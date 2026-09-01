@@ -71,6 +71,7 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 | `PROXY_CACHE_MAX_STALE_SECS` | `2592000` | 期限切れでも再検証できるエントリを保持しておく最長時間 (既定 30 日) |
 | `PROXY_CACHE_MAX_OBJECT_MB` | `4096` | ディスク層に置く 1 オブジェクトの最大サイズ（MiB） |
 | `PROXY_MEM_CACHE_MAX_OBJECT_MB` | `32` | メモリ層に置く 1 オブジェクトの最大サイズ（MiB）。これを超えるものはディスクからストリーミング配信 |
+| `PROXY_DISK_MAX_ENTRIES` | `2000000` | ディスク層の索引に保持するエントリ数の上限 (1 件あたり RAM 約 100 バイト)。超えた分は LRU で追い出す |
 
 `PROXY_CACHE_DIR` を指定しない場合は、書き込める最初の候補を使います:
 `$XDG_CACHE_HOME/sorahost-http-proxy` (または `~/.cache/sorahost-http-proxy`) → `/var/cache/sorahost-http-proxy` → `$TMPDIR/sorahost-http-proxy-cache`。
@@ -115,7 +116,9 @@ GET リクエストのみを対象に、レスポンスをワイヤ形式その�
   `Content-Length` / `Connection` を付け直す。形式は `SHPC2` で、旧形式のエントリは起動時に捨てる
 - L1 (メモリ) → L2 (ディスク) の順に探索し、`PROXY_MEM_CACHE_MAX_OBJECT_MB` 以下の L2 ヒットは L1 へ昇格。
   それより大きいものはディスクからそのままストリーミング配信
-- どちらも LRU で上限を超えた分から追い出し (参照・追い出しともに O(log n))
+- どちらも LRU で上限を超えた分から追い出し (参照・追い出しともに O(log n))。書き込み中の一時ファイルの分も
+  容量計算に含めるので、同時ダウンロードやバラストの再充填で上限を超えることはない
+- ディスク上のエントリはペイロード長をヘッダーに記録し、読むときにファイルサイズと照合して途中で切れたものを弾く
 - ディスクキャッシュは 256 分割ディレクトリに 1 エントリ 1 ファイルで置き、ファイルの mtime に有効期限を
   記録するので、起動時の走査はファイルを開かずに済む。書き込みは一時ファイルへのストリーミング
 - キャッシュキーは メソッド + URL + 正規化した `Accept-Encoding`。`Vary` に `Accept-Encoding` 以外があれば保存しない
@@ -136,6 +139,10 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
   バリデータがあれば「毎回再検証」として保存します
 - オリジンに繋がらない・5xx を返す場合は、`must-revalidate` でない限り期限切れの表現を配信します (`cache=STALE`)
 - クライアントが `If-None-Match` / `If-Modified-Since` を付けてきて保存済みの表現と一致すれば、キャッシュから 304 を返します
+- `no-cache` / `s-maxage` / `must-revalidate` 付きの表現と、クライアントが `no-cache` を付けた要求では stale を配信しません
+- 上流のキャッシュを経てきた応答は `Age` と `Date` から経過時間を差し引いて保存し、配信時の `Age` はプロキシが付け直します
+- POST / PUT / DELETE などへの成功応答 (2xx/3xx) を受けたら、その URL (と同じサーバーへの `Location` / `Content-Location`)
+  のキャッシュを無効化します (RFC 9111 §4.4)。本文付きの GET と `Range` 要求の応答は保存しません
 
 ### 自動モードの予算と動的マージン
 
@@ -176,7 +183,8 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 - ディスク: `ballast.reserve` ファイルを `fallocate` で伸ばす。エントリの書き込み前に必要分だけ縮める
 - 予算が縮んだときはまずバラストを返し、それでも足りないときだけエントリを追い出す
 - tmpfs / ramfs 上のディレクトリでは「ディスク」の先行確保が RAM を食うだけなので無効化して警告
-- バラストファイルは停止中も残りますが (シグナルでの終了時は消せない)、次回起動時に必ず空にしてから予算に合わせて作り直します
+- SIGTERM / SIGINT を受けたら `ballast.reserve` を切り詰めてから終了します (Pterodactyl の停止中にディスク使用量として
+  残らない)。強制終了で残っても、次回起動時に必ず空にしてから予算に合わせて作り直します
 
 ### Pterodactyl での注意
 

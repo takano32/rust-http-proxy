@@ -86,7 +86,7 @@ impl Cache {
             }
         }
 
-        if pressure {
+        if pressure || self.disk_enospc_seen.swap(false, Ordering::Relaxed) {
             self.backoff_until.store(
                 tick + self.ticks_per(PRESSURE_BACKOFF_SECS),
                 Ordering::Relaxed,
@@ -160,18 +160,22 @@ impl Cache {
                     if let Some(cg) = cg {
                         margins.cgroup.observe(cg.usage.saturating_sub(owned));
                     }
-                    if m.under_pressure() {
+                    // ホストの PSI はホスト側のマージンにだけ、cgroup の PSI は cgroup 側にだけ効かせる
+                    if m.host_pressure() {
                         margins
                             .host
                             .on_pressure(percent_of(m.total, BACKOFF_PERCENT), m.total);
-                        if let Some(cg) = cg {
+                    } else {
+                        margins.host.on_calm();
+                    }
+                    if let Some(cg) = cg {
+                        if m.cgroup_pressure().unwrap_or_else(|| m.host_pressure()) {
                             margins
                                 .cgroup
                                 .on_pressure(percent_of(cg.limit, BACKOFF_PERCENT), cg.limit);
+                        } else {
+                            margins.cgroup.on_calm();
                         }
-                    } else {
-                        margins.host.on_calm();
-                        margins.cgroup.on_calm();
                     }
                     let host_floor = (m.min_free.saturating_mul(MIN_FREE_MULTIPLIER))
                         .max(floor_for(m.total, MEM_FLOOR));
@@ -223,9 +227,10 @@ impl Cache {
                                 percent_of(f.total, BACKOFF_PERCENT).max(floor),
                                 f.total,
                             );
+                            self.disk_enospc_seen.store(true, Ordering::Relaxed);
                             log_info!(
                                 None,
-                                "disk is full for other writers ({} ENOSPC): backing off",
+                                "disk is full ({} ENOSPC on cache writes): backing off",
                                 enospc
                             );
                         } else {
@@ -237,10 +242,16 @@ impl Cache {
                             DiskQuota::Fixed(_) | DiskQuota::Auto => "disk quota",
                             _ => "filesystem",
                         };
-                        (
-                            budget::disk_budget(owned, f, percent, keep),
-                            Some((what, f.used_percent())),
-                        )
+                        let mut cap = budget::disk_budget(owned, f, percent, keep);
+                        // 割当で計算していても、実際のファイルシステムの空きは超えられない
+                        if quota.is_some()
+                            && let Some(real) = sysinfo::fs_info(self.disk.dir())
+                        {
+                            let real_keep =
+                                margins.disk.keep_free(floor_for(real.total, DISK_FLOOR), 0);
+                            cap = cap.min(budget::disk_budget(owned, &real, percent, real_keep));
+                        }
+                        (cap, Some((what, f.used_percent())))
                     }
                     None => {
                         if !self.disk_fallback_warned.swap(true, Ordering::Relaxed) {

@@ -155,6 +155,8 @@ pub struct CacheConfig {
     pub max_object_size: u64,
     /// メモリ層に置く 1 オブジェクトの最大サイズ (バイト)
     pub mem_max_object_size: u64,
+    /// ディスク層の索引に保持するエントリ数の上限 (1 件 ~100 バイトの RAM)
+    pub disk_max_entries: usize,
     /// コンテナのディスク割当 (`PROXY_DISK_QUOTA_MB` / 別名 `SERVER_DISK`)。Pterodactyl のように
     /// 「ディレクトリの合計サイズ」で制限される環境向け。
     pub disk_quota: DiskQuota,
@@ -187,6 +189,7 @@ impl Default for CacheConfig {
             max_stale: Duration::from_secs(30 * 24 * 3600),
             max_object_size: 4096 * MIB,
             mem_max_object_size: 32 * MIB,
+            disk_max_entries: 2_000_000,
             disk_quota: DiskQuota::Unknown,
             quota_root: None,
             mem_alloc: None,
@@ -272,6 +275,10 @@ impl CacheConfig {
             mem_max_object_size: num("PROXY_MEM_CACHE_MAX_OBJECT_MB")
                 .map(|v| v.saturating_mul(MIB))
                 .unwrap_or(d.mem_max_object_size),
+            disk_max_entries: num("PROXY_DISK_MAX_ENTRIES")
+                .filter(|&v| v > 0)
+                .map(|v| v as usize)
+                .unwrap_or(d.disk_max_entries),
             disk_quota: get("PROXY_DISK_QUOTA_MB")
                 .or_else(|| get("SERVER_DISK"))
                 .and_then(|v| DiskQuota::parse(&v))

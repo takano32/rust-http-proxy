@@ -128,11 +128,25 @@ impl DiskTier {
                 report.expired += 1;
                 continue;
             }
-            index.insert(
-                key,
-                DiskEntry::new(size, meta),
-                clock.fetch_add(1, Ordering::Relaxed),
-            );
+            if index.len() >= self.max_entries() {
+                let _ = fs::remove_file(&path);
+                report.removed += 1;
+                continue;
+            }
+            let seq = clock.fetch_add(1, Ordering::Relaxed);
+            if let Some(old) = index.insert(key, DiskEntry::new(size, meta), seq)
+                && old.meta.validators != validators
+            {
+                // 同じキーの .cache と .vcache が両方ある (確定途中で落ちた等) → 期限の長い方を残す
+                if old.meta.expires_at > meta.expires_at {
+                    let _ = fs::remove_file(&path);
+                    index.insert(key, old, seq);
+                } else {
+                    let _ = fs::remove_file(self.path_for(key, old.meta.validators));
+                }
+                report.removed += 1;
+                continue;
+            }
             report.restored += 1;
             if report.restored.is_multiple_of(100_000) {
                 log_info!(None, "disk cache scan: {} entries so far", report.restored);

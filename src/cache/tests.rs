@@ -139,7 +139,7 @@ fn stale_entry_with_validators_survives_and_can_be_refreshed() {
                 .ends_with(".vcache")
         );
 
-        let expires = cache.refresh(key, Duration::from_secs(600), 1);
+        let expires = cache.refresh(key, Duration::from_secs(600), 0, 1);
         assert!(expires > now);
         let (resp, _) = cache.get(key, 1).unwrap();
         assert!(resp.is_fresh(now));
@@ -243,6 +243,7 @@ fn large_object_streams_to_disk_only() {
         key,
         "http://example.com/large",
         Duration::from_secs(60),
+        0,
         false,
         None,
         1,
@@ -275,6 +276,7 @@ fn aborted_store_leaves_nothing_behind() {
         key,
         "http://example.com/abort",
         Duration::from_secs(60),
+        0,
         false,
         None,
         1,
@@ -700,4 +702,112 @@ fn switching_validators_replaces_the_old_file_extension() {
     );
     assert!(!v_path.exists());
     assert!(cache.disk_path(key).unwrap().exists());
+}
+
+#[test]
+fn in_flight_room_is_accounted_until_the_writer_finishes() {
+    let cache = fresh("shp-test-inflight", MIB, 10 * MIB);
+    let meta = Meta {
+        stored_at: 1,
+        expires_at: u64::MAX,
+        validators: false,
+    };
+    let k1 = cache_key("GET", "http://example.com/a");
+    let k2 = cache_key("GET", "http://example.com/b");
+    // 6 MiB 予定の書き込みが場所を取ると (先読み分も含めて) 空きが無くなる
+    let w1 = cache
+        .disk
+        .begin(k1, "http://example.com/a", meta, 1, Some(6 * MIB), u64::MAX)
+        .unwrap()
+        .expect("first writer gets room");
+    assert!(cache.disk.in_flight_bytes() >= 6 * MIB);
+    assert_eq!(cache.disk.free_room(), 0);
+    // 2 本目は入らない (静かにスキップ)
+    let w2 = cache
+        .disk
+        .begin(k2, "http://example.com/b", meta, 2, Some(6 * MIB), u64::MAX)
+        .unwrap();
+    assert!(w2.is_none(), "no room while the first write is in flight");
+    // 中止すれば戻る
+    w1.abort();
+    assert_eq!(cache.disk.in_flight_bytes(), 0);
+    assert_eq!(cache.disk.free_room(), 10 * MIB);
+    let mut w3 = cache
+        .disk
+        .begin(k2, "http://example.com/b", meta, 3, Some(6 * MIB), u64::MAX)
+        .unwrap()
+        .expect("room is back");
+    w3.write(&vec![b'x'; 6 * MIB as usize]).unwrap();
+    let out = w3.finish(4).unwrap();
+    assert!(out.stored);
+    assert_eq!(cache.disk.in_flight_bytes(), 0);
+    assert_eq!(cache.disk_usage().1, 1);
+}
+
+#[test]
+fn truncated_disk_file_is_rejected_and_removed() {
+    let cache = fresh("shp-test-truncated", 100, MIB);
+    let key = cache_key("GET", "http://example.com/t");
+    cache.put(
+        key,
+        "http://example.com/t",
+        wire(b"0123456789"),
+        Duration::from_secs(60),
+        1,
+    );
+    let path = cache.disk_path(key).unwrap();
+    cache.mem.remove(key);
+    let len = fs::metadata(&path).unwrap().len();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(len - 3)
+        .unwrap();
+    // L1 から外してディスクから読ませる → 長さ不一致で捨てる
+    assert!(cache.get(key, 1).is_none());
+    assert!(!path.exists());
+    assert_eq!(cache.disk_usage().1, 0);
+}
+
+#[test]
+fn disk_entry_cap_evicts_least_recently_used() {
+    let mut cfg = CacheConfig::fixed(MIB, 10 * MIB, test_dir("shp-test-entry-cap"));
+    cfg.disk_max_entries = 3;
+    let cache = Cache::new(cfg);
+    for i in 0..5 {
+        let url = format!("http://example.com/{}", i);
+        cache.put(
+            cache_key("GET", &url),
+            &url,
+            b"x".to_vec(),
+            Duration::from_secs(60),
+            i,
+        );
+    }
+    assert_eq!(cache.disk_usage().1, 3);
+    assert!(
+        cache
+            .disk_path(cache_key("GET", "http://example.com/0"))
+            .is_none()
+    );
+    assert!(
+        cache
+            .disk_path(cache_key("GET", "http://example.com/4"))
+            .is_some()
+    );
+}
+
+#[test]
+fn invalidate_removes_every_variant_of_a_url() {
+    let cache = fresh("shp-test-invalidate", MIB, MIB);
+    let url = "http://example.com/item";
+    let plain = cache_key("GET", url);
+    let gz = super::cache_key_variant("GET", url, "gzip");
+    cache.put(plain, url, b"plain".to_vec(), Duration::from_secs(60), 1);
+    cache.put(gz, url, b"gzip".to_vec(), Duration::from_secs(60), 1);
+    assert!(cache.get(plain, 1).is_some() && cache.get(gz, 1).is_some());
+    assert_eq!(cache.invalidate(url, 1), 2);
+    assert!(cache.get(plain, 1).is_none() && cache.get(gz, 1).is_none());
+    assert_eq!(cache.disk_usage().1, 0);
 }

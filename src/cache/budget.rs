@@ -45,16 +45,28 @@ impl MemSnapshot {
         }
     }
 
-    /// ホスト全体か所属 cgroup のどこかで PSI が閾値を超えているか。
+    /// ホスト全体の PSI が閾値を超えているか。
+    pub fn host_pressure(&self) -> bool {
+        self.pressure.as_ref().is_some_and(is_hot)
+    }
+
+    /// 最も厳しい cgroup の PSI (無ければ `None`)。
+    pub fn cgroup_pressure(&self) -> Option<bool> {
+        self.cgroups
+            .iter()
+            .min_by_key(|c| c.limit)
+            .and_then(|c| c.pressure.as_ref())
+            .map(is_hot)
+    }
+
+    /// 実際に効く圧迫。cgroup 制限が効いているコンテナでは、ホスト全体の PSI は隣のコンテナの
+    /// 影響を受けるので、自分の cgroup の PSI があればそれだけを見る。
     pub fn under_pressure(&self) -> bool {
-        let hot = |p: &MemPressure| {
-            p.some_avg10 >= PRESSURE_SOME_AVG10 || p.full_avg10 >= PRESSURE_FULL_AVG10
-        };
-        self.pressure.as_ref().is_some_and(hot)
-            || self
-                .cgroups
-                .iter()
-                .any(|c| c.pressure.as_ref().is_some_and(hot))
+        if self.cgroups.is_empty() {
+            return self.host_pressure();
+        }
+        self.cgroup_pressure()
+            .unwrap_or_else(|| self.host_pressure())
     }
 
     /// 最も強い圧迫値 (ログ用)。
@@ -74,6 +86,10 @@ impl MemSnapshot {
     pub fn cgroup_usage(&self) -> Option<u64> {
         self.cgroups.iter().min_by_key(|c| c.limit).map(|c| c.usage)
     }
+}
+
+fn is_hot(p: &MemPressure) -> bool {
+    p.some_avg10 >= PRESSURE_SOME_AVG10 || p.full_avg10 >= PRESSURE_FULL_AVG10
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -273,6 +289,24 @@ mod tests {
         });
         assert!(c.under_pressure());
         assert_eq!(c.max_pressure().unwrap().full_avg10, 9.0);
+        // cgroup の PSI が読めるなら、ホスト全体の圧迫 (隣のコンテナ) は無視する
+        let mut h = snap(10 * GIB, 5 * GIB);
+        h.pressure = Some(MemPressure {
+            some_avg10: 90.0,
+            full_avg10: 50.0,
+        });
+        h.cgroups.push(CgroupMem {
+            limit: GIB,
+            usage: 0,
+            pressure: Some(MemPressure {
+                some_avg10: 0.0,
+                full_avg10: 0.0,
+            }),
+        });
+        assert!(h.host_pressure() && !h.under_pressure());
+        // cgroup v1 (PSI 無し) ならホストの PSI にフォールバック
+        h.cgroups[0].pressure = None;
+        assert!(h.under_pressure());
     }
 
     #[test]

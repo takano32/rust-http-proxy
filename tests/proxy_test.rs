@@ -691,3 +691,62 @@ fn test_integration_range_and_head_from_cache() {
         "range and head answered from cache"
     );
 }
+
+#[test]
+fn test_integration_unsafe_method_invalidates_cached_get() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_origin(
+        Arc::clone(&counter),
+        Arc::new(|req, n| {
+            let body = format!("version {}", n);
+            let status = if req.starts_with("POST") {
+                "204 No Content"
+            } else {
+                "200 OK"
+            };
+            if req.starts_with("POST") {
+                return format!(
+                    "HTTP/1.1 {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    status
+                )
+                .into_bytes();
+            }
+            format!(
+                "HTTP/1.1 {}\r\nContent-Length: {}\r\nCache-Control: max-age=60\r\nConnection: close\r\n\r\n{}",
+                status, body.len(), body
+            )
+            .into_bytes()
+        }),
+    );
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-invalidate"));
+    let host = format!("127.0.0.1:{}", origin_port);
+    let url = format!("http://{}/item", host);
+
+    let first = get_via_proxy(proxy_port, &url, &host);
+    assert!(first.ends_with("version 1"), "{}", first);
+    let hit = get_via_proxy(proxy_port, &url, &host);
+    assert!(
+        hit.contains("X-Cache: HIT") && hit.ends_with("version 1"),
+        "{}",
+        hit
+    );
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let req = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        url, host
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 204"), "{}", resp);
+
+    // POST 後は古い表現が消えていて、オリジンから取り直す
+    let after = get_via_proxy(proxy_port, &url, &host);
+    assert!(
+        !after.contains("X-Cache") && after.ends_with("version 3"),
+        "{}",
+        after
+    );
+    assert_eq!(counter.load(Ordering::SeqCst), 3);
+}

@@ -12,6 +12,7 @@ use sorahost_http_proxy::log;
 use sorahost_http_proxy::metrics::Metrics;
 use sorahost_http_proxy::net;
 use sorahost_http_proxy::pool::Pool;
+use sorahost_http_proxy::signal;
 use sorahost_http_proxy::{log_debug, log_error, log_info};
 
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -42,6 +43,10 @@ fn main() {
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
     let pool = Arc::new(Pool::new(config.pool_per_host, ORIGIN_IDLE));
+    if config.cache.enabled && config.cache.reserve {
+        // 停止シグナルで ballast.reserve を空にしてから終わる (Wings のディスク計測に残さない)
+        signal::install(&cache.ballast_path());
+    }
 
     log_info!(
         None,

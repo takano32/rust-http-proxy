@@ -40,12 +40,12 @@ impl ResponseHead {
     }
 }
 
-/// レスポンスヘッダーのうち、プロキシが自分で決め直すもの (枠組み・接続管理)。
-const FRAMING_HEADERS: &[&str] = &["transfer-encoding", "content-length"];
+/// レスポンスヘッダーのうち、プロキシが自分で決め直すもの (枠組み・経過時間)。
+const FRAMING_HEADERS: &[&str] = &["transfer-encoding", "content-length", "age"];
 
 pub fn sanitize_response_head(head: &[u8]) -> ResponseHead {
     let text = String::from_utf8_lossy(head);
-    let mut lines = text.split("\r\n").map(|l| l.trim_end_matches('\n'));
+    let mut lines = text.split('\n').map(|l| l.trim_end_matches('\r'));
     let status_line = lines.next().unwrap_or("").trim();
     let mut parts = status_line.splitn(2, ' ');
     let _version = parts.next();
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn response_head_is_sanitized_and_reassembled() {
-        let head = b"HTTP/1.0 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\nConnection: close, X-Custom\r\nX-Custom: 1\r\nKeep-Alive: timeout=5\r\nContent-Type: text/plain\r\nETag: \"a\"\r\n\r\n";
+        let head = b"HTTP/1.0 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\nConnection: close, X-Custom\r\nX-Custom: 1\r\nKeep-Alive: timeout=5\r\nAge: 12\r\nContent-Type: text/plain\nETag: \"a\"\n\n";
         let h = sanitize_response_head(head);
         assert_eq!(h.status_line, "HTTP/1.1 200 OK");
         assert_eq!(

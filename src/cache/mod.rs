@@ -171,11 +171,21 @@ fn read_head<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
     }
 }
 
+/// 先頭部分 (空行まで) の長さ。CRLF でも素の LF でも受け付ける。
 fn head_len(wire: &[u8]) -> usize {
-    wire.windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 4)
-        .unwrap_or(wire.len())
+    let mut i = 0;
+    while i < wire.len() {
+        let nl = match wire[i..].iter().position(|&b| b == b'\n') {
+            Some(p) => i + p,
+            None => return wire.len(),
+        };
+        let line = &wire[i..nl];
+        if line.is_empty() || line == b"\r" {
+            return nl + 1;
+        }
+        i = nl + 1;
+    }
+    wire.len()
 }
 
 /// 保存結果。
@@ -246,7 +256,7 @@ impl StoreSink<'_> {
             out.memory = cache.mem.capacity() >= self.total;
         }
         if let Some(w) = self.disk.take() {
-            match w.finish() {
+            match w.finish(cache.tick()) {
                 Ok(r) => {
                     cache.count_evictions(r.evicted);
                     out.disk = r.stored;
@@ -303,10 +313,14 @@ pub struct Cache {
     ticks: AtomicU64,
     snapshot: Mutex<Snapshot>,
     margins: Mutex<Margins>,
+    /// URL (バリアント無しのキー) → 保存したバリアントのキー。無効化 (POST 等) 用
+    variants: Mutex<key::KeyMap<Vec<CacheKey>>>,
     /// quota モードでの、割当ディレクトリ内の自分以外の使用量
     other_disk_usage: AtomicU64,
-    /// このティックまではバラストの再確保を控える (メモリ圧迫後)
+    /// このティックまではバラストの再確保を控える (メモリ圧迫・ENOSPC の後)
     backoff_until: AtomicU64,
+    /// 直近のプローブで ENOSPC を観測した (バラストの再確保を控える合図)
+    disk_enospc_seen: AtomicBool,
     pressure_logged: AtomicBool,
     mem_fallback_warned: AtomicBool,
     disk_fallback_warned: AtomicBool,
@@ -329,7 +343,7 @@ impl Cache {
         let cache = Self {
             quota,
             mem: MemTier::new(cfg.reserve),
-            disk: DiskTier::new(cfg.dir.clone(), cfg.reserve),
+            disk: DiskTier::new(cfg.dir.clone(), cfg.reserve, cfg.disk_max_entries),
             margins: Mutex::new(Margins {
                 host: Margin::new(cfg.mem_keep_free),
                 cgroup: Margin::new(cfg.mem_keep_free),
@@ -339,8 +353,10 @@ impl Cache {
             clock: AtomicU64::new(0),
             ticks: AtomicU64::new(0),
             snapshot: Mutex::new(Snapshot::default()),
+            variants: Mutex::new(key::KeyMap::default()),
             other_disk_usage: AtomicU64::new(0),
             backoff_until: AtomicU64::new(0),
+            disk_enospc_seen: AtomicBool::new(false),
             pressure_logged: AtomicBool::new(false),
             mem_fallback_warned: AtomicBool::new(false),
             disk_fallback_warned: AtomicBool::new(false),
@@ -459,6 +475,11 @@ impl Cache {
             .map(|m| self.disk.path_for(key, m.validators))
     }
 
+    /// バラストファイルのパス (シグナル時の切り詰め用)。
+    pub fn ballast_path(&self) -> PathBuf {
+        self.disk.ballast_path()
+    }
+
     /// 直近のプローブで観測したシステム使用量。
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot
@@ -535,8 +556,18 @@ impl Cache {
                 return None;
             }
             Err(e) => {
-                log_warn!(Some(conn_id), "cache L2 read failed key={}: {}", key, e);
-                self.disk.remove(key);
+                // 壊れている・無い場合だけ消す。一時的な I/O エラー (fd 枯渇など) では残す
+                if is_permanent(&e) {
+                    log_warn!(Some(conn_id), "cache L2 read failed key={}: {}", key, e);
+                    self.disk.remove(key);
+                } else {
+                    log_warn!(
+                        Some(conn_id),
+                        "cache L2 temporarily unreadable key={}: {}",
+                        key,
+                        e
+                    );
+                }
                 return None;
             }
         };
@@ -547,7 +578,9 @@ impl Cache {
             let mut data = Vec::with_capacity(size as usize);
             if let Err(e) = reader.read_to_end(&mut data) {
                 log_warn!(Some(conn_id), "cache L2 read failed key={}: {}", key, e);
-                self.disk.remove(key);
+                if is_permanent(&e) {
+                    self.disk.remove(key);
+                }
                 return None;
             }
             sysinfo::drop_page_cache(reader.get_ref());
@@ -596,22 +629,66 @@ impl Cache {
         Some(resp)
     }
 
-    /// ストリーミング保存を開始する。`expected` はレスポンスの Content-Length (分かれば)。
+    /// URL とバリアントの対応を覚えておく (無効化用)。
+    pub fn remember_variant(&self, url: &str, key: CacheKey) {
+        let base = cache_key("GET", url);
+        let mut v = self.variants.lock().unwrap_or_else(|p| p.into_inner());
+        let list = v.entry(base).or_default();
+        if !list.contains(&key) {
+            list.push(key);
+        }
+    }
+
+    /// URL のすべてのバリアントを消す (unsafe メソッドへの成功応答時, RFC 9111 §4.4)。
+    /// 再起動前に保存されたバリアントは把握できないので、ベストエフォート。
+    pub fn invalidate(&self, url: &str, conn_id: usize) -> usize {
+        let base = cache_key("GET", url);
+        let mut keys = {
+            let mut v = self.variants.lock().unwrap_or_else(|p| p.into_inner());
+            v.remove(&base).unwrap_or_default()
+        };
+        if !keys.contains(&base) {
+            keys.push(base);
+        }
+        let mut removed = 0;
+        for k in keys {
+            let had = self.mem.remove(k) | self.disk.lookup(k).is_some();
+            self.disk.remove(k);
+            if had {
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            log_debug!(
+                Some(conn_id),
+                "cache INVALIDATE url={} ({} variants)",
+                url,
+                removed
+            );
+        }
+        removed
+    }
+
+    /// ストリーミング保存を開始する。`expected` はレスポンスの Content-Length (分かれば)、
+    /// `age` は受信時点で既に経過している時間 (上流キャッシュの Age / Date から)。
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_store(
         &self,
         key: CacheKey,
         url: &str,
         ttl: Duration,
+        age: u64,
         validators: bool,
         expected: Option<u64>,
         conn_id: usize,
     ) -> StoreSink<'_> {
-        let stored_at = now_epoch();
+        let now = now_epoch();
         let meta = Meta {
-            stored_at,
-            expires_at: stored_at.saturating_add(ttl.as_secs()),
+            stored_at: now.saturating_sub(age),
+            expires_at: now.saturating_add(ttl.as_secs().saturating_sub(age)),
             validators,
         };
+        self.remember_variant(url, key);
         let mem_buf =
             if self.cfg.enabled && expected.is_none_or(|e| e <= self.cfg.mem_max_object_size) {
                 Some(Vec::with_capacity(
@@ -670,17 +747,27 @@ impl Cache {
         if !self.cfg.enabled {
             return StoreOutcome::default();
         }
-        let mut sink =
-            self.begin_store(key, url, ttl, validators, Some(bytes.len() as u64), conn_id);
+        let mut sink = self.begin_store(
+            key,
+            url,
+            ttl,
+            0,
+            validators,
+            Some(bytes.len() as u64),
+            conn_id,
+        );
         sink.write(&bytes);
         sink.finish()
     }
 
-    /// 再検証 (304) に成功したので有効期限を延ばす。戻り値は新しい期限。
-    pub fn refresh(&self, key: CacheKey, ttl: Duration, conn_id: usize) -> u64 {
-        let expires_at = now_epoch().saturating_add(ttl.as_secs());
-        let in_mem = self.mem.refresh(key, expires_at, self.tick());
-        let on_disk = self.disk.refresh(key, expires_at, self.tick());
+    /// 再検証 (304) に成功したので有効期限を延ばし、経過時間 (Age) を `age` から数え直す。
+    /// 戻り値は新しい期限。
+    pub fn refresh(&self, key: CacheKey, ttl: Duration, age: u64, conn_id: usize) -> u64 {
+        let now = now_epoch();
+        let stored_at = now.saturating_sub(age);
+        let expires_at = now.saturating_add(ttl.as_secs().saturating_sub(age));
+        let in_mem = self.mem.refresh(key, stored_at, expires_at, self.tick());
+        let on_disk = self.disk.refresh(key, stored_at, expires_at, self.tick());
         if in_mem || on_disk {
             self.revalidations.fetch_add(1, Ordering::Relaxed);
         }
@@ -699,6 +786,14 @@ impl Cache {
         self.mem.remove(key);
         self.disk.remove(key);
     }
+}
+
+/// 読めない原因がファイル側 (消えた・壊れた) にあるか。fd 枯渇や EIO のような一時的な失敗は含めない。
+fn is_permanent(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+    )
 }
 
 /// `Auto` は `df <割当ディレクトリ>` が割当を示すときだけ採用する。`/` と同じファイルシステム

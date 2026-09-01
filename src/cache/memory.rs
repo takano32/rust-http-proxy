@@ -147,11 +147,12 @@ impl MemTier {
     }
 
     /// 再検証に成功したので有効期限を延ばす。エントリが無ければ false。
-    pub fn refresh(&self, key: CacheKey, expires_at: u64, seq: u64) -> bool {
+    pub fn refresh(&self, key: CacheKey, stored_at: u64, expires_at: u64, seq: u64) -> bool {
         let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
         let Some(entry) = store.get_mut(key) else {
             return false;
         };
+        entry.meta.stored_at = stored_at;
         entry.meta.expires_at = expires_at;
         store.touch(key, seq);
         true

@@ -216,8 +216,12 @@ pub fn handle_http_with_headers(
     let client_no_store = freshness::has_directive(&req.cache_control, "no-store");
     let force_revalidate = freshness::has_directive(&req.cache_control, "no-cache")
         || freshness::directive_value(&req.cache_control, "max-age") == Some(0);
-    let lookup_allowed =
-        cache.enabled() && (is_get || head_only) && !req.authorization && !client_no_store;
+    // 本文付きの GET は本文でも意味が変わりうるのでキャッシュしない
+    let lookup_allowed = cache.enabled()
+        && (is_get || head_only)
+        && !req.authorization
+        && !client_no_store
+        && req_framing == Framing::None;
     let store_allowed = lookup_allowed && is_get && req.range.is_none();
     let client_conditional = req.if_none_match.is_some() || req.if_modified_since.is_some();
     let now = now_epoch();
@@ -225,6 +229,7 @@ pub fn handle_http_with_headers(
     let mut stale: Option<(CachedResponse, CacheSource)> = None;
     if lookup_allowed {
         if let Some((entry, source)) = cache.get(key, conn_id) {
+            cache.remember_variant(&url, key);
             if entry.is_fresh(now) && !force_revalidate {
                 body::drain(reader, req_framing)?;
                 let ttl_left = entry.ttl_left(now);
@@ -279,6 +284,7 @@ pub fn handle_http_with_headers(
                     e
                 );
                 if let Some((entry, source)) = stale.take()
+                    && !force_revalidate
                     && can_serve_stale(&entry)
                 {
                     body::drain(reader, req_framing)?;
@@ -311,6 +317,7 @@ pub fn handle_http_with_headers(
             Err(e) => {
                 log_warn!(Some(conn_id), "failed to read origin response: {}", e);
                 if let Some((entry, source)) = stale.take()
+                    && !force_revalidate
                     && can_serve_stale(&entry)
                 {
                     return serve_cached(client, entry, source, "STALE", 0, &ctx);
@@ -343,15 +350,17 @@ pub fn handle_http_with_headers(
         && let Some((entry, source)) = stale.take()
     {
         let cached_head = freshness::parse_cached_head(&entry.head);
-        let ttl = freshness::revalidated_ttl(&resp_headers, &cached_head, cfg, now);
-        cache.refresh(key, ttl, conn_id);
+        let p = freshness::revalidated_policy(&resp_headers, &cached_head, cfg, now);
+        cache.refresh(key, p.ttl, p.age, conn_id);
         if origin_reusable {
             shared.pool.put(&server_addr, server);
         }
-        return serve_cached(client, entry, source, "REVALIDATED", ttl.as_secs(), &ctx);
+        let ttl_left = p.ttl.as_secs().saturating_sub(p.age);
+        return serve_cached(client, entry, source, "REVALIDATED", ttl_left, &ctx);
     }
-    // オリジン障害: stale を配信 (must-revalidate でなければ)。この接続は再利用しない
+    // オリジン障害: stale を配信 (禁止されていなければ)。この接続は再利用しない
     if STALE_ON_STATUS.contains(&status)
+        && !force_revalidate
         && let Some((entry, source)) = stale.take()
         && can_serve_stale(&entry)
     {
@@ -372,9 +381,21 @@ pub fn handle_http_with_headers(
     } else {
         None
     };
-    if policy.is_none() && stale.is_some() {
-        // 新しい表現は保存できないので、古い表現も捨てる
+    if policy.is_none() && stale.is_some() && (200..400).contains(&status) {
+        // 新しい表現が届いたのに保存できないので、古い表現も捨てる (4xx/5xx では残す)
         cache.remove(key);
+    }
+    // unsafe メソッドへの成功応答は対象 URL (と Location 先) のキャッシュを無効化する (RFC 9111 §4.4)
+    if !is_get && !head_only && (200..400).contains(&status) && cache.enabled() {
+        cache.invalidate(&url, conn_id);
+        for name in ["location", "content-location"] {
+            if let Some((_, target)) = resp_headers.iter().find(|(k, _)| k == name)
+                && let Ok((h, p)) = parse_target(target, None)
+                && net::with_default_port(h, 80) == server_addr
+            {
+                cache.invalidate(&format!("http://{}{}", server_addr, p), conn_id);
+            }
+        }
     }
     let sanitized = headers::sanitize_response_head(&head);
     // クライアント向けの枠組み: 長さが分かればそのまま、分からなければ HTTP/1.1 には再 chunk
@@ -411,7 +432,7 @@ pub fn handle_http_with_headers(
         _ => None,
     };
     let mut sink =
-        policy.map(|p| cache.begin_store(key, &url, p.ttl, p.validators, expected, conn_id));
+        policy.map(|p| cache.begin_store(key, &url, p.ttl, p.age, p.validators, expected, conn_id));
     if let Some(s) = sink.as_mut() {
         s.write(&cached_head);
     }
@@ -546,7 +567,7 @@ fn write_error(client: &mut TcpStream, status: u16, reason: &str) -> io::Result<
 
 /// stale のまま配信してよいか (`must-revalidate` / `proxy-revalidate` なら不可)。
 fn can_serve_stale(entry: &CachedResponse) -> bool {
-    !freshness::parse_cached_head(&entry.head).must_revalidate
+    freshness::parse_cached_head(&entry.head).may_serve_stale()
 }
 
 /// `If-Range` が保存済みの表現に一致するか (無ければ一致扱い)。弱い ETag は使えない。

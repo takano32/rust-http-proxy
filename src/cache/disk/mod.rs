@@ -88,6 +88,10 @@ pub struct DiskTier {
     reserve: bool,
     /// 直近のプローブ以降に自分の書き込みが ENOSPC になった回数
     enospc: AtomicU64,
+    /// 書き込み中の一時ファイルのために確保している容量 (確定・中止で戻す)
+    pub(super) in_flight: AtomicU64,
+    /// 索引に保持するエントリ数の上限 (メモリを食い潰さないため)
+    max_entries: usize,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -98,7 +102,7 @@ pub struct WriteOutcome {
 }
 
 impl DiskTier {
-    pub fn new(dir: PathBuf, reserve: bool) -> Self {
+    pub fn new(dir: PathBuf, reserve: bool, max_entries: usize) -> Self {
         Self {
             dir,
             ready: AtomicBool::new(false),
@@ -112,7 +116,18 @@ impl DiskTier {
             ballast_bytes: AtomicU64::new(0),
             reserve,
             enospc: AtomicU64::new(0),
+            in_flight: AtomicU64::new(0),
+            max_entries: max_entries.max(1),
         }
+    }
+
+    /// バラストファイルのパス (シグナル時の切り詰め用)。
+    pub fn ballast_path(&self) -> PathBuf {
+        self.dir.join(BALLAST_FILE)
+    }
+
+    pub fn in_flight_bytes(&self) -> u64 {
+        self.in_flight.load(Ordering::Relaxed)
     }
 
     pub fn dir(&self) -> &Path {
@@ -141,12 +156,15 @@ impl DiskTier {
         self.ballast_bytes.load(Ordering::Relaxed)
     }
 
-    /// エントリ + バラスト (自分がファイルシステムから取っている分)。
+    /// エントリ + 書き込み中 + バラスト (自分がファイルシステムから取っている分)。
     pub fn owned(&self) -> u64 {
-        self.usage().0.saturating_add(self.ballast_bytes())
+        self.usage()
+            .0
+            .saturating_add(self.in_flight_bytes())
+            .saturating_add(self.ballast_bytes())
     }
 
-    /// 上限までの空き (エントリとバラストを除いた分)。
+    /// 上限までの空き (エントリ・書き込み中・バラストを除いた分)。
     pub fn free_room(&self) -> u64 {
         self.capacity().saturating_sub(self.owned())
     }
@@ -195,7 +213,17 @@ impl DiskTier {
     }
 
     /// ディレクトリを準備し、既存ファイルからインデックスを復元する。
+    /// 失敗したら索引を空にして返す (中途半端な索引で追い出しが走らないように)。
     pub fn init(&self, clock: &AtomicU64, now: u64, max_stale: u64) -> io::Result<ScanReport> {
+        let result = self.init_inner(clock, now, max_stale);
+        if result.is_err() {
+            let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+            *index = Store::default();
+        }
+        result
+    }
+
+    fn init_inner(&self, clock: &AtomicU64, now: u64, max_stale: u64) -> io::Result<ScanReport> {
         fs::create_dir_all(&self.dir)?;
         for shard in 0..SHARDS {
             fs::create_dir_all(self.dir.join(format!("{:02x}", shard)))?;
@@ -209,31 +237,42 @@ impl DiskTier {
                 self.scan_shard(&dir, &mut index, clock, now, max_stale, &mut report);
             }
         }
-        self.prepare_ballast()?;
+        self.prepare_ballast();
         self.ready.store(true, Ordering::Relaxed);
         Ok(report)
     }
 
-    fn prepare_ballast(&self) -> io::Result<()> {
+    /// バラストファイルを空の状態で用意する。開けなければ先行確保だけ諦める (致命的にはしない)。
+    fn prepare_ballast(&self) {
         let path = self.dir.join(BALLAST_FILE);
         let mut b = self.ballast.lock().unwrap_or_else(|p| p.into_inner());
         b.bytes = 0;
         self.ballast_bytes.store(0, Ordering::Relaxed);
-        if self.reserve {
-            // 前回分は空にして、予算計算のあとで改めて伸ばす
-            b.file = Some(
-                OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&path)?,
-            );
-        } else {
+        if !self.reserve {
             b.file = None;
             let _ = fs::remove_file(&path);
+            return;
         }
-        Ok(())
+        // 前回分は空にして、予算計算のあとで改めて伸ばす
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+        {
+            Ok(f) => b.file = Some(f),
+            Err(e) => {
+                b.file = None;
+                b.supported = false;
+                log_warn!(
+                    None,
+                    "disk reservation unavailable ({}): {} (using limit only)",
+                    path.display(),
+                    e
+                );
+            }
+        }
     }
 
     /// インデックス上のメタ情報 (`stored_at` は当てにしないこと)。
@@ -247,19 +286,34 @@ impl DiskTier {
         index.touch(key, seq);
     }
 
-    /// ファイルを開いてヘッダーを読み、ワイヤバイト列の先頭に位置づけて返す。
+    /// ファイルを開いてヘッダーを読み、ペイロードの先頭に位置づけて返す。
     /// 有効期限は (再検証で延びている可能性があるので) インデックス側を採用する。
+    /// 記録されたペイロード長と実際のサイズが合わなければ壊れているとみなして `Ok(None)`。
     pub fn open(&self, key: CacheKey) -> io::Result<Option<DiskHit>> {
         let Some(indexed) = self.lookup(key) else {
             return Ok(None);
         };
         let path = self.path_for(key, indexed.validators);
         let mut file = File::open(&path)?;
-        let Some((mut meta, offset)) = format::read_header(&mut file)? else {
+        let Some(h) = format::read_header(&mut file)? else {
             return Ok(None);
         };
+        let mut meta = h.meta;
         meta.expires_at = meta.expires_at.max(indexed.expires_at);
-        let size = file.metadata()?.len().saturating_sub(offset);
+        if indexed.stored_at > 0 {
+            meta.stored_at = indexed.stored_at;
+        }
+        let size = file.metadata()?.len().saturating_sub(h.offset as u64);
+        if h.payload_len.is_some_and(|n| n != size) {
+            log_warn!(
+                None,
+                "cache L2 entry {} is truncated ({}B of {}B)",
+                path.display(),
+                size,
+                h.payload_len.unwrap_or(0)
+            );
+            return Ok(None);
+        }
         Ok(Some(DiskHit { meta, file, size }))
     }
 
@@ -276,13 +330,12 @@ impl DiskTier {
         result
     }
 
+    /// エントリを消す。ファイルの削除は索引ロックの下で行い、確定直後のファイルを消さないようにする。
     pub fn remove(&self, key: CacheKey) {
-        let removed = {
-            let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
-            index.remove(key)
-        };
+        let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+        let removed = index.remove(key);
         // インデックスに無くても両方の名前を試して消す
-        let validators = removed.map(|e| e.meta.validators);
+        let validators = removed.as_ref().map(|e| e.meta.validators);
         for v in [true, false] {
             if validators.is_none_or(|x| x == v) {
                 let _ = fs::remove_file(self.path_for(key, v));
@@ -291,12 +344,13 @@ impl DiskTier {
     }
 
     /// 再検証に成功したので有効期限を延ばす (インデックスと mtime)。
-    pub fn refresh(&self, key: CacheKey, expires_at: u64, seq: u64) -> bool {
+    pub fn refresh(&self, key: CacheKey, stored_at: u64, expires_at: u64, seq: u64) -> bool {
         let validators = {
             let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
             let Some(e) = index.get_mut(key) else {
                 return false;
             };
+            e.meta.stored_at = stored_at;
             e.meta.expires_at = expires_at;
             let validators = e.meta.validators;
             index.touch(key, seq);
@@ -340,38 +394,54 @@ impl DiskTier {
             return Ok(WriteOutcome::default());
         };
         w.write(data)?;
-        w.finish()
+        w.finish(seq)
     }
 
-    /// `extra` バイトを追加しても上限に収まるよう、バラスト → LRU の順に空ける。追い出し件数を返す。
+    /// `extra` バイトを (書き込み中の分に加えて) 追加しても上限に収まるよう、
+    /// バラスト → LRU の順に空ける。追い出し件数を返す。
     pub fn make_room(&self, extra: u64) -> usize {
+        if !self.is_ready() {
+            return 0;
+        }
         let capacity = self.capacity();
-        let over = self
-            .usage()
-            .0
-            .saturating_add(extra)
-            .saturating_add(self.ballast_bytes())
-            .saturating_sub(capacity);
+        let over = self.owned().saturating_add(extra).saturating_sub(capacity);
         if over > 0 {
             self.shrink_ballast(over);
         }
         let mut evicted = 0;
         loop {
-            let victim = {
-                let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
-                if index.bytes().saturating_add(extra) <= capacity {
-                    break;
-                }
-                index.pop_lru()
-            };
-            let Some((key, e)) = victim else {
+            let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+            let used = index.bytes().saturating_add(self.in_flight_bytes());
+            if used.saturating_add(extra) <= capacity {
+                break;
+            }
+            let Some((key, e)) = index.pop_lru() else {
                 break;
             };
+            // ファイル削除も索引ロックの下で (確定中の rename と競合させない)
             let _ = fs::remove_file(self.path_for(key, e.meta.validators));
+            drop(index);
             evicted += 1;
             log_debug!(None, "cache L2 EVICT key={} freed={}B", key, e.size);
         }
         evicted
+    }
+
+    /// 索引の件数上限を超えた分を LRU で追い出す (索引ロックを持って呼ぶ)。
+    pub(super) fn enforce_entry_cap(&self, index: &mut Store<DiskEntry>) -> usize {
+        let mut evicted = 0;
+        while index.len() > self.max_entries {
+            let Some((key, e)) = index.pop_lru() else {
+                break;
+            };
+            let _ = fs::remove_file(self.path_for(key, e.meta.validators));
+            evicted += 1;
+        }
+        evicted
+    }
+
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
     }
 
     pub fn enforce(&self) -> usize {
@@ -399,7 +469,11 @@ impl DiskTier {
         if !self.reserve || !self.is_ready() {
             return 0;
         }
-        let target = self.capacity().saturating_sub(self.usage().0);
+        // 書き込み中の分も埋めてはいけない
+        let target = self
+            .capacity()
+            .saturating_sub(self.usage().0)
+            .saturating_sub(self.in_flight_bytes());
         let mut b = self.ballast.lock().unwrap_or_else(|p| p.into_inner());
         let Ballast {
             file,
@@ -430,9 +504,7 @@ impl DiskTier {
                     break;
                 }
                 Err(e) => {
-                    if e.raw_os_error() == Some(ENOSPC) {
-                        self.enospc.fetch_add(1, Ordering::Relaxed);
-                    }
+                    // 自分の先行確保が入らないだけなので、他者の圧迫 (ENOSPC) には数えない
                     log_debug!(None, "disk reservation paused: {}", e);
                     break;
                 }

@@ -19,12 +19,18 @@ const WINDOW: usize = 60;
 const VOLATILITY_FACTOR: u64 = 2;
 /// 平穏がこの回数続くごとにバックオフを減衰させる。
 const DECAY_EVERY: u64 = 30;
+/// 圧迫の連続観測でバックオフを再び倍にするまでの最短間隔 (プローブ回数)。
+/// PSI の avg10 は 10 秒平均なので、1 回の圧迫で毎秒倍々にならないようにする。
+const ESCALATE_EVERY: u64 = 10;
+/// バックオフの上限 (全体の 1/2)。ゼロまで縮退させない。
+const BACKOFF_CAP_DIVISOR: u64 = 2;
 
 #[derive(Debug, Clone)]
 pub struct Margin {
     history: VecDeque<u64>,
     backoff: u64,
     calm_ticks: u64,
+    since_escalation: u64,
     manual_floor: u64,
 }
 
@@ -34,6 +40,7 @@ impl Margin {
             history: VecDeque::with_capacity(WINDOW + 1),
             backoff: 0,
             calm_ticks: 0,
+            since_escalation: ESCALATE_EVERY,
             manual_floor,
         }
     }
@@ -61,13 +68,24 @@ impl Margin {
     }
 
     /// 圧迫を観測した。`initial` は最初のバックオフ量 (例: 全体の 5%)。
+    /// 倍にするのは `ESCALATE_EVERY` 回に 1 度まで、上限は全体の半分。
     pub fn on_pressure(&mut self, initial: u64, total: u64) {
         self.calm_ticks = 0;
-        self.backoff = self.backoff.saturating_mul(2).max(initial).min(total);
+        self.since_escalation += 1;
+        if self.backoff > 0 && self.since_escalation < ESCALATE_EVERY {
+            return;
+        }
+        self.since_escalation = 0;
+        self.backoff = self
+            .backoff
+            .saturating_mul(2)
+            .max(initial)
+            .min(total / BACKOFF_CAP_DIVISOR);
     }
 
     /// 圧迫のないプローブが 1 回あった。しばらく続けばバックオフを減衰させる。
     pub fn on_calm(&mut self) {
+        self.since_escalation = self.since_escalation.saturating_add(1);
         if self.backoff == 0 {
             return;
         }
@@ -120,20 +138,27 @@ mod tests {
     }
 
     #[test]
-    fn backoff_doubles_under_pressure_and_decays_when_calm() {
+    fn backoff_escalates_once_per_episode_and_decays_when_calm() {
         let mut m = Margin::new(0);
         m.on_pressure(100 * MIB, 1000 * MIB);
         assert_eq!(m.backoff(), 100 * MIB);
-        m.on_pressure(100 * MIB, 1000 * MIB);
-        assert_eq!(m.backoff(), 200 * MIB);
-        for _ in 0..10 {
+        // 圧迫が続いても 10 回未満では倍にならない
+        for _ in 0..5 {
             m.on_pressure(100 * MIB, 1000 * MIB);
         }
-        assert_eq!(m.backoff(), 1000 * MIB, "capped at total");
+        assert_eq!(m.backoff(), 100 * MIB);
+        for _ in 0..ESCALATE_EVERY {
+            m.on_pressure(100 * MIB, 1000 * MIB);
+        }
+        assert_eq!(m.backoff(), 200 * MIB);
+        for _ in 0..(ESCALATE_EVERY * 10) {
+            m.on_pressure(100 * MIB, 1000 * MIB);
+        }
+        assert_eq!(m.backoff(), 500 * MIB, "capped at half of total");
         for _ in 0..DECAY_EVERY {
             m.on_calm();
         }
-        assert_eq!(m.backoff(), 750 * MIB);
-        assert_eq!(m.keep_free(0, 0), 750 * MIB);
+        assert_eq!(m.backoff(), 375 * MIB);
+        assert_eq!(m.keep_free(0, 0), 375 * MIB);
     }
 }

@@ -10,10 +10,11 @@ pub mod log;
 pub mod metrics;
 pub mod net;
 pub mod pool;
+pub mod signal;
 pub mod sysinfo;
 pub mod tunnel;
 
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Instant;
@@ -32,6 +33,30 @@ Connection: close\r\n\
 
 /// 1 つのクライアント接続で処理する最大要求数 (keep-alive)。
 const MAX_REQUESTS_PER_CONNECTION: usize = 1000;
+/// 要求行・ヘッダー行 1 本の最大長と、ヘッダー行数の上限 (超えたら 414 / 431)。
+const MAX_LINE: usize = 64 * 1024;
+const MAX_HEADER_LINES: usize = 256;
+
+/// 長さ制限付きで 1 行読む。制限を超えたら `Ok(None)`。
+fn read_limited_line(
+    reader: &mut BufReader<TcpStream>,
+    line: &mut String,
+) -> io::Result<Option<usize>> {
+    let n = reader.by_ref().take(MAX_LINE as u64).read_line(line)?;
+    if n == MAX_LINE && !line.ends_with('\n') {
+        return Ok(None);
+    }
+    Ok(Some(n))
+}
+
+fn reject(client: &mut TcpStream, status: u16, reason: &str) -> io::Result<()> {
+    let resp = format!(
+        "HTTP/1.1 {} {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        status, reason
+    );
+    client.write_all(resp.as_bytes())?;
+    client.flush()
+}
 
 /// 1 つのクライアント接続を、keep-alive なら複数の要求にわたって処理する。
 pub fn handle_client(
@@ -82,12 +107,20 @@ pub fn handle_client(
         };
         client.set_read_timeout(Some(wait))?;
         let mut request_line = String::new();
-        match reader.read_line(&mut request_line) {
-            Ok(0) => {
+        match read_limited_line(&mut reader, &mut request_line) {
+            Ok(None) => {
+                log_warn!(
+                    Some(conn_id),
+                    "414 URI Too Long (request line over {} bytes)",
+                    MAX_LINE
+                );
+                return reject(&mut client, 414, "URI Too Long");
+            }
+            Ok(Some(0)) => {
                 log_debug!(Some(conn_id), "client closed ({} requests served)", served);
                 return Ok(());
             }
-            Ok(_) => {}
+            Ok(Some(_)) => {}
             Err(e)
                 if served > 0
                     && matches!(
@@ -145,12 +178,24 @@ pub fn handle_client(
         let mut host_header = None;
         loop {
             let mut line = String::new();
-            if reader.read_line(&mut line)? == 0 {
-                break;
+            match read_limited_line(&mut reader, &mut line)? {
+                None => {
+                    log_warn!(Some(conn_id), "431 Request Header Fields Too Large");
+                    return reject(&mut client, 431, "Request Header Fields Too Large");
+                }
+                Some(0) => break,
+                Some(_) => {}
             }
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 break;
+            }
+            if raw_headers.len() >= MAX_HEADER_LINES {
+                log_warn!(
+                    Some(conn_id),
+                    "431 Request Header Fields Too Large (too many lines)"
+                );
+                return reject(&mut client, 431, "Request Header Fields Too Large");
             }
             if let Some((k, v)) = line.split_once(':')
                 && k.trim().eq_ignore_ascii_case("host")

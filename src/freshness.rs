@@ -23,6 +23,8 @@ pub struct Policy {
     pub validators: bool,
     /// stale のまま配信してはいけない (オリジン障害時も 5xx を返す)
     pub must_revalidate: bool,
+    /// 受信時点で既に経過している時間 (`Age` ヘッダーと `Date` からの経過の大きい方)
+    pub age: u64,
 }
 
 /// レスポンスを保存してよいか。`headers` の名前は小文字化されていること。
@@ -40,6 +42,7 @@ pub fn response_policy(
     let mut date = None;
     let mut last_modified = None;
     let mut etag = false;
+    let mut age_header = 0u64;
     for (k, v) in headers {
         match k.as_str() {
             "set-cookie" => return None,
@@ -54,9 +57,12 @@ pub fn response_policy(
             "date" => date = httpdate::parse(v),
             "last-modified" => last_modified = httpdate::parse(v),
             "etag" => etag = true,
+            "age" => age_header = v.trim().parse().unwrap_or(0),
             _ => {}
         }
     }
+    // 上流のキャッシュを経てきた分の経過時間 (RFC 9111 §4.2.3 の簡易版)
+    let age = age_header.max(date.map_or(0, |d| now.saturating_sub(d)));
     if has_directive(&cache_control, "no-store") || has_directive(&cache_control, "private") {
         return None;
     }
@@ -85,6 +91,7 @@ pub fn response_policy(
         ttl: Duration::from_secs(ttl),
         validators,
         must_revalidate,
+        age,
     })
 }
 
@@ -101,26 +108,38 @@ fn heuristic_ttl(last_modified: Option<u64>, cfg: &CacheConfig, now: u64) -> Opt
     Some(ttl.clamp(floor, ceiling))
 }
 
-/// 304 を受けたときの新しい TTL。304 側の Cache-Control / Expires を優先し、
-/// 無ければ保存済みの Last-Modified からの経験則。
-pub fn revalidated_ttl(
+/// 304 を受けたときの新しい方針。304 側のヘッダーを優先し、無いものは保存済みの表現の
+/// Cache-Control / Expires / Date / Last-Modified / ETag で補う (RFC 9111 §4.3.4)。
+/// 保存済みが `no-cache` / `max-age=0` なら、304 が明示的に延ばさない限り TTL 0 のまま。
+pub fn revalidated_policy(
     headers_304: &[(String, String)],
     cached: &CachedHead,
     cfg: &CacheConfig,
     now: u64,
-) -> Duration {
+) -> Policy {
     let mut hs: Vec<(String, String)> = headers_304.to_vec();
-    if !hs.iter().any(|(k, _)| k == "last-modified")
-        && let Some(lm) = &cached.last_modified
-    {
-        hs.push(("last-modified".to_string(), lm.clone()));
+    let has = |hs: &[(String, String)], name: &str| hs.iter().any(|(k, _)| k == name);
+    let fill = |hs: &mut Vec<(String, String)>, name: &str, value: Option<&String>| {
+        if !has(hs, name)
+            && let Some(v) = value
+        {
+            hs.push((name.to_string(), v.clone()));
+        }
+    };
+    // 304 に Cache-Control / Expires のどちらも無ければ保存済みの鮮度指示を引き継ぐ
+    if !has(&hs, "cache-control") && !has(&hs, "expires") {
+        fill(&mut hs, "cache-control", cached.cache_control.as_ref());
+        fill(&mut hs, "expires", cached.expires.as_ref());
+        fill(&mut hs, "date", cached.date.as_ref());
     }
-    if !hs.iter().any(|(k, _)| k == "etag")
-        && let Some(et) = &cached.etag
-    {
-        hs.push(("etag".to_string(), et.clone()));
-    }
-    response_policy(200, &hs, cfg, now).map_or(Duration::ZERO, |p| p.ttl)
+    fill(&mut hs, "last-modified", cached.last_modified.as_ref());
+    fill(&mut hs, "etag", cached.etag.as_ref());
+    response_policy(200, &hs, cfg, now).unwrap_or(Policy {
+        ttl: Duration::ZERO,
+        validators: cached.etag.is_some() || cached.last_modified.is_some(),
+        must_revalidate: cached.must_revalidate,
+        age: 0,
+    })
 }
 
 /// `Vary` が対応できる範囲か (`Accept-Encoding` のみ)。
@@ -184,13 +203,26 @@ pub struct CachedHead {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub must_revalidate: bool,
+    /// `no-cache` / `s-maxage` 付き: 再検証なしに stale を配信してはいけない (RFC 9111 §4.2.4)
+    pub no_stale: bool,
+    /// 元の `Cache-Control` (小文字)、`Expires`、`Date`
+    pub cache_control: Option<String>,
+    pub expires: Option<String>,
+    pub date: Option<String>,
     /// (小文字の名前, 元の名前, 値)
     pub headers: Vec<(String, String, String)>,
 }
 
+impl CachedHead {
+    /// stale のまま配信してよいか。
+    pub fn may_serve_stale(&self) -> bool {
+        !self.must_revalidate && !self.no_stale
+    }
+}
+
 pub fn parse_cached_head(head: &[u8]) -> CachedHead {
     let text = String::from_utf8_lossy(head);
-    let mut lines = text.split("\r\n");
+    let mut lines = text.split('\n');
     let status = lines
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
@@ -202,6 +234,7 @@ pub fn parse_cached_head(head: &[u8]) -> CachedHead {
     };
     let mut cache_control = String::new();
     for line in lines {
+        let line = line.trim_end_matches('\r');
         let Some((k, v)) = line.split_once(':') else {
             continue;
         };
@@ -211,6 +244,8 @@ pub fn parse_cached_head(head: &[u8]) -> CachedHead {
         match lower.as_str() {
             "etag" => out.etag = Some(value.clone()),
             "last-modified" => out.last_modified = Some(value.clone()),
+            "expires" => out.expires = Some(value.clone()),
+            "date" => out.date = Some(value.clone()),
             "cache-control" => {
                 if !cache_control.is_empty() {
                     cache_control.push(',');
@@ -223,6 +258,11 @@ pub fn parse_cached_head(head: &[u8]) -> CachedHead {
     }
     out.must_revalidate = has_directive(&cache_control, "must-revalidate")
         || has_directive(&cache_control, "proxy-revalidate");
+    out.no_stale =
+        has_directive(&cache_control, "no-cache") || has_directive(&cache_control, "s-maxage");
+    if !cache_control.is_empty() {
+        out.cache_control = Some(cache_control);
+    }
     out
 }
 
@@ -458,24 +498,77 @@ mod tests {
     }
 
     #[test]
-    fn revalidated_ttl_prefers_304_headers_then_stored_validators() {
+    fn revalidated_policy_prefers_304_headers_then_stored_directives() {
         let c = cfg();
         let head = parse_cached_head(
             b"HTTP/1.1 200 OK\r\nLast-Modified: Sun, 06 Nov 1994 08:49:37 GMT\r\n\r\n",
         );
         assert_eq!(
-            revalidated_ttl(&hdrs(&[("cache-control", "max-age=42")]), &head, &c, NOW),
+            revalidated_policy(&hdrs(&[("cache-control", "max-age=42")]), &head, &c, NOW).ttl,
             Duration::from_secs(42)
         );
         // 304 にヒント無し → 古い Last-Modified からの経験則 (上限 7 日)
         assert_eq!(
-            revalidated_ttl(&hdrs(&[]), &head, &c, NOW),
+            revalidated_policy(&hdrs(&[]), &head, &c, NOW).ttl,
             Duration::from_secs(7 * 86_400)
         );
         let plain = parse_cached_head(b"HTTP/1.1 200 OK\r\nETag: \"e\"\r\n\r\n");
         assert_eq!(
-            revalidated_ttl(&hdrs(&[]), &plain, &c, NOW),
+            revalidated_policy(&hdrs(&[]), &plain, &c, NOW).ttl,
             Duration::from_secs(300)
         );
+        // 保存済みが no-cache なら、304 が何も言わない限り TTL 0 のまま
+        let nc =
+            parse_cached_head(b"HTTP/1.1 200 OK\r\nETag: \"e\"\r\nCache-Control: no-cache\r\n\r\n");
+        assert_eq!(
+            revalidated_policy(&hdrs(&[]), &nc, &c, NOW).ttl,
+            Duration::ZERO
+        );
+        assert!(!nc.may_serve_stale());
+        assert_eq!(
+            revalidated_policy(&hdrs(&[("cache-control", "max-age=10")]), &nc, &c, NOW).ttl,
+            Duration::from_secs(10)
+        );
+    }
+
+    #[test]
+    fn age_and_date_reduce_remaining_freshness() {
+        let c = cfg();
+        let p = response_policy(
+            200,
+            &hdrs(&[("cache-control", "max-age=60"), ("age", "55")]),
+            &c,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(p.ttl, Duration::from_secs(60));
+        assert_eq!(p.age, 55);
+        let (y, mo, d, h, mi, s) = crate::log::civil_from_epoch(NOW - 600);
+        let date = format!(
+            "Mon, {:02} {} {} {:02}:{:02}:{:02} GMT",
+            d,
+            [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+            ][mo as usize - 1],
+            y,
+            h,
+            mi,
+            s
+        );
+        let p = response_policy(
+            200,
+            &hdrs(&[("cache-control", "max-age=900"), ("date", &date)]),
+            &c,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(p.age, 600);
+        let sm = parse_cached_head(
+            b"HTTP/1.1 200 OK\r\nCache-Control: s-maxage=60\r\nETag: \"x\"\r\n\r\n",
+        );
+        assert!(!sm.may_serve_stale(), "s-maxage forbids stale");
+        // 素の LF で終わるヘッダーも解析できる
+        let lf = parse_cached_head(b"HTTP/1.1 200 OK\nETag: \"lf\"\n\n");
+        assert_eq!(lf.etag.as_deref(), Some("\"lf\""));
     }
 }
