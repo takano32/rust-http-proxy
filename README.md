@@ -17,9 +17,9 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 - **HTTPS のオリジンもキャッシュ (CA 不要)**: クライアントが `GET /https/example.com/path` (プロキシをオリジンとして叩く)
   か `GET https://example.com/path` で頼めば、プロキシがシステムの OpenSSL で HTTPS 取得し、平文 HTTP で返して保存する。
   応答の `Location` は `/https/...` 形式に書き換えるのでリダイレクトもプロキシに留まる。CONNECT トンネルは従来どおり素通し
-- **IPv6 は任意 (既定 off)**: `PROXY_IPV6=on` で `[::]` と `0.0.0.0` の両方で待ち受け (IPv6 が無ければ IPv4 のみ)、
+- **IPv4 / IPv6 デュアルスタック**: `[::]` と `0.0.0.0` の両方で待ち受け (IPv6 が無ければ IPv4 のみ)、
   オリジンへは A / AAAA を引いて IPv6 優先の Happy Eyeballs (RFC 8305) で速い方に接続、
-  `http://[2001:db8::1]:8080/` などの IPv6 リテラルにも対応。既定では `0.0.0.0` のみ・A レコードのみ
+  `http://[2001:db8::1]:8080/` などの IPv6 リテラルにも対応。`PROXY_IPV6=off` で IPv4 のみにできる
 - **RFC 7230 / RFC 9110 準拠**:
   - Hop-by-hop ヘッダーの自動除去
   - `Via` ヘッダーおよび `X-Forwarded-For` ヘッダーの付与・伝搬
@@ -48,8 +48,8 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 | 環境変数名 | デフォルト値 | 説明 |
 |---|---|---|
 | `SERVER_PORT` | `8080` | プロキシが待受を行うポート番号 (Pterodactyl が自動設定) |
-| `PROXY_BIND` | `0.0.0.0` (IPv6 有効時は `::` + `0.0.0.0`) | 待ち受けアドレスのカンマ区切りリスト (例: `127.0.0.1,[::1]`) |
-| `PROXY_IPV6` | `off` | IPv6 を使う (待ち受けと AAAA での接続)。コンテナ環境では経路の無い IPv6 に振られて遅くなることがあるので既定 off |
+| `PROXY_BIND` | 自動 (`::` + `0.0.0.0`) | 待ち受けアドレスのカンマ区切りリスト (例: `127.0.0.1,[::1]`)。未設定ならデュアルスタックで自動 |
+| `PROXY_IPV6` | `on` | IPv6 を使う (待ち受けと AAAA での接続)。`off` で `0.0.0.0` のみ・A レコードのみ |
 | `SERVER_MEMORY` | なし | コンテナのメモリ割当 (MB)。Pterodactyl が自動設定し、メモリキャッシュの上限として尊重される |
 | `PROXY_DISK_QUOTA_MB` (別名 `SERVER_DISK`) | なし | コンテナのディスク割当。**Pterodactyl はこれを渡してくれない**ので、egg 変数として設定する。MB 数 = パネルの Disk Space、`0` = 無制限、`auto` = `df -B1 /home/container` の total を割当とみなす (下記)。Pterodactyl で未設定ならディスクキャッシュは 512 MiB 固定・先行確保なし |
 | `PROXY_ALLOW_HOSTS` | なし (全許可) | 接続許可ホストのカンマ区切りリスト (例: `*.example.com,api.github.com`) |
@@ -265,7 +265,7 @@ cargo build --release
 ## 起動方法
 
 ```bash
-# 基本起動 (メモリ・ディスクとも動的マージンだけ残して限界まで自動確保、IPv4 のみ)
+# 基本起動 (メモリ・ディスクとも動的マージンだけ残して限界まで自動確保)
 SERVER_PORT=8080 ./target/release/sorahost-http-proxy
 
 # ACL・タイムアウト付きで起動
