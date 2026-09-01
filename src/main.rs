@@ -11,9 +11,13 @@ use sorahost_http_proxy::handle_client;
 use sorahost_http_proxy::log;
 use sorahost_http_proxy::metrics::Metrics;
 use sorahost_http_proxy::net;
+use sorahost_http_proxy::pool::Pool;
 use sorahost_http_proxy::{log_debug, log_error, log_info};
 
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
+
+/// オリジンへのアイドル接続を保持する時間。
+const ORIGIN_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn main() {
     log::init_from_env();
@@ -37,6 +41,7 @@ fn main() {
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
+    let pool = Arc::new(Pool::new(config.pool_per_host, ORIGIN_IDLE));
 
     log_info!(
         None,
@@ -80,7 +85,13 @@ fn main() {
                 .unwrap_or_else(|| "not set".to_string())
         );
     }
-    log_info!(None, "timeout: {}s", config.timeout.as_secs());
+    log_info!(
+        None,
+        "timeout: {}s, keep-alive: {}s, origin pool: {} per host",
+        config.timeout.as_secs(),
+        config.keepalive.as_secs(),
+        config.pool_per_host
+    );
     if !config.acl.allow_hosts.is_empty() {
         log_info!(None, "allowed hosts: {:?}", config.acl.allow_hosts);
     }
@@ -92,17 +103,24 @@ fn main() {
     let mut listeners = listeners.into_iter();
     let last = listeners.next_back().expect("at least one listener");
     for listener in listeners {
-        let (config, metrics, cache) = (
+        let shared = (
             Arc::clone(&config),
             Arc::clone(&metrics),
             Arc::clone(&cache),
+            Arc::clone(&pool),
         );
-        thread::spawn(move || serve(listener, config, metrics, cache));
+        thread::spawn(move || serve(listener, shared.0, shared.1, shared.2, shared.3));
     }
-    serve(last, config, metrics, cache);
+    serve(last, config, metrics, cache, pool);
 }
 
-fn serve(listener: TcpListener, config: Arc<Config>, metrics: Arc<Metrics>, cache: Arc<Cache>) {
+fn serve(
+    listener: TcpListener,
+    config: Arc<Config>,
+    metrics: Arc<Metrics>,
+    cache: Arc<Cache>,
+    pool: Arc<Pool>,
+) {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -110,8 +128,9 @@ fn serve(listener: TcpListener, config: Arc<Config>, metrics: Arc<Metrics>, cach
                 let cfg = Arc::clone(&config);
                 let m = Arc::clone(&metrics);
                 let c = Arc::clone(&cache);
+                let p = Arc::clone(&pool);
                 thread::spawn(move || {
-                    if let Err(e) = handle_client(stream, cfg, m, c, conn_id) {
+                    if let Err(e) = handle_client(stream, cfg, m, c, p, conn_id) {
                         if e.kind() != io::ErrorKind::UnexpectedEof
                             && e.kind() != io::ErrorKind::ConnectionReset
                             && e.kind() != io::ErrorKind::BrokenPipe

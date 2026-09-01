@@ -10,6 +10,7 @@ use sorahost_http_proxy::cache::{Cache, CacheConfig, MIB};
 use sorahost_http_proxy::config::Config;
 use sorahost_http_proxy::handle_client;
 use sorahost_http_proxy::metrics::Metrics;
+use sorahost_http_proxy::pool::Pool;
 
 type Handler = dyn Fn(&str, usize) -> Vec<u8> + Send + Sync;
 
@@ -77,14 +78,16 @@ fn start_test_proxy_with_cache(config: Config, cache_cfg: CacheConfig) -> u16 {
     let cfg = Arc::new(config);
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(cache_cfg));
+    let pool = Arc::new(Pool::new(cfg.pool_per_host, Duration::from_secs(30)));
 
     thread::spawn(move || {
         for (conn_id, stream) in listener.incoming().flatten().enumerate() {
             let c = Arc::clone(&cfg);
             let m = Arc::clone(&metrics);
             let ch = Arc::clone(&cache);
+            let p = Arc::clone(&pool);
             thread::spawn(move || {
-                let _ = handle_client(stream, c, m, ch, conn_id);
+                let _ = handle_client(stream, c, m, ch, p, conn_id);
             });
         }
     });
@@ -93,7 +96,75 @@ fn start_test_proxy_with_cache(config: Config, cache_cfg: CacheConfig) -> u16 {
 }
 
 fn proxy_config() -> Config {
-    Config::new("0", None, None, Duration::from_secs(5)).unwrap()
+    let mut cfg = Config::new("0", None, None, Duration::from_secs(5)).unwrap();
+    cfg.keepalive = Duration::from_secs(2);
+    cfg
+}
+
+/// 1 本の接続で複数の要求を送るための、Content-Length 付き応答の読み取り。
+fn read_response(stream: &mut TcpStream) -> (String, Vec<u8>) {
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    while !buf.ends_with(b"\r\n\r\n") {
+        if stream.read(&mut byte).unwrap() == 0 {
+            break;
+        }
+        buf.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&buf).into_owned();
+    let len: usize = head
+        .lines()
+        .find_map(|l| l.strip_prefix("Content-Length: "))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    let mut body = vec![0u8; len];
+    stream.read_exact(&mut body).unwrap();
+    (head, body)
+}
+
+/// HTTP/1.1 keep-alive で複数の要求に応答するモックオリジン。接続数と要求数を数える。
+fn start_keepalive_origin(
+    connections: Arc<AtomicUsize>,
+    requests: Arc<AtomicUsize>,
+) -> (u16, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            connections.fetch_add(1, Ordering::SeqCst);
+            let requests = Arc::clone(&requests);
+            thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut lines = Vec::new();
+                    loop {
+                        let mut line = String::new();
+                        if std::io::BufRead::read_line(&mut reader, &mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        if line.trim().is_empty() {
+                            break;
+                        }
+                        lines.push(line);
+                    }
+                    if lines.is_empty() {
+                        return;
+                    }
+                    let n = requests.fetch_add(1, Ordering::SeqCst) + 1;
+                    let body = format!("response #{}", n);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    if stream.write_all(resp.as_bytes()).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, handle)
 }
 
 #[test]
@@ -104,7 +175,7 @@ fn test_integration_http_forwarding() {
     // Send HTTP proxy request without any authentication
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
     let req = format!(
-        "GET http://127.0.0.1:{}/test HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        "GET http://127.0.0.1:{}/test HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
         origin_port, origin_port
     );
     stream.write_all(req.as_bytes()).unwrap();
@@ -161,7 +232,10 @@ fn get_via_proxy(proxy_port: u16, url: &str, host: &str) -> String {
 /// `extra` は追加のリクエストヘッダー行 (CRLF 終端)。
 fn get_via_proxy_with(proxy_port: u16, url: &str, host: &str, extra: &str) -> String {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    let req = format!("GET {} HTTP/1.1\r\nHost: {}\r\n{}\r\n", url, host, extra);
+    let req = format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n{}\r\n",
+        url, host, extra
+    );
     stream.write_all(req.as_bytes()).unwrap();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).unwrap();
@@ -384,7 +458,10 @@ fn test_integration_large_response_streams_through_disk() {
 
     let fetch = |extra: &str| {
         let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-        let req = format!("GET {} HTTP/1.1\r\nHost: {}\r\n{}\r\n", url, host, extra);
+        let req = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n{}\r\n",
+            url, host, extra
+        );
         stream.write_all(req.as_bytes()).unwrap();
         let mut response = Vec::new();
         stream.read_to_end(&mut response).unwrap();
@@ -405,4 +482,212 @@ fn test_integration_large_response_streams_through_disk() {
     );
     assert_eq!(got, body);
     assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_integration_keepalive_serves_multiple_requests_per_connection() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-keepalive"));
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    for i in 0..3 {
+        let req = format!(
+            "GET http://{}/ka{} HTTP/1.1\r\nHost: {}\r\n\r\n",
+            host, i, host
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let (head, body) = read_response(&mut stream);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+        assert!(head.contains("Connection: keep-alive"), "{}", head);
+        assert_eq!(body, b"hello from mock origin");
+    }
+    // 同じ接続でキャッシュヒットも返る
+    let req = format!("GET http://{}/ka0 HTTP/1.1\r\nHost: {}\r\n\r\n", host, host);
+    stream.write_all(req.as_bytes()).unwrap();
+    let (head, body) = read_response(&mut stream);
+    assert!(head.contains("X-Cache: HIT"), "{}", head);
+    assert_eq!(body, b"hello from mock origin");
+    assert_eq!(counter.load(Ordering::SeqCst), 3);
+
+    // Connection: close で終わる
+    let req = format!(
+        "GET http://{}/ka1 HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        host, host
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut rest = Vec::new();
+    stream.read_to_end(&mut rest).unwrap();
+    let text = String::from_utf8_lossy(&rest);
+    assert!(text.contains("Connection: close"), "{}", text);
+    assert!(text.ends_with("hello from mock origin"));
+
+    // HTTP/1.0 の要求は応答後に閉じられる
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let req = format!("GET http://{}/ka2 HTTP/1.0\r\nHost: {}\r\n\r\n", host, host);
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut rest = Vec::new();
+    stream.read_to_end(&mut rest).unwrap();
+    assert!(String::from_utf8_lossy(&rest).contains("Connection: close"));
+}
+
+#[test]
+fn test_integration_origin_connections_are_pooled() {
+    let connections = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) =
+        start_keepalive_origin(Arc::clone(&connections), Arc::clone(&requests));
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-pool"));
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    for i in 0..4 {
+        let resp = get_via_proxy(proxy_port, &format!("http://{}/p{}", host, i), &host);
+        assert!(resp.contains(&format!("response #{}", i + 1)), "{}", resp);
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 4);
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        1,
+        "one pooled origin connection"
+    );
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .write_all(b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .unwrap();
+    let mut status = String::new();
+    stream.read_to_string(&mut status).unwrap();
+    assert!(
+        status.contains("\"origin_connections\":{\"new\":1,\"reused\":3}"),
+        "{}",
+        status
+    );
+}
+
+#[test]
+fn test_integration_chunked_origin_is_dechunked_cached_and_reframed() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_origin(
+        Arc::clone(&counter),
+        Arc::new(|_req, _n| {
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nCache-Control: max-age=60\r\nConnection: close\r\n\r\n5\r\nhello\r\n7\r\n chunks\r\n0\r\n\r\n".to_vec()
+        }),
+    );
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-chunked"));
+    let host = format!("127.0.0.1:{}", origin_port);
+    let url = format!("http://{}/chunked", host);
+
+    // HTTP/1.0 クライアントには解読済みの本文を close 区切りで
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let req = format!("GET {} HTTP/1.0\r\nHost: {}\r\n\r\n", url, host);
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    let text = String::from_utf8_lossy(&raw);
+    assert!(!text.contains("Transfer-Encoding"), "{}", text);
+    assert!(text.ends_with("\r\n\r\nhello chunks"), "{}", text);
+
+    // HTTP/1.1 クライアントには再 chunk (終端チャンク付き)
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let req = format!(
+        "GET {}?v2 HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        url, host
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    let text = String::from_utf8_lossy(&raw);
+    assert!(text.contains("Transfer-Encoding: chunked"), "{}", text);
+    assert!(text.ends_with("0\r\n\r\n"), "{}", text);
+    assert!(text.contains("hello") && text.contains(" chunks"));
+
+    // キャッシュからは Content-Length 付きで
+    let second = get_via_proxy(proxy_port, &url, &host);
+    assert!(second.contains("X-Cache: HIT"), "{}", second);
+    assert!(second.contains("Content-Length: 12"), "{}", second);
+    assert!(second.ends_with("hello chunks"), "{}", second);
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn test_integration_range_and_head_from_cache() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(
+        Arc::clone(&counter),
+        "ETag: \"r1\"\r\nCache-Control: max-age=60\r\n",
+    );
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-range"));
+    let host = format!("127.0.0.1:{}", origin_port);
+    let url = format!("http://{}/range", host);
+
+    // 未キャッシュの Range 要求はそのまま転送 (モックは無視して 200 を返す) され、保存されない
+    let first = get_via_proxy_with(proxy_port, &url, &host, "Range: bytes=0-4\r\n");
+    assert!(
+        first.starts_with("HTTP/1.1 200 OK") && !first.contains("X-Cache"),
+        "{}",
+        first
+    );
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+    // 全体を取得してキャッシュ
+    let full = get_via_proxy(proxy_port, &url, &host);
+    assert!(full.ends_with("hello from mock origin"));
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+
+    let part = get_via_proxy_with(proxy_port, &url, &host, "Range: bytes=6-9\r\n");
+    assert!(part.starts_with("HTTP/1.1 206 Partial Content"), "{}", part);
+    assert!(part.contains("Content-Range: bytes 6-9/22"), "{}", part);
+    assert!(part.contains("Content-Length: 4"), "{}", part);
+    assert!(part.ends_with("\r\n\r\nfrom"), "{}", part);
+
+    let tail = get_via_proxy_with(proxy_port, &url, &host, "Range: bytes=-6\r\n");
+    assert!(
+        tail.contains("Content-Range: bytes 16-21/22") && tail.ends_with("origin"),
+        "{}",
+        tail
+    );
+
+    let bad = get_via_proxy_with(proxy_port, &url, &host, "Range: bytes=100-\r\n");
+    assert!(
+        bad.starts_with("HTTP/1.1 416 Range Not Satisfiable"),
+        "{}",
+        bad
+    );
+    assert!(bad.contains("Content-Range: bytes */22"), "{}", bad);
+
+    // If-Range が合わなければ全体
+    let whole = get_via_proxy_with(
+        proxy_port,
+        &url,
+        &host,
+        "Range: bytes=0-1\r\nIf-Range: \"other\"\r\n",
+    );
+    assert!(
+        whole.starts_with("HTTP/1.1 200 OK") && whole.ends_with("hello from mock origin"),
+        "{}",
+        whole
+    );
+
+    // HEAD はキャッシュからヘッダーだけ
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let req = format!(
+        "HEAD {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        url, host
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut head = String::new();
+    stream.read_to_string(&mut head).unwrap();
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert!(
+        head.contains("Content-Length: 22") && head.contains("X-Cache: HIT"),
+        "{}",
+        head
+    );
+    assert!(head.ends_with("\r\n\r\n"), "{}", head);
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        2,
+        "range and head answered from cache"
+    );
 }

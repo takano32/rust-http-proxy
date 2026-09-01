@@ -10,9 +10,11 @@ use crate::metrics::Metrics;
 use crate::net;
 use crate::{log_debug, log_trace, log_warn};
 
+/// `prefix` はリクエストヘッダーの直後に既に読み込んでしまったバイト列 (先にサーバーへ渡す)。
 pub fn handle_connect(
     mut client: TcpStream,
     target: &str,
+    prefix: &[u8],
     timeout: Duration,
     conn_id: usize,
     metrics: Arc<Metrics>,
@@ -26,7 +28,7 @@ pub fn handle_connect(
 
     log_debug!(Some(conn_id), "start CONNECT {}", addr_str);
 
-    let server = match connect_with_timeout(&addr_str, timeout) {
+    let mut server = match connect_with_timeout(&addr_str, timeout) {
         Ok(s) => s,
         Err(e) => {
             log_warn!(
@@ -55,6 +57,9 @@ pub fn handle_connect(
 
     client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     client.flush()?;
+    if !prefix.is_empty() {
+        server.write_all(prefix)?;
+    }
 
     client.set_read_timeout(None)?;
     client.set_write_timeout(None)?;

@@ -13,6 +13,10 @@ pub struct Config {
     pub bind_addrs: Vec<IpAddr>,
     pub acl: AclConfig,
     pub timeout: Duration,
+    /// クライアント接続を keep-alive で待つアイドル時間。0 なら 1 接続 1 要求
+    pub keepalive: Duration,
+    /// オリジンへのアイドル接続をホストごとに何本まで保持するか。0 で再利用しない
+    pub pool_per_host: usize,
     pub cache: CacheConfig,
 }
 
@@ -34,6 +38,18 @@ impl Config {
         )?;
         if let Ok(bind) = env::var("PROXY_BIND") {
             cfg.bind_addrs = parse_bind_list(&bind)?;
+        }
+        if let Some(secs) = env::var("PROXY_KEEPALIVE_SECS")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.keepalive = Duration::from_secs(secs);
+        }
+        if let Some(n) = env::var("PROXY_ORIGIN_POOL")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+        {
+            cfg.pool_per_host = n;
         }
         Ok(cfg.with_cache(CacheConfig::from_env()))
     }
@@ -59,6 +75,8 @@ impl Config {
             bind_addrs: Vec::new(),
             acl,
             timeout,
+            keepalive: Duration::from_secs(15),
+            pool_per_host: 8,
             cache: CacheConfig::default(),
         })
     }
@@ -88,6 +106,8 @@ mod tests {
         assert_eq!(cfg.port, 9090);
         assert!(cfg.bind_addrs.is_empty(), "dual-stack auto by default");
         assert_eq!(cfg.timeout, Duration::from_secs(10));
+        assert_eq!(cfg.keepalive, Duration::from_secs(15));
+        assert_eq!(cfg.pool_per_host, 8);
     }
 
     #[test]

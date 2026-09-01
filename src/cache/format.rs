@@ -1,13 +1,16 @@
 //! ディスク上のエントリ形式。
 //!
 //! ```text
-//! SHPC1\n
+//! SHPC2\n
 //! <URL>\n
 //! <stored_at> <expires_at> [flags]\n
 //! <レスポンスのワイヤバイト列 (ステータス行 + ヘッダー + ボディ)>
 //! ```
 //!
 //! `flags` は省略可能で、`v` が含まれていれば ETag / Last-Modified を持ち再検証できる。
+//! 本文は解読済み (chunked を外した生のバイト列) で、先頭に付くヘッダー部には
+//! Content-Length / Transfer-Encoding / Connection を含めない (配信時に付け直す)。
+//! 旧形式 (`SHPC1`: ワイヤ形式そのまま) は互換性が無いので起動時に捨てる。
 //! 起動時の走査はファイルの mtime (= expires_at) だけを見るので、ヘッダーは
 //! ヒット時・期限切れの確認時にしか読まない。
 
@@ -15,7 +18,7 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
-pub const MAGIC: &str = "SHPC1";
+pub const MAGIC: &str = "SHPC2";
 
 /// ヘッダーを読むときに読み込む最大バイト数 (URL は通常これより十分短い)。
 const HEADER_MAX: usize = 16 * 1024;
@@ -120,18 +123,20 @@ mod tests {
         let (m, off) = parse_header(&blob).unwrap();
         assert_eq!(m, meta(100, 200, true));
         assert_eq!(&blob[off..], b"body");
-        // flags 無し (旧形式) も読める
-        let (m, _) = parse_header(b"SHPC1\nurl\n1 2\nx").unwrap();
+        // flags 無しも読める
+        let (m, _) = parse_header(b"SHPC2\nurl\n1 2\nx").unwrap();
         assert_eq!(m, meta(1, 2, false));
         assert!(parse_header(b"NOPE\nx\n1 2\n").is_none());
-        assert!(parse_header(b"SHPC1\nurl\n").is_none());
+        assert!(parse_header(b"SHPC2\nurl\n").is_none());
+        // 旧形式 (ワイヤ形式そのまま) は互換性が無いので読まない
+        assert!(parse_header(b"SHPC1\nurl\n1 2\nx").is_none());
     }
 
     #[test]
     fn url_newlines_are_stripped() {
         let blob = encode("http://x/\r\ninjected", b"", &meta(1, 2, false));
         let (_, off) = parse_header(&blob).unwrap();
-        assert_eq!(&blob[..off], b"SHPC1\nhttp://x/injected\n1 2\n");
+        assert_eq!(&blob[..off], b"SHPC2\nhttp://x/injected\n1 2\n");
     }
 
     #[test]

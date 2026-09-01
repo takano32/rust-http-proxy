@@ -1,21 +1,23 @@
 //! HTTP (平文) リクエストの転送とキャッシュの適用。
 //!
 //! 流れ: リクエスト解析 → キャッシュ参照 (新鮮なら配信、期限切れでもバリデータ付きなら
-//! 再検証用に保持) → オリジンへ転送 (必要なら条件付き) → 応答を配信しつつストリーミングで
-//! 保存。304 なら保存済みの表現を延命して配信し、オリジン障害時は stale を配信する。
+//! 再検証用に保持) → オリジンへ転送 (プールの接続を再利用、必要なら条件付き) → 応答本文を
+//! 解読しつつクライアントへ自前の枠組みで配信し、同時にストリーミングで保存。
+//! 304 なら保存済みの表現を延命して配信し、オリジン障害時は stale を配信する。
+//! `Range` / `HEAD` はキャッシュ済みの完全な表現から切り出して応答する。
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::body::{self, BodyReader, Framing, RangeSpec};
 use crate::cache::{Cache, CacheSource, CachedResponse, cache_key_variant, now_epoch};
 use crate::freshness::{self, CachedHead};
 use crate::headers;
 use crate::log::{Access, access};
 use crate::metrics::Metrics;
 use crate::net;
-use crate::tunnel::connect_with_timeout;
+use crate::pool::Pool;
 use crate::{log_debug, log_trace, log_warn};
 
 const COPY_BUF_SIZE: usize = 64 * 1024;
@@ -25,54 +27,31 @@ const STALE_ON_STATUS: &[u16] = &[500, 502, 503, 504];
 /// (生バイト列, ステータスコード, 小文字化したヘッダー名と値の組)
 pub type ResponseHead = (Vec<u8>, u16, Vec<(String, String)>);
 
-#[allow(clippy::too_many_arguments)]
-pub fn handle_http(
-    client: TcpStream,
-    peer_addr: Option<SocketAddr>,
-    request_line: String,
-    mut reader: BufReader<TcpStream>,
-    timeout: Duration,
-    conn_id: usize,
-    metrics: Arc<Metrics>,
-    cache: Arc<Cache>,
-) -> io::Result<()> {
-    let mut raw_headers = Vec::new();
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
-            break;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            break;
-        }
-        raw_headers.push(line);
-    }
-    handle_http_with_headers(
-        client,
-        peer_addr,
-        request_line,
-        raw_headers,
-        reader,
-        timeout,
-        conn_id,
-        metrics,
-        cache,
-    )
+/// 接続をまたいで共有する状態。
+pub struct Shared<'a> {
+    pub timeout: Duration,
+    pub keepalive: Duration,
+    pub conn_id: usize,
+    pub metrics: &'a Metrics,
+    pub cache: &'a Cache,
+    pub pool: &'a Pool,
 }
 
 /// リクエストヘッダーのうち転送・キャッシュ判断に使うもの。
 #[derive(Default)]
 struct RequestHeaders {
     host: Option<String>,
-    content_length: Option<usize>,
-    chunked: bool,
+    /// (小文字の名前, 値)
+    pairs: Vec<(String, String)>,
     authorization: bool,
     cache_control: String,
     if_none_match: Option<String>,
     if_modified_since: Option<String>,
-    range: bool,
+    if_range: Option<String>,
+    range: Option<String>,
     accept_encoding: Option<String>,
+    connection_close: bool,
+    connection_keep_alive: bool,
 }
 
 fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
@@ -86,8 +65,6 @@ fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeade
         log_trace!(Some(conn_id), "req header  {}: {}", k.trim(), v_trim);
         match k_lower.as_str() {
             "host" => h.host = Some(v_trim.to_string()),
-            "content-length" => h.content_length = v_trim.parse().ok(),
-            "transfer-encoding" if v_trim.eq_ignore_ascii_case("chunked") => h.chunked = true,
             "authorization" => h.authorization = true,
             "cache-control" | "pragma" => {
                 if !h.cache_control.is_empty() {
@@ -97,10 +74,22 @@ fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeade
             }
             "if-none-match" => h.if_none_match = Some(v_trim.to_string()),
             "if-modified-since" => h.if_modified_since = Some(v_trim.to_string()),
-            "range" => h.range = true,
+            "if-range" => h.if_range = Some(v_trim.to_string()),
+            "range" => h.range = Some(v_trim.to_string()),
             "accept-encoding" => h.accept_encoding = Some(v_trim.to_string()),
+            "connection" | "proxy-connection" => {
+                for token in v_trim.split(',') {
+                    let t = token.trim();
+                    if t.eq_ignore_ascii_case("close") {
+                        h.connection_close = true;
+                    } else if t.eq_ignore_ascii_case("keep-alive") {
+                        h.connection_keep_alive = true;
+                    }
+                }
+            }
             _ => {}
         }
+        h.pairs.push((k_lower, v_trim.to_string()));
     }
     h
 }
@@ -115,6 +104,9 @@ struct Ctx<'a> {
     conn_id: usize,
     metrics: &'a Metrics,
     req: &'a RequestHeaders,
+    /// 応答後もクライアント接続を維持できるか
+    keep_client: bool,
+    head_only: bool,
 }
 
 impl Ctx<'_> {
@@ -133,22 +125,33 @@ impl Ctx<'_> {
             },
         );
     }
+
+    fn connection_line(&self) -> String {
+        if self.keep_client {
+            "Connection: keep-alive".to_string()
+        } else {
+            "Connection: close".to_string()
+        }
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// オリジンとの接続 (バッファ付き)。
+type Origin = BufReader<TcpStream>;
+
+/// 1 リクエストを処理する。戻り値はクライアント接続を次の要求に使えるか。
 pub fn handle_http_with_headers(
-    mut client: TcpStream,
+    client: &mut TcpStream,
     peer_addr: Option<SocketAddr>,
-    request_line: String,
-    raw_headers: Vec<String>,
-    mut reader: BufReader<TcpStream>,
-    timeout: Duration,
-    conn_id: usize,
-    metrics: Arc<Metrics>,
-    cache: Arc<Cache>,
-) -> io::Result<()> {
+    request_line: &str,
+    raw_headers: &[String],
+    reader: &mut BufReader<TcpStream>,
+    shared: &Shared<'_>,
+) -> io::Result<bool> {
     let started = Instant::now();
-    let req = parse_request_headers(&raw_headers, conn_id);
+    let conn_id = shared.conn_id;
+    let cache = shared.cache;
+    let metrics = shared.metrics;
+    let req = parse_request_headers(raw_headers, conn_id);
 
     let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 2 {
@@ -157,55 +160,75 @@ pub fn handle_http_with_headers(
             "malformed request line: {:?}",
             request_line.trim()
         );
-        return Ok(());
+        return Ok(false);
     }
     let method = parts[0];
     let target = parts[1];
     let version = if parts.len() > 2 {
         parts[2]
     } else {
-        "HTTP/1.1"
+        "HTTP/1.0"
     };
+    let http11 = version.eq_ignore_ascii_case("HTTP/1.1");
+    let keep_client = !shared.keepalive.is_zero()
+        && if http11 {
+            !req.connection_close
+        } else {
+            req.connection_keep_alive
+        };
+    let req_framing = Framing::of_request(&req.pairs);
+    let is_get = method.eq_ignore_ascii_case("GET");
+    let head_only = method.eq_ignore_ascii_case("HEAD");
 
-    let (host_port, path) = parse_target(target, req.host.as_deref())?;
+    let (host_port, path) = match parse_target(target, req.host.as_deref()) {
+        Ok(v) => v,
+        Err(e) => {
+            log_warn!(Some(conn_id), "400 Bad Request: {}", e);
+            let _ = client.write_all(
+                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            return Ok(false);
+        }
+    };
     let server_addr = net::with_default_port(host_port, 80);
     let url = format!("http://{}{}", server_addr, path);
     let client_ip = peer_addr
         .map(|a| a.ip().to_string())
         .unwrap_or_else(|| "-".to_string());
     log_debug!(Some(conn_id), "start {} {} {}", method, url, version);
-    let ctx = Ctx {
+    let mut ctx = Ctx {
         client_ip: &client_ip,
         method,
         url: &url,
         version,
         started,
         conn_id,
-        metrics: &metrics,
+        metrics,
         req: &req,
+        keep_client,
+        head_only,
     };
 
     // ---- キャッシュ参照 ----
     let cfg = cache.config();
     let variant = freshness::accept_encoding_variant(req.accept_encoding.as_deref());
-    let key = cache_key_variant(method, &url, &variant);
+    let key = cache_key_variant("GET", &url, &variant);
     let client_no_store = freshness::has_directive(&req.cache_control, "no-store");
     let force_revalidate = freshness::has_directive(&req.cache_control, "no-cache")
         || freshness::directive_value(&req.cache_control, "max-age") == Some(0);
-    let req_allows_cache = cache.enabled()
-        && method.eq_ignore_ascii_case("GET")
-        && !req.authorization
-        && !client_no_store
-        && !req.range;
+    let lookup_allowed =
+        cache.enabled() && (is_get || head_only) && !req.authorization && !client_no_store;
+    let store_allowed = lookup_allowed && is_get && req.range.is_none();
     let client_conditional = req.if_none_match.is_some() || req.if_modified_since.is_some();
     let now = now_epoch();
 
     let mut stale: Option<(CachedResponse, CacheSource)> = None;
-    if req_allows_cache {
+    if lookup_allowed {
         if let Some((entry, source)) = cache.get(key, conn_id) {
             if entry.is_fresh(now) && !force_revalidate {
+                body::drain(reader, req_framing)?;
                 let ttl_left = entry.ttl_left(now);
-                return serve_cached(&mut client, entry, source, "HIT", ttl_left, &ctx);
+                return serve_cached(client, entry, source, "HIT", ttl_left, &ctx);
             }
             // クライアント自身の条件付き要求は、そのままオリジンに判断させる
             if !client_conditional {
@@ -215,82 +238,88 @@ pub fn handle_http_with_headers(
     } else if cache.enabled() {
         log_debug!(
             Some(conn_id),
-            "cache BYPASS (method={} auth={} range={} cc='{}')",
+            "cache BYPASS (method={} auth={} cc='{}')",
             method,
             req.authorization,
-            req.range,
             req.cache_control
         );
     }
 
     // ---- オリジンへ転送 ----
-    log_debug!(Some(conn_id), "connecting to origin {}", server_addr);
-    let mut server = match connect_with_timeout(&server_addr, timeout) {
-        Ok(s) => s,
-        Err(e) => {
-            log_warn!(
-                Some(conn_id),
-                "502 Bad Gateway: connect {} failed: {}",
-                server_addr,
-                e
-            );
-            if let Some((entry, source)) = stale.take()
-                && can_serve_stale(&entry)
-            {
-                return serve_cached(&mut client, entry, source, "STALE", 0, &ctx);
+    let conditional_lines = stale
+        .as_ref()
+        .map(|(entry, _)| {
+            freshness::conditional_headers(&freshness::parse_cached_head(&entry.head))
+        })
+        .unwrap_or_default();
+    let mut request_head = format!("{} {} {}\r\n", method, path, "HTTP/1.1").into_bytes();
+    for h in headers::sanitize_and_inject_headers(raw_headers, peer_addr) {
+        log_trace!(Some(conn_id), "fwd header  {}", h.trim_end());
+        request_head.extend_from_slice(h.as_bytes());
+    }
+    for line in &conditional_lines {
+        log_trace!(Some(conn_id), "fwd header  {} (revalidation)", line);
+        request_head.extend_from_slice(line.as_bytes());
+        request_head.extend_from_slice(b"\r\n");
+    }
+    request_head.extend_from_slice(b"\r\n");
+
+    // 本文の無い冪等な要求だけ、再利用した接続が死んでいたときに 1 回やり直す
+    let retryable = req_framing == Framing::None && (is_get || head_only);
+    let mut attempt = 0;
+    let (mut server, head, status, resp_headers, request_body_bytes) = loop {
+        attempt += 1;
+        let (mut server, reused) = match acquire_origin(shared, &server_addr) {
+            Ok(v) => v,
+            Err(e) => {
+                log_warn!(
+                    Some(conn_id),
+                    "502 Bad Gateway: connect {} failed: {}",
+                    server_addr,
+                    e
+                );
+                if let Some((entry, source)) = stale.take()
+                    && can_serve_stale(&entry)
+                {
+                    body::drain(reader, req_framing)?;
+                    return serve_cached(client, entry, source, "STALE", 0, &ctx);
+                }
+                write_error(client, 502, "Bad Gateway")?;
+                return Ok(false);
             }
-            let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
-            return Err(e);
+        };
+        metrics.inc_origin_conn(reused);
+        let sent = server
+            .get_mut()
+            .write_all(&request_head)
+            .and_then(|_| forward_request_body(reader, server.get_mut(), req_framing))
+            .and_then(|n| server.get_mut().flush().map(|_| n));
+        let result = sent.and_then(|n| read_response_head(&mut server).map(|h| (h, n)));
+        match result {
+            Ok(((head, status, resp_headers), n)) => {
+                break (server, head, status, resp_headers, n);
+            }
+            Err(e) if reused && retryable && attempt == 1 && is_eof_like(&e) => {
+                log_debug!(
+                    Some(conn_id),
+                    "pooled connection to {} was stale ({}), retrying",
+                    server_addr,
+                    e
+                );
+                continue;
+            }
+            Err(e) => {
+                log_warn!(Some(conn_id), "failed to read origin response: {}", e);
+                if let Some((entry, source)) = stale.take()
+                    && can_serve_stale(&entry)
+                {
+                    return serve_cached(client, entry, source, "STALE", 0, &ctx);
+                }
+                write_error(client, 502, "Bad Gateway")?;
+                return Ok(false);
+            }
         }
     };
-
-    server.set_read_timeout(Some(timeout))?;
-    server.set_write_timeout(Some(timeout))?;
-
-    let forward_request_line = format!("{} {} {}\r\n", method, path, version);
-    server.write_all(forward_request_line.as_bytes())?;
-
-    let sanitized_headers = headers::sanitize_and_inject_headers(&raw_headers, peer_addr);
-    for h in &sanitized_headers {
-        log_trace!(Some(conn_id), "fwd header  {}", h.trim_end());
-        server.write_all(h.as_bytes())?;
-    }
-    if let Some((entry, _)) = &stale {
-        // 保存済みの表現で再検証する (304 なら本文転送なしで延命)
-        for line in freshness::conditional_headers(&freshness::parse_cached_head(&entry.head)) {
-            log_trace!(Some(conn_id), "fwd header  {} (revalidation)", line);
-            server.write_all(line.as_bytes())?;
-            server.write_all(b"\r\n")?;
-        }
-    }
-    server.write_all(b"\r\n")?;
-
-    let mut request_body_bytes = 0u64;
-    if let Some(len) = req.content_length {
-        if len > 0 {
-            let mut body_reader = (&mut reader).take(len as u64);
-            request_body_bytes = io::copy(&mut body_reader, &mut server)?;
-        }
-    } else if req.chunked {
-        loop {
-            let mut chunk_header = String::new();
-            reader.read_line(&mut chunk_header)?;
-            server.write_all(chunk_header.as_bytes())?;
-            let hex_str = chunk_header.trim().split(';').next().unwrap_or("");
-            let chunk_size = usize::from_str_radix(hex_str, 16).unwrap_or(0);
-            if chunk_size == 0 {
-                let mut trail = String::new();
-                reader.read_line(&mut trail)?;
-                server.write_all(trail.as_bytes())?;
-                break;
-            }
-            let mut chunk_data = vec![0u8; chunk_size + 2];
-            reader.read_exact(&mut chunk_data)?;
-            server.write_all(&chunk_data)?;
-            request_body_bytes += chunk_size as u64;
-        }
-    }
-    server.flush()?;
     if request_body_bytes > 0 {
         log_debug!(
             Some(conn_id),
@@ -298,25 +327,16 @@ pub fn handle_http_with_headers(
             request_body_bytes
         );
     }
-
-    // ---- レスポンス受信 ----
-    let mut server_reader = BufReader::with_capacity(COPY_BUF_SIZE, server);
-    let (head, status, resp_headers) = match read_response_head(&mut server_reader) {
-        Ok(v) => v,
-        Err(e) => {
-            log_warn!(Some(conn_id), "failed to read origin response: {}", e);
-            if let Some((entry, source)) = stale.take()
-                && can_serve_stale(&entry)
-            {
-                return serve_cached(&mut client, entry, source, "STALE", 0, &ctx);
-            }
-            let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
-            return Err(e);
-        }
-    };
     for (k, v) in &resp_headers {
         log_trace!(Some(conn_id), "res header  {}: {}", k, v);
     }
+
+    let framing = Framing::of_response(status, head_only, &resp_headers);
+    let origin_reusable = head.starts_with(b"HTTP/1.1")
+        && framing != Framing::Close
+        && !resp_headers.iter().any(|(k, v)| {
+            k == "connection" && v.split(',').any(|t| t.trim().eq_ignore_ascii_case("close"))
+        });
 
     // 304: 保存済みの表現がまだ有効。延命して配信する
     if status == 304
@@ -325,16 +345,12 @@ pub fn handle_http_with_headers(
         let cached_head = freshness::parse_cached_head(&entry.head);
         let ttl = freshness::revalidated_ttl(&resp_headers, &cached_head, cfg, now);
         cache.refresh(key, ttl, conn_id);
-        return serve_cached(
-            &mut client,
-            entry,
-            source,
-            "REVALIDATED",
-            ttl.as_secs(),
-            &ctx,
-        );
+        if origin_reusable {
+            shared.pool.put(&server_addr, server);
+        }
+        return serve_cached(client, entry, source, "REVALIDATED", ttl.as_secs(), &ctx);
     }
-    // オリジン障害: stale を配信 (must-revalidate でなければ)
+    // オリジン障害: stale を配信 (must-revalidate でなければ)。この接続は再利用しない
     if STALE_ON_STATUS.contains(&status)
         && let Some((entry, source)) = stale.take()
         && can_serve_stale(&entry)
@@ -344,14 +360,14 @@ pub fn handle_http_with_headers(
             "origin returned {}: serving stale entry",
             status
         );
-        return serve_cached(&mut client, entry, source, "STALE", 0, &ctx);
+        return serve_cached(client, entry, source, "STALE", 0, &ctx);
     }
-    if req_allows_cache {
+    if lookup_allowed {
         metrics.inc_cache_miss();
     }
 
     // ---- 配信しつつ保存 ----
-    let policy = if req_allows_cache {
+    let policy = if store_allowed {
         freshness::response_policy(status, &resp_headers, cfg, now)
     } else {
         None
@@ -360,72 +376,172 @@ pub fn handle_http_with_headers(
         // 新しい表現は保存できないので、古い表現も捨てる
         cache.remove(key);
     }
-    let content_length = resp_headers
-        .iter()
-        .find(|(k, _)| k == "content-length")
-        .and_then(|(_, v)| v.parse::<u64>().ok());
-    let mut sink = policy.map(|p| {
-        cache.begin_store(
-            key,
-            &url,
-            p.ttl,
-            p.validators,
-            content_length.map(|l| l.saturating_add(head.len() as u64)),
-            conn_id,
-        )
-    });
+    let sanitized = headers::sanitize_response_head(&head);
+    // クライアント向けの枠組み: 長さが分かればそのまま、分からなければ HTTP/1.1 には再 chunk
+    let client_framing = match framing {
+        Framing::None | Framing::Length(_) => framing,
+        Framing::Chunked | Framing::Close => {
+            if http11 {
+                Framing::Chunked
+            } else {
+                Framing::Close
+            }
+        }
+    };
+    if client_framing == Framing::Close {
+        ctx.keep_client = false;
+    }
+    let mut extra = Vec::new();
+    match client_framing {
+        Framing::Length(n) => extra.push(format!("Content-Length: {}", n)),
+        Framing::Chunked => extra.push("Transfer-Encoding: chunked".to_string()),
+        Framing::None if head_only => {
+            // HEAD: GET と同じヘッダーを返す (本文は無い)
+            if let Some((_, v)) = resp_headers.iter().find(|(k, _)| k == "content-length") {
+                extra.push(format!("Content-Length: {}", v));
+            }
+        }
+        _ => {}
+    }
+    extra.push(ctx.connection_line());
+    let client_head = sanitized.assemble(&extra);
+    let cached_head = sanitized.assemble(&[]);
+    let expected = match framing {
+        Framing::Length(n) => Some(n.saturating_add(cached_head.len() as u64)),
+        _ => None,
+    };
+    let mut sink =
+        policy.map(|p| cache.begin_store(key, &url, p.ttl, p.validators, expected, conn_id));
     if let Some(s) = sink.as_mut() {
-        s.write(&head);
+        s.write(&cached_head);
     }
 
-    client.write_all(&head)?;
+    client.write_all(&client_head)?;
     let mut body_bytes = 0u64;
-    let mut chunk = vec![0u8; COPY_BUF_SIZE];
-    let mut truncated = false;
-    loop {
-        let n = match server_reader.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(ref e) if is_eof_like(e) => {
-                log_debug!(Some(conn_id), "origin read ended: {}", e);
-                truncated = true;
-                break;
-            }
-            Err(e) => {
-                if let Some(s) = sink.take() {
-                    s.abort();
+    let mut buf = vec![0u8; COPY_BUF_SIZE];
+    let mut clean = true;
+    {
+        let mut body = BodyReader::new(&mut server, framing);
+        loop {
+            let n = match body.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(ref e) if is_eof_like(e) => {
+                    log_debug!(Some(conn_id), "origin body ended early: {}", e);
+                    clean = false;
+                    break;
                 }
-                return Err(e);
+                Err(e) => {
+                    if let Some(s) = sink.take() {
+                        s.abort();
+                    }
+                    return Err(e);
+                }
+            };
+            if client_framing == Framing::Chunked {
+                body::write_chunk(client, &buf[..n])?;
+            } else {
+                client.write_all(&buf[..n])?;
             }
-        };
-        client.write_all(&chunk[..n])?;
-        body_bytes += n as u64;
-        if let Some(s) = sink.as_mut() {
-            s.write(&chunk[..n]);
+            body_bytes += n as u64;
+            if let Some(s) = sink.as_mut() {
+                s.write(&buf[..n]);
+            }
         }
+        clean = clean && body.finished_cleanly();
+    }
+    if clean && client_framing == Framing::Chunked {
+        body::write_last_chunk(client)?;
     }
     client.flush()?;
-    if truncated && let Some(s) = sink.take() {
-        s.abort();
-    }
 
-    let total = head.len() as u64 + body_bytes;
-    metrics.add_bytes(total + request_body_bytes);
-
-    let cache_state = match (policy, sink) {
-        (Some(p), Some(s)) => {
-            let out = s.finish();
-            if out.memory || out.disk {
-                format!("MISS stored ttl={}s", p.ttl.as_secs())
-            } else {
-                "MISS".to_string()
-            }
+    let cache_state = if clean {
+        if origin_reusable {
+            shared.pool.put(&server_addr, server);
         }
-        _ if !req_allows_cache => "BYPASS".to_string(),
-        _ => "MISS".to_string(),
+        match (policy, sink) {
+            (Some(p), Some(s)) => {
+                let out = s.finish();
+                if out.memory || out.disk {
+                    format!("MISS stored ttl={}s", p.ttl.as_secs())
+                } else {
+                    "MISS".to_string()
+                }
+            }
+            _ if !lookup_allowed => "BYPASS".to_string(),
+            _ => "MISS".to_string(),
+        }
+    } else {
+        // 途中で切れた本文はクライアントにもそれと分かる形 (終端チャンク無し / 短い本文) で伝わる
+        if let Some(s) = sink {
+            s.abort();
+        }
+        ctx.keep_client = false;
+        "MISS truncated".to_string()
     };
+
+    let total = client_head.len() as u64 + body_bytes;
+    metrics.add_bytes(total + request_body_bytes);
     ctx.log(&status.to_string(), total, &cache_state);
-    Ok(())
+    Ok(ctx.keep_client)
+}
+
+/// プールにあれば再利用し、無ければ接続する。戻り値の bool は再利用したか。
+fn acquire_origin(shared: &Shared<'_>, server_addr: &str) -> io::Result<(Origin, bool)> {
+    if let Some(server) = shared.pool.get(server_addr) {
+        server.get_ref().set_read_timeout(Some(shared.timeout))?;
+        server.get_ref().set_write_timeout(Some(shared.timeout))?;
+        log_debug!(
+            Some(shared.conn_id),
+            "reusing pooled connection to {}",
+            server_addr
+        );
+        return Ok((server, true));
+    }
+    log_debug!(Some(shared.conn_id), "connecting to origin {}", server_addr);
+    let stream = net::connect(server_addr, shared.timeout)?;
+    stream.set_read_timeout(Some(shared.timeout))?;
+    stream.set_write_timeout(Some(shared.timeout))?;
+    Ok((BufReader::with_capacity(COPY_BUF_SIZE, stream), false))
+}
+
+/// クライアントのリクエスト本文をオリジンへ同じ枠組みで転送する。戻り値は本文のバイト数。
+fn forward_request_body(
+    reader: &mut BufReader<TcpStream>,
+    server: &mut TcpStream,
+    framing: Framing,
+) -> io::Result<u64> {
+    match framing {
+        Framing::None | Framing::Close => Ok(0),
+        Framing::Length(_) => {
+            let mut body = BodyReader::new(reader, framing);
+            io::copy(&mut body, server)
+        }
+        Framing::Chunked => {
+            let mut body = BodyReader::new(reader, framing);
+            let mut buf = vec![0u8; COPY_BUF_SIZE];
+            let mut total = 0u64;
+            loop {
+                let n = body.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                body::write_chunk(server, &buf[..n])?;
+                total += n as u64;
+            }
+            body::write_last_chunk(server)?;
+            Ok(total)
+        }
+    }
+}
+
+fn write_error(client: &mut TcpStream, status: u16, reason: &str) -> io::Result<()> {
+    let resp = format!(
+        "HTTP/1.1 {} {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        status, reason
+    );
+    client.write_all(resp.as_bytes())?;
+    client.flush()
 }
 
 /// stale のまま配信してよいか (`must-revalidate` / `proxy-revalidate` なら不可)。
@@ -433,7 +549,26 @@ fn can_serve_stale(entry: &CachedResponse) -> bool {
     !freshness::parse_cached_head(&entry.head).must_revalidate
 }
 
-/// キャッシュ済みレスポンスを配信する。クライアントの条件付き要求に合致すれば 304 を返す。
+/// `If-Range` が保存済みの表現に一致するか (無ければ一致扱い)。弱い ETag は使えない。
+fn if_range_matches(if_range: Option<&str>, head: &CachedHead) -> bool {
+    let Some(cond) = if_range else {
+        return true;
+    };
+    let cond = cond.trim();
+    if cond.starts_with('"') {
+        head.etag.as_deref().is_some_and(|e| e == cond)
+    } else if cond.starts_with("W/") {
+        false
+    } else {
+        match (&head.last_modified, crate::httpdate::parse(cond)) {
+            (Some(lm), Some(t)) => crate::httpdate::parse(lm) == Some(t),
+            _ => false,
+        }
+    }
+}
+
+/// キャッシュ済みレスポンスを配信する。クライアントの条件付き要求には 304、`Range` には 206、
+/// `HEAD` にはヘッダーだけを返す。戻り値はクライアント接続を維持できるか。
 fn serve_cached(
     client: &mut TcpStream,
     entry: CachedResponse,
@@ -441,10 +576,9 @@ fn serve_cached(
     label: &str,
     ttl_left: u64,
     ctx: &Ctx<'_>,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let age = entry.age();
     let cached_head = freshness::parse_cached_head(&entry.head);
-    let status = cached_head.status.to_string();
     let conditional = ctx.req.if_none_match.is_some() || ctx.req.if_modified_since.is_some();
     if conditional
         && freshness::client_not_modified(
@@ -453,7 +587,8 @@ fn serve_cached(
             ctx.req.if_modified_since.as_deref(),
         )
     {
-        let written = write_not_modified(client, &cached_head, label, source, age)?;
+        let written =
+            write_not_modified(client, &cached_head, label, source, age, ctx.keep_client)?;
         ctx.metrics.inc_cache_hit();
         ctx.metrics.add_bytes(written);
         ctx.log(
@@ -461,23 +596,45 @@ fn serve_cached(
             written,
             &format!("{}({},304) age={}s", label, source.as_str(), age),
         );
-        return Ok(());
+        return Ok(ctx.keep_client);
     }
-    let written = write_cached_response(client, entry, label, source, age)?;
+
+    let body_len = entry.body_len();
+    let range = match (&ctx.req.range, cached_head.status == 200 && !ctx.head_only) {
+        (Some(r), true) if if_range_matches(ctx.req.if_range.as_deref(), &cached_head) => {
+            body::parse_range(r, body_len)
+        }
+        _ => RangeSpec::Ignore,
+    };
+    let served = Serve {
+        label,
+        source,
+        age,
+        keep_alive: ctx.keep_client,
+        head_only: ctx.head_only,
+        range,
+    };
+    let (status, written) = write_cached_response(client, entry, &served)?;
     ctx.metrics.inc_cache_hit();
     ctx.metrics.add_bytes(written);
+    let detail = match range {
+        RangeSpec::Bytes { start, end } => format!(" range={}-{}", start, end),
+        RangeSpec::Unsatisfiable => " range=unsatisfiable".to_string(),
+        RangeSpec::Ignore => String::new(),
+    };
     ctx.log(
-        &status,
+        &status.to_string(),
         written,
         &format!(
-            "{}({}) age={}s ttl_left={}s",
+            "{}({}) age={}s ttl_left={}s{}",
             label,
             source.as_str(),
             age,
-            ttl_left
+            ttl_left,
+            detail
         ),
     );
-    Ok(())
+    Ok(ctx.keep_client)
 }
 
 fn is_eof_like(e: &io::Error) -> bool {
@@ -485,37 +642,87 @@ fn is_eof_like(e: &io::Error) -> bool {
         e.kind(),
         io::ErrorKind::UnexpectedEof
             | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
             | io::ErrorKind::WouldBlock
             | io::ErrorKind::TimedOut
     )
 }
 
-fn x_cache_line(label: &str, source: CacheSource, age: u64) -> String {
-    format!(
-        "X-Cache: {} from sorahost-http-proxy ({})\r\nAge: {}\r\n",
-        label,
-        source.as_str(),
-        age
-    )
+fn x_cache_lines(label: &str, source: CacheSource, age: u64) -> [String; 2] {
+    [
+        format!(
+            "X-Cache: {} from sorahost-http-proxy ({})",
+            label,
+            source.as_str()
+        ),
+        format!("Age: {}", age),
+    ]
 }
 
-/// キャッシュ済みレスポンスに `X-Cache` / `Age` を付与してクライアントへ書き出す。
+/// キャッシュ済みレスポンスの配信方法。
+pub struct Serve<'a> {
+    pub label: &'a str,
+    pub source: CacheSource,
+    pub age: u64,
+    pub keep_alive: bool,
+    pub head_only: bool,
+    pub range: RangeSpec,
+}
+
+/// キャッシュ済みレスポンスに枠組み (Content-Length) と `X-Cache` / `Age` を付けて書き出す。
+/// 戻り値は (ステータス, 書いたバイト数)。
 pub fn write_cached_response(
     client: &mut impl Write,
     entry: CachedResponse,
-    label: &str,
-    source: CacheSource,
-    age: u64,
-) -> io::Result<u64> {
-    let head = entry.head.clone();
-    let split = find_subslice(&head, b"\r\n").map(|p| p + 2).unwrap_or(0);
-    let extra = x_cache_line(label, source, age);
-    client.write_all(&head[..split])?;
-    client.write_all(extra.as_bytes())?;
-    client.write_all(&head[split..])?;
-    let body = io::copy(&mut entry.into_body_reader(), client)?;
+    serve: &Serve<'_>,
+) -> io::Result<(u16, u64)> {
+    let mut head = headers::sanitize_response_head(&entry.head);
+    let body_len = entry.body_len();
+    let mut extra: Vec<String> = x_cache_lines(serve.label, serve.source, serve.age).to_vec();
+    let status;
+    let (start, len) = match serve.range {
+        RangeSpec::Bytes { start, end } => {
+            status = 206;
+            head.status_line = "HTTP/1.1 206 Partial Content".to_string();
+            extra.push(format!(
+                "Content-Range: bytes {}-{}/{}",
+                start, end, body_len
+            ));
+            (start, end - start + 1)
+        }
+        RangeSpec::Unsatisfiable => {
+            status = 416;
+            head.status_line = "HTTP/1.1 416 Range Not Satisfiable".to_string();
+            head.lines
+                .retain(|l| !l.to_ascii_lowercase().starts_with("content-type:"));
+            extra.push(format!("Content-Range: bytes */{}", body_len));
+            (0, 0)
+        }
+        RangeSpec::Ignore => {
+            status = head
+                .status_line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(200);
+            (0, body_len)
+        }
+    };
+    extra.push(format!("Content-Length: {}", len));
+    extra.push(if serve.keep_alive {
+        "Connection: keep-alive".to_string()
+    } else {
+        "Connection: close".to_string()
+    });
+    let bytes = head.assemble(&extra);
+    client.write_all(&bytes)?;
+    let mut written = bytes.len() as u64;
+    if !serve.head_only && len > 0 {
+        written += io::copy(&mut entry.into_body_range(start, len), client)?;
+    }
     client.flush()?;
-    Ok(head.len() as u64 + extra.len() as u64 + body)
+    Ok((status, written))
 }
 
 /// クライアントの条件付き要求に対する 304 応答。
@@ -525,21 +732,25 @@ fn write_not_modified(
     label: &str,
     source: CacheSource,
     age: u64,
+    keep_alive: bool,
 ) -> io::Result<u64> {
     let mut out = String::from("HTTP/1.1 304 Not Modified\r\n");
-    out.push_str(&x_cache_line(label, source, age));
+    for line in x_cache_lines(label, source, age) {
+        out.push_str(&line);
+        out.push_str("\r\n");
+    }
     for line in freshness::not_modified_headers(head) {
         out.push_str(&line);
         out.push_str("\r\n");
     }
-    out.push_str("\r\n");
+    out.push_str(if keep_alive {
+        "Connection: keep-alive\r\n\r\n"
+    } else {
+        "Connection: close\r\n\r\n"
+    });
     client.write_all(out.as_bytes())?;
     client.flush()?;
     Ok(out.len() as u64)
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// ステータス行とヘッダー部を読み切り、[`ResponseHead`] を返す。
@@ -606,6 +817,7 @@ pub fn parse_target<'a>(
 mod tests {
     use super::*;
     use crate::cache::{Body, Meta};
+    use std::sync::Arc;
 
     #[test]
     fn test_parse_target_absolute_url() {
@@ -669,17 +881,92 @@ mod tests {
         }
     }
 
+    fn serve(range: RangeSpec, head_only: bool) -> Serve<'static> {
+        Serve {
+            label: "HIT",
+            source: CacheSource::Disk,
+            age: 42,
+            keep_alive: true,
+            head_only,
+            range,
+        }
+    }
+
     #[test]
-    fn test_write_cached_response_injects_headers() {
-        let entry = cached(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+    fn test_write_cached_response_injects_framing_and_headers() {
+        let entry =
+            cached(b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nhi");
         let mut out = Vec::new();
-        let n = write_cached_response(&mut out, entry, "HIT", CacheSource::Disk, 42).unwrap();
+        let (status, n) =
+            write_cached_response(&mut out, entry, &serve(RangeSpec::Ignore, false)).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.starts_with(
-            "HTTP/1.1 200 OK\r\nX-Cache: HIT from sorahost-http-proxy (disk)\r\nAge: 42\r\n"
-        ));
-        assert!(text.ends_with("\r\n\r\nhi"));
+        assert_eq!(status, 200);
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Cache: HIT from sorahost-http-proxy (disk)\r\nAge: 42\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nhi"), "{}", text);
+        assert!(!text.contains("Connection: close"));
         assert_eq!(n, text.len() as u64);
+    }
+
+    #[test]
+    fn test_write_cached_response_range_and_head() {
+        let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n0123456789";
+        let mut out = Vec::new();
+        let (status, _) = write_cached_response(
+            &mut out,
+            cached(wire),
+            &serve(RangeSpec::Bytes { start: 2, end: 5 }, false),
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(status, 206);
+        assert!(
+            text.starts_with("HTTP/1.1 206 Partial Content\r\n"),
+            "{}",
+            text
+        );
+        assert!(text.contains("Content-Range: bytes 2-5/10\r\n"));
+        assert!(text.contains("Content-Length: 4\r\n"));
+        assert!(text.ends_with("\r\n\r\n2345"));
+
+        let mut out = Vec::new();
+        let (status, _) = write_cached_response(
+            &mut out,
+            cached(wire),
+            &serve(RangeSpec::Unsatisfiable, false),
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(status, 416);
+        assert!(text.contains("Content-Range: bytes */10\r\n") && text.ends_with("\r\n\r\n"));
+
+        let mut out = Vec::new();
+        let (status, _) =
+            write_cached_response(&mut out, cached(wire), &serve(RangeSpec::Ignore, true)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(status, 200);
+        assert!(
+            text.contains("Content-Length: 10\r\n") && text.ends_with("\r\n\r\n"),
+            "{}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_if_range_matching() {
+        let head = freshness::parse_cached_head(
+            b"HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nLast-Modified: Sun, 06 Nov 1994 08:49:37 GMT\r\n\r\n",
+        );
+        assert!(if_range_matches(None, &head));
+        assert!(if_range_matches(Some("\"v1\""), &head));
+        assert!(!if_range_matches(Some("\"v2\""), &head));
+        assert!(!if_range_matches(Some("W/\"v1\""), &head));
+        assert!(if_range_matches(
+            Some("Sun, 06 Nov 1994 08:49:37 GMT"),
+            &head
+        ));
+        assert!(!if_range_matches(
+            Some("Mon, 07 Nov 1994 08:49:37 GMT"),
+            &head
+        ));
     }
 
     #[test]
@@ -688,11 +975,11 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nETag: \"x\"\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\n",
         );
         let mut out = Vec::new();
-        write_not_modified(&mut out, &head, "HIT", CacheSource::Memory, 3).unwrap();
+        write_not_modified(&mut out, &head, "HIT", CacheSource::Memory, 3, false).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("HTTP/1.1 304 Not Modified\r\nX-Cache: HIT from sorahost-http-proxy (memory)\r\nAge: 3\r\n"));
         assert!(text.contains("ETag: \"x\"\r\n"));
         assert!(!text.contains("Content-Length"));
-        assert!(text.ends_with("\r\n\r\n"));
+        assert!(text.ends_with("Connection: close\r\n\r\n"));
     }
 }

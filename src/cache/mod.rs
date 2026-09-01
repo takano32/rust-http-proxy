@@ -109,6 +109,29 @@ impl CachedResponse {
         self.meta.expires_at.saturating_sub(now)
     }
 
+    /// 本文の長さ (ヘッダー部を除く)。
+    pub fn body_len(&self) -> u64 {
+        self.size.saturating_sub(self.head.len() as u64)
+    }
+
+    /// 本文の `start` から `len` バイトを読むリーダー (Range 応答用)。
+    pub fn into_body_range(self, start: u64, len: u64) -> Box<dyn Read + Send> {
+        match self.body {
+            Body::Memory { data, offset } => {
+                let mut cur = Cursor::new(ArcBytes(data));
+                cur.set_position(offset as u64 + start);
+                Box::new(cur.take(len))
+            }
+            Body::File(mut reader) => {
+                if start > 0 {
+                    // 先頭から start バイト読み飛ばす (BufReader の位置を保つため seek は使わない)
+                    let _ = io::copy(&mut (&mut reader).take(start), &mut io::sink());
+                }
+                Box::new(reader.take(len))
+            }
+        }
+    }
+
     /// 本文を読むリーダー。
     pub fn into_body_reader(self) -> Box<dyn Read + Send> {
         match self.body {

@@ -1,4 +1,5 @@
 pub mod acl;
+pub mod body;
 pub mod cache;
 pub mod config;
 pub mod freshness;
@@ -8,6 +9,7 @@ pub mod httpdate;
 pub mod log;
 pub mod metrics;
 pub mod net;
+pub mod pool;
 pub mod sysinfo;
 pub mod tunnel;
 
@@ -19,23 +21,29 @@ use std::time::Instant;
 use cache::Cache;
 use config::Config;
 use metrics::Metrics;
+use pool::Pool;
 
 const FORBIDDEN_RESPONSE: &[u8] = b"HTTP/1.1 403 Forbidden\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 Content-Length: 13\r\n\
+Connection: close\r\n\
 \r\n\
 403 Forbidden";
 
+/// 1 つのクライアント接続で処理する最大要求数 (keep-alive)。
+const MAX_REQUESTS_PER_CONNECTION: usize = 1000;
+
+/// 1 つのクライアント接続を、keep-alive なら複数の要求にわたって処理する。
 pub fn handle_client(
     mut client: TcpStream,
     config: Arc<Config>,
     metrics: Arc<Metrics>,
     cache: Arc<Cache>,
+    pool: Arc<Pool>,
     conn_id: usize,
 ) -> io::Result<()> {
     let started = Instant::now();
     metrics.inc_active_conn();
-    metrics.inc_requests();
 
     struct ConnGuard(Arc<Metrics>, usize, Instant);
     impl Drop for ConnGuard {
@@ -61,119 +69,156 @@ pub fn handle_client(
             .map(|a| a.to_string())
             .unwrap_or_else(|| "<unknown>".to_string())
     );
-
-    client.set_read_timeout(Some(config.timeout))?;
     client.set_write_timeout(Some(config.timeout))?;
-
     let mut reader = BufReader::new(client.try_clone()?);
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
-        log_debug!(Some(conn_id), "client closed before sending a request line");
-        return Ok(());
-    }
-    log_trace!(Some(conn_id), "request line: {}", request_line.trim_end());
-
-    let parts: Vec<&str> = request_line.split_whitespace().collect();
-    if parts.len() < 2 {
-        log_warn!(
-            Some(conn_id),
-            "malformed request line: {:?}",
-            request_line.trim()
-        );
-        return Ok(());
-    }
-
-    let method = parts[0];
-    let target = parts[1];
-
-    // Health check endpoint handling
-    if (target == "/healthz" || target == "/status") && method.eq_ignore_ascii_case("GET") {
-        let json_body = metrics.to_json_with_cache(Some(&cache));
-        let response = format!(
-            "HTTP/1.1 200 OK\r\n\
-            Content-Type: application/json\r\n\
-            Content-Length: {}\r\n\
-            Connection: close\r\n\
-            \r\n\
-            {}",
-            json_body.len(),
-            json_body
-        );
-        client.write_all(response.as_bytes())?;
-        client.flush()?;
-        log_info!(Some(conn_id), "GET {} -> 200 (status endpoint)", target);
-        return Ok(());
-    }
-
-    let mut raw_headers = Vec::new();
-    let mut host_header = None;
+    let mut served = 0usize;
 
     loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
-            break;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            break;
-        }
-
-        if let Some((k, v)) = line.split_once(':') {
-            let k_lower = k.trim().to_ascii_lowercase();
-            if k_lower == "host" {
-                host_header = Some(v.trim().to_string());
-            }
-        }
-        raw_headers.push(line);
-    }
-
-    // ACL / Host Check
-    let target_host = if method.eq_ignore_ascii_case("CONNECT") {
-        target
-    } else {
-        match http::parse_target(target, host_header.as_deref()) {
-            Ok((h, _)) => h,
-            Err(e) => {
-                log_warn!(Some(conn_id), "400 Bad Request: {}", e);
-                let _ = client.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
+        // 最初の要求は通常のタイムアウト、2 回目以降は keep-alive のアイドル時間で待つ
+        let wait = if served == 0 {
+            config.timeout
+        } else {
+            config.keepalive
+        };
+        client.set_read_timeout(Some(wait))?;
+        let mut request_line = String::new();
+        match reader.read_line(&mut request_line) {
+            Ok(0) => {
+                log_debug!(Some(conn_id), "client closed ({} requests served)", served);
                 return Ok(());
             }
+            Ok(_) => {}
+            Err(e)
+                if served > 0
+                    && matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::ConnectionReset
+                    ) =>
+            {
+                log_debug!(Some(conn_id), "keep-alive idle timeout: {}", e);
+                return Ok(());
+            }
+            Err(e) => return Err(e),
         }
-    };
+        // 要求の前の空行は読み飛ばす (RFC 9112 §2.2)
+        if request_line.trim().is_empty() {
+            continue;
+        }
+        client.set_read_timeout(Some(config.timeout))?;
+        metrics.inc_requests();
+        log_trace!(Some(conn_id), "request line: {}", request_line.trim_end());
 
-    if !config.acl.is_allowed(target_host) {
-        log_warn!(
-            Some(conn_id),
-            "403 Forbidden (ACL blocked host: {})",
-            target_host
-        );
-        client.write_all(FORBIDDEN_RESPONSE)?;
-        client.flush()?;
-        return Ok(());
-    }
+        let parts: Vec<&str> = request_line.split_whitespace().collect();
+        if parts.len() < 2 {
+            log_warn!(
+                Some(conn_id),
+                "malformed request line: {:?}",
+                request_line.trim()
+            );
+            return Ok(());
+        }
+        let method = parts[0].to_string();
+        let target = parts[1].to_string();
 
-    // Forward or Tunnel
-    if method.eq_ignore_ascii_case("CONNECT") {
-        tunnel::handle_connect(
-            client,
-            target,
-            config.timeout,
+        // Health check endpoint handling
+        if (target == "/healthz" || target == "/status") && method.eq_ignore_ascii_case("GET") {
+            let json_body = metrics.to_json_with_cache(Some(&cache));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                Content-Type: application/json\r\n\
+                Content-Length: {}\r\n\
+                Connection: close\r\n\
+                \r\n\
+                {}",
+                json_body.len(),
+                json_body
+            );
+            client.write_all(response.as_bytes())?;
+            client.flush()?;
+            log_info!(Some(conn_id), "GET {} -> 200 (status endpoint)", target);
+            return Ok(());
+        }
+
+        let mut raw_headers = Vec::new();
+        let mut host_header = None;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                break;
+            }
+            if let Some((k, v)) = line.split_once(':')
+                && k.trim().eq_ignore_ascii_case("host")
+            {
+                host_header = Some(v.trim().to_string());
+            }
+            raw_headers.push(line);
+        }
+
+        // ACL / Host Check
+        let is_connect = method.eq_ignore_ascii_case("CONNECT");
+        let target_host = if is_connect {
+            target.clone()
+        } else {
+            match http::parse_target(&target, host_header.as_deref()) {
+                Ok((h, _)) => h.to_string(),
+                Err(e) => {
+                    log_warn!(Some(conn_id), "400 Bad Request: {}", e);
+                    let _ = client.write_all(
+                        b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    return Ok(());
+                }
+            }
+        };
+        if !config.acl.is_allowed(&target_host) {
+            log_warn!(
+                Some(conn_id),
+                "403 Forbidden (ACL blocked host: {})",
+                target_host
+            );
+            client.write_all(FORBIDDEN_RESPONSE)?;
+            client.flush()?;
+            return Ok(());
+        }
+
+        if is_connect {
+            // 先読みしてしまったバイト (TLS ClientHello など) はトンネルへ渡す
+            let prefix = reader.buffer().to_vec();
+            return tunnel::handle_connect(
+                client,
+                &target,
+                &prefix,
+                config.timeout,
+                conn_id,
+                Arc::clone(&metrics),
+            );
+        }
+
+        let shared = http::Shared {
+            timeout: config.timeout,
+            keepalive: config.keepalive,
             conn_id,
-            Arc::clone(&metrics),
-        )?;
-    } else {
-        http::handle_http_with_headers(
-            client,
+            metrics: &metrics,
+            cache: &cache,
+            pool: &pool,
+        };
+        let keep = http::handle_http_with_headers(
+            &mut client,
             peer_addr,
-            request_line,
-            raw_headers,
-            reader,
-            config.timeout,
-            conn_id,
-            Arc::clone(&metrics),
-            Arc::clone(&cache),
+            &request_line,
+            &raw_headers,
+            &mut reader,
+            &shared,
         )?;
+        served += 1;
+        if !keep || served >= MAX_REQUESTS_PER_CONNECTION {
+            return Ok(());
+        }
     }
-
-    Ok(())
 }

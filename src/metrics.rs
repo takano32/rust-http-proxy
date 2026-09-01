@@ -10,6 +10,9 @@ pub struct Metrics {
     pub bytes_forwarded: AtomicU64,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
+    /// オリジンへ新規に張った接続数と、プールから再利用した回数
+    pub origin_new: AtomicU64,
+    pub origin_reused: AtomicU64,
 }
 
 impl Metrics {
@@ -21,6 +24,8 @@ impl Metrics {
             bytes_forwarded: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
+            origin_new: AtomicU64::new(0),
+            origin_reused: AtomicU64::new(0),
         }
     }
 
@@ -48,6 +53,14 @@ impl Metrics {
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_origin_conn(&self, reused: bool) {
+        if reused {
+            self.origin_reused.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.origin_new.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     pub fn to_json(&self) -> String {
         self.to_json_with_cache(None)
     }
@@ -68,7 +81,9 @@ impl Metrics {
             concat!(
                 "{{\"status\":\"ok\",\"uptime_secs\":{},\"total_requests\":{},",
                 "\"active_connections\":{},\"bytes_forwarded\":{},",
-                "\"cache_hits\":{},\"cache_misses\":{},\"log_level\":\"{}\",\"cache\":{}}}"
+                "\"cache_hits\":{},\"cache_misses\":{},",
+                "\"origin_connections\":{{\"new\":{},\"reused\":{}}},",
+                "\"log_level\":\"{}\",\"cache\":{}}}"
             ),
             uptime,
             requests,
@@ -76,6 +91,8 @@ impl Metrics {
             bytes,
             self.cache_hits.load(Ordering::Relaxed),
             self.cache_misses.load(Ordering::Relaxed),
+            self.origin_new.load(Ordering::Relaxed),
+            self.origin_reused.load(Ordering::Relaxed),
             crate::log::current_level().as_str().trim(),
             cache_json
         )
