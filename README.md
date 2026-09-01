@@ -14,6 +14,9 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
   (Content-Length / 再 chunk / close) ので、HTTP/1.0 のオリジンやクライアントが混ざっても正しく持続する
 - **Range / HEAD**: キャッシュ済みの完全な表現から `206 Partial Content` (単一範囲、`If-Range` 対応、範囲外は `416`) や
   `HEAD` 応答を切り出す。未キャッシュの Range 要求はそのまま転送
+- **HTTPS のオリジンもキャッシュ (CA 不要)**: クライアントが `GET /https/example.com/path` (プロキシをオリジンとして叩く)
+  か `GET https://example.com/path` で頼めば、プロキシがシステムの OpenSSL で HTTPS 取得し、平文 HTTP で返して保存する。
+  応答の `Location` は `/https/...` 形式に書き換えるのでリダイレクトもプロキシに留まる。CONNECT トンネルは従来どおり素通し
 - **IPv4 / IPv6 デュアルスタック**: `[::]` と `0.0.0.0` の両方で待ち受け (IPv6 が無ければ IPv4 のみ)、
   オリジンへは A / AAAA を引いて IPv6 優先の Happy Eyeballs (RFC 8305) で速い方に接続、
   `http://[2001:db8::1]:8080/` などの IPv6 リテラルにも対応
@@ -53,6 +56,9 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 | `PROXY_TIMEOUT_SECS` | `30` | 接続およびデータ転送タイムアウト（秒） |
 | `PROXY_KEEPALIVE_SECS` | `15` | クライアント接続を次の要求まで待つアイドル時間 (秒)。`0` で 1 接続 1 要求 |
 | `PROXY_ORIGIN_POOL` | `8` | オリジンへのアイドル接続をホストごとに保持する本数。`0` で再利用しない |
+| `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
+| `PROXY_TLS_VERIFY` | `on` | オリジンの証明書を検証するか。`off` は自己署名の内部オリジン向け (推奨しない) |
+| `PROXY_TLS_CA_FILE` | なし (システムの CA) | 追加で信頼する CA 証明書 (PEM) |
 | `PROXY_LOG_LEVEL` | `info` | ログレベル (`error` / `warn` / `info` / `debug` / `trace`) |
 | `PROXY_CACHE_ENABLED` | `true` | `0` / `false` / `off` / `no` でキャッシュを無効化 |
 | `PROXY_MEM_CACHE_MB` | `auto` | メモリキャッシュ上限。`auto` (動的マージンだけ残して限界まで) か固定値 (MiB) |
@@ -73,9 +79,9 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 | `PROXY_MEM_CACHE_MAX_OBJECT_MB` | `32` | メモリ層に置く 1 オブジェクトの最大サイズ（MiB）。これを超えるものはディスクからストリーミング配信 |
 | `PROXY_DISK_MAX_ENTRIES` | `2000000` | ディスク層の索引に保持するエントリ数の上限 (1 件あたり RAM 約 100 バイト)。超えた分は LRU で追い出す |
 
-環境変数を設定できない環境 (Pterodactyl で egg 変数を追加する権限が無い等) では、`$HOME/sorahost-http-proxy.env`
-(`PROXY_ENV_FILE` で場所を変更可) に `KEY=VALUE` を 1 行ずつ書けば同じ効果になります (`#` はコメント、
-実際の環境変数が優先)。Pterodactyl ならファイルマネージャで `/home/container/sorahost-http-proxy.env` を置くだけです。
+環境変数を設定できない環境 (Pterodactyl で egg 変数を追加する権限が無い等) では、`$HOME/.env` に `KEY=VALUE` を
+1 行ずつ書けば同じ効果になります (`#` はコメント、実際の環境変数が優先)。Pterodactyl ならファイルマネージャで
+`/home/container/.env` を置くだけです。
 
 `PROXY_CACHE_DIR` を指定しない場合は、書き込める最初の候補を使います:
 `$XDG_CACHE_HOME/sorahost-http-proxy` (または `~/.cache/sorahost-http-proxy`) → `/var/cache/sorahost-http-proxy` → `$TMPDIR/sorahost-http-proxy-cache`。
@@ -131,6 +137,27 @@ GET リクエストのみを対象に、レスポンスをワイヤ形式その�
 - 次の場合は保存しない: GET 以外 / `Authorization` 付き / `Range` 付き / クライアントの `no-store` /
   レスポンスの `no-store`・`private` / `Set-Cookie` / 非対応の `Vary` / 非キャッシュ対象ステータス / 上限超過
 - クライアントの `no-cache` / `max-age=0` は「バイパス」ではなく「オリジンで再検証」として扱う
+
+### HTTPS のオリジン
+
+HTTPS の中身をキャッシュするには TLS を終端する必要があり、CONNECT トンネル (クライアントが `https://` を普通にプロキシ
+経由で開く形) では暗号化されたまま素通しになります。代わりに、クライアント側で URL を次の形にしてプロキシへ平文 HTTP
+で頼めば、プロキシが HTTPS で取得して保存・配信します。
+
+```bash
+# プロキシをオリジンとして叩く形 (スクリプトやダウンロードツール向け)
+curl http://127.0.0.1:8080/https/example.com/file.zip -o file.zip
+```
+
+要求行に `GET https://example.com/file.zip HTTP/1.1` と絶対 URL を書いて平文で送るクライアント (自作スクリプト等) も
+同じように扱います。普通のプロキシ設定で `https://` を開くクライアントは CONNECT を使うので対象外です。
+
+- TLS はシステムの OpenSSL (`libssl.so.3` / `libssl.so.1.1`) を実行時に読み込んで使います。クレートもビルド時の依存もなく、
+  ライブラリが無い環境では HTTPS 取得だけが無効になります (起動ログに出ます)
+- 証明書は既定で検証します (システムの CA ストア、`SSL_CERT_FILE` / `SSL_CERT_DIR`、または `PROXY_TLS_CA_FILE`)
+- 応答の `Location` / `Content-Location` が絶対 URL なら `/https/host/path` 形式に書き換えるので、リダイレクトを追っても
+  プロキシから外れません
+- キャッシュキーには `https://host:443/path` の形で保存されるので、`/https/...` 形式と絶対 URL 形式は同じエントリに当たります
 
 ### 鮮度と再検証 (RFC 9111)
 

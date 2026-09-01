@@ -17,7 +17,9 @@ use crate::headers;
 use crate::log::{Access, access};
 use crate::metrics::Metrics;
 use crate::net;
+use crate::origin::{self, OriginStream, Scheme};
 use crate::pool::Pool;
+use crate::tls::TlsClient;
 use crate::{log_debug, log_trace, log_warn};
 
 const COPY_BUF_SIZE: usize = 64 * 1024;
@@ -35,6 +37,119 @@ pub struct Shared<'a> {
     pub metrics: &'a Metrics,
     pub cache: &'a Cache,
     pub pool: &'a Pool,
+    /// HTTPS のオリジン用 (libssl が無ければ `None`)
+    pub tls: Option<&'a TlsClient>,
+}
+
+/// 要求先 (オリジン)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    pub scheme: Scheme,
+    /// ホスト (必要ならポート付き)、IPv6 リテラルは括弧付き
+    pub host_port: String,
+    pub path: String,
+    /// `/https/host/path` 形式 (プロキシをオリジンとして叩く形) で頼まれたか。
+    /// この場合、応答の Location も同じ形式に書き換えてクライアントをプロキシに留める
+    pub mapped: bool,
+}
+
+impl Origin {
+    pub fn server_addr(&self) -> String {
+        net::with_default_port(&self.host_port, self.scheme.default_port())
+    }
+
+    /// キャッシュキーとログに使う正規化 URL。
+    pub fn url(&self) -> String {
+        format!("{}://{}{}", self.scheme, self.server_addr(), self.path)
+    }
+
+    /// 接続プールのキー。
+    pub fn pool_key(&self) -> String {
+        format!("{}://{}", self.scheme, self.server_addr())
+    }
+
+    pub fn host(&self) -> String {
+        net::split_host_port(&self.host_port).0
+    }
+}
+
+/// 要求行の target と Host ヘッダーからオリジンを決める。
+/// 受け付ける形: `http://h/p`、`https://h/p` (絶対形式)、`/https/h/p`、`/http/h/p` (マッピング)、
+/// `/p` (Host ヘッダー宛て)、`h` (ホストのみ)。
+pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origin> {
+    let split = |scheme: Scheme, rest: &str, mapped: bool| -> io::Result<Origin> {
+        let (host_port, path) = match rest.find('/') {
+            Some(pos) => (&rest[..pos], &rest[pos..]),
+            None => (rest, "/"),
+        };
+        if host_port.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Missing host in request target",
+            ));
+        }
+        Ok(Origin {
+            scheme,
+            host_port: host_port.to_string(),
+            path: path.to_string(),
+            mapped,
+        })
+    };
+    if let Some(rest) = target.strip_prefix("http://") {
+        return split(Scheme::Http, rest, false);
+    }
+    if let Some(rest) = target.strip_prefix("https://") {
+        return split(Scheme::Https, rest, false);
+    }
+    if let Some(rest) = target.strip_prefix("/https/") {
+        return split(Scheme::Https, rest, true);
+    }
+    if let Some(rest) = target.strip_prefix("/http/") {
+        return split(Scheme::Http, rest, true);
+    }
+    if target.starts_with('/') {
+        return match host_header {
+            Some(h) if !h.is_empty() => Ok(Origin {
+                scheme: Scheme::Http,
+                host_port: h.to_string(),
+                path: target.to_string(),
+                mapped: false,
+            }),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Missing host in HTTP request",
+            )),
+        };
+    }
+    Ok(Origin {
+        scheme: Scheme::Http,
+        host_port: target.to_string(),
+        path: "/".to_string(),
+        mapped: false,
+    })
+}
+
+/// マッピング形式のクライアント向けに、絶対 URL の Location / Content-Location を `/https/h/p` 形式へ。
+pub fn map_locations(lines: &mut [String]) {
+    for line in lines.iter_mut() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let lower = name.trim().to_ascii_lowercase();
+        if lower != "location" && lower != "content-location" {
+            continue;
+        }
+        let v = value.trim();
+        let mapped = if let Some(rest) = v.strip_prefix("https://") {
+            Some(format!("/https/{}", rest))
+        } else {
+            v.strip_prefix("http://")
+                .map(|rest| format!("/http/{}", rest))
+        };
+        if let Some(m) = mapped {
+            *line = format!("{}: {}", name.trim(), m);
+        }
+    }
 }
 
 /// リクエストヘッダーのうち転送・キャッシュ判断に使うもの。
@@ -107,6 +222,8 @@ struct Ctx<'a> {
     /// 応答後もクライアント接続を維持できるか
     keep_client: bool,
     head_only: bool,
+    /// マッピング形式の要求 (Location を書き換える)
+    mapped: bool,
 }
 
 impl Ctx<'_> {
@@ -136,7 +253,7 @@ impl Ctx<'_> {
 }
 
 /// オリジンとの接続 (バッファ付き)。
-type Origin = BufReader<TcpStream>;
+type Upstream = BufReader<OriginStream>;
 
 /// 1 リクエストを処理する。戻り値はクライアント接続を次の要求に使えるか。
 pub fn handle_http_with_headers(
@@ -180,8 +297,8 @@ pub fn handle_http_with_headers(
     let is_get = method.eq_ignore_ascii_case("GET");
     let head_only = method.eq_ignore_ascii_case("HEAD");
 
-    let (host_port, path) = match parse_target(target, req.host.as_deref()) {
-        Ok(v) => v,
+    let origin = match parse_origin(target, req.host.as_deref()) {
+        Ok(o) => o,
         Err(e) => {
             log_warn!(Some(conn_id), "400 Bad Request: {}", e);
             let _ = client.write_all(
@@ -190,8 +307,9 @@ pub fn handle_http_with_headers(
             return Ok(false);
         }
     };
-    let server_addr = net::with_default_port(host_port, 80);
-    let url = format!("http://{}{}", server_addr, path);
+    let server_addr = origin.server_addr();
+    let url = origin.url();
+    let pool_key = origin.pool_key();
     let client_ip = peer_addr
         .map(|a| a.ip().to_string())
         .unwrap_or_else(|| "-".to_string());
@@ -207,6 +325,7 @@ pub fn handle_http_with_headers(
         req: &req,
         keep_client,
         head_only,
+        mapped: origin.mapped,
     };
 
     // ---- キャッシュ参照 ----
@@ -257,8 +376,13 @@ pub fn handle_http_with_headers(
             freshness::conditional_headers(&freshness::parse_cached_head(&entry.head))
         })
         .unwrap_or_default();
-    let mut request_head = format!("{} {} {}\r\n", method, path, "HTTP/1.1").into_bytes();
+    let mut request_head = format!("{} {} {}\r\n", method, origin.path, "HTTP/1.1").into_bytes();
+    // Host はオリジンのものに差し替える (マッピング形式ではプロキシ宛ての Host が来る)
+    request_head.extend_from_slice(format!("Host: {}\r\n", origin.host_port).as_bytes());
     for h in headers::sanitize_and_inject_headers(raw_headers, peer_addr) {
+        if h.trim_start().to_ascii_lowercase().starts_with("host:") {
+            continue;
+        }
         log_trace!(Some(conn_id), "fwd header  {}", h.trim_end());
         request_head.extend_from_slice(h.as_bytes());
     }
@@ -274,7 +398,7 @@ pub fn handle_http_with_headers(
     let mut attempt = 0;
     let (mut server, head, status, resp_headers, request_body_bytes) = loop {
         attempt += 1;
-        let (mut server, reused) = match acquire_origin(shared, &server_addr) {
+        let (mut server, reused) = match acquire_origin(shared, &origin, &pool_key) {
             Ok(v) => v,
             Err(e) => {
                 log_warn!(
@@ -309,7 +433,7 @@ pub fn handle_http_with_headers(
                 log_debug!(
                     Some(conn_id),
                     "pooled connection to {} was stale ({}), retrying",
-                    server_addr,
+                    pool_key,
                     e
                 );
                 continue;
@@ -353,7 +477,7 @@ pub fn handle_http_with_headers(
         let p = freshness::revalidated_policy(&resp_headers, &cached_head, cfg, now);
         cache.refresh(key, p.ttl, p.age, conn_id);
         if origin_reusable {
-            shared.pool.put(&server_addr, server);
+            shared.pool.put(&pool_key, server);
         }
         let ttl_left = p.ttl.as_secs().saturating_sub(p.age);
         return serve_cached(client, entry, source, "REVALIDATED", ttl_left, &ctx);
@@ -390,14 +514,20 @@ pub fn handle_http_with_headers(
         cache.invalidate(&url, conn_id);
         for name in ["location", "content-location"] {
             if let Some((_, target)) = resp_headers.iter().find(|(k, _)| k == name)
-                && let Ok((h, p)) = parse_target(target, None)
-                && net::with_default_port(h, 80) == server_addr
+                && let Ok(o) = parse_origin(target, None)
+                && o.scheme == origin.scheme
+                && o.server_addr() == server_addr
             {
-                cache.invalidate(&format!("http://{}{}", server_addr, p), conn_id);
+                cache.invalidate(&o.url(), conn_id);
             }
         }
     }
-    let sanitized = headers::sanitize_response_head(&head);
+    let mut sanitized = headers::sanitize_response_head(&head);
+    // 保存するのは元の Location のまま (配信時に必要なら書き換える)
+    let cached_head = sanitized.assemble(&[]);
+    if origin.mapped {
+        map_locations(&mut sanitized.lines);
+    }
     // クライアント向けの枠組み: 長さが分かればそのまま、分からなければ HTTP/1.1 には再 chunk
     let client_framing = match framing {
         Framing::None | Framing::Length(_) => framing,
@@ -426,7 +556,6 @@ pub fn handle_http_with_headers(
     }
     extra.push(ctx.connection_line());
     let client_head = sanitized.assemble(&extra);
-    let cached_head = sanitized.assemble(&[]);
     let expected = match framing {
         Framing::Length(n) => Some(n.saturating_add(cached_head.len() as u64)),
         _ => None,
@@ -478,7 +607,7 @@ pub fn handle_http_with_headers(
 
     let cache_state = if clean {
         if origin_reusable {
-            shared.pool.put(&server_addr, server);
+            shared.pool.put(&pool_key, server);
         }
         match (policy, sink) {
             (Some(p), Some(s)) => {
@@ -507,29 +636,36 @@ pub fn handle_http_with_headers(
     Ok(ctx.keep_client)
 }
 
-/// プールにあれば再利用し、無ければ接続する。戻り値の bool は再利用したか。
-fn acquire_origin(shared: &Shared<'_>, server_addr: &str) -> io::Result<(Origin, bool)> {
-    if let Some(server) = shared.pool.get(server_addr) {
-        server.get_ref().set_read_timeout(Some(shared.timeout))?;
-        server.get_ref().set_write_timeout(Some(shared.timeout))?;
+/// プールにあれば再利用し、無ければ接続する (HTTPS なら TLS まで)。戻り値の bool は再利用したか。
+fn acquire_origin(
+    shared: &Shared<'_>,
+    origin: &Origin,
+    pool_key: &str,
+) -> io::Result<(Upstream, bool)> {
+    if let Some(server) = shared.pool.get(pool_key) {
+        server.get_ref().set_timeouts(shared.timeout)?;
         log_debug!(
             Some(shared.conn_id),
             "reusing pooled connection to {}",
-            server_addr
+            pool_key
         );
         return Ok((server, true));
     }
-    log_debug!(Some(shared.conn_id), "connecting to origin {}", server_addr);
-    let stream = net::connect(server_addr, shared.timeout)?;
-    stream.set_read_timeout(Some(shared.timeout))?;
-    stream.set_write_timeout(Some(shared.timeout))?;
+    log_debug!(Some(shared.conn_id), "connecting to origin {}", pool_key);
+    let stream = origin::connect(
+        origin.scheme,
+        &origin.server_addr(),
+        &origin.host(),
+        shared.timeout,
+        shared.tls,
+    )?;
     Ok((BufReader::with_capacity(COPY_BUF_SIZE, stream), false))
 }
 
 /// クライアントのリクエスト本文をオリジンへ同じ枠組みで転送する。戻り値は本文のバイト数。
 fn forward_request_body(
     reader: &mut BufReader<TcpStream>,
-    server: &mut TcpStream,
+    server: &mut OriginStream,
     framing: Framing,
 ) -> io::Result<u64> {
     match framing {
@@ -634,6 +770,7 @@ fn serve_cached(
         keep_alive: ctx.keep_client,
         head_only: ctx.head_only,
         range,
+        map_locations: ctx.mapped,
     };
     let (status, written) = write_cached_response(client, entry, &served)?;
     ctx.metrics.inc_cache_hit();
@@ -689,6 +826,8 @@ pub struct Serve<'a> {
     pub keep_alive: bool,
     pub head_only: bool,
     pub range: RangeSpec,
+    /// マッピング形式のクライアント向けに Location を書き換える
+    pub map_locations: bool,
 }
 
 /// キャッシュ済みレスポンスに枠組み (Content-Length) と `X-Cache` / `Age` を付けて書き出す。
@@ -699,6 +838,9 @@ pub fn write_cached_response(
     serve: &Serve<'_>,
 ) -> io::Result<(u16, u64)> {
     let mut head = headers::sanitize_response_head(&entry.head);
+    if serve.map_locations {
+        map_locations(&mut head.lines);
+    }
     let body_len = entry.body_len();
     let mut extra: Vec<String> = x_cache_lines(serve.label, serve.source, serve.age).to_vec();
     let status;
@@ -810,30 +952,6 @@ pub fn read_response_head<R: BufRead>(reader: &mut R) -> io::Result<ResponseHead
     Ok((head, status, headers))
 }
 
-pub fn parse_target<'a>(
-    target: &'a str,
-    host_header: Option<&'a str>,
-) -> io::Result<(&'a str, &'a str)> {
-    if let Some(stripped) = target.strip_prefix("http://") {
-        if let Some(pos) = stripped.find('/') {
-            Ok((&stripped[..pos], &stripped[pos..]))
-        } else {
-            Ok((stripped, "/"))
-        }
-    } else if target.starts_with('/') {
-        if let Some(h) = host_header {
-            Ok((h, target))
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Missing host in HTTP request",
-            ))
-        }
-    } else {
-        Ok((target, "/"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,30 +959,57 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn test_parse_target_absolute_url() {
-        let (host, path) = parse_target("http://example.com/test?a=1", None).unwrap();
-        assert_eq!(host, "example.com");
-        assert_eq!(path, "/test?a=1");
+    fn test_parse_origin_forms() {
+        let o = parse_origin("http://example.com/test?a=1", None).unwrap();
+        assert_eq!(
+            (o.scheme, o.host_port.as_str(), o.path.as_str(), o.mapped),
+            (Scheme::Http, "example.com", "/test?a=1", false)
+        );
+        assert_eq!(o.server_addr(), "example.com:80");
+        assert_eq!(o.url(), "http://example.com:80/test?a=1");
 
-        let (host2, path2) = parse_target("http://example.com:8080", None).unwrap();
-        assert_eq!(host2, "example.com:8080");
-        assert_eq!(path2, "/");
+        let o = parse_origin("https://example.com", None).unwrap();
+        assert_eq!((o.scheme, o.path.as_str()), (Scheme::Https, "/"));
+        assert_eq!(o.server_addr(), "example.com:443");
+        assert_eq!(o.pool_key(), "https://example.com:443");
 
-        let (host3, path3) = parse_target("http://[2001:db8::1]:8080/v6", None).unwrap();
-        assert_eq!(host3, "[2001:db8::1]:8080");
-        assert_eq!(path3, "/v6");
-        assert_eq!(net::with_default_port(host3, 80), "[2001:db8::1]:8080");
-        let (host4, _) = parse_target("http://[::1]/", None).unwrap();
-        assert_eq!(net::with_default_port(host4, 80), "[::1]:80");
+        let o = parse_origin("/https/[2001:db8::1]:8443/v6", None).unwrap();
+        assert_eq!(
+            (o.scheme, o.host_port.as_str(), o.path.as_str(), o.mapped),
+            (Scheme::Https, "[2001:db8::1]:8443", "/v6", true)
+        );
+        assert_eq!(o.host(), "2001:db8::1");
+        assert_eq!(o.server_addr(), "[2001:db8::1]:8443");
+
+        let o = parse_origin("/http/example.com", None).unwrap();
+        assert_eq!(
+            (o.scheme, o.path.as_str(), o.mapped),
+            (Scheme::Http, "/", true)
+        );
+
+        let o = parse_origin("/index.html", Some("example.com")).unwrap();
+        assert_eq!(
+            (o.scheme, o.host_port.as_str(), o.path.as_str()),
+            (Scheme::Http, "example.com", "/index.html")
+        );
+        assert!(parse_origin("/index.html", None).is_err());
+        assert!(parse_origin("/https/", None).is_err());
+        assert!(parse_origin("/https//path", None).is_err());
     }
 
     #[test]
-    fn test_parse_target_relative_url() {
-        let (host, path) = parse_target("/index.html", Some("example.com")).unwrap();
-        assert_eq!(host, "example.com");
-        assert_eq!(path, "/index.html");
-
-        assert!(parse_target("/index.html", None).is_err());
+    fn test_map_locations() {
+        let mut lines = vec![
+            "Location: https://example.com/next".to_string(),
+            "Content-Location: http://example.com:8080/x".to_string(),
+            "X-Other: https://keep.me/".to_string(),
+            "Location: /relative".to_string(),
+        ];
+        map_locations(&mut lines);
+        assert_eq!(lines[0], "Location: /https/example.com/next");
+        assert_eq!(lines[1], "Content-Location: /http/example.com:8080/x");
+        assert_eq!(lines[2], "X-Other: https://keep.me/");
+        assert_eq!(lines[3], "Location: /relative");
     }
 
     #[test]
@@ -910,6 +1055,7 @@ mod tests {
             keep_alive: true,
             head_only,
             range,
+            map_locations: false,
         }
     }
 

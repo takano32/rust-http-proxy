@@ -1,15 +1,12 @@
-//! 環境変数の代わりにファイルから設定を読む。
+//! 環境変数の代わりに `$HOME/.env` から設定を読む。
 //!
-//! Pterodactyl では egg 変数を追加する権限が無いことがあるので、ボリューム内のファイル
-//! (`$HOME/sorahost-http-proxy.env`、または `PROXY_ENV_FILE` で指定) に `KEY=VALUE` を
-//! 書けば同じ効果になる。実際の環境変数が優先で、ファイルはその補完。
+//! Pterodactyl では egg 変数を追加する権限が無いことがあるので、ボリューム直下の `.env` に
+//! `KEY=VALUE` を書けば同じ効果になる。実際の環境変数が優先で、ファイルはその補完。
 
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-
-const DEFAULT_NAME: &str = "sorahost-http-proxy.env";
 
 struct Loaded {
     path: Option<PathBuf>,
@@ -20,14 +17,9 @@ static LOADED: OnceLock<Loaded> = OnceLock::new();
 
 fn loaded() -> &'static Loaded {
     LOADED.get_or_init(|| {
-        let path = env::var_os("PROXY_ENV_FILE")
+        let path = env::var_os("HOME")
             .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                env::var_os("HOME")
-                    .filter(|v| !v.is_empty())
-                    .map(|h| PathBuf::from(h).join(DEFAULT_NAME))
-            });
+            .map(|h| PathBuf::from(h).join(".env"));
         match path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
             Some(text) => Loaded {
                 path,
@@ -75,19 +67,19 @@ pub fn parse(text: &str) -> HashMap<String, String> {
     out
 }
 
-/// 実際の環境変数 → env ファイルの順に探す。
+/// 実際の環境変数 → `$HOME/.env` の順に探す。
 pub fn var(key: &str) -> Option<String> {
     env::var(key)
         .ok()
         .or_else(|| loaded().vars.get(key).cloned())
 }
 
-/// 読み込んだ env ファイルのパス (無ければ `None`)。
+/// 読み込んだ `.env` のパス (無ければ `None`)。
 pub fn loaded_path() -> Option<&'static PathBuf> {
     loaded().path.as_ref()
 }
 
-/// env ファイルで与えられたキーの数 (ログ用)。
+/// `.env` で与えられたキーの数 (ログ用)。
 pub fn loaded_count() -> usize {
     loaded().vars.len()
 }

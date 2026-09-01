@@ -10,9 +10,11 @@ pub mod httpdate;
 pub mod log;
 pub mod metrics;
 pub mod net;
+pub mod origin;
 pub mod pool;
 pub mod signal;
 pub mod sysinfo;
+pub mod tls;
 pub mod tunnel;
 
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -24,6 +26,13 @@ use cache::Cache;
 use config::Config;
 use metrics::Metrics;
 use pool::Pool;
+use tls::TlsClient;
+
+/// オリジンへ向かう側の共有状態 (接続プールと TLS クライアント)。
+pub struct Upstream {
+    pub pool: Pool,
+    pub tls: Option<TlsClient>,
+}
 
 const FORBIDDEN_RESPONSE: &[u8] = b"HTTP/1.1 403 Forbidden\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
@@ -65,7 +74,7 @@ pub fn handle_client(
     config: Arc<Config>,
     metrics: Arc<Metrics>,
     cache: Arc<Cache>,
-    pool: Arc<Pool>,
+    upstream: Arc<Upstream>,
     conn_id: usize,
 ) -> io::Result<()> {
     let started = Instant::now();
@@ -211,8 +220,8 @@ pub fn handle_client(
         let target_host = if is_connect {
             target.clone()
         } else {
-            match http::parse_target(&target, host_header.as_deref()) {
-                Ok((h, _)) => h.to_string(),
+            match http::parse_origin(&target, host_header.as_deref()) {
+                Ok(o) => o.host_port,
                 Err(e) => {
                     log_warn!(Some(conn_id), "400 Bad Request: {}", e);
                     let _ = client.write_all(
@@ -252,7 +261,8 @@ pub fn handle_client(
             conn_id,
             metrics: &metrics,
             cache: &cache,
-            pool: &pool,
+            pool: &upstream.pool,
+            tls: upstream.tls.as_ref(),
         };
         let keep = http::handle_http_with_headers(
             &mut client,

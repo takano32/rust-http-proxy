@@ -406,7 +406,7 @@ impl Cache {
         if cache.cfg.pterodactyl && cache.cfg.disk_limit.is_auto() && !cache.quota.is_known() {
             log_warn!(
                 None,
-                "Pterodactyl detected but the disk allocation is unknown (Pterodactyl does not pass it to the container): disk cache capped at {} MiB with no reservation, because Wings kills the server as soon as the Disk Space allocation is exceeded; put SERVER_DISK=<allocation MB> (0 = unlimited, auto = trust df) in the environment or in $HOME/sorahost-http-proxy.env",
+                "Pterodactyl detected but the disk allocation is unknown (Pterodactyl does not pass it to the container): disk cache capped at {} MiB with no reservation, because Wings kills the server as soon as the Disk Space allocation is exceeded; put SERVER_DISK=<allocation MB> (0 = unlimited, auto = trust df) in the environment or in $HOME/.env",
                 config::PTERODACTYL_UNKNOWN_QUOTA_DISK / MIB
             );
             cache.disk.disable_reserve();

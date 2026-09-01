@@ -8,9 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sorahost_http_proxy::cache::{Cache, CacheConfig, MIB};
 use sorahost_http_proxy::config::Config;
-use sorahost_http_proxy::handle_client;
 use sorahost_http_proxy::metrics::Metrics;
 use sorahost_http_proxy::pool::Pool;
+use sorahost_http_proxy::tls::TlsClient;
+use sorahost_http_proxy::{Upstream, handle_client};
 
 type Handler = dyn Fn(&str, usize) -> Vec<u8> + Send + Sync;
 
@@ -73,12 +74,25 @@ fn start_test_proxy(config: Config) -> u16 {
 }
 
 fn start_test_proxy_with_cache(config: Config, cache_cfg: CacheConfig) -> u16 {
+    start_test_proxy_full(config, cache_cfg, None)
+}
+
+/// `ca_file` を渡すと、その証明書だけを信頼する TLS クライアント付きで起動する。
+fn start_test_proxy_full(
+    config: Config,
+    cache_cfg: CacheConfig,
+    ca_file: Option<std::path::PathBuf>,
+) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let cfg = Arc::new(config);
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(cache_cfg));
-    let pool = Arc::new(Pool::new(cfg.pool_per_host, Duration::from_secs(30)));
+    let tls = TlsClient::load(true, ca_file.as_deref()).ok().flatten();
+    let pool = Arc::new(Upstream {
+        pool: Pool::new(cfg.pool_per_host, Duration::from_secs(30)),
+        tls,
+    });
 
     thread::spawn(move || {
         for (conn_id, stream) in listener.incoming().flatten().enumerate() {
@@ -749,4 +763,114 @@ fn test_integration_unsafe_method_invalidates_cached_get() {
         after
     );
     assert_eq!(counter.load(Ordering::SeqCst), 3);
+}
+
+/// 自己署名証明書を作り、python の https サーバーを立てる。道具が無ければ None (テストはスキップ)。
+fn start_tls_origin(
+    dir: &std::path::Path,
+) -> Option<(u16, std::path::PathBuf, std::process::Child)> {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    std::fs::create_dir_all(dir.join("www")).ok()?;
+    std::fs::write(dir.join("www/hello.txt"), b"hello over tls").ok()?;
+    let cert = dir.join("cert.pem");
+    let key = dir.join("key.pem");
+    let ok = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-nodes",
+            "-keyout",
+            key.to_str()?,
+            "-out",
+            cert.to_str()?,
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=IP:127.0.0.1,DNS:localhost",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?
+        .success();
+    if !ok {
+        return None;
+    }
+    let script = format!(
+        "import http.server, ssl, functools, sys\n\
+         class H(http.server.SimpleHTTPRequestHandler):\n\
+             protocol_version = 'HTTP/1.1'\n\
+             def log_message(self, *a): pass\n\
+         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)\n\
+         ctx.load_cert_chain({cert:?}, {key:?})\n\
+         srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(H, directory={www:?}))\n\
+         srv.socket = ctx.wrap_socket(srv.socket, server_side=True)\n\
+         print(srv.server_address[1], flush=True)\n\
+         srv.serve_forever()\n",
+        cert = cert.to_str()?,
+        key = key.to_str()?,
+        www = dir.join("www").to_str()?,
+    );
+    let mut child = Command::new("python3")
+        .args(["-c", &script])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take()?)
+        .read_line(&mut line)
+        .ok()?;
+    let port: u16 = line.trim().parse().ok()?;
+    Some((port, cert, child))
+}
+
+#[test]
+fn test_integration_https_origin_is_fetched_and_cached() {
+    if TlsClient::load(true, None).ok().flatten().is_none() {
+        eprintln!("skipping: libssl not available");
+        return;
+    }
+    let dir = std::env::temp_dir().join("shp-it-tls");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((origin_port, cert, mut child)) = start_tls_origin(&dir) else {
+        eprintln!("skipping: openssl or python3 with ssl not available");
+        return;
+    };
+    // 自己署名の CA を信頼するプロキシ
+    let proxy_port =
+        start_test_proxy_full(proxy_config(), cache_cfg("shp-it-tls-cache"), Some(cert));
+    let mapped = format!("/https/127.0.0.1:{}/hello.txt", origin_port);
+
+    let first = get_via_proxy(proxy_port, &mapped, "proxy.local");
+    assert!(first.starts_with("HTTP/1.1 200 OK"), "{}", first);
+    assert!(first.ends_with("hello over tls"), "{}", first);
+    assert!(!first.contains("X-Cache"));
+
+    let second = get_via_proxy(proxy_port, &mapped, "proxy.local");
+    assert!(second.contains("X-Cache: HIT"), "{}", second);
+    assert!(second.ends_with("hello over tls"), "{}", second);
+
+    // 絶対形式でも同じキャッシュに当たる
+    let absolute = get_via_proxy(
+        proxy_port,
+        &format!("https://127.0.0.1:{}/hello.txt", origin_port),
+        &format!("127.0.0.1:{}", origin_port),
+    );
+    assert!(absolute.contains("X-Cache: HIT"), "{}", absolute);
+
+    // CA を渡さないプロキシは検証に失敗して 502
+    let strict_port = start_test_proxy_full(proxy_config(), cache_cfg("shp-it-tls-strict"), None);
+    let rejected = get_via_proxy(strict_port, &mapped, "proxy.local");
+    assert!(rejected.starts_with("HTTP/1.1 502"), "{}", rejected);
+
+    let _ = child.kill();
+    let _ = child.wait();
 }

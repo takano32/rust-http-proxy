@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::acl::AclConfig;
@@ -17,6 +18,12 @@ pub struct Config {
     pub keepalive: Duration,
     /// オリジンへのアイドル接続をホストごとに何本まで保持するか。0 で再利用しない
     pub pool_per_host: usize,
+    /// HTTPS のオリジンへ取得に行くか (システムの OpenSSL を使う)
+    pub tls_enabled: bool,
+    /// オリジンの証明書を検証するか
+    pub tls_verify: bool,
+    /// 追加の CA 証明書ファイル (PEM)。無ければシステムの CA ストア
+    pub tls_ca_file: Option<PathBuf>,
     pub cache: CacheConfig,
 }
 
@@ -48,6 +55,21 @@ impl Config {
         {
             cfg.pool_per_host = n;
         }
+        let off = |v: String| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
+        };
+        if let Some(v) = envfile::var("PROXY_TLS") {
+            cfg.tls_enabled = !off(v);
+        }
+        if let Some(v) = envfile::var("PROXY_TLS_VERIFY") {
+            cfg.tls_verify = !off(v);
+        }
+        if let Some(path) = envfile::var("PROXY_TLS_CA_FILE").filter(|p| !p.trim().is_empty()) {
+            cfg.tls_ca_file = Some(PathBuf::from(path.trim()));
+        }
         Ok(cfg.with_cache(CacheConfig::from_env()))
     }
 
@@ -74,6 +96,9 @@ impl Config {
             timeout,
             keepalive: Duration::from_secs(15),
             pool_per_host: 8,
+            tls_enabled: true,
+            tls_verify: true,
+            tls_ca_file: None,
             cache: CacheConfig::default(),
         })
     }

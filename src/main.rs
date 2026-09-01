@@ -13,6 +13,8 @@ use sorahost_http_proxy::metrics::Metrics;
 use sorahost_http_proxy::net;
 use sorahost_http_proxy::pool::Pool;
 use sorahost_http_proxy::signal;
+use sorahost_http_proxy::tls::TlsClient;
+use sorahost_http_proxy::{Upstream, log_warn};
 use sorahost_http_proxy::{log_debug, log_error, log_info};
 
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -42,7 +44,45 @@ fn main() {
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
-    let pool = Arc::new(Pool::new(config.pool_per_host, ORIGIN_IDLE));
+    let tls = if !config.tls_enabled {
+        log_info!(
+            None,
+            "TLS: disabled (PROXY_TLS=off); https:// origins are unavailable"
+        );
+        None
+    } else {
+        match TlsClient::load(config.tls_verify, config.tls_ca_file.as_deref()) {
+            Ok(Some(t)) => {
+                log_info!(
+                    None,
+                    "TLS: {} (certificate verification {}{})",
+                    t.version(),
+                    if t.verifies() { "on" } else { "OFF" },
+                    config
+                        .tls_ca_file
+                        .as_ref()
+                        .map(|p| format!(", CA file {}", p.display()))
+                        .unwrap_or_default()
+                );
+                Some(t)
+            }
+            Ok(None) => {
+                log_warn!(
+                    None,
+                    "TLS: libssl not found; https:// origins are unavailable"
+                );
+                None
+            }
+            Err(e) => {
+                log_error!(None, "TLS setup failed: {}", e);
+                process::exit(1);
+            }
+        }
+    };
+    let pool = Arc::new(Upstream {
+        pool: Pool::new(config.pool_per_host, ORIGIN_IDLE),
+        tls,
+    });
     if config.cache.enabled && config.cache.reserve {
         // 停止シグナルで ballast.reserve を空にしてから終わる (Wings のディスク計測に残さない)
         signal::install(&cache.ballast_path());
@@ -130,7 +170,7 @@ fn serve(
     config: Arc<Config>,
     metrics: Arc<Metrics>,
     cache: Arc<Cache>,
-    pool: Arc<Pool>,
+    pool: Arc<Upstream>,
 ) {
     for stream in listener.incoming() {
         match stream {

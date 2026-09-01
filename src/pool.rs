@@ -1,16 +1,18 @@
 //! オリジンへの接続プール (keep-alive の再利用)。
 //!
-//! ホスト (`host:port`) ごとにアイドル接続を保持し、再利用前に生存確認をする。
+//! 上流 (`scheme://host:port`) ごとにアイドル接続を保持し、再利用前に生存確認をする。
 //! 最後に返された接続から使う (LIFO) ので、古い接続は自然に期限切れで捨てられる。
 
 use std::collections::{HashMap, VecDeque};
 use std::io::BufReader;
 use std::net::TcpStream;
+
+use crate::origin::OriginStream;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 struct Idle {
-    stream: BufReader<TcpStream>,
+    stream: BufReader<OriginStream>,
     since: Instant,
 }
 
@@ -34,7 +36,7 @@ impl Pool {
     }
 
     /// 使えるアイドル接続があれば取り出す。
-    pub fn get(&self, host: &str) -> Option<BufReader<TcpStream>> {
+    pub fn get(&self, host: &str) -> Option<BufReader<OriginStream>> {
         if !self.enabled() {
             return None;
         }
@@ -48,7 +50,8 @@ impl Pool {
                 }
                 c?
             };
-            if candidate.since.elapsed() < self.idle_timeout && is_alive(candidate.stream.get_ref())
+            if candidate.since.elapsed() < self.idle_timeout
+                && is_alive(candidate.stream.get_ref().tcp())
             {
                 return Some(candidate.stream);
             }
@@ -56,7 +59,7 @@ impl Pool {
     }
 
     /// 応答を読み切った接続を戻す。読み残しがあるものは捨てる。
-    pub fn put(&self, host: &str, stream: BufReader<TcpStream>) {
+    pub fn put(&self, host: &str, stream: BufReader<OriginStream>) {
         if !self.enabled() || !stream.buffer().is_empty() {
             return;
         }
@@ -117,14 +120,14 @@ mod tests {
     fn reuses_live_connections_and_drops_dead_ones() {
         let pool = Pool::new(2, Duration::from_secs(5));
         let (c1, s1) = pair();
-        pool.put("h", BufReader::new(c1));
+        pool.put("h", BufReader::new(OriginStream::Plain(c1)));
         assert_eq!(pool.idle_count(), 1);
         assert!(pool.get("h").is_some());
         assert!(pool.get("h").is_none());
         drop(s1);
 
         let (c2, s2) = pair();
-        pool.put("h", BufReader::new(c2));
+        pool.put("h", BufReader::new(OriginStream::Plain(c2)));
         drop(s2); // 相手が閉じた
         std::thread::sleep(Duration::from_millis(50));
         assert!(pool.get("h").is_none(), "dead connection is discarded");
@@ -134,7 +137,7 @@ mod tests {
     fn stray_bytes_make_a_connection_unusable() {
         let pool = Pool::new(2, Duration::from_secs(5));
         let (c, mut s) = pair();
-        pool.put("h", BufReader::new(c));
+        pool.put("h", BufReader::new(OriginStream::Plain(c)));
         s.write_all(b"junk").unwrap();
         std::thread::sleep(Duration::from_millis(50));
         assert!(pool.get("h").is_none());
@@ -145,15 +148,15 @@ mod tests {
         let pool = Pool::new(1, Duration::from_millis(30));
         let (c1, _s1) = pair();
         let (c2, _s2) = pair();
-        pool.put("h", BufReader::new(c1));
-        pool.put("h", BufReader::new(c2));
+        pool.put("h", BufReader::new(OriginStream::Plain(c1)));
+        pool.put("h", BufReader::new(OriginStream::Plain(c2)));
         assert_eq!(pool.idle_count(), 1, "max per host");
         std::thread::sleep(Duration::from_millis(60));
         pool.sweep();
         assert_eq!(pool.idle_count(), 0);
         let disabled = Pool::new(0, Duration::from_secs(1));
         let (c3, _s3) = pair();
-        disabled.put("h", BufReader::new(c3));
+        disabled.put("h", BufReader::new(OriginStream::Plain(c3)));
         assert!(!disabled.enabled() && disabled.get("h").is_none());
     }
 }
