@@ -166,6 +166,8 @@ pub struct CacheConfig {
     pub mem_alloc: Option<u64>,
     /// Pterodactyl (Wings) 配下で動いているか (`P_SERVER_UUID` の有無)。
     pub pterodactyl: bool,
+    /// 割当が分からないとき、Wings の挙動から割当を探る (`PROXY_DISK_PROBE`)。
+    pub disk_probe: bool,
 }
 
 impl Default for CacheConfig {
@@ -194,6 +196,7 @@ impl Default for CacheConfig {
             quota_root: None,
             mem_alloc: None,
             pterodactyl: false,
+            disk_probe: true,
         }
     }
 }
@@ -288,6 +291,7 @@ impl CacheConfig {
                 .filter(|&v| v > 0)
                 .map(|v| v.saturating_mul(MIB)),
             pterodactyl,
+            disk_probe: flag("PROXY_DISK_PROBE", true),
         }
     }
 
@@ -323,9 +327,13 @@ impl CacheConfig {
 /// 2 を最優先にする。
 pub fn resolve_default_dir(pterodactyl: bool) -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(xdg) = env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
+    let home = env::var_os("HOME").filter(|v| !v.is_empty());
+    // Pterodactyl では残るのはボリューム ($HOME) だけなので、イメージが XDG_CACHE_HOME を
+    // どこかに向けていても無視する
+    let xdg = env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty() && !pterodactyl);
+    if let Some(xdg) = xdg {
         candidates.push(PathBuf::from(xdg).join("sorahost-http-proxy"));
-    } else if let Some(home) = env::var_os("HOME").filter(|v| !v.is_empty()) {
+    } else if let Some(home) = home {
         candidates.push(PathBuf::from(home).join(".cache/sorahost-http-proxy"));
     }
     if cfg!(unix) {

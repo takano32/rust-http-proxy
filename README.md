@@ -70,6 +70,7 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 | `PROXY_CACHE_RESERVE` | `true` | 予算の未使用分を先行確保 (バラスト) するか。`0` / `false` / `off` / `no` で上限管理のみにする |
 | `PROXY_CACHE_PROBE_SECS` | `1` | 使用量を測り直して予算を更新する間隔 (秒)。`0` で起動時の 1 回だけ |
 | `PROXY_DISK_QUOTA_ROOT` | `$HOME` | ディスク割当が適用されるディレクトリ (Pterodactyl では `/home/container`) |
+| `PROXY_DISK_PROBE` | `on` | 割当が分からないとき Wings の挙動から割当を探るか (後述)。`off` なら 512 MiB 固定 |
 | `PROXY_CACHE_DIR` | 自動選択 (後述) | ディスクキャッシュ格納先 |
 | `PROXY_CACHE_TTL_SECS` | `300` | `Cache-Control` も `Last-Modified` も無い場合の TTL（秒）。経験則 TTL の下限でもある |
 | `PROXY_CACHE_HEURISTIC_PERCENT` | `10` | `Last-Modified` からの経過時間のこの割合を TTL にする (RFC 9111 4.2.2)。`0` で無効 |
@@ -229,7 +230,15 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
   `{{server.build.disk_space}}` を書き出せる環境なら、それを起動スクリプトで環境変数に渡す手もあります
 - **未設定でも自動判断します**: `df -B1 /home/container` 相当 (statvfs) が `/` と別のファイルシステムで、かつ `/` より
   小さければ、それを割当とみなして使います (ボリュームが別ディスクにあるだけのホストで、そのディスク丸ごとを割当と
-  誤認しないための条件)。条件に合わなければ 512 MiB 上限に留め、起動ログに理由を出します
+  誤認しないための条件)。条件に合わなければ、**Wings の挙動から割当を探ります**:
+  - 実データの上限は最初 512 MiB。そこまで埋まったら 10 分ごとに上限を 25% ずつ上げ、増えた分はバラスト (fallocate)
+    だけで埋めます (実データは確認済みの上限まで)
+  - 10 分止められなければその上限を確認済みにして次へ。もし Wings が割当超過で止めたら、停止シグナルでバラストを
+    切り詰めるので使用量は確認済みの上限以下に戻り、そのまま再起動できます。再起動時に「上げた直後に途切れた」と
+    分かるので、確認済みの値を割当として記憶して以後 7 日は探りません
+  - つまり最悪 1 回だけ Wings に止められて再起動が必要になりますが、以降は無設定で割当いっぱいまで使います。
+    状態は `/home/container/.sorahost-http-proxy.state` に残ります。`PROXY_DISK_PROBE=off` で探索を止められます
+    (その場合は 512 MiB 固定)。割当が分かっているなら `.env` に `SERVER_DISK` を書く方が早いです
 - `SERVER_DISK=auto` を明示すると、`df -B1 /home/container` 相当 (statvfs) の total を割当として使います。
   これが正しいのは、ホストが XFS のプロジェクトクォータや ZFS データセットなどでサーバーごとに領域を切っていて、
   `df` の total がパネルの Disk Space と一致する場合だけです。単なる bind mount ではホストのディスク全体が

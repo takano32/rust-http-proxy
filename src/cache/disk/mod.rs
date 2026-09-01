@@ -82,7 +82,10 @@ pub struct DiskTier {
     dir: PathBuf,
     ready: AtomicBool,
     index: Mutex<Store<DiskEntry>>,
+    /// エントリ + バラストの上限
     capacity: AtomicU64,
+    /// エントリだけの上限 (割当の探索中は capacity より小さい)
+    entry_capacity: AtomicU64,
     ballast: Mutex<Ballast>,
     ballast_bytes: AtomicU64,
     reserve: bool,
@@ -108,6 +111,7 @@ impl DiskTier {
             ready: AtomicBool::new(false),
             index: Mutex::new(Store::default()),
             capacity: AtomicU64::new(0),
+            entry_capacity: AtomicU64::new(0),
             ballast: Mutex::new(Ballast {
                 file: None,
                 bytes: 0,
@@ -142,8 +146,20 @@ impl DiskTier {
         self.capacity.load(Ordering::Relaxed)
     }
 
+    /// 全体 (エントリ + バラスト) の上限。エントリの上限も同じ値にする。
     pub fn set_capacity(&self, bytes: u64) {
         self.capacity.store(bytes, Ordering::Relaxed);
+        self.entry_capacity.store(bytes, Ordering::Relaxed);
+    }
+
+    /// エントリだけの上限を全体より小さくする (増えた分はバラストだけで埋める)。
+    pub fn set_entry_capacity(&self, bytes: u64) {
+        self.entry_capacity
+            .store(bytes.min(self.capacity()), Ordering::Relaxed);
+    }
+
+    pub fn entry_capacity(&self) -> u64 {
+        self.entry_capacity.load(Ordering::Relaxed)
     }
 
     /// (エントリ合計バイト, 件数)
@@ -164,9 +180,11 @@ impl DiskTier {
             .saturating_add(self.ballast_bytes())
     }
 
-    /// 上限までの空き (エントリ・書き込み中・バラストを除いた分)。
+    /// エントリの上限までの空き (エントリと書き込み中の分を除く)。
     pub fn free_room(&self) -> u64 {
-        self.capacity().saturating_sub(self.owned())
+        self.entry_capacity()
+            .saturating_sub(self.usage().0)
+            .saturating_sub(self.in_flight_bytes())
     }
 
     pub fn reserve_active(&self) -> bool {
@@ -408,11 +426,12 @@ impl DiskTier {
         if over > 0 {
             self.shrink_ballast(over);
         }
+        let entry_capacity = self.entry_capacity();
         let mut evicted = 0;
         loop {
             let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
             let used = index.bytes().saturating_add(self.in_flight_bytes());
-            if used.saturating_add(extra) <= capacity {
+            if used.saturating_add(extra) <= entry_capacity {
                 break;
             }
             let Some((key, e)) = index.pop_lru() else {

@@ -56,7 +56,7 @@ impl<'a> DiskWriter<'a> {
         }
         // 長さの分からない本文は予算の 1/4 までに抑え、1 本のダウンロードで L2 を空にしないようにする
         let max_object = if expected.is_none() {
-            max_object.min(tier.capacity() / 4)
+            max_object.min(tier.entry_capacity() / 4)
         } else {
             max_object
         };
@@ -88,7 +88,7 @@ impl<'a> DiskWriter<'a> {
         if needed <= self.room {
             return Ok(());
         }
-        if needed > self.max_object || needed > self.tier.capacity() {
+        if needed > self.max_object || needed > self.tier.entry_capacity() {
             return Err(io::Error::new(
                 io::ErrorKind::FileTooLarge,
                 "object exceeds the disk cache limit",
@@ -103,7 +103,7 @@ impl<'a> DiskWriter<'a> {
             .0
             .saturating_add(self.tier.in_flight_bytes())
             .saturating_add(extra)
-            > self.tier.capacity()
+            > self.tier.entry_capacity()
         {
             return Err(io::Error::new(
                 io::ErrorKind::FileTooLarge,

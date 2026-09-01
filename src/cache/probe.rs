@@ -210,10 +210,32 @@ impl Cache {
             },
         };
 
+        // 割当の探索中は、実データの上限 (confirmed) と全体の上限 (cap) が分かれる
+        let mut entry_cap: Option<u64> = None;
         let (disk_cap, disk_detail) = if !self.disk.is_ready() {
             (0, None)
         } else if unknown_quota {
-            (PTERODACTYL_UNKNOWN_QUOTA_DISK, None)
+            let mut probe = self.disk_probe.lock().unwrap_or_else(|p| p.into_inner());
+            match probe.as_mut() {
+                Some(pr) => {
+                    let (confirmed, cap) = pr.tick(now_epoch(), self.disk.usage().0);
+                    entry_cap = Some(confirmed);
+                    let mut cap = cap;
+                    // 実際のファイルシステムの空きは超えられない
+                    if let Some(real) = sysinfo::fs_info(self.disk.dir()) {
+                        let real_keep =
+                            margins.disk.keep_free(floor_for(real.total, DISK_FLOOR), 0);
+                        cap = cap.min(budget::disk_budget(
+                            self.disk.owned(),
+                            &real,
+                            100,
+                            real_keep,
+                        ));
+                    }
+                    (cap, Some(("probed allocation", 0.0)))
+                }
+                None => (PTERODACTYL_UNKNOWN_QUOTA_DISK, None),
+            }
         } else {
             match self.cfg.disk_limit {
                 Limit::Fixed(b) => (b, None),
@@ -272,6 +294,9 @@ impl Cache {
         self.announce("disk", self.disk.capacity(), disk_cap, disk_detail);
         self.mem.set_capacity(mem_cap);
         self.disk.set_capacity(disk_cap);
+        if let Some(e) = entry_cap {
+            self.disk.set_entry_capacity(e);
+        }
 
         let pressure = snap.mem.as_ref().is_some_and(|m| m.under_pressure());
         if pressure {
@@ -299,7 +324,13 @@ impl Cache {
         let diff = old.abs_diff(new);
         let significant = old == 0 || (diff * 20 > old && diff >= 64 * MIB);
         let detail = usage
-            .map(|(what, pct)| format!(" ({} {:.1}% used)", what, pct))
+            .map(|(what, pct)| {
+                if pct > 0.0 {
+                    format!(" ({} {:.1}% used)", what, pct)
+                } else {
+                    format!(" ({})", what)
+                }
+            })
             .unwrap_or_default();
         let msg = format!(
             "{} cache budget: {} MiB -> {} MiB{}",
