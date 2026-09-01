@@ -1,4 +1,5 @@
 pub mod config;
+pub mod headers;
 pub mod http;
 pub mod tunnel;
 
@@ -7,6 +8,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 pub fn handle_client(client: TcpStream, conn_id: usize) -> io::Result<()> {
+    let peer_addr = client.peer_addr().ok();
     client.set_read_timeout(Some(Duration::from_secs(30)))?;
     client.set_write_timeout(Some(Duration::from_secs(30)))?;
 
@@ -27,7 +29,7 @@ pub fn handle_client(client: TcpStream, conn_id: usize) -> io::Result<()> {
     if method.eq_ignore_ascii_case("CONNECT") {
         tunnel::handle_connect(client, target, conn_id)?;
     } else {
-        http::handle_http(client, request_line, reader, conn_id)?;
+        http::handle_http(client, peer_addr, request_line, reader, conn_id)?;
     }
 
     Ok(())

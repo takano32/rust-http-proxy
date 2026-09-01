@@ -1,13 +1,16 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
+
+use crate::headers;
 
 pub fn handle_http(
     mut client: TcpStream,
+    peer_addr: Option<SocketAddr>,
     request_line: String,
     mut reader: BufReader<TcpStream>,
     conn_id: usize,
 ) -> io::Result<()> {
-    let mut headers = Vec::new();
+    let mut raw_headers = Vec::new();
     let mut host_header = None;
     let mut content_length: Option<usize> = None;
     let mut is_chunked = false;
@@ -31,11 +34,9 @@ pub fn handle_http(
                 content_length = v_trim.parse().ok();
             } else if k_lower == "transfer-encoding" && v_trim.eq_ignore_ascii_case("chunked") {
                 is_chunked = true;
-            } else if k_lower == "proxy-connection" {
-                continue;
             }
         }
-        headers.push(line);
+        raw_headers.push(line);
     }
 
     let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
@@ -67,7 +68,8 @@ pub fn handle_http(
     let forward_request_line = format!("{} {} {}\r\n", method, path, version);
     server.write_all(forward_request_line.as_bytes())?;
 
-    for h in headers {
+    let sanitized_headers = headers::sanitize_and_inject_headers(&raw_headers, peer_addr);
+    for h in sanitized_headers {
         server.write_all(h.as_bytes())?;
     }
     server.write_all(b"\r\n")?;
