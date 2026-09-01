@@ -558,18 +558,43 @@ fn quota_mode_budgets_against_allocation_minus_others_and_margin() {
     assert!(json.contains("\"keep_free_bytes\":10485760"), "{}", json);
 }
 
-#[cfg(target_os = "linux")]
 #[test]
-fn pterodactyl_without_quota_uses_host_filesystem() {
+fn pterodactyl_without_quota_is_capped_and_never_reserves() {
     let cfg = CacheConfig {
         disk_limit: Limit::Auto { percent: 100 },
         pterodactyl: true,
-        ..CacheConfig::fixed(MIB, 0, test_dir("shp-test-ptero-hostfs"))
+        reserve: true,
+        ..CacheConfig::fixed(MIB, 0, test_dir("shp-test-ptero-unknown"))
     };
     let cache = Cache::new(cfg);
-    let snap = cache.snapshot();
-    assert!(snap.fs.is_some(), "host filesystem is measured");
-    assert!(snap.disk_keep_free > 0);
+    assert_eq!(
+        cache.disk_capacity(),
+        super::config::PTERODACTYL_UNKNOWN_QUOTA_DISK
+    );
+    assert!(
+        !cache.disk.reserve_active(),
+        "no disk ballast without a known quota"
+    );
+    assert!(
+        cache.snapshot().fs.is_none(),
+        "host filesystem is not used as the denominator"
+    );
+    cache.probe_tick();
+    assert_eq!(
+        cache.disk_capacity(),
+        super::config::PTERODACTYL_UNKNOWN_QUOTA_DISK
+    );
+    assert_eq!(cache.disk_reserved(), 0);
+
+    // 割当が分かれば (0 = 無制限でも) 通常どおり
+    let cfg = CacheConfig {
+        disk_limit: Limit::Auto { percent: 100 },
+        pterodactyl: true,
+        disk_quota_set: true,
+        ..CacheConfig::fixed(MIB, 0, test_dir("shp-test-ptero-known"))
+    };
+    let cache = Cache::new(cfg);
+    assert!(cache.snapshot().fs.is_some() || cache.disk_capacity() == super::config::FALLBACK_DISK);
 }
 
 #[cfg(target_os = "linux")]

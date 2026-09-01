@@ -42,7 +42,7 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 | `SERVER_PORT` | `8080` | プロキシが待受を行うポート番号 (Pterodactyl が自動設定) |
 | `PROXY_BIND` | 自動 (`::` + `0.0.0.0`) | 待ち受けアドレスのカンマ区切りリスト (例: `127.0.0.1,[::1]`)。未設定ならデュアルスタックで自動 |
 | `SERVER_MEMORY` | なし | コンテナのメモリ割当 (MB)。Pterodactyl が自動設定し、メモリキャッシュの上限として尊重される |
-| `PROXY_DISK_QUOTA_MB` (別名 `SERVER_DISK`) | なし | コンテナのディスク割当 (MB)。**Pterodactyl はこれを渡してくれない**ので、egg 変数としてパネルの Disk Space と同じ値を設定する。`0` は無制限 |
+| `PROXY_DISK_QUOTA_MB` (別名 `SERVER_DISK`) | なし | コンテナのディスク割当 (MB)。**Pterodactyl はこれを渡してくれない**ので、egg 変数としてパネルの Disk Space と同じ値を設定する。`0` は無制限。Pterodactyl で未設定ならディスクキャッシュは 512 MiB 固定・先行確保なし |
 | `PROXY_ALLOW_HOSTS` | なし (全許可) | 接続許可ホストのカンマ区切りリスト (例: `*.example.com,api.github.com`) |
 | `PROXY_DENY_HOSTS` | なし | 接続拒否ホストのカンマ区切りリスト (例: `bad.com,*.blocked.org`) |
 | `PROXY_TIMEOUT_SECS` | `30` | 接続およびデータ転送タイムアウト（秒） |
@@ -171,10 +171,14 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 
 - メモリは cgroup と `SERVER_MEMORY` の両方で上限が決まるので追加設定は不要です。コンテナ内の `/proc/meminfo` は
   ホスト全体を示しますが、実際に効くのは cgroup 側の予算です
-- **ディスク割当は Pterodactyl がコンテナに渡してくれません。** Wings は `/home/container` の合計サイズで割当を強制し、
-  超過すると次回起動できなくなります。egg 変数 `PROXY_DISK_QUOTA_MB` (または `SERVER_DISK`) を用意し、
-  サーバーの Disk Space (MB) と同じ値にしてください。無制限なら `0`。未設定だとホストのファイルシステム全体を
-  分母にするので、割当が有限なら超過する可能性があります (起動時に警告します)
+- **ディスク割当は Pterodactyl がコンテナに渡してくれません。** Wings は `/home/container` の合計サイズを監視していて、
+  割当を超えると **即座にプロセスを停止し** (`Server is exceeding the assigned disk space limit, stopping process now`)、
+  減らすまで起動もできません。egg 変数 `PROXY_DISK_QUOTA_MB` (または `SERVER_DISK`) を用意し、サーバーの
+  Disk Space (MB) と同じ値にしてください。無制限なら `0`。**未設定のときはディスクキャッシュを 512 MiB 固定・
+  先行確保なしに抑えます** (起動時に警告します)。egg の Configuration Files 機能で
+  `{{server.build.disk_space}}` を書き出せる環境なら、それを起動スクリプトで環境変数に渡す手もあります
+- 超過で止められてしまったら、ファイルマネージャか SFTP で `/home/container/.cache/sorahost-http-proxy/`
+  (特に `ballast.reserve`) を削除すれば起動できます
 - 既定のキャッシュ先は `/home/container/.cache/sorahost-http-proxy` (ボリューム内なので再起動後も残る)
 
 ## ビルド・テスト

@@ -13,6 +13,9 @@ pub const DEFAULT_TARGET_PERCENT: u8 = 100;
 /// 自動モードが使えない環境 (Linux 以外など) で使う固定上限。
 pub const FALLBACK_MEM: u64 = 200 * MIB;
 pub const FALLBACK_DISK: u64 = 2048 * MIB;
+/// Pterodactyl でディスク割当が分からないときの上限。Wings は割当超過を検知すると
+/// 即座にプロセスを停止するので、割当を教えてもらうまでは小さく抑える。
+pub const PTERODACTYL_UNKNOWN_QUOTA_DISK: u64 = 512 * MIB;
 
 /// 各層の上限の指定方法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

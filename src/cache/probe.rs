@@ -9,7 +9,7 @@ use std::sync::{Arc, Weak};
 use std::thread::{self, JoinHandle};
 
 use super::budget::{self, Probe, percent_of};
-use super::config::{FALLBACK_DISK, FALLBACK_MEM, Limit, MIB};
+use super::config::{FALLBACK_DISK, FALLBACK_MEM, Limit, MIB, PTERODACTYL_UNKNOWN_QUOTA_DISK};
 use super::{Cache, now_epoch};
 use crate::sysinfo;
 use crate::{log_debug, log_info, log_warn};
@@ -126,7 +126,10 @@ impl Cache {
             .cfg
             .disk_quota
             .map(|q| (q, self.other_disk_usage.load(Ordering::Relaxed)));
-        let want_fs = self.cfg.disk_limit.is_auto() && self.disk.is_ready();
+        // Pterodactyl で割当が分からなければホスト FS は見ず、固定の小さな上限にする
+        let unknown_quota =
+            self.cfg.pterodactyl && self.cfg.disk_limit.is_auto() && !self.cfg.disk_quota_set;
+        let want_fs = self.cfg.disk_limit.is_auto() && self.disk.is_ready() && !unknown_quota;
         let mut snap = budget::take(&Probe {
             dir: self.disk.dir(),
             want_mem,
@@ -197,6 +200,8 @@ impl Cache {
 
         let (disk_cap, disk_detail) = if !self.disk.is_ready() {
             (0, None)
+        } else if unknown_quota {
+            (PTERODACTYL_UNKNOWN_QUOTA_DISK, None)
         } else {
             match self.cfg.disk_limit {
                 Limit::Fixed(b) => (b, None),

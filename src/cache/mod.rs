@@ -359,8 +359,10 @@ impl Cache {
         if cache.cfg.pterodactyl && cache.cfg.disk_limit.is_auto() && !cache.cfg.disk_quota_set {
             log_warn!(
                 None,
-                "Pterodactyl detected but the disk allocation is unknown (Pterodactyl does not pass it to the container): sizing the disk cache against the host filesystem, which can exceed the server's Disk Space and block the next start; set PROXY_DISK_QUOTA_MB (or SERVER_DISK) to the allocation in MB, or 0 if unlimited"
+                "Pterodactyl detected but the disk allocation is unknown (Pterodactyl does not pass it to the container): disk cache capped at {} MiB with no reservation, because Wings kills the server as soon as the Disk Space allocation is exceeded; set PROXY_DISK_QUOTA_MB (or SERVER_DISK) to the allocation in MB (0 = unlimited) to use it fully",
+                config::PTERODACTYL_UNKNOWN_QUOTA_DISK / MIB
             );
+            cache.disk.disable_reserve();
         }
 
         cache.refresh_other_disk_usage();
