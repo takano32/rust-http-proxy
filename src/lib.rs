@@ -1,5 +1,4 @@
 pub mod acl;
-pub mod auth;
 pub mod config;
 pub mod headers;
 pub mod http;
@@ -12,13 +11,6 @@ use std::sync::Arc;
 
 use config::Config;
 use metrics::Metrics;
-
-const AUTH_REQUIRED_RESPONSE: &[u8] = b"HTTP/1.1 407 Proxy Authentication Required\r\n\
-Proxy-Authenticate: Basic realm=\"sorahost-http-proxy\"\r\n\
-Content-Type: text/plain; charset=utf-8\r\n\
-Content-Length: 30\r\n\
-\r\n\
-407 Proxy Authentication Required";
 
 const FORBIDDEN_RESPONSE: &[u8] = b"HTTP/1.1 403 Forbidden\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
@@ -80,7 +72,6 @@ pub fn handle_client(
     }
 
     let mut raw_headers = Vec::new();
-    let mut proxy_auth_header = None;
     let mut host_header = None;
 
     loop {
@@ -95,24 +86,14 @@ pub fn handle_client(
 
         if let Some((k, v)) = line.split_once(':') {
             let k_lower = k.trim().to_ascii_lowercase();
-            if k_lower == "proxy-authorization" {
-                proxy_auth_header = Some(v.trim().to_string());
-            } else if k_lower == "host" {
+            if k_lower == "host" {
                 host_header = Some(v.trim().to_string());
             }
         }
         raw_headers.push(line);
     }
 
-    // 1. Auth check
-    if config.auth.is_enabled() && !config.auth.validate(proxy_auth_header.as_deref()) {
-        println!("[Conn #{}] 407 Unauthorized (Auth failed)", conn_id);
-        client.write_all(AUTH_REQUIRED_RESPONSE)?;
-        client.flush()?;
-        return Ok(());
-    }
-
-    // 2. ACL / Host Check
+    // ACL / Host Check
     let target_host = if method.eq_ignore_ascii_case("CONNECT") {
         target
     } else {
@@ -132,7 +113,7 @@ pub fn handle_client(
         return Ok(());
     }
 
-    // 3. Forward or Tunnel
+    // Forward or Tunnel
     if method.eq_ignore_ascii_case("CONNECT") {
         tunnel::handle_connect(client, target, config.timeout, conn_id)?;
     } else {

@@ -31,9 +31,6 @@ fn main() {
     let metrics = Arc::new(Metrics::new());
 
     println!("HTTP/HTTPS Proxy listening on {}", config.bind_addr);
-    if config.auth.is_enabled() {
-        println!("Proxy authentication is ENABLED");
-    }
     if !config.acl.allow_hosts.is_empty() {
         println!("Allowed hosts: {:?}", config.acl.allow_hosts);
     }

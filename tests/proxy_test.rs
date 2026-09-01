@@ -59,10 +59,10 @@ fn start_test_proxy(config: Config) -> u16 {
 #[test]
 fn test_integration_http_forwarding() {
     let (origin_port, _origin_handle) = start_mock_origin();
-    let config = Config::new("0", None, None, None, Duration::from_secs(5)).unwrap();
+    let config = Config::new("0", None, None, Duration::from_secs(5)).unwrap();
     let proxy_port = start_test_proxy(config);
 
-    // Send HTTP proxy request
+    // Send HTTP proxy request without any authentication
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
     let req = format!(
         "GET http://127.0.0.1:{}/test HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
@@ -78,19 +78,17 @@ fn test_integration_http_forwarding() {
 }
 
 #[test]
-fn test_integration_auth_and_acl() {
+fn test_integration_acl_denied() {
     let (origin_port, _origin_handle) = start_mock_origin();
     let config = Config::new(
         "0",
-        Some("user:pass".to_string()),
-        Some("127.0.0.1"),
-        Some("blocked.com"),
+        None,
+        Some("blocked.com, 127.0.0.1"),
         Duration::from_secs(5),
     )
     .unwrap();
     let proxy_port = start_test_proxy(config);
 
-    // 1. Without auth -> 407
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
     let req = format!(
         "GET http://127.0.0.1:{}/test HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
@@ -99,25 +97,12 @@ fn test_integration_auth_and_acl() {
     stream.write_all(req.as_bytes()).unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
-    assert!(response.starts_with("HTTP/1.1 407 Proxy Authentication Required"));
-
-    // 2. With auth -> 200
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    // base64("user:pass") = "dXNlcjpwYXNz"
-    let req = format!(
-        "GET http://127.0.0.1:{}/test HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nProxy-Authorization: Basic dXNlcjpwYXNz\r\n\r\n",
-        origin_port, origin_port
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
-    assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert!(response.contains("hello from mock origin"));
+    assert!(response.starts_with("HTTP/1.1 403 Forbidden"));
 }
 
 #[test]
 fn test_integration_healthz() {
-    let config = Config::new("0", None, None, None, Duration::from_secs(5)).unwrap();
+    let config = Config::new("0", None, None, Duration::from_secs(5)).unwrap();
     let proxy_port = start_test_proxy(config);
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
