@@ -1,11 +1,15 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
+use crate::cache::Cache;
+
 pub struct Metrics {
     pub start_time: Instant,
     pub total_requests: AtomicU64,
     pub active_connections: AtomicUsize,
     pub bytes_forwarded: AtomicU64,
+    pub cache_hits: AtomicU64,
+    pub cache_misses: AtomicU64,
 }
 
 impl Metrics {
@@ -15,6 +19,8 @@ impl Metrics {
             total_requests: AtomicU64::new(0),
             active_connections: AtomicUsize::new(0),
             bytes_forwarded: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
         }
     }
 
@@ -34,15 +40,44 @@ impl Metrics {
         self.bytes_forwarded.fetch_add(bytes, Ordering::Relaxed);
     }
 
+    pub fn inc_cache_hit(&self) {
+        self.cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_cache_miss(&self) {
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn to_json(&self) -> String {
+        self.to_json_with_cache(None)
+    }
+
+    /// キャッシュ統計を含めた `/status` 用 JSON を生成する。
+    pub fn to_json_with_cache(&self, cache: Option<&Cache>) -> String {
         let uptime = self.start_time.elapsed().as_secs();
         let requests = self.total_requests.load(Ordering::Relaxed);
         let active = self.active_connections.load(Ordering::Relaxed);
         let bytes = self.bytes_forwarded.load(Ordering::Relaxed);
 
+        let cache_json = match cache {
+            Some(c) => c.to_json(),
+            None => "null".to_string(),
+        };
+
         format!(
-            "{{\"status\":\"ok\",\"uptime_secs\":{},\"total_requests\":{},\"active_connections\":{},\"bytes_forwarded\":{}}}",
-            uptime, requests, active, bytes
+            concat!(
+                "{{\"status\":\"ok\",\"uptime_secs\":{},\"total_requests\":{},",
+                "\"active_connections\":{},\"bytes_forwarded\":{},",
+                "\"cache_hits\":{},\"cache_misses\":{},\"log_level\":\"{}\",\"cache\":{}}}"
+            ),
+            uptime,
+            requests,
+            active,
+            bytes,
+            self.cache_hits.load(Ordering::Relaxed),
+            self.cache_misses.load(Ordering::Relaxed),
+            crate::log::current_level().as_str().trim(),
+            cache_json
         )
     }
 }
@@ -69,6 +104,13 @@ mod tests {
         assert!(json.contains("\"total_requests\":1"));
         assert!(json.contains("\"active_connections\":1"));
         assert!(json.contains("\"bytes_forwarded\":1024"));
+
+        metrics.inc_cache_hit();
+        metrics.inc_cache_miss();
+        let json_c = metrics.to_json();
+        assert!(json_c.contains("\"cache_hits\":1"));
+        assert!(json_c.contains("\"cache_misses\":1"));
+        assert!(json_c.contains("\"cache\":null"));
 
         metrics.dec_active_conn();
         let json2 = metrics.to_json();

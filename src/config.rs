@@ -3,12 +3,14 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::acl::AclConfig;
+use crate::cache::CacheConfig;
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub acl: AclConfig,
     pub timeout: Duration,
+    pub cache: CacheConfig,
 }
 
 impl Config {
@@ -27,6 +29,13 @@ impl Config {
             deny_hosts.as_deref(),
             Duration::from_secs(timeout_secs),
         )
+        .map(|cfg| cfg.with_cache(CacheConfig::from_env()))
+    }
+
+    /// キャッシュ設定を差し替える。
+    pub fn with_cache(mut self, cache: CacheConfig) -> Self {
+        self.cache = cache;
+        self
     }
 
     pub fn new(
@@ -46,6 +55,7 @@ impl Config {
             bind_addr,
             acl,
             timeout,
+            cache: CacheConfig::default(),
         })
     }
 }
@@ -59,6 +69,14 @@ mod tests {
         let cfg = Config::new("9090", None, None, Duration::from_secs(10)).unwrap();
         assert_eq!(cfg.bind_addr.port(), 9090);
         assert_eq!(cfg.timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_cache_defaults() {
+        let cfg = Config::new("8080", None, None, Duration::from_secs(30)).unwrap();
+        assert_eq!(cfg.cache.mem_capacity, 200 * 1024 * 1024);
+        assert_eq!(cfg.cache.disk_capacity, 2048 * 1024 * 1024);
+        assert!(cfg.cache.enabled);
     }
 
     #[test]
