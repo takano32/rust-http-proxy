@@ -4,17 +4,13 @@ use std::net::{SocketAddr, TcpStream};
 use crate::headers;
 
 pub fn handle_http(
-    mut client: TcpStream,
+    client: TcpStream,
     peer_addr: Option<SocketAddr>,
     request_line: String,
     mut reader: BufReader<TcpStream>,
     conn_id: usize,
 ) -> io::Result<()> {
     let mut raw_headers = Vec::new();
-    let mut host_header = None;
-    let mut content_length: Option<usize> = None;
-    let mut is_chunked = false;
-
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
@@ -24,7 +20,24 @@ pub fn handle_http(
         if trimmed.is_empty() {
             break;
         }
+        raw_headers.push(line);
+    }
+    handle_http_with_headers(client, peer_addr, request_line, raw_headers, reader, conn_id)
+}
 
+pub fn handle_http_with_headers(
+    mut client: TcpStream,
+    peer_addr: Option<SocketAddr>,
+    request_line: String,
+    raw_headers: Vec<String>,
+    mut reader: BufReader<TcpStream>,
+    conn_id: usize,
+) -> io::Result<()> {
+    let mut host_header = None;
+    let mut content_length: Option<usize> = None;
+    let mut is_chunked = false;
+
+    for line in &raw_headers {
         if let Some((k, v)) = line.split_once(':') {
             let k_lower = k.trim().to_ascii_lowercase();
             let v_trim = v.trim();
@@ -36,7 +49,6 @@ pub fn handle_http(
                 is_chunked = true;
             }
         }
-        raw_headers.push(line);
     }
 
     let parts: Vec<&str> = request_line.trim().split_whitespace().collect();

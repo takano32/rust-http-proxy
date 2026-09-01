@@ -2,6 +2,7 @@ use std::io;
 use std::net::TcpListener;
 use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 
 use sorahost_http_proxy::config::Config;
@@ -11,7 +12,7 @@ static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 fn main() {
     let config = match Config::from_env() {
-        Ok(c) => c,
+        Ok(c) => Arc::new(c),
         Err(e) => {
             eprintln!("Configuration error: {}", e);
             process::exit(1);
@@ -27,13 +28,17 @@ fn main() {
     };
 
     println!("HTTP/HTTPS Proxy listening on {}", config.bind_addr);
+    if config.auth.is_enabled() {
+        println!("Proxy authentication is ENABLED");
+    }
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let cfg = Arc::clone(&config);
                 thread::spawn(move || {
-                    if let Err(e) = handle_client(stream, conn_id) {
+                    if let Err(e) = handle_client(stream, cfg, conn_id) {
                         if e.kind() != io::ErrorKind::UnexpectedEof
                             && e.kind() != io::ErrorKind::ConnectionReset
                             && e.kind() != io::ErrorKind::BrokenPipe
