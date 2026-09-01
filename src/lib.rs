@@ -1,3 +1,4 @@
+pub mod acl;
 pub mod auth;
 pub mod config;
 pub mod headers;
@@ -18,6 +19,12 @@ Content-Length: 30\r\n\
 \r\n\
 407 Proxy Authentication Required";
 
+const FORBIDDEN_RESPONSE: &[u8] = b"HTTP/1.1 403 Forbidden\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+Content-Length: 13\r\n\
+\r\n\
+403 Forbidden";
+
 pub fn handle_client(mut client: TcpStream, config: Arc<Config>, conn_id: usize) -> io::Result<()> {
     let peer_addr = client.peer_addr().ok();
     client.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -37,52 +44,71 @@ pub fn handle_client(mut client: TcpStream, config: Arc<Config>, conn_id: usize)
     let method = parts[0];
     let target = parts[1];
 
-    if config.auth.is_enabled() {
-        // Read headers to check Proxy-Authorization
-        let mut proxy_auth_header = None;
-        let mut raw_headers = Vec::new();
+    let mut raw_headers = Vec::new();
+    let mut proxy_auth_header = None;
+    let mut host_header = None;
 
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line)? == 0 {
-                break;
-            }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                break;
-            }
-
-            if let Some((k, v)) = line.split_once(':') {
-                if k.trim().eq_ignore_ascii_case("proxy-authorization") {
-                    proxy_auth_header = Some(v.trim().to_string());
-                }
-            }
-            raw_headers.push(line);
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            break;
         }
 
-        if !config.auth.validate(proxy_auth_header.as_deref()) {
-            println!("[Conn #{}] 407 Unauthorized (Auth failed)", conn_id);
-            client.write_all(AUTH_REQUIRED_RESPONSE)?;
-            client.flush()?;
-            return Ok(());
+        if let Some((k, v)) = line.split_once(':') {
+            let k_lower = k.trim().to_ascii_lowercase();
+            if k_lower == "proxy-authorization" {
+                proxy_auth_header = Some(v.trim().to_string());
+            } else if k_lower == "host" {
+                host_header = Some(v.trim().to_string());
+            }
         }
+        raw_headers.push(line);
+    }
 
-        if method.eq_ignore_ascii_case("CONNECT") {
-            tunnel::handle_connect(client, target, conn_id)?;
-        } else {
-            http::handle_http_with_headers(
-                client,
-                peer_addr,
-                request_line,
-                raw_headers,
-                reader,
-                conn_id,
-            )?;
+    // 1. Auth check
+    if config.auth.is_enabled() && !config.auth.validate(proxy_auth_header.as_deref()) {
+        println!("[Conn #{}] 407 Unauthorized (Auth failed)", conn_id);
+        client.write_all(AUTH_REQUIRED_RESPONSE)?;
+        client.flush()?;
+        return Ok(());
+    }
+
+    // 2. ACL / Host Check
+    let target_host = if method.eq_ignore_ascii_case("CONNECT") {
+        target
+    } else {
+        match http::parse_target(target, host_header.as_deref()) {
+            Ok((h, _)) => h,
+            Err(_) => {
+                let _ = client.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
+                return Ok(());
+            }
         }
-    } else if method.eq_ignore_ascii_case("CONNECT") {
+    };
+
+    if !config.acl.is_allowed(target_host) {
+        println!("[Conn #{}] 403 Forbidden (ACL blocked host: {})", conn_id, target_host);
+        client.write_all(FORBIDDEN_RESPONSE)?;
+        client.flush()?;
+        return Ok(());
+    }
+
+    // 3. Forward or Tunnel
+    if method.eq_ignore_ascii_case("CONNECT") {
         tunnel::handle_connect(client, target, conn_id)?;
     } else {
-        http::handle_http(client, peer_addr, request_line, reader, conn_id)?;
+        http::handle_http_with_headers(
+            client,
+            peer_addr,
+            request_line,
+            raw_headers,
+            reader,
+            conn_id,
+        )?;
     }
 
     Ok(())
