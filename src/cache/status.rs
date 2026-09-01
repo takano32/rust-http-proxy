@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 
 use super::Cache;
-use super::config::Limit;
+use super::config::{DiskQuota, Limit};
 
 fn opt(v: Option<u64>) -> String {
     v.map_or_else(|| "null".to_string(), |x| x.to_string())
@@ -49,7 +49,7 @@ impl Cache {
                 "\"keep_free_bytes\":{},\"cgroup_keep_free_bytes\":{}}},",
                 "\"disk\":{{\"used_bytes\":{},\"limit_bytes\":{},\"entries\":{},\"dir\":\"{}\",",
                 "\"mode\":\"{}\",\"target_percent\":{},\"reserved_bytes\":{},\"quota_bytes\":{},",
-                "\"keep_free_bytes\":{}}},",
+                "\"quota_mode\":\"{}\",\"keep_free_bytes\":{}}},",
                 "\"system\":{{\"probed_at\":{},\"process_rss_bytes\":{},",
                 "\"mem_total_bytes\":{},\"mem_available_bytes\":{},\"mem_used_percent\":{},",
                 "\"mem_active_file_bytes\":{},",
@@ -87,7 +87,12 @@ impl Cache {
             disk_mode,
             disk_pct,
             self.disk_reserved(),
-            opt(self.cfg.disk_quota),
+            opt(match self.disk_quota() {
+                DiskQuota::Fixed(q) => Some(q),
+                DiskQuota::Auto => snap.fs.map(|f| f.total),
+                _ => None,
+            }),
+            self.disk_quota().as_str(),
             snap.disk_keep_free,
             snap.taken_at,
             opt(snap.rss),

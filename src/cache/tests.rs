@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use super::config::{CacheConfig, Limit, MIB};
+use super::config::{CacheConfig, DiskQuota, Limit, MIB};
 use super::key::cache_key;
 use super::memory::{BALLAST_CHUNK, MemTier};
 use super::{Body, Cache, CacheSource, Meta, format};
@@ -543,8 +543,7 @@ fn quota_mode_budgets_against_allocation_minus_others_and_margin() {
     fs::write(root.join("server.jar"), vec![0u8; 10 * MIB as usize]).unwrap();
     let cfg = CacheConfig {
         disk_limit: Limit::Auto { percent: 100 },
-        disk_quota: Some(100 * MIB),
-        disk_quota_set: true,
+        disk_quota: DiskQuota::Fixed(100 * MIB),
         quota_root: Some(root.clone()),
         pterodactyl: true,
         ..CacheConfig::fixed(MIB, 0, root.join("cache"))
@@ -556,6 +555,52 @@ fn quota_mode_budgets_against_allocation_minus_others_and_margin() {
     assert!(json.contains("\"quota_bytes\":104857600"), "{}", json);
     assert!(json.contains("\"disk_total_bytes\":104857600"), "{}", json);
     assert!(json.contains("\"keep_free_bytes\":10485760"), "{}", json);
+    assert!(json.contains("\"quota_mode\":\"fixed\""), "{}", json);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn auto_quota_uses_df_of_the_quota_root_unless_it_is_the_host_disk() {
+    // 割当ディレクトリが / と同じファイルシステムなら「ホストディスク」→ 不明扱いで安全上限
+    let same_fs = CacheConfig {
+        disk_limit: Limit::Auto { percent: 100 },
+        disk_quota: DiskQuota::Auto,
+        quota_root: Some(PathBuf::from("/")),
+        pterodactyl: true,
+        ..CacheConfig::fixed(MIB, 0, test_dir("shp-test-quota-auto-host"))
+    };
+    let cache = Cache::new(same_fs);
+    assert_eq!(cache.disk_quota(), DiskQuota::Unknown);
+    assert_eq!(
+        cache.disk_capacity(),
+        super::config::PTERODACTYL_UNKNOWN_QUOTA_DISK
+    );
+
+    // 別のファイルシステム (このテストでは $TMPDIR が / と別のときだけ) なら df の total を割当にする
+    let root = env::temp_dir();
+    let (Some(df), Some(rootfs)) = (
+        crate::sysinfo::fs_info(&root),
+        crate::sysinfo::fs_info(std::path::Path::new("/")),
+    ) else {
+        return;
+    };
+    if df.total == rootfs.total {
+        eprintln!("skipping: temp dir is on the root filesystem");
+        return;
+    }
+    let cfg = CacheConfig {
+        disk_limit: Limit::Auto { percent: 100 },
+        disk_quota: DiskQuota::Auto,
+        quota_root: Some(root),
+        pterodactyl: true,
+        ..CacheConfig::fixed(MIB, 0, test_dir("shp-test-quota-auto"))
+    };
+    let cache = Cache::new(cfg);
+    assert_eq!(cache.disk_quota(), DiskQuota::Auto);
+    let snap = cache.snapshot();
+    assert_eq!(snap.fs.map(|f| f.total), Some(df.total));
+    assert!(cache.disk_capacity() < df.total);
+    assert!(cache.to_json().contains("\"quota_mode\":\"auto\""));
 }
 
 #[test]
@@ -590,7 +635,7 @@ fn pterodactyl_without_quota_is_capped_and_never_reserves() {
     let cfg = CacheConfig {
         disk_limit: Limit::Auto { percent: 100 },
         pterodactyl: true,
-        disk_quota_set: true,
+        disk_quota: DiskQuota::Unlimited,
         ..CacheConfig::fixed(MIB, 0, test_dir("shp-test-ptero-known"))
     };
     let cache = Cache::new(cfg);

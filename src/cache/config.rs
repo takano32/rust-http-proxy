@@ -77,6 +77,58 @@ impl fmt::Display for Limit {
     }
 }
 
+/// コンテナのディスク割当の与え方。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskQuota {
+    /// 何も分からない (Pterodactyl では安全側の小さな上限に倒す)
+    Unknown,
+    /// 明示的に無制限 (`0`): ホストのファイルシステム全体を分母にする
+    Unlimited,
+    /// 割当 (バイト): 割当ディレクトリ内の合計サイズで管理する
+    Fixed(u64),
+    /// `df -B1 <割当ディレクトリ>` 相当 (statvfs) が割当そのものを示すとみなす
+    /// (XFS プロジェクトクォータや ZFS データセットで領域を切っているホスト向け)
+    Auto,
+}
+
+impl DiskQuota {
+    /// `auto` / `0` / MB 数を解釈する。
+    pub fn parse(s: &str) -> Option<DiskQuota> {
+        let s = s.trim().to_ascii_lowercase();
+        if s == "auto" || s == "df" {
+            return Some(DiskQuota::Auto);
+        }
+        match s.parse::<u64>().ok()? {
+            0 => Some(DiskQuota::Unlimited),
+            mb => Some(DiskQuota::Fixed(mb.saturating_mul(MIB))),
+        }
+    }
+
+    pub fn is_known(&self) -> bool {
+        !matches!(self, DiskQuota::Unknown)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DiskQuota::Unknown => "unknown",
+            DiskQuota::Unlimited => "unlimited",
+            DiskQuota::Fixed(_) => "fixed",
+            DiskQuota::Auto => "auto",
+        }
+    }
+}
+
+impl fmt::Display for DiskQuota {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DiskQuota::Unknown => write!(f, "unknown (not set)"),
+            DiskQuota::Unlimited => write!(f, "unlimited"),
+            DiskQuota::Fixed(b) => write!(f, "{} MiB", b / MIB),
+            DiskQuota::Auto => write!(f, "auto (df of the quota root)"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CacheConfig {
     pub enabled: bool,
@@ -103,12 +155,10 @@ pub struct CacheConfig {
     pub max_object_size: u64,
     /// メモリ層に置く 1 オブジェクトの最大サイズ (バイト)
     pub mem_max_object_size: u64,
-    /// コンテナのディスク割当 (バイト)。Pterodactyl のように「ディレクトリの合計サイズ」で
-    /// 制限される環境向けで、指定すると `statvfs` の代わりにこの値を分母にする。
-    pub disk_quota: Option<u64>,
-    /// `PROXY_DISK_QUOTA_MB` (別名 `SERVER_DISK`) が明示されたか (`0` = 無制限の明示も含む)。
-    pub disk_quota_set: bool,
-    /// `disk_quota` が適用されるディレクトリ (通常はコンテナのボリューム = `$HOME`)。
+    /// コンテナのディスク割当 (`PROXY_DISK_QUOTA_MB` / 別名 `SERVER_DISK`)。Pterodactyl のように
+    /// 「ディレクトリの合計サイズ」で制限される環境向け。
+    pub disk_quota: DiskQuota,
+    /// 割当が適用されるディレクトリ (通常はコンテナのボリューム = `$HOME`)。
     pub quota_root: Option<PathBuf>,
     /// コンテナのメモリ割当 (バイト)。Pterodactyl が渡す `SERVER_MEMORY` (MB)。
     pub mem_alloc: Option<u64>,
@@ -137,8 +187,7 @@ impl Default for CacheConfig {
             max_stale: Duration::from_secs(30 * 24 * 3600),
             max_object_size: 4096 * MIB,
             mem_max_object_size: 32 * MIB,
-            disk_quota: None,
-            disk_quota_set: false,
+            disk_quota: DiskQuota::Unknown,
             quota_root: None,
             mem_alloc: None,
             pterodactyl: false,
@@ -223,13 +272,10 @@ impl CacheConfig {
             mem_max_object_size: num("PROXY_MEM_CACHE_MAX_OBJECT_MB")
                 .map(|v| v.saturating_mul(MIB))
                 .unwrap_or(d.mem_max_object_size),
-            disk_quota: num("PROXY_DISK_QUOTA_MB")
-                .or_else(|| num("SERVER_DISK"))
-                .filter(|&v| v > 0)
-                .map(|v| v.saturating_mul(MIB)),
-            disk_quota_set: num("PROXY_DISK_QUOTA_MB")
-                .or_else(|| num("SERVER_DISK"))
-                .is_some(),
+            disk_quota: get("PROXY_DISK_QUOTA_MB")
+                .or_else(|| get("SERVER_DISK"))
+                .and_then(|v| DiskQuota::parse(&v))
+                .unwrap_or(DiskQuota::Unknown),
             quota_root: get("PROXY_DISK_QUOTA_ROOT").map(PathBuf::from).or(home),
             mem_alloc: num("SERVER_MEMORY")
                 .filter(|&v| v > 0)
@@ -365,8 +411,7 @@ mod tests {
         assert_eq!(cfg.mem_max_object_size, 32 * MIB);
         assert_eq!(cfg.mem_keep_free, 0);
         assert_eq!(cfg.heuristic_percent, 10);
-        assert_eq!(cfg.disk_quota, Some(10240 * MIB));
-        assert!(cfg.disk_quota_set);
+        assert_eq!(cfg.disk_quota, DiskQuota::Fixed(10240 * MIB));
         assert_eq!(cfg.quota_root, Some(PathBuf::from("/home/container")));
         assert_eq!(cfg.mem_alloc, Some(1024 * MIB));
         assert!(cfg.pterodactyl);
@@ -382,8 +427,11 @@ mod tests {
         .collect();
         let cfg = CacheConfig::from_lookup(|k| bad.get(k).map(|v| v.to_string()));
         assert_eq!(cfg.mem_limit, Limit::Auto { percent: 100 });
-        assert_eq!(cfg.disk_quota, None);
-        assert!(cfg.disk_quota_set, "0 は「無制限」の明示");
+        assert_eq!(cfg.disk_quota, DiskQuota::Unlimited, "0 は「無制限」の明示");
+        assert_eq!(DiskQuota::parse("auto"), Some(DiskQuota::Auto));
+        assert_eq!(DiskQuota::parse(" DF "), Some(DiskQuota::Auto));
+        assert_eq!(DiskQuota::parse("garbage"), None);
+        assert!(!DiskQuota::Unknown.is_known() && DiskQuota::Auto.is_known());
         assert_eq!(cfg.disk_keep_free, 512 * MIB);
         assert_eq!(cfg.mem_alloc, None);
         assert!(!cfg.pterodactyl);

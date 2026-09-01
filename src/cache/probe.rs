@@ -9,7 +9,9 @@ use std::sync::{Arc, Weak};
 use std::thread::{self, JoinHandle};
 
 use super::budget::{self, Probe, percent_of};
-use super::config::{FALLBACK_DISK, FALLBACK_MEM, Limit, MIB, PTERODACTYL_UNKNOWN_QUOTA_DISK};
+use super::config::{
+    DiskQuota, FALLBACK_DISK, FALLBACK_MEM, Limit, MIB, PTERODACTYL_UNKNOWN_QUOTA_DISK,
+};
 use super::{Cache, now_epoch};
 use crate::sysinfo;
 use crate::{log_debug, log_info, log_warn};
@@ -112,26 +114,32 @@ impl Cache {
 
     /// quota モードで、割当ディレクトリ内の自分以外の使用量を測り直す。
     pub(super) fn refresh_other_disk_usage(&self) {
-        let (Some(_), Some(root)) = (self.cfg.disk_quota, &self.cfg.quota_root) else {
+        if !matches!(self.quota, DiskQuota::Fixed(_)) {
             return;
-        };
-        let others = sysinfo::dir_size_excluding(root, self.disk.dir());
+        }
+        let others = sysinfo::dir_size_excluding(self.quota_root(), self.disk.dir());
         self.other_disk_usage.store(others, Ordering::Relaxed);
     }
 
     /// システム使用量を測り直し、マージンと両層の上限を更新する。戻り値はメモリ圧迫の有無。
     pub fn refresh_budget(&self) -> bool {
         let want_mem = self.cfg.mem_limit.is_auto();
-        let quota = self
-            .cfg
-            .disk_quota
-            .map(|q| (q, self.other_disk_usage.load(Ordering::Relaxed)));
+        let quota = match self.quota {
+            DiskQuota::Fixed(q) => Some((q, self.other_disk_usage.load(Ordering::Relaxed))),
+            _ => None,
+        };
         // Pterodactyl で割当が分からなければホスト FS は見ず、固定の小さな上限にする
         let unknown_quota =
-            self.cfg.pterodactyl && self.cfg.disk_limit.is_auto() && !self.cfg.disk_quota_set;
+            self.cfg.pterodactyl && self.cfg.disk_limit.is_auto() && !self.quota.is_known();
         let want_fs = self.cfg.disk_limit.is_auto() && self.disk.is_ready() && !unknown_quota;
+        // `auto` は割当ディレクトリ自体の statvfs (df 相当) を分母にする
+        let probe_dir = if self.quota == DiskQuota::Auto {
+            self.quota_root()
+        } else {
+            self.disk.dir()
+        };
         let mut snap = budget::take(&Probe {
-            dir: self.disk.dir(),
+            dir: probe_dir,
             want_mem,
             want_fs,
             mem_alloc: self.cfg.mem_alloc,
@@ -225,10 +233,9 @@ impl Cache {
                         }
                         let keep = margins.disk.keep_free(floor, 0);
                         snap.disk_keep_free = keep;
-                        let what = if quota.is_some() {
-                            "disk quota"
-                        } else {
-                            "filesystem"
+                        let what = match self.quota {
+                            DiskQuota::Fixed(_) | DiskQuota::Auto => "disk quota",
+                            _ => "filesystem",
                         };
                         (
                             budget::disk_budget(owned, f, percent, keep),

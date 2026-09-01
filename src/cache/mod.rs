@@ -27,13 +27,13 @@ pub mod status;
 #[cfg(test)]
 mod tests;
 
-pub use config::{CacheConfig, Limit, MIB};
+pub use config::{CacheConfig, DiskQuota, Limit, MIB};
 pub use format::Meta;
 pub use key::{CacheKey, cache_key, cache_key_variant};
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Cursor, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -294,6 +294,8 @@ pub(crate) struct Margins {
 
 pub struct Cache {
     cfg: CacheConfig,
+    /// 起動時の確認を経た、実際に使う割当の扱い (`Auto` はホストディスクだと分かれば `Unknown` に落とす)
+    quota: DiskQuota,
     mem: MemTier,
     disk: DiskTier,
     /// LRU の採番用カウンタ (両層で共有)
@@ -319,7 +321,13 @@ pub struct Cache {
 
 impl Cache {
     pub fn new(cfg: CacheConfig) -> Self {
+        let quota = if cfg.enabled {
+            resolve_quota(&cfg)
+        } else {
+            cfg.disk_quota
+        };
         let cache = Self {
+            quota,
             mem: MemTier::new(cfg.reserve),
             disk: DiskTier::new(cfg.dir.clone(), cfg.reserve),
             margins: Mutex::new(Margins {
@@ -379,10 +387,10 @@ impl Cache {
             );
             cache.disk.disable_reserve();
         }
-        if cache.cfg.pterodactyl && cache.cfg.disk_limit.is_auto() && !cache.cfg.disk_quota_set {
+        if cache.cfg.pterodactyl && cache.cfg.disk_limit.is_auto() && !cache.quota.is_known() {
             log_warn!(
                 None,
-                "Pterodactyl detected but the disk allocation is unknown (Pterodactyl does not pass it to the container): disk cache capped at {} MiB with no reservation, because Wings kills the server as soon as the Disk Space allocation is exceeded; set PROXY_DISK_QUOTA_MB (or SERVER_DISK) to the allocation in MB (0 = unlimited) to use it fully",
+                "Pterodactyl detected but the disk allocation is unknown (Pterodactyl does not pass it to the container): disk cache capped at {} MiB with no reservation, because Wings kills the server as soon as the Disk Space allocation is exceeded; set PROXY_DISK_QUOTA_MB (or SERVER_DISK) to the allocation in MB, 0 if unlimited, or auto if `df -B1 /home/container` shows the allocation",
                 config::PTERODACTYL_UNKNOWN_QUOTA_DISK / MIB
             );
             cache.disk.disable_reserve();
@@ -402,6 +410,16 @@ impl Cache {
 
     pub fn config(&self) -> &CacheConfig {
         &self.cfg
+    }
+
+    /// 実際に使っているディスク割当の扱い。
+    pub fn disk_quota(&self) -> DiskQuota {
+        self.quota
+    }
+
+    /// 割当ディレクトリ (無ければキャッシュディレクトリ)。
+    pub fn quota_root(&self) -> &Path {
+        self.cfg.quota_root.as_deref().unwrap_or(&self.cfg.dir)
     }
 
     pub fn enabled(&self) -> bool {
@@ -681,6 +699,55 @@ impl Cache {
         self.mem.remove(key);
         self.disk.remove(key);
     }
+}
+
+/// `Auto` は `df <割当ディレクトリ>` が割当を示すときだけ採用する。`/` と同じファイルシステム
+/// (total が一致) ならホストディスクが見えているだけなので `Unknown` に落とす。
+/// Pterodactyl では判断材料として df 相当の数字を常にログに出す。
+fn resolve_quota(cfg: &CacheConfig) -> DiskQuota {
+    let root = cfg.quota_root.as_deref().unwrap_or(&cfg.dir);
+    let df = sysinfo::fs_info(root);
+    if cfg.pterodactyl
+        && let Some(f) = df
+    {
+        log_info!(
+            None,
+            "df -B1 {}: total {} MiB, used {} MiB, available {} MiB (compare with the panel's Disk Space)",
+            root.display(),
+            f.total / MIB,
+            f.used / MIB,
+            f.available / MIB
+        );
+    }
+    if cfg.disk_quota != DiskQuota::Auto {
+        return cfg.disk_quota;
+    }
+    let Some(f) = df else {
+        log_warn!(
+            None,
+            "SERVER_DISK=auto but {} cannot be measured; treating the allocation as unknown",
+            root.display()
+        );
+        return DiskQuota::Unknown;
+    };
+    if let Some(rootfs) = sysinfo::fs_info(Path::new("/"))
+        && rootfs.total == f.total
+    {
+        log_warn!(
+            None,
+            "SERVER_DISK=auto but df {} reports the same filesystem as / ({} MiB): that is the host disk, not the allocation; treating the allocation as unknown",
+            root.display(),
+            f.total / MIB
+        );
+        return DiskQuota::Unknown;
+    }
+    log_info!(
+        None,
+        "disk allocation from df {}: {} MiB",
+        root.display(),
+        f.total / MIB
+    );
+    DiskQuota::Auto
 }
 
 impl Drop for Cache {

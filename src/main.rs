@@ -73,16 +73,14 @@ fn main() {
             c.mem_alloc
                 .map(|m| format!("{} MiB", m / MIB))
                 .unwrap_or_else(|| "unknown".to_string()),
-            c.disk_quota
-                .map(|q| format!(
-                    "{} MiB under {}",
-                    q / MIB,
-                    c.quota_root
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default()
-                ))
-                .unwrap_or_else(|| "not set".to_string())
+            format!(
+                "{} under {}",
+                cache.disk_quota(),
+                c.quota_root
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            )
         );
     }
     log_info!(
