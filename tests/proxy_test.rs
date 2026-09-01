@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use sorahost_http_proxy::cache::{Cache, CacheConfig};
+use sorahost_http_proxy::cache::{Cache, CacheConfig, MIB};
 use sorahost_http_proxy::config::Config;
 use sorahost_http_proxy::handle_client;
 use sorahost_http_proxy::metrics::Metrics;
@@ -24,23 +24,29 @@ fn start_counting_origin(
     let port = listener.local_addr().unwrap().port();
 
     let handle = thread::spawn(move || {
-        for stream in listener.incoming() {
-            if let Ok(mut stream) = stream {
-                let counter = Arc::clone(&counter);
-                thread::spawn(move || {
-                    let mut buf = [0u8; 1024];
-                    let _ = stream.read(&mut buf);
-                    counter.fetch_add(1, Ordering::SeqCst);
-                    let body = "hello from mock origin";
-                    let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{}",
-                        body.len(),
-                        extra_headers,
-                        body
-                    );
-                    let _ = stream.write_all(resp.as_bytes());
-                });
-            }
+        for mut stream in listener.incoming().flatten() {
+            let counter = Arc::clone(&counter);
+            thread::spawn(move || {
+                // ヘッダー終端まで読み切ってから応答する (読み残しがあると close 時に
+                // RST が飛び、プロキシ側でレスポンスが「途中で切れた」扱いになる)
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                counter.fetch_add(1, Ordering::SeqCst);
+                let body = "hello from mock origin";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n{}",
+                    body.len(),
+                    extra_headers,
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            });
         }
     });
 
@@ -59,17 +65,13 @@ fn start_test_proxy_with_cache(config: Config, cache_cfg: CacheConfig) -> u16 {
     let cache = Arc::new(Cache::new(cache_cfg));
 
     thread::spawn(move || {
-        let mut conn_id = 0;
-        for stream in listener.incoming() {
-            if let Ok(stream) = stream {
-                conn_id += 1;
-                let c = Arc::clone(&cfg);
-                let m = Arc::clone(&metrics);
-                let ch = Arc::clone(&cache);
-                thread::spawn(move || {
-                    let _ = handle_client(stream, c, m, ch, conn_id);
-                });
-            }
+        for (conn_id, stream) in listener.incoming().flatten().enumerate() {
+            let c = Arc::clone(&cfg);
+            let m = Arc::clone(&metrics);
+            let ch = Arc::clone(&cache);
+            thread::spawn(move || {
+                let _ = handle_client(stream, c, m, ch, conn_id);
+            });
         }
     });
 
@@ -126,7 +128,9 @@ fn test_integration_healthz() {
     let proxy_port = start_test_proxy(config);
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream.write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+    stream
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .unwrap();
 
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
@@ -143,12 +147,14 @@ fn get_via_proxy(proxy_port: u16, url: &str, host: &str) -> String {
     response
 }
 
+/// 固定上限 (メモリ 200 MiB / ディスク 2048 MiB) のテスト用キャッシュ設定。
 fn cache_cfg(dir: &str) -> CacheConfig {
-    let mut cfg = CacheConfig::default();
-    cfg.dir = std::env::temp_dir().join(dir);
-    cfg.default_ttl = Duration::from_secs(60);
-    let _ = std::fs::remove_dir_all(&cfg.dir);
-    cfg
+    let dir = std::env::temp_dir().join(dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    CacheConfig {
+        default_ttl: Duration::from_secs(60),
+        ..CacheConfig::fixed(200 * MIB, 2048 * MIB, dir)
+    }
 }
 
 #[test]
@@ -163,15 +169,27 @@ fn test_integration_cache_hit_serves_second_request() {
 
     let first = get_via_proxy(proxy_port, &url, &host);
     assert!(first.contains("hello from mock origin"));
-    assert!(!first.contains("X-Cache"), "first response must be a MISS: {}", first);
+    assert!(
+        !first.contains("X-Cache"),
+        "first response must be a MISS: {}",
+        first
+    );
 
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(second.starts_with("HTTP/1.1 200 OK"));
-    assert!(second.contains("X-Cache: HIT from sorahost-http-proxy (memory)"), "{}", second);
+    assert!(
+        second.contains("X-Cache: HIT from sorahost-http-proxy (memory)"),
+        "{}",
+        second
+    );
     assert!(second.contains("Age: "));
     assert!(second.contains("hello from mock origin"));
 
-    assert_eq!(counter.load(Ordering::SeqCst), 1, "origin should be hit once");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "origin should be hit once"
+    );
 }
 
 #[test]
@@ -188,7 +206,11 @@ fn test_integration_no_store_response_is_not_cached() {
     get_via_proxy(proxy_port, &url, &host);
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(!second.contains("X-Cache"), "{}", second);
-    assert_eq!(counter.load(Ordering::SeqCst), 2, "origin should be hit twice");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        2,
+        "origin should be hit twice"
+    );
 }
 
 #[test]
@@ -204,7 +226,16 @@ fn test_integration_status_reports_cache_limits() {
     stream.read_to_string(&mut response).unwrap();
 
     // memory 200MiB / disk 2048MiB
-    assert!(response.contains("\"limit_bytes\":209715200"), "{}", response);
-    assert!(response.contains("\"limit_bytes\":2147483648"), "{}", response);
+    assert!(
+        response.contains("\"limit_bytes\":209715200"),
+        "{}",
+        response
+    );
+    assert!(
+        response.contains("\"limit_bytes\":2147483648"),
+        "{}",
+        response
+    );
+    assert!(response.contains("\"mode\":\"fixed\""), "{}", response);
     assert!(response.contains("\"cache_hits\":0"), "{}", response);
 }

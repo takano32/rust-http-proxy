@@ -5,6 +5,7 @@ pub mod headers;
 pub mod http;
 pub mod log;
 pub mod metrics;
+pub mod sysinfo;
 pub mod tunnel;
 
 use std::io::{self, BufRead, BufReader, Write};
@@ -69,9 +70,13 @@ pub fn handle_client(
     }
     log_trace!(Some(conn_id), "request line: {}", request_line.trim_end());
 
-    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 2 {
-        log_warn!(Some(conn_id), "malformed request line: {:?}", request_line.trim());
+        log_warn!(
+            Some(conn_id),
+            "malformed request line: {:?}",
+            request_line.trim()
+        );
         return Ok(());
     }
 
@@ -134,7 +139,11 @@ pub fn handle_client(
     };
 
     if !config.acl.is_allowed(target_host) {
-        log_warn!(Some(conn_id), "403 Forbidden (ACL blocked host: {})", target_host);
+        log_warn!(
+            Some(conn_id),
+            "403 Forbidden (ACL blocked host: {})",
+            target_host
+        );
         client.write_all(FORBIDDEN_RESPONSE)?;
         client.flush()?;
         return Ok(());
@@ -142,7 +151,13 @@ pub fn handle_client(
 
     // Forward or Tunnel
     if method.eq_ignore_ascii_case("CONNECT") {
-        tunnel::handle_connect(client, target, config.timeout, conn_id, Arc::clone(&metrics))?;
+        tunnel::handle_connect(
+            client,
+            target,
+            config.timeout,
+            conn_id,
+            Arc::clone(&metrics),
+        )?;
     } else {
         http::handle_http_with_headers(
             client,

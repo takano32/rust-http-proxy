@@ -1,11 +1,11 @@
 use std::io::{self, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::log::{access, Access};
+use crate::log::{Access, access};
 use crate::metrics::Metrics;
 use crate::{log_debug, log_trace, log_warn};
 
@@ -32,7 +32,12 @@ pub fn handle_connect(
     let server = match connect_with_timeout(&addr_str, timeout) {
         Ok(s) => s,
         Err(e) => {
-            log_warn!(Some(conn_id), "502 Bad Gateway: connect {} failed: {}", addr_str, e);
+            log_warn!(
+                Some(conn_id),
+                "502 Bad Gateway: connect {} failed: {}",
+                addr_str,
+                e
+            );
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
             access(
                 conn_id,
@@ -94,9 +99,8 @@ pub fn connect_with_timeout(addr_str: &str, timeout: Duration) -> io::Result<Tcp
         }
     }
 
-    Err(last_err.unwrap_or_else(|| {
-        io::Error::new(io::ErrorKind::ConnectionRefused, "Failed to connect")
-    }))
+    Err(last_err
+        .unwrap_or_else(|| io::Error::new(io::ErrorKind::ConnectionRefused, "Failed to connect")))
 }
 
 /// 双方向にデータを中継し、転送した合計バイト数を返す。

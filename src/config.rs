@@ -74,9 +74,10 @@ mod tests {
     #[test]
     fn test_cache_defaults() {
         let cfg = Config::new("8080", None, None, Duration::from_secs(30)).unwrap();
-        assert_eq!(cfg.cache.mem_capacity, 200 * 1024 * 1024);
-        assert_eq!(cfg.cache.disk_capacity, 2048 * 1024 * 1024);
-        assert!(cfg.cache.enabled);
+        assert!(cfg.cache.mem_limit.is_auto());
+        assert!(cfg.cache.disk_limit.is_auto());
+        assert_eq!(cfg.cache.mem_limit.target_percent(), Some(90));
+        assert!(cfg.cache.enabled && cfg.cache.reserve);
     }
 
     #[test]

@@ -27,11 +27,11 @@ pub fn sanitize_and_inject_headers(
 
     // First pass: check Connection header for custom hop-by-hop header names
     for line in headers {
-        if let Some((k, v)) = line.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("connection") {
-                for item in v.split(',') {
-                    custom_hop_by_hop.push(item.trim().to_ascii_lowercase());
-                }
+        if let Some((k, v)) = line.split_once(':')
+            && k.trim().eq_ignore_ascii_case("connection")
+        {
+            for item in v.split(',') {
+                custom_hop_by_hop.push(item.trim().to_ascii_lowercase());
             }
         }
     }
@@ -100,12 +100,36 @@ mod tests {
         let cleaned = sanitize_and_inject_headers(&raw, Some(addr));
 
         assert!(cleaned.iter().any(|h| h.starts_with("Host: example.com")));
-        assert!(cleaned.iter().any(|h| h.starts_with("User-Agent: curl/7.88.1")));
-        assert!(cleaned.iter().any(|h| h.starts_with("X-Forwarded-For: 192.168.1.100")));
-        assert!(cleaned.iter().any(|h| h.starts_with("Via: 1.1 sorahost-http-proxy")));
+        assert!(
+            cleaned
+                .iter()
+                .any(|h| h.starts_with("User-Agent: curl/7.88.1"))
+        );
+        assert!(
+            cleaned
+                .iter()
+                .any(|h| h.starts_with("X-Forwarded-For: 192.168.1.100"))
+        );
+        assert!(
+            cleaned
+                .iter()
+                .any(|h| h.starts_with("Via: 1.1 sorahost-http-proxy"))
+        );
 
-        assert!(!cleaned.iter().any(|h| h.to_ascii_lowercase().starts_with("proxy-connection")));
-        assert!(!cleaned.iter().any(|h| h.to_ascii_lowercase().starts_with("keep-alive")));
-        assert!(!cleaned.iter().any(|h| h.to_ascii_lowercase().starts_with("x-foo")));
+        assert!(
+            !cleaned
+                .iter()
+                .any(|h| h.to_ascii_lowercase().starts_with("proxy-connection"))
+        );
+        assert!(
+            !cleaned
+                .iter()
+                .any(|h| h.to_ascii_lowercase().starts_with("keep-alive"))
+        );
+        assert!(
+            !cleaned
+                .iter()
+                .any(|h| h.to_ascii_lowercase().starts_with("x-foo"))
+        );
     }
 }

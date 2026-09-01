@@ -3,11 +3,11 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::cache::{cache_key, Cache, CacheSource};
+use crate::cache::{Cache, CacheSource, cache_key};
 use crate::headers;
+use crate::log::{Access, access};
 use crate::metrics::Metrics;
 use crate::tunnel::connect_with_timeout;
-use crate::log::{access, Access};
 use crate::{log_debug, log_trace, log_warn};
 
 const COPY_BUF_SIZE: usize = 32 * 1024;
@@ -15,6 +15,7 @@ const COPY_BUF_SIZE: usize = 32 * 1024;
 /// キャッシュ対象となりうるレスポンスステータス (RFC 9111 6.1 heuristically cacheable)。
 const CACHEABLE_STATUS: &[u16] = &[200, 203, 204, 300, 301, 308, 404, 405, 410, 414, 501];
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_http(
     client: TcpStream,
     peer_addr: Option<SocketAddr>,
@@ -90,14 +91,22 @@ pub fn handle_http_with_headers(
         }
     }
 
-    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 2 {
-        log_warn!(Some(conn_id), "malformed request line: {:?}", request_line.trim());
+        log_warn!(
+            Some(conn_id),
+            "malformed request line: {:?}",
+            request_line.trim()
+        );
         return Ok(());
     }
     let method = parts[0];
     let target = parts[1];
-    let version = if parts.len() > 2 { parts[2] } else { "HTTP/1.1" };
+    let version = if parts.len() > 2 {
+        parts[2]
+    } else {
+        "HTTP/1.1"
+    };
 
     let (host_port, path) = parse_target(target, host_header.as_deref())?;
 
@@ -122,7 +131,7 @@ pub fn handle_http_with_headers(
         && !req_cache_control.contains("no-cache");
 
     if req_allows_cache {
-        if let Some((entry, source)) = cache.get(&key, conn_id) {
+        if let Some((entry, source)) = cache.get(key, conn_id) {
             let age = entry.age();
             let written = write_cached_response(&mut client, &entry.bytes, source, age)?;
             metrics.inc_cache_hit();
@@ -164,7 +173,12 @@ pub fn handle_http_with_headers(
     let mut server = match connect_with_timeout(&server_addr, timeout) {
         Ok(s) => s,
         Err(e) => {
-            log_warn!(Some(conn_id), "502 Bad Gateway: connect {} failed: {}", server_addr, e);
+            log_warn!(
+                Some(conn_id),
+                "502 Bad Gateway: connect {} failed: {}",
+                server_addr,
+                e
+            );
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
             return Err(e);
         }
@@ -210,7 +224,11 @@ pub fn handle_http_with_headers(
     }
     server.flush()?;
     if request_body_bytes > 0 {
-        log_debug!(Some(conn_id), "forwarded request body {}B", request_body_bytes);
+        log_debug!(
+            Some(conn_id),
+            "forwarded request body {}B",
+            request_body_bytes
+        );
     }
 
     // ---- レスポンス受信・転送・キャッシュ格納 ----
@@ -272,7 +290,7 @@ pub fn handle_http_with_headers(
 
     let cache_state = match (ttl, buffer) {
         (Some(ttl), Some(buf)) => {
-            cache.put(&key, &url, buf, ttl, conn_id);
+            cache.put(key, &url, buf, ttl, conn_id);
             format!("MISS stored ttl={}s", ttl.as_secs())
         }
         _ if !req_allows_cache => "BYPASS".to_string(),
@@ -324,7 +342,11 @@ pub fn write_cached_response(
     age: u64,
 ) -> io::Result<usize> {
     let split = find_subslice(bytes, b"\r\n").map(|p| p + 2).unwrap_or(0);
-    let extra = format!("X-Cache: HIT from sorahost-http-proxy ({})\r\nAge: {}\r\n", source.as_str(), age);
+    let extra = format!(
+        "X-Cache: HIT from sorahost-http-proxy ({})\r\nAge: {}\r\n",
+        source.as_str(),
+        age
+    );
     client.write_all(&bytes[..split])?;
     client.write_all(extra.as_bytes())?;
     client.write_all(&bytes[split..])?;
@@ -333,15 +355,14 @@ pub fn write_cached_response(
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-/// ステータス行とヘッダー部を読み切り、(生バイト列, ステータスコード, ヘッダー) を返す。
-pub fn read_response_head<R: BufRead>(
-    reader: &mut R,
-) -> io::Result<(Vec<u8>, u16, Vec<(String, String)>)> {
+/// (生バイト列, ステータスコード, 小文字化したヘッダー名と値の組)
+pub type ResponseHead = (Vec<u8>, u16, Vec<(String, String)>);
+
+/// ステータス行とヘッダー部を読み切り、[`ResponseHead`] を返す。
+pub fn read_response_head<R: BufRead>(reader: &mut R) -> io::Result<ResponseHead> {
     let mut head = Vec::with_capacity(1024);
     let mut status_line = String::new();
     if reader.read_line(&mut status_line)? == 0 {
@@ -425,16 +446,19 @@ pub fn response_ttl(
 fn directive_value(cache_control: &str, name: &str) -> Option<u64> {
     for part in cache_control.split(',') {
         let part = part.trim();
-        if let Some(rest) = part.strip_prefix(name) {
-            if let Some(v) = rest.trim_start().strip_prefix('=') {
-                return v.trim().trim_matches('"').parse::<u64>().ok();
-            }
+        if let Some(rest) = part.strip_prefix(name)
+            && let Some(v) = rest.trim_start().strip_prefix('=')
+        {
+            return v.trim().trim_matches('"').parse::<u64>().ok();
         }
     }
     None
 }
 
-pub fn parse_target<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Result<(&'a str, &'a str)> {
+pub fn parse_target<'a>(
+    target: &'a str,
+    host_header: Option<&'a str>,
+) -> io::Result<(&'a str, &'a str)> {
     if let Some(stripped) = target.strip_prefix("http://") {
         if let Some(pos) = stripped.find('/') {
             Ok((&stripped[..pos], &stripped[pos..]))
@@ -445,7 +469,10 @@ pub fn parse_target<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Re
         if let Some(h) = host_header {
             Ok((h, target))
         } else {
-            Err(io::Error::new(io::ErrorKind::InvalidInput, "Missing host in HTTP request"))
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Missing host in HTTP request",
+            ))
         }
     } else {
         Ok((target, "/"))
@@ -491,7 +518,10 @@ mod tests {
         assert_eq!(status, 200);
         assert!(head.ends_with(b"\r\n\r\n"));
         assert_eq!(headers.len(), 2);
-        assert_eq!(headers[1], ("cache-control".to_string(), "max-age=60".to_string()));
+        assert_eq!(
+            headers[1],
+            ("cache-control".to_string(), "max-age=60".to_string())
+        );
 
         let mut rest = Vec::new();
         reader.read_to_end(&mut rest).unwrap();
@@ -500,14 +530,22 @@ mod tests {
 
     #[test]
     fn test_response_ttl_default() {
-        let ttl = response_ttl(200, &hdrs(&[("content-type", "text/html")]), Duration::from_secs(300));
+        let ttl = response_ttl(
+            200,
+            &hdrs(&[("content-type", "text/html")]),
+            Duration::from_secs(300),
+        );
         assert_eq!(ttl, Some(Duration::from_secs(300)));
     }
 
     #[test]
     fn test_response_ttl_max_age_and_s_maxage() {
         assert_eq!(
-            response_ttl(200, &hdrs(&[("cache-control", "public, max-age=120")]), Duration::from_secs(300)),
+            response_ttl(
+                200,
+                &hdrs(&[("cache-control", "public, max-age=120")]),
+                Duration::from_secs(300)
+            ),
             Some(Duration::from_secs(120))
         );
         assert_eq!(
@@ -523,9 +561,18 @@ mod tests {
     #[test]
     fn test_response_not_cacheable() {
         let d = Duration::from_secs(300);
-        assert_eq!(response_ttl(200, &hdrs(&[("cache-control", "no-store")]), d), None);
-        assert_eq!(response_ttl(200, &hdrs(&[("cache-control", "private")]), d), None);
-        assert_eq!(response_ttl(200, &hdrs(&[("cache-control", "max-age=0")]), d), None);
+        assert_eq!(
+            response_ttl(200, &hdrs(&[("cache-control", "no-store")]), d),
+            None
+        );
+        assert_eq!(
+            response_ttl(200, &hdrs(&[("cache-control", "private")]), d),
+            None
+        );
+        assert_eq!(
+            response_ttl(200, &hdrs(&[("cache-control", "max-age=0")]), d),
+            None
+        );
         assert_eq!(response_ttl(200, &hdrs(&[("set-cookie", "a=b")]), d), None);
         assert_eq!(response_ttl(200, &hdrs(&[("vary", "*")]), d), None);
         assert_eq!(response_ttl(500, &hdrs(&[]), d), None);
@@ -544,7 +591,9 @@ mod tests {
         let mut out = Vec::new();
         let n = write_cached_response(&mut out, cached, CacheSource::Disk, 42).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.starts_with("HTTP/1.1 200 OK\r\nX-Cache: HIT from sorahost-http-proxy (disk)\r\nAge: 42\r\n"));
+        assert!(text.starts_with(
+            "HTTP/1.1 200 OK\r\nX-Cache: HIT from sorahost-http-proxy (disk)\r\nAge: 42\r\n"
+        ));
         assert!(text.ends_with("\r\n\r\nhi"));
         assert_eq!(n, text.len());
     }
