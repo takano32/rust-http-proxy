@@ -10,8 +10,10 @@ use crate::envfile;
 pub struct Config {
     /// 待ち受けポート
     pub port: u16,
-    /// 待ち受けアドレス。空ならデュアルスタック (`[::]` + `0.0.0.0`) を自動で試す
+    /// 待ち受けアドレス。空なら `0.0.0.0` (IPv6 有効時はデュアルスタック)
     pub bind_addrs: Vec<IpAddr>,
+    /// IPv6 を使うか (待ち受けと AAAA での接続)。既定 off
+    pub ipv6: bool,
     pub acl: AclConfig,
     pub timeout: Duration,
     /// クライアント接続を keep-alive で待つアイドル時間。0 なら 1 接続 1 要求
@@ -61,6 +63,9 @@ impl Config {
                 "0" | "false" | "off" | "no"
             )
         };
+        if let Some(v) = envfile::var("PROXY_IPV6") {
+            cfg.ipv6 = !off(v);
+        }
         if let Some(v) = envfile::var("PROXY_TLS") {
             cfg.tls_enabled = !off(v);
         }
@@ -92,6 +97,7 @@ impl Config {
         Ok(Self {
             port,
             bind_addrs: Vec::new(),
+            ipv6: false,
             acl,
             timeout,
             keepalive: Duration::from_secs(15),
@@ -126,7 +132,8 @@ mod tests {
     fn test_valid_port() {
         let cfg = Config::new("9090", None, None, Duration::from_secs(10)).unwrap();
         assert_eq!(cfg.port, 9090);
-        assert!(cfg.bind_addrs.is_empty(), "dual-stack auto by default");
+        assert!(cfg.bind_addrs.is_empty());
+        assert!(!cfg.ipv6, "IPv6 off by default");
         assert_eq!(cfg.timeout, Duration::from_secs(10));
         assert_eq!(cfg.keepalive, Duration::from_secs(15));
         assert_eq!(cfg.pool_per_host, 8);

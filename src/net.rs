@@ -1,11 +1,14 @@
-//! IPv4 / IPv6 デュアルスタックのためのネットワーク補助。
+//! ネットワーク補助。IPv6 は既定で無効 (`PROXY_IPV6=on` で有効)。
 //!
-//! - 待ち受け: `[::]` と `0.0.0.0` の両方を試し、IPv6 が無い環境では IPv4 だけにフォールバック
-//! - 接続: A / AAAA の両方を引き、IPv6 優先で 250 ms ずつずらして並行に試す (Happy Eyeballs, RFC 8305)
+//! - 待ち受け: 既定は `0.0.0.0` のみ。IPv6 有効時は `[::]` と `0.0.0.0` の両方を試し、
+//!   IPv6 が無い環境では IPv4 だけにフォールバック
+//! - 接続: 既定は A レコードだけ。IPv6 有効時は A / AAAA の両方を引き、IPv6 優先で 250 ms ずつ
+//!   ずらして並行に試す (Happy Eyeballs, RFC 8305)
 //! - `[2001:db8::1]:8080` 形式のホスト・ポート解析と、v4-mapped アドレス (`::ffff:1.2.3.4`) の正規化
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -14,6 +17,17 @@ use crate::{log_debug, log_warn};
 
 /// Happy Eyeballs で次の接続試行を始めるまでの間隔。
 const STAGGER: Duration = Duration::from_millis(250);
+
+/// IPv6 を使うか (既定 off)。起動時に設定から決める。
+static IPV6_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_ipv6_enabled(on: bool) {
+    IPV6_ENABLED.store(on, Ordering::Relaxed);
+}
+
+pub fn ipv6_enabled() -> bool {
+    IPV6_ENABLED.load(Ordering::Relaxed)
+}
 
 /// `host:port` / `[v6]:port` / `[v6]` / `host` / 素の `v6` を (ホスト, ポート) に分ける。
 pub fn split_host_port(s: &str) -> (String, Option<u16>) {
@@ -71,14 +85,22 @@ pub fn canonical_addr(addr: SocketAddr) -> SocketAddr {
     SocketAddr::new(canonical_ip(addr.ip()), addr.port())
 }
 
-/// 待ち受けソケットを作る。`addrs` が空ならデュアルスタック (`[::]` + `0.0.0.0`) を自動で試す。
-/// `port` が 0 のときは最初に取れたポートを残りにも使う。
+/// 待ち受けソケットを作る。`addrs` が空なら IPv6 有効時はデュアルスタック (`[::]` + `0.0.0.0`)、
+/// 無効時は `0.0.0.0` だけ。`port` が 0 のときは最初に取れたポートを残りにも使う。
 pub fn bind_all(addrs: &[IpAddr], port: u16) -> io::Result<Vec<TcpListener>> {
+    bind_all_with(addrs, port, ipv6_enabled())
+}
+
+pub fn bind_all_with(addrs: &[IpAddr], port: u16, ipv6: bool) -> io::Result<Vec<TcpListener>> {
     let candidates: Vec<IpAddr> = if addrs.is_empty() {
-        vec![
-            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        ]
+        if ipv6 {
+            vec![
+                IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            ]
+        } else {
+            vec![IpAddr::V4(Ipv4Addr::UNSPECIFIED)]
+        }
     } else {
         addrs.to_vec()
     };
@@ -150,13 +172,23 @@ pub fn interleave(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
     out
 }
 
-/// 名前解決して Happy Eyeballs で接続する。全体の締め切りは `timeout`。
+/// 名前解決して接続する。IPv6 無効時は A レコードだけ、有効時は Happy Eyeballs。全体の締め切りは `timeout`。
 pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
-    let addrs = interleave(addr_str.to_socket_addrs()?.collect());
+    let resolved: Vec<SocketAddr> = addr_str.to_socket_addrs()?.collect();
+    let ipv6 = ipv6_enabled();
+    let addrs: Vec<SocketAddr> = if ipv6 {
+        interleave(resolved)
+    } else {
+        resolved.into_iter().filter(|a| a.is_ipv4()).collect()
+    };
     if addrs.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "Could not resolve host",
+            if ipv6 {
+                "Could not resolve host"
+            } else {
+                "host has no IPv4 address (IPv6 is disabled; set PROXY_IPV6=on)"
+            },
         ));
     }
     connect_resolved(addrs, timeout)

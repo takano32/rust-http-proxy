@@ -33,6 +33,7 @@ fn main() {
         }
     };
 
+    net::set_ipv6_enabled(config.ipv6);
     let listeners = match net::bind_all(&config.bind_addrs, config.port) {
         Ok(l) => l,
         Err(e) => {
@@ -138,10 +139,15 @@ fn main() {
     }
     log_info!(
         None,
-        "timeout: {}s, keep-alive: {}s, origin pool: {} per host",
+        "timeout: {}s, keep-alive: {}s, origin pool: {} per host, IPv6: {}",
         config.timeout.as_secs(),
         config.keepalive.as_secs(),
-        config.pool_per_host
+        config.pool_per_host,
+        if config.ipv6 {
+            "on"
+        } else {
+            "off (PROXY_IPV6=on to enable)"
+        }
     );
     if !config.acl.allow_hosts.is_empty() {
         log_info!(None, "allowed hosts: {:?}", config.acl.allow_hosts);
