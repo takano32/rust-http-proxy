@@ -1,5 +1,6 @@
 use std::env;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use crate::acl::AclConfig;
 use crate::auth::AuthConfig;
@@ -9,6 +10,7 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     pub auth: AuthConfig,
     pub acl: AclConfig,
+    pub timeout: Duration,
 }
 
 impl Config {
@@ -17,12 +19,17 @@ impl Config {
         let auth_val = env::var("PROXY_AUTH").ok();
         let allow_hosts = env::var("PROXY_ALLOW_HOSTS").ok();
         let deny_hosts = env::var("PROXY_DENY_HOSTS").ok();
+        let timeout_secs = env::var("PROXY_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(30);
 
         Self::new(
             &port_str,
             auth_val,
             allow_hosts.as_deref(),
             deny_hosts.as_deref(),
+            Duration::from_secs(timeout_secs),
         )
     }
 
@@ -31,6 +38,7 @@ impl Config {
         proxy_auth: Option<String>,
         allow_hosts: Option<&str>,
         deny_hosts: Option<&str>,
+        timeout: Duration,
     ) -> Result<Self, String> {
         let port: u16 = port_str
             .parse()
@@ -44,6 +52,7 @@ impl Config {
             bind_addr,
             auth,
             acl,
+            timeout,
         })
     }
 }
@@ -54,20 +63,21 @@ mod tests {
 
     #[test]
     fn test_valid_port() {
-        let cfg = Config::new("9090", None, None, None).unwrap();
+        let cfg = Config::new("9090", None, None, None, Duration::from_secs(10)).unwrap();
         assert_eq!(cfg.bind_addr.port(), 9090);
+        assert_eq!(cfg.timeout, Duration::from_secs(10));
         assert!(!cfg.auth.is_enabled());
     }
 
     #[test]
     fn test_auth_config() {
-        let cfg = Config::new("9090", Some("user:pass".to_string()), None, None).unwrap();
+        let cfg = Config::new("9090", Some("user:pass".to_string()), None, None, Duration::from_secs(30)).unwrap();
         assert!(cfg.auth.is_enabled());
     }
 
     #[test]
     fn test_invalid_port() {
-        assert!(Config::new("invalid", None, None, None).is_err());
-        assert!(Config::new("99999", None, None, None).is_err());
+        assert!(Config::new("invalid", None, None, None, Duration::from_secs(30)).is_err());
+        assert!(Config::new("99999", None, None, None, Duration::from_secs(30)).is_err());
     }
 }

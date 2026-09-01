@@ -1,21 +1,23 @@
 use std::io::{self, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::thread;
+use std::time::Duration;
 
 pub fn handle_connect(
     mut client: TcpStream,
     target: &str,
+    timeout: Duration,
     conn_id: usize,
 ) -> io::Result<()> {
-    let addr = if target.contains(':') {
+    let addr_str = if target.contains(':') {
         target.to_string()
     } else {
         format!("{}:443", target)
     };
 
-    println!("[Conn #{}] CONNECT {}", conn_id, addr);
+    println!("[Conn #{}] CONNECT {}", conn_id, addr_str);
 
-    let server = match TcpStream::connect(&addr) {
+    let server = match connect_with_timeout(&addr_str, timeout) {
         Ok(s) => s,
         Err(e) => {
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
@@ -32,6 +34,28 @@ pub fn handle_connect(
     server.set_write_timeout(None)?;
 
     tunnel(client, server)
+}
+
+pub fn connect_with_timeout(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
+    let addrs: Vec<SocketAddr> = addr_str.to_socket_addrs()?.collect();
+    if addrs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Could not resolve host",
+        ));
+    }
+
+    let mut last_err = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, timeout) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last_err = Some(e),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        io::Error::new(io::ErrorKind::ConnectionRefused, "Failed to connect")
+    }))
 }
 
 pub fn tunnel(mut client: TcpStream, mut server: TcpStream) -> io::Result<()> {

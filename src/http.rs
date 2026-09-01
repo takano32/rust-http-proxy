@@ -1,13 +1,16 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::time::Duration;
 
 use crate::headers;
+use crate::tunnel::connect_with_timeout;
 
 pub fn handle_http(
     client: TcpStream,
     peer_addr: Option<SocketAddr>,
     request_line: String,
     mut reader: BufReader<TcpStream>,
+    timeout: Duration,
     conn_id: usize,
 ) -> io::Result<()> {
     let mut raw_headers = Vec::new();
@@ -22,7 +25,7 @@ pub fn handle_http(
         }
         raw_headers.push(line);
     }
-    handle_http_with_headers(client, peer_addr, request_line, raw_headers, reader, conn_id)
+    handle_http_with_headers(client, peer_addr, request_line, raw_headers, reader, timeout, conn_id)
 }
 
 pub fn handle_http_with_headers(
@@ -31,6 +34,7 @@ pub fn handle_http_with_headers(
     request_line: String,
     raw_headers: Vec<String>,
     mut reader: BufReader<TcpStream>,
+    timeout: Duration,
     conn_id: usize,
 ) -> io::Result<()> {
     let mut host_header = None;
@@ -69,13 +73,16 @@ pub fn handle_http_with_headers(
 
     println!("[Conn #{}] {} http://{}{}", conn_id, method, server_addr, path);
 
-    let mut server = match TcpStream::connect(&server_addr) {
+    let mut server = match connect_with_timeout(&server_addr, timeout) {
         Ok(s) => s,
         Err(e) => {
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
             return Err(e);
         }
     };
+
+    server.set_read_timeout(Some(timeout))?;
+    server.set_write_timeout(Some(timeout))?;
 
     let forward_request_line = format!("{} {} {}\r\n", method, path, version);
     server.write_all(forward_request_line.as_bytes())?;

@@ -8,7 +8,6 @@ pub mod tunnel;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
-use std::time::Duration;
 
 use config::Config;
 
@@ -27,8 +26,8 @@ Content-Length: 13\r\n\
 
 pub fn handle_client(mut client: TcpStream, config: Arc<Config>, conn_id: usize) -> io::Result<()> {
     let peer_addr = client.peer_addr().ok();
-    client.set_read_timeout(Some(Duration::from_secs(30)))?;
-    client.set_write_timeout(Some(Duration::from_secs(30)))?;
+    client.set_read_timeout(Some(config.timeout))?;
+    client.set_write_timeout(Some(config.timeout))?;
 
     let mut reader = BufReader::new(client.try_clone()?);
     let mut request_line = String::new();
@@ -99,7 +98,7 @@ pub fn handle_client(mut client: TcpStream, config: Arc<Config>, conn_id: usize)
 
     // 3. Forward or Tunnel
     if method.eq_ignore_ascii_case("CONNECT") {
-        tunnel::handle_connect(client, target, conn_id)?;
+        tunnel::handle_connect(client, target, config.timeout, conn_id)?;
     } else {
         http::handle_http_with_headers(
             client,
@@ -107,6 +106,7 @@ pub fn handle_client(mut client: TcpStream, config: Arc<Config>, conn_id: usize)
             request_line,
             raw_headers,
             reader,
+            config.timeout,
             conn_id,
         )?;
     }
