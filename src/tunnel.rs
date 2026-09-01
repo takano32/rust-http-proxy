@@ -1,5 +1,5 @@
 use std::io::{self, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::log::{Access, access};
 use crate::metrics::Metrics;
+use crate::net;
 use crate::{log_debug, log_trace, log_warn};
 
 pub fn handle_connect(
@@ -19,13 +20,9 @@ pub fn handle_connect(
     let started = Instant::now();
     let client_ip = client
         .peer_addr()
-        .map(|a| a.ip().to_string())
+        .map(|a| net::canonical_ip(a.ip()).to_string())
         .unwrap_or_else(|_| "-".to_string());
-    let addr_str = if target.contains(':') {
-        target.to_string()
-    } else {
-        format!("{}:443", target)
-    };
+    let addr_str = net::with_default_port(target, 443);
 
     log_debug!(Some(conn_id), "start CONNECT {}", addr_str);
 
@@ -82,25 +79,9 @@ pub fn handle_connect(
     Ok(())
 }
 
+/// 名前解決して接続する (IPv6 / IPv4 を Happy Eyeballs で並行に試す)。
 pub fn connect_with_timeout(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
-    let addrs: Vec<SocketAddr> = addr_str.to_socket_addrs()?.collect();
-    if addrs.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Could not resolve host",
-        ));
-    }
-
-    let mut last_err = None;
-    for addr in addrs {
-        match TcpStream::connect_timeout(&addr, timeout) {
-            Ok(stream) => return Ok(stream),
-            Err(e) => last_err = Some(e),
-        }
-    }
-
-    Err(last_err
-        .unwrap_or_else(|| io::Error::new(io::ErrorKind::ConnectionRefused, "Failed to connect")))
+    net::connect(addr_str, timeout)
 }
 
 /// 双方向にデータを中継し、転送した合計バイト数を返す。

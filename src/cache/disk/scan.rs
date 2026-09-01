@@ -1,7 +1,8 @@
 //! 起動時のディスクキャッシュ走査 (インデックス復元)。
 //!
-//! 分割ディレクトリ内のファイルは mtime = 有効期限なので `stat` だけで済む。
-//! mtime が過去 (期限切れ、またはコピー等で mtime が失われた) ならヘッダーを読んで確認する。
+//! 分割ディレクトリ内のファイルは mtime = 有効期限、拡張子 = バリデータの有無なので
+//! `stat` だけで済む。mtime が過去 (期限切れ、またはコピー等で mtime が失われた) なら
+//! ヘッダーを読んで確認し、再検証できないか古すぎるものは消す。
 //! 直下にある旧レイアウト (フラット配置) のファイルは分割ディレクトリへ移す。
 
 use std::fs::{self, OpenOptions};
@@ -11,9 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::{DiskEntry, DiskTier};
-use crate::cache::format;
+use crate::cache::format::{self, Meta};
 use crate::cache::key::CacheKey;
 use crate::cache::lru::Store;
+use crate::cache::memory::is_garbage;
 use crate::log_info;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -24,9 +26,24 @@ pub struct ScanReport {
     pub removed: usize,
 }
 
+/// ファイル名からキーとバリデータの有無を取り出す。
+fn parse_name(name: &str) -> Option<(CacheKey, bool)> {
+    if let Some(stem) = name.strip_suffix(".vcache") {
+        return CacheKey::from_hex(stem).map(|k| (k, true));
+    }
+    name.strip_suffix(".cache")
+        .and_then(CacheKey::from_hex)
+        .map(|k| (k, false))
+}
+
 impl DiskTier {
     /// 直下の旧レイアウトのエントリを分割ディレクトリへ移し、一時ファイルを消す。
-    pub(super) fn scan_root(&self, now: u64, report: &mut ScanReport) -> io::Result<()> {
+    pub(super) fn scan_root(
+        &self,
+        now: u64,
+        max_stale: u64,
+        report: &mut ScanReport,
+    ) -> io::Result<()> {
         for entry in fs::read_dir(&self.dir)?.flatten() {
             let path = entry.path();
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -37,12 +54,12 @@ impl DiskTier {
                 report.removed += 1;
                 continue;
             }
-            let Some(key) = name.strip_suffix(".cache").and_then(CacheKey::from_hex) else {
+            let Some((key, _)) = parse_name(name) else {
                 continue;
             };
             match format::read_meta(&path) {
-                Some(meta) if meta.expires_at > now => {
-                    let dest = self.path_for(key);
+                Some(meta) if !is_garbage(&meta, now, max_stale) => {
+                    let dest = self.path_for(key, meta.validators);
                     if fs::rename(&path, &dest).is_ok() {
                         set_expiry_mtime(&dest, meta.expires_at);
                         report.migrated += 1;
@@ -67,6 +84,7 @@ impl DiskTier {
         index: &mut Store<DiskEntry>,
         clock: &AtomicU64,
         now: u64,
+        max_stale: u64,
         report: &mut ScanReport,
     ) {
         let Ok(entries) = fs::read_dir(shard) else {
@@ -82,17 +100,22 @@ impl DiskTier {
                 report.removed += 1;
                 continue;
             }
-            let Some(key) = name.strip_suffix(".cache").and_then(CacheKey::from_hex) else {
+            let Some((key, validators)) = parse_name(name) else {
                 continue;
             };
-            let Ok(meta) = entry.metadata() else {
+            let Ok(stat) = entry.metadata() else {
                 continue;
             };
-            let size = meta.len();
-            let expires_at = match mtime_epoch(&meta) {
-                Some(t) if t > now => t,
+            let size = stat.len();
+            let meta = match mtime_epoch(&stat) {
+                // 高速パス: mtime に有効期限が入っていて、まだ先
+                Some(t) if t > now => Meta {
+                    stored_at: 0,
+                    expires_at: t,
+                    validators,
+                },
                 _ => match format::read_meta(&path) {
-                    Some(m) => m.expires_at,
+                    Some(m) => m,
                     None => {
                         let _ = fs::remove_file(&path);
                         report.removed += 1;
@@ -100,14 +123,14 @@ impl DiskTier {
                     }
                 },
             };
-            if expires_at <= now {
+            if is_garbage(&meta, now, max_stale) {
                 let _ = fs::remove_file(&path);
                 report.expired += 1;
                 continue;
             }
             index.insert(
                 key,
-                DiskEntry::new(size, expires_at),
+                DiskEntry::new(size, meta),
                 clock.fetch_add(1, Ordering::Relaxed),
             );
             report.restored += 1;

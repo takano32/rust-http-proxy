@@ -3,11 +3,13 @@
 //! バラストは 64 MiB 単位の `Vec<u8>` を 0 以外で埋めて全ページをコミットさせたもの。
 //! キャッシュエントリが増えるとその分だけバラストを解放し、常に
 //! `エントリ + バラスト <= 予算` を保つ。予算が縮んだときはバラスト → LRU の順に手放す。
+//!
+//! 期限切れでもバリデータ (ETag / Last-Modified) を持つエントリは再検証用に残す。
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::CachedResponse;
+use super::format::Meta;
 use super::key::CacheKey;
 use super::lru::{LruEntry, Store};
 use crate::{log_debug, log_warn};
@@ -20,8 +22,7 @@ const EVICT_BATCH: usize = 256;
 
 pub struct MemEntry {
     pub data: Arc<Vec<u8>>,
-    pub stored_at: u64,
-    pub expires_at: u64,
+    pub meta: Meta,
     last_used: u64,
 }
 
@@ -35,6 +36,12 @@ impl LruEntry for MemEntry {
     fn set_last_used(&mut self, seq: u64) {
         self.last_used = seq;
     }
+}
+
+/// `get` の結果。`meta.expires_at <= now` なら stale (再検証が必要)。
+pub struct MemHit {
+    pub data: Arc<Vec<u8>>,
+    pub meta: Meta,
 }
 
 pub struct MemTier {
@@ -81,18 +88,17 @@ impl MemTier {
         self.usage().0.saturating_add(self.ballast_bytes())
     }
 
-    /// 有効なエントリがあれば返す。期限切れはこの場で削除する。
-    pub fn get(&self, key: CacheKey, now: u64, seq: u64) -> Option<CachedResponse> {
+    /// エントリがあれば返す (期限切れでもバリデータ付きなら返す)。再検証できない期限切れは削除。
+    pub fn get(&self, key: CacheKey, now: u64, seq: u64) -> Option<MemHit> {
         let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
         let entry = store.get(key)?;
-        if entry.expires_at > now {
-            let resp = CachedResponse {
-                bytes: Arc::clone(&entry.data),
-                stored_at: entry.stored_at,
-                expires_at: entry.expires_at,
+        if entry.meta.expires_at > now || entry.meta.validators {
+            let hit = MemHit {
+                data: Arc::clone(&entry.data),
+                meta: entry.meta,
             };
             store.touch(key, seq);
-            return Some(resp);
+            return Some(hit);
         }
         let removed = store.remove(key);
         drop(store);
@@ -101,14 +107,7 @@ impl MemTier {
     }
 
     /// 挿入し、上限超過分を LRU で追い出す。戻り値は追い出し件数。
-    pub fn insert(
-        &self,
-        key: CacheKey,
-        data: Arc<Vec<u8>>,
-        stored_at: u64,
-        expires_at: u64,
-        seq: u64,
-    ) -> usize {
+    pub fn insert(&self, key: CacheKey, data: Arc<Vec<u8>>, meta: Meta, seq: u64) -> usize {
         let capacity = self.capacity();
         if data.len() as u64 > capacity {
             return 0;
@@ -118,8 +117,7 @@ impl MemTier {
             let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
             let entry = MemEntry {
                 data,
-                stored_at,
-                expires_at,
+                meta,
                 last_used: 0,
             };
             if let Some(old) = store.insert(key, entry, seq) {
@@ -146,6 +144,25 @@ impl MemTier {
         self.release_ballast(bytes, capacity);
         drop(dropped);
         evicted
+    }
+
+    /// 再検証に成功したので有効期限を延ばす。エントリが無ければ false。
+    pub fn refresh(&self, key: CacheKey, expires_at: u64, seq: u64) -> bool {
+        let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(entry) = store.get_mut(key) else {
+            return false;
+        };
+        entry.meta.expires_at = expires_at;
+        store.touch(key, seq);
+        true
+    }
+
+    pub fn remove(&self, key: CacheKey) -> bool {
+        let removed = {
+            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            store.remove(key)
+        };
+        removed.is_some()
     }
 
     /// 予算に合わせる (プローブから呼ぶ)。バラスト → LRU の順に手放し、追い出し件数を返す。
@@ -235,12 +252,13 @@ impl MemTier {
         added
     }
 
-    /// 期限切れエントリを削除し、件数を返す。
-    pub fn sweep_expired(&self, now: u64) -> usize {
+    /// 期限切れで再検証できない、または期限から `max_stale` 秒以上経ったエントリを削除する。
+    pub fn sweep(&self, now: u64, max_stale: u64) -> usize {
         let mut dropped = Vec::new();
         {
             let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
-            for key in store.keys_where(|e| e.expires_at <= now) {
+            let keys = store.keys_where(|e| is_garbage(&e.meta, now, max_stale));
+            for key in keys {
                 if let Some(e) = store.remove(key) {
                     dropped.push(e.data);
                 }
@@ -250,4 +268,9 @@ impl MemTier {
         drop(dropped);
         n
     }
+}
+
+/// 期限切れで再検証できない、または期限から `max_stale` 秒以上経っているか。
+pub fn is_garbage(meta: &Meta, now: u64, max_stale: u64) -> bool {
+    meta.expires_at <= now && (!meta.validators || meta.expires_at.saturating_add(max_stale) <= now)
 }

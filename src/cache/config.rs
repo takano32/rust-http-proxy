@@ -8,8 +8,8 @@ use std::time::Duration;
 
 pub const MIB: u64 = 1024 * 1024;
 
-/// 自動モードの既定の目標使用率 (%)。
-pub const DEFAULT_TARGET_PERCENT: u8 = 90;
+/// 自動モードの既定の使用率キャップ (%)。100 = 割合では抑えず、動的マージンだけで決める。
+pub const DEFAULT_TARGET_PERCENT: u8 = 100;
 /// 自動モードが使えない環境 (Linux 以外など) で使う固定上限。
 pub const FALLBACK_MEM: u64 = 200 * MIB;
 pub const FALLBACK_DISK: u64 = 2048 * MIB;
@@ -17,7 +17,8 @@ pub const FALLBACK_DISK: u64 = 2048 * MIB;
 /// 各層の上限の指定方法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Limit {
-    /// システム全体の使用率が `percent` % に達するまで自動で確保する。
+    /// 動的な安全マージンだけ残して自動で確保する。`percent` はその上に掛ける
+    /// 使用率のキャップ (100 = キャップ無し)。
     Auto { percent: u8 },
     /// 固定上限 (バイト)。
     Fixed(u64),
@@ -66,7 +67,8 @@ impl Limit {
 impl fmt::Display for Limit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Limit::Auto { percent } => write!(f, "auto (up to {}% of system)", percent),
+            Limit::Auto { percent: 100 } => write!(f, "auto (dynamic margin)"),
+            Limit::Auto { percent } => write!(f, "auto (dynamic margin, cap {}%)", percent),
             Limit::Fixed(bytes) => write!(f, "{} MiB", bytes / MIB),
         }
     }
@@ -83,13 +85,26 @@ pub struct CacheConfig {
     pub probe_interval: Duration,
     /// ディスクキャッシュ格納ディレクトリ
     pub dir: PathBuf,
-    /// Cache-Control が無い場合の既定 TTL
+    /// 手動で指定する最低限の空きマージン (バイト)。0 なら動的マージンのみ
+    pub mem_keep_free: u64,
+    pub disk_keep_free: u64,
+    /// Cache-Control も Last-Modified も無い場合の既定 TTL
     pub default_ttl: Duration,
-    /// 1 オブジェクトの最大サイズ (バイト)
+    /// Last-Modified からの経験則: 経過時間のこの割合 (%) を TTL にする
+    pub heuristic_percent: u8,
+    /// 経験則 TTL の上限
+    pub heuristic_max: Duration,
+    /// 期限切れでも再検証できるエントリを保持しておく最長時間 (期限からの経過)
+    pub max_stale: Duration,
+    /// ディスク層に置く 1 オブジェクトの最大サイズ (バイト)。本文はストリーミングで書く
     pub max_object_size: u64,
+    /// メモリ層に置く 1 オブジェクトの最大サイズ (バイト)
+    pub mem_max_object_size: u64,
     /// コンテナのディスク割当 (バイト)。Pterodactyl のように「ディレクトリの合計サイズ」で
     /// 制限される環境向けで、指定すると `statvfs` の代わりにこの値を分母にする。
     pub disk_quota: Option<u64>,
+    /// `PROXY_DISK_QUOTA_MB` (別名 `SERVER_DISK`) が明示されたか (`0` = 無制限の明示も含む)。
+    pub disk_quota_set: bool,
     /// `disk_quota` が適用されるディレクトリ (通常はコンテナのボリューム = `$HOME`)。
     pub quota_root: Option<PathBuf>,
     /// コンテナのメモリ割当 (バイト)。Pterodactyl が渡す `SERVER_MEMORY` (MB)。
@@ -109,11 +124,18 @@ impl Default for CacheConfig {
                 percent: DEFAULT_TARGET_PERCENT,
             },
             reserve: true,
-            probe_interval: Duration::from_secs(2),
+            probe_interval: Duration::from_secs(1),
             dir: env::temp_dir().join("sorahost-http-proxy-cache"),
+            mem_keep_free: 0,
+            disk_keep_free: 0,
             default_ttl: Duration::from_secs(300),
-            max_object_size: 32 * MIB,
+            heuristic_percent: 10,
+            heuristic_max: Duration::from_secs(7 * 24 * 3600),
+            max_stale: Duration::from_secs(30 * 24 * 3600),
+            max_object_size: 4096 * MIB,
+            mem_max_object_size: 32 * MIB,
             disk_quota: None,
+            disk_quota_set: false,
             quota_root: None,
             mem_alloc: None,
             pterodactyl: false,
@@ -173,15 +195,38 @@ impl CacheConfig {
                 .map(Duration::from_secs)
                 .unwrap_or(d.probe_interval),
             dir,
+            mem_keep_free: num("PROXY_MEM_KEEP_FREE_MB")
+                .map(|v| v.saturating_mul(MIB))
+                .unwrap_or(d.mem_keep_free),
+            disk_keep_free: num("PROXY_DISK_KEEP_FREE_MB")
+                .map(|v| v.saturating_mul(MIB))
+                .unwrap_or(d.disk_keep_free),
             default_ttl: num("PROXY_CACHE_TTL_SECS")
                 .map(Duration::from_secs)
                 .unwrap_or(d.default_ttl),
+            heuristic_percent: num("PROXY_CACHE_HEURISTIC_PERCENT")
+                .filter(|p| (0..=100).contains(p))
+                .map(|p| p as u8)
+                .unwrap_or(d.heuristic_percent),
+            heuristic_max: num("PROXY_CACHE_HEURISTIC_MAX_SECS")
+                .map(Duration::from_secs)
+                .unwrap_or(d.heuristic_max),
+            max_stale: num("PROXY_CACHE_MAX_STALE_SECS")
+                .map(Duration::from_secs)
+                .unwrap_or(d.max_stale),
             max_object_size: num("PROXY_CACHE_MAX_OBJECT_MB")
                 .map(|v| v.saturating_mul(MIB))
                 .unwrap_or(d.max_object_size),
+            mem_max_object_size: num("PROXY_MEM_CACHE_MAX_OBJECT_MB")
+                .map(|v| v.saturating_mul(MIB))
+                .unwrap_or(d.mem_max_object_size),
             disk_quota: num("PROXY_DISK_QUOTA_MB")
+                .or_else(|| num("SERVER_DISK"))
                 .filter(|&v| v > 0)
                 .map(|v| v.saturating_mul(MIB)),
+            disk_quota_set: num("PROXY_DISK_QUOTA_MB")
+                .or_else(|| num("SERVER_DISK"))
+                .is_some(),
             quota_root: get("PROXY_DISK_QUOTA_ROOT").map(PathBuf::from).or(home),
             mem_alloc: num("SERVER_MEMORY")
                 .filter(|&v| v > 0)
@@ -258,6 +303,10 @@ mod tests {
 
     #[test]
     fn parses_limit_forms() {
+        assert_eq!(
+            Limit::parse("auto", 100),
+            Some(Limit::Auto { percent: 100 })
+        );
         assert_eq!(Limit::parse("auto", 90), Some(Limit::Auto { percent: 90 }));
         assert_eq!(
             Limit::parse(" AUTO:75 ", 90),
@@ -270,15 +319,17 @@ mod tests {
         assert_eq!(Limit::parse("lots", 90), None);
         assert_eq!(Limit::Fixed(3 * MIB).to_string(), "3 MiB");
         assert!(Limit::Auto { percent: 90 }.to_string().contains("90%"));
+        assert!(Limit::Auto { percent: 100 }.to_string().contains("dynamic"));
     }
 
     #[test]
     fn defaults_are_auto_with_reserve() {
         let d = CacheConfig::default();
-        assert_eq!(d.mem_limit, Limit::Auto { percent: 90 });
-        assert_eq!(d.disk_limit, Limit::Auto { percent: 90 });
+        assert_eq!(d.mem_limit, Limit::Auto { percent: 100 });
+        assert_eq!(d.disk_limit, Limit::Auto { percent: 100 });
         assert!(d.reserve && d.enabled);
-        assert_eq!(d.probe_interval, Duration::from_secs(2));
+        assert_eq!(d.probe_interval, Duration::from_secs(1));
+        assert_eq!(d.mem_keep_free, 0);
     }
 
     #[test]
@@ -308,7 +359,11 @@ mod tests {
         assert_eq!(cfg.dir, PathBuf::from("/tmp/shp-cfg-test"));
         assert_eq!(cfg.default_ttl, Duration::from_secs(5));
         assert_eq!(cfg.max_object_size, MIB);
+        assert_eq!(cfg.mem_max_object_size, 32 * MIB);
+        assert_eq!(cfg.mem_keep_free, 0);
+        assert_eq!(cfg.heuristic_percent, 10);
         assert_eq!(cfg.disk_quota, Some(10240 * MIB));
+        assert!(cfg.disk_quota_set);
         assert_eq!(cfg.quota_root, Some(PathBuf::from("/home/container")));
         assert_eq!(cfg.mem_alloc, Some(1024 * MIB));
         assert!(cfg.pterodactyl);
@@ -317,12 +372,16 @@ mod tests {
             ("PROXY_MEM_CACHE_MB", "garbage"),
             ("PROXY_MEM_TARGET_PERCENT", "0"),
             ("PROXY_CACHE_DIR", "/tmp/shp-cfg-test"),
+            ("PROXY_DISK_QUOTA_MB", "0"),
+            ("PROXY_DISK_KEEP_FREE_MB", "512"),
         ]
         .into_iter()
         .collect();
         let cfg = CacheConfig::from_lookup(|k| bad.get(k).map(|v| v.to_string()));
-        assert_eq!(cfg.mem_limit, Limit::Auto { percent: 90 });
+        assert_eq!(cfg.mem_limit, Limit::Auto { percent: 100 });
         assert_eq!(cfg.disk_quota, None);
+        assert!(cfg.disk_quota_set, "0 は「無制限」の明示");
+        assert_eq!(cfg.disk_keep_free, 512 * MIB);
         assert_eq!(cfg.mem_alloc, None);
         assert!(!cfg.pterodactyl);
     }

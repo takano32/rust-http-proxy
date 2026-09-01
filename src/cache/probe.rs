@@ -1,25 +1,34 @@
 //! バックグラウンドのプローブ。
 //!
-//! 一定間隔でシステム使用量を測り直して予算を更新し、超過分の追い出し、
-//! 期限切れの掃除、バラストの伸長を行う。スレッドは `Weak<Cache>` しか持たないので、
-//! `Cache` が破棄されれば自然に終了する。
+//! 一定間隔でシステム使用量を測り直し、動的マージン ([`super::margin`]) を更新して予算を
+//! 決め、超過分の追い出し・期限切れの掃除・バラストの伸長を行う。スレッドは
+//! `Weak<Cache>` しか持たないので、`Cache` が破棄されれば自然に終了する。
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::thread::{self, JoinHandle};
 
-use super::budget::{self, Probe};
+use super::budget::{self, Probe, percent_of};
 use super::config::{FALLBACK_DISK, FALLBACK_MEM, Limit, MIB};
 use super::{Cache, now_epoch};
 use crate::sysinfo;
 use crate::{log_debug, log_info, log_warn};
 
-/// 期限切れ掃除と quota モードの他者使用量の再計測を行う間隔 (秒)。
+/// 期限切れ掃除の間隔 (秒)。
 const SWEEP_INTERVAL_SECS: u64 = 30;
-/// メモリ圧迫を検知したあと、バラストの再確保を控える時間 (秒)。
+/// quota モードで割当ディレクトリ内の他者使用量を測り直す間隔 (秒)。
+const OTHERS_INTERVAL_SECS: u64 = 60;
+/// 圧迫を検知したあと、バラストの再確保を控える時間 (秒)。
 const PRESSURE_BACKOFF_SECS: u64 = 60;
 /// これ以上まとめて確保したときは info ログに出す。
 const ANNOUNCE_RESERVE_BYTES: u64 = 256 * MIB;
+/// カーネル床: `vm.min_free_kbytes` のこの倍を空けておく。
+const MIN_FREE_MULTIPLIER: u64 = 4;
+/// 床の絶対量 (ただし全体の 1/10 を超えない)。
+const MEM_FLOOR: u64 = 64 * MIB;
+const DISK_FLOOR: u64 = 256 * MIB;
+/// 圧迫時の最初のバックオフ (全体に対する %)。
+const BACKOFF_PERCENT: u8 = 5;
 
 pub fn spawn(cache: &Arc<Cache>) -> Option<JoinHandle<()>> {
     let interval = cache.config().probe_interval;
@@ -41,6 +50,11 @@ pub fn spawn(cache: &Arc<Cache>) -> Option<JoinHandle<()>> {
         .ok()
 }
 
+/// 「全体の 1%」と「絶対量 (ただし全体の 1/10 まで)」の大きい方。小さな資源で床が全部を食わないようにする。
+fn floor_for(total: u64, absolute: u64) -> u64 {
+    (total / 100).max(absolute.min(total / 10))
+}
+
 impl Cache {
     fn ticks_per(&self, secs: u64) -> u64 {
         let interval = self.cfg.probe_interval.as_secs().max(1);
@@ -53,9 +67,7 @@ impl Cache {
             return;
         }
         let tick = self.ticks.fetch_add(1, Ordering::Relaxed) + 1;
-        let sweep_every = self.ticks_per(SWEEP_INTERVAL_SECS);
-        let sweep_now = tick.is_multiple_of(sweep_every);
-        if sweep_now {
+        if tick.is_multiple_of(self.ticks_per(OTHERS_INTERVAL_SECS)) {
             self.refresh_other_disk_usage();
         }
 
@@ -63,9 +75,10 @@ impl Cache {
         let evicted = self.mem.enforce() + self.disk.enforce();
         self.count_evictions(evicted);
 
-        if sweep_now {
+        if tick.is_multiple_of(self.ticks_per(SWEEP_INTERVAL_SECS)) {
             let now = now_epoch();
-            let n = self.mem.sweep_expired(now) + self.disk.sweep_expired(now);
+            let max_stale = self.cfg.max_stale.as_secs();
+            let n = self.mem.sweep(now, max_stale) + self.disk.sweep(now, max_stale);
             if n > 0 {
                 log_debug!(None, "cache sweep: removed {} expired entries", n);
             }
@@ -106,23 +119,15 @@ impl Cache {
         self.other_disk_usage.store(others, Ordering::Relaxed);
     }
 
-    /// ホストのファイルシステム全体を分母にしてよいか。Pterodactyl では割当 (quota) が
-    /// 別に強制されるので、quota 未設定のときはホスト全体を見ずに固定値へ倒す。
-    fn host_fs_allowed(&self) -> bool {
-        !(self.cfg.pterodactyl && self.cfg.disk_quota.is_none())
-    }
-
-    /// システム使用量を測り直し、両層の上限を更新する。戻り値はメモリ圧迫の有無。
+    /// システム使用量を測り直し、マージンと両層の上限を更新する。戻り値はメモリ圧迫の有無。
     pub fn refresh_budget(&self) -> bool {
         let want_mem = self.cfg.mem_limit.is_auto();
         let quota = self
             .cfg
             .disk_quota
             .map(|q| (q, self.other_disk_usage.load(Ordering::Relaxed)));
-        let want_fs = self.cfg.disk_limit.is_auto()
-            && self.disk.is_ready()
-            && (quota.is_some() || self.host_fs_allowed());
-        let snap = budget::take(&Probe {
+        let want_fs = self.cfg.disk_limit.is_auto() && self.disk.is_ready();
+        let mut snap = budget::take(&Probe {
             dir: self.disk.dir(),
             want_mem,
             want_fs,
@@ -130,11 +135,53 @@ impl Cache {
             quota,
             owned_disk: self.disk.owned(),
         });
+        let enospc = self.disk.take_enospc();
+        let mut margins = self.margins.lock().unwrap_or_else(|p| p.into_inner());
 
-        let mem_cap = match self.cfg.mem_limit {
-            Limit::Fixed(b) => b,
+        let (mem_cap, mem_detail) = match self.cfg.mem_limit {
+            Limit::Fixed(b) => (b, None),
             Limit::Auto { percent } => match &snap.mem {
-                Some(m) => budget::mem_budget(self.mem.owned(), m, percent),
+                Some(m) => {
+                    let owned = self.mem.owned();
+                    // 最も厳しい cgroup (コンテナならこれが効く)
+                    let cg = m.cgroups.iter().min_by_key(|c| c.limit).copied();
+                    margins.host.observe(m.used().saturating_sub(owned));
+                    if let Some(cg) = cg {
+                        margins.cgroup.observe(cg.usage.saturating_sub(owned));
+                    }
+                    if m.under_pressure() {
+                        margins
+                            .host
+                            .on_pressure(percent_of(m.total, BACKOFF_PERCENT), m.total);
+                        if let Some(cg) = cg {
+                            margins
+                                .cgroup
+                                .on_pressure(percent_of(cg.limit, BACKOFF_PERCENT), cg.limit);
+                        }
+                    } else {
+                        margins.host.on_calm();
+                        margins.cgroup.on_calm();
+                    }
+                    let host_floor = (m.min_free.saturating_mul(MIN_FREE_MULTIPLIER))
+                        .max(floor_for(m.total, MEM_FLOOR));
+                    let host_keep = margins.host.keep_free(host_floor, m.active_file);
+                    let cg_keep = cg.map_or(0, |cg| {
+                        margins.cgroup.keep_free(floor_for(cg.limit, MEM_FLOOR), 0)
+                    });
+                    snap.mem_keep_free = host_keep;
+                    snap.cgroup_keep_free = cg_keep;
+                    let detail = match cg {
+                        Some(cg) => (
+                            "container memory",
+                            cg.usage as f64 * 100.0 / cg.limit.max(1) as f64,
+                        ),
+                        None => ("system memory", m.used_percent()),
+                    };
+                    (
+                        budget::mem_budget(owned, m, percent, host_keep, cg_keep),
+                        Some(detail),
+                    )
+                }
                 None => {
                     if !self.mem_fallback_warned.swap(true, Ordering::Relaxed) {
                         log_warn!(
@@ -143,56 +190,63 @@ impl Cache {
                             FALLBACK_MEM / MIB
                         );
                     }
-                    FALLBACK_MEM
+                    (FALLBACK_MEM, None)
                 }
             },
         };
-        let disk_cap = if !self.disk.is_ready() {
-            0
+
+        let (disk_cap, disk_detail) = if !self.disk.is_ready() {
+            (0, None)
         } else {
             match self.cfg.disk_limit {
-                Limit::Fixed(b) => b,
+                Limit::Fixed(b) => (b, None),
                 Limit::Auto { percent } => match &snap.fs {
-                    Some(f) => budget::disk_budget(self.disk.owned(), f, percent),
+                    Some(f) => {
+                        let owned = self.disk.owned();
+                        margins.disk.observe(f.used.saturating_sub(owned));
+                        let floor = floor_for(f.total, DISK_FLOOR);
+                        if enospc > 0 {
+                            margins.disk.on_pressure(
+                                percent_of(f.total, BACKOFF_PERCENT).max(floor),
+                                f.total,
+                            );
+                            log_info!(
+                                None,
+                                "disk is full for other writers ({} ENOSPC): backing off",
+                                enospc
+                            );
+                        } else {
+                            margins.disk.on_calm();
+                        }
+                        let keep = margins.disk.keep_free(floor, 0);
+                        snap.disk_keep_free = keep;
+                        let what = if quota.is_some() {
+                            "disk quota"
+                        } else {
+                            "filesystem"
+                        };
+                        (
+                            budget::disk_budget(owned, f, percent, keep),
+                            Some((what, f.used_percent())),
+                        )
+                    }
                     None => {
-                        if self.host_fs_allowed()
-                            && !self.disk_fallback_warned.swap(true, Ordering::Relaxed)
-                        {
+                        if !self.disk_fallback_warned.swap(true, Ordering::Relaxed) {
                             log_warn!(
                                 None,
                                 "filesystem usage is not measurable here; disk cache fixed at {} MiB",
                                 FALLBACK_DISK / MIB
                             );
                         }
-                        FALLBACK_DISK
+                        (FALLBACK_DISK, None)
                     }
                 },
             }
         };
+        drop(margins);
 
-        self.announce(
-            "memory",
-            self.mem.capacity(),
-            mem_cap,
-            snap.mem
-                .as_ref()
-                .map(|m| ("system memory", m.used_percent())),
-        );
-        self.announce(
-            "disk",
-            self.disk.capacity(),
-            disk_cap,
-            snap.fs.map(|f| {
-                (
-                    if quota.is_some() {
-                        "disk quota"
-                    } else {
-                        "filesystem"
-                    },
-                    f.used_percent(),
-                )
-            }),
-        );
+        self.announce("memory", self.mem.capacity(), mem_cap, mem_detail);
+        self.announce("disk", self.disk.capacity(), disk_cap, disk_detail);
         self.mem.set_capacity(mem_cap);
         self.disk.set_capacity(disk_cap);
 

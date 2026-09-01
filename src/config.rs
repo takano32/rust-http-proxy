@@ -1,5 +1,5 @@
 use std::env;
-use std::net::SocketAddr;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::acl::AclConfig;
@@ -7,7 +7,10 @@ use crate::cache::CacheConfig;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub bind_addr: SocketAddr,
+    /// 待ち受けポート
+    pub port: u16,
+    /// 待ち受けアドレス。空ならデュアルスタック (`[::]` + `0.0.0.0`) を自動で試す
+    pub bind_addrs: Vec<IpAddr>,
     pub acl: AclConfig,
     pub timeout: Duration,
     pub cache: CacheConfig,
@@ -23,13 +26,16 @@ impl Config {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(30);
 
-        Self::new(
+        let mut cfg = Self::new(
             &port_str,
             allow_hosts.as_deref(),
             deny_hosts.as_deref(),
             Duration::from_secs(timeout_secs),
-        )
-        .map(|cfg| cfg.with_cache(CacheConfig::from_env()))
+        )?;
+        if let Ok(bind) = env::var("PROXY_BIND") {
+            cfg.bind_addrs = parse_bind_list(&bind)?;
+        }
+        Ok(cfg.with_cache(CacheConfig::from_env()))
     }
 
     /// キャッシュ設定を差し替える。
@@ -47,17 +53,29 @@ impl Config {
         let port: u16 = port_str
             .parse()
             .map_err(|e| format!("Invalid SERVER_PORT '{}': {}", port_str, e))?;
-        let bind_addr: SocketAddr = format!("0.0.0.0:{}", port)
-            .parse()
-            .map_err(|e| format!("Invalid bind address: {}", e))?;
         let acl = AclConfig::new(allow_hosts, deny_hosts);
         Ok(Self {
-            bind_addr,
+            port,
+            bind_addrs: Vec::new(),
             acl,
             timeout,
             cache: CacheConfig::default(),
         })
     }
+}
+
+/// `PROXY_BIND` のカンマ区切りアドレス (`::`, `0.0.0.0`, `127.0.0.1`, `[::1]`)。空なら自動。
+pub fn parse_bind_list(s: &str) -> Result<Vec<IpAddr>, String> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            item.trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<IpAddr>()
+                .map_err(|e| format!("Invalid PROXY_BIND entry '{}': {}", item, e))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -67,8 +85,18 @@ mod tests {
     #[test]
     fn test_valid_port() {
         let cfg = Config::new("9090", None, None, Duration::from_secs(10)).unwrap();
-        assert_eq!(cfg.bind_addr.port(), 9090);
+        assert_eq!(cfg.port, 9090);
+        assert!(cfg.bind_addrs.is_empty(), "dual-stack auto by default");
         assert_eq!(cfg.timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_bind_list() {
+        let list = parse_bind_list(" ::, 0.0.0.0 ,[::1]").unwrap();
+        assert_eq!(list.len(), 3);
+        assert!(list[0].is_ipv6() && list[1].is_ipv4() && list[2].is_loopback());
+        assert!(parse_bind_list("nope").is_err());
+        assert!(parse_bind_list("").unwrap().is_empty());
     }
 
     #[test]
@@ -76,7 +104,7 @@ mod tests {
         let cfg = Config::new("8080", None, None, Duration::from_secs(30)).unwrap();
         assert!(cfg.cache.mem_limit.is_auto());
         assert!(cfg.cache.disk_limit.is_auto());
-        assert_eq!(cfg.cache.mem_limit.target_percent(), Some(90));
+        assert_eq!(cfg.cache.mem_limit.target_percent(), Some(100));
         assert!(cfg.cache.enabled && cfg.cache.reserve);
     }
 

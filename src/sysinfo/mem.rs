@@ -9,6 +9,8 @@ pub struct MemInfo {
     pub total: u64,
     /// カーネルの `MemAvailable` (回収可能なページキャッシュを含む見積もり)。
     pub available: u64,
+    /// 最近使われた (活性な) ファイルページ。他者のホットなページキャッシュ。
+    pub active_file: u64,
 }
 
 /// cgroup によるメモリ制限 (バイト)。
@@ -38,6 +40,7 @@ pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
     let mut total = None;
     let mut available = None;
     let mut free = None;
+    let mut active_file = 0u64;
     let mut reclaimable = 0u64;
     for line in text.lines() {
         let Some((key, rest)) = line.split_once(':') else {
@@ -50,6 +53,7 @@ pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
             "MemTotal" => total = Some(bytes),
             "MemAvailable" => available = Some(bytes),
             "MemFree" => free = Some(bytes),
+            "Active(file)" => active_file = bytes,
             "Buffers" | "Cached" | "SReclaimable" => reclaimable += bytes,
             _ => {}
         }
@@ -60,7 +64,18 @@ pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
     Some(MemInfo {
         total,
         available: available.min(total),
+        active_file,
     })
+}
+
+/// カーネルが常に空けておこうとする量 (`vm.min_free_kbytes`, バイト)。
+pub fn min_free_bytes() -> Option<u64> {
+    fs::read_to_string("/proc/sys/vm/min_free_kbytes")
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|kb| kb * 1024)
 }
 
 /// `"   123456 kB"` / `"123456"` 形式の値をバイトに変換する。
@@ -207,10 +222,11 @@ mod tests {
 
     #[test]
     fn parses_meminfo() {
-        let text = "MemTotal:        6792156 kB\nMemFree:          791672 kB\nMemAvailable:    2393856 kB\nBuffers:              16 kB\n";
+        let text = "MemTotal:        6792156 kB\nMemFree:          791672 kB\nMemAvailable:    2393856 kB\nBuffers:              16 kB\nActive(file):     617388 kB\n";
         let m = parse_meminfo(text).unwrap();
         assert_eq!(m.total, 6_792_156 * 1024);
         assert_eq!(m.available, 2_393_856 * 1024);
+        assert_eq!(m.active_file, 617_388 * 1024);
     }
 
     #[test]

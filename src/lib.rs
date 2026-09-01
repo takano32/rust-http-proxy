@@ -1,10 +1,13 @@
 pub mod acl;
 pub mod cache;
 pub mod config;
+pub mod freshness;
 pub mod headers;
 pub mod http;
+pub mod httpdate;
 pub mod log;
 pub mod metrics;
+pub mod net;
 pub mod sysinfo;
 pub mod tunnel;
 
@@ -50,7 +53,7 @@ pub fn handle_client(
     }
     let _guard = ConnGuard(Arc::clone(&metrics), conn_id, started);
 
-    let peer_addr = client.peer_addr().ok();
+    let peer_addr = client.peer_addr().ok().map(net::canonical_addr);
     log_debug!(
         Some(conn_id),
         "accepted connection from {}",

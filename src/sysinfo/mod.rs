@@ -15,5 +15,6 @@ pub use fs::{
     preallocate,
 };
 pub use mem::{
-    CgroupMem, MemInfo, MemPressure, cgroup_mem_limits, mem_info, mem_pressure, process_rss,
+    CgroupMem, MemInfo, MemPressure, cgroup_mem_limits, mem_info, mem_pressure, min_free_bytes,
+    process_rss,
 };

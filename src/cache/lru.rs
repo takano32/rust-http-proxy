@@ -47,6 +47,11 @@ impl<E: LruEntry> Store<E> {
         self.entries.get(&key)
     }
 
+    /// 可変参照。`last_used` は変えないこと (順序は `touch` で更新する)。
+    pub fn get_mut(&mut self, key: CacheKey) -> Option<&mut E> {
+        self.entries.get_mut(&key)
+    }
+
     /// 最終利用を `seq` に更新する。存在しなければ false。
     pub fn touch(&mut self, key: CacheKey, seq: u64) -> bool {
         let Some(e) = self.entries.get_mut(&key) else {

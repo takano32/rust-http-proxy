@@ -10,6 +10,7 @@ use sorahost_http_proxy::config::Config;
 use sorahost_http_proxy::handle_client;
 use sorahost_http_proxy::log;
 use sorahost_http_proxy::metrics::Metrics;
+use sorahost_http_proxy::net;
 use sorahost_http_proxy::{log_debug, log_error, log_info};
 
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -25,10 +26,10 @@ fn main() {
         }
     };
 
-    let listener = match TcpListener::bind(config.bind_addr) {
+    let listeners = match net::bind_all(&config.bind_addrs, config.port) {
         Ok(l) => l,
         Err(e) => {
-            log_error!(None, "failed to bind on {}: {}", config.bind_addr, e);
+            log_error!(None, "failed to bind port {}: {}", config.port, e);
             process::exit(1);
         }
     };
@@ -40,7 +41,11 @@ fn main() {
     log_info!(
         None,
         "sorahost-http-proxy listening on {} (log level: {})",
-        config.bind_addr,
+        listeners
+            .iter()
+            .map(net::describe_listener)
+            .collect::<Vec<_>>()
+            .join(", "),
         log::current_level().as_str().trim()
     );
     let c = &config.cache;
@@ -83,6 +88,21 @@ fn main() {
         log_info!(None, "denied hosts: {:?}", config.acl.deny_hosts);
     }
 
+    // 待ち受けソケットごとに accept スレッドを持つ (最後の 1 つはこのスレッドで回す)
+    let mut listeners = listeners.into_iter();
+    let last = listeners.next_back().expect("at least one listener");
+    for listener in listeners {
+        let (config, metrics, cache) = (
+            Arc::clone(&config),
+            Arc::clone(&metrics),
+            Arc::clone(&cache),
+        );
+        thread::spawn(move || serve(listener, config, metrics, cache));
+    }
+    serve(last, config, metrics, cache);
+}
+
+fn serve(listener: TcpListener, config: Arc<Config>, metrics: Arc<Metrics>, cache: Arc<Cache>) {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {

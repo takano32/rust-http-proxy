@@ -37,13 +37,21 @@ impl fmt::Debug for CacheKey {
 
 /// FNV-1a を 2 系統走らせた 128bit 相当のキャッシュキー。
 pub fn cache_key(method: &str, url: &str) -> CacheKey {
+    cache_key_variant(method, url, "")
+}
+
+/// `variant` (正規化した Accept-Encoding など) で表現を分けたキー。空文字なら `cache_key` と同じ。
+pub fn cache_key_variant(method: &str, url: &str, variant: &str) -> CacheKey {
     let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
     let mut h2: u64 = 0x9e37_79b9_7f4a_7c15;
+    let separator: &[u8] = if variant.is_empty() { b"" } else { b"\x00" };
     for b in method
         .as_bytes()
         .iter()
         .chain(b"|".iter())
         .chain(url.as_bytes())
+        .chain(separator.iter())
+        .chain(variant.as_bytes())
     {
         h1 ^= *b as u64;
         h1 = h1.wrapping_mul(0x0000_0100_0000_01b3);
@@ -85,6 +93,8 @@ mod tests {
         assert_eq!(a, cache_key("GET", "http://example.com/a"));
         assert_ne!(a, cache_key("GET", "http://example.com/b"));
         assert_ne!(a, cache_key("HEAD", "http://example.com/a"));
+        assert_eq!(cache_key_variant("GET", "http://example.com/a", ""), a);
+        assert_ne!(cache_key_variant("GET", "http://example.com/a", "gzip"), a);
         let hex = a.to_string();
         assert_eq!(hex.len(), 32);
         assert_eq!(CacheKey::from_hex(&hex), Some(a));

@@ -42,12 +42,8 @@ impl AclConfig {
     }
 }
 
-fn extract_host(host_or_addr: &str) -> &str {
-    if let Some(pos) = host_or_addr.find(':') {
-        &host_or_addr[..pos]
-    } else {
-        host_or_addr
-    }
+fn extract_host(host_or_addr: &str) -> String {
+    crate::net::split_host_port(host_or_addr).0
 }
 
 fn match_pattern(pattern: &str, host: &str) -> bool {
@@ -68,6 +64,15 @@ fn match_pattern(pattern: &str, host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ipv6_literal_host() {
+        let acl = AclConfig::new(Some("2001:db8::1, example.com"), None);
+        assert!(acl.is_allowed("[2001:db8::1]:443"));
+        assert!(acl.is_allowed("[2001:db8::1]"));
+        assert!(acl.is_allowed("example.com:80"));
+        assert!(!acl.is_allowed("[2001:db8::2]:443"));
+    }
 
     #[test]
     fn test_acl_default_allows_all() {

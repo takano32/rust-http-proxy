@@ -3,15 +3,16 @@
 //! ```text
 //! SHPC1\n
 //! <URL>\n
-//! <stored_at> <expires_at>\n
-//! <レスポンスのワイヤバイト列>
+//! <stored_at> <expires_at> [flags]\n
+//! <レスポンスのワイヤバイト列 (ステータス行 + ヘッダー + ボディ)>
 //! ```
 //!
+//! `flags` は省略可能で、`v` が含まれていれば ETag / Last-Modified を持ち再検証できる。
 //! 起動時の走査はファイルの mtime (= expires_at) だけを見るので、ヘッダーは
-//! ヒット時と mtime が信用できないときにしか読まない。
+//! ヒット時・期限切れの確認時にしか読まない。
 
-use std::fs::{self, File};
-use std::io::{self, Read};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 pub const MAGIC: &str = "SHPC1";
@@ -23,16 +24,25 @@ const HEADER_MAX: usize = 16 * 1024;
 pub struct Meta {
     pub stored_at: u64,
     pub expires_at: u64,
+    /// 再検証用のバリデータ (ETag / Last-Modified) を持つか
+    pub validators: bool,
 }
 
-/// エントリ 1 件分のファイル内容を組み立てる。
-pub fn encode(url: &str, data: &[u8], stored_at: u64, expires_at: u64) -> Vec<u8> {
-    let mut blob = Vec::with_capacity(data.len() + url.len() + 64);
-    blob.extend_from_slice(MAGIC.as_bytes());
-    blob.push(b'\n');
-    blob.extend_from_slice(url.replace(['\n', '\r'], "").as_bytes());
-    blob.push(b'\n');
-    blob.extend_from_slice(format!("{} {}\n", stored_at, expires_at).as_bytes());
+/// エントリ 1 件分のヘッダー行を組み立てる。
+pub fn header(url: &str, meta: &Meta) -> Vec<u8> {
+    let mut out = Vec::with_capacity(url.len() + 64);
+    out.extend_from_slice(MAGIC.as_bytes());
+    out.push(b'\n');
+    out.extend_from_slice(url.replace(['\n', '\r'], "").as_bytes());
+    out.push(b'\n');
+    let flags = if meta.validators { " v" } else { "" };
+    out.extend_from_slice(format!("{} {}{}\n", meta.stored_at, meta.expires_at, flags).as_bytes());
+    out
+}
+
+/// ヘッダー + ボディを一続きに組み立てる (小さなエントリ・テスト用)。
+pub fn encode(url: &str, data: &[u8], meta: &Meta) -> Vec<u8> {
+    let mut blob = header(url, meta);
     blob.extend_from_slice(data);
     blob
 }
@@ -49,13 +59,15 @@ pub fn parse_header(data: &[u8]) -> Option<(Meta, usize)> {
     if lines[0] != MAGIC {
         return None;
     }
-    let mut nums = lines[2].split_whitespace();
-    let stored_at = nums.next()?.parse().ok()?;
-    let expires_at = nums.next()?.parse().ok()?;
+    let mut fields = lines[2].split_whitespace();
+    let stored_at = fields.next()?.parse().ok()?;
+    let expires_at = fields.next()?.parse().ok()?;
+    let validators = fields.next().is_some_and(|f| f.contains('v'));
     Some((
         Meta {
             stored_at,
             expires_at,
+            validators,
         },
         offset,
     ))
@@ -64,17 +76,26 @@ pub fn parse_header(data: &[u8]) -> Option<(Meta, usize)> {
 /// ヘッダーだけを読む (ファイル全体は読まない)。
 pub fn read_meta(path: &Path) -> Option<Meta> {
     let mut file = File::open(path).ok()?;
+    read_header(&mut file).ok().flatten().map(|(meta, _)| meta)
+}
+
+/// 開いたファイルからヘッダーを読み、ファイル位置をボディの先頭に合わせる。
+/// 形式が不正なら `Ok(None)`。戻り値は (メタ情報, ボディ開始オフセット)。
+pub fn read_header(file: &mut File) -> io::Result<Option<(Meta, u64)>> {
     let mut buf = Vec::with_capacity(512);
     file.by_ref()
         .take(HEADER_MAX as u64)
-        .read_to_end(&mut buf)
-        .ok()?;
-    parse_header(&buf).map(|(meta, _)| meta)
+        .read_to_end(&mut buf)?;
+    let Some((meta, offset)) = parse_header(&buf) else {
+        return Ok(None);
+    };
+    file.seek(SeekFrom::Start(offset as u64))?;
+    Ok(Some((meta, offset as u64)))
 }
 
 /// ファイル全体を読み、ヘッダーを取り除いたボディを返す。形式が不正なら `Ok(None)`。
 pub fn read_entry(path: &Path) -> io::Result<Option<(Meta, Vec<u8>)>> {
-    let mut data = fs::read(path)?;
+    let mut data = std::fs::read(path)?;
     Ok(parse_header(&data).map(|(meta, offset)| {
         data.drain(..offset);
         (meta, data)
@@ -85,47 +106,62 @@ pub fn read_entry(path: &Path) -> io::Result<Option<(Meta, Vec<u8>)>> {
 mod tests {
     use super::*;
 
+    fn meta(stored_at: u64, expires_at: u64, validators: bool) -> Meta {
+        Meta {
+            stored_at,
+            expires_at,
+            validators,
+        }
+    }
+
     #[test]
     fn encode_parse_round_trip() {
-        let blob = encode("http://example.com/a?b=1", b"body", 100, 200);
-        let (meta, off) = parse_header(&blob).unwrap();
-        assert_eq!(
-            meta,
-            Meta {
-                stored_at: 100,
-                expires_at: 200
-            }
-        );
+        let blob = encode("http://example.com/a?b=1", b"body", &meta(100, 200, true));
+        let (m, off) = parse_header(&blob).unwrap();
+        assert_eq!(m, meta(100, 200, true));
         assert_eq!(&blob[off..], b"body");
+        // flags 無し (旧形式) も読める
+        let (m, _) = parse_header(b"SHPC1\nurl\n1 2\nx").unwrap();
+        assert_eq!(m, meta(1, 2, false));
         assert!(parse_header(b"NOPE\nx\n1 2\n").is_none());
         assert!(parse_header(b"SHPC1\nurl\n").is_none());
     }
 
     #[test]
     fn url_newlines_are_stripped() {
-        let blob = encode("http://x/\r\ninjected", b"", 1, 2);
+        let blob = encode("http://x/\r\ninjected", b"", &meta(1, 2, false));
         let (_, off) = parse_header(&blob).unwrap();
         assert_eq!(&blob[..off], b"SHPC1\nhttp://x/injected\n1 2\n");
     }
 
     #[test]
-    fn read_meta_and_entry_from_file() {
+    fn read_meta_header_and_entry_from_file() {
         let path = std::env::temp_dir().join("shp-test-format.cache");
         let body = vec![b'z'; 100_000];
-        fs::write(&path, encode("http://example.com/big", &body, 5, 6)).unwrap();
+        std::fs::write(
+            &path,
+            encode("http://example.com/big", &body, &meta(5, 6, true)),
+        )
+        .unwrap();
+        assert_eq!(read_meta(&path), Some(meta(5, 6, true)));
+
+        let mut f = File::open(&path).unwrap();
+        let (m, offset) = read_header(&mut f).unwrap().unwrap();
+        assert_eq!(m.expires_at, 6);
+        let mut rest = Vec::new();
+        f.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, body);
         assert_eq!(
-            read_meta(&path),
-            Some(Meta {
-                stored_at: 5,
-                expires_at: 6
-            })
+            offset as usize + body.len(),
+            std::fs::metadata(&path).unwrap().len() as usize
         );
-        let (meta, got) = read_entry(&path).unwrap().unwrap();
-        assert_eq!(meta.expires_at, 6);
+
+        let (m, got) = read_entry(&path).unwrap().unwrap();
+        assert_eq!(m.expires_at, 6);
         assert_eq!(got, body);
-        fs::write(&path, b"garbage").unwrap();
+        std::fs::write(&path, b"garbage").unwrap();
         assert!(read_meta(&path).is_none());
         assert!(read_entry(&path).unwrap().is_none());
-        let _ = fs::remove_file(&path);
+        let _ = std::fs::remove_file(&path);
     }
 }
