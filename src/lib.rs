@@ -3,6 +3,7 @@ pub mod auth;
 pub mod config;
 pub mod headers;
 pub mod http;
+pub mod metrics;
 pub mod tunnel;
 
 use std::io::{self, BufRead, BufReader, Write};
@@ -10,6 +11,7 @@ use std::net::TcpStream;
 use std::sync::Arc;
 
 use config::Config;
+use metrics::Metrics;
 
 const AUTH_REQUIRED_RESPONSE: &[u8] = b"HTTP/1.1 407 Proxy Authentication Required\r\n\
 Proxy-Authenticate: Basic realm=\"sorahost-http-proxy\"\r\n\
@@ -24,7 +26,23 @@ Content-Length: 13\r\n\
 \r\n\
 403 Forbidden";
 
-pub fn handle_client(mut client: TcpStream, config: Arc<Config>, conn_id: usize) -> io::Result<()> {
+pub fn handle_client(
+    mut client: TcpStream,
+    config: Arc<Config>,
+    metrics: Arc<Metrics>,
+    conn_id: usize,
+) -> io::Result<()> {
+    metrics.inc_active_conn();
+    metrics.inc_requests();
+
+    struct ConnGuard(Arc<Metrics>);
+    impl Drop for ConnGuard {
+        fn drop(&mut self) {
+            self.0.dec_active_conn();
+        }
+    }
+    let _guard = ConnGuard(Arc::clone(&metrics));
+
     let peer_addr = client.peer_addr().ok();
     client.set_read_timeout(Some(config.timeout))?;
     client.set_write_timeout(Some(config.timeout))?;
@@ -42,6 +60,24 @@ pub fn handle_client(mut client: TcpStream, config: Arc<Config>, conn_id: usize)
 
     let method = parts[0];
     let target = parts[1];
+
+    // Health check endpoint handling
+    if (target == "/healthz" || target == "/status") && method.eq_ignore_ascii_case("GET") {
+        let json_body = metrics.to_json();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+            Content-Type: application/json\r\n\
+            Content-Length: {}\r\n\
+            Connection: close\r\n\
+            \r\n\
+            {}",
+            json_body.len(),
+            json_body
+        );
+        client.write_all(response.as_bytes())?;
+        client.flush()?;
+        return Ok(());
+    }
 
     let mut raw_headers = Vec::new();
     let mut proxy_auth_header = None;
