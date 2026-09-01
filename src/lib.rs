@@ -2,6 +2,7 @@ pub mod acl;
 pub mod body;
 pub mod cache;
 pub mod config;
+pub mod envfile;
 pub mod freshness;
 pub mod headers;
 pub mod http;

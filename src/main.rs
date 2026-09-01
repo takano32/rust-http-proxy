@@ -58,6 +58,14 @@ fn main() {
             .join(", "),
         log::current_level().as_str().trim()
     );
+    if let Some(path) = sorahost_http_proxy::envfile::loaded_path() {
+        log_info!(
+            None,
+            "settings file {} loaded ({} variables; real environment takes precedence)",
+            path.display(),
+            sorahost_http_proxy::envfile::loaded_count()
+        );
+    }
     let c = &config.cache;
     log_info!(
         None,

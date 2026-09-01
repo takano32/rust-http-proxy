@@ -1,9 +1,9 @@
-use std::env;
 use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::acl::AclConfig;
 use crate::cache::CacheConfig;
+use crate::envfile;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -22,11 +22,10 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
-        let port_str = env::var("SERVER_PORT").unwrap_or_else(|_| "8080".to_string());
-        let allow_hosts = env::var("PROXY_ALLOW_HOSTS").ok();
-        let deny_hosts = env::var("PROXY_DENY_HOSTS").ok();
-        let timeout_secs = env::var("PROXY_TIMEOUT_SECS")
-            .ok()
+        let port_str = envfile::var("SERVER_PORT").unwrap_or_else(|| "8080".to_string());
+        let allow_hosts = envfile::var("PROXY_ALLOW_HOSTS");
+        let deny_hosts = envfile::var("PROXY_DENY_HOSTS");
+        let timeout_secs = envfile::var("PROXY_TIMEOUT_SECS")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(30);
 
@@ -36,18 +35,16 @@ impl Config {
             deny_hosts.as_deref(),
             Duration::from_secs(timeout_secs),
         )?;
-        if let Ok(bind) = env::var("PROXY_BIND") {
+        if let Some(bind) = envfile::var("PROXY_BIND") {
             cfg.bind_addrs = parse_bind_list(&bind)?;
         }
-        if let Some(secs) = env::var("PROXY_KEEPALIVE_SECS")
-            .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
+        if let Some(secs) =
+            envfile::var("PROXY_KEEPALIVE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
         {
             cfg.keepalive = Duration::from_secs(secs);
         }
-        if let Some(n) = env::var("PROXY_ORIGIN_POOL")
-            .ok()
-            .and_then(|s| s.trim().parse::<usize>().ok())
+        if let Some(n) =
+            envfile::var("PROXY_ORIGIN_POOL").and_then(|s| s.trim().parse::<usize>().ok())
         {
             cfg.pool_per_host = n;
         }

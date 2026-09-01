@@ -62,7 +62,7 @@ pub fn enabled(level: Level) -> bool {
 
 /// `PROXY_LOG_LEVEL` からログレベルを初期化する。
 pub fn init_from_env() {
-    if let Ok(v) = std::env::var("PROXY_LOG_LEVEL") {
+    if let Some(v) = crate::envfile::var("PROXY_LOG_LEVEL") {
         if let Some(l) = Level::parse(&v) {
             set_level(l);
             return;

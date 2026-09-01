@@ -200,7 +200,7 @@ impl Default for CacheConfig {
 
 impl CacheConfig {
     pub fn from_env() -> Self {
-        Self::from_lookup(|k| env::var(k).ok())
+        Self::from_lookup(crate::envfile::var)
     }
 
     /// 環境変数相当の値を `lookup` から読んで設定を組み立てる (テストしやすいよう分離)。

@@ -406,7 +406,7 @@ impl Cache {
         if cache.cfg.pterodactyl && cache.cfg.disk_limit.is_auto() && !cache.quota.is_known() {
             log_warn!(
                 None,
-                "Pterodactyl detected but the disk allocation is unknown (Pterodactyl does not pass it to the container): disk cache capped at {} MiB with no reservation, because Wings kills the server as soon as the Disk Space allocation is exceeded; set PROXY_DISK_QUOTA_MB (or SERVER_DISK) to the allocation in MB, 0 if unlimited, or auto if `df -B1 /home/container` shows the allocation",
+                "Pterodactyl detected but the disk allocation is unknown (Pterodactyl does not pass it to the container): disk cache capped at {} MiB with no reservation, because Wings kills the server as soon as the Disk Space allocation is exceeded; put SERVER_DISK=<allocation MB> (0 = unlimited, auto = trust df) in the environment or in $HOME/sorahost-http-proxy.env",
                 config::PTERODACTYL_UNKNOWN_QUOTA_DISK / MIB
             );
             cache.disk.disable_reserve();
@@ -814,31 +814,57 @@ fn resolve_quota(cfg: &CacheConfig) -> DiskQuota {
             f.available / MIB
         );
     }
-    if cfg.disk_quota != DiskQuota::Auto {
+    // 明示の auto: `/` と別のファイルシステムなら割当とみなす。
+    // 未設定 (Pterodactyl): さらに `/` より小さいときだけ割当とみなす。ボリュームが別ディスクに
+    // あるだけのホストで、そのディスク丸ごとを割当と誤認して Wings に止められないための安全側の条件。
+    let inferring = cfg.disk_quota == DiskQuota::Unknown && cfg.pterodactyl;
+    if cfg.disk_quota != DiskQuota::Auto && !inferring {
         return cfg.disk_quota;
     }
+    let label = if inferring {
+        "disk allocation not configured"
+    } else {
+        "SERVER_DISK=auto"
+    };
     let Some(f) = df else {
         log_warn!(
             None,
-            "SERVER_DISK=auto but {} cannot be measured; treating the allocation as unknown",
+            "{} and {} cannot be measured; treating the allocation as unknown",
+            label,
             root.display()
         );
         return DiskQuota::Unknown;
     };
-    if let Some(rootfs) = sysinfo::fs_info(Path::new("/"))
-        && rootfs.total == f.total
-    {
+    let rootfs = sysinfo::fs_info(Path::new("/"));
+    if rootfs.is_some_and(|r| r.total == f.total) {
         log_warn!(
             None,
-            "SERVER_DISK=auto but df {} reports the same filesystem as / ({} MiB): that is the host disk, not the allocation; treating the allocation as unknown",
+            "{}: df {} reports the same filesystem as / ({} MiB), i.e. the host disk rather than the allocation; treating the allocation as unknown",
+            label,
             root.display(),
             f.total / MIB
         );
         return DiskQuota::Unknown;
     }
+    if inferring && rootfs.is_some_and(|r| f.total >= r.total) {
+        log_warn!(
+            None,
+            "{}: df {} ({} MiB) is not smaller than / ({} MiB), so it is probably a whole data disk rather than the allocation; treating the allocation as unknown (set SERVER_DISK to override)",
+            label,
+            root.display(),
+            f.total / MIB,
+            rootfs.map_or(0, |r| r.total / MIB)
+        );
+        return DiskQuota::Unknown;
+    }
     log_info!(
         None,
-        "disk allocation from df {}: {} MiB",
+        "disk allocation {} df {}: {} MiB",
+        if inferring {
+            "inferred from"
+        } else {
+            "taken from"
+        },
         root.display(),
         f.total / MIB
     );

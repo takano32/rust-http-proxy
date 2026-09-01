@@ -607,10 +607,12 @@ fn auto_quota_uses_df_of_the_quota_root_unless_it_is_the_host_disk() {
 
 #[test]
 fn pterodactyl_without_quota_is_capped_and_never_reserves() {
+    // quota_root を / にすると「ホストディスク」と判定され、割当不明のまま安全上限になる
     let cfg = CacheConfig {
         disk_limit: Limit::Auto { percent: 100 },
         pterodactyl: true,
         reserve: true,
+        quota_root: Some(PathBuf::from("/")),
         ..CacheConfig::fixed(MIB, 0, test_dir("shp-test-ptero-unknown"))
     };
     let cache = Cache::new(cfg);
@@ -810,4 +812,36 @@ fn invalidate_removes_every_variant_of_a_url() {
     assert_eq!(cache.invalidate(url, 1), 2);
     assert!(cache.get(plain, 1).is_none() && cache.get(gz, 1).is_none());
     assert_eq!(cache.disk_usage().1, 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unknown_quota_is_inferred_from_df_only_when_smaller_than_root() {
+    let root = env::temp_dir();
+    let (Some(df), Some(rootfs)) = (
+        crate::sysinfo::fs_info(&root),
+        crate::sysinfo::fs_info(std::path::Path::new("/")),
+    ) else {
+        return;
+    };
+    let cfg = CacheConfig {
+        disk_limit: Limit::Auto { percent: 100 },
+        quota_root: Some(root),
+        pterodactyl: true,
+        ..CacheConfig::fixed(MIB, 0, test_dir("shp-test-quota-infer"))
+    };
+    let cache = Cache::new(cfg);
+    if df.total != rootfs.total && df.total < rootfs.total {
+        assert_eq!(
+            cache.disk_quota(),
+            DiskQuota::Auto,
+            "smaller separate fs is taken as the allocation"
+        );
+    } else {
+        assert_eq!(cache.disk_quota(), DiskQuota::Unknown);
+        assert_eq!(
+            cache.disk_capacity(),
+            super::config::PTERODACTYL_UNKNOWN_QUOTA_DISK
+        );
+    }
 }

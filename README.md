@@ -73,6 +73,10 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 | `PROXY_MEM_CACHE_MAX_OBJECT_MB` | `32` | メモリ層に置く 1 オブジェクトの最大サイズ（MiB）。これを超えるものはディスクからストリーミング配信 |
 | `PROXY_DISK_MAX_ENTRIES` | `2000000` | ディスク層の索引に保持するエントリ数の上限 (1 件あたり RAM 約 100 バイト)。超えた分は LRU で追い出す |
 
+環境変数を設定できない環境 (Pterodactyl で egg 変数を追加する権限が無い等) では、`$HOME/sorahost-http-proxy.env`
+(`PROXY_ENV_FILE` で場所を変更可) に `KEY=VALUE` を 1 行ずつ書けば同じ効果になります (`#` はコメント、
+実際の環境変数が優先)。Pterodactyl ならファイルマネージャで `/home/container/sorahost-http-proxy.env` を置くだけです。
+
 `PROXY_CACHE_DIR` を指定しない場合は、書き込める最初の候補を使います:
 `$XDG_CACHE_HOME/sorahost-http-proxy` (または `~/.cache/sorahost-http-proxy`) → `/var/cache/sorahost-http-proxy` → `$TMPDIR/sorahost-http-proxy-cache`。
 Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。`$TMPDIR` は tmpfs (RAM) のことが多いので最後の手段です。
@@ -196,7 +200,10 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
   Disk Space (MB) と同じ値にしてください。無制限なら `0`。**未設定のときはディスクキャッシュを 512 MiB 固定・
   先行確保なしに抑えます** (起動時に警告します)。egg の Configuration Files 機能で
   `{{server.build.disk_space}}` を書き出せる環境なら、それを起動スクリプトで環境変数に渡す手もあります
-- `SERVER_DISK=auto` にすると、`df -B1 /home/container` 相当 (statvfs) の total を割当として使います。
+- **未設定でも自動判断します**: `df -B1 /home/container` 相当 (statvfs) が `/` と別のファイルシステムで、かつ `/` より
+  小さければ、それを割当とみなして使います (ボリュームが別ディスクにあるだけのホストで、そのディスク丸ごとを割当と
+  誤認しないための条件)。条件に合わなければ 512 MiB 上限に留め、起動ログに理由を出します
+- `SERVER_DISK=auto` を明示すると、`df -B1 /home/container` 相当 (statvfs) の total を割当として使います。
   これが正しいのは、ホストが XFS のプロジェクトクォータや ZFS データセットなどでサーバーごとに領域を切っていて、
   `df` の total がパネルの Disk Space と一致する場合だけです。単なる bind mount ではホストのディスク全体が
   見えるので、起動時に `df /` と比べて同じファイルシステムなら「不明」扱い (512 MiB 上限) に落として警告します。
