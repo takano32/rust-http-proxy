@@ -1,9 +1,9 @@
-//! ネットワーク補助。IPv6 は既定で無効 (`PROXY_IPV6=on` で有効)。
+//! IPv4 / IPv6 デュアルスタックのためのネットワーク補助 (`PROXY_IPV6=off` で IPv4 のみ)。
 //!
-//! - 待ち受け: 既定は `0.0.0.0` のみ。IPv6 有効時は `[::]` と `0.0.0.0` の両方を試し、
-//!   IPv6 が無い環境では IPv4 だけにフォールバック
-//! - 接続: 既定は A レコードだけ。IPv6 有効時は A / AAAA の両方を引き、IPv6 優先で 250 ms ずつ
-//!   ずらして並行に試す (Happy Eyeballs, RFC 8305)
+//! - 待ち受け: `[::]` と `0.0.0.0` の両方を試し、IPv6 が無い環境では IPv4 だけにフォールバック。
+//!   IPv6 無効時は `0.0.0.0` のみ
+//! - 接続: A / AAAA の両方を引き、IPv6 優先で 250 ms ずつずらして並行に試す (Happy Eyeballs,
+//!   RFC 8305)。IPv6 無効時は A レコードだけ
 //! - `[2001:db8::1]:8080` 形式のホスト・ポート解析と、v4-mapped アドレス (`::ffff:1.2.3.4`) の正規化
 
 use std::io;
@@ -18,8 +18,8 @@ use crate::{log_debug, log_warn};
 /// Happy Eyeballs で次の接続試行を始めるまでの間隔。
 const STAGGER: Duration = Duration::from_millis(250);
 
-/// IPv6 を使うか (既定 off)。起動時に設定から決める。
-static IPV6_ENABLED: AtomicBool = AtomicBool::new(false);
+/// IPv6 を使うか (既定 on)。起動時に設定から決める。
+static IPV6_ENABLED: AtomicBool = AtomicBool::new(true);
 
 pub fn set_ipv6_enabled(on: bool) {
     IPV6_ENABLED.store(on, Ordering::Relaxed);
@@ -301,6 +301,10 @@ mod tests {
 
     #[test]
     fn binds_dual_stack_or_falls_back() {
+        assert!(ipv6_enabled(), "on by default");
+        let v4 = bind_all_with(&[], 0, false).expect("v4-only listener");
+        assert_eq!(v4.len(), 1);
+        assert!(v4[0].local_addr().unwrap().ip().is_ipv4());
         let listeners = bind_all(&[], 0).expect("at least one listener");
         assert!(!listeners.is_empty() && listeners.len() <= 2);
         let port = listeners[0].local_addr().unwrap().port();
