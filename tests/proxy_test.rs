@@ -1065,3 +1065,52 @@ fn test_integration_slow_origin_gives_up_and_serves_stale() {
         started.elapsed()
     );
 }
+
+#[test]
+fn test_integration_concurrent_misses_are_coalesced() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_origin(
+        Arc::clone(&counter),
+        Arc::new(|_req, _n| {
+            thread::sleep(Duration::from_millis(700));
+            let body = "coalesced body";
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: max-age=60\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_bytes()
+        }),
+    );
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-coalesce"));
+    let host = format!("127.0.0.1:{}", origin_port);
+    let url = format!("http://{}/big-asset", host);
+
+    let handles: Vec<_> = (0..6)
+        .map(|i| {
+            let (url, host) = (url.clone(), host.clone());
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(i * 20));
+                get_via_proxy(proxy_port, &url, &host)
+            })
+        })
+        .collect();
+    let responses: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    for r in &responses {
+        assert!(
+            r.starts_with("HTTP/1.1 200 OK") && r.ends_with("coalesced body"),
+            "{}",
+            r
+        );
+    }
+    let coalesced = responses
+        .iter()
+        .filter(|r| r.contains("X-Cache: COALESCED"))
+        .count();
+    assert!(
+        coalesced >= 4,
+        "expected most requests to be coalesced, got {}",
+        coalesced
+    );
+    assert_eq!(counter.load(Ordering::SeqCst), 1, "origin fetched once");
+}

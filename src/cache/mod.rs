@@ -20,6 +20,7 @@ pub mod disk;
 pub mod diskprobe;
 pub mod entry;
 pub mod format;
+pub mod inflight;
 pub mod key;
 pub mod lru;
 pub mod margin;
@@ -35,6 +36,7 @@ mod tests;
 pub use config::{CacheConfig, DiskQuota, Limit, MIB};
 pub use entry::{Body, CachedResponse};
 pub use format::Meta;
+pub use inflight::{FetchOutcome, FetchTicket};
 pub use key::{CacheKey, cache_key, cache_key_variant};
 pub use ops::PeekInfo;
 pub use sink::{StoreOutcome, StoreSink};
@@ -102,6 +104,8 @@ pub struct Cache {
     variants: Mutex<key::KeyMap<Vec<CacheKey>>>,
     /// 裏で再検証中のキー (同じキーは 1 本だけ)
     revalidating: Mutex<HashSet<CacheKey>>,
+    /// 進行中の取得 (同時ミスの合流用)
+    inflight: inflight::InFlightTable,
     /// quota モードでの、割当ディレクトリ内の自分以外の使用量
     other_disk_usage: AtomicU64,
     /// このティックまではバラストの再確保を控える (メモリ圧迫・ENOSPC の後)
@@ -120,6 +124,8 @@ pub struct Cache {
     pub background_revalidations: AtomicU64,
     /// 期限切れの表現をそのまま配信した回数 (grace 内・オリジン障害・待ち切れ)
     pub stale_served: AtomicU64,
+    /// 同時ミスの合流で、オリジンへ行かずに済んだ要求の数
+    pub coalesced: AtomicU64,
     pub evictions: AtomicU64,
     pub bytes_served: AtomicU64,
 }
@@ -150,6 +156,7 @@ impl Cache {
             disk_probe: Mutex::new(None),
             variants: Mutex::new(key::KeyMap::default()),
             revalidating: Mutex::new(HashSet::new()),
+            inflight: inflight::InFlightTable::default(),
             other_disk_usage: AtomicU64::new(0),
             backoff_until: AtomicU64::new(0),
             disk_enospc_seen: AtomicBool::new(false),
@@ -163,6 +170,7 @@ impl Cache {
             revalidations: AtomicU64::new(0),
             background_revalidations: AtomicU64::new(0),
             stale_served: AtomicU64::new(0),
+            coalesced: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
             bytes_served: AtomicU64::new(0),
         };
@@ -282,6 +290,16 @@ impl Cache {
     /// バラストファイルのパス (シグナル時の切り詰め用)。
     pub fn ballast_path(&self) -> PathBuf {
         self.disk.ballast_path()
+    }
+
+    /// 同じキーの取得が進行中かを見て、leader になるか待つ側になるかを決める。
+    pub fn begin_fetch(&self, key: CacheKey) -> FetchTicket<'_> {
+        self.inflight.begin(key)
+    }
+
+    /// 進行中の取得の数。
+    pub fn inflight_count(&self) -> usize {
+        self.inflight.len()
     }
 
     /// 裏側の再検証を始めてよいか (同じキーが進行中、または上限なら false)。

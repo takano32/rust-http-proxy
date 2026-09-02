@@ -224,6 +224,25 @@ pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
     line(&mut out, "cache_revalidating", "", c.revalidating_count());
     header(
         &mut out,
+        "cache_coalesced_total",
+        "counter",
+        "Requests that waited for an in-flight fetch instead of contacting the origin",
+    );
+    line(
+        &mut out,
+        "cache_coalesced_total",
+        "",
+        c.coalesced.load(Ordering::Relaxed),
+    );
+    header(
+        &mut out,
+        "cache_inflight",
+        "gauge",
+        "Origin fetches in flight (coalescing table)",
+    );
+    line(&mut out, "cache_inflight", "", c.inflight_count());
+    header(
+        &mut out,
         "cache_evictions_total",
         "counter",
         "Entries evicted",

@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 use crate::Upstream;
 
 use crate::body::{self, BodyReader, Framing};
-use crate::cache::{Cache, CacheSource, CachedResponse, cache_key_variant, now_epoch};
+use crate::cache::{
+    Cache, CacheSource, CachedResponse, FetchOutcome, FetchTicket, cache_key_variant, now_epoch,
+};
 use crate::freshness;
 use crate::headers;
 use crate::log::{Access, access};
@@ -252,6 +254,31 @@ pub fn handle_http_with_headers(
             req.authorization,
             req.cache_control
         );
+    }
+
+    // ---- 同時ミスの合流: 同じキーを誰かが取得中なら、その保存完了を待ってキャッシュから返す ----
+    let mut leader = None;
+    if store_allowed && stale.is_none() {
+        match cache.begin_fetch(key) {
+            FetchTicket::Leader(guard) => leader = Some(guard),
+            FetchTicket::Follower(inflight) => {
+                log_debug!(
+                    Some(conn_id),
+                    "cache WAIT: another request is fetching key={}",
+                    key
+                );
+                if inflight.wait(shared.timeout) == Some(FetchOutcome::Stored)
+                    && let Some((entry, source)) = cache.get(key, conn_id)
+                    && entry.is_fresh(now_epoch())
+                {
+                    body::drain(reader, req_framing)?;
+                    cache.coalesced.fetch_add(1, Ordering::Relaxed);
+                    let ttl_left = entry.ttl_left(now_epoch());
+                    return serve_cached(client, entry, source, "COALESCED", ttl_left, &ctx);
+                }
+                // 保存されなかった・間に合わなかった: 自分で取りに行く
+            }
+        }
     }
 
     // ---- オリジンへ転送 ----
@@ -511,6 +538,9 @@ pub fn handle_http_with_headers(
             (Some(p), Some(s)) => {
                 let out = s.finish();
                 if out.memory || out.disk {
+                    if let Some(guard) = leader.take() {
+                        guard.complete(FetchOutcome::Stored);
+                    }
                     format!("MISS stored ttl={}s", p.ttl.as_secs())
                 } else {
                     "MISS".to_string()
@@ -528,6 +558,10 @@ pub fn handle_http_with_headers(
         "MISS truncated".to_string()
     };
 
+    // 保存されなかった場合は待っている要求に自分で取りに行かせる (Drop でも通知される)
+    if let Some(guard) = leader.take() {
+        guard.complete(FetchOutcome::NotStored);
+    }
     let total = client_head.len() as u64 + body_bytes;
     metrics.add_bytes(total + request_body_bytes);
     ctx.log(&status.to_string(), total, &cache_state);
