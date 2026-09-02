@@ -38,7 +38,12 @@ pub fn handle_connect(
                 e
             );
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
-            metrics.record_host(&format!("connect://{}", addr_str), HostOutcome::Error, 0);
+            metrics.record_host_timed(
+                &format!("connect://{}", addr_str),
+                HostOutcome::Error,
+                0,
+                started.elapsed(),
+            );
             access(
                 conn_id,
                 &Access {
@@ -56,6 +61,8 @@ pub fn handle_connect(
         }
     };
 
+    // ホスト別の応答時間は接続確立まで (トンネル自体の寿命は応答時間ではない)
+    let connect_took = started.elapsed();
     client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     client.flush()?;
     if !prefix.is_empty() {
@@ -69,10 +76,11 @@ pub fn handle_connect(
 
     let transferred = tunnel(client, server)?;
     metrics.add_bytes(transferred);
-    metrics.record_host(
+    metrics.record_host_timed(
         &format!("connect://{}", addr_str),
         HostOutcome::Bypass,
         transferred,
+        connect_took,
     );
     access(
         conn_id,

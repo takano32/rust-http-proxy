@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 
@@ -35,6 +35,9 @@ impl HostOutcome {
     }
 }
 
+/// 応答時間ヒストグラムの上限 (ms)。最後の区間は上限なし。
+pub const LATENCY_BOUNDS_MS: [u64; 9] = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HostStats {
     pub requests: u64,
@@ -43,6 +46,72 @@ pub struct HostStats {
     pub bypass: u64,
     pub errors: u64,
     pub bytes: u64,
+    /// 応答時間を記録した要求数と、その合計・最大 (ms)。CONNECT は接続確立までの時間
+    pub timed: u64,
+    pub duration_ms_sum: u64,
+    pub duration_ms_max: u64,
+    /// `LATENCY_BOUNDS_MS` の区間ごとの件数 (+ 上限なしの区間)
+    pub buckets: [u64; LATENCY_BOUNDS_MS.len() + 1],
+}
+
+impl HostStats {
+    fn observe(&mut self, d: Duration) {
+        let ms = d.as_millis().min(u64::MAX as u128) as u64;
+        self.timed += 1;
+        self.duration_ms_sum += ms;
+        self.duration_ms_max = self.duration_ms_max.max(ms);
+        let idx = LATENCY_BOUNDS_MS
+            .iter()
+            .position(|&b| ms <= b)
+            .unwrap_or(LATENCY_BOUNDS_MS.len());
+        self.buckets[idx] += 1;
+    }
+
+    pub fn avg_ms(&self) -> f64 {
+        if self.timed == 0 {
+            0.0
+        } else {
+            self.duration_ms_sum as f64 / self.timed as f64
+        }
+    }
+
+    /// 区間内を線形に補間した分位点 (ms)。最後の区間は最大値で頭打ち。
+    pub fn quantile_ms(&self, q: f64) -> f64 {
+        if self.timed == 0 {
+            return 0.0;
+        }
+        let rank = (q.clamp(0.0, 1.0) * self.timed as f64).max(1.0);
+        let mut seen = 0u64;
+        for (i, &n) in self.buckets.iter().enumerate() {
+            if n == 0 {
+                continue;
+            }
+            if (seen + n) as f64 >= rank {
+                let lo = if i == 0 {
+                    0.0
+                } else {
+                    LATENCY_BOUNDS_MS[i - 1] as f64
+                };
+                let hi = if i < LATENCY_BOUNDS_MS.len() {
+                    LATENCY_BOUNDS_MS[i] as f64
+                } else {
+                    (self.duration_ms_max as f64).max(lo)
+                };
+                let frac = (rank - seen as f64) / n as f64;
+                return lo + (hi - lo) * frac;
+            }
+            seen += n;
+        }
+        self.duration_ms_max as f64
+    }
+
+    pub fn error_rate(&self) -> f64 {
+        if self.requests == 0 {
+            0.0
+        } else {
+            self.errors as f64 / self.requests as f64
+        }
+    }
 }
 
 /// ホスト別統計の上限。超えた分は `other` にまとめる。
@@ -80,8 +149,17 @@ impl Metrics {
         }
     }
 
-    /// ホスト別に 1 要求を数える。
+    /// ホスト別に 1 要求を数える (応答時間なし)。
     pub fn record_host(&self, host: &str, outcome: HostOutcome, bytes: u64) {
+        self.record(host, outcome, bytes, None);
+    }
+
+    /// ホスト別に 1 要求と応答時間を数える。
+    pub fn record_host_timed(&self, host: &str, outcome: HostOutcome, bytes: u64, took: Duration) {
+        self.record(host, outcome, bytes, Some(took));
+    }
+
+    fn record(&self, host: &str, outcome: HostOutcome, bytes: u64, took: Option<Duration>) {
         let mut hosts = self.hosts.lock().unwrap_or_else(|p| p.into_inner());
         let key = if hosts.len() >= MAX_HOSTS && !hosts.contains_key(host) {
             "other"
@@ -96,6 +174,9 @@ impl Metrics {
             HostOutcome::Miss => s.misses += 1,
             HostOutcome::Bypass => s.bypass += 1,
             HostOutcome::Error => s.errors += 1,
+        }
+        if let Some(d) = took {
+            s.observe(d);
         }
     }
 
@@ -162,14 +243,19 @@ impl Metrics {
             .take(50)
             .map(|(h, s)| {
                 format!(
-                    "{{\"host\":\"{}\",\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"bytes\":{}}}",
+                    "{{\"host\":\"{}\",\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"bytes\":{},\"timed\":{},\"avg_ms\":{:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"max_ms\":{}}}",
                     h.replace('\\', "\\\\").replace('"', "\\\""),
                     s.requests,
                     s.hits,
                     s.misses,
                     s.bypass,
                     s.errors,
-                    s.bytes
+                    s.bytes,
+                    s.timed,
+                    s.avg_ms(),
+                    s.quantile_ms(0.5),
+                    s.quantile_ms(0.95),
+                    s.duration_ms_max
                 )
             })
             .collect();
@@ -257,7 +343,8 @@ mod tests {
                 misses: 1,
                 bypass: 0,
                 errors: 0,
-                bytes: 30
+                bytes: 30,
+                ..Default::default()
             }
         );
         assert_eq!(hosts[1].1.errors, 1);
@@ -274,5 +361,49 @@ mod tests {
         let hosts = m.hosts_sorted();
         assert!(hosts.len() <= MAX_HOSTS + 1);
         assert!(hosts.iter().any(|(h, _)| h == "other"));
+    }
+}
+
+#[cfg(test)]
+mod latency_tests {
+    use super::*;
+
+    #[test]
+    fn quantiles_interpolate_within_buckets() {
+        let m = Metrics::new();
+        for ms in [5, 20, 40, 80, 200, 400, 800, 2000, 4000, 9000] {
+            m.record_host_timed(
+                "http://a:80",
+                HostOutcome::Miss,
+                0,
+                Duration::from_millis(ms),
+            );
+        }
+        let (_, s) = &m.hosts_sorted()[0];
+        assert_eq!(s.timed, 10);
+        assert_eq!(s.duration_ms_max, 9000);
+        assert!((s.avg_ms() - 1654.5).abs() < 0.01);
+        // 各区間に 1 件ずつ: p50 は 5 番目の区間 (100..250] の上端、p95 は最後の区間の途中
+        assert!(
+            (s.quantile_ms(0.5) - 250.0).abs() < 1e-6,
+            "{}",
+            s.quantile_ms(0.5)
+        );
+        let p95 = s.quantile_ms(0.95);
+        assert!(p95 > 5000.0 && p95 <= 9000.0, "{}", p95);
+        assert_eq!(s.quantile_ms(1.0), 9000.0);
+        assert_eq!(HostStats::default().quantile_ms(0.5), 0.0);
+    }
+
+    #[test]
+    fn error_rate_counts_all_requests() {
+        let m = Metrics::new();
+        m.record_host("http://a:80", HostOutcome::Error, 0);
+        m.record_host("http://a:80", HostOutcome::Hit, 0);
+        m.record_host("http://a:80", HostOutcome::Hit, 0);
+        m.record_host("http://a:80", HostOutcome::Hit, 0);
+        let (_, s) = &m.hosts_sorted()[0];
+        assert!((s.error_rate() - 0.25).abs() < 1e-9);
+        assert_eq!(s.timed, 0);
     }
 }

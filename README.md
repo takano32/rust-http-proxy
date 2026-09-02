@@ -347,6 +347,10 @@ RSS) の JSON です。ブラウザの HTTP プロキシにこのプロキシを
 これらのパスはプロキシ自身が応答し、オリジン形式の要求 (`GET /status` + `Host:`) より優先します。認証は無いので、
 到達できる人は誰でも purge できます (公開ポートで動かすなら到達制御を)。
 
+ホスト別統計には応答時間 (平均・p50・p95・最大 ms、CONNECT は接続確立までの時間) も入り、`/metrics` では
+`sorahost_host_request_duration_seconds` ヒストグラムとして出ます。ダッシュボードのホスト表は要求数・遅い順 (p95)・
+エラー率・転送量で並べ替えられます。
+
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
 `/metrics` も同じ内容を `sorahost_*` 系列で出します。`origin_connections` にオリジンへの新規接続数と再利用回数、`cache` には各層の `used_bytes` / `limit_bytes` (現在の予算) / `reserved_bytes` (バラスト) /

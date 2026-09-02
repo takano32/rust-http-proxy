@@ -93,8 +93,8 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   </section>
 
   <section class="card" style="margin-top:14px">
-    <h2>ホスト別 (上位 20)</h2>
-    <div style="overflow-x:auto"><table id="hosts"><thead><tr><th>host</th><th>要求</th><th>命中</th><th>ミス</th><th>素通し</th><th>エラー</th><th>転送</th><th>命中率</th></tr></thead><tbody></tbody></table></div>
+    <h2>ホスト別 (上位 20) <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">並び: <select id="hostsort"><option value="requests">要求数</option><option value="p95">遅い順 (p95)</option><option value="errors">エラー率</option><option value="bytes">転送量</option></select></span></h2>
+    <div style="overflow-x:auto"><table id="hosts"><thead><tr><th>host</th><th>要求</th><th>命中</th><th>ミス</th><th>素通し</th><th>エラー</th><th>転送</th><th>命中率</th><th title="応答時間の中央値 / 95 パーセンタイル。CONNECT は接続確立まで">応答 p50 / p95</th><th>エラー率</th></tr></thead><tbody></tbody></table></div>
   </section>
 </main>
 <script>
@@ -169,10 +169,16 @@ function renderStatus(s){
   var rows=[['保存',c.stores],['追い出し',c.evictions],['再検証',c.revalidations],['裏側の再検証',c.background_revalidations+' (進行中 '+c.revalidating+')'],['期限切れをそのまま配信',c.stale_served],['同時ミスの合流',c.coalesced+' (進行中 '+c.inflight+')'],['キャッシュから配信',fmtBytes(c.bytes_served)],
     ['RSS',fmtBytes(sys.process_rss_bytes)],['cgroup',sys.cgroup_limit_bytes?fmtBytes(sys.cgroup_usage_bytes)+' / '+fmtBytes(sys.cgroup_limit_bytes):'–'],['ホストのメモリ',sys.mem_total_bytes?(sys.mem_used_percent+'% 使用 / '+fmtBytes(sys.mem_total_bytes)):'–'],['メモリ圧迫',sys.mem_pressure?'あり':'なし']];
   $('cachetbl').tBodies[0].innerHTML=rows.map(function(r){return'<tr><td style="font-family:inherit">'+r[0]+'</td><td>'+(r[1]==null?'–':r[1])+'</td></tr>'}).join('');
-  var hosts=(s.hosts||[]).slice(0,20);
-  $('hosts').tBodies[0].innerHTML=hosts.map(function(h){var hr=(h.hits+h.misses)>0?h.hits/(h.hits+h.misses)*100:null;
-    return'<tr><td title="'+esc(h.host)+'">'+esc(h.host)+'</td><td>'+fmtNum(h.requests)+'</td><td>'+fmtNum(h.hits)+'</td><td>'+fmtNum(h.misses)+'</td><td>'+fmtNum(h.bypass)+'</td><td>'+fmtNum(h.errors)+'</td><td>'+fmtBytes(h.bytes)+'</td><td>'+(hr==null?'<span class="tag">素通し</span>':hr.toFixed(0)+'%<span class="mini"><i style="width:'+hr+'%"></i></span>')+'</td></tr>'}).join('')||'<tr><td colspan="8" style="text-align:center;color:var(--muted)">まだ要求がありません</td></tr>';
+  var sortKey=$('hostsort').value,all=(s.hosts||[]).slice();
+  all.sort(function(a,b){if(sortKey==='p95')return(b.p95_ms||0)-(a.p95_ms||0);if(sortKey==='errors')return(b.requests?b.errors/b.requests:0)-(a.requests?a.errors/a.requests:0)||b.errors-a.errors;if(sortKey==='bytes')return b.bytes-a.bytes;return b.requests-a.requests});
+  var hosts=all.slice(0,20);
+  $('hosts').tBodies[0].innerHTML=hosts.map(function(h){var hr=(h.hits+h.misses)>0?h.hits/(h.hits+h.misses)*100:null;var er=h.requests?h.errors/h.requests*100:0;
+    var lat=h.timed?fmtMs(h.p50_ms)+' / <span style="color:'+latColor(h.p95_ms)+'">'+fmtMs(h.p95_ms)+'</span>':'–';
+    return'<tr><td title="'+esc(h.host)+'">'+esc(h.host)+'</td><td>'+fmtNum(h.requests)+'</td><td>'+fmtNum(h.hits)+'</td><td>'+fmtNum(h.misses)+'</td><td>'+fmtNum(h.bypass)+'</td><td>'+fmtNum(h.errors)+'</td><td>'+fmtBytes(h.bytes)+'</td><td>'+(hr==null?'<span class="tag">素通し</span>':hr.toFixed(0)+'%<span class="mini"><i style="width:'+hr+'%"></i></span>')+'</td><td>'+lat+'</td><td style="color:'+(er>=5?'var(--bad)':er>0?'var(--warn)':'inherit')+'">'+(h.requests?er.toFixed(1)+'%':'–')+'</td></tr>'}).join('')||'<tr><td colspan="10" style="text-align:center;color:var(--muted)">まだ要求がありません</td></tr>';
 }
+function fmtMs(ms){return ms==null?'–':ms>=1000?(ms/1000).toFixed(1)+' s':Math.round(ms)+' ms'}
+function latColor(ms){return ms>=2000?'var(--bad)':ms>=500?'var(--warn)':'inherit'}
+$('hostsort').addEventListener('change',function(){if(last)renderStatus(last)});
 function esc(s){return String(s).replace(/[&<>"]/g,function(ch){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]})}
 function ok(good,msg){$('dot').className='dot'+(good?'':' bad');$('lastok').textContent=msg}
 function fetchJson(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}

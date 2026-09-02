@@ -75,10 +75,11 @@ struct Ctx<'a> {
 
 impl Ctx<'_> {
     fn log(&self, status: &str, bytes: u64, cache: &str) {
-        self.metrics.record_host(
+        self.metrics.record_host_timed(
             self.pool_key,
             HostOutcome::from_access(cache, status.parse().unwrap_or(0)),
             bytes,
+            self.started.elapsed(),
         );
         access(
             self.conn_id,

@@ -127,14 +127,51 @@ pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
         "counter",
         "Bytes per origin host",
     );
-    for (host, s) in m.hosts_sorted().into_iter().take(100) {
-        let l = format!("host=\"{}\"", escape(&host));
+    let hosts: Vec<_> = m.hosts_sorted().into_iter().take(100).collect();
+    for (host, s) in &hosts {
+        let l = format!("host=\"{}\"", escape(host));
         line(&mut out, "host_requests_total", &l, s.requests);
         line(&mut out, "host_hits_total", &l, s.hits);
         line(&mut out, "host_misses_total", &l, s.misses);
         line(&mut out, "host_bypass_total", &l, s.bypass);
         line(&mut out, "host_errors_total", &l, s.errors);
         line(&mut out, "host_bytes_total", &l, s.bytes);
+    }
+    header(
+        &mut out,
+        "host_request_duration_seconds",
+        "histogram",
+        "Response time per origin host (CONNECT: time to establish the tunnel)",
+    );
+    for (host, s) in &hosts {
+        if s.timed == 0 {
+            continue;
+        }
+        let h = escape(host);
+        let mut cum = 0u64;
+        for (i, n) in s.buckets.iter().enumerate() {
+            cum += n;
+            let le = match crate::metrics::LATENCY_BOUNDS_MS.get(i) {
+                Some(b) => format!("{}", *b as f64 / 1000.0),
+                None => "+Inf".to_string(),
+            };
+            let _ = writeln!(
+                out,
+                "sorahost_host_request_duration_seconds_bucket{{host=\"{}\",le=\"{}\"}} {}",
+                h, le, cum
+            );
+        }
+        let _ = writeln!(
+            out,
+            "sorahost_host_request_duration_seconds_sum{{host=\"{}\"}} {}",
+            h,
+            s.duration_ms_sum as f64 / 1000.0
+        );
+        let _ = writeln!(
+            out,
+            "sorahost_host_request_duration_seconds_count{{host=\"{}\"}} {}",
+            h, s.timed
+        );
     }
 
     let Some(c) = cache else {
