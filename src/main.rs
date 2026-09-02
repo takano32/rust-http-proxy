@@ -50,7 +50,18 @@ fn main() {
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
-    let _history = sorahost_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache));
+    let store = if config.stats_persist {
+        sorahost_http_proxy::persist::Store::default_path()
+            .and_then(|p| sorahost_http_proxy::persist::start(p, &metrics))
+    } else {
+        None
+    };
+    let store = store.map(|(s, _handle)| s);
+    if let Some(s) = &store {
+        sorahost_http_proxy::blocklist::set_store(Arc::clone(s));
+    }
+    let _history =
+        sorahost_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache), store);
     let tls = if !config.tls_enabled {
         log_info!(
             None,

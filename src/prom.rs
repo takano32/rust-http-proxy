@@ -209,9 +209,9 @@ pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
     let clients: Vec<_> = m.clients_sorted().into_iter().take(100).collect();
     for (client, c) in &clients {
         let l = format!("client=\"{}\"", escape(client));
-        line(&mut out, "client_requests_total", &l, c.stats.requests);
-        line(&mut out, "client_bytes_total", &l, c.stats.bytes);
-        line(&mut out, "client_blocked_total", &l, c.stats.blocked);
+        line(&mut out, "client_requests_total", &l, c.requests);
+        line(&mut out, "client_bytes_total", &l, c.bytes);
+        line(&mut out, "client_blocked_total", &l, c.blocked);
     }
     header(
         &mut out,

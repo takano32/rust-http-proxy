@@ -100,27 +100,182 @@ pub fn configure(sources: Sources) {
     WAKE.notify_all();
 }
 
-/// このホストがブロック対象か。`host` はポートなしの小文字。
-pub fn is_blocked(host: &str) -> bool {
-    let guard = SET.read().unwrap_or_else(|e| e.into_inner());
-    let Some(set) = guard.as_ref() else {
+/// 手動の上書き (一時的な許可 / 拒否)。状態ファイルの固定 256 スロットに置き、
+/// いっぱいなら最も古いものを潰す。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Override {
+    pub host: String,
+    pub block: bool,
+    /// 期限 (epoch 秒)。0 なら消すまで有効
+    pub expires: u64,
+    pub created: u64,
+    slot: usize,
+}
+
+impl Override {
+    fn encode(&self) -> Vec<u8> {
+        let mut e = crate::rrd::Enc::new();
+        e.str(&self.host, 128)
+            .u64(self.block as u64)
+            .u64(self.expires)
+            .u64(self.created);
+        e.0
+    }
+
+    fn decode(slot: usize, payload: &[u8]) -> Option<Override> {
+        let mut d = crate::rrd::Dec(payload);
+        let host = d.str(128);
+        if host.is_empty() {
+            return None;
+        }
+        Some(Override {
+            host,
+            block: d.u64() != 0,
+            expires: d.u64(),
+            created: d.u64(),
+            slot,
+        })
+    }
+
+    fn live(&self, now: u64) -> bool {
+        self.expires == 0 || self.expires > now
+    }
+
+    pub fn json(&self) -> String {
+        format!(
+            "{{\"host\":\"{}\",\"action\":\"{}\",\"expires\":{},\"created\":{}}}",
+            self.host.replace('"', "\\\""),
+            if self.block { "block" } else { "allow" },
+            self.expires,
+            self.created
+        )
+    }
+}
+
+static OVERRIDES: RwLock<Vec<Override>> = RwLock::new(Vec::new());
+static STORE: std::sync::OnceLock<Arc<crate::persist::Store>> = std::sync::OnceLock::new();
+
+/// 状態ファイルをつなぎ、保存されていた上書きを読み戻す。
+pub fn set_store(store: Arc<crate::persist::Store>) {
+    let now = now_epoch();
+    let mut list: Vec<Override> = store
+        .read_overrides()
+        .iter()
+        .filter_map(|(slot, p)| Override::decode(*slot, p))
+        .filter(|o| o.live(now))
+        .collect();
+    list.sort_by_key(|o| o.created);
+    let n = list.len();
+    *OVERRIDES.write().unwrap_or_else(|e| e.into_inner()) = list;
+    let _ = STORE.set(store);
+    if n > 0 {
+        log_info!(None, "blocklist: {} manual overrides restored", n);
+    }
+}
+
+/// 上書きを置く (同じホストの既存は置き換え)。`ttl` が 0 なら消すまで有効。
+pub fn set_override(host: &str, block: bool, ttl: Duration) -> Override {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let now = now_epoch();
+    let mut list = OVERRIDES.write().unwrap_or_else(|e| e.into_inner());
+    list.retain(|o| o.live(now));
+    let store = STORE.get();
+    let slots = store.map_or(crate::rrd::OVERRIDE_SLOTS, |s| s.overrides_region().count);
+    let slot = if let Some(pos) = list.iter().position(|o| o.host == host) {
+        list.remove(pos).slot
+    } else if list.len() < slots {
+        (0..slots)
+            .find(|s| !list.iter().any(|o| o.slot == *s))
+            .unwrap_or(0)
+    } else {
+        // いっぱい: 最も古いものを潰す (環状)
+        let oldest = list
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, o)| o.created)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        list.remove(oldest).slot
+    };
+    let o = Override {
+        host,
+        block,
+        expires: if ttl.is_zero() {
+            0
+        } else {
+            now + ttl.as_secs()
+        },
+        created: now,
+        slot,
+    };
+    if let Some(st) = store {
+        st.write_override(slot, &o.encode());
+    }
+    list.push(o.clone());
+    o
+}
+
+/// 上書きを消す。あったら `true`。
+pub fn clear_override(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let mut list = OVERRIDES.write().unwrap_or_else(|e| e.into_inner());
+    let Some(pos) = list.iter().position(|o| o.host == host) else {
         return false;
     };
-    if set.is_empty() {
-        return false;
+    let o = list.remove(pos);
+    if let Some(st) = STORE.get() {
+        st.clear_override(o.slot);
     }
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    if host.is_empty() {
-        return false;
+    true
+}
+
+/// 生きている上書きの一覧 (新しい順)。
+pub fn overrides() -> Vec<Override> {
+    let now = now_epoch();
+    let mut v: Vec<Override> = OVERRIDES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|o| o.live(now))
+        .cloned()
+        .collect();
+    v.sort_by_key(|o| std::cmp::Reverse(o.created));
+    v
+}
+
+/// 判定の理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// ブロックしない (どこにも無い)
+    Clear,
+    /// 一覧に載っている (`&str` は一致したエントリ)
+    Listed,
+    Exempt,
+    OverrideBlock,
+    OverrideAllow,
+}
+
+impl Verdict {
+    pub fn blocked(self) -> bool {
+        matches!(self, Verdict::Listed | Verdict::OverrideBlock)
     }
-    let exempt = EXEMPT.read().unwrap_or_else(|e| e.into_inner());
-    if exempt.iter().any(|p| crate::acl::match_pattern(p, &host)) {
-        return false;
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Clear => "clear",
+            Verdict::Listed => "listed",
+            Verdict::Exempt => "exempt",
+            Verdict::OverrideBlock => "override:block",
+            Verdict::OverrideAllow => "override:allow",
+        }
     }
-    let mut cur = host.as_str();
+}
+
+/// ホストとその親ドメインのどれかが `f` を満たすか。
+fn walk(host: &str, mut f: impl FnMut(&str) -> bool) -> bool {
+    let mut cur = host;
     loop {
-        if set.contains(cur) {
-            BLOCKED.fetch_add(1, Ordering::Relaxed);
+        if f(cur) {
             return true;
         }
         match cur.split_once('.') {
@@ -128,6 +283,56 @@ pub fn is_blocked(host: &str) -> bool {
             _ => return false,
         }
     }
+}
+
+/// ホストの判定 (数えない)。`host` はポートなし。
+pub fn check(host: &str) -> Verdict {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return Verdict::Clear;
+    }
+    {
+        let now = now_epoch();
+        let list = OVERRIDES.read().unwrap_or_else(|e| e.into_inner());
+        let mut hit = None;
+        walk(&host, |h| {
+            hit = list
+                .iter()
+                .find(|o| o.live(now) && o.host == h)
+                .map(|o| o.block);
+            hit.is_some()
+        });
+        match hit {
+            Some(true) => return Verdict::OverrideBlock,
+            Some(false) => return Verdict::OverrideAllow,
+            None => {}
+        }
+    }
+    let guard = SET.read().unwrap_or_else(|e| e.into_inner());
+    let Some(set) = guard.as_ref() else {
+        return Verdict::Clear;
+    };
+    if set.is_empty() {
+        return Verdict::Clear;
+    }
+    let exempt = EXEMPT.read().unwrap_or_else(|e| e.into_inner());
+    if exempt.iter().any(|p| crate::acl::match_pattern(p, &host)) {
+        return Verdict::Exempt;
+    }
+    if walk(&host, |h| set.contains(h)) {
+        Verdict::Listed
+    } else {
+        Verdict::Clear
+    }
+}
+
+/// このホストがブロック対象か。`host` はポートなしの小文字。対象なら数える。
+pub fn is_blocked(host: &str) -> bool {
+    let blocked = check(host).blocked();
+    if blocked {
+        BLOCKED.fetch_add(1, Ordering::Relaxed);
+    }
+    blocked
 }
 
 /// 登録件数。
@@ -403,7 +608,7 @@ pub fn status_json() -> String {
     let st = state();
     let q = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
     format!(
-        "{{\"entries\":{},\"file\":{},\"file_entries\":{},\"url\":{},\"url_entries\":{},\"refresh_secs\":{},\"updated_at\":{},\"fetched_at\":{},\"exempt\":[{}],\"blocked\":{},\"error\":{}}}",
+        "{{\"entries\":{},\"file\":{},\"file_entries\":{},\"url\":{},\"url_entries\":{},\"refresh_secs\":{},\"updated_at\":{},\"fetched_at\":{},\"exempt\":[{}],\"blocked\":{},\"error\":{},\"overrides\":[{}]}}",
         st.entries,
         st.sources
             .file
@@ -431,12 +636,20 @@ pub fn status_json() -> String {
             .as_ref()
             .map(|e| q(e))
             .unwrap_or_else(|| "null".into()),
+        overrides()
+            .iter()
+            .map(Override::json)
+            .collect::<Vec<_>>()
+            .join(","),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// グローバルな SET / OVERRIDES を触るテストを直列にする
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn parses_hosts_and_plain_formats() {
@@ -451,7 +664,36 @@ mod tests {
     }
 
     #[test]
+    fn overrides_win_over_the_list_and_expire() {
+        let _g = TEST_LOCK.lock().unwrap();
+        *SET.write().unwrap() = Some(Arc::new(parse("0.0.0.0 tracker.example\n")));
+        assert_eq!(check("cdn.tracker.example"), Verdict::Listed);
+        set_override("tracker.example", false, Duration::from_secs(60));
+        assert_eq!(check("cdn.tracker.example"), Verdict::OverrideAllow);
+        assert!(!is_blocked("tracker.example"));
+        let o = set_override("Fresh.Example.", true, Duration::ZERO);
+        assert_eq!(o.host, "fresh.example");
+        assert_eq!(o.expires, 0);
+        assert_eq!(check("www.fresh.example"), Verdict::OverrideBlock);
+        assert!(is_blocked("www.fresh.example"));
+        assert_eq!(overrides().len(), 2);
+        assert!(clear_override("fresh.example"));
+        assert!(!clear_override("fresh.example"));
+        // 期限切れは無視される
+        OVERRIDES
+            .write()
+            .unwrap()
+            .iter_mut()
+            .for_each(|o| o.expires = 1);
+        assert_eq!(check("cdn.tracker.example"), Verdict::Listed);
+        assert!(overrides().is_empty());
+        OVERRIDES.write().unwrap().clear();
+        *SET.write().unwrap() = None;
+    }
+
+    #[test]
     fn matches_exact_and_parent_domains_with_exemptions() {
+        let _g = TEST_LOCK.lock().unwrap();
         *SET.write().unwrap() = Some(Arc::new(parse(
             "0.0.0.0 doubleclick.net\nexact.example.com\n",
         )));

@@ -37,14 +37,6 @@ impl HostOutcome {
     }
 }
 
-/// 接続元別統計。
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct ClientStats {
-    pub stats: HostStats,
-    /// 最後に要求を受けた時刻 (epoch 秒)
-    pub last_seen: u64,
-}
-
 /// 接続元 IP ごとの統計を持つ上限。
 pub const MAX_CLIENTS: usize = 1000;
 
@@ -67,9 +59,74 @@ pub struct HostStats {
     pub duration_ms_max: u64,
     /// `LATENCY_BOUNDS_MS` の区間ごとの件数 (+ 上限なしの区間)
     pub buckets: [u64; LATENCY_BOUNDS_MS.len() + 1],
+    /// 最後に要求を受けた時刻 (epoch 秒)
+    pub last_seen: u64,
 }
 
 impl HostStats {
+    fn count(&mut self, outcome: HostOutcome, bytes: u64, took: Option<Duration>) {
+        self.requests += 1;
+        self.bytes += bytes;
+        self.last_seen = crate::cache::now_epoch();
+        match outcome {
+            HostOutcome::Hit => self.hits += 1,
+            HostOutcome::Miss => self.misses += 1,
+            HostOutcome::Bypass => self.bypass += 1,
+            HostOutcome::Error => self.errors += 1,
+            HostOutcome::Blocked => self.blocked += 1,
+        }
+        if let Some(d) = took {
+            self.observe(d);
+        }
+    }
+
+    /// 状態ファイルのレコード (名前 128 バイト + 数値)。
+    pub fn encode(&self, name: &str) -> Vec<u8> {
+        let mut e = crate::rrd::Enc::new();
+        e.str(name, 128)
+            .u64(self.last_seen)
+            .u64(self.requests)
+            .u64(self.hits)
+            .u64(self.misses)
+            .u64(self.bypass)
+            .u64(self.errors)
+            .u64(self.blocked)
+            .u64(self.bytes)
+            .u64(self.timed)
+            .u64(self.duration_ms_sum)
+            .u64(self.duration_ms_max);
+        for b in self.buckets {
+            e.u64(b);
+        }
+        e.0
+    }
+
+    pub fn decode(payload: &[u8]) -> Option<(String, HostStats)> {
+        let mut d = crate::rrd::Dec(payload);
+        let name = d.str(128);
+        if name.is_empty() {
+            return None;
+        }
+        let mut s = HostStats {
+            last_seen: d.u64(),
+            requests: d.u64(),
+            hits: d.u64(),
+            misses: d.u64(),
+            bypass: d.u64(),
+            errors: d.u64(),
+            blocked: d.u64(),
+            bytes: d.u64(),
+            timed: d.u64(),
+            duration_ms_sum: d.u64(),
+            duration_ms_max: d.u64(),
+            ..HostStats::default()
+        };
+        for b in s.buckets.iter_mut() {
+            *b = d.u64();
+        }
+        Some((name, s))
+    }
+
     fn observe(&mut self, d: Duration) {
         let ms = d.as_millis().min(u64::MAX as u128) as u64;
         self.timed += 1;
@@ -148,7 +205,7 @@ pub struct Metrics {
     /// ホスト (`scheme://host:port`) ごとの統計
     hosts: Mutex<HashMap<String, HostStats>>,
     /// 接続元 IP ごとの統計 (上位 `MAX_CLIENTS`、あふれた分は "other")
-    clients: Mutex<HashMap<String, ClientStats>>,
+    clients: Mutex<HashMap<String, HostStats>>,
 }
 
 impl Metrics {
@@ -185,19 +242,10 @@ impl Metrics {
         } else {
             host
         };
-        let s = hosts.entry(key.to_string()).or_default();
-        s.requests += 1;
-        s.bytes += bytes;
-        match outcome {
-            HostOutcome::Hit => s.hits += 1,
-            HostOutcome::Miss => s.misses += 1,
-            HostOutcome::Bypass => s.bypass += 1,
-            HostOutcome::Error => s.errors += 1,
-            HostOutcome::Blocked => s.blocked += 1,
-        }
-        if let Some(d) = took {
-            s.observe(d);
-        }
+        hosts
+            .entry(key.to_string())
+            .or_default()
+            .count(outcome, bytes, took);
     }
 
     /// 接続元 IP ごとに 1 要求を数える。
@@ -214,37 +262,33 @@ impl Metrics {
         } else {
             client
         };
-        let c = clients.entry(key.to_string()).or_default();
-        c.last_seen = crate::cache::now_epoch();
-        let s = &mut c.stats;
-        s.requests += 1;
-        s.bytes += bytes;
-        match outcome {
-            HostOutcome::Hit => s.hits += 1,
-            HostOutcome::Miss => s.misses += 1,
-            HostOutcome::Bypass => s.bypass += 1,
-            HostOutcome::Error => s.errors += 1,
-            HostOutcome::Blocked => s.blocked += 1,
-        }
-        if let Some(d) = took {
-            s.observe(d);
-        }
+        clients
+            .entry(key.to_string())
+            .or_default()
+            .count(outcome, bytes, took);
     }
 
     /// 要求数の多い順に並べた接続元別統計。
-    pub fn clients_sorted(&self) -> Vec<(String, ClientStats)> {
+    pub fn clients_sorted(&self) -> Vec<(String, HostStats)> {
         let clients = self.clients.lock().unwrap_or_else(|p| p.into_inner());
-        let mut v: Vec<(String, ClientStats)> = clients
+        let mut v: Vec<(String, HostStats)> = clients
             .iter()
             .map(|(k, s)| (k.clone(), s.clone()))
             .collect();
-        v.sort_by(|a, b| {
-            b.1.stats
-                .requests
-                .cmp(&a.1.stats.requests)
-                .then_with(|| a.0.cmp(&b.0))
-        });
+        v.sort_by(|a, b| b.1.requests.cmp(&a.1.requests).then_with(|| a.0.cmp(&b.0)));
         v
+    }
+
+    /// 起動時に状態ファイルから読み戻す (今の値が空のときだけ)。
+    pub fn restore(&self, hosts: Vec<(String, HostStats)>, clients: Vec<(String, HostStats)>) {
+        let mut h = self.hosts.lock().unwrap_or_else(|p| p.into_inner());
+        if h.is_empty() {
+            h.extend(hosts);
+        }
+        let mut c = self.clients.lock().unwrap_or_else(|p| p.into_inner());
+        if c.is_empty() {
+            c.extend(clients);
+        }
     }
 
     /// 要求数の多い順に並べたホスト別統計。
@@ -314,14 +358,7 @@ impl Metrics {
             .clients_sorted()
             .into_iter()
             .take(50)
-            .map(|(c, s)| {
-                format!(
-                    "{{\"client\":\"{}\",{},\"last_seen\":{}}}",
-                    json_str(&c),
-                    stats_json(&s.stats),
-                    s.last_seen
-                )
-            })
+            .map(|(c, s)| format!("{{\"client\":\"{}\",{}}}", json_str(&c), stats_json(&s)))
             .collect();
         format!(
             concat!(
@@ -330,7 +367,7 @@ impl Metrics {
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
-                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"blocklist\":{},\"cache\":{}}}"
+                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{}}}"
             ),
             uptime,
             requests,
@@ -346,6 +383,7 @@ impl Metrics {
             crate::reload::status_json(),
             crate::dns::status_json(),
             crate::blocklist::status_json(),
+            crate::persist::status_json(),
             cache_json
         )
     }
@@ -358,7 +396,7 @@ fn json_str(s: &str) -> String {
 /// ホスト別 / 接続元別に共通の統計フィールド (先頭・末尾の波括弧なし)。
 fn stats_json(s: &HostStats) -> String {
     format!(
-        "\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"blocked\":{},\"bytes\":{},\"timed\":{},\"avg_ms\":{:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"max_ms\":{}",
+        "\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"blocked\":{},\"bytes\":{},\"timed\":{},\"avg_ms\":{:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"max_ms\":{},\"last_seen\":{}",
         s.requests,
         s.hits,
         s.misses,
@@ -370,7 +408,8 @@ fn stats_json(s: &HostStats) -> String {
         s.avg_ms(),
         s.quantile_ms(0.5),
         s.quantile_ms(0.95),
-        s.duration_ms_max
+        s.duration_ms_max,
+        s.last_seen
     )
 }
 
@@ -423,10 +462,15 @@ mod tests {
         m.record_host("blocked://ads.example", HostOutcome::Blocked, 0);
         let clients = m.clients_sorted();
         assert_eq!(clients[0].0, "10.0.0.1");
-        assert_eq!(clients[0].1.stats.requests, 2);
-        assert_eq!(clients[0].1.stats.blocked, 1);
-        assert_eq!(clients[0].1.stats.timed, 1);
+        assert_eq!(clients[0].1.requests, 2);
+        assert_eq!(clients[0].1.blocked, 1);
+        assert_eq!(clients[0].1.timed, 1);
         assert!(clients[0].1.last_seen > 0);
+        let enc = clients[0].1.encode("10.0.0.1");
+        assert!(enc.len() <= crate::rrd::STATS_RECORD - 4);
+        let (name, back) = HostStats::decode(&enc).unwrap();
+        assert_eq!(name, "10.0.0.1");
+        assert_eq!(back, clients[0].1);
         let json = m.to_json();
         assert!(json.contains("\"clients\":[{\"client\":\"10.0.0.1\",\"requests\":2"));
         assert!(json.contains("\"blocked\":1"));
@@ -450,8 +494,12 @@ mod tests {
         m.record_host("http://b:80", HostOutcome::from_access("MISS", 502), 0);
         let hosts = m.hosts_sorted();
         assert_eq!(hosts[0].0, "http://a:80");
+        assert!(hosts[0].1.last_seen > 0);
         assert_eq!(
-            hosts[0].1,
+            HostStats {
+                last_seen: 0,
+                ..hosts[0].1.clone()
+            },
             HostStats {
                 requests: 2,
                 hits: 1,

@@ -150,6 +150,9 @@ impl Live {
         if fresh.pool_per_host != boot.pool_per_host {
             restart.push("PROXY_ORIGIN_POOL");
         }
+        if fresh.stats_persist != boot.stats_persist {
+            restart.push("PROXY_STATS_PERSIST");
+        }
         if fresh.cache != boot.cache {
             restart.push("cache settings (SERVER_MEMORY/SERVER_DISK/PROXY_CACHE_*)");
         }

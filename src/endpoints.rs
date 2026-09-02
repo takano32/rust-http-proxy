@@ -1,6 +1,6 @@
 //! プロキシ自身のエンドポイント: `/dashboard` (コントロールパネル)、`/healthz` `/status`
-//! `/history` (JSON)、`/metrics` (Prometheus)、`/proxy.pac` (ブラウザの自動設定)、
-//! `/purge` と `PURGE` メソッド、`/lookup`。
+//! `/history` (JSON、`res=5|60|3600`)、`/metrics` (Prometheus)、`/proxy.pac` (ブラウザの自動設定)、
+//! `/purge` と `PURGE` メソッド、`/lookup`、`/blocklist` (判定と手動の上書き)。
 //!
 //! これらのパスはオリジン形式の要求 (`GET /status` + `Host:`) より優先する。ブラウザがこの
 //! プロキシ自身を経由して `http://host:PORT/status` のように絶対形式で要求してきた場合も、
@@ -84,7 +84,16 @@ pub fn handle(
             pac(ep, target, self_addressed),
         )
     } else if is_get && path == "/history" {
-        (200, "application/json", ep.metrics.history.to_json())
+        let params = parse_query(query.unwrap_or(""));
+        let res = params
+            .iter()
+            .find(|(k, _)| k == "res")
+            .and_then(|(_, v)| v.parse::<u64>().ok())
+            .map(crate::history::History::index_for)
+            .unwrap_or(0);
+        (200, "application/json", ep.metrics.history.to_json_res(res))
+    } else if is_get && path == "/blocklist" {
+        blocklist_op(&parse_query(query.unwrap_or("")))
     } else if is_get && (path == "/healthz" || path == "/status") {
         (
             200,
@@ -130,7 +139,7 @@ pub fn handle(
         (
             404,
             "text/plain; charset=utf-8",
-            "not found. endpoints: /dashboard /status /history /metrics /proxy.pac /lookup?url= /purge?url=|all=1\n"
+            "not found. endpoints: /dashboard /status /history?res=5|60|3600 /metrics /proxy.pac /lookup?url= /purge?url=|all=1 /blocklist?host=&action=block|allow|clear\n"
                 .to_string(),
         )
     } else {
@@ -160,6 +169,61 @@ pub fn handle(
         status
     );
     Ok(true)
+}
+
+/// `/blocklist?host=<h>` で判定、`&action=block|allow|clear[&ttl_secs=N]` で手動の上書き。
+/// 引数なしなら一覧の状態と上書きの一覧。
+fn blocklist_op(params: &[(String, String)]) -> (u16, &'static str, String) {
+    use crate::blocklist;
+    let get = |k: &str| params.iter().find(|(x, _)| x == k).map(|(_, v)| v.as_str());
+    let Some(host) = get("host").map(str::trim).filter(|h| !h.is_empty()) else {
+        return (200, "application/json", blocklist::status_json());
+    };
+    let host = crate::net::split_host_port(host).0.to_ascii_lowercase();
+    if host.is_empty() || !host.contains('.') {
+        return (
+            400,
+            "application/json",
+            "{\"error\":\"host must be a domain name\"}".to_string(),
+        );
+    }
+    let ttl = get("ttl_secs")
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(std::time::Duration::from_secs(86400));
+    let action = get("action").unwrap_or("");
+    let changed = match action {
+        "block" => Some(blocklist::set_override(&host, true, ttl).json()),
+        "allow" => Some(blocklist::set_override(&host, false, ttl).json()),
+        "clear" => Some(blocklist::clear_override(&host).to_string()),
+        "" => None,
+        _ => {
+            return (
+                400,
+                "application/json",
+                "{\"error\":\"action must be block, allow or clear\"}".to_string(),
+            );
+        }
+    };
+    let v = blocklist::check(&host);
+    (
+        200,
+        "application/json",
+        format!(
+            "{{\"host\":\"{}\",\"blocked\":{},\"verdict\":\"{}\",\"action\":{},\"overrides\":[{}]}}",
+            json_escape(&host),
+            v.blocked(),
+            v.as_str(),
+            changed
+                .map(|c| format!("{{\"{}\":{}}}", action, c))
+                .unwrap_or_else(|| "null".to_string()),
+            blocklist::overrides()
+                .iter()
+                .map(blocklist::Override::json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    )
 }
 
 /// ブラウザ用の自動設定スクリプト (PAC)。自分自身・ローカル・`pac_direct` のホストは DIRECT、

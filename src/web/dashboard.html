@@ -57,6 +57,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   <span class="sub" id="blocklist"></span>
   <div class="right">
     <span class="links"><a href="/status" target="_blank">/status</a><a href="/metrics" target="_blank">/metrics</a><a href="/history" target="_blank">/history</a><a href="/proxy.pac" target="_blank">/proxy.pac</a></span>
+    <label>範囲 <select id="range"><option value="5">1 時間</option><option value="60">1 日</option><option value="3600">30 日</option></select></label>
     <label><input type="checkbox" id="pause"> 一時停止</label>
     <span class="dot" id="dot"></span><span id="lastok">接続中…</span>
   </div>
@@ -89,6 +90,8 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
         <button type="button" id="btn-purge-all" class="danger">キャッシュを全部消す</button>
         <span class="hint">確認のうえ /purge?all=1 を呼びます</span>
       </div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="bhost" placeholder="ホスト名 (ブロックリストの判定 / 一時的な上書き)"><button class="ghost" id="bcheck">判定</button><button class="ghost" id="ballow">24h 許可</button><button class="ghost" id="bblock">24h 拒否</button><button class="ghost" id="bclear">上書き解除</button></div>
+      <div class="hint" id="boverrides"></div>
       <pre id="out">ここに結果が出ます</pre>
     </div>
     <div class="card">
@@ -193,9 +196,13 @@ function renderStatus(s){
     return'<tr><td>'+esc(c.client)+'</td><td>'+fmtNum(c.requests)+'</td><td>'+fmtNum(c.hits)+'</td><td>'+fmtNum(c.bypass)+'</td><td>'+fmtNum(c.errors)+'</td><td style="color:'+(c.blocked?'var(--warn)':'inherit')+'">'+fmtNum(c.blocked)+'</td><td>'+fmtBytes(c.bytes)+'</td><td>'+lat+'</td><td title="'+new Date(c.last_seen*1000).toLocaleString()+'">'+ago(Math.max(0,nowS-c.last_seen))+'</td></tr>'}).join('')||'<tr><td colspan="9" style="text-align:center;color:var(--muted)">まだ要求がありません</td></tr>';
   var bl=s.blocklist||{};$('blocklist').textContent=bl.entries?'ブロックリスト '+fmtNum(bl.entries)+' 件 · 拒否 '+fmtNum(bl.blocked)+(bl.error?' · エラーあり':''):'';
   $('blocklist').title=bl.error||'';
+  var ov=bl.overrides||[];$('boverrides').innerHTML=ov.length?'上書き: '+ov.map(function(o){return'<code>'+esc(o.host)+'</code> '+(o.action==='block'?'拒否':'許可')+(o.expires?' (~'+new Date(o.expires*1000).toLocaleString()+')':' (無期限)')}).join(' · '):'';
 }
 function fmtMs(ms){return ms==null?'–':ms>=1000?(ms/1000).toFixed(1)+' s':Math.round(ms)+' ms'}
 function latColor(ms){return ms>=2000?'var(--bad)':ms>=500?'var(--warn)':'inherit'}
+function bl(action){var h=$('bhost').value.trim();if(!h)return;var u='/blocklist?host='+encodeURIComponent(h)+(action?'&action='+action:'');
+  fetchJson(u).then(function(j){$('out').textContent=JSON.stringify(j,null,2);pollStatus()}).catch(function(e){$('out').textContent=e.message})}
+$('bcheck').addEventListener('click',function(){bl('')});$('ballow').addEventListener('click',function(){bl('allow')});$('bblock').addEventListener('click',function(){bl('block')});$('bclear').addEventListener('click',function(){bl('clear')});
 $('hostsort').addEventListener('change',function(){if(last)renderStatus(last)});
 $('clientsort').addEventListener('change',function(){if(last)renderStatus(last)});
 function esc(s){return String(s).replace(/[&<>"]/g,function(ch){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]})}
@@ -212,7 +219,10 @@ function renderSettings(st){
 }
 function fetchJson(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
 function pollStatus(){if($('pause').checked)return;fetchJson('/status').then(function(s){renderStatus(s);ok(true,'更新 '+new Date().toLocaleTimeString())}).catch(function(e){ok(false,'取得失敗: '+e.message)})}
-function pollHistory(){if($('pause').checked)return;fetchJson('/history').then(function(h){hist=h.samples||[];redraw()}).catch(function(){})}
+function pollHistory(){if($('pause').checked)return;fetchJson('/history?res='+$('range').value).then(function(h){hist=h.samples||[];redraw()}).catch(function(){})}
+$('range').addEventListener('change',function(){hist=[];pollHistory()});
+try{var savedRange=localStorage.getItem('range');if(savedRange)$('range').value=savedRange}catch(e){}
+$('range').addEventListener('change',function(){try{localStorage.setItem('range',$('range').value)}catch(e){}});
 $('f-lookup').addEventListener('submit',function(e){e.preventDefault();var u=$('url').value.trim();if(!u)return;
   fetchJson('/lookup?url='+encodeURIComponent(u)).then(function(j){$('out').textContent=JSON.stringify(j,null,2)}).catch(function(e){$('out').textContent=e.message})});
 $('btn-purge').addEventListener('click',function(){var u=$('url').value.trim();if(!u)return;

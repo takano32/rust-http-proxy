@@ -38,6 +38,8 @@ pub struct Config {
     pub blocklist_refresh: Duration,
     /// ブロックリストの対象外にするホスト (`PROXY_BLOCKLIST_EXEMPT`、`*.example.com` 可)
     pub blocklist_exempt: Vec<String>,
+    /// 統計と履歴を `$HOME/.sorahost-http-proxy.rrd` に残す (`PROXY_STATS_PERSIST`、既定 on)
+    pub stats_persist: bool,
     pub cache: CacheConfig,
 }
 
@@ -83,6 +85,9 @@ impl Config {
         }
         if let Some(v) = envfile::var("PROXY_TLS_VERIFY") {
             cfg.tls_verify = !off(v);
+        }
+        if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
+            cfg.stats_persist = !off(v);
         }
         if let Some(path) = envfile::var("PROXY_TLS_CA_FILE").filter(|p| !p.trim().is_empty()) {
             cfg.tls_ca_file = Some(PathBuf::from(path.trim()));
@@ -152,6 +157,7 @@ impl Config {
             blocklist_url: None,
             blocklist_refresh: Duration::from_secs(86400),
             blocklist_exempt: Vec::new(),
+            stats_persist: true,
             cache: CacheConfig::default(),
         })
     }

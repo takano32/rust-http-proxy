@@ -1145,6 +1145,32 @@ fn test_integration_dashboard_and_self_addressed_requests() {
         "{}",
         r
     );
+    // 履歴は解像度を選べる
+    let r = get_via_proxy(proxy_port, &format!("http://{}/history?res=60", me), &me);
+    assert!(r.contains("\"interval_secs\":60,"), "{}", r);
+    // ブロックリストの判定と手動の上書き
+    let r = get_via_proxy(
+        proxy_port,
+        &format!("http://{}/blocklist?host=ads.test.invalid&action=block", me),
+        &me,
+    );
+    assert!(
+        r.contains("\"blocked\":true,\"verdict\":\"override:block\""),
+        "{}",
+        r
+    );
+    let r = get_via_proxy(
+        proxy_port,
+        "http://sub.ads.test.invalid/x",
+        "sub.ads.test.invalid",
+    );
+    assert!(r.starts_with("HTTP/1.1 403"), "{}", r);
+    let r = get_via_proxy(
+        proxy_port,
+        &format!("http://{}/blocklist?host=ads.test.invalid&action=clear", me),
+        &me,
+    );
+    assert!(r.contains("\"verdict\":\"clear\""), "{}", r);
     // 自分宛てで知らないパスは転送せず 404
     let r = get_via_proxy(proxy_port, &format!("http://{}/nope", me), &me);
     assert!(r.starts_with("HTTP/1.1 404"), "{}", r);
