@@ -75,12 +75,12 @@ struct Ctx<'a> {
 
 impl Ctx<'_> {
     fn log(&self, status: &str, bytes: u64, cache: &str) {
-        self.metrics.record_host_timed(
-            self.pool_key,
-            HostOutcome::from_access(cache, status.parse().unwrap_or(0)),
-            bytes,
-            self.started.elapsed(),
-        );
+        let outcome = HostOutcome::from_access(cache, status.parse().unwrap_or(0));
+        let took = self.started.elapsed();
+        self.metrics
+            .record_host_timed(self.pool_key, outcome, bytes, took);
+        self.metrics
+            .record_client(self.client_ip, outcome, bytes, Some(took));
         access(
             self.conn_id,
             &Access {

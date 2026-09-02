@@ -111,7 +111,10 @@ mod tests {
             d.seen(CacheKey(i));
             i += 1;
         }
-        assert!(d.seen(old), "still in the previous filter after one rotation");
+        assert!(
+            d.seen(old),
+            "still in the previous filter after one rotation"
+        );
         while d.rotations() < 2 {
             d.seen(CacheKey(i));
             i += 1;

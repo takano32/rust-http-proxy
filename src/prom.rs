@@ -57,6 +57,25 @@ pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
         "result=\"negative\"",
         negative,
     );
+    header(
+        &mut out,
+        "blocklist_entries",
+        "gauge",
+        "Domains in the blocklist",
+    );
+    line(&mut out, "blocklist_entries", "", crate::blocklist::len());
+    header(
+        &mut out,
+        "blocklist_blocked_total",
+        "counter",
+        "Requests refused because the host is on the blocklist",
+    );
+    line(
+        &mut out,
+        "blocklist_blocked_total",
+        "",
+        crate::blocklist::blocked_total(),
+    );
     header(&mut out, "requests_total", "counter", "Requests received");
     line(
         &mut out,
@@ -152,6 +171,47 @@ pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
         line(&mut out, "host_bypass_total", &l, s.bypass);
         line(&mut out, "host_errors_total", &l, s.errors);
         line(&mut out, "host_bytes_total", &l, s.bytes);
+    }
+    header(
+        &mut out,
+        "host_blocked_total",
+        "counter",
+        "Requests refused by the ACL or blocklist per host",
+    );
+    for (host, s) in &hosts {
+        if s.blocked > 0 {
+            line(
+                &mut out,
+                "host_blocked_total",
+                &format!("host=\"{}\"", escape(host)),
+                s.blocked,
+            );
+        }
+    }
+    header(
+        &mut out,
+        "client_requests_total",
+        "counter",
+        "Requests per client address",
+    );
+    header(
+        &mut out,
+        "client_bytes_total",
+        "counter",
+        "Bytes per client address",
+    );
+    header(
+        &mut out,
+        "client_blocked_total",
+        "counter",
+        "Refused requests per client address",
+    );
+    let clients: Vec<_> = m.clients_sorted().into_iter().take(100).collect();
+    for (client, c) in &clients {
+        let l = format!("client=\"{}\"", escape(client));
+        line(&mut out, "client_requests_total", &l, c.stats.requests);
+        line(&mut out, "client_bytes_total", &l, c.stats.bytes);
+        line(&mut out, "client_blocked_total", &l, c.stats.blocked);
     }
     header(
         &mut out,

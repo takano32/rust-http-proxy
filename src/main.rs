@@ -90,6 +90,10 @@ fn main() {
         pool: Pool::new(config.pool_per_host, ORIGIN_IDLE),
         tls,
     });
+    sorahost_http_proxy::blocklist::configure(
+        sorahost_http_proxy::blocklist::Sources::from_config(&config),
+    );
+    let _blocklist = sorahost_http_proxy::blocklist::spawn(Arc::clone(&pool), config.timeout);
     if config.cache.enabled && config.cache.reserve {
         // 停止シグナルで ballast.reserve を空にしてから終わる (Wings のディスク計測に残さない)
         signal::install(&cache.ballast_path());

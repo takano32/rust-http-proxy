@@ -6,7 +6,7 @@
 //!
 //! 即時反映できるのは接続単位で参照する値だけ: ACL (`PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS`)、
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
-//! `PROXY_PAC_DIRECT`。それ以外 (ポート、bind、
+//! `PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`。それ以外 (ポート、bind、
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
 //! `/status` と dashboard に「再起動が必要」と出す。
 
@@ -114,6 +114,15 @@ impl Live {
         if fresh.pac_direct != old.pac_direct {
             next.pac_direct = fresh.pac_direct.clone();
             applied.push("PROXY_PAC_DIRECT");
+        }
+        let bl = crate::blocklist::Sources::from_config(&fresh);
+        if bl != crate::blocklist::Sources::from_config(&old) {
+            next.blocklist_file = fresh.blocklist_file.clone();
+            next.blocklist_url = fresh.blocklist_url.clone();
+            next.blocklist_refresh = fresh.blocklist_refresh;
+            next.blocklist_exempt = fresh.blocklist_exempt.clone();
+            crate::blocklist::configure(bl);
+            applied.push("PROXY_BLOCKLIST_*");
         }
         let level = envfile::var("PROXY_LOG_LEVEL")
             .and_then(|v| log::Level::parse(&v))

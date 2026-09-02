@@ -30,6 +30,14 @@ pub struct Config {
     pub dns_ttl: Duration,
     /// `/proxy.pac` で DIRECT にするホストの一覧 (`PROXY_PAC_DIRECT`、`*.example.com` 可)
     pub pac_direct: Vec<String>,
+    /// ブロックリストのファイル (`PROXY_BLOCKLIST_FILE`、hosts 形式 / 1 行 1 ドメイン)
+    pub blocklist_file: Option<PathBuf>,
+    /// ブロックリストの URL (`PROXY_BLOCKLIST_URL`)
+    pub blocklist_url: Option<String>,
+    /// URL を取り直す間隔 (`PROXY_BLOCKLIST_REFRESH_SECS`)
+    pub blocklist_refresh: Duration,
+    /// ブロックリストの対象外にするホスト (`PROXY_BLOCKLIST_EXEMPT`、`*.example.com` 可)
+    pub blocklist_exempt: Vec<String>,
     pub cache: CacheConfig,
 }
 
@@ -84,12 +92,29 @@ impl Config {
         {
             cfg.dns_ttl = Duration::from_secs(secs);
         }
-        if let Some(list) = envfile::var("PROXY_PAC_DIRECT") {
-            cfg.pac_direct = list
-                .split(',')
+        let list = |v: String| -> Vec<String> {
+            v.split(',')
                 .map(|s| s.trim().to_ascii_lowercase())
                 .filter(|s| !s.is_empty())
-                .collect();
+                .collect()
+        };
+        if let Some(v) = envfile::var("PROXY_PAC_DIRECT") {
+            cfg.pac_direct = list(v);
+        }
+        cfg.blocklist_file = envfile::var("PROXY_BLOCKLIST_FILE")
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from);
+        cfg.blocklist_url = envfile::var("PROXY_BLOCKLIST_URL")
+            .map(|u| u.trim().to_string())
+            .filter(|u| u.starts_with("http://") || u.starts_with("https://"));
+        if let Some(secs) =
+            envfile::var("PROXY_BLOCKLIST_REFRESH_SECS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.blocklist_refresh = Duration::from_secs(secs.max(60));
+        }
+        if let Some(v) = envfile::var("PROXY_BLOCKLIST_EXEMPT") {
+            cfg.blocklist_exempt = list(v);
         }
         Ok(cfg.with_cache(CacheConfig::from_env()))
     }
@@ -123,6 +148,10 @@ impl Config {
             tls_ca_file: None,
             dns_ttl: Duration::from_secs(60),
             pac_direct: Vec::new(),
+            blocklist_file: None,
+            blocklist_url: None,
+            blocklist_refresh: Duration::from_secs(86400),
+            blocklist_exempt: Vec::new(),
             cache: CacheConfig::default(),
         })
     }

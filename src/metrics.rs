@@ -12,6 +12,8 @@ pub enum HostOutcome {
     Miss,
     Bypass,
     Error,
+    /// ACL / ブロックリストで拒否した (403)
+    Blocked,
 }
 
 impl HostOutcome {
@@ -35,6 +37,17 @@ impl HostOutcome {
     }
 }
 
+/// 接続元別統計。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ClientStats {
+    pub stats: HostStats,
+    /// 最後に要求を受けた時刻 (epoch 秒)
+    pub last_seen: u64,
+}
+
+/// 接続元 IP ごとの統計を持つ上限。
+pub const MAX_CLIENTS: usize = 1000;
+
 /// 応答時間ヒストグラムの上限 (ms)。最後の区間は上限なし。
 pub const LATENCY_BOUNDS_MS: [u64; 9] = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
 
@@ -45,6 +58,8 @@ pub struct HostStats {
     pub misses: u64,
     pub bypass: u64,
     pub errors: u64,
+    /// ACL / ブロックリストで拒否した数
+    pub blocked: u64,
     pub bytes: u64,
     /// 応答時間を記録した要求数と、その合計・最大 (ms)。CONNECT は接続確立までの時間
     pub timed: u64,
@@ -132,6 +147,8 @@ pub struct Metrics {
     pub history: crate::history::History,
     /// ホスト (`scheme://host:port`) ごとの統計
     hosts: Mutex<HashMap<String, HostStats>>,
+    /// 接続元 IP ごとの統計 (上位 `MAX_CLIENTS`、あふれた分は "other")
+    clients: Mutex<HashMap<String, ClientStats>>,
 }
 
 impl Metrics {
@@ -147,6 +164,7 @@ impl Metrics {
             origin_reused: AtomicU64::new(0),
             history: crate::history::History::default(),
             hosts: Mutex::new(HashMap::new()),
+            clients: Mutex::new(HashMap::new()),
         }
     }
 
@@ -175,10 +193,58 @@ impl Metrics {
             HostOutcome::Miss => s.misses += 1,
             HostOutcome::Bypass => s.bypass += 1,
             HostOutcome::Error => s.errors += 1,
+            HostOutcome::Blocked => s.blocked += 1,
         }
         if let Some(d) = took {
             s.observe(d);
         }
+    }
+
+    /// 接続元 IP ごとに 1 要求を数える。
+    pub fn record_client(
+        &self,
+        client: &str,
+        outcome: HostOutcome,
+        bytes: u64,
+        took: Option<Duration>,
+    ) {
+        let mut clients = self.clients.lock().unwrap_or_else(|p| p.into_inner());
+        let key = if clients.len() >= MAX_CLIENTS && !clients.contains_key(client) {
+            "other"
+        } else {
+            client
+        };
+        let c = clients.entry(key.to_string()).or_default();
+        c.last_seen = crate::cache::now_epoch();
+        let s = &mut c.stats;
+        s.requests += 1;
+        s.bytes += bytes;
+        match outcome {
+            HostOutcome::Hit => s.hits += 1,
+            HostOutcome::Miss => s.misses += 1,
+            HostOutcome::Bypass => s.bypass += 1,
+            HostOutcome::Error => s.errors += 1,
+            HostOutcome::Blocked => s.blocked += 1,
+        }
+        if let Some(d) = took {
+            s.observe(d);
+        }
+    }
+
+    /// 要求数の多い順に並べた接続元別統計。
+    pub fn clients_sorted(&self) -> Vec<(String, ClientStats)> {
+        let clients = self.clients.lock().unwrap_or_else(|p| p.into_inner());
+        let mut v: Vec<(String, ClientStats)> = clients
+            .iter()
+            .map(|(k, s)| (k.clone(), s.clone()))
+            .collect();
+        v.sort_by(|a, b| {
+            b.1.stats
+                .requests
+                .cmp(&a.1.stats.requests)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        v
     }
 
     /// 要求数の多い順に並べたホスト別統計。
@@ -242,21 +308,18 @@ impl Metrics {
             .hosts_sorted()
             .into_iter()
             .take(50)
-            .map(|(h, s)| {
+            .map(|(h, s)| format!("{{\"host\":\"{}\",{}}}", json_str(&h), stats_json(&s)))
+            .collect();
+        let clients_json: Vec<String> = self
+            .clients_sorted()
+            .into_iter()
+            .take(50)
+            .map(|(c, s)| {
                 format!(
-                    "{{\"host\":\"{}\",\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"bytes\":{},\"timed\":{},\"avg_ms\":{:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"max_ms\":{}}}",
-                    h.replace('\\', "\\\\").replace('"', "\\\""),
-                    s.requests,
-                    s.hits,
-                    s.misses,
-                    s.bypass,
-                    s.errors,
-                    s.bytes,
-                    s.timed,
-                    s.avg_ms(),
-                    s.quantile_ms(0.5),
-                    s.quantile_ms(0.95),
-                    s.duration_ms_max
+                    "{{\"client\":\"{}\",{},\"last_seen\":{}}}",
+                    json_str(&c),
+                    stats_json(&s.stats),
+                    s.last_seen
                 )
             })
             .collect();
@@ -266,8 +329,8 @@ impl Metrics {
                 "\"active_connections\":{},\"bytes_forwarded\":{},",
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{}}},",
-                "\"hosts\":[{}],",
-                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"cache\":{}}}"
+                "\"hosts\":[{}],\"clients\":[{}],",
+                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"blocklist\":{},\"cache\":{}}}"
             ),
             uptime,
             requests,
@@ -278,12 +341,37 @@ impl Metrics {
             self.origin_new.load(Ordering::Relaxed),
             self.origin_reused.load(Ordering::Relaxed),
             hosts_json.join(","),
+            clients_json.join(","),
             crate::log::current_level().as_str().trim(),
             crate::reload::status_json(),
             crate::dns::status_json(),
+            crate::blocklist::status_json(),
             cache_json
         )
     }
+}
+
+fn json_str(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// ホスト別 / 接続元別に共通の統計フィールド (先頭・末尾の波括弧なし)。
+fn stats_json(s: &HostStats) -> String {
+    format!(
+        "\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"blocked\":{},\"bytes\":{},\"timed\":{},\"avg_ms\":{:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"max_ms\":{}",
+        s.requests,
+        s.hits,
+        s.misses,
+        s.bypass,
+        s.errors,
+        s.blocked,
+        s.bytes,
+        s.timed,
+        s.avg_ms(),
+        s.quantile_ms(0.5),
+        s.quantile_ms(0.95),
+        s.duration_ms_max
+    )
 }
 
 impl Default for Metrics {
@@ -319,6 +407,30 @@ mod tests {
         metrics.dec_active_conn();
         let json2 = metrics.to_json();
         assert!(json2.contains("\"active_connections\":0"));
+    }
+
+    #[test]
+    fn clients_and_blocked_are_counted() {
+        let m = Metrics::new();
+        m.record_client(
+            "10.0.0.1",
+            HostOutcome::Hit,
+            100,
+            Some(Duration::from_millis(30)),
+        );
+        m.record_client("10.0.0.1", HostOutcome::Blocked, 0, None);
+        m.record_client("10.0.0.2", HostOutcome::Bypass, 5, None);
+        m.record_host("blocked://ads.example", HostOutcome::Blocked, 0);
+        let clients = m.clients_sorted();
+        assert_eq!(clients[0].0, "10.0.0.1");
+        assert_eq!(clients[0].1.stats.requests, 2);
+        assert_eq!(clients[0].1.stats.blocked, 1);
+        assert_eq!(clients[0].1.stats.timed, 1);
+        assert!(clients[0].1.last_seen > 0);
+        let json = m.to_json();
+        assert!(json.contains("\"clients\":[{\"client\":\"10.0.0.1\",\"requests\":2"));
+        assert!(json.contains("\"blocked\":1"));
+        assert!(json.contains("\"host\":\"blocked://ads.example\",\"requests\":1,\"hits\":0,\"misses\":0,\"bypass\":0,\"errors\":0,\"blocked\":1"));
     }
 
     #[test]

@@ -44,6 +44,7 @@ pub fn handle_connect(
                 0,
                 started.elapsed(),
             );
+            metrics.record_client(&client_ip, HostOutcome::Error, 0, Some(started.elapsed()));
             access(
                 conn_id,
                 &Access {
@@ -81,6 +82,12 @@ pub fn handle_connect(
         HostOutcome::Bypass,
         transferred,
         connect_took,
+    );
+    metrics.record_client(
+        &client_ip,
+        HostOutcome::Bypass,
+        transferred,
+        Some(connect_took),
     );
     access(
         conn_id,

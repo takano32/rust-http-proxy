@@ -1,4 +1,5 @@
 pub mod acl;
+pub mod blocklist;
 pub mod body;
 pub mod cache;
 pub mod config;
@@ -231,12 +232,29 @@ pub fn handle_client(
                 }
             }
         };
-        if !config.acl.is_allowed(&target_host) {
+        let denied = if !config.acl.is_allowed(&target_host) {
+            Some("ACL")
+        } else if blocklist::is_blocked(&net::split_host_port(&target_host).0) {
+            Some("blocklist")
+        } else {
+            None
+        };
+        if let Some(why) = denied {
             log_warn!(
                 Some(conn_id),
-                "403 Forbidden (ACL blocked host: {})",
+                "403 Forbidden ({} blocked host: {})",
+                why,
                 target_host
             );
+            let client_ip = peer_addr
+                .map(|a| a.ip().to_string())
+                .unwrap_or_else(|| "-".to_string());
+            metrics.record_host(
+                &format!("blocked://{}", net::split_host_port(&target_host).0),
+                metrics::HostOutcome::Blocked,
+                0,
+            );
+            metrics.record_client(&client_ip, metrics::HostOutcome::Blocked, 0, None);
             client.write_all(FORBIDDEN_RESPONSE)?;
             client.flush()?;
             return Ok(());

@@ -46,7 +46,7 @@ fn extract_host(host_or_addr: &str) -> String {
     crate::net::split_host_port(host_or_addr).0
 }
 
-fn match_pattern(pattern: &str, host: &str) -> bool {
+pub(crate) fn match_pattern(pattern: &str, host: &str) -> bool {
     let pattern = pattern.to_ascii_lowercase();
     if pattern == host {
         return true;
