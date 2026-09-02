@@ -1,5 +1,6 @@
 //! `Cache` の読み書き操作: 参照 (L1 → L2、昇格)、ストリーミング保存、延命、無効化。
 
+use crate::sync::LockExt;
 use std::io::{BufReader, Read};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -49,10 +50,7 @@ impl Cache {
     /// 全エントリを消し、消した件数 (両層の合計) を返す。
     pub fn clear_all(&self) -> usize {
         let n = self.mem.clear() + self.disk.clear();
-        self.variants
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
+        self.variants.locked().clear();
         log_debug!(None, "cache CLEAR removed {} entries", n);
         n
     }
@@ -189,7 +187,7 @@ impl Cache {
     /// URL とバリアントの対応を覚えておく (無効化用)。
     pub fn remember_variant(&self, url: &str, key: CacheKey) {
         let base = cache_key("GET", url);
-        let mut v = self.variants.lock().unwrap_or_else(|p| p.into_inner());
+        let mut v = self.variants.locked();
         let list = v.entry(base).or_default();
         if !list.contains(&key) {
             list.push(key);
@@ -200,7 +198,7 @@ impl Cache {
     pub fn invalidate(&self, url: &str, conn_id: usize) -> usize {
         let base = cache_key("GET", url);
         let mut keys = {
-            let mut v = self.variants.lock().unwrap_or_else(|p| p.into_inner());
+            let mut v = self.variants.locked();
             v.remove(&base).unwrap_or_default()
         };
         if !keys.contains(&base) {

@@ -42,12 +42,12 @@ pub use key::{CacheKey, cache_key, cache_key_variant};
 pub use ops::PeekInfo;
 pub use sink::{StoreOutcome, StoreSink};
 
+use crate::sync::LockExt;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use budget::Snapshot;
 use disk::DiskTier;
@@ -59,12 +59,7 @@ use quota::resolve_quota;
 use crate::sysinfo;
 use crate::{log_info, log_warn};
 
-pub fn now_epoch() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+pub use crate::clock::now_epoch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheSource {
@@ -218,8 +213,7 @@ impl Cache {
         if cache.cfg.pterodactyl && cache.cfg.disk_limit.is_auto() && !cache.quota.is_known() {
             if cache.cfg.disk_probe && cache.disk.reserve_active() {
                 let state = cache.quota_root().join(".sorahost-http-proxy.state");
-                *cache.disk_probe.lock().unwrap_or_else(|p| p.into_inner()) =
-                    Some(DiskProbe::load(&state, now_epoch()));
+                *cache.disk_probe.locked() = Some(DiskProbe::load(&state, now_epoch()));
             } else {
                 log_warn!(
                     None,
@@ -334,7 +328,7 @@ impl Cache {
 
     /// 裏側の再検証を始めてよいか (同じキーが進行中、または上限なら false)。
     pub fn begin_revalidation(&self, key: CacheKey) -> bool {
-        let mut set = self.revalidating.lock().unwrap_or_else(|p| p.into_inner());
+        let mut set = self.revalidating.locked();
         if set.len() >= MAX_BACKGROUND_REVALIDATIONS || set.contains(&key) {
             return false;
         }
@@ -343,24 +337,18 @@ impl Cache {
     }
 
     pub fn end_revalidation(&self, key: CacheKey) {
-        let mut set = self.revalidating.lock().unwrap_or_else(|p| p.into_inner());
+        let mut set = self.revalidating.locked();
         set.remove(&key);
     }
 
     /// 進行中の裏側の再検証の数。
     pub fn revalidating_count(&self) -> usize {
-        self.revalidating
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .len()
+        self.revalidating.locked().len()
     }
 
     /// 直近のプローブで観測したシステム使用量。
     pub fn snapshot(&self) -> Snapshot {
-        self.snapshot
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+        self.snapshot.locked().clone()
     }
 
     fn tick(&self) -> u64 {

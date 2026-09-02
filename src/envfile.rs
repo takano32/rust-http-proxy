@@ -4,6 +4,7 @@
 //! `KEY=VALUE` を書けば同じ効果になる。ファイルの値が実際の環境変数より優先する (パネルが
 //! 渡す値を手元で上書きできるように)。
 
+use crate::sync::RwLockExt;
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
@@ -39,17 +40,14 @@ fn read() -> Loaded {
 }
 
 fn loaded() -> RwLockReadGuard<'static, Loaded> {
-    LOADED
-        .get_or_init(|| RwLock::new(read()))
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
+    LOADED.get_or_init(|| RwLock::new(read())).read_locked()
 }
 
 /// `.env` を読み直し、値が変わったキー (追加・削除・変更) を名前順で返す。
 pub fn reload() -> Vec<String> {
     let fresh = read();
     let lock = LOADED.get_or_init(|| RwLock::new(read()));
-    let mut cur = lock.write().unwrap_or_else(|e| e.into_inner());
+    let mut cur = lock.write_locked();
     let mut changed: Vec<String> = cur
         .vars
         .keys()

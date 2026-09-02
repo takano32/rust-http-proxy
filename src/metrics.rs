@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -236,7 +237,7 @@ impl Metrics {
     }
 
     fn record(&self, host: &str, outcome: HostOutcome, bytes: u64, took: Option<Duration>) {
-        let mut hosts = self.hosts.lock().unwrap_or_else(|p| p.into_inner());
+        let mut hosts = self.hosts.locked();
         let key = if hosts.len() >= MAX_HOSTS && !hosts.contains_key(host) {
             "other"
         } else {
@@ -256,7 +257,7 @@ impl Metrics {
         bytes: u64,
         took: Option<Duration>,
     ) {
-        let mut clients = self.clients.lock().unwrap_or_else(|p| p.into_inner());
+        let mut clients = self.clients.locked();
         let key = if clients.len() >= MAX_CLIENTS && !clients.contains_key(client) {
             "other"
         } else {
@@ -270,7 +271,7 @@ impl Metrics {
 
     /// 要求数の多い順に並べた接続元別統計。
     pub fn clients_sorted(&self) -> Vec<(String, HostStats)> {
-        let clients = self.clients.lock().unwrap_or_else(|p| p.into_inner());
+        let clients = self.clients.locked();
         let mut v: Vec<(String, HostStats)> = clients
             .iter()
             .map(|(k, s)| (k.clone(), s.clone()))
@@ -281,11 +282,11 @@ impl Metrics {
 
     /// 起動時に状態ファイルから読み戻す (今の値が空のときだけ)。
     pub fn restore(&self, hosts: Vec<(String, HostStats)>, clients: Vec<(String, HostStats)>) {
-        let mut h = self.hosts.lock().unwrap_or_else(|p| p.into_inner());
+        let mut h = self.hosts.locked();
         if h.is_empty() {
             h.extend(hosts);
         }
-        let mut c = self.clients.lock().unwrap_or_else(|p| p.into_inner());
+        let mut c = self.clients.locked();
         if c.is_empty() {
             c.extend(clients);
         }
@@ -293,7 +294,7 @@ impl Metrics {
 
     /// 要求数の多い順に並べたホスト別統計。
     pub fn hosts_sorted(&self) -> Vec<(String, HostStats)> {
-        let hosts = self.hosts.lock().unwrap_or_else(|p| p.into_inner());
+        let hosts = self.hosts.locked();
         let mut v: Vec<(String, HostStats)> =
             hosts.iter().map(|(k, s)| (k.clone(), s.clone())).collect();
         v.sort_by(|a, b| b.1.requests.cmp(&a.1.requests).then_with(|| a.0.cmp(&b.0)));
@@ -352,13 +353,25 @@ impl Metrics {
             .hosts_sorted()
             .into_iter()
             .take(50)
-            .map(|(h, s)| format!("{{\"host\":\"{}\",{}}}", json_str(&h), stats_json(&s)))
+            .map(|(h, s)| {
+                format!(
+                    "{{\"host\":\"{}\",{}}}",
+                    crate::json::escape(&h),
+                    stats_json(&s)
+                )
+            })
             .collect();
         let clients_json: Vec<String> = self
             .clients_sorted()
             .into_iter()
             .take(50)
-            .map(|(c, s)| format!("{{\"client\":\"{}\",{}}}", json_str(&c), stats_json(&s)))
+            .map(|(c, s)| {
+                format!(
+                    "{{\"client\":\"{}\",{}}}",
+                    crate::json::escape(&c),
+                    stats_json(&s)
+                )
+            })
             .collect();
         format!(
             concat!(
@@ -387,10 +400,6 @@ impl Metrics {
             cache_json
         )
     }
-}
-
-fn json_str(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// ホスト別 / 接続元別に共通の統計フィールド (先頭・末尾の波括弧なし)。

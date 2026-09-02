@@ -5,6 +5,7 @@
 //! 現在の側が [`ROTATE_AFTER`] 回埋まったら直前の側と入れ替えて古い記憶を捨てる。
 //! 誤検出はキーを「見たことがある」と言う方向にしか起きず、その場合はただ保存されるだけ。
 
+use crate::sync::LockExt;
 use std::sync::Mutex;
 
 use super::key::CacheKey;
@@ -58,7 +59,7 @@ impl Doorkeeper {
     /// このキーを以前に見たことがあれば `true`。見ていなければ覚えて `false`。
     pub fn seen(&self, key: CacheKey) -> bool {
         let pos = positions(key);
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = self.inner.locked();
         if test(&g.current, pos) || test(&g.previous, pos) {
             return true;
         }
@@ -80,10 +81,7 @@ impl Doorkeeper {
 
     /// 入れ替えた回数 (テストと状態表示用)。
     pub fn rotations(&self) -> u64 {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .rotations
+        self.inner.locked().rotations
     }
 }
 

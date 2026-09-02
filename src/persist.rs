@@ -7,6 +7,7 @@
 //! 置き場所は `$HOME/.sorahost-http-proxy.rrd` (Pterodactyl で永続するのはそこだけ)。
 //! `PROXY_STATS_PERSIST=off` で無効。大きさは約 1 MiB で、以後は伸びない。
 
+use crate::sync::LockExt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -89,7 +90,7 @@ impl Store {
 
     /// 履歴の標本を各リングへ書く。
     pub fn write_samples(&self, pushed: &Pushed) {
-        let mut rings = self.rings.lock().unwrap_or_else(|p| p.into_inner());
+        let mut rings = self.rings.locked();
         for (i, s) in [pushed.fine, pushed.minute, pushed.hour].iter().enumerate() {
             if let Some(s) = s {
                 let r = rings[i].push(&self.rrd, &s.encode());
@@ -147,8 +148,8 @@ impl Store {
     /// `/status` の `"state_file"` 要素。
     pub fn status_json(&self) -> String {
         format!(
-            "{{\"path\":\"{}\",\"bytes\":{},\"flushes\":{},\"write_errors\":{}}}",
-            self.path.display().to_string().replace('"', "\\\""),
+            "{{\"path\":{},\"bytes\":{},\"flushes\":{},\"write_errors\":{}}}",
+            crate::json::quote(&self.path.display().to_string()),
             self.rrd.layout.total,
             self.flushes.load(Ordering::Relaxed),
             self.write_errors.load(Ordering::Relaxed)

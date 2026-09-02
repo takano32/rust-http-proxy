@@ -5,6 +5,7 @@
 //! 使い (オリジンの DNS 障害でトンネルが全滅しないように)、失敗そのものも [`NEGATIVE`] の間
 //! 覚えて連続した再解決を抑える。IP リテラルはキャッシュしない。
 
+use crate::sync::LockExt;
 use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -43,15 +44,10 @@ pub fn ttl() -> Duration {
     Duration::from_secs(TTL_SECS.load(Ordering::Relaxed))
 }
 
-/// `host:port` (IPv6 リテラルは `[..]:port`) を分ける。
-fn split_host_port(addr: &str) -> Option<(&str, u16)> {
-    let (host, port) = addr.rsplit_once(':')?;
-    let port = port.parse().ok()?;
-    let host = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
-    Some((host, port))
+/// `host:port` (IPv6 リテラルは `[..]:port`) を分ける。ポートが無ければ `None`。
+fn split_host_port(addr: &str) -> Option<(String, u16)> {
+    let (host, port) = crate::net::split_host_port(addr);
+    Some((host, port?))
 }
 
 fn system_resolve(host: &str, port: u16) -> io::Result<Vec<IpAddr>> {
@@ -70,6 +66,7 @@ pub fn resolve(addr_str: &str) -> io::Result<Vec<SocketAddr>> {
     let Some((host, port)) = split_host_port(addr_str) else {
         return addr_str.to_socket_addrs().map(|i| i.collect());
     };
+    let host = host.as_str();
     let ttl = ttl();
     if ttl.is_zero() || host.parse::<IpAddr>().is_ok() {
         return addr_str.to_socket_addrs().map(|i| i.collect());
@@ -77,7 +74,7 @@ pub fn resolve(addr_str: &str) -> io::Result<Vec<SocketAddr>> {
     let key = host.to_ascii_lowercase();
     let now = Instant::now();
     {
-        let mut guard = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = TABLE.locked();
         if let Some(e) = guard.get_or_insert_with(HashMap::new).get(&key) {
             if !e.addrs.is_empty() && now.duration_since(e.resolved_at) < ttl {
                 HITS.fetch_add(1, Ordering::Relaxed);
@@ -93,7 +90,7 @@ pub fn resolve(addr_str: &str) -> io::Result<Vec<SocketAddr>> {
     }
     MISSES.fetch_add(1, Ordering::Relaxed);
     let result = system_resolve(host, port);
-    let mut guard = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = TABLE.locked();
     let table = guard.get_or_insert_with(HashMap::new);
     match result {
         Ok(addrs) => {
@@ -142,18 +139,14 @@ fn evict_oldest(table: &mut HashMap<String, Entry>) {
 
 /// 覚えている結果を全部捨てる (`.env` の TTL 変更やテスト用)。
 pub fn clear() {
-    if let Some(t) = TABLE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+    if let Some(t) = TABLE.locked().as_mut() {
         t.clear();
     }
 }
 
 /// `/status` の `"dns"` 要素。
 pub fn status_json() -> String {
-    let entries = TABLE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .map_or(0, HashMap::len);
+    let entries = TABLE.locked().as_ref().map_or(0, HashMap::len);
     format!(
         "{{\"ttl_secs\":{},\"entries\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{}}}",
         TTL_SECS.load(Ordering::Relaxed),
@@ -190,8 +183,11 @@ mod tests {
 
     #[test]
     fn splits_host_and_port() {
-        assert_eq!(split_host_port("example.com:80"), Some(("example.com", 80)));
-        assert_eq!(split_host_port("[::1]:8080"), Some(("::1", 8080)));
+        assert_eq!(
+            split_host_port("example.com:80"),
+            Some(("example.com".into(), 80))
+        );
+        assert_eq!(split_host_port("[::1]:8080"), Some(("::1".into(), 8080)));
         assert_eq!(split_host_port("nope"), None);
     }
 

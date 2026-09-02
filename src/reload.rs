@@ -10,11 +10,14 @@
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
 //! `/status` と dashboard に「再起動が必要」と出す。
 
+use crate::sync::{LockExt, RwLockExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
+
+use crate::clock::now_epoch;
 
 use crate::config::Config;
 use crate::sysinfo::inotify::Watch;
@@ -68,7 +71,7 @@ impl Live {
 
     /// 現在の設定のスナップショット。
     pub fn config(&self) -> Arc<Config> {
-        Arc::clone(&self.current.read().unwrap_or_else(|e| e.into_inner()))
+        Arc::clone(&self.current.read_locked())
     }
 
     /// `.env` を読み直して反映する。変更の有無にかかわらず呼んでよい。
@@ -79,7 +82,7 @@ impl Live {
         }
         self.reloads.fetch_add(1, Ordering::Relaxed);
         self.last_reload.store(now_epoch(), Ordering::Relaxed);
-        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = self.state.locked();
         let fresh = match Config::from_env() {
             Ok(c) => c,
             Err(e) => {
@@ -131,7 +134,7 @@ impl Live {
             log::set_level(level);
             applied.push("PROXY_LOG_LEVEL");
         }
-        *self.current.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(next);
+        *self.current.write_locked() = Arc::new(next);
 
         let boot = &self.boot;
         let mut restart = Vec::new();
@@ -172,33 +175,26 @@ impl Live {
     }
 
     fn set_watch(&self, kind: &'static str) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).watch = kind;
+        self.state.locked().watch = kind;
     }
 
     /// `/status` の `"settings"` 要素。
     pub fn json(&self) -> String {
-        let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let list = |v: &[String]| {
-            v.iter()
-                .map(|s| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")))
-                .collect::<Vec<_>>()
-                .join(",")
-        };
+        let st = self.state.locked();
         format!(
-            "{{\"path\":{},\"watch\":\"{}\",\"reloads\":{},\"last_reload\":{},\"applied\":[{}],\"restart_required\":[{}],\"error\":{}}}",
-            envfile::loaded_path()
-                .or_else(envfile::env_path)
-                .map(|p| format!("\"{}\"", p.display().to_string().replace('"', "\\\"")))
-                .unwrap_or_else(|| "null".to_string()),
+            "{{\"path\":{},\"watch\":\"{}\",\"reloads\":{},\"last_reload\":{},\"applied\":{},\"restart_required\":{},\"error\":{}}}",
+            crate::json::quote_opt(
+                envfile::loaded_path()
+                    .or_else(envfile::env_path)
+                    .map(|p| p.display().to_string())
+                    .as_deref()
+            ),
             st.watch,
             self.reloads.load(Ordering::Relaxed),
             self.last_reload.load(Ordering::Relaxed),
-            list(&st.applied),
-            list(&st.restart_required),
-            st.error
-                .as_ref()
-                .map(|e| format!("\"{}\"", e.replace('"', "\\\"")))
-                .unwrap_or_else(|| "null".to_string()),
+            crate::json::list(&st.applied),
+            crate::json::list(&st.restart_required),
+            crate::json::quote_opt(st.error.as_deref()),
         )
     }
 }
@@ -219,13 +215,6 @@ pub fn status_json() -> String {
 fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
     let md = std::fs::metadata(path).ok()?;
     Some((md.modified().ok()?, md.len()))
-}
-
-fn now_epoch() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// 監視スレッドを起動する。`HOME` が無ければ何もしない。

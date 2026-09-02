@@ -14,6 +14,7 @@ pub mod writer;
 pub use scan::ScanReport;
 pub use writer::DiskWriter;
 
+use crate::sync::LockExt;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -168,7 +169,7 @@ impl DiskTier {
 
     /// (エントリ合計バイト, 件数)
     pub fn usage(&self) -> (u64, usize) {
-        let index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+        let index = self.index.locked();
         (index.bytes(), index.len())
     }
 
@@ -192,17 +193,12 @@ impl DiskTier {
     }
 
     pub fn reserve_active(&self) -> bool {
-        self.reserve
-            && self
-                .ballast
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .supported
+        self.reserve && self.ballast.locked().supported
     }
 
     /// 先行確保を止めてバラストファイルを消す (tmpfs 上など、確保しても意味がない場合)。
     pub fn disable_reserve(&self) {
-        let mut b = self.ballast.lock().unwrap_or_else(|p| p.into_inner());
+        let mut b = self.ballast.locked();
         b.supported = false;
         b.bytes = 0;
         b.file = None;
@@ -244,7 +240,7 @@ impl DiskTier {
     pub fn init(&self, clock: &AtomicU64, now: u64, max_stale: u64) -> io::Result<ScanReport> {
         let result = self.init_inner(clock, now, max_stale);
         if result.is_err() {
-            let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+            let mut index = self.index.locked();
             *index = Store::default();
         }
         result
@@ -258,7 +254,7 @@ impl DiskTier {
         let mut report = ScanReport::default();
         self.scan_root(now, max_stale, &mut report)?;
         {
-            let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+            let mut index = self.index.locked();
             for shard in 0..SHARDS {
                 let dir = self.dir.join(format!("{:02x}", shard));
                 self.scan_shard(&dir, &mut index, clock, now, max_stale, &mut report);
@@ -272,7 +268,7 @@ impl DiskTier {
     /// バラストファイルを空の状態で用意する。開けなければ先行確保だけ諦める (致命的にはしない)。
     fn prepare_ballast(&self) {
         let path = self.dir.join(BALLAST_FILE);
-        let mut b = self.ballast.lock().unwrap_or_else(|p| p.into_inner());
+        let mut b = self.ballast.locked();
         b.bytes = 0;
         self.ballast_bytes.store(0, Ordering::Relaxed);
         if !self.reserve {
@@ -304,19 +300,19 @@ impl DiskTier {
 
     /// インデックス上のメタ情報 (`stored_at` は当てにしないこと)。
     pub fn lookup(&self, key: CacheKey) -> Option<Meta> {
-        let index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+        let index = self.index.locked();
         index.get(key).map(|e| e.meta)
     }
 
     /// インデックス上の (サイズ, メタ情報)。
     pub fn lookup_entry(&self, key: CacheKey) -> Option<(u64, Meta)> {
-        let index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+        let index = self.index.locked();
         index.get(key).map(|e| (e.size, e.meta))
     }
 
     /// 全エントリを消し (ファイルも)、件数を返す。バラストは残す。
     pub fn clear(&self) -> usize {
-        let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+        let mut index = self.index.locked();
         let mut n = 0;
         while let Some((key, e)) = index.pop_lru() {
             let _ = fs::remove_file(self.path_for(key, e.meta.validators));
@@ -326,7 +322,7 @@ impl DiskTier {
     }
 
     pub fn touch(&self, key: CacheKey, seq: u64) {
-        let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+        let mut index = self.index.locked();
         index.touch(key, seq);
     }
 
@@ -376,7 +372,7 @@ impl DiskTier {
 
     /// エントリを消す。ファイルの削除は索引ロックの下で行い、確定直後のファイルを消さないようにする。
     pub fn remove(&self, key: CacheKey) {
-        let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+        let mut index = self.index.locked();
         let removed = index.remove(key);
         // インデックスに無くても両方の名前を試して消す
         let validators = removed.as_ref().map(|e| e.meta.validators);
@@ -390,7 +386,7 @@ impl DiskTier {
     /// 再検証に成功したので有効期限を延ばす (インデックスと mtime)。
     pub fn refresh(&self, key: CacheKey, stored_at: u64, expires_at: u64, seq: u64) -> bool {
         let validators = {
-            let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+            let mut index = self.index.locked();
             let Some(e) = index.get_mut(key) else {
                 return false;
             };
@@ -455,7 +451,7 @@ impl DiskTier {
         let entry_capacity = self.entry_capacity();
         let mut evicted = 0;
         loop {
-            let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+            let mut index = self.index.locked();
             let used = index.bytes().saturating_add(self.in_flight_bytes());
             if used.saturating_add(extra) <= entry_capacity {
                 break;
@@ -494,7 +490,7 @@ impl DiskTier {
     }
 
     fn shrink_ballast(&self, by: u64) {
-        let mut b = self.ballast.lock().unwrap_or_else(|p| p.into_inner());
+        let mut b = self.ballast.locked();
         if b.bytes == 0 {
             return;
         }
@@ -519,7 +515,7 @@ impl DiskTier {
             .capacity()
             .saturating_sub(self.usage().0)
             .saturating_sub(self.in_flight_bytes());
-        let mut b = self.ballast.lock().unwrap_or_else(|p| p.into_inner());
+        let mut b = self.ballast.locked();
         let Ballast {
             file,
             bytes,
@@ -566,7 +562,7 @@ impl DiskTier {
     /// 期限切れで再検証できない、または期限から `max_stale` 秒以上経ったエントリを削除する。
     pub fn sweep(&self, now: u64, max_stale: u64) -> usize {
         let keys = {
-            let index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+            let index = self.index.locked();
             index.keys_where(|e| is_garbage(&e.meta, now, max_stale))
         };
         for key in &keys {
@@ -577,7 +573,7 @@ impl DiskTier {
 
     /// バラストを手放す (終了時)。
     pub fn shutdown(&self) {
-        let mut b = self.ballast.lock().unwrap_or_else(|p| p.into_inner());
+        let mut b = self.ballast.locked();
         if let Some(f) = b.file.take() {
             let _ = f.set_len(0);
         }

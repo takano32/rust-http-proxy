@@ -6,6 +6,7 @@
 //! ヘッダーへ書き戻し、mtime を有効期限にして、索引ロックの下で本来のファイル名へ rename する。
 //! 場所の確保は「今必要な分」だけ厳密に行い、空きがあるときだけ先読みして呼び出し回数を減らす。
 
+use crate::sync::LockExt;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -171,7 +172,7 @@ impl<'a> DiskWriter<'a> {
 
         // rename と索引更新は同じロックの下で行い、追い出しがこのファイルを消さないようにする
         {
-            let mut index = self.tier.index.lock().unwrap_or_else(|p| p.into_inner());
+            let mut index = self.tier.index.locked();
             fs::rename(&self.tmp, &self.path)?;
             let replaced = index.insert(self.key, DiskEntry::new(self.written, self.meta), seq);
             // バリデータの有無が変わると拡張子も変わるので、旧ファイルが孤児にならないよう消す

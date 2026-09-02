@@ -4,6 +4,7 @@
 //! 待ち、保存された表現をキャッシュから受け取る。leader が保存できずに終わった (保存対象外・
 //! 失敗・切断) ときは待っていた側が自分で取得する。leader のガードは Drop で必ず完了を通知する。
 
+use crate::sync::LockExt;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,7 +28,7 @@ impl InFlight {
     /// 完了を待つ。`timeout` 内に終わらなければ `None`。
     pub fn wait(&self, timeout: Duration) -> Option<FetchOutcome> {
         let deadline = Instant::now() + timeout;
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.locked();
         while state.is_none() {
             let now = Instant::now();
             if now >= deadline {
@@ -43,7 +44,7 @@ impl InFlight {
     }
 
     fn complete(&self, outcome: FetchOutcome) {
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.locked();
         if state.is_none() {
             *state = Some(outcome);
         }
@@ -65,7 +66,7 @@ pub enum FetchTicket<'a> {
 impl InFlightTable {
     /// leader になれれば `Leader`、既に誰かが取得中なら `Follower`。
     pub fn begin(&self, key: CacheKey) -> FetchTicket<'_> {
-        let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        let mut map = self.map.locked();
         if let Some(existing) = map.get(&key) {
             return FetchTicket::Follower(Arc::clone(existing));
         }
@@ -80,7 +81,7 @@ impl InFlightTable {
     }
 
     pub fn len(&self) -> usize {
-        self.map.lock().unwrap_or_else(|p| p.into_inner()).len()
+        self.map.locked().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -89,7 +90,7 @@ impl InFlightTable {
 
     fn finish(&self, key: CacheKey, entry: &InFlight, outcome: FetchOutcome) {
         {
-            let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
+            let mut map = self.map.locked();
             map.remove(&key);
         }
         entry.complete(outcome);

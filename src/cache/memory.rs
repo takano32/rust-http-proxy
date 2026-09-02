@@ -6,6 +6,7 @@
 //!
 //! 期限切れでもバリデータ (ETag / Last-Modified) を持つエントリは再検証用に残す。
 
+use crate::sync::LockExt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -75,7 +76,7 @@ impl MemTier {
 
     /// (エントリ合計バイト, 件数)
     pub fn usage(&self) -> (u64, usize) {
-        let store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        let store = self.store.locked();
         (store.bytes(), store.len())
     }
 
@@ -90,14 +91,14 @@ impl MemTier {
 
     /// LRU に触らずにエントリの (サイズ, メタ情報) を見る。
     pub fn peek(&self, key: CacheKey) -> Option<(u64, Meta)> {
-        let store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        let store = self.store.locked();
         store.get(key).map(|e| (e.data.len() as u64, e.meta))
     }
 
     /// 全エントリを消し、件数を返す。
     pub fn clear(&self) -> usize {
         let old = {
-            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            let mut store = self.store.locked();
             std::mem::take(&mut *store)
         };
         old.len()
@@ -105,7 +106,7 @@ impl MemTier {
 
     /// エントリがあれば返す (期限切れでもバリデータ付きなら返す)。再検証できない期限切れは削除。
     pub fn get(&self, key: CacheKey, now: u64, seq: u64) -> Option<MemHit> {
-        let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        let mut store = self.store.locked();
         let entry = store.get(key)?;
         if entry.meta.expires_at > now || entry.meta.validators {
             let hit = MemHit {
@@ -129,7 +130,7 @@ impl MemTier {
         }
         let mut dropped: Vec<Arc<Vec<u8>>> = Vec::new();
         let (bytes, evicted) = {
-            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            let mut store = self.store.locked();
             let entry = MemEntry {
                 data,
                 meta,
@@ -163,7 +164,7 @@ impl MemTier {
 
     /// 再検証に成功したので有効期限を延ばす。エントリが無ければ false。
     pub fn refresh(&self, key: CacheKey, stored_at: u64, expires_at: u64, seq: u64) -> bool {
-        let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        let mut store = self.store.locked();
         let Some(entry) = store.get_mut(key) else {
             return false;
         };
@@ -175,7 +176,7 @@ impl MemTier {
 
     pub fn remove(&self, key: CacheKey) -> bool {
         let removed = {
-            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            let mut store = self.store.locked();
             store.remove(key)
         };
         removed.is_some()
@@ -189,7 +190,7 @@ impl MemTier {
         loop {
             let mut dropped = Vec::new();
             {
-                let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+                let mut store = self.store.locked();
                 while store.bytes() > capacity && dropped.len() < EVICT_BATCH {
                     match store.pop_lru() {
                         Some((_, e)) => dropped.push(e.data),
@@ -221,7 +222,7 @@ impl MemTier {
         }
         let mut freed = Vec::new();
         {
-            let mut ballast = self.ballast.lock().unwrap_or_else(|p| p.into_inner());
+            let mut ballast = self.ballast.locked();
             while cache_bytes.saturating_add(self.ballast_bytes()) > capacity {
                 let Some(chunk) = ballast.pop() else {
                     break;
@@ -258,7 +259,7 @@ impl MemTier {
             // 0 以外で埋めて calloc 最適化を避け、全ページを実際にコミットさせる
             chunk.resize(BALLAST_CHUNK, 0xA5);
             {
-                let mut ballast = self.ballast.lock().unwrap_or_else(|p| p.into_inner());
+                let mut ballast = self.ballast.locked();
                 ballast.push(chunk);
                 self.ballast_bytes
                     .fetch_add(BALLAST_CHUNK as u64, Ordering::Relaxed);
@@ -272,7 +273,7 @@ impl MemTier {
     pub fn sweep(&self, now: u64, max_stale: u64) -> usize {
         let mut dropped = Vec::new();
         {
-            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            let mut store = self.store.locked();
             let keys = store.keys_where(|e| is_garbage(&e.meta, now, max_stale));
             for key in keys {
                 if let Some(e) = store.remove(key) {

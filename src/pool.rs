@@ -3,6 +3,7 @@
 //! 上流 (`scheme://host:port`) ごとにアイドル接続を保持し、再利用前に生存確認をする。
 //! 最後に返された接続から使う (LIFO) ので、古い接続は自然に期限切れで捨てられる。
 
+use crate::sync::LockExt;
 use std::collections::{HashMap, VecDeque};
 use std::io::BufReader;
 use std::net::TcpStream;
@@ -42,7 +43,7 @@ impl Pool {
         }
         loop {
             let candidate = {
-                let mut idle = self.idle.lock().unwrap_or_else(|p| p.into_inner());
+                let mut idle = self.idle.locked();
                 let queue = idle.get_mut(host)?;
                 let c = queue.pop_back();
                 if queue.is_empty() {
@@ -64,7 +65,7 @@ impl Pool {
             return;
         }
         let now = Instant::now();
-        let mut idle = self.idle.lock().unwrap_or_else(|p| p.into_inner());
+        let mut idle = self.idle.locked();
         let queue = idle.entry(host.to_string()).or_default();
         queue.retain(|i| now.duration_since(i.since) < self.idle_timeout);
         while queue.len() >= self.max_per_host {
@@ -76,7 +77,7 @@ impl Pool {
     /// 期限切れを捨てる (定期的に呼ぶ)。
     pub fn sweep(&self) {
         let now = Instant::now();
-        let mut idle = self.idle.lock().unwrap_or_else(|p| p.into_inner());
+        let mut idle = self.idle.locked();
         idle.retain(|_, q| {
             q.retain(|i| now.duration_since(i.since) < self.idle_timeout);
             !q.is_empty()
@@ -84,7 +85,7 @@ impl Pool {
     }
 
     pub fn idle_count(&self) -> usize {
-        let idle = self.idle.lock().unwrap_or_else(|p| p.into_inner());
+        let idle = self.idle.locked();
         idle.values().map(|q| q.len()).sum()
     }
 }

@@ -5,6 +5,7 @@
 //! - 粗い解像度は細かい標本から作る: 累計カウンタは窓の最後の値、ゲージ (接続数・使用量) は平均
 //! - 状態ファイル ([`crate::persist`]) があれば各解像度をそこにも書き、起動時に読み戻す
 
+use crate::sync::LockExt;
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -176,17 +177,13 @@ impl History {
     fn roll(&self, from: usize, to: usize, now: u64) -> Option<Sample> {
         let step = RESOLUTIONS[to].0;
         let window_start = (now / step) * step;
-        let last_to = self.rings[to]
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .back()
-            .map(|s| s.t);
+        let last_to = self.rings[to].locked().back().map(|s| s.t);
         // 直前の窓 [window_start - step, window_start) がまだ無ければ作る
         let prev = window_start.checked_sub(step)?;
         if last_to.is_some_and(|t| t >= prev) {
             return None;
         }
-        let src = self.rings[from].lock().unwrap_or_else(|p| p.into_inner());
+        let src = self.rings[from].locked();
         let window: Vec<Sample> = src
             .iter()
             .filter(|s| s.t >= prev && s.t < window_start)
@@ -202,7 +199,7 @@ impl History {
     }
 
     fn append(ring: &Mutex<VecDeque<Sample>>, s: Sample, cap: usize) {
-        let mut q = ring.lock().unwrap_or_else(|p| p.into_inner());
+        let mut q = ring.locked();
         if q.len() >= cap {
             q.pop_front();
         }
@@ -211,7 +208,7 @@ impl History {
 
     /// 起動時に状態ファイルから読み戻す (`res` は 0=5 秒, 1=1 分, 2=1 時間)。
     pub fn restore(&self, res: usize, samples: impl IntoIterator<Item = Sample>) {
-        let mut q = self.rings[res].lock().unwrap_or_else(|p| p.into_inner());
+        let mut q = self.rings[res].locked();
         q.clear();
         q.extend(samples);
         while q.len() > RESOLUTIONS[res].1 {
@@ -220,10 +217,7 @@ impl History {
     }
 
     pub fn len(&self) -> usize {
-        self.rings[0]
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .len()
+        self.rings[0].locked().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -245,7 +239,7 @@ impl History {
 
     pub fn to_json_res(&self, res: usize) -> String {
         let res = res.min(RESOLUTIONS.len() - 1);
-        let q = self.rings[res].lock().unwrap_or_else(|p| p.into_inner());
+        let q = self.rings[res].locked();
         let mut out = format!("{{\"interval_secs\":{},\"samples\":[", RESOLUTIONS[res].0);
         for (i, s) in q.iter().enumerate() {
             if i > 0 {

@@ -29,7 +29,10 @@ pub struct Endpoint<'a> {
     pub pac_direct: &'a [String],
 }
 
-const DASHBOARD_HTML: &str = include_str!("web/dashboard.html");
+mod blocklist;
+mod pac;
+
+const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
 
 /// 要求ターゲットを自分宛てのパスに直す。オリジン形式はそのまま、絶対形式は自分のポート宛て
 /// のときだけパスに落とす。それ以外 (他所への転送) は `None`。
@@ -81,7 +84,7 @@ pub fn handle(
         (
             200,
             "application/x-ns-proxy-autoconfig",
-            pac(ep, target, self_addressed),
+            pac::render(ep, target, self_addressed),
         )
     } else if is_get && path == "/history" {
         let params = parse_query(query.unwrap_or(""));
@@ -93,7 +96,7 @@ pub fn handle(
             .unwrap_or(0);
         (200, "application/json", ep.metrics.history.to_json_res(res))
     } else if is_get && path == "/blocklist" {
-        blocklist_op(&parse_query(query.unwrap_or("")))
+        blocklist::handle(&parse_query(query.unwrap_or("")))
     } else if is_get && (path == "/healthz" || path == "/status") {
         (
             200,
@@ -171,118 +174,6 @@ pub fn handle(
     Ok(true)
 }
 
-/// `/blocklist?host=<h>` で判定、`&action=block|allow|clear[&ttl_secs=N]` で手動の上書き。
-/// 引数なしなら一覧の状態と上書きの一覧。
-fn blocklist_op(params: &[(String, String)]) -> (u16, &'static str, String) {
-    use crate::blocklist;
-    let get = |k: &str| params.iter().find(|(x, _)| x == k).map(|(_, v)| v.as_str());
-    let Some(host) = get("host").map(str::trim).filter(|h| !h.is_empty()) else {
-        return (200, "application/json", blocklist::status_json());
-    };
-    let host = crate::net::split_host_port(host).0.to_ascii_lowercase();
-    if host.is_empty() || !host.contains('.') {
-        return (
-            400,
-            "application/json",
-            "{\"error\":\"host must be a domain name\"}".to_string(),
-        );
-    }
-    let ttl = get("ttl_secs")
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(std::time::Duration::from_secs)
-        .unwrap_or(std::time::Duration::from_secs(86400));
-    let action = get("action").unwrap_or("");
-    let changed = match action {
-        "block" => Some(blocklist::set_override(&host, true, ttl).json()),
-        "allow" => Some(blocklist::set_override(&host, false, ttl).json()),
-        "clear" => Some(blocklist::clear_override(&host).to_string()),
-        "" => None,
-        _ => {
-            return (
-                400,
-                "application/json",
-                "{\"error\":\"action must be block, allow or clear\"}".to_string(),
-            );
-        }
-    };
-    let v = blocklist::check(&host);
-    (
-        200,
-        "application/json",
-        format!(
-            "{{\"host\":\"{}\",\"blocked\":{},\"verdict\":\"{}\",\"action\":{},\"overrides\":[{}]}}",
-            json_escape(&host),
-            v.blocked(),
-            v.as_str(),
-            changed
-                .map(|c| format!("{{\"{}\":{}}}", action, c))
-                .unwrap_or_else(|| "null".to_string()),
-            blocklist::overrides()
-                .iter()
-                .map(blocklist::Override::json)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-    )
-}
-
-/// ブラウザ用の自動設定スクリプト (PAC)。自分自身・ローカル・`pac_direct` のホストは DIRECT、
-/// それ以外はこのプロキシ経由 (落ちていれば DIRECT にフォールバック)。
-fn pac(ep: &Endpoint<'_>, target: &str, self_addressed: bool) -> String {
-    // 自分の名前: 絶対形式ならその authority、そうでなければ Host ヘッダー
-    let authority = if self_addressed {
-        target
-            .split_once("://")
-            .map(|(_, rest)| rest.split('/').next().unwrap_or(""))
-            .unwrap_or("")
-    } else {
-        ep.host.unwrap_or("")
-    };
-    let (self_host, _) = crate::net::split_host_port(authority);
-    let self_host = self_host
-        .trim_matches(|c| c == '[' || c == ']')
-        .to_ascii_lowercase();
-    let proxy = if self_host.is_empty() {
-        format!("127.0.0.1:{}", ep.port)
-    } else if self_host.contains(':') {
-        format!("[{}]:{}", self_host, ep.port)
-    } else {
-        format!("{}:{}", self_host, ep.port)
-    };
-    let mut direct: Vec<String> = vec![
-        "host === \"localhost\"".into(),
-        "host === \"127.0.0.1\"".into(),
-        "host === \"::1\"".into(),
-        "isPlainHostName(host)".into(),
-    ];
-    if !self_host.is_empty() {
-        direct.push(format!("host === \"{}\"", js_escape(&self_host)));
-    }
-    for pat in ep.pac_direct {
-        let p = js_escape(pat);
-        if let Some(bare) = pat.strip_prefix("*.") {
-            direct.push(format!(
-                "host === \"{}\" || shExpMatch(host, \"{}\")",
-                js_escape(bare),
-                p
-            ));
-        } else if pat.contains('*') {
-            direct.push(format!("shExpMatch(host, \"{}\")", p));
-        } else {
-            direct.push(format!("host === \"{}\"", p));
-        }
-    }
-    format!(
-        "// sorahost-http-proxy PAC (PROXY_PAC_DIRECT で除外ホストを追加)\nfunction FindProxyForURL(url, host) {{\n  host = host.toLowerCase();\n  if ({}) return \"DIRECT\";\n  return \"PROXY {}; DIRECT\";\n}}\n",
-        direct.join("\n      || "),
-        proxy
-    )
-}
-
-fn js_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 /// URL を正規化して全バリアントを消す。
 fn purge_url(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
     match parse_origin(url, None) {
@@ -295,14 +186,14 @@ fn purge_url(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
                 format!(
                     "{{\"purged\":{},\"url\":\"{}\"}}",
                     n,
-                    json_escape(&canonical)
+                    crate::json::escape(&canonical)
                 ),
             )
         }
         Err(e) => (
             400,
             "application/json",
-            format!("{{\"error\":\"{}\"}}", json_escape(&e.to_string())),
+            format!("{{\"error\":\"{}\"}}", crate::json::escape(&e.to_string())),
         ),
     }
 }
@@ -326,7 +217,7 @@ fn lookup(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
                 "application/json",
                 format!(
                     "{{\"found\":true,\"url\":\"{}\",\"memory\":{},\"disk\":{},\"size\":{},\"stored_at\":{},\"expires_at\":{},\"fresh\":{},\"ttl_left\":{},\"validators\":{}}}",
-                    json_escape(&canonical),
+                    crate::json::escape(&canonical),
                     info.memory,
                     info.disk,
                     info.size,
@@ -343,7 +234,7 @@ fn lookup(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
             "application/json",
             format!(
                 "{{\"found\":false,\"url\":\"{}\"}}",
-                json_escape(&canonical)
+                crate::json::escape(&canonical)
             ),
         ),
     }
@@ -393,10 +284,6 @@ fn hex(b: u8) -> Option<u8> {
     }
 }
 
-fn json_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,7 +299,7 @@ mod tests {
         );
         assert_eq!(q[1], ("all".to_string(), "1".to_string()));
         assert_eq!(q[2], ("flag".to_string(), String::new()));
-        assert_eq!(json_escape("a\"b\\c"), "a\\\"b\\\\c");
+        assert_eq!(crate::json::escape("a\"b\\c"), "a\\\"b\\\\c");
     }
 }
 
@@ -437,61 +324,5 @@ mod local_path_tests {
         assert_eq!(local_path("http://example.com/status", 80), Some("/status"));
         assert_eq!(local_path("http://example.com:8080/x", 60624), None);
         assert_eq!(local_path("https://example.com:60624/x", 60624), None);
-    }
-}
-
-#[cfg(test)]
-mod pac_tests {
-    use super::*;
-
-    fn ep<'a>(
-        host: Option<&'a str>,
-        direct: &'a [String],
-    ) -> (Metrics, Cache, u16, Option<&'a str>, &'a [String]) {
-        (
-            Metrics::new(),
-            Cache::new(crate::cache::CacheConfig::disabled()),
-            8080,
-            host,
-            direct,
-        )
-    }
-
-    #[test]
-    fn pac_uses_host_header_and_direct_list() {
-        let direct = vec!["*.example.com".to_string(), "intra".to_string()];
-        let (m, c, port, host, d) = ep(Some("tokyo.sorahost.net:60624"), &direct);
-        let e = Endpoint {
-            metrics: &m,
-            cache: &c,
-            conn_id: 1,
-            port,
-            host,
-            pac_direct: d,
-        };
-        let script = pac(&e, "/proxy.pac", false);
-        assert!(script.contains("function FindProxyForURL(url, host)"));
-        assert!(script.contains("return \"PROXY tokyo.sorahost.net:8080; DIRECT\""));
-        assert!(script.contains("host === \"tokyo.sorahost.net\""));
-        assert!(script.contains("host === \"example.com\" || shExpMatch(host, \"*.example.com\")"));
-        assert!(script.contains("host === \"intra\""));
-        assert!(script.contains("isPlainHostName(host)"));
-    }
-
-    #[test]
-    fn pac_prefers_absolute_form_authority() {
-        let (m, c, port, host, d) = ep(Some("other:1"), &[]);
-        let e = Endpoint {
-            metrics: &m,
-            cache: &c,
-            conn_id: 1,
-            port,
-            host,
-            pac_direct: d,
-        };
-        let script = pac(&e, "http://proxy.local:8080/proxy.pac", true);
-        assert!(script.contains("PROXY proxy.local:8080; DIRECT"));
-        let script = pac(&e, "http://[::1]:8080/proxy.pac", true);
-        assert!(script.contains("PROXY [::1]:8080; DIRECT"));
     }
 }

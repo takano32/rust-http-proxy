@@ -4,6 +4,7 @@
 //! 決め、超過分の追い出し・期限切れの掃除・バラストの伸長を行う。スレッドは
 //! `Weak<Cache>` しか持たないので、`Cache` が破棄されれば自然に終了する。
 
+use crate::sync::LockExt;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::thread::{self, JoinHandle};
@@ -147,7 +148,7 @@ impl Cache {
             owned_disk: self.disk.owned(),
         });
         let enospc = self.disk.take_enospc();
-        let mut margins = self.margins.lock().unwrap_or_else(|p| p.into_inner());
+        let mut margins = self.margins.locked();
 
         let (mem_cap, mem_detail) = match self.cfg.mem_limit {
             Limit::Fixed(b) => (b, None),
@@ -215,7 +216,7 @@ impl Cache {
         let (disk_cap, disk_detail) = if !self.disk.is_ready() {
             (0, None)
         } else if unknown_quota {
-            let mut probe = self.disk_probe.lock().unwrap_or_else(|p| p.into_inner());
+            let mut probe = self.disk_probe.locked();
             match probe.as_mut() {
                 Some(pr) => {
                     let (confirmed, cap) = pr.tick(
@@ -318,7 +319,7 @@ impl Cache {
             self.pressure_logged.store(false, Ordering::Relaxed);
         }
 
-        *self.snapshot.lock().unwrap_or_else(|p| p.into_inner()) = snap;
+        *self.snapshot.locked() = snap;
         pressure
     }
 
