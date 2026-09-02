@@ -98,7 +98,8 @@ impl HostStats {
                     (self.duration_ms_max as f64).max(lo)
                 };
                 let frac = (rank - seen as f64) / n as f64;
-                return lo + (hi - lo) * frac;
+                // 観測した最大値は超えない (件数が少ないとき区間の上端が出ないように)
+                return (lo + (hi - lo) * frac).min(self.duration_ms_max as f64);
             }
             seen += n;
         }
