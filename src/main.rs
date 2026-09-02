@@ -60,8 +60,11 @@ fn main() {
     if let Some(s) = &store {
         sorahost_http_proxy::blocklist::set_store(Arc::clone(s));
     }
-    let _history =
-        sorahost_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache), store);
+    let _history = sorahost_http_proxy::history::spawn(
+        Arc::clone(&metrics),
+        Arc::clone(&cache),
+        store.clone(),
+    );
     let tls = if !config.tls_enabled {
         log_info!(
             None,
@@ -105,9 +108,21 @@ fn main() {
         sorahost_http_proxy::blocklist::Sources::from_config(&config),
     );
     let _blocklist = sorahost_http_proxy::blocklist::spawn(Arc::clone(&pool), config.timeout);
-    if config.cache.enabled && config.cache.reserve {
-        // 停止シグナルで ballast.reserve を空にしてから終わる (Wings のディスク計測に残さない)
-        signal::install(&cache.ballast_path());
+    // 停止シグナルで統計を状態ファイルに書き、ballast.reserve を空にしてから終わる
+    // (Wings のディスク計測に残さない)
+    {
+        let ballast = (config.cache.enabled && config.cache.reserve).then(|| cache.ballast_path());
+        let store = store.clone();
+        let m = Arc::clone(&metrics);
+        signal::install(
+            ballast.as_deref(),
+            Box::new(move || {
+                if let Some(st) = store {
+                    st.flush_stats(&m);
+                    log_info!(None, "statistics saved to {}", st.path.display());
+                }
+            }),
+        );
     }
 
     log_info!(
