@@ -14,7 +14,49 @@ use super::{Cache, CacheSource, now_epoch};
 use crate::sysinfo;
 use crate::{log_debug, log_warn};
 
+/// `peek` の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeekInfo {
+    pub memory: bool,
+    pub disk: bool,
+    /// メモリにあればその長さ、無ければディスク上のファイルサイズ
+    pub size: u64,
+    pub meta: Meta,
+}
+
 impl Cache {
+    /// LRU や統計に触らずにエントリの有無と状態を見る。
+    pub fn peek(&self, key: CacheKey) -> Option<PeekInfo> {
+        let mem = self.mem.peek(key);
+        let disk = self.disk.lookup_entry(key);
+        match (mem, disk) {
+            (Some((size, meta)), d) => Some(PeekInfo {
+                memory: true,
+                disk: d.is_some(),
+                size,
+                meta,
+            }),
+            (None, Some((size, meta))) => Some(PeekInfo {
+                memory: false,
+                disk: true,
+                size,
+                meta,
+            }),
+            (None, None) => None,
+        }
+    }
+
+    /// 全エントリを消し、消した件数 (両層の合計) を返す。
+    pub fn clear_all(&self) -> usize {
+        let n = self.mem.clear() + self.disk.clear();
+        self.variants
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        log_debug!(None, "cache CLEAR removed {} entries", n);
+        n
+    }
+
     /// キャッシュを引く。メモリ → ディスクの順に探索し、小さなディスクヒットはメモリへ昇格させる。
     /// 期限切れでもバリデータ付きなら返す (呼び出し側が `is_fresh` で判断して再検証する)。
     pub fn get(&self, key: CacheKey, conn_id: usize) -> Option<(CachedResponse, CacheSource)> {

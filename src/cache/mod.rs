@@ -36,6 +36,7 @@ pub use config::{CacheConfig, DiskQuota, Limit, MIB};
 pub use entry::{Body, CachedResponse};
 pub use format::Meta;
 pub use key::{CacheKey, cache_key, cache_key_variant};
+pub use ops::PeekInfo;
 pub use sink::{StoreOutcome, StoreSink};
 
 use std::path::{Path, PathBuf};

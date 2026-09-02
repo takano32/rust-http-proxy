@@ -2,6 +2,7 @@ pub mod acl;
 pub mod body;
 pub mod cache;
 pub mod config;
+pub mod endpoints;
 pub mod envfile;
 pub mod freshness;
 pub mod headers;
@@ -12,6 +13,7 @@ pub mod metrics;
 pub mod net;
 pub mod origin;
 pub mod pool;
+pub mod prom;
 pub mod signal;
 pub mod sysinfo;
 pub mod tls;
@@ -165,22 +167,13 @@ pub fn handle_client(
         let method = parts[0].to_string();
         let target = parts[1].to_string();
 
-        // Health check endpoint handling
-        if (target == "/healthz" || target == "/status") && method.eq_ignore_ascii_case("GET") {
-            let json_body = metrics.to_json_with_cache(Some(&cache));
-            let response = format!(
-                "HTTP/1.1 200 OK\r\n\
-                Content-Type: application/json\r\n\
-                Content-Length: {}\r\n\
-                Connection: close\r\n\
-                \r\n\
-                {}",
-                json_body.len(),
-                json_body
-            );
-            client.write_all(response.as_bytes())?;
-            client.flush()?;
-            log_info!(Some(conn_id), "GET {} -> 200 (status endpoint)", target);
+        // プロキシ自身のエンドポイント (/healthz, /status, /metrics, /purge, /lookup, PURGE)
+        let ep = endpoints::Endpoint {
+            metrics: &metrics,
+            cache: &cache,
+            conn_id,
+        };
+        if endpoints::handle(&mut client, &method, &target, &ep)? {
             return Ok(());
         }
 

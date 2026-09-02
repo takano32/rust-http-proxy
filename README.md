@@ -38,8 +38,9 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 - **詳細なアクセスログ**:
   - 既定 (INFO) で 1 リクエスト 1 行のアクセスログ (キャッシュ HIT/MISS/REVALIDATED/STALE 付き) を標準出力へ
   - `PROXY_LOG_LEVEL` で `error` / `warn` / `info` / `debug` / `trace` を切り替え
-- **ヘルスチェック & メトリクス**:
-  - `/healthz`, `/status` エンドポイントによる JSON 稼働状況・キャッシュ統計・システム使用量取得
+- **ヘルスチェック & メトリクス & 操作**:
+  - `/healthz`, `/status` (JSON: 稼働状況・キャッシュ統計・ホスト別統計・システム使用量)、`/metrics` (Prometheus 形式)
+  - `PURGE <url>` / `/purge?url=<url>` / `/purge?all=1` でキャッシュを消す、`/lookup?url=<url>` でエントリの状態を見る
 - **タイムアウト制御**:
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
 
@@ -312,8 +313,20 @@ curl -x http://127.0.0.1:8080 http://example.com/ -H 'If-None-Match: "<ETag>"' -
 
 # ヘルスチェック・メトリクス確認 (キャッシュ統計・予算・マージン・先行確保量・システム使用量を含む)
 curl http://127.0.0.1:8080/status
+curl http://127.0.0.1:8080/metrics                      # Prometheus 形式
+
+# キャッシュの操作・確認
+curl -X PURGE -x http://127.0.0.1:8080 http://example.com/file.zip     # 1 URL (全バリアント) を消す
+curl "http://127.0.0.1:8080/purge?url=http://example.com/file.zip"     # 同じことを GET で
+curl "http://127.0.0.1:8080/purge?all=1"                               # 全消去
+curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存状態 (層・サイズ・期限)
 ```
 
-`/status` の `origin_connections` にオリジンへの新規接続数と再利用回数、`cache` には各層の `used_bytes` / `limit_bytes` (現在の予算) / `reserved_bytes` (バラスト) /
+これらのパスはプロキシ自身が応答し、オリジン形式の要求 (`GET /status` + `Host:`) より優先します。認証は無いので、
+到達できる人は誰でも purge できます (公開ポートで動かすなら到達制御を)。
+
+`/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
+バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
+`/metrics` も同じ内容を `sorahost_*` 系列で出します。`origin_connections` にオリジンへの新規接続数と再利用回数、`cache` には各層の `used_bytes` / `limit_bytes` (現在の予算) / `reserved_bytes` (バラスト) /
 `keep_free_bytes` (動的マージン) / `mode` (`auto` か `fixed`) と、`system` に直近の計測値 (メモリ総量と空き、
 活性ページキャッシュ、cgroup 制限と使用量、PSI の有無、ディスク総量と空き、自プロセスの RSS) が入ります。

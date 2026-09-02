@@ -22,7 +22,7 @@ use crate::cache::{Cache, CacheSource, CachedResponse, cache_key_variant, now_ep
 use crate::freshness;
 use crate::headers;
 use crate::log::{Access, access};
-use crate::metrics::Metrics;
+use crate::metrics::{HostOutcome, Metrics};
 use crate::origin::{self, OriginStream};
 use crate::pool::Pool;
 use crate::tls::TlsClient;
@@ -65,10 +65,17 @@ struct Ctx<'a> {
     head_only: bool,
     /// マッピング形式の要求 (Location を書き換える)
     mapped: bool,
+    /// ホスト別統計のキー (`scheme://host:port`)
+    pool_key: &'a str,
 }
 
 impl Ctx<'_> {
     fn log(&self, status: &str, bytes: u64, cache: &str) {
+        self.metrics.record_host(
+            self.pool_key,
+            HostOutcome::from_access(cache, status.parse().unwrap_or(0)),
+            bytes,
+        );
         access(
             self.conn_id,
             &Access {
@@ -167,6 +174,7 @@ pub fn handle_http_with_headers(
         keep_client,
         head_only,
         mapped: origin.mapped,
+        pool_key: &pool_key,
     };
 
     // ---- キャッシュ参照 ----

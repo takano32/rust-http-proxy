@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::log::{Access, access};
-use crate::metrics::Metrics;
+use crate::metrics::{HostOutcome, Metrics};
 use crate::net;
 use crate::{log_debug, log_trace, log_warn};
 
@@ -38,6 +38,7 @@ pub fn handle_connect(
                 e
             );
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
+            metrics.record_host(&format!("connect://{}", addr_str), HostOutcome::Error, 0);
             access(
                 conn_id,
                 &Access {
@@ -68,6 +69,11 @@ pub fn handle_connect(
 
     let transferred = tunnel(client, server)?;
     metrics.add_bytes(transferred);
+    metrics.record_host(
+        &format!("connect://{}", addr_str),
+        HostOutcome::Bypass,
+        transferred,
+    );
     access(
         conn_id,
         &Access {

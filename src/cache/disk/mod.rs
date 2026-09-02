@@ -299,6 +299,23 @@ impl DiskTier {
         index.get(key).map(|e| e.meta)
     }
 
+    /// インデックス上の (サイズ, メタ情報)。
+    pub fn lookup_entry(&self, key: CacheKey) -> Option<(u64, Meta)> {
+        let index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+        index.get(key).map(|e| (e.size, e.meta))
+    }
+
+    /// 全エントリを消し (ファイルも)、件数を返す。バラストは残す。
+    pub fn clear(&self) -> usize {
+        let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
+        let mut n = 0;
+        while let Some((key, e)) = index.pop_lru() {
+            let _ = fs::remove_file(self.path_for(key, e.meta.validators));
+            n += 1;
+        }
+        n
+    }
+
     pub fn touch(&self, key: CacheKey, seq: u64) {
         let mut index = self.index.lock().unwrap_or_else(|p| p.into_inner());
         index.touch(key, seq);

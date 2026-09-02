@@ -88,6 +88,21 @@ impl MemTier {
         self.usage().0.saturating_add(self.ballast_bytes())
     }
 
+    /// LRU に触らずにエントリの (サイズ, メタ情報) を見る。
+    pub fn peek(&self, key: CacheKey) -> Option<(u64, Meta)> {
+        let store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        store.get(key).map(|e| (e.data.len() as u64, e.meta))
+    }
+
+    /// 全エントリを消し、件数を返す。
+    pub fn clear(&self) -> usize {
+        let old = {
+            let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
+            std::mem::take(&mut *store)
+        };
+        old.len()
+    }
+
     /// エントリがあれば返す (期限切れでもバリデータ付きなら返す)。再検証できない期限切れは削除。
     pub fn get(&self, key: CacheKey, now: u64, seq: u64) -> Option<MemHit> {
         let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());

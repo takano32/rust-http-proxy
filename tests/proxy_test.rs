@@ -874,3 +874,99 @@ fn test_integration_https_origin_is_fetched_and_cached() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+#[test]
+fn test_integration_metrics_purge_and_lookup_endpoints() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) =
+        start_counting_origin(Arc::clone(&counter), "Cache-Control: max-age=60\r\n");
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-endpoints"));
+    let host = format!("127.0.0.1:{}", origin_port);
+    let url = format!("http://{}/asset", host);
+
+    get_via_proxy(proxy_port, &url, &host);
+    let hit = get_via_proxy(proxy_port, &url, &host);
+    assert!(hit.contains("X-Cache: HIT"));
+
+    let endpoint = |req: &str| {
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut out = String::new();
+        stream.read_to_string(&mut out).unwrap();
+        out
+    };
+
+    // /lookup はエントリを報告する (LRU には触らない)
+    let looked = endpoint(&format!(
+        "GET /lookup?url={} HTTP/1.1\r\nHost: x\r\n\r\n",
+        url
+    ));
+    assert!(looked.starts_with("HTTP/1.1 200 OK"), "{}", looked);
+    assert!(
+        looked.contains("\"found\":true") && looked.contains("\"memory\":true"),
+        "{}",
+        looked
+    );
+
+    // /metrics は Prometheus 形式でヒット数とホスト別統計を出す
+    let metrics = endpoint("GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+    assert!(metrics.contains("text/plain; version=0.0.4"), "{}", metrics);
+    assert!(
+        metrics.contains("sorahost_cache_hits_total{tier=\"memory\"} 1"),
+        "{}",
+        metrics
+    );
+    assert!(
+        metrics.contains(&format!(
+            "sorahost_host_hits_total{{host=\"http://{}\"}} 1",
+            host
+        )),
+        "{}",
+        metrics
+    );
+    assert!(
+        metrics.contains(&format!(
+            "sorahost_host_misses_total{{host=\"http://{}\"}} 1",
+            host
+        )),
+        "{}",
+        metrics
+    );
+
+    // /status にもホスト別が入る
+    let status = endpoint("GET /status HTTP/1.1\r\nHost: x\r\n\r\n");
+    assert!(
+        status.contains(&format!(
+            "\"host\":\"http://{}\",\"requests\":2,\"hits\":1,\"misses\":1",
+            host
+        )),
+        "{}",
+        status
+    );
+
+    // PURGE メソッドで消える → 次は MISS
+    let purged = endpoint(&format!("PURGE {} HTTP/1.1\r\nHost: {}\r\n\r\n", url, host));
+    assert!(
+        purged.starts_with("HTTP/1.1 200 OK") && purged.contains("\"purged\":1"),
+        "{}",
+        purged
+    );
+    let after = get_via_proxy(proxy_port, &url, &host);
+    assert!(!after.contains("X-Cache"), "{}", after);
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+
+    // /purge?all=1 で全消去、/lookup は 404
+    let all = endpoint("GET /purge?all=1 HTTP/1.1\r\nHost: x\r\n\r\n");
+    assert!(all.contains("\"all\":true"), "{}", all);
+    let gone = endpoint(&format!(
+        "GET /lookup?url={} HTTP/1.1\r\nHost: x\r\n\r\n",
+        url
+    ));
+    assert!(
+        gone.starts_with("HTTP/1.1 404") && gone.contains("\"found\":false"),
+        "{}",
+        gone
+    );
+    let bad = endpoint("GET /purge HTTP/1.1\r\nHost: x\r\n\r\n");
+    assert!(bad.starts_with("HTTP/1.1 400"), "{}", bad);
+}
