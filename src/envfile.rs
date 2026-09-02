@@ -1,7 +1,8 @@
 //! 環境変数の代わりに `$HOME/.env` から設定を読む。
 //!
 //! Pterodactyl では egg 変数を追加する権限が無いことがあるので、ボリューム直下の `.env` に
-//! `KEY=VALUE` を書けば同じ効果になる。実際の環境変数が優先で、ファイルはその補完。
+//! `KEY=VALUE` を書けば同じ効果になる。ファイルの値が実際の環境変数より優先する (パネルが
+//! 渡す値を手元で上書きできるように)。
 
 use std::collections::HashMap;
 use std::env;
@@ -67,11 +68,13 @@ pub fn parse(text: &str) -> HashMap<String, String> {
     out
 }
 
-/// 実際の環境変数 → `$HOME/.env` の順に探す。
+/// `$HOME/.env` → 実際の環境変数の順に探す (ファイルが優先)。
 pub fn var(key: &str) -> Option<String> {
-    env::var(key)
-        .ok()
-        .or_else(|| loaded().vars.get(key).cloned())
+    loaded()
+        .vars
+        .get(key)
+        .cloned()
+        .or_else(|| env::var(key).ok())
 }
 
 /// 読み込んだ `.env` のパス (無ければ `None`)。
