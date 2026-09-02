@@ -15,6 +15,7 @@ pub mod net;
 pub mod origin;
 pub mod pool;
 pub mod prom;
+pub mod reload;
 pub mod signal;
 pub mod sysinfo;
 pub mod tls;

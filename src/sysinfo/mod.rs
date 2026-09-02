@@ -8,6 +8,7 @@
 //! 呼び出し側 (キャッシュの自動予算) は固定の既定値へフォールバックする。
 
 pub mod fs;
+pub mod inotify;
 pub mod mem;
 
 pub use fs::{

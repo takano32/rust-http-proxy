@@ -12,6 +12,7 @@ use sorahost_http_proxy::log;
 use sorahost_http_proxy::metrics::Metrics;
 use sorahost_http_proxy::net;
 use sorahost_http_proxy::pool::Pool;
+use sorahost_http_proxy::reload;
 use sorahost_http_proxy::signal;
 use sorahost_http_proxy::tls::TlsClient;
 use sorahost_http_proxy::{Upstream, log_warn};
@@ -26,7 +27,7 @@ fn main() {
     log::init_from_env();
 
     let config = match Config::from_env() {
-        Ok(c) => Arc::new(c),
+        Ok(c) => c,
         Err(e) => {
             log_error!(None, "configuration error: {}", e);
             process::exit(1);
@@ -42,6 +43,9 @@ fn main() {
         }
     };
 
+    let live = reload::Live::new(config);
+    let config = live.config();
+    let _reload = reload::spawn(Arc::clone(&live));
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
@@ -103,7 +107,7 @@ fn main() {
     if let Some(path) = sorahost_http_proxy::envfile::loaded_path() {
         log_info!(
             None,
-            "settings file {} loaded ({} variables; real environment takes precedence)",
+            "settings file {} loaded ({} variables; file values override the real environment)",
             path.display(),
             sorahost_http_proxy::envfile::loaded_count()
         );
@@ -162,19 +166,20 @@ fn main() {
     let last = listeners.next_back().expect("at least one listener");
     for listener in listeners {
         let shared = (
-            Arc::clone(&config),
+            Arc::clone(&live),
             Arc::clone(&metrics),
             Arc::clone(&cache),
             Arc::clone(&pool),
         );
         thread::spawn(move || serve(listener, shared.0, shared.1, shared.2, shared.3));
     }
-    serve(last, config, metrics, cache, pool);
+    drop(config);
+    serve(last, live, metrics, cache, pool);
 }
 
 fn serve(
     listener: TcpListener,
-    config: Arc<Config>,
+    live: Arc<reload::Live>,
     metrics: Arc<Metrics>,
     cache: Arc<Cache>,
     pool: Arc<Upstream>,
@@ -183,7 +188,7 @@ fn serve(
         match stream {
             Ok(stream) => {
                 let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
-                let cfg = Arc::clone(&config);
+                let cfg = live.config();
                 let m = Arc::clone(&metrics);
                 let c = Arc::clone(&cache);
                 let p = Arc::clone(&pool);

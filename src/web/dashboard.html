@@ -45,6 +45,9 @@ button:disabled{opacity:.5;cursor:default}
 pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10px;font:12px/1.45 var(--mono);white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto;margin:10px 0 0;color:#c9d1e3}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;background:var(--line);color:var(--muted);margin-left:6px}
 .links a{color:var(--accent);text-decoration:none;margin-right:12px;font-size:12px}
+.banner{margin:0 0 14px;padding:10px 14px;border-radius:10px;font-size:13px;background:rgba(245,179,66,.12);border:1px solid var(--warn);color:var(--fg)}
+.banner.bad{background:rgba(255,107,107,.12);border-color:var(--bad)}
+.banner code{font:12px var(--mono);color:var(--warn)}
 </style>
 </head>
 <body>
@@ -58,6 +61,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   </div>
 </header>
 <main>
+  <div class="banner" id="settings" hidden></div>
   <section class="grid">
     <div class="card"><h2>要求 / 秒</h2><div class="kpi" id="rps">–</div><div class="hint" id="reqtotal"></div></div>
     <div class="card"><h2>転送 / 秒</h2><div class="kpi" id="bps">–</div><div class="hint" id="bytestotal"></div></div>
@@ -154,6 +158,7 @@ function redraw(){
 function renderStatus(s){
   last=s;var c=s.cache||{};
   $('uptime').textContent='稼働 '+fmtDur(s.uptime_secs)+' · ログ '+(s.log_level||'');
+  renderSettings(s.settings);
   $('reqtotal').textContent='累計 '+fmtNum(s.total_requests)+' 要求';
   $('bytestotal').textContent='累計 '+fmtBytes(s.bytes_forwarded);
   $('active').textContent=fmtNum(s.active_connections);
@@ -181,6 +186,16 @@ function latColor(ms){return ms>=2000?'var(--bad)':ms>=500?'var(--warn)':'inheri
 $('hostsort').addEventListener('change',function(){if(last)renderStatus(last)});
 function esc(s){return String(s).replace(/[&<>"]/g,function(ch){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]})}
 function ok(good,msg){$('dot').className='dot'+(good?'':' bad');$('lastok').textContent=msg}
+function renderSettings(st){
+  var el=$('settings');if(!st){el.hidden=true;return}
+  var parts=[];
+  if(st.error)parts.push('<b>.env の解釈に失敗</b>: '+esc(st.error)+' (前の設定を維持)');
+  if(st.restart_required&&st.restart_required.length)parts.push('<b>再起動が必要</b>: '+st.restart_required.map(function(k){return'<code>'+esc(k)+'</code>'}).join(' ')+' が変更されました');
+  if(!parts.length){el.hidden=true;return}
+  var when=st.last_reload?new Date(st.last_reload*1000).toLocaleTimeString():'';
+  parts.push('<span class="hint">'+esc(st.path||'.env')+' · 再読込 '+st.reloads+' 回'+(when?' · 最終 '+when:'')+' · 検知 '+esc(st.watch)+'</span>');
+  el.className='banner'+(st.error?' bad':'');el.innerHTML=parts.join('<br>');el.hidden=false;
+}
 function fetchJson(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
 function pollStatus(){if($('pause').checked)return;fetchJson('/status').then(function(s){renderStatus(s);ok(true,'更新 '+new Date().toLocaleTimeString())}).catch(function(e){ok(false,'取得失敗: '+e.message)})}
 function pollHistory(){if($('pause').checked)return;fetchJson('/history').then(function(h){hist=h.samples||[];redraw()}).catch(function(){})}

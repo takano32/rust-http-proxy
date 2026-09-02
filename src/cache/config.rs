@@ -129,7 +129,7 @@ impl fmt::Display for DiskQuota {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CacheConfig {
     pub enabled: bool,
     pub mem_limit: Limit,

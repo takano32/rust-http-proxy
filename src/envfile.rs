@@ -7,31 +7,60 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock, RwLockReadGuard};
 
 struct Loaded {
+    /// 実際に読めた `.env` のパス (無ければ `None`)
     path: Option<PathBuf>,
     vars: HashMap<String, String>,
 }
 
-static LOADED: OnceLock<Loaded> = OnceLock::new();
+static LOADED: OnceLock<RwLock<Loaded>> = OnceLock::new();
 
-fn loaded() -> &'static Loaded {
-    LOADED.get_or_init(|| {
-        let path = env::var_os("HOME")
-            .filter(|v| !v.is_empty())
-            .map(|h| PathBuf::from(h).join(".env"));
-        match path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
-            Some(text) => Loaded {
-                path,
-                vars: parse(&text),
-            },
-            None => Loaded {
-                path: None,
-                vars: HashMap::new(),
-            },
-        }
-    })
+/// `$HOME/.env` の場所。`HOME` が無ければ `None`。
+pub fn env_path() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(|h| PathBuf::from(h).join(".env"))
+}
+
+fn read() -> Loaded {
+    let path = env_path();
+    match path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+        Some(text) => Loaded {
+            path,
+            vars: parse(&text),
+        },
+        None => Loaded {
+            path: None,
+            vars: HashMap::new(),
+        },
+    }
+}
+
+fn loaded() -> RwLockReadGuard<'static, Loaded> {
+    LOADED
+        .get_or_init(|| RwLock::new(read()))
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// `.env` を読み直し、値が変わったキー (追加・削除・変更) を名前順で返す。
+pub fn reload() -> Vec<String> {
+    let fresh = read();
+    let lock = LOADED.get_or_init(|| RwLock::new(read()));
+    let mut cur = lock.write().unwrap_or_else(|e| e.into_inner());
+    let mut changed: Vec<String> = cur
+        .vars
+        .keys()
+        .chain(fresh.vars.keys())
+        .filter(|k| cur.vars.get(*k) != fresh.vars.get(*k))
+        .cloned()
+        .collect();
+    changed.sort();
+    changed.dedup();
+    *cur = fresh;
+    changed
 }
 
 /// `KEY=VALUE` 行を読む。`#` 以降はコメント、`export ` 接頭辞と引用符は外す。
@@ -78,8 +107,8 @@ pub fn var(key: &str) -> Option<String> {
 }
 
 /// 読み込んだ `.env` のパス (無ければ `None`)。
-pub fn loaded_path() -> Option<&'static PathBuf> {
-    loaded().path.as_ref()
+pub fn loaded_path() -> Option<PathBuf> {
+    loaded().path.clone()
 }
 
 /// `.env` で与えられたキーの数 (ログ用)。
