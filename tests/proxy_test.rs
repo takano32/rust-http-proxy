@@ -1114,3 +1114,29 @@ fn test_integration_concurrent_misses_are_coalesced() {
     );
     assert_eq!(counter.load(Ordering::SeqCst), 1, "origin fetched once");
 }
+
+#[test]
+fn test_integration_dashboard_and_self_addressed_requests() {
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-dashboard"));
+    let me = format!("127.0.0.1:{}", proxy_port);
+    // ブラウザがプロキシ経由で自分自身の /status を開いたとき (絶対形式) も自分宛てとして応答する
+    let r = get_via_proxy(proxy_port, &format!("http://{}/status", me), &me);
+    assert!(r.starts_with("HTTP/1.1 200 OK"), "{}", r);
+    assert!(r.contains("\"status\":\"ok\""), "{}", r);
+    let r = get_via_proxy(proxy_port, &format!("http://{}/dashboard", me), &me);
+    assert!(
+        r.starts_with("HTTP/1.1 200 OK") && r.contains("text/html"),
+        "{}",
+        r
+    );
+    assert!(r.contains("<canvas"), "dashboard html");
+    let r = get_via_proxy(proxy_port, &format!("http://{}/history", me), &me);
+    assert!(
+        r.starts_with("HTTP/1.1 200 OK") && r.contains("\"samples\":["),
+        "{}",
+        r
+    );
+    // 自分宛てで知らないパスは転送せず 404
+    let r = get_via_proxy(proxy_port, &format!("http://{}/nope", me), &me);
+    assert!(r.starts_with("HTTP/1.1 404"), "{}", r);
+}

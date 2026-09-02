@@ -1,9 +1,11 @@
-//! プロキシ自身のエンドポイント: `/healthz` `/status` (JSON)、`/metrics` (Prometheus)、
-//! `/purge` と `PURGE` メソッド、`/lookup` (エントリの状態)。
+//! プロキシ自身のエンドポイント: `/dashboard` (コントロールパネル)、`/healthz` `/status`
+//! `/history` (JSON)、`/metrics` (Prometheus)、`/purge` と `PURGE` メソッド、`/lookup`。
 //!
-//! これらのパスはオリジン形式の要求 (`GET /status` + `Host:`) より優先する。応答は常に
-//! `Connection: close`。認証は無いので、到達できる人は誰でも purge できる (公開ポートなら
-//! ACL や到達制御で守ること)。
+//! これらのパスはオリジン形式の要求 (`GET /status` + `Host:`) より優先する。ブラウザがこの
+//! プロキシ自身を経由して `http://host:PORT/status` のように絶対形式で要求してきた場合も、
+//! ポートが自分の待ち受けポートなら自分宛てとみなす (自分へ転送してループしない)。
+//! 応答は常に `Connection: close`。認証は無いので、到達できる人は誰でも purge できる
+//! (公開ポートなら ACL や到達制御で守ること)。
 
 use std::io::{self, Write};
 use std::net::TcpStream;
@@ -18,6 +20,30 @@ pub struct Endpoint<'a> {
     pub metrics: &'a Metrics,
     pub cache: &'a Cache,
     pub conn_id: usize,
+    /// 自分の待ち受けポート (絶対形式の自分宛て判定に使う)
+    pub port: u16,
+}
+
+const DASHBOARD_HTML: &str = include_str!("web/dashboard.html");
+
+/// 要求ターゲットを自分宛てのパスに直す。オリジン形式はそのまま、絶対形式は自分のポート宛て
+/// のときだけパスに落とす。それ以外 (他所への転送) は `None`。
+fn local_path(target: &str, port: u16) -> Option<&str> {
+    if target.starts_with('/') {
+        return Some(target);
+    }
+    let rest = target
+        .strip_prefix("http://")
+        .or_else(|| target.strip_prefix("HTTP://"))?;
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    let authority_port = match authority.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => p.parse::<u16>().ok()?,
+        _ => 80,
+    };
+    (authority_port == port).then_some(path)
 }
 
 /// 内部エンドポイントなら応答して `Ok(true)` を返す。そうでなければ何もせず `Ok(false)`。
@@ -27,13 +53,27 @@ pub fn handle(
     target: &str,
     ep: &Endpoint<'_>,
 ) -> io::Result<bool> {
-    let (path, query) = match target.split_once('?') {
+    let is_purge = method.eq_ignore_ascii_case("PURGE");
+    let local = if is_purge {
+        Some(target)
+    } else {
+        local_path(target, ep.port)
+    };
+    let Some(local) = local else {
+        return Ok(false);
+    };
+    let self_addressed = !target.starts_with('/');
+    let (path, query) = match local.split_once('?') {
         Some((p, q)) => (p, Some(q)),
-        None => (target, None),
+        None => (local, None),
     };
     let is_get = method.eq_ignore_ascii_case("GET");
-    let (status, content_type, body) = if method.eq_ignore_ascii_case("PURGE") {
+    let (status, content_type, body) = if is_purge {
         purge_url(ep, target)
+    } else if is_get && (path == "/dashboard" || path == "/dashboard/") {
+        (200, "text/html; charset=utf-8", DASHBOARD_HTML.to_string())
+    } else if is_get && path == "/history" {
+        (200, "application/json", ep.metrics.history.to_json())
     } else if is_get && (path == "/healthz" || path == "/status") {
         (
             200,
@@ -74,6 +114,14 @@ pub fn handle(
                 "{\"error\":\"use /lookup?url=<url>\"}".to_string(),
             ),
         }
+    } else if self_addressed {
+        // 自分宛てだが知らないパス: 自分へ転送するとループするので 404
+        (
+            404,
+            "text/plain; charset=utf-8",
+            "not found. endpoints: /dashboard /status /history /metrics /lookup?url= /purge?url=|all=1\n"
+                .to_string(),
+        )
     } else {
         return Ok(false);
     };
@@ -233,5 +281,29 @@ mod tests {
         assert_eq!(q[1], ("all".to_string(), "1".to_string()));
         assert_eq!(q[2], ("flag".to_string(), String::new()));
         assert_eq!(json_escape("a\"b\\c"), "a\\\"b\\\\c");
+    }
+}
+
+#[cfg(test)]
+mod local_path_tests {
+    use super::local_path;
+
+    #[test]
+    fn origin_form_is_always_local() {
+        assert_eq!(local_path("/status", 8080), Some("/status"));
+        assert_eq!(local_path("/purge?all=1", 8080), Some("/purge?all=1"));
+    }
+
+    #[test]
+    fn absolute_form_is_local_only_on_our_port() {
+        assert_eq!(
+            local_path("http://tokyo.example.net:60624/status", 60624),
+            Some("/status")
+        );
+        assert_eq!(local_path("http://[::1]:60624", 60624), Some("/"));
+        assert_eq!(local_path("http://example.com/status", 60624), None);
+        assert_eq!(local_path("http://example.com/status", 80), Some("/status"));
+        assert_eq!(local_path("http://example.com:8080/x", 60624), None);
+        assert_eq!(local_path("https://example.com:60624/x", 60624), None);
     }
 }

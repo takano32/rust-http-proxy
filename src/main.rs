@@ -45,6 +45,7 @@ fn main() {
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
+    let _history = sorahost_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache));
     let tls = if !config.tls_enabled {
         log_info!(
             None,

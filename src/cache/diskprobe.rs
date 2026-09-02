@@ -9,9 +9,9 @@
 //! 実データもそこまで使う。ファイルシステム側で割当が効いているホストなら数分で終わる。
 //!
 //! **slow**: fast の途中で止められた (起動から 10 分以内に途切れた) ホスト向け。Wings が
-//! ディレクトリサイズで止めるタイプなので、実データが埋まったら 10 分ごとに 25% ずつ上げ、
-//! 増えた分はバラストだけで埋める。止められたら再起動時に「上げてから 10 分以内に途切れた」と
-//! 分かるので、確認済みの値を割当として記憶する。
+//! ディレクトリサイズで止めるタイプなので、10 分止められないごとに 512 MiB ずつ上げ、
+//! 増えた分はバラストだけで埋める (実データは確認済みの上限まで)。止められたら再起動時に
+//! 「上げてから 10 分以内に途切れた」と分かるので、確認済みの値を割当として記憶する。
 //!
 //! 止められても停止シグナルでバラストは切り詰められるので、使用量は実データの上限以下に戻り
 //! そのまま再起動できる。状態はボリューム内の小さなファイルに `key=value` で残す。
@@ -26,16 +26,12 @@ use crate::{log_info, log_warn};
 pub const START: u64 = 512 * MIB;
 /// fast モードで 1 プローブごとに伸ばす量。
 pub const FAST_STEP: u64 = 512 * MIB;
-/// slow モードで 1 段上げる割合 (5/4 = 25%) と最低増分。
-const STEP_NUM: u64 = 5;
-const STEP_DEN: u64 = 4;
-const MIN_STEP: u64 = 64 * MIB;
 /// これだけ止められなければ確認済みとみなす。
 const CONFIRM_SECS: u64 = 600;
 /// 生存記録の間隔。
 const HEARTBEAT_SECS: u64 = 30;
-/// slow モードで、実データがこの割合まで埋まったら次を探る (%)。
-const FULL_PERCENT: u64 = 90;
+/// fast モードで、バラストがこの回数連続で伸びなければ限界とみなす。
+const STALL_TICKS: u32 = 2;
 /// 学習した値を見直すまでの期間。
 const RELEARN_SECS: u64 = 7 * 24 * 3600;
 /// 最初の 512 MiB すら止められた場合の最低値。
@@ -74,6 +70,9 @@ pub struct DiskProbe {
     /// fast モードで見つけた割当の候補と、その時刻
     found: Option<u64>,
     found_at: u64,
+    /// fast モードの伸び検知用 (前回の保持量と、伸びなかった連続回数)
+    prev_owned: u64,
+    stalled: u32,
 }
 
 impl DiskProbe {
@@ -92,6 +91,8 @@ impl DiskProbe {
             early_stops: 0,
             found: None,
             found_at: 0,
+            prev_owned: 0,
+            stalled: 0,
         };
         let Ok(text) = fs::read_to_string(path) else {
             p.save();
@@ -295,7 +296,13 @@ impl DiskProbe {
             return false;
         }
         let followed = owned.saturating_add(FAST_STEP / 2) >= self.cap;
-        if fill_failed || (self.cap > START && !followed) {
+        if !followed && owned <= self.prev_owned {
+            self.stalled += 1;
+        } else {
+            self.stalled = 0;
+        }
+        self.prev_owned = owned;
+        if fill_failed || (self.cap > START && !followed && self.stalled >= STALL_TICKS) {
             let found = owned.max(START);
             self.found = Some(found);
             self.found_at = now;
@@ -333,19 +340,16 @@ impl DiskProbe {
                 CONFIRM_SECS / 60
             );
         }
-        let full = self.confirmed > 0
-            && entries.saturating_mul(100) >= self.confirmed.saturating_mul(FULL_PERCENT);
-        if self.cap == self.confirmed && full {
-            let next = (self.cap / STEP_DEN)
-                .saturating_mul(STEP_NUM)
-                .max(self.cap.saturating_add(MIN_STEP));
+        let _ = entries;
+        if self.cap == self.confirmed && self.confirmed >= START {
+            let next = self.cap.saturating_add(FAST_STEP);
             self.cap = next;
             self.raised_at = now;
             self.alive = now;
             changed = true;
             log_info!(
                 None,
-                "disk allocation probe: cache is full at {} MiB, raising to {} MiB with reservation only",
+                "disk allocation probe: {} MiB is confirmed, raising to {} MiB with reservation only",
                 self.confirmed / MIB,
                 next / MIB
             );
@@ -401,13 +405,21 @@ mod tests {
             p.tick(1_002, 0, START + FAST_STEP, false),
             (START, START + 2 * FAST_STEP)
         );
-        // 追いつけなくなったら (FS の空きの都合) そこが候補: cap は保持量に戻る
+        // 伸びが 2 回連続で止まったら (FS の空きの都合) そこが候補: cap は保持量に戻る
         let held = START + FAST_STEP + 100 * MIB;
-        assert_eq!(p.tick(1_003, 0, held, false), (START, held));
+        assert_eq!(
+            p.tick(1_003, 0, held, false),
+            (START, START + 2 * FAST_STEP)
+        );
+        assert_eq!(
+            p.tick(1_004, 0, held, false),
+            (START, START + 2 * FAST_STEP)
+        );
+        assert_eq!(p.tick(1_005, 0, held, false), (START, held));
         assert!(p.probing());
         // 10 分待って確定 → 実データもそこまで
         assert_eq!(p.tick(1_100, 0, held, false), (START, held));
-        assert_eq!(p.tick(1_003 + CONFIRM_SECS, 0, held, false), (held, held));
+        assert_eq!(p.tick(1_005 + CONFIRM_SECS, 0, held, false), (held, held));
         assert_eq!(p.learned(), Some(held));
         assert!(!p.probing());
         // 再起動しても学習済み
@@ -442,22 +454,29 @@ mod tests {
     }
 
     #[test]
-    fn slow_mode_raises_when_full_and_learns_when_stopped_after_a_raise() {
+    fn slow_mode_raises_every_confirmation_and_learns_when_stopped_after_a_raise() {
         let path = fresh_path("shp-probe-slow.state");
         let mut p = DiskProbe::load(&path, 10_000);
         p.tick(10_000 + HEARTBEAT_SECS, 0, START, false);
         let mut p = DiskProbe::load(&path, 10_100); // 早期途切れ → slow
         assert_eq!(p.mode(), Mode::Slow);
-        // 最初の 512 MiB は 10 分後に確認済み
-        assert_eq!(p.tick(10_100 + CONFIRM_SECS, 0, 0, false), (START, START));
-        // 90% 埋まったら 25% 上げる
-        let (entries, cap) = p.tick(20_000, START * 95 / 100, START, false);
-        assert_eq!((entries, cap), (START, START * 5 / 4));
-        p.tick(20_000 + HEARTBEAT_SECS, START, START, false);
+        // 最初の 512 MiB は 10 分後に確認済みになり、すぐ次の 512 MiB を (バラストで) 探る
+        assert_eq!(
+            p.tick(10_100 + CONFIRM_SECS, 0, 0, false),
+            (START, START + FAST_STEP)
+        );
+        // 10 分止められなければ確認済みになり、また 512 MiB 上げる
+        let (entries, cap) = p.tick(10_100 + 2 * CONFIRM_SECS + 1, 0, START + FAST_STEP, false);
+        assert_eq!((entries, cap), (START + FAST_STEP, START + 2 * FAST_STEP));
+        let raised = 10_100 + 2 * CONFIRM_SECS + 1;
+        p.tick(raised + HEARTBEAT_SECS, 0, START + FAST_STEP, false); // 生存記録
         // 上げた直後に止められた → 確認済みを学習
-        let again = DiskProbe::load(&path, 21_000);
-        assert_eq!(again.learned(), Some(START));
-        assert_eq!((again.confirmed(), again.cap()), (START, START));
+        let again = DiskProbe::load(&path, raised + 120);
+        assert_eq!(again.learned(), Some(START + FAST_STEP));
+        assert_eq!(
+            (again.confirmed(), again.cap()),
+            (START + FAST_STEP, START + FAST_STEP)
+        );
         assert_eq!(again.mode(), Mode::Slow);
     }
 

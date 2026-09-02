@@ -58,6 +58,8 @@ pub struct Metrics {
     /// オリジンへ新規に張った接続数と、プールから再利用した回数
     pub origin_new: AtomicU64,
     pub origin_reused: AtomicU64,
+    /// ダッシュボード用の履歴 (`history::spawn` が記録)
+    pub history: crate::history::History,
     /// ホスト (`scheme://host:port`) ごとの統計
     hosts: Mutex<HashMap<String, HostStats>>,
 }
@@ -73,6 +75,7 @@ impl Metrics {
             cache_misses: AtomicU64::new(0),
             origin_new: AtomicU64::new(0),
             origin_reused: AtomicU64::new(0),
+            history: crate::history::History::default(),
             hosts: Mutex::new(HashMap::new()),
         }
     }

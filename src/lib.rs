@@ -6,6 +6,7 @@ pub mod endpoints;
 pub mod envfile;
 pub mod freshness;
 pub mod headers;
+pub mod history;
 pub mod http;
 pub mod httpdate;
 pub mod log;
@@ -172,6 +173,8 @@ pub fn handle_client(
             metrics: &metrics,
             cache: &cache,
             conn_id,
+            // 実際に受けたポート (テストや複数 bind でも自分宛て判定が合うように)
+            port: client.local_addr().map(|a| a.port()).unwrap_or(config.port),
         };
         if endpoints::handle(&mut client, &method, &target, &ep)? {
             return Ok(());
