@@ -35,6 +35,7 @@ const BALLAST_STEP: u64 = 16 * MIB;
 /// 1 回の fallocate で伸ばす最大量 (巨大な 1 回呼び出しでスレッドを止めない)。
 const BALLAST_GROW_MAX: u64 = 1024 * MIB;
 const ENOSPC: i32 = 28;
+const EDQUOT: i32 = 122;
 
 pub struct DiskEntry {
     pub size: u64,
@@ -91,6 +92,8 @@ pub struct DiskTier {
     reserve: bool,
     /// 直近のプローブ以降に自分の書き込みが ENOSPC になった回数
     enospc: AtomicU64,
+    /// 直近のバラスト伸長が (ENOSPC / EDQUOT で) 失敗した
+    fill_failed: AtomicBool,
     /// 書き込み中の一時ファイルのために確保している容量 (確定・中止で戻す)
     pub(super) in_flight: AtomicU64,
     /// 索引に保持するエントリ数の上限 (メモリを食い潰さないため)
@@ -120,6 +123,7 @@ impl DiskTier {
             ballast_bytes: AtomicU64::new(0),
             reserve,
             enospc: AtomicU64::new(0),
+            fill_failed: AtomicBool::new(false),
             in_flight: AtomicU64::new(0),
             max_entries: max_entries.max(1),
         }
@@ -209,6 +213,11 @@ impl DiskTier {
     /// 直近のプローブ以降の ENOSPC 回数を取り出してリセットする。
     pub fn take_enospc(&self) -> u64 {
         self.enospc.swap(0, Ordering::Relaxed)
+    }
+
+    /// 直近のバラスト伸長が失敗したかを取り出してリセットする。
+    pub fn take_fill_failed(&self) -> bool {
+        self.fill_failed.swap(false, Ordering::Relaxed)
     }
 
     /// I/O 結果を通過させつつ、ENOSPC を数える。
@@ -540,7 +549,11 @@ impl DiskTier {
                     break;
                 }
                 Err(e) => {
-                    // 自分の先行確保が入らないだけなので、他者の圧迫 (ENOSPC) には数えない
+                    // 自分の先行確保が入らないだけなので、他者の圧迫 (ENOSPC) には数えない。
+                    // 割当の探索には「ここが限界」の合図として渡す
+                    if matches!(e.raw_os_error(), Some(ENOSPC) | Some(EDQUOT)) {
+                        self.fill_failed.store(true, Ordering::Relaxed);
+                    }
                     log_debug!(None, "disk reservation paused: {}", e);
                     break;
                 }

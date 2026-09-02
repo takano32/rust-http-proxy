@@ -218,7 +218,12 @@ impl Cache {
             let mut probe = self.disk_probe.lock().unwrap_or_else(|p| p.into_inner());
             match probe.as_mut() {
                 Some(pr) => {
-                    let (confirmed, cap) = pr.tick(now_epoch(), self.disk.usage().0);
+                    let (confirmed, cap) = pr.tick(
+                        now_epoch(),
+                        self.disk.usage().0,
+                        self.disk.owned(),
+                        self.disk.take_fill_failed(),
+                    );
                     entry_cap = Some(confirmed);
                     let mut cap = cap;
                     // 実際のファイルシステムの空きは超えられない
