@@ -55,7 +55,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   <h1>sorahost-http-proxy</h1>
   <span class="sub" id="uptime">–</span>
   <div class="right">
-    <span class="links"><a href="/status" target="_blank">/status</a><a href="/metrics" target="_blank">/metrics</a><a href="/history" target="_blank">/history</a></span>
+    <span class="links"><a href="/status" target="_blank">/status</a><a href="/metrics" target="_blank">/metrics</a><a href="/history" target="_blank">/history</a><a href="/proxy.pac" target="_blank">/proxy.pac</a></span>
     <label><input type="checkbox" id="pause"> 一時停止</label>
     <span class="dot" id="dot"></span><span id="lastok">接続中…</span>
   </div>
@@ -171,7 +171,7 @@ function renderStatus(s){
   var dp=pct(d.used_bytes,d.limit_bytes);$('diskkpi').innerHTML=fmtBytes(d.used_bytes)+'<small>/ '+fmtBytes(d.limit_bytes)+'</small>';$('diskbar').style.width=dp+'%';$('diskbar').className=barClass(dp);
   $('diskhint').textContent=fmtNum(d.entries)+' 件 · 予約 '+fmtBytes(d.reserved_bytes)+' · 割当 '+(d.quota_mode||'')+(d.quota_bytes?' '+fmtBytes(d.quota_bytes):'')+(d.entry_limit_bytes&&d.entry_limit_bytes!==d.limit_bytes?' · 実データ上限 '+fmtBytes(d.entry_limit_bytes):'');
   var sys=c.system||{};
-  var rows=[['保存',c.stores],['追い出し',c.evictions],['再検証',c.revalidations],['裏側の再検証',c.background_revalidations+' (進行中 '+c.revalidating+')'],['期限切れをそのまま配信',c.stale_served],['同時ミスの合流',c.coalesced+' (進行中 '+c.inflight+')'],['キャッシュから配信',fmtBytes(c.bytes_served)],
+  var rows=[['保存',c.stores],['追い出し',c.evictions],['再検証',c.revalidations],['裏側の再検証',c.background_revalidations+' (進行中 '+c.revalidating+')'],['期限切れをそのまま配信',c.stale_served],['同時ミスの合流',c.coalesced+' (進行中 '+c.inflight+')'],['入場制御で見送り (初回)',c.admission_rejected],['キャッシュから配信',fmtBytes(c.bytes_served)],
     ['RSS',fmtBytes(sys.process_rss_bytes)],['cgroup',sys.cgroup_limit_bytes?fmtBytes(sys.cgroup_usage_bytes)+' / '+fmtBytes(sys.cgroup_limit_bytes):'–'],['ホストのメモリ',sys.mem_total_bytes?(sys.mem_used_percent+'% 使用 / '+fmtBytes(sys.mem_total_bytes)):'–'],['メモリ圧迫',sys.mem_pressure?'あり':'なし']];
   $('cachetbl').tBodies[0].innerHTML=rows.map(function(r){return'<tr><td style="font-family:inherit">'+r[0]+'</td><td>'+(r[1]==null?'–':r[1])+'</td></tr>'}).join('');
   var sortKey=$('hostsort').value,all=(s.hosts||[]).slice();

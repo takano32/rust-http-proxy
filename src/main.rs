@@ -35,6 +35,7 @@ fn main() {
     };
 
     net::set_ipv6_enabled(config.ipv6);
+    sorahost_http_proxy::dns::set_ttl(config.dns_ttl);
     let listeners = match net::bind_all(&config.bind_addrs, config.port) {
         Ok(l) => l,
         Err(e) => {
@@ -144,10 +145,11 @@ fn main() {
     }
     log_info!(
         None,
-        "timeout: {}s, keep-alive: {}s, origin pool: {} per host, IPv6: {}",
+        "timeout: {}s, keep-alive: {}s, origin pool: {} per host, DNS cache: {}s, IPv6: {}",
         config.timeout.as_secs(),
         config.keepalive.as_secs(),
         config.pool_per_host,
+        config.dns_ttl.as_secs(),
         if config.ipv6 {
             "on"
         } else {

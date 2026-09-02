@@ -1136,6 +1136,15 @@ fn test_integration_dashboard_and_self_addressed_requests() {
         "{}",
         r
     );
+    // PAC は自分の名前 (Host / authority) とポートでプロキシを指す
+    let r = get_via_proxy(proxy_port, &format!("http://{}/proxy.pac", me), &me);
+    assert!(
+        r.starts_with("HTTP/1.1 200 OK")
+            && r.contains("application/x-ns-proxy-autoconfig")
+            && r.contains(&format!("PROXY {}; DIRECT", me)),
+        "{}",
+        r
+    );
     // 自分宛てで知らないパスは転送せず 404
     let r = get_via_proxy(proxy_port, &format!("http://{}/nope", me), &me);
     assert!(r.starts_with("HTTP/1.1 404"), "{}", r);

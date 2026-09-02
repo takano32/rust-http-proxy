@@ -267,7 +267,7 @@ impl Metrics {
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{}}},",
                 "\"hosts\":[{}],",
-                "\"log_level\":\"{}\",\"settings\":{},\"cache\":{}}}"
+                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"cache\":{}}}"
             ),
             uptime,
             requests,
@@ -280,6 +280,7 @@ impl Metrics {
             hosts_json.join(","),
             crate::log::current_level().as_str().trim(),
             crate::reload::status_json(),
+            crate::dns::status_json(),
             cache_json
         )
     }

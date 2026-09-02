@@ -172,6 +172,10 @@ pub struct CacheConfig {
     pub pterodactyl: bool,
     /// 割当が分からないとき、Wings の挙動から割当を探る (`PROXY_DISK_PROBE`)。
     pub disk_probe: bool,
+    /// 入場制御: 層が 90% 埋まっているとき、2 回目に要求された URL だけ保存する (`PROXY_CACHE_ADMISSION`)。
+    pub admission: bool,
+    /// 4xx など否定応答に明示の鮮度が無いときの TTL 上限 (`PROXY_NEGATIVE_TTL_SECS`)。
+    pub negative_ttl: Duration,
 }
 
 impl Default for CacheConfig {
@@ -203,6 +207,8 @@ impl Default for CacheConfig {
             mem_alloc: None,
             pterodactyl: false,
             disk_probe: true,
+            admission: true,
+            negative_ttl: Duration::from_secs(60),
         }
     }
 }
@@ -304,6 +310,10 @@ impl CacheConfig {
                 .map(|v| v.saturating_mul(MIB)),
             pterodactyl,
             disk_probe: flag("PROXY_DISK_PROBE", true),
+            admission: flag("PROXY_CACHE_ADMISSION", d.admission),
+            negative_ttl: num("PROXY_NEGATIVE_TTL_SECS")
+                .map(Duration::from_secs)
+                .unwrap_or(d.negative_ttl),
         }
     }
 

@@ -98,3 +98,43 @@ fn invalidate_removes_every_variant_of_a_url() {
     assert!(cache.get(plain, 1).is_none() && cache.get(gz, 1).is_none());
     assert_eq!(cache.disk_usage().1, 0);
 }
+
+#[test]
+fn admission_gates_first_sightings_only_when_the_tier_is_full() {
+    // ディスク層なし、メモリ 1 MiB: 余裕があるうちは初見でも通す
+    let mut cfg = CacheConfig::fixed(MIB, 0, test_dir("shp-test-admission"));
+    cfg.reserve = false;
+    let cache = Cache::new(cfg);
+    let k1 = cache_key("GET", "http://example.com/1");
+    assert!(cache.admit(k1), "empty cache admits a first sighting");
+    // 90% まで埋める
+    for i in 0..10 {
+        let url = format!("http://example.com/fill/{}", i);
+        cache.put(
+            cache_key("GET", &url),
+            &url,
+            vec![b'x'; 96 * 1024],
+            Duration::from_secs(60),
+            1,
+        );
+    }
+    let (used, _) = cache.mem_usage();
+    assert!(
+        used * 10 >= cache.mem_capacity() * 9,
+        "tier is full (used {})",
+        used
+    );
+    let k2 = cache_key("GET", "http://example.com/2");
+    assert!(!cache.admit(k2), "first sighting is refused under pressure");
+    assert!(cache.admit(k2), "second sighting is admitted");
+    assert_eq!(cache.admission_rejected.load(Ordering::Relaxed), 1);
+    assert!(
+        cache.admit(k1),
+        "a key seen before the pressure is admitted"
+    );
+
+    let mut off = CacheConfig::fixed(MIB, 0, test_dir("shp-test-admission-off"));
+    off.admission = false;
+    let cache = Cache::new(off);
+    assert!(cache.admit(k2));
+}

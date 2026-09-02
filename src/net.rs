@@ -7,7 +7,7 @@
 //! - `[2001:db8::1]:8080` 形式のホスト・ポート解析と、v4-mapped アドレス (`::ffff:1.2.3.4`) の正規化
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
@@ -174,7 +174,7 @@ pub fn interleave(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
 
 /// 名前解決して接続する。IPv6 無効時は A レコードだけ、有効時は Happy Eyeballs。全体の締め切りは `timeout`。
 pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
-    let resolved: Vec<SocketAddr> = addr_str.to_socket_addrs()?.collect();
+    let resolved: Vec<SocketAddr> = crate::dns::resolve(addr_str)?;
     let ipv6 = ipv6_enabled();
     let addrs: Vec<SocketAddr> = if ipv6 {
         interleave(resolved)

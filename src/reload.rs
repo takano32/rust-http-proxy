@@ -5,7 +5,8 @@
 //! ファイルシステムに備えて、[`POLL_INTERVAL`] ごとの mtime / サイズ確認も常に行う。
 //!
 //! 即時反映できるのは接続単位で参照する値だけ: ACL (`PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS`)、
-//! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`。それ以外 (ポート、bind、
+//! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
+//! `PROXY_PAC_DIRECT`。それ以外 (ポート、bind、
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
 //! `/status` と dashboard に「再起動が必要」と出す。
 
@@ -103,6 +104,16 @@ impl Live {
         if fresh.keepalive != old.keepalive {
             next.keepalive = fresh.keepalive;
             applied.push("PROXY_KEEPALIVE_SECS");
+        }
+        if fresh.dns_ttl != old.dns_ttl {
+            next.dns_ttl = fresh.dns_ttl;
+            crate::dns::set_ttl(fresh.dns_ttl);
+            crate::dns::clear();
+            applied.push("PROXY_DNS_TTL_SECS");
+        }
+        if fresh.pac_direct != old.pac_direct {
+            next.pac_direct = fresh.pac_direct.clone();
+            applied.push("PROXY_PAC_DIRECT");
         }
         let level = envfile::var("PROXY_LOG_LEVEL")
             .and_then(|v| log::Level::parse(&v))

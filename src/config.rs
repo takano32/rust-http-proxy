@@ -26,6 +26,10 @@ pub struct Config {
     pub tls_verify: bool,
     /// 追加の CA 証明書ファイル (PEM)。無ければシステムの CA ストア
     pub tls_ca_file: Option<PathBuf>,
+    /// 名前解決の結果を保持する時間 (`PROXY_DNS_TTL_SECS`、0 で無効)
+    pub dns_ttl: Duration,
+    /// `/proxy.pac` で DIRECT にするホストの一覧 (`PROXY_PAC_DIRECT`、`*.example.com` 可)
+    pub pac_direct: Vec<String>,
     pub cache: CacheConfig,
 }
 
@@ -75,6 +79,18 @@ impl Config {
         if let Some(path) = envfile::var("PROXY_TLS_CA_FILE").filter(|p| !p.trim().is_empty()) {
             cfg.tls_ca_file = Some(PathBuf::from(path.trim()));
         }
+        if let Some(secs) =
+            envfile::var("PROXY_DNS_TTL_SECS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.dns_ttl = Duration::from_secs(secs);
+        }
+        if let Some(list) = envfile::var("PROXY_PAC_DIRECT") {
+            cfg.pac_direct = list
+                .split(',')
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
         Ok(cfg.with_cache(CacheConfig::from_env()))
     }
 
@@ -105,6 +121,8 @@ impl Config {
             tls_enabled: true,
             tls_verify: true,
             tls_ca_file: None,
+            dns_ttl: Duration::from_secs(60),
+            pac_direct: Vec::new(),
             cache: CacheConfig::default(),
         })
     }

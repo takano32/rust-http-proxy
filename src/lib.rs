@@ -2,6 +2,7 @@ pub mod acl;
 pub mod body;
 pub mod cache;
 pub mod config;
+pub mod dns;
 pub mod endpoints;
 pub mod envfile;
 pub mod freshness;
@@ -169,18 +170,6 @@ pub fn handle_client(
         let method = parts[0].to_string();
         let target = parts[1].to_string();
 
-        // プロキシ自身のエンドポイント (/healthz, /status, /metrics, /purge, /lookup, PURGE)
-        let ep = endpoints::Endpoint {
-            metrics: &metrics,
-            cache: &cache,
-            conn_id,
-            // 実際に受けたポート (テストや複数 bind でも自分宛て判定が合うように)
-            port: client.local_addr().map(|a| a.port()).unwrap_or(config.port),
-        };
-        if endpoints::handle(&mut client, &method, &target, &ep)? {
-            return Ok(());
-        }
-
         let mut raw_headers = Vec::new();
         let mut host_header = None;
         loop {
@@ -210,6 +199,20 @@ pub fn handle_client(
                 host_header = Some(v.trim().to_string());
             }
             raw_headers.push(line);
+        }
+
+        // プロキシ自身のエンドポイント (/dashboard, /status, /metrics, /proxy.pac, /purge, /lookup, PURGE)
+        let ep = endpoints::Endpoint {
+            metrics: &metrics,
+            cache: &cache,
+            conn_id,
+            // 実際に受けたポート (テストや複数 bind でも自分宛て判定が合うように)
+            port: client.local_addr().map(|a| a.port()).unwrap_or(config.port),
+            host: host_header.as_deref(),
+            pac_direct: &config.pac_direct,
+        };
+        if endpoints::handle(&mut client, &method, &target, &ep)? {
+            return Ok(());
         }
 
         // ACL / Host Check

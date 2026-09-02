@@ -41,6 +41,22 @@ pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
         "",
         m.start_time.elapsed().as_secs(),
     );
+    header(
+        &mut out,
+        "dns_lookups_total",
+        "counter",
+        "Name resolutions by result (hit = served from the DNS cache)",
+    );
+    let [hits, misses, stale, negative] = crate::dns::counters();
+    line(&mut out, "dns_lookups_total", "result=\"hit\"", hits);
+    line(&mut out, "dns_lookups_total", "result=\"miss\"", misses);
+    line(&mut out, "dns_lookups_total", "result=\"stale\"", stale);
+    line(
+        &mut out,
+        "dns_lookups_total",
+        "result=\"negative\"",
+        negative,
+    );
     header(&mut out, "requests_total", "counter", "Requests received");
     line(
         &mut out,
@@ -278,6 +294,18 @@ pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
         "Origin fetches in flight (coalescing table)",
     );
     line(&mut out, "cache_inflight", "", c.inflight_count());
+    header(
+        &mut out,
+        "cache_admission_rejected_total",
+        "counter",
+        "Responses not stored because the URL was seen for the first time while the cache was full",
+    );
+    line(
+        &mut out,
+        "cache_admission_rejected_total",
+        "",
+        c.admission_rejected.load(Ordering::Relaxed),
+    );
     header(
         &mut out,
         "cache_evictions_total",

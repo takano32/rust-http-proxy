@@ -70,19 +70,26 @@ pub fn response_policy(
     let must_revalidate = has_directive(&cache_control, "must-revalidate")
         || has_directive(&cache_control, "proxy-revalidate");
 
+    let explicit = directive_value(&cache_control, "s-maxage")
+        .or_else(|| directive_value(&cache_control, "max-age"))
+        .or_else(|| {
+            expires.map(|e| {
+                // 解析できない Expires (例: "0") は「既に古い」の意味
+                httpdate::parse(e).map_or(0, |exp| exp.saturating_sub(date.unwrap_or(now)))
+            })
+        });
     let ttl = if has_directive(&cache_control, "no-cache") {
         0
+    } else if let Some(t) = explicit {
+        t
     } else {
-        directive_value(&cache_control, "s-maxage")
-            .or_else(|| directive_value(&cache_control, "max-age"))
-            .or_else(|| {
-                expires.map(|e| {
-                    // 解析できない Expires (例: "0") は「既に古い」の意味
-                    httpdate::parse(e).map_or(0, |exp| exp.saturating_sub(date.unwrap_or(now)))
-                })
-            })
-            .or_else(|| heuristic_ttl(last_modified, cfg, now))
-            .unwrap_or(cfg.default_ttl.as_secs())
+        let implied = heuristic_ttl(last_modified, cfg, now).unwrap_or(cfg.default_ttl.as_secs());
+        // 否定応答 (404 / 410 など) は明示が無ければ短く持つ (すぐ復活することが多い)
+        if status >= 400 {
+            implied.min(cfg.negative_ttl.as_secs())
+        } else {
+            implied
+        }
     };
     if ttl == 0 && !validators {
         return None;
@@ -375,6 +382,17 @@ mod tests {
         assert_eq!(p.unwrap().ttl, Duration::from_secs(3600));
         // 解析できない Expires は「既に古い」→ バリデータが無ければ保存しない
         assert!(response_policy(200, &hdrs(&[("expires", "0")]), &c, NOW).is_none());
+    }
+
+    #[test]
+    fn negative_responses_get_a_short_implicit_ttl() {
+        let c = cfg();
+        let p = response_policy(404, &hdrs(&[]), &c, NOW).unwrap();
+        assert_eq!(p.ttl, c.negative_ttl, "default TTL is capped for 404");
+        let p = response_policy(410, &hdrs(&[("cache-control", "max-age=3600")]), &c, NOW).unwrap();
+        assert_eq!(p.ttl.as_secs(), 3600, "explicit max-age wins");
+        let p = response_policy(200, &hdrs(&[]), &c, NOW).unwrap();
+        assert_eq!(p.ttl, c.default_ttl, "success keeps the default TTL");
     }
 
     #[test]

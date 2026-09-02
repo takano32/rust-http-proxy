@@ -14,6 +14,7 @@
 //! ヒット時はそれをそのままクライアントへ再生する。期限切れでもバリデータを持つ
 //! エントリは残し、呼び出し側が再検証 (304) して延命する。
 
+pub mod admission;
 pub mod budget;
 pub mod config;
 pub mod disk;
@@ -126,6 +127,9 @@ pub struct Cache {
     pub stale_served: AtomicU64,
     /// 同時ミスの合流で、オリジンへ行かずに済んだ要求の数
     pub coalesced: AtomicU64,
+    /// 入場制御で見送った保存の数 (初回の要求)
+    pub admission_rejected: AtomicU64,
+    doorkeeper: admission::Doorkeeper,
     pub evictions: AtomicU64,
     pub bytes_served: AtomicU64,
 }
@@ -171,6 +175,8 @@ impl Cache {
             background_revalidations: AtomicU64::new(0),
             stale_served: AtomicU64::new(0),
             coalesced: AtomicU64::new(0),
+            admission_rejected: AtomicU64::new(0),
+            doorkeeper: admission::Doorkeeper::default(),
             evictions: AtomicU64::new(0),
             bytes_served: AtomicU64::new(0),
         };
@@ -290,6 +296,30 @@ impl Cache {
     /// バラストファイルのパス (シグナル時の切り詰め用)。
     pub fn ballast_path(&self) -> PathBuf {
         self.disk.ballast_path()
+    }
+
+    /// このキーの応答を保存してよいか (入場制御)。層に余裕があるうちは何でも保存し、
+    /// 最後の層が 90% 埋まったら「2 回目以降に見たキー」だけ通す。
+    pub fn admit(&self, key: CacheKey) -> bool {
+        if !self.cfg.admission {
+            return true;
+        }
+        let seen = self.doorkeeper.seen(key);
+        if seen || !self.under_pressure() {
+            return true;
+        }
+        self.admission_rejected.fetch_add(1, Ordering::Relaxed);
+        false
+    }
+
+    /// 最後の層 (ディスクがあればディスク、無ければメモリ) が 90% 以上埋まっているか。
+    fn under_pressure(&self) -> bool {
+        let (used, cap) = if self.disk.capacity() > 0 {
+            (self.disk.usage().0, self.disk.capacity())
+        } else {
+            (self.mem.usage().0, self.mem.capacity())
+        };
+        cap > 0 && used.saturating_mul(10) >= cap.saturating_mul(9)
     }
 
     /// 同じキーの取得が進行中かを見て、leader になるか待つ側になるかを決める。

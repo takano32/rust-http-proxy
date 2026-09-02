@@ -257,6 +257,9 @@ pub fn handle_http_with_headers(
         );
     }
 
+    // ---- 入場制御: 層が埋まっているとき、初めて見た URL は保存しない (2 回目から) ----
+    let store_allowed = store_allowed && (stale.is_some() || cache.admit(key));
+
     // ---- 同時ミスの合流: 同じキーを誰かが取得中なら、その保存完了を待ってキャッシュから返す ----
     let mut leader = None;
     if store_allowed && stale.is_none() {
