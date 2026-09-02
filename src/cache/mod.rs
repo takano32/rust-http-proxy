@@ -39,6 +39,7 @@ pub use key::{CacheKey, cache_key, cache_key_variant};
 pub use ops::PeekInfo;
 pub use sink::{StoreOutcome, StoreSink};
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -99,6 +100,8 @@ pub struct Cache {
     disk_probe: Mutex<Option<DiskProbe>>,
     /// URL (バリアント無しのキー) → 保存したバリアントのキー。無効化 (POST 等) 用
     variants: Mutex<key::KeyMap<Vec<CacheKey>>>,
+    /// 裏で再検証中のキー (同じキーは 1 本だけ)
+    revalidating: Mutex<HashSet<CacheKey>>,
     /// quota モードでの、割当ディレクトリ内の自分以外の使用量
     other_disk_usage: AtomicU64,
     /// このティックまではバラストの再確保を控える (メモリ圧迫・ENOSPC の後)
@@ -113,9 +116,16 @@ pub struct Cache {
     pub misses: AtomicU64,
     pub stores: AtomicU64,
     pub revalidations: AtomicU64,
+    /// 裏で完了した再検証 (304 での延命と差し替えの両方)
+    pub background_revalidations: AtomicU64,
+    /// 期限切れの表現をそのまま配信した回数 (grace 内・オリジン障害・待ち切れ)
+    pub stale_served: AtomicU64,
     pub evictions: AtomicU64,
     pub bytes_served: AtomicU64,
 }
+
+/// 同時に走らせる裏側の再検証の上限。
+const MAX_BACKGROUND_REVALIDATIONS: usize = 32;
 
 impl Cache {
     pub fn new(cfg: CacheConfig) -> Self {
@@ -139,6 +149,7 @@ impl Cache {
             snapshot: Mutex::new(Snapshot::default()),
             disk_probe: Mutex::new(None),
             variants: Mutex::new(key::KeyMap::default()),
+            revalidating: Mutex::new(HashSet::new()),
             other_disk_usage: AtomicU64::new(0),
             backoff_until: AtomicU64::new(0),
             disk_enospc_seen: AtomicBool::new(false),
@@ -150,6 +161,8 @@ impl Cache {
             misses: AtomicU64::new(0),
             stores: AtomicU64::new(0),
             revalidations: AtomicU64::new(0),
+            background_revalidations: AtomicU64::new(0),
+            stale_served: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
             bytes_served: AtomicU64::new(0),
         };
@@ -269,6 +282,29 @@ impl Cache {
     /// バラストファイルのパス (シグナル時の切り詰め用)。
     pub fn ballast_path(&self) -> PathBuf {
         self.disk.ballast_path()
+    }
+
+    /// 裏側の再検証を始めてよいか (同じキーが進行中、または上限なら false)。
+    pub fn begin_revalidation(&self, key: CacheKey) -> bool {
+        let mut set = self.revalidating.lock().unwrap_or_else(|p| p.into_inner());
+        if set.len() >= MAX_BACKGROUND_REVALIDATIONS || set.contains(&key) {
+            return false;
+        }
+        set.insert(key);
+        true
+    }
+
+    pub fn end_revalidation(&self, key: CacheKey) {
+        let mut set = self.revalidating.lock().unwrap_or_else(|p| p.into_inner());
+        set.remove(&key);
+    }
+
+    /// 進行中の裏側の再検証の数。
+    pub fn revalidating_count(&self) -> usize {
+        self.revalidating
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len()
     }
 
     /// 直近のプローブで観測したシステム使用量。

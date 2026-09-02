@@ -151,6 +151,10 @@ pub struct CacheConfig {
     pub heuristic_max: Duration,
     /// 期限切れでも再検証できるエントリを保持しておく最長時間 (期限からの経過)
     pub max_stale: Duration,
+    /// 期限切れ後この時間以内なら、保存済みの表現をすぐ返して裏で再検証する (stale-while-revalidate)
+    pub grace: Duration,
+    /// 期限切れの表現があるとき、オリジンの接続と最初の応答を待つ上限 (超えたら stale を返す)
+    pub stale_wait: Duration,
     /// ディスク層に置く 1 オブジェクトの最大サイズ (バイト)。本文はストリーミングで書く
     pub max_object_size: u64,
     /// メモリ層に置く 1 オブジェクトの最大サイズ (バイト)
@@ -189,6 +193,8 @@ impl Default for CacheConfig {
             heuristic_percent: 10,
             heuristic_max: Duration::from_secs(7 * 24 * 3600),
             max_stale: Duration::from_secs(30 * 24 * 3600),
+            grace: Duration::from_secs(60),
+            stale_wait: Duration::from_secs(5),
             max_object_size: 4096 * MIB,
             mem_max_object_size: 32 * MIB,
             disk_max_entries: 2_000_000,
@@ -272,6 +278,12 @@ impl CacheConfig {
             max_stale: num("PROXY_CACHE_MAX_STALE_SECS")
                 .map(Duration::from_secs)
                 .unwrap_or(d.max_stale),
+            grace: num("PROXY_CACHE_GRACE_SECS")
+                .map(Duration::from_secs)
+                .unwrap_or(d.grace),
+            stale_wait: num("PROXY_STALE_WAIT_SECS")
+                .map(Duration::from_secs)
+                .unwrap_or(d.stale_wait),
             max_object_size: num("PROXY_CACHE_MAX_OBJECT_MB")
                 .map(|v| v.saturating_mul(MIB))
                 .unwrap_or(d.max_object_size),

@@ -5,6 +5,7 @@
 //! → 応答本文を解読しつつクライアントへ自前の枠組みで配信し、同時にストリーミングで保存。
 //! 304 なら保存済みの表現を延命して配信し、オリジン障害時は stale を配信する。
 
+mod refresh;
 mod request;
 mod serve;
 #[cfg(test)]
@@ -15,7 +16,11 @@ pub use serve::{Serve, write_cached_response};
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+
+use crate::Upstream;
 
 use crate::body::{self, BodyReader, Framing};
 use crate::cache::{Cache, CacheSource, CachedResponse, cache_key_variant, now_epoch};
@@ -24,14 +29,12 @@ use crate::headers;
 use crate::log::{Access, access};
 use crate::metrics::{HostOutcome, Metrics};
 use crate::origin::{self, OriginStream};
-use crate::pool::Pool;
-use crate::tls::TlsClient;
 use crate::{log_debug, log_trace, log_warn};
 
 use request::{RequestHeaders, parse_request_headers};
 use serve::{can_serve_stale, serve_cached};
 
-const COPY_BUF_SIZE: usize = 64 * 1024;
+pub(super) const COPY_BUF_SIZE: usize = 64 * 1024;
 /// オリジンがこのステータスを返したら stale を配信する (RFC 5861 stale-if-error 相当)。
 const STALE_ON_STATUS: &[u16] = &[500, 502, 503, 504];
 
@@ -39,15 +42,14 @@ const STALE_ON_STATUS: &[u16] = &[500, 502, 503, 504];
 pub type ResponseHead = (Vec<u8>, u16, Vec<(String, String)>);
 
 /// 接続をまたいで共有する状態。
-pub struct Shared<'a> {
+pub struct Shared {
     pub timeout: Duration,
     pub keepalive: Duration,
     pub conn_id: usize,
-    pub metrics: &'a Metrics,
-    pub cache: &'a Cache,
-    pub pool: &'a Pool,
-    /// HTTPS のオリジン用 (libssl が無ければ `None`)
-    pub tls: Option<&'a TlsClient>,
+    pub metrics: Arc<Metrics>,
+    pub cache: Arc<Cache>,
+    /// 接続プールと TLS クライアント
+    pub upstream: Arc<Upstream>,
 }
 
 /// アクセスログと配信に必要なリクエストの文脈。
@@ -101,7 +103,7 @@ impl Ctx<'_> {
 }
 
 /// オリジンとの接続 (バッファ付き)。
-type Upstream = BufReader<OriginStream>;
+type OriginConn = BufReader<OriginStream>;
 
 /// 1 リクエストを処理する。戻り値はクライアント接続を次の要求に使えるか。
 pub fn handle_http_with_headers(
@@ -110,12 +112,12 @@ pub fn handle_http_with_headers(
     request_line: &str,
     raw_headers: &[String],
     reader: &mut BufReader<TcpStream>,
-    shared: &Shared<'_>,
+    shared: &Shared,
 ) -> io::Result<bool> {
     let started = Instant::now();
     let conn_id = shared.conn_id;
-    let cache = shared.cache;
-    let metrics = shared.metrics;
+    let cache: &Cache = &shared.cache;
+    let metrics: &Metrics = &shared.metrics;
     let req = parse_request_headers(raw_headers, conn_id);
 
     let parts: Vec<&str> = request_line.split_whitespace().collect();
@@ -205,6 +207,40 @@ pub fn handle_http_with_headers(
             }
             // クライアント自身の条件付き要求は、そのままオリジンに判断させる
             if !client_conditional {
+                // 期限切れ直後 (grace 内) なら、すぐ返して裏で再検証する (stale-while-revalidate)。
+                // 既定の grace は新鮮だった期間のある表現だけに使い、max-age=0 (毎回再検証) の表現は
+                // オリジンが stale-while-revalidate を明示したときだけ対象にする
+                let head = freshness::parse_cached_head(&entry.head);
+                let default_grace = if entry.meta.expires_at > entry.meta.stored_at {
+                    cfg.grace.as_secs()
+                } else {
+                    0
+                };
+                let grace = default_grace.max(
+                    head.cache_control
+                        .as_deref()
+                        .and_then(|cc| freshness::directive_value(cc, "stale-while-revalidate"))
+                        .unwrap_or(0),
+                );
+                let stale_for = now.saturating_sub(entry.meta.expires_at);
+                if !force_revalidate
+                    && grace > 0
+                    && entry.meta.validators
+                    && head.may_serve_stale()
+                    && stale_for <= grace
+                    && refresh::spawn(
+                        shared,
+                        &origin,
+                        key,
+                        &url,
+                        entry.head.clone(),
+                        req.accept_encoding.clone(),
+                    )
+                {
+                    body::drain(reader, req_framing)?;
+                    cache.stale_served.fetch_add(1, Ordering::Relaxed);
+                    return serve_cached(client, entry, source, "REFRESHING", 0, &ctx);
+                }
                 stale = Some((entry, source));
             }
         }
@@ -225,29 +261,36 @@ pub fn handle_http_with_headers(
             freshness::conditional_headers(&freshness::parse_cached_head(&entry.head))
         })
         .unwrap_or_default();
-    let mut request_head = format!("{} {} {}\r\n", method, origin.path, "HTTP/1.1").into_bytes();
-    // Host はオリジンのものに差し替える (マッピング形式ではプロキシ宛ての Host が来る)
-    request_head.extend_from_slice(format!("Host: {}\r\n", origin.host_port).as_bytes());
-    for h in headers::sanitize_and_inject_headers(raw_headers, peer_addr) {
-        if h.trim_start().to_ascii_lowercase().starts_with("host:") {
-            continue;
-        }
+    let forwarded: Vec<String> = headers::sanitize_and_inject_headers(raw_headers, peer_addr)
+        .into_iter()
+        .filter(|h| !h.trim_start().to_ascii_lowercase().starts_with("host:"))
+        .collect();
+    for h in &forwarded {
         log_trace!(Some(conn_id), "fwd header  {}", h.trim_end());
-        request_head.extend_from_slice(h.as_bytes());
     }
     for line in &conditional_lines {
         log_trace!(Some(conn_id), "fwd header  {} (revalidation)", line);
-        request_head.extend_from_slice(line.as_bytes());
-        request_head.extend_from_slice(b"\r\n");
     }
-    request_head.extend_from_slice(b"\r\n");
+    let request_head = request_head(method, &origin, &forwarded, &conditional_lines);
+    // 期限切れの表現が手元にあるなら、オリジンを長く待たずに stale を返す
+    let origin_timeout = if stale.is_some() {
+        shared.timeout.min(cfg.stale_wait)
+    } else {
+        shared.timeout
+    };
 
     // 本文の無い冪等な要求だけ、再利用した接続が死んでいたときに 1 回やり直す
     let retryable = req_framing == Framing::None && (is_get || head_only);
     let mut attempt = 0;
     let (mut server, head, status, resp_headers, request_body_bytes) = loop {
         attempt += 1;
-        let (mut server, reused) = match acquire_origin(shared, &origin, &pool_key) {
+        let (mut server, reused) = match acquire_origin(
+            &shared.upstream,
+            origin_timeout,
+            conn_id,
+            &origin,
+            &pool_key,
+        ) {
             Ok(v) => v,
             Err(e) => {
                 log_warn!(
@@ -261,6 +304,7 @@ pub fn handle_http_with_headers(
                     && can_serve_stale(&entry)
                 {
                     body::drain(reader, req_framing)?;
+                    cache.stale_served.fetch_add(1, Ordering::Relaxed);
                     return serve_cached(client, entry, source, "STALE", 0, &ctx);
                 }
                 write_error(client, 502, "Bad Gateway")?;
@@ -276,6 +320,9 @@ pub fn handle_http_with_headers(
         let result = sent.and_then(|n| read_response_head(&mut server).map(|h| (h, n)));
         match result {
             Ok(((head, status, resp_headers), n)) => {
+                if origin_timeout != shared.timeout {
+                    let _ = server.get_ref().set_timeouts(shared.timeout);
+                }
                 break (server, head, status, resp_headers, n);
             }
             Err(e) if reused && retryable && attempt == 1 && is_eof_like(&e) => {
@@ -293,6 +340,7 @@ pub fn handle_http_with_headers(
                     && !force_revalidate
                     && can_serve_stale(&entry)
                 {
+                    cache.stale_served.fetch_add(1, Ordering::Relaxed);
                     return serve_cached(client, entry, source, "STALE", 0, &ctx);
                 }
                 write_error(client, 502, "Bad Gateway")?;
@@ -326,7 +374,7 @@ pub fn handle_http_with_headers(
         let p = freshness::revalidated_policy(&resp_headers, &cached_head, cfg, now);
         cache.refresh(key, p.ttl, p.age, conn_id);
         if origin_reusable {
-            shared.pool.put(&pool_key, server);
+            shared.upstream.pool.put(&pool_key, server);
         }
         let ttl_left = p.ttl.as_secs().saturating_sub(p.age);
         return serve_cached(client, entry, source, "REVALIDATED", ttl_left, &ctx);
@@ -342,6 +390,7 @@ pub fn handle_http_with_headers(
             "origin returned {}: serving stale entry",
             status
         );
+        cache.stale_served.fetch_add(1, Ordering::Relaxed);
         return serve_cached(client, entry, source, "STALE", 0, &ctx);
     }
     if lookup_allowed {
@@ -456,7 +505,7 @@ pub fn handle_http_with_headers(
 
     let cache_state = if clean {
         if origin_reusable {
-            shared.pool.put(&pool_key, server);
+            shared.upstream.pool.put(&pool_key, server);
         }
         match (policy, sink) {
             (Some(p), Some(s)) => {
@@ -485,28 +534,48 @@ pub fn handle_http_with_headers(
     Ok(ctx.keep_client)
 }
 
+/// オリジンへの要求の先頭 (要求行 + Host + 転送するヘッダー + 条件付きヘッダー + 空行)。
+/// Host はオリジンのものに差し替える (マッピング形式ではプロキシ宛ての Host が来る)。
+pub(super) fn request_head(
+    method: &str,
+    origin: &Origin,
+    forwarded: &[String],
+    conditional: &[String],
+) -> Vec<u8> {
+    let mut head = format!("{} {} HTTP/1.1\r\n", method, origin.path).into_bytes();
+    head.extend_from_slice(format!("Host: {}\r\n", origin.host_port).as_bytes());
+    for h in forwarded {
+        head.extend_from_slice(h.as_bytes());
+    }
+    for line in conditional {
+        head.extend_from_slice(line.as_bytes());
+        head.extend_from_slice(b"\r\n");
+    }
+    head.extend_from_slice(b"\r\n");
+    head
+}
+
 /// プールにあれば再利用し、無ければ接続する (HTTPS なら TLS まで)。戻り値の bool は再利用したか。
-fn acquire_origin(
-    shared: &Shared<'_>,
+/// `timeout` は接続と最初の応答を待つ時間 (stale があるときは短くする)。
+pub(super) fn acquire_origin(
+    upstream: &Upstream,
+    timeout: Duration,
+    conn_id: usize,
     origin: &Origin,
     pool_key: &str,
-) -> io::Result<(Upstream, bool)> {
-    if let Some(server) = shared.pool.get(pool_key) {
-        server.get_ref().set_timeouts(shared.timeout)?;
-        log_debug!(
-            Some(shared.conn_id),
-            "reusing pooled connection to {}",
-            pool_key
-        );
+) -> io::Result<(OriginConn, bool)> {
+    if let Some(server) = upstream.pool.get(pool_key) {
+        server.get_ref().set_timeouts(timeout)?;
+        log_debug!(Some(conn_id), "reusing pooled connection to {}", pool_key);
         return Ok((server, true));
     }
-    log_debug!(Some(shared.conn_id), "connecting to origin {}", pool_key);
+    log_debug!(Some(conn_id), "connecting to origin {}", pool_key);
     let stream = origin::connect(
         origin.scheme,
         &origin.server_addr(),
         &origin.host(),
-        shared.timeout,
-        shared.tls,
+        timeout,
+        upstream.tls.as_ref(),
     )?;
     Ok((BufReader::with_capacity(COPY_BUF_SIZE, stream), false))
 }

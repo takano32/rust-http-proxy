@@ -970,3 +970,98 @@ fn test_integration_metrics_purge_and_lookup_endpoints() {
     let bad = endpoint("GET /purge HTTP/1.1\r\nHost: x\r\n\r\n");
     assert!(bad.starts_with("HTTP/1.1 400"), "{}", bad);
 }
+
+#[test]
+fn test_integration_grace_serves_stale_and_refreshes_in_background() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_origin(
+        Arc::clone(&counter),
+        Arc::new(|req, n| {
+            if req.contains("If-None-Match: \"g1\"") {
+                return b"HTTP/1.1 304 Not Modified\r\nETag: \"g1\"\r\nCache-Control: max-age=1\r\nConnection: close\r\n\r\n".to_vec();
+            }
+            let body = format!("grace body {}", n);
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"g1\"\r\nCache-Control: max-age=1\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_bytes()
+        }),
+    );
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-grace"));
+    let host = format!("127.0.0.1:{}", origin_port);
+    let url = format!("http://{}/grace", host);
+
+    let first = get_via_proxy(proxy_port, &url, &host);
+    assert!(first.ends_with("grace body 1"), "{}", first);
+    thread::sleep(Duration::from_millis(1500));
+
+    // 期限切れ直後: すぐ古い表現が返り (REFRESHING)、裏で再検証が走る
+    let started = std::time::Instant::now();
+    let second = get_via_proxy(proxy_port, &url, &host);
+    assert!(
+        second.contains("X-Cache: REFRESHING from sorahost-http-proxy (memory)"),
+        "{}",
+        second
+    );
+    assert!(second.ends_with("grace body 1"), "{}", second);
+    assert!(started.elapsed() < Duration::from_millis(800));
+
+    // 裏の再検証 (304) が終わると、また新鮮なヒットになる
+    for _ in 0..50 {
+        if counter.load(Ordering::SeqCst) >= 2 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    thread::sleep(Duration::from_millis(50));
+    let third = get_via_proxy(proxy_port, &url, &host);
+    assert!(third.contains("X-Cache: HIT"), "{}", third);
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        2,
+        "one conditional request in the background"
+    );
+}
+
+#[test]
+fn test_integration_slow_origin_gives_up_and_serves_stale() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_origin(
+        Arc::clone(&counter),
+        Arc::new(|_req, n| {
+            if n > 1 {
+                thread::sleep(Duration::from_secs(4));
+            }
+            let body = "slow body";
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"s1\"\r\nCache-Control: max-age=0\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_bytes()
+        }),
+    );
+    let mut cfg = cache_cfg("shp-it-slow");
+    cfg.stale_wait = Duration::from_secs(1);
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cfg);
+    let host = format!("127.0.0.1:{}", origin_port);
+    let url = format!("http://{}/slow", host);
+
+    get_via_proxy(proxy_port, &url, &host);
+    // 期限切れ (max-age=0) → 同期再検証だが、1 秒待って応答が無ければ stale を返す
+    let started = std::time::Instant::now();
+    let second = get_via_proxy(proxy_port, &url, &host);
+    assert!(
+        second.contains("X-Cache: STALE from sorahost-http-proxy (memory)"),
+        "{}",
+        second
+    );
+    assert!(second.ends_with("slow body"), "{}", second);
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        started.elapsed()
+    );
+}

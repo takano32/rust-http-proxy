@@ -252,10 +252,9 @@ pub fn handle_client(
             timeout: config.timeout,
             keepalive: config.keepalive,
             conn_id,
-            metrics: &metrics,
-            cache: &cache,
-            pool: &upstream.pool,
-            tls: upstream.tls.as_ref(),
+            metrics: Arc::clone(&metrics),
+            cache: Arc::clone(&cache),
+            upstream: Arc::clone(&upstream),
         };
         let keep = http::handle_http_with_headers(
             &mut client,

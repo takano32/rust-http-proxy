@@ -193,6 +193,37 @@ pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
     );
     header(
         &mut out,
+        "cache_background_revalidations_total",
+        "counter",
+        "Revalidations completed in the background",
+    );
+    line(
+        &mut out,
+        "cache_background_revalidations_total",
+        "",
+        c.background_revalidations.load(Ordering::Relaxed),
+    );
+    header(
+        &mut out,
+        "cache_stale_served_total",
+        "counter",
+        "Expired entries served (grace, origin failure, slow origin)",
+    );
+    line(
+        &mut out,
+        "cache_stale_served_total",
+        "",
+        c.stale_served.load(Ordering::Relaxed),
+    );
+    header(
+        &mut out,
+        "cache_revalidating",
+        "gauge",
+        "Background revalidations in flight",
+    );
+    line(&mut out, "cache_revalidating", "", c.revalidating_count());
+    header(
+        &mut out,
         "cache_evictions_total",
         "counter",
         "Entries evicted",

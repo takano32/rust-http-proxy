@@ -22,6 +22,7 @@ impl HostOutcome {
         }
         if cache_state.starts_with("HIT")
             || cache_state.starts_with("REVALIDATED")
+            || cache_state.starts_with("REFRESHING")
             || cache_state.starts_with("STALE")
         {
             HostOutcome::Hit
