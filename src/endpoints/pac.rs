@@ -49,7 +49,7 @@ pub(super) fn render(ep: &Endpoint<'_>, target: &str, self_addressed: bool) -> S
         }
     }
     format!(
-        "// sorahost-http-proxy PAC (PROXY_PAC_DIRECT で除外ホストを追加)\nfunction FindProxyForURL(url, host) {{\n  host = host.toLowerCase();\n  if ({}) return \"DIRECT\";\n  return \"PROXY {}; DIRECT\";\n}}\n",
+        "// rust-http-proxy PAC (PROXY_PAC_DIRECT で除外ホストを追加)\nfunction FindProxyForURL(url, host) {{\n  host = host.toLowerCase();\n  if ({}) return \"DIRECT\";\n  return \"PROXY {}; DIRECT\";\n}}\n",
         direct.join("\n      || "),
         proxy
     )

@@ -2,7 +2,7 @@
 //!
 //! 出所は 2 つ: `PROXY_BLOCKLIST_FILE` (ローカルのファイル) と `PROXY_BLOCKLIST_URL`
 //! (StevenBlack の hosts など。`PROXY_BLOCKLIST_REFRESH_SECS` ごとに自分で取りに行き、
-//! `$HOME/.sorahost-http-proxy.blocklist` に保存して再起動後も使う)。両方あれば和集合。
+//! `$HOME/.rust-http-proxy.blocklist` に保存して再起動後も使う)。両方あれば和集合。
 //! 判定は正確な一致に加えて親ドメイン (`ad.example.com` は `example.com` の登録で落ちる)。
 //! `PROXY_BLOCKLIST_EXEMPT` (`*.example.com` 可) に合うホストは対象外。
 //! すべて `.env` の再読込で即時反映する。
@@ -201,7 +201,7 @@ pub fn blocked_total() -> u64 {
 
 /// hosts 形式 / 1 行 1 ドメインの文字列を解析する。
 fn cache_path() -> Option<PathBuf> {
-    crate::envfile::env_path().map(|p| p.with_file_name(".sorahost-http-proxy.blocklist"))
+    crate::envfile::env_path().map(|p| p.with_file_name(".rust-http-proxy.blocklist"))
 }
 
 fn mtime(path: &Path) -> Option<u64> {

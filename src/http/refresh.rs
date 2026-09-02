@@ -95,7 +95,7 @@ fn revalidate(
     let (mut server, reused) = acquire_origin(upstream, timeout, conn_id, origin, &pool_key)?;
     metrics.inc_origin_conn(reused);
 
-    let mut extra: Vec<String> = vec!["Via: 1.1 sorahost-http-proxy\r\n".to_string()];
+    let mut extra: Vec<String> = vec!["Via: 1.1 rust-http-proxy\r\n".to_string()];
     if let Some(ae) = accept_encoding {
         extra.push(format!("Accept-Encoding: {}\r\n", ae));
     }

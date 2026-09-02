@@ -24,7 +24,7 @@ pub fn fetch(url: &str, upstream: &Upstream, timeout: Duration) -> io::Result<Ve
         )?;
         let mut reader = BufReader::new(stream);
         let req = format!(
-            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: sorahost-http-proxy\r\nAccept: text/plain, */*\r\nConnection: close\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: rust-http-proxy\r\nAccept: text/plain, */*\r\nConnection: close\r\n\r\n",
             o.path, o.host_port
         );
         reader.get_mut().write_all(req.as_bytes())?;

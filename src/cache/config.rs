@@ -190,7 +190,7 @@ impl Default for CacheConfig {
             },
             reserve: true,
             probe_interval: Duration::from_secs(1),
-            dir: env::temp_dir().join("sorahost-http-proxy-cache"),
+            dir: env::temp_dir().join("rust-http-proxy-cache"),
             mem_keep_free: 0,
             disk_keep_free: 0,
             default_ttl: Duration::from_secs(300),
@@ -341,9 +341,9 @@ impl CacheConfig {
 
 /// 既定のキャッシュディレクトリ。書き込める最初の候補を選ぶ。
 ///
-/// 1. `/var/cache/sorahost-http-proxy` (root で動かす場合)
-/// 2. `$XDG_CACHE_HOME/sorahost-http-proxy` または `~/.cache/sorahost-http-proxy`
-/// 3. `$TMPDIR/sorahost-http-proxy-cache` (tmpfs のことが多いので最後の手段)
+/// 1. `/var/cache/rust-http-proxy` (root で動かす場合)
+/// 2. `$XDG_CACHE_HOME/rust-http-proxy` または `~/.cache/rust-http-proxy`
+/// 3. `$TMPDIR/rust-http-proxy-cache` (tmpfs のことが多いので最後の手段)
 ///
 /// Pterodactyl ではコンテナが起動ごとに作り直され `/home/container` だけが残るので、
 /// 2 を最優先にする。
@@ -354,12 +354,12 @@ pub fn resolve_default_dir(pterodactyl: bool) -> PathBuf {
     // どこかに向けていても無視する
     let xdg = env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty() && !pterodactyl);
     if let Some(xdg) = xdg {
-        candidates.push(PathBuf::from(xdg).join("sorahost-http-proxy"));
+        candidates.push(PathBuf::from(xdg).join("rust-http-proxy"));
     } else if let Some(home) = home {
-        candidates.push(PathBuf::from(home).join(".cache/sorahost-http-proxy"));
+        candidates.push(PathBuf::from(home).join(".cache/rust-http-proxy"));
     }
     if cfg!(unix) {
-        let var_cache = PathBuf::from("/var/cache/sorahost-http-proxy");
+        let var_cache = PathBuf::from("/var/cache/rust-http-proxy");
         if pterodactyl {
             candidates.push(var_cache);
         } else {

@@ -1,4 +1,4 @@
-# sorahost-http-proxy
+# rust-http-proxy
 
 `SERVER_PORT` 環境変数でポート番号を指定して起動する、依存クレートゼロ（Rust 標準ライブラリ `std` のみ使用）の軽量・認証不要な HTTP/HTTPS プロキシサーバーです。
 Pterodactyl (Wings) のコンテナ内で動かすことを想定しています。
@@ -76,10 +76,10 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 | `PROXY_ORIGIN_POOL` | `8` | オリジンへのアイドル接続をホストごとに保持する本数。`0` で再利用しない |
 | `PROXY_DNS_TTL_SECS` | `60` | 名前解決の結果を保持する秒数。`0` で毎回解決。解決に失敗したら 1 時間以内の古い結果を使い、失敗自体も 5 秒覚える。`.env` で即時反映 |
 | `PROXY_BLOCKLIST_FILE` | なし | ドメインのブロックリスト (hosts 形式 `0.0.0.0 host` または 1 行 1 ドメイン)。親ドメインの登録で子ドメインも落ちる。`.env` で即時反映、ファイルの更新は 1 分以内に反映 |
-| `PROXY_BLOCKLIST_URL` | なし | ブロックリストを取りに行く URL (StevenBlack の hosts など)。`$HOME/.sorahost-http-proxy.blocklist` に保存して再起動後も使う。ファイルと両方あれば和集合 |
+| `PROXY_BLOCKLIST_URL` | なし | ブロックリストを取りに行く URL (StevenBlack の hosts など)。`$HOME/.rust-http-proxy.blocklist` に保存して再起動後も使う。ファイルと両方あれば和集合 |
 | `PROXY_BLOCKLIST_REFRESH_SECS` | `86400` | URL を取り直す間隔 (最小 60)。失敗したら 10 分後に再試行し、その間は前の一覧を使う |
 | `PROXY_BLOCKLIST_EXEMPT` | なし | ブロックリストの対象外にするホストのカンマ区切り (`*.example.com` 可) |
-| `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.sorahost-http-proxy.rrd` (固定 約 1 MiB) に残し、再起動後に読み戻す。`off` で無効 |
+| `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 約 1 MiB) に残し、再起動後に読み戻す。`off` で無効 |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
 | `PROXY_TLS_VERIFY` | `on` | オリジンの証明書を検証するか。`off` は自己署名の内部オリジン向け (推奨しない) |
@@ -121,7 +121,7 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 前の設定を維持し、`settings.error` にメッセージが入ります。
 
 `PROXY_CACHE_DIR` を指定しない場合は、書き込める最初の候補を使います:
-`$XDG_CACHE_HOME/sorahost-http-proxy` (または `~/.cache/sorahost-http-proxy`) → `/var/cache/sorahost-http-proxy` → `$TMPDIR/sorahost-http-proxy-cache`。
+`$XDG_CACHE_HOME/rust-http-proxy` (または `~/.cache/rust-http-proxy`) → `/var/cache/rust-http-proxy` → `$TMPDIR/rust-http-proxy-cache`。
 Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。`$TMPDIR` は tmpfs (RAM) のことが多いので最後の手段です。
 
 ## ログ
@@ -130,7 +130,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 1 リクエストにつき 1 行のアクセスログが出ます。
 
 ```
-2026-09-02T02:48:22.900Z INFO  [main] disk cache ready at /home/container/.cache/sorahost-http-proxy (12034 entries restored, 210 expired removed, 0 migrated, 0 stray files removed)
+2026-09-02T02:48:22.900Z INFO  [main] disk cache ready at /home/container/.cache/rust-http-proxy (12034 entries restored, 210 expired removed, 0 migrated, 0 stray files removed)
 2026-09-02T02:48:22.901Z INFO  [main] memory cache budget: 0 MiB -> 3482 MiB (container memory 12.1% used)
 2026-09-02T02:48:22.901Z INFO  [main] disk cache budget: 0 MiB -> 97800 MiB (disk quota 2.0% used)
 2026-09-02T02:48:24.310Z INFO  [main] reserved +3456 MiB memory / +97792 MiB disk (ballast now 3456 MiB / 97792 MiB)
@@ -284,16 +284,16 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
     バラストだけで埋め (実データは確認済みの上限まで)、上げた直後に止められたら確認済みの値を割当として記憶します
     (7 日は探りません)。例えば割当 3 GiB なら約 1 時間で 2.5〜3 GiB に落ち着きます
   - つまり最悪 2 回 Wings に止められて再起動が必要になりますが、以降は無設定で割当いっぱいまで使います。
-    状態は `/home/container/.sorahost-http-proxy.state` に残ります。`PROXY_DISK_PROBE=off` で探索を止められます
+    状態は `/home/container/.rust-http-proxy.state` に残ります。`PROXY_DISK_PROBE=off` で探索を止められます
     (その場合は 512 MiB 固定)。割当が分かっているなら `.env` に `SERVER_DISK` を書く方が早いです
 - `SERVER_DISK=auto` を明示すると、`df -B1 /home/container` 相当 (statvfs) の total を割当として使います。
   これが正しいのは、ホストが XFS のプロジェクトクォータや ZFS データセットなどでサーバーごとに領域を切っていて、
   `df` の total がパネルの Disk Space と一致する場合だけです。単なる bind mount ではホストのディスク全体が
   見えるので、起動時に `df /` と比べて同じファイルシステムなら「不明」扱い (512 MiB 上限) に落として警告します。
   Pterodactyl では判断しやすいよう、起動ログに `df -B1 /home/container: total ... used ...` を常に出します
-- 超過で止められてしまったら、ファイルマネージャか SFTP で `/home/container/.cache/sorahost-http-proxy/`
+- 超過で止められてしまったら、ファイルマネージャか SFTP で `/home/container/.cache/rust-http-proxy/`
   (特に `ballast.reserve`) を削除すれば起動できます
-- 既定のキャッシュ先は `/home/container/.cache/sorahost-http-proxy` (ボリューム内なので再起動後も残る)
+- 既定のキャッシュ先は `/home/container/.cache/rust-http-proxy` (ボリューム内なので再起動後も残る)
 
 ## ビルド・テスト
 
@@ -312,32 +312,32 @@ cargo build --release
 
 ```bash
 # 基本起動 (メモリ・ディスクとも動的マージンだけ残して限界まで自動確保)
-SERVER_PORT=8080 ./target/release/sorahost-http-proxy
+SERVER_PORT=8080 ./target/release/rust-http-proxy
 
 # ACL・タイムアウト付きで起動
 SERVER_PORT=8080 \
 PROXY_ALLOW_HOSTS="*.example.com,*.github.com" \
 PROXY_DENY_HOSTS="evil.example.com" \
 PROXY_TIMEOUT_SECS=15 \
-./target/release/sorahost-http-proxy
+./target/release/rust-http-proxy
 
 # 使用率を 80% / 90% で頭打ちにし、先行確保をやめて上限管理だけにする
 SERVER_PORT=8080 \
 PROXY_MEM_TARGET_PERCENT=80 \
 PROXY_DISK_TARGET_PERCENT=90 \
 PROXY_CACHE_RESERVE=0 \
-./target/release/sorahost-http-proxy
+./target/release/rust-http-proxy
 
 # 従来どおり固定上限 (メモリ 200MB / ディスク 2GB) で起動
 SERVER_PORT=8080 \
 PROXY_LOG_LEVEL=debug \
 PROXY_MEM_CACHE_MB=200 \
 PROXY_DISK_CACHE_MB=2048 \
-PROXY_CACHE_DIR=/var/cache/sorahost-http-proxy \
-./target/release/sorahost-http-proxy
+PROXY_CACHE_DIR=/var/cache/rust-http-proxy \
+./target/release/rust-http-proxy
 
 # Pterodactyl (SERVER_PORT / SERVER_MEMORY / P_SERVER_UUID はパネルが渡す。ディスク割当だけ egg 変数で)
-PROXY_DISK_QUOTA_MB=51200 ./sorahost-http-proxy
+PROXY_DISK_QUOTA_MB=51200 ./rust-http-proxy
 ```
 
 ## 動作確認 (curl)

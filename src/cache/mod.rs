@@ -212,7 +212,7 @@ impl Cache {
         }
         if cache.cfg.pterodactyl && cache.cfg.disk_limit.is_auto() && !cache.quota.is_known() {
             if cache.cfg.disk_probe && cache.disk.reserve_active() {
-                let state = cache.quota_root().join(".sorahost-http-proxy.state");
+                let state = cache.quota_root().join(".rust-http-proxy.state");
                 *cache.disk_probe.locked() = Some(DiskProbe::load(&state, now_epoch()));
             } else {
                 log_warn!(

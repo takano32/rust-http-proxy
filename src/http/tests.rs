@@ -118,7 +118,7 @@ fn test_write_cached_response_injects_framing_and_headers() {
         write_cached_response(&mut out, entry, &serve(RangeSpec::Ignore, false)).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert_eq!(status, 200);
-    assert!(text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Cache: HIT from sorahost-http-proxy (disk)\r\nAge: 42\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nhi"), "{}", text);
+    assert!(text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Cache: HIT from rust-http-proxy (disk)\r\nAge: 42\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nhi"), "{}", text);
     assert!(!text.contains("Connection: close"));
     assert_eq!(n, text.len() as u64);
 }
@@ -195,7 +195,7 @@ fn test_write_not_modified_keeps_validators_only() {
     write_not_modified(&mut out, &head, "HIT", CacheSource::Memory, 3, false).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.starts_with(
-        "HTTP/1.1 304 Not Modified\r\nX-Cache: HIT from sorahost-http-proxy (memory)\r\nAge: 3\r\n"
+        "HTTP/1.1 304 Not Modified\r\nX-Cache: HIT from rust-http-proxy (memory)\r\nAge: 3\r\n"
     ));
     assert!(text.contains("ETag: \"x\"\r\n"));
     assert!(!text.contains("Content-Length"));

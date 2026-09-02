@@ -107,7 +107,7 @@ pub(super) fn serve_cached(
 fn x_cache_lines(label: &str, source: CacheSource, age: u64) -> [String; 2] {
     [
         format!(
-            "X-Cache: {} from sorahost-http-proxy ({})",
+            "X-Cache: {} from rust-http-proxy ({})",
             label,
             source.as_str()
         ),

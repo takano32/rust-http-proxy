@@ -4,7 +4,7 @@
 //! - ホスト別・接続元別: [`FLUSH_INTERVAL`] ごとに上位 1000 を固定スロットへ書き直す
 //! - ブロックリストの上書き: 変更のたびにそのスロットだけ書く ([`crate::blocklist`] から)
 //!
-//! 置き場所は `$HOME/.sorahost-http-proxy.rrd` (Pterodactyl で永続するのはそこだけ)。
+//! 置き場所は `$HOME/.rust-http-proxy.rrd` (Pterodactyl で永続するのはそこだけ)。
 //! `PROXY_STATS_PERSIST=off` で無効。大きさは約 1 MiB で、以後は伸びない。
 
 use crate::sync::LockExt;
@@ -34,9 +34,9 @@ pub struct Store {
 }
 
 impl Store {
-    /// 既定の場所 (`$HOME/.sorahost-http-proxy.rrd`)。
+    /// 既定の場所 (`$HOME/.rust-http-proxy.rrd`)。
     pub fn default_path() -> Option<PathBuf> {
-        crate::envfile::env_path().map(|p| p.with_file_name(".sorahost-http-proxy.rrd"))
+        crate::envfile::env_path().map(|p| p.with_file_name(".rust-http-proxy.rrd"))
     }
 
     /// 開き (無ければ作り)、履歴のリングを読み戻す。

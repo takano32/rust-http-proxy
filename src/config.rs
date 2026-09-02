@@ -38,7 +38,7 @@ pub struct Config {
     pub blocklist_refresh: Duration,
     /// ブロックリストの対象外にするホスト (`PROXY_BLOCKLIST_EXEMPT`、`*.example.com` 可)
     pub blocklist_exempt: Vec<String>,
-    /// 統計と履歴を `$HOME/.sorahost-http-proxy.rrd` に残す (`PROXY_STATS_PERSIST`、既定 on)
+    /// 統計と履歴を `$HOME/.rust-http-proxy.rrd` に残す (`PROXY_STATS_PERSIST`、既定 on)
     pub stats_persist: bool,
     pub cache: CacheConfig,
 }

@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use sorahost_http_proxy::cache::{Cache, CacheConfig, MIB};
-use sorahost_http_proxy::config::Config;
-use sorahost_http_proxy::metrics::Metrics;
-use sorahost_http_proxy::pool::Pool;
-use sorahost_http_proxy::tls::TlsClient;
-use sorahost_http_proxy::{Upstream, handle_client};
+use rust_http_proxy::cache::{Cache, CacheConfig, MIB};
+use rust_http_proxy::config::Config;
+use rust_http_proxy::metrics::Metrics;
+use rust_http_proxy::pool::Pool;
+use rust_http_proxy::tls::TlsClient;
+use rust_http_proxy::{Upstream, handle_client};
 
 type Handler = dyn Fn(&str, usize) -> Vec<u8> + Send + Sync;
 
@@ -286,7 +286,7 @@ fn test_integration_cache_hit_serves_second_request() {
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(second.starts_with("HTTP/1.1 200 OK"));
     assert!(
-        second.contains("X-Cache: HIT from sorahost-http-proxy (memory)"),
+        second.contains("X-Cache: HIT from rust-http-proxy (memory)"),
         "{}",
         second
     );
@@ -391,7 +391,7 @@ fn test_integration_stale_entry_is_revalidated_with_304() {
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(second.starts_with("HTTP/1.1 200 OK"), "{}", second);
     assert!(
-        second.contains("X-Cache: REVALIDATED from sorahost-http-proxy (memory)"),
+        second.contains("X-Cache: REVALIDATED from rust-http-proxy (memory)"),
         "{}",
         second
     );
@@ -415,7 +415,7 @@ fn test_integration_stale_is_served_when_origin_fails() {
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(second.starts_with("HTTP/1.1 200 OK"), "{}", second);
     assert!(
-        second.contains("X-Cache: STALE from sorahost-http-proxy (memory)"),
+        second.contains("X-Cache: STALE from rust-http-proxy (memory)"),
         "{}",
         second
     );
@@ -490,7 +490,7 @@ fn test_integration_large_response_streams_through_disk() {
     assert_eq!(got, body);
     let (head, got) = fetch("");
     assert!(
-        head.contains("X-Cache: HIT from sorahost-http-proxy (disk)"),
+        head.contains("X-Cache: HIT from rust-http-proxy (disk)"),
         "{}",
         head
     );
@@ -1001,7 +1001,7 @@ fn test_integration_grace_serves_stale_and_refreshes_in_background() {
     let started = std::time::Instant::now();
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(
-        second.contains("X-Cache: REFRESHING from sorahost-http-proxy (memory)"),
+        second.contains("X-Cache: REFRESHING from rust-http-proxy (memory)"),
         "{}",
         second
     );
@@ -1054,7 +1054,7 @@ fn test_integration_slow_origin_gives_up_and_serves_stale() {
     let started = std::time::Instant::now();
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(
-        second.contains("X-Cache: STALE from sorahost-http-proxy (memory)"),
+        second.contains("X-Cache: STALE from rust-http-proxy (memory)"),
         "{}",
         second
     );

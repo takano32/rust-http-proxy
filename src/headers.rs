@@ -116,7 +116,7 @@ pub fn sanitize_and_inject_headers(
 
             if k_lower == "via" {
                 has_via = true;
-                let new_via = format!("{}: {}, 1.1 sorahost-http-proxy\r\n", k_trim, v.trim());
+                let new_via = format!("{}: {}, 1.1 rust-http-proxy\r\n", k_trim, v.trim());
                 out.push(new_via);
                 continue;
             }
@@ -139,7 +139,7 @@ pub fn sanitize_and_inject_headers(
 
     // Add Via if not already updated
     if !has_via {
-        out.push("Via: 1.1 sorahost-http-proxy\r\n".to_string());
+        out.push("Via: 1.1 rust-http-proxy\r\n".to_string());
     }
 
     out
@@ -199,7 +199,7 @@ mod tests {
         assert!(
             cleaned
                 .iter()
-                .any(|h| h.starts_with("Via: 1.1 sorahost-http-proxy"))
+                .any(|h| h.starts_with("Via: 1.1 rust-http-proxy"))
         );
 
         assert!(

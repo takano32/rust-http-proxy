@@ -5,18 +5,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-use sorahost_http_proxy::cache::{Cache, MIB};
-use sorahost_http_proxy::config::Config;
-use sorahost_http_proxy::handle_client;
-use sorahost_http_proxy::log;
-use sorahost_http_proxy::metrics::Metrics;
-use sorahost_http_proxy::net;
-use sorahost_http_proxy::pool::Pool;
-use sorahost_http_proxy::reload;
-use sorahost_http_proxy::signal;
-use sorahost_http_proxy::tls::TlsClient;
-use sorahost_http_proxy::{Upstream, log_warn};
-use sorahost_http_proxy::{log_debug, log_error, log_info};
+use rust_http_proxy::cache::{Cache, MIB};
+use rust_http_proxy::config::Config;
+use rust_http_proxy::handle_client;
+use rust_http_proxy::log;
+use rust_http_proxy::metrics::Metrics;
+use rust_http_proxy::net;
+use rust_http_proxy::pool::Pool;
+use rust_http_proxy::reload;
+use rust_http_proxy::signal;
+use rust_http_proxy::tls::TlsClient;
+use rust_http_proxy::{Upstream, log_warn};
+use rust_http_proxy::{log_debug, log_error, log_info};
 
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -35,7 +35,7 @@ fn main() {
     };
 
     net::set_ipv6_enabled(config.ipv6);
-    sorahost_http_proxy::dns::set_ttl(config.dns_ttl);
+    rust_http_proxy::dns::set_ttl(config.dns_ttl);
     let listeners = match net::bind_all(&config.bind_addrs, config.port) {
         Ok(l) => l,
         Err(e) => {
@@ -51,16 +51,16 @@ fn main() {
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
     let store = if config.stats_persist {
-        sorahost_http_proxy::persist::Store::default_path()
-            .and_then(|p| sorahost_http_proxy::persist::start(p, &metrics))
+        rust_http_proxy::persist::Store::default_path()
+            .and_then(|p| rust_http_proxy::persist::start(p, &metrics))
     } else {
         None
     };
     let store = store.map(|(s, _handle)| s);
     if let Some(s) = &store {
-        sorahost_http_proxy::blocklist::set_store(Arc::clone(s));
+        rust_http_proxy::blocklist::set_store(Arc::clone(s));
     }
-    let _history = sorahost_http_proxy::history::spawn(
+    let _history = rust_http_proxy::history::spawn(
         Arc::clone(&metrics),
         Arc::clone(&cache),
         store.clone(),
@@ -104,10 +104,10 @@ fn main() {
         pool: Pool::new(config.pool_per_host, ORIGIN_IDLE),
         tls,
     });
-    sorahost_http_proxy::blocklist::configure(
-        sorahost_http_proxy::blocklist::Sources::from_config(&config),
+    rust_http_proxy::blocklist::configure(
+        rust_http_proxy::blocklist::Sources::from_config(&config),
     );
-    let _blocklist = sorahost_http_proxy::blocklist::spawn(Arc::clone(&pool), config.timeout);
+    let _blocklist = rust_http_proxy::blocklist::spawn(Arc::clone(&pool), config.timeout);
     // 停止シグナルで統計を状態ファイルに書き、ballast.reserve を空にしてから終わる
     // (Wings のディスク計測に残さない)
     {
@@ -127,7 +127,7 @@ fn main() {
 
     log_info!(
         None,
-        "sorahost-http-proxy listening on {} (log level: {})",
+        "rust-http-proxy listening on {} (log level: {})",
         listeners
             .iter()
             .map(net::describe_listener)
@@ -135,12 +135,12 @@ fn main() {
             .join(", "),
         log::current_level().as_str().trim()
     );
-    if let Some(path) = sorahost_http_proxy::envfile::loaded_path() {
+    if let Some(path) = rust_http_proxy::envfile::loaded_path() {
         log_info!(
             None,
             "settings file {} loaded ({} variables; file values override the real environment)",
             path.display(),
-            sorahost_http_proxy::envfile::loaded_count()
+            rust_http_proxy::envfile::loaded_count()
         );
     }
     let c = &config.cache;
