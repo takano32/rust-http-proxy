@@ -241,6 +241,28 @@ fn test_integration_healthz() {
     assert!(response.contains("\"status\":\"ok\""));
 }
 
+/// `/status` の JSON を取る (テストが「状態が落ち着いたか」を見るため)。
+fn status_json(proxy_port: u16) -> String {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .write_all(b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut out = String::new();
+    let _ = stream.read_to_string(&mut out);
+    out
+}
+
+/// `cond` が真になるまで最大 10 秒待つ (負荷の高い CI でも落ちない幅)。
+fn wait_until(cond: impl Fn() -> bool, what: &str) {
+    for _ in 0..500 {
+        if cond() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timed out waiting: {}", what);
+}
+
 fn get_via_proxy(proxy_port: u16, url: &str, host: &str) -> String {
     get_via_proxy_with(proxy_port, url, host, "")
 }
@@ -1012,14 +1034,15 @@ fn test_integration_grace_serves_stale_and_refreshes_in_background() {
     // 裏で取り直すので、オリジンの応答を待っていない = 十分速い (負荷の高い CI でも通る幅にする)
     assert!(started.elapsed() < Duration::from_millis(2000));
 
-    // 裏の再検証 (304) が終わると、また新鮮なヒットになる
-    for _ in 0..150 {
-        if counter.load(Ordering::SeqCst) >= 2 {
-            break;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    thread::sleep(Duration::from_millis(50));
+    // 裏の再検証 (304) が「終わる」まで待つ。オリジンに届いた時点 (counter >= 2) では
+    // まだ保存が終わっていないことがあるので、実行中の数が 0 に戻るのを見る
+    wait_until(
+        || {
+            counter.load(Ordering::SeqCst) >= 2
+                && status_json(proxy_port).contains("\"revalidating\":0")
+        },
+        "the background revalidation should finish",
+    );
     let third = get_via_proxy(proxy_port, &url, &host);
     assert!(third.contains("X-Cache: HIT"), "{}", third);
     assert_eq!(
