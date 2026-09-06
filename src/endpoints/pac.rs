@@ -88,6 +88,7 @@ mod tests {
             conn_id: 1,
             port,
             host,
+            lite: false,
             pac_direct: d,
         };
         let script = render(&e, "/proxy.pac", false);
@@ -108,6 +109,7 @@ mod tests {
             conn_id: 1,
             port,
             host,
+            lite: false,
             pac_direct: d,
         };
         let script = render(&e, "http://proxy.local:8080/proxy.pac", true);

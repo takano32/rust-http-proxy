@@ -40,6 +40,9 @@ pub struct Config {
     pub blocklist_exempt: Vec<String>,
     /// 統計と履歴を `$HOME/.rust-http-proxy.rrd` に残す (`PROXY_STATS_PERSIST`、既定 on)
     pub stats_persist: bool,
+    /// 最速の素通しプロファイル (`PROXY_PROFILE=lite` / `--lite`)。
+    /// キャッシュ・統計の永続化・ブロックリストを止め、ログを warn にする
+    pub lite: bool,
     /// CONNECT を許すあて先ポート (`PROXY_CONNECT_PORTS`、既定は制限なし)
     pub connect_ports: PortSet,
     /// ループバック・リンクローカル宛てのオリジンを許すか (`PROXY_ALLOW_LOCAL`、既定 off)。
@@ -68,6 +71,12 @@ impl Config {
             deny_hosts.as_deref(),
             Duration::from_secs(timeout_secs),
         )?;
+        // lite は「既定をまとめて off にする」だけなので、後続の環境変数が上書きできる
+        cfg.lite =
+            envfile::var("PROXY_PROFILE").is_some_and(|v| v.trim().eq_ignore_ascii_case("lite"));
+        if cfg.lite {
+            cfg.stats_persist = false;
+        }
         if let Some(bind) = envfile::var("PROXY_BIND") {
             cfg.bind_addrs = parse_bind_list(&bind)?;
         }
@@ -147,7 +156,16 @@ impl Config {
         if let Some(v) = envfile::var("PROXY_BLOCKLIST_EXEMPT") {
             cfg.blocklist_exempt = list(v);
         }
-        Ok(cfg.with_cache(CacheConfig::from_env()))
+        let mut cache = CacheConfig::from_env();
+        if cfg.lite {
+            // lite ではブロックリストの取得もキャッシュもしない (明示指定があればそちらが勝つ)
+            cfg.blocklist_file = None;
+            cfg.blocklist_url = None;
+            if envfile::var("PROXY_CACHE_ENABLED").is_none() {
+                cache.enabled = false;
+            }
+        }
+        Ok(cfg.with_cache(cache))
     }
 
     /// キャッシュ設定を差し替える。
@@ -184,6 +202,7 @@ impl Config {
             blocklist_refresh: Duration::from_secs(86400),
             blocklist_exempt: Vec::new(),
             stats_persist: true,
+            lite: false,
             connect_ports: PortSet::default(),
             allow_local: false,
             tunnel_idle: Duration::from_secs(300),

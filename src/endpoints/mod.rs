@@ -27,6 +27,8 @@ pub struct Endpoint<'a> {
     pub host: Option<&'a str>,
     /// `/proxy.pac` で DIRECT にするホストのパターン
     pub pac_direct: &'a [String],
+    /// lite プロファイル (ダッシュボードを持たない)
+    pub lite: bool,
 }
 
 mod blocklist;
@@ -79,7 +81,15 @@ pub fn handle(
     let (status, content_type, body) = if is_purge {
         purge_url(ep, target)
     } else if is_get && (path == "/dashboard" || path == "/dashboard/") {
-        (200, "text/html; charset=utf-8", DASHBOARD_HTML.to_string())
+        if ep.lite {
+            (
+                200,
+                "text/plain; charset=utf-8",
+                "lite mode: the dashboard is off (PROXY_PROFILE=lite)\n".to_string(),
+            )
+        } else {
+            (200, "text/html; charset=utf-8", DASHBOARD_HTML.to_string())
+        }
     } else if is_get && path == "/proxy.pac" {
         (
             200,

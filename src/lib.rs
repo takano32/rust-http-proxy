@@ -335,6 +335,7 @@ pub fn handle_client(
             port: client.local_addr().map(|a| a.port()).unwrap_or(config.port),
             host: host_header.as_deref(),
             pac_direct: &config.pac_direct,
+            lite: config.lite,
         };
         if endpoints::handle(&mut client, &method, &target, &ep)? {
             return Ok(());

@@ -69,6 +69,11 @@ pub fn init_from_env() {
         }
         println!("Unknown PROXY_LOG_LEVEL '{}', falling back to 'info'", v);
     }
+    // lite プロファイルの既定は warn (明示指定があれば上で返している)
+    if crate::envfile::var("PROXY_PROFILE").is_some_and(|v| v.trim().eq_ignore_ascii_case("lite")) {
+        set_level(Level::Warn);
+        return;
+    }
     set_level(Level::Info);
 }
 
