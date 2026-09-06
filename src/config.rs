@@ -40,6 +40,8 @@ pub struct Config {
     pub blocklist_exempt: Vec<String>,
     /// 統計と履歴を `$HOME/.rust-http-proxy.rrd` に残す (`PROXY_STATS_PERSIST`、既定 on)
     pub stats_persist: bool,
+    /// CONNECT トンネルのアイドル打ち切り時間 (`PROXY_TUNNEL_IDLE_SECS`、既定 300 秒、`0` で無期限)
+    pub tunnel_idle: Duration,
     /// 同時に受ける接続数の上限 (`PROXY_MAX_CONNS`、既定 4096、`0` で無制限)。
     /// 超えた接続には 503 を返して閉じる (スレッドは起こさない)
     pub max_conns: usize,
@@ -166,6 +168,7 @@ impl Config {
             blocklist_refresh: Duration::from_secs(86400),
             blocklist_exempt: Vec::new(),
             stats_persist: true,
+            tunnel_idle: Duration::from_secs(300),
             max_conns: 4096,
             cache: CacheConfig::default(),
         })
@@ -200,6 +203,7 @@ mod tests {
         assert_eq!(cfg.keepalive, Duration::from_secs(15));
         assert_eq!(cfg.pool_per_host, 8);
         assert_eq!(cfg.max_conns, 4096);
+        assert_eq!(cfg.tunnel_idle, Duration::from_secs(300));
     }
 
     #[test]

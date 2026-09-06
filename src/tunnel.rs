@@ -14,9 +14,6 @@ use crate::metrics::{HostOutcome, Metrics};
 use crate::net;
 use crate::{log_debug, log_warn};
 
-/// トンネルのアイドル打ち切り時間 (無通信がこれだけ続いたら両側を閉じる)。
-pub const DEFAULT_IDLE: Duration = Duration::from_secs(300);
-
 /// `prefix` はリクエストヘッダーの直後に既に読み込んでしまったバイト列 (先にサーバーへ渡す)。
 pub fn handle_connect(
     mut client: TcpStream,

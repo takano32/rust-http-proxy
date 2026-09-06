@@ -108,6 +108,10 @@ impl Live {
             next.keepalive = fresh.keepalive;
             applied.push("PROXY_KEEPALIVE_SECS");
         }
+        if fresh.tunnel_idle != old.tunnel_idle {
+            next.tunnel_idle = fresh.tunnel_idle;
+            applied.push("PROXY_TUNNEL_IDLE_SECS");
+        }
         if fresh.max_conns != old.max_conns {
             next.max_conns = fresh.max_conns;
             applied.push("PROXY_MAX_CONNS");

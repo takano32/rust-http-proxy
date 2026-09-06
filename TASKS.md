@@ -181,7 +181,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
     上限到達は `warn` で 1 分に 1 回だけログ。`/status` と `/metrics` に `active_connections` と `rejected_overload` を出す (前者は既にある)。
   - 受け入れ基準: 上限 8 で起動し、9 本目が 503 になる結合テスト。ベンチの数値が悪化しない。
 
-- [ ] **T2.2 トンネルと keep-alive のアイドルタイムアウト**
+- [x] **T2.2 トンネルと keep-alive のアイドルタイムアウト**
   - 変更箇所: `src/tunnel.rs` (T1.3 の `poll` タイムアウト)、`src/config.rs`。
   - やること: `PROXY_TUNNEL_IDLE_SECS` (既定 300、`0` で無期限)。双方向とも `idle` 秒データが無ければ両側を閉じる。
   - 受け入れ基準: 1 秒設定で無通信トンネルが約 1 秒で閉じる結合テスト。README の表に追加。

@@ -391,7 +391,7 @@ pub fn handle_client(
                 &target,
                 &prefix,
                 config.timeout,
-                Some(tunnel::DEFAULT_IDLE),
+                (!config.tunnel_idle.is_zero()).then_some(config.tunnel_idle),
                 conn_id,
                 Arc::clone(&metrics),
             );
