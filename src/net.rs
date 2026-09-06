@@ -172,6 +172,11 @@ pub fn interleave(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
     out
 }
 
+/// 上流ソケットの Nagle を切る (小さな応答が delayed ACK 待ちで止まらないように)。失敗は無視。
+fn nodelay(stream: &TcpStream) {
+    let _ = stream.set_nodelay(true);
+}
+
 /// 名前解決して接続する。IPv6 無効時は A レコードだけ、有効時は Happy Eyeballs。全体の締め切りは `timeout`。
 pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
     let resolved: Vec<SocketAddr> = crate::dns::resolve(addr_str)?;
@@ -197,7 +202,7 @@ pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
 /// 並べ替え済みのアドレス列に Happy Eyeballs で接続する。
 pub fn connect_resolved(addrs: Vec<SocketAddr>, timeout: Duration) -> io::Result<TcpStream> {
     if addrs.len() == 1 {
-        return TcpStream::connect_timeout(&addrs[0], timeout);
+        return TcpStream::connect_timeout(&addrs[0], timeout).inspect(nodelay);
     }
 
     let deadline = Instant::now() + timeout;
@@ -228,7 +233,10 @@ pub fn connect_resolved(addrs: Vec<SocketAddr>, timeout: Duration) -> io::Result
             deadline.saturating_duration_since(now)
         };
         match rx.recv_timeout(wait) {
-            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Ok(stream)) => {
+                nodelay(&stream);
+                return Ok(stream);
+            }
             Ok(Err(e)) => {
                 pending -= 1;
                 last_err = Some(e);

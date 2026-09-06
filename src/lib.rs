@@ -116,6 +116,9 @@ pub fn handle_client(
             .unwrap_or_else(|| "<unknown>".to_string())
     );
     client.set_write_timeout(Some(config.timeout))?;
+    // Nagle を切る。応答ヘッダーと本文を別々に write すると delayed ACK と噛み合って
+    // 1 要求あたり 40 ms 止まるため (失敗しても致命的ではないので無視する)
+    let _ = client.set_nodelay(true);
     let mut reader = BufReader::new(client.try_clone()?);
     let mut served = 0usize;
 

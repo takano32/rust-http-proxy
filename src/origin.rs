@@ -91,6 +91,8 @@ pub fn connect(
     tls: Option<&TlsClient>,
 ) -> io::Result<OriginStream> {
     let tcp = net::connect(server_addr, timeout)?;
+    // net::connect が立てているはずだが、プールを経ない経路でも確実にするため念のため
+    let _ = tcp.set_nodelay(true);
     tcp.set_read_timeout(Some(timeout))?;
     tcp.set_write_timeout(Some(timeout))?;
     match scheme {

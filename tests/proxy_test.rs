@@ -1175,3 +1175,39 @@ fn test_integration_dashboard_and_self_addressed_requests() {
     let r = get_via_proxy(proxy_port, &format!("http://{}/nope", me), &me);
     assert!(r.starts_with("HTTP/1.1 404"), "{}", r);
 }
+
+#[test]
+fn test_integration_keepalive_requests_are_not_delayed_by_nagle() {
+    // TCP_NODELAY が立っていないと、応答ヘッダーと本文を別々に write したときに
+    // Nagle + delayed ACK で 1 要求あたり約 40 ms 止まる (5 要求で 200 ms 以上)。
+    let connections = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) =
+        start_keepalive_origin(Arc::clone(&connections), Arc::clone(&requests));
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream.set_nodelay(true).unwrap();
+    // 1 要求目は接続確立を含むので測定から外す
+    let warmup = format!("GET http://{}/w HTTP/1.1\r\nHost: {}\r\n\r\n", host, host);
+    stream.write_all(warmup.as_bytes()).unwrap();
+    read_response(&mut stream);
+
+    let started = std::time::Instant::now();
+    for i in 0..5 {
+        let req = format!(
+            "GET http://{}/nagle{} HTTP/1.1\r\nHost: {}\r\n\r\n",
+            host, i, host
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let (head, _body) = read_response(&mut stream);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "5 keep-alive requests took {:?} (Nagle would need 200ms or more)",
+        elapsed
+    );
+}

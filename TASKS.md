@@ -47,14 +47,14 @@
 
 同じ環境、`--body-bytes 1024`。`direct` はプロキシを通さないオリジン直結 (ベンチ自身の上限)。
 
-| 項目 | T0.1 時点 | 備考 |
-|---|---|---|
-| direct, 8 並列 | **300,805 req/s, p50 0.013 ms** | ベンチは律速しない (基準 50,000 req/s) |
-| forward, 8 並列 | **188 req/s, p50 42.0 ms, p99 54.1 ms** | Nagle 待ち (T1.1) |
-| forward, 64 並列 | 1,517 req/s, p50 41.9 ms, p99 51.3 ms | |
-| tunnel 1 本 | 1,044 MiB/s | 256 MiB |
-| connect, 8 並列 | 3,506 tunnels/s, p50 1.85 ms | |
-| connect, 64 並列 | 3,648 tunnels/s, p50 17.3 ms | |
+| 項目 | T0.1 時点 | T1.1 (TCP_NODELAY) 後 | 備考 |
+|---|---|---|---|
+| direct, 8 並列 | **300,805 req/s, p50 0.013 ms** | 300,542 req/s, p50 0.014 ms | ベンチは律速しない (基準 50,000 req/s) |
+| forward, 8 並列 | 188 req/s, p50 42.0 ms, p99 54.1 ms | **29,107 req/s, p50 0.222 ms, p99 1.33 ms** | 155 倍 |
+| forward, 64 並列 | 1,517 req/s, p50 41.9 ms, p99 51.3 ms | 22,027 req/s, p50 1.97 ms, p99 15.8 ms | |
+| tunnel 1 本 | 1,044 MiB/s | 1,114 MiB/s | 256 MiB。T1.3 で 1.5 GiB/s 以上へ |
+| connect, 8 並列 | 3,506 tunnels/s, p50 1.85 ms | 3,938 tunnels/s, p50 1.70 ms | |
+| connect, 64 並列 | 3,648 tunnels/s, p50 17.3 ms | 3,288 tunnels/s, p50 18.1 ms | |
 
 **判明している最大のボトルネック**: プロキシが `TCP_NODELAY` を立てていないため、応答ヘッダーと本文を別々に `write` した際に
 Nagle + delayed ACK で **1 要求あたり約 40 ms 止まる**。実験で両側に `set_nodelay(true)` を入れると 8 並列で
@@ -97,7 +97,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
 
 ### Phase 1 — 少ない変更で確実に速くする (最優先)
 
-- [ ] **T1.1 `TCP_NODELAY` を全ソケットに立てる** ← 最重要、実測済み
+- [x] **T1.1 `TCP_NODELAY` を全ソケットに立てる** ← 最重要、実測済み
   - 変更箇所: `src/lib.rs` `handle_client` (クライアント側、`set_write_timeout` の直後)、`src/origin.rs` `connect` (オリジン側)、
     `src/net.rs` `connect_resolved` (Happy Eyeballs で勝った接続。ここに入れればトンネルとオリジンの両方に効く)。
   - やること: `set_nodelay(true)` を呼ぶ (失敗は無視して良い)。プールから取り出した接続は設定が残るので追加処理不要。
