@@ -108,6 +108,10 @@ impl Live {
             next.keepalive = fresh.keepalive;
             applied.push("PROXY_KEEPALIVE_SECS");
         }
+        if fresh.max_conns != old.max_conns {
+            next.max_conns = fresh.max_conns;
+            applied.push("PROXY_MAX_CONNS");
+        }
         if fresh.dns_ttl != old.dns_ttl {
             next.dns_ttl = fresh.dns_ttl;
             crate::dns::set_ttl(fresh.dns_ttl);

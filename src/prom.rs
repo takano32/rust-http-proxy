@@ -97,6 +97,18 @@ pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
     );
     header(
         &mut out,
+        "rejected_overload_total",
+        "counter",
+        "Connections refused with 503 because PROXY_MAX_CONNS was reached",
+    );
+    line(
+        &mut out,
+        "rejected_overload_total",
+        "",
+        m.rejected_overload.load(Ordering::Relaxed),
+    );
+    header(
+        &mut out,
         "bytes_forwarded_total",
         "counter",
         "Bytes sent to clients and origins",

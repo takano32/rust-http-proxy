@@ -195,6 +195,8 @@ pub struct Metrics {
     pub start_time: Instant,
     pub total_requests: AtomicU64,
     pub active_connections: AtomicUsize,
+    /// 同時接続数の上限に当たって 503 で断った数
+    pub rejected_overload: AtomicU64,
     pub bytes_forwarded: AtomicU64,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
@@ -215,6 +217,7 @@ impl Metrics {
             start_time: Instant::now(),
             total_requests: AtomicU64::new(0),
             active_connections: AtomicUsize::new(0),
+            rejected_overload: AtomicU64::new(0),
             bytes_forwarded: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
@@ -389,7 +392,7 @@ impl Metrics {
         format!(
             concat!(
                 "{{\"status\":\"ok\",\"uptime_secs\":{},\"total_requests\":{},",
-                "\"active_connections\":{},\"bytes_forwarded\":{},",
+                "\"active_connections\":{},\"rejected_overload\":{},\"bytes_forwarded\":{},",
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
@@ -398,6 +401,7 @@ impl Metrics {
             uptime,
             requests,
             active,
+            self.rejected_overload.load(Ordering::Relaxed),
             bytes,
             self.cache_hits.load(Ordering::Relaxed),
             self.cache_misses.load(Ordering::Relaxed),

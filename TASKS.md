@@ -175,7 +175,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
 
 ### Phase 2 — 認証なし (= 誰でも使える) でも落ちない
 
-- [ ] **T2.1 同時接続数の上限 (`PROXY_MAX_CONNS`、既定 4096)**
+- [x] **T2.1 同時接続数の上限 (`PROXY_MAX_CONNS`、既定 4096)**
   - 変更箇所: `src/main.rs` `serve()` (無制限に `thread::spawn`)、`src/config.rs`、`src/reload.rs` (即時反映に含める)。
   - やること: `AtomicUsize` の接続カウンタが上限なら `503 Service Unavailable` + `Retry-After: 1` を書いて閉じる (スレッドは起こさない)。
     上限到達は `warn` で 1 分に 1 回だけログ。`/status` と `/metrics` に `active_connections` と `rejected_overload` を出す (前者は既にある)。

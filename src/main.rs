@@ -1,24 +1,19 @@
-use std::io;
-use std::net::TcpListener;
 use std::process;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use rust_http_proxy::cache::{Cache, MIB};
 use rust_http_proxy::config::Config;
-use rust_http_proxy::handle_client;
 use rust_http_proxy::log;
 use rust_http_proxy::metrics::Metrics;
 use rust_http_proxy::net;
 use rust_http_proxy::pool::Pool;
 use rust_http_proxy::reload;
+use rust_http_proxy::serve;
 use rust_http_proxy::signal;
 use rust_http_proxy::tls::TlsClient;
 use rust_http_proxy::{Upstream, log_warn};
-use rust_http_proxy::{log_debug, log_error, log_info};
-
-static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
+use rust_http_proxy::{log_error, log_info};
 
 /// オリジンへのアイドル接続を保持する時間 (長いほどプールのヒット率が上がる)。
 const ORIGIN_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
@@ -192,53 +187,31 @@ fn main() {
         log_info!(None, "denied hosts: {:?}", config.acl.deny_hosts);
     }
 
+    let limiter = rust_http_proxy::Limiter::new();
     // 待ち受けソケットごとに accept スレッドを持つ (最後の 1 つはこのスレッドで回す)
     let mut listeners = listeners.into_iter();
     let last = listeners.next_back().expect("at least one listener");
     for listener in listeners {
         let shared = (
             Arc::clone(&live),
+            Arc::clone(&limiter),
             Arc::clone(&metrics),
             Arc::clone(&cache),
             Arc::clone(&pool),
         );
-        thread::spawn(move || serve(listener, shared.0, shared.1, shared.2, shared.3));
+        thread::spawn(move || {
+            let live = shared.0;
+            serve(
+                listener,
+                || live.config(),
+                shared.1,
+                shared.2,
+                shared.3,
+                shared.4,
+            )
+        });
     }
     drop(config);
-    serve(last, live, metrics, cache, pool);
-}
-
-fn serve(
-    listener: TcpListener,
-    live: Arc<reload::Live>,
-    metrics: Arc<Metrics>,
-    cache: Arc<Cache>,
-    pool: Arc<Upstream>,
-) {
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
-                let cfg = live.config();
-                let m = Arc::clone(&metrics);
-                let c = Arc::clone(&cache);
-                let p = Arc::clone(&pool);
-                thread::spawn(move || {
-                    if let Err(e) = handle_client(stream, cfg, m, c, p, conn_id) {
-                        if e.kind() != io::ErrorKind::UnexpectedEof
-                            && e.kind() != io::ErrorKind::ConnectionReset
-                            && e.kind() != io::ErrorKind::BrokenPipe
-                        {
-                            log_error!(Some(conn_id), "{}", e);
-                        } else {
-                            log_debug!(Some(conn_id), "connection ended: {}", e);
-                        }
-                    }
-                });
-            }
-            Err(e) => {
-                log_error!(None, "accept failed: {}", e);
-            }
-        }
-    }
+    let l = Arc::clone(&live);
+    serve(last, || l.config(), limiter, metrics, cache, pool);
 }

@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rust_http_proxy::Upstream;
 use rust_http_proxy::cache::{Cache, CacheConfig, MIB};
 use rust_http_proxy::config::Config;
 use rust_http_proxy::metrics::Metrics;
 use rust_http_proxy::pool::Pool;
 use rust_http_proxy::tls::TlsClient;
-use rust_http_proxy::{Upstream, handle_client};
 
 type Handler = dyn Fn(&str, usize) -> Vec<u8> + Send + Sync;
 
@@ -95,15 +95,14 @@ fn start_test_proxy_full(
     });
 
     thread::spawn(move || {
-        for (conn_id, stream) in listener.incoming().flatten().enumerate() {
-            let c = Arc::clone(&cfg);
-            let m = Arc::clone(&metrics);
-            let ch = Arc::clone(&cache);
-            let p = Arc::clone(&pool);
-            thread::spawn(move || {
-                let _ = handle_client(stream, c, m, ch, p, conn_id);
-            });
-        }
+        rust_http_proxy::serve(
+            listener,
+            || Arc::clone(&cfg),
+            rust_http_proxy::Limiter::new(),
+            metrics,
+            cache,
+            pool,
+        )
     });
 
     port
@@ -573,7 +572,8 @@ fn test_integration_origin_connections_are_pooled() {
     let mut status = String::new();
     stream.read_to_string(&mut status).unwrap();
     assert!(
-        status.contains("\"origin_connections\":{\"new\":1,\"reused\":3,\"pool_hit_ratio\":0.7500}"),
+        status
+            .contains("\"origin_connections\":{\"new\":1,\"reused\":3,\"pool_hit_ratio\":0.7500}"),
         "{}",
         status
     );
@@ -1284,4 +1284,54 @@ fn test_integration_connect_tunnel_forwards_prefix_and_both_directions() {
     writer.join().unwrap();
     assert_eq!(back.len(), payload.len());
     assert_eq!(back, payload);
+}
+
+#[test]
+fn test_integration_connection_limit_returns_503() {
+    // 上限 8 で起動し、9 本目が 503 になること
+    let (origin_port, _origin) = start_mock_origin();
+    let mut cfg = proxy_config();
+    cfg.max_conns = 8;
+    let proxy_port = start_test_proxy(cfg);
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    // 上限ぶん keep-alive で握ったままにする (1 要求ずつ流して接続を確立させる)
+    let mut held = Vec::new();
+    for i in 0..8 {
+        let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+        let req = format!(
+            "GET http://{}/hold{} HTTP/1.1\r\nHost: {}\r\n\r\n",
+            host, i, host
+        );
+        s.write_all(req.as_bytes()).unwrap();
+        read_response(&mut s);
+        held.push(s);
+    }
+
+    let mut extra = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let mut resp = String::new();
+    extra.read_to_string(&mut resp).unwrap();
+    assert!(
+        resp.starts_with("HTTP/1.1 503 Service Unavailable"),
+        "{}",
+        resp
+    );
+    assert!(resp.contains("Retry-After: 1"), "{}", resp);
+
+    // 1 本閉じれば次は通る
+    held.pop();
+    for _ in 0..50 {
+        let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+        let req = format!(
+            "GET http://{}/after HTTP/1.1\r\nHost: {}\r\n\r\n",
+            host, host
+        );
+        s.write_all(req.as_bytes()).unwrap();
+        let (head, _) = read_response(&mut s);
+        if head.starts_with("HTTP/1.1 200") {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("a slot should have been freed");
 }

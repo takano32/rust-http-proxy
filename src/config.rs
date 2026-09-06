@@ -40,6 +40,9 @@ pub struct Config {
     pub blocklist_exempt: Vec<String>,
     /// 統計と履歴を `$HOME/.rust-http-proxy.rrd` に残す (`PROXY_STATS_PERSIST`、既定 on)
     pub stats_persist: bool,
+    /// 同時に受ける接続数の上限 (`PROXY_MAX_CONNS`、既定 4096、`0` で無制限)。
+    /// 超えた接続には 503 を返して閉じる (スレッドは起こさない)
+    pub max_conns: usize,
     pub cache: CacheConfig,
 }
 
@@ -85,6 +88,11 @@ impl Config {
         }
         if let Some(v) = envfile::var("PROXY_TLS_VERIFY") {
             cfg.tls_verify = !off(v);
+        }
+        if let Some(n) =
+            envfile::var("PROXY_MAX_CONNS").and_then(|s| s.trim().parse::<usize>().ok())
+        {
+            cfg.max_conns = n;
         }
         if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
             cfg.stats_persist = !off(v);
@@ -158,6 +166,7 @@ impl Config {
             blocklist_refresh: Duration::from_secs(86400),
             blocklist_exempt: Vec::new(),
             stats_persist: true,
+            max_conns: 4096,
             cache: CacheConfig::default(),
         })
     }
@@ -190,6 +199,7 @@ mod tests {
         assert_eq!(cfg.timeout, Duration::from_secs(10));
         assert_eq!(cfg.keepalive, Duration::from_secs(15));
         assert_eq!(cfg.pool_per_host, 8);
+        assert_eq!(cfg.max_conns, 4096);
     }
 
     #[test]

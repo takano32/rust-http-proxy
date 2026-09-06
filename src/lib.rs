@@ -31,8 +31,10 @@ pub mod tls;
 pub mod tunnel;
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::Instant;
 
 use cache::Cache;
@@ -53,6 +55,117 @@ Content-Length: 13\r\n\
 Connection: close\r\n\
 \r\n\
 403 Forbidden";
+
+/// 接続の通し番号。
+static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
+
+/// 同時接続数の見張り (待ち受けソケット全体で 1 つ共有する)。
+#[derive(Default)]
+pub struct Limiter {
+    open: AtomicUsize,
+    /// 上限に当たったことを最後に警告した時刻 (epoch 秒)。1 分に 1 回だけ出す
+    warned: AtomicUsize,
+}
+
+impl Limiter {
+    pub fn new() -> Arc<Limiter> {
+        Arc::new(Limiter::default())
+    }
+
+    /// 今開いている接続の数。
+    pub fn open(&self) -> usize {
+        self.open.load(Ordering::Relaxed)
+    }
+}
+
+const OVERLOAD_RESPONSE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+Retry-After: 1\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+Content-Length: 23\r\n\
+Connection: close\r\n\
+\r\n\
+503 Service Unavailable";
+
+/// 待ち受けソケットから接続を受け、1 本ごとにスレッドを起こす。
+/// `config_of` は接続ごとに最新の設定を取り出す (`.env` の再読込に追従するため)。
+pub fn serve(
+    listener: TcpListener,
+    config_of: impl Fn() -> Arc<Config>,
+    limiter: Arc<Limiter>,
+    metrics: Arc<Metrics>,
+    cache: Arc<Cache>,
+    upstream: Arc<Upstream>,
+) {
+    for stream in listener.incoming() {
+        let mut stream = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                log_error!(None, "accept failed: {}", e);
+                continue;
+            }
+        };
+        let cfg = config_of();
+        // 上限を超えたらスレッドを起こさずに 503 を返して閉じる
+        let max = cfg.max_conns;
+        if max > 0 && limiter.open() >= max {
+            metrics
+                .rejected_overload
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let now = cache::now_epoch() as usize;
+            let last = limiter.warned.load(Ordering::Relaxed);
+            if now.saturating_sub(last) >= 60
+                && limiter
+                    .warned
+                    .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                log_warn!(
+                    None,
+                    "connection limit reached ({} open, PROXY_MAX_CONNS={}); returning 503",
+                    limiter.open(),
+                    max
+                );
+            }
+            let _ = stream.set_write_timeout(Some(cfg.timeout));
+            let _ = stream.write_all(OVERLOAD_RESPONSE);
+            let _ = stream.flush();
+            continue;
+        }
+        let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
+        limiter.open.fetch_add(1, Ordering::Relaxed);
+        let m = Arc::clone(&metrics);
+        let l = Arc::clone(&limiter);
+        let c = Arc::clone(&cache);
+        let p = Arc::clone(&upstream);
+        let spawned = thread::Builder::new()
+            .name(format!("conn#{}", conn_id))
+            // 接続スレッドは深い再帰をしないので既定 (8 MiB) より小さくてよい
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                struct OpenGuard(Arc<Limiter>);
+                impl Drop for OpenGuard {
+                    fn drop(&mut self) {
+                        self.0.open.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let _open = OpenGuard(l);
+                if let Err(e) = handle_client(stream, cfg, m, c, p, conn_id) {
+                    if e.kind() != io::ErrorKind::UnexpectedEof
+                        && e.kind() != io::ErrorKind::ConnectionReset
+                        && e.kind() != io::ErrorKind::BrokenPipe
+                    {
+                        log_error!(Some(conn_id), "{}", e);
+                    } else {
+                        log_debug!(Some(conn_id), "connection ended: {}", e);
+                    }
+                }
+            });
+        if spawned.is_err() {
+            limiter.open.fetch_sub(1, Ordering::Relaxed);
+            log_error!(Some(conn_id), "failed to spawn a thread for the connection");
+        }
+    }
+}
 
 /// 1 つのクライアント接続で処理する最大要求数 (keep-alive)。
 const MAX_REQUESTS_PER_CONNECTION: usize = 1000;
