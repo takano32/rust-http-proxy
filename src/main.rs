@@ -60,11 +60,8 @@ fn main() {
     if let Some(s) = &store {
         rust_http_proxy::blocklist::set_store(Arc::clone(s));
     }
-    let _history = rust_http_proxy::history::spawn(
-        Arc::clone(&metrics),
-        Arc::clone(&cache),
-        store.clone(),
-    );
+    let _history =
+        rust_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache), store.clone());
     let tls = if !config.tls_enabled {
         log_info!(
             None,
@@ -104,9 +101,9 @@ fn main() {
         pool: Pool::new(config.pool_per_host, ORIGIN_IDLE),
         tls,
     });
-    rust_http_proxy::blocklist::configure(
-        rust_http_proxy::blocklist::Sources::from_config(&config),
-    );
+    rust_http_proxy::blocklist::configure(rust_http_proxy::blocklist::Sources::from_config(
+        &config,
+    ));
     let _blocklist = rust_http_proxy::blocklist::spawn(Arc::clone(&pool), config.timeout);
     // 停止シグナルで統計を状態ファイルに書き、ballast.reserve を空にしてから終わる
     // (Wings のディスク計測に残さない)

@@ -306,6 +306,11 @@ cargo build
 
 # 最適化リリースビルド
 cargo build --release
+
+# ベンチ (オリジンもベンチ内で起動する。プロキシは別端末で先に上げておく)
+cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
+# --conc 並列数 / --seconds 測定秒数 / --body-bytes 応答本文の大きさ
+# direct 行はプロキシを通さないオリジン直結 (ベンチ自身の上限。30 万 req/s 前後)
 ```
 
 ## 起動方法
