@@ -52,6 +52,20 @@ impl CachedResponse {
         self.size.saturating_sub(self.head.len() as u64)
     }
 
+    /// メモリ層のエントリなら、本文の `start` から `len` バイトを (データ, 開始, 終了) で返す。
+    /// そのまま書き出せるので、リーダーを作って中間バッファ越しに写す必要がない。
+    /// ディスク層なら `None` ([`into_body_range`](Self::into_body_range) を使う)。
+    pub fn memory_range(&self, start: u64, len: u64) -> Option<(Arc<Vec<u8>>, usize, usize)> {
+        match &self.body {
+            Body::Memory { data, offset } => {
+                let from = offset.checked_add(start as usize)?;
+                let to = from.checked_add(len as usize)?;
+                (to <= data.len()).then(|| (Arc::clone(data), from, to))
+            }
+            Body::File(_) => None,
+        }
+    }
+
     /// 本文の `start` から `len` バイトを読むリーダー (Range 応答用)。
     pub fn into_body_range(self, start: u64, len: u64) -> Box<dyn Read + Send> {
         match self.body {

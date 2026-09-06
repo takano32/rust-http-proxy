@@ -43,17 +43,20 @@ pub(super) fn serve_cached(
     ctx: &Ctx<'_>,
 ) -> io::Result<bool> {
     let age = entry.age();
-    let cached_head = freshness::parse_cached_head(&entry.head);
     let conditional = ctx.req.if_none_match.is_some() || ctx.req.if_modified_since.is_some();
-    if conditional
+    // 条件付きでも Range でもない素の HIT では、保存したヘッダーを読み直す必要がない
+    // (毎ヒットで全ヘッダー行を String に作り直していた)
+    let cached_head =
+        (conditional || ctx.req.range.is_some()).then(|| freshness::parse_cached_head(&entry.head));
+    if let Some(cached_head) = cached_head.as_ref()
+        && conditional
         && freshness::client_not_modified(
-            &cached_head,
+            cached_head,
             ctx.req.if_none_match.as_deref(),
             ctx.req.if_modified_since.as_deref(),
         )
     {
-        let written =
-            write_not_modified(client, &cached_head, label, source, age, ctx.keep_client)?;
+        let written = write_not_modified(client, cached_head, label, source, age, ctx.keep_client)?;
         ctx.metrics.inc_cache_hit();
         ctx.metrics.add_bytes(written);
         ctx.log(
@@ -65,8 +68,13 @@ pub(super) fn serve_cached(
     }
 
     let body_len = entry.body_len();
-    let range = match (&ctx.req.range, cached_head.status == 200 && !ctx.head_only) {
-        (Some(r), true) if if_range_matches(ctx.req.if_range.as_deref(), &cached_head) => {
+    let head_is_200 = cached_head.as_ref().is_some_and(|h| h.status == 200);
+    let range = match (&ctx.req.range, head_is_200 && !ctx.head_only) {
+        (Some(r), true)
+            if cached_head
+                .as_ref()
+                .is_some_and(|h| if_range_matches(ctx.req.if_range.as_deref(), h)) =>
+        {
             body::parse_range(r, body_len)
         }
         _ => RangeSpec::Ignore,
@@ -178,7 +186,14 @@ pub fn write_cached_response(
     client.write_all(&bytes)?;
     let mut written = bytes.len() as u64;
     if !serve.head_only && len > 0 {
-        written += io::copy(&mut entry.into_body_range(start, len), client)?;
+        // メモリ層ならそのまま書く (io::copy はスタックの 8 KiB で写すため、
+        // 大きいエントリでは中間バッファへのコピーが 1 回まるごと余計にかかる)
+        if let Some((data, from, to)) = entry.memory_range(start, len) {
+            client.write_all(&data[from..to])?;
+            written += (to - from) as u64;
+        } else {
+            written += io::copy(&mut entry.into_body_range(start, len), client)?;
+        }
     }
     client.flush()?;
     Ok((status, written))
