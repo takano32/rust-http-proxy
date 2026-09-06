@@ -123,8 +123,27 @@ T4.2 `opt-level` の比較 (`--lite`、8 並列、forward を 3 回測った平�
 | トンネル 1 本あたりのスレッド | 3 | **1** |
 | 起動直後のスレッド | 6 | 6 (既定) / **3** (`--lite`) |
 | 同時 5,000 トンネル | 未計測 | RSS 198 MiB、新規 CONNECT p99 9.1 ms |
-| バイナリ | 857 KB | 923 KB (glibc) / 1.06 MB (musl 静的) |
+| バイナリ | 857 KB | 923 KB |
 | テスト | 150 単体 + 21 結合 | **158 単体 + 28 結合** |
+
+### perf / strace での確認 (後から両方が入ったので取り直した)
+
+- **T0.2**: `CARGO_PROFILE_RELEASE_DEBUG=1` だけでは `profile.release` の `strip = true` に消されるので、
+  `CARGO_PROFILE_RELEASE_STRIP=none` も要ることが分かった (README を修正)。付ければ
+  `perf record -g -p <pid>` → `perf report` でシンボルが出る。
+- **T1.2**: `strace -f -e trace=write,sendto` で 1 要求あたりのクライアント向け呼び出しを直接確認した
+  (Rust の `TcpStream` は `write` ではなく `sendto` を使う)。
+
+  ```
+  変更前 (4717a3d): sendto(7, "HTTP/1.1 200 OK...", 90)   ← ヘッダー
+                    sendto(7, "xxxxxxxx...",        1000) ← 本文
+  変更後 (現在):    sendto(7, "HTTP/1.1 200 OK...", 1090) ← 1 回
+  ```
+
+- **T1.4**: `PROXY_CACHE_ENABLED=off` のとき、`perf report` に `cache::` / `freshness::` のシンボルは
+  出ない (唯一出るのは起動時の `Ballast` の drop が 0.01%)。`strace -c` のファイル系システムコールも
+  28,644 要求で `openat` 18 回・`statx` 2 回・`mkdirat` 2 回 (すべて起動時) で、要求あたり 0。
+  キャッシュ有効時は 58,078 要求で `openat` 283 回・`mkdirat` 257 回。
 
 参考: 旧 `scripts/bench.py` でも forward 8 並列 p50 44 ms → **11.0 ms** になった (直結が p50 9.6 ms
 なので Python 側の下限に張り付いている。実際の値は Rust ベンチの 0.20 ms)。

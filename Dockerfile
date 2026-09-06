@@ -1,9 +1,8 @@
 # 2 段ビルド: rust でビルドして、バイナリと libssl だけの小さな実行イメージに置く。
 #
-# glibc のままなのは、musl 静的リンクにすると (1) dlopen が使えず TLS = https:// オリジンの
-# 取得とキャッシュが無効になり、(2) 名前解決が NSS を通らず /etc/resolv.conf だけになり、
-# (3) musl の malloc がマルチスレッドで遅いためです。
-# 「どのディストリビューションにも 1 ファイルで置きたい」場合だけ scripts/build-static.sh を使ってください。
+# glibc のままなのは、musl 静的リンクにすると (1) forward が実測で 1/3 になり、
+# (2) dlopen が使えず TLS = https:// オリジンの取得とキャッシュが無効になり、
+# (3) 名前解決が NSS を通らず /etc/resolv.conf だけになるためです (README の「配布」を参照)。
 FROM rust:1.96 AS build
 WORKDIR /src
 COPY Cargo.toml ./

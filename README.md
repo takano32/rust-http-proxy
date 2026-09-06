@@ -15,7 +15,7 @@ curl -x localhost:8080 http://example.com/        # 動作確認
 プロキシ設定の「自動プロキシ設定 URL」に入れるだけです (このプロキシが落ちていれば DIRECT に落ちます)。
 
 `cargo install --git https://github.com/takano32/rust-http-proxy` でも入ります
-(ビルドにピーク約 450 MiB 必要。メモリの小さい環境では [配布](#配布-docker--静的バイナリ) の Release バイナリを使ってください)。
+(ビルドにピーク約 450 MiB 必要。メモリの小さい環境では [配布](#配布-docker--release-バイナリ) の Release バイナリを使ってください)。
 
 キャッシュ・ダッシュボード・統計まで使うなら `--lite` を外します。
 
@@ -40,13 +40,13 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 | CONNECT 確立 | 8,350 tunnels/s, p50 0.68 ms |
 | 同時 5,000 トンネル | RSS 198 MiB、新規 CONNECT p99 9.1 ms |
 | 起動直後のスレッド | `--lite` で 3 本、既定で 6 本 |
-| バイナリ | 923 KB (glibc) / 1.06 MB (musl 静的) |
+| バイナリ | 923 KB |
 
 ## 特徴
 
 - **認証不要（No Auth）**: 事前設定なしで誰でも即座に利用可能
 - **依存クレートゼロ**: 外部クレート依存がないため、ビルド負荷が最小限で高速にビルド可能
-- **超軽量バイナリ**: リリースビルドで約 900 KB (glibc)、musl 静的リンクで約 1.0 MB
+- **超軽量バイナリ**: リリースビルドで約 900 KB
 - **HTTP / HTTPS (CONNECTトンネリング) 対応**
 - **同時ミスの合流 (collapsed forwarding)**: 同じ URL を複数のクライアントが同時に要求しても、オリジンへ行くのは
   最初の 1 本だけ。残りはその保存完了を待ってキャッシュから受け取る (`cache=COALESCED`)。保存されなかった場合は
@@ -401,7 +401,8 @@ cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 ### 開発者向け: プロファイル取得
 
 ```bash
-CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release   # 行番号付き (バイナリには残さない)
+# シンボル付きでビルドする (profile.release は strip = true なので strip も止める)
+CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=none cargo build --release
 perf record -g -p $(pgrep -f 'rust-http-proxy$') -- sleep 10   # 別端末でベンチを回している間に
 perf report --stdio | head -40                                 # ホットパスを見る
 strace -c -f -p $(pgrep -f 'rust-http-proxy$')                 # perf が無ければシステムコールの回数で見る
@@ -410,7 +411,7 @@ strace -f -e trace=write,sendto -c -p $(pgrep -f 'rust-http-proxy$')  # 1 要求
 
 `[profile.release] debug = 1` は入れません (バイナリが太るため)。必要なときだけ上の環境変数で付けます。
 
-## 配布 (Docker / 静的バイナリ)
+## 配布 (Docker / Release バイナリ)
 
 ```bash
 # Docker (2 段ビルド。実行イメージは debian-slim + libssl3)
@@ -420,30 +421,31 @@ curl -x localhost:8080 http://example.com/
 ```
 
 タグ `v*` を push すると `.github/workflows/release.yml` が x86_64 / aarch64 の
-**gnu (通常版)** と **musl (静的)** を作って Release に添付します。基本は gnu 版を使ってください。
+バイナリ (glibc 2.35 以上) を作って Release に添付します。
 
-### musl 静的リンクを選ぶ基準
+### musl 静的リンクを採らない理由 (実測)
 
-```bash
-./scripts/build-static.sh                       # x86_64-unknown-linux-musl
-./scripts/build-static.sh aarch64-unknown-linux-musl
-```
+「1 ファイルでどこにでも置ける」ので一度は入れましたが、実測して外しました。
 
-「どのディストリビューションにも 1 ファイルで置きたい」「glibc の版ずれ (`GLIBC_2.34 not found`) を
-避けたい」ときだけの選択肢です。引き換えに次を失います。
+| | forward, 8 並列 | CONNECT 確立 |
+|---|---|---|
+| glibc (通常ビルド) | **32,169 req/s, p50 0.204 ms** | 8,071 tunnels/s |
+| musl 静的リンク | 10,846 req/s, p50 0.602 ms (**1/3**) | 7,277 tunnels/s |
 
-1. **TLS が使えない**: `dlopen` が機能しないので `libssl` を実行時に読み込めません。
-   `https://` オリジンの取得とキャッシュが無効になります (`CONNECT` トンネル = ブラウザの HTTPS は影響なし)
-2. **名前解決が NSS を通らない**: musl は `/etc/resolv.conf` だけを見ます (systemd-resolved / mDNS /
-   `nsswitch.conf` の設定が効かない)
-3. **malloc がマルチスレッドで遅い**: この実装は 1 接続 1 スレッドで、1 要求あたり約 99 回確保するので効きます
+加えて、
+
+1. **TLS が使えない**: `dlopen` が機能しないので `libssl` を実行時に読み込めず、起動ログに
+   `TLS: libssl not found` が出ます。`https://` オリジンの取得とキャッシュが無効になります
+   (`CONNECT` トンネル = ブラウザの HTTPS は影響なし)
+2. **名前解決が NSS を通らない**: musl は `/etc/resolv.conf` だけを見ます (systemd-resolved / mDNS が効かない)
+3. **ビルドに 450 MiB 必要**: 静的リンクにしてもビルドが軽くなるわけではありません
+
+**ビルドに必要なメモリ**: `cargo build --release` は `lto = true` / `codegen-units = 1` のため
+ピークで約 450 MiB 使います。メモリ 200 MB のコンテナではビルドできないので、Release のバイナリを
+置くか、`lto = "thin"` / `codegen-units = 16` / `cargo build -j 1` に落としてください。
 
 **最適化レベル**: `opt-level = "s"` のままにしています。`3` と比べた実測は forward 8 並列で
 32,419 → 33,121 req/s (**+2.2%**)、バイナリは 923 KB → 1,054 KB。5% に届かないのでサイズを取りました。
-
-**ビルドに必要なメモリ**: `cargo build --release` は `lto = true` / `codegen-units = 1` のため
-ピークで約 450 MiB 使います (musl でも gnu でも同じ)。メモリ 200 MB のコンテナではビルドできないので、
-Release のバイナリを置くか、`lto = "thin"` / `codegen-units = 16` / `cargo build -j 1` に落としてください。
 
 ## 起動方法
 
