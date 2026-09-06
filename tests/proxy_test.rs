@@ -1790,3 +1790,58 @@ fn test_integration_pooled_connection_returning_408_is_retried() {
         "408 を受けた 1 回ぶん余計にオリジンへ行く"
     );
 }
+
+#[test]
+fn test_integration_total_header_size_is_capped() {
+    // 1 行の上限だけだと、正常な形の要求でも 64 KiB × 256 行 = 16 MiB を送れてしまい、
+    // 認証なしの開放プロキシでは数接続でメモリを食い潰せる (実測で RSS 15 → 272 MiB)。
+    // 合計にも上限があること、上限内の大きめのヘッダーは通ることを固定する
+    let (origin_port, _origin) = start_mock_origin();
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let request_with_headers = |kib: usize| -> String {
+        let mut req = format!("GET http://{}/pad HTTP/1.1\r\nHost: {}\r\n", host, host);
+        // 1 行 8 KiB のヘッダーを並べる
+        for i in 0..(kib / 8) {
+            req.push_str(&format!(
+                "X-Pad-{:03}: {}\r\n",
+                i,
+                "a".repeat(8 * 1024 - 15)
+            ));
+        }
+        req.push_str("\r\n");
+        req
+    };
+
+    // 上限内 (64 KiB) は通る
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .write_all(request_with_headers(64).as_bytes())
+        .unwrap();
+    let (head, _) = read_response(&mut stream);
+    assert!(
+        head.starts_with("HTTP/1.1 200 OK"),
+        "上限内は通る: {}",
+        head
+    );
+
+    // 上限超え (256 KiB) は 431
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .write_all(request_with_headers(256).as_bytes())
+        .unwrap();
+    let mut resp = String::new();
+    let _ = stream.read_to_string(&mut resp);
+    assert!(
+        resp.starts_with("HTTP/1.1 431"),
+        "合計の上限を超えたら 431: {}",
+        &resp[..resp.len().min(80)]
+    );
+}

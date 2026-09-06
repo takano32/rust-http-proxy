@@ -187,6 +187,19 @@ const MAX_REQUESTS_PER_CONNECTION: usize = 1000;
 /// 要求行・ヘッダー行 1 本の最大長と、ヘッダー行数の上限 (超えたら 414 / 431)。
 const MAX_LINE: usize = 64 * 1024;
 const MAX_HEADER_LINES: usize = 256;
+/// 1 要求のヘッダー全体 (要求行 + ヘッダー行) の合計上限。
+///
+/// 1 行の上限だけだと `MAX_LINE` の行を `MAX_HEADER_LINES` 本並べられ、認証なしの
+/// 開放プロキシでは正常な形の要求を数本送るだけでメモリを食い潰せる
+/// (実測: 同時 8 接続で RSS 15 MiB → 272 MiB)。要求行 1 本 + 最大長のヘッダー 1 本は通る幅。
+const MAX_HEADER_BYTES: usize = 128 * 1024;
+/// 次の要求のために抱えておく行数と 1 行の容量。これを超えたぶんは要求ごとに解放する
+/// (使い回しの利得はほぼそのままで、接続あたりの居座りを 32 KiB 程度に抑える)。
+const KEEP_LINES: usize = 32;
+const KEEP_LINE_CAP: usize = 1024;
+/// 要求を断ったあと、応答が RST で消えないように読み捨てる上限 (時間とバイト数)。
+const LINGER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+const LINGER_BYTES: usize = 64 * 1024;
 
 thread_local! {
     /// 要求ヘッダーの行バッファ。1 接続 = 1 スレッドなので、要求ごとに `String` を作り直さず
@@ -223,6 +236,18 @@ impl HeaderBuf {
         self.used += 1;
     }
 
+    /// 次の要求に備えて空にする。使い回すのは先頭 [`KEEP_LINES`] 本ぶんだけで、
+    /// 大きく育った行は容量ごと手放す (大きなヘッダーを 1 回送られただけで、その接続の
+    /// 間ずっとメモリを抱え込まないように)。
+    fn recycle(&mut self) {
+        self.lines.truncate(KEEP_LINES);
+        for line in &mut self.lines {
+            line.clear();
+            line.shrink_to(KEEP_LINE_CAP);
+        }
+        self.used = 0;
+    }
+
     fn headers(&self) -> &[String] {
         &self.lines[..self.used]
     }
@@ -253,7 +278,20 @@ fn reject(client: &TcpStream, status: u16, reason: &str) -> io::Result<()> {
         status, reason
     );
     client.write_all(resp.as_bytes())?;
-    client.flush()
+    client.flush()?;
+    // 相手がまだ送っている途中で閉じると RST になり、書いた応答ごと捨てられてクライアントは
+    // 理由が分からない。少しだけ読み捨ててから閉じる (時間もバイト数も上限つきなので、
+    // これ自体を居座りに使うことはできない)
+    let _ = client.set_read_timeout(Some(LINGER_TIMEOUT));
+    let mut sink = [0u8; 8 * 1024];
+    let mut drained = 0usize;
+    while drained < LINGER_BYTES {
+        match client.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => drained += n,
+        }
+    }
+    Ok(())
 }
 
 /// 1 つのクライアント接続を、keep-alive なら複数の要求にわたって処理する。
@@ -315,7 +353,8 @@ pub fn handle_client(
             read_timeout = Some(wait);
         }
         request_line.clear();
-        headers.used = 0;
+        request_line.shrink_to(KEEP_LINE_CAP);
+        headers.recycle();
         match read_limited_line(&mut reader, &mut request_line) {
             Ok(None) => {
                 log_warn!(
@@ -363,6 +402,8 @@ pub fn handle_client(
 
         // Host の値は行の添字で覚えておき、読み終わってから借用する (複製しない)
         let mut host_line: Option<usize> = None;
+        // ヘッダー全体の大きさ (要求行を含む)
+        let mut header_bytes = request_line.len();
         // 本文付きの要求だけ、読み取りタイムアウトを本来の値に戻す
         let mut has_body = false;
         loop {
@@ -373,7 +414,17 @@ pub fn handle_client(
                     return reject(&client, 431, "Request Header Fields Too Large");
                 }
                 Some(0) => break,
-                Some(_) => {}
+                Some(n) => {
+                    header_bytes += n;
+                    if header_bytes > MAX_HEADER_BYTES {
+                        log_warn!(
+                            Some(conn_id),
+                            "431 Request Header Fields Too Large (headers over {} bytes)",
+                            MAX_HEADER_BYTES
+                        );
+                        return reject(&client, 431, "Request Header Fields Too Large");
+                    }
+                }
             }
             if headers.lines[index].trim().is_empty() {
                 break;
