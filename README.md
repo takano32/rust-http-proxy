@@ -313,6 +313,18 @@ cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 # direct 行はプロキシを通さないオリジン直結 (ベンチ自身の上限。30 万 req/s 前後)
 ```
 
+### 開発者向け: プロファイル取得
+
+```bash
+CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release   # 行番号付き (バイナリには残さない)
+perf record -g -p $(pgrep -f 'rust-http-proxy$') -- sleep 10   # 別端末でベンチを回している間に
+perf report --stdio | head -40                                 # ホットパスを見る
+strace -c -f -p $(pgrep -f 'rust-http-proxy$')                 # perf が無ければシステムコールの回数で見る
+strace -f -e trace=write,sendto -c -p $(pgrep -f 'rust-http-proxy$')  # 1 要求あたりの write 回数
+```
+
+`[profile.release] debug = 1` は入れません (バイナリが太るため)。必要なときだけ上の環境変数で付けます。
+
 ## 起動方法
 
 ```bash

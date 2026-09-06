@@ -90,7 +90,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
     `cargo run --release --bin bench -- --proxy 127.0.0.1:18080` で動く。README の「ビルド・テスト」に使い方を 3 行で追記。
     ベースライン表 (このファイルの §1) に Rust ベンチの値を追記する。
 
-- [ ] **T0.2 プロファイル取得の手順を書く**
+- [x] **T0.2 プロファイル取得の手順を書く**
   - やること: `perf record -g` (無ければ `strace -c -f`) でホットパスを見る手順を README の開発者向け節に 5 行で。
     `[profile.release] debug = 1` は入れない (バイナリが太る)。必要なら `CARGO_PROFILE_RELEASE_DEBUG=1` を環境変数で。
   - 受け入れ基準: 手順どおりに `perf report` か `strace -c` の出力が得られる。
