@@ -1,7 +1,46 @@
 # rust-http-proxy
 
-`SERVER_PORT` 環境変数でポート番号を指定して起動する、依存クレートゼロ（Rust 標準ライブラリ `std` のみ使用）の軽量・認証不要な HTTP/HTTPS プロキシサーバーです。
-Pterodactyl (Wings) のコンテナ内で動かすことを想定しています。
+依存クレートゼロ (Rust 標準ライブラリ `std` だけ) の、**認証不要**な HTTP/HTTPS プロキシです。
+バイナリを 1 つ置いて起動するだけで使えます。
+
+## クイックスタート
+
+```bash
+cargo build --release                    # ビルド (約 900 KB のバイナリが 1 つ)
+./target/release/rust-http-proxy --lite -p 8080   # 起動 (最速の素通し設定)
+curl -x localhost:8080 http://example.com/        # 動作確認
+```
+
+ブラウザに設定するなら、自動設定スクリプトの URL `http://<ホスト>:8080/proxy.pac` を
+プロキシ設定の「自動プロキシ設定 URL」に入れるだけです (このプロキシが落ちていれば DIRECT に落ちます)。
+
+`cargo install --git https://github.com/takano32/rust-http-proxy` でも入ります
+(ビルドにピーク約 450 MiB 必要。メモリの小さい環境では [配布](#配布-静的バイナリ--docker) の静的バイナリを使ってください)。
+
+キャッシュ・ダッシュボード・統計まで使うなら `--lite` を外します。
+
+```bash
+SERVER_PORT=8080 ./target/release/rust-http-proxy
+# http://localhost:8080/dashboard  … グラフとホスト別統計
+# http://localhost:8080/status     … JSON、/metrics … Prometheus 形式
+```
+
+## 性能
+
+8 コア / 6.6 GiB、loopback、`cargo run --release --bin bench` で測った値です
+(`direct` はプロキシを通さないオリジン直結 = ベンチ自身の上限)。
+
+| 項目 | 値 |
+|---|---|
+| direct (ベンチの上限) | 300,542 req/s, p50 0.014 ms |
+| forward, 8 並列 (`--lite`) | **33,125 req/s, p50 0.199 ms** |
+| forward, 8 並列 (キャッシュ HIT) | **75,563 req/s, p50 0.070 ms** |
+| forward, 64 並列 | 25,912 req/s, p50 1.6 ms |
+| CONNECT トンネル 1 本 | **2,800 MiB/s** (Linux は `splice(2)`) |
+| CONNECT 確立 | 8,350 tunnels/s, p50 0.68 ms |
+| 同時 5,000 トンネル | RSS 198 MiB、新規 CONNECT p99 9.1 ms |
+| 起動直後のスレッド | `--lite` で 3 本、既定で 6 本 |
+| バイナリ | 923 KB (glibc) / 1.06 MB (musl 静的) |
 
 ## 特徴
 

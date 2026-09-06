@@ -237,7 +237,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
     `.github/workflows/release.yml`: タグ `v*` で x86_64 / aarch64 (musl) をビルドして Release に添付。
   - 受け入れ基準: `docker build . && docker run -p 8080:8080 <image>` で `curl -x localhost:8080 http://example.com/` が通る (Docker が無い環境では手順とワークフローのみで可、その旨をコミットに書く)。
 
-- [ ] **T3.4 README を「30 秒で使える」構成に直す**
+- [x] **T3.4 README を「30 秒で使える」構成に直す**
   - やること: 先頭を **クイックスタート** (ビルド 1 行、起動 1 行、`curl -x` 1 行、ブラウザ設定 = `/proxy.pac` の URL) にし、機能一覧と環境変数の表はその下へ。
     バイナリサイズの記述を実測 (T1〜T3 完了後の値) に直す。`cargo install --git <このリポジトリ>` を書く。
     §1 の計測値を「性能」節として README に転記する (Rust ベンチの値)。
