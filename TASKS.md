@@ -59,6 +59,9 @@
 T1.2 (BufWriter) 後: forward 8 並列 30,231 req/s, p50 0.216 ms。
 キャッシュ HIT (`--cacheable`, メモリ 64 MiB) は 60,813 → **75,563 req/s**、p50 0.091 → 0.070 ms。
 
+T1.3 (poll + splice) 後: トンネル 1 本 1,114 → **2,800 MiB/s**、CONNECT 確立 3,704 → **7,375 tunnels/s**
+(p50 1.77 → 0.68 ms)、トンネル 1 本あたりのスレッド 3 → **1**、待ち受けのみのスレッド数 5。
+
 **判明している最大のボトルネック**: プロキシが `TCP_NODELAY` を立てていないため、応答ヘッダーと本文を別々に `write` した際に
 Nagle + delayed ACK で **1 要求あたり約 40 ms 止まる**。実験で両側に `set_nodelay(true)` を入れると 8 並列で
 **176 → 674 req/s、p50 44 → 9.6 ms** (直結と同等、つまり Python の上限に到達) になった。これが T1.1。
@@ -117,7 +120,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
   - 受け入れ基準: `strace -f -e trace=write,sendto -c` で 1 要求あたりのクライアント向け `write` 回数が 2 回以上 → 1 回。全テスト通過。
     キャッシュ HIT の p50 が悪化しない。
 
-- [ ] **T1.3 CONNECT トンネルを 1 スレッド + `poll(2)` に、Linux では `splice(2)` でゼロコピー**
+- [x] **T1.3 CONNECT トンネルを 1 スレッド + `poll(2)` に、Linux では `splice(2)` でゼロコピー**
   - 変更箇所: `src/tunnel.rs` `tunnel()` (現状: `try_clone` して 2 スレッドで `io::copy`、接続ごとに合計 3 スレッド)。
   - やること:
     1. 両ソケットを non-blocking にし、`poll` で読める側を待って `read`/`write` する 1 ループにする。片側 EOF は `shutdown(Write)` で相手に伝え、両方向が閉じたら終了。

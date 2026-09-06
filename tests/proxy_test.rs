@@ -1211,3 +1211,77 @@ fn test_integration_keepalive_requests_are_not_delayed_by_nagle() {
         elapsed
     );
 }
+
+/// 受け取ったバイトをそのまま返す TCP サーバー (CONNECT トンネルの相手)。
+fn start_echo_server() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            thread::spawn(move || {
+                let mut buf = [0u8; 64 * 1024];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if stream.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            });
+        }
+    });
+    port
+}
+
+/// CONNECT の 200 応答を読み切る。
+fn read_connect_response(stream: &mut TcpStream) -> String {
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    while !buf.ends_with(b"\r\n\r\n") {
+        if stream.read(&mut byte).unwrap() == 0 {
+            break;
+        }
+        buf.push(byte[0]);
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+#[test]
+fn test_integration_connect_tunnel_forwards_prefix_and_both_directions() {
+    let echo_port = start_echo_server();
+    let proxy_port = start_test_proxy(proxy_config());
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream.set_nodelay(true).unwrap();
+    // 要求と、その直後に続くバイト (TLS ClientHello 相当) を 1 回で送る。
+    // プロキシは先読みしてしまった分をトンネルの先頭で送り直さなければならない
+    let req = format!(
+        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\nCLIENT-HELLO",
+        echo_port, echo_port
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let head = read_connect_response(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
+
+    let mut got = [0u8; 12];
+    stream.read_exact(&mut got).unwrap();
+    assert_eq!(&got, b"CLIENT-HELLO", "prefix must reach the origin first");
+
+    // 双方向に流れる (splice の経路)
+    let payload = vec![b'z'; 1 << 20];
+    let mut sender = stream.try_clone().unwrap();
+    let sent = payload.clone();
+    let writer = thread::spawn(move || {
+        sender.write_all(&sent).unwrap();
+        sender.shutdown(std::net::Shutdown::Write).unwrap();
+    });
+    let mut back = Vec::new();
+    stream.read_to_end(&mut back).unwrap();
+    writer.join().unwrap();
+    assert_eq!(back.len(), payload.len());
+    assert_eq!(back, payload);
+}

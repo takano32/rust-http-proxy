@@ -24,6 +24,8 @@ pub mod reload;
 pub mod rrd;
 pub mod signal;
 pub mod sync;
+#[cfg(target_os = "linux")]
+pub mod sys;
 pub mod sysinfo;
 pub mod tls;
 pub mod tunnel;
@@ -276,6 +278,7 @@ pub fn handle_client(
                 &target,
                 &prefix,
                 config.timeout,
+                Some(tunnel::DEFAULT_IDLE),
                 conn_id,
                 Arc::clone(&metrics),
             );

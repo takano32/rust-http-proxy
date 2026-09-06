@@ -16,19 +16,13 @@ mod imp {
     use std::path::Path;
     use std::time::Duration;
 
+    use crate::sys::{POLLIN, PollFd, poll_fds};
+
     unsafe extern "C" {
         fn inotify_init1(flags: c_int) -> c_int;
         fn inotify_add_watch(fd: c_int, path: *const c_char, mask: u32) -> c_int;
         fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
         fn close(fd: c_int) -> c_int;
-        fn poll(fds: *mut PollFd, nfds: u64, timeout: c_int) -> c_int;
-    }
-
-    #[repr(C)]
-    struct PollFd {
-        fd: c_int,
-        events: i16,
-        revents: i16,
     }
 
     const IN_CLOEXEC: c_int = 0o2000000;
@@ -38,7 +32,6 @@ mod imp {
     const IN_DELETE: u32 = 0x200;
     const IN_MOVED_TO: u32 = 0x80;
     const IN_MOVED_FROM: u32 = 0x40;
-    const POLLIN: i16 = 0x1;
     const EINTR: i32 = 4;
     const EAGAIN: i32 = 11;
 
@@ -72,23 +65,9 @@ mod imp {
 
         /// `timeout` まで待ち、監視対象のファイルに変化があれば `true`。
         pub fn wait(&self, timeout: Duration) -> io::Result<bool> {
-            let mut pfd = PollFd {
-                fd: self.fd,
-                events: POLLIN,
-                revents: 0,
-            };
+            let mut fds = [PollFd::new(self.fd, POLLIN)];
             let ms = timeout.as_millis().min(i32::MAX as u128) as c_int;
-            // SAFETY: pfd は 1 要素の有効な配列。
-            let n = unsafe { poll(&mut pfd, 1, ms) };
-            if n < 0 {
-                let e = io::Error::last_os_error();
-                return if e.raw_os_error() == Some(EINTR) {
-                    Ok(false)
-                } else {
-                    Err(e)
-                };
-            }
-            if n == 0 {
+            if poll_fds(&mut fds, ms)? == 0 {
                 return Ok(false);
             }
             self.drain()
