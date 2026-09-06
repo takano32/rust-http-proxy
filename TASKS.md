@@ -229,7 +229,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
     起動ログ 1 行目に `profile: lite` と出す。
   - 受け入れ基準: `--lite` で起動直後のスレッド数が待ち受け + 2 以下。ベンチの数値が既定プロファイルと同等以上。
 
-- [ ] **T3.3 配布: 静的バイナリ・Dockerfile・GitHub Release**
+- [x] **T3.3 配布: 静的バイナリ・Dockerfile・GitHub Release**
   - やること: `scripts/build-static.sh` (`rustup target add x86_64-unknown-linux-musl` → `cargo build --release --target ...`)。
     musl 静的リンクでは `dlopen(libssl)` が使えないので、起動ログに「TLS: unavailable in static build」と出ることを確認して README に明記
     (HTTPS オリジンのキャッシュだけが無効、CONNECT は影響なし)。

@@ -7,7 +7,7 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 
 - **認証不要（No Auth）**: 事前設定なしで誰でも即座に利用可能
 - **依存クレートゼロ**: 外部クレート依存がないため、ビルド負荷が最小限で高速にビルド可能
-- **超軽量バイナリ**: リリースビルド時で約 500KB
+- **超軽量バイナリ**: リリースビルドで約 900 KB (glibc)、musl 静的リンクで約 1.0 MB
 - **HTTP / HTTPS (CONNECTトンネリング) 対応**
 - **同時ミスの合流 (collapsed forwarding)**: 同じ URL を複数のクライアントが同時に要求しても、オリジンへ行くのは
   最初の 1 本だけ。残りはその保存完了を待ってキャッシュから受け取る (`cache=COALESCED`)。保存されなかった場合は
@@ -370,6 +370,30 @@ strace -f -e trace=write,sendto -c -p $(pgrep -f 'rust-http-proxy$')  # 1 要求
 ```
 
 `[profile.release] debug = 1` は入れません (バイナリが太るため)。必要なときだけ上の環境変数で付けます。
+
+## 配布 (静的バイナリ / Docker)
+
+```bash
+# musl で静的リンク (どのディストリビューションでもそのまま置いて動く)
+./scripts/build-static.sh                       # x86_64-unknown-linux-musl
+./scripts/build-static.sh aarch64-unknown-linux-musl
+
+# Docker (2 段ビルド。scratch にバイナリ 1 つだけ)
+docker build -t rust-http-proxy .
+docker run -p 8080:8080 rust-http-proxy
+curl -x localhost:8080 http://example.com/
+```
+
+タグ `v*` を push すると `.github/workflows/release.yml` が x86_64 / aarch64 (musl) を作って
+Release に添付します。
+
+**静的リンクの制限**: musl 静的リンクでは `dlopen` が使えないので、TLS (`libssl`) を実行時に
+読み込めません。起動ログに TLS が使えない旨が出ます。影響を受けるのは **`https://` オリジンからの
+取得とキャッシュだけ**で、`CONNECT` トンネル (ブラウザの HTTPS) は素通しなので影響ありません。
+
+**ビルドに必要なメモリ**: `cargo build --release` は `lto = true` / `codegen-units = 1` のため
+ピークで約 450 MiB 使います (musl でも gnu でも同じ)。メモリ 200 MB のコンテナではビルドできないので、
+上の静的バイナリを置くか、`lto = "thin"` / `codegen-units = 16` / `cargo build -j 1` に落としてください。
 
 ## 起動方法
 
