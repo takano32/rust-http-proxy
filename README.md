@@ -438,6 +438,9 @@ curl -x localhost:8080 http://example.com/
    `nsswitch.conf` の設定が効かない)
 3. **malloc がマルチスレッドで遅い**: この実装は 1 接続 1 スレッドで、1 要求あたり約 99 回確保するので効きます
 
+**最適化レベル**: `opt-level = "s"` のままにしています。`3` と比べた実測は forward 8 並列で
+32,419 → 33,121 req/s (**+2.2%**)、バイナリは 923 KB → 1,054 KB。5% に届かないのでサイズを取りました。
+
 **ビルドに必要なメモリ**: `cargo build --release` は `lto = true` / `codegen-units = 1` のため
 ピークで約 450 MiB 使います (musl でも gnu でも同じ)。メモリ 200 MB のコンテナではビルドできないので、
 Release のバイナリを置くか、`lto = "thin"` / `codegen-units = 16` / `cargo build -j 1` に落としてください。
