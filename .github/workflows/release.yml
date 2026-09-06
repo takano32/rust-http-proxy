@@ -10,10 +10,15 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 古めの glibc でビルドして、新しい環境でも古い環境でも動くようにする
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
+        # gnu: TLS (dlopen libssl) と NSS の名前解決が使える通常版。glibc 2.35 以上が要る
+        # musl: 1 ファイルでどこでも動く代わりに TLS が使えず、名前解決は /etc/resolv.conf のみ
         target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
           - x86_64-unknown-linux-musl
           - aarch64-unknown-linux-musl
     steps:
@@ -23,17 +28,18 @@ jobs:
           rustup toolchain install 1.96.0 --profile minimal
           rustup default 1.96.0
           rustup target add ${{ matrix.target }}
-      - name: Install the cross linker
-        if: matrix.target == 'aarch64-unknown-linux-musl'
+      - name: Install the cross toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-      - name: Install musl-tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Build
-        run: RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target ${{ matrix.target }}
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: Build (gnu は動的リンク、musl は静的リンク)
+        run: |
+          case "${{ matrix.target }}" in
+            *musl) export RUSTFLAGS="-C target-feature=+crt-static" ;;
+          esac
+          cargo build --release --target ${{ matrix.target }}
       - name: Rename
         run: cp target/${{ matrix.target }}/release/rust-http-proxy rust-http-proxy-${{ matrix.target }}
       - uses: softprops/action-gh-release@v2

@@ -3,9 +3,14 @@
 #
 #   ./scripts/build-static.sh [TARGET]     # 既定は x86_64-unknown-linux-musl
 #
-# 注意: musl の静的リンクでは dlopen が使えないので TLS (libssl) を実行時に読み込めません。
-# 起動ログに "TLS: unavailable in static build" が出ます。https:// オリジンのキャッシュだけが
-# 無効になり、CONNECT トンネル (ブラウザの HTTPS) は影響を受けません。
+# これは「どのディストリビューションにも 1 ファイルで置きたい」ときの選択肢で、既定ではありません。
+# 引き換えに失うもの:
+#   1. TLS: dlopen が使えないので libssl を実行時に読み込めません。https:// オリジンの取得と
+#      キャッシュが無効になります (CONNECT トンネル = ブラウザの HTTPS は影響なし)。
+#   2. 名前解決: musl は NSS を通さず /etc/resolv.conf だけを見ます (systemd-resolved / mDNS が効かない)。
+#   3. malloc: musl の malloc はマルチスレッドで glibc より遅く、1 要求あたりの確保回数が
+#      多いこの実装では効きます。
+# 迷ったら glibc のビルド (cargo build --release) か Dockerfile を使ってください。
 set -eu
 
 target="${1:-x86_64-unknown-linux-musl}"

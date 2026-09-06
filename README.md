@@ -15,7 +15,7 @@ curl -x localhost:8080 http://example.com/        # 動作確認
 プロキシ設定の「自動プロキシ設定 URL」に入れるだけです (このプロキシが落ちていれば DIRECT に落ちます)。
 
 `cargo install --git https://github.com/takano32/rust-http-proxy` でも入ります
-(ビルドにピーク約 450 MiB 必要。メモリの小さい環境では [配布](#配布-静的バイナリ--docker) の静的バイナリを使ってください)。
+(ビルドにピーク約 450 MiB 必要。メモリの小さい環境では [配布](#配布-docker--静的バイナリ) の Release バイナリを使ってください)。
 
 キャッシュ・ダッシュボード・統計まで使うなら `--lite` を外します。
 
@@ -410,29 +410,37 @@ strace -f -e trace=write,sendto -c -p $(pgrep -f 'rust-http-proxy$')  # 1 要求
 
 `[profile.release] debug = 1` は入れません (バイナリが太るため)。必要なときだけ上の環境変数で付けます。
 
-## 配布 (静的バイナリ / Docker)
+## 配布 (Docker / 静的バイナリ)
 
 ```bash
-# musl で静的リンク (どのディストリビューションでもそのまま置いて動く)
-./scripts/build-static.sh                       # x86_64-unknown-linux-musl
-./scripts/build-static.sh aarch64-unknown-linux-musl
-
-# Docker (2 段ビルド。scratch にバイナリ 1 つだけ)
+# Docker (2 段ビルド。実行イメージは debian-slim + libssl3)
 docker build -t rust-http-proxy .
 docker run -p 8080:8080 rust-http-proxy
 curl -x localhost:8080 http://example.com/
 ```
 
-タグ `v*` を push すると `.github/workflows/release.yml` が x86_64 / aarch64 (musl) を作って
-Release に添付します。
+タグ `v*` を push すると `.github/workflows/release.yml` が x86_64 / aarch64 の
+**gnu (通常版)** と **musl (静的)** を作って Release に添付します。基本は gnu 版を使ってください。
 
-**静的リンクの制限**: musl 静的リンクでは `dlopen` が使えないので、TLS (`libssl`) を実行時に
-読み込めません。起動ログに TLS が使えない旨が出ます。影響を受けるのは **`https://` オリジンからの
-取得とキャッシュだけ**で、`CONNECT` トンネル (ブラウザの HTTPS) は素通しなので影響ありません。
+### musl 静的リンクを選ぶ基準
+
+```bash
+./scripts/build-static.sh                       # x86_64-unknown-linux-musl
+./scripts/build-static.sh aarch64-unknown-linux-musl
+```
+
+「どのディストリビューションにも 1 ファイルで置きたい」「glibc の版ずれ (`GLIBC_2.34 not found`) を
+避けたい」ときだけの選択肢です。引き換えに次を失います。
+
+1. **TLS が使えない**: `dlopen` が機能しないので `libssl` を実行時に読み込めません。
+   `https://` オリジンの取得とキャッシュが無効になります (`CONNECT` トンネル = ブラウザの HTTPS は影響なし)
+2. **名前解決が NSS を通らない**: musl は `/etc/resolv.conf` だけを見ます (systemd-resolved / mDNS /
+   `nsswitch.conf` の設定が効かない)
+3. **malloc がマルチスレッドで遅い**: この実装は 1 接続 1 スレッドで、1 要求あたり約 99 回確保するので効きます
 
 **ビルドに必要なメモリ**: `cargo build --release` は `lto = true` / `codegen-units = 1` のため
 ピークで約 450 MiB 使います (musl でも gnu でも同じ)。メモリ 200 MB のコンテナではビルドできないので、
-上の静的バイナリを置くか、`lto = "thin"` / `codegen-units = 16` / `cargo build -j 1` に落としてください。
+Release のバイナリを置くか、`lto = "thin"` / `codegen-units = 16` / `cargo build -j 1` に落としてください。
 
 ## 起動方法
 
