@@ -62,6 +62,9 @@ T1.2 (BufWriter) 後: forward 8 並列 30,231 req/s, p50 0.216 ms。
 T1.3 (poll + splice) 後: トンネル 1 本 1,114 → **2,800 MiB/s**、CONNECT 確立 3,704 → **7,375 tunnels/s**
 (p50 1.77 → 0.68 ms)、トンネル 1 本あたりのスレッド 3 → **1**、待ち受けのみのスレッド数 5。
 
+T1.4 後: `PROXY_CACHE_ENABLED=off PROXY_STATS_PERSIST=off` の起動直後スレッド数 5 → **3**
+(既定は 6)。forward 8 並列 30,699 req/s、CONNECT 確立 8,293 tunnels/s。
+
 **判明している最大のボトルネック**: プロキシが `TCP_NODELAY` を立てていないため、応答ヘッダーと本文を別々に `write` した際に
 Nagle + delayed ACK で **1 要求あたり約 40 ms 止まる**。実験で両側に `set_nodelay(true)` を入れると 8 並列で
 **176 → 674 req/s、p50 44 → 9.6 ms** (直結と同等、つまり Python の上限に到達) になった。これが T1.1。
@@ -131,7 +134,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
   - 受け入れ基準: トンネル 1 本のスループットが **881 MiB/s → 1.5 GiB/s 以上** (Rust ベンチで)。`ps -o nlwp` でトンネル 1 本あたりのスレッドが 3 → 1。
     既存の結合テスト (CONNECT を使うもの) と、`prefix` (先読みした ClientHello 相当のバイト列) が最初に送られることのテストが通る。
 
-- [ ] **T1.4 キャッシュ無効時・統計無効時に一切の余計な仕事をしない**
+- [x] **T1.4 キャッシュ無効時・統計無効時に一切の余計な仕事をしない**
   - 変更箇所: `src/http/mod.rs` (`cache_key_variant`, `freshness::*`, `now_epoch`, `Ctx` の `String` 生成)、`src/main.rs` (`history::spawn`, `Cache::spawn_probe`, `blocklist::spawn`)。
   - やること: `cache.enabled()` が false なら鍵の生成・鮮度判定・合流 (`inflight`) を通らない早期分岐を置く。
     キャッシュ無効なら probe スレッドを起動しない、`PROXY_STATS_PERSIST=off` なら persist/history のスレッドを起動しない、ブロックリスト未設定なら fetch スレッドを起動しない (既にそうなっている箇所は確認だけ)。

@@ -79,7 +79,7 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 | `PROXY_BLOCKLIST_URL` | なし | ブロックリストを取りに行く URL (StevenBlack の hosts など)。`$HOME/.rust-http-proxy.blocklist` に保存して再起動後も使う。ファイルと両方あれば和集合 |
 | `PROXY_BLOCKLIST_REFRESH_SECS` | `86400` | URL を取り直す間隔 (最小 60)。失敗したら 10 分後に再試行し、その間は前の一覧を使う |
 | `PROXY_BLOCKLIST_EXEMPT` | なし | ブロックリストの対象外にするホストのカンマ区切り (`*.example.com` 可) |
-| `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 約 1 MiB) に残し、再起動後に読み戻す。`off` で無効 |
+| `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 約 1 MiB) に残し、再起動後に読み戻す。`off` で無効 (履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフは空になる) |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
 | `PROXY_TLS_VERIFY` | `on` | オリジンの証明書を検証するか。`off` は自己署名の内部オリジン向け (推奨しない) |
@@ -312,6 +312,19 @@ cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 # --conc 並列数 / --seconds 測定秒数 / --body-bytes 応答本文の大きさ
 # direct 行はプロキシを通さないオリジン直結 (ベンチ自身の上限。30 万 req/s 前後)
 ```
+
+### 起動直後のスレッド数
+
+「使わない機能にはコストを払わない」方針なので、無効にした機能のスレッドは起動しません。
+
+| 設定 | スレッド | 内訳 |
+|---|---|---|
+| 既定 (キャッシュ・統計あり) | 6 | 待ち受け + `env-reload` + `cache-probe` + `persist` + `history` + `shutdown` |
+| `PROXY_CACHE_ENABLED=off PROXY_STATS_PERSIST=off` | 3 | 待ち受け + `env-reload` + `shutdown` |
+
+ブロックリストの取得スレッドは `PROXY_BLOCKLIST_FILE` / `PROXY_BLOCKLIST_URL` が設定されたときだけ動きます
+(`$HOME/.env` の再読込で後から設定された場合もその時点で起動します)。
+接続 1 本ごとのスレッドはこれとは別で、CONNECT トンネルは Linux では 1 本あたり 1 スレッドです。
 
 ### 開発者向け: プロファイル取得
 

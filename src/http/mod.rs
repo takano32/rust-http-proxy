@@ -24,7 +24,8 @@ use crate::Upstream;
 
 use crate::body::{self, BodyReader, Framing};
 use crate::cache::{
-    Cache, CacheSource, CachedResponse, FetchOutcome, FetchTicket, cache_key_variant, now_epoch,
+    Cache, CacheKey, CacheSource, CachedResponse, FetchOutcome, FetchTicket, cache_key_variant,
+    now_epoch,
 };
 use crate::freshness;
 use crate::headers;
@@ -185,20 +186,28 @@ pub fn handle_http_with_headers(
 
     // ---- キャッシュ参照 ----
     let cfg = cache.config();
-    let variant = freshness::accept_encoding_variant(req.accept_encoding.as_deref());
-    let key = cache_key_variant("GET", &url, &variant);
-    let client_no_store = freshness::has_directive(&req.cache_control, "no-store");
-    let force_revalidate = freshness::has_directive(&req.cache_control, "no-cache")
-        || freshness::directive_value(&req.cache_control, "max-age") == Some(0);
+    // キャッシュ無効時は鍵の生成も鮮度判定もしない (素通しの経路を最短にする)
+    let cache_on = cache.enabled();
+    let (key, client_no_store, force_revalidate, now) = if cache_on {
+        let variant = freshness::accept_encoding_variant(req.accept_encoding.as_deref());
+        (
+            cache_key_variant("GET", &url, &variant),
+            freshness::has_directive(&req.cache_control, "no-store"),
+            freshness::has_directive(&req.cache_control, "no-cache")
+                || freshness::directive_value(&req.cache_control, "max-age") == Some(0),
+            now_epoch(),
+        )
+    } else {
+        (CacheKey(0), false, false, 0)
+    };
     // 本文付きの GET は本文でも意味が変わりうるのでキャッシュしない
-    let lookup_allowed = cache.enabled()
+    let lookup_allowed = cache_on
         && (is_get || head_only)
         && !req.authorization
         && !client_no_store
         && req_framing == Framing::None;
     let store_allowed = lookup_allowed && is_get && req.range.is_none();
     let client_conditional = req.if_none_match.is_some() || req.if_modified_since.is_some();
-    let now = now_epoch();
 
     let mut stale: Option<(CachedResponse, CacheSource)> = None;
     if lookup_allowed {
@@ -248,7 +257,7 @@ pub fn handle_http_with_headers(
                 stale = Some((entry, source));
             }
         }
-    } else if cache.enabled() {
+    } else if cache_on {
         log_debug!(
             Some(conn_id),
             "cache BYPASS (method={} auth={} cc='{}')",
@@ -440,7 +449,7 @@ pub fn handle_http_with_headers(
         cache.remove(key);
     }
     // unsafe メソッドへの成功応答は対象 URL (と Location 先) のキャッシュを無効化する (RFC 9111 §4.4)
-    if !is_get && !head_only && (200..400).contains(&status) && cache.enabled() {
+    if !is_get && !head_only && (200..400).contains(&status) && cache_on {
         cache.invalidate(&url, conn_id);
         for name in ["location", "content-location"] {
             if let Some((_, target)) = resp_headers.iter().find(|(k, _)| k == name)

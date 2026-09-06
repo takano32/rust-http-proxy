@@ -104,9 +104,15 @@ pub fn configure(sources: Sources) {
         return;
     }
     *EXEMPT.write_locked() = sources.exempt.clone();
+    let empty = sources.is_empty();
     st.sources = sources;
     st.dirty = true;
+    drop(st);
     WAKE.notify_all();
+    // 起動時は未設定でも、.env の再読込で出所が付いたらここで監視スレッドを起こす
+    if !empty {
+        start();
+    }
 }
 
 /// 手動の上書き (一時的な許可 / 拒否)。状態ファイルの固定 256 スロットに置き、
@@ -303,8 +309,28 @@ fn rebuild(upstream: &Upstream, timeout: Duration, fetch_url: bool) {
     );
 }
 
-/// 監視スレッド: 出所の変更・ファイルの更新・URL の期限で一覧を作り直す。
+/// 監視スレッドの起動に必要なもの (出所が後から設定されたときに使う)。
+static STARTER: std::sync::OnceLock<(Arc<Upstream>, Duration)> = std::sync::OnceLock::new();
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 監視スレッドを起動する。出所が未設定なら起動しない (`.env` の再読込で設定されたら
+/// [`configure`] から起動される)。
 pub fn spawn(upstream: Arc<Upstream>, timeout: Duration) -> Option<thread::JoinHandle<()>> {
+    let _ = STARTER.set((upstream, timeout));
+    if state().sources.is_empty() {
+        return None;
+    }
+    start()
+}
+
+/// 出所が設定されていて、まだ動いていなければ監視スレッドを起こす。
+fn start() -> Option<thread::JoinHandle<()>> {
+    use std::sync::atomic::Ordering;
+    let (upstream, timeout) = STARTER.get()?;
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return None;
+    }
+    let (upstream, timeout) = (Arc::clone(upstream), *timeout);
     thread::Builder::new()
         .name("blocklist".into())
         .spawn(move || {

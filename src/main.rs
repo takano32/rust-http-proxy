@@ -60,8 +60,10 @@ fn main() {
     if let Some(s) = &store {
         rust_http_proxy::blocklist::set_store(Arc::clone(s));
     }
-    let _history =
-        rust_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache), store.clone());
+    // 永続化しないなら履歴スレッドも起動しない (/history とダッシュボードのグラフは空になる)
+    let _history = config.stats_persist.then(|| {
+        rust_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache), store.clone())
+    });
     let tls = if !config.tls_enabled {
         log_info!(
             None,

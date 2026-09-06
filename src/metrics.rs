@@ -238,15 +238,17 @@ impl Metrics {
 
     fn record(&self, host: &str, outcome: HostOutcome, bytes: u64, took: Option<Duration>) {
         let mut hosts = self.hosts.locked();
-        let key = if hosts.len() >= MAX_HOSTS && !hosts.contains_key(host) {
-            "other"
+        // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
+        if let Some(stats) = hosts.get_mut(host) {
+            stats.count(outcome, bytes, took);
+            return;
+        }
+        let key = if hosts.len() >= MAX_HOSTS {
+            "other".to_string()
         } else {
-            host
+            host.to_string()
         };
-        hosts
-            .entry(key.to_string())
-            .or_default()
-            .count(outcome, bytes, took);
+        hosts.entry(key).or_default().count(outcome, bytes, took);
     }
 
     /// 接続元 IP ごとに 1 要求を数える。
@@ -258,15 +260,16 @@ impl Metrics {
         took: Option<Duration>,
     ) {
         let mut clients = self.clients.locked();
-        let key = if clients.len() >= MAX_CLIENTS && !clients.contains_key(client) {
-            "other"
+        if let Some(stats) = clients.get_mut(client) {
+            stats.count(outcome, bytes, took);
+            return;
+        }
+        let key = if clients.len() >= MAX_CLIENTS {
+            "other".to_string()
         } else {
-            client
+            client.to_string()
         };
-        clients
-            .entry(key.to_string())
-            .or_default()
-            .count(outcome, bytes, took);
+        clients.entry(key).or_default().count(outcome, bytes, took);
     }
 
     /// 要求数の多い順に並べた接続元別統計。
