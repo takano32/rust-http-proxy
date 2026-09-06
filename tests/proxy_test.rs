@@ -111,6 +111,8 @@ fn start_test_proxy_full(
 fn proxy_config() -> Config {
     let mut cfg = Config::new("0", None, None, Duration::from_secs(5)).unwrap();
     cfg.keepalive = Duration::from_secs(2);
+    // テストのオリジンは 127.0.0.1 なので、ローカル宛ての既定の拒否を外す
+    cfg.allow_local = true;
     cfg
 }
 
@@ -1362,4 +1364,41 @@ fn test_integration_idle_tunnel_is_closed_after_the_idle_timeout() {
         "closed after {:?}",
         elapsed
     );
+}
+
+#[test]
+fn test_integration_metadata_address_is_forbidden_by_default() {
+    // 既定 (PROXY_ALLOW_LOCAL 無し) ではクラウドのメタデータ宛ては 403
+    let mut cfg = proxy_config();
+    cfg.allow_local = false;
+    let proxy_port = start_test_proxy(cfg);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .write_all(
+            b"GET http://169.254.169.254/latest/meta-data/ HTTP/1.1\r\nHost: 169.254.169.254\r\n\r\n",
+        )
+        .unwrap();
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 403 Forbidden"), "{}", resp);
+}
+
+#[test]
+fn test_integration_connect_port_restriction() {
+    let echo_port = start_echo_server();
+    let mut cfg = proxy_config();
+    // 443 だけ許す設定なので、テスト用オリジンのポートは弾かれる
+    cfg.connect_ports = rust_http_proxy::acl::PortSet::parse("443");
+    let proxy_port = start_test_proxy(cfg);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let req = format!(
+        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        echo_port, echo_port
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).unwrap();
+    assert!(resp.starts_with("HTTP/1.1 403 Forbidden"), "{}", resp);
 }

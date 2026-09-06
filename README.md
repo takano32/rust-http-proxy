@@ -80,6 +80,8 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 | `PROXY_BLOCKLIST_URL` | なし | ブロックリストを取りに行く URL (StevenBlack の hosts など)。`$HOME/.rust-http-proxy.blocklist` に保存して再起動後も使う。ファイルと両方あれば和集合 |
 | `PROXY_BLOCKLIST_REFRESH_SECS` | `86400` | URL を取り直す間隔 (最小 60)。失敗したら 10 分後に再試行し、その間は前の一覧を使う |
 | `PROXY_BLOCKLIST_EXEMPT` | なし | ブロックリストの対象外にするホストのカンマ区切り (`*.example.com` 可) |
+| `PROXY_CONNECT_PORTS` | なし (制限なし) | `CONNECT` を許すあて先ポート。`443,80,8080-8099` のようにカンマ区切り (範囲可)。ここに無いポートは 403。`.env` で即時反映 |
+| `PROXY_ALLOW_LOCAL` | `off` | ループバック (`127.0.0.0/8`, `::1`) とリンクローカル (`169.254.0.0/16`, `fe80::/10`) 宛てのオリジンを許すか。既定では 403 にしてクラウドのメタデータ (`169.254.169.254`) 経由の SSRF を防ぐ。ローカルのサービスへプロキシしたいときだけ `on`。`.env` で即時反映 |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる。`0` で無期限。`.env` で即時反映 |
 | `PROXY_MAX_CONNS` | `4096` | 同時に受ける接続数の上限。超えた接続にはスレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。`0` で無制限。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
 | `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 約 1 MiB) に残し、再起動後に読み戻す。`off` で無効 (履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフは空になる) |
@@ -310,7 +312,7 @@ cargo build
 # 最適化リリースビルド
 cargo build --release
 
-# ベンチ (オリジンもベンチ内で起動する。プロキシは別端末で先に上げておく)
+# ベンチ (オリジンもベンチ内で起動する。プロキシは別端末で PROXY_ALLOW_LOCAL=on を付けて先に上げておく)
 cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 # --conc 並列数 / --seconds 測定秒数 / --body-bytes 応答本文の大きさ
 # direct 行はプロキシを通さないオリジン直結 (ベンチ自身の上限。30 万 req/s 前後)

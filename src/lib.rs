@@ -359,6 +359,15 @@ pub fn handle_client(
             Some("ACL")
         } else if blocklist::is_blocked(&net::split_host_port(&target_host).0) {
             Some("blocklist")
+        } else if is_connect
+            && !config
+                .connect_ports
+                .allows(net::split_host_port(&target_host).1.unwrap_or(443))
+        {
+            Some("CONNECT port")
+        } else if !config.allow_local && acl::is_local_target(&target_host) {
+            // クラウドのメタデータ (169.254.169.254) 経由の SSRF を止める
+            Some("local address")
         } else {
             None
         };

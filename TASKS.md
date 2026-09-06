@@ -103,12 +103,14 @@ Nagle + delayed ACK で **1 要求あたり約 40 ms 止まる**。実験で両�
 
 ```bash
 # 端末 1: 最速設定でプロキシを起動 (ポート 18080、ループバックのみ)
-HOME=/tmp/proxy-bench SERVER_PORT=18080 PROXY_BIND=127.0.0.1 \
+HOME=/tmp/proxy-bench SERVER_PORT=18080 PROXY_BIND=127.0.0.1 PROXY_ALLOW_LOCAL=on \
 PROXY_CACHE_ENABLED=off PROXY_STATS_PERSIST=off PROXY_LOG_LEVEL=warn \
 ./target/release/rust-http-proxy
 
 # 端末 2: ベンチ (オリジンはスクリプト内で起動される)
 python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
+# または (T0.1 以降はこちらが正)
+./target/release/bench --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 ```
 
 同じ内容をキャッシュ有効 (`PROXY_MEM_CACHE_MB=64 PROXY_DISK_CACHE_MB=64 PROXY_CACHE_RESERVE=off PROXY_CACHE_DIR=/tmp/proxy-bench/cache`)
@@ -202,7 +204,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
   - やること: 確立済みトンネルの fd を `epoll` (`extern "C"`) で待ち、`splice` で中継する専用スレッドを N (= コア数) 本。HTTP 転送は従来どおりスレッド。
   - 受け入れ基準: 5,000 本のアイドルトンネルで RSS 200 MiB 未満、新規 CONNECT の p99 が 10 ms 未満。
 
-- [ ] **T2.4 開放プロキシとしての最小限の安全策 (速度に影響しないもの)**
+- [x] **T2.4 開放プロキシとしての最小限の安全策 (速度に影響しないもの)**
   - やること: `CONNECT` の宛先ポートが `PROXY_CONNECT_PORTS` (既定 `443,80,8080-8099`… は絞りすぎなので **既定は制限なし**、書式だけ用意) に無ければ 403。
     ループバック・リンクローカル (`169.254.0.0/16`, `fe80::/10`) 宛てのオリジンは `PROXY_ALLOW_LOCAL=on` が無い限り 403 (クラウドメタデータ経由の SSRF 防止。テストは `127.0.0.1` を使うので `PROXY_ALLOW_LOCAL=on` を結合テストの Config に入れる)。
   - 受け入れ基準: 既定設定でメタデータアドレスへの `GET` が 403 になる単体テスト。既存テストは設定追加だけで通る。

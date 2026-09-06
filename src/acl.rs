@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AclConfig {
     pub allow_hosts: Vec<String>,
@@ -39,6 +41,74 @@ impl AclConfig {
         }
 
         true
+    }
+}
+
+/// 許可するポートの集合 (`PROXY_CONNECT_PORTS`)。空なら制限なし。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PortSet {
+    ranges: Vec<(u16, u16)>,
+}
+
+impl PortSet {
+    /// `443,80,8080-8099` 形式を読む。空文字なら制限なし。書式が違う項目は無視する。
+    pub fn parse(spec: &str) -> PortSet {
+        let mut ranges = Vec::new();
+        for item in spec.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            match item.split_once('-') {
+                Some((lo, hi)) => {
+                    if let (Ok(lo), Ok(hi)) = (lo.trim().parse::<u16>(), hi.trim().parse::<u16>()) {
+                        ranges.push((lo.min(hi), lo.max(hi)));
+                    }
+                }
+                None => {
+                    if let Ok(p) = item.parse::<u16>() {
+                        ranges.push((p, p));
+                    }
+                }
+            }
+        }
+        PortSet { ranges }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    /// 制限が無ければ常に true。
+    pub fn allows(&self, port: u16) -> bool {
+        self.ranges.is_empty()
+            || self
+                .ranges
+                .iter()
+                .any(|(lo, hi)| port >= *lo && port <= *hi)
+    }
+}
+
+/// ループバック・リンクローカル (`169.254.0.0/16`, `fe80::/10`) と、未指定アドレス。
+/// クラウドのメタデータ (`169.254.169.254`) 経由の SSRF を防ぐために使う。
+pub fn is_local_ip(ip: IpAddr) -> bool {
+    match crate::net::canonical_ip(ip) {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_link_local() || v4.is_unspecified(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// `host[:port]` の宛先がローカル宛てか。IP リテラルはその場で、名前は DNS キャッシュで判定する
+/// (どのみち直後に解決するので追加のコストは無い)。解決できないものは false (先で 502 になる)。
+pub fn is_local_target(host_or_addr: &str) -> bool {
+    let host = extract_host(host_or_addr);
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return is_local_ip(ip);
+    }
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match crate::dns::resolve(&crate::net::join_host_port(&host, 80)) {
+        Ok(addrs) => addrs.iter().any(|a| is_local_ip(a.ip())),
+        Err(_) => false,
     }
 }
 
@@ -98,5 +168,32 @@ mod tests {
         assert!(acl.is_allowed("api.example.com"));
         assert!(acl.is_allowed("rust-lang.org:443"));
         assert!(!acl.is_allowed("other.com"));
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    #[test]
+    fn port_set_parses_lists_and_ranges() {
+        let set = PortSet::parse("443, 80 , 8080-8099");
+        assert!(set.allows(443) && set.allows(80) && set.allows(8085));
+        assert!(!set.allows(22) && !set.allows(8100));
+        let none = PortSet::parse("  ");
+        assert!(none.is_empty() && none.allows(22), "空なら制限なし");
+        assert!(PortSet::parse("junk").is_empty());
+    }
+
+    #[test]
+    fn local_targets_are_recognised() {
+        assert!(is_local_target("127.0.0.1:8080"));
+        assert!(is_local_target("localhost"));
+        assert!(is_local_target("169.254.169.254"), "cloud metadata");
+        assert!(is_local_target("[::1]:443"));
+        assert!(is_local_target("[fe80::1]"));
+        assert!(is_local_target("[::ffff:127.0.0.1]"), "v4-mapped");
+        assert!(!is_local_target("93.184.216.34"));
+        assert!(!is_local_target("10.0.0.1"), "私有アドレスは対象外");
     }
 }

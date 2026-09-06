@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::acl::AclConfig;
+use crate::acl::{AclConfig, PortSet};
 use crate::cache::CacheConfig;
 use crate::envfile;
 
@@ -40,6 +40,11 @@ pub struct Config {
     pub blocklist_exempt: Vec<String>,
     /// 統計と履歴を `$HOME/.rust-http-proxy.rrd` に残す (`PROXY_STATS_PERSIST`、既定 on)
     pub stats_persist: bool,
+    /// CONNECT を許すあて先ポート (`PROXY_CONNECT_PORTS`、既定は制限なし)
+    pub connect_ports: PortSet,
+    /// ループバック・リンクローカル宛てのオリジンを許すか (`PROXY_ALLOW_LOCAL`、既定 off)。
+    /// 既定ではクラウドのメタデータ (`169.254.169.254`) 経由の SSRF を 403 で止める
+    pub allow_local: bool,
     /// CONNECT トンネルのアイドル打ち切り時間 (`PROXY_TUNNEL_IDLE_SECS`、既定 300 秒、`0` で無期限)
     pub tunnel_idle: Duration,
     /// 同時に受ける接続数の上限 (`PROXY_MAX_CONNS`、既定 4096、`0` で無制限)。
@@ -95,6 +100,17 @@ impl Config {
             envfile::var("PROXY_MAX_CONNS").and_then(|s| s.trim().parse::<usize>().ok())
         {
             cfg.max_conns = n;
+        }
+        if let Some(secs) =
+            envfile::var("PROXY_TUNNEL_IDLE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.tunnel_idle = Duration::from_secs(secs);
+        }
+        if let Some(v) = envfile::var("PROXY_CONNECT_PORTS") {
+            cfg.connect_ports = PortSet::parse(&v);
+        }
+        if let Some(v) = envfile::var("PROXY_ALLOW_LOCAL") {
+            cfg.allow_local = !off(v);
         }
         if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
             cfg.stats_persist = !off(v);
@@ -168,6 +184,8 @@ impl Config {
             blocklist_refresh: Duration::from_secs(86400),
             blocklist_exempt: Vec::new(),
             stats_persist: true,
+            connect_ports: PortSet::default(),
+            allow_local: false,
             tunnel_idle: Duration::from_secs(300),
             max_conns: 4096,
             cache: CacheConfig::default(),
@@ -204,6 +222,7 @@ mod tests {
         assert_eq!(cfg.pool_per_host, 8);
         assert_eq!(cfg.max_conns, 4096);
         assert_eq!(cfg.tunnel_idle, Duration::from_secs(300));
+        assert!(cfg.connect_ports.is_empty() && !cfg.allow_local);
     }
 
     #[test]

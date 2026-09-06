@@ -108,6 +108,14 @@ impl Live {
             next.keepalive = fresh.keepalive;
             applied.push("PROXY_KEEPALIVE_SECS");
         }
+        if fresh.connect_ports != old.connect_ports {
+            next.connect_ports = fresh.connect_ports.clone();
+            applied.push("PROXY_CONNECT_PORTS");
+        }
+        if fresh.allow_local != old.allow_local {
+            next.allow_local = fresh.allow_local;
+            applied.push("PROXY_ALLOW_LOCAL");
+        }
         if fresh.tunnel_idle != old.tunnel_idle {
             next.tunnel_idle = fresh.tunnel_idle;
             applied.push("PROXY_TUNNEL_IDLE_SECS");
