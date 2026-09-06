@@ -203,6 +203,8 @@ fn main() {
     }
 
     let limiter = rust_http_proxy::Limiter::new();
+    // 接続スレッドを使い回す (生成・破棄の約 16 システムコールを接続ごとに払わない)
+    let workers = Arc::new(rust_http_proxy::workers::Workers::new());
     // 待ち受けソケットごとに accept スレッドを持つ (最後の 1 つはこのスレッドで回す)
     let mut listeners = listeners.into_iter();
     let last = listeners.next_back().expect("at least one listener");
@@ -210,6 +212,7 @@ fn main() {
         let shared = (
             Arc::clone(&live),
             Arc::clone(&limiter),
+            Arc::clone(&workers),
             Arc::clone(&metrics),
             Arc::clone(&cache),
             Arc::clone(&pool),
@@ -223,10 +226,11 @@ fn main() {
                 shared.2,
                 shared.3,
                 shared.4,
+                shared.5,
             )
         });
     }
     drop(config);
     let l = Arc::clone(&live);
-    serve(last, || l.config(), limiter, metrics, cache, pool);
+    serve(last, || l.config(), limiter, workers, metrics, cache, pool);
 }

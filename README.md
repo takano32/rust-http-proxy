@@ -38,7 +38,8 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 | forward, 64 並列 | 25,912 req/s, p50 1.6 ms |
 | CONNECT トンネル 1 本 | **2,800 MiB/s** (Linux は `splice(2)`) |
 | CONNECT 確立 | 8,350 tunnels/s, p50 0.68 ms |
-| 同時 5,000 トンネル | RSS 198 MiB、新規 CONNECT p99 9.1 ms |
+| 1 接続 1 要求 (keep-alive 無し) | 12,710 req/s, CPU 98 us/要求 |
+| 同時 5,000 トンネル | RSS 140 MiB、新規 CONNECT p99 8.1 ms |
 | 起動直後のスレッド | `--lite` で 3 本、既定で 6 本 |
 | バイナリ | 923 KB |
 
@@ -396,7 +397,11 @@ cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 
 ブロックリストの取得スレッドは `PROXY_BLOCKLIST_FILE` / `PROXY_BLOCKLIST_URL` が設定されたときだけ動きます
 (`$HOME/.env` の再読込で後から設定された場合もその時点で起動します)。
-接続 1 本ごとのスレッドはこれとは別で、CONNECT トンネルは Linux では 1 本あたり 1 スレッドです。
+
+接続 1 本ごとのスレッドはこれとは別です (CONNECT トンネルは Linux では 1 本あたり 1 スレッド)。
+**接続スレッドは使い回します**: 仕事を終えたスレッドは空き置き場に戻り、30 秒使われなければ自分で
+終わります (空きは最大 64 本まで)。「1 接続 = 1 スレッドが専任する」構造はそのままで、生成と破棄の
+システムコール (実測で 1 接続あたり約 16 回) だけを償却する形です。
 
 ### 開発者向け: プロファイル取得
 

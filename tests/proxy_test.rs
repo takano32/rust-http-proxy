@@ -99,6 +99,7 @@ fn start_test_proxy_full(
             listener,
             || Arc::clone(&cfg),
             rust_http_proxy::Limiter::new(),
+            Arc::new(rust_http_proxy::workers::Workers::new()),
             metrics,
             cache,
             pool,

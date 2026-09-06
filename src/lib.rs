@@ -30,12 +30,12 @@ pub mod sys;
 pub mod sysinfo;
 pub mod tls;
 pub mod tunnel;
+pub mod workers;
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 use std::time::Instant;
 
 use cache::Cache;
@@ -102,6 +102,7 @@ pub fn serve(
     listener: TcpListener,
     config_of: impl Fn() -> Arc<Config>,
     limiter: Arc<Limiter>,
+    workers: Arc<workers::Workers>,
     metrics: Arc<Metrics>,
     cache: Arc<Cache>,
     upstream: Arc<Upstream>,
@@ -154,33 +155,29 @@ pub fn serve(
         let l = Arc::clone(&limiter);
         let c = Arc::clone(&cache);
         let p = Arc::clone(&upstream);
-        let spawned = thread::Builder::new()
-            .name(format!("conn#{}", conn_id))
-            // 接続スレッドは深い再帰をしないので既定 (8 MiB) より小さくてよい
-            .stack_size(256 * 1024)
-            .spawn(move || {
-                struct OpenGuard(Arc<Limiter>);
-                impl Drop for OpenGuard {
-                    fn drop(&mut self) {
-                        self.0.open.fetch_sub(1, Ordering::Relaxed);
-                    }
+        let started = workers.run(Box::new(move || {
+            struct OpenGuard(Arc<Limiter>);
+            impl Drop for OpenGuard {
+                fn drop(&mut self) {
+                    self.0.open.fetch_sub(1, Ordering::Relaxed);
                 }
-                let _open = OpenGuard(l);
-                let accepted = Accepted { peer, local_port };
-                if let Err(e) = handle_client(stream, accepted, cfg, m, c, p, conn_id) {
-                    if e.kind() != io::ErrorKind::UnexpectedEof
-                        && e.kind() != io::ErrorKind::ConnectionReset
-                        && e.kind() != io::ErrorKind::BrokenPipe
-                    {
-                        log_error!(Some(conn_id), "{}", e);
-                    } else {
-                        log_debug!(Some(conn_id), "connection ended: {}", e);
-                    }
+            }
+            let _open = OpenGuard(l);
+            let accepted = Accepted { peer, local_port };
+            if let Err(e) = handle_client(stream, accepted, cfg, m, c, p, conn_id) {
+                if e.kind() != io::ErrorKind::UnexpectedEof
+                    && e.kind() != io::ErrorKind::ConnectionReset
+                    && e.kind() != io::ErrorKind::BrokenPipe
+                {
+                    log_error!(Some(conn_id), "{}", e);
+                } else {
+                    log_debug!(Some(conn_id), "connection ended: {}", e);
                 }
-            });
-        if spawned.is_err() {
+            }
+        }));
+        if started.is_err() {
             limiter.open.fetch_sub(1, Ordering::Relaxed);
-            log_error!(Some(conn_id), "failed to spawn a thread for the connection");
+            log_error!(Some(conn_id), "failed to get a thread for the connection");
         }
     }
 }
