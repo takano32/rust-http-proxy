@@ -92,6 +92,19 @@ impl Pipe {
         })
     }
 
+    /// 待つパイプ (`splice` がブロックする)。本文の素通しに使う。
+    pub fn new_blocking() -> io::Result<Pipe> {
+        let mut fds = [0 as c_int; 2];
+        // SAFETY: fds は 2 要素の配列。失敗は -1 で返る。
+        if unsafe { pipe2(fds.as_mut_ptr(), O_CLOEXEC) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Pipe {
+            read_fd: fds[0],
+            write_fd: fds[1],
+        })
+    }
+
     /// パイプ容量を広げる (失敗しても既定容量のまま使えるので無視して良い)。
     pub fn set_capacity(&self, bytes: c_int) {
         // SAFETY: 自分で開いた fd に対する fcntl。失敗は -1 で返るだけ。
@@ -132,6 +145,32 @@ pub fn splice_move(from: RawFd, to: RawFd, len: usize) -> io::Result<usize> {
             Some(EAGAIN) => return Err(io::Error::from(io::ErrorKind::WouldBlock)),
             _ => return Err(e),
         }
+    }
+}
+
+/// 待つ `splice(2)`。相手が読めるようになるまでブロックする。
+/// パイプ側にも `O_NONBLOCK` があると `EAGAIN` になるので、[`Pipe::new_blocking`] と組で使う。
+pub fn splice_block(from: RawFd, to: RawFd, len: usize) -> io::Result<usize> {
+    loop {
+        // SAFETY: どちらも呼び出し側が保持している有効な記述子。オフセットは使わない。
+        let n = unsafe {
+            splice(
+                from,
+                std::ptr::null_mut(),
+                to,
+                std::ptr::null_mut(),
+                len,
+                SPLICE_F_MOVE,
+            )
+        };
+        if n >= 0 {
+            return Ok(n as usize);
+        }
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() == Some(EINTR) {
+            continue;
+        }
+        return Err(e);
     }
 }
 

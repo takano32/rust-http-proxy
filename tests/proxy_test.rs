@@ -1845,3 +1845,104 @@ fn test_integration_total_header_size_is_capped() {
         &resp[..resp.len().min(80)]
     );
 }
+
+/// 指定サイズの決まった中身を Content-Length 付きで返すオリジン。
+fn start_sized_origin(counter: Arc<AtomicUsize>, cacheable: bool) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let counter = Arc::clone(&counter);
+            thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut path = String::new();
+                    let mut first = String::new();
+                    if std::io::BufRead::read_line(&mut reader, &mut first).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    loop {
+                        let mut l = String::new();
+                        if std::io::BufRead::read_line(&mut reader, &mut l).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        if l.trim().is_empty() {
+                            break;
+                        }
+                    }
+                    path.push_str(first.split_whitespace().nth(1).unwrap_or("/"));
+                    let size: usize = path
+                        .rsplit('/')
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let body: Vec<u8> = (0..size).map(|i| ((i * 7 + 13) % 251) as u8).collect();
+                    let cc = if cacheable { "max-age=60" } else { "no-store" };
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: {}\r\n\r\n",
+                        size, cc
+                    );
+                    if stream.write_all(head.as_bytes()).is_err()
+                        || stream.write_all(&body).is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+fn get_body_via_proxy(proxy_port: u16, origin_port: u16, size: usize) -> Vec<u8> {
+    let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    let req = format!(
+        "GET http://127.0.0.1:{}/b/{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        origin_port, size, origin_port
+    );
+    s.write_all(req.as_bytes()).unwrap();
+    let mut all = Vec::new();
+    s.read_to_end(&mut all).unwrap();
+    let split = all.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    assert!(
+        String::from_utf8_lossy(&all[..split]).starts_with("HTTP/1.1 200 OK"),
+        "{}",
+        String::from_utf8_lossy(&all[..split.min(200)])
+    );
+    all[split..].to_vec()
+}
+
+#[test]
+fn test_integration_large_response_bodies_are_delivered_intact() {
+    // 素通しできる本文は splice(2) でカーネル内を運ぶ。閾値の前後と、
+    // 保存する応答 (splice を通さない経路) の両方で中身が一致すること
+    let expect =
+        |size: usize| -> Vec<u8> { (0..size).map(|i| ((i * 7 + 13) % 251) as u8).collect() };
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let origin_port = start_sized_origin(Arc::clone(&counter), false);
+    let proxy_port = start_test_proxy(proxy_config());
+    // 閾値 (128 KiB) の前後をまたぐ大きさ。並列実行の邪魔をしないよう最大は 1 MiB に留める
+    for size in [1024, 100 * 1024, 128 * 1024, 512 * 1024, 1024 * 1024] {
+        let got = get_body_via_proxy(proxy_port, origin_port, size);
+        assert_eq!(got.len(), size, "{} バイトの本文の長さ", size);
+        assert_eq!(got, expect(size), "{} バイトの本文の中身", size);
+    }
+
+    // キャッシュに保存する応答は splice を通らない (保存と配信が両方正しいこと)
+    let counter = Arc::new(AtomicUsize::new(0));
+    let origin_port = start_sized_origin(Arc::clone(&counter), true);
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-splice"));
+    let size = 512 * 1024;
+    let first = get_body_via_proxy(proxy_port, origin_port, size);
+    assert_eq!(first, expect(size), "保存しながらの配信");
+    let second = get_body_via_proxy(proxy_port, origin_port, size);
+    assert_eq!(second, expect(size), "キャッシュからの配信");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "2 回目はオリジンに行かない"
+    );
+}

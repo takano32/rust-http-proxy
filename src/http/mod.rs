@@ -106,6 +106,92 @@ impl Drop for CopyBuf {
         }
     }
 }
+/// Content-Length のある応答本文を `splice(2)` でオリジンからクライアントへ素通しする。
+///
+/// 本文を書き換えず、キャッシュにも保存しない応答なら、ユーザー空間に持ち上げる必要がない。
+/// CONNECT トンネルで既に使っている仕掛けと同じ (カーネル内でパイプを経由して移す)。
+#[cfg(target_os = "linux")]
+pub(super) mod passthrough {
+    use std::io;
+    use std::os::fd::RawFd;
+    use std::sync::Mutex;
+
+    use crate::sync::LockExt;
+    use crate::sys::{self, Pipe};
+
+    /// パイプの容量 = 1 回の splice で動かす上限。
+    ///
+    /// 1 MiB にすると `fs.pipe-user-pages-soft` (既定 16384 ページ = 64 MiB) に当たって
+    /// 64 本しか作れず、それ以降は黙って既定の 64 KiB に落ちる。256 KiB なら 256 本まで
+    /// 同じ容量が行き渡る。
+    const PIPE_CAPACITY: usize = 256 * 1024;
+    /// 使い回すために置いておくパイプの上限 (1 本あたりカーネル側のメモリを持つ)。
+    const POOL_MAX: usize = 32;
+
+    static POOL: Mutex<Vec<Pipe>> = Mutex::new(Vec::new());
+
+    /// プールから借りたパイプ。Drop で返す。
+    struct Borrowed(Option<Pipe>);
+
+    impl Borrowed {
+        fn take() -> io::Result<Borrowed> {
+            if let Some(p) = POOL.locked().pop() {
+                return Ok(Borrowed(Some(p)));
+            }
+            let p = Pipe::new_blocking()?;
+            p.set_capacity(PIPE_CAPACITY as i32);
+            Ok(Borrowed(Some(p)))
+        }
+    }
+
+    impl Drop for Borrowed {
+        fn drop(&mut self) {
+            if let Some(p) = self.0.take() {
+                let mut pool = POOL.locked();
+                if pool.len() < POOL_MAX {
+                    pool.push(p);
+                }
+            }
+        }
+    }
+
+    /// `remaining` バイトを運ぶ。戻り値は (運んだバイト数, 最後まで届いたか)。
+    ///
+    /// 途中で失敗したらパイプに残ったバイトは失われるので、呼び出し側はこの接続を
+    /// プールに戻してはいけない (`Err` を返した場合)。
+    pub fn relay(from: RawFd, to: RawFd, remaining: u64) -> io::Result<(u64, bool)> {
+        let borrowed = Borrowed::take()?;
+        let pipe = borrowed.0.as_ref().expect("just taken");
+        let mut left = remaining;
+        let mut moved = 0u64;
+        while left > 0 {
+            let want = left.min(PIPE_CAPACITY as u64) as usize;
+            let n = sys::splice_block(from, pipe.write_fd, want)?;
+            if n == 0 {
+                // オリジンが Content-Length より早く閉じた
+                return Ok((moved, false));
+            }
+            let mut out = n;
+            while out > 0 {
+                let w = sys::splice_block(pipe.read_fd, to, out)?;
+                if w == 0 {
+                    return Ok((moved, false));
+                }
+                out -= w;
+                moved += w as u64;
+                left -= w as u64;
+            }
+        }
+        Ok((moved, true))
+    }
+}
+
+/// この大きさ以上の本文だけ [`passthrough`] に回す。これより小さいと、応答ヘッダーを
+/// 読んだ時点でだいたい手元のバッファに入っているので、splice の往復のぶんかえって遅い
+/// (実測: 64 KiB では約 171 → 179 us/要求)。
+#[cfg(target_os = "linux")]
+const SPLICE_MIN_BYTES: u64 = 128 * 1024;
+
 /// オリジンがこのステータスを返したら stale を配信する (RFC 5861 stale-if-error 相当)。
 const STALE_ON_STATUS: &[u16] = &[500, 502, 503, 504];
 
@@ -583,9 +669,39 @@ pub fn handle_http_with_headers(
 
     client.write_all(&client_head)?;
     let mut body_bytes = 0u64;
-    let mut buf = CopyBuf::take();
     let mut clean = true;
+
+    // ---- 書き換えも保存もしない本文は splice(2) でカーネル内を運ぶ ----
+    let mut spliced = false;
+    #[cfg(target_os = "linux")]
+    if sink.is_none()
+        && !head_only
+        && client_framing == framing
+        && let Framing::Length(total) = framing
+        && let OriginStream::Plain(origin_tcp) = server.get_ref()
+        && total.saturating_sub(server.buffer().len() as u64) >= SPLICE_MIN_BYTES
     {
+        use std::os::fd::AsRawFd;
+        let (origin_fd, client_fd) = (origin_tcp.as_raw_fd(), client.get_ref().as_raw_fd());
+        // 応答ヘッダーを読むときに一緒に読んでしまった本文の先頭は自分で書く
+        // (ヘッダーと同じ 1 回の sendto に載る)
+        let pre = server.buffer().len().min(total as usize);
+        if pre > 0 {
+            let prefix = server.buffer()[..pre].to_vec();
+            client.write_all(&prefix)?;
+            server.consume(pre);
+            body_bytes += pre as u64;
+        }
+        client.flush()?;
+        let (moved, ok) = passthrough::relay(origin_fd, client_fd, total - pre as u64)?;
+        body_bytes += moved;
+        clean = ok;
+        spliced = true;
+        log_trace!(Some(conn_id), "spliced {}B of body to the client", moved);
+    }
+
+    if !spliced {
+        let mut buf = CopyBuf::take();
         let mut body = BodyReader::new(&mut server, framing);
         loop {
             let n = match body.read(&mut buf) {
