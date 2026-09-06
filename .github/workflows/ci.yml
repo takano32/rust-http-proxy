@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.96
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt,clippy
+          rustup default 1.96.0
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+
+      # ベンチは数字を残すだけ (閾値では落とさない。CI の機械は揺れるため)
+      - name: Benchmark
+        run: |
+          HOME=$(mktemp -d) PROXY_ALLOW_LOCAL=on \
+            ./target/release/rust-http-proxy --lite -p 18080 --bind 127.0.0.1 &
+          sleep 2
+          ./target/release/bench --proxy 127.0.0.1:18080 --conc 8 --seconds 2 | tee bench.txt
+          {
+            echo '### bench (--lite, 8 並列, 2 秒)'
+            echo '```'
+            cat bench.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

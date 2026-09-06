@@ -243,7 +243,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
     §1 の計測値を「性能」節として README に転記する (Rust ベンチの値)。
   - 受け入れ基準: README の先頭 20 行だけで起動と動作確認ができる。
 
-- [ ] **T3.5 CI (`.github/workflows/ci.yml`)**
+- [x] **T3.5 CI (`.github/workflows/ci.yml`)**
   - やること: push / PR で `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --release`。
     ベンチは `bench --seconds 2` を実行して出力を貼るだけ (閾値では落とさない)。
   - 受け入れ基準: ワークフローが緑。
