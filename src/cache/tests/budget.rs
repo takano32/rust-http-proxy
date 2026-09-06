@@ -219,7 +219,17 @@ fn pterodactyl_without_quota_is_capped_and_never_reserves() {
     // $TMPDIR は tmpfs のことが多く先行確保が無効になるので、その場合は固定上限
     if cache.disk.reserve_active() {
         assert!(cache.disk_capacity() <= crate::cache::diskprobe::START);
-        assert_eq!(cache.disk.entry_capacity(), 0, "nothing confirmed yet");
+        // プローブの状態は quota_root (= ここでは "/") の下の .rust-http-proxy.state に
+        // 置かれるためテストの管理外にある。確認済みの値が既にある機械もあるので、
+        // 「まだ確認していない」ではなく「安全上限を超えない」を見る
+        assert!(
+            cache.disk.entry_capacity() <= crate::cache::diskprobe::START,
+            "entry capacity must stay under the safe cap while the allocation is unknown \
+             (entry {} MiB, disk {} MiB, cap {} MiB)",
+            cache.disk.entry_capacity() / MIB,
+            cache.disk_capacity() / MIB,
+            crate::cache::diskprobe::START / MIB
+        );
     } else {
         assert_eq!(
             cache.disk_capacity(),
