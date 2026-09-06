@@ -106,6 +106,17 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
+    /// `cond` が真になるまで最大 2 秒待つ。
+    fn wait_until(cond: impl Fn() -> bool) {
+        for _ in 0..200 {
+            if cond() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("condition did not hold within 2s");
+    }
+
     #[test]
     fn reuses_one_thread_for_sequential_jobs() {
         let w = Arc::new(Workers::new());
@@ -118,6 +129,9 @@ mod tests {
             }))
             .unwrap_or_else(|_| panic!("could not get a thread"));
             ids.push(rx.recv().unwrap());
+            // 仕事が終わってから置き場に戻るまでの間に次を渡すと別スレッドになるので、
+            // 戻ったのを見てから次へ (競合しないテストにする)
+            wait_until(|| w.idle_count() == 1);
         }
         assert_eq!(ids.len(), 5);
         assert!(
@@ -126,6 +140,35 @@ mod tests {
             ids
         );
         assert_eq!(w.idle_count(), 1);
+    }
+
+    #[test]
+    fn survives_a_panicking_job() {
+        // 仕事がパニックしてもプールは使えるままであること
+        // (そのスレッドは死に、置き場に残った送り口は次に取り出した側が捨てる)
+        let w = Arc::new(Workers::new());
+        let (tx, rx) = mpsc::channel();
+        {
+            let tx = tx.clone();
+            w.run(Box::new(move || {
+                let _ = tx.send(());
+                panic!("intentional panic in a worker job");
+            }))
+            .unwrap_or_else(|_| panic!("could not get a thread"));
+        }
+        rx.recv().unwrap();
+        thread::sleep(Duration::from_millis(100));
+
+        // 次の仕事はちゃんと走る
+        let (tx2, rx2) = mpsc::channel();
+        for i in 0..3 {
+            let tx2 = tx2.clone();
+            w.run(Box::new(move || {
+                let _ = tx2.send(i);
+            }))
+            .unwrap_or_else(|_| panic!("could not get a thread after the panic"));
+            assert_eq!(rx2.recv().unwrap(), i);
+        }
     }
 
     #[test]
