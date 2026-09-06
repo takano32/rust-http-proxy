@@ -57,6 +57,15 @@ Connection: close\r\n\
 \r\n\
 403 Forbidden";
 
+/// accept したときに分かる接続の素性 (要求ごとにも接続ごとにも引き直さない)。
+#[derive(Clone, Copy)]
+pub struct Accepted {
+    /// 相手のアドレス (`accept` の戻り値。`getpeername` を呼ばない)
+    pub peer: std::net::SocketAddr,
+    /// 受けた待ち受けポート (自分宛て判定に使う。`getsockname` を呼ばない)
+    pub local_port: u16,
+}
+
 /// 接続の通し番号。
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -97,9 +106,16 @@ pub fn serve(
     cache: Arc<Cache>,
     upstream: Arc<Upstream>,
 ) {
-    for stream in listener.incoming() {
-        let mut stream = match stream {
-            Ok(s) => s,
+    // 待ち受けポートは接続ごとに引かない (accept したソケットのローカルポートは待ち受けと同じ)
+    let local_port = listener
+        .local_addr()
+        .map(|a| a.port())
+        .unwrap_or_else(|_| config_of().port);
+    loop {
+        // incoming() は accept() の戻り値のアドレスを捨てるので accept() を直接呼ぶ
+        // (接続ごとの getpeername が 1 回減る)
+        let (mut stream, peer) = match listener.accept() {
+            Ok(v) => v,
             Err(e) => {
                 log_error!(None, "accept failed: {}", e);
                 continue;
@@ -150,7 +166,8 @@ pub fn serve(
                     }
                 }
                 let _open = OpenGuard(l);
-                if let Err(e) = handle_client(stream, cfg, m, c, p, conn_id) {
+                let accepted = Accepted { peer, local_port };
+                if let Err(e) = handle_client(stream, accepted, cfg, m, c, p, conn_id) {
                     if e.kind() != io::ErrorKind::UnexpectedEof
                         && e.kind() != io::ErrorKind::ConnectionReset
                         && e.kind() != io::ErrorKind::BrokenPipe
@@ -222,7 +239,7 @@ impl Drop for HeaderBuf {
 
 /// 長さ制限付きで 1 行読む。制限を超えたら `Ok(None)`。
 fn read_limited_line(
-    reader: &mut BufReader<TcpStream>,
+    reader: &mut BufReader<&TcpStream>,
     line: &mut String,
 ) -> io::Result<Option<usize>> {
     let n = reader.by_ref().take(MAX_LINE as u64).read_line(line)?;
@@ -232,7 +249,8 @@ fn read_limited_line(
     Ok(Some(n))
 }
 
-fn reject(client: &mut TcpStream, status: u16, reason: &str) -> io::Result<()> {
+fn reject(client: &TcpStream, status: u16, reason: &str) -> io::Result<()> {
+    let mut client = client;
     let resp = format!(
         "HTTP/1.1 {} {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         status, reason
@@ -243,7 +261,8 @@ fn reject(client: &mut TcpStream, status: u16, reason: &str) -> io::Result<()> {
 
 /// 1 つのクライアント接続を、keep-alive なら複数の要求にわたって処理する。
 pub fn handle_client(
-    mut client: TcpStream,
+    client: TcpStream,
+    accepted: Accepted,
     config: Arc<Config>,
     metrics: Arc<Metrics>,
     cache: Arc<Cache>,
@@ -269,21 +288,16 @@ pub fn handle_client(
     }
     let _guard = ConnGuard(Arc::clone(&metrics), conn_id, started);
 
-    let peer_addr = client.peer_addr().ok().map(net::canonical_addr);
-    log_debug!(
-        Some(conn_id),
-        "accepted connection from {}",
-        peer_addr
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "<unknown>".to_string())
-    );
+    // accept() が返したアドレスをそのまま使う (getpeername を呼ばない)
+    let peer_addr = Some(net::canonical_addr(accepted.peer));
+    let local_port = accepted.local_port;
+    log_debug!(Some(conn_id), "accepted connection from {}", accepted.peer);
     client.set_write_timeout(Some(config.timeout))?;
     // Nagle を切る。応答ヘッダーと本文を別々に write すると delayed ACK と噛み合って
     // 1 要求あたり 40 ms 止まるため (失敗しても致命的ではないので無視する)
     let _ = client.set_nodelay(true);
-    let mut reader = BufReader::new(client.try_clone()?);
-    // 自分宛て判定に使う待ち受けポートは接続ごとに 1 回だけ引く (要求ごとの getsockname を消す)
-    let local_port = client.local_addr().map(|a| a.port()).unwrap_or(config.port);
+    // 記述子を複製しない (接続ごとの fcntl + close と fd 1 本を節約する)
+    let mut reader = BufReader::new(&client);
     let mut served = 0usize;
     // 要求行とヘッダー行はこの接続の間ずっと使い回す (毎要求の確保をなくす)
     let mut request_line = String::new();
@@ -312,7 +326,7 @@ pub fn handle_client(
                     "414 URI Too Long (request line over {} bytes)",
                     MAX_LINE
                 );
-                return reject(&mut client, 414, "URI Too Long");
+                return reject(&client, 414, "URI Too Long");
             }
             Ok(Some(0)) => {
                 log_debug!(Some(conn_id), "client closed ({} requests served)", served);
@@ -359,7 +373,7 @@ pub fn handle_client(
             match read_limited_line(&mut reader, headers.next())? {
                 None => {
                     log_warn!(Some(conn_id), "431 Request Header Fields Too Large");
-                    return reject(&mut client, 431, "Request Header Fields Too Large");
+                    return reject(&client, 431, "Request Header Fields Too Large");
                 }
                 Some(0) => break,
                 Some(_) => {}
@@ -372,7 +386,7 @@ pub fn handle_client(
                     Some(conn_id),
                     "431 Request Header Fields Too Large (too many lines)"
                 );
-                return reject(&mut client, 431, "Request Header Fields Too Large");
+                return reject(&client, 431, "Request Header Fields Too Large");
             }
             if let Some((k, _)) = headers.lines[index].split_once(':') {
                 let k = k.trim();
@@ -407,7 +421,7 @@ pub fn handle_client(
             pac_direct: &config.pac_direct,
             lite: config.lite,
         };
-        if endpoints::handle(&mut client, method, target, &ep)? {
+        if endpoints::handle(&mut &client, method, target, &ep)? {
             return Ok(());
         }
 
@@ -420,7 +434,7 @@ pub fn handle_client(
                 Ok(o) => std::borrow::Cow::Owned(o.host_port),
                 Err(e) => {
                     log_warn!(Some(conn_id), "400 Bad Request: {}", e);
-                    let _ = client.write_all(
+                    let _ = (&client).write_all(
                         b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                     );
                     return Ok(());
@@ -459,8 +473,8 @@ pub fn handle_client(
                 0,
             );
             metrics.record_client(&client_ip, metrics::HostOutcome::Blocked, 0, None);
-            client.write_all(FORBIDDEN_RESPONSE)?;
-            client.flush()?;
+            (&client).write_all(FORBIDDEN_RESPONSE)?;
+            (&client).flush()?;
             return Ok(());
         }
 
@@ -490,7 +504,7 @@ pub fn handle_client(
             upstream: Arc::clone(&upstream),
         };
         let keep = http::handle_http_with_headers(
-            &mut client,
+            &client,
             peer_addr,
             &request_line,
             raw_headers,

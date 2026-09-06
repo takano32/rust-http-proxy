@@ -30,6 +30,8 @@ struct Args {
     cacheable: bool,
     /// 測る種類 ("all" / "direct" / "forward" / "tunnel" / "connect")
     only: String,
+    /// 1 要求ごとに接続を張り直す (接続あたりの固定費を測る)
+    no_keepalive: bool,
 }
 
 fn usage() -> ! {
@@ -49,6 +51,7 @@ fn parse_args() -> Args {
         body_bytes: 1024,
         cacheable: false,
         only: "all".to_string(),
+        no_keepalive: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -60,6 +63,7 @@ fn parse_args() -> Args {
             "--body-bytes" => args.body_bytes = value().parse().unwrap_or_else(|_| usage()),
             "--cacheable" => args.cacheable = true,
             "--only" => args.only = value(),
+            "--no-keepalive" => args.no_keepalive = true,
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -268,7 +272,13 @@ fn read_response(reader: &mut BufReader<TcpStream>, line: &mut String) -> io::Re
 }
 
 /// keep-alive で HTTP 要求を投げ続ける負荷。`request` は 1 要求ぶんのバイト列。
-fn http_load(target: SocketAddr, request: Vec<u8>, conc: usize, seconds: u64) -> Report {
+fn http_load(
+    target: SocketAddr,
+    request: Vec<u8>,
+    conc: usize,
+    seconds: u64,
+    keepalive: bool,
+) -> Report {
     run_load(conc, seconds, move |stop, lat, bytes| {
         let mut conn: Option<(TcpStream, BufReader<TcpStream>)> = None;
         let mut line = String::new();
@@ -291,7 +301,7 @@ fn http_load(target: SocketAddr, request: Vec<u8>, conc: usize, seconds: u64) ->
                 Ok((n, keep)) => {
                     lat.push(t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
                     *bytes += n;
-                    if !keep {
+                    if !keep || !keepalive {
                         conn = None;
                     }
                 }
@@ -348,15 +358,22 @@ fn main() {
     let args = parse_args();
     let origin = spawn_origin(args.body_bytes, args.cacheable).expect("origin");
     println!(
-        "bench: conc={} seconds={} body={}B cacheable={} origin={}",
-        args.conc, args.seconds, args.body_bytes, args.cacheable, origin
+        "bench: conc={} seconds={} body={}B cacheable={} keep-alive={} origin={}",
+        args.conc, args.seconds, args.body_bytes, args.cacheable, !args.no_keepalive, origin
     );
 
     let want = |name: &str| args.only == "all" || args.only == name;
 
     if want("direct") {
         let direct_req = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", origin).into_bytes();
-        http_load(origin, direct_req, args.conc, args.seconds).print("direct");
+        http_load(
+            origin,
+            direct_req,
+            args.conc,
+            args.seconds,
+            !args.no_keepalive,
+        )
+        .print("direct");
     }
 
     let Some(proxy) = args.proxy.as_deref() else {
@@ -367,7 +384,14 @@ fn main() {
     if want("forward") {
         let forward_req =
             format!("GET http://{0}/ HTTP/1.1\r\nHost: {0}\r\n\r\n", origin).into_bytes();
-        http_load(proxy, forward_req, args.conc, args.seconds).print("forward");
+        http_load(
+            proxy,
+            forward_req,
+            args.conc,
+            args.seconds,
+            !args.no_keepalive,
+        )
+        .print("forward");
     }
 
     // トンネル 1 本のスループット (時間ではなく転送量で終わる)

@@ -149,11 +149,11 @@ type OriginConn = BufReader<OriginStream>;
 
 /// 1 リクエストを処理する。戻り値はクライアント接続を次の要求に使えるか。
 pub fn handle_http_with_headers(
-    client: &mut TcpStream,
+    client: &TcpStream,
     peer_addr: Option<SocketAddr>,
     request_line: &str,
     raw_headers: &[String],
-    reader: &mut BufReader<TcpStream>,
+    reader: &mut BufReader<&TcpStream>,
     shared: &Shared,
 ) -> io::Result<bool> {
     let started = Instant::now();
@@ -404,7 +404,12 @@ pub fn handle_http_with_headers(
                 }
                 break (server, head, status, resp_headers, n);
             }
-            Err(e) if reused && retryable && attempt == 1 && is_eof_like(&e) => {
+            Err(e)
+                if reused
+                    && retryable
+                    && attempt == 1
+                    && (is_eof_like(&e) || e.kind() == io::ErrorKind::InvalidData) =>
+            {
                 log_debug!(
                     Some(conn_id),
                     "pooled connection to {} was stale ({}), retrying",
@@ -667,15 +672,27 @@ pub(super) fn acquire_origin(
 
 /// クライアントのリクエスト本文をオリジンへ同じ枠組みで転送する。戻り値は本文のバイト数。
 fn forward_request_body(
-    reader: &mut BufReader<TcpStream>,
+    reader: &mut BufReader<&TcpStream>,
     server: &mut OriginStream,
     framing: Framing,
 ) -> io::Result<u64> {
     match framing {
         Framing::None | Framing::Close => Ok(0),
         Framing::Length(_) => {
+            // io::copy はスタックの 8 KiB で読むため、512 KiB の本文で recvfrom が 66 回出る。
+            // chunked 側と同じ 64 KiB の使い回しバッファで読むと 8 回で済む
             let mut body = BodyReader::new(reader, framing);
-            io::copy(&mut body, server)
+            let mut buf = CopyBuf::take();
+            let mut total = 0u64;
+            loop {
+                let n = body.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                server.write_all(&buf[..n])?;
+                total += n as u64;
+            }
+            Ok(total)
         }
         Framing::Chunked => {
             let mut body = BodyReader::new(reader, framing);
@@ -718,6 +735,21 @@ fn is_eof_like(e: &io::Error) -> bool {
 
 /// ステータス行とヘッダー部を読み切り、[`ResponseHead`] を返す。
 pub fn read_response_head<R: BufRead>(reader: &mut R) -> io::Result<ResponseHead> {
+    loop {
+        let (head, status, headers) = read_one_response_head(reader)?;
+        // 1xx は中間応答なので読み飛ばして本物の応答を待つ (101 Switching Protocols は除く)。
+        // `Expect: 100-continue` はオリジンまで素通しているので、これが無いと 100 Continue を
+        // 最終応答として中継してしまう
+        if (100..200).contains(&status) && status != 101 {
+            log_trace!(None, "skipping interim {} response from the origin", status);
+            continue;
+        }
+        return Ok((head, status, headers));
+    }
+}
+
+/// 応答を 1 つだけ読む (1xx の読み飛ばしは呼び出し側)。
+fn read_one_response_head<R: BufRead>(reader: &mut R) -> io::Result<ResponseHead> {
     let mut head = Vec::with_capacity(1024);
     let mut status_line = String::new();
     if reader.read_line(&mut status_line)? == 0 {
@@ -728,11 +760,23 @@ pub fn read_response_head<R: BufRead>(reader: &mut R) -> io::Result<ResponseHead
     }
     head.extend_from_slice(status_line.as_bytes());
 
+    // 状態行の形を確かめる。再利用した接続に前のやり取りの読み残しがあると、それを応答として
+    // 中継してしまうので、ここで弾いて再試行に落とす
     let status = status_line
         .split_whitespace()
         .nth(1)
+        .filter(|s| s.len() == 3)
         .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
+        .filter(|s| (100..600).contains(s));
+    let Some(status) = status.filter(|_| status_line.starts_with("HTTP/1.")) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "origin sent a malformed status line: {:?}",
+                status_line.trim()
+            ),
+        ));
+    };
 
     let mut headers = Vec::new();
     // 行の読み取りバッファは 1 本を使い回す (ヘッダーの数だけ String を作らない)

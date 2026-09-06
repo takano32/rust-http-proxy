@@ -201,3 +201,41 @@ fn test_write_not_modified_keeps_validators_only() {
     assert!(!text.contains("Content-Length"));
     assert!(text.ends_with("Connection: close\r\n\r\n"));
 }
+
+#[test]
+fn test_read_response_head_rejects_a_malformed_status_line() {
+    // 再利用した接続に前のやり取りの読み残しがあると、それを応答として中継してしまうので、
+    // 状態行の形を確かめて InvalidData で弾く (呼び出し側が 1 回だけ再試行する)
+    for bad in [
+        &b"garbage\r\n\r\n"[..],
+        &b"HTTP/1.1 twohundred OK\r\n\r\n"[..],
+        &b"HTTP/1.1 20 OK\r\n\r\n"[..],
+        &b"HTTP/2 200\r\n\r\n"[..],
+        &b"\x00\x01\x02\r\n\r\n"[..],
+        &b"hello"[..], // 前の応答の本文がそのまま残っていた場合
+    ] {
+        let mut reader = BufReader::new(bad);
+        let err = read_response_head(&mut reader).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "should reject {:?}",
+            String::from_utf8_lossy(bad)
+        );
+    }
+}
+
+#[test]
+fn test_read_response_head_skips_interim_responses() {
+    // Expect: 100-continue はオリジンまで素通しているので、100 Continue を最終応答として
+    // 中継しないこと。101 Switching Protocols は中間応答ではないので返すこと
+    let raw = b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n";
+    let mut reader = BufReader::new(&raw[..]);
+    let (_head, status, _headers) = read_response_head(&mut reader).unwrap();
+    assert_eq!(status, 201, "100 Continue は読み飛ばす");
+
+    let raw = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n";
+    let mut reader = BufReader::new(&raw[..]);
+    let (_head, status, _headers) = read_response_head(&mut reader).unwrap();
+    assert_eq!(status, 101, "101 は読み飛ばさない");
+}

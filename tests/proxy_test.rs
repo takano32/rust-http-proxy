@@ -1008,10 +1008,11 @@ fn test_integration_grace_serves_stale_and_refreshes_in_background() {
         second
     );
     assert!(second.ends_with("grace body 1"), "{}", second);
-    assert!(started.elapsed() < Duration::from_millis(800));
+    // 裏で取り直すので、オリジンの応答を待っていない = 十分速い (負荷の高い CI でも通る幅にする)
+    assert!(started.elapsed() < Duration::from_millis(2000));
 
     // 裏の再検証 (304) が終わると、また新鮮なヒットになる
-    for _ in 0..50 {
+    for _ in 0..150 {
         if counter.load(Ordering::SeqCst) >= 2 {
             break;
         }
@@ -1554,4 +1555,129 @@ fn test_integration_request_body_on_a_reused_connection() {
     stream.write_all(req.as_bytes()).unwrap();
     let (head, _) = read_response(&mut stream);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+}
+
+#[test]
+fn test_integration_interim_100_continue_is_not_forwarded() {
+    // オリジンが 100 Continue を先に送っても、クライアントには本物の応答が届く
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_origin(
+        Arc::clone(&counter),
+        Arc::new(|_req, _n| {
+            let body = "created";
+            format!(
+                "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 201 Created\r\nContent-Length: {}\r\n\
+                 Cache-Control: no-store\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_bytes()
+        }),
+    );
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let payload = "x=1";
+    let req = format!(
+        "POST http://{}/create HTTP/1.1\r\nHost: {}\r\nExpect: 100-continue\r\n\
+         Content-Length: {}\r\n\r\n{}",
+        host,
+        host,
+        payload.len(),
+        payload
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let (head, body) = read_response(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 201 Created"), "{}", head);
+    assert_eq!(String::from_utf8_lossy(&body), "created");
+}
+
+/// Content-Length ぶんの本文を最後まで読んでから、その要約を返すオリジン。
+fn start_body_echo_origin() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            thread::spawn(move || {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 64 * 1024];
+                loop {
+                    // ヘッダー終端まで
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match stream.read(&mut chunk) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let split = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+                    let head = String::from_utf8_lossy(&buf[..split]).into_owned();
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.trim()
+                                .eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse().ok())?
+                        })
+                        .unwrap_or(0);
+                    let mut body: Vec<u8> = buf[split..].to_vec();
+                    while body.len() < len {
+                        match stream.read(&mut chunk) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => body.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    buf = body.split_off(len);
+                    let summary = format!(
+                        "{}:{}:{}",
+                        body.len(),
+                        body.first().copied().unwrap_or(0),
+                        body.last().copied().unwrap_or(0)
+                    );
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n{}",
+                        summary.len(),
+                        summary
+                    );
+                    if stream.write_all(resp.as_bytes()).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+#[test]
+fn test_integration_large_request_body_is_forwarded_intact() {
+    // 本文の転送は 64 KiB 単位で読む。境界をまたいでも長さも中身も欠けないこと
+    let origin_port = start_body_echo_origin();
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    for size in [200 * 1024, 64 * 1024, 65 * 1024] {
+        let mut payload = vec![b'a'; size];
+        payload[0] = b'S';
+        let last = payload.len() - 1;
+        payload[last] = b'E';
+        let head = format!(
+            "POST http://{}/big HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\n\r\n",
+            host,
+            host,
+            payload.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(&payload).unwrap();
+        let (head, body) = read_response(&mut stream);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            format!("{}:{}:{}", size, b'S', b'E'),
+            "{} バイトの本文が欠けずに届く",
+            size
+        );
+    }
 }

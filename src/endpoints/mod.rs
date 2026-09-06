@@ -9,7 +9,6 @@
 //! (公開ポートなら ACL や到達制御で守ること)。
 
 use std::io::{self, Write};
-use std::net::TcpStream;
 
 use crate::cache::{Cache, cache_key};
 use crate::http::parse_origin;
@@ -58,7 +57,7 @@ fn local_path(target: &str, port: u16) -> Option<&str> {
 
 /// 内部エンドポイントなら応答して `Ok(true)` を返す。そうでなければ何もせず `Ok(false)`。
 pub fn handle(
-    client: &mut TcpStream,
+    client: &mut impl Write,
     method: &str,
     target: &str,
     ep: &Endpoint<'_>,
