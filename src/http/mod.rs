@@ -39,7 +39,28 @@ use crate::{log_debug, log_trace, log_warn};
 use request::{RequestHeaders, parse_request_headers};
 use serve::{can_serve_stale, serve_cached};
 
-pub(super) const COPY_BUF_SIZE: usize = 64 * 1024;
+/// 本文を運ぶときの 1 回ぶんの大きさ。
+///
+/// 64 KiB より 32 KiB の方が速い (実測、大コア固定・3 回とも): 本文 64 KiB で
+/// CPU/要求 93.5 → 85.9 us (-8%)、本文 1 MiB で 750.6 → 666.7 us (-11%)、
+/// 主力の 1 KiB 経路は 47.6 → 46.5 us で退行なし、アイドル接続あたりのメモリも同じ。
+/// キャッシュ階層に収まりやすいためと思われる。
+pub(super) const COPY_BUF_SIZE: usize = 32 * 1024;
+
+/// クライアントへ書くときのバッファ。**必ず [`COPY_BUF_SIZE`] より大きくすること。**
+/// 同じ大きさだと std の BufWriter が「容量以上の write はバッファを空けてから直書き」
+/// する経路に入り、ヘッダーだけが単独の sendto になる (実測: 本文 1 MiB で sendto が
+/// 9 → 42.7 回/要求)。
+pub(super) const CLIENT_WRITE_BUF: usize = 2 * COPY_BUF_SIZE;
+
+/// オリジンから読むときのバッファ。**必ず [`COPY_BUF_SIZE`] 以下にすること。**
+/// これより大きいと body::BodyReader の「要求が容量以上なら内部バッファを迂回して直読み」
+/// が効かず、本文をまるごと余計に memcpy する (実測: 本文 1 MiB で user CPU +60%)。
+pub(super) const ORIGIN_READ_BUF: usize = COPY_BUF_SIZE;
+
+// 上の 2 つの不変条件をコンパイル時に固定する (定数を片方だけ触ったときに気付けるように)
+const _: () = assert!(CLIENT_WRITE_BUF > COPY_BUF_SIZE);
+const _: () = assert!(ORIGIN_READ_BUF <= COPY_BUF_SIZE);
 
 /// 本文の中継バッファのプロセス共用プール。
 ///
@@ -168,10 +189,7 @@ pub fn handle_http_with_headers(
     let started = Instant::now();
     // 応答ヘッダーと本文の先頭を 1 回の write でまとめて出す (別々に出すと 1 セグメント増える)。
     // どの経路でも最後に flush するので、次の要求の前にバッファは空になる
-    // 容量は本文チャンク (COPY_BUF_SIZE) より大きくする。同じだと 64 KiB 以上の応答で
-    // BufWriter が「容量以上の write はバッファを空けてから直書き」する経路に入り、
-    // ヘッダーだけが単独の sendto になってしまう
-    let client = &mut BufWriter::with_capacity(2 * COPY_BUF_SIZE, client);
+    let client = &mut BufWriter::with_capacity(CLIENT_WRITE_BUF, client);
     let conn_id = shared.conn_id;
     let cache: &Cache = &shared.cache;
     let metrics: &Metrics = &shared.metrics;
@@ -682,7 +700,7 @@ pub(super) fn acquire_origin(
         timeout,
         upstream.tls.as_ref(),
     )?;
-    Ok((BufReader::with_capacity(COPY_BUF_SIZE, stream), false))
+    Ok((BufReader::with_capacity(ORIGIN_READ_BUF, stream), false))
 }
 
 /// クライアントのリクエスト本文をオリジンへ同じ枠組みで転送する。戻り値は本文のバイト数。
