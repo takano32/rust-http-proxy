@@ -10,6 +10,7 @@ use std::net::TcpStream;
 
 use crate::origin::OriginStream;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 struct Idle {
@@ -22,14 +23,29 @@ struct Idle {
 pub struct Pool {
     idle: Mutex<HashMap<String, VecDeque<Idle>>>,
     max_per_host: usize,
+    /// 全ホスト合計のアイドル接続の上限 (ホスト数 × max_per_host に歯止めを掛ける)。
+    /// 1 本あたり読み取りバッファを抱えるので、多数のホストへ行くと青天井になるため
+    max_total: usize,
+    /// 今持っているアイドル接続の数 (上限判定を O(1) にするため別に数える)
+    total: AtomicUsize,
     idle_timeout: Duration,
 }
 
 impl Pool {
     pub fn new(max_per_host: usize, idle_timeout: Duration) -> Self {
+        Self::with_total(
+            max_per_host,
+            max_per_host.saturating_mul(32).max(64),
+            idle_timeout,
+        )
+    }
+
+    pub fn with_total(max_per_host: usize, max_total: usize, idle_timeout: Duration) -> Self {
         Self {
             idle: Mutex::new(HashMap::new()),
             max_per_host,
+            max_total,
+            total: AtomicUsize::new(0),
             idle_timeout,
         }
     }
@@ -49,6 +65,9 @@ impl Pool {
                 let mut idle = self.idle.locked();
                 let queue = idle.get_mut(host)?;
                 let c = queue.pop_back();
+                if c.is_some() {
+                    self.total.fetch_sub(1, Ordering::Relaxed);
+                }
                 if queue.is_empty() {
                     idle.remove(host);
                 }
@@ -71,6 +90,10 @@ impl Pool {
         if !self.enabled() || !stream.buffer().is_empty() {
             return;
         }
+        // 全体の上限に達していたら、この接続はプールに入れずに閉じる
+        if self.total.load(Ordering::Relaxed) >= self.max_total {
+            return;
+        }
         let now = Instant::now();
         let mut idle = self.idle.locked();
         // ロックを持つ時間を短くする: 既にある行はキーを作り直さず、期限切れの掃除は
@@ -79,29 +102,44 @@ impl Pool {
             Some(q) => q,
             None => idle.entry(host.to_string()).or_default(),
         };
+        let mut dropped = 0usize;
         while queue.len() >= self.max_per_host {
-            queue.pop_front();
+            if queue.pop_front().is_some() {
+                dropped += 1;
+            }
         }
         queue.push_back(Idle {
             stream,
             since: now,
             timeout,
         });
+        drop(idle);
+        self.total.fetch_add(1, Ordering::Relaxed);
+        if dropped > 0 {
+            self.total.fetch_sub(dropped, Ordering::Relaxed);
+        }
     }
 
-    /// 期限切れを捨てる (定期的に呼ぶ)。
-    pub fn sweep(&self) {
+    /// 期限切れを捨てる (`env-reload` スレッドが 30 秒ごとに呼ぶ)。戻り値は捨てた本数。
+    pub fn sweep(&self) -> usize {
         let now = Instant::now();
         let mut idle = self.idle.locked();
+        let before: usize = idle.values().map(|q| q.len()).sum();
         idle.retain(|_, q| {
             q.retain(|i| now.duration_since(i.since) < self.idle_timeout);
             !q.is_empty()
         });
+        let after: usize = idle.values().map(|q| q.len()).sum();
+        drop(idle);
+        let removed = before.saturating_sub(after);
+        if removed > 0 {
+            self.total.fetch_sub(removed, Ordering::Relaxed);
+        }
+        removed
     }
 
     pub fn idle_count(&self) -> usize {
-        let idle = self.idle.locked();
-        idle.values().map(|q| q.len()).sum()
+        self.total.load(Ordering::Relaxed)
     }
 }
 

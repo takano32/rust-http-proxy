@@ -17,6 +17,7 @@ pub use serve::{Serve, write_cached_response};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,7 @@ use crate::headers;
 use crate::log::{Access, access};
 use crate::metrics::{HostOutcome, Metrics};
 use crate::origin::{self, OriginStream};
+use crate::sync::LockExt;
 use crate::{log_debug, log_trace, log_warn};
 
 use request::{RequestHeaders, parse_request_headers};
@@ -39,18 +41,22 @@ use serve::{can_serve_stale, serve_cached};
 
 pub(super) const COPY_BUF_SIZE: usize = 64 * 1024;
 
-thread_local! {
-    /// 本文の中継バッファ。1 接続 = 1 スレッドなので、要求ごとに 64 KiB を確保して
-    /// ゼロ埋めし直す代わりにスレッドで使い回す
-    static COPY_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+/// 本文の中継バッファのプロセス共用プール。
+///
+/// スレッドローカルに置くと、アイドルな keep-alive 接続が「使っていない 64 KiB」を
+/// スレッドごとに抱え続ける (実測: アイドル 1 接続あたり 109.6 kB のうち約 67 kB がこれ)。
+/// 借りている間だけ持つ形にすると、同時に本文を運んでいる数ぶんしか要らない。
+static COPY_POOL: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+/// プールに置いておく上限。これを超えたぶんは返さずに解放する
+/// (同時に本文を運ぶ数がこれを超えるのは一時的な山なので、抱え続けない)。
+const COPY_POOL_MAX: usize = 64;
 
 /// スレッドから借りた中継バッファ。Drop で返すので途中で return しても失わない。
 pub(super) struct CopyBuf(Vec<u8>);
 
 impl CopyBuf {
     pub(super) fn take() -> CopyBuf {
-        let mut buf = COPY_BUF.with(|b| std::mem::take(&mut *b.borrow_mut()));
+        let mut buf = COPY_POOL.locked().pop().unwrap_or_default();
         if buf.len() < COPY_BUF_SIZE {
             buf.resize(COPY_BUF_SIZE, 0);
         }
@@ -73,7 +79,10 @@ impl std::ops::DerefMut for CopyBuf {
 
 impl Drop for CopyBuf {
     fn drop(&mut self) {
-        COPY_BUF.with(|b| *b.borrow_mut() = std::mem::take(&mut self.0));
+        let mut pool = COPY_POOL.locked();
+        if pool.len() < COPY_POOL_MAX {
+            pool.push(std::mem::take(&mut self.0));
+        }
     }
 }
 /// オリジンがこのステータスを返したら stale を配信する (RFC 5861 stale-if-error 相当)。

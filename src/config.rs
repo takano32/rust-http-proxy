@@ -20,6 +20,8 @@ pub struct Config {
     pub keepalive: Duration,
     /// オリジンへのアイドル接続をホストごとに何本まで保持するか。0 で再利用しない
     pub pool_per_host: usize,
+    /// アイドル接続の全体上限 (`PROXY_ORIGIN_POOL_TOTAL`)。ホスト数 × per_host の歯止め
+    pub pool_total: usize,
     /// HTTPS のオリジンへ取得に行くか (システムの OpenSSL を使う)
     pub tls_enabled: bool,
     /// オリジンの証明書を検証するか
@@ -89,6 +91,11 @@ impl Config {
             envfile::var("PROXY_ORIGIN_POOL").and_then(|s| s.trim().parse::<usize>().ok())
         {
             cfg.pool_per_host = n;
+        }
+        if let Some(n) =
+            envfile::var("PROXY_ORIGIN_POOL_TOTAL").and_then(|s| s.trim().parse::<usize>().ok())
+        {
+            cfg.pool_total = n;
         }
         let off = |v: String| {
             matches!(
@@ -191,7 +198,8 @@ impl Config {
             acl,
             timeout,
             keepalive: Duration::from_secs(15),
-            pool_per_host: 8,
+            pool_per_host: 64,
+            pool_total: 256,
             tls_enabled: true,
             tls_verify: true,
             tls_ca_file: None,
@@ -238,7 +246,8 @@ mod tests {
         assert!(cfg.ipv6, "IPv6 on by default");
         assert_eq!(cfg.timeout, Duration::from_secs(10));
         assert_eq!(cfg.keepalive, Duration::from_secs(15));
-        assert_eq!(cfg.pool_per_host, 8);
+        assert_eq!(cfg.pool_per_host, 64);
+        assert_eq!(cfg.pool_total, 256);
         assert_eq!(cfg.max_conns, 4096);
         assert_eq!(cfg.tunnel_idle, Duration::from_secs(300));
         assert!(cfg.connect_ports.is_empty() && !cfg.allow_local);

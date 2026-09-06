@@ -13,7 +13,7 @@ use rust_http_proxy::serve;
 use rust_http_proxy::signal;
 use rust_http_proxy::tls::TlsClient;
 use rust_http_proxy::{Upstream, log_warn};
-use rust_http_proxy::{log_error, log_info};
+use rust_http_proxy::{log_debug, log_error, log_info};
 
 /// オリジンへのアイドル接続を保持する時間 (長いほどプールのヒット率が上がる)。
 const ORIGIN_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
@@ -56,7 +56,19 @@ fn main() {
 
     let live = reload::Live::new(config);
     let config = live.config();
-    let _reload = reload::spawn(Arc::clone(&live));
+    // 接続プールの掃除は専用スレッドを立てず、.env の監視スレッドの一巡ごとに行う
+    let sweeper: Arc<std::sync::OnceLock<Arc<Upstream>>> = Arc::new(std::sync::OnceLock::new());
+    let _reload = {
+        let sweeper = Arc::clone(&sweeper);
+        reload::spawn(Arc::clone(&live), move || {
+            if let Some(up) = sweeper.get() {
+                let n = up.pool.sweep();
+                if n > 0 {
+                    log_debug!(None, "origin pool: dropped {} idle connections", n);
+                }
+            }
+        })
+    };
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
@@ -110,12 +122,13 @@ fn main() {
         }
     };
     let pool = Arc::new(Upstream {
-        pool: Pool::new(config.pool_per_host, ORIGIN_IDLE),
+        pool: Pool::with_total(config.pool_per_host, config.pool_total, ORIGIN_IDLE),
         tls,
     });
     rust_http_proxy::blocklist::configure(rust_http_proxy::blocklist::Sources::from_config(
         &config,
     ));
+    let _ = sweeper.set(Arc::clone(&pool));
     let _blocklist = rust_http_proxy::blocklist::spawn(Arc::clone(&pool), config.timeout);
     // 停止シグナルで統計を状態ファイルに書き、ballast.reserve を空にしてから終わる
     // (Wings のディスク計測に残さない)

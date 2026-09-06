@@ -234,7 +234,10 @@ fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
 }
 
 /// 監視スレッドを起動する。`HOME` が無ければ何もしない。
-pub fn spawn(live: Arc<Live>) -> Option<thread::JoinHandle<()>> {
+/// `.env` の監視スレッドを起こす。`tick` は待ち受けが一巡するたび ([`POLL_INTERVAL`] ごと、
+/// または `.env` の変化時) に呼ばれる。接続プールの掃除など、専用スレッドを立てるほどでない
+/// 定期処理をここに載せる。
+pub fn spawn(live: Arc<Live>, tick: impl Fn() + Send + 'static) -> Option<thread::JoinHandle<()>> {
     let path: PathBuf = envfile::env_path()?;
     let dir = path.parent()?.to_path_buf();
     let watch = match Watch::open(&dir, ".env") {
@@ -289,6 +292,7 @@ pub fn spawn(live: Arc<Live>) -> Option<thread::JoinHandle<()>> {
                     seen = now;
                     live.reload();
                 }
+                tick();
             }
         })
         .ok()?;
