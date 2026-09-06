@@ -61,6 +61,22 @@ Pterodactyl (Wings) のコンテナ内で動かすことを想定しています
 - **タイムアウト制御**:
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
 
+## コマンドライン引数
+
+環境変数を書かなくても、よく使う設定は引数で渡せます (優先順位は **引数 > `$HOME/.env` > 環境変数**)。
+
+```
+  -p, --port <PORT>    待ち受けポート        (SERVER_PORT)
+      --bind <ADDRS>   待ち受けアドレス      (PROXY_BIND、カンマ区切り)
+      --no-cache       キャッシュを止める    (PROXY_CACHE_ENABLED=off)
+      --quiet          警告以上だけ出す      (PROXY_LOG_LEVEL=warn)
+      --lite           最速の素通しプロファイル (PROXY_PROFILE=lite)
+  -h, --help           使い方を出して終了 (終了コード 0)
+  -V, --version        版を出して終了
+```
+
+`--port=3128` の形式も使えます。知らない引数は使い方を出して終了コード 2 になります。
+
 ## 環境変数
 
 | 環境変数名 | デフォルト値 | 説明 |

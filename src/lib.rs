@@ -2,6 +2,7 @@ pub mod acl;
 pub mod blocklist;
 pub mod body;
 pub mod cache;
+pub mod cli;
 pub mod clock;
 pub mod config;
 pub mod dns;

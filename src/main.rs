@@ -19,6 +19,17 @@ use rust_http_proxy::{log_error, log_info};
 const ORIGIN_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn main() {
+    match rust_http_proxy::cli::parse(std::env::args().skip(1)) {
+        rust_http_proxy::cli::Cli::Print(msg, 0) => {
+            println!("{}", msg);
+            process::exit(0);
+        }
+        rust_http_proxy::cli::Cli::Print(msg, code) => {
+            eprintln!("{}", msg);
+            process::exit(code);
+        }
+        rust_http_proxy::cli::Cli::Run(vars) => rust_http_proxy::envfile::set_overrides(vars),
+    }
     log::init_from_env();
 
     let config = match Config::from_env() {

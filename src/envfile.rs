@@ -17,6 +17,13 @@ struct Loaded {
 }
 
 static LOADED: OnceLock<RwLock<Loaded>> = OnceLock::new();
+/// コマンドライン引数による上書き (`.env` よりも優先する)。
+static OVERRIDES: OnceLock<HashMap<String, String>> = OnceLock::new();
+
+/// コマンドライン引数から来た上書きを覚える (起動時に 1 回だけ)。
+pub fn set_overrides(vars: Vec<(String, String)>) {
+    let _ = OVERRIDES.set(vars.into_iter().collect());
+}
 
 /// `$HOME/.env` の場所。`HOME` が無ければ `None`。
 pub fn env_path() -> Option<PathBuf> {
@@ -95,8 +102,11 @@ pub fn parse(text: &str) -> HashMap<String, String> {
     out
 }
 
-/// `$HOME/.env` → 実際の環境変数の順に探す (ファイルが優先)。
+/// コマンドライン引数 → `$HOME/.env` → 実際の環境変数の順に探す。
 pub fn var(key: &str) -> Option<String> {
+    if let Some(v) = OVERRIDES.get().and_then(|o| o.get(key)) {
+        return Some(v.clone());
+    }
     loaded()
         .vars
         .get(key)

@@ -211,7 +211,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
 
 ### Phase 3 — 手軽にする
 
-- [ ] **T3.1 コマンドライン引数 (`--help`, `--version`, `-p/--port`, `--bind`, `--no-cache`, `--quiet`, `--lite`)**
+- [x] **T3.1 コマンドライン引数 (`--help`, `--version`, `-p/--port`, `--bind`, `--no-cache`, `--quiet`, `--lite`)**
   - 変更箇所: `src/main.rs` 先頭、`src/config.rs`。`std::env::args` を手で解析 (クレート禁止)。
   - やること: 引数は対応する環境変数を `std::env::set_var` する前段として扱う (優先順位: 引数 > `$HOME/.env` > 環境変数。README の説明を更新)。
     `--help` は環境変数の表を短く出す。`--version` は `env!("CARGO_PKG_VERSION")`。
