@@ -1502,3 +1502,56 @@ fn test_integration_malformed_requests_do_not_panic() {
     let ok = get_via_proxy(proxy_port, &format!("http://{}/alive", host), &host);
     assert!(ok.contains("200 OK"), "{}", ok);
 }
+
+#[test]
+fn test_integration_request_body_on_a_reused_connection() {
+    // 同じ接続の 2 本目以降で本文付きの要求を送る。要求行とヘッダーは keep-alive の
+    // アイドル時間で待つようにしたので、本文を読む前にタイムアウトが戻ることの確認
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_origin(
+        Arc::clone(&counter),
+        Arc::new(|req, _n| {
+            let body = req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_bytes()
+        }),
+    );
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    // 1 本目: 本文なし
+    let req = format!(
+        "GET http://{}/first HTTP/1.1\r\nHost: {}\r\n\r\n",
+        host, host
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    read_response(&mut stream);
+
+    // 2 本目: 本文あり (オリジンは受け取った本文をそのまま返す)
+    let payload = "name=value&x=1";
+    let req = format!(
+        "POST http://{}/second HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\n\r\n{}",
+        host,
+        host,
+        payload.len(),
+        payload
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let (head, body) = read_response(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert_eq!(String::from_utf8_lossy(&body), payload, "本文が転送される");
+
+    // 3 本目: 本文なしに戻っても続く
+    let req = format!(
+        "GET http://{}/third HTTP/1.1\r\nHost: {}\r\n\r\n",
+        host, host
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let (head, _) = read_response(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+}

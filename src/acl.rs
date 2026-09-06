@@ -26,6 +26,10 @@ impl AclConfig {
     }
 
     pub fn is_allowed(&self, host_or_addr: &str) -> bool {
+        // 許可も拒否も設定されていなければ何もしない (既定の経路で文字列を作らない)
+        if self.allow_hosts.is_empty() && self.deny_hosts.is_empty() {
+            return true;
+        }
         let host = extract_host(host_or_addr).to_ascii_lowercase();
 
         // 1. Check deny list first
@@ -106,14 +110,14 @@ pub fn is_local_target(host_or_addr: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
-    match crate::dns::resolve(&crate::net::join_host_port(&host, 80)) {
+    match crate::dns::resolve(&crate::net::join_host_port(host, 80)) {
         Ok(addrs) => addrs.iter().any(|a| is_local_ip(a.ip())),
         Err(_) => false,
     }
 }
 
-fn extract_host(host_or_addr: &str) -> String {
-    crate::net::split_host_port(host_or_addr).0
+fn extract_host(host_or_addr: &str) -> &str {
+    crate::net::split_host_port_ref(host_or_addr).0
 }
 
 pub(crate) fn match_pattern(pattern: &str, host: &str) -> bool {

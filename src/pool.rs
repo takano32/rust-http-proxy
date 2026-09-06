@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 struct Idle {
     stream: BufReader<OriginStream>,
     since: Instant,
+    /// このソケットに今設定してあるタイムアウト (同じなら setsockopt を省く)
+    timeout: Duration,
 }
 
 pub struct Pool {
@@ -36,8 +38,9 @@ impl Pool {
         self.max_per_host > 0 && !self.idle_timeout.is_zero()
     }
 
-    /// 使えるアイドル接続があれば取り出す。
-    pub fn get(&self, host: &str) -> Option<BufReader<OriginStream>> {
+    /// 使えるアイドル接続があれば取り出す。`want` は使いたいタイムアウトで、
+    /// 前回と同じなら `setsockopt` を呼ばない (要求ごとの 2 回を消す)。
+    pub fn get(&self, host: &str, want: Duration) -> Option<BufReader<OriginStream>> {
         if !self.enabled() {
             return None;
         }
@@ -54,13 +57,17 @@ impl Pool {
             if candidate.since.elapsed() < self.idle_timeout
                 && is_alive(candidate.stream.get_ref().tcp())
             {
+                if candidate.timeout != want {
+                    candidate.stream.get_ref().set_timeouts(want).ok()?;
+                }
                 return Some(candidate.stream);
             }
         }
     }
 
     /// 応答を読み切った接続を戻す。読み残しがあるものは捨てる。
-    pub fn put(&self, host: &str, stream: BufReader<OriginStream>) {
+    /// `timeout` は今このソケットに設定してある値。
+    pub fn put(&self, host: &str, stream: BufReader<OriginStream>, timeout: Duration) {
         if !self.enabled() || !stream.buffer().is_empty() {
             return;
         }
@@ -71,7 +78,11 @@ impl Pool {
         while queue.len() >= self.max_per_host {
             queue.pop_front();
         }
-        queue.push_back(Idle { stream, since: now });
+        queue.push_back(Idle {
+            stream,
+            since: now,
+            timeout,
+        });
     }
 
     /// 期限切れを捨てる (定期的に呼ぶ)。
@@ -135,27 +146,42 @@ mod tests {
     fn reuses_live_connections_and_drops_dead_ones() {
         let pool = Pool::new(2, Duration::from_secs(5));
         let (c1, s1) = pair();
-        pool.put("h", BufReader::new(OriginStream::Plain(c1)));
+        pool.put(
+            "h",
+            BufReader::new(OriginStream::Plain(c1)),
+            Duration::from_secs(5),
+        );
         assert_eq!(pool.idle_count(), 1);
-        assert!(pool.get("h").is_some());
-        assert!(pool.get("h").is_none());
+        assert!(pool.get("h", Duration::from_secs(5)).is_some());
+        assert!(pool.get("h", Duration::from_secs(5)).is_none());
         drop(s1);
 
         let (c2, s2) = pair();
-        pool.put("h", BufReader::new(OriginStream::Plain(c2)));
+        pool.put(
+            "h",
+            BufReader::new(OriginStream::Plain(c2)),
+            Duration::from_secs(5),
+        );
         drop(s2); // 相手が閉じた
         std::thread::sleep(Duration::from_millis(50));
-        assert!(pool.get("h").is_none(), "dead connection is discarded");
+        assert!(
+            pool.get("h", Duration::from_secs(5)).is_none(),
+            "dead connection is discarded"
+        );
     }
 
     #[test]
     fn stray_bytes_make_a_connection_unusable() {
         let pool = Pool::new(2, Duration::from_secs(5));
         let (c, mut s) = pair();
-        pool.put("h", BufReader::new(OriginStream::Plain(c)));
+        pool.put(
+            "h",
+            BufReader::new(OriginStream::Plain(c)),
+            Duration::from_secs(5),
+        );
         s.write_all(b"junk").unwrap();
         std::thread::sleep(Duration::from_millis(50));
-        assert!(pool.get("h").is_none());
+        assert!(pool.get("h", Duration::from_secs(5)).is_none());
     }
 
     #[test]
@@ -163,15 +189,27 @@ mod tests {
         let pool = Pool::new(1, Duration::from_millis(30));
         let (c1, _s1) = pair();
         let (c2, _s2) = pair();
-        pool.put("h", BufReader::new(OriginStream::Plain(c1)));
-        pool.put("h", BufReader::new(OriginStream::Plain(c2)));
+        pool.put(
+            "h",
+            BufReader::new(OriginStream::Plain(c1)),
+            Duration::from_secs(5),
+        );
+        pool.put(
+            "h",
+            BufReader::new(OriginStream::Plain(c2)),
+            Duration::from_secs(5),
+        );
         assert_eq!(pool.idle_count(), 1, "max per host");
         std::thread::sleep(Duration::from_millis(60));
         pool.sweep();
         assert_eq!(pool.idle_count(), 0);
         let disabled = Pool::new(0, Duration::from_secs(1));
         let (c3, _s3) = pair();
-        disabled.put("h", BufReader::new(OriginStream::Plain(c3)));
-        assert!(!disabled.enabled() && disabled.get("h").is_none());
+        disabled.put(
+            "h",
+            BufReader::new(OriginStream::Plain(c3)),
+            Duration::from_secs(1),
+        );
+        assert!(!disabled.enabled() && disabled.get("h", Duration::from_secs(1)).is_none());
     }
 }

@@ -30,29 +30,36 @@ pub fn ipv6_enabled() -> bool {
 }
 
 /// `host:port` / `[v6]:port` / `[v6]` / `host` / 素の `v6` を (ホスト, ポート) に分ける。
-pub fn split_host_port(s: &str) -> (String, Option<u16>) {
+/// 文字列を作らない版 ([`split_host_port`] は所有権が要るときに使う)。
+pub fn split_host_port_ref(s: &str) -> (&str, Option<u16>) {
     let s = s.trim();
     if let Some(rest) = s.strip_prefix('[') {
         if let Some(end) = rest.find(']') {
-            let host = rest[..end].to_string();
+            let host = &rest[..end];
             let port = rest[end + 1..]
                 .strip_prefix(':')
                 .and_then(|p| p.parse::<u16>().ok());
             return (host, port);
         }
-        return (s.to_string(), None);
+        return (s, None);
     }
     // ':' が 2 つ以上あれば括弧無しの IPv6 リテラル (ポート無し)
     if s.matches(':').count() >= 2 {
-        return (s.to_string(), None);
+        return (s, None);
     }
     match s.rsplit_once(':') {
         Some((host, port)) => match port.parse::<u16>() {
-            Ok(p) => (host.to_string(), Some(p)),
-            Err(_) => (s.to_string(), None),
+            Ok(p) => (host, Some(p)),
+            Err(_) => (s, None),
         },
-        None => (s.to_string(), None),
+        None => (s, None),
     }
+}
+
+/// [`split_host_port_ref`] のホストを複製して返す版。
+pub fn split_host_port(s: &str) -> (String, Option<u16>) {
+    let (host, port) = split_host_port_ref(s);
+    (host.to_string(), port)
 }
 
 /// ホストとポートを `host:port` に組み立てる (IPv6 リテラルは括弧で囲む)。

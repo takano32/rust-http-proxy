@@ -174,6 +174,52 @@ const MAX_REQUESTS_PER_CONNECTION: usize = 1000;
 const MAX_LINE: usize = 64 * 1024;
 const MAX_HEADER_LINES: usize = 256;
 
+thread_local! {
+    /// 要求ヘッダーの行バッファ。1 接続 = 1 スレッドなので、要求ごとに `String` を作り直さず
+    /// 容量ごと使い回す (解放せずに抱えておく)
+    static HEADER_LINES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// スレッドから借りたヘッダー行の置き場。Drop で返すので途中で return しても失わない。
+struct HeaderBuf {
+    lines: Vec<String>,
+    /// 今の要求で使っている行数
+    used: usize,
+}
+
+impl HeaderBuf {
+    fn take() -> HeaderBuf {
+        HeaderBuf {
+            lines: HEADER_LINES.with(|b| std::mem::take(&mut *b.borrow_mut())),
+            used: 0,
+        }
+    }
+
+    /// 次の行を書き込む先 (中身は空、容量は残っている)。
+    fn next(&mut self) -> &mut String {
+        if self.used == self.lines.len() {
+            self.lines.push(String::new());
+        }
+        let line = &mut self.lines[self.used];
+        line.clear();
+        line
+    }
+
+    fn commit(&mut self) {
+        self.used += 1;
+    }
+
+    fn headers(&self) -> &[String] {
+        &self.lines[..self.used]
+    }
+}
+
+impl Drop for HeaderBuf {
+    fn drop(&mut self) {
+        HEADER_LINES.with(|b| *b.borrow_mut() = std::mem::take(&mut self.lines));
+    }
+}
+
 /// 長さ制限付きで 1 行読む。制限を超えたら `Ok(None)`。
 fn read_limited_line(
     reader: &mut BufReader<TcpStream>,
@@ -236,7 +282,14 @@ pub fn handle_client(
     // 1 要求あたり 40 ms 止まるため (失敗しても致命的ではないので無視する)
     let _ = client.set_nodelay(true);
     let mut reader = BufReader::new(client.try_clone()?);
+    // 自分宛て判定に使う待ち受けポートは接続ごとに 1 回だけ引く (要求ごとの getsockname を消す)
+    let local_port = client.local_addr().map(|a| a.port()).unwrap_or(config.port);
     let mut served = 0usize;
+    // 要求行とヘッダー行はこの接続の間ずっと使い回す (毎要求の確保をなくす)
+    let mut request_line = String::new();
+    let mut headers = HeaderBuf::take();
+    // 今ソケットに設定してある読み取りタイムアウト (同じ値なら setsockopt を呼ばない)
+    let mut read_timeout: Option<std::time::Duration> = None;
 
     loop {
         // 最初の要求は通常のタイムアウト、2 回目以降は keep-alive のアイドル時間で待つ
@@ -245,8 +298,13 @@ pub fn handle_client(
         } else {
             config.keepalive
         };
-        client.set_read_timeout(Some(wait))?;
-        let mut request_line = String::new();
+        // タイムアウトの再設定は値が変わるときだけ (setsockopt は要求ごとに効いてくる)
+        if read_timeout != Some(wait) {
+            client.set_read_timeout(Some(wait))?;
+            read_timeout = Some(wait);
+        }
+        request_line.clear();
+        headers.used = 0;
         match read_limited_line(&mut reader, &mut request_line) {
             Ok(None) => {
                 log_warn!(
@@ -279,27 +337,26 @@ pub fn handle_client(
         if request_line.trim().is_empty() {
             continue;
         }
-        client.set_read_timeout(Some(config.timeout))?;
         metrics.inc_requests();
         log_trace!(Some(conn_id), "request line: {}", request_line.trim_end());
 
-        let parts: Vec<&str> = request_line.split_whitespace().collect();
-        if parts.len() < 2 {
+        let mut parts = request_line.split_whitespace();
+        let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
             log_warn!(
                 Some(conn_id),
                 "malformed request line: {:?}",
                 request_line.trim()
             );
             return Ok(());
-        }
-        let method = parts[0].to_string();
-        let target = parts[1].to_string();
+        };
 
-        let mut raw_headers = Vec::new();
-        let mut host_header = None;
+        // Host の値は行の添字で覚えておき、読み終わってから借用する (複製しない)
+        let mut host_line: Option<usize> = None;
+        // 本文付きの要求だけ、読み取りタイムアウトを本来の値に戻す
+        let mut has_body = false;
         loop {
-            let mut line = String::new();
-            match read_limited_line(&mut reader, &mut line)? {
+            let index = headers.used;
+            match read_limited_line(&mut reader, headers.next())? {
                 None => {
                     log_warn!(Some(conn_id), "431 Request Header Fields Too Large");
                     return reject(&mut client, 431, "Request Header Fields Too Large");
@@ -307,24 +364,37 @@ pub fn handle_client(
                 Some(0) => break,
                 Some(_) => {}
             }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
+            if headers.lines[index].trim().is_empty() {
                 break;
             }
-            if raw_headers.len() >= MAX_HEADER_LINES {
+            if index >= MAX_HEADER_LINES {
                 log_warn!(
                     Some(conn_id),
                     "431 Request Header Fields Too Large (too many lines)"
                 );
                 return reject(&mut client, 431, "Request Header Fields Too Large");
             }
-            if let Some((k, v)) = line.split_once(':')
-                && k.trim().eq_ignore_ascii_case("host")
-            {
-                host_header = Some(v.trim().to_string());
+            if let Some((k, _)) = headers.lines[index].split_once(':') {
+                let k = k.trim();
+                if host_line.is_none() && k.eq_ignore_ascii_case("host") {
+                    host_line = Some(index);
+                } else if k.eq_ignore_ascii_case("content-length")
+                    || k.eq_ignore_ascii_case("transfer-encoding")
+                {
+                    has_body = true;
+                }
             }
-            raw_headers.push(line);
+            headers.commit();
         }
+        // 要求行とヘッダーは keep-alive のアイドル時間で待っている。本文を読むならここで戻す
+        if has_body && read_timeout != Some(config.timeout) {
+            client.set_read_timeout(Some(config.timeout))?;
+            read_timeout = Some(config.timeout);
+        }
+        let host_header: Option<&str> = host_line
+            .and_then(|i| headers.lines[i].split_once(':'))
+            .map(|(_, v)| v.trim());
+        let raw_headers = headers.headers();
 
         // プロキシ自身のエンドポイント (/dashboard, /status, /metrics, /proxy.pac, /purge, /lookup, PURGE)
         let ep = endpoints::Endpoint {
@@ -332,22 +402,22 @@ pub fn handle_client(
             cache: &cache,
             conn_id,
             // 実際に受けたポート (テストや複数 bind でも自分宛て判定が合うように)
-            port: client.local_addr().map(|a| a.port()).unwrap_or(config.port),
-            host: host_header.as_deref(),
+            port: local_port,
+            host: host_header,
             pac_direct: &config.pac_direct,
             lite: config.lite,
         };
-        if endpoints::handle(&mut client, &method, &target, &ep)? {
+        if endpoints::handle(&mut client, method, target, &ep)? {
             return Ok(());
         }
 
         // ACL / Host Check
         let is_connect = method.eq_ignore_ascii_case("CONNECT");
-        let target_host = if is_connect {
-            target.clone()
+        let target_host: std::borrow::Cow<'_, str> = if is_connect {
+            std::borrow::Cow::Borrowed(target)
         } else {
-            match http::parse_origin(&target, host_header.as_deref()) {
-                Ok(o) => o.host_port,
+            match http::parse_origin(target, host_header) {
+                Ok(o) => std::borrow::Cow::Owned(o.host_port),
                 Err(e) => {
                     log_warn!(Some(conn_id), "400 Bad Request: {}", e);
                     let _ = client.write_all(
@@ -359,12 +429,12 @@ pub fn handle_client(
         };
         let denied = if !config.acl.is_allowed(&target_host) {
             Some("ACL")
-        } else if blocklist::is_blocked(&net::split_host_port(&target_host).0) {
+        } else if blocklist::is_blocked(net::split_host_port_ref(&target_host).0) {
             Some("blocklist")
         } else if is_connect
             && !config
                 .connect_ports
-                .allows(net::split_host_port(&target_host).1.unwrap_or(443))
+                .allows(net::split_host_port_ref(&target_host).1.unwrap_or(443))
         {
             Some("CONNECT port")
         } else if !config.allow_local && acl::is_local_target(&target_host) {
@@ -384,7 +454,7 @@ pub fn handle_client(
                 .map(|a| a.ip().to_string())
                 .unwrap_or_else(|| "-".to_string());
             metrics.record_host(
-                &format!("blocked://{}", net::split_host_port(&target_host).0),
+                &format!("blocked://{}", net::split_host_port_ref(&target_host).0),
                 metrics::HostOutcome::Blocked,
                 0,
             );
@@ -402,7 +472,7 @@ pub fn handle_client(
             drop(reader);
             return tunnel::handle_connect(
                 client,
-                &target,
+                target,
                 &prefix,
                 config.timeout,
                 (!config.tunnel_idle.is_zero()).then_some(config.tunnel_idle),
@@ -423,7 +493,7 @@ pub fn handle_client(
             &mut client,
             peer_addr,
             &request_line,
-            &raw_headers,
+            raw_headers,
             &mut reader,
             &shared,
         )?;

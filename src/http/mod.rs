@@ -453,7 +453,7 @@ pub fn handle_http_with_headers(
         let p = freshness::revalidated_policy(&resp_headers, &cached_head, cfg, now);
         cache.refresh(key, p.ttl, p.age, conn_id);
         if origin_reusable {
-            shared.upstream.pool.put(&pool_key, server);
+            shared.upstream.pool.put(&pool_key, server, shared.timeout);
         }
         let ttl_left = p.ttl.as_secs().saturating_sub(p.age);
         return serve_cached(client, entry, source, "REVALIDATED", ttl_left, &ctx);
@@ -584,7 +584,7 @@ pub fn handle_http_with_headers(
 
     let cache_state = if clean {
         if origin_reusable {
-            shared.upstream.pool.put(&pool_key, server);
+            shared.upstream.pool.put(&pool_key, server, shared.timeout);
         }
         match (policy, sink) {
             (Some(p), Some(s)) => {
@@ -650,8 +650,7 @@ pub(super) fn acquire_origin(
     origin: &Origin,
     pool_key: &str,
 ) -> io::Result<(OriginConn, bool)> {
-    if let Some(server) = upstream.pool.get(pool_key) {
-        server.get_ref().set_timeouts(timeout)?;
+    if let Some(server) = upstream.pool.get(pool_key, timeout) {
         log_debug!(Some(conn_id), "reusing pooled connection to {}", pool_key);
         return Ok((server, true));
     }
@@ -736,8 +735,10 @@ pub fn read_response_head<R: BufRead>(reader: &mut R) -> io::Result<ResponseHead
         .unwrap_or(0);
 
     let mut headers = Vec::new();
+    // 行の読み取りバッファは 1 本を使い回す (ヘッダーの数だけ String を作らない)
+    let mut line = String::new();
     loop {
-        let mut line = String::new();
+        line.clear();
         if reader.read_line(&mut line)? == 0 {
             break;
         }

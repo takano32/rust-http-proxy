@@ -125,7 +125,7 @@ fn revalidate(
             .background_revalidations
             .fetch_add(1, Ordering::Relaxed);
         if reusable {
-            upstream.pool.put(&pool_key, server);
+            upstream.pool.put(&pool_key, server, timeout);
         }
         return Ok("304, refreshed");
     }
@@ -169,7 +169,7 @@ fn revalidate(
         .background_revalidations
         .fetch_add(1, Ordering::Relaxed);
     if reusable {
-        upstream.pool.put(&pool_key, server);
+        upstream.pool.put(&pool_key, server, timeout);
     }
     Ok("replaced with a fresh copy")
 }
