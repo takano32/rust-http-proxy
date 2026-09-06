@@ -20,8 +20,8 @@ use rust_http_proxy::{log_debug, log_error, log_info};
 
 static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
-/// オリジンへのアイドル接続を保持する時間。
-const ORIGIN_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
+/// オリジンへのアイドル接続を保持する時間 (長いほどプールのヒット率が上がる)。
+const ORIGIN_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn main() {
     log::init_from_env();

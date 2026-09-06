@@ -90,14 +90,28 @@ impl Pool {
     }
 }
 
-/// 相手が閉じていないか、読み残しが無いかを非ブロッキングの peek で確かめる。
+/// 相手が閉じていないか、読み残しが無いかを確かめる。
+///
+/// Linux では `recv(MSG_PEEK | MSG_DONTWAIT)` の 1 回で済ませる
+/// (`set_nonblocking` → `peek` → `set_nonblocking` は 3 システムコールだった)。
+#[cfg(target_os = "linux")]
+fn is_alive(stream: &TcpStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut byte = [0u8; 1];
+    match crate::sys::peek(stream.as_raw_fd(), &mut byte) {
+        // 読めるものがある = 前の応答の読み残し、0 = 相手が閉じた。どちらも使えない
+        Ok(_) => false,
+        Err(e) => e.kind() == std::io::ErrorKind::WouldBlock,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
 fn is_alive(stream: &TcpStream) -> bool {
     if stream.set_nonblocking(true).is_err() {
         return false;
     }
     let mut byte = [0u8; 1];
     let alive = match stream.peek(&mut byte) {
-        Ok(0) => false,
         Ok(_) => false,
         Err(e) => e.kind() == std::io::ErrorKind::WouldBlock,
     };

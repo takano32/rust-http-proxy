@@ -573,7 +573,7 @@ fn test_integration_origin_connections_are_pooled() {
     let mut status = String::new();
     stream.read_to_string(&mut status).unwrap();
     assert!(
-        status.contains("\"origin_connections\":{\"new\":1,\"reused\":3}"),
+        status.contains("\"origin_connections\":{\"new\":1,\"reused\":3,\"pool_hit_ratio\":0.7500}"),
         "{}",
         status
     );

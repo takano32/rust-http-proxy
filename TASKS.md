@@ -83,6 +83,8 @@ T1.5 の計測 (conn 1 本、1 要求あたりの内訳、`Instant` を一時的
 
 T1.5 後: forward 1 並列 6,697 → **8,286 req/s**、8 並列 30,699 → **32,842**、64 並列 22,392 → **25,912 (+15.7%)**。
 
+T1.6 後: `pool_hit_ratio` = **0.9712** (基準 0.95)、forward 8 並列 32,074 req/s、64 並列 26,142 req/s。
+
 **判明している最大のボトルネック**: プロキシが `TCP_NODELAY` を立てていないため、応答ヘッダーと本文を別々に `write` した際に
 Nagle + delayed ACK で **1 要求あたり約 40 ms 止まる**。実験で両側に `set_nodelay(true)` を入れると 8 並列で
 **176 → 674 req/s、p50 44 → 9.6 ms** (直結と同等、つまり Python の上限に到達) になった。これが T1.1。
@@ -165,7 +167,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
     やるなら 1 要求ぶんのヘッダーを 1 つの `Vec<u8>` に読み、`(start, end)` のスライスで参照する。`MAX_LINE` / `MAX_HEADER_LINES` の制限は維持。
   - 受け入れ基準: forward 64 並列の req/s が 5% 以上向上、または「計測の結果不要」と記録。
 
-- [ ] **T1.6 オリジン接続プールのヒット率を上げる**
+- [x] **T1.6 オリジン接続プールのヒット率を上げる**
   - 変更箇所: `src/pool.rs`, `src/main.rs` (`ORIGIN_IDLE` = 30 s)。
   - やること: `is_alive` の `set_nonblocking(true)` → `peek` → `set_nonblocking(false)` は 3 syscall。`MSG_PEEK | MSG_DONTWAIT` の `recv` 1 回にする (Linux、`extern "C"` の `recv`)。
     アイドル保持を 30 s → 60 s。`/status` にプールのヒット/ミス数を出す。

@@ -328,6 +328,16 @@ impl Metrics {
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// プールから再利用できた割合 (`reused / (new + reused)`)。
+    pub fn pool_hit_ratio(&self) -> f64 {
+        let new = self.origin_new.load(Ordering::Relaxed);
+        let reused = self.origin_reused.load(Ordering::Relaxed);
+        match new + reused {
+            0 => 0.0,
+            total => reused as f64 / total as f64,
+        }
+    }
+
     pub fn inc_origin_conn(&self, reused: bool) {
         if reused {
             self.origin_reused.fetch_add(1, Ordering::Relaxed);
@@ -381,7 +391,7 @@ impl Metrics {
                 "{{\"status\":\"ok\",\"uptime_secs\":{},\"total_requests\":{},",
                 "\"active_connections\":{},\"bytes_forwarded\":{},",
                 "\"cache_hits\":{},\"cache_misses\":{},",
-                "\"origin_connections\":{{\"new\":{},\"reused\":{}}},",
+                "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
                 "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{}}}"
             ),
@@ -393,6 +403,7 @@ impl Metrics {
             self.cache_misses.load(Ordering::Relaxed),
             self.origin_new.load(Ordering::Relaxed),
             self.origin_reused.load(Ordering::Relaxed),
+            self.pool_hit_ratio(),
             hosts_json.join(","),
             clients_json.join(","),
             crate::log::current_level().as_str().trim(),
