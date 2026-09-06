@@ -386,6 +386,9 @@ pub fn handle_client(
         if is_connect {
             // 先読みしてしまったバイト (TLS ClientHello など) はトンネルへ渡す
             let prefix = reader.buffer().to_vec();
+            // トンネルの間は要求読み取り用のバッファも複製した記述子も要らない
+            // (アイドルのトンネルを大量に抱えるときの資源を減らす)
+            drop(reader);
             return tunnel::handle_connect(
                 client,
                 &target,

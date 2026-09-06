@@ -174,13 +174,15 @@ mod relay {
     use std::time::Duration;
 
     use crate::log_trace;
-    use crate::sys::{self, POLLIN, POLLOUT, Pipe, PollFd};
+    use crate::sys::{self, POLLERR, POLLHUP, POLLIN, POLLOUT, Pipe, PollFd};
 
     /// 1 回の splice / read で動かす最大バイト数 (パイプ容量と同じ)。
     const CHUNK: usize = 1 << 20;
 
     /// 片方向の中継。データはパイプ (splice) か、使えなければ中間バッファに置く。
+    /// 最初にデータが動くまで作らない (アイドルのトンネルは資源を持たない)。
     enum Relay {
+        Unset,
         Pipe(Pipe),
         Buf(Vec<u8>),
     }
@@ -194,6 +196,8 @@ mod relay {
         pending: usize,
         /// バッファ方式で次に書き出す位置
         offset: usize,
+        /// poll が「読める」と言った (最初は分からないので待つ側から始める)
+        readable: bool,
         src_eof: bool,
         done: bool,
         moved: u64,
@@ -201,19 +205,13 @@ mod relay {
 
     impl Dir {
         fn new(src: usize, dst: usize) -> Dir {
-            let relay = match Pipe::new() {
-                Ok(p) => {
-                    p.set_capacity(CHUNK as i32);
-                    Relay::Pipe(p)
-                }
-                Err(_) => Relay::Buf(vec![0u8; 64 * 1024]),
-            };
             Dir {
                 src,
                 dst,
-                relay,
+                relay: Relay::Unset,
                 pending: 0,
                 offset: 0,
+                readable: false,
                 src_eof: false,
                 done: false,
                 moved: 0,
@@ -222,7 +220,17 @@ mod relay {
 
         /// 送信元から中継バッファへ移す。`Ok(0)` は EOF。
         fn fill(&mut self, socks: &[TcpStream; 2]) -> io::Result<usize> {
+            if matches!(self.relay, Relay::Unset) {
+                self.relay = match Pipe::new() {
+                    Ok(p) => {
+                        p.set_capacity(CHUNK as i32);
+                        Relay::Pipe(p)
+                    }
+                    Err(_) => Relay::Buf(vec![0u8; 64 * 1024]),
+                };
+            }
             match &mut self.relay {
+                Relay::Unset => unreachable!("just initialised"),
                 Relay::Pipe(pipe) => {
                     match sys::splice_move(socks[self.src].as_raw_fd(), pipe.write_fd, CHUNK) {
                         Ok(n) => Ok(n),
@@ -246,6 +254,7 @@ mod relay {
         /// 中継バッファから送信先へ移す。
         fn drain(&mut self, socks: &[TcpStream; 2]) -> io::Result<usize> {
             match &mut self.relay {
+                Relay::Unset => Ok(0),
                 Relay::Pipe(pipe) => {
                     sys::splice_move(pipe.read_fd, socks[self.dst].as_raw_fd(), self.pending)
                 }
@@ -274,8 +283,8 @@ mod relay {
                 if d.done {
                     continue;
                 }
-                // 送信元 → 中継
-                if !d.src_eof && d.pending == 0 {
+                // 送信元 → 中継 (読めると分かってから中継バッファを用意する)
+                if !d.src_eof && d.pending == 0 && d.readable {
                     match d.fill(&socks) {
                         Ok(0) => {
                             d.src_eof = true;
@@ -286,7 +295,7 @@ mod relay {
                             d.offset = 0;
                             progressed = true;
                         }
-                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => d.readable = false,
                         Err(_) => {
                             d.src_eof = true;
                             progressed = true;
@@ -347,6 +356,12 @@ mod relay {
             if sys::poll_fds(&mut fds, timeout_ms)? == 0 && timeout_ms >= 0 {
                 log_trace!(None, "tunnel idle timeout after {}ms", timeout_ms);
                 break 'outer;
+            }
+            for d in dirs.iter_mut() {
+                // HUP / ERR でも read して EOF を確かめる
+                if fds[d.src].revents & (POLLIN | POLLHUP | POLLERR) != 0 {
+                    d.readable = true;
+                }
             }
         }
 
