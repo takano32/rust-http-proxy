@@ -1402,3 +1402,103 @@ fn test_integration_connect_port_restriction() {
     stream.read_to_string(&mut resp).unwrap();
     assert!(resp.starts_with("HTTP/1.1 403 Forbidden"), "{}", resp);
 }
+
+/// 1 本の接続に生のバイト列を投げ、応答 (あれば) と接続が閉じたかを返す。
+fn raw_request(proxy_port: u16, bytes: &[u8]) -> String {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    stream.write_all(bytes).unwrap();
+    let mut out = Vec::new();
+    // 相手が閉じるまで読む (閉じなければタイムアウトで抜ける)
+    let _ = stream.read_to_end(&mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[test]
+fn test_integration_malformed_requests_do_not_panic() {
+    let proxy_port = start_test_proxy(proxy_config());
+    let status =
+        |resp: &str| -> Option<u16> { resp.split_whitespace().nth(1).and_then(|s| s.parse().ok()) };
+
+    // 要求行が壊れている: 応答なしで閉じるか 400
+    for bad in [
+        &b"GARBAGE\r\n\r\n"[..],
+        &b"GET\r\n\r\n"[..],
+        &b"\x00\x01\x02\r\n\r\n"[..],
+        &b"GET http://127.0.0.1:9/ HTTP/1.1\r\nHost\r\n\r\n"[..], // 区切りのないヘッダー
+    ] {
+        let resp = raw_request(proxy_port, bad);
+        assert!(
+            resp.is_empty() || matches!(status(&resp), Some(400..=599)),
+            "unexpected response: {:?}",
+            resp
+        );
+    }
+
+    // 巨大な要求行 -> 414
+    let mut long = b"GET http://example.invalid/".to_vec();
+    long.extend(std::iter::repeat_n(b'a', 70 * 1024));
+    long.extend_from_slice(b" HTTP/1.1\r\n\r\n");
+    assert_eq!(status(&raw_request(proxy_port, &long)), Some(414));
+
+    // ヘッダー行が多すぎる -> 431
+    let mut many = b"GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\n".to_vec();
+    for i in 0..300 {
+        many.extend_from_slice(format!("X-Pad-{}: 1\r\n", i).as_bytes());
+    }
+    many.extend_from_slice(b"\r\n");
+    assert_eq!(status(&raw_request(proxy_port, &many)), Some(431));
+
+    // ヘッダー 1 行が長すぎる -> 431
+    let mut long_header = b"GET http://example.invalid/ HTTP/1.1\r\nX-Long: ".to_vec();
+    long_header.extend(std::iter::repeat_n(b'b', 70 * 1024));
+    long_header.extend_from_slice(b"\r\n\r\n");
+    assert_eq!(status(&raw_request(proxy_port, &long_header)), Some(431));
+
+    // CR 無しの行 (LF だけ) でも解釈できる
+    let resp = raw_request(
+        proxy_port,
+        b"GET http://127.0.0.1:9/ HTTP/1.1\nHost: 127.0.0.1:9\n\n",
+    );
+    assert!(
+        resp.is_empty() || matches!(status(&resp), Some(400..=599)),
+        "{:?}",
+        resp
+    );
+
+    // CONNECT の宛先にパスが付いている / スキームが付いている
+    for target in [
+        "http://example.invalid:443/path",
+        "example.invalid:443/path",
+    ] {
+        let req = format!(
+            "CONNECT {} HTTP/1.1\r\nHost: example.invalid\r\n\r\n",
+            target
+        );
+        let resp = raw_request(proxy_port, req.as_bytes());
+        assert!(
+            resp.is_empty() || matches!(status(&resp), Some(400..=599)),
+            "{:?}",
+            resp
+        );
+    }
+
+    // IPv6 リテラル (到達しないので 502 か 403。パニックしないことが要点)
+    let resp = raw_request(
+        proxy_port,
+        b"GET http://[2001:db8::1]:8080/ HTTP/1.1\r\nHost: [2001:db8::1]:8080\r\n\r\n",
+    );
+    assert!(
+        resp.is_empty() || matches!(status(&resp), Some(400..=599)),
+        "{:?}",
+        resp
+    );
+
+    // 最後に正常な要求が通ること (プロキシが生きている)
+    let (origin_port, _origin) = start_mock_origin();
+    let host = format!("127.0.0.1:{}", origin_port);
+    let ok = get_via_proxy(proxy_port, &format!("http://{}/alive", host), &host);
+    assert!(ok.contains("200 OK"), "{}", ok);
+}
