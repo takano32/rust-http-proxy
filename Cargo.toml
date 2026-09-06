@@ -2,6 +2,9 @@
 name = "rust-http-proxy"
 version = "0.1.0"
 edition = "2024"
+# `cargo run --release` はプロキシ本体を動かす (ベンチは `--bin bench` で明示的に)。
+# これが無いと bin が 2 つあるため cargo がどちらか決められずエラーになる
+default-run = "rust-http-proxy"
 
 [dependencies]
 

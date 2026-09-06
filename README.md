@@ -380,6 +380,9 @@ cargo build
 # 最適化リリースビルド
 cargo build --release
 
+# 起動 (bin が 2 つあるが default-run でプロキシ本体が選ばれる。ベンチはビルドされない)
+cargo run --release
+
 # ベンチ (オリジンもベンチ内で起動する。プロキシは別端末で PROXY_ALLOW_LOCAL=on を付けて先に上げておく)
 cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 # --conc 並列数 / --seconds 測定秒数 / --body-bytes 応答本文の大きさ
