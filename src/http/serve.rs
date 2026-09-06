@@ -1,7 +1,6 @@
 //! キャッシュ済みレスポンスの配信: 条件付き要求への 304、Range の 206/416、HEAD、stale の判定。
 
 use std::io::{self, Write};
-use std::net::TcpStream;
 
 use super::Ctx;
 use super::request::map_locations;
@@ -36,7 +35,7 @@ pub(super) fn if_range_matches(if_range: Option<&str>, head: &CachedHead) -> boo
 /// キャッシュ済みレスポンスを配信する。クライアントの条件付き要求には 304、`Range` には 206、
 /// `HEAD` にはヘッダーだけを返す。戻り値はクライアント接続を維持できるか。
 pub(super) fn serve_cached(
-    client: &mut TcpStream,
+    client: &mut impl Write,
     entry: CachedResponse,
     source: CacheSource,
     label: &str,

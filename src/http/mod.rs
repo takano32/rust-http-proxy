@@ -14,7 +14,7 @@ mod tests;
 pub use request::{Origin, map_locations, parse_origin};
 pub use serve::{Serve, write_cached_response};
 
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -118,6 +118,9 @@ pub fn handle_http_with_headers(
     shared: &Shared,
 ) -> io::Result<bool> {
     let started = Instant::now();
+    // 応答ヘッダーと本文の先頭を 1 回の write でまとめて出す (別々に出すと 1 セグメント増える)。
+    // どの経路でも最後に flush するので、次の要求の前にバッファは空になる
+    let client = &mut BufWriter::with_capacity(COPY_BUF_SIZE, client);
     let conn_id = shared.conn_id;
     let cache: &Cache = &shared.cache;
     let metrics: &Metrics = &shared.metrics;
@@ -154,9 +157,7 @@ pub fn handle_http_with_headers(
         Ok(o) => o,
         Err(e) => {
             log_warn!(Some(conn_id), "400 Bad Request: {}", e);
-            let _ = client.write_all(
-                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            );
+            let _ = write_error(client, 400, "Bad Request");
             return Ok(false);
         }
     };
@@ -648,7 +649,7 @@ fn forward_request_body(
     }
 }
 
-fn write_error(client: &mut TcpStream, status: u16, reason: &str) -> io::Result<()> {
+fn write_error(client: &mut impl Write, status: u16, reason: &str) -> io::Result<()> {
     let resp = format!(
         "HTTP/1.1 {} {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         status, reason

@@ -26,6 +26,8 @@ struct Args {
     conc: usize,
     seconds: u64,
     body_bytes: usize,
+    /// オリジン応答を保存可能にする (キャッシュ HIT 側を測る)
+    cacheable: bool,
 }
 
 fn usage() -> ! {
@@ -43,6 +45,7 @@ fn parse_args() -> Args {
         conc: 8,
         seconds: 5,
         body_bytes: 1024,
+        cacheable: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -52,6 +55,7 @@ fn parse_args() -> Args {
             "--conc" => args.conc = value().parse().unwrap_or_else(|_| usage()),
             "--seconds" => args.seconds = value().parse().unwrap_or_else(|_| usage()),
             "--body-bytes" => args.body_bytes = value().parse().unwrap_or_else(|_| usage()),
+            "--cacheable" => args.cacheable = true,
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -65,14 +69,15 @@ fn parse_args() -> Args {
 // ---------------------------------------------------------------- オリジン
 
 /// 固定応答を 1 回の `write_all` で返す keep-alive オリジン。
-fn spawn_origin(body_bytes: usize) -> io::Result<SocketAddr> {
+fn spawn_origin(body_bytes: usize, cacheable: bool) -> io::Result<SocketAddr> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?;
     let body = vec![b'x'; body_bytes];
     let mut response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\n\r\n",
-        body.len()
+         Cache-Control: {}\r\n\r\n",
+        body.len(),
+        if cacheable { "max-age=60" } else { "no-store" }
     )
     .into_bytes();
     response.extend_from_slice(&body);
@@ -337,10 +342,10 @@ fn parse_addr(s: &str) -> SocketAddr {
 
 fn main() {
     let args = parse_args();
-    let origin = spawn_origin(args.body_bytes).expect("origin");
+    let origin = spawn_origin(args.body_bytes, args.cacheable).expect("origin");
     println!(
-        "bench: conc={} seconds={} body={}B origin={}",
-        args.conc, args.seconds, args.body_bytes, origin
+        "bench: conc={} seconds={} body={}B cacheable={} origin={}",
+        args.conc, args.seconds, args.body_bytes, args.cacheable, origin
     );
 
     let direct_req = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", origin).into_bytes();

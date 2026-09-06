@@ -56,6 +56,9 @@
 | connect, 8 並列 | 3,506 tunnels/s, p50 1.85 ms | 3,938 tunnels/s, p50 1.70 ms | |
 | connect, 64 並列 | 3,648 tunnels/s, p50 17.3 ms | 3,288 tunnels/s, p50 18.1 ms | |
 
+T1.2 (BufWriter) 後: forward 8 並列 30,231 req/s, p50 0.216 ms。
+キャッシュ HIT (`--cacheable`, メモリ 64 MiB) は 60,813 → **75,563 req/s**、p50 0.091 → 0.070 ms。
+
 **判明している最大のボトルネック**: プロキシが `TCP_NODELAY` を立てていないため、応答ヘッダーと本文を別々に `write` した際に
 Nagle + delayed ACK で **1 要求あたり約 40 ms 止まる**。実験で両側に `set_nodelay(true)` を入れると 8 並列で
 **176 → 674 req/s、p50 44 → 9.6 ms** (直結と同等、つまり Python の上限に到達) になった。これが T1.1。
@@ -105,7 +108,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
     結合テストを 1 つ追加: keep-alive 接続で 5 要求を連続して送り、合計時間が 100 ms 未満であること (Nagle があれば 200 ms 以上かかる)。
     ループバックなので閾値は余裕を持たせ、CI でフレークしないようにする。
 
-- [ ] **T1.2 応答ヘッダーと本文を 1 回の書き込みにまとめる**
+- [x] **T1.2 応答ヘッダーと本文を 1 回の書き込みにまとめる**
   - 変更箇所: `src/http/mod.rs` の配信部 (`client.write_all(&client_head)` からループまで)、`src/http/serve.rs` の `write_cached_response`、
     `src/endpoints/mod.rs` の自前エンドポイント応答。
   - やること: クライアントへの書き込みを `BufWriter::with_capacity(64 * 1024, client)` 経由にし、ヘッダー + 最初の本文チャンクが 1 セグメントで出るようにする。
