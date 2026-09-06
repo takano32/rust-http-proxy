@@ -38,6 +38,44 @@ use request::{RequestHeaders, parse_request_headers};
 use serve::{can_serve_stale, serve_cached};
 
 pub(super) const COPY_BUF_SIZE: usize = 64 * 1024;
+
+thread_local! {
+    /// 本文の中継バッファ。1 接続 = 1 スレッドなので、要求ごとに 64 KiB を確保して
+    /// ゼロ埋めし直す代わりにスレッドで使い回す
+    static COPY_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// スレッドから借りた中継バッファ。Drop で返すので途中で return しても失わない。
+pub(super) struct CopyBuf(Vec<u8>);
+
+impl CopyBuf {
+    pub(super) fn take() -> CopyBuf {
+        let mut buf = COPY_BUF.with(|b| std::mem::take(&mut *b.borrow_mut()));
+        if buf.len() < COPY_BUF_SIZE {
+            buf.resize(COPY_BUF_SIZE, 0);
+        }
+        CopyBuf(buf)
+    }
+}
+
+impl std::ops::Deref for CopyBuf {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for CopyBuf {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+impl Drop for CopyBuf {
+    fn drop(&mut self) {
+        COPY_BUF.with(|b| *b.borrow_mut() = std::mem::take(&mut self.0));
+    }
+}
 /// オリジンがこのステータスを返したら stale を配信する (RFC 5861 stale-if-error 相当)。
 const STALE_ON_STATUS: &[u16] = &[500, 502, 503, 504];
 
@@ -507,7 +545,7 @@ pub fn handle_http_with_headers(
 
     client.write_all(&client_head)?;
     let mut body_bytes = 0u64;
-    let mut buf = vec![0u8; COPY_BUF_SIZE];
+    let mut buf = CopyBuf::take();
     let mut clean = true;
     {
         let mut body = BodyReader::new(&mut server, framing);
@@ -642,7 +680,7 @@ fn forward_request_body(
         }
         Framing::Chunked => {
             let mut body = BodyReader::new(reader, framing);
-            let mut buf = vec![0u8; COPY_BUF_SIZE];
+            let mut buf = CopyBuf::take();
             let mut total = 0u64;
             loop {
                 let n = body.read(&mut buf)?;

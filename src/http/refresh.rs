@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::request::Origin;
-use super::{COPY_BUF_SIZE, Shared, acquire_origin, read_response_head, request_head};
+use super::{Shared, acquire_origin, read_response_head, request_head};
 use crate::Upstream;
 use crate::body::{BodyReader, Framing};
 use crate::cache::{Cache, CacheKey, now_epoch};
@@ -145,7 +145,7 @@ fn revalidate(
     };
     let mut sink = cache.begin_store(key, url, p.ttl, p.age, p.validators, expected, conn_id);
     sink.write(&stored_head);
-    let mut buf = vec![0u8; COPY_BUF_SIZE];
+    let mut buf = super::CopyBuf::take();
     let clean = {
         let mut body = BodyReader::new(&mut server, framing);
         loop {

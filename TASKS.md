@@ -65,6 +65,24 @@ T1.3 (poll + splice) 後: トンネル 1 本 1,114 → **2,800 MiB/s**、CONNECT
 T1.4 後: `PROXY_CACHE_ENABLED=off PROXY_STATS_PERSIST=off` の起動直後スレッド数 5 → **3**
 (既定は 6)。forward 8 並列 30,699 req/s、CONNECT 確立 8,293 tunnels/s。
 
+T1.5 の計測 (conn 1 本、1 要求あたりの内訳、`Instant` を一時的に仕込んで測定):
+
+| 区間 | 時間 | |
+|---|---|---|
+| 要求解析 (parse_request_headers + parse_origin) | 4.9 us | 全体 128 us の **3.8%** |
+| キャッシュ判定 | 2.2 us | |
+| 要求ヘッダー組み立て | 1.6 us | |
+| オリジン接続の取得 (プール) | 5.2 us | |
+| オリジン往復 | 61.2 us | 大半は待ち時間 |
+| 応答ヘッダー整形 | 5.6 us | |
+| 本文の配信 | 24.2 us → 17.9 us | 毎要求 64 KiB を確保・ゼロ埋めしていた |
+| 統計・アクセスログ | 3.3 us | |
+
+確保回数は 1 要求あたり 98.7 回 (一時的に数えるアロケータを入れて測定)。解析の割合が 5% 未満なので
+**ヘッダーのスライス化は見送り**、代わりに計測で見つかった中継バッファの確保を潰した。
+
+T1.5 後: forward 1 並列 6,697 → **8,286 req/s**、8 並列 30,699 → **32,842**、64 並列 22,392 → **25,912 (+15.7%)**。
+
 **判明している最大のボトルネック**: プロキシが `TCP_NODELAY` を立てていないため、応答ヘッダーと本文を別々に `write` した際に
 Nagle + delayed ACK で **1 要求あたり約 40 ms 止まる**。実験で両側に `set_nodelay(true)` を入れると 8 並列で
 **176 → 674 req/s、p50 44 → 9.6 ms** (直結と同等、つまり Python の上限に到達) になった。これが T1.1。
@@ -141,7 +159,7 @@ python3 scripts/bench.py --proxy 127.0.0.1:18080 --seconds 5
     `metrics.record_host` / `record_client` の `format!` は info 未満のログレベルでも走るので、ホスト別統計の上位表更新はロック 1 回 + 文字列生成 1 回に抑える。
   - 受け入れ基準: `PROXY_CACHE_ENABLED=off` で `perf`/`strace -c` 上に cache/freshness 由来の関数・`stat`/`open` が出ない。起動直後のスレッド数を README に書く (期待: 待ち受け + 数本)。
 
-- [ ] **T1.5 要求解析のアロケーションを減らす (計測してから)**
+- [x] **T1.5 要求解析のアロケーションを減らす (計測してから)**
   - 変更箇所: `src/lib.rs` `handle_client` (`raw_headers: Vec<String>`、`method`/`target` の `to_string`)、`src/http/request.rs` `parse_request_headers`。
   - やること: まず T0.1 のベンチ + `perf` で `alloc` の割合を見る。5% 未満なら **このタスクは飛ばす** (理由をコミットに書く)。
     やるなら 1 要求ぶんのヘッダーを 1 つの `Vec<u8>` に読み、`(start, end)` のスライスで参照する。`MAX_LINE` / `MAX_HEADER_LINES` の制限は維持。

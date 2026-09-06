@@ -28,6 +28,8 @@ struct Args {
     body_bytes: usize,
     /// オリジン応答を保存可能にする (キャッシュ HIT 側を測る)
     cacheable: bool,
+    /// 測る種類 ("all" / "direct" / "forward" / "tunnel" / "connect")
+    only: String,
 }
 
 fn usage() -> ! {
@@ -46,6 +48,7 @@ fn parse_args() -> Args {
         seconds: 5,
         body_bytes: 1024,
         cacheable: false,
+        only: "all".to_string(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -56,6 +59,7 @@ fn parse_args() -> Args {
             "--seconds" => args.seconds = value().parse().unwrap_or_else(|_| usage()),
             "--body-bytes" => args.body_bytes = value().parse().unwrap_or_else(|_| usage()),
             "--cacheable" => args.cacheable = true,
+            "--only" => args.only = value(),
             "-h" | "--help" => usage(),
             _ => usage(),
         }
@@ -348,46 +352,58 @@ fn main() {
         args.conc, args.seconds, args.body_bytes, args.cacheable, origin
     );
 
-    let direct_req = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", origin).into_bytes();
-    http_load(origin, direct_req, args.conc, args.seconds).print("direct");
+    let want = |name: &str| args.only == "all" || args.only == name;
+
+    if want("direct") {
+        let direct_req = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", origin).into_bytes();
+        http_load(origin, direct_req, args.conc, args.seconds).print("direct");
+    }
 
     let Some(proxy) = args.proxy.as_deref() else {
         return;
     };
     let proxy = parse_addr(proxy);
 
-    let forward_req = format!("GET http://{0}/ HTTP/1.1\r\nHost: {0}\r\n\r\n", origin).into_bytes();
-    http_load(proxy, forward_req, args.conc, args.seconds).print("forward");
+    if want("forward") {
+        let forward_req =
+            format!("GET http://{0}/ HTTP/1.1\r\nHost: {0}\r\n\r\n", origin).into_bytes();
+        http_load(proxy, forward_req, args.conc, args.seconds).print("forward");
+    }
 
     // トンネル 1 本のスループット (時間ではなく転送量で終わる)
-    let blaster = spawn_blaster().expect("blaster");
-    match open_tunnel(proxy, blaster) {
-        Ok((_sock, mut reader)) => {
-            let mut buf = vec![0u8; 256 * 1024];
-            let t0 = Instant::now();
-            let mut got = 0u64;
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => got += n as u64,
+    if want("tunnel") {
+        let blaster = spawn_blaster().expect("blaster");
+        match open_tunnel(proxy, blaster) {
+            Ok((_sock, mut reader)) => {
+                let mut buf = vec![0u8; 256 * 1024];
+                let t0 = Instant::now();
+                let mut got = 0u64;
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => got += n as u64,
+                    }
+                    if got >= SINK_BYTES {
+                        break;
+                    }
                 }
-                if got >= SINK_BYTES {
-                    break;
-                }
+                let secs = t0.elapsed().as_secs_f64().max(1e-9);
+                println!(
+                    "{:<8} {:>9} op/s  {:>8.1} MiB/s  ({} MiB through one tunnel)",
+                    "tunnel",
+                    1,
+                    got as f64 / secs / (1024.0 * 1024.0),
+                    got / (1 << 20)
+                );
             }
-            let secs = t0.elapsed().as_secs_f64().max(1e-9);
-            println!(
-                "{:<8} {:>9} op/s  {:>8.1} MiB/s  ({} MiB through one tunnel)",
-                "tunnel",
-                1,
-                got as f64 / secs / (1024.0 * 1024.0),
-                got / (1 << 20)
-            );
+            Err(e) => println!("tunnel   skipped: {}", e),
         }
-        Err(e) => println!("tunnel   skipped: {}", e),
     }
 
     // CONNECT の確立/秒
+    if !want("connect") {
+        return;
+    }
     let sink = spawn_sink().expect("sink");
     run_load(args.conc, args.seconds, move |stop, lat, _bytes| {
         while !stop.load(Ordering::Relaxed) {
