@@ -182,7 +182,14 @@ pub fn write_cached_response(
     } else {
         "Connection: close".to_string()
     });
-    let bytes = head.assemble(&extra);
+    // Location の書き換えが要らないときは String を 1 本ずつ作らずに直接書く
+    let bytes = if serve.map_locations {
+        head.assemble(&extra)
+    } else {
+        let mut out = Vec::with_capacity(entry.head.len() + 128);
+        crate::headers::write_response_head(&mut out, &entry.head, Some(&head.status_line), &extra);
+        out
+    };
     client.write_all(&bytes)?;
     let mut written = bytes.len() as u64;
     if !serve.head_only && len > 0 {

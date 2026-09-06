@@ -456,17 +456,14 @@ pub fn handle_http_with_headers(
             freshness::conditional_headers(&freshness::parse_cached_head(&entry.head))
         })
         .unwrap_or_default();
-    let forwarded: Vec<String> = headers::sanitize_and_inject_headers(raw_headers, peer_addr)
-        .into_iter()
-        .filter(|h| !h.trim_start().to_ascii_lowercase().starts_with("host:"))
-        .collect();
-    for h in &forwarded {
-        log_trace!(Some(conn_id), "fwd header  {}", h.trim_end());
-    }
-    for line in &conditional_lines {
-        log_trace!(Some(conn_id), "fwd header  {} (revalidation)", line);
-    }
-    let request_head = request_head(method, &origin, &forwarded, &conditional_lines);
+    // 転送するヘッダーは Vec<String> を経由せず、そのままバイト列に書く
+    let request_head =
+        build_request_head(method, &origin, raw_headers, peer_addr, &conditional_lines);
+    log_trace!(
+        Some(conn_id),
+        "origin request head:\n{}",
+        String::from_utf8_lossy(&request_head).trim_end()
+    );
     // 期限切れの表現が手元にあるなら、オリジンを長く待たずに stale を返す
     let origin_timeout = if stale.is_some() {
         shared.timeout.min(cfg.stale_wait)
@@ -623,12 +620,15 @@ pub fn handle_http_with_headers(
             }
         }
     }
-    let mut sanitized = headers::sanitize_response_head(&head);
-    // 保存するのは元の Location のまま (配信時に必要なら書き換える)
-    let cached_head = sanitized.assemble(&[]);
-    if origin.mapped {
-        map_locations(&mut sanitized.lines);
-    }
+    // 保存するのは元の Location のまま (配信時に必要なら書き換える)。
+    // マッピング形式でなければ String を 1 本ずつ作らずに直接バイト列へ書く
+    let mut cached_head = Vec::new();
+    headers::write_response_head(&mut cached_head, &head, None, &[]);
+    let sanitized = origin.mapped.then(|| {
+        let mut h = headers::sanitize_response_head(&head);
+        map_locations(&mut h.lines);
+        h
+    });
     // クライアント向けの枠組み: 長さが分かればそのまま、分からなければ HTTP/1.1 には再 chunk
     let client_framing = match framing {
         Framing::None | Framing::Length(_) => framing,
@@ -656,7 +656,14 @@ pub fn handle_http_with_headers(
         _ => {}
     }
     extra.push(ctx.connection_line());
-    let client_head = sanitized.assemble(&extra);
+    let client_head = match &sanitized {
+        Some(h) => h.assemble(&extra),
+        None => {
+            let mut out = Vec::with_capacity(cached_head.len() + 64);
+            headers::write_response_head(&mut out, &head, None, &extra);
+            out
+        }
+    };
     let expected = match framing {
         Framing::Length(n) => Some(n.saturating_add(cached_head.len() as u64)),
         _ => None,
@@ -774,8 +781,34 @@ pub fn handle_http_with_headers(
     Ok(ctx.keep_client)
 }
 
+/// クライアントから受けたヘッダーをそのまま使って、オリジンへの要求の先頭を組み立てる。
+/// [`request_head`] と同じ形だが、中間の `Vec<String>` を作らない。
+pub(super) fn build_request_head(
+    method: &str,
+    origin: &Origin,
+    raw_headers: &[String],
+    peer_addr: Option<SocketAddr>,
+    conditional: &[String],
+) -> Vec<u8> {
+    let mut head = Vec::with_capacity(256 + raw_headers.iter().map(|h| h.len()).sum::<usize>());
+    head.extend_from_slice(method.as_bytes());
+    head.extend_from_slice(b" ");
+    head.extend_from_slice(origin.path.as_bytes());
+    head.extend_from_slice(b" HTTP/1.1\r\nHost: ");
+    head.extend_from_slice(origin.host_port.as_bytes());
+    head.extend_from_slice(b"\r\n");
+    headers::write_request_headers(&mut head, raw_headers, peer_addr);
+    for line in conditional {
+        head.extend_from_slice(line.as_bytes());
+        head.extend_from_slice(b"\r\n");
+    }
+    head.extend_from_slice(b"\r\n");
+    head
+}
+
 /// オリジンへの要求の先頭 (要求行 + Host + 転送するヘッダー + 条件付きヘッダー + 空行)。
 /// Host はオリジンのものに差し替える (マッピング形式ではプロキシ宛ての Host が来る)。
+/// 裏の再検証 ([`refresh`]) のように、転送するヘッダーを自前で作る経路で使う。
 pub(super) fn request_head(
     method: &str,
     origin: &Origin,
