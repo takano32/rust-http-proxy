@@ -212,9 +212,9 @@ pub fn handle_http_with_headers(
             return Ok(false);
         }
     };
-    let server_addr = origin.server_addr();
-    let url = origin.url();
-    let pool_key = origin.pool_key();
+    // URL・プールキー・接続先は 1 本の String から借りる (要求ごとの組み立てを 1 回に)
+    let located = origin.locate();
+    let (server_addr, url, pool_key) = (located.server_addr(), located.url(), located.pool_key());
     let client_ip = peer_addr
         .map(|a| a.ip().to_string())
         .unwrap_or_else(|| "-".to_string());
@@ -222,7 +222,7 @@ pub fn handle_http_with_headers(
     let mut ctx = Ctx {
         client_ip: &client_ip,
         method,
-        url: &url,
+        url,
         version,
         started,
         conn_id,
@@ -231,7 +231,7 @@ pub fn handle_http_with_headers(
         keep_client,
         head_only,
         mapped: origin.mapped,
-        pool_key: &pool_key,
+        pool_key,
     };
 
     // ---- キャッシュ参照 ----
@@ -241,7 +241,7 @@ pub fn handle_http_with_headers(
     let (key, client_no_store, force_revalidate, now) = if cache_on {
         let variant = freshness::accept_encoding_variant(req.accept_encoding.as_deref());
         (
-            cache_key_variant("GET", &url, &variant),
+            cache_key_variant("GET", url, &variant),
             freshness::has_directive(&req.cache_control, "no-store"),
             freshness::has_directive(&req.cache_control, "no-cache")
                 || freshness::directive_value(&req.cache_control, "max-age") == Some(0),
@@ -262,7 +262,7 @@ pub fn handle_http_with_headers(
     let mut stale: Option<(CachedResponse, CacheSource)> = None;
     if lookup_allowed {
         if let Some((entry, source)) = cache.get(key, conn_id) {
-            cache.remember_variant(&url, key);
+            cache.remember_variant(url, key);
             if entry.is_fresh(now) && !force_revalidate {
                 body::drain(reader, req_framing)?;
                 let ttl_left = entry.ttl_left(now);
@@ -295,7 +295,7 @@ pub fn handle_http_with_headers(
                         shared,
                         &origin,
                         key,
-                        &url,
+                        url,
                         entry.head.clone(),
                         req.accept_encoding.clone(),
                     )
@@ -375,33 +375,28 @@ pub fn handle_http_with_headers(
     let mut attempt = 0;
     let (mut server, head, status, resp_headers, request_body_bytes) = loop {
         attempt += 1;
-        let (mut server, reused) = match acquire_origin(
-            &shared.upstream,
-            origin_timeout,
-            conn_id,
-            &origin,
-            &pool_key,
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                log_warn!(
-                    Some(conn_id),
-                    "502 Bad Gateway: connect {} failed: {}",
-                    server_addr,
-                    e
-                );
-                if let Some((entry, source)) = stale.take()
-                    && !force_revalidate
-                    && can_serve_stale(&entry)
-                {
-                    body::drain(reader, req_framing)?;
-                    cache.stale_served.fetch_add(1, Ordering::Relaxed);
-                    return serve_cached(client, entry, source, "STALE", 0, &ctx);
+        let (mut server, reused) =
+            match acquire_origin(&shared.upstream, origin_timeout, conn_id, &origin, pool_key) {
+                Ok(v) => v,
+                Err(e) => {
+                    log_warn!(
+                        Some(conn_id),
+                        "502 Bad Gateway: connect {} failed: {}",
+                        server_addr,
+                        e
+                    );
+                    if let Some((entry, source)) = stale.take()
+                        && !force_revalidate
+                        && can_serve_stale(&entry)
+                    {
+                        body::drain(reader, req_framing)?;
+                        cache.stale_served.fetch_add(1, Ordering::Relaxed);
+                        return serve_cached(client, entry, source, "STALE", 0, &ctx);
+                    }
+                    write_error(client, 502, "Bad Gateway")?;
+                    return Ok(false);
                 }
-                write_error(client, 502, "Bad Gateway")?;
-                return Ok(false);
-            }
-        };
+            };
         metrics.inc_origin_conn(reused);
         let sent = server
             .get_mut()
@@ -478,7 +473,7 @@ pub fn handle_http_with_headers(
         let p = freshness::revalidated_policy(&resp_headers, &cached_head, cfg, now);
         cache.refresh(key, p.ttl, p.age, conn_id);
         if origin_reusable {
-            shared.upstream.pool.put(&pool_key, server, shared.timeout);
+            shared.upstream.pool.put(pool_key, server, shared.timeout);
         }
         let ttl_left = p.ttl.as_secs().saturating_sub(p.age);
         return serve_cached(client, entry, source, "REVALIDATED", ttl_left, &ctx);
@@ -513,7 +508,7 @@ pub fn handle_http_with_headers(
     }
     // unsafe メソッドへの成功応答は対象 URL (と Location 先) のキャッシュを無効化する (RFC 9111 §4.4)
     if !is_get && !head_only && (200..400).contains(&status) && cache_on {
-        cache.invalidate(&url, conn_id);
+        cache.invalidate(url, conn_id);
         for name in ["location", "content-location"] {
             if let Some((_, target)) = resp_headers.iter().find(|(k, _)| k == name)
                 && let Ok(o) = parse_origin(target, None)
@@ -563,7 +558,7 @@ pub fn handle_http_with_headers(
         _ => None,
     };
     let mut sink =
-        policy.map(|p| cache.begin_store(key, &url, p.ttl, p.age, p.validators, expected, conn_id));
+        policy.map(|p| cache.begin_store(key, url, p.ttl, p.age, p.validators, expected, conn_id));
     if let Some(s) = sink.as_mut() {
         s.write(&cached_head);
     }
@@ -609,7 +604,7 @@ pub fn handle_http_with_headers(
 
     let cache_state = if clean {
         if origin_reusable {
-            shared.upstream.pool.put(&pool_key, server, shared.timeout);
+            shared.upstream.pool.put(pool_key, server, shared.timeout);
         }
         match (policy, sink) {
             (Some(p), Some(s)) => {

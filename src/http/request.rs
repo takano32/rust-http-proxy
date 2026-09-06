@@ -93,6 +93,63 @@ impl Origin {
     pub fn host(&self) -> String {
         net::split_host_port(&self.host_port).0
     }
+
+    /// 正規化 URL を 1 本だけ組み立てる。接続プールのキーと接続先はその部分文字列として借りる。
+    /// (要求ごとに `with_default_port` を 3 回、`format!` を 2 回やり直すのをやめる)
+    pub fn locate(&self) -> Located {
+        let addr_start = self.scheme.as_str().len() + 3; // "://"
+        let mut url =
+            String::with_capacity(addr_start + self.host_port.len() + 6 + self.path.len());
+        url.push_str(self.scheme.as_str());
+        url.push_str("://");
+        let (host, port) = net::split_host_port_ref(&self.host_port);
+        if host.contains(':') && !host.starts_with('[') {
+            url.push('[');
+            url.push_str(host);
+            url.push(']');
+        } else {
+            url.push_str(host);
+        }
+        url.push(':');
+        url.push_str(
+            &port
+                .unwrap_or_else(|| self.scheme.default_port())
+                .to_string(),
+        );
+        let origin_end = url.len();
+        url.push_str(&self.path);
+        Located {
+            url,
+            origin_end,
+            addr_start,
+        }
+    }
+}
+
+/// `scheme://host:port/path` を 1 本持ち、プールキーと接続先を部分文字列で返す。
+pub struct Located {
+    url: String,
+    /// `scheme://host:port` が終わる位置
+    origin_end: usize,
+    /// `host:port` が始まる位置
+    addr_start: usize,
+}
+
+impl Located {
+    /// キャッシュキーとログに使う正規化 URL。
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// 接続プールのキー (`scheme://host:port`)。
+    pub fn pool_key(&self) -> &str {
+        &self.url[..self.origin_end]
+    }
+
+    /// 接続先 (`host:port`)。
+    pub fn server_addr(&self) -> &str {
+        &self.url[self.addr_start..self.origin_end]
+    }
 }
 
 /// 要求行の target と Host ヘッダーからオリジンを決める。

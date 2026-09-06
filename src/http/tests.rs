@@ -239,3 +239,67 @@ fn test_read_response_head_skips_interim_responses() {
     let (_head, status, _headers) = read_response_head(&mut reader).unwrap();
     assert_eq!(status, 101, "101 は読み飛ばさない");
 }
+
+#[test]
+fn test_locate_builds_one_string_for_url_pool_key_and_addr() {
+    let cases = [
+        (
+            "http://example.com/a?b=1",
+            None,
+            "http://example.com:80/a?b=1",
+            "http://example.com:80",
+            "example.com:80",
+        ),
+        (
+            "http://example.com:8080/",
+            None,
+            "http://example.com:8080/",
+            "http://example.com:8080",
+            "example.com:8080",
+        ),
+        (
+            "https://example.com/x",
+            None,
+            "https://example.com:443/x",
+            "https://example.com:443",
+            "example.com:443",
+        ),
+        (
+            "http://[2001:db8::1]:8080/p",
+            None,
+            "http://[2001:db8::1]:8080/p",
+            "http://[2001:db8::1]:8080",
+            "[2001:db8::1]:8080",
+        ),
+        (
+            "http://[2001:db8::1]/p",
+            None,
+            "http://[2001:db8::1]:80/p",
+            "http://[2001:db8::1]:80",
+            "[2001:db8::1]:80",
+        ),
+        (
+            "/path",
+            Some("example.com"),
+            "http://example.com:80/path",
+            "http://example.com:80",
+            "example.com:80",
+        ),
+    ];
+    for (target, host, want_url, want_key, want_addr) in cases {
+        let o = parse_origin(target, host).unwrap();
+        let l = o.locate();
+        // 従来の 3 つの関数と完全に一致すること
+        assert_eq!(l.url(), o.url(), "url for {}", target);
+        assert_eq!(l.pool_key(), o.pool_key(), "pool_key for {}", target);
+        assert_eq!(
+            l.server_addr(),
+            o.server_addr(),
+            "server_addr for {}",
+            target
+        );
+        assert_eq!(l.url(), want_url);
+        assert_eq!(l.pool_key(), want_key);
+        assert_eq!(l.server_addr(), want_addr);
+    }
+}
