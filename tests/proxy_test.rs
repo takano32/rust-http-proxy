@@ -1106,14 +1106,20 @@ fn test_integration_concurrent_misses_are_coalesced() {
             r
         );
     }
-    let coalesced = responses
+    // オリジンへ行くのは 1 本だけ、残りは合流 (COALESCED) か、その後の保存済み (HIT) から返る。
+    // どちらになるかは到着の順番次第なので、まとめて数える (負荷の高い CI でも安定する)
+    let from_cache = responses
         .iter()
-        .filter(|r| r.contains("X-Cache: COALESCED"))
+        .filter(|r| r.contains("X-Cache: COALESCED") || r.contains("X-Cache: HIT"))
         .count();
     assert!(
-        coalesced >= 4,
-        "expected most requests to be coalesced, got {}",
-        coalesced
+        from_cache >= 5,
+        "expected all but the leader to be served without touching the origin, got {}",
+        from_cache
+    );
+    assert!(
+        responses.iter().any(|r| r.contains("X-Cache: COALESCED")),
+        "at least one request should have joined the in-flight fetch"
     );
     assert_eq!(counter.load(Ordering::SeqCst), 1, "origin fetched once");
 }
@@ -1680,4 +1686,83 @@ fn test_integration_large_request_body_is_forwarded_intact() {
             size
         );
     }
+}
+
+/// keep-alive で受け、同じ接続の 2 本目の要求にだけ 408 を返すオリジン
+/// (アイドルタイムアウトで 408 を積んでから閉じる実装を模した形)。
+fn start_408_on_second_request_origin(requests: Arc<AtomicUsize>) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let requests = Arc::clone(&requests);
+            thread::spawn(move || {
+                let mut stream = stream;
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut on_this_conn = 0usize;
+                loop {
+                    let mut saw_request = false;
+                    loop {
+                        let mut line = String::new();
+                        if std::io::BufRead::read_line(&mut reader, &mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        if line.trim().is_empty() {
+                            break;
+                        }
+                        saw_request = true;
+                    }
+                    if !saw_request {
+                        return;
+                    }
+                    on_this_conn += 1;
+                    let n = requests.fetch_add(1, Ordering::SeqCst) + 1;
+                    let resp = if on_this_conn == 2 {
+                        "HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\n\r\n".to_string()
+                    } else {
+                        let body = format!("ok {}", n);
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                    };
+                    if stream.write_all(resp.as_bytes()).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+#[test]
+fn test_integration_pooled_connection_returning_408_is_retried() {
+    // 再利用した接続に「積まれていた」408 は、そのまま中継せずに新しい接続でやり直す
+    let requests = Arc::new(AtomicUsize::new(0));
+    let origin_port = start_408_on_second_request_origin(Arc::clone(&requests));
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+    let url = format!("http://{}/p", host);
+
+    let first = get_via_proxy(proxy_port, &url, &host);
+    assert!(
+        first.contains("200 OK") && first.ends_with("ok 1"),
+        "{}",
+        first
+    );
+
+    // 2 本目はプールの接続を再利用して 408 を受けるが、新しい接続でやり直して 200 が返る
+    let second = get_via_proxy(proxy_port, &url, &host);
+    assert!(
+        second.contains("200 OK"),
+        "408 が中継されてはいけない: {}",
+        second
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        3,
+        "408 を受けた 1 回ぶん余計にオリジンへ行く"
+    );
 }

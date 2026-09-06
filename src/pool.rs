@@ -73,8 +73,12 @@ impl Pool {
         }
         let now = Instant::now();
         let mut idle = self.idle.locked();
-        let queue = idle.entry(host.to_string()).or_default();
-        queue.retain(|i| now.duration_since(i.since) < self.idle_timeout);
+        // ロックを持つ時間を短くする: 既にある行はキーを作り直さず、期限切れの掃除は
+        // sweep() に任せて上限だけ見る (このロックは全接続スレッドが 1 要求に 2 回取る)
+        let queue = match idle.get_mut(host) {
+            Some(q) => q,
+            None => idle.entry(host.to_string()).or_default(),
+        };
         while queue.len() >= self.max_per_host {
             queue.pop_front();
         }

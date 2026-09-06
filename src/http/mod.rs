@@ -159,7 +159,10 @@ pub fn handle_http_with_headers(
     let started = Instant::now();
     // 応答ヘッダーと本文の先頭を 1 回の write でまとめて出す (別々に出すと 1 セグメント増える)。
     // どの経路でも最後に flush するので、次の要求の前にバッファは空になる
-    let client = &mut BufWriter::with_capacity(COPY_BUF_SIZE, client);
+    // 容量は本文チャンク (COPY_BUF_SIZE) より大きくする。同じだと 64 KiB 以上の応答で
+    // BufWriter が「容量以上の write はバッファを空けてから直書き」する経路に入り、
+    // ヘッダーだけが単独の sendto になってしまう
+    let client = &mut BufWriter::with_capacity(2 * COPY_BUF_SIZE, client);
     let conn_id = shared.conn_id;
     let cache: &Cache = &shared.cache;
     let metrics: &Metrics = &shared.metrics;
@@ -398,18 +401,26 @@ pub fn handle_http_with_headers(
             .and_then(|n| server.get_mut().flush().map(|_| n));
         let result = sent.and_then(|n| read_response_head(&mut server).map(|h| (h, n)));
         match result {
+            // 408 (Request Timeout) と 421 (Misdirected Request) は、再利用した接続に
+            // 積まれていた応答か、この接続では処理できない印。冪等ならやり直す (RFC 9110 §15.5.20)
+            Ok(((_, status, _), _))
+                if reused && retryable && attempt == 1 && (status == 408 || status == 421) =>
+            {
+                log_debug!(
+                    Some(conn_id),
+                    "pooled connection to {} returned {}, retrying on a fresh one",
+                    pool_key,
+                    status
+                );
+                continue;
+            }
             Ok(((head, status, resp_headers), n)) => {
                 if origin_timeout != shared.timeout {
                     let _ = server.get_ref().set_timeouts(shared.timeout);
                 }
                 break (server, head, status, resp_headers, n);
             }
-            Err(e)
-                if reused
-                    && retryable
-                    && attempt == 1
-                    && (is_eof_like(&e) || e.kind() == io::ErrorKind::InvalidData) =>
-            {
+            Err(e) if reused && retryable && attempt == 1 && is_stale_conn_error(&e) => {
                 log_debug!(
                     Some(conn_id),
                     "pooled connection to {} was stale ({}), retrying",
@@ -719,6 +730,20 @@ fn write_error(client: &mut impl Write, status: u16, reason: &str) -> io::Result
     );
     client.write_all(resp.as_bytes())?;
     client.flush()
+}
+
+/// 再利用した接続が死んでいた (要求が届いていない) と判断してよいエラーか。
+/// タイムアウトは「届いたが処理が遅い」場合があるので含めない (含めると二重送信になる)。
+fn is_stale_conn_error(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+            // 状態行が壊れている = 前のやり取りの読み残しを読んだ
+            | io::ErrorKind::InvalidData
+    )
 }
 
 fn is_eof_like(e: &io::Error) -> bool {
