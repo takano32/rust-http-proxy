@@ -227,6 +227,66 @@ mod tests {
     }
 
     #[test]
+    fn counts_stay_accurate_and_the_global_cap_holds() {
+        // 全体上限 3、ホストあたり 2
+        let pool = Pool::with_total(2, 3, Duration::from_secs(5));
+        let mut keep = Vec::new();
+        for host in ["a", "b"] {
+            for _ in 0..2 {
+                let (c, s) = pair();
+                keep.push(s);
+                pool.put(
+                    host,
+                    BufReader::new(OriginStream::Plain(c)),
+                    Duration::from_secs(5),
+                );
+            }
+        }
+        // a に 2 本、b は 1 本目まで入って上限 3 に達し、2 本目は入らない
+        assert_eq!(pool.idle_count(), 3, "全体上限で頭打ちになる");
+
+        // 取り出すと減る
+        assert!(pool.get("a", Duration::from_secs(5)).is_some());
+        assert_eq!(pool.idle_count(), 2);
+        assert!(pool.get("a", Duration::from_secs(5)).is_some());
+        assert_eq!(pool.idle_count(), 1);
+        assert!(pool.get("a", Duration::from_secs(5)).is_none());
+        assert_eq!(pool.idle_count(), 1, "空振りでは減らない");
+
+        // ホストあたりの上限で押し出されたぶんも数え違えない
+        let pool = Pool::with_total(1, 10, Duration::from_secs(5));
+        let mut keep = Vec::new();
+        for _ in 0..3 {
+            let (c, s) = pair();
+            keep.push(s);
+            pool.put(
+                "h",
+                BufReader::new(OriginStream::Plain(c)),
+                Duration::from_secs(5),
+            );
+        }
+        assert_eq!(pool.idle_count(), 1, "ホストあたり 1 本");
+
+        // 期限切れの掃除でも数え違えない
+        let pool = Pool::with_total(4, 10, Duration::from_millis(30));
+        let mut keep = Vec::new();
+        for _ in 0..3 {
+            let (c, s) = pair();
+            keep.push(s);
+            pool.put(
+                "h",
+                BufReader::new(OriginStream::Plain(c)),
+                Duration::from_secs(5),
+            );
+        }
+        assert_eq!(pool.idle_count(), 3);
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(pool.sweep(), 3, "3 本とも期限切れ");
+        assert_eq!(pool.idle_count(), 0);
+        assert_eq!(pool.sweep(), 0, "空なら何も捨てない");
+    }
+
+    #[test]
     fn respects_limits_and_expiry() {
         let pool = Pool::new(1, Duration::from_millis(30));
         let (c1, _s1) = pair();
