@@ -662,7 +662,7 @@ pub fn handle_http_with_headers(
     // 応答ヘッダーをもう一度なめて Vec を育て直していた (要求ごとに確保 5 回)
     let cached_head = policy.is_some().then(|| {
         let mut out = Vec::with_capacity(head.len() + 64);
-        headers::write_response_head(&mut out, &head, None, &[] as &[&str]);
+        headers::write_response_head(&mut out, &head, None, &[], &[] as &[&str]);
         out
     });
     let sanitized = origin.mapped.then(|| {
@@ -716,7 +716,7 @@ pub fn handle_http_with_headers(
         Some(h) => h.assemble(extra),
         None => {
             let mut out = Vec::with_capacity(head.len() + 96);
-            headers::write_response_head(&mut out, &head, None, extra);
+            headers::write_response_head(&mut out, &head, None, &[], extra);
             out
         }
     };

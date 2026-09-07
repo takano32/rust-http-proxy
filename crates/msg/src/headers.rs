@@ -155,16 +155,31 @@ impl ResponseHead {
     }
 }
 
+/// 応答ヘッダー 1 行の名前が `names` のどれかと一致するか (大小は無視する)。
+///
+/// 落とすヘッダーの指名に使う。行に `:` が無ければ名前は空扱い (どれにも一致しない)。
+pub fn line_named(line: &str, names: &[&str]) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+    let name = ascii::split_once(line, b':')
+        .map(|(k, _)| k.trim_ascii())
+        .unwrap_or("");
+    names.iter().any(|n| name.eq_ignore_ascii_case(n))
+}
+
 /// 応答の先頭を `Vec<String>` を経由せずに `out` へ書く。
 ///
 /// [`sanitize_response_head`] + [`ResponseHead::assemble`] と同じ結果を、ヘッダー 1 本ごとの
 /// String を作らずに得る。`Location` の書き換えが要るとき (マッピング形式) は使えないので、
 /// そのときは従来どおり [`sanitize_response_head`] を使う。
 /// `status_line` を渡すとステータス行を差し替える (206 / 416 用)。
+/// `drop_names` に挙げた名前のヘッダーは落とす (416 の `Content-Type` 用。空なら何もしない)。
 pub fn write_response_head<S: AsRef<str>>(
     out: &mut Vec<u8>,
     head: &[u8],
     status_line: Option<&str>,
+    drop_names: &[&str],
     extra: &[S],
 ) {
     let text = String::from_utf8_lossy(head);
@@ -235,6 +250,7 @@ pub fn write_response_head<S: AsRef<str>>(
         let name = k.trim_ascii();
         if is_hop_by_hop_name(name)
             || named_in_connection(name)
+            || drop_names.iter().any(|d| name.eq_ignore_ascii_case(d))
             || FRAMING_HEADERS.iter().any(|f| name.eq_ignore_ascii_case(f))
         {
             continue;
@@ -566,11 +582,17 @@ mod write_request_tests {
 mod write_response_tests {
     use super::*;
 
-    fn old_way(head: &[u8], status_line: Option<&str>, extra: &[String]) -> Vec<u8> {
+    fn old_way(
+        head: &[u8],
+        status_line: Option<&str>,
+        drop_names: &[&str],
+        extra: &[String],
+    ) -> Vec<u8> {
         let mut h = sanitize_response_head(head);
         if let Some(sl) = status_line {
             h.status_line = sl.to_string();
         }
+        h.lines.retain(|l| !line_named(l, drop_names));
         h.assemble(extra)
     }
 
@@ -600,16 +622,20 @@ mod write_response_tests {
         for head in cases {
             for extra in &extras {
                 for sl in [None, Some("HTTP/1.1 206 Partial Content")] {
-                    let mut got = Vec::new();
-                    write_response_head(&mut got, head, sl, extra);
-                    assert_eq!(
-                        String::from_utf8_lossy(&got),
-                        String::from_utf8_lossy(&old_way(head, sl, extra)),
-                        "head={:?} sl={:?} extra={:?}",
-                        String::from_utf8_lossy(head),
-                        sl,
-                        extra
-                    );
+                    // 落とすヘッダーの指名あり / なし の両方で、組を作る版と一致すること
+                    for drop_names in [&[] as &[&str], &["content-type"], &["A", "x"]] {
+                        let mut got = Vec::new();
+                        write_response_head(&mut got, head, sl, drop_names, extra);
+                        assert_eq!(
+                            String::from_utf8_lossy(&got),
+                            String::from_utf8_lossy(&old_way(head, sl, drop_names, extra)),
+                            "head={:?} sl={:?} drop={:?} extra={:?}",
+                            String::from_utf8_lossy(head),
+                            sl,
+                            drop_names,
+                            extra
+                        );
+                    }
                 }
             }
         }

@@ -167,6 +167,54 @@ fn test_write_cached_response_range_and_head() {
     );
 }
 
+/// 416 (Range Not Satisfiable) は本文を返さないので、保存してある `Content-Type` を
+/// 落とすこと。**マッピング形式でない普通の経路**でも落ちること (T10.7 / T10.2 の取りこぼし)。
+///
+/// `head.lines.retain(...)` は `Location` を書き換えるとき (マッピング形式) にしか作らない
+/// `ResponseHead` の側しか直していなかった。素の HIT は生の先頭をそのまま
+/// `write_response_head` へ渡すので、`Content-Type` がそのまま残っていた。
+#[test]
+fn test_416_drops_the_stored_content_type_on_both_paths() {
+    let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nETag: \"v1\"\r\n\r\n0123456789";
+    for map_locations in [false, true] {
+        let mut out = Vec::new();
+        let served = Serve {
+            map_locations,
+            ..serve(RangeSpec::Unsatisfiable, false)
+        };
+        let (status, _) = write_cached_response(&mut out, cached(wire), &served).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(status, 416);
+        assert!(
+            !text.to_ascii_lowercase().contains("content-type"),
+            "416 に Content-Type が残っている (map_locations={}): {}",
+            map_locations,
+            text
+        );
+        // ほかのヘッダーは残る (落とすのは Content-Type だけ)
+        assert!(text.contains("ETag: \"v1\"\r\n"), "{}", text);
+        assert!(text.contains("Content-Range: bytes */10\r\n"), "{}", text);
+        assert!(text.ends_with("\r\n\r\n"), "{}", text);
+    }
+}
+
+/// 416 でないときは `Content-Type` を落とさない (上のテストの対照)。
+#[test]
+fn test_206_keeps_the_content_type() {
+    let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n0123456789";
+    for map_locations in [false, true] {
+        let mut out = Vec::new();
+        let served = Serve {
+            map_locations,
+            ..serve(RangeSpec::Bytes { start: 2, end: 5 }, false)
+        };
+        let (status, _) = write_cached_response(&mut out, cached(wire), &served).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(status, 206);
+        assert!(text.contains("Content-Type: text/plain\r\n"), "{}", text);
+    }
+}
+
 #[test]
 fn test_if_range_matching() {
     let head = freshness::parse_cached_head(
