@@ -30,6 +30,12 @@ pub struct Endpoint<'a> {
     pub pac_direct: &'a [String],
     /// lite プロファイル (ダッシュボードを持たない)
     pub lite: bool,
+    /// 上限といまのスレッド数を引く口 (`/status` を組み立てるときだけ呼ぶ)。
+    ///
+    /// 値そのものではなく関数で受け取るのは、生きているスレッド数と待ち行列を数えるのに
+    /// **全接続スレッドで共有している鍵**を取るため。`Endpoint` は要求ごとに組むので、
+    /// ここで数えると熱い経路に乗ってしまう (`/status` に来たときだけ引く)
+    pub concurrency: &'a dyn Fn() -> metrics::Concurrency,
 }
 
 mod blocklist;
@@ -120,6 +126,7 @@ pub fn handle(
                     settings: &reload::status_json(),
                     blocklist: &crate::blocklist::status_json(),
                     state_file: &persist::status_json(),
+                    concurrency: (ep.concurrency)(),
                 },
             ),
         )

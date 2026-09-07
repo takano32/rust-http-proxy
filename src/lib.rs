@@ -185,6 +185,9 @@ pub fn serve(
         let c = Arc::clone(&cache);
         let p = Arc::clone(&upstream);
         let w = park.clone();
+        // `/status` が上限とスレッド数を出すために、接続にワーカー置き場も持たせる
+        // (数を引くのは `/status` に来たときだけ。要求ごとには引かない)
+        let wk = Arc::clone(&workers);
         let started = workers.run(Box::new(move || {
             // 同時接続数と active_connections の持ち分は Conn が持つ (接続の寿命と一致させる)
             let accepted = Accepted { peer, local_port };
@@ -197,6 +200,7 @@ pub fn serve(
                 c,
                 p,
                 w,
+                wk,
                 conn_inherited,
                 conn_id,
             ) {
@@ -452,6 +456,9 @@ pub struct Conn {
     scratch: Option<Scratch>,
     /// アイドルのときに預ける先 (無ければ従来どおりこのスレッドがブロッキング read で待つ)
     park: Option<Arc<idle::IdleWatch>>,
+    /// 接続スレッドの置き場。`/status` が上限といまの数を出すためだけに持つ
+    /// (数を引くのは `/status` に来たときだけ。鍵を要求ごとに取らない)
+    workers: Arc<workers::Workers>,
     /// 接続元の IP を文字列にしたもの (X-Forwarded-For と統計に毎要求要るので接続ごとに 1 回だけ作る)
     peer_ip: String,
     /// 同時接続数と `/status` の active_connections の持ち分 (接続の寿命と一致させる)
@@ -531,6 +538,7 @@ impl Conn {
         cache: Arc<Cache>,
         upstream: Arc<Upstream>,
         park: Option<Arc<idle::IdleWatch>>,
+        workers: Arc<workers::Workers>,
         inherited: Option<std::time::Duration>,
         conn_id: usize,
     ) -> io::Result<Conn> {
@@ -562,6 +570,7 @@ impl Conn {
             read_timeout: inherited,
             scratch: None,
             park,
+            workers,
             peer_ip: net::canonical_addr(accepted.peer).ip().to_string(),
             _open: open,
             _active: active,
@@ -763,6 +772,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         served,
         read_timeout,
         park,
+        workers,
         peer_ip,
         ..
     } = conn;
@@ -925,6 +935,15 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     let raw_headers = scratch.headers();
 
     // プロキシ自身のエンドポイント (/dashboard, /status, /metrics, /proxy.pac, /purge, /lookup, PURGE)
+    // 上限といまのスレッド数は `/status` のときだけ引く (`Workers` の鍵は全接続スレッドが
+    // 共有しているので、要求ごとに数えると熱い経路に乗る)
+    let concurrency = || crate::metrics::Concurrency {
+        max_conns: config.max_conns,
+        max_threads: workers.max_threads(),
+        live_threads: workers.live_count(),
+        idle_threads: workers.idle_count(),
+        queued_jobs: workers.queued(),
+    };
     let ep = endpoints::Endpoint {
         metrics,
         cache,
@@ -934,6 +953,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         host: host_header,
         pac_direct: &config.pac_direct,
         lite: config.lite,
+        concurrency: &concurrency,
     };
     if endpoints::handle(&mut &*client, method, target, &ep)? {
         return Ok(Step::Close);
@@ -1103,6 +1123,7 @@ mod tests {
             cache,
             upstream,
             None,
+            Arc::new(workers::Workers::new(0)),
             None,
             1,
         );
@@ -1145,6 +1166,7 @@ mod tests {
             cache,
             upstream,
             None,
+            Arc::new(workers::Workers::new(0)),
             // 継承していない経路 (Linux 以外・継承に失敗した環境) をわざと通す
             None,
             1,

@@ -150,6 +150,50 @@ fn test_integration_status_embeds_the_parts_from_the_upper_layers() {
     }
 }
 
+/// `PROXY_MAX_CONNS` / `PROXY_MAX_THREADS` の `auto` で決まった値と、いまのスレッドの数が
+/// `/status` から見えること (T10.7。以前は起動ログにしか出ていなかった)。
+#[test]
+fn test_integration_status_shows_the_limits_and_the_thread_counts() {
+    let mut cfg = proxy_config();
+    cfg.max_conns = 137;
+    cfg.max_threads = 41;
+    let proxy_port = start_test_proxy(cfg);
+    let status = status_json(proxy_port);
+    assert!(
+        status.contains("\"max_conns\":137"),
+        "決まった上限が出ていない: {}",
+        status
+    );
+    assert!(
+        status.contains("\"max_threads\":41"),
+        "スレッドの上限が出ていない: {}",
+        status
+    );
+    // `/status` を引いている接続そのものがワーカースレッドを 1 本使っているので、
+    // 生きているスレッドは 1 本以上。待ち行列は空 (上限に当たっていない)
+    let live: usize = field(&status, "\"live_threads\":");
+    let idle: usize = field(&status, "\"idle_threads\":");
+    assert!(
+        live >= 1,
+        "生きているスレッドが数えられていない: {}",
+        status
+    );
+    assert!(idle <= live, "空きは生きている数を超えない: {}", status);
+    assert!(status.contains("\"queued_jobs\":0"), "{}", status);
+}
+
+/// `/status` の JSON から `key` に続く数を取る (テスト用の雑な取り出し)。
+fn field(status: &str, key: &str) -> usize {
+    let at = status
+        .find(key)
+        .unwrap_or_else(|| panic!("{} が無い: {}", key, status))
+        + key.len();
+    let end = status[at..]
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(status.len() - at);
+    status[at..at + end].parse().expect("数字")
+}
+
 #[test]
 fn test_integration_metrics_purge_and_lookup_endpoints() {
     let counter = Arc::new(AtomicUsize::new(0));
