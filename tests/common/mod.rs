@@ -21,6 +21,18 @@ use rust_http_proxy::tls::TlsClient;
 /// リクエスト全文と通し番号 (1 始まり) を受け取って応答のバイト列を返す。
 pub type Handler = dyn Fn(&str, usize) -> Vec<u8> + Send + Sync;
 
+/// ヘッダー部から `Content-Length` の値を取る (無ければ 0)。名前の大小は無視する。
+fn content_length(head: &str) -> usize {
+    head.lines()
+        .find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| v.trim().parse().ok())?
+        })
+        .unwrap_or(0)
+}
+
 pub fn start_mock_origin() -> (u16, thread::JoinHandle<()>) {
     start_counting_origin(Arc::new(AtomicUsize::new(0)), "")
 }
@@ -66,6 +78,21 @@ pub fn start_origin(
                     match stream.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                // 本文も `Content-Length` ぶん読み切ってからハンドラに渡す。ここで止めると、
+                // ヘッダーと本文が別のセグメントで届いたとき (機械が混むと起きる) に
+                // 全文から本文が落ちて、エコーするハンドラが空を返す (T8.7)。
+                // このリポジトリのテストは chunked の要求本文を送らないので扱わない
+                if let Some(head_end) = req.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+                {
+                    let want =
+                        head_end + content_length(&String::from_utf8_lossy(&req[..head_end]));
+                    while req.len() < want {
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => req.extend_from_slice(&buf[..n]),
+                        }
                     }
                 }
                 let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
@@ -429,16 +456,7 @@ pub fn start_body_echo_origin() -> u16 {
                         }
                     }
                     let split = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
-                    let head = String::from_utf8_lossy(&buf[..split]).into_owned();
-                    let len: usize = head
-                        .lines()
-                        .find_map(|l| {
-                            let (k, v) = l.split_once(':')?;
-                            k.trim()
-                                .eq_ignore_ascii_case("content-length")
-                                .then(|| v.trim().parse().ok())?
-                        })
-                        .unwrap_or(0);
+                    let len = content_length(&String::from_utf8_lossy(&buf[..split]));
                     let mut body: Vec<u8> = buf[split..].to_vec();
                     while body.len() < len {
                         match stream.read(&mut chunk) {

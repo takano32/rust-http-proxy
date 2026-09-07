@@ -494,12 +494,21 @@ Phase 0〜4 の後、設計上の前提を 8 つの観点から疑い直した�
     切れ目が無ければ「無い」と記録する。
   - 受け入れ基準: 割るか割らないかの判断が、依存の実測にもとづいていること。
 
-- [ ] **T8.7 結合テストのオリジンが要求本文を読まず、機械が混むと落ちる**
+- [x] **T8.7 結合テストのオリジンが要求本文を読まず、機械が混むと落ちる**
   - 目的: `test_integration_request_body_on_a_reused_connection` が `taskset -c 0` で 4 回に 1 回落ちる (T9.1 の作業中に判明)。
     テスト側のオリジン (`tests/common/mod.rs` の `start_origin`) が `\r\n\r\n` までしか読まず、ヘッダーと本文が別セグメントで
     届くとエコーが空になる。プロキシの不具合ではない。
   - やること: ヘルパーが `Content-Length` ぶん本文を読み切ってから応答するように直す。
   - 受け入れ基準: `taskset -c 0 cargo test --test proxy_test request_body` を 10 回回して落ちないこと。
+  - 結果: `start_origin` がヘッダー終端を見つけたあと、`Content-Length` ぶんに届くまで読み足すようにした。
+    ハンドラに渡すもの (要求全文と通し番号) は変えていない。`taskset -c 0 … --test-threads=1` を 10 回:
+    **直す前 3/10 が落ち** (`本文が転送される left: "" right: "name=value&x=1"`)、**直したあと 0/10**。
+    `Content-Length` の取り出しは `start_body_echo_origin` と同じものだったので `content_length()` に括り出した
+    (名前の大小を無視する)。**chunked は扱わない**: このリポジトリのテストに chunked の**要求**本文を送るものは無い
+    (`Transfer-Encoding` が出てくるのは chunked の**応答** (`cache_test`) と、`Connection: Transfer-Encoding` の
+    スマグリング試験 (自前のオリジンを立てている) だけ)。同じ読み方をしている他のヘルパー
+    (`start_keepalive_origin` `start_408_on_second_request_origin` `start_sized_origin`) は本文付きの要求を
+    受け取らないので触っていない。`cargo test --workspace` 219 通過
 
 ### Phase 9 — クレートを割ったことで手が届くようになった最適化
 
