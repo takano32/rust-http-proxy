@@ -28,7 +28,7 @@ run_in_cgroup() {
   cargo_bin=$(command -v cargo) || return 2
   local sudo=""
   [ "$(id -u)" -ne 0 ] && sudo="sudo -n"
-  $sudo systemd-run --scope --quiet \
+  $sudo systemd-run --scope \
       --uid="$(id -u)" --gid="$(id -g)" \
       -p "MemoryMax=${LIMIT_MB}M" -p MemorySwapMax=0 \
       -E "PATH=$PATH" -E "HOME=$HOME" -E "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
@@ -65,11 +65,17 @@ if [ "$MODE" = find ]; then
   for LIMIT_MB in $LADDER; do
     echo "=== 上限 ${LIMIT_MB} MB を試す ==="
     cargo clean -q
-    if run_in_cgroup; then
+    run_in_cgroup
+    rc=$?
+    if [ $rc -eq 0 ]; then
       echo "通る最小の上限: ${LIMIT_MB} MB"
       exit 0
     fi
-    echo "  ${LIMIT_MB} MB では通らなかった"
+    if [ $rc -eq 2 ]; then
+      echo "cgroup を作れないので調べられません"
+      exit 2
+    fi
+    echo "  ${LIMIT_MB} MB では通らなかった (exit=$rc)"
   done
   echo "どの上限でも通らなかった"
   exit 1
