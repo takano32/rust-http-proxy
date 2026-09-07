@@ -60,7 +60,7 @@ pub(super) fn serve_cached(
         ctx.metrics.inc_cache_hit();
         ctx.metrics.add_bytes(written);
         ctx.log(
-            "304",
+            304,
             written,
             &format!("{}({},304) age={}s", label, source.as_str(), age),
         );
@@ -97,7 +97,7 @@ pub(super) fn serve_cached(
         RangeSpec::Ignore => String::new(),
     };
     ctx.log(
-        &status.to_string(),
+        status,
         written,
         &format!(
             "{}({}) age={}s ttl_left={}s{}",

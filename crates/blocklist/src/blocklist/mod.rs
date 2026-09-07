@@ -160,6 +160,11 @@ pub(crate) fn walk(host: &str, mut f: impl FnMut(&str) -> bool) -> bool {
 
 /// ホストの判定 (数えない)。`host` はポートなし。
 pub fn check(host: &str) -> Verdict {
+    // 一覧も上書きも空なら (既定の設定と `--lite` がこれ)、小文字化した `String` も作らずに抜ける。
+    // ここは素通しの経路でも要求ごとに 1 回通る
+    if SET.read_locked().as_ref().is_none_or(|s| s.is_empty()) && overrides::is_empty() {
+        return Verdict::Clear;
+    }
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     if host.is_empty() {
         return Verdict::Clear;

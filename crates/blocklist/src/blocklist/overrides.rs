@@ -148,10 +148,19 @@ pub fn overrides() -> Vec<Override> {
     v
 }
 
+/// 上書きが 1 つも登録されていないか。
+pub(super) fn is_empty() -> bool {
+    OVERRIDES.read_locked().is_empty()
+}
+
 /// このホストか親ドメインに生きている上書きがあれば、それが拒否かどうか。
 pub(super) fn lookup(host: &str) -> Option<bool> {
-    let now = now_epoch();
     let list = OVERRIDES.read_locked();
+    if list.is_empty() {
+        // 上書きが 1 つも無いのが普通。ここで壁時計を引かない
+        return None;
+    }
+    let now = now_epoch();
     let mut hit = None;
     super::walk(host, |h| {
         hit = list

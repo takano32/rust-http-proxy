@@ -382,7 +382,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 | クレート | 責務 |
 |---|---|
 | `proxy-sys` | Linux のシステムコールを直接叩く薄い層 (`poll`/`epoll`/`splice`/`pipe2`/`recv`) とシグナル |
-| `proxy-base` | ロック、壁時計、JSON の組み立て、`.env` の読み取り、ログ、HTTP 日付、コマンドライン引数 |
+| `proxy-base` | ロック、壁時計、JSON の組み立て、`.env` の読み取り、ログ、HTTP 日付、コマンドライン引数、ASCII だけを見る文字列の分割 |
 | `proxy-rrd` | 固定長のリングバッファ (状態ファイルの保存形式) |
 | `proxy-sysinfo` | 機械の観測 (メモリ、ディスク、cgroup の上限、`inotify`) |
 | `proxy-workers` | 接続スレッドの使い回し |

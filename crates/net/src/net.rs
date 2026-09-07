@@ -33,9 +33,10 @@ pub fn ipv6_enabled() -> bool {
 /// 文字列を作らない版 ([`split_host_port`] は所有権が要るときに使う)。
 #[inline]
 pub fn split_host_port_ref(s: &str) -> (&str, Option<u16>) {
-    let s = s.trim();
+    // 要求ごとに何度も通るので、区切りの探索も空白の除去も ASCII だけで済ませる
+    let s = s.trim_ascii();
     if let Some(rest) = s.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
+        if let Some(end) = rest.as_bytes().iter().position(|b| *b == b']') {
             let host = &rest[..end];
             let port = rest[end + 1..]
                 .strip_prefix(':')
@@ -45,10 +46,10 @@ pub fn split_host_port_ref(s: &str) -> (&str, Option<u16>) {
         return (s, None);
     }
     // ':' が 2 つ以上あれば括弧無しの IPv6 リテラル (ポート無し)
-    if s.matches(':').count() >= 2 {
+    if crate::ascii::count(s, b':') >= 2 {
         return (s, None);
     }
-    match s.rsplit_once(':') {
+    match crate::ascii::rsplit_once(s, b':') {
         Some((host, port)) => match port.parse::<u16>() {
             Ok(p) => (host, Some(p)),
             Err(_) => (s, None),
