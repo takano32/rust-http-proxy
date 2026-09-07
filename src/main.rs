@@ -40,6 +40,15 @@ fn main() {
         }
     };
 
+    // malloc のアリーナ数を絞る。**スレッドを作る前に呼ぶ必要がある**ので、
+    // 設定を読んだ直後・待ち受けを立てる前に置く
+    #[cfg(target_os = "linux")]
+    if config.malloc_arenas > 0 {
+        let max = config.malloc_arenas.min(i32::MAX as usize) as i32;
+        if !rust_http_proxy::sys::limit_malloc_arenas(max) {
+            log_debug!(None, "mallopt(M_ARENA_MAX, {}) was refused", max);
+        }
+    }
     if config.lite {
         // ログレベルに依らず必ず出す起動バナー
         println!("profile: lite (no cache, no statistics, no blocklist, warn log level)");

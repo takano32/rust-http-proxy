@@ -6,6 +6,7 @@ use std::io;
 use std::os::fd::RawFd;
 
 unsafe extern "C" {
+    fn mallopt(param: c_int, value: c_int) -> c_int;
     fn poll(fds: *mut PollFd, nfds: usize, timeout: c_int) -> c_int;
     fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
     fn splice(
@@ -54,6 +55,19 @@ const MSG_PEEK: c_int = 2;
 const MSG_DONTWAIT: c_int = 0x40;
 const EINTR: i32 = 4;
 const EAGAIN: i32 = 11;
+
+/// glibc の `M_ARENA_MAX` (malloc.h の定義値)。
+const M_ARENA_MAX: c_int = -8;
+
+/// malloc のアリーナ数に上限を掛ける。**スレッドを作る前に 1 回だけ呼ぶこと。**
+///
+/// glibc は既定でコア数の 8 倍までアリーナを作り、スレッドごとに別のアリーナを使う。
+/// 接続ごとにスレッドが増えるこのプロキシでは、アイドル接続を多数抱えたときに
+/// 使われないままのアリーナが RSS に居座る。戻り値は成功したか。
+pub fn limit_malloc_arenas(max: c_int) -> bool {
+    // SAFETY: 定数のパラメータ番号と値を渡すだけ。失敗は 0 で返る。
+    unsafe { mallopt(M_ARENA_MAX, max) == 1 }
+}
 
 /// `poll(2)`。`timeout_ms` が負なら無期限。戻り値は準備できた記述子の数 (0 はタイムアウト)。
 /// `EINTR` は 0 個として返す (呼び出し側でループする)。
