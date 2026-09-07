@@ -788,7 +788,7 @@ CPU/要求 50.2 us の 68% はカーネル側なので、効く順もこの順�
     `SO_RCVTIMEO` は `accept()` にも効くので、accept ループは `WouldBlock`/`TimedOut` をログも sleep も無しに `continue` する。
     `.env` で `timeout` が変わったら待ち受けに当て直し、その 1 本だけは接続ごとの設定に落とす。
     カーネルの挙動を固定する単体テストを 3 本足した (継承の確認・`accept()` が `SO_RCVTIMEO` で `WouldBlock`・`0` を断る)。
-    テストは 180 単体 + 42 結合 (`97afc9d`)
+    テストは 180 単体 + 42 結合 (`ab7a5d7`)
 
 - [ ] **T9.4 accept したスレッドがそのまま接続を処理する (受け渡しの `futex` をなくす)**
   - 目的: いまは待ち受けごとに 1 本の accept スレッドが接続を受け、`Box<dyn FnOnce>` にしてチャネルでワーカーへ渡す
