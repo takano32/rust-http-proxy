@@ -138,7 +138,7 @@ fn revalidate(
         return Ok("not cacheable any more, removed");
     };
     let sanitized = headers::sanitize_response_head(&rhead);
-    let stored_head = sanitized.assemble(&[]);
+    let stored_head = sanitized.assemble(&[] as &[&str]);
     let expected = match framing {
         Framing::Length(n) => Some(n.saturating_add(stored_head.len() as u64)),
         _ => None,

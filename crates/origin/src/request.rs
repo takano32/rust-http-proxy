@@ -2,6 +2,7 @@
 
 use std::io;
 
+use crate::ascii;
 use crate::log_trace;
 use crate::net;
 use crate::origin::Scheme;
@@ -10,8 +11,10 @@ use crate::origin::Scheme;
 #[derive(Default)]
 pub struct RequestHeaders {
     pub host: Option<String>,
-    /// (小文字の名前, 値)
-    pub pairs: Vec<(String, String)>,
+    /// `Content-Length` の値 (最後に出てきたもの。数でなければ `None`)
+    pub content_length: Option<u64>,
+    /// `Transfer-Encoding` の最後の指定が `chunked` か
+    pub chunked: bool,
     pub authorization: bool,
     pub cache_control: String,
     pub if_none_match: Option<String>,
@@ -26,41 +29,69 @@ pub struct RequestHeaders {
 pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
     let mut h = RequestHeaders::default();
     for line in raw_headers {
-        let Some((k, v)) = line.split_once(':') else {
+        let Some((k, v)) = ascii::split_once(line, b':') else {
             continue;
         };
-        let k_lower = k.trim().to_ascii_lowercase();
-        let v_trim = v.trim();
-        log_trace!(Some(conn_id), "req header  {}: {}", k.trim(), v_trim);
-        match k_lower.as_str() {
-            "host" => h.host = Some(v_trim.to_string()),
-            "authorization" => h.authorization = true,
-            "cache-control" | "pragma" => {
-                if !h.cache_control.is_empty() {
-                    h.cache_control.push(',');
-                }
-                h.cache_control.push_str(&v_trim.to_ascii_lowercase());
+        // 名前は小文字化した `String` を作らずに比べる (要求ごとにヘッダーの本数だけ確保していた)
+        let name = k.trim_ascii();
+        let v_trim = v.trim_ascii();
+        log_trace!(Some(conn_id), "req header  {}: {}", name, v_trim);
+        let is = |want: &str| name.eq_ignore_ascii_case(want);
+        if is("host") {
+            h.host = Some(v_trim.to_string());
+        } else if is("authorization") {
+            h.authorization = true;
+        } else if is("cache-control") || is("pragma") {
+            if !h.cache_control.is_empty() {
+                h.cache_control.push(',');
             }
-            "if-none-match" => h.if_none_match = Some(v_trim.to_string()),
-            "if-modified-since" => h.if_modified_since = Some(v_trim.to_string()),
-            "if-range" => h.if_range = Some(v_trim.to_string()),
-            "range" => h.range = Some(v_trim.to_string()),
-            "accept-encoding" => h.accept_encoding = Some(v_trim.to_string()),
-            "connection" | "proxy-connection" => {
-                for token in v_trim.split(',') {
-                    let t = token.trim();
-                    if t.eq_ignore_ascii_case("close") {
-                        h.connection_close = true;
-                    } else if t.eq_ignore_ascii_case("keep-alive") {
-                        h.connection_keep_alive = true;
-                    }
+            h.cache_control.push_str(&v_trim.to_ascii_lowercase());
+        } else if is("if-none-match") {
+            h.if_none_match = Some(v_trim.to_string());
+        } else if is("if-modified-since") {
+            h.if_modified_since = Some(v_trim.to_string());
+        } else if is("if-range") {
+            h.if_range = Some(v_trim.to_string());
+        } else if is("range") {
+            h.range = Some(v_trim.to_string());
+        } else if is("accept-encoding") {
+            h.accept_encoding = Some(v_trim.to_string());
+        } else if is("connection") || is("proxy-connection") {
+            for token in v_trim.split(',') {
+                let t = token.trim_ascii();
+                if t.eq_ignore_ascii_case("close") {
+                    h.connection_close = true;
+                } else if t.eq_ignore_ascii_case("keep-alive") {
+                    h.connection_keep_alive = true;
                 }
             }
-            _ => {}
+        } else if is("content-length") {
+            h.content_length = v_trim.parse::<u64>().ok();
+        } else if is("transfer-encoding") {
+            // 最後の符号化が chunked なら本文は chunked (RFC 9112 §6.1)
+            h.chunked = h.chunked
+                || v_trim
+                    .split(',')
+                    .next_back()
+                    .is_some_and(|t| t.trim_ascii().eq_ignore_ascii_case("chunked"));
         }
-        h.pairs.push((k_lower, v_trim.to_string()));
     }
     h
+}
+
+/// ポート番号を確保せずに 10 進の文字列にする (`u16::to_string` は `String` を 1 本作る)。
+fn port_digits(buf: &mut [u8; 5], mut port: u16) -> &str {
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (port % 10) as u8;
+        port /= 10;
+        if port == 0 {
+            break;
+        }
+    }
+    // 数字しか書いていないので UTF-8 として必ず妥当
+    std::str::from_utf8(&buf[i..]).unwrap_or("0")
 }
 
 /// 要求先 (オリジン)。
@@ -115,11 +146,11 @@ impl Origin {
             url.push_str(host);
         }
         url.push(':');
-        url.push_str(
-            &port
-                .unwrap_or_else(|| self.scheme.default_port())
-                .to_string(),
-        );
+        let mut digits = [0u8; 5];
+        url.push_str(port_digits(
+            &mut digits,
+            port.unwrap_or_else(|| self.scheme.default_port()),
+        ));
         let origin_end = url.len();
         url.push_str(&self.path);
         Located {
@@ -217,6 +248,43 @@ pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origi
     })
 }
 
+/// 要求先のホスト (`host[:port]`) だけを**借用で**取り出す ([`parse_origin`] と同じ規則)。
+///
+/// ACL / ブロックリストの判定は `host_port` しか見ないので、そのためだけに
+/// [`parse_origin`] を呼ぶと要求ごとに `String` を 2 本 (`host_port` と `path`) 作ることになる。
+/// 返す文字列は必ず `target` か `host_header` の部分文字列なので確保が要らない。
+pub fn target_host<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Result<&'a str> {
+    let host_of = |rest: &'a str| -> io::Result<&'a str> {
+        let host_port = match rest.find('/') {
+            Some(pos) => &rest[..pos],
+            None => rest,
+        };
+        if host_port.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Missing host in request target",
+            ));
+        }
+        Ok(host_port)
+    };
+    for prefix in ["http://", "https://", "/https/", "/http/"] {
+        if let Some(rest) = target.strip_prefix(prefix) {
+            return host_of(rest);
+        }
+    }
+    if target.starts_with('/') {
+        return match host_header {
+            Some(h) if !h.is_empty() => Ok(h),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Missing host in HTTP request",
+            )),
+        };
+    }
+    // スキームも `/` も無い形 (`h` や `h:443`) は、丸ごとがホストになる
+    Ok(target)
+}
+
 /// マッピング形式のクライアント向けに、絶対 URL の Location / Content-Location を `/https/h/p` 形式へ。
 pub fn map_locations(lines: &mut [String]) {
     for line in lines.iter_mut() {
@@ -236,6 +304,41 @@ pub fn map_locations(lines: &mut [String]) {
         };
         if let Some(m) = mapped {
             *line = format!("{}: {}", name.trim(), m);
+        }
+    }
+}
+
+#[cfg(test)]
+mod target_host_tests {
+    use super::*;
+
+    /// [`parse_origin`] の `host_port` と 1 文字も違わないこと (乖離すると ACL がすり抜ける)。
+    #[test]
+    fn matches_parse_origin() {
+        let cases = [
+            ("http://example.com/a/b", None),
+            ("http://example.com:8080/", None),
+            ("https://[::1]:8443/x", None),
+            ("/https/example.com/a", None),
+            ("/http/example.com:81/a", None),
+            ("/only/path", Some("host.example:80")),
+            ("/", Some("h")),
+            ("example.com:443", None),
+            ("example.com", None),
+        ];
+        for (target, host) in cases {
+            let want = parse_origin(target, host).map(|o| o.host_port);
+            let got = target_host(target, host).map(|h| h.to_string());
+            match (want, got) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "target={:?} host={:?}", target, host),
+                (Err(_), Err(_)) => {}
+                (a, b) => panic!("target={:?} host={:?}: {:?} vs {:?}", target, host, a, b),
+            }
+        }
+        // どちらも「ホストが無い」で失敗すること
+        for (target, host) in [("http:///a", None), ("/p", None), ("/p", Some(""))] {
+            assert!(parse_origin(target, host).is_err());
+            assert!(target_host(target, host).is_err());
         }
     }
 }

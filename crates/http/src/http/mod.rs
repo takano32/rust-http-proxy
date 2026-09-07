@@ -14,8 +14,9 @@ pub use crate::request::{Origin, map_locations, parse_origin};
 pub use crate::response::{ResponseHead, read_response_head};
 pub use serve::{Serve, write_cached_response};
 
+use std::borrow::Cow;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::TcpStream;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
@@ -226,13 +227,15 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn log(&self, status: &str, bytes: u64, cache: &str) {
-        let outcome = HostOutcome::from_access(cache, status.parse().unwrap_or(0));
+    fn log(&self, status: u16, bytes: u64, cache: &str) {
+        let outcome = HostOutcome::from_access(cache, status);
+        // 経過時間は 1 回だけ引く (clock_gettime は要求ごとに効いてくる)
         let took = self.started.elapsed();
         self.metrics
             .record_host_timed(self.pool_key, outcome, bytes, took);
         self.metrics
             .record_client(self.client_ip, outcome, bytes, Some(took));
+        let mut digits = [0u8; 5];
         access(
             self.conn_id,
             &Access {
@@ -240,21 +243,56 @@ impl Ctx<'_> {
                 method: self.method,
                 target: self.url,
                 version: self.version,
-                status,
+                status: decimal(&mut digits, status as u64),
                 bytes,
-                duration_ms: self.started.elapsed().as_secs_f64() * 1000.0,
+                duration_ms: took.as_secs_f64() * 1000.0,
                 cache,
             },
         );
     }
 
-    fn connection_line(&self) -> String {
+    fn connection_line(&self) -> &'static str {
         if self.keep_client {
-            "Connection: keep-alive".to_string()
+            "Connection: keep-alive"
         } else {
-            "Connection: close".to_string()
+            "Connection: close"
         }
     }
+}
+
+/// 10 進の数字を確保せずに書く (`to_string` / `format!` は `String` を 1 本作る)。
+fn decimal(buf: &mut [u8; 5], mut v: u64) -> &str {
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 || i == 0 {
+            break;
+        }
+    }
+    // 数字しか書いていないので UTF-8 として必ず妥当
+    std::str::from_utf8(&buf[i..]).unwrap_or("0")
+}
+
+/// `Content-Length: N` を確保せずに組み立てる (`buf` は呼び出し側のスタック)。
+fn content_length_line(buf: &mut [u8; 40], n: u64) -> &str {
+    const NAME: &[u8] = b"Content-Length: ";
+    buf[..NAME.len()].copy_from_slice(NAME);
+    let mut digits = [0u8; 20];
+    let mut i = digits.len();
+    let mut v = n;
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    let end = NAME.len() + (digits.len() - i);
+    buf[NAME.len()..end].copy_from_slice(&digits[i..]);
+    std::str::from_utf8(&buf[..end]).unwrap_or("Content-Length: 0")
 }
 
 /// オリジンとの接続 (バッファ付き)。
@@ -263,7 +301,7 @@ type OriginConn = BufReader<OriginStream>;
 /// 1 リクエストを処理する。戻り値はクライアント接続を次の要求に使えるか。
 pub fn handle_http_with_headers(
     client: &TcpStream,
-    peer_addr: Option<SocketAddr>,
+    client_ip: Option<&str>,
     request_line: &str,
     raw_headers: &[String],
     reader: &mut crate::clientio::ClientReader<'_>,
@@ -278,22 +316,16 @@ pub fn handle_http_with_headers(
     let metrics: &Metrics = &shared.metrics;
     let req = parse_request_headers(raw_headers, conn_id);
 
-    let parts: Vec<&str> = request_line.split_whitespace().collect();
-    if parts.len() < 2 {
+    let mut parts = request_line.split_whitespace();
+    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
         log_warn!(
             Some(conn_id),
             "malformed request line: {:?}",
             request_line.trim()
         );
         return Ok(false);
-    }
-    let method = parts[0];
-    let target = parts[1];
-    let version = if parts.len() > 2 {
-        parts[2]
-    } else {
-        "HTTP/1.0"
     };
+    let version = parts.next().unwrap_or("HTTP/1.0");
     let http11 = version.eq_ignore_ascii_case("HTTP/1.1");
     let keep_client = !shared.keepalive.is_zero()
         && if http11 {
@@ -301,7 +333,13 @@ pub fn handle_http_with_headers(
         } else {
             req.connection_keep_alive
         };
-    let req_framing = Framing::of_request(&req.pairs);
+    let req_framing = if req.chunked {
+        Framing::Chunked
+    } else {
+        req.content_length
+            .map(Framing::Length)
+            .unwrap_or(Framing::None)
+    };
     let is_get = method.eq_ignore_ascii_case("GET");
     let head_only = method.eq_ignore_ascii_case("HEAD");
 
@@ -316,12 +354,9 @@ pub fn handle_http_with_headers(
     // URL・プールキー・接続先は 1 本の String から借りる (要求ごとの組み立てを 1 回に)
     let located = origin.locate();
     let (server_addr, url, pool_key) = (located.server_addr(), located.url(), located.pool_key());
-    let client_ip = peer_addr
-        .map(|a| a.ip().to_string())
-        .unwrap_or_else(|| "-".to_string());
     log_debug!(Some(conn_id), "start {} {} {}", method, url, version);
     let mut ctx = Ctx {
-        client_ip: &client_ip,
+        client_ip: client_ip.unwrap_or("-"),
         method,
         url,
         version,
@@ -455,7 +490,7 @@ pub fn handle_http_with_headers(
         .unwrap_or_default();
     // 転送するヘッダーは Vec<String> を経由せず、そのままバイト列に書く
     let request_head =
-        build_request_head(method, &origin, raw_headers, peer_addr, &conditional_lines);
+        build_request_head(method, &origin, raw_headers, client_ip, &conditional_lines);
     log_trace!(
         Some(conn_id),
         "origin request head:\n{}",
@@ -471,7 +506,7 @@ pub fn handle_http_with_headers(
     // 本文の無い冪等な要求だけ、再利用した接続が死んでいたときに 1 回やり直す
     let retryable = req_framing == Framing::None && (is_get || head_only);
     let mut attempt = 0;
-    let (mut server, head, status, resp_headers, request_body_bytes) = loop {
+    let (mut server, head, status, request_body_bytes) = loop {
         attempt += 1;
         let (mut server, reused) =
             match acquire_origin(&shared.upstream, origin_timeout, conn_id, &origin, pool_key) {
@@ -501,11 +536,11 @@ pub fn handle_http_with_headers(
             .write_all(&request_head)
             .and_then(|_| forward_request_body(reader, server.get_mut(), req_framing))
             .and_then(|n| server.get_mut().flush().map(|_| n));
-        let result = sent.and_then(|n| read_response_head(&mut server).map(|h| (h, n)));
+        let result = sent.and_then(|n| crate::response::read_head(&mut server).map(|h| (h, n)));
         match result {
             // 408 (Request Timeout) と 421 (Misdirected Request) は、再利用した接続に
             // 積まれていた応答か、この接続では処理できない印。冪等ならやり直す (RFC 9110 §15.5.20)
-            Ok(((_, status, _), _))
+            Ok(((_, status), _))
                 if reused && retryable && attempt == 1 && (status == 408 || status == 421) =>
             {
                 log_debug!(
@@ -516,11 +551,11 @@ pub fn handle_http_with_headers(
                 );
                 continue;
             }
-            Ok(((head, status, resp_headers), n)) => {
+            Ok(((head, status), n)) => {
                 if origin_timeout != shared.timeout {
                     let _ = server.get_ref().set_timeouts(shared.timeout);
                 }
-                break (server, head, status, resp_headers, n);
+                break (server, head, status, n);
             }
             Err(e) if reused && retryable && attempt == 1 && is_stale_conn_error(&e) => {
                 log_debug!(
@@ -552,23 +587,23 @@ pub fn handle_http_with_headers(
             request_body_bytes
         );
     }
-    for (k, v) in &resp_headers {
+    for (k, v) in headers::response_lines(&head) {
         log_trace!(Some(conn_id), "res header  {}: {}", k, v);
     }
 
-    let framing = Framing::of_response(status, head_only, &resp_headers);
+    // 枠組みも `Connection: close` も生の先頭から直接見る (組を作らない)
+    let framing = Framing::of_response_head(status, head_only, &head);
     let origin_reusable = head.starts_with(b"HTTP/1.1")
         && framing != Framing::Close
-        && !resp_headers.iter().any(|(k, v)| {
-            k == "connection" && v.split(',').any(|t| t.trim().eq_ignore_ascii_case("close"))
-        });
+        && !headers::response_names(&head, "connection", "close");
 
     // 304: 保存済みの表現がまだ有効。延命して配信する
     if status == 304
         && let Some((entry, source)) = stale.take()
     {
         let cached_head = freshness::parse_cached_head(&entry.head);
-        let p = freshness::revalidated_policy(&resp_headers, &cached_head, cfg, now);
+        let p =
+            freshness::revalidated_policy(&headers::response_pairs(&head), &cached_head, cfg, now);
         cache.refresh(key, p.ttl, p.age, conn_id);
         if origin_reusable {
             shared.upstream.pool.put(pool_key, server, shared.timeout);
@@ -596,7 +631,7 @@ pub fn handle_http_with_headers(
 
     // ---- 配信しつつ保存 ----
     let policy = if store_allowed {
-        freshness::response_policy(status, &resp_headers, cfg, now)
+        freshness::response_policy(status, &headers::response_pairs(&head), cfg, now)
     } else {
         None
     };
@@ -608,7 +643,7 @@ pub fn handle_http_with_headers(
     if !is_get && !head_only && (200..400).contains(&status) && cache_on {
         cache.invalidate(url, conn_id);
         for name in ["location", "content-location"] {
-            if let Some((_, target)) = resp_headers.iter().find(|(k, _)| k == name)
+            if let Some(target) = headers::response_value(&head, name)
                 && let Ok(o) = parse_origin(target, None)
                 && o.scheme == origin.scheme
                 && o.server_addr() == server_addr
@@ -618,9 +653,14 @@ pub fn handle_http_with_headers(
         }
     }
     // 保存するのは元の Location のまま (配信時に必要なら書き換える)。
-    // マッピング形式でなければ String を 1 本ずつ作らずに直接バイト列へ書く
-    let mut cached_head = Vec::new();
-    headers::write_response_head(&mut cached_head, &head, None, &[]);
+    // マッピング形式でなければ String を 1 本ずつ作らずに直接バイト列へ書く。
+    // **保存しないなら組み立てもしない**: 素通しの経路では、この 1 本のために
+    // 応答ヘッダーをもう一度なめて Vec を育て直していた (要求ごとに確保 5 回)
+    let cached_head = policy.is_some().then(|| {
+        let mut out = Vec::with_capacity(head.len() + 64);
+        headers::write_response_head(&mut out, &head, None, &[] as &[&str]);
+        out
+    });
     let sanitized = origin.mapped.then(|| {
         let mut h = headers::sanitize_response_head(&head);
         map_locations(&mut h.lines);
@@ -640,35 +680,52 @@ pub fn handle_http_with_headers(
     if client_framing == Framing::Close {
         ctx.keep_client = false;
     }
-    let mut extra = Vec::new();
+    // 足すヘッダー行は借用のまま持つ (`Vec<String>` と `format!` を要求ごとに作らない)
+    let mut cl_buf = [0u8; 40];
+    // HEAD のときだけ確保する (それ以外は 1 バイトも作らない)
+    let cl_owned;
+    let mut extra: [&str; 2] = [""; 2];
+    let mut n_extra = 0usize;
     match client_framing {
-        Framing::Length(n) => extra.push(format!("Content-Length: {}", n)),
-        Framing::Chunked => extra.push("Transfer-Encoding: chunked".to_string()),
+        Framing::Length(len) => {
+            extra[0] = content_length_line(&mut cl_buf, len);
+            n_extra = 1;
+        }
+        Framing::Chunked => {
+            extra[0] = "Transfer-Encoding: chunked";
+            n_extra = 1;
+        }
         Framing::None if head_only => {
             // HEAD: GET と同じヘッダーを返す (本文は無い)
-            if let Some((_, v)) = resp_headers.iter().find(|(k, _)| k == "content-length") {
-                extra.push(format!("Content-Length: {}", v));
+            if let Some(v) = headers::response_value(&head, "content-length") {
+                cl_owned = format!("Content-Length: {}", v);
+                extra[0] = &cl_owned;
+                n_extra = 1;
             }
         }
         _ => {}
     }
-    extra.push(ctx.connection_line());
+    extra[n_extra] = ctx.connection_line();
+    n_extra += 1;
+    let extra = &extra[..n_extra];
     let client_head = match &sanitized {
-        Some(h) => h.assemble(&extra),
+        Some(h) => h.assemble(extra),
         None => {
-            let mut out = Vec::with_capacity(cached_head.len() + 64);
-            headers::write_response_head(&mut out, &head, None, &extra);
+            let mut out = Vec::with_capacity(head.len() + 96);
+            headers::write_response_head(&mut out, &head, None, extra);
             out
         }
     };
     let expected = match framing {
-        Framing::Length(n) => Some(n.saturating_add(cached_head.len() as u64)),
+        Framing::Length(n) => cached_head
+            .as_ref()
+            .map(|h| n.saturating_add(h.len() as u64)),
         _ => None,
     };
     let mut sink =
         policy.map(|p| cache.begin_store(key, url, p.ttl, p.age, p.validators, expected, conn_id));
-    if let Some(s) = sink.as_mut() {
-        s.write(&cached_head);
+    if let (Some(s), Some(h)) = (sink.as_mut(), cached_head.as_ref()) {
+        s.write(h);
     }
 
     client.write_all(&client_head)?;
@@ -740,7 +797,7 @@ pub fn handle_http_with_headers(
     }
     client.flush()?;
 
-    let cache_state = if clean {
+    let cache_state: Cow<'static, str> = if clean {
         if origin_reusable {
             shared.upstream.pool.put(pool_key, server, shared.timeout);
         }
@@ -751,13 +808,14 @@ pub fn handle_http_with_headers(
                     if let Some(guard) = leader.take() {
                         guard.complete(FetchOutcome::Stored);
                     }
-                    format!("MISS stored ttl={}s", p.ttl.as_secs())
+                    // 保存できたときだけ組み立てる (素通しの経路では確保しない)
+                    Cow::Owned(format!("MISS stored ttl={}s", p.ttl.as_secs()))
                 } else {
-                    "MISS".to_string()
+                    Cow::Borrowed("MISS")
                 }
             }
-            _ if !lookup_allowed => "BYPASS".to_string(),
-            _ => "MISS".to_string(),
+            _ if !lookup_allowed => Cow::Borrowed("BYPASS"),
+            _ => Cow::Borrowed("MISS"),
         }
     } else {
         // 途中で切れた本文はクライアントにもそれと分かる形 (終端チャンク無し / 短い本文) で伝わる
@@ -765,7 +823,7 @@ pub fn handle_http_with_headers(
             s.abort();
         }
         ctx.keep_client = false;
-        "MISS truncated".to_string()
+        Cow::Borrowed("MISS truncated")
     };
 
     // 保存されなかった場合は待っている要求に自分で取りに行かせる (Drop でも通知される)
@@ -774,7 +832,7 @@ pub fn handle_http_with_headers(
     }
     let total = client_head.len() as u64 + body_bytes;
     metrics.add_bytes(total + request_body_bytes);
-    ctx.log(&status.to_string(), total, &cache_state);
+    ctx.log(status, total, &cache_state);
     Ok(ctx.keep_client)
 }
 
@@ -784,7 +842,7 @@ pub(super) fn build_request_head(
     method: &str,
     origin: &Origin,
     raw_headers: &[String],
-    peer_addr: Option<SocketAddr>,
+    client_ip: Option<&str>,
     conditional: &[String],
 ) -> Vec<u8> {
     let mut head = Vec::with_capacity(256 + raw_headers.iter().map(|h| h.len()).sum::<usize>());
@@ -794,7 +852,7 @@ pub(super) fn build_request_head(
     head.extend_from_slice(b" HTTP/1.1\r\nHost: ");
     head.extend_from_slice(origin.host_port.as_bytes());
     head.extend_from_slice(b"\r\n");
-    headers::write_request_headers(&mut head, raw_headers, peer_addr);
+    headers::write_request_headers(&mut head, raw_headers, client_ip);
     for line in conditional {
         head.extend_from_slice(line.as_bytes());
         head.extend_from_slice(b"\r\n");

@@ -516,6 +516,58 @@ fn test_integration_request_body_on_a_reused_connection() {
 }
 
 #[test]
+fn test_integration_forwarded_headers_are_added_on_every_request() {
+    // 接続元 IP は接続ごとに 1 回だけ文字列にして使い回す。同じ接続の 2 本目以降でも
+    // X-Forwarded-For と Via がオリジンに届くこと (使い回しを壊すと 2 本目で消える)
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_origin(
+        Arc::clone(&counter),
+        Arc::new(|req, _n| {
+            // 受け取った要求の先頭をそのまま本文にして返す
+            let head = req.split("\r\n\r\n").next().unwrap_or("").to_string();
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n{}",
+                head.len(),
+                head
+            )
+            .into_bytes()
+        }),
+    );
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    for path in ["/first", "/second"] {
+        let req = format!(
+            "GET http://{}{} HTTP/1.1\r\nHost: {}\r\n\r\n",
+            host, path, host
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let (head, body) = read_response(&mut stream);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+        let seen = String::from_utf8_lossy(&body).to_string();
+        assert!(
+            seen.contains("X-Forwarded-For: 127.0.0.1\r\n"),
+            "{}: {}",
+            path,
+            seen
+        );
+        // Via はプロキシが最後に足すので、エコーされた先頭では行末の CRLF が付かない
+        assert!(
+            seen.ends_with("Via: 1.1 rust-http-proxy"),
+            "{}: {}",
+            path,
+            seen
+        );
+        assert!(
+            seen.contains(&format!("Host: {}\r\n", host)),
+            "{}: {}",
+            path,
+            seen
+        );
+    }
+}
+
+#[test]
 fn test_integration_interim_100_continue_is_not_forwarded() {
     // オリジンが 100 Continue を先に送っても、クライアントには本物の応答が届く
     let counter = Arc::new(AtomicUsize::new(0));

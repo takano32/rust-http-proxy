@@ -25,6 +25,28 @@ impl Framing {
         Self::of_headers(headers).unwrap_or(Framing::Close)
     }
 
+    /// 応答の枠組みを**生の先頭バイト列から**決める ([`Framing::of_response`] と同じ規則)。
+    /// 小文字の名前と値の組を作らずに済むので、素通しの経路はこちらを使う。
+    pub fn of_response_head(status: u16, head_only: bool, head: &[u8]) -> Framing {
+        if head_only || (100..200).contains(&status) || status == 204 || status == 304 {
+            return Framing::None;
+        }
+        let mut length = None;
+        for (k, v) in crate::headers::response_lines(head) {
+            if k.eq_ignore_ascii_case("transfer-encoding") {
+                if v.split(',')
+                    .next_back()
+                    .is_some_and(|t| t.trim_ascii().eq_ignore_ascii_case("chunked"))
+                {
+                    return Framing::Chunked;
+                }
+            } else if k.eq_ignore_ascii_case("content-length") {
+                length = v.trim_ascii().parse::<u64>().ok();
+            }
+        }
+        length.map(Framing::Length).unwrap_or(Framing::Close)
+    }
+
     /// リクエストの枠組み (枠が無ければ本文なし)。
     pub fn of_request(headers: &[(String, String)]) -> Framing {
         Self::of_headers(headers).unwrap_or(Framing::None)
@@ -397,5 +419,39 @@ mod tests {
         assert_eq!(parse_range("bytes=5-2", 10), RangeSpec::Ignore);
         assert_eq!(parse_range("items=0-1", 10), RangeSpec::Ignore);
         assert_eq!(parse_range("bytes=x-1", 10), RangeSpec::Ignore);
+    }
+}
+
+#[cfg(test)]
+mod of_response_head_tests {
+    use super::*;
+
+    /// 生の先頭から決める版が、組を作ってから決める版と同じ結果になること。
+    #[test]
+    fn matches_the_pairs_version() {
+        let heads: Vec<&[u8]> = vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\n\r\n",
+        ];
+        for head in heads {
+            let pairs = crate::headers::response_pairs(head);
+            for status in [200u16, 204, 304, 101, 500] {
+                for head_only in [false, true] {
+                    assert_eq!(
+                        Framing::of_response_head(status, head_only, head),
+                        Framing::of_response(status, head_only, &pairs),
+                        "head={:?} status={} head_only={}",
+                        String::from_utf8_lossy(head),
+                        status,
+                        head_only
+                    );
+                }
+            }
+        }
     }
 }

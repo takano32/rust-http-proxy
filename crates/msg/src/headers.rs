@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
 
+use crate::ascii;
+
 const HOP_BY_HOP_HEADERS: &[&str] = &[
     "connection",
     "keep-alive",
@@ -32,21 +34,17 @@ const MAX_CUSTOM_HOP: usize = 16;
 /// `Vec<String>` を経由しないので、ヘッダー 1 本につき小文字化した名前と行の複製を作らない
 /// (実測: ヘッダー 11 本の要求で確保が 137 → 62 回/要求)。`Host:` は呼び出し側がオリジンの
 /// ものに差し替えるので、ここでは落とす。
-pub fn write_request_headers(
-    out: &mut Vec<u8>,
-    headers: &[String],
-    client_addr: Option<SocketAddr>,
-) {
+pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: Option<&str>) {
     // Connection: で指名された名前は借用のまま覚える (溢れたら元の行を読み直す)
     let mut custom: [&str; MAX_CUSTOM_HOP] = [""; MAX_CUSTOM_HOP];
     let mut n_custom = 0usize;
     let mut overflow = false;
     for line in headers {
-        if let Some((k, v)) = line.split_once(':')
-            && k.trim().eq_ignore_ascii_case("connection")
+        if let Some((k, v)) = ascii::split_once(line, b':')
+            && k.trim_ascii().eq_ignore_ascii_case("connection")
         {
             for item in v.split(',') {
-                let token = item.trim();
+                let token = item.trim_ascii();
                 if token.is_empty() {
                     continue;
                 }
@@ -68,9 +66,10 @@ pub fn write_request_headers(
         }
         overflow
             && headers.iter().any(|line| {
-                line.split_once(':').is_some_and(|(k, v)| {
-                    k.trim().eq_ignore_ascii_case("connection")
-                        && v.split(',').any(|t| t.trim().eq_ignore_ascii_case(name))
+                ascii::split_once(line, b':').is_some_and(|(k, v)| {
+                    k.trim_ascii().eq_ignore_ascii_case("connection")
+                        && v.split(',')
+                            .any(|t| t.trim_ascii().eq_ignore_ascii_case(name))
                 })
             })
     };
@@ -78,10 +77,10 @@ pub fn write_request_headers(
     let mut x_forwarded_for: Option<&str> = None;
     let mut has_via = false;
     for line in headers {
-        let Some((k, v)) = line.split_once(':') else {
+        let Some((k, v)) = ascii::split_once(line, b':') else {
             continue;
         };
-        let name = k.trim();
+        let name = k.trim_ascii();
         // 枠組みのヘッダー (Content-Length / Transfer-Encoding) は Connection: で指名されても
         // 落とさない。落とすと「ヘッダーは枠組み無し・本文は送る」というずれが起き、
         // オリジンが本文を次の要求の先頭として読む (要求スマグリング)。
@@ -95,27 +94,27 @@ pub fn write_request_headers(
             continue;
         }
         if name.eq_ignore_ascii_case("x-forwarded-for") {
-            x_forwarded_for = Some(v.trim());
+            x_forwarded_for = Some(v.trim_ascii());
             continue;
         }
         if name.eq_ignore_ascii_case("via") {
             has_via = true;
             out.extend_from_slice(name.as_bytes());
             out.extend_from_slice(b": ");
-            out.extend_from_slice(v.trim().as_bytes());
+            out.extend_from_slice(v.trim_ascii().as_bytes());
             out.extend_from_slice(b", 1.1 rust-http-proxy\r\n");
             continue;
         }
         out.extend_from_slice(line.as_bytes());
     }
 
-    if let Some(addr) = client_addr {
+    if let Some(ip) = client_ip {
         out.extend_from_slice(b"X-Forwarded-For: ");
         if let Some(existing) = x_forwarded_for {
             out.extend_from_slice(existing.as_bytes());
             out.extend_from_slice(b", ");
         }
-        out.extend_from_slice(addr.ip().to_string().as_bytes());
+        out.extend_from_slice(ip.as_bytes());
         out.extend_from_slice(b"\r\n");
     } else if let Some(existing) = x_forwarded_for {
         out.extend_from_slice(b"X-Forwarded-For: ");
@@ -139,12 +138,16 @@ pub struct ResponseHead {
 
 impl ResponseHead {
     /// 追加のヘッダー行を足して、空行まで含めたバイト列にする。
-    pub fn assemble(&self, extra: &[String]) -> Vec<u8> {
+    pub fn assemble<S: AsRef<str>>(&self, extra: &[S]) -> Vec<u8> {
         let mut out = String::with_capacity(256);
         out.push_str(&self.status_line);
         out.push_str("\r\n");
-        for line in self.lines.iter().chain(extra.iter()) {
+        for line in self.lines.iter() {
             out.push_str(line);
+            out.push_str("\r\n");
+        }
+        for line in extra {
+            out.push_str(line.as_ref());
             out.push_str("\r\n");
         }
         out.push_str("\r\n");
@@ -158,39 +161,44 @@ impl ResponseHead {
 /// String を作らずに得る。`Location` の書き換えが要るとき (マッピング形式) は使えないので、
 /// そのときは従来どおり [`sanitize_response_head`] を使う。
 /// `status_line` を渡すとステータス行を差し替える (206 / 416 用)。
-pub fn write_response_head(
+pub fn write_response_head<S: AsRef<str>>(
     out: &mut Vec<u8>,
     head: &[u8],
     status_line: Option<&str>,
-    extra: &[String],
+    extra: &[S],
 ) {
     let text = String::from_utf8_lossy(head);
-    let mut lines = text.split('\n').map(|l| l.trim_end_matches('\r'));
-    let first = lines.next().unwrap_or("").trim();
+    let first = text.split('\n').next().unwrap_or("").trim_ascii();
     match status_line {
         Some(sl) => out.extend_from_slice(sl.as_bytes()),
         None => {
-            let rest = first
-                .split_once(' ')
+            let rest = ascii::split_once(first, b' ')
                 .map(|x| x.1)
                 .unwrap_or("200 OK")
-                .trim();
+                .trim_ascii();
             out.extend_from_slice(b"HTTP/1.1 ");
             out.extend_from_slice(rest.as_bytes());
         }
     }
     out.extend_from_slice(b"\r\n");
 
-    let raw: Vec<&str> = lines.filter(|l| !l.trim().is_empty()).collect();
+    // ヘッダー行は 2 回なめるが、`Vec<&str>` に集めない (要求ごとの確保を 1 つ減らす)
+    let raw = || {
+        text.split('\n')
+            .skip(1)
+            // 行末の空白 (CR を含む) は値の側で必ず落とすので、ここで落としても結果は変わらない
+            .map(|l| l.trim_ascii_end())
+            .filter(|l| !l.is_empty())
+    };
     let mut custom: [&str; MAX_CUSTOM_HOP] = [""; MAX_CUSTOM_HOP];
     let mut n_custom = 0usize;
     let mut overflow = false;
-    for line in &raw {
-        if let Some((k, v)) = line.split_once(':')
-            && k.trim().eq_ignore_ascii_case("connection")
+    for line in raw() {
+        if let Some((k, v)) = ascii::split_once(line, b':')
+            && k.trim_ascii().eq_ignore_ascii_case("connection")
         {
             for item in v.split(',') {
-                let token = item.trim();
+                let token = item.trim_ascii();
                 if token.is_empty() {
                     continue;
                 }
@@ -211,19 +219,20 @@ pub fn write_response_head(
             return true;
         }
         overflow
-            && raw.iter().any(|line| {
-                line.split_once(':').is_some_and(|(k, v)| {
-                    k.trim().eq_ignore_ascii_case("connection")
-                        && v.split(',').any(|t| t.trim().eq_ignore_ascii_case(name))
+            && raw().any(|line| {
+                ascii::split_once(line, b':').is_some_and(|(k, v)| {
+                    k.trim_ascii().eq_ignore_ascii_case("connection")
+                        && v.split(',')
+                            .any(|t| t.trim_ascii().eq_ignore_ascii_case(name))
                 })
             })
     };
 
-    for line in &raw {
-        let Some((k, v)) = line.split_once(':') else {
+    for line in raw() {
+        let Some((k, v)) = ascii::split_once(line, b':') else {
             continue;
         };
-        let name = k.trim();
+        let name = k.trim_ascii();
         if is_hop_by_hop_name(name)
             || named_in_connection(name)
             || FRAMING_HEADERS.iter().any(|f| name.eq_ignore_ascii_case(f))
@@ -232,14 +241,51 @@ pub fn write_response_head(
         }
         out.extend_from_slice(name.as_bytes());
         out.extend_from_slice(b": ");
-        out.extend_from_slice(v.trim().as_bytes());
+        out.extend_from_slice(v.trim_ascii().as_bytes());
         out.extend_from_slice(b"\r\n");
     }
     for line in extra {
-        out.extend_from_slice(line.as_bytes());
+        out.extend_from_slice(line.as_ref().as_bytes());
         out.extend_from_slice(b"\r\n");
     }
     out.extend_from_slice(b"\r\n");
+}
+
+/// 応答の先頭 (生バイト列) からヘッダー行を「名前, 値」で返す。前後の空白は落としてある。
+///
+/// 状態行は飛ばし、最初の空行で終わる。`Vec` も `String` も作らないので、
+/// 素通しの経路 (枠組みと `Connection` しか見ない) はこれだけで足りる。
+pub fn response_lines(head: &[u8]) -> impl Iterator<Item = (&str, &str)> {
+    head.split(|b| *b == b'\n')
+        .skip(1)
+        .map(|line| std::str::from_utf8(line).unwrap_or("").trim_ascii())
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| ascii::split_once(line, b':'))
+        .map(|(k, v)| (k.trim_ascii(), v.trim_ascii()))
+}
+
+/// 応答の先頭を「小文字の名前, 値」の組にする ([`response_lines`] を複製した形)。
+/// キャッシュの判定 ([`crate::freshness`] 相当) のように組で受け取る API のために残してある。
+pub fn response_pairs(head: &[u8]) -> Vec<(String, String)> {
+    response_lines(head)
+        .map(|(k, v)| (k.to_ascii_lowercase(), v.to_string()))
+        .collect()
+}
+
+/// 応答の先頭から、名前が一致する最初のヘッダーの値を借用で返す。
+pub fn response_value<'a>(head: &'a [u8], name: &str) -> Option<&'a str> {
+    response_lines(head)
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v)
+}
+
+/// 応答の `name` ヘッダーが `token` を (カンマ区切りの中に) 挙げているか。
+pub fn response_names(head: &[u8], name: &str, token: &str) -> bool {
+    response_lines(head).any(|(k, v)| {
+        k.eq_ignore_ascii_case(name)
+            && v.split(',')
+                .any(|t| t.trim_ascii().eq_ignore_ascii_case(token))
+    })
 }
 
 /// レスポンスヘッダーのうち、プロキシが自分で決め直すもの (枠組み・経過時間)。
@@ -247,36 +293,37 @@ const FRAMING_HEADERS: &[&str] = &["transfer-encoding", "content-length", "age"]
 
 pub fn sanitize_response_head(head: &[u8]) -> ResponseHead {
     let text = String::from_utf8_lossy(head);
-    let mut lines = text.split('\n').map(|l| l.trim_end_matches('\r'));
-    let status_line = lines.next().unwrap_or("").trim();
+    let mut lines = text.split('\n').map(|l| l.trim_ascii_end());
+    let status_line = lines.next().unwrap_or("").trim_ascii();
     let mut parts = status_line.splitn(2, ' ');
     let _version = parts.next();
-    let rest = parts.next().unwrap_or("200 OK").trim();
+    let rest = parts.next().unwrap_or("200 OK").trim_ascii();
     let mut out = ResponseHead {
         status_line: format!("HTTP/1.1 {}", rest),
         lines: Vec::new(),
     };
-    let raw: Vec<&str> = lines.filter(|l| !l.trim().is_empty()).collect();
+    let raw: Vec<&str> = lines.filter(|l| !l.is_empty()).collect();
     let mut custom_hop: Vec<String> = Vec::new();
     for line in &raw {
-        if let Some((k, v)) = line.split_once(':')
-            && k.trim().eq_ignore_ascii_case("connection")
+        if let Some((k, v)) = ascii::split_once(line, b':')
+            && k.trim_ascii().eq_ignore_ascii_case("connection")
         {
-            custom_hop.extend(v.split(',').map(|t| t.trim().to_ascii_lowercase()));
+            custom_hop.extend(v.split(',').map(|t| t.trim_ascii().to_ascii_lowercase()));
         }
     }
     for line in raw {
-        let Some((k, v)) = line.split_once(':') else {
+        let Some((k, v)) = ascii::split_once(line, b':') else {
             continue;
         };
-        let lower = k.trim().to_ascii_lowercase();
+        let lower = k.trim_ascii().to_ascii_lowercase();
         if is_hop_by_hop(&lower)
             || custom_hop.contains(&lower)
             || FRAMING_HEADERS.contains(&lower.as_str())
         {
             continue;
         }
-        out.lines.push(format!("{}: {}", k.trim(), v.trim()));
+        out.lines
+            .push(format!("{}: {}", k.trim_ascii(), v.trim_ascii()));
     }
     out
 }
@@ -292,19 +339,19 @@ pub fn sanitize_and_inject_headers(
 
     // First pass: check Connection header for custom hop-by-hop header names
     for line in headers {
-        if let Some((k, v)) = line.split_once(':')
-            && k.trim().eq_ignore_ascii_case("connection")
+        if let Some((k, v)) = ascii::split_once(line, b':')
+            && k.trim_ascii().eq_ignore_ascii_case("connection")
         {
             for item in v.split(',') {
-                custom_hop_by_hop.push(item.trim().to_ascii_lowercase());
+                custom_hop_by_hop.push(item.trim_ascii().to_ascii_lowercase());
             }
         }
     }
 
     // Second pass: filter and collect
     for line in headers {
-        if let Some((k, v)) = line.split_once(':') {
-            let k_trim = k.trim();
+        if let Some((k, v)) = ascii::split_once(line, b':') {
+            let k_trim = k.trim_ascii();
             let k_lower = k_trim.to_ascii_lowercase();
 
             // 枠組みのヘッダーは Connection: で指名されても落とさない
@@ -316,13 +363,13 @@ pub fn sanitize_and_inject_headers(
             }
 
             if k_lower == "x-forwarded-for" {
-                x_forwarded_for = Some(v.trim().to_string());
+                x_forwarded_for = Some(v.trim_ascii().to_string());
                 continue;
             }
 
             if k_lower == "via" {
                 has_via = true;
-                let new_via = format!("{}: {}, 1.1 rust-http-proxy\r\n", k_trim, v.trim());
+                let new_via = format!("{}: {}, 1.1 rust-http-proxy\r\n", k_trim, v.trim_ascii());
                 out.push(new_via);
                 continue;
             }
@@ -482,8 +529,9 @@ mod write_request_tests {
         ];
         for headers in &cases {
             for client in [Some(addr), None] {
+                let ip = client.map(|a: SocketAddr| a.ip().to_string());
                 let mut got = Vec::new();
-                write_request_headers(&mut got, headers, client);
+                write_request_headers(&mut got, headers, ip.as_deref());
                 assert_eq!(
                     String::from_utf8_lossy(&got),
                     String::from_utf8_lossy(&old_way(headers, client)),
@@ -565,5 +613,58 @@ mod write_response_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod response_view_tests {
+    use super::*;
+
+    /// 生の先頭を 1 行ずつ読む版が、以前の「読みながら組を作る」実装と同じ結果になること。
+    fn old_way(head: &[u8]) -> Vec<(String, String)> {
+        let text = String::from_utf8_lossy(head);
+        let mut out = Vec::new();
+        for line in text.split_inclusive('\n').skip(1) {
+            if line.trim().is_empty() {
+                break;
+            }
+            if let Some((k, v)) = line.split_once(':') {
+                out.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn response_pairs_matches_the_previous_implementation() {
+        let cases: Vec<&[u8]> = vec![
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 5\r\n\r\n",
+            b"HTTP/1.0 404 Not Found\r\nServer: x\r\nConnection: close\r\n\r\n",
+            b"HTTP/1.1 200 OK\nA:b\nNoColon\nC:  d  \n\n",
+            b"HTTP/1.1 204 No Content\r\n\r\n",
+            // 空行のあとに何かあっても読まない
+            b"HTTP/1.1 200 OK\r\nA: b\r\n\r\nbody",
+            // 終端の空行が無い (相手が途中で閉じた)
+            b"HTTP/1.1 200 OK\r\nA: b\r\n",
+        ];
+        for head in cases {
+            assert_eq!(
+                response_pairs(head),
+                old_way(head),
+                "head={:?}",
+                String::from_utf8_lossy(head)
+            );
+        }
+    }
+
+    #[test]
+    fn response_value_and_names() {
+        let head =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: keep-alive, X-Odd\r\n\r\n";
+        assert_eq!(response_value(head, "content-length"), Some("12"));
+        assert_eq!(response_value(head, "CONTENT-LENGTH"), Some("12"));
+        assert_eq!(response_value(head, "missing"), None);
+        assert!(response_names(head, "connection", "x-odd"));
+        assert!(!response_names(head, "connection", "close"));
     }
 }

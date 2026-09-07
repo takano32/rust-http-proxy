@@ -441,6 +441,8 @@ pub struct Conn {
     scratch: Option<Scratch>,
     /// アイドルのときに預ける先 (無ければ従来どおりこのスレッドがブロッキング read で待つ)
     park: Option<Arc<idle::IdleWatch>>,
+    /// 接続元の IP を文字列にしたもの (X-Forwarded-For と統計に毎要求要るので接続ごとに 1 回だけ作る)
+    peer_ip: String,
     /// 同時接続数と `/status` の active_connections の持ち分 (接続の寿命と一致させる)
     _open: OpenGuard,
     _active: ActiveGuard,
@@ -534,6 +536,7 @@ impl Conn {
             read_timeout: inherited,
             scratch: None,
             park,
+            peer_ip: net::canonical_addr(accepted.peer).ip().to_string(),
             _open: OpenGuard(limiter),
             _active: active,
         })
@@ -711,7 +714,6 @@ pub fn run_conn(conn: Box<Conn>) {
 /// 要求を 1 つ処理する。次に何をするかを返す。
 fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     let (conn_id, local_port) = (conn.conn_id, conn.accepted.local_port);
-    let peer_addr = Some(net::canonical_addr(conn.accepted.peer));
     // 要求行とヘッダー行の置き場。持っていなければ今のスレッドから借りる
     if conn.scratch.is_none() {
         conn.scratch = Some(Scratch::take());
@@ -727,8 +729,10 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         served,
         read_timeout,
         park,
+        peer_ip,
         ..
     } = conn;
+    let peer_ip: &str = peer_ip;
     let scratch = scratch.as_mut().expect("just set");
     scratch.reset();
 
@@ -897,11 +901,12 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
 
     // ACL / Host Check
     let is_connect = method.eq_ignore_ascii_case("CONNECT");
-    let target_host: std::borrow::Cow<'_, str> = if is_connect {
-        std::borrow::Cow::Borrowed(target)
+    // 判定に要るのはホストだけなので、要求行から借りる (String を 2 本作らない)
+    let target_host: &str = if is_connect {
+        target
     } else {
-        match http::parse_origin(target, host_header) {
-            Ok(o) => std::borrow::Cow::Owned(o.host_port),
+        match request::target_host(target, host_header) {
+            Ok(h) => h,
             Err(e) => {
                 log_warn!(Some(conn_id), "400 Bad Request: {}", e);
                 let _ = (&*client).write_all(
@@ -911,17 +916,14 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             }
         }
     };
-    let denied = if !config.acl.is_allowed(&target_host) {
+    let (bare_host, host_port) = net::split_host_port_ref(target_host);
+    let denied = if !config.acl.is_allowed(target_host) {
         Some("ACL")
-    } else if blocklist::is_blocked(net::split_host_port_ref(&target_host).0) {
+    } else if blocklist::is_blocked(bare_host) {
         Some("blocklist")
-    } else if is_connect
-        && !config
-            .connect_ports
-            .allows(net::split_host_port_ref(&target_host).1.unwrap_or(443))
-    {
+    } else if is_connect && !config.connect_ports.allows(host_port.unwrap_or(443)) {
         Some("CONNECT port")
-    } else if !config.allow_local && acl::is_local_target(&target_host) {
+    } else if !config.allow_local && acl::is_local_target(target_host) {
         // クラウドのメタデータ (169.254.169.254) 経由の SSRF を止める
         Some("local address")
     } else {
@@ -934,15 +936,12 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             why,
             target_host
         );
-        let client_ip = peer_addr
-            .map(|a| a.ip().to_string())
-            .unwrap_or_else(|| "-".to_string());
         metrics.record_host(
-            &format!("blocked://{}", net::split_host_port_ref(&target_host).0),
+            &format!("blocked://{}", bare_host),
             metrics::HostOutcome::Blocked,
             0,
         );
-        metrics.record_client(&client_ip, metrics::HostOutcome::Blocked, 0, None);
+        metrics.record_client(peer_ip, metrics::HostOutcome::Blocked, 0, None);
         (&*client).write_all(FORBIDDEN_RESPONSE)?;
         (&*client).flush()?;
         return Ok(Step::Close);
@@ -969,7 +968,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     };
     let keep = http::handle_http_with_headers(
         client,
-        peer_addr,
+        Some(peer_ip),
         &request_line,
         raw_headers,
         &mut reader,
