@@ -9,7 +9,9 @@
 # アロケータが解放済みのページを持ち続けるので、同じビルドでも余裕のある機械ほど
 # 大きく出る (実測: aarch64 の手元 194 MB に対し、GitHub の runner では 334 MB)。
 # そこで、cgroup を作れる環境では**実際にその上限の中でビルドして通るか**を見る。
-# 作れない環境では RSS を出すだけにして、判定はしない。
+# システムの systemd (CI) が無くても、**ユーザーの systemd** (`systemd-run --user --scope`) が
+# あれば同じ判定ができる (手元の機械はこちら。PID 1 が systemd でなくてもユーザーの
+# インスタンスは動いていて、上限も効く)。どちらも無いときだけ RSS を出すだけにして判定しない。
 #
 # 使い方:
 #   scripts/build-memory.sh [上限 MB]            上限の中で通るか (既定 200)
@@ -20,18 +22,39 @@ if [ "${1:-}" = "--find" ]; then MODE=find; shift; fi
 LIMIT_MB="${1:-200}"
 LADDER="${*:-200}"
 
+# どの systemd で scope を作れるかを 1 度だけ調べ、`SCOPE_KIND` に覚える。
+# 判定は「実際に小さい scope を 1 つ作ってみる」で行う。`systemctl is-system-running` は
+# 状態が degraded なだけでも 1 を返すので使えない。
+SCOPE_KIND=""
+detect_scope() {
+  [ -n "$SCOPE_KIND" ] && return 0
+  command -v systemd-run >/dev/null 2>&1 || { SCOPE_KIND=none; return 0; }
+  local sudo=""
+  [ "$(id -u)" -ne 0 ] && sudo="sudo -n"
+  if $sudo systemd-run --scope --quiet -p MemoryMax=64M /bin/true >/dev/null 2>&1; then
+    SCOPE_KIND=system   # CI やふつうの Linux
+  elif systemd-run --user --scope --quiet -p MemoryMax=64M -p MemorySwapMax=0 /bin/true >/dev/null 2>&1; then
+    SCOPE_KIND=user     # 手元 (PID 1 が systemd でない。ユーザーの systemd だけ動いている)
+  else
+    SCOPE_KIND=none
+  fi
+}
+
 run_in_cgroup() {
-  command -v systemd-run >/dev/null 2>&1 || return 2
+  detect_scope
+  [ "$SCOPE_KIND" = none ] && return 2
   # systemd-run は -E を当てる前に実行ファイルを探すので、絶対パスで渡す
   local cargo_bin
   cargo_bin=$(command -v cargo) || return 2
+  # ユーザーの scope は自分自身として走るので --uid/--gid は付けない
+  # (付けると systemd に拒まれる)。システムの scope は root が作るので要る。
+  local scope=(--user --scope)
   local sudo=""
-  [ "$(id -u)" -ne 0 ] && sudo="sudo -n"
-  # 実際に小さい scope を 1 つ作ってみる。`systemctl is-system-running` は
-  # 状態が degraded なだけでも 1 を返すので、判定に使えない
-  $sudo systemd-run --scope --quiet -p MemoryMax=64M /bin/true >/dev/null 2>&1 || return 2
-  $sudo systemd-run --scope \
-      --uid="$(id -u)" --gid="$(id -g)" \
+  if [ "$SCOPE_KIND" = system ]; then
+    [ "$(id -u)" -ne 0 ] && sudo="sudo -n"
+    scope=(--scope --uid="$(id -u)" --gid="$(id -g)")
+  fi
+  $sudo systemd-run "${scope[@]}" \
       -p "MemoryMax=${LIMIT_MB}M" -p MemorySwapMax=0 \
       -E "PATH=$PATH" -E "HOME=$HOME" -E "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
       -E "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \

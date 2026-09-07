@@ -418,6 +418,12 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 > その合計がコンテナのメモリ上限を超えて OOM killer に落とされます (実測: 200 MB の cgroup で、
 > 並列だと落ち `-j 1` なら通る)。潤沢な機械で急ぐときは `cargo build --release -j 8` で上書きできます
 > (8 コアで 32.3 秒 → 14.9 秒)。
+>
+> 手元で確かめるなら `cargo clean && scripts/build-memory.sh 200` (通る最小を探すなら
+> `scripts/build-memory.sh --find 100 110 120 130 140 150`)。このスクリプトは **実際にその上限の
+> cgroup の中でビルドします** — RSS を測るだけだと、メモリ圧のかかっていない機械ほど大きく出て
+> 機械をまたいだ判定にならないためです。cgroup は systemd に作らせます (システムの `systemd-run --scope`、
+> 無ければ**ユーザーの** `systemd-run --user --scope`。どちらも無い環境では参考の RSS だけ出して判定しません)。
 ```bash
 # テスト実行
 cargo test
