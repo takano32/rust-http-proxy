@@ -307,6 +307,49 @@ fn test_integration_dashboard_and_self_addressed_requests() {
     assert!(r.starts_with("HTTP/1.1 404"), "{}", r);
 }
 
+/// 群れ (accept で待つスレッド、上限 64 本) より多い接続が同時に来ても全部さばけること。
+///
+/// 上限に当たったぶんは「accept したスレッドが処理する」経路ではなく、従来どおり
+/// ワーカーへ渡す経路に落ちる (T9.4)。待ち受けが空になるとここで詰まる。
+#[test]
+fn test_integration_more_connections_at_once_than_the_accept_flock() {
+    let (origin_port, _origin) = start_mock_origin();
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let served = Arc::new(AtomicUsize::new(0));
+    let mut clients = Vec::new();
+    for i in 0..80 {
+        let (host, served) = (host.clone(), Arc::clone(&served));
+        clients.push(thread::spawn(move || {
+            let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+            let req = format!(
+                "GET http://{}/burst{} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                host, i, host
+            );
+            s.write_all(req.as_bytes()).unwrap();
+            let (head, _) = read_response(&mut s);
+            if head.starts_with("HTTP/1.1 200") {
+                served.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+    }
+    for c in clients {
+        c.join().unwrap();
+    }
+    assert_eq!(served.load(Ordering::SeqCst), 80, "全部に応答が返る");
+
+    // 群れが上限に当たった後も待ち受けは生きている
+    let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let req = format!(
+        "GET http://{}/after HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        host, host
+    );
+    s.write_all(req.as_bytes()).unwrap();
+    let (head, _) = read_response(&mut s);
+    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
+}
+
 #[test]
 fn test_integration_connection_limit_returns_503() {
     // 上限 8 で起動し、9 本目が 503 になること

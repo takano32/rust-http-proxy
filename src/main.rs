@@ -252,7 +252,8 @@ fn main() {
     } else {
         None
     };
-    // 待ち受けソケットごとに accept スレッドを持つ (最後の 1 つはこのスレッドで回す)
+    // 待ち受けソケットごとに「accept で待つスレッドの群れ」を持つ (最後の 1 つは
+    // このスレッドが群れの 1 本目になる)。accept したスレッドがそのまま接続を処理する
     let mut listeners = listeners.into_iter();
     let last = listeners.next_back().expect("at least one listener");
     for listener in listeners {
@@ -269,7 +270,7 @@ fn main() {
             let live = shared.0;
             serve(
                 listener,
-                || live.config(),
+                move || live.config(),
                 shared.1,
                 shared.2,
                 shared.3,
@@ -283,7 +284,7 @@ fn main() {
     let l = Arc::clone(&live);
     serve(
         last,
-        || l.config(),
+        move || l.config(),
         limiter,
         workers,
         metrics,

@@ -29,13 +29,14 @@ pub use proxy_sys::signal;
 pub use proxy_sys::sys;
 pub use proxy_sysinfo::sysinfo;
 pub use proxy_tunnel::tunnel;
-pub use proxy_workers::workers;
+pub use proxy_workers::{flock, workers};
 
 use std::io::{self, BufRead, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use cache::Cache;
 use config::Config;
@@ -87,12 +88,14 @@ Connection: close\r\n\
 \r\n\
 503 Service Unavailable";
 
-/// 待ち受けソケットから接続を受け、1 本ごとにスレッドを起こす。
+/// 待ち受けソケットから接続を受け、**受けたスレッドがそのまま接続を処理する** (T9.4)。
 /// `config_of` は接続ごとに最新の設定を取り出す (`.env` の再読込に追従するため)。
+///
+/// この関数は戻らない (呼んだスレッドが群れの 1 本目になる)。
 #[allow(clippy::too_many_arguments)]
 pub fn serve(
     listener: TcpListener,
-    config_of: impl Fn() -> Arc<Config>,
+    config_of: impl Fn() -> Arc<Config> + Send + Sync + 'static,
     limiter: Arc<Limiter>,
     workers: Arc<workers::Workers>,
     metrics: Arc<Metrics>,
@@ -108,53 +111,230 @@ pub fn serve(
     // Linux では accept したソケットが待ち受けの TCP_NODELAY / SO_RCVTIMEO / SO_SNDTIMEO を
     // 引き継ぐ。待ち受けに 1 回当てておけば、接続ごとの setsockopt 3 回が要らない (T9.3)。
     // 当たらなかった環境では None のままで、従来どおり接続ごとに設定する
-    let mut inherited = inherit_on_listener(&listener, config_of().timeout);
+    let inherited = inherit_on_listener(&listener, config_of().timeout);
+    let acceptor = Arc::new(Acceptor {
+        listener,
+        local_port,
+        config_of: Box::new(config_of),
+        limiter,
+        workers,
+        metrics,
+        cache,
+        upstream,
+        park,
+        inherited: AtomicU64::new(pack_timeout(inherited)),
+        flock: flock::Flock::new(),
+    });
+    if inherited.is_none() {
+        // 待ち受けに SO_RCVTIMEO が載らない環境 (Linux 以外・aarch64/x86_64 以外・timeout が 0)。
+        // accept() が永久に待つので群れを痩せさせる手立てが無い。従来どおり
+        // 「1 本で accept してワーカーへ渡す」経路を使う
+        log_debug!(
+            None,
+            "accepting on a single thread (the listener has no receive timeout)"
+        );
+        return accept_and_hand_off(&acceptor);
+    }
+    // このスレッドが群れの 1 本目。**この 1 本だけは空き置き場へ下がらない**
+    // (下がると待ち受けが空になりうるし、serve が戻ると main が終わってしまう)
+    acceptor.flock.enroll();
     loop {
-        // incoming() は accept() の戻り値のアドレスを捨てるので accept() を直接呼ぶ
-        // (接続ごとの getpeername が 1 回減る)
-        let (mut stream, peer) = match listener.accept() {
-            Ok(v) => v,
-            // 待ち受けに載せた SO_RCVTIMEO は accept() にも効くので、接続が来ないまま
-            // timeout 秒たつと WouldBlock で戻ってくる。これは異常ではないので
-            // ログも待ちも無しに待ち直す (下の「その他のエラー」より必ず先に拾うこと)。
-            // 割り込みと「相手が accept 前に切った」も同じくすぐ次へ
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::Interrupted
-                        | io::ErrorKind::ConnectionAborted
-                ) =>
-            {
-                continue;
+        // 接続の処理中のパニックは下で受け止めているが、それ以外で落ちても待ち受けが
+        // 止まらないように、いちばん外でも受けて回り直す
+        if catch_unwind(AssertUnwindSafe(|| accept_loop(&acceptor, None))).is_err() {
+            log_error!(None, "accept loop panicked; restarting it");
+        }
+    }
+}
+
+/// 1 つの待ち受けを回すための、群れのスレッドで分け合う状態。
+struct Acceptor {
+    listener: TcpListener,
+    /// 受けた待ち受けポート (自分宛て判定に使う)
+    local_port: u16,
+    config_of: Box<dyn Fn() -> Arc<Config> + Send + Sync>,
+    limiter: Arc<Limiter>,
+    workers: Arc<workers::Workers>,
+    metrics: Arc<Metrics>,
+    cache: Arc<Cache>,
+    upstream: Arc<Upstream>,
+    park: Option<Arc<idle::IdleWatch>>,
+    /// 待ち受けにいま当たっている timeout ([`pack_timeout`] の詰め方)
+    inherited: AtomicU64,
+    /// accept で待つスレッドの群れ
+    flock: flock::Flock,
+}
+
+/// 継承させた timeout を [`Acceptor::inherited`] に詰める (`0` は「継承していない」)。
+fn pack_timeout(timeout: Option<Duration>) -> u64 {
+    timeout.map_or(0, |d| (d.as_nanos().min(u64::MAX as u128 - 1) as u64) + 1)
+}
+
+/// [`accept_one`] の結果。
+enum Accept {
+    Got(TcpStream, SocketAddr),
+    /// 待ち受けが暇なまま `SO_RCVTIMEO` で戻ってきた
+    Idle,
+    /// すぐ待ち直してよい (割り込み・相手が accept 前に切った・記述子切れ)
+    Retry,
+}
+
+/// `accept()` を 1 回だけ呼ぶ。
+fn accept_one(listener: &TcpListener) -> Accept {
+    // incoming() は accept() の戻り値のアドレスを捨てるので accept() を直接呼ぶ
+    // (接続ごとの getpeername が 1 回減る)
+    match listener.accept() {
+        Ok((stream, peer)) => Accept::Got(stream, peer),
+        // 待ち受けに載せた SO_RCVTIMEO は accept() にも効くので、接続が来ないまま
+        // timeout 秒たつと WouldBlock で戻ってくる。これは異常ではないので
+        // ログも待ちも無しに待ち直す (下の「その他のエラー」より必ず先に拾うこと)
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            Accept::Idle
+        }
+        // 割り込みと「相手が accept 前に切った」もすぐ次へ
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted
+            ) =>
+        {
+            Accept::Retry
+        }
+        Err(e) => {
+            // 記述子を使い切ったとき (EMFILE/ENFILE) は何度呼んでも同じ失敗が返る。
+            // そのまま回すと 1 コアを 100% 使いながらログを溢れさせるので少し待つ
+            log_error!(None, "accept failed: {}", e);
+            std::thread::sleep(ACCEPT_ERROR_BACKOFF);
+            Accept::Retry
+        }
+    }
+}
+
+/// 群れのスレッド 1 本ぶんの accept ループ。
+///
+/// `standby` を持つスレッドは、待ち受けが暇で他に待っている人が居れば空き置き場へ下がる
+/// (下がって時間切れになったら戻る = スレッドを終わらせる)。持たないスレッド (群れの
+/// 1 本目) は下がらないので、**待ち受けには必ず誰かが居る**。
+fn accept_loop(acceptor: &Arc<Acceptor>, standby: Option<&flock::Standby>) {
+    loop {
+        // 継承の値は accept の**前に**控える。後で読むと、.env の再読込で待ち受けに
+        // 当て直した瞬間に、当て直す前に受けた接続まで「当たっている」扱いにしてしまう
+        let inherited = acceptor.inherited();
+        acceptor.flock.enter_accept();
+        let got = accept_one(&acceptor.listener);
+        // 自分を除いて、まだ accept で待っている人の数
+        let others = acceptor.flock.leave_accept();
+        match got {
+            Accept::Got(stream, peer) => {
+                // 待ち受けを空にしないよう、処理に移る前に 1 本補充する (**ここだけ futex**)。
+                // 補充できない = 群れが上限。その接続はワーカーへ渡して自分は accept に戻る
+                if others == 0 && !acceptor.refill() {
+                    if let Some(conn) = acceptor.admit(stream, peer, inherited) {
+                        acceptor.hand_off(conn);
+                    }
+                    continue;
+                }
+                let Some(conn) = acceptor.admit(stream, peer, inherited) else {
+                    continue;
+                };
+                // 接続の処理がパニックしてもこのスレッドは待ち受けに戻る (群れが痩せない)
+                if catch_unwind(AssertUnwindSafe(|| run_conn(conn))).is_err() {
+                    log_error!(None, "connection handler panicked");
+                }
             }
-            Err(e) => {
-                // 記述子を使い切ったとき (EMFILE/ENFILE) は何度呼んでも同じ失敗が返る。
-                // そのまま回すと 1 コアを 100% 使いながらログを溢れさせるので少し待つ
-                log_error!(None, "accept failed: {}", e);
-                std::thread::sleep(ACCEPT_ERROR_BACKOFF);
-                continue;
+            // 暇なので、他に待っている人が居るなら空き置き場へ下がる
+            Accept::Idle => {
+                if others > 0
+                    && let Some(sb) = standby
+                    && !acceptor.flock.stand_by(sb)
+                {
+                    return;
+                }
             }
-        };
-        let cfg = config_of();
-        // この接続が継承したのは「今 待ち受けに当たっている値」。.env の再読込で timeout が
-        // 変わった直後だけは食い違うので、その接続は従来どおり接続ごとに設定する
+            Accept::Retry => {}
+        }
+    }
+}
+
+/// 待ち受けに `SO_RCVTIMEO` が載らない環境で使う従来の経路。
+/// 1 本のスレッドが accept だけを回し、接続はワーカーへ渡す。
+fn accept_and_hand_off(acceptor: &Arc<Acceptor>) {
+    loop {
+        let inherited = acceptor.inherited();
+        if let Accept::Got(stream, peer) = accept_one(&acceptor.listener)
+            && let Some(conn) = acceptor.admit(stream, peer, inherited)
+        {
+            acceptor.hand_off(conn);
+        }
+    }
+}
+
+impl Acceptor {
+    /// 待ち受けにいま当たっている timeout。
+    fn inherited(&self) -> Option<Duration> {
+        match self.inherited.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(Duration::from_nanos(v - 1)),
+        }
+    }
+
+    /// 待ち受けに 1 本補充する。増やせなかった (群れが上限) ときだけ `false`。
+    fn refill(self: &Arc<Self>) -> bool {
+        self.flock.refill(|| {
+            let acceptor = Arc::clone(self);
+            std::thread::Builder::new()
+                .name("accept".into())
+                .stack_size(flock::STACK_SIZE)
+                .spawn(move || {
+                    let standby = flock::Standby::new();
+                    if catch_unwind(AssertUnwindSafe(|| accept_loop(&acceptor, Some(&standby))))
+                        .is_err()
+                    {
+                        // ここまで来るのは accept ループ自体が落ちたとき。
+                        // 帳簿だけ戻す (待ち受けには 1 本目が残っている)
+                        log_error!(None, "accept thread panicked");
+                        acceptor.flock.retire();
+                    }
+                })
+                .is_ok()
+        })
+    }
+
+    /// accept した接続を受け入れるか決め、受けるなら [`Conn`] を作る。
+    /// 上限超過で 503 を返した・`Conn` を作れなかったときは `None`。
+    /// `inherited` は accept の前に控えておいた「待ち受けに当たっていた timeout」。
+    fn admit(
+        &self,
+        mut stream: TcpStream,
+        peer: SocketAddr,
+        inherited: Option<Duration>,
+    ) -> Option<Box<Conn>> {
+        // .env の再読込で timeout が変わった直後だけは接続が継承した値と食い違うので、
+        // その接続は従来どおり接続ごとに設定する
+        let cfg = (self.config_of)();
         let conn_inherited = inherited.filter(|t| *t == cfg.timeout);
         if conn_inherited.is_none() && inherited.is_some() {
             // 待ち受けに当て直す (次の接続から効く)
-            inherited = inherit_on_listener(&listener, cfg.timeout);
+            let applied = inherit_on_listener(&self.listener, cfg.timeout);
+            self.inherited
+                .store(pack_timeout(applied), Ordering::Relaxed);
         }
-        // 上限を超えたらスレッドを起こさずに 503 を返して閉じる
+        // 上限を超えたらスレッドを使わずに 503 を返して閉じる
         let max = cfg.max_conns;
-        if max > 0 && limiter.open() >= max {
-            metrics
+        if max > 0 && self.limiter.open() >= max {
+            self.metrics
                 .rejected_overload
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                .fetch_add(1, Ordering::Relaxed);
             let now = cache::now_epoch() as usize;
-            let last = limiter.warned.load(Ordering::Relaxed);
+            let last = self.limiter.warned.load(Ordering::Relaxed);
             if now.saturating_sub(last) >= 60
-                && limiter
+                && self
+                    .limiter
                     .warned
                     .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
                     .is_ok()
@@ -162,7 +342,7 @@ pub fn serve(
                 log_warn!(
                     None,
                     "connection limit reached ({} open, PROXY_MAX_CONNS={}); returning 503",
-                    limiter.open(),
+                    self.limiter.open(),
                     max
                 );
             }
@@ -171,36 +351,42 @@ pub fn serve(
             }
             let _ = stream.write_all(OVERLOAD_RESPONSE);
             let _ = stream.flush();
-            continue;
+            return None;
         }
         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
-        limiter.open.fetch_add(1, Ordering::Relaxed);
-        let m = Arc::clone(&metrics);
-        let l = Arc::clone(&limiter);
-        let c = Arc::clone(&cache);
-        let p = Arc::clone(&upstream);
-        let w = park.clone();
-        let started = workers.run(Box::new(move || {
-            // 同時接続数と active_connections の持ち分は Conn が持つ (接続の寿命と一致させる)
-            let accepted = Accepted { peer, local_port };
-            match Conn::new(
-                stream,
-                accepted,
-                l,
-                cfg,
-                m,
-                c,
-                p,
-                w,
-                conn_inherited,
-                conn_id,
-            ) {
-                Ok(conn) => run_conn(Box::new(conn)),
-                Err(e) => log_error!(Some(conn_id), "{}", e),
+        self.limiter.open.fetch_add(1, Ordering::Relaxed);
+        // 同時接続数と active_connections の持ち分はここから Conn が持つ (接続の寿命と一致させる)
+        let accepted = Accepted {
+            peer,
+            local_port: self.local_port,
+        };
+        match Conn::new(
+            stream,
+            accepted,
+            Arc::clone(&self.limiter),
+            cfg,
+            Arc::clone(&self.metrics),
+            Arc::clone(&self.cache),
+            Arc::clone(&self.upstream),
+            self.park.clone(),
+            conn_inherited,
+            conn_id,
+        ) {
+            Ok(conn) => Some(Box::new(conn)),
+            Err(e) => {
+                // Conn が出来ていないので持ち分を自分で戻す
+                self.limiter.open.fetch_sub(1, Ordering::Relaxed);
+                log_error!(Some(conn_id), "{}", e);
+                None
             }
-        }));
-        if started.is_err() {
-            limiter.open.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    /// 接続をワーカースレッドへ渡す (群れが上限のときと、従来経路)。
+    fn hand_off(&self, conn: Box<Conn>) {
+        let conn_id = conn.id();
+        // 渡せなければ仕事ごと返ってくる。落とせば Conn も落ちて接続が閉じる
+        if self.workers.run(Box::new(move || run_conn(conn))).is_err() {
             log_error!(Some(conn_id), "failed to get a thread for the connection");
         }
     }
