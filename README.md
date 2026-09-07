@@ -38,13 +38,29 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 | forward, 8 並列 (`--lite`) | **33,125 req/s, p50 0.199 ms** |
 | forward, 8 並列 (キャッシュ HIT) | **75,563 req/s, p50 0.070 ms** |
 | forward, 64 並列 | 25,912 req/s, p50 1.6 ms |
-| CONNECT トンネル 1 本 | **2,800 MiB/s** (Linux は `splice(2)`) |
+| CONNECT トンネル 1 本 | **2,800 MiB/s** (Linux は `splice(2)`。**ベンチ律速** → 下の注) |
 | CONNECT 確立 | 8,350 tunnels/s, p50 0.68 ms |
 | 1 接続 1 要求 (keep-alive 無し) | 12,710 req/s, CPU 98 us/要求 |
 | 同時 5,000 トンネル (アイドル) | **68 スレッド / RSS 71.5 MiB** (預けない場合 5,005 スレッド / 93.9 MiB) |
 | 暇な keep-alive 接続 2,000 本 | **18 スレッド / RSS 25.7 MiB** (預けない場合 2,003 スレッド / 72.3 MiB) |
 | 起動直後のスレッド | `--lite` で 4 本、既定で 7 本 |
 | バイナリ | 923 KB |
+
+### 注: トンネルの MiB/s はプロキシの上限ではありません
+
+**この行だけはベンチ側が律速しています。** プロキシは `splice(2)` で 1 バイトもコピーしませんが、
+ベンチは送る側 (blaster) と受ける側 (reader) で 1 回ずつコピーするので、**ベンチのスレッドの方が先に頭打ち**になります。
+そのため MiB/s は「ベンチをどのコアに置いたか」で 2.6 倍動きます
+(2026-09-08、同じ `release` バイナリ、`--only tunnel --conc 1` を 10 秒 × 3 回の中央値):
+
+| 置き方 | スループット | プロキシの CPU | プロキシが使ったコア |
+|---|---|---|---|
+| プロキシ cpu4-5 / ベンチ cpu6-7 (現在の既定) | **3,956 MiB/s** | 182.7 us/MiB (user 10.9) | 1 コアの **72%** |
+| プロキシ cpu4-7 / ベンチ cpu0-3 (LITTLE) | 1,534 MiB/s | 223.2 us/MiB (user 14.4) | 1 コアの 34% |
+
+プロキシ側は 1 コアを 72% しか使っておらず、飽和しているのはベンチのスレッド (1 本が 100%) の方です。
+**この経路の主指標は CPU/MiB** で、`scripts/cpu-per-request.sh --only tunnel --conc 1` が
+CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出します。
 
 ## 特徴
 
@@ -446,6 +462,7 @@ cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 # --conc 並列数 / --seconds 測定秒数 / --body-bytes 応答本文の大きさ
 # --only direct|forward|tunnel|connect|idle-tunnels|syscall-cost|all で 1 種だけ測れる
 # direct 行はプロキシを通さないオリジン直結 (ベンチ自身の上限。30 万 req/s 前後)
+# tunnel 行も --seconds 秒だけ 1 本のトンネルに流す (この行はベンチ律速。上の「性能」の注)
 
 # この機械での sendto / recvfrom 1 回の実費 (プロキシは使わない。CPU の固定が要る)
 taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 3

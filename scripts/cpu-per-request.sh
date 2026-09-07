@@ -5,6 +5,12 @@
 # `/proc/<pid>/stat` の utime + stime の差をベンチの操作数で割る。
 # 主指標は **CPU/要求** で、スループットは律速がベンチ側に移るので補助でしかない。
 #
+# **`--only tunnel` だけは既定の配置が違う** (プロキシ cpu4-5 / ベンチ cpu6-7。T10.8 で実測して決めた)。
+# この経路のベンチは blaster (送る) と reader (受ける) の 2 スレッドがどちらも本気で回るので、
+# LITTLE に置くと**ベンチが先に頭打ちになってプロキシの実力が見えない** (実測 1.20 → 2.42 GiB/s)。
+# それでも律速はベンチ側のまま (プロキシは `splice` でコピー 0 回、ベンチは送り+受けでコピー 2 回)。
+# 出力の `proxy NN% of one core` が 100% に届かない限り、MiB/s はプロキシの上限ではない。
+#
 # 使い方:
 #   scripts/cpu-per-request.sh [--only forward|connect|tunnel|idle-tunnels] [bench の残りの引数...]
 #     既定は --only forward --conc 8 --seconds 10
@@ -12,19 +18,18 @@
 #     scripts/cpu-per-request.sh                                  # keep-alive の forward
 #     scripts/cpu-per-request.sh --only forward --no-keepalive    # 1 接続 1 要求
 #     scripts/cpu-per-request.sh --only connect                   # CONNECT の確立
+#     scripts/cpu-per-request.sh --only tunnel --conc 1           # トンネル 1 本 (主指標は CPU/MiB)
 #     PROXY_MAX_CONNS=8192 scripts/cpu-per-request.sh --only idle-tunnels --conc 5000
 #                                                                 # アイドルトンネルを握る
 #     PROXY_ARGS="" PROXY_MEM_CACHE_MB=64 PROXY_CACHE_DIR=/tmp/pc \
 #       scripts/cpu-per-request.sh --cacheable                    # キャッシュ HIT
 #
 # 環境変数:
-#   PROXY_CPUS (既定 4-7) / BENCH_CPUS (既定 0-3) / PORT (既定 18080)
+#   PROXY_CPUS (既定 4-7、tunnel だけ 4-5) / BENCH_CPUS (既定 0-3、tunnel だけ 6-7) / PORT (既定 18080)
 #   PROXY_ARGS (既定 "--lite"。空にすると既定プロファイルで、環境変数がそのまま効く)
 #   BIN / BENCH (既定 target/release/{rust-http-proxy,bench})
 set -u
 cd "$(dirname "$0")/.."
-PROXY_CPUS=${PROXY_CPUS:-4-7}
-BENCH_CPUS=${BENCH_CPUS:-0-3}
 PORT=${PORT:-18080}
 BIN=${BIN:-target/release/rust-http-proxy}
 BENCH=${BENCH:-target/release/bench}
@@ -44,6 +49,15 @@ while [ $# -gt 0 ]; do
 done
 [ $CONC_GIVEN -eq 1 ] || ARGS+=(--conc 8)
 [ $SECS_GIVEN -eq 1 ] || ARGS+=(--seconds 10)
+
+# コアの割り当ては測る種類で変える (上の説明を参照)。tunnel はベンチも big に置く。
+if [ "$ONLY" = tunnel ]; then
+  PROXY_CPUS=${PROXY_CPUS:-4-5}
+  BENCH_CPUS=${BENCH_CPUS:-6-7}
+else
+  PROXY_CPUS=${PROXY_CPUS:-4-7}
+  BENCH_CPUS=${BENCH_CPUS:-0-3}
+fi
 
 for b in "$BIN" "$BENCH"; do
   [ -x "$b" ] || { echo "not built: $b" >&2; exit 1; }
@@ -89,8 +103,14 @@ touch "$work/sampling"
   done
 ) &
 sampler=$!
-out=$(taskset -c "$BENCH_CPUS" "$BENCH" --proxy "127.0.0.1:$PORT" --only "$ONLY" "${ARGS[@]}")
+# ベンチ自身の CPU も測る (このベンチが律速していないかを見るため)。
+# `time` は bash の組み込みで、外部コマンドを増やさずに子の user / sys / 実時間が取れる。
+TIMEFORMAT='%3R %3U %3S'
+{ time taskset -c "$BENCH_CPUS" "$BENCH" --proxy "127.0.0.1:$PORT" --only "$ONLY" \
+    "${ARGS[@]}" >"$work/bench.out" 2>&1; } 2>"$work/bench.time"
 rc=$?
+out=$(cat "$work/bench.out")
+read -r real buser bsys <"$work/bench.time"
 read -r u1 s1 < <(awk '{print $14, $15}' "/proc/$pid/stat")
 hwm=$(awk '/^VmHWM/{print $2}' "/proc/$pid/status")
 threads1=$(awk '/^Threads/{print $2}' "/proc/$pid/status")
@@ -106,7 +126,7 @@ read -r threads_max threads_mid < <(sort -n "$work/samples" | awk -v t0="$thread
 echo "$out"
 [ $rc -eq 0 ] || { echo "bench failed (exit $rc)"; exit $rc; }
 
-# tunnel は「操作数」ではなく運んだ MiB で割る (256 MiB を 1 本で通す)
+# tunnel は「操作数」ではなく運んだ MiB で割る (1 本のトンネルに `--seconds` 秒流す)
 if [ "$ONLY" = tunnel ]; then
   ops=$(echo "$out" | sed -n 's/.*(\([0-9]*\) MiB through.*/\1/p' | tail -1)
   unit=MiB
@@ -115,11 +135,17 @@ else
   unit=$([ "$ONLY" = forward ] && echo req || echo op)
 fi
 [ -n "$ops" ] && [ "$ops" -gt 0 ] || { echo "could not read the number of operations"; exit 1; }
+# `proxy NN% of one core` はプロキシが使い切ったコアの数 (100% = 1 コアを丸ごと)。
+# ベンチ側と見比べて、**どちらが律速しているか**をその場で判断するためのもの。
 awk -v u=$((u1 - u0)) -v s=$((s1 - s0)) -v ops="$ops" -v tick="$tick" -v hwm="$hwm" \
     -v t0="$threads0" -v t1="$threads1" -v tmax="$threads_max" -v tmid="$threads_mid" \
-    -v parked="${parked:-0}" \
+    -v parked="${parked:-0}" -v real="${real:-0}" -v bu="${buser:-0}" -v bs="${bsys:-0}" \
     -v unit="$unit" 'BEGIN {
   us = 1e6 / tick
+  bench = bu + bs
   printf "CPU/%s: %.2f us (user %.2f / kernel %.2f)  %s %d  proxy peak RSS %.1f MB  threads %d -> %d (max %d, median %d)  parked max %d\n",
     unit, (u + s) * us / ops, u * us / ops, s * us / ops, unit, ops, hwm / 1024, t0, t1, tmax, tmid, parked
+  if (real > 0)
+    printf "  proxy %.0f%% of one core  |  bench %.2f us/%s (%.0f%% of one core, user %.2f / sys %.2f)  in %.2fs\n",
+      (u + s) / tick / real * 100, bench * 1e6 / ops, unit, bench / real * 100, bu, bs, real
 }'
