@@ -13,8 +13,10 @@ use std::io::{self, Write};
 use crate::cache::{Cache, cache_key};
 use crate::http::parse_origin;
 use crate::log_info;
-use crate::metrics::Metrics;
+use crate::metrics::{self, Metrics};
+use crate::persist;
 use crate::prom;
+use crate::reload;
 
 pub struct Endpoint<'a> {
     pub metrics: &'a Metrics,
@@ -110,7 +112,16 @@ pub fn handle(
         (
             200,
             "application/json",
-            ep.metrics.to_json_with_cache(Some(ep.cache)),
+            // `/status` の組み立てはここの仕事。指標は部品を並べるだけにしてある
+            // (下の層が上の層を呼ぶと依存が輪になるため)
+            ep.metrics.to_json_with_cache(
+                Some(ep.cache),
+                metrics::StatusExtras {
+                    settings: &reload::status_json(),
+                    blocklist: &crate::blocklist::status_json(),
+                    state_file: &persist::status_json(),
+                },
+            ),
         )
     } else if is_get && path == "/metrics" {
         (

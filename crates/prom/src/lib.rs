@@ -10,11 +10,11 @@ pub use proxy_base::{
     cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info, log_trace,
     log_warn, sync,
 };
+pub use proxy_blocklist::{
+    Upstream, blocklist, body, clientio, config, headers, origin, pool, request, response, tls,
+};
 #[cfg(target_os = "linux")]
 pub use proxy_cache::sys;
 pub use proxy_cache::{cache, signal, sysinfo};
+pub use proxy_metrics::{history, metrics, persist, rrd};
 pub use proxy_net::{acl, dns, net};
-pub use proxy_stats::{
-    Upstream, blocklist, body, clientio, config, headers, history, metrics, origin, persist, pool,
-    reload, request, response, rrd, tls,
-};

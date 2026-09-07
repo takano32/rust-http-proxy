@@ -11,5 +11,7 @@ proxy-base = { path = "../base" }
 proxy-net = { path = "../net" }
 proxy-cache = { path = "../cache" }
 proxy-http = { path = "../http" }
-proxy-stats = { path = "../stats" }
+proxy-metrics = { path = "../metrics" }
+proxy-blocklist = { path = "../blocklist" }
+proxy-reload = { path = "../reload" }
 proxy-prom = { path = "../prom" }

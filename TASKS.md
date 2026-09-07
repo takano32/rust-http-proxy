@@ -364,9 +364,9 @@ Phase 0〜4 の後、設計上の前提を 8 つの観点から疑い直した�
   - 結果: 7 → **23 クレート**。CPU/要求 41.42 → 41.46 us (ぶれの中)、ビルド時間 34.5 → 38.1 秒、
     テスト 218 本すべて通過。**ビルドが通る最小の上限は 130 MB** (200 MB に対し 70 MB の余裕。
     `scripts/build-memory.sh --find` で測った)。`bench` は既定のビルド対象から外した。
-    **割らなかったところ**: `proxy-stats` の 5 モジュール (blocklist / history / metrics /
-    persist / reload) は 1 つの強連結成分 (reload → blocklist → persist → metrics → reload)。
-    指標の JSON にブロックリストと再読込の状態を埋めているのが元で、割るには依存の反転が要る
+    **割らなかったところ**: `proxy-metrics` の 3 モジュール (metrics / history / persist) は
+    互いを参照している (履歴は指標の一部で、状態ファイルはその両方を載せる)。
+    `proxy-msg` の 4 つも「HTTP メッセージの表現」で 1 つの責務
 
 - [x] **T7.2 2,214 行の結合テストを責務ごとに 4 本へ分ける**
   - 目的: 1 ファイル 2,000 行の目安を超えていた。
@@ -430,17 +430,12 @@ Phase 0〜4 の後、設計上の前提を 8 つの観点から疑い直した�
   - やること: `ulimit -n` との関係を確かめ、既定値の根拠を決め直して README に書く。
   - 受け入れ基準: 既定値の根拠が 1 行で説明できること。
 
-- [ ] **T8.6 `proxy-stats` の強連結成分をほどく**
-  - 目的: 23 クレートのうち `proxy-stats` (2,266 行) だけが「計測・ブロックリスト・再読込」の
-    3 つを抱えている。ビルドのメモリでも実測でいちばん大きい。
-  - 原因: `metrics::to_json_with_cache` が `/status` の JSON を組み立てるとき、
-    `blocklist::status_json()` `reload::status_json()` `persist::status_json()` を呼んでいる。
-    これで下の層が上の層を呼ぶ形になり、reload → blocklist → persist → metrics → reload の輪ができる。
-  - やること: `/status` の組み立ては `proxy-endpoints` の仕事なので、そちらへ移す。
-    `to_json_with_cache` は部品の JSON を受け取る形にする。そのうえで
-    blocklist / reload / metrics を別クレートに割る。
-  - 受け入れ基準: `/status` の出力が 1 バイトも変わらないこと (結合テストで確認)。
-    CPU/要求 が変わらないこと。
+- [ ] **T8.6 `proxy-cache` と `proxy-http` をさらに割れるか調べる**
+  - 目的: いちばん大きいのが `proxy-cache` (2,255 行、うち 936 行はテスト) と
+    `proxy-http` (1,728 行)。どちらも「1 つの責務」に見えるが、内訳は見ていない。
+  - やること: モジュール間の依存を実際に測ってから決める (`crate::` の参照を数える)。
+    切れ目が無ければ「無い」と記録する。
+  - 受け入れ基準: 割るか割らないかの判断が、依存の実測にもとづいていること。
 
 ## 付録 A. 計測の記録
 

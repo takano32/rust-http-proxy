@@ -1,5 +1,5 @@
 [package]
-name = "proxy-prom"
+name = "proxy-reload"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,7 +8,7 @@ path = "src/lib.rs"
 
 [dependencies]
 proxy-base = { path = "../base" }
+proxy-sysinfo = { path = "../sysinfo" }
 proxy-net = { path = "../net" }
-proxy-cache = { path = "../cache" }
-proxy-metrics = { path = "../metrics" }
+proxy-config = { path = "../config" }
 proxy-blocklist = { path = "../blocklist" }

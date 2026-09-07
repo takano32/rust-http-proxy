@@ -13,15 +13,17 @@ pub use proxy_base::{
     cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info, log_trace,
     log_warn, sync,
 };
+pub use proxy_blocklist::blocklist;
 pub use proxy_cache::cache;
 pub use proxy_config::config;
 pub use proxy_endpoints::endpoints;
 pub use proxy_http::{freshness, http};
+pub use proxy_metrics::{history, metrics, persist, rrd};
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};
 pub use proxy_origin::{Upstream, origin, pool, request, tls};
 pub use proxy_prom::prom;
-pub use proxy_stats::{blocklist, history, metrics, persist, reload, rrd};
+pub use proxy_reload::reload;
 pub use proxy_sys::signal;
 #[cfg(target_os = "linux")]
 pub use proxy_sys::sys;

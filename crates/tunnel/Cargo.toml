@@ -10,4 +10,4 @@ path = "src/lib.rs"
 proxy-base = { path = "../base" }
 proxy-sys = { path = "../sys" }
 proxy-net = { path = "../net" }
-proxy-stats = { path = "../stats" }
+proxy-metrics = { path = "../metrics" }

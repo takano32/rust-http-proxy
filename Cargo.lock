@@ -11,6 +11,19 @@ name = "proxy-bench"
 version = "0.1.0"
 
 [[package]]
+name = "proxy-blocklist"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-config",
+ "proxy-metrics",
+ "proxy-msg",
+ "proxy-net",
+ "proxy-origin",
+ "proxy-rrd",
+]
+
+[[package]]
 name = "proxy-cache"
 version = "0.1.0"
 dependencies = [
@@ -79,11 +92,13 @@ name = "proxy-endpoints"
 version = "0.1.0"
 dependencies = [
  "proxy-base",
+ "proxy-blocklist",
  "proxy-cache",
  "proxy-http",
+ "proxy-metrics",
  "proxy-net",
  "proxy-prom",
- "proxy-stats",
+ "proxy-reload",
 ]
 
 [[package]]
@@ -101,11 +116,21 @@ dependencies = [
  "proxy-base",
  "proxy-cache",
  "proxy-freshness",
+ "proxy-metrics",
  "proxy-msg",
  "proxy-net",
  "proxy-origin",
- "proxy-stats",
  "proxy-sys",
+]
+
+[[package]]
+name = "proxy-metrics"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cache",
+ "proxy-net",
+ "proxy-rrd",
 ]
 
 [[package]]
@@ -137,28 +162,26 @@ name = "proxy-prom"
 version = "0.1.0"
 dependencies = [
  "proxy-base",
+ "proxy-blocklist",
  "proxy-cache",
+ "proxy-metrics",
  "proxy-net",
- "proxy-stats",
+]
+
+[[package]]
+name = "proxy-reload"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-blocklist",
+ "proxy-config",
+ "proxy-net",
+ "proxy-sysinfo",
 ]
 
 [[package]]
 name = "proxy-rrd"
 version = "0.1.0"
-
-[[package]]
-name = "proxy-stats"
-version = "0.1.0"
-dependencies = [
- "proxy-base",
- "proxy-cache",
- "proxy-config",
- "proxy-msg",
- "proxy-net",
- "proxy-origin",
- "proxy-rrd",
- "proxy-sysinfo",
-]
 
 [[package]]
 name = "proxy-sys"
@@ -183,8 +206,8 @@ name = "proxy-tunnel"
 version = "0.1.0"
 dependencies = [
  "proxy-base",
+ "proxy-metrics",
  "proxy-net",
- "proxy-stats",
  "proxy-sys",
 ]
 
@@ -200,15 +223,17 @@ name = "rust-http-proxy"
 version = "0.1.0"
 dependencies = [
  "proxy-base",
+ "proxy-blocklist",
  "proxy-cache",
  "proxy-config",
  "proxy-endpoints",
  "proxy-http",
+ "proxy-metrics",
  "proxy-msg",
  "proxy-net",
  "proxy-origin",
  "proxy-prom",
- "proxy-stats",
+ "proxy-reload",
  "proxy-sys",
  "proxy-sysinfo",
  "proxy-tunnel",

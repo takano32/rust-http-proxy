@@ -188,6 +188,28 @@ impl HostStats {
     }
 }
 
+/// `/status` の JSON に埋め込む、上の層が用意する部品。
+///
+/// 既定 (`Default`) は `"null"`。単体テストのように上の層が居ないときに使う。
+pub struct StatusExtras<'a> {
+    /// `.env` の再読込の状態 (`reload::status_json()`)
+    pub settings: &'a str,
+    /// ブロックリストの状態 (`blocklist::status_json()`)
+    pub blocklist: &'a str,
+    /// 状態ファイルの状態 (`persist::status_json()`)
+    pub state_file: &'a str,
+}
+
+impl Default for StatusExtras<'_> {
+    fn default() -> Self {
+        StatusExtras {
+            settings: "null",
+            blocklist: "null",
+            state_file: "null",
+        }
+    }
+}
+
 /// ホスト別統計の上限。超えた分は `other` にまとめる。
 pub const MAX_HOSTS: usize = 1000;
 
@@ -355,11 +377,16 @@ impl Metrics {
     }
 
     pub fn to_json(&self) -> String {
-        self.to_json_with_cache(None)
+        self.to_json_with_cache(None, StatusExtras::default())
     }
 
-    /// キャッシュ統計を含めた `/status` 用 JSON を生成する。
-    pub fn to_json_with_cache(&self, cache: Option<&Cache>) -> String {
+    /// キャッシュ統計と、上の層が用意した部品を含めた `/status` 用 JSON を生成する。
+    ///
+    /// `settings` / `blocklist` / `state_file` を**呼び出し側から受け取る**のは、
+    /// ここで `reload::status_json()` のように直接呼ぶと、下の層 (指標) が上の層を
+    /// 呼ぶ形になって依存が輪になるため。`/status` を組み立てるのは `proxy-endpoints`
+    /// の仕事で、ここはその部品を並べるだけにする。
+    pub fn to_json_with_cache(&self, cache: Option<&Cache>, extra: StatusExtras<'_>) -> String {
         let uptime = self.start_time.elapsed().as_secs();
         let requests = self.total_requests.load(Ordering::Relaxed);
         let active = self.active_connections.load(Ordering::Relaxed);
@@ -419,10 +446,10 @@ impl Metrics {
             hosts_json.join(","),
             clients_json.join(","),
             crate::log::current_level().as_str().trim(),
-            crate::reload::status_json(),
+            extra.settings,
             crate::dns::status_json(),
-            crate::blocklist::status_json(),
-            crate::persist::status_json(),
+            extra.blocklist,
+            extra.state_file,
             cache_json
         )
     }

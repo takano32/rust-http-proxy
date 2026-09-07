@@ -106,6 +106,51 @@ fn test_integration_origin_connections_are_pooled() {
 }
 
 #[test]
+fn test_integration_status_embeds_the_parts_from_the_upper_layers() {
+    // `/status` の組み立ては endpoints の仕事で、指標 (proxy-metrics) は部品を並べるだけ。
+    // 受け渡しが切れると、その部品が丸ごと null になる。
+    // テスト用のプロキシは再読込スレッドも状態ファイルも持たないので、
+    // settings と state_file はもともと null。生きているのは blocklist と dns の 2 つ
+    let proxy_port = start_test_proxy(proxy_config());
+    let status = status_json(proxy_port);
+    for (key, must_contain) in [
+        ("\"blocklist\":", "\"entries\":"),
+        ("\"dns\":", "\"ttl_secs\":"),
+    ] {
+        let at = status
+            .find(key)
+            .unwrap_or_else(|| panic!("{} が無い: {}", key, status));
+        let tail = &status[at + key.len()..];
+        assert!(
+            tail[..200.min(tail.len())].contains(must_contain),
+            "{} の中身が空 (上の層からの受け渡しが切れている): {}",
+            key,
+            &tail[..80.min(tail.len())]
+        );
+    }
+    // 部品の位置 (キーの並び) も変わっていないこと
+    let order: Vec<&str> = [
+        "\"log_level\":",
+        "\"settings\":",
+        "\"dns\":",
+        "\"blocklist\":",
+        "\"state_file\":",
+        "\"cache\":",
+    ]
+    .into_iter()
+    .filter(|k| status.contains(k))
+    .collect();
+    assert_eq!(order.len(), 6, "{}", status);
+    let mut at = 0;
+    for k in order {
+        let i = status[at..]
+            .find(k)
+            .unwrap_or_else(|| panic!("{} の位置が違う: {}", k, status));
+        at += i;
+    }
+}
+
+#[test]
 fn test_integration_metrics_purge_and_lookup_endpoints() {
     let counter = Arc::new(AtomicUsize::new(0));
     let (origin_port, _origin) =

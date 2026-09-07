@@ -397,7 +397,9 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 | `proxy-cachedisk` | キャッシュのディスク側 (ファイル形式、走査、書き出し) |
 | `proxy-cache` | キャッシュ本体 (メモリ側とディスク側を束ねる) |
 | `proxy-config` | 起動時の設定 |
-| `proxy-stats` | 計測、ブロックリスト、`.env` の再読込 |
+| `proxy-metrics` | 計測 (ホスト別・接続元別の統計、時系列の履歴、状態ファイルへの読み書き) |
+| `proxy-blocklist` | ドメインのブロックリスト |
+| `proxy-reload` | `$HOME/.env` の再読込 (`inotify` で見張る) |
 | `proxy-prom` | Prometheus 形式の出力 |
 | `proxy-freshness` | RFC 9111 の鮮度判定 |
 | `proxy-http` | 中継の本体 |

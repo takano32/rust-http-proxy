@@ -1,5 +1,5 @@
 [package]
-name = "proxy-http"
+name = "proxy-blocklist"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,10 +8,9 @@ path = "src/lib.rs"
 
 [dependencies]
 proxy-base = { path = "../base" }
-proxy-sys = { path = "../sys" }
+proxy-rrd = { path = "../rrd" }
 proxy-msg = { path = "../msg" }
 proxy-net = { path = "../net" }
 proxy-origin = { path = "../origin" }
-proxy-cache = { path = "../cache" }
-proxy-freshness = { path = "../freshness" }
+proxy-config = { path = "../config" }
 proxy-metrics = { path = "../metrics" }
