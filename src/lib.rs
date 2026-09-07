@@ -582,26 +582,84 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
             },
             Step::Close => return Ok(()),
             Step::Connect { target, prefix } => {
-                // client だけ取り出してトンネルへ渡す (残りのフィールドは
-                // この式が終わってから落ちるので、持ち分は最後まで立ったまま)
-                let conn = *conn;
-                let (timeout, idle) = (
-                    conn.config.timeout,
-                    (!conn.config.tunnel_idle.is_zero()).then_some(conn.config.tunnel_idle),
-                );
-                let (conn_id, metrics) = (conn.conn_id, Arc::clone(&conn.metrics));
-                return tunnel::handle_connect(
-                    conn.client,
+                // 要るものだけ取り出してトンネルへ渡す (`Conn` に `Drop` は無いので
+                // 分解できる)。**持ち分 (`_open` / `_active`) も一緒に渡すこと**:
+                // トンネルは暇なときに監視スレッドへ預けられるので、ここで落とすと
+                // 預けた瞬間に同時接続数が減って `PROXY_MAX_CONNS` の意味が壊れる
+                let Conn {
+                    client,
+                    config,
+                    metrics,
+                    conn_id,
+                    park,
+                    _open,
+                    _active,
+                    ..
+                } = *conn;
+                let timeout = config.timeout;
+                let idle = (!config.tunnel_idle.is_zero()).then_some(config.tunnel_idle);
+                let hold: Box<dyn Send> = Box::new((_open, _active));
+                return start_tunnel(
+                    client,
                     &target,
                     &prefix,
                     timeout,
                     idle,
                     conn_id,
                     metrics,
+                    park,
+                    config.park_grace,
+                    hold,
                 );
             }
         }
     }
+}
+
+/// CONNECT トンネルを始める。
+///
+/// Linux では、両方向とも暇になったトンネルを監視スレッド (`epoll`) へ預けて
+/// スレッドを手放す (`park` があるときだけ)。それ以外の環境では従来どおり
+/// 1 本のスレッドが最後まで面倒をみる。
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+fn start_tunnel(
+    client: TcpStream,
+    target: &str,
+    prefix: &[u8],
+    timeout: std::time::Duration,
+    idle: Option<std::time::Duration>,
+    conn_id: usize,
+    metrics: Arc<Metrics>,
+    park: Option<Arc<idle::IdleWatch>>,
+    grace: std::time::Duration,
+    hold: Box<dyn Send>,
+) -> io::Result<()> {
+    let park = park.map(|w| (w as Arc<dyn tunnel::Park>, grace));
+    tunnel::handle_connect_parked(
+        client, target, prefix, timeout, idle, conn_id, metrics, park, hold,
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+#[allow(clippy::too_many_arguments)]
+fn start_tunnel(
+    client: TcpStream,
+    target: &str,
+    prefix: &[u8],
+    timeout: std::time::Duration,
+    idle: Option<std::time::Duration>,
+    conn_id: usize,
+    metrics: Arc<Metrics>,
+    park: Option<Arc<idle::IdleWatch>>,
+    grace: std::time::Duration,
+    hold: Box<dyn Send>,
+) -> io::Result<()> {
+    // 預け先は Linux (epoll) だけ。持ち分はこの関数が終わるまで持っておく
+    let _ = (park, grace);
+    let result = tunnel::handle_connect(client, target, prefix, timeout, idle, conn_id, metrics);
+    drop(hold);
+    result
 }
 
 /// 接続を監視スレッドへ預けてこのスレッドを解放する。

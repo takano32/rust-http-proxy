@@ -219,6 +219,8 @@ pub struct Metrics {
     pub active_connections: AtomicUsize,
     /// アイドルなまま監視スレッド (epoll) に預けている接続数と、その監視が生きているか
     pub parked_connections: AtomicUsize,
+    /// そのうち CONNECT トンネルの数 (両方向とも暇なもの。T8.1)
+    pub parked_tunnels: AtomicUsize,
     pub park_watcher_alive: AtomicBool,
     /// 同時接続数の上限に当たって 503 で断った数
     pub rejected_overload: AtomicU64,
@@ -243,6 +245,7 @@ impl Metrics {
             total_requests: AtomicU64::new(0),
             active_connections: AtomicUsize::new(0),
             parked_connections: AtomicUsize::new(0),
+            parked_tunnels: AtomicUsize::new(0),
             park_watcher_alive: AtomicBool::new(false),
             rejected_overload: AtomicU64::new(0),
             bytes_forwarded: AtomicU64::new(0),
@@ -424,7 +427,8 @@ impl Metrics {
         format!(
             concat!(
                 "{{\"status\":\"ok\",\"uptime_secs\":{},\"total_requests\":{},",
-                "\"active_connections\":{},\"parked_connections\":{},\"parking\":{},",
+                "\"active_connections\":{},\"parked_connections\":{},\"parked_tunnels\":{},",
+                "\"parking\":{},",
                 "\"rejected_overload\":{},\"bytes_forwarded\":{},",
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
@@ -435,6 +439,7 @@ impl Metrics {
             requests,
             active,
             self.parked_connections.load(Ordering::Relaxed),
+            self.parked_tunnels.load(Ordering::Relaxed),
             self.park_watcher_alive.load(Ordering::Relaxed),
             self.rejected_overload.load(Ordering::Relaxed),
             bytes,
