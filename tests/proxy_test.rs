@@ -1003,7 +1003,9 @@ fn test_integration_grace_serves_stale_and_refreshes_in_background() {
         Arc::clone(&counter),
         Arc::new(|req, n| {
             if req.contains("If-None-Match: \"g1\"") {
-                return b"HTTP/1.1 304 Not Modified\r\nETag: \"g1\"\r\nCache-Control: max-age=1\r\nConnection: close\r\n\r\n".to_vec();
+                // 再検証では鮮度を長めに延ばす。max-age=1 のままだと、再検証の完了を
+                // 待っている間に再び期限が切れて、次が HIT にならないことがある
+                return b"HTTP/1.1 304 Not Modified\r\nETag: \"g1\"\r\nCache-Control: max-age=60\r\nConnection: close\r\n\r\n".to_vec();
             }
             let body = format!("grace body {}", n);
             format!(
