@@ -4,6 +4,7 @@
 //! 出力形式: `2026-09-02T01:23:45.678Z INFO  [conn#12] message`
 //! 出力先はレベルによらずすべて標準出力 (stdout)。
 
+use std::cell::RefCell;
 use std::io::Write;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -78,16 +79,13 @@ pub fn init_from_env() {
 }
 
 /// UTC のタイムスタンプ文字列 (`2026-09-02T01:23:45.678Z`) を生成する。
+///
+/// ログを 1 行出すだけなら [`log_line`] / [`access`] が使い回しのバッファへ直接書くので、
+/// この関数は `String` が要る呼び出し元のためだけに残してある。
 pub fn timestamp() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let millis = now.subsec_millis();
-    let (y, mo, d, h, mi, s) = civil_from_epoch(now.as_secs());
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        y, mo, d, h, mi, s, millis
-    )
+    let mut buf = Vec::with_capacity(24);
+    push_timestamp(&mut buf);
+    String::from_utf8(buf).unwrap_or_default()
 }
 
 /// UNIX epoch 秒を UTC の (年, 月, 日, 時, 分, 秒) へ変換する (Howard Hinnant のアルゴリズム)。
@@ -114,23 +112,138 @@ pub fn civil_from_epoch(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
     (y, mo, d, h, mi, s)
 }
 
+/// 10 進で書き足す (`{:0width$}` と同じ。桁が足りなければ先頭に `0` を詰める)。
+/// `Display` を通さないので `String` を作らない。
+fn push_padded(buf: &mut Vec<u8>, v: u64, width: usize) {
+    let mut digits = [0u8; 20];
+    let mut i = digits.len();
+    let mut n = v;
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    for _ in digits.len() - i..width {
+        buf.push(b'0');
+    }
+    buf.extend_from_slice(&digits[i..]);
+}
+
+thread_local! {
+    /// 直近に組み立てた「秒まで」のタイムスタンプ (`2026-09-02T01:23:45.`) と、その epoch 秒。
+    /// 秒が変わらない限り作り直さない (`civil_from_epoch` の除算とゼロ詰めは要求ごとに効く)。
+    static SECOND: RefCell<(u64, Vec<u8>)> = const { RefCell::new((u64::MAX, Vec::new())) };
+
+    /// 1 行を組み立てるバッファ。書き出しは行ごとに 1 回なので、スレッドに 1 本で足りる。
+    /// 伸びたままになるが、1 行の長さは要求行とヘッダーの上限で頭打ちになる。
+    static LINE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 秒までの部分 (`2026-09-02T01:23:45.`) を書き足す。
+fn push_second(buf: &mut Vec<u8>, secs: u64) {
+    let (y, mo, d, h, mi, s) = civil_from_epoch(secs);
+    // epoch 秒は u64 なので年は必ず 1970 以降 (負にはならない)
+    push_padded(buf, y.max(0) as u64, 4);
+    buf.push(b'-');
+    push_padded(buf, mo as u64, 2);
+    buf.push(b'-');
+    push_padded(buf, d as u64, 2);
+    buf.push(b'T');
+    push_padded(buf, h as u64, 2);
+    buf.push(b':');
+    push_padded(buf, mi as u64, 2);
+    buf.push(b':');
+    push_padded(buf, s as u64, 2);
+    buf.push(b'.');
+}
+
+/// `2026-09-02T01:23:45.678Z` を書き足す (秒までは使い回す)。
+fn push_timestamp_at(buf: &mut Vec<u8>, secs: u64, millis: u32) {
+    SECOND.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut c) => {
+            if c.0 != secs || c.1.is_empty() {
+                c.1.clear();
+                push_second(&mut c.1, secs);
+                c.0 = secs;
+            }
+            buf.extend_from_slice(&c.1);
+        }
+        // 借用に失敗するのはログの中からログを呼んだときだけ (通常は起きない)
+        Err(_) => push_second(buf, secs),
+    });
+    push_padded(buf, millis as u64, 3);
+    buf.push(b'Z');
+}
+
+/// 現在時刻の `2026-09-02T01:23:45.678Z` を書き足す。
+fn push_timestamp(buf: &mut Vec<u8>) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    push_timestamp_at(buf, now.as_secs(), now.subsec_millis());
+}
+
+/// 1 行の頭 (`2026-09-02T01:23:45.678Z INFO  [conn#12] `) を書き足す。
+fn push_prefix(buf: &mut Vec<u8>, level: Level, conn_id: Option<usize>) {
+    push_timestamp(buf);
+    buf.push(b' ');
+    buf.extend_from_slice(level.as_str().as_bytes());
+    match conn_id {
+        Some(id) => {
+            buf.extend_from_slice(b" [conn#");
+            push_padded(buf, id as u64, 1);
+            buf.extend_from_slice(b"] ");
+        }
+        None => buf.extend_from_slice(b" [main] "),
+    }
+}
+
+/// 組み立てた 1 行を標準出力へ 1 回で書き出す。ロックは 1 回だけ取る
+/// (`Stdout` の `write_all` と `flush` を別々に呼ぶと 2 回取ることになる)。
+fn emit(line: &[u8]) {
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    let _ = out.write_all(line);
+    let _ = out.flush();
+}
+
+/// 使い回しのバッファへ 1 行を組み立てて書き出す (`format!` の `String` を作らない)。
+fn write_line(build: impl FnOnce(&mut Vec<u8>)) {
+    // 借用に失敗するのはログの中からログを呼んだときだけ。そのときは使い捨ての置き場で出す
+    let mut spare = Vec::new();
+    LINE.with(|cell| {
+        let mut held = cell.try_borrow_mut().ok();
+        let buf = match held.as_deref_mut() {
+            Some(buf) => {
+                buf.clear();
+                buf
+            }
+            None => &mut spare,
+        };
+        build(buf);
+        emit(buf);
+    });
+}
+
 /// 1 行のログを出力する。レベルによらず、すべて標準出力へ書き出す。
 pub fn log_line(level: Level, conn_id: Option<usize>, msg: &str) {
     if !enabled(level) {
         return;
     }
-    let line = match conn_id {
-        Some(id) => format!("{} {} [conn#{}] {}\n", timestamp(), level.as_str(), id, msg),
-        None => format!("{} {} [main] {}\n", timestamp(), level.as_str(), msg),
-    };
-    let mut out = std::io::stdout();
-    let _ = out.write_all(line.as_bytes());
-    let _ = out.flush();
+    write_line(|buf| {
+        push_prefix(buf, level, conn_id);
+        buf.extend_from_slice(msg.as_bytes());
+        buf.push(b'\n');
+    });
 }
 
 /// 1 リクエスト分のアクセスログ (既定の INFO レベルで出力される)。
 ///
 /// 例: `ACCESS 127.0.0.1 "GET http://example.com/ HTTP/1.1" 200 1234B 12.3ms cache=HIT(memory)`
+#[derive(Clone, Copy)]
 pub struct Access<'a> {
     pub client: &'a str,
     pub method: &'a str,
@@ -142,25 +255,37 @@ pub struct Access<'a> {
     pub cache: &'a str,
 }
 
+/// アクセスログの本体 (`ACCESS ...`) を書き足す。行の頭と改行は付けない。
+fn push_access(buf: &mut Vec<u8>, rec: &Access<'_>) {
+    buf.extend_from_slice(b"ACCESS ");
+    buf.extend_from_slice(rec.client.as_bytes());
+    buf.extend_from_slice(b" \"");
+    buf.extend_from_slice(rec.method.as_bytes());
+    buf.push(b' ');
+    buf.extend_from_slice(rec.target.as_bytes());
+    buf.push(b' ');
+    buf.extend_from_slice(rec.version.as_bytes());
+    buf.extend_from_slice(b"\" ");
+    buf.extend_from_slice(rec.status.as_bytes());
+    buf.push(b' ');
+    push_padded(buf, rec.bytes, 1);
+    buf.extend_from_slice(b"B ");
+    // `{:.1}` の丸め (最近接・偶数) を自前で真似ると 1 バイト変わることがあるので、
+    // 小数だけは std に任せる (`Vec<u8>` への `write!` は確保しない)
+    let _ = write!(buf, "{:.1}", rec.duration_ms);
+    buf.extend_from_slice(b"ms cache=");
+    buf.extend_from_slice(rec.cache.as_bytes());
+}
+
 pub fn access(conn_id: usize, rec: &Access<'_>) {
     if !enabled(Level::Info) {
         return;
     }
-    log_line(
-        Level::Info,
-        Some(conn_id),
-        &format!(
-            "ACCESS {} \"{} {} {}\" {} {}B {:.1}ms cache={}",
-            rec.client,
-            rec.method,
-            rec.target,
-            rec.version,
-            rec.status,
-            rec.bytes,
-            rec.duration_ms,
-            rec.cache
-        ),
-    );
+    write_line(|buf| {
+        push_prefix(buf, Level::Info, Some(conn_id));
+        push_access(buf, rec);
+        buf.push(b'\n');
+    });
 }
 
 /// 内部マクロ: `log!(Level::Info, conn_id, "fmt", args...)`
@@ -242,6 +367,129 @@ mod tests {
                 cache: "MISS",
             },
         );
+    }
+
+    /// タイムスタンプが以前の `format!("{:04}-{:02}-...{:03}Z")` と 1 バイトも変わらないこと。
+    /// 秒を使い回すので、同じ秒を続けたり戻したりする並びも通す。
+    #[test]
+    fn test_timestamp_matches_the_old_format() {
+        let cases = [
+            (0u64, 0u32),
+            (1_788_312_225, 678),
+            (1_788_312_225, 7),
+            (1_788_312_225, 70),
+            (1_788_312_226, 0),
+            (1_788_312_225, 999),
+            (951_782_400, 1),       // 2000-02-29 (うるう年)
+            (253_402_300_799, 999), // 9999-12-31T23:59:59
+            (253_402_300_800, 0),   // 10000-01-01 (年が 5 桁でも `{:04}` は詰めない)
+        ];
+        for (secs, millis) in cases {
+            let mut buf = Vec::new();
+            push_timestamp_at(&mut buf, secs, millis);
+            let (y, mo, d, h, mi, s) = civil_from_epoch(secs);
+            let expected = format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+                y, mo, d, h, mi, s, millis
+            );
+            assert_eq!(
+                String::from_utf8(buf).unwrap(),
+                expected,
+                "{} {}",
+                secs,
+                millis
+            );
+        }
+    }
+
+    /// 行の頭が以前の `format!("{} {} [conn#{}] {}\n")` と同じ並びであること。
+    #[test]
+    fn test_prefix_matches_the_old_format() {
+        let mut buf = Vec::new();
+        push_prefix(&mut buf, Level::Info, Some(12));
+        let line = String::from_utf8(buf).unwrap();
+        assert_eq!(line.len(), 24 + " INFO  [conn#12] ".len());
+        assert_eq!(&line[24..], " INFO  [conn#12] ");
+
+        let mut buf = Vec::new();
+        push_prefix(&mut buf, Level::Error, None);
+        let line = String::from_utf8(buf).unwrap();
+        assert_eq!(&line[24..], " ERROR [main] ");
+    }
+
+    /// アクセスログの本体が以前の `format!` と 1 バイトも変わらないこと。
+    /// 経過時間の `{:.1}` は丸めが効く値 (0.05 / 0.25 / 0.35) も通す。
+    #[test]
+    fn test_access_line_matches_the_old_format() {
+        let base = Access {
+            client: "127.0.0.1",
+            method: "GET",
+            target: "http://example.com/",
+            version: "HTTP/1.1",
+            status: "200",
+            bytes: 1234,
+            duration_ms: 12.34,
+            cache: "HIT(memory)",
+        };
+        let cases = [
+            base,
+            Access {
+                client: "::1",
+                method: "CONNECT",
+                target: "example.com:443",
+                status: "200",
+                bytes: 0,
+                duration_ms: 0.0,
+                cache: "BYPASS(tunnel)",
+                ..base
+            },
+            Access {
+                method: "HEAD",
+                version: "HTTP/1.0",
+                status: "304",
+                bytes: 1,
+                duration_ms: 0.05,
+                cache: "HIT(disk,304) age=3s",
+                ..base
+            },
+            Access {
+                status: "206",
+                bytes: u64::MAX,
+                duration_ms: 0.25,
+                cache: "HIT(memory) age=0s ttl_left=59s range=0-99",
+                ..base
+            },
+            Access {
+                method: "POST",
+                status: "502",
+                bytes: 9,
+                duration_ms: 0.35,
+                cache: "MISS truncated",
+                ..base
+            },
+            Access {
+                bytes: 7,
+                duration_ms: 1234.5678,
+                cache: "MISS stored ttl=60s",
+                ..base
+            },
+        ];
+        for rec in cases {
+            let mut buf = Vec::new();
+            push_access(&mut buf, &rec);
+            let expected = format!(
+                "ACCESS {} \"{} {} {}\" {} {}B {:.1}ms cache={}",
+                rec.client,
+                rec.method,
+                rec.target,
+                rec.version,
+                rec.status,
+                rec.bytes,
+                rec.duration_ms,
+                rec.cache
+            );
+            assert_eq!(String::from_utf8(buf).unwrap(), expected);
+        }
     }
 
     #[test]

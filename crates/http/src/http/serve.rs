@@ -62,10 +62,11 @@ pub(super) fn serve_cached(
         ctx.metrics.add_bytes(written);
         // アクセスログが出ないなら状態の文字列を組み立てない (`from_access` は先頭しか見ない)
         if log::enabled(Level::Info) {
+            let mut buf = [0u8; 160];
             ctx.log(
                 304,
                 written,
-                &format!("{}({},304) age={}s", label, source.as_str(), age),
+                not_modified_state(&mut buf, label, source, age),
             );
         } else {
             ctx.log(304, written, label);
@@ -101,22 +102,11 @@ pub(super) fn serve_cached(
     // 同じ扱い (`Cow::Borrowed("BYPASS")`) で、`HostOutcome::from_access` は
     // 先頭の label しか見ないので統計も変わらない
     if log::enabled(Level::Info) {
-        let detail = match range {
-            RangeSpec::Bytes { start, end } => format!(" range={}-{}", start, end),
-            RangeSpec::Unsatisfiable => " range=unsatisfiable".to_string(),
-            RangeSpec::Ignore => String::new(),
-        };
+        let mut buf = [0u8; 160];
         ctx.log(
             status,
             written,
-            &format!(
-                "{}({}) age={}s ttl_left={}s{}",
-                label,
-                source.as_str(),
-                age,
-                ttl_left,
-                detail
-            ),
+            cached_state(&mut buf, label, source, age, ttl_left, range),
         );
     } else {
         ctx.log(status, written, label);
@@ -164,6 +154,52 @@ fn put_u64(buf: &mut [u8], at: usize, mut v: u64) -> usize {
     let end = (at + n).min(buf.len());
     buf[at..end].copy_from_slice(&digits[i..i + (end - at)]);
     end
+}
+
+/// アクセスログの状態欄 `HIT(memory,304) age=3s` を確保せずに組み立てる。
+fn not_modified_state<'a>(
+    buf: &'a mut [u8; 160],
+    label: &'a str,
+    source: CacheSource,
+    age: u64,
+) -> &'a str {
+    let mut i = put_str(buf, 0, label);
+    i = put_str(buf, i, "(");
+    i = put_str(buf, i, source.as_str());
+    i = put_str(buf, i, ",304) age=");
+    i = put_u64(buf, i, age);
+    i = put_str(buf, i, "s");
+    std::str::from_utf8(&buf[..i]).unwrap_or(label)
+}
+
+/// アクセスログの状態欄 `HIT(memory) age=0s ttl_left=59s range=0-99` を確保せずに組み立てる。
+fn cached_state<'a>(
+    buf: &'a mut [u8; 160],
+    label: &'a str,
+    source: CacheSource,
+    age: u64,
+    ttl_left: u64,
+    range: RangeSpec,
+) -> &'a str {
+    let mut i = put_str(buf, 0, label);
+    i = put_str(buf, i, "(");
+    i = put_str(buf, i, source.as_str());
+    i = put_str(buf, i, ") age=");
+    i = put_u64(buf, i, age);
+    i = put_str(buf, i, "s ttl_left=");
+    i = put_u64(buf, i, ttl_left);
+    i = put_str(buf, i, "s");
+    match range {
+        RangeSpec::Bytes { start, end } => {
+            i = put_str(buf, i, " range=");
+            i = put_u64(buf, i, start);
+            i = put_str(buf, i, "-");
+            i = put_u64(buf, i, end);
+        }
+        RangeSpec::Unsatisfiable => i = put_str(buf, i, " range=unsatisfiable"),
+        RangeSpec::Ignore => {}
+    }
+    std::str::from_utf8(&buf[..i]).unwrap_or(label)
 }
 
 /// `X-Cache: <label> from rust-http-proxy (<source>)` を確保せずに組み立てる。
