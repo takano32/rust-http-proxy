@@ -22,6 +22,7 @@ members = [
     "crates/http",
     "crates/tunnel",
     "crates/endpoints",
+    "crates/bench",
 ]
 
 # 既定のビルド対象はプロキシ本体だけ。計測用の bench は `-p proxy-bench` で明示的に作る

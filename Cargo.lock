@@ -7,6 +7,10 @@ name = "proxy-base"
 version = "0.1.0"
 
 [[package]]
+name = "proxy-bench"
+version = "0.1.0"
+
+[[package]]
 name = "proxy-cache"
 version = "0.1.0"
 dependencies = [
