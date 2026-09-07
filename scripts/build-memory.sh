@@ -83,7 +83,7 @@ if [ "$MODE" = find ]; then
   exit 1
 fi
 
-echo "上限 ${LIMIT_MB} MB でリリースビルドを試します (-j 1)"
+echo "上限 ${LIMIT_MB} MB でリリースビルドを試します (-j 1。.cargo/config.toml と同じ)"
 run_in_cgroup
 case $? in
   0)

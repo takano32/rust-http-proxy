@@ -375,6 +375,12 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 
 ## ビルド・テスト
 
+
+> **メモリの小さい環境向けの設定**: `.cargo/config.toml` で `jobs = 1` にしてあります。
+> `rustc` はクレート単位で全部を一度に抱えるため 1 プロセスで 150〜200 MB 使い、既定の並列数だと
+> その合計がコンテナのメモリ上限を超えて OOM killer に落とされます (実測: 200 MB の cgroup で、
+> 並列だと落ち `-j 1` なら通る)。潤沢な機械で急ぐときは `cargo build --release -j 8` で上書きできます
+> (8 コアで 32.3 秒 → 14.9 秒)。
 ```bash
 # テスト実行
 cargo test
