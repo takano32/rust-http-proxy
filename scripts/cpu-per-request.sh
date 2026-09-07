@@ -5,6 +5,14 @@
 # `/proc/<pid>/stat` の utime + stime の差をベンチの操作数で割る。
 # 主指標は **CPU/要求** で、スループットは律速がベンチ側に移るので補助でしかない。
 #
+# **どの経路も同じ条件で測る** (T10.11)。プロファイルは `--lite`、ログ水準は `warn`、
+# キャッシュの ballast は off で揃える。§2 は「経路どうしを比べる表」なので、
+# 1 行だけ条件が違うと比べられない数字が並ぶ。以前は `--cacheable` (キャッシュ HIT) だけ
+# 「`PROXY_ARGS=""` = 既定プロファイル = ログ **info**」で回す手順になっていて、
+# HIT の行にだけアクセスログ 1 行 (T10.10 の実測で 7.1 us/要求) が乗っていた。
+# **キャッシュは `--cacheable` を渡せばこのスクリプトが自分で入れる** (`--lite` のまま
+# `PROXY_CACHE_ENABLED=on`)。条件は毎回 1 行目に印字するので、出力を見れば再現できる。
+#
 # **`--only tunnel` だけは既定の配置が違う** (プロキシ cpu4-5 / ベンチ cpu6-7。T10.8 で実測して決めた)。
 # この経路のベンチは blaster (送る) と reader (受ける) の 2 スレッドがどちらも本気で回るので、
 # LITTLE に置くと**ベンチが先に頭打ちになってプロキシの実力が見えない** (実測 1.20 → 2.42 GiB/s)。
@@ -19,14 +27,19 @@
 #     scripts/cpu-per-request.sh --only forward --no-keepalive    # 1 接続 1 要求
 #     scripts/cpu-per-request.sh --only connect                   # CONNECT の確立
 #     scripts/cpu-per-request.sh --only tunnel --conc 1           # トンネル 1 本 (主指標は CPU/MiB)
+#     scripts/cpu-per-request.sh --cacheable                      # キャッシュ HIT
 #     PROXY_MAX_CONNS=8192 scripts/cpu-per-request.sh --only idle-tunnels --conc 5000
 #                                                                 # アイドルトンネルを握る
-#     PROXY_ARGS="" PROXY_MEM_CACHE_MB=64 PROXY_CACHE_DIR=/tmp/pc \
-#       scripts/cpu-per-request.sh --cacheable                    # キャッシュ HIT
 #
-# 環境変数:
+# 環境変数 (どれも「明示されたら上書き」。既定のままなら上の「同じ条件」で回る):
 #   PROXY_CPUS (既定 4-7、tunnel だけ 4-5) / BENCH_CPUS (既定 0-3、tunnel だけ 6-7) / PORT (既定 18080)
-#   PROXY_ARGS (既定 "--lite"。空にすると既定プロファイルで、環境変数がそのまま効く)
+#   PROXY_ARGS (既定 "--lite"。空にすると既定プロファイル = キャッシュ・統計・ダッシュボードあり)
+#   PROXY_LOG_LEVEL (既定 warn。**info にするとアクセスログのぶんだけ重くなる**ので、
+#                    比べる表に載せる数字は warn で揃えること)
+#   PROXY_CACHE_ENABLED (--cacheable のときだけ既定 on) / PROXY_MEM_CACHE_MB / PROXY_DISK_CACHE_MB (既定 64)
+#   PROXY_CACHE_RESERVE (既定 off) / PROXY_CACHE_DIR (既定は使い捨ての作業ディレクトリの下)
+#     ← reserve を on のまま既定プロファイルを測ると、HOME (= mktemp -d = tmpfs) に GB 単位の
+#       ballast ができて RSS が跳ね、CPU/要求 が 62〜103 us の間で暴れる (T10.10 の落とし穴)
 #   BIN / BENCH (既定 target/release/{rust-http-proxy,bench})
 set -u
 cd "$(dirname "$0")/.."
@@ -39,11 +52,13 @@ ONLY=forward
 ARGS=()
 CONC_GIVEN=0
 SECS_GIVEN=0
+CACHEABLE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --only) ONLY=$2; shift 2 ;;
     --conc) CONC_GIVEN=1; ARGS+=("$1" "$2"); shift 2 ;;
     --seconds) SECS_GIVEN=1; ARGS+=("$1" "$2"); shift 2 ;;
+    --cacheable) CACHEABLE=1; ARGS+=("$1"); shift ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
@@ -59,12 +74,33 @@ else
   BENCH_CPUS=${BENCH_CPUS:-0-3}
 fi
 
+# 経路をまたいで揃える条件 (T10.11)。明示されていればそちらが勝つ。
+export PROXY_LOG_LEVEL=${PROXY_LOG_LEVEL:-warn}
+export PROXY_CACHE_RESERVE=${PROXY_CACHE_RESERVE:-off}
+if [ $CACHEABLE -eq 1 ]; then
+  # `--lite` はキャッシュを既定で off にするが、明示指定の方が勝つ (config.rs)。
+  # ここで入れることで、HIT の行も他の行と同じ `--lite` / warn のまま測れる。
+  export PROXY_CACHE_ENABLED=${PROXY_CACHE_ENABLED:-on}
+  export PROXY_MEM_CACHE_MB=${PROXY_MEM_CACHE_MB:-64}
+  export PROXY_DISK_CACHE_MB=${PROXY_DISK_CACHE_MB:-64}
+fi
+
 for b in "$BIN" "$BENCH"; do
   [ -x "$b" ] || { echo "not built: $b" >&2; exit 1; }
 done
 
 work=$(mktemp -d)
 trap 'kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf "$work"' EXIT
+export PROXY_CACHE_DIR=${PROXY_CACHE_DIR:-$work/cache}
+# 1 行目に「何をどの条件で測ったか」を出す。§2 の行はこの 1 行で再現できる。
+if [ $CACHEABLE -eq 1 ]; then
+  cache_desc="cache=$PROXY_CACHE_ENABLED (${PROXY_MEM_CACHE_MB}MB mem / ${PROXY_DISK_CACHE_MB}MB disk)"
+else
+  cache_desc="cache=(profile default)"
+fi
+echo "run: ${PROXY_ARGS:-(default profile)} PROXY_LOG_LEVEL=$PROXY_LOG_LEVEL" \
+  "$cache_desc reserve=$PROXY_CACHE_RESERVE | --only $ONLY ${ARGS[*]}" \
+  "| proxy cpu$PROXY_CPUS / bench cpu$BENCH_CPUS | $BIN"
 # shellcheck disable=SC2086
 HOME=$work PROXY_ALLOW_LOCAL=on PROXY_STATS_PERSIST=off \
   taskset -c "$PROXY_CPUS" "$BIN" $PROXY_ARGS -p "$PORT" --bind 127.0.0.1 >"$work/proxy.log" 2>&1 &
