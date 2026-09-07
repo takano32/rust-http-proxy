@@ -1,3 +1,13 @@
+[workspace]
+members = [
+    "crates/base",
+    "crates/net",
+    "crates/store",
+    "crates/cache",
+    "crates/stats",
+    "crates/http",
+]
+
 [package]
 name = "rust-http-proxy"
 version = "0.1.0"
@@ -7,10 +17,31 @@ edition = "2024"
 default-run = "rust-http-proxy"
 
 [dependencies]
+# 自分のコードを層ごとに分けたもの。**外部クレートは 1 つも使わない** (すべて std のみ)。
+# 1 クレートが大きいと rustc がまとめて抱えてビルドの最大 RSS が上がるため
+# (実測: 18,276 行 1 クレートで 330 MB、動作環境の上限は 200 MB)。
+proxy-base = { path = "crates/base" }
+proxy-net = { path = "crates/net" }
+proxy-cache = { path = "crates/cache" }
+proxy-stats = { path = "crates/stats" }
+proxy-http = { path = "crates/http" }
 
+# メモリの小さい環境 (Pterodactyl コンテナ) でも通ることを優先した既定のプロファイル。
+# LTO を切っているのは、まとめて最適化する最終リンクだけで 350 MB 使うため。
+# 実測 (このリポジトリ、aarch64):
+#   lto = true  → ビルド最大 347 MB、CPU 37.9 us/要求
+#   lto = false → ビルド最大 192 MB、CPU 39.7 us/要求 (+4.9%)
+# 配布するバイナリは下の dist プロファイル (LTO あり) で作る。
 [profile.release]
-opt-level = "s"
-lto = true
+opt-level = 3
+lto = false
 strip = true
 codegen-units = 1
+
+# 配布用。速さとバイナリの小ささを優先し、ビルドのメモリは気にしない
+# (GitHub Actions のような潤沢な環境で使う)。`cargo build --profile dist`
+[profile.dist]
+inherits = "release"
+opt-level = "s"
+lto = true
 

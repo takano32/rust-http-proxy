@@ -8,22 +8,22 @@ use crate::origin::Scheme;
 
 /// リクエストヘッダーのうち転送・キャッシュ判断に使うもの。
 #[derive(Default)]
-pub(super) struct RequestHeaders {
-    pub(super) host: Option<String>,
+pub struct RequestHeaders {
+    pub host: Option<String>,
     /// (小文字の名前, 値)
-    pub(super) pairs: Vec<(String, String)>,
-    pub(super) authorization: bool,
-    pub(super) cache_control: String,
-    pub(super) if_none_match: Option<String>,
-    pub(super) if_modified_since: Option<String>,
-    pub(super) if_range: Option<String>,
-    pub(super) range: Option<String>,
-    pub(super) accept_encoding: Option<String>,
-    pub(super) connection_close: bool,
-    pub(super) connection_keep_alive: bool,
+    pub pairs: Vec<(String, String)>,
+    pub authorization: bool,
+    pub cache_control: String,
+    pub if_none_match: Option<String>,
+    pub if_modified_since: Option<String>,
+    pub if_range: Option<String>,
+    pub range: Option<String>,
+    pub accept_encoding: Option<String>,
+    pub connection_close: bool,
+    pub connection_keep_alive: bool,
 }
 
-pub(super) fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
+pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
     let mut h = RequestHeaders::default();
     for line in raw_headers {
         let Some((k, v)) = line.split_once(':') else {

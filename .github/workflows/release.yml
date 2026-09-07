@@ -32,9 +32,10 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        # 配布用は LTO ありの dist プロファイル (速さとバイナリの小ささを優先)
+        run: cargo build --profile dist --target ${{ matrix.target }}
       - name: Rename
-        run: cp target/${{ matrix.target }}/release/rust-http-proxy rust-http-proxy-${{ matrix.target }}
+        run: cp target/${{ matrix.target }}/dist/rust-http-proxy rust-http-proxy-${{ matrix.target }}
       - uses: softprops/action-gh-release@v2
         with:
           files: rust-http-proxy-${{ matrix.target }}

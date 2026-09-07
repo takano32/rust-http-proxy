@@ -10,7 +10,6 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
-use super::request::Origin;
 use super::{Shared, acquire_origin, read_response_head, request_head};
 use crate::Upstream;
 use crate::body::{BodyReader, Framing};
@@ -19,6 +18,7 @@ use crate::freshness;
 use crate::headers;
 use crate::log_debug;
 use crate::metrics::Metrics;
+use crate::request::Origin;
 
 /// 裏で再検証を始める。既に同じキーが再検証中、または上限に達していれば false。
 pub fn spawn(

@@ -1,38 +1,27 @@
-pub mod acl;
-pub mod blocklist;
-pub mod body;
-pub mod cache;
-pub mod cli;
-pub mod clientio;
-pub mod clock;
-pub mod config;
-pub mod dns;
+//! 認証なしの HTTP/HTTPS(CONNECT) フォワードプロキシ本体。
+//!
+//! 下の層は別クレートに分けてある ([`proxy_base`] / [`proxy_cache`] / [`proxy_stats`])。
+//! **外部クレートは 1 つも使っていない** — 分けているのは、1 クレートが大きいと
+//! `rustc` が全部を一度に抱えてビルドの最大 RSS がそのまま増えるため
+//! (実測: 18,276 行 1 クレートで 330 MB、動作環境の上限は 200 MB)。
+
 pub mod endpoints;
-pub mod envfile;
-pub mod freshness;
-pub mod headers;
-pub mod history;
-pub mod http;
-pub mod httpdate;
 pub mod idle;
-pub mod json;
-pub mod log;
-pub mod metrics;
-pub mod net;
-pub mod origin;
-pub mod persist;
-pub mod pool;
-pub mod prom;
-pub mod reload;
-pub mod rrd;
-pub mod signal;
-pub mod sync;
+
+// 下の層をこのクレートの名前空間にも出す (`rust_http_proxy::config` のような
+// 移設前と同じ書き方が、本体でも結合テストでもそのまま通るようにするため)。
 #[cfg(target_os = "linux")]
-pub mod sys;
-pub mod sysinfo;
-pub mod tls;
-pub mod tunnel;
-pub mod workers;
+pub use proxy_base::sys;
+pub use proxy_base::{
+    cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info, log_trace,
+    log_warn, rrd, signal, sync, sysinfo, workers,
+};
+pub use proxy_cache::cache;
+pub use proxy_http::{freshness, http, tunnel};
+pub use proxy_net::{
+    Upstream, acl, body, clientio, dns, headers, net, origin, pool, request, response, tls,
+};
+pub use proxy_stats::{blocklist, config, history, metrics, persist, prom, reload};
 
 use std::io::{self, BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -43,14 +32,6 @@ use std::time::Instant;
 use cache::Cache;
 use config::Config;
 use metrics::Metrics;
-use pool::Pool;
-use tls::TlsClient;
-
-/// オリジンへ向かう側の共有状態 (接続プールと TLS クライアント)。
-pub struct Upstream {
-    pub pool: Pool,
-    pub tls: Option<TlsClient>,
-}
 
 const FORBIDDEN_RESPONSE: &[u8] = b"HTTP/1.1 403 Forbidden\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\

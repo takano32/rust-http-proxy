@@ -3,12 +3,12 @@
 use std::io;
 use std::path::Path;
 
-use super::config::{CacheConfig, DiskQuota, MIB};
+use crate::config::{CacheConfig, DiskQuota, MIB};
 use crate::sysinfo;
 use crate::{log_info, log_warn};
 
 /// 読めない原因がファイル側 (消えた・壊れた) にあるか。fd 枯渇や EIO のような一時的な失敗は含めない。
-pub(super) fn is_permanent(e: &io::Error) -> bool {
+pub fn is_permanent(e: &io::Error) -> bool {
     matches!(
         e.kind(),
         io::ErrorKind::NotFound | io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
@@ -18,7 +18,7 @@ pub(super) fn is_permanent(e: &io::Error) -> bool {
 /// `Auto` は `df <割当ディレクトリ>` が割当を示すときだけ採用する。`/` と同じファイルシステム
 /// (total が一致) ならホストディスクが見えているだけなので `Unknown` に落とす。
 /// Pterodactyl では判断材料として df 相当の数字を常にログに出す。
-pub(super) fn resolve_quota(cfg: &CacheConfig) -> DiskQuota {
+pub fn resolve_quota(cfg: &CacheConfig) -> DiskQuota {
     let root = cfg.quota_root.as_deref().unwrap_or(&cfg.dir);
     let df = sysinfo::fs_info(root);
     if cfg.pterodactyl

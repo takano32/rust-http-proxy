@@ -8,6 +8,7 @@ pub trait LockExt<T> {
 }
 
 impl<T> LockExt<T> for Mutex<T> {
+    #[inline]
     fn locked(&self) -> MutexGuard<'_, T> {
         self.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -19,9 +20,11 @@ pub trait RwLockExt<T> {
 }
 
 impl<T> RwLockExt<T> for RwLock<T> {
+    #[inline]
     fn read_locked(&self) -> RwLockReadGuard<'_, T> {
         self.read().unwrap_or_else(|e| e.into_inner())
     }
+    #[inline]
     fn write_locked(&self) -> RwLockWriteGuard<'_, T> {
         self.write().unwrap_or_else(|e| e.into_inner())
     }

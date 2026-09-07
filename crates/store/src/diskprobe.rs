@@ -19,7 +19,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::config::MIB;
+use crate::config::MIB;
 use crate::{log_info, log_warn};
 
 /// 最初の上限 (実データの上限でもある)。

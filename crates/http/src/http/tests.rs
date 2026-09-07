@@ -1,11 +1,11 @@
 //! `http` の単体テスト。
 
-use super::request::*;
 use super::serve::*;
 use super::*;
 use crate::body::RangeSpec;
 use crate::cache::{Body, Meta};
 use crate::origin::Scheme;
+use crate::request::*;
 use std::sync::Arc;
 
 #[test]

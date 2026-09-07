@@ -24,11 +24,19 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # ワークスペースなので --workspace が要る (無いと下の層のテストが走らない)
+      - run: cargo test --workspace
       - run: cargo build --release
+
+      # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る。
+      # クレートごとの rustc の最大 RSS を測り、200 MB を超えたら落とす
+      - name: Build memory
+        run: |
+          cargo clean
+          ./scripts/build-memory.sh 200
 
       # ベンチは数字を残すだけ (閾値では落とさない。CI の機械は揺れるため)
       - name: Benchmark

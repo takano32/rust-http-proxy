@@ -1,0 +1,10 @@
+[package]
+name = "proxy-base"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+# 外部クレートは使わない (std のみ)。
+[dependencies]

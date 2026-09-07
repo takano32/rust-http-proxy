@@ -15,20 +15,13 @@
 //! エントリは残し、呼び出し側が再検証 (304) して延命する。
 
 pub mod admission;
-pub mod budget;
-pub mod config;
 pub mod disk;
-pub mod diskprobe;
 pub mod entry;
-pub mod format;
 pub mod inflight;
-pub mod key;
 pub mod lru;
-pub mod margin;
 pub mod memory;
 mod ops;
 pub mod probe;
-mod quota;
 pub mod sink;
 pub mod status;
 #[cfg(test)]
@@ -60,6 +53,8 @@ use crate::sysinfo;
 use crate::{log_info, log_warn};
 
 pub use crate::clock::now_epoch;
+// 土台は別クレート。move 前と同じ `cache::config` のような書き方をそのまま通す
+pub use proxy_store::{budget, config, diskprobe, format, key, margin, quota};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheSource {

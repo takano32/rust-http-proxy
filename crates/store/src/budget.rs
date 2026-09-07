@@ -157,7 +157,7 @@ pub fn take(p: &Probe<'_>) -> Snapshot {
         sysinfo::fs_info(p.dir)
     };
     Snapshot {
-        taken_at: super::now_epoch(),
+        taken_at: crate::clock::now_epoch(),
         mem,
         fs,
         rss,

@@ -31,6 +31,7 @@ pub fn ipv6_enabled() -> bool {
 
 /// `host:port` / `[v6]:port` / `[v6]` / `host` / 素の `v6` を (ホスト, ポート) に分ける。
 /// 文字列を作らない版 ([`split_host_port`] は所有権が要るときに使う)。
+#[inline]
 pub fn split_host_port_ref(s: &str) -> (&str, Option<u16>) {
     let s = s.trim();
     if let Some(rest) = s.strip_prefix('[') {
@@ -57,6 +58,7 @@ pub fn split_host_port_ref(s: &str) -> (&str, Option<u16>) {
 }
 
 /// [`split_host_port_ref`] のホストを複製して返す版。
+#[inline]
 pub fn split_host_port(s: &str) -> (String, Option<u16>) {
     let (host, port) = split_host_port_ref(s);
     (host.to_string(), port)
@@ -88,6 +90,7 @@ pub fn canonical_ip(ip: IpAddr) -> IpAddr {
     }
 }
 
+#[inline]
 pub fn canonical_addr(addr: SocketAddr) -> SocketAddr {
     SocketAddr::new(canonical_ip(addr.ip()), addr.port())
 }

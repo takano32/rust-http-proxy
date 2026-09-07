@@ -24,21 +24,25 @@ pub struct ClientBuf {
 }
 
 impl ClientBuf {
+    #[inline]
     pub fn new() -> ClientBuf {
         ClientBuf::default()
     }
 
     /// まだ読み出していないバイト列。
+    #[inline]
     pub fn buffered(&self) -> &[u8] {
         &self.buf[self.pos..self.cap]
     }
 
+    #[inline]
     pub fn has_buffered(&self) -> bool {
         self.pos < self.cap
     }
 
     /// 読み残しが無ければバッファ領域を手放す (アイドル中に 8 KiB を抱えないため)。
     /// 読み残しがあるときは何もしない。
+    #[inline]
     pub fn release(&mut self) {
         if !self.has_buffered() {
             self.buf = Vec::new();
@@ -48,6 +52,7 @@ impl ClientBuf {
     }
 
     /// このバッファと `stream` を組にして、1 要求ぶんの読み取りに使う。
+    #[inline]
     pub fn reader<'a>(&'a mut self, stream: &'a TcpStream) -> ClientReader<'a> {
         ClientReader { buf: self, stream }
     }
@@ -61,6 +66,7 @@ pub struct ClientReader<'a> {
 
 impl ClientReader<'_> {
     /// まだ読み出していないバイト列 (`BufReader::buffer` と同じ)。
+    #[inline]
     pub fn buffer(&self) -> &[u8] {
         self.buf.buffered()
     }
@@ -77,6 +83,7 @@ impl ClientReader<'_> {
 }
 
 impl Read for ClientReader<'_> {
+    #[inline]
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         // 手元に何も無く、要求が大きいならバッファを経由しない (BufReader と同じ)
         if !self.buf.has_buffered() && out.len() >= CLIENT_READ_BUF {
@@ -91,6 +98,7 @@ impl Read for ClientReader<'_> {
 }
 
 impl BufRead for ClientReader<'_> {
+    #[inline]
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         if !self.buf.has_buffered() {
             if self.buf.buf.len() < CLIENT_READ_BUF {
@@ -103,6 +111,7 @@ impl BufRead for ClientReader<'_> {
         Ok(self.buf.buffered())
     }
 
+    #[inline]
     fn consume(&mut self, amount: usize) {
         self.buf.pos = (self.buf.pos + amount).min(self.buf.cap);
     }

@@ -3,5 +3,58 @@
 version = 4
 
 [[package]]
+name = "proxy-base"
+version = "0.1.0"
+
+[[package]]
+name = "proxy-cache"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-net",
+ "proxy-store",
+]
+
+[[package]]
+name = "proxy-http"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cache",
+ "proxy-net",
+ "proxy-stats",
+]
+
+[[package]]
+name = "proxy-net"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+]
+
+[[package]]
+name = "proxy-stats"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cache",
+ "proxy-net",
+]
+
+[[package]]
+name = "proxy-store"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+]
+
+[[package]]
 name = "rust-http-proxy"
 version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cache",
+ "proxy-http",
+ "proxy-net",
+ "proxy-stats",
+]

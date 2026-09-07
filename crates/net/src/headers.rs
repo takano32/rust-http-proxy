@@ -17,6 +17,7 @@ pub fn is_hop_by_hop(name: &str) -> bool {
 }
 
 /// 小文字化した文字列を作らずに判定する版。
+#[inline]
 pub fn is_hop_by_hop_name(name: &str) -> bool {
     HOP_BY_HOP_HEADERS
         .iter()

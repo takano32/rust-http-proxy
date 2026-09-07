@@ -4,7 +4,8 @@ use std::io::{self, BufReader, Read, Write};
 use std::time::Duration;
 
 use crate::body::{BodyReader, Framing};
-use crate::http::{parse_origin, read_response_head};
+use crate::request::parse_origin;
+use crate::response::read_response_head;
 use crate::{Upstream, origin};
 
 /// 取得した一覧の上限 (これ以上は切る)。

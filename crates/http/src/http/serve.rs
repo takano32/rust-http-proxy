@@ -3,11 +3,11 @@
 use std::io::{self, Write};
 
 use super::Ctx;
-use super::request::map_locations;
 use crate::body::{self, RangeSpec};
 use crate::cache::{CacheSource, CachedResponse};
 use crate::freshness::{self, CachedHead};
 use crate::headers;
+use crate::request::map_locations;
 
 /// stale のまま配信してよいか (`must-revalidate` / `proxy-revalidate` なら不可)。
 pub(super) fn can_serve_stale(entry: &CachedResponse) -> bool {
