@@ -14,6 +14,7 @@ pub mod headers;
 pub mod history;
 pub mod http;
 pub mod httpdate;
+pub mod idle;
 pub mod json;
 pub mod log;
 pub mod metrics;
@@ -99,6 +100,7 @@ Connection: close\r\n\
 
 /// 待ち受けソケットから接続を受け、1 本ごとにスレッドを起こす。
 /// `config_of` は接続ごとに最新の設定を取り出す (`.env` の再読込に追従するため)。
+#[allow(clippy::too_many_arguments)]
 pub fn serve(
     listener: TcpListener,
     config_of: impl Fn() -> Arc<Config>,
@@ -107,6 +109,7 @@ pub fn serve(
     metrics: Arc<Metrics>,
     cache: Arc<Cache>,
     upstream: Arc<Upstream>,
+    park: Option<Arc<idle::IdleWatch>>,
 ) {
     // 待ち受けポートは接続ごとに引かない (accept したソケットのローカルポートは待ち受けと同じ)
     let local_port = listener
@@ -156,18 +159,13 @@ pub fn serve(
         let l = Arc::clone(&limiter);
         let c = Arc::clone(&cache);
         let p = Arc::clone(&upstream);
+        let w = park.clone();
         let started = workers.run(Box::new(move || {
             // 同時接続数と active_connections の持ち分は Conn が持つ (接続の寿命と一致させる)
             let accepted = Accepted { peer, local_port };
-            if let Err(e) = handle_client(stream, accepted, l, cfg, m, c, p, conn_id) {
-                if e.kind() != io::ErrorKind::UnexpectedEof
-                    && e.kind() != io::ErrorKind::ConnectionReset
-                    && e.kind() != io::ErrorKind::BrokenPipe
-                {
-                    log_error!(Some(conn_id), "{}", e);
-                } else {
-                    log_debug!(Some(conn_id), "connection ended: {}", e);
-                }
+            match Conn::new(stream, accepted, l, cfg, m, c, p, w, conn_id) {
+                Ok(conn) => run_conn(Box::new(conn)),
+                Err(e) => log_error!(Some(conn_id), "{}", e),
             }
         }));
         if started.is_err() {
@@ -342,6 +340,8 @@ pub struct Conn {
     read_timeout: Option<std::time::Duration>,
     /// 要求行とヘッダー行の置き場。処理している間だけ持ち、預けるときはスレッドへ返す
     scratch: Option<Scratch>,
+    /// アイドルのときに預ける先 (無ければ従来どおりこのスレッドがブロッキング read で待つ)
+    park: Option<Arc<idle::IdleWatch>>,
     /// 同時接続数と `/status` の active_connections の持ち分 (接続の寿命と一致させる)
     _open: OpenGuard,
     _active: ActiveGuard,
@@ -399,6 +399,7 @@ impl Conn {
         metrics: Arc<Metrics>,
         cache: Arc<Cache>,
         upstream: Arc<Upstream>,
+        park: Option<Arc<idle::IdleWatch>>,
         conn_id: usize,
     ) -> io::Result<Conn> {
         metrics.inc_active_conn();
@@ -424,6 +425,7 @@ impl Conn {
             served: 0,
             read_timeout: None,
             scratch: None,
+            park,
             _open: OpenGuard(limiter),
             _active: active,
         })
@@ -432,6 +434,17 @@ impl Conn {
     /// 先読みしたバイトが残っているか (残っていたら次の要求を待ってはいけない)。
     pub fn has_buffered(&self) -> bool {
         self.buf.has_buffered()
+    }
+
+    /// クライアント側のソケット記述子 (epoll に入れるときの鍵)。
+    pub fn client_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        self.client.as_raw_fd()
+    }
+
+    /// ログ用の接続番号。
+    pub fn id(&self) -> usize {
+        self.conn_id
     }
 
     /// 要求と要求の間に抱えている資源を手放す (別のワーカーへ預ける前に呼ぶ)。
@@ -445,7 +458,11 @@ impl Conn {
 fn pump(mut conn: Box<Conn>) -> io::Result<()> {
     loop {
         match serve_one(&mut conn)? {
-            Step::Next => continue,
+            Step::Next => match park_if_idle(conn) {
+                // 預けられた: このスレッドは解放される (続きは監視スレッドが起こす)
+                Ok(()) => return Ok(()),
+                Err(back) => conn = back,
+            },
             Step::Close => return Ok(()),
             Step::Connect { target, prefix } => {
                 // client だけ取り出してトンネルへ渡す (残りのフィールドは
@@ -470,22 +487,66 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
     }
 }
 
-/// 1 つのクライアント接続を、keep-alive なら複数の要求にわたって処理する。
-#[allow(clippy::too_many_arguments)]
-pub fn handle_client(
-    client: TcpStream,
-    accepted: Accepted,
-    limiter: Arc<Limiter>,
-    config: Arc<Config>,
-    metrics: Arc<Metrics>,
-    cache: Arc<Cache>,
-    upstream: Arc<Upstream>,
-    conn_id: usize,
-) -> io::Result<()> {
-    let conn = Conn::new(
-        client, accepted, limiter, config, metrics, cache, upstream, conn_id,
-    )?;
-    pump(Box::new(conn))
+/// 猶予のあいだ待っているスレッドの数 (`park_max_grace` の歯止め用)。
+static IN_GRACE: AtomicUsize = AtomicUsize::new(0);
+
+/// 次の要求が来るまで暇なら、接続を監視スレッドへ預けてこのスレッドを解放する。
+/// 預けられたら `Ok(())`、このまま同じスレッドで待つなら `Err(conn)`。
+fn park_if_idle(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
+    let Some(watch) = conn.park.clone() else {
+        return Err(conn);
+    };
+    // 先読み済みのバイトがあるなら待つ必要が無い (パイプライン化された次の要求)
+    if conn.has_buffered() {
+        return Err(conn);
+    }
+    // 少しだけこのスレッドで待ってみる。続けて要求が来る接続に、預ける/戻すの往復
+    // (epoll_ctl 2 回 + ワーカーの受け渡し) を払わせない
+    if !conn.config.park_grace.is_zero() && wait_briefly(&conn) {
+        return Err(conn);
+    }
+    let deadline = Instant::now() + conn.config.keepalive;
+    conn.release_idle_buffers();
+    watch.park(conn, deadline)
+}
+
+/// 猶予のあいだ読めるようになるのを待つ。`true` なら要求が来ている。
+#[cfg(target_os = "linux")]
+fn wait_briefly(conn: &Conn) -> bool {
+    let max = conn.config.park_max_grace;
+    if max > 0 && IN_GRACE.fetch_add(1, Ordering::Relaxed) >= max {
+        // 全接続がいっせいに暇になったときに、猶予でスレッドが積み上がるのを止める
+        IN_GRACE.fetch_sub(1, Ordering::Relaxed);
+        return false;
+    }
+    let mut fds = [sys::PollFd::new(conn.client_fd(), sys::POLLIN)];
+    let ready = sys::poll_fds(&mut fds, conn.config.park_grace.as_millis() as i32);
+    if max > 0 {
+        IN_GRACE.fetch_sub(1, Ordering::Relaxed);
+    }
+    // 失敗したときは預けずに続ける (旧経路のブロッキング read に任せる)
+    !matches!(ready, Ok(0))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn wait_briefly(_conn: &Conn) -> bool {
+    false
+}
+
+/// 1 つの接続を最後まで面倒みる。ワーカースレッドに渡す仕事の中身。
+/// 監視スレッドから戻ってきた接続もここに入る。
+pub fn run_conn(conn: Box<Conn>) {
+    let conn_id = conn.conn_id;
+    if let Err(e) = pump(conn) {
+        if e.kind() != io::ErrorKind::UnexpectedEof
+            && e.kind() != io::ErrorKind::ConnectionReset
+            && e.kind() != io::ErrorKind::BrokenPipe
+        {
+            log_error!(Some(conn_id), "{}", e);
+        } else {
+            log_debug!(Some(conn_id), "connection ended: {}", e);
+        }
+    }
 }
 
 /// 要求を 1 つ処理する。次に何をするかを返す。

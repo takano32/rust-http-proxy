@@ -227,6 +227,26 @@ fn main() {
     let limiter = rust_http_proxy::Limiter::new();
     // 接続スレッドを使い回す (生成・破棄の約 16 システムコールを接続ごとに払わない)
     let workers = Arc::new(rust_http_proxy::workers::Workers::new());
+    // アイドルな keep-alive 接続をスレッドから外して epoll に預ける監視スレッド。
+    // 作れなければ何もせず、接続ごとにスレッドが待つ元の動きのままになる
+    let park = if config.park_idle {
+        match rust_http_proxy::idle::IdleWatch::start(Arc::clone(&workers), Arc::clone(&metrics)) {
+            Ok(w) => {
+                log_info!(
+                    None,
+                    "parking idle keep-alive connections (grace {}ms)",
+                    config.park_grace.as_millis()
+                );
+                Some(w)
+            }
+            Err(e) => {
+                log_warn!(None, "cannot park idle connections: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
     // 待ち受けソケットごとに accept スレッドを持つ (最後の 1 つはこのスレッドで回す)
     let mut listeners = listeners.into_iter();
     let last = listeners.next_back().expect("at least one listener");
@@ -238,6 +258,7 @@ fn main() {
             Arc::clone(&metrics),
             Arc::clone(&cache),
             Arc::clone(&pool),
+            park.clone(),
         );
         thread::spawn(move || {
             let live = shared.0;
@@ -249,10 +270,20 @@ fn main() {
                 shared.3,
                 shared.4,
                 shared.5,
+                shared.6,
             )
         });
     }
     drop(config);
     let l = Arc::clone(&live);
-    serve(last, || l.config(), limiter, workers, metrics, cache, pool);
+    serve(
+        last,
+        || l.config(),
+        limiter,
+        workers,
+        metrics,
+        cache,
+        pool,
+        park,
+    );
 }

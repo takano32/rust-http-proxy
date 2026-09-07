@@ -94,15 +94,23 @@ fn start_test_proxy_full(
         tls,
     });
 
+    let workers = Arc::new(rust_http_proxy::workers::Workers::new());
+    // park_idle が立っている設定なら、アイドル接続を預ける監視スレッドも起こす
+    let park = cfg.park_idle.then(|| {
+        rust_http_proxy::idle::IdleWatch::start(Arc::clone(&workers), Arc::clone(&metrics))
+            .expect("idle watcher")
+    });
+
     thread::spawn(move || {
         rust_http_proxy::serve(
             listener,
             || Arc::clone(&cfg),
             rust_http_proxy::Limiter::new(),
-            Arc::new(rust_http_proxy::workers::Workers::new()),
+            workers,
             metrics,
             cache,
             pool,
+            park,
         )
     });
 
@@ -520,6 +528,127 @@ fn test_integration_large_response_streams_through_disk() {
     );
     assert_eq!(got, body);
     assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+/// アイドル接続を監視スレッド (epoll) に預ける設定。
+fn park_config() -> Config {
+    let mut cfg = proxy_config();
+    cfg.park_idle = true;
+    cfg
+}
+
+/// `host` 宛ての要求を 1 本送って応答を読む (keep-alive のまま接続は開けておく)。
+fn one_keepalive_request(stream: &mut TcpStream, host: &str, path: &str) -> (String, Vec<u8>) {
+    let req = format!(
+        "GET http://{}{} HTTP/1.1\r\nHost: {}\r\n\r\n",
+        host, path, host
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    read_response(stream)
+}
+
+#[test]
+fn test_integration_parked_idle_connection_serves_the_next_request() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let proxy_port = start_test_proxy(park_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let (head, body) = one_keepalive_request(&mut stream, &host, "/p1");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert_eq!(body, b"hello from mock origin");
+
+    // 猶予 (既定 3ms) を過ぎれば監視スレッドに預けられ、スレッドから外れる
+    wait_until(
+        || status_json(proxy_port).contains("\"parked_connections\":1"),
+        "the idle connection should be parked",
+    );
+    let status = status_json(proxy_port);
+    assert!(status.contains("\"parking\":true"), "{}", status);
+
+    // 預けた接続に要求を送ると、監視スレッドが起こしてワーカーが処理する
+    let (head, body) = one_keepalive_request(&mut stream, &host, "/p2");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert!(head.contains("Connection: keep-alive"), "{}", head);
+    assert_eq!(body, b"hello from mock origin");
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+
+    // 2 本目のあとも預けられる (何度でも往復できる)
+    wait_until(
+        || status_json(proxy_port).contains("\"parked_connections\":1"),
+        "the connection should be parked again",
+    );
+    let (head, _) = one_keepalive_request(&mut stream, &host, "/p3");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+}
+
+#[test]
+fn test_integration_park_with_no_grace_serves_every_request() {
+    // 猶予 0 = 要求のたびに必ず預けて戻す。預ける経路を毎回通す設定 (CI 用)
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let mut cfg = park_config();
+    cfg.park_grace = Duration::ZERO;
+    let proxy_port = start_test_proxy(cfg);
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    for i in 0..5 {
+        let (head, body) = one_keepalive_request(&mut stream, &host, &format!("/g{}", i));
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+        assert_eq!(body, b"hello from mock origin");
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 5);
+}
+
+#[test]
+fn test_integration_parked_connection_closes_at_keepalive_timeout() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let mut cfg = park_config();
+    cfg.keepalive = Duration::from_millis(300);
+    let proxy_port = start_test_proxy(cfg);
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let (head, _) = one_keepalive_request(&mut stream, &host, "/t1");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+
+    // 預けたまま keep-alive の期限が過ぎたら、監視スレッドが閉じる
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut buf = [0u8; 1];
+    assert_eq!(stream.read(&mut buf).unwrap(), 0, "closed by the proxy");
+    // /status を引く接続それ自体が active に入るので、預かり数の方で見る
+    wait_until(
+        || status_json(proxy_port).contains("\"parked_connections\":0"),
+        "the expired connection should be released",
+    );
+}
+
+#[test]
+fn test_integration_parked_connection_notices_the_client_going_away() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let proxy_port = start_test_proxy(park_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let (head, _) = one_keepalive_request(&mut stream, &host, "/c1");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    wait_until(
+        || status_json(proxy_port).contains("\"parked_connections\":1"),
+        "the idle connection should be parked",
+    );
+
+    // 預けている間にクライアントが閉じたら、持ち分ごと片付ける
+    drop(stream);
+    wait_until(
+        || status_json(proxy_port).contains("\"parked_connections\":0"),
+        "the closed connection should be released",
+    );
 }
 
 #[test]

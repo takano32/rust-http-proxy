@@ -22,6 +22,17 @@ pub struct Config {
     pub pool_per_host: usize,
     /// アイドル接続の全体上限 (`PROXY_ORIGIN_POOL_TOTAL`)。ホスト数 × per_host の歯止め
     pub pool_total: usize,
+    /// アイドルな keep-alive 接続をスレッドから外し、1 本の監視スレッド (epoll) に
+    /// 預けるか (`PROXY_PARK_IDLE`)。Linux 以外では自動的に無効。
+    pub park_idle: bool,
+    /// 預ける前に同じスレッドで待ってみる時間 (`PROXY_PARK_GRACE_MS`)。
+    ///
+    /// 続けて要求が来る忙しい接続に、預ける/戻すの往復 (epoll_ctl 2 回 + ワーカーの
+    /// 受け渡し) を払わせないための猶予。0 なら猶予なしで即座に預ける。
+    pub park_grace: Duration,
+    /// 同時に猶予待ちできるスレッド数の上限 (`PROXY_PARK_MAX_GRACE`)。
+    /// 全接続がいっせいに暇になったときに、猶予のあいだスレッドが積み上がるのを止める。
+    pub park_max_grace: usize,
     /// malloc のアリーナ数の上限 (`PROXY_MALLOC_ARENAS`、`0` で glibc の既定のまま)。
     ///
     /// glibc の既定は「コア数 × 8」で、スレッドごとに別のアリーナを使う。接続ごとに
@@ -109,12 +120,25 @@ impl Config {
         {
             cfg.malloc_arenas = n;
         }
+        if let Some(ms) =
+            envfile::var("PROXY_PARK_GRACE_MS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.park_grace = Duration::from_millis(ms);
+        }
+        if let Some(n) =
+            envfile::var("PROXY_PARK_MAX_GRACE").and_then(|s| s.trim().parse::<usize>().ok())
+        {
+            cfg.park_max_grace = n;
+        }
         let off = |v: String| {
             matches!(
                 v.trim().to_ascii_lowercase().as_str(),
                 "0" | "false" | "off" | "no"
             )
         };
+        if let Some(v) = envfile::var("PROXY_PARK_IDLE") {
+            cfg.park_idle = !off(v);
+        }
         if let Some(v) = envfile::var("PROXY_IPV6") {
             cfg.ipv6 = !off(v);
         }
@@ -212,6 +236,9 @@ impl Config {
             keepalive: Duration::from_secs(15),
             pool_per_host: 64,
             pool_total: 256,
+            park_idle: false,
+            park_grace: Duration::from_millis(3),
+            park_max_grace: 256,
             malloc_arenas: 8,
             tls_enabled: true,
             tls_verify: true,
