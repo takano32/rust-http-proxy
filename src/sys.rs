@@ -1,4 +1,4 @@
-//! Linux のシステムコールを直接叩く薄い層 (`poll`, `pipe2`, `splice`, `recv`)。
+//! Linux のシステムコールを直接叩く薄い層 (`poll`, `pipe2`, `splice`, `recv`, `epoll`)。
 //! 外部クレートは使わず `unsafe extern "C"` で宣言する。Linux 以外ではこのモジュール自体が無い。
 
 use std::ffi::{c_int, c_uint, c_void};
@@ -20,6 +20,9 @@ unsafe extern "C" {
     fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int;
     fn recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize;
     fn close(fd: c_int) -> c_int;
+    fn epoll_create1(flags: c_int) -> c_int;
+    fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut EpollEvent) -> c_int;
+    fn epoll_wait(epfd: c_int, events: *mut EpollEvent, maxevents: c_int, timeout: c_int) -> c_int;
 }
 
 /// `struct pollfd`。
@@ -210,6 +213,113 @@ pub fn peek(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
     Ok(n as usize)
 }
 
+/// `struct epoll_event`。
+///
+/// **x86_64 (と x32) だけ `__attribute__((packed))` が付く** ため 12 バイト、
+/// それ以外 (aarch64 など) は詰め物込みで 16 バイト。C 側と食い違うと
+/// `epoll_wait` が書き戻す配列の刻みがずれるので、arch ごとに合わせる。
+#[repr(C)]
+#[cfg_attr(target_arch = "x86_64", repr(packed))]
+#[derive(Clone, Copy, Default)]
+pub struct EpollEvent {
+    events: u32,
+    data: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(size_of::<EpollEvent>() == 12);
+#[cfg(not(target_arch = "x86_64"))]
+const _: () = assert!(size_of::<EpollEvent>() == 16);
+
+impl EpollEvent {
+    pub fn new(events: u32, token: u64) -> Self {
+        EpollEvent {
+            events,
+            data: token,
+        }
+    }
+
+    /// 起きた事象のビット。
+    pub fn events(&self) -> u32 {
+        // packed なので参照を作らず値で取り出す
+        self.events
+    }
+
+    /// 登録時に預けた目印 (このプロキシでは fd 番号を入れる)。
+    pub fn token(&self) -> u64 {
+        self.data
+    }
+}
+
+pub const EPOLLIN: u32 = 0x001;
+pub const EPOLLERR: u32 = 0x008;
+pub const EPOLLHUP: u32 = 0x010;
+pub const EPOLLRDHUP: u32 = 0x2000;
+
+const EPOLL_CLOEXEC: c_int = O_CLOEXEC;
+const EPOLL_CTL_ADD: c_int = 1;
+const EPOLL_CTL_DEL: c_int = 2;
+
+/// `epoll_create1(2)` で作った監視の集合。落ちるときに fd を閉じる。
+pub struct Epoll {
+    fd: RawFd,
+}
+
+impl Epoll {
+    pub fn new() -> io::Result<Epoll> {
+        // SAFETY: 定数のフラグを渡すだけ。失敗は -1 で返る。
+        let fd = unsafe { epoll_create1(EPOLL_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Epoll { fd })
+    }
+
+    /// 記述子を集合に足す。`token` は [`EpollEvent::token`] でそのまま返ってくる。
+    pub fn add(&self, fd: RawFd, events: u32, token: u64) -> io::Result<()> {
+        let mut ev = EpollEvent::new(events, token);
+        // SAFETY: ev はこの呼び出しの間だけ有効なら良い (カーネルは値を複製する)。
+        let r = unsafe { epoll_ctl(self.fd, EPOLL_CTL_ADD, fd, &mut ev) };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// 記述子を集合から外す。
+    pub fn delete(&self, fd: RawFd) -> io::Result<()> {
+        // SAFETY: DEL では event は見られない (Linux 2.6.9 以降は NULL 可)。
+        let r = unsafe { epoll_ctl(self.fd, EPOLL_CTL_DEL, fd, std::ptr::null_mut()) };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// `epoll_wait(2)`。戻り値は `events` の先頭何個が埋まったか (0 はタイムアウト)。
+    /// `timeout_ms` が負なら無期限。`EINTR` は 0 個として返す。
+    pub fn wait(&self, events: &mut [EpollEvent], timeout_ms: c_int) -> io::Result<usize> {
+        let max = events.len().min(c_int::MAX as usize) as c_int;
+        // SAFETY: events は max 個ぶんの書込先として有効。
+        let n = unsafe { epoll_wait(self.fd, events.as_mut_ptr(), max, timeout_ms) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(EINTR) {
+                return Ok(0);
+            }
+            return Err(e);
+        }
+        Ok(n as usize)
+    }
+}
+
+impl Drop for Epoll {
+    fn drop(&mut self) {
+        // SAFETY: 自分で開いた fd を 1 回だけ閉じる。
+        unsafe { close(self.fd) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +362,65 @@ mod tests {
         drop(b);
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert_eq!(peek(a.as_raw_fd(), &mut buf).unwrap(), 0, "peer closed");
+    }
+
+    #[test]
+    fn epoll_reports_readable_and_peer_close() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut a = TcpStream::connect(addr).unwrap();
+        let (b, _) = listener.accept().unwrap();
+
+        let ep = Epoll::new().unwrap();
+        let token = 0xdead_beef_cafe_u64;
+        ep.add(b.as_raw_fd(), EPOLLIN | EPOLLRDHUP, token).unwrap();
+
+        let mut evs = [EpollEvent::default(); 8];
+        // まだ何も来ていない
+        assert_eq!(ep.wait(&mut evs, 10).unwrap(), 0);
+
+        a.write_all(b"x").unwrap();
+        assert_eq!(ep.wait(&mut evs, 1000).unwrap(), 1);
+        assert_eq!(evs[0].token(), token);
+        assert!(evs[0].events() & EPOLLIN != 0);
+
+        drop(a);
+        assert_eq!(ep.wait(&mut evs, 1000).unwrap(), 1);
+        assert!(evs[0].events() & (EPOLLRDHUP | EPOLLIN) != 0);
+
+        ep.delete(b.as_raw_fd()).unwrap();
+        assert_eq!(ep.wait(&mut evs, 10).unwrap(), 0, "外したら報告されない");
+    }
+
+    #[test]
+    fn epoll_wakes_when_another_thread_adds_a_ready_fd() {
+        // 監視スレッドが epoll_wait で待っている最中に別スレッドが足しても届くこと
+        // (park は必ずワーカースレッド側から呼ばれる)
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut a = TcpStream::connect(addr).unwrap();
+        let (b, _) = listener.accept().unwrap();
+        a.write_all(b"already here").unwrap();
+
+        let ep = std::sync::Arc::new(Epoll::new().unwrap());
+        let ep2 = std::sync::Arc::clone(&ep);
+        let fd = b.as_raw_fd();
+        let adder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            ep2.add(fd, EPOLLIN, 7).unwrap();
+        });
+        let mut evs = [EpollEvent::default(); 4];
+        assert_eq!(ep.wait(&mut evs, 3000).unwrap(), 1);
+        assert_eq!(evs[0].token(), 7);
+        adder.join().unwrap();
+    }
+
+    #[test]
+    fn epoll_add_rejects_a_regular_file() {
+        // epoll に入れられない記述子は EPERM。park は失敗を握りつぶさず旧経路へ落とす
+        let ep = Epoll::new().unwrap();
+        let f = std::fs::File::open("/proc/self/cmdline").unwrap();
+        assert!(ep.add(f.as_raw_fd(), EPOLLIN, 0).is_err());
     }
 
     #[test]
