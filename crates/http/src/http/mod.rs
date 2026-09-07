@@ -12,7 +12,6 @@ mod tests;
 
 pub use crate::request::{Origin, map_locations, parse_origin};
 pub use crate::response::{ResponseHead, read_response_head};
-pub use serve::{Serve, write_cached_response};
 
 use std::borrow::Cow;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};

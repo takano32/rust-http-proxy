@@ -246,7 +246,11 @@ fn status_of(head: &[u8]) -> u16 {
 }
 
 /// キャッシュ済みレスポンスの配信方法。
-pub struct Serve<'a> {
+///
+/// この型と [`write_cached_response`] を使うのは `http` の中だけ (クレートの外に利用者は
+/// いない)。以前は `mod.rs` が `pub use` で外まで出していて、`proxy-endpoints` からも
+/// 見えていた (T8.6 のやり残し)
+pub(super) struct Serve<'a> {
     pub label: &'a str,
     pub source: CacheSource,
     pub age: u64,
@@ -259,7 +263,7 @@ pub struct Serve<'a> {
 
 /// キャッシュ済みレスポンスに枠組み (Content-Length) と `X-Cache` / `Age` を付けて書き出す。
 /// 戻り値は (ステータス, 書いたバイト数)。
-pub fn write_cached_response(
+pub(super) fn write_cached_response(
     client: &mut impl Write,
     entry: CachedResponse,
     serve: &Serve<'_>,
