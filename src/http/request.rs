@@ -76,18 +76,22 @@ pub struct Origin {
 }
 
 impl Origin {
+    // 以下 3 つは [`Origin::locate`] に委譲する。同じ正規化を 2 か所に書くと、
+    // 片方だけ直したときに黙って食い違う (例: Location 先のキャッシュ無効化は
+    // 「locate() 由来の接続先」と「server_addr() の結果」を突き合わせている)。
+
     pub fn server_addr(&self) -> String {
-        net::with_default_port(&self.host_port, self.scheme.default_port())
+        self.locate().server_addr().to_string()
     }
 
     /// キャッシュキーとログに使う正規化 URL。
     pub fn url(&self) -> String {
-        format!("{}://{}{}", self.scheme, self.server_addr(), self.path)
+        self.locate().into_url()
     }
 
     /// 接続プールのキー。
     pub fn pool_key(&self) -> String {
-        format!("{}://{}", self.scheme, self.server_addr())
+        self.locate().pool_key().to_string()
     }
 
     pub fn host(&self) -> String {
@@ -149,6 +153,11 @@ impl Located {
     /// 接続先 (`host:port`)。
     pub fn server_addr(&self) -> &str {
         &self.url[self.addr_start..self.origin_end]
+    }
+
+    /// 組み立てた URL をそのまま受け取る (複製しない)。
+    pub fn into_url(self) -> String {
+        self.url
     }
 }
 

@@ -303,3 +303,68 @@ fn test_locate_builds_one_string_for_url_pool_key_and_addr() {
         assert_eq!(l.server_addr(), want_addr);
     }
 }
+
+#[test]
+fn test_locate_matches_the_generic_normalisation_on_many_inputs() {
+    // locate() は net::with_default_port / join_host_port と同じ正規化を自前で持っている。
+    // 将来どちらか片方だけ直したときに気付けるよう、広い入力で突き合わせておく
+    // (Location 先のキャッシュ無効化は、この 2 つが一致している前提で比較している)。
+    let hosts = [
+        "example.com",
+        "example.com:8080",
+        "127.0.0.1",
+        "127.0.0.1:1",
+        "[2001:db8::1]",
+        "[2001:db8::1]:8080",
+        "2001:db8::1",
+        "::1",
+        "[::1]:443",
+        "[]",
+        "[2001:db8::1",
+        "host:notaport",
+        "host:99999",
+        "host:0",
+        "UPPER.Example.COM:80",
+        "a.b.c.d.e.f:65535",
+        "x",
+        "",
+    ];
+    let paths = ["/", "", "/a/b?c=d#e", "/%20%2f", "/?", "//double"];
+    let schemes = [Scheme::Http, Scheme::Https];
+    let mut checked = 0usize;
+    for h in hosts {
+        for p in paths {
+            for scheme in schemes {
+                let o = Origin {
+                    scheme,
+                    host_port: h.to_string(),
+                    path: p.to_string(),
+                    mapped: false,
+                };
+                let l = o.locate();
+                // 汎用の正規化 (net) と、locate() の自前の組み立てが一致すること
+                let generic_addr = crate::net::with_default_port(h, scheme.default_port());
+                assert_eq!(l.server_addr(), generic_addr, "server_addr for {:?}", h);
+                assert_eq!(
+                    l.url(),
+                    format!("{}://{}{}", scheme, generic_addr, p),
+                    "url for {:?} {:?}",
+                    h,
+                    p
+                );
+                assert_eq!(
+                    l.pool_key(),
+                    format!("{}://{}", scheme, generic_addr),
+                    "pool_key for {:?}",
+                    h
+                );
+                // 委譲した旧 API とも一致すること
+                assert_eq!(o.server_addr(), l.server_addr());
+                assert_eq!(o.url(), l.url());
+                assert_eq!(o.pool_key(), l.pool_key());
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, hosts.len() * paths.len() * schemes.len());
+}
