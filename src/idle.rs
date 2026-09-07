@@ -44,6 +44,16 @@ mod linux {
     /// 起こす仕掛け (eventfd) は要らない。設定を読み直して keepalive が短くなった直後だけ
     /// 期限が前後しうるので、その取りこぼしをこの間隔で拾う。
     const MAX_WAIT_MS: i32 = 1000;
+    /// 期限切れを 1 周で何本まで片づけるか。
+    ///
+    /// 監視スレッドが `epoll_wait` に戻るまでの間、読めるようになった接続は待たされる。
+    /// TCP 接続の `close(2)` はこの機械で 1 本 10.8 us (Cortex-A78) / 64.0 us (A55)
+    /// かかるので、上限なしに落とすと 4,096 本で 42 ms / 262 ms 止まる。計測済みの
+    /// forward p99 は 1.33 ms なので、それを越えない 16 本 (A55 でも 1.0 ms) で切る。
+    /// 残りは次の周回で片づく (期限が過ぎていれば [`IdleWatch::next_timeout`] が 0 を
+    /// 返すのですぐ戻り、しかもその 1 回で溜まった EPOLLIN も拾えるので、
+    /// 生きている接続が期限切れの列に割り込める)。
+    const EXPIRE_BATCH: usize = 16;
 
     /// 預かっている 1 接続。
     struct Parked {
@@ -150,7 +160,10 @@ mod linux {
         fn expire(&self, now: Instant) -> Vec<Box<Conn>> {
             let mut due = Vec::new();
             let mut inner = self.inner.locked();
-            while let Some(&(deadline, _)) = inner.deadlines.first() {
+            while due.len() < EXPIRE_BATCH {
+                let Some(&(deadline, _)) = inner.deadlines.first() else {
+                    break;
+                };
                 if deadline > now {
                     break;
                 }
@@ -249,6 +262,8 @@ mod linux {
                     "closing {} idle connections past keep-alive",
                     expired.len()
                 );
+                // ロックの外で落とす (close(2) の間、預けたいワーカーを待たせない)
+                drop(expired);
             }
         }
     }
