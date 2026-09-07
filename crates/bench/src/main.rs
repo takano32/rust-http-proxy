@@ -10,6 +10,8 @@
 //!   2. forward : 平文 HTTP をプロキシ経由で転送したときの要求/秒と p50/p99
 //!   3. tunnel  : CONNECT トンネル 1 本のスループット (MiB/s)
 //!   4. connect : CONNECT の確立/秒 (短命トンネル)
+//!   5. idle-tunnels: `--conc N` 本の CONNECT を張ったまま `--seconds` 秒握る
+//!      (プロキシ側のスレッド数と RSS を見るためのモード。`--only idle-tunnels` でだけ走る)
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -37,6 +39,7 @@ struct Args {
 fn usage() -> ! {
     eprintln!(
         "usage: bench [--proxy HOST:PORT] [--conc N] [--seconds N] [--body-bytes N]\n\
+                     [--only direct|forward|tunnel|connect|idle-tunnels|all]\n\
          \n\
          Without --proxy only the direct (origin) baseline is measured."
     );
@@ -156,6 +159,21 @@ fn spawn_sink() -> io::Result<SocketAddr> {
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let _ = stream.shutdown(Shutdown::Both);
+        }
+    });
+    Ok(addr)
+}
+
+/// 接続を受けて持ち続けるだけのリスナー (アイドルトンネルの相手)。
+/// 読みも書きも閉じもしないので、トンネルは両方向とも暇なまま残る。
+fn spawn_holder() -> io::Result<SocketAddr> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?;
+    thread::spawn(move || {
+        // 1 本 1 スレッドにすると 5,000 スレッドになるので、受けたら Vec に積むだけ
+        let mut held: Vec<TcpStream> = Vec::new();
+        for stream in listener.incoming().flatten() {
+            held.push(stream);
         }
     });
     Ok(addr)
@@ -343,6 +361,76 @@ fn open_tunnel(
     Ok((sock, reader))
 }
 
+/// CONNECT を張り、`200` を読み切ったソケットだけを返す (`BufReader` を残さない)。
+///
+/// アイドルトンネルを 5,000 本握るモード用。[`open_tunnel`] は 1 本につき
+/// `try_clone` した記述子と 8 KiB の `BufReader` を持つので、本数ぶん積むと
+/// ベンチ側が先に重くなる。CONNECT の応答のあとには何も続かないので 1 バイトずつ読む。
+fn open_tunnel_bare(proxy: SocketAddr, target: SocketAddr) -> io::Result<TcpStream> {
+    let mut sock = TcpStream::connect(proxy)?;
+    sock.set_nodelay(true)?;
+    let req = format!("CONNECT {0} HTTP/1.1\r\nHost: {0}\r\n\r\n", target);
+    sock.write_all(req.as_bytes())?;
+    let mut head = Vec::with_capacity(64);
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if sock.read(&mut byte)? == 0 {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+        }
+        head.push(byte[0]);
+        if head.len() > 4096 {
+            return Err(io::Error::other("CONNECT response header too long"));
+        }
+    }
+    if !head.starts_with(b"HTTP/1.1 200") {
+        return Err(io::Error::other("CONNECT was refused"));
+    }
+    Ok(sock)
+}
+
+/// `conc` 本の CONNECT を張り、`seconds` 秒そのまま握る。
+///
+/// プロキシ側の「アイドルなトンネル 1 本あたりのスレッドと RSS」を見るためのモード。
+/// 5,000 本張るので、ベンチ側は 1 スレッドで接続を `Vec` に持つ (5,000 スレッドを作らない)。
+/// プロキシの `PROXY_MAX_CONNS` (既定 4096) に当たるので、測るときは `0` か 8192 にする。
+fn idle_tunnels(proxy: SocketAddr, conc: usize, seconds: u64) {
+    let holder = spawn_holder().expect("holder");
+    let mut held: Vec<TcpStream> = Vec::with_capacity(conc);
+    let mut latencies_us: Vec<u32> = Vec::with_capacity(conc);
+    let mut failed = 0usize;
+    let started = Instant::now();
+    for _ in 0..conc {
+        let t0 = Instant::now();
+        match open_tunnel_bare(proxy, holder) {
+            Ok(sock) => {
+                latencies_us.push(t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
+                held.push(sock);
+            }
+            Err(_) => failed += 1,
+        }
+    }
+    let opened = started.elapsed();
+    println!(
+        "idle-tun {} tunnels open in {:.1}s ({} failed); holding {}s",
+        held.len(),
+        opened.as_secs_f64(),
+        failed,
+        seconds
+    );
+    // 握ったまま待つ (この間にプロキシのスレッド数と RSS を見る)
+    thread::sleep(Duration::from_secs(seconds));
+    // 握れた本数を「操作数」として出す (scripts/cpu-per-request.sh がこの行から読む)
+    latencies_us.sort_unstable();
+    Report {
+        ops: held.len() as u64,
+        bytes: 0,
+        elapsed: started.elapsed(),
+        latencies_us,
+    }
+    .print("idle-tun");
+    drop(held);
+}
+
 fn parse_addr(s: &str) -> SocketAddr {
     use std::net::ToSocketAddrs;
     s.to_socket_addrs()
@@ -422,6 +510,12 @@ fn main() {
             }
             Err(e) => println!("tunnel   skipped: {}", e),
         }
+    }
+
+    // アイドルなトンネルを握り続ける (--only idle-tunnels のときだけ。all には入れない)
+    if args.only == "idle-tunnels" {
+        idle_tunnels(proxy, args.conc, args.seconds);
+        return;
     }
 
     // CONNECT の確立/秒
