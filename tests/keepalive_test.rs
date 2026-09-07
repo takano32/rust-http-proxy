@@ -340,3 +340,43 @@ fn test_integration_zero_timeout_never_closes_a_silent_connection() {
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
     assert_eq!(body, b"hello from mock origin");
 }
+/// 生きているスレッドの上限に達しても、要求は待たされるだけで捨てられないこと (T10.5)。
+///
+/// 上限 2 本に対して 12 本の接続を同時に張る。上限を超えたぶんは `Workers` の待ち行列で
+/// 待ち、空いたスレッドが順に引き取る。1 本でも落とされたら (= 上限のときに `Err(job)` を
+/// 返して `serve` が接続を閉じる作りに戻ったら) このテストが落ちる。
+#[test]
+fn test_integration_requests_wait_instead_of_being_dropped_at_the_thread_limit() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let mut cfg = park_config();
+    cfg.max_threads = 2;
+    let proxy_port = start_test_proxy(cfg);
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    const CLIENTS: usize = 12;
+    let (tx, rx) = std::sync::mpsc::channel();
+    for i in 0..CLIENTS {
+        let (tx, host) = (tx.clone(), host.clone());
+        thread::spawn(move || {
+            let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
+            let (head, body) = one_keepalive_request(&mut stream, &host, &format!("/t{}", i));
+            let _ = tx.send((head, body));
+        });
+    }
+    for i in 0..CLIENTS {
+        let (head, body) = rx
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|e| panic!("{} 本目の応答が来ない: {}", i + 1, e));
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+        assert_eq!(body, b"hello from mock origin");
+    }
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        CLIENTS,
+        "全部オリジンへ届く"
+    );
+}

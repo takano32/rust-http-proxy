@@ -130,7 +130,8 @@ pub fn start_test_proxy_full(
         tls,
     });
 
-    let workers = Arc::new(rust_http_proxy::workers::Workers::new());
+    // 上限は設定から (テストでは既定のまま = コア数から決まる値)
+    let workers = Arc::new(rust_http_proxy::workers::Workers::new(cfg.max_threads));
     // park_idle が立っている設定なら、アイドル接続を預ける監視スレッドも起こす
     let park = cfg.park_idle.then(|| {
         rust_http_proxy::idle::IdleWatch::start(Arc::clone(&workers), Arc::clone(&metrics))
