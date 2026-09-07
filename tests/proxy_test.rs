@@ -584,6 +584,45 @@ fn test_integration_parked_idle_connection_serves_the_next_request() {
 }
 
 #[test]
+fn test_integration_park_waits_for_a_request_sent_in_pieces() {
+    // 猶予は「次の要求がまだ来ていない」ことを読み取りタイムアウトで測る。
+    // 要求を送っている最中の細切れ (猶予より長い間隔) で切ってはいけない
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let mut cfg = park_config();
+    cfg.park_grace = Duration::from_millis(5);
+    let proxy_port = start_test_proxy(cfg);
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let (head, _) = one_keepalive_request(&mut stream, &host, "/s1");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    wait_until(
+        || status_json(proxy_port).contains("\"parked_connections\":1"),
+        "the idle connection should be parked",
+    );
+
+    // 猶予 (5ms) の何倍も空けながら、要求行の途中・ヘッダーの途中で区切って送る
+    let req = format!(
+        "GET http://{}/s2 HTTP/1.1\r\nHost: {}\r\nX-Slow: yes\r\n\r\n",
+        host, host
+    );
+    let bytes = req.as_bytes();
+    for chunk in [&bytes[..12], &bytes[12..30], &bytes[30..]] {
+        stream.write_all(chunk).unwrap();
+        stream.flush().unwrap();
+        thread::sleep(Duration::from_millis(40));
+    }
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let (head, body) = read_response(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert_eq!(body, b"hello from mock origin");
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+}
+
+#[test]
 fn test_integration_park_with_no_grace_serves_every_request() {
     // 猶予 0 = 要求のたびに必ず預けて戻す。預ける経路を毎回通す設定 (CI 用)
     let counter = Arc::new(AtomicUsize::new(0));

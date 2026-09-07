@@ -30,9 +30,6 @@ pub struct Config {
     /// 続けて要求が来る忙しい接続に、預ける/戻すの往復 (epoll_ctl 2 回 + ワーカーの
     /// 受け渡し) を払わせないための猶予。0 なら猶予なしで即座に預ける。
     pub park_grace: Duration,
-    /// 同時に猶予待ちできるスレッド数の上限 (`PROXY_PARK_MAX_GRACE`)。
-    /// 全接続がいっせいに暇になったときに、猶予のあいだスレッドが積み上がるのを止める。
-    pub park_max_grace: usize,
     /// malloc のアリーナ数の上限 (`PROXY_MALLOC_ARENAS`、`0` で glibc の既定のまま)。
     ///
     /// glibc の既定は「コア数 × 8」で、スレッドごとに別のアリーナを使う。接続ごとに
@@ -124,11 +121,6 @@ impl Config {
             envfile::var("PROXY_PARK_GRACE_MS").and_then(|s| s.trim().parse::<u64>().ok())
         {
             cfg.park_grace = Duration::from_millis(ms);
-        }
-        if let Some(n) =
-            envfile::var("PROXY_PARK_MAX_GRACE").and_then(|s| s.trim().parse::<usize>().ok())
-        {
-            cfg.park_max_grace = n;
         }
         let off = |v: String| {
             matches!(
@@ -238,7 +230,6 @@ impl Config {
             pool_total: 256,
             park_idle: false,
             park_grace: Duration::from_millis(3),
-            park_max_grace: 256,
             malloc_arenas: 8,
             tls_enabled: true,
             tls_verify: true,

@@ -291,6 +291,56 @@ impl Drop for Scratch {
     }
 }
 
+/// [`read_line_or_idle`] の結果。
+enum Line {
+    /// 読めた ([`read_limited_line`] の戻り値そのまま)
+    Read(Option<usize>),
+    /// 猶予のあいだ 1 バイトも来なかった (= 預けてよい)
+    Idle,
+}
+
+/// 猶予つきで 1 行読む。
+///
+/// 読み取りタイムアウトを猶予の長さにしておき、空振りしたらそれを「暇だ」と解釈する。
+/// `poll` を別に呼ばずに済むので、要求ごとのシステムコールが 1 回増えない。
+/// 途中まで来ていたら (要求を送っている最中の細切れ) `full` まで待ち直して読み切る。
+///
+/// `extend` が `None` なら猶予なし。`allow_idle` が偽なら空振りでも待ち直す
+/// (要求の途中では預けられないため)。
+fn read_line_or_idle(
+    reader: &mut clientio::ClientReader<'_>,
+    line: &mut String,
+    extend: Option<(&TcpStream, std::time::Duration)>,
+    allow_idle: bool,
+    extended: &mut bool,
+) -> io::Result<Line> {
+    loop {
+        match read_limited_line(reader, line) {
+            Ok(v) => return Ok(Line::Read(v)),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                let Some((stream, full)) = extend else {
+                    return Err(e);
+                };
+                if *extended {
+                    return Err(e);
+                }
+                if allow_idle && line.is_empty() {
+                    return Ok(Line::Idle);
+                }
+                // 要求の途中: 猶予ではなく本来のアイドル時間で待ち直す
+                stream.set_read_timeout(Some(full))?;
+                *extended = true;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// 長さ制限付きで 1 行読む。制限を超えたら `Ok(None)`。
 fn read_limited_line(
     reader: &mut clientio::ClientReader<'_>,
@@ -358,6 +408,8 @@ pub struct Conn {
 pub enum Step {
     /// この接続で次の要求を待つ (keep-alive)
     Next,
+    /// 猶予のあいだ次の要求が来なかった。監視スレッドへ預けてスレッドを解放する
+    Park,
     /// この接続は終わり
     Close,
     /// CONNECT トンネルへ移る
@@ -465,7 +517,16 @@ impl Conn {
 fn pump(mut conn: Box<Conn>) -> io::Result<()> {
     loop {
         match serve_one(&mut conn)? {
-            Step::Next => match park_if_idle(conn) {
+            // 猶予 0 の設定では読みにも行かず、その場で預ける
+            Step::Next if conn.park.is_some() && conn.config.park_grace.is_zero() => {
+                match park_now(conn) {
+                    Ok(()) => return Ok(()),
+                    Err(back) => conn = back,
+                }
+            }
+            Step::Next => continue,
+            // 猶予のあいだ次の要求が来なかった
+            Step::Park => match park_now(conn) {
                 // 預けられた: このスレッドは解放される (続きは監視スレッドが起こす)
                 Ok(()) => return Ok(()),
                 Err(back) => conn = back,
@@ -494,15 +555,11 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
     }
 }
 
-/// 猶予のあいだ待っているスレッドの数 (`park_max_grace` の歯止め用)。
-static IN_GRACE: AtomicUsize = AtomicUsize::new(0);
-
-/// 次の要求が来るまで暇なら、接続を監視スレッドへ預けてこのスレッドを解放する。
+/// 接続を監視スレッドへ預けてこのスレッドを解放する。
 /// 預けられたら `Ok(())`、このまま同じスレッドで待つなら `Err(conn)`。
-fn park_if_idle(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
-    let Some(watch) = conn.park.clone() else {
-        return Err(conn);
-    };
+///
+/// 「暇かどうか」の判定は済んでいる前提 ([`Step::Park`] で来るか、猶予 0 の設定)。
+fn park_now(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
     // 先読み済みのバイトがあるなら待つ必要が無い (パイプライン化された次の要求)
     if conn.has_buffered() {
         return Err(conn);
@@ -511,66 +568,21 @@ fn park_if_idle(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
     if conn.config.keepalive.is_zero() {
         return Err(conn);
     }
-    // 少しだけこのスレッドで待ってみる。続けて要求が来る接続に、預ける/戻すの往復
-    // (epoll_ctl 2 回 + ワーカーの受け渡し) を払わせない
-    if !conn.config.park_grace.is_zero() && wait_briefly(&conn) {
+    let Some(watch) = conn.park.clone() else {
         return Err(conn);
-    }
+    };
     let deadline = Instant::now() + conn.config.keepalive;
     conn.release_idle_buffers();
-    watch.park(conn, deadline)
-}
-
-/// 猶予待ちの枠。取れたときだけ作られ、落ちるときに必ず返す。
-struct GraceSlot;
-
-impl GraceSlot {
-    /// 空きがあれば取る。上限に達していたら `None` (猶予なしで預ける)。
-    fn take(max: usize) -> Option<GraceSlot> {
-        // 0 は無制限。それでも枠は数える (Drop が必ず 1 減らすので釣り合う)
-        if max == 0 {
-            IN_GRACE.fetch_add(1, Ordering::Relaxed);
-            return Some(GraceSlot);
-        }
-        // 全接続がいっせいに暇になったときに、猶予でスレッドが積み上がるのを止める
-        let mut now = IN_GRACE.load(Ordering::Relaxed);
-        loop {
-            if now >= max {
-                return None;
-            }
-            match IN_GRACE.compare_exchange_weak(now, now + 1, Ordering::Relaxed, Ordering::Relaxed)
-            {
-                Ok(_) => return Some(GraceSlot),
-                Err(seen) => now = seen,
-            }
+    match watch.park(conn, deadline) {
+        Ok(()) => Ok(()),
+        Err(mut conn) => {
+            // 預かってもらえなかった (監視スレッドが死んだ、この記述子が epoll に
+            // 入らない)。この接続は以後スレッドで待つ側に固定する。そうしないと
+            // 要求のたびに猶予で空振りして預け直そうとして空回りする
+            conn.park = None;
+            Err(conn)
         }
     }
-}
-
-impl Drop for GraceSlot {
-    fn drop(&mut self) {
-        IN_GRACE.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-/// 猶予のあいだ読めるようになるのを待つ。`true` なら要求が来ている。
-#[cfg(target_os = "linux")]
-fn wait_briefly(conn: &Conn) -> bool {
-    let max = conn.config.park_max_grace;
-    let Some(_slot) = GraceSlot::take(max) else {
-        return false;
-    };
-    let mut fds = [sys::PollFd::new(conn.client_fd(), sys::POLLIN)];
-    // 失敗したときは預けずに続ける (旧経路のブロッキング read に任せる)
-    !matches!(
-        sys::poll_fds(&mut fds, conn.config.park_grace.as_millis() as i32),
-        Ok(0)
-    )
-}
-
-#[cfg(not(target_os = "linux"))]
-fn wait_briefly(_conn: &Conn) -> bool {
-    false
 }
 
 /// 1 つの接続を最後まで面倒みる。ワーカースレッドに渡す仕事の中身。
@@ -607,25 +619,43 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         upstream,
         served,
         read_timeout,
+        park,
         ..
     } = conn;
     let scratch = scratch.as_mut().expect("just set");
     scratch.reset();
 
+    // 2 回目以降で監視スレッドに預けられるなら、待つのは猶予のあいだだけ。
+    // 空振りしたら「暇だ」と解釈して預ける (poll を別に呼ばずに済む)
+    let grace = (*served > 0
+        && park.is_some()
+        && !config.park_grace.is_zero()
+        && !config.keepalive.is_zero())
+    .then_some(config.park_grace);
     // 最初の要求は通常のタイムアウト、2 回目以降は keep-alive のアイドル時間で待つ
-    let wait = if *served == 0 {
-        config.timeout
-    } else {
-        config.keepalive
+    let wait = match (grace, *served) {
+        (Some(g), _) => g,
+        (None, 0) => config.timeout,
+        (None, _) => config.keepalive,
     };
     // タイムアウトの再設定は値が変わるときだけ (setsockopt は要求ごとに効いてくる)
     if *read_timeout != Some(wait) {
         client.set_read_timeout(Some(wait))?;
         *read_timeout = Some(wait);
     }
+    // 猶予で待っている間に要求が届き始めたら、本来のアイドル時間まで待ち直す
+    let extend = grace.map(|_| (&*client, config.keepalive));
+    let mut extended = false;
     let mut reader = buf.reader(client);
-    match read_limited_line(&mut reader, &mut scratch.request_line) {
-        Ok(None) => {
+    match read_line_or_idle(
+        &mut reader,
+        &mut scratch.request_line,
+        extend,
+        true,
+        &mut extended,
+    ) {
+        Ok(Line::Idle) => return Ok(Step::Park),
+        Ok(Line::Read(None)) => {
             log_warn!(
                 Some(conn_id),
                 "414 URI Too Long (request line over {} bytes)",
@@ -634,11 +664,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             reject(client, 414, "URI Too Long")?;
             return Ok(Step::Close);
         }
-        Ok(Some(0)) => {
+        Ok(Line::Read(Some(0))) => {
             log_debug!(Some(conn_id), "client closed ({} requests served)", *served);
             return Ok(Step::Close);
         }
-        Ok(Some(_)) => {}
+        Ok(Line::Read(Some(_))) => {}
         Err(e)
             if *served > 0
                 && matches!(
@@ -684,7 +714,13 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     let mut has_body = false;
     loop {
         let index = scratch.used;
-        match read_limited_line(&mut reader, scratch.next())? {
+        // 要求の途中なので、空振りしても預けない (待ち直す)
+        let line =
+            match read_line_or_idle(&mut reader, scratch.next(), extend, false, &mut extended)? {
+                Line::Read(v) => v,
+                Line::Idle => unreachable!("allow_idle is false"),
+            };
+        match line {
             None => {
                 log_warn!(Some(conn_id), "431 Request Header Fields Too Large");
                 reject(client, 431, "Request Header Fields Too Large")?;
