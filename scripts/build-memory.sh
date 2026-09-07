@@ -5,17 +5,25 @@
 # SIGKILL されてビルドが落ちる。rustc はクレート単位で全部を一度に抱えるので、
 # 行が増えるとそのまま効いてくる。層ごとにクレートを分けてあるのはそのため。
 #
-# **RSS を測るだけでは機械をまたいだ判定にならない。** メモリ圧がかかっていないと
-# アロケータが解放済みのページを持ち続けるので、同じビルドでも余裕のある機械ほど
-# 大きく出る (実測: aarch64 の手元 194 MB に対し、GitHub の runner では 334 MB)。
+# **VmRSS を測るだけでは上限との比較にならない。** rustc の VmRSS のうち 110〜122 MB は
+# `librustc_driver-*.so` (111 MB) をマップしたファイル由来のページで、これはページキャッシュに
+# 載っていれば cgroup には課金されない (実測: 上限 110 MB の cgroup の中で通ったビルドでも、
+# VmRSS は 215 MB と出る)。cgroup が必ず抱えるのは **RssAnon** の方で、こちらは 36〜86 MB。
+# だから RSS の絶対値を上限と比べてはいけない。**同じ機械の中でクレートの順位を見るためだけに使う。**
 # そこで、cgroup を作れる環境では**実際にその上限の中でビルドして通るか**を見る。
 # システムの systemd (CI) が無くても、**ユーザーの systemd** (`systemd-run --user --scope`) が
 # あれば同じ判定ができる (手元の機械はこちら。PID 1 が systemd でなくてもユーザーの
 # インスタンスは動いていて、上限も効く)。どちらも無いときだけ RSS を出すだけにして判定しない。
 #
+# **上限を決めているクレート** (T10.9 の実測、RssAnon の最大。手元 aarch64、3 回とも同じ順):
+#   proxy-http 85.5 MB > proxy-blocklist 84.0 > 本体 (rust-http-proxy) 79.2 > proxy-metrics 76.1
+#   > proxy-net 73.6 > … > proxy-diskprobe 35.7 (いちばん小さいクレートでも 36 MB は要る)
+# 行数の順ではない (いちばん長い proxy-cache 2,257 行は 67.0 MB で 6 番目)。効くのは
+# 「自分の行数 + 依存から単相化されてくる量」。上限を下げたいならこの上位から割ること。
+#
 # 使い方:
 #   scripts/build-memory.sh [上限 MB]            上限の中で通るか (既定 200)
-#   scripts/build-memory.sh --find 200 250 300   通る最小の上限を探す (調べるとき用)
+#   scripts/build-memory.sh --find 90 100 110    通る最小の上限を探す (調べるとき用)
 set -u
 MODE=gate
 if [ "${1:-}" = "--find" ]; then MODE=find; shift; fi
@@ -67,11 +75,16 @@ report_rss() {
   (
     while true; do
       for p in $(pgrep -x rustc 2>/dev/null); do
-        rss=$(awk '/VmRSS/{print $2}' "/proc/$p/status" 2>/dev/null) || continue
+        # RssAnon (cgroup が必ず抱える分) と VmRSS (ファイル由来のページを含む) の両方。
+        # 並べ替えの鍵は RssAnon。VmRSS は 110 MB 前後が librustc_driver のマップで、
+        # クレートの大きさとはほとんど関係しない。
+        read -r anon rss < <(awk '/^RssAnon:/{a=$2} /^VmRSS:/{r=$2} END{print a+0, r+0}' \
+          "/proc/$p/status" 2>/dev/null)
+        [ "${anon:-0}" -eq 0 ] && continue
         name=$(tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -A1 -x -- '--crate-name' | tail -1)
-        [ -n "$rss" ] && [ -n "$name" ] && echo "$rss $name" >> "$rows"
+        [ -n "$name" ] && echo "$anon $rss $name" >> "$rows"
       done
-      sleep 0.03
+      sleep 0.02
     done
   ) &
   local sampler=$!
@@ -80,8 +93,12 @@ report_rss() {
   sleep 0.3
   kill "$sampler" 2>/dev/null
   echo
-  echo "クレートごとの rustc 最大 RSS (参考値。メモリ圧のかかり方で上下する):"
-  sort -k2,2 -k1,1rn "$rows" | awk '!seen[$2]++ {printf "  %-22s %7.1f MB\n", $2, $1/1024}'
+  echo "クレートごとの rustc の最大メモリ (RssAnon 順。**上限と直接比べてはいけない**。"
+  echo "同じ機械の中でどのクレートが大きいかを見るためのもの):"
+  printf "  %-22s %9s %9s\n" "クレート" "RssAnon" "VmRSS"
+  sort -k3,3 -k1,1rn "$rows" \
+    | awk '!seen[$3]++ {printf "  %-22s %6.1f MB %6.1f MB\n", $3, $1/1024, $2/1024}' \
+    | sort -k2,2rn
   rm -f "$rows"
   return $rc
 }
@@ -120,7 +137,8 @@ case $? in
     ;;
   *)
     echo "NG: ${LIMIT_MB} MB の中でビルドが通りませんでした (rustc が OOM killer に落とされたか、ビルド自体の失敗)"
-    echo "    どのクレートが大きいかは、余裕のある機械で下の参考値を見てください"
+    echo "    落ちるのは上限を決めているクレート (実測では proxy-http か proxy-blocklist) のところ。"
+    echo "    順位は cgroup を作れない機械で参考値 (RssAnon) を出すと見られます"
     exit 1
     ;;
 esac
