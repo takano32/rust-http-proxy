@@ -243,6 +243,16 @@ fn main() {
             .unwrap_or_else(|| "unknown".to_string()),
         rust_http_proxy::config::FDS_PER_CONN
     );
+    // 生きている接続スレッドの上限 (T10.5)。上限に達したら仕事は待たせる (捨てない)
+    log_info!(
+        None,
+        "max connection threads: {}",
+        if config.max_threads == 0 {
+            "unlimited".to_string()
+        } else {
+            config.max_threads.to_string()
+        }
+    );
     if !config.acl.allow_hosts.is_empty() {
         log_info!(None, "allowed hosts: {:?}", config.acl.allow_hosts);
     }
@@ -251,8 +261,9 @@ fn main() {
     }
 
     let limiter = rust_http_proxy::Limiter::new();
-    // 接続スレッドを使い回す (生成・破棄の約 16 システムコールを接続ごとに払わない)
-    let workers = Arc::new(rust_http_proxy::workers::Workers::new());
+    // 接続スレッドを使い回す (生成・破棄の約 16 システムコールを接続ごとに払わない)。
+    // 上限は起動時に 1 回だけ決める (`.env` の再読込では変えない)
+    let workers = Arc::new(rust_http_proxy::workers::Workers::new(config.max_threads));
     // アイドルな keep-alive 接続をスレッドから外して epoll に預ける監視スレッド。
     // 作れなければ何もせず、接続ごとにスレッドが待つ元の動きのままになる
     let park = if config.park_idle {

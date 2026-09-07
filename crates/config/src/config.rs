@@ -40,6 +40,45 @@ pub fn default_max_conns() -> usize {
     MAX_CONNS_CAP
 }
 
+/// `PROXY_MAX_THREADS=auto` の 1 コアあたりの本数と、その下限・上限。
+///
+/// 接続スレッドは**ほとんどの時間 I/O で寝ている**ので、コア数そのものでは全く足りない
+/// (1 本の接続を処理しているあいだずっと 1 本要る)。一方でいくら増やしても得るものは無く、
+/// 1 本あたりスタック 256 KiB と切り替えの費用がかかる。
+///
+/// 実測 (T10.5、`--only idle-tunnels --conc 5000`、プロキシは 4 コアに固定)。
+/// 暇なトンネルは 1 本ごとに猶予 100 ms のあいだワーカーを握るので、**確立できる速さは
+/// おおよそ「上限 ÷ 100 ms」**になる。上限が無いと同じ場面で 4,721 スレッドまで跳ねる。
+///
+/// | 上限 | 5,000 本の確立 | スレッド最大 | ピーク RSS |
+/// |---|---|---|---|
+/// | 64 (コア数 × 16) | 8.4 s | 68 | 26.9 MB |
+/// | 128 (コア数 × 32) | 4.2 s | 132 | 26.7 MB |
+/// | 192 | 3.0 s | 196 | 27.6 MB |
+/// | **256 (コア数 × 64、既定)** | **2.2〜2.6 s** | **260** | **28.1 MB** |
+/// | 384 | 1.8 s | 388 | 31.4 MB |
+/// | 無制限 (T10.5 以前) | 1.8 s | 4,721 | 72.6 MB |
+///
+/// 確立の速さがほぼ元に戻り、跳ね上がりも 1 桁小さいところとして **コア数 × 64** を採った。
+const THREADS_PER_CORE: usize = 64;
+const MIN_MAX_THREADS: usize = 128;
+const MAX_MAX_THREADS: usize = 512;
+
+/// 生きている接続スレッドの上限の既定 (`PROXY_MAX_THREADS=auto`)。
+///
+/// `コア数 × 64` を 128〜512 に収め、`PROXY_MAX_CONNS` があればそれも超えない
+/// (受けない接続のためのスレッドは要らない)。コア数は `available_parallelism` なので、
+/// `taskset` で絞られていればその数になる (使える資源に合わせる)。
+/// **`0` (無制限) には決してしない** — 上限が無いと、預けた接続が一斉に切れたときに
+/// スレッドが数千まで跳ねる (T8.1 で 4,621、T10.5 で 4,721 の実測)。
+pub fn default_max_threads(max_conns: usize) -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let n = cores
+        .saturating_mul(THREADS_PER_CORE)
+        .clamp(MIN_MAX_THREADS, MAX_MAX_THREADS);
+    if max_conns > 0 { n.min(max_conns) } else { n }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// 待ち受けポート
@@ -104,6 +143,12 @@ pub struct Config {
     /// 同時に受ける接続数の上限 (`PROXY_MAX_CONNS`、既定 `auto`、`0` で無制限)。
     /// 超えた接続には 503 を返して閉じる (スレッドは起こさない)。`auto` の決め方は [`auto_max_conns`]
     pub max_conns: usize,
+    /// 同時に生きていてよい接続スレッドの上限 (`PROXY_MAX_THREADS`、既定 `auto`、`0` で無制限)。
+    ///
+    /// 上限に達したら新しいスレッドを起こさず仕事を待たせる (捨てない)。**起動時に 1 回だけ
+    /// 読む** (`Workers` を作るときに渡すので、`.env` の再読込では変わらない)。
+    /// `auto` の決め方は [`default_max_threads`]
+    pub max_threads: usize,
     pub cache: CacheConfig,
 }
 
@@ -184,6 +229,15 @@ impl Config {
                 cfg.max_conns = n;
             }
         }
+        // スレッドの上限は接続数の上限にも従うので、**PROXY_MAX_CONNS の後に**決める
+        cfg.max_threads = default_max_threads(cfg.max_conns);
+        if let Some(v) = envfile::var("PROXY_MAX_THREADS") {
+            let v = v.trim();
+            if let Ok(n) = v.parse::<usize>() {
+                cfg.max_threads = n;
+            }
+            // `auto` と読めない書き方は既定のまま
+        }
         if let Some(secs) =
             envfile::var("PROXY_TUNNEL_IDLE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
         {
@@ -258,6 +312,7 @@ impl Config {
             .parse()
             .map_err(|e| format!("Invalid SERVER_PORT '{}': {}", port_str, e))?;
         let acl = AclConfig::new(allow_hosts, deny_hosts);
+        let max_conns = default_max_conns();
         Ok(Self {
             port,
             bind_addrs: Vec::new(),
@@ -284,7 +339,8 @@ impl Config {
             connect_ports: PortSet::default(),
             allow_local: false,
             tunnel_idle: Duration::from_secs(300),
-            max_conns: default_max_conns(),
+            max_conns,
+            max_threads: default_max_threads(max_conns),
             cache: CacheConfig::default(),
         })
     }
@@ -339,6 +395,22 @@ mod tests {
         assert_eq!(auto_max_conns(0), 1);
         // 既定はこの計算そのもので、上限を超えない
         assert!((1..=MAX_CONNS_CAP).contains(&default_max_conns()));
+    }
+
+    #[test]
+    fn test_default_max_threads() {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let want = (cores * THREADS_PER_CORE).clamp(MIN_MAX_THREADS, MAX_MAX_THREADS);
+        // 接続数に余裕があればコア数から決まる
+        assert_eq!(default_max_threads(0), want, "無制限のときもスレッドは有限");
+        assert_eq!(default_max_threads(MAX_CONNS_CAP), want);
+        // 接続数の上限の方が小さければそちらに従う (受けない接続のスレッドは要らない)
+        assert_eq!(default_max_threads(16), 16);
+        assert_eq!(default_max_threads(1), 1);
+        // 何があっても無制限にはしない
+        assert!(default_max_threads(0) > 0 && default_max_threads(0) <= MAX_MAX_THREADS);
+        let cfg = Config::new("8080", None, None, Duration::from_secs(30)).unwrap();
+        assert_eq!(cfg.max_threads, default_max_threads(cfg.max_conns));
     }
 
     #[test]
