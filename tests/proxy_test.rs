@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -1945,4 +1945,75 @@ fn test_integration_large_response_bodies_are_delivered_intact() {
         1,
         "2 回目はオリジンに行かない"
     );
+}
+
+#[test]
+fn test_integration_connection_named_framing_headers_do_not_smuggle() {
+    // `Connection: Content-Length` のように枠組みのヘッダーを hop-by-hop として指名されると、
+    // 「ヘッダーからは Content-Length を落とすが本文は送る」というずれが起きうる。
+    // オリジンはその本文を次の要求の先頭として読むので、共有のオリジン接続に別要求を
+    // 注入できてしまう (要求スマグリング)。ヘッダーと本文が必ず整合することを固定する。
+    let received = Arc::new(Mutex::new(Vec::<String>::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    {
+        let received = Arc::clone(&received);
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let received = Arc::clone(&received);
+                thread::spawn(move || {
+                    stream
+                        .set_read_timeout(Some(Duration::from_millis(500)))
+                        .unwrap();
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    loop {
+                        match stream.read(&mut chunk) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                buf.extend_from_slice(&chunk[..n]);
+                                if buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() >= 10 {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    received
+                        .lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(&buf).into_owned());
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                });
+            }
+        });
+    }
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    for named in ["Content-Length", "Transfer-Encoding"] {
+        let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let req = format!(
+            "POST http://{}/x HTTP/1.1\r\nHost: {}\r\nConnection: {}\r\n\
+             Content-Length: 10\r\n\r\n0123456789",
+            host, host, named
+        );
+        s.write_all(req.as_bytes()).unwrap();
+        let mut resp = String::new();
+        let _ = s.read_to_string(&mut resp);
+
+        thread::sleep(Duration::from_millis(300));
+        let seen = received.lock().unwrap();
+        let last = seen.last().cloned().unwrap_or_default();
+        let (head, body) = last.split_once("\r\n\r\n").unwrap_or((last.as_str(), ""));
+        let has_framing = head
+            .lines()
+            .any(|l| l.to_ascii_lowercase().starts_with("content-length:"));
+        assert!(
+            has_framing || body.is_empty(),
+            "Connection: {} で枠組みが落ちたのに本文が届いている (要求スマグリング):\n{}",
+            named,
+            last
+        );
+    }
 }

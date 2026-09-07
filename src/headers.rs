@@ -81,9 +81,15 @@ pub fn write_request_headers(
             continue;
         };
         let name = k.trim();
+        // 枠組みのヘッダー (Content-Length / Transfer-Encoding) は Connection: で指名されても
+        // 落とさない。落とすと「ヘッダーは枠組み無し・本文は送る」というずれが起き、
+        // オリジンが本文を次の要求の先頭として読む (要求スマグリング)。
+        // 本文を送るかどうかは Framing::of_request が生のヘッダーから決めるので、
+        // ここだけで落とすと両者が食い違う
+        let framing_header = FRAMING_HEADERS.iter().any(|f| name.eq_ignore_ascii_case(f));
         if name.eq_ignore_ascii_case("host")
             || is_hop_by_hop_name(name)
-            || named_in_connection(name)
+            || (!framing_header && named_in_connection(name))
         {
             continue;
         }
@@ -300,7 +306,11 @@ pub fn sanitize_and_inject_headers(
             let k_trim = k.trim();
             let k_lower = k_trim.to_ascii_lowercase();
 
-            if is_hop_by_hop(&k_lower) || custom_hop_by_hop.contains(&k_lower) {
+            // 枠組みのヘッダーは Connection: で指名されても落とさない
+            // (要求スマグリング対策。write_request_headers 側と同じ規則)
+            let framing_header = FRAMING_HEADERS.contains(&k_lower.as_str());
+            if is_hop_by_hop(&k_lower) || (!framing_header && custom_hop_by_hop.contains(&k_lower))
+            {
                 continue;
             }
 
