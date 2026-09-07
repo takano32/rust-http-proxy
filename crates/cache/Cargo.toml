@@ -8,5 +8,9 @@ path = "src/lib.rs"
 
 [dependencies]
 proxy-base = { path = "../base" }
-proxy-net = { path = "../net" }
-proxy-store = { path = "../store" }
+proxy-sysinfo = { path = "../sysinfo" }
+proxy-cachekey = { path = "../cachekey" }
+proxy-cachecfg = { path = "../cachecfg" }
+proxy-capacity = { path = "../capacity" }
+proxy-cachemem = { path = "../cachemem" }
+proxy-cachedisk = { path = "../cachedisk" }

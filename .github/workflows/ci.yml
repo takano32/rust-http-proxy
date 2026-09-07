@@ -30,6 +30,8 @@ jobs:
       # ワークスペースなので --workspace が要る (無いと下の層のテストが走らない)
       - run: cargo test --workspace
       - run: cargo build --release
+      # ベンチは既定のビルド対象から外してあるので明示的に作る
+      - run: cargo build --release -p proxy-bench
 
       # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る。
       # クレートごとの rustc の最大 RSS を測り、200 MB を超えたら落とす

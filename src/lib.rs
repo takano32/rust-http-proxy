@@ -5,23 +5,29 @@
 //! `rustc` が全部を一度に抱えてビルドの最大 RSS がそのまま増えるため
 //! (実測: 18,276 行 1 クレートで 330 MB、動作環境の上限は 200 MB)。
 
-pub mod endpoints;
 pub mod idle;
 
-// 下の層をこのクレートの名前空間にも出す (`rust_http_proxy::config` のような
-// 移設前と同じ書き方が、本体でも結合テストでもそのまま通るようにするため)。
-#[cfg(target_os = "linux")]
-pub use proxy_base::sys;
+// 下の層をこのクレートの名前空間にも出す (`rust_http_proxy::config` のような書き方が、
+// 本体でも結合テストでもそのまま通るようにするため)。
 pub use proxy_base::{
     cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info, log_trace,
-    log_warn, rrd, signal, sync, sysinfo, workers,
+    log_warn, sync,
 };
 pub use proxy_cache::cache;
-pub use proxy_http::{freshness, http, tunnel};
-pub use proxy_net::{
-    Upstream, acl, body, clientio, dns, headers, net, origin, pool, request, response, tls,
-};
-pub use proxy_stats::{blocklist, config, history, metrics, persist, prom, reload};
+pub use proxy_config::config;
+pub use proxy_endpoints::endpoints;
+pub use proxy_http::{freshness, http};
+pub use proxy_msg::{body, clientio, headers, response};
+pub use proxy_net::{acl, dns, net};
+pub use proxy_origin::{Upstream, origin, pool, request, tls};
+pub use proxy_prom::prom;
+pub use proxy_stats::{blocklist, history, metrics, persist, reload, rrd};
+pub use proxy_sys::signal;
+#[cfg(target_os = "linux")]
+pub use proxy_sys::sys;
+pub use proxy_sysinfo::sysinfo;
+pub use proxy_tunnel::tunnel;
+pub use proxy_workers::workers;
 
 use std::io::{self, BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};

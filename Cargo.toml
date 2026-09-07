@@ -1,30 +1,56 @@
 [workspace]
 members = [
+    "crates/sys",
     "crates/base",
+    "crates/rrd",
+    "crates/sysinfo",
+    "crates/workers",
+    "crates/tls",
+    "crates/msg",
     "crates/net",
-    "crates/store",
+    "crates/origin",
+    "crates/cachekey",
+    "crates/cachecfg",
+    "crates/capacity",
+    "crates/cachemem",
+    "crates/cachedisk",
     "crates/cache",
+    "crates/config",
     "crates/stats",
+    "crates/prom",
+    "crates/freshness",
     "crates/http",
+    "crates/tunnel",
+    "crates/endpoints",
 ]
+
+# 既定のビルド対象はプロキシ本体だけ。計測用の bench は `-p proxy-bench` で明示的に作る
+# (メモリの小さい環境で `cargo run --release` が余計なものをビルドしないように)。
+default-members = ["."]
 
 [package]
 name = "rust-http-proxy"
 version = "0.1.0"
 edition = "2024"
-# `cargo run --release` はプロキシ本体を動かす (ベンチは `--bin bench` で明示的に)。
-# これが無いと bin が 2 つあるため cargo がどちらか決められずエラーになる
-default-run = "rust-http-proxy"
 
 [dependencies]
 # 自分のコードを層ごとに分けたもの。**外部クレートは 1 つも使わない** (すべて std のみ)。
 # 1 クレートが大きいと rustc がまとめて抱えてビルドの最大 RSS が上がるため
-# (実測: 18,276 行 1 クレートで 330 MB、動作環境の上限は 200 MB)。
+# (実測: 18,276 行 1 クレートで 330 MB、動作環境の上限は 200 MB = SERVER_MEMORY 256 MiB)。
 proxy-base = { path = "crates/base" }
-proxy-net = { path = "crates/net" }
 proxy-cache = { path = "crates/cache" }
-proxy-stats = { path = "crates/stats" }
+proxy-config = { path = "crates/config" }
+proxy-endpoints = { path = "crates/endpoints" }
 proxy-http = { path = "crates/http" }
+proxy-msg = { path = "crates/msg" }
+proxy-net = { path = "crates/net" }
+proxy-origin = { path = "crates/origin" }
+proxy-prom = { path = "crates/prom" }
+proxy-stats = { path = "crates/stats" }
+proxy-sys = { path = "crates/sys" }
+proxy-sysinfo = { path = "crates/sysinfo" }
+proxy-tunnel = { path = "crates/tunnel" }
+proxy-workers = { path = "crates/workers" }
 
 # メモリの小さい環境 (Pterodactyl コンテナ) でも通ることを優先した既定のプロファイル。
 # LTO を切っているのは、まとめて最適化する最終リンクだけで 350 MB 使うため。

@@ -1,0 +1,15 @@
+[package]
+name = "proxy-endpoints"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proxy-base = { path = "../base" }
+proxy-net = { path = "../net" }
+proxy-cache = { path = "../cache" }
+proxy-http = { path = "../http" }
+proxy-stats = { path = "../stats" }
+proxy-prom = { path = "../prom" }

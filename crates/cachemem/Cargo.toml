@@ -1,0 +1,11 @@
+[package]
+name = "proxy-cachemem"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proxy-base = { path = "../base" }
+proxy-cachekey = { path = "../cachekey" }

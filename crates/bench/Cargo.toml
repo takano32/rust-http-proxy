@@ -1,0 +1,13 @@
+[package]
+name = "proxy-bench"
+version = "0.1.0"
+edition = "2024"
+
+# 計測用の道具。プロキシ本体には依存しない (オリジンも自分で立てる)。
+# 既定のビルド対象から外してあるので `cargo build --release` では作られない。
+# 使うときは `cargo build --release -p proxy-bench`。
+[[bin]]
+name = "bench"
+path = "src/main.rs"
+
+[dependencies]

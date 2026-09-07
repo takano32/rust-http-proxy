@@ -1,0 +1,13 @@
+[package]
+name = "proxy-origin"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proxy-base = { path = "../base" }
+proxy-sys = { path = "../sys" }
+proxy-net = { path = "../net" }
+proxy-tls = { path = "../tls" }

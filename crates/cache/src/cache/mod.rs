@@ -14,18 +14,16 @@
 //! ヒット時はそれをそのままクライアントへ再生する。期限切れでもバリデータを持つ
 //! エントリは残し、呼び出し側が再検証 (304) して延命する。
 
-pub mod admission;
-pub mod disk;
-pub mod entry;
-pub mod inflight;
-pub mod lru;
-pub mod memory;
 mod ops;
 pub mod probe;
 pub mod sink;
 pub mod status;
 #[cfg(test)]
 mod tests;
+
+// メモリ側とディスク側は別クレート。move 前と同じ `cache::memory` のような書き方を通す
+pub use proxy_cachedisk::disk;
+pub use proxy_cachemem::{admission, entry, inflight, lru, memory};
 
 pub use config::{CacheConfig, DiskQuota, Limit, MIB};
 pub use entry::{Body, CachedResponse};
@@ -54,7 +52,9 @@ use crate::{log_info, log_warn};
 
 pub use crate::clock::now_epoch;
 // 土台は別クレート。move 前と同じ `cache::config` のような書き方をそのまま通す
-pub use proxy_store::{budget, config, diskprobe, format, key, margin, quota};
+pub use proxy_cachecfg::config;
+pub use proxy_cachekey::{format, key};
+pub use proxy_capacity::{budget, diskprobe, margin, quota};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheSource {

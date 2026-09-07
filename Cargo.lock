@@ -11,8 +11,83 @@ name = "proxy-cache"
 version = "0.1.0"
 dependencies = [
  "proxy-base",
+ "proxy-cachecfg",
+ "proxy-cachedisk",
+ "proxy-cachekey",
+ "proxy-cachemem",
+ "proxy-capacity",
+ "proxy-sysinfo",
+]
+
+[[package]]
+name = "proxy-cachecfg"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+]
+
+[[package]]
+name = "proxy-cachedisk"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cachecfg",
+ "proxy-cachekey",
+ "proxy-cachemem",
+ "proxy-sysinfo",
+]
+
+[[package]]
+name = "proxy-cachekey"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+]
+
+[[package]]
+name = "proxy-cachemem"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cachekey",
+]
+
+[[package]]
+name = "proxy-capacity"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cachecfg",
+ "proxy-sysinfo",
+]
+
+[[package]]
+name = "proxy-config"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cache",
  "proxy-net",
- "proxy-store",
+]
+
+[[package]]
+name = "proxy-endpoints"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cache",
+ "proxy-http",
+ "proxy-net",
+ "proxy-prom",
+ "proxy-stats",
+]
+
+[[package]]
+name = "proxy-freshness"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cache",
 ]
 
 [[package]]
@@ -21,8 +96,19 @@ version = "0.1.0"
 dependencies = [
  "proxy-base",
  "proxy-cache",
+ "proxy-freshness",
+ "proxy-msg",
  "proxy-net",
+ "proxy-origin",
  "proxy-stats",
+ "proxy-sys",
+]
+
+[[package]]
+name = "proxy-msg"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
 ]
 
 [[package]]
@@ -33,16 +119,73 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxy-stats"
+name = "proxy-origin"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-net",
+ "proxy-sys",
+ "proxy-tls",
+]
+
+[[package]]
+name = "proxy-prom"
 version = "0.1.0"
 dependencies = [
  "proxy-base",
  "proxy-cache",
  "proxy-net",
+ "proxy-stats",
 ]
 
 [[package]]
-name = "proxy-store"
+name = "proxy-rrd"
+version = "0.1.0"
+
+[[package]]
+name = "proxy-stats"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cache",
+ "proxy-config",
+ "proxy-msg",
+ "proxy-net",
+ "proxy-origin",
+ "proxy-rrd",
+ "proxy-sysinfo",
+]
+
+[[package]]
+name = "proxy-sys"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+]
+
+[[package]]
+name = "proxy-sysinfo"
+version = "0.1.0"
+dependencies = [
+ "proxy-sys",
+]
+
+[[package]]
+name = "proxy-tls"
+version = "0.1.0"
+
+[[package]]
+name = "proxy-tunnel"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-net",
+ "proxy-stats",
+ "proxy-sys",
+]
+
+[[package]]
+name = "proxy-workers"
 version = "0.1.0"
 dependencies = [
  "proxy-base",
@@ -54,7 +197,16 @@ version = "0.1.0"
 dependencies = [
  "proxy-base",
  "proxy-cache",
+ "proxy-config",
+ "proxy-endpoints",
  "proxy-http",
+ "proxy-msg",
  "proxy-net",
+ "proxy-origin",
+ "proxy-prom",
  "proxy-stats",
+ "proxy-sys",
+ "proxy-sysinfo",
+ "proxy-tunnel",
+ "proxy-workers",
 ]

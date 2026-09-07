@@ -1,0 +1,14 @@
+[package]
+name = "proxy-cachedisk"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proxy-base = { path = "../base" }
+proxy-sysinfo = { path = "../sysinfo" }
+proxy-cachekey = { path = "../cachekey" }
+proxy-cachecfg = { path = "../cachecfg" }
+proxy-cachemem = { path = "../cachemem" }

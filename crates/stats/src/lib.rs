@@ -1,23 +1,29 @@
-//! 設定と計測の層 (設定の読み込みと再読込、ブロックリスト、指標、履歴、永続化)。
+//! 計測とブロックリストと設定の再読込。
 //!
-//! 依存するのは [`proxy_base`] と [`proxy_cache`] だけ。中継の本体は知らない。
+//! この 6 つは互いを参照しているので 1 つのクレートにまとめてある
+//! (指標の JSON にブロックリストと再読込の状態が入り、ブロックリストの上書きは
+//! 指標と同じ状態ファイルに載る)。割るには依存の反転が要るので、そこまではしない。
+//!
+//! 層ごとにクレートを分けてあるのは、`rustc` がクレート単位で全部を一度に抱えるため
+//! (動作環境のメモリ上限は 200 MB)。**外部クレートは 1 つも使っていない。**
 
 pub mod blocklist;
-pub mod config;
 pub mod history;
 pub mod metrics;
 pub mod persist;
-pub mod prom;
 pub mod reload;
 
-// 下の層をこのクレートの名前空間にも出す (移設前と同じ `crate::sync` の書き方を通すため)。
-#[cfg(target_os = "linux")]
-pub use proxy_base::sys;
+// 下の層をこのクレートの名前空間にも出す (`crate::sync` のような書き方をそのまま通すため)。
 pub use proxy_base::{
     cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info, log_trace,
-    log_warn, rrd, signal, sync, sysinfo, workers,
+    log_warn, sync,
 };
 pub use proxy_cache::cache;
-pub use proxy_net::{
-    Upstream, acl, body, clientio, dns, headers, net, origin, pool, request, response, tls,
-};
+pub use proxy_config::config;
+pub use proxy_msg::{body, clientio, headers, response};
+pub use proxy_net::{acl, dns, net};
+pub use proxy_origin::{Upstream, origin, pool, request, tls};
+pub use proxy_rrd::rrd;
+#[cfg(target_os = "linux")]
+pub use proxy_sysinfo::sys;
+pub use proxy_sysinfo::{signal, sysinfo};
