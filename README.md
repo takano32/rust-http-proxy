@@ -373,10 +373,44 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
   (特に `ballast.reserve`) を削除すれば起動できます
 - 既定のキャッシュ先は `/home/container/.cache/rust-http-proxy` (ボリューム内なので再起動後も残る)
 
+## クレート構成
+
+**外部クレートは 1 つも使っていません** (すべて `std` のみ)。`crates/` にあるのは全部このリポジトリのコードで、
+責務ごとの層に分けてあります。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
+全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
+
+| クレート | 責務 |
+|---|---|
+| `proxy-sys` | Linux のシステムコールを直接叩く薄い層 (`poll`/`epoll`/`splice`/`pipe2`/`recv`) とシグナル |
+| `proxy-base` | ロック、壁時計、JSON の組み立て、`.env` の読み取り、ログ、HTTP 日付、コマンドライン引数 |
+| `proxy-rrd` | 固定長のリングバッファ (状態ファイルの保存形式) |
+| `proxy-sysinfo` | 機械の観測 (メモリ、ディスク、cgroup の上限、`inotify`) |
+| `proxy-workers` | 接続スレッドの使い回し |
+| `proxy-tls` | システムの OpenSSL を `dlopen` で使う TLS クライアント |
+| `proxy-msg` | HTTP メッセージの表現 (ヘッダー、本文の枠、読み取りバッファ、応答の先頭) |
+| `proxy-net` | 名前解決 (Happy Eyeballs)、接続、アドレスの判定 |
+| `proxy-origin` | オリジンへの接続とその使い回し、要求 URL の解釈 |
+| `proxy-cachekey` | キャッシュの保存形式と鍵 |
+| `proxy-cachecfg` | キャッシュの設定 |
+| `proxy-capacity` | 使ってよい量の見積もり (空きメモリ・ディスク・cgroup・quota) |
+| `proxy-cachemem` | キャッシュのメモリ側 (LRU、エントリ、合流、受け入れ判定) |
+| `proxy-cachedisk` | キャッシュのディスク側 (ファイル形式、走査、書き出し) |
+| `proxy-cache` | キャッシュ本体 (メモリ側とディスク側を束ねる) |
+| `proxy-config` | 起動時の設定 |
+| `proxy-stats` | 計測、ブロックリスト、`.env` の再読込 |
+| `proxy-prom` | Prometheus 形式の出力 |
+| `proxy-freshness` | RFC 9111 の鮮度判定 |
+| `proxy-http` | 中継の本体 |
+| `proxy-tunnel` | CONNECT トンネル |
+| `proxy-endpoints` | プロキシ自身のエンドポイント (`/dashboard` `/status` `/metrics` …) |
+| `proxy-bench` | 計測用の道具 (既定のビルド対象から外してあります。`cargo build --release -p proxy-bench`) |
+| `rust-http-proxy` | 接続の受け付け、keep-alive、アイドル接続の預かり |
+
 ## ビルド・テスト
 
 
 > **メモリの小さい環境向けの設定**: `.cargo/config.toml` で `jobs = 1` にしてあります。
+> このリポジトリは **130 MB のメモリでリリースビルドが通ります** (CI が 200 MB の cgroup に入れて毎回確認)。
 > `rustc` はクレート単位で全部を一度に抱えるため 1 プロセスで 150〜200 MB 使い、既定の並列数だと
 > その合計がコンテナのメモリ上限を超えて OOM killer に落とされます (実測: 200 MB の cgroup で、
 > 並列だと落ち `-j 1` なら通る)。潤沢な機械で急ぐときは `cargo build --release -j 8` で上書きできます
