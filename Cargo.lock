@@ -33,6 +33,7 @@ dependencies = [
  "proxy-cachekey",
  "proxy-cachemem",
  "proxy-capacity",
+ "proxy-diskprobe",
  "proxy-sysinfo",
 ]
 
@@ -85,6 +86,14 @@ dependencies = [
  "proxy-base",
  "proxy-cache",
  "proxy-net",
+]
+
+[[package]]
+name = "proxy-diskprobe"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cachecfg",
 ]
 
 [[package]]

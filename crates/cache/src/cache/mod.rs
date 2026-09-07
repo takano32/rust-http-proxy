@@ -54,7 +54,8 @@ pub use crate::clock::now_epoch;
 // 土台は別クレート。move 前と同じ `cache::config` のような書き方をそのまま通す
 pub use proxy_cachecfg::config;
 pub use proxy_cachekey::{format, key};
-pub use proxy_capacity::{budget, diskprobe, margin, quota};
+pub use proxy_capacity::{budget, margin, quota};
+pub use proxy_diskprobe::diskprobe;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheSource {

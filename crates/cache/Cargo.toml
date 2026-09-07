@@ -12,5 +12,6 @@ proxy-sysinfo = { path = "../sysinfo" }
 proxy-cachekey = { path = "../cachekey" }
 proxy-cachecfg = { path = "../cachecfg" }
 proxy-capacity = { path = "../capacity" }
+proxy-diskprobe = { path = "../diskprobe" }
 proxy-cachemem = { path = "../cachemem" }
 proxy-cachedisk = { path = "../cachedisk" }

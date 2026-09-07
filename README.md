@@ -376,7 +376,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 ## クレート構成
 
 **外部クレートは 1 つも使っていません** (すべて `std` のみ)。`crates/` にあるのは全部このリポジトリのコードで、
-責務ごとの層に分けてあります。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
+責務ごとの層に分けてあります (26 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
 全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
 
 | クレート | 責務 |
@@ -392,7 +392,8 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 | `proxy-origin` | オリジンへの接続とその使い回し、要求 URL の解釈 |
 | `proxy-cachekey` | キャッシュの保存形式と鍵 |
 | `proxy-cachecfg` | キャッシュの設定 |
-| `proxy-capacity` | 使ってよい量の見積もり (空きメモリ・ディスク・cgroup・quota) |
+| `proxy-diskprobe` | ディスクの実測 (実際に書いてみて、どれだけ入るかを確かめる) |
+| `proxy-capacity` | 使ってよい量の見積もり (空きメモリ・cgroup の上限・コンテナの quota) |
 | `proxy-cachemem` | キャッシュのメモリ側 (LRU、エントリ、合流、受け入れ判定) |
 | `proxy-cachedisk` | キャッシュのディスク側 (ファイル形式、走査、書き出し) |
 | `proxy-cache` | キャッシュ本体 (メモリ側とディスク側を束ねる) |

@@ -20,4 +20,5 @@ pub use proxy_cachecfg::config;
 pub use proxy_cachedisk::disk;
 pub use proxy_cachekey::{format, key};
 pub use proxy_cachemem::{admission, entry, inflight, lru, memory};
-pub use proxy_capacity::{budget, diskprobe, margin, quota};
+pub use proxy_capacity::{budget, margin, quota};
+pub use proxy_diskprobe::diskprobe;
