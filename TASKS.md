@@ -81,6 +81,25 @@ CPU/要求 は `/proc/<pid>/stat` の 14・15 列目 (utime, stime) の差 ÷ �
 同じ内容をキャッシュ有効 (`PROXY_MEM_CACHE_MB=64 PROXY_DISK_CACHE_MB=64 PROXY_CACHE_RESERVE=off PROXY_CACHE_DIR=/tmp/proxy-bench/cache`)
 でも 1 回取り、キャッシュを入れても遅くならないことを確認する。
 
+**上の手順は `scripts/cpu-per-request.sh` が自動でやる** (固定・起動・計測・utime+stime の差 ÷ 操作数・ピーク RSS・スレッド数)。
+
+```bash
+scripts/cpu-per-request.sh                                   # keep-alive の forward (既定 --conc 8 --seconds 10)
+scripts/cpu-per-request.sh --no-keepalive                    # 1 接続 1 要求
+scripts/cpu-per-request.sh --only connect                    # CONNECT の確立
+scripts/cpu-per-request.sh --only tunnel --conc 1            # トンネル 1 本 (CPU/MiB)
+PROXY_ARGS="" PROXY_MEM_CACHE_MB=64 PROXY_DISK_CACHE_MB=64 PROXY_CACHE_RESERVE=off \
+  PROXY_CACHE_DIR=/tmp/proxy-bench/cache scripts/cpu-per-request.sh --cacheable   # キャッシュ HIT
+```
+
+**ぶれの扱い**: この機械は同じ設定でも 5 秒の計測で ±8% ぶれることがある (2026-09-07 深夜の実測: 50.9 / 55.3 / 58.9 us)。
+数 % の差を見るときは **変更前と変更後のバイナリを交互に 3 回ずつ** 10 秒で回し、中央値で比べる。
+片方を 3 回続けて測ると、機械の状態の変化 (熱・他プロセス) が差に化ける。
+
+**システムコールの数え方**: `strace -p` はこの環境では `ptrace` が拒まれるので、プロキシを **strace の下で起動する**
+(`strace -f -c -o out.txt taskset -c 4-7 target/release/rust-http-proxy --lite ...`)。止めるときは strace ではなく
+プロキシ (strace の子プロセス) に SIGINT を送る。回数 ÷ 操作数 が 1 要求 (または 1 接続) あたりの値。
+
 ### ビルドのメモリの測り方
 
 ```bash
@@ -396,46 +415,169 @@ Phase 0〜4 の後、設計上の前提を 8 つの観点から疑い直した�
 
 上と同じ形式。**着手する前に必ず「今どうなっているか」を測る**こと。
 
+### Phase 8 — 前のラウンドからの持ち越し
+
 - [ ] **T8.1 CONNECT トンネルも暇なときは監視スレッドに預ける**
   - 目的: トンネルは今も 1 本 1 スレッド。実測で同時 5,000 本のとき RSS 140 MiB。
     HTTP 側と同じ `IdleWatch` がもうあるので、両方向が暇なトンネルは預けられるはず。
-  - 変更箇所: `crates/http/src/tunnel.rs`、`src/idle.rs`。
+  - 変更箇所: `crates/tunnel/src/tunnel.rs`、`src/idle.rs`、`crates/bench/src/main.rs` (計測モード)。
   - やること: `splice` のループが両方向とも `WouldBlock` になったら、2 つの記述子を epoll に預けて
     スレッドを解放する。どちらかが読めるようになったらワーカーへ戻す。
-    **注意**: 今の `IdleWatch` は記述子 1 本と `Box<Conn>` の対応しか持てない。トンネルは 2 本要る。
+    - **今の `IdleWatch` は記述子 1 本と `Box<Conn>` の対応しか持てない。トンネルは 2 本要る。**
+      預かるものを enum (`Http(Box<Conn>)` / `Tunnel(Box<…>)`) にし、2 つの fd から同じトンネルを引けるようにする
+      (両方を epoll に入れ、どちらかが起きたら両方外す。期限切れも同じ)。
+    - `relay::run` を「暇になるまで回して戻る」形 (状態を struct に持つ) に割り、預けている間に要る
+      情報 (conn_id、宛先、開始時刻、`metrics`、接続元 IP) も一緒に運ぶ。終わったときのアクセスログと
+      統計は、どのワーカーで終わっても 1 回だけ出す。
+    - 預けられる条件は「両方向とも未送信 0・EOF でない・直近の poll が両方空振り」。預ける前にパイプ
+      (`Relay`) を手放す (方向あたり fd 2 本。戻ったら遅延生成のまま作り直す)。
+    - 期限は `tunnel_idle` (既定 300 s)。`0` (無期限) のときの扱いは決めて記録する
+      (`Instant` の足し算が溢れない範囲で遠い期限を使うか、預けないか)。
+    - Linux 以外は従来どおり (2 スレッドの `io::copy`)。
+    - **計測のために** `proxy-bench` に `--only idle-tunnels` を足す (`--conc` 本の CONNECT を張って `--seconds` 秒握る。
+      プロキシ側のスレッド数と RSS は `scripts/cpu-per-request.sh` が出す)。
   - 受け入れ基準: 同時 5,000 本のアイドルトンネルでスレッド数が 5,000 → 数十、RSS が下がること。
-    スループット (2.6 GiB/s) と新規 CONNECT の p99 (9.1 ms) が悪化しないこと。
+    スループット (`--only tunnel`) と新規 CONNECT の CPU/接続・p99 が悪化しないこと。
+    結合テストを足す: 預けられたトンネルがその後もデータを通すこと、`tunnel_idle` で閉じること。
 
-- [ ] **T8.2 1 接続 1 要求のときの CPU 98 us/要求 を下げる**
-  - 目的: keep-alive が効かないクライアント (curl の既定など) では、いまも 1 要求あたり 98 us かかる。
-    表の中でいちばん悪い数字。
-  - やること: まず `strace -f -c` と CPU/要求 の内訳を取る (accept、スレッドの受け渡し、ソケットの後始末の比)。
-    測ってから決める。スレッド置き場は既にあるので、残っているのは accept まわりのはず。
-  - 受け入れ基準: 内訳を出したうえで、5% 以上下がるか「効かない」と記録する。
+- [x] **T8.2 1 接続 1 要求のときの内訳を取る** → 内訳は取った (2026-09-07)。**対策は T9.3 / T9.4 に分けた。**
+  - 結果: 1 接続 1 要求 (`--no-keepalive`、8 並列) は **123.3 us/接続** (user 29.1 / kernel 94.2)。keep-alive の
+    50.9 us (user 16.2 / kernel 34.7) との差 72 us が接続 1 本の固定費。`strace -f -c` の内訳は **14 システムコール/接続**
+    (keep-alive は 5.03/要求):
 
-- [ ] **T8.3 LTO を切って失った 4.9% を埋める**
-  - 目的: `release` (LTO なし) 39.7 us と `dist` (LTO あり) 38.1 us の差。動作環境で動くのは前者。
-  - やること: 両者の `perf` を突き合わせて、差が出ている関数を特定する。`#[inline]` の総当たりは
-    効かないことが分かっている (§4) ので、**どこで差が出ているかを先に測る**。
-  - 受け入れ基準: 差を半分以下にするか、「LTO でしか埋まらない」と根拠つきで記録する。
+    | システムコール | 回/接続 | 何か |
+    |---|---|---|
+    | `setsockopt` | **4.00** | `SO_SNDTIMEO`、`TCP_NODELAY`、`SO_RCVTIMEO` (1 要求目の timeout)、`SO_RCVTIMEO` (2 要求目の猶予) |
+    | `recvfrom` | 4.00 | 要求 1、オリジン応答 1、プールの生存確認 (`MSG_PEEK`) 1、**次の要求待ちで EOF** 1 |
+    | `futex` | **2.00** | accept スレッド → ワーカーの受け渡し (起こす 1 + 待つ 1) |
+    | `sendto` | 2.00 | オリジンへ 1、クライアントへ 1 |
+    | `accept4` / `close` | 1.00 / 1.00 | 本質 |
 
-- [ ] **T8.4 1 要求あたりの確保 41.1 回の内訳を出す**
-  - 目的: 98.7 → 41.1 まで来たが、残りが何なのかは数えていない。
-  - やること: 数えるアロケータに呼び出し元を記録させて上位を出す。5% 以上減らせるものだけ潰す。
-  - 受け入れ基準: 内訳の表を TASKS に残す。
+    `recvfrom` の 4 本目は、ベンチ (と curl のような既定のクライアント) が `Connection: close` を付けずに
+    自分から閉じるので、次の要求を待って EOF を読むぶん。クライアント側の都合なので手を付けない。
+    残りで削れるのは **`setsockopt` 4 回** (T9.3) と **受け渡しの `futex` 2 回 + コンテキストスイッチ** (T9.4)。
+
+- [ ] **T8.3 LTO を切って失った 4.9% を埋める** → **T9.1 に統合** (まず LTO そのものを測り直す)。
+
+- [ ] **T8.4 1 要求あたりの確保 41.1 回の内訳を出す** → **T9.5 に統合** (perf の内訳と一緒に取る)。
 
 - [ ] **T8.5 `PROXY_MAX_CONNS` の既定 4096 を見直す**
   - 目的: 上限の意味が変わった。以前は「同時に立つスレッド数」の歯止めだったが、
-    アイドル接続を預けるようになったので、いまは実質「記述子の数」の歯止め。
+    アイドル接続を預けるようになったので、いまは実質「記述子の数」の歯止め。T8.1 が入るとトンネルも同じになる。
   - やること: `ulimit -n` との関係を確かめ、既定値の根拠を決め直して README に書く。
   - 受け入れ基準: 既定値の根拠が 1 行で説明できること。
 
 - [ ] **T8.6 `proxy-cache` と `proxy-http` をさらに割れるか調べる**
-  - 目的: いちばん大きいのが `proxy-cache` (2,255 行、うち 936 行はテスト) と
+  - 目的: いちばん大きいのが `proxy-cache` (2,257 行、うち 936 行はテスト) と
     `proxy-http` (1,728 行)。どちらも「1 つの責務」に見えるが、内訳は見ていない。
   - やること: モジュール間の依存を実際に測ってから決める (`crate::` の参照を数える)。
     切れ目が無ければ「無い」と記録する。
   - 受け入れ基準: 割るか割らないかの判断が、依存の実測にもとづいていること。
+
+### Phase 9 — クレートを割ったことで手が届くようになった最適化
+
+T7.1 / T7.4 で 1 クレートを 26 に割った結果、**手が届くようになったこと**が 3 つある。
+
+1. **ビルドのメモリに 90 MB の余裕ができた** (347 MB → 110 MB、上限 200 MB)。ビルドを重くする最適化 (LTO、
+   最適化レベル) は「200 MB に入らない」の一言で切っていたが、その数字は **7 クレート・並列ビルドのとき** のもの
+   (`lto = "thin"` 334 MB は `jobs = 1` より前の計測)。前提が変わったので測り直せる。
+2. **層ごとに別クレートになった**ので、クレート単位のプロファイル (`[profile.release.package.*]`) で
+   ホットパスと関係ない層だけ最適化を軽くできる。ホットパスにコードを足しても (T8.1、T9.4)、
+   そのクレートが小さいので上限を脅かさない。
+3. **システムコールの層 (`proxy-sys`) と計測の道具 (`proxy-bench`) が独立した**ので、束縛や計測モードを足しても
+   プロキシ本体のビルドには効かない。
+
+- [ ] **T9.0 手元でも cgroup の中でビルドを試せるようにする**
+  - 目的: 「200 MB で通るか」は CI に投げないと分からなかった (手元は `sudo systemd-run` が使えない)。
+    LTO の判断 (T9.1) を手元で回すには、手元で cgroup を作れる必要がある。
+  - 発見: この機械では **`systemd-run --user --scope -p MemoryMax=64M`** が通り、上限も効く
+    (64M の scope で 40 MB を確保した python が SIGKILL された。cgroup の名前空間の都合で
+    `/sys/fs/cgroup` からは見えないが、殺されることは確認済み)。
+  - 変更箇所: `scripts/build-memory.sh`、`TASKS.md` §1。
+  - やること: `run_in_cgroup` で、システムの systemd (`sudo systemd-run --scope`) が使えなければ
+    **ユーザーの systemd (`systemd-run --user --scope`)** を試す。どちらも使えないときだけ RSS の参考値に落ちる。
+    `--find` を手元で回し、CI の「110 MB」と比べて差を記録する (機械が違うので同じにはならない。
+    差が分かっていれば手元の数字で判断できる)。
+  - 受け入れ基準: `scripts/build-memory.sh --find 100 110 120 130 140 150` が手元で数字を返すこと。
+    CI 側の動きは変えない。
+
+- [ ] **T9.1 LTO を `jobs = 1`・26 クレートの条件で測り直す** (T8.3 の答え)
+  - 目的: `release` (LTO なし) と `dist` (LTO あり) の差 4.9% は、LTO が 200 MB に入らないから諦めていた。
+    その根拠の数字 (thin 334 MB / fat 347 MB) は 7 クレート・並列ビルドの値で、いまの条件では測っていない。
+    LTO の重さは **最終リンク 1 回だけ**にかかるので、クレートを小さく割っても最終リンクは同じ大きさ、
+    という可能性もある。どちらかは測れば分かる。
+  - 変更箇所: `Cargo.toml` (`[profile.release]`)、README の「ビルド・テスト」「配布」節、`TASKS.md` §2・§4。
+  - やること: `lto = false` (現状) / `"thin"` / `"fat"` の 3 つで、(a) T9.0 の cgroup で **通る最小の上限**、
+    (b) CPU/要求 (forward・HIT・connect を交互に 3 回)、(c) バイナリサイズ、(d) クリーンビルドの時間 を取る。
+    **採用の条件**: cgroup で 170 MB 以下 (上限に 30 MB の余裕) で通り、CPU/要求 が下がるかバイナリが小さくなること。
+    thin と fat の両方が通るなら速い方。採用したら `dist` プロファイルとの差を取り直し、
+    README の古い記述 (**「ビルドにピーク約 450 MiB」「`lto = true`」「`opt-level = "s"` のまま」は今の設定と合っていない**) を直す。
+    入らなければ、`release` と `dist` の `perf report` を突き合わせて差の出ている関数を表にし、
+    「LTO でしか埋まらない」か「`#[inline]` を当てるべき関数がある」かを記録する (総当たりの `#[inline]` は効かないことが §4 で分かっている)。
+    `panic = "abort"` は測らない: ワーカーの仕事がパニックしてもプロセスが生き残る (`survives_a_panicking_job`) のは設計上の要件。
+  - 受け入れ基準: 3 通りの表が残り、採用 / 不採用が根拠つきで書かれていること。採用したら CI の `Build memory` (200 MB) が通ること。
+
+- [ ] **T9.2 ホットパスと関係ないクレートは `opt-level = "s"` に落とす**
+  - 目的: クレートを割ったので、層ごとに最適化レベルを選べる。`/dashboard` の HTML、Prometheus 出力、設定の読み取り、
+    ディスクの実測、`.env` の監視などは 1 要求ごとには走らない。そこを `"s"` にすればバイナリとビルドの時間・メモリが減り、
+    速さは変わらないはず。
+  - 変更箇所: `Cargo.toml` (`[profile.release.package."proxy-…"]`)。
+  - やること: 候補は `proxy-rrd` `proxy-sysinfo` `proxy-capacity` `proxy-diskprobe` `proxy-cachecfg` `proxy-config`
+    `proxy-reload` `proxy-prom` `proxy-endpoints` (`endpoints::handle` は毎要求呼ばれるが、先頭の判定だけで抜ける)。
+    `proxy-cachedisk` は書き出し経路がそこそこ熱いので、入れる場合は別に測る。
+    **ホットパス (`base` `sys` `msg` `net` `origin` `http` `freshness` `cache` `cachemem` `cachekey` `tunnel` `workers`
+    `metrics` `blocklist` `tls` と本体) は触らない** (`metrics.record_host` と `blocklist::is_blocked` は毎要求走る)。
+  - 受け入れ基準: CPU/要求 (forward・HIT・connect) がぶれの中、バイナリが小さくなり、ビルドのメモリが増えないこと。
+    差が出なければ「効かない」と §4 に書いて戻す。
+
+- [ ] **T9.3 accept した接続への `setsockopt` 4 回を、待ち受けソケットからの継承に置き換える**
+  - 目的: 1 接続 1 要求では 14 システムコール/接続のうち 4 が `setsockopt` (T8.2 の内訳)。Linux では accept した
+    ソケットが待ち受けソケットの `TCP_NODELAY` / `SO_RCVTIMEO` / `SO_SNDTIMEO` を引き継ぐ (`sk_clone_lock` が
+    `struct sock` ごと複製する) ので、待ち受けに 1 回設定すれば接続ごとには要らない。
+  - 変更箇所: `crates/sys/src/sys.rs` (`setsockopt` の束縛。`TcpListener` には `set_nodelay` が無い)、
+    `src/lib.rs` (`serve` / `Conn::new` / `serve_one` の `read_timeout` の初期値)、`crates/net/src/net.rs` (`bind_all`)。
+  - やること:
+    1. Linux では bind 直後に待ち受けへ `TCP_NODELAY`、`SO_SNDTIMEO = timeout`、`SO_RCVTIMEO = timeout` を設定し、
+       `Conn::new` の `set_write_timeout` / `set_nodelay` と 1 要求目の `set_read_timeout` を省く
+       (`Conn.read_timeout` の初期値を継承した `Some(timeout)` にする)。Linux 以外は従来どおり接続ごとに設定。
+    2. `SO_RCVTIMEO` は `accept()` にも効く (timeout 秒ごとに `EAGAIN` で戻る)。`serve` の accept ループで
+       `WouldBlock` / `TimedOut` はログも待ちもせず `continue` する。
+    3. `.env` の再読込で `timeout` が変わったら待ち受けの値も更新する (`serve` は接続ごとに `config_of()` を
+       引いているので、前回当てた値と違うときだけ `setsockopt` し直す)。
+    4. 継承を確かめる単体テスト: 待ち受けに 3 つを設定 → connect → accept したソケットの `nodelay()` /
+       `read_timeout()` / `write_timeout()` が待ち受けの値になっていること (カーネルの挙動を固定するテスト。
+       もし継承されない環境が出たら、このテストが落ちて接続ごとの設定に戻せる)。
+    5. 503 (上限超過) の経路の `set_write_timeout` も継承で要らなくなる。
+  - 受け入れ基準: `strace -f -c` で `setsockopt` が 4.00 → 1.00 回/接続 (残る 1 回は 2 要求目の猶予)。
+    1 接続 1 要求の CPU/接続 が下がること (交互 3 回の中央値)。keep-alive・connect・HIT が退行しないこと。全テスト通過。
+
+- [ ] **T9.4 accept したスレッドがそのまま接続を処理する (受け渡しの `futex` をなくす)**
+  - 目的: いまは accept 専用スレッドが接続を受け、チャネルでワーカーへ渡す。渡すたびに `futex` 2 回
+    (起こす + 待つ) と別コアでの起床が要る (T8.2 の内訳)。1 接続 1 要求の p50 が 0.33 ms と keep-alive の
+    0.18 ms より悪いのはここ。
+  - 変更箇所: `src/lib.rs` (`serve`)、`crates/workers/src/workers.rs`。
+  - やること: leader / follower にする。待ち受けで `accept()` を待つスレッドを複数持ち、accept した
+    スレッドが**自分で**その接続を処理する (処理が終わるか、預けたら待ち受けに戻る)。
+    accept したとき「待ち受けに誰も残っていない」なら 1 本だけ起こす (このときだけ `futex`)。
+    起こした数と待っている数を `AtomicUsize` で数え、待ち受けのスレッド数には上限を置く (設定は増やさない。
+    `MAX_IDLE` と同じ 64 で十分か、実測で決める)。監視スレッドから戻る接続は従来どおりワーカー経由で良い。
+    同時接続数の 503 (`PROXY_MAX_CONNS`) の判定と `rejected_overload` はそのまま動くこと。
+    まず実装して測り、効かなければ戻して §4 に書く (この計画の他の案と同じ)。
+  - 受け入れ基準: `strace -f -c` で `futex` が 2.00 → 0.1 回/接続 以下、1 接続 1 要求の CPU/接続 が 5% 以上下がること。
+    keep-alive (預ける経路を含む)・connect・上限 8 で 9 本目が 503 になるテストが通ること。
+
+- [ ] **T9.5 ユーザー空間の 16 us/要求 の内訳を出し、上位を潰す** (T8.4 を含む)
+  - 目的: keep-alive の経路はシステムコール 5 回で床に着いた (`recvfrom` 3 + `sendto` 2、うち 1 はプールの生存確認で
+    §4 のとおり残す)。残りはユーザー空間 16 us (全体の 1/3) とカーネル 35 us で、ユーザー空間の内訳は
+    T1.5 (128 us 時代の区間計測) 以来取っていない。当時 3.8% だった要求解析は、いまなら 1 割になっている計算。
+    確保 41.1 回/要求 の内訳 (T8.4) も同じ道具で出る。
+  - 変更箇所: 内訳しだい (`crates/msg`・`crates/http`・`crates/origin`・`src/lib.rs` のどれか)。
+  - やること: `CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release` で
+    シンボルを残し、forward 8 並列を `perf record -g` (この環境はユーザー空間だけ数える) で取って上位 10 関数を表にする。
+    確保は数えるアロケータに `std::backtrace` で呼び出し元を記録させ (計測時だけ。コミットには入れない)、
+    上位を表にする。**5% 以上取れるものだけ** 潰し、1 つずつ測る。
+  - 受け入れ基準: 関数と確保の内訳の表が TASKS に残り、ユーザー空間の CPU/要求 が 5% 以上下がるか
+    「これ以上は効かない」と根拠つきで記録されていること。
 
 ## 付録 A. 計測の記録
 
@@ -593,3 +735,20 @@ T4.2 `opt-level` の比較 (`--lite`、8 並列、forward を 3 回測った平�
 
 参考: 旧 `scripts/bench.py` でも forward 8 並列 p50 44 ms → **11.0 ms** になった (直結が p50 9.6 ms
 なので Python 側の下限に張り付いている。実際の値は Rust ベンチの 0.20 ms)。
+
+### 2026-09-07 深夜の測り直し (Phase 9 の着手前。この機械の今の状態)
+
+`scripts/cpu-per-request.sh` で 5 秒ずつ (8 並列、`--lite`、本文 1 KiB)。§2 の値より 2 割ほど重く出ているが、
+同じ日に同じ道具で測った前後比較にしか使わない (機械の状態が違う。この日は計測中に別の作業も走っていた)。
+
+| 経路 | スループット | p50 | CPU/操作 | 内訳 (user / kernel) |
+|---|---|---|---|---|
+| forward keep-alive | 30,039 req/s | 0.183 ms | **50.9 us/要求** (3 回で 50.9 / 55.3 / 58.9) | 16.2 / 34.7 |
+| forward 1 接続 1 要求 (`--no-keepalive`) | 11,955 req/s | 0.330 ms | **123.3 us/接続** | 29.1 / 94.2 |
+| connect (短命トンネル) | 6,068 /s | 0.224 ms | **187.3 us/本** | 26.3 / 161.0 |
+| tunnel 1 本 (256 MiB) | 1,301 MiB/s | — | 273 us/MiB | 0 / 273 |
+| キャッシュ HIT (メモリ 64 MiB) | 59,461 req/s | 0.091 ms | **30.6 us/要求** | 13.1 / 17.5 |
+
+システムコール (`strace -f -c`、プロキシを strace の下で起動): keep-alive は **5.03 回/要求**
+(`recvfrom` 3.00・`sendto` 2.00、`futex` 0.026、`setsockopt` 0.005)。1 接続 1 要求は **14 回/接続** (内訳は T8.2)。
+暇なプロキシは 10 秒で `epoll_pwait` 10 回 (監視スレッドの 1 秒周期) だけで、起動後は他に起きない (lite・既定とも)。
