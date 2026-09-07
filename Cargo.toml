@@ -59,11 +59,17 @@ proxy-tunnel = { path = "crates/tunnel" }
 proxy-workers = { path = "crates/workers" }
 
 # メモリの小さい環境 (Pterodactyl コンテナ) でも通ることを優先した既定のプロファイル。
-# LTO を切っているのは、まとめて最適化する最終リンクだけで 350 MB 使うため。
-# 実測 (このリポジトリ、aarch64):
-#   lto = true  → ビルド最大 347 MB、CPU 37.9 us/要求
-#   lto = false → ビルド最大 192 MB、CPU 39.7 us/要求 (+4.9%)
-# 配布するバイナリは下の dist プロファイル (LTO あり) で作る。
+# LTO を切っているのは、まとめて最適化する**最終リンクの 1 回**が大きいため。
+# クレートを 26 に割っても最終リンクは全部を抱えるので、そこは小さくならなかった。
+#
+# 26 クレート・`jobs = 1` で測り直した実測 (aarch64、手元の cgroup で通る最小の上限):
+#   lto = false → 100 MB、38.7 秒、1,316,336 B、CPU 50.19 us/要求  ← これ
+#   lto = "thin"→ 170 MB、55.4 秒、1,316,328 B、CPU 50.09 us/要求 (-0.2%、ぶれの中)
+#   lto = "fat" → 350 MB、48.8 秒、1,185,248 B、CPU 47.95 us/要求 (-4.5%)
+# fat は効くが上限 200 MB の 1.75 倍。thin は 170 MB 払って何も返ってこない
+# (バイナリは 8 バイトしか変わらない)。よって切ったままにする (T9.1)。
+#
+# 配布するバイナリは下の dist プロファイル (fat LTO) で作る。
 [profile.release]
 opt-level = 3
 lto = false
@@ -72,6 +78,10 @@ codegen-units = 1
 
 # 配布用。速さとバイナリの小ささを優先し、ビルドのメモリは気にしない
 # (GitHub Actions のような潤沢な環境で使う)。`cargo build --profile dist`
+# release との違いは 2 つだけ: `opt-level` が "s"、`lto` が fat。
+# 実測: 988,648 B (release は 1,316,336 B)、ビルドに 350 MB 以上要る。
+# ユーザー空間の CPU は release の 15.88 → 14.68 us/要求 (-7.6%) だが、
+# CPU/要求 の 68% はカーネル側なので全体では 2〜3% にしかならない (T9.1)。
 [profile.dist]
 inherits = "release"
 opt-level = "s"
