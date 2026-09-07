@@ -22,12 +22,14 @@ LADDER="${*:-200}"
 
 run_in_cgroup() {
   command -v systemd-run >/dev/null 2>&1 || return 2
-  systemctl is-system-running >/dev/null 2>&1 || return 2
   # systemd-run は -E を当てる前に実行ファイルを探すので、絶対パスで渡す
   local cargo_bin
   cargo_bin=$(command -v cargo) || return 2
   local sudo=""
   [ "$(id -u)" -ne 0 ] && sudo="sudo -n"
+  # 実際に小さい scope を 1 つ作ってみる。`systemctl is-system-running` は
+  # 状態が degraded なだけでも 1 を返すので、判定に使えない
+  $sudo systemd-run --scope --quiet -p MemoryMax=64M /bin/true >/dev/null 2>&1 || return 2
   $sudo systemd-run --scope \
       --uid="$(id -u)" --gid="$(id -g)" \
       -p "MemoryMax=${LIMIT_MB}M" -p MemorySwapMax=0 \
