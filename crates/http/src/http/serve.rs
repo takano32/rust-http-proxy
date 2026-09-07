@@ -7,6 +7,7 @@ use crate::body::{self, RangeSpec};
 use crate::cache::{CacheSource, CachedResponse};
 use crate::freshness::{self, CachedHead};
 use crate::headers;
+use crate::log::{self, Level};
 use crate::request::map_locations;
 
 /// stale のまま配信してよいか (`must-revalidate` / `proxy-revalidate` なら不可)。
@@ -59,11 +60,16 @@ pub(super) fn serve_cached(
         let written = write_not_modified(client, cached_head, label, source, age, ctx.keep_client)?;
         ctx.metrics.inc_cache_hit();
         ctx.metrics.add_bytes(written);
-        ctx.log(
-            304,
-            written,
-            &format!("{}({},304) age={}s", label, source.as_str(), age),
-        );
+        // アクセスログが出ないなら状態の文字列を組み立てない (`from_access` は先頭しか見ない)
+        if log::enabled(Level::Info) {
+            ctx.log(
+                304,
+                written,
+                &format!("{}({},304) age={}s", label, source.as_str(), age),
+            );
+        } else {
+            ctx.log(304, written, label);
+        }
         return Ok(ctx.keep_client);
     }
 
@@ -91,23 +97,30 @@ pub(super) fn serve_cached(
     let (status, written) = write_cached_response(client, entry, &served)?;
     ctx.metrics.inc_cache_hit();
     ctx.metrics.add_bytes(written);
-    let detail = match range {
-        RangeSpec::Bytes { start, end } => format!(" range={}-{}", start, end),
-        RangeSpec::Unsatisfiable => " range=unsatisfiable".to_string(),
-        RangeSpec::Ignore => String::new(),
-    };
-    ctx.log(
-        status,
-        written,
-        &format!(
-            "{}({}) age={}s ttl_left={}s{}",
-            label,
-            source.as_str(),
-            age,
-            ttl_left,
-            detail
-        ),
-    );
+    // アクセスログが出ないなら 1 バイトも組み立てない。forward の経路が既に
+    // 同じ扱い (`Cow::Borrowed("BYPASS")`) で、`HostOutcome::from_access` は
+    // 先頭の label しか見ないので統計も変わらない
+    if log::enabled(Level::Info) {
+        let detail = match range {
+            RangeSpec::Bytes { start, end } => format!(" range={}-{}", start, end),
+            RangeSpec::Unsatisfiable => " range=unsatisfiable".to_string(),
+            RangeSpec::Ignore => String::new(),
+        };
+        ctx.log(
+            status,
+            written,
+            &format!(
+                "{}({}) age={}s ttl_left={}s{}",
+                label,
+                source.as_str(),
+                age,
+                ttl_left,
+                detail
+            ),
+        );
+    } else {
+        ctx.log(status, written, label);
+    }
     Ok(ctx.keep_client)
 }
 
@@ -120,6 +133,80 @@ fn x_cache_lines(label: &str, source: CacheSource, age: u64) -> [String; 2] {
         ),
         format!("Age: {}", age),
     ]
+}
+
+/// 文字列を `buf` の `at` から書き、書き終わりの位置を返す (収まらなければ切る)。
+fn put_str(buf: &mut [u8], at: usize, s: &str) -> usize {
+    if at >= buf.len() {
+        return at;
+    }
+    let end = (at + s.len()).min(buf.len());
+    buf[at..end].copy_from_slice(&s.as_bytes()[..end - at]);
+    end
+}
+
+/// 10 進数を `buf` の `at` から書き、書き終わりの位置を返す (確保しない)。
+fn put_u64(buf: &mut [u8], at: usize, mut v: u64) -> usize {
+    if at >= buf.len() {
+        return at;
+    }
+    let mut digits = [0u8; 20];
+    let mut i = digits.len();
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    let n = digits.len() - i;
+    let end = (at + n).min(buf.len());
+    buf[at..end].copy_from_slice(&digits[i..i + (end - at)]);
+    end
+}
+
+/// `X-Cache: <label> from rust-http-proxy (<source>)` を確保せずに組み立てる。
+fn x_cache_line<'a>(buf: &'a mut [u8; 96], label: &str, source: CacheSource) -> &'a str {
+    let mut i = put_str(buf, 0, "X-Cache: ");
+    i = put_str(buf, i, label);
+    i = put_str(buf, i, " from rust-http-proxy (");
+    i = put_str(buf, i, source.as_str());
+    i = put_str(buf, i, ")");
+    std::str::from_utf8(&buf[..i]).unwrap_or("X-Cache: HIT from rust-http-proxy (memory)")
+}
+
+/// `Age: <n>` を確保せずに組み立てる。
+fn age_line(buf: &mut [u8; 32], age: u64) -> &str {
+    let mut i = put_str(buf, 0, "Age: ");
+    i = put_u64(buf, i, age);
+    std::str::from_utf8(&buf[..i]).unwrap_or("Age: 0")
+}
+
+/// `Content-Range: bytes <start>-<end>/<total>` (範囲なしなら `bytes */<total>`) を確保せずに組み立てる。
+fn content_range_line(buf: &mut [u8; 64], range: Option<(u64, u64)>, total: u64) -> &str {
+    let mut i = put_str(buf, 0, "Content-Range: bytes ");
+    match range {
+        Some((start, end)) => {
+            i = put_u64(buf, i, start);
+            i = put_str(buf, i, "-");
+            i = put_u64(buf, i, end);
+        }
+        None => i = put_str(buf, i, "*"),
+    }
+    i = put_str(buf, i, "/");
+    i = put_u64(buf, i, total);
+    std::str::from_utf8(&buf[..i]).unwrap_or("Content-Range: bytes */0")
+}
+
+/// 保存済みの先頭のステータス行から状態コードを取る (`sanitize_response_head` を通さない)。
+fn status_of(head: &[u8]) -> u16 {
+    head.split(|b| *b == b'\n')
+        .next()
+        .and_then(|l| std::str::from_utf8(l).ok())
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200)
 }
 
 /// キャッシュ済みレスポンスの配信方法。
@@ -141,54 +228,78 @@ pub fn write_cached_response(
     entry: CachedResponse,
     serve: &Serve<'_>,
 ) -> io::Result<(u16, u64)> {
-    let mut head = headers::sanitize_response_head(&entry.head);
-    if serve.map_locations {
-        map_locations(&mut head.lines);
-    }
     let body_len = entry.body_len();
-    let mut extra: Vec<String> = x_cache_lines(serve.label, serve.source, serve.age).to_vec();
+    // `ResponseHead` (ヘッダー 1 本ごとの String) を組み立てるのは Location を書き換えるとき
+    // だけにする。それ以外は生の先頭をそのまま `write_response_head` に渡せば 1 バイトも
+    // 変わらないのに、素の HIT のたびに全ヘッダー行を作り直して捨てていた
+    let mut head = serve
+        .map_locations
+        .then(|| headers::sanitize_response_head(&entry.head));
+    if let Some(h) = head.as_mut() {
+        map_locations(&mut h.lines);
+    }
+    // 足すヘッダー行は借用のまま持つ (`Vec<String>` と `format!` を要求ごとに作らない。
+    // forward の経路 (`handle_http_with_headers`) が既に同じ形)
+    let mut xc_buf = [0u8; 96];
+    let mut age_buf = [0u8; 32];
+    let mut cr_buf = [0u8; 64];
+    let mut cl_buf = [0u8; 40];
+    let mut extra: [&str; 5] = [""; 5];
+    extra[0] = x_cache_line(&mut xc_buf, serve.label, serve.source);
+    extra[1] = age_line(&mut age_buf, serve.age);
+    let mut n_extra = 2usize;
+
     let status;
+    // ステータス行を差し替えるのは 206 / 416 のときだけ (`None` なら保存済みのものを使う)
+    let status_line: Option<&str>;
     let (start, len) = match serve.range {
         RangeSpec::Bytes { start, end } => {
             status = 206;
-            head.status_line = "HTTP/1.1 206 Partial Content".to_string();
-            extra.push(format!(
-                "Content-Range: bytes {}-{}/{}",
-                start, end, body_len
-            ));
+            status_line = Some("HTTP/1.1 206 Partial Content");
+            extra[n_extra] = content_range_line(&mut cr_buf, Some((start, end)), body_len);
+            n_extra += 1;
             (start, end - start + 1)
         }
         RangeSpec::Unsatisfiable => {
             status = 416;
-            head.status_line = "HTTP/1.1 416 Range Not Satisfiable".to_string();
-            head.lines
-                .retain(|l| !l.to_ascii_lowercase().starts_with("content-type:"));
-            extra.push(format!("Content-Range: bytes */{}", body_len));
+            status_line = Some("HTTP/1.1 416 Range Not Satisfiable");
+            if let Some(h) = head.as_mut() {
+                h.lines
+                    .retain(|l| !l.to_ascii_lowercase().starts_with("content-type:"));
+            }
+            extra[n_extra] = content_range_line(&mut cr_buf, None, body_len);
+            n_extra += 1;
             (0, 0)
         }
         RangeSpec::Ignore => {
-            status = head
-                .status_line
-                .split_whitespace()
-                .nth(1)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(200);
+            status = status_of(&entry.head);
+            status_line = None;
             (0, body_len)
         }
     };
-    extra.push(format!("Content-Length: {}", len));
-    extra.push(if serve.keep_alive {
-        "Connection: keep-alive".to_string()
+    extra[n_extra] = super::content_length_line(&mut cl_buf, len);
+    n_extra += 1;
+    extra[n_extra] = if serve.keep_alive {
+        "Connection: keep-alive"
     } else {
-        "Connection: close".to_string()
-    });
+        "Connection: close"
+    };
+    n_extra += 1;
+    let extra = &extra[..n_extra];
+
     // Location の書き換えが要らないときは String を 1 本ずつ作らずに直接書く
-    let bytes = if serve.map_locations {
-        head.assemble(&extra)
-    } else {
-        let mut out = Vec::with_capacity(entry.head.len() + 128);
-        crate::headers::write_response_head(&mut out, &entry.head, Some(&head.status_line), &extra);
-        out
+    let bytes = match head {
+        Some(mut h) => {
+            if let Some(sl) = status_line {
+                h.status_line = sl.to_string();
+            }
+            h.assemble(extra)
+        }
+        None => {
+            let mut out = Vec::with_capacity(entry.head.len() + 128);
+            crate::headers::write_response_head(&mut out, &entry.head, status_line, extra);
+            out
+        }
     };
     client.write_all(&bytes)?;
     let mut written = bytes.len() as u64;
@@ -232,4 +343,58 @@ pub(super) fn write_not_modified(
     client.write_all(out.as_bytes())?;
     client.flush()?;
     Ok(out.len() as u64)
+}
+
+#[cfg(test)]
+mod extra_line_tests {
+    use super::*;
+
+    /// スタックで組み立てた行が、以前の `format!` 版と 1 バイトも違わないこと。
+    #[test]
+    fn stack_built_lines_match_the_previous_implementation() {
+        for label in ["HIT", "REVALIDATED", "REFRESHING", "COALESCED", "STALE"] {
+            for source in [CacheSource::Memory, CacheSource::Disk] {
+                for age in [0u64, 1, 42, 4_294_967_296, u64::MAX] {
+                    let old = x_cache_lines(label, source, age);
+                    let mut b1 = [0u8; 96];
+                    let mut b2 = [0u8; 32];
+                    assert_eq!(x_cache_line(&mut b1, label, source), old[0]);
+                    assert_eq!(age_line(&mut b2, age), old[1]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn content_range_and_status_match_the_previous_implementation() {
+        for (start, end, total) in [(0u64, 0u64, 1u64), (2, 5, 10), (0, u64::MAX - 1, u64::MAX)] {
+            let mut b = [0u8; 64];
+            assert_eq!(
+                content_range_line(&mut b, Some((start, end)), total),
+                format!("Content-Range: bytes {}-{}/{}", start, end, total)
+            );
+            let mut b = [0u8; 64];
+            assert_eq!(
+                content_range_line(&mut b, None, total),
+                format!("Content-Range: bytes */{}", total)
+            );
+        }
+        // ステータスは sanitize_response_head 経由と同じ値になること
+        for head in [
+            &b"HTTP/1.1 200 OK\r\n\r\n"[..],
+            b"HTTP/1.0 404 Not Found\r\n\r\n",
+            b"HTTP/1.1 204\r\n\r\n",
+            b"garbage",
+            b"HTTP/1.1",
+            b"",
+        ] {
+            let old = headers::sanitize_response_head(head)
+                .status_line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(200);
+            assert_eq!(status_of(head), old, "head={:?}", head);
+        }
+    }
 }
