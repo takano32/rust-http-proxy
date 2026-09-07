@@ -8,7 +8,9 @@
 //! 測るもの:
 //!   1. direct  : オリジン直結の要求/秒 (ベンチが律速していないことの確認。5 万 req/s 以上出ること)
 //!   2. forward : 平文 HTTP をプロキシ経由で転送したときの要求/秒と p50/p99
-//!   3. tunnel  : CONNECT トンネル 1 本のスループット (MiB/s)
+//!   3. tunnel  : CONNECT トンネル 1 本のスループット (MiB/s、`--seconds` 秒)。
+//!      **この経路はベンチ側が律速する** (プロキシは `splice` でコピー 0 回、ベンチは送りと受けで
+//!      コピー 2 回)。`scripts/cpu-per-request.sh --only tunnel` は両方を big コアに置いて測る (T10.8)
 //!   4. connect : CONNECT の確立/秒 (短命トンネル)
 //!   5. idle-tunnels: `--conc N` 本の CONNECT を張ったまま `--seconds` 秒握る
 //!      (プロキシ側のスレッド数と RSS を見るためのモード。`--only idle-tunnels` でだけ走る)
@@ -22,8 +24,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// トンネルのスループット計測で送るバイト数。
-const SINK_BYTES: u64 = 256 << 20;
+/// トンネルのスループット計測で 1 回に読む大きさ。
+///
+/// 送る側 ([`spawn_blaster`]) は相手が閉じるまで送り続け、受ける側は `--seconds` 秒で止める。
+/// **転送量ではなく時間で終わらせる**のは、他のモードと揃えるためと、短すぎる計測だと
+/// `/proc/<pid>/stat` の 10 ms 刻みが結果を丸めてしまうため。256 MiB 固定だった頃は
+/// 0.2 秒しか走らず、プロキシの user CPU が 1 tick 未満で「0.00 us/MiB」に見えていた (T10.8)。
+const TUNNEL_READ_BYTES: usize = 256 * 1024;
 
 struct Args {
     proxy: Option<String>,
@@ -130,7 +137,9 @@ fn serve_origin(mut stream: TcpStream, response: &[u8]) -> io::Result<()> {
     }
 }
 
-/// 接続されたら `SINK_BYTES` を送って閉じる (トンネルのスループット用)。
+/// 接続されたら相手が閉じるまで送り続ける (トンネルのスループット用)。
+///
+/// 受ける側が `--seconds` 秒で切るので、この関数は量では止まらない。
 fn spawn_blaster() -> io::Result<SocketAddr> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?;
@@ -140,12 +149,8 @@ fn spawn_blaster() -> io::Result<SocketAddr> {
                 let _ = stream.set_nodelay(true);
                 let chunk = vec![b'y'; 1 << 20];
                 let mut stream = stream;
-                let mut sent = 0u64;
-                while sent < SINK_BYTES {
-                    if stream.write_all(&chunk).is_err() {
-                        break;
-                    }
-                    sent += chunk.len() as u64;
+                while stream.write_all(&chunk).is_ok() {
+                    // 受ける側が切るまで送り続ける (量では止まらない)
                 }
                 let _ = stream.shutdown(Shutdown::Both);
             });
@@ -831,12 +836,13 @@ fn main() {
         .print("forward");
     }
 
-    // トンネル 1 本のスループット (時間ではなく転送量で終わる)
+    // トンネル 1 本のスループット (他のモードと同じく `--seconds` 秒で終わる)
     if want("tunnel") {
         let blaster = spawn_blaster().expect("blaster");
         match open_tunnel(proxy, blaster) {
-            Ok((_sock, mut reader)) => {
-                let mut buf = vec![0u8; 256 * 1024];
+            Ok((sock, mut reader)) => {
+                let mut buf = vec![0u8; TUNNEL_READ_BYTES];
+                let deadline = Duration::from_secs(args.seconds);
                 let t0 = Instant::now();
                 let mut got = 0u64;
                 loop {
@@ -844,11 +850,13 @@ fn main() {
                         Ok(0) | Err(_) => break,
                         Ok(n) => got += n as u64,
                     }
-                    if got >= SINK_BYTES {
+                    if t0.elapsed() >= deadline {
                         break;
                     }
                 }
                 let secs = t0.elapsed().as_secs_f64().max(1e-9);
+                // 先に切る。切らないと blaster が送り続けたまま次のモードの計測に混ざる。
+                let _ = sock.shutdown(Shutdown::Both);
                 println!(
                     "{:<8} {:>9} op/s  {:>8.1} MiB/s  ({} MiB through one tunnel)",
                     "tunnel",
