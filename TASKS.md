@@ -905,6 +905,26 @@ CPU/要求 50.2 us の 68% はカーネル側なので、効く順もこの順�
     `read_line` の `String` 経由 (UTF-8 検証)。`__kernel_clock_gettime` 2.4% = 要求あたり `Instant::now()` を何回呼んでいるか。
   - 受け入れ基準: 関数と確保の内訳の表が TASKS に残り、ユーザー空間の CPU/要求 が 5% 以上下がるか「これ以上は効かない」と根拠つきで記録されていること。
 
+- [ ] **T9.6 同時接続数の数え漏れ (`Conn::new` が失敗すると `open` が戻らない)**
+  - 目的: T9.4 の作業中に見つかった**既存の不具合**。`src/lib.rs` の `serve` は accept 直後に
+    `limiter.open.fetch_add(1)` してからワーカーへ渡し、持ち分の返却は `Conn` の `_open: OpenGuard` の `Drop` に任せている。
+    ところが `Conn::new` は `OpenGuard` を作る**前**に `client.set_write_timeout(Some(config.timeout))?` を通るので、
+    ここで `Err` になると `open` が 1 増えたまま誰も戻さない。積み重なると `PROXY_MAX_CONNS` に達して**恒久的に 503** になる。
+  - 変更箇所: `src/lib.rs` (`serve` / `Conn::new` / `OpenGuard`)、`crates/workers/src/workers.rs` (`run` が失敗したとき仕事を落とすかどうかの確認)。
+  - 今の経路: `serve` が `fetch_add` → `workers.run(Box::new(move || { Conn::new(...) }))` → `Conn::new` の `?` で早期 return →
+    `log_error!` だけして終わり。`started.is_err()` のときだけ `serve` 側で `fetch_sub` している。
+    **Linux で継承 (T9.3) が効いていれば `set_write_timeout` を呼ばないので踏まない**。踏むのは継承が当たらない環境
+    (Linux 以外、`inherit_socket_options` が失敗した場合) だけ。
+  - やること: 持ち分を**数える場所と返す場所を 1 つにする**。`OpenGuard` を `serve` 側 (accept したところ) で作って
+    `Conn::new` に渡し、`Conn` はそれを持つだけにする。こうすれば `Conn::new` の途中で失敗しても、`workers.run` が失敗して
+    仕事が落とされても、`Drop` が必ず 1 回だけ戻す (`serve` の手動の `fetch_sub` も消える)。
+    **ホットパスの原子操作を増やさないこと** (今と同じく接続あたり 1 増 1 減)。
+    `workers.run` が失敗したときに `Box<dyn FnOnce>` を捨てるのか呼び出し側へ返すのかを先に確かめる (返すなら受け取って落とす)。
+  - 受け入れ基準: `Conn::new` を失敗させたときに `open` が戻ることを見る単体テスト (継承を無効にし、閉じたソケットなどで
+    `set_write_timeout` を失敗させる。作れなければ `OpenGuard` を渡す形になったことを型で示すテストでよい)。
+    `test_integration_connection_limit_returns_503` が通ること。性能は変わらないはず (原子操作の数が同じ) だが、
+    keep-alive を 1 回だけ測って退行がないことを確かめる。
+
 ## 付録 A. 計測の記録 (時系列)
 
 着手時からの数字の履歴。**現在地は §2**。Phase 5 以降の数字は各タスクの `結果:` にある (ここには重複して書かない)。
