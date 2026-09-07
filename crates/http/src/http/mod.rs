@@ -467,6 +467,9 @@ pub fn handle_http_with_headers(
                     "cache WAIT: another request is fetching key={}",
                     key
                 );
+                // `shared.timeout` が 0 (無期限) のときはここだけ「待たない」意味に
+                // なるが、待たなければ自分で取りに行くだけなので安全側。
+                // 先頭のスレッドを無期限に待つ形にはしない (相手が固まると連鎖する)
                 if inflight.wait(shared.timeout) == Some(FetchOutcome::Stored)
                     && let Some((entry, source)) = cache.get(key, conn_id)
                     && entry.is_fresh(now_epoch())
@@ -497,8 +500,10 @@ pub fn handle_http_with_headers(
         String::from_utf8_lossy(&request_head).trim_end()
     );
     // 期限切れの表現が手元にあるなら、オリジンを長く待たずに stale を返す
+    // (`shared.timeout` の 0 は「無期限」なので、素の `min` だと 0 秒で諦める方に
+    // 化ける。`timeout::shorter` は無期限の側を必ず負けさせる。T10.6)
     let origin_timeout = if stale.is_some() {
-        shared.timeout.min(cfg.stale_wait)
+        proxy_base::timeout::shorter(shared.timeout, cfg.stale_wait)
     } else {
         shared.timeout
     };

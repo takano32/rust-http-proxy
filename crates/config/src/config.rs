@@ -49,6 +49,11 @@ pub struct Config {
     /// IPv6 を使うか (待ち受けと AAAA での接続)。既定 on
     pub ipv6: bool,
     pub acl: AclConfig,
+    /// 接続・読み書きのタイムアウト (`PROXY_TIMEOUT_SECS`、既定 30 秒、`0` で無期限)。
+    ///
+    /// `0` は `PROXY_TUNNEL_IDLE_SECS` と同じく**無期限**の意味 (T10.6)。
+    /// ソケットへ渡すときは [`proxy_base::timeout::for_socket`] で `None` に直す
+    /// (`std` は `Duration::ZERO` を `InvalidInput` で断るため)。
     pub timeout: Duration,
     /// クライアント接続を keep-alive で待つアイドル時間。0 なら 1 接続 1 要求
     pub keepalive: Duration,
@@ -112,6 +117,8 @@ impl Config {
         let port_str = envfile::var("SERVER_PORT").unwrap_or_else(|| "8080".to_string());
         let allow_hosts = envfile::var("PROXY_ALLOW_HOSTS");
         let deny_hosts = envfile::var("PROXY_DENY_HOSTS");
+        // `0` は無期限。1 秒に切り上げないのは、切り上げると**無期限を表す手段が
+        // 設定から無くなる**ため (`PROXY_TUNNEL_IDLE_SECS=0` と意味を揃えた。T10.6)
         let timeout_secs = envfile::var("PROXY_TIMEOUT_SECS")
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(30);

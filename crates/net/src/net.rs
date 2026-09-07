@@ -188,7 +188,16 @@ fn nodelay(stream: &TcpStream) {
     let _ = stream.set_nodelay(true);
 }
 
-/// 名前解決して接続する。IPv6 無効時は A レコードだけ、有効時は Happy Eyeballs。全体の締め切りは `timeout`。
+/// 1 つのアドレスへ接続する。`timeout` が `None` なら締め切り無し (OS 既定に任せる)。
+fn connect_one(addr: &SocketAddr, timeout: Option<Duration>) -> io::Result<TcpStream> {
+    match timeout {
+        Some(t) => TcpStream::connect_timeout(addr, t),
+        None => TcpStream::connect(addr),
+    }
+}
+
+/// 名前解決して接続する。IPv6 無効時は A レコードだけ、有効時は Happy Eyeballs。全体の締め切りは `timeout`
+/// (`Duration::ZERO` は無期限 = OS 既定の接続タイムアウトに任せる)。
 pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
     let resolved: Vec<SocketAddr> = crate::dns::resolve(addr_str)?;
     let ipv6 = ipv6_enabled();
@@ -211,12 +220,16 @@ pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
 }
 
 /// 並べ替え済みのアドレス列に Happy Eyeballs で接続する。
+///
+/// `timeout` が `Duration::ZERO` なら**締め切りを置かない** (`PROXY_TIMEOUT_SECS=0` = 無期限。
+/// T10.6)。`TcpStream::connect_timeout` は 0 を `InvalidInput` で断るので、そのときは
+/// 素の `connect` を使い、OS 既定の接続タイムアウト (Linux はおよそ 130 秒) に任せる。
 pub fn connect_resolved(addrs: Vec<SocketAddr>, timeout: Duration) -> io::Result<TcpStream> {
     if addrs.len() == 1 {
-        return TcpStream::connect_timeout(&addrs[0], timeout).inspect(nodelay);
+        return connect_one(&addrs[0], proxy_base::timeout::for_socket(timeout)).inspect(nodelay);
     }
 
-    let deadline = Instant::now() + timeout;
+    let deadline = (!timeout.is_zero()).then(|| Instant::now() + timeout);
     let (tx, rx) = mpsc::channel::<io::Result<TcpStream>>();
     let mut launched = 0usize;
     let mut pending = 0usize;
@@ -228,22 +241,29 @@ pub fn connect_resolved(addrs: Vec<SocketAddr>, timeout: Duration) -> io::Result
         if launched < addrs.len() && (pending == 0 || now >= next_launch) {
             let addr = addrs[launched];
             let tx = tx.clone();
-            let remaining = deadline
-                .saturating_duration_since(now)
-                .max(Duration::from_millis(1));
+            let remaining = deadline.map(|d| {
+                d.saturating_duration_since(now)
+                    .max(Duration::from_millis(1))
+            });
             thread::spawn(move || {
-                let _ = tx.send(TcpStream::connect_timeout(&addr, remaining));
+                let _ = tx.send(connect_one(&addr, remaining));
             });
             launched += 1;
             pending += 1;
             next_launch = now + STAGGER;
         }
+        // 締め切りが無いときは、まだ launch していないぶんの間隔だけ待ち、
+        // 全部 launch したあとは結果が出るまで待つ (無期限)
         let wait = if launched < addrs.len() {
-            next_launch.saturating_duration_since(now)
+            Some(next_launch.saturating_duration_since(now))
         } else {
-            deadline.saturating_duration_since(now)
+            deadline.map(|d| d.saturating_duration_since(now))
         };
-        match rx.recv_timeout(wait) {
+        let got = match wait {
+            Some(w) => rx.recv_timeout(w),
+            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match got {
             Ok(Ok(stream)) => {
                 nodelay(&stream);
                 return Ok(stream);
@@ -256,7 +276,7 @@ pub fn connect_resolved(addrs: Vec<SocketAddr>, timeout: Duration) -> io::Result
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                if Instant::now() >= deadline {
+                if deadline.is_some_and(|d| Instant::now() >= d) {
                     break;
                 }
             }
