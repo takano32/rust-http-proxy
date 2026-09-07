@@ -40,7 +40,8 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 | CONNECT 確立 | 8,350 tunnels/s, p50 0.68 ms |
 | 1 接続 1 要求 (keep-alive 無し) | 12,710 req/s, CPU 98 us/要求 |
 | 同時 5,000 トンネル | RSS 140 MiB、新規 CONNECT p99 8.1 ms |
-| 起動直後のスレッド | `--lite` で 3 本、既定で 6 本 |
+| 暇な keep-alive 接続 2,000 本 | **18 スレッド / RSS 25.7 MiB** (預けない場合 2,003 スレッド / 72.3 MiB) |
+| 起動直後のスレッド | `--lite` で 4 本、既定で 7 本 |
 | バイナリ | 923 KB |
 
 ## 特徴
@@ -399,16 +400,25 @@ cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 
 | 設定 | スレッド | 内訳 |
 |---|---|---|
-| 既定 (キャッシュ・統計あり) | 6 | 待ち受け + `env-reload` + `cache-probe` + `persist` + `history` + `shutdown` |
-| `PROXY_CACHE_ENABLED=off PROXY_STATS_PERSIST=off` | 3 | 待ち受け + `env-reload` + `shutdown` |
+| 既定 (キャッシュ・統計あり) | 7 | 待ち受け + `env-reload` + `cache-probe` + `persist` + `history` + `shutdown` + `idle-watch` |
+| `PROXY_CACHE_ENABLED=off PROXY_STATS_PERSIST=off` (= `--lite`) | 4 | 待ち受け + `env-reload` + `shutdown` + `idle-watch` |
+| 上記 + `PROXY_PARK_IDLE=off` | 3 | `idle-watch` が減る |
 
 ブロックリストの取得スレッドは `PROXY_BLOCKLIST_FILE` / `PROXY_BLOCKLIST_URL` が設定されたときだけ動きます
 (`$HOME/.env` の再読込で後から設定された場合もその時点で起動します)。
 
 接続 1 本ごとのスレッドはこれとは別です (CONNECT トンネルは Linux では 1 本あたり 1 スレッド)。
+
 **接続スレッドは使い回します**: 仕事を終えたスレッドは空き置き場に戻り、30 秒使われなければ自分で
-終わります (空きは最大 64 本まで)。「1 接続 = 1 スレッドが専任する」構造はそのままで、生成と破棄の
-システムコール (実測で 1 接続あたり約 16 回) だけを償却する形です。
+終わります (空きは最大 64 本まで)。生成と破棄のシステムコール (実測で 1 接続あたり約 16 回) を
+接続ごとに払わない形です。
+
+**要求を処理していない keep-alive 接続はスレッドを握りません** (`PROXY_PARK_IDLE`、既定 on、
+Linux のみ)。次の要求が猶予 (既定 3 ms) のあいだ来なければ、その接続は `idle-watch` スレッドの
+epoll に預けられ、ワーカースレッドは解放されます。読めるようになったら空いているワーカーに戻します。
+実測で暇な接続 2,000 本のとき 2,003 スレッド・RSS 72.3 MiB → **18 スレッド・25.7 MiB**、
+忙しいときの CPU/要求とシステムコール数は変わりません。`off` にすると
+「1 接続 = 1 スレッドが専任する」元の動きに戻ります。
 
 ### 開発者向け: プロファイル取得
 
