@@ -540,7 +540,7 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。手元の cgroup の最小メ�
     (Linux 以外は固定値 4096)。**挙動を変えるなら実測とテスト**、変えないなら README に根拠を 1 行、で十分。
   - 受け入れ基準: 既定値の根拠が 1 行で説明できること。`auto` を入れるなら、`ulimit -n 256` で起動したときに記述子切れではなく 503 で断る結合テスト。
 
-- [ ] **T8.6 `proxy-cache` と `proxy-http` をさらに割れるか調べる**
+- [x] **T8.6 `proxy-cache` と `proxy-http` をさらに割れるか調べる**
   - 目的: いちばん大きいのが `proxy-cache` (2,257 行、うち 936 行はテスト) と `proxy-http` (1,728 行)。どちらも「1 つの責務」に見えるが、内訳は見ていない。
     ビルドのメモリは本体クレート (`src/lib.rs` 903 行 + 依存の単相化) が最大を決めているので (T9.2 の知見)、割っても上限は下がらないかもしれない。
     その場合は「責務が分かれるか」だけで判断する。
@@ -549,6 +549,38 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。手元の cgroup の最小メ�
     候補は `probe.rs` (ディスクの実測の駆動、354 行) と `refresh.rs` (裏の再検証、175 行)。切れ目が無ければ「無い」と記録する。
     割るなら T7.4 と同じく下の層を同じ名前で再エクスポートして、呼び出し側の書き方を変えない。
   - 受け入れ基準: 割るか割らないかの判断が、依存の実測 (参照の数と向きの表) にもとづいていること。割ったらテストの本数と CPU/要求 が変わらないこと。
+  - 結果: **割らない。切れ目が無い。** 両クレートのモジュール間参照を数えたところ、**一方通行 (逆参照ゼロ) の切れ目は 1 つも無かった**。
+
+    | クレート / モジュール | 下 → 上 (子 → `mod.rs`) | 上 → 下 (逆参照) | 判定 |
+    |---|---|---|---|
+    | cache / `ops.rs` (338 行) | 型 11 + 非公開フィールド 35 + 非公開メソッド 7 | `pub use ops::PeekInfo` 1 | 相互 |
+    | cache / `probe.rs` (354 行) | 型 9 + **非公開フィールド 14 種に 57 回** + `count_evictions()` | `probe::spawn` / `refresh_budget()` / `refresh_other_disk_usage()` の **3** | 相互 |
+    | cache / `sink.rs` (119 行) | 型 2 + 非公開フィールド 6 + 非公開メソッド 4 | `pub use sink::{StoreOutcome, StoreSink}` 2 | 相互 |
+    | cache / `status.rs` (119 行) | 型 2 + 非公開フィールド 6 | 0 | `impl Cache` なので動かせない |
+    | http / `serve.rs` (235 行) | **非公開 struct `Ctx` の非公開フィールドに 20 回** | `serve_cached` 7 + `can_serve_stale` 3 + `pub use` 2 = **12** | 相互 |
+    | http / `refresh.rs` (175 行) | `Shared` / `acquire_origin` / `request_head` / `CopyBuf` の 5 名前・16 回 | `refresh::spawn` **1** (`mod.rs:395`) | 相互 (逆参照は 1 つだけ) |
+
+    **決め手は 2 つ。** ひとつは `proxy-cache` の 4 モジュールも `serve.rs` も、**`Cache` / `Ctx` の固有 impl か、その非公開フィールドを
+    直接触るコード**だということ。Rust は固有 impl を型の定義クレートにしか置けないので、`Cache` を動かさずに `probe` だけ
+    別クレートへ出す道は無い。自由関数に書き換えるなら `cfg` `quota` `mem` `disk` `margins` `disk_probe` ほか
+    **14 個の非公開フィールドを `pub` に開ける**ことになり、隠蔽が壊れるだけで責務は分かれない。
+    もうひとつは `probe.rs` が `Cache::new` から呼ばれていること (`mod.rs:223-224` の `refresh_other_disk_usage()` / `refresh_budget()`)。
+    **予算の決定は「裏の仕事」ではなく `Cache` の構築の一部**で、責務としても切れていない。
+
+    唯一 T7.4 と同じ形に持ち込めるのは `refresh.rs` (逆参照が `mod.rs:395` の `refresh::spawn` 1 つだけ) だが、切るには
+    `Shared` / `CopyBuf` / `request_head` / `acquire_origin` (計 124 行) を新クレート `proxy-httpcore` に落として
+    `proxy-revalidate` (175 行) と `proxy-http` (1,038 行) の 3 段にする必要がある。落とす 4 つは**素通し経路でも使う**ので
+    熱い経路がクレート境界をまたぎ (LTO 無しの境界の値段は T8.3 の 1.31 us/要求 = ユーザー空間の 8.2%)、`pub(super)` を 3 つ
+    `pub` に格上げする一方、増えた 2 クレートの依存は元と同じ広さのまま。**払うものだけあって得るものが無い** (T9.1 の thin LTO と同じ結論)。
+
+    **ビルドメモリは下がらない見込み** (実測はしていない)。`jobs = 1` なので通る最小 = 最大の rustc 1 つで、T9.2 のとおり
+    最大を決めているのは本体クレート。`cargo build --release` に食わせる行数は **`proxy-cache` 1,321 行 / `proxy-http` 1,358 行**
+    (テストは両クレートとも別ファイルなので `#[cfg(test)]` で丸ごと落ちる) で、どちらも本体クレート
+    (`src/lib.rs` 963 + `main.rs` 294 + `idle.rs` 291 = 1,548 行 + 26 クレートぶんの単相化) より小さく、**既に peak ではない**。
+    2,257 行 / 1,728 行という見た目の大きさの 41% / 21% はテストで、release ビルドは最初から見ていない。
+
+    **ついでに見つけたもの**: `crates/http/src/http/mod.rs:15` の `pub use serve::{Serve, write_cached_response};` は
+    クレートの外に利用者がいない (リポジトリ全体を grep して 0 件)。`pub(super)` に落とせるが、公開 API を狭めるだけなので別扱い。
 
 - [x] **T8.7 結合テストのオリジンが要求本文を読まず、機械が混むと落ちる**
   - 目的: `test_integration_request_body_on_a_reused_connection` が `taskset -c 0` で 4 回に 1 回落ちる (T9.1 の作業中に判明)。
