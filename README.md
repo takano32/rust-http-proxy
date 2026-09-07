@@ -29,6 +29,8 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 
 8 コア / 6.6 GiB、loopback、`cargo run --release --bin bench` で測った値です
 (`direct` はプロキシを通さないオリジン直結 = ベンチ自身の上限)。
+この表は 2026-09-07 に**コアを固定せずに**測った値です。この機械は big.LITTLE で固定の仕方によって 2 倍変わるため、
+プロキシを big・ベンチを LITTLE に固定して測り直した最新の値は `scripts/cpu-per-request.sh` と `TASKS.md` §2 を見てください。
 
 | 項目 | 値 |
 |---|---|
