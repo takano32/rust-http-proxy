@@ -1473,7 +1473,7 @@ T9.5 が「確保を 7 回/要求 減らしても CPU が動かない」を実�
     閉じきるまでの時間が極端に延びないこと (前後の値を表に)。forward・connect・tunnel が退行しないこと。
     `survives_a_panicking_job` を含む既存の `workers` のテストが通ること。
 
-- [ ] **T10.6 `PROXY_TIMEOUT_SECS=0` の意味を揃える**
+- [x] **T10.6 `PROXY_TIMEOUT_SECS=0` の意味を揃える**
   - 目的: いまは `Duration::ZERO` がそのまま渡り、**全接続が `set_write_timeout` で失敗する** (T9.6 でこの経路が
     持ち分を漏らす不具合を直したが、挙動そのものは変なまま)。同じ `0` でも `PROXY_TUNNEL_IDLE_SECS=0` は「無期限」で、
     意味が食い違っている。
@@ -1485,6 +1485,47 @@ T9.5 が「確保を 7 回/要求 減らしても CPU が動かない」を実�
     アイドル接続を預ける仕組み (T6.5 の猶予) が無期限とどう噛み合うかを必ず確かめる。
   - 受け入れ基準: `PROXY_TIMEOUT_SECS=0` で起動して普通に代理でき、暇な接続が閉じられないことを見る結合テスト。
     既定 (30) の挙動と性能が変わらないこと (keep-alive を 1 回測る)。README の表に `0` の意味を書く。
+  - 結果: **`0` = 無期限に寄せた** (`PROXY_TUNNEL_IDLE_SECS=0` と同じ意味)。「1 秒に切り上げ」は無期限を表す手段が
+    設定から無くなるので採らない (理由は `crates/base/src/timeout.rs` の冒頭に残した。「0 = 無期限」の約束事そのものも
+    ここ 1 か所に置いた)。**着手前の状態は「変」ではなく壊れていた**: std が `set_write_timeout(Some(ZERO))` を
+    `InvalidInput` で断るため、**この設定では 1 本も代理できなかった** (T9.6 で持ち分は漏れなくなったが、それだけ)。
+
+    **継承するかしないかは実測で決めた。** Linux の `timeval {0, 0}` は「タイムアウト無し」そのものなので、
+    `inherit_socket_options` の「0 を断る」をやめて**そのまま継承させる**方を採った。
+
+    | `PROXY_TIMEOUT_SECS=0`、1 接続 1 要求 | 継承しない (接続ごとに `None`) | 継承する |
+    |---|---|---|
+    | `setsockopt`/接続 | 4.00 | **1.00** |
+    | CPU/接続 (交互 3 回の中央値) | 106.56 us | **104.33 us** (-2.1%) |
+
+    残る 1.00 は「2 要求目を猶予 `park_grace` で待つ」ぶんで既定設定と同じ (T9.3 の成果はそのまま)。
+    既定 (30 秒) に退行が無いことの確認 (前後交互 3 回の中央値): keep-alive の CPU/要求 42.13 → 42.62 us (ぶれの中)、
+    `setsockopt`/接続 は 1.00 のまま。
+
+    **アイドル接続を預ける仕組み (T6.5) は無期限でも動く。** 2 回目以降の待ちは `config.timeout` ではなく
+    猶予 `park_grace` の長さなので、空振り =「暇だ」の判定はそのまま起きる。実バイナリを `PROXY_TIMEOUT_SECS=0` で
+    起動して確かめた (普通に代理できる / `/status` の `parked_connections` が 1 / 何も送らない接続は 3 秒たっても
+    閉じられない / 預けた接続はそのまま次の要求に使える)。`accept()` も無期限に待つようになるが、accept ループが
+    空振りの合間にしている仕事は無い (設定は接続ごとに `config_of()` で引き直し、`.env` の再読込は別スレッド) ので依存は無い。
+
+    オリジン側も同じ意味に揃えた: `connect_timeout` は 0 を断るので素の `connect` (OS 既定の接続タイムアウト) に落とし、
+    Happy Eyeballs の締め切りも置かない。`stale` があるときの `shared.timeout.min(stale_wait)` は無期限が
+    「0 秒で諦める」に化けるので `timeout::shorter` (無期限の側が必ず負ける) にした。
+
+    | 足したテスト | 何を見るか |
+    |---|---|
+    | `zero_timeout_is_inherited_as_no_timeout` | 待ち受けに 0 を当てると accept したソケットが「無期限」を引き継ぐ (カーネルの挙動を固定する) |
+    | `zero_timeout_sets_no_timeout_instead_of_failing` | 継承しない経路でも `Conn::new` が成功し、書きが無期限になる |
+    | `test_integration_zero_timeout_proxies_and_still_parks_idle_connections` | 0 で普通に代理でき、暇な接続が預けられる (T6.5 との噛み合わせ) |
+    | `test_integration_zero_timeout_never_closes_a_silent_connection` | 何も送らない接続が閉じられない (有限なら閉じられることを同じテストで対比) |
+
+    T9.6 の回帰テスト `open_slot_comes_back_when_conn_setup_fails` は**失敗のさせ方を変えた** (timeout 0 では
+    成功するようになったので、ソケットでない記述子を渡して `setsockopt` を `ENOTSOCK` で失敗させる)。
+    README の表に `0` の意味を書いた。テスト 191 単体 + 49 結合 → **194 単体 + 51 結合** (`dd5286b`)
+    - `PROXY_TIMEOUT_SECS=0` のとき、キャッシュの**同時ミス合流** (`inflight.wait`) だけは「無期限に待つ」ではなく
+      「待たない」(= 自分で取りに行く) 意味にした。先頭のスレッドが固まったときに連鎖するのを避けるため (安全側)。
+    - `PROXY_BLOCKLIST_URL` の取得も 0 なら締め切り無しになる (背景スレッド 1 本の話なので放置)。
+
 
 - [ ] **T10.7 やり残しの小物 4 件**
   - 目的: Phase 8〜10 で「範囲外」として残したもの。どれも小さいので 1 タスクにまとめる。**1 件 1 コミット**。
