@@ -11,9 +11,14 @@
 # そこで、cgroup を作れる環境では**実際にその上限の中でビルドして通るか**を見る。
 # 作れない環境では RSS を出すだけにして、判定はしない。
 #
-# 使い方: scripts/build-memory.sh [上限 MB]   (既定 200)
+# 使い方:
+#   scripts/build-memory.sh [上限 MB]            上限の中で通るか (既定 200)
+#   scripts/build-memory.sh --find 200 250 300   通る最小の上限を探す (調べるとき用)
 set -u
+MODE=gate
+if [ "${1:-}" = "--find" ]; then MODE=find; shift; fi
 LIMIT_MB="${1:-200}"
+LADDER="${*:-200}"
 
 run_in_cgroup() {
   command -v systemd-run >/dev/null 2>&1 || return 2
@@ -28,7 +33,7 @@ run_in_cgroup() {
       -p "MemoryMax=${LIMIT_MB}M" -p MemorySwapMax=0 \
       -E "PATH=$PATH" -E "HOME=$HOME" -E "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
       -E "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
-      "$cargo_bin" build --release
+      "$cargo_bin" build --release -j 1
 }
 
 report_rss() {
@@ -56,7 +61,21 @@ report_rss() {
   return $rc
 }
 
-echo "上限 ${LIMIT_MB} MB でリリースビルドを試します"
+if [ "$MODE" = find ]; then
+  for LIMIT_MB in $LADDER; do
+    echo "=== 上限 ${LIMIT_MB} MB を試す ==="
+    cargo clean -q
+    if run_in_cgroup; then
+      echo "通る最小の上限: ${LIMIT_MB} MB"
+      exit 0
+    fi
+    echo "  ${LIMIT_MB} MB では通らなかった"
+  done
+  echo "どの上限でも通らなかった"
+  exit 1
+fi
+
+echo "上限 ${LIMIT_MB} MB でリリースビルドを試します (-j 1)"
 run_in_cgroup
 case $? in
   0)
