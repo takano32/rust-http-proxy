@@ -63,12 +63,21 @@ impl Pool {
         loop {
             let candidate = {
                 let mut idle = self.idle.locked();
+                let rows = idle.len();
                 let queue = idle.get_mut(host)?;
                 let c = queue.pop_back();
                 if c.is_some() {
                     self.total.fetch_sub(1, Ordering::Relaxed);
                 }
-                if queue.is_empty() {
+                // **行が空になってもエントリは残す** (T9.5 のやり残し)。消すと次の `put` が
+                // 鍵の `String` を作り直すことになる (実測で要求あたり 0.2 回の確保)。
+                // 空になったエントリは `sweep()` が掃除する。
+                // ただし `sweep()` は `.env` の監視スレッドが回している (`HOME` が無い環境では
+                // そのスレッドが立たない) ので、掃除が来なくても溜まらないように歯止めを置く:
+                // **行の数が「持てるアイドル接続の本数」を超えたら余りは必ず空行**なので、
+                // そのときだけその場で消す (行数は `max_total + 1` で頭打ちになる)
+                let empty = queue.is_empty();
+                if empty && rows > self.max_total {
                     idle.remove(host);
                 }
                 c?
@@ -121,6 +130,9 @@ impl Pool {
     }
 
     /// 期限切れを捨てる (`env-reload` スレッドが 30 秒ごとに呼ぶ)。戻り値は捨てた本数。
+    ///
+    /// **空になった行 (エントリ) もここで消す。** `get` は行を空にしてもエントリを残すので
+    /// (鍵の `String` を作り直さないため)、掃除しないとホストが増え続けたときに溜まる。
     pub fn sweep(&self) -> usize {
         let now = Instant::now();
         let mut idle = self.idle.locked();
@@ -140,6 +152,12 @@ impl Pool {
 
     pub fn idle_count(&self) -> usize {
         self.total.load(Ordering::Relaxed)
+    }
+
+    /// ホスト別の行の数 (空の行を含む)。掃除が効いているかを見るためのテスト用。
+    #[cfg(test)]
+    fn host_rows(&self) -> usize {
+        self.idle.locked().len()
     }
 }
 
@@ -284,6 +302,61 @@ mod tests {
         assert_eq!(pool.sweep(), 3, "3 本とも期限切れ");
         assert_eq!(pool.idle_count(), 0);
         assert_eq!(pool.sweep(), 0, "空なら何も捨てない");
+    }
+
+    /// 行を空にしてもエントリは残り、`sweep()` が掃除すること (T10.7 / T9.5 のやり残し)。
+    ///
+    /// 残すのは、消すと次の `put` が鍵の `String` を作り直すため
+    /// (キープアライブが効いている素通しの経路で要求あたり 0.2 回の確保)。
+    #[test]
+    fn draining_a_row_keeps_the_entry_and_sweep_removes_it() {
+        let pool = Pool::new(2, Duration::from_secs(5));
+        let (c1, s1) = pair();
+        pool.put(
+            "h",
+            BufReader::new(OriginStream::Plain(c1)),
+            Duration::from_secs(5),
+        );
+        assert_eq!(pool.host_rows(), 1);
+        assert!(pool.get("h", Duration::from_secs(5)).is_some());
+        assert_eq!(pool.idle_count(), 0, "接続は出ていった");
+        assert_eq!(
+            pool.host_rows(),
+            1,
+            "行が空になってもエントリは残る (次の put が鍵を作り直さない)"
+        );
+        drop(s1);
+
+        // 空振りの get でもエントリは消えない (`?` で抜けるだけ)
+        assert!(pool.get("h", Duration::from_secs(5)).is_none());
+        assert_eq!(pool.host_rows(), 1);
+
+        // 掃除が空のエントリを片づける
+        assert_eq!(pool.sweep(), 0, "捨てた接続は 0 本 (空の行しか無い)");
+        assert_eq!(pool.host_rows(), 0, "空のエントリは sweep で消える");
+    }
+
+    /// 掃除が来なくても行は溜まり続けないこと (行数 > 持てる本数 なら空行をその場で消す)。
+    #[test]
+    fn empty_rows_do_not_pile_up_without_a_sweep() {
+        // 全体で 1 本しか持てない = 行が 2 つ以上あれば必ずどれかは空
+        let pool = Pool::with_total(1, 1, Duration::from_secs(5));
+        let mut keep = Vec::new();
+        for host in ["a", "b", "c", "d"] {
+            let (c, s) = pair();
+            keep.push(s);
+            pool.put(
+                host,
+                BufReader::new(OriginStream::Plain(c)),
+                Duration::from_secs(5),
+            );
+            assert!(pool.get(host, Duration::from_secs(5)).is_some());
+            assert!(
+                pool.host_rows() <= 2,
+                "行は max_total + 1 で頭打ち: {}",
+                pool.host_rows()
+            );
+        }
     }
 
     #[test]
