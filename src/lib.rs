@@ -174,9 +174,10 @@ pub fn serve(
             continue;
         }
         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
-        limiter.open.fetch_add(1, Ordering::Relaxed);
+        // 同時接続数の持ち分は番人として取って仕事へ運ぶ。`Conn::new` が途中で失敗しても、
+        // 仕事がワーカーへ渡らずに落ちても、番人の `Drop` が必ず 1 回だけ返す (T9.6)
+        let open = OpenGuard::acquire(Arc::clone(&limiter));
         let m = Arc::clone(&metrics);
-        let l = Arc::clone(&limiter);
         let c = Arc::clone(&cache);
         let p = Arc::clone(&upstream);
         let w = park.clone();
@@ -186,7 +187,7 @@ pub fn serve(
             match Conn::new(
                 stream,
                 accepted,
-                l,
+                open,
                 cfg,
                 m,
                 c,
@@ -200,7 +201,7 @@ pub fn serve(
             }
         }));
         if started.is_err() {
-            limiter.open.fetch_sub(1, Ordering::Relaxed);
+            // 渡せなかった仕事はここで落ちる。持ち分はその中の `OpenGuard` が返す (T9.6)
             log_error!(Some(conn_id), "failed to get a thread for the connection");
         }
     }
@@ -461,7 +462,21 @@ pub enum Step {
 }
 
 /// 同時接続数の持ち分。
+///
+/// **数えるのも返すのもこの型だけ** (T9.6)。`serve` が accept した直後に
+/// [`OpenGuard::acquire`] で取り、`Conn` へ運ぶ。途中で `Conn::new` が失敗しても、
+/// 仕事がワーカーに渡らずに落ちても、`Drop` が必ず 1 回だけ返す。
+/// (以前は `serve` が `fetch_add` して `Conn` の `Drop` が返す形だったので、
+/// `Conn::new` の `?` で抜けると持ち分が戻らず、積もると恒久的に 503 になった。)
 struct OpenGuard(Arc<Limiter>);
+
+impl OpenGuard {
+    /// 持ち分を 1 つ取る (返すのは `Drop`)。
+    fn acquire(limiter: Arc<Limiter>) -> OpenGuard {
+        limiter.open.fetch_add(1, Ordering::Relaxed);
+        OpenGuard(limiter)
+    }
+}
 
 impl Drop for OpenGuard {
     fn drop(&mut self) {
@@ -500,7 +515,7 @@ impl Conn {
     fn new(
         client: TcpStream,
         accepted: Accepted,
-        limiter: Arc<Limiter>,
+        open: OpenGuard,
         config: Arc<Config>,
         metrics: Arc<Metrics>,
         cache: Arc<Cache>,
@@ -537,7 +552,7 @@ impl Conn {
             scratch: None,
             park,
             peer_ip: net::canonical_addr(accepted.peer).ip().to_string(),
-            _open: OpenGuard(limiter),
+            _open: open,
             _active: active,
         })
     }
@@ -1016,5 +1031,68 @@ mod tests {
         assert_eq!(second.headers().len(), 0, "前の要求の行は見えない");
         assert!(!second.lines.is_empty(), "容量は使い回す");
         assert!(second.lines[0].is_empty());
+    }
+
+    /// 同時接続数の持ち分は、`Conn::new` が途中で失敗しても戻ること (T9.6)。
+    ///
+    /// 以前は `serve` が `open` を直接 `fetch_add` し、返すのは `Conn` の
+    /// `_open: OpenGuard` の `Drop` だった。`Conn::new` は番人を作る**前**に
+    /// `set_write_timeout(...)?` を通るので、ここで失敗すると持ち分が誰にも
+    /// 戻されず、積もると `PROXY_MAX_CONNS` に達して恒久的に 503 になる。
+    /// `PROXY_TIMEOUT_SECS=0` (= `Duration::ZERO`) は継承が断られるうえ
+    /// `set_write_timeout(Some(ZERO))` が必ず失敗するので、設定ひとつで踏める。
+    #[test]
+    fn open_slot_comes_back_when_conn_setup_fails() {
+        let limiter = Limiter::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _client = TcpStream::connect(addr).unwrap();
+        let (stream, peer) = listener.accept().unwrap();
+
+        // timeout 0 は継承できず (T9.3)、`set_write_timeout` も失敗する
+        let config =
+            Arc::new(config::Config::new("8080", None, None, std::time::Duration::ZERO).unwrap());
+        let metrics = Arc::new(metrics::Metrics::new());
+        let cache = Arc::new(Cache::new(config.cache.clone()));
+        let upstream = Arc::new(Upstream {
+            pool: pool::Pool::new(8, std::time::Duration::from_secs(60)),
+            tls: None,
+        });
+
+        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        assert_eq!(limiter.open(), 1, "持ち分を取ったら 1");
+        let err = Conn::new(
+            stream,
+            Accepted {
+                peer,
+                local_port: addr.port(),
+            },
+            open,
+            config,
+            metrics,
+            cache,
+            upstream,
+            None,
+            None,
+            1,
+        );
+        assert!(err.is_err(), "timeout 0 では Conn::new は失敗する");
+        drop(err);
+        assert_eq!(limiter.open(), 0, "失敗しても持ち分は戻る");
+    }
+
+    /// ワーカーに渡せなかった仕事が落ちるときも持ち分が戻ること (T9.6)。
+    ///
+    /// `Workers::run` は失敗すると仕事 (`Box<dyn FnOnce>`) を呼び出し元へ返す。
+    /// `serve` はそれを落とすだけなので、番人が仕事の中に入っていることが返却の条件。
+    #[test]
+    fn open_slot_comes_back_when_the_job_is_dropped() {
+        let limiter = Limiter::new();
+        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        // `let _ = open;` だと RFC 2229 の分離キャプチャで閉包が捕まえないので `drop` で使う
+        let job: Box<dyn FnOnce() + Send> = Box::new(move || drop(open));
+        assert_eq!(limiter.open(), 1, "仕事が持ち分を抱えている");
+        drop(job);
+        assert_eq!(limiter.open(), 0, "呼ばれずに落ちても戻る");
     }
 }
