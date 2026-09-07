@@ -18,6 +18,9 @@ LIMIT_MB="${1:-200}"
 run_in_cgroup() {
   command -v systemd-run >/dev/null 2>&1 || return 2
   systemctl is-system-running >/dev/null 2>&1 || return 2
+  # systemd-run は -E を当てる前に実行ファイルを探すので、絶対パスで渡す
+  local cargo_bin
+  cargo_bin=$(command -v cargo) || return 2
   local sudo=""
   [ "$(id -u)" -ne 0 ] && sudo="sudo -n"
   $sudo systemd-run --scope --quiet \
@@ -25,7 +28,7 @@ run_in_cgroup() {
       -p "MemoryMax=${LIMIT_MB}M" -p MemorySwapMax=0 \
       -E "PATH=$PATH" -E "HOME=$HOME" -E "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
       -E "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
-      cargo build --release
+      "$cargo_bin" build --release
 }
 
 report_rss() {
