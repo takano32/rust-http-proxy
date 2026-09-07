@@ -443,7 +443,11 @@ cargo run --release
 # ベンチ (オリジンもベンチ内で起動する。プロキシは別端末で PROXY_ALLOW_LOCAL=on を付けて先に上げておく)
 cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 # --conc 並列数 / --seconds 測定秒数 / --body-bytes 応答本文の大きさ
+# --only direct|forward|tunnel|connect|idle-tunnels|syscall-cost|all で 1 種だけ測れる
 # direct 行はプロキシを通さないオリジン直結 (ベンチ自身の上限。30 万 req/s 前後)
+
+# この機械での sendto / recvfrom 1 回の実費 (プロキシは使わない。CPU の固定が要る)
+taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 3
 ```
 
 ### 起動直後のスレッド数
