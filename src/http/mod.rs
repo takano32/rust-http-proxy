@@ -269,7 +269,7 @@ pub fn handle_http_with_headers(
     peer_addr: Option<SocketAddr>,
     request_line: &str,
     raw_headers: &[String],
-    reader: &mut BufReader<&TcpStream>,
+    reader: &mut crate::clientio::ClientReader<'_>,
     shared: &Shared,
 ) -> io::Result<bool> {
     let started = Instant::now();
@@ -854,7 +854,7 @@ pub(super) fn acquire_origin(
 
 /// クライアントのリクエスト本文をオリジンへ同じ枠組みで転送する。戻り値は本文のバイト数。
 fn forward_request_body(
-    reader: &mut BufReader<&TcpStream>,
+    reader: &mut crate::clientio::ClientReader<'_>,
     server: &mut OriginStream,
     framing: Framing,
 ) -> io::Result<u64> {

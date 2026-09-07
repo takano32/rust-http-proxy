@@ -3,6 +3,7 @@ pub mod blocklist;
 pub mod body;
 pub mod cache;
 pub mod cli;
+pub mod clientio;
 pub mod clock;
 pub mod config;
 pub mod dns;
@@ -32,7 +33,7 @@ pub mod tls;
 pub mod tunnel;
 pub mod workers;
 
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -261,7 +262,7 @@ impl Drop for HeaderBuf {
 
 /// 長さ制限付きで 1 行読む。制限を超えたら `Ok(None)`。
 fn read_limited_line(
-    reader: &mut BufReader<&TcpStream>,
+    reader: &mut clientio::ClientReader<'_>,
     line: &mut String,
 ) -> io::Result<Option<usize>> {
     let n = reader.by_ref().take(MAX_LINE as u64).read_line(line)?;
@@ -331,8 +332,10 @@ pub fn handle_client(
     // Nagle を切る。応答ヘッダーと本文を別々に write すると delayed ACK と噛み合って
     // 1 要求あたり 40 ms 止まるため (失敗しても致命的ではないので無視する)
     let _ = client.set_nodelay(true);
-    // 記述子を複製しない (接続ごとの fcntl + close と fd 1 本を節約する)
-    let mut reader = BufReader::new(&client);
+    // 記述子を複製せず、バッファとストリームを分けて持つ
+    // (アイドル中にバッファだけ残してストリームを手放せるようにするため)
+    let mut buf = clientio::ClientBuf::new();
+    let mut reader = buf.reader(&client);
     let mut served = 0usize;
     // 要求行とヘッダー行はこの接続の間ずっと使い回す (毎要求の確保をなくす)
     let mut request_line = String::new();
@@ -527,10 +530,12 @@ pub fn handle_client(
         }
 
         if is_connect {
-            // 先読みしてしまったバイト (TLS ClientHello など) はトンネルへ渡す
-            let prefix = reader.buffer().to_vec();
-            // トンネルの間は要求読み取り用のバッファも複製した記述子も要らない
-            // (アイドルのトンネルを大量に抱えるときの資源を減らす)
+            // 先読みしてしまったバイト (TLS ClientHello など) はトンネルへ渡す。
+            // 同時に読み取りバッファを手放す (トンネルの間は要求として読まないので、
+            // アイドルのトンネルを大量に抱えるときの資源が減る)
+            let prefix = reader.take_buffered();
+            // 借用を終えて client を move できるようにする (ClientReader は Drop を持たない)
+            #[allow(clippy::drop_non_drop)]
             drop(reader);
             return tunnel::handle_connect(
                 client,
