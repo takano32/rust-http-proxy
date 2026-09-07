@@ -141,14 +141,14 @@ OOM killer に落とされる (実測: 200 MB の cgroup で、並列だと落�
 | ビルドが通る最小のメモリ | 347 MB でも通らない | **110 MB** (CI) / 100 MB (手元) — 上限 200 MB に対し 90 MB の余裕 |
 | バイナリ | 857 KB | 1,316 KB (release) / **988 KB** (dist) |
 | CPU/要求 (forward / HIT / CONNECT 確立) | — | **50.2 / 39.1 / 179.3 us** |
-| テスト | 150 単体 + 21 結合 | **177 単体 + 42 結合** |
+| テスト | 150 単体 + 21 結合 | **180 単体 + 42 結合** |
 
 ### 完了の定義 (§0 のゴールに対して)
 
 - [x] Phase 0〜1 と T2.1・T2.2・T3.1・T3.2・T3.4 が完了、README の性能節に Rust ベンチの値がある
 - [x] forward 8 並列 p50 が 1 ms 台 (loopback) — 実際は **0.20 ms**
 - [x] トンネルが 1.5 GiB/s 以上 — **2.6 GiB/s**
-- [x] 既定設定で `cargo test --workspace` 全通過 (177 単体 + 42 結合)
+- [x] 既定設定で `cargo test --workspace` 全通過 (180 単体 + 42 結合)
 - [x] `rust-http-proxy --lite -p 8080` の 1 行で「認証なし・手軽・最速」
 ## 3. やったこと
 
@@ -731,12 +731,14 @@ CPU/要求 50.2 us の 68% はカーネル側なので、効く順もこの順�
     `proxy-cachedisk` は別に測る予定だったが、9 クレートで何も動かない以上、1 つ足しても同じなので測っていない。
     9 行の override は「クレートを足すたびにどちらの層か決める」手間だけを増やすので、置かずに戻した。
 
-- [ ] **T9.3 accept した接続への `setsockopt` 4 回を、待ち受けソケットからの継承に置き換える**
+- [x] **T9.3 accept した接続への `setsockopt` 4 回を、待ち受けソケットからの継承に置き換える**
   - 目的: 1 接続 1 要求では 14 システムコール/接続のうち 4 が `setsockopt` (T8.2 の内訳)。Linux では accept した
     ソケットが待ち受けソケットの `TCP_NODELAY` / `SO_RCVTIMEO` / `SO_SNDTIMEO` を引き継ぐ (`sk_clone_lock` が
     `struct sock` ごと複製する) ので、待ち受けに 1 回設定すれば接続ごとには要らない。
   - 変更箇所: `crates/sys/src/sys.rs` (`setsockopt` の束縛。`TcpListener` には `set_nodelay` が無い)、
     `src/lib.rs` (`serve` / `Conn::new` / `serve_one` の `read_timeout` の初期値)、`src/main.rs` (bind 直後)、`crates/net/src/net.rs` (`bind_all`)。
+    → 実際に触ったのは `crates/sys/src/sys.rs` と `src/lib.rs` の 2 つだけ。`.env` の再読込に追従するには
+    設定を引いている `serve` で当てるのが素直で、`bind_all` (`net`) や `main` は設定を持っていないため。
   - 今の経路: `Conn::new` が `set_write_timeout(timeout)` と `set_nodelay(true)` (2 回)。`serve_one` は `read_timeout` が `None` から
     始まるので 1 要求目で `set_read_timeout(timeout)` (3 回目)、2 要求目は猶予 `park_grace` に変えるので 4 回目。
     **4 回目は残す** (1 要求目 = timeout、2 要求目以降 = 猶予、という切り替えは要る)。503 の経路 (`OVERLOAD_RESPONSE`) でも `set_write_timeout` を呼んでいる。
@@ -759,6 +761,34 @@ CPU/要求 50.2 us の 68% はカーネル側なので、効く順もこの順�
   - 計測: 変更前のバイナリを退避し、`scripts/cpu-per-request.sh --no-keepalive` を前後交互に 3 回ずつ。keep-alive・`--only connect`・
     キャッシュ HIT も前後 1〜2 回ずつ (退行が無いこと)。`strace -f -c` で `setsockopt` /接続 を前後で数える。p50 も表に。
   - 受け入れ基準: `setsockopt` が 4.00 → 1.00 回/接続。1 接続 1 要求の CPU/接続 が下がること (中央値)。keep-alive・connect・HIT が退行しないこと。全テスト通過。
+  - 結果: **`setsockopt` は 4.00 → 1.00 回/接続** (受け入れ基準どおり。`strace -f -c`、1 接続 1 要求で
+    111,928/27,973 → 26,499/26,463)。残る 1 回は「2 要求目を猶予 `park_grace` で待つ」ぶんで、これは残す仕様。
+    CPU/接続 は前後交互 5 回ずつの中央値で **117.27 → 113.99 us (-2.8%)**。5 組すべてで後が低いので向きは確かだが、
+    ぶれ (±8%) より小さい。3 回のシステムコールは 1 回 0.4 us 程度なので、この幅で妥当。
+
+    | 1 接続 1 要求 (`--no-keepalive`、5 回の中央値) | 前 | 後 |
+    |---|---|---|
+    | CPU/接続 | 117.27 us | **113.99 us** (-2.8%) |
+    | req/s | 13,047 | 13,205 |
+    | p50 | 0.317 ms | 0.320 ms |
+    | `setsockopt`/接続 | 4.00 | **1.00** |
+
+    退行が無いことの確認 (前後交互、keep-alive と HIT は 2 回・connect は 5 回の中央値):
+    keep-alive forward 48.11〜49.72 → 49.13〜50.75 us (ぶれの中)、`--only connect` 187.58 → 180.26 us (-3.9%)、
+    キャッシュ HIT 40.00〜41.07 → 39.62〜40.28 us。keep-alive の 1 要求あたりのシステムコールは 5.04 のまま
+    (`setsockopt` は 0.0048 → 0.0016 回/要求。keep-alive では元々 1 接続ぶんが多数の要求に薄まっている)。
+    `--only connect` の tunnels/s だけ中央値 7,402 → 6,187 と出たが、この計測は 4,156〜7,862 と倍近く動くので
+    ぶれ (CPU/op と p50 はどちらも改善している)。
+
+    実装は `crates/sys/src/sys.rs` の `inherit_socket_options`
+    (`SOL_SOCKET`/`SO_RCVTIMEO`/`SO_SNDTIMEO`/`IPPROTO_TCP`/`TCP_NODELAY`、`struct timeval`、aarch64 と x86_64 のみ)。
+    `serve` が待ち受けに 1 回当て、`Conn::new` は継承済みなら `set_write_timeout` / `set_nodelay` を飛ばし
+    `read_timeout` を継承値から始める。**失敗したら従来どおり接続ごとに設定する**フォールバックは残してある
+    (`inherit_on_listener` が `None` を返す経路。Linux 以外・aarch64/x86_64 以外・`timeout` が 0 のときもここに落ちる)。
+    `SO_RCVTIMEO` は `accept()` にも効くので、accept ループは `WouldBlock`/`TimedOut` をログも sleep も無しに `continue` する。
+    `.env` で `timeout` が変わったら待ち受けに当て直し、その 1 本だけは接続ごとの設定に落とす。
+    カーネルの挙動を固定する単体テストを 3 本足した (継承の確認・`accept()` が `SO_RCVTIMEO` で `WouldBlock`・`0` を断る)。
+    テストは 180 単体 + 42 結合 (`97afc9d`)
 
 - [ ] **T9.4 accept したスレッドがそのまま接続を処理する (受け渡しの `futex` をなくす)**
   - 目的: いまは待ち受けごとに 1 本の accept スレッドが接続を受け、`Box<dyn FnOnce>` にしてチャネルでワーカーへ渡す

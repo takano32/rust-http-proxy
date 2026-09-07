@@ -1,9 +1,10 @@
-//! Linux のシステムコールを直接叩く薄い層 (`poll`, `pipe2`, `splice`, `recv`, `epoll`)。
+//! Linux のシステムコールを直接叩く薄い層 (`poll`, `pipe2`, `splice`, `recv`, `epoll`, `setsockopt`)。
 //! 外部クレートは使わず `unsafe extern "C"` で宣言する。Linux 以外ではこのモジュール自体が無い。
 
 use std::ffi::{c_int, c_uint, c_void};
 use std::io;
 use std::os::fd::RawFd;
+use std::time::Duration;
 
 unsafe extern "C" {
     fn mallopt(param: c_int, value: c_int) -> c_int;
@@ -23,6 +24,13 @@ unsafe extern "C" {
     fn epoll_create1(flags: c_int) -> c_int;
     fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut EpollEvent) -> c_int;
     fn epoll_wait(epfd: c_int, events: *mut EpollEvent, maxevents: c_int, timeout: c_int) -> c_int;
+    fn setsockopt(
+        fd: c_int,
+        level: c_int,
+        name: c_int,
+        value: *const c_void,
+        len: u32, // socklen_t
+    ) -> c_int;
 }
 
 /// `struct pollfd`。
@@ -211,6 +219,94 @@ pub fn peek(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
         return Err(e);
     }
     Ok(n as usize)
+}
+
+/// `setsockopt(2)` の定数 (aarch64 / x86_64 で同じ値。他の arch は値が違うので
+/// [`inherit_socket_options`] ごと外し、呼び出し側は接続ごとの設定に落ちる)。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+mod sockopt {
+    use std::ffi::c_int;
+
+    pub const SOL_SOCKET: c_int = 1;
+    pub const SO_RCVTIMEO: c_int = 20;
+    pub const SO_SNDTIMEO: c_int = 21;
+    pub const IPPROTO_TCP: c_int = 6;
+    pub const TCP_NODELAY: c_int = 1;
+
+    /// `struct timeval` (64 bit Linux)。
+    #[repr(C)]
+    pub struct TimeVal {
+        pub tv_sec: i64,
+        pub tv_usec: i64,
+    }
+}
+
+/// 待ち受けソケットに「accept した接続へ引き継がせたいオプション」をまとめて当てる。
+///
+/// Linux は `accept` のときに `sk_clone_lock` が `struct sock` ごと複製するので、
+/// `TCP_NODELAY` / `SO_RCVTIMEO` / `SO_SNDTIMEO` は待ち受けから接続へそのまま引き継がれる。
+/// 待ち受けに 1 回当てておけば接続ごとの `setsockopt` 3 回を払わなくて済む。
+///
+/// **`SO_RCVTIMEO` は `accept()` 自体にも効く** (`timeout` ごとに `EAGAIN` で戻る) ので、
+/// 呼び出し側の accept ループは `WouldBlock` を「まだ来ていない」として読み飛ばすこと。
+///
+/// 失敗したら `Err` を返す。呼び出し側は**従来どおり接続ごとに設定する**こと
+/// (カーネルが引き継がない環境でも動きが変わらないように)。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+pub fn inherit_socket_options(listener_fd: RawFd, timeout: Duration) -> io::Result<()> {
+    use sockopt::*;
+
+    // 0 は「無期限」の意味になってしまう (std の set_read_timeout も 0 を拒む)。
+    // 呼び出し側の従来経路と同じ扱いにするためここで断る
+    if timeout.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot set a 0 duration timeout",
+        ));
+    }
+    let mut tv = TimeVal {
+        tv_sec: timeout.as_secs().min(i64::MAX as u64) as i64,
+        tv_usec: timeout.subsec_micros() as i64,
+    };
+    // 1 マイクロ秒未満の指定が「無期限」に化けないようにする (std と同じ丸め方)
+    if tv.tv_sec == 0 && tv.tv_usec == 0 {
+        tv.tv_usec = 1;
+    }
+    let one: c_int = 1;
+    // Nagle を切る。応答ヘッダーと本文を別々に write すると delayed ACK と噛み合って
+    // 1 要求あたり 40 ms 止まるため
+    set(listener_fd, IPPROTO_TCP, TCP_NODELAY, &one)?;
+    set(listener_fd, SOL_SOCKET, SO_RCVTIMEO, &tv)?;
+    set(listener_fd, SOL_SOCKET, SO_SNDTIMEO, &tv)?;
+    Ok(())
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+pub fn inherit_socket_options(_listener_fd: RawFd, _timeout: Duration) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "socket option constants are only known for aarch64 and x86_64",
+    ))
+}
+
+/// `setsockopt` を 1 つ当てる。`value` は C 側の型と同じレイアウトを持つ値。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+fn set<T>(fd: RawFd, level: c_int, name: c_int, value: &T) -> io::Result<()> {
+    // SAFETY: value は呼び出しの間だけ有効なら良く (カーネルが値を複製する)、
+    // 長さもその型の大きさをそのまま渡している。
+    let r = unsafe {
+        setsockopt(
+            fd,
+            level,
+            name,
+            value as *const T as *const c_void,
+            size_of::<T>() as u32,
+        )
+    };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// `struct epoll_event`。
@@ -421,6 +517,47 @@ mod tests {
         let ep = Epoll::new().unwrap();
         let f = std::fs::File::open("/proc/self/cmdline").unwrap();
         assert!(ep.add(f.as_raw_fd(), EPOLLIN, 0).is_err());
+    }
+
+    #[test]
+    fn accepted_sockets_inherit_the_listener_options() {
+        // カーネルの挙動を固定するテスト。accept したソケットが待ち受けの
+        // TCP_NODELAY / SO_RCVTIMEO / SO_SNDTIMEO を引き継がない環境が出たら、
+        // ここが落ちて「接続ごとに設定する」経路へ戻せる (T9.3)
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let timeout = std::time::Duration::from_secs(7);
+        inherit_socket_options(listener.as_raw_fd(), timeout).unwrap();
+
+        let _client = TcpStream::connect(addr).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        assert!(accepted.nodelay().unwrap(), "TCP_NODELAY を引き継ぐ");
+        assert_eq!(accepted.read_timeout().unwrap(), Some(timeout));
+        assert_eq!(accepted.write_timeout().unwrap(), Some(timeout));
+    }
+
+    #[test]
+    fn accept_times_out_with_the_receive_timeout() {
+        // SO_RCVTIMEO は accept() にも効く。serve の accept ループはこれを
+        // 「まだ来ていない」として読み飛ばす (ログも sleep も無しに continue)
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        inherit_socket_options(listener.as_raw_fd(), std::time::Duration::from_millis(50)).unwrap();
+        let started = std::time::Instant::now();
+        let err = listener.accept().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "無期限に待っていない"
+        );
+    }
+
+    #[test]
+    fn zero_timeout_is_refused() {
+        // 0 は「無期限」になってしまうので断る (呼び出し側は従来経路に落ちる)
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let err =
+            inherit_socket_options(listener.as_raw_fd(), std::time::Duration::ZERO).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]

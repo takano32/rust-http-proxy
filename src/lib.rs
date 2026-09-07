@@ -105,16 +105,26 @@ pub fn serve(
         .local_addr()
         .map(|a| a.port())
         .unwrap_or_else(|_| config_of().port);
+    // Linux では accept したソケットが待ち受けの TCP_NODELAY / SO_RCVTIMEO / SO_SNDTIMEO を
+    // 引き継ぐ。待ち受けに 1 回当てておけば、接続ごとの setsockopt 3 回が要らない (T9.3)。
+    // 当たらなかった環境では None のままで、従来どおり接続ごとに設定する
+    let mut inherited = inherit_on_listener(&listener, config_of().timeout);
     loop {
         // incoming() は accept() の戻り値のアドレスを捨てるので accept() を直接呼ぶ
         // (接続ごとの getpeername が 1 回減る)
         let (mut stream, peer) = match listener.accept() {
             Ok(v) => v,
-            // 割り込みと「相手が accept 前に切った」はすぐ次へ
+            // 待ち受けに載せた SO_RCVTIMEO は accept() にも効くので、接続が来ないまま
+            // timeout 秒たつと WouldBlock で戻ってくる。これは異常ではないので
+            // ログも待ちも無しに待ち直す (下の「その他のエラー」より必ず先に拾うこと)。
+            // 割り込みと「相手が accept 前に切った」も同じくすぐ次へ
             Err(e)
                 if matches!(
                     e.kind(),
-                    io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                        | io::ErrorKind::ConnectionAborted
                 ) =>
             {
                 continue;
@@ -128,6 +138,13 @@ pub fn serve(
             }
         };
         let cfg = config_of();
+        // この接続が継承したのは「今 待ち受けに当たっている値」。.env の再読込で timeout が
+        // 変わった直後だけは食い違うので、その接続は従来どおり接続ごとに設定する
+        let conn_inherited = inherited.filter(|t| *t == cfg.timeout);
+        if conn_inherited.is_none() && inherited.is_some() {
+            // 待ち受けに当て直す (次の接続から効く)
+            inherited = inherit_on_listener(&listener, cfg.timeout);
+        }
         // 上限を超えたらスレッドを起こさずに 503 を返して閉じる
         let max = cfg.max_conns;
         if max > 0 && limiter.open() >= max {
@@ -149,7 +166,9 @@ pub fn serve(
                     max
                 );
             }
-            let _ = stream.set_write_timeout(Some(cfg.timeout));
+            if conn_inherited.is_none() {
+                let _ = stream.set_write_timeout(Some(cfg.timeout));
+            }
             let _ = stream.write_all(OVERLOAD_RESPONSE);
             let _ = stream.flush();
             continue;
@@ -164,7 +183,18 @@ pub fn serve(
         let started = workers.run(Box::new(move || {
             // 同時接続数と active_connections の持ち分は Conn が持つ (接続の寿命と一致させる)
             let accepted = Accepted { peer, local_port };
-            match Conn::new(stream, accepted, l, cfg, m, c, p, w, conn_id) {
+            match Conn::new(
+                stream,
+                accepted,
+                l,
+                cfg,
+                m,
+                c,
+                p,
+                w,
+                conn_inherited,
+                conn_id,
+            ) {
                 Ok(conn) => run_conn(Box::new(conn)),
                 Err(e) => log_error!(Some(conn_id), "{}", e),
             }
@@ -174,6 +204,29 @@ pub fn serve(
             log_error!(Some(conn_id), "failed to get a thread for the connection");
         }
     }
+}
+
+/// 待ち受けソケットに「accept した接続へ引き継がせるオプション」を当てる。
+/// 当たったら継承させた `timeout` を返す (当たらなければ `None` = 接続ごとに設定する)。
+fn inherit_on_listener(
+    listener: &TcpListener,
+    timeout: std::time::Duration,
+) -> Option<std::time::Duration> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        match sys::inherit_socket_options(listener.as_raw_fd(), timeout) {
+            Ok(()) => return Some(timeout),
+            Err(e) => log_debug!(
+                None,
+                "listener socket options not inherited ({}); setting them per connection",
+                e
+            ),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (listener, timeout);
+    None
 }
 
 /// 1 つのクライアント接続で処理する最大要求数 (keep-alive)。
@@ -438,6 +491,9 @@ impl Drop for ActiveGuard {
 impl Conn {
     /// accept した接続から作る。
     /// 同時接続数と active_connections はここから数え始める。
+    ///
+    /// `inherited` が `Some(t)` なら、待ち受けから `TCP_NODELAY` / `SO_RCVTIMEO` / `SO_SNDTIMEO`
+    /// (いずれも `t`) を引き継いでいるので、接続ごとの `setsockopt` は 1 回も要らない (T9.3)。
     #[allow(clippy::too_many_arguments)]
     fn new(
         client: TcpStream,
@@ -448,6 +504,7 @@ impl Conn {
         cache: Arc<Cache>,
         upstream: Arc<Upstream>,
         park: Option<Arc<idle::IdleWatch>>,
+        inherited: Option<std::time::Duration>,
         conn_id: usize,
     ) -> io::Result<Conn> {
         metrics.inc_active_conn();
@@ -457,10 +514,12 @@ impl Conn {
             started: Instant::now(),
         };
         log_debug!(Some(conn_id), "accepted connection from {}", accepted.peer);
-        client.set_write_timeout(Some(config.timeout))?;
-        // Nagle を切る。応答ヘッダーと本文を別々に write すると delayed ACK と噛み合って
-        // 1 要求あたり 40 ms 止まるため (失敗しても致命的ではないので無視する)
-        let _ = client.set_nodelay(true);
+        if inherited.is_none() {
+            client.set_write_timeout(Some(config.timeout))?;
+            // Nagle を切る。応答ヘッダーと本文を別々に write すると delayed ACK と噛み合って
+            // 1 要求あたり 40 ms 止まるため (失敗しても致命的ではないので無視する)
+            let _ = client.set_nodelay(true);
+        }
         Ok(Conn {
             client,
             buf: clientio::ClientBuf::new(),
@@ -471,7 +530,8 @@ impl Conn {
             upstream,
             conn_id,
             served: 0,
-            read_timeout: None,
+            // 継承していれば読み取りタイムアウトはもう載っている (1 要求目の setsockopt が省ける)
+            read_timeout: inherited,
             scratch: None,
             park,
             _open: OpenGuard(limiter),
