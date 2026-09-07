@@ -140,7 +140,7 @@ pub fn start_test_proxy_full(
     thread::spawn(move || {
         rust_http_proxy::serve(
             listener,
-            move || Arc::clone(&cfg),
+            || Arc::clone(&cfg),
             rust_http_proxy::Limiter::new(),
             workers,
             metrics,
