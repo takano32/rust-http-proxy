@@ -31,7 +31,7 @@ Every setting can also be given as an environment variable or in $HOME/.env
 
   SERVER_PORT              listen port (8080)
   PROXY_BIND               listen addresses (dual stack by default)
-  PROXY_MAX_CONNS          maximum concurrent connections (4096, 0 = unlimited)
+  PROXY_MAX_CONNS          maximum concurrent connections (auto, 0 = unlimited)
   PROXY_TIMEOUT_SECS       origin timeout (30)
   PROXY_KEEPALIVE_SECS     client keep-alive idle time (15)
   PROXY_TUNNEL_IDLE_SECS   CONNECT tunnel idle timeout (300, 0 = never)

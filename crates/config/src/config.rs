@@ -6,6 +6,40 @@ use crate::acl::{AclConfig, PortSet};
 use crate::cache::CacheConfig;
 use crate::envfile;
 
+/// 1 接続が最悪で使う記述子の数: クライアント 1 + オリジン 1 + 素通し中のパイプ 2 (`splice`)。
+pub const FDS_PER_CONN: u64 = 4;
+
+/// 接続以外で使う記述子の予備: 待ち受け (最大 2) + epoll + inotify + 状態ファイル +
+/// ブロックリストの取得 + キャッシュのディスク I/O + 標準入出力。多めに見て 64。
+const NOFILE_RESERVE: u64 = 64;
+
+/// `PROXY_MAX_CONNS=auto` の頭打ち。
+///
+/// 記述子が余っていてもここで止める。上限は記述子だけの歯止めではなく、
+/// **fd 以外の資源 (スレッド・RSS) の歯止め**でもあるため。T2.1 で入れた既定と同じ値で、
+/// 根拠は T2.3 の実測 (同時 5,000 本のアイドル接続で RSS 198 MiB。動作環境のコンテナは小さい)。
+/// これを超える値が要るなら数値で明示してもらう。
+pub const MAX_CONNS_CAP: usize = 4096;
+
+/// `RLIMIT_NOFILE` の soft limit から同時接続数の上限を決める (`PROXY_MAX_CONNS=auto`)。
+///
+/// `(soft - 予備 64) / 4` を [`MAX_CONNS_CAP`] で頭打ちにした値。1 接続あたり最悪 4 記述子なので、
+/// `ulimit -n` が 1024 の環境なら 240、4096 なら 1008 で、**`accept` が `EMFILE` で失敗する前に
+/// 503 で断れる**。`0` (無制限) には決してしない (記述子切れに戻ってしまうため下限は 1)。
+pub fn auto_max_conns(nofile_soft: u64) -> usize {
+    let usable = nofile_soft.saturating_sub(NOFILE_RESERVE) / FDS_PER_CONN;
+    usable.clamp(1, MAX_CONNS_CAP as u64) as usize
+}
+
+/// `PROXY_MAX_CONNS` の既定 (= `auto`)。`RLIMIT_NOFILE` が読めない環境では [`MAX_CONNS_CAP`]。
+pub fn default_max_conns() -> usize {
+    #[cfg(target_os = "linux")]
+    if let Some(soft) = crate::sys::max_open_files() {
+        return auto_max_conns(soft);
+    }
+    MAX_CONNS_CAP
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// 待ち受けポート
@@ -67,8 +101,8 @@ pub struct Config {
     pub allow_local: bool,
     /// CONNECT トンネルのアイドル打ち切り時間 (`PROXY_TUNNEL_IDLE_SECS`、既定 300 秒、`0` で無期限)
     pub tunnel_idle: Duration,
-    /// 同時に受ける接続数の上限 (`PROXY_MAX_CONNS`、既定 4096、`0` で無制限)。
-    /// 超えた接続には 503 を返して閉じる (スレッドは起こさない)
+    /// 同時に受ける接続数の上限 (`PROXY_MAX_CONNS`、既定 `auto`、`0` で無制限)。
+    /// 超えた接続には 503 を返して閉じる (スレッドは起こさない)。`auto` の決め方は [`auto_max_conns`]
     pub max_conns: usize,
     pub cache: CacheConfig,
 }
@@ -140,10 +174,15 @@ impl Config {
         if let Some(v) = envfile::var("PROXY_TLS_VERIFY") {
             cfg.tls_verify = !off(v);
         }
-        if let Some(n) =
-            envfile::var("PROXY_MAX_CONNS").and_then(|s| s.trim().parse::<usize>().ok())
-        {
-            cfg.max_conns = n;
+        // `auto` (既定) は記述子の上限から決める。数値ならその値、`0` は無制限。
+        // 読めない書き方は既定 (auto) のままにする
+        if let Some(v) = envfile::var("PROXY_MAX_CONNS") {
+            let v = v.trim();
+            if v.eq_ignore_ascii_case("auto") {
+                cfg.max_conns = default_max_conns();
+            } else if let Ok(n) = v.parse::<usize>() {
+                cfg.max_conns = n;
+            }
         }
         if let Some(secs) =
             envfile::var("PROXY_TUNNEL_IDLE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
@@ -245,7 +284,7 @@ impl Config {
             connect_ports: PortSet::default(),
             allow_local: false,
             tunnel_idle: Duration::from_secs(300),
-            max_conns: 4096,
+            max_conns: default_max_conns(),
             cache: CacheConfig::default(),
         })
     }
@@ -280,9 +319,26 @@ mod tests {
         assert_eq!(cfg.pool_per_host, 64);
         assert_eq!(cfg.pool_total, 256);
         assert_eq!(cfg.malloc_arenas, 8);
-        assert_eq!(cfg.max_conns, 4096);
+        assert_eq!(cfg.max_conns, default_max_conns());
         assert_eq!(cfg.tunnel_idle, Duration::from_secs(300));
         assert!(cfg.connect_ports.is_empty() && !cfg.allow_local);
+    }
+
+    #[test]
+    fn test_auto_max_conns() {
+        // 1 接続 4 記述子 + 予備 64。記述子切れ (accept の EMFILE) より先に 503 で断れる値
+        assert_eq!(auto_max_conns(256), 48);
+        assert_eq!(auto_max_conns(1024), 240);
+        assert_eq!(auto_max_conns(4096), 1008);
+        // 記述子が余っていても頭打ち (fd 以外の資源の歯止め)
+        assert_eq!(auto_max_conns(524_288), MAX_CONNS_CAP);
+        assert_eq!(auto_max_conns(1_048_576), MAX_CONNS_CAP);
+        assert_eq!(auto_max_conns(u64::MAX), MAX_CONNS_CAP);
+        // 予備にも足りない極端な環境でも 0 (= 無制限) にはしない
+        assert_eq!(auto_max_conns(64), 1);
+        assert_eq!(auto_max_conns(0), 1);
+        // 既定はこの計算そのもので、上限を超えない
+        assert!((1..=MAX_CONNS_CAP).contains(&default_max_conns()));
     }
 
     #[test]

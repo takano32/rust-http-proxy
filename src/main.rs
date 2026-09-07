@@ -18,6 +18,18 @@ use rust_http_proxy::{log_debug, log_error, log_info};
 /// オリジンへのアイドル接続を保持する時間 (長いほどプールのヒット率が上がる)。
 const ORIGIN_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// 起動ログ用に `RLIMIT_NOFILE` の soft limit を引く (読めない環境では `None`)。
+fn nofile_limit() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        rust_http_proxy::sys::max_open_files()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 fn main() {
     match rust_http_proxy::cli::parse(std::env::args().skip(1)) {
         rust_http_proxy::cli::Cli::Print(msg, 0) => {
@@ -216,6 +228,20 @@ fn main() {
         } else {
             "off (PROXY_IPV6=on to enable)"
         }
+    );
+    // 上限の根拠を追えるように、決まった値と元になった記述子の上限を出す (T8.5)
+    log_info!(
+        None,
+        "max connections: {} (open file limit {}, {} descriptors per connection)",
+        if config.max_conns == 0 {
+            "unlimited".to_string()
+        } else {
+            config.max_conns.to_string()
+        },
+        nofile_limit()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        rust_http_proxy::config::FDS_PER_CONN
     );
     if !config.acl.allow_hosts.is_empty() {
         log_info!(None, "allowed hosts: {:?}", config.acl.allow_hosts);

@@ -309,6 +309,78 @@ fn set<T>(fd: RawFd, level: c_int, name: c_int, value: &T) -> io::Result<()> {
     Ok(())
 }
 
+/// `getrlimit(2)` / `setrlimit(2)` の定数と `struct rlimit`。
+///
+/// `RLIMIT_NOFILE` の番号 (7) は asm-generic の値で、mips / sparc では違う。`rlim_t` の幅も
+/// libc 次第 (64 ビット環境の glibc / musl はどちらも 64 ビット、32 ビットの musl は 64 ビットだが
+/// 32 ビットの glibc は 32 ビット) で、食い違うと呼び出し側のスタックを壊す。
+/// [`inherit_socket_options`] と同じく **aarch64 / x86_64 だけ**で有効にし、それ以外では
+/// 「分からない」を返す (呼び出し側は固定の既定値に落ちる)。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+mod rlimit {
+    use std::ffi::c_int;
+
+    pub const RLIMIT_NOFILE: c_int = 7;
+
+    /// `struct rlimit` (64 ビットの `rlim_t` 2 つ)。
+    #[repr(C)]
+    pub struct RLimit {
+        pub cur: u64,
+        pub max: u64,
+    }
+
+    unsafe extern "C" {
+        pub fn getrlimit(resource: c_int, rlim: *mut RLimit) -> c_int;
+        pub fn setrlimit(resource: c_int, rlim: *const RLimit) -> c_int;
+    }
+}
+
+/// このプロセスが開ける記述子の数 (`RLIMIT_NOFILE` の soft limit)。
+/// 分からなければ `None` (呼び出し側は固定の既定値に落ちる)。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+pub fn max_open_files() -> Option<u64> {
+    let mut lim = rlimit::RLimit { cur: 0, max: 0 };
+    // SAFETY: lim はこの呼び出しの間だけ有効なら良い書込先。失敗は -1 で返る。
+    if unsafe { rlimit::getrlimit(rlimit::RLIMIT_NOFILE, &mut lim) } < 0 {
+        return None;
+    }
+    Some(lim.cur)
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+pub fn max_open_files() -> Option<u64> {
+    None
+}
+
+/// `RLIMIT_NOFILE` の soft limit を下げる (hard limit はそのまま)。
+/// **記述子の少ない環境を再現するためのもの** (`tests/maxconns_test.rs`)。プロセス全体に効くので、
+/// 呼ぶのは「そのテストだけが動いているテストバイナリ」に限ること。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+pub fn set_max_open_files(soft: u64) -> io::Result<()> {
+    let mut lim = rlimit::RLimit { cur: 0, max: 0 };
+    // SAFETY: 上と同じ。今の hard limit を読んでから、それを超えない値に下げる。
+    if unsafe { rlimit::getrlimit(rlimit::RLIMIT_NOFILE, &mut lim) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let next = rlimit::RLimit {
+        cur: soft.min(lim.max),
+        max: lim.max,
+    };
+    // SAFETY: next は呼び出しの間だけ有効なら良い (カーネルが値を読むだけ)。
+    if unsafe { rlimit::setrlimit(rlimit::RLIMIT_NOFILE, &next) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+pub fn set_max_open_files(_soft: u64) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "RLIMIT_NOFILE is only wired up for aarch64 and x86_64",
+    ))
+}
+
 /// `struct epoll_event`。
 ///
 /// **x86_64 (と x32) だけ `__attribute__((packed))` が付く** ため 12 バイト、
@@ -558,6 +630,22 @@ mod tests {
         let err =
             inherit_socket_options(listener.as_raw_fd(), std::time::Duration::ZERO).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[test]
+    fn reports_the_open_file_limit() {
+        // 幅や番号が食い違っていれば、ここが 0 や桁違いの値になって落ちる
+        // (下げる方はテストのプロセス全体に効くので、ここでは呼ばない)
+        let soft = max_open_files().expect("getrlimit(RLIMIT_NOFILE)");
+        assert!(soft >= 64, "soft limit が小さすぎる: {}", soft);
+        let open = std::fs::File::open("/proc/self/cmdline").unwrap();
+        assert!(
+            (open.as_raw_fd() as u64) < soft,
+            "開いている fd 番号 {} が soft limit {} を超えている",
+            open.as_raw_fd(),
+            soft
+        );
     }
 
     #[test]
