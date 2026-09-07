@@ -38,7 +38,7 @@ jobs:
       - name: Build memory
         run: |
           cargo clean
-          ./scripts/build-memory.sh 200
+          ./scripts/build-memory.sh --find 120 130 140 150 160 170 180 190 200
 
       # ベンチは数字を残すだけ (閾値では落とさない。CI の機械は揺れるため)
       - name: Benchmark
