@@ -1072,6 +1072,152 @@ CPU/要求 50.2 us の 68% はカーネル側なので、効く順もこの順�
       (`PROXY_TUNNEL_IDLE_SECS=0` は「無期限」なので、同じ 0 でも意味が違う)。持ち分は漏れなくなったので急がないが、
       直すなら「0 は無期限」か「1 秒未満は 1 秒に切り上げ」のどちらかに寄せる話。
 
+### Phase 10 — 未踏の経路を測る (forward は掘り尽くした)
+
+Phase 9 のあと、forward keep-alive は **42.74 us/要求 のうち カーネルが 30.64 us (72%)** になった。
+T9.5 が「確保を 7 回/要求 減らしても CPU が動かない」を実測したので、**確保回数はもう効く指標ではない**。
+一方で **CONNECT 確立 170.3 us (forward の 4 倍)** と **キャッシュ HIT の user 15.94 us (forward の 11.93 us より重い)** は
+**一度も内訳を取っていない**。Phase 10 はそこを測る。
+
+- [ ] **T10.0 §2 の表を現在のバイナリで測り直す (`dist` も)**
+  - 目的: §2 の数字の出どころがばらばらで、いくつかは**現在と食い違っている**。
+    いちばんはっきりしているのは **CONNECT トンネル 1 本**で、§2 は 2,681 MiB/s (T1.3、2026-09-07) だが
+    T8.1 が測った値は **1,252 MiB/s** と 2 倍違う。64 並列 25,912 req/s は T5.2 の値、
+    キャッシュ HIT 75,563 req/s は T1.2 の値で、どちらもその後 Phase 6〜9 を通っていない。
+    **配布するバイナリは `dist` (fat LTO) なのに、§2 には `release` の数字しかない**のも問題
+    (T9.1 の実測では fat LTO で forward -4.5% / HIT -9.3%)。
+  - 変更箇所: `TASKS.md` の §2 のみ (コードは変えない)。必要なら `scripts/cpu-per-request.sh` の使い方を README に 1 行。
+  - やること: 現在の HEAD の `release` と `dist` の両方を作り、§2 の各行を**同じ道具で測り直す**。
+    1. `cargo build --release` と `cargo build --profile dist`、`cargo build --release -p proxy-bench`。
+    2. `scripts/cpu-per-request.sh` で forward 8 並列 / 64 並列 / `--cacheable` / `--only connect` / `--only tunnel --conc 1` /
+       `--no-keepalive` を **`release` と `dist` の両方**について 3 回ずつ、中央値。
+    3. 暇な keep-alive 接続 2,000 本と暇なトンネル 5,000 本のスレッド数・RSS (T8.1 の `--only idle-tunnels` を使う)。
+    4. `strace -f -c` でシステムコール/要求 と /接続。確保回数は測らない (T9.5 で指標として無効と分かったため。§2 の行は
+       「T9.5 時点の 10.0」と出典を書いて据え置く)。
+    5. `scripts/build-memory.sh --find` で通る最小のメモリ。
+  - 受け入れ基準: §2 の各行に**いつ・どのバイナリで測ったか**が分かること (`release` と `dist` を併記)。
+    2,681 MiB/s と 1,252 MiB/s の食い違いに説明がつくこと (ベンチの引数が変わったのか、機械の状態か、退行か)。
+    **退行が見つかったら、それ自体を新しいタスクとして書く**。
+
+- [ ] **T10.1 CONNECT 確立 170 us/本 の内訳を出し、上位を潰す**
+  - 目的: forward 42.74 us の **4 倍**なのに、一度も profile していない。`--only connect` は「CONNECT を張って
+    `200 Connection Established` を読んだら閉じる」を繰り返すので、DNS・接続・トンネル起動の固定費がそのまま出る。
+  - 変更箇所: 内訳しだい (`crates/net/src/net.rs` の Happy Eyeballs、`crates/net/src/dns.rs`、`crates/tunnel/src/tunnel.rs`、
+    `src/lib.rs` の `Step::Connect`、`crates/origin/src/pool.rs`)。
+  - 読む場所: `handle_connect` → `start_tunnel` → `relay::run`。T1.3 (poll + splice)、T2.3 (スタック 256 KiB・パイプの遅延生成)、
+    T8.1 (預ける形に割った `Idle` / `run_until_idle`) を先に読む。
+  - やること: T9.5 と同じ道具立て。
+    1. `CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release`。
+    2. `--only connect` を回している最中に `perf record -e cpu-clock -F 4999 -g -p <pid> -- sleep 10`、
+       `perf report --no-children --percent-limit 1 --stdio --sort symbol` で上位を表にし、`% × user CPU/本` で us に直す。
+    3. `strace -f -c` で **1 本あたりのシステムコール**を数え、内訳の表にする (forward の 5.02 回/要求 と並べる)。
+       `socket` / `connect` / `getaddrinfo` 由来 / `pipe2` / `epoll_ctl` / `close` がそれぞれ何回か。
+    4. **カーネルとユーザーの比**を出す (`/proc/<pid>/stat` の utime/stime。forward は user 11.93 / kernel 30.64)。
+    5. 上位から **5% 以上取れる見込みのものだけ**直す。1 つ直すごとに交互 3 回ずつ。効かないものは戻して §4 に 1 行。
+  - 見当 (先入観にしないこと): `127.0.0.1` のようなリテラル宛でも DNS 解決を通っていないか。Happy Eyeballs が
+    2 本張って 1 本捨てていないか。トンネルの `Idle` を組むときの `String` (宛先) と `Arc::clone`。
+    `pipe2` の遅延生成が効いているか (T2.3)。`Instant::now()` の回数。
+  - 受け入れ基準: **関数別とシステムコール別の内訳の表が残る**こと。かつ CONNECT 確立の CPU/本 が 5% 以上下がるか、
+    「これ以上は効かない」と根拠つきで記録されていること (T9.5 の段 3 と同じ形で)。
+
+- [ ] **T10.2 キャッシュ HIT の user 15.94 us が forward の 11.93 us より重い理由を出す**
+  - 目的: HIT はオリジンに一切行かないのに、**ユーザー空間の CPU が forward より 4.0 us 多い**
+    (T9.5 の実測: HIT 38.66 us = user 15.94 / kernel 22.7、forward 42.74 us = user 11.93 / kernel 30.64)。
+    T9.5 は forward だけを profile したので、HIT 専用の経路は手つかず。T5.5 で本文の直接書きとヘッダー再解析の省略は入れたが、
+    それは 256 KiB の本文の話で、ベンチの 1 KiB 応答では効かない。
+  - 変更箇所: 内訳しだい (`crates/http/src/http/serve.rs`、`crates/cache/src/cache/ops.rs` の `get` / `peek`、
+    `crates/freshness`、`crates/cachekey`)。
+  - やること:
+    1. T9.5 と同じ手順で、`PROXY_ARGS="" PROXY_MEM_CACHE_MB=64 PROXY_DISK_CACHE_MB=64 PROXY_CACHE_RESERVE=off
+       PROXY_CACHE_DIR=/tmp/proxy-bench/cache scripts/cpu-per-request.sh --cacheable` の最中に perf。
+    2. **forward の内訳と同じ分類で表を作り、差分を出す** (T9.5 の「何に使っているか」の 7 分類をそのまま使うと比較できる)。
+       どこが forward より重いのかを名指しする。
+    3. 確保も同じ道具 (数えるアロケータ) で HIT 経路について取る。**計測用のコードはコミットに入れない。**
+    4. 上位から 5% 以上取れるものだけ直す。1 つずつ交互 3 回。
+  - 見当 (先入観にしないこと): 鍵の生成 (`cachekey`) が要求ごとに `String` を作る。鮮度判定 (`freshness`) の日付解析。
+    `Cache::get` のロック 2 回 (T9.5 の「原子操作 1.08 us」の一部)。`serve_cached` が `Vec<Header>` を組み直す。
+    レンジ (206) と条件付き (304) の判定が HIT のたびに走る。
+  - 受け入れ基準: **forward と同じ分類で並べた内訳の表**が残り、「HIT の user が重い理由」が名指しで説明できること。
+    かつ HIT の user CPU/要求 が 5% 以上下がるか、根拠つきで「効かない」と記録されていること。
+
+- [ ] **T10.3 forward のカーネル 30.6 us/要求 の内訳を出し、削れるかの結論を出す**
+  - 目的: forward の **72% がカーネル**になった。システムコールは `recvfrom` 3 + `sendto` 2 = 5.02 回/要求 で
+    T4.4 以来の床にいる。**この 30.6 us が「5 回のシステムコールの実費」なのか、それとも別の何かなのか**を確かめる。
+    削れないなら「これが床だ」と根拠つきで残すのが成果 (§0 の「速さは必ず計測して示す」に対する答えになる)。
+  - 変更箇所: 原則としてコードは変えない (T10.4 が続く)。
+  - やること:
+    1. `strace -f -c -w` (壁時計) で**システムコールごとの時間**を取り、5 回の内訳を出す。
+       `-c` の既定は CPU 時間ではないので、`/proc/<pid>/stat` の stime との突き合わせも行う。
+    2. **1 回いくらか**を切り分ける: 何もしないループで `recvfrom` / `sendto` を回す小さな計測を書き
+       (`crates/bench` に `--only syscall-cost` のような隠しモードでよい)、この機械での 1 回の実費を出す。
+       big.LITTLE なので **cpu4-7 に固定**して測る (§1 のとおり cpu0-3 とは 2.2 倍違う)。
+    3. 5 回 × 実費 と 30.64 us を比べ、**差があるならどこか**を言う (ソケットバッファのコピー量、`epoll` の出入り、
+       スケジューラの起床、TCP のスタック処理)。本文 1 KiB を 0 / 4 KiB / 64 KiB に変えて傾きを見ると切り分けやすい。
+    4. 結論を書く。削れる余地があるなら T10.4 以降のタスクとして書き足す。
+  - 受け入れ基準: **カーネル 30.64 us の行き先が数字で説明できる**こと (「`recvfrom` × 3 = A us、`sendto` × 2 = B us、
+    残り C us は〜」の形)。削れないなら、その根拠が §4 に 1 行残ること。
+
+- [ ] **T10.4 プールの生存確認 `recvfrom` を「一定時間アイドルだった接続だけ」にする**
+  - 目的: 要求あたり 5.02 回のシステムコールのうち 1 回は、プールから出したオリジン接続の生存確認
+    (`recvfrom(MSG_PEEK | MSG_DONTWAIT)`、T1.6)。**全体の 20%**。§4 は「省略するとプールが desync したとき
+    **他人の応答**が渡り、誤った URL のキャッシュとして固定化する」として **全廃**を否定した。
+    だが**直前の要求で使ったばかりの接続**なら、オリジンが閉じる暇はほぼ無い。「最後に使ってから T ミリ秒未満なら省く」
+    という条件付きなら、危険を増やさずに 20% を削れる可能性がある。
+  - 変更箇所: `crates/origin/src/pool.rs` (`is_alive` の呼び出し条件、`Entry` に `last_used: Instant`)、
+    `crates/config` (しきい値の環境変数)、README。
+  - やること:
+    1. **先に危険を数える**: しきい値 T のとき、オリジンが「最後に使ってから T ms 以内」に閉じる確率を考える。
+       keep-alive のオリジンは自分のアイドルタイムアウト (nginx 既定 75 s、Apache 5 s) で閉じるので、
+       **T が数十 ms なら閉じるのは事実上「相手が異常終了したとき」だけ**。その場合も `sendto` か次の `recvfrom` が
+       `ECONNRESET` / EOF を返すので、**desync ではなく検出可能な失敗**になる。この論証を必ずコメントと TASKS に残す。
+    2. `PROXY_POOL_PEEK_AFTER_MS` (既定 50 ぐらいから) を足し、`0` で「常に確認」(従来動作)。
+    3. 「省いた結果 EOF を踏んだ」ときに**必ず新しい接続で張り直して再送する**こと (べき等でない要求を二重に送らないよう、
+       **要求本文を送る前に失敗した場合だけ**再送する。既存の再送の仕組みがあるならそれに乗る)。ここが崩れると
+       §4 の懸念そのものになるので、**結合テストを必ず足す**。
+    4. 計測: `--conc 8` の forward を前後交互 3 回ずつ。`strace -f -c` で `recvfrom`/要求 が 3.00 → 2.0x になること。
+  - 受け入れ基準: `recvfrom` が 3.00 → **2.1 回/要求 以下**、forward の CPU/要求 が **5% 以上下がる**こと。
+    「オリジンが省いた窓の中で閉じた」場合に**誤った応答が渡らない**ことを見る結合テスト (オリジンを閉じてから
+    しきい値内に要求を送り、502 か張り直しになることを確かめる)。効かない・危ないと分かったら戻して §4 に 1 行。
+
+- [ ] **T10.5 一斉 close のときにスレッドが跳ねないようにする (`Workers` に生きているスレッドの上限)**
+  - 目的: T8.1 の実測で、預けたトンネル 5,000 本が同時に切れると **一時的に最大 4,621 スレッド**まで増える
+    (中央値は 68)。閉じるのに shutdown・アクセスログ・統計が要るので監視スレッドでは落とせず、1 本ずつワーカーへ渡している。
+    同じ性質は HTTP の預かり接続が一斉に要求を送ったときにもある (T6.4 から)。
+  - 変更箇所: `crates/workers/src/workers.rs` (`spawn` の判断)、`src/idle.rs` (引き上げの束ね方)、`crates/config`。
+  - やること: `Workers` に「生きているスレッドの上限」(既定はコア数 × 8 か、`PROXY_MAX_CONNS` から決める) を入れ、
+    上限に達したら**新しいスレッドを起こさず待たせる** (仕事は捨てない)。`IdleWatch` の期限切れは既に 1 周 16 本で
+    切っているので (T6.6)、起床側も同じように束ねられないかを見る。
+  - 受け入れ基準: 暇なトンネル 5,000 本を一斉に閉じたときの**スレッド最大が数百以下**になること (前 4,621)。
+    閉じきるまでの時間が極端に延びないこと (前後の値を表に)。forward・connect・tunnel が退行しないこと。
+    `survives_a_panicking_job` を含む既存の `workers` のテストが通ること。
+
+- [ ] **T10.6 `PROXY_TIMEOUT_SECS=0` の意味を揃える**
+  - 目的: いまは `Duration::ZERO` がそのまま渡り、**全接続が `set_write_timeout` で失敗する** (T9.6 でこの経路が
+    持ち分を漏らす不具合を直したが、挙動そのものは変なまま)。同じ `0` でも `PROXY_TUNNEL_IDLE_SECS=0` は「無期限」で、
+    意味が食い違っている。
+  - 変更箇所: `crates/config/src/config.rs` (`from_env` の `timeout_secs`)、`src/lib.rs` (`inherit_on_listener` と `Conn::new`)、README。
+  - やること: **`0` = 無期限** (`set_*_timeout(None)`) に寄せる。`PROXY_TUNNEL_IDLE_SECS` と揃うのでこちらを採る
+    (「1 秒に切り上げ」は、無期限を表す手段が無くなるので採らない — 理由をコメントに残す)。
+    `inherit_socket_options` は timeout 0 を断っているので、無期限のときは**継承せず接続ごとに `None` を設定する**か、
+    `timeval {0, 0}` が「無期限」を意味することを使って継承する (Linux ではそう。どちらにするか実測で決め、理由を残す)。
+    アイドル接続を預ける仕組み (T6.5 の猶予) が無期限とどう噛み合うかを必ず確かめる。
+  - 受け入れ基準: `PROXY_TIMEOUT_SECS=0` で起動して普通に代理でき、暇な接続が閉じられないことを見る結合テスト。
+    既定 (30) の挙動と性能が変わらないこと (keep-alive を 1 回測る)。README の表に `0` の意味を書く。
+
+- [ ] **T10.7 やり残しの小物 3 件**
+  - 目的: Phase 8〜9 で「範囲外」として残したもの。どれも小さいので 1 タスクにまとめる。**1 件 1 コミット**。
+  - やること:
+    1. **`/status` に `max_conns` を出す** (T8.5 のやり残し)。`/status` の JSON は `proxy-metrics` が組み立てていて
+       `Config` を持たないので、`endpoints::Endpoint` に決まった値を渡す配線が要る。`auto` で決まった値が
+       起動ログを見なくても分かるようにするのが目的。
+    2. **`crates/http/src/http/mod.rs` の `pub use serve::{Serve, write_cached_response};` を `pub(super)` に落とす**
+       (T8.6 のやり残し)。クレートの外に利用者がいないことは grep で確認済み (0 件)。
+    3. **`Pool::get` が行を空にするときエントリを消すのをやめる** (T9.5 のやり残し)。消すので `put` が
+       0.2 回/要求 の割合で鍵の `String` を作り直している。残す場合は**ホストが増え続けるとエントリが溜まる**ので、
+       `sweep()` (T5.2 で呼び出し元を足した) で空のエントリも掃除すること。
+  - 受け入れ基準: 3 件とも `cargo test --workspace` 全通過。3 は確保が 10.0 → 9.8 回/要求 になること (性能は測らなくてよい。
+    T9.5 のとおりこの大きさの確保は CPU に出ない)。1 は `/status` に値が出ることを見るテスト。
+
 ## 付録 A. 計測の記録 (時系列)
 
 着手時からの数字の履歴。**現在地は §2**。Phase 5 以降の数字は各タスクの `結果:` にある (ここには重複して書かない)。
