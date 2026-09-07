@@ -1621,7 +1621,7 @@ T9.5 が「確保を 7 回/要求 減らしても CPU が動かない」を実�
     - `PROXY_BLOCKLIST_URL` の取得も 0 なら締め切り無しになる (背景スレッド 1 本の話なので放置)。
 
 
-- [ ] **T10.7 やり残しの小物 4 件**
+- [x] **T10.7 やり残しの小物 4 件**
   - 目的: Phase 8〜10 で「範囲外」として残したもの。どれも小さいので 1 タスクにまとめる。**1 件 1 コミット**。
   - やること:
     1. **`/status` に `max_conns` を出す** (T8.5 のやり残し)。`/status` の JSON は `proxy-metrics` が組み立てていて
@@ -1635,8 +1635,49 @@ T9.5 が「確保を 7 回/要求 減らしても CPU が動かない」を実�
     4. **416 の応答で `Content-Type` が落ちない** (T10.2 が見つけた既存の取りこぼし)。`head.lines.retain(...)` は
        `ResponseHead` 側だけを直すが、マッピング形式でない経路は生の先頭から `write_response_head` で書くので
        この行が残る。直すには `write_response_head` に「落とすヘッダー名」を渡す口が要る。
-  - 受け入れ基準: 3 件とも `cargo test --workspace` 全通過。3 は確保が 10.0 → 9.8 回/要求 になること (性能は測らなくてよい。
+  - 受け入れ基準: 4 件とも `cargo test --workspace` 全通過。3 は確保が 10.0 → 9.8 回/要求 になること (性能は測らなくてよい。
     T9.5 のとおりこの大きさの確保は CPU に出ない)。1 は `/status` に値が出ることを見るテスト。
+    4 は 416 のときに `Content-Type` が落ちることを見るテスト。
+  - 結果: **4 件とも入れた。** 1 件 1 コミット。
+
+    **1. `/status` に上限といまのスレッド数を出した** (`354da2f`)。増えた鍵は `max_conns` / `max_threads`
+    (`auto` で決まった値。`0` = 無制限) / `live_threads` / `idle_threads` / `queued_jobs`。
+    配線は `proxy-metrics` の `StatusExtras` に `Concurrency` を足して**上の層から値を渡す**形
+    (`settings` / `blocklist` / `state_file` と同じ扱い。下の層が `Config` や `Workers` を呼ぶと依存が輪になる)。
+    **熱い経路には乗せていない**: `endpoints::Endpoint` が受け取るのは値ではなく `&dyn Fn() -> Concurrency` で、
+    `/status` を組み立てるときだけ呼ぶ。生きているスレッド数と待ち行列を数えるには全接続スレッドで共有している
+    `Workers` の鍵が要り、`Endpoint` は要求ごとに組むので、値で渡すと 1 要求あたり鍵を 3 回取ることになる。
+    `Conn` は `Arc<Workers>` を 1 本持つ (接続あたり `Arc::clone` 1 回、要求あたり 0)。
+    T10.5 のやり残しだった `Workers::live_count()` / `queued()` / `idle_count()` はこれで呼び出し元がついた。
+
+    **2. `Serve` / `write_cached_response` をクレートの外に出さないようにした** (`0a720a9`、T8.6 のやり残し)。
+    利用者は grep で 0 件 (T10.2 で `serve.rs` が変わっているので数え直した)。**指示の `pub(super)` にはしなかった**:
+    `mod.rs` の再エクスポートを `pub(super)` に落とすと親に利用者がいないので `unused_imports` で `-D warnings` に当たる。
+    再エクスポートの行ごと消して**定義側 (`serve.rs`) を `pub(super)`** にした方が狭い。
+    これまでは `proxy-endpoints` が `pub use proxy_http::http;` で再エクスポートしているので
+    `proxy_endpoints::http::Serve` まで見えていた。
+
+    **3. `Pool::get` が行を空にするときエントリを消すのをやめた** (`8b7e239`、T9.5 のやり残し)。
+    消すので次の `put` が `idle.entry(host.to_string())` に落ち、鍵の `String` を作り直していた (T9.5 の実測で 0.2 回/要求)。
+    **性能は測っていない** (T9.5 のとおりこの大きさの確保は CPU に出ない)。空のエントリは `sweep()` が消すが、
+    **`sweep()` を回しているのは `.env` の監視スレッドで、`HOME` が無い環境では `reload::spawn` が `None` を返して
+    そのスレッドが立たない**。掃除が来なくても溜まらないよう `get` に歯止めを置いた:
+    **行の数が持てるアイドル接続の本数 (`max_total`) を超えていたら余りは必ず空行**なので、そのときだけその場で消す
+    (行数は `max_total + 1` で頭打ち)。単体テスト 2 本で回帰を止める。
+
+    **4. 416 の応答で `Content-Type` が落ちていなかったのを直した** (`69d31f4`、T10.2 が見つけた取りこぼし)。
+    まず**落ちていないことを見るテストを書いて再現**した。`head.lines.retain(...)` は `ResponseHead` を組み立てる経路
+    (マッピング形式で `Location` を書き換えるとき) しか直しておらず、素の HIT は T10.2 以降 生の先頭をそのまま
+    `write_response_head` に渡すのでこの行が残っていた。`headers::write_response_head` に「落とすヘッダー名」を渡す口
+    (`drop_names: &[&str]`) を足し、名前の一致は `headers::line_named` に切り出して**両方の経路で同じ判定**を使う
+    (以前の `retain` は `to_ascii_lowercase().starts_with("content-type:")` で、空白入り `Content-Type : x` を
+    取りこぼすうえ確保も 1 回していた)。`drop_names` が空なら何もしないので素通しと 200 / 206 は 1 バイトも変わらない。
+
+    テスト 200 単体 + 52 結合 → **205 単体 + 53 結合** (258 本、全通過)。性能ベンチは 4 件とも不要
+    (要求ごとに増えた仕事は 0) (`354da2f` `0a720a9` `8b7e239` `69d31f4`)
+    - **やり残し**: `/metrics` (Prometheus) とダッシュボードには `max_conns` / `live_threads` を出していない
+      (`/status` だけ)。`PROXY_MAX_THREADS` が `.env` の再読込で変わらない点 (T10.5 のやり残し) はそのまま。
+
 
 - [x] **T10.8 `--only tunnel` はプロキシではなくベンチを測っている**
   - 目的: T10.0 で分かった。トンネル 1 本の計測中、**プロキシの user CPU は 0.00 us/MiB** で、
