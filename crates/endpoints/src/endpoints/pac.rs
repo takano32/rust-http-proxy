@@ -82,6 +82,7 @@ mod tests {
     fn pac_uses_host_header_and_direct_list() {
         let direct = vec!["*.example.com".to_string(), "intra".to_string()];
         let (m, c, port, host, d) = ep(Some("tokyo.sorahost.net:60624"), &direct);
+        let concurrency = || crate::metrics::Concurrency::default();
         let e = Endpoint {
             metrics: &m,
             cache: &c,
@@ -90,6 +91,7 @@ mod tests {
             host,
             lite: false,
             pac_direct: d,
+            concurrency: &concurrency,
         };
         let script = render(&e, "/proxy.pac", false);
         assert!(script.contains("function FindProxyForURL(url, host)"));
@@ -103,6 +105,7 @@ mod tests {
     #[test]
     fn pac_prefers_absolute_form_authority() {
         let (m, c, port, host, d) = ep(Some("other:1"), &[]);
+        let concurrency = || crate::metrics::Concurrency::default();
         let e = Endpoint {
             metrics: &m,
             cache: &c,
@@ -111,6 +114,7 @@ mod tests {
             host,
             lite: false,
             pac_direct: d,
+            concurrency: &concurrency,
         };
         let script = render(&e, "http://proxy.local:8080/proxy.pac", true);
         assert!(script.contains("PROXY proxy.local:8080; DIRECT"));

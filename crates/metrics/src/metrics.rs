@@ -198,6 +198,8 @@ pub struct StatusExtras<'a> {
     pub blocklist: &'a str,
     /// 状態ファイルの状態 (`persist::status_json()`)
     pub state_file: &'a str,
+    /// 上限といまのスレッドの数 ([`Concurrency`])
+    pub concurrency: Concurrency,
 }
 
 impl Default for StatusExtras<'_> {
@@ -206,8 +208,28 @@ impl Default for StatusExtras<'_> {
             settings: "null",
             blocklist: "null",
             state_file: "null",
+            concurrency: Concurrency::default(),
         }
     }
+}
+
+/// 上限と、いまの接続スレッドの数 (`/status` 用)。
+///
+/// `auto` で決まった上限を**起動ログを見なくても確かめられる**ようにするためのもの
+/// (`PROXY_MAX_CONNS` は T8.5、`PROXY_MAX_THREADS` と待ち行列は T10.5 のやり残し)。
+/// 値を決めるのは上の層 (`Config` と `Workers`) で、ここは受け取って並べるだけ。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Concurrency {
+    /// 同時接続数の上限 (`PROXY_MAX_CONNS` が `auto` なら決まった値。`0` で無制限)
+    pub max_conns: usize,
+    /// 生きていてよい接続スレッドの上限 (`PROXY_MAX_THREADS`。`0` で無制限)
+    pub max_threads: usize,
+    /// いま生きている接続スレッドの数
+    pub live_threads: usize,
+    /// そのうち空き置き場に積んである数 (仕事を待っているスレッド)
+    pub idle_threads: usize,
+    /// 上限に達して待たせている仕事の数 (捨てていない)
+    pub queued_jobs: usize,
 }
 
 /// ホスト別統計の上限。超えた分は `other` にまとめる。
@@ -427,8 +449,10 @@ impl Metrics {
         format!(
             concat!(
                 "{{\"status\":\"ok\",\"uptime_secs\":{},\"total_requests\":{},",
-                "\"active_connections\":{},\"parked_connections\":{},\"parked_tunnels\":{},",
+                "\"active_connections\":{},\"max_conns\":{},",
+                "\"parked_connections\":{},\"parked_tunnels\":{},",
                 "\"parking\":{},",
+                "\"live_threads\":{},\"idle_threads\":{},\"queued_jobs\":{},\"max_threads\":{},",
                 "\"rejected_overload\":{},\"bytes_forwarded\":{},",
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
@@ -438,9 +462,14 @@ impl Metrics {
             uptime,
             requests,
             active,
+            extra.concurrency.max_conns,
             self.parked_connections.load(Ordering::Relaxed),
             self.parked_tunnels.load(Ordering::Relaxed),
             self.park_watcher_alive.load(Ordering::Relaxed),
+            extra.concurrency.live_threads,
+            extra.concurrency.idle_threads,
+            extra.concurrency.queued_jobs,
+            extra.concurrency.max_threads,
             self.rejected_overload.load(Ordering::Relaxed),
             bytes,
             self.cache_hits.load(Ordering::Relaxed),
@@ -513,6 +542,40 @@ mod tests {
         metrics.dec_active_conn();
         let json2 = metrics.to_json();
         assert!(json2.contains("\"active_connections\":0"));
+        // 上の層が渡さないときは 0 (= 無制限・数えていない) で出る
+        assert!(json2.contains("\"max_conns\":0"));
+        assert!(
+            json2.contains(
+                "\"live_threads\":0,\"idle_threads\":0,\"queued_jobs\":0,\"max_threads\":0"
+            )
+        );
+    }
+
+    /// 上限といまのスレッド数は上の層から渡ったものがそのまま出ること (T10.7)。
+    #[test]
+    fn capacity_from_the_upper_layer_lands_in_the_status_json() {
+        let m = Metrics::new();
+        let json = m.to_json_with_cache(
+            None,
+            StatusExtras {
+                concurrency: Concurrency {
+                    max_conns: 48,
+                    max_threads: 256,
+                    live_threads: 7,
+                    idle_threads: 3,
+                    queued_jobs: 2,
+                },
+                ..StatusExtras::default()
+            },
+        );
+        assert!(json.contains("\"max_conns\":48"), "{}", json);
+        assert!(
+            json.contains(
+                "\"live_threads\":7,\"idle_threads\":3,\"queued_jobs\":2,\"max_threads\":256"
+            ),
+            "{}",
+            json
+        );
     }
 
     #[test]

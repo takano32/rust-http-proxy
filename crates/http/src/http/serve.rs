@@ -246,7 +246,11 @@ fn status_of(head: &[u8]) -> u16 {
 }
 
 /// キャッシュ済みレスポンスの配信方法。
-pub struct Serve<'a> {
+///
+/// この型と [`write_cached_response`] を使うのは `http` の中だけ (クレートの外に利用者は
+/// いない)。以前は `mod.rs` が `pub use` で外まで出していて、`proxy-endpoints` からも
+/// 見えていた (T8.6 のやり残し)
+pub(super) struct Serve<'a> {
     pub label: &'a str,
     pub source: CacheSource,
     pub age: u64,
@@ -259,7 +263,7 @@ pub struct Serve<'a> {
 
 /// キャッシュ済みレスポンスに枠組み (Content-Length) と `X-Cache` / `Age` を付けて書き出す。
 /// 戻り値は (ステータス, 書いたバイト数)。
-pub fn write_cached_response(
+pub(super) fn write_cached_response(
     client: &mut impl Write,
     entry: CachedResponse,
     serve: &Serve<'_>,
@@ -288,6 +292,8 @@ pub fn write_cached_response(
     let status;
     // ステータス行を差し替えるのは 206 / 416 のときだけ (`None` なら保存済みのものを使う)
     let status_line: Option<&str>;
+    // 保存済みの先頭から落とすヘッダー (416 のときだけ。空なら何も落とさない)
+    let mut drop_names: &[&str] = &[];
     let (start, len) = match serve.range {
         RangeSpec::Bytes { start, end } => {
             status = 206;
@@ -299,10 +305,11 @@ pub fn write_cached_response(
         RangeSpec::Unsatisfiable => {
             status = 416;
             status_line = Some("HTTP/1.1 416 Range Not Satisfiable");
-            if let Some(h) = head.as_mut() {
-                h.lines
-                    .retain(|l| !l.to_ascii_lowercase().starts_with("content-type:"));
-            }
+            // 本文を返さないので、保存してある `Content-Type` は落とす。
+            // **両方の経路で落とすこと**: マッピング形式は `ResponseHead` を組み立てるが、
+            // それ以外は生の先頭をそのまま `write_response_head` に渡すので、
+            // `ResponseHead` の側だけを直しても素の HIT では残ってしまう (T10.7)
+            drop_names = &["content-type"];
             extra[n_extra] = content_range_line(&mut cr_buf, None, body_len);
             n_extra += 1;
             (0, 0)
@@ -329,11 +336,19 @@ pub fn write_cached_response(
             if let Some(sl) = status_line {
                 h.status_line = sl.to_string();
             }
+            h.lines
+                .retain(|l| !crate::headers::line_named(l, drop_names));
             h.assemble(extra)
         }
         None => {
             let mut out = Vec::with_capacity(entry.head.len() + 128);
-            crate::headers::write_response_head(&mut out, &entry.head, status_line, extra);
+            crate::headers::write_response_head(
+                &mut out,
+                &entry.head,
+                status_line,
+                drop_names,
+                extra,
+            );
             out
         }
     };
