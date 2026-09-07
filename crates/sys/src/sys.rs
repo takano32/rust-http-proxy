@@ -249,6 +249,7 @@ mod sockopt {
 ///
 /// **`SO_RCVTIMEO` は `accept()` 自体にも効く** (`timeout` ごとに `EAGAIN` で戻る) ので、
 /// 呼び出し側の accept ループは `WouldBlock` を「まだ来ていない」として読み飛ばすこと。
+/// `timeout` が 0 (= 無期限) のときは `accept()` も無期限に待つ。
 ///
 /// 失敗したら `Err` を返す。呼び出し側は**従来どおり接続ごとに設定する**こと
 /// (カーネルが引き継がない環境でも動きが変わらないように)。
@@ -256,20 +257,18 @@ mod sockopt {
 pub fn inherit_socket_options(listener_fd: RawFd, timeout: Duration) -> io::Result<()> {
     use sockopt::*;
 
-    // 0 は「無期限」の意味になってしまう (std の set_read_timeout も 0 を拒む)。
-    // 呼び出し側の従来経路と同じ扱いにするためここで断る
-    if timeout.is_zero() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "cannot set a 0 duration timeout",
-        ));
-    }
     let mut tv = TimeVal {
         tv_sec: timeout.as_secs().min(i64::MAX as u64) as i64,
         tv_usec: timeout.subsec_micros() as i64,
     };
-    // 1 マイクロ秒未満の指定が「無期限」に化けないようにする (std と同じ丸め方)
-    if tv.tv_sec == 0 && tv.tv_usec == 0 {
+    // Linux では `timeval {0, 0}` が「タイムアウト無し」。`PROXY_TIMEOUT_SECS=0` は
+    // まさにそれを意味するので (T10.6)、0 はそのまま渡して**継承させる**。
+    // 以前はここで断って接続ごとの設定に落としていたが、落ちた先の
+    // `set_write_timeout(Some(ZERO))` を std が `InvalidInput` で拒むので、
+    // その設定では全接続が失敗していた。
+    // 0 でない指定が丸めで「無期限」に化けるのは困るので、そちらは 1 us に上げる
+    // (std と同じ丸め方)
+    if !timeout.is_zero() && tv.tv_sec == 0 && tv.tv_usec == 0 {
         tv.tv_usec = 1;
     }
     let one: c_int = 1;
@@ -624,12 +623,20 @@ mod tests {
     }
 
     #[test]
-    fn zero_timeout_is_refused() {
-        // 0 は「無期限」になってしまうので断る (呼び出し側は従来経路に落ちる)
+    fn zero_timeout_is_inherited_as_no_timeout() {
+        // `PROXY_TIMEOUT_SECS=0` = 無期限 (T10.6)。Linux の `timeval {0, 0}` が
+        // まさに「タイムアウト無し」なので、そのまま継承させられる
+        // (接続ごとの `set_write_timeout(Some(ZERO))` は std が断るので使えない)。
+        // カーネルがこの意味を変えたらここが落ちる
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let err =
-            inherit_socket_options(listener.as_raw_fd(), std::time::Duration::ZERO).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        let addr = listener.local_addr().unwrap();
+        inherit_socket_options(listener.as_raw_fd(), std::time::Duration::ZERO).unwrap();
+
+        let _client = TcpStream::connect(addr).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        assert!(accepted.nodelay().unwrap(), "TCP_NODELAY は引き継ぐ");
+        assert_eq!(accepted.read_timeout().unwrap(), None, "読みは無期限");
+        assert_eq!(accepted.write_timeout().unwrap(), None, "書きも無期限");
     }
 
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]

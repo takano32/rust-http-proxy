@@ -11,7 +11,7 @@ pub mod idle;
 // 本体でも結合テストでもそのまま通るようにするため)。
 pub use proxy_base::{
     cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info, log_trace,
-    log_warn, sync,
+    log_warn, sync, timeout,
 };
 pub use proxy_blocklist::blocklist;
 pub use proxy_cache::cache;
@@ -107,7 +107,8 @@ pub fn serve(
         .unwrap_or_else(|_| config_of().port);
     // Linux では accept したソケットが待ち受けの TCP_NODELAY / SO_RCVTIMEO / SO_SNDTIMEO を
     // 引き継ぐ。待ち受けに 1 回当てておけば、接続ごとの setsockopt 3 回が要らない (T9.3)。
-    // 当たらなかった環境では None のままで、従来どおり接続ごとに設定する
+    // 当たらなかった環境では None のままで、従来どおり接続ごとに設定する。
+    // timeout 0 (= 無期限、T10.6) も `timeval {0, 0}` としてそのまま継承させる
     let mut inherited = inherit_on_listener(&listener, config_of().timeout);
     loop {
         // incoming() は accept() の戻り値のアドレスを捨てるので accept() を直接呼ぶ
@@ -117,6 +118,9 @@ pub fn serve(
             // 待ち受けに載せた SO_RCVTIMEO は accept() にも効くので、接続が来ないまま
             // timeout 秒たつと WouldBlock で戻ってくる。これは異常ではないので
             // ログも待ちも無しに待ち直す (下の「その他のエラー」より必ず先に拾うこと)。
+            // timeout 0 (= 無期限) なら accept は戻ってこないが、このループが空振りの
+            // 合間にしていることは無い (設定は接続ごとに config_of() で引き直す) ので、
+            // 無期限に待って構わない。
             // 割り込みと「相手が accept 前に切った」も同じくすぐ次へ
             Err(e)
                 if matches!(
@@ -167,7 +171,7 @@ pub fn serve(
                 );
             }
             if conn_inherited.is_none() {
-                let _ = stream.set_write_timeout(Some(cfg.timeout));
+                let _ = stream.set_write_timeout(timeout::for_socket(cfg.timeout));
             }
             let _ = stream.write_all(OVERLOAD_RESPONSE);
             let _ = stream.flush();
@@ -209,6 +213,11 @@ pub fn serve(
 
 /// 待ち受けソケットに「accept した接続へ引き継がせるオプション」を当てる。
 /// 当たったら継承させた `timeout` を返す (当たらなければ `None` = 接続ごとに設定する)。
+///
+/// `timeout` が `Duration::ZERO` (= 無期限) でも当たる。Linux の `timeval {0, 0}` が
+/// 「タイムアウト無し」そのものなので、無期限のときこそ継承させた方が安い
+/// (継承しないと接続ごとに `set_write_timeout(None)` / `set_nodelay` / `set_read_timeout(None)`
+/// の 3 回を払う。実測: 1 接続 1 要求 で setsockopt 3.00 → 0.00 回/接続)。
 fn inherit_on_listener(
     listener: &TcpListener,
     timeout: std::time::Duration,
@@ -376,7 +385,7 @@ fn read_line_or_idle(
                     return Ok(Line::Idle);
                 }
                 // 要求の途中: 猶予ではなく本来のアイドル時間で待ち直す
-                stream.set_read_timeout(Some(full))?;
+                stream.set_read_timeout(timeout::for_socket(full))?;
                 *extended = true;
             }
             Err(e) => return Err(e),
@@ -436,7 +445,8 @@ pub struct Conn {
     conn_id: usize,
     /// この接続で処理した要求の数
     served: usize,
-    /// 今ソケットに設定してある読み取りタイムアウト (同じ値なら setsockopt を呼ばない)
+    /// 今ソケットに設定してある読み取りタイムアウト (同じ値なら setsockopt を呼ばない)。
+    /// `None` は「まだ何も設定していない」、`Some(Duration::ZERO)` は「無期限を設定済み」
     read_timeout: Option<std::time::Duration>,
     /// 要求行とヘッダー行の置き場。処理している間だけ持ち、預けるときはスレッドへ返す
     scratch: Option<Scratch>,
@@ -532,7 +542,8 @@ impl Conn {
         };
         log_debug!(Some(conn_id), "accepted connection from {}", accepted.peer);
         if inherited.is_none() {
-            client.set_write_timeout(Some(config.timeout))?;
+            // 0 は無期限 (T10.6)。std は `Duration::ZERO` を断るので `None` に直す
+            client.set_write_timeout(timeout::for_socket(config.timeout))?;
             // Nagle を切る。応答ヘッダーと本文を別々に write すると delayed ACK と噛み合って
             // 1 要求あたり 40 ms 止まるため (失敗しても致命的ではないので無視する)
             let _ = client.set_nodelay(true);
@@ -760,21 +771,27 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     scratch.reset();
 
     // 2 回目以降で監視スレッドに預けられるなら、待つのは猶予のあいだだけ。
-    // 空振りしたら「暇だ」と解釈して預ける (poll を別に呼ばずに済む)
+    // 空振りしたら「暇だ」と解釈して預ける (poll を別に呼ばずに済む)。
+    // **`config.timeout` が 0 (無期限) でもここは変わらない**: 猶予は `park_grace` の
+    // 長さで、`timeout` とは別物なので、空振り = 「暇だ」の判定はそのまま起きる
+    // (T6.5 の預ける仕組みは無期限でも動く。結合テストで確かめてある)
     let grace = (*served > 0
         && park.is_some()
         && !config.park_grace.is_zero()
         && !config.keepalive.is_zero())
     .then_some(config.park_grace);
-    // 最初の要求は通常のタイムアウト、2 回目以降は keep-alive のアイドル時間で待つ
+    // 最初の要求は通常のタイムアウト、2 回目以降は keep-alive のアイドル時間で待つ。
+    // `config.timeout` が 0 なら 1 要求目は無期限に待つ (= 何も送ってこない接続を
+    // 閉じない。`PROXY_TIMEOUT_SECS=0` が意味するのはこれ。T10.6)
     let wait = match (grace, *served) {
         (Some(g), _) => g,
         (None, 0) => config.timeout,
         (None, _) => config.keepalive,
     };
-    // タイムアウトの再設定は値が変わるときだけ (setsockopt は要求ごとに効いてくる)
+    // タイムアウトの再設定は値が変わるときだけ (setsockopt は要求ごとに効いてくる)。
+    // `wait` が 0 なら無期限 (`PROXY_TIMEOUT_SECS=0`。T10.6)
     if *read_timeout != Some(wait) {
-        client.set_read_timeout(Some(wait))?;
+        client.set_read_timeout(timeout::for_socket(wait))?;
         *read_timeout = Some(wait);
     }
     // 猶予で待っている間に要求が届き始めたら、本来のアイドル時間まで待ち直す
@@ -899,7 +916,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     }
     // 要求行とヘッダーは keep-alive のアイドル時間で待っている。本文を読むならここで戻す
     if has_body && *read_timeout != Some(config.timeout) {
-        client.set_read_timeout(Some(config.timeout))?;
+        client.set_read_timeout(timeout::for_socket(config.timeout))?;
         *read_timeout = Some(config.timeout);
     }
     let host_header: Option<&str> = host_line
@@ -1047,19 +1064,24 @@ mod tests {
     /// `_open: OpenGuard` の `Drop` だった。`Conn::new` は番人を作る**前**に
     /// `set_write_timeout(...)?` を通るので、ここで失敗すると持ち分が誰にも
     /// 戻されず、積もると `PROXY_MAX_CONNS` に達して恒久的に 503 になる。
-    /// `PROXY_TIMEOUT_SECS=0` (= `Duration::ZERO`) は継承が断られるうえ
-    /// `set_write_timeout(Some(ZERO))` が必ず失敗するので、設定ひとつで踏める。
+    ///
+    /// **失敗のさせ方は T10.6 で変えた**。以前は `PROXY_TIMEOUT_SECS=0` が
+    /// `set_write_timeout(Some(ZERO))` を必ず失敗させたのでそれを使っていたが、
+    /// 0 は「無期限」(= `None`) になったので成功する。代わりにソケットでない
+    /// 記述子 (パイプ) を渡して `setsockopt` を `ENOTSOCK` で失敗させる。
+    #[cfg(unix)]
     #[test]
     fn open_slot_comes_back_when_conn_setup_fails() {
-        let limiter = Limiter::new();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let _client = TcpStream::connect(addr).unwrap();
-        let (stream, peer) = listener.accept().unwrap();
+        use std::os::fd::OwnedFd;
 
-        // timeout 0 は継承できず (T9.3)、`set_write_timeout` も失敗する
-        let config =
-            Arc::new(config::Config::new("8080", None, None, std::time::Duration::ZERO).unwrap());
+        let limiter = Limiter::new();
+        // ソケットでない記述子。`set_write_timeout` が ENOTSOCK で失敗する
+        let (reader, _writer) = std::io::pipe().unwrap();
+        let stream = TcpStream::from(OwnedFd::from(reader));
+
+        let config = Arc::new(
+            config::Config::new("8080", None, None, std::time::Duration::from_secs(5)).unwrap(),
+        );
         let metrics = Arc::new(metrics::Metrics::new());
         let cache = Arc::new(Cache::new(config.cache.clone()));
         let upstream = Arc::new(Upstream {
@@ -1072,8 +1094,8 @@ mod tests {
         let err = Conn::new(
             stream,
             Accepted {
-                peer,
-                local_port: addr.port(),
+                peer: "127.0.0.1:1".parse().unwrap(),
+                local_port: 8080,
             },
             open,
             config,
@@ -1084,9 +1106,58 @@ mod tests {
             None,
             1,
         );
-        assert!(err.is_err(), "timeout 0 では Conn::new は失敗する");
+        assert!(err.is_err(), "ソケットでなければ Conn::new は失敗する");
         drop(err);
         assert_eq!(limiter.open(), 0, "失敗しても持ち分は戻る");
+    }
+
+    /// `PROXY_TIMEOUT_SECS=0` は「無期限」なので `Conn::new` は成功すること (T10.6)。
+    ///
+    /// 以前はここで `set_write_timeout(Some(Duration::ZERO))` が必ず失敗し、
+    /// **この設定では 1 本も代理できなかった**。
+    #[test]
+    fn zero_timeout_sets_no_timeout_instead_of_failing() {
+        let limiter = Limiter::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _client = TcpStream::connect(addr).unwrap();
+        let (stream, peer) = listener.accept().unwrap();
+
+        let config =
+            Arc::new(config::Config::new("8080", None, None, std::time::Duration::ZERO).unwrap());
+        let metrics = Arc::new(metrics::Metrics::new());
+        let cache = Arc::new(Cache::new(config.cache.clone()));
+        let upstream = Arc::new(Upstream {
+            pool: pool::Pool::new(8, std::time::Duration::from_secs(60)),
+            tls: None,
+        });
+
+        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        let conn = Conn::new(
+            stream,
+            Accepted {
+                peer,
+                local_port: addr.port(),
+            },
+            open,
+            config,
+            metrics,
+            cache,
+            upstream,
+            None,
+            // 継承していない経路 (Linux 以外・継承に失敗した環境) をわざと通す
+            None,
+            1,
+        )
+        .expect("timeout 0 は無期限なので Conn::new は成功する");
+        assert_eq!(
+            conn.client.write_timeout().unwrap(),
+            None,
+            "0 は無期限として設定される"
+        );
+        assert_eq!(limiter.open(), 1);
+        drop(conn);
+        assert_eq!(limiter.open(), 0);
     }
 
     /// ワーカーに渡せなかった仕事が落ちるときも持ち分が戻ること (T9.6)。

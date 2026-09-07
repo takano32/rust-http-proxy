@@ -51,9 +51,11 @@ impl OriginStream {
         }
     }
 
+    /// 読み書きのタイムアウトを揃えて設定する (`Duration::ZERO` は無期限。T10.6)。
     pub fn set_timeouts(&self, timeout: Duration) -> io::Result<()> {
-        self.tcp().set_read_timeout(Some(timeout))?;
-        self.tcp().set_write_timeout(Some(timeout))
+        let t = proxy_base::timeout::for_socket(timeout);
+        self.tcp().set_read_timeout(t)?;
+        self.tcp().set_write_timeout(t)
     }
 }
 
@@ -93,8 +95,10 @@ pub fn connect(
     let tcp = net::connect(server_addr, timeout)?;
     // net::connect が立てているはずだが、プールを経ない経路でも確実にするため念のため
     let _ = tcp.set_nodelay(true);
-    tcp.set_read_timeout(Some(timeout))?;
-    tcp.set_write_timeout(Some(timeout))?;
+    // `timeout` が 0 なら無期限 (T10.6)
+    let t = proxy_base::timeout::for_socket(timeout);
+    tcp.set_read_timeout(t)?;
+    tcp.set_write_timeout(t)?;
     match scheme {
         Scheme::Http => Ok(OriginStream::Plain(tcp)),
         Scheme::Https => {

@@ -261,3 +261,82 @@ fn test_integration_keepalive_requests_are_not_delayed_by_nagle() {
         elapsed
     );
 }
+
+#[test]
+fn test_integration_zero_timeout_proxies_and_still_parks_idle_connections() {
+    // PROXY_TIMEOUT_SECS=0 = 無期限 (T10.6)。以前はこの設定だと `Conn::new` の
+    // `set_write_timeout(Some(ZERO))` が必ず失敗し、**1 本も代理できなかった**。
+    // 預ける仕組み (T6.5) は「2 回目以降の読み取りタイムアウトを猶予の長さにして
+    // 空振りを『暇だ』と解釈する」形なので、待ち方が無期限になっても壊れないことを見る
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let mut cfg = park_config();
+    cfg.timeout = Duration::ZERO;
+    let proxy_port = start_test_proxy(cfg);
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let (head, body) = one_keepalive_request(&mut stream, &host, "/z1");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert_eq!(body, b"hello from mock origin");
+
+    // 猶予は `park_grace` の長さで `timeout` とは別物なので、無期限でも預けられる
+    wait_until(
+        || status_json(proxy_port).contains("\"parked_connections\":1"),
+        "the idle connection should be parked even with an unlimited timeout",
+    );
+
+    // 預けた接続はそのまま次の要求に使える
+    let (head, body) = one_keepalive_request(&mut stream, &host, "/z2");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert_eq!(body, b"hello from mock origin");
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn test_integration_zero_timeout_never_closes_a_silent_connection() {
+    // 「無期限」の意味を見る (T10.6): 何も送ってこない接続を閉じない。
+    // 対比のため、短いタイムアウトなら同じ接続が閉じられることも同時に見る
+    let mut quick = proxy_config();
+    quick.timeout = Duration::from_millis(200);
+    let quick_port = start_test_proxy(quick);
+
+    let mut forever = proxy_config();
+    forever.timeout = Duration::ZERO;
+    let forever_port = start_test_proxy(forever);
+
+    let mut buf = [0u8; 1];
+    // 200 ms のタイムアウト: 黙っていると閉じられる
+    let mut closed = TcpStream::connect(format!("127.0.0.1:{}", quick_port)).unwrap();
+    closed
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    assert_eq!(
+        closed.read(&mut buf).unwrap(),
+        0,
+        "PROXY_TIMEOUT_SECS が有限なら黙っている接続は閉じられる"
+    );
+
+    // 無期限: 何倍の時間待っても閉じられない
+    let mut kept = TcpStream::connect(format!("127.0.0.1:{}", forever_port)).unwrap();
+    kept.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    let err = kept.read(&mut buf).unwrap_err();
+    assert!(
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        "閉じられずに読み取りが空振りするはず: {:?}",
+        err
+    );
+
+    // 生きているので、そのまま普通に代理できる
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let host = format!("127.0.0.1:{}", origin_port);
+    kept.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let (head, body) = one_keepalive_request(&mut kept, &host, "/late");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert_eq!(body, b"hello from mock origin");
+}
