@@ -199,13 +199,12 @@ thread_local! {
     ///
     /// 接続ではなく**スレッド**に置くのは、アイドルの接続を別のワーカーへ預けられるように
     /// するため (接続に持たせると、預けている間ずっと抱えることになる)。
-    static SCRATCH: std::cell::RefCell<Scratch> = const {
-        std::cell::RefCell::new(Scratch {
-            lines: Vec::new(),
-            used: 0,
-            request_line: String::new(),
-        })
-    };
+    /// **`Drop` を持つ型をここに置かないこと。** スレッドが終わるときこの置き場自体が
+    /// 破棄され、その最中に `SCRATCH.with` を呼ぶと `AccessError` で panic し、
+    /// 「thread local panicked on drop」でプロセスごと abort する。
+    /// 置くのは中身 (行の Vec と要求行) だけにして、[`Scratch`] は借りた側だけが持つ。
+    static SCRATCH: std::cell::RefCell<(Vec<String>, String)> =
+        const { std::cell::RefCell::new((Vec::new(), String::new())) };
 }
 
 /// スレッドから借りた要求行とヘッダー行の置き場。Drop で返すので途中で return しても失わない。
@@ -235,16 +234,12 @@ impl Scratch {
     /// (使い回すのは先頭 [`KEEP_LINES`] 本 × [`KEEP_LINE_CAP`] まで。大きなヘッダーを
     /// 1 回送られただけでスレッドがメモリを抱え込まないように)。
     fn take() -> Scratch {
-        let mut me = SCRATCH.with(|b| {
-            std::mem::replace(
-                &mut *b.borrow_mut(),
-                Scratch {
-                    lines: Vec::new(),
-                    used: 0,
-                    request_line: String::new(),
-                },
-            )
-        });
+        let (lines, request_line) = SCRATCH.with(|b| std::mem::take(&mut *b.borrow_mut()));
+        let mut me = Scratch {
+            lines,
+            used: 0,
+            request_line,
+        };
         me.reset();
         me
     }
@@ -270,15 +265,12 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        // **フィールド単位で戻すこと。** `*slot = Scratch { .. }` にすると、置き換えで落ちる
-        // 古い値の Drop がまたここに来て無限再帰する
         let lines = std::mem::take(&mut self.lines);
         let request_line = std::mem::take(&mut self.request_line);
-        SCRATCH.with(|b| {
+        // スレッドが終わりかけていると置き場はもう無い。with だと panic するので try_with
+        let _ = SCRATCH.try_with(|b| {
             if let Ok(mut slot) = b.try_borrow_mut() {
-                slot.lines = lines;
-                slot.used = 0;
-                slot.request_line = request_line;
+                *slot = (lines, request_line);
             }
         });
     }
@@ -798,5 +790,41 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         Ok(Step::Close)
     } else {
         Ok(Step::Next)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 置き場を借りたスレッドが終わっても落ちないこと。
+    ///
+    /// スレッドローカルの破棄中にその置き場自身を触ると、std は
+    /// 「thread local panicked on drop」で**プロセスごと abort** する。
+    /// 回帰するとこのテストはテスト失敗ではなくテストバイナリの異常終了になる。
+    #[test]
+    fn scratch_survives_the_thread_that_borrowed_it() {
+        let h = std::thread::spawn(|| {
+            let mut scratch = Scratch::take();
+            scratch.request_line.push_str("GET / HTTP/1.1\r\n");
+            scratch.next().push_str("Host: example.com\r\n");
+            scratch.commit();
+            assert_eq!(scratch.headers().len(), 1);
+            // ここで置き場はスレッドへ戻る。このあとスレッドが終わり、置き場が破棄される
+        });
+        h.join().expect("the worker thread must exit cleanly");
+    }
+
+    /// 借りて返すと、行の容量は使い回されるが中身は残らない。
+    #[test]
+    fn scratch_is_recycled_but_cleared() {
+        let mut first = Scratch::take();
+        first.next().push_str("X-A: 1");
+        first.commit();
+        drop(first);
+        let second = Scratch::take();
+        assert_eq!(second.headers().len(), 0, "前の要求の行は見えない");
+        assert!(!second.lines.is_empty(), "容量は使い回す");
+        assert!(second.lines[0].is_empty());
     }
 }
