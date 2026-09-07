@@ -239,6 +239,11 @@ fn main() {
                 );
                 Some(w)
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+                // Linux 以外。接続ごとにスレッドが待つ元の動きになるだけ
+                log_debug!(None, "not parking idle connections: {}", e);
+                None
+            }
             Err(e) => {
                 log_warn!(None, "cannot park idle connections: {}", e);
                 None

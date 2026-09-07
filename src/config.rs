@@ -23,7 +23,7 @@ pub struct Config {
     /// アイドル接続の全体上限 (`PROXY_ORIGIN_POOL_TOTAL`)。ホスト数 × per_host の歯止め
     pub pool_total: usize,
     /// アイドルな keep-alive 接続をスレッドから外し、1 本の監視スレッド (epoll) に
-    /// 預けるか (`PROXY_PARK_IDLE`)。Linux 以外では自動的に無効。
+    /// 預けるか (`PROXY_PARK_IDLE`、既定 on)。Linux 以外では自動的に無効。
     pub park_idle: bool,
     /// 預ける前に同じスレッドで待ってみる時間 (`PROXY_PARK_GRACE_MS`)。
     ///
@@ -228,7 +228,7 @@ impl Config {
             keepalive: Duration::from_secs(15),
             pool_per_host: 64,
             pool_total: 256,
-            park_idle: false,
+            park_idle: true,
             park_grace: Duration::from_millis(3),
             malloc_arenas: 8,
             tls_enabled: true,

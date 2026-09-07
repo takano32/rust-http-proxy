@@ -530,7 +530,8 @@ fn test_integration_large_response_streams_through_disk() {
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
 
-/// アイドル接続を監視スレッド (epoll) に預ける設定。
+/// アイドル接続を監視スレッド (epoll) に預ける設定 (既定なので `proxy_config` と
+/// 同じだが、そのテストが何を見ているかを名前で示すために分けておく)。
 fn park_config() -> Config {
     let mut cfg = proxy_config();
     cfg.park_idle = true;
@@ -581,6 +582,30 @@ fn test_integration_parked_idle_connection_serves_the_next_request() {
     );
     let (head, _) = one_keepalive_request(&mut stream, &host, "/p3");
     assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+}
+
+#[test]
+fn test_integration_keepalive_without_parking_still_works() {
+    // PROXY_PARK_IDLE=off: 「1 接続 = 1 スレッドが専任」の元の動き
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let mut cfg = proxy_config();
+    cfg.park_idle = false;
+    let proxy_port = start_test_proxy(cfg);
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let (head, _) = one_keepalive_request(&mut stream, &host, "/n1");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    // 猶予より十分長く空けても、預けないので接続はそのまま
+    thread::sleep(Duration::from_millis(100));
+    let status = status_json(proxy_port);
+    assert!(status.contains("\"parked_connections\":0"), "{}", status);
+    assert!(status.contains("\"parking\":false"), "{}", status);
+    let (head, body) = one_keepalive_request(&mut stream, &host, "/n2");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert_eq!(body, b"hello from mock origin");
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
 }
 
 #[test]
