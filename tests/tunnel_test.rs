@@ -256,3 +256,58 @@ fn test_integration_parked_tunnels_survive_both_sides_closing_at_once() {
         "all tunnels should be closed exactly once",
     );
 }
+
+/// 接続を受けたらすぐ両方向を閉じるリスナー (中継の途中で送り先が消える相手)。
+fn start_slamming_origin() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    });
+    port
+}
+
+/// 中継パイプはスレッドごとに使い回す (T10.1)。
+///
+/// **中身の残ったパイプを次のトンネルへ回すと他人のバイトが混ざる。**
+/// 送り先が途中で消えたトンネル (パイプに渡せないバイトが残る) の直後に張った
+/// トンネルが、自分の送ったバイトだけを過不足なく受け取ることを確かめる。
+#[test]
+fn test_integration_reused_relay_pipe_never_leaks_bytes() {
+    let echo_port = start_echo_server();
+    let dead_port = start_slamming_origin();
+    let proxy_port = start_test_proxy(proxy_config());
+
+    for round in 0..3u8 {
+        // 1. 送り先がすぐ閉じるトンネルへ流し込む (渡せなかったぶんがパイプに残る)
+        let mut dead = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+        dead.set_nodelay(true).unwrap();
+        let req = format!(
+            "CONNECT 127.0.0.1:{0} HTTP/1.1\r\nHost: 127.0.0.1:{0}\r\n\r\n",
+            dead_port
+        );
+        dead.write_all(req.as_bytes()).unwrap();
+        let head = read_connect_response(&mut dead);
+        assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
+        // 相手はもう閉じているので、途中で失敗しても構わない
+        let _ = dead.write_all(&vec![b'X'; 512 * 1024]);
+        drop(dead);
+
+        // 2. 直後のトンネルは自分のバイトだけを受け取る
+        let mut stream = open_tunnel(proxy_port, echo_port);
+        let payload = vec![b'a' + round; 256 * 1024];
+        let mut sender = stream.try_clone().unwrap();
+        let sent = payload.clone();
+        let writer = thread::spawn(move || {
+            sender.write_all(&sent).unwrap();
+            sender.shutdown(std::net::Shutdown::Write).unwrap();
+        });
+        let mut back = Vec::new();
+        stream.read_to_end(&mut back).unwrap();
+        writer.join().unwrap();
+        assert_eq!(back.len(), payload.len(), "round {}", round);
+        assert_eq!(back, payload, "round {}", round);
+    }
+}

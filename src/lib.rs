@@ -610,6 +610,7 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                     metrics,
                     conn_id,
                     park,
+                    peer_ip,
                     _open,
                     _active,
                     ..
@@ -625,6 +626,9 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                     idle,
                     conn_id,
                     metrics,
+                    // 接続元 IP は接続ごとに 1 回作ってある。ここで渡さないと
+                    // トンネル側が `peer_addr()` を引き直す (`getpeername` が 1 本ごとに 1 回)
+                    peer_ip,
                     park,
                     config.park_grace,
                     hold,
@@ -649,13 +653,14 @@ fn start_tunnel(
     idle: Option<std::time::Duration>,
     conn_id: usize,
     metrics: Arc<Metrics>,
+    client_ip: String,
     park: Option<Arc<idle::IdleWatch>>,
     grace: std::time::Duration,
     hold: Box<dyn Send>,
 ) -> io::Result<()> {
     let park = park.map(|w| (w as Arc<dyn tunnel::Park>, grace));
     tunnel::handle_connect_parked(
-        client, target, prefix, timeout, idle, conn_id, metrics, park, hold,
+        client, target, prefix, timeout, idle, conn_id, metrics, client_ip, park, hold,
     )
 }
 
@@ -669,13 +674,16 @@ fn start_tunnel(
     idle: Option<std::time::Duration>,
     conn_id: usize,
     metrics: Arc<Metrics>,
+    client_ip: String,
     park: Option<Arc<idle::IdleWatch>>,
     grace: std::time::Duration,
     hold: Box<dyn Send>,
 ) -> io::Result<()> {
     // 預け先は Linux (epoll) だけ。持ち分はこの関数が終わるまで持っておく
     let _ = (park, grace);
-    let result = tunnel::handle_connect(client, target, prefix, timeout, idle, conn_id, metrics);
+    let result = tunnel::handle_connect(
+        client, target, prefix, timeout, idle, conn_id, metrics, client_ip,
+    );
     drop(hold);
     result
 }

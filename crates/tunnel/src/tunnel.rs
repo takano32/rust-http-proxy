@@ -46,12 +46,9 @@ fn open(
     timeout: Duration,
     conn_id: usize,
     metrics: Arc<Metrics>,
+    client_ip: String,
 ) -> io::Result<Opened> {
     let started = Instant::now();
-    let client_ip = client
-        .peer_addr()
-        .map(|a| net::canonical_ip(a.ip()).to_string())
-        .unwrap_or_else(|_| "-".to_string());
     let addr_str = net::with_default_port(target, 443);
 
     log_debug!(Some(conn_id), "start CONNECT {}", addr_str);
@@ -144,6 +141,7 @@ fn report(o: &Info, transferred: u64) {
 /// `prefix` はリクエストヘッダーの直後に既に読み込んでしまったバイト列 (先にサーバーへ渡す)。
 ///
 /// 暇なトンネルを監視スレッドへ預けたい呼び出し側は [`handle_connect_parked`] を使う (Linux)。
+#[allow(clippy::too_many_arguments)]
 pub fn handle_connect(
     client: TcpStream,
     target: &str,
@@ -152,6 +150,7 @@ pub fn handle_connect(
     idle: Option<Duration>,
     conn_id: usize,
     metrics: Arc<Metrics>,
+    client_ip: String,
 ) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -163,6 +162,7 @@ pub fn handle_connect(
             idle,
             conn_id,
             metrics,
+            client_ip,
             None,
             Box::new(()),
         )
@@ -173,7 +173,7 @@ pub fn handle_connect(
             client,
             server,
             info,
-        } = open(client, target, prefix, timeout, conn_id, metrics)?;
+        } = open(client, target, prefix, timeout, conn_id, metrics, client_ip)?;
         let transferred = tunnel(client, server, idle)?;
         report(&info, transferred);
         Ok(())
@@ -187,6 +187,8 @@ pub fn handle_connect(
 /// `hold` は本体クレートの持ち分 (同時接続数と `active_connections` のガード) で、
 /// 中身は見ないがトンネルが終わるまで落とさずに運ぶ (預けた瞬間に数が減ると
 /// `PROXY_MAX_CONNS` の意味が壊れる)。
+/// `client_ip` は接続元 IP の文字列。接続を受けたときに 1 回だけ作ったものを運ぶ
+/// (ここで `peer_addr()` を引き直すと、トンネル 1 本ごとに `getpeername` が 1 回増える)。
 #[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
 pub fn handle_connect_parked(
@@ -197,10 +199,11 @@ pub fn handle_connect_parked(
     idle: Option<Duration>,
     conn_id: usize,
     metrics: Arc<Metrics>,
+    client_ip: String,
     park: Option<(Arc<dyn Park>, Duration)>,
     hold: Box<dyn Send>,
 ) -> io::Result<()> {
-    let opened = open(client, target, prefix, timeout, conn_id, metrics)?;
+    let opened = open(client, target, prefix, timeout, conn_id, metrics, client_ip)?;
     // トンネルの猶予は HTTP の keep-alive より長く取る (下限 [`relay::MIN_PARK_GRACE`])
     let park = park.map(|(w, grace)| (w, grace.max(relay::MIN_PARK_GRACE)));
     relay::start(opened, idle, park, hold)
@@ -286,6 +289,42 @@ mod relay {
     /// 「閉じられる直前に預けて、すぐ起こされる」ぶんを丸ごと払っていた。
     pub(super) const MIN_PARK_GRACE: Duration = Duration::from_millis(100);
 
+    /// スレッドごとに使い回す中継パイプの数 (トンネル 1 本が両方向で 2 本使う)。
+    const POOLED_PIPES: usize = 2;
+
+    thread_local! {
+        /// 使い終わった中継パイプの置き場 (スレッドごと)。
+        ///
+        /// 短命なトンネルは 1 本あたり `pipe2` 2 回・`fcntl(F_SETPIPE_SZ)` 2 回・
+        /// `close` 4 回を払っていた (`--only connect` の実測でシステムコール 29.03 回/本 のうち 8 回)。
+        /// 空になったパイプはスレッドに残しておき、次のトンネルが使い回す。
+        /// **`Drop` を持つ [`Pipe`] を置くので、出し入れは必ず `try_with` で行うこと**
+        /// (スレッドの終了中に `with` を呼ぶと `AccessError` で panic し、
+        /// 「thread local panicked on drop」でプロセスごと abort する)。
+        static PIPES: std::cell::RefCell<Vec<Pipe>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// 置き場から 1 本取る。無ければ作る (容量を広げるのは作るときだけ)。
+    fn take_pipe() -> io::Result<Pipe> {
+        if let Ok(Some(pipe)) = PIPES.try_with(|c| c.borrow_mut().pop()) {
+            return Ok(pipe);
+        }
+        let pipe = Pipe::new()?;
+        pipe.set_capacity(CHUNK as i32);
+        Ok(pipe)
+    }
+
+    /// 空のパイプを置き場へ返す。置き場が一杯 (かスレッドの終了中) なら閉じる。
+    fn give_pipe(pipe: Pipe) {
+        let _ = PIPES.try_with(move |c| {
+            let mut pool = c.borrow_mut();
+            if pool.len() < POOLED_PIPES {
+                pool.push(pipe);
+            }
+        });
+    }
+
     /// 片方向の中継。データはパイプ (splice) か、使えなければ中間バッファに置く。
     /// 最初にデータが動くまで作らない (アイドルのトンネルは資源を持たない)。
     enum Relay {
@@ -328,11 +367,8 @@ mod relay {
         /// 送信元から中継バッファへ移す。`Ok(0)` は EOF。
         fn fill(&mut self, socks: &[TcpStream; 2]) -> io::Result<usize> {
             if matches!(self.relay, Relay::Unset) {
-                self.relay = match Pipe::new() {
-                    Ok(p) => {
-                        p.set_capacity(CHUNK as i32);
-                        Relay::Pipe(p)
-                    }
+                self.relay = match take_pipe() {
+                    Ok(p) => Relay::Pipe(p),
                     Err(_) => Relay::Buf(vec![0u8; 64 * 1024]),
                 };
             }
@@ -370,6 +406,20 @@ mod relay {
                     (&socks[self.dst]).write(&buf[self.offset..end])
                 }
             }
+        }
+
+        /// 中継の置き場を手放す。パイプは**空のときだけ**スレッドの置き場へ返す。
+        ///
+        /// 中身が残っているパイプを使い回すと、次のトンネルに**他人のバイト**が流れる。
+        /// `pending` はパイプに入っていてまだ渡していないバイト数なので、これが 0 の
+        /// ときだけ返す (渡せなくなったときは呼び出し側が `Relay::Unset` にして閉じる)。
+        fn drop_relay(&mut self) {
+            if let Relay::Pipe(pipe) = std::mem::replace(&mut self.relay, Relay::Unset)
+                && self.pending == 0
+            {
+                give_pipe(pipe);
+            }
+            self.offset = 0;
         }
 
         /// 「今すぐ動かすものが無く、まだ両方向とも生きている」か (預けてよいかの判定)。
@@ -415,6 +465,10 @@ mod relay {
 
     impl Drop for Idle {
         fn drop(&mut self) {
+            // 空のパイプはスレッドの置き場へ返す (次のトンネルが pipe2 と fcntl を省ける)
+            for d in self.dirs.iter_mut() {
+                d.drop_relay();
+            }
             report(&self.info, self.transferred);
         }
     }
@@ -448,8 +502,7 @@ mod relay {
         /// 抱えないようにする。戻ってきたら遅延生成のまま作り直す。
         fn release(&mut self) {
             for d in self.dirs.iter_mut() {
-                d.relay = Relay::Unset;
-                d.offset = 0;
+                d.drop_relay();
                 d.readable = false;
             }
         }
@@ -515,6 +568,9 @@ mod relay {
                             // 送信先が閉じた: この方向は終わり、相手にも伝える
                             Err(_) => {
                                 d.pending = 0;
+                                // パイプに残ったぶんはもう渡せない。置き場へ返さずに閉じる
+                                // (返すと次のトンネルに他人のバイトが混ざる)
+                                d.relay = Relay::Unset;
                                 d.src_eof = true;
                                 progressed = true;
                                 break;
