@@ -121,8 +121,20 @@ pub fn serve(
         // (接続ごとの getpeername が 1 回減る)
         let (mut stream, peer) = match listener.accept() {
             Ok(v) => v,
+            // 割り込みと「相手が accept 前に切った」はすぐ次へ
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                continue;
+            }
             Err(e) => {
+                // 記述子を使い切ったとき (EMFILE/ENFILE) は何度呼んでも同じ失敗が返る。
+                // そのまま回すと 1 コアを 100% 使いながらログを溢れさせるので少し待つ
                 log_error!(None, "accept failed: {}", e);
+                std::thread::sleep(ACCEPT_ERROR_BACKOFF);
                 continue;
             }
         };
@@ -190,6 +202,9 @@ const MAX_HEADER_BYTES: usize = 128 * 1024;
 /// (使い回しの利得はほぼそのままで、接続あたりの居座りを 32 KiB 程度に抑える)。
 const KEEP_LINES: usize = 32;
 const KEEP_LINE_CAP: usize = 1024;
+/// accept が失敗したときに次の試行まで待つ時間 (記述子切れでの空回りを止める)。
+const ACCEPT_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// 要求を断ったあと、応答が RST で消えないように読み捨てる上限 (時間とバイト数)。
 const LINGER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 const LINGER_BYTES: usize = 64 * 1024;
@@ -492,6 +507,10 @@ fn park_if_idle(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
     if conn.has_buffered() {
         return Err(conn);
     }
+    // keep-alive を切っている設定なら、預けても期限切れで閉じるだけ
+    if conn.config.keepalive.is_zero() {
+        return Err(conn);
+    }
     // 少しだけこのスレッドで待ってみる。続けて要求が来る接続に、預ける/戻すの往復
     // (epoll_ctl 2 回 + ワーカーの受け渡し) を払わせない
     if !conn.config.park_grace.is_zero() && wait_briefly(&conn) {
@@ -502,22 +521,51 @@ fn park_if_idle(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
     watch.park(conn, deadline)
 }
 
+/// 猶予待ちの枠。取れたときだけ作られ、落ちるときに必ず返す。
+struct GraceSlot;
+
+impl GraceSlot {
+    /// 空きがあれば取る。上限に達していたら `None` (猶予なしで預ける)。
+    fn take(max: usize) -> Option<GraceSlot> {
+        // 0 は無制限。それでも枠は数える (Drop が必ず 1 減らすので釣り合う)
+        if max == 0 {
+            IN_GRACE.fetch_add(1, Ordering::Relaxed);
+            return Some(GraceSlot);
+        }
+        // 全接続がいっせいに暇になったときに、猶予でスレッドが積み上がるのを止める
+        let mut now = IN_GRACE.load(Ordering::Relaxed);
+        loop {
+            if now >= max {
+                return None;
+            }
+            match IN_GRACE.compare_exchange_weak(now, now + 1, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return Some(GraceSlot),
+                Err(seen) => now = seen,
+            }
+        }
+    }
+}
+
+impl Drop for GraceSlot {
+    fn drop(&mut self) {
+        IN_GRACE.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// 猶予のあいだ読めるようになるのを待つ。`true` なら要求が来ている。
 #[cfg(target_os = "linux")]
 fn wait_briefly(conn: &Conn) -> bool {
     let max = conn.config.park_max_grace;
-    if max > 0 && IN_GRACE.fetch_add(1, Ordering::Relaxed) >= max {
-        // 全接続がいっせいに暇になったときに、猶予でスレッドが積み上がるのを止める
-        IN_GRACE.fetch_sub(1, Ordering::Relaxed);
+    let Some(_slot) = GraceSlot::take(max) else {
         return false;
-    }
+    };
     let mut fds = [sys::PollFd::new(conn.client_fd(), sys::POLLIN)];
-    let ready = sys::poll_fds(&mut fds, conn.config.park_grace.as_millis() as i32);
-    if max > 0 {
-        IN_GRACE.fetch_sub(1, Ordering::Relaxed);
-    }
     // 失敗したときは預けずに続ける (旧経路のブロッキング read に任せる)
-    !matches!(ready, Ok(0))
+    !matches!(
+        sys::poll_fds(&mut fds, conn.config.park_grace.as_millis() as i32),
+        Ok(0)
+    )
 }
 
 #[cfg(not(target_os = "linux"))]

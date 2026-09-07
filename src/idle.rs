@@ -220,12 +220,27 @@ mod linux {
                     return;
                 }
             };
+            let mut closed = 0usize;
             for ev in &events[..n] {
-                // EPOLLIN でも EPOLLRDHUP でも EPOLLERR でも、やることは同じ
-                // (ワーカーに戻して read させる。0 バイトなら向こうで閉じる)
-                if let Some(conn) = watch.take(ev.token() as RawFd) {
-                    watch.resume(conn);
+                let Some(conn) = watch.take(ev.token() as RawFd) else {
+                    continue;
+                };
+                if ev.events() & EPOLLIN == 0 {
+                    // 読めるものが無いのに知らせが来た = 相手が黙って切った。
+                    // わざわざワーカーを起こして 0 バイトを読ませる必要はない
+                    // (水準通知なので、データがあれば必ず EPOLLIN も立つ)
+                    closed += 1;
+                    drop(conn);
+                    continue;
                 }
+                watch.resume(conn);
+            }
+            if closed > 0 {
+                log_debug!(
+                    None,
+                    "closing {} connections the client went away on",
+                    closed
+                );
             }
             let expired = watch.expire(Instant::now());
             if !expired.is_empty() {
