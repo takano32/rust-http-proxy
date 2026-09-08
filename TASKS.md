@@ -162,6 +162,7 @@ CONNECT の計測は 10 秒で 7〜10 万本張るので**毎回バケットを�
 ```bash
 cargo clean && ./scripts/build-memory.sh 200                 # 200 MB の cgroup で通るか
 ./scripts/build-memory.sh --find 100 110 120 130 140 150      # 通る最小の上限を探す
+gh workflow run ci.yml --ref main                             # CI の機械で測る (build-memory-find。T11.7)
 ```
 
 `.cargo/config.toml` で `jobs = 1` にしてある。既定の並列数だと複数の `rustc` が同時に走り、その合計が上限を超えて
@@ -194,19 +195,40 @@ CI は毎回 200 MB で回す。`scripts/build-memory.sh` が出す参考値も 
 上限 200 MB に当たるにはいちばん大きいクレートの RssAnon が **2.2 倍 (85.5 → 186 MB)** にならないといけない。
 下げたくなったら割るのは `proxy-http` と `proxy-blocklist`。
 
-**手元でも判定できる** (T9.0)。この機械は PID 1 が systemd ではないので `sudo systemd-run --scope` は使えないが、
-**ユーザーの systemd** (`systemd-run --user --scope -p MemoryMax=…`) は動いていて上限も効く。スクリプトは
+**手元でも判定できる** (T9.0)。この機械は**システムの systemd が動いていない** (`/run/systemd/system` が無く、
+`systemd-run --scope` は "System has not been booted with systemd as init system" と言う。`sudo -n` 自体は通るので、
+使えない理由は sudo ではない。T11.7 で確かめた) ためシステムの scope は作れないが、**ユーザーの systemd**
+(`systemd-run --user --scope -p MemoryMax=…`) は動いていて上限も効く。スクリプトは
 「システムの systemd → ユーザーの systemd → 参考の RSS だけ」の順に落ちる。
 **いま通る最小は手元で 99〜100 MB** (T10.9。98 MB は 3 回とも落ち、99 MB と 100 MB は 5 回とも通った)。
 **上限 200 MB に対して 100 MB (2.0 倍) の余裕がある。**
 
-**CI の値は測っていない。** 長く載っていた「CI で 110 MB」は T7.4 (26 クレートに割った直後) の値で、Phase 8〜10 の
-コードは入っていない。push したときに CI が確かめるのは **200 MB の関門を通るかどうかだけ**で、CI で通る最小は誰も測っていない。
-**「手元は CI より 10 MB 低い」という書き方は取り下げる** — 根拠は T9.0 の 手元 100 / CI 110 という 1 点比較だけで、
-その後 T10.0 は同じ手元で 110 を出しており、手元の数字自体が測るたびに動く。オフセットとして使える精度が無い。
+**CI の値は「測れるようにしたが、まだ取っていない」** (T11.7)。`.github/workflows/ci.yml` の `build-memory-find` ジョブを
+**手で回せば取れる**:
+
+```bash
+gh workflow run ci.yml --ref main                                  # 既定の段で測る
+gh workflow run ci.yml --ref main -f ladder="95 100 105 110 115"   # 段を指定する
+```
+
+月曜 03:17 UTC の週 1 でも回る。結果は run の Summary に出て、同じ Summary に**測った runner の素性**
+(image・arch・CPU・メモリ・どの systemd で cgroup を作れたか) も残る。push / PR では回らない
+(毎回の関門は今までどおり 200 MB の `Build memory` だけ)。
+
+**CI で最後に取れた値は 110 MB** (T7.4、run `34131704897`)。ただし **26 クレートに割った直後**のコードで Phase 8〜10 は
+入っていない。そのログでは 100 MB が `proxy-blocklist` のところで落ち、110 MB が 16.02 秒で通っている。
+**手元 (aarch64、ユーザーの systemd、8 コア / 6.6 GiB) と CI (`ubuntu-24.04`、x86_64、4 vCPU / 16 GB) は
+機械もアーキテクチャも違うので、この 110 と手元の 99 を引き算してオフセットにしてはいけない**
+(「手元は CI より 10 MB 低い」は T10.9 で取り下げた。根拠は 1 点比較だけだった)。
+
+**手元の数字をどう読むか**: 手元の 99 MB は「**手元の機械で** 200 MB の関門にどれだけ余裕があるか」であって、
+CI や動作環境 (Pterodactyl コンテナ) の値を代表しない。動作環境で通るかどうかの判定は **CI の 200 MB の関門**が
+毎回やっている。手元の値が意味を持つのは「クレートを割る前と後」のような**同じ機械での前後比較**のとき。
 
 **境目は薄い** (98 MB は落ち、99 MB は通る)。**必ず機械を占有して測ること** — 他のビルドが同時に走ると同じ上限でも落ちる
 (T10.0 が 110 MB と出したのはこれが原因の可能性が高い)。
+**落ちるクレートも回ごとに動く** (T10.9 は 95/98 MB で `proxy-http`、T11.7 の再確認では 98 MB で `proxy-blocklist`。
+2 つの RssAnon は 85.5 と 84.0 で 1.5 MB しか違わない)。
 
 ## 2. 現在地
 
