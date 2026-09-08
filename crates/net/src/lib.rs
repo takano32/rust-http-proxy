@@ -12,3 +12,5 @@ pub use proxy_base::{
     ascii, cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info,
     log_trace, log_warn, sync,
 };
+#[cfg(target_os = "linux")]
+pub use proxy_sys::sys;

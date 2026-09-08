@@ -188,17 +188,72 @@ fn nodelay(stream: &TcpStream) {
     let _ = stream.set_nodelay(true);
 }
 
+/// 接続したソケットをどちらの流儀で返すか。
+///
+/// **呼び出し元が 2 つあり、欲しい形が違う** (T11.1):
+/// オリジンプール ([`connect`]) はそのまま `read` / `write` するのでブロッキング、
+/// CONNECT の中継 ([`connect_nonblocking`]) は `poll` で回すので nonblocking のままが良い。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// 呼び出し側がそのまま読み書きする (オリジンへの HTTP)。
+    Blocking,
+    /// 中継が `poll(2)` で回す (CONNECT トンネル)。`ioctl` を 1 回も払わずに済む。
+    Nonblocking,
+}
+
 /// 1 つのアドレスへ接続する。`timeout` が `None` なら締め切り無し (OS 既定に任せる)。
-fn connect_one(addr: &SocketAddr, timeout: Option<Duration>) -> io::Result<TcpStream> {
-    match timeout {
-        Some(t) => TcpStream::connect_timeout(addr, t),
-        None => TcpStream::connect(addr),
+///
+/// Linux (aarch64 / x86_64) では `crates/sys` の自前の接続を使う。std の
+/// `TcpStream::connect_timeout` は nonblocking を on にして off に戻すので
+/// `ioctl(FIONBIO)` を必ず 2 回払い、中継はそのあと on に戻し直すのでもう 1 回要る
+/// (T10.1 の実測で CONNECT 1 本あたり `ioctl` 4.00 回、うち 3 回が無駄)。
+/// 自前の接続は最初から `SOCK_NONBLOCK` で作るので、[`Mode::Nonblocking`] なら 0 回、
+/// [`Mode::Blocking`] でも戻す 1 回だけで済む。
+///
+/// それ以外の環境では従来どおり std に任せ、nonblocking が要るときだけ 1 回当てる。
+fn connect_one(addr: &SocketAddr, timeout: Option<Duration>, mode: Mode) -> io::Result<TcpStream> {
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    ))]
+    {
+        let stream = crate::sys::connect_nonblocking(addr, timeout)?;
+        if mode == Mode::Blocking {
+            stream.set_nonblocking(false)?;
+        }
+        Ok(stream)
+    }
+    #[cfg(not(all(
+        target_os = "linux",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    )))]
+    {
+        let stream = match timeout {
+            Some(t) => TcpStream::connect_timeout(addr, t)?,
+            None => TcpStream::connect(addr)?,
+        };
+        if mode == Mode::Nonblocking {
+            stream.set_nonblocking(true)?;
+        }
+        Ok(stream)
     }
 }
 
 /// 名前解決して接続する。IPv6 無効時は A レコードだけ、有効時は Happy Eyeballs。全体の締め切りは `timeout`
 /// (`Duration::ZERO` は無期限 = OS 既定の接続タイムアウトに任せる)。
+///
+/// 返すソケットは**ブロッキング** (オリジンへの HTTP はそのまま読み書きする)。
+/// CONNECT の中継のように `poll` で回すなら [`connect_nonblocking`] を使うこと。
 pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
+    connect_with_mode(addr_str, timeout, Mode::Blocking)
+}
+
+/// [`connect`] と同じだが、**nonblocking のままの**ソケットを返す (CONNECT の中継用)。
+pub fn connect_nonblocking(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
+    connect_with_mode(addr_str, timeout, Mode::Nonblocking)
+}
+
+fn connect_with_mode(addr_str: &str, timeout: Duration, mode: Mode) -> io::Result<TcpStream> {
     let resolved: Vec<SocketAddr> = crate::dns::resolve(addr_str)?;
     let ipv6 = ipv6_enabled();
     let addrs: Vec<SocketAddr> = if ipv6 {
@@ -216,17 +271,27 @@ pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
             },
         ));
     }
-    connect_resolved(addrs, timeout)
+    connect_resolved_with_mode(addrs, timeout, mode)
 }
 
-/// 並べ替え済みのアドレス列に Happy Eyeballs で接続する。
+/// 並べ替え済みのアドレス列に Happy Eyeballs で接続する (ブロッキングのソケットを返す)。
+pub fn connect_resolved(addrs: Vec<SocketAddr>, timeout: Duration) -> io::Result<TcpStream> {
+    connect_resolved_with_mode(addrs, timeout, Mode::Blocking)
+}
+
+/// [`connect_resolved`] の本体。
 ///
 /// `timeout` が `Duration::ZERO` なら**締め切りを置かない** (`PROXY_TIMEOUT_SECS=0` = 無期限。
 /// T10.6)。`TcpStream::connect_timeout` は 0 を `InvalidInput` で断るので、そのときは
-/// 素の `connect` を使い、OS 既定の接続タイムアウト (Linux はおよそ 130 秒) に任せる。
-pub fn connect_resolved(addrs: Vec<SocketAddr>, timeout: Duration) -> io::Result<TcpStream> {
+/// 締め切り無しで待ち、OS 既定の接続タイムアウト (Linux はおよそ 130 秒) に任せる。
+pub fn connect_resolved_with_mode(
+    addrs: Vec<SocketAddr>,
+    timeout: Duration,
+    mode: Mode,
+) -> io::Result<TcpStream> {
     if addrs.len() == 1 {
-        return connect_one(&addrs[0], proxy_base::timeout::for_socket(timeout)).inspect(nodelay);
+        return connect_one(&addrs[0], proxy_base::timeout::for_socket(timeout), mode)
+            .inspect(nodelay);
     }
 
     let deadline = (!timeout.is_zero()).then(|| Instant::now() + timeout);
@@ -246,7 +311,7 @@ pub fn connect_resolved(addrs: Vec<SocketAddr>, timeout: Duration) -> io::Result
                     .max(Duration::from_millis(1))
             });
             thread::spawn(move || {
-                let _ = tx.send(connect_one(&addr, remaining));
+                let _ = tx.send(connect_one(&addr, remaining, mode));
             });
             launched += 1;
             pending += 1;
@@ -392,5 +457,62 @@ mod tests {
     fn connect_addrs(addrs: Vec<SocketAddr>, timeout: Duration) -> io::Result<TcpStream> {
         // `connect` は文字列を解決するので、ここでは同じアルゴリズムを直接使う
         super::connect_resolved(addrs, timeout)
+    }
+
+    /// 呼び出し元が欲しい形でソケットが返ること (T11.1)。
+    ///
+    /// 中継 (CONNECT) は nonblocking のまま、オリジンプールはブロッキング。
+    /// ここが逆になると、中継は `poll` の前に必ず 1 回 `ioctl` を払い直すことになり、
+    /// プールは `read` が即 `WouldBlock` で戻って応答を取りこぼす。
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    ))]
+    #[test]
+    fn hands_out_blocking_or_nonblocking_sockets_as_asked() {
+        use std::os::fd::AsRawFd;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+
+        let relay = connect_nonblocking(&addr, Duration::from_secs(5)).unwrap();
+        let _a = listener.accept().unwrap();
+        assert!(crate::sys::is_nonblocking(relay.as_raw_fd()).unwrap());
+
+        let pooled = connect(&addr, Duration::from_secs(5)).unwrap();
+        let _b = listener.accept().unwrap();
+        assert!(!crate::sys::is_nonblocking(pooled.as_raw_fd()).unwrap());
+        // ブロッキングのソケットにはタイムアウトを置ける (プールが使う経路)
+        pooled
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let mut buf = [0u8; 1];
+        let started = Instant::now();
+        assert!(std::io::Read::read(&mut &pooled, &mut buf).is_err());
+        assert!(
+            started.elapsed() >= Duration::from_millis(40),
+            "ブロッキングなら読み取りタイムアウトのぶんは待つ: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Happy Eyeballs (アドレスが 2 つ以上) でも同じ約束が守られること。
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "aarch64", target_arch = "x86_64")
+    ))]
+    #[test]
+    fn happy_eyeballs_keeps_the_requested_mode() {
+        use std::os::fd::AsRawFd;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let addrs = vec![
+            SocketAddr::new("192.0.2.1".parse().unwrap(), 9),
+            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port),
+        ];
+        let stream =
+            connect_resolved_with_mode(addrs, Duration::from_secs(5), Mode::Nonblocking).unwrap();
+        assert!(crate::sys::is_nonblocking(stream.as_raw_fd()).unwrap());
     }
 }
