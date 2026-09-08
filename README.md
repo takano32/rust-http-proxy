@@ -460,9 +460,11 @@ cargo run --release
 # ベンチ (オリジンもベンチ内で起動する。プロキシは別端末で PROXY_ALLOW_LOCAL=on を付けて先に上げておく)
 cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 # --conc 並列数 / --seconds 測定秒数 / --body-bytes 応答本文の大きさ
-# --only direct|forward|tunnel|connect|idle-tunnels|syscall-cost|all で 1 種だけ測れる
+# --only direct|forward|tunnel|connect|idle-tunnels|idle-conns|syscall-cost|all で 1 種だけ測れる
 # direct 行はプロキシを通さないオリジン直結 (ベンチ自身の上限。30 万 req/s 前後)
 # tunnel 行も --seconds 秒だけ 1 本のトンネルに流す (この行はベンチ律速。上の「性能」の注)
+# idle-tunnels / idle-conns は --conc 本を張ったまま --seconds 秒握る (スレッド数と RSS 用)。
+#   idle-conns は 1 要求ずつ通してから握る。どちらも PROXY_MAX_CONNS=8192 を付けて測る
 
 # この機械での sendto / recvfrom 1 回の実費 (プロキシは使わない。CPU の固定が要る)
 taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 3
@@ -505,9 +507,11 @@ HTTP の代理はワーカーをすぐ手放すので、この天井には当た
 **要求を処理していない keep-alive 接続はスレッドを握りません** (`PROXY_PARK_IDLE`、既定 on、
 Linux のみ)。次の要求が猶予 (既定 3 ms) のあいだ来なければ、その接続は `idle-watch` スレッドの
 epoll に預けられ、ワーカースレッドは解放されます。読めるようになったら空いているワーカーに戻します。
-実測で暇な接続 2,000 本のとき 2,003 スレッド・RSS 72.3 MiB → **18 スレッド・25.7 MiB**、
+実測で暇な接続 2,000 本のとき 2,004 スレッド・RSS 68.0 MB → **25 スレッド・25.2 MB**、
 忙しいときの CPU/要求とシステムコール数は変わりません。`off` にすると
-「1 接続 = 1 スレッドが専任する」元の動きに戻ります。
+「1 接続 = 1 スレッドが専任する」元の動きに戻ります
+(2026-09-08、`release`、`PROXY_MAX_CONNS=8192 scripts/cpu-per-request.sh --only idle-conns --conc 2000`
+の 3 回の中央値。`off` 側は同じコマンドに `PROXY_PARK_IDLE=off PROXY_MAX_THREADS=0` を足したもの)。
 
 **暇な CONNECT トンネルも同じ預かり所に預けます** (同じ `PROXY_PARK_IDLE`、Linux のみ)。
 両方向とも 100 ms 動きが無ければ、クライアント側とサーバー側の記述子 2 本を epoll に預けて

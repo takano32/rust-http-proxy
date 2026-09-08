@@ -14,7 +14,9 @@
 //!   4. connect : CONNECT の確立/秒 (短命トンネル)
 //!   5. idle-tunnels: `--conc N` 本の CONNECT を張ったまま `--seconds` 秒握る
 //!      (プロキシ側のスレッド数と RSS を見るためのモード。`--only idle-tunnels` でだけ走る)
-//!   6. syscall-cost: この機械での `sendto` / `recvfrom` 1 回の実費 (プロキシは使わない。
+//!   6. idle-conns: `--conc N` 本の keep-alive 接続に **1 要求ずつ通してから** `--seconds` 秒握る
+//!      (同じくプロキシ側のスレッド数と RSS を見るためのモード。`--only idle-conns` でだけ走る)
+//!   7. syscall-cost: この機械での `sendto` / `recvfrom` 1 回の実費 (プロキシは使わない。
 //!      `--only syscall-cost` でだけ走る。**`taskset` で cpu を固定して使うこと**)
 
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -39,7 +41,8 @@ struct Args {
     body_bytes: usize,
     /// オリジン応答を保存可能にする (キャッシュ HIT 側を測る)
     cacheable: bool,
-    /// 測る種類 ("all" / "direct" / "forward" / "tunnel" / "connect")
+    /// 測る種類 ("all" / "direct" / "forward" / "tunnel" / "connect" /
+    /// "idle-tunnels" / "idle-conns" / "syscall-cost")
     only: String,
     /// 1 要求ごとに接続を張り直す (接続あたりの固定費を測る)
     no_keepalive: bool,
@@ -48,7 +51,7 @@ struct Args {
 fn usage() -> ! {
     eprintln!(
         "usage: bench [--proxy HOST:PORT] [--conc N] [--seconds N] [--body-bytes N]\n\
-                     [--only direct|forward|tunnel|connect|idle-tunnels|syscall-cost|all]\n\
+                     [--only direct|forward|tunnel|connect|idle-tunnels|idle-conns|syscall-cost|all]\n\
          \n\
          Without --proxy only the direct (origin) baseline is measured."
     );
@@ -435,6 +438,93 @@ fn idle_tunnels(proxy: SocketAddr, conc: usize, seconds: u64) {
         latencies_us,
     }
     .print("idle-tun");
+    drop(held);
+}
+
+/// keep-alive 接続を 1 本張り、**1 要求だけ通してから**そのソケットを返す。
+///
+/// 応答を読むための [`BufReader`] (と `try_clone` した記述子) はここで捨てる。
+/// 2,000 本ぶん抱えるとベンチ側が先に重くなるため ([`open_tunnel_bare`] と同じ理由)。
+/// 応答のあとに続くものは無いので、捨てても取りこぼさない。
+fn open_idle_conn(proxy: SocketAddr, request: &[u8], line: &mut String) -> io::Result<TcpStream> {
+    let mut sock = TcpStream::connect(proxy)?;
+    sock.set_nodelay(true)?;
+    let mut reader = BufReader::new(sock.try_clone()?);
+    sock.write_all(request)?;
+    let (_, keep) = read_response(&mut reader, line)?;
+    if !keep {
+        return Err(io::Error::other("proxy closed the keep-alive connection"));
+    }
+    drop(reader);
+    Ok(sock)
+}
+
+/// `conc` 本の keep-alive 接続を張り、**1 要求ずつ通してから** `seconds` 秒そのまま握る。
+///
+/// プロキシ側の「暇な keep-alive 接続 1 本あたりのスレッドと RSS」を見るためのモード
+/// ([`idle_tunnels`] の HTTP 版)。2,000 本張るので、ベンチ側は **1 スレッドで接続を `Vec` に持つ**
+/// (2,000 スレッドを作らない)。プロキシの `PROXY_MAX_CONNS` に当たるので、測るときは 8192 にする。
+///
+/// **1 要求通してから暇にするのが大事**。要求を 1 本も通していない接続はプロキシから見ると
+/// 「まだ 1 バイトも読んでいない接続」で、預ける仕組み (T6.5 の猶予) にかかる状態が違う。
+/// 見たいのは「1 要求通したあと暇になった接続」の方なので、必ず 1 往復させてから握る。
+///
+/// **握る時間はプロキシの `PROXY_KEEPALIVE_SECS` (既定 15 秒) より短くすること。**
+/// 越えると預かり所が期限切れで閉じてしまい、途中から本数が減った状態を測ることになる。
+/// 最後に「まだ生きている本数」を印字するので、減っていればその行で分かる。
+fn idle_conns(proxy: SocketAddr, origin: SocketAddr, conc: usize, seconds: u64) {
+    let request = format!("GET http://{0}/ HTTP/1.1\r\nHost: {0}\r\n\r\n", origin).into_bytes();
+    let mut held: Vec<TcpStream> = Vec::with_capacity(conc);
+    let mut latencies_us: Vec<u32> = Vec::with_capacity(conc);
+    let mut line = String::new();
+    let mut failed = 0usize;
+    let started = Instant::now();
+    for _ in 0..conc {
+        let t0 = Instant::now();
+        match open_idle_conn(proxy, &request, &mut line) {
+            Ok(sock) => {
+                latencies_us.push(t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
+                held.push(sock);
+            }
+            Err(_) => failed += 1,
+        }
+    }
+    let opened = started.elapsed();
+    println!(
+        "idle-con {} keep-alive conns open (1 request each) in {:.1}s ({} failed); holding {}s",
+        held.len(),
+        opened.as_secs_f64(),
+        failed,
+        seconds
+    );
+    // 握ったまま待つ (この間にプロキシのスレッド数と RSS を見る)
+    thread::sleep(Duration::from_secs(seconds));
+    // まだ生きている本数を数える。プロキシは黙っているはずなので、生きていれば
+    // ノンブロッキングの read が WouldBlock、閉じられていれば 0 バイトの EOF になる。
+    let mut alive = 0usize;
+    let mut byte = [0u8; 1];
+    for sock in &held {
+        let _ = sock.set_nonblocking(true);
+        let mut r: &TcpStream = sock;
+        if matches!(r.read(&mut byte), Err(ref e) if e.kind() == io::ErrorKind::WouldBlock) {
+            alive += 1;
+        }
+    }
+    println!(
+        "idle-con {} of {} still open after {}s",
+        alive,
+        held.len(),
+        seconds
+    );
+    // 握れた本数を「操作数」として出す (scripts/cpu-per-request.sh がこの行から読む)
+    latencies_us.sort_unstable();
+    Report {
+        ops: held.len() as u64,
+        bytes: 0,
+        elapsed: started.elapsed(),
+        latencies_us,
+    }
+    .print("idle-con");
     drop(held);
 }
 
@@ -872,6 +962,12 @@ fn main() {
     // アイドルなトンネルを握り続ける (--only idle-tunnels のときだけ。all には入れない)
     if args.only == "idle-tunnels" {
         idle_tunnels(proxy, args.conc, args.seconds);
+        return;
+    }
+
+    // 1 要求ずつ通した keep-alive 接続を握り続ける (--only idle-conns のときだけ。all には入れない)
+    if args.only == "idle-conns" {
+        idle_conns(proxy, origin, args.conc, args.seconds);
         return;
     }
 
