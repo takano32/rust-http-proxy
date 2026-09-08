@@ -2139,7 +2139,7 @@ Phase 11 は **5% に届かないと分かっているもの**と、**まだ測�
     - README の性能表 (2026-09-07、固定なし) の該当行は古いまま → **T11.8 で揃える**。
 
 
-- [ ] **T11.5 `/metrics` とダッシュボードに `max_conns` / スレッド数を出す**
+- [x] **T11.5 `/metrics` とダッシュボードに `max_conns` / スレッド数を出す**
   - 目的: T10.7 で `/status` には出したが、`/metrics` (Prometheus) とダッシュボードには出していない。
     運用で見るのは `/metrics` の方なので、片肺のまま。
   - 変更箇所: `crates/prom/`、`crates/endpoints/` (ダッシュボードの HTML)、`crates/metrics/src/metrics.rs`。
@@ -2148,6 +2148,27 @@ Phase 11 は **5% に届かないと分かっているもの**と、**まだ測�
     ダッシュボードは「いまのスレッド数 / 上限」を 1 行足す程度でよい。
   - 受け入れ基準: `/metrics` に 5 つの gauge が出ることを見るテスト。要求あたりの仕事が増えていないこと
     (`--lite` の keep-alive を 1 回測る)。
+  - 結果: **`/status` に出していた 5 つを `/metrics` にも gauge で足し、ダッシュボードに 1 行出した** (`b795bf6`)。
+    名前は既存に合わせた (**`sorahost_` 接頭辞**。いまの値なので `_total` は付けない。`# HELP` / `# TYPE` は
+    既存の `header()` / `line()` をそのまま使う): `sorahost_max_connections` / `sorahost_max_threads` /
+    `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs`。
+    配線は **T10.7 と同じ形**。`prom::render` は値を引数で受け取る (指標を読むだけの層が `Config` や `Workers` を呼ぶと
+    依存が輪になる) 形にし、`endpoints::Endpoint` が持っている `&dyn Fn() -> Concurrency` を
+    **`/metrics` を組み立てるときだけ** 1 回呼ぶ。**熱い経路のコードは 1 行も変わっていない**
+    (増えたのは `/metrics` の分岐の中だけ)。`crates/metrics` は触っていない (`Concurrency` は T10.7 のものがそのまま使えた)。
+    ダッシュボードは「接続中」カードに `スレッド 7 / 256 (空き 3 · 待ち 2) · 接続上限 1008` の 1 行。
+    読むのは `/status` の JSON なので新しい取得は無い。
+
+    `--lite` の keep-alive (8 並列 10 秒、前後交互 5 組 = 順を入れ替えた 2 組 + 3 組、捨て走り 1 本つき) の中央値:
+    CPU/要求 41.26 → 42.04 us (**+1.9%**、user 11.32 → 11.87、kernel 29.95 → 30.17)、req/s 38,627 → 37,992。
+    **5% のぶれの中**だが 5 組すべて同じ向きに出る。要求あたりの仕事は増えていないのでバイナリの並びの差と読む
+    (大きさは 1,381,872 B のまま変わらない)。
+    テスト 205 単体 + 53 結合 → **206 単体 + 54 結合** (260 本、全通過)
+    - **やり残し**: gauge を 5 つの独立した名前にした (`sorahost_threads{state="live"}` のようなラベルにはしなかった)。
+      `/status` の鍵と 1 対 1 で読めることを優先したが、Prometheus の作法としてはラベルの方が素直。
+      `PROXY_MAX_THREADS` が `.env` の再読込で変わらない点 (T10.5 / T11.6) はそのままなので、
+      `sorahost_max_threads` は起動時の値を出し続ける。
+
 
 - [ ] **T11.6 `PROXY_MAX_THREADS` を `.env` の再読込で変えられるようにする**
   - 目的: T10.5 のやり残し。いまは起動時に 1 回だけ読む。`PROXY_MAX_CONNS` は再読込で変わる (T2.1) ので、
