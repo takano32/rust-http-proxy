@@ -150,9 +150,9 @@ pub struct Config {
     pub max_conns: usize,
     /// 同時に生きていてよい接続スレッドの上限 (`PROXY_MAX_THREADS`、既定 `auto`、`0` で無制限)。
     ///
-    /// 上限に達したら新しいスレッドを起こさず仕事を待たせる (捨てない)。**起動時に 1 回だけ
-    /// 読む** (`Workers` を作るときに渡すので、`.env` の再読込では変わらない)。
-    /// `auto` の決め方は [`default_max_threads`]
+    /// 上限に達したら新しいスレッドを起こさず仕事を待たせる (捨てない)。
+    /// **`.env` の再読込で変わる** (T11.6。`serve` が接続ごとにこの値と `Workers` の
+    /// 上限を突き合わせ、食い違ったときだけ当て直す)。`auto` の決め方は [`default_max_threads`]
     pub max_threads: usize,
     pub cache: CacheConfig,
 }

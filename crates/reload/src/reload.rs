@@ -6,7 +6,8 @@
 //!
 //! 即時反映できるのは接続単位で参照する値だけ: ACL (`PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS`)、
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
-//! `PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`。それ以外 (ポート、bind、
+//! `PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
+//! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
 //! `/status` と dashboard に「再起動が必要」と出す。
 
@@ -123,6 +124,12 @@ impl Live {
         if fresh.max_conns != old.max_conns {
             next.max_conns = fresh.max_conns;
             applied.push("PROXY_MAX_CONNS");
+        }
+        // `auto` は `PROXY_MAX_CONNS` から決まるので、そちらが変わるとこの値も変わる
+        // (当てるのは `serve` が接続ごとに `Workers::set_limit` で。T11.6)
+        if fresh.max_threads != old.max_threads {
+            next.max_threads = fresh.max_threads;
+            applied.push("PROXY_MAX_THREADS");
         }
         if fresh.dns_ttl != old.dns_ttl {
             next.dns_ttl = fresh.dns_ttl;
