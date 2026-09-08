@@ -461,8 +461,11 @@ pub fn handle_http_with_headers(
     let store_allowed = store_allowed && (stale.is_some() || cache.admit(key));
 
     // ---- 同時ミスの合流: 同じキーを誰かが取得中なら、その保存完了を待ってキャッシュから返す ----
+    // **保存されないと分かっている URL では合流しない** (T11.9)。待っても保存されないので、
+    // 起きてから結局自分でオリジンへ行くことになり、待ち損 (`futex` 1.76 回/要求) だけが残る。
+    // 初めて見る URL では今までどおり合流する
     let mut leader = None;
-    if store_allowed && stale.is_none() {
+    if store_allowed && stale.is_none() && cache.may_coalesce(key, now) {
         match cache.begin_fetch(key) {
             FetchTicket::Leader(guard) => leader = Some(guard),
             FetchTicket::Follower(inflight) => {
@@ -837,6 +840,11 @@ pub fn handle_http_with_headers(
 
     // 保存されなかった場合は待っている要求に自分で取りに行かせる (Drop でも通知される)
     if let Some(guard) = leader.take() {
+        // この鍵は保存されないと分かったので覚えておく (次の同時ミスは合流させない。T11.9)。
+        // 途中で切れた転送は一時的な失敗なので覚えない (次はうまくいくかもしれない)
+        if clean {
+            cache.remember_not_stored(key, now);
+        }
         guard.complete(FetchOutcome::NotStored);
     }
     let total = client_head.len() as u64 + body_bytes;
