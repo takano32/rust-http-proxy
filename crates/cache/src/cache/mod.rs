@@ -23,7 +23,7 @@ mod tests;
 
 // メモリ側とディスク側は別クレート。move 前と同じ `cache::memory` のような書き方を通す
 pub use proxy_cachedisk::disk;
-pub use proxy_cachemem::{admission, entry, inflight, lru, memory};
+pub use proxy_cachemem::{admission, entry, inflight, lru, memory, notstored};
 
 pub use config::{CacheConfig, DiskQuota, Limit, MIB};
 pub use entry::{Body, CachedResponse};
@@ -98,6 +98,8 @@ pub struct Cache {
     revalidating: Mutex<HashSet<CacheKey>>,
     /// 進行中の取得 (同時ミスの合流用)
     inflight: inflight::InFlightTable,
+    /// 保存されないと分かっている鍵 (この鍵では合流を通さない。T11.9)
+    not_stored: notstored::NotStored,
     /// quota モードでの、割当ディレクトリ内の自分以外の使用量
     other_disk_usage: AtomicU64,
     /// このティックまではバラストの再確保を控える (メモリ圧迫・ENOSPC の後)
@@ -135,6 +137,8 @@ impl Cache {
         } else {
             cfg.disk_quota
         };
+        // 入れ替えの周期は既定の TTL に合わせる (`cfg` はこのあと構造体に移すのでここで作る)
+        let not_stored = notstored::NotStored::new(cfg.default_ttl.as_secs());
         let cache = Self {
             quota,
             mem: MemTier::new(cfg.reserve),
@@ -152,6 +156,7 @@ impl Cache {
             variants: Mutex::new(key::KeyMap::default()),
             revalidating: Mutex::new(HashSet::new()),
             inflight: inflight::InFlightTable::default(),
+            not_stored,
             other_disk_usage: AtomicU64::new(0),
             backoff_until: AtomicU64::new(0),
             disk_enospc_seen: AtomicBool::new(false),
@@ -315,6 +320,24 @@ impl Cache {
     /// 同じキーの取得が進行中かを見て、leader になるか待つ側になるかを決める。
     pub fn begin_fetch(&self, key: CacheKey) -> FetchTicket<'_> {
         self.inflight.begin(key)
+    }
+
+    /// この鍵で同時ミスの合流を通してよいか。**保存されないと分かっている鍵では合流しない**
+    /// (待っても保存されないので、起きてから結局自分でオリジンへ行くことになる。T11.9)。
+    /// `now` は要求の処理で既に読んである epoch 秒。
+    pub fn may_coalesce(&self, key: CacheKey, now: u64) -> bool {
+        !self.not_stored.contains(key, now)
+    }
+
+    /// leader が「保存しなかった」で終わった鍵を覚える (次の同時ミスでは合流しない)。
+    /// 途中で切れた転送のような一時的な失敗では呼ばないこと。
+    pub fn remember_not_stored(&self, key: CacheKey, now: u64) {
+        self.not_stored.remember(key, now);
+    }
+
+    /// 「保存されない鍵」の記憶を入れ替えた回数 (テストと状態表示用)。
+    pub fn not_stored_rotations(&self) -> u64 {
+        self.not_stored.rotations()
     }
 
     /// 進行中の取得の数。

@@ -40,14 +40,15 @@ impl Default for Doorkeeper {
     }
 }
 
-fn positions(key: CacheKey) -> [usize; 2] {
+/// 鍵から 2 本のビット位置を出す。`bits` は 2 のべき乗 (このクレートのブルームフィルタ共通)。
+pub(crate) fn positions(key: CacheKey, bits: usize) -> [usize; 2] {
     let lo = key.0 as u64;
     let hi = (key.0 >> 64) as u64;
     let h1 = (lo ^ hi.rotate_left(29)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let h2 = (hi ^ lo.rotate_left(17)).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     [
-        (h1 >> 43) as usize & (BITS - 1),
-        (h2 >> 43) as usize & (BITS - 1),
+        (h1 >> 43) as usize & (bits - 1),
+        (h2 >> 43) as usize & (bits - 1),
     ]
 }
 
@@ -58,7 +59,7 @@ fn test(bits: &[u64], pos: [usize; 2]) -> bool {
 impl Doorkeeper {
     /// このキーを以前に見たことがあれば `true`。見ていなければ覚えて `false`。
     pub fn seen(&self, key: CacheKey) -> bool {
-        let pos = positions(key);
+        let pos = positions(key, BITS);
         let mut g = self.inner.locked();
         if test(&g.current, pos) || test(&g.previous, pos) {
             return true;

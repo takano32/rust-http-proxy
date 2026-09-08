@@ -138,3 +138,25 @@ fn admission_gates_first_sightings_only_when_the_tier_is_full() {
     let cache = Cache::new(off);
     assert!(cache.admit(k2));
 }
+
+#[test]
+fn coalescing_is_skipped_for_keys_that_were_not_stored() {
+    // 既定の TTL = 入れ替えの周期 (`CacheConfig::fixed` の既定は 300 秒)
+    let cache = fresh("shp-test-not-stored", MIB, 0);
+    let k = cache_key("GET", "http://example.com/no-store");
+    let other = cache_key("GET", "http://example.com/cacheable");
+    let now = 1_000_000;
+    // 初めて見る鍵は今までどおり合流する
+    assert!(cache.may_coalesce(k, now));
+    // leader が「保存しなかった」で終わったら、次からは合流を通さない
+    cache.remember_not_stored(k, now);
+    assert!(!cache.may_coalesce(k, now));
+    // 他の鍵は巻き添えにならない
+    assert!(cache.may_coalesce(other, now));
+    // 1 周期では「直前」の側に残るのでまだ覚えている
+    assert!(!cache.may_coalesce(k, now + 301));
+    assert_eq!(cache.not_stored_rotations(), 1);
+    // 2 周期で忘れて合流に戻る (オリジンが Cache-Control を変えることがある)
+    assert!(cache.may_coalesce(k, now + 602));
+    assert_eq!(cache.not_stored_rotations(), 2);
+}

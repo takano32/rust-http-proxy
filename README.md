@@ -70,7 +70,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 - **HTTP / HTTPS (CONNECTトンネリング) 対応**
 - **同時ミスの合流 (collapsed forwarding)**: 同じ URL を複数のクライアントが同時に要求しても、オリジンへ行くのは
   最初の 1 本だけ。残りはその保存完了を待ってキャッシュから受け取る (`cache=COALESCED`)。保存されなかった場合は
-  各自で取りに行く
+  各自で取りに行く。**保存されないと分かった URL では次から合流を通さない** (待っても保存されないので待ち損。
+  `Cache-Control: no-store` のオリジンへ 8 並列で同じ URL を叩くと 30,000 → 36,500 req/s)。
+  覚えるのはブルームフィルタで、`PROXY_CACHE_TTL_SECS` と同じ周期で入れ替えて忘れる
+  (オリジンが `Cache-Control` を変えたら、次の周期から合流に戻る)
 - **keep-alive と接続プール**: クライアント接続は HTTP/1.1 の持続接続 (アイドル 15 秒)、オリジンへの接続は
   ホストごとにプールして再利用 (既定 64 本・全体 256 本まで、アイドル 60 秒まで保持、再利用前に 1 回の `recv(MSG_PEEK|MSG_DONTWAIT)` で生存確認)。
   再利用できた割合は `/status` の `origin_connections.pool_hit_ratio` に出ます。本文は必ず解読してから自前で枠付けし直す
@@ -413,7 +416,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 | `proxy-cachecfg` | キャッシュの設定 |
 | `proxy-diskprobe` | ディスクの実測 (実際に書いてみて、どれだけ入るかを確かめる) |
 | `proxy-capacity` | 使ってよい量の見積もり (空きメモリ・cgroup の上限・コンテナの quota) |
-| `proxy-cachemem` | キャッシュのメモリ側 (LRU、エントリ、合流、受け入れ判定) |
+| `proxy-cachemem` | キャッシュのメモリ側 (LRU、エントリ、合流、受け入れ判定、保存されない鍵の記憶) |
 | `proxy-cachedisk` | キャッシュのディスク側 (ファイル形式、走査、書き出し) |
 | `proxy-cache` | キャッシュ本体 (メモリ側とディスク側を束ねる) |
 | `proxy-config` | 起動時の設定 |
