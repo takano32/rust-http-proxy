@@ -92,11 +92,6 @@ fn open(
     client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     client.flush()?;
     if !prefix.is_empty() {
-        // Linux の `server` は接続した時点から nonblocking (T11.1) なので `write_all` は
-        // `WouldBlock` で戻りうる。送信バッファが空くまで待って書き切る
-        #[cfg(target_os = "linux")]
-        write_all_blocking(&mut server, prefix, timeout)?;
-        #[cfg(not(target_os = "linux"))]
         server.write_all(prefix)?;
     }
     Ok(Opened {
@@ -215,58 +210,8 @@ pub fn handle_connect_parked(
 }
 
 /// 名前解決して接続する (IPv6 / IPv4 を Happy Eyeballs で並行に試す)。
-///
-/// **Linux では nonblocking のままのソケットを返す** (T11.1)。中継は `poll(2)` で回すので
-/// ブロッキングに戻す必要が無く、std の `connect_timeout` が払う `ioctl(FIONBIO)` 2 回と、
-/// 中継のために戻し直す 1 回をまとめて省ける。
 pub fn connect_with_timeout(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
-    #[cfg(target_os = "linux")]
-    {
-        net::connect_nonblocking(addr_str, timeout)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        net::connect(addr_str, timeout)
-    }
-}
-
-/// nonblocking のソケットへ全部書く (CONNECT の先読みぶんを上流へ渡すとき)。
-///
-/// `timeout` が `Duration::ZERO` なら締め切り無し (T10.6 の約束)。
-#[cfg(target_os = "linux")]
-fn write_all_blocking(sock: &mut TcpStream, mut buf: &[u8], timeout: Duration) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-
-    let deadline = (!timeout.is_zero()).then(|| Instant::now() + timeout);
-    while !buf.is_empty() {
-        match sock.write(buf) {
-            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
-            Ok(n) => buf = &buf[n..],
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                let timeout_ms = match deadline {
-                    None => -1,
-                    Some(d) => {
-                        let left = d.saturating_duration_since(Instant::now());
-                        if left.is_zero() {
-                            return Err(io::Error::new(
-                                io::ErrorKind::TimedOut,
-                                "timed out writing the buffered CONNECT prefix",
-                            ));
-                        }
-                        (left.as_millis().min(i32::MAX as u128) as i32).max(1)
-                    }
-                };
-                let mut fds = [crate::sys::PollFd::new(
-                    sock.as_raw_fd(),
-                    crate::sys::POLLOUT,
-                )];
-                crate::sys::poll_fds(&mut fds, timeout_ms)?;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
+    net::connect(addr_str, timeout)
 }
 
 /// 双方向にデータを中継し、転送した合計バイト数を返す (Linux 以外)。
@@ -713,10 +658,8 @@ mod relay {
             server,
             info,
         } = opened;
-        // クライアント側は accept したままなのでブロッキング。上流は
-        // `connect_with_timeout` が nonblocking のまま返しているので触らない
-        // (T11.1: ここで戻し直していたのが `ioctl` 4 回のうちの 1 回)
         client.set_nonblocking(true)?;
+        server.set_nonblocking(true)?;
         drive(Box::new(Idle {
             socks: [client, server],
             dirs: [Dir::new(0, 1), Dir::new(1, 0)],
@@ -769,48 +712,5 @@ mod relay {
                 }
             }
         }
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Read;
-    use std::net::TcpListener;
-
-    /// 先読みぶんを nonblocking のソケットへ書き切れること (T11.1)。
-    ///
-    /// `open` が受け取る上流ソケットは接続した時点から nonblocking なので、
-    /// std の `write_all` では `WouldBlock` で落ちる。相手が読み始めるまで待ってから
-    /// 続きを書き、**1 バイトも落とさず順番も変えない**ことをここで固定する。
-    #[test]
-    fn writes_the_whole_prefix_to_a_nonblocking_socket() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let mut writer = TcpStream::connect(addr).unwrap();
-        let (mut reader, _) = listener.accept().unwrap();
-        writer.set_nonblocking(true).unwrap();
-
-        // 送信バッファが埋まって `WouldBlock` になるくらいの大きさにする
-        let payload: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
-        let expect = payload.clone();
-        let drain = std::thread::spawn(move || {
-            // すぐには読まない (書き手を必ず一度は待たせる)
-            std::thread::sleep(Duration::from_millis(100));
-            let mut got = Vec::with_capacity(expect.len());
-            let mut buf = vec![0u8; 64 * 1024];
-            while got.len() < expect.len() {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => got.extend_from_slice(&buf[..n]),
-                    Err(e) => panic!("read failed: {}", e),
-                }
-            }
-            assert_eq!(got, expect, "落ちたバイトも入れ替わりも無い");
-        });
-        write_all_blocking(&mut writer, &payload, Duration::from_secs(30)).unwrap();
-        drop(writer);
-        drain.join().unwrap();
     }
 }

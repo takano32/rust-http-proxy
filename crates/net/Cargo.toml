@@ -8,4 +8,3 @@ path = "src/lib.rs"
 
 [dependencies]
 proxy-base = { path = "../base" }
-proxy-sys = { path = "../sys" }
