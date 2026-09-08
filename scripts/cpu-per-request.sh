@@ -20,7 +20,7 @@
 # 出力の `proxy NN% of one core` が 100% に届かない限り、MiB/s はプロキシの上限ではない。
 #
 # 使い方:
-#   scripts/cpu-per-request.sh [--only forward|connect|tunnel|idle-tunnels] [bench の残りの引数...]
+#   scripts/cpu-per-request.sh [--only forward|connect|tunnel|idle-tunnels|idle-conns] [bench の残りの引数...]
 #     既定は --only forward --conc 8 --seconds 10
 #   例:
 #     scripts/cpu-per-request.sh                                  # keep-alive の forward
@@ -30,6 +30,17 @@
 #     scripts/cpu-per-request.sh --cacheable                      # キャッシュ HIT
 #     PROXY_MAX_CONNS=8192 scripts/cpu-per-request.sh --only idle-tunnels --conc 5000
 #                                                                 # アイドルトンネルを握る
+#     PROXY_MAX_CONNS=8192 scripts/cpu-per-request.sh --only idle-conns --conc 2000
+#                                                                 # 暇な keep-alive 接続を握る
+#
+# **`--only idle-tunnels` / `--only idle-conns` で見るのはスレッド数と RSS** (CPU/op ではない)。
+# どちらも「確立 + 保持 + 終わりの一斉 close」の合計を本数で割った値になるので CPU は弱い指標
+# (T8.1)。読むのは `threads ... (max N, median M)` と `proxy peak RSS` と `parked max`。
+# `--only idle-conns` の握る秒数は **プロキシの `PROXY_KEEPALIVE_SECS` (既定 15 秒) より短く**
+# すること (越えると預かり所が期限切れで閉じる)。ベンチが最後に「まだ生きている本数」を出す。
+# 「預けない場合」(預ける前の姿) を測るには `PROXY_PARK_IDLE=off PROXY_MAX_THREADS=0` を足す。
+# **上限 (T10.5 の auto = 256) を外さないと止まる**: 預けないと 1 接続が 1 スレッドを握ったままなので、
+# 257 本目からは待ち行列に入って応答が返らない。
 #
 # 環境変数 (どれも「明示されたら上書き」。既定のままなら上の「同じ条件」で回る):
 #   PROXY_CPUS (既定 4-7、tunnel だけ 4-5) / BENCH_CPUS (既定 0-3、tunnel だけ 6-7) / PORT (既定 18080)
