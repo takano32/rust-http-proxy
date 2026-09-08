@@ -30,11 +30,11 @@ pub struct Endpoint<'a> {
     pub pac_direct: &'a [String],
     /// lite プロファイル (ダッシュボードを持たない)
     pub lite: bool,
-    /// 上限といまのスレッド数を引く口 (`/status` を組み立てるときだけ呼ぶ)。
+    /// 上限といまのスレッド数を引く口 (`/status` と `/metrics` を組み立てるときだけ呼ぶ)。
     ///
     /// 値そのものではなく関数で受け取るのは、生きているスレッド数と待ち行列を数えるのに
     /// **全接続スレッドで共有している鍵**を取るため。`Endpoint` は要求ごとに組むので、
-    /// ここで数えると熱い経路に乗ってしまう (`/status` に来たときだけ引く)
+    /// ここで数えると熱い経路に乗ってしまう (この 2 つのパスに来たときだけ引く)
     pub concurrency: &'a dyn Fn() -> metrics::Concurrency,
 }
 
@@ -134,7 +134,8 @@ pub fn handle(
         (
             200,
             "text/plain; version=0.0.4; charset=utf-8",
-            prom::render(ep.metrics, Some(ep.cache)),
+            // 上限といまのスレッド数はここで 1 回だけ引く (`/status` と同じ形)
+            prom::render(ep.metrics, Some(ep.cache), (ep.concurrency)()),
         )
     } else if is_get && path == "/purge" {
         let params = parse_query(query.unwrap_or(""));

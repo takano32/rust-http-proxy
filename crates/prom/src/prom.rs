@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use std::sync::atomic::Ordering;
 
 use crate::cache::Cache;
-use crate::metrics::Metrics;
+use crate::metrics::{Concurrency, Metrics};
 
 /// ラベル値のエスケープ (RFC: `\`、`"`、改行)。
 fn escape(v: &str) -> String {
@@ -27,7 +27,12 @@ fn header(out: &mut String, name: &str, kind: &str, help: &str) {
 }
 
 /// メトリクス一式を描く。`cache` が `None` ならキャッシュ関連は出さない。
-pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
+///
+/// `conc` (上限といまのスレッドの数) を**呼び出し側から受け取る**のは、`/status` の
+/// [`crate::metrics::StatusExtras`] と同じ理由: 数えるには `Config` と `Workers` が要り、
+/// ここ (指標を読むだけの層) から呼ぶと依存が輪になる。数えるのに全接続スレッドで
+/// 共有している鍵を取るので、**`/metrics` を組み立てるときだけ**引くこと (熱い経路に乗せない)。
+pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     let mut out = String::with_capacity(4096);
     header(
         &mut out,
@@ -95,6 +100,43 @@ pub fn render(m: &Metrics, cache: Option<&Cache>) -> String {
         "",
         m.active_connections.load(Ordering::Relaxed),
     );
+    // 上限といまのスレッドの数 (`/status` に出しているのと同じ値。T11.5)。
+    // `auto` で決まった上限を、起動ログを見なくても監視側から確かめられるようにするためのもの
+    header(
+        &mut out,
+        "max_connections",
+        "gauge",
+        "Client connection limit (PROXY_MAX_CONNS after auto sizing; 0 = unlimited)",
+    );
+    line(&mut out, "max_connections", "", conc.max_conns);
+    header(
+        &mut out,
+        "max_threads",
+        "gauge",
+        "Connection thread limit (PROXY_MAX_THREADS after auto sizing; 0 = unlimited)",
+    );
+    line(&mut out, "max_threads", "", conc.max_threads);
+    header(
+        &mut out,
+        "live_threads",
+        "gauge",
+        "Connection threads alive",
+    );
+    line(&mut out, "live_threads", "", conc.live_threads);
+    header(
+        &mut out,
+        "idle_threads",
+        "gauge",
+        "Connection threads waiting for work",
+    );
+    line(&mut out, "idle_threads", "", conc.idle_threads);
+    header(
+        &mut out,
+        "queued_jobs",
+        "gauge",
+        "Jobs waiting because the connection thread limit was reached",
+    );
+    line(&mut out, "queued_jobs", "", conc.queued_jobs);
     header(
         &mut out,
         "rejected_overload_total",
@@ -542,7 +584,7 @@ mod tests {
         let m = Metrics::new();
         m.inc_requests();
         m.record_host("http://a\"b:80", HostOutcome::Hit, 10);
-        let text = render(&m, None);
+        let text = render(&m, None, Concurrency::default());
         assert!(
             text.contains("# TYPE sorahost_requests_total counter\nsorahost_requests_total 1\n")
         );
@@ -556,5 +598,50 @@ mod tests {
             "no cache section without a cache"
         );
         assert_eq!(escape("x\\y\n"), "x\\\\y\\n");
+    }
+
+    /// 上限といまのスレッド数が gauge として出ること (T11.5)。
+    /// `/status` に出しているのと同じ 5 つで、値は上の層から渡ったものがそのまま出る。
+    #[test]
+    fn renders_the_limits_and_the_thread_counts_as_gauges() {
+        let m = Metrics::new();
+        let text = render(
+            &m,
+            None,
+            Concurrency {
+                max_conns: 137,
+                max_threads: 41,
+                live_threads: 7,
+                idle_threads: 3,
+                queued_jobs: 2,
+            },
+        );
+        for (name, value) in [
+            ("max_connections", 137),
+            ("max_threads", 41),
+            ("live_threads", 7),
+            ("idle_threads", 3),
+            ("queued_jobs", 2),
+        ] {
+            assert!(
+                text.contains(&format!("# TYPE sorahost_{} gauge\n", name)),
+                "{} の TYPE が無い:\n{}",
+                name,
+                text
+            );
+            assert!(
+                text.contains(&format!("sorahost_{} {}\n", name, value)),
+                "{} の値が違う:\n{}",
+                name,
+                text
+            );
+        }
+        // 渡されなければ 0 (= 無制限・数えていない)
+        let zeroed = render(&m, None, Concurrency::default());
+        assert!(
+            zeroed.contains("sorahost_max_connections 0\n"),
+            "{}",
+            zeroed
+        );
     }
 }

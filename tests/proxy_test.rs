@@ -182,7 +182,61 @@ fn test_integration_status_shows_the_limits_and_the_thread_counts() {
     assert!(status.contains("\"queued_jobs\":0"), "{}", status);
 }
 
-/// `/status` の JSON から `key` に続く数を取る (テスト用の雑な取り出し)。
+/// `/status` に出した上限といまのスレッド数が、`/metrics` にも gauge として出ること (T11.5)。
+/// 運用で見るのは `/metrics` の方なので、`/status` だけだと片肺になる。
+#[test]
+fn test_integration_metrics_shows_the_limits_and_the_thread_counts() {
+    let mut cfg = proxy_config();
+    cfg.max_conns = 137;
+    cfg.max_threads = 41;
+    let proxy_port = start_test_proxy(cfg);
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .write_all(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    let mut metrics = String::new();
+    stream.read_to_string(&mut metrics).unwrap();
+    for name in [
+        "max_connections",
+        "max_threads",
+        "live_threads",
+        "idle_threads",
+        "queued_jobs",
+    ] {
+        assert!(
+            metrics.contains(&format!("# TYPE sorahost_{} gauge\n", name)),
+            "sorahost_{} の gauge が無い: {}",
+            name,
+            metrics
+        );
+    }
+    assert!(
+        metrics.contains("sorahost_max_connections 137\n"),
+        "決まった上限が出ていない: {}",
+        metrics
+    );
+    assert!(
+        metrics.contains("sorahost_max_threads 41\n"),
+        "スレッドの上限が出ていない: {}",
+        metrics
+    );
+    assert!(
+        metrics.contains("sorahost_queued_jobs 0\n"),
+        "待ち行列は空のはず: {}",
+        metrics
+    );
+    // `/metrics` を引いている接続そのものがワーカースレッドを 1 本使っている
+    let live: usize = field(&metrics, "\nsorahost_live_threads ");
+    let idle: usize = field(&metrics, "\nsorahost_idle_threads ");
+    assert!(
+        live >= 1,
+        "生きているスレッドが数えられていない: {}",
+        metrics
+    );
+    assert!(idle <= live, "空きは生きている数を超えない: {}", metrics);
+}
+
+/// `/status` の JSON や `/metrics` の本文から `key` に続く数を取る (テスト用の雑な取り出し)。
 fn field(status: &str, key: &str) -> usize {
     let at = status
         .find(key)
