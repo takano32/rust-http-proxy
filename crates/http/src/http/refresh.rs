@@ -3,11 +3,30 @@
 //! 期限切れ直後 (grace 内) の要求には保存済みの表現をすぐ返し、このモジュールが別スレッドで
 //! オリジンへ条件付き要求を送る。304 なら延命、新しい表現なら保存し直し、保存できない応答なら
 //! 古い表現を捨てる。同じキーの再検証は同時に 1 本だけ、全体でも上限を設ける。
+//!
+//! # 走らせる場所は接続スレッドの置き場 (T11.3)
+//!
+//! 再検証は**自分でスレッドを起こさない**。T10.5 が `Workers` に入れた「生きているスレッドの
+//! 上限」(`PROXY_MAX_THREADS`) の外にいると、stale-while-revalidate が集中したときに
+//! T10.5 が防いだのと同じスレッドの山が起きるため。
+//!
+//! **上限に達しているときは待ち行列に積まず捨てる** (`Workers::try_run`)。理由は 3 つ:
+//!
+//! - 再検証は「後でやればいい仕事」で、**捨てても正しさは崩れない**
+//!   (その項目は次の要求で普通のミス = 同期の再検証として取り直されるだけ)。
+//! - 待ち行列は新しい接続と共用なので、積むと**その接続の処理が再検証の後ろに並ぶ**。
+//! - 積むと、順番が来るまでキャッシュ側の「再検証中」の印を握り続ける
+//!   (同じキーの再検証も、全体の 32 本の枠も、そのぶん詰まる)。
+//!
+//! 捨てた回数は `/status` の `revalidations_dropped` と `/metrics` の
+//! `cache_revalidations_dropped_total` に出る。
+//!
+//! この形は**自分で釣り合う**: 接続がスレッドを使い切っているときは再検証が全部捨てられ
+//! (要求の処理が優先される)、空きがあるときだけ裏で走る。
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::thread;
 use std::time::Duration;
 
 use super::{Shared, acquire_origin, read_response_head, request_head};
@@ -20,9 +39,27 @@ use crate::log_debug;
 use crate::metrics::Metrics;
 use crate::request::Origin;
 
-/// 裏で再検証を始める。既に同じキーが再検証中、または上限に達していれば false。
+/// 「このキーは裏で再検証中」の印の番人。落ちると印が消える。
+///
+/// 仕事がワーカーに渡らずに落ちても、走っている途中でパニックしても、`Drop` が必ず
+/// 1 回だけ消す (以前は仕事の最後に `end_revalidation` を呼ぶだけだったので、
+/// パニックすると印が残り、そのキーは二度と裏で再検証されなかった)。
+/// T9.6 の `OpenGuard` と同じ形で、`Workers` が失敗した仕事を呼び出し元へ返す性質に乗っている。
+struct Revalidating {
+    cache: Arc<Cache>,
+    key: CacheKey,
+}
+
+impl Drop for Revalidating {
+    fn drop(&mut self) {
+        self.cache.end_revalidation(self.key);
+    }
+}
+
+/// 裏で再検証を始める。既に同じキーが再検証中、上限に達している、または
+/// 接続スレッドに空きが無ければ false (呼び出し元は普通の (同期の) 再検証に回る)。
 pub fn spawn(
-    shared: &Shared,
+    shared: &Shared<'_>,
     origin: &Origin,
     key: CacheKey,
     url: &str,
@@ -32,49 +69,63 @@ pub fn spawn(
     if !shared.cache.begin_revalidation(key) {
         return false;
     }
-    let cache = Arc::clone(&shared.cache);
+    // 印はここから番人が持つ (以後どの道を通っても 1 回だけ消える)
+    let ticket = Revalidating {
+        cache: Arc::clone(&shared.cache),
+        key,
+    };
     let upstream = Arc::clone(&shared.upstream);
     let metrics = Arc::clone(&shared.metrics);
     let timeout = shared.timeout;
     let origin = origin.clone();
     let url = url.to_string();
     let conn_id = shared.conn_id;
-    let spawned = thread::Builder::new()
-        .name("revalidate".into())
-        .spawn(move || {
-            let outcome = revalidate(
-                &cache,
-                &upstream,
-                &metrics,
-                timeout,
-                &origin,
-                key,
-                &url,
-                &cached_head,
-                accept_encoding.as_deref(),
-                conn_id,
+    let job = Box::new(move || {
+        let cache: &Cache = &ticket.cache;
+        let outcome = revalidate(
+            cache,
+            &upstream,
+            &metrics,
+            timeout,
+            &origin,
+            key,
+            &url,
+            &cached_head,
+            accept_encoding.as_deref(),
+            conn_id,
+        );
+        match outcome {
+            Ok(what) => log_debug!(
+                Some(conn_id),
+                "background revalidation of {} -> {}",
+                url,
+                what
+            ),
+            Err(e) => log_debug!(
+                Some(conn_id),
+                "background revalidation of {} failed: {} (stale entry kept)",
+                url,
+                e
+            ),
+        }
+        // ここで ticket が落ち、「再検証中」の印が消える
+    });
+    match shared.workers.try_run(job) {
+        Ok(()) => true,
+        Err(_returned) => {
+            // 生きているスレッドが上限。**待ち行列には積まない** (モジュール冒頭の理由)。
+            // 戻ってきた仕事はここで落ち、番人が印を消す
+            shared
+                .cache
+                .revalidations_dropped
+                .fetch_add(1, Ordering::Relaxed);
+            log_debug!(
+                Some(conn_id),
+                "background revalidation skipped (no worker thread available)"
             );
-            match outcome {
-                Ok(what) => log_debug!(
-                    Some(conn_id),
-                    "background revalidation of {} -> {}",
-                    url,
-                    what
-                ),
-                Err(e) => log_debug!(
-                    Some(conn_id),
-                    "background revalidation of {} failed: {} (stale entry kept)",
-                    url,
-                    e
-                ),
-            }
-            cache.end_revalidation(key);
-        })
-        .is_ok();
-    if !spawned {
-        shared.cache.end_revalidation(key);
+            false
+        }
     }
-    spawned
 }
 
 #[allow(clippy::too_many_arguments)]

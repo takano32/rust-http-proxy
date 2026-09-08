@@ -43,7 +43,8 @@ impl Cache {
             concat!(
                 "{{\"enabled\":{},\"hits\":{},\"hits_memory\":{},\"hits_disk\":{},",
                 "\"misses\":{},\"hit_ratio\":{:.4},\"stores\":{},\"evictions\":{},",
-                "\"revalidations\":{},\"background_revalidations\":{},\"revalidating\":{},",
+                "\"revalidations\":{},\"background_revalidations\":{},",
+                "\"revalidations_dropped\":{},\"revalidating\":{},",
                 "\"stale_served\":{},\"coalesced\":{},\"inflight\":{},\"admission_rejected\":{},\"bytes_served\":{},\"reserve\":{},",
                 "\"memory\":{{\"used_bytes\":{},\"limit_bytes\":{},\"entries\":{},",
                 "\"mode\":\"{}\",\"target_percent\":{},\"reserved_bytes\":{},",
@@ -67,6 +68,7 @@ impl Cache {
             self.evictions.load(Ordering::Relaxed),
             self.revalidations.load(Ordering::Relaxed),
             self.background_revalidations.load(Ordering::Relaxed),
+            self.revalidations_dropped.load(Ordering::Relaxed),
             self.revalidating_count(),
             self.stale_served.load(Ordering::Relaxed),
             self.coalesced.load(Ordering::Relaxed),

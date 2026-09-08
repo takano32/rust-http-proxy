@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use rust_http_proxy::cache::MIB;
 use rust_http_proxy::tls::TlsClient;
@@ -504,6 +504,205 @@ fn test_integration_grace_serves_stale_and_refreshes_in_background() {
         counter.load(Ordering::SeqCst),
         2,
         "one conditional request in the background"
+    );
+}
+
+/// 名前が `name` の OS スレッドの数。Linux 以外では数えられないので常に 0。
+#[cfg(target_os = "linux")]
+fn threads_named(name: &str) -> usize {
+    let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
+        return 0;
+    };
+    dir.filter_map(|e| e.ok())
+        .filter(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == name))
+        .count()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn threads_named(_name: &str) -> usize {
+    0
+}
+
+/// max-age=1 + ETag の表現を返し、条件付き要求には `delay` だけ待ってから 304 を返すオリジン。
+fn slow_revalidating_origin(
+    counter: Arc<AtomicUsize>,
+    delay: Duration,
+) -> (u16, thread::JoinHandle<()>) {
+    start_origin(
+        counter,
+        Arc::new(move |req: &str, _n| {
+            if req.contains("If-None-Match:") {
+                // 再検証を重ならせるために、条件付き要求だけ遅らせる
+                thread::sleep(delay);
+                return b"HTTP/1.1 304 Not Modified\r\nETag: \"w1\"\r\nCache-Control: max-age=60\r\nConnection: close\r\n\r\n".to_vec();
+            }
+            let body = "worker pool body";
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"w1\"\r\nCache-Control: max-age=1\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_bytes()
+        }),
+    )
+}
+
+/// 裏側の再検証は接続スレッドの置き場の中で走る (T11.3)。
+///
+/// 以前は再検証のたびに `thread::spawn` していたので、`PROXY_MAX_THREADS` (T10.5) の
+/// **外**にスレッドが増えた。再検証が集中しても
+///
+/// - `Workers` の外に「revalidate」スレッドが 1 本も出ないこと
+/// - 生きているスレッドが上限を超えないこと
+///
+/// を、burst の最中に細かく見張って確かめる。
+#[test]
+fn test_integration_background_revalidation_stays_inside_the_worker_pool() {
+    const MAX_THREADS: usize = 4;
+    const URLS: usize = 8;
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) =
+        slow_revalidating_origin(Arc::clone(&counter), Duration::from_millis(300));
+    let mut cfg = proxy_config();
+    cfg.max_threads = MAX_THREADS;
+    let (proxy_port, workers) = start_test_proxy_with_workers(cfg, cache_cfg("shp-it-revalpool"));
+    let host = format!("127.0.0.1:{}", origin_port);
+    let urls: Vec<String> = (0..URLS)
+        .map(|i| format!("http://{}/pool{}", host, i))
+        .collect();
+
+    // まず全部を保存する (max-age=1)
+    for url in &urls {
+        let r = get_via_proxy(proxy_port, url, &host);
+        assert!(r.ends_with("worker pool body"), "{}", r);
+    }
+    thread::sleep(Duration::from_millis(1200));
+    let before_reval = json_number(&status_json(proxy_port), "background_revalidations");
+
+    // burst の最中ずっと見張る
+    let stop = Arc::new(AtomicBool::new(false));
+    let max_live = Arc::new(AtomicUsize::new(0));
+    let stray = Arc::new(AtomicUsize::new(0));
+    let watcher = {
+        let (stop, max_live, stray, workers) = (
+            Arc::clone(&stop),
+            Arc::clone(&max_live),
+            Arc::clone(&stray),
+            Arc::clone(&workers),
+        );
+        thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                max_live.fetch_max(workers.live_count(), Ordering::SeqCst);
+                stray.fetch_max(threads_named("revalidate"), Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(2));
+            }
+        })
+    };
+
+    // 期限切れの表現を次々に叩く。1 本ずつでも、オリジンが 300 ms 待つので裏側の再検証は
+    // 重なっていく (上限 4 のうち 1 本は要求を処理しているので、裏に回せるのは 3 本まで)
+    for url in &urls {
+        let r = get_via_proxy(proxy_port, url, &host);
+        assert!(r.starts_with("HTTP/1.1 200 OK"), "{}", r);
+        assert!(r.ends_with("worker pool body"), "{}", r);
+    }
+    // 裏で走っている再検証が終わるまで見張り続ける
+    wait_until(
+        || status_json(proxy_port).contains("\"revalidating\":0"),
+        "background revalidations should finish",
+    );
+    stop.store(true, Ordering::SeqCst);
+    watcher.join().expect("watcher thread");
+
+    assert_eq!(
+        stray.load(Ordering::SeqCst),
+        0,
+        "再検証が置き場の外でスレッドを起こしている"
+    );
+    assert!(
+        max_live.load(Ordering::SeqCst) <= MAX_THREADS,
+        "生きているスレッドが上限 {} を超えた: {}",
+        MAX_THREADS,
+        max_live.load(Ordering::SeqCst)
+    );
+    // 上限 4 に 8 本ぶつけたので、裏で走ったものと捨てたものの両方が出る
+    let status = status_json(proxy_port);
+    let done = json_number(&status, "background_revalidations") - before_reval;
+    let dropped = json_number(&status, "revalidations_dropped");
+    assert!(
+        done >= 1,
+        "空きがあるときは裏で走らせるはず: done={} dropped={}",
+        done,
+        dropped
+    );
+    assert_eq!(
+        done + dropped,
+        URLS as u64,
+        "どの要求も「裏で走る」か「捨てる」のどちらか: done={} dropped={}",
+        done,
+        dropped
+    );
+}
+
+/// `\"key\":N` を数として取り出す (テスト用の雑な取り出し)。
+fn json_number(json: &str, key: &str) -> u64 {
+    let needle = format!("\"{}\":", key);
+    let at = json.find(&needle).unwrap_or_else(|| panic!("no {}", key)) + needle.len();
+    json[at..]
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|d| d.parse().ok())
+        .unwrap_or_else(|| panic!("not a number: {}", key))
+}
+
+/// 空いている接続スレッドが 1 本も無ければ、裏側の再検証は**待ち行列に積まず捨てる** (T11.3)。
+///
+/// 捨てても正しさは崩れない: その要求はそのまま同期の再検証に回り、クライアントは
+/// 新しい表現を受け取る。捨てた回数は `/status` に出る。
+#[test]
+fn test_integration_background_revalidation_is_dropped_when_threads_are_capped() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) =
+        slow_revalidating_origin(Arc::clone(&counter), Duration::from_millis(0));
+    let mut cfg = proxy_config();
+    // 上限 1 = いま要求を処理しているスレッドで全部。裏の再検証に回せる空きは無い
+    cfg.max_threads = 1;
+    let proxy_port = start_test_proxy_with_cache(cfg, cache_cfg("shp-it-revaldrop"));
+    let host = format!("127.0.0.1:{}", origin_port);
+    let url = format!("http://{}/capped", host);
+
+    let first = get_via_proxy(proxy_port, &url, &host);
+    assert!(first.ends_with("worker pool body"), "{}", first);
+    thread::sleep(Duration::from_millis(1200));
+
+    // 期限切れ直後。裏へ回せないので REFRESHING にはならず、同期で再検証して返す
+    let second = get_via_proxy(proxy_port, &url, &host);
+    assert!(second.starts_with("HTTP/1.1 200 OK"), "{}", second);
+    assert!(second.ends_with("worker pool body"), "{}", second);
+    assert!(
+        !second.contains("REFRESHING"),
+        "空きが無いのに裏へ回してはいけない: {}",
+        second
+    );
+
+    let status = status_json(proxy_port);
+    assert_eq!(
+        json_number(&status, "revalidations_dropped"),
+        1,
+        "捨てた再検証が数えられていない: {}",
+        status
+    );
+    assert_eq!(
+        json_number(&status, "revalidating"),
+        0,
+        "捨てたのに「再検証中」の印が残っている: {}",
+        status
+    );
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        2,
+        "オリジンへは最初の取得と同期の再検証の 2 回"
     );
 }
 

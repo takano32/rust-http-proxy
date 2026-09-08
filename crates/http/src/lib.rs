@@ -17,5 +17,9 @@ pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};
 pub use proxy_origin::{Upstream, origin, pool, request, tls};
 pub use proxy_sys::signal;
+// 裏側の再検証 (`http::refresh`) を接続スレッドと同じ置き場で走らせるため (T11.3)。
+// `proxy-workers` が依存しているのは `proxy-base` だけなので、ここから使っても輪にならない
+// (輪になるなら T10.7 の `Concurrency` と同じく上の層から関数を渡す形にしていた)
 #[cfg(target_os = "linux")]
 pub use proxy_sys::sys;
+pub use proxy_workers::workers;

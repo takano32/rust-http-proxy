@@ -15,3 +15,4 @@ proxy-origin = { path = "../origin" }
 proxy-cache = { path = "../cache" }
 proxy-freshness = { path = "../freshness" }
 proxy-metrics = { path = "../metrics" }
+proxy-workers = { path = "../workers" }

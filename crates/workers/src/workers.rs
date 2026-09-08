@@ -25,6 +25,14 @@
 //!
 //! ため。待ち行列に置いた仕事は、**仕事を終えたスレッドが空き置き場へ戻る前に引き取る**
 //! (どちらも同じロックの中で決めるので、置いた仕事が誰にも拾われない隙間はできない)。
+//!
+//! # 「後でやればいい仕事」は積まずに返す ([`Workers::try_run`]、T11.3)
+//!
+//! 待たせてよいのは「誰かがその結果を待っている仕事」(接続の処理) だけ。裏側の再検証
+//! (`http::refresh`) のような**後でやればいい仕事**は、上限に達しているときは待ち行列に
+//! 積まずに呼び出し元へ返す。積むと、(1) 先に並んだぶんだけ新しい接続の処理が遅れ、
+//! (2) 待っている間ずっとキャッシュ側の「再検証中」の印を握り続けるためで、
+//! **捨てても正しさは崩れない** (その項目は次の要求で普通のミスとして取り直されるだけ)。
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -77,6 +85,20 @@ impl Workers {
     /// **`Err` で仕事を呼び出し元へ返す性質は壊さないこと** (T9.6 で `OpenGuard` を
     /// 仕事の中に入れ、落ちたら同時接続数の持ち分が戻るようにしてある)。
     pub fn run(self: &Arc<Self>, job: Job) -> Result<(), Job> {
+        self.submit(job, true)
+    }
+
+    /// [`Workers::run`] と同じだが、**上限に達しているときは待ち行列に積まず `Err(job)` を返す**。
+    ///
+    /// 「後でやればいい仕事」(裏側の再検証。T11.3) 用。呼び出し元は返ってきた仕事を落とし、
+    /// その回の作業をあきらめる。`Err` で仕事が戻る性質は `run` と同じなので、
+    /// 仕事に持たせた番人 (`OpenGuard` のような型) の `Drop` はここでも必ず走る。
+    pub fn try_run(self: &Arc<Self>, job: Job) -> Result<(), Job> {
+        self.submit(job, false)
+    }
+
+    /// `queue_when_full` が偽なら、上限に達したときに待ち行列へ積まず仕事を返す。
+    fn submit(self: &Arc<Self>, job: Job, queue_when_full: bool) -> Result<(), Job> {
         let mut job = job;
         // 積んである送り口を新しい順に試す。相手が時間切れで終わっていれば send が失敗する
         loop {
@@ -87,6 +109,10 @@ impl Workers {
                     inner.live += 1;
                     drop(inner);
                     return self.start(job);
+                }
+                if !queue_when_full {
+                    // 後でやればいい仕事: 積まずに返す (呼び出し元があきらめる)
+                    return Err(job);
                 }
                 // 上限に達した: スレッドは増やさず仕事を待たせる。仕事を終えたスレッドが
                 // 空き置き場へ戻る前にここから引き取る (同じ鍵の中で決めるので取りこぼさない)
@@ -361,6 +387,67 @@ mod tests {
         wait_until(|| done.load(Ordering::SeqCst) == 8);
         assert_eq!(w.queued(), 0);
         assert!(w.live_count() <= 2, "増えていない: {}", w.live_count());
+    }
+
+    /// 「後でやればいい仕事」は上限に達したら積まずに返る (T11.3)。
+    ///
+    /// **仕事が呼び出し元へ戻ってくること**が要点で、戻ってきた仕事を落とせば、
+    /// その中に入れた番人 (ここでは `Bell`) の `Drop` が走る (T9.6 と同じ性質)。
+    #[test]
+    fn try_run_gives_the_job_back_instead_of_queueing_it() {
+        struct Bell(Arc<AtomicUsize>);
+        impl Drop for Bell {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let w = Arc::new(Workers::new(1));
+        let started = Arc::new(AtomicUsize::new(0));
+        let hold = Arc::new(Mutex::new(()));
+        let guard = hold.locked();
+        {
+            let (started, hold) = (Arc::clone(&started), Arc::clone(&hold));
+            w.run(Box::new(move || {
+                started.fetch_add(1, Ordering::SeqCst);
+                let _held = hold.locked();
+            }))
+            .unwrap_or_else(|_| panic!("could not get a thread"));
+        }
+        wait_until(|| started.load(Ordering::SeqCst) == 1);
+
+        // 上限は 1 で、その 1 本は塞がっている
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let bell = Bell(Arc::clone(&dropped));
+        let ran = Arc::new(AtomicUsize::new(0));
+        let returned = {
+            let ran = Arc::clone(&ran);
+            w.try_run(Box::new(move || {
+                let _bell = bell;
+                ran.fetch_add(1, Ordering::SeqCst);
+            }))
+        };
+        assert!(returned.is_err(), "上限に達したら仕事は戻ってくる");
+        assert_eq!(w.queued(), 0, "待ち行列には積まない");
+        assert_eq!(w.live_count(), 1, "スレッドも増えない");
+        assert_eq!(dropped.load(Ordering::SeqCst), 0, "まだ落としていない");
+        drop(returned);
+        assert_eq!(
+            dropped.load(Ordering::SeqCst),
+            1,
+            "落とせば番人の Drop が走る"
+        );
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "仕事そのものは走らない");
+
+        // 空きができれば `try_run` は普通に走る
+        drop(guard);
+        wait_until(|| w.idle_count() == 1);
+        let (tx, rx) = mpsc::channel();
+        w.try_run(Box::new(move || {
+            let _ = tx.send(());
+        }))
+        .unwrap_or_else(|_| panic!("空きがあるのに走らせられなかった"));
+        rx.recv().unwrap();
     }
 
     /// 上限が 1 のとき、走っている仕事がパニックしても待ち行列が片づくこと (T10.5)。

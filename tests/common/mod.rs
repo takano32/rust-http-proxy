@@ -113,12 +113,28 @@ pub fn start_test_proxy_with_cache(config: Config, cache_cfg: CacheConfig) -> u1
     start_test_proxy_full(config, cache_cfg, None)
 }
 
+/// 接続スレッドの置き場も返す版 (スレッドの上限を見るテスト用)。
+pub fn start_test_proxy_with_workers(
+    config: Config,
+    cache_cfg: CacheConfig,
+) -> (u16, Arc<rust_http_proxy::workers::Workers>) {
+    start_test_proxy_parts(config, cache_cfg, None)
+}
+
 /// `ca_file` を渡すと、その証明書だけを信頼する TLS クライアント付きで起動する。
 pub fn start_test_proxy_full(
     config: Config,
     cache_cfg: CacheConfig,
     ca_file: Option<std::path::PathBuf>,
 ) -> u16 {
+    start_test_proxy_parts(config, cache_cfg, ca_file).0
+}
+
+fn start_test_proxy_parts(
+    config: Config,
+    cache_cfg: CacheConfig,
+    ca_file: Option<std::path::PathBuf>,
+) -> (u16, Arc<rust_http_proxy::workers::Workers>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let cfg = Arc::new(config);
@@ -138,6 +154,7 @@ pub fn start_test_proxy_full(
             .expect("idle watcher")
     });
 
+    let handle = Arc::clone(&workers);
     thread::spawn(move || {
         rust_http_proxy::serve(
             listener,
@@ -151,7 +168,7 @@ pub fn start_test_proxy_full(
         )
     });
 
-    port
+    (port, handle)
 }
 
 pub fn proxy_config() -> Config {
