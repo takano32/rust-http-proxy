@@ -25,15 +25,23 @@
 //!
 //! ため。待ち行列に置いた仕事は、**仕事を終えたスレッドが空き置き場へ戻る前に引き取る**
 //! (どちらも同じロックの中で決めるので、置いた仕事が誰にも拾われない隙間はできない)。
+//!
+//! # 上限の差し替え (T11.6)
+//!
+//! 上限は `.env` の再読込で変わる (`PROXY_MAX_CONNS` と同じ扱いに揃える)。当てるのは
+//! [`Workers::set_limit`] で、呼ぶのは `serve` が接続ごとに引いている設定と食い違ったときだけ
+//! (待ち受けへ `setsockopt` を当て直す T9.3 と同じ形)。**熱い経路に原子操作は増やさない** —
+//! 接続ごとにかかるのは `Relaxed` の読みが 1 回だけで、書くのは値が変わったときだけ。
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use crate::sync::LockExt;
-use crate::{log_debug, log_error};
+use crate::{log_debug, log_error, log_info};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -57,8 +65,12 @@ struct Inner {
 /// 空きスレッドの置き場。待ち受けソケット全体で 1 つ共有する。
 pub struct Workers {
     inner: Mutex<Inner>,
-    /// 生きているスレッドの上限 (`0` で無制限)。決め方は `config::default_max_threads`
-    max_live: usize,
+    /// 生きているスレッドの上限 (`0` で無制限)。決め方は `config::default_max_threads`。
+    ///
+    /// `.env` の再読込で変わる ([`Workers::set_limit`]) ので鍵の外に出してある。
+    /// 読むのは `Inner` の鍵を持っているあいだ (数と突き合わせるため) と、
+    /// 接続ごとの比較 ([`Workers::max_threads`]) の 2 か所だけ
+    max_live: AtomicUsize,
 }
 
 impl Workers {
@@ -66,7 +78,7 @@ impl Workers {
     pub fn new(max_live: usize) -> Workers {
         Workers {
             inner: Mutex::new(Inner::default()),
-            max_live,
+            max_live: AtomicUsize::new(max_live),
         }
     }
 
@@ -82,7 +94,8 @@ impl Workers {
         loop {
             let mut inner = self.inner.locked();
             let Some(tx) = inner.idle.pop() else {
-                if self.max_live == 0 || inner.live < self.max_live {
+                let cap = self.max_threads();
+                if cap == 0 || inner.live < cap {
                     // これから起こす 1 本ぶんの席を先に取る (取ってから鍵を放す)
                     inner.live += 1;
                     drop(inner);
@@ -183,8 +196,59 @@ impl Workers {
     }
 
     /// 生きているスレッドの上限 (`0` で無制限)。
+    ///
+    /// 接続ごとに 1 回だけ引く (`serve` が設定と突き合わせる)。順序は要らないので `Relaxed`
+    /// — 上限は「だいたい今の値」であればよく、1 接続ぶん遅れて効いても困らない。
     pub fn max_threads(&self) -> usize {
-        self.max_live
+        self.max_live.load(Ordering::Relaxed)
+    }
+
+    /// 生きているスレッドの上限を差し替える (`.env` の再読込。T11.6)。
+    ///
+    /// **上げたとき**は待たせている仕事を新しい上限まですぐ起こす。空いたスレッドが出るのを
+    /// 待たせると、keep-alive の接続 (仕事が長い) では事実上止まったままになるため。
+    ///
+    /// **下げたときは走っているスレッドを殺さない。** 新しいスレッドを起こさなくなるだけで、
+    /// 仕事を終えたスレッドが空き置き場へ戻らずに終わっていく ([`worker_loop`])。
+    /// なので**「生きている数 > 新しい上限」の状態がしばらく続く** (それぞれの接続が終わるまで)。
+    /// 途中で切ると代理の最中の応答が壊れるので、自然に縮むのを待つ方を採る。
+    pub fn set_limit(self: &Arc<Self>, max_live: usize) {
+        let previous = self.max_live.swap(max_live, Ordering::Relaxed);
+        if previous == max_live {
+            return;
+        }
+        log_info!(
+            None,
+            "connection thread limit changed from {} to {} (0 = unlimited)",
+            previous,
+            max_live
+        );
+        // 上げたぶんの席で待ち行列を片づける (下げたときは 1 本目で false が返って終わる)
+        while self.start_queued() {}
+    }
+
+    /// 待ち行列の先頭を新しいスレッドで始める。上限に当たった・待ち行列が空・
+    /// スレッドを作れなかったときは `false`。
+    fn start_queued(self: &Arc<Self>) -> bool {
+        let job = {
+            let mut inner = self.inner.locked();
+            let cap = self.max_threads();
+            if cap != 0 && inner.live >= cap {
+                return false;
+            }
+            let Some(job) = inner.queue.pop_front() else {
+                return false;
+            };
+            // これから起こす 1 本ぶんの席を先に取る (取ってから鍵を放す)
+            inner.live += 1;
+            job
+        };
+        // 失敗しても `start` が席を戻す。仕事はここで落ちる (接続が閉じ、持ち分は Drop で戻る)
+        if self.start(job).is_err() {
+            log_error!(None, "cannot create a worker thread for a queued job");
+            return false;
+        }
+        true
     }
 }
 
@@ -213,6 +277,18 @@ fn worker_loop(workers: &Arc<Workers>, tx: Sender<Job>, rx: Receiver<Job>) {
                 job = next;
                 continue;
             }
+            // 上限が下がっていたら (T11.6) 空き置き場へ戻らずに終わる。走っている仕事は
+            // 殺さないので、こうして**仕事を終えたスレッドから 1 本ずつ**自然に減らす
+            let cap = workers.max_threads();
+            if cap != 0 && inner.live > cap {
+                log_debug!(
+                    None,
+                    "worker thread exiting ({} live over the limit of {})",
+                    inner.live,
+                    cap
+                );
+                return;
+            }
             if inner.idle.len() >= MAX_IDLE {
                 log_debug!(
                     None,
@@ -235,7 +311,6 @@ fn worker_loop(workers: &Arc<Workers>, tx: Sender<Job>, rx: Receiver<Job>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
 
     /// `cond` が真になるまで最大 2 秒待つ。
@@ -361,6 +436,96 @@ mod tests {
         wait_until(|| done.load(Ordering::SeqCst) == 8);
         assert_eq!(w.queued(), 0);
         assert!(w.live_count() <= 2, "増えていない: {}", w.live_count());
+    }
+
+    /// 上限を上げると、待たせていた仕事がその場で動き出す (T11.6)。
+    #[test]
+    fn raising_the_limit_starts_the_queued_jobs() {
+        let w = Arc::new(Workers::new(1));
+        let started = Arc::new(AtomicUsize::new(0));
+        let hold = Arc::new(Mutex::new(()));
+        let guard = hold.locked();
+        for _ in 0..4 {
+            let (started, hold) = (Arc::clone(&started), Arc::clone(&hold));
+            w.run(Box::new(move || {
+                started.fetch_add(1, Ordering::SeqCst);
+                let _held = hold.locked();
+            }))
+            .unwrap_or_else(|_| panic!("could not get a thread"));
+        }
+        wait_until(|| started.load(Ordering::SeqCst) == 1);
+        assert_eq!(w.queued(), 3, "上限 1 なので 3 つ待っている");
+
+        w.set_limit(4);
+        assert_eq!(w.max_threads(), 4);
+        // 空いたスレッドを待たずに、待ち行列がその場で片づく
+        wait_until(|| started.load(Ordering::SeqCst) == 4);
+        assert_eq!(w.queued(), 0);
+        assert_eq!(w.live_count(), 4);
+        drop(guard);
+    }
+
+    /// `0` に戻すと無制限 (T10.5 以前の動き) に戻る (T11.6)。
+    #[test]
+    fn setting_the_limit_to_zero_means_unlimited() {
+        let w = Arc::new(Workers::new(1));
+        let started = Arc::new(AtomicUsize::new(0));
+        let hold = Arc::new(Mutex::new(()));
+        let guard = hold.locked();
+        for _ in 0..6 {
+            let (started, hold) = (Arc::clone(&started), Arc::clone(&hold));
+            w.run(Box::new(move || {
+                started.fetch_add(1, Ordering::SeqCst);
+                let _held = hold.locked();
+            }))
+            .unwrap_or_else(|_| panic!("could not get a thread"));
+        }
+        wait_until(|| w.queued() == 5);
+        w.set_limit(0);
+        wait_until(|| started.load(Ordering::SeqCst) == 6);
+        assert_eq!(w.queued(), 0);
+        drop(guard);
+    }
+
+    /// 上限を下げても走っている仕事は殺さず、終わったスレッドから 1 本ずつ減る (T11.6)。
+    #[test]
+    fn lowering_the_limit_lets_the_running_jobs_finish() {
+        let w = Arc::new(Workers::new(4));
+        let started = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicUsize::new(0));
+        let hold = Arc::new(Mutex::new(()));
+        let guard = hold.locked();
+        let mut job = |w: &Arc<Workers>| {
+            let (started, done, hold) =
+                (Arc::clone(&started), Arc::clone(&done), Arc::clone(&hold));
+            w.run(Box::new(move || {
+                started.fetch_add(1, Ordering::SeqCst);
+                let _held = hold.locked();
+                done.fetch_add(1, Ordering::SeqCst);
+            }))
+            .unwrap_or_else(|_| panic!("could not get a thread"));
+        };
+        for _ in 0..4 {
+            job(&w);
+        }
+        wait_until(|| started.load(Ordering::SeqCst) == 4);
+
+        w.set_limit(1);
+        assert_eq!(w.live_count(), 4, "走っているスレッドは殺さない");
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            4,
+            "走っている仕事は止まらない"
+        );
+        // 生きている数が新しい上限を超えているので、次の仕事は待たされる
+        job(&w);
+        assert_eq!(w.queued(), 1);
+
+        drop(guard);
+        wait_until(|| done.load(Ordering::SeqCst) == 5);
+        // 仕事を終えたスレッドは空き置き場へ戻らずに終わり、上限まで縮む
+        wait_until(|| w.live_count() <= 1);
+        assert!(w.idle_count() <= 1, "空きも上限まで: {}", w.idle_count());
     }
 
     /// 上限が 1 のとき、走っている仕事がパニックしても待ち行列が片づくこと (T10.5)。

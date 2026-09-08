@@ -149,6 +149,12 @@ pub fn serve(
             // 待ち受けに当て直す (次の接続から効く)
             inherited = inherit_on_listener(&listener, cfg.timeout);
         }
+        // 生きているスレッドの上限も `.env` の再読込で変わる (T11.6)。当て直すのは
+        // 食い違ったときだけで、接続ごとにかかるのは `Relaxed` の読みが 1 回
+        // (`PROXY_MAX_CONNS` と同じく、接続ごとに引いた設定をそのまま使う)
+        if cfg.max_threads != workers.max_threads() {
+            workers.set_limit(cfg.max_threads);
+        }
         // 上限を超えたらスレッドを起こさずに 503 を返して閉じる
         let max = cfg.max_conns;
         if max > 0 && limiter.open() >= max {
