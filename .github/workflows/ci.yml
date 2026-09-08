@@ -4,12 +4,26 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # 下の build-memory-find だけを回す口 (check は動かない)。
+  # `gh workflow run ci.yml -f ladder="90 95 100"` でも回せる
+  workflow_dispatch:
+    inputs:
+      ladder:
+        description: "試す上限 (MB) を空白区切りで小さい順に。最初に通った値が答え"
+        required: false
+        default: "90 95 100 105 110 115 120 130 150 200"
+  # 週 1 回 (月曜 03:17 UTC = 12:17 JST)。放っておくと値が古くなるため。
+  # 毎時 0 分は GitHub 側が混んで待たされるので 17 分にずらしてある
+  schedule:
+    - cron: "17 3 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   check:
+    # push / PR のときだけ。手回しと週 1 は下のジョブのためのもの
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,8 +47,11 @@ jobs:
       # ベンチは既定のビルド対象から外してあるので明示的に作る
       - run: cargo build --release -p proxy-bench
 
-      # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る。
-      # クレートごとの rustc の最大 RSS を測り、200 MB を超えたら落とす
+      # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る (§0 の関門)。
+      # 200 MB の cgroup (systemd-run --scope -p MemoryMax=200M) の中で実際に
+      # リリースビルドを回し、rustc が OOM killer に落とされたら失敗する。
+      # **これは毎回回す** (通るかどうかは push ごとに知りたい)。
+      # 余裕がいくつあるか = 通る最小の上限は下の build-memory-find で測る
       - name: Build memory
         run: |
           cargo clean
@@ -53,3 +70,81 @@ jobs:
             cat bench.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ビルドが通る最小のメモリを CI の機械で実測する (T11.7)。
+  #
+  # **なぜ push ごとに回さないか**: 上の `Build memory` が §0 の条件 (200 MB で通ること) を
+  # 毎回確かめており、守りたいことはそれで足りている。ここで測るのは「余裕がいくつあるか」で、
+  # コミット単位で追う必要は無い。段ごとに `cargo clean` からのビルドが 1 回要るので
+  # (runner で 1 段 10〜16 秒、既定の 10 段で 2〜3 分)、刻むほど毎回の CI が延びる。
+  # 値は機械の状態で 1 MB 単位にぶれる (境目は薄い。手元では 98 MB が落ちて 99 MB が通る) ので、
+  # これを push の関門にすると偽陽性で止まる。
+  #
+  # **なぜ手回し (workflow_dispatch) と週 1 (schedule) の両方か**: 手回しは
+  # クレートを割った直後など「いま知りたい」ときのため (ladder も指定できる)。
+  # 週 1 は放っておくと値が古くなるため — 実際 T7.4 の 110 MB が Phase 8〜10 の間ずっと
+  # §1 に載ったままになり、T10.9 で取り下げる羽目になった。
+  # なお schedule は既定ブランチでしか走らず、リポジトリが 60 日動かないと GitHub に止められる。
+  build-memory-find:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.96
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup default 1.96.0
+      # キャッシュは張らない。--find は段ごとに `cargo clean` するので当たらないし、
+      # 空になった target を check ジョブのキャッシュに上書きさせたくない
+
+      # 出た数字を後から読めるように、測った機械の素性を残す。
+      # とくに `scripts/build-memory.sh` が「システムの systemd → ユーザーの systemd →
+      # 参考の RSS だけ」のどれに落ちたかは、値の意味が変わるので必ず記録する
+      - name: Record what this runner is
+        run: |
+          {
+            echo '### この計測を回した runner'
+            echo ''
+            echo "- image: \`${ImageOS:-?}\` / arch: \`$(uname -m)\` / kernel: \`$(uname -r)\`"
+            echo "- CPU $(nproc) 個 / MemTotal $(awk '/^MemTotal:/{printf "%.1f GiB", $2/1048576}' /proc/meminfo)"
+            echo "- PID 1: \`$(cat /proc/1/comm)\` / cgroup v$(test -e /sys/fs/cgroup/cgroup.controllers && echo 2 || echo 1)"
+            echo "- $(rustc -V) / host: $(rustc -vV | awk '/^host:/{print $2}')"
+            if sudo -n systemd-run --scope --quiet -p MemoryMax=64M /bin/true > /dev/null 2>&1; then
+              echo '- cgroup の経路: **システムの systemd** (`sudo systemd-run --scope`)'
+            elif systemd-run --user --scope --quiet -p MemoryMax=64M -p MemorySwapMax=0 /bin/true > /dev/null 2>&1; then
+              echo '- cgroup の経路: **ユーザーの systemd** (`systemd-run --user --scope`)'
+            else
+              echo '- cgroup の経路: **無し** (この runner では判定できない。--find は exit 2 で落ちる)'
+            fi
+            echo ''
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 小さい上限から順に「その cgroup の中でリリースビルドが通るか」を試し、
+      # 最初に通った上限を答えにする。cgroup を作れない runner では exit 2 で落ちる
+      # (黙って「測れなかった」で終わらせない)
+      - name: Build memory (find the minimum)
+        env:
+          # schedule のときは github.event.inputs が無いので既定の段になる
+          # (`inputs` 文脈は手回しでしか無いので `github.event.inputs` の方を使う)
+          LADDER: ${{ github.event.inputs.ladder || '90 95 100 105 110 115 120 130 150 200' }}
+        run: |
+          case "$LADDER" in
+            "" | *[!0-9\ ]*)
+              echo "ladder は空白区切りの数字で指定してください: $LADDER"
+              exit 1
+              ;;
+          esac
+          set +e
+          ./scripts/build-memory.sh --find $LADDER 2>&1 | tee find.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          {
+            echo '### ビルドが通る最小のメモリ (CI)'
+            echo ''
+            echo "試した上限: \`$LADDER\` MB"
+            echo '```'
+            grep -E '^(=== |  [0-9]+ MB では|通る最小の上限|どの上限でも|cgroup を作れない)' find.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
