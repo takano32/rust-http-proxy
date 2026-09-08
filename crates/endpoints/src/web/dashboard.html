@@ -67,7 +67,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   <section class="grid">
     <div class="card"><h2>要求 / 秒</h2><div class="kpi" id="rps">–</div><div class="hint" id="reqtotal"></div></div>
     <div class="card"><h2>転送 / 秒</h2><div class="kpi" id="bps">–</div><div class="hint" id="bytestotal"></div></div>
-    <div class="card"><h2>接続中</h2><div class="kpi" id="active">–</div><div class="hint" id="origins"></div></div>
+    <div class="card"><h2>接続中</h2><div class="kpi" id="active">–</div><div class="hint" id="threads"></div><div class="hint" id="origins"></div></div>
     <div class="card"><h2>キャッシュ命中率</h2><div class="kpi" id="hitratio">–</div><div class="hint" id="hitdetail"></div></div>
     <div class="card"><h2>メモリキャッシュ</h2><div class="kpi" id="memkpi">–</div><div class="bar"><i id="membar"></i></div><div class="hint" id="memhint"></div></div>
     <div class="card"><h2>ディスクキャッシュ</h2><div class="kpi" id="diskkpi">–</div><div class="bar"><i id="diskbar"></i></div><div class="hint" id="diskhint"></div></div>
@@ -171,6 +171,8 @@ function renderStatus(s){
   $('reqtotal').textContent='累計 '+fmtNum(s.total_requests)+' 要求';
   $('bytestotal').textContent='累計 '+fmtBytes(s.bytes_forwarded);
   $('active').textContent=fmtNum(s.active_connections);
+  var lim=function(v){return v?fmtNum(v):'無制限'};
+  $('threads').textContent='スレッド '+fmtNum(s.live_threads)+' / '+lim(s.max_threads)+' (空き '+fmtNum(s.idle_threads)+(s.queued_jobs?' · 待ち '+fmtNum(s.queued_jobs):'')+') · 接続上限 '+lim(s.max_conns);
   var o=s.origin_connections||{};$('origins').textContent='オリジン接続 新規 '+fmtNum(o.new)+' / 再利用 '+fmtNum(o.reused);
   var hits=c.hits||0,miss=c.misses||0;$('hitratio').textContent=(hits+miss)>0?(hits/(hits+miss)*100).toFixed(1)+'%':'–';
   $('hitdetail').textContent='命中 '+fmtNum(hits)+' (メモリ '+fmtNum(c.hits_memory)+' / ディスク '+fmtNum(c.hits_disk)+') · ミス '+fmtNum(miss);
