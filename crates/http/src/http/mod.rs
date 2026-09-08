@@ -34,6 +34,7 @@ use crate::log::{Access, access};
 use crate::metrics::{HostOutcome, Metrics};
 use crate::origin::{self, OriginStream};
 use crate::sync::LockExt;
+use crate::workers::Workers;
 use crate::{log_debug, log_trace, log_warn};
 
 use crate::request::{RequestHeaders, parse_request_headers};
@@ -196,7 +197,7 @@ const SPLICE_MIN_BYTES: u64 = 128 * 1024;
 const STALE_ON_STATUS: &[u16] = &[500, 502, 503, 504];
 
 /// 接続をまたいで共有する状態。
-pub struct Shared {
+pub struct Shared<'a> {
     pub timeout: Duration,
     pub keepalive: Duration,
     pub conn_id: usize,
@@ -204,6 +205,10 @@ pub struct Shared {
     pub cache: Arc<Cache>,
     /// 接続プールと TLS クライアント
     pub upstream: Arc<Upstream>,
+    /// 接続スレッドの置き場 (裏側の再検証をこの上限の内側で走らせる。T11.3)。
+    /// **借りるだけ**にしてあるのは、この構造体を要求ごとに組むため
+    /// (`Arc<Workers>` を持たせると要求あたり `Arc::clone` が 1 回増える)
+    pub workers: &'a Arc<Workers>,
 }
 
 /// アクセスログと配信に必要なリクエストの文脈。
@@ -304,7 +309,7 @@ pub fn handle_http_with_headers(
     request_line: &str,
     raw_headers: &[String],
     reader: &mut crate::clientio::ClientReader<'_>,
-    shared: &Shared,
+    shared: &Shared<'_>,
 ) -> io::Result<bool> {
     let started = Instant::now();
     // 応答ヘッダーと本文の先頭を 1 回の write でまとめて出す (別々に出すと 1 セグメント増える)。

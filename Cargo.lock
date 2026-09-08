@@ -130,6 +130,7 @@ dependencies = [
  "proxy-net",
  "proxy-origin",
  "proxy-sys",
+ "proxy-workers",
 ]
 
 [[package]]

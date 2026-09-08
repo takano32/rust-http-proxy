@@ -196,7 +196,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる (`PROXY_PARK_IDLE=on` なら、預かり所が期限を見て引き上げる)。`0` で無期限。`.env` で即時反映 |
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル (`--lite` と同じ)。キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限。超えた接続にはスレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。`auto` は記述子の上限から `min(4096, (RLIMIT_NOFILE の soft − 予備 64) ÷ 4)` (1 接続が最悪で使う記述子は クライアント 1 + オリジン 1 + 素通しのパイプ 2 = 4 本。`ulimit -n` が 1024 の環境なら 240、4096 なら 1008)。記述子が余っていても 4096 で頭打ちにするのは、上限が fd 以外の資源 (スレッド・RSS) の歯止めでもあるため (預けない設定では同時 5,000 本で 5,005 スレッド・RSS 93.9 MB の実測)。数値を書けばその値、`0` で無制限。決まった値は起動ログの `max connections:` と `/status` の `max_conns` (`/metrics` は `sorahost_max_connections`) に出る。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
-| `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。**起動時に 1 回だけ読む** (`.env` の再読込では変わらない)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る) |
+| `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。**起動時に 1 回だけ読む** (`.env` の再読込では変わらない)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。**裏側の再検証 (stale-while-revalidate) もこの上限の内側で走ります**が、こちらは待たせず捨てます (`/status` の `revalidations_dropped`) |
 | `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 約 1 MiB) に残し、再起動後に読み戻す。`off` で無効 (履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフは空になる) |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
@@ -328,7 +328,10 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 - 期限切れから `PROXY_CACHE_GRACE_SECS` (既定 60 秒) 以内なら、保存済みの表現をすぐ返して裏で再検証します
   (`cache=REFRESHING`、RFC 5861 の stale-while-revalidate)。オリジンが `stale-while-revalidate=N` を付けていれば
   その値も使います。`max-age=0` (毎回再検証) の表現は、オリジンが明示したときだけ対象です。同じ URL の裏側の
-  再検証は同時に 1 本、全体で 32 本まで
+  再検証は同時に 1 本、全体で 32 本まで。**裏側の再検証は接続スレッドと同じ置き場で走ります**
+  (`PROXY_MAX_THREADS` の内側)。空いているスレッドが無ければ**待たせずに捨て**、その要求はそのまま
+  同期の再検証に回ります (捨てても正しさは崩れません。その項目は次の要求で取り直されます)。
+  捨てた回数は `/status` の `revalidations_dropped` と `/metrics` の `cache_revalidations_dropped_total` に出ます
 - 期限切れの表現があるのにオリジンが遅いときは、接続と最初の応答を `PROXY_STALE_WAIT_SECS` (既定 5 秒) までしか
   待たず、超えたら期限切れの表現を配信します (`cache=STALE`)
 - オリジンに繋がらない・5xx を返す場合は、`must-revalidate` でない限り期限切れの表現を配信します (`cache=STALE`)
@@ -524,6 +527,13 @@ taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 
 アクセスログ・統計が要るので、監視スレッドの中では落とせません)。上限 256 なら同じ場面で
 **260 スレッド・ピーク RSS 65 → 27 MB** で、閉じきるまでの時間は変わりません (0.66 秒)。
 
+**裏側の再検証 (stale-while-revalidate) もこの置き場で走ります**。以前は再検証のたびに
+スレッドを起こしていたので上限の外にいました。ただし待ち方は接続と逆で、**空きが無ければ
+待ち行列に積まずに捨てます**。再検証は「後でやればいい仕事」で、捨てても次の要求で
+普通に取り直されるだけなのに対し、積むと (1) 新しい接続の処理がその後ろに並び、
+(2) 順番が来るまで「このキーは再検証中」の印を握り続けるためです。捨てた要求はそのまま
+同期の再検証に回るので、クライアントには新しい表現が返ります。
+
 代償は「暇なトンネルを預かる速さ」です。トンネルは 1 本ごとに猶予 100 ms のあいだワーカーを
 握るので、**次々に張られる CONNECT を受けられる速さの天井が「上限 ÷ 100 ms」**になります
 (上限 256 で毎秒 2,560 本。実測で 5,000 本の確立が 1.9 → 2.45 秒)。それより速く暇なトンネルが
@@ -706,6 +716,8 @@ RSS) の JSON です。ブラウザの HTTP プロキシにこのプロキシを
 `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs`)。ダッシュボードの「接続中」にも
 `スレッド 7 / 256 (空き 3) · 接続上限 1008` の 1 行が出ます。数えるには接続スレッドで共有している鍵が要るので、
 **`/status` と `/metrics` に来たときだけ**数えます (要求ごとの仕事は増えません)。
+`cache` の `revalidations_dropped` は、上限に当たって捨てた裏側の再検証の数です
+(こちらは「後でやればいい仕事」なので待たせません)。
 
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。

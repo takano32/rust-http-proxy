@@ -114,6 +114,9 @@ pub struct Cache {
     pub revalidations: AtomicU64,
     /// 裏で完了した再検証 (304 での延命と差し替えの両方)
     pub background_revalidations: AtomicU64,
+    /// 接続スレッドの上限に当たって捨てた裏側の再検証の数 (T11.3)。
+    /// 捨てても正しさは崩れない (その項目は次の要求で普通のミスとして取り直される)
+    pub revalidations_dropped: AtomicU64,
     /// 期限切れの表現をそのまま配信した回数 (grace 内・オリジン障害・待ち切れ)
     pub stale_served: AtomicU64,
     /// 同時ミスの合流で、オリジンへ行かずに済んだ要求の数
@@ -164,6 +167,7 @@ impl Cache {
             stores: AtomicU64::new(0),
             revalidations: AtomicU64::new(0),
             background_revalidations: AtomicU64::new(0),
+            revalidations_dropped: AtomicU64::new(0),
             stale_served: AtomicU64::new(0),
             coalesced: AtomicU64::new(0),
             admission_rejected: AtomicU64::new(0),
@@ -323,6 +327,9 @@ impl Cache {
     }
 
     /// 裏側の再検証を始めてよいか (同じキーが進行中、または上限なら false)。
+    ///
+    /// **この上限 ([`MAX_BACKGROUND_REVALIDATIONS`]) はキーの数の上限**で、走らせる場所の
+    /// 上限は接続スレッドの置き場 (`Workers`) 側にある (T11.3)。
     pub fn begin_revalidation(&self, key: CacheKey) -> bool {
         let mut set = self.revalidating.locked();
         if set.len() >= MAX_BACKGROUND_REVALIDATIONS || set.contains(&key) {

@@ -1025,6 +1025,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         metrics: Arc::clone(metrics),
         cache: Arc::clone(cache),
         upstream: Arc::clone(upstream),
+        // 裏側の再検証もこの置き場で走らせる (T11.3)。借りるだけなので要求あたりの費用は 0
+        workers: &*workers,
     };
     let keep = http::handle_http_with_headers(
         client,

@@ -372,6 +372,18 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     );
     header(
         &mut out,
+        "cache_revalidations_dropped_total",
+        "counter",
+        "Background revalidations skipped because every worker thread was busy",
+    );
+    line(
+        &mut out,
+        "cache_revalidations_dropped_total",
+        "",
+        c.revalidations_dropped.load(Ordering::Relaxed),
+    );
+    header(
+        &mut out,
         "cache_stale_served_total",
         "counter",
         "Expired entries served (grace, origin failure, slow origin)",
