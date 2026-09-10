@@ -631,6 +631,10 @@ docker run -p 8080:8080 rust-http-proxy
 curl -x localhost:8080 http://example.com/
 ```
 
+イメージに入れるのは `Cargo.toml` / `Cargo.lock` / `build.rs` / `.cargo` / `crates` / `src` だけです
+(本体は 26 個のクレートに分かれているので `crates` が要ります)。`.git` は入れないので、
+イメージの中の版は `rust-http-proxy 0.1.0+unknown` になります。
+
 タグ `v*` を push すると `.github/workflows/release.yml` が x86_64 / aarch64 の
 バイナリ (glibc 2.35 以上) を作って Release に添付します。
 
