@@ -45,8 +45,9 @@ Every setting can also be given as an environment variable or in $HOME/.env
 
 See README.md for the full table.";
 
-/// `args` は実行ファイル名を除いた引数。
-pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Cli {
+/// `args` は実行ファイル名を除いた引数。`version` は `-V` / `--version` で出す版
+/// (本体クレートの `build.rs` が作る。ここは下の層なので受け取るだけ。T12.6)。
+pub fn parse<I: IntoIterator<Item = String>>(args: I, version: &str) -> Cli {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut it = args.into_iter().peekable();
     while let Some(arg) = it.next() {
@@ -70,9 +71,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Cli {
         };
         match name.as_str() {
             "-h" | "--help" => return Cli::Print(USAGE.to_string(), 0),
-            "-V" | "--version" => {
-                return Cli::Print(format!("rust-http-proxy {}", env!("CARGO_PKG_VERSION")), 0);
-            }
+            "-V" | "--version" => return Cli::Print(format!("rust-http-proxy {}", version), 0),
             "-p" | "--port" => match value("--port") {
                 Ok(v) => set(&mut out, "SERVER_PORT", v),
                 Err(e) => return e,
@@ -99,8 +98,10 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Cli {
 mod tests {
     use super::*;
 
+    const TEST_VERSION: &str = "0.1.0+deadbee";
+
     fn parse_str(args: &[&str]) -> Cli {
-        parse(args.iter().map(|s| s.to_string()))
+        parse(args.iter().map(|s| s.to_string()), TEST_VERSION)
     }
 
     #[test]
@@ -141,8 +142,9 @@ mod tests {
             Cli::Print(msg, 0) => assert!(msg.contains("usage:")),
             other => panic!("{:?}", other),
         }
+        // 版は上の層から受け取ったものをそのまま出す (起動ログ・`/status` と同じ文字列)
         match parse_str(&["-V"]) {
-            Cli::Print(msg, 0) => assert!(msg.starts_with("rust-http-proxy ")),
+            Cli::Print(msg, 0) => assert_eq!(msg, "rust-http-proxy 0.1.0+deadbee"),
             other => panic!("{:?}", other),
         }
     }

@@ -76,8 +76,10 @@ fn test_integration_max_threads_changes_when_the_env_file_is_rewritten() {
             }
         }
     });
-    // "rust-http-proxy listening on 127.0.0.1:PORT (log level: info)" から待ち受けポートを取る
+    // "rust-http-proxy 0.1.0+144b992 listening on 127.0.0.1:PORT (log level: info)" から
+    // 待ち受けポートを取る。版もこの行に出る (T12.6)
     let mut port = None;
+    let mut banner = String::new();
     while let Ok(line) = rx.recv_timeout(Duration::from_secs(20)) {
         if let Some(rest) = line.split_once("listening on ") {
             port = rest
@@ -86,10 +88,19 @@ fn test_integration_max_threads_changes_when_the_env_file_is_rewritten() {
                 .next()
                 .and_then(|a| a.rsplit(':').next())
                 .and_then(|p| p.parse::<u16>().ok());
+            banner = line;
             break;
         }
     }
     let port = port.expect("the proxy did not log its listening port");
+    assert!(
+        banner.contains(&format!(
+            "rust-http-proxy {} listening on",
+            rust_http_proxy::VERSION
+        )),
+        "起動ログに版が出ていない: {}",
+        banner
+    );
 
     let status = status_json(port);
     assert!(

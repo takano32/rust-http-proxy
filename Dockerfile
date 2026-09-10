@@ -6,6 +6,8 @@
 FROM rust:1.96 AS build
 WORKDIR /src
 COPY Cargo.toml ./
+# build.rs は版の文字列を作るだけ。.git は入れないので `0.1.0+unknown` になる
+COPY build.rs ./
 COPY src ./src
 RUN cargo build --release
 

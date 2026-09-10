@@ -198,6 +198,8 @@ pub struct StatusExtras<'a> {
     pub blocklist: &'a str,
     /// 状態ファイルの状態 (`persist::status_json()`)
     pub state_file: &'a str,
+    /// 動いているバイナリの版 (本体クレートの `VERSION`。`0.1.0+144b992` の形)
+    pub version: &'a str,
     /// 上限といまのスレッドの数 ([`Concurrency`])
     pub concurrency: Concurrency,
 }
@@ -208,6 +210,7 @@ impl Default for StatusExtras<'_> {
             settings: "null",
             blocklist: "null",
             state_file: "null",
+            version: "unknown",
             concurrency: Concurrency::default(),
         }
     }
@@ -448,7 +451,7 @@ impl Metrics {
             .collect();
         format!(
             concat!(
-                "{{\"status\":\"ok\",\"uptime_secs\":{},\"total_requests\":{},",
+                "{{\"status\":\"ok\",\"version\":\"{}\",\"uptime_secs\":{},\"total_requests\":{},",
                 "\"active_connections\":{},\"max_conns\":{},",
                 "\"parked_connections\":{},\"parked_tunnels\":{},",
                 "\"parking\":{},",
@@ -459,6 +462,7 @@ impl Metrics {
                 "\"hosts\":[{}],\"clients\":[{}],",
                 "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{}}}"
             ),
+            crate::json::escape(extra.version),
             uptime,
             requests,
             active,
@@ -548,6 +552,26 @@ mod tests {
             json2.contains(
                 "\"live_threads\":0,\"idle_threads\":0,\"queued_jobs\":0,\"max_threads\":0"
             )
+        );
+    }
+
+    /// 版は上の層から渡ったものがそのまま `/status` に出ること (T12.6)。
+    #[test]
+    fn the_version_from_the_upper_layer_lands_in_the_status_json() {
+        let m = Metrics::new();
+        let json = m.to_json_with_cache(
+            None,
+            StatusExtras {
+                version: "0.1.0+deadbee",
+                ..StatusExtras::default()
+            },
+        );
+        assert!(json.contains("\"version\":\"0.1.0+deadbee\""), "{}", json);
+        // 渡されなければ "unknown" (git の無い環境でビルドしたときと同じ見え方)
+        assert!(
+            m.to_json().contains("\"version\":\"unknown\""),
+            "{}",
+            m.to_json()
         );
     }
 
