@@ -340,15 +340,32 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
-    /// `cond` が真になるまで最大 2 秒待つ。
+    /// `cond` が真になるまで 10 ms 刻みで最大 5 秒待つ。
+    ///
+    /// 混んでいる機械ではスレッドが起きるまでに 100 ms 以上かかることがあるので、
+    /// 待ち時間を決め打ちしない。`#[track_caller]` を付けているので、時間切れの
+    /// パニックは**呼んだ側の行**を指す。
+    #[track_caller]
     fn wait_until(cond: impl Fn() -> bool) {
-        for _ in 0..200 {
+        for _ in 0..500 {
             if cond() {
                 return;
             }
             thread::sleep(Duration::from_millis(10));
         }
-        panic!("condition did not hold within 2s");
+        panic!("condition did not hold within 5s");
+    }
+
+    /// `cond` が 100 ms のあいだ (10 ms ごとに 10 回) 真のままであることを確かめる。
+    ///
+    /// 「これ以上増えない」のような**起きないこと**を見るための待ち方。待てば真になる
+    /// 条件は [`wait_until`] を使う。1 回寝てから 1 回見るのと違い、途中で破れても捕まえる。
+    #[track_caller]
+    fn stays_true(what: &str, cond: impl Fn() -> bool) {
+        for _ in 0..10 {
+            thread::sleep(Duration::from_millis(10));
+            assert!(cond(), "{}", what);
+        }
     }
 
     #[test]
@@ -392,8 +409,9 @@ mod tests {
             .unwrap_or_else(|_| panic!("could not get a thread"));
         }
         rx.recv().unwrap();
-        thread::sleep(Duration::from_millis(100));
-        assert_eq!(w.live_count(), 0, "死んだスレッドの席は戻る");
+        // 席が戻るのはパニックしたスレッドが落ちきってからで、混んでいる機械では
+        // 100 ms では足りない (決め打ちで待つと落ちる)。戻るまで待つ
+        wait_until(|| w.live_count() == 0);
 
         // 次の仕事はちゃんと走る
         let (tx2, rx2) = mpsc::channel();
@@ -454,8 +472,10 @@ mod tests {
         }
         // 走れるのは上限の 2 本だけ。残りは待ち行列で待つ
         wait_until(|| started.load(Ordering::SeqCst) == 2);
-        thread::sleep(Duration::from_millis(100));
-        assert_eq!(started.load(Ordering::SeqCst), 2, "上限を越えて走らない");
+        // 3 本目が走り出さないことは待っても真にならないので、しばらく見張る
+        stays_true("上限を越えて走らない", || {
+            started.load(Ordering::SeqCst) == 2
+        });
         assert_eq!(w.live_count(), 2, "生きているスレッドは上限まで");
         assert_eq!(w.queued(), 6, "残りは待ち行列 (捨てない)");
         // 手を放せば残りも同じ 2 本で順に片づく
