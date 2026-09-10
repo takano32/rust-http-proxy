@@ -489,7 +489,15 @@ pub enum Step {
     /// この接続は終わり
     Close,
     /// CONNECT トンネルへ移る
-    Connect { target: String, prefix: Vec<u8> },
+    Connect {
+        target: String,
+        prefix: Vec<u8>,
+        /// ACL の判定が引いた答え (名前解決を 1 要求 1 回にする。T12.7)。
+        /// IP リテラルと `PROXY_ALLOW_LOCAL=on` (判定を飛ばす) では `None`
+        addrs: Option<Vec<std::net::IpAddr>>,
+        /// そのホストで最後に勝った族 (T12.1)。同じ鍵取りで受け取ったもの
+        preferred: Option<bool>,
+    },
 }
 
 /// 同時接続数の持ち分。
@@ -633,7 +641,12 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                 Err(back) => conn = back,
             },
             Step::Close => return Ok(()),
-            Step::Connect { target, prefix } => {
+            Step::Connect {
+                target,
+                prefix,
+                addrs,
+                preferred,
+            } => {
                 // 要るものだけ取り出してトンネルへ渡す (`Conn` に `Drop` は無いので
                 // 分解できる)。**持ち分 (`_open` / `_active`) も一緒に渡すこと**:
                 // トンネルは暇なときに監視スレッドへ預けられるので、ここで落とすと
@@ -652,6 +665,11 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                 let timeout = config.timeout;
                 let idle = (!config.tunnel_idle.is_zero()).then_some(config.tunnel_idle);
                 let hold: Box<dyn Send> = Box::new((_open, _active));
+                // 判定で引いた答えをそのまま接続に使う (T12.7)。鍵はこの CONNECT の
+                // ホスト名 (`target` の借用で足りるので複製しない)
+                let resolved = addrs.map(|addrs| {
+                    dns::Resolved::new(net::split_host_port_ref(&target).0, addrs, preferred)
+                });
                 return start_tunnel(
                     client,
                     &target,
@@ -663,6 +681,7 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                     // 接続元 IP は接続ごとに 1 回作ってある。ここで渡さないと
                     // トンネル側が `peer_addr()` を引き直す (`getpeername` が 1 本ごとに 1 回)
                     peer_ip,
+                    resolved.as_ref(),
                     park,
                     config.park_grace,
                     hold,
@@ -688,13 +707,14 @@ fn start_tunnel(
     conn_id: usize,
     metrics: Arc<Metrics>,
     client_ip: String,
+    resolved: Option<&dns::Resolved<'_>>,
     park: Option<Arc<idle::IdleWatch>>,
     grace: std::time::Duration,
     hold: Box<dyn Send>,
 ) -> io::Result<()> {
     let park = park.map(|w| (w as Arc<dyn tunnel::Park>, grace));
     tunnel::handle_connect_parked(
-        client, target, prefix, timeout, idle, conn_id, metrics, client_ip, park, hold,
+        client, target, prefix, timeout, idle, conn_id, metrics, client_ip, resolved, park, hold,
     )
 }
 
@@ -709,6 +729,7 @@ fn start_tunnel(
     conn_id: usize,
     metrics: Arc<Metrics>,
     client_ip: String,
+    resolved: Option<&dns::Resolved<'_>>,
     park: Option<Arc<idle::IdleWatch>>,
     grace: std::time::Duration,
     hold: Box<dyn Send>,
@@ -716,7 +737,7 @@ fn start_tunnel(
     // 預け先は Linux (epoll) だけ。持ち分はこの関数が終わるまで持っておく
     let _ = (park, grace);
     let result = tunnel::handle_connect(
-        client, target, prefix, timeout, idle, conn_id, metrics, client_ip,
+        client, target, prefix, timeout, idle, conn_id, metrics, client_ip, resolved,
     );
     drop(hold);
     result
@@ -1009,15 +1030,20 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         }
     };
     let (bare_host, host_port) = net::split_host_port_ref(target_host);
+    // ローカル宛ての判定で引いた答え (接続でもう一度引かないために持ち回す。T12.7)
+    let mut resolved: Option<dns::Resolved> = None;
     let denied = if !config.acl.is_allowed(target_host) {
         Some("ACL")
     } else if blocklist::is_blocked(bare_host) {
         Some("blocklist")
     } else if is_connect && !config.connect_ports.allows(host_port.unwrap_or(443)) {
         Some("CONNECT port")
-    } else if !config.allow_local && acl::is_local_target(target_host) {
-        // クラウドのメタデータ (169.254.169.254) 経由の SSRF を止める
-        Some("local address")
+    } else if !config.allow_local {
+        // クラウドのメタデータ (169.254.169.254) 経由の SSRF を止める。
+        // **判定に使った答えはそのまま接続へ渡す** (名前解決は 1 要求 1 回。T12.7)
+        let (local, r) = acl::resolve_target(target_host);
+        resolved = r;
+        local.then_some("local address")
     } else {
         None
     };
@@ -1044,9 +1070,18 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         // 同時に読み取りバッファを手放す (トンネルの間は要求として読まないので、
         // アイドルのトンネルを大量に抱えるときの資源が減る)
         let prefix = reader.take_buffered();
+        let (addrs, preferred) = match resolved {
+            Some(r) => {
+                let preferred = r.preferred();
+                (Some(r.into_addrs()), preferred)
+            }
+            None => (None, None),
+        };
         return Ok(Step::Connect {
             target: target.to_string(),
             prefix,
+            addrs,
+            preferred,
         });
     }
 
@@ -1059,6 +1094,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         upstream: Arc::clone(upstream),
         // 裏側の再検証もこの置き場で走らせる (T11.3)。借りるだけなので要求あたりの費用は 0
         workers: &*workers,
+        // プールに無くて繋ぎに行くときは、判定で引いた答えを使う (T12.7)
+        resolved: resolved.as_ref(),
     };
     let keep = http::handle_http_with_headers(
         client,

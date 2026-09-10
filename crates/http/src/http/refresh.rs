@@ -143,7 +143,8 @@ fn revalidate(
 ) -> io::Result<&'static str> {
     let cached = freshness::parse_cached_head(cached_head);
     let pool_key = origin.pool_key();
-    let (mut server, reused) = acquire_origin(upstream, timeout, conn_id, origin, &pool_key)?;
+    // 裏側の再検証は別スレッドで走る (要求の判定とは別の解決になる)。ここで引き直す
+    let (mut server, reused) = acquire_origin(upstream, timeout, conn_id, origin, &pool_key, None)?;
     metrics.inc_origin_conn(reused);
 
     let mut extra: Vec<String> = vec![crate::via::line().to_string()];

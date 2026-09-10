@@ -28,6 +28,7 @@ use crate::cache::{
     Cache, CacheKey, CacheSource, CachedResponse, FetchOutcome, FetchTicket, cache_key_variant,
     now_epoch,
 };
+use crate::dns;
 use crate::freshness;
 use crate::headers;
 use crate::log::{Access, access};
@@ -209,6 +210,9 @@ pub struct Shared<'a> {
     /// **借りるだけ**にしてあるのは、この構造体を要求ごとに組むため
     /// (`Arc<Workers>` を持たせると要求あたり `Arc::clone` が 1 回増える)
     pub workers: &'a Arc<Workers>,
+    /// ACL の判定 (`acl::resolve_target`) が引いた答え。オリジンへ繋ぐときはこれを使い、
+    /// 名前解決を 1 要求 1 回にする (T12.7)。判定を飛ばした経路では `None`
+    pub resolved: Option<&'a dns::Resolved<'a>>,
 }
 
 /// アクセスログと配信に必要なリクエストの文脈。
@@ -520,28 +524,34 @@ pub fn handle_http_with_headers(
     let mut attempt = 0;
     let (mut server, head, status, request_body_bytes) = loop {
         attempt += 1;
-        let (mut server, reused) =
-            match acquire_origin(&shared.upstream, origin_timeout, conn_id, &origin, pool_key) {
-                Ok(v) => v,
-                Err(e) => {
-                    log_warn!(
-                        Some(conn_id),
-                        "502 Bad Gateway: connect {} failed: {}",
-                        server_addr,
-                        e
-                    );
-                    if let Some((entry, source)) = stale.take()
-                        && !force_revalidate
-                        && can_serve_stale(&entry)
-                    {
-                        body::drain(reader, req_framing)?;
-                        cache.stale_served.fetch_add(1, Ordering::Relaxed);
-                        return serve_cached(client, entry, source, "STALE", 0, &ctx);
-                    }
-                    write_error(client, 502, "Bad Gateway")?;
-                    return Ok(false);
+        let (mut server, reused) = match acquire_origin(
+            &shared.upstream,
+            origin_timeout,
+            conn_id,
+            &origin,
+            pool_key,
+            shared.resolved,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                log_warn!(
+                    Some(conn_id),
+                    "502 Bad Gateway: connect {} failed: {}",
+                    server_addr,
+                    e
+                );
+                if let Some((entry, source)) = stale.take()
+                    && !force_revalidate
+                    && can_serve_stale(&entry)
+                {
+                    body::drain(reader, req_framing)?;
+                    cache.stale_served.fetch_add(1, Ordering::Relaxed);
+                    return serve_cached(client, entry, source, "STALE", 0, &ctx);
                 }
-            };
+                write_error(client, 502, "Bad Gateway")?;
+                return Ok(false);
+            }
+        };
         metrics.inc_origin_conn(reused);
         let sent = server
             .get_mut()
@@ -908,6 +918,7 @@ pub(super) fn acquire_origin(
     conn_id: usize,
     origin: &Origin,
     pool_key: &str,
+    resolved: Option<&dns::Resolved<'_>>,
 ) -> io::Result<(OriginConn, bool)> {
     if let Some(server) = upstream.pool.get(pool_key, timeout) {
         log_debug!(Some(conn_id), "reusing pooled connection to {}", pool_key);
@@ -920,6 +931,7 @@ pub(super) fn acquire_origin(
         &origin.host(),
         timeout,
         upstream.tls.as_ref(),
+        resolved,
     )?;
     Ok((BufReader::with_capacity(ORIGIN_READ_BUF, stream), false))
 }

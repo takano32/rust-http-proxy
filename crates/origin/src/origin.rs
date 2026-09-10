@@ -5,6 +5,7 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
+use crate::dns;
 use crate::net;
 use crate::tls::{TlsClient, TlsStream};
 
@@ -85,14 +86,17 @@ impl Write for OriginStream {
 }
 
 /// 名前解決して接続し、HTTPS なら TLS ハンドシェイクまで行う。
+/// `resolved` は ACL の判定が引いた答え。あればここでは解決しない (名前解決を 1 要求
+/// 1 回にする。T12.7)。
 pub fn connect(
     scheme: Scheme,
     server_addr: &str,
     host: &str,
     timeout: Duration,
     tls: Option<&TlsClient>,
+    resolved: Option<&dns::Resolved<'_>>,
 ) -> io::Result<OriginStream> {
-    let tcp = net::connect(server_addr, timeout)?;
+    let tcp = net::connect_with(server_addr, resolved, timeout)?;
     // net::connect が立てているはずだが、プールを経ない経路でも確実にするため念のため
     let _ = tcp.set_nodelay(true);
     // `timeout` が 0 なら無期限 (T10.6)
