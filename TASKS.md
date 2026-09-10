@@ -2864,7 +2864,7 @@ Opus (`claude-opus-5`) に同じ材料 (§0〜§4、Phase 10〜11 の `結果:`�
     - 見つけた既存の問題 (未着手、下の「小物 (未着手)」): `Dockerfile` が `crates/` と `Cargo.lock` を `COPY` していないので
       元からビルドが通らない (今回 `COPY build.rs` だけ足した)。`workers::tests::survives_a_panicking_job` が機械が混んでいると
       落ちる (`thread::sleep(100ms)` 決め打ち)。
-- [ ] **T12.7 名前解決を 1 要求 1 回にする (ACL の判定と接続で 2 回引いている)**
+- [x] **T12.7 名前解決を 1 要求 1 回にする (ACL の判定と接続で 2 回引いている)**
   - 目的: Opus が見つけた。デプロイ先の `dns.hits + dns.misses` = 3,714 に対し `total_requests` 1,868 で **1.99 回/要求**。
     `acl::is_local_target` がポート 80 で `dns::resolve` し (`crates/net/src/acl.rs:113`)、直後に `net::connect` がもう一度引く
     (`crates/net/src/net.rs:202`)。2 回目は必ずキャッシュ命中なので CPU は動かないが、(a) `/status` の DNS 命中率 74% が
@@ -2877,6 +2877,18 @@ Opus (`claude-opus-5`) に同じ材料 (§0〜§4、Phase 10〜11 の `結果:`�
     IP リテラルと `PROXY_ALLOW_LOCAL=on` (判定を飛ばす) の経路は今までどおり。
   - 受け入れ基準: 結合テストで CONNECT 1 本あたり `dns.hits + dns.misses` の増分が **2 → 1**。`PROXY_DNS_TTL_SECS=0` で
     「判定の解決と接続の解決が同じ答えを使う」ことを見るテスト (解決の回数を数える)。`--only connect` の CPU/本 が ±4% の中。
+
+  - 結果 (2026-09-10、`e90996c`): 判定 (`acl::resolve_target`) が引いた答えを `dns::Resolved` に入れて接続まで運ぶ形にした
+    (CONNECT は `Step::Connect`、forward は `http::Shared`)。動いているプロキシで実測して、**1 要求あたりの `dns.hits + misses` が
+    CONNECT・forward とも 2.00 → 1.00**。`PROXY_DNS_TTL_SECS=0` では strace で `/etc/hosts` を開く回数が **2.00 → 1.00 回/本**
+    (= `getaddrinfo` が 1 要求 1 回) で、判定と接続が別の答えを使う形 (DNS rebinding) は無くなった。TTL 0 のときは OS に投げた回数を
+    そもそも数えていなかったので数えるようにした (`dns.hits + dns.misses` = 解決した回数)。副産物として、要求ごとのホスト名の
+    `String` 3 本と表の鍵取り 1 回が消えた。`--only connect` の CPU/本 は 158.78 → 160.14 us (+0.9%、前後交互 3 組の中央値、
+    ops 65,246 → 67,193。TIME_WAIT 律速のぶれの中)。IP リテラルと `PROXY_ALLOW_LOCAL=on` の経路は今までどおり接続側で解決する。
+    テスト 288 → 291 本。
+    - 名前が引けなかったときだけ接続側がもう一度引く (失敗を運ぶには `io::Error` の複製が要る。接続しないので rebinding の穴ではない)。
+    - `tests/dns_test.rs` は `/etc/hosts` に「ローカル宛てでない IPv4 の名前」がある機械でだけ走る (無ければ skip して表示)。
+    - デプロイ先の `hits + misses ÷ 要求` は 1.99 → 1.0 になるはず。**ミス率は分母が半分になるので約 2 倍 (26% → 52%) に見える**。
 
 **小物 (未着手。Phase 12 の作業中に見つけたもの)**:
 - `Dockerfile` が `crates/` と `Cargo.lock` を `COPY` していないので元からビルドが通らない (T12.6 で発見)。
