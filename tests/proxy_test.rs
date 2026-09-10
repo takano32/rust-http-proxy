@@ -116,6 +116,7 @@ fn test_integration_status_embeds_the_parts_from_the_upper_layers() {
     for (key, must_contain) in [
         ("\"blocklist\":", "\"entries\":"),
         ("\"dns\":", "\"ttl_secs\":"),
+        ("\"ipv6\":", "\"attempts\":"),
     ] {
         let at = status
             .find(key)
@@ -133,6 +134,7 @@ fn test_integration_status_embeds_the_parts_from_the_upper_layers() {
         "\"log_level\":",
         "\"settings\":",
         "\"dns\":",
+        "\"ipv6\":",
         "\"blocklist\":",
         "\"state_file\":",
         "\"cache\":",
@@ -140,7 +142,7 @@ fn test_integration_status_embeds_the_parts_from_the_upper_layers() {
     .into_iter()
     .filter(|k| status.contains(k))
     .collect();
-    assert_eq!(order.len(), 6, "{}", status);
+    assert_eq!(order.len(), 7, "{}", status);
     let mut at = 0;
     for k in order {
         let i = status[at..]
@@ -225,6 +227,20 @@ fn test_integration_metrics_shows_the_limits_and_the_thread_counts() {
         "待ち行列は空のはず: {}",
         metrics
     );
+    // Happy Eyeballs の族ごとの勝敗 (T12.1)。誰もつないでいないので 0 のまま出る
+    for name in [
+        "ipv6_attempts_total",
+        "ipv6_wins_total",
+        "ipv6_losses_total",
+    ] {
+        assert!(
+            metrics.contains(&format!("# TYPE sorahost_{} counter\n", name))
+                && metrics.contains(&format!("\nsorahost_{} 0\n", name)),
+            "sorahost_{} が無い: {}",
+            name,
+            metrics
+        );
+    }
     // `/metrics` を引いている接続そのものがワーカースレッドを 1 本使っている
     let live: usize = field(&metrics, "\nsorahost_live_threads ");
     let idle: usize = field(&metrics, "\nsorahost_idle_threads ");

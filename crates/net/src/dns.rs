@@ -31,6 +31,10 @@ struct Entry {
     resolved_at: Instant,
     /// 直近の失敗 (負のキャッシュ)
     failed_at: Option<(Instant, io::ErrorKind, String)>,
+    /// このホストで最後に接続できた族 (`Some(true)` = IPv6)。RFC 8305 §8 の
+    /// 「過去の結果で優先する族を変える」ための記憶で、**TTL で引き直しても残す**
+    /// (アドレスは変わっても、そのホストへどちらの族で届くかは変わりにくい)。
+    last_win_v6: Option<bool>,
 }
 
 static TABLE: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
@@ -63,22 +67,30 @@ fn system_resolve(host: &str, port: u16) -> io::Result<Vec<IpAddr>> {
 
 /// `addr_str` (`host:port`) を解決する。キャッシュがあれば OS に問い合わせない。
 pub fn resolve(addr_str: &str) -> io::Result<Vec<SocketAddr>> {
+    resolve_with_pref(addr_str).map(|(addrs, _)| addrs)
+}
+
+/// [`resolve`] に「最後に勝った族」の記憶を添えて返す (T12.1)。**表を引くのは 1 回だけ**
+/// にするためで、接続側が別に [`preferred_family`] を呼ぶと鍵を 2 回取ることになる。
+pub fn resolve_with_pref(addr_str: &str) -> io::Result<(Vec<SocketAddr>, Option<bool>)> {
     let Some((host, port)) = split_host_port(addr_str) else {
-        return addr_str.to_socket_addrs().map(|i| i.collect());
+        return addr_str.to_socket_addrs().map(|i| (i.collect(), None));
     };
     let host = host.as_str();
     let ttl = ttl();
     if ttl.is_zero() || host.parse::<IpAddr>().is_ok() {
-        return addr_str.to_socket_addrs().map(|i| i.collect());
+        return addr_str.to_socket_addrs().map(|i| (i.collect(), None));
     }
     let key = host.to_ascii_lowercase();
     let now = Instant::now();
+    let mut pref = None;
     {
         let mut guard = TABLE.locked();
         if let Some(e) = guard.get_or_insert_with(HashMap::new).get(&key) {
+            pref = e.last_win_v6;
             if !e.addrs.is_empty() && now.duration_since(e.resolved_at) < ttl {
                 HITS.fetch_add(1, Ordering::Relaxed);
-                return Ok(with_port(&e.addrs, port));
+                return Ok((with_port(&e.addrs, port), pref));
             }
             if let Some((at, kind, msg)) = &e.failed_at
                 && now.duration_since(*at) < NEGATIVE
@@ -97,30 +109,78 @@ pub fn resolve(addr_str: &str) -> io::Result<Vec<SocketAddr>> {
             if table.len() >= MAX_ENTRIES && !table.contains_key(&key) {
                 evict_oldest(table);
             }
+            // 引き直しでも族の記憶は引き継ぐ
+            let last_win_v6 = table.get(&key).and_then(|e| e.last_win_v6).or(pref);
             table.insert(
                 key,
                 Entry {
                     addrs: addrs.clone(),
                     resolved_at: now,
                     failed_at: None,
+                    last_win_v6,
                 },
             );
-            Ok(with_port(&addrs, port))
+            Ok((with_port(&addrs, port), last_win_v6))
         }
         Err(e) => {
             let entry = table.entry(key).or_insert_with(|| Entry {
                 addrs: Vec::new(),
                 resolved_at: now,
                 failed_at: None,
+                last_win_v6: None,
             });
             entry.failed_at = Some((now, e.kind(), e.to_string()));
             if !entry.addrs.is_empty() && now.duration_since(entry.resolved_at) < STALE_MAX {
                 STALE.fetch_add(1, Ordering::Relaxed);
-                return Ok(with_port(&entry.addrs, port));
+                let pref = entry.last_win_v6;
+                return Ok((with_port(&entry.addrs, port), pref));
             }
             Err(e)
         }
     }
+}
+
+/// このホストで最後に接続できた族 (`Some(true)` = IPv6)。覚えていなければ `None`。
+pub fn preferred_family(host: &str) -> Option<bool> {
+    if host.is_empty() || host.parse::<IpAddr>().is_ok() {
+        return None;
+    }
+    let key = host.to_ascii_lowercase();
+    TABLE
+        .locked()
+        .as_ref()
+        .and_then(|t| t.get(&key))
+        .and_then(|e| e.last_win_v6)
+}
+
+/// このホストで勝った族を覚える。**答えが変わるときだけ**呼ぶこと (定常状態では鍵を取らない)。
+/// IP リテラルは覚えない (族は見れば分かるし、表に載せる意味が無い)。
+pub fn remember_family(host: &str, v6: bool) {
+    // TTL 0 (キャッシュ無効) のときは読む側が表を見ないので、覚えても引かれない
+    if host.is_empty() || ttl().is_zero() || host.parse::<IpAddr>().is_ok() {
+        return;
+    }
+    let key = host.to_ascii_lowercase();
+    let mut guard = TABLE.locked();
+    let table = guard.get_or_insert_with(HashMap::new);
+    if let Some(e) = table.get_mut(&key) {
+        e.last_win_v6 = Some(v6);
+        return;
+    }
+    if table.len() >= MAX_ENTRIES {
+        evict_oldest(table);
+    }
+    // まだ引いていないホスト (TTL 0 や解決を経ない経路) でも記憶だけは置ける。
+    // `addrs` が空なので当たりにはならず、次の解決で埋まる
+    table.insert(
+        key,
+        Entry {
+            addrs: Vec::new(),
+            resolved_at: Instant::now(),
+            failed_at: None,
+            last_win_v6: Some(v6),
+        },
+    );
 }
 
 fn with_port(addrs: &[IpAddr], port: u16) -> Vec<SocketAddr> {
@@ -210,6 +270,28 @@ mod tests {
         assert!(cached("127.0.0.1").is_none());
         let v6 = resolve("[::1]:9").unwrap();
         assert_eq!(v6, vec!["[::1]:9".parse().unwrap()]);
+    }
+
+    /// 勝った族の記憶は TTL で引き直しても残る (T12.1)。
+    #[test]
+    fn the_winning_family_survives_a_relookup() {
+        let host = "localhost";
+        remember_family("LocalHost", true);
+        assert_eq!(preferred_family(host), Some(true));
+        assert_eq!(preferred_family("127.0.0.1"), None, "IP リテラルは覚えない");
+        // TTL 切れにして引き直させる
+        {
+            let mut guard = TABLE.locked();
+            let table = guard.get_or_insert_with(HashMap::new);
+            if let Some(e) = table.get_mut(host) {
+                e.resolved_at = Instant::now() - Duration::from_secs(24 * 3600);
+            }
+        }
+        let (addrs, pref) = resolve_with_pref("localhost:1234").unwrap();
+        assert!(!addrs.is_empty());
+        assert_eq!(pref, Some(true), "引き直しても記憶は残る");
+        remember_family(host, false);
+        assert_eq!(preferred_family(host), Some(false));
     }
 
     #[test]
