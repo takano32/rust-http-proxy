@@ -22,7 +22,7 @@
 | §2 | 現在地 (数字の一覧) |
 | §3 | やったこと (Phase 0〜7) |
 | §4 | 測って採らなかったもの |
-| §5 | これから (Phase 8〜9) |
+| §5 | これから (Phase 8〜12。Phase 12 はデプロイ先の実測から決めた) |
 | 付録 A | 計測の記録 (時系列) |
 
 ## 0. ゴールと前提
@@ -2399,7 +2399,7 @@ Phase 11 は **5% に届かないと分かっているもの**と、**まだ測�
       `Cache::not_stored_rotations()` は公開してあるので、`/status` に出すのはコストゼロ。
 
 
-### Phase 12 — 進め方から決める (Fable と合議する)
+### Phase 12 — デプロイ先で体感する速さに向き直る (Fable と合議した結果)
 
 **Phase 12 は着手前に Fable (`claude-fable-5-1`) と合議して、やること自体を決める** (2026-09-08 に決定)。
 これまでの Phase は Opus が計画も実装もしてきたが、Phase 10〜11 で分かったのは
@@ -2426,21 +2426,317 @@ Phase 11 は **5% に届かないと分かっているもの**と、**まだ測�
 3. 出てきた案は**必ず「受け入れ基準を数字で書けるか」で選別する**。書けないものは Phase に入れない。
 4. 決まったら従来どおり §5 の形式で書き、1 タスク = 1 エージェント = 1 コミットで回す。
 
-**いま分かっている候補** (どれも 5% には届かない見込み。数字は各 `結果:` と §4 にある):
+#### 合議の結果 (2026-09-10、Fable)
 
-| 候補 | 見込み | 出どころ |
+**Fable が材料に足したのは「デプロイ済みの環境の実測」** (`http://nagoya.sorahost.net:50697/`、Pterodactyl コンテナ、
+cgroup 256 MiB、`ulimit -n` 1024、既定プロファイル、ログ `info`)。§0〜§4 の数字はすべて手元の loopback で測ったもので、
+**動いているプロキシを誰かが使ったときの数字は一度も見ていなかった**。
+2026-09-10 05:37 UTC に `/status` (稼働 149,206 秒 = 41.4 時間) を取り、`.rrd` に永続化されたホスト別統計
+(8,953 要求ぶん。`/status` に出るのは上位 50 ホスト = 8,218 件で、`MAX_HOSTS` は 1,000) を読んだ。
+生の JSON は**リポジトリに入れない** (個人の閲覧先が入る。手元の `~/rust-http-proxy-status/2026-09-10T0537Z-status.json` に置いた) が、
+下の表はその集計で、**同じ集計は T12.0 の道具で再現できる**。
+
+**いちばん大事な結論: §2 が測ってきた速さと、デプロイ先で体感する速さは、別のものだった。**
+
+| デプロイ先の実測 (2026-09-10) | 値 | §2 (loopback) との対応 |
 |---|---|---|
-| ベンチを `vmsplice` + `splice` でゼロコピー化し、トンネルをプロキシ律速にする | 計測の質。速さではない | T10.8 |
-| アクセスログをまとめ書きにする (kernel 4.9 us/要求) | **挙動が変わる** (落ちたとき直前の行が消える) | T10.10 |
-| `/status` に「合流を飛ばした回数」を出す | 観測。熱い経路に原子操作を足さない形なら | T11.9 |
-| 上限が小さい環境で背景の仕事に上限の何割かだけ使わせる | 既定では実害なし | T11.3 |
-| 空きスレッドを上限低下時にその場で終わらせる | 最大 30 秒のずれ | T11.6 |
-| `sorahost_threads{state="live"}` のラベル形式にする | Prometheus の作法 | T11.5 |
+| 要求の内訳 (永続化された 8,953 件) | **CONNECT 8,800 (98.3%)**、forward 140 (1.6%。HIT 56 / MISS 84)、エラー 12、ブロック 1 | §2 の主戦場 (forward keep-alive、HIT) は **1.6%** |
+| 要求の頻度 (起動から 41.4 時間で 1,854 件) | **0.012 req/s** (80 秒に 1 件) | §2 は 38,619 req/s。**CPU/要求 41 us は 1 日で 2 秒ぶん** |
+| CONNECT 確立、AAAA の無いホスト (22 ホスト、2,063 件) | **p50 の中央値 5.10 ms、avg の中央値 7.10 ms** (discord.com 5.2、x.com 5.0、www.mof.go.jp 5.0) | §2 の 140 us/本 は **この 2.7%**。残りは名前解決と RTT |
+| CONNECT 確立、AAAA のあるホスト (25 ホスト、**6,022 件 = CONNECT の 74.5%**) | **avg 257 ms** (avg の中央値 257.4、p50 の中央値 260。www.dlsite.com 257.4、registry.npmjs.org 256.7、example.com 257.0、www.google.com 257.6) | **§2 には存在しない経路**。250 ms は `net.rs` の `STAGGER` (`crates/net/src/net.rs:19`) そのもの |
+| 41.4 時間で失った待ち時間 | 6,022 × 250 ms = **1,506 秒 (25 分)** | — |
+| ホスト別統計の p50 = p95 = max になっているホスト | **50 ホスト中 29** (datadog: avg 257.2、p50 = p95 = max = 280) | 区間 `LATENCY_BOUNDS_MS` (`crates/metrics/src/metrics.rs:45`) が 10 段しか無い |
+| RSS / cgroup | **215.9 MB / 268.4 MB (256 MiB)**、うちメモリキャッシュのバラスト 201.3 MB、キャッシュの実体は **1 件 798 B** | §2 の「暇なトンネル 5,000 本で 29.9 MB」は `--lite` (バラスト無し)・6.6 GiB の機械での値 |
+| 上限 | `max_conns` 240 (`ulimit -n` 1024 から)、`max_threads` 128、生きているスレッド 1、接続 2 | §2 の「同時 5,000 本」はここでは起きない (240 で 503) |
+| DNS キャッシュ (起動から) | 35 件、hit 2,748 / miss 966 (26%)、TTL 60 秒。**hit + miss = 3,714 は要求 1,868 の 1.99 倍** (T12.7) | — |
+| オリジンプール (起動から 41.4 時間) | **new 1 / reused 0** | §2 の keep-alive とプールの前提はここでは 1 度も効いていない |
+| 接続元 | **1 つ** (`10.255.0.1`、Wings の NAT) | 接続元別の統計はこの環境では 1 行しか出ない |
+| `GET /` (ブラウザでプロキシの URL を開く) | **502 Bad Gateway、本文 0 バイト** | 自分宛てなのに `Host` へ転送しに行き、コンテナが自分の公開アドレスに届かないので 502 |
+
+**Fable が「怪しい」と判断した前提** (証拠のあるものから順に):
+
+1. **「CONNECT は DNS も Happy Eyeballs も無罪」(T10.1) は loopback の結論で、デプロイ先では Happy Eyeballs が犯人。**
+   証拠: CONNECT の 47 ホストを dns.google で AAAA の有無に分けると、**AAAA あり 25 ホストは 25 とも avg 250 ms 超**、
+   AAAA なし 22 ホストは 20 が 10 ms 未満 (例外は本当に遠い `safereddit.com` 143 ms と、名前解決の時点で AAAA が
+   無かった `graph.hangout.audio` 274 ms)。forward の 3 ホストも同じ向きで、AAAA のある `edgedl.me.gvt1.com` は
+   avg 40.4 だが p50 7.8 / p95 242.5 — **プールで再利用できた要求だけが 250 ms を免れている**。
+   値が 250 + v4 の RTT に揃う (accounts.google.com 265.6、www.nikkei.com 265.7、mtalk.google.com 293.8)。
+   デプロイ先へ IPv6 リテラル宛ての CONNECT を送ると **約 1.0〜1.1 秒で 502** (Opus 1,015 ms、Fable 1,082 ms)。
+   つまりコンテナの IPv6 は「経路はあるが約 1 秒で失敗する」。経路そのものが無ければ `connect(2)` は即 `ENETUNREACH` で返り、
+   `connect_resolved` は待たずに次へ行く (`crates/net/src/net.rs:271-277`) ので、この 250 ms は出ない。
+   名前宛てと IPv4 リテラル宛ての生の CONNECT の差は +229〜+274 ms (Opus の実測、4 ホスト)。
+   **loopback のベンチではこの経路が一度も走らない**: オリジンのアドレスは 1 つなので `addrs.len() == 1` で
+   `connect_one` へ直行する (`net.rs:228`)。T10.8 と同じ種類の「測っていない経路」だった。
+   単体テスト `happy_eyeballs_skips_unreachable_first_candidate` (`net.rs:362-379`) は **3 秒未満なら合格**なので、
+   250 ms を毎回払っていても通る。
+2. **「CONNECT 1 本の速さは CPU/本 で測る」(§1) はデプロイ先では成り立たない。** 140 us は 5 ms の 2.7%、257 ms の 0.05%。
+   デプロイ先で体感するのは **名前解決 + オリジンまでの RTT + (バグなら) 250 ms** で、コードの CPU は誤差。
+   Phase 10〜11 が CONNECT で削った 25 us は、この環境では**測定限界の下**にある。
+3. **「速さは同じ条件で loopback で測る」(§0) は、デプロイ先で起きることの一部しか見ない。** 上の表の行は
+   どれも §1 のレシピからは出ない。§1 に「デプロイ先の測り方」が無いのが穴 (T12.0)。
+4. **「自分宛ての要求は 404 で止まる」は絶対形式だけ。オリジン形式だと自分へ転送してループする。**
+   `local_path` はオリジン形式 (`GET /` + `Host:`) を無条件に自分のパスとして通し (`crates/endpoints/src/endpoints/mod.rs:48-50`)、
+   知らないパスのときは `self_addressed == false` なので転送へ落ちる (`mod.rs:168-176`)。`parse_origin` は `Host` を
+   そのままオリジンにする (`crates/origin/src/request.rs:229-241`)。**手元で再現した** (2026-09-10、`release`、
+   `PROXY_MAX_CONNS=32`、`PROXY_ALLOW_LOCAL=off`、待ち受けを LAN アドレスにして `curl http://<そのアドレス>:port/`):
+   1 要求で `active_connections` 32、`live_threads` 32、`origin_connections.new` 32 になり、33 本目が 503 で
+   連鎖が止まって手元に 503 が返る。既定 (`max_conns` 4096、`PROXY_ALLOW_LOCAL=on`) では 8 秒待っても返らず、
+   **`/status` も 5 秒で応答しなかった**。デプロイ先は `max_threads` 128 < `max_conns` 240 なので、
+   129 本目からはスレッド待ちの行列に入り、128 本のスレッドはその行列の応答を待つ = **30 秒 (`PROXY_TIMEOUT_SECS`)
+   全員が止まる**見込み (仮説。コンテナの内側のアドレスを `Host` に書けば外からでも起こせる)。
+   `Via` はあるが再検証の経路にしか付けていない (`crates/http/src/http/refresh.rs:149`)。
+5. **「p50 / p95 は分位点」は区間が粗いので、実態は「どの区間か」。** 257 ms は (250, 500] に入り、区間内を線形補間して
+   375 → 観測した最大値 280 で頭打ち (`metrics.rs:152-175`) → **p50 = p95 = max = 280、しかも avg 257 より大きい**。
+   T12.1 の効果をデプロイ先で確かめる数字がこれなので、先に信用できる形にしておく必要がある。
+6. **Happy Eyeballs の負けた試行はスレッドと fd を最長 30 秒抱える。** 候補ごとに `thread::spawn` し (`net.rs:248`)、
+   勝った時点で `return` するが負けた側は `connect_one` が返るまで生きる (**デプロイ先では約 1 秒**。SYN が黙って落ちる網なら
+   `PROXY_TIMEOUT_SECS` の 30 秒)。`Workers` の上限の外、
+   `max_conns` の「1 接続 4 記述子」の外 (`ulimit -n` 1024 → 240 × 4 = 960)。ページを開いて 20 ホスト × 6 本の
+   CONNECT が来ると 120 本のスレッドと SYN-SENT のソケットが約 1 秒 (黒穴なら 30 秒) 残る (仮説。手元では未計測)。
+   T11.1 が書いて戻した nonblocking の接続 (`d466ace`) は、**CPU/本 では効かなかったが、この用途では正解**
+   (1 スレッドで複数の候補を `poll` し、負けた方を即 `close` できる)。
+7. **「キャッシュは使わないときにコストがかからない」(§0) はバラストには当てはまらない。** 256 MiB のコンテナで
+   RSS 215.9 MB、そのうち 201.3 MB が 1 件 798 B のキャッシュのための先行確保。設計どおりだが、
+   **256 MiB の cgroup の中で `max_threads` 128 本が同時に働いたときに OOM にならないことは測っていない**
+   (§2 のメモリの行はすべて `--lite`、6.6 GiB の機械)。
+8. **「デプロイ先で動いているのがどのコミットか」は分からない。** `/status` にも起動ログにも版が無い。
+   稼働 41.4 時間から逆算した起動は 2026-09-08 12:10 UTC で、`aee706f` と `41e918f` の間としか言えない。
+
+**§4 や Phase 11 の候補との突き合わせ** (前の候補表の行き先):
+
+| 候補 (Phase 11 末尾の表) | 行き先 | 理由 |
+|---|---|---|
+| ベンチを `vmsplice` + `splice` でゼロコピー化 | **やらない** | デプロイ先のトンネルは 41 時間で 304 MB。律速はベンチどころか回線 |
+| アクセスログのまとめ書き | **やらない** | 0.012 req/s の環境で 4.9 us/要求 は 1 日 0.06 秒。挙動が変わる代償に見合わない |
+| `/status` に合流を飛ばした回数 | T12.6 (1) | コストゼロなので出す |
+| 上限が小さい環境で背景の仕事に上限の何割か | **やらない** | デプロイ先の `revalidations` は 0 |
+| 空きスレッドを上限低下時に終わらせる | **やらない** | 30 秒のずれは実害なし |
+| `sorahost_threads{state=...}` のラベル形式 | T12.4 (4) | `/metrics` を触るついでに |
+
+**Phase 12 の測り方**: §1 に加えて、**デプロイ先の `/status` を 2 回取って差分で見る** (T12.0)。ホスト別統計は
+`.rrd` に永続化されて再起動をまたぐので、`avg_ms` をそのまま読むと直す前の 257 ms が混ざり続ける。
+`avg_ms × timed` が合計 ms なので、2 回の差 `(avg2·timed2 − avg1·timed1) / (timed2 − timed1)` がその間の平均になる。
+手元からは `curl -x nagoya.sorahost.net:50697 -w '%{time_connect} %{time_appconnect} %{time_starttransfer}'` で、
+`time_appconnect − time_connect` が「CONNECT 確立 + TLS 握手」(2026-09-10 の実測: www.dlsite.com 0.37〜0.43 秒、
+直結なら 0.13 秒。discord.com は 0.08 秒)。**この環境で 5% 未満の差は見えない** (回線のぶれが ±20 ms ある) ので、
+Phase 12 の受け入れ基準は 5% ではなく**桁で書く** (250 ms → 30 ms 未満、のように)。
+
+#### Opus 側の独立案との突き合わせ
+
+Opus (`claude-opus-5`) に同じ材料 (§0〜§4、Phase 10〜11 の `結果:`、README、デプロイ先の `/status` と `/metrics` の
+スナップショット、デプロイ先への curl) を渡し、**Fable の結論は伏せて**「前提のどこが怪しいか」を独立に出させた (2026-09-10)。
+
+| 論点 | Fable | Opus | 扱い |
+|---|---|---|---|
+| Happy Eyeballs の 250 ms | AAAA の有無で 25 / 22 ホストがきれいに割れる (`/status` の集計) | **同じ結論に独立に到達**。加えて**デプロイ先へ生の CONNECT** で実測: 名前宛て 289〜303 ms、IPv4 リテラル宛て 29〜60 ms (**+229〜+274 ms**)。IPv6 リテラル宛ては **約 1.0 秒で 502** (Fable も 1.08 秒で再現) | **一致 → T12.1**。仮説が 1 段はっきりした: コンテナの IPv6 は「経路はあるが約 1 秒で失敗」。即 `ENETUNREACH` ではないので早回し (`net.rs:271-277`) に乗らない |
+| loopback の CPU/要求 はデプロイ先で無意味 | 0.012 req/s、CPU/要求 41 us は 1 日 2 秒 | 同じ。3 日の待ち 1,514 秒 : プロキシが使った CPU の総量 1.32 秒 = **1,143 : 1**。オリジンプールは 41 時間で new 1 / reused 0 | **一致**。「もう掘らない」に入れる |
+| ホスト別 p50 / p95 | 区間が粗く 29/50 が max の写し | 同じ (要求数で 74%)。区間案は 12 段 (100〜500 ms を割る) | **一致 → T12.4 (1)**。ホスト別は 24 段、履歴の窓は 12 段 (Fable 24 段 / Opus 12 段の差は本質ではない) |
+| バラスト 192 MiB | 256 MiB の中で上限まで働いても落ちないか**測る** | **使われるまで確保しない**に変える (3 日で 2,394 B 配るために 75% を取っている) | **食い違い (対処) → T12.5 で先に測って決める**: cgroup の中でバラストが何を買っているかを測り、何も買っていなければ Opus 案 |
+| 自分宛てのオリジン形式でループ | 手元で再現 (1 要求で 32 接続 / 32 スレッド) | 見ていない | **Fable のみ、証拠あり → T12.3** |
+| 負けた試行のスレッドと fd | 最長 30 秒残る (仮説) | 同じ指摘。デプロイ先では IPv6 が約 1 秒で失敗するので**残るのは約 1 秒** | **一致 (Opus の実測で軽くなった) → T12.2 は「先に測って、10 本未満ならやらない」** |
+| 名前解決が 1 要求 2 回 | 見ていない | `dns.hits + misses` 3,714 / 要求 1,868 = **1.99 回**。`acl.rs:113` (ポート 80) と `net.rs:202` | **Opus のみ、証拠あり (Fable がコードで確認) → T12.7**。TTL 0 のとき判定と接続で別の答えを使う (rebinding) 点は Fable が足した |
+| `/status` の窓が混在 | 差分で測る道具で回避 (T12.0) | `total_requests` (起動から) と `hosts[]` (通算) が無印で並ぶ。再起動後 250 秒で 1,868 → 3 と 249 → 251 | **Opus のみ → T12.4 (4)** |
+| Happy Eyeballs をどこで測るか | 黒穴を使う単体テスト + デプロイ先の差分 | ベンチに `--only connect-multi` を足して §2 に 1 行 (T10.1 の穴を §1 で塞ぐ) | **食い違い (場所)**。単体テストと差分は必須、ベンチの行は名前解決の注入 (`PROXY_HOSTS`) が要るので T12.1 の任意項目 |
+| デプロイ先での受け入れ基準の書き方 | 差分 (`avg × timed` の差 ÷ `timed` の差) | `/status` の `avg_ms` を直接読む (258 → 20) | **Opus の書き方では測れない** (ホスト別統計は `.rrd` で通算されるので何日も 20 に届かない) → 差分に統一 |
+| IPv4 優先からの戻り方 | IPv6 が 1 度勝ったら戻す (勝つ機会が無いので実質戻らない) | 600 秒に 1 回 IPv6 を試して戻す | **Opus 案を採る** (T12.1 の 2) |
+| やらないもの | forward / syscall / 確保 / ログのまとめ書き / vmsplice / スレッドの小物 | 同じ一覧 + ビルドメモリをさらに下げること | **一致** |
+
+3 つの大きな論点 (250 ms・CPU/要求 の無意味さ・p50 の区間) で**独立に同じ結論**になったので、Phase 12 はこの 3 つを軸に組む。
+食い違いは対処の仕方 (バラスト) と測る場所 (ベンチ) の 2 つで、どちらも「先に測る」で決める形にした。
+**Phase 13 で要る統計・履歴・ダッシュボードは Phase 12 に入れる** (2026-09-10 の指示)。Phase 13 は「デプロイ先で見る」段階になるので、
+その物差し (窓つきの分位点、名前解決と接続の内訳、エラーの原因、fd とスレッド) を T12.4 に 1 つの形式変更でまとめた。
+
+- [ ] **T12.0 デプロイ先を測れるようにする (`/status` の差分と手元からの計測)**
+  - 目的: Phase 12 の受け入れ基準はすべてデプロイ先で確かめる。ところが §1 にはデプロイ先の測り方が無く、
+    ホスト別統計は永続化されるので `avg_ms` を読んでも前後が分からない。**先に物差しを作る** (Phase 0 と同じ順番)。
+  - 変更箇所: `scripts/status-diff.py` (新規)、`scripts/probe-deployed.sh` (新規)、`TASKS.md` §1 (デプロイ先の測り方の節)。
+  - やること:
+    1. `status-diff.py A.json B.json`: 2 つの `/status` からホスト別に `Δtimed`、`Δavg_ms` (合計 ms の差 ÷ 件数の差)、
+       `Δrequests`、`Δbytes` を出し、AAAA の有無 (`getaddrinfo` で引く。`--no-dns` で省略) で 2 群に分けて中央値を出す。
+       1 つだけ渡せばその累計を同じ形で出す。
+    2. `probe-deployed.sh HOST:PORT`: `GET /status`、`GET /` (自分宛て)、`-x` で `http://example.com/`、
+       `-x` で `https://` を AAAA あり / なしのホスト各 1 つ、それぞれ 3 回。`time_connect` / `time_appconnect` /
+       `time_starttransfer` と状態コードを表にする。
+    3. §1 に「デプロイ先の測り方」を足し、上の「デプロイ先の実測」の表を §2 の下に「デプロイ先の現在地」として写す。
+  - 受け入れ基準: 1 は 2026-09-10 05:37 UTC の snapshot 1 つ (`~/rust-http-proxy-status/2026-09-10T0537Z-status.json`) から
+    **CONNECT の 74.5% が AAAA ありのホスト、その群の avg の中央値 257.4 ms、無い群の p50 の中央値 5.10 ms**
+    を再現すること (この節の表と同じ数字が出ること)。2 はデプロイ先に対して 30 秒以内に終わり、
+    `GET /` の状態コードと `time_appconnect − time_connect` が出ること。ベンチもコードも触らない。
+- [ ] **T12.1 IPv6 が死んでいる環境で、CONNECT のたびに 250 ms 払わない (Happy Eyeballs に記憶を持たせる)**
+  - 目的: デプロイ先の CONNECT の 74.5% が `STAGGER` 250 ms を丸ごと払っている (上の表)。**Phase 0〜11 が CONNECT 1 本で削ったのは
+    235 → 140 us、これは 1 本で 250 ms** (257 ms → 7 ms)。Opus の換算では 3 日の待ち 1,514 秒に対して、プロキシが 3 日で使った
+    CPU の総量は 1.32 秒 (1,143 : 1)。RFC 8305 §8 も「過去の結果で優先する族を変える」ことを求めている。
+  - 変更箇所: `crates/net/src/net.rs` (`connect_resolved`、`interleave`)、`crates/net/src/dns.rs` (`Entry` に勝った族を持たせる)、
+    `crates/net` の単体テスト、`tests/tunnel_test.rs`、`crates/metrics` (`/status` の `ipv6`)、README (`PROXY_IPV6` の説明)。
+  - やること:
+    1. **ホストごと**: `dns::Entry` に「最後に勝った族」を持たせ、次の `connect` はその族を先頭に並べる
+       (`interleave` の先頭を入れ替えるだけ。残りの順は RFC のまま)。TTL で引き直しても記憶は残す。
+    2. **全体**: IPv6 の試行が起動から 1 度も勝たず、連続 3 回負けたら、初めて見るホストも IPv4 を先頭にする。
+       **600 秒に 1 回だけ IPv6 を先頭に戻して試し** (Opus 案。IPv6 が生き返れば自然に戻る)、1 度勝ったら解除。
+       **IPv6 の試行そのものはやめない** (先頭を IPv4 にするだけなので、IPv4 が死んでいるホストは 250 ms 後に IPv6 で拾える)。
+       状態は `AtomicU64` 2 本 (連続で負けた数、次に IPv6 を試す時刻) で足りる。熱い経路に増えるのは勝ったときの `store` 1 回。
+       切り替えたときに 1 回だけ `warn` を出す (`IPv6 attempts never succeed; trying IPv4 first (set PROXY_IPV6=off to skip IPv6)`)。
+    3. `/status` に `"ipv6":{"attempts":N,"wins":N,"losses":N,"v4_first":bool}` を出す (T12.0 の差分で効きを見るため。組み立ては
+       `/status` のときだけ)。
+    4. 既存テスト (`net.rs:362-379`) の `< 3 秒` を **1 回目は 250 ms 以上 (設計どおり待つ) / 2 回目は 50 ms 未満**に書き直す。
+    5. README の `PROXY_IPV6` に「IPv6 が黙って落ちる環境では自動で IPv4 を先にする。確実に避けたいなら `off`」と書く。
+    6. (任意、別コミット) `PROXY_HOSTS=name=ip1,ip2` (静的な名前解決、`.env` で即時反映) を足せば、ベンチに `--only connect-multi`
+       (黒穴 → ループバックの 2 候補) を足して §2 に 1 行増やせる (Opus 案)。**T10.1 が「無罪」と結論したのは、ベンチが
+       `addrs.len() == 1` で Happy Eyeballs 本体を一度も通っていなかったから**で、その穴を §1 のレシピで塞ぐ意味がある。
+       ただし機能が 1 つ増えるので、要るかどうかは別に決める。
+  - 受け入れ基準 (手元): `[::1]` に `listen(0)` で待ち受けを作って 1 本つないで塞ぐ (以後の SYN は落ちる = 黒穴。
+    2026-09-10 に確認、次の `connect` は 1.5 秒以上返らない) + `127.0.0.1` の普通の待ち受け、の 2 つを候補にした
+    `connect_resolved` で、**1 回目 ≥ 250 ms、同じホストの 2 回目 < 50 ms、別のホストでも 3 回負けた後は < 50 ms**。
+    IPv6 が生きている条件 (`[::1]` の生きた待ち受けを先頭) では今までどおり IPv6 が勝つこと。
+    `--only connect` の CPU/本 が ±4% の中 (候補が 1 つのときの経路は触らないので動かないはず)。forward・HIT は触らない。
+  - 受け入れ基準 (デプロイ先): T12.0 の差分で、**AAAA ありのホストの Δavg_ms の中央値が 257 → 30 ms 未満**、
+    AAAA なしのホストは 7 ms 前後のまま。手元からの `probe-deployed.sh` で www.dlsite.com の
+    `time_appconnect − time_connect` が 0.37 秒台 → 0.15 秒未満。**`/status` の `avg_ms` を直接読んで 258 → 20 を待つ
+    (Opus の基準) のでは何日も動かない** (`.rrd` の通算なので)。差分で見る。
+  - 注意: **コードを直す前に、コンテナの中で仮説を確かめる** (`curl -6 -m 3 https://www.google.com/` が約 1 秒で失敗すれば
+    上の実測どおり、即 `Network is unreachable` なら別の原因)。**今日できる回避**は `.env` に `PROXY_IPV6=off`
+    (再起動が要る。`PROXY_IPV6` は `restart_required` に入る — `crates/reload/src/reload.rs:167-168`)。回避を入れたら
+    T12.0 の差分でそれだけで 257 → 7 ms になるはずで、それ自体が仮説の検証になる。
+- [ ] **T12.2 Happy Eyeballs の負けた試行を残さない (T11.1 の nonblocking 接続を、CPU ではなく資源のために採る)**
+  - 目的: 負けた候補のスレッドとソケット (SYN-SENT) が `connect_one` が返るまで残る (前提 6)。**デプロイ先では約 1 秒**
+    (IPv6 の接続が約 1 秒で失敗する。上の実測)、SYN が黙って落ちる網では `PROXY_TIMEOUT_SECS` の 30 秒。
+    T12.1 で「先頭が勝つ」のが普通になれば 2 本目は起動されず残らないが、両方 250 ms より遅いホストと、
+    T12.1 が学ぶ前の数回では残る。`max_conns` の記述子の勘定 (1 接続 4 本) の外なので、`ulimit -n` 1024 の
+    環境では `accept` の `EMFILE` (`src/lib.rs:137-140`、待って回る) に届きうる。
+  - 変更箇所: `crates/sys/src/sys.rs`、`crates/net/src/net.rs`。**`d466ace` (T11.1) をそのまま復活させるのではなく**、
+    `socket(SOCK_NONBLOCK)` → `connect` → `poll` の部分だけを取り出して `connect_resolved` の中で使う
+    (候補を 250 ms ごとに足しながら 1 つの `poll` で待ち、勝った時点で残りを `close`)。Linux 以外は今のスレッド版。
+  - やること: **先に測る**。T12.1 のあとで、黒穴を先頭にしたホストへ CONNECT を 100 本連続で通し、
+    `/proc/<pid>/status` の `Threads` と `ss -tanp state syn-sent` を 1 秒ごとに読む。残るのが 10 本未満なら**やらない**
+    (§4 に数字を 1 行)。残るなら上の形で書く。
+  - 受け入れ基準: 100 本のあと **1 秒以内に `Threads` が基準値 + 0、SYN-SENT が 0**。`--only connect` の CPU/本 が
+    T11.1 の再現にならないこと (±4% の中。T11.1 は +1.0% だった)。`ppoll`/`splice` の回数は変えない。
+- [ ] **T12.3 自分宛てのオリジン形式の要求でループしない (`GET /` で 502 ではなく案内を返す)**
+  - 目的: 前提 4。1 要求でプロキシが自分自身に `max_conns` 本つなぐ。デプロイ先で 502 で済んでいるのは
+    偶然 (コンテナが自分の公開アドレスに届かない) で、内側のアドレスを `Host` に書けば外から止められる。
+    ついでに、ブラウザでプロキシの URL を開いた人に 502 の白紙ではなく `/dashboard` への案内を返す。
+  - 変更箇所: `crates/endpoints/src/endpoints/mod.rs` (`local_path`、`handle`)、`src/lib.rs:964` 付近 (呼び出し)、
+    `crates/http/src/http/mod.rs` (転送する要求に `Via`、受けた要求の `Via` の検査)、`tests/proxy_test.rs`、README。
+  - やること:
+    1. オリジン形式 (`/` で始まる target) は **`Host` のポート (無ければ 80) が自分の待ち受けポートと同じときだけ**
+       自分宛てとみなす (絶対形式と同じ規則。`local_path` は既に絶対形式でこれをやっている)。自分宛てで知らないパスは 404
+       (いまの本文のまま)、**`/` だけは 200 でエンドポイントの一覧** (`text/plain`。`--lite` でも出す)。
+       `Host` のポートが違うオリジン形式は今までどおり転送する (透過プロキシの使い方を壊さない)。
+    2. 保険として、転送する要求に `Via: 1.1 <起動ごとの乱数 8 桁>` を付け、**自分の印が付いた要求を受けたら 508 Loop Detected**
+       で閉じる (印が起動ごとなので、rust-http-proxy を 2 段に並べた正当な構成は誤検出しない)。
+       `refresh.rs:149` の固定の `Via` も同じ印にそろえる。
+  - 受け入れ基準: 結合テスト 3 本。(a) 待ち受けアドレス:ポートを `Host` にしたオリジン形式の `GET /x` が **10 ms 未満で 404**、
+    `origin_connections.new` が +0、`active_connections` が 1 以下。(b) 同じ形の `GET /` が 200 で本文に `/dashboard` を含む。
+    (c) ポートの違う自分 (待ち受けを 2 つ立てて互いに向ける) で **2 段目が 508**、接続は 2 本まで。
+    forward の CPU/要求 は ±ぶれの中 (`Via` 1 行 = 約 30 バイトの `sendto` が増えるだけ)。
+    デプロイ先: `probe-deployed.sh` の `GET /` が 502 → 200。
+- [ ] **T12.4 統計・履歴・ダッシュボードを「Phase 13 がデプロイ先で見る形」にする (形式の変更は 1 回で)**
+  - 目的: 2 つある。(a) 前提 5 — ホスト別の p50 / p95 が区間の上端の写しで (50 ホスト中 29、要求数で 74%)、
+    T12.1 の効果を `/status` と `/dashboard` で確かめられない。(b) **Phase 13 の見込み**: 250 ms を外したあとデプロイ先に残る待ちは
+    名前解決のミス (26%)・オリジンまでの RTT・エラーの原因・fd とスレッドの山で、**どれも今の統計には無い**
+    (履歴 `Sample` は要求数・バイト・接続数・キャッシュ・RSS の 13 項目だけ — `crates/metrics/src/history.rs:27-41`。
+    応答時間は累計しかなく窓が無い。エラーは件数だけで原因が無い。名前解決の時間はどこにも無い。fd の数も無い)。
+    Phase 0 がベンチを先に作ったのと同じで、**Phase 13 の物差しを Phase 12 で作る**。`.rrd` の形式が変わる作業なので、
+    区間の変更と履歴の拡張を**同じ版上げで 1 回**にする。
+  - 変更箇所: `crates/metrics/src/metrics.rs` (`LATENCY_BOUNDS_MS`、`HostStats`、`quantile_ms`)、`crates/metrics/src/history.rs` (`Sample`)、
+    `crates/metrics/src/persist.rs` と `crates/rrd` (版と大きさ)、`crates/net/src/dns.rs` (解決にかかった時間)、
+    `crates/tunnel/src/tunnel.rs` と `crates/http/src/http/mod.rs` (エラーの原因を渡す)、`crates/prom/src/prom.rs`、
+    `crates/endpoints/src/endpoints/mod.rs`、`crates/endpoints/src/web/dashboard.html`、`crates/sysinfo` (fd の数)、README。
+  - やること (**1 件 1 コミット**。1 が形式を変える唯一のコミットで、2〜5 はその上に足す):
+    1. **`.rrd` を版 2 にする**: ホスト別の区間を 1 ms〜10 s の 24 段 (公比 1.5) にし、履歴 `Sample` に下の項目を足す。
+       `MAX_HOSTS` 1,000 × 24 段は +192 KiB、履歴は 2,880 標本 × 追加 30 項目 × 8 B = +690 KiB なので、
+       **ファイルを 2 MiB 固定にする** (入らなければ 4 MiB。大事なのは固定で伸びないこと。README の「約 1 MiB」を直す)。
+       旧版は**読み捨てて作り直す** (統計は運用の参考値)。
+       `quantile_ms` は区間内の補間のまま (区間が細かくなれば足りる)。
+    2. **内訳を取る**: 名前解決にかかった時間 (`dns::resolve` のミスのときだけ `Instant` を 2 回読む)、接続にかかった時間、
+       勝った族 (v4 / v6)、エラーの原因 (`dns` / `refused` / `unreachable` / `timeout` / `reset` / `tls` / `other` の 7 つに畳む)。
+       ホスト別に `dns_ms_sum` / `connect_ms_sum` / `v4_wins` / `v6_wins` / `errors_by_cause[7]` を足す。
+       **熱い経路に原子操作は足さない**: どれも `record_host_timed` が既に取っている鍵の内側で書く。
+       `--lite` (統計なし) では 1 命令も増えないこと (T1.4 の方針)。
+    3. **履歴に窓つきの分位点を入れる**: `Sample` に「その区間の」CONNECT 確立と forward の初バイトの
+       件数・合計 ms・12 段の区間 (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000 ms) を足し、
+       あわせて `connects` / `forwards` / `errors` / `dns_misses` / `dns_ms_sum` / `threads` (プロセス全体、`/proc/self/status`) /
+       `fds` (`/proc/self/fd` の数) / `max_fds` を足す。粗い解像度へ畳むときは区間を足し合わせる。
+       `/history` の JSON は項目が倍以上になるので、**標本を配列の配列にする** (キーを 1 回だけ出す)。
+    4. **`/status` と `/metrics`**: `/status` に `since_start_secs` と `restored_since` (最古の `last_seen`。Opus が見つけた窓の混在 —
+       `total_requests` 1,868 と `hosts[]` 通算 8,953 が無印で並ぶ) と `fds` / `max_fds` / `threads` を足す。`/metrics` に
+       `sorahost_connect_seconds_bucket{le=...}` / `sorahost_dns_seconds_sum|count` / `sorahost_errors_total{cause=...}` /
+       `sorahost_fds` を足し、`sorahost_live_threads` / `sorahost_idle_threads` は `sorahost_threads{state="live"|"idle"}` に
+       そろえる (T11.5 の候補。旧名は 1 版だけ両方出す)。
+    5. **ダッシュボード**: 図を 3 枚足す — 「CONNECT 確立 p50 / p95 (ms)」「名前解決ミス / 秒 とエラー (原因別)」「スレッド / fd」。
+       KPI に「CONNECT 確立 p50 (直近 5 分)」を足す (**Phase 13 で最初に見る数字**)。ホスト別の表に「名前解決 / 接続 (ms)」と
+       「v4 / v6」の列を足し、ヘッダーに版 (T12.6 (2)) と「起動から / 通算」の窓を出す。
+  - 受け入れ基準:
+    - 1: 単体テストで 257 ms × 90 件 + 290 ms × 10 件 → **p50 が 250〜265** (いまは 290)、p95 ≥ 280。5 ms × 100 件で p50 が 4〜6。
+      旧版の `.rrd` を置いて起動しても落ちず、`state_file.bytes` が新しい固定の大きさ (2 MiB なら **2,097,152**)、`write_errors` 0
+      (結合テスト 1 本)。
+    - 2: 結合テストで、つながらないオリジン (閉じたポート → `refused`、TEST-NET-1 → `timeout`) の原因が `/status` の
+      `errors_by_cause` に **1 件ずつ**乗る。`--only connect` の CPU/本 と forward の CPU/要求 が ±ぶれの中、
+      `--lite` のシステムコール 5.02 回/要求 のまま、確保回数も変わらない (§1 の数えるアロケータ)。
+    - 3: 単体テストで 257 ms × 100 件 → 7 ms × 100 件を 2 つの区間に入れ、**それぞれの p50 が 250〜265 と 5〜10**。
+      `/history?res=5` の応答が **512 KiB 以下**、`/status` が 64 KiB 以下、`/metrics` が 400 KiB 以下 (いま 165 KB)。
+      `fds` が `ls /proc/<pid>/fd | wc -l` と ±2 で一致。
+    - 4 と 5: `/metrics` のテストを新旧両方の名前で通す。デプロイ先で T12.1 を入れた前後が **`/dashboard` の
+      「CONNECT 確立 p50」の 1 枚で分かる**こと (257 → 10 ms 台の段差が 1 時間の図に出る)。
+  - 注意: **測る側が熱い経路を重くしたら本末転倒**。2 の受け入れ基準 (CPU・システムコール・確保が動かない) を先に確かめる。
+    fd と スレッドの数は `/proc` を読むので、5 秒の標本のときだけ (要求ごとには読まない)。
+- [ ] **T12.5 256 MiB の cgroup でバラストが「何を買っているか」と「落ちないか」を測り、要らなければ段階化する**
+  - 目的: 前提 7。デプロイ先は RSS 215.9 MB / 256 MiB で、うち 201.3 MB (192 MiB) が 1 件 798 B のキャッシュのための先行確保。
+    ディスクも割当 3 GiB のうち 2.9 GB がバラスト (`disk_used_percent` 91.7% の正体)。3 日で配ったのは 2,394 B (Opus の集計)。
+    README のバラストの目的は「予算のうち使っていない分を先に確保し、縮むときはバラストから返す」だが、
+    **cgroup で上限が決まっている環境で先に確保することが何を買うのか**は測っていない。Fable と Opus の食い違い:
+    Fable は「落ちないことを測る」、Opus は「使われるまで確保しない」に変える案。**先に測って決める**。
+  - 変更箇所: `scripts/` (計測。`scripts/build-memory.sh` の `systemd-run --user --scope -p MemoryMax=` の作法を流用)。
+    段階化するなら `crates/cache/src/cache/probe.rs` (`fill_ballast` の条件)、`crates/cachemem/src/memory.rs`、README (`PROXY_CACHE_RESERVE`)。
+    落ちるなら `crates/capacity/src/margin.rs`。
+  - やること:
+    1. `SERVER_MEMORY=256` `PROXY_MAX_CONNS=240` `PROXY_MAX_THREADS=128`、`ulimit -n 1024` で既定プロファイルを
+       `MemoryMax=256M MemorySwapMax=0` の scope に入れ、バラストが満ちてから (`/status` の `reserved_bytes` が 200 MB 前後)
+       `--only tunnel --conc 128` を 60 秒、続けて `--only idle-tunnels --conc 240`。`memory.peak`、`memory.events` の `oom_kill`、
+       `/status` の `reserved_bytes` を 1 秒ごとに記録する。
+    2. 同じ scope で `PROXY_CACHE_RESERVE=off` にし、キャッシュできるオリジン (`--cacheable`) で予算いっぱいまで保存させる。
+       **バラスト無しでも `limit_bytes` まで入って OOM にならないなら、この環境でバラストは何も買っていない。**
+    3. 2 で買っていないと分かったら段階化する: `stores == 0` の間は確保しない、最初の保存から 64 MiB ずつ、実使用量の 2 倍を
+       上限に伸ばす。従来の動きは `PROXY_CACHE_RESERVE=eager` で残す (Opus 案)。
+  - 受け入れ基準: 1 は **`oom_kill` が 0**、`memory.peak` ≤ 256 MiB、圧迫の検知からバラストが縮むまで **2 秒以内**
+    (`PROXY_CACHE_PROBE_SECS=1` の 2 周期)。落ちるなら落ちた条件の数字を残し、`margin.rs` で
+    `max_threads × (スタック + 書き込みバッファ 64 KiB + CopyBuf)` を `keep_free` に足して `oom_kill` 0 になるまで。
+    3 まで行くなら、要求 0 件で起動して 60 秒後の **RSS 215.9 → 30 MB 未満**、`disk.reserved_bytes` 2.9 GB → 64 MiB 未満、
+    HIT の CPU/要求 が ±5% (22.0 us)、`cache_test` 全通過。
+- [ ] **T12.6 小物 2 件**
+  - 目的: どれも小さく、Phase 12 で「デプロイ先を見る」ときに要る。**1 件 1 コミット**。
+  - やること:
+    1. **`/status` に `not_stored_rotations` を出す** (T11.9 のやり残し。`Cache::not_stored_rotations()` は公開済み、コストゼロ)。
+    2. **`/status` と起動ログに版を出す** (前提 8)。`version` = `CARGO_PKG_VERSION` + `git rev-parse --short HEAD`
+       (`build.rs` で `Command::new("git")`。外部クレートは使わない。git が無ければ `unknown`)。`-V` も同じ文字列にする。
+  - 受け入れ基準: 2 件とも `cargo test --workspace` 全通過、`/status` に値が出ることを見るテスト。
+    2 はデプロイ先の `/status` で **どのコミットが動いているか分かる**こと (再デプロイのたびに確かめられる)。
+- [ ] **T12.7 名前解決を 1 要求 1 回にする (ACL の判定と接続で 2 回引いている)**
+  - 目的: Opus が見つけた。デプロイ先の `dns.hits + dns.misses` = 3,714 に対し `total_requests` 1,868 で **1.99 回/要求**。
+    `acl::is_local_target` がポート 80 で `dns::resolve` し (`crates/net/src/acl.rs:113`)、直後に `net::connect` がもう一度引く
+    (`crates/net/src/net.rs:202`)。2 回目は必ずキャッシュ命中なので CPU は動かないが、(a) `/status` の DNS 命中率 74% が
+    「解決を省けた率」を表していない、(b) `PROXY_DNS_TTL_SECS=0` では本当に 2 回 `getaddrinfo` が走り (TTL の境目でも起きうる)、
+    **判定に使った答えと接続に使う答えが別**になる (DNS rebinding で SSRF の判定をすり抜けられる形)。T12.1 の「勝った族の記憶」も
+    同じ入口に置くので、先に 1 本にしておく方が素直。
+  - 変更箇所: `crates/net/src/acl.rs`、`crates/net/src/net.rs`、`src/lib.rs:992` 付近 (判定と接続で解決結果を持ち回す)、
+    `crates/tunnel/src/tunnel.rs:213` (`connect_with_timeout`)、`crates/origin/src/pool.rs` (プール経路)。
+  - やること: 判定で解決した `Vec<IpAddr>` をそのまま `connect_resolved` に渡す (`with_port` でポートだけ差し替える)。
+    IP リテラルと `PROXY_ALLOW_LOCAL=on` (判定を飛ばす) の経路は今までどおり。
+  - 受け入れ基準: 結合テストで CONNECT 1 本あたり `dns.hits + dns.misses` の増分が **2 → 1**。`PROXY_DNS_TTL_SECS=0` で
+    「判定の解決と接続の解決が同じ答えを使う」ことを見るテスト (解決の回数を数える)。`--only connect` の CPU/本 が ±4% の中。
 
 **Phase 12 で「もう掘らない」と決まっているところ** (二度調べない):
 forward の keep-alive 経路 (カーネル 72% で床、T10.3)、確保の回数 (指標として無効、T9.5 / T11.2)、
-CONNECT の syscall を 1 本ずつ削る (T11.1 で打ち止め)、LTO・クレート分割・`opt-level`・`SO_REUSEPORT`・
-受け渡しの `futex` 除去 (すべて §4)。
+CONNECT の syscall を 1 本ずつ削る (T11.1 で打ち止め。**T12.2 が T11.1 の実装を使うのは CPU のためではない**)、
+LTO・クレート分割・`opt-level`・`SO_REUSEPORT`・受け渡しの `futex` 除去 (すべて §4)、
+**loopback の CPU/要求 をこれ以上削ること** (デプロイ先の 0.012 req/s では 1 日 2 秒。3 日の待ち 1,514 秒に対して CPU の総量は
+1.32 秒 — Fable と Opus の両方がここで一致した。§2 の表は「退行していないこと」の確認にだけ使う)。
+
+**Phase 12 の完了の定義**: デプロイ先で T12.0 の差分を 24 時間ぶん取り、**AAAA ありのホストの CONNECT 確立が
+AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GET /` が 200 を返すこと。`/status` に版が出ていること。
+**順番**: T12.0 → T12.1 → T12.3 → T12.4 (1〜5) → T12.7 → T12.6 → T12.5 → T12.2 (効きの大きさと依存の順。T12.4 が
+先に済んでいれば T12.1 の効きは `/dashboard` で見えるが、T12.1 は 1 件で 250 ms なので待たせない。T12.2 と T12.5 は
+「先に測って要らなければやらない」タスク)。**Phase 13 は T12.4 の図を 24 時間ぶん見てから決める。**
 
 ## 付録 A. 計測の記録 (時系列)
 
