@@ -12,5 +12,5 @@ pub mod response;
 // 下の層をこのクレートの名前空間にも出す (`crate::sync` のような書き方をそのまま通すため)。
 pub use proxy_base::{
     ascii, cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info,
-    log_trace, log_warn, sync,
+    log_trace, log_warn, sync, via,
 };

@@ -286,8 +286,15 @@ pub fn start_keepalive_origin(
 /// `/status` の JSON を取る (テストが「状態が落ち着いたか」を見るため)。
 pub fn status_json(proxy_port: u16) -> String {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    // オリジン形式が自分宛てになるのは `Host` のポートが待ち受けと同じときだけ (T12.3)
     stream
-        .write_all(b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .write_all(
+            format!(
+                "GET /status HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                proxy_port
+            )
+            .as_bytes(),
+        )
         .unwrap();
     let mut out = String::new();
     let _ = stream.read_to_string(&mut out);
@@ -657,4 +664,31 @@ pub fn get_body_via_proxy(proxy_port: u16, origin_port: u16, size: usize) -> Vec
         String::from_utf8_lossy(&all[..split.min(200)])
     );
     all[split..].to_vec()
+}
+
+/// `/status` の JSON から整数の指標を 1 つ取る (`"key":123` の 123)。
+pub fn status_number(json: &str, key: &str) -> u64 {
+    let pat = format!("\"{}\":", key);
+    let at = json
+        .find(&pat)
+        .unwrap_or_else(|| panic!("no {} in {}", key, json))
+        + pat.len();
+    json[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|_| panic!("{} is not a number in {}", key, json))
+}
+
+/// 1 本の接続で 1 要求を送り、応答を全部読む (`Connection: close`)。
+pub fn raw_get(proxy_port: u16, request: &str) -> String {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut out = String::new();
+    let _ = stream.read_to_string(&mut out);
+    out
 }

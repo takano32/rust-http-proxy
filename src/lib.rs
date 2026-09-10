@@ -11,7 +11,7 @@ pub mod idle;
 // 本体でも結合テストでもそのまま通るようにするため)。
 pub use proxy_base::{
     cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info, log_trace,
-    log_warn, sync, timeout,
+    log_warn, sync, timeout, via,
 };
 pub use proxy_blocklist::blocklist;
 pub use proxy_cache::cache;
@@ -875,6 +875,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
 
     // Host の値は行の添字で覚えておき、読み終わってから借用する (複製しない)
     let mut host_line: Option<usize> = None;
+    // 受けた Via に自分の印 (起動ごとの 8 桁 16 進) があるか = 自分を通った要求が戻ってきた
+    let mut via_loop = false;
     // ヘッダー全体の大きさ (要求行を含む)
     let mut header_bytes = request_line.len();
     // 本文付きの要求だけ、読み取りタイムアウトを本来の値に戻す
@@ -918,7 +920,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             reject(client, 431, "Request Header Fields Too Large")?;
             return Ok(Step::Close);
         }
-        if let Some((k, _)) = scratch.lines[index].split_once(':') {
+        if let Some((k, v)) = scratch.lines[index].split_once(':') {
             let k = k.trim();
             if host_line.is_none() && k.eq_ignore_ascii_case("host") {
                 host_line = Some(index);
@@ -926,6 +928,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 || k.eq_ignore_ascii_case("transfer-encoding")
             {
                 has_body = true;
+            } else if !via_loop && k.eq_ignore_ascii_case("via") {
+                via_loop = via::is_self(v);
             }
         }
         scratch.commit();
@@ -939,6 +943,19 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         .and_then(|i| scratch.lines[i].split_once(':'))
         .map(|(_, v)| v.trim());
     let raw_headers = scratch.headers();
+
+    // 自分の印の付いた `Via` を受けた = 自分を通った要求が自分に戻ってきた (T12.3 の保険)。
+    // 印は起動ごとの乱数なので、rust-http-proxy を 2 段に並べた正当な構成 (別プロセス) は
+    // 誤検出しない。同じプロセスの別の待ち受けへ回した形はここで 1 段目で止まる
+    if via_loop {
+        log_warn!(
+            Some(conn_id),
+            "508 Loop Detected (request carries our own Via: {})",
+            via::token()
+        );
+        reject(client, 508, "Loop Detected")?;
+        return Ok(Step::Close);
+    }
 
     // プロキシ自身のエンドポイント (/dashboard, /status, /metrics, /proxy.pac, /purge, /lookup, PURGE)
     // 上限といまのスレッド数は `/status` のときだけ引く (`Workers` の鍵は全接続スレッドが

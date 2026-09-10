@@ -62,7 +62,13 @@ fn test_integration_healthz() {
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
     stream
-        .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .write_all(
+            format!(
+                "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                proxy_port
+            )
+            .as_bytes(),
+        )
         .unwrap();
 
     let mut response = String::new();
@@ -93,7 +99,13 @@ fn test_integration_origin_connections_are_pooled() {
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
     stream
-        .write_all(b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .write_all(
+            format!(
+                "GET /status HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                proxy_port
+            )
+            .as_bytes(),
+        )
         .unwrap();
     let mut status = String::new();
     stream.read_to_string(&mut status).unwrap();
@@ -192,7 +204,13 @@ fn test_integration_metrics_shows_the_limits_and_the_thread_counts() {
     let proxy_port = start_test_proxy(cfg);
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
     stream
-        .write_all(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")
+        .write_all(
+            format!(
+                "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                proxy_port
+            )
+            .as_bytes(),
+        )
         .unwrap();
     let mut metrics = String::new();
     stream.read_to_string(&mut metrics).unwrap();
@@ -271,8 +289,8 @@ fn test_integration_metrics_purge_and_lookup_endpoints() {
 
     // /lookup はエントリを報告する (LRU には触らない)
     let looked = endpoint(&format!(
-        "GET /lookup?url={} HTTP/1.1\r\nHost: x\r\n\r\n",
-        url
+        "GET /lookup?url={} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        url, proxy_port
     ));
     assert!(looked.starts_with("HTTP/1.1 200 OK"), "{}", looked);
     assert!(
@@ -282,7 +300,10 @@ fn test_integration_metrics_purge_and_lookup_endpoints() {
     );
 
     // /metrics は Prometheus 形式でヒット数とホスト別統計を出す
-    let metrics = endpoint("GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+    let metrics = endpoint(&format!(
+        "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        proxy_port
+    ));
     assert!(metrics.contains("text/plain; version=0.0.4"), "{}", metrics);
     assert!(
         metrics.contains("sorahost_cache_hits_total{tier=\"memory\"} 1"),
@@ -307,7 +328,10 @@ fn test_integration_metrics_purge_and_lookup_endpoints() {
     );
 
     // /status にもホスト別が入る
-    let status = endpoint("GET /status HTTP/1.1\r\nHost: x\r\n\r\n");
+    let status = endpoint(&format!(
+        "GET /status HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        proxy_port
+    ));
     assert!(
         status.contains(&format!(
             "\"host\":\"http://{}\",\"requests\":2,\"hits\":1,\"misses\":1",
@@ -329,18 +353,24 @@ fn test_integration_metrics_purge_and_lookup_endpoints() {
     assert_eq!(counter.load(Ordering::SeqCst), 2);
 
     // /purge?all=1 で全消去、/lookup は 404
-    let all = endpoint("GET /purge?all=1 HTTP/1.1\r\nHost: x\r\n\r\n");
+    let all = endpoint(&format!(
+        "GET /purge?all=1 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        proxy_port
+    ));
     assert!(all.contains("\"all\":true"), "{}", all);
     let gone = endpoint(&format!(
-        "GET /lookup?url={} HTTP/1.1\r\nHost: x\r\n\r\n",
-        url
+        "GET /lookup?url={} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        url, proxy_port
     ));
     assert!(
         gone.starts_with("HTTP/1.1 404") && gone.contains("\"found\":false"),
         "{}",
         gone
     );
-    let bad = endpoint("GET /purge HTTP/1.1\r\nHost: x\r\n\r\n");
+    let bad = endpoint(&format!(
+        "GET /purge HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        proxy_port
+    ));
     assert!(bad.starts_with("HTTP/1.1 400"), "{}", bad);
 }
 
@@ -649,9 +679,10 @@ fn test_integration_forwarded_headers_are_added_on_every_request() {
             path,
             seen
         );
-        // Via はプロキシが最後に足すので、エコーされた先頭では行末の CRLF が付かない
+        // Via はプロキシが最後に足すので、エコーされた先頭では行末の CRLF が付かない。
+        // 印は起動ごとの 8 桁 16 進 (T12.3)
         assert!(
-            seen.ends_with("Via: 1.1 rust-http-proxy"),
+            seen.ends_with(&format!("Via: {}", rust_http_proxy::via::token())),
             "{}: {}",
             path,
             seen
@@ -920,4 +951,128 @@ fn test_integration_connection_named_framing_headers_do_not_smuggle() {
             last
         );
     }
+}
+
+// --- T12.3: 自分宛てのオリジン形式でループしない ---------------------------------
+
+/// 待ち受けアドレス:ポートを `Host` にしたオリジン形式の知らないパスは、その場で 404。
+/// 直す前は `Host` 宛て = 自分自身へ転送して `max_conns` 本つないでいた (手元で 33 本)。
+#[test]
+fn test_integration_self_addressed_origin_form_does_not_loop() {
+    let proxy_port = start_test_proxy(proxy_config());
+    assert_eq!(status_number(&status_json(proxy_port), "new"), 0);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let req = format!(
+        "GET /x HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        proxy_port
+    );
+    // 自分へ 1 本でもつなぐと loopback でも桁が変わるので、要求 1 本の往復を測る
+    let start = std::time::Instant::now();
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(
+        response.starts_with("HTTP/1.1 404 Not Found"),
+        "{}",
+        response
+    );
+    assert!(
+        elapsed < Duration::from_millis(10),
+        "自分へ転送していない証拠: {:?}",
+        elapsed
+    );
+    let status = status_json(proxy_port);
+    assert_eq!(
+        status_number(&status, "new"),
+        0,
+        "オリジンへの接続は 1 本も張らない: {}",
+        status
+    );
+    assert!(
+        status_number(&status, "active_connections") <= 1,
+        "/status を取っているこの 1 本だけ: {}",
+        status
+    );
+}
+
+/// 自分宛ての `/` は 200 でエンドポイントの一覧 (ブラウザで開いた人への案内)。
+#[test]
+fn test_integration_self_addressed_root_lists_endpoints() {
+    let proxy_port = start_test_proxy(proxy_config());
+    let response = raw_get(
+        proxy_port,
+        &format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            proxy_port
+        ),
+    );
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{}", response);
+    assert!(
+        response.contains("Content-Type: text/plain; charset=utf-8"),
+        "{}",
+        response
+    );
+    assert!(response.contains("/dashboard"), "{}", response);
+    assert!(response.contains("/proxy.pac"), "{}", response);
+
+    // lite でも一覧は出す (ただし持っていない /dashboard は載せない)
+    let mut lite = proxy_config();
+    lite.lite = true;
+    let lite_port = start_test_proxy(lite);
+    let response = raw_get(
+        lite_port,
+        &format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            lite_port
+        ),
+    );
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{}", response);
+    assert!(response.contains("/status"), "{}", response);
+    assert!(!response.contains("/dashboard"), "{}", response);
+}
+
+/// ポートの違う自分へ回った要求は、2 段目が自分の `Via` の印を見て 508 で閉じる。
+/// (待ち受けを 2 つ立てる = 同じプロセス = 同じ印。別プロセスの 2 段重ねは誤検出しない)
+#[test]
+fn test_integration_via_mark_stops_a_loop_between_two_listeners() {
+    let first = start_test_proxy(proxy_config());
+    let second = start_test_proxy(proxy_config());
+
+    // 1 段目は `Host` のポートが自分と違うので転送する → 2 段目が印を見つけて 508
+    let response = raw_get(
+        first,
+        &format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            second
+        ),
+    );
+    assert!(
+        response.starts_with("HTTP/1.1 508 Loop Detected"),
+        "{}",
+        response
+    );
+
+    // 使った接続は client→1 段目 と 1 段目→2 段目 の 2 本だけ
+    assert_eq!(status_number(&status_json(first), "new"), 1);
+    assert_eq!(
+        status_number(&status_json(second), "new"),
+        0,
+        "2 段目は転送していない"
+    );
+
+    // 別プロセスの印 (違う 8 桁) は誤検出しない
+    let response = raw_get(
+        second,
+        &format!(
+            "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nVia: 1.1 rust-http-proxy/deadbeef\r\nConnection: close\r\n\r\n",
+            second
+        ),
+    );
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{}", response);
 }
