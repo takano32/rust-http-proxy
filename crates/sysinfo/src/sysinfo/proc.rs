@@ -80,22 +80,32 @@ mod tests {
 
     /// **`ls /proc/<pid>/fd | wc -l` と ±2 で一致すること** (T12.4 (3) の受け入れ基準)。
     /// どちらも数える側が `/proc/<pid>/fd` を 1 つ開くので、その 1 本のぶんが誤差に入る。
+    ///
+    /// 同じテストプロセスの他のテストが同時に fd を開け閉めする (ソケットや `/proc` の読み) ので、
+    /// 1 回の比較では ±2 を外れることがある (実測 1/14 程度)。それは数え方の誤りではないので、
+    /// 何回か測り直して 1 回でも合えばよしとする。
     #[cfg(target_os = "linux")]
     #[test]
     fn the_fd_count_agrees_with_ls_proc_pid_fd() {
         // 数える前に 1 本開けておく (0 本の偶然の一致にならないように)
         let _keep = std::fs::File::open("/proc/self/status").unwrap();
-        let (ours, _) = process_fds().unwrap();
-        let out = std::process::Command::new("ls")
-            .arg(format!("/proc/{}/fd", std::process::id()))
-            .output()
-            .expect("ls");
-        let theirs = String::from_utf8_lossy(&out.stdout).lines().count() as u64;
-        assert!(
-            ours.abs_diff(theirs) <= 2,
-            "process_fds {} と ls {} が ±2 で一致しない",
-            ours,
-            theirs
+        let mut last = (0, 0);
+        for _ in 0..20 {
+            let (ours, _) = process_fds().unwrap();
+            let out = std::process::Command::new("ls")
+                .arg(format!("/proc/{}/fd", std::process::id()))
+                .output()
+                .expect("ls");
+            let theirs = String::from_utf8_lossy(&out.stdout).lines().count() as u64;
+            if ours.abs_diff(theirs) <= 2 {
+                return;
+            }
+            last = (ours, theirs);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!(
+            "process_fds {} と ls {} が ±2 で一致しない (20 回とも)",
+            last.0, last.1
         );
     }
 }

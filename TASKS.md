@@ -2952,16 +2952,30 @@ Opus (`claude-opus-5`) に同じ材料 (§0〜§4、Phase 10〜11 の `結果:`�
     - `tests/dns_test.rs` は `/etc/hosts` に「ローカル宛てでない IPv4 の名前」がある機械でだけ走る (無ければ skip して表示)。
     - デプロイ先の `hits + misses ÷ 要求` は 1.99 → 1.0 になるはず。**ミス率は分母が半分になるので約 2 倍 (26% → 52%) に見える**。
 
-**小物 (未着手。Phase 12 の作業中に見つけたもの)**:
-- `Dockerfile` が `crates/` と `Cargo.lock` を `COPY` していないので元からビルドが通らない (T12.6 で発見)。
-- `workers::tests::survives_a_panicking_job` が機械が混んでいると落ちる (`crates/workers/src/workers.rs` の `sleep(100ms)` 決め打ち。
-  `wait_until` の形にする)。
+**小物 (Phase 12 の作業中に見つけたもの。最後の 1 件を除いて済。`wave5/t128`)**:
+- `Dockerfile` が `crates/` と `Cargo.lock` を `COPY` していないので元からビルドが通らなかった (T12.6 で発見)
+  → **済**: `COPY Cargo.toml Cargo.lock build.rs ./` / `COPY .cargo ./.cargo` / `COPY crates ./crates` / `COPY src ./src` にした (`6b93425`)。
+  この機械に Docker が無いので、`git ls-files` で `COPY` と同じ一覧だけを展開して `cargo build --release` が通ること (43.6 秒、
+  `0.1.0+unknown`) で代用して確かめた。直す前の一覧は `failed to load manifest for workspace member crates/sys` で落ちることも確認済み。
+  `.dockerignore` は無い (`target/` がビルドコンテキストに入って転送が遅い。イメージには入らない。Docker のある機械で足す)。
+- `workers::tests::survives_a_panicking_job` が機械が混んでいると落ちる (`sleep(100ms)` 決め打ち)
+  → **済**: `wait_until` を 10 ms 刻み最大 5 秒 (+ `#[track_caller]`) にして置き換え、「これ以上増えないこと」は新しい `stays_true`
+  (10 ms ごとに 10 回見張る) にした (`8ee5f6f`)。`cargo test -p proxy-workers` 5 回連続と、busy loop 8 本で埋めた機械での 3 回、
+  いずれも 9 本全通過。
 - 508 Loop Detected を数えていない → **T12.4 (2) で `loop` として数えるようにした (済)**。
-- `bench --only tunnel` は `--conc` を無視して 1 本しか張らない (`crates/bench/src/main.rs` の tunnel モード。T12.5 で発見)。
-  §1 のレシピどおり `--conc 1` でしか使っていないので実害は無いが、`--conc` を受けるか、受けないと印字するかのどちらかにする。
-- `MAX_REQUESTS_PER_CONNECTION = 1000` (`src/lib.rs`) が README にも `/status` にも出ていない。長い keep-alive の道具は必ず踏む。
-- `--only idle-tunnels --conc 240` のように `max_conns` を使い切ると `/status` も 503 になる (監視が見えなくなる。Phase 13 候補 2 の
-  「LRU で暇なトンネルを 1 本閉じる」は監視の観点でも要る)。
+- `bench --only tunnel` は `--conc` を無視して 1 本しか張らない (T12.5 で発見)
+  → **済**: `--conc N` で N 本張って合計 MiB を出すようにした (`c84a195`)。**1 本目は呼び出し元スレッドで回す**ので
+  `--conc 1` は元と同じ経路のまま。同じバイナリの A/B (3 回ずつ交互、中央値) は 188.14 → 188.24 us/MiB (+0.05%、ぶれの中) で
+  §2 の 185.5 us/MiB と同じ桁。§2 の「トンネル」の行が `--conc 1` の値であることを `scripts/cpu-per-request.sh` にも書いた。
+- `MAX_REQUESTS_PER_CONNECTION = 1000` (`src/lib.rs`) が README にも `/status` にも出ていない
+  → **済**: README の keep-alive の説明と `PROXY_KEEPALIVE_SECS` の行に書いた (`5713c27`)。環境変数にはせず `/status` にも出さない。
+  1,000 要求目の応答に `Connection: close` が付かない (上限の判定が応答のあとにある。閉じるのと入れ違いに次を送った
+  クライアントは 1 回取りこぼす) ことも書いた。直すなら `http` 側へ「これが最後」を渡す必要がある (未着手)。
+- **未着手**: `--only idle-tunnels --conc 240` のように `max_conns` を使い切ると `/status` も 503 になる (監視が見えなくなる。
+  Phase 13 候補 2 の「LRU で暇なトンネルを 1 本閉じる」は監視の観点でも要る)。
+- `cargo test --workspace` の 1/14 程度の稀な flake → **済**: 正体は T12.4 の `sysinfo::proc::tests::the_fd_count_agrees_with_ls_proc_pid_fd`
+  (同じテストプロセスの他のテストが fd を開け閉めするので、1 回の比較では ±2 を外れることがある。実測 `process_fds 7` 対 `ls 11`)。
+  20 回まで測り直して 1 回でも合えばよしとする形にした。5 回 + 3 回連続で 310 本全通過。
 
 **Phase 12 で「もう掘らない」と決まっているところ** (二度調べない):
 forward の keep-alive 経路 (カーネル 72% で床、T10.3)、確保の回数 (指標として無効、T9.5 / T11.2)、
