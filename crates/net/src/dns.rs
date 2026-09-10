@@ -6,6 +6,7 @@
 //! 覚えて連続した再解決を抑える。IP リテラルはキャッシュしない。
 
 use crate::sync::LockExt;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -25,6 +26,51 @@ static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);
 static STALE: AtomicU64 = AtomicU64::new(0);
 static FAILURES: AtomicU64 = AtomicU64::new(0);
+/// ミスのときに `getaddrinfo` に費やした時間の合計 (us)。**ミスの経路でしか書かない**
+/// ので、当たりの経路 (熱い方) には原子操作が 1 つも増えない (T12.4 (2))。
+static RESOLVE_US_SUM: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// このスレッドが直近に払った名前解決の費用 (us の合計と回数)。**ホスト別の内訳に
+    /// 使う**もので、原子操作を増やさないための thread-local。読む側が 0 に戻す。
+    ///
+    /// `const` で初期化しているので destructor が登録されず、スレッドの終了中に触っても
+    /// `AccessError` にならない (`Drop` を持つ thread-local と違って `with` で足りる)。
+    static RESOLVE_COST: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+    /// このスレッドで直近に確立した接続の族 (`Some(true)` = IPv6)。
+    /// 書くのは [`note_family`] (接続が確立した 1 か所だけ)、読む側が `None` に戻す。
+    static LAST_FAMILY: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// 直近の名前解決の費用を読み、0 に戻す (ms の合計と回数)。
+///
+/// **測る前にも 1 回呼んで捨てること**。ここは要求をまたいで貯まる箱なので、
+/// 前の要求が残していったぶんを次の要求のホストに付けないようにする。
+pub fn take_resolve_cost() -> (u64, u64) {
+    let (us, n) = RESOLVE_COST.replace((0, 0));
+    // 1 ms 未満のミス (手元の loopback) は 0 ms として数える。デプロイ先の
+    // ミスは Docker の内蔵 DNS 越しで ms の単位なので、この丸めで足りる
+    ((us + 500) / 1000, n)
+}
+
+/// 直近に確立した接続の族を読み、`None` に戻す。
+pub fn take_family() -> Option<bool> {
+    LAST_FAMILY.replace(None)
+}
+
+/// 接続が確立した族を控える (`crate::net` の確立点だけが呼ぶ)。thread-local への
+/// 書き込み 1 回で、原子操作もシステムコールも増えない。
+pub fn note_family(v6: bool) {
+    LAST_FAMILY.set(Some(v6));
+}
+
+/// `getaddrinfo` に費やした時間の合計 (us) と回数 (`/metrics` と `/status`)。
+pub fn resolve_cost_total() -> (u64, u64) {
+    (
+        RESOLVE_US_SUM.load(Ordering::Relaxed),
+        MISSES.load(Ordering::Relaxed),
+    )
+}
 
 struct Entry {
     addrs: Vec<IpAddr>,
@@ -164,7 +210,15 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
         }
     }
     MISSES.fetch_add(1, Ordering::Relaxed);
+    // ミスのときだけ `Instant` を 2 回読む (当たりの経路は 1 命令も増えない。T12.4 (2))
+    let t0 = Instant::now();
     let result = system_resolve(host, port);
+    let us = t0.elapsed().as_micros().min(u64::MAX as u128) as u64;
+    RESOLVE_US_SUM.fetch_add(us, Ordering::Relaxed);
+    RESOLVE_COST.set({
+        let (s, n) = RESOLVE_COST.get();
+        (s + us, n + 1)
+    });
     let mut guard = TABLE.locked();
     let table = guard.get_or_insert_with(HashMap::new);
     match result {
@@ -270,14 +324,21 @@ pub fn clear() {
 /// `/status` の `"dns"` 要素。
 pub fn status_json() -> String {
     let entries = TABLE.locked().as_ref().map_or(0, HashMap::len);
+    let (us, misses) = resolve_cost_total();
     format!(
-        "{{\"ttl_secs\":{},\"entries\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{}}}",
+        "{{\"ttl_secs\":{},\"entries\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{},\"miss_ms_sum\":{:.1},\"miss_avg_ms\":{:.2}}}",
         TTL_SECS.load(Ordering::Relaxed),
         entries,
         HITS.load(Ordering::Relaxed),
         MISSES.load(Ordering::Relaxed),
         STALE.load(Ordering::Relaxed),
         FAILURES.load(Ordering::Relaxed),
+        us as f64 / 1000.0,
+        if misses == 0 {
+            0.0
+        } else {
+            us as f64 / 1000.0 / misses as f64
+        },
     )
 }
 

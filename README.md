@@ -138,15 +138,17 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   キャッシュを切っていても判定と接続が別の答えを見ることはない
 - **入場制御 & ネガティブキャッシュ**: 層が埋まったら 2 回目に見た URL だけ保存。404 / 410 は既定 60 秒だけ保持
 - **ドメインのブロックリスト**: hosts 形式のファイルや URL (1 日 1 回自動更新) から読み、広告・トラッカーを CONNECT の段階で 403 にする
-- **統計と履歴の永続化**: 固定サイズ (約 1 MiB) の状態ファイルに、履歴 3 解像度 (5 秒 × 1 時間、1 分 × 1 日、
+- **統計と履歴の永続化**: 固定サイズ (4 MiB) の状態ファイルに、履歴 3 解像度 (5 秒 × 1 時間、1 分 × 1 日、
   1 時間 × 30 日) を環状に、ホスト別・接続元別の上位 1000 を固定スロットに書く。ファイルは伸びず、再起動後も表とグラフが残る。
+  **形式に版があり、版が変わったら古いファイルは読み捨てて作り直す** (統計は運用の参考値なので移行はしない)。
   停止シグナル (SIGTERM / SIGINT) では表を書き出してから終了する (3 秒以内、2 回目のシグナルで即終了)
 - **接続元別の統計**: 接続元 IP ごとの要求数・転送量・拒否数・応答時間を `/status` `/metrics` とダッシュボードに出す
 - **`/proxy.pac`**: ブラウザの自動設定スクリプト。自分自身・ローカル・`PROXY_PAC_DIRECT` のホストは DIRECT、
   それ以外はこのプロキシ経由 (落ちていれば DIRECT)。ブラウザに `http://<host>:<port>/proxy.pac` を設定するだけ
 - **ヘルスチェック & メトリクス & 操作**:
   - `/` (エンドポイントの一覧。ブラウザでプロキシの URL を開いた人への案内。`--lite` でも出ます)
-  - `/dashboard` (ブラウザ用のコントロールパネル: 要求/転送レート・命中率・メモリ/ディスクのグラフ、ホスト別統計、
+  - `/dashboard` (ブラウザ用のコントロールパネル: 要求/転送レート・命中率・**CONNECT 確立 p50 / p95**・
+    **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
     URL の照会と削除、全消去)、`/healthz`, `/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
   - `PURGE <url>` / `/purge?url=<url>` / `/purge?all=1` でキャッシュを消す、`/lookup?url=<url>` でエントリの状態を見る
   - `/history?res=5|60|3600` で 1 時間 / 1 日 / 30 日の履歴、`/blocklist?host=<h>` でブロックリストの判定、
@@ -216,7 +218,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル (`--lite` と同じ)。キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限。超えた接続にはスレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。`auto` は記述子の上限から `min(4096, (RLIMIT_NOFILE の soft − 予備 64) ÷ 4)` (1 接続が最悪で使う記述子は クライアント 1 + オリジン 1 + 素通しのパイプ 2 = 4 本。`ulimit -n` が 1024 の環境なら 240、4096 なら 1008)。記述子が余っていても 4096 で頭打ちにするのは、上限が fd 以外の資源 (スレッド・RSS) の歯止めでもあるため (同時 5,000 本で RSS 198 MiB の実測)。数値を書けばその値、`0` で無制限。決まった値は起動ログの `max connections:` と `/status` の `max_conns` (`/metrics` は `sorahost_max_connections`) に出る。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
 | `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。`.env` で即時反映 (次に受ける接続から効く。**下げても走っているスレッドは殺さず**、仕事を終えたスレッドから順に減ります。`auto` のときは `PROXY_MAX_CONNS` を変えるとこちらも決め直します)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。**裏側の再検証 (stale-while-revalidate) もこの上限の内側で走ります**が、こちらは待たせず捨てます (`/status` の `revalidations_dropped`) |
-| `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 約 1 MiB) に残し、再起動後に読み戻す。`off` で無効 (履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフは空になる) |
+| `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 4 MiB) に残し、再起動後に読み戻す。`off` で無効 (履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフは空になる) |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
 | `PROXY_TLS_VERIFY` | `on` | オリジンの証明書を検証するか。`off` は自己署名の内部オリジン向け (推奨しない) |
@@ -727,8 +729,12 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 ```
 
 `/dashboard` はブラウザで開くコントロールパネルです (依存なしの 1 ページ。2 秒ごとに `/status`、5 秒ごとに `/history` を
-取って描きます)。`/history` は 5 秒間隔・直近 1 時間分の累計値 (要求数・転送量・接続数・命中/ミス・メモリ/ディスク使用量・
-RSS) の JSON です。ブラウザの HTTP プロキシにこのプロキシを設定した状態で `http://ホスト:ポート/dashboard` を開くと要求は
+取って描きます)。`/history` は 5 秒間隔・直近 1 時間分の JSON です。**標本は配列の配列**で、列名は先頭の `keys` に
+1 回だけ出ます (項目が 31 に増えたため)。要求数・転送量・命中/ミス・メモリ/ディスク使用量・RSS は累計 (ブラウザ側で
+差分を取ってレートにする)、応答時間の分布 (`connect_*` / `forward_*` の件数・合計 ms・最大・12 段の区間) と
+エラー (`errors` / `errors_by_cause`)・名前解決 (`dns_misses` / `dns_ms_sum`) は**その区間だけ**の値、
+接続数・スレッド数・記述子数 (`active` / `threads` / `fds`) はゲージで、粗い解像度へ畳むときは平均と
+**最大** (`active_max` / `threads_max` / `fds_max`) の両方を残します (平均に畳むと山が消えるため)。ブラウザの HTTP プロキシにこのプロキシを設定した状態で `http://ホスト:ポート/dashboard` を開くと要求は
 絶対形式で届きますが、ポートが自分の待ち受けポートなら自分宛てとして応答します (自分へ転送してループしません)。
 
 **自分宛てかどうかはポートだけで決めます**: 絶対形式 (`GET http://host:PORT/status`) は URL の、
@@ -747,15 +753,38 @@ RSS) の JSON です。ブラウザの HTTP プロキシにこのプロキシを
 
 ホスト別統計には応答時間 (平均・p50・p95・最大 ms、CONNECT は接続確立までの時間) も入り、`/metrics` では
 `sorahost_host_request_duration_seconds` ヒストグラムとして出ます。ダッシュボードのホスト表は要求数・遅い順 (p95)・
-エラー率・転送量で並べ替えられます。
+エラー率・転送量で並べ替えられ、「名前解決 / 接続 (ms)」と「v4 / v6」の列で**待ちの内訳**が読めます。
+
+ダッシュボードの図は 9 枚で、上段の KPI に「**CONNECT 確立 p50 (直近 5 分)**」が出ます
+(区間ごとのヒストグラムを直近 60 標本ぶん足し合わせて分位点を出したもの)。
+ヘッダーには動いている版と、**どちらの窓か** (起動から / 通算) が出ます。
+外部ライブラリは 1 つも読み込まない 1 ページのままです。ブラウザの無い環境では
+`node scripts/check-dashboard.js` が「JS の構文」と「`/history` の配列の配列の読み方が
+実出力と合っていること」を確かめます (Node があるときだけの補助的な確認)。
 
 `/status` のトップレベルの `version` には動いているバイナリの版が出ます (`-V` と起動ログと同じ文字列)。
+
+**`/status` は 2 つの窓が混ざっている**ので、どちらの窓かが分かるように目印を出します:
+`since_start_secs` から下 (`total_requests` / `bytes_forwarded` / `cache_hits` …) は**この起動から**、
+`hosts[]` と `clients[]` は状態ファイルに残る**通算**で、`restored_since` がその通算の始まり
+(最も古い `last_seen` の epoch 秒。`0` なら表が空) です。あわせてプロセス全体の数え物
+`threads` (`/proc/self/status` の `Threads`。接続スレッドだけを数える `live_threads` とは別で、
+監視・履歴・接続試行のスレッドも入ります) と `fds` / `max_fds` (`/proc/self/fd` の数と `RLIMIT_NOFILE`) も出ます。
+`/proc` を読むのは **`/status` と `/metrics` に来たときと 5 秒ごとの履歴の標本のときだけ**です。
 
 `/status` には上限といまの混み具合も出ます: `max_conns` / `max_threads` (`auto` で決まった値。`0` は無制限)、
 `live_threads` (生きている接続スレッド) / `idle_threads` (そのうち仕事待ち) / `queued_jobs` (上限に当たって
 待たせている仕事。捨てていません)。`auto` が何を選んだかは起動ログを見なくてもここで分かります。
 同じ 5 つは `/metrics` にも gauge で出ます (`sorahost_max_connections` / `sorahost_max_threads` /
-`sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs`)。ダッシュボードの「接続中」にも
+`sorahost_threads{state="live"|"idle"}` / `sorahost_queued_jobs`)。
+**接続スレッドの 2 つはラベル付きの 1 系列にそろえました**。旧名 `sorahost_live_threads` /
+`sorahost_idle_threads` はこの版だけ両方出るので、監視側は次の版までに移してください。
+`/metrics` にはこのほか `sorahost_connect_seconds`(`_bucket{le=}` / `_sum` / `_count`。CONNECT 確立の
+ヒストグラム。区間は `/history` と同じ 12 段)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
+かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
+`sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads` が出ます。
+ホスト別の応答時間ヒストグラム (`sorahost_host_request_duration_seconds`) は区間が 24 段になったので
+**上位 50 ホストまで**です (数え上げの系列はこれまでどおり上位 100 ホスト)。ダッシュボードの「接続中」にも
 `スレッド 7 / 256 (空き 3) · 接続上限 1008` の 1 行が出ます。数えるには接続スレッドで共有している鍵が要るので、
 **`/status` と `/metrics` に来たときだけ**数えます (要求ごとの仕事は増えません)。
 `cache` の `revalidations_dropped` は、上限に当たって捨てた裏側の再検証の数です
@@ -764,6 +793,13 @@ RSS) の JSON です。ブラウザの HTTP プロキシにこのプロキシを
 
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
+ホスト別の行にはさらに**待ちの内訳**が入ります: `dns_ms_sum` / `dns_misses` (名前解決を OS に聞いた合計時間と回数)、
+`connect_ms_sum` (接続にかかった合計時間。名前解決のぶんは含みません)、`v4_wins` / `v6_wins` (確立した族)、
+`errors_by_cause` (`[dns, refused, unreachable, timeout, reset, tls, loop, other]` の順の件数。
+`loop` は自分の `Via` が付いて `508` で閉じたもの)。**測るための費用は熱い経路に乗せていません**:
+名前解決の時計はキャッシュを外したときだけ読み、内訳はホスト別統計が既に取っている鍵の内側で足します
+(原子操作もシステムコールも増えません。実測: forward の確保 8.03 → 8.03 回/要求、
+`--lite` のシステムコール 5.00 → 5.00 回/要求)。`dns` には `miss_ms_sum` / `miss_avg_ms` (ミス 1 回の値段) が出ます。
 `/metrics` も同じ内容を `sorahost_*` 系列で出します。`origin_connections` にオリジンへの新規接続数と再利用回数、`cache` には各層の `used_bytes` / `limit_bytes` (現在の予算) / `reserved_bytes` (バラスト) /
 `keep_free_bytes` (動的マージン) / `mode` (`auto` か `fixed`) と、`system` に直近の計測値 (メモリ総量と空き、
 活性ページキャッシュ、cgroup 制限と使用量、PSI の有無、ディスク総量と空き、自プロセスの RSS) が入ります。

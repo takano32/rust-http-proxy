@@ -379,7 +379,12 @@ fn connect_candidates(
 ) -> io::Result<TcpStream> {
     if addrs.len() == 1 {
         // 候補が 1 つなら Happy Eyeballs は要らない (この経路は T12.1 でも変えていない)
-        return connect_one(&addrs[0], proxy_base::timeout::for_socket(timeout)).inspect(nodelay);
+        let v6 = addrs[0].is_ipv6();
+        return connect_one(&addrs[0], proxy_base::timeout::for_socket(timeout)).inspect(|s| {
+            nodelay(s);
+            // 確立した族を控える (thread-local への書き込み 1 回。T12.4 (2))
+            crate::dns::note_family(v6);
+        });
     }
 
     let addrs = interleave_from(addrs, preferred.unwrap_or_else(ipv6_first_for_new_host));
@@ -427,6 +432,8 @@ fn connect_candidates(
             Ok((index, Ok(stream))) => {
                 nodelay(&stream);
                 let won_v6 = addrs[index].is_ipv6();
+                // ホスト別の内訳 (`v4_wins` / `v6_wins`) に使う (T12.4 (2))
+                crate::dns::note_family(won_v6);
                 if tried_v6 {
                     if won_v6 {
                         note_ipv6_win();
@@ -867,7 +874,7 @@ mod tests {
                 let addrs = addrs.clone();
                 hs.push(scope.spawn(move || {
                     let host = format!("t122-para-{}.invalid", i);
-                    connect_resolved(&host, addrs, timeout).map(|s| drop(s))
+                    connect_resolved(&host, addrs, timeout).map(drop)
                 }));
             }
             // 呼び出し側のスレッドは全部終わらせてから数える (残るのは負けた試行だけ)
@@ -901,7 +908,7 @@ mod tests {
                 let addrs = addrs.clone();
                 hs.push(scope.spawn(move || {
                     let host = format!("t122-para2-{}.invalid", i);
-                    connect_resolved(&host, addrs, timeout).map(|s| drop(s))
+                    connect_resolved(&host, addrs, timeout).map(drop)
                 }));
             }
             for h in hs {

@@ -53,7 +53,9 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
 <body>
 <header>
   <h1>rust-http-proxy</h1>
+  <span class="sub" id="version"></span>
   <span class="sub" id="uptime">–</span>
+  <span class="sub" id="window"></span>
   <span class="sub" id="blocklist"></span>
   <div class="right">
     <span class="links"><a href="/status" target="_blank">/status</a><a href="/metrics" target="_blank">/metrics</a><a href="/history" target="_blank">/history</a><a href="/proxy.pac" target="_blank">/proxy.pac</a></span>
@@ -67,6 +69,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   <section class="grid">
     <div class="card"><h2>要求 / 秒</h2><div class="kpi" id="rps">–</div><div class="hint" id="reqtotal"></div></div>
     <div class="card"><h2>転送 / 秒</h2><div class="kpi" id="bps">–</div><div class="hint" id="bytestotal"></div></div>
+    <div class="card"><h2>CONNECT 確立 p50 <span class="tag">直近 5 分</span></h2><div class="kpi" id="connp50">–</div><div class="hint" id="conndetail"></div></div>
     <div class="card"><h2>接続中</h2><div class="kpi" id="active">–</div><div class="hint" id="threads"></div><div class="hint" id="origins"></div></div>
     <div class="card"><h2>キャッシュ命中率</h2><div class="kpi" id="hitratio">–</div><div class="hint" id="hitdetail"></div></div>
     <div class="card"><h2>メモリキャッシュ</h2><div class="kpi" id="memkpi">–</div><div class="bar"><i id="membar"></i></div><div class="hint" id="memhint"></div></div>
@@ -77,6 +80,9 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
     <div class="card chart"><h2>要求 / 秒 <span id="c-rps"></span></h2><canvas id="ch-rps"></canvas></div>
     <div class="card chart"><h2>転送 MB / 秒 <span id="c-bps"></span></h2><canvas id="ch-bps"></canvas></div>
     <div class="card chart"><h2>命中率 % (区間) <span id="c-hit"></span></h2><canvas id="ch-hit"></canvas></div>
+    <div class="card chart"><h2>CONNECT 確立 p50 / p95 (ms) <span id="c-conn"></span></h2><canvas id="ch-conn"></canvas></div>
+    <div class="card chart"><h2>名前解決ミス / 秒 · エラー / 秒 <span id="c-err"></span></h2><canvas id="ch-err"></canvas></div>
+    <div class="card chart"><h2>スレッド / fd <span id="c-fd"></span></h2><canvas id="ch-fd"></canvas></div>
     <div class="card chart"><h2>接続数 <span id="c-active"></span></h2><canvas id="ch-active"></canvas></div>
     <div class="card chart"><h2>メモリ MB (使用 / 上限 / RSS) <span id="c-mem"></span></h2><canvas id="ch-mem"></canvas></div>
     <div class="card chart"><h2>ディスク MB (使用 / 上限) <span id="c-disk"></span></h2><canvas id="ch-disk"></canvas></div>
@@ -102,7 +108,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
 
   <section class="card" style="margin-top:14px">
     <h2>ホスト別 (上位 20) <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">並び: <select id="hostsort"><option value="requests">要求数</option><option value="p95">遅い順 (p95)</option><option value="errors">エラー率</option><option value="bytes">転送量</option></select></span></h2>
-    <div style="overflow-x:auto"><table id="hosts"><thead><tr><th>host</th><th>要求</th><th>命中</th><th>ミス</th><th>素通し</th><th>エラー</th><th title="ACL / ブロックリストで拒否">拒否</th><th>転送</th><th>命中率</th><th title="応答時間の中央値 / 95 パーセンタイル。CONNECT は接続確立まで">応答 p50 / p95</th><th>エラー率</th></tr></thead><tbody></tbody></table></div>
+    <div style="overflow-x:auto"><table id="hosts"><thead><tr><th>host</th><th>要求</th><th>命中</th><th>ミス</th><th>素通し</th><th>エラー</th><th title="ACL / ブロックリストで拒否">拒否</th><th>転送</th><th>命中率</th><th title="応答時間の中央値 / 95 パーセンタイル。CONNECT は接続確立まで">応答 p50 / p95</th><th title="名前解決 1 回あたり / 接続 1 回あたりの平均 ms (待ちの内訳)">名前解決 / 接続</th><th title="Happy Eyeballs で確立した族の内訳">v4 / v6</th><th>エラー率</th></tr></thead><tbody></tbody></table></div>
   </section>
 
   <section class="card" style="margin-top:14px">
@@ -114,9 +120,54 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
 (function(){
 'use strict';
 var $=function(id){return document.getElementById(id)};
-var hist=[];       // {t,requests,bytes,active,hits,misses,mem_used,mem_limit,disk_used,disk_limit,rss}
+var hist=[];       // 正規化した標本 (`/history` の keys でキー名を戻したもの)
+var interval=5;    // いま見ている解像度 (秒)。`/history` の interval_secs
+var bounds=[];     // 窓のヒストグラムの区間 (ms)。`/history` の bounds_ms
+var causes=[];     // エラーの原因の名前。`/history` の causes
 var last=null;     // 直近の /status
 var lastSample=null;
+
+// --- ここから下の 3 つは node の整形テストからも呼ぶ (DOM に触らないこと) ---
+// `/history` は標本を配列の配列で返す (キーは keys に 1 回だけ)。列名で引ける形に戻す
+function toSamples(h){
+  var idx={},keys=h.keys||[];
+  for(var i=0;i<keys.length;i++)idx[keys[i]]=i;
+  return (h.samples||[]).map(function(row){
+    var o={};
+    for(var k in idx)o[k]=row[idx[k]];
+    return o;
+  });
+}
+// 区間ヒストグラムの分位点 (プロキシ側 `Window::quantile_ms` と同じ: 区間内を線形補間し、
+// その窓で観測した最大値で頭打ち)。件数 0 なら null
+function winQuantile(buckets,count,max,p,bnds){
+  if(!count||!buckets)return null;
+  var rank=Math.max(1,p*count),seen=0;
+  for(var i=0;i<buckets.length;i++){
+    var n=buckets[i];
+    if(!n)continue;
+    if(seen+n>=rank){
+      var lo=i===0?0:bnds[i-1],hi=i<bnds.length?bnds[i]:Math.max(max,lo);
+      return Math.min(lo+(hi-lo)*((rank-seen)/n),max);
+    }
+    seen+=n;
+  }
+  return max;
+}
+// 直近 `n` 標本の窓を足し合わせる (KPI の「直近 5 分」用)
+function mergeWindows(samples,n,prefix){
+  var out={count:0,max:0,buckets:null,sum:0};
+  for(var i=Math.max(0,samples.length-n);i<samples.length;i++){
+    var s=samples[i],b=s[prefix+'_buckets'];
+    if(!b)continue;
+    if(!out.buckets)out.buckets=b.map(function(){return 0});
+    for(var j=0;j<b.length;j++)out.buckets[j]+=b[j];
+    out.count+=s[prefix==='connect'?'connects':'forwards']||0;
+    out.sum+=s[prefix+'_ms_sum']||0;
+    out.max=Math.max(out.max,s[prefix+'_ms_max']||0);
+  }
+  return out;
+}
 function fmtBytes(n){if(n==null)return'–';var u=['B','KiB','MiB','GiB','TiB'],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return(i?n.toFixed(n<10?2:1):n)+' '+u[i]}
 function fmtNum(n){return n==null?'–':Number(n).toLocaleString()}
 function fmtDur(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+'d ':'')+(h?h+'h ':'')+m+'m'}
@@ -126,8 +177,14 @@ function barClass(p){return p>=95?'bad':p>=80?'warn':''}
 function rates(){ // hist から区間ごとの派生値
   var r=[];
   for(var i=1;i<hist.length;i++){var a=hist[i-1],b=hist[i],dt=Math.max(1,b.t-a.t);var dh=b.hits-a.hits,dm=b.misses-a.misses;
-    r.push({t:b.t,rps:(b.requests-a.requests)/dt,bps:(b.bytes-a.bytes)/dt/1048576,hit:(dh+dm)>0?dh/(dh+dm)*100:null,active:b.active,
-      mem:b.mem_used/1048576,memlim:b.mem_limit/1048576,rss:b.rss/1048576,disk:b.disk_used/1048576,disklim:b.disk_limit/1048576});}
+    // 累計 (requests/bytes/hits) は差分でレートに、区間の値 (connects/errors/dns_misses)
+    // はそのまま秒で割る、ゲージ (active/threads/fds) は最大値を読む
+    r.push({t:b.t,rps:(b.requests-a.requests)/dt,bps:(b.bytes-a.bytes)/dt/1048576,hit:(dh+dm)>0?dh/(dh+dm)*100:null,active:b.active_max!=null?b.active_max:b.active,
+      mem:b.mem_used/1048576,memlim:b.mem_limit/1048576,rss:b.rss/1048576,disk:b.disk_used/1048576,disklim:b.disk_limit/1048576,
+      cp50:winQuantile(b.connect_buckets,b.connects,b.connect_ms_max,0.5,bounds),
+      cp95:winQuantile(b.connect_buckets,b.connects,b.connect_ms_max,0.95,bounds),
+      dnsps:(b.dns_misses||0)/dt,errps:(b.errors||0)/dt,
+      threads:b.threads_max!=null?b.threads_max:b.threads,fds:b.fds_max!=null?b.fds_max:b.fds,maxfds:b.max_fds});}
   return r;
 }
 function drawChart(id,series,opts){
@@ -157,22 +214,43 @@ function redraw(){
   drawChart('ch-rps',[{data:pick('rps'),color:'#5aa9ff',fill:'rgba(90,169,255,.12)'}],{});
   drawChart('ch-bps',[{data:pick('bps'),color:'#3ecf8e',fill:'rgba(62,207,142,.12)'}],{});
   drawChart('ch-hit',[{data:pick('hit'),color:'#f5b342'}],{max:100});
+  drawChart('ch-conn',[{data:pick('cp95'),color:'#f5b342',width:1},{data:pick('cp50'),color:'#5aa9ff',fill:'rgba(90,169,255,.12)'}],{});
+  drawChart('ch-err',[{data:pick('errps'),color:'#ff6b6b',width:1.6},{data:pick('dnsps'),color:'#f5b342',fill:'rgba(245,179,66,.12)'}],{});
+  // fd の上限は「近いときだけ」点線で描く。`ulimit -n` が 524288 のような機械では
+  // 上限に軸を取られて実際の本数が潰れてしまう (デプロイ先は 1024 なので出る)
+  var fdPeak=Math.max.apply(null,[1].concat(pick('fds').concat(pick('threads')).filter(function(v){return v!=null}))),
+      fdSeries=[{data:pick('fds'),color:'#3ecf8e',fill:'rgba(62,207,142,.12)'},{data:pick('threads'),color:'#c084fc',width:1.6}];
+  if(lastR&&lastR.maxfds&&lastR.maxfds<=fdPeak*4)fdSeries.unshift({data:pick('maxfds'),color:'#8b91a5',dash:[4,4],width:1});
+  drawChart('ch-fd',fdSeries,{});
   drawChart('ch-active',[{data:pick('active'),color:'#c084fc',fill:'rgba(192,132,252,.12)'}],{});
   drawChart('ch-mem',[{data:pick('memlim'),color:'#8b91a5',dash:[4,4],width:1},{data:pick('rss'),color:'#ff6b6b',width:1},{data:pick('mem'),color:'#5aa9ff',fill:'rgba(90,169,255,.12)'}],{});
   drawChart('ch-disk',[{data:pick('disklim'),color:'#8b91a5',dash:[4,4],width:1},{data:pick('disk'),color:'#3ecf8e',fill:'rgba(62,207,142,.12)'}],{});
   if(lastR){$('c-rps').textContent=lastR.rps.toFixed(1);$('c-bps').textContent=lastR.bps.toFixed(2);$('c-hit').textContent=lastR.hit==null?'–':lastR.hit.toFixed(0)+'%';
     $('c-active').textContent=lastR.active;$('c-mem').textContent=lastR.mem.toFixed(0)+' / '+lastR.memlim.toFixed(0);$('c-disk').textContent=lastR.disk.toFixed(0)+' / '+lastR.disklim.toFixed(0);
+    $('c-conn').textContent=lastR.cp50==null?'–':fmtMs(lastR.cp50)+' / '+fmtMs(lastR.cp95);
+    $('c-err').textContent=lastR.dnsps.toFixed(2)+' / '+lastR.errps.toFixed(2);
+    $('c-fd').textContent=lastR.threads+' / '+lastR.fds+(lastR.maxfds?' (上限 '+lastR.maxfds+')':'');
     $('rps').textContent=lastR.rps.toFixed(1);$('bps').textContent=fmtBytes(lastR.bps*1048576)+'/s'}
+  // KPI: 直近 5 分 (5 秒 × 60 標本。粗い解像度では 60 標本ぶんそのまま) の CONNECT 確立 p50
+  var span=Math.max(1,Math.round(300/(interval||5))),w=mergeWindows(hist,span,'connect');
+  $('connp50').textContent=w.count?fmtMs(winQuantile(w.buckets,w.count,w.max,0.5,bounds)):'–';
+  $('conndetail').textContent=w.count?w.count+' 本 · p95 '+fmtMs(winQuantile(w.buckets,w.count,w.max,0.95,bounds))+' · 平均 '+fmtMs(w.sum/w.count):'この窓に CONNECT がありません';
 }
 function renderStatus(s){
   last=s;var c=s.cache||{};
+  $('version').textContent=s.version||'';
   $('uptime').textContent='稼働 '+fmtDur(s.uptime_secs)+' · ログ '+(s.log_level||'');
+  // 上の数え物は「起動から」、下のホスト別 / 接続元別の表は「通算」(状態ファイルに残る)
+  $('window').textContent='窓: 起動から '+fmtDur(s.since_start_secs==null?s.uptime_secs:s.since_start_secs)
+    +' / 表は通算'+(s.restored_since?' ('+new Date(s.restored_since*1000).toLocaleDateString()+' から)':'');
+  $('window').title='total_requests などは起動から、hosts[] と clients[] は状態ファイルに残る通算です';
   renderSettings(s.settings);
   $('reqtotal').textContent='累計 '+fmtNum(s.total_requests)+' 要求';
   $('bytestotal').textContent='累計 '+fmtBytes(s.bytes_forwarded);
   $('active').textContent=fmtNum(s.active_connections);
   var lim=function(v){return v?fmtNum(v):'無制限'};
-  $('threads').textContent='スレッド '+fmtNum(s.live_threads)+' / '+lim(s.max_threads)+' (空き '+fmtNum(s.idle_threads)+(s.queued_jobs?' · 待ち '+fmtNum(s.queued_jobs):'')+') · 接続上限 '+lim(s.max_conns);
+  $('threads').textContent='スレッド '+fmtNum(s.live_threads)+' / '+lim(s.max_threads)+' (空き '+fmtNum(s.idle_threads)+(s.queued_jobs?' · 待ち '+fmtNum(s.queued_jobs):'')+') · 接続上限 '+lim(s.max_conns)
+    +(s.fds?' · fd '+fmtNum(s.fds)+' / '+fmtNum(s.max_fds)+' · プロセス全体 '+fmtNum(s.threads)+' スレッド':'');
   var o=s.origin_connections||{};$('origins').textContent='オリジン接続 新規 '+fmtNum(o.new)+' / 再利用 '+fmtNum(o.reused);
   var hits=c.hits||0,miss=c.misses||0;$('hitratio').textContent=(hits+miss)>0?(hits/(hits+miss)*100).toFixed(1)+'%':'–';
   $('hitdetail').textContent='命中 '+fmtNum(hits)+' (メモリ '+fmtNum(c.hits_memory)+' / ディスク '+fmtNum(c.hits_disk)+') · ミス '+fmtNum(miss);
@@ -184,13 +262,22 @@ function renderStatus(s){
   var sys=c.system||{};
   var rows=[['保存',c.stores],['追い出し',c.evictions],['再検証',c.revalidations],['裏側の再検証',c.background_revalidations+' (進行中 '+c.revalidating+')'],['期限切れをそのまま配信',c.stale_served],['同時ミスの合流',c.coalesced+' (進行中 '+c.inflight+')'],['入場制御で見送り (初回)',c.admission_rejected],['キャッシュから配信',fmtBytes(c.bytes_served)],
     ['RSS',fmtBytes(sys.process_rss_bytes)],['cgroup',sys.cgroup_limit_bytes?fmtBytes(sys.cgroup_usage_bytes)+' / '+fmtBytes(sys.cgroup_limit_bytes):'–'],['ホストのメモリ',sys.mem_total_bytes?(sys.mem_used_percent+'% 使用 / '+fmtBytes(sys.mem_total_bytes)):'–'],['メモリ圧迫',sys.mem_pressure?'あり':'なし']];
+  // エラーの原因は `/status` のホスト別の内訳を足し上げて出す (図には秒あたりの本数だけ出る)
+  var names=causes.length?causes:['dns','refused','unreachable','timeout','reset','tls','loop','other'];
+  var byCause=names.map(function(){return 0});
+  (s.hosts||[]).forEach(function(h){(h.errors_by_cause||[]).forEach(function(v,i){byCause[i]+=v})});
+  var shown=names.map(function(n,i){return byCause[i]?n+' '+fmtNum(byCause[i]):null}).filter(Boolean);
+  rows.push(['エラーの原因 (通算)',shown.length?shown.join(' · '):'なし']);
   $('cachetbl').tBodies[0].innerHTML=rows.map(function(r){return'<tr><td style="font-family:inherit">'+r[0]+'</td><td>'+(r[1]==null?'–':r[1])+'</td></tr>'}).join('');
   var sortKey=$('hostsort').value,all=(s.hosts||[]).slice();
   all.sort(function(a,b){if(sortKey==='p95')return(b.p95_ms||0)-(a.p95_ms||0);if(sortKey==='errors')return(b.requests?b.errors/b.requests:0)-(a.requests?a.errors/a.requests:0)||b.errors-a.errors;if(sortKey==='bytes')return b.bytes-a.bytes;return b.requests-a.requests});
   var hosts=all.slice(0,20);
   $('hosts').tBodies[0].innerHTML=hosts.map(function(h){var hr=(h.hits+h.misses)>0?h.hits/(h.hits+h.misses)*100:null;var er=h.requests?h.errors/h.requests*100:0;
     var lat=h.timed?fmtMs(h.p50_ms)+' / <span style="color:'+latColor(h.p95_ms)+'">'+fmtMs(h.p95_ms)+'</span>':'–';
-    return'<tr><td title="'+esc(h.host)+'">'+esc(h.host)+'</td><td>'+fmtNum(h.requests)+'</td><td>'+fmtNum(h.hits)+'</td><td>'+fmtNum(h.misses)+'</td><td>'+fmtNum(h.bypass)+'</td><td>'+fmtNum(h.errors)+'</td><td>'+fmtNum(h.blocked)+'</td><td>'+fmtBytes(h.bytes)+'</td><td>'+(hr==null?'<span class="tag">素通し</span>':hr.toFixed(0)+'%<span class="mini"><i style="width:'+hr+'%"></i></span>')+'</td><td>'+lat+'</td><td style="color:'+(er>=5?'var(--bad)':er>0?'var(--warn)':'inherit')+'">'+(h.requests?er.toFixed(1)+'%':'–')+'</td></tr>'}).join('')||'<tr><td colspan="11" style="text-align:center;color:var(--muted)">まだ要求がありません</td></tr>';
+    // 待ちの内訳: 名前解決はミス 1 回あたり、接続は確立 1 回あたりの平均 ms
+    var dns=h.dns_misses?fmtMs(h.dns_ms_sum/h.dns_misses):'–',conn=h.timed?fmtMs(h.connect_ms_sum/h.timed):'–';
+    var fam=(h.v4_wins||h.v6_wins)?fmtNum(h.v4_wins)+' / '+fmtNum(h.v6_wins):'–';
+    return'<tr><td title="'+esc(h.host)+'">'+esc(h.host)+'</td><td>'+fmtNum(h.requests)+'</td><td>'+fmtNum(h.hits)+'</td><td>'+fmtNum(h.misses)+'</td><td>'+fmtNum(h.bypass)+'</td><td>'+fmtNum(h.errors)+'</td><td>'+fmtNum(h.blocked)+'</td><td>'+fmtBytes(h.bytes)+'</td><td>'+(hr==null?'<span class="tag">素通し</span>':hr.toFixed(0)+'%<span class="mini"><i style="width:'+hr+'%"></i></span>')+'</td><td>'+lat+'</td><td title="名前解決 (ミス 1 回) / 接続 1 回">'+dns+' / '+conn+'</td><td>'+fam+'</td><td style="color:'+(er>=5?'var(--bad)':er>0?'var(--warn)':'inherit')+'">'+(h.requests?er.toFixed(1)+'%':'–')+'</td></tr>'}).join('')||'<tr><td colspan="13" style="text-align:center;color:var(--muted)">まだ要求がありません</td></tr>';
   var csort=$('clientsort').value,cl=(s.clients||[]).slice();
   cl.sort(function(a,b){if(csort==='bytes')return b.bytes-a.bytes;if(csort==='blocked')return b.blocked-a.blocked||b.requests-a.requests;if(csort==='last_seen')return b.last_seen-a.last_seen;return b.requests-a.requests});
   var nowS=Math.floor(Date.now()/1000);
@@ -221,7 +308,8 @@ function renderSettings(st){
 }
 function fetchJson(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
 function pollStatus(){if($('pause').checked)return;fetchJson('/status').then(function(s){renderStatus(s);ok(true,'更新 '+new Date().toLocaleTimeString())}).catch(function(e){ok(false,'取得失敗: '+e.message)})}
-function pollHistory(){if($('pause').checked)return;fetchJson('/history?res='+$('range').value).then(function(h){hist=h.samples||[];redraw()}).catch(function(){})}
+function pollHistory(){if($('pause').checked)return;fetchJson('/history?res='+$('range').value).then(function(h){
+  interval=h.interval_secs||5;bounds=h.bounds_ms||[];causes=h.causes||[];hist=toSamples(h);redraw()}).catch(function(){})}
 $('range').addEventListener('change',function(){hist=[];pollHistory()});
 try{var savedRange=localStorage.getItem('range');if(savedRange)$('range').value=savedRange}catch(e){}
 $('range').addEventListener('change',function(){try{localStorage.setItem('range',$('range').value)}catch(e){}});

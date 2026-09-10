@@ -139,20 +139,52 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
         "Connection thread limit (PROXY_MAX_THREADS after auto sizing; 0 = unlimited)",
     );
     line(&mut out, "max_threads", "", conc.max_threads);
+    // 接続スレッドの数はラベル付きの 1 系列にそろえた (T11.5 の候補 → T12.4 (4))。
+    // **旧名 (`sorahost_live_threads` / `sorahost_idle_threads`) は 1 版だけ両方出す**
+    // ので、監視側は次の版までに `sorahost_threads{state=...}` へ移せる
+    header(
+        &mut out,
+        "threads",
+        "gauge",
+        "Connection threads by state (replaces sorahost_live_threads / sorahost_idle_threads)",
+    );
+    line(&mut out, "threads", "state=\"live\"", conc.live_threads);
+    line(&mut out, "threads", "state=\"idle\"", conc.idle_threads);
     header(
         &mut out,
         "live_threads",
         "gauge",
-        "Connection threads alive",
+        "Connection threads alive (deprecated: use sorahost_threads{state=\"live\"})",
     );
     line(&mut out, "live_threads", "", conc.live_threads);
     header(
         &mut out,
         "idle_threads",
         "gauge",
-        "Connection threads waiting for work",
+        "Connection threads waiting for work (deprecated: use sorahost_threads{state=\"idle\"})",
     );
     line(&mut out, "idle_threads", "", conc.idle_threads);
+    // プロセス全体の数え物 (接続スレッドとは別。`/proc` を読むのはこのパスだけ。T12.4 (4))
+    if let Some(n) = crate::sysinfo::process_threads() {
+        header(
+            &mut out,
+            "process_threads",
+            "gauge",
+            "Threads in the process (including the watcher, history and connect-attempt threads)",
+        );
+        line(&mut out, "process_threads", "", n);
+    }
+    if let Some((fds, max_fds)) = crate::sysinfo::process_fds() {
+        header(&mut out, "fds", "gauge", "Open file descriptors");
+        line(&mut out, "fds", "", fds);
+        header(
+            &mut out,
+            "max_fds",
+            "gauge",
+            "File descriptor limit (RLIMIT_NOFILE soft)",
+        );
+        line(&mut out, "max_fds", "", max_fds);
+    }
     header(
         &mut out,
         "queued_jobs",
@@ -203,6 +235,64 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
         m.origin_reused.load(Ordering::Relaxed),
     );
 
+    // CONNECT 確立の全体のヒストグラム (Phase 13 が最初に見る数字。T12.4 (4))。
+    // ホスト別の `sorahost_host_request_duration_seconds` と違い、**区間は 12 段**で
+    // 履歴 (`/history`) と同じ刻み。合計は起動からの累計
+    let totals = m.totals();
+    header(
+        &mut out,
+        "connect_seconds",
+        "histogram",
+        "Time to establish a CONNECT tunnel (name resolution + TCP)",
+    );
+    let mut cum = 0u64;
+    for (i, n) in totals.connect.buckets.iter().enumerate() {
+        cum += n;
+        let le = match crate::history::WINDOW_BOUNDS_MS.get(i) {
+            Some(b) => format!("{}", *b as f64 / 1000.0),
+            None => "+Inf".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "sorahost_connect_seconds_bucket{{le=\"{}\"}} {}",
+            le, cum
+        );
+    }
+    let _ = writeln!(
+        out,
+        "sorahost_connect_seconds_sum {}",
+        totals.connect.ms_sum as f64 / 1000.0
+    );
+    let _ = writeln!(
+        out,
+        "sorahost_connect_seconds_count {}",
+        totals.connect.count
+    );
+    // 名前解決のミス 1 回の値段 (デプロイ先ではミス率 26%。Phase 13 の候補 1 の分子)
+    let (dns_us, dns_misses) = crate::dns::resolve_cost_total();
+    header(
+        &mut out,
+        "dns_seconds",
+        "summary",
+        "Time spent in getaddrinfo (cache misses only)",
+    );
+    let _ = writeln!(out, "sorahost_dns_seconds_sum {}", dns_us as f64 / 1e6);
+    let _ = writeln!(out, "sorahost_dns_seconds_count {}", dns_misses);
+    // エラーの原因 (デプロイ先の「エラー 12 件、原因は不明」を無くす)
+    header(
+        &mut out,
+        "errors_total",
+        "counter",
+        "Failed requests by cause (loop = 508 Loop Detected)",
+    );
+    for (i, name) in crate::metrics::ERR_CAUSE_NAMES.iter().enumerate() {
+        line(
+            &mut out,
+            "errors_total",
+            &format!("cause=\"{}\"", name),
+            totals.errors_by_cause[i],
+        );
+    }
     header(
         &mut out,
         "host_requests_total",
@@ -296,7 +386,11 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
         "histogram",
         "Response time per origin host (CONNECT: time to establish the tunnel)",
     );
-    for (host, s) in &hosts {
+    // 区間が 10 段から 24 段になったので、**ヒストグラムは上位 50 ホストまで**にする
+    // (`/status` の `hosts[]` と同じ数)。100 ホスト全部だと上限まで埋まったとき
+    // `/metrics` が 389 KiB になり、400 KiB の予算に 1 KiB しか残らなかった (実測)。
+    // 数え上げ (`host_requests_total` など) はこれまでどおり上位 100 ホスト
+    for (host, s) in hosts.iter().take(50) {
         if s.timed == 0 {
             continue;
         }
@@ -690,6 +784,125 @@ mod tests {
             "{}",
             zeroed
         );
+    }
+
+    /// 接続スレッドの数が新旧両方の名前で出ること (T12.4 (4))。旧名は 1 版だけ残す。
+    #[test]
+    fn thread_gauges_are_rendered_under_both_the_old_and_the_new_name() {
+        let m = Metrics::new();
+        let text = render(
+            &m,
+            None,
+            Concurrency {
+                live_threads: 7,
+                idle_threads: 3,
+                ..Concurrency::default()
+            },
+        );
+        for pat in [
+            "sorahost_threads{state=\"live\"} 7\n",
+            "sorahost_threads{state=\"idle\"} 3\n",
+            "sorahost_live_threads 7\n",
+            "sorahost_idle_threads 3\n",
+        ] {
+            assert!(text.contains(pat), "{} が無い:\n{}", pat, text);
+        }
+    }
+
+    /// CONNECT 確立のヒストグラム・名前解決・エラーの原因が出ること (T12.4 (4))。
+    #[test]
+    fn renders_the_connect_histogram_the_dns_summary_and_the_error_causes() {
+        use std::time::Duration;
+        let m = Metrics::new();
+        m.record_host_timed(
+            "connect://a:443",
+            HostOutcome::Bypass,
+            0,
+            Duration::from_millis(257),
+        );
+        m.record_host_detail(
+            "connect://b:443",
+            HostOutcome::Error,
+            0,
+            Some(Duration::from_millis(30_000)),
+            crate::metrics::Detail {
+                cause: Some(crate::metrics::ErrCause::Timeout),
+                ..crate::metrics::Detail::default()
+            },
+        );
+        let text = render(&m, None, Concurrency::default());
+        assert!(
+            text.contains("# TYPE sorahost_connect_seconds histogram\n"),
+            "{}",
+            text
+        );
+        // 12 段 + `+Inf` で、累積になっていること
+        assert!(
+            text.contains("sorahost_connect_seconds_bucket{le=\"0.25\"} 0\n"),
+            "{}",
+            text
+        );
+        assert!(
+            text.contains("sorahost_connect_seconds_bucket{le=\"0.5\"} 1\n"),
+            "{}",
+            text
+        );
+        assert!(
+            text.contains("sorahost_connect_seconds_bucket{le=\"+Inf\"} 2\n"),
+            "{}",
+            text
+        );
+        assert!(
+            text.contains("sorahost_connect_seconds_count 2\n"),
+            "{}",
+            text
+        );
+        assert!(
+            text.contains("sorahost_connect_seconds_sum 30.257\n"),
+            "{}",
+            text
+        );
+        assert!(text.contains("sorahost_dns_seconds_count "), "{}", text);
+        assert!(
+            text.contains("sorahost_errors_total{cause=\"timeout\"} 1\n"),
+            "{}",
+            text
+        );
+        assert!(
+            text.contains("sorahost_errors_total{cause=\"loop\"} 0\n"),
+            "{}",
+            text
+        );
+    }
+
+    /// 上限まで埋めても `/status` 64 KiB / `/metrics` 400 KiB に収まること (T12.4 (3))。
+    #[test]
+    fn the_endpoints_stay_within_their_size_budget_when_the_tables_are_full() {
+        let m = Metrics::new();
+        for i in 0..crate::metrics::MAX_HOSTS {
+            // 長めのホスト名 + 全部の区間に件数が入っている最悪の形
+            let host = format!("connect://very-long-host-name-{:04}.example.com:443", i);
+            for ms in [1, 5, 30, 120, 400, 900, 3000, 12_000] {
+                m.record_host_timed(
+                    &host,
+                    HostOutcome::Bypass,
+                    1 << 30,
+                    std::time::Duration::from_millis(ms),
+                );
+            }
+        }
+        for i in 0..crate::metrics::MAX_CLIENTS {
+            m.record_client(
+                &format!("2001:db8:1234:5678:9abc:def0:1234:{:04x}", i),
+                HostOutcome::Bypass,
+                1 << 30,
+                Some(std::time::Duration::from_millis(400)),
+            );
+        }
+        let status = m.to_json();
+        assert!(status.len() <= 64 * 1024, "/status が {} B", status.len());
+        let text = render(&m, None, Concurrency::default());
+        assert!(text.len() <= 400 * 1024, "/metrics が {} B", text.len());
     }
 
     /// 「合流を飛ばす鍵」の記憶を入れ替えた回数が `/metrics` にも出ること (T12.6)。

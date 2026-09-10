@@ -983,6 +983,20 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             via::token()
         );
         reject(client, 508, "Loop Detected")?;
+        // 原因つきで 1 件数える (T12.4 (2))。ここは要求ターゲットをまだ解いていないので、
+        // 鍵は `Host` (無ければ要求ターゲット) から作る。この経路は 1 要求に 1 回しか
+        // 通らないので `format!` の確保は熱い経路に乗らない
+        metrics.record_host_detail(
+            &format!("loop://{}", host_header.unwrap_or(target)),
+            metrics::HostOutcome::Error,
+            0,
+            None,
+            metrics::Detail {
+                cause: Some(metrics::ErrCause::Loop),
+                ..metrics::Detail::default()
+            },
+        );
+        metrics.record_client(peer_ip, metrics::HostOutcome::Error, 0, None);
         return Ok(Step::Close);
     }
 
@@ -1040,7 +1054,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         Some("CONNECT port")
     } else if !config.allow_local {
         // クラウドのメタデータ (169.254.169.254) 経由の SSRF を止める。
-        // **判定に使った答えはそのまま接続へ渡す** (名前解決は 1 要求 1 回。T12.7)
+        // **判定に使った答えはそのまま接続へ渡す** (名前解決は 1 要求 1 回。T12.7)。
+        // 名前解決の費用はここで払うので、前の要求がこのスレッドに残した分は
+        // 解決の前に捨てる (次の `take` でこの要求のぶんだけが取れるように。T12.4 (2))
+        let _ = dns::take_resolve_cost();
+        let _ = dns::take_family();
         let (local, r) = acl::resolve_target(target_host);
         resolved = r;
         local.then_some("local address")

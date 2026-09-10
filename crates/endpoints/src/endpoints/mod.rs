@@ -415,6 +415,36 @@ mod local_path_tests {
         assert_eq!(local_path("https://example.com:60624/x", 60624, None), None);
     }
 
+    /// ダッシュボードに Phase 13 が見る図と KPI が載っていること (T12.4 (5))。
+    ///
+    /// ブラウザが無いので絵は確かめられない。**`/history` の読み方が合っているか**は
+    /// `scripts/check-dashboard.js` (Node があるときだけ) が実出力を通して見る。
+    /// ここで見るのは「消えていないこと」だけ。
+    #[test]
+    fn the_dashboard_has_the_charts_phase_13_reads() {
+        let html = super::DASHBOARD_HTML;
+        for id in ["ch-conn", "ch-err", "ch-fd", "connp50", "version", "window"] {
+            assert!(html.contains(&format!("id=\"{}\"", id)), "{} が無い", id);
+        }
+        // 配列の配列を読む側 (キー名を戻す関数) と区間の分位点
+        for f in [
+            "function toSamples(",
+            "function winQuantile(",
+            "function mergeWindows(",
+        ] {
+            assert!(html.contains(f), "{} が無い", f);
+        }
+        // ホスト別の表の列 (名前解決 / 接続、v4 / v6)
+        assert!(html.contains("名前解決 / 接続"), "{}", "内訳の列が無い");
+        assert!(html.contains("v4 / v6"), "{}", "族の列が無い");
+        // 外部ライブラリは読み込まない (依存なしの 1 ページ)
+        assert!(!html.contains("<script src="), "外部 JS を読み込んでいる");
+        assert!(
+            !html.contains("<link rel=\"stylesheet\""),
+            "外部 CSS を読み込んでいる"
+        );
+    }
+
     #[test]
     fn the_listing_hides_the_dashboard_in_lite_mode() {
         assert!(endpoint_list(false).contains("/dashboard"));
