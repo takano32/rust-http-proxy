@@ -8,9 +8,10 @@
 //! 測るもの:
 //!   1. direct  : オリジン直結の要求/秒 (ベンチが律速していないことの確認。5 万 req/s 以上出ること)
 //!   2. forward : 平文 HTTP をプロキシ経由で転送したときの要求/秒と p50/p99
-//!   3. tunnel  : CONNECT トンネル 1 本のスループット (MiB/s、`--seconds` 秒)。
+//!   3. tunnel  : CONNECT トンネル `--conc N` 本のスループット合計 (MiB/s、`--seconds` 秒)。
 //!      **この経路はベンチ側が律速する** (プロキシは `splice` でコピー 0 回、ベンチは送りと受けで
-//!      コピー 2 回)。`scripts/cpu-per-request.sh --only tunnel` は両方を big コアに置いて測る (T10.8)
+//!      コピー 2 回)。`scripts/cpu-per-request.sh --only tunnel` は両方を big コアに置いて測る (T10.8)。
+//!      TASKS.md §2 の「トンネル 1 本」は `--conc 1` の値
 //!   4. connect : CONNECT の確立/秒 (短命トンネル)
 //!   5. idle-tunnels: `--conc N` 本の CONNECT を張ったまま `--seconds` 秒握る
 //!      (プロキシ側のスレッド数と RSS を見るためのモード。`--only idle-tunnels` でだけ走る)
@@ -369,6 +370,28 @@ fn open_tunnel(
         return Err(io::Error::other("CONNECT was refused"));
     }
     Ok((sock, reader))
+}
+
+/// 張ったトンネルを `seconds` 秒読み続け、受け取ったバイト数を返す。
+///
+/// 読み終わったら**その場で切る**。切らないと blaster が送り続けたまま
+/// 次のモードの計測に混ざる。
+fn drain_tunnel(sock: TcpStream, mut reader: BufReader<TcpStream>, seconds: u64) -> u64 {
+    let mut buf = vec![0u8; TUNNEL_READ_BYTES];
+    let deadline = Duration::from_secs(seconds);
+    let t0 = Instant::now();
+    let mut got = 0u64;
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got += n as u64,
+        }
+        if t0.elapsed() >= deadline {
+            break;
+        }
+    }
+    let _ = sock.shutdown(Shutdown::Both);
+    got
 }
 
 /// CONNECT を張り、`200` を読み切ったソケットだけを返す (`BufReader` を残さない)。
@@ -926,36 +949,57 @@ fn main() {
         .print("forward");
     }
 
-    // トンネル 1 本のスループット (他のモードと同じく `--seconds` 秒で終わる)
+    // トンネル `--conc N` 本のスループット合計 (他のモードと同じく `--seconds` 秒で終わる)
     if want("tunnel") {
         let blaster = spawn_blaster().expect("blaster");
-        match open_tunnel(proxy, blaster) {
-            Ok((sock, mut reader)) => {
-                let mut buf = vec![0u8; TUNNEL_READ_BYTES];
-                let deadline = Duration::from_secs(args.seconds);
-                let t0 = Instant::now();
-                let mut got = 0u64;
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => got += n as u64,
-                    }
-                    if t0.elapsed() >= deadline {
-                        break;
-                    }
+        // 2 本目以降を先に張ってスレッドへ渡し、**1 本目はこのスレッドで回す**。
+        // こうすると `--conc 1` では下の `for` が 1 度も回らず、スレッドを 1 本も
+        // 足さない元のままの経路になる (§2 の「トンネル 1 本」はこの条件の値なので、
+        // 並列を足したことで数字が動かないようにする)。
+        let mut readers = Vec::new();
+        let mut failed = 0usize;
+        for _ in 1..args.conc {
+            match open_tunnel(proxy, blaster) {
+                Ok((sock, reader)) => {
+                    let seconds = args.seconds;
+                    readers.push(thread::spawn(move || drain_tunnel(sock, reader, seconds)));
                 }
-                let secs = t0.elapsed().as_secs_f64().max(1e-9);
-                // 先に切る。切らないと blaster が送り続けたまま次のモードの計測に混ざる。
-                let _ = sock.shutdown(Shutdown::Both);
-                println!(
-                    "{:<8} {:>9} op/s  {:>8.1} MiB/s  ({} MiB through one tunnel)",
-                    "tunnel",
-                    1,
-                    got as f64 / secs / (1024.0 * 1024.0),
-                    got / (1 << 20)
-                );
+                Err(_) => failed += 1,
             }
-            Err(e) => println!("tunnel   skipped: {}", e),
+        }
+        match open_tunnel(proxy, blaster) {
+            Ok((sock, reader)) => {
+                let t0 = Instant::now();
+                let mut got = drain_tunnel(sock, reader, args.seconds);
+                let secs = t0.elapsed().as_secs_f64().max(1e-9);
+                for h in readers {
+                    got += h.join().unwrap_or(0);
+                }
+                let live = args.conc - failed;
+                println!(
+                    "{:<8} {:>9} op/s  {:>8.1} MiB/s  ({} MiB through {} tunnel{})",
+                    "tunnel",
+                    live,
+                    got as f64 / secs / (1024.0 * 1024.0),
+                    got / (1 << 20),
+                    live,
+                    if live == 1 { "" } else { "s" }
+                );
+                if failed > 0 {
+                    println!(
+                        "tunnel   {} of {} tunnels failed to open",
+                        failed, args.conc
+                    );
+                }
+            }
+            Err(e) => {
+                // 1 本目が張れなくても、先に張った 2 本目以降は流れている。
+                // 待たずに次のモードへ進むとその通信が混ざるので、ここで待つ
+                for h in readers {
+                    let _ = h.join();
+                }
+                println!("tunnel   skipped: {}", e);
+            }
         }
     }
 

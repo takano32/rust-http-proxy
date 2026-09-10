@@ -5,9 +5,15 @@
 # (3) 名前解決が NSS を通らず /etc/resolv.conf だけになるためです (README の「配布」を参照)。
 FROM rust:1.96 AS build
 WORKDIR /src
-COPY Cargo.toml ./
+# ワークスペースの土台。`Cargo.lock` を入れるのは版を固定するため
+# (外部クレートは 1 つも使わないが、lock が無いと生成しに行く)。
 # build.rs は版の文字列を作るだけ。.git は入れないので `0.1.0+unknown` になる
-COPY build.rs ./
+COPY Cargo.toml Cargo.lock build.rs ./
+# `jobs = 1` (メモリの小さい環境でも通す設定)。手元・CI・Docker で同じ条件にする
+COPY .cargo ./.cargo
+# 本体は 26 個のクレートに分かれている (`Cargo.toml` の workspace members)。
+# path 依存なので、これが無いとワークスペースの読み込みごと失敗する
+COPY crates ./crates
 COPY src ./src
 RUN cargo build --release
 
