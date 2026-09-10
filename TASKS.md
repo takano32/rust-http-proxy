@@ -157,6 +157,63 @@ CONNECT の計測は 10 秒で 7〜10 万本張るので**毎回バケットを�
 `perf record -e cpu-clock -F 4999 -g -p <pid>` → `perf report`。この環境の `perf` は**ユーザー空間しか数えない**
 (`perf_event_paranoid = 2`。既定の `cycles` はサンプルが取れないので必ず `-e cpu-clock`)。カーネル側は utime/stime の差で見る。
 
+### デプロイ先の測り方
+
+**§0〜§2 の数字はすべて手元の loopback**で、デプロイ先 (`nagoya.sorahost.net:50697`、Pterodactyl
+コンテナ) で利用者が待っている時間は一度も測っていなかった (2026-09-10 の合議で分かった)。
+デプロイ先で測るときの道具は 2 つで、**見ている場所が違う** (T12.0):
+
+| 道具 | 見えるもの | 使うとき |
+|---|---|---|
+| `scripts/status-diff.py` | **プロキシから見た**ホスト別の待ち (`/status` の `hosts[]`) | 効きを面で見る。24 時間ぶんの差分 |
+| `scripts/probe-deployed.sh` | **手元から見た**待ち (`curl -w`) | 1 経路を今すぐ確かめる。1 回 15 本・4 秒 |
+
+**ホスト別統計は差分で見る** (`avg_ms` をそのまま読まない)。`hosts[]` は `.rrd` に永続化されて
+**再起動をまたいで通算される**ので、直す前の 257 ms が何日も混ざり続ける。`avg_ms × timed` が
+合計 ms なので、2 回取って `(avg2·timed2 − avg1·timed1) / (timed2 − timed1)` がその間の平均になる。
+
+```bash
+curl -s http://nagoya.sorahost.net:50697/status > a.json     # 直す前
+# ... 24 時間 ...
+curl -s http://nagoya.sorahost.net:50697/status > b.json     # 直した後
+scripts/status-diff.py a.json b.json --aaaa aaaa.json        # 差分
+scripts/status-diff.py b.json --aaaa aaaa.json               # 通算 (1 枚ならそのまま)
+```
+
+CONNECT (`connect://`) と forward を別の表にし、**AAAA の有無で 2 群に分けて中央値**を出す
+(Happy Eyeballs の 250 ms を払うのは AAAA のあるホストだけなので、この 2 群の差が Phase 12 の主指標)。
+**AAAA の判定はリゾルバ次第**なので、数字を残すときは引いた表を `--aaaa`
+(`{"host": true/false}` の JSON) で固定する。既定は `getaddrinfo`、`--no-dns` で省ける。
+合議のときはこの機械のリゾルバが www.google.com の AAAA を落として「無し」と出た
+(同じ日に引き直したら 50 ホスト全部が dns.google の DoH の表と一致した)。
+2026-09-10 05:37 UTC の 1 枚からは
+**AAAA あり 25 ホスト・要求 6,022 (CONNECT の 74.5%)・avg の中央値 257.4 ms、
+なし 22 ホスト・2,063 件・p50 の中央値 5.10 ms (avg 7.10)** が出る (§2 の「デプロイ先の現在地」の表と同じ)。
+
+**差分の精度は `Δtimed` で決まる。** `/status` の `avg_ms` は小数第 1 位までなので、合計 ms の丸め誤差は
+最悪 `0.05 × timed`。これが `Δtimed` で割られる。8 分あけた 2 枚では `Δtimed = 2` に対して
+通算 `timed` が 3,930 あり、**誤差は ±196.6 ms** で桁が読めない。`Δavg_ms` の右にこの ± を出すので、
+**幅が読みたい桁より小さくなるまで間隔をあける** (デプロイ先は 0.012 req/s = 80 秒に 1 件なので、
+主要ホストで数十件貯めるのに数時間〜1 日)。**Phase 12 の受け入れ基準を 24 時間の差分で書くのはこのため。**
+
+**手元からは `probe-deployed.sh`。** `time_appconnect − time_connect` が「CONNECT 確立 + TLS 握手」
+(手元からプロキシまでの TCP は `time_connect` に入るので引き算で落ちる)。5 経路 × 3 回 = 15 本を
+28 秒の予算つきで回し、予算を超えた行は `skip` と出す。**デプロイ先は利用者の本番なので、
+確認に使う要求はこの 1 回分に留める。**
+
+**この環境で 5% 未満の差は見えない** (回線のぶれが ±20 ms、`GET /status` の `time_connect` も
+0.032〜0.190 秒と揺れる)。**Phase 12 の受け入れ基準は 5% ではなく桁で書く** (250 ms → 30 ms 未満、のように)。
+
+**落とし穴 2 つ**:
+
+- **forward の行はキャッシュ HIT のことがある。** `http://example.com/` は 3 回とも 0.070〜0.087 秒で、
+  AAAA のあるホストなのに 250 ms を払っていない。`curl -D -` で見ると
+  `X-Cache: HIT from rust-http-proxy (memory)` / `Age: 6239` で、**そもそも出て行っていない**。
+  オリジンまでの待ちを見たいときは `-H 'Cache-Control: no-cache'` を足すか `X-Cache` を確かめる。
+- **`/status` は窓が混在している。** `total_requests` は起動から、`hosts[]` は `.rrd` の通算。
+  `status-diff.py` の見出しは両方を印字し、`uptime_secs` が減っていたら
+  「**再起動をまたいでいる**」と出す (T12.4 (4) で `/status` 側に窓を書く)。
+
 ### ビルドのメモリの測り方
 
 ```bash
@@ -346,6 +403,43 @@ CONNECT 確立 8,283 /s (T4.3)** も固定なしの値だった。上の表に�
   立ち上がりと 10 ms 刻みの丸めを含んでいた
 - [x] 既定設定で `cargo test --workspace` 全通過 (T9.6 時点で 189 単体 + 48 結合)
 - [x] `rust-http-proxy --lite -p 8080` の 1 行で「認証なし・手軽・最速」
+
+### デプロイ先の現在地 (2026-09-10、`nagoya.sorahost.net:50697`)
+
+**§2 の表は手元の loopback**。こちらは実際に動いているプロキシ (Pterodactyl コンテナ、cgroup 256 MiB、
+`ulimit -n` 1024、既定プロファイル、ログ `info`) を 2026-09-10 05:37 UTC に測ったもの
+(稼働 149,206 秒 = 41.4 時間、`.rrd` の通算 8,953 要求)。**同じ集計は
+`scripts/status-diff.py <snapshot> --aaaa <表>` で再現できる** (T12.0)。生の JSON はリポジトリに入れない
+(個人の閲覧先が入る。手元の `~/rust-http-proxy-status/` に置いた)。表の中身は §5 Phase 12 の
+「合議の結果」と同じ。
+
+| デプロイ先の実測 (2026-09-10) | 値 | §2 (loopback) との対応 |
+|---|---|---|
+| 要求の内訳 (永続化された 8,953 件) | **CONNECT 8,800 (98.3%)**、forward 140 (1.6%。HIT 56 / MISS 84)、エラー 12、ブロック 1 | §2 の主戦場 (forward keep-alive、HIT) は **1.6%** |
+| 要求の頻度 (起動から 41.4 時間で 1,854 件) | **0.012 req/s** (80 秒に 1 件) | §2 は 38,619 req/s。**CPU/要求 41 us は 1 日で 2 秒ぶん** |
+| CONNECT 確立、AAAA の無いホスト (22 ホスト、2,063 件) | **p50 の中央値 5.10 ms、avg の中央値 7.10 ms** (discord.com 5.2、x.com 5.0、www.mof.go.jp 5.0) | §2 の 140 us/本 は **この 2.7%**。残りは名前解決と RTT |
+| CONNECT 確立、AAAA のあるホスト (25 ホスト、**6,022 件 = CONNECT の 74.5%**) | **avg 257 ms** (avg の中央値 257.4、p50 の中央値 260。www.dlsite.com 257.4、registry.npmjs.org 256.7、example.com 257.0、www.google.com 257.6) | **§2 には存在しない経路**。250 ms は `net.rs` の `STAGGER` (`crates/net/src/net.rs:19`) そのもの |
+| 41.4 時間で失った待ち時間 | 6,022 × 250 ms = **1,506 秒 (25 分)** | — |
+| ホスト別統計の p50 = p95 = max になっているホスト | **50 ホスト中 29** (datadog: avg 257.2、p50 = p95 = max = 280) | 区間 `LATENCY_BOUNDS_MS` (`crates/metrics/src/metrics.rs:45`) が 10 段しか無い |
+| RSS / cgroup | **215.9 MB / 268.4 MB (256 MiB)**、うちメモリキャッシュのバラスト 201.3 MB、キャッシュの実体は **1 件 798 B** | §2 の「暇なトンネル 5,000 本で 29.9 MB」は `--lite` (バラスト無し)・6.6 GiB の機械での値 |
+| 上限 | `max_conns` 240 (`ulimit -n` 1024 から)、`max_threads` 128、生きているスレッド 1、接続 2 | §2 の「同時 5,000 本」はここでは起きない (240 で 503) |
+| DNS キャッシュ (起動から) | 35 件、hit 2,748 / miss 966 (26%)、TTL 60 秒。**hit + miss = 3,714 は要求 1,868 の 1.99 倍** (T12.7) | — |
+| オリジンプール (起動から 41.4 時間) | **new 1 / reused 0** | §2 の keep-alive とプールの前提はここでは 1 度も効いていない |
+| 接続元 | **1 つ** (`10.255.0.1`、Wings の NAT) | 接続元別の統計はこの環境では 1 行しか出ない |
+| `GET /` (ブラウザでプロキシの URL を開く) | **502 Bad Gateway、本文 0 バイト** | 自分宛てなのに `Host` へ転送しに行き、コンテナが自分の公開アドレスに届かないので 502 |
+
+**手元から見た値** (`scripts/probe-deployed.sh nagoya.sorahost.net:50697`、3 回ずつ、2026-09-10):
+
+| 経路 | 状態コード | `time_starttransfer` | `time_appconnect − time_connect` |
+|---|---|---|---|
+| `GET /status` | 200 | 0.070〜0.214 秒 | — (TLS 無し) |
+| `GET /` (自分宛て) | **502** | 0.061〜0.316 秒 | — |
+| `http://example.com/` (forward) | 200 | 0.070〜0.087 秒 | — (**キャッシュ HIT。出て行っていない**) |
+| `https://www.dlsite.com/` (**AAAA あり**) | 301 | 0.475〜0.496 秒 | **0.320〜0.329 秒** |
+| `https://discord.com/` (**AAAA なし**) | 200 | 0.187〜0.207 秒 | **0.072〜0.113 秒** |
+
+**AAAA の有無で app-conn が約 0.23 秒違う** = `STAGGER` の 250 ms。プロキシ側の集計 (257 ms 対 7 ms) と
+向きも桁も合う。
 
 ## 3. やったこと
 
@@ -2546,7 +2640,7 @@ Opus (`claude-opus-5`) に同じ材料 (§0〜§4、Phase 10〜11 の `結果:`�
 **Phase 13 で要る統計・履歴・ダッシュボードは Phase 12 に入れる** (2026-09-10 の指示)。Phase 13 は「デプロイ先で見る」段階になるので、
 その物差し (窓つきの分位点、名前解決と接続の内訳、エラーの原因、fd とスレッド) を T12.4 に 1 つの形式変更でまとめた。
 
-- [ ] **T12.0 デプロイ先を測れるようにする (`/status` の差分と手元からの計測)**
+- [x] **T12.0 デプロイ先を測れるようにする (`/status` の差分と手元からの計測)**
   - 目的: Phase 12 の受け入れ基準はすべてデプロイ先で確かめる。ところが §1 にはデプロイ先の測り方が無く、
     ホスト別統計は永続化されるので `avg_ms` を読んでも前後が分からない。**先に物差しを作る** (Phase 0 と同じ順番)。
   - 変更箇所: `scripts/status-diff.py` (新規)、`scripts/probe-deployed.sh` (新規)、`TASKS.md` §1 (デプロイ先の測り方の節)。
@@ -2562,6 +2656,24 @@ Opus (`claude-opus-5`) に同じ材料 (§0〜§4、Phase 10〜11 の `結果:`�
     **CONNECT の 74.5% が AAAA ありのホスト、その群の avg の中央値 257.4 ms、無い群の p50 の中央値 5.10 ms**
     を再現すること (この節の表と同じ数字が出ること)。2 はデプロイ先に対して 30 秒以内に終わり、
     `GET /` の状態コードと `time_appconnect − time_connect` が出ること。ベンチもコードも触らない。
+  - 結果: `scripts/status-diff.py` (`3d7a679`) と `scripts/probe-deployed.sh` (`b39fe07`)。
+    どちらも Python 3 標準ライブラリ / curl だけで、コードもベンチも触っていない。
+    **受け入れ基準は再現した**: 2026-09-10T0537Z の 1 枚 + dns.google の DoH の表で
+    **AAAA あり 25 ホスト・6,022 件 (CONNECT の 74.5%)・avg の中央値 257.4 ms、
+    なし 22 ホスト・2,063 件・p50 の中央値 5.10 ms (avg 7.10)**。
+    `probe-deployed.sh nagoya.sorahost.net:50697` は **4 秒**で終わり (予算 28 秒)、
+    `GET /` は 3 回とも **502**、`time_appconnect − time_connect` は
+    **AAAA あり (www.dlsite.com) 0.320〜0.329 秒 / なし (discord.com) 0.072〜0.113 秒 = 差 約 0.23 秒**。
+    作りながら分かったことが 3 つ:
+    (a) **差分の精度は `Δtimed` で決まる**。`avg_ms` が 0.1 ms 刻みなので誤差の上限は
+    `0.05 × timed ÷ Δtimed`。手元にある 8 分あけた 2 枚では ±61.6〜196.6 ms で**桁が読めない**。
+    `Δavg_ms` の右に ± を出すようにした。**24 時間の差分が要る**のはこのため。
+    (b) **`http://example.com/` の forward はキャッシュ HIT** (`X-Cache: HIT from rust-http-proxy (memory)`、
+    `Age: 6239`) で、AAAA のあるホストなのに 250 ms を払っていない。**この行はオリジンまでの待ちではない**。
+    (c) **AAAA の判定はリゾルバ次第**。合議のときは www.google.com が「無し」と出たが、
+    同じ日に引き直したら 50 ホスト全部が DoH の表と一致した。**数字を残すときは `--aaaa` で表を固定する**。
+    §1 に「デプロイ先の測り方」、§2 の下に「デプロイ先の現在地」を足した。T12.1 の前の基準として
+    `~/rust-http-proxy-status/` に `/status` を 1 枚取ってある (差分の a.json)。
 - [ ] **T12.1 IPv6 が死んでいる環境で、CONNECT のたびに 250 ms 払わない (Happy Eyeballs に記憶を持たせる)**
   - 目的: デプロイ先の CONNECT の 74.5% が `STAGGER` 250 ms を丸ごと払っている (上の表)。**Phase 0〜11 が CONNECT 1 本で削ったのは
     235 → 140 us、これは 1 本で 250 ms** (257 ms → 7 ms)。Opus の換算では 3 日の待ち 1,514 秒に対して、プロキシが 3 日で使った
