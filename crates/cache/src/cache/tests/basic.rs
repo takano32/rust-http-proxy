@@ -82,6 +82,7 @@ fn to_json_reports_limits_and_mode() {
     assert!(json.contains("\"reserve\":false"), "{}", json);
     assert!(json.contains("\"quota_bytes\":null"), "{}", json);
     assert!(json.contains("\"revalidations\":0"), "{}", json);
+    assert!(json.contains("\"not_stored_rotations\":0"), "{}", json);
     assert!(json.contains("\"keep_free_bytes\":0"), "{}", json);
 }
 
@@ -156,7 +157,18 @@ fn coalescing_is_skipped_for_keys_that_were_not_stored() {
     // 1 周期では「直前」の側に残るのでまだ覚えている
     assert!(!cache.may_coalesce(k, now + 301));
     assert_eq!(cache.not_stored_rotations(), 1);
+    // 入れ替えた回数は `/status` の `cache` にも出る (T12.6)
+    assert!(
+        cache.to_json().contains("\"not_stored_rotations\":1"),
+        "{}",
+        cache.to_json()
+    );
     // 2 周期で忘れて合流に戻る (オリジンが Cache-Control を変えることがある)
     assert!(cache.may_coalesce(k, now + 602));
     assert_eq!(cache.not_stored_rotations(), 2);
+    assert!(
+        cache.to_json().contains("\"not_stored_rotations\":2"),
+        "{}",
+        cache.to_json()
+    );
 }

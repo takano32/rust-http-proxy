@@ -93,7 +93,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   各自で取りに行く。**保存されないと分かった URL では次から合流を通さない** (待っても保存されないので待ち損。
   `Cache-Control: no-store` のオリジンへ 8 並列で同じ URL を叩くと 30,000 → 36,500 req/s)。
   覚えるのはブルームフィルタで、`PROXY_CACHE_TTL_SECS` と同じ周期で入れ替えて忘れる
-  (オリジンが `Cache-Control` を変えたら、次の周期から合流に戻る)
+  (オリジンが `Cache-Control` を変えたら、次の周期から合流に戻る)。入れ替えた回数は
+  `/status` の `cache.not_stored_rotations` と `/metrics` の `sorahost_cache_not_stored_rotations_total` に出ます
 - **keep-alive と接続プール**: クライアント接続は HTTP/1.1 の持続接続 (アイドル 15 秒)、オリジンへの接続は
   ホストごとにプールして再利用 (既定 64 本・全体 256 本まで、アイドル 60 秒まで保持、再利用前に 1 回の `recv(MSG_PEEK|MSG_DONTWAIT)` で生存確認)。
   再利用できた割合は `/status` の `origin_connections.pool_hit_ratio` に出ます。本文は必ず解読してから自前で枠付けし直す
@@ -727,7 +728,8 @@ RSS) の JSON です。ブラウザの HTTP プロキシにこのプロキシを
 `スレッド 7 / 256 (空き 3) · 接続上限 1008` の 1 行が出ます。数えるには接続スレッドで共有している鍵が要るので、
 **`/status` と `/metrics` に来たときだけ**数えます (要求ごとの仕事は増えません)。
 `cache` の `revalidations_dropped` は、上限に当たって捨てた裏側の再検証の数です
-(こちらは「後でやればいい仕事」なので待たせません)。
+(こちらは「後でやればいい仕事」なので待たせません)。`cache` の `not_stored_rotations` は
+「保存されないと分かった URL」の記憶 (ブルームフィルタ) を入れ替えた回数です。
 
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
