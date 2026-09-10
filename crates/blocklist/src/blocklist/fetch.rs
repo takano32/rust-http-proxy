@@ -22,6 +22,8 @@ pub fn fetch(url: &str, upstream: &Upstream, timeout: Duration) -> io::Result<Ve
             &o.host(),
             timeout,
             upstream.tls.as_ref(),
+            // ここは ACL の判定を経ない経路 (一覧の取得) なので、その場で解決する
+            None,
         )?;
         let mut reader = BufReader::new(stream);
         let req = format!(

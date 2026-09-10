@@ -1,3 +1,4 @@
+use crate::dns::Resolved;
 use std::net::IpAddr;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -100,20 +101,33 @@ pub fn is_local_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// `host[:port]` の宛先がローカル宛てか。IP リテラルはその場で、名前は DNS キャッシュで判定する
-/// (どのみち直後に解決するので追加のコストは無い)。解決できないものは false (先で 502 になる)。
-pub fn is_local_target(host_or_addr: &str) -> bool {
-    let host = extract_host(host_or_addr);
+/// `host[:port]` の宛先がローカル宛てかを判定し、**判定に使った答えを一緒に返す** (T12.7)。
+///
+/// 名前はここで 1 回だけ解決し、接続側はこの答えをそのまま使う
+/// ([`crate::net::connect_with`])。こうしないと判定と接続で表を 2 回引くことになり、
+/// `PROXY_DNS_TTL_SECS=0` では `getaddrinfo` を 2 回呼んで**別の答えで接続しうる**
+/// (DNS rebinding で判定をすり抜けられる)。
+///
+/// IP リテラルは解決するものが無いので `None` (接続側もその場で使う)。
+/// 解決できないものはローカル扱いにしない (先で 502 になる)。
+pub fn resolve_target(host_or_addr: &str) -> (bool, Option<Resolved<'_>>) {
+    let (host, port) = crate::net::split_host_port_ref(host_or_addr);
     if let Ok(ip) = host.parse::<IpAddr>() {
-        return is_local_ip(ip);
+        return (is_local_ip(ip), None);
     }
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
+    match crate::dns::resolve_host(host, port.unwrap_or(80)) {
+        Ok((addrs, preferred)) => {
+            let local = addrs.iter().any(|&ip| is_local_ip(ip));
+            (local, Some(Resolved::new(host, addrs, preferred)))
+        }
+        // 解決できないときだけ名前で見る (リゾルバが壊れていても localhost は止める)
+        Err(_) => (host.eq_ignore_ascii_case("localhost"), None),
     }
-    match crate::dns::resolve(&crate::net::join_host_port(host, 80)) {
-        Ok(addrs) => addrs.iter().any(|a| is_local_ip(a.ip())),
-        Err(_) => false,
-    }
+}
+
+/// [`resolve_target`] の、答えが要らない呼び出し側のための版。
+pub fn is_local_target(host_or_addr: &str) -> bool {
+    resolve_target(host_or_addr).0
 }
 
 fn extract_host(host_or_addr: &str) -> &str {
@@ -191,6 +205,10 @@ mod local_tests {
 
     #[test]
     fn local_targets_are_recognised() {
+        // 名前を引くので、解決の回数を数えるテストとは直列に回す
+        let _guard = crate::dns::RESOLVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         assert!(is_local_target("127.0.0.1:8080"));
         assert!(is_local_target("localhost"));
         assert!(is_local_target("169.254.169.254"), "cloud metadata");

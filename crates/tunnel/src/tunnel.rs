@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::dns;
 use crate::log::{Access, access};
 #[cfg(not(target_os = "linux"))]
 use crate::log_trace;
@@ -39,6 +40,7 @@ struct Info {
 
 /// 宛先へつなぎ、`200` と先読みぶん (`prefix`) を送る。
 /// つなげなければ 502 を書き、ログと統計を出して `Err`。
+#[allow(clippy::too_many_arguments)]
 fn open(
     mut client: TcpStream,
     target: &str,
@@ -47,13 +49,14 @@ fn open(
     conn_id: usize,
     metrics: Arc<Metrics>,
     client_ip: String,
+    resolved: Option<&dns::Resolved<'_>>,
 ) -> io::Result<Opened> {
     let started = Instant::now();
     let addr_str = net::with_default_port(target, 443);
 
     log_debug!(Some(conn_id), "start CONNECT {}", addr_str);
 
-    let mut server = match connect_with_timeout(&addr_str, timeout) {
+    let mut server = match connect_with_timeout(&addr_str, resolved, timeout) {
         Ok(s) => s,
         Err(e) => {
             log_warn!(
@@ -151,6 +154,7 @@ pub fn handle_connect(
     conn_id: usize,
     metrics: Arc<Metrics>,
     client_ip: String,
+    resolved: Option<&dns::Resolved<'_>>,
 ) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -163,6 +167,7 @@ pub fn handle_connect(
             conn_id,
             metrics,
             client_ip,
+            resolved,
             None,
             Box::new(()),
         )
@@ -173,7 +178,9 @@ pub fn handle_connect(
             client,
             server,
             info,
-        } = open(client, target, prefix, timeout, conn_id, metrics, client_ip)?;
+        } = open(
+            client, target, prefix, timeout, conn_id, metrics, client_ip, resolved,
+        )?;
         let transferred = tunnel(client, server, idle)?;
         report(&info, transferred);
         Ok(())
@@ -200,18 +207,26 @@ pub fn handle_connect_parked(
     conn_id: usize,
     metrics: Arc<Metrics>,
     client_ip: String,
+    resolved: Option<&dns::Resolved<'_>>,
     park: Option<(Arc<dyn Park>, Duration)>,
     hold: Box<dyn Send>,
 ) -> io::Result<()> {
-    let opened = open(client, target, prefix, timeout, conn_id, metrics, client_ip)?;
+    let opened = open(
+        client, target, prefix, timeout, conn_id, metrics, client_ip, resolved,
+    )?;
     // トンネルの猶予は HTTP の keep-alive より長く取る (下限 [`relay::MIN_PARK_GRACE`])
     let park = park.map(|(w, grace)| (w, grace.max(relay::MIN_PARK_GRACE)));
     relay::start(opened, idle, park, hold)
 }
 
 /// 名前解決して接続する (IPv6 / IPv4 を Happy Eyeballs で並行に試す)。
-pub fn connect_with_timeout(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
-    net::connect(addr_str, timeout)
+/// `resolved` は ACL の判定が引いた答え。あればここでは解決しない (T12.7)。
+pub fn connect_with_timeout(
+    addr_str: &str,
+    resolved: Option<&dns::Resolved<'_>>,
+    timeout: Duration,
+) -> io::Result<TcpStream> {
+    net::connect_with(addr_str, resolved, timeout)
 }
 
 /// 双方向にデータを中継し、転送した合計バイト数を返す (Linux 以外)。

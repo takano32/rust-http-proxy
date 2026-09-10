@@ -227,13 +227,34 @@ fn connect_one(addr: &SocketAddr, timeout: Option<Duration>) -> io::Result<TcpSt
 /// 名前解決して接続する。IPv6 無効時は A レコードだけ、有効時は Happy Eyeballs。全体の締め切りは `timeout`
 /// (`Duration::ZERO` は無期限 = OS 既定の接続タイムアウトに任せる)。
 pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
+    connect_with(addr_str, None, timeout)
+}
+
+/// [`connect`] の、**判定 (ACL) が引いた答えを渡せる版** (T12.7)。
+///
+/// `resolved` が同じホストの答えなら、ここでは名前解決をしない (要求 1 本で表を 1 回しか
+/// 引かない。`PROXY_DNS_TTL_SECS=0` でも `getaddrinfo` は 1 回だけで、判定と接続が
+/// 必ず同じ答えを使う)。`None` (IP リテラル、`PROXY_ALLOW_LOCAL=on` で判定を飛ばした、
+/// 判定を経ない経路) のときは今までどおりここで解決する。
+pub fn connect_with(
+    addr_str: &str,
+    resolved: Option<&crate::dns::Resolved<'_>>,
+    timeout: Duration,
+) -> io::Result<TcpStream> {
+    let (host, port) = split_host_port_ref(addr_str);
     // 解決と一緒に「最後に勝った族」も受け取る (表を引くのは 1 回だけ。T12.1)
-    let (resolved, preferred) = crate::dns::resolve_with_pref(addr_str)?;
+    let (addrs, preferred) = match resolved
+        .zip(port)
+        .and_then(|(r, p)| r.socket_addrs_for(host, p).map(|a| (a, r.preferred())))
+    {
+        Some(pair) => pair,
+        None => crate::dns::resolve_with_pref(addr_str)?,
+    };
     let ipv6 = ipv6_enabled();
     let addrs: Vec<SocketAddr> = if ipv6 {
-        resolved
+        addrs
     } else {
-        resolved.into_iter().filter(|a| a.is_ipv4()).collect()
+        addrs.into_iter().filter(|a| a.is_ipv4()).collect()
     };
     if addrs.is_empty() {
         return Err(io::Error::new(
@@ -245,7 +266,6 @@ pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {
             },
         ));
     }
-    let (host, _) = split_host_port_ref(addr_str);
     connect_candidates(host, addrs, preferred, timeout)
 }
 
@@ -691,6 +711,52 @@ mod tests {
             started.elapsed() < Duration::from_secs(3),
             "did not wait for the dead address"
         );
+    }
+
+    /// T12.7: **判定 (ACL) と接続で名前解決を 2 回しない。**
+    ///
+    /// `PROXY_DNS_TTL_SECS=0` (キャッシュ無効) でも 1 要求 1 回で、接続は判定と同じ
+    /// 答えを使う (別の答えを引くと DNS rebinding でローカル宛ての判定をすり抜けられる)。
+    /// 表とカウンタは全テストで共有しているので直列に回す。
+    #[test]
+    fn the_check_and_the_connect_share_one_lookup() {
+        let _resolve = crate::dns::RESOLVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // localhost が 2 候補 (::1 と 127.0.0.1) の環境では Happy Eyeballs の
+        // 全体の勝敗が動くので、そちらのテストとも直列にする
+        let _ipv6 = IPV6_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = format!("localhost:{}", listener.local_addr().unwrap().port());
+        let lookups = || {
+            let [hits, misses, _, _] = crate::dns::counters();
+            hits + misses
+        };
+        for ttl in [Duration::from_secs(60), Duration::ZERO] {
+            crate::dns::set_ttl(ttl);
+            crate::dns::clear();
+            let before = lookups();
+
+            // 1. ローカル宛ての判定: ここで 1 回だけ引き、答えを持って帰る
+            let (local, resolved) = crate::acl::resolve_target(&addr);
+            assert!(local, "localhost はローカル宛て");
+            let resolved = resolved.expect("判定に使った答えが返る");
+            assert_eq!(lookups() - before, 1, "判定で 1 回 (ttl={:?})", ttl);
+
+            // 2. 接続: 判定の答えを使うので引き直さない
+            let stream = connect_with(&addr, Some(&resolved), Duration::from_secs(5)).unwrap();
+            assert!(
+                resolved.addrs().contains(&stream.peer_addr().unwrap().ip()),
+                "判定に使った答えの中の 1 つに繋いでいる"
+            );
+            assert_eq!(lookups() - before, 1, "接続では引かない (ttl={:?})", ttl);
+
+            // 3. 答えを渡さなければ (T12.7 の前の形) もう 1 回引く
+            drop(connect_with(&addr, None, Duration::from_secs(5)).unwrap());
+            assert_eq!(lookups() - before, 2, "渡さないと 2 回 (ttl={:?})", ttl);
+        }
+        crate::dns::set_ttl(Duration::from_secs(60));
+        crate::dns::clear();
     }
 
     #[test]
