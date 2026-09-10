@@ -2,7 +2,7 @@
 
 #![allow(unused_imports)]
 use super::{fresh, on_disk_test_dir, test_dir, wire};
-use crate::cache::config::{CacheConfig, DiskQuota, Limit, MIB};
+use crate::cache::config::{CacheConfig, DiskQuota, Limit, MIB, Reserve};
 use crate::cache::key::cache_key;
 use crate::cache::memory::{BALLAST_CHUNK, MemTier};
 use crate::cache::{Body, Cache, CacheSource, Meta, format};
@@ -79,7 +79,7 @@ fn to_json_reports_limits_and_mode() {
     assert!(json.contains("\"limit_bytes\":2147483648"), "{}", json);
     assert!(json.contains("\"hit_ratio\":0.0000"), "{}", json);
     assert!(json.contains("\"mode\":\"fixed\""), "{}", json);
-    assert!(json.contains("\"reserve\":false"), "{}", json);
+    assert!(json.contains("\"reserve\":\"off\""), "{}", json);
     assert!(json.contains("\"quota_bytes\":null"), "{}", json);
     assert!(json.contains("\"revalidations\":0"), "{}", json);
     assert!(json.contains("\"not_stored_rotations\":0"), "{}", json);
@@ -104,7 +104,7 @@ fn invalidate_removes_every_variant_of_a_url() {
 fn admission_gates_first_sightings_only_when_the_tier_is_full() {
     // ディスク層なし、メモリ 1 MiB: 余裕があるうちは初見でも通す
     let mut cfg = CacheConfig::fixed(MIB, 0, test_dir("shp-test-admission"));
-    cfg.reserve = false;
+    cfg.reserve = Reserve::Off;
     let cache = Cache::new(cfg);
     let k1 = cache_key("GET", "http://example.com/1");
     assert!(cache.admit(k1), "empty cache admits a first sighting");

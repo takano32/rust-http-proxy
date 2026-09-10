@@ -236,13 +236,16 @@ impl MemTier {
     }
 
     /// 予算の未使用分をバラストで埋める。戻り値は追加したバイト数。
-    pub fn fill_ballast(&self) -> u64 {
+    ///
+    /// `max_owned` は「エントリ + バラストがこれを超えないところまで」の上限で、
+    /// 段階化 (`PROXY_CACHE_RESERVE` の既定) が実使用量から決める。`eager` は `u64::MAX`。
+    pub fn fill_ballast(&self, max_owned: u64) -> u64 {
         if !self.reserve || self.alloc_failed.load(Ordering::Relaxed) {
             return 0;
         }
         let mut added = 0u64;
         loop {
-            let capacity = self.capacity();
+            let capacity = self.capacity().min(max_owned);
             if self.owned().saturating_add(BALLAST_CHUNK as u64) > capacity {
                 break;
             }

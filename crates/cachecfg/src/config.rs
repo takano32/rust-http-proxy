@@ -17,6 +17,55 @@ pub const FALLBACK_DISK: u64 = 2048 * MIB;
 /// 即座にプロセスを停止するので、割当を教えてもらうまでは小さく抑える。
 pub const PTERODACTYL_UNKNOWN_QUOTA_DISK: u64 = 512 * MIB;
 
+/// 先行確保 (バラスト) の仕方。
+///
+/// **既定は `Staged` = 使われるまで確保しない** (T12.5)。256 MiB のコンテナで測ったところ、
+/// 予算の未使用分を最初から全部押さえる `Eager` は「何も買っていない」うえに危なかった:
+/// バラスト無しでもメモリ層は `limit_bytes` (197.6 MiB) まで埋まり OOM も起きないのに、
+/// 192 MiB を先に押さえていると空きが 45 MiB しか残らず、コンテナの中の別プロセスが
+/// 60 MiB 取ろうとしただけで**プローブ (1 秒周期) が返す前にカーネルの OOM killer が
+/// プロキシを殺した** (3 回中 1 回)。従来の動きは `PROXY_CACHE_RESERVE=eager` で残してある。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reserve {
+    /// 先行確保しない (上限の管理だけ)。
+    Off,
+    /// 使われるまで確保しない。1 件でも保存されたら「実使用量の 2 倍」までを先に押さえる (既定)。
+    #[default]
+    Staged,
+    /// 予算の未使用分を最初から全部押さえる (T12.5 より前の動き)。
+    Eager,
+}
+
+impl Reserve {
+    /// `0` / `false` / `off` / `no` → `Off`、`eager` → `Eager`、その他 (未設定含む) → `Staged`。
+    pub fn parse(s: &str) -> Reserve {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "0" | "false" | "off" | "no" => Reserve::Off,
+            "eager" | "all" | "full" => Reserve::Eager,
+            _ => Reserve::Staged,
+        }
+    }
+
+    /// 何らかの形で確保するか (層を作るときの判定)。
+    pub fn is_on(self) -> bool {
+        !matches!(self, Reserve::Off)
+    }
+
+    pub fn is_eager(self) -> bool {
+        matches!(self, Reserve::Eager)
+    }
+}
+
+impl fmt::Display for Reserve {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Reserve::Off => "off",
+            Reserve::Staged => "staged",
+            Reserve::Eager => "eager",
+        })
+    }
+}
+
 /// 各層の上限の指定方法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Limit {
@@ -135,7 +184,7 @@ pub struct CacheConfig {
     pub mem_limit: Limit,
     pub disk_limit: Limit,
     /// 予算の未使用分を先行確保する (メモリはページを実際に確保、ディスクは fallocate)。
-    pub reserve: bool,
+    pub reserve: Reserve,
     /// システム使用量を測り直して予算を更新する間隔。0 なら起動時の 1 回だけ。
     pub probe_interval: Duration,
     /// ディスクキャッシュ格納ディレクトリ
@@ -188,7 +237,7 @@ impl Default for CacheConfig {
             disk_limit: Limit::Auto {
                 percent: DEFAULT_TARGET_PERCENT,
             },
-            reserve: true,
+            reserve: Reserve::Staged,
             probe_interval: Duration::from_secs(1),
             dir: env::temp_dir().join("rust-http-proxy-cache"),
             mem_keep_free: 0,
@@ -260,7 +309,9 @@ impl CacheConfig {
             enabled: flag("PROXY_CACHE_ENABLED", true),
             mem_limit: limit("PROXY_MEM_CACHE_MB", "PROXY_MEM_TARGET_PERCENT"),
             disk_limit: limit("PROXY_DISK_CACHE_MB", "PROXY_DISK_TARGET_PERCENT"),
-            reserve: flag("PROXY_CACHE_RESERVE", true),
+            reserve: get("PROXY_CACHE_RESERVE")
+                .map(|v| Reserve::parse(&v))
+                .unwrap_or(d.reserve),
             probe_interval: num("PROXY_CACHE_PROBE_SECS")
                 .map(Duration::from_secs)
                 .unwrap_or(d.probe_interval),
@@ -331,7 +382,7 @@ impl CacheConfig {
             enabled: true,
             mem_limit: Limit::Fixed(mem_bytes),
             disk_limit: Limit::Fixed(disk_bytes),
-            reserve: false,
+            reserve: Reserve::Off,
             probe_interval: Duration::ZERO,
             dir,
             ..Self::default()
@@ -413,7 +464,8 @@ mod tests {
         let d = CacheConfig::default();
         assert_eq!(d.mem_limit, Limit::Auto { percent: 100 });
         assert_eq!(d.disk_limit, Limit::Auto { percent: 100 });
-        assert!(d.reserve && d.enabled);
+        assert_eq!(d.reserve, Reserve::Staged);
+        assert!(d.enabled);
         assert_eq!(d.probe_interval, Duration::from_secs(1));
         assert_eq!(d.mem_keep_free, 0);
     }
@@ -440,7 +492,8 @@ mod tests {
         let cfg = CacheConfig::from_lookup(|k| vars.get(k).map(|v| v.to_string()));
         assert_eq!(cfg.mem_limit, Limit::Fixed(256 * MIB));
         assert_eq!(cfg.disk_limit, Limit::Auto { percent: 70 });
-        assert!(!cfg.reserve && cfg.enabled);
+        assert_eq!(cfg.reserve, Reserve::Off);
+        assert!(cfg.enabled);
         assert_eq!(cfg.probe_interval, Duration::from_secs(10));
         assert_eq!(cfg.dir, PathBuf::from("/tmp/shp-cfg-test"));
         assert_eq!(cfg.default_ttl, Duration::from_secs(5));

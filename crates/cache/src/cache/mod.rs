@@ -25,7 +25,7 @@ mod tests;
 pub use proxy_cachedisk::disk;
 pub use proxy_cachemem::{admission, entry, inflight, lru, memory, notstored};
 
-pub use config::{CacheConfig, DiskQuota, Limit, MIB};
+pub use config::{CacheConfig, DiskQuota, Limit, MIB, Reserve};
 pub use entry::{Body, CachedResponse};
 pub use format::Meta;
 pub use inflight::{FetchOutcome, FetchTicket};
@@ -144,8 +144,8 @@ impl Cache {
         let not_stored = notstored::NotStored::new(cfg.default_ttl.as_secs());
         let cache = Self {
             quota,
-            mem: MemTier::new(cfg.reserve),
-            disk: DiskTier::new(cfg.dir.clone(), cfg.reserve, cfg.disk_max_entries),
+            mem: MemTier::new(cfg.reserve.is_on()),
+            disk: DiskTier::new(cfg.dir.clone(), cfg.reserve.is_on(), cfg.disk_max_entries),
             margins: Mutex::new(Margins {
                 host: Margin::new(cfg.mem_keep_free),
                 cgroup: Margin::new(cfg.mem_keep_free),
