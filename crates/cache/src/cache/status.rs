@@ -46,7 +46,7 @@ impl Cache {
                 "\"revalidations\":{},\"background_revalidations\":{},",
                 "\"revalidations_dropped\":{},\"revalidating\":{},",
                 "\"stale_served\":{},\"coalesced\":{},\"not_stored_rotations\":{},",
-                "\"inflight\":{},\"admission_rejected\":{},\"bytes_served\":{},\"reserve\":{},",
+                "\"inflight\":{},\"admission_rejected\":{},\"bytes_served\":{},\"reserve\":\"{}\",",
                 "\"memory\":{{\"used_bytes\":{},\"limit_bytes\":{},\"entries\":{},",
                 "\"mode\":\"{}\",\"target_percent\":{},\"reserved_bytes\":{},",
                 "\"keep_free_bytes\":{},\"cgroup_keep_free_bytes\":{}}},",

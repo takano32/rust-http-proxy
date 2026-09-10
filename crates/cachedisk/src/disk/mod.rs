@@ -505,14 +505,27 @@ impl DiskTier {
         self.ballast_bytes.store(b.bytes, Ordering::Relaxed);
     }
 
+    /// 抱えてよい合計 (エントリ + バラスト) がこの値になるまでバラストを切り詰める。
+    /// 段階化で上限が下がったときに呼ぶ (予算が縮んだときの [`Self::make_room`] と同じ道)。
+    pub fn release_ballast_to(&self, max_owned: u64) {
+        let over = self.owned().saturating_sub(max_owned);
+        if over > 0 {
+            self.shrink_ballast(over);
+        }
+    }
+
     /// 予算の未使用分をバラストファイルで埋める。戻り値は追加したバイト数。
-    pub fn fill_ballast(&self) -> u64 {
+    ///
+    /// `max_owned` は「エントリ + バラストがこれを超えないところまで」の上限
+    /// (段階化。`PROXY_CACHE_RESERVE` の既定)。`eager` は `u64::MAX`。
+    pub fn fill_ballast(&self, max_owned: u64) -> u64 {
         if !self.reserve || !self.is_ready() {
             return 0;
         }
         // 書き込み中の分も埋めてはいけない
         let target = self
             .capacity()
+            .min(max_owned)
             .saturating_sub(self.usage().0)
             .saturating_sub(self.in_flight_bytes());
         let mut b = self.ballast.locked();

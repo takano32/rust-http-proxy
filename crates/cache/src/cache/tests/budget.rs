@@ -2,7 +2,7 @@
 
 #![allow(unused_imports)]
 use super::{fresh, on_disk_test_dir, test_dir, wire};
-use crate::cache::config::{CacheConfig, DiskQuota, Limit, MIB};
+use crate::cache::config::{CacheConfig, DiskQuota, Limit, MIB, Reserve};
 use crate::cache::key::cache_key;
 use crate::cache::memory::{BALLAST_CHUNK, MemTier};
 use crate::cache::{Body, Cache, CacheSource, Meta, format};
@@ -76,7 +76,7 @@ fn sweep_removes_garbage_from_both_tiers() {
 fn memory_ballast_gives_way_to_entries_and_budget_cuts() {
     let tier = MemTier::new(true);
     tier.set_capacity(BALLAST_CHUNK as u64);
-    assert_eq!(tier.fill_ballast(), BALLAST_CHUNK as u64);
+    assert_eq!(tier.fill_ballast(u64::MAX), BALLAST_CHUNK as u64);
     assert_eq!(tier.owned(), BALLAST_CHUNK as u64);
 
     // 1 MiB のエントリが入るとバラストは 1 ブロック解放される
@@ -89,11 +89,15 @@ fn memory_ballast_gives_way_to_entries_and_budget_cuts() {
     tier.insert(cache_key("GET", "http://a/"), data, meta, 1);
     assert_eq!(tier.ballast_bytes(), 0);
     assert_eq!(tier.usage(), (MIB, 1));
-    assert_eq!(tier.fill_ballast(), 0, "63 MiB left is less than one chunk");
+    assert_eq!(
+        tier.fill_ballast(u64::MAX),
+        0,
+        "63 MiB left is less than one chunk"
+    );
 
     // 予算が増えれば埋め直し、減ればバラストから返す
     tier.set_capacity(2 * BALLAST_CHUNK as u64 + 2 * MIB);
-    assert_eq!(tier.fill_ballast(), 2 * BALLAST_CHUNK as u64);
+    assert_eq!(tier.fill_ballast(u64::MAX), 2 * BALLAST_CHUNK as u64);
     tier.set_capacity(BALLAST_CHUNK as u64);
     assert_eq!(
         tier.enforce(),
@@ -105,16 +109,55 @@ fn memory_ballast_gives_way_to_entries_and_budget_cuts() {
 }
 
 #[test]
+fn staged_reservation_waits_until_the_cache_is_actually_used() {
+    // T12.5: 既定 (staged) は「使われるまで確保しない」。デプロイ先は 1 件 798 B の
+    // キャッシュのために 192 MiB を押さえていた
+    let mut cfg = CacheConfig::fixed(4 * BALLAST_CHUNK as u64, 0, test_dir("shp-test-staged"));
+    cfg.reserve = Reserve::Staged;
+    let cache = Cache::new(cfg);
+    cache.probe_tick();
+    assert_eq!(
+        cache.mem_reserved(),
+        0,
+        "保存が 0 件なら 1 バイトも押さえない"
+    );
+
+    // 小さいものを 1 件保存しても、実使用量の 2 倍は 1 ブロック (64 MiB) に届かない
+    let url = "http://example.com/small";
+    cache.put(
+        cache_key("GET", url),
+        url,
+        vec![b'z'; 798],
+        Duration::from_secs(60),
+        1,
+    );
+    cache.probe_tick();
+    assert_eq!(cache.mem_usage().1, 1);
+    assert_eq!(
+        cache.mem_reserved(),
+        0,
+        "798 B の 2 倍では 64 MiB のブロックは取れない"
+    );
+
+    // eager は従来どおり、保存 0 件でも予算いっぱいまで押さえる
+    let mut cfg = CacheConfig::fixed(2 * BALLAST_CHUNK as u64, 0, test_dir("shp-test-eager"));
+    cfg.reserve = Reserve::Eager;
+    let eager = Cache::new(cfg);
+    eager.probe_tick();
+    assert_eq!(eager.mem_reserved(), 2 * BALLAST_CHUNK as u64);
+}
+
+#[test]
 fn disk_ballast_is_preallocated_and_shrinks_for_writes() {
     let mut cfg = CacheConfig::fixed(MIB, 48 * MIB, on_disk_test_dir("shp-test-disk-ballast"));
-    cfg.reserve = true;
+    cfg.reserve = Reserve::Eager;
     let cache = Cache::new(cfg);
     if !cache.disk.reserve_active() {
         eprintln!("skipping: fallocate unsupported on this filesystem");
         return;
     }
     let ballast = cache.cfg.dir.join("ballast.reserve");
-    let added = cache.disk.fill_ballast();
+    let added = cache.disk.fill_ballast(u64::MAX);
     if added == 0 {
         eprintln!("skipping: could not preallocate (probably no space)");
         return;
@@ -211,7 +254,7 @@ fn pterodactyl_without_quota_is_capped_and_never_reserves() {
     let cfg = CacheConfig {
         disk_limit: Limit::Auto { percent: 100 },
         pterodactyl: true,
-        reserve: true,
+        reserve: Reserve::Eager,
         quota_root: Some(PathBuf::from("/")),
         ..CacheConfig::fixed(MIB, 0, test_dir("shp-test-ptero-unknown"))
     };

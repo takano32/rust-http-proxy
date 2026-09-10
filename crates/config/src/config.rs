@@ -435,7 +435,8 @@ mod tests {
         assert!(cfg.cache.mem_limit.is_auto());
         assert!(cfg.cache.disk_limit.is_auto());
         assert_eq!(cfg.cache.mem_limit.target_percent(), Some(100));
-        assert!(cfg.cache.enabled && cfg.cache.reserve);
+        assert!(cfg.cache.enabled);
+        assert_eq!(cfg.cache.reserve, proxy_cache::cache::Reserve::Staged);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::thread::{self, JoinHandle};
 
 use super::budget::{self, Probe, percent_of};
 use super::config::{
-    DiskQuota, FALLBACK_DISK, FALLBACK_MEM, Limit, MIB, PTERODACTYL_UNKNOWN_QUOTA_DISK,
+    DiskQuota, FALLBACK_DISK, FALLBACK_MEM, Limit, MIB, PTERODACTYL_UNKNOWN_QUOTA_DISK, Reserve,
 };
 use super::{Cache, now_epoch};
 use crate::sysinfo;
@@ -32,6 +32,8 @@ const MEM_FLOOR: u64 = 64 * MIB;
 const DISK_FLOOR: u64 = 256 * MIB;
 /// 圧迫時の最初のバックオフ (全体に対する %)。
 const BACKOFF_PERCENT: u8 = 5;
+/// 段階化した先行確保が「実使用量の何倍まで」抱えてよいか (T12.5)。
+const STAGED_MULTIPLIER: u64 = 2;
 
 pub fn spawn(cache: &Arc<Cache>) -> Option<JoinHandle<()>> {
     let interval = cache.config().probe_interval;
@@ -75,6 +77,12 @@ impl Cache {
         }
 
         let pressure = self.refresh_budget();
+        // 段階化 (既定) では上限が実使用量から決まるので、使用量が減れば先にバラストを返す
+        let mem_ceiling = self.reserve_ceiling(self.mem.usage().0, false);
+        let disk_ceiling = self.reserve_ceiling(self.disk.usage().0, self.disk_probing());
+        self.mem
+            .release_ballast(self.mem.usage().0, self.mem.capacity().min(mem_ceiling));
+        self.disk.release_ballast_to(disk_ceiling);
         let evicted = self.mem.enforce() + self.disk.enforce();
         self.count_evictions(evicted);
 
@@ -93,9 +101,9 @@ impl Cache {
                 Ordering::Relaxed,
             );
         }
-        if self.cfg.reserve && tick >= self.backoff_until.load(Ordering::Relaxed) {
-            let m = self.mem.fill_ballast();
-            let d = self.disk.fill_ballast();
+        if self.cfg.reserve.is_on() && tick >= self.backoff_until.load(Ordering::Relaxed) {
+            let m = self.mem.fill_ballast(mem_ceiling);
+            let d = self.disk.fill_ballast(disk_ceiling);
             if m + d > 0 {
                 let msg = format!(
                     "reserved +{} MiB memory / +{} MiB disk (ballast now {} MiB / {} MiB)",
@@ -108,6 +116,33 @@ impl Cache {
                     log_info!(None, "{}", msg);
                 } else {
                     log_debug!(None, "{}", msg);
+                }
+            }
+        }
+    }
+
+    /// 割当の探索中か (ディスクのバラストで Wings の上限を探っている最中は段階化しない)。
+    fn disk_probing(&self) -> bool {
+        self.disk_probe.locked().is_some()
+    }
+
+    /// この層が抱えてよい合計 (エントリ + バラスト) の上限。
+    ///
+    /// **使われるまで確保しない** (T12.5): 1 件も保存していない間は 0 で、保存が始まったら
+    /// 実使用量の [`STAGED_MULTIPLIER`] 倍まで。これに予算 (`capacity`) が別途掛かるので、
+    /// 「実際に使っているぶんと同じだけを先に押さえる」動きになる。`eager` は従来どおり
+    /// 予算いっぱい、`off` は 0。`probing` は Pterodactyl の割当探索中
+    /// (バラストを伸ばして上限を探る仕組みなので段階化しない)。
+    fn reserve_ceiling(&self, used: u64, probing: bool) -> u64 {
+        match self.cfg.reserve {
+            Reserve::Off => 0,
+            Reserve::Eager => u64::MAX,
+            Reserve::Staged if probing => u64::MAX,
+            Reserve::Staged => {
+                if self.stores.load(Ordering::Relaxed) == 0 {
+                    0
+                } else {
+                    used.saturating_mul(STAGED_MULTIPLIER)
                 }
             }
         }

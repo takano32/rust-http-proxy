@@ -154,7 +154,8 @@ fn main() {
     // 停止シグナルで統計を状態ファイルに書き、ballast.reserve を空にしてから終わる
     // (Wings のディスク計測に残さない)
     {
-        let ballast = (config.cache.enabled && config.cache.reserve).then(|| cache.ballast_path());
+        let ballast =
+            (config.cache.enabled && config.cache.reserve.is_on()).then(|| cache.ballast_path());
         let store = store.clone();
         let m = Arc::clone(&metrics);
         signal::install(
@@ -196,7 +197,7 @@ fn main() {
         if c.enabled { "enabled" } else { "disabled" },
         c.mem_limit,
         c.disk_limit,
-        if c.reserve { "on" } else { "off" },
+        c.reserve,
         c.probe_interval.as_secs(),
         c.dir.display(),
         c.default_ttl.as_secs(),
