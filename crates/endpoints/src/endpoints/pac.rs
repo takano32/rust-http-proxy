@@ -90,6 +90,7 @@ mod tests {
             port,
             host,
             lite: false,
+            version: "0.1.0+test",
             pac_direct: d,
             concurrency: &concurrency,
         };
@@ -113,6 +114,7 @@ mod tests {
             port,
             host,
             lite: false,
+            version: "0.1.0+test",
             pac_direct: d,
             concurrency: &concurrency,
         };

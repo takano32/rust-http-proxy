@@ -31,7 +31,7 @@ fn nofile_limit() -> Option<u64> {
 }
 
 fn main() {
-    match rust_http_proxy::cli::parse(std::env::args().skip(1)) {
+    match rust_http_proxy::cli::parse(std::env::args().skip(1), rust_http_proxy::VERSION) {
         rust_http_proxy::cli::Cli::Print(msg, 0) => {
             println!("{}", msg);
             process::exit(0);
@@ -170,7 +170,10 @@ fn main() {
 
     log_info!(
         None,
-        "rust-http-proxy listening on {} (log level: {})",
+        // 版を先頭に出す: デプロイ先でどのコミットが動いているかをログだけでも
+        // 追えるようにするため (同じ文字列が `-V` と `/status` の `version` に出る。T12.6)
+        "rust-http-proxy {} listening on {} (log level: {})",
+        rust_http_proxy::VERSION,
         listeners
             .iter()
             .map(net::describe_listener)

@@ -41,6 +41,14 @@ use cache::Cache;
 use config::Config;
 use metrics::Metrics;
 
+/// 動いているバイナリの版 (`build.rs` が作る `PROXY_VERSION`)。
+///
+/// `CARGO_PKG_VERSION` + git の短いハッシュ (`0.1.0+144b992`、作業ツリーが汚れていれば
+/// `-dirty`)。git や `.git` の無い環境でビルドしたときは `0.1.0+unknown`。
+/// **デプロイ先でどのコミットが動いているかを知るため**のもので、起動ログ・`-V`・
+/// `/status` の 3 か所に同じ文字列を出す (T12.6)。
+pub const VERSION: &str = env!("PROXY_VERSION");
+
 const FORBIDDEN_RESPONSE: &[u8] = b"HTTP/1.1 403 Forbidden\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 Content-Length: 13\r\n\
@@ -976,6 +984,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         host: host_header,
         pac_direct: &config.pac_direct,
         lite: config.lite,
+        version: VERSION,
         concurrency: &concurrency,
     };
     if endpoints::handle(&mut &*client, method, target, &ep)? {

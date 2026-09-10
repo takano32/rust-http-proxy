@@ -31,6 +31,8 @@ pub struct Endpoint<'a> {
     pub pac_direct: &'a [String],
     /// lite プロファイル (ダッシュボードを持たない)
     pub lite: bool,
+    /// 動いているバイナリの版 (`/status` に出す。本体クレートの `VERSION`)
+    pub version: &'a str,
     /// 上限といまのスレッド数を引く口 (`/status` と `/metrics` を組み立てるときだけ呼ぶ)。
     ///
     /// 値そのものではなく関数で受け取るのは、生きているスレッド数と待ち行列を数えるのに
@@ -166,6 +168,7 @@ pub fn handle(
                     settings: &reload::status_json(),
                     blocklist: &crate::blocklist::status_json(),
                     state_file: &persist::status_json(),
+                    version: ep.version,
                     concurrency: (ep.concurrency)(),
                 },
             ),

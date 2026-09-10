@@ -438,6 +438,18 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     );
     header(
         &mut out,
+        "cache_not_stored_rotations_total",
+        "counter",
+        "Rotations of the memory of keys a leader did not store (two rotations forget a key)",
+    );
+    line(
+        &mut out,
+        "cache_not_stored_rotations_total",
+        "",
+        c.not_stored_rotations(),
+    );
+    header(
+        &mut out,
         "cache_inflight",
         "gauge",
         "Origin fetches in flight (coalescing table)",
@@ -677,6 +689,21 @@ mod tests {
             zeroed.contains("sorahost_max_connections 0\n"),
             "{}",
             zeroed
+        );
+    }
+
+    /// 「合流を飛ばす鍵」の記憶を入れ替えた回数が `/metrics` にも出ること (T12.6)。
+    #[test]
+    fn renders_the_not_stored_rotations_counter() {
+        let m = Metrics::new();
+        let cache = Cache::new(crate::cache::CacheConfig::disabled());
+        let text = render(&m, Some(&cache), Concurrency::default());
+        assert!(
+            text.contains(
+                "# TYPE sorahost_cache_not_stored_rotations_total counter\nsorahost_cache_not_stored_rotations_total 0\n"
+            ),
+            "{}",
+            text
         );
     }
 }

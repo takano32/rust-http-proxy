@@ -117,6 +117,39 @@ fn test_integration_origin_connections_are_pooled() {
     );
 }
 
+/// 版が `-V` と `/status` で同じ文字列であること (T12.6)。
+///
+/// 起動ログにも同じものを出しているが、そちらは実バイナリを起こす `reload_test` で見ている。
+#[test]
+fn test_integration_the_version_is_the_same_in_v_and_in_status() {
+    // `build.rs` が作った文字列。git のある環境では `0.1.0+<短いハッシュ>`、
+    // `.git` の無いところで作ったら `0.1.0+unknown`
+    let version = rust_http_proxy::VERSION;
+    assert!(
+        version.starts_with(&format!("{}+", env!("CARGO_PKG_VERSION"))),
+        "版の形が違う: {}",
+        version
+    );
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
+        .arg("-V")
+        .output()
+        .expect("could not run the proxy binary");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("rust-http-proxy {}", version)
+    );
+
+    let proxy_port = start_test_proxy(proxy_config());
+    let status = status_json(proxy_port);
+    assert!(
+        status.contains(&format!("\"version\":\"{}\"", version)),
+        "{}",
+        status
+    );
+}
+
 #[test]
 fn test_integration_status_embeds_the_parts_from_the_upper_layers() {
     // `/status` の組み立ては endpoints の仕事で、指標 (proxy-metrics) は部品を並べるだけ。
