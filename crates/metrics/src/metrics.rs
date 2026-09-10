@@ -1,5 +1,6 @@
 use crate::sync::LockExt;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -144,6 +145,9 @@ pub struct Detail {
     pub family_v6: Option<bool>,
     /// エラーの原因 (エラーでなければ `None`)
     pub cause: Option<ErrCause>,
+    /// 履歴の窓に入れる値 (ms)。forward は「初バイトまで」で、応答全体の時間
+    /// (`took`) とは別。`None` なら `took` をそのまま使う (CONNECT の確立時間)
+    pub first_byte_ms: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -499,7 +503,9 @@ impl Metrics {
                 iv.errors_by_cause[c as usize] += 1;
             }
             if let Some(d) = took {
-                let ms = d.as_millis().min(u64::MAX as u128) as u64;
+                let ms = detail
+                    .first_byte_ms
+                    .unwrap_or_else(|| d.as_millis().min(u64::MAX as u128) as u64);
                 // CONNECT のホスト別統計の鍵は `connect://` で始まる (`tunnel::report`)。
                 // 前綴りを見るだけで済むので、呼び出し側に旗を持たせない
                 if host.starts_with("connect://") {
@@ -667,7 +673,7 @@ impl Metrics {
                 format!(
                     "{{\"host\":\"{}\",{}}}",
                     crate::json::escape(&h),
-                    stats_json(&s)
+                    stats_json(&s, true)
                 )
             })
             .collect();
@@ -679,7 +685,7 @@ impl Metrics {
                 format!(
                     "{{\"client\":\"{}\",{}}}",
                     crate::json::escape(&c),
-                    stats_json(&s)
+                    stats_json(&s, false)
                 )
             })
             .collect();
@@ -729,8 +735,11 @@ impl Metrics {
 }
 
 /// ホスト別 / 接続元別に共通の統計フィールド (先頭・末尾の波括弧なし)。
-fn stats_json(s: &HostStats) -> String {
-    format!(
+///
+/// `detail` はホスト別だけ (T12.4 (2))。接続元別には名前解決も接続も族も無いので、
+/// 全部 0 の列を 50 行ぶん並べても `/status` が太るだけになる。
+fn stats_json(s: &HostStats, detail: bool) -> String {
+    let mut out = format!(
         "\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"blocked\":{},\"bytes\":{},\"timed\":{},\"avg_ms\":{:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"max_ms\":{},\"last_seen\":{}",
         s.requests,
         s.hits,
@@ -745,7 +754,22 @@ fn stats_json(s: &HostStats) -> String {
         s.quantile_ms(0.95),
         s.duration_ms_max,
         s.last_seen
-    )
+    );
+    if detail {
+        let _ = write!(
+            out,
+            ",\"dns_ms_sum\":{},\"dns_misses\":{},\"connect_ms_sum\":{},\"v4_wins\":{},\"v6_wins\":{},\"errors_by_cause\":[",
+            s.dns_ms_sum, s.dns_misses, s.connect_ms_sum, s.v4_wins, s.v6_wins
+        );
+        for (i, c) in s.errors_by_cause.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let _ = write!(out, "{}", c);
+        }
+        out.push(']');
+    }
+    out
 }
 
 impl Default for Metrics {
@@ -1007,6 +1031,105 @@ mod latency_tests {
             let r = w[1] as f64 / w[0] as f64;
             assert!((1.3..=1.6).contains(&r), "{:?} -> {}", w, r);
         }
+    }
+
+    /// `io::Error` から 8 つの原因へ畳めること (T12.4 (2))。
+    #[test]
+    fn io_errors_fold_into_eight_causes() {
+        use std::io::{Error, ErrorKind};
+        let c = |k: ErrorKind| ErrCause::from_io(&Error::new(k, "x"));
+        assert_eq!(c(ErrorKind::ConnectionRefused), ErrCause::Refused);
+        assert_eq!(c(ErrorKind::NetworkUnreachable), ErrCause::Unreachable);
+        assert_eq!(c(ErrorKind::HostUnreachable), ErrCause::Unreachable);
+        assert_eq!(c(ErrorKind::TimedOut), ErrCause::Timeout);
+        assert_eq!(c(ErrorKind::ConnectionReset), ErrCause::Reset);
+        assert_eq!(c(ErrorKind::BrokenPipe), ErrCause::Reset);
+        assert_eq!(c(ErrorKind::NotFound), ErrCause::Dns);
+        assert_eq!(c(ErrorKind::PermissionDenied), ErrCause::Other);
+        // `getaddrinfo` の失敗は種別が付かないことがあるので文言も見る
+        assert_eq!(
+            ErrCause::from_io(&Error::other("failed to lookup address information: x")),
+            ErrCause::Dns
+        );
+        assert_eq!(
+            ErrCause::from_io(&Error::other("TLS handshake failed")),
+            ErrCause::Tls
+        );
+        assert_eq!(ErrCause::Loop.name(), "loop");
+        assert_eq!(ERR_CAUSE_NAMES.len(), ERR_CAUSES);
+    }
+
+    /// 内訳はホスト別の行と区間の合計の両方に乗る (T12.4 (2) / (3))。
+    #[test]
+    fn the_breakdown_lands_on_the_host_row_and_the_interval() {
+        let m = Metrics::new();
+        m.record_host_detail(
+            "connect://a:443",
+            HostOutcome::Bypass,
+            0,
+            Some(Duration::from_millis(257)),
+            Detail {
+                dns_ms: 12,
+                dns_misses: 1,
+                connect_ms: 245,
+                family_v6: Some(false),
+                cause: None,
+                first_byte_ms: None,
+            },
+        );
+        m.record_host_detail(
+            "connect://a:443",
+            HostOutcome::Error,
+            0,
+            Some(Duration::from_millis(300)),
+            Detail {
+                family_v6: Some(true),
+                cause: Some(ErrCause::Refused),
+                ..Detail::default()
+            },
+        );
+        let (host, s) = &m.hosts_sorted()[0];
+        assert_eq!(host, "connect://a:443");
+        assert_eq!((s.dns_ms_sum, s.dns_misses, s.connect_ms_sum), (12, 1, 245));
+        assert_eq!((s.v4_wins, s.v6_wins), (1, 1));
+        assert_eq!(s.errors_by_cause[ErrCause::Refused as usize], 1);
+        // `connect://` の鍵は CONNECT の窓へ入る
+        let iv = m.totals();
+        assert_eq!(iv.connect.count, 2);
+        assert_eq!(iv.forward.count, 0);
+        assert_eq!(iv.errors, 1);
+        assert_eq!(iv.errors_by_cause[ErrCause::Refused as usize], 1);
+        assert_eq!((iv.dns_misses, iv.dns_ms_sum), (1, 12));
+        // 区間は読むと 0 に戻る
+        assert_eq!(m.take_interval().connect.count, 2);
+        assert_eq!(m.take_interval().connect.count, 0);
+        assert_eq!(m.totals().connect.count, 2, "累計は残る");
+        // forward は初バイトの値が窓に入る (応答全体の時間ではない)
+        m.record_host_detail(
+            "http://b:80",
+            HostOutcome::Miss,
+            0,
+            Some(Duration::from_millis(900)),
+            Detail {
+                first_byte_ms: Some(7),
+                ..Detail::default()
+            },
+        );
+        let iv = m.take_interval();
+        assert_eq!(iv.forward.count, 1);
+        assert_eq!(iv.forward.ms_max, 7);
+        // ホスト別の応答時間はこれまでどおり応答全体
+        let b = m
+            .hosts_sorted()
+            .into_iter()
+            .find(|(h, _)| h == "http://b:80")
+            .unwrap()
+            .1;
+        assert_eq!(b.duration_ms_max, 900);
+        // `/status` にはホスト別だけ内訳が出る (接続元別には出ない)
+        let json = m.to_json();
+        assert!(json.contains("\"v6_wins\":1"), "{}", json);
+        assert!(json.contains("\"errors_by_cause\":["), "{}", json);
     }
 
     #[test]

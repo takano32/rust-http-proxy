@@ -31,7 +31,7 @@ use crate::cache::{
 use crate::freshness;
 use crate::headers;
 use crate::log::{Access, access};
-use crate::metrics::{HostOutcome, Metrics};
+use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics};
 use crate::origin::{self, OriginStream};
 use crate::sync::LockExt;
 use crate::workers::Workers;
@@ -228,6 +228,9 @@ struct Ctx<'a> {
     mapped: bool,
     /// ホスト別統計のキー (`scheme://host:port`)
     pool_key: &'a str,
+    /// 1 要求の内訳 (名前解決 / 接続 / 勝った族 / エラーの原因。T12.4 (2))。
+    /// オリジンへ行った経路だけが埋める (キャッシュ HIT では全部 0)
+    detail: Detail,
 }
 
 impl Ctx<'_> {
@@ -236,7 +239,7 @@ impl Ctx<'_> {
         // 経過時間は 1 回だけ引く (clock_gettime は要求ごとに効いてくる)
         let took = self.started.elapsed();
         self.metrics
-            .record_host_timed(self.pool_key, outcome, bytes, took);
+            .record_host_detail(self.pool_key, outcome, bytes, Some(took), self.detail);
         self.metrics
             .record_client(self.client_ip, outcome, bytes, Some(took));
         let mut digits = [0u8; 5];
@@ -372,6 +375,7 @@ pub fn handle_http_with_headers(
         head_only,
         mapped: origin.mapped,
         pool_key,
+        detail: Detail::default(),
     };
 
     // ---- キャッシュ参照 ----
@@ -518,8 +522,14 @@ pub fn handle_http_with_headers(
     // 本文の無い冪等な要求だけ、再利用した接続が死んでいたときに 1 回やり直す
     let retryable = req_framing == Framing::None && (is_get || head_only);
     let mut attempt = 0;
+    // 前の要求がこのスレッドに残していった名前解決の費用を捨てる (T12.4 (2))
+    let _ = crate::dns::take_resolve_cost();
+    let _ = crate::dns::take_family();
     let (mut server, head, status, request_body_bytes) = loop {
         attempt += 1;
+        // 接続にかかった時間は「オリジンを掴むまで − 名前解決」で出す。時計を読むのは
+        // ここで 1 回だけで、プールから再利用できたときは 2 回目を読まない (熱い経路)
+        let acquire_started = Instant::now();
         let (mut server, reused) =
             match acquire_origin(&shared.upstream, origin_timeout, conn_id, &origin, pool_key) {
                 Ok(v) => v,
@@ -530,6 +540,7 @@ pub fn handle_http_with_headers(
                         server_addr,
                         e
                     );
+                    ctx.detail = origin_detail(acquire_started, Some(ErrCause::from_io(&e)));
                     if let Some((entry, source)) = stale.take()
                         && !force_revalidate
                         && can_serve_stale(&entry)
@@ -539,9 +550,14 @@ pub fn handle_http_with_headers(
                         return serve_cached(client, entry, source, "STALE", 0, &ctx);
                     }
                     write_error(client, 502, "Bad Gateway")?;
+                    // 原因つきで 1 件数える (デプロイ先の「エラー 12 件、原因は不明」を無くす)
+                    ctx.log(502, 0, "ERROR");
                     return Ok(false);
                 }
             };
+        if !reused {
+            ctx.detail = origin_detail(acquire_started, None);
+        }
         metrics.inc_origin_conn(reused);
         let sent = server
             .get_mut()
@@ -567,6 +583,10 @@ pub fn handle_http_with_headers(
                 if origin_timeout != shared.timeout {
                     let _ = server.get_ref().set_timeouts(shared.timeout);
                 }
+                // 「forward の初バイト」= オリジンの応答ヘッダーを読み終えたところ
+                // (本文の転送は相手と回線の都合なので、待ちの物差しにはこちらを使う)
+                ctx.detail.first_byte_ms =
+                    Some(ctx.started.elapsed().as_millis().min(u64::MAX as u128) as u64);
                 break (server, head, status, n);
             }
             Err(e) if reused && retryable && attempt == 1 && is_stale_conn_error(&e) => {
@@ -580,6 +600,7 @@ pub fn handle_http_with_headers(
             }
             Err(e) => {
                 log_warn!(Some(conn_id), "failed to read origin response: {}", e);
+                ctx.detail.cause = Some(ErrCause::from_io(&e));
                 if let Some((entry, source)) = stale.take()
                     && !force_revalidate
                     && can_serve_stale(&entry)
@@ -588,6 +609,7 @@ pub fn handle_http_with_headers(
                     return serve_cached(client, entry, source, "STALE", 0, &ctx);
                 }
                 write_error(client, 502, "Bad Gateway")?;
+                ctx.log(502, 0, "ERROR");
                 return Ok(false);
             }
         }
@@ -973,6 +995,21 @@ fn write_error(client: &mut impl Write, status: u16, reason: &str) -> io::Result
     );
     client.write_all(resp.as_bytes())?;
     client.flush()
+}
+
+/// オリジンを掴むまでの内訳を組み立てる (T12.4 (2))。**接続を試した直後の 1 回だけ**呼ぶ
+/// (thread-local を読んで 0 に戻すので、2 回呼ぶと 2 回目が空になる)。
+fn origin_detail(acquire_started: Instant, cause: Option<ErrCause>) -> Detail {
+    let (dns_ms, dns_misses) = crate::dns::take_resolve_cost();
+    let total_ms = acquire_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    Detail {
+        dns_ms,
+        dns_misses,
+        connect_ms: total_ms.saturating_sub(dns_ms),
+        family_v6: crate::dns::take_family(),
+        cause,
+        first_byte_ms: None,
+    }
 }
 
 /// 再利用した接続が死んでいた (要求が届いていない) と判断してよいエラーか。

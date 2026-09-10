@@ -962,6 +962,20 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             via::token()
         );
         reject(client, 508, "Loop Detected")?;
+        // 原因つきで 1 件数える (T12.4 (2))。ここは要求ターゲットをまだ解いていないので、
+        // 鍵は `Host` (無ければ要求ターゲット) から作る。この経路は 1 要求に 1 回しか
+        // 通らないので `format!` の確保は熱い経路に乗らない
+        metrics.record_host_detail(
+            &format!("loop://{}", host_header.unwrap_or(target)),
+            metrics::HostOutcome::Error,
+            0,
+            None,
+            metrics::Detail {
+                cause: Some(metrics::ErrCause::Loop),
+                ..metrics::Detail::default()
+            },
+        );
+        metrics.record_client(peer_ip, metrics::HostOutcome::Error, 0, None);
         return Ok(Step::Close);
     }
 

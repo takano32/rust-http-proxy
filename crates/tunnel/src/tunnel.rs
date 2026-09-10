@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::log::{Access, access};
 #[cfg(not(target_os = "linux"))]
 use crate::log_trace;
-use crate::metrics::{HostOutcome, Metrics};
+use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics};
 use crate::net;
 use crate::{log_debug, log_warn};
 
@@ -34,6 +34,8 @@ struct Info {
     started: Instant,
     /// ホスト別の応答時間は接続確立まで (トンネル自体の寿命は応答時間ではない)
     connect_took: Duration,
+    /// 確立までの内訳 (名前解決 / 接続 / 勝った族。T12.4 (2))
+    detail: Detail,
     metrics: Arc<Metrics>,
 }
 
@@ -53,6 +55,10 @@ fn open(
 
     log_debug!(Some(conn_id), "start CONNECT {}", addr_str);
 
+    // 前の要求がこのスレッドに残していった名前解決の費用を捨てる (次の `take` で
+    // この CONNECT のぶんだけが取れるように。T12.4 (2))
+    let _ = crate::dns::take_resolve_cost();
+    let _ = crate::dns::take_family();
     let mut server = match connect_with_timeout(&addr_str, timeout) {
         Ok(s) => s,
         Err(e) => {
@@ -63,11 +69,12 @@ fn open(
                 e
             );
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
-            metrics.record_host_timed(
+            metrics.record_host_detail(
                 &format!("connect://{}", addr_str),
                 HostOutcome::Error,
                 0,
-                started.elapsed(),
+                Some(started.elapsed()),
+                detail_of(started.elapsed(), Some(ErrCause::from_io(&e))),
             );
             metrics.record_client(&client_ip, HostOutcome::Error, 0, Some(started.elapsed()));
             access(
@@ -89,6 +96,7 @@ fn open(
 
     // ホスト別の応答時間は接続確立まで (トンネル自体の寿命は応答時間ではない)
     let connect_took = started.elapsed();
+    let detail = detail_of(connect_took, None);
     client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     client.flush()?;
     if !prefix.is_empty() {
@@ -103,19 +111,40 @@ fn open(
             client_ip,
             started,
             connect_took,
+            detail,
             metrics,
         },
     })
 }
 
+/// 確立までの内訳を組み立てる。**呼ぶのは接続が終わった直後の 1 回だけ**
+/// (thread-local を読んで 0 に戻すので、2 回呼ぶと 2 回目が空になる)。
+///
+/// 接続にかかった時間は「全体 − 名前解決」で出す。`net` 側に測る口を足すと
+/// T12.7 (同じところを直しているタスク) と衝突するので、**引き算で済ませている**。
+fn detail_of(total: Duration, cause: Option<ErrCause>) -> Detail {
+    let (dns_ms, dns_misses) = crate::dns::take_resolve_cost();
+    let total_ms = total.as_millis().min(u64::MAX as u128) as u64;
+    Detail {
+        dns_ms,
+        dns_misses,
+        connect_ms: total_ms.saturating_sub(dns_ms),
+        family_v6: crate::dns::take_family(),
+        cause,
+        // CONNECT は「確立まで」がそのまま窓に入る値なので指定しない
+        first_byte_ms: None,
+    }
+}
+
 /// トンネルが終わったときのアクセスログと統計 (どこで終わっても 1 回だけ通る)。
 fn report(o: &Info, transferred: u64) {
     o.metrics.add_bytes(transferred);
-    o.metrics.record_host_timed(
+    o.metrics.record_host_detail(
         &format!("connect://{}", o.addr_str),
         HostOutcome::Bypass,
         transferred,
-        o.connect_took,
+        Some(o.connect_took),
+        o.detail,
     );
     o.metrics.record_client(
         &o.client_ip,

@@ -311,3 +311,52 @@ fn test_integration_reused_relay_pipe_never_leaks_bytes() {
         assert_eq!(back, payload, "round {}", round);
     }
 }
+
+/// つながらないオリジンのエラーの原因が `/status` の `errors_by_cause` に乗ること (T12.4 (2))。
+///
+/// 2 つ試す: **閉じたポート** (即 `ECONNREFUSED`) は `refused`、
+/// **TEST-NET-1** (`192.0.2.1`、RFC 5737 の文書用アドレスで応答しない) は `timeout`。
+/// どちらもホスト別の行に 1 件ずつ乗り、ホストが違うので取り違えない。
+#[test]
+fn test_integration_failed_connects_land_in_errors_by_cause() {
+    // 立てたそばから閉じたポート番号 (誰も待ち受けていないことが確かめられる)
+    let closed_port = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let p = l.local_addr().unwrap().port();
+        drop(l);
+        p
+    };
+    let mut cfg = proxy_config();
+    // TEST-NET-1 が「時間切れ」になるまでを短くする (既定 5 秒だとテストが遅い)
+    cfg.timeout = Duration::from_millis(300);
+    let proxy_port = start_test_proxy(cfg);
+
+    for target in [format!("127.0.0.1:{}", closed_port), "192.0.2.1:443".into()] {
+        let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        s.write_all(format!("CONNECT {t} HTTP/1.1\r\nHost: {t}\r\n\r\n", t = target).as_bytes())
+            .unwrap();
+        let head = read_connect_response(&mut s);
+        assert!(head.starts_with("HTTP/1.1 502"), "{} -> {}", target, head);
+    }
+
+    let status = status_json(proxy_port);
+    // `errors_by_cause` は [dns, refused, unreachable, timeout, reset, tls, loop, other]
+    let causes_of = |host: &str| -> Vec<u64> {
+        let at = status
+            .find(&format!("\"host\":\"connect://{}\"", host))
+            .unwrap_or_else(|| panic!("no row for {} in {}", host, status));
+        let arr = &status[at..];
+        let a = arr.find("\"errors_by_cause\":[").unwrap() + 19;
+        arr[a..arr[a..].find(']').unwrap() + a]
+            .split(',')
+            .map(|v| v.parse().unwrap())
+            .collect()
+    };
+    let refused = causes_of(&format!("127.0.0.1:{}", closed_port));
+    assert_eq!(refused[1], 1, "refused が 1 件: {:?}", refused);
+    assert_eq!(refused.iter().sum::<u64>(), 1, "他の原因に乗らない");
+    let timed_out = causes_of("192.0.2.1:443");
+    assert_eq!(timed_out[3], 1, "timeout が 1 件: {:?}", timed_out);
+    assert_eq!(timed_out.iter().sum::<u64>(), 1, "他の原因に乗らない");
+}
