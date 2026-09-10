@@ -692,6 +692,239 @@ mod tests {
         assert_eq!(ipv6_counters(), [2, 2, 0]);
     }
 
+    /// T12.2 の計測: 負けた Happy Eyeballs の試行がスレッドと fd を何本残すか。
+    ///
+    /// 黒穴 `[::1]` (backlog 0 を 1 本で埋めたもの) + 生きた `127.0.0.1` の 2 候補へ
+    /// `connect_resolved` を 100 回呼び、1 回ごとに `/proc/self/status` の `Threads` と
+    /// `/proc/self/fd` の数を読む。締め切りは 2 秒 (デプロイ先の `PROXY_TIMEOUT_SECS` は 30)。
+    ///
+    ///   cargo test -p proxy-net --release -- --ignored --exact \
+    ///     net::tests::measures_leftover_attempts --nocapture --test-threads=1
+    ///
+    /// 2026-09-10 の実測 (T12.2 はこの数字で「やらない」と決めた):
+    ///
+    /// - 順に 100 本・毎回別ホスト: 残るのは最大 4 / 最後 3 スレッド (fd も同数)、基準値に戻るまで 1.7 秒
+    /// - 順に 100 本・同じホスト: +0 (記憶が効くと IPv6 の候補はそもそも起動されない)
+    /// - 600 秒ごとの探り 1 本: +1 スレッド。**残る時間は締め切りそのもの** (2 秒 → 1.8 秒、4 秒 → 3.8 秒)
+    /// - 起動直後に 100 本が**同時に**来ると +14〜100 (最初の `STAGGER` 250 ms の間に来たぶんだけ賭ける)。
+    ///   学習後に 100 本同時なら +0
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "T12.2 の計測 (十数秒かかる)"]
+    fn measures_leftover_attempts() {
+        let _guard = IPV6_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((_hole, _filler, live, addrs)) = blackhole_v6_and_live_v4() else {
+            eprintln!("no IPv6 loopback; skipping");
+            return;
+        };
+        live.set_nonblocking(true).unwrap();
+        let timeout = Duration::from_secs(2);
+
+        fn threads() -> usize {
+            std::fs::read_to_string("/proc/self/status")
+                .unwrap()
+                .lines()
+                .find_map(|l| l.strip_prefix("Threads:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap()
+        }
+        fn fds() -> usize {
+            std::fs::read_dir("/proc/self/fd").unwrap().count()
+        }
+        let drain = || while live.accept().is_ok() {};
+        // 基準値に戻るまでの時間 (0.1 秒刻みで 5 秒まで)
+        let settle = |base_t: usize, base_f: usize| -> Option<Duration> {
+            let started = Instant::now();
+            for _ in 0..51 {
+                if threads() <= base_t && fds() <= base_f {
+                    return Some(started.elapsed());
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            None
+        };
+        let show = |d: Option<Duration>| match d {
+            Some(d) => format!("{:.1} s", d.as_secs_f64()),
+            None => "> 5 s".to_string(),
+        };
+
+        eprintln!("\n== T12.2 計測 (timeout {:?}) ==", timeout);
+        eprintln!("条件 | 直後 Threads | 直後 fd | 戻るまで");
+
+        // (1) 起動直後から順に 100 本、ホストは全部初めて見る名前 (T12.1 の学習が効く形)
+        reset_ipv6_state();
+        crate::dns::clear();
+        drain();
+        let (base_t, base_f) = (threads(), fds());
+        let (mut peak_t, mut peak_f) = (0usize, 0usize);
+        let mut per_call = Vec::new();
+        let started = Instant::now();
+        for i in 0..100 {
+            let host = format!("t122-serial-{}.invalid", i);
+            let at = Instant::now();
+            let s = connect_resolved(&host, addrs.clone(), timeout).expect("v4 should win");
+            let took = at.elapsed();
+            let (t, f) = (
+                threads().saturating_sub(base_t),
+                fds().saturating_sub(base_f),
+            );
+            if i < 6 {
+                per_call.push(format!(
+                    "{}本目 {:.1}ms T+{} fd+{}",
+                    i + 1,
+                    took.as_secs_f64() * 1e3,
+                    t,
+                    f
+                ));
+            }
+            peak_t = peak_t.max(t);
+            peak_f = peak_f.max(f);
+            drop(s);
+            drain();
+        }
+        let burst = started.elapsed();
+        let (end_t, end_f) = (
+            threads().saturating_sub(base_t),
+            fds().saturating_sub(base_f),
+        );
+        let back = settle(base_t, base_f);
+        eprintln!(
+            "(1) 順に 100 本・毎回別ホスト ({:.2} s) | 最大 +{} / 最後 +{} | 最大 +{} / 最後 +{} | {}",
+            burst.as_secs_f64(),
+            peak_t,
+            end_t,
+            peak_f,
+            end_f,
+            show(back)
+        );
+        eprintln!("    最初の 6 本: {}", per_call.join(" / "));
+        eprintln!("    {}", ipv6_status_json());
+
+        // (2) 同じホストへ 100 本 (ホストごとの記憶が効いた後)
+        drain();
+        let (base_t, base_f) = (threads(), fds());
+        let (mut peak_t, mut peak_f) = (0usize, 0usize);
+        let host = "t122-samehost.invalid";
+        connect_resolved(host, addrs.clone(), timeout).unwrap();
+        drain();
+        for _ in 0..100 {
+            let s = connect_resolved(host, addrs.clone(), timeout).expect("v4 should win");
+            peak_t = peak_t.max(threads().saturating_sub(base_t));
+            peak_f = peak_f.max(fds().saturating_sub(base_f));
+            drop(s);
+            drain();
+        }
+        let (end_t, end_f) = (
+            threads().saturating_sub(base_t),
+            fds().saturating_sub(base_f),
+        );
+        let back = settle(base_t, base_f);
+        eprintln!(
+            "(2) 順に 100 本・同じホスト | 最大 +{} / 最後 +{} | 最大 +{} / 最後 +{} | {}",
+            peak_t,
+            end_t,
+            peak_f,
+            end_f,
+            show(back)
+        );
+
+        // (3) 600 秒ごとの IPv6 の探り 1 本 (時刻は進められないので `IPV6_PROBE_AT` を 0 に戻す)。
+        // 締め切りを 2 秒と 4 秒で 2 回測り、「残る時間 = PROXY_TIMEOUT_SECS」を確かめる
+        for t in [timeout, Duration::from_secs(4)] {
+            drain();
+            let (base_t, base_f) = (threads(), fds());
+            IPV6_PROBE_AT.store(0, Ordering::Relaxed);
+            let at = Instant::now();
+            let s = connect_resolved("t122-probe.invalid", addrs.clone(), t).unwrap();
+            let took = at.elapsed();
+            let (end_t, end_f) = (
+                threads().saturating_sub(base_t),
+                fds().saturating_sub(base_f),
+            );
+            drop(s);
+            drain();
+            let back = settle(base_t, base_f);
+            eprintln!(
+                "(3) 600 秒ごとの探り 1 本・締め切り {:?} ({:.1} ms) | +{} | +{} | {}",
+                t,
+                took.as_secs_f64() * 1e3,
+                end_t,
+                end_f,
+                show(back)
+            );
+            crate::dns::clear();
+        }
+
+        // (4) 起動直後に 100 本が**同時に**来る (ページを 1 枚開いた形。学習が間に合わない)
+        reset_ipv6_state();
+        crate::dns::clear();
+        drain();
+        let (base_t, base_f) = (threads(), fds());
+        let started = Instant::now();
+        thread::scope(|scope| {
+            let mut hs = Vec::new();
+            for i in 0..100 {
+                let addrs = addrs.clone();
+                hs.push(scope.spawn(move || {
+                    let host = format!("t122-para-{}.invalid", i);
+                    connect_resolved(&host, addrs, timeout).map(|s| drop(s))
+                }));
+            }
+            // 呼び出し側のスレッドは全部終わらせてから数える (残るのは負けた試行だけ)
+            for h in hs {
+                let _ = h.join();
+            }
+        });
+        let burst = started.elapsed();
+        let (end_t, end_f) = (
+            threads().saturating_sub(base_t),
+            fds().saturating_sub(base_f),
+        );
+        drain();
+        let back = settle(base_t, base_f);
+        eprintln!(
+            "(4) 同時に 100 本・起動直後 ({:.2} s) | +{} | +{} | {}",
+            burst.as_secs_f64(),
+            end_t,
+            end_f,
+            show(back)
+        );
+        eprintln!("    {}", ipv6_status_json());
+
+        // (5) 学習が済んだあとに 100 本が同時に来る (2 枚目以降のページ)
+        drain();
+        let (base_t, base_f) = (threads(), fds());
+        let started = Instant::now();
+        thread::scope(|scope| {
+            let mut hs = Vec::new();
+            for i in 0..100 {
+                let addrs = addrs.clone();
+                hs.push(scope.spawn(move || {
+                    let host = format!("t122-para2-{}.invalid", i);
+                    connect_resolved(&host, addrs, timeout).map(|s| drop(s))
+                }));
+            }
+            for h in hs {
+                let _ = h.join();
+            }
+        });
+        let burst = started.elapsed();
+        let (end_t, end_f) = (
+            threads().saturating_sub(base_t),
+            fds().saturating_sub(base_f),
+        );
+        drain();
+        let back = settle(base_t, base_f);
+        eprintln!(
+            "(5) 同時に 100 本・学習後 ({:.2} s) | +{} | +{} | {}",
+            burst.as_secs_f64(),
+            end_t,
+            end_f,
+            show(back)
+        );
+        eprintln!("    {}\n", ipv6_status_json());
+    }
+
     /// Linux 以外は黒穴 (`listen(fd, 0)`) を作れないので、到達不能アドレスで従来どおり見る。
     #[cfg(not(target_os = "linux"))]
     #[test]
