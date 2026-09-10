@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
 use crate::ascii;
+use crate::via;
 
 const HOP_BY_HOP_HEADERS: &[&str] = &[
     "connection",
@@ -102,7 +103,9 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
             out.extend_from_slice(name.as_bytes());
             out.extend_from_slice(b": ");
             out.extend_from_slice(v.trim_ascii().as_bytes());
-            out.extend_from_slice(b", 1.1 rust-http-proxy\r\n");
+            out.extend_from_slice(b", ");
+            out.extend_from_slice(via::token().as_bytes());
+            out.extend_from_slice(b"\r\n");
             continue;
         }
         out.extend_from_slice(line.as_bytes());
@@ -123,7 +126,8 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
     }
 
     if !has_via {
-        out.extend_from_slice(b"Via: 1.1 rust-http-proxy\r\n");
+        // 起動時に 1 回作った行をそのまま書く (要求ごとに String を作らない)
+        out.extend_from_slice(via::line().as_bytes());
     }
 }
 
@@ -385,7 +389,7 @@ pub fn sanitize_and_inject_headers(
 
             if k_lower == "via" {
                 has_via = true;
-                let new_via = format!("{}: {}, 1.1 rust-http-proxy\r\n", k_trim, v.trim_ascii());
+                let new_via = format!("{}: {}, {}\r\n", k_trim, v.trim_ascii(), via::token());
                 out.push(new_via);
                 continue;
             }
@@ -408,7 +412,7 @@ pub fn sanitize_and_inject_headers(
 
     // Add Via if not already updated
     if !has_via {
-        out.push("Via: 1.1 rust-http-proxy\r\n".to_string());
+        out.push(via::line().to_string());
     }
 
     out
@@ -465,11 +469,7 @@ mod tests {
                 .iter()
                 .any(|h| h.starts_with("X-Forwarded-For: 192.168.1.100"))
         );
-        assert!(
-            cleaned
-                .iter()
-                .any(|h| h.starts_with("Via: 1.1 rust-http-proxy"))
-        );
+        assert!(cleaned.iter().any(|h| h == &via::line().to_string()));
 
         assert!(
             !cleaned

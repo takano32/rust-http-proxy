@@ -74,7 +74,13 @@ fn test_integration_status_reports_cache_limits() {
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
     stream
-        .write_all(b"GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .write_all(
+            format!(
+                "GET /status HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                proxy_port
+            )
+            .as_bytes(),
+        )
         .unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();

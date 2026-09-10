@@ -142,7 +142,7 @@ touch "$work/sampling"
     i=$((i + 1))
     if [ $((i % 10)) -eq 0 ]; then
       p=$( { exec 3<>"/dev/tcp/127.0.0.1/$PORT" &&
-             printf 'GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3 &&
+             printf 'GET /status HTTP/1.1\r\nHost: 127.0.0.1:%s\r\nConnection: close\r\n\r\n' "$PORT" >&3 &&
              cat <&3; } 2>/dev/null | sed -n 's/.*"parked_connections":\([0-9]*\).*/\1/p' | tail -1)
       if [ -n "$p" ] && [ "$p" -gt "$pk" ]; then pk=$p; echo "$pk" >"$work/parked.max"; fi
     fi

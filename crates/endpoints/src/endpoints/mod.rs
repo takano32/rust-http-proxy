@@ -2,9 +2,10 @@
 //! `/history` (JSON、`res=5|60|3600`)、`/metrics` (Prometheus)、`/proxy.pac` (ブラウザの自動設定)、
 //! `/purge` と `PURGE` メソッド、`/lookup`、`/blocklist` (判定と手動の上書き)。
 //!
-//! これらのパスはオリジン形式の要求 (`GET /status` + `Host:`) より優先する。ブラウザがこの
-//! プロキシ自身を経由して `http://host:PORT/status` のように絶対形式で要求してきた場合も、
-//! ポートが自分の待ち受けポートなら自分宛てとみなす (自分へ転送してループしない)。
+//! 自分宛てかどうかは**ポートだけ**で決める: 絶対形式 (`http://host:PORT/status`) は authority の、
+//! オリジン形式 (`GET /status` + `Host:`) は `Host` のポート (無ければ 80) が自分の待ち受けポートと
+//! 同じときだけ自分宛て。自分宛てで知らないパスは 404、`/` は 200 でこの一覧を返す
+//! (自分へ転送してループしない。T12.3)。ポートの違うオリジン形式は今までどおり転送する。
 //! 応答は常に `Connection: close`。認証は無いので、到達できる人は誰でも purge できる
 //! (公開ポートなら ACL や到達制御で守ること)。
 
@@ -43,11 +44,16 @@ mod pac;
 
 const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
 
-/// 要求ターゲットを自分宛てのパスに直す。オリジン形式はそのまま、絶対形式は自分のポート宛て
-/// のときだけパスに落とす。それ以外 (他所への転送) は `None`。
-fn local_path(target: &str, port: u16) -> Option<&str> {
+/// 要求ターゲットを自分宛てのパスに直す。**どちらの形式もポートだけで判定する**:
+/// 絶対形式は authority の、オリジン形式は `Host` ヘッダーのポート (無ければ 80) が
+/// 自分の待ち受けポートと同じときだけ自分宛て。それ以外 (他所への転送) は `None`。
+///
+/// オリジン形式を無条件に自分宛てにしていた頃は、知らないパスが `Host` 宛ての転送に落ちて
+/// **`Host` が自分自身ならループした** (1 要求で `max_conns` 本。T12.3 の前提 4)。
+/// `Host` が無い HTTP/1.0 のオリジン形式は自分宛てにしない (今までどおり 400)。
+fn local_path<'a>(target: &'a str, port: u16, host: Option<&str>) -> Option<&'a str> {
     if target.starts_with('/') {
-        return Some(target);
+        return (authority_port(host?)? == port).then_some(target);
     }
     let rest = target
         .strip_prefix("http://")
@@ -56,11 +62,43 @@ fn local_path(target: &str, port: u16) -> Option<&str> {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
-    let authority_port = match authority.rsplit_once(':') {
-        Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => p.parse::<u16>().ok()?,
-        _ => 80,
+    (authority_port(authority)? == port).then_some(path)
+}
+
+/// `host[:port]` のポート (無ければ 80)。`[::1]` のようなブラケット付きも扱う。
+fn authority_port(authority: &str) -> Option<u16> {
+    if authority.is_empty() {
+        return None;
+    }
+    match authority.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => p.parse::<u16>().ok(),
+        _ => Some(80),
+    }
+}
+
+/// 自分宛ての `/` に返す案内 (エンドポイントの一覧)。`--lite` では `/dashboard` を載せない。
+fn endpoint_list(lite: bool) -> String {
+    let dashboard = if lite {
+        ""
+    } else {
+        "  /dashboard                                  control panel (graphs, per-host stats)\n"
     };
-    (authority_port == port).then_some(path)
+    format!(
+        "rust-http-proxy - an HTTP/HTTPS(CONNECT) forward proxy.\n\n\
+         This is the proxy itself, not a web site. Point your browser or client at\n\
+         this address as an HTTP proxy (or use /proxy.pac below).\n\n\
+         endpoints:\n\
+         {}\
+         \x20 /status                                     JSON: counters, hosts, cache, threads\n\
+         \x20 /healthz                                    same as /status\n\
+         \x20 /history?res=5|60|3600                      JSON: time series\n\
+         \x20 /metrics                                    Prometheus text format\n\
+         \x20 /proxy.pac                                  browser auto-config script\n\
+         \x20 /lookup?url=<url>                           cache entry state\n\
+         \x20 /purge?url=<url> | /purge?all=1             drop cache entries (also: PURGE <url>)\n\
+         \x20 /blocklist?host=&action=block|allow|clear   blocklist decision and overrides\n",
+        dashboard
+    )
 }
 
 /// 内部エンドポイントなら応答して `Ok(true)` を返す。そうでなければ何もせず `Ok(false)`。
@@ -74,12 +112,14 @@ pub fn handle(
     let local = if is_purge {
         Some(target)
     } else {
-        local_path(target, ep.port)
+        local_path(target, ep.port, ep.host)
     };
     let Some(local) = local else {
         return Ok(false);
     };
-    let self_addressed = !target.starts_with('/');
+    // ここへ来た要求はどちらの形式でも自分宛て (`local_path` がポートで判定済み)。
+    // この旗は「絶対形式か」= `/proxy.pac` が自分の名前をどちらから取るか、だけに使う
+    let absolute_form = !target.starts_with('/');
     let (path, query) = match local.split_once('?') {
         Some((p, q)) => (p, Some(q)),
         None => (local, None),
@@ -101,7 +141,7 @@ pub fn handle(
         (
             200,
             "application/x-ns-proxy-autoconfig",
-            pac::render(ep, target, self_addressed),
+            pac::render(ep, target, absolute_form),
         )
     } else if is_get && path == "/history" {
         let params = parse_query(query.unwrap_or(""));
@@ -165,16 +205,16 @@ pub fn handle(
                 "{\"error\":\"use /lookup?url=<url>\"}".to_string(),
             ),
         }
-    } else if self_addressed {
+    } else if is_get && (path == "/" || path.is_empty()) {
+        // ブラウザでプロキシの URL を開いた人への案内 (`--lite` でも出す)
+        (200, "text/plain; charset=utf-8", endpoint_list(ep.lite))
+    } else {
         // 自分宛てだが知らないパス: 自分へ転送するとループするので 404
         (
             404,
             "text/plain; charset=utf-8",
-            "not found. endpoints: /dashboard /status /history?res=5|60|3600 /metrics /proxy.pac /lookup?url= /purge?url=|all=1 /blocklist?host=&action=block|allow|clear\n"
-                .to_string(),
+            format!("not found.\n\n{}", endpoint_list(ep.lite)),
         )
-    } else {
-        return Ok(false);
     };
     let reason = match status {
         200 => "OK",
@@ -333,24 +373,51 @@ mod tests {
 
 #[cfg(test)]
 mod local_path_tests {
-    use super::local_path;
+    use super::{endpoint_list, local_path};
 
     #[test]
-    fn origin_form_is_always_local() {
-        assert_eq!(local_path("/status", 8080), Some("/status"));
-        assert_eq!(local_path("/purge?all=1", 8080), Some("/purge?all=1"));
+    fn origin_form_is_local_only_when_the_host_port_is_ours() {
+        assert_eq!(
+            local_path("/status", 8080, Some("127.0.0.1:8080")),
+            Some("/status")
+        );
+        assert_eq!(
+            local_path("/purge?all=1", 8080, Some("[::1]:8080")),
+            Some("/purge?all=1")
+        );
+        assert_eq!(local_path("/", 80, Some("proxy.example.net")), Some("/"));
+        // ポートが違えば今までどおり転送する (透過プロキシの使い方を壊さない)
+        assert_eq!(local_path("/status", 8080, Some("example.com")), None);
+        assert_eq!(local_path("/status", 8080, Some("example.com:80")), None);
+        assert_eq!(local_path("/x", 8080, Some("127.0.0.1:9999")), None);
+        // Host の無い HTTP/1.0 のオリジン形式は今までどおり (転送に落ちて 400)
+        assert_eq!(local_path("/status", 8080, None), None);
+        assert_eq!(local_path("/status", 8080, Some("")), None);
+        assert_eq!(local_path("/status", 8080, Some("host:nope")), None);
     }
 
     #[test]
     fn absolute_form_is_local_only_on_our_port() {
         assert_eq!(
-            local_path("http://tokyo.example.net:60624/status", 60624),
+            local_path("http://tokyo.example.net:60624/status", 60624, None),
             Some("/status")
         );
-        assert_eq!(local_path("http://[::1]:60624", 60624), Some("/"));
-        assert_eq!(local_path("http://example.com/status", 60624), None);
-        assert_eq!(local_path("http://example.com/status", 80), Some("/status"));
-        assert_eq!(local_path("http://example.com:8080/x", 60624), None);
-        assert_eq!(local_path("https://example.com:60624/x", 60624), None);
+        assert_eq!(local_path("http://[::1]:60624", 60624, None), Some("/"));
+        assert_eq!(local_path("http://example.com/status", 60624, None), None);
+        assert_eq!(
+            local_path("http://example.com/status", 80, None),
+            Some("/status")
+        );
+        assert_eq!(local_path("http://example.com:8080/x", 60624, None), None);
+        assert_eq!(local_path("https://example.com:60624/x", 60624, None), None);
+    }
+
+    #[test]
+    fn the_listing_hides_the_dashboard_in_lite_mode() {
+        assert!(endpoint_list(false).contains("/dashboard"));
+        assert!(!endpoint_list(true).contains("/dashboard"));
+        for path in ["/status", "/metrics", "/proxy.pac", "/purge?url="] {
+            assert!(endpoint_list(true).contains(path), "{}", path);
+        }
     }
 }
