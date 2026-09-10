@@ -665,8 +665,19 @@ impl Metrics {
             None => "null".to_string(),
         };
 
-        let hosts_json: Vec<String> = self
-            .hosts_sorted()
+        let all_hosts = self.hosts_sorted();
+        // ホスト別統計は `.rrd` で再起動をまたいで通算されるので、**いつからの通算か**を出す
+        // (`total_requests` は起動から、`hosts[]` は通算という窓の混在が読めなかった)
+        let restored_since = all_hosts
+            .iter()
+            .map(|(_, s)| s.last_seen)
+            .filter(|&t| t > 0)
+            .min()
+            .unwrap_or(0);
+        // `/proc` を読むのはこのパスに来たときだけ (要求ごとには読まない)
+        let threads = crate::sysinfo::process_threads().unwrap_or(0);
+        let (fds, max_fds) = crate::sysinfo::process_fds().unwrap_or((0, 0));
+        let hosts_json: Vec<String> = all_hosts
             .into_iter()
             .take(50)
             .map(|(h, s)| {
@@ -692,6 +703,10 @@ impl Metrics {
         format!(
             concat!(
                 "{{\"status\":\"ok\",\"version\":\"{}\",\"uptime_secs\":{},\"total_requests\":{},",
+                // 窓の目印 (T12.4 (4)): `since_start_secs` から下は起動から、
+                // `restored_since` は `hosts[]` / `clients[]` が何時からの通算か (epoch 秒、0 = 無し)
+                "\"since_start_secs\":{},\"restored_since\":{},",
+                "\"threads\":{},\"fds\":{},\"max_fds\":{},",
                 "\"active_connections\":{},\"max_conns\":{},",
                 "\"parked_connections\":{},\"parked_tunnels\":{},",
                 "\"parking\":{},",
@@ -705,6 +720,11 @@ impl Metrics {
             crate::json::escape(extra.version),
             uptime,
             requests,
+            uptime,
+            restored_since,
+            threads,
+            fds,
+            max_fds,
             active,
             extra.concurrency.max_conns,
             self.parked_connections.load(Ordering::Relaxed),

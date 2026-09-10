@@ -754,11 +754,27 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 
 `/status` のトップレベルの `version` には動いているバイナリの版が出ます (`-V` と起動ログと同じ文字列)。
 
+**`/status` は 2 つの窓が混ざっている**ので、どちらの窓かが分かるように目印を出します:
+`since_start_secs` から下 (`total_requests` / `bytes_forwarded` / `cache_hits` …) は**この起動から**、
+`hosts[]` と `clients[]` は状態ファイルに残る**通算**で、`restored_since` がその通算の始まり
+(最も古い `last_seen` の epoch 秒。`0` なら表が空) です。あわせてプロセス全体の数え物
+`threads` (`/proc/self/status` の `Threads`。接続スレッドだけを数える `live_threads` とは別で、
+監視・履歴・接続試行のスレッドも入ります) と `fds` / `max_fds` (`/proc/self/fd` の数と `RLIMIT_NOFILE`) も出ます。
+`/proc` を読むのは **`/status` と `/metrics` に来たときと 5 秒ごとの履歴の標本のときだけ**です。
+
 `/status` には上限といまの混み具合も出ます: `max_conns` / `max_threads` (`auto` で決まった値。`0` は無制限)、
 `live_threads` (生きている接続スレッド) / `idle_threads` (そのうち仕事待ち) / `queued_jobs` (上限に当たって
 待たせている仕事。捨てていません)。`auto` が何を選んだかは起動ログを見なくてもここで分かります。
 同じ 5 つは `/metrics` にも gauge で出ます (`sorahost_max_connections` / `sorahost_max_threads` /
-`sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs`)。ダッシュボードの「接続中」にも
+`sorahost_threads{state="live"|"idle"}` / `sorahost_queued_jobs`)。
+**接続スレッドの 2 つはラベル付きの 1 系列にそろえました**。旧名 `sorahost_live_threads` /
+`sorahost_idle_threads` はこの版だけ両方出るので、監視側は次の版までに移してください。
+`/metrics` にはこのほか `sorahost_connect_seconds`(`_bucket{le=}` / `_sum` / `_count`。CONNECT 確立の
+ヒストグラム。区間は `/history` と同じ 12 段)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
+かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
+`sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads` が出ます。
+ホスト別の応答時間ヒストグラム (`sorahost_host_request_duration_seconds`) は区間が 24 段になったので
+**上位 50 ホストまで**です (数え上げの系列はこれまでどおり上位 100 ホスト)。ダッシュボードの「接続中」にも
 `スレッド 7 / 256 (空き 3) · 接続上限 1008` の 1 行が出ます。数えるには接続スレッドで共有している鍵が要るので、
 **`/status` と `/metrics` に来たときだけ**数えます (要求ごとの仕事は増えません)。
 `cache` の `revalidations_dropped` は、上限に当たって捨てた裏側の再検証の数です

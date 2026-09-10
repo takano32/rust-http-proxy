@@ -13,6 +13,21 @@ use std::time::Duration;
 
 use common::status_json;
 
+/// `"key":` に続く数を取る (テスト用の雑な取り出し。キーは前後の `"` を含めて渡す)。
+fn status_number(json: &str, key: &str) -> u64 {
+    let pat = format!("{}:", key);
+    let at = json
+        .find(&pat)
+        .unwrap_or_else(|| panic!("no {} in {}", key, json))
+        + pat.len();
+    json[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|_| panic!("{} is not a number", key))
+}
+
 /// 版 2 の固定の大きさ (`proxy_rrd::rrd::FILE_SIZE`)。
 const FILE_SIZE: u64 = 4 * 1024 * 1024;
 
@@ -107,6 +122,38 @@ fn test_integration_an_old_state_file_is_replaced_by_the_new_fixed_size_one() {
         std::fs::metadata(&rrd).unwrap().len(),
         FILE_SIZE,
         "ファイルの実サイズも固定"
+    );
+
+    // ---- `/status` の窓とプロセスの数え物 (T12.4 (4)) ----
+    assert!(
+        status.contains("\"since_start_secs\":") && status.contains("\"restored_since\":"),
+        "窓の目印が無い: {}",
+        status
+    );
+    // まだ 1 件も要求を通していないので、通算の始まりは 0 (= `hosts[]` が空)
+    assert!(status.contains("\"restored_since\":0"), "{}", status);
+    let pid = child.0.id();
+    let fds = status_number(&status, "\"fds\"");
+    let max_fds = status_number(&status, "\"max_fds\"");
+    let threads = status_number(&status, "\"threads\"");
+    let ls = std::process::Command::new("ls")
+        .arg(format!("/proc/{}/fd", pid))
+        .output()
+        .expect("ls");
+    let counted = String::from_utf8_lossy(&ls.stdout).lines().count() as u64;
+    assert!(
+        fds.abs_diff(counted) <= 2,
+        "/status の fds {} と ls /proc/{}/fd {} が ±2 で一致しない",
+        fds,
+        pid,
+        counted
+    );
+    assert!(max_fds >= fds, "max_fds {} < fds {}", max_fds, fds);
+    assert!(threads >= 2, "スレッド数 {}", threads);
+    assert!(
+        status.len() <= 64 * 1024,
+        "/status が {} B (64 KiB 超)",
+        status.len()
     );
 
     drop(child);
