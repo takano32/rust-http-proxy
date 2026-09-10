@@ -27,6 +27,8 @@
 #     scripts/cpu-per-request.sh --only forward --no-keepalive    # 1 接続 1 要求
 #     scripts/cpu-per-request.sh --only connect                   # CONNECT の確立
 #     scripts/cpu-per-request.sh --only tunnel --conc 1           # トンネル 1 本 (主指標は CPU/MiB)
+#       ← **§2 の「トンネル」の行はこの `--conc 1` の値**。`--conc N` にすると N 本を
+#         並列に張って運んだ MiB の合計で割るので、別の数字になる (比べるときは本数を揃える)
 #     scripts/cpu-per-request.sh --cacheable                      # キャッシュ HIT
 #     PROXY_MAX_CONNS=8192 scripts/cpu-per-request.sh --only idle-tunnels --conc 5000
 #                                                                 # アイドルトンネルを握る
@@ -173,7 +175,7 @@ read -r threads_max threads_mid < <(sort -n "$work/samples" | awk -v t0="$thread
 echo "$out"
 [ $rc -eq 0 ] || { echo "bench failed (exit $rc)"; exit $rc; }
 
-# tunnel は「操作数」ではなく運んだ MiB で割る (1 本のトンネルに `--seconds` 秒流す)
+# tunnel は「操作数」ではなく運んだ MiB で割る (`--conc` 本のトンネルに `--seconds` 秒流した合計)
 if [ "$ONLY" = tunnel ]; then
   ops=$(echo "$out" | sed -n 's/.*(\([0-9]*\) MiB through.*/\1/p' | tail -1)
   unit=MiB
