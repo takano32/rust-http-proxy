@@ -656,6 +656,84 @@ mod tests {
         assert_eq!(hq.front().unwrap().t % 3600, 0);
     }
 
+    /// T12.4 (3) の受け入れ基準: **2 つの区間に別々の分位点が出る**こと。
+    /// 累計しか無かった頃は「起動からの平均」しか読めず、直した前後が同じ数字に混ざっていた。
+    #[test]
+    fn two_intervals_keep_their_own_medians() {
+        let h = History::default();
+        let mut slow = sample(1_000_000);
+        for _ in 0..100 {
+            slow.connect.observe(257);
+        }
+        let mut fast = sample(1_000_005);
+        for _ in 0..100 {
+            fast.connect.observe(7);
+        }
+        h.push(slow);
+        h.push(fast);
+        let q = h.rings[0].lock().unwrap();
+        let p50: Vec<f64> = q.iter().map(|s| s.connect.quantile_ms(0.5)).collect();
+        assert_eq!(p50.len(), 2);
+        assert!((250.0..=265.0).contains(&p50[0]), "{:?}", p50);
+        assert!((5.0..=10.0).contains(&p50[1]), "{:?}", p50);
+        // 畳むと 200 件がひとつの分布になる (件数は足し合わせ、最大は大きい方)
+        drop(q);
+        let agg = Sample::downsample(&[slow, fast], 1_000_000);
+        assert_eq!(agg.connect.count, 200);
+        assert_eq!(agg.connect.ms_max, 257);
+        assert!((agg.connect.avg_ms() - 132.0).abs() < 1e-9);
+    }
+
+    /// `/history?res=5` (720 標本) が 512 KiB に収まること (T12.4 (3))。
+    /// 値は「1 年動かしたあと」を想定した大きめの桁で埋める (短い数字で測ると通ってしまう)。
+    #[test]
+    fn a_full_hour_of_samples_fits_in_512_kib() {
+        let h = History::default();
+        for i in 0..(CAPACITY as u64) {
+            let mut s = Sample {
+                t: 1_770_000_000 + i * 5,
+                requests: 12_345_678 + i,
+                bytes: 987_654_321_098 + i,
+                active: 240,
+                hits: 1_234_567,
+                misses: 2_345_678,
+                stores: 345_678,
+                evictions: 45_678,
+                mem_used: 201_326_592,
+                mem_limit: 268_435_456,
+                disk_used: 2_900_000_000,
+                disk_limit: 3_221_225_472,
+                rss: 215_900_000,
+                errors: 12_345,
+                errors_by_cause: [1111, 2222, 3333, 4444, 5555, 6666, 7777, 8888],
+                dns_misses: 99_999,
+                dns_ms_sum: 888_888,
+                threads: 128,
+                fds: 1000,
+                max_fds: 1024,
+                active_max: 240,
+                threads_max: 128,
+                fds_max: 1010,
+                ..Sample::default()
+            };
+            for b in s.connect.buckets.iter_mut() {
+                *b = 999_999;
+            }
+            s.connect.count = 12_999_987;
+            s.connect.ms_sum = 3_333_333_333;
+            s.connect.ms_max = 30_000;
+            s.forward = s.connect;
+            h.push(s);
+        }
+        let json = h.to_json();
+        assert_eq!(h.len(), CAPACITY);
+        assert!(
+            json.len() <= 512 * 1024,
+            "/history?res=5 が {} B (512 KiB 超)",
+            json.len()
+        );
+    }
+
     #[test]
     fn sample_encoding_round_trips() {
         let mut connect = Window::default();

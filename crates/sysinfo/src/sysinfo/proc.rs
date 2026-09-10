@@ -77,4 +77,25 @@ mod tests {
         assert!(fds >= 3, "少なくとも stdin/stdout/stderr はある: {}", fds);
         assert!(max >= fds, "上限 {} < いま {}", max, fds);
     }
+
+    /// **`ls /proc/<pid>/fd | wc -l` と ±2 で一致すること** (T12.4 (3) の受け入れ基準)。
+    /// どちらも数える側が `/proc/<pid>/fd` を 1 つ開くので、その 1 本のぶんが誤差に入る。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_fd_count_agrees_with_ls_proc_pid_fd() {
+        // 数える前に 1 本開けておく (0 本の偶然の一致にならないように)
+        let _keep = std::fs::File::open("/proc/self/status").unwrap();
+        let (ours, _) = process_fds().unwrap();
+        let out = std::process::Command::new("ls")
+            .arg(format!("/proc/{}/fd", std::process::id()))
+            .output()
+            .expect("ls");
+        let theirs = String::from_utf8_lossy(&out.stdout).lines().count() as u64;
+        assert!(
+            ours.abs_diff(theirs) <= 2,
+            "process_fds {} と ls {} が ±2 で一致しない",
+            ours,
+            theirs
+        );
+    }
 }
