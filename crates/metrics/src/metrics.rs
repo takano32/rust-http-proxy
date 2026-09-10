@@ -457,7 +457,7 @@ impl Metrics {
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
-                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{}}}"
+                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{}}}"
             ),
             uptime,
             requests,
@@ -482,6 +482,7 @@ impl Metrics {
             crate::log::current_level().as_str().trim(),
             extra.settings,
             crate::dns::status_json(),
+            crate::net::ipv6_status_json(),
             extra.blocklist,
             extra.state_file,
             cache_json

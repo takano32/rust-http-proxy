@@ -62,6 +62,29 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
         "result=\"negative\"",
         negative,
     );
+    // Happy Eyeballs の族ごとの勝敗 (T12.1)。`v4_first` は `/status` に出す
+    header(
+        &mut out,
+        "ipv6_attempts_total",
+        "counter",
+        "Connections where an IPv6 candidate was tried (Happy Eyeballs)",
+    );
+    let [attempts, wins, losses] = crate::net::ipv6_counters();
+    line(&mut out, "ipv6_attempts_total", "", attempts);
+    header(
+        &mut out,
+        "ipv6_wins_total",
+        "counter",
+        "Connections established by the IPv6 candidate",
+    );
+    line(&mut out, "ipv6_wins_total", "", wins);
+    header(
+        &mut out,
+        "ipv6_losses_total",
+        "counter",
+        "Connections where IPv6 was tried but IPv4 established first",
+    );
+    line(&mut out, "ipv6_losses_total", "", losses);
     header(
         &mut out,
         "blocklist_entries",
