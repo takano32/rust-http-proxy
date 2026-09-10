@@ -18,8 +18,20 @@ use std::path::Path;
 pub use crc::crc32;
 
 /// ファイル先頭の識別子。レイアウトを変えたら末尾の版を上げる。
-const MAGIC: &[u8; 8] = b"SHPRRD01";
+///
+/// 版 2 (T12.4): ホスト別の区間を 24 段に、履歴の標本を 62 項目に増やした。
+/// 版が変わった古いファイルは**読み捨てて作り直す** (統計は運用の参考値なので、
+/// 移行コードを持つより作り直す方が単純で確実)。
+const MAGIC: &[u8; 8] = b"SHPRRD02";
 const HEADER_SIZE: u64 = 4096;
+
+/// ファイルの大きさ (固定)。**大事なのは伸びないこと**なので、領域の合計ではなく
+/// 切りのよい 4 MiB に固定し、残りは次に項目が増えたときのための余白にする
+/// (版を上げると統計を捨てることになるので、余白があるほど上げずに済む)。
+///
+/// 版 1 は約 1 MiB だった。版 2 は履歴 2,880 標本 × 512 B = 1.41 MiB と
+/// 統計 2,000 行 × 576 B = 1.10 MiB で、**2 MiB には入らない** (実測 2,671,616 B)。
+pub const FILE_SIZE: u64 = 4 * 1024 * 1024;
 
 /// 領域: 固定長レコード `count` 本。`record_size` には末尾の CRC (4 バイト) を含む。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,11 +63,16 @@ pub struct Layout {
     pub hosts: Region,
     pub clients: Region,
     pub overrides: Region,
+    /// 領域が実際に使っている大きさ (末尾は余白)
+    pub used: u64,
+    /// ファイルの大きさ ([`FILE_SIZE`] 固定)
     pub total: u64,
 }
 
-pub const SAMPLE_RECORD: usize = 128;
-pub const STATS_RECORD: usize = 320;
+/// 履歴 1 標本のレコード長。62 項目 × 8 B = 496 B + CRC 4 B。
+pub const SAMPLE_RECORD: usize = 512;
+/// ホスト別 / 接続元別 1 行のレコード長。名前 128 B + 48 項目 × 8 B = 512 B + CRC 4 B。
+pub const STATS_RECORD: usize = 576;
 pub const OVERRIDE_RECORD: usize = 160;
 pub const STATS_SLOTS: usize = 1000;
 pub const OVERRIDE_SLOTS: usize = 256;
@@ -99,6 +116,9 @@ impl Layout {
             count: OVERRIDE_SLOTS,
         };
         off += overrides.bytes();
+        // 領域の合計 (`off`) は 4 MiB に収まっていること。収まらない版を書いたら
+        // ここで組み立てが止まる (実行時に気付くより早い)
+        assert!(off <= FILE_SIZE);
         Layout {
             history_fine,
             history_minute,
@@ -106,7 +126,8 @@ impl Layout {
             hosts,
             clients,
             overrides,
-            total: off,
+            used: off,
+            total: FILE_SIZE,
         }
     }
 }
@@ -267,7 +288,11 @@ mod tests {
         let (rrd, created) = Rrd::open(&path).unwrap();
         assert!(created);
         assert_eq!(std::fs::metadata(&path).unwrap().len(), rrd.layout.total);
-        assert!(rrd.layout.total < 2 * 1024 * 1024, "about 1 MiB");
+        assert_eq!(rrd.layout.total, FILE_SIZE, "4 MiB 固定");
+        assert!(
+            rrd.layout.used <= rrd.layout.total,
+            "領域が余白に食い込まない"
+        );
         let r = rrd.layout.overrides;
         assert!(rrd.read_all(r).unwrap().is_empty());
         let mut e = Enc::new();
