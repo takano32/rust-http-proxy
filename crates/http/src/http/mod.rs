@@ -262,6 +262,16 @@ impl Ctx<'_> {
         );
     }
 
+    /// エラーを返したときのログと統計。個票のリング (`/errors`) にも 1 件残す (T13.4)。
+    ///
+    /// [`Ctx::log`] と分けてあるのは、**エラーの経路からしか個票を書かない**ため
+    /// (成功の熱い経路には 1 命令も足さない)。
+    fn log_failure(&self, status: u16) {
+        self.metrics
+            .record_error(false, self.pool_key, self.client_ip, status, &self.detail);
+        self.log(status, 0, "ERROR");
+    }
+
     fn connection_line(&self) -> &'static str {
         if self.keep_client {
             "Connection: keep-alive"
@@ -558,7 +568,7 @@ pub fn handle_http_with_headers(
                 }
                 write_error(client, 502, "Bad Gateway")?;
                 // 原因つきで 1 件数える (デプロイ先の「エラー 12 件、原因は不明」を無くす)
-                ctx.log(502, 0, "ERROR");
+                ctx.log_failure(502);
                 return Ok(false);
             }
         };
@@ -616,7 +626,7 @@ pub fn handle_http_with_headers(
                     return serve_cached(client, entry, source, "STALE", 0, &ctx);
                 }
                 write_error(client, 502, "Bad Gateway")?;
-                ctx.log(502, 0, "ERROR");
+                ctx.log_failure(502);
                 return Ok(false);
             }
         }

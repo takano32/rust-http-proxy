@@ -470,6 +470,9 @@ pub struct Metrics {
     pub origin_reused: AtomicU64,
     /// ダッシュボード用の履歴 (`history::spawn` が記録)
     pub history: crate::history::History,
+    /// 直近のエラーの個票 (`/errors`。T13.4)。**書くのはエラーの経路だけ**なので、
+    /// 成功の熱い経路はこのリングを 1 度も触らない
+    pub errors: crate::recent::ErrorRing,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの統計 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -493,6 +496,7 @@ impl Metrics {
             origin_new: AtomicU64::new(0),
             origin_reused: AtomicU64::new(0),
             history: crate::history::History::default(),
+            errors: crate::recent::ErrorRing::new(),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }
@@ -519,6 +523,34 @@ impl Metrics {
         detail: Detail,
     ) {
         self.record(host, outcome, bytes, took, detail);
+    }
+
+    /// エラー 1 件を個票のリングに写す (`/errors`。T13.4)。
+    ///
+    /// **エラーを返す経路からだけ呼ぶこと。** 集計 (`/status`) では「どのホストで何件」
+    /// までしか分からず、デプロイ先で 2 秒かかって失敗した名前解決の**相手と時刻**が
+    /// 読めなかった (T13.0)。原因の分からないエラー (`detail.cause` が `None`) は
+    /// 書かない — 原因なしの行が並んでも読む人の手が増えないため。
+    pub fn record_error(
+        &self,
+        connect: bool,
+        target: &str,
+        client: &str,
+        status: u16,
+        detail: &Detail,
+    ) {
+        let Some(cause) = detail.cause else {
+            return;
+        };
+        self.errors.push(crate::recent::ErrorEntry::new(
+            connect,
+            target,
+            client,
+            status,
+            cause,
+            detail.dns_ms,
+            detail.connect_ms,
+        ));
     }
 
     fn record(

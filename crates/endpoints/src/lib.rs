@@ -16,7 +16,7 @@ pub use proxy_cache::sys;
 pub use proxy_cache::{cache, signal, sysinfo};
 pub use proxy_http::{
     Upstream, body, clientio, freshness, headers, history, http, metrics, origin, persist, pool,
-    request, response, rrd, tls,
+    recent, request, response, rrd, tls,
 };
 pub use proxy_net::{acl, dns, net};
 pub use proxy_prom::prom;

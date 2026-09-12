@@ -68,13 +68,16 @@ fn open(
                 e
             );
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
+            let detail = detail_of(started.elapsed(), Some(ErrCause::from_io(&e)));
             metrics.record_host_detail(
                 &format!("connect://{}", addr_str),
                 HostOutcome::Error,
                 0,
                 Some(started.elapsed()),
-                detail_of(started.elapsed(), Some(ErrCause::from_io(&e))),
+                detail,
             );
+            // 個票にも 1 件残す (`/errors`。誰の・いつ・なぜ。T13.4)
+            metrics.record_error(true, &addr_str, &client_ip, 502, &detail);
             metrics.record_client(&client_ip, HostOutcome::Error, 0, Some(started.elapsed()));
             access(
                 conn_id,
