@@ -82,10 +82,13 @@ for (const s of samples) {
 if (checked === 0) fail('CONNECT のある標本が 1 つも無い (--only connect で回した出力を渡すこと)');
 if (api.winQuantile([0, 0], 0, 0, 0.5, hist.bounds_ms) !== null) fail('件数 0 は null のはず');
 
-// 直近 5 分 (60 標本) の合成: 件数と最大値が足し合わせ / 最大になっていること
+// 直近 5 分 (60 標本) の合成: 件数と最大値が足し合わせ / 最大になっていること。
+// 比べる相手も**同じ直近 60 標本**にする (全標本と比べると、標本が 60 を超える実出力で必ず食い違う。
+// デプロイ先の res=60 (1,440 標本) で「29 != 8839」と出た誤検出がそれ)
 const merged = api.mergeWindows(samples, 60, 'connect');
-const total = samples.reduce((a, s) => a + s.connects, 0);
-const max = samples.reduce((a, s) => Math.max(a, s.connect_ms_max), 0);
+const recent = samples.slice(Math.max(0, samples.length - 60));
+const total = recent.reduce((a, s) => a + s.connects, 0);
+const max = recent.reduce((a, s) => Math.max(a, s.connect_ms_max), 0);
 if (merged.count !== total) fail('mergeWindows の件数 ' + merged.count + ' != ' + total);
 if (merged.max !== max) fail('mergeWindows の最大値 ' + merged.max + ' != ' + max);
 const bucketSum = merged.buckets.reduce((a, b) => a + b, 0);
