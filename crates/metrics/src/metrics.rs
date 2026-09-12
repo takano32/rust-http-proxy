@@ -460,6 +460,8 @@ pub struct Metrics {
     pub park_watcher_alive: AtomicBool,
     /// 同時接続数の上限に当たって 503 で断った数
     pub rejected_overload: AtomicU64,
+    /// 上限に当たったときに、席を作るために閉じた暇なトンネルの数 (T13.2)
+    pub evicted_idle: AtomicU64,
     pub bytes_forwarded: AtomicU64,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
@@ -484,6 +486,7 @@ impl Metrics {
             parked_tunnels: AtomicUsize::new(0),
             park_watcher_alive: AtomicBool::new(false),
             rejected_overload: AtomicU64::new(0),
+            evicted_idle: AtomicU64::new(0),
             bytes_forwarded: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
@@ -771,7 +774,7 @@ impl Metrics {
                 "\"parked_connections\":{},\"parked_tunnels\":{},",
                 "\"parking\":{},",
                 "\"live_threads\":{},\"idle_threads\":{},\"queued_jobs\":{},\"max_threads\":{},",
-                "\"rejected_overload\":{},\"bytes_forwarded\":{},",
+                "\"rejected_overload\":{},\"evicted_idle\":{},\"bytes_forwarded\":{},",
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
@@ -795,6 +798,7 @@ impl Metrics {
             extra.concurrency.queued_jobs,
             extra.concurrency.max_threads,
             self.rejected_overload.load(Ordering::Relaxed),
+            self.evicted_idle.load(Ordering::Relaxed),
             bytes,
             self.cache_hits.load(Ordering::Relaxed),
             self.cache_misses.load(Ordering::Relaxed),

@@ -208,6 +208,18 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     );
     header(
         &mut out,
+        "evicted_idle_total",
+        "counter",
+        "Idle CONNECT tunnels closed to make room when PROXY_MAX_CONNS was reached",
+    );
+    line(
+        &mut out,
+        "evicted_idle_total",
+        "",
+        m.evicted_idle.load(Ordering::Relaxed),
+    );
+    header(
+        &mut out,
         "bytes_forwarded_total",
         "counter",
         "Bytes sent to clients and origins",

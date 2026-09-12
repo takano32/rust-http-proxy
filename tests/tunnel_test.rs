@@ -154,31 +154,55 @@ fn test_integration_parked_tunnel_still_passes_data() {
 }
 
 /// 預けているトンネルも「開いている接続」として数える (`PROXY_MAX_CONNS` の意味を保つ)。
+///
+/// 数えているからこそ、上限に当たった次の接続は**その 1 本を閉じてから**受ける (T13.2)。
+/// 数えていなければ閉じる必要が無いので、`evicted_idle` が 1 になることが
+/// 「席を占めていた」ことの証拠になる。上限のまわりの残りの振る舞い (最古を選ぶ、
+/// 忙しいトンネルは閉じない、自分宛ては上限の外) は `tests/overload_test.rs`。
 #[test]
 fn test_integration_parked_tunnel_still_counts_against_max_conns() {
     let echo_port = start_echo_server();
     let mut cfg = proxy_config();
     cfg.max_conns = 1;
-    let proxy_port = start_test_proxy(cfg);
+    let (proxy_port, metrics) = start_test_proxy_with_metrics(cfg);
     let mut stream = open_tunnel(proxy_port, echo_port);
 
-    // 預けられるまで待つ (猶予は 3ms。/status は上限に当たって使えないので時間で待つ)
-    thread::sleep(Duration::from_millis(300));
+    // 預けられるまで待つ (猶予はトンネルだと 100ms。/status は上限に当たると
+    // それ自身が 1 本閉じてしまうので、指標を直に見る)
+    wait_until(
+        || {
+            metrics
+                .parked_tunnels
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 1
+        },
+        "the idle tunnel should be parked",
+    );
     let resp = raw_request(
         proxy_port,
         b"GET http://127.0.0.1/ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
     );
     assert!(
-        resp.starts_with("HTTP/1.1 503"),
-        "a parked tunnel must keep its slot: {}",
+        !resp.starts_with("HTTP/1.1 503"),
+        "the seat is made by closing the parked tunnel, not by refusing: {}",
         resp
     );
+    assert_eq!(
+        metrics
+            .evicted_idle
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the parked tunnel was holding a seat, so exactly one was closed"
+    );
 
-    // 預けたトンネルはまだ生きている
-    stream.write_all(b"ping").unwrap();
+    // 席を譲ったトンネルは閉じられている (握っている側で EOF)
     let mut got = [0u8; 4];
-    stream.read_exact(&mut got).unwrap();
-    assert_eq!(&got, b"ping");
+    let _ = stream.write_all(b"ping");
+    assert_eq!(
+        stream.read(&mut got).unwrap_or(0),
+        0,
+        "the tunnel that gave up its seat is closed"
+    );
 }
 
 /// 預けているトンネルの片側が閉じたら、相手にも伝わる。
