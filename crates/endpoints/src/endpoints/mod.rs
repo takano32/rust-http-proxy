@@ -44,6 +44,7 @@ pub struct Endpoint<'a> {
 
 mod blocklist;
 mod pac;
+mod recent;
 
 const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
 
@@ -93,6 +94,11 @@ fn endpoint_list(lite: bool) -> String {
          endpoints:\n\
          {}\
          \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
+         \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
+         \x20 /connections                                JSON: the connections open right now\n\
+         \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
+         \x20 /log?n=200                                  JSON: the last warnings and errors\n\
+         \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
          \x20 /healthz                                    same as /status\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
          \x20 /metrics                                    Prometheus text format\n\
@@ -155,6 +161,17 @@ pub fn handle(
             .map(crate::history::History::index_for)
             .unwrap_or(0);
         (200, "application/json", ep.metrics.history.to_json_res(res))
+    } else if is_get && path == "/errors" {
+        // 個票 (T13.4)。集計 (`/status`) では読めない「誰が・いつ・なぜ」を出す
+        recent::errors(ep, query)
+    } else if is_get && path == "/connections" {
+        recent::connections(ep)
+    } else if is_get && path == "/dns" {
+        recent::dns(query)
+    } else if is_get && path == "/log" {
+        recent::log(query)
+    } else if is_get && path == "/hosts" {
+        recent::hosts(ep, query)
     } else if is_get && path == "/blocklist" {
         blocklist::handle(&parse_query(query.unwrap_or("")))
     } else if is_get && (path == "/healthz" || path == "/status") {
@@ -448,6 +465,11 @@ mod local_path_tests {
             "dnsmiss",
             "connlimit",
             "bad",
+            // 個票の表 (T13.4)
+            "errors",
+            "errhint",
+            "conns",
+            "connhint",
         ] {
             assert!(html.contains(&format!("id=\"{}\"", id)), "{} が無い", id);
         }
@@ -459,6 +481,9 @@ mod local_path_tests {
             "function dnsStats(",
             "function badHosts(",
             "function peak(",
+            // 個票を読む側 (T13.4)
+            "function errorRows(",
+            "function connRows(",
         ] {
             assert!(html.contains(f), "{} が無い", f);
         }
@@ -483,6 +508,36 @@ mod local_path_tests {
             "{}",
             "30 秒ごとになっていない"
         );
+        // 個票は 5 秒ごとに `/errors?n=20` と `/connections` の 2 本 (T13.4)
+        assert!(
+            html.contains("fetchJson('/errors?n=20')"),
+            "{}",
+            "/errors を取っていない"
+        );
+        assert!(
+            html.contains("fetchJson('/connections')"),
+            "{}",
+            "/connections を取っていない"
+        );
+        assert!(
+            html.contains("setInterval(pollRecent,5000)"),
+            "{}",
+            "個票が 5 秒ごとになっていない"
+        );
+        // ヘッダーから個票へ行けること (T13.4)
+        for link in [
+            "/dns",
+            "/log",
+            "/hosts?limit=1000",
+            "/errors",
+            "/connections",
+        ] {
+            assert!(
+                html.contains(&format!("<a href=\"{}\" target=\"_blank\">", link)),
+                "{} へのリンクが無い",
+                link
+            );
+        }
         // 外部ライブラリは読み込まない (依存なしの 1 ページ)
         assert!(!html.contains("<script src="), "外部 JS を読み込んでいる");
         assert!(

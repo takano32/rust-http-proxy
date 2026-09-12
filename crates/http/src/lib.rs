@@ -12,7 +12,7 @@ pub use proxy_base::{
 };
 pub use proxy_cache::{cache, sysinfo};
 pub use proxy_freshness::freshness;
-pub use proxy_metrics::{history, metrics, persist, rrd};
+pub use proxy_metrics::{history, metrics, persist, recent, rrd};
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};
 pub use proxy_origin::{Upstream, origin, pool, request, tls};

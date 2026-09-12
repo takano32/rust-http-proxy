@@ -92,6 +92,8 @@ fn main() {
         })
     };
     let metrics = Arc::new(Metrics::new());
+    // `--lite` では `/connections` に登録しない (空の一覧を返す。T1.4 の方針。T13.4)
+    metrics.conns.set_enabled(!config.lite);
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
     let store = if config.stats_persist {

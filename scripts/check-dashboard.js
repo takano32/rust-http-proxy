@@ -7,6 +7,8 @@
 //      (キーの並び・入れ子の配列・区間の分位点。T12.4 (5))
 //   3. **`/status` を読む関数が実出力で例外なく描けること** (名前解決の KPI、
 //      「悪いホスト」の表、直近の山。T13.3)
+//   4. **個票 (`/errors` `/connections`) を読む関数**が、形の違う入力でも落ちないこと
+//      (作り置きは架空のホスト名。T13.4)
 //
 // 使い方: node scripts/check-dashboard.js [/history の実出力.json] [/status の実出力.json]
 //   引数を省くと下の作り置き (手元のプロキシから取った実出力と、架空のホスト名の見本) を使う。
@@ -35,8 +37,17 @@ try {
   fail('JS の構文エラー: ' + e.message);
 }
 
-// 2. `/history` と `/status` を読む関数を取り出して動かす (DOM に触らない 6 つだけ)
-const names = ['toSamples', 'winQuantile', 'mergeWindows', 'dnsStats', 'badHosts', 'peak'];
+// 2. `/history` と `/status` と個票を読む関数を取り出して動かす (DOM に触らない 8 つだけ)
+const names = [
+  'toSamples',
+  'winQuantile',
+  'mergeWindows',
+  'dnsStats',
+  'badHosts',
+  'peak',
+  'errorRows',
+  'connRows',
+];
 let src = '';
 for (const n of names) {
   const at = js.indexOf('function ' + n + '(');
@@ -152,6 +163,52 @@ if (api.badHosts([st.hosts, st.hosts], causeNames, 10).length !== bad.length) {
 }
 if (api.badHosts([null, undefined], causeNames, 10).length !== 0) fail('空でも例外なく 0 件のはず');
 
+// 4. 個票 (`/errors` `/connections`) を読む関数 (T13.4)。実出力の作り置きは無いので、
+// 形だけ同じ架空のデータで見る (ホスト名は架空、接続元はドキュメント用の範囲)
+const errJson = {
+  errors: [
+    { at: 1789251465, kind: 'connect', target: 'a.example.net:443', cause: 'dns', dns_ms: 2013, connect_ms: 0, status: 502, client: '198.51.100.7' },
+    { at: 1789251400, kind: 'forward', target: 'http://b.example.net:80', cause: 'refused', dns_ms: 0, connect_ms: 1, status: 502, client: '198.51.100.8' },
+  ],
+  count: 2, kept: 2, capacity: 500, recorded: 2, truncated: false,
+};
+const errRows = api.errorRows(errJson, 20);
+if (errRows.length !== 2) fail('errorRows の件数が合わない: ' + errRows.length);
+if (errRows[0].cause !== 'dns' || errRows[0].dns_ms !== 2013) fail('errorRows が読めていない');
+if (errRows[0].at <= 0) fail('時刻が epoch 秒で読めていない');
+if (api.errorRows(errJson, 1).length !== 1) fail('n で絞れていない');
+if (api.errorRows({}, 20).length !== 0) fail('空でも例外なく 0 件のはず');
+if (api.errorRows(null, 20).length !== 0) fail('null でも例外なく 0 件のはず');
+// 古い出力 (キーが無い) でも落ちない
+if (api.errorRows({ errors: [{}] }, 20)[0].cause !== '') fail('無いキーは空文字のはず');
+
+const connJson = {
+  connections: [
+    { id: 3, client: '198.51.100.7', target: 'a.example.net:443', kind: 'connect', state: 'parked', age_secs: 120, bytes: 4096, fds: 2 },
+    { id: 9, client: '198.51.100.9', target: '', kind: 'http', state: 'serving', age_secs: 0, bytes: 0, fds: 1 },
+    { id: 5, client: '198.51.100.8', target: 'b.example.net:443', kind: 'connect', state: 'relaying', age_secs: 900, bytes: 1048576, fds: 2 },
+  ],
+  count: 3, shown: 3, truncated: false, lite: false,
+};
+const conn = api.connRows(connJson, 50);
+if (conn.rows.length !== 3) fail('connRows の件数が合わない');
+// 長く居る順 (経過の降順)
+for (let i = 1; i < conn.rows.length; i++) {
+  if (conn.rows[i - 1].age_secs < conn.rows[i].age_secs) fail('connRows の並びが崩れた');
+}
+if (conn.rows[0].id !== 5) fail('いちばん長く居る接続が先頭でない: ' + conn.rows[0].id);
+if (conn.kinds.connect !== 2 || conn.kinds.http !== 1) fail('種類の内訳が合わない');
+if (conn.states.parked !== 1 || conn.states.relaying !== 1 || conn.states.serving !== 1) {
+  fail('状態の内訳が合わない: ' + JSON.stringify(conn.states));
+}
+if (conn.bytes !== 4096 + 1048576) fail('転送の合計が合わない: ' + conn.bytes);
+if (conn.count !== 3) fail('count が読めていない');
+if (api.connRows(connJson, 1).rows.length !== 1) fail('n で絞れていない');
+const lite = api.connRows({ connections: [], count: 0, lite: true }, 50);
+if (lite.rows.length !== 0 || !lite.lite) fail('lite の空一覧が読めていない');
+if (api.connRows({}, 50).rows.length !== 0) fail('空でも例外なく 0 件のはず');
+if (api.connRows(null, 50).count !== 0) fail('null でも例外なく 0 件のはず');
+
 console.log(
   'OK: dashboard.html の JS は構文が通り、/history ' +
     samples.length +
@@ -173,5 +230,9 @@ console.log(
     (dn.avg == null ? '–' : dn.avg.toFixed(1) + ' ms') +
     ')、悪いホスト ' +
     bad.length +
-    ' 件'
+    ' 件。個票 (/errors ' +
+    errRows.length +
+    ' 件、/connections ' +
+    conn.rows.length +
+    ' 本) も読めた'
 );

@@ -470,6 +470,12 @@ pub struct Metrics {
     pub origin_reused: AtomicU64,
     /// ダッシュボード用の履歴 (`history::spawn` が記録)
     pub history: crate::history::History,
+    /// 直近のエラーの個票 (`/errors`。T13.4)。**書くのはエラーの経路だけ**なので、
+    /// 成功の熱い経路はこのリングを 1 度も触らない
+    pub errors: crate::recent::ErrorRing,
+    /// いま開いている接続の一覧 (`/connections`。T13.4)。登録と抹消は接続の開始と
+    /// 終了で 1 回ずつだけ (`--lite` では登録しない)
+    pub conns: crate::recent::ConnTable,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの統計 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -493,6 +499,8 @@ impl Metrics {
             origin_new: AtomicU64::new(0),
             origin_reused: AtomicU64::new(0),
             history: crate::history::History::default(),
+            errors: crate::recent::ErrorRing::new(),
+            conns: crate::recent::ConnTable::new(),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }
@@ -519,6 +527,34 @@ impl Metrics {
         detail: Detail,
     ) {
         self.record(host, outcome, bytes, took, detail);
+    }
+
+    /// エラー 1 件を個票のリングに写す (`/errors`。T13.4)。
+    ///
+    /// **エラーを返す経路からだけ呼ぶこと。** 集計 (`/status`) では「どのホストで何件」
+    /// までしか分からず、デプロイ先で 2 秒かかって失敗した名前解決の**相手と時刻**が
+    /// 読めなかった (T13.0)。原因の分からないエラー (`detail.cause` が `None`) は
+    /// 書かない — 原因なしの行が並んでも読む人の手が増えないため。
+    pub fn record_error(
+        &self,
+        connect: bool,
+        target: &str,
+        client: &str,
+        status: u16,
+        detail: &Detail,
+    ) {
+        let Some(cause) = detail.cause else {
+            return;
+        };
+        self.errors.push(crate::recent::ErrorEntry::new(
+            connect,
+            target,
+            client,
+            status,
+            cause,
+            detail.dns_ms,
+            detail.connect_ms,
+        ));
     }
 
     fn record(
@@ -822,7 +858,11 @@ impl Metrics {
 ///
 /// `detail` はホスト別だけ (T12.4 (2))。接続元別には名前解決も接続も族も無いので、
 /// 全部 0 の列を 50 行ぶん並べても `/status` が太るだけになる。
-fn stats_json(s: &HostStats, detail: bool) -> String {
+///
+/// 外から呼べるのは `/hosts` (T13.4) が **`/status` の `hosts[]` と同じ形**で
+/// 全ホストを出すため。形が 2 つに分かれると `scripts/status-diff.py` が両方を
+/// 読めなくなるので、組み立てはこの 1 か所に置く。
+pub fn stats_json(s: &HostStats, detail: bool) -> String {
     let mut out = format!(
         "\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"blocked\":{},\"bytes\":{},\"timed\":{},\"avg_ms\":{:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"max_ms\":{},\"last_seen\":{}",
         s.requests,

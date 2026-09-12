@@ -13,6 +13,7 @@ use crate::log::{Access, access};
 use crate::log_trace;
 use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics};
 use crate::net;
+use crate::recent::ConnSlot;
 use crate::{log_debug, log_warn};
 
 #[cfg(target_os = "linux")]
@@ -38,6 +39,9 @@ struct Info {
     /// 確立までの内訳 (名前解決 / 接続 / 勝った族。T12.4 (2))
     detail: Detail,
     metrics: Arc<Metrics>,
+    /// `/connections` の枠 (T13.4)。状態と運んだバイト数をここに書く。
+    /// 登録と抹消は本体クレート (接続の開始と終了) の仕事で、ここは書くだけ
+    slot: Option<Arc<ConnSlot>>,
 }
 
 /// 宛先へつなぎ、`200` と先読みぶん (`prefix`) を送る。
@@ -52,6 +56,7 @@ fn open(
     metrics: Arc<Metrics>,
     client_ip: String,
     resolved: Option<&dns::Resolved<'_>>,
+    slot: Option<Arc<ConnSlot>>,
 ) -> io::Result<Opened> {
     let started = Instant::now();
     let addr_str = net::with_default_port(target, 443);
@@ -68,13 +73,16 @@ fn open(
                 e
             );
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
+            let detail = detail_of(started.elapsed(), Some(ErrCause::from_io(&e)));
             metrics.record_host_detail(
                 &format!("connect://{}", addr_str),
                 HostOutcome::Error,
                 0,
                 Some(started.elapsed()),
-                detail_of(started.elapsed(), Some(ErrCause::from_io(&e))),
+                detail,
             );
+            // 個票にも 1 件残す (`/errors`。誰の・いつ・なぜ。T13.4)
+            metrics.record_error(true, &addr_str, &client_ip, 502, &detail);
             metrics.record_client(&client_ip, HostOutcome::Error, 0, Some(started.elapsed()));
             access(
                 conn_id,
@@ -96,6 +104,10 @@ fn open(
     // ホスト別の応答時間は接続確立まで (トンネル自体の寿命は応答時間ではない)
     let connect_took = started.elapsed();
     let detail = detail_of(connect_took, None);
+    // `/connections` の 1 行を「CONNECT の中継中」にする (1 本につき 1 回だけ。T13.4)
+    if let Some(s) = &slot {
+        s.begin_tunnel(&addr_str);
+    }
     client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     client.flush()?;
     if !prefix.is_empty() {
@@ -112,6 +124,7 @@ fn open(
             connect_took,
             detail,
             metrics,
+            slot,
         },
     })
 }
@@ -180,6 +193,7 @@ pub fn handle_connect(
     metrics: Arc<Metrics>,
     client_ip: String,
     resolved: Option<&dns::Resolved<'_>>,
+    slot: Option<Arc<ConnSlot>>,
 ) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -195,6 +209,7 @@ pub fn handle_connect(
             resolved,
             None,
             Box::new(()),
+            slot,
         )
     }
     #[cfg(not(target_os = "linux"))]
@@ -204,7 +219,7 @@ pub fn handle_connect(
             server,
             info,
         } = open(
-            client, target, prefix, timeout, conn_id, metrics, client_ip, resolved,
+            client, target, prefix, timeout, conn_id, metrics, client_ip, resolved, slot,
         )?;
         let transferred = tunnel(client, server, idle)?;
         report(&info, transferred);
@@ -235,9 +250,10 @@ pub fn handle_connect_parked(
     resolved: Option<&dns::Resolved<'_>>,
     park: Option<(Arc<dyn Park>, Duration)>,
     hold: Box<dyn Send>,
+    slot: Option<Arc<ConnSlot>>,
 ) -> io::Result<()> {
     let opened = open(
-        client, target, prefix, timeout, conn_id, metrics, client_ip, resolved,
+        client, target, prefix, timeout, conn_id, metrics, client_ip, resolved, slot,
     )?;
     // トンネルの猶予は HTTP の keep-alive より長く取る (下限 [`relay::MIN_PARK_GRACE`])
     let park = park.map(|(w, grace)| (w, grace.max(relay::MIN_PARK_GRACE)));
@@ -313,6 +329,7 @@ mod relay {
 
     use super::{Info, Opened, report};
     use crate::log_trace;
+    use crate::recent::{ConnSlot, ConnState};
     use crate::sys::{self, POLLERR, POLLHUP, POLLIN, POLLOUT, Pipe, PollFd};
 
     /// 1 回の splice / read で動かす最大バイト数 (パイプ容量と同じ)。
@@ -524,6 +541,11 @@ mod relay {
             [self.socks[0].as_raw_fd(), self.socks[1].as_raw_fd()]
         }
 
+        /// `/connections` の枠 (預かり所が状態を書くために借りる。T13.4)。
+        pub fn slot(&self) -> Option<&Arc<ConnSlot>> {
+            self.info.slot.as_ref()
+        }
+
         /// 預かるときの期限。作れなければ `None` (預けない)。
         pub fn deadline(&self) -> Option<Instant> {
             // 無期限のトンネルも、期限の集合に入れるために遠い期限を置く
@@ -545,6 +567,10 @@ mod relay {
                 d.drop_relay();
                 d.readable = false;
             }
+            // ここまでに運んだバイト数を `/connections` に見せる (預ける直前の 1 回)
+            if let Some(s) = &self.info.slot {
+                s.set_bytes(self.transferred);
+            }
         }
 
         /// 動かせるだけ動かして、終わるか暇になるまで回す。
@@ -563,6 +589,7 @@ mod relay {
                 .as_ref()
                 .map(|(_, g)| g.as_millis().min(i32::MAX as u128) as i32);
             let socks = &self.socks;
+            let slot = self.info.slot.as_ref();
             let dirs = &mut self.dirs;
             let transferred = &mut self.transferred;
 
@@ -651,6 +678,11 @@ mod relay {
                 // **片方向だけ EOF (half-close) のトンネルは預けない**: 残った方向は
                 // 「相手に shutdown を伝えて閉じる」までが仕事で、そこまで預かり所に
                 // 持たせると起こし方が 2 通りになる。寿命も短いので単純さを採る
+                // ここで止まる = 今の合計が落ち着いた値。`/connections` に見せるのは
+                // この 1 回だけで、バイトごとにも splice ごとにも書かない (T13.4)
+                if let Some(s) = slot {
+                    s.set_bytes(*transferred);
+                }
                 let parkable = grace_ms.is_some() && dirs.iter().all(Dir::quiet);
                 let wait_ms = match grace_ms {
                     Some(g) if parkable => g,
@@ -714,6 +746,9 @@ mod relay {
 
     /// 預かっていたトンネルをワーカーで再開する (事象が来て起こされたとき)。
     pub fn resume(idle: Box<Idle>) {
+        if let Some(s) = idle.slot() {
+            s.set_state(ConnState::Relaying);
+        }
         drive(idle);
     }
 

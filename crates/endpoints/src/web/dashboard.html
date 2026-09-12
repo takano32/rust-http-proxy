@@ -58,7 +58,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   <span class="sub" id="window"></span>
   <span class="sub" id="blocklist"></span>
   <div class="right">
-    <span class="links"><a href="/status" target="_blank">/status</a><a href="/metrics" target="_blank">/metrics</a><a href="/history" target="_blank">/history</a><a href="/proxy.pac" target="_blank">/proxy.pac</a></span>
+    <span class="links"><a href="/status" target="_blank">/status</a><a href="/hosts?limit=1000" target="_blank">/hosts</a><a href="/metrics" target="_blank">/metrics</a><a href="/history" target="_blank">/history</a><a href="/errors" target="_blank">/errors</a><a href="/connections" target="_blank">/connections</a><a href="/dns" target="_blank">/dns</a><a href="/log" target="_blank">/log</a><a href="/proxy.pac" target="_blank">/proxy.pac</a></span>
     <label>範囲 <select id="range"><option value="5">1 時間</option><option value="60">1 日</option><option value="3600">30 日</option></select></label>
     <label><input type="checkbox" id="pause"> 一時停止</label>
     <span class="dot" id="dot"></span><span id="lastok">接続中…</span>
@@ -119,6 +119,18 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   </section>
 
   <section class="card" style="margin-top:14px">
+    <h2>最近のエラー (直近 20) <span class="tag">5 秒ごと</span><span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">/errors?n=20</span></h2>
+    <div style="overflow-x:auto"><table id="errors"><thead><tr><th>時刻</th><th>種類</th><th>宛先</th><th title="ERR_CAUSE_NAMES の名前">原因</th><th title="この 1 件で名前解決に費やした ms">名前解決</th><th title="この 1 件で接続 (SYN → 確立) に費やした ms">接続</th><th>状態</th><th>接続元</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="errhint"></div>
+  </section>
+
+  <section class="card" style="margin-top:14px">
+    <h2>いまの接続 (上位 50) <span class="tag">5 秒ごと</span><span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">/connections</span></h2>
+    <div style="overflow-x:auto"><table id="conns"><thead><tr><th>id</th><th>接続元</th><th>宛先</th><th>種類</th><th title="relaying 中継中 / parked 預かり所 (epoll) / reading スレッドで次の要求待ち / serving 処理中 / queued ワーカー待ち">状態</th><th>経過</th><th>転送</th><th title="この接続が握っている記述子の数">fd</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="connhint"></div>
+  </section>
+
+  <section class="card" style="margin-top:14px">
     <h2>接続元別 (上位 20) <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">並び: <select id="clientsort"><option value="requests">要求数</option><option value="bytes">転送量</option><option value="blocked">拒否</option><option value="last_seen">最近</option></select></span></h2>
     <div style="overflow-x:auto"><table id="clients"><thead><tr><th>client</th><th>要求</th><th>命中</th><th>素通し</th><th>エラー</th><th title="ACL / ブロックリストで拒否">拒否</th><th>転送</th><th>応答 p50 / p95</th><th>最終</th></tr></thead><tbody></tbody></table></div>
   </section>
@@ -137,7 +149,7 @@ var badLists=[null,null];  // [?sort=errors, ?sort=dns] の hosts[] (30 秒ご�
 // エラーの原因の既定の名前 (`/history` の causes が来るまで、と来なかったとき)
 var CAUSES=['dns','refused','unreachable','timeout','reset','tls','loop','other'];
 
-// --- ここから下の 6 つは node の整形テストからも呼ぶ (DOM に触らないこと) ---
+// --- ここから下の 8 つは node の整形テストからも呼ぶ (DOM に触らないこと) ---
 // `/history` は標本を配列の配列で返す (キーは keys に 1 回だけ)。列名で引ける形に戻す
 function toSamples(h){
   var idx={},keys=h.keys||[];
@@ -208,6 +220,29 @@ function badHosts(lists,names,n){
       dns_avg:h.dns_misses?h.dns_ms_sum/h.dns_misses:null,dns_sum:h.dns_ms_sum||0,
       conn_avg:h.timed?h.connect_ms_sum/h.timed:null};
   });
+}
+// 「最近のエラー」: `/errors` の応答から上位 n 件 (応答は新しい順のまま)。
+// 原因と種類はプロキシ側の綴り (`ERR_CAUSE_NAMES` / connect|forward) をそのまま出す
+function errorRows(j,n){
+  return ((j&&j.errors)||[]).slice(0,n||20).map(function(e){
+    return {at:+e.at||0,kind:e.kind||'',target:e.target||'',cause:e.cause||'',
+      dns_ms:e.dns_ms==null?null:+e.dns_ms,connect_ms:e.connect_ms==null?null:+e.connect_ms,
+      status:+e.status||0,client:e.client||''};
+  });
+}
+// 「いまの接続」: `/connections` の応答を**長く居る順**に n 件と、状態・種類の内訳。
+// バーストのときに何が席を占めているかを見るための並びなので、経過の長い順にする
+function connRows(j,n){
+  var all=((j&&j.connections)||[]).slice();
+  all.sort(function(a,b){return (b.age_secs||0)-(a.age_secs||0)||(a.id||0)-(b.id||0)});
+  var states={},kinds={connect:0,http:0},bytes=0;
+  all.forEach(function(c){
+    states[c.state]=(states[c.state]||0)+1;
+    if(kinds[c.kind]!=null)kinds[c.kind]++;
+    bytes+=+c.bytes||0;
+  });
+  return {rows:all.slice(0,n||50),states:states,kinds:kinds,bytes:bytes,
+    count:(j&&j.count!=null)?+j.count:all.length,lite:!!(j&&j.lite)};
 }
 // 直近 n 標本のゲージの山 (`active_max` の無い古い標本は `active` で代用)。件数 0 なら null
 function peak(samples,n,key,fallback){
@@ -369,6 +404,35 @@ function renderBad(){
   }).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--muted)">'
     +(badLists[0]||badLists[1]?'エラーも遅い名前解決もありません':'読み込み中…')+'</td></tr>';
 }
+// 個票の表 (T13.4)。どちらも 5 秒ごとに取り直す
+function renderErrors(j){
+  var rows=errorRows(j,20);
+  $('errors').tBodies[0].innerHTML=rows.map(function(e){
+    return'<tr><td title="'+new Date(e.at*1000).toLocaleString()+'">'+new Date(e.at*1000).toLocaleTimeString()+'</td>'
+      +'<td>'+esc(e.kind)+'</td><td title="'+esc(e.target)+'">'+esc(e.target)+'</td>'
+      +'<td style="color:var(--bad)">'+esc(e.cause)+'</td>'
+      +'<td>'+fmtMs(e.dns_ms)+'</td><td>'+fmtMs(e.connect_ms)+'</td>'
+      +'<td>'+fmtNum(e.status)+'</td><td>'+esc(e.client)+'</td></tr>'
+  }).join('')||'<tr><td colspan="8" style="text-align:center;color:var(--muted)">エラーはまだありません</td></tr>';
+  $('errhint').textContent='覚えているのは '+fmtNum(j&&j.kept)+' 件 / 上限 '+fmtNum(j&&j.capacity)
+    +' · 起動からの通算 '+fmtNum(j&&j.recorded)+' 件 (プロセスのメモリだけ。再起動で消えます)';
+}
+function renderConns(j){
+  var c=connRows(j,50);
+  $('conns').tBodies[0].innerHTML=c.rows.map(function(r){
+    var st=r.state==='relaying'?'var(--ok)':r.state==='parked'?'var(--muted)':r.state==='queued'?'var(--warn)':'inherit';
+    return'<tr><td>'+fmtNum(r.id)+'</td><td>'+esc(r.client)+'</td>'
+      +'<td title="'+esc(r.target||'')+'">'+esc(r.target||'–')+'</td><td>'+esc(r.kind)+'</td>'
+      +'<td style="color:'+st+'">'+esc(r.state)+'</td><td>'+ago(+r.age_secs||0)+'</td>'
+      +'<td>'+fmtBytes(+r.bytes||0)+'</td><td>'+fmtNum(r.fds)+'</td></tr>'
+  }).join('')||'<tr><td colspan="8" style="text-align:center;color:var(--muted)">'
+    +(c.lite?'lite プロファイルでは記録しません':'接続はありません')+'</td></tr>';
+  var parts=['開いている '+fmtNum(c.count)+' 本',
+    'トンネル '+fmtNum(c.kinds.connect)+' / keep-alive '+fmtNum(c.kinds.http),
+    '転送 '+fmtBytes(c.bytes)];
+  Object.keys(c.states).sort().forEach(function(k){parts.push(k+' '+fmtNum(c.states[k]))});
+  $('connhint').textContent=parts.join(' · ');
+}
 function fmtMs(ms){return ms==null?'–':ms>=1000?(ms/1000).toFixed(1)+' s':Math.round(ms)+' ms'}
 function latColor(ms){return ms>=2000?'var(--bad)':ms>=500?'var(--warn)':'inherit'}
 function bl(action){var h=$('bhost').value.trim();if(!h)return;var u='/blocklist?host='+encodeURIComponent(h)+(action?'&action='+action:'');
@@ -394,6 +458,10 @@ function pollStatus(){if($('pause').checked)return;fetchJson('/status').then(fun
 // プロキシ側の仕事が 2 倍になる。並べ替えるだけの応答でも 50 ホストぶんを組み立てる)
 function pollBad(){if($('pause').checked)return;
   ['errors','dns'].forEach(function(k,i){fetchJson('/status?sort='+k).then(function(s){badLists[i]=s.hosts||[];renderBad()}).catch(function(){})})}
+// 個票は 5 秒ごとに 2 本 (`/errors` は 20 件、`/connections` は今の一覧。T13.4)
+function pollRecent(){if($('pause').checked)return;
+  fetchJson('/errors?n=20').then(renderErrors).catch(function(){});
+  fetchJson('/connections').then(renderConns).catch(function(){});}
 function pollHistory(){if($('pause').checked)return;fetchJson('/history?res='+$('range').value).then(function(h){
   interval=h.interval_secs||5;bounds=h.bounds_ms||[];causes=h.causes||[];hist=toSamples(h);redraw()}).catch(function(){})}
 $('range').addEventListener('change',function(){hist=[];pollHistory()});
@@ -406,7 +474,7 @@ $('btn-purge').addEventListener('click',function(){var u=$('url').value.trim();i
 $('btn-purge-all').addEventListener('click',function(){if(!confirm('キャッシュを全部消します。よろしいですか？'))return;
   fetchJson('/purge?all=1').then(function(j){$('out').textContent=JSON.stringify(j,null,2);pollStatus()}).catch(function(e){$('out').textContent=e.message})});
 window.addEventListener('resize',redraw);
-pollStatus();pollHistory();pollBad();setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);
+pollStatus();pollHistory();pollBad();pollRecent();setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);setInterval(pollRecent,5000);
 })();
 </script>
 </body>
