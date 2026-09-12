@@ -350,6 +350,8 @@ pub struct StatusExtras<'a> {
     pub version: &'a str,
     /// 上限といまのスレッドの数 ([`Concurrency`])
     pub concurrency: Concurrency,
+    /// `hosts[]` の上位 50 をどの鍵で切り出すか (`/status?sort=`。T13.3)
+    pub sort: HostSort,
 }
 
 impl Default for StatusExtras<'_> {
@@ -360,6 +362,7 @@ impl Default for StatusExtras<'_> {
             state_file: "null",
             version: "unknown",
             concurrency: Concurrency::default(),
+            sort: HostSort::Requests,
         }
     }
 }
@@ -381,6 +384,39 @@ pub struct Concurrency {
     pub idle_threads: usize,
     /// 上限に達して待たせている仕事の数 (捨てていない)
     pub queued_jobs: usize,
+}
+
+/// `/status` の `hosts[]` から上位 50 を切り出す鍵 (`?sort=`。T13.3)。
+///
+/// **切り出す鍵だけ**を変えるもので、JSON の形も件数も変わらない。要求数の上位 50 には
+/// 「悪いホスト」が出てこないのが動機で、デプロイ後 58.6 時間の実測では
+/// **エラー 99 件のうち 80 件 (名前解決の失敗) を抱えたホストが 1 つも上位 50 に居なかった**
+/// (上位 50 のエラーは全部 0)。`clients[]` は要求数順のまま (接続元には内訳が無いので、
+/// 名前解決や確立の鍵で並べても全部 0 の同点になるだけ)。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HostSort {
+    /// 要求数の多い順 (既定。今までの順)
+    #[default]
+    Requests,
+    /// エラー件数の多い順
+    Errors,
+    /// 名前解決に費やした合計 (`dns_ms_sum`) の大きい順
+    Dns,
+    /// 応答 (CONNECT は確立) の平均 (`avg_ms`) の遅い順
+    Slow,
+}
+
+impl HostSort {
+    /// `?sort=` の値から決める。**知らない値は既定 (`requests`) に倒す**
+    /// (綴り違いで 400 を返すより、今までどおりの応答を返す方が監視の口として安全)。
+    pub fn from_param(v: &str) -> Self {
+        match v {
+            "errors" => HostSort::Errors,
+            "dns" => HostSort::Dns,
+            "slow" => HostSort::Slow,
+            _ => HostSort::Requests,
+        }
+    }
 }
 
 /// ホスト別統計の上限。超えた分は `other` にまとめる。
@@ -592,13 +628,36 @@ impl Metrics {
 
     /// 要求数の多い順に並べたホスト別統計。
     pub fn hosts_sorted(&self) -> Vec<(String, HostStats)> {
+        self.hosts_sorted_by(HostSort::Requests)
+    }
+
+    /// 鍵を選んで並べたホスト別統計 (T13.3)。`/status?sort=` が上位 50 を切り出すのに使う。
+    ///
+    /// **同点は要求数 → 名前で崩す**ので、どの鍵でも順序は 1 つに決まる (テストが順序で書ける)。
+    /// 名前解決だけは合計が同じときに問い合わせた回数を先に見る: 手元の loopback では
+    /// ミス 1 回が 1 ms 未満で `dns_ms_sum` が 0 に丸まる (`dns::take_resolve_cost`) ため、
+    /// 合計だけでは「名前で引いているホスト」と「IP リテラル」の区別が付かない。
+    pub fn hosts_sorted_by(&self, sort: HostSort) -> Vec<(String, HostStats)> {
         let hosts = self.hosts.locked();
         let mut v: Vec<(String, HostStats)> = hosts
             .map
             .iter()
             .map(|(k, s)| (k.clone(), s.clone()))
             .collect();
-        v.sort_by(|a, b| b.1.requests.cmp(&a.1.requests).then_with(|| a.0.cmp(&b.0)));
+        v.sort_by(|a, b| {
+            let tie = b.1.requests.cmp(&a.1.requests).then_with(|| a.0.cmp(&b.0));
+            match sort {
+                HostSort::Requests => tie,
+                HostSort::Errors => b.1.errors.cmp(&a.1.errors).then(tie),
+                HostSort::Dns => {
+                    b.1.dns_ms_sum
+                        .cmp(&a.1.dns_ms_sum)
+                        .then_with(|| b.1.dns_misses.cmp(&a.1.dns_misses))
+                        .then(tie)
+                }
+                HostSort::Slow => b.1.avg_ms().total_cmp(&a.1.avg_ms()).then(tie),
+            }
+        });
         v
     }
 
@@ -665,7 +724,8 @@ impl Metrics {
             None => "null".to_string(),
         };
 
-        let all_hosts = self.hosts_sorted();
+        // 上位 50 を切り出す鍵だけが `?sort=` で変わる (JSON の形は変わらない。T13.3)
+        let all_hosts = self.hosts_sorted_by(extra.sort);
         // ホスト別統計は `.rrd` で再起動をまたいで通算されるので、**いつからの通算か**を出す
         // (`total_requests` は起動から、`hosts[]` は通算という窓の混在が読めなかった)
         let restored_since = all_hosts
@@ -1150,6 +1210,158 @@ mod latency_tests {
         let json = m.to_json();
         assert!(json.contains("\"v6_wins\":1"), "{}", json);
         assert!(json.contains("\"errors_by_cause\":["), "{}", json);
+    }
+
+    /// `/status?sort=` が上位を切り出す鍵だけを変えること (T13.3)。
+    ///
+    /// 鍵ごとに先頭が入れ替わり、**JSON の形は変わらない** (件数もキーもそのまま)。
+    #[test]
+    fn the_sort_key_only_changes_which_hosts_are_cut_out() {
+        let m = Metrics::new();
+        // 要求は多いが健全なホスト
+        for _ in 0..10 {
+            m.record_host_detail(
+                "connect://busy:443",
+                HostOutcome::Bypass,
+                0,
+                Some(Duration::from_millis(5)),
+                Detail::default(),
+            );
+        }
+        // 名前解決に時間を払っているホスト (要求は 2 件)
+        for _ in 0..2 {
+            m.record_host_detail(
+                "connect://slow-dns:443",
+                HostOutcome::Bypass,
+                0,
+                Some(Duration::from_millis(60)),
+                Detail {
+                    dns_ms: 50,
+                    dns_misses: 1,
+                    connect_ms: 10,
+                    ..Detail::default()
+                },
+            );
+        }
+        // エラーだけのホスト (要求 1 件)
+        m.record_host_detail(
+            "connect://broken:443",
+            HostOutcome::Error,
+            0,
+            None,
+            Detail {
+                cause: Some(ErrCause::Dns),
+                dns_misses: 1,
+                ..Detail::default()
+            },
+        );
+        // 遠いホスト (1 件だけだが平均が飛び抜けて遅い)
+        m.record_host_detail(
+            "connect://far-away:443",
+            HostOutcome::Bypass,
+            0,
+            Some(Duration::from_millis(900)),
+            Detail {
+                connect_ms: 900,
+                ..Detail::default()
+            },
+        );
+        let first = |sort| m.hosts_sorted_by(sort)[0].0.clone();
+        assert_eq!(first(HostSort::Requests), "connect://busy:443");
+        assert_eq!(first(HostSort::Errors), "connect://broken:443");
+        assert_eq!(first(HostSort::Dns), "connect://slow-dns:443");
+        assert_eq!(first(HostSort::Slow), "connect://far-away:443");
+        // 知らない値と空は既定 (要求数順) に倒れる
+        for v in ["", "requests", "REQUESTS", "errors?", "なにか"] {
+            assert_eq!(
+                m.hosts_sorted_by(HostSort::from_param(v))[0].0,
+                "connect://busy:443",
+                "{}",
+                v
+            );
+        }
+        // 同点は要求数 → 名前で崩すので、どの鍵でも順序は 1 つに決まる
+        assert_eq!(
+            m.hosts_sorted_by(HostSort::Errors),
+            m.hosts_sorted_by(HostSort::Errors)
+        );
+        // JSON の形は鍵で変わらない (件数もキーも同じ。先頭のホストだけが違う)
+        let of = |sort| {
+            m.to_json_with_cache(
+                None,
+                StatusExtras {
+                    sort,
+                    ..StatusExtras::default()
+                },
+            )
+        };
+        let (a, b) = (of(HostSort::Requests), of(HostSort::Errors));
+        assert_eq!(a.matches("\"host\":").count(), 4);
+        assert_eq!(
+            a.matches("\"host\":").count(),
+            b.matches("\"host\":").count()
+        );
+        assert_eq!(
+            a.matches("\"errors_by_cause\":[").count(),
+            b.matches("\"errors_by_cause\":[").count()
+        );
+        assert!(
+            a.contains("\"hosts\":[{\"host\":\"connect://busy:443\""),
+            "{}",
+            a
+        );
+        assert!(
+            b.contains("\"hosts\":[{\"host\":\"connect://broken:443\""),
+            "{}",
+            b
+        );
+    }
+
+    /// `/status` の応答は上位 50 ホスト + 上位 50 接続元でも 64 KiB に収まること (T13.3)。
+    ///
+    /// 監視が 5 秒ごとに引く口なので、太らせない。長い名前 (RFC の上限に近い 200 バイト) を
+    /// 並べた最悪に近い形で測る。
+    #[test]
+    fn the_status_json_stays_under_64_kib() {
+        let m = Metrics::new();
+        for i in 0..200 {
+            let host = format!("connect://{}{:03}.example.net:443", "n".repeat(180), i);
+            m.record_host_detail(
+                &host,
+                HostOutcome::Error,
+                u64::MAX / 2,
+                Some(Duration::from_millis(1234)),
+                Detail {
+                    dns_ms: 9999,
+                    dns_misses: 7,
+                    connect_ms: 8888,
+                    family_v6: Some(true),
+                    cause: Some(ErrCause::Dns),
+                    first_byte_ms: None,
+                },
+            );
+            m.record_client(
+                &format!("2001:db8:{:04x}:{:04x}::{:04x}", i, i, i),
+                HostOutcome::Error,
+                u64::MAX / 2,
+                Some(Duration::from_millis(1234)),
+            );
+        }
+        for sort in [
+            HostSort::Requests,
+            HostSort::Errors,
+            HostSort::Dns,
+            HostSort::Slow,
+        ] {
+            let json = m.to_json_with_cache(
+                None,
+                StatusExtras {
+                    sort,
+                    ..StatusExtras::default()
+                },
+            );
+            assert!(json.len() <= 64 * 1024, "{} バイト", json.len());
+        }
     }
 
     #[test]

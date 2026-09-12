@@ -229,6 +229,141 @@ fn test_integration_status_shows_the_limits_and_the_thread_counts() {
     assert!(status.contains("\"queued_jobs\":0"), "{}", status);
 }
 
+/// `/status?sort=` が上位 50 の切り出しだけを変えること (T13.3)。
+///
+/// デプロイ先では要求数の上位 50 にエラーも遅い名前解決も出てこない (58.6 時間で
+/// エラー 99 件のうち 80 件が上位 50 の外)。ここでは 4 つのホストを作って、
+/// 鍵ごとに先頭が入れ替わり、既定と知らない値は今までの順のままであることを見る。
+#[test]
+fn test_integration_status_sort_brings_the_bad_hosts_to_the_front() {
+    let (origin_port, _origin) = start_mock_origin();
+    // 300 ms かけて返すオリジン (`?sort=slow` の的)
+    let (slow_port, _slow) = start_origin(
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(|_req: &str, _n: usize| {
+            thread::sleep(Duration::from_millis(300));
+            let body = "slow origin";
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_bytes()
+        }),
+    );
+    // 誰も待っていないポート (`?sort=errors` の的。束縛してすぐ手放す)
+    let dead_port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let proxy_port = start_test_proxy(proxy_config());
+
+    // (1) 要求数の多い健全なホスト。IP リテラルなので名前解決の表を通らない
+    let busy = format!("127.0.0.1:{}", origin_port);
+    for i in 0..3 {
+        let r = get_via_proxy(proxy_port, &format!("http://{}/ok{}", busy, i), &busy);
+        assert!(r.starts_with("HTTP/1.1 200 OK"), "{}", r);
+    }
+    // (2) 名前で引くホスト。`localhost` は名前解決の表を通るので `dns_misses` が付く
+    let named = format!("localhost:{}", origin_port);
+    let r = get_via_proxy(proxy_port, &format!("http://{}/named", named), &named);
+    assert!(r.starts_with("HTTP/1.1 200 OK"), "{}", r);
+    // (3) 遅いホスト (1 件だけだが平均が飛び抜けて遅い)
+    let slow = format!("127.0.0.1:{}", slow_port);
+    let r = get_via_proxy(proxy_port, &format!("http://{}/slow", slow), &slow);
+    assert!(r.starts_with("HTTP/1.1 200 OK"), "{}", r);
+    // (4) 接続を拒まれるホスト (エラー 1 件、原因は refused)
+    let dead = format!("127.0.0.1:{}", dead_port);
+    let r = get_via_proxy(proxy_port, &format!("http://{}/dead", dead), &dead);
+    assert!(r.starts_with("HTTP/1.1 502"), "{}", r);
+
+    let sorted = |q: &str| first_host(&status_json_query(proxy_port, q));
+    // 既定 (問い合わせ無し) は今までどおり要求数順
+    assert_eq!(
+        first_host(&status_json(proxy_port)),
+        format!("http://{}", busy)
+    );
+    assert_eq!(sorted(""), format!("http://{}", busy));
+    assert_eq!(sorted("?sort=requests"), format!("http://{}", busy));
+    // エラー 1 件のホストが先頭 (要求数では最下位)
+    assert_eq!(sorted("?sort=errors"), format!("http://{}", dead));
+    // 名前解決を払ったホストが先頭 (loopback のミスは 1 ms 未満で `dns_ms_sum` が
+    // 0 に丸まるので、同点は `dns_misses` で崩れる)
+    assert_eq!(sorted("?sort=dns"), format!("http://{}", named));
+    // 平均の遅いホストが先頭
+    assert_eq!(sorted("?sort=slow"), format!("http://{}", slow));
+    // 知らない値・空の値は既定に倒れる。`/healthz` は問い合わせを読まない
+    assert_eq!(sorted("?sort=nonsense"), format!("http://{}", busy));
+    assert_eq!(sorted("?sort="), format!("http://{}", busy));
+    assert_eq!(sorted("?other=1"), format!("http://{}", busy));
+    assert_eq!(
+        first_host(&endpoint_on(
+            proxy_port,
+            &format!(
+                "GET /healthz?sort=errors HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                proxy_port
+            )
+        )),
+        format!("http://{}", busy)
+    );
+
+    // JSON の形は変わらない: 4 ホストが全部入り、内訳の列もそのまま
+    let by_errors = status_json_query(proxy_port, "?sort=errors");
+    assert_eq!(hosts_in(&by_errors).len(), 4, "{}", by_errors);
+    assert_eq!(
+        hosts_in(&by_errors).len(),
+        hosts_in(&status_json(proxy_port)).len()
+    );
+    assert!(by_errors.contains("\"errors_by_cause\":["), "{}", by_errors);
+    assert!(
+        by_errors.contains("\"clients\":[{\"client\":\"127.0.0.1\""),
+        "接続元は要求数順のまま: {}",
+        by_errors
+    );
+    // 監視が 5 秒ごとに引く口なので、太らせない
+    assert!(by_errors.len() <= 64 * 1024, "{} バイト", by_errors.len());
+}
+
+/// `/status` に問い合わせを付けて引く (T13.3 の `?sort=`)。
+fn status_json_query(proxy_port: u16, query: &str) -> String {
+    endpoint_on(
+        proxy_port,
+        &format!(
+            "GET /status{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            query, proxy_port
+        ),
+    )
+}
+
+/// 自分宛ての要求を 1 本投げて応答を全部読む。
+fn endpoint_on(proxy_port: u16, req: &str) -> String {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut out = String::new();
+    let _ = stream.read_to_string(&mut out);
+    out
+}
+
+/// `/status` の `hosts[]` に出ている順のホスト名。
+fn hosts_in(status: &str) -> Vec<String> {
+    let at = status.find("\"hosts\":[").expect("hosts[] が無い");
+    let end = status[at..]
+        .find("],\"clients\"")
+        .expect("hosts[] の終わり")
+        + at;
+    status[at..end]
+        .split("{\"host\":\"")
+        .skip(1)
+        .map(|s| s.split('"').next().unwrap_or("").to_string())
+        .collect()
+}
+
+/// `/status` の `hosts[]` の先頭のホスト名。
+fn first_host(status: &str) -> String {
+    hosts_in(status).first().cloned().unwrap_or_default()
+}
+
 /// `/status` に出した上限といまのスレッド数が、`/metrics` にも gauge として出ること (T11.5)。
 /// 運用で見るのは `/metrics` の方なので、`/status` だけだと片肺になる。
 #[test]

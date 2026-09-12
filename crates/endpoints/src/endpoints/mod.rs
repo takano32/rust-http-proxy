@@ -1,4 +1,5 @@
 //! プロキシ自身のエンドポイント: `/dashboard` (コントロールパネル)、`/healthz` `/status`
+//! (`?sort=requests|errors|dns|slow` で `hosts[]` の上位 50 の切り出しを変えられる。T13.3)、
 //! `/history` (JSON、`res=5|60|3600`)、`/metrics` (Prometheus)、`/proxy.pac` (ブラウザの自動設定)、
 //! `/purge` と `PURGE` メソッド、`/lookup`、`/blocklist` (判定と手動の上書き)。
 //!
@@ -91,7 +92,7 @@ fn endpoint_list(lite: bool) -> String {
          this address as an HTTP proxy (or use /proxy.pac below).\n\n\
          endpoints:\n\
          {}\
-         \x20 /status                                     JSON: counters, hosts, cache, threads\n\
+         \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /healthz                                    same as /status\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
          \x20 /metrics                                    Prometheus text format\n\
@@ -157,6 +158,19 @@ pub fn handle(
     } else if is_get && path == "/blocklist" {
         blocklist::handle(&parse_query(query.unwrap_or("")))
     } else if is_get && (path == "/healthz" || path == "/status") {
+        // `?sort=requests|errors|dns|slow` は `hosts[]` の上位 50 を切り出す鍵だけを変える
+        // (T13.3)。知らない値は既定に倒す。**`/healthz` は問い合わせを読まない**
+        // (監視が叩く口の意味を変えない)
+        let sort = if path == "/status" {
+            parse_query(query.unwrap_or(""))
+                .iter()
+                .find(|(k, _)| k == "sort")
+                .map_or(metrics::HostSort::Requests, |(_, v)| {
+                    metrics::HostSort::from_param(v)
+                })
+        } else {
+            metrics::HostSort::Requests
+        };
         (
             200,
             "application/json",
@@ -170,6 +184,7 @@ pub fn handle(
                     state_file: &persist::status_json(),
                     version: ep.version,
                     concurrency: (ep.concurrency)(),
+                    sort,
                 },
             ),
         )
@@ -415,28 +430,59 @@ mod local_path_tests {
         assert_eq!(local_path("https://example.com:60624/x", 60624, None), None);
     }
 
-    /// ダッシュボードに Phase 13 が見る図と KPI が載っていること (T12.4 (5))。
+    /// ダッシュボードに Phase 13 が見る図と KPI が載っていること (T12.4 (5)、T13.3)。
     ///
-    /// ブラウザが無いので絵は確かめられない。**`/history` の読み方が合っているか**は
-    /// `scripts/check-dashboard.js` (Node があるときだけ) が実出力を通して見る。
-    /// ここで見るのは「消えていないこと」だけ。
+    /// ブラウザが無いので絵は確かめられない。**`/history` と `/status` の読み方が
+    /// 合っているか**は `scripts/check-dashboard.js` (Node があるときだけ) が
+    /// 実出力を通して見る。ここで見るのは「消えていないこと」だけ。
     #[test]
     fn the_dashboard_has_the_charts_phase_13_reads() {
         let html = super::DASHBOARD_HTML;
-        for id in ["ch-conn", "ch-err", "ch-fd", "connp50", "version", "window"] {
+        for id in [
+            "ch-conn",
+            "ch-err",
+            "ch-fd",
+            "connp50",
+            "version",
+            "window",
+            "dnsmiss",
+            "connlimit",
+            "bad",
+        ] {
             assert!(html.contains(&format!("id=\"{}\"", id)), "{} が無い", id);
         }
-        // 配列の配列を読む側 (キー名を戻す関数) と区間の分位点
+        // 配列の配列を読む側 (キー名を戻す関数) と区間の分位点、`/status` を読む側 (T13.3)
         for f in [
             "function toSamples(",
             "function winQuantile(",
             "function mergeWindows(",
+            "function dnsStats(",
+            "function badHosts(",
+            "function peak(",
         ] {
             assert!(html.contains(f), "{} が無い", f);
         }
-        // ホスト別の表の列 (名前解決 / 接続、v4 / v6)
+        // ホスト別の表の列 (名前解決 / 接続、v4 / v6) と並びの選択肢 (T13.3 で 2 つ増えた)
         assert!(html.contains("名前解決 / 接続"), "{}", "内訳の列が無い");
         assert!(html.contains("v4 / v6"), "{}", "族の列が無い");
+        for opt in ["\"p95\"", "\"errors\"", "\"dns\"", "\"slow\"", "\"bytes\""] {
+            assert!(
+                html.contains(&format!("<option value={}>", opt)),
+                "並びの選択肢 {} が無い",
+                opt
+            );
+        }
+        // 「悪いホスト」は `?sort=` の 2 本を **30 秒に 1 回だけ** 取る (負荷を増やさない)
+        assert!(
+            html.contains("'/status?sort='+k"),
+            "{}",
+            "?sort= を取っていない"
+        );
+        assert!(
+            html.contains("setInterval(pollBad,30000)"),
+            "{}",
+            "30 秒ごとになっていない"
+        );
         // 外部ライブラリは読み込まない (依存なしの 1 ページ)
         assert!(!html.contains("<script src="), "外部 JS を読み込んでいる");
         assert!(

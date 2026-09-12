@@ -70,7 +70,8 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
     <div class="card"><h2>要求 / 秒</h2><div class="kpi" id="rps">–</div><div class="hint" id="reqtotal"></div></div>
     <div class="card"><h2>転送 / 秒</h2><div class="kpi" id="bps">–</div><div class="hint" id="bytestotal"></div></div>
     <div class="card"><h2>CONNECT 確立 p50 <span class="tag">直近 5 分</span></h2><div class="kpi" id="connp50">–</div><div class="hint" id="conndetail"></div></div>
-    <div class="card"><h2>接続中</h2><div class="kpi" id="active">–</div><div class="hint" id="threads"></div><div class="hint" id="origins"></div></div>
+    <div class="card"><h2>名前解決 <span class="tag">通算</span></h2><div class="kpi" id="dnsmiss">–</div><div class="hint" id="dnsdetail"></div></div>
+    <div class="card"><h2>接続中</h2><div class="kpi" id="active">–</div><div class="hint" id="connlimit"></div><div class="hint" id="threads"></div><div class="hint" id="origins"></div></div>
     <div class="card"><h2>キャッシュ命中率</h2><div class="kpi" id="hitratio">–</div><div class="hint" id="hitdetail"></div></div>
     <div class="card"><h2>メモリキャッシュ</h2><div class="kpi" id="memkpi">–</div><div class="bar"><i id="membar"></i></div><div class="hint" id="memhint"></div></div>
     <div class="card"><h2>ディスクキャッシュ</h2><div class="kpi" id="diskkpi">–</div><div class="bar"><i id="diskbar"></i></div><div class="hint" id="diskhint"></div></div>
@@ -107,8 +108,14 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   </section>
 
   <section class="card" style="margin-top:14px">
-    <h2>ホスト別 (上位 20) <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">並び: <select id="hostsort"><option value="requests">要求数</option><option value="p95">遅い順 (p95)</option><option value="errors">エラー率</option><option value="bytes">転送量</option></select></span></h2>
+    <h2>ホスト別 (上位 20) <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">並び: <select id="hostsort"><option value="requests">要求数</option><option value="p95">遅い順 (p95)</option><option value="errors">エラー率</option><option value="dns">名前解決 (合計)</option><option value="slow">確立の平均</option><option value="bytes">転送量</option></select></span></h2>
     <div style="overflow-x:auto"><table id="hosts"><thead><tr><th>host</th><th>要求</th><th>命中</th><th>ミス</th><th>素通し</th><th>エラー</th><th title="ACL / ブロックリストで拒否">拒否</th><th>転送</th><th>命中率</th><th title="応答時間の中央値 / 95 パーセンタイル。CONNECT は接続確立まで">応答 p50 / p95</th><th title="名前解決 1 回あたり / 接続 1 回あたりの平均 ms (待ちの内訳)">名前解決 / 接続</th><th title="Happy Eyeballs で確立した族の内訳">v4 / v6</th><th>エラー率</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="card" style="margin-top:14px">
+    <h2>悪いホスト (上位 10) <span class="tag">30 秒ごと</span><span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">/status?sort=errors + ?sort=dns</span></h2>
+    <div style="overflow-x:auto"><table id="bad"><thead><tr><th>host</th><th>要求</th><th>エラー</th><th title="errors_by_cause を原因名で">原因</th><th title="ミス 1 回あたりの平均 ms (dns_ms_sum ÷ dns_misses)">名前解決 (1 回)</th><th title="そのホストに費やした名前解決の合計 (dns_ms_sum)">名前解決 (合計)</th><th title="確立 1 回あたりの平均 ms (connect_ms_sum ÷ timed)">確立 (1 回)</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint">要求数の上位 50 には出てこないホストを見るための表です (エラーか名前解決のあるものだけ)。</div>
   </section>
 
   <section class="card" style="margin-top:14px">
@@ -126,8 +133,11 @@ var bounds=[];     // 窓のヒストグラムの区間 (ms)。`/history` の bo
 var causes=[];     // エラーの原因の名前。`/history` の causes
 var last=null;     // 直近の /status
 var lastSample=null;
+var badLists=[null,null];  // [?sort=errors, ?sort=dns] の hosts[] (30 秒ごと。T13.3)
+// エラーの原因の既定の名前 (`/history` の causes が来るまで、と来なかったとき)
+var CAUSES=['dns','refused','unreachable','timeout','reset','tls','loop','other'];
 
-// --- ここから下の 3 つは node の整形テストからも呼ぶ (DOM に触らないこと) ---
+// --- ここから下の 6 つは node の整形テストからも呼ぶ (DOM に触らないこと) ---
 // `/history` は標本を配列の配列で返す (キーは keys に 1 回だけ)。列名で引ける形に戻す
 function toSamples(h){
   var idx={},keys=h.keys||[];
@@ -167,6 +177,47 @@ function mergeWindows(samples,n,prefix){
     out.max=Math.max(out.max,s[prefix+'_ms_max']||0);
   }
   return out;
+}
+// 名前解決の KPI (`/status` の dns をそのまま読む)。ミス率・ミス 1 回の値段・先回り。
+// `refreshes` と `negative_ttl_secs` は T13.1 で足すキーなので、**無ければ null** (「–」で描く)
+function dnsStats(s){
+  var d=(s&&s.dns)||{},hits=+d.hits||0,miss=+d.misses||0,tot=hits+miss;
+  return {rate:tot?miss/tot*100:null,avg:d.miss_avg_ms==null?null:+d.miss_avg_ms,
+    hits:hits,misses:miss,lookups:tot,entries:+d.entries||0,
+    negative:+d.negative_hits||0,stale:+d.stale_served||0,
+    ttl:d.ttl_secs==null?null:+d.ttl_secs,
+    negttl:d.negative_ttl_secs==null?null:+d.negative_ttl_secs,
+    refreshes:d.refreshes==null?null:+d.refreshes};
+}
+// 「悪いホスト」: `/status?sort=errors` と `?sort=dns` の 2 枚を混ぜて上位 n 件。
+// エラーの多い順 → 名前解決に費やした順で、エラーも名前解決も無いホストは出さない
+// (要求数の上位 50 には出てこないホストを見るための表なので、健全なホストは要らない)
+function badHosts(lists,names,n){
+  var seen={},rows=[];
+  (lists||[]).forEach(function(hs){(hs||[]).forEach(function(h){
+    if(!h||!h.host||seen[h.host])return;
+    seen[h.host]=1;
+    if(!(h.errors>0)&&!(h.dns_ms_sum>0)&&!(h.dns_misses>0))return;
+    rows.push(h)})});
+  rows.sort(function(a,b){return(b.errors||0)-(a.errors||0)||(b.dns_ms_sum||0)-(a.dns_ms_sum||0)
+    ||(b.dns_misses||0)-(a.dns_misses||0)||(b.requests||0)-(a.requests||0)});
+  return rows.slice(0,n||10).map(function(h){
+    var c=h.errors_by_cause||[];
+    return {host:h.host,requests:h.requests||0,errors:h.errors||0,
+      causes:(names||[]).map(function(nm,i){return c[i]?nm+' '+c[i]:null}).filter(Boolean),
+      dns_avg:h.dns_misses?h.dns_ms_sum/h.dns_misses:null,dns_sum:h.dns_ms_sum||0,
+      conn_avg:h.timed?h.connect_ms_sum/h.timed:null};
+  });
+}
+// 直近 n 標本のゲージの山 (`active_max` の無い古い標本は `active` で代用)。件数 0 なら null
+function peak(samples,n,key,fallback){
+  var a=samples||[],mx=null;
+  for(var i=Math.max(0,a.length-n);i<a.length;i++){
+    var v=a[i][key];
+    if(v==null&&fallback)v=a[i][fallback];
+    if(v!=null&&(mx==null||v>mx))mx=v;
+  }
+  return mx;
 }
 function fmtBytes(n){if(n==null)return'–';var u=['B','KiB','MiB','GiB','TiB'],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return(i?n.toFixed(n<10?2:1):n)+' '+u[i]}
 function fmtNum(n){return n==null?'–':Number(n).toLocaleString()}
@@ -249,6 +300,25 @@ function renderStatus(s){
   $('bytestotal').textContent='累計 '+fmtBytes(s.bytes_forwarded);
   $('active').textContent=fmtNum(s.active_connections);
   var lim=function(v){return v?fmtNum(v):'無制限'};
+  // 名前解決 (T13.3): ミス率とミス 1 回の値段。T13.1 の「先回り」は**あれば**出す
+  var dn=dnsStats(s);
+  $('dnsmiss').textContent=dn.rate==null?'–':dn.rate.toFixed(1)+'%';
+  $('dnsmiss').title='ミス率 = misses ÷ (hits + misses)。ミスの 1 回だけが OS に問い合わせます';
+  var dparts=['ミス '+fmtNum(dn.misses)+' / '+fmtNum(dn.lookups),'ミス 1 回 '+fmtMs(dn.avg)];
+  if(dn.refreshes!=null)dparts.push('先回り '+fmtNum(dn.refreshes)+' 回');
+  if(dn.negative)dparts.push('失敗の再利用 '+fmtNum(dn.negative));
+  if(dn.stale)dparts.push('古い答え '+fmtNum(dn.stale));
+  dparts.push('表 '+fmtNum(dn.entries)+' 件'+(dn.ttl==null?'':' (TTL '+dn.ttl+' s'+(dn.negttl==null?'':' / 失敗 '+dn.negttl+' s')+')'));
+  $('dnsdetail').textContent=dparts.join(' · ');
+  // 接続の上限と山 (T13.3): 503 に届く前に「あと何本か」が読めるように。
+  // 山は `/history` の直近 5 分の `active_max` の最大 (平均に畳むと山が消える)
+  var span5=Math.max(1,Math.round(300/(interval||5))),pk=peak(hist,span5,'active_max','active');
+  var cparts=['上限 '+lim(s.max_conns),'山 '+(pk==null?'–':fmtNum(pk))+' (直近 5 分)','503 '+fmtNum(s.rejected_overload)];
+  if(s.evicted_idle!=null)cparts.push('追い出し '+fmtNum(s.evicted_idle));
+  $('connlimit').textContent=cparts.join(' · ');
+  $('connlimit').title='上限に当たった接続は 503 で断ります (断った数が 503)';
+  var full=pct(pk,s.max_conns),fcls=barClass(full);
+  $('connlimit').style.color=fcls?'var(--'+fcls+')':'';
   $('threads').textContent='スレッド '+fmtNum(s.live_threads)+' / '+lim(s.max_threads)+' (空き '+fmtNum(s.idle_threads)+(s.queued_jobs?' · 待ち '+fmtNum(s.queued_jobs):'')+') · 接続上限 '+lim(s.max_conns)
     +(s.fds?' · fd '+fmtNum(s.fds)+' / '+fmtNum(s.max_fds)+' · プロセス全体 '+fmtNum(s.threads)+' スレッド':'');
   var o=s.origin_connections||{};$('origins').textContent='オリジン接続 新規 '+fmtNum(o.new)+' / 再利用 '+fmtNum(o.reused);
@@ -263,14 +333,15 @@ function renderStatus(s){
   var rows=[['保存',c.stores],['追い出し',c.evictions],['再検証',c.revalidations],['裏側の再検証',c.background_revalidations+' (進行中 '+c.revalidating+')'],['期限切れをそのまま配信',c.stale_served],['同時ミスの合流',c.coalesced+' (進行中 '+c.inflight+')'],['入場制御で見送り (初回)',c.admission_rejected],['キャッシュから配信',fmtBytes(c.bytes_served)],
     ['RSS',fmtBytes(sys.process_rss_bytes)],['cgroup',sys.cgroup_limit_bytes?fmtBytes(sys.cgroup_usage_bytes)+' / '+fmtBytes(sys.cgroup_limit_bytes):'–'],['ホストのメモリ',sys.mem_total_bytes?(sys.mem_used_percent+'% 使用 / '+fmtBytes(sys.mem_total_bytes)):'–'],['メモリ圧迫',sys.mem_pressure?'あり':'なし']];
   // エラーの原因は `/status` のホスト別の内訳を足し上げて出す (図には秒あたりの本数だけ出る)
-  var names=causes.length?causes:['dns','refused','unreachable','timeout','reset','tls','loop','other'];
+  var names=causes.length?causes:CAUSES;
   var byCause=names.map(function(){return 0});
   (s.hosts||[]).forEach(function(h){(h.errors_by_cause||[]).forEach(function(v,i){byCause[i]+=v})});
   var shown=names.map(function(n,i){return byCause[i]?n+' '+fmtNum(byCause[i]):null}).filter(Boolean);
   rows.push(['エラーの原因 (通算)',shown.length?shown.join(' · '):'なし']);
   $('cachetbl').tBodies[0].innerHTML=rows.map(function(r){return'<tr><td style="font-family:inherit">'+r[0]+'</td><td>'+(r[1]==null?'–':r[1])+'</td></tr>'}).join('');
   var sortKey=$('hostsort').value,all=(s.hosts||[]).slice();
-  all.sort(function(a,b){if(sortKey==='p95')return(b.p95_ms||0)-(a.p95_ms||0);if(sortKey==='errors')return(b.requests?b.errors/b.requests:0)-(a.requests?a.errors/a.requests:0)||b.errors-a.errors;if(sortKey==='bytes')return b.bytes-a.bytes;return b.requests-a.requests});
+  // 並びはこの 50 件の中での並べ替え (どの 50 件を切り出すかは `/status?sort=` の側。T13.3)
+  all.sort(function(a,b){if(sortKey==='p95')return(b.p95_ms||0)-(a.p95_ms||0);if(sortKey==='errors')return(b.requests?b.errors/b.requests:0)-(a.requests?a.errors/a.requests:0)||b.errors-a.errors;if(sortKey==='dns')return(b.dns_ms_sum||0)-(a.dns_ms_sum||0)||(b.dns_misses||0)-(a.dns_misses||0);if(sortKey==='slow')return(b.avg_ms||0)-(a.avg_ms||0);if(sortKey==='bytes')return b.bytes-a.bytes;return b.requests-a.requests});
   var hosts=all.slice(0,20);
   $('hosts').tBodies[0].innerHTML=hosts.map(function(h){var hr=(h.hits+h.misses)>0?h.hits/(h.hits+h.misses)*100:null;var er=h.requests?h.errors/h.requests*100:0;
     var lat=h.timed?fmtMs(h.p50_ms)+' / <span style="color:'+latColor(h.p95_ms)+'">'+fmtMs(h.p95_ms)+'</span>':'–';
@@ -286,6 +357,17 @@ function renderStatus(s){
   var bl=s.blocklist||{};$('blocklist').textContent=bl.entries?'ブロックリスト '+fmtNum(bl.entries)+' 件 · 拒否 '+fmtNum(bl.blocked)+(bl.error?' · エラーあり':''):'';
   $('blocklist').title=bl.error||'';
   var ov=bl.overrides||[];$('boverrides').innerHTML=ov.length?'上書き: '+ov.map(function(o){return'<code>'+esc(o.host)+'</code> '+(o.action==='block'?'拒否':'許可')+(o.expires?' (~'+new Date(o.expires*1000).toLocaleString()+')':' (無期限)')}).join(' · '):'';
+}
+// 「悪いホスト」の表 (30 秒ごとに取った `?sort=errors` と `?sort=dns` の 2 枚から)
+function renderBad(){
+  var rows=badHosts(badLists,causes.length?causes:CAUSES,10);
+  $('bad').tBodies[0].innerHTML=rows.map(function(r){
+    return'<tr><td title="'+esc(r.host)+'">'+esc(r.host)+'</td><td>'+fmtNum(r.requests)+'</td>'
+      +'<td style="color:'+(r.errors?'var(--bad)':'inherit')+'">'+fmtNum(r.errors)+'</td>'
+      +'<td style="text-align:left;white-space:normal">'+esc(r.causes.join(' · ')||'–')+'</td>'
+      +'<td>'+fmtMs(r.dns_avg)+'</td><td>'+fmtMs(r.dns_sum)+'</td><td>'+fmtMs(r.conn_avg)+'</td></tr>'
+  }).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--muted)">'
+    +(badLists[0]||badLists[1]?'エラーも遅い名前解決もありません':'読み込み中…')+'</td></tr>';
 }
 function fmtMs(ms){return ms==null?'–':ms>=1000?(ms/1000).toFixed(1)+' s':Math.round(ms)+' ms'}
 function latColor(ms){return ms>=2000?'var(--bad)':ms>=500?'var(--warn)':'inherit'}
@@ -308,6 +390,10 @@ function renderSettings(st){
 }
 function fetchJson(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
 function pollStatus(){if($('pause').checked)return;fetchJson('/status').then(function(s){renderStatus(s);ok(true,'更新 '+new Date().toLocaleTimeString())}).catch(function(e){ok(false,'取得失敗: '+e.message)})}
+// 「悪いホスト」の 2 枚だけは **30 秒に 1 回** (2 秒ごとの `/status` に 2 本足すと
+// プロキシ側の仕事が 2 倍になる。並べ替えるだけの応答でも 50 ホストぶんを組み立てる)
+function pollBad(){if($('pause').checked)return;
+  ['errors','dns'].forEach(function(k,i){fetchJson('/status?sort='+k).then(function(s){badLists[i]=s.hosts||[];renderBad()}).catch(function(){})})}
 function pollHistory(){if($('pause').checked)return;fetchJson('/history?res='+$('range').value).then(function(h){
   interval=h.interval_secs||5;bounds=h.bounds_ms||[];causes=h.causes||[];hist=toSamples(h);redraw()}).catch(function(){})}
 $('range').addEventListener('change',function(){hist=[];pollHistory()});
@@ -320,7 +406,7 @@ $('btn-purge').addEventListener('click',function(){var u=$('url').value.trim();i
 $('btn-purge-all').addEventListener('click',function(){if(!confirm('キャッシュを全部消します。よろしいですか？'))return;
   fetchJson('/purge?all=1').then(function(j){$('out').textContent=JSON.stringify(j,null,2);pollStatus()}).catch(function(e){$('out').textContent=e.message})});
 window.addEventListener('resize',redraw);
-pollStatus();pollHistory();setInterval(pollStatus,2000);setInterval(pollHistory,5000);
+pollStatus();pollHistory();pollBad();setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);
 })();
 </script>
 </body>
