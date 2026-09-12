@@ -465,6 +465,11 @@ mod local_path_tests {
             "dnsmiss",
             "connlimit",
             "bad",
+            // 個票の表 (T13.4)
+            "errors",
+            "errhint",
+            "conns",
+            "connhint",
         ] {
             assert!(html.contains(&format!("id=\"{}\"", id)), "{} が無い", id);
         }
@@ -476,6 +481,9 @@ mod local_path_tests {
             "function dnsStats(",
             "function badHosts(",
             "function peak(",
+            // 個票を読む側 (T13.4)
+            "function errorRows(",
+            "function connRows(",
         ] {
             assert!(html.contains(f), "{} が無い", f);
         }
@@ -500,6 +508,36 @@ mod local_path_tests {
             "{}",
             "30 秒ごとになっていない"
         );
+        // 個票は 5 秒ごとに `/errors?n=20` と `/connections` の 2 本 (T13.4)
+        assert!(
+            html.contains("fetchJson('/errors?n=20')"),
+            "{}",
+            "/errors を取っていない"
+        );
+        assert!(
+            html.contains("fetchJson('/connections')"),
+            "{}",
+            "/connections を取っていない"
+        );
+        assert!(
+            html.contains("setInterval(pollRecent,5000)"),
+            "{}",
+            "個票が 5 秒ごとになっていない"
+        );
+        // ヘッダーから個票へ行けること (T13.4)
+        for link in [
+            "/dns",
+            "/log",
+            "/hosts?limit=1000",
+            "/errors",
+            "/connections",
+        ] {
+            assert!(
+                html.contains(&format!("<a href=\"{}\" target=\"_blank\">", link)),
+                "{} へのリンクが無い",
+                link
+            );
+        }
         // 外部ライブラリは読み込まない (依存なしの 1 ページ)
         assert!(!html.contains("<script src="), "外部 JS を読み込んでいる");
         assert!(
