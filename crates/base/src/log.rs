@@ -3,11 +3,18 @@
 //! `PROXY_LOG_LEVEL` (error/warn/info/debug/trace) でレベルを制御する。
 //! 出力形式: `2026-09-02T01:23:45.678Z INFO  [conn#12] message`
 //! 出力先はレベルによらずすべて標準出力 (stdout)。
+//!
+//! **warn 以上は固定長のリングにも写す** (`/log`。T13.4)。動作環境 (Pterodactyl) の
+//! コンソールは流れて消えるので、「さっき何を警告したか」を後から読む口が要る。
+//! `info` のアクセスログは写さない — 熱い経路 (1 行 7.2 us/要求。T10.10) を重くしない。
 
 use std::cell::RefCell;
 use std::io::Write;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::sync::LockExt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -228,10 +235,98 @@ fn write_line(build: impl FnOnce(&mut Vec<u8>)) {
     });
 }
 
+/// `/log` に覚えておく行数 (固定)。1 行 [`MAX_LOG_LINE`] B なので最悪でも 256 KiB。
+pub const MAX_LOG_LINES: usize = 1000;
+/// 1 行に覚える長さ (バイト)。長い警告はここで切る。
+pub const MAX_LOG_LINE: usize = 256;
+
+/// リングに覚えている 1 行。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line {
+    /// いつ (epoch 秒)
+    pub at: u64,
+    pub level: Level,
+    /// ログの `[conn#N]` (無ければ `[main]`)
+    pub conn: Option<usize>,
+    pub msg: String,
+}
+
+#[derive(Default)]
+struct LogRing {
+    buf: Vec<Line>,
+    next: usize,
+    total: u64,
+}
+
+/// warn 以上の直近の行 (`/log`)。**書くのは警告とエラーのときだけ**なので、
+/// 熱い経路 (info のアクセスログ) はこの鍵を 1 度も取らない。
+static RECENT: Mutex<LogRing> = Mutex::new(LogRing {
+    buf: Vec::new(),
+    next: 0,
+    total: 0,
+});
+
+/// 直近 `n` 行を**新しい順**で返す。2 つ目は起動からの通算 (捨てた分も含む)。
+pub fn recent(n: usize) -> (Vec<Line>, u64) {
+    let r = RECENT.locked();
+    let len = r.buf.len();
+    let n = n.min(len);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        // `next` の 1 つ手前が最新 (満杯になる前は `next == 0` なので末尾が最新)
+        let start = if len < MAX_LOG_LINES { len } else { r.next };
+        out.push(r.buf[(start + len - 1 - i) % len].clone());
+    }
+    (out, r.total)
+}
+
+/// 覚えている行数。
+pub fn recent_len() -> usize {
+    RECENT.locked().buf.len()
+}
+
+/// リングを空にする (テスト用)。
+pub fn clear_recent() {
+    let mut r = RECENT.locked();
+    r.buf.clear();
+    r.next = 0;
+    r.total = 0;
+}
+
+/// warn 以上の 1 行をリングに写す (満杯なら最も古いものを上書き)。
+fn remember(level: Level, conn_id: Option<usize>, msg: &str) {
+    let line = Line {
+        at: crate::clock::now_epoch(),
+        level,
+        conn: conn_id,
+        // 文字の途中で切らない
+        msg: {
+            let mut end = msg.len().min(MAX_LOG_LINE);
+            while end > 0 && !msg.is_char_boundary(end) {
+                end -= 1;
+            }
+            msg[..end].to_string()
+        },
+    };
+    let mut r = RECENT.locked();
+    r.total += 1;
+    if r.buf.len() < MAX_LOG_LINES {
+        r.buf.push(line);
+        return;
+    }
+    let at = r.next;
+    r.buf[at] = line;
+    r.next = (at + 1) % MAX_LOG_LINES;
+}
+
 /// 1 行のログを出力する。レベルによらず、すべて標準出力へ書き出す。
 pub fn log_line(level: Level, conn_id: Option<usize>, msg: &str) {
     if !enabled(level) {
         return;
+    }
+    // warn 以上は `/log` のリングにも写す (T13.4)。info / debug / trace は比較 1 回だけ
+    if level <= Level::Warn {
+        remember(level, conn_id, msg);
     }
     write_line(|buf| {
         push_prefix(buf, level, conn_id);
@@ -350,6 +445,8 @@ mod tests {
 
     #[test]
     fn test_access_log_is_info_level() {
+        // ログ水準はプロセスに 1 つなので、水準を触るテストは直列に回す
+        let _guard = crate::sync::LockExt::locked(&RING_TEST_LOCK);
         set_level(Level::Info);
         assert!(enabled(Level::Info));
         assert!(!enabled(Level::Debug));
@@ -491,6 +588,79 @@ mod tests {
             assert_eq!(String::from_utf8(buf).unwrap(), expected);
         }
     }
+
+    /// warn 以上だけがリングに入り、`info` のアクセスログは入らない (T13.4)。
+    #[test]
+    fn only_warnings_and_errors_reach_the_ring() {
+        let _guard = crate::sync::LockExt::locked(&RING_TEST_LOCK);
+        clear_recent();
+        set_level(Level::Info);
+        log_line(Level::Info, Some(1), "this is info");
+        access(
+            1,
+            &Access {
+                client: "127.0.0.1",
+                method: "GET",
+                target: "http://example.com/",
+                version: "HTTP/1.1",
+                status: "200",
+                bytes: 42,
+                duration_ms: 1.5,
+                cache: "MISS",
+            },
+        );
+        assert_eq!(recent_len(), 0, "info もアクセスログも写さない");
+        log_line(Level::Warn, Some(7), "502 Bad Gateway");
+        log_line(Level::Error, None, "accept failed");
+        let (got, total) = recent(10);
+        assert_eq!(total, 2);
+        assert_eq!(got.len(), 2);
+        // 新しい順
+        assert_eq!(got[0].level, Level::Error);
+        assert_eq!(got[0].conn, None);
+        assert_eq!(got[0].msg, "accept failed");
+        assert_eq!(got[1].level, Level::Warn);
+        assert_eq!(got[1].conn, Some(7));
+        assert!(got[1].at > 1_700_000_000, "{}", got[1].at);
+        clear_recent();
+    }
+
+    /// レベルを error に下げたら warn は出ないので、リングにも入らない。
+    #[test]
+    fn the_ring_follows_the_log_level() {
+        let _guard = crate::sync::LockExt::locked(&RING_TEST_LOCK);
+        clear_recent();
+        set_level(Level::Error);
+        log_line(Level::Warn, None, "not logged");
+        assert_eq!(recent_len(), 0);
+        log_line(Level::Error, None, "logged");
+        assert_eq!(recent_len(), 1);
+        set_level(Level::Info);
+        clear_recent();
+    }
+
+    /// 1 行は 256 B までで切り、1,000 行で頭打ち (古いものを上書き)。
+    #[test]
+    fn the_ring_clips_long_lines_and_wraps_at_1000() {
+        let _guard = crate::sync::LockExt::locked(&RING_TEST_LOCK);
+        clear_recent();
+        set_level(Level::Info);
+        log_line(Level::Warn, None, &"x".repeat(1000));
+        assert_eq!(recent(1).0[0].msg.len(), MAX_LOG_LINE);
+        clear_recent();
+        for i in 0..(MAX_LOG_LINES + 5) {
+            log_line(Level::Warn, None, &format!("line {}", i));
+        }
+        let (got, total) = recent(MAX_LOG_LINES + 100);
+        assert_eq!(total as usize, MAX_LOG_LINES + 5);
+        assert_eq!(got.len(), MAX_LOG_LINES);
+        assert_eq!(got[0].msg, format!("line {}", MAX_LOG_LINES + 4));
+        assert_eq!(got[MAX_LOG_LINES - 1].msg, "line 5");
+        clear_recent();
+    }
+
+    /// リングもログ水準もプロセスに 1 組なので、この束は直列に回す。
+    static RING_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_timestamp_format() {

@@ -259,3 +259,61 @@ fn test_integration_dns_shows_the_resolver_table() {
     assert_eq!(one.matches("{\"host\":\"").count(), 1, "{}", one);
     assert!(one.contains("\"shown\":1"), "{}", one);
 }
+
+/// `log_warn!` の直後に `/log` に同じ行が見え、`info` のアクセスログは見えないこと
+/// (T13.4 の受け入れ基準 (d))。
+#[test]
+fn test_integration_log_shows_warnings_but_not_the_access_log() {
+    let (origin_port, _origin) = start_mock_origin();
+    let dead_port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let proxy_port = start_test_proxy(proxy_config());
+
+    // info のアクセスログが出る要求 (200)
+    let ok = format!("127.0.0.1:{}", origin_port);
+    let r = get_via_proxy(proxy_port, &format!("http://{}/ok", ok), &ok);
+    assert!(r.starts_with("HTTP/1.1 200 OK"), "{}", r);
+    // warn が出る要求 (502 Bad Gateway。`crates/http` の `log_warn!`)
+    let dead = format!("127.0.0.1:{}", dead_port);
+    let r = get_via_proxy(proxy_port, &format!("http://{}/x", dead), &dead);
+    assert!(r.starts_with("HTTP/1.1 502"), "{}", r);
+
+    let json = endpoint_json(proxy_port, "/log");
+    assert!(json.contains("\"capacity\":1000"), "{}", json);
+    assert!(json.contains("\"level\":\"info\""), "{}", json);
+    // 出した warn がそのまま 1 行として見える (接続番号つき)
+    assert!(json.contains("\"level\":\"warn\""), "{}", json);
+    assert!(
+        json.contains(&format!("502 Bad Gateway: connect 127.0.0.1:{}", dead_port)),
+        "warn の行が無い: {}",
+        json
+    );
+    assert!(json.contains("\"conn\":"), "{}", json);
+    let at = status_number(&json, "at");
+    assert!(at > 1_700_000_000, "時刻が epoch 秒でない: {}", at);
+    // `info` のアクセスログは写していない (熱い経路。T10.10)
+    assert!(
+        !json.contains("ACCESS"),
+        "アクセスログが入っている: {}",
+        json
+    );
+    assert!(
+        !json.contains("(internal endpoint)"),
+        "info が入っている: {}",
+        json
+    );
+    // 行の側に `info` は 1 つも無い (末尾の `"level":"info"` は今のログ水準の表示)
+    assert!(
+        !json.contains("\"level\":\"info\",\"conn\""),
+        "info の行が入っている: {}",
+        json
+    );
+
+    // `?n=1` は新しい 1 行だけ
+    let one = endpoint_json(proxy_port, "/log?n=1");
+    assert_eq!(one.matches("{\"at\":").count(), 1, "{}", one);
+    assert!(one.contains("\"count\":1"), "{}", one);
+}

@@ -126,6 +126,46 @@ pub fn dns(query: Option<&str>) -> (u16, &'static str, String) {
     (200, "application/json", out)
 }
 
+/// `/log?n=200` — warn 以上の直近 N 行 (新しい順、既定 200 行・最大 1,000)。
+///
+/// `info` のアクセスログは写していない (熱い経路を重くしないため。T10.10)。
+/// 動作環境 (Pterodactyl) のコンソールは流れて消えるので、これがその代わり。
+pub fn log(query: Option<&str>) -> (u16, &'static str, String) {
+    let n = num_param(query, "n", 200, crate::log::MAX_LOG_LINES);
+    let (lines, total) = crate::log::recent(n);
+    let mut out = String::with_capacity(8192);
+    out.push_str("{\"lines\":");
+    let (shown, cut) = array_within(&mut out, lines.iter().map(log_line_json));
+    let _ = write!(
+        out,
+        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"level\":\"{}\",\"truncated\":{}}}",
+        shown,
+        crate::log::recent_len(),
+        crate::log::MAX_LOG_LINES,
+        total,
+        crate::log::current_level()
+            .as_str()
+            .trim()
+            .to_ascii_lowercase(),
+        cut
+    );
+    (200, "application/json", out)
+}
+
+/// `/log` の 1 要素。`conn` は `[conn#N]` の N (`[main]` なら `null`)。
+fn log_line_json(line: &crate::log::Line) -> String {
+    format!(
+        "{{\"at\":{},\"level\":\"{}\",\"conn\":{},\"msg\":\"{}\"}}",
+        line.at,
+        line.level.as_str().trim().to_ascii_lowercase(),
+        match line.conn {
+            Some(id) => id.to_string(),
+            None => "null".to_string(),
+        },
+        crate::json::escape(&line.msg)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +318,37 @@ mod tests {
             shown,
             MAX_BODY
         );
+    }
+
+    /// `/log` はどんな中身でも 256 KiB に収まること。
+    ///
+    /// 1 行 256 B × 1,000 行 = 250 KiB に JSON の飾りが乗るので、**上限いっぱいの
+    /// 1,000 行は入りきらない**のが設計どおり (既定の 200 行は最悪でも入る)。
+    /// 入らない分はバイト数で打ち切って `"truncated":true` を出す。
+    #[test]
+    fn the_log_response_stays_under_256_kib() {
+        let line = crate::log::Line {
+            at: u64::MAX,
+            level: crate::log::Level::Warn,
+            conn: Some(usize::MAX),
+            // 1 行は 256 B で切ってあるが、`\"` に化ける文字だけの最悪も見る
+            msg: "\"".repeat(crate::log::MAX_LOG_LINE),
+        };
+        let lines = vec![line; crate::log::MAX_LOG_LINES];
+        for (n, want_cut) in [(200usize, false), (crate::log::MAX_LOG_LINES, true)] {
+            let mut body = String::from("{\"lines\":");
+            let (shown, cut) = array_within(&mut body, lines.iter().take(n).map(log_line_json));
+            body.push('}');
+            assert_eq!(cut, want_cut, "{} 行", n);
+            assert!(body.len() <= MAX_BODY, "{} 行で {} B", n, body.len());
+            println!(
+                "log {} 行 (最悪の行) の応答: {} B / 出せたのは {} 行 (上限 {} B)",
+                n,
+                body.len(),
+                shown,
+                MAX_BODY
+            );
+        }
     }
 
     #[test]
