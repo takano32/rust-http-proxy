@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // ダッシュボード (`crates/endpoints/src/web/dashboard.html`) の JS を、ブラウザ無しで確かめる。
 //
-// ブラウザが無い環境でも壊れに気づけるように、見るのは 2 つだけ:
+// ブラウザが無い環境でも壊れに気づけるように、見るのは 3 つだけ:
 //   1. <script> の中身が構文として通ること (`new Function` = `node --check` と同じ判定)
 //   2. **`/history` の配列の配列を読む関数の読み方が、実際の出力と合っていること**
 //      (キーの並び・入れ子の配列・区間の分位点。T12.4 (5))
+//   3. **`/status` を読む関数が実出力で例外なく描けること** (名前解決の KPI、
+//      「悪いホスト」の表、直近の山。T13.3)
 //
-// 使い方: node scripts/check-dashboard.js [/history の実出力.json]
-//   引数を省くと下の作り置き (手元のプロキシから取った実出力) を使う。
+// 使い方: node scripts/check-dashboard.js [/history の実出力.json] [/status の実出力.json]
+//   引数を省くと下の作り置き (手元のプロキシから取った実出力と、架空のホスト名の見本) を使う。
 // 依存なし。Node があるときだけ回す補助的な確認で、`cargo test` の代わりではない。
 
 const fs = require('fs');
@@ -33,8 +35,8 @@ try {
   fail('JS の構文エラー: ' + e.message);
 }
 
-// 2. `/history` を読む関数を取り出して動かす (DOM に触らない 3 つだけ)
-const names = ['toSamples', 'winQuantile', 'mergeWindows'];
+// 2. `/history` と `/status` を読む関数を取り出して動かす (DOM に触らない 6 つだけ)
+const names = ['toSamples', 'winQuantile', 'mergeWindows', 'dnsStats', 'badHosts', 'peak'];
 let src = '';
 for (const n of names) {
   const at = js.indexOf('function ' + n + '(');
@@ -96,6 +98,60 @@ if (bucketSum !== total) fail('区間の合計 ' + bucketSum + ' != 件数 ' + t
 const kpi = api.winQuantile(merged.buckets, merged.count, merged.max, 0.5, hist.bounds_ms);
 if (!(kpi >= 0 && kpi <= merged.max)) fail('KPI の p50 が範囲外: ' + kpi);
 
+// 直近 60 標本のゲージの山 (「接続中」のカードの「山 (直近 5 分)」。T13.3)
+const want = recent.reduce(
+  (a, s) => Math.max(a, s.active_max != null ? s.active_max : s.active),
+  0
+);
+const pk = api.peak(samples, 60, 'active_max', 'active');
+if (pk !== want) fail('peak の山 ' + pk + ' != ' + want);
+if (api.peak([], 60, 'active_max', 'active') !== null) fail('標本 0 は null のはず');
+
+// 3. `/status` を読む関数 (名前解決の KPI と「悪いホスト」の表。T13.3)
+const statusFile = process.argv[3] || path.join(__dirname, 'testdata', 'status.json');
+const st = JSON.parse(fs.readFileSync(statusFile, 'utf8'));
+if (!Array.isArray(st.hosts)) fail(statusFile + ' に hosts[] が無い (/status の出力を渡すこと)');
+const dns = st.dns || {};
+const dn = api.dnsStats(st);
+if (dn.lookups !== (dns.hits || 0) + (dns.misses || 0)) fail('解決した回数が合わない');
+if (dn.lookups && !(dn.rate >= 0 && dn.rate <= 100)) fail('ミス率が範囲外: ' + dn.rate);
+if (dns.misses && Math.abs(dn.avg - dns.miss_ms_sum / dns.misses) > 0.02) {
+  fail('ミス 1 回の平均が miss_ms_sum ÷ misses と合わない: ' + dn.avg);
+}
+// 無いキーは null (「–」で描く)、あれば数で返る。T13.1 が `refreshes` と
+// `negative_ttl_secs` を足すまでは実出力に無いので、両方の枝をここで見る
+if (api.dnsStats({}).rate !== null) fail('dns が無いときは null のはず');
+if (api.dnsStats({ dns: {} }).refreshes !== null) fail('無いキーは null のはず');
+if (api.dnsStats({ dns: { refreshes: 7, negative_ttl_secs: 60 } }).refreshes !== 7) {
+  fail('refreshes を読めていない');
+}
+
+const causeNames = hist.causes || [];
+const bad = api.badHosts([st.hosts], causeNames, 10);
+if (bad.length > 10) fail('上位 10 件を超えた: ' + bad.length);
+for (const b of bad) {
+  if (typeof b.host !== 'string' || !b.host) fail('host が読めていない');
+  if (!(b.errors > 0 || b.dns_sum > 0 || b.dns_avg !== null)) {
+    fail('エラーも名前解決も無いホストが表に出た: ' + b.host);
+  }
+  if (b.dns_avg !== null && !(b.dns_avg >= 0)) fail('名前解決の平均が数でない: ' + b.host);
+  if (b.conn_avg !== null && !(b.conn_avg >= 0)) fail('確立の平均が数でない: ' + b.host);
+  for (const c of b.causes) {
+    if (!causeNames.some((n) => c.indexOf(n + ' ') === 0)) fail('原因の名前が違う: ' + c);
+  }
+}
+for (let i = 1; i < bad.length; i++) {
+  const a = bad[i - 1], b = bad[i];
+  if (a.errors < b.errors || (a.errors === b.errors && a.dns_sum < b.dns_sum)) {
+    fail('並びが崩れた: ' + a.host + ' の次に ' + b.host);
+  }
+}
+// 2 枚 (?sort=errors と ?sort=dns) を混ぜても同じホストは 1 行だけ
+if (api.badHosts([st.hosts, st.hosts], causeNames, 10).length !== bad.length) {
+  fail('2 枚を混ぜたら重複した');
+}
+if (api.badHosts([null, undefined], causeNames, 10).length !== 0) fail('空でも例外なく 0 件のはず');
+
 console.log(
   'OK: dashboard.html の JS は構文が通り、/history ' +
     samples.length +
@@ -105,5 +161,17 @@ console.log(
     total +
     ' 本) を読めた。直近の p50 = ' +
     kpi.toFixed(2) +
-    ' ms'
+    ' ms、山 = ' +
+    pk +
+    '。/status (' +
+    path.basename(statusFile) +
+    ') はホスト ' +
+    st.hosts.length +
+    ' 件、名前解決のミス率 ' +
+    (dn.rate == null ? '–' : dn.rate.toFixed(1) + '%') +
+    ' (ミス 1 回 ' +
+    (dn.avg == null ? '–' : dn.avg.toFixed(1) + ' ms') +
+    ')、悪いホスト ' +
+    bad.length +
+    ' 件'
 );
