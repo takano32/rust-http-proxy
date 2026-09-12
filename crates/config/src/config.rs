@@ -123,6 +123,11 @@ pub struct Config {
     pub tls_ca_file: Option<PathBuf>,
     /// 名前解決の結果を保持する時間 (`PROXY_DNS_TTL_SECS`、0 で無効)
     pub dns_ttl: Duration,
+    /// 解決の失敗を覚えておく時間 (`PROXY_DNS_NEGATIVE_SECS`、0 で覚えない)。
+    ///
+    /// デプロイ先では失敗する解決が 1 回 約 2 秒かかる (58.6 時間で 80 件)。5 秒では
+    /// 「直後の再試行」しか捉えられていなかったので 60 秒にした (T13.1)
+    pub dns_negative: Duration,
     /// `/proxy.pac` で DIRECT にするホストの一覧 (`PROXY_PAC_DIRECT`、`*.example.com` 可)
     pub pac_direct: Vec<String>,
     /// ブロックリストのファイル (`PROXY_BLOCKLIST_FILE`、hosts 形式 / 1 行 1 ドメイン)
@@ -267,6 +272,11 @@ impl Config {
         {
             cfg.dns_ttl = Duration::from_secs(secs);
         }
+        if let Some(secs) =
+            envfile::var("PROXY_DNS_NEGATIVE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.dns_negative = Duration::from_secs(secs);
+        }
         let list = |v: String| -> Vec<String> {
             v.split(',')
                 .map(|s| s.trim().to_ascii_lowercase())
@@ -336,6 +346,7 @@ impl Config {
             tls_verify: true,
             tls_ca_file: None,
             dns_ttl: Duration::from_secs(60),
+            dns_negative: crate::dns::NEGATIVE,
             pac_direct: Vec::new(),
             blocklist_file: None,
             blocklist_url: None,

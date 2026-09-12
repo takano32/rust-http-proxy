@@ -50,9 +50,9 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
         &mut out,
         "dns_lookups_total",
         "counter",
-        "Name resolutions by result (hit = served from the DNS cache)",
+        "Name resolutions by result (hit = served from the DNS cache, refresh = re-resolved in the background)",
     );
-    let [hits, misses, stale, negative] = crate::dns::counters();
+    let [hits, misses, stale, negative, refresh] = crate::dns::counters();
     line(&mut out, "dns_lookups_total", "result=\"hit\"", hits);
     line(&mut out, "dns_lookups_total", "result=\"miss\"", misses);
     line(&mut out, "dns_lookups_total", "result=\"stale\"", stale);
@@ -62,6 +62,8 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
         "result=\"negative\"",
         negative,
     );
+    // 期限前に裏で引き直した回数 (T13.1)。利用者は待っていないので `miss` とは別系列
+    line(&mut out, "dns_lookups_total", "result=\"refresh\"", refresh);
     // Happy Eyeballs の族ごとの勝敗 (T12.1)。`v4_first` は `/status` に出す
     header(
         &mut out,

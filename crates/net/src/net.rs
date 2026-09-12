@@ -969,7 +969,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = format!("localhost:{}", listener.local_addr().unwrap().port());
         let lookups = || {
-            let [hits, misses, _, _] = crate::dns::counters();
+            let [hits, misses, _, _, _] = crate::dns::counters();
             hits + misses
         };
         for ttl in [Duration::from_secs(60), Duration::ZERO] {

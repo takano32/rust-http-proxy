@@ -67,6 +67,7 @@ fn main() {
     }
     net::set_ipv6_enabled(config.ipv6);
     rust_http_proxy::dns::set_ttl(config.dns_ttl);
+    rust_http_proxy::dns::set_negative_ttl(config.dns_negative);
     let listeners = match net::bind_all(&config.bind_addrs, config.port) {
         Ok(l) => l,
         Err(e) => {

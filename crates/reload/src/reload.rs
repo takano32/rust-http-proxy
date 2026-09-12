@@ -6,6 +6,7 @@
 //!
 //! 即時反映できるのは接続単位で参照する値だけ: ACL (`PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS`)、
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
+//! `PROXY_DNS_NEGATIVE_SECS`、
 //! `PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
 //! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
@@ -136,6 +137,13 @@ impl Live {
             crate::dns::set_ttl(fresh.dns_ttl);
             crate::dns::clear();
             applied.push("PROXY_DNS_TTL_SECS");
+        }
+        // 負のキャッシュは長さを変えるだけ (表は捨てない。覚えている失敗は次の参照で
+        // 新しい長さと比べられるので、0 にすればその場で効かなくなる)
+        if fresh.dns_negative != old.dns_negative {
+            next.dns_negative = fresh.dns_negative;
+            crate::dns::set_negative_ttl(fresh.dns_negative);
+            applied.push("PROXY_DNS_NEGATIVE_SECS");
         }
         if fresh.pac_direct != old.pac_direct {
             next.pac_direct = fresh.pac_direct.clone();
