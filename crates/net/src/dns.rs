@@ -94,6 +94,11 @@ struct Entry {
     last_used: Instant,
     /// 裏で引き直している最中 (同じ名前の引き直しを 1 本に絞る旗)。
     refreshing: bool,
+    /// この名前で OS に問い合わせた回数 (`/dns?sort=misses`。T13.4)。
+    /// **書くのは既に表の鍵を取っている場所だけ**なので、原子操作は増えない
+    misses: u64,
+    /// この名前を期限前に裏で引き直した回数 (T13.4)
+    refreshes: u64,
     /// 直近の失敗 (負のキャッシュ)
     failed_at: Option<(Instant, io::ErrorKind, String)>,
     /// このホストで最後に接続できた族 (`Some(true)` = IPv6)。RFC 8305 §8 の
@@ -110,6 +115,8 @@ impl Entry {
             resolved_at: now,
             last_used: now,
             refreshing: false,
+            misses: 0,
+            refreshes: 0,
             failed_at: None,
             last_win_v6,
         }
@@ -212,6 +219,7 @@ fn refresh_one(key: &str) {
             return;
         };
         entry.refreshing = false;
+        entry.refreshes += 1;
         if let Ok(addrs) = result {
             // 答えが変わっていれば差し替える。族の記憶 (T12.1) は引き継ぐ
             entry.addrs = addrs;
@@ -380,6 +388,7 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
             slot.addrs = addrs.clone();
             slot.resolved_at = now;
             slot.last_used = now;
+            slot.misses += 1;
             slot.failed_at = None;
             if slot.last_win_v6.is_none() {
                 slot.last_win_v6 = pref;
@@ -388,6 +397,7 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
         }
         Err(e) => {
             let entry = table.entry(key).or_insert_with(|| Entry::empty(now, None));
+            entry.misses += 1;
             entry.failed_at = Some((now, e.kind(), e.to_string()));
             if !entry.addrs.is_empty() && now.duration_since(entry.resolved_at) < STALE_MAX {
                 STALE.fetch_add(1, Ordering::Relaxed);
@@ -455,9 +465,162 @@ pub fn clear() {
     }
 }
 
+/// `/dns` の並べ替えの鍵 (T13.4)。知らない値は既定 (`age`) に倒す
+/// (`/status?sort=` と同じ方針で、綴り違いで 400 を返すより今までどおり返す方が安全)。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DnsSort {
+    /// 解決してからの経過が長い順 (既定。期限に近いものが上に来る)
+    #[default]
+    Age,
+    /// ホスト名の順
+    Host,
+    /// OS に問い合わせた回数の多い順 (先回りが効いていない名前が上に来る)
+    Misses,
+}
+
+impl DnsSort {
+    pub fn from_param(v: &str) -> DnsSort {
+        match v {
+            "host" => DnsSort::Host,
+            "misses" => DnsSort::Misses,
+            _ => DnsSort::Age,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DnsSort::Age => "age",
+            DnsSort::Host => "host",
+            DnsSort::Misses => "misses",
+        }
+    }
+}
+
+/// 1 行に出すアドレスの上限 (CDN は A / AAAA を 10 本以上返すことがある)。
+pub const MAX_ROW_ADDRS: usize = 8;
+
+/// `/dns` の 1 行 (T13.4)。表の中身をそのまま写したもの。
+#[derive(Debug, Clone)]
+pub struct TableRow {
+    pub host: String,
+    /// 覚えているアドレス (多いときは [`MAX_ROW_ADDRS`] 本で切る)
+    pub addrs: Vec<IpAddr>,
+    /// 覚えている本数 (切る前)
+    pub addr_count: usize,
+    /// 解決してからの秒
+    pub age_secs: u64,
+    /// 残り TTL (秒。0 = 期限切れ)
+    pub ttl_left: u64,
+    /// 最後に引いてからの秒
+    pub idle_secs: u64,
+    /// このホストで最後に勝った族 (`Some(true)` = IPv6。T12.1)
+    pub win_v6: Option<bool>,
+    /// 負のキャッシュ: (何秒前に失敗したか, 理由)
+    pub failed: Option<(u64, String)>,
+    /// 裏で引き直している最中か (T13.1)
+    pub refreshing: bool,
+    /// OS に問い合わせた回数と、期限前に裏で引き直した回数
+    pub misses: u64,
+    pub refreshes: u64,
+}
+
+impl TableRow {
+    /// `/dns` の 1 要素。
+    pub fn to_json(&self) -> String {
+        let addrs: Vec<String> = self.addrs.iter().map(|a| format!("\"{}\"", a)).collect();
+        let failed = match &self.failed {
+            Some((secs, msg)) => format!(
+                "{{\"secs_ago\":{},\"error\":\"{}\"}}",
+                secs,
+                // 理由は `getaddrinfo` の文言なので短い。念のため 120 B で切る
+                crate::json::escape(&clip(msg, 120))
+            ),
+            None => "null".to_string(),
+        };
+        format!(
+            "{{\"host\":\"{}\",\"addrs\":[{}],\"addr_count\":{},\"age_secs\":{},\"ttl_left\":{},\"idle_secs\":{},\"win_v6\":{},\"failed\":{},\"refreshing\":{},\"misses\":{},\"refreshes\":{}}}",
+            crate::json::escape(&self.host),
+            addrs.join(","),
+            self.addr_count,
+            self.age_secs,
+            self.ttl_left,
+            self.idle_secs,
+            match self.win_v6 {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "null",
+            },
+            failed,
+            self.refreshing,
+            self.misses,
+            self.refreshes,
+        )
+    }
+}
+
+/// 文字列を `max` バイト以内に切る (文字の途中で切らない)。
+fn clip(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+/// 名前解決の表の中身 (`/dns`。T13.4)。**鍵の内側では複製だけして、並べ替えも
+/// 組み立ても外でやる** (表は要求の経路が取る鍵なので、長く握らない)。
+pub fn table(sort: DnsSort) -> Vec<TableRow> {
+    let now = Instant::now();
+    let ttl = ttl();
+    let mut rows: Vec<TableRow> = {
+        let guard = TABLE.locked();
+        let Some(t) = guard.as_ref() else {
+            return Vec::new();
+        };
+        t.iter()
+            .map(|(host, e)| {
+                let age = now.saturating_duration_since(e.resolved_at);
+                TableRow {
+                    host: host.clone(),
+                    addrs: e.addrs.iter().take(MAX_ROW_ADDRS).copied().collect(),
+                    addr_count: e.addrs.len(),
+                    age_secs: age.as_secs(),
+                    ttl_left: ttl.saturating_sub(age).as_secs(),
+                    idle_secs: now.saturating_duration_since(e.last_used).as_secs(),
+                    win_v6: e.last_win_v6,
+                    failed: e.failed_at.as_ref().map(|(at, _, msg)| {
+                        (now.saturating_duration_since(*at).as_secs(), msg.clone())
+                    }),
+                    refreshing: e.refreshing,
+                    misses: e.misses,
+                    refreshes: e.refreshes,
+                }
+            })
+            .collect()
+    };
+    // 同点は名前で崩す (どの鍵でも順序が 1 つに決まる。`/status?sort=` と同じ方針)
+    rows.sort_by(|a, b| match sort {
+        DnsSort::Age => b
+            .age_secs
+            .cmp(&a.age_secs)
+            .then_with(|| a.host.cmp(&b.host)),
+        DnsSort::Host => a.host.cmp(&b.host),
+        DnsSort::Misses => b.misses.cmp(&a.misses).then_with(|| a.host.cmp(&b.host)),
+    });
+    rows
+}
+
+/// 覚えている名前の数 (`/dns` の `count`)。
+pub fn entries() -> usize {
+    TABLE.locked().as_ref().map_or(0, HashMap::len)
+}
+
 /// `/status` の `"dns"` 要素。
 pub fn status_json() -> String {
-    let entries = TABLE.locked().as_ref().map_or(0, HashMap::len);
+    let entries = entries();
     let (us, misses) = resolve_cost_total();
     format!(
         "{{\"ttl_secs\":{},\"negative_ttl_secs\":{},\"entries\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{},\"refreshes\":{},\"miss_ms_sum\":{:.1},\"miss_avg_ms\":{:.2}}}",

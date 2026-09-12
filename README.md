@@ -163,7 +163,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   - **個票 (集計では読めない「誰が・いつ・なぜ」。T13.4)**: `/errors?n=100` で直近のエラー
     (時刻・`connect` / `forward`・宛先・原因・名前解決 ms・接続 ms・返した状態コード・接続元。500 件の環状、プロセスのメモリだけ)、
     `/connections` でいま開いている接続の一覧 (接続 id・接続元・宛先・`connect` / `http`・
-    状態 `relaying` / `parked` / `reading` / `serving` / `queued`・開始からの秒・転送バイト・記述子の数。`--lite` では空)
+    状態 `relaying` / `parked` / `reading` / `serving` / `queued`・開始からの秒・転送バイト・記述子の数。`--lite` では空)、
+    `/dns?sort=age|host|misses&limit=300` で名前解決の表の中身 (ホスト・アドレス・解決からの秒・残り TTL・
+    最後に使ってからの秒・勝った族・負のキャッシュなら理由・裏で引き直し中か・OS に問い合わせた回数)
   - `PURGE <url>` / `/purge?url=<url>` / `/purge?all=1` でキャッシュを消す、`/lookup?url=<url>` でエントリの状態を見る
   - `/history?res=5|60|3600` で 1 時間 / 1 日 / 30 日の履歴、`/blocklist?host=<h>` でブロックリストの判定、
     `&action=block|allow|clear[&ttl_secs=N]` で一時的な上書き (既定 24 時間、`0` で無期限。状態ファイルに 256 件まで残る)

@@ -44,6 +44,15 @@ fn array_within(out: &mut String, items: impl IntoIterator<Item = String>) -> (u
     (n, cut)
 }
 
+/// `?key=` の文字列 (無ければ `""`)。
+fn str_param(query: Option<&str>, key: &str) -> String {
+    parse_query(query.unwrap_or(""))
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
+}
+
 /// `?key=N` を読む (無い / 読めない / 範囲外は既定か端に倒す。`/status?sort=` と同じ方針)。
 fn num_param(query: Option<&str>, key: &str, default: usize, max: usize) -> usize {
     parse_query(query.unwrap_or(""))
@@ -91,6 +100,28 @@ pub fn connections(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         shown,
         cut,
         !ep.metrics.conns.enabled()
+    );
+    (200, "application/json", out)
+}
+
+/// `/dns?sort=age|host|misses&limit=300` — 名前解決の表の中身 (T13.1 の効きを見る口)。
+pub fn dns(query: Option<&str>) -> (u16, &'static str, String) {
+    let sort = crate::dns::DnsSort::from_param(&str_param(query, "sort"));
+    let limit = num_param(query, "limit", 300, 4096);
+    let rows = crate::dns::table(sort);
+    let count = rows.len();
+    let mut out = String::with_capacity(8192);
+    out.push_str("{\"entries\":");
+    let (shown, cut) = array_within(&mut out, rows.iter().take(limit).map(|r| r.to_json()));
+    let _ = write!(
+        out,
+        ",\"count\":{},\"shown\":{},\"sort\":\"{}\",\"ttl_secs\":{},\"negative_ttl_secs\":{},\"truncated\":{}}}",
+        count,
+        shown,
+        sort.name(),
+        crate::dns::ttl().as_secs(),
+        crate::dns::negative_ttl().as_secs(),
+        cut
     );
     (200, "application/json", out)
 }
@@ -185,6 +216,70 @@ mod tests {
         }
     }
 
+    /// `/dns` は**どんな中身でも** 256 KiB に収まること。
+    ///
+    /// 名前は 253 文字 (DNS の上限) まで、アドレスは 1 ホストに 8 本まで出すので、
+    /// 最悪の 1 行は 900 B 近くなる。件数の上限 (既定 300) だけでは足りないので
+    /// **バイト数でも打ち切る** — その打ち切りがちゃんと効くことをここで見る。
+    #[test]
+    fn the_dns_response_stays_under_256_kib() {
+        use crate::dns::{MAX_ROW_ADDRS, TableRow};
+        use std::net::IpAddr;
+        let v6: IpAddr = "2001:db8:85a3:8d3:1319:8a2e:370:7348".parse().unwrap();
+        let v4: IpAddr = "93.184.216.34".parse().unwrap();
+        // (1) ありふれた行 (名前 15 文字、A と AAAA の 2 本)。既定の 300 行が収まること
+        let plain = TableRow {
+            host: "www.example.com".to_string(),
+            addrs: vec![v4, v6],
+            addr_count: 2,
+            age_secs: 12,
+            ttl_left: 48,
+            idle_secs: 3,
+            win_v6: Some(false),
+            failed: None,
+            refreshing: false,
+            misses: 4,
+            refreshes: 2,
+        };
+        let mut body = String::from("{\"entries\":");
+        let (shown, cut) = array_within(&mut body, vec![plain; 300].iter().map(|r| r.to_json()));
+        body.push('}');
+        assert_eq!(shown, 300);
+        assert!(!cut);
+        assert!(body.len() <= MAX_BODY, "{} B", body.len());
+        println!(
+            "dns 300 行 (ありふれた行): {} B (上限 {} B)",
+            body.len(),
+            MAX_BODY
+        );
+
+        // (2) 最悪の行を表いっぱい (4,096 = `MAX_ENTRIES`) 並べても上限を越えない
+        let worst = TableRow {
+            host: "a".repeat(253),
+            addrs: vec![v6; MAX_ROW_ADDRS],
+            addr_count: 32,
+            age_secs: u64::MAX,
+            ttl_left: u64::MAX,
+            idle_secs: u64::MAX,
+            win_v6: Some(true),
+            failed: Some((u64::MAX, "e".repeat(300))),
+            refreshing: true,
+            misses: u64::MAX,
+            refreshes: u64::MAX,
+        };
+        let mut body = String::from("{\"entries\":");
+        let (shown, cut) = array_within(&mut body, vec![worst; 4096].iter().map(|r| r.to_json()));
+        body.push('}');
+        assert!(cut, "バイト数で打ち切られること");
+        assert!(body.len() <= MAX_BODY, "{} B", body.len());
+        println!(
+            "dns 4,096 行 (最悪の行): {} B / 出せたのは {} 行 (上限 {} B)",
+            body.len(),
+            shown,
+            MAX_BODY
+        );
+    }
+
     #[test]
     fn numeric_parameters_fall_back_to_the_default() {
         assert_eq!(num_param(None, "n", 100, 500), 100);
@@ -192,5 +287,8 @@ mod tests {
         assert_eq!(num_param(Some("n=9999"), "n", 100, 500), 500);
         assert_eq!(num_param(Some("n=0"), "n", 100, 500), 1);
         assert_eq!(num_param(Some("n=abc"), "n", 100, 500), 100);
+        assert_eq!(str_param(Some("sort=host"), "sort"), "host");
+        assert_eq!(str_param(Some("a=1&sort=misses"), "sort"), "misses");
+        assert_eq!(str_param(None, "sort"), "");
     }
 }

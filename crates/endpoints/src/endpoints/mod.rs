@@ -96,6 +96,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
          \x20 /connections                                JSON: the connections open right now\n\
+         \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /healthz                                    same as /status\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
          \x20 /metrics                                    Prometheus text format\n\
@@ -163,6 +164,8 @@ pub fn handle(
         recent::errors(ep, query)
     } else if is_get && path == "/connections" {
         recent::connections(ep)
+    } else if is_get && path == "/dns" {
+        recent::dns(query)
     } else if is_get && path == "/blocklist" {
         blocklist::handle(&parse_query(query.unwrap_or("")))
     } else if is_get && (path == "/healthz" || path == "/status") {

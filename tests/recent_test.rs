@@ -203,3 +203,59 @@ fn test_integration_connections_is_empty_in_lite_mode() {
     assert!(json.contains("\"count\":0"), "{}", json);
     assert!(json.contains("\"lite\":true"), "{}", json);
 }
+
+/// 解決したホストが `/dns` に見え、失敗した名前が**負のキャッシュ**として見えること
+/// (T13.4 の受け入れ基準 (c))。
+#[test]
+fn test_integration_dns_shows_the_resolver_table() {
+    let (origin_port, _origin) = start_mock_origin();
+    let proxy_port = start_test_proxy(proxy_config());
+
+    // (1) 引ける名前 (`localhost` は表を通る。IP リテラルは通らない)
+    let named = format!("localhost:{}", origin_port);
+    let r = get_via_proxy(proxy_port, &format!("http://{}/ok", named), &named);
+    assert!(r.starts_with("HTTP/1.1 200 OK"), "{}", r);
+    // (2) 引けない名前 → 負のキャッシュ (`PROXY_DNS_NEGATIVE_SECS` の既定 60 秒)
+    let bogus = "t134-no-such-host.invalid:80";
+    let r = get_via_proxy(proxy_port, &format!("http://{}/x", bogus), bogus);
+    assert!(r.starts_with("HTTP/1.1 502"), "{}", r);
+
+    let json = endpoint_json(proxy_port, "/dns");
+    assert!(json.contains("\"sort\":\"age\""), "{}", json);
+    assert!(json.contains("\"ttl_secs\":"), "{}", json);
+    assert!(json.contains("\"negative_ttl_secs\":"), "{}", json);
+    // 引けた名前: アドレスと残り TTL と「最後に使ってからの秒」がある
+    assert!(json.contains("\"host\":\"localhost\""), "{}", json);
+    assert!(json.contains("\"addrs\":[\"127.0.0.1\""), "{}", json);
+    assert!(json.contains("\"ttl_left\":"), "{}", json);
+    assert!(json.contains("\"idle_secs\":"), "{}", json);
+    assert!(json.contains("\"refreshing\":false"), "{}", json);
+    // 引けなかった名前: 負のキャッシュとして理由つきで見える
+    assert!(
+        json.contains("\"host\":\"t134-no-such-host.invalid\""),
+        "{}",
+        json
+    );
+    assert!(json.contains("\"failed\":{\"secs_ago\":"), "{}", json);
+    assert!(json.contains("\"error\":\""), "{}", json);
+    // IP リテラルは表を通らない (`127.0.0.1` のホスト行は無い)
+    assert!(!json.contains("\"host\":\"127.0.0.1\""), "{}", json);
+
+    // 並べ替え: `host` は名前順、知らない値は既定 (`age`) に倒れる
+    let by_host = endpoint_json(proxy_port, "/dns?sort=host");
+    assert!(by_host.contains("\"sort\":\"host\""), "{}", by_host);
+    let hosts: Vec<&str> = by_host
+        .split("{\"host\":\"")
+        .skip(1)
+        .map(|s| s.split('"').next().unwrap_or(""))
+        .collect();
+    let mut sorted = hosts.clone();
+    sorted.sort_unstable();
+    assert_eq!(hosts, sorted, "{}", by_host);
+    assert!(endpoint_json(proxy_port, "/dns?sort=misses").contains("\"sort\":\"misses\""),);
+    assert!(endpoint_json(proxy_port, "/dns?sort=nonsense").contains("\"sort\":\"age\""),);
+    // `?limit=` は件数を絞る
+    let one = endpoint_json(proxy_port, "/dns?limit=1");
+    assert_eq!(one.matches("{\"host\":\"").count(), 1, "{}", one);
+    assert!(one.contains("\"shown\":1"), "{}", one);
+}
