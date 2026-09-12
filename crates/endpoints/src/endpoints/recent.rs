@@ -166,6 +166,63 @@ fn log_line_json(line: &crate::log::Line) -> String {
     )
 }
 
+/// `/hosts?sort=requests|errors|dns|slow&limit=200` — `.rrd` にある**全ホスト**を
+/// `/status` の `hosts[]` と同じ形で (T13.4)。
+///
+/// `/status` の上位 50 は変えない (監視が 5 秒ごとに引く口を太らせない)。
+/// 上位 50 に入らない残り 950 ホストを見るのがこちらの仕事で、
+/// `scripts/status-diff.py` がそのまま読めるように窓の目印も同じ名前で出す。
+pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    let sort = crate::metrics::HostSort::from_param(&str_param(query, "sort"));
+    let limit = num_param(query, "limit", 200, crate::metrics::MAX_HOSTS);
+    let all = ep.metrics.hosts_sorted_by(sort);
+    let count = all.len();
+    // `hosts[]` は `.rrd` の通算なので、いつからの通算かも一緒に出す (`/status` と同じ)
+    let restored_since = all
+        .iter()
+        .map(|(_, s)| s.last_seen)
+        .filter(|&t| t > 0)
+        .min()
+        .unwrap_or(0);
+    let mut out = String::with_capacity(16384);
+    out.push_str("{\"hosts\":");
+    let (shown, cut) = array_within(
+        &mut out,
+        all.iter().take(limit).map(|(h, s)| {
+            format!(
+                "{{\"host\":\"{}\",{}}}",
+                crate::json::escape(h),
+                crate::metrics::stats_json(s, true)
+            )
+        }),
+    );
+    let _ = write!(
+        out,
+        ",\"count\":{},\"shown\":{},\"sort\":\"{}\",\"limit\":{},\"truncated\":{},\"uptime_secs\":{},\"total_requests\":{},\"restored_since\":{}}}",
+        count,
+        shown,
+        sort_name(sort),
+        limit,
+        cut,
+        ep.metrics.start_time.elapsed().as_secs(),
+        ep.metrics
+            .total_requests
+            .load(std::sync::atomic::Ordering::Relaxed),
+        restored_since
+    );
+    (200, "application/json", out)
+}
+
+/// `?sort=` に出す名前 (`/status?sort=` と同じ綴り)。
+fn sort_name(sort: crate::metrics::HostSort) -> &'static str {
+    match sort {
+        crate::metrics::HostSort::Requests => "requests",
+        crate::metrics::HostSort::Errors => "errors",
+        crate::metrics::HostSort::Dns => "dns",
+        crate::metrics::HostSort::Slow => "slow",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +404,102 @@ mod tests {
                 body.len(),
                 shown,
                 MAX_BODY
+            );
+        }
+    }
+
+    /// `/hosts` は 1,000 ホスト (`MAX_HOSTS` = `.rrd` に入る全部) でも 256 KiB 以下。
+    ///
+    /// デプロイ先並みの値なら 1,000 件が丸ごと入る。桁を振り切った値 (転送 20 桁、
+    /// 応答 9,999 ms、原因が 8 種類とも埋まる) を 1,000 件並べると入りきらないので、
+    /// そこは**バイト数で打ち切る** — その打ち切りが効くことも一緒に見る。
+    #[test]
+    fn the_hosts_response_stays_under_256_kib() {
+        use crate::metrics::{Detail, ErrCause, HostOutcome, HostSort, MAX_HOSTS};
+        use std::time::Duration;
+
+        let row = |m: &Metrics, host: &str, bytes: u64, ms: u64, detail: Detail| {
+            m.record_host_detail(
+                host,
+                HostOutcome::Bypass,
+                bytes,
+                Some(Duration::from_millis(ms)),
+                detail,
+            );
+        };
+
+        // (1) デプロイ先並み (鍵 29 文字、転送 100 MB、確立 12 ms)
+        let plain = Metrics::new();
+        for i in 0..MAX_HOSTS {
+            row(
+                &plain,
+                &format!("connect://host{:04}.example.net:443", i),
+                98_765_432,
+                12,
+                Detail {
+                    dns_ms: 3,
+                    dns_misses: 1,
+                    connect_ms: 9,
+                    family_v6: Some(false),
+                    cause: None,
+                    first_byte_ms: None,
+                },
+            );
+        }
+        // (2) 桁を振り切った最悪
+        let worst = Metrics::new();
+        for i in 0..MAX_HOSTS {
+            row(
+                &worst,
+                &format!("connect://host{:04}.cdn.example.net:443", i),
+                u64::MAX / 2,
+                9999,
+                Detail {
+                    dns_ms: 123,
+                    dns_misses: 45,
+                    connect_ms: 678,
+                    family_v6: Some(true),
+                    cause: Some(ErrCause::Dns),
+                    first_byte_ms: None,
+                },
+            );
+        }
+
+        let build = |m: &Metrics, take: usize| {
+            let all = m.hosts_sorted_by(HostSort::Requests);
+            assert_eq!(all.len(), MAX_HOSTS);
+            let mut body = String::from("{\"hosts\":");
+            let (shown, cut) = array_within(
+                &mut body,
+                all.iter().take(take).map(|(h, s)| {
+                    format!(
+                        "{{\"host\":\"{}\",{}}}",
+                        crate::json::escape(h),
+                        crate::metrics::stats_json(s, true)
+                    )
+                }),
+            );
+            body.push('}');
+            (body.len(), shown, cut)
+        };
+
+        // 既定の 200 件は、桁を振り切った値でも丸ごと入る
+        let (len, shown, cut) = build(&worst, 200);
+        assert_eq!(shown, 200);
+        assert!(!cut);
+        assert!(len <= MAX_BODY, "{} B", len);
+        println!("hosts 200 件 (最悪の値): {} B (上限 {} B)", len, MAX_BODY);
+
+        // 1,000 件は 1 件 325 B (ありふれた値) なので 256 KiB には入りきらない。
+        // **バイト数で打ち切って上限を守る**のが設計どおり (`"truncated":true` で分かる)
+        for (label, m) in [("ありふれた値", &plain), ("最悪の値", &worst)] {
+            let (len, shown, cut) = build(m, MAX_HOSTS);
+            assert!(len <= MAX_BODY, "{} で {} B", label, len);
+            assert!(cut, "{}: バイト数で打ち切られること", label);
+            assert!(shown >= 500, "{}: {} 件しか出ていない", label, shown);
+            println!(
+                "hosts 1,000 件 ({}): {} B / 出せたのは {} 件 (上限 {} B)",
+                label, len, shown, MAX_BODY
             );
         }
     }

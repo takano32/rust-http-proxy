@@ -858,7 +858,11 @@ impl Metrics {
 ///
 /// `detail` はホスト別だけ (T12.4 (2))。接続元別には名前解決も接続も族も無いので、
 /// 全部 0 の列を 50 行ぶん並べても `/status` が太るだけになる。
-fn stats_json(s: &HostStats, detail: bool) -> String {
+///
+/// 外から呼べるのは `/hosts` (T13.4) が **`/status` の `hosts[]` と同じ形**で
+/// 全ホストを出すため。形が 2 つに分かれると `scripts/status-diff.py` が両方を
+/// 読めなくなるので、組み立てはこの 1 か所に置く。
+pub fn stats_json(s: &HostStats, detail: bool) -> String {
     let mut out = format!(
         "\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"blocked\":{},\"bytes\":{},\"timed\":{},\"avg_ms\":{:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"max_ms\":{},\"last_seen\":{}",
         s.requests,

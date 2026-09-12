@@ -19,6 +19,15 @@
 #     curl -s http://host:port/status > b.json; scripts/status-diff.py a.json b.json
 #     scripts/status-diff.py <(curl -s 'http://host:port/status?sort=errors') --sort errors
 #
+# **`/hosts` の JSON もそのまま読める** (T13.4)。`/status` の `hosts[]` は要求数の上位 50 だけ
+# なので、`.rrd` にある全ホスト (最大 1,000) を見たいときはこちら:
+#     scripts/status-diff.py <(curl -s 'http://host:port/hosts?limit=1000')
+#     curl -s 'http://host:port/hosts?limit=1000' > a.json; sleep 86400
+#     curl -s 'http://host:port/hosts?limit=1000' > b.json; scripts/status-diff.py a.json b.json
+# `--aaaa` と組で 1,000 ホストの AAAA 別集計が取れる。`/hosts` は 1 件 325 B ほどなので
+# 256 KiB に入りきらないと `"truncated": true` を付けて途中で切る (そのときは `--sort` か
+# `?limit=` で絞る)。切れていたらこのスクリプトが 1 行警告を出す。
+#
 # **`--sort` は 1 枚のときだけ** (`/status?sort=errors|dns|slow` を取った JSON をそのまま読んで、
 # 同じ鍵で並べ、名前解決 / 確立の 1 回あたりとエラーの原因の列を足す。T13.3)。
 # **差分は要求数順の 2 枚でだけ取る**: `?sort=` が変えるのは「上位 50 をどの鍵で切り出すか」なので、
@@ -64,6 +73,16 @@ def host_name(key):
 def load(path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def up(snap):
+    """起動からの秒 (`/hosts` にも同じ名前で入っている。無ければ 0)。"""
+    return snap.get("uptime_secs", 0)
+
+
+def reqs(snap):
+    """起動からの要求数 (同上)。"""
+    return snap.get("total_requests", 0)
 
 
 def has_aaaa(name):
@@ -220,8 +239,10 @@ def print_groups(title, rows, diff):
 
 def main():
     p = argparse.ArgumentParser(
-        description="デプロイ先の /status をホスト別に読む (1 つなら通算、2 つなら差分)")
-    p.add_argument("files", nargs="+", metavar="STATUS.json", help="/status の JSON (1 つか 2 つ)")
+        description="デプロイ先の /status (または /hosts) をホスト別に読む "
+                    "(1 つなら通算、2 つなら差分)")
+    p.add_argument("files", nargs="+", metavar="STATUS.json",
+                   help="/status か /hosts の JSON (1 つか 2 つ)")
     p.add_argument("--aaaa", metavar="FILE", help='{"host": true/false} の JSON で AAAA の有無を与える')
     p.add_argument("--no-dns", action="store_true", help="AAAA を引かない (群分けをしない)")
     p.add_argument("--min-timed", type=int, default=0, metavar="N",
@@ -261,13 +282,19 @@ def main():
     src = {"dns": "getaddrinfo", "file": args.aaaa, "none": "引かない"}[mode]
     print(f"# status-diff: {' -> '.join(args.files)}")
     if diff:
-        d_up = b["uptime_secs"] - a["uptime_secs"]
+        d_up = up(b) - up(a)
         note = "" if d_up > 0 else "  **再起動をまたいでいる** (uptime が減った)"
-        print(f"# {'差分':<4} uptime {a['uptime_secs']:,} -> {b['uptime_secs']:,} 秒 (Δ{d_up:+,})"
-              f"、total_requests {a['total_requests']:,} -> {b['total_requests']:,} (起動からの窓){note}")
+        print(f"# {'差分':<4} uptime {up(a):,} -> {up(b):,} 秒 (Δ{d_up:+,})"
+              f"、total_requests {reqs(a):,} -> {reqs(b):,} (起動からの窓){note}")
     else:
-        print(f"# {'通算':<4} uptime {a['uptime_secs']:,} 秒、total_requests {a['total_requests']:,} "
+        print(f"# {'通算':<4} uptime {up(a):,} 秒、total_requests {reqs(a):,} "
               f"(起動からの窓。hosts[] は .rrd の通算なので窓が違う)")
+    # `/hosts` は 256 KiB でバイト数打ち切りをするので、切れていたら言う (T13.4)
+    for name, snap in zip(args.files, snaps):
+        if snap.get("truncated"):
+            print(f"# **注意** {name} は途中で切れている "
+                  f"(count {snap.get('count')} のうち shown {snap.get('shown')})。"
+                  "?limit= か ?sort= で絞ること")
     print(f"# AAAA の判定: {src} / ホスト {len(names)}")
 
     shown = [r for r in rows if r["timed"] >= args.min_timed]

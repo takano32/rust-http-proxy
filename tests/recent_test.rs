@@ -317,3 +317,78 @@ fn test_integration_log_shows_warnings_but_not_the_access_log() {
     assert_eq!(one.matches("{\"at\":").count(), 1, "{}", one);
     assert!(one.contains("\"count\":1"), "{}", one);
 }
+
+/// 60 ホストへ要求したあと `/hosts?limit=1000` が 60 件、`/status` は 50 件のまま
+/// (T13.4 の受け入れ基準 (e))。
+#[test]
+fn test_integration_hosts_lists_every_host_while_status_keeps_fifty() {
+    let (origin_port, _origin) = start_mock_origin();
+    let dead_port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let proxy_port = start_test_proxy(proxy_config());
+
+    // 60 ホスト分の鍵を作る。ホスト別統計の鍵は要求ターゲットの `scheme://host:port`
+    // なので、宛先が同じでも `127.0.0.N` を変えれば別のホストとして数えられる
+    // (待ち受けは 127.0.0.1 だけなので 2 番以降は 502 になるが、鍵は立つ)
+    for i in 0..59 {
+        let host = format!("127.0.0.{}:{}", i + 1, origin_port);
+        let _ = get_via_proxy(proxy_port, &format!("http://{}/h{}", host, i), &host);
+    }
+    // 60 ホスト目はエラーを **2 件** 持つホスト (`?sort=errors` の先頭になる。
+    // 他のホストは 1 件なので、同点崩しではなくエラー数で先頭に来る)
+    let dead = format!("127.0.0.99:{}", dead_port);
+    for _ in 0..2 {
+        let r = get_via_proxy(proxy_port, &format!("http://{}/x", dead), &dead);
+        assert!(r.starts_with("HTTP/1.1 502"), "{}", r);
+    }
+
+    let count_hosts = |json: &str| json.matches("{\"host\":\"").count();
+    let hosts = endpoint_json(proxy_port, "/hosts?limit=1000");
+    assert_eq!(count_hosts(&hosts), 60, "{}", hosts);
+    assert!(hosts.contains("\"count\":60"), "{}", hosts);
+    assert!(hosts.contains("\"shown\":60"), "{}", hosts);
+    assert!(hosts.contains("\"sort\":\"requests\""), "{}", hosts);
+    assert!(!hosts.contains("\"truncated\":true"), "{}", hosts);
+    // `/status` の 50 は変えない
+    let status = status_json(proxy_port);
+    assert_eq!(count_hosts(&status), 50, "{}", status);
+
+    // `/status` の `hosts[]` と同じ形 (内訳の列も同じ名前)
+    for key in [
+        "\"requests\":",
+        "\"errors\":",
+        "\"timed\":",
+        "\"avg_ms\":",
+        "\"p50_ms\":",
+        "\"p95_ms\":",
+        "\"dns_ms_sum\":",
+        "\"dns_misses\":",
+        "\"connect_ms_sum\":",
+        "\"v4_wins\":",
+        "\"errors_by_cause\":[",
+    ] {
+        assert!(hosts.contains(key), "{} が無い: {}", key, hosts);
+    }
+    // `scripts/status-diff.py` が読む窓の目印も同じ名前で出る
+    assert!(hosts.contains("\"uptime_secs\":"), "{}", hosts);
+    assert!(hosts.contains("\"total_requests\":"), "{}", hosts);
+    assert!(hosts.contains("\"restored_since\":"), "{}", hosts);
+
+    // `?sort=` は `/status?sort=` と同じ鍵。エラー 1 件のホストが先頭に来る
+    let by_errors = endpoint_json(proxy_port, "/hosts?sort=errors&limit=1000");
+    assert!(by_errors.contains("\"sort\":\"errors\""), "{}", by_errors);
+    let first = by_errors
+        .split("{\"host\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .unwrap_or("");
+    assert_eq!(first, format!("http://{}", dead), "{}", by_errors);
+    // 知らない値は既定に倒す。`?limit=` は件数を絞る
+    assert!(endpoint_json(proxy_port, "/hosts?sort=nonsense").contains("\"sort\":\"requests\""));
+    let ten = endpoint_json(proxy_port, "/hosts?limit=10");
+    assert_eq!(count_hosts(&ten), 10, "{}", ten);
+    assert!(ten.contains("\"count\":60"), "{}", ten);
+}
