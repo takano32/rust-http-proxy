@@ -746,6 +746,7 @@ curl http://127.0.0.1:8080/
 
 # ヘルスチェック・メトリクス確認 (キャッシュ統計・予算・マージン・先行確保量・システム使用量を含む)
 curl http://127.0.0.1:8080/status
+curl "http://127.0.0.1:8080/status?sort=errors"         # 上位 50 をエラーの多い順で切り出す (dns / slow も)
 curl http://127.0.0.1:8080/metrics                      # Prometheus 形式
 
 # キャッシュの操作・確認
@@ -820,6 +821,12 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
+**`?sort=requests|errors|dns|slow` でこの 50 件の切り出し方を変えられます** (既定は `requests` = 今までどおりの要求数順。
+`errors` はエラー件数、`dns` は名前解決に費やした合計 `dns_ms_sum`、`slow` は応答 (CONNECT は確立) の平均 `avg_ms` の
+多い / 遅い順。**知らない値は既定に倒します**)。JSON の形も件数も変わらず、変わるのは `hosts[]` の並びだけです
+(`clients[]` は要求数順のまま、`/healthz` は問い合わせを読みません)。要求数の上位 50 には「悪いホスト」が出てこない
+のが動機で、デプロイ先の実測 (58.6 時間) では**エラー 99 件のうち 80 件 (名前解決の失敗) を抱えたホストが
+1 つも上位 50 に居ませんでした**。`curl "http://127.0.0.1:8080/status?sort=errors"` で見られます。
 ホスト別の行にはさらに**待ちの内訳**が入ります: `dns_ms_sum` / `dns_misses` (名前解決を OS に聞いた合計時間と回数)、
 `connect_ms_sum` (接続にかかった合計時間。名前解決のぶんは含みません)、`v4_wins` / `v6_wins` (確立した族)、
 `errors_by_cause` (`[dns, refused, unreachable, timeout, reset, tls, loop, other]` の順の件数。

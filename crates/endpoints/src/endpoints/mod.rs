@@ -1,4 +1,5 @@
 //! プロキシ自身のエンドポイント: `/dashboard` (コントロールパネル)、`/healthz` `/status`
+//! (`?sort=requests|errors|dns|slow` で `hosts[]` の上位 50 の切り出しを変えられる。T13.3)、
 //! `/history` (JSON、`res=5|60|3600`)、`/metrics` (Prometheus)、`/proxy.pac` (ブラウザの自動設定)、
 //! `/purge` と `PURGE` メソッド、`/lookup`、`/blocklist` (判定と手動の上書き)。
 //!
@@ -91,7 +92,7 @@ fn endpoint_list(lite: bool) -> String {
          this address as an HTTP proxy (or use /proxy.pac below).\n\n\
          endpoints:\n\
          {}\
-         \x20 /status                                     JSON: counters, hosts, cache, threads\n\
+         \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /healthz                                    same as /status\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
          \x20 /metrics                                    Prometheus text format\n\
@@ -157,6 +158,19 @@ pub fn handle(
     } else if is_get && path == "/blocklist" {
         blocklist::handle(&parse_query(query.unwrap_or("")))
     } else if is_get && (path == "/healthz" || path == "/status") {
+        // `?sort=requests|errors|dns|slow` は `hosts[]` の上位 50 を切り出す鍵だけを変える
+        // (T13.3)。知らない値は既定に倒す。**`/healthz` は問い合わせを読まない**
+        // (監視が叩く口の意味を変えない)
+        let sort = if path == "/status" {
+            parse_query(query.unwrap_or(""))
+                .iter()
+                .find(|(k, _)| k == "sort")
+                .map_or(metrics::HostSort::Requests, |(_, v)| {
+                    metrics::HostSort::from_param(v)
+                })
+        } else {
+            metrics::HostSort::Requests
+        };
         (
             200,
             "application/json",
@@ -170,6 +184,7 @@ pub fn handle(
                     state_file: &persist::status_json(),
                     version: ep.version,
                     concurrency: (ep.concurrency)(),
+                    sort,
                 },
             ),
         )
