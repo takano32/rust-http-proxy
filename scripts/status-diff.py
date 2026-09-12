@@ -13,9 +13,16 @@
 #
 # 使い方:
 #   scripts/status-diff.py A.json [B.json] [--aaaa FILE | --no-dns] [--min-timed N] [--top N]
+#                          [--sort errors|dns|slow]
 #     scripts/status-diff.py <(curl -s http://host:port/status)              # いまの通算
 #     curl -s http://host:port/status > a.json; sleep 3600
 #     curl -s http://host:port/status > b.json; scripts/status-diff.py a.json b.json
+#     scripts/status-diff.py <(curl -s 'http://host:port/status?sort=errors') --sort errors
+#
+# **`--sort` は 1 枚のときだけ** (`/status?sort=errors|dns|slow` を取った JSON をそのまま読んで、
+# 同じ鍵で並べ、名前解決 / 確立の 1 回あたりとエラーの原因の列を足す。T13.3)。
+# **差分は要求数順の 2 枚でだけ取る**: `?sort=` が変えるのは「上位 50 をどの鍵で切り出すか」なので、
+# 鍵の違う 2 枚を引き算すると、入れ替わったホストの差が「新しく現れた」ように見えてしまう。
 #
 # **AAAA の判定はリゾルバ次第**なので注意。既定は `socket.getaddrinfo(host, AF_INET6)` だが、
 # **この機械のリゾルバは一部のホストで AAAA を落とすことがある** (2026-09-10 の合議のときは
@@ -42,6 +49,8 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
 CONNECT = "connect://"
+# `/status` の `errors_by_cause` の並び (`crates/metrics/src/metrics.rs` の ERR_CAUSE_NAMES)
+CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
 
 
 def host_name(key):
@@ -90,6 +99,11 @@ def row_of(key, a, b):
         err = 0.05 * (cur["timed"] + old["timed"]) / d_timed
     else:
         avg, err = None, None
+    # 待ちの内訳 (T12.4 (2) より前の古い雪像には無いので、無ければ 0)
+    def d(name):
+        return cur.get(name, 0) - old.get(name, 0)
+    causes = [x - y for x, y in zip(cur.get("errors_by_cause", [0] * len(CAUSE_NAMES)),
+                                    old.get("errors_by_cause", [0] * len(CAUSE_NAMES)))]
     return {
         "key": key,
         "name": host_name(key),
@@ -103,7 +117,27 @@ def row_of(key, a, b):
         "p50_ms": cur.get("p50_ms"),
         "p95_ms": cur.get("p95_ms"),
         "max_ms": cur.get("max_ms"),
+        "dns_ms_sum": d("dns_ms_sum"),
+        "dns_misses": d("dns_misses"),
+        "connect_ms_sum": d("connect_ms_sum"),
+        "errors_by_cause": causes,
     }
+
+
+def causes_text(counts):
+    """`[80, 0, ...]` -> `dns 80`。全部 0 なら `—`。"""
+    shown = [f"{CAUSE_NAMES[i]} {n}" for i, n in enumerate(counts) if n]
+    return " ".join(shown) if shown else "—"
+
+
+def per_miss(row):
+    """名前解決のミス 1 回あたりの ms (ミスが無ければ None)。"""
+    return row["dns_ms_sum"] / row["dns_misses"] if row["dns_misses"] else None
+
+
+def per_conn(row):
+    """確立 1 回あたりの ms (計った要求が無ければ None)。"""
+    return row["connect_ms_sum"] / row["timed"] if row["timed"] else None
 
 
 def fmt_bytes(n):
@@ -129,7 +163,7 @@ def median(values):
     return statistics.median(values) if values else None
 
 
-def print_table(title, rows, diff, aaaa_shown):
+def print_table(title, rows, diff, aaaa_shown, detail=False):
     print()
     print(f"== {title} ({len(rows)} ホスト) ==")
     if not rows:
@@ -140,6 +174,9 @@ def print_table(title, rows, diff, aaaa_shown):
     if diff:
         head += f" {'±':>7}"
     head += f" {'p50':>7} {'p95':>7} {'max':>7} {'bytes':>9} {'err':>4}"
+    if detail:
+        # `--sort` のときだけ足す列 (待ちの内訳とエラーの原因。T13.3)
+        head += f" {cell('dns/回', 7)} {cell('dns計', 8)} {cell('接続/回', 8)}  原因"
     print(head)
     for r in rows:
         name = r["name"] if len(r["name"]) <= width else r["name"][: width - 1] + "…"
@@ -151,6 +188,9 @@ def print_table(title, rows, diff, aaaa_shown):
             line += f" {err:>7}"
         line += (f" {fmt_ms(r['p50_ms']):>7} {fmt_ms(r['p95_ms']):>7} "
                  f"{fmt_ms(r['max_ms']):>7} {fmt_bytes(r['bytes']):>9} {r['errors']:>4}")
+        if detail:
+            line += (f" {cell(fmt_ms(per_miss(r)), 7)} {fmt_ms(r['dns_ms_sum']):>8} "
+                     f"{cell(fmt_ms(per_conn(r)), 8)}  {causes_text(r['errors_by_cause'])}")
         print(line)
 
 
@@ -187,10 +227,16 @@ def main():
     p.add_argument("--min-timed", type=int, default=0, metavar="N",
                    help="timed がこの数に満たないホストを表から省く (既定 0)")
     p.add_argument("--top", type=int, default=0, metavar="N", help="表に出すホスト数 (既定は全部)")
+    p.add_argument("--sort", choices=["errors", "dns", "slow"], metavar="KEY",
+                   help="1 枚のときの並びを errors|dns|slow にし、内訳の列を足す "
+                        "(/status?sort= を取った JSON をそのまま読むため。差分は要求数順の 2 枚で取る)")
     args = p.parse_args()
 
     if len(args.files) > 2:
         p.error("渡せるのは 1 つか 2 つ")
+    if args.sort and len(args.files) == 2:
+        # 鍵の違う 2 枚を引き算すると、入れ替わったホストの差が「新しく現れた」ように見える
+        p.error("--sort は 1 枚のときだけ (差分は要求数順の 2 枚で取る)")
     snaps = [load(f) for f in args.files]
     diff = len(snaps) == 2
     if diff:
@@ -225,14 +271,23 @@ def main():
     print(f"# AAAA の判定: {src} / ホスト {len(names)}")
 
     shown = [r for r in rows if r["timed"] >= args.min_timed]
-    shown.sort(key=lambda r: (-r["requests"], r["name"]))
+    # 並べ替えの鍵は `/status?sort=` と同じ (同点は要求数 → 名前で崩す。T13.3)
+    order = {
+        "errors": lambda r: (-r["errors"], -r["dns_ms_sum"], -r["requests"], r["name"]),
+        "dns": lambda r: (-r["dns_ms_sum"], -r["dns_misses"], -r["requests"], r["name"]),
+        "slow": lambda r: (-(r["avg_ms"] or 0.0), -r["requests"], r["name"]),
+    }.get(args.sort, lambda r: (-r["requests"], r["name"]))
+    shown.sort(key=order)
     if args.top:
         shown = shown[: args.top]
     con = [r for r in shown if r["connect"]]
     fwd = [r for r in shown if not r["connect"]]
     aaaa_shown = mode != "none"
-    print_table("CONNECT", con, diff, aaaa_shown)
-    print_table("forward", fwd, diff, aaaa_shown)
+    if args.sort:
+        print(f"# 並び  {args.sort} (/status?sort={args.sort} と同じ鍵。"
+              "dns/回 = dns_ms_sum ÷ dns_misses、接続/回 = connect_ms_sum ÷ timed)")
+    print_table("CONNECT", con, diff, aaaa_shown, bool(args.sort))
+    print_table("forward", fwd, diff, aaaa_shown, bool(args.sort))
     if aaaa_shown:
         print_groups("CONNECT", con, diff)
         print_groups("forward", fwd, diff)
