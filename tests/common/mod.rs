@@ -118,7 +118,18 @@ pub fn start_test_proxy_with_workers(
     config: Config,
     cache_cfg: CacheConfig,
 ) -> (u16, Arc<rust_http_proxy::workers::Workers>) {
-    start_test_proxy_parts(config, cache_cfg, None)
+    let (port, workers, _) = start_test_proxy_parts(config, cache_cfg, None);
+    (port, workers)
+}
+
+/// 指標も返す版 (上限に当たっている最中を見るテスト用)。
+///
+/// **上限のテストは `/status` で待ってはいけない**: `/status` 自体が 1 本の接続なので、
+/// 上限に当たっていると「暇なトンネルを 1 本閉じて受ける」(T13.2) が動いて、見たかった
+/// 状態を測るその行為が状態を変えてしまう。指標を直に読めば接続を増やさずに待てる。
+pub fn start_test_proxy_with_metrics(config: Config) -> (u16, Arc<Metrics>) {
+    let (port, _, metrics) = start_test_proxy_parts(config, CacheConfig::disabled(), None);
+    (port, metrics)
 }
 
 /// `ca_file` を渡すと、その証明書だけを信頼する TLS クライアント付きで起動する。
@@ -134,7 +145,7 @@ fn start_test_proxy_parts(
     config: Config,
     cache_cfg: CacheConfig,
     ca_file: Option<std::path::PathBuf>,
-) -> (u16, Arc<rust_http_proxy::workers::Workers>) {
+) -> (u16, Arc<rust_http_proxy::workers::Workers>, Arc<Metrics>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let cfg = Arc::new(config);
@@ -155,6 +166,7 @@ fn start_test_proxy_parts(
     });
 
     let handle = Arc::clone(&workers);
+    let seen = Arc::clone(&metrics);
     thread::spawn(move || {
         rust_http_proxy::serve(
             listener,
@@ -168,7 +180,7 @@ fn start_test_proxy_parts(
         )
     });
 
-    (port, handle)
+    (port, handle, seen)
 }
 
 /// `.env` の再読込のように**設定を差し替えられる**テスト用プロキシ (T11.6)。

@@ -72,6 +72,8 @@ static CONN_COUNTER: AtomicUsize = AtomicUsize::new(1);
 #[derive(Default)]
 pub struct Limiter {
     open: AtomicUsize,
+    /// 上限の外で受けている「自分宛てかもしれない」接続の数 (T13.2)
+    overflow: AtomicUsize,
     /// 上限に当たったことを最後に警告した時刻 (epoch 秒)。1 分に 1 回だけ出す
     warned: AtomicUsize,
 }
@@ -94,6 +96,21 @@ Content-Length: 23\r\n\
 Connection: close\r\n\
 \r\n\
 503 Service Unavailable";
+
+/// 上限に当たっていても受ける「自分宛てかもしれない」接続の本数 (T13.2)。
+///
+/// accept の時点では要求が読めないので、上限に当たって席も作れないときは、この本数までは
+/// 受けてスレッドを起こし、**要求行と `Host` を読んでから**決める (内部エンドポイント =
+/// T12.3 の自分宛て判定なら普通に応答、それ以外は 503 で閉じる)。狙いは
+/// 「上限に当たっている最中でも `/status` が取れる」ことだけなので枠は小さくてよい
+/// (1 本では、監視が取りに来たときに他の接続が枠を使っていると空振りする)。
+const OVERFLOW_SLOTS: usize = 4;
+
+/// 上限の外で受けた接続が要求行を送ってくるのを待つ上限 (T13.2)。
+///
+/// 枠は [`OVERFLOW_SLOTS`] 本しかないので、黙ったままの接続に長く占領させない
+/// (占領されると監視が `/status` を取れない)。`PROXY_TIMEOUT_SECS` の方が短ければそちら。
+const OVERFLOW_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// 待ち受けソケットから接続を受け、1 本ごとにスレッドを起こす。
 /// `config_of` は接続ごとに最新の設定を取り出す (`.env` の再読込に追従するため)。
@@ -163,33 +180,45 @@ pub fn serve(
         if cfg.max_threads != workers.max_threads() {
             workers.set_limit(cfg.max_threads);
         }
-        // 上限を超えたらスレッドを起こさずに 503 を返して閉じる
+        // 上限に当たったときの段取り (T13.2):
+        //   1. 預かり所の**暇なトンネル**を最古から 1 本閉じて席を作る (閉じるのはこのスレッド。
+        //      持ち分が同期で返るので、すぐ下の `OpenGuard::acquire` がその席に座れる)
+        //   2. 閉じるものが無ければ、自分宛てかもしれないぶんとして `OVERFLOW_SLOTS` 本までは
+        //      受ける (要求行と `Host` を読んでから、自分宛てでなければワーカーが 503 を返す)
+        //   3. それも埋まっていたら今までどおりスレッドを起こさずに 503
         let max = cfg.max_conns;
+        let mut overflow = None;
         if max > 0 && limiter.open() >= max {
-            metrics
-                .rejected_overload
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let now = cache::now_epoch() as usize;
-            let last = limiter.warned.load(Ordering::Relaxed);
-            if now.saturating_sub(last) >= 60
-                && limiter
-                    .warned
-                    .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-            {
-                log_warn!(
-                    None,
-                    "connection limit reached ({} open, PROXY_MAX_CONNS={}); returning 503",
-                    limiter.open(),
-                    max
-                );
+            let made_room = park.as_ref().is_some_and(|w| w.evict_oldest_tunnel());
+            if !made_room {
+                overflow = OverflowGuard::try_acquire(&limiter);
             }
-            if conn_inherited.is_none() {
-                let _ = stream.set_write_timeout(timeout::for_socket(cfg.timeout));
+            if !made_room && overflow.is_none() {
+                metrics
+                    .rejected_overload
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let now = cache::now_epoch() as usize;
+                let last = limiter.warned.load(Ordering::Relaxed);
+                if now.saturating_sub(last) >= 60
+                    && limiter
+                        .warned
+                        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    log_warn!(
+                        None,
+                        "connection limit reached ({} open, PROXY_MAX_CONNS={}) and no idle tunnel to close; returning 503",
+                        limiter.open(),
+                        max
+                    );
+                }
+                if conn_inherited.is_none() {
+                    let _ = stream.set_write_timeout(timeout::for_socket(cfg.timeout));
+                }
+                let _ = stream.write_all(OVERLOAD_RESPONSE);
+                let _ = stream.flush();
+                continue;
             }
-            let _ = stream.write_all(OVERLOAD_RESPONSE);
-            let _ = stream.flush();
-            continue;
         }
         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
         // 同時接続数の持ち分は番人として取って仕事へ運ぶ。`Conn::new` が途中で失敗しても、
@@ -209,6 +238,7 @@ pub fn serve(
                 stream,
                 accepted,
                 open,
+                overflow,
                 cfg,
                 m,
                 c,
@@ -431,9 +461,15 @@ fn reject(client: &TcpStream, status: u16, reason: &str) -> io::Result<()> {
     );
     client.write_all(resp.as_bytes())?;
     client.flush()?;
-    // 相手がまだ送っている途中で閉じると RST になり、書いた応答ごと捨てられてクライアントは
-    // 理由が分からない。少しだけ読み捨ててから閉じる (時間もバイト数も上限つきなので、
-    // これ自体を居座りに使うことはできない)
+    linger(client);
+    Ok(())
+}
+
+/// 断ったあと、相手がまだ送っている途中で閉じると RST になり、書いた応答ごと捨てられて
+/// クライアントは理由が分からない。少しだけ読み捨ててから閉じる (時間もバイト数も上限つきなので、
+/// これ自体を居座りに使うことはできない)。
+fn linger(client: &TcpStream) {
+    let mut client = client;
     let _ = client.set_read_timeout(Some(LINGER_TIMEOUT));
     let mut sink = [0u8; 8 * 1024];
     let mut drained = 0usize;
@@ -443,7 +479,24 @@ fn reject(client: &TcpStream, status: u16, reason: &str) -> io::Result<()> {
             Ok(n) => drained += n,
         }
     }
-    Ok(())
+}
+
+/// 上限の外で受けた接続 (T13.2) に 503 を返して閉じる。
+///
+/// 自分宛て (内部エンドポイント) でなければここへ来る。accept のところで返す 503 と
+/// 同じ本文で、断った数も同じ `rejected_overload` に数える。
+/// `drain` は「要求を読んだあとか」: 本文が届いている途中かもしれないので読み捨ててから
+/// 閉じる。1 バイトも届いていない (黙ったままの) 接続では読み捨てるものが無い。
+fn overload(client: &TcpStream, metrics: &Metrics, conn_id: usize, why: &str, drain: bool) -> Step {
+    log_debug!(Some(conn_id), "over the connection limit: 503 for {}", why);
+    metrics.rejected_overload.fetch_add(1, Ordering::Relaxed);
+    let mut client = client;
+    let _ = client.write_all(OVERLOAD_RESPONSE);
+    let _ = client.flush();
+    if drain {
+        linger(client);
+    }
+    Step::Close
 }
 
 /// 1 つのクライアント接続を、keep-alive なら複数の要求にわたって処理する。
@@ -475,6 +528,9 @@ pub struct Conn {
     workers: Arc<workers::Workers>,
     /// 接続元の IP を文字列にしたもの (X-Forwarded-For と統計に毎要求要るので接続ごとに 1 回だけ作る)
     peer_ip: String,
+    /// 上限の外で受けた枠の持ち分 (T13.2)。`Some` = 「自分宛てのときだけ応える接続」で、
+    /// 内部エンドポイント以外は要求を読んだあと 503 で閉じる。`Drop` で枠を返す
+    overflow: Option<OverflowGuard>,
     /// 同時接続数と `/status` の active_connections の持ち分 (接続の寿命と一致させる)
     _open: OpenGuard,
     _active: ActiveGuard,
@@ -523,6 +579,40 @@ impl Drop for OpenGuard {
     }
 }
 
+/// 上限の外の枠 ([`OVERFLOW_SLOTS`]) の持ち分 (T13.2)。
+///
+/// `OpenGuard` と同じく**取るのも返すのもこの型だけ**。accept した接続へ運び、
+/// `Conn` が落ちる (= 接続が閉じる) ときに `Drop` が枠を返す。
+struct OverflowGuard(Arc<Limiter>);
+
+impl OverflowGuard {
+    /// 空いていれば枠を 1 つ取る。埋まっていれば `None` (呼び出し側は 503)。
+    ///
+    /// 待ち受けが複数 (デュアルスタック) だと accept するスレッドも複数なので、
+    /// 「見てから増やす」の間に割り込まれないように CAS で取る。
+    fn try_acquire(limiter: &Arc<Limiter>) -> Option<OverflowGuard> {
+        let mut taken = limiter.overflow.load(Ordering::Relaxed);
+        while taken < OVERFLOW_SLOTS {
+            match limiter.overflow.compare_exchange_weak(
+                taken,
+                taken + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Some(OverflowGuard(Arc::clone(limiter))),
+                Err(now) => taken = now,
+            }
+        }
+        None
+    }
+}
+
+impl Drop for OverflowGuard {
+    fn drop(&mut self) {
+        self.0.overflow.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// `/status` の active_connections の持ち分。
 struct ActiveGuard {
     metrics: Arc<Metrics>,
@@ -555,6 +645,7 @@ impl Conn {
         client: TcpStream,
         accepted: Accepted,
         open: OpenGuard,
+        overflow: Option<OverflowGuard>,
         config: Arc<Config>,
         metrics: Arc<Metrics>,
         cache: Arc<Cache>,
@@ -594,6 +685,7 @@ impl Conn {
             park,
             workers,
             peer_ip: net::canonical_addr(accepted.peer).ip().to_string(),
+            overflow,
             _open: open,
             _active: active,
         })
@@ -792,6 +884,8 @@ pub fn run_conn(conn: Box<Conn>) {
 /// 要求を 1 つ処理する。次に何をするかを返す。
 fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     let (conn_id, local_port) = (conn.conn_id, conn.accepted.local_port);
+    // 上限の外で受けた接続か (T13.2)。自分宛て (内部エンドポイント) のときだけ応える
+    let overflow = conn.overflow.is_some();
     // 要求行とヘッダー行の置き場。持っていなければ今のスレッドから借りる
     if conn.scratch.is_none() {
         conn.scratch = Some(Scratch::take());
@@ -830,6 +924,12 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // 閉じない。`PROXY_TIMEOUT_SECS=0` が意味するのはこれ。T10.6)
     let wait = match (grace, *served) {
         (Some(g), _) => g,
+        // 上限の外で受けた接続は、要求行を待つ時間を切る (T13.2)。枠は `OVERFLOW_SLOTS` 本
+        // しかないので、黙ったままの接続に占領させると `/status` が取れなくなる
+        (None, 0) if overflow => match config.timeout {
+            t if t.is_zero() => OVERFLOW_READ_TIMEOUT,
+            t => t.min(OVERFLOW_READ_TIMEOUT),
+        },
         (None, 0) => config.timeout,
         (None, _) => config.keepalive,
     };
@@ -876,6 +976,23 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         {
             log_debug!(Some(conn_id), "keep-alive idle timeout: {}", e);
             return Ok(Step::Close);
+        }
+        // 上限の外で受けたのに何も送ってこない接続 (T13.2)。自分宛てか分からないまま
+        // 枠を握らせておけないので、待つのをやめて 503 で閉じる
+        Err(e)
+            if overflow
+                && matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+        {
+            return Ok(overload(
+                client,
+                metrics,
+                conn_id,
+                "a silent connection",
+                false,
+            ));
         }
         Err(e) => return Err(e),
     }
@@ -1024,6 +1141,17 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     };
     if endpoints::handle(&mut &*client, method, target, &ep)? {
         return Ok(Step::Close);
+    }
+    // 上限の外で受けた接続で、自分宛てではなかった (T13.2)。判定は上の
+    // `endpoints::handle` = T12.3 の `local_path` そのもので、偽ならここへ来る
+    if overflow {
+        return Ok(overload(
+            client,
+            metrics,
+            conn_id,
+            request_line.trim_end(),
+            true,
+        ));
     }
 
     // ACL / Host Check
@@ -1207,6 +1335,7 @@ mod tests {
                 local_port: 8080,
             },
             open,
+            None,
             config,
             metrics,
             cache,
@@ -1250,6 +1379,7 @@ mod tests {
                 local_port: addr.port(),
             },
             open,
+            None,
             config,
             metrics,
             cache,

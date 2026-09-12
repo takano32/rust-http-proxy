@@ -267,6 +267,55 @@ mod linux {
             Some(entry.what)
         }
 
+        /// 同時接続の上限に当たったとき、**暇なトンネル**の最古の 1 本を閉じて席を 1 つ空ける (T13.2)。
+        /// 閉じたら `true`、閉じるものが無ければ `false` (呼び出し側は今までどおり 503)。
+        ///
+        /// **呼んだスレッド (accept したスレッド) がその場で落とす。** `Idle` が落ちると
+        /// 両側のソケットが閉じ、同時接続数と `active_connections` の持ち分 (トンネルが
+        /// 運んでいる `hold`) が**同期で**返る。監視スレッドに頼むと返るのが遅れて、
+        /// 上限に当たった accept がそのまま 503 を返してしまう。
+        ///
+        /// **暇な keep-alive 接続 ([`Parked::Http`]) は閉じない**: 次の要求を待っているだけなので、
+        /// 閉じると入れ違いで届いた要求を取りこぼす (クライアントからは 1 回失敗して見える)。
+        ///
+        /// 最古 = `deadline` が最小のトンネル。トンネルの期限は「預けた時刻 + アイドル期限」で、
+        /// アイドル期限は全部のトンネルで同じ設定値なので、これが預けた順になる
+        /// (`.env` で `PROXY_TUNNEL_IDLE_SECS` を変えた直後だけ前後しうるが、
+        /// どれを選んでも「暇なトンネルを 1 本」であることは変わらない)。
+        pub fn evict_oldest_tunnel(&self) -> bool {
+            let evicted = {
+                let mut guard = self.inner.locked();
+                let inner = &mut *guard;
+                // 期限の早い順に見て、最初に見つかったトンネルを取る
+                let mut oldest = None;
+                for &(deadline, key) in inner.deadlines.iter() {
+                    if inner.entries.get(&key).is_some_and(|e| e.what.is_tunnel()) {
+                        oldest = Some((deadline, key));
+                        break;
+                    }
+                }
+                let Some((deadline, key)) = oldest else {
+                    return false;
+                };
+                inner.deadlines.remove(&(deadline, key));
+                let entry = inner.entries.remove(&key).expect("just found");
+                let (fds, n) = entry.what.fds();
+                self.del_fds(&fds[..n]);
+                inner.tunnels -= 1;
+                self.publish(inner);
+                entry.what
+            };
+            log_debug!(
+                Some(evicted.id()),
+                "closing the oldest idle tunnel to make room (connection limit reached)"
+            );
+            self.metrics.evicted_idle.fetch_add(1, Ordering::Relaxed);
+            // **鍵の外で落とす**: ソケットの close(2)、アクセスログ、ホスト別統計の鍵取りを
+            // 預かり所の鍵の内側でやると、預けたいワーカーを待たせる
+            drop(evicted);
+            true
+        }
+
         /// 期限が来たものを引き上げる。
         fn expire(&self, now: Instant) -> Vec<Parked> {
             let mut due = Vec::new();
@@ -444,5 +493,10 @@ impl IdleWatch {
 
     pub fn parked(&self) -> usize {
         0
+    }
+
+    /// 預かり所が無いので閉じるものも無い (Linux 以外は上限に当たったら今までどおり 503)。
+    pub fn evict_oldest_tunnel(&self) -> bool {
+        false
     }
 }
