@@ -3088,49 +3088,96 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
     Phase 13 の着手時に取り、食い違いがあればここに足す)。
     1 時間ごとの内訳で分かったこと: 平常時は p50 7.5〜9.5 ms で動かない。バーストの 3 つの時間帯だけが avg / p95 / max /
     エラー / 名前解決の平均 / 同時接続を同時に押し上げていて、**Phase 13 の 3 タスクはどれも「バーストのとき」の話**。
+**Phase 13 の進め方** (Phase 12 と同じ。§5 冒頭「実装を Opus に渡すときの決まり」がそのまま効く): T13.1 / T13.2 / T13.3 は触るファイルが
+ほぼ重ならないので **3 つ並列** (worktree + `mx`)。`/status` の JSON を組む `crates/metrics/src/metrics.rs` だけは 3 つとも触るので、
+足すキーは各タスクの本文どおりの名前と場所にする (親がマージで合わせる)。**ダッシュボードの変更は T13.3 に集める**
+(T13.1 / T13.2 は `/status` にキーを足すだけ。T13.3 は「そのキーがあれば出す」形で描く)。デプロイ先の受け入れ基準は
+エージェントには測れないので、報告には「手元の基準を満たした / デプロイ先は再デプロイ後に親が見る」と書く。
+
 - [ ] **T13.1 名前解決のミスを先回りし、失敗した名前を 60 秒覚える**
   - 目的: 名前解決が上位ホストの CONNECT 確立時間の 28% (3.4 / 12.1 ms)、0.42 回/要求 × 約 10 ms。失敗する解決は 1 回約 2 秒で
     58.6 時間に 80 件、負のキャッシュ 5 秒では直後の再試行 (81 件) しか救えていない。バースト時はミス 1 回の平均が 100 ms を超える
     (リゾルバの混雑) ので、ミスそのものを減らすことが効く。
-  - 変更箇所: `crates/net/src/dns.rs` (`Entry` に「最後に使った時刻」、期限前の引き直し、`NEGATIVE`)、引き直しを回す場所
-    (**要求ごとにスレッドを起こさない**。1 本の refresher スレッドを最初の要求で遅延起動するか、`Workers` に投げる。
-    `--lite` でも動くこと)、README (`PROXY_DNS_TTL_SECS` の説明、負のキャッシュの秒数)。
-  - やること: (a) 表を引いて **残り TTL が 1/4 を切っていて、かつ直近 TTL 内に使われたホスト**は、答えは今の表から返し、裏で
-    1 回だけ引き直す (ホストごとに in-flight は 1 本。失敗したら古い答えを残す = いまの `STALE_MAX` の道)。期限が切れたホストで
-    直近 TTL 内に使われていないものは今までどおり同期でミス。(b) `NEGATIVE` を 5 → 60 秒 (`PROXY_DNS_NEGATIVE_SECS` で変えられる
-    ように。`.env` で即時反映)。(c) `/status` の `dns` に `refreshes` (裏で引き直した回数) を足す。
-  - 受け入れ基準 (手元): 単体テストで「t=0 に解決、t=50 秒に使用 → t=61 秒の参照がミスにならない (裏の引き直しが済んでいる)」と
-    「t=0 に解決、その後使われない → t=61 秒はミス」の両方。失敗した名前を 10 秒後に引いても OS に問い合わせない。
-    `--only connect` の CPU/本 が ±4% の中 (IP リテラルは表を通らないので動かないはず)。
-  - 受け入れ基準 (デプロイ先、24 時間の差分): **`dns.misses ÷ 要求` が 0.42 → 0.15 未満**、**ミス 1 回の平均
+  - 変更箇所: `crates/net/src/dns.rs` (`Entry` に `last_used: Instant` と `refreshing: bool`、期限前の引き直し、`NEGATIVE` を設定値に)、
+    `crates/config/src/config.rs` と `crates/reload/src/reload.rs` (`PROXY_DNS_NEGATIVE_SECS`、`.env` で即時反映。`PROXY_DNS_TTL_SECS` と
+    同じ配線)、`crates/metrics/src/metrics.rs` (`/status` の `dns` に `refreshes` と `negative_ttl_secs`)、`crates/prom/src/prom.rs`
+    (`sorahost_dns_lookups_total{result="refresh"}`)、README (`PROXY_DNS_TTL_SECS` の行、新しい行、DNS キャッシュの節)。
+  - やること:
+    1. **期限前の引き直し (refresh-ahead)**: `resolve_host` で表に当たったとき、`resolved_at` からの経過が **TTL の 3/4 を超え**、かつ
+       **`last_used` が TTL 以内** (= 直近 TTL 内に使われた「熱い」ホスト) で、`refreshing` でなければ、答えは今の表から返し
+       (ヒットとして数える)、裏で 1 回だけ引き直す。引き直しが済んだら `resolved_at` を更新 (答えが変わっていれば差し替え。
+       T12.1 の `last_win_v6` は引き継ぐ)。失敗したら古い答えを残す (いまの `STALE_MAX` の道と同じ)。期限が切れたホストで直近 TTL 内に
+       使われていないものは今までどおり同期でミス。`last_used` は表に当たるたびに書く (既に鍵の内側なので追加の鍵取りは無い)。
+    2. **裏で引き直す仕組み**: **要求ごとにスレッドを起こさない**。`std::sync::mpsc` の受け口を持つ **refresher スレッド 1 本**を、最初の
+       引き直しのときに遅延起動する (`OnceLock<Sender<String>>`)。`--lite` でも同じ (プロファイルに依らない)。同じホストの引き直しが
+       重ならないように `refreshing` で 1 本に絞る。refresher は `system_resolve` を呼んで表を書き戻すだけ。スレッド名は `dns-refresh`。
+    3. **負のキャッシュ**: `NEGATIVE` 5 秒 → **既定 60 秒**、`PROXY_DNS_NEGATIVE_SECS` で変えられる (`0` で覚えない)。失敗の種類は
+       今までどおり `io::ErrorKind` と文字列を返す。
+    4. `/status` の `dns` に `"refreshes": N` (裏で引き直した回数) と `"negative_ttl_secs": N` を足す (`ttl_secs` の隣)。`/metrics` に
+       `sorahost_dns_lookups_total{result="refresh"}`。
+    5. README: `PROXY_DNS_TTL_SECS` の行に「直近 TTL 内に使われた名前は期限の 3/4 で裏で引き直すのでミスにならない」、新しい行
+       `PROXY_DNS_NEGATIVE_SECS`、DNS キャッシュの節に古い答えで繋ぐ窓の説明。
+  - 受け入れ基準 (手元): 単体テスト (解決を差し替えて数える。既存の `dns::tests` の作法) で、(a) t=0 に解決、t=50 秒に使用 →
+    t=46〜60 秒のどこかで裏の引き直しが 1 回走り、t=61 秒の参照が **ヒット** (ミスにならない)、(b) t=0 に解決してその後使われない →
+    t=61 秒は **ミス**、(c) 同じホストへ同時に 10 本来ても引き直しは 1 本、(d) 失敗した名前を 10 秒後に引いても OS に問い合わせず
+    同じエラー (`negative_hits` +1)、61 秒後は問い合わせる、(e) `PROXY_DNS_NEGATIVE_SECS=0` で覚えない。
+    結合テストで `/status` の `dns.refreshes` が増えること。`mx scripts/cpu-per-request.sh --only connect` の CPU/本 が ±4% の中
+    (IP リテラルは表を通らないので動かないはず。ops も併記して逆相関に注意)。`cargo test --workspace` 全通過。
+  - 受け入れ基準 (デプロイ先、再デプロイ後 24 時間の差分。親が見る): **`dns.misses ÷ 要求` が 0.42 → 0.15 未満**、**ミス 1 回の平均
     (`sorahost_dns_seconds_sum` の増分 ÷ `count` の増分) が 36.5 → 15 ms 未満**、平常時の CONNECT 確立 p50 (`/history?res=3600`) が
-    8.7 → 7.5 ms 以下。`errors_total{cause="dns"}` の増え方が半分以下。
+    8.7 → 7.5 ms 以下、`errors_total{cause="dns"}` の増え方が半分以下。
   - 注意: 古い答えで繋ぐ窓は最長 TTL の 1/4 (15 秒)。その間に IP が変わって古い IP が死んでいれば Happy Eyeballs の 250 ms を払う
     (失敗はしない。次の候補へ行く)。CDN の IP が「変わって即死ぬ」ことは稀なので受け入れる。理由をコメントに残す。
-- [ ] **T13.2 同時接続の山で 503 を出す前に暇なトンネルを 1 本閉じ、`/status` は上限の外にする**
+    refresher が `system_resolve` で 2 秒止まっても (失敗する名前)、要求の経路は止まらない (裏だから)。
+- [ ] **T13.2 同時接続の山で 503 を出す前に暇なトンネルを 1 本閉じ、自分宛ての要求は上限の外で受ける**
   - 目的: バースト時に同時接続が 218 本 (上限 240) まで来ている。あと 22 本で新しい CONNECT が 503 になり、その 503 は
     `/status` にも返る (監視が消える。T12.5 で `--only idle-tunnels --conc 240` のとき実際にそうなった)。fd は 501 / 1,024、
     スレッドは 79 / 128 なので、詰まるのは `max_conns` だけ。
-  - 変更箇所: `src/lib.rs` (accept ループの上限判定)、`src/idle.rs` (預かり所 = 暇なトンネルの一覧と最古の 1 本を閉じる口)、
-    `crates/endpoints` (自分宛ての判定を accept 側でも使えるように)、README (`PROXY_MAX_CONNS` の説明)、`tests/maxconns_test.rs`。
-  - やること: (a) 上限に当たったとき、**預かり所にある暇なトンネル (両方向とも `PROXY_PARK_GRACE_MS` 以上動いていない) のうち
-    最古の 1 本を閉じてから受ける**。閉じるものが無いときだけ 503。閉じた数を `/status` の `evicted_idle` と `/metrics` に出す。
-    (b) 自分宛ての内部エンドポイントの要求 (T12.3 の判定) は **上限の外に 4 本ぶんの余裕**を持つ (上限 + 4 まで受け、
-    転送する要求には使わない)。(c) 上限は変えない (fd の勘定 4 本/接続は実測 2.3 本だが、緩めるのは山を 1 度この形で
-    見てから)。
+  - 変更箇所: `src/lib.rs` (accept ループの上限判定 `limiter.open() >= max` の周辺、`OVERLOAD_RESPONSE`)、`src/idle.rs` (預かり所に
+    「最古の暇なトンネルを 1 本取り出して閉じる」口。`entries` の `deadline` = 預けた時刻 + アイドル期限なので最古は `deadline` が最小のもの)、
+    `crates/metrics/src/metrics.rs` (`/status` のトップレベルに `evicted_idle`。`rejected_overload` の隣)、`crates/prom/src/prom.rs`
+    (`sorahost_evicted_idle_total`)、README (`PROXY_MAX_CONNS` の説明)、`tests/maxconns_test.rs`。
+  - やること:
+    1. **上限に当たったとき、預かり所の暇なトンネルの最古の 1 本を閉じてから受ける**。閉じるのは accept したスレッド自身がその場で行う
+       (`idle.rs` から `Parked::Tunnel` を `take` して両側の fd を閉じ、接続数を 1 減らす。監視スレッドに頼むと減るのが遅れて 503 になる)。
+       閉じるものが無いとき (全部忙しい、または預かり所が空) だけ今までどおり 503。閉じた数を `evicted_idle` に数える。
+       **暇な keep-alive 接続 (`Parked::Http`) は閉じない** (次の要求を待っているだけで、閉じると入れ違いの要求を取りこぼす)。
+    2. **自分宛ての要求は上限の外で受ける**: accept の時点では要求が読めないので、上限に当たっても **4 本まで**は受けてスレッドを
+       起こし、要求行と `Host` を読んだあと、**内部エンドポイント (T12.3 の `local_path` の判定) なら普通に応答、それ以外は 503 で閉じる**。
+       4 本を超えたら今までどおり読まずに 503。`/status` が「上限に当たっている最中」も取れるのが目的。
+    3. 上限の値そのものは変えない (fd の勘定 4 本/接続は実測 2.3 本だが、緩めるのは山を 1 度この形で見てから)。
+    4. README の `PROXY_MAX_CONNS` の説明を直す (「超えたら 503」→「超えたら暇なトンネルを 1 本閉じて受ける。閉じるものが無ければ 503。
+       `/status` 等の自分宛ては上限 + 4 まで受ける」)。
   - 受け入れ基準: 結合テストで、`PROXY_MAX_CONNS=8` で暇なトンネル 8 本を握ったまま 9 本目の CONNECT が **200** (503 でない) で
     `active_connections` が 8 以下、`evicted_idle` が 1、閉じられたのが最古の 1 本 (握っているクライアントの側で EOF を見る)。
-    同じ状態で `GET /status` が 200。すべてのトンネルが忙しいときは今までどおり 503。forward / CONNECT の CPU が ±ぶれの中。
-    デプロイ先 (24 時間): `rejected_overload` 0、`/status` がバースト中も取れること (`/history` の欠けが無い)。
-- [ ] **T13.3 `/status` のホスト別一覧を並べ替えられるようにする (小物)**
+    同じ状態で `GET /status` が **200**、その `/status` の応答に `evicted_idle: 1` が出る。すべてのトンネルが忙しい (中継中) ときは
+    今までどおり 503。上限 + 4 を超えた自分宛ては 503。既存の `maxconns_test` が通る (503 の経路が残っていること)。
+    forward / CONNECT の CPU が ±ぶれの中 (上限に当たらない経路は変えない)。`cargo test --workspace` 全通過。
+  - 受け入れ基準 (デプロイ先、24 時間。親が見る): `rejected_overload` 0、`/status` がバースト中も取れること (`/history` の 5 秒標本に
+    欠けが無い)、`evicted_idle` が山のあった時間帯にだけ増えていること。
+- [ ] **T13.3 `/status` を並べ替えられるようにし、ダッシュボードに「名前解決」「悪いホスト」「上限」を出す**
   - 目的: 上位 50 (要求数順) では、エラー 80 件と約 2 秒の解決失敗を抱えたホストが 1 つも見えない (上位 50 のエラーは全部 0)。
-    T13.1 (b) の効きを `/status` で確かめる口が要る。
-  - 変更箇所: `crates/endpoints/src/endpoints/mod.rs` (`/status?sort=`)、`crates/metrics/src/metrics.rs` (並べ替えの鍵)、README、
-    `scripts/status-diff.py` (`--sort` を渡せるように)、ダッシュボードの「並び」に `dns` を足す。
-  - やること: `?sort=requests` (既定、今までどおり) / `errors` / `dns` (`dns_ms_sum`) / `slow` (`avg_ms`)。上位 50 の切り出しだけを
-    変え、JSON の形は変えない。
-  - 受け入れ基準: 結合テストで、エラーを 1 件持つホストが `?sort=errors` の先頭に来ること。既定の応答が今までと同じ順であること
-    (`/status` の順序テスト)。デプロイ先: `?sort=errors` で `dns` の 80 件を持つホストが見えること。
+    T13.1 / T13.2 の効きを `/status` と `/dashboard` で確かめる口が要る。
+  - 変更箇所: `crates/endpoints/src/endpoints/mod.rs` (`/status?sort=`)、`crates/metrics/src/metrics.rs` (上位 50 を切り出す鍵。
+    `sort_by` と `.take(50)` の 2 か所)、`crates/endpoints/src/web/dashboard.html`、`scripts/status-diff.py` (`--sort` を渡す)、
+    `scripts/check-dashboard.js` (新しい列を読めること)、README (`/status` の説明)。
+  - やること:
+    1. `/status?sort=requests` (既定、今までどおり) / `errors` / `dns` (`dns_ms_sum`) / `slow` (`avg_ms`)。上位 50 の切り出しだけを
+       変え、JSON の形は変えない。知らない値は既定に倒す。`/healthz` は変えない。
+    2. ダッシュボード: (a) KPI に「名前解決」のカード (ミス率 `misses ÷ (hits + misses)`、ミス 1 回の平均 `miss_avg_ms`、
+       `refreshes` があれば「先回り N 回」)。(b) 「接続中」のカードに `上限 240 / 山 (直近 5 分の active_max) / 503 N / 追い出し N`
+       (`evicted_idle` があれば)。(c) 「悪いホスト (上位 10)」の表を足す: `?sort=errors` と `?sort=dns` を取って、エラー数・原因の内訳
+       (`errors_by_cause` を原因名で)・名前解決の平均・確立の平均を出す。5 秒ごとの更新では `?sort=` の 2 本を 30 秒に 1 回だけ
+       取る (負荷を増やさない)。(d) ホスト別の「並び」に `dns` (名前解決の合計) と `slow` (確立の平均) を足す。
+       外部ライブラリは無しのまま。`node scripts/check-dashboard.js` が通ること。
+    3. `scripts/status-diff.py` に `--sort errors|dns|slow` (1 枚のときに `/status?sort=` を取った JSON をそのまま読めればよい。
+       差分は要求数順の 2 枚でだけ取れる、と使い方に書く)。
+  - 受け入れ基準: 結合テストで、エラーを 1 件持つホストが `?sort=errors` の先頭に来ること、`?sort=dns` で `dns_ms_sum` の大きい
+    ホストが先頭に来ること、既定の応答が今までと同じ順であること (`/status` の順序テスト)、知らない `sort` は既定と同じ。
+    `node scripts/check-dashboard.js` がデプロイ先の実出力 (`~/rust-http-proxy-status/2026-09-12T2018Z-history_res_60`) で OK。
+    `cargo test --workspace` 全通過。`/status` の応答が 64 KiB 以下のまま。
+  - 受け入れ基準 (デプロイ先。親が見る): `?sort=errors` で `dns` の 80 件を持つホストが見えること。`/dashboard` の「名前解決」の
+    カードでミス率と平均が読めること。
 
 **Phase 13 の完了の定義 (T13.0 で置き直した)**: デプロイ先の 24 時間の差分で、**`dns.misses ÷ 要求` が 0.15 未満、ミス 1 回の
 平均が 15 ms 未満、平常時の CONNECT 確立 p50 が 7.5 ms 以下、バーストがあっても `rejected_overload` 0 で `/status` が取れ、
