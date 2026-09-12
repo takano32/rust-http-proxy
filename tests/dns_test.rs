@@ -154,3 +154,49 @@ fn zero_ttl_still_resolves_once_per_request() {
     }
     rust_http_proxy::dns::set_ttl(Duration::from_secs(60));
 }
+
+/// `/status` の `"dns"` 以降の切れ端 (この中の鍵を `status_number` で読む)。
+fn dns_status(proxy_port: u16) -> String {
+    let json = status_json(proxy_port);
+    let at = json.find("\"dns\":").expect("no dns in /status");
+    json[at..].to_string()
+}
+
+/// 直近 TTL 内に使われた名前は期限の 3/4 で裏で引き直され、`/status` の
+/// `dns.refreshes` が増える (T13.1)。
+///
+/// 実時間を待つので TTL は 4 秒 (引き直しの窓は 3 秒〜4 秒)。窓を取りこぼさないように
+/// 250 ms ごとに要求を出しながら待つ (取りこぼしても期限切れのミスから数え直すだけ)。
+#[test]
+fn a_hot_name_is_refreshed_in_the_background() {
+    let _guard = DNS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    rust_http_proxy::dns::set_ttl(Duration::from_secs(4));
+    rust_http_proxy::dns::clear();
+    let (origin, _origin) = start_mock_origin();
+    // オリジンは 127.0.0.1 だが、**表を通るのは名前で来たときだけ**なので `localhost` で引く
+    let proxy = start_test_proxy(proxy_config());
+    let url = format!("http://localhost:{}/", origin);
+    let host = format!("localhost:{}", origin);
+
+    let dns = dns_status(proxy);
+    assert!(dns.contains("\"negative_ttl_secs\":"), "{}", dns);
+    let before = status_number(&dns, "refreshes");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let res = get_via_proxy(proxy, &url, &host);
+        assert!(
+            res.starts_with("HTTP/1.1 200"),
+            "{}",
+            &res[..res.len().min(80)]
+        );
+        if status_number(&dns_status(proxy), "refreshes") > before {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "期限の 3/4 を過ぎても裏で引き直していない"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    rust_http_proxy::dns::set_ttl(Duration::from_secs(60));
+}
