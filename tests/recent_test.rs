@@ -88,3 +88,118 @@ fn test_integration_errors_keeps_the_newest_first_and_honours_n() {
     let bad = endpoint_json(proxy_port, "/errors?n=abc&x=1");
     assert!(bad.contains("\"count\":2"), "{}", bad);
 }
+
+/// 読むだけで何も返さず、閉じもしないリスナー (`tests/overload_test.rs` と同じ道具)。
+///
+/// ここへ張ったトンネルでクライアントが送信側だけ閉じると**片方向だけ EOF** になり、
+/// 預けられない = ずっと `relaying` のトンネルが作れる。
+fn start_quiet_origin() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 1024];
+                while !matches!(std::io::Read::read(&mut stream, &mut buf), Ok(0) | Err(_)) {}
+                std::mem::forget(stream);
+            });
+        }
+    });
+    port
+}
+
+/// CONNECT を張って `200` まで読む。
+fn open_tunnel(proxy_port: u16, target_port: u16) -> std::net::TcpStream {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream.set_nodelay(true).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let req = format!(
+        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        target_port, target_port
+    );
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if stream.read(&mut byte).unwrap() == 0 {
+            break;
+        }
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8_lossy(&head).into_owned();
+    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
+    stream
+}
+
+/// 握ったトンネルが `/connections` に `parked` として、中継中のトンネルが
+/// `relaying` として見えること (T13.4 の受け入れ基準 (b))。
+#[test]
+#[cfg(target_os = "linux")]
+fn test_integration_connections_shows_parked_and_relaying_tunnels() {
+    let origin_port = start_quiet_origin();
+    let proxy_port = start_test_proxy(park_config());
+
+    // (1) 両方向とも暇なトンネル → 猶予が過ぎたら預かり所へ (`parked`)
+    let _idle = open_tunnel(proxy_port, origin_port);
+    // (2) 送信側だけ閉じた (片方向 EOF) トンネル → 預けられないので `relaying` のまま
+    let busy = open_tunnel(proxy_port, origin_port);
+    busy.shutdown(std::net::Shutdown::Write).unwrap();
+
+    wait_until(
+        || endpoint_json(proxy_port, "/connections").contains("\"state\":\"parked\""),
+        "トンネルが預けられる",
+    );
+    let json = endpoint_json(proxy_port, "/connections");
+    assert!(json.contains("\"state\":\"parked\""), "{}", json);
+    assert!(json.contains("\"state\":\"relaying\""), "{}", json);
+    // どちらも CONNECT で、記述子は 2 本、宛先はオリジン
+    assert_eq!(json.matches("\"kind\":\"connect\"").count(), 2, "{}", json);
+    assert_eq!(json.matches("\"fds\":2").count(), 2, "{}", json);
+    assert_eq!(
+        json.matches(&format!("\"target\":\"127.0.0.1:{}\"", origin_port))
+            .count(),
+        2,
+        "{}",
+        json
+    );
+    // `/connections` を取りに来たこの接続自身も 1 行になる (keep-alive の HTTP、記述子 1 本)
+    assert!(json.contains("\"kind\":\"http\""), "{}", json);
+    assert!(json.contains("\"state\":\"serving\""), "{}", json);
+    assert!(json.contains("\"fds\":1"), "{}", json);
+    assert!(json.contains("\"client\":\"127.0.0.1\""), "{}", json);
+    assert!(json.contains("\"lite\":false"), "{}", json);
+    assert!(!json.contains("\"truncated\":true"), "{}", json);
+    // 通し番号の小さい順 (古い順)
+    let ids: Vec<u64> = json
+        .split("{\"id\":")
+        .skip(1)
+        .map(|s| {
+            s.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "{:?}", ids);
+    assert!(
+        json.contains(&format!("\"count\":{}", ids.len())),
+        "{}",
+        json
+    );
+}
+
+/// `--lite` では登録しないので空の一覧 (T1.4 の方針)。
+#[test]
+fn test_integration_connections_is_empty_in_lite_mode() {
+    let mut cfg = proxy_config();
+    cfg.lite = true;
+    let proxy_port = start_test_proxy(cfg);
+    let json = endpoint_json(proxy_port, "/connections");
+    assert!(json.contains("\"connections\":[]"), "{}", json);
+    assert!(json.contains("\"count\":0"), "{}", json);
+    assert!(json.contains("\"lite\":true"), "{}", json);
+}

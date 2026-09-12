@@ -473,6 +473,9 @@ pub struct Metrics {
     /// 直近のエラーの個票 (`/errors`。T13.4)。**書くのはエラーの経路だけ**なので、
     /// 成功の熱い経路はこのリングを 1 度も触らない
     pub errors: crate::recent::ErrorRing,
+    /// いま開いている接続の一覧 (`/connections`。T13.4)。登録と抹消は接続の開始と
+    /// 終了で 1 回ずつだけ (`--lite` では登録しない)
+    pub conns: crate::recent::ConnTable,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの統計 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -497,6 +500,7 @@ impl Metrics {
             origin_reused: AtomicU64::new(0),
             history: crate::history::History::default(),
             errors: crate::recent::ErrorRing::new(),
+            conns: crate::recent::ConnTable::new(),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }

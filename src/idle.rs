@@ -38,6 +38,7 @@ mod linux {
     use std::sync::atomic::Ordering;
     use std::thread;
 
+    use crate::recent::{ConnSlot, ConnState};
     use crate::sync::LockExt;
     use crate::sys::{EPOLLIN, EPOLLRDHUP, Epoll, EpollEvent};
     use crate::tunnel;
@@ -94,6 +95,21 @@ mod linux {
 
         fn is_tunnel(&self) -> bool {
             matches!(self, Parked::Tunnel(_))
+        }
+
+        /// `/connections` の枠 (T13.4)。状態を書くだけで、預かり所の鍵とは無関係。
+        fn slot(&self) -> Option<&Arc<ConnSlot>> {
+            match self {
+                Parked::Http(conn) => conn.slot(),
+                Parked::Tunnel(idle) => idle.slot(),
+            }
+        }
+
+        /// `/connections` の状態を書く (原子 1 回。`--lite` では何もしない)。
+        fn set_state(&self, state: ConnState) {
+            if let Some(s) = self.slot() {
+                s.set_state(state);
+            }
         }
     }
 
@@ -214,6 +230,8 @@ mod linux {
                 inner.tunnels += 1;
             }
             inner.deadlines.insert((deadline, key));
+            // `/connections` に「預かり所にいる」と書く (T13.4)
+            what.set_state(ConnState::Parked);
             inner.entries.insert(key, Entry { what, deadline });
             self.publish(&inner);
             Ok(())
@@ -375,6 +393,8 @@ mod linux {
         /// 読めるようになった keep-alive 接続を空いているワーカーへ戻す。
         fn resume_conn(&self, conn: Box<Conn>) {
             let id = conn.id();
+            // ワーカーの空きを待つ (取られたら `run_conn` が `serving` に書き直す)
+            conn.set_state(ConnState::Queued);
             // 渡せなかったときは仕事ごと返ってくる。落とせば Conn も落ちて接続が閉じる
             if self
                 .workers
@@ -388,6 +408,10 @@ mod linux {
         /// 動きのあったトンネルを空いているワーカーへ戻す。
         fn resume_tunnel(&self, idle: Box<tunnel::Idle>) {
             let id = idle.id();
+            // ワーカーの空きを待つ (取られたら `tunnel::resume` が `relaying` に書き直す)
+            if let Some(s) = idle.slot() {
+                s.set_state(ConnState::Queued);
+            }
             if self
                 .workers
                 .run(Box::new(move || tunnel::resume(idle)))

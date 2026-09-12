@@ -9,12 +9,15 @@
 //!
 //! - [`ErrorRing`]: エラーを 1 件返したときだけ ([`Metrics::record_error`] 経由)。
 //!   **成功の熱い経路は 1 命令も通らない。**
-//! - 接続の一覧は [`crate::metrics::Metrics`] の側にあり、登録と抹消は接続の開始と
-//!   終了で 1 回ずつ (T13.4 (2) で足す)。
+//! - [`ConnTable`]: いまの接続の一覧 (`/connections`)。**表の鍵を取るのは
+//!   接続の開始と終了の 2 回だけ**で、状態と転送バイトは [`ConnSlot`] の原子に書く。
 //!
 //! [`Metrics::record_error`]: crate::metrics::Metrics::record_error
 
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::metrics::ErrCause;
 use crate::sync::LockExt;
@@ -183,6 +186,199 @@ impl ErrorRing {
     }
 }
 
+/// 接続 1 本の状態 (`/connections` の `state`)。
+///
+/// 更新するのは**要求ごとではない場所**だけ: 接続を受けたとき、トンネルを開いたとき、
+/// 預けたとき、起こしてワーカーに渡すとき、ワーカーが取ったとき。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ConnState {
+    /// ワーカースレッドが持っていて、要求を処理している
+    Serving = 0,
+    /// ワーカースレッドが持ったまま次の要求を待っている (預けられなかった接続)
+    Reading = 1,
+    /// 預かり所 (epoll) にいる。スレッドは握っていない
+    Parked = 2,
+    /// 起こされてワーカーの空きを待っている
+    Queued = 3,
+    /// CONNECT トンネルとして中継中
+    Relaying = 4,
+}
+
+impl ConnState {
+    pub fn name(self) -> &'static str {
+        match self {
+            ConnState::Serving => "serving",
+            ConnState::Reading => "reading",
+            ConnState::Parked => "parked",
+            ConnState::Queued => "queued",
+            ConnState::Relaying => "relaying",
+        }
+    }
+
+    fn from_u8(v: u8) -> ConnState {
+        match v {
+            1 => ConnState::Reading,
+            2 => ConnState::Parked,
+            3 => ConnState::Queued,
+            4 => ConnState::Relaying,
+            _ => ConnState::Serving,
+        }
+    }
+}
+
+/// 接続 1 本の今の姿。[`ConnTable`] と接続自身が同じものを [`Arc`] で持つ。
+///
+/// **状態と転送バイトは原子で書く。** 表の `HashMap` の鍵を取るのは登録と抹消の
+/// 2 回だけで、預ける / 戻す / 中継を始める のどれも表を止めない。バーストで 240 本が
+/// 一斉に預け直す場面こそ `/connections` で見たい場面なので、**見るための仕掛けが
+/// そこに鍵を 1 つ増やしてはいけない**。
+pub struct ConnSlot {
+    /// 接続の通し番号 (ログの `conn#N` と同じ)
+    pub id: u64,
+    /// 接続元 IP (接続ごとに 1 回だけ作った文字列の複製)
+    pub client: String,
+    /// 受けた時刻 (`age_secs` を出すため)
+    pub started: Instant,
+    state: AtomicU8,
+    /// CONNECT の宛先。**書くのは 1 本につき 1 回だけ** (トンネルを開いたとき)。
+    /// keep-alive の HTTP 接続は要求ごとに宛先が変わるので空のまま (要求ごとに触らない)
+    target: Mutex<String>,
+    /// CONNECT トンネルか (`false` = keep-alive の HTTP)
+    connect: AtomicBool,
+    /// 運んだ合計バイト数 (トンネルが暇になるたびに書く)
+    bytes: AtomicU64,
+}
+
+impl ConnSlot {
+    fn new(id: u64, client: &str, started: Instant) -> ConnSlot {
+        ConnSlot {
+            id,
+            client: clip(client, MAX_CLIENT),
+            started,
+            state: AtomicU8::new(ConnState::Serving as u8),
+            target: Mutex::new(String::new()),
+            connect: AtomicBool::new(false),
+            bytes: AtomicU64::new(0),
+        }
+    }
+
+    /// 状態を書く (原子 1 回。表の鍵は取らない)。
+    pub fn set_state(&self, state: ConnState) {
+        self.state.store(state as u8, Ordering::Relaxed);
+    }
+
+    pub fn state(&self) -> ConnState {
+        ConnState::from_u8(self.state.load(Ordering::Relaxed))
+    }
+
+    /// CONNECT トンネルになった (宛先が決まった)。**1 本につき 1 回だけ呼ぶ。**
+    pub fn begin_tunnel(&self, target: &str) {
+        *self.target.locked() = clip(target, MAX_TARGET);
+        self.connect.store(true, Ordering::Relaxed);
+        self.set_state(ConnState::Relaying);
+    }
+
+    /// 運んだ合計バイト数を書く (中継が止まるところで 1 回。バイトごとには書かない)。
+    pub fn set_bytes(&self, bytes: u64) {
+        self.bytes.store(bytes, Ordering::Relaxed);
+    }
+
+    pub fn is_connect(&self) -> bool {
+        self.connect.load(Ordering::Relaxed)
+    }
+
+    pub fn bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+
+    /// `/connections` の 1 要素。
+    pub fn to_json(&self, now: Instant) -> String {
+        let connect = self.is_connect();
+        format!(
+            "{{\"id\":{},\"client\":\"{}\",\"target\":\"{}\",\"kind\":\"{}\",\"state\":\"{}\",\"age_secs\":{},\"bytes\":{},\"fds\":{}}}",
+            self.id,
+            crate::json::escape(&self.client),
+            crate::json::escape(&self.target.locked()),
+            if connect { "connect" } else { "http" },
+            self.state().name(),
+            now.saturating_duration_since(self.started).as_secs(),
+            self.bytes(),
+            // トンネルはクライアントとオリジンの 2 本、keep-alive はクライアントの 1 本
+            if connect { 2 } else { 1 },
+        )
+    }
+}
+
+/// いま開いている接続の表 (`/connections`)。
+///
+/// **登録と抹消は接続の開始と終了で 1 回ずつだけ** (要求ごとには触らない)。
+/// `--lite` では [`ConnTable::set_enabled`] で切り、登録もしない (空の一覧を返す。T1.4 の方針)。
+pub struct ConnTable {
+    on: AtomicBool,
+    map: Mutex<HashMap<u64, Arc<ConnSlot>>>,
+}
+
+impl Default for ConnTable {
+    fn default() -> Self {
+        ConnTable::new()
+    }
+}
+
+impl ConnTable {
+    pub fn new() -> ConnTable {
+        ConnTable {
+            on: AtomicBool::new(true),
+            map: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 記録するかどうか (`--lite` では `false`)。起動時に 1 回だけ呼ぶ。
+    pub fn set_enabled(&self, on: bool) {
+        self.on.store(on, Ordering::Relaxed);
+        if !on {
+            self.map.locked().clear();
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.on.load(Ordering::Relaxed)
+    }
+
+    /// 接続を 1 本登録する (接続の開始で 1 回だけ)。`--lite` なら `None`。
+    pub fn register(&self, id: u64, client: &str, started: Instant) -> Option<Arc<ConnSlot>> {
+        if !self.enabled() {
+            return None;
+        }
+        let slot = Arc::new(ConnSlot::new(id, client, started));
+        self.map.locked().insert(id, Arc::clone(&slot));
+        Some(slot)
+    }
+
+    /// 接続を 1 本抹消する (接続の終了で 1 回だけ)。
+    pub fn unregister(&self, id: u64) {
+        if !self.enabled() {
+            return;
+        }
+        self.map.locked().remove(&id);
+    }
+
+    /// 今の一覧を**古い順** (通し番号の小さい順) で返す。
+    pub fn snapshot(&self) -> Vec<Arc<ConnSlot>> {
+        let mut v: Vec<Arc<ConnSlot>> = self.map.locked().values().map(Arc::clone).collect();
+        v.sort_by_key(|s| s.id);
+        v
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.locked().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +455,70 @@ mod tests {
         // 3 バイト文字の途中で切らない
         assert_eq!(clip("日本語です", 8), "日…");
         assert!(clip("日本語です", 8).len() <= 8);
+    }
+}
+
+#[cfg(test)]
+mod conn_tests {
+    use super::*;
+
+    #[test]
+    fn the_table_registers_and_unregisters_once() {
+        let t = ConnTable::new();
+        assert!(t.is_empty());
+        let now = Instant::now();
+        let a = t.register(1, "127.0.0.1", now).expect("登録できる");
+        let _b = t.register(2, "::1", now).expect("登録できる");
+        assert_eq!(t.len(), 2);
+        // 古い順 (通し番号の順)
+        let snap = t.snapshot();
+        assert_eq!(snap[0].id, 1);
+        assert_eq!(snap[1].id, 2);
+        assert_eq!(snap[0].state(), ConnState::Serving);
+        assert!(!snap[0].is_connect());
+
+        // 状態と宛先は表の鍵を取らずに書ける
+        a.begin_tunnel("example.com:443");
+        a.set_bytes(4096);
+        assert_eq!(t.snapshot()[0].state(), ConnState::Relaying);
+        assert!(t.snapshot()[0].is_connect());
+        let json = t.snapshot()[0].to_json(Instant::now());
+        assert!(json.contains("\"kind\":\"connect\""), "{}", json);
+        assert!(json.contains("\"state\":\"relaying\""), "{}", json);
+        assert!(json.contains("\"target\":\"example.com:443\""), "{}", json);
+        assert!(json.contains("\"bytes\":4096"), "{}", json);
+        assert!(json.contains("\"fds\":2"), "{}", json);
+
+        a.set_state(ConnState::Parked);
+        assert_eq!(t.snapshot()[0].state(), ConnState::Parked);
+        t.unregister(1);
+        assert_eq!(t.len(), 1);
+        t.unregister(1);
+        assert_eq!(t.len(), 1, "2 回抹消しても増減しない");
+    }
+
+    /// `--lite` では登録しない (空の一覧)。
+    #[test]
+    fn lite_registers_nothing() {
+        let t = ConnTable::new();
+        t.set_enabled(false);
+        assert!(t.register(1, "127.0.0.1", Instant::now()).is_none());
+        assert!(t.is_empty());
+        assert!(t.snapshot().is_empty());
+        assert!(!t.enabled());
+    }
+
+    /// keep-alive の HTTP 接続は記述子 1 本・宛先なし。
+    #[test]
+    fn a_keepalive_connection_shows_one_descriptor() {
+        let t = ConnTable::new();
+        let slot = t.register(7, "10.0.0.1", Instant::now()).unwrap();
+        slot.set_state(ConnState::Reading);
+        let json = slot.to_json(Instant::now());
+        assert!(json.contains("\"kind\":\"http\""), "{}", json);
+        assert!(json.contains("\"state\":\"reading\""), "{}", json);
+        assert!(json.contains("\"target\":\"\""), "{}", json);
+        assert!(json.contains("\"fds\":1"), "{}", json);
+        assert!(json.contains("\"id\":7"), "{}", json);
     }
 }

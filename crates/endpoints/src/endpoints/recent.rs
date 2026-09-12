@@ -11,6 +11,7 @@
 //! (`/dns` は 1 ホストに A / AAAA が 10 本以上返ることがある)。
 
 use std::fmt::Write as _;
+use std::time::Instant;
 
 use super::{Endpoint, parse_query};
 use crate::recent::MAX_ERRORS;
@@ -72,10 +73,33 @@ pub fn errors(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     (200, "application/json", out)
 }
 
+/// `/connections` — いま開いている接続の一覧 (通し番号の小さい順 = 古い順)。
+///
+/// `--lite` では登録していないので空の一覧を返す (`"lite":true` でそれと分かる)。
+/// 件数の上限は置かず、[`MAX_BODY`] に収まるところまで出す (`"truncated"` で分かる)。
+pub fn connections(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
+    let now = Instant::now();
+    let all = ep.metrics.conns.snapshot();
+    let count = all.len();
+    let mut out = String::with_capacity(8192);
+    out.push_str("{\"connections\":");
+    let (shown, cut) = array_within(&mut out, all.iter().map(|c| c.to_json(now)));
+    let _ = write!(
+        out,
+        ",\"count\":{},\"shown\":{},\"truncated\":{},\"lite\":{}}}",
+        count,
+        shown,
+        cut,
+        !ep.metrics.conns.enabled()
+    );
+    (200, "application/json", out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::metrics::{Detail, ErrCause, Metrics};
+    use crate::recent::ConnState;
 
     /// 500 件の最悪 (宛先も接続元も上限いっぱい) でも 256 KiB に収まること。
     #[test]
@@ -106,7 +130,11 @@ mod tests {
         assert_eq!(shown, MAX_ERRORS, "500 件が全部入ること");
         assert!(!cut);
         assert!(body.len() <= MAX_BODY, "{} B", body.len());
-        println!("errors 500 件の応答: {} B (上限 {} B)", body.len(), MAX_BODY);
+        println!(
+            "errors 500 件の応答: {} B (上限 {} B)",
+            body.len(),
+            MAX_BODY
+        );
     }
 
     /// 原因の分からないエラーはリングに書かない。
@@ -121,6 +149,40 @@ mod tests {
             &Detail::default(),
         );
         assert!(m.errors.is_empty());
+    }
+
+    /// 240 本 (デプロイ先の上限) でも、1,000 本でも 256 KiB に収まること。
+    #[test]
+    fn the_connections_response_stays_under_256_kib() {
+        let m = Metrics::new();
+        let long_host = format!("{}.example.net:65535", "sub.".repeat(30));
+        let now = Instant::now();
+        for i in 0..1000u64 {
+            let slot = m
+                .conns
+                .register(i, "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6", now)
+                .expect("登録できる");
+            slot.begin_tunnel(&long_host);
+            slot.set_bytes(u64::MAX);
+            slot.set_state(ConnState::Parked);
+        }
+        let all = m.conns.snapshot();
+        assert_eq!(all.len(), 1000);
+        assert_eq!(all[0].id, 0, "古い順に並ぶ");
+        for n in [240usize, 1000] {
+            let mut body = String::from("{\"connections\":");
+            let (shown, cut) = array_within(&mut body, all.iter().take(n).map(|c| c.to_json(now)));
+            body.push('}');
+            assert_eq!(shown, n, "{} 本が全部入ること", n);
+            assert!(!cut);
+            assert!(body.len() <= MAX_BODY, "{} 本で {} B", n, body.len());
+            println!(
+                "connections {} 本の応答: {} B (上限 {} B)",
+                n,
+                body.len(),
+                MAX_BODY
+            );
+        }
     }
 
     #[test]

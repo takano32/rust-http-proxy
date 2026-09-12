@@ -531,6 +531,10 @@ pub struct Conn {
     /// 上限の外で受けた枠の持ち分 (T13.2)。`Some` = 「自分宛てのときだけ応える接続」で、
     /// 内部エンドポイント以外は要求を読んだあと 503 で閉じる。`Drop` で枠を返す
     overflow: Option<OverflowGuard>,
+    /// `/connections` に出すこの接続の枠 (T13.4)。**登録は `Conn::new`、抹消は
+    /// `ActiveGuard::drop` の 1 回ずつだけ**で、状態はこの `Arc` の原子に書く
+    /// (`--lite` では `None` = 何も記録しない)
+    slot: Option<Arc<recent::ConnSlot>>,
     /// 同時接続数と `/status` の active_connections の持ち分 (接続の寿命と一致させる)
     _open: OpenGuard,
     _active: ActiveGuard,
@@ -622,6 +626,9 @@ struct ActiveGuard {
 
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
+        // `/connections` からも外す (登録と抹消は接続の開始と終了で 1 回ずつ。T13.4)。
+        // トンネルへ移った接続も、この番人を一緒に運んでいるので必ずここを通る
+        self.metrics.conns.unregister(self.conn_id as u64);
         self.metrics.dec_active_conn();
         log_debug!(
             Some(self.conn_id),
@@ -669,6 +676,11 @@ impl Conn {
             // 1 要求あたり 40 ms 止まるため (失敗しても致命的ではないので無視する)
             let _ = client.set_nodelay(true);
         }
+        let peer_ip = net::canonical_addr(accepted.peer).ip().to_string();
+        // `/connections` に登録する (接続の開始で 1 回だけ。`--lite` では `None`)
+        let slot = metrics
+            .conns
+            .register(conn_id as u64, &peer_ip, active.started);
         Ok(Conn {
             client,
             buf: clientio::ClientBuf::new(),
@@ -684,8 +696,9 @@ impl Conn {
             scratch: None,
             park,
             workers,
-            peer_ip: net::canonical_addr(accepted.peer).ip().to_string(),
+            peer_ip,
             overflow,
+            slot,
             _open: open,
             _active: active,
         })
@@ -705,6 +718,18 @@ impl Conn {
     /// ログ用の接続番号。
     pub fn id(&self) -> usize {
         self.conn_id
+    }
+
+    /// `/connections` に出す状態を書く (原子 1 回。`--lite` では何もしない。T13.4)。
+    pub fn set_state(&self, state: recent::ConnState) {
+        if let Some(slot) = &self.slot {
+            slot.set_state(state);
+        }
+    }
+
+    /// `/connections` の枠 (預かり所が状態を書くために借りる)。
+    pub fn slot(&self) -> Option<&Arc<recent::ConnSlot>> {
+        self.slot.as_ref()
     }
 
     /// 要求と要求の間に抱えている資源を手放す (別のワーカーへ預ける前に呼ぶ)。
@@ -750,6 +775,7 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                     conn_id,
                     park,
                     peer_ip,
+                    slot,
                     _open,
                     _active,
                     ..
@@ -777,6 +803,9 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                     park,
                     config.park_grace,
                     hold,
+                    // `/connections` の枠をそのままトンネルへ運ぶ (T13.4)。
+                    // 抹消するのは `hold` の中の `ActiveGuard` なので、寿命は一致する
+                    slot,
                 );
             }
         }
@@ -803,10 +832,12 @@ fn start_tunnel(
     park: Option<Arc<idle::IdleWatch>>,
     grace: std::time::Duration,
     hold: Box<dyn Send>,
+    slot: Option<Arc<recent::ConnSlot>>,
 ) -> io::Result<()> {
     let park = park.map(|w| (w as Arc<dyn tunnel::Park>, grace));
     tunnel::handle_connect_parked(
         client, target, prefix, timeout, idle, conn_id, metrics, client_ip, resolved, park, hold,
+        slot,
     )
 }
 
@@ -825,11 +856,12 @@ fn start_tunnel(
     park: Option<Arc<idle::IdleWatch>>,
     grace: std::time::Duration,
     hold: Box<dyn Send>,
+    slot: Option<Arc<recent::ConnSlot>>,
 ) -> io::Result<()> {
     // 預け先は Linux (epoll) だけ。持ち分はこの関数が終わるまで持っておく
     let _ = (park, grace);
     let result = tunnel::handle_connect(
-        client, target, prefix, timeout, idle, conn_id, metrics, client_ip, resolved,
+        client, target, prefix, timeout, idle, conn_id, metrics, client_ip, resolved, slot,
     );
     drop(hold);
     result
@@ -846,11 +878,14 @@ fn park_now(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
     }
     // keep-alive を切っている設定なら、預けても期限切れで閉じるだけ
     if conn.config.keepalive.is_zero() {
+        conn.set_state(recent::ConnState::Reading);
         return Err(conn);
     }
     let Some(watch) = conn.park.clone() else {
         return Err(conn);
     };
+    // 預けに行く (断られたら下で `reading` に戻す)
+    conn.set_state(recent::ConnState::Parked);
     let deadline = Instant::now() + conn.config.keepalive;
     conn.release_idle_buffers();
     match watch.park(conn, deadline) {
@@ -860,6 +895,7 @@ fn park_now(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
             // 入らない)。この接続は以後スレッドで待つ側に固定する。そうしないと
             // 要求のたびに猶予で空振りして預け直そうとして空回りする
             conn.park = None;
+            conn.set_state(recent::ConnState::Reading);
             Err(conn)
         }
     }
@@ -869,6 +905,8 @@ fn park_now(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
 /// 監視スレッドから戻ってきた接続もここに入る。
 pub fn run_conn(conn: Box<Conn>) {
     let conn_id = conn.conn_id;
+    // ワーカーが取った (預かり所から戻ってきた接続もここを通る。T13.4)
+    conn.set_state(recent::ConnState::Serving);
     if let Err(e) = pump(conn) {
         if e.kind() != io::ErrorKind::UnexpectedEof
             && e.kind() != io::ErrorKind::ConnectionReset
