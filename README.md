@@ -167,7 +167,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **403 で拒否した要求もここに入ります** (原因は `acl` / `blocklist` / `connect_port` / `local`、状態コード 403)。
     403 は 5xx ではないので `/status` の `errors_by_cause` (8 つの原因) には乗らず、
     集計では `hosts[]` の `blocked` に数えるだけです。**誰が何を拒否されたか**はこの個票でだけ読めます、
-    `/connections` でいま開いている接続の一覧 (接続 id・接続元・宛先・`connect` / `http`・
+    `/connections` でいま開いている接続の一覧 (接続 id・接続元・宛先 (CONNECT はトンネルの相手、
+    keep-alive の HTTP は**最初の要求の宛先**。どちらも接続あたり 1 回しか書きません)・`connect` / `http`・
     状態 `relaying` / `parked` / `reading` / `serving` / `queued`・開始からの秒・転送バイト・記述子の数。`--lite` では空)、
     `/dns?sort=age|host|misses&limit=300` で名前解決の表の中身 (ホスト・アドレス・解決からの秒・残り TTL・
     最後に使ってからの秒・勝った族・負のキャッシュなら理由・裏で引き直し中か・OS に問い合わせた回数)、

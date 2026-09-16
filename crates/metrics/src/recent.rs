@@ -263,8 +263,9 @@ pub struct ConnSlot {
     /// 受けた時刻 (`age_secs` を出すため)
     pub started: Instant,
     state: AtomicU8,
-    /// CONNECT の宛先。**書くのは 1 本につき 1 回だけ** (トンネルを開いたとき)。
-    /// keep-alive の HTTP 接続は要求ごとに宛先が変わるので空のまま (要求ごとに触らない)
+    /// 宛先。**書くのは 1 本につき 1 回だけ**: CONNECT はトンネルを開いたとき
+    /// ([`ConnSlot::begin_tunnel`])、keep-alive の HTTP 接続は**最初の要求**のとき
+    /// ([`ConnSlot::set_first_target`]。T14.2 (5))。要求ごとには触らない
     target: Mutex<String>,
     /// CONNECT トンネルか (`false` = keep-alive の HTTP)
     connect: AtomicBool,
@@ -292,6 +293,20 @@ impl ConnSlot {
 
     pub fn state(&self) -> ConnState {
         ConnState::from_u8(self.state.load(Ordering::Relaxed))
+    }
+
+    /// keep-alive の HTTP 接続の**最初の要求の宛先**を書く (T14.2 (5))。
+    ///
+    /// T13.4 では「要求ごとに宛先が変わるので空のまま」にしていたが、`/connections` で
+    /// 占有の内訳を読むとき **`http` の行だけ宛先が空** だと何に使われている接続か分からない。
+    /// 要求ごとには書かない方針はそのままで、**接続の最初の 1 回だけ**書く
+    /// (表の鍵は取らない。取るのはこの枠の `target` の鍵 1 つで、接続あたり 1 回)。
+    /// 既に何か入っていれば触らない (CONNECT の宛先を上書きしない)。
+    pub fn set_first_target(&self, target: &str) {
+        let mut t = self.target.locked();
+        if t.is_empty() {
+            *t = clip(target, MAX_TARGET);
+        }
     }
 
     /// CONNECT トンネルになった (宛先が決まった)。**1 本につき 1 回だけ呼ぶ。**

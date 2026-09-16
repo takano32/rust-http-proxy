@@ -939,6 +939,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         park,
         workers,
         peer_ip,
+        slot,
         ..
     } = conn;
     let peer_ip: &str = peer_ip;
@@ -1273,6 +1274,14 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         });
     }
 
+    // keep-alive の HTTP 接続の宛先を `/connections` に出す (T14.2 (5))。
+    // **書くのは接続の最初の要求のときだけ** (2 本目以降は宛先が変わりうるが、
+    // 要求ごとに表を触らない方針は T13.4 のまま)。CONNECT はトンネルを開くときに書く
+    if *served == 0
+        && let Some(slot) = slot.as_ref()
+    {
+        slot.set_first_target(target_host);
+    }
     // この接続で処理する最後の要求か (`Config::max_requests_per_conn`。T14.2)。
     // `http` 側はこれが立っていると応答に `Connection: close` を付け、`keep` に false を返す
     let last = *served + 1 >= config.max_requests_per_conn;
