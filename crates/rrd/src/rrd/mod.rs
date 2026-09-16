@@ -364,18 +364,21 @@ impl Rrd {
     }
 }
 
+/// 領域 1 つぶんの `(添字, ペイロード)` の列 (変換の途中で持つもの)。
+type Records = Vec<(usize, Vec<u8>)>;
+
 /// 版 2 のファイルなら領域ごとの `(添字, ペイロード)` を返す (それ以外は `None`)。
 ///
 /// 読めない・壊れている・別の版はすべて `None` = 「今までどおり作り直す」。
 /// **中身は 1 バイトも読み替えない**: どちらの版のレコードも「固定の順 + 予備」で、
 /// 版 3 のレコードは版 2 より長いだけなので、**末尾がゼロで伸びれば**そのまま
 /// 同じ意味になる (足りない欄を 0 にするのは [`Dec`] の仕事)。
-fn read_v2(path: &Path) -> Option<[Vec<(usize, Vec<u8>)>; REGIONS]> {
+fn read_v2(path: &Path) -> Option<[Records; REGIONS]> {
     let layout = Layout::v2();
     let f = Fixed::open_existing(path, MAGIC_V2, layout.total)
         .ok()
         .flatten()?;
-    let mut out: [Vec<(usize, Vec<u8>)>; REGIONS] = Default::default();
+    let mut out: [Records; REGIONS] = Default::default();
     for (slot, region) in out.iter_mut().zip(layout.regions()) {
         *slot = f.read_all(region).ok()?;
     }
