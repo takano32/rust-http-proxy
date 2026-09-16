@@ -3758,7 +3758,7 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
       (`last_target`) を入れて +0.95% に戻した。宛先は名前ではなく 64 ビットの指紋だけを持つ。
     - `.rrd` の `HostStats` のスロットに **余白 52 B** (hosts と clients で共用)。T14.5 の RTT 4 欄 (32 B) は版を上げずに入る。
     - **デプロイ先の基準 (再デプロイ後 `/clients` で `161.33.196.121` の `agents` と `distinct_targets` が読める) は T14.99 で見る。**
-- [ ] **T14.8 ダッシュボードの「調査」ページ (個票を時間軸で読む)**
+- [x] **T14.8 ダッシュボードの「調査」ページ (個票を時間軸で読む)**
   - 目的: T14.3〜T14.7 で増える個票を、URL を手で叩かずに読めるようにする。`/dashboard` は「いま」の画面なので、**「起きたこと」を
     時間軸で読む別のページ** (`/dashboard/inspect` または `/inspect`) にする (既存のダッシュボードは増やさない)。
   - 変更箇所: `crates/endpoints/src/web/inspect.html` (新規。外部ライブラリ無し、`dashboard.html` の描画の流儀と CSS を共有)、
@@ -3773,6 +3773,29 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
   - 受け入れ基準: `node scripts/check-dashboard.js` が `inspect.html` の描画関数 (`timeline` / `slowRows` / `burstCards` / `clientRows` /
     `rttScatter` / `sinceStart`) を手元のベンチで取った `/snapshot` の実出力で例外なく通すこと。`inspect.html` は 64 KiB 以下。
     `/inspect` は `--lite` でも 200 (個票が無ければ「記録していません」)。
+  - 結果 (2026-09-16、`aca6598` / `94eead2`): 「調査」ページ `/inspect` (`/dashboard/inspect` も同じ) を足した。`/dashboard` が「いま」の画面
+    なのに対して**起きたことを時間軸で読む**ページで、外部ライブラリ無し・`dashboard.html` の CSS と描画の流儀そのまま・**40,561 B** (上限 64 KiB)。
+    描くのは (a) タイムライン (`/recent`。横 = 時刻、縦 = 接続元 / 宛先の切替、長さ = 寿命、色 = 閉じた理由 8 種 (`error:<原因>` は 1 色に畳む)、
+    太さ = バイト。範囲 1 / 6 / 24 時間) に **`/events` の印**を縦の破線で重ねたもの (**知らない綴りは既定色**なので T14.23 の `anomaly` が
+    増えても壊れない)、(b) 遅い接続の上位 50 (`?sort=slow`。段階 `queue` / `client_read` / `dns` / `connect` / `first_relay` の積み上げ横棒と
+    **確立 − RTT** の列)、(c) 山の写真 (`/bursts` を 1 枚ずつ)、(d) 接続元 (`/clients`。`agents` / 宛先の種類 / リテラル / RTT / 再送 / 初回・最終 /
+    下り % (T14.26))、(e) RTT × 接続時間の散布 (`/hosts` の `rtt_ms.avg` × `connect_ms_sum ÷ timed`。対角線から離れた順に 12 件の表)、
+    (f) 起動からの窓 (**T14.24 の `/history?since=restart&summary=1` を 1 要求で**読み、無い版と `--lite` では標本を `since_start_secs` で
+    切って手元で畳む)、(g) 先頭に `/snapshot` へのリンク、(任意) `/hosts/series?top=8` の折れ線 (T14.22 の無い版では枠ごと出さない)。
+    更新は**個票が 10 秒ごと・表と散布は 30 秒ごと** (`/hosts` は上位 200 まで。デプロイ先の `limit=1000` は 261 KB あるので、開いたままでも
+    監視より重くならないようにした)。描画関数 8 つ + `toSamples` / `winQuantile` は DOM に触らず、`scripts/check-dashboard.js` の 10 番目の検査が
+    **手元のベンチで取った `/snapshot` の実出力** (`scripts/testdata/snapshot-local.json`、65,713 B。宛先は `127.0.0.1` と `localhost` だけ) と
+    **デプロイ先の雪像** (`2026-09-16T0106Z-status` + `-history_res_60`) の両方で通す: 手元は タイムライン 58 本 (client_eof 32 / idle_timeout 22 /
+    error 3 / keepalive_timeout 1)・遅い接続 50 件・山 1 枚・RTT の点 6 個 (外した行 6)・起動からの窓 CONNECT 37 本 p50 0.54 ms、
+    デプロイ先は ホスト 50 件で RTT の点 0 個 (T14.5 より前の雪像なので `rtt_ms` が無い = **標本 0 の行を描かない枝**が実出力で通った)・1,440 標本。
+    `--lite` でも **200** (中の表と図は「記録していません」と出す。結合テスト 1 本 + 単体テスト 1 本を新設)。`/` の案内と README も更新。
+    - **RTT の散布は「接続の平均が 0 ms なら描かない」をやめた**: loopback は確立が 1 ms 未満で `connect_ms_sum` が 0 に丸まり、手元の実出力が
+      1 点も残らなかった。描かないのは `rtt_ms` が `null` (標本 0) の行と `timed` 0 の行だけ。
+    - 手元の `/snapshot` を取るのに使ったのは **debug ビルドのプロキシ + python の負荷** (CONNECT 6 ホスト・forward 4 ホスト・20 本の山・
+      `error:refused` / `error:dns` / `idle_timeout` / `keepalive_timeout` を 1 回の実行で作る)。**性能には触っていない** (HTML 1 枚と配信の 1 行だけ)。
+    - `/hosts/series` (T14.22) は窓が 5 分なので 30 秒の手元の実行では 0 系列 (`rotations` 0)。折れ線は見本でしか通っていない — デプロイ先で見る。
+      ブラウザでの目視はしていない (作り物の DOM と `fetch` で `<script>` を丸ごと動かす煙試験を通常・`--lite`・`summary=1` の無い版の 3 通りで通した。
+      スクラッチだけでリポジトリには入れていない — `check-dashboard.js` に畳むなら T14.44)。手元の個票は接続元が 1 つなのでタイムラインは 1 行。
 **`.rrd` の標本の余白は残り 4 B (T14.2 (3) の実測)**: T14.6 / T14.10 / T14.12 が「標本の余白に入れば」と書いているものは、実際には
 **入らない**。メモリ上の窓にするか、版を 1 回だけ上げてまとめて足す (上げるなら T14.99 の再デプロイの直前に 1 回。統計は消える)。
 
@@ -4297,7 +4320,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     - **再生するのは CONNECT だけ** (`kind` が `http` の個票は数えて飛ばす。デプロイ先は 99% が CONNECT)。上りは合図の 16 バイトが必ず流れるので、上り 16 B 未満の個票は
       そのぶんだけ多く流れる。`at` は秒刻みなので、同じ秒の個票は 0 ms 差で一斉に走り出す。個票 1 本 = 1 スレッド (同時本数ぶんだけ生きる)。単体 5 本を新設。
     - 小物: `/bursts` の `threshold` / `max_conns` は写真を 1 枚も撮っていないあいだ `0` で返る (履歴スレッドが初回に埋めるまで)。読む人が誤解しうる。
-- [ ] **T14.30 CI でデプロイ先に似せた条件を回し、`/snapshot` を成果物として残す**
+- [x] **T14.30 CI でデプロイ先に似せた条件を回し、`/snapshot` を成果物として残す**
   - 目的: 今の CI はビルドとテストと 200 MB の関門だけ。§1 のレシピの数字は手元の機械でしか取れないが、**「Happy Eyeballs の 250 ms を
     払っていない」「段階の内訳が壊れていない」**のような**形の退行**は CI でも見張れる (数字の絶対値は比べない)。
   - 変更箇所: `.github/workflows/*.yml` (GitHub Actions の ubuntu runner で `unshare -rmn` が使えるか先に確かめる。使えなければ IPv6 の
@@ -4307,6 +4330,41 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     `connect-multi` の p50 が **50 ms 以上なら CI を落とす** (250 ms の退行の検知。学習後の値なので 1 ms 台のはず)。CI の時間が +3 分以内。
     (この 1 件は人が push して CI を回す必要がある — エージェントは `git push` しないので、ワークフローの yml と scripts を用意して手元で
     `scripts/ci-snapshot.sh` が通るところまで。)
+  - 結果 (2026-09-16、`2bd8971`): `scripts/ci-snapshot.sh` (新規) と `.github/workflows/ci.yml` の
+    `deployed-like-snapshot` ジョブ (`check` と**並べて**回す。`needs:` は付けない)。スクリプトは
+    `scripts/deployed-like.sh` の中で release のプロキシを上げ、`--only connect-multi` と forward を
+    10 秒ずつ回し、`/snapshot` を `snapshot.json` に落として artifact にする (`if: always()` —
+    **落ちたときこそ中身が要る**)。**見張るのは形の退行だけで、数字の絶対値は比べない**:
+    (1) `connect-multi` の p50 が **50 ms 以上なら非 0 で終わる** (`CI_SNAPSHOT_P50_MAX_MS`)、
+    (2) `/snapshot` が 1 要求で取れて JSON として読めること、(3) その中に `/status` の `ipv6.v4_first` と
+    `/profile` の段階が入っていて**窓に数字が入っている**こと (名前が並ぶだけでは通さない)。
+
+    | 手元で回したもの | 1 本目 (8 本の中央値) | p50 | forward p50 | `/status` の ipv6 | 出口 | 所要 |
+    |---|---|---|---|---|---|---|
+    | deployed-like の中 (`--seconds 10 --conc 8`) | 270.6 ms | **0.97 ms** | 0.285 ms | `{"attempts":9,"wins":0,"losses":9,"v4_first":true}` | 0 | 21.2 s |
+    | 閾を `CI_SNAPSHOT_P50_MAX_MS=0.001` に下げる | 253.8 ms | 0.77 ms | 0.248 ms | `v4_first` true | **1** | 12 s |
+    | `CI_SNAPSHOT_NO_NS=1` (名前空間なし) | — | 0.29 ms (`--only connect`) | 0.236 ms | `v4_first` false | 0 | 12 s |
+
+    `snapshot.json` は 285.7 KiB・17 の部品 (`status` / `history` / `profile` / `recent` / `hosts_series` …)、
+    `/profile` は `connect` の 7 段階と `forward` の 6 段階のどちらにも数字の入った窓があった。**CI を実際に
+    回すのは人が push してから** (エージェントは `git push` しない)。CI の時間は `check` と並列なので通算では
+    伸びない見込み (このジョブ自身はビルド + 21 秒。手元の release ビルドは 1 分 7 秒、runner はキャッシュ次第。
+    直列化されて伸びるなら `--seconds 5` で十分)。
+    - **`PROXY_STATS_PERSIST=off` にしてはいけない**ことが分かった: `src/main.rs` は永続化が off なら
+      **履歴スレッドごと起動しない**ので `/history` も `/bursts` も `/history?summary=1` も空になる
+      (最初 off で回して `history.5` の標本が 0 本、要約が全部 0 だった)。既定 (on) のまま `HOME` を
+      使い捨てにして、状態ファイル (`.rrd` と T14.9 の `.recent` の 4 MiB × 2) ごと終わりに消す。**ベンチ用の
+      スクリプトが軽くしようとして off を付けると雪像の半分が死ぬ** — 計測の節の注意 (T14.56 の文書の整合で 1 行)。
+    - 名前空間が作れない機械では **IPv6 の黒穴だけ諦めて**残りを回す (`ipv6_blackhole: false` と印字し、
+      CONNECT は IP リテラル宛ての `--only connect`)。**この道では 250 ms の退行は捕まらない**
+      (Happy Eyeballs に入らない) ので、CI の 1 ステップ目で `unshare -rmnC` / `-rmn` の可否を
+      `GITHUB_STEP_SUMMARY` に残す。`scripts/deployed-like.sh` は `-rmnC` (cgroup 名前空間) まで要求するので、
+      `-rmn` は通るが `-C` が通らない runner では黒穴を諦めることになる (小物: `-C` が駄目なら `-rmn` に落ちて
+      `MemoryMax` だけ諦める道を `deployed-like.sh` に足すと CI で黒穴まで見られる確率が上がる)。
+    - 名前空間なしで回すと `PORT` (既定 18080) が他のプロキシと衝突して**他人のプロキシを測ってしまう**ので、
+      起動前に「既に誰かいる」を検出して exit 2 する門を入れた。ついでにプロキシ自身から見た同じ 20 秒
+      (`/history?since=restart&summary=1`) も 1 行印字する (判定には使わない。手元では connects 57,891 / p50 0.5 ms /
+      forwards 210,704 / errors 0)。**runner で `unshare` が通るかは最初の push のあと step summary の「名前空間」の行で見る (人)。**
 **さらに候補 (2026-09-16、続き: T14.31〜)**。ここは「数字の精度」「利用者の端末から見た値」「データが勝手に溜まる」「実データを安全に
 テストへ持ち込む」「1 相手の説明」。共通の決まりは T14.4〜T14.8 と同じ。**再デプロイ前に入れる価値が高いのは T14.31 と T14.34**
 (T14.99 の判定 (p50 6 ms 以下) を正確に読むため、データを取り逃さないため)。
