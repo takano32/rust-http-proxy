@@ -3392,6 +3392,14 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
   T14.31 (`wave7/t1431`、正確な分位点。実装はほぼ済み、CPU/本の A/B と既知の答えの再現の途中)、
   T14.34 (`wave7/t1434`、日次の自動 snapshot)、T14.43 (`wave7/t1443`、起動時の自己ベンチ。始めたばかり)。
   再開は「枝の `wip:` コミットの本文と、その枝の最後の報告 (このファイルには無い。エージェントに `git log -1` と差分を読ませる) から」。
+  **T14.43 の再開メモ** (エージェントの最後の報告から): 実装とテスト (`tests/selfbench_test.rs` 2 本、`proxy-selfbench` 単体 5 本) は通っている。
+  `crates/selfbench` (依存は `proxy-base` だけ。CPU は `CLOCK_PROCESS_CPUTIME_ID` の ns 刻みで、自己ベンチのスレッドの取り分を引く)、
+  `crates/net/src/acl.rs` に自己ベンチの相手役 2 ポートだけを 3 秒間 ACL から外す口、`src/main.rs` は測る 3 秒だけログを warn に、
+  `/status` 末尾の `self_bench` (`note` に断られた理由)。途中結果: 自己ベンチ forward **37.6 / 38.4 us**、connect 137.5 / 140.4 us
+  (2 回の差 2%)。残り: `git merge main` (`src/main.rs` / `config.rs` / `metrics.rs` で両方残す)、計測のやり直し
+  (`scratchpad/measure.sh` を `mx` で 1 回。最後に `cargo clean` があるのでテストは先に)、README 4 か所、`結果:`。
+  **親の判断が要る**: CONNECT 1.5 秒で約 2.2 万本張るので `/recent` の個票 (4,096 件、永続化) が丸ごと埋まり TIME_WAIT が約 4.4 万残る
+  → 本数の上限を足すか、既定 off のまま「再デプロイ直後の 1 回だけ on」の運用にする。
   T14.27 の `wave7/t1427` はマージ済み (worktree に 2 回目の `git merge main` の残骸があれば `git reset --hard 56241a1` して消してよい)。
 - **次に始める番号順**: T14.28 (400 の理由別。T14.27 の申し送りを読む) → T14.38 (SNI) → T14.39 → T14.40 (匿名化した実データが要る。
   1 日ぶんしか無いので複製で) → T14.41 → T14.42 → T14.44 → T14.45〜T14.54 → T14.55〜T14.58 → push (人) → 再デプロイ (人) → T14.99。
