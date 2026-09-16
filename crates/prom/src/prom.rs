@@ -232,6 +232,18 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     );
     header(
         &mut out,
+        "rejected_per_client_total",
+        "counter",
+        "Connections refused with 503 because the peer was over PROXY_MAX_CONNS_PER_CLIENT",
+    );
+    line(
+        &mut out,
+        "rejected_per_client_total",
+        "",
+        m.rejected_per_client.load(Ordering::Relaxed),
+    );
+    header(
+        &mut out,
         "bytes_forwarded_total",
         "counter",
         "Bytes sent to clients and origins",
