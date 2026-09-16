@@ -900,6 +900,14 @@ impl ConnTable {
         if !on {
             return None;
         }
+        // 起動時の自己ベンチ (T14.43) が自分で打った接続は枠を作らない (`--lite` と同じ扱い)。
+        // 作ると 2,000 本の CONNECT が `/recent` の 4,096 件を半分埋め、その個票が
+        // 状態ファイルに残ってしまう。**接続元ごとの上限 (すぐ上の `add_client`) には
+        // ちゃんと数える** (プロキシから見れば本物の負荷なので)。
+        // 費用は自己ベンチが回っていないときの原子の読み 1 回
+        if crate::selfbench::is_client(client) {
+            return None;
+        }
         let slot = Arc::new(ConnSlot::new(id, client, started));
         g.slots.insert(id, Arc::clone(&slot));
         Some(slot)

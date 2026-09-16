@@ -1,5 +1,6 @@
 use crate::dns::Resolved;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AclConfig {
@@ -237,7 +238,8 @@ impl std::fmt::Display for ClientAcl {
 pub fn resolve_target(host_or_addr: &str) -> (bool, Option<Resolved<'_>>) {
     let (host, port) = crate::net::split_host_port_ref(host_or_addr);
     if let Ok(ip) = host.parse::<IpAddr>() {
-        return (is_local_ip(ip), None);
+        // 自己ベンチ (T14.43) の相手役だけは `PROXY_ALLOW_LOCAL=off` でも通す (3 秒だけ)
+        return (is_local_ip(ip) && !is_self_bench_target(ip, port), None);
     }
     match crate::dns::resolve_host(host, port.unwrap_or(80)) {
         Ok((addrs, preferred)) => {
@@ -247,6 +249,38 @@ pub fn resolve_target(host_or_addr: &str) -> (bool, Option<Resolved<'_>>) {
         // 解決できないときだけ名前で見る (リゾルバが壊れていても localhost は止める)
         Err(_) => (host.eq_ignore_ascii_case("localhost"), None),
     }
+}
+
+/// 起動時の自己ベンチ (T14.43) が使う**自分の中の相手役**のポート (`0` = 無し)。
+///
+/// 自己ベンチの宛先は `127.0.0.1` の使い捨てポート 2 つ (固定応答のオリジンと、すぐ閉じる
+/// sink) で、どちらも**このプロセスの中**にある。`PROXY_ALLOW_LOCAL=off` (既定) のままでは
+/// 自分の中のオリジンにも 403 を返してしまい、測れるのが「403 を返す費用」になってしまうので、
+/// **自己ベンチが回っている 3 秒だけ**この 2 ポートを判定から外す。
+/// 開けるのも閉じるのも `src/main.rs` の自己ベンチの前後 1 回ずつで、外から同じポートを
+/// 指されても行き先は 1 KiB を返すオリジンか、すぐ閉じる sink しかない。
+static SELF_BENCH_PORTS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+/// 自己ベンチの相手役のポートを覚える (空のスライスで**閉じる**)。
+pub fn set_self_bench_ports(ports: &[u16]) {
+    for (i, slot) in SELF_BENCH_PORTS.iter().enumerate() {
+        slot.store(ports.get(i).copied().unwrap_or(0) as u32, Ordering::Relaxed);
+    }
+}
+
+/// いま自己ベンチが使っているループバックの宛先か。
+///
+/// **費用は「ループバック宛ての IP リテラル」のときの原子読み 1〜2 回だけ**。
+/// [`resolve_target`] で [`is_local_ip`] が真になった後にしか呼ばないので、
+/// 普通の要求 (名前宛て・外向きの IP) では 1 命令も増えない。
+fn is_self_bench_target(ip: IpAddr, port: Option<u16>) -> bool {
+    let Some(port) = port.filter(|p| *p != 0) else {
+        return false;
+    };
+    ip.is_loopback()
+        && SELF_BENCH_PORTS
+            .iter()
+            .any(|slot| slot.load(Ordering::Relaxed) == u32::from(port))
 }
 
 /// [`resolve_target`] の、答えが要らない呼び出し側のための版。
@@ -284,6 +318,28 @@ mod tests {
         assert!(acl.is_allowed("[2001:db8::1]"));
         assert!(acl.is_allowed("example.com:80"));
         assert!(!acl.is_allowed("[2001:db8::2]:443"));
+    }
+
+    /// 自己ベンチ (T14.43) の相手役だけは `PROXY_ALLOW_LOCAL=off` でも通る。
+    #[test]
+    fn self_bench_targets_are_exempt_while_the_bench_runs() {
+        assert!(is_local_target("127.0.0.1:18081"), "普段はローカル宛て");
+        set_self_bench_ports(&[18081, 18082]);
+        assert!(!is_local_target("127.0.0.1:18081"), "自己ベンチの相手役");
+        assert!(
+            !is_local_target("[::1]:18082"),
+            "IPv6 のループバックでも同じ"
+        );
+        assert!(
+            is_local_target("127.0.0.1:18083"),
+            "覚えていないポートはそのまま"
+        );
+        assert!(
+            is_local_target("169.254.169.254:80"),
+            "メタデータは開けない"
+        );
+        set_self_bench_ports(&[]);
+        assert!(is_local_target("127.0.0.1:18081"), "3 秒で閉じる");
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process;
 use std::sync::Arc;
 use std::thread;
@@ -118,6 +119,46 @@ fn check_environment() -> i32 {
     }
 }
 
+/// 待ち受けアドレスを「自分に繋ぎに行けるアドレス」に直す (T14.43)。
+///
+/// `0.0.0.0` / `[::]` で待っているときはループバックに読み替える。特定のアドレスで
+/// 待っているならそのアドレスへ繋ぐ (そこが唯一の入口なので、loopback では届かない)。
+fn loopback_target(addr: SocketAddr) -> SocketAddr {
+    if !addr.ip().is_unspecified() {
+        return addr;
+    }
+    match addr {
+        SocketAddr::V4(_) => SocketAddr::from((Ipv4Addr::LOCALHOST, addr.port())),
+        SocketAddr::V6(_) => SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())),
+    }
+}
+
+/// 起動時の自己ベンチを 1 回だけ回す (`PROXY_SELF_BENCH=on`。T14.43)。
+///
+/// 待ち受けが accept を始めるのを少しだけ待ってから、**loopback だけで 3 秒**
+/// (内蔵のオリジンへ forward 8 並列 1.5 秒 + CONNECT 8 並列 1.5 秒)。外へは 1 バイトも出さない。
+/// 結果は `/status` の `self_bench` と `/events` の `start` に残る。
+///
+/// **測っている間だけログ水準を warn に下げる**: 既定プロファイル (info) のままだと
+/// アクセスログが数万行出て、コンソールにも CPU/要求 にも乗ってしまう (1 行 7.2 us。T10.10)。
+/// §2 の表も warn で測ってあるので、下げた方が**同じ物差し**になる。
+fn run_self_bench(addr: SocketAddr) {
+    // accept ループが回り出すのを待つ (待ち受けは既に開いているので、繋ぎに行っても
+    // 取りこぼしはしない。測る前の 100 ms は起動直後のばたつきを避けるためのもの)
+    thread::sleep(std::time::Duration::from_millis(100));
+    let level = log::current_level();
+    if level > log::Level::Warn {
+        log::set_level(log::Level::Warn);
+    }
+    let report = rust_http_proxy::selfbench::run(addr, &|ports| {
+        rust_http_proxy::acl::set_self_bench_ports(ports)
+    });
+    log::set_level(level);
+    log_info!(None, "{}", report.summary());
+    // 出来事の時系列にも 1 件 (種類は増やさず、起動の `start` に添える。T14.11 / T14.43)
+    rust_http_proxy::events::push(rust_http_proxy::events::EventKind::Start, &report.summary());
+}
+
 fn main() {
     match rust_http_proxy::cli::parse(std::env::args().skip(1), rust_http_proxy::VERSION) {
         rust_http_proxy::cli::Cli::Print(msg, 0) => {
@@ -181,6 +222,14 @@ fn main() {
     if let Some(l) = listeners.first() {
         rust_http_proxy::sysinfo::capabilities::set_listener(l);
     }
+    // 起動時の自己ベンチ (`PROXY_SELF_BENCH=on`、既定 off。T14.43) の宛先 = **自分の待ち受け**。
+    // `SERVER_PORT=0` でも実際のポートが要るので、待ち受けを開いたここで読む。
+    // **既定ではこの `then` の判定 1 回だけ**で、自己ベンチのコードは 1 命令も走らない
+    let self_bench = config
+        .self_bench
+        .then(|| listeners.first().and_then(|l| l.local_addr().ok()))
+        .flatten()
+        .map(loopback_target);
 
     let live = reload::Live::new(config);
     let config = live.config();
@@ -487,6 +536,13 @@ fn main() {
     } else {
         None
     };
+    // 起動時の自己ベンチ (T14.43)。**待ち受けが accept を始める直前**に起こし、
+    // 中で少し待ってから loopback だけで 3 秒回す (`off` ならここは `None`)
+    if let Some(addr) = self_bench {
+        let _ = thread::Builder::new()
+            .name("selfbench".into())
+            .spawn(move || run_self_bench(addr));
+    }
     // 待ち受けソケットごとに accept スレッドを持つ (最後の 1 つはこのスレッドで回す)
     let mut listeners = listeners.into_iter();
     let last = listeners.next_back().expect("at least one listener");

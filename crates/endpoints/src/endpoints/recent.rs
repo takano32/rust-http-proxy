@@ -22,6 +22,7 @@ use std::time::Instant;
 
 use super::{Endpoint, parse_query};
 use crate::events::MAX_EVENTS;
+use crate::metrics::SCHEMA_HEAD;
 use crate::recent::{BurstShot, MAX_BURSTS, MAX_ERRORS, MAX_RECENT, RecentEntry};
 use crate::trace::{MAX_PATH, MAX_TRACE};
 
@@ -87,7 +88,8 @@ pub fn errors(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     let n = num_param(query, "n", 100, MAX_ERRORS);
     let (entries, total) = ep.metrics.errors.recent(n);
     let mut out = String::with_capacity(4096);
-    out.push_str("{\"errors\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"errors\":");
     let (shown, cut) = array_within(&mut out, entries.iter().map(|e| e.to_json()));
     let _ = write!(
         out,
@@ -112,7 +114,8 @@ pub fn connections(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
     let all = ep.metrics.conns.snapshot();
     let count = all.len();
     let mut out = String::with_capacity(8192);
-    out.push_str("{\"connections\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"connections\":");
     let (shown, cut) = array_within(&mut out, all.iter().map(|c| c.to_json(now)));
     let _ = write!(
         out,
@@ -132,7 +135,8 @@ pub fn dns(query: Option<&str>) -> (u16, &'static str, String) {
     let rows = crate::dns::table(sort);
     let count = rows.len();
     let mut out = String::with_capacity(8192);
-    out.push_str("{\"entries\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"entries\":");
     let (shown, cut) = array_within(&mut out, rows.iter().take(limit).map(|r| r.to_json()));
     let _ = write!(
         out,
@@ -155,7 +159,8 @@ pub fn log(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String
     let n = num_param(query, "n", 200, crate::log::MAX_LOG_LINES);
     let (lines, total) = crate::log::recent(n);
     let mut out = String::with_capacity(8192);
-    out.push_str("{\"lines\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"lines\":");
     let (shown, cut) = array_within(&mut out, lines.iter().map(log_line_json));
     let _ = write!(
         out,
@@ -191,7 +196,8 @@ pub fn daily(query: Option<&str>) -> (u16, &'static str, String) {
     );
     let d = crate::daily::recent(n);
     let mut out = String::with_capacity(8192);
-    out.push_str("{\"days\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"days\":");
     let (shown, cut) = array_within(&mut out, d.lines);
     let _ = write!(
         out,
@@ -236,7 +242,8 @@ pub fn slo(query: Option<&str>) -> (u16, &'static str, String) {
 pub fn snapshots() -> (u16, &'static str, String) {
     let l = crate::snapshots::list();
     let mut out = String::with_capacity(1024);
-    out.push_str("{\"files\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"files\":");
     let (shown, cut) = array_within(
         &mut out,
         l.files.iter().map(|f| {
@@ -263,7 +270,8 @@ pub fn snapshots() -> (u16, &'static str, String) {
 /// `/snapshots/<YYYY-MM-DD>` — 残してある 1 日ぶんを**そのまま**返す (T14.34)。
 ///
 /// 中身は `/snapshot` の応答そのもの (組み直さない) なので、`scripts/snapshot-diff.py` や
-/// `scripts/collect-deployed.sh --from-server` がそのまま読める。日付として読めない名前と
+/// `scripts/collect-deployed.sh --from-server` がそのまま読める。**版 (`schema`) も
+/// 書いた時のまま**で、読む道具は版の無い古いファイルも今までどおり読める (T14.49)。日付として読めない名前と
 /// 置いていない日は 404 (`..` を書かれても置き場所の外は見ない)。
 pub fn snapshot_file(date: &str) -> (u16, &'static str, String) {
     match crate::snapshots::read(date) {
@@ -272,7 +280,8 @@ pub fn snapshot_file(date: &str) -> (u16, &'static str, String) {
             404,
             "application/json",
             format!(
-                "{{\"error\":\"no snapshot for that day\",\"date\":{},\"see\":\"/snapshots\"}}",
+                "{}\"error\":\"no snapshot for that day\",\"date\":{},\"see\":\"/snapshots\"}}",
+                SCHEMA_HEAD,
                 crate::json::quote(date)
             ),
         ),
@@ -312,7 +321,8 @@ pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
         .min()
         .unwrap_or(0);
     let mut out = String::with_capacity(16384);
-    out.push_str("{\"hosts\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"hosts\":");
     let (shown, cut) = array_within(
         &mut out,
         all.iter().take(limit).map(|(h, s)| {
@@ -362,7 +372,8 @@ pub fn host_series(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str
     let view = ep.metrics.host_series(want, top);
     let count = view.series.len();
     let mut out = String::with_capacity(64 * 1024);
-    out.push_str("{\"series\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"series\":");
     let (shown, cut) = array_within(&mut out, view.series.iter().map(series_json));
     let _ = write!(
         out,
@@ -434,7 +445,8 @@ pub fn clients(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
         .min()
         .unwrap_or(0);
     let mut out = String::with_capacity(16384);
-    out.push_str("{\"clients\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"clients\":");
     let (shown, cut) = array_within(&mut out, all.iter().take(limit).map(|(c, s)| s.to_json(c)));
     let _ = write!(
         out,
@@ -509,7 +521,8 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
         RecentSort::Bytes => rows.sort_by_key(|e| std::cmp::Reverse(e.bytes())),
     }
     let mut out = String::with_capacity(8192);
-    out.push_str("{\"recent\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"recent\":");
     let (shown, cut) = array_within(&mut out, rows.iter().take(n).map(RecentEntry::to_json));
     let _ = write!(
         out,
@@ -553,7 +566,8 @@ pub fn trace(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
         .unwrap_or(0);
     let (rows, total) = crate::trace::select(since, n);
     let mut out = String::with_capacity(8192);
-    out.push_str("{\"trace\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"trace\":");
     let (shown, cut) = array_within(&mut out, rows.iter().map(crate::trace::TraceLine::to_json));
     let _ = write!(
         out,
@@ -584,7 +598,8 @@ pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     let n = num_param(query, "n", MAX_BURSTS, MAX_BURSTS);
     let (shots, total) = ep.metrics.bursts.recent(n);
     let mut out = String::with_capacity(8192);
-    out.push_str("{\"bursts\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"bursts\":");
     let (shown, cut) = array_within(&mut out, shots.iter().map(BurstShot::to_json));
     let _ = write!(
         out,
@@ -627,7 +642,8 @@ pub fn events(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
         .unwrap_or(0);
     let (events, total) = crate::events::select(since, n);
     let mut out = String::with_capacity(8192);
-    out.push_str("{\"events\":");
+    out.push_str(SCHEMA_HEAD);
+    out.push_str("\"events\":");
     let (shown, cut) = array_within(&mut out, events.iter().map(crate::events::Event::to_json));
     let _ = write!(
         out,
@@ -712,9 +728,12 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
     let total: usize = overhead_of(&part) + part.iter().map(|(_, v)| v.len()).sum::<usize>();
 
     let mut out = String::with_capacity(total + 1024);
+    // 応答の形の版は**いちばん先頭の鍵** (T14.49)。**各部にもそれぞれ入っている**
+    // (部はどれもその口の出力そのものなので、切り出して 1 本の応答として読める)
+    out.push_str(SCHEMA_HEAD);
     let _ = write!(
         out,
-        "{{\"taken_at\":{},\"version\":\"{}\",\"uptime_secs\":{},\"limit_bytes\":{},\"parts\":[",
+        "\"taken_at\":{},\"version\":\"{}\",\"uptime_secs\":{},\"limit_bytes\":{},\"parts\":[",
         crate::cache::now_epoch(),
         crate::json::escape(ep.version),
         ep.metrics.start_time.elapsed().as_secs(),
@@ -817,7 +836,7 @@ mod tests {
         let (entries, total) = ep_metrics.errors.recent(MAX_ERRORS);
         assert_eq!(entries.len(), MAX_ERRORS);
         assert_eq!(total, MAX_ERRORS as u64 + 20);
-        let mut body = String::from("{\"errors\":");
+        let mut body = String::from(SCHEMA_HEAD) + "\"errors\":";
         let (shown, cut) = array_within(&mut body, entries.iter().map(|e| e.to_json()));
         body.push('}');
         assert_eq!(shown, MAX_ERRORS, "500 件が全部入ること");
@@ -863,7 +882,7 @@ mod tests {
         assert_eq!(all.len(), 1000);
         assert_eq!(all[0].id, 0, "古い順に並ぶ");
         for n in [240usize, 1000] {
-            let mut body = String::from("{\"connections\":");
+            let mut body = String::from(SCHEMA_HEAD) + "\"connections\":";
             let (shown, cut) = array_within(&mut body, all.iter().take(n).map(|c| c.to_json(now)));
             body.push('}');
             assert_eq!(shown, n, "{} 本が全部入ること", n);
@@ -928,6 +947,7 @@ mod tests {
             conn_id: 1,
             port: 8080,
             host: None,
+            client: None,
             pac_direct: &[],
             lite: false,
             readonly: false,
@@ -979,6 +999,7 @@ mod tests {
             conn_id: 1,
             port: 8080,
             host: None,
+            client: None,
             pac_direct: &[],
             lite: false,
             readonly: false,
@@ -989,7 +1010,7 @@ mod tests {
         crate::events::push(EventKind::Start, "version 0.0.0 on port 8080");
         crate::events::push(EventKind::Reload, "PROXY_TIMEOUT_SECS 30 \u{2192} 10");
         let body = events(&ep, None).2;
-        assert!(body.starts_with("{\"events\":["), "{}", body);
+        assert!(body.starts_with("{\"schema\":1,\"events\":["), "{}", body);
         assert!(body.contains("\"kind\":\"reload\""), "{}", body);
         assert!(
             body.contains("PROXY_TIMEOUT_SECS 30 \u{2192} 10"),
@@ -1026,7 +1047,7 @@ mod tests {
         assert!(!one.contains("\"kind\":\"start\""), "{}", one);
         // `?since=` は「その時刻以降」。先の時刻なら 0 件
         let none = events(&ep, Some("since=9999999999")).2;
-        assert!(none.starts_with("{\"events\":[]"), "{}", none);
+        assert!(none.starts_with("{\"schema\":1,\"events\":[]"), "{}", none);
         assert!(none.contains("\"since\":9999999999"), "{}", none);
         assert!(none.contains("\"recorded\":2"), "通算は残る: {}", none);
         // 満杯 (512 件) の最悪でも 256 KiB に収まる
@@ -1127,6 +1148,7 @@ mod tests {
             conn_id: 1,
             port: 8080,
             host: None,
+            client: None,
             pac_direct: &[],
             lite: false,
             readonly: false,
@@ -1187,7 +1209,7 @@ mod tests {
             // T14.37 で増えた欄 (引き直しで答えが変わった回数)。1 行の大きさに効く
             changes: 1,
         };
-        let mut body = String::from("{\"entries\":");
+        let mut body = String::from(SCHEMA_HEAD) + "\"entries\":";
         let (shown, cut) = array_within(&mut body, vec![plain; 300].iter().map(|r| r.to_json()));
         body.push('}');
         assert_eq!(shown, 300);
@@ -1216,7 +1238,7 @@ mod tests {
             refreshes: u64::MAX,
             changes: u64::MAX,
         };
-        let mut body = String::from("{\"entries\":");
+        let mut body = String::from(SCHEMA_HEAD) + "\"entries\":";
         let (shown, cut) = array_within(&mut body, vec![worst; 4096].iter().map(|r| r.to_json()));
         body.push('}');
         assert!(cut, "バイト数で打ち切られること");
@@ -1245,7 +1267,7 @@ mod tests {
         };
         let lines = vec![line; crate::log::MAX_LOG_LINES];
         for (n, want_cut) in [(200usize, false), (crate::log::MAX_LOG_LINES, true)] {
-            let mut body = String::from("{\"lines\":");
+            let mut body = String::from(SCHEMA_HEAD) + "\"lines\":";
             let (shown, cut) = array_within(&mut body, lines.iter().take(n).map(log_line_json));
             body.push('}');
             assert_eq!(cut, want_cut, "{} 行", n);
@@ -1322,7 +1344,7 @@ mod tests {
         let build = |m: &Metrics, take: usize| {
             let all = m.hosts_sorted_by(HostSort::Requests);
             assert_eq!(all.len(), MAX_HOSTS);
-            let mut body = String::from("{\"hosts\":");
+            let mut body = String::from(SCHEMA_HEAD) + "\"hosts\":";
             let (shown, cut) = array_within(
                 &mut body,
                 all.iter().take(take).map(|(h, s)| {
@@ -1393,7 +1415,7 @@ mod tests {
         let all = m.clients_sorted_by(ClientSort::Requests);
         assert_eq!(all.len(), MAX_CLIENTS);
         for (n, want_cut) in [(200usize, false), (MAX_CLIENTS, true)] {
-            let mut body = String::from("{\"clients\":");
+            let mut body = String::from(SCHEMA_HEAD) + "\"clients\":";
             let (shown, cut) =
                 array_within(&mut body, all.iter().take(n).map(|(c, s)| s.to_json(c)));
             body.push('}');
@@ -1457,6 +1479,7 @@ mod tests {
             conn_id: 1,
             port: 8080,
             host: None,
+            client: None,
             pac_direct: &[],
             lite: false,
             readonly: false,
@@ -1524,7 +1547,7 @@ mod tests {
             })
             .collect();
         for (name, series, want_cut) in [("deployed-like", plain, false), ("worst", worst, true)] {
-            let mut body = String::from("{\"series\":");
+            let mut body = String::from(SCHEMA_HEAD) + "\"series\":";
             let (shown, cut) = array_within(&mut body, series.iter().map(series_json));
             body.push('}');
             assert_eq!(cut, want_cut, "{}", name);

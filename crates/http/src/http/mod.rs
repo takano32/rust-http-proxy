@@ -1032,7 +1032,12 @@ pub fn handle_http_with_headers(
         guard.complete(FetchOutcome::NotStored);
     }
     let total = client_head.len() as u64 + body_bytes;
-    metrics.add_bytes(total + request_body_bytes);
+    // 起動時の自己ベンチ (T14.43) が自分で打った要求のバイトは合計に足さない
+    // (`/status` の `bytes_forwarded` と `/history` の `bytes` に 20 MB の山が立つため)。
+    // 費用は自己ベンチが回っていないときの原子の読み 1 回
+    if !proxy_metrics::selfbench::is_target(ctx.pool_key) {
+        metrics.add_bytes(total + request_body_bytes);
+    }
     // 個票の「上り」は要求の本文ぶん (ヘッダーぶんは本体クレートが足す。T14.4)
     ctx.up_bytes = request_body_bytes;
     ctx.log(status, total, &cache_state);

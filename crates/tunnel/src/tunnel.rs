@@ -330,7 +330,10 @@ fn report(
     // CONNECT のホストと SNI の食い違い (T14.38)。旗は中継の入口で 1 回だけ立ててあり、
     // ここはホスト別統計が既に取る鍵の内側へ運ぶだけ (原子もシステムコールも増えない)
     detail.sni_mismatch = o.sni_mismatch;
-    o.metrics.add_bytes(transferred);
+    // 自己ベンチ (T14.43) のトンネルは合計にも足さない (`/hosts` と同じ理由)
+    if !crate::selfbench::is_target(&o.addr_str) {
+        o.metrics.add_bytes(transferred);
+    }
     let host_key = format!("connect://{}", o.addr_str);
     o.metrics.record_host_detail(
         &host_key,

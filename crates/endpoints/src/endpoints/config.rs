@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use super::Endpoint;
 use crate::config::Config;
+use crate::metrics::SCHEMA_HEAD;
 
 /// 応答の上限 (64 KiB)。全 `PROXY_*` / `SERVER_*` (約 60 件) を並べても 5 KB 前後だが、
 /// 長いパスや一覧が入っても越えないように、他の個票と同じくバイト数でも見張る。
@@ -53,9 +54,11 @@ fn live_config() -> Box<Config> {
 /// 設定 1 つを `"KEY":{"value":…,"source":"…"}` に並べた本文 (`/config` の中身)。
 fn body_for(cfg: &Config, version: &str) -> String {
     let mut body = String::with_capacity(8192);
+    // 応答の形の版は**いちばん先頭の鍵** (T14.49)
+    body.push_str(SCHEMA_HEAD);
     let _ = write!(
         body,
-        "{{\"version\":\"{}\",\"env_file\":{},\"settings\":{{",
+        "\"version\":\"{}\",\"env_file\":{},\"settings\":{{",
         crate::json::escape(version),
         crate::json::quote_opt(
             crate::envfile::loaded_path()
@@ -108,6 +111,7 @@ mod tests {
             conn_id: 1,
             port: 8080,
             host: None,
+            client: None,
             pac_direct: &[],
             lite: false,
             // T14.18 で足った欄 (T14.15 はその前に枝を切っていた)。`/config` は読む口なので

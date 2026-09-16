@@ -27,6 +27,7 @@ pub use proxy_net::{acl, dns, net};
 pub use proxy_origin::{Upstream, origin, pool, request, tls};
 pub use proxy_prom::prom;
 pub use proxy_reload::reload;
+pub use proxy_selfbench as selfbench;
 pub use proxy_sys::signal;
 #[cfg(target_os = "linux")]
 pub use proxy_sys::sys;
@@ -1326,7 +1327,12 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     if scratch.request_line.trim().is_empty() {
         return Ok(Step::Next);
     }
-    metrics.inc_requests();
+    // 起動時の自己ベンチ (T14.43) が自分で打った要求は `/status` の合計に数えない
+    // (20,000 要求が乗ると、0.015 req/s のデプロイ先では合計が自己ベンチだけになる)。
+    // 費用は自己ベンチが回っていないときの原子の読み 1 回
+    if !selfbench::is_client(peer_ip) {
+        metrics.inc_requests();
+    }
     log_trace!(
         Some(conn_id),
         "request line: {}",
@@ -1510,6 +1516,10 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         // 実際に受けたポート (テストや複数 bind でも自分宛て判定が合うように)
         port: local_port,
         host: host_header,
+        // 内部エンドポイントを引いた接続元を 1 行残すため (`/status` の `readers`。T14.53)。
+        // 数えるのは `endpoints::handle` が「自分宛て」と決めたあとなので、
+        // プロキシとして通す要求はこの値を 1 度も使わない
+        client: Some(peer_ip),
         pac_direct: &config.pac_direct,
         lite: config.lite,
         readonly: config.endpoints_readonly,

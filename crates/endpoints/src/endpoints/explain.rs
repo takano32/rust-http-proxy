@@ -19,7 +19,7 @@
 use std::fmt::Write as _;
 
 use super::{Endpoint, parse_query};
-use crate::metrics::{ERR_CAUSE_NAMES, HostStats};
+use crate::metrics::{ERR_CAUSE_NAMES, HostStats, SCHEMA_HEAD};
 use crate::recent::{MAX_ERRORS, RecentEntry};
 
 /// 応答 1 本の上限 (64 KiB)。個票の口 (256 KiB) より小さいのは、ここが
@@ -70,7 +70,10 @@ pub fn explain(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
         (
             400,
             "application/json",
-            "{\"error\":\"use /explain?host=<name[:port]> or /explain?client=<ip>\"}".to_string(),
+            format!(
+                "{}\"error\":\"use /explain?host=<name[:port]> or /explain?client=<ip>\"}}",
+                SCHEMA_HEAD
+            ),
         )
     }
 }
@@ -216,9 +219,11 @@ fn host_body(ep: &Endpoint<'_>, query: &str) -> String {
     let known = !keys.is_empty() || dns_row.is_some() || rows_matched > 0 || errs_matched > 0;
 
     let mut out = String::with_capacity(8192);
+    // 応答の形の版は**いちばん先頭の鍵** (T14.49)
+    out.push_str(SCHEMA_HEAD);
     let _ = write!(
         out,
-        "{{\"kind\":\"host\",\"query\":\"{}\",\"host\":\"{}\",\"port\":{},\"known\":{},\"at\":{},\"keys\":[",
+        "\"kind\":\"host\",\"query\":\"{}\",\"host\":\"{}\",\"port\":{},\"known\":{},\"at\":{},\"keys\":[",
         crate::json::escape(&clip(query)),
         crate::json::escape(&clip(&want)),
         match want_port {
@@ -308,9 +313,11 @@ fn client_body(ep: &Endpoint<'_>, ip: &str) -> String {
     let known = row.is_some() || rows_matched > 0 || errs_matched > 0;
 
     let mut out = String::with_capacity(8192);
+    // 応答の形の版は**いちばん先頭の鍵** (T14.49)
+    out.push_str(SCHEMA_HEAD);
     let _ = write!(
         out,
-        "{{\"kind\":\"client\",\"query\":\"{}\",\"client\":\"{}\",\"known\":{},\"at\":{},\"stats\":",
+        "\"kind\":\"client\",\"query\":\"{}\",\"client\":\"{}\",\"known\":{},\"at\":{},\"stats\":",
         crate::json::escape(&clip(ip)),
         crate::json::escape(&clip(ip)),
         known,
