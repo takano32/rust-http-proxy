@@ -463,6 +463,11 @@ pub struct ConnSlot {
     /// 確立までに SYN を送り直した回数 (T14.46)。**書くのは接続の終わりの
     /// [`ConnSlot::finish`] だけ**で、読んだのは `net` の確立点 (`getsockopt` 1 回)
     syn_retrans: AtomicU8,
+    /// 中継が**書けるのを待った**合計 ms (`[クライアント側, オリジン側]`。T14.42)。
+    /// `client` が大きい = 利用者の下り回線か端末が読まない、`origin` が大きい =
+    /// オリジンか利用者の上りが詰まっている。**書くのは接続の終わりの 1 回だけ**
+    /// ([`ConnSlot::finish`]) で、中継のループ (splice の往復) は 1 度も触らない
+    stall_ms: [AtomicU32; SIDES],
 }
 
 /// [`ConnSlot::parked_at`] の「預けられていない」印。
@@ -494,6 +499,7 @@ impl ConnSlot {
             rate_bps: AtomicU64::new(0),
             sni: Mutex::new(String::new()),
             syn_retrans: AtomicU8::new(0),
+            stall_ms: [const { AtomicU32::new(0) }; SIDES],
         }
     }
 
@@ -594,6 +600,11 @@ impl ConnSlot {
         }
         // 確立までの SYN の再送 (T14.46)
         self.syn_retrans.store(tally.syn_retrans, Ordering::Relaxed);
+        // 中継が書けるのを待った ms (T14.42)。中継の中では方向ごとの箱に足すだけで、
+        // 原子に移すのはここ 1 回 (`rtt_us` / `retrans` と同じ扱い)
+        for (cell, v) in self.stall_ms.iter().zip(tally.stall_ms) {
+            cell.store(v, Ordering::Relaxed);
+        }
     }
 
     /// 預かり所に入った (原子 2 回。**預ける瞬間だけ**で、要求ごとには触らない)。
@@ -686,6 +697,11 @@ impl ConnSlot {
             ],
             sni,
             syn_retrans: self.syn_retrans.load(Ordering::Relaxed),
+            // 中継の詰まりの向き (T14.42)。トンネルでなければ両方 0
+            stall_ms: [
+                self.stall_ms[CLIENT_SIDE].load(Ordering::Relaxed),
+                self.stall_ms[ORIGIN_SIDE].load(Ordering::Relaxed),
+            ],
         })
     }
 
@@ -1142,6 +1158,9 @@ pub struct ConnTally {
     /// 確立までに SYN を送り直した回数 (T14.46)。keep-alive の HTTP 接続では
     /// **いちばん多かった要求**の値 (プールが接続を張った要求だけ 0 でない)
     pub syn_retrans: u8,
+    /// 中継が**書けるのを待った**合計 ms (`[クライアント側, オリジン側]`。T14.42)。
+    /// トンネルだけが埋める (http の接続と、繋がらなかった CONNECT は 0)
+    pub stall_ms: [u32; SIDES],
 }
 
 impl ConnTally {
@@ -1205,6 +1224,10 @@ pub struct RecentEntry {
     /// Linux 以外」。**1 回で確立が 1 秒、2 回で 3 秒に飛ぶ**ので、`ms.connect` が
     /// 1,000 ms 台の個票はここが 1 以上になる (どちら側の待ち受けが溢れたかの手掛かり)
     pub syn_retrans: u8,
+    /// 中継が**書けるのを待った**合計 ms (`[クライアント側, オリジン側]`。T14.42)。
+    /// `client` が大きい = 利用者の下り回線か端末が読んでいない、`origin` が大きい =
+    /// オリジンか利用者の上りが詰まっている。CONNECT のトンネルだけが埋める
+    pub stall_ms: [u32; SIDES],
 }
 
 /// `us` を ms の JSON にする (`0` = 読めなかった → `null`。T14.5)。
@@ -1284,7 +1307,14 @@ impl RecentEntry {
         }
         // 確立までの SYN の再送 (T14.46)。**末尾に足した** (既存の鍵の順は変えない)。
         // 0 でも必ず出す (「欄が無い」= 古い版と区別させるため)
-        let _ = write!(out, ",\"syn_retrans\":{}}}", self.syn_retrans);
+        let _ = write!(out, ",\"syn_retrans\":{}", self.syn_retrans);
+        // 中継の詰まりの向き (T14.42)。**末尾に足した** (既存の鍵の順は変えない)。
+        // 両方 0 でも必ず出す (「詰まっていない」と「欄が無い」を区別させるため)
+        let _ = write!(
+            out,
+            ",\"stall_ms\":{{\"client\":{},\"origin\":{}}}}}",
+            self.stall_ms[CLIENT_SIDE], self.stall_ms[ORIGIN_SIDE],
+        );
         out
     }
 }
@@ -2204,6 +2234,8 @@ mod conn_tests {
                 retrans: [0, 0],
                 // 確立まで SYN を 1 回送り直した (= 1 秒待たされた接続。T14.46)
                 syn_retrans: 1,
+                // 中継の詰まり: クライアントへ書けずに 1,800 ms 待った (T14.42)
+                stall_ms: [1_800, 0],
             },
             0,
         );
@@ -2323,6 +2355,7 @@ mod conn_tests {
                 stage_ms: [0, i, 0, 0, 0, 0],
                 rtt_us: [0; SIDES],
                 retrans: [0; SIDES],
+                stall_ms: [0; SIDES],
                 sni: None,
                 syn_retrans: 0,
             });
@@ -2369,6 +2402,7 @@ mod conn_tests {
                 rtt_us: [u32::MAX; SIDES],
                 retrans: [u32::MAX; SIDES],
                 syn_retrans: u8::MAX,
+                stall_ms: [u32::MAX; SIDES],
             },
             u32::MAX,
         );
@@ -2484,6 +2518,7 @@ mod burst_tests {
             parked_secs: 3,
             parks: 2,
             stage_ms: [0; STAGES],
+            stall_ms: [0; SIDES],
             rtt_us: [0; SIDES],
             retrans: [0; SIDES],
             sni: None,
