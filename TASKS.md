@@ -4320,7 +4320,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     - **再生するのは CONNECT だけ** (`kind` が `http` の個票は数えて飛ばす。デプロイ先は 99% が CONNECT)。上りは合図の 16 バイトが必ず流れるので、上り 16 B 未満の個票は
       そのぶんだけ多く流れる。`at` は秒刻みなので、同じ秒の個票は 0 ms 差で一斉に走り出す。個票 1 本 = 1 スレッド (同時本数ぶんだけ生きる)。単体 5 本を新設。
     - 小物: `/bursts` の `threshold` / `max_conns` は写真を 1 枚も撮っていないあいだ `0` で返る (履歴スレッドが初回に埋めるまで)。読む人が誤解しうる。
-- [ ] **T14.30 CI でデプロイ先に似せた条件を回し、`/snapshot` を成果物として残す**
+- [x] **T14.30 CI でデプロイ先に似せた条件を回し、`/snapshot` を成果物として残す**
   - 目的: 今の CI はビルドとテストと 200 MB の関門だけ。§1 のレシピの数字は手元の機械でしか取れないが、**「Happy Eyeballs の 250 ms を
     払っていない」「段階の内訳が壊れていない」**のような**形の退行**は CI でも見張れる (数字の絶対値は比べない)。
   - 変更箇所: `.github/workflows/*.yml` (GitHub Actions の ubuntu runner で `unshare -rmn` が使えるか先に確かめる。使えなければ IPv6 の
@@ -4330,6 +4330,41 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     `connect-multi` の p50 が **50 ms 以上なら CI を落とす** (250 ms の退行の検知。学習後の値なので 1 ms 台のはず)。CI の時間が +3 分以内。
     (この 1 件は人が push して CI を回す必要がある — エージェントは `git push` しないので、ワークフローの yml と scripts を用意して手元で
     `scripts/ci-snapshot.sh` が通るところまで。)
+  - 結果 (2026-09-16、`2bd8971`): `scripts/ci-snapshot.sh` (新規) と `.github/workflows/ci.yml` の
+    `deployed-like-snapshot` ジョブ (`check` と**並べて**回す。`needs:` は付けない)。スクリプトは
+    `scripts/deployed-like.sh` の中で release のプロキシを上げ、`--only connect-multi` と forward を
+    10 秒ずつ回し、`/snapshot` を `snapshot.json` に落として artifact にする (`if: always()` —
+    **落ちたときこそ中身が要る**)。**見張るのは形の退行だけで、数字の絶対値は比べない**:
+    (1) `connect-multi` の p50 が **50 ms 以上なら非 0 で終わる** (`CI_SNAPSHOT_P50_MAX_MS`)、
+    (2) `/snapshot` が 1 要求で取れて JSON として読めること、(3) その中に `/status` の `ipv6.v4_first` と
+    `/profile` の段階が入っていて**窓に数字が入っている**こと (名前が並ぶだけでは通さない)。
+
+    | 手元で回したもの | 1 本目 (8 本の中央値) | p50 | forward p50 | `/status` の ipv6 | 出口 | 所要 |
+    |---|---|---|---|---|---|---|
+    | deployed-like の中 (`--seconds 10 --conc 8`) | 270.6 ms | **0.97 ms** | 0.285 ms | `{"attempts":9,"wins":0,"losses":9,"v4_first":true}` | 0 | 21.2 s |
+    | 閾を `CI_SNAPSHOT_P50_MAX_MS=0.001` に下げる | 253.8 ms | 0.77 ms | 0.248 ms | `v4_first` true | **1** | 12 s |
+    | `CI_SNAPSHOT_NO_NS=1` (名前空間なし) | — | 0.29 ms (`--only connect`) | 0.236 ms | `v4_first` false | 0 | 12 s |
+
+    `snapshot.json` は 285.7 KiB・17 の部品 (`status` / `history` / `profile` / `recent` / `hosts_series` …)、
+    `/profile` は `connect` の 7 段階と `forward` の 6 段階のどちらにも数字の入った窓があった。**CI を実際に
+    回すのは人が push してから** (エージェントは `git push` しない)。CI の時間は `check` と並列なので通算では
+    伸びない見込み (このジョブ自身はビルド + 21 秒。手元の release ビルドは 1 分 7 秒、runner はキャッシュ次第。
+    直列化されて伸びるなら `--seconds 5` で十分)。
+    - **`PROXY_STATS_PERSIST=off` にしてはいけない**ことが分かった: `src/main.rs` は永続化が off なら
+      **履歴スレッドごと起動しない**ので `/history` も `/bursts` も `/history?summary=1` も空になる
+      (最初 off で回して `history.5` の標本が 0 本、要約が全部 0 だった)。既定 (on) のまま `HOME` を
+      使い捨てにして、状態ファイル (`.rrd` と T14.9 の `.recent` の 4 MiB × 2) ごと終わりに消す。**ベンチ用の
+      スクリプトが軽くしようとして off を付けると雪像の半分が死ぬ** — 計測の節の注意 (T14.56 の文書の整合で 1 行)。
+    - 名前空間が作れない機械では **IPv6 の黒穴だけ諦めて**残りを回す (`ipv6_blackhole: false` と印字し、
+      CONNECT は IP リテラル宛ての `--only connect`)。**この道では 250 ms の退行は捕まらない**
+      (Happy Eyeballs に入らない) ので、CI の 1 ステップ目で `unshare -rmnC` / `-rmn` の可否を
+      `GITHUB_STEP_SUMMARY` に残す。`scripts/deployed-like.sh` は `-rmnC` (cgroup 名前空間) まで要求するので、
+      `-rmn` は通るが `-C` が通らない runner では黒穴を諦めることになる (小物: `-C` が駄目なら `-rmn` に落ちて
+      `MemoryMax` だけ諦める道を `deployed-like.sh` に足すと CI で黒穴まで見られる確率が上がる)。
+    - 名前空間なしで回すと `PORT` (既定 18080) が他のプロキシと衝突して**他人のプロキシを測ってしまう**ので、
+      起動前に「既に誰かいる」を検出して exit 2 する門を入れた。ついでにプロキシ自身から見た同じ 20 秒
+      (`/history?since=restart&summary=1`) も 1 行印字する (判定には使わない。手元では connects 57,891 / p50 0.5 ms /
+      forwards 210,704 / errors 0)。**runner で `unshare` が通るかは最初の push のあと step summary の「名前空間」の行で見る (人)。**
 **さらに候補 (2026-09-16、続き: T14.31〜)**。ここは「数字の精度」「利用者の端末から見た値」「データが勝手に溜まる」「実データを安全に
 テストへ持ち込む」「1 相手の説明」。共通の決まりは T14.4〜T14.8 と同じ。**再デプロイ前に入れる価値が高いのは T14.31 と T14.34**
 (T14.99 の判定 (p50 6 ms 以下) を正確に読むため、データを取り逃さないため)。
