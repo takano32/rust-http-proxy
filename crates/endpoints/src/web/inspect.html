@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>rust-http-proxy — 調査</title>
+<style>
+:root{--bg:#0f1117;--card:#171a23;--line:#262a37;--fg:#e6e8ef;--muted:#8b91a5;--accent:#5aa9ff;--ok:#3ecf8e;--warn:#f5b342;--bad:#ff6b6b;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans JP",sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(15,17,23,.92);backdrop-filter:blur(6px);z-index:2}
+header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.02em}
+header .sub{color:var(--muted);font-size:12px}
+header .right{margin-left:auto;display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);display:inline-block;box-shadow:0 0 8px var(--ok)}
+.dot.bad{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+main{padding:18px 22px 40px;max-width:1400px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0;margin-top:14px}
+.card h2{margin:0 0 8px;font-size:12px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.card h2 span.r{float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)}
+.hint{color:var(--muted);font-size:12px;margin-top:4px}
+canvas{width:100%;height:150px;display:block}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+th,td{padding:6px 8px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+td:first-child,th:first-child{text-align:left;max-width:320px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:12px}
+.stack{display:flex;height:14px;border-radius:4px;overflow:hidden;background:var(--line);min-width:120px}
+.stack i{display:block;height:100%}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--muted);margin-top:8px}
+.legend b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.lead{font-size:13px;font-family:var(--mono);background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:10px;overflow-x:auto;white-space:nowrap}
+.links a{color:var(--accent);text-decoration:none;margin-right:12px;font-size:12px}
+.tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;background:var(--line);color:var(--muted);margin-left:6px}
+.banner{margin:14px 0 0;padding:10px 14px;border-radius:10px;font-size:13px;background:rgba(245,179,66,.12);border:1px solid var(--warn);color:var(--fg)}
+.cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.shot{background:#0b0d13;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.shot h3{margin:0 0 6px;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.shot table{font-size:12px}
+.shot td,.shot th{padding:3px 6px}
+.grid2{display:grid;gap:14px;grid-template-columns:1fr 1fr}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+select,button{background:#0b0d13;border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:3px 6px;font:12px system-ui}
+.kv{display:flex;flex-wrap:wrap;gap:14px;font-size:13px;font-variant-numeric:tabular-nums}
+.kv div{min-width:110px}
+.kv b{display:block;color:var(--muted);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.05em}
+</style>
+</head>
+<body>
+<header>
+  <h1>rust-http-proxy <span class="tag">調査</span></h1>
+  <span class="sub" id="version"></span>
+  <span class="sub" id="uptime">–</span>
+  <div class="right">
+    <span class="links"><a href="/snapshot" target="_blank">/snapshot</a><a href="/dashboard">/dashboard</a><a href="/recent?n=2000" target="_blank">/recent</a><a href="/bursts" target="_blank">/bursts</a><a href="/clients?limit=1000" target="_blank">/clients</a><a href="/hosts?limit=1000" target="_blank">/hosts</a><a href="/events" target="_blank">/events</a></span>
+    <label>範囲 <select id="range"><option value="3600">1 時間</option><option value="21600">6 時間</option><option value="86400">24 時間</option></select></label>
+    <label>縦 <select id="by"><option value="client">接続元</option><option value="target">宛先</option></select></label>
+    <label><input type="checkbox" id="pause"> 一時停止</label>
+    <span class="dot" id="dot"></span><span id="lastok">接続中…</span>
+  </div>
+</header>
+<main>
+  <div class="banner" id="lite" hidden></div>
+
+  <section class="card">
+    <h2>タイムライン (閉じた接続) <span class="r">/recent?since= · 色 = 閉じた理由 · 太さ = バイト · 印 = /events</span></h2>
+    <div class="lead" id="tllead">読み込み中…</div>
+    <canvas id="ch-timeline" style="height:320px"></canvas>
+    <div class="legend" id="lg-timeline"></div>
+    <div class="hint" id="tlhint"></div>
+  </section>
+
+  <section class="card">
+    <h2>起動からの窓 <span class="r">/history?since=restart&amp;summary=1 (無ければ手元で切る)</span></h2>
+    <div style="margin-bottom:8px">窓 <select id="win"><option value="start">起動から</option><option value="all">通算</option></select></div>
+    <div class="kv" id="winkv"></div>
+    <div class="hint" id="winhint"></div>
+  </section>
+
+  <section class="card">
+    <h2>遅い接続 (上位 50) <span class="r">/recent?sort=slow · 段階 = queue / client_read / dns / connect / first_relay</span></h2>
+    <div class="legend" id="lg-stages"></div>
+    <div style="overflow-x:auto"><table id="slow"><thead><tr><th>宛先</th><th>接続元</th><th>種類</th><th title="段階の積み上げ (1 本ぶん)">段階</th><th>確立</th><th title="段階の合計 (利用者が待った時間ではない)">合計</th><th title="カーネルの平滑化 RTT (オリジン側)">RTT</th><th title="確立 − RTT。RTT では説明できない待ち">差</th><th>寿命</th><th>転送</th><th>理由</th><th>時刻</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="slowhint"></div>
+  </section>
+
+  <section class="card">
+    <h2>山の写真 <span class="r">/bursts?n=50</span></h2>
+    <div class="cards" id="bursts"></div>
+    <div class="hint" id="bursthint"></div>
+  </section>
+
+  <section class="card">
+    <h2>接続元 <span class="r">/clients?limit=200 · 並び: <select id="clientsort"><option value="requests">要求数</option><option value="bytes">転送量</option><option value="targets">宛先の種類</option><option value="recent">最近</option></select></span></h2>
+    <div style="overflow-x:auto"><table id="clients"><thead><tr><th>client</th><th>要求</th><th>転送</th><th>エラー</th><th title="見た User-Agent (最大 4 種)">agents</th><th title="宛先ホストの種類 (最大 256)">宛先</th><th title="IP リテラル宛ての要求数">リテラル</th><th title="カーネルの平滑化 RTT (クライアント側。標本が無ければ –)">RTT</th><th>再送</th><th>初回</th><th>最終</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="clienthint"></div>
+  </section>
+
+  <section class="grid2">
+    <div class="card" style="margin-top:0">
+      <h2>RTT × 接続時間 <span class="r">/hosts の rtt_ms.avg × connect_ms_sum ÷ timed</span></h2>
+      <canvas id="ch-rtt" style="height:300px"></canvas>
+      <div class="hint" id="rtthint"></div>
+    </div>
+    <div class="card" style="margin-top:0">
+      <h2>対角線から離れたホスト (上位 12) <span class="r">差 = 接続 − RTT</span></h2>
+      <div style="overflow-x:auto"><table id="rtt"><thead><tr><th>host</th><th>RTT</th><th>接続</th><th title="接続 ÷ RTT">倍</th><th title="接続 − RTT">差</th><th>要求</th><th>再送</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="card" id="series-card" hidden>
+    <h2>ホスト別の折れ線 <span class="r">/hosts/series?top=8 (T14.22。無ければこの枠は出ません)</span></h2>
+    <canvas id="ch-series" style="height:220px"></canvas>
+    <div class="legend" id="lg-series"></div>
+  </section>
+</main>
+<script>
+(function(){
+'use strict';
+var $=function(id){return document.getElementById(id)};
+var now=0;          // 最後に /status を引いた時刻 (epoch 秒)
+var lastStatus=null;
+var tl=null;        // 直近の timeline()
+var marks=[];       // 直近の eventMarks()
+var scatter=null;   // 直近の rttScatter()
+var series=null;    // /hosts/series (T14.22。無ければ null のまま)
+
+// 閉じた理由の色 (T14.4 の 8 種)。**知らない綴りが増えても壊れない**:
+// `error:<原因>` は `error` に畳み、知らない名前は既定の灰色になる
+var REASON_COLORS={client_eof:'#3ecf8e',server_eof:'#5aa9ff',idle_timeout:'#c084fc',
+  keepalive_timeout:'#6ee7f9',evicted:'#f5b342',limit:'#a3e635',shutdown:'#94a3b8',error:'#ff6b6b'};
+// 出来事の色 (T14.11 の 10 種)。**T14.23 の `anomaly` のように増えても**既定色で描くだけ
+var EVENT_COLORS={start:'#3ecf8e',reload:'#5aa9ff',blocklist:'#c084fc',ipv6:'#6ee7f9',
+  pressure:'#f5b342',ballast:'#a3e635',state_file:'#fca5a5',evict:'#f59e0b',
+  emfile:'#ff6b6b',shutdown:'#94a3b8',anomaly:'#ff6b6b'};
+var STAGE_COLORS=['#5aa9ff','#3ecf8e','#f5b342','#c084fc','#ff6b6b','#6ee7f9','#a3e635'];
+// (b) の積み上げに使う段階 (T14.3 の 5 つ。0 の段階は JSON に出てこない = 0 として読む)
+var SLOW_STAGES=['queue','client_read','dns','connect','first_relay'];
+
+// --- ここから下の 9 つは node の整形テスト (scripts/check-dashboard.js) からも呼ぶ。
+// --- **DOM に触らないこと** (描くのは draw* の側)。
+function num(v){return v==null?null:+v}
+function reasonKey(r){var s=String(r||''),i=s.indexOf(':');return i<0?s:s.slice(0,i)}
+function reasonColor(r){return REASON_COLORS[reasonKey(r)]||'#8b91a5'}
+// バイト数 → 線の太さ (1〜5 px)。1 KiB ごとに 1 段で頭打ち
+function weightOf(b){return b>0?Math.min(5,1+Math.floor(Math.log(1+b/1024)/Math.log(8))):1}
+
+// `/history` は標本を配列の配列で返す (キーは keys に 1 回だけ)。列名で引ける形に戻す
+// (`dashboard.html` の同名の関数と同じ読み方)
+function toSamples(h){
+  var idx={},keys=(h&&h.keys)||[];
+  for(var i=0;i<keys.length;i++)idx[keys[i]]=i;
+  return ((h&&h.samples)||[]).map(function(row){
+    var o={};
+    for(var k in idx)o[k]=row[idx[k]];
+    return o;
+  });
+}
+// 区間ヒストグラムの分位点 (プロキシ側 `Window::quantile_ms` と同じ)。件数 0 なら null
+function winQuantile(buckets,count,max,p,bnds){
+  if(!count||!buckets)return null;
+  var rank=Math.max(1,p*count),seen=0;
+  bnds=bnds||[];
+  for(var i=0;i<buckets.length;i++){
+    var n=buckets[i];
+    if(!n)continue;
+    if(seen+n>=rank){
+      var lo=i===0?0:bnds[i-1],hi=i<bnds.length?bnds[i]:Math.max(max,lo);
+      return Math.min(lo+(hi-lo)*((rank-seen)/n),max);
+    }
+    seen+=n;
+  }
+  return max;
+}
+
+// (a) タイムライン: `/recent` の 1 本 1 本を「横 = 時刻、縦 = 接続元 (または宛先)」の線にする。
+// 線の長さ = 寿命、色 = 閉じた理由、太さ = 運んだバイト。窓からはみ出す接続は端で切る
+// (`x0` / `x1` は 0〜1 の比。実際の座標にするのは描く側)。
+function timeline(j,opts){
+  opts=opts||{};
+  var rows=(j&&j.recent)||[],by=opts.by==='target'?'target':'client';
+  var span=+opts.span>0?+opts.span:3600,t1=+opts.now||0;
+  if(!t1){ // 「いま」が無ければ最後に閉じた時刻を右端にする (保存した雪像を読むとき)
+    for(var i=0;i<rows.length;i++)t1=Math.max(t1,(+rows[i].at||0)+(+rows[i].secs||0));
+  }
+  var t0=t1-span,lanes={},names=[],shown=0,hidden=0,bytes=0,tally={};
+  for(var k=0;k<rows.length;k++){
+    var r=rows[k],at=+r.at||0,secs=+r.secs||0,end=at+secs;
+    if(!at||end<t0||at>t1){hidden++;continue}
+    var name=String(r[by]==null||r[by]===''?'?':r[by]),lane=lanes[name];
+    if(!lane){lane=lanes[name]={name:name,rows:[],conns:0,bytes:0,secs:0};names.push(name)}
+    var b=(+r.up||0)+(+r.down||0),key=reasonKey(r.reason);
+    tally[key]=(tally[key]||0)+1;
+    lane.conns++;lane.bytes+=b;lane.secs+=secs;bytes+=b;shown++;
+    lane.rows.push({id:+r.id||0,at:at,end:end,secs:secs,kind:r.kind||'',
+      client:r.client||'',target:r.target||'',reason:r.reason||'',color:reasonColor(r.reason),
+      bytes:b,weight:weightOf(b),status:+r.status||0,reqs:+r.reqs||0,parks:+r.parks||0,
+      x0:Math.max(0,Math.min(1,(at-t0)/span)),x1:Math.max(0,Math.min(1,(end-t0)/span))});
+  }
+  var list=names.map(function(n){return lanes[n]});
+  list.sort(function(a,b){return b.conns-a.conns||b.bytes-a.bytes||(a.name<b.name?-1:1)});
+  var max=+opts.lanes>0?+opts.lanes:14,rest=list.slice(max);
+  return {t0:t0,t1:t1,span:span,by:by,lanes:list.slice(0,max),
+    others:{lanes:rest.length,conns:rest.reduce(function(a,l){return a+l.conns},0)},
+    reasons:Object.keys(tally).map(function(n){return {name:n,count:tally[n],color:REASON_COLORS[n]||'#8b91a5'}})
+      .sort(function(a,b){return b.count-a.count}),
+    count:rows.length,shown:shown,hidden:hidden,bytes:bytes,
+    lite:!!(j&&j.lite),truncated:!!(j&&j.truncated),empty:shown===0};
+}
+
+// `/events` の印 (T14.11)。タイムラインと同じ窓に落として 0〜1 の比にする。
+// **種類が増えても壊れない**: 知らない綴り (T14.23 の `anomaly` など) は既定の色で描くだけ
+function eventMarks(j,win){
+  var evs=(j&&j.events)||[],t0=(win&&win.t0)||0,t1=(win&&win.t1)||0;
+  var span=Math.max(1,t1-t0),out=[];
+  for(var i=0;i<evs.length;i++){
+    var e=evs[i],at=+e.at||0,kind=e.kind||'';
+    if(!at||at<t0||at>t1)continue;
+    out.push({at:at,kind:kind,text:e.text||'',color:EVENT_COLORS[kind]||'#8b91a5',
+      known:Object.prototype.hasOwnProperty.call(EVENT_COLORS,kind),x:(at-t0)/span});
+  }
+  return out.sort(function(a,b){return a.at-b.at});
+}
+
+// (b) 遅い接続: `/recent?sort=slow` の上位 n 件を、段階の積み上げ横棒に直す。
+// 段階は T14.3 の 5 つ。**0 の段階は JSON に出てこない**ので 0 として読む。
+// `差` は「確立 − オリジン側の RTT」= RTT では説明できない待ち (T14.5)。
+function slowRows(j,n){
+  return ((j&&j.recent)||[]).slice(0,n||50).map(function(r){
+    var ms=r.ms||{},parts=[],total=0;
+    for(var i=0;i<SLOW_STAGES.length;i++){
+      var v=+ms[SLOW_STAGES[i]]||0;
+      total+=v;
+      parts.push({name:SLOW_STAGES[i],ms:v,color:STAGE_COLORS[i%STAGE_COLORS.length],pct:0});
+    }
+    for(var k=0;k<parts.length;k++)parts[k].pct=total>0?parts[k].ms/total*100:0;
+    var rtt=r.rtt_ms||{},rt=r.retrans||{},conn=+ms.connect||0,orig=num(rtt.origin);
+    return {id:+r.id||0,at:+r.at||0,client:r.client||'',target:r.target||'',kind:r.kind||'',
+      reason:r.reason||'',color:reasonColor(r.reason),secs:+r.secs||0,reqs:+r.reqs||0,
+      bytes:(+r.up||0)+(+r.down||0),stages:parts,total:total,connect_ms:conn,
+      first_byte:+ms.first_byte||0,rtt_client:num(rtt.client),rtt_origin:orig,
+      retrans:(+rt.client||0)+(+rt.origin||0),
+      unexplained:orig==null?null:Math.max(0,conn-orig)};
+  });
+}
+
+// (c) 山の写真: `/bursts` の 1 枚を、内訳の割合まで足した形に直す (T14.6)。
+// **無い鍵は 0 / 空**にする (古い版の出力でも落ちない)。
+function burstCards(j,n){
+  return ((j&&j.bursts)||[]).slice(0,n||50).map(function(b){
+    var states=b.states||{},kinds=b.kinds||{},active=+b.active||0;
+    var tot=function(o){var s=0;for(var k in o)s+=+o[k]||0;return s};
+    var top=function(a,key){
+      return (a||[]).map(function(x){
+        return {name:x[key]||'',conns:+x.conns||0,pct:active>0?(+x.conns||0)/active*100:0};
+      });
+    };
+    return {at:+b.at||0,seq:+b.seq||0,active:active,trigger:+b.trigger_active||0,
+      max_conns:+b.max_conns||0,threshold:+b.threshold||0,
+      pct:(+b.max_conns||0)>0?active/(+b.max_conns)*100:0,
+      clients:top(b.clients,'client'),clients_other:+b.clients_other||0,
+      clients_distinct:+b.clients_distinct||0,
+      targets:top(b.targets,'target'),targets_other:+b.targets_other||0,
+      targets_distinct:+b.targets_distinct||0,
+      states:Object.keys(states).map(function(k){
+        return {name:k,n:+states[k]||0,pct:active>0?(+states[k]||0)/active*100:0};
+      }),
+      kinds:Object.keys(kinds).map(function(k){return {name:k,n:+kinds[k]||0}}),
+      state_sum:tot(states),kind_sum:tot(kinds),
+      evicted_idle:+b.evicted_idle||0,rejected_overload:+b.rejected_overload||0,
+      threads:+b.threads||0,fds:+b.fds||0,max_fds:+b.max_fds||0};
+  });
+}
+
+// (d) 接続元の表: `/clients` (無ければ `/status` の `clients[]`) を読む。
+// **RTT は標本が無ければ `rtt_ms` が `null`** (Linux 以外・`--lite`・まだ 1 本も閉じていない)
+// ので、そのときは `null` のまま返す (描く側が「–」にする。T14.5)。
+function clientRows(j,n,sort){
+  var rows=((j&&j.clients)||[]).map(function(c){
+    var r=c.rtt_ms||null;
+    return {client:c.client||'',requests:+c.requests||0,bytes:+c.bytes||0,
+      errors:+c.errors||0,blocked:+c.blocked||0,rejected:+c.rejected||0,
+      hits:+c.hits||0,p50_ms:num(c.p50_ms),p95_ms:num(c.p95_ms),
+      agents:c.agents||(c.agent?[c.agent]:[]),agents_dropped:+c.agents_dropped||0,
+      distinct_targets:+c.distinct_targets||0,capped:!!c.distinct_targets_capped,
+      literal_targets:+c.literal_targets||0,nonstandard_ports:+c.nonstandard_ports||0,
+      ports:(c.ports||[]).map(function(p){return {port:+p.port||0,requests:+p.requests||0}}),
+      rtt:r&&+r.samples>0&&r.avg!=null?{avg:+r.avg,min:num(r.min),samples:+r.samples}:null,
+      retrans:+c.retrans||0,first_seen:+c.first_seen||0,last_seen:+c.last_seen||0};
+  });
+  var key=sort||'requests';
+  rows.sort(function(a,b){
+    if(key==='bytes')return b.bytes-a.bytes;
+    if(key==='targets')return b.distinct_targets-a.distinct_targets;
+    if(key==='recent')return b.last_seen-a.last_seen;
+    return b.requests-a.requests;
+  });
+  return rows.slice(0,n||200);
+}
+
+// (e) RTT の散布: `/hosts` (または `/status` の `hosts[]`) の `rtt_ms.avg` を x、
+// 接続 1 回の平均 (`connect_ms_sum ÷ timed`) を y に。
+// **標本 0 (`rtt_ms` が `null`) の行と、接続を 1 度も測っていない行は描かない** (T14.5)。
+// 対角線 (y = x) から上に離れた点が「RTT では説明できない待ち」。
+function rttScatter(j,opts){
+  var rows=(j&&(j.hosts||(j.length!=null?j:null)))||[];
+  var pts=[],skipped=0,maxX=0,maxY=0;
+  for(var i=0;i<rows.length;i++){
+    var h=rows[i]||{},r=h.rtt_ms,timed=+h.timed||0,sum=+h.connect_ms_sum||0;
+    if(!r||!(+r.samples>0)||r.avg==null||!(timed>0)||!(sum>0)){skipped++;continue}
+    var x=+r.avg,y=sum/timed;
+    if(!(x>0)){skipped++;continue}
+    pts.push({host:h.host||'',rtt:x,connect:y,ratio:y/x,gap:y-x,samples:+r.samples||0,
+      requests:+h.requests||0,errors:+h.errors||0,retrans:+h.retrans||0});
+    if(x>maxX)maxX=x;
+    if(y>maxY)maxY=y;
+  }
+  pts.sort(function(a,b){return b.gap-a.gap});
+  return {points:pts.slice(0,(opts&&+opts.max)||200),count:pts.length,skipped:skipped,
+    maxX:maxX,maxY:maxY,max:Math.max(maxX,maxY,1)};
+}
+
+// (f) 起動からの窓。**T14.24 の `/history?since=restart&summary=1` があればそれを読む**
+// (サーバーが畳んだ 1 行)。要約を持たない版や `--lite` では `/history` の標本を
+// `since_start_secs` で切って自分で畳む — どちらでも同じ形を返す。
+function sinceStart(h,uptime,at){
+  h=h||{};
+  if(h.connects!=null&&h.from!=null&&!h.keys){ // T14.24 の要約
+    return {mode:'summary',from:+h.from||0,to:+h.to||0,samples:+h.samples||0,cut:0,
+      connects:+h.connects||0,p50:num(h.p50_ms),p95:num(h.p95_ms),avg:num(h.avg_ms),
+      max:num(h.max_ms),forwards:+h.forwards||0,errors:+h.errors||0,
+      dns_misses:+h.dns_misses||0,dns_per_connect:num(h.dns_miss_per_connect),
+      dns_avg:num(h.dns_miss_avg_ms),active_max:+h.active_max||0,rows:[]};
+  }
+  var all=toSamples(h),bnds=h.bounds_ms||[];
+  var from=(+uptime>0&&+at>0)?(+at)-(+uptime):0;
+  var rows=all.filter(function(s){return (+s.t||0)>=from});
+  var buckets=null,count=0,sum=0,mx=0,fw=0,errs=0,miss=0,dms=0,act=0;
+  for(var i=0;i<rows.length;i++){
+    var s=rows[i],b=s.connect_buckets;
+    if(b){
+      if(!buckets)buckets=b.map(function(){return 0});
+      for(var k=0;k<b.length;k++)buckets[k]+=+b[k]||0;
+    }
+    count+=+s.connects||0;sum+=+s.connect_ms_sum||0;
+    mx=Math.max(mx,+s.connect_ms_max||0);fw+=+s.forwards||0;
+    errs+=+s.errors||0;miss+=+s.dns_misses||0;dms+=+s.dns_ms_sum||0;
+    act=Math.max(act,s.active_max!=null?+s.active_max:(+s.active||0));
+  }
+  return {mode:'samples',from:from,to:rows.length?+rows[rows.length-1].t||0:0,
+    samples:rows.length,cut:all.length-rows.length,connects:count,
+    p50:winQuantile(buckets,count,mx,0.5,bnds),p95:winQuantile(buckets,count,mx,0.95,bnds),
+    avg:count?sum/count:null,max:mx,forwards:fw,errors:errs,dns_misses:miss,
+    dns_per_connect:count?miss/count:null,dns_avg:miss?dms/miss:null,
+    active_max:act,rows:rows};
+}
+// --- ここまでが node からも呼ぶ関数 ---
+
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function fmtBytes(n){if(n==null)return'–';var u=['B','KiB','MiB','GiB','TiB'],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return(i?n.toFixed(n<10?2:1):n)+' '+u[i]}
+function fmtNum(n){return n==null?'–':Number(n).toLocaleString()}
+function fmtMs(ms){return ms==null?'–':ms>=1000?(ms/1000).toFixed(2)+' s':ms>=10?Math.round(ms)+' ms':(+ms).toFixed(1)+' ms'}
+function fmtSecs(s){return s==null?'–':s>=86400?(s/86400).toFixed(1)+' d':s>=3600?(s/3600).toFixed(1)+' h':s>=60?(s/60).toFixed(1)+' m':s+' s'}
+function fmtAt(t){return t?new Date(t*1000).toLocaleTimeString():'–'}
+function fmtDay(t){return t?new Date(t*1000).toLocaleString():'–'}
+function clip(s,n){s=String(s||'');return s.length>n?s.slice(0,n-1)+'…':s}
+function ok(good,msg){$('dot').className='dot'+(good?'':' bad');$('lastok').textContent=msg}
+function ctx(c){
+  var dpr=window.devicePixelRatio||1,W=c.clientWidth,H=c.clientHeight;
+  if(c.width!==W*dpr||c.height!==H*dpr){c.width=W*dpr;c.height=H*dpr}
+  var g=c.getContext('2d');
+  g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);
+  return {g:g,W:W,H:H};
+}
+
+// タイムラインを描く (縦 1 行 = 1 つの接続元 / 宛先。同じ行の重なりは 4 段にずらす)
+function drawTimeline(){
+  var c=$('ch-timeline');
+  if(!tl)return;
+  var lanes=tl.lanes,rowH=Math.max(18,Math.min(34,Math.floor(300/Math.max(1,lanes.length))));
+  c.style.height=(lanes.length*rowH+42)+'px';
+  var o=ctx(c),g=o.g,padL=Math.min(230,Math.max(120,o.W*0.22)),padR=10,padT=8,padB=22;
+  var w=o.W-padL-padR,h=lanes.length*rowH;
+  g.font='11px system-ui';
+  // 縦の目盛り (時刻)
+  g.strokeStyle='#262a37';g.fillStyle='#8b91a5';g.lineWidth=1;g.textAlign='center';
+  for(var i=0;i<=6;i++){
+    var x=padL+w*i/6,t=tl.t0+tl.span*i/6;
+    g.beginPath();g.moveTo(x,padT);g.lineTo(x,padT+h);g.stroke();
+    g.fillText(fmtAt(Math.round(t)),x,padT+h+14);
+  }
+  // 出来事の印 (縦の破線 + 上の三角)
+  g.setLineDash([3,3]);
+  marks.forEach(function(m){
+    var x=padL+w*m.x;
+    g.strokeStyle=m.color;g.beginPath();g.moveTo(x,padT);g.lineTo(x,padT+h);g.stroke();
+    g.fillStyle=m.color;g.beginPath();g.moveTo(x,padT);g.lineTo(x-4,padT-6);g.lineTo(x+4,padT-6);g.closePath();g.fill();
+  });
+  g.setLineDash([]);
+  lanes.forEach(function(lane,li){
+    var y=padT+li*rowH+rowH/2;
+    g.fillStyle='#8b91a5';g.textAlign='right';g.font='11px '+getComputedStyle(document.body).getPropertyValue('--mono');
+    g.fillText(clip(lane.name,34),padL-8,y+4);
+    g.font='11px system-ui';
+    lane.rows.forEach(function(r,ri){
+      var yy=y+((ri%4)-1.5)*Math.min(4,rowH/5);
+      g.strokeStyle=r.color;g.lineWidth=r.weight;g.lineCap='round';
+      g.beginPath();
+      var x0=padL+w*r.x0,x1=Math.max(padL+w*r.x1,x0+1.5);
+      g.moveTo(x0,yy);g.lineTo(x1,yy);g.stroke();
+    });
+  });
+  g.lineCap='butt';
+}
+
+function drawScatter(){
+  var c=$('ch-rtt');
+  if(!scatter)return;
+  var o=ctx(c),g=o.g,padL=46,padR=10,padT=10,padB=26,w=o.W-padL-padR,h=o.H-padT-padB;
+  var max=Math.max(1,scatter.max)*1.1;
+  g.font='11px system-ui';g.strokeStyle='#262a37';g.fillStyle='#8b91a5';g.lineWidth=1;
+  for(var i=0;i<=4;i++){
+    var y=padT+h-h*i/4,x=padL+w*i/4,v=max*i/4;
+    g.textAlign='right';
+    g.beginPath();g.moveTo(padL,y);g.lineTo(padL+w,y);g.stroke();
+    g.fillText(v>=100?Math.round(v):v.toFixed(1),padL-6,y+4);
+    g.textAlign='center';g.fillText(v>=100?Math.round(v):v.toFixed(1),x,padT+h+14);
+  }
+  g.textAlign='left';g.fillText('x = RTT ms',padL+4,padT+10);
+  g.save();g.translate(12,padT+h/2);g.rotate(-Math.PI/2);g.textAlign='center';g.fillText('y = 接続 ms',0,0);g.restore();
+  // 対角線 (y = x)
+  g.strokeStyle='#3ecf8e';g.setLineDash([4,4]);g.beginPath();
+  g.moveTo(padL,padT+h);g.lineTo(padL+w,padT+h-h);g.stroke();g.setLineDash([]);
+  scatter.points.forEach(function(p){
+    var x=padL+w*Math.min(p.rtt,max)/max,y=padT+h-h*Math.min(p.connect,max)/max;
+    var r=Math.min(8,3+Math.log(1+p.requests)/2);
+    g.fillStyle=p.ratio>=5?'rgba(255,107,107,.75)':p.ratio>=2?'rgba(245,179,66,.75)':'rgba(90,169,255,.75)';
+    g.beginPath();g.arc(x,y,r,0,Math.PI*2);g.fill();
+  });
+}
+
+// (T14.22) `/hosts/series?top=8` が来たときだけ描く折れ線
+function drawSeries(){
+  if(!series||!series.hosts||!series.hosts.length)return;
+  var o=ctx($('ch-series')),g=o.g,padL=46,padR=10,padT=10,padB=20;
+  var w=o.W-padL-padR,h=o.H-padT-padB,n=0,max=0;
+  series.hosts.forEach(function(s){
+    n=Math.max(n,(s.values||[]).length);
+    (s.values||[]).forEach(function(v){if(v!=null&&+v>max)max=+v});
+  });
+  if(max<=0)max=1;
+  max*=1.1;
+  g.strokeStyle='#262a37';g.fillStyle='#8b91a5';g.font='11px system-ui';g.textAlign='right';
+  for(var i=0;i<=4;i++){
+    var y=padT+h-h*i/4;
+    g.beginPath();g.moveTo(padL,y);g.lineTo(padL+w,y);g.stroke();
+    var v=max*i/4;g.fillText(v>=100?Math.round(v):v.toFixed(1),padL-6,y+4);
+  }
+  var span=Math.max(1,n-1);
+  series.hosts.forEach(function(s,si){
+    g.beginPath();g.strokeStyle=STAGE_COLORS[si%STAGE_COLORS.length];g.lineWidth=1.6;
+    var started=false;
+    (s.values||[]).forEach(function(v,i){
+      if(v==null){started=false;return}
+      var x=padL+w*i/span,y=padT+h-h*Math.min(+v,max)/max;
+      if(!started){g.moveTo(x,y);started=true}else g.lineTo(x,y);
+    });
+    g.stroke();
+  });
+  $('lg-series').innerHTML=series.hosts.map(function(s,si){
+    return '<span><b style="background:'+STAGE_COLORS[si%STAGE_COLORS.length]+'"></b>'+esc(clip(s.host||s.name||'?',28))+'</span>';
+  }).join('');
+}
+
+function renderTimeline(){
+  if(!tl)return;
+  $('tllead').textContent='窓 '+fmtSecs(tl.span)+' ('+fmtAt(tl.t0)+' → '+fmtAt(tl.t1)+') · 描いた接続 '
+    +fmtNum(tl.shown)+' 本 / 取れた '+fmtNum(tl.count)+' 本 · 行 '+tl.lanes.length
+    +(tl.others.lanes?' (+ 他 '+tl.others.lanes+' 行 '+fmtNum(tl.others.conns)+' 本)':'')
+    +' · 転送 '+fmtBytes(tl.bytes)+' · 印 '+marks.length+' 件';
+  $('lg-timeline').innerHTML=tl.reasons.map(function(r){
+    return '<span><b style="background:'+r.color+'"></b>'+esc(r.name)+' '+fmtNum(r.count)+'</span>';
+  }).join('')+(marks.length?'<span>│ 出来事: '+marks.map(function(m){
+    return '<b style="background:'+m.color+'"></b>'+esc(m.kind);
+  }).join(' ')+'</span>':'');
+  $('tlhint').textContent=tl.empty
+    ?(tl.lite?'--lite では閉じた接続を記録していません。':'この窓には閉じた接続がありません (範囲を広げてください)。')
+    :'縦は'+(tl.by==='client'?'接続元':'宛先')+'、線 1 本が接続 1 本 (長さ = 寿命、太さ = 運んだバイト)。窓からはみ出す接続は端で切っています。';
+  drawTimeline();
+}
+
+function renderSlow(j){
+  var rows=slowRows(j,50),tb=$('slow').tBodies[0];
+  $('lg-stages').innerHTML=SLOW_STAGES.map(function(n,i){
+    return '<span><b style="background:'+STAGE_COLORS[i%STAGE_COLORS.length]+'"></b>'+n+'</span>';
+  }).join('');
+  tb.innerHTML=rows.map(function(r){
+    var stack=r.total>0?r.stages.map(function(s){
+      return s.pct<=0?'':'<i style="width:'+s.pct.toFixed(2)+'%;background:'+s.color+'" title="'+s.name+' '+fmtMs(s.ms)+'"></i>';
+    }).join(''):'';
+    return '<tr><td title="'+esc(r.target)+'">'+esc(clip(r.target,42))+'</td><td>'+esc(r.client)+'</td><td>'+esc(r.kind)
+      +'</td><td><div class="stack">'+stack+'</div></td><td>'+fmtMs(r.connect_ms)+'</td><td>'+fmtMs(r.total)
+      +'</td><td>'+fmtMs(r.rtt_origin)+'</td><td style="color:'+(r.unexplained>=250?'var(--bad)':r.unexplained>=50?'var(--warn)':'inherit')+'">'
+      +fmtMs(r.unexplained)+'</td><td>'+fmtSecs(r.secs)+'</td><td>'+fmtBytes(r.bytes)
+      +'</td><td style="color:'+r.color+'">'+esc(r.reason)+'</td><td>'+fmtAt(r.at)+'</td></tr>';
+  }).join('');
+  $('slowhint').textContent=rows.length
+    ?'確立の遅い順 (/recent?sort=slow)。「合計」は段階の足し算で、利用者が待った時間ではありません (T14.3)。「差」は確立 − RTT。'
+    :(j&&j.lite?'--lite では個票を記録していません。':'まだ 1 本も閉じていません。');
+}
+
+function renderBursts(j){
+  var cards=burstCards(j,50);
+  $('bursts').innerHTML=cards.map(function(b){
+    var bar=function(rows,other){
+      return rows.map(function(x){
+        return '<tr><td title="'+esc(x.name)+'">'+esc(clip(x.name,26))+'</td><td>'+fmtNum(x.conns)
+          +'</td><td>'+x.pct.toFixed(0)+'%</td></tr>';
+      }).join('')+(other?'<tr><td>他</td><td>'+fmtNum(other)+'</td><td></td></tr>':'');
+    };
+    return '<div class="shot"><h3>'+fmtDay(b.at)+' <span class="tag">#'+b.seq+'</span></h3>'
+      +'<div class="hint">'+fmtNum(b.active)+' 本 / 上限 '+fmtNum(b.max_conns)+' ('+b.pct.toFixed(0)+'%) · 閾 '
+      +fmtNum(b.threshold)+' · 越えた瞬間 '+fmtNum(b.trigger)+' 本 · スレッド '+fmtNum(b.threads)
+      +' · fd '+fmtNum(b.fds)+'/'+fmtNum(b.max_fds)+'</div>'
+      +'<div class="hint">状態: '+b.states.map(function(s){return s.name+' '+s.n}).join(' · ')
+      +' · 種類: '+b.kinds.map(function(k){return k.name+' '+k.n}).join(' / ')
+      +' · 追い出し '+fmtNum(b.evicted_idle)+' · 503 '+fmtNum(b.rejected_overload)+'</div>'
+      +'<div class="grid2" style="gap:8px"><table><thead><tr><th>接続元 ('+b.clients_distinct+')</th><th>本</th><th>%</th></tr></thead><tbody>'
+      +bar(b.clients,b.clients_other)+'</tbody></table>'
+      +'<table><thead><tr><th>宛先 ('+b.targets_distinct+')</th><th>本</th><th>%</th></tr></thead><tbody>'
+      +bar(b.targets,b.targets_other)+'</tbody></table></div></div>';
+  }).join('');
+  $('bursthint').textContent=cards.length
+    ?'同時接続が PROXY_MAX_CONNS × PROXY_BURST_PERCENT を越えた瞬間の写真 (新しい順、最大 50 枚)。'
+    :(j&&j.lite?'--lite では写真を撮りません。':'まだ山がありません (閾 '+((j&&j.threshold)||0)+' 本)。');
+}
+
+function renderClients(j){
+  var rows=clientRows(j,200,$('clientsort').value),tb=$('clients').tBodies[0];
+  tb.innerHTML=rows.map(function(c){
+    return '<tr><td>'+esc(c.client)+'</td><td>'+fmtNum(c.requests)+'</td><td>'+fmtBytes(c.bytes)
+      +'</td><td'+(c.errors?' style="color:var(--bad)"':'')+'>'+fmtNum(c.errors)+'</td>'
+      +'<td title="'+esc(c.agents.join(' / '))+'" style="text-align:left;font-family:var(--mono);font-size:11px">'
+      +esc(clip(c.agents.join(' / ')||'–',44))+(c.agents_dropped?' +'+c.agents_dropped:'')+'</td>'
+      +'<td>'+fmtNum(c.distinct_targets)+(c.capped?'+':'')+'</td><td>'+fmtNum(c.literal_targets)
+      +'</td><td>'+(c.rtt?fmtMs(c.rtt.avg)+' <span class="hint" style="display:inline">(最小 '+fmtMs(c.rtt.min)+' · '+c.rtt.samples+')</span>':'–')
+      +'</td><td>'+fmtNum(c.retrans)+'</td><td>'+(c.first_seen?fmtDay(c.first_seen):'–')+'</td><td>'+fmtDay(c.last_seen)+'</td></tr>';
+  }).join('');
+  $('clienthint').textContent=rows.length
+    ?'全接続元 (/clients)。RTT はカーネルの平滑化 RTT (クライアント側) で、標本が無ければ「–」です。'
+      +(j&&j.persisted===false?' 新しい欄は状態ファイルに残らないので、再起動で消えます。':'')
+    :'まだ接続元がありません。';
+}
+
+function renderScatter(j){
+  scatter=rttScatter(j,{max:200});
+  var tb=$('rtt').tBodies[0];
+  tb.innerHTML=scatter.points.slice(0,12).map(function(p){
+    return '<tr><td title="'+esc(p.host)+'">'+esc(clip(p.host,40))+'</td><td>'+fmtMs(p.rtt)+'</td><td>'+fmtMs(p.connect)
+      +'</td><td style="color:'+(p.ratio>=5?'var(--bad)':p.ratio>=2?'var(--warn)':'inherit')+'">'+p.ratio.toFixed(1)+'×</td><td>'
+      +fmtMs(p.gap)+'</td><td>'+fmtNum(p.requests)+'</td><td>'+fmtNum(p.retrans)+'</td></tr>';
+  }).join('');
+  $('rtthint').textContent=scatter.count
+    ?'点 '+scatter.count+' 個 (RTT の標本が無い / 接続を測っていないホスト '+scatter.skipped+' 件は描いていません)。'
+      +'緑の対角線が y = x で、上に離れるほど RTT では説明できない待ちです。'
+    :'RTT の標本があるホストがまだありません (T14.5 は接続の終わりに 1 回だけ読みます。Linux 以外と --lite では読めません)。';
+  drawScatter();
+}
+
+function renderWindow(sum,label){
+  var kv=[['窓',label],['標本',fmtNum(sum.samples)+(sum.cut?' (外 '+fmtNum(sum.cut)+')':'')],
+    ['CONNECT',fmtNum(sum.connects)],['p50',fmtMs(sum.p50)],['p95',fmtMs(sum.p95)],
+    ['平均',fmtMs(sum.avg)],['最大',fmtMs(sum.max)],['forward',fmtNum(sum.forwards)],
+    ['エラー',fmtNum(sum.errors)],['名前解決ミス',fmtNum(sum.dns_misses)],
+    ['ミス / 接続',sum.dns_per_connect==null?'–':(+sum.dns_per_connect).toFixed(3)],
+    ['ミス 1 回',fmtMs(sum.dns_avg)],['山 (同時接続)',fmtNum(sum.active_max)]];
+  $('winkv').innerHTML=kv.map(function(p){return '<div><b>'+p[0]+'</b>'+p[1]+'</div>'}).join('');
+  $('winhint').textContent=(sum.mode==='summary'
+    ?'サーバー側の要約 (/history?summary=1。T14.24) を 1 要求で読んでいます。'
+    :'この版は ?summary=1 を持っていないので、/history の標本を since_start_secs で切って畳みました。')
+    +' 期間 '+fmtDay(sum.from)+' → '+fmtDay(sum.to)+'。';
+}
+
+function fetchJson(u){
+  return fetch(u,{cache:'no-store'}).then(function(r){
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    return r.json();
+  });
+}
+function span(){return +$('range').value||3600}
+
+function pollRecent(){
+  var s=span(),since=now?now-s:0;
+  return Promise.all([
+    fetchJson('/recent?n=2000'+(since?'&since='+since:'')),
+    fetchJson('/events?n=200'+(since?'&since='+since:'')).catch(function(){return null}),
+    fetchJson('/recent?sort=slow&n=50')
+  ]).then(function(r){
+    tl=timeline(r[0],{now:now,span:s,by:$('by').value,lanes:14});
+    marks=eventMarks(r[1],tl);
+    renderTimeline();
+    renderSlow(r[2]);
+    $('lite').hidden=!r[0].lite;
+    if(r[0].lite)$('lite').textContent='--lite (PROXY_PROFILE=lite) では個票を記録していません。このページは開けますが、表と図は空のままです。';
+  });
+}
+
+function pollWindow(){
+  var mode=$('win').value;
+  var url=mode==='start'?'/history?since=restart&summary=1':'/history?summary=1';
+  return fetchJson(url).then(function(j){
+    var up=lastStatus?+lastStatus.since_start_secs||+lastStatus.uptime_secs||0:0;
+    if(j&&j.connects!=null&&j.from!=null&&!j.keys){
+      renderWindow(sinceStart(j),mode==='start'?'起動から (サーバー要約)':'通算 (サーバー要約)');
+      return;
+    }
+    // ?summary=1 を知らない版はふつうの `/history` を返すので、手元で切る
+    renderWindow(sinceStart(j,mode==='start'?up:0,now),mode==='start'?'起動から (手元で切った)':'通算 (手元で畳んだ)');
+  });
+}
+
+function pollTables(){
+  return Promise.all([
+    fetchJson('/bursts?n=50'),
+    fetchJson('/clients?sort=requests&limit=200'),
+    fetchJson('/hosts?sort=requests&limit=1000'),
+    // T14.22 が入っていれば折れ線も描く (無い版は 404 なので黙って諦める)
+    fetchJson('/hosts/series?top=8').catch(function(){return null})
+  ]).then(function(r){
+    renderBursts(r[0]);
+    renderClients(r[1]);
+    renderScatter(r[2]);
+    series=(r[3]&&r[3].hosts&&r[3].hosts.length)?r[3]:null;
+    $('series-card').hidden=!series;
+    if(series)drawSeries();
+  });
+}
+
+function poll(){
+  if($('pause').checked)return;
+  fetchJson('/status').then(function(s){
+    lastStatus=s;
+    now=Math.floor(Date.now()/1000);
+    $('version').textContent=s.version||'';
+    $('uptime').textContent='起動から '+fmtSecs(+s.since_start_secs||+s.uptime_secs||0)
+      +' · いま '+fmtNum(s.active_connections)+' 本 / 上限 '+fmtNum(s.max_conns);
+    return Promise.all([pollRecent(),pollWindow(),pollTables()]);
+  }).then(function(){
+    ok(true,'更新 '+new Date().toLocaleTimeString());
+  }).catch(function(e){
+    ok(false,'取得失敗: '+e.message);
+  });
+}
+
+$('range').addEventListener('change',poll);
+$('by').addEventListener('change',poll);
+$('win').addEventListener('change',pollWindow);
+$('clientsort').addEventListener('change',poll);
+window.addEventListener('resize',function(){drawTimeline();drawScatter();drawSeries()});
+poll();
+setInterval(poll,10000);
+})();
+</script>
+</body>
+</html>
