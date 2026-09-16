@@ -190,6 +190,15 @@ pub struct Detail {
     pub first_byte_ms: Option<u64>,
     /// 段階ごとの待ち時間 (T14.3 (1))。`--lite` では時計を読まないので全部 0
     pub stages: StageMs,
+    /// 向き別のバイト (T14.26)。`bytes_in` = クライアント → オリジン (上り)、
+    /// `bytes_out` = オリジン → クライアント (下り)。
+    ///
+    /// **新しい計数は 1 つも足していない** ので費用は 0: CONNECT は中継が既に
+    /// 方向ごとに持っている `up` / `down` ([`crate::recent::ConnTally`] に渡すのと
+    /// 同じ値)、forward は要求本文と応答のバイト (どちらもアクセスログが既に数えている)
+    /// を、ホスト別統計が既に取っている鍵の内側へ運ぶだけ
+    pub bytes_in: u64,
+    pub bytes_out: u64,
 }
 
 /// 1 要求 (1 本) の段階ごとの待ち時間 (ms。T14.3 (1))。
@@ -257,6 +266,20 @@ pub struct HostStats {
     pub rtt_samples: u64,
     /// その接続たちが再送したセグメントの通算 (`tcpi_total_retrans`)
     pub retrans: u64,
+    /// 向き別の転送バイト (T14.26)。`bytes_in` = クライアント → オリジン (上り)、
+    /// `bytes_out` = オリジン → クライアント (下り)。**ここまでが `.rrd` に残る欄**
+    /// ([`HostStats::encode`] の並びと同じ順)。
+    ///
+    /// CONNECT は `bytes == bytes_in + bytes_out` だが、**forward の `bytes` は
+    /// 今までどおり応答のぶんだけ**なので (欄の意味は変えない)、上りを足すと
+    /// `bytes_in + bytes_out` の方が大きくなる
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    /// ホスト別の時系列 ([`crate::hostseries`]) の枠の番号。**直近 1 時間の要求数で
+    /// 上位 16 に居る間だけ** `Some` で、入れ替えるのは history スレッド (T14.22)。
+    /// 要求の経路はこの旗を見るだけ。`.rrd` には書かない欄なので
+    /// [`HostStats::encode`] / [`HostStats::decode`] は 1 バイトも変えていない
+    pub series_slot: Option<u8>,
 }
 
 impl HostStats {
@@ -290,6 +313,10 @@ impl HostStats {
         if let Some(c) = d.cause {
             self.errors_by_cause[c as usize] += 1;
         }
+        // 向き別のバイト (T14.26)。既に数えてあるものを 2 つに分けて運んできただけなので、
+        // ここで増えるのは足し算 2 回だけ (鍵も原子操作もシステムコールも増えない)
+        self.bytes_in += d.bytes_in;
+        self.bytes_out += d.bytes_out;
     }
 
     /// 状態ファイルのレコード (名前 128 バイト + 数値)。
@@ -318,14 +345,15 @@ impl HostStats {
         for c in self.errors_by_cause {
             e.u64(c);
         }
-        // 欄は**末尾に足す**だけ (T14.5 の 4 欄で名前 128 B + 53 項目 = 552 B)。
-        // 版 3 の 1 スロットは 640 B = ペイロード 636 B なので**予備は 84 B**
-        // (T14.14)。ここから下が予備で、足しても版は上がらない
-        // (古いファイルはその位置がゼロ埋めなので 0 で読み戻る)
+        // 欄は**末尾に足す**だけ (T14.5 の 4 欄で名前 128 B + 53 項目 = 552 B)
         e.u64(self.rtt_us_sum)
             .u64(self.rtt_us_min)
             .u64(self.rtt_samples)
             .u64(self.retrans);
+        // T14.26 の 2 欄も同じ作法で末尾へ (552 → 568 B)。版 3 の 1 スロットは 640 B =
+        // ペイロード 636 B なので**ここから下が予備の 68 B** (T14.14。8 項目ぶん)。
+        // 足しても版は上がらない (古いファイルはその位置がゼロ埋めなので 0 で読み戻る)
+        e.u64(self.bytes_in).u64(self.bytes_out);
         e.0
     }
 
@@ -361,11 +389,16 @@ impl HostStats {
             *c = d.u64();
         }
         // 短いレコード (T14.5 より前に書かれた行、版 2 から詰め直した行) は
-        // ここで尽きて 0 が返る。**ここから下が予備** — 欄を足すならこの位置から
+        // ここで尽きて 0 が返る
         s.rtt_us_sum = d.u64();
         s.rtt_us_min = d.u64();
         s.rtt_samples = d.u64();
         s.retrans = d.u64();
+        // 同じく T14.26 より前のファイルはここで尽きて 0 が返る (向きの分からない
+        // 昔の転送量は `bytes` にだけ入っている)。**ここから下が予備** — 欄を足す
+        // ならこの位置から (T14.14)
+        s.bytes_in = d.u64();
+        s.bytes_out = d.u64();
         Some((name, s))
     }
 
@@ -510,8 +543,9 @@ impl ClientSort {
 ///
 /// 要求数・転送量・応答時間は今までどおり [`HostStats`] で数える (`.rrd` に残る通算)。
 /// **この型が足す欄はメモリだけ**で、再起動で消える (`/clients` の `"persisted":false`)。
-/// 版 3 (T14.14) でスロットが 640 B になって余白は 84 B に広がったが、`agents` だけで
-/// 4 × 128 B 要るので**やはり入らない** (数字の欄なら 10 個ほど足せる)。
+/// `.rrd` の 1 スロットは名前 128 B + 55 項目 × 8 B = 568 B を使っている。版 3 で
+/// ペイロードが 636 B になって余白は 4 → 68 B に広がった (T14.14) が、`agents` だけで
+/// 4 × 128 B 要るので**やはり入らない** (数字の欄なら 8 個ほど足せる)。
 /// 名前の並びを `.rrd` に残したくなったら、領域を増やして版を上げることになる。
 #[derive(Debug, Default, Clone)]
 pub struct ClientStats {
@@ -570,14 +604,23 @@ impl ClientStats {
     }
 
     /// 1 要求を数える。**呼び出し側が既に鍵を取っている** ([`Metrics::record_client`])。
+    ///
+    /// `dir` は向き別のバイト `(上り, 下り)` (T14.26)。接続元にも名前解決や族の内訳は
+    /// 無いので、[`Detail`] はこの 2 欄だけを埋めて渡す (`/status` に 0 の列は増えない)。
     fn count(
         &mut self,
         outcome: HostOutcome,
         bytes: u64,
+        dir: (u64, u64),
         took: Option<Duration>,
         target: Option<&str>,
     ) {
-        self.stats.count(outcome, bytes, took, &Detail::default());
+        let detail = Detail {
+            bytes_in: dir.0,
+            bytes_out: dir.1,
+            ..Detail::default()
+        };
+        self.stats.count(outcome, bytes, took, &detail);
         if let Some(t) = target {
             self.note_target(t);
         }
@@ -870,6 +913,9 @@ struct HostTable {
     /// 直近の標本以降の段階 (`take_stages` が読んで 0 に戻す。T14.3 (1))。
     /// **同じ鍵の内側に置いてある**ので、段階を足しても原子操作は増えない
     stages: crate::profile::Stages,
+    /// 上位 16 ホストの時系列 (`/hosts/series`。T14.22)。**ホスト表と同じ鍵の中**に
+    /// 置いて、要求の経路が鍵を 2 つ取らないようにしてある
+    series: crate::hostseries::HostSeries,
 }
 
 pub struct Metrics {
@@ -1095,6 +1141,12 @@ impl Metrics {
         // `tunnel::report`。前綴りを見るだけで済むので、呼び出し側に旗を持たせない)
         let connect = host.starts_with("connect://");
         let counted = connect || !(host.starts_with("blocked://") || host.starts_with("loop://"));
+        // 窓と時系列に入れる値 (ms)。**1 回だけ作る** (以前は Interval 2 つで 2 回作っていた。T14.22)
+        let ms = took.map(|d| {
+            detail
+                .first_byte_ms
+                .unwrap_or_else(|| d.as_millis().min(u64::MAX as u128) as u64)
+        });
         // 全体の合計も同じ鍵の内側で足す (原子操作を増やさない)
         for iv in [&mut hosts.total, &mut hosts.interval] {
             iv.dns_misses += detail.dns_misses;
@@ -1105,10 +1157,7 @@ impl Metrics {
             if let Some(c) = detail.cause {
                 iv.errors_by_cause[c as usize] += 1;
             }
-            if let Some(d) = took {
-                let ms = detail
-                    .first_byte_ms
-                    .unwrap_or_else(|| d.as_millis().min(u64::MAX as u128) as u64);
+            if let Some(ms) = ms {
                 if connect {
                     iv.connect.observe(ms);
                 } else if counted {
@@ -1128,6 +1177,15 @@ impl Metrics {
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
         if let Some(stats) = hosts.map.get_mut(host) {
             stats.count(outcome, bytes, took, detail);
+            // 上位 16 ホストなら時系列にも 1 標本ぶん (T14.22)。旗が無ければ分岐 1 回で終わり
+            if let Some(slot) = stats.series_slot {
+                hosts.series.add(
+                    slot,
+                    ms.unwrap_or(0),
+                    detail.dns_ms,
+                    outcome == HostOutcome::Error,
+                );
+            }
             return;
         }
         let key = if hosts.map.len() >= MAX_HOSTS {
@@ -1140,6 +1198,29 @@ impl Metrics {
             .entry(key)
             .or_default()
             .count(outcome, bytes, took, detail);
+    }
+
+    /// ホスト別の時系列の窓を進め、上位 16 を入れ替える (T14.22)。
+    ///
+    /// **呼ぶのは history スレッドだけ** (5 秒ごと)。窓の境目 (既定 5 分) でなければ
+    /// ホスト表の鍵 1 回と比較 1 回で戻る。`--lite` は履歴スレッドそのものが立たない
+    /// (`PROXY_STATS_PERSIST=off` と同じ) ので、旗が立つことも配列を確保することも無い。
+    pub fn roll_host_series(&self) {
+        let mut hosts = self.hosts.locked();
+        let t = &mut *hosts;
+        t.series.rotate(crate::cache::now_epoch(), &mut t.map);
+    }
+
+    /// 上位ホストの時系列の写し (`/hosts/series`。T14.22)。
+    ///
+    /// `host` を渡すとそのホストだけ、渡さなければ直近 1 時間の要求数の多い順に `top` 件。
+    pub fn host_series(&self, host: Option<&str>, top: usize) -> crate::hostseries::View {
+        self.hosts.locked().series.view(host, top)
+    }
+
+    /// 時系列の窓を差し替える (**結合テスト用の口**。本番は 5 分。T14.22)。
+    pub fn set_host_series_window(&self, secs: u64) {
+        self.hosts.locked().series.set_window(secs);
     }
 
     /// 直近の標本以降の合計を読み、0 に戻す ([`crate::history::Sample::take`] だけが呼ぶ)。
@@ -1169,12 +1250,13 @@ impl Metrics {
         client: &str,
         outcome: HostOutcome,
         bytes: u64,
+        dir: (u64, u64),
         took: Option<Duration>,
         target: Option<&str>,
     ) {
         let mut clients = self.clients.locked();
         if let Some(stats) = clients.get_mut(client) {
-            stats.count(outcome, bytes, took, target);
+            stats.count(outcome, bytes, dir, took, target);
             return;
         }
         let key = if clients.len() >= MAX_CLIENTS {
@@ -1185,7 +1267,7 @@ impl Metrics {
         clients
             .entry(key)
             .or_insert_with(ClientStats::now)
-            .count(outcome, bytes, took, target);
+            .count(outcome, bytes, dir, took, target);
     }
 
     /// ホスト (オリジン側) のカーネルの RTT と再送を 1 標本足す (`/hosts`。T14.5)。
@@ -1574,7 +1656,7 @@ impl Metrics {
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
 ///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
 /// - `rings` は記録のリングが**満杯のときの見積もり** (固定部 + 文字列の上限。T13.4 / T14.4 /
-///   T14.6 / T14.11 / T14.25)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
+///   T14.6 / T14.11 / T14.22 / T14.25)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
 /// - `arenas` は `PROXY_MALLOC_ARENAS` で掛けた上限 (`0` = glibc の既定のまま。T5.6)
 ///
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
@@ -1603,6 +1685,12 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             + MAX_SHOT_TARGETS * (name + MAX_TARGET))) as u64;
     let log = (MAX_LOG_LINES * (size_of::<Line>() + MAX_LOG_LINE)) as u64;
     let events = (MAX_EVENTS * (size_of::<Event>() + MAX_TEXT)) as u64;
+    // ホスト別の時系列は固定長 (上位 16 ホスト × 288 標本 × 5 項目 × 8 B。T14.22)。
+    // **上位が 1 つ決まるまでは確保しない**ので、これも「満杯のとき」の見積もり
+    let hostseries = (crate::hostseries::SLOTS
+        * crate::hostseries::SAMPLES
+        * crate::hostseries::FIELDS
+        * size_of::<u64>()) as u64;
     // 履歴は 3 解像度の標本 (T12.4) と、閉じた接続の分布の窓 2 つ (T14.6)、
     // 速さと半閉じの窓 2 つ (T14.25)
     let samples: usize = RESOLUTIONS.iter().map(|(_, n)| n).sum();
@@ -1622,7 +1710,7 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             "{{\"rss\":{},\"heap_used\":{},\"heap_free\":{},\"mmap\":{},",
             "\"stacks_estimate\":{},\"cache_memory\":{},",
             "\"rings\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
-            "\"events\":{},\"history\":{},\"total\":{}}},\"arenas\":{}}}"
+            "\"events\":{},\"history\":{},\"hostseries\":{},\"total\":{}}},\"arenas\":{}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -1636,7 +1724,8 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         log,
         events,
         history,
-        recent + errors + bursts + log + events + history,
+        hostseries,
+        recent + errors + bursts + log + events + history + hostseries,
         crate::sysinfo::arena_max(),
     )
 }
@@ -1645,13 +1734,15 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
 ///
 /// `detail` はホスト別だけ (T12.4 (2))。接続元別には名前解決も接続も族も無いので、
 /// 全部 0 の列を 50 行ぶん並べても `/status` が太るだけになる。
+/// 向き別のバイト (`bytes_in` / `bytes_out`。T14.26) は**両方に出す**: 接続元にも
+/// 「この端末は上りが主か下りが主か」があり、どちらも実際に数えた値が入る。
 ///
 /// 外から呼べるのは `/hosts` (T13.4) が **`/status` の `hosts[]` と同じ形**で
 /// 全ホストを出すため。形が 2 つに分かれると `scripts/status-diff.py` が両方を
 /// 読めなくなるので、組み立てはこの 1 か所に置く。
 pub fn stats_json(s: &HostStats, detail: bool) -> String {
     let mut out = format!(
-        "\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"blocked\":{},\"bytes\":{},\"timed\":{},\"avg_ms\":{:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"max_ms\":{},\"last_seen\":{}",
+        "\"requests\":{},\"hits\":{},\"misses\":{},\"bypass\":{},\"errors\":{},\"blocked\":{},\"bytes\":{},\"bytes_in\":{},\"bytes_out\":{},\"timed\":{},\"avg_ms\":{:.1},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"max_ms\":{},\"last_seen\":{}",
         s.requests,
         s.hits,
         s.misses,
@@ -1659,6 +1750,8 @@ pub fn stats_json(s: &HostStats, detail: bool) -> String {
         s.errors,
         s.blocked,
         s.bytes,
+        s.bytes_in,
+        s.bytes_out,
         s.timed,
         s.avg_ms(),
         s.quantile_ms(0.5),
@@ -1791,6 +1884,8 @@ mod tests {
             "10.0.0.1",
             HostOutcome::Hit,
             100,
+            // 向き別 (T14.26)。ここでは合計と辻褄が合う値にしてある
+            (30, 70),
             Some(Duration::from_millis(30)),
             Some("http://a.example:80"),
         );
@@ -1798,10 +1893,11 @@ mod tests {
             "10.0.0.1",
             HostOutcome::Blocked,
             0,
+            (0, 0),
             None,
             Some("ads.example:443"),
         );
-        m.record_client("10.0.0.2", HostOutcome::Bypass, 5, None, None);
+        m.record_client("10.0.0.2", HostOutcome::Bypass, 5, (5, 0), None, None);
         m.record_host("blocked://ads.example", HostOutcome::Blocked, 0);
         let clients = m.clients_sorted();
         assert_eq!(clients[0].0, "10.0.0.1");
@@ -1825,7 +1921,7 @@ mod tests {
     fn the_rtt_columns_fit_in_the_slot_and_old_records_read_back_as_zero() {
         let m = Metrics::new();
         m.record_host("connect://a:443", HostOutcome::Bypass, 10);
-        m.record_client("10.0.0.1", HostOutcome::Bypass, 10, None, None);
+        m.record_client("10.0.0.1", HostOutcome::Bypass, 10, (0, 0), None, None);
         // 標本が無い間は「無い」(`/hosts` では `null`)
         let none = m.hosts_sorted()[0].1.clone();
         assert_eq!(none.rtt_samples, 0);
@@ -1858,22 +1954,22 @@ mod tests {
         assert_eq!(totals[crate::recent::CLIENT_SIDE], (48_300, 1));
         assert_eq!(totals[crate::recent::ORIGIN_SIDE], (50_100, 2));
 
-        // `.rrd` の 1 スロット: 名前 128 B + 53 項目 × 8 B = 552 B。
-        // 版 3 (T14.14) でペイロードが 636 B になったので**余白は 84 B**
-        // (版 2 では 20 B しか無かった)。欄を足すとここが減る: 64 B を割ったら
+        // `.rrd` の 1 スロット: 名前 128 B + 55 項目 × 8 B = 568 B (T14.26 の 2 欄まで)。
+        // 版 3 (T14.14) でペイロードが 636 B になったので**余白は 68 B**
+        // (版 2 では 4 B しか残っていなかった)。欄を足すとここが減る: 64 B を割ったら
         // 「予備を使い切りかけている」ので、版を上げる算段をすること
         let enc = s.encode("connect://a:443");
-        assert_eq!(enc.len(), 128 + 53 * 8);
+        assert_eq!(enc.len(), 128 + 55 * 8);
         let spare = crate::rrd::STATS_RECORD - 4 - enc.len();
         assert!(
-            (64..=84).contains(&spare),
+            (32..=68).contains(&spare),
             "スロットの余白が {} B (版 3 で足した 64 B を使い切りかけている)",
             spare
         );
         assert_eq!(HostStats::decode(&enc).unwrap().1, s);
 
-        // T14.5 より前に書かれたレコード (末尾 4 欄が無い) は 0 で読み戻る
-        let old = &enc[..enc.len() - 32];
+        // T14.5 より前に書かれたレコード (末尾 6 欄が無い) は 0 で読み戻る
+        let old = &enc[..enc.len() - 48];
         let (name, back) = HostStats::decode(old).unwrap();
         assert_eq!(name, "connect://a:443");
         assert_eq!(
@@ -1886,6 +1982,84 @@ mod tests {
             (0, 0, 0, 0)
         );
         assert_eq!(back.requests, s.requests, "前の欄はそのまま読める");
+    }
+
+    /// 向き別のバイトが `.rrd` の残りの余白に入り、**古いファイルは 0 で読み戻る**こと (T14.26)。
+    ///
+    /// `bytes` (合計) は今までどおりで、新しいのは「その内訳」だけ。
+    #[test]
+    fn the_direction_columns_fit_in_the_slot_and_old_records_read_back_as_zero() {
+        let m = Metrics::new();
+        // CONNECT 1 本: 1 KiB 上げて 2 KiB 下ろした (合計 3 KiB)
+        m.record_host_detail(
+            "connect://a:443",
+            HostOutcome::Bypass,
+            3072,
+            Some(Duration::from_millis(12)),
+            Detail {
+                bytes_in: 1024,
+                bytes_out: 2048,
+                ..Detail::default()
+            },
+        );
+        m.record_client(
+            "10.0.0.1",
+            HostOutcome::Bypass,
+            3072,
+            (1024, 2048),
+            None,
+            None,
+        );
+        // もう 1 本 (足し込まれること)
+        m.record_host_detail(
+            "connect://a:443",
+            HostOutcome::Bypass,
+            30,
+            None,
+            Detail {
+                bytes_in: 10,
+                bytes_out: 20,
+                ..Detail::default()
+            },
+        );
+
+        let s = m.hosts_sorted()[0].1.clone();
+        assert_eq!(s.bytes, 3102, "合計は今までどおり");
+        assert_eq!(s.bytes_in, 1034);
+        assert_eq!(s.bytes_out, 2068);
+        assert_eq!(
+            s.bytes_in + s.bytes_out,
+            s.bytes,
+            "CONNECT は合計と一致する"
+        );
+        assert!(
+            stats_json(&s, false).contains("\"bytes\":3102,\"bytes_in\":1034,\"bytes_out\":2068"),
+            "{}",
+            stats_json(&s, false)
+        );
+        // 接続元別にも同じ 2 欄が出る (`/status` の `clients[]` と `/clients`)
+        let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
+        assert_eq!((c.stats.bytes_in, c.stats.bytes_out), (1024, 2048));
+        assert!(
+            c.to_json("10.0.0.1")
+                .contains("\"bytes_in\":1024,\"bytes_out\":2048"),
+            "{}",
+            c.to_json("10.0.0.1")
+        );
+
+        // `.rrd` の 1 スロット: 名前 128 B + 55 項目 × 8 B = 568 B (**余白は 4 B**)
+        let enc = s.encode("connect://a:443");
+        assert_eq!(enc.len(), 128 + 55 * 8);
+        assert_eq!(crate::rrd::STATS_RECORD - 4 - enc.len(), 4, "残りの余白");
+        assert_eq!(HostStats::decode(&enc).unwrap().1, s);
+
+        // T14.26 より前に書かれたレコード (末尾 2 欄が無い) は 0 で読み戻り、
+        // それより前の欄 (T14.5 の RTT も含めて) はそのまま読める
+        let (name, back) = HostStats::decode(&enc[..enc.len() - 16]).unwrap();
+        assert_eq!(name, "connect://a:443");
+        assert_eq!((back.bytes_in, back.bytes_out), (0, 0));
+        assert_eq!(back.bytes, s.bytes, "合計は昔のファイルにも入っている");
+        assert_eq!(back.requests, s.requests);
     }
 
     #[test]
@@ -2266,6 +2440,8 @@ mod latency_tests {
                 &format!("2001:db8:{:04x}:{:04x}::{:04x}", i, i, i),
                 HostOutcome::Error,
                 u64::MAX / 2,
+                // 向き別も桁を振り切らせる (1 行の JSON を最悪にする。T14.26)
+                (u64::MAX / 2, u64::MAX / 2),
                 Some(Duration::from_millis(1234)),
                 Some("connect://very-long-host-name.example.com:443"),
             );
@@ -2298,7 +2474,7 @@ mod latency_tests {
             "http://example.com:80",
             "192.0.2.7:8443",
         ] {
-            m.record_client("10.0.0.1", HostOutcome::Bypass, 1, None, Some(t));
+            m.record_client("10.0.0.1", HostOutcome::Bypass, 1, (0, 1), None, Some(t));
         }
         let v = m.clients_sorted_by(ClientSort::Requests);
         assert_eq!(v[0].0, "10.0.0.1");
@@ -2321,6 +2497,7 @@ mod latency_tests {
             "10.0.0.1",
             HostOutcome::Bypass,
             0,
+            (0, 0),
             None,
             Some("EXAMPLE.COM:443"),
         );
@@ -2355,7 +2532,7 @@ mod latency_tests {
         for i in 0..6 {
             m.record_client_agent("10.0.0.1", &format!("ua/{}", i));
         }
-        m.record_client("10.0.0.1", HostOutcome::Bypass, 0, None, None);
+        m.record_client("10.0.0.1", HostOutcome::Bypass, 0, (0, 0), None, None);
         let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
         assert_eq!(c.agents.len(), MAX_CLIENT_AGENTS);
         assert_eq!(c.agents_dropped, 2);
@@ -2371,7 +2548,7 @@ mod latency_tests {
         let m2 = Metrics::new();
         m2.record_client_agent("10.0.0.2", &long);
         m2.record_client_agent("10.0.0.2", &long);
-        m2.record_client("10.0.0.2", HostOutcome::Bypass, 0, None, None);
+        m2.record_client("10.0.0.2", HostOutcome::Bypass, 0, (0, 0), None, None);
         let c2 = m2.clients_sorted_by(ClientSort::Requests).remove(0).1;
         assert_eq!(c2.agents.len(), 1);
         assert_eq!(c2.agents_dropped, 0);
@@ -2391,6 +2568,7 @@ mod latency_tests {
                 "10.0.0.1",
                 HostOutcome::Bypass,
                 0,
+                (0, 0),
                 None,
                 Some(&format!("h{}.example:443", i)),
             );
@@ -2408,6 +2586,7 @@ mod latency_tests {
                 "10.0.0.2",
                 HostOutcome::Bypass,
                 0,
+                (0, 0),
                 None,
                 Some(&format!("a.example:{}", 1000 + p)),
             );
@@ -2484,6 +2663,7 @@ mod latency_tests {
                 "10.0.0.3",
                 HostOutcome::Bypass,
                 0,
+                (0, 0),
                 None,
                 Some(&format!("h{}.example:443", i)),
             );
@@ -2493,6 +2673,7 @@ mod latency_tests {
                 "10.0.0.4",
                 HostOutcome::Bypass,
                 0,
+                (0, 0),
                 None,
                 Some("192.0.2.9:443"),
             );
@@ -2534,6 +2715,7 @@ mod latency_tests {
             "10.0.0.1",
             HostOutcome::Blocked,
             0,
+            (0, 0),
             None,
             Some("ads.example"),
         );

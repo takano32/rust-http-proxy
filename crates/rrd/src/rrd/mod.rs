@@ -104,8 +104,8 @@ pub struct Layout {
 /// (`proxy_metrics::history::Sample` の `encode` / `decode`。読むときは無ければ 0)。
 pub const SAMPLE_RECORD: usize = 1024;
 /// ホスト別 / 接続元別 1 行のレコード長。名前 128 B + 項目 × 8 B + CRC 4 B。
-/// 項目は 53 個 (T14.5 の RTT 4 欄まで) で 552 B。**版 3 で 576 → 640 B にして
-/// 余白を 20 → 84 B に広げた** (T14.14。10 項目足してもまだ残る)。
+/// 項目は 55 個 (T14.26 の `bytes_in` / `bytes_out` まで) で 568 B。**版 3 で
+/// 576 → 640 B にして余白を 4 → 68 B に広げた** (T14.14。8 項目足してもまだ残る)。
 pub const STATS_RECORD: usize = 640;
 pub const OVERRIDE_RECORD: usize = 160;
 pub const STATS_SLOTS: usize = 1000;
