@@ -2266,10 +2266,11 @@ mod tests {
             c.to_json("10.0.0.1")
         );
 
-        // `.rrd` の 1 スロット: 名前 128 B + 55 項目 × 8 B = 568 B (**余白は 4 B**)
+        // `.rrd` の 1 スロット: 名前 128 B + 55 項目 × 8 B = 568 B。版 2 では余白 4 B だったが、
+        // T14.14 の版 3 (640 B) で予備 68 B = 8 項目になった (T14.26 の時点の値は 4 B)
         let enc = s.encode("connect://a:443");
         assert_eq!(enc.len(), 128 + 55 * 8);
-        assert_eq!(crate::rrd::STATS_RECORD - 4 - enc.len(), 4, "残りの余白");
+        assert_eq!(crate::rrd::STATS_RECORD - 4 - enc.len(), 68, "残りの余白");
         assert_eq!(HostStats::decode(&enc).unwrap().1, s);
 
         // T14.26 より前に書かれたレコード (末尾 2 欄が無い) は 0 で読み戻り、
