@@ -32,7 +32,7 @@ use crate::dns;
 use crate::freshness;
 use crate::headers;
 use crate::log::{Access, access};
-use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics};
+use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics, StageMs};
 use crate::origin::{self, OriginStream};
 use crate::sync::LockExt;
 use crate::workers::Workers;
@@ -220,6 +220,9 @@ pub struct Shared<'a> {
     /// `Connection: keep-alive` を付けたまま閉じていたので、その応答を読んだ直後に
     /// 次の要求を送ったクライアントが取りこぼしていた (T12.6 の小物)
     pub last: bool,
+    /// ここまでに測った段階 (`queue` と `client_read`。T14.3 (1))。
+    /// **本体クレートが測った値をそのまま運ぶだけ**で、ここでは時計を読まない
+    pub stages: crate::metrics::StageMs,
 }
 
 /// アクセスログと配信に必要なリクエストの文脈。
@@ -249,8 +252,15 @@ impl Ctx<'_> {
         let outcome = HostOutcome::from_access(cache, status);
         // 経過時間は 1 回だけ引く (clock_gettime は要求ごとに効いてくる)
         let took = self.started.elapsed();
+        // 本文を流した時間 = 全体 − 初バイトまで (T14.3 (1))。**時計は足さない**
+        // (ここまでに読んだ 2 つの差で出す。キャッシュ HIT は初バイトが無いので全部が本文)
+        let mut detail = self.detail;
+        if crate::profile::on() {
+            let total = took.as_millis().min(u64::MAX as u128) as u64;
+            detail.stages.body = total.saturating_sub(detail.first_byte_ms.unwrap_or(0)) as u32;
+        }
         self.metrics
-            .record_host_detail(self.pool_key, outcome, bytes, Some(took), self.detail);
+            .record_host_detail(self.pool_key, outcome, bytes, Some(took), detail);
         self.metrics
             .record_client(self.client_ip, outcome, bytes, Some(took));
         let mut digits = [0u8; 5];
@@ -397,7 +407,11 @@ pub fn handle_http_with_headers(
         head_only,
         mapped: origin.mapped,
         pool_key,
-        detail: Detail::default(),
+        // `queue` と `client_read` は本体クレートが測った値 (T14.3 (1))
+        detail: Detail {
+            stages: shared.stages,
+            ..Detail::default()
+        },
     };
 
     // ---- キャッシュ参照 ----
@@ -565,7 +579,8 @@ pub fn handle_http_with_headers(
                     server_addr,
                     e
                 );
-                ctx.detail = origin_detail(acquire_started, Some(ErrCause::from_io(&e)));
+                ctx.detail =
+                    origin_detail(acquire_started, Some(ErrCause::from_io(&e)), shared.stages);
                 if let Some((entry, source)) = stale.take()
                     && !force_revalidate
                     && can_serve_stale(&entry)
@@ -581,7 +596,7 @@ pub fn handle_http_with_headers(
             }
         };
         if !reused {
-            ctx.detail = origin_detail(acquire_started, None);
+            ctx.detail = origin_detail(acquire_started, None, shared.stages);
         }
         metrics.inc_origin_conn(reused);
         let sent = server
@@ -589,6 +604,8 @@ pub fn handle_http_with_headers(
             .write_all(&request_head)
             .and_then(|_| forward_request_body(reader, server.get_mut(), req_framing))
             .and_then(|n| server.get_mut().flush().map(|_| n));
+        // 要求をオリジンへ送り終えた境目 (T14.3 (1))。ここが forward に足す唯一の時計
+        let sent_at = crate::profile::mark();
         let result = sent.and_then(|n| crate::response::read_head(&mut server).map(|h| (h, n)));
         match result {
             // 408 (Request Timeout) と 421 (Misdirected Request) は、再利用した接続に
@@ -612,6 +629,13 @@ pub fn handle_http_with_headers(
                 // (本文の転送は相手と回線の都合なので、待ちの物差しにはこちらを使う)
                 ctx.detail.first_byte_ms =
                     Some(ctx.started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+                // 要求を送るのにかかった時間 = 「送り終えるまで」− 名前解決 − 接続 (T14.3 (1))
+                if let Some(at) = sent_at {
+                    let acquire_and_send =
+                        crate::profile::ms_u32(at.saturating_duration_since(acquire_started));
+                    let origin_ms = (ctx.detail.dns_ms + ctx.detail.connect_ms) as u32;
+                    ctx.detail.stages.send = acquire_and_send.saturating_sub(origin_ms);
+                }
                 break (server, head, status, n);
             }
             Err(e) if reused && retryable && attempt == 1 && is_stale_conn_error(&e) => {
@@ -1026,7 +1050,7 @@ fn write_error(client: &mut impl Write, status: u16, reason: &str) -> io::Result
 
 /// オリジンを掴むまでの内訳を組み立てる (T12.4 (2))。**接続を試した直後の 1 回だけ**呼ぶ
 /// (thread-local を読んで 0 に戻すので、2 回呼ぶと 2 回目が空になる)。
-fn origin_detail(acquire_started: Instant, cause: Option<ErrCause>) -> Detail {
+fn origin_detail(acquire_started: Instant, cause: Option<ErrCause>, stages: StageMs) -> Detail {
     let (dns_ms, dns_misses) = crate::dns::take_resolve_cost();
     let total_ms = acquire_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     Detail {
@@ -1036,6 +1060,8 @@ fn origin_detail(acquire_started: Instant, cause: Option<ErrCause>) -> Detail {
         family_v6: crate::dns::take_family(),
         cause,
         first_byte_ms: None,
+        // ここまでに測った段階 (`queue` / `client_read`) は引き継ぐ (T14.3 (1))
+        stages,
     }
 }
 

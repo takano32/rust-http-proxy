@@ -391,10 +391,12 @@ mod linux {
         }
 
         /// 読めるようになった keep-alive 接続を空いているワーカーへ戻す。
-        fn resume_conn(&self, conn: Box<Conn>) {
+        fn resume_conn(&self, mut conn: Box<Conn>) {
             let id = conn.id();
             // ワーカーの空きを待つ (取られたら `run_conn` が `serving` に書き直す)
             conn.set_state(ConnState::Queued);
+            // ここから `run_conn` までが `queue` の段階 (T14.3 (1))
+            conn.mark_queued();
             // 渡せなかったときは仕事ごと返ってくる。落とせば Conn も落ちて接続が閉じる
             if self
                 .workers

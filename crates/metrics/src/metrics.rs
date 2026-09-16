@@ -188,6 +188,36 @@ pub struct Detail {
     /// 履歴の窓に入れる値 (ms)。forward は「初バイトまで」で、応答全体の時間
     /// (`took`) とは別。`None` なら `took` をそのまま使う (CONNECT の確立時間)
     pub first_byte_ms: Option<u64>,
+    /// 段階ごとの待ち時間 (T14.3 (1))。`--lite` では時計を読まないので全部 0
+    pub stages: StageMs,
+}
+
+/// 1 要求 (1 本) の段階ごとの待ち時間 (ms。T14.3 (1))。
+///
+/// [`Detail`] の中に置いてあるので、書くのは [`Metrics::record`] が既に取っている
+/// 鍵の内側だけ = **原子操作は 1 つも増えない**。熱い経路で増えるのは境目の
+/// `Instant::now()` だけ (CONNECT 5 回、forward 4 回)。`--lite` では時計も読まない。
+///
+/// `dns` / `connect` は [`Detail::dns_ms`] / [`Detail::connect_ms`]、forward の `ttfb` は
+/// [`Detail::first_byte_ms`] がそのまま段階になるので、ここには持たない
+/// (段階の並びは [`crate::profile::CONNECT_STAGES`] / [`crate::profile::FORWARD_STAGES`])。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StageMs {
+    /// accept (または預かり所からの起床) してからワーカーが動き出すまで
+    pub queue: u32,
+    /// 要求行を読んでから `Host` まで読み終えるまで
+    /// (**接続を開けたまま黙っている時間は含めない**)
+    pub client_read: u32,
+    /// CONNECT: `200 Connection Established` を書いてから最初の中継バイトまで
+    pub first_relay: u32,
+    /// CONNECT: 中継の合計 (確立から終わりまで − 預けられていた時間)
+    pub relay: u32,
+    /// CONNECT: 預けられていた合計
+    pub park: u32,
+    /// forward: 要求をオリジンへ送り終えるまで (名前解決と接続は含めない)
+    pub send: u32,
+    /// forward: 初バイトから本文を流し終えるまで
+    pub body: u32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -487,6 +517,9 @@ struct HostTable {
     total: Interval,
     /// 直近の標本以降 (`take_interval` が読んで 0 に戻す)
     interval: Interval,
+    /// 直近の標本以降の段階 (`take_stages` が読んで 0 に戻す。T14.3 (1))。
+    /// **同じ鍵の内側に置いてある**ので、段階を足しても原子操作は増えない
+    stages: crate::profile::Stages,
 }
 
 pub struct Metrics {
@@ -516,6 +549,8 @@ pub struct Metrics {
     /// いま開いている接続の一覧 (`/connections`。T13.4)。登録と抹消は接続の開始と
     /// 終了で 1 回ずつだけ (`--lite` では登録しない)
     pub conns: crate::recent::ConnTable,
+    /// 段階・スレッド・ロックの窓 (`/profile`。T14.3)。`.rrd` には書かない
+    pub profile: crate::profile::Profile,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの統計 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -541,6 +576,7 @@ impl Metrics {
             history: crate::history::History::default(),
             errors: crate::recent::ErrorRing::new(),
             conns: crate::recent::ConnTable::new(),
+            profile: crate::profile::Profile::default(),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }
@@ -647,6 +683,15 @@ impl Metrics {
                 }
             }
         }
+        // 段階の窓 (T14.3 (1))。`--lite` では時計を読んでいないので窓も触らない。
+        // 同じ鍵の内側なので、原子操作も鍵の取り直しも増えない
+        if took.is_some() && crate::profile::on() {
+            if host.starts_with("connect://") {
+                hosts.stages.observe_connect(&detail);
+            } else if !host.starts_with("blocked://") && !host.starts_with("loop://") {
+                hosts.stages.observe_forward(&detail);
+            }
+        }
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
         if let Some(stats) = hosts.map.get_mut(host) {
             stats.count(outcome, bytes, took, detail);
@@ -668,6 +713,12 @@ impl Metrics {
     pub fn take_interval(&self) -> Interval {
         let mut hosts = self.hosts.locked();
         std::mem::take(&mut hosts.interval)
+    }
+
+    /// 直近の標本以降の段階を読み、0 に戻す (`profile-sample` スレッドだけが呼ぶ。T14.3)。
+    pub fn take_stages(&self) -> crate::profile::Stages {
+        let mut hosts = self.hosts.locked();
+        std::mem::take(&mut hosts.stages)
     }
 
     /// 起動からの累計 (`/metrics` の全体のヒストグラム用)。
@@ -1256,6 +1307,7 @@ mod latency_tests {
                 family_v6: Some(false),
                 cause: None,
                 first_byte_ms: None,
+                ..Detail::default()
             },
         );
         m.record_host_detail(
@@ -1439,6 +1491,7 @@ mod latency_tests {
                     family_v6: Some(true),
                     cause: Some(ErrCause::Dns),
                     first_byte_ms: None,
+                    ..Detail::default()
                 },
             );
             m.record_client(

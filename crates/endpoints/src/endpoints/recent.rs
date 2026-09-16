@@ -447,6 +447,7 @@ mod tests {
                     family_v6: Some(false),
                     cause: None,
                     first_byte_ms: None,
+                    ..Detail::default()
                 },
             );
         }
@@ -465,6 +466,7 @@ mod tests {
                     family_v6: Some(true),
                     cause: Some(ErrCause::Dns),
                     first_byte_ms: None,
+                    ..Detail::default()
                 },
             );
         }

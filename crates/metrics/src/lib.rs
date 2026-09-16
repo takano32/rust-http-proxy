@@ -9,6 +9,7 @@
 pub mod history;
 pub mod metrics;
 pub mod persist;
+pub mod profile;
 pub mod recent;
 
 // 下の層をこのクレートの名前空間にも出す (`crate::sync` のような書き方をそのまま通すため)。

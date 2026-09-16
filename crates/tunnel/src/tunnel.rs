@@ -11,7 +11,7 @@ use crate::dns;
 use crate::log::{Access, access};
 #[cfg(not(target_os = "linux"))]
 use crate::log_trace;
-use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics};
+use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics, StageMs};
 use crate::net;
 use crate::recent::ConnSlot;
 use crate::{log_debug, log_warn};
@@ -36,8 +36,11 @@ struct Info {
     started: Instant,
     /// ホスト別の応答時間は接続確立まで (トンネル自体の寿命は応答時間ではない)
     connect_took: Duration,
-    /// 確立までの内訳 (名前解決 / 接続 / 勝った族。T12.4 (2))
+    /// 確立までの内訳 (名前解決 / 接続 / 勝った族。T12.4 (2)) と段階 (T14.3 (1))
     detail: Detail,
+    /// `200 Connection Established` を書き終えた時刻 (`first_relay` の起点。T14.3 (1))。
+    /// `--lite` では `None` = 時計を読まない
+    established: Option<Instant>,
     metrics: Arc<Metrics>,
     /// `/connections` の枠 (T13.4)。状態と運んだバイト数をここに書く。
     /// 登録と抹消は本体クレート (接続の開始と終了) の仕事で、ここは書くだけ
@@ -57,6 +60,7 @@ fn open(
     client_ip: String,
     resolved: Option<&dns::Resolved<'_>>,
     slot: Option<Arc<ConnSlot>>,
+    stages: StageMs,
 ) -> io::Result<Opened> {
     let started = Instant::now();
     let addr_str = net::with_default_port(target, 443);
@@ -73,7 +77,7 @@ fn open(
                 e
             );
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
-            let detail = detail_of(started.elapsed(), Some(ErrCause::from_io(&e)));
+            let detail = detail_of(started.elapsed(), Some(ErrCause::from_io(&e)), stages);
             metrics.record_host_detail(
                 &format!("connect://{}", addr_str),
                 HostOutcome::Error,
@@ -103,13 +107,15 @@ fn open(
 
     // ホスト別の応答時間は接続確立まで (トンネル自体の寿命は応答時間ではない)
     let connect_took = started.elapsed();
-    let detail = detail_of(connect_took, None);
+    let detail = detail_of(connect_took, None, stages);
     // `/connections` の 1 行を「CONNECT の中継中」にする (1 本につき 1 回だけ。T13.4)
     if let Some(s) = &slot {
         s.begin_tunnel(&addr_str);
     }
     client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     client.flush()?;
+    // トンネル越しの TLS 握手の往復を測る起点 (T14.3 (1))。`--lite` では読まない
+    let established = crate::profile::mark();
     if !prefix.is_empty() {
         server.write_all(prefix)?;
     }
@@ -123,6 +129,7 @@ fn open(
             started,
             connect_took,
             detail,
+            established,
             metrics,
             slot,
         },
@@ -134,7 +141,7 @@ fn open(
 ///
 /// 接続にかかった時間は「全体 − 名前解決」で出す。`net` 側に測る口を足すと
 /// T12.7 (同じところを直しているタスク) と衝突するので、**引き算で済ませている**。
-fn detail_of(total: Duration, cause: Option<ErrCause>) -> Detail {
+fn detail_of(total: Duration, cause: Option<ErrCause>, stages: StageMs) -> Detail {
     let (dns_ms, dns_misses) = crate::dns::take_resolve_cost();
     let total_ms = total.as_millis().min(u64::MAX as u128) as u64;
     Detail {
@@ -145,18 +152,30 @@ fn detail_of(total: Duration, cause: Option<ErrCause>) -> Detail {
         cause,
         // CONNECT は「確立まで」がそのまま窓に入る値なので指定しない
         first_byte_ms: None,
+        // `queue` と `client_read` は本体クレートが測った値 (T14.3 (1))
+        stages,
     }
 }
 
 /// トンネルが終わったときのアクセスログと統計 (どこで終わっても 1 回だけ通る)。
 fn report(o: &Info, transferred: u64) {
+    let alive = o.started.elapsed();
     o.metrics.add_bytes(transferred);
+    // 中継の合計 = 生きていた時間 − 確立まで − 預けられていた時間 (T14.3 (1))。
+    // **時計は足さない** (アクセスログが読む `alive` をそのまま使う)
+    let mut detail = o.detail;
+    if crate::profile::on() {
+        let total = alive.as_millis().min(u64::MAX as u128) as u64;
+        let head =
+            o.connect_took.as_millis().min(u64::MAX as u128) as u64 + detail.stages.park as u64;
+        detail.stages.relay = total.saturating_sub(head).min(u32::MAX as u64) as u32;
+    }
     o.metrics.record_host_detail(
         &format!("connect://{}", o.addr_str),
         HostOutcome::Bypass,
         transferred,
         Some(o.connect_took),
-        o.detail,
+        detail,
     );
     o.metrics.record_client(
         &o.client_ip,
@@ -173,7 +192,7 @@ fn report(o: &Info, transferred: u64) {
             version: "HTTP/1.1",
             status: "200",
             bytes: transferred,
-            duration_ms: o.started.elapsed().as_secs_f64() * 1000.0,
+            duration_ms: alive.as_secs_f64() * 1000.0,
             cache: "BYPASS(tunnel)",
         },
     );
@@ -194,6 +213,7 @@ pub fn handle_connect(
     client_ip: String,
     resolved: Option<&dns::Resolved<'_>>,
     slot: Option<Arc<ConnSlot>>,
+    stages: StageMs,
 ) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -210,6 +230,7 @@ pub fn handle_connect(
             None,
             Box::new(()),
             slot,
+            stages,
         )
     }
     #[cfg(not(target_os = "linux"))]
@@ -219,7 +240,7 @@ pub fn handle_connect(
             server,
             info,
         } = open(
-            client, target, prefix, timeout, conn_id, metrics, client_ip, resolved, slot,
+            client, target, prefix, timeout, conn_id, metrics, client_ip, resolved, slot, stages,
         )?;
         let transferred = tunnel(client, server, idle)?;
         report(&info, transferred);
@@ -251,9 +272,10 @@ pub fn handle_connect_parked(
     park: Option<(Arc<dyn Park>, Duration)>,
     hold: Box<dyn Send>,
     slot: Option<Arc<ConnSlot>>,
+    stages: StageMs,
 ) -> io::Result<()> {
     let opened = open(
-        client, target, prefix, timeout, conn_id, metrics, client_ip, resolved, slot,
+        client, target, prefix, timeout, conn_id, metrics, client_ip, resolved, slot, stages,
     )?;
     // トンネルの猶予は HTTP の keep-alive より長く取る (下限 [`relay::MIN_PARK_GRACE`])
     let park = park.map(|(w, grace)| (w, grace.max(relay::MIN_PARK_GRACE)));
@@ -516,6 +538,12 @@ mod relay {
         park: Option<(Arc<dyn Park>, Duration)>,
         /// アクセスログと統計に要る素性
         info: Info,
+        /// `200` を書いてから最初の中継バイトまで (ms。T14.3 (1))
+        first_relay_ms: u32,
+        /// いま預けられているなら、預けた時刻 (T14.3 (1))
+        parked_at: Option<Instant>,
+        /// 預けられていた合計 (ms)
+        parked_ms: u32,
         /// 本体クレートの持ち分 (同時接続数と `active_connections`)。中身は見ない
         _hold: Box<dyn Send>,
     }
@@ -526,6 +554,9 @@ mod relay {
             for d in self.dirs.iter_mut() {
                 d.drop_relay();
             }
+            // 段階 (T14.3 (1))。`relay` は `report` が引き算で出す
+            self.info.detail.stages.first_relay = self.first_relay_ms;
+            self.info.detail.stages.park = self.parked_ms;
             report(&self.info, self.transferred);
         }
     }
@@ -555,6 +586,16 @@ mod relay {
         /// 以後は預けない (断られたトンネルが猶予のたびに預け直そうとして空回りしないように)。
         pub fn no_park(&mut self) {
             self.park = None;
+            self.parked_at = None;
+        }
+
+        /// 預かり所から戻ってきた (預けられていた時間を足す。T14.3 (1))。
+        fn unpark(&mut self) {
+            if let Some(t) = self.parked_at.take() {
+                self.parked_ms = self
+                    .parked_ms
+                    .saturating_add(crate::profile::ms_u32(t.elapsed()));
+            }
         }
 
         /// 預ける前に中継の資源を手放す。
@@ -571,6 +612,8 @@ mod relay {
             if let Some(s) = &self.info.slot {
                 s.set_bytes(self.transferred);
             }
+            // 預けた時刻 (T14.3 (1))。預かってもらえなければ `no_park` が消す
+            self.parked_at = crate::profile::mark();
         }
 
         /// 動かせるだけ動かして、終わるか暇になるまで回す。
@@ -590,8 +633,10 @@ mod relay {
                 .map(|(_, g)| g.as_millis().min(i32::MAX as u128) as i32);
             let socks = &self.socks;
             let slot = self.info.slot.as_ref();
+            let established = self.info.established;
             let dirs = &mut self.dirs;
             let transferred = &mut self.transferred;
+            let first_relay = &mut self.first_relay_ms;
 
             loop {
                 let mut progressed = false;
@@ -625,6 +670,13 @@ mod relay {
                         match d.drain(socks) {
                             Ok(0) => break,
                             Ok(n) => {
+                                // 最初の中継バイト (T14.3 (1))。比較 1 回で、時計を読むのは
+                                // 1 本につき 1 回だけ (`--lite` では `established` が `None`)
+                                if *transferred == 0
+                                    && let Some(t) = established
+                                {
+                                    *first_relay = crate::profile::ms_u32(t.elapsed());
+                                }
                                 d.pending -= n;
                                 d.offset += n;
                                 d.moved += n as u64;
@@ -739,13 +791,17 @@ mod relay {
             idle,
             park,
             info,
+            first_relay_ms: 0,
+            parked_at: None,
+            parked_ms: 0,
             _hold: hold,
         }));
         Ok(())
     }
 
     /// 預かっていたトンネルをワーカーで再開する (事象が来て起こされたとき)。
-    pub fn resume(idle: Box<Idle>) {
+    pub fn resume(mut idle: Box<Idle>) {
+        idle.unpark();
         if let Some(s) = idle.slot() {
             s.set_state(ConnState::Relaying);
         }
@@ -753,7 +809,8 @@ mod relay {
     }
 
     /// 期限切れで引き上げたトンネルを閉じる (`poll` が 0 を返したときと同じログと統計)。
-    pub fn expire(idle: Box<Idle>) {
+    pub fn expire(mut idle: Box<Idle>) {
+        idle.unpark();
         log_trace!(Some(idle.id()), "tunnel idle timeout while parked");
         // 落ちるとソケットが閉じ、アクセスログと統計が出る
         drop(idle);
