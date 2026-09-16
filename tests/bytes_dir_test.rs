@@ -206,10 +206,10 @@ impl Drop for KillOnDrop {
     }
 }
 
-/// T14.26 より前に書かれた `.rrd` (版 2 のまま、`HostStats` が 53 項目) を置いて起動しても
+/// T14.26 より前の形 (`HostStats` が 53 項目) で書かれた行を置いて起動しても
 /// 落ちず、新しい 2 欄 (向き別のバイト) が 0 で読み戻ること。
 ///
-/// **版は上げていない** ので、古いファイルは読み捨てられずにそのまま復元される。
+/// 欄は**末尾に足す**決まりなので、短いレコードは読み捨てられずにそのまま復元される。
 /// `Dec` は足りなければ 0 を返すので、末尾に足した欄だけが 0 になるのが期待の動き
 /// (T14.5 の RTT の 4 欄がそのまま読めることも一緒に見る = 欄がずれていない証拠)。
 #[test]
@@ -221,10 +221,10 @@ fn test_integration_a_pre_direction_state_file_restores_with_zero_direction_byte
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(".rust-http-proxy.rrd");
 
-    // 版 2 のファイルを作り、**T14.26 より前の形** (名前 128 B + 53 項目) で 1 行ずつ書く
+    // いまの版のファイルを作り、**T14.26 より前の形** (名前 128 B + 53 項目) で 1 行ずつ書く
     {
-        let (rrd, created) = Rrd::open(&path).unwrap();
-        assert!(created);
+        let (rrd, opened) = Rrd::open(&path).unwrap();
+        assert!(opened.created);
         for (region, name, requests) in [
             (rrd.layout.hosts, "connect://mtalk.google.com:5228", 920u64),
             (rrd.layout.clients, "198.51.100.7", 463),
