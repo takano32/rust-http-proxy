@@ -273,6 +273,10 @@ fn main() {
     if !config.acl.deny_hosts.is_empty() {
         log_info!(None, "denied hosts: {:?}", config.acl.deny_hosts);
     }
+    // 読めた項目をそのまま出す (書き損じた項目は消えているので、ここで気づける。T14.18)
+    if !config.allow_clients.is_empty() {
+        log_info!(None, "allowed clients: {}", config.allow_clients);
+    }
 
     let limiter = rust_http_proxy::Limiter::new();
     // 接続スレッドを使い回す (生成・破棄の約 16 システムコールを接続ごとに払わない)。

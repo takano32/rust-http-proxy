@@ -603,6 +603,7 @@ mod tests {
             host: None,
             pac_direct: &[],
             lite: false,
+            readonly: false,
             version: "test",
             concurrency: &concurrency,
         };
@@ -709,6 +710,7 @@ mod tests {
             host: None,
             pac_direct: &[],
             lite: false,
+            readonly: false,
             version: "test",
             concurrency: &concurrency,
         };

@@ -101,6 +101,114 @@ pub fn is_local_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// 接続元 IP の許可リスト (`PROXY_ALLOW_CLIENTS`)。空なら全許可 (既定)。
+///
+/// 宛先の [`AclConfig`] とは**別物**で、こちらは accept した相手の IP を見る
+/// ([`is_local_ip`] / `PROXY_ALLOW_LOCAL` は宛先の話なので無関係)。
+/// **認証ではない** — 経路を絞るだけで、同じアドレスから来られれば誰でも通る。
+///
+/// 持ち方は「前置長の付いたアドレス」の配列 (`1.2.3.4` は `/32`、`2001:db8::` は `/128`)。
+/// 想定は多くても数十件なので線形に照合する (16 件で 1 us 未満)。
+/// v4-mapped IPv6 (`::ffff:1.2.3.4`) は [`crate::net::canonical_ip`] で IPv4 に直してから
+/// 照合するので、デュアルスタックで待ち受けていても `1.2.3.4` の 1 行で書ける。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientAcl {
+    v4: Vec<(u32, u8)>,
+    v6: Vec<(u128, u8)>,
+}
+
+impl ClientAcl {
+    /// `1.2.3.4,10.0.0.0/8,2001:db8::/32` を読む。空文字なら全許可。
+    /// **書式が違う項目は無視する** ([`PortSet::parse`] と同じ作法。1 項目の書き損じで
+    /// 全部が空 = 全許可 に化けると、絞ったつもりで絞れていないことになるため)。
+    pub fn parse(spec: &str) -> ClientAcl {
+        let mut acl = ClientAcl::default();
+        for item in spec.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (addr, len) = match item.split_once('/') {
+                Some((a, b)) => match b.trim().parse::<u8>() {
+                    Ok(n) => (a.trim(), Some(n)),
+                    Err(_) => continue,
+                },
+                None => (item, None),
+            };
+            let Ok(ip) = addr
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<IpAddr>()
+            else {
+                continue;
+            };
+            match crate::net::canonical_ip(ip) {
+                // `::ffff:1.2.3.0/120` のような書き方も IPv4 の数え方に直す
+                IpAddr::V4(v4) => {
+                    let bits = match len {
+                        Some(n) if ip.is_ipv6() => match n.checked_sub(96) {
+                            Some(n) => n,
+                            None => continue,
+                        },
+                        Some(n) => n,
+                        None => 32,
+                    };
+                    if bits <= 32 {
+                        acl.v4.push((u32::from(v4), bits));
+                    }
+                }
+                IpAddr::V6(v6) => {
+                    let bits = len.unwrap_or(128);
+                    if bits <= 128 {
+                        acl.v6.push((u128::from(v6), bits));
+                    }
+                }
+            }
+        }
+        acl
+    }
+
+    /// 1 項目も無いか (= 全許可。**既定の経路はこの分岐 1 回だけ**)。
+    pub fn is_empty(&self) -> bool {
+        self.v4.is_empty() && self.v6.is_empty()
+    }
+
+    /// この接続元を受けてよいか。空なら常に true。
+    pub fn allows(&self, ip: IpAddr) -> bool {
+        if self.is_empty() {
+            return true;
+        }
+        // 前置長 0 (`0.0.0.0/0`) は `>>` が桁あふれるので先に拾う
+        match crate::net::canonical_ip(ip) {
+            IpAddr::V4(v4) => {
+                let a = u32::from(v4);
+                (self.v4.iter()).any(|&(net, bits)| bits == 0 || (a ^ net) >> (32 - bits) == 0)
+            }
+            IpAddr::V6(v6) => {
+                let a = u128::from(v6);
+                (self.v6.iter()).any(|&(net, bits)| bits == 0 || (a ^ net) >> (128 - bits) == 0)
+            }
+        }
+    }
+}
+
+/// 起動ログに「実際に読めた項目」を出すため (書き損じた項目は消えているので気づける)。
+impl std::fmt::Display for ClientAcl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let v4 = (self.v4.iter())
+            .map(|&(net, bits)| (IpAddr::V4(std::net::Ipv4Addr::from(net)), bits, 32u8));
+        let v6 = (self.v6.iter())
+            .map(|&(net, bits)| (IpAddr::V6(std::net::Ipv6Addr::from(net)), bits, 128u8));
+        for (i, (ip, bits, full)) in v4.chain(v6).enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            if bits == full {
+                write!(f, "{}", ip)?;
+            } else {
+                write!(f, "{}/{}", ip, bits)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// `host[:port]` の宛先がローカル宛てかを判定し、**判定に使った答えを一緒に返す** (T12.7)。
 ///
 /// 名前はここで 1 回だけ解決し、接続側はこの答えをそのまま使う
@@ -201,6 +309,49 @@ mod local_tests {
         let none = PortSet::parse("  ");
         assert!(none.is_empty() && none.allows(22), "空なら制限なし");
         assert!(PortSet::parse("junk").is_empty());
+    }
+
+    #[test]
+    fn client_acl_matches_addresses_and_cidr() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // 空なら全許可 (既定)
+        let none = ClientAcl::parse("  ");
+        assert!(none.is_empty() && none.allows(ip("203.0.113.9")));
+
+        let acl = ClientAcl::parse("1.2.3.4, 10.0.0.0/8 ,2001:db8::/32");
+        assert!(!acl.is_empty());
+        assert!(acl.allows(ip("1.2.3.4")));
+        assert!(!acl.allows(ip("1.2.3.5")));
+        assert!(acl.allows(ip("10.0.0.1")) && acl.allows(ip("10.255.255.255")));
+        assert!(!acl.allows(ip("11.0.0.1")));
+        assert!(acl.allows(ip("2001:db8::1")) && !acl.allows(ip("2001:db9::1")));
+        // v4-mapped IPv6 は IPv4 として照合する (デュアルスタックの待ち受け)
+        assert!(acl.allows(ip("::ffff:10.0.0.1")) && !acl.allows(ip("::ffff:11.0.0.1")));
+        // IPv4 しか書いていなければ本物の IPv6 は通さない (逆も同じ)
+        assert!(!ClientAcl::parse("10.0.0.0/8").allows(ip("2001:db8::1")));
+        assert!(!ClientAcl::parse("2001:db8::/32").allows(ip("10.0.0.1")));
+        assert_eq!(acl.to_string(), "1.2.3.4, 10.0.0.0/8, 2001:db8::/32");
+    }
+
+    #[test]
+    fn client_acl_edges_and_bad_entries() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // `/0` は全部 (`>>` の桁あふれを起こさないこと)
+        assert!(ClientAcl::parse("0.0.0.0/0").allows(ip("203.0.113.9")));
+        assert!(ClientAcl::parse("::/0").allows(ip("2001:db8::1")));
+        // `/32` と `/128` は 1 つだけ
+        let one = ClientAcl::parse("[::1]/128");
+        assert!(one.allows(ip("::1")) && !one.allows(ip("::2")));
+        // 書式が違う項目は落ちるだけで、残りは効く (全部落ちて「全許可」に化けない)
+        let acl = ClientAcl::parse("junk, 10.0.0.0/nope, 10.0.0.0/33, 127.0.0.0/8");
+        assert!(!acl.is_empty(), "残った 1 項目で絞り続ける");
+        assert!(acl.allows(ip("127.0.0.1")) && !acl.allows(ip("10.0.0.1")));
+        // 書き損じだけなら空 = 全許可 (絞る手段が 1 つも無いので止めようがない)
+        assert!(ClientAcl::parse("junk").is_empty());
+        // v4-mapped を前置長つきで書いても IPv4 の数え方に直る (`/120` = `/24`)
+        let mapped = ClientAcl::parse("::ffff:10.0.0.0/120");
+        assert_eq!(mapped.to_string(), "10.0.0.0/24");
+        assert!(mapped.allows(ip("10.0.0.1")) && !mapped.allows(ip("10.0.1.1")));
     }
 
     #[test]

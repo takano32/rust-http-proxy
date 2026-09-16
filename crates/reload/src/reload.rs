@@ -8,6 +8,7 @@
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
 //! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、
 //! `PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
+//! `PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`、
 //! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
 //! `/status` と dashboard に「再起動が必要」と出す。
@@ -117,6 +118,15 @@ impl Live {
         if fresh.allow_local != old.allow_local {
             next.allow_local = fresh.allow_local;
             applied.push("PROXY_ALLOW_LOCAL");
+        }
+        if fresh.endpoints_readonly != old.endpoints_readonly {
+            next.endpoints_readonly = fresh.endpoints_readonly;
+            applied.push("PROXY_ENDPOINTS_READONLY");
+        }
+        // 接続元の ACL は `serve` が accept ごとに引き直すので、次に来る接続から効く
+        if fresh.allow_clients != old.allow_clients {
+            next.allow_clients = fresh.allow_clients.clone();
+            applied.push("PROXY_ALLOW_CLIENTS");
         }
         if fresh.tunnel_idle != old.tunnel_idle {
             next.tunnel_idle = fresh.tunnel_idle;

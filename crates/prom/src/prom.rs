@@ -220,6 +220,18 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     );
     header(
         &mut out,
+        "rejected_client_acl_total",
+        "counter",
+        "Connections closed right after accept because the peer is not in PROXY_ALLOW_CLIENTS",
+    );
+    line(
+        &mut out,
+        "rejected_client_acl_total",
+        "",
+        m.rejected_client_acl.load(Ordering::Relaxed),
+    );
+    header(
+        &mut out,
         "bytes_forwarded_total",
         "counter",
         "Bytes sent to clients and origins",
