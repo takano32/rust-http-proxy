@@ -18,7 +18,9 @@ pub use proxy_cache::cache;
 pub use proxy_config::config;
 pub use proxy_endpoints::endpoints;
 pub use proxy_http::{freshness, http};
-pub use proxy_metrics::{canary, daily, events, history, kernel, metrics, persist, recent, rrd};
+pub use proxy_metrics::{
+    anomaly, canary, daily, events, history, kernel, metrics, persist, recent, rrd,
+};
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};
 pub use proxy_origin::{Upstream, origin, pool, request, tls};

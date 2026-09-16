@@ -759,6 +759,8 @@ pub fn spawn_every(
         let sample = Sample::take(metrics, cache);
         // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
         crate::daily::tick(metrics, &sample);
+        // 標本が直近 1 時間の基準値から外れていれば出来事に 1 件 (T14.23)
+        crate::anomaly::check(metrics, &sample);
         let pushed = metrics.history.push(sample);
         if let Some(st) = &store {
             st.write_samples(&pushed);

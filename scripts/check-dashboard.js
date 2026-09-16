@@ -12,7 +12,7 @@
 //   5. **`/history` の `closed` (閉じた接続の分布) と `/bursts` の写真**が読めること
 //      (区間の数・合計と件数の一致・並び。T14.6)
 //   6. **カーネルと cgroup の窓** (`/history` の `kernel`、`/status` の `kernel`) が読めること (T14.12)
-//   7. **`/events` の時系列**が読めること (10 種の綴り・新しい順・`?since=` の絞り。T14.11)
+//   7. **`/events` の時系列**が読めること (11 種の綴り・新しい順・`?since=` の絞り。T14.11 / T14.23)
 //
 // 使い方: node scripts/check-dashboard.js [/history の実出力.json] [/status の実出力.json]
 //   引数を省くと下の作り置き (手元のプロキシから取った実出力と、架空のホスト名の見本) を使う。
@@ -455,10 +455,11 @@ if (st.kernel) {
   if (!st.kernel.last_5m) fail('/status の kernel に last_5m が無い');
 }
 
-// 7. `/events` の時系列 (T14.11)。10 種で固定なので、綴りが増減したらここで気づく
+// 7. `/events` の時系列 (T14.11)。11 種で固定なので、綴りが増減したらここで気づく
+// (`anomaly` は異常の自動検知が書く 1 件。T14.23)
 const EVENT_KINDS = [
   'start', 'reload', 'blocklist', 'ipv6', 'pressure', 'ballast',
-  'state_file', 'evict', 'emfile', 'shutdown',
+  'state_file', 'evict', 'emfile', 'shutdown', 'anomaly',
 ];
 
 function eventRows(json, since) {
@@ -473,14 +474,15 @@ const eventJson = {
     { at: 1789251470, kind: 'reload', text: 'PROXY_TIMEOUT_SECS 30 \u2192 10' },
     { at: 1789251468, kind: 'ballast', text: 'ballast +256 MiB -> 256 MiB (memory 0 MiB, disk 256 MiB)' },
     { at: 1789251465, kind: 'start', text: 'version 0.1.0+abcdef1 on port 8080 (profile default, cache on, timeout 30s, max conns 240)' },
+    { at: 1789251460, kind: 'anomaly', text: 'connect_p95: connect p95 138 ms over 5m is 14.1x the 1h baseline 9.8 ms (120 of 1328 connects)' },
   ],
-  count: 3, kept: 3, capacity: 512, recorded: 3, since: 0, kinds: EVENT_KINDS, truncated: false,
+  count: 4, kept: 4, capacity: 512, recorded: 4, since: 0, kinds: EVENT_KINDS, truncated: false,
 };
 const evs = eventRows(eventJson, 0);
-if (evs.length !== 3) fail('eventRows の件数が合わない');
-if (evs[0].at < evs[1].at || evs[1].at < evs[2].at) fail('出来事が新しい順でない');
+if (evs.length !== 4) fail('eventRows の件数が合わない');
+if (evs.some((e, i) => i > 0 && evs[i - 1].at < e.at)) fail('出来事が新しい順でない');
 if (!evs.every((e) => EVENT_KINDS.includes(e.kind))) fail('知らない種類がある');
-if (eventJson.kinds.length !== 10) fail('種類は 10 種で固定のはず');
+if (eventJson.kinds.length !== 11) fail('種類は 11 種で固定のはず');
 if (eventJson.kinds.join(',') !== EVENT_KINDS.join(',')) fail('種類の綴りか並びが変わった');
 if (evs.some((e) => e.text.length > 128)) fail('説明が 128 バイトを超えた');
 if (eventRows(eventJson, 1789251468).length !== 2) fail('since で絞れていない');
