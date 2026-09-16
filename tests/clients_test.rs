@@ -72,9 +72,14 @@ fn test_integration_clients_shows_the_agent_targets_and_ports() {
 
     // (1) 名前宛ての CONNECT を 1 本 (`localhost` は IP リテラルではない)
     connect_with_agent(proxy_port, &format!("localhost:{}", echo), "t147/1.0");
+    // `User-Agent` は最初の要求を読んだ時点で、要求数・宛先・ポートはトンネルが閉じた時点
+    // (`report`) で書かれる。機械が混んでいると前者だけが先に見える瞬間があるので、両方を待つ
     wait_until(
-        || endpoint_json(proxy_port, "/clients").contains("t147/1.0"),
-        "/clients に User-Agent が出る",
+        || {
+            let json = endpoint_json(proxy_port, "/clients");
+            json.contains("t147/1.0") && status_number(&client_row(&json), "requests") >= 1
+        },
+        "/clients に User-Agent と 1 本目が出る",
     );
     let row = client_row(&endpoint_json(proxy_port, "/clients"));
     assert!(row.contains("\"agents\":[\"t147/1.0\"]"), "{}", row);
