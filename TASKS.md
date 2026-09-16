@@ -43,8 +43,8 @@
 - **既存機能を壊さない**。`cargo test --workspace` は常に全通過。キャッシュ・ダッシュボード等は
   「使わないときに一切コストがかからない」ようにするのが方針で、削除はしない。
 - Rust は `edition = "2024"`、`rustc 1.96` で動くこと。`cargo clippy --workspace --all-targets` の警告を増やさない。
-- **`cargo build --release` はメモリ 200 MB で通ること** (動作環境のコンテナが小さい)。
-  `scripts/build-memory.sh` が CI で見張っている (実際に 200 MB の cgroup に入れてビルドする)。
+- **`cargo build --release` はメモリ 180 MB で通ること** (動作環境のコンテナが小さい。2026-09-16 に 200 → 180 に下げた。
+  理想は 120 MB で、それは Phase 15 の T15.0)。`scripts/build-memory.sh` が CI で見張っている (実際にその cgroup に入れてビルドする)。
   効くのは 2 つだけ: **クレートを小さく割ること** (`rustc` はクレート単位で全部を抱える。
   **ファイルを割っても下がらない**) と、**`jobs = 1`** (`.cargo/config.toml`。並列に走る rustc の
   合計が上限を超えるため)。
@@ -4886,7 +4886,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 目的: 今日は 10 個のブランチを並列に実装してマージした。個々のブランチは通っていても、合わせたときにだけ起きる壊れ方
     (`/status` のキー順、`/snapshot` の `parts`、`check-dashboard.js` の `api`、ビルドメモリ、flake) は main でしか分からない。
   - 変更箇所: 直すものがあれば最小限 (テストの待ち方、キー順、README の 1 行)。新しい機能は足さない。
-  - **先にやること (T14.43 の発見、2026-09-16)**: `scripts/build-memory.sh 200` が main で落ちる (`proxy-metrics` の rustc が RssAnon 272 MB。280 MB で NG・320 MB で OK。T10.9 の 76 MB から 3.5 倍)。**`crates/metrics` を割る** (候補: `quantiles` / `snapshots` / `trace` / `slo` / `hostseries` / `anomaly` / `daily` / `events` / `kernel` / `profile` を `crates/metrics-extra` (仮) に、`/status` の巨大な `format!` を部ごとの関数に) — 200 MB で通るまで。機能は 1 つも変えない。
+  - **先にやること (T14.43 の発見、2026-09-16。利用者の決定: 関門は 200 → 180 MB、120 MB は T15.0)**: `scripts/build-memory.sh 200` が main で落ちる (`proxy-metrics` の rustc が RssAnon 272 MB。280 MB で NG・320 MB で OK。T10.9 の 76 MB から 3.5 倍)。**`crates/metrics` を割る** (候補: `quantiles` / `snapshots` / `trace` / `slo` / `hostseries` / `anomaly` / `daily` / `events` / `kernel` / `profile` を `crates/metrics-extra` (仮) に、`/status` の巨大な `format!` を部ごとの関数に) — 200 MB で通るまで。機能は 1 つも変えない。割ったあと `scripts/build-memory.sh --find` で**通る最小の上限**と、**クレートごとの rustc の RssAnon の表** (T14.43 の測り方: 1 クレートだけ cgroup に入れて上限を振る) を作り、**関門 = 最小 + 3 割の余裕、ただし上限 180 MB** にして `scripts/build-memory.sh` の既定・CI・§0・README を 180 に書き換える。表は T15.0 (120 MB) の材料なので `結果:` に貼る。
   - **小物 (T14.42 のマージで気づいた)**: T14.46 は個票ファイル (`.recent`) の閉じた接続レコードの**数値の途中** (`reason` の直後、`stage_ms` の前) に `syn_retrans` を差し込んだので、同じ版の印 `SHPREC02` で**それより前に書いたファイル**は `stage_ms` 以降がずれて読める (デプロイ先にはまだ `.recent` が無いので実害は無いが、手元の古いファイルは壊れる)。T14.55 で `.recent` の版の印を `SHPREC03` に上げて (捨てるだけ。`.rrd` とは独立) 読み戻しの単体テストを 1 本足す。
   - やること (全部 `mx` の中、他のエージェント無しで): (1) `cargo fmt --all --check` / `clippy --workspace --all-targets -- -D warnings` /
     `cargo build --release` / `cargo build --profile dist` (配布用も通ること)。(2) **`cargo test --workspace --no-fail-fast` を 5 回連続**
@@ -4951,6 +4951,19 @@ p50 6 ms 以下**、T14.2 の 7 件が済み (見送りは理由つき)、T14.99
 遅い接続の段階と閉じた理由が、`/bursts` で山の中身が、`/clients` で接続元の正体が、`/hosts` の `rtt_ms` で物理と自分の切り分けが読めること。
 **T14.9〜T14.12 (入れた分)**: 再起動をまたいで個票が残り、利用者が居ない時間帯の待ち (canary) と、バーストのときのカーネル側
 (`ListenOverflows` / 再送 / TIME_WAIT / CPU の絞り / PSI) と、そのとき何を変えたか (`/events`) が読めること。
+
+### Phase 15 (書き出し。2026-09-16、利用者の決定)
+
+- [ ] **T15.0 ビルドメモリの関門を 120 MB にする (理想値。再デプロイ後、T14.99 のデータ取りと並行できる)**
+  - 目的: 関門は `jobs = 1` なので効くのは**いちばん重い 1 クレート**。T10.9 の 26 クレート構成では 100 MB で通っていた (最大 85.5 MB、最小 36 MB)。
+    120 MB を切るには**全クレートを 85 MB 前後以下** (おおむね 2,500〜3,000 行以下、単相化の多いものはもっと小さく) に保つ必要がある。
+  - 材料: T14.55 の `結果:` にある**クレートごとの RssAnon の表**。180 MB の関門を通した時点で `metrics` は 4〜5 個に割れている前提。
+  - やること: (1) 表の上位から割る (`metrics` の残りを 7〜8 個まで、`endpoints` (4,188 行) は `/status` `/recent` 系と画面の配信で 2 つに、
+    `net` (3,170 行) と本体は測ってから)。層の依存 (下から上を呼べない。T14.11 の `events::poll` の制約) に当たったら、上の層に閉包を預ける形。
+    (2) 割るたびに `scripts/build-memory.sh --find` で最小を測り、120 で通ったら関門・CI・§0・README を 120 に。
+    (3) 中身は 1 バイトも変えない (テストが全部通ることで確かめる。`/status` の出力の順序テスト)。配布用 `dist` (LTO) は関門の外のまま。
+  - 受け入れ基準: `scripts/build-memory.sh 120` が通る。全クレートの RssAnon が表で 100 MB 未満。ビルド時間の増分を報告 (クレートが増えるぶん)。
+    `cargo test --workspace` 全通過、`/status` の JSON が分割の前後で同じ。
 
 ## 付録 A. 計測の記録 (時系列)
 
