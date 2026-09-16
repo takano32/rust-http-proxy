@@ -354,6 +354,14 @@ pub struct Detail {
     /// 常に `false`。IP リテラル宛ての CONNECT (T14.7 の `literal_targets`) は
     /// 必ず食い違うので、domain fronting と「宛先を IP で書くクライアント」の両方が入る
     pub sni_mismatch: bool,
+    /// この接続を確立するまでに **SYN を送り直した回数** (T14.46)。
+    ///
+    /// 確立した直後に `getsockopt(TCP_INFO)` を 1 回読んだ `tcpi_total_retrans` で
+    /// (まだデータを送っていないので SYN の再送しか入っていない)、`0` は「再送なし /
+    /// 読めなかった / Linux 以外」。1 回の再送で確立は 1 秒、2 回で 3 秒に飛ぶので、
+    /// **`connect_ms` が 1,000 ms 台の接続はここが 1 以上**になる。
+    /// forward は**プールが接続を張ったときだけ**値が入る (使い回した要求は 0)
+    pub syn_retrans: u8,
 }
 
 /// 1 要求 (1 本) の段階ごとの待ち時間 (ms。T14.3 (1))。
@@ -439,6 +447,13 @@ pub struct HostStats {
     /// **`.rrd` には書かない** (スロットの余白は 4 B しか無い。T14.26) ので
     /// 再起動で 0 に戻る = `series_slot` と同じ扱い。合計は `/status` の `sni_mismatches`
     pub sni_mismatch: u64,
+    /// そのホストへの接続が **SYN を送り直した回数の合計** (T14.46)。
+    /// **`.rrd` には書かない** ([`HostStats::sni_mismatch`] と同じ扱い。スロットの
+    /// 余白は 4 B しか無い) ので再起動で 0 に戻る。合計は `/status` の `syn_retrans_total`。
+    ///
+    /// [`HostStats::retrans`] (T14.5) は**接続の終わり**に読んだ通算 (データの再送を含む)、
+    /// こちらは**確立の直後**なので SYN の再送だけ = 「繋ぐのに何回やり直したか」
+    pub syn_retrans: u64,
 }
 
 impl HostStats {
@@ -490,6 +505,9 @@ impl HostStats {
         if d.sni_mismatch {
             self.sni_mismatch += 1;
         }
+        // 確立までの SYN の再送 (T14.46)。**読んだのは `net` の確立点**で、
+        // ここは鍵の内側の足し算 1 回 (メモリだけの欄)
+        self.syn_retrans += d.syn_retrans as u64;
     }
 
     /// 状態ファイルのレコード (名前 128 バイト + 数値)。
@@ -1190,6 +1208,9 @@ pub struct Metrics {
     /// CONNECT のホストと SNI が食い違った本数の合計 (`/status` の `sni_mismatches`。T14.38)。
     /// **メモリだけ** (`.rrd` には書かない)。ホスト別は [`HostStats::sni_mismatch`]
     pub sni_mismatches: AtomicU64,
+    /// 確立までに SYN を送り直した回数の合計 (`/status` の `syn_retrans_total`。T14.46)。
+    /// **メモリだけ** (`.rrd` には書かない)。ホスト別は [`HostStats::syn_retrans`]
+    pub syn_retrans_total: AtomicU64,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -1227,6 +1248,7 @@ impl Metrics {
             bursts: crate::recent::BurstRing::new(),
             recent_persisted: AtomicBool::new(false),
             sni_mismatches: AtomicU64::new(0),
+            syn_retrans_total: AtomicU64::new(0),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
             readers: Mutex::new(HashMap::new()),
@@ -1478,6 +1500,12 @@ impl Metrics {
         // 旗が立つのはトンネルの終わりだけなので、ここは分岐 1 回 (原子は触らない)
         if detail.sni_mismatch {
             self.sni_mismatches.fetch_add(1, Ordering::Relaxed);
+        }
+        // 確立までの SYN の再送の合計 (`/status`。T14.46)。再送は稀なので、
+        // 普通の接続はこの分岐 1 回で終わる (原子は触らない)
+        if detail.syn_retrans != 0 {
+            self.syn_retrans_total
+                .fetch_add(detail.syn_retrans as u64, Ordering::Relaxed);
         }
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
         if let Some(stats) = hosts.map.get_mut(host) {
@@ -2031,10 +2059,11 @@ impl Metrics {
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
                 // (`memory` も T14.21、`recent_quantiles` も T14.31、`rate_bps_total` も
                 // T14.39、`rejected_requests` も T14.28、`sni_mismatches` も T14.38、
-                // `self_bench` も T14.43、`readers` も T14.53 で同じく末尾)
+                // `self_bench` も T14.43、`readers` も T14.53、`syn_retrans_total` も
+                // T14.46 で同じく末尾)
                 "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
                 "\"rejected_requests\":{},\"sni_mismatches\":{},\"self_bench\":{},",
-                "\"readers\":{}}}"
+                "\"readers\":{},\"syn_retrans_total\":{}}}"
             ),
             SCHEMA,
             crate::json::escape(extra.version),
@@ -2096,7 +2125,9 @@ impl Metrics {
             crate::selfbench::status_json(),
             // 内部エンドポイントを引いた接続元の上位 20 (T14.53)。全部は `/readers`。
             // **プロキシとして通した要求は入らない** (`clients[]` とは別の表)
-            self.readers_json()
+            self.readers_json(),
+            // 確立までに SYN を送り直した回数の合計 (T14.46)
+            self.syn_retrans_total.load(Ordering::Relaxed)
         )
     }
 }
@@ -2275,6 +2306,10 @@ pub fn stats_json(s: &HostStats, detail: bool) -> String {
         // CONNECT のホストと SNI の食い違い (T14.38)。**ホスト別だけ** (接続元別には
         // 宛先が無い)。**末尾に足した** ので既存の鍵の順は変わらない
         let _ = write!(out, ",\"sni_mismatch\":{}", s.sni_mismatch);
+        // 確立までの SYN の再送 (T14.46)。**ホスト別だけ** (`sni_mismatch` と同じく
+        // `detail` の内側 — 接続元別には「繋ぎに行く先」が無い)。
+        // **末尾に足した**ので既存の鍵の順は変わらない
+        let _ = write!(out, ",\"syn_retrans\":{}", s.syn_retrans);
     }
     out
 }
