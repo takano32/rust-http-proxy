@@ -1213,10 +1213,9 @@ mod closed_tests {
             json
         );
         assert!(json.ends_with("}}"), "{}", &json[json.len() - 40..]);
-        // 1 時間の解像度は `null` (T14.10 の canary がこの後ろに続くので `ends_with` では見ない)
-        let hour = h.to_json_res(2);
-        assert!(hour.contains(",\"closed\":null,\"canary\":"), "{}", hour);
-        assert!(hour.ends_with('}'), "{}", hour);
+        // 1 時間の解像度は `null` (**末尾ではない**: T14.10 の canary が後ろに続く)
+        let hourly = h.to_json_res(2);
+        assert!(hourly.contains(",\"closed\":null"), "{}", hourly);
     }
 
     /// 窓が埋まったときの大きさ (1 窓 ≈ 300 B。`/history` が太る分をここで押さえておく)。

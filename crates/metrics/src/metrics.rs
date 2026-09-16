@@ -513,6 +513,9 @@ pub struct ClientStats {
     last_nonstandard: bool,
     last_port_slot: Option<usize>,
     last_ports_other: bool,
+    /// 接続元ごとの同時接続の上限 (`PROXY_MAX_CONNS_PER_CLIENT`) に当たって断った本数
+    /// (T14.13)。**書くのは断った経路だけ** ([`Metrics::record_client_rejected`])
+    pub rejected: u64,
 }
 
 impl ClientStats {
@@ -676,7 +679,7 @@ impl ClientStats {
             .map(|(p, n)| format!("{{\"port\":{},\"requests\":{}}}", p, n))
             .collect();
         format!(
-            "{{\"client\":\"{}\",{}{},\"agents\":{},\"agents_dropped\":{},\"distinct_targets_capped\":{},\"ports\":[{}],\"ports_other\":{},\"nonstandard_ports\":{}}}",
+            "{{\"client\":\"{}\",{}{},\"agents\":{},\"agents_dropped\":{},\"distinct_targets_capped\":{},\"ports\":[{}],\"ports_other\":{},\"nonstandard_ports\":{},\"rejected\":{}}}",
             crate::json::escape(client),
             stats_json(&self.stats, false),
             self.status_json(),
@@ -685,7 +688,8 @@ impl ClientStats {
             self.targets_capped,
             ports.join(","),
             self.ports_other,
-            self.nonstandard_ports
+            self.nonstandard_ports,
+            self.rejected
         )
     }
 }
@@ -846,6 +850,8 @@ pub struct Metrics {
     pub evicted_idle: AtomicU64,
     /// `PROXY_ALLOW_CLIENTS` に無い接続元として accept 直後に閉じた数 (T14.18)
     pub rejected_client_acl: AtomicU64,
+    /// 接続元ごとの同時接続の上限 (`PROXY_MAX_CONNS_PER_CLIENT`) に当たって 503 で断った数 (T14.13)
+    pub rejected_per_client: AtomicU64,
     pub bytes_forwarded: AtomicU64,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
@@ -884,6 +890,7 @@ impl Metrics {
             rejected_overload: AtomicU64::new(0),
             evicted_idle: AtomicU64::new(0),
             rejected_client_acl: AtomicU64::new(0),
+            rejected_per_client: AtomicU64::new(0),
             bytes_forwarded: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
@@ -1191,6 +1198,26 @@ impl Metrics {
             .note_agent(agent);
     }
 
+    /// 接続元ごとの同時接続の上限に当たって断った 1 本を数える (`/clients` の `rejected`。T14.13)。
+    ///
+    /// **通るのは断った経路だけ**なので、通した接続には 1 命令も足さない。全体の合計
+    /// (`rejected_per_client`) も同じ場所で足す (鍵は接続元の表の 1 回)。
+    pub fn record_client_rejected(&self, client: &str) {
+        self.rejected_per_client
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut clients = self.clients.locked();
+        if let Some(stats) = clients.get_mut(client) {
+            stats.rejected += 1;
+            return;
+        }
+        let key = if clients.len() >= MAX_CLIENTS {
+            "other".to_string()
+        } else {
+            client.to_string()
+        };
+        clients.entry(key).or_insert_with(ClientStats::now).rejected += 1;
+    }
+
     /// 要求数の多い順に並べた接続元別統計 (`.rrd` と `/metrics` が使う欄だけ)。
     pub fn clients_sorted(&self) -> Vec<(String, HostStats)> {
         self.clients_sorted_by(ClientSort::Requests)
@@ -1395,6 +1422,7 @@ impl Metrics {
                 "\"parking\":{},",
                 "\"live_threads\":{},\"idle_threads\":{},\"queued_jobs\":{},\"max_threads\":{},",
                 "\"rejected_overload\":{},\"evicted_idle\":{},\"rejected_client_acl\":{},",
+                "\"rejected_per_client\":{},",
                 "\"bytes_forwarded\":{},",
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
@@ -1422,6 +1450,7 @@ impl Metrics {
             self.rejected_overload.load(Ordering::Relaxed),
             self.evicted_idle.load(Ordering::Relaxed),
             self.rejected_client_acl.load(Ordering::Relaxed),
+            self.rejected_per_client.load(Ordering::Relaxed),
             bytes,
             self.cache_hits.load(Ordering::Relaxed),
             self.cache_misses.load(Ordering::Relaxed),
@@ -2215,6 +2244,27 @@ mod latency_tests {
         assert_eq!(c2.ports_other, 2);
         assert_eq!(c2.nonstandard_ports, 10);
         assert_eq!(c2.distinct_targets(), 1);
+    }
+
+    /// 接続元ごとの上限で断った数は、全体の合計と個票の両方に残る (T14.13)。
+    #[test]
+    fn rejections_are_counted_for_the_total_and_for_the_client() {
+        let m = Metrics::new();
+        m.record_client_rejected("10.0.0.1");
+        m.record_client_rejected("10.0.0.1");
+        m.record_client_rejected("10.0.0.2");
+        assert_eq!(m.rejected_per_client.load(Ordering::Relaxed), 3);
+
+        // 要求を 1 本も通していない接続元でも `/clients` に出る (断られただけの相手)
+        let all = m.clients_sorted_by(ClientSort::Requests);
+        let one = all
+            .iter()
+            .find(|(k, _)| k == "10.0.0.1")
+            .expect("10.0.0.1 の行")
+            .1
+            .to_json("10.0.0.1");
+        assert!(one.contains("\"rejected\":2"), "{}", one);
+        assert!(m.to_json().contains("\"rejected_per_client\":3"));
     }
 
     /// `?sort=` の鍵ごとに先頭が入れ替わること (T14.7)。
