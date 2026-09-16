@@ -64,6 +64,13 @@ const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
 /// `--lite` でも 200 で返す (記録が無ければページの中で「記録していません」と出る)。
 const INSPECT_HTML: &str = include_str!("../web/inspect.html");
 
+/// 「端末から測る」ページ (T14.33)。プロキシ側の計測は「プロキシに届いてから」しか
+/// 見えないので、**利用者のブラウザから** `/status` の往復と、プロキシ経由で小さな URL を
+/// 取る時間を測り、`/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) に並べる。
+/// 測った値はサーバーへ送らない (端末の中だけ)。`--lite` でも 200 で返す
+/// (接続元を記録していないことはページの中で伝える)。
+const PROBE_HTML: &str = include_str!("../web/probe.html");
+
 /// 要求ターゲットを自分宛てのパスに直す。**どちらの形式もポートだけで判定する**:
 /// 絶対形式は authority の、オリジン形式は `Host` ヘッダーのポート (無ければ 80) が
 /// 自分の待ち受けポートと同じときだけ自分宛て。それ以外 (他所への転送) は `None`。
@@ -110,6 +117,7 @@ fn endpoint_list(lite: bool) -> String {
          endpoints:\n\
          {}\
          \x20 /inspect                                    control panel: what happened (timeline)\n\
+         \x20 /probe.html                                 measure this proxy from your browser\n\
          \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
          \x20 /connections                                JSON: the connections open right now\n\
@@ -177,6 +185,9 @@ pub fn handle(
         // 「調査」ページ (T14.8)。`--lite` でも 200 — 個票が空でもページは開ける
         // (読む人が「記録していません」と分かるのはページの中)
         (200, "text/html; charset=utf-8", INSPECT_HTML.to_string())
+    } else if is_get && (path == "/probe.html" || path == "/probe" || path == "/probe/") {
+        // 「端末から測る」ページ (T14.33)。`--lite` でも 200 — 測れるのは (1) だけになる
+        (200, "text/html; charset=utf-8", PROBE_HTML.to_string())
     } else if is_get && (path == "/dashboard" || path == "/dashboard/") {
         if ep.lite {
             (

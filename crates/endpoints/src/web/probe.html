@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>rust-http-proxy — 端末から測る</title>
+<style>
+:root{--bg:#0f1117;--card:#171a23;--line:#262a37;--fg:#e6e8ef;--muted:#8b91a5;--accent:#5aa9ff;--ok:#3ecf8e;--warn:#f5b342;--bad:#ff6b6b;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans JP",sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(15,17,23,.92);backdrop-filter:blur(6px);z-index:2}
+header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.02em}
+header .sub{color:var(--muted);font-size:12px}
+header .right{margin-left:auto;display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);display:inline-block;box-shadow:0 0 8px var(--ok)}
+.dot.bad{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+.dot.wait{background:var(--warn);box-shadow:0 0 8px var(--warn)}
+main{padding:18px 22px 40px;max-width:1100px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0;margin-top:14px}
+.card h2{margin:0 0 8px;font-size:12px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.card h2 span.r{float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)}
+.hint{color:var(--muted);font-size:12px;margin-top:6px}
+.hint code,code{font-family:var(--mono);font-size:12px;background:#0b0d13;border:1px solid var(--line);border-radius:4px;padding:0 4px}
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+th,td{padding:6px 8px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+td:first-child,th:first-child{text-align:left;max-width:360px;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);font-size:12px}
+.lead{font-size:14px;font-family:var(--mono);background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px;overflow-x:auto;white-space:nowrap}
+.lead.ok{border-color:var(--ok)}
+.lead.no{border-color:var(--warn)}
+.lead.bad{border-color:var(--bad)}
+.links a{color:var(--accent);text-decoration:none;margin-right:12px;font-size:12px}
+.tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;background:var(--line);color:var(--muted);margin-left:6px}
+.banner{margin:14px 0 0;padding:10px 14px;border-radius:10px;font-size:13px;background:rgba(62,207,142,.10);border:1px solid var(--ok);color:var(--fg)}
+.kv{display:flex;flex-wrap:wrap;gap:14px;font-size:14px;font-variant-numeric:tabular-nums}
+.kv div{min-width:110px}
+.kv b{display:block;color:var(--muted);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.05em}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px}
+select,button,input{background:#0b0d13;border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:4px 8px;font:13px system-ui}
+input{font-family:var(--mono);font-size:12px;min-width:260px}
+button{cursor:pointer;border-color:var(--accent);color:var(--accent)}
+button[disabled]{opacity:.5;cursor:default}
+ul.hint{margin:6px 0 0;padding-left:18px}
+ul.hint li{margin:3px 0}
+.grid2{display:grid;gap:14px;grid-template-columns:1fr 1fr}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>rust-http-proxy <span class="tag">端末から測る</span></h1>
+  <span class="sub" id="version"></span>
+  <div class="right">
+    <span class="links"><a href="/dashboard">/dashboard</a><a href="/inspect">/inspect</a><a href="/status" target="_blank">/status</a><a href="/clients?limit=1000" target="_blank">/clients</a></span>
+    <span class="dot" id="dot"></span><span id="state">待機中</span>
+  </div>
+</header>
+<main>
+  <div class="banner">測った値は<b>この端末の中だけ</b>にあります (サーバーへは送りません)。このページがプロキシに出す要求は <code>/status</code> と <code>/clients</code>、それに下の URL の取得だけです。</div>
+
+  <section class="card">
+    <h2>測る <span class="r">中央値で読む (1 回目は接続の確立を含むので遅く出ます)</span></h2>
+    <div class="row">
+      <label>回数 <select id="times"><option value="3">3 回</option><option value="5" selected>5 回</option><option value="9">9 回</option></select></label>
+      <label>プロキシ経由を試す URL <input id="url" value="http://example.com/" spellcheck="false"></label>
+      <button id="run">もう一度測る</button>
+      <span class="hint" id="progress" style="margin-top:0"></span>
+    </div>
+    <div class="hint">(2) の URL は <code>http://</code> の小さなページにしてください (<code>http://example.com/</code>、<code>http://detectportal.firefox.com/success.txt</code> など)。中身は読みません (<code>mode: no-cors</code>) — 測るのは往復の時間だけです。</div>
+  </section>
+
+  <section class="card">
+    <h2>(1) この端末 → プロキシ <span class="r">GET /status (cache: no-store) · 往復 = RTT + 応答を組んで返す時間</span></h2>
+    <div class="kv" id="kv1"></div>
+    <div style="overflow-x:auto;margin-top:8px"><table id="t1"><thead><tr><th>回</th><th title="要求を出してから応答の頭が来るまで">応答待ち</th><th title="本文を読み終わるまで">往復</th><th title="読んだ JSON の文字数">応答</th><th>結果</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="h1"></div>
+  </section>
+
+  <section class="card">
+    <h2>(2) プロキシ経由の取得 <span class="r">判定 = /status の clients[] にこの端末の行が増えたか</span></h2>
+    <div class="lead" id="verdict">まだ測っていません</div>
+    <div class="kv" id="kv2"></div>
+    <div style="overflow-x:auto;margin-top:8px"><table id="t2"><thead><tr><th>回</th><th>往復</th><th>結果</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="h2"></div>
+  </section>
+
+  <section class="card">
+    <h2>(3) プロキシ側から見たこの端末 <span class="r">/clients の自分の行 (T14.7) と rtt_ms (T14.5)</span></h2>
+    <div class="kv" id="kv3"></div>
+    <div class="grid2" style="margin-top:10px">
+      <div style="overflow-x:auto"><table id="t3"><thead><tr><th>欄</th><th>値</th></tr></thead><tbody></tbody></table></div>
+      <div style="overflow-x:auto"><table id="t4"><thead><tr><th>突き合わせ</th><th>値</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="hint" id="h3"></div>
+  </section>
+
+  <section class="card">
+    <h2>読み方</h2>
+    <ul class="hint">
+      <li>(1) の<b>往復の中央値</b>が「この端末 → プロキシの RTT + <code>/status</code> を組んで返す時間」です。同じ機械の中 (loopback) なら 1 ms 前後、遠いところにあるなら回線の RTT がそのまま出ます。</li>
+      <li>(2) の判定は<b>プロキシの記録</b>で見ます: プロキシは<b>自分宛ての要求 (<code>/status</code> など) を <code>clients[]</code> に数えない</b>ので、URL を取る前後で自分の行の <code>requests</code> が増えていれば「このブラウザはプロキシを経由した」、増えていなければ「経由していない (端末が自分で取りに行った)」です。自分の IP は、増えた行から分かります (増えた行が無いときは <code>/clients</code> の「最終が今」の行を見当にします)。</li>
+      <li>(3) の <code>rtt_ms</code> は<b>カーネルが測った平滑化 RTT</b> (T14.5) で、<b>接続を閉じたときに 1 本ぶん</b>読んだものです。(1) の往復からこの RTT を引いた残りが「プロキシが応答を組むのにかかった時間 + 端末の中の時間」です。このページを開いている接続はまだ閉じていないので、標本が 0 なら「–」になります。</li>
+      <li><code>--lite</code> (<code>PROXY_PROFILE=lite</code>) では接続元を<b>記録していません</b>。このページは開けますが (3) の表は空で、(2) は判定できません。</li>
+      <li>測った値は<b>サーバーに送りません</b>。残したいときはこの画面を保存するか、<a href="/snapshot" target="_blank">/snapshot</a> を手で取ってください。</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function(){
+'use strict';
+var $=function(id){return document.getElementById(id)};
+var view=null;   // 直近の render() の結果
+var busy=false;
+
+// --- ここから下の 3 つは node の整形テスト (scripts/check-dashboard.js の 11 番目) からも
+// --- 呼ぶ。**DOM にも fetch にも触らないこと** (描くのは draw、測るのは run の側)。
+
+// 数列の中央値 (数でない要素は落とす)。空なら null。
+// **1 回目は接続の確立を含んで遅く出る**ので、平均ではなく中央値で読む
+function median(xs){
+  var v=[],i;
+  for(i=0;i<((xs&&xs.length)||0);i++){
+    var x=xs[i];
+    if(x==null||x==='')continue;
+    x=+x;
+    if(isFinite(x))v.push(x);
+  }
+  if(!v.length)return null;
+  v.sort(function(a,b){return a-b});
+  var h=v.length>>1;
+  return v.length%2?v[h]:(v[h-1]+v[h])/2;
+}
+
+// 前と後の 2 枚の `clients[]` (`/status` でも `/clients` でも同じ形) を比べて、
+// **要求数が増えた行 = このブラウザ**を拾う (T14.33 の判定)。
+//
+// プロキシは**自分宛ての要求 (`/status` など) を `clients[]` に数えない** (`src/lib.rs` の
+// `record_client_agent` の手前のコメント) ので、このページが出す要求だけでは 1 行も増えない。
+// 増えたなら、そのブラウザは**プロキシ経由で外の URL を取りに行った**ということ。
+// 増えた行が無ければ「経由していない」。自分の IP が分からないときは
+// 「最終が今」(`opts.window` 秒以内) の行を見当として返す。
+function pick(before,after,opts){
+  opts=opts||{};
+  var was={},prev=(before&&before.clients)||[],rows=(after&&after.clients)||[],i;
+  for(i=0;i<prev.length;i++){
+    var p=prev[i]||{};
+    if(p.client)was[p.client]={requests:+p.requests||0,last_seen:+p.last_seen||0};
+  }
+  var now=+opts.now||0,win=+opts.window>0?+opts.window:10,grew=[],fresh=[];
+  for(i=0;i<rows.length;i++){
+    var c=rows[i]||{},ip=c.client||'';
+    if(!ip)continue;
+    var old=was[ip],delta=(+c.requests||0)-(old?old.requests:0),seen=+c.last_seen||0;
+    if(delta>0){
+      grew.push({client:ip,delta:delta,requests:+c.requests||0,
+        before:old?old.requests:null,first:!old,last_seen:seen});
+    }
+    if(now&&seen>=now-win)fresh.push({client:ip,last_seen:seen,requests:+c.requests||0});
+  }
+  grew.sort(function(a,b){return b.delta-a.delta||b.last_seen-a.last_seen});
+  fresh.sort(function(a,b){return b.last_seen-a.last_seen});
+  // 期待する増分 (取れた回数) に届く行を優先する。届く行が無ければいちばん増えた行
+  var need=+opts.need>0?+opts.need:1,hit=null;
+  for(i=0;i<grew.length;i++){if(grew[i].delta>=need){hit=grew[i];break}}
+  if(!hit&&grew.length)hit=grew[0];
+  return {proxied:!!hit,
+    ip:hit?hit.client:(fresh.length===1?fresh[0].client:null),
+    how:hit?'delta':(fresh.length===1?'recent':null),
+    delta:hit?hit.delta:0,first:!!(hit&&hit.first),need:need,
+    candidates:grew,ambiguous:grew.length>1,recent:fresh,seen:rows.length};
+}
+
+// 測った結果を「描くための形」に畳む。**DOM に触らない** (描くのは draw)。
+// st = {direct:[{ms,head_ms,bytes,ok,error}], probe:{url,samples:[...]},
+//       before, after ( `clients[]` を持つ JSON 2 枚), clients (`/clients` の出力),
+//       now (epoch 秒), window}
+function render(st){
+  st=st||{};
+  function stat(list){
+    var rows=list||[],good=[],head=[],bytes=[],fail=0,i;
+    for(i=0;i<rows.length;i++){
+      var s=rows[i]||{},ms=+s.ms;
+      if(s.ok===false||!isFinite(ms)){fail++;continue}
+      good.push(ms);
+      if(isFinite(+s.head_ms))head.push(+s.head_ms);
+      if(isFinite(+s.bytes))bytes.push(+s.bytes);
+    }
+    var sorted=good.slice().sort(function(a,b){return a-b});
+    return {n:rows.length,ok:good.length,fail:fail,median:median(good),head:median(head),
+      bytes:median(bytes),min:sorted.length?sorted[0]:null,
+      max:sorted.length?sorted[sorted.length-1]:null,
+      first:rows.length&&isFinite(+rows[0].ms)?+rows[0].ms:null,samples:rows};
+  }
+  var direct=stat(st.direct),probe=stat(st.probe&&st.probe.samples);
+  probe.url=(st.probe&&st.probe.url)||'';
+  var via=pick(st.before,st.after,{now:st.now,window:st.window,need:probe.ok||1});
+  via.exact=probe.ok>0&&via.delta===probe.ok;
+  // (3) `/clients` の自分の行 (T14.7)。IP が分からなければ空のまま
+  var rows=(st.clients&&st.clients.clients)||[],me=null,i;
+  for(i=0;i<rows.length;i++){
+    var c=rows[i]||{};
+    if(via.ip&&c.client===via.ip){me=c;break}
+  }
+  var r=me&&me.rtt_ms&&+me.rtt_ms.samples>0&&me.rtt_ms.avg!=null?me.rtt_ms:null;
+  var mine=me?{client:me.client||'',requests:+me.requests||0,bytes:+me.bytes||0,
+    bytes_in:+me.bytes_in||0,bytes_out:+me.bytes_out||0,errors:+me.errors||0,
+    hits:+me.hits||0,blocked:+me.blocked||0,
+    p50_ms:me.p50_ms==null?null:+me.p50_ms,p95_ms:me.p95_ms==null?null:+me.p95_ms,
+    agents:me.agents||(me.agent?[me.agent]:[]),
+    distinct_targets:+me.distinct_targets||0,literal_targets:+me.literal_targets||0,
+    nonstandard_ports:+me.nonstandard_ports||0,
+    rtt:r?{avg:+r.avg,min:r.min==null?null:+r.min,samples:+r.samples||0}:null,
+    retrans:+me.retrans||0,first_seen:+me.first_seen||0,last_seen:+me.last_seen||0}:null;
+  // (1) の往復と、カーネルが測った RTT (T14.5) を並べる。**カーネルの RTT は接続を
+  // 閉じたときの標本**なので、まだ 1 本も閉じていなければ標本 0 = `null`
+  var kernel=mine&&mine.rtt?mine.rtt.avg:null;
+  var compare={page:direct.median,kernel:kernel,
+    kernel_min:mine&&mine.rtt?mine.rtt.min:null,
+    samples:mine&&mine.rtt?mine.rtt.samples:0,
+    gap:direct.median!=null&&kernel!=null?direct.median-kernel:null,
+    ratio:direct.median!=null&&kernel>0?direct.median/kernel:null};
+  var verdict;
+  if(!probe.n)verdict={key:'none',text:'まだ測っていません'};
+  else if(via.proxied)verdict={key:'proxy',text:'経由しています (プロキシがこの端末の要求を数えました)'};
+  else if(probe.ok)verdict={key:'direct',text:'経由していません (端末が自分で取りに行きました)'};
+  else verdict={key:'unknown',text:'判定できません (取得が 1 回も成功しませんでした)'};
+  var notes=[];
+  if(via.ambiguous)notes.push('同じ時間に他の接続元も動いていました (増えた行 '+via.candidates.length+' 件)。いちばん増えた行をこの端末とみなしています。');
+  if(via.proxied&&!via.exact)notes.push('増えた要求数 '+via.delta+' 回と、取れた回数 '+probe.ok+' 回が合いません (このブラウザの他のタブも数に入ります)。');
+  if(!rows.length)notes.push('接続元の記録がありません (このプロキシをまだ誰も通っていないか、--lite では記録していません)。');
+  else if(!mine)notes.push('この端末の行は /clients にありません (このページを開いた要求はプロキシの統計に数えません)。');
+  else if(!mine.rtt)notes.push('カーネルの RTT はまだ標本がありません (接続を閉じたときに 1 本ぶん読みます)。');
+  if(compare.gap!=null&&compare.gap<0)notes.push('カーネルの RTT の方が大きく出ています (この行の RTT は閉じた接続の平均で、いま測った往復とは別の接続のものです)。');
+  return {at:+st.now||0,direct:direct,probe:probe,via:via,me:mine,compare:compare,
+    verdict:verdict,notes:notes,clients:rows.length};
+}
+
+// --- ここから下は DOM と fetch に触る側 ---
+
+function fmtMs(v){return v==null?'–':(v<10?(+v).toFixed(2):(+v).toFixed(1))+' ms'}
+function fmtNum(v){return v==null?'–':(+v).toLocaleString('en-US')}
+function fmtTime(t){return t?new Date(t*1000).toLocaleString():'–'}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function ok(good,msg){$('dot').className='dot'+(good===null?' wait':(good?'':' bad'));$('state').textContent=msg}
+function kv(id,pairs){
+  $(id).innerHTML=pairs.map(function(p){
+    return '<div><b>'+esc(p[0])+'</b>'+esc(p[1])+'</div>'}).join('');
+}
+function rows(id,list){
+  $(id).querySelector('tbody').innerHTML=list.map(function(r){
+    return '<tr>'+r.map(function(c,i){
+      return '<td'+(i?'':'')+'>'+esc(c)+'</td>'}).join('')+'</tr>'}).join('');
+}
+
+// 1 回ぶんの往復。`cache:'no-store'` はブラウザのキャッシュを使わないため
+// (使われると 0 ms になって何も測れない)
+function timedJson(url){
+  var t0=performance.now(),head=null;
+  return fetch(url,{cache:'no-store'}).then(function(res){
+    head=performance.now()-t0;
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    return res.text().then(function(txt){
+      var s={ms:performance.now()-t0,head_ms:head,bytes:txt.length,ok:true,json:null};
+      try{s.json=JSON.parse(txt)}catch(e){s.ok=false;s.error='JSON が読めません'}
+      return s;
+    });
+  },function(e){
+    return {ms:performance.now()-t0,head_ms:head,ok:false,error:String((e&&e.message)||e)};
+  });
+}
+// 外の URL を 1 回取る。**中身は読まない** (`no-cors` で不透明な応答になる)。
+// 測るのは「このブラウザが 1 本取るのにかかった時間」だけ
+function timedProbe(url){
+  var t0=performance.now();
+  return fetch(url,{cache:'no-store',mode:'no-cors',credentials:'omit'}).then(function(){
+    return {ms:performance.now()-t0,ok:true};
+  },function(e){
+    return {ms:performance.now()-t0,ok:false,error:String((e&&e.message)||e)};
+  });
+}
+
+function draw(v){
+  var d=v.direct;
+  kv('kv1',[['往復 (中央値)',fmtMs(d.median)],['応答待ち (中央値)',fmtMs(d.head)],
+    ['最小',fmtMs(d.min)],['最大',fmtMs(d.max)],['1 回目',fmtMs(d.first)],
+    ['応答',d.bytes==null?'–':fmtNum(d.bytes)+' 文字'],
+    ['成功',d.ok+' / '+d.n]]);
+  rows('t1',d.samples.map(function(s,i){
+    return [String(i+1),fmtMs(s.head_ms),fmtMs(s.ms),s.bytes==null?'–':fmtNum(s.bytes),
+      s.ok===false?('失敗: '+(s.error||'')):'ok'];
+  }));
+  $('h1').textContent='この往復には「端末 → プロキシの RTT」と「プロキシが /status を組んで返す時間」の両方が入ります。'
+    +(d.bytes==null?'':' 応答 '+fmtNum(d.bytes)+' 文字ぶんの送信も含みます。');
+
+  var p=v.probe,cls={proxy:'ok',direct:'no',unknown:'bad',none:''}[v.verdict.key]||'';
+  $('verdict').className='lead '+cls;
+  $('verdict').textContent=v.verdict.text
+    +(v.via.ip?' · この端末 = '+v.via.ip+(v.via.how==='recent'?' (最終が今の行からの見当)':''):'')
+    +(v.via.proxied?' · 増えた要求 '+v.via.delta+' 回':'');
+  kv('kv2',[['URL',p.url||'–'],['往復 (中央値)',fmtMs(p.median)],['最小',fmtMs(p.min)],
+    ['最大',fmtMs(p.max)],['1 回目',fmtMs(p.first)],['成功',p.ok+' / '+p.n],
+    ['プロキシが数えた要求',v.via.proxied?fmtNum(v.via.delta):'0']]);
+  rows('t2',p.samples.map(function(s,i){
+    return [String(i+1),fmtMs(s.ms),s.ok===false?('失敗: '+(s.error||'')):'ok'];
+  }));
+  $('h2').textContent=(v.verdict.key==='proxy'
+    ?'プロキシ経由なので、この時間には「端末 → プロキシ」と「プロキシ → 宛先」の両方が入ります。(1) との差がプロキシから先の往復です。'
+    :v.verdict.key==='direct'
+      ?'ブラウザはこのプロキシを使わずに取りに行きました (プロキシの clients[] は 1 行も増えていません)。ブラウザのプロキシ設定か /proxy.pac を入れてからもう一度測ってください。'
+      :'取得に失敗しました。URL が http:// であること、その宛先へ出られることを確かめてください。')
+    +(v.via.seen?' 比べた接続元は '+v.via.seen+' 件です。':'');
+
+  var me=v.me,c=v.compare;
+  kv('kv3',[['接続元',me?me.client:(v.via.ip||'–')],
+    ['要求 (通算)',me?fmtNum(me.requests):'–'],
+    ['カーネルの RTT (平均)',fmtMs(c.kernel)],
+    ['RTT の標本',fmtNum(c.samples)],
+    ['(1) の往復 − RTT',fmtMs(c.gap)],
+    ['初めて見た',me?fmtTime(me.first_seen):'–'],
+    ['最終',me?fmtTime(me.last_seen):'–']]);
+  rows('t3',me?[
+    ['requests',fmtNum(me.requests)],['errors',fmtNum(me.errors)],
+    ['hits',fmtNum(me.hits)],['bytes',fmtNum(me.bytes)],
+    ['p50 / p95',fmtMs(me.p50_ms)+' / '+fmtMs(me.p95_ms)],
+    ['agents',(me.agents||[]).join(' , ')||'–'],
+    ['宛先の種類',fmtNum(me.distinct_targets)],
+    ['IP リテラル宛て',fmtNum(me.literal_targets)],
+    ['443 / 80 以外',fmtNum(me.nonstandard_ports)],
+    ['再送',fmtNum(me.retrans)]
+  ]:[['–','この端末の行はまだありません']]);
+  rows('t4',[
+    ['(1) 往復の中央値',fmtMs(c.page)],
+    ['カーネルの RTT (平均)',fmtMs(c.kernel)],
+    ['カーネルの RTT (最小)',fmtMs(c.kernel_min)],
+    ['差 (往復 − RTT)',fmtMs(c.gap)],
+    ['倍 (往復 ÷ RTT)',c.ratio==null?'–':(+c.ratio).toFixed(1)+' 倍'],
+    ['(2) 往復の中央値',fmtMs(p.median)],
+    ['(2) − (1)',p.median!=null&&c.page!=null?fmtMs(p.median-c.page):'–']
+  ]);
+  $('h3').textContent=v.notes.join(' ')||'この端末の行と、カーネルが測った RTT が読めています。';
+}
+
+// (1) → (2) → (3) の順に 1 本ずつ測る (並べて投げると往復が測れない)
+function run(){
+  if(busy)return;
+  busy=true;$('run').disabled=true;
+  var n=+$('times').value||5,url=$('url').value||'http://example.com/';
+  var st={direct:[],probe:{url:url,samples:[]},before:null,after:null,clients:null,
+    now:Math.floor(Date.now()/1000),window:10};
+  var step=Promise.resolve(),i;
+  ok(null,'測定中…');
+  for(i=0;i<n;i++){
+    step=step.then(function(){
+      $('progress').textContent='(1) /status '+(st.direct.length+1)+' / '+n;
+      return timedJson('/status').then(function(s){
+        st.direct.push(s);
+        if(s.json){st.before=s.json;$('version').textContent=s.json.version||''}
+      });
+    });
+  }
+  for(i=0;i<n;i++){
+    step=step.then(function(){
+      $('progress').textContent='(2) '+url+' '+(st.probe.samples.length+1)+' / '+n;
+      return timedProbe(url).then(function(s){st.probe.samples.push(s)});
+    });
+  }
+  return step.then(function(){
+    $('progress').textContent='(3) /status と /clients';
+    return timedJson('/status');
+  }).then(function(s){
+    st.after=s.json;
+    return timedJson('/clients?sort=recent&limit=200');
+  }).then(function(s){
+    st.clients=s.json;
+    st.now=Math.floor(Date.now()/1000);
+    view=render(st);
+    draw(view);
+    $('progress').textContent='';
+    ok(true,'測定 '+new Date().toLocaleTimeString());
+  }).catch(function(e){
+    $('progress').textContent='';
+    ok(false,'失敗: '+((e&&e.message)||e));
+  }).then(function(){
+    busy=false;$('run').disabled=false;
+  });
+}
+
+$('run').addEventListener('click',run);
+run();
+})();
+</script>
+</body>
+</html>
