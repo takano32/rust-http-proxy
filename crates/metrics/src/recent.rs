@@ -459,6 +459,21 @@ impl ConnSlot {
             .fetch_add(now.saturating_sub(at), Ordering::Relaxed);
     }
 
+    /// 預かり所にいた合計 ms (**中継の時間を出すために引く**。T14.25)。
+    ///
+    /// 読むのはトンネルの終わり (`tunnel::report`) の 1 回だけ。原子の読み 2 回で、
+    /// まだ預けられたままなら最後の 1 区間もここで足す ([`ConnSlot::closed_entry`]
+    /// と同じ数え方。預かり所は落とす前に必ず `on_unpark` を通るので、普通は通らない)。
+    pub fn parked_ms(&self) -> u64 {
+        let ms = self.parked_ms.load(Ordering::Relaxed);
+        let at = self.parked_at.load(Ordering::Relaxed);
+        if at == NOT_PARKED {
+            return ms;
+        }
+        let now = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        ms.saturating_add(now.saturating_sub(at))
+    }
+
     /// 閉じた接続の個票を 1 件作る (`ConnTable` から外すときに 1 回だけ)。
     ///
     /// **自分宛て (`/status` `/dashboard` …) だけで終わった接続は `None`**: 宛先を 1 つも
