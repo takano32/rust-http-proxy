@@ -216,6 +216,19 @@ pub fn serve(
             drop(stream);
             continue;
         }
+        // 消えたクライアントを見つける (`PROXY_TCP_KEEPALIVE`、既定 `on` = 60:10:3。T14.52)。
+        // 端末のスリープや回線の切断では FIN も RST も来ないので、トンネルは
+        // `PROXY_TUNNEL_IDLE_SECS` (300 秒) の期限切れまで残り、閉じた理由が
+        // `idle_timeout` になって「本当に暇」と区別できない。keepalive を当てておけば
+        // 消えた相手は約 90 秒で `ETIMEDOUT` になり、`client_dead` として数えられる。
+        //
+        // 費用は**接続あたり `setsockopt` 4 回**。`TCP_NODELAY` などと違って待ち受けから
+        // 継承させていないのは、`.env` で変えたときに次の接続から効くようにするため
+        // (`off` なら 1 回も呼ばず、この `if` の分岐 1 回だけ)。**`--lite` でも当てる**
+        // (枠が無くても「消えた相手」はトンネルの終わり方として閉じたい)
+        if let Some(k) = cfg.tcp_keepalive {
+            set_client_keepalive(&stream, k);
+        }
         // この接続が継承したのは「今 待ち受けに当たっている値」。.env の再読込で timeout が
         // 変わった直後だけは食い違うので、その接続は従来どおり接続ごとに設定する
         let conn_inherited = inherited.filter(|t| *t == cfg.timeout);
@@ -400,6 +413,28 @@ fn inherit_on_listener(
     #[cfg(not(target_os = "linux"))]
     let _ = (listener, timeout);
     None
+}
+
+/// accept したクライアント側のソケットに TCP keepalive を当てる (T14.52)。
+///
+/// `setsockopt` 4 回 (`SO_KEEPALIVE` / `TCP_KEEPIDLE` / `TCP_KEEPINTVL` / `TCP_KEEPCNT`)。
+/// 失敗しても接続は続ける (当たらなければ「消えた相手」が今までどおり
+/// `idle_timeout` になるだけで、中継そのものには関係がない) が、**毎接続 warn を
+/// 出すと溢れる**ので `debug` に落とす。Linux 以外では何もしない。
+fn set_client_keepalive(stream: &TcpStream, k: config::TcpKeepalive) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        if let Err(e) = sys::set_keepalive(stream.as_raw_fd(), k.idle_secs, k.intvl_secs, k.count) {
+            log_debug!(
+                None,
+                "could not set TCP keepalive on the client socket: {}",
+                e
+            );
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (stream, k);
 }
 
 /// 要求行・ヘッダー行 1 本の最大長と、ヘッダー行数の上限 (超えたら 414 / 431)。
@@ -921,6 +956,17 @@ impl Conn {
     /// ログ用の接続番号。
     pub fn id(&self) -> usize {
         self.conn_id
+    }
+
+    /// クライアントのソケットに溜まっているエラーを 1 回だけ取る (T14.52)。
+    ///
+    /// TCP keepalive (`PROXY_TCP_KEEPALIVE`) が尽きるとカーネルが `sk_err` を
+    /// `ETIMEDOUT` にするので、「相手が黙って消えた」と「相手がふつうに切った」を
+    /// ここで見分けられる (`ECONNRESET` などはそのまま原因になる)。
+    /// `getsockopt(SO_ERROR)` を 1 回引き、**取ると消える**ので、呼ぶのは
+    /// 預かり所が `EPOLLERR` で起こされた枝だけ (接続の経路では呼ばない)。
+    pub fn take_client_error(&self) -> Option<io::Error> {
+        self.client.take_error().ok().flatten()
     }
 
     /// `/connections` に出す状態を書く (原子 1 回。`--lite` では何もしない。T13.4)。

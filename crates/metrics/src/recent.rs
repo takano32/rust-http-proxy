@@ -1072,8 +1072,10 @@ pub const STAGE_FIRST_RELAY: usize = 5;
 
 /// 接続が閉じた理由 (`/recent` の `reason`)。
 ///
-/// 8 種類しかないのは、読む人が「次に何を見るか」を変えられる粒度で切ったため
+/// 9 種類しかないのは、読む人が「次に何を見るか」を変えられる粒度で切ったため
 /// ([`ErrCause`] と同じ方針)。`Error` だけは原因を連れて `error:refused` のように出す。
+/// **`/history` の分布 ([`CLOSE_REASON_NAMES`]) は 8 列のまま**で、`ClientDead` は
+/// `shutdown` に畳む (標本の余白の都合。T14.52)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseReason {
     /// クライアントが先に EOF を送った (ふつうの終わり方)
@@ -1090,6 +1092,11 @@ pub enum CloseReason {
     Limit,
     /// 上のどれでもない、プロキシ側の都合 (監視スレッドの停止、4xx で断った、内部エンドポイント)
     Shutdown,
+    /// クライアントが**黙って消えた** (TCP keepalive が尽きて `ETIMEDOUT`。T14.52)。
+    ///
+    /// 端末のスリープや回線の切断で FIN も RST も来なかったぶん。`idle_timeout` の
+    /// うち「本当に暇」ではなかった本数がこれで分かる
+    ClientDead,
     /// 入出力が失敗した (原因は [`ErrCause`] と同じ 8 つ)
     Error(ErrCause),
 }
@@ -1107,6 +1114,9 @@ impl CloseReason {
             CloseReason::Limit => 6,
             CloseReason::Shutdown => 7,
             CloseReason::Error(c) => 8 + c as u16,
+            // `Error` の 8 種 (8〜15) の次。**末尾に足す**ので既存の符号は動かない
+            // (個票ファイル (T14.9) の大きさも変わらない。T14.52)
+            CloseReason::ClientDead => 16,
         }
     }
 
@@ -1127,6 +1137,7 @@ impl CloseReason {
             13 => CloseReason::Error(ErrCause::Tls),
             14 => CloseReason::Error(ErrCause::Loop),
             15 => CloseReason::Error(ErrCause::Other),
+            16 => CloseReason::ClientDead,
             _ => CloseReason::Shutdown,
         }
     }
@@ -1134,7 +1145,9 @@ impl CloseReason {
     /// 分布の添字 ([`CLOSE_REASON_NAMES`] の並び。T14.6)。
     ///
     /// `Error` は原因を落として 1 つにまとめる (原因別は `/status` の `errors_by_cause` と
-    /// `/errors` にあるので、窓の列を 8 つ増やさない)。
+    /// `/errors` にあるので、窓の列を 8 つ増やさない)。**`ClientDead` も `shutdown` に
+    /// 畳む** (T14.52。窓の列を 9 つにすると標本の余白に入らないため。1 本ずつ見たい
+    /// ときは `/recent` の `reason` を読む)。
     pub fn index(self) -> usize {
         match self {
             CloseReason::ClientEof => 0,
@@ -1143,7 +1156,7 @@ impl CloseReason {
             CloseReason::KeepaliveTimeout => 3,
             CloseReason::Evicted => 4,
             CloseReason::Limit => 5,
-            CloseReason::Shutdown => 6,
+            CloseReason::Shutdown | CloseReason::ClientDead => 6,
             CloseReason::Error(_) => 7,
         }
     }
@@ -1159,6 +1172,7 @@ impl CloseReason {
             CloseReason::Evicted => Cow::Borrowed("evicted"),
             CloseReason::Limit => Cow::Borrowed("limit"),
             CloseReason::Shutdown => Cow::Borrowed("shutdown"),
+            CloseReason::ClientDead => Cow::Borrowed("client_dead"),
             CloseReason::Error(c) => Cow::Owned(format!("error:{}", c.name())),
         }
     }
@@ -1828,9 +1842,10 @@ impl BurstRing {
 
 /// 閉じた理由の数 ([`CLOSE_REASON_NAMES`] と同じ。T14.6)。
 ///
-/// [`CloseReason`] は 8 種類で、`Error` だけは原因を連れている。分布では
+/// [`CloseReason`] は 9 種類で、`Error` だけは原因を連れている。分布では
 /// **`error:*` を 1 つにまとめる** (原因別は `/status` の `errors_by_cause` と
-/// `/errors` にあるので、ここで 8 + 8 = 15 列に増やさない)。
+/// `/errors` にあるので、ここで 8 + 8 = 15 列に増やさない)。**`client_dead` も
+/// `shutdown` に畳む** (T14.52。標本の余白の都合で列は 8 つのまま)。
 pub const CLOSE_REASONS: usize = 8;
 pub const CLOSE_REASON_NAMES: [&str; CLOSE_REASONS] = [
     "client_eof",
@@ -2351,7 +2366,7 @@ mod conn_tests {
         assert!(local.closed_entry(Instant::now()).is_none());
     }
 
-    /// `error:<原因>` の綴りと、8 つの理由が往復できること。
+    /// `error:<原因>` の綴りと、9 つの理由が往復できること。
     #[test]
     fn every_close_reason_survives_the_round_trip() {
         let all = [
@@ -2362,6 +2377,7 @@ mod conn_tests {
             (CloseReason::Evicted, "evicted"),
             (CloseReason::Limit, "limit"),
             (CloseReason::Shutdown, "shutdown"),
+            (CloseReason::ClientDead, "client_dead"),
             (CloseReason::Error(ErrCause::Refused), "error:refused"),
             (CloseReason::Error(ErrCause::Dns), "error:dns"),
             (CloseReason::Error(ErrCause::Other), "error:other"),
@@ -2370,6 +2386,13 @@ mod conn_tests {
             assert_eq!(reason.text(), name);
             assert_eq!(CloseReason::from_code(reason.code()), reason, "{}", name);
         }
+        // `/history` の分布は 8 列のままで、`client_dead` は `shutdown` に畳む (T14.52)
+        assert_eq!(
+            CloseReason::ClientDead.index(),
+            CloseReason::Shutdown.index()
+        );
+        assert_eq!(CLOSE_REASON_NAMES.len(), CLOSE_REASONS);
+        assert!(!CLOSE_REASON_NAMES.contains(&"client_dead"));
     }
 
     /// `since` と `client` で絞れ、新しい順に返ること。

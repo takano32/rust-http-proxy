@@ -66,6 +66,72 @@ pub const DEFAULT_SNAPSHOT_DAYS: usize = 30;
 /// `snapshots::MAX_KEPT_DAYS` と同じ値。この層は計測クレートに依存しないので数値で持つ)。
 pub const MAX_SNAPSHOT_DAYS: usize = 365;
 
+/// 消えたクライアントを見つける TCP keepalive の既定 (`PROXY_TCP_KEEPALIVE`。T14.52)。
+///
+/// 60 秒無通信で探りを出し、10 秒おきに 3 回返事が無ければ**約 90 秒**で
+/// `ETIMEDOUT` にする。`PROXY_TUNNEL_IDLE_SECS` (300 秒) より十分短いので、
+/// 「本当に暇」で閉じる前に「相手が消えた」を見分けられる。
+pub const DEFAULT_TCP_KEEPALIVE: TcpKeepalive = TcpKeepalive {
+    idle_secs: 60,
+    intvl_secs: 10,
+    count: 3,
+};
+
+/// クライアント側のソケットに当てる TCP keepalive (`PROXY_TCP_KEEPALIVE`。T14.52)。
+///
+/// 端末がスリープしたり回線が切れたりすると FIN も RST も来ないので、トンネルは
+/// `PROXY_TUNNEL_IDLE_SECS` の期限切れまで残り、閉じた理由は `idle_timeout` になる。
+/// keepalive を当てておけば消えた相手は `idle_secs + intvl_secs * count` 秒ほどで
+/// `ETIMEDOUT` になり、`client_dead` として数えられる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpKeepalive {
+    /// 無通信がこれだけ続いたら最初の探りを送る (秒。`TCP_KEEPIDLE`)
+    pub idle_secs: u32,
+    /// 探りと探りの間隔 (秒。`TCP_KEEPINTVL`)
+    pub intvl_secs: u32,
+    /// 返事の無い探りを何回まで送るか (`TCP_KEEPCNT`)
+    pub count: u32,
+}
+
+impl TcpKeepalive {
+    /// `on` / `off` / `on:<idle>:<intvl>:<cnt>` を読む。読めない書き方は `None`
+    /// (呼び出し側が既定のまま使う)。**`off` は `Some(None)`** で返す。
+    pub fn parse(v: &str) -> Option<Option<TcpKeepalive>> {
+        let v = v.trim().to_ascii_lowercase();
+        let mut it = v.split(':');
+        let head = it.next()?;
+        if matches!(head, "0" | "false" | "off" | "no") {
+            return Some(None);
+        }
+        if !matches!(head, "1" | "true" | "on" | "yes") {
+            return None;
+        }
+        let rest: Vec<&str> = it.collect();
+        if rest.is_empty() {
+            return Some(Some(DEFAULT_TCP_KEEPALIVE));
+        }
+        // 3 つ揃っていて全部 1 以上のときだけ採る (半端な指定は既定に落とす)
+        if rest.len() != 3 {
+            return None;
+        }
+        let mut n = [0u32; 3];
+        for (o, s) in n.iter_mut().zip(rest) {
+            *o = s.trim().parse::<u32>().ok().filter(|v| *v > 0)?;
+        }
+        Some(Some(TcpKeepalive {
+            idle_secs: n[0],
+            intvl_secs: n[1],
+            count: n[2],
+        }))
+    }
+
+    /// 消えた相手が `ETIMEDOUT` になるまでのおおよその秒数 (README と起動ログ用)。
+    pub fn dead_after_secs(&self) -> u32 {
+        self.idle_secs
+            .saturating_add(self.intvl_secs.saturating_mul(self.count))
+    }
+}
+
 /// SLO の 4 つの閾 (`PROXY_SLO`。T14.50)。**満たす = 値がこれ以下**。
 ///
 /// 履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、時間ごと・日ごとの達成率を
@@ -471,6 +537,13 @@ pub struct Config {
     /// `off` でも残る。当てる先はプロセス全体の旗 ([`crate::records::set`]) で、
     /// `.env` で書き換えると**次の記録から**効く
     pub records: crate::records::Mode,
+    /// 消えたクライアントの検知 (`PROXY_TCP_KEEPALIVE`、既定 `on` = 60:10:3。T14.52)。
+    ///
+    /// `Some` なら **accept 直後にクライアント側のソケットへ `setsockopt` を 4 回**当てる
+    /// (`SO_KEEPALIVE` / `TCP_KEEPIDLE` / `TCP_KEEPINTVL` / `TCP_KEEPCNT`)。`None` (`off`) は
+    /// 1 回も呼ばない。`--lite` でも当てる (枠が無くても「消えた相手」は閉じたい)。
+    /// `.env` で書き換えると**次に受ける接続から**効く (開いている接続には当て直さない)
+    pub tcp_keepalive: Option<TcpKeepalive>,
     /// 各値の出どころ (`/config` の `source`。T14.15)。効いた値にだけ印が付く
     pub sources: Sources,
 }
@@ -678,6 +751,15 @@ impl Config {
             cfg.records = m;
             src.mark("PROXY_RECORDS");
         }
+        // 消えたクライアントの検知 (T14.52)。`off` / `on` / `on:<idle>:<intvl>:<cnt>` で、
+        // 読めない書き方は既定 (`on` = 60:10:3) のまま
+        if let Some(k) = envfile::var("PROXY_TCP_KEEPALIVE")
+            .as_deref()
+            .and_then(TcpKeepalive::parse)
+        {
+            cfg.tcp_keepalive = k;
+            src.mark("PROXY_TCP_KEEPALIVE");
+        }
         if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
             cfg.stats_persist = !off(v);
             src.mark("PROXY_STATS_PERSIST");
@@ -801,6 +883,14 @@ impl Config {
     /// `PROXY_PEEK_SNI` の効いている値 (`off` / `on` / `on:<port>`。T14.38)。
     ///
     /// `on` は 443 だけ、`on:<port>` は 443 に加えてそのポートでも覗く。
+    /// `PROXY_TCP_KEEPALIVE` の効いている値を `.env` に書き戻せる形で返す (T14.52)。
+    pub fn tcp_keepalive_spec(&self) -> String {
+        match self.tcp_keepalive {
+            None => "off".to_string(),
+            Some(k) => format!("on:{}:{}:{}", k.idle_secs, k.intvl_secs, k.count),
+        }
+    }
+
     pub fn peek_sni_spec(&self) -> String {
         match self.peek_sni {
             None => "off".to_string(),
@@ -913,6 +1003,11 @@ impl Config {
         add("PROXY_TLS", self.tls_enabled.to_string());
         add("PROXY_TLS_VERIFY", self.tls_verify.to_string());
         add("PROXY_TLS_CA_FILE", path(self.tls_ca_file.as_ref()));
+        // 消えたクライアントの検知 (T14.52。`off` / `on:<idle>:<intvl>:<cnt>`)
+        add(
+            "PROXY_TCP_KEEPALIVE",
+            crate::json::quote(&self.tcp_keepalive_spec()),
+        );
         // 記録とプロファイル
         add("PROXY_RECORDS", crate::json::quote(self.records.name()));
         add("PROXY_STATS_PERSIST", self.stats_persist.to_string());
@@ -1060,6 +1155,7 @@ impl Config {
             trace_client: None,
             peek_sni: Some(DEFAULT_PEEK_SNI_PORT),
             records: crate::records::Mode::On,
+            tcp_keepalive: Some(DEFAULT_TCP_KEEPALIVE),
             sources: Sources::default(),
         })
     }
@@ -1310,6 +1406,50 @@ mod tests {
         );
     }
 
+    /// `PROXY_TCP_KEEPALIVE` の書き方 (T14.52)。半端な指定は既定に落とす。
+    #[test]
+    fn tcp_keepalive_parses_on_off_and_three_numbers() {
+        assert_eq!(TcpKeepalive::parse("on"), Some(Some(DEFAULT_TCP_KEEPALIVE)));
+        assert_eq!(
+            TcpKeepalive::parse(" ON "),
+            Some(Some(DEFAULT_TCP_KEEPALIVE))
+        );
+        assert_eq!(TcpKeepalive::parse("1"), Some(Some(DEFAULT_TCP_KEEPALIVE)));
+        assert_eq!(TcpKeepalive::parse("off"), Some(None));
+        assert_eq!(TcpKeepalive::parse("0"), Some(None));
+        assert_eq!(TcpKeepalive::parse("no"), Some(None));
+        assert_eq!(
+            TcpKeepalive::parse("on:1:1:2"),
+            Some(Some(TcpKeepalive {
+                idle_secs: 1,
+                intvl_secs: 1,
+                count: 2,
+            }))
+        );
+        // 既定は約 90 秒で `ETIMEDOUT` (`PROXY_TUNNEL_IDLE_SECS` の 300 秒より十分短い)
+        assert_eq!(DEFAULT_TCP_KEEPALIVE.dead_after_secs(), 90);
+        // 読めない書き方は `None` = 既定のまま
+        for bad in [
+            "on:1", "on:1:2", "on:0:1:2", "on:1:1:0", "on:a:b:c", "maybe", "",
+        ] {
+            assert_eq!(TcpKeepalive::parse(bad), None, "{}", bad);
+        }
+    }
+
+    /// `/config` に出る形は `.env` にそのまま書き戻せること (T14.52)。
+    #[test]
+    fn tcp_keepalive_spec_round_trips_through_parse() {
+        let mut cfg = Config::new("9090", None, None, Duration::from_secs(5)).expect("port");
+        assert_eq!(cfg.tcp_keepalive_spec(), "on:60:10:3");
+        assert_eq!(
+            TcpKeepalive::parse(&cfg.tcp_keepalive_spec()),
+            Some(cfg.tcp_keepalive)
+        );
+        cfg.tcp_keepalive = None;
+        assert_eq!(cfg.tcp_keepalive_spec(), "off");
+        assert_eq!(TcpKeepalive::parse("off"), Some(None));
+    }
+
     #[test]
     fn settings_show_the_effective_value_of_every_key() {
         let mut cfg =
@@ -1333,6 +1473,7 @@ mod tests {
         assert_eq!(find("PROXY_CONNECT_PORTS"), "\"443,8080-8099\"");
         assert_eq!(find("PROXY_PROFILE"), "\"lite\"");
         assert_eq!(find("PROXY_TLS_CA_FILE"), "null");
+        assert_eq!(find("PROXY_TCP_KEEPALIVE"), "\"on:60:10:3\"");
         assert_eq!(find("PROXY_MEM_CACHE_MB"), "\"auto\"");
         assert_eq!(find("SERVER_DISK"), find("PROXY_DISK_QUOTA_MB"), "別名");
         // 出どころは既定 (このテストは環境変数を触っていない)
