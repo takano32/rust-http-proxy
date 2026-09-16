@@ -252,7 +252,15 @@ impl Ctx<'_> {
         self.metrics
             .record_host_detail(self.pool_key, outcome, bytes, Some(took), self.detail);
         self.metrics
-            .record_client(self.client_ip, outcome, bytes, Some(took));
+            // 宛先はホスト別統計と同じ鍵 (`scheme://host:port`)。接続元の個票 (`/clients`) は
+            // この鍵からホストとポートを取る (T14.7)
+            .record_client(
+                self.client_ip,
+                outcome,
+                bytes,
+                Some(took),
+                Some(self.pool_key),
+            );
         let mut digits = [0u8; 5];
         access(
             self.conn_id,

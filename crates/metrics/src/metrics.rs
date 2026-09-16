@@ -376,6 +376,307 @@ impl HostStats {
     }
 }
 
+/// 接続元ごとに覚えておく `User-Agent` の種類 (T14.7)。
+///
+/// 1 つの IP の裏に複数の端末が居る (NAT) ことがあるので 1 つでは足りず、
+/// 並べても読めないので 4 つ。あふれた分は数えるだけ (`agents_dropped`)。
+pub const MAX_CLIENT_AGENTS: usize = 4;
+
+/// `User-Agent` を覚えておく長さ (バイト)。
+///
+/// 個票に入れてよい**唯一のヘッダー**で、先頭 128 バイトだけ (Phase 14 の共通の決まり:
+/// URL のパスも問い合わせ文字列も本文も入れない)。
+pub const MAX_AGENT_BYTES: usize = 128;
+
+/// 接続元ごとに数える宛先の種類の上限。超えたら `distinct_targets_capped` を立てる。
+pub const MAX_CLIENT_TARGETS: usize = 256;
+
+/// 接続元ごとに覚えておくポートの種類。あふれた分は `ports_other` にまとめる。
+pub const MAX_CLIENT_PORTS: usize = 8;
+
+/// `/clients` を並べる鍵 (`?sort=`。T14.7)。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ClientSort {
+    /// 要求数の多い順 (既定。`/status` の `clients[]` と同じ並び)
+    #[default]
+    Requests,
+    /// 最後に要求を受けた時刻の新しい順
+    Recent,
+    /// 宛先ホストの種類が多い順
+    Targets,
+    /// IP リテラル宛ての要求が多い順
+    Literal,
+}
+
+impl ClientSort {
+    /// `?sort=` の値から決める。**知らない値は既定 (`requests`) に倒す**
+    /// ([`HostSort::from_param`] と同じ方針)。
+    pub fn from_param(v: &str) -> Self {
+        match v {
+            "recent" => ClientSort::Recent,
+            "targets" => ClientSort::Targets,
+            "literal" => ClientSort::Literal,
+            _ => ClientSort::Requests,
+        }
+    }
+
+    /// `/clients` の `"sort"` に出す名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            ClientSort::Requests => "requests",
+            ClientSort::Recent => "recent",
+            ClientSort::Targets => "targets",
+            ClientSort::Literal => "literal",
+        }
+    }
+}
+
+/// 接続元 1 つの個票 (`/clients`。T14.7)。
+///
+/// 要求数・転送量・応答時間は今までどおり [`HostStats`] で数える (`.rrd` に残る通算)。
+/// **この型が足す欄はメモリだけ**で、再起動で消える (`/clients` の `"persisted":false`)。
+/// `.rrd` の 1 スロットは 572 B で、名前 128 B + 49 項目 × 8 B = 520 B を使っていて
+/// 余白は 52 B しかなく、`agents` だけで 4 × 128 B 要るので入らない。版を上げると
+/// 統計を全部捨てることになるので、**ここは版を上げない**選択をした (本文のとおり)。
+#[derive(Debug, Default, Clone)]
+pub struct ClientStats {
+    /// 要求数・転送量・応答時間 (`/status` の `clients[]` の今までの欄)
+    pub stats: HostStats,
+    /// 初めて見た時刻 (epoch 秒)。**`0` はこの起動より前から居た**
+    /// (状態ファイルから読み戻した接続元。いつからかは分からない)
+    pub first_seen: u64,
+    /// 見た `User-Agent` (最大 [`MAX_CLIENT_AGENTS`] 種、先頭 [`MAX_AGENT_BYTES`] バイト)
+    pub agents: Vec<String>,
+    /// そのうち最後に見たものの添字 (`/status` に出す 1 つ)
+    agent_last: usize,
+    /// 覚え切れなかった `User-Agent` の数 (5 種類目以降を名乗った接続の数)
+    pub agents_dropped: u64,
+    /// 宛先ホストの指紋 (最大 [`MAX_CLIENT_TARGETS`])。**名前は持たない**:
+    /// 読みたいのは「何種類か」だけで、名前を持つと 1,000 接続元 × 256 件で MB になる
+    targets: std::collections::HashSet<u64>,
+    /// 宛先が [`MAX_CLIENT_TARGETS`] を超えた (`/clients` では `256+` の意味)
+    pub targets_capped: bool,
+    /// 使ったポートと、その要求数 (最大 [`MAX_CLIENT_PORTS`] 種)
+    pub ports: Vec<(u16, u64)>,
+    /// 覚え切れなかったポートへの要求数
+    pub ports_other: u64,
+    /// 宛先が IP リテラルだった要求数 (名前を引かずに繋いでいる = 普通のブラウザではない)
+    pub literal_targets: u64,
+    /// 443 / 80 以外のポートへの要求数
+    pub nonstandard_ports: u64,
+    /// 直前の要求の宛先 (そのままの文字列) と、そこから決まる 4 つ。
+    /// **同じ宛先が続く間は分解も指紋も表もやり直さない**ための記憶
+    /// ([`ClientStats::note_target`] の実測を参照)
+    last_target: String,
+    last_literal: bool,
+    last_nonstandard: bool,
+    last_port_slot: Option<usize>,
+    last_ports_other: bool,
+}
+
+impl ClientStats {
+    /// いま初めて見た接続元。
+    fn now() -> ClientStats {
+        ClientStats {
+            first_seen: crate::cache::now_epoch(),
+            ..ClientStats::default()
+        }
+    }
+
+    /// 状態ファイルから読み戻した接続元 (**初めて見た時刻は分からない** ので `0`)。
+    fn restored(stats: HostStats) -> ClientStats {
+        ClientStats {
+            stats,
+            ..ClientStats::default()
+        }
+    }
+
+    /// 1 要求を数える。**呼び出し側が既に鍵を取っている** ([`Metrics::record_client`])。
+    fn count(
+        &mut self,
+        outcome: HostOutcome,
+        bytes: u64,
+        took: Option<Duration>,
+        target: Option<&str>,
+    ) {
+        self.stats.count(outcome, bytes, took, Detail::default());
+        if let Some(t) = target {
+            self.note_target(t);
+        }
+    }
+
+    /// 宛先の種類・ポート・IP リテラルを数える (鍵の内側)。
+    ///
+    /// **同じ宛先が続く間は、分解も指紋も表の引き直しもやらない** (`last_*` の記憶に
+    /// 当たれば数え上げるだけ)。要求ごとに分解をやり直すと、その 100 ns 前後が
+    /// forward の CPU/要求 では 1 us 以上になって出てくる (接続元の表の鍵は 8 並列では
+    /// 取り合いになる)。**実測 (forward の CPU/要求、前後交互 6 組の中央値)**:
+    /// 毎要求やり直す版は 40.94 → 42.27 us (+3.3%)、記憶つきは 40.57 → 40.96 us
+    /// (+0.95%、ぶれの中)。`note_target` を止めただけの版は変更前と同じ 40.57 us。
+    fn note_target(&mut self, target: &str) {
+        if self.last_target != target {
+            self.remember(target);
+        }
+        if self.last_literal {
+            self.literal_targets += 1;
+        }
+        if self.last_nonstandard {
+            self.nonstandard_ports += 1;
+        }
+        match self.last_port_slot {
+            Some(i) => self.ports[i].1 += 1,
+            None if self.last_ports_other => self.ports_other += 1,
+            None => {}
+        }
+    }
+
+    /// 宛先が変わったときだけ通る道 (分解・指紋・宛先の表・ポートの席を決める)。
+    ///
+    /// 数えるのは呼び出し元 ([`ClientStats::note_target`]) なので、ここでは
+    /// **席を決めるだけ**にする (二重に数えないため)。
+    fn remember(&mut self, target: &str) {
+        // 置き場は使い回す (宛先が 2 つの間で交互に来ても確保しない)
+        self.last_target.clear();
+        self.last_target.push_str(target);
+        let (host, port) = target_parts(target);
+        self.last_literal = false;
+        self.last_nonstandard = false;
+        self.last_port_slot = None;
+        self.last_ports_other = false;
+        if host.is_empty() {
+            return;
+        }
+        let fp = fingerprint(host);
+        if self.targets.len() < MAX_CLIENT_TARGETS {
+            self.targets.insert(fp);
+        } else if !self.targets.contains(&fp) {
+            self.targets_capped = true;
+        }
+        self.last_literal = host.parse::<std::net::IpAddr>().is_ok();
+        let Some(p) = port else {
+            return;
+        };
+        self.last_nonstandard = p != 443 && p != 80;
+        self.last_port_slot = match self.ports.iter().position(|(q, _)| *q == p) {
+            Some(i) => Some(i),
+            None if self.ports.len() < MAX_CLIENT_PORTS => {
+                // 0 で置いて、数えるのは呼び出し元に任せる
+                self.ports.push((p, 0));
+                Some(self.ports.len() - 1)
+            }
+            None => {
+                self.last_ports_other = true;
+                None
+            }
+        };
+    }
+
+    /// `User-Agent` を 1 つ覚える (**接続の最初の要求だけ**通る)。
+    fn note_agent(&mut self, agent: &str) {
+        let agent = agent.trim();
+        if agent.is_empty() {
+            return;
+        }
+        // 知っている `User-Agent` なら確保しない (接続 1 本につき 1 回通る道なので、
+        // ここで `clip` の String を作ると接続ごとの確保が 1 回増える)
+        if let Some(i) = self.agents.iter().position(|a| a.as_str() == agent) {
+            self.agent_last = i;
+            return;
+        }
+        // 覚えるのは切った形なので、長いものは切ってからもう一度見比べる
+        // (切る前と比べたままだと、長い `User-Agent` がいつまでも「知らない 1 つ」になる)
+        let agent = crate::recent::clip(agent, MAX_AGENT_BYTES);
+        if let Some(i) = self.agents.iter().position(|a| *a == agent) {
+            self.agent_last = i;
+            return;
+        }
+        if self.agents.len() >= MAX_CLIENT_AGENTS {
+            self.agents_dropped += 1;
+            return;
+        }
+        self.agents.push(agent);
+        self.agent_last = self.agents.len() - 1;
+    }
+
+    /// 宛先ホストの種類 ([`MAX_CLIENT_TARGETS`] で頭打ち。
+    /// `targets_capped` が立っていたら「これ以上」の意味)。
+    pub fn distinct_targets(&self) -> usize {
+        self.targets.len()
+    }
+
+    /// 最後に見た `User-Agent` (`/status` に出す 1 つ)。
+    pub fn agent(&self) -> Option<&str> {
+        self.agents.get(self.agent_last).map(|s| s.as_str())
+    }
+
+    /// 使ったポートを要求数の多い順に (同数は番号順。順序は 1 つに決まる)。
+    pub fn ports_sorted(&self) -> Vec<(u16, u64)> {
+        let mut v = self.ports.clone();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v
+    }
+
+    /// `/status` の `clients[]` に足す欄 (**今までの欄の後ろに並べる**。先頭の `,` 込み)。
+    pub fn status_json(&self) -> String {
+        format!(
+            ",\"first_seen\":{},\"agent\":{},\"distinct_targets\":{},\"literal_targets\":{}",
+            self.first_seen,
+            crate::json::quote_opt(self.agent()),
+            self.distinct_targets(),
+            self.literal_targets
+        )
+    }
+
+    /// `/clients` の 1 行 (`/status` の `clients[]` と同じ欄 + 個票だけの欄)。
+    pub fn to_json(&self, client: &str) -> String {
+        let ports: Vec<String> = self
+            .ports_sorted()
+            .iter()
+            .map(|(p, n)| format!("{{\"port\":{},\"requests\":{}}}", p, n))
+            .collect();
+        format!(
+            "{{\"client\":\"{}\",{}{},\"agents\":{},\"agents_dropped\":{},\"distinct_targets_capped\":{},\"ports\":[{}],\"ports_other\":{},\"nonstandard_ports\":{}}}",
+            crate::json::escape(client),
+            stats_json(&self.stats, false),
+            self.status_json(),
+            crate::json::list(&self.agents),
+            self.agents_dropped,
+            self.targets_capped,
+            ports.join(","),
+            self.ports_other,
+            self.nonstandard_ports
+        )
+    }
+}
+
+/// 宛先 (`scheme://host:port` / `host:port` / `host`) を (ホスト, ポート) に分ける。
+///
+/// 呼び出し側の鍵の形がまちまち (forward は `http://host:port`、CONNECT は `host:port`、
+/// 403 は要求行のまま) なので、**ここで 1 つに寄せる**。
+fn target_parts(target: &str) -> (&str, Option<u16>) {
+    let t = match target.find("://") {
+        Some(i) => &target[i + 3..],
+        None => target,
+    };
+    let t = match t.find('/') {
+        Some(i) => &t[..i],
+        None => t,
+    };
+    crate::net::split_host_port_ref(t)
+}
+
+/// 宛先ホストの 64 ビットの指紋 (FNV-1a、大小同一視)。
+///
+/// 種類の数を数えるだけなので名前は要らない。256 件で衝突する確率は 1e-15 の桁。
+fn fingerprint(host: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in host.as_bytes() {
+        h ^= b.to_ascii_lowercase() as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 /// `/status` の JSON に埋め込む、上の層が用意する部品。
 ///
 /// 既定 (`Default`) は `"null"`。単体テストのように上の層が居ないときに使う。
@@ -518,8 +819,8 @@ pub struct Metrics {
     pub conns: crate::recent::ConnTable,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
-    /// 接続元 IP ごとの統計 (上位 `MAX_CLIENTS`、あふれた分は "other")
-    clients: Mutex<HashMap<String, HostStats>>,
+    /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
+    clients: Mutex<HashMap<String, ClientStats>>,
 }
 
 impl Metrics {
@@ -676,16 +977,21 @@ impl Metrics {
     }
 
     /// 接続元 IP ごとに 1 要求を数える。
+    ///
+    /// `target` はこの要求の宛先 (`scheme://host:port` / `host:port`。分からなければ
+    /// `None`)。宛先の種類・ポート・IP リテラルは**この関数が既に取っている鍵の内側**で
+    /// 数える (原子操作もシステムコールも増やさない。T14.7)。
     pub fn record_client(
         &self,
         client: &str,
         outcome: HostOutcome,
         bytes: u64,
         took: Option<Duration>,
+        target: Option<&str>,
     ) {
         let mut clients = self.clients.locked();
         if let Some(stats) = clients.get_mut(client) {
-            stats.count(outcome, bytes, took, Detail::default());
+            stats.count(outcome, bytes, took, target);
             return;
         }
         let key = if clients.len() >= MAX_CLIENTS {
@@ -695,18 +1001,67 @@ impl Metrics {
         };
         clients
             .entry(key)
-            .or_default()
-            .count(outcome, bytes, took, Detail::default());
+            .or_insert_with(ClientStats::now)
+            .count(outcome, bytes, took, target);
     }
 
-    /// 要求数の多い順に並べた接続元別統計。
+    /// 接続元の `User-Agent` を 1 つ覚える (`/clients`。T14.7)。
+    ///
+    /// **呼ぶのは接続の最初の要求のときだけ** (`src/lib.rs`)。要求ごとに見ると
+    /// ヘッダーの走査も鍵も要求ごとに増えるので、接続 1 本につき 1 回に決めてある
+    /// (2 要求目からは呼び出し側の旗で飛ばす)。
+    pub fn record_client_agent(&self, client: &str, agent: &str) {
+        let mut clients = self.clients.locked();
+        if let Some(stats) = clients.get_mut(client) {
+            stats.note_agent(agent);
+            return;
+        }
+        let key = if clients.len() >= MAX_CLIENTS {
+            "other".to_string()
+        } else {
+            client.to_string()
+        };
+        clients
+            .entry(key)
+            .or_insert_with(ClientStats::now)
+            .note_agent(agent);
+    }
+
+    /// 要求数の多い順に並べた接続元別統計 (`.rrd` と `/metrics` が使う欄だけ)。
     pub fn clients_sorted(&self) -> Vec<(String, HostStats)> {
+        self.clients_sorted_by(ClientSort::Requests)
+            .into_iter()
+            .map(|(k, s)| (k, s.stats))
+            .collect()
+    }
+
+    /// 鍵を選んで並べた接続元の個票 (`/clients` と `/status` の `clients[]`。T14.7)。
+    ///
+    /// **同点は要求数 → 名前で崩す**ので、どの鍵でも順序は 1 つに決まる
+    /// ([`Metrics::hosts_sorted_by`] と同じ作法。テストが順序で書ける)。
+    pub fn clients_sorted_by(&self, sort: ClientSort) -> Vec<(String, ClientStats)> {
         let clients = self.clients.locked();
-        let mut v: Vec<(String, HostStats)> = clients
+        let mut v: Vec<(String, ClientStats)> = clients
             .iter()
             .map(|(k, s)| (k.clone(), s.clone()))
             .collect();
-        v.sort_by(|a, b| b.1.requests.cmp(&a.1.requests).then_with(|| a.0.cmp(&b.0)));
+        v.sort_by(|a, b| {
+            let tie =
+                b.1.stats
+                    .requests
+                    .cmp(&a.1.stats.requests)
+                    .then_with(|| a.0.cmp(&b.0));
+            match sort {
+                ClientSort::Requests => tie,
+                ClientSort::Recent => b.1.stats.last_seen.cmp(&a.1.stats.last_seen).then(tie),
+                ClientSort::Targets => {
+                    b.1.distinct_targets()
+                        .cmp(&a.1.distinct_targets())
+                        .then(tie)
+                }
+                ClientSort::Literal => b.1.literal_targets.cmp(&a.1.literal_targets).then(tie),
+            }
+        });
         v
     }
 
@@ -718,7 +1073,13 @@ impl Metrics {
         }
         let mut c = self.clients.locked();
         if c.is_empty() {
-            c.extend(clients);
+            // 読み戻した接続元は「いつから居るか」が分からない (`first_seen` は
+            // `.rrd` に書いていない欄なので 0 のまま = この起動より前から)
+            c.extend(
+                clients
+                    .into_iter()
+                    .map(|(k, s)| (k, ClientStats::restored(s))),
+            );
         }
     }
 
@@ -845,14 +1206,16 @@ impl Metrics {
             })
             .collect();
         let clients_json: Vec<String> = self
-            .clients_sorted()
+            .clients_sorted_by(ClientSort::Requests)
             .into_iter()
             .take(50)
             .map(|(c, s)| {
                 format!(
-                    "{{\"client\":\"{}\",{}}}",
+                    "{{\"client\":\"{}\",{}{}}}",
                     crate::json::escape(&c),
-                    stats_json(&s, false)
+                    stats_json(&s.stats, false),
+                    // T14.7 の 4 つは**末尾に足す** (既存の鍵の順は変えない)
+                    s.status_json()
                 )
             })
             .collect();
@@ -1050,9 +1413,16 @@ mod tests {
             HostOutcome::Hit,
             100,
             Some(Duration::from_millis(30)),
+            Some("http://a.example:80"),
         );
-        m.record_client("10.0.0.1", HostOutcome::Blocked, 0, None);
-        m.record_client("10.0.0.2", HostOutcome::Bypass, 5, None);
+        m.record_client(
+            "10.0.0.1",
+            HostOutcome::Blocked,
+            0,
+            None,
+            Some("ads.example:443"),
+        );
+        m.record_client("10.0.0.2", HostOutcome::Bypass, 5, None, None);
         m.record_host("blocked://ads.example", HostOutcome::Blocked, 0);
         let clients = m.clients_sorted();
         assert_eq!(clients[0].0, "10.0.0.1");
@@ -1446,6 +1816,7 @@ mod latency_tests {
                 HostOutcome::Error,
                 u64::MAX / 2,
                 Some(Duration::from_millis(1234)),
+                Some("connect://very-long-host-name.example.com:443"),
             );
         }
         for sort in [
@@ -1463,6 +1834,241 @@ mod latency_tests {
             );
             assert!(json.len() <= 64 * 1024, "{} バイト", json.len());
         }
+    }
+
+    /// 接続元の個票 (T14.7): `User-Agent`・宛先の種類・ポート・IP リテラル宛て。
+    #[test]
+    fn the_client_card_counts_agents_targets_ports_and_literals() {
+        let m = Metrics::new();
+        // `User-Agent` は接続の最初の要求で 1 回だけ渡る (前後の空白は落ちる)
+        m.record_client_agent("10.0.0.1", " t147/1.0 ");
+        for t in [
+            "connect://example.com:443",
+            "http://example.com:80",
+            "192.0.2.7:8443",
+        ] {
+            m.record_client("10.0.0.1", HostOutcome::Bypass, 1, None, Some(t));
+        }
+        let v = m.clients_sorted_by(ClientSort::Requests);
+        assert_eq!(v[0].0, "10.0.0.1");
+        let c = &v[0].1;
+        assert_eq!(c.stats.requests, 3);
+        assert_eq!(c.agents, vec!["t147/1.0".to_string()]);
+        assert_eq!(c.agent(), Some("t147/1.0"));
+        assert_eq!(c.agents_dropped, 0);
+        // 宛先は example.com と 192.0.2.7 の 2 種 (ポートが違っても同じホスト)
+        assert_eq!(c.distinct_targets(), 2);
+        assert!(!c.targets_capped);
+        assert_eq!(c.literal_targets, 1);
+        assert_eq!(c.nonstandard_ports, 1);
+        // 同数のポートは番号の小さい順 (順序は 1 つに決まる)
+        assert_eq!(c.ports_sorted(), vec![(80, 1), (443, 1), (8443, 1)]);
+        assert_eq!(c.ports_other, 0);
+        assert!(c.first_seen > 1_700_000_000);
+        // 宛先の指紋は大小を同一視する
+        m.record_client(
+            "10.0.0.1",
+            HostOutcome::Bypass,
+            0,
+            None,
+            Some("EXAMPLE.COM:443"),
+        );
+        let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
+        assert_eq!(c.distinct_targets(), 2);
+        assert_eq!(c.ports_sorted()[0], (443, 2));
+        // `/status` の欄と `/clients` の行
+        assert!(
+            c.status_json().starts_with(",\"first_seen\":"),
+            "{}",
+            c.status_json()
+        );
+        let row = c.to_json("10.0.0.1");
+        assert!(
+            row.starts_with("{\"client\":\"10.0.0.1\",\"requests\":4"),
+            "{}",
+            row
+        );
+        assert!(row.contains("\"agent\":\"t147/1.0\""), "{}", row);
+        assert!(row.contains("\"agents\":[\"t147/1.0\"]"), "{}", row);
+        assert!(
+            row.contains("\"ports\":[{\"port\":443,\"requests\":2}"),
+            "{}",
+            row
+        );
+    }
+
+    /// `User-Agent` は 4 種まで覚え、5 種類目からは数えるだけ。長いものは 128 B で切る。
+    #[test]
+    fn the_client_card_keeps_four_agents() {
+        let m = Metrics::new();
+        for i in 0..6 {
+            m.record_client_agent("10.0.0.1", &format!("ua/{}", i));
+        }
+        m.record_client("10.0.0.1", HostOutcome::Bypass, 0, None, None);
+        let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
+        assert_eq!(c.agents.len(), MAX_CLIENT_AGENTS);
+        assert_eq!(c.agents_dropped, 2);
+        // 覚えた中で最後に見たものが `/status` に出る 1 つ
+        assert_eq!(c.agent(), Some("ua/3"));
+        m.record_client_agent("10.0.0.1", "ua/0");
+        let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
+        assert_eq!(c.agent(), Some("ua/0"));
+        assert_eq!(c.agents.len(), MAX_CLIENT_AGENTS, "並びは変えない");
+
+        // 同じ長い `User-Agent` は 1 種のまま (切った形で見比べるため)
+        let long = "x".repeat(300);
+        let m2 = Metrics::new();
+        m2.record_client_agent("10.0.0.2", &long);
+        m2.record_client_agent("10.0.0.2", &long);
+        m2.record_client("10.0.0.2", HostOutcome::Bypass, 0, None, None);
+        let c2 = m2.clients_sorted_by(ClientSort::Requests).remove(0).1;
+        assert_eq!(c2.agents.len(), 1);
+        assert_eq!(c2.agents_dropped, 0);
+        assert!(
+            c2.agents[0].len() <= MAX_AGENT_BYTES,
+            "{}",
+            c2.agents[0].len()
+        );
+    }
+
+    /// 宛先は 256 種、ポートは 8 種で頭打ち (あふれた分は旗と `ports_other`)。
+    #[test]
+    fn the_client_card_caps_targets_and_ports() {
+        let m = Metrics::new();
+        for i in 0..(MAX_CLIENT_TARGETS + 10) {
+            m.record_client(
+                "10.0.0.1",
+                HostOutcome::Bypass,
+                0,
+                None,
+                Some(&format!("h{}.example:443", i)),
+            );
+        }
+        let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
+        assert_eq!(c.distinct_targets(), MAX_CLIENT_TARGETS);
+        assert!(c.targets_capped);
+        assert_eq!(
+            c.ports_sorted(),
+            vec![(443, MAX_CLIENT_TARGETS as u64 + 10)]
+        );
+
+        for p in 0..10u16 {
+            m.record_client(
+                "10.0.0.2",
+                HostOutcome::Bypass,
+                0,
+                None,
+                Some(&format!("a.example:{}", 1000 + p)),
+            );
+        }
+        let c2 = m
+            .clients_sorted_by(ClientSort::Requests)
+            .into_iter()
+            .find(|(k, _)| k == "10.0.0.2")
+            .expect("10.0.0.2 の行")
+            .1;
+        assert_eq!(c2.ports.len(), MAX_CLIENT_PORTS);
+        assert_eq!(c2.ports_other, 2);
+        assert_eq!(c2.nonstandard_ports, 10);
+        assert_eq!(c2.distinct_targets(), 1);
+    }
+
+    /// `?sort=` の鍵ごとに先頭が入れ替わること (T14.7)。
+    #[test]
+    fn clients_can_be_sorted_by_requests_recent_targets_or_literals() {
+        // (1) 要求数と「最後に見た時刻」は向きが逆になるように読み戻す
+        let m = Metrics::new();
+        m.restore(
+            vec![],
+            vec![
+                (
+                    "10.0.0.1".to_string(),
+                    HostStats {
+                        requests: 10,
+                        last_seen: 100,
+                        ..HostStats::default()
+                    },
+                ),
+                (
+                    "10.0.0.2".to_string(),
+                    HostStats {
+                        requests: 5,
+                        last_seen: 900,
+                        ..HostStats::default()
+                    },
+                ),
+            ],
+        );
+        let first = |s: ClientSort| m.clients_sorted_by(s).remove(0).0;
+        assert_eq!(first(ClientSort::Requests), "10.0.0.1");
+        assert_eq!(first(ClientSort::Recent), "10.0.0.2");
+        // 読み戻した接続元は「いつから居るか」が分からない
+        assert_eq!(m.clients_sorted_by(ClientSort::Requests)[0].1.first_seen, 0);
+
+        // (2) 宛先の種類と IP リテラル宛ても向きを逆にする
+        let m2 = Metrics::new();
+        for i in 0..3 {
+            m2.record_client(
+                "10.0.0.3",
+                HostOutcome::Bypass,
+                0,
+                None,
+                Some(&format!("h{}.example:443", i)),
+            );
+        }
+        for _ in 0..5 {
+            m2.record_client(
+                "10.0.0.4",
+                HostOutcome::Bypass,
+                0,
+                None,
+                Some("192.0.2.9:443"),
+            );
+        }
+        let first2 = |s: ClientSort| m2.clients_sorted_by(s).remove(0).0;
+        assert_eq!(first2(ClientSort::Requests), "10.0.0.4");
+        assert_eq!(first2(ClientSort::Targets), "10.0.0.3");
+        assert_eq!(first2(ClientSort::Literal), "10.0.0.4");
+        // 知らない値は既定に倒す
+        assert_eq!(ClientSort::from_param("nonsense"), ClientSort::Requests);
+        assert_eq!(ClientSort::from_param("targets"), ClientSort::Targets);
+        assert_eq!(ClientSort::from_param("literal").name(), "literal");
+    }
+
+    /// 宛先の鍵は呼び出し側でまちまちなので、ホストとポートの取り出しを 1 か所で見る。
+    #[test]
+    fn the_target_key_is_split_the_same_way_everywhere() {
+        assert_eq!(
+            target_parts("connect://example.com:443"),
+            ("example.com", Some(443))
+        );
+        assert_eq!(
+            target_parts("http://example.com:80"),
+            ("example.com", Some(80))
+        );
+        assert_eq!(
+            target_parts("http://example.com:80/a/b"),
+            ("example.com", Some(80))
+        );
+        assert_eq!(target_parts("example.com"), ("example.com", None));
+        assert_eq!(
+            target_parts("[2001:db8::1]:8443"),
+            ("2001:db8::1", Some(8443))
+        );
+        assert_eq!(target_parts("2001:db8::1"), ("2001:db8::1", None));
+        // ポートを持たない宛先はポートを数えない (ホストの種類だけ)
+        let m = Metrics::new();
+        m.record_client(
+            "10.0.0.1",
+            HostOutcome::Blocked,
+            0,
+            None,
+            Some("ads.example"),
+        );
+        let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
+        assert_eq!(c.distinct_targets(), 1);
+        assert!(c.ports.is_empty());
+        assert_eq!(c.nonstandard_ports, 0);
     }
 
     #[test]

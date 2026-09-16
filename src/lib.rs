@@ -1058,6 +1058,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
 
     // Host の値は行の添字で覚えておき、読み終わってから借用する (複製しない)
     let mut host_line: Option<usize> = None;
+    // `User-Agent` も行の添字で覚える (`/clients`。T14.7)。**拾うのは接続の最初の要求だけ**で、
+    // 2 要求目からはこの旗が倒れているので、ヘッダー 1 行につき比較 1 回で飛ばせる
+    // (`--lite` では記録しないので端から見ない。Phase 14 の共通の決まり)
+    let want_agent = *served == 0 && !config.lite;
+    let mut agent_line: Option<usize> = None;
     // 受けた Via に自分の印 (起動ごとの 8 桁 16 進) があるか = 自分を通った要求が戻ってきた
     let mut via_loop = false;
     // ヘッダー全体の大きさ (要求行を含む)
@@ -1113,6 +1118,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 has_body = true;
             } else if !via_loop && k.eq_ignore_ascii_case("via") {
                 via_loop = via::is_self(v);
+            } else if want_agent && agent_line.is_none() && k.eq_ignore_ascii_case("user-agent") {
+                agent_line = Some(index);
             }
         }
         scratch.commit();
@@ -1153,7 +1160,13 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         );
         // 個票にも 1 件残す (`/errors`。T13.4)
         metrics.record_error(false, host_header.unwrap_or(target), peer_ip, 508, &detail);
-        metrics.record_client(peer_ip, metrics::HostOutcome::Error, 0, None);
+        metrics.record_client(
+            peer_ip,
+            metrics::HostOutcome::Error,
+            0,
+            None,
+            Some(host_header.unwrap_or(target)),
+        );
         return Ok(Step::Close);
     }
 
@@ -1192,6 +1205,16 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             request_line.trim_end(),
             true,
         ));
+    }
+
+    // 接続元の個票に `User-Agent` を写す (`/clients`。T14.7)。ここまで来た要求は
+    // 「自分宛てでもなく、上限の外でもない = プロキシとして通す要求」なので、
+    // `/status` を引いただけの相手で `clients[]` が増えることはない。
+    // **通るのは接続の最初の要求の 1 回だけ** (鍵を取るのも接続 1 本につき 1 回)
+    if let Some(i) = agent_line
+        && let Some((_, v)) = scratch.lines[i].split_once(':')
+    {
+        metrics.record_client_agent(peer_ip, v);
     }
 
     // ACL / Host Check
@@ -1245,7 +1268,13 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             metrics::HostOutcome::Blocked,
             0,
         );
-        metrics.record_client(peer_ip, metrics::HostOutcome::Blocked, 0, None);
+        metrics.record_client(
+            peer_ip,
+            metrics::HostOutcome::Blocked,
+            0,
+            None,
+            Some(target_host),
+        );
         // 個票にも 1 件残す (`/errors`。T14.2 (4))。403 は集計では `blocked` に数えてあり、
         // `errors_by_cause` には乗らないので、**誰が何を拒否されたか**はここでしか読めない
         metrics.record_blocked(is_connect, target_host, peer_ip, why);
