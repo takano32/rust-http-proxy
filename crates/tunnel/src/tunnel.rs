@@ -125,6 +125,8 @@ fn open(
                 &client_ip,
                 HostOutcome::Error,
                 0,
+                // 繋がらなかったので運んだバイトは上りも下りも無い (T14.26)
+                (0, 0),
                 Some(started.elapsed()),
                 Some(&addr_str),
             );
@@ -195,6 +197,8 @@ fn detail_of(total: Duration, cause: Option<ErrCause>, stages: StageMs) -> Detai
         first_byte_ms: None,
         // `queue` と `client_read` は本体クレートが測った値 (T14.3 (1))
         stages,
+        // 向き別のバイト (T14.26) は終わってからでないと分からないので `report` が入れる
+        ..Detail::default()
     }
 }
 
@@ -289,6 +293,12 @@ fn report(
             .transfer
             .observe(transferred, relay, half_close);
     }
+    // 向き別のバイト (T14.26)。**数え直しはしていない**: 中継が方向ごとに持っている
+    // `up` / `down` (すぐ上で個票に渡したのと同じ値) をホスト別統計の鍵の内側へ
+    // 運ぶだけなので、足し算 2 回のほかに費用は無い。`--lite` (枠が無い = 上の
+    // `if let` を通らない) でもホスト別統計は生きているので、ここは枠の外に置く
+    detail.bytes_in = up;
+    detail.bytes_out = down;
     o.metrics.add_bytes(transferred);
     let host_key = format!("connect://{}", o.addr_str);
     o.metrics.record_host_detail(
@@ -302,6 +312,7 @@ fn report(
         &o.client_ip,
         HostOutcome::Bypass,
         transferred,
+        (up, down),
         Some(o.connect_took),
         // 接続元の個票に宛先の種類とポートを数える (`/clients`。T14.7)。
         // トンネル 1 本の終わりに 1 回だけで、鍵は record_client のものをそのまま使う
