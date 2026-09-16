@@ -289,6 +289,128 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     (200, "application/json", out)
 }
 
+/// `/snapshot` の上限 (4 MiB)。個票 1 本 1 本の上限 ([`MAX_BODY`]) とは別枠。
+///
+/// デプロイ先から 1 日 1 回取って保存する大きさなので、回線を占めない・エディタで
+/// 開ける・`python -m json.tool` が通る、の 3 つが収まる値にしてある。
+pub const MAX_SNAPSHOT: usize = 4 * 1024 * 1024;
+
+/// `/snapshot` が越えたときに落とす順 (大きいものから)。落としたものは `"dropped"` に出る。
+const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
+
+/// `/snapshot` — 上の全部を **1 要求で** 1 つの JSON にして返す (T14.4)。
+///
+/// デプロイ先のデータ収集が 17 本の URL を手で叩く作業になっていた (T14.0) ので、
+/// `scripts/collect-deployed.sh` が 1 回で取って保存できる形にする。
+///
+/// **組み立ては同じプロセス内の関数呼び出し**で、自分へ HTTP で繋ぎ直さない
+/// (17 本ぶんの接続を増やさない。上限に当たっている最中でも取れる。測る行為が
+/// `/connections` や `/recent` を変えない)。**保持もしない** (要求ごとに組む)。
+///
+/// 中身: `status` (`?sort=` の 3 通り)、`history` (5 / 60 / 3600 秒)、`dns`、`errors`、
+/// `connections`、`recent`、`hosts`、`log`。**T14.3 の `/profile`、T14.6 の `/bursts`、
+/// T14.7 の `/clients` は、入ったらここに 1 行ずつ足す** (`parts` に名前が出るので、
+/// 読む側は「この版に何が入っていたか」を JSON だけで判別できる)。
+pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
+    use crate::history::History;
+    use crate::metrics::HostSort;
+
+    // 個票はどれも 256 KiB 以下、`/status` は 64 KiB 以下、履歴は 3 本で最大 2 MiB。
+    // 先に全部組んでから、合計が 4 MiB を越えていたら順に落とす
+    let mut part: Vec<(&'static str, String)> = vec![
+        ("status", super::status_body(ep, HostSort::Requests)),
+        ("status_errors", super::status_body(ep, HostSort::Errors)),
+        ("status_dns", super::status_body(ep, HostSort::Dns)),
+        (
+            "history.5",
+            ep.metrics.history.to_json_res(History::index_for(5)),
+        ),
+        (
+            "history.60",
+            ep.metrics.history.to_json_res(History::index_for(60)),
+        ),
+        (
+            "history.3600",
+            ep.metrics.history.to_json_res(History::index_for(3600)),
+        ),
+        ("dns", dns(Some("sort=age&limit=4096")).2),
+        ("errors", errors(ep, Some("n=500")).2),
+        ("connections", connections(ep).2),
+        ("recent", recent(ep, Some("n=2000")).2),
+        ("hosts", hosts(ep, Some("limit=1000")).2),
+        ("log", log(Some("n=1000")).2),
+    ];
+    let names: Vec<&'static str> = part.iter().map(|(k, _)| *k).collect();
+    let dropped = drop_to_fit(&mut part, MAX_SNAPSHOT);
+    let total: usize = overhead_of(&part) + part.iter().map(|(_, v)| v.len()).sum::<usize>();
+
+    let mut out = String::with_capacity(total + 1024);
+    let _ = write!(
+        out,
+        "{{\"taken_at\":{},\"version\":\"{}\",\"uptime_secs\":{},\"limit_bytes\":{},\"parts\":[",
+        crate::cache::now_epoch(),
+        crate::json::escape(ep.version),
+        ep.metrics.start_time.elapsed().as_secs(),
+        MAX_SNAPSHOT,
+    );
+    for (i, name) in names.iter().enumerate() {
+        let _ = write!(out, "{}\"{}\"", if i == 0 { "" } else { "," }, name);
+    }
+    out.push_str("],\"dropped\":[");
+    for (i, name) in dropped.iter().enumerate() {
+        let _ = write!(out, "{}\"{}\"", if i == 0 { "" } else { "," }, name);
+    }
+    out.push(']');
+    // `history` だけは `{"5":…,"60":…,"3600":…}` に入れ子にする (`/history?res=` と同じ鍵)
+    let mut history_open = false;
+    for (name, body) in &part {
+        match name.strip_prefix("history.") {
+            Some(res) => {
+                out.push_str(if history_open { "," } else { ",\"history\":{" });
+                history_open = true;
+                let _ = write!(out, "\"{}\":{}", res, body);
+            }
+            None => {
+                if history_open {
+                    out.push('}');
+                    history_open = false;
+                }
+                let _ = write!(out, ",\"{}\":{}", name, body);
+            }
+        }
+    }
+    if history_open {
+        out.push('}');
+    }
+    out.push('}');
+    (200, "application/json", out)
+}
+
+/// 頭 (`taken_at` など) と鍵の飾りぶんの余白。
+fn overhead_of(part: &[(&'static str, String)]) -> usize {
+    512 + part.iter().map(|(k, _)| k.len() + 8).sum::<usize>()
+}
+
+/// 合計が `limit` を越えていたら [`DROP_ORDER`] の順に `null` へ置き換え、落とした名前を返す。
+///
+/// 落とす順は「大きい割に後から取り直せるもの」から: `recent` (2,000 件) →
+/// `log` (1,000 行) → `history.5` (5 秒標本 720 本。60 秒と 3600 秒があれば形は見える)。
+fn drop_to_fit(part: &mut [(&'static str, String)], limit: usize) -> Vec<&'static str> {
+    let mut total: usize = overhead_of(part) + part.iter().map(|(_, v)| v.len()).sum::<usize>();
+    let mut dropped = Vec::new();
+    for name in DROP_ORDER {
+        if total <= limit {
+            break;
+        }
+        if let Some((_, body)) = part.iter_mut().find(|(k, _)| *k == name) {
+            total = total - body.len() + 4;
+            *body = "null".to_string();
+            dropped.push(name);
+        }
+    }
+    dropped
+}
+
 /// `?sort=` に出す名前 (`/status?sort=` と同じ綴り)。
 fn sort_name(sort: crate::metrics::HostSort) -> &'static str {
     match sort {
@@ -436,6 +558,42 @@ mod tests {
                 MAX_BODY
             );
         }
+    }
+
+    /// 4 MiB を越えたら `/recent` → `/log` → `/history?res=5` の順に落とすこと (T14.4)。
+    #[test]
+    fn the_snapshot_drops_the_biggest_parts_in_order() {
+        let build = || {
+            vec![
+                ("status", "s".repeat(100)),
+                ("history.5", "a".repeat(400)),
+                ("history.60", "b".repeat(400)),
+                ("recent", "c".repeat(500)),
+                ("log", "d".repeat(300)),
+            ]
+        };
+        // 収まっていれば 1 つも落とさない
+        let mut part = build();
+        assert!(drop_to_fit(&mut part, MAX_SNAPSHOT).is_empty());
+        assert_eq!(part[3].1.len(), 500);
+
+        // いちばん大きい `recent` から順に落ちる
+        let total = overhead_of(&part) + 1700;
+        let mut part = build();
+        assert_eq!(drop_to_fit(&mut part, total - 1), ["recent"]);
+        assert_eq!(part[3], ("recent", "null".to_string()));
+        assert_eq!(part[4].1.len(), 300, "log はまだ残る");
+
+        let mut part = build();
+        assert_eq!(drop_to_fit(&mut part, total - 700), ["recent", "log"]);
+        let mut part = build();
+        assert_eq!(
+            drop_to_fit(&mut part, 1),
+            ["recent", "log", "history.5"],
+            "3 つ落としてもこれ以上は落とさない"
+        );
+        assert_eq!(part[0].1.len(), 100, "`/status` は落とさない");
+        assert_eq!(part[2].1.len(), 400, "60 秒の履歴は落とさない");
     }
 
     /// `?sort=` の並びと `?since=` / `?client=` の絞り (T14.4)。

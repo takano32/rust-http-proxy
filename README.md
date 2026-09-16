@@ -222,6 +222,13 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `?sort=slow` は確立 (`ms.connect`) の遅い順、`?sort=bytes` は転送の多い順。
     **自分宛て (`/status` `/dashboard` …) だけで終わった接続は残しません** — 監視が 5 秒おきに引くとリングがそれで埋まるためです
     (数は `/status` にあります)
+  - **1 要求で全部取る (T14.4)**: `/snapshot` は上の口を **1 つの JSON** にまとめて返します
+    (`status` / `status_errors` / `status_dns` / `history` (`5` / `60` / `3600`) / `dns` / `errors` /
+    `connections` / `recent` / `hosts` / `log`。何が入っているかは `parts` に並びます)。
+    デプロイ先の様子を見るのに 17 本の URL を手で叩いていたのを 1 回で済ませるための口で、
+    **組み立ては同じプロセス内の関数呼び出し** (自分へ HTTP で繋ぎ直さないので、接続を 17 本増やしませんし、
+    上限に当たっている最中でも取れます)。上限は **4 MiB** で、越えたら `recent` → `log` → `history.5` の順に
+    `null` へ落として `dropped` に名前を出します。保存して読むのは `scripts/collect-deployed.sh` です
   - どの個票も応答は 256 KiB 以下 (件数の上限とは別にバイト数でも打ち切り、切ったら `"truncated": true`)。
     リングはプロセスのメモリだけで、状態ファイル (`.rrd`) には書きません (再起動で消えてよい個票)。
     **どれも認証なしで見えます** (このプロキシの方針。`/purge` と同じ)。接続元の IP と宛先ホストが並ぶので、
@@ -834,6 +841,7 @@ curl "http://127.0.0.1:8080/recent?n=200"               # 閉じた接続 (新�
 curl "http://127.0.0.1:8080/recent?sort=slow&n=20"      # 確立のいちばん遅かった 20 本
 curl "http://127.0.0.1:8080/recent?client=198.51.100.7" # ある接続元だけ
 curl "http://127.0.0.1:8080/recent?since=$(( $(date +%s) - 3600 ))"   # 直近 1 時間に開いたもの
+curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
 
 # キャッシュの操作・確認
 curl -X PURGE -x http://127.0.0.1:8080 http://example.com/file.zip     # 1 URL (全バリアント) を消す
