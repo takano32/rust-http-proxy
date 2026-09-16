@@ -22,6 +22,12 @@
 //!   8. connect-multi: 4 と同じだが宛先が**名前** (`multi.test`) なので、プロキシ側で
 //!      候補が 2 つ (黒穴の AAAA と生きている A) になり Happy Eyeballs 本体を通る。
 //!      `scripts/deployed-like.sh` の中でだけ走る (`--only connect-multi`)
+//!   9. replay: デプロイ先の `/recent` (T14.4) の個票を**同じ間隔・同じ本数**で張り直す
+//!      (`--only replay --replay-file <path> [--speed 10]`。T14.29)。宛先のホスト名は
+//!      そのままに、ポートだけ内蔵オリジンへ置き換える。名前解決は
+//!      `scripts/deployed-like.sh --hosts-from <path>` の `/etc/hosts` に任せる
+
+mod replay;
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -46,19 +52,32 @@ struct Args {
     /// オリジン応答を保存可能にする (キャッシュ HIT 側を測る)
     cacheable: bool,
     /// 測る種類 ("all" / "direct" / "forward" / "tunnel" / "connect" / "connect-multi" /
-    /// "idle-tunnels" / "idle-conns" / "syscall-cost")
+    /// "idle-tunnels" / "idle-conns" / "syscall-cost" / "replay")
     only: String,
     /// 1 要求ごとに接続を張り直す (接続あたりの固定費を測る)
     no_keepalive: bool,
+    /// `--only replay` が読む個票 (`/recent` / `/snapshot` / `/connections` の JSON。T14.29)
+    replay_file: Option<String>,
+    /// `--only replay` の RTT の出どころ (`/hosts` の JSON。個票と同じ JSON にあれば要らない)
+    rtt_file: Option<String>,
+    /// 再生の倍速 (`--only replay`。1 で等速、10 で 10 倍速)
+    speed: f64,
+    /// 再生を打ち切る秒 (`--only replay`。0 なら個票を最後まで再生する)
+    replay_secs: u64,
+    /// `/status` と `/bursts` を引く先 (既定は `--proxy` と同じ)
+    admin: Option<String>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: bench [--proxy HOST:PORT] [--conc N] [--seconds N] [--body-bytes N]\n\
                      [--only direct|forward|tunnel|connect|connect-multi|idle-tunnels|\n\
-                             idle-conns|syscall-cost|all]\n\
+                             idle-conns|syscall-cost|replay|all]\n\
+                     [--replay-file PATH] [--rtt-file PATH] [--speed N] [--replay-secs N]\n\
+                     [--admin HOST:PORT]\n\
          \n\
-         Without --proxy only the direct (origin) baseline is measured."
+         Without --proxy only the direct (origin) baseline is measured.\n\
+         --only replay needs --replay-file (a /recent, /snapshot or /connections JSON)."
     );
     std::process::exit(2);
 }
@@ -72,6 +91,11 @@ fn parse_args() -> Args {
         cacheable: false,
         only: "all".to_string(),
         no_keepalive: false,
+        replay_file: None,
+        rtt_file: None,
+        speed: 1.0,
+        replay_secs: 0,
+        admin: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -84,11 +108,16 @@ fn parse_args() -> Args {
             "--cacheable" => args.cacheable = true,
             "--only" => args.only = value(),
             "--no-keepalive" => args.no_keepalive = true,
+            "--replay-file" => args.replay_file = Some(value()),
+            "--rtt-file" => args.rtt_file = Some(value()),
+            "--speed" => args.speed = value().parse().unwrap_or_else(|_| usage()),
+            "--replay-secs" => args.replay_secs = value().parse().unwrap_or_else(|_| usage()),
+            "--admin" => args.admin = Some(value()),
             "-h" | "--help" => usage(),
             _ => usage(),
         }
     }
-    if args.conc == 0 || args.seconds == 0 {
+    if args.conc == 0 || args.seconds == 0 || !(args.speed.is_finite() && args.speed > 0.0) {
         usage();
     }
     args
@@ -1024,6 +1053,24 @@ fn main() {
     // システムコールの実費だけを測るモード (プロキシもオリジンも使わない)
     if args.only == "syscall-cost" {
         syscost::run(args.seconds);
+        return;
+    }
+
+    // デプロイ先の個票の再生 (相手は自前の再生オリジンなので、下の固定応答オリジンは使わない)
+    if args.only == "replay" {
+        let (Some(proxy), Some(file)) = (args.proxy.as_deref(), args.replay_file.as_deref()) else {
+            eprintln!("bench: --only replay needs --proxy and --replay-file");
+            usage();
+        };
+        let proxy = parse_addr(proxy);
+        replay::run(&replay::ReplayArgs {
+            proxy,
+            file,
+            rtt_file: args.rtt_file.as_deref(),
+            speed: args.speed,
+            limit_secs: args.replay_secs,
+            admin: args.admin.as_deref().map_or(proxy, parse_addr),
+        });
         return;
     }
 
