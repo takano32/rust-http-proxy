@@ -381,7 +381,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **`"persisted": false`** は「これらの新しい欄は状態ファイルに残らない (再起動で消える)」の意味です
     (`.rrd` の 1 スロット 572 B は既存の 49 項目で 520 B 使っていて、`agents` だけで 4 × 128 B 要るため。
     版を上げると統計を全部捨てることになるので上げていません)。
-    **T14.5 の RTT の 4 欄 (32 B) はスロットの余白に入ったので残ります** (552 B。余白は 20 B)
+    **T14.5 の RTT の 4 欄 (32 B) と T14.26 の向き別のバイト 2 欄 (16 B) はスロットの余白に入ったので残ります**
+    (552 → 568 B。**余白は 20 → 4 B** で、版を上げずに足せる項目はもうありません)
   - **閉じた接続の個票 (T14.4)**: `/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
     `/connections` が「いま」しか見せないのに対し、こちらは「**起きたこと**」です。1 件 = 接続 id・開いた時刻 (`at`、epoch 秒)・
     接続元 (`client`)・宛先 (`target`)・種類 (`kind` = `connect` / `http`)・寿命 (`secs`)・要求数 (`reqs`、http だけ)・
@@ -1440,6 +1441,12 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"}` (最後の値) と
 
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
+バイト数は合計 (`bytes`) のほかに**向き別の `bytes_in` / `bytes_out`** が並びます (T14.26。`bytes_in` =
+クライアント → オリジン = 上り、`bytes_out` = オリジン → クライアント = 下り)。上り主体の相手 (ログ送信) は
+「利用者の回線の上り」が律速で、プロキシでもオリジンでもない — その切り分けに使います。
+**CONNECT は `bytes == bytes_in + bytes_out`** ですが、**forward の `bytes` は今までどおり応答のぶんだけ**なので
+(欄の意味は変えていません)、要求本文のある相手では `bytes_in + bytes_out` の方が大きくなります。
+数え直しはしていません (中継が方向ごとに持っている値と、要求本文 / 応答のバイトをそのまま渡すだけです)。
 **`?sort=requests|errors|dns|slow` でこの 50 件の切り出し方を変えられます** (既定は `requests` = 今までどおりの要求数順。
 `errors` はエラー件数、`dns` は名前解決に費やした合計 `dns_ms_sum`、`slow` は応答 (CONNECT は確立) の平均 `avg_ms` の
 多い / 遅い順。**知らない値は既定に倒します**)。JSON の形も件数も変わらず、変わるのは `hosts[]` の並びだけです
@@ -1461,6 +1468,7 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"}` (最後の値) と
 **裏の引き直しはミスに数えません** (利用者は待っていないので、`misses` と `miss_avg_ms` に混ぜると
 「ミス 1 回の値段」が読めなくなる)。`/metrics` では `sorahost_dns_lookups_total{result="refresh"}` です。
 `clients[]` にも同じ `rtt_ms` / `retrans` が出ますが、**こちらはクライアント側** (利用者 → プロキシの往復) です。
+`bytes_in` / `bytes_out` も同じ向き (`bytes_in` = その端末が上げた量) で出るので、「この端末は上りが主か下りが主か」が読めます。
 `/status` の `clients[]` には接続元 IP ごとの要求数・転送量・拒否数・応答時間が要求数順に最大 50 件入り、
 末尾に **`first_seen`** (初めて見た時刻。`0` = この起動より前から居る) / **`agent`** (最後に見た `User-Agent` 1 つ。
 無ければ `null`) / **`distinct_targets`** (宛先ホストの種類) / **`literal_targets`** (IP リテラル宛ての要求数) が付きます

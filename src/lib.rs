@@ -1423,6 +1423,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             peer_ip,
             metrics::HostOutcome::Error,
             0,
+            // 508 で閉じたので運んだバイトは上りも下りも無い (T14.26)
+            (0, 0),
             None,
             Some(host_header.unwrap_or(target)),
         );
@@ -1535,6 +1537,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             peer_ip,
             metrics::HostOutcome::Blocked,
             0,
+            // 403 で断ったので運んだバイトは上りも下りも無い (T14.26)
+            (0, 0),
             None,
             Some(target_host),
         );
