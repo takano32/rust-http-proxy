@@ -3339,7 +3339,8 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
 **待つ間に決めてよいこと (数字に依らない)** → T14.2 にまとめた。**追加 (2026-09-16、利用者の指示)**: ボトルネックを推定できる
 プロファイル画面 → T14.3。
 
-**順番 (2026-09-16 に入れ替えた)**: **T14.1 → T14.2 → T14.3 → 再デプロイ → 24 時間 → T14.9**。T14.9 (デプロイ後の様子見と締め) は
+**順番 (2026-09-16 に入れ替えた)**: **T14.1 → T14.2 → T14.3 → T14.4 → (T14.5 ∥ T14.7) → T14.6 → T14.8 → 再デプロイ → 24 時間 → T14.9**
+(T14.4 は個票の形を決めるので先、T14.5 と T14.7 は触るファイルが違うので並列、T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く)。T14.9 (デプロイ後の様子見と締め) は
 「デプロイ先の数字で書く」タスクなので、T14.3 の `/profile` まで入った版でデータを取ってから書く方が、1 回の再デプロイで済み、
 締めの表に段階の内訳 (どこで待っているか) まで載せられる。T14.1 と T14.2 は並列、T14.3 はその 2 つをマージしてから。
 **採番の決まり (Phase 14 から)**: 各 Phase の `Tn.9` は「デプロイ後の様子見と修正、締めの文書」に予約する (§0)。
@@ -3483,12 +3484,126 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
     時間) ので、画面では **「確立まで」(queue + client_read + dns + connect + first_relay) と「その後」(relay / park) を分けて積む**。
     **T14.1 / T14.2 のあとに着手** (`src/lib.rs` `http/mod.rs` `metrics.rs` を触るため)。再デプロイはこれまで入れて 1 回 (T14.9)。
 
+**追加の収集 (2026-09-16、利用者の指示: 次のデプロイで取れるデータを限界まで有用にする)**。T14.3 (プロファイル) に加えて、
+2026-09-16 の分析で「あれば答えが出た」ものを 5 つ足す。どれも**成功の熱い経路には 1 命令も足さない** (書くのは接続の開始・終了・
+預ける瞬間・エラーの経路だけ)。**共通の決まり** (T14.4〜T14.8 全部に効く。各タスクの本文にも貼る):
+
+- 記録はメモリ上の固定長の環状バッファ (`.rrd` は触らない。再起動で消えてよい。例外は T14.4 のファイル)。
+- 応答は 256 KiB 以下 (件数の上限とは別にバイト数で打ち切り `"truncated":true`。T13.4 と同じ)。例外は `/snapshot` (4 MiB)。
+- `--lite` では記録しない (T1.4)。Linux 専用のものは `unsafe extern "C"` + `#[cfg(target_os = "linux")]`、他 OS では「無い」と出す。
+- 費用の確認は毎回同じ: forward の CPU/要求 (前後交互 3 組) と CONNECT 確立 (**6 組**) が ±ぶれの中、`--lite` のシステムコール 5.01 回/要求 と
+  確保が動かない。**接続ごとに増える分は本文に数字で書く** (例: 「トンネル 1 本の終わりに `getsockopt` 2 回」)。
+- 個票に入れるのは接続元 IP・宛先ホスト:ポート・時刻・数字だけ。**URL のパスや問い合わせ文字列、本文、ヘッダー** (`User-Agent` の
+  先頭 128 バイトだけ例外) **は入れない**。認証なしで見える (`/purge` と同じ方針) ので README に書く。
+- `/` の案内 (T12.3)、README のエンドポイント一覧、`scripts/check-dashboard.js` (T14.8 で描く関数) を各タスクで更新する。
+
+- [ ] **T14.4 閉じた接続の個票 `/recent` と、1 回で全部取る `/snapshot`**
+  - 目的: 2026-09-16 の分析で最も欲しかったのは「バーストのとき誰が何を開いたか」「遅かった 1 本はどの段階で遅かったか」で、
+    `/connections` は**いま**しか見えず、`/errors` は失敗だけ。閉じた接続 1 本ごとの記録があれば、山も遅い接続も後から読める。
+    あわせて、データ収集が 17 本の URL を手で叩く作業になっている (T14.0) ので、1 要求で全部取れる `/snapshot` と、それを保存して
+    読む `scripts/collect-deployed.sh` を作る。
+  - 変更箇所: `crates/metrics/src/recent.rs` (閉じた接続のリング。`ConnSlot` に開始時刻と段階の値を足す)、`src/lib.rs` (接続の終了で
+    1 件書く。閉じた理由を渡す)、`crates/tunnel/src/tunnel.rs` (`report` に閉じた理由と段階を渡す)、`crates/http/src/http/mod.rs`
+    (forward の接続の終了)、`crates/endpoints/src/endpoints/recent.rs` (`/recent`、`/snapshot`)、`scripts/collect-deployed.sh` (新規)、
+    `scripts/status-diff.py` (`/snapshot` の JSON を読める)、README。
+  - やること (1 件 1 コミット):
+    1. **`/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes`** (既定 200、最大 2,000。リングは 2,000 件固定、1 件 ≤ 256 B):
+       1 件 = 接続 id、接続元、宛先、種類 (`connect` / `http`)、開いた時刻、寿命 (秒)、要求数 (http)、バイト (上り / 下り別)、
+       **閉じた理由** (`client_eof` / `server_eof` / `idle_timeout` / `keepalive_timeout` / `error:<cause>` / `evicted` / `limit` (1,000 要求) /
+       `shutdown`)、**段階の ms** (T14.3 の `queue` / `client_read` / `dns` / `connect` / `first_relay`。T14.3 より先に着手するなら
+       `dns` / `connect` だけ入れて残りは T14.3 が足す)、預けられていた合計秒、預けられた回数、状態コード (http の最後の応答)。
+       書くのは**接続の終了で 1 回** (`ConnSlot` の抹消と同じ場所。鍵はリングの鍵 1 回)。
+    2. **`/snapshot`**: `/status`、`/status?sort=errors`、`/status?sort=dns`、`/history?res=5|60|3600`、`/dns`、`/errors?n=500`、
+       `/connections`、`/recent?n=2000`、`/hosts?limit=1000`、`/log?n=1000`、`/profile?res=5|60` (あれば)、`/bursts` (あれば)、`/clients` (あれば)
+       を **1 つの JSON** (`{"taken_at":epoch,"version":...,"status":{...},"history":{"5":...},...}`) で返す。上限 4 MiB (超えたら大きい順に
+       `/recent` → `/log` → `/history?res=5` を落として `"dropped":[...]`)。組み立ては要求ごと (保持しない)。
+    3. **`scripts/collect-deployed.sh HOST:PORT [DIR]`**: `/snapshot` を `DIR/<UTC 時刻>-snapshot.json` に保存し、`status-diff.py`
+       (前回の snapshot があれば差分)、`check-dashboard.js`、`probe-deployed.sh` を続けて回して 1 枚の要約 (Markdown) を標準出力に出す。
+       既定の `DIR` は `~/rust-http-proxy-status/`。**リポジトリには保存しない**。
+  - 受け入れ基準: 結合テストで、(a) 閉じた CONNECT が `/recent` に 1 件 (理由 `client_eof`、寿命、バイト、`dns` / `connect` ms)、
+    (b) 1,000 要求で閉じた http 接続が `limit`、アイドルで閉じたトンネルが `idle_timeout`、T13.2 で閉じたものが `evicted` として見える、
+    (c) `?client=` と `?since=` で絞れる、`?sort=slow` が `connect` の大きい順、(d) `/snapshot` が 1 要求で上の全部を含み 4 MiB 以下
+    (各キーがある)、(e) 2,000 件のリングを `n=2000` で読んで 256 KiB で打ち切られる (`truncated`)。費用: 共通の決まり (接続の終了に
+    リングの鍵 1 回と 1 件の書き込み)。`collect-deployed.sh` を手元のプロキシに対して回して要約が出ること。
+- [ ] **T14.5 カーネルの RTT と再送 (`TCP_INFO`) を接続の個票とホスト別・接続元別に**
+  - 目的: 「mtalk.google.com の 30 ms は RTT か」「urlscan.io の 250 ms は RTT か」「利用者 → プロキシの往復は何 ms か」を、これまでは
+    接続にかかった時間 (SYN の往復 + α) から推測していた。カーネルは各ソケットの **平滑化 RTT・再送回数・輻輳窓** を持っている
+    (`getsockopt(SOL_TCP, TCP_INFO)`)。これを接続の終わりに 2 本 (クライアント側・オリジン側) 読めば、**物理 (RTT) と自分 (それ以外) が
+    切り分けられ**、パケット損失 (再送) が見え、**利用者側の回線の質**が初めて数字になる。
+  - 変更箇所: `crates/sys/src/sys.rs` (`getsockopt` の束縛と `tcp_info` の読み出し。`SOL_TCP = 6`、`TCP_INFO = 11`。構造体は
+    `linux/tcp.h` の `struct tcp_info` で、**先頭 8 バイトが u8 の旗、以後 u32 の並び**: `tcpi_lost` はオフセット 32、`tcpi_retrans` 36、
+    `tcpi_pmtu` 60、`tcpi_rtt` 68 (us)、`tcpi_rttvar` 72、`tcpi_snd_cwnd` 80、`tcpi_total_retrans` 100。104 バイトの緩衝を渡し、カーネルは
+    `min(len, sizeof)` だけ書くので古いカーネルでも落ちない。**実装前に手元の `/usr/include/linux/tcp.h` でオフセットを確かめる**)、
+    `crates/tunnel/src/tunnel.rs` (`report` で 2 本読む)、`src/lib.rs` (http 接続の終了でクライアント側を読む)、`crates/origin/src/pool.rs`
+    (オリジン接続を捨てるときに読む)、`crates/metrics/src/metrics.rs` (`HostStats` に `rtt_us_sum` / `rtt_us_min` / `retrans` /
+    `rtt_samples`、`ClientStats` に同じ 4 つ。**`.rrd` の版は上げない**: `HostStats` のスロットに余白があるか先に見て、無ければ
+    メモリだけ (再起動で消える) にする)、`crates/metrics/src/recent.rs` (個票に `rtt_ms` / `retrans` を 2 本ぶん)、`/hosts` `/status` の
+    JSON、`/metrics` (`sorahost_host_rtt_seconds` は出さない — 系列が増えすぎる。全体の `sorahost_rtt_seconds{side="client"|"origin"}` の
+    sum/count だけ)、README。Linux 以外は `null`。
+  - やること: (1) `sys::tcp_info(fd) -> Option<TcpInfo { rtt_us, rttvar_us, retrans, total_retrans, lost, cwnd, pmtu }>`。
+    (2) トンネルの終わり (`report`) で両側を読み、個票 (T14.4) とホスト別 (オリジン側) と接続元別 (クライアント側) に足す。
+    (3) http 接続の終わりでクライアント側、プールの接続を捨てるときにオリジン側。**要求ごとには読まない**。
+    (4) `/hosts` と `/status` の `hosts[]` `clients[]` に `rtt_ms` (平均と最小) と `retrans` を出す。ダッシュボードは T14.8。
+  - 受け入れ基準: 結合テスト (Linux) で、loopback のトンネルを閉じたあと個票の `rtt_ms` が両側とも **1 ms 未満**で `retrans` 0、
+    `/hosts` の `rtt_ms` が出る。Linux 以外は `null`。費用: **トンネル 1 本の終わりに `getsockopt` 2 回** (CONNECT 1 本あたりの
+    システムコール 20.08 → 22.08 を本文に書く)、CONNECT 確立の CPU/本 ±4% (6 組)、forward の要求ごとは 0 増。
+    デプロイ先 (再デプロイ後): 手元から `probe-deployed.sh` を回したあと `/status` の `clients[]` にこの機械の IP の `rtt_ms` が
+    **40〜60 ms** (手元の `time_connect` 0.04〜0.06 秒と合う) で出ること、`hosts[]` の mtalk.google.com の `rtt_ms` が接続の時間
+    (30 ms) と同じ桁で出ること。
+- [ ] **T14.6 山の写真 `/bursts` と、閉じた理由・寿命・バイトの分布**
+  - 目的: T13.2 の効きは「バーストが来たとき」にしか見えないが、来たときに `/connections` を見ている人はいない。同時接続が
+    上限の一定割合を超えた瞬間に自動で写真を撮る。あわせて、トンネルが**誰に・どれだけ生きて・なぜ**閉じられたかの分布が無い
+    (`PROXY_TUNNEL_IDLE_SECS` 300 秒と `PROXY_KEEPALIVE_SECS` 15 秒が長いのか短いのかを決める材料)。
+  - 変更箇所: `crates/metrics/src/recent.rs` (写真のリング 50 枚)、`src/lib.rs` (接続数が閾を越えた瞬間の判定: `OpenGuard::acquire` で
+    「越えた」ときだけ写真を頼む。**閾を越えていない経路は比較 1 回**)、`crates/metrics/src/history.rs` (`Sample` に閉じた理由 8 種の
+    件数、寿命と上り/下りバイトの 12 段の区間、預けられていた秒。**標本の余白に入る範囲で**。入らなければ `/profile` と同じメモリ上の窓)、
+    `crates/endpoints/src/endpoints/recent.rs` (`/bursts`)、README。
+  - やること: (1) **写真**: `active_connections` が `max_conns × PROXY_BURST_PERCENT` (既定 50、0 で止める) を**下から上に越えた瞬間**に
+    1 枚 (同じ山では 1 枚だけ。再び閾の 80% を下回るまで撮らない): 時刻、`active` / `max_conns`、接続元ごとの本数、宛先の上位 10、
+    状態別 (`relaying` / `parked` / `reading` / `queued`)、種類別、`evicted_idle` と `rejected_overload` の累計、スレッド / fd。写真の中身は
+    `/connections` の表から作る (鍵 1 回)。撮るのは越えた接続を受けたスレッドではなく **history スレッドに頼む** (旗を立てるだけ。
+    5 秒後には撮れているので、accept の経路に鍵を増やさない)。(2) **分布**: トンネルの終わりに、閉じた理由 (T14.4 と同じ 8 種) の件数、
+    寿命 (秒) と上り・下りバイトの 12 段の区間、預けられていた秒の合計を窓に足す (既に鍵の内側)。(3) `/bursts?n=50`。
+  - 受け入れ基準: 結合テストで `PROXY_MAX_CONNS=8` `PROXY_BURST_PERCENT=50` にして 5 本目のトンネルで写真が 1 枚撮れ (`active` 5、
+    接続元 1 つ、宛先の上位に試験のホスト)、6〜8 本目では増えず、2 本まで減ってから再び 5 本で 2 枚目。`/history` の標本に閉じた理由と
+    寿命の区間が出る (`check-dashboard.js` で読める)。費用: 共通の決まり (越えていない経路は比較 1 回、写真は history スレッド)。
+    デプロイ先: 次のバーストで `/bursts` に写真があること (親が見る)。
+- [ ] **T14.7 接続元の個票 `/clients` (`User-Agent`、宛先の多様さ、ポート、RTT)**
+  - 目的: 2026-09-16 に見知らぬ接続元 (`161.33.196.121`) が現れたが、`/status` の `clients[]` は要求数と応答時間しか無く、**それが誰の
+    どのプログラムで、何をしているか**が分からない (宛先の顔ぶれから利用者本人と推測するしかなかった)。認証なしの公開プロキシなので、
+    接続元ごとに「初めて見た時刻」「`User-Agent`」「宛先の多様さ」「使ったポート」「IP リテラル宛ての数」が要る。
+  - 変更箇所: `crates/metrics/src/metrics.rs` (`ClientStats` に `first_seen`、`agents` (最大 4 種、先頭 128 バイト)、`distinct_targets`
+    (最大 256 の集合、それ以上は「256+」)、`ports` (上位 8)、`literal_targets`、`nonstandard_ports` (443 / 80 以外)。**書くのは既に
+    `record_client` が取っている鍵の内側**)、`src/lib.rs` (要求ヘッダーから `User-Agent` を 1 回だけ拾う: **接続の最初の要求だけ**。
+    要求ごとには見ない)、`crates/endpoints/src/endpoints/recent.rs` (`/clients?sort=requests|recent|targets|literal&limit=200`、全接続元)、
+    `/status` の `clients[]` に `first_seen` / `agent` / `distinct_targets` / `literal_targets` (上位 50 は今までどおり)、README。
+  - やること: 上のとおり。`.rrd` の `ClientStats` のスロットに余白が無ければ、新しい欄はメモリだけ (再起動で消える) にして `/clients` に
+    `"persisted": false` を出す。
+  - 受け入れ基準: 結合テストで、`User-Agent: t147/1.0` を付けた CONNECT のあと `/clients` にその接続元が `agents: ["t147/1.0"]`、
+    `distinct_targets` 1、`ports` に 試験のポート、IP リテラル宛てを 1 本足すと `literal_targets` 1。要求ごとの費用 0 (最初の要求だけ
+    `User-Agent` を見る。2 要求目からは旗で飛ばす)、forward の CPU/要求 ±ぶれの中。デプロイ先: 再デプロイ後 `/clients` で
+    `161.33.196.121` の `agents` と `distinct_targets` が読め、本人の端末かどうかが判断できること (親が見る)。
+- [ ] **T14.8 ダッシュボードの「調査」ページ (個票を時間軸で読む)**
+  - 目的: T14.3〜T14.7 で増える個票を、URL を手で叩かずに読めるようにする。`/dashboard` は「いま」の画面なので、**「起きたこと」を
+    時間軸で読む別のページ** (`/dashboard/inspect` または `/inspect`) にする (既存のダッシュボードは増やさない)。
+  - 変更箇所: `crates/endpoints/src/web/inspect.html` (新規。外部ライブラリ無し、`dashboard.html` の描画の流儀と CSS を共有)、
+    `crates/endpoints/src/endpoints/mod.rs` (配信)、`scripts/check-dashboard.js` (同じ検査を `inspect.html` にも)、README。
+  - やること: (a) **タイムライン**: `/recent` を横軸 = 時刻、縦 = 接続元 (または宛先) で 1 本 1 本を線で描く (寿命の長さ、色 = 閉じた理由、
+    太さ = バイト)。範囲は直近 1 時間 / 6 時間 / 24 時間 (`?since=`)。(b) **遅い接続の表**: `/recent?sort=slow` の上位 50 を段階の内訳
+    (T14.3 の `queue` / `client_read` / `dns` / `connect` / `first_relay`) の積み上げ横棒で。(c) **山**: `/bursts` の写真を 1 枚ずつ
+    (接続元別・宛先別・状態別の内訳)。(d) **接続元**: `/clients` を表で (`agents`、`distinct_targets`、`literal_targets`、RTT、初回 / 最終)。
+    (e) **RTT**: `/hosts` の `rtt_ms` と `connect` の平均を散布 (x = RTT、y = 接続時間。対角線から離れた点 = RTT では説明できない待ち)。
+    (f) **起動からの窓**: `/history` を `since_start_secs` で切って「起動から」と「通算」を切り替えるトグル (T14.0 で手作業だった)。
+    (g) ページ先頭に `/snapshot` へのリンク。
+  - 受け入れ基準: `node scripts/check-dashboard.js` が `inspect.html` の描画関数 (`timeline` / `slowRows` / `burstCards` / `clientRows` /
+    `rttScatter` / `sinceStart`) を手元のベンチで取った `/snapshot` の実出力で例外なく通すこと。`inspect.html` は 64 KiB 以下。
+    `/inspect` は `--lite` でも 200 (個票が無ければ「記録していません」)。
 - [ ] **T14.9 締める (README と §2 と §0 をデプロイ先の数字で書き直す)**
   - 目的: §0 のゴール「同じ条件でこれ以上速くならないところまで」は loopback では Phase 11 で到達し、デプロイ先では Phase 12〜14 で
     「コードで縮む待ち」を使い切る。それを 1 か所に書く。
   - 変更箇所: `README.md` (性能節にデプロイ先の表、環境変数表の DNS の 3 行、エンドポイント一覧)、`TASKS.md` §0 (ゴールに到達の日付と数字)、
     §2 (「デプロイ先の現在地」を最新の 1 枚にまとめ、古い 2 枚は付録 A へ)。
-  - やること: **T14.1 と T14.3 を含む版を再デプロイして 24 時間の数字が出てから** (順番は上のとおり。`T14.9` は
+  - やること: **T14.1〜T14.8 を含む版を再デプロイして 24 時間の数字が出てから** (`scripts/collect-deployed.sh` で 1 枚取る) (順番は上のとおり。`T14.9` は
     「デプロイ後の様子見と修正、締めの文書」の番号 — §0 の決まり)。README の性能節に
     「デプロイ先 (実際の利用) の数字」の表を足す: CONNECT 確立 p50 / p95、名前解決ミス率、RSS、`GET /`、個票のエンドポイント、
     **`/profile` の段階の内訳 (CONNECT 1 本の時間がどこに消えているか)**。§0 に「デプロイ先: 2026-09-XX、CONNECT 確立 p50 N ms
@@ -3499,7 +3614,8 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
 **Phase 14 の完了の定義**: T14.1 を再デプロイして 24 時間で **名前解決のミス率 0.15 未満・主要 3 ホスト 0.05 未満・平常時の CONNECT 確立
 p50 6 ms 以下**、T14.2 の 7 件が済み (見送りは理由つき)、T14.9 で README / §2 / §0 がデプロイ先の数字で書かれていること。
 加えて **T14.3 の `/profile` が既知の答え (accept 45%、tunnel の `splice`、forward の CPU/要求) を再現し、デプロイ先で CONNECT の
-段階の内訳が読めること**。
+段階の内訳が読めること**。**T14.4〜T14.8**: `scripts/collect-deployed.sh` 1 回でデプロイ先の全部が 1 枚の JSON に取れ、`/recent` で
+遅い接続の段階と閉じた理由が、`/bursts` で山の中身が、`/clients` で接続元の正体が、`/hosts` の `rtt_ms` で物理と自分の切り分けが読めること。
 
 ## 付録 A. 計測の記録 (時系列)
 
