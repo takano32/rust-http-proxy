@@ -319,6 +319,15 @@ pub struct Config {
     /// 含めて閉じる = 公開ポートで個票を見せないため)。宛先の `PROXY_ALLOW_HOSTS` と
     /// `PROXY_ALLOW_LOCAL` とは無関係。**認証ではない** (T14.18)
     pub allow_clients: ClientAcl,
+    /// 1 つの接続元から同時に受ける接続数の上限 (`PROXY_MAX_CONNS_PER_CLIENT`、既定 `0` = 無効)。
+    ///
+    /// 設定されている間だけ、accept 直後にその接続元の**生きている接続の本数**を数え、
+    /// 上限以上なら `503` + `Retry-After: 1` を返して閉じる (断った数は `/status` の
+    /// `rejected_per_client`)。自分宛て (内部エンドポイント) は T13.2 の「上限 + 4 本」の枠で
+    /// 受けてから判定するので、上限に当たっている接続元からでも `/status` は取れる。
+    /// **認証ではなく公平さの上限** (見知らぬ接続元が `PROXY_MAX_CONNS` を 1 人で使い切ると
+    /// 本人が 503 になるため。T14.13)
+    pub max_conns_per_client: usize,
     /// 各値の出どころ (`/config` の `source`。T14.15)。効いた値にだけ印が付く
     pub sources: Sources,
 }
@@ -469,6 +478,12 @@ impl Config {
             cfg.allow_clients = ClientAcl::parse(&v);
             src.mark("PROXY_ALLOW_CLIENTS");
         }
+        if let Some(n) =
+            envfile::var("PROXY_MAX_CONNS_PER_CLIENT").and_then(|s| s.trim().parse::<usize>().ok())
+        {
+            cfg.max_conns_per_client = n;
+            src.mark("PROXY_MAX_CONNS_PER_CLIENT");
+        }
         if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
             cfg.stats_persist = !off(v);
             src.mark("PROXY_STATS_PERSIST");
@@ -609,6 +624,10 @@ impl Config {
         add("PROXY_KEEPALIVE_SECS", secs(self.keepalive));
         add("PROXY_TUNNEL_IDLE_SECS", secs(self.tunnel_idle));
         add("PROXY_MAX_CONNS", self.max_conns.to_string());
+        add(
+            "PROXY_MAX_CONNS_PER_CLIENT",
+            self.max_conns_per_client.to_string(),
+        );
         add("PROXY_MAX_THREADS", self.max_threads.to_string());
         add("PROXY_ORIGIN_POOL", self.pool_per_host.to_string());
         add("PROXY_ORIGIN_POOL_TOTAL", self.pool_total.to_string());
@@ -786,6 +805,7 @@ impl Config {
             cache: CacheConfig::default(),
             endpoints_readonly: false,
             allow_clients: ClientAcl::default(),
+            max_conns_per_client: 0,
             sources: Sources::default(),
         })
     }
@@ -946,6 +966,8 @@ mod tests {
         assert_eq!(cfg.max_conns, default_max_conns());
         assert_eq!(cfg.tunnel_idle, Duration::from_secs(300));
         assert!(cfg.connect_ports.is_empty() && !cfg.allow_local);
+        // 接続元ごとの同時接続の上限は既定で無効 (T14.13)
+        assert_eq!(cfg.max_conns_per_client, 0);
     }
 
     #[test]

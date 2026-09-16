@@ -199,6 +199,47 @@ pub fn serve(
         if cfg.max_threads != workers.max_threads() {
             workers.set_limit(cfg.max_threads);
         }
+        let mut overflow = None;
+        // 接続元ごとの同時接続の上限 (`PROXY_MAX_CONNS_PER_CLIENT`。T14.13)。
+        // **認証ではなく公平さの上限**で、1 人が `PROXY_MAX_CONNS` を使い切って本人が
+        // 503 になるのを防ぐためのもの。既定 (0) の費用は下の分岐 1 回だけ。
+        //
+        // 数え方: 数えるのは `/connections` の表と同じ鍵の内側にある「接続元ごとの本数」で、
+        // 引くのは `HashMap` 1 回 (240 本を数え直さない)。鍵は `Conn::new` の登録と同じ
+        // 正規化した接続元 IP なので、数と表は必ず一致する。
+        //
+        // **自分宛ての内部エンドポイントは数えない**: accept の時点では要求が読めないので、
+        // 上限に当たった接続は T13.2 と同じ「上限 + 4 本」の枠で受け、要求行を読んでから
+        // 決める (自分宛てなら普通に応答、それ以外はワーカーが 503 + `Retry-After: 1`)。
+        // 枠が埋まっていたらここで 503 を返して閉じる。こうすると、上限に当たっている
+        // 接続元からでも `/status` が取れる (監視が消えない。T13.2 の狙いと同じ)。
+        if cfg.max_conns_per_client > 0 {
+            let client = net::canonical_addr(peer).ip().to_string();
+            if metrics
+                .conns
+                .at_client_limit(&client, cfg.max_conns_per_client)
+            {
+                overflow = OverflowGuard::try_acquire(&limiter, true);
+                if overflow.is_none() {
+                    metrics.record_client_rejected(&client);
+                    log_debug!(
+                        None,
+                        "over PROXY_MAX_CONNS_PER_CLIENT={} for {}: 503",
+                        cfg.max_conns_per_client,
+                        client
+                    );
+                    if conn_inherited.is_none() {
+                        let _ = stream.set_write_timeout(timeout::for_socket(cfg.timeout));
+                    }
+                    let _ = stream.write_all(OVERLOAD_RESPONSE);
+                    let _ = stream.flush();
+                    continue;
+                }
+            }
+        } else if metrics.conns.counting_clients() {
+            // 上限を `0` に戻したら数えるのもやめる (`.env` で即時反映)
+            metrics.conns.stop_counting_clients();
+        }
         // 上限に当たったときの段取り (T13.2):
         //   1. 預かり所の**暇なトンネル**を最古から 1 本閉じて席を作る (閉じるのはこのスレッド。
         //      持ち分が同期で返るので、すぐ下の `OpenGuard::acquire` がその席に座れる)
@@ -206,11 +247,11 @@ pub fn serve(
         //      受ける (要求行と `Host` を読んでから、自分宛てでなければワーカーが 503 を返す)
         //   3. それも埋まっていたら今までどおりスレッドを起こさずに 503
         let max = cfg.max_conns;
-        let mut overflow = None;
         if max > 0 && limiter.open() >= max {
             let made_room = park.as_ref().is_some_and(|w| w.evict_oldest_tunnel());
-            if !made_room {
-                overflow = OverflowGuard::try_acquire(&limiter);
+            // 接続元ごとの上限で枠を取ってあれば、その枠をそのまま使う (二重には取らない)
+            if !made_room && overflow.is_none() {
+                overflow = OverflowGuard::try_acquire(&limiter, false);
             }
             if !made_room && overflow.is_none() {
                 metrics
@@ -513,12 +554,28 @@ fn linger(client: &TcpStream) {
 /// 上限の外で受けた接続 (T13.2) に 503 を返して閉じる。
 ///
 /// 自分宛て (内部エンドポイント) でなければここへ来る。accept のところで返す 503 と
-/// 同じ本文で、断った数も同じ `rejected_overload` に数える。
+/// 同じ本文で、断った数も同じ `rejected_overload` に数える (下の `per_client` を除く)。
 /// `drain` は「要求を読んだあとか」: 本文が届いている途中かもしれないので読み捨ててから
 /// 閉じる。1 バイトも届いていない (黙ったままの) 接続では読み捨てるものが無い。
-fn overload(client: &TcpStream, metrics: &Metrics, conn_id: usize, why: &str, drain: bool) -> Step {
+///
+/// `per_client` が `Some(接続元)` なら、枠を使ったのは**接続元ごとの上限**
+/// (`PROXY_MAX_CONNS_PER_CLIENT`) なので、数える先は `rejected_per_client` と
+/// その接続元の個票 (`/clients` の `rejected`。T14.13)。
+fn overload(
+    client: &TcpStream,
+    metrics: &Metrics,
+    conn_id: usize,
+    why: &str,
+    drain: bool,
+    per_client: Option<&str>,
+) -> Step {
     log_debug!(Some(conn_id), "over the connection limit: 503 for {}", why);
-    metrics.rejected_overload.fetch_add(1, Ordering::Relaxed);
+    match per_client {
+        Some(ip) => metrics.record_client_rejected(ip),
+        None => {
+            metrics.rejected_overload.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     let mut client = client;
     let _ = client.write_all(OVERLOAD_RESPONSE);
     let _ = client.flush();
@@ -635,14 +692,19 @@ impl Drop for OpenGuard {
 ///
 /// `OpenGuard` と同じく**取るのも返すのもこの型だけ**。accept した接続へ運び、
 /// `Conn` が落ちる (= 接続が閉じる) ときに `Drop` が枠を返す。
-struct OverflowGuard(Arc<Limiter>);
+struct OverflowGuard {
+    limiter: Arc<Limiter>,
+    /// この枠を使った理由が**接続元ごとの上限**か (T14.13)。自分宛てでなかったときに
+    /// 数える先が違うだけ (`rejected_per_client` / `rejected_overload`)
+    per_client: bool,
+}
 
 impl OverflowGuard {
     /// 空いていれば枠を 1 つ取る。埋まっていれば `None` (呼び出し側は 503)。
     ///
     /// 待ち受けが複数 (デュアルスタック) だと accept するスレッドも複数なので、
     /// 「見てから増やす」の間に割り込まれないように CAS で取る。
-    fn try_acquire(limiter: &Arc<Limiter>) -> Option<OverflowGuard> {
+    fn try_acquire(limiter: &Arc<Limiter>, per_client: bool) -> Option<OverflowGuard> {
         let mut taken = limiter.overflow.load(Ordering::Relaxed);
         while taken < OVERFLOW_SLOTS {
             match limiter.overflow.compare_exchange_weak(
@@ -651,7 +713,12 @@ impl OverflowGuard {
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return Some(OverflowGuard(Arc::clone(limiter))),
+                Ok(_) => {
+                    return Some(OverflowGuard {
+                        limiter: Arc::clone(limiter),
+                        per_client,
+                    });
+                }
                 Err(now) => taken = now,
             }
         }
@@ -661,7 +728,7 @@ impl OverflowGuard {
 
 impl Drop for OverflowGuard {
     fn drop(&mut self) {
-        self.0.overflow.fetch_sub(1, Ordering::Relaxed);
+        self.limiter.overflow.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -1046,6 +1113,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     let (conn_id, local_port) = (conn.conn_id, conn.accepted.local_port);
     // 上限の外で受けた接続か (T13.2)。自分宛て (内部エンドポイント) のときだけ応える
     let overflow = conn.overflow.is_some();
+    // その枠を使ったのが接続元ごとの上限なら、断った 1 本はそちらに数える (T14.13)
+    let over_client = conn.overflow.as_ref().is_some_and(|g| g.per_client);
     // 要求行とヘッダー行の置き場。持っていなければ今のスレッドから借りる
     if conn.scratch.is_none() {
         conn.scratch = Some(Scratch::take());
@@ -1156,6 +1225,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 conn_id,
                 "a silent connection",
                 false,
+                over_client.then_some(peer_ip),
             ));
         }
         Err(e) => return Err(e),
@@ -1350,6 +1420,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             conn_id,
             request_line.trim_end(),
             true,
+            over_client.then_some(peer_ip),
         ));
     }
 
