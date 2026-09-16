@@ -168,6 +168,11 @@ static RING: Mutex<EventRing> = Mutex::new(EventRing {
 
 /// 1 件書く (満杯なら最も古いものを上書きする)。**稀な経路からだけ呼ぶこと。**
 pub fn push(kind: EventKind, text: &str) {
+    // 記録の一括 off (T14.41)。`/events` の説明には再読込で変わった設定の値が入るので
+    // (`PROXY_TRACE_CLIENT` / `PROXY_ALLOW_CLIENTS` は IP そのもの)、`off` では書かない
+    if !crate::records::recording() {
+        return;
+    }
     let event = Event {
         at: crate::cache::now_epoch(),
         kind,

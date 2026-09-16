@@ -22,6 +22,13 @@
 //!   足すのは `/recent` に 1 件書くのと同じ場所で、**既に鍵の内側**。
 //!   これだけは**メモリだけ** (T14.9 が残すのは上の 4 本のリングと `/log`)。
 //!
+//! **`PROXY_RECORDS` (T14.41)**: 上のどのリングも、書き込みの入口に
+//! [`crate::records::recording`] の分岐が 1 つある。`off` なら**鍵も取らずに捨てる**
+//! (`/hosts` と `/history` は接続元を含まないのでそのまま残る)。`hashed` のときは
+//! 接続元 IP を [`crate::records::client_key`] で 16 桁の 16 進に置き換えて記録する —
+//! 通すのは [`ErrorEntry::new`] と [`ConnTable::register`] の 2 か所だけで、
+//! `/recent` (枠から作る) も `/bursts` (表から作る) もそこから流れてくる。
+//!
 //! [`Metrics::record_error`]: crate::metrics::Metrics::record_error
 
 use std::collections::HashMap;
@@ -200,7 +207,9 @@ impl ErrorEntry {
             dns_ms: dns_ms.min(MAX_MS),
             connect_ms: connect_ms.min(MAX_MS),
             status,
-            client: clip(client, MAX_CLIENT),
+            // 接続元は**この 1 関数**を通して記録の形に直す (T14.41)。
+            // 既定 (`on`) は借りたまま返るので確保も比較も増えない
+            client: clip(&crate::records::client_key(client), MAX_CLIENT),
         }
     }
 
@@ -301,7 +310,12 @@ impl ErrorRing {
     }
 
     /// 1 件書く (満杯なら最も古いものを上書きする)。
+    ///
+    /// `PROXY_RECORDS=off` なら**鍵も取らずに捨てる** (T14.41)。
     pub fn push(&self, entry: ErrorEntry) {
+        if !crate::records::recording() {
+            return;
+        }
         let mut r = self.inner.locked();
         r.total += 1;
         if r.buf.len() < MAX_ERRORS {
@@ -875,13 +889,17 @@ impl ConnTable {
     /// (登録・抹消と同じ鍵) で、数えるのは `HashMap` を 1 回引くだけ。初めて呼ばれたときに
     /// 「数える」へ切り替え、そのとき生きている接続から数え直す。
     pub fn at_client_limit(&self, client: &str, limit: usize) -> bool {
+        // 表の鍵は `register` と同じ**記録の形** (`PROXY_RECORDS=hashed` ならハッシュ)
+        // なので、引くときも同じ 1 関数を通す。判定そのものは呼ぶ側が渡した**生の IP**
+        // から始まっていて、同じ接続元は必ず同じ鍵になる = 数え方は 3 つの値で同じ (T14.41)
+        let key = crate::records::client_key(client);
         let mut g = self.inner.locked();
         if !self.counting.load(Ordering::Relaxed) {
             g.recount_clients();
             self.counting.store(true, Ordering::Relaxed);
         }
         g.per_client
-            .get(client)
+            .get(key.as_ref())
             .is_some_and(|&n| n as usize >= limit)
     }
 
@@ -894,24 +912,34 @@ impl ConnTable {
 
     /// この接続元のいまの本数 (数えていなければ `0`)。
     pub fn client_conns(&self, client: &str) -> u32 {
+        let key = crate::records::client_key(client);
         self.inner
             .locked()
             .per_client
-            .get(client)
+            .get(key.as_ref())
             .copied()
             .unwrap_or(0)
     }
 
     /// 接続を 1 本登録する (接続の開始で 1 回だけ)。`--lite` なら `None`。
+    ///
+    /// **`PROXY_RECORDS=off` は `--lite` と同じ扱い** (枠を作らない = `/connections` も
+    /// `/recent` も `/bursts` も空)。ただし接続元ごとの本数は `--lite` と同じく数え続ける
+    /// ので、`PROXY_MAX_CONNS_PER_CLIENT` の公平さの上限は `off` でも効く (T14.41)。
+    /// **旗を見るのはここ 1 回**で、抹消 ([`ConnTable::unregister`]) は見ない —
+    /// 途中で `on` → `off` に変えたときに、既に登録してある枠が表に残ってしまうため
     pub fn register(&self, id: u64, client: &str, started: Instant) -> Option<Arc<ConnSlot>> {
-        let on = self.enabled();
+        let on = self.enabled() && crate::records::recording();
         // `--lite` で上限も使っていないときは鍵を取らない (今までどおり費用 0)
         if !on && !self.counting_clients() {
             return None;
         }
+        // 接続元は**この 1 回**だけ記録の形に直し、枠と本数の表の両方に同じ値を使う
+        // (`client` は生のまま残す — 下の自己ベンチの判定が IP そのものを見るため)
+        let key = crate::records::client_key(client);
         let mut g = self.inner.locked();
         if self.counting.load(Ordering::Relaxed) {
-            g.add_client(id, client);
+            g.add_client(id, &key);
         }
         if !on {
             return None;
@@ -924,7 +952,7 @@ impl ConnTable {
         if crate::selfbench::is_client(client) {
             return None;
         }
-        let slot = Arc::new(ConnSlot::new(id, client, started));
+        let slot = Arc::new(ConnSlot::new(id, &key, started));
         g.slots.insert(id, Arc::clone(&slot));
         Some(slot)
     }
@@ -1355,7 +1383,12 @@ impl RecentRing {
     }
 
     /// 1 件書く (満杯なら最も古いものを上書きする)。**接続の終了で 1 回だけ。**
+    ///
+    /// `PROXY_RECORDS=off` なら**鍵も取らずに捨てる** (T14.41)。
     pub fn push(&self, entry: RecentEntry) {
+        if !crate::records::recording() {
+            return;
+        }
         let mut r = self.inner.locked();
         r.total += 1;
         if r.buf.len() < MAX_RECENT {
@@ -1704,7 +1737,13 @@ impl BurstRing {
     }
 
     /// 1 枚書く (満杯なら最も古いものを上書きする)。
+    ///
+    /// `PROXY_RECORDS=off` なら**鍵も取らずに捨てる** (T14.41)。写真の中身は
+    /// `/connections` の表から作るので、`off` ではそもそも接続元が 1 つも入らない
     pub fn push(&self, shot: BurstShot) {
+        if !crate::records::recording() {
+            return;
+        }
         let mut r = self.inner.locked();
         r.total += 1;
         if r.buf.len() < MAX_BURSTS {

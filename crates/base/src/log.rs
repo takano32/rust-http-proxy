@@ -391,8 +391,11 @@ pub fn log_line(level: Level, conn_id: Option<usize>, msg: &str) {
     if !enabled(level) {
         return;
     }
-    // warn 以上は `/log` のリングにも写す (T13.4)。info / debug / trace は比較 1 回だけ
-    if level <= Level::Warn {
+    // warn 以上は `/log` のリングにも写す (T13.4)。info / debug / trace は比較 1 回だけ。
+    // `PROXY_RECORDS=off` はここも止める (T14.41)。**止まるのはリングだけ**で、
+    // 標準出力への 1 行は今までどおり出す (コンテナのログは運用の側の道具で、
+    // 認証なしで誰でも読める `/log` とは見える範囲が違う)
+    if level <= Level::Warn && crate::records::recording() {
         remember(level, conn_id, msg);
     }
     write_line(|buf| {

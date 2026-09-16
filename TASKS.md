@@ -4669,7 +4669,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
       本物の 7 日ぶん (雪像 7 枚の経路) は再デプロイ後に `collect-deployed.sh --from-server` で溜まってから 1 回回す (T14.99)。
     - 小物: `--out json` は無い (T14.44 の `weeklyRows` が要るなら `snapshot-diff.py --out json` と同じ 5 行)。`collect-deployed.sh` からは呼んでいない。
       `snapshot-diff.py` の `aggregate()` の `out["requests"]` は初期化だけで足していない死に欄 (T14.17 の持ち物)。
-- [ ] **T14.41 記録の一括 off とハッシュ化 (`PROXY_RECORDS=on|off|hashed`)**
+- [x] **T14.41 記録の一括 off とハッシュ化 (`PROXY_RECORDS=on|off|hashed`)**
   - 目的: T13.4〜T14.7 で個票 (接続元 IP・宛先・`User-Agent`・SNI) が増えた。認証なしの公開ポートで動かすなら、**記録を 1 つの旗で
     全部止める**か、**接続元 IP を復元できない形 (ハッシュ) で持つ**選択肢が要る (利用者以外の人の情報を残さないため)。
   - 変更箇所: `crates/config` と `crates/reload` (`PROXY_RECORDS`、既定 `on`、`.env` で即時反映)、`crates/metrics/src/recent.rs` (全リングの
@@ -4677,6 +4677,10 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     同じ変換)、`/status` に `records: "on"|"off"|"hashed"`、README (方針の説明)。
   - 受け入れ基準: 結合テストで `off` のとき `/recent` `/errors` `/connections` `/clients` `/log` が空 (`"records":"off"`)、`hashed` のとき
     接続元が 16 桁の 16 進で同じ接続元は同じ値、`on` は今までどおり。費用: 旗の分岐 1 回 (既定 `on` では変わらない)。
+  - 結果 (2026-09-16、`5174662`、README は `66db836`): 認証を入れない方針 (§0) のまま**公開ポートで利用者以外の情報を残さない**ための旗 **`PROXY_RECORDS=on|off|hashed`** (既定 `on`、`.env` で即時反映) を足した。**`off`** は `/recent` `/errors` `/connections` `/clients` `/log` `/events` `/trace` `/bursts` の写真 `/readers` (T14.53) の **9 つに 1 件も書かず** (どれも `"count":0`)、個票のファイル (`.recent`) にも書かず読み戻しもしない (`"persisted":false`。ファイルは消さない)。**`.rrd` の接続元別の表は次の 5 秒の書き出しで空になる** (前の起動が残した生の IP はディスクからも消える)。**残るのは `/hosts` `/hosts/series` `/explain`・`/history` `/daily` `/snapshots`・`/status` の数字・`/dns` `/metrics`** — 個人に結びつくのは接続元の側だけなので。**`hashed`** は接続元 IP を**起動ごとの乱数 (塩) を混ぜた FNV-1a 64 ビットの 16 進 16 桁**に置き換える (`127.0.0.1` → `cb3c874474114702`)。同じ起動の中では同じ接続元がいつも同じ値で各口を突き合わせられ、**再起動すると値が変わる** (値から IP を引く表を作り置きできない)。塩は `crates/base/src/via.rs` の印と同じ作り方。
+    - **旗の置き場は `crates/base/src/records.rs` (新規)**: `/log` のリングは `proxy-base` にあり `proxy-metrics` へは依存できないので、唯一の置き場をいちばん下のクレートに置いた。接続元の変換は **`records::client_key` の 1 関数**で、通すのは `ErrorEntry::new` / `ConnTable::register` / `trace::push` / `Metrics::record_client{,_rtt,_agent,_rejected}` / `record_reader` / `Metrics::restore` / `Restored::install` だけ。**判定は必ず生の IP** (`PROXY_ALLOW_CLIENTS` / `PROXY_TRACE_CLIENT` / `PROXY_MAX_CONNS_PER_CLIENT` は `off` でも `hashed` でも同じ数え方)。**費用**: 記録の入口ごとに原子 1 回の読みと分岐 1 回。既定 (`on`) では `client_key` が `Cow::Borrowed` を返すので確保も複製も増えない。熱い経路には 1 命令も足していない。
+    - `/status` の末尾に `records`、`/config` に `PROXY_RECORDS`、README に方針。前の起動の個票と接続元の統計は**読み戻すときに同じ変換を通す**。結合 3 本 (`tests/records_test.rs`、実バイナリ) と単体 4 本を新設。
+    - 限界: **`off` では `/history` の `closed` (分布) も埋まらない** (枠を作らない = `--lite` と同じ扱い。分布も残したいなら `hashed`)。`/log` の warn の**本文**に IP が入る行は `hashed` では直せない。**標準出力のアクセスログ (info) は `off` でも出る** (止めたいなら `PROXY_LOG_LEVEL=warn`。旗の下に入れるかは利用者の判断)。`on` → `off` に途中で変えたとき既に開いている接続の枠は `/connections` に残る (効くのは次の記録から)。`hashed` で読み戻した個票は再ハッシュになる (前の起動の値とは突き合わせられない)。
 - [x] **T14.42 中継の詰まりの向き (クライアントが読まないのか、オリジンが読まないのか)**
   - 目的: 転送が遅いとき、遅いのは「クライアントの回線 (下り)」か「オリジン」か「利用者の上り」か。`splice` が `EAGAIN` で止まり
     `poll` で書けるのを待つ時間を**向き別**に足せば、トンネル 1 本ごとに「クライアント側で待った ms / オリジン側で待った ms」が出る。

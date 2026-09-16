@@ -57,6 +57,9 @@ static GLOBAL: OnceLock<Arc<Live>> = OnceLock::new();
 
 impl Live {
     pub fn new(config: Config) -> Arc<Live> {
+        // 記録の一括 off とハッシュ化 (T14.41)。旗はプロセス全体に 1 つなので、
+        // 起動時のここと下の再読込の 2 か所だけで当てる (`--check` は通らない)
+        crate::records::set(config.records);
         let boot = Arc::new(config);
         let live = Arc::new(Live {
             current: RwLock::new(Arc::clone(&boot)),
@@ -146,6 +149,14 @@ impl Live {
         if fresh.max_conns_per_client != old.max_conns_per_client {
             next.max_conns_per_client = fresh.max_conns_per_client;
             applied.push("PROXY_MAX_CONNS_PER_CLIENT");
+        }
+        // 記録の一括 off とハッシュ化 (T14.41)。当てた瞬間から**次の記録**に効く
+        // (既に溜まっている個票は書き換えない。消したいなら再起動する)
+        if fresh.records != old.records {
+            next.records = fresh.records;
+            next.sources.adopt(&fresh.sources, "PROXY_RECORDS");
+            crate::records::set(fresh.records);
+            applied.push("PROXY_RECORDS");
         }
         // 追跡する接続元 (T14.27)。旗を立てるのは accept なので**次に来る接続から**効く
         // (いま開いている接続の旗はそのまま = 途中で追跡が切れたり増えたりしない)
