@@ -15,20 +15,21 @@
 # あれば同じ判定ができる (手元の機械はこちら。PID 1 が systemd でなくてもユーザーの
 # インスタンスは動いていて、上限も効く)。どちらも無いときだけ RSS を出すだけにして判定しない。
 #
-# **上限を決めているクレート** (T10.9 の実測、RssAnon の最大。手元 aarch64、3 回とも同じ順):
-#   proxy-http 85.5 MB > proxy-blocklist 84.0 > 本体 (rust-http-proxy) 79.2 > proxy-metrics 76.1
-#   > proxy-net 73.6 > … > proxy-diskprobe 35.7 (いちばん小さいクレートでも 36 MB は要る)
-# 行数の順ではない (いちばん長い proxy-cache 2,257 行は 67.0 MB で 6 番目)。効くのは
-# 「自分の行数 + 依存から単相化されてくる量」。上限を下げたいならこの上位から割ること。
+# **上限を決めているクレート** (T14.55 の実測、RssAnon の最大。手元 aarch64):
+#   proxy-endpoints 115.3 MB > proxy-net 110.2 > proxy-metrics-core 109.7 > proxy-metrics-window 97.9
+#   > 本体 (rust-http-proxy) 94.1 > proxy-metrics-watch 91.3 > proxy-metrics-recent 89.6
+#   > proxy-http 85.8 > … > proxy-tls 35.6 (いちばん小さいクレートでも 36 MB は要る)
+# 行数の順ではない。効くのは「自分の行数 + 依存から単相化されてくる量」。
+# 上限を下げたいならこの上位から割ること (T14.55 で `proxy-metrics` 1 つ 272 MB を 6 つに割った)。
 #
 # 使い方:
-#   scripts/build-memory.sh [上限 MB]            上限の中で通るか (既定 200)
-#   scripts/build-memory.sh --find 90 100 110    通る最小の上限を探す (調べるとき用)
+#   scripts/build-memory.sh [上限 MB]            上限の中で通るか (既定 180)
+#   scripts/build-memory.sh --find 130 140 150   通る最小の上限を探す (調べるとき用)
 set -u
 MODE=gate
 if [ "${1:-}" = "--find" ]; then MODE=find; shift; fi
-LIMIT_MB="${1:-200}"
-LADDER="${*:-200}"
+LIMIT_MB="${1:-180}"
+LADDER="${*:-180}"
 
 # どの systemd で scope を作れるかを 1 度だけ調べ、`SCOPE_KIND` に覚える。
 # 判定は「実際に小さい scope を 1 つ作ってみる」で行う。`systemctl is-system-running` は
@@ -137,7 +138,7 @@ case $? in
     ;;
   *)
     echo "NG: ${LIMIT_MB} MB の中でビルドが通りませんでした (rustc が OOM killer に落とされたか、ビルド自体の失敗)"
-    echo "    落ちるのは上限を決めているクレート (実測では proxy-http か proxy-blocklist) のところ。"
+    echo "    落ちるのは上限を決めているクレート (実測では proxy-endpoints か proxy-net) のところ。"
     echo "    順位は cgroup を作れない機械で参考値 (RssAnon) を出すと見られます"
     exit 1
     ;;
