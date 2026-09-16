@@ -460,6 +460,9 @@ pub struct ConnSlot {
     /// **書くのはトンネル 1 本につき多くて 1 回** (覗けて名前が読めたときだけ) で、
     /// 空は「覗いていない / 読めなかった」。443 以外と `--lite` では常に空
     sni: Mutex<String>,
+    /// 確立までに SYN を送り直した回数 (T14.46)。**書くのは接続の終わりの
+    /// [`ConnSlot::finish`] だけ**で、読んだのは `net` の確立点 (`getsockopt` 1 回)
+    syn_retrans: AtomicU8,
 }
 
 /// [`ConnSlot::parked_at`] の「預けられていない」印。
@@ -490,6 +493,7 @@ impl ConnSlot {
             bytes_prev: AtomicU64::new(0),
             rate_bps: AtomicU64::new(0),
             sni: Mutex::new(String::new()),
+            syn_retrans: AtomicU8::new(0),
         }
     }
 
@@ -588,6 +592,8 @@ impl ConnSlot {
         for (cell, v) in self.retrans.iter().zip(tally.retrans) {
             cell.store(v, Ordering::Relaxed);
         }
+        // 確立までの SYN の再送 (T14.46)
+        self.syn_retrans.store(tally.syn_retrans, Ordering::Relaxed);
     }
 
     /// 預かり所に入った (原子 2 回。**預ける瞬間だけ**で、要求ごとには触らない)。
@@ -679,6 +685,7 @@ impl ConnSlot {
                 self.retrans[ORIGIN_SIDE].load(Ordering::Relaxed),
             ],
             sni,
+            syn_retrans: self.syn_retrans.load(Ordering::Relaxed),
         })
     }
 
@@ -1124,17 +1131,28 @@ pub struct ConnTally {
     /// 書くのは**接続の終わりに `getsockopt` を呼んだ 1 回だけ**で、`0` は「読めなかった」
     pub rtt_us: [u32; SIDES],
     pub retrans: [u32; SIDES],
+    /// 確立までに SYN を送り直した回数 (T14.46)。keep-alive の HTTP 接続では
+    /// **いちばん多かった要求**の値 (プールが接続を張った要求だけ 0 でない)
+    pub syn_retrans: u8,
 }
 
 impl ConnTally {
-    /// 1 要求ぶんを足す (段階の ms は**いちばん遅かった要求**を採る)。
-    pub fn add_request(&mut self, status: u16, up: u64, down: u64, stage_ms: [u64; STAGES]) {
+    /// 1 要求ぶんを足す (段階の ms と SYN の再送は**いちばん大きかった要求**を採る)。
+    pub fn add_request(
+        &mut self,
+        status: u16,
+        up: u64,
+        down: u64,
+        stage_ms: [u64; STAGES],
+        syn_retrans: u8,
+    ) {
         self.up = self.up.saturating_add(up);
         self.down = self.down.saturating_add(down);
         self.status = status;
         for (slot, ms) in self.stage_ms.iter_mut().zip(stage_ms) {
             *slot = (*slot).max(ms);
         }
+        self.syn_retrans = self.syn_retrans.max(syn_retrans);
     }
 }
 
@@ -1175,6 +1193,10 @@ pub struct RecentEntry {
     /// `None` は「覗いていない (443 以外・`--lite`・`off`) / 読めなかった」で JSON では `null`。
     /// **IP リテラル宛ての CONNECT では、これが「本当の宛先」**
     pub sni: Option<Box<str>>,
+    /// 確立までに SYN を送り直した回数 (T14.46)。`0` は「再送なし / 読めなかった /
+    /// Linux 以外」。**1 回で確立が 1 秒、2 回で 3 秒に飛ぶ**ので、`ms.connect` が
+    /// 1,000 ms 台の個票はここが 1 以上になる (どちら側の待ち受けが溢れたかの手掛かり)
+    pub syn_retrans: u8,
 }
 
 /// `us` を ms の JSON にする (`0` = 読めなかった → `null`。T14.5)。
@@ -1248,10 +1270,13 @@ impl RecentEntry {
         // 覗いていない (443 以外・`--lite`・`off`) と読めなかったときは `null`
         match &self.sni {
             Some(name) => {
-                let _ = write!(out, ",\"sni\":\"{}\"}}", crate::json::escape(name));
+                let _ = write!(out, ",\"sni\":\"{}\"", crate::json::escape(name));
             }
-            None => out.push_str(",\"sni\":null}"),
+            None => out.push_str(",\"sni\":null"),
         }
+        // 確立までの SYN の再送 (T14.46)。**末尾に足した** (既存の鍵の順は変えない)。
+        // 0 でも必ず出す (「欄が無い」= 古い版と区別させるため)
+        let _ = write!(out, ",\"syn_retrans\":{}}}", self.syn_retrans);
         out
     }
 }
@@ -1934,7 +1959,7 @@ mod tests {
         ms[STAGE_QUEUE] = 159;
         ms[STAGE_CLIENT_READ] = 2;
         ms[STAGE_FIRST_RELAY] = 37;
-        tally.add_request(0, 4, 4, ms);
+        tally.add_request(0, 4, 4, ms, 0);
         slot.finish(CloseReason::ClientEof, tally, 0);
         let json = t
             .unregister(3)
@@ -2169,6 +2194,8 @@ mod conn_tests {
                 // カーネルの RTT: 利用者は 48 ms、宛先は 30 ms (T14.5)
                 rtt_us: [48_300, 30_100],
                 retrans: [0, 0],
+                // 確立まで SYN を 1 回送り直した (= 1 秒待たされた接続。T14.46)
+                syn_retrans: 1,
             },
             0,
         );
@@ -2289,6 +2316,7 @@ mod conn_tests {
                 rtt_us: [0; SIDES],
                 retrans: [0; SIDES],
                 sni: None,
+                syn_retrans: 0,
             });
         }
         let (all, total) = ring.select(0, "");
@@ -2332,6 +2360,7 @@ mod conn_tests {
                 stage_ms: [u64::MAX; STAGES],
                 rtt_us: [u32::MAX; SIDES],
                 retrans: [u32::MAX; SIDES],
+                syn_retrans: u8::MAX,
             },
             u32::MAX,
         );
@@ -2450,6 +2479,7 @@ mod burst_tests {
             rtt_us: [0; SIDES],
             retrans: [0; SIDES],
             sni: None,
+            syn_retrans: 0,
         }
     }
 

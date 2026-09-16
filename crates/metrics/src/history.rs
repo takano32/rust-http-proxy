@@ -1360,6 +1360,7 @@ mod closed_tests {
             rtt_us: [0; SIDES],
             retrans: [0; SIDES],
             sni: None,
+            syn_retrans: 0,
         }
     }
 

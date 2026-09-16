@@ -198,6 +198,9 @@ fn detail_of(total: Duration, cause: Option<ErrCause>, stages: StageMs) -> Detai
         dns_misses,
         connect_ms: total_ms.saturating_sub(dns_ms),
         family_v6: crate::dns::take_family(),
+        // 確立までに SYN を送り直した回数 (T14.46)。読んだのは `net` の確立点の
+        // `getsockopt` 1 回で、ここは thread-local を読んで 0 に戻すだけ
+        syn_retrans: crate::dns::take_syn_retrans(),
         cause,
         // CONNECT は「確立まで」がそのまま窓に入る値なので指定しない
         first_byte_ms: None,
@@ -281,6 +284,8 @@ fn report(
                 stage_ms,
                 rtt_us,
                 retrans,
+                // 確立までの SYN の再送 (T14.46)。確立の直後に読んだ値をそのまま運ぶ
+                syn_retrans: detail.syn_retrans,
             },
             0,
         );
