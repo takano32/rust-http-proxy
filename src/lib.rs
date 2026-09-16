@@ -1189,6 +1189,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         host: host_header,
         pac_direct: &config.pac_direct,
         lite: config.lite,
+        readonly: config.endpoints_readonly,
         version: VERSION,
         concurrency: &concurrency,
     };

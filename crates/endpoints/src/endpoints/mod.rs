@@ -8,7 +8,8 @@
 //! 同じときだけ自分宛て。自分宛てで知らないパスは 404、`/` は 200 でこの一覧を返す
 //! (自分へ転送してループしない。T12.3)。ポートの違うオリジン形式は今までどおり転送する。
 //! 応答は常に `Connection: close`。認証は無いので、到達できる人は誰でも purge できる
-//! (公開ポートなら ACL や到達制御で守ること)。
+//! (公開ポートなら ACL や到達制御で守ること)。`PROXY_ENDPOINTS_READONLY=on` にすると
+//! **書き換える口だけ** (`/purge` / `PURGE` / `/blocklist?action=`) を 405 で断る (T14.18)。
 
 use std::io::{self, Write};
 
@@ -32,6 +33,9 @@ pub struct Endpoint<'a> {
     pub pac_direct: &'a [String],
     /// lite プロファイル (ダッシュボードを持たない)
     pub lite: bool,
+    /// 書き換える口 (`/purge` / `PURGE` / `/blocklist?action=`) を 405 で断る
+    /// (`PROXY_ENDPOINTS_READONLY`。読む口は今までどおり。認証ではない。T14.18)
+    pub readonly: bool,
     /// 動いているバイナリの版 (`/status` に出す。本体クレートの `VERSION`)
     pub version: &'a str,
     /// 上限といまのスレッド数を引く口 (`/status` と `/metrics` を組み立てるときだけ呼ぶ)。
@@ -135,7 +139,15 @@ pub fn handle(
         None => (local, None),
     };
     let is_get = method.eq_ignore_ascii_case("GET");
-    let (status, content_type, body) = if is_purge {
+    // `PROXY_ENDPOINTS_READONLY=on` なら**書き換える口だけ**断る (T14.18)。読む口は
+    // 今までどおりなので、これは認証ではなく「消せる口を閉じる」つまみでしかない
+    let (status, content_type, body) = if ep.readonly && is_write(is_purge, path, query) {
+        (
+            405,
+            "application/json",
+            "{\"error\":\"read-only (PROXY_ENDPOINTS_READONLY=on)\"}".to_string(),
+        )
+    } else if is_purge {
         purge_url(ep, target)
     } else if is_get && (path == "/dashboard" || path == "/dashboard/") {
         if ep.lite {
@@ -259,6 +271,7 @@ pub fn handle(
         200 => "OK",
         400 => "Bad Request",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         _ => "OK",
     };
     let response = format!(
@@ -348,6 +361,19 @@ fn lookup(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
 }
 
 /// `a=b&c=d` を (キー, パーセントデコード済みの値) に分ける。
+/// 書き換える口か (`/purge` / `PURGE` / `/blocklist?action=<空でない値>`。T14.18)。
+///
+/// 呼ぶのは `PROXY_ENDPOINTS_READONLY=on` のときだけ (`&&` の右に置いてある) なので、
+/// 既定では `/blocklist` の問い合わせを二度読むことはない。
+fn is_write(is_purge: bool, path: &str, query: Option<&str>) -> bool {
+    is_purge
+        || path == "/purge"
+        || (path == "/blocklist"
+            && parse_query(query.unwrap_or(""))
+                .iter()
+                .any(|(k, v)| k == "action" && !v.is_empty()))
+}
+
 pub fn parse_query(query: &str) -> Vec<(String, String)> {
     query
         .split('&')
