@@ -318,8 +318,10 @@ impl HostStats {
         for c in self.errors_by_cause {
             e.u64(c);
         }
-        // T14.5 の 4 欄は**末尾に足す**だけ (1 スロット 572 B のうち 520 B が既存の
-        // 49 項目、ここで 552 B。版は上げないので、古いファイルは 0 で読み戻る)
+        // 欄は**末尾に足す**だけ (T14.5 の 4 欄で名前 128 B + 53 項目 = 552 B)。
+        // 版 3 の 1 スロットは 640 B = ペイロード 636 B なので**予備は 84 B**
+        // (T14.14)。ここから下が予備で、足しても版は上がらない
+        // (古いファイルはその位置がゼロ埋めなので 0 で読み戻る)
         e.u64(self.rtt_us_sum)
             .u64(self.rtt_us_min)
             .u64(self.rtt_samples)
@@ -358,7 +360,8 @@ impl HostStats {
         for c in s.errors_by_cause.iter_mut() {
             *c = d.u64();
         }
-        // 版を上げていないので、T14.5 より前に書かれたファイルはここで尽きて 0 が返る
+        // 短いレコード (T14.5 より前に書かれた行、版 2 から詰め直した行) は
+        // ここで尽きて 0 が返る。**ここから下が予備** — 欄を足すならこの位置から
         s.rtt_us_sum = d.u64();
         s.rtt_us_min = d.u64();
         s.rtt_samples = d.u64();
@@ -507,9 +510,9 @@ impl ClientSort {
 ///
 /// 要求数・転送量・応答時間は今までどおり [`HostStats`] で数える (`.rrd` に残る通算)。
 /// **この型が足す欄はメモリだけ**で、再起動で消える (`/clients` の `"persisted":false`)。
-/// `.rrd` の 1 スロットは 572 B で、名前 128 B + 49 項目 × 8 B = 520 B を使っていて
-/// 余白は 52 B しかなく、`agents` だけで 4 × 128 B 要るので入らない。版を上げると
-/// 統計を全部捨てることになるので、**ここは版を上げない**選択をした (本文のとおり)。
+/// 版 3 (T14.14) でスロットが 640 B になって余白は 84 B に広がったが、`agents` だけで
+/// 4 × 128 B 要るので**やはり入らない** (数字の欄なら 10 個ほど足せる)。
+/// 名前の並びを `.rrd` に残したくなったら、領域を増やして版を上げることになる。
 #[derive(Debug, Default, Clone)]
 pub struct ClientStats {
     /// 要求数・転送量・応答時間 (`/status` の `clients[]` の今までの欄)
@@ -1855,10 +1858,18 @@ mod tests {
         assert_eq!(totals[crate::recent::CLIENT_SIDE], (48_300, 1));
         assert_eq!(totals[crate::recent::ORIGIN_SIDE], (50_100, 2));
 
-        // `.rrd` の 1 スロット: 名前 128 B + 53 項目 × 8 B = 552 B (余白 572 - 552 = 20 B)
+        // `.rrd` の 1 スロット: 名前 128 B + 53 項目 × 8 B = 552 B。
+        // 版 3 (T14.14) でペイロードが 636 B になったので**余白は 84 B**
+        // (版 2 では 20 B しか無かった)。欄を足すとここが減る: 64 B を割ったら
+        // 「予備を使い切りかけている」ので、版を上げる算段をすること
         let enc = s.encode("connect://a:443");
         assert_eq!(enc.len(), 128 + 53 * 8);
-        assert_eq!(crate::rrd::STATS_RECORD - 4 - enc.len(), 20, "残りの余白");
+        let spare = crate::rrd::STATS_RECORD - 4 - enc.len();
+        assert!(
+            (64..=84).contains(&spare),
+            "スロットの余白が {} B (版 3 で足した 64 B を使い切りかけている)",
+            spare
+        );
         assert_eq!(HostStats::decode(&enc).unwrap().1, s);
 
         // T14.5 より前に書かれたレコード (末尾 4 欄が無い) は 0 で読み戻る

@@ -1,7 +1,10 @@
-//! 状態ファイル (`.rust-http-proxy.rrd`) の版上げの結合テスト (T12.4 (1))。
+//! 状態ファイル (`.rust-http-proxy.rrd`) の版上げの結合テスト (T12.4 (1)、T14.14)。
 //!
-//! **版 1 のファイルが置いてある状態で起動しても落ちない**こと (読み捨てて作り直す) と、
-//! 大きさが新しい固定値になり書込エラーが出ないことを、実バイナリを起こして確かめる。
+//! 実バイナリを起こして 3 つを見る:
+//!
+//! - **版 1 のファイルが置いてあっても落ちない** (読み捨てて作り直す。T12.4)
+//! - **版 2 のファイルは捨てずに版 3 へ詰め直す** (T14.14。統計が 1 件も消えない)
+//! - 大きさが新しい固定値 (8 MiB) になり、書込エラーが出ない
 
 mod common;
 
@@ -11,7 +14,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use common::status_json;
+use common::{endpoint_json, status_json};
 
 /// `"key":` に続く数を取る (テスト用の雑な取り出し。キーは前後の `"` を含めて渡す)。
 fn status_number(json: &str, key: &str) -> u64 {
@@ -28,8 +31,8 @@ fn status_number(json: &str, key: &str) -> u64 {
         .unwrap_or_else(|_| panic!("{} is not a number", key))
 }
 
-/// 版 2 の固定の大きさ (`proxy_rrd::rrd::FILE_SIZE`)。
-const FILE_SIZE: u64 = 4 * 1024 * 1024;
+/// 版 3 の固定の大きさ (`proxy_rrd::rrd::FILE_SIZE`。T14.14 で 4 → 8 MiB)。
+const FILE_SIZE: u64 = 8 * 1024 * 1024;
 
 struct KillOnDrop(Child);
 
@@ -38,6 +41,54 @@ impl Drop for KillOnDrop {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+/// `.env` を置いてプロキシを起こし、`(子, 待ち受けポート, 最後の `state file ...` の行)`。
+fn start_proxy(dir: &std::path::Path) -> (KillOnDrop, u16, String) {
+    // 既定プロファイル (lite だと統計を永続化しない)。ログは info で起動行を読む
+    std::fs::write(
+        dir.join(".env"),
+        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n",
+    )
+    .unwrap();
+    let mut child = KillOnDrop(
+        Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
+            .env("HOME", dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("could not start the proxy binary"),
+    );
+    let stdout = child.0.stdout.take().expect("piped stdout");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    let mut port = None;
+    let mut state_line = String::new();
+    while let Ok(line) = rx.recv_timeout(Duration::from_secs(30)) {
+        if line.contains("state file ") {
+            state_line = line.clone();
+        }
+        if let Some(rest) = line.split_once("listening on ") {
+            port = rest
+                .1
+                .split_whitespace()
+                .next()
+                .and_then(|a| a.rsplit(':').next())
+                .and_then(|p| p.parse::<u16>().ok());
+            break;
+        }
+    }
+    (
+        child,
+        port.expect("the proxy did not log its listening port"),
+        state_line,
+    )
 }
 
 /// 版 1 のファイルを模して置く (識別子 `SHPRRD01` + 約 1 MiB の中身)。
@@ -60,47 +111,7 @@ fn test_integration_an_old_state_file_is_replaced_by_the_new_fixed_size_one() {
     write_version_one_rrd(&rrd);
     assert_eq!(std::fs::metadata(&rrd).unwrap().len(), 1_064_960);
 
-    // 既定プロファイル (lite だと統計を永続化しない)。ログは info で起動行を読む
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n",
-    )
-    .unwrap();
-
-    let mut child = KillOnDrop(
-        Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
-            .env("HOME", &dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("could not start the proxy binary"),
-    );
-    let stdout = child.0.stdout.take().expect("piped stdout");
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                return;
-            }
-        }
-    });
-    let mut port = None;
-    let mut state_line = String::new();
-    while let Ok(line) = rx.recv_timeout(Duration::from_secs(30)) {
-        if line.contains("state file ") && line.contains("created") {
-            state_line = line.clone();
-        }
-        if let Some(rest) = line.split_once("listening on ") {
-            port = rest
-                .1
-                .split_whitespace()
-                .next()
-                .and_then(|a| a.rsplit(':').next())
-                .and_then(|p| p.parse::<u16>().ok());
-            break;
-        }
-    }
-    let port = port.expect("the proxy did not log its listening port");
+    let (child, port, state_line) = start_proxy(&dir);
     assert!(
         state_line.contains("created"),
         "版 1 のファイルは読み捨てて作り直すはず: {:?}",
@@ -108,6 +119,12 @@ fn test_integration_an_old_state_file_is_replaced_by_the_new_fixed_size_one() {
     );
 
     let status = status_json(port);
+    // 作り直しは「変換」ではない (新規起動の `converted_from` は null。T14.14)
+    assert!(
+        status.contains("\"version\":3,\"converted_from\":null"),
+        "新規起動の版と変換元: {}",
+        status
+    );
     assert!(
         status.contains(&format!("\"bytes\":{}", FILE_SIZE)),
         "state_file.bytes が新しい固定の大きさでない: {}",
@@ -160,11 +177,11 @@ fn test_integration_an_old_state_file_is_replaced_by_the_new_fixed_size_one() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// T14.5 より前に書かれた `.rrd` (版 2 のまま、`HostStats` が 49 項目) を置いて起動しても
-/// 落ちず、新しい 4 欄 (RTT と再送) が 0 で読み戻ること。
+/// T14.5 より前の形 (`HostStats` が 49 項目) で書かれた行を置いて起動しても落ちず、
+/// あとから足した 4 欄 (RTT と再送) が 0 で読み戻ること。
 ///
-/// **版は上げていない** ので、古いファイルは読み捨てられずにそのまま復元される。
-/// `Dec` は足りなければ 0 を返すので、末尾に足した欄だけが 0 になるのが期待の動き。
+/// 欄は**末尾に足す**決まりなので、短いレコードは読み捨てられずにそのまま復元される
+/// (`Dec` は足りなければ 0 を返す)。版 2 から詰め直した行も同じ形になる (T14.14)。
 #[test]
 fn test_integration_a_pre_rtt_state_file_restores_with_zero_rtt() {
     use rust_http_proxy::rrd::{Enc, Rrd};
@@ -174,10 +191,10 @@ fn test_integration_a_pre_rtt_state_file_restores_with_zero_rtt() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(".rust-http-proxy.rrd");
 
-    // 版 2 のファイルを作り、**T14.5 より前の形** (名前 128 B + 49 項目) で 1 行ずつ書く
+    // いまの版のファイルを作り、**T14.5 より前の形** (名前 128 B + 49 項目) で 1 行ずつ書く
     {
-        let (rrd, created) = Rrd::open(&path).unwrap();
-        assert!(created);
+        let (rrd, opened) = Rrd::open(&path).unwrap();
+        assert!(opened.created);
         for (region, name, requests) in [
             (rrd.layout.hosts, "connect://mtalk.google.com:5228", 920u64),
             (rrd.layout.clients, "198.51.100.7", 463),
@@ -207,48 +224,10 @@ fn test_integration_a_pre_rtt_state_file_restores_with_zero_rtt() {
         }
     }
 
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n",
-    )
-    .unwrap();
-    let mut child = KillOnDrop(
-        Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
-            .env("HOME", &dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("could not start the proxy binary"),
-    );
-    let stdout = child.0.stdout.take().expect("piped stdout");
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                return;
-            }
-        }
-    });
-    let mut port = None;
-    let mut state_line = String::new();
-    while let Ok(line) = rx.recv_timeout(Duration::from_secs(30)) {
-        if line.contains("state file ") {
-            state_line = line.clone();
-        }
-        if let Some(rest) = line.split_once("listening on ") {
-            port = rest
-                .1
-                .split_whitespace()
-                .next()
-                .and_then(|a| a.rsplit(':').next())
-                .and_then(|p| p.parse::<u16>().ok());
-            break;
-        }
-    }
-    let port = port.expect("the proxy did not log its listening port");
+    let (child, port, state_line) = start_proxy(&dir);
     assert!(
         !state_line.contains("created"),
-        "版は上げていないので作り直さないはず: {:?}",
+        "いま書いた版 3 のファイルは作り直さないはず: {:?}",
         state_line
     );
     assert!(
