@@ -275,12 +275,24 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   それ以外はこのプロキシ経由 (落ちていれば DIRECT)。ブラウザに `http://<host>:<port>/proxy.pac` を設定するだけ
 - **ヘルスチェック & メトリクス & 操作**:
   - `/` (エンドポイントの一覧。ブラウザでプロキシの URL を開いた人への案内。`--lite` でも出ます)
+  - `/config` (**効いている設定とその出どころ**。下記「環境変数」の節)
   - `/dashboard` (ブラウザ用のコントロールパネル: 要求/転送レート・命中率・**CONNECT 確立 p50 / p95**・
     **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
     **最近のエラー (直近 20)** と **いまの接続 (上位 50)** の表 (どちらも 5 秒ごと)、
     URL の照会と削除、全消去)、`/healthz`, `/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
+  - **`capabilities` (この環境で何が読めるか)**: `/status` と `/config` の `capabilities` に
+    `{"proc_syscall":true,"tcp_info":true,"cgroup_cpu":true,"cgroup_pressure":true,"ipv6_route":true,"resolver_ms":9,"home_writable":true,"checked_at":1758...}`。
+    統計の `null` が「無かった」のか「読めなかった」のかを先に答えるためのもので、
+    `proc_syscall` は `/proc/self/task/<tid>/syscall` (スレッドの状態)、`tcp_info` は待ち受けソケットへの
+    `getsockopt(SOL_TCP, TCP_INFO)` (カーネルの RTT と再送)、`cgroup_cpu` / `cgroup_pressure` は自分の cgroup の
+    `cpu.stat` / `cpu.pressure` (CPU の絞りと PSI)、`ipv6_route` は `/proc/net/ipv6_route` の既定経路、
+    `resolver_ms` は `example.com` を 1 回引くのにかかった ms (締め切り 2 秒、失敗は `null`)、
+    `home_writable` は `$HOME` に書けるか (状態ファイルの置き場) を見ます。
+    **判定は起動時 1 回と 1 時間ごと**で (`.env` の監視スレッドのついで。要求の経路では何もしません)、
+    `checked_at` がその時刻です。Linux 以外では `/proc` も cgroup も無いので `false` になります
   - **個票 (集計では読めない「誰が・いつ・なぜ」。T13.4)**: `/errors?n=100` で直近のエラー
-    (時刻・`connect` / `forward`・宛先・原因・名前解決 ms・接続 ms・返した状態コード・接続元。500 件の環状、プロセスのメモリだけ)。
+    (時刻・`connect` / `forward` / `canary`・宛先・原因・名前解決 ms・接続 ms・返した状態コード・接続元。
+    500 件の環状、プロセスのメモリだけ)。
     **403 で拒否した要求もここに入ります** (原因は `acl` / `blocklist` / `connect_port` / `local`、状態コード 403)。
     403 は 5xx ではないので `/status` の `errors_by_cause` (8 つの原因) には乗らず、
     集計では `hosts[]` の `blocked` に数えるだけです。**誰が何を拒否されたか**はこの個票でだけ読めます、
@@ -338,6 +350,27 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **組み立ては同じプロセス内の関数呼び出し** (自分へ HTTP で繋ぎ直さないので、接続を 17 本増やしませんし、
     上限に当たっている最中でも取れます)。上限は **4 MiB** で、越えたら `recent` → `log` → `history.5` の順に
     `null` へ落として `dropped` に名前を出します。保存して読むのは `scripts/collect-deployed.sh` です
+  - **canary (利用者の要求が無い時間帯も待ちを測る。T14.10)**: プロキシ自身が **60 秒に 1 回**
+    (`PROXY_CANARY_SECS`)、`PROXY_CANARY` で決めた宛先へ **名前解決 → TCP 接続 → 即 `close`** だけを行い、
+    その時間を残します。**TLS も HTTP も送りません** (相手に届くのは 1 分に 1 回の名前解決と SYN / FIN だけです。
+    利用者と同じ Happy Eyeballs を通るので、A と AAAA の両方を持つ相手には 250 ms ずらして
+    もう 1 本 SYN が出ることがあります)。
+    平常時の CONNECT 確立 p50 は利用者の要求があった時間帯だけの値なので、深夜や利用者が居ない日は 1 点も無く、
+    「遅かったのはプロキシか、回線か、利用者の端末か」が切り分けられませんでした。canary の値が利用者の値と
+    合っていれば回線 (またはリゾルバ)、合っていなければ利用者側、と読めます。
+    最後の 1 回は `/status` の `canary` (`mode` / `secs` / `runs` / `failures` / `at` / `host` / `dns_ms` /
+    `connect_ms` / `error`)、`/metrics` の `sorahost_canary_seconds{stage="dns"|"connect"}` (最後の値。
+    1 回も回っていなければ 1 行も出しません。**失敗した回は届かなかった段階が 0 になる**ので、
+    成否は `/status` の `canary.error` と `canary.failures`、`/errors` で見てください)。時系列は **`/history?res=5|60` の `canary`** で、
+    `{"keys":["t","canary_dns_ms","canary_connect_ms","canary_host"],"samples":[[…]]}` という
+    **別の配列**です (既存の `keys` / `samples` は 1 列も変えていません。`.rrd` の標本には書かないので
+    再起動で消えます。窓は 5 秒 × 720 と 60 秒 × 1,440)。失敗は `/errors` に `kind: "canary"` で 1 件だけ残り、
+    利用者に返したエラーの集計 (`errors_by_cause`) には混ざりません。
+    名前解決は**名前解決の表を通さず** OS に直接聞くので (リゾルバの実力を測るため)、`/status` の
+    `dns.hits` / `dns.misses` にも keep-warm にも影響しません。TCP 接続は利用者と同じ経路
+    (Happy Eyeballs と IPv4 優先の学習) を通ります。回すのは **`canary` スレッド 1 本**だけで、
+    利用者の要求の経路には 1 命令も足していません。**履歴スレッドが動いているときだけ回ります**
+    (`--lite` と `PROXY_STATS_PERSIST=off` では履歴スレッドごと止まるので canary も回りません)
   - **再起動をまたぐか (`persisted` / `restored`)**: `/recent` `/errors` `/bursts` `/log` の 4 つは、
     5 秒ごとに `$HOME/.rust-http-proxy.recent` (固定 4 MiB、統計の `.rrd` とは別のファイル) へ新しい分だけ追記され、
     次の起動で読み戻されます。**`"persisted": true|false`** がその可否 (`PROXY_STATS_PERSIST=off` と、
@@ -378,11 +411,41 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       --no-cache       キャッシュを止める    (PROXY_CACHE_ENABLED=off)
       --quiet          警告以上だけ出す      (PROXY_LOG_LEVEL=warn)
       --lite           最速の素通しプロファイル (PROXY_PROFILE=lite)
+      --check          起動せずに環境と効く設定を出して終了 (下記)
   -h, --help           使い方を出して終了 (終了コード 0)
   -V, --version        版を出して終了
 ```
 
 `--port=3128` の形式も使えます。知らない引数は使い方を出して終了コード 2 になります。
+
+`--check` は**起動せずに**「この環境で何が読めるか」(`capabilities` の 7 項目) と
+「この設定で起動したら何が効くか」(`/config` と同じ全 `PROXY_*` / `SERVER_*` と出どころ) を印字して終わります。
+Pterodactyl のように触れないコンテナで、**起動前の確認**と**統計の `null` の理由の切り分け**に使えます
+(他の引数も一緒に効くので `--check -p 3128 --lite` のように「その設定なら何が効くか」も見られます)。
+終了コードは `capabilities` の 6 項目 (`resolver_ms` を除く) が全部読めれば **0**、1 つでも読めなければ **1** です
+(名前解決を外すのは、リゾルバが遅い環境でもプロキシとしては動く — そしてそれ自体が測りたい数字 — ため)。
+
+```
+$ rust-http-proxy --check
+rust-http-proxy 0.1.0+28f9064 --check
+settings file: /home/container/.env (3 variables)
+
+capabilities (what this environment lets the proxy read):
+  [ok] proc_syscall     /proc/self/task/<tid>/syscall (per-thread state)
+  [ok] tcp_info         getsockopt(SOL_TCP, TCP_INFO) (kernel RTT and retransmits)
+  [ok] cgroup_cpu       cgroup cpu.stat (CPU throttling)
+  [ok] cgroup_pressure  cgroup cpu.pressure (PSI: waiting for the CPU)
+  [ok] ipv6_route       a default route in /proc/net/ipv6_route
+  [ok] home_writable    $HOME is writable (statistics file, blocklist)
+  [ok] resolver_ms      9 ms for one lookup (not part of the exit code)
+
+settings (source, name, effective value):
+  default   SERVER_PORT                    8080
+  env_file  PROXY_DNS_TTL_SECS             30
+  ...
+
+check: ok (everything this proxy reads is readable)
+```
 
 `-V` が出す版は `0.1.0+144b992` のように **`Cargo.toml` の版 + ビルドしたときの git の短いハッシュ**です
 (作業ツリーに未コミットの変更があれば `0.1.0+144b992-dirty`)。`git` や `.git` の無いところでビルドすると
@@ -422,6 +485,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 | `PROXY_DNS_TTL_SECS` | `60` | 名前解決の結果を保持する秒数。`0` で毎回解決 (それでも 1 要求につき 1 回。`/status` の `dns.misses` がその回数)。**直近この秒数以内に使われた名前は期限の 3/4 を過ぎたところで裏で 1 回だけ引き直す**ので、使い続けているホストはミスになりません (`/status` の `dns.refreshes`)。解決に失敗したら 1 時間以内の古い結果を使う。`.env` で即時反映 |
 | `PROXY_DNS_NEGATIVE_SECS` | `60` | 名前解決の**失敗**を覚えておく秒数 (`0` で覚えない)。覚えている間は OS に問い合わせずに同じエラーを返します (`/status` の `dns.negative_hits`)。引けない名前 1 つで 2 秒待たされることがあるための蓋で、古い答えが 1 時間以内にあるときはエラーより古い答えを優先します。`.env` で即時反映 |
 | `PROXY_DNS_WARM_SECS` | `900` | **keep-warm**: 直近この秒数に **2 回以上**使われた名前 (warm) は、使われていなくても `PROXY_DNS_TTL_SECS` の 3/4 ごとに裏で引き直し続けます (`0` で無効 = 直近 TTL 内に使われた名前だけ 1 回先回りする動きに戻る)。TTL (60 秒) を熱さの物差しにすると、間隔が TTL より長いホストは 1 つも救えません (デプロイ先の主要 3 件は 2〜10 分間隔で、ミス率は 0.31 / 0.76 / 1.00 でした)。1 回だけ使われた名前は warm にしません (引き直しても二度と来ない)。答えを持っている名前だけが warm になります (引けない名前は負のキャッシュの担当)。同時に warm でいられるのは **32 件**まで (最後の使用がいちばん古いものから外す) で、最後の使用からこの秒数を過ぎたら引き直しを止めます。最悪でも 32 件 ÷ 45 秒 ≈ 0.7 回/秒。いま warm な名前の数は `/status` の `dns.warm`、名前ごとの予定は `/dns` の `warm` / `next_refresh_secs`。`.env` で即時反映 |
+| `PROXY_CANARY` | `auto` | **canary** (利用者の要求が無い時間帯も待ちを測る): `PROXY_CANARY_SECS` 秒に 1 回、宛先へ**名前解決と TCP 接続だけ**を行って時間を残します (握ったらすぐ閉じ、TLS も HTTP も送りません。相手に届くのは 1 分に 1 回の SYN と FIN だけ)。`auto` は**直近 1 時間で最も要求の多い CONNECT の宛先** (`/status` の上位ホストの先頭で、最後に使ってから 1 時間以内のもの) を毎周期選び直します (1 件も無ければ何もしません = 誰も使っていないプロキシは誰にも繋ぎません)。`off` で止める。ホストをカンマ区切りで書けばその全部 (最大 8、ポートを省くと 443)。結果は `/status` の `canary`、`/history?res=5|60` の `canary` の配列、`/metrics` の `sorahost_canary_seconds{stage="dns"|"connect"}`、失敗は `/errors` に `kind: "canary"` で 1 件。名前解決は表を通さず OS に聞くので利用者の `dns` の数字には混ざりません。**履歴スレッドが動いているときだけ回ります** (`--lite` と `PROXY_STATS_PERSIST=off` では回りません)。`.env` で即時反映 |
+| `PROXY_CANARY_SECS` | `60` | canary の周期 (秒、最小 1)。**試験で短くするための口**で、運用では触りません (60 秒に 1 回・1 宛先 1 本なら、相手にも自分にも負荷はありません)。`.env` で即時反映 |
 | `PROXY_BLOCKLIST_FILE` | なし | ドメインのブロックリスト (hosts 形式 `0.0.0.0 host` または 1 行 1 ドメイン)。親ドメインの登録で子ドメインも落ちる。`.env` で即時反映、ファイルの更新は 1 分以内に反映 |
 | `PROXY_BLOCKLIST_URL` | なし | ブロックリストを取りに行く URL (StevenBlack の hosts など)。`$HOME/.rust-http-proxy.blocklist` に保存して再起動後も使う。ファイルと両方あれば和集合 |
 | `PROXY_BLOCKLIST_REFRESH_SECS` | `86400` | URL を取り直す間隔 (最小 60)。失敗したら 10 分後に再試行し、その間は前の一覧を使う |
@@ -477,6 +542,17 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 オリジンプール・キャッシュ予算 (`SERVER_MEMORY` / `SERVER_DISK` / `PROXY_CACHE_*`) は起動時に固定なので、変更を検知すると
 `/status` の `settings.restart_required` と `/dashboard` の帯に「再起動が必要」と出ます。解釈できない値を書いた場合は
 前の設定を維持し、`settings.error` にメッセージが入ります。
+
+**いま何が効いているかは `/config` で 1 枚に出ます** (JSON)。全 `PROXY_*` / `SERVER_*` について
+`{"PROXY_DNS_TTL_SECS":{"value":30,"source":"env_file"}, ...}` の形で、`value` は**いま効いている値**、
+`source` はそれが来た層 (`default` = このコードの既定 / `env` = 実際の環境変数 / `env_file` = `$HOME/.env` /
+`cli` = コマンドライン引数) です。**書いたのに読めない書き方だった行は `default` のまま**出るので、
+「`.env` に書いたのに効かない」がその場で分かります (再起動が要る項目は値が古いままなので、
+同じ応答の `reload.restart_required` を見てください)。別名のあるキー (`SERVER_DISK` は
+`PROXY_DISK_QUOTA_MB` の別名) は、実際に効いた方にだけ `source` が付きます。
+一覧の値 (`PROXY_PAC_DIRECT` など) は 1 KiB で切って `"+N more"` を付けます (全部見たいときは `.env` を読む)。
+同じ応答に `capabilities` (上記) と `.env` の監視の状態も入るので、**データを取るときは `/config` を 1 枚
+一緒に保存しておけば「そのときの設定」が後から読めます**。応答は 64 KiB 以下です。
 
 `PROXY_CACHE_DIR` を指定しない場合は、書き込める最初の候補を使います:
 `$XDG_CACHE_HOME/rust-http-proxy` (または `~/.cache/rust-http-proxy`) → `/var/cache/rust-http-proxy` → `$TMPDIR/rust-http-proxy-cache`。
@@ -984,6 +1060,9 @@ curl "http://127.0.0.1:8080/purge?url=http://example.com/file.zip"     # 同じ�
 curl "http://127.0.0.1:8080/purge?all=1"                               # 全消去
 curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存状態 (層・サイズ・期限)
 ```
+
+`/history` の応答には、上の標本 (`keys` / `samples`) とは**別に** `canary` の配列が付きます
+(`res=5` と `res=60` のときだけ中身が入ります。T14.10)。
 
 `/dashboard` はブラウザで開くコントロールパネルです (依存なしの 1 ページ。2 秒ごとに `/status`、5 秒ごとに `/history`、
 **30 秒ごとに `/status?sort=errors` と `?sort=dns`** を取って描きます。並べ替えた 2 本だけ間隔を空けているのは、

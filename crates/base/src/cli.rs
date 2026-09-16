@@ -8,6 +8,8 @@
 pub enum Cli {
     /// このまま起動する (環境変数の上書き)
     Run(Vec<(String, String)>),
+    /// 起動せずに環境と効いている設定を調べて終わる (`--check`。環境変数の上書きは同じく効く)
+    Check(Vec<(String, String)>),
     /// メッセージを出して終了する (終了コード付き。0 は標準出力、それ以外は標準エラー)
     Print(String, i32),
 }
@@ -23,6 +25,9 @@ usage: rust-http-proxy [OPTIONS]
       --quiet          only warnings/errors  (PROXY_LOG_LEVEL=warn)
       --lite           fastest pass-through profile (PROXY_PROFILE=lite:
                        no cache, no statistics, no blocklist, warn level)
+      --check          do not start: print what this environment lets the proxy
+                       read and the settings that would take effect, then exit
+                       (exit code 0 when everything is readable, 1 otherwise)
   -h, --help           show this help and exit
   -V, --version        show the version and exit
 
@@ -49,6 +54,9 @@ See README.md for the full table.";
 /// (本体クレートの `build.rs` が作る。ここは下の層なので受け取るだけ。T12.6)。
 pub fn parse<I: IntoIterator<Item = String>>(args: I, version: &str) -> Cli {
     let mut out: Vec<(String, String)> = Vec::new();
+    // `--check` は最後にまとめて判定する (`--check -p 9999 --lite` のように
+    // 他の引数と混ぜて「この設定で起動したらどうなるか」を見られるように)
+    let mut check = false;
     let mut it = args.into_iter().peekable();
     while let Some(arg) = it.next() {
         // `--port=8080` 形式もそのまま受ける
@@ -83,6 +91,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I, version: &str) -> Cli {
             "--no-cache" => set(&mut out, "PROXY_CACHE_ENABLED", "off".to_string()),
             "--quiet" => set(&mut out, "PROXY_LOG_LEVEL", "warn".to_string()),
             "--lite" => set(&mut out, "PROXY_PROFILE", "lite".to_string()),
+            "--check" => check = true,
             other => {
                 return Cli::Print(
                     format!("rust-http-proxy: unknown option '{}'\n\n{}", other, USAGE),
@@ -91,7 +100,11 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I, version: &str) -> Cli {
             }
         }
     }
-    Cli::Run(out)
+    if check {
+        Cli::Check(out)
+    } else {
+        Cli::Run(out)
+    }
 }
 
 #[cfg(test)]
@@ -145,6 +158,27 @@ mod tests {
         // 版は上の層から受け取ったものをそのまま出す (起動ログ・`/status` と同じ文字列)
         match parse_str(&["-V"]) {
             Cli::Print(msg, 0) => assert_eq!(msg, "rust-http-proxy 0.1.0+deadbee"),
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn check_keeps_the_other_options() {
+        // 起動しないが、他の引数はそのまま効く (その設定で起動したらどうなるかを見る)
+        let Cli::Check(vars) = parse_str(&["--check", "-p", "3128", "--lite"]) else {
+            panic!("should check");
+        };
+        assert_eq!(
+            vars,
+            vec![
+                ("SERVER_PORT".to_string(), "3128".to_string()),
+                ("PROXY_PROFILE".to_string(), "lite".to_string()),
+            ]
+        );
+        assert_eq!(parse_str(&["--check"]), Cli::Check(Vec::new()));
+        // 使い方にも出る
+        match parse_str(&["--help"]) {
+            Cli::Print(msg, 0) => assert!(msg.contains("--check")),
             other => panic!("{:?}", other),
         }
     }

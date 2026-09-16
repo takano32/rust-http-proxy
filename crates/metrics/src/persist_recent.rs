@@ -26,7 +26,7 @@ use std::time::Instant;
 use crate::log::{Level, Line};
 use crate::metrics::Metrics;
 use crate::recent::{
-    BurstShot, CONN_STATES, CloseReason, EntryCause, ErrorEntry, MAX_BURSTS, MAX_ERRORS,
+    BurstShot, CONN_STATES, CloseReason, EntryCause, EntryKind, ErrorEntry, MAX_BURSTS, MAX_ERRORS,
     MAX_RECENT, MAX_SHOT_CLIENTS, MAX_SHOT_TARGETS, RecentEntry, STAGES,
 };
 use crate::rrd::ring::Ring;
@@ -466,7 +466,7 @@ fn encode_error(seq: u64, e: &ErrorEntry) -> Vec<u8> {
     let mut enc = Enc::new();
     enc.u64(seq)
         .u64(e.at)
-        .u64(u64::from(e.connect))
+        .u64(e.kind.code())
         .u64(e.cause.code())
         .u64(e.dns_ms)
         .u64(e.connect_ms)
@@ -480,7 +480,7 @@ fn decode_error(p: &[u8]) -> Option<ErrorEntry> {
     let mut d = Dec(p);
     let _seq = d.u64();
     let at = d.u64();
-    let connect = d.u64() != 0;
+    let kind = EntryKind::from_code(d.u64());
     let cause = EntryCause::from_code(d.u64());
     let dns_ms = d.u64();
     let connect_ms = d.u64();
@@ -492,7 +492,7 @@ fn decode_error(p: &[u8]) -> Option<ErrorEntry> {
     }
     Some(ErrorEntry {
         at,
-        connect,
+        kind,
         target,
         cause,
         dns_ms,
@@ -684,10 +684,9 @@ mod tests {
         assert_eq!(l.log.bytes(), 1_044_480);
         // 1 レコードの中身が入ること (組み立て時の assert と同じものを数字で残す)
         assert_eq!(
-            (CLOSED_PAYLOAD, ERROR_PAYLOAD, LOG_PAYLOAD),
-            (244, 188, 252)
+            (CLOSED_PAYLOAD, ERROR_PAYLOAD, LOG_PAYLOAD, SHOT_PAYLOAD),
+            (244, 188, 252, 2016)
         );
-        assert!(SHOT_PAYLOAD <= 4092, "{}", SHOT_PAYLOAD);
     }
 
     #[test]
@@ -698,7 +697,7 @@ mod tests {
         assert_eq!(decode_closed(&encode_closed(1, &e)).unwrap(), e);
 
         let err = ErrorEntry::new(
-            true,
+            EntryKind::Connect,
             "ads.example.com:443",
             "198.51.100.3",
             403,
@@ -741,7 +740,10 @@ mod tests {
             fds: 21,
             max_fds: 1024,
         };
-        assert!(encode_shot(1, &shot).len() <= SHOT_PAYLOAD);
+        assert_eq!(
+            encode_shot(1, &shot).len(),
+            8 * 25 + (W_CLIENT + 8) + (W_ETARGET + 8)
+        );
         assert_eq!(decode_shot(&encode_shot(1, &shot)).unwrap(), shot);
     }
 

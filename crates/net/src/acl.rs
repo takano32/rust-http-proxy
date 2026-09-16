@@ -80,6 +80,22 @@ impl PortSet {
         self.ranges.is_empty()
     }
 
+    /// 読んだ結果を `443,8080-8099` の形に書き戻す (空なら `""` = 制限なし)。
+    /// `/config` が**効いている値**を出すために使う (読めなかった項目は落ちている。T14.15)。
+    pub fn spec(&self) -> String {
+        self.ranges
+            .iter()
+            .map(|(lo, hi)| {
+                if lo == hi {
+                    lo.to_string()
+                } else {
+                    format!("{}-{}", lo, hi)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     /// 制限が無ければ常に true。
     pub fn allows(&self, port: u16) -> bool {
         self.ranges.is_empty()
@@ -309,6 +325,10 @@ mod local_tests {
         let none = PortSet::parse("  ");
         assert!(none.is_empty() && none.allows(22), "空なら制限なし");
         assert!(PortSet::parse("junk").is_empty());
+        // `/config` に出す「効いている値」は読めた項目だけ (T14.15)
+        assert_eq!(set.spec(), "443,80,8080-8099");
+        assert_eq!(PortSet::parse("443,junk").spec(), "443");
+        assert_eq!(none.spec(), "");
     }
 
     #[test]

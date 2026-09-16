@@ -101,13 +101,62 @@ impl EntryCause {
     }
 }
 
+/// 個票 1 件の種類 (`/errors` の `kind`)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryKind {
+    /// 要求を中継する経路 (`GET http://…`)
+    Forward,
+    /// CONNECT トンネルの確立
+    Connect,
+    /// プロキシ自身の canary (利用者の要求ではない。T14.10)
+    Canary,
+}
+
+impl EntryKind {
+    /// `/errors` の `kind` に出す名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            EntryKind::Forward => "forward",
+            EntryKind::Connect => "connect",
+            EntryKind::Canary => "canary",
+        }
+    }
+
+    /// 利用者の経路の旗 (`true` = CONNECT) から。
+    pub fn from_connect(connect: bool) -> EntryKind {
+        if connect {
+            EntryKind::Connect
+        } else {
+            EntryKind::Forward
+        }
+    }
+
+    /// ファイルに書くときの符号 (T14.9)。
+    pub fn code(self) -> u64 {
+        match self {
+            EntryKind::Forward => 0,
+            EntryKind::Connect => 1,
+            EntryKind::Canary => 2,
+        }
+    }
+
+    /// 符号から戻す。知らない値は [`EntryKind::Forward`]。
+    pub fn from_code(v: u64) -> EntryKind {
+        match v {
+            1 => EntryKind::Connect,
+            2 => EntryKind::Canary,
+            _ => EntryKind::Forward,
+        }
+    }
+}
+
 /// エラー 1 件の個票。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ErrorEntry {
     /// いつ (epoch 秒)
     pub at: u64,
-    /// CONNECT の確立で失敗したか (`false` = forward)
-    pub connect: bool,
+    /// どの経路の 1 件か (forward / connect / canary)
+    pub kind: EntryKind,
     /// 宛先 (`host:port`)
     pub target: String,
     /// 原因 (5xx は [`ErrCause`] = `/status` の `errors_by_cause` と同じ名前、
@@ -127,7 +176,7 @@ impl ErrorEntry {
     /// 長さを切り詰めて 1 件を作る (時刻は今)。
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        connect: bool,
+        kind: EntryKind,
         target: &str,
         client: &str,
         status: u16,
@@ -137,7 +186,7 @@ impl ErrorEntry {
     ) -> ErrorEntry {
         ErrorEntry {
             at: crate::cache::now_epoch(),
-            connect,
+            kind,
             target: clip(target, MAX_TARGET),
             cause,
             dns_ms: dns_ms.min(MAX_MS),
@@ -152,7 +201,7 @@ impl ErrorEntry {
         format!(
             "{{\"at\":{},\"kind\":\"{}\",\"target\":\"{}\",\"cause\":\"{}\",\"dns_ms\":{},\"connect_ms\":{},\"status\":{},\"client\":\"{}\"}}",
             self.at,
-            if self.connect { "connect" } else { "forward" },
+            self.kind.name(),
             crate::json::escape(&self.target),
             self.cause.name(),
             self.dns_ms,
@@ -1534,7 +1583,7 @@ mod tests {
 
     fn entry(n: u64) -> ErrorEntry {
         ErrorEntry::new(
-            true,
+            EntryKind::Connect,
             &format!("h{}.example.net:443", n),
             "127.0.0.1",
             502,
@@ -1581,7 +1630,7 @@ mod tests {
     fn one_entry_fits_in_256_bytes() {
         let long = "a".repeat(300);
         let e = ErrorEntry::new(
-            false,
+            EntryKind::Forward,
             &long,
             "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6xx",
             502,
@@ -1609,7 +1658,7 @@ mod tests {
             (BlockCause::Local, "local"),
         ] {
             let e = ErrorEntry::new(
-                true,
+                EntryKind::Connect,
                 "ads.example.net:443",
                 "198.51.100.7",
                 403,
