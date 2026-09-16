@@ -7,7 +7,7 @@
 //! 即時反映できるのは接続単位で参照する値だけ: ACL (`PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS`)、
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
 //! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、`PROXY_CANARY`、`PROXY_CANARY_SECS`、
-//! `PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
+//! `PROXY_CANARY_IPV6`、`PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
 //! `PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`、
 //! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
@@ -188,11 +188,17 @@ impl Live {
             crate::dns::set_warm_window(fresh.dns_warm);
             applied.push("PROXY_DNS_WARM_SECS");
         }
-        // canary の宛先と周期 (T14.10)。`canary` スレッドは次の周期から新しい宛先を使う
-        if fresh.canary != old.canary || fresh.canary_secs != old.canary_secs {
+        // canary の宛先と周期 (T14.10) と IPv6 側 (T14.37)。`canary` スレッドは
+        // 次の周期から新しい宛先を使う
+        if fresh.canary != old.canary
+            || fresh.canary_secs != old.canary_secs
+            || fresh.canary_ipv6 != old.canary_ipv6
+        {
             next.canary = fresh.canary.clone();
             next.canary_secs = fresh.canary_secs;
-            crate::canary::configure(&fresh.canary, fresh.canary_secs);
+            next.canary_ipv6 = fresh.canary_ipv6;
+            next.sources.adopt(&fresh.sources, "PROXY_CANARY_IPV6");
+            crate::canary::configure(&fresh.canary, fresh.canary_secs, fresh.canary_ipv6);
             applied.push("PROXY_CANARY");
         }
         if fresh.pac_direct != old.pac_direct {

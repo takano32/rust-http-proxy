@@ -224,6 +224,16 @@ fn connect_one(addr: &SocketAddr, timeout: Option<Duration>) -> io::Result<TcpSt
     }
 }
 
+/// **1 つのアドレスへ繋ぐだけ** (canary の IPv6 側。T14.37)。
+///
+/// Happy Eyeballs も、勝敗の記録 ([`ipv6_status_json`] の `attempts` / `wins` / `losses`) も、
+/// ホストごとの族の記憶 ([`crate::dns::remember_family`]) も**動かさない**: これは
+/// 「コンテナの IPv6 がいま生きているか」を 1 分に 1 回見るだけの観測で、
+/// `v4_first` の判定 (600 秒に 1 回の探り) を動かしてはいけない。
+pub fn connect_addr(addr: &SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
+    connect_one(addr, proxy_base::timeout::for_socket(timeout))
+}
+
 /// 名前解決して接続する。IPv6 無効時は A レコードだけ、有効時は Happy Eyeballs。全体の締め切りは `timeout`
 /// (`Duration::ZERO` は無期限 = OS 既定の接続タイムアウトに任せる)。
 pub fn connect(addr_str: &str, timeout: Duration) -> io::Result<TcpStream> {

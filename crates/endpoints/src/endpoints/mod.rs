@@ -51,6 +51,7 @@ pub struct Endpoint<'a> {
 
 mod blocklist;
 mod config;
+mod explain;
 mod health;
 mod pac;
 mod profile;
@@ -129,6 +130,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
          \x20 /hosts/series?top=16&host=<name>            JSON: per-host series (5 min x 24 h)\n\
          \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
+         \x20 /explain?host=<name> | ?client=<ip>         JSON: one peer, explained in one page\n\
          \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
@@ -251,6 +253,9 @@ pub fn handle(
     } else if is_get && path == "/clients" {
         // 接続元の個票 (T14.7)。認証なしで誰でも見えるのは他の個票と同じ
         recent::clients(ep, query)
+    } else if is_get && path == "/explain" {
+        // 1 相手の説明 (T14.36)。上の口を横断して読む作業をサーバー側で 1 枚に組む
+        explain::explain(ep, query)
     } else if is_get && path == "/config" {
         // 効いている設定とその出どころ、この環境で何が読めるか (T14.15)
         config::render(ep)

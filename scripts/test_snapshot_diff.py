@@ -514,5 +514,38 @@ class Deployed(unittest.TestCase):
                          [sd.MISSED, sd.MISSED, sd.MISSED, sd.UNKNOWN])
 
 
+@unittest.skipUnless(os.path.isfile(os.path.join(DATA, "deployed-2026-09-16.anon.json")),
+                     "匿名化した実データが無い")
+class Anonymized(unittest.TestCase):
+    """T14.35 の匿名化した実データ (`testdata/deployed-2026-09-16.anon.json`) で回る。
+
+    上の `Deployed` は `~/rust-http-proxy-status/` があるときだけ回るが、これは
+    **リポジトリの中の実データ** (ホスト名と IP と UA だけを置き換えた雪像) なのでいつでも回る。
+    """
+
+    def test_the_anonymized_snapshot_gives_the_numbers_of_t140(self):
+        snap = sd.load_source(os.path.join(DATA, "deployed-2026-09-16.anon.json"), False)
+        self.assertEqual((snap["taken_at"], snap["uptime_secs"]), (1789520760, 261833))
+        self.assertEqual(len(snap["hosts"]["hosts"]), 817)
+        self.assertEqual(len(snap["dns"]["entries"]), 90)
+        # ホスト別の読み方 (`proxydata.row_of`) が実データの形で回る
+        rows = [pd.row_of(h["host"], h, None) for h in snap["hosts"]["hosts"]]
+        self.assertEqual(sum(r["requests"] for r in rows), 18153)
+        top = max(rows, key=lambda r: r["requests"])
+        self.assertEqual((top["requests"], top["connect"]), (4427, True))
+        self.assertRegex(top["name"], r"^host-\d{4}\.example$")
+        # `/history?res=3600` を起動時刻で切った平常時 = T14.0 の表の「あと」の列
+        started = snap["taken_at"] - snap["uptime_secs"]
+        hrows, bounds, _causes, interval = sd.merged_history(snap, snap, "3600")
+        limit = max(1, round(sd.BURST_PER_HOUR * interval / 3600.0))
+        agg = sd.aggregate([r for r in hrows if r["t"] >= started], bounds, limit)
+        self.assertEqual((agg["samples"], agg["burst_samples"], agg["errors"]), (72, 0, 0))
+        self.assertEqual(f"{agg['dns_per_connect']:.2f}", "0.55")
+        self.assertEqual(f"{agg['connect_p50']:.1f}", "8.3")
+        self.assertEqual(f"{agg['connect_p95']:.1f}", "80.7")
+        self.assertEqual(f"{agg['connect_avg']:.1f}", "15.3")
+        self.assertEqual(f"{agg['ms_per_miss']:.1f}", "11.5")
+
+
 if __name__ == "__main__":
     unittest.main()
