@@ -3346,7 +3346,8 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
 プロファイル画面 → T14.3。
 
 **順番 (2026-09-16 に入れ替えた)**: **T14.1 → T14.2 → T14.3 → T14.4 → (T14.5 ∥ T14.7) → T14.6 → T14.8 → [T14.9 → T14.12 → T14.11 → T14.10、T14.15 → T14.18 → T14.17 → T14.14 → T14.16 → T14.20 → T14.19 → T14.21、T14.22 → T14.23 → T14.28 → T14.31 → T14.34 のうち
-再デプロイ前に間に合った分] → 再デプロイ → 24 時間 → T14.99** (T14.24〜T14.27、T14.29、T14.30、T14.32、T14.33、T14.35〜T14.37 は再デプロイ後でもよい) (T14.4 は個票の形を決めるので先、T14.5 と T14.7 は触るファイルが違うので並列、
+再デプロイ前に間に合った分] → 再デプロイ → 24 時間 → T14.99** (T14.24〜T14.27、T14.29、T14.30、T14.32、T14.33、T14.35〜T14.44 は再デプロイ後でもよい。T14.41 (記録の一括 off とハッシュ化) だけは
+公開ポートで記録の増えた版を動かすなら先に) (T14.4 は個票の形を決めるので先、T14.5 と T14.7 は触るファイルが違うので並列、
 T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.13 は利用者が要ると言ったときだけ。T14.18 は既定無効で入れる (2026-09-16 の指示)。
 T14.14 (`.rrd` 版 3) は履歴に項目を足すと決めたときにその前に 1 回)。T14.99 (デプロイ後の様子見と締め) は
 「デプロイ先の数字で書く」タスクなので、T14.3 の `/profile` まで入った版でデータを取ってから書く方が、1 回の再デプロイで済み、
@@ -4040,6 +4041,77 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     `canary.ipv6_connect_ms` と `/history`)、README。
   - 受け入れ基準: 単体テストで答えを差し替えた引き直しで `changes` が 1 増え、同じ答えなら増えない。canary の IPv6 側が黒穴
     (T14.16 の環境) で `null` (失敗) と出て、生きていれば ms が出る。費用 0。
+**さらに候補 (2026-09-16、続き: T14.38〜)**。ここは「宛先の正体」「いまの速さ」「詰まりの向き」「この機械の実力」「記録を止める口」。
+共通の決まりは T14.4〜T14.8 と同じ。どれも再デプロイ後でもよい (T14.41 だけは、記録が増えた版を公開ポートで動かすなら**先に**入れる価値がある)。
+
+- [ ] **T14.38 CONNECT の最初のバイトから SNI を読む (`PROXY_PEEK_SNI`、既定 `on`)**
+  - 目的: T14.7 の `literal_targets` (IP リテラル宛ての CONNECT) は「本当はどこへ行っているか」が分からない。CONNECT のあとクライアントが
+    最初に送るのは TLS の ClientHello で、その中の SNI に宛先の名前がある。`200` を返したあと**最初の中継の前に 1 回だけ `recv(MSG_PEEK)`**
+    すれば (バイトは消費しない。そのあとの `splice` はそのまま)、IP リテラル宛てでも名前が分かり、CONNECT のホストと SNI が違う
+    (domain fronting、または設定を間違えたクライアント) ことも数えられる。
+  - 変更箇所: `crates/sys/src/sys.rs` (`recv(MSG_PEEK)` の束縛。Linux 専用、他 OS では読まない)、`crates/tunnel/src/tunnel.rs` (`open` の
+    `200` のあと、最初の `poll` でクライアント側が読めるようになったときに 1 回だけ覗く。**ClientHello の解析は 60 行程度**: TLS record
+    (type 0x16) → handshake (type 0x01) → extensions → server_name (type 0x00)。壊れていれば `None` で終わり、中継は続ける)、
+    `crates/metrics/src/recent.rs` (個票に `sni`)、`crates/metrics/src/metrics.rs` (ホスト別の `sni_mismatch` の件数、`/status` に
+    `sni_mismatches` の合計)、`crates/config` (`PROXY_PEEK_SNI=on|off`)、README (個票に SNI が入ること)。
+  - やること: 上のとおり。覗く長さは 1,024 バイト (ClientHello の大半はこれで足りる。足りなければ `None`)。**443 以外のポートでは覗かない**
+    (TLS とは限らない)。`--lite` では覗かない。
+  - 受け入れ基準: 単体テストで手書きの ClientHello (SNI `example.test`) から名前が取れ、壊れた record と SNI 無しで `None`。結合テストで
+    CONNECT `127.0.0.1:443` 相当の宛先 (試験のオリジンを 443 に立てられないので、`PROXY_PEEK_SNI_PORTS` のような試験用の口は作らず、
+    テストでは内蔵オリジンのポートを 443 として扱う差し替えを `cfg(test)` ではなく設定で持つ — `PROXY_PEEK_SNI=on:<port>` の形) へ
+    ClientHello を送ると個票の `sni` に `example.test`、CONNECT のホストと違えば `sni_mismatches` +1。
+    費用: **トンネル 1 本に `recv(MSG_PEEK)` 1 回** (CONNECT 1 本あたりのシステムコール +1。本文に書く)、CONNECT 確立の CPU/本 ±4% (6 組)、
+    `--only tunnel` の CPU/MiB が ±ぶれの中 (中継の経路は変えない)。
+- [ ] **T14.39 いまの転送速度 (`/connections` の各行に直近 5 秒の bytes/s)**
+  - 目的: `/connections` の `bytes` は累計で、「いま誰が帯域を使っているか」が分からない。history スレッドが 5 秒ごとに各接続の `bytes`
+    (T13.4 の `ConnSlot` の原子) を控えれば、差分で直近 5 秒の速さが出る。
+  - 変更箇所: `crates/metrics/src/recent.rs` (`ConnSlot` に `bytes_prev` と `rate_bps` の原子 2 つ。history スレッドが 5 秒ごとに全 slot を
+    なめて更新。**接続の経路は触らない**)、`/connections` の各行に `rate_bps` (上り / 下り別が取れれば 2 つ)、`/status` に `rate_bps_total`、
+    ダッシュボードの「いまの接続」に列 (T14.8 の担当。無ければ `check-dashboard.js` に載せるだけ)、README。
+  - 受け入れ基準: 結合テストで 1 MiB/s で流し続けるトンネルを 12 秒握り、`/connections` の `rate_bps` が 0.5〜2 MiB/s の範囲。
+    費用 0 (history スレッドだけ。240 本なめて 240 回の原子の読み書き)。
+- [ ] **T14.40 週次の要約 (`scripts/weekly-report.py`)**
+  - 目的: T14.34 の日次 snapshot と T14.20 の日次の要約があれば、1 週間の「要求数・p50 / p95・名前解決ミス率・エラー・山・接続元の
+    出入り・遅かったホスト上位・新しく見たホスト」を Markdown 1 枚にできる。T14.99 と、次の Phase の T15.0 の入力になる。
+  - 変更箇所: `scripts/weekly-report.py` (新規。標準ライブラリのみ。入力は `~/rust-http-proxy-status/` の snapshot 群か `/snapshots`)、README。
+  - 受け入れ基準: 匿名化した実データ (T14.35) 7 日ぶん (無ければ 1 日ぶんを複製) から表 8 つが出て、数字が `snapshot-diff.py` (T14.17) の
+    値と一致する。
+- [ ] **T14.41 記録の一括 off とハッシュ化 (`PROXY_RECORDS=on|off|hashed`)**
+  - 目的: T13.4〜T14.7 で個票 (接続元 IP・宛先・`User-Agent`・SNI) が増えた。認証なしの公開ポートで動かすなら、**記録を 1 つの旗で
+    全部止める**か、**接続元 IP を復元できない形 (ハッシュ) で持つ**選択肢が要る (利用者以外の人の情報を残さないため)。
+  - 変更箇所: `crates/config` と `crates/reload` (`PROXY_RECORDS`、既定 `on`、`.env` で即時反映)、`crates/metrics/src/recent.rs` (全リングの
+    書き込みを 1 つの旗で飛ばす。`hashed` は接続元 IP を起動ごとの乱数つき FNV-1a 64 ビットの 16 進で置き換える — `/clients` の鍵も
+    同じ変換)、`/status` に `records: "on"|"off"|"hashed"`、README (方針の説明)。
+  - 受け入れ基準: 結合テストで `off` のとき `/recent` `/errors` `/connections` `/clients` `/log` が空 (`"records":"off"`)、`hashed` のとき
+    接続元が 16 桁の 16 進で同じ接続元は同じ値、`on` は今までどおり。費用: 旗の分岐 1 回 (既定 `on` では変わらない)。
+- [ ] **T14.42 中継の詰まりの向き (クライアントが読まないのか、オリジンが読まないのか)**
+  - 目的: 転送が遅いとき、遅いのは「クライアントの回線 (下り)」か「オリジン」か「利用者の上り」か。`splice` が `EAGAIN` で止まり
+    `poll` で書けるのを待つ時間を**向き別**に足せば、トンネル 1 本ごとに「クライアント側で待った ms / オリジン側で待った ms」が出る。
+  - 変更箇所: `crates/tunnel/src/tunnel.rs` (`relay` の `poll` ループ: 書けるのを待つ側と待った時間を積む。**時計を読むのは書けなくて
+    待ちに入る回だけ** — 64 KiB ごとに 1 回ではない)、`crates/metrics/src/recent.rs` (個票に `stall_ms: {client, origin}`)、T14.6 の窓
+    (向き別の合計)、README。
+  - 受け入れ基準: 結合テストで、読まないクライアント (受信を 2 秒止める) へ 1 MiB を流すと個票の `stall_ms.client` ≥ 1,500、
+    読まないオリジンなら `stall_ms.origin` ≥ 1,500。費用: `--only tunnel --conc 1` の CPU/MiB が ±ぶれの中 (3 組)。**待ちに入らない
+    中継 (loopback) では時計を 1 回も読まない**ことを `strace -c` の `clock_gettime` (vDSO なので出ない) ではなく、コードの経路で
+    説明する。
+- [ ] **T14.43 起動時の自己ベンチ (`PROXY_SELF_BENCH=on`、既定 `off`)**
+  - 目的: §2 の CPU/要求 (41 us) は手元の big.LITTLE の big コアの値で、**デプロイ先のコンテナの CPU で何 us か**は分からない。T14.3 の
+    `cpu_per_request_us` は実トラフィックの値だが 0.015 req/s では 5 秒の窓に 0〜1 本しか入らず読めない。起動直後に **loopback だけで
+    3 秒** (内蔵の小さなオリジン → 自分へ forward 8 並列と CONNECT 8 並列) 回して CPU/要求 と CPU/本 を測り、`/status` の `self_bench`
+    と `/events` に残せば、§2 の表とデプロイ先が**同じ物差し**で並ぶ (外へは 1 バイトも出さない)。
+  - 変更箇所: `src/main.rs` (起動後、待ち受けを開いてから 3 秒だけ)、`crates/bench` の一部を本体から呼べるように切り出す (`crates/bench`
+    は `default-members` 外なので、必要な最小 (内蔵オリジンと forward / CONNECT の打ち手) を `crates/selfbench` に分ける。**ビルドメモリ
+    200 MB の関門に影響しないこと**を `scripts/build-memory.sh` で確かめる)、`/status` の `self_bench` (`{"at":..,"forward_us":..,"connect_us":..,
+    "cores":..}`)、README。
+  - 受け入れ基準: 手元で `PROXY_SELF_BENCH=on` の `forward_us` が §1 のレシピ (`--lite` ではなく既定プロファイル) の値と **±20%** で合う
+    (3 秒・8 並列は §1 の 10 秒 × 3 組より粗い。ぶれの幅を報告に書く)。`off` (既定) では 1 命令も走らない。ビルドは 200 MB で通る。
+    デプロイ先: 再デプロイ後 `/status` の `self_bench` に値が出て、§2 との比が読めること (親が見る)。
+- [ ] **T14.44 週次・日次の要約とイベントをダッシュボードの「調査」ページに (T14.8 の続き)**
+  - 目的: T14.20 (日次) / T14.23 (異常) / T14.34 (日次 snapshot) / T14.40 (週次) が入ると、読む口が JSON と Markdown に散る。
+    調査ページ (T14.8) に「今週」「今日」「出来事と異常」の 3 枚を足して、**見に行く場所を 1 つ**にする。
+  - 変更箇所: `crates/endpoints/src/web/inspect.html`、`scripts/check-dashboard.js`、README。
+  - 受け入れ基準: `node scripts/check-dashboard.js` が新しい描画関数 (`dailyRows` / `weeklyRows` / `eventMarks`) を匿名化した実データ
+    (T14.35) で通す。`inspect.html` は 96 KiB 以下 (T14.8 の 64 KiB から上げる。理由を README に)。
 - [ ] **T14.99 締める (README と §2 と §0 をデプロイ先の数字で書き直す)**
   - 目的: §0 のゴール「同じ条件でこれ以上速くならないところまで」は loopback では Phase 11 で到達し、デプロイ先では Phase 12〜14 で
     「コードで縮む待ち」を使い切る。それを 1 か所に書く。
