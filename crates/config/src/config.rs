@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::acl::{AclConfig, PortSet};
+use crate::acl::{AclConfig, ClientAcl, PortSet};
 use crate::cache::CacheConfig;
 use crate::envfile;
 
@@ -185,6 +185,12 @@ pub struct Config {
     /// (`/status` `/hosts` `/blocklist?host=` の判定だけ 等) は今までどおり。
     /// **認証ではない** (誰でも読める。公開ポートで「消せる口」だけ閉じるためのつまみ。T14.18)
     pub endpoints_readonly: bool,
+    /// 受ける接続元の許可リスト (`PROXY_ALLOW_CLIENTS`、既定 空 = 全許可)。
+    ///
+    /// ここに無い接続元は **accept した直後に、要求を読まずに閉じる** (内部エンドポイントも
+    /// 含めて閉じる = 公開ポートで個票を見せないため)。宛先の `PROXY_ALLOW_HOSTS` と
+    /// `PROXY_ALLOW_LOCAL` とは無関係。**認証ではない** (T14.18)
+    pub allow_clients: ClientAcl,
 }
 
 impl Config {
@@ -288,6 +294,9 @@ impl Config {
         }
         if let Some(v) = envfile::var("PROXY_ENDPOINTS_READONLY") {
             cfg.endpoints_readonly = !off(v);
+        }
+        if let Some(v) = envfile::var("PROXY_ALLOW_CLIENTS") {
+            cfg.allow_clients = ClientAcl::parse(&v);
         }
         if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
             cfg.stats_persist = !off(v);
@@ -396,6 +405,7 @@ impl Config {
             max_threads: default_max_threads(max_conns),
             cache: CacheConfig::default(),
             endpoints_readonly: false,
+            allow_clients: ClientAcl::default(),
         })
     }
 }

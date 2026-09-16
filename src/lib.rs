@@ -167,6 +167,25 @@ pub fn serve(
             }
         };
         let cfg = config_of();
+        // 接続元の ACL (`PROXY_ALLOW_CLIENTS`。T14.18)。**要求を読まずにここで閉じる**ので、
+        // 内部エンドポイントも含めて何も見せない (公開ポートで個票を出さないため)。
+        // 断るのに応答は返さない — 誰が叩いているか分からない相手に、ここに何が居るかを
+        // 教えないため (503 を返す上限のときとは目的が違う)。
+        // T13.2 の「上限の外の枠」より**前**に置く (枠は自分宛ての要求のためのもので、
+        // そもそも繋がせない相手には要らない)。**認証ではない**。
+        // 既定 (空) の費用は `is_empty()` の分岐 1 回だけで、照合には入らない
+        if !cfg.allow_clients.is_empty() && !cfg.allow_clients.allows(peer.ip()) {
+            metrics
+                .rejected_client_acl
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            log_debug!(
+                None,
+                "closing connection from {} (not in PROXY_ALLOW_CLIENTS)",
+                peer.ip()
+            );
+            drop(stream);
+            continue;
+        }
         // この接続が継承したのは「今 待ち受けに当たっている値」。.env の再読込で timeout が
         // 変わった直後だけは食い違うので、その接続は従来どおり接続ごとに設定する
         let conn_inherited = inherited.filter(|t| *t == cfg.timeout);
