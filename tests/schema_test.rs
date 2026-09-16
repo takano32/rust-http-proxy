@@ -63,6 +63,7 @@ const QUERIES: &[(&str, &str)] = &[
     ("/history", "/history?res=60&n=10"),
     ("/history", "/history?since=0&summary=1"),
     ("/profile", "/profile?res=5"),
+    ("/slo", "/slo?days=7"),
     ("/daily", "/daily?n=365"),
     ("/lookup", "/lookup?url=http://example.com/x"),
     ("/purge", "/purge?url=http://example.com/x"),

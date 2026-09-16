@@ -213,6 +213,25 @@ pub fn daily(query: Option<&str>) -> (u16, &'static str, String) {
     (200, "application/json", out)
 }
 
+/// `/slo?days=7` — SLO の達成率 (T14.50)。
+///
+/// 閾は `PROXY_SLO` の 4 つ (`connect_p50_ms` / `connect_p95_ms` / `error_rate` /
+/// `dns_miss_per_connect`) で、**5 秒の標本 1 本ごと**に 4 つとも満たしたかを
+/// 履歴スレッドが判定している (`crate::slo`)。ここはその時間ごとの集計を
+/// 日ごと・時間ごとに畳んで、**外れた時間帯 (連続する外れは 1 行)** と一緒に返すだけ。
+/// 応答は [`crate::slo::MAX_BODY`] (64 KiB) 以下。判定していない標本
+/// (確立が 1 本も無い 5 秒) は分母に入らないので `ratio` が `null` になることがある。
+pub fn slo(query: Option<&str>) -> (u16, &'static str, String) {
+    let days = num_param(
+        query,
+        "days",
+        crate::slo::DEFAULT_DAYS as usize,
+        crate::slo::MAX_DAYS as usize,
+    ) as u64;
+    let body = crate::slo::report(crate::cache::now_epoch(), days).to_json();
+    (200, "application/json", body)
+}
+
 /// `/snapshots` — 日次で残した `/snapshot` の一覧 (T14.34)。
 ///
 /// 履歴スレッドが UTC の日付をまたいだ瞬間に `$HOME/.rust-http-proxy/snapshots/<日付>.json`

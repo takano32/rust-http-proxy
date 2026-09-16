@@ -875,6 +875,8 @@ pub fn spawn_every(
         let pushed = metrics.history.push(sample);
         // 積んだあとに、直近 5 分が直近 1 時間の基準値から外れていないかを見る (T14.23)
         crate::anomaly::check(metrics, &sample);
+        // 同じ標本を SLO の 4 つの閾に当て、時間ごとの達成率に 1 本足す (`/slo`。T14.50)
+        crate::slo::observe(&sample);
         if let Some(st) = &store {
             st.write_samples(&pushed);
             st.write_recent(metrics);

@@ -33,7 +33,7 @@ use crate::dns;
 use crate::freshness;
 use crate::headers;
 use crate::log::{Access, access};
-use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics, StageMs};
+use crate::metrics::{BadRequestReason, Detail, ErrCause, HostOutcome, Metrics, StageMs};
 use crate::origin::{self, OriginStream};
 use crate::recent::{
     ConnTally, STAGE_CLIENT_READ, STAGE_CONNECT, STAGE_DNS, STAGE_FIRST_BYTE, STAGE_QUEUE, STAGES,
@@ -432,6 +432,15 @@ pub fn handle_http_with_headers(
             "malformed request line: {:?}",
             request_line.trim()
         );
+        // 理由別に 1 件数えて個票にも残す (T14.28)。**個票に要求行そのものは入れない**。
+        // 本体クレートが同じ判定を先にしているのでここへは普通は来ないが、数える口は
+        // 400 を返す場所ごとに置く
+        metrics.record_bad_request(
+            BadRequestReason::of_request_line(request_line),
+            client_ip.unwrap_or("-"),
+            400,
+        );
+        let _ = write_error(client, 400, "Bad Request");
         return Ok(false);
     };
     let version = parts.next().unwrap_or("HTTP/1.0");
@@ -444,6 +453,24 @@ pub fn handle_http_with_headers(
             req.connection_keep_alive
         };
     let req_framing = if req.chunked {
+        // `Content-Length` と `Transfer-Encoding: chunked` が両方ある要求は、前段と後段で
+        // 本文の切れ目が食い違う (要求の密輸)。RFC 9112 §6.1 は「中継してはならない」と
+        // 書いているので 400 で断る (T14.28)。**この比較が走るのは `chunked` が真のとき
+        // だけ**なので、本文の無い要求と `Content-Length` だけの要求 (= 成功の経路) には
+        // 分岐も比較も 1 つも増えない
+        if req.content_length.is_some() {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: both Content-Length and Transfer-Encoding: chunked"
+            );
+            metrics.record_bad_request(
+                BadRequestReason::BodyFraming,
+                client_ip.unwrap_or("-"),
+                400,
+            );
+            let _ = write_error(client, 400, "Bad Request");
+            return Ok(false);
+        }
         Framing::Chunked
     } else {
         req.content_length
@@ -457,6 +484,12 @@ pub fn handle_http_with_headers(
         Ok(o) => o,
         Err(e) => {
             log_warn!(Some(conn_id), "400 Bad Request: {}", e);
+            // `Host` が無い (`no_host`) のか絶対 URI が壊れている (`bad_uri`) のか (T14.28)
+            metrics.record_bad_request(
+                BadRequestReason::of_target(method, target),
+                client_ip.unwrap_or("-"),
+                400,
+            );
             let _ = write_error(client, 400, "Bad Request");
             return Ok(false);
         }

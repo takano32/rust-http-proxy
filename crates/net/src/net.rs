@@ -114,13 +114,72 @@ pub fn canonical_addr(addr: SocketAddr) -> SocketAddr {
     SocketAddr::new(canonical_ip(addr.ip()), addr.port())
 }
 
-/// 待ち受けソケットを作る。`addrs` が空なら IPv6 有効時はデュアルスタック (`[::]` + `0.0.0.0`)、
-/// 無効時は `0.0.0.0` だけ。`port` が 0 のときは最初に取れたポートを残りにも使う。
-pub fn bind_all(addrs: &[IpAddr], port: u16) -> io::Result<Vec<TcpListener>> {
-    bind_all_with(addrs, port, ipv6_enabled())
+/// `std` の `TcpListener::bind` が使う backlog。**Rust はこれを変えられない**ので、
+/// backlog を選ぶにはソケットを自分で作るしかない (T14.47)。
+pub const STD_BACKLOG: u32 = 128;
+
+/// backlog の既定 (`PROXY_LISTEN_BACKLOG=0`) の頭打ち。
+pub const DEFAULT_BACKLOG_CAP: u32 = 1024;
+
+/// backlog の既定: **`min(1024, /proc/sys/net/core/somaxconn)`** (T14.47)。
+///
+/// `somaxconn` が読めなければ 1024 (カーネルが自分で `somaxconn` に切り詰めるので、
+/// 大きめに渡しても溢れない)。Linux 以外は `std` のまま 128。
+///
+/// 128 では足りない理由: ブラウザがページを 1 枚開くと数十本の CONNECT が**同時に**来るのに、
+/// accept ループは 1 本しかない (§4 の T4.3 で「並列にしても速くならない」と測って決めた)。
+/// 受け入れ待ち行列が溢れると SYN は**黙って捨てられ**、クライアントは 1 秒後に再送するので、
+/// 利用者には 1 秒の待ちとして見える (T14.16 の手元の実測で max 1,011 ms、T14.12 の
+/// `ListenOverflows` が直近 5 分で +122)。
+pub fn default_backlog() -> u32 {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/sys/net/core/somaxconn")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_BACKLOG_CAP)
+            .min(DEFAULT_BACKLOG_CAP)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        STD_BACKLOG
+    }
 }
 
-pub fn bind_all_with(addrs: &[IpAddr], port: u16, ipv6: bool) -> io::Result<Vec<TcpListener>> {
+/// 待ち受けソケットを 1 本作る。**Linux では backlog を選べる** (`socket` / `bind` /
+/// `listen(fd, backlog)` を自分で呼ぶ。T14.47)。それ以外の OS は `std` の `bind`
+/// (backlog は 128 固定) のままで、`backlog` は効かない。
+fn bind_one(addr: SocketAddr, backlog: u32) -> io::Result<TcpListener> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::FromRawFd;
+
+        match proxy_sys::sys::listen_socket(addr, backlog) {
+            // SAFETY: listen まで済んだ記述子を 1 回だけ包む (以後は TcpListener が閉じる)。
+            Ok(fd) => return Ok(unsafe { TcpListener::from_raw_fd(fd) }),
+            // 定数の分からない arch では `std` に落ちる (backlog は 128 のまま)
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let _ = backlog;
+    TcpListener::bind(addr)
+}
+
+/// 待ち受けソケットを作る。`addrs` が空なら IPv6 有効時はデュアルスタック (`[::]` + `0.0.0.0`)、
+/// 無効時は `0.0.0.0` だけ。`port` が 0 のときは最初に取れたポートを残りにも使う。
+/// `backlog` は受け入れ待ち行列の長さ (`PROXY_LISTEN_BACKLOG`。0 で [`default_backlog`])。
+pub fn bind_all(addrs: &[IpAddr], port: u16, backlog: u32) -> io::Result<Vec<TcpListener>> {
+    bind_all_with(addrs, port, ipv6_enabled(), backlog)
+}
+
+pub fn bind_all_with(
+    addrs: &[IpAddr],
+    port: u16,
+    ipv6: bool,
+    backlog: u32,
+) -> io::Result<Vec<TcpListener>> {
     let candidates: Vec<IpAddr> = if addrs.is_empty() {
         if ipv6 {
             vec![
@@ -134,11 +193,16 @@ pub fn bind_all_with(addrs: &[IpAddr], port: u16, ipv6: bool) -> io::Result<Vec<
         addrs.to_vec()
     };
     let auto = addrs.is_empty();
+    let backlog = if backlog == 0 {
+        default_backlog()
+    } else {
+        backlog
+    };
     let mut out: Vec<TcpListener> = Vec::new();
     let mut port = port;
     let mut first_err = None;
     for ip in candidates {
-        match TcpListener::bind(SocketAddr::new(ip, port)) {
+        match bind_one(SocketAddr::new(ip, port), backlog) {
             Ok(l) => {
                 if port == 0 {
                     port = l.local_addr().map(|a| a.port()).unwrap_or(0);
@@ -536,10 +600,10 @@ mod tests {
     #[test]
     fn binds_dual_stack_or_falls_back() {
         assert!(ipv6_enabled(), "on by default");
-        let v4 = bind_all_with(&[], 0, false).expect("v4-only listener");
+        let v4 = bind_all_with(&[], 0, false, 0).expect("v4-only listener");
         assert_eq!(v4.len(), 1);
         assert!(v4[0].local_addr().unwrap().ip().is_ipv4());
-        let listeners = bind_all(&[], 0).expect("at least one listener");
+        let listeners = bind_all(&[], 0, 0).expect("at least one listener");
         assert!(!listeners.is_empty() && listeners.len() <= 2);
         let port = listeners[0].local_addr().unwrap().port();
         assert!(
@@ -548,9 +612,49 @@ mod tests {
                 .all(|l| l.local_addr().unwrap().port() == port)
         );
         // 明示指定なら指定どおり
-        let explicit = bind_all(&[IpAddr::V4(Ipv4Addr::LOCALHOST)], 0).unwrap();
+        let explicit = bind_all(&[IpAddr::V4(Ipv4Addr::LOCALHOST)], 0, 0).unwrap();
         assert_eq!(explicit.len(), 1);
         assert!(explicit[0].local_addr().unwrap().ip().is_loopback());
+    }
+
+    /// backlog の既定は `min(1024, somaxconn)` で、読めない機械でも 1〜1,024 に収まる (T14.47)。
+    #[test]
+    fn default_backlog_is_capped_at_1024() {
+        let n = default_backlog();
+        assert!((1..=DEFAULT_BACKLOG_CAP).contains(&n), "backlog {}", n);
+        #[cfg(target_os = "linux")]
+        if let Some(somaxconn) = std::fs::read_to_string("/proc/sys/net/core/somaxconn")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+        {
+            assert_eq!(
+                n,
+                somaxconn.min(DEFAULT_BACKLOG_CAP),
+                "somaxconn と食い違う"
+            );
+        }
+    }
+
+    /// backlog を指定しても待ち受けは今までどおり使えること (T14.47)。
+    ///
+    /// backlog そのもの (`ss -ltn` の `Send-Q`) は結合テスト `tests/backlog_test.rs` で見る。
+    /// ここで見るのは「`std` の `bind` を置き換えても待ち受けの姿が変わらない」こと:
+    /// 指定したアドレスに 1 本だけ立ち、accept でき、`0` と大きすぎる値でも失敗しないこと。
+    #[test]
+    fn binds_with_an_explicit_backlog() {
+        let listeners = bind_all(&[IpAddr::V4(Ipv4Addr::LOCALHOST)], 0, 5).expect("listener");
+        assert_eq!(listeners.len(), 1);
+        let addr = listeners[0].local_addr().unwrap();
+        let client = TcpStream::connect(addr).unwrap();
+        let (accepted, _) = listeners[0].accept().unwrap();
+        drop((client, accepted));
+
+        // 0 は「既定に任せる」(呼ぶ側が解決していなくても落ちない)
+        let zero = bind_all(&[IpAddr::V4(Ipv4Addr::LOCALHOST)], 0, 0).expect("listener");
+        assert_eq!(zero.len(), 1);
+        // 大きすぎる値はカーネルが somaxconn で頭打ちにするので、ここでは失敗しない
+        let big = bind_all(&[IpAddr::V4(Ipv4Addr::LOCALHOST)], 0, 1 << 20).expect("listener");
+        assert_eq!(big.len(), 1);
     }
 
     /// IPv6 を絡めるテストは**全体の状態 (連敗と勝敗の数) を共有する**ので直列に回す。
