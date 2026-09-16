@@ -751,6 +751,8 @@ pub fn spawn_every(
         // 山の写真と、閉じた接続の分布の窓 (T14.6)。**標本より先に**撮るのは、
         // 越えてから撮るまでを 1 周期より短くするため
         metrics.take_burst_shot();
+        // 下の層 (IPv4 優先の切替・圧迫・バラスト) の変わり目を出来事に 1 件 (T14.11)
+        crate::events::poll(cache);
         metrics.history.closed.roll(crate::cache::now_epoch());
         let pushed = metrics.history.push(Sample::take(metrics, cache));
         if let Some(st) = &store {

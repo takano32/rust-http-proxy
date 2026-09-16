@@ -84,6 +84,8 @@ impl Store {
                     what,
                     e
                 );
+                // 出来事の時系列にも最初の 1 回だけ (T14.11)
+                crate::events::note_state_file(&self.path, what, &e);
             }
         }
     }
