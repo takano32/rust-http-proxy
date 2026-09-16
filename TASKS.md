@@ -4749,7 +4749,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 受け入れ基準: 結合テストで http 接続の `target` が `127.0.0.1:<port>`。費用 0 (接続の最初の要求だけ)。
   - 結果 (2026-09-16、`8b8925e`): http 接続の `target` を CONNECT と同じ `host:port` にそろえた。`ConnSlot::set_first_target` に渡す値を、ホスト別統計の鍵 (`pool_key` = `scheme://host:port`) と**同じ規則**で組む (`http://example.com/` → `example.com:80`、`http://host:8080/` → `host:8080`、絶対形式の `https://` なら 443)。スキームだけを**確保せずに**取る `request::target_scheme` を足し、**`parse_origin` の `scheme` と 1 つも食い違わないこと**を単体テストで縛った。`format!` が要るのはポートを省いた要求だけ、通るのは**接続の最初の要求の 1 回**なので要求ごとの費用は 0。`record_client` に渡す値は変えていないので `/clients` の `distinct_targets` / `literal_targets` は今までどおり。`/explain?host=` は `key_host_port` がポートの有無を両方扱うので `?host=127.0.0.1` でも `?host=127.0.0.1:80` でも同じ個票が引ける。`check-dashboard.js` の `HOSTKEY` は元からポート付きを通すので変更なし。結合 1 本 + 単体 1 本を追加。
     - 宛先の形は個票 (`/connections` `/recent` `/bursts`) が `host:port`、集計の鍵 (`/hosts` `/errors`) が `scheme://host:port` で**2 形のまま** (読む側は `key_host_port` が両方を剥がす)。`/trace` の forward の `target` は URL のまま (意図的)。統一するなら別タスク。
-- [ ] **T14.49 全エンドポイントに `schema` の版を入れる**
+- [x] **T14.49 全エンドポイントに `schema` の版を入れる**
   - 目的: `/status` `/history` `/recent` … の JSON の形は Phase ごとに増えている。読む道具 (`status-diff.py` `snapshot-diff.py`
     `check-dashboard.js`) が「この JSON はどの版か」を推測している (`parts` の有無など)。各応答の先頭に `"schema": N` (整数、形が変わったら +1)
     を入れ、道具は版で分岐する。
@@ -4757,6 +4757,28 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 受け入れ基準: 結合テストで全エンドポイント (`/status` `/history` `/dns` `/errors` `/connections` `/recent` `/hosts` `/clients` `/log`
     `/snapshot` `/profile` `/bursts` …) の応答の先頭 64 バイトに `"schema":` があること。`check-dashboard.js` が版の無い古い出力
     (`~/rust-http-proxy-status/2026-09-16T0106Z-*`) も読めること。
+  - 結果 (2026-09-16、`6f2ce9d`): JSON を返す口 **27 か所**の応答の**いちばん先頭の鍵**に `"schema":1` を入れた。
+    定義は `crates/metrics/src/metrics.rs` の **`SCHEMA` / `SCHEMA_HEAD` / `with_schema()` の 1 か所**だけで、
+    2 つが食い違ったら `const _: () = assert!(…)` で**ビルドが止まる**。付いたのは `/status` `/history` (`?summary=1` も)
+    `/profile` `/errors` `/connections` `/recent` `/bursts` `/trace` `/events` `/snapshot` `/snapshots` `/dns` `/log`
+    `/hosts` `/hosts/series` `/clients` `/daily` `/explain` `/config` `/healthz` (200 と 503) `/slo` `/blocklist`
+    `/purge` `/lookup` と、**エラーの応答 (400 / 404 / 405)**。`/snapshot` は**外側と 17 部の両方**。**入れ子 (`/status` の
+    `dns` `kernel` `blocklist`、`/history` の `closed` `transfer` `canary`、`/slo` の `thresholds`) は版を持たない** — 版を持つのは
+    「応答の 1 番外側」だけ。`/metrics` `/proxy.pac` と HTML と `--check` は JSON ではないので対象外。
+    道具は **2 分岐** (`proxydata.schema_of` / `is_snapshot` / `warn_newer`): 版 1 以降は `parts` を見るだけ、
+    **版の無い古い出力は「版 0」として今までどおり鍵の有無から推測して読む** (`~/rust-http-proxy-status/` の雪像はどれも版の無い形)。
+    `snapshot-diff.py` は「形の版 `schema` A → B」の行と `--out json` の `a.schema` / `b.schema`、`status-diff.py` は
+    `# <ファイル> の形の版 schema=N`。`check-dashboard.js` の検査 14 は、**版 0 の fixture と、それに `schema` を足した版 1 で読めた
+    中身が完全に一致**することを見る (fixture は**版の無いまま**置いてある = 版 0 が読めることの回帰テスト)。
+    テストは新規 `tests/schema_test.rs` **3 本**: (a) **`/` の案内から口を機械的に取り出して** 30 通りの応答の**先頭 64 バイト**に
+    `"schema":1` があること (案内に出た口が一覧に無ければ落ちるので、口が増えたときに漏れない)、(b) エラーの応答、(c) `/snapshot` の各部。
+    `scripts` の単体テストに `Schema` の 6 本 (118 → 124 本)。費用は応答 1 本あたり **12 バイトと `push_str` 1 回**で、要求の熱い経路には
+    1 命令も足していない。README にエンドポイント一覧の隣へ**版の履歴の表** (版 0 = 〜2026-09-16 / 版 1 = 2026-09-16 Phase 14 の形) と、
+    **形を変えたら +1 して 1 行足す / 鍵を末尾に足すだけなら上げない**決まりを書いた。
+    - 気づき: `/snapshots/<date>` の 200 は置いてあるファイルをそのまま返すので、この版より前の日次ファイルには `schema` が無い (道具は版 0 として読む)。
+      `/blocklist` は引数なしのとき `/status` の `blocklist` と同じ関数の出力なので、そこだけ `with_schema()` で先頭に版を足す。
+      HTML (`dashboard` / `inspect` / `probe`) は `schema` を読んでいない (版 2 で形を変えるときに分岐が要る)。
+      再デプロイ後に雪像を取り直すとき (T14.99) は版 1 の fixture を別に 1 枚足す。
 - [x] **T14.50 SLO の達成率 (`/slo`)**
   - 目的: Phase の完了の定義は「p50 6 ms 以下」のような閾値だが、デプロイ先で**時間の何割がそれを満たしたか**は出ない。閾値を設定で持ち、
     5 秒の標本ごとに満たしたかを判定して、日ごと・時間ごとの達成率を返せば、T14.99 と次の Phase の判定が「満たした / 満たさない」ではなく

@@ -221,7 +221,7 @@ fn test_integration_history_carries_the_closed_connection_distribution() {
     let json = endpoint_json(proxy_port, "/history?res=5");
     // 既存の形はそのまま (標本の後ろに別の配列)
     assert!(
-        json.starts_with("{\"interval_secs\":5,\"keys\":[\"t\","),
+        json.starts_with("{\"schema\":1,\"interval_secs\":5,\"keys\":[\"t\","),
         "{}",
         &json[..80]
     );
