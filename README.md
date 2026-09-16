@@ -331,6 +331,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
     **最近のエラー (直近 20)** と **いまの接続 (上位 50)** の表 (どちらも 5 秒ごと)、
     URL の照会と削除、全消去)、`/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
+  - **`/inspect` (「調査」ページ: 起きたことを時間軸で読む。T14.8)**: `/dashboard` が「いま」の画面なのに対して、
+    閉じた接続の個票を**時間軸**で読む別のページです (`/dashboard/inspect` も同じもの)
   - **`/healthz` (本当の健康診断)**: `{"ok":bool,"checks":{...}}` の**軽い JSON** (1 KiB 弱) で、
     検査が 1 つでも偽なら **`503 Service Unavailable`** を返します (Pterodactyl やモニタが 200 / 503 で
     判断できるように。以前は `/status` の写しで、いつでも 200 でした)。検査は 6 つ:
@@ -713,7 +715,8 @@ check: ok (everything this proxy reads is readable)
 
 `--lite` (= `PROXY_PROFILE=lite`) は「認証なし・手軽・最速」の素通し設定です。キャッシュ・統計の永続化・
 ブロックリストの取得を止め、ログを `warn` にします (個別の環境変数を明示すればそちらが勝ちます)。
-`/dashboard` は 1 行の `lite mode: ...` を返し、起動ログの 1 行目に `profile: lite` が出ます。
+`/dashboard` は 1 行の `lite mode: ...` を返し、起動ログの 1 行目に `profile: lite` が出ます
+(**「調査」ページ `/inspect` は `--lite` でも 200 で開けます** — 中の表と図は「記録していません」と出ます)。
 起動直後のスレッドは 4 本 (待ち受け + `env-reload` + `shutdown` + `idle-watch`) だけです
 (`PROXY_PARK_IDLE=off` なら 3 本)。
 
@@ -751,7 +754,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_CONNECT_PORTS` | なし (制限なし) | `CONNECT` を許すあて先ポート。`443,80,8080-8099` のようにカンマ区切り (範囲可)。ここに無いポートは 403。`.env` で即時反映 |
 | `PROXY_ALLOW_LOCAL` | `off` | ループバック (`127.0.0.0/8`, `::1`) とリンクローカル (`169.254.0.0/16`, `fe80::/10`) 宛てのオリジンを許すか。既定では 403 にしてクラウドのメタデータ (`169.254.169.254`) 経由の SSRF を防ぐ。ローカルのサービスへプロキシしたいときだけ `on`。`.env` で即時反映 |
 | `PROXY_ALLOW_CLIENTS` | なし (全許可) | **受ける接続元**のカンマ区切りリスト (`1.2.3.4,10.0.0.0/8,2001:db8::/32`。1 つの IP は `/32` `/128` と同じ)。ここに無い相手は **accept した直後に、要求を 1 バイトも読まずに閉じます** (応答も返しません)。**内部エンドポイントも含めて閉じる**ので、公開ポートで `/status` や `/clients` の個票が見られることもありません。`PROXY_MAX_CONNS` の 「上限 + 4 本」の枠より**前**で判定します。断った数は `/status` の `rejected_client_acl` と `/metrics` の `sorahost_rejected_client_acl_total`。v4-mapped IPv6 (`::ffff:1.2.3.4`) は IPv4 として照合するので、デュアルスタックで 待ち受けていても `1.2.3.4` の 1 行で書けます。書式が違う項目は読み飛ばします (起動ログの `allowed clients:` に実際に読めた項目が出るので、書き損じはそこで分かります)。**宛先の `PROXY_ALLOW_HOSTS` / `PROXY_ALLOW_LOCAL` とは無関係**で、**認証でもありません** (同じアドレスから来られれば誰でも通ります)。`.env` で即時反映 (次に受ける接続から) |
-| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/metrics` `/hosts` `/hosts/series` `/clients` `/errors` `/connections` `/recent` `/bursts` `/events` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
+| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/metrics` `/hosts` `/hosts/series` `/clients` `/errors` `/connections` `/recent` `/bursts` `/events` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる (`PROXY_PARK_IDLE=on` なら、預かり所が期限を見て引き上げる)。`0` で無期限。`.env` で即時反映 |
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル (`--lite` と同じ)。キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限。上限に当たったら、まず**預かり所の暇な CONNECT トンネルを最古から 1 本閉じて**席を作り、その接続を受ける (閉じた数は `/status` の `evicted_idle` と `/metrics` の `sorahost_evicted_idle_total`。**暇な keep-alive 接続は閉じない** — 次の要求を待っているだけなので、閉じると入れ違いで届いた要求を取りこぼすため)。閉じるものが無い (トンネルが全部中継中、または預かり所が空) ときは、スレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。ただし**自分宛て (`/status` `/metrics` などの内部エンドポイント) は上限 + 4 本まで受ける**: accept の時点では要求が読めないので、4 本までは受けて要求行と `Host` を読み、自分宛てなら普通に応答、それ以外は 503 で閉じる (上限に当たっている最中でも監視が取れるようにするため。この枠で受けた接続は要求行が 2 秒来なければ 503 で閉じる)。`auto` は記述子の上限から `min(4096, (RLIMIT_NOFILE の soft − 予備 64) ÷ 4)` (1 接続が最悪で使う記述子は クライアント 1 + オリジン 1 + 素通しのパイプ 2 = 4 本。`ulimit -n` が 1024 の環境なら 240、4096 なら 1008)。記述子が余っていても 4096 で頭打ちにするのは、上限が fd 以外の資源 (スレッド・RSS) の歯止めでもあるため (同時 5,000 本で RSS 198 MiB の実測)。数値を書けばその値、`0` で無制限。決まった値は起動ログの `max connections:` と `/status` の `max_conns` (`/metrics` は `sorahost_max_connections`) に出る。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
@@ -1325,6 +1328,7 @@ curl "http://127.0.0.1:8080/hosts/series?top=16"        # 上位 16 ホストの
 curl "http://127.0.0.1:8080/hosts/series?host=connect://mtalk.google.com:5228"  # 1 ホストだけ
 curl "http://127.0.0.1:8080/daily?n=365"                # 1 日 1 行の要約 (永久に残る。古い順)
 curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
+# ブラウザで読むなら http://127.0.0.1:8080/inspect (上の個票を時間軸で描く「調査」ページ)
 
 # キャッシュの操作・確認
 curl -X PURGE -x http://127.0.0.1:8080 http://example.com/file.zip     # 1 URL (全バリアント) を消す
@@ -1387,9 +1391,41 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 (`connect_ms_sum ÷ timed`) が読めます (エラーも名前解決も無いホストは出しません)。
 ヘッダーには動いている版と、**どちらの窓か** (起動から / 通算) が出ます。
 外部ライブラリは 1 つも読み込まない 1 ページのままです。ブラウザの無い環境では
-`node scripts/check-dashboard.js [/history の出力] [/status の出力]` が「JS の構文」と
-「`/history` の配列の配列・`/status` の読み方が実出力と合っていること」を確かめます
+`node scripts/check-dashboard.js [/history の出力] [/status の出力] [/profile の出力] [/snapshot の出力]` が
+「JS の構文」と「`/history` の配列の配列・`/status` の読み方が実出力と合っていること」を確かめます
 (Node があるときだけの補助的な確認。引数を省くと `scripts/testdata/` の見本を読みます)。
+
+**`/inspect` は「調査」ページ**です (`/dashboard/inspect` も同じもの。T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
+こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページ (64 KiB 以下) のままです。
+更新は**個票 (`/status` `/recent` `/events` `/history?summary=1`) が 10 秒ごと、表と散布 (`/bursts` `/clients`
+`/hosts` `/hosts/series`) は 30 秒ごと**です (`/hosts` は上位 200 まで。開いたままにしても監視より重くならないように)。
+描くのは 6 枚:
+
+- **タイムライン** (`/recent`): 横 = 時刻、縦 = 接続元 (宛先にも切り替えられます)、線 1 本が接続 1 本で、
+  長さ = 寿命・色 = 閉じた理由 (8 種。`error:<原因>` は 1 色に畳みます)・太さ = 運んだバイト。
+  範囲は 1 時間 / 6 時間 / 24 時間 (`/recent?since=`)。**`/events` の出来事**は縦の破線の印で重ねます
+  (種類が増えても既定の色で描くだけなので壊れません)
+- **起動からの窓**: `/history?since=restart&summary=1` (T14.24) を 1 要求で読み、「起動から」と「通算」を
+  切り替えます。`?summary=1` を持たない版や `--lite` では `/history` の標本を `since_start_secs` で切って
+  手元で畳みます (どちらでも同じ 1 行になります)
+- **遅い接続 (上位 50)** (`/recent?sort=slow`): 段階 (`queue` / `client_read` / `dns` / `connect` / `first_relay`。T14.3) の
+  積み上げ横棒と、**確立 − RTT** の列 (T14.5。RTT では説明できない待ちがどれだけかを 1 列で読むため)
+- **山の写真** (`/bursts`): 1 枚ずつ、接続元別・宛先別・状態別・種類別の内訳と、そのときのスレッド / fd
+- **接続元** (`/clients`): `User-Agent`・宛先の種類・IP リテラル宛て・RTT・初回 / 最終
+  (RTT は標本が無ければ「–」です)
+- **RTT × 接続時間の散布** (`/hosts`): x = カーネルの平滑化 RTT の平均、y = 接続 1 回の平均
+  (`connect_ms_sum ÷ timed`)。対角線 (y = x) から上に離れた点が「RTT では説明できない待ち」で、
+  右の表に差の大きい順で 12 件出ます (`rtt_ms` が `null` = 標本 0 のホストと、接続を 1 度も測っていない
+  ホストは描きません。接続の平均が 0 ms = 1 ms 未満のホストは y = 0 に描きます)
+- **ホスト別の折れ線** (`/hosts/series?top=8`。T14.22): この口を持っている版でだけ出る枠です
+  (無ければ枠ごと出しません)
+- (ページの先頭に `/snapshot` へのリンクがあります。個票を 1 要求で持ち帰るときはそちら)
+
+描画関数 (`timeline` / `slowRows` / `burstCards` / `clientRows` / `rttScatter` / `sinceStart` / `eventMarks` /
+`seriesLines`) は DOM に触らないので、`node scripts/check-dashboard.js` が
+`scripts/testdata/snapshot-local.json` (手元のベンチで取った `/snapshot` の実出力。宛先は
+`127.0.0.1` と `localhost` だけです) と `scripts/testdata/history-summary.json` (同じく `?summary=1` の実出力)、
+それに渡せばデプロイ先の `/status` `/history` でも回します。
 
 `/status` のトップレベルの `version` には動いているバイナリの版が出ます (`-V` と起動ログと同じ文字列)。
 
