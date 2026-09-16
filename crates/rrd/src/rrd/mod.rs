@@ -71,7 +71,9 @@ pub struct Layout {
 
 /// 履歴 1 標本のレコード長。62 項目 × 8 B = 496 B + CRC 4 B。
 pub const SAMPLE_RECORD: usize = 512;
-/// ホスト別 / 接続元別 1 行のレコード長。名前 128 B + 48 項目 × 8 B = 512 B + CRC 4 B。
+/// ホスト別 / 接続元別 1 行のレコード長。名前 128 B + 項目 × 8 B + CRC 4 B。
+/// 項目は 53 個 (T14.5 の RTT 4 欄まで) で 552 B、**余白は 20 B** (版を上げずに
+/// 足せるのは残り 2 項目。上げると統計を全部捨てることになる)。
 pub const STATS_RECORD: usize = 576;
 pub const OVERRIDE_RECORD: usize = 160;
 pub const STATS_SLOTS: usize = 1000;

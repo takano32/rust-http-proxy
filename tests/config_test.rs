@@ -155,8 +155,11 @@ fn test_integration_capabilities_appear_in_status() {
         .collect();
     assert!(leftovers.is_empty(), "書き込みの検査の跡: {:?}", leftovers);
 
-    // `/healthz` は `/status` と同じ JSON なのでこちらにも出る
-    assert!(endpoint_json(port, "/healthz").contains("\"capabilities\":{"));
+    // `/config` にも同じものが出る (T14.15 は `/status` と `/config` の 2 か所に出す)。
+    // **`/healthz` はもう `/status` の写しではない** ので、そちらでは見ない (T14.12)
+    assert!(endpoint_json(port, "/config").contains("\"capabilities\":{"));
+    let health = endpoint_json(port, "/healthz");
+    assert!(health.contains("\"checks\":{"), "{}", health);
 
     drop(_child);
     let _ = std::fs::remove_dir_all(&dir);

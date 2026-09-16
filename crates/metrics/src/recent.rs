@@ -10,7 +10,8 @@
 //! - [`ErrorRing`]: エラーを 1 件返したときだけ ([`Metrics::record_error`] 経由)。
 //!   **成功の熱い経路は 1 命令も通らない。**
 //! - [`ConnTable`]: いまの接続の一覧 (`/connections`)。**表の鍵を取るのは
-//!   接続の開始と終了の 2 回だけ**で、状態と転送バイトは [`ConnSlot`] の原子に書く。
+//!   接続の開始と終了の 2 回だけ**で、状態と転送バイトは [`ConnSlot`] の原子に書く
+//!   (`PROXY_MAX_CONNS_PER_CLIENT` を設定したときだけ、accept の判定で 1 回増える。T14.13)。
 //! - [`RecentRing`]: 閉じた接続の個票 (`/recent`。T14.4)。接続の終了で 1 回。
 //! - [`BurstRing`]: 同時接続数が上限の一定割合を越えた瞬間の写真 (`/bursts`。T14.6)。
 //!   **撮るのは history スレッド**で、越えた接続を受けたスレッドは旗を立てるだけ。
@@ -322,6 +323,10 @@ pub struct ConnSlot {
     status: AtomicU16,
     requests: AtomicU32,
     stage_ms: [AtomicU32; STAGES],
+    /// カーネルの RTT (us) と再送の通算 (`[クライアント側, オリジン側]`。T14.5)。
+    /// 読むのは接続の終わりの `getsockopt` だけで、`0` は「読めなかった」
+    rtt_us: [AtomicU32; SIDES],
+    retrans: [AtomicU32; SIDES],
     /// 預けられた回数と、預かり所にいた合計 ms、いま預けられた時刻
     /// (接続を受けてからの ms。[`NOT_PARKED`] なら預けられていない)。
     /// **書くのは預ける / 引き上げる瞬間だけ**で、要求ごとには触らない
@@ -349,6 +354,8 @@ impl ConnSlot {
             status: AtomicU16::new(0),
             requests: AtomicU32::new(0),
             stage_ms: [const { AtomicU32::new(0) }; STAGES],
+            rtt_us: [const { AtomicU32::new(0) }; SIDES],
+            retrans: [const { AtomicU32::new(0) }; SIDES],
             parks: AtomicU32::new(0),
             parked_ms: AtomicU64::new(0),
             parked_at: AtomicU64::new(NOT_PARKED),
@@ -423,6 +430,13 @@ impl ConnSlot {
         for (cell, ms) in self.stage_ms.iter().zip(tally.stage_ms) {
             cell.store(ms.min(MAX_MS) as u32, Ordering::Relaxed);
         }
+        // カーネルの RTT と再送 (T14.5)。読めなかった側は 0 のまま
+        for (cell, v) in self.rtt_us.iter().zip(tally.rtt_us) {
+            cell.store(v, Ordering::Relaxed);
+        }
+        for (cell, v) in self.retrans.iter().zip(tally.retrans) {
+            cell.store(v, Ordering::Relaxed);
+        }
     }
 
     /// 預かり所に入った (原子 2 回。**預ける瞬間だけ**で、要求ごとには触らない)。
@@ -485,6 +499,14 @@ impl ConnSlot {
             parked_secs: (parked_ms / 1000).min(MAX_SECS),
             parks: self.parks.load(Ordering::Relaxed),
             stage_ms,
+            rtt_us: [
+                self.rtt_us[CLIENT_SIDE].load(Ordering::Relaxed),
+                self.rtt_us[ORIGIN_SIDE].load(Ordering::Relaxed),
+            ],
+            retrans: [
+                self.retrans[CLIENT_SIDE].load(Ordering::Relaxed),
+                self.retrans[ORIGIN_SIDE].load(Ordering::Relaxed),
+            ],
         })
     }
 
@@ -518,9 +540,73 @@ impl ConnSlot {
 ///
 /// **登録と抹消は接続の開始と終了で 1 回ずつだけ** (要求ごとには触らない)。
 /// `--lite` では [`ConnTable::set_enabled`] で切り、登録もしない (空の一覧を返す。T1.4 の方針)。
+///
+/// `PROXY_MAX_CONNS_PER_CLIENT` が設定されている間だけ、**同じ鍵の内側で**接続元ごとの
+/// 本数も持つ ([`ConnTable::at_client_limit`]。T14.13)。accept のたびに 240 本を数え直さずに
+/// 済ませるためで、上限が `0` (既定) のときはこの表を作らない。
 pub struct ConnTable {
     on: AtomicBool,
-    map: Mutex<HashMap<u64, Arc<ConnSlot>>>,
+    /// 接続元ごとの本数を数えているか (`PROXY_MAX_CONNS_PER_CLIENT` が設定されている間だけ)。
+    /// **`--lite` でも数える**: 枠 ([`ConnSlot`]) を作らないまま本数だけ ±1 できるので、
+    /// 記録を全部止めたプロファイルでも公平さの上限は効く (T14.13)
+    counting: AtomicBool,
+    inner: Mutex<Conns>,
+}
+
+/// [`ConnTable`] が 1 つの鍵で守るもの。
+#[derive(Default)]
+struct Conns {
+    /// 接続 id → 枠 (`/connections`)
+    slots: HashMap<u64, Arc<ConnSlot>>,
+    /// 接続元 → いま生きている本数 (T14.13。数えているときだけ中身がある)
+    per_client: HashMap<Arc<str>, u32>,
+    /// 接続 id → 接続元 (抹消のときに鍵を引くため。`--lite` で枠が無くても引ける)
+    client_of: HashMap<u64, Arc<str>>,
+}
+
+impl Conns {
+    /// この接続元の本数を 1 増やす (**呼び出し側が鍵を持っている**)。
+    fn add_client(&mut self, id: u64, client: &str) {
+        let key: Arc<str> = Arc::from(client);
+        *self.per_client.entry(Arc::clone(&key)).or_insert(0) += 1;
+        self.client_of.insert(id, key);
+    }
+
+    /// この接続の接続元の本数を 1 減らす (数えていない接続なら何もしない)。
+    fn drop_client(&mut self, id: u64) {
+        let Some(key) = self.client_of.remove(&id) else {
+            return;
+        };
+        if let Some(n) = self.per_client.get_mut(&key) {
+            *n -= 1;
+            if *n == 0 {
+                // 0 本になった接続元は落とす (見知らぬ接続元で表が伸び続けないように)
+                self.per_client.remove(&key);
+            }
+        }
+    }
+
+    /// いま生きている接続から数え直す (数え始めるとき)。
+    ///
+    /// `--lite` は枠を持たないので 0 から数え始める (= 切り替えより前から居る接続は
+    /// 入らない。閉じるときも引かないので数が狂うことはない)。
+    fn recount_clients(&mut self) {
+        let live: Vec<(u64, Arc<str>)> = self
+            .slots
+            .iter()
+            .map(|(id, slot)| (*id, Arc::from(slot.client.as_str())))
+            .collect();
+        self.forget_clients();
+        for (id, key) in live {
+            *self.per_client.entry(Arc::clone(&key)).or_insert(0) += 1;
+            self.client_of.insert(id, key);
+        }
+    }
+
+    fn forget_clients(&mut self) {
+        self.per_client.clear();
+        self.client_of.clear();
+    }
 }
 
 impl Default for ConnTable {
@@ -533,7 +619,8 @@ impl ConnTable {
     pub fn new() -> ConnTable {
         ConnTable {
             on: AtomicBool::new(true),
-            map: Mutex::new(HashMap::new()),
+            counting: AtomicBool::new(false),
+            inner: Mutex::new(Conns::default()),
         }
     }
 
@@ -541,7 +628,8 @@ impl ConnTable {
     pub fn set_enabled(&self, on: bool) {
         self.on.store(on, Ordering::Relaxed);
         if !on {
-            self.map.locked().clear();
+            // 接続元ごとの本数は `--lite` でも持てるので、捨てるのは枠だけ
+            self.inner.locked().slots.clear();
         }
     }
 
@@ -549,13 +637,60 @@ impl ConnTable {
         self.on.load(Ordering::Relaxed)
     }
 
+    /// 接続元ごとの本数を数えているか (`PROXY_MAX_CONNS_PER_CLIENT` が設定されている間。T14.13)。
+    pub fn counting_clients(&self) -> bool {
+        self.counting.load(Ordering::Relaxed)
+    }
+
+    /// この接続元の生きている接続が `limit` 本以上か (`PROXY_MAX_CONNS_PER_CLIENT`。T14.13)。
+    ///
+    /// **accept ごとに 1 回**、上限が設定されているときだけ呼ぶ。取るのは表の鍵 1 回
+    /// (登録・抹消と同じ鍵) で、数えるのは `HashMap` を 1 回引くだけ。初めて呼ばれたときに
+    /// 「数える」へ切り替え、そのとき生きている接続から数え直す。
+    pub fn at_client_limit(&self, client: &str, limit: usize) -> bool {
+        let mut g = self.inner.locked();
+        if !self.counting.load(Ordering::Relaxed) {
+            g.recount_clients();
+            self.counting.store(true, Ordering::Relaxed);
+        }
+        g.per_client
+            .get(client)
+            .is_some_and(|&n| n as usize >= limit)
+    }
+
+    /// 数えるのをやめて表を捨てる (上限を `0` に戻したとき。T14.13)。
+    pub fn stop_counting_clients(&self) {
+        let mut g = self.inner.locked();
+        self.counting.store(false, Ordering::Relaxed);
+        g.forget_clients();
+    }
+
+    /// この接続元のいまの本数 (数えていなければ `0`)。
+    pub fn client_conns(&self, client: &str) -> u32 {
+        self.inner
+            .locked()
+            .per_client
+            .get(client)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// 接続を 1 本登録する (接続の開始で 1 回だけ)。`--lite` なら `None`。
     pub fn register(&self, id: u64, client: &str, started: Instant) -> Option<Arc<ConnSlot>> {
-        if !self.enabled() {
+        let on = self.enabled();
+        // `--lite` で上限も使っていないときは鍵を取らない (今までどおり費用 0)
+        if !on && !self.counting_clients() {
+            return None;
+        }
+        let mut g = self.inner.locked();
+        if self.counting.load(Ordering::Relaxed) {
+            g.add_client(id, client);
+        }
+        if !on {
             return None;
         }
         let slot = Arc::new(ConnSlot::new(id, client, started));
-        self.map.locked().insert(id, Arc::clone(&slot));
+        g.slots.insert(id, Arc::clone(&slot));
         Some(slot)
     }
 
@@ -564,21 +699,30 @@ impl ConnTable {
     /// 返した枠から閉じた接続の個票を作る (`/recent`。T14.4)。`--lite` と、
     /// 既に抹消済み (2 回目) では `None`。
     pub fn unregister(&self, id: u64) -> Option<Arc<ConnSlot>> {
-        if !self.enabled() {
+        let on = self.enabled();
+        if !on && !self.counting_clients() {
             return None;
         }
-        self.map.locked().remove(&id)
+        let mut g = self.inner.locked();
+        if self.counting.load(Ordering::Relaxed) {
+            g.drop_client(id);
+        }
+        if !on {
+            return None;
+        }
+        g.slots.remove(&id)
     }
 
     /// 今の一覧を**古い順** (通し番号の小さい順) で返す。
     pub fn snapshot(&self) -> Vec<Arc<ConnSlot>> {
-        let mut v: Vec<Arc<ConnSlot>> = self.map.locked().values().map(Arc::clone).collect();
+        let mut v: Vec<Arc<ConnSlot>> =
+            self.inner.locked().slots.values().map(Arc::clone).collect();
         v.sort_by_key(|s| s.id);
         v
     }
 
     pub fn len(&self) -> usize {
-        self.map.locked().len()
+        self.inner.locked().slots.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -614,6 +758,12 @@ pub const STAGE_NAMES: [&str; STAGES] = [
     "client_read",
     "first_relay",
 ];
+
+/// カーネルの RTT と再送を持つ側の数 (クライアント側とオリジン側。T14.5)。
+pub const SIDES: usize = 2;
+/// [`RecentEntry::rtt_us`] / [`ConnTally::rtt_us`] の添字。
+pub const CLIENT_SIDE: usize = 0;
+pub const ORIGIN_SIDE: usize = 1;
 
 /// [`STAGE_NAMES`] の添字。
 pub const STAGE_DNS: usize = 0;
@@ -728,6 +878,10 @@ pub struct ConnTally {
     pub status: u16,
     /// 段階の ms (いちばん大きかった要求の値)。並びは [`STAGE_NAMES`]
     pub stage_ms: [u64; STAGES],
+    /// カーネルの平滑化 RTT (us) と再送の通算 (`[クライアント側, オリジン側]`。T14.5)。
+    /// 書くのは**接続の終わりに `getsockopt` を呼んだ 1 回だけ**で、`0` は「読めなかった」
+    pub rtt_us: [u32; SIDES],
+    pub retrans: [u32; SIDES],
 }
 
 impl ConnTally {
@@ -771,6 +925,22 @@ pub struct RecentEntry {
     pub parks: u32,
     /// 段階の ms ([`STAGE_NAMES`] の並び)
     pub stage_ms: [u64; STAGES],
+    /// カーネルの平滑化 RTT (us) と再送の通算 (`[クライアント側, オリジン側]`。T14.5)。
+    /// `0` は「読めなかった」(Linux 以外・`--lite`・もう閉じていた) で JSON では `null`
+    pub rtt_us: [u32; SIDES],
+    pub retrans: [u32; SIDES],
+}
+
+/// `us` を ms の JSON にする (`0` = 読めなかった → `null`。T14.5)。
+///
+/// 桁は成り行きに任せる (`{}` は往復できる最短の表記を出すので、us を 1000 で割った値は
+/// `0.052` / `30.1` / `4294967.295` のように**余計な 0 が付かない**)。us のままにしないのは、
+/// `/hosts` の `rtt_ms` と `/recent` の `ms`(段階) が ms なので単位を揃えるため。
+fn rtt_ms_json(us: u32) -> String {
+    if us == 0 {
+        return "null".to_string();
+    }
+    format!("{}", us as f64 / 1000.0)
 }
 
 impl RecentEntry {
@@ -817,7 +987,17 @@ impl RecentEntry {
             }
             let _ = write!(out, "{}\"{}\":{}", if i == 0 { "" } else { "," }, name, ms);
         }
-        out.push_str("}}");
+        out.push('}');
+        // カーネルの RTT と再送 (T14.5)。**両側とも必ず出す**が、読めなかった側
+        // (Linux 以外・`--lite`・もう閉じていた) は `null` — 0 ms と区別させないため
+        let _ = write!(
+            out,
+            ",\"rtt_ms\":{{\"client\":{},\"origin\":{}}},\"retrans\":{{\"client\":{},\"origin\":{}}}}}",
+            rtt_ms_json(self.rtt_us[CLIENT_SIDE]),
+            rtt_ms_json(self.rtt_us[ORIGIN_SIDE]),
+            self.retrans[CLIENT_SIDE],
+            self.retrans[ORIGIN_SIDE],
+        );
         out
     }
 }
@@ -1579,6 +1759,9 @@ mod conn_tests {
                 down: 65536,
                 status: 0,
                 stage_ms: [3, 9, 0, 0, 0, 0],
+                // カーネルの RTT: 利用者は 48 ms、宛先は 30 ms (T14.5)
+                rtt_us: [48_300, 30_100],
+                retrans: [0, 0],
             },
             0,
         );
@@ -1612,9 +1795,21 @@ mod conn_tests {
             "{}",
             json
         );
+        // カーネルの RTT と再送は両側とも必ず出る (T14.5)
+        assert_eq!(e.rtt_us, [48_300, 30_100]);
+        assert!(
+            json.contains("\"rtt_ms\":{\"client\":48.3,\"origin\":30.1}"),
+            "{}",
+            json
+        );
+        assert!(
+            json.contains("\"retrans\":{\"client\":0,\"origin\":0}"),
+            "{}",
+            json
+        );
         // T14.3 が埋める段階はまだ 0 なので 1 バイトも出さない
         assert!(!json.contains("queue"), "{}", json);
-        assert!(json.len() <= 256, "ありふれた 1 件が {} B", json.len());
+        assert!(json.len() <= 300, "ありふれた 1 件が {} B", json.len());
         println!("closed entry: typical {} B\n  {}", json.len(), json);
     }
 
@@ -1684,6 +1879,8 @@ mod conn_tests {
                 parked_secs: 0,
                 parks: 0,
                 stage_ms: [0, i, 0, 0, 0, 0],
+                rtt_us: [0; SIDES],
+                retrans: [0; SIDES],
             });
         }
         let (all, total) = ring.select(0, "");
@@ -1701,11 +1898,12 @@ mod conn_tests {
         assert!(ring.select(9_999_999, "").0.is_empty());
     }
 
-    /// 桁を振り切った 1 件でも 448 B に収まること (**リングの大きさの上限**)。
+    /// 桁を振り切った 1 件でも 560 B に収まること (**リングの大きさの上限**)。
     ///
-    /// 1 件の目安は 256 B (T13.4 の `/errors` と同じ) で、**ありふれた 1 件は上のテストの
-    /// とおり 225 B**。ここで見るのは「起こりえない桁 (転送 20 桁、段階の ms が 6 つとも
-    /// 7 桁) を並べてもリングが 2,000 × 448 B = 875 KiB を越えない」ことだけで、
+    /// 1 件の目安は 300 B (T14.5 のカーネルの RTT 2 側ぶんで 256 B から上がった)。
+    /// ここで見るのは「起こりえない桁 (転送 20 桁、段階の ms が 6 つとも 7 桁、
+    /// RTT と再送が 4,294,967,295) を並べてもリングが 2,000 × 560 B = 1,094 KiB を
+    /// 越えない」ことだけで、
     /// `/recent?n=2000` の応答は 256 KiB のバイト数打ち切りに当たるのが設計どおり
     /// (`crates/endpoints` のテストで見る)。
     #[test]
@@ -1724,6 +1922,8 @@ mod conn_tests {
                 down: u64::MAX,
                 status: 599,
                 stage_ms: [u64::MAX; STAGES],
+                rtt_us: [u32::MAX; SIDES],
+                retrans: [u32::MAX; SIDES],
             },
             u32::MAX,
         );
@@ -1733,8 +1933,63 @@ mod conn_tests {
         assert!(e.target.len() <= MAX_RECENT_TARGET, "{}", e.target.len());
         assert!(e.client.len() <= MAX_CLIENT, "{}", e.client.len());
         let json = e.to_json();
-        assert!(json.len() <= 448, "最悪の 1 件が {} B", json.len());
+        assert!(json.len() <= 560, "最悪の 1 件が {} B", json.len());
         println!("closed entry: worst {} B", json.len());
+    }
+
+    /// 接続元ごとの本数は、上限が設定されたときだけ数える (T14.13)。
+    #[test]
+    fn counting_per_client_starts_when_a_limit_is_set() {
+        let t = ConnTable::new();
+        let now = Instant::now();
+        // 上限を見るまでは数えない (既定の費用 0)
+        let _a = t.register(1, "10.0.0.1", now);
+        assert!(!t.counting_clients());
+        assert_eq!(t.client_conns("10.0.0.1"), 0);
+
+        // 初めて判定したとき、生きている接続から数え直す
+        assert!(!t.at_client_limit("10.0.0.1", 2));
+        assert!(t.counting_clients());
+        assert_eq!(t.client_conns("10.0.0.1"), 1);
+
+        let _b = t.register(2, "10.0.0.1", now);
+        assert_eq!(t.client_conns("10.0.0.1"), 2);
+        assert!(t.at_client_limit("10.0.0.1", 2), "2 本目で上限");
+        assert!(!t.at_client_limit("10.0.0.2", 2), "別の接続元は 0 本から");
+
+        // 抹消で 1 本減り、0 本になった接続元は表から落ちる
+        t.unregister(2);
+        assert_eq!(t.client_conns("10.0.0.1"), 1);
+        assert!(!t.at_client_limit("10.0.0.1", 2));
+        t.unregister(1);
+        assert_eq!(t.client_conns("10.0.0.1"), 0);
+
+        // 上限を 0 に戻したら表も捨てる
+        let _c = t.register(3, "10.0.0.1", now);
+        assert_eq!(t.client_conns("10.0.0.1"), 1);
+        t.stop_counting_clients();
+        assert!(!t.counting_clients());
+        assert_eq!(t.client_conns("10.0.0.1"), 0);
+        // 数えていない間の抹消は空振り (負にならない)
+        t.unregister(3);
+        assert!(!t.at_client_limit("10.0.0.1", 1), "数え直しても 0 本");
+    }
+
+    /// `--lite` は枠を持たないが、接続元ごとの本数は数えられる (T14.13)。
+    #[test]
+    fn lite_still_counts_connections_per_client() {
+        let t = ConnTable::new();
+        t.set_enabled(false);
+        assert!(!t.at_client_limit("10.0.0.1", 1));
+        assert!(
+            t.register(1, "10.0.0.1", Instant::now()).is_none(),
+            "枠は作らない"
+        );
+        assert!(t.is_empty());
+        assert_eq!(t.client_conns("10.0.0.1"), 1);
+        assert!(t.at_client_limit("10.0.0.1", 1));
+        t.unregister(1);
+        assert_eq!(t.client_conns("10.0.0.1"), 0);
     }
 
     /// `--lite` では登録しない (空の一覧)。
@@ -1784,6 +2039,8 @@ mod burst_tests {
             parked_secs: 3,
             parks: 2,
             stage_ms: [0; STAGES],
+            rtt_us: [0; SIDES],
+            retrans: [0; SIDES],
         }
     }
 

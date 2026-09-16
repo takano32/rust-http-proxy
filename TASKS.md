@@ -3375,9 +3375,12 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
 プロファイル画面 → T14.3。
 
 **順番 (2026-09-16 に決め直した: 連番順)**: **T14.1 → T14.2 → T14.3 → … → T14.54 → T14.55 → T14.56 → T14.57 → T14.58 → push (人) → 再デプロイ (人) → 24 時間 → T14.99**。
-**番号順に 1 タスク 1 エージェントで進め、飛ばさない** (2026-09-16 の指示)。**テストは修正のたびに回さず、仕上げに 1 回** (2026-09-16 の指示。
-開発中は `cargo check -p` と対象クレートのテストだけをロック無しで回し、全体の fmt / clippy / test / build は 1 タスクにつき最後に 1 回だけ `mx` で。
-親も複数のブランチをマージしてから 1 回だけ検証する。ビルドとテストが 1 本のロックで直列なので、全体チェックの回数がそのまま待ち時間になる)。触るファイルが重ならないものは並列にしてよいが、着手の順は番号順
+**番号順に 1 タスク 1 エージェントで進め、飛ばさない** (2026-09-16 の指示)。**全体テスト (`cargo test --workspace`) は最後に 1 回だけ**
+(2026-09-16 の指示「何回も回してもムダだ」「lint だけすれば固有の結合テストいらんかな」。エージェントは `cargo fmt --all` と
+触ったクレートの `cargo clippy -p <crate> --all-targets -- -D warnings` (lint) を回し、**自分が新しく書いたテストだけ 1 回** (`--test <名前>`、
+ロック無し、1 分ほど。動く証拠がそれしか無いので) 走らせて手放す。既存のテストは回さない。全体の clippy / test / release ビルドは
+**親が T14.58 まで全部マージしたあとに 1 回** (push の前)。マージのたびに親が見るのは `cargo check --workspace` だけ。ビルドとテストが 1 本の
+ロックで直列で、この機械はメモリ 6.6 GB なので全体テストを 2 本同時に走らせられず、全体チェックの回数がそのまま待ち時間になる)。触るファイルが重ならないものは並列にしてよいが、着手の順は番号順
 (依存があるものは依存先のマージを待つ: T14.8 は T14.3 / T14.5 / T14.6 の出力を描くので 3 つのあと、T14.9 / T14.11 は T14.6 のリングのあと、
 T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプロイ前に間に合った分」という区切りは無くし、**T14.58 まで終えてから再デプロイ**する。
 
@@ -3621,7 +3624,7 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     - 次が繋ぐ場所: T14.3 は `recent.rs` の `STAGES` の後ろ 3 つ (`queue` / `client_read` / `first_relay`) を `Ctx::log()` と `tunnel::report()` で
       埋めるだけ。T14.5 は `RecentEntry` に `rtt_ms` / `retrans` を足して `ConnTally` 経由で `ConnSlot::finish` へ。T14.6 は `Metrics::record_closed()`
       で理由ごとに数える (2,000 件を複製しない)。
-- [ ] **T14.5 カーネルの RTT と再送 (`TCP_INFO`) を接続の個票とホスト別・接続元別に**
+- [x] **T14.5 カーネルの RTT と再送 (`TCP_INFO`) を接続の個票とホスト別・接続元別に**
   - 目的: 「mtalk.google.com の 30 ms は RTT か」「urlscan.io の 250 ms は RTT か」「利用者 → プロキシの往復は何 ms か」を、これまでは
     接続にかかった時間 (SYN の往復 + α) から推測していた。カーネルは各ソケットの **平滑化 RTT・再送回数・輻輳窓** を持っている
     (`getsockopt(SOL_TCP, TCP_INFO)`)。これを接続の終わりに 2 本 (クライアント側・オリジン側) 読めば、**物理 (RTT) と自分 (それ以外) が
@@ -3646,6 +3649,13 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     デプロイ先 (再デプロイ後): 手元から `probe-deployed.sh` を回したあと `/status` の `clients[]` にこの機械の IP の `rtt_ms` が
     **40〜60 ms** (手元の `time_connect` 0.04〜0.06 秒と合う) で出ること、`hosts[]` の mtalk.google.com の `rtt_ms` が接続の時間
     (30 ms) と同じ桁で出ること。
+  - 結果 (2026-09-16、`a343fa7`): カーネルの RTT と再送を**接続の終わりに 1 回だけ**読むようにした。`sys::tcp_info(fd) -> Option<TcpInfo { rtt_us, rttvar_us, retrans, total_retrans, lost, cwnd, pmtu }>` は 104 バイトの緩衝に `getsockopt(SOL_TCP=6, TCP_INFO=11)` 1 回。**欄の位置は動作環境の `/usr/include/linux/tcp.h` を `offsetof` で確かめた** (`sizeof(struct tcp_info)` = 280。`tcpi_lost` 32 / `tcpi_retrans` 36 / `tcpi_pmtu` 60 / `tcpi_rtt` 68 / `tcpi_rttvar` 72 / `tcpi_snd_cwnd` 80 / `tcpi_total_retrans` 100 — **本文の見込みと 7 つとも一致**)。カーネルは `min(len, sizeof)` しか書かないので古いカーネルでも溢れず、`tcpi_rttvar` まで書かれなければ `None`。読むのは 3 か所だけ: `tunnel::report` で**両側** (`getsockopt` 2 回)、`Conn::finish` でクライアント側 (1 回。`--lite` は枠が無いので通らない)、`crates/origin/src/pool.rs` の新しい `on_discard` フックでオリジン側 (**期限切れか相手が閉じていた接続を捨てるときだけ**で、使い回せた接続は 1 度も通らない)。**要求ごとには読まない**。出口は `/recent` の 1 件 (`rtt_ms` / `retrans` を `{"client":…,"origin":…}`。読めなかった側は `null`)、`/hosts` と `/status` の `hosts[]` (オリジン側) / `clients[]` (クライアント側) の `rtt_ms` (`avg` / `min` / `samples`) と `retrans`、`/metrics` の `sorahost_rtt_seconds_{sum,count}{side="client"|"origin"}` (**ホスト別は出さない** — 系列が増えすぎる)。`HostStats` の末尾に `rtt_us_sum` / `rtt_us_min` / `rtt_samples` / `retrans` の 4 欄 (32 B) を足して `.rrd` は 1 スロット 520 → **552 B** (**余白 52 → 20 B**)、**版は上げていない** (T14.5 より前のファイルは新しい欄が 0 で読み戻る。古い形のレコードを書いた `.rrd` を置いて実バイナリで確かめた)。**費用**: CONNECT 確立 CPU/本 **134.89 → 137.97 us (+2.3%、6 組。基準 ±4% の中)**、**CONNECT 1 本のシステムコール 20.06 → 22.11** (`getsockopt` ちょうど 2.00 回/本)、forward の CPU/要求 42.24 → 41.91 us (−0.8%、3 組 = ぶれの中) で**要求ごとは 0 増** (`--lite` のシステムコール 5.02 → 5.02)、1 接続 1 要求 108.13 → 106.74 us (−1.3%、3 組)。`/recent` の 1 件は 225 → **298 B** (最悪 446 → 551 B)。結合 3 本・単体 3 本を新設、テスト 384 → 390 本。
+    - 個票の `rtt_ms` / `retrans` は**両側とも必ず出す** (`null` と 0 ms を区別させるため) ので 1 件が 73 B 太った。`[client, origin]` の配列にすれば 262 B に収まるが、読みやすさを採った。
+    - `--lite` でも**トンネルは両側を読む** (ホスト別統計は `--lite` でも生きているため)。`Conn::finish` は枠が無いので読まない = forward の 5.02 回/要求 が動かない。
+    - `crates/sysinfo` の `capabilities::tcp_info_ok` (T14.15) が `getsockopt` をもう 1 つ別に宣言している。`proxy-sysinfo` は `proxy-sys` に依存しているので `sys::tcp_info` に寄せられる (判定の意味が違うので今回は触らず。小物 1 件)。
+    - ホスト表が `MAX_HOSTS` (1000) で溢れて `other` に畳まれた相手と `MAX_CLIENTS` 越えの接続元は、行を作らない方針なのでその 1 標本を捨てる。
+    - 次が繋ぐ場所: T14.8 は `/recent` の `rtt_ms` と `/hosts` の `rtt_ms` × `connect` の散布、`/clients` の表の RTT 列 (`samples` 0 は `null` なので描かない分岐が要る)。T14.26 は `.rrd` の**残り 20 B = u64 2 項目**。
+    - **デプロイ先の基準 (再デプロイ後、`probe-deployed.sh` のあと `clients[]` にこの機械の `rtt_ms` 40〜60 ms、`hosts[]` の mtalk.google.com が接続の時間と同じ桁) は親が見る。**
 - [x] **T14.6 山の写真 `/bursts` と、閉じた理由・寿命・バイトの分布**
   - 目的: T13.2 の効きは「バーストが来たとき」にしか見えないが、来たときに `/connections` を見ている人はいない。同時接続が
     上限の一定割合を超えた瞬間に自動で写真を撮る。あわせて、トンネルが**誰に・どれだけ生きて・なぜ**閉じられたかの分布が無い
@@ -3795,7 +3805,7 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     `pressure` / `ballast` / `state_file` / `evict` / `emfile` / `shutdown` の 10 種で固定 (増やすなら README も)。
   - 受け入れ基準: 結合テストで、起動 → `.env` の `PROXY_TIMEOUT_SECS` を書き換え → `/events` に `start` と `reload` (`PROXY_TIMEOUT_SECS 30 → 10`)
     の 2 件が時刻つきで見える。`?since=` で絞れる。応答 256 KiB 以下。費用 0 (稀な経路だけ)。
-- [ ] **T14.12 カーネルと cgroup の統計を窓に (`ListenOverflows`、再送、TIME_WAIT、CPU の絞り、PSI) と、本当の `/healthz`**
+- [x] **T14.12 カーネルと cgroup の統計を窓に (`ListenOverflows`、再送、TIME_WAIT、CPU の絞り、PSI) と、本当の `/healthz`**
   - 目的: バーストのとき**カーネル側で何が起きていたか**が無い。受け入れ待ち行列の溢れ (`ListenOverflows` / `ListenDrops`: 溢れると
     クライアントは SYN を 1〜3 秒後に再送するので、プロキシの統計には「遅い接続」としてすら残らない)、再送 (`RetransSegs` /
     `TCPSynRetrans`)、TIME_WAIT の本数 (loopback の CONNECT のベンチを律速していたもの。§1)、cgroup の CPU の絞り (`cpu.stat` の
@@ -3817,7 +3827,32 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     1 本握ったまま呼ぶと `active` の検査が偽で **503**。`/history` の標本に `time_wait` と `psi_cpu_some_avg10` が出る (読めない環境は `null`)。
     **既知の答えの再現**: 手元で `--only connect` を回している最中の `time_wait` が **数万** (§1 の `tcp_max_tw_buckets = 32768` に
     近い値) になること。費用 0 (5 秒の標本だけ)。
-- [ ] **T14.13 接続元ごとの同時接続の上限 `PROXY_MAX_CONNS_PER_CLIENT` (既定 0 = 無効。利用者が要ると言ったときだけ)**
+  - 結果 (2026-09-16、`983e462` / `8650b99`、マージ `9d64d0b`): **バーストのときカーネル側で何が起きていたかが読めるようになった。**
+    5 秒の標本のときだけ `/proc/net/{netstat,snmp,sockstat}` と cgroup v2 の `cpu.stat` / `cpu.max` / `*.pressure` を読み、
+    **メモリ上の窓** (5 秒 × 720 と 60 秒 × 1,440、1 標本 200 B ≈ 420 KiB) に入れる (`.rrd` は余白 4 B なので触っていない。T14.2 (3))。
+    累計のものは**増分**、値のものは値、1 分へ畳むときは増分は和・値と PSI は**最大** (平均だと山が消える)。
+    最新の値は `/status` の末尾の `kernel` (`tcp` / `cgroup_cpu` / `psi` / 直近 5 分の `last_5m`。実測 540 B)、時系列は
+    `/history?res=5|60` の**別の配列** `kernel` (23 列。`res=3600` は `null`。`/snapshot` の `history.*` にも入る)、
+    `/metrics` は `sorahost_kernel_*_total` と `sorahost_kernel_time_wait` / `sorahost_cgroup_cpu_throttled_seconds_total` /
+    `sorahost_psi_{some,full}_avg10{resource=}`。**読めない源は `null`** (Linux 以外・`/proc/net` の無いコンテナ・cgroup v1・PSI 無し)、
+    `--lite` / `PROXY_STATS_PERSIST=off` は履歴スレッドが動かないので窓ごと空。
+    **既知の答えの再現**: `scripts/cpu-per-request.sh --only connect` を回している最中の `/status` は
+    `kernel.tcp.time_wait` が **364 → 28,812〜30,966**、2 本目では **32,768** (§1 の `tcp_max_tw_buckets` ちょうど)。
+    **ついでに分かった**: この経路 (8,838 本/秒) は**待ち受け行列も溢れている** (`listen_overflows` が直近 5 分で +122、
+    `syn_retrans` の累計 7,559) — T14.47 (`PROXY_LISTEN_BACKLOG`) の前提が手元で確かめられた。
+    `/healthz` は `/status` の写しをやめ、`{"ok":bool,"checks":{listening,fds,connections,state_file,listen_overflows,resolver}}`
+    の **306 B** の応答に。1 つでも偽なら **503** (上のベンチ中は `listen_overflows` が偽で実際に 503)、
+    調べられないものは `null` で判定に入れない。`PROXY_MAX_CONNS=1` を 1 本握ったまま引くと `connections` が偽で 503
+    (T13.2 の枠があるので応答自体は届く)。費用: **要求ごとは 0** (5 秒に 1 回 `/proc` 3 つ + cgroup 4 つ)。`/healthz` はむしろ
+    軽くなった (20 KB の `/status` を組まなくなった)。CPU/本 140.32 us は §1 の幅の中。テストは新規 18 本
+    (マージ前の `cargo test --workspace` 410 本全通過、`check-dashboard.js` は `kernel` 入りの実出力で OK)。
+    - 気づき: `/proc/net` の数は**ネットワーク名前空間ごと**なので、同じ名前空間に他の待ち受けがあると `/healthz` の
+      `listen_overflows` が巻き込まれる (デプロイ先はコンテナなので実質このプロキシのぶん。Pterodactyl が 503 で再起動する設定なら
+      閾値を緩める余地)。窓は再起動で消える (T14.14 で版 3 にするなら 23 列は予備に収まる)。`cpu.max` はこの機械では `max` なので
+      `quota_cores` は実機未確認。`sockets_mem` はページ数。
+    - デプロイ先: 再デプロイ後に `/status` の `kernel.last_5m.listen_overflows` と `/history` の `kernel` で、バーストの時間帯に
+      SYN が落ちていたかが読めること、`kernel.cgroup_cpu.quota_cores` と `nr_throttled` が出るか (親が見る)。
+- [x] **T14.13 接続元ごとの同時接続の上限 `PROXY_MAX_CONNS_PER_CLIENT` (既定 0 = 無効。利用者が要ると言ったときだけ)**
   - 目的: 認証なしの公開プロキシで、見知らぬ接続元が `max_conns` 240 を 1 人で使い切ると本人が 503 になる。認証は入れない方針
     (§0) だが、**1 接続元あたりの同時接続の上限は認証ではなく公平さ**で、T13.2 の追い出しと同じ場所で判定できる。**挙動を変える**ので
     既定は無効、README に「公開ポートで見知らぬ接続元が増えたときに」と書く。
@@ -3828,6 +3863,27 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
   - 受け入れ基準: 結合テストで `PROXY_MAX_CONNS_PER_CLIENT=2` にして同じ接続元から 3 本目の CONNECT が 503、別の接続元 (`127.0.0.2`) は
     200、`/status` の `rejected_per_client` が 1。既定 (0) では今までどおり (`maxconns_test` / `overload_test` が無修正で通る)。
     費用: 既定では分岐 1 回、設定時は接続ごとに表の鍵 1 回 (登録と同じ鍵)。
+  - 結果 (2026-09-16、`c99a9ce`): 接続元ごとの同時接続の上限を入れた。**既定は 0 = 無効**で挙動は今までどおり。
+    `PROXY_MAX_CONNS_PER_CLIENT=N` を設定すると、accept 直後 (`PROXY_ALLOW_CLIENTS` の判定の直後、T13.2 の上限判定より前) に
+    その接続元の**生きている接続の本数**を数え、N 本以上なら `503` + `Retry-After: 1` で閉じる。**自分宛ての内部エンドポイントは
+    数えない**: accept では要求が読めないので、上限に当たった接続は T13.2 と同じ「上限 + 4 本」の枠で受けて要求行を読み、
+    自分宛てなら普通に応答、それ以外はワーカーが 503 (枠が埋まっていたら accept の場で読まずに 503)。**上限に当たっている
+    接続元からでも `/status` が取れる**。数え方は `/connections` の表 (T13.4) と**同じ鍵の内側**に持つ
+    `HashMap<Arc<str>, u32>` で、accept の判定は鍵 1 回 + 引き 1 回 (240 本を数え直さない)。登録・抹消で ±1。
+    **`--lite` でも効く** (枠は作らず本数だけ数える)。数えるのは上限が設定されている間だけで、0 に戻すと表ごと捨て、
+    あとから入れたときはそのとき生きている接続から数え直す。断った数は `/status` の `rejected_per_client`、`/metrics` の
+    `sorahost_rejected_per_client_total`、`/clients` の行の `rejected`。`.env` で即時反映、`/config` に効いている値と出どころも
+    出る (T14.15)。**認証ではない** (§0 は守る。同じアドレスから来られれば誰でも通る)。
+    費用は forward 42.62 → 43.26 us/要求 (+1.5%)、1 接続 1 要求 110.28 → 106.28 us/要求 (−3.6%)、`--lite` のシステムコール
+    5.01 → 5.02 回/要求 (どれもぶれの中。release、前後交互 3 組の中央値、基準は `844fb9a`)。既定の費用は accept ごとの分岐 1 回、
+    設定時は接続ごとに表の鍵 1 回 (登録と同じ鍵) と確保 1 回。テスト 383 → 390 本 全通過 (`tests/perclient_test.rs` 4 本 + 単体 3 本)。
+    - 結合テストは**送信元を `127.0.0.2` に bind して「別の接続元」を作る** (`tests/common/mod.rs` の `connect_from`。std には
+      bind してから connect する口が無いので `socket` / `bind` / `connect` を直に宣言。ループバックは `127.0.0.0/8` が丸ごと
+      自分のアドレスなので root は要らない)。実バイナリ + `.env` + `--lite` の 1 本も入れた。
+    - 上限に当たった接続は T13.2 の 4 本の枠を一時的に 1 つ使う (要求行を読んで 503 を返すまで、最長 2 秒)。
+      同時に来た数本は上限を少し超えて通りうる (数えるのは登録済みの本数)。NAT の内側の複数台は 1 人として数える。
+    - マージのついでに main の赤いテスト 2 本 (`/history` の末尾が `closed` ではなく canary。T14.6 と T14.10 のマージ漏れ) を直した (`dc98eec`)。
+    - **デプロイ先では既定 (0) のまま**。見知らぬ接続元が増えたときに `.env` で入れる (再起動は要らない)。
 **さらに候補 (2026-09-16、続き: T14.14〜)**。ここからは「データを取る」より **「取ったデータを失わない・読める・再現できる」** ものと、
 公開プロキシとして必要になったときの**止め方**。優先は T14.15 → T14.17 → T14.14 (履歴に足す項目を採ると決めたとき) → T14.16 →
 T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 の指示。順は T14.15 の次)。

@@ -226,6 +226,8 @@ impl Sample {
         let iv = metrics.take_interval();
         // `/proc` を読むのは 5 秒の標本のときだけ (要求ごとには読まない)
         let (threads, fds, max_fds) = process_counts();
+        // カーネルと cgroup の窓 (`/proc/net`・cgroup・PSI) もこの標本のときだけ進める (T14.12)
+        crate::kernel::sample(now_epoch());
         Self {
             t: now_epoch(),
             requests: metrics.total_requests.load(Ordering::Relaxed),
@@ -1085,7 +1087,7 @@ mod tests {
 #[cfg(test)]
 mod closed_tests {
     use super::*;
-    use crate::recent::{CLOSED_KEYS, CloseReason, RecentEntry, STAGES};
+    use crate::recent::{CLOSED_KEYS, CloseReason, RecentEntry, SIDES, STAGES};
 
     fn sample(t: u64) -> Sample {
         Sample {
@@ -1110,6 +1112,8 @@ mod closed_tests {
             parked_secs: 1,
             parks: 1,
             stage_ms: [0; STAGES],
+            rtt_us: [0; SIDES],
+            retrans: [0; SIDES],
         }
     }
 
@@ -1213,8 +1217,11 @@ mod closed_tests {
             json
         );
         assert!(json.ends_with("}}"), "{}", &json[json.len() - 40..]);
-        // 1 時間の解像度は `null`
-        assert!(h.to_json_res(2).ends_with(",\"closed\":null}"));
+        // 1 時間の解像度は `null`。**末尾で見ない**: T14.10 の `canary` がこのうしろに
+        // 付くので、`ends_with` で見ると「別の配列を足したら落ちるテスト」になる
+        let hour = h.to_json_res(2);
+        assert!(hour.contains(",\"closed\":null"), "{}", hour);
+        assert!(hour.ends_with("}"), "{}", hour);
     }
 
     /// 窓が埋まったときの大きさ (1 窓 ≈ 300 B。`/history` が太る分をここで押さえておく)。

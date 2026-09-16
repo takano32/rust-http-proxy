@@ -423,6 +423,7 @@ const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
 ///
 /// 中身: `status` (`?sort=` の 3 通り)、`history` (5 / 60 / 3600 秒)、`dns`、`errors`、
 /// `connections`、`recent`、`hosts`、`clients` (T14.7)、`bursts` (T14.6)、`log`。
+/// **`history.*` にはカーネルと cgroup の窓 (`kernel`) も一緒に入る** (T14.12。`/history` と同じ組み立て)。
 /// **T14.3 の `/profile` は、入ったらここに 1 行足す** (`parts` に名前が出るので、
 /// 読む側は「この版に何が入っていたか」を JSON だけで判別できる)。
 pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
@@ -435,17 +436,15 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ("status", super::status_body(ep, HostSort::Requests)),
         ("status_errors", super::status_body(ep, HostSort::Errors)),
         ("status_dns", super::status_body(ep, HostSort::Dns)),
-        (
-            "history.5",
-            ep.metrics.history.to_json_res(History::index_for(5)),
-        ),
+        // `/history` と同じ組み立て (カーネルと cgroup の窓も一緒に入る。T14.12)
+        ("history.5", super::history_body(ep, History::index_for(5))),
         (
             "history.60",
-            ep.metrics.history.to_json_res(History::index_for(60)),
+            super::history_body(ep, History::index_for(60)),
         ),
         (
             "history.3600",
-            ep.metrics.history.to_json_res(History::index_for(3600)),
+            super::history_body(ep, History::index_for(3600)),
         ),
         ("dns", dns(Some("sort=age&limit=4096")).2),
         ("errors", errors(ep, Some("n=500")).2),
@@ -635,7 +634,7 @@ mod tests {
     /// (既定の 200 件は最悪の値でも入る)。ここは `/recent` そのものを通して見る。
     #[test]
     fn the_recent_response_stays_under_256_kib() {
-        use crate::recent::{CloseReason, ConnTally, MAX_RECENT, STAGES};
+        use crate::recent::{CloseReason, ConnTally, MAX_RECENT, SIDES, STAGES};
 
         let m = Metrics::new();
         let now = Instant::now();
@@ -653,6 +652,8 @@ mod tests {
                     down: u64::MAX,
                     status: 599,
                     stage_ms: [u64::MAX; STAGES],
+                    rtt_us: [u32::MAX; SIDES],
+                    retrans: [u32::MAX; SIDES],
                 },
                 u32::MAX,
             );
@@ -832,6 +833,7 @@ mod tests {
                     down: bytes,
                     status: 0,
                     stage_ms: [0, connect_ms, 0, 0, 0, 0],
+                    ..Default::default()
                 },
                 0,
             );

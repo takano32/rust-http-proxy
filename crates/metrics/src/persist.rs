@@ -169,6 +169,11 @@ pub fn status_json() -> String {
         .unwrap_or_else(|| "null".to_string())
 }
 
+/// 書込エラーの累計 (`/healthz` の検査。永続化していなければ `None` = 検査しない。T14.12)。
+pub fn write_errors() -> Option<u64> {
+    GLOBAL.get().map(|s| s.write_errors.load(Ordering::Relaxed))
+}
+
 /// 起動時に読み戻した内容。
 pub struct Loaded {
     pub created: bool,

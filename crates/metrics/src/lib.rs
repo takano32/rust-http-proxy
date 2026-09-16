@@ -9,6 +9,7 @@
 pub mod canary;
 pub mod events;
 pub mod history;
+pub mod kernel;
 pub mod metrics;
 pub mod persist;
 pub mod recent;

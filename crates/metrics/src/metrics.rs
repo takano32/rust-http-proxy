@@ -218,6 +218,14 @@ pub struct HostStats {
     pub v6_wins: u64,
     /// エラーの原因別の件数 ([`ErrCause`] の順)
     pub errors_by_cause: [u64; ERR_CAUSES],
+    /// カーネルの平滑化 RTT (`TCP_INFO`) の標本 (T14.5)。**要求ごとではなく接続の
+    /// 終わりに 1 本 1 回**なので `timed` とは数が合わない。ホスト別はオリジン側、
+    /// 接続元別 ([`ClientStats`]) はクライアント側の値が入る
+    pub rtt_us_sum: u64,
+    pub rtt_us_min: u64,
+    pub rtt_samples: u64,
+    /// その接続たちが再送したセグメントの通算 (`tcpi_total_retrans`)
+    pub retrans: u64,
 }
 
 impl HostStats {
@@ -279,6 +287,12 @@ impl HostStats {
         for c in self.errors_by_cause {
             e.u64(c);
         }
+        // T14.5 の 4 欄は**末尾に足す**だけ (1 スロット 572 B のうち 520 B が既存の
+        // 49 項目、ここで 552 B。版は上げないので、古いファイルは 0 で読み戻る)
+        e.u64(self.rtt_us_sum)
+            .u64(self.rtt_us_min)
+            .u64(self.rtt_samples)
+            .u64(self.retrans);
         e.0
     }
 
@@ -313,7 +327,34 @@ impl HostStats {
         for c in s.errors_by_cause.iter_mut() {
             *c = d.u64();
         }
+        // 版を上げていないので、T14.5 より前に書かれたファイルはここで尽きて 0 が返る
+        s.rtt_us_sum = d.u64();
+        s.rtt_us_min = d.u64();
+        s.rtt_samples = d.u64();
+        s.retrans = d.u64();
         Some((name, s))
+    }
+
+    /// カーネルの RTT と再送を 1 標本足す (**接続の終わりに 1 回だけ**。T14.5)。
+    /// 呼び出し側が既に鍵を取っているので、原子操作もシステムコールも増えない。
+    fn observe_rtt(&mut self, rtt_us: u32, retrans: u32) {
+        let us = rtt_us as u64;
+        self.rtt_us_sum = self.rtt_us_sum.saturating_add(us);
+        self.rtt_samples += 1;
+        if self.rtt_us_min == 0 || us < self.rtt_us_min {
+            self.rtt_us_min = us;
+        }
+        self.retrans = self.retrans.saturating_add(retrans as u64);
+    }
+
+    /// RTT の平均 (ms)。標本が無ければ `None` (Linux 以外・`--lite` では出ない)。
+    pub fn rtt_avg_ms(&self) -> Option<f64> {
+        (self.rtt_samples > 0).then(|| self.rtt_us_sum as f64 / self.rtt_samples as f64 / 1000.0)
+    }
+
+    /// RTT の最小 (ms)。標本が無ければ `None`。
+    pub fn rtt_min_ms(&self) -> Option<f64> {
+        (self.rtt_samples > 0).then(|| self.rtt_us_min as f64 / 1000.0)
     }
 
     fn observe(&mut self, d: Duration) {
@@ -472,6 +513,9 @@ pub struct ClientStats {
     last_nonstandard: bool,
     last_port_slot: Option<usize>,
     last_ports_other: bool,
+    /// 接続元ごとの同時接続の上限 (`PROXY_MAX_CONNS_PER_CLIENT`) に当たって断った本数
+    /// (T14.13)。**書くのは断った経路だけ** ([`Metrics::record_client_rejected`])
+    pub rejected: u64,
 }
 
 impl ClientStats {
@@ -635,7 +679,7 @@ impl ClientStats {
             .map(|(p, n)| format!("{{\"port\":{},\"requests\":{}}}", p, n))
             .collect();
         format!(
-            "{{\"client\":\"{}\",{}{},\"agents\":{},\"agents_dropped\":{},\"distinct_targets_capped\":{},\"ports\":[{}],\"ports_other\":{},\"nonstandard_ports\":{}}}",
+            "{{\"client\":\"{}\",{}{},\"agents\":{},\"agents_dropped\":{},\"distinct_targets_capped\":{},\"ports\":[{}],\"ports_other\":{},\"nonstandard_ports\":{},\"rejected\":{}}}",
             crate::json::escape(client),
             stats_json(&self.stats, false),
             self.status_json(),
@@ -644,7 +688,8 @@ impl ClientStats {
             self.targets_capped,
             ports.join(","),
             self.ports_other,
-            self.nonstandard_ports
+            self.nonstandard_ports,
+            self.rejected
         )
     }
 }
@@ -805,6 +850,8 @@ pub struct Metrics {
     pub evicted_idle: AtomicU64,
     /// `PROXY_ALLOW_CLIENTS` に無い接続元として accept 直後に閉じた数 (T14.18)
     pub rejected_client_acl: AtomicU64,
+    /// 接続元ごとの同時接続の上限 (`PROXY_MAX_CONNS_PER_CLIENT`) に当たって 503 で断った数 (T14.13)
+    pub rejected_per_client: AtomicU64,
     pub bytes_forwarded: AtomicU64,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
@@ -843,6 +890,7 @@ impl Metrics {
             rejected_overload: AtomicU64::new(0),
             evicted_idle: AtomicU64::new(0),
             rejected_client_acl: AtomicU64::new(0),
+            rejected_per_client: AtomicU64::new(0),
             bytes_forwarded: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
@@ -1075,6 +1123,59 @@ impl Metrics {
             .count(outcome, bytes, took, target);
     }
 
+    /// ホスト (オリジン側) のカーネルの RTT と再送を 1 標本足す (`/hosts`。T14.5)。
+    ///
+    /// **呼ぶのは接続の終わりだけ** (トンネルを閉じるとき、プールのオリジン接続を
+    /// 捨てるとき)。要求ごとには呼ばない。読めなかった (`rtt_us == 0`) ときは
+    /// 鍵も取らずに戻る = Linux 以外と `--lite` は 1 命令も払わない。
+    pub fn record_host_rtt(&self, host: &str, rtt_us: u32, retrans: u32) {
+        if rtt_us == 0 {
+            return;
+        }
+        let mut hosts = self.hosts.locked();
+        // **行は作らない**: ここへ来る接続は直前に必ず数えられているので、無いのは
+        // 表が [`MAX_HOSTS`] で溢れて `other` に畳まれたときだけ (その 1 標本は捨てる)
+        if let Some(s) = hosts.map.get_mut(host) {
+            s.observe_rtt(rtt_us, retrans);
+        }
+    }
+
+    /// 接続元 (クライアント側) のカーネルの RTT と再送を 1 標本足す (`/clients`。T14.5)。
+    ///
+    /// 利用者 → プロキシの往復がここで初めて数字になる。[`record_host_rtt`](Self::record_host_rtt)
+    /// と同じく**接続の終わりだけ**で、鍵は `record_client` のものと同じ 1 つ。
+    pub fn record_client_rtt(&self, client: &str, rtt_us: u32, retrans: u32) {
+        if rtt_us == 0 {
+            return;
+        }
+        let mut clients = self.clients.locked();
+        if let Some(c) = clients.get_mut(client) {
+            c.stats.observe_rtt(rtt_us, retrans);
+        }
+    }
+
+    /// 全体の RTT の合計 (`/metrics` の `sorahost_rtt_seconds`。T14.5)。
+    ///
+    /// 返すのは `[(us 合計, 標本数); 2]` で、添字は
+    /// [`crate::recent::CLIENT_SIDE`] / [`crate::recent::ORIGIN_SIDE`]。
+    /// **ホスト別は出さない** (系列が増えすぎる) ので、ここで畳んでから渡す。
+    /// 読むのは `/metrics` に来たときだけなので、表を一度なめてよい。
+    pub fn rtt_totals(&self) -> [(u64, u64); 2] {
+        let fold = |acc: (u64, u64), s: &HostStats| {
+            (
+                acc.0.saturating_add(s.rtt_us_sum),
+                acc.1.saturating_add(s.rtt_samples),
+            )
+        };
+        let client = self
+            .clients
+            .locked()
+            .values()
+            .fold((0, 0), |a, c| fold(a, &c.stats));
+        let origin = self.hosts.locked().map.values().fold((0, 0), fold);
+        [client, origin]
+    }
+
     /// 接続元の `User-Agent` を 1 つ覚える (`/clients`。T14.7)。
     ///
     /// **呼ぶのは接続の最初の要求のときだけ** (`src/lib.rs`)。要求ごとに見ると
@@ -1095,6 +1196,26 @@ impl Metrics {
             .entry(key)
             .or_insert_with(ClientStats::now)
             .note_agent(agent);
+    }
+
+    /// 接続元ごとの同時接続の上限に当たって断った 1 本を数える (`/clients` の `rejected`。T14.13)。
+    ///
+    /// **通るのは断った経路だけ**なので、通した接続には 1 命令も足さない。全体の合計
+    /// (`rejected_per_client`) も同じ場所で足す (鍵は接続元の表の 1 回)。
+    pub fn record_client_rejected(&self, client: &str) {
+        self.rejected_per_client
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut clients = self.clients.locked();
+        if let Some(stats) = clients.get_mut(client) {
+            stats.rejected += 1;
+            return;
+        }
+        let key = if clients.len() >= MAX_CLIENTS {
+            "other".to_string()
+        } else {
+            client.to_string()
+        };
+        clients.entry(key).or_insert_with(ClientStats::now).rejected += 1;
     }
 
     /// 要求数の多い順に並べた接続元別統計 (`.rrd` と `/metrics` が使う欄だけ)。
@@ -1301,12 +1422,15 @@ impl Metrics {
                 "\"parking\":{},",
                 "\"live_threads\":{},\"idle_threads\":{},\"queued_jobs\":{},\"max_threads\":{},",
                 "\"rejected_overload\":{},\"evicted_idle\":{},\"rejected_client_acl\":{},",
+                "\"rejected_per_client\":{},",
                 "\"bytes_forwarded\":{},",
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
                 // この環境で何が読めるか (T14.15) と canary (T14.10)。どちらも覚えてある結果を読むだけ
-                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{}}}"
+                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
+                // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
+                "\"kernel\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1328,6 +1452,7 @@ impl Metrics {
             self.rejected_overload.load(Ordering::Relaxed),
             self.evicted_idle.load(Ordering::Relaxed),
             self.rejected_client_acl.load(Ordering::Relaxed),
+            self.rejected_per_client.load(Ordering::Relaxed),
             bytes,
             self.cache_hits.load(Ordering::Relaxed),
             self.cache_misses.load(Ordering::Relaxed),
@@ -1345,7 +1470,11 @@ impl Metrics {
             extra.blocklist,
             extra.state_file,
             crate::sysinfo::capabilities::status_json(),
-            cache_json
+            cache_json,
+            // カーネルと cgroup の統計 (5 秒の標本で読んだ最新の値。T14.12)。
+            // ここから直に呼べるのは `dns` / `ipv6` と同じ**下の層**だから
+            // (`settings` のような上の層の部品は `extra` で受け取る)
+            crate::kernel::status_json()
         )
     }
 }
@@ -1375,6 +1504,18 @@ pub fn stats_json(s: &HostStats, detail: bool) -> String {
         s.duration_ms_max,
         s.last_seen
     );
+    // カーネルの RTT (T14.5)。標本が無ければ `null` (Linux 以外・`--lite`・
+    // まだ 1 本も閉じていない)。ホスト別はオリジン側、接続元別はクライアント側
+    match (s.rtt_avg_ms(), s.rtt_min_ms()) {
+        (Some(avg), Some(min)) => {
+            let _ = write!(
+                out,
+                ",\"rtt_ms\":{{\"avg\":{:.3},\"min\":{:.3},\"samples\":{}}},\"retrans\":{}",
+                avg, min, s.rtt_samples, s.retrans
+            );
+        }
+        _ => out.push_str(",\"rtt_ms\":null,\"retrans\":0"),
+    }
     if detail {
         let _ = write!(
             out,
@@ -1515,6 +1656,66 @@ mod tests {
         assert!(json.contains("\"clients\":[{\"client\":\"10.0.0.1\",\"requests\":2"));
         assert!(json.contains("\"blocked\":1"));
         assert!(json.contains("\"host\":\"blocked://ads.example\",\"requests\":1,\"hits\":0,\"misses\":0,\"bypass\":0,\"errors\":0,\"blocked\":1"));
+    }
+
+    /// カーネルの RTT の 4 欄が `.rrd` の余白に入り、**古いファイルは 0 で読み戻る**こと (T14.5)。
+    #[test]
+    fn the_rtt_columns_fit_in_the_slot_and_old_records_read_back_as_zero() {
+        let m = Metrics::new();
+        m.record_host("connect://a:443", HostOutcome::Bypass, 10);
+        m.record_client("10.0.0.1", HostOutcome::Bypass, 10, None, None);
+        // 標本が無い間は「無い」(`/hosts` では `null`)
+        let none = m.hosts_sorted()[0].1.clone();
+        assert_eq!(none.rtt_samples, 0);
+        assert_eq!(none.rtt_avg_ms(), None);
+        assert!(stats_json(&none, false).contains("\"rtt_ms\":null,\"retrans\":0"));
+
+        // 接続の終わりに 2 本ぶん (30.1 ms と 20.0 ms)
+        m.record_host_rtt("connect://a:443", 30_100, 2);
+        m.record_host_rtt("connect://a:443", 20_000, 0);
+        // 知らないホストは作らない (数えられていない相手の行が生えない)
+        m.record_host_rtt("connect://never-seen:443", 1_000, 0);
+        // 読めなかった側 (0) は標本にしない
+        m.record_client_rtt("10.0.0.1", 0, 0);
+        m.record_client_rtt("10.0.0.1", 48_300, 0);
+        assert_eq!(m.hosts_sorted().len(), 1, "行は増えない");
+
+        let s = m.hosts_sorted()[0].1.clone();
+        assert_eq!(s.rtt_samples, 2);
+        assert_eq!(s.rtt_us_sum, 50_100);
+        assert_eq!(s.rtt_us_min, 20_000);
+        assert_eq!(s.retrans, 2);
+        assert_eq!(s.rtt_avg_ms(), Some(25.05));
+        assert_eq!(s.rtt_min_ms(), Some(20.0));
+        assert!(
+            stats_json(&s, false)
+                .contains("\"rtt_ms\":{\"avg\":25.050,\"min\":20.000,\"samples\":2},\"retrans\":2")
+        );
+        // 全体の合計 (`/metrics`)。添字は [クライアント側, オリジン側]
+        let totals = m.rtt_totals();
+        assert_eq!(totals[crate::recent::CLIENT_SIDE], (48_300, 1));
+        assert_eq!(totals[crate::recent::ORIGIN_SIDE], (50_100, 2));
+
+        // `.rrd` の 1 スロット: 名前 128 B + 53 項目 × 8 B = 552 B (余白 572 - 552 = 20 B)
+        let enc = s.encode("connect://a:443");
+        assert_eq!(enc.len(), 128 + 53 * 8);
+        assert_eq!(crate::rrd::STATS_RECORD - 4 - enc.len(), 20, "残りの余白");
+        assert_eq!(HostStats::decode(&enc).unwrap().1, s);
+
+        // T14.5 より前に書かれたレコード (末尾 4 欄が無い) は 0 で読み戻る
+        let old = &enc[..enc.len() - 32];
+        let (name, back) = HostStats::decode(old).unwrap();
+        assert_eq!(name, "connect://a:443");
+        assert_eq!(
+            (
+                back.rtt_us_sum,
+                back.rtt_us_min,
+                back.rtt_samples,
+                back.retrans
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(back.requests, s.requests, "前の欄はそのまま読める");
     }
 
     #[test]
@@ -2049,6 +2250,27 @@ mod latency_tests {
         assert_eq!(c2.ports_other, 2);
         assert_eq!(c2.nonstandard_ports, 10);
         assert_eq!(c2.distinct_targets(), 1);
+    }
+
+    /// 接続元ごとの上限で断った数は、全体の合計と個票の両方に残る (T14.13)。
+    #[test]
+    fn rejections_are_counted_for_the_total_and_for_the_client() {
+        let m = Metrics::new();
+        m.record_client_rejected("10.0.0.1");
+        m.record_client_rejected("10.0.0.1");
+        m.record_client_rejected("10.0.0.2");
+        assert_eq!(m.rejected_per_client.load(Ordering::Relaxed), 3);
+
+        // 要求を 1 本も通していない接続元でも `/clients` に出る (断られただけの相手)
+        let all = m.clients_sorted_by(ClientSort::Requests);
+        let one = all
+            .iter()
+            .find(|(k, _)| k == "10.0.0.1")
+            .expect("10.0.0.1 の行")
+            .1
+            .to_json("10.0.0.1");
+        assert!(one.contains("\"rejected\":2"), "{}", one);
+        assert!(m.to_json().contains("\"rejected_per_client\":3"));
     }
 
     /// `?sort=` の鍵ごとに先頭が入れ替わること (T14.7)。

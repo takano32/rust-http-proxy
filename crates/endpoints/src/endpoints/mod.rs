@@ -1,6 +1,8 @@
-//! プロキシ自身のエンドポイント: `/dashboard` (コントロールパネル)、`/healthz` `/status`
+//! プロキシ自身のエンドポイント: `/dashboard` (コントロールパネル)、`/status`
 //! (`?sort=requests|errors|dns|slow` で `hosts[]` の上位 50 の切り出しを変えられる。T13.3)、
-//! `/history` (JSON、`res=5|60|3600`)、`/metrics` (Prometheus)、`/proxy.pac` (ブラウザの自動設定)、
+//! `/healthz` (**本当の健康診断**。軽い JSON で、検査が 1 つでも偽なら 503。T14.12)、
+//! `/history` (JSON、`res=5|60|3600`。カーネルと cgroup の窓が `kernel` に付く)、
+//! `/metrics` (Prometheus)、`/proxy.pac` (ブラウザの自動設定)、
 //! `/purge` と `PURGE` メソッド、`/lookup`、`/blocklist` (判定と手動の上書き)。
 //!
 //! 自分宛てかどうかは**ポートだけ**で決める: 絶対形式 (`http://host:PORT/status`) は authority の、
@@ -48,6 +50,7 @@ pub struct Endpoint<'a> {
 
 mod blocklist;
 mod config;
+mod health;
 mod pac;
 mod recent;
 
@@ -110,7 +113,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
          \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
          \x20 /config                                     JSON: effective settings and where they came from\n\
-         \x20 /healthz                                    same as /status\n\
+         \x20 /healthz                                    health checks (503 when unhealthy)\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
          \x20 /metrics                                    Prometheus text format\n\
          \x20 /proxy.pac                                  browser auto-config script\n\
@@ -179,7 +182,7 @@ pub fn handle(
             .and_then(|(_, v)| v.parse::<u64>().ok())
             .map(crate::history::History::index_for)
             .unwrap_or(0);
-        (200, "application/json", ep.metrics.history.to_json_res(res))
+        (200, "application/json", history_body(ep, res))
     } else if is_get && path == "/errors" {
         // 個票 (T13.4)。集計 (`/status`) では読めない「誰が・いつ・なぜ」を出す
         recent::errors(ep, query)
@@ -212,20 +215,19 @@ pub fn handle(
         config::render(ep)
     } else if is_get && path == "/blocklist" {
         blocklist::handle(&parse_query(query.unwrap_or("")))
-    } else if is_get && (path == "/healthz" || path == "/status") {
+    } else if is_get && path == "/healthz" {
+        // `/status` の写しではなく**本当の健康診断** (T14.12)。軽い JSON で、
+        // 1 つでも検査が偽なら 503。**問い合わせは読まない** (監視が叩く口の意味を変えない)
+        health::healthz(ep)
+    } else if is_get && path == "/status" {
         // `?sort=requests|errors|dns|slow` は `hosts[]` の上位 50 を切り出す鍵だけを変える
-        // (T13.3)。知らない値は既定に倒す。**`/healthz` は問い合わせを読まない**
-        // (監視が叩く口の意味を変えない)
-        let sort = if path == "/status" {
-            parse_query(query.unwrap_or(""))
-                .iter()
-                .find(|(k, _)| k == "sort")
-                .map_or(metrics::HostSort::Requests, |(_, v)| {
-                    metrics::HostSort::from_param(v)
-                })
-        } else {
-            metrics::HostSort::Requests
-        };
+        // (T13.3)。知らない値は既定に倒す
+        let sort = parse_query(query.unwrap_or(""))
+            .iter()
+            .find(|(k, _)| k == "sort")
+            .map_or(metrics::HostSort::Requests, |(_, v)| {
+                metrics::HostSort::from_param(v)
+            });
         (200, "application/json", status_body(ep, sort))
     } else if is_get && path == "/metrics" {
         (
@@ -278,6 +280,8 @@ pub fn handle(
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        // `/healthz` の検査が 1 つでも偽 (T14.12)
+        503 => "Service Unavailable",
         _ => "OK",
     };
     let response = format!(
@@ -320,6 +324,20 @@ pub(super) fn status_body(ep: &Endpoint<'_>, sort: metrics::HostSort) -> String 
             sort,
         },
     )
+}
+
+/// `/history` の JSON に、カーネルと cgroup の窓を**別の配列**として足す (T14.12)。
+///
+/// 標本の配列 (`keys` / `samples`) は 1 バイトも変えない: `.rrd` の標本の余白は 4 B しか
+/// 残っていない (T14.2 (3)) ので、カーネルの窓はメモリだけの別物になっている。
+/// 項目数も解像度も違うので、同じ行に混ぜずに `"kernel":{"keys":[...],"samples":[[...]]}` で並べる
+/// (1 時間の解像度はこの窓に無いので `null`)。
+pub(super) fn history_body(ep: &Endpoint<'_>, res: usize) -> String {
+    let base = ep.metrics.history.to_json_res(res);
+    match base.strip_suffix('}') {
+        Some(head) => format!("{},\"kernel\":{}}}", head, crate::kernel::history_json(res)),
+        None => base,
+    }
 }
 
 /// URL を正規化して全バリアントを消す。
