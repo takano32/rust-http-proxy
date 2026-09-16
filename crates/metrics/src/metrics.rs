@@ -1144,6 +1144,9 @@ pub struct Metrics {
     /// CONNECT のホストと SNI が食い違った本数の合計 (`/status` の `sni_mismatches`。T14.38)。
     /// **メモリだけ** (`.rrd` には書かない)。ホスト別は [`HostStats::sni_mismatch`]
     pub sni_mismatches: AtomicU64,
+    /// 重い口 (`/snapshot` `/profile` …) が既に 1 本走っていたので 503 で断った数 (T14.51)。
+    /// 足すのは内部エンドポイントの経路だけで、プロキシとしての要求は 1 度も触らない
+    pub heavy_rejected: AtomicU64,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -1177,6 +1180,7 @@ impl Metrics {
             bursts: crate::recent::BurstRing::new(),
             recent_persisted: AtomicBool::new(false),
             sni_mismatches: AtomicU64::new(0),
+            heavy_rejected: AtomicU64::new(0),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }
@@ -1852,9 +1856,10 @@ impl Metrics {
                 "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
                 // (`memory` も T14.21、`recent_quantiles` も T14.31、`rate_bps_total` も
-                // T14.39、`rejected_requests` も T14.28、`sni_mismatches` も T14.38 で同じく末尾)
+                // T14.39、`rejected_requests` も T14.28、`sni_mismatches` も T14.38、
+                // `heavy_rejected` も T14.51 で同じく末尾)
                 "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
-                "\"rejected_requests\":{},\"sni_mismatches\":{}}}"
+                "\"rejected_requests\":{},\"sni_mismatches\":{},\"heavy_rejected\":{}}}"
             ),
             SCHEMA,
             crate::json::escape(extra.version),
@@ -1910,7 +1915,9 @@ impl Metrics {
             // 読めずに断った要求の理由別 (T14.28)。原子 6 本を読むだけ
             self.rejected_requests_json(),
             // CONNECT のホストと SNI が食い違った本数 (T14.38)
-            self.sni_mismatches.load(Ordering::Relaxed)
+            self.sni_mismatches.load(Ordering::Relaxed),
+            // 重い口が 1 本走っている最中に来て 503 で断った数 (T14.51)
+            self.heavy_rejected.load(Ordering::Relaxed)
         )
     }
 }
