@@ -114,6 +114,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
+         \x20 /daily?n=365                                JSON: one summary line per day (kept forever)\n\
          \x20 /metrics                                    Prometheus text format\n\
          \x20 /proxy.pac                                  browser auto-config script\n\
          \x20 /lookup?url=<url>                           cache entry state\n\
@@ -198,6 +199,9 @@ pub fn handle(
         recent::snapshot(ep)
     } else if is_get && path == "/dns" {
         recent::dns(query)
+    } else if is_get && path == "/daily" {
+        // 1 日 1 行の要約 (T14.20)。`/history` (30 日) が消えたあとも残る
+        recent::daily(query)
     } else if is_get && path == "/log" {
         recent::log(query)
     } else if is_get && path == "/hosts" {
