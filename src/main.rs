@@ -239,6 +239,14 @@ fn main() {
     // 異常の自動検知の閾 (T14.23)。判定するのは履歴スレッドなので、渡すのは
     // 同時接続の上限と、山と見なす本数 (T14.6 の写真と同じ閾) の 2 つだけ
     rust_http_proxy::anomaly::configure(config.max_conns, config.burst_at);
+    // SLO の 4 つの閾 (`PROXY_SLO`。T14.50)。判定するのも履歴スレッドで、
+    // 5 秒の標本 1 本ごとに 4 つを当てて時間ごとの達成率に足す (`/slo`)
+    rust_http_proxy::slo::configure(rust_http_proxy::slo::Thresholds {
+        connect_p50_ms: config.slo.connect_p50_ms,
+        connect_p95_ms: config.slo.connect_p95_ms,
+        error_rate: config.slo.error_rate,
+        dns_miss_per_connect: config.slo.dns_miss_per_connect,
+    });
     // 永続化しないなら履歴スレッドも起動しない (/history とダッシュボードのグラフは空になる)
     let _history = config.stats_persist.then(|| {
         rust_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache), store.clone())
