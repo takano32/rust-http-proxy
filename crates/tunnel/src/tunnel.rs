@@ -292,6 +292,23 @@ fn report(
             .history
             .transfer
             .observe(transferred, relay, half_close);
+        // 接続元 1 つの追跡 (`/trace`。T14.27)。**旗が立っているトンネルだけ** 1 行書く。
+        // 立っていない本数の費用はこの分岐 1 回だけで、宛先・段階の ms・閉じた理由・
+        // 寿命はすぐ上で既に組んだものをそのまま渡す (時計も確保も増やさない)
+        if s.traced() {
+            crate::trace::push(crate::trace::Line {
+                conn_id: o.conn_id,
+                client: &o.client_ip,
+                method: "CONNECT",
+                target: &o.addr_str,
+                version: "HTTP/1.1",
+                status: 200,
+                took_ms: alive.as_millis().min(u64::MAX as u128) as u64,
+                bytes: transferred,
+                stage_ms,
+                reason: Some(reason),
+            });
+        }
     }
     // 向き別のバイト (T14.26)。**数え直しはしていない**: 中継が方向ごとに持っている
     // `up` / `down` (すぐ上で個票に渡したのと同じ値) をホスト別統計の鍵の内側へ

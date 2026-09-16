@@ -1656,7 +1656,7 @@ impl Metrics {
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
 ///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
 /// - `rings` は記録のリングが**満杯のときの見積もり** (固定部 + 文字列の上限。T13.4 / T14.4 /
-///   T14.6 / T14.11 / T14.22 / T14.25)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
+///   T14.6 / T14.11 / T14.22 / T14.25 / T14.27)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
 /// - `arenas` は `PROXY_MALLOC_ARENAS` で掛けた上限 (`0` = glibc の既定のまま。T5.6)
 ///
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
@@ -1685,6 +1685,9 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             + MAX_SHOT_TARGETS * (name + MAX_TARGET))) as u64;
     let log = (MAX_LOG_LINES * (size_of::<Line>() + MAX_LOG_LINE)) as u64;
     let events = (MAX_EVENTS * (size_of::<Event>() + MAX_TEXT)) as u64;
+    // 接続元 1 つの追跡 (T14.27)。**追跡していなければ 1 バイトも確保していない**ので、
+    // これも他と同じ「満杯のとき」の見積もり
+    let trace = (crate::trace::MAX_TRACE * crate::trace::MAX_LINE_ESTIMATE) as u64;
     // ホスト別の時系列は固定長 (上位 16 ホスト × 288 標本 × 5 項目 × 8 B。T14.22)。
     // **上位が 1 つ決まるまでは確保しない**ので、これも「満杯のとき」の見積もり
     let hostseries = (crate::hostseries::SLOTS
@@ -1711,7 +1714,7 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             "{{\"rss\":{},\"heap_used\":{},\"heap_free\":{},\"mmap\":{},",
             "\"stacks_estimate\":{},\"cache_memory\":{},",
             "\"rings\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
-            "\"events\":{},\"history\":{},\"hostseries\":{},\"total\":{}}},\"arenas\":{}}}"
+            "\"events\":{},\"trace\":{},\"history\":{},\"hostseries\":{},\"total\":{}}},\"arenas\":{}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -1724,9 +1727,10 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         bursts,
         log,
         events,
+        trace,
         history,
         hostseries,
-        recent + errors + bursts + log + events + history + hostseries,
+        recent + errors + bursts + log + events + trace + history + hostseries,
         crate::sysinfo::arena_max(),
     )
 }

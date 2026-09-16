@@ -477,6 +477,20 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `PROXY_STATS_PERSIST=off` (履歴スレッドを起こさない設定) でも撮りません**。
     山が来るのを待たずに手元で確かめるには、`/recent` の個票を同じ間隔・同じ本数で張り直す
     `bench --only replay` を使います (上の「デプロイ先のパターンを手元で再生する」)
+  - **接続元 1 つの追跡 (T14.27)**: `PROXY_TRACE_CLIENT=<ip>` を設定している間だけ、**その接続元の**
+    要求を `/trace?n=200&since=<epoch>` (新しい順、既定 200 行・最大 1,000、1,000 行の環状) に残します。
+    1 行 = 時刻 (`at`、epoch 秒)・接続 id (`conn`)・接続元 (`client`)・**要求行** (`method` / `target` / `version`)・
+    応答の状態 (`status`)・所要 ms (`took_ms`)・バイト (`bytes`)・**段階の ms** (`ms`。`/recent` と同じ綴り)・
+    **閉じた理由** (`reason`。CONNECT だけ。forward の 1 要求では `null`)。CONNECT の `target` は宛先の `host:port`、
+    forward の `target` は **URL (先頭 256 バイト)** です。
+    **この口だけは URL のパスが入ります** (他の個票は入れません。下の「個票に入れるのは…」を参照)。
+    全体のログ水準を `trace` に上げるとアクセスログが**全員に**乗る (1 行 7.2 us/要求) のに対し、
+    ここは 1 人ぶんだけです。**照合は accept の 1 回だけ**で、一致した接続に旗を立て、
+    要求ごとに見るのはその旗 1 つ (一致しない接続元の費用は分岐 1 回)。
+    `--lite` は接続の枠そのものを作らないので**旗も立たず、1 行も残りません**。
+    リングは**メモリだけ**なので再起動で消えます (`/recent` などと違い個票のファイルには書きません)。
+    **`/snapshot` には入れません** (パスが保存したファイルに残らないように)。
+    いま誰を追っているかは `/config` の `PROXY_TRACE_CLIENT` で読めます
   - **起きたことの時系列 (T14.11)**: `/events?n=200&since=<epoch>` は、**プロキシに起きた出来事**を
     1 本の時系列にしたものです (新しい順、既定 200 件、512 件の環状)。数字が動いたときに
     「**そのとき何を変えたか**」を読むための口で、`/status` の `settings` は最後の 1 回しか残さず、
@@ -573,7 +587,11 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (`PROXY_ALLOW_CLIENTS` で接続元を絞れば、これらの個票にも届きません)。
     個票に入れるのは**接続元 IP・宛先のホスト:ポート・時刻・数字だけ**です。
     **`/clients` の `User-Agent` (先頭 128 バイト) が入る唯一のヘッダー**で、URL のパスや問い合わせ文字列、
-    本文、その他のヘッダーは 1 つも記録しません
+    本文、その他のヘッダーは 1 つも記録しません。
+    **例外は `/trace` だけ**です (T14.27): `PROXY_TRACE_CLIENT` で**追跡している 1 接続元に限り**、
+    要求行の URL を先頭 256 バイトまで残します。これも認証なしで見えるので、**調べ終わったら
+    `PROXY_TRACE_CLIENT` を空に戻してください** (空にすれば次の接続から書かなくなり、
+    プロセスを再起動すればリングごと消えます。リングはメモリだけでファイルには残りません)
   - **カーネルと cgroup の窓 (バーストのときカーネル側で何が起きていたか。T14.12)**:
     プロキシの統計には残らない事象を、**5 秒の標本のときだけ** `/proc` と `/sys/fs/cgroup` を読んで
     メモリ上の窓 (5 秒 × 720 = 1 時間 と 60 秒 × 1,440 = 1 日。1 標本 200 B なので約 420 KiB、
@@ -673,10 +691,11 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       先行確保の `reserved_bytes`)
     - `rings` は記録のリングが**満杯になったときの見積もり** (バイト): `recent` (2,000 件)、
       `errors` (500 件)、`bursts` (50 枚)、`log` (1,000 行)、`events` (512 件)、
+      `trace` (1,000 行。T14.27)、
       `history` (**5 秒 × 4,320** + 60 秒 × 1,440 + 1 時間 × 720 の標本と、閉じた接続の窓、
       速さと半閉じの窓。5 秒の標本を 6 時間ぶん持つので 2.95 → **4.77 MB**。T14.32)、
       `hostseries` (16 ホスト × 288 標本 × 5 項目 × 8 B = 180 KiB。T14.22) と、
-      その合計 `total` (この機械では 5.9 MiB)。
+      その合計 `total` (この機械では 6.4 MiB)。
       いま何件入っているかは `/recent` や `/errors` の `total` を見てください
     - `arenas` は `PROXY_MALLOC_ARENAS` で実際に掛けた `M_ARENA_MAX` (`0` = glibc の既定のまま)
 
@@ -853,11 +872,12 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_CONNECT_PORTS` | なし (制限なし) | `CONNECT` を許すあて先ポート。`443,80,8080-8099` のようにカンマ区切り (範囲可)。ここに無いポートは 403。`.env` で即時反映 |
 | `PROXY_ALLOW_LOCAL` | `off` | ループバック (`127.0.0.0/8`, `::1`) とリンクローカル (`169.254.0.0/16`, `fe80::/10`) 宛てのオリジンを許すか。既定では 403 にしてクラウドのメタデータ (`169.254.169.254`) 経由の SSRF を防ぐ。ローカルのサービスへプロキシしたいときだけ `on`。`.env` で即時反映 |
 | `PROXY_ALLOW_CLIENTS` | なし (全許可) | **受ける接続元**のカンマ区切りリスト (`1.2.3.4,10.0.0.0/8,2001:db8::/32`。1 つの IP は `/32` `/128` と同じ)。ここに無い相手は **accept した直後に、要求を 1 バイトも読まずに閉じます** (応答も返しません)。**内部エンドポイントも含めて閉じる**ので、公開ポートで `/status` や `/clients` の個票が見られることもありません。`PROXY_MAX_CONNS` の 「上限 + 4 本」の枠より**前**で判定します。断った数は `/status` の `rejected_client_acl` と `/metrics` の `sorahost_rejected_client_acl_total`。v4-mapped IPv6 (`::ffff:1.2.3.4`) は IPv4 として照合するので、デュアルスタックで 待ち受けていても `1.2.3.4` の 1 行で書けます。書式が違う項目は読み飛ばします (起動ログの `allowed clients:` に実際に読めた項目が出るので、書き損じはそこで分かります)。**宛先の `PROXY_ALLOW_HOSTS` / `PROXY_ALLOW_LOCAL` とは無関係**で、**認証でもありません** (同じアドレスから来られれば誰でも通ります)。`.env` で即時反映 (次に受ける接続から) |
-| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/metrics` `/hosts` `/hosts/series` `/clients` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
+| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/metrics` `/hosts` `/hosts/series` `/clients` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/trace` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる (`PROXY_PARK_IDLE=on` なら、預かり所が期限を見て引き上げる)。`0` で無期限。`.env` で即時反映 |
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル (`--lite` と同じ)。キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限。上限に当たったら、まず**預かり所の暇な CONNECT トンネルを最古から 1 本閉じて**席を作り、その接続を受ける (閉じた数は `/status` の `evicted_idle` と `/metrics` の `sorahost_evicted_idle_total`。**暇な keep-alive 接続は閉じない** — 次の要求を待っているだけなので、閉じると入れ違いで届いた要求を取りこぼすため)。閉じるものが無い (トンネルが全部中継中、または預かり所が空) ときは、スレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。ただし**自分宛て (`/status` `/metrics` などの内部エンドポイント) は上限 + 4 本まで受ける**: accept の時点では要求が読めないので、4 本までは受けて要求行と `Host` を読み、自分宛てなら普通に応答、それ以外は 503 で閉じる (上限に当たっている最中でも監視が取れるようにするため。この枠で受けた接続は要求行が 2 秒来なければ 503 で閉じる)。`auto` は記述子の上限から `min(4096, (RLIMIT_NOFILE の soft − 予備 64) ÷ 4)` (1 接続が最悪で使う記述子は クライアント 1 + オリジン 1 + 素通しのパイプ 2 = 4 本。`ulimit -n` が 1024 の環境なら 240、4096 なら 1008)。記述子が余っていても 4096 で頭打ちにするのは、上限が fd 以外の資源 (スレッド・RSS) の歯止めでもあるため (同時 5,000 本で RSS 198 MiB の実測)。数値を書けばその値、`0` で無制限。決まった値は起動ログの `max connections:` と `/status` の `max_conns` (`/metrics` は `sorahost_max_connections`) に出る。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
 | `PROXY_MAX_CONNS_PER_CLIENT` | `0` (無効) | **1 つの接続元から同時に受ける接続数の上限**。認証なしの公開ポートで、見知らぬ接続元 1 人が `PROXY_MAX_CONNS` (既定 240) を使い切ると**本人が 503 になる**ため、その手前で頭を押さえるつまみです。**認証ではなく公平さの上限**です (同じアドレスから来られれば誰でも通ります)。設定すると accept の直後にその接続元の**いま生きている接続の本数**を数え、上限以上なら `503 Service Unavailable` + `Retry-After: 1` を返して閉じます。断った数は `/status` の `rejected_per_client` と `/metrics` の `sorahost_rejected_per_client_total`、接続元ごとの内訳は `/clients` の行の `rejected`。**自分宛て (`/status` などの内部エンドポイント) は数えません**: accept の時点では要求が読めないので、`PROXY_MAX_CONNS` と同じ「上限 + 4 本」の枠で受けてから要求行を読み、自分宛てなら普通に応答、それ以外は 503 で閉じます (上限に当たっている接続元からでも監視が取れるように)。**数え方**: 数えるのは `/connections` の表と同じ「接続の開始と終了」で ±1 する本数で、鍵は接続元 IP (v4-mapped IPv6 は IPv4 として数えます)。NAT の内側の複数台は 1 人として数えられます。数えるのは**上限を設定している間だけ**で、`0` に戻すと表ごと捨てます (既定の費用は accept ごとの分岐 1 回)。`--lite` でも効きます (`/connections` の行は作らずに本数だけ数えます)。同時に来た数本は上限を少し超えて通ることがあります (数えるのは登録済みの本数のため)。`.env` で即時反映 (次に受ける接続から。あとから入れたときは、そのとき生きている接続から数え直します) |
+| `PROXY_TRACE_CLIENT` | なし (追跡しない) | **1 つの接続元だけ**を追いかけて、その要求を `/trace` に残します (T14.27)。値は IP を 1 つ (`198.51.100.7` / `2001:db8::1`。v4-mapped IPv6 は IPv4 として照合します)。設定すると **accept した直後に接続元がこの IP かどうかを 1 回だけ**見て、一致した接続に旗を立てます。旗の立った接続は、要求ごとに**要求行** (メソッド + **URL の先頭 256 バイト** + HTTP の版)・応答の状態・所要 ms・バイト・**段階の ms**を、CONNECT はトンネルの終わりに**宛先と閉じた理由**を、**1,000 行の環状バッファ**に 1 行書きます (`/trace?n=200&since=<epoch>`、既定 200 行・最大 1,000)。**全体のログ水準を `trace` に上げるのとは違い、費用が乗るのはその 1 人だけ**です (アクセスログ 1 行は 7.2 us/要求。既定 (空) では accept ごとの分岐 1 回、設定していても一致しない接続元は要求ごとに旗を読む分岐 1 回だけ)。**この口だけは URL のパスが入ります** (他の個票は入れません)。認証なしで誰でも読めるので、**調べ終わったら空に戻してください**。リングは**メモリだけ**で、個票のファイル (`$HOME/.rust-http-proxy.recent`) にも `/snapshot` にも入れません (パスが保存したファイルに残らないように)。`--lite` は接続の枠を作らないので**追跡しません**。`.env` で即時反映 (次に受ける接続から。いま開いている接続の旗は動きません) |
 | `PROXY_BURST_PERCENT` | `50` | 同時接続数が `PROXY_MAX_CONNS` のこの割合を**越えた瞬間**に `/connections` の写真を 1 枚撮って `/bursts` に残す (T14.6)。`0` で撮らない。**同じ山では 1 枚だけ**で、閾の 80% を下回るまで次は撮りません。撮るのは履歴スレッド (5 秒周期) なので、接続を受ける経路に増えるのは比較 1 回だけです。割合を当てるのは `PROXY_MAX_CONNS` だけで、上限の外の枠 4 本 (自分宛て用) は含めません。`PROXY_MAX_CONNS=0` (無制限) と `--lite` では撮りません。**履歴スレッドが撮るので `PROXY_STATS_PERSIST=off` でも撮りません**。`.env` で即時反映 |
 | `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。`.env` で即時反映 (次に受ける接続から効く。**下げても走っているスレッドは殺さず**、仕事を終えたスレッドから順に減ります。`auto` のときは `PROXY_MAX_CONNS` を変えるとこちらも決め直します)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。**裏側の再検証 (stale-while-revalidate) もこの上限の内側で走ります**が、こちらは待たせず捨てます (`/status` の `revalidations_dropped`) |
 | `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 8 MiB) に、**個票 (`/recent` `/errors` `/bursts` `/events` `/log`) を `$HOME/.rust-http-proxy.recent` (固定 4 MiB)** に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`)、**ホスト別の時系列** (`/hosts/series`) は空になり、個票の `"persisted"` は `false`、日次の要約も 1 行も書きません) |
@@ -1434,6 +1454,7 @@ curl "http://127.0.0.1:8080/recent?sort=slow&n=20"      # 確立のいちばん�
 curl "http://127.0.0.1:8080/recent?client=198.51.100.7" # ある接続元だけ
 curl "http://127.0.0.1:8080/recent?since=$(( $(date +%s) - 3600 ))"   # 直近 1 時間に開いたもの
 curl "http://127.0.0.1:8080/bursts?n=50"                # 山が立った瞬間の写真 (新しい順)
+curl "http://127.0.0.1:8080/trace?n=200"                # 追跡中の 1 接続元の要求 (PROXY_TRACE_CLIENT。URL が入る)
 curl "http://127.0.0.1:8080/events?n=200"               # 起動・再読込・圧迫などの出来事 (新しい順)
 curl "http://127.0.0.1:8080/events?since=$(( $(date +%s) - 86400 ))"  # 直近 1 日の出来事だけ
 curl -s "http://127.0.0.1:8080/events?n=512" | grep -o '"kind":"anomaly","text":"[^"]*"'  # 自動検知だけ

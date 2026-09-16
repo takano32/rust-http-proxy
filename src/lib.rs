@@ -20,7 +20,7 @@ pub use proxy_endpoints::endpoints;
 pub use proxy_http::{freshness, http};
 pub use proxy_metrics::{
     anomaly, canary, daily, events, history, hostseries, kernel, metrics, persist, persist_recent,
-    profile, recent, rrd,
+    profile, recent, rrd, trace,
 };
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};
@@ -245,6 +245,14 @@ pub fn serve(
             // 上限を `0` に戻したら数えるのもやめる (`.env` で即時反映)
             metrics.conns.stop_counting_clients();
         }
+        // 接続元 1 つの追跡 (`PROXY_TRACE_CLIENT`。T14.27)。**接続元を見るのはここだけ**で、
+        // 一致した接続には下の `Conn::new` が枠 (`ConnSlot`) に旗を立てる。以降は
+        // 要求ごとにその旗を読む分岐 1 回で済む (文字列の比較も設定の引き直しもしない)。
+        // 既定 (空) の費用は `is_some_and` の分岐 1 回だけで、照合にも入らない。
+        // `.env` で書き換えると**次に来る接続から**効く (開いている接続の旗は動かない)
+        let traced = cfg
+            .trace_client
+            .is_some_and(|ip| ip == net::canonical_addr(peer).ip());
         // 上限に当たったときの段取り (T13.2):
         //   1. 預かり所の**暇なトンネル**を最古から 1 本閉じて席を作る (閉じるのはこのスレッド。
         //      持ち分が同期で返るので、すぐ下の `OpenGuard::acquire` がその席に座れる)
@@ -328,6 +336,7 @@ pub fn serve(
                 conn_inherited,
                 conn_id,
                 queued_at,
+                traced,
             ) {
                 Ok(conn) => run_conn(Box::new(conn)),
                 Err(e) => log_error!(Some(conn_id), "{}", e),
@@ -815,6 +824,7 @@ impl Conn {
         inherited: Option<std::time::Duration>,
         conn_id: usize,
         queued_at: Option<Instant>,
+        traced: bool,
     ) -> io::Result<Conn> {
         metrics.inc_active_conn();
         let active_started = Instant::now();
@@ -836,6 +846,12 @@ impl Conn {
         let slot = metrics
             .conns
             .register(conn_id as u64, &peer_ip, active.started);
+        // 追跡の旗 (`PROXY_TRACE_CLIENT` に一致した接続だけ。T14.27)。照合は accept で
+        // 済ませてあるので、ここは原子 1 回の書き込み。**`--lite` は枠が無いので
+        // 旗も立たない** = 追跡しない
+        if traced && let Some(s) = &slot {
+            s.mark_traced();
+        }
         Ok(Conn {
             client,
             buf: clientio::ClientBuf::new(),
@@ -1599,6 +1615,9 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         read_started,
         // 閉じた接続の個票に積み上げる箱 (T14.4)。`--lite` では枠が無いので渡さない
         tally: slot.is_some().then_some(tally),
+        // 追跡中の接続元か (`PROXY_TRACE_CLIENT`。T14.27)。要求ごとに読むのはこの
+        // 旗 1 つだけで、立っていない要求は `Ctx::log` の分岐 1 回で飛ばす
+        traced: slot.as_ref().is_some_and(|s| s.traced()),
     };
     let keep = http::handle_http_with_headers(
         client,
@@ -1710,6 +1729,7 @@ mod tests {
             None,
             1,
             None,
+            false,
         );
         assert!(err.is_err(), "ソケットでなければ Conn::new は失敗する");
         drop(err);
@@ -1756,6 +1776,7 @@ mod tests {
             None,
             1,
             None,
+            false,
         )
         .expect("timeout 0 は無期限なので Conn::new は成功する");
         assert_eq!(

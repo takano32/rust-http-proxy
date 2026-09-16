@@ -236,6 +236,11 @@ pub struct Shared<'a> {
     /// 積み上げは普通の変数で行い、**接続の終了で 1 回だけ**枠へ移す
     /// (要求ごとの原子操作を 1 つも増やさないため)
     pub tally: Option<&'a Cell<ConnTally>>,
+    /// 追跡中の接続元か (`PROXY_TRACE_CLIENT`。T14.27)。
+    ///
+    /// 照合は accept で 1 回だけ済ませてあり、**要求ごとに残るのはこの旗 1 つ**。
+    /// 立っていれば [`Ctx::log`] が要求行と応答の状態と段階の ms を `/trace` へ 1 行書く
+    pub traced: bool,
 }
 
 /// アクセスログと配信に必要なリクエストの文脈。
@@ -262,6 +267,8 @@ struct Ctx<'a> {
     up_bytes: u64,
     /// 接続の個票に積み上げる箱 (T14.4)。`--lite` では `None`
     tally: Option<&'a Cell<ConnTally>>,
+    /// 追跡中の接続元か (`PROXY_TRACE_CLIENT`。T14.27)。立っていなければ分岐 1 回で飛ばす
+    traced: bool,
 }
 
 impl Ctx<'_> {
@@ -288,6 +295,26 @@ impl Ctx<'_> {
             stage_ms[STAGE_CLIENT_READ] = detail.stages.client_read as u64;
             t.add_request(status, self.up_bytes, bytes, stage_ms);
             cell.set(t);
+            // 接続元 1 つの追跡 (`/trace`。T14.27)。**旗が立っている接続だけ** 1 行書く。
+            // 立っていない要求の費用はこの分岐 1 回だけで、段階の ms も所要時間も
+            // すぐ上で既に組んだものをそのまま渡す (時計も確保も増やさない)。
+            // ここは個票の決まり (パスを入れない) の**唯一の例外**で、追跡中の
+            // 1 接続元に限り URL を先頭 256 B まで残す
+            if self.traced {
+                crate::trace::push(crate::trace::Line {
+                    conn_id: self.conn_id,
+                    client: self.client_ip,
+                    method: self.method,
+                    target: self.url,
+                    version: self.version,
+                    status,
+                    took_ms: took.as_millis().min(u64::MAX as u128) as u64,
+                    bytes,
+                    stage_ms,
+                    // 閉じた理由は接続 1 本のものなので CONNECT だけ (T14.4 の `/recent` にある)
+                    reason: None,
+                });
+            }
         }
         // 向き別のバイト (T14.26)。**新しい計数はしていない**: 上りは要求本文
         // (個票が既に使っている `up_bytes`)、下りはこの応答のバイト (アクセスログに
@@ -464,6 +491,7 @@ pub fn handle_http_with_headers(
         },
         up_bytes: 0,
         tally: shared.tally,
+        traced: shared.traced,
     };
 
     // ---- キャッシュ参照 ----
