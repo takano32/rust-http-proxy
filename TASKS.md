@@ -3798,7 +3798,7 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     `pressure` / `ballast` / `state_file` / `evict` / `emfile` / `shutdown` の 10 種で固定 (増やすなら README も)。
   - 受け入れ基準: 結合テストで、起動 → `.env` の `PROXY_TIMEOUT_SECS` を書き換え → `/events` に `start` と `reload` (`PROXY_TIMEOUT_SECS 30 → 10`)
     の 2 件が時刻つきで見える。`?since=` で絞れる。応答 256 KiB 以下。費用 0 (稀な経路だけ)。
-- [ ] **T14.12 カーネルと cgroup の統計を窓に (`ListenOverflows`、再送、TIME_WAIT、CPU の絞り、PSI) と、本当の `/healthz`**
+- [x] **T14.12 カーネルと cgroup の統計を窓に (`ListenOverflows`、再送、TIME_WAIT、CPU の絞り、PSI) と、本当の `/healthz`**
   - 目的: バーストのとき**カーネル側で何が起きていたか**が無い。受け入れ待ち行列の溢れ (`ListenOverflows` / `ListenDrops`: 溢れると
     クライアントは SYN を 1〜3 秒後に再送するので、プロキシの統計には「遅い接続」としてすら残らない)、再送 (`RetransSegs` /
     `TCPSynRetrans`)、TIME_WAIT の本数 (loopback の CONNECT のベンチを律速していたもの。§1)、cgroup の CPU の絞り (`cpu.stat` の
@@ -3820,6 +3820,31 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     1 本握ったまま呼ぶと `active` の検査が偽で **503**。`/history` の標本に `time_wait` と `psi_cpu_some_avg10` が出る (読めない環境は `null`)。
     **既知の答えの再現**: 手元で `--only connect` を回している最中の `time_wait` が **数万** (§1 の `tcp_max_tw_buckets = 32768` に
     近い値) になること。費用 0 (5 秒の標本だけ)。
+  - 結果 (2026-09-16、`983e462` / `8650b99`、マージ `9d64d0b`): **バーストのときカーネル側で何が起きていたかが読めるようになった。**
+    5 秒の標本のときだけ `/proc/net/{netstat,snmp,sockstat}` と cgroup v2 の `cpu.stat` / `cpu.max` / `*.pressure` を読み、
+    **メモリ上の窓** (5 秒 × 720 と 60 秒 × 1,440、1 標本 200 B ≈ 420 KiB) に入れる (`.rrd` は余白 4 B なので触っていない。T14.2 (3))。
+    累計のものは**増分**、値のものは値、1 分へ畳むときは増分は和・値と PSI は**最大** (平均だと山が消える)。
+    最新の値は `/status` の末尾の `kernel` (`tcp` / `cgroup_cpu` / `psi` / 直近 5 分の `last_5m`。実測 540 B)、時系列は
+    `/history?res=5|60` の**別の配列** `kernel` (23 列。`res=3600` は `null`。`/snapshot` の `history.*` にも入る)、
+    `/metrics` は `sorahost_kernel_*_total` と `sorahost_kernel_time_wait` / `sorahost_cgroup_cpu_throttled_seconds_total` /
+    `sorahost_psi_{some,full}_avg10{resource=}`。**読めない源は `null`** (Linux 以外・`/proc/net` の無いコンテナ・cgroup v1・PSI 無し)、
+    `--lite` / `PROXY_STATS_PERSIST=off` は履歴スレッドが動かないので窓ごと空。
+    **既知の答えの再現**: `scripts/cpu-per-request.sh --only connect` を回している最中の `/status` は
+    `kernel.tcp.time_wait` が **364 → 28,812〜30,966**、2 本目では **32,768** (§1 の `tcp_max_tw_buckets` ちょうど)。
+    **ついでに分かった**: この経路 (8,838 本/秒) は**待ち受け行列も溢れている** (`listen_overflows` が直近 5 分で +122、
+    `syn_retrans` の累計 7,559) — T14.47 (`PROXY_LISTEN_BACKLOG`) の前提が手元で確かめられた。
+    `/healthz` は `/status` の写しをやめ、`{"ok":bool,"checks":{listening,fds,connections,state_file,listen_overflows,resolver}}`
+    の **306 B** の応答に。1 つでも偽なら **503** (上のベンチ中は `listen_overflows` が偽で実際に 503)、
+    調べられないものは `null` で判定に入れない。`PROXY_MAX_CONNS=1` を 1 本握ったまま引くと `connections` が偽で 503
+    (T13.2 の枠があるので応答自体は届く)。費用: **要求ごとは 0** (5 秒に 1 回 `/proc` 3 つ + cgroup 4 つ)。`/healthz` はむしろ
+    軽くなった (20 KB の `/status` を組まなくなった)。CPU/本 140.32 us は §1 の幅の中。テストは新規 18 本
+    (マージ前の `cargo test --workspace` 410 本全通過、`check-dashboard.js` は `kernel` 入りの実出力で OK)。
+    - 気づき: `/proc/net` の数は**ネットワーク名前空間ごと**なので、同じ名前空間に他の待ち受けがあると `/healthz` の
+      `listen_overflows` が巻き込まれる (デプロイ先はコンテナなので実質このプロキシのぶん。Pterodactyl が 503 で再起動する設定なら
+      閾値を緩める余地)。窓は再起動で消える (T14.14 で版 3 にするなら 23 列は予備に収まる)。`cpu.max` はこの機械では `max` なので
+      `quota_cores` は実機未確認。`sockets_mem` はページ数。
+    - デプロイ先: 再デプロイ後に `/status` の `kernel.last_5m.listen_overflows` と `/history` の `kernel` で、バーストの時間帯に
+      SYN が落ちていたかが読めること、`kernel.cgroup_cpu.quota_cores` と `nr_throttled` が出るか (親が見る)。
 - [x] **T14.13 接続元ごとの同時接続の上限 `PROXY_MAX_CONNS_PER_CLIENT` (既定 0 = 無効。利用者が要ると言ったときだけ)**
   - 目的: 認証なしの公開プロキシで、見知らぬ接続元が `max_conns` 240 を 1 人で使い切ると本人が 503 になる。認証は入れない方針
     (§0) だが、**1 接続元あたりの同時接続の上限は認証ではなく公平さ**で、T13.2 の追い出しと同じ場所で判定できる。**挙動を変える**ので

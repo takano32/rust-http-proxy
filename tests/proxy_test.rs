@@ -74,7 +74,9 @@ fn test_integration_healthz() {
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert!(response.contains("\"status\":\"ok\""));
+    // `/status` の写しではなく健康診断 (T14.12)。検査の中身は `tests/kernel_test.rs`
+    assert!(response.contains("\"ok\":true"), "{}", response);
+    assert!(response.contains("\"checks\":{"), "{}", response);
 }
 
 #[test]
@@ -293,20 +295,21 @@ fn test_integration_status_sort_brings_the_bad_hosts_to_the_front() {
     assert_eq!(sorted("?sort=dns"), format!("http://{}", named));
     // 平均の遅いホストが先頭
     assert_eq!(sorted("?sort=slow"), format!("http://{}", slow));
-    // 知らない値・空の値は既定に倒れる。`/healthz` は問い合わせを読まない
+    // 知らない値・空の値は既定に倒れる
     assert_eq!(sorted("?sort=nonsense"), format!("http://{}", busy));
     assert_eq!(sorted("?sort="), format!("http://{}", busy));
     assert_eq!(sorted("?other=1"), format!("http://{}", busy));
-    assert_eq!(
-        first_host(&endpoint_on(
-            proxy_port,
-            &format!(
-                "GET /healthz?sort=errors HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-                proxy_port
-            )
-        )),
-        format!("http://{}", busy)
+    // `/healthz` は問い合わせを読まない (T14.12 で `/status` の写しではなくなったので、
+    // そもそも `hosts[]` を持たない軽い応答になっている)
+    let health = endpoint_on(
+        proxy_port,
+        &format!(
+            "GET /healthz?sort=errors HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            proxy_port
+        ),
     );
+    assert!(health.contains("\"checks\":{"), "{}", health);
+    assert!(!health.contains("\"hosts\":"), "{}", health);
 
     // JSON の形は変わらない: 4 ホストが全部入り、内訳の列もそのまま
     let by_errors = status_json_query(proxy_port, "?sort=errors");
