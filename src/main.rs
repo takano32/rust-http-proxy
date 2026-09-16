@@ -219,6 +219,14 @@ fn main() {
     if let Some(s) = &store {
         rust_http_proxy::blocklist::set_store(Arc::clone(s));
     }
+    // 日次の要約 (`$HOME/.rust-http-proxy.daily.jsonl`。T14.20)。書くのは履歴スレッドで、
+    // `PROXY_STATS_PERSIST=off` ではここを呼ばないので 1 行も書かない
+    if config.stats_persist {
+        rust_http_proxy::daily::configure(
+            rust_http_proxy::daily::default_path(),
+            rust_http_proxy::VERSION,
+        );
+    }
     // 永続化しないなら履歴スレッドも起動しない (/history とダッシュボードのグラフは空になる)
     let _history = config.stats_persist.then(|| {
         rust_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache), store.clone())

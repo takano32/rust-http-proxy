@@ -154,6 +154,38 @@ pub fn log(query: Option<&str>) -> (u16, &'static str, String) {
     (200, "application/json", out)
 }
 
+/// `/daily?n=365` — 1 日 1 行の要約 (**古い順**。既定 1 年、最大
+/// [`crate::daily::MAX_DAYS`] 日。T14.20)。
+///
+/// `/history` は 30 日で消えるが、この口が読むファイル
+/// (`$HOME/.rust-http-proxy.daily.jsonl`) は**永久に残る** (上限 2 MiB = 11 年ぶん)。
+/// 行はファイルにある JSON をそのまま並べるだけ (プロキシは組み立て直さない)。
+/// `PROXY_STATS_PERSIST=off` では 1 行も書いていないので `days` は空で `path` が `null`。
+pub fn daily(query: Option<&str>) -> (u16, &'static str, String) {
+    let n = num_param(
+        query,
+        "n",
+        crate::daily::DEFAULT_DAYS,
+        crate::daily::MAX_DAYS,
+    );
+    let d = crate::daily::recent(n);
+    let mut out = String::with_capacity(8192);
+    out.push_str("{\"days\":");
+    let (shown, cut) = array_within(&mut out, d.lines);
+    let _ = write!(
+        out,
+        ",\"count\":{},\"shown\":{},\"bytes\":{},\"max_bytes\":{},\"max_line\":{},\"path\":{},\"truncated\":{}}}",
+        d.count,
+        shown,
+        d.bytes,
+        crate::daily::MAX_BYTES,
+        crate::daily::MAX_LINE,
+        crate::json::quote_opt(d.path.as_ref().map(|p| p.display().to_string()).as_deref()),
+        cut || d.truncated
+    );
+    (200, "application/json", out)
+}
+
 /// `/log` の 1 要素。`conn` は `[conn#N]` の N (`[main]` なら `null`)。
 fn log_line_json(line: &crate::log::Line) -> String {
     format!(
