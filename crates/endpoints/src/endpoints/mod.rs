@@ -52,6 +52,7 @@ mod blocklist;
 mod config;
 mod health;
 mod pac;
+mod profile;
 mod recent;
 
 const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
@@ -115,6 +116,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
+         \x20 /profile?res=5|60                           JSON: stages, threads, locks\n\
          \x20 /daily?n=365                                JSON: one summary line per day (kept forever)\n\
          \x20 /metrics                                    Prometheus text format\n\
          \x20 /proxy.pac                                  browser auto-config script\n\
@@ -184,6 +186,9 @@ pub fn handle(
             .map(crate::history::History::index_for)
             .unwrap_or(0);
         (200, "application/json", history_body(ep, res))
+    } else if is_get && path == "/profile" {
+        // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)
+        profile::profile(ep, query)
     } else if is_get && path == "/errors" {
         // 個票 (T13.4)。集計 (`/status`) では読めない「誰が・いつ・なぜ」を出す
         recent::errors(ep, query)
@@ -550,6 +555,18 @@ mod local_path_tests {
             "errhint",
             "conns",
             "connhint",
+            // プロファイル (T14.3)
+            "proflead",
+            "st-connect-setup",
+            "st-connect-after",
+            "st-forward-setup",
+            "st-forward-after",
+            "stages",
+            "ch-rolecpu",
+            "ch-cpureq",
+            "roles",
+            "locks",
+            "profhint",
         ] {
             assert!(html.contains(&format!("id=\"{}\"", id)), "{} が無い", id);
         }
@@ -564,6 +581,13 @@ mod local_path_tests {
             // 個票を読む側 (T13.4)
             "function errorRows(",
             "function connRows(",
+            // プロファイルを読む側 (T14.3)
+            "function toProfile(",
+            "function stageRows(",
+            "function longestStage(",
+            "function roleRows(",
+            "function lockRows(",
+            "function drawStack(",
         ] {
             assert!(html.contains(f), "{} が無い", f);
         }
@@ -604,6 +628,17 @@ mod local_path_tests {
             "{}",
             "個票が 5 秒ごとになっていない"
         );
+        // プロファイルは 5 秒ごとに `/profile?res=` を 1 本 (T14.3)
+        assert!(
+            html.contains("fetchJson('/profile?res='+res)"),
+            "{}",
+            "/profile を取っていない"
+        );
+        assert!(
+            html.contains("setInterval(pollProfile,5000)"),
+            "{}",
+            "プロファイルが 5 秒ごとになっていない"
+        );
         // ヘッダーから個票へ行けること (T13.4)
         for link in [
             "/dns",
@@ -611,6 +646,7 @@ mod local_path_tests {
             "/hosts?limit=1000",
             "/errors",
             "/connections",
+            "/profile",
         ] {
             assert!(
                 html.contains(&format!("<a href=\"{}\" target=\"_blank\">", link)),

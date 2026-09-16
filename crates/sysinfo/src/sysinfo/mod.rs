@@ -3,7 +3,8 @@
 //! - [`mem`]: `/proc/meminfo`, `/proc/self/status`, `/proc/pressure/memory`, cgroup v1/v2
 //! - [`fs`]: `statvfs(3)` / `fallocate(2)` を libc シンボル直接参照で呼び、`/proc/mounts` で
 //!   マウント種別を調べる
-//! - [`proc`]: `/proc/self/status` のスレッド数と `/proc/self/fd` の記述子の数 / `RLIMIT_NOFILE`
+//! - [`proc`]: `/proc/self/status` のスレッド数と `/proc/self/fd` の記述子の数 / `RLIMIT_NOFILE`、
+//!   `/proc/self/task/*/{stat,syscall}` のスレッド別 CPU と状態 (T14.3 (2))
 //! - [`malloc`]: glibc の `mallinfo2(3)` でヒープの内訳 (T14.21)
 //! - [`net`]: `/proc/net/{netstat,snmp,sockstat}` のカーネルの TCP 統計 (T14.12)
 //! - [`cgroup`]: cgroup v2 の CPU の絞り (`cpu.stat` / `cpu.max`) と PSI (T14.12)
@@ -34,4 +35,4 @@ pub use mem::{
     process_rss,
 };
 pub use net::{SockStat, TcpExt, TcpSnmp, TcpStats, tcp_stats};
-pub use proc::{process_fds, process_threads};
+pub use proc::{TaskSample, TaskScan, process_fds, process_threads, scan_tasks};

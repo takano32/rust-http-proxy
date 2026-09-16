@@ -206,6 +206,10 @@ fn main() {
     let metrics = Arc::new(Metrics::new());
     // `--lite` では `/connections` に登録しない (空の一覧を返す。T1.4 の方針。T13.4)
     metrics.conns.set_enabled(!config.lite);
+    // `--lite` では段階の時計も読まない (`/profile` は off。T14.3)
+    rust_http_proxy::profile::set_enabled(!config.lite);
+    let _profile = (!config.lite)
+        .then(|| rust_http_proxy::profile::spawn(Arc::clone(&metrics), config.profile_sample_ms));
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
     let store = if config.stats_persist {

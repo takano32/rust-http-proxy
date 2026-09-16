@@ -747,9 +747,9 @@ pub const STAGES: usize = 6;
 
 /// 段階の ms の名前 (`/recent` の `ms` に出す鍵)。
 ///
-/// **いま埋まるのは先頭 3 つだけ** (`dns` / `connect` / `first_byte` = [`crate::metrics::Detail`] に
-/// あるもの)。残り 3 つは T14.3 (`/profile`) が段階の時計を足したときに埋める欄で、
-/// それまでは 0 のまま (0 の段階は JSON に出さない)。
+/// 先頭 3 つ (`dns` / `connect` / `first_byte`) は [`crate::metrics::Detail`] にあるもの、
+/// 残り 3 つ (`queue` / `client_read` / `first_relay`) は T14.3 が足した
+/// [`crate::metrics::StageMs`] から入る (0 の段階は JSON に出さない)。
 pub const STAGE_NAMES: [&str; STAGES] = [
     "dns",
     "connect",
@@ -769,6 +769,12 @@ pub const ORIGIN_SIDE: usize = 1;
 pub const STAGE_DNS: usize = 0;
 pub const STAGE_CONNECT: usize = 1;
 pub const STAGE_FIRST_BYTE: usize = 2;
+/// accept (または預かり所からの起床) からワーカーが動き出すまで (T14.3 の `StageMs::queue`)
+pub const STAGE_QUEUE: usize = 3;
+/// 要求行が届いてから `Host` まで読み終えるまで (T14.3 の `StageMs::client_read`)
+pub const STAGE_CLIENT_READ: usize = 4;
+/// CONNECT: `200` を書いてから最初の中継バイトまで (T14.3 の `StageMs::first_relay`)
+pub const STAGE_FIRST_RELAY: usize = 5;
 
 /// 接続が閉じた理由 (`/recent` の `reason`)。
 ///
@@ -1607,6 +1613,47 @@ mod tests {
             0,
             1,
         )
+    }
+
+    /// T14.3 が足した 3 つの段階 (`queue` / `client_read` / `first_relay`) が個票に出ること。
+    ///
+    /// `dns` と `connect` は必ず出て、残りは 0 でないときだけ出る (0 の段階で行を伸ばさない)。
+    #[test]
+    fn the_three_stages_from_the_profile_show_up_in_the_record() {
+        let t = ConnTable::new();
+        let slot = t.register(3, "198.51.100.7", Instant::now()).expect("枠");
+        slot.begin_tunnel("a.example.net:443");
+        let mut tally = ConnTally::default();
+        let mut ms = [0u64; STAGES];
+        ms[STAGE_DNS] = 6;
+        ms[STAGE_CONNECT] = 9;
+        ms[STAGE_QUEUE] = 159;
+        ms[STAGE_CLIENT_READ] = 2;
+        ms[STAGE_FIRST_RELAY] = 37;
+        tally.add_request(0, 4, 4, ms);
+        slot.finish(CloseReason::ClientEof, tally, 0);
+        let json = t
+            .unregister(3)
+            .expect("枠が返る")
+            .closed_entry(Instant::now())
+            .expect("宛先のある接続は残る")
+            .to_json();
+        for (name, v) in [
+            ("dns", 6),
+            ("connect", 9),
+            ("queue", 159),
+            ("client_read", 2),
+            ("first_relay", 37),
+        ] {
+            assert!(
+                json.contains(&format!("\"{}\":{}", name, v)),
+                "{} が出ていない: {}",
+                name,
+                json
+            );
+        }
+        // 0 の段階 (`first_byte`) は出さない
+        assert!(!json.contains("\"first_byte\""), "{}", json);
     }
 
     #[test]

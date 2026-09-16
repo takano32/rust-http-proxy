@@ -498,6 +498,25 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     標本 1 本の余白が 4 B しか無いため)。件数 0 の窓は出しません (行の先頭に窓の始まりの時刻があります)。
     `/blocklist?host=<h>` でブロックリストの判定、
     `&action=block|allow|clear[&ttl_secs=N]` で一時的な上書き (既定 24 時間、`0` で無期限。状態ファイルに 256 件まで残る)
+  - **`/profile?res=5|60`** で「**1 要求の時間がどの段階に消えたか**」「**CPU がどの役割のスレッドで何をして使われたか**」
+    「**ロックの取り合いと待ち行列の待ち**」を 1 枚で (5 秒 × 720 = 1 時間 と 60 秒 × 1,440 = 1 日 の窓。
+    ダッシュボードの「プロファイル」の節がこれを描きます):
+    - **段階** — CONNECT は `queue` (accept してからワーカーが動き出すまで) / `client_read` (要求行を読んでから `Host` まで) /
+      `dns` / `connect` / `first_relay` (`200 Connection Established` を書いてから最初の中継バイトまで =
+      トンネル越しの TLS 握手の往復) / `relay` / `park` の 7 段、転送は `queue` / `client_read` / `origin` /
+      `send` / `ttfb` / `body` の 6 段。段階 1 つにつき 件数・合計 ms・最大 ms・12 段の区間 (`/history` と同じ 1〜5,000 ms)
+    - **スレッド** — 役割ごとの CPU と「走行中 / どのシステムコールで待っているか / 休眠」の割合 (`PROXY_PROFILE_SAMPLE_MS`)。
+      **状態の割合は「どこで待っているか」で、「どこで CPU を使っているか」ではありません**:
+      `/proc/<tid>/syscall` はスレッドが CPU に乗っている間は中身に関係なく `running` を返すので、
+      カーネルの中で回り続ける処理 (`splice` の中継など) は `running` に出ます。CPU の行き先は役割ごとの CPU を見てください。
+      また `conn` 役には**次の仕事を待っているワーカー**も入ります (`futex`)
+    - **CPU/要求** — 窓の CPU (utime + stime の増分) ÷ 窓の要求数。`scripts/cpu-per-request.sh` と同じ物差しの値が
+      デプロイ先でも読めます (`recent.cpu_per_request_us` は直近 5 分)
+    - **ロック** — 統計の表・名前解決の表・預かり所・ワーカーの 4 つが「待たされた」回数と、待ち行列で待った件数 / 合計 ms / 最大 ms
+    - 記録はプロセスのメモリだけ (約 5.1 MB。状態ファイルには書きません)。応答は 256 KiB 以下で、
+      入り切らないときは**新しい標本を残して**古い方から落とし `"truncated": true` を出します。**`--lite` では `{"profile":"off"}`**
+    - 段階の窓は **ms 刻み**なので、loopback のように 1 要求が 1 ms に満たない環境ではほとんどの段階が 0 に潰れます
+      (これはデプロイ先の 6〜30 ms の待ちを読むための道具です。手元の速さを見るなら `cpu_per_request_us` の方)
 - **タイムアウト制御**:
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
 
@@ -602,6 +621,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_BURST_PERCENT` | `50` | 同時接続数が `PROXY_MAX_CONNS` のこの割合を**越えた瞬間**に `/connections` の写真を 1 枚撮って `/bursts` に残す (T14.6)。`0` で撮らない。**同じ山では 1 枚だけ**で、閾の 80% を下回るまで次は撮りません。撮るのは履歴スレッド (5 秒周期) なので、接続を受ける経路に増えるのは比較 1 回だけです。割合を当てるのは `PROXY_MAX_CONNS` だけで、上限の外の枠 4 本 (自分宛て用) は含めません。`PROXY_MAX_CONNS=0` (無制限) と `--lite` では撮りません。**履歴スレッドが撮るので `PROXY_STATS_PERSIST=off` でも撮りません**。`.env` で即時反映 |
 | `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。`.env` で即時反映 (次に受ける接続から効く。**下げても走っているスレッドは殺さず**、仕事を終えたスレッドから順に減ります。`auto` のときは `PROXY_MAX_CONNS` を変えるとこちらも決め直します)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。**裏側の再検証 (stale-while-revalidate) もこの上限の内側で走ります**が、こちらは待たせず捨てます (`/status` の `revalidations_dropped`) |
 | `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 4 MiB) に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`) は空になり、日次の要約も 1 行も書きません) |
+| `PROXY_PROFILE_SAMPLE_MS` | `1000` | `/profile` のスレッドの標本を取る間隔 (ms)。`profile-sample` スレッド 1 本が この間隔で `/proc/self/task/*/stat` と `/proc/self/task/*/syscall` を読み、**役割ごと** (`accept` / `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` / `profile-sample` / `other`) に「CPU」と「いま走っているか・どのシステムコールで待っているか・休眠か」を数えます。`0` で標本を止める (段階の窓は 5 秒ごとに畳み続けます)。下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 2 つ開くぶん (実測 約 54 us) で、**140 スレッド・1 秒間隔で 1 コアの 0.75%** (60 秒で 450 ms。128 スレッド相当で 0.69%)。スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。`/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。**`--lite` では `/profile` ごと off** |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
 | `PROXY_TLS_VERIFY` | `on` | オリジンの証明書を検証するか。`off` は自己署名の内部オリジン向け (推奨しない) |

@@ -188,6 +188,37 @@ pub struct Detail {
     /// 履歴の窓に入れる値 (ms)。forward は「初バイトまで」で、応答全体の時間
     /// (`took`) とは別。`None` なら `took` をそのまま使う (CONNECT の確立時間)
     pub first_byte_ms: Option<u64>,
+    /// 段階ごとの待ち時間 (T14.3 (1))。`--lite` では時計を読まないので全部 0
+    pub stages: StageMs,
+}
+
+/// 1 要求 (1 本) の段階ごとの待ち時間 (ms。T14.3 (1))。
+///
+/// [`Detail`] の中に置いてあるので、書くのは [`Metrics::record`] が既に取っている
+/// 鍵の内側だけ = **原子操作は 1 つも増えない**。熱い経路で増えるのは境目の
+/// `Instant::now()` だけ (要求ごとに forward 2 回 / CONNECT 3 回 + 接続ごとに 1 回)。
+/// `--lite` では時計も読まない。
+///
+/// `dns` / `connect` は [`Detail::dns_ms`] / [`Detail::connect_ms`]、forward の `ttfb` は
+/// [`Detail::first_byte_ms`] がそのまま段階になるので、ここには持たない
+/// (段階の並びは [`crate::profile::CONNECT_STAGES`] / [`crate::profile::FORWARD_STAGES`])。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StageMs {
+    /// accept (または預かり所からの起床) してからワーカーが動き出すまで
+    pub queue: u32,
+    /// 要求行を読んでから `Host` まで読み終えるまで
+    /// (**接続を開けたまま黙っている時間は含めない**)
+    pub client_read: u32,
+    /// CONNECT: `200 Connection Established` を書いてから最初の中継バイトまで
+    pub first_relay: u32,
+    /// CONNECT: 中継の合計 (確立から終わりまで − 預けられていた時間)
+    pub relay: u32,
+    /// CONNECT: 預けられていた合計
+    pub park: u32,
+    /// forward: 要求をオリジンへ送り終えるまで (名前解決と接続は含めない)
+    pub send: u32,
+    /// forward: 初バイトから本文を流し終えるまで
+    pub body: u32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -229,7 +260,7 @@ pub struct HostStats {
 }
 
 impl HostStats {
-    fn count(&mut self, outcome: HostOutcome, bytes: u64, took: Option<Duration>, detail: Detail) {
+    fn count(&mut self, outcome: HostOutcome, bytes: u64, took: Option<Duration>, detail: &Detail) {
         self.requests += 1;
         self.bytes += bytes;
         self.last_seen = crate::cache::now_epoch();
@@ -247,7 +278,7 @@ impl HostStats {
     }
 
     /// 内訳を足す (鍵の内側。全部 0 の [`Detail::default`] でも同じ道を通る)。
-    fn add_detail(&mut self, d: Detail) {
+    fn add_detail(&mut self, d: &Detail) {
         self.dns_ms_sum += d.dns_ms;
         self.dns_misses += d.dns_misses;
         self.connect_ms_sum += d.connect_ms;
@@ -543,7 +574,7 @@ impl ClientStats {
         took: Option<Duration>,
         target: Option<&str>,
     ) {
-        self.stats.count(outcome, bytes, took, Detail::default());
+        self.stats.count(outcome, bytes, took, &Detail::default());
         if let Some(t) = target {
             self.note_target(t);
         }
@@ -833,6 +864,9 @@ struct HostTable {
     total: Interval,
     /// 直近の標本以降 (`take_interval` が読んで 0 に戻す)
     interval: Interval,
+    /// 直近の標本以降の段階 (`take_stages` が読んで 0 に戻す。T14.3 (1))。
+    /// **同じ鍵の内側に置いてある**ので、段階を足しても原子操作は増えない
+    stages: crate::profile::Stages,
 }
 
 pub struct Metrics {
@@ -866,6 +900,8 @@ pub struct Metrics {
     /// いま開いている接続の一覧 (`/connections`。T13.4)。登録と抹消は接続の開始と
     /// 終了で 1 回ずつだけ (`--lite` では登録しない)
     pub conns: crate::recent::ConnTable,
+    /// 段階・スレッド・ロックの窓 (`/profile`。T14.3)。`.rrd` には書かない
+    pub profile: crate::profile::Profile,
     /// 閉じた接続の個票 (`/recent`。T14.4)。**書くのは接続の終了で 1 回だけ**で、
     /// 要求ごとにも中継のバイトごとにも触らない
     pub closed: crate::recent::RecentRing,
@@ -899,6 +935,7 @@ impl Metrics {
             history: crate::history::History::default(),
             errors: crate::recent::ErrorRing::new(),
             conns: crate::recent::ConnTable::new(),
+            profile: crate::profile::Profile::default(),
             closed: crate::recent::RecentRing::new(),
             bursts: crate::recent::BurstRing::new(),
             hosts: Mutex::new(HostTable::default()),
@@ -908,12 +945,12 @@ impl Metrics {
 
     /// ホスト別に 1 要求を数える (応答時間なし)。
     pub fn record_host(&self, host: &str, outcome: HostOutcome, bytes: u64) {
-        self.record(host, outcome, bytes, None, Detail::default());
+        self.record(host, outcome, bytes, None, &Detail::default());
     }
 
     /// ホスト別に 1 要求と応答時間を数える。
     pub fn record_host_timed(&self, host: &str, outcome: HostOutcome, bytes: u64, took: Duration) {
-        self.record(host, outcome, bytes, Some(took), Detail::default());
+        self.record(host, outcome, bytes, Some(took), &Detail::default());
     }
 
     /// [`record_host_timed`](Self::record_host_timed) に内訳を添えた版 (T12.4 (2))。
@@ -926,7 +963,7 @@ impl Metrics {
         took: Option<Duration>,
         detail: Detail,
     ) {
-        self.record(host, outcome, bytes, took, detail);
+        self.record(host, outcome, bytes, took, &detail);
     }
 
     /// エラー 1 件を個票のリングに写す (`/errors`。T13.4)。
@@ -1039,10 +1076,17 @@ impl Metrics {
         outcome: HostOutcome,
         bytes: u64,
         took: Option<Duration>,
-        detail: Detail,
+        detail: &Detail,
     ) {
-        let mut hosts = self.hosts.locked();
+        // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
+        let mut hosts = self
+            .hosts
+            .locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_STATS]);
         let hosts = &mut *hosts;
+        // 鍵の種類は 1 回だけ見る (CONNECT のホスト別統計の鍵は `connect://` で始まる。
+        // `tunnel::report`。前綴りを見るだけで済むので、呼び出し側に旗を持たせない)
+        let connect = host.starts_with("connect://");
+        let counted = connect || !(host.starts_with("blocked://") || host.starts_with("loop://"));
         // 全体の合計も同じ鍵の内側で足す (原子操作を増やさない)
         for iv in [&mut hosts.total, &mut hosts.interval] {
             iv.dns_misses += detail.dns_misses;
@@ -1057,13 +1101,20 @@ impl Metrics {
                 let ms = detail
                     .first_byte_ms
                     .unwrap_or_else(|| d.as_millis().min(u64::MAX as u128) as u64);
-                // CONNECT のホスト別統計の鍵は `connect://` で始まる (`tunnel::report`)。
-                // 前綴りを見るだけで済むので、呼び出し側に旗を持たせない
-                if host.starts_with("connect://") {
+                if connect {
                     iv.connect.observe(ms);
-                } else if !host.starts_with("blocked://") && !host.starts_with("loop://") {
+                } else if counted {
                     iv.forward.observe(ms);
                 }
+            }
+        }
+        // 段階の窓 (T14.3 (1))。`--lite` では時計を読んでいないので窓も触らない。
+        // 同じ鍵の内側なので、原子操作も鍵の取り直しも増えない
+        if took.is_some() && counted && crate::profile::on() {
+            if connect {
+                hosts.stages.observe_connect(detail);
+            } else {
+                hosts.stages.observe_forward(detail);
             }
         }
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
@@ -1087,6 +1138,12 @@ impl Metrics {
     pub fn take_interval(&self) -> Interval {
         let mut hosts = self.hosts.locked();
         std::mem::take(&mut hosts.interval)
+    }
+
+    /// 直近の標本以降の段階を読み、0 に戻す (`profile-sample` スレッドだけが呼ぶ。T14.3)。
+    pub fn take_stages(&self) -> crate::profile::Stages {
+        let mut hosts = self.hosts.locked();
+        std::mem::take(&mut hosts.stages)
     }
 
     /// 起動からの累計 (`/metrics` の全体のヒストグラム用)。
@@ -1997,6 +2054,7 @@ mod latency_tests {
                 family_v6: Some(false),
                 cause: None,
                 first_byte_ms: None,
+                ..Detail::default()
             },
         );
         m.record_host_detail(
@@ -2182,6 +2240,7 @@ mod latency_tests {
                     family_v6: Some(true),
                     cause: Some(ErrCause::Dns),
                     first_byte_ms: None,
+                    ..Detail::default()
                 },
             );
             m.record_client(
