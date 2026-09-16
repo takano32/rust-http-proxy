@@ -817,6 +817,9 @@ pub struct Metrics {
     /// いま開いている接続の一覧 (`/connections`。T13.4)。登録と抹消は接続の開始と
     /// 終了で 1 回ずつだけ (`--lite` では登録しない)
     pub conns: crate::recent::ConnTable,
+    /// 閉じた接続の個票 (`/recent`。T14.4)。**書くのは接続の終了で 1 回だけ**で、
+    /// 要求ごとにも中継のバイトごとにも触らない
+    pub closed: crate::recent::RecentRing,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -842,6 +845,7 @@ impl Metrics {
             history: crate::history::History::default(),
             errors: crate::recent::ErrorRing::new(),
             conns: crate::recent::ConnTable::new(),
+            closed: crate::recent::RecentRing::new(),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }
@@ -896,6 +900,19 @@ impl Metrics {
             detail.dns_ms,
             detail.connect_ms,
         ));
+    }
+
+    /// 閉じた接続を `/connections` から外し、個票を 1 件残す (`/recent`。T14.4)。
+    ///
+    /// **接続の終了で 1 回だけ呼ぶこと** (`ActiveGuard::drop` = 接続の寿命そのもの)。
+    /// 取る鍵は表の鍵 1 回 (元からある抹消のぶん) とリングの鍵 1 回だけで、
+    /// 何を書くかは枠 ([`crate::recent::ConnSlot`]) に既に載っている。
+    pub fn record_closed(&self, id: u64) {
+        if let Some(slot) = self.conns.unregister(id)
+            && let Some(entry) = slot.closed_entry(std::time::Instant::now())
+        {
+            self.closed.push(entry);
+        }
     }
 
     /// 403 で拒否した 1 件を個票のリングに写す (`/errors`。T14.2 (4))。

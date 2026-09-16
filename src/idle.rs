@@ -38,7 +38,7 @@ mod linux {
     use std::sync::atomic::Ordering;
     use std::thread;
 
-    use crate::recent::{ConnSlot, ConnState};
+    use crate::recent::{CloseReason, ConnSlot, ConnState};
     use crate::sync::LockExt;
     use crate::sys::{EPOLLIN, EPOLLRDHUP, Epoll, EpollEvent};
     use crate::tunnel;
@@ -109,6 +109,38 @@ mod linux {
         fn set_state(&self, state: ConnState) {
             if let Some(s) = self.slot() {
                 s.set_state(state);
+            }
+        }
+
+        /// 預かり所に入った / 出た (預けられた回数と合計秒。`/recent`。T14.4)。
+        ///
+        /// **書くのは預ける瞬間と引き上げる瞬間だけ**で、要求ごとにも中継のバイトごとにも
+        /// 触らない (T14.4 の共通の決まり)。
+        fn on_park(&self) {
+            if let Some(s) = self.slot() {
+                s.on_park();
+            }
+        }
+
+        fn on_unpark(&self) {
+            if let Some(s) = self.slot() {
+                s.on_unpark();
+            }
+        }
+
+        /// 閉じた理由を書く (先着優先。`/recent`。T14.4)。
+        fn set_close(&self, reason: CloseReason) {
+            if let Some(s) = self.slot() {
+                s.set_close(reason);
+            }
+        }
+
+        /// 預かっているものが期限切れで閉じるときの理由。
+        fn expired_reason(&self) -> CloseReason {
+            match self {
+                // トンネルは無通信の打ち切り、keep-alive は次の要求を待ちきれなかった
+                Parked::Tunnel(_) => CloseReason::IdleTimeout,
+                Parked::Http(_) => CloseReason::KeepaliveTimeout,
             }
         }
     }
@@ -232,6 +264,8 @@ mod linux {
             inner.deadlines.insert((deadline, key));
             // `/connections` に「預かり所にいる」と書く (T13.4)
             what.set_state(ConnState::Parked);
+            // 預けられた回数と、預かっていた時間の起点 (`/recent`。T14.4)
+            what.on_park();
             inner.entries.insert(key, Entry { what, deadline });
             self.publish(&inner);
             Ok(())
@@ -281,6 +315,8 @@ mod linux {
             if entry.what.is_tunnel() {
                 inner.tunnels -= 1;
             }
+            // 預かっていた時間を足す (`/recent`。T14.4)
+            entry.what.on_unpark();
             self.publish(&inner);
             Some(entry.what)
         }
@@ -320,6 +356,9 @@ mod linux {
                 let (fds, n) = entry.what.fds();
                 self.del_fds(&fds[..n]);
                 inner.tunnels -= 1;
+                // 預かっていた時間と「追い出された」という理由を残す (`/recent`。T14.4)
+                entry.what.on_unpark();
+                entry.what.set_close(CloseReason::Evicted);
                 self.publish(inner);
                 entry.what
             };
@@ -352,6 +391,9 @@ mod linux {
                     if entry.what.is_tunnel() {
                         inner.tunnels -= 1;
                     }
+                    // 期限切れで閉じる (`/recent` の理由と預かっていた時間。T14.4)
+                    entry.what.on_unpark();
+                    entry.what.set_close(entry.what.expired_reason());
                     due.push(entry.what);
                 }
             }
@@ -378,6 +420,14 @@ mod linux {
             let mut inner = self.inner.locked();
             inner.alive = false;
             let left: Vec<Parked> = inner.entries.drain().map(|(_, e)| e.what).collect();
+            // 監視スレッドが死んだので預かっていたものは全部閉じる (`/recent`。T14.4)
+            for what in &left {
+                what.on_unpark();
+                what.set_close(CloseReason::Shutdown);
+                if let Parked::Http(conn) = what {
+                    conn.finish(CloseReason::Shutdown);
+                }
+            }
             inner.deadlines.clear();
             inner.tunnels = 0;
             self.publish(&inner);
@@ -463,6 +513,7 @@ mod linux {
                             // わざわざワーカーを起こして 0 バイトを読ませる必要はない
                             // (水準通知なので、データがあれば必ず EPOLLIN も立つ)
                             closed += 1;
+                            conn.finish(CloseReason::ClientEof);
                             drop(conn);
                             continue;
                         }
@@ -490,7 +541,11 @@ mod linux {
                 for what in expired {
                     match what {
                         // ロックの外で落とす (close(2) の間、預けたいワーカーを待たせない)
-                        Parked::Http(conn) => drop(conn),
+                        Parked::Http(conn) => {
+                            // 理由は `expire` が枠に書いてあるので、ここは数だけ移す (T14.4)
+                            conn.finish(CloseReason::KeepaliveTimeout);
+                            drop(conn);
+                        }
                         Parked::Tunnel(idle) => watch.expire_tunnel(idle),
                     }
                 }

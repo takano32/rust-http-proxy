@@ -489,3 +489,421 @@ fn test_integration_connections_shows_the_first_target_of_a_keepalive_http_conne
         json
     );
 }
+
+// ---------------------------------------------------------------------------
+// `/recent` — 閉じた接続の個票 (T14.4)
+// ---------------------------------------------------------------------------
+
+/// 読んだぶんをそのまま返し、クライアントが送信側を閉じたら自分も閉じるオリジン。
+///
+/// トンネルの「ふつうの終わり方」(クライアントが先に EOF) を待ち時間なしに作るための道具。
+fn start_echo_origin() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 4096];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if stream.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                // クライアントが送信側を閉じたので、こちらも閉じる (トンネルが終わる)
+            });
+        }
+    });
+    port
+}
+
+/// `/recent` の JSON から、`needle` を含む 1 件だけを切り出す。
+fn one_entry(json: &str, needle: &str) -> String {
+    json.split("{\"id\":")
+        .skip(1)
+        .map(|s| s.split('}').next().unwrap_or(s).to_string())
+        .find(|s| s.contains(needle))
+        .unwrap_or_else(|| panic!("{} の 1 件が無い: {}", needle, json))
+}
+
+/// `/recent` の JSON から `"id":N` の並びを取る (出てくる順 = 並べ替えの結果)。
+fn recent_ids(json: &str) -> Vec<u64> {
+    json.split("{\"id\":")
+        .skip(1)
+        .map(|s| {
+            s.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap()
+        })
+        .collect()
+}
+
+/// (a) 閉じた CONNECT が `/recent` に 1 件 (理由 `client_eof`、寿命、バイト、段階の ms)。
+#[test]
+#[cfg(target_os = "linux")]
+fn test_integration_recent_records_a_closed_tunnel() {
+    use std::io::{Read, Write};
+
+    let origin_port = start_echo_origin();
+    let proxy_port = start_test_proxy(park_config());
+
+    // まだ何も閉じていない
+    let empty = endpoint_json(proxy_port, "/recent");
+    assert!(empty.contains("\"recent\":[]"), "{}", empty);
+    assert!(empty.contains("\"recorded\":0"), "{}", empty);
+    assert!(empty.contains("\"capacity\":2000"), "{}", empty);
+    assert!(empty.contains("\"lite\":false"), "{}", empty);
+
+    let mut tunnel = open_tunnel(proxy_port, origin_port);
+    tunnel.write_all(b"hello tunnel").unwrap();
+    let mut back = [0u8; 12];
+    tunnel.read_exact(&mut back).unwrap();
+    assert_eq!(&back, b"hello tunnel");
+    // クライアントが先に EOF を出す = `client_eof`
+    tunnel.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut rest = Vec::new();
+    let _ = tunnel.read_to_end(&mut rest);
+    drop(tunnel);
+
+    wait_until(
+        || endpoint_json(proxy_port, "/recent").contains("\"kind\":\"connect\""),
+        "閉じたトンネルが /recent に出る",
+    );
+    let json = endpoint_json(proxy_port, "/recent");
+    assert!(json.contains("\"kind\":\"connect\""), "{}", json);
+    assert!(json.contains("\"reason\":\"client_eof\""), "{}", json);
+    assert!(json.contains("\"client\":\"127.0.0.1\""), "{}", json);
+    assert!(
+        json.contains(&format!("\"target\":\"127.0.0.1:{}\"", origin_port)),
+        "{}",
+        json
+    );
+    // 運んだバイトは上り / 下り別 (12 B ずつエコーした)
+    assert!(json.contains("\"up\":12"), "{}", json);
+    assert!(json.contains("\"down\":12"), "{}", json);
+    // 段階の ms は `dns` と `connect` が必ず出る (IP リテラルなので名前解決は 0)
+    assert!(json.contains("\"ms\":{\"dns\":0,\"connect\":"), "{}", json);
+    // 開いた時刻は epoch 秒、寿命は秒
+    let at = status_number(&json, "at");
+    assert!(at > 1_700_000_000, "開いた時刻が epoch 秒でない: {}", at);
+    assert!(json.contains("\"secs\":"), "{}", json);
+    // CONNECT なので要求数と状態コードは 0
+    assert!(json.contains("\"reqs\":0"), "{}", json);
+    assert!(json.contains("\"status\":0"), "{}", json);
+    assert!(!json.contains("\"truncated\":true"), "{}", json);
+}
+
+/// (b-1) 1 接続あたりの要求数の上限で閉じた http 接続が `limit` として見えること。
+///
+/// 上限は設定で渡せる (`Config::max_requests_per_conn`。T14.2) ので 3 に下げて見る。
+#[test]
+fn test_integration_recent_shows_the_request_limit() {
+    use std::io::Write;
+
+    let (origin_port, _origin) = common::start_keepalive_origin(
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    );
+    let mut cfg = proxy_config();
+    cfg.max_requests_per_conn = 3;
+    let proxy_port = start_test_proxy(cfg);
+
+    let host = format!("127.0.0.1:{}", origin_port);
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    for i in 0..3 {
+        let (head, _) = one_keepalive_request(&mut stream, &host, "/x");
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{} 本目: {}", i, head);
+    }
+    // 3 本目の応答には `Connection: close` が付いている (T14.2) ので、ここで閉じる
+    let _ = stream.write_all(b"");
+    drop(stream);
+
+    wait_until(
+        || endpoint_json(proxy_port, "/recent").contains("\"reason\":\"limit\""),
+        "1,000 要求 (ここでは 3) の上限で閉じた接続が /recent に出る",
+    );
+    let json = endpoint_json(proxy_port, "/recent");
+    assert!(json.contains("\"reason\":\"limit\""), "{}", json);
+    assert!(json.contains("\"kind\":\"http\""), "{}", json);
+    assert!(json.contains("\"reqs\":3"), "{}", json);
+    assert!(json.contains("\"status\":200"), "{}", json);
+    // 宛先は接続の最初の要求のもの (T14.2 (5))、バイトは上り (要求) / 下り (応答) 別
+    assert!(
+        json.contains(&format!("\"target\":\"{}\"", host)),
+        "{}",
+        json
+    );
+    let entry = one_entry(&json, "\"reason\":\"limit\"");
+    let up = status_number(&entry, "up");
+    let down = status_number(&entry, "down");
+    assert!(up > 0 && down > 0, "up={} down={} in {}", up, down, entry);
+}
+
+/// (b-2) アイドルで閉じたトンネルが `idle_timeout` として見えること。
+#[test]
+#[cfg(target_os = "linux")]
+fn test_integration_recent_shows_an_idle_tunnel_timeout() {
+    let origin_port = start_quiet_origin();
+    let mut cfg = park_config();
+    // 預かり所の期限 = 預けた時刻 + このアイドル期限
+    cfg.tunnel_idle = std::time::Duration::from_millis(300);
+    let proxy_port = start_test_proxy(cfg);
+
+    let tunnel = open_tunnel(proxy_port, origin_port);
+    wait_until(
+        || endpoint_json(proxy_port, "/recent").contains("\"reason\":\"idle_timeout\""),
+        "アイドルのトンネルが期限で閉じて /recent に出る",
+    );
+    let json = endpoint_json(proxy_port, "/recent");
+    assert!(json.contains("\"reason\":\"idle_timeout\""), "{}", json);
+    assert!(json.contains("\"kind\":\"connect\""), "{}", json);
+    // 預けられていた回数と秒が残ること
+    assert!(json.contains("\"parks\":1"), "{}", json);
+    drop(tunnel);
+}
+
+/// (b-3) T13.2 の追い出しで閉じたトンネルが `evicted` として見えること。
+#[test]
+#[cfg(target_os = "linux")]
+fn test_integration_recent_shows_an_evicted_tunnel() {
+    use std::sync::atomic::Ordering;
+
+    let origin_port = start_quiet_origin();
+    let mut cfg = park_config();
+    cfg.max_conns = 4;
+    cfg.keepalive = std::time::Duration::from_secs(60);
+    let (proxy_port, metrics) = common::start_test_proxy_with_metrics(cfg);
+
+    // 上限ぴったりまで暇なトンネルを張り、全部が預けられるのを待つ
+    let held: Vec<_> = (0..4)
+        .map(|_| open_tunnel(proxy_port, origin_port))
+        .collect();
+    wait_until(
+        || metrics.parked_tunnels.load(Ordering::Relaxed) == 4,
+        "4 本とも預かり所に入る",
+    );
+    // 5 本目: 上限に当たるので最古の暇なトンネルが 1 本閉じられる (T13.2)
+    let extra = open_tunnel(proxy_port, origin_port);
+    wait_until(
+        || metrics.evicted_idle.load(Ordering::Relaxed) >= 1,
+        "暇なトンネルが 1 本追い出される",
+    );
+    wait_until(
+        || endpoint_json(proxy_port, "/recent").contains("\"reason\":\"evicted\""),
+        "追い出されたトンネルが /recent に出る",
+    );
+    // `/recent` を引きに来る接続自身も上限に当たるので、追い出しは 1 本とは限らない
+    // (T13.2 の「上限に当たった accept が暇なトンネルを 1 本閉じる」がそのまま見える)
+    let json = endpoint_json(proxy_port, "/recent");
+    assert!(json.contains("\"reason\":\"evicted\""), "{}", json);
+    let entry = one_entry(&json, "\"reason\":\"evicted\"");
+    assert!(entry.contains("\"kind\":\"connect\""), "{}", entry);
+    assert!(entry.contains("\"parks\":1"), "{}", entry);
+    drop(held);
+    drop(extra);
+}
+
+/// (c) `?client=` と `?since=` で絞れ、`?sort=slow` が確立の遅い順に並ぶこと。
+#[test]
+fn test_integration_recent_filters_and_sorts() {
+    let (origin_port, _origin) = common::start_mock_origin();
+    let proxy_port = start_test_proxy(proxy_config());
+
+    // 3 本の http 接続を開いて閉じる (`Connection: close` なので 1 本 1 要求)
+    let host = format!("127.0.0.1:{}", origin_port);
+    for _ in 0..3 {
+        let r = get_via_proxy(proxy_port, &format!("http://{}/x", host), &host);
+        assert!(r.starts_with("HTTP/1.1 200"), "{}", r);
+    }
+    wait_until(
+        || status_number(&endpoint_json(proxy_port, "/recent"), "recorded") >= 3,
+        "3 本ぶんの個票が残る",
+    );
+
+    let all = endpoint_json(proxy_port, "/recent");
+    let ids = recent_ids(&all);
+    assert_eq!(
+        ids.len(),
+        3,
+        "自分宛ての `/recent` 自身は残らないはず: {}",
+        all
+    );
+    // 新しい順 (通し番号は増える一方なので降順になる)
+    assert!(ids.windows(2).all(|w| w[0] > w[1]), "{:?}", ids);
+    assert_eq!(
+        all.matches(&format!("\"target\":\"{}\"", host)).count(),
+        3,
+        "{}",
+        all
+    );
+
+    // 接続元で絞る: 自分は 127.0.0.1 なので全部残り、別の IP なら 0 件
+    let mine = endpoint_json(proxy_port, "/recent?client=127.0.0.1");
+    assert_eq!(recent_ids(&mine).len(), 3, "{}", mine);
+    let none = endpoint_json(proxy_port, "/recent?client=198.51.100.1");
+    assert!(none.contains("\"recent\":[]"), "{}", none);
+    assert!(none.contains("\"client\":\"198.51.100.1\""), "{}", none);
+
+    // 時刻で絞る: 未来を渡せば 0 件、過去を渡せば全部
+    let future = endpoint_json(proxy_port, "/recent?since=9999999999");
+    assert!(future.contains("\"recent\":[]"), "{}", future);
+    let past = endpoint_json(proxy_port, "/recent?since=1");
+    assert_eq!(recent_ids(&past).len(), 3, "{}", past);
+
+    // `?sort=slow` は確立の遅い順 (`ms.connect` の降順)
+    let slow = endpoint_json(proxy_port, "/recent?sort=slow");
+    assert!(slow.contains("\"sort\":\"slow\""), "{}", slow);
+    let connect_ms: Vec<u64> = slow
+        .split("\"connect\":")
+        .skip(1)
+        .map(|s| {
+            s.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    assert!(
+        connect_ms.windows(2).all(|w| w[0] >= w[1]),
+        "確立の遅い順になっていない: {:?}",
+        connect_ms
+    );
+    // `?n=` で件数を絞る。知らない値は既定に倒す
+    assert_eq!(
+        recent_ids(&endpoint_json(proxy_port, "/recent?n=1")).len(),
+        1
+    );
+    assert_eq!(
+        recent_ids(&endpoint_json(proxy_port, "/recent?n=abc&sort=nope")).len(),
+        3
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `/snapshot` — 1 要求で全部取る (T14.4)
+// ---------------------------------------------------------------------------
+
+/// JSON として括弧と引用符の釣り合いが取れているか (外部クレートを足さずに形だけ見る)。
+///
+/// `/snapshot` は部品の文字列を手で並べて組むので、**入れ子の閉じ忘れ**が最も起きやすい。
+/// 本当の構文検査は `scripts/collect-deployed.sh` が Python で通すが、回帰はここで止める。
+fn json_is_balanced(s: &str) -> bool {
+    let mut depth: i64 = 0;
+    let (mut in_str, mut escaped) = (false, false);
+    for c in s.chars() {
+        if in_str {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0 && !in_str
+}
+
+/// (d) `/snapshot` が 1 要求で全部を含み、4 MiB 以下であること。
+#[test]
+fn test_integration_snapshot_has_every_part_in_one_request() {
+    let (origin_port, _origin) = common::start_mock_origin();
+    let dead_port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let proxy_port = start_test_proxy(proxy_config());
+
+    // 個票に中身があるようにしておく (成功 1 本、失敗 1 本)
+    let host = format!("127.0.0.1:{}", origin_port);
+    let ok = get_via_proxy(proxy_port, &format!("http://{}/x", host), &host);
+    assert!(ok.starts_with("HTTP/1.1 200"), "{}", ok);
+    let dead = format!("127.0.0.1:{}", dead_port);
+    let bad = raw_get(
+        proxy_port,
+        &format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", dead, dead),
+    );
+    assert!(bad.starts_with("HTTP/1.1 502"), "{}", bad);
+
+    let json = endpoint_json(proxy_port, "/snapshot");
+    assert!(json_is_balanced(&json), "JSON の括弧が合わない: {}", json);
+    assert!(
+        json.len() <= 4 * 1024 * 1024,
+        "4 MiB を越えた: {} B",
+        json.len()
+    );
+
+    // 頭 (いつ・どの版・どれが入っているか)
+    assert!(json.contains("\"taken_at\":"), "{}", json);
+    assert!(json.contains("\"version\":"), "{}", json);
+    assert!(json.contains("\"uptime_secs\":"), "{}", json);
+    assert!(json.contains("\"dropped\":[]"), "{}", json);
+    // 中身 (17 本の URL を手で叩いていたぶん)
+    for key in [
+        "\"status\":{",
+        "\"status_errors\":{",
+        "\"status_dns\":{",
+        "\"history\":{\"5\":{",
+        "\"60\":{",
+        "\"3600\":{",
+        "\"dns\":{",
+        "\"errors\":{",
+        "\"connections\":{",
+        "\"recent\":{",
+        "\"hosts\":{",
+        "\"log\":{",
+    ] {
+        assert!(
+            json.contains(key),
+            "{} が無い: {}",
+            key,
+            &json[..600.min(json.len())]
+        );
+    }
+    // `parts` に名前が並ぶ (この版に何が入っていたかが JSON だけで分かる)
+    for name in ["status", "history.5", "recent", "log"] {
+        assert!(json.contains(&format!("\"{}\"", name)), "{}", name);
+    }
+    // 部品の中身が実際に入っていること (集計・履歴・個票の 3 層)
+    assert!(json.contains("\"total_requests\":"), "{}", "/status の中身");
+    assert!(
+        json.contains("\"cause\":\"refused\""),
+        "{}",
+        "/errors の中身"
+    );
+    assert!(
+        json.contains(&format!("\"target\":\"http://{}\"", host))
+            || json.contains(&format!("\"target\":\"{}\"", host)),
+        "{}",
+        "/recent の中身"
+    );
+    assert!(json.contains("\"keys\":"), "{}", "/history の中身");
+
+    // `/snapshot` は取るだけで何も保持しない (2 回取っても形は同じ)
+    let again = endpoint_json(proxy_port, "/snapshot");
+    assert!(json_is_balanced(&again));
+    assert!(again.contains("\"dropped\":[]"), "{}", again);
+}

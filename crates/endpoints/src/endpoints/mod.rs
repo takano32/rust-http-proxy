@@ -96,6 +96,8 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
          \x20 /connections                                JSON: the connections open right now\n\
+         \x20 /recent?n=200&since=&client=&sort=          JSON: the connections that closed\n\
+         \x20 /snapshot                                   JSON: everything above in one request\n\
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
@@ -167,6 +169,12 @@ pub fn handle(
         recent::errors(ep, query)
     } else if is_get && path == "/connections" {
         recent::connections(ep)
+    } else if is_get && path == "/recent" {
+        // 閉じた接続の個票 (T14.4)。`/connections` の「いま」に対して「起きたこと」
+        recent::recent(ep, query)
+    } else if is_get && path == "/snapshot" {
+        // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
+        recent::snapshot(ep)
     } else if is_get && path == "/dns" {
         recent::dns(query)
     } else if is_get && path == "/log" {
@@ -192,23 +200,7 @@ pub fn handle(
         } else {
             metrics::HostSort::Requests
         };
-        (
-            200,
-            "application/json",
-            // `/status` の組み立てはここの仕事。指標は部品を並べるだけにしてある
-            // (下の層が上の層を呼ぶと依存が輪になるため)
-            ep.metrics.to_json_with_cache(
-                Some(ep.cache),
-                metrics::StatusExtras {
-                    settings: &reload::status_json(),
-                    blocklist: &crate::blocklist::status_json(),
-                    state_file: &persist::status_json(),
-                    version: ep.version,
-                    concurrency: (ep.concurrency)(),
-                    sort,
-                },
-            ),
-        )
+        (200, "application/json", status_body(ep, sort))
     } else if is_get && path == "/metrics" {
         (
             200,
@@ -279,6 +271,28 @@ pub fn handle(
         status
     );
     Ok(true)
+}
+
+/// `/status` の本体を組み立てる (`?sort=` は `hosts[]` の上位 50 を切り出す鍵。T13.3)。
+///
+/// **`/snapshot` (T14.4) もここを呼ぶ**: 1 要求で全部取るのに自分へ HTTP で繋ぎ直すと、
+/// 上限に当たっているときに取れない・接続を 17 本増やす・測る行為が状態を変える。
+/// 同じプロセス内の関数呼び出しで組む。
+///
+/// `/status` の組み立てはこの層の仕事 (指標は部品を並べるだけにしてある。
+/// 下の層が上の層を呼ぶと依存が輪になるため)。
+pub(super) fn status_body(ep: &Endpoint<'_>, sort: metrics::HostSort) -> String {
+    ep.metrics.to_json_with_cache(
+        Some(ep.cache),
+        metrics::StatusExtras {
+            settings: &reload::status_json(),
+            blocklist: &crate::blocklist::status_json(),
+            state_file: &persist::status_json(),
+            version: ep.version,
+            concurrency: (ep.concurrency)(),
+            sort,
+        },
+    )
 }
 
 /// URL を正規化して全バリアントを消す。

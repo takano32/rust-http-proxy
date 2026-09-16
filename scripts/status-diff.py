@@ -19,6 +19,11 @@
 #     curl -s http://host:port/status > b.json; scripts/status-diff.py a.json b.json
 #     scripts/status-diff.py <(curl -s 'http://host:port/status?sort=errors') --sort errors
 #
+# **`/snapshot` の JSON もそのまま読める** (T14.4)。中の `/hosts` の部分 (最大 1,000 ホスト) を
+# 使うので、`scripts/collect-deployed.sh` が保存したファイルをそのまま 1 枚でも 2 枚でも渡せる:
+#     scripts/collect-deployed.sh nagoya.sorahost.net:50697        # 1 日 1 回取る
+#     scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json   # 最初と最後で差分
+#
 # **`/hosts` の JSON もそのまま読める** (T13.4)。`/status` の `hosts[]` は要求数の上位 50 だけ
 # なので、`.rrd` にある全ホスト (最大 1,000) を見たいときはこちら:
 #     scripts/status-diff.py <(curl -s 'http://host:port/hosts?limit=1000')
@@ -72,7 +77,22 @@ def host_name(key):
 
 def load(path):
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        return unwrap(json.load(f))
+
+
+def unwrap(snap):
+    """`/snapshot` (T14.4) なら、その中の `/hosts` の部分を `/hosts` と同じ形で返す。
+
+    `/snapshot` は `/status` も `/hosts` も持っているが、**ここで使うのは `/hosts`**
+    (`.rrd` にある全ホスト。`/status` の `hosts[]` は要求数の上位 50 だけ)。
+    窓の目印 (`uptime_secs` / `total_requests`) は `/hosts` にも同じ名前で入っている。
+    """
+    if not (isinstance(snap, dict) and "parts" in snap and isinstance(snap.get("hosts"), dict)):
+        return snap
+    inner = dict(snap["hosts"])
+    inner.setdefault("uptime_secs", snap.get("uptime_secs", 0))
+    inner["snapshot_taken_at"] = snap.get("taken_at")
+    return inner
 
 
 def up(snap):
@@ -242,7 +262,7 @@ def main():
         description="デプロイ先の /status (または /hosts) をホスト別に読む "
                     "(1 つなら通算、2 つなら差分)")
     p.add_argument("files", nargs="+", metavar="STATUS.json",
-                   help="/status か /hosts の JSON (1 つか 2 つ)")
+                   help="/status か /hosts か /snapshot の JSON (1 つか 2 つ)")
     p.add_argument("--aaaa", metavar="FILE", help='{"host": true/false} の JSON で AAAA の有無を与える')
     p.add_argument("--no-dns", action="store_true", help="AAAA を引かない (群分けをしない)")
     p.add_argument("--min-timed", type=int, default=0, metavar="N",
@@ -281,6 +301,10 @@ def main():
 
     src = {"dns": "getaddrinfo", "file": args.aaaa, "none": "引かない"}[mode]
     print(f"# status-diff: {' -> '.join(args.files)}")
+    for name, snap in zip(args.files, snaps):
+        if snap.get("snapshot_taken_at"):
+            print(f"# {name} は /snapshot (T14.4) の中の /hosts を読んだ "
+                  f"(取得 {snap['snapshot_taken_at']}、ホスト {len(snap.get('hosts', []))} 件)")
     if diff:
         d_up = up(b) - up(a)
         note = "" if d_up > 0 else "  **再起動をまたいでいる** (uptime が減った)"

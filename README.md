@@ -73,6 +73,21 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 **ホスト別の平均は 2 枚の差分で読みます** (`/status` の `hosts[]` は状態ファイルに残って再起動をまたいで
 通算されるので、そのまま読むと直す前の値が何日も混ざります)。
 
+**1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T14.4)。`/snapshot` を
+`DIR/<UTC 時刻>-snapshot.json` (既定 `~/rust-http-proxy-status/`) に保存し、要点
+(`scripts/snapshot-summary.py`)・ホスト別 (`status-diff.py`。**前回の雪像があれば差分**)・
+ダッシュボードの読み方 (`check-dashboard.js`)・手元から見た待ち (`probe-deployed.sh`) を
+続けて回して **Markdown 1 枚**を標準出力に出します。`status-diff.py` は `/snapshot` の JSON を
+そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
+
+```bash
+scripts/collect-deployed.sh nagoya.sorahost.net:50697 > today.md   # 1 日 1 回
+PROBE=0 scripts/collect-deployed.sh nagoya.sorahost.net:50697      # 本物の要求を送らずに取る
+scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と最後で差分
+```
+
+保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
+
 | 項目 | 直す前 (2026-09-10) | いま | 出どころ |
 |---|---|---|---|
 | CONNECT 確立、**AAAA のあるホスト** | **257 ms** (25 ホストの中央値) | **9 ms** (29 ホスト) | 2026-09-12、`status-diff.py --aaaa` |
@@ -220,6 +235,26 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **`"persisted": false`** は「これらの新しい欄は状態ファイルに残らない (再起動で消える)」の意味です
     (`.rrd` の 1 スロット 572 B は既存の 49 項目で 520 B 使っていて、`agents` だけで 4 × 128 B 要るため。
     版を上げると統計を全部捨てることになるので上げていません)
+  - **閉じた接続の個票 (T14.4)**: `/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
+    `/connections` が「いま」しか見せないのに対し、こちらは「**起きたこと**」です。1 件 = 接続 id・開いた時刻 (`at`、epoch 秒)・
+    接続元 (`client`)・宛先 (`target`)・種類 (`kind` = `connect` / `http`)・寿命 (`secs`)・要求数 (`reqs`、http だけ)・
+    **上り / 下り別のバイト** (`up` / `down`)・**閉じた理由** (`reason`)・最後の応答の状態コード (`status`、http だけ)・
+    預かり所にいた合計秒と回数 (`parked_secs` / `parks`)・**段階の ms** (`ms` = `dns` / `connect`。`first_byte` は 0 でなければ)。
+    理由は `client_eof` (クライアントが先に EOF) / `server_eof` (宛先が先に EOF) / `idle_timeout` (トンネルの無通信打ち切り) /
+    `keepalive_timeout` (次の要求を待ちきれなかった) / `evicted` (上限に当たって席を作るために閉じた。`PROXY_MAX_CONNS`) /
+    `limit` (1 接続あたりの要求数の上限) / `error:<原因>` (原因は `/status` の `errors_by_cause` と同じ 8 つ) /
+    `shutdown` (その他のプロキシ側の都合) の 8 種類。**書くのは接続の終了で 1 回だけ**で、要求ごとにも中継のバイトごとにも
+    何も書きません。2,000 件の環状 (ありふれた 1 件 225 B)。`?since=` は「開いた時刻がこれ以降」、`?client=` は接続元の完全一致、
+    `?sort=slow` は確立 (`ms.connect`) の遅い順、`?sort=bytes` は転送の多い順。
+    **自分宛て (`/status` `/dashboard` …) だけで終わった接続は残しません** — 監視が 5 秒おきに引くとリングがそれで埋まるためです
+    (数は `/status` にあります)
+  - **1 要求で全部取る (T14.4)**: `/snapshot` は上の口を **1 つの JSON** にまとめて返します
+    (`status` / `status_errors` / `status_dns` / `history` (`5` / `60` / `3600`) / `dns` / `errors` /
+    `connections` / `recent` / `hosts` / `log`。何が入っているかは `parts` に並びます)。
+    デプロイ先の様子を見るのに 17 本の URL を手で叩いていたのを 1 回で済ませるための口で、
+    **組み立ては同じプロセス内の関数呼び出し** (自分へ HTTP で繋ぎ直さないので、接続を 17 本増やしませんし、
+    上限に当たっている最中でも取れます)。上限は **4 MiB** で、越えたら `recent` → `log` → `history.5` の順に
+    `null` へ落として `dropped` に名前を出します。保存して読むのは `scripts/collect-deployed.sh` です
   - どの個票も応答は 256 KiB 以下 (件数の上限とは別にバイト数でも打ち切り、切ったら `"truncated": true`)。
     リングはプロセスのメモリだけで、状態ファイル (`.rrd`) には書きません (再起動で消えてよい個票)。
     **どれも認証なしで見えます** (このプロキシの方針。`/purge` と同じ)。接続元の IP と宛先ホストが並ぶので、
@@ -828,6 +863,14 @@ curl http://127.0.0.1:8080/
 curl http://127.0.0.1:8080/status
 curl "http://127.0.0.1:8080/status?sort=errors"         # 上位 50 をエラーの多い順で切り出す (dns / slow も)
 curl http://127.0.0.1:8080/metrics                      # Prometheus 形式
+
+# 個票 (誰が・いつ・なぜ)
+curl "http://127.0.0.1:8080/connections"                # いま開いている接続
+curl "http://127.0.0.1:8080/recent?n=200"               # 閉じた接続 (新しい順)
+curl "http://127.0.0.1:8080/recent?sort=slow&n=20"      # 確立のいちばん遅かった 20 本
+curl "http://127.0.0.1:8080/recent?client=198.51.100.7" # ある接続元だけ
+curl "http://127.0.0.1:8080/recent?since=$(( $(date +%s) - 3600 ))"   # 直近 1 時間に開いたもの
+curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
 
 # キャッシュの操作・確認
 curl -X PURGE -x http://127.0.0.1:8080 http://example.com/file.zip     # 1 URL (全バリアント) を消す
