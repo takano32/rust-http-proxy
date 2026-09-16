@@ -941,9 +941,9 @@ mod tests {
         );
         // canary (T14.10) は**別の配列**で末尾に付く (既存の列は 1 つも動かない)
         assert!(
-            json.ends_with(",\"canary\":{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\"],\"samples\":[]}}"),
+            json.ends_with(",\"canary\":{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\",\"canary_ipv6_connect_ms\"],\"samples\":[]}}"),
             "{}",
-            &json[json.len() - 120..]
+            &json[json.len() - 150..]
         );
         // 列の数が `KEYS` と合っていること (入れ子の配列は 1 列と数える)
         let first = &json[json.find("\"samples\":[[").unwrap() + 11..];
