@@ -699,7 +699,8 @@ pub const MAX_CLIENT_PORTS: usize = 8;
 /// 付いてくるので、`/events` の 1 行に要るものだけを持つ。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewClient {
-    /// 接続元 (表の鍵。あふれた分の `other` もここに来る)
+    /// 接続元 (**表の鍵そのまま**。あふれた分の `other` もここに来る。
+    /// `PROXY_RECORDS=hashed` (T14.41) では鍵が 16 進なので、この値もそれになる)
     pub client: String,
     /// 初めて見た時刻 (epoch 秒)
     pub first_seen: u64,

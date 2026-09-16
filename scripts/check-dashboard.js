@@ -1807,10 +1807,11 @@ const unknownEv = er.rows.filter((r) => r.kind === 'brand_new_kind')[0];
 if (unknownEv.known !== false || unknownEv.color !== '#8b91a5') fail('知らない綴りは既定の色のはず');
 if (unknownEv.anomaly || unknownEv.subject !== '') fail('anomaly でない行に種類が付いた');
 if (er.kinds.reduce((a, k) => a + k.count, 0) !== er.rows.length) fail('種類の内訳が件数と合わない');
-// 11 種 (T14.11 の綴り) はどれも「知っている」側に入る
+// 既知の綴り (T14.11 の 10 種 + T14.23 の `anomaly` + T14.54 の `new_client`) は
+// どれも「知っている」側に入る
 const allKinds = insNew.eventRows({ events: EVENT_KINDS.map((k, i) => ({ at: evAt + i, kind: k, text: k })) }, 200);
-if (allKinds.kinds.length !== EVENT_KINDS.length) fail('11 種が読めていない: ' + allKinds.kinds.length);
-for (const r of allKinds.rows) if (!r.known) fail('11 種のはずが知らない綴りになった: ' + r.kind);
+if (allKinds.kinds.length !== EVENT_KINDS.length) fail(EVENT_KINDS.length + ' 種が読めていない: ' + allKinds.kinds.length);
+for (const r of allKinds.rows) if (!r.known) fail('既知の綴りのはずが知らない綴りになった: ' + r.kind);
 if (insNew.eventRows(null, 200).available !== false) fail('/events の無い版は available:false のはず');
 if (insNew.eventRows(null, 200).rows.length !== 0) fail('null でも 0 件のはず');
 if (insNew.eventRows({ events: [] }, 200).available !== true) fail('口はあるが 0 件の版は available:true');
