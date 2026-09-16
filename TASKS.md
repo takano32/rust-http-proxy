@@ -164,6 +164,35 @@ CONNECT の計測は 10 秒で 7〜10 万本張るので**毎回バケットを�
 `perf record -e cpu-clock -F 4999 -g -p <pid>` → `perf report`。この環境の `perf` は**ユーザー空間しか数えない**
 (`perf_event_paranoid = 2`。既定の `cycles` はサンプルが取れないので必ず `-e cpu-clock`)。カーネル側は utime/stime の差で見る。
 
+### デプロイ先に似せた条件 (手元で 250 ms を再現する)
+
+**§1 のここまでの数字はすべて loopback** で、デプロイ先の一番の癖 = **IPv6 が黙って落ちる**が入っていない。
+`scripts/deployed-like.sh` が root 無しでその条件を作る (T14.16)。
+
+```bash
+scripts/deployed-like.sh -- scripts/cpu-per-request.sh --only connect-multi --seconds 5
+scripts/cpu-per-request.sh --deployed-like --only connect-multi --seconds 5   # 同じもの
+scripts/deployed-like.sh --memory off --nofile 4096 -- <任意のコマンド>       # 上限は変えられる
+```
+
+作るのは `unshare -rmnC` の中の 5 つ: (1) lo だけのネット名前空間 (外へ出られないのでオリジンはベンチの内蔵のものだけ)、
+(2) **IPv6 の既定経路を `dev lo`** (出た SYN は戻って捨てられ、`connect` は**約 1.02 秒ハングしてから `ENETUNREACH`** =
+デプロイ先の「IPv6 リテラル宛ては約 1.0 秒で 502」と同じ姿)、(3) `/etc/hosts` を「元の内容 + `multi.test` の 2 行」に bind mount
+(`2001:db8::1` = 黒穴 / `127.0.0.1` = 生きている → `getaddrinfo` が AAAA と A の 2 候補を返す)、(4) `ulimit -n 1024` と
+`systemd-run --user --scope -p MemoryMax=256M`、(5) cgroup 名前空間 + `mount -t cgroup2` (プロキシ自身に 256 MiB の上限を見せる)。
+
+**`blackhole` の経路では再現しない**: この機械では `connect` がその場で `EINVAL` を返す (実測 0.000 秒) ので、プロキシは待たずに
+IPv4 へ移り 250 ms が出ない。**「黙って落ちる」ことが要る。**
+
+**`--only connect` は Happy Eyeballs を通らない** (宛先が IP リテラル = 候補 1 つで `crates/net/src/net.rs` の `addrs.len() == 1` の
+短絡に入る。T10.1 が「無罪」と結論した理由)。名前宛ての **`--only connect-multi`** は候補が 2 つになるので通り、**各スレッドの 1 本目の
+確立時間**とそのあとの p50 / p95 / max を出す。**`--conc` は 3 以上**にすること (T12.1 の「3 連敗で IPv4 を先頭」は同時に走り出した
+本数ぶんしか「まだ誰も負けていない」賭けを作らない。2 本目からはホストごとの記憶 `last_win_v6` が効いて IPv6 をそもそも試さない)。
+終わりに `/status` の `"ipv6"` を 1 回引いて印字する。cgroup の上限はベンチにも掛かる (太るものを測るときは `--memory off`)。
+
+**この条件の数字は §2 の表には載せない** (§2 は経路どうしを比べる表で、条件が 1 行だけ違う数字を混ぜられない)。名前空間が作れない
+機械ではスクリプトが「使えない」と印字して**終了コード 2** (名前空間の外で `--only connect-multi` を回したときも 2)。
+
 ### デプロイ先の測り方
 
 **§0〜§2 の数字はすべて手元の loopback**で、デプロイ先 (`nagoya.sorahost.net:50697`、Pterodactyl
@@ -3805,10 +3834,11 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
   - 受け入れ基準: 結合テストで `.env` に `PROXY_DNS_TTL_SECS=30` を書いて起動 → `/config` の該当行が `{"value":30,"source":"env_file"}`、
     書いていない行が `"default"`。`--check` の終了コード 0 と印字に `capabilities` の 6 項目。費用 0 (要求の経路は触らない)。
     デプロイ先: 再デプロイ後の `capabilities` で T14.3 / T14.5 / T14.12 の `partial` / `null` の理由が説明できること。
-- [ ] **T14.16 デプロイ先に似せた手元の環境 (`scripts/deployed-like.sh`) と、ベンチの `--only connect-multi`**
+- [x] **T14.16 デプロイ先に似せた手元の環境 (`scripts/deployed-like.sh`) と、ベンチの `--only connect-multi`**
   - 目的: Happy Eyeballs の 250 ms (Phase 12) はベンチが構造上通れない経路に隠れていた (`addrs.len() == 1`)。手元で **IPv6 が黒穴の
     環境**を作れれば、T12.1 / T14.1 / T14.5 の挙動を本物のプロキシで再現でき、§1 のレシピに「デプロイ先に似た条件」の行が持てる。
-    この機械では `unshare -rn` (root 不要のユーザー名前空間) で `ip -6 route add blackhole default` が通ることを確認済み (2026-09-16)。
+    この機械では `unshare -rn` (root 不要のユーザー名前空間) で `ip -6 route add blackhole default` が通ることを確認済み (2026-09-16)。**ただし実装で分かったこと: `blackhole` では `connect` が即 `EINVAL` で
+    250 ms が出ない。既定経路を `dev lo` に置くと約 1 秒ハングしてデプロイ先と同じ姿になる** (下の `結果:`)。
   - 変更箇所: `scripts/deployed-like.sh` (新規: `unshare -rn` で lo を上げ、IPv6 の既定経路を blackhole、`ulimit -n 1024`、
     `systemd-run --user --scope -p MemoryMax=256M` (使えるとき)、その中でプロキシとベンチを回す)、`crates/bench/src/main.rs`
     (`--only connect-multi`: `PROXY_HOSTS` が無いので、名前解決の注入の代わりに **`/etc/hosts` を名前空間の中で差し替える**
@@ -3820,6 +3850,26 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
     (`git worktree` で `41e918f` を作る) なら CONNECT 確立が 250 ms 以上、今のバイナリなら 1 回目 250 ms・2 回目以降 1 ms 未満**が
     出ること (= Phase 12 の発見を手元で再現し、T12.1 の効きを本物のプロキシで確かめる)。`/status` の `ipv6` が `v4_first: true` に
     なること。名前空間が作れない機械では「使えない」と印字して終了コード 2。
+  - 結果 (2026-09-16、`2e77564` / `99c3f00` / `3f7d7e1`): **Phase 12 の 250 ms が手元で再現するようになった。** `scripts/deployed-like.sh` は
+    `unshare -rmnC` (root 不要) の中で lo だけの網を作り、**IPv6 の既定経路を `dev lo`** に置く。**本文の `blackhole` では再現しない**のが
+    分かった: この機械では `connect` がその場で `EINVAL` を返す (実測 0.000 秒、6 回とも) ので、プロキシは待たずに IPv4 へ移り 250 ms を
+    払わない。`dev lo` なら出た SYN は lo を回って戻り、自分宛てでないので黙って捨てられ、**1.017〜1.037 秒ハングしてから `ENETUNREACH`**
+    になる (デプロイ先の「IPv6 リテラル宛ては約 1.0 秒で 502」と同じ姿)。残りは `/etc/hosts` の bind mount (`multi.test` に AAAA と A)、
+    `ulimit -n 1024`、`systemd-run --user --scope -p MemoryMax=256M`、cgroup 名前空間 + `mount -t cgroup2`。ベンチの `--only connect-multi` は
+    `multi.test:<内蔵オリジンのポート>` へ CONNECT を張り続け、各スレッドの 1 本目と p50 / p95 / max を出す。
+
+    | プロキシ | 1 本目 (8 スレッドの中央値) | p50 | p95 | max | 確立/秒 | `/status` の `ipv6` |
+    |---|---|---|---|---|---|---|
+    | T12.1 の前 (`41e918f`) | 257.6 ms | **251.7 ms** | 257.0 ms | 269.4 ms | 32 /s | (この版には無い) |
+    | いま | 261.7 ms | **0.57 ms** | 1.60 ms | 1,011 ms | 7,479 /s | `{"attempts":16,"wins":0,"losses":16,"v4_first":true}` |
+
+    (`scripts/deployed-like.sh -- scripts/cpu-per-request.sh --only connect-multi --seconds 5`、`--conc 8`。受け入れ基準どおり
+    **T12.1 の前は毎回 250 ms、今は同時に走り出した本だけ**。) `--conc` は 3 以上でないと `v4_first` が立たない (2 本目からはホストごとの
+    記憶が効いて IPv6 を試さない)。いまの max 1,011 ms は 250 ms ではなく、7,479 本/秒で張ると待ち行列が溢れて SYN が 1 秒後に再送されるぶん。
+    既存の `--only connect` は出力の形も数字も変わらない (135.47 → 132.72 us/本、±4% の中)。名前空間の外で回すと終了コード 2。
+    **この条件の CPU/本 は §2 に載せない** (IPv6 の試行スレッドのぶんが乗るので `--only connect` と比べられない)。§1 に節を足した。
+    - cgroup 256 MiB はベンチにも掛かる (太るものを測るときは `--memory off`)。`--only connect-multi` は `--only all` に入れていない。
+      `crates/bench` に初めての単体テスト 1 本 (`Report::percentile`)。
 - [ ] **T14.17 `scripts/snapshot-diff.py` (2 枚の `/snapshot` から「何が変わったか」を全部出す)**
   - 目的: T14.0 の分析は `/status` の差分・`/history` の再起動時刻での切り分け・`/dns` の個票・`/hosts` の差分を手作業で組み合わせた
     (Python を 5 回書いた)。次の T14.99 で同じことを 1 コマンドにする。`status-diff.py` はホスト別の差分だけ。
