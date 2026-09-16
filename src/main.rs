@@ -167,7 +167,7 @@ fn main() {
     rust_http_proxy::dns::set_warm_window(config.dns_warm);
     // canary の宛先と周期 (T14.10)。実際に回すのは履歴スレッドの周期から (`--lite` と
     // `PROXY_STATS_PERSIST=off` では履歴スレッドが無いので canary も回らない)
-    rust_http_proxy::canary::configure(&config.canary, config.canary_secs);
+    rust_http_proxy::canary::configure(&config.canary, config.canary_secs, config.canary_ipv6);
     let listeners = match net::bind_all(&config.bind_addrs, config.port) {
         Ok(l) => l,
         Err(e) => {

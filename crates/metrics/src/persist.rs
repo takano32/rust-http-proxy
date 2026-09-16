@@ -5,7 +5,9 @@
 //! - ブロックリストの上書き: 変更のたびにそのスロットだけ書く ([`crate::blocklist`] から)
 //!
 //! 置き場所は `$HOME/.rust-http-proxy.rrd` (Pterodactyl で永続するのはそこだけ)。
-//! `PROXY_STATS_PERSIST=off` で無効。大きさは 4 MiB 固定で、以後は伸びない。
+//! `PROXY_STATS_PERSIST=off` で無効。大きさは **8 MiB 固定** (版 3。T14.14) で、
+//! 以後は伸びない。**版 2 のファイルは起動時に 1 回だけ版 3 の形に詰め直す**ので、
+//! 通算の統計は版を上げても消えない (`/status` の `state_file.converted_from`)。
 //!
 //! **個票 (`/recent` `/errors` `/bursts` `/log`) は隣の別のファイル**
 //! `$HOME/.rust-http-proxy.recent` に落とす ([`crate::persist_recent`]。T14.9)。
@@ -24,7 +26,7 @@ use crate::history::{Pushed, Sample};
 use crate::metrics::{HostStats, Metrics};
 use crate::persist_recent::{RecentFile, Restored};
 use crate::rrd::ring::Ring;
-use crate::rrd::{Region, Rrd};
+use crate::rrd::{Opened, Region, Rrd};
 use crate::{log_info, log_warn};
 
 /// 統計表を書き直す間隔。
@@ -37,6 +39,8 @@ pub struct Store {
     /// 書込エラーの回数 (連発しないよう最初だけ警告する)
     write_errors: AtomicU64,
     flushes: AtomicU64,
+    /// 開いたときに分かったこと (版と、版 2 から変換したか。T14.14)
+    opened: Opened,
     /// 個票のファイル (`$HOME/.rust-http-proxy.recent`。T14.9)。開けなければ `None`
     recent: Option<RecentFile>,
 }
@@ -68,7 +72,7 @@ impl Store {
 
     /// 開き (無ければ作り)、履歴のリングと個票を読み戻す。
     pub fn open(path: PathBuf) -> io::Result<(Arc<Store>, Loaded)> {
-        let (rrd, created) = Rrd::open(&path)?;
+        let (rrd, opened) = Rrd::open(&path)?;
         let l = rrd.layout;
         let (fine, fine_recs) = Ring::load(&rrd, l.history_fine)?;
         let (minute, minute_recs) = Ring::load(&rrd, l.history_minute)?;
@@ -89,7 +93,7 @@ impl Store {
             None => (None, None),
         };
         let loaded = Loaded {
-            created,
+            opened,
             history: [decode(fine_recs), decode(minute_recs), decode(hour_recs)],
             hosts: stats(l.hosts)?,
             clients: stats(l.clients)?,
@@ -102,6 +106,7 @@ impl Store {
             rings: Mutex::new([fine, minute, hour]),
             write_errors: AtomicU64::new(0),
             flushes: AtomicU64::new(0),
+            opened,
             recent,
         });
         Ok((store, loaded))
@@ -181,13 +186,19 @@ impl Store {
             .unwrap_or_default()
     }
 
-    /// `/status` の `"state_file"` 要素。個票のファイルは `"recent"` に入れ子で
-    /// 出す (T14.9。永続化していなければ `null`)。
+    /// `/status` の `"state_file"` 要素。`"version"` は保存形式の版、
+    /// `"converted_from"` は**この起動で詰め直した元の版** (していなければ `null`。
+    /// T14.14)。個票のファイルは `"recent"` に入れ子で出す (T14.9)。
     pub fn status_json(&self) -> String {
         format!(
-            "{{\"path\":{},\"bytes\":{},\"flushes\":{},\"write_errors\":{},\"recent\":{}}}",
+            "{{\"path\":{},\"bytes\":{},\"version\":{},\"converted_from\":{},\"flushes\":{},\"write_errors\":{},\"recent\":{}}}",
             crate::json::quote(&self.path.display().to_string()),
             self.rrd.layout.total,
+            crate::rrd::VERSION,
+            self.opened
+                .converted_from
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "null".to_string()),
             self.flushes.load(Ordering::Relaxed),
             self.write_errors.load(Ordering::Relaxed),
             self.recent
@@ -215,7 +226,8 @@ pub fn write_errors() -> Option<u64> {
 
 /// 起動時に読み戻した内容。
 pub struct Loaded {
-    pub created: bool,
+    /// 作り直したか・版 2 から詰め直したか (T14.14)
+    pub opened: Opened,
     pub history: [Vec<Sample>; 3],
     pub hosts: Vec<(String, HostStats)>,
     pub clients: Vec<(String, HostStats)>,
@@ -247,12 +259,21 @@ pub fn start(path: PathBuf, metrics: &Arc<Metrics>) -> Option<(Arc<Store>, JoinH
     metrics.history.restore(2, hour);
     let (nh, nc) = (loaded.hosts.len(), loaded.clients.len());
     metrics.restore(loaded.hosts, loaded.clients);
+    // 版 2 から詰め直したときは、その旨と所要 (起動時 1 回だけ) を残す (T14.14)
+    let how = match loaded.opened.converted_from {
+        Some(v) => format!(
+            "converted from version {} in {} ms",
+            v, loaded.opened.convert_ms
+        ),
+        None if loaded.opened.created => "created".to_string(),
+        None => "opened".to_string(),
+    };
     log_info!(
         None,
         "state file {} ({} KiB, {}): history {}/{}/{} samples, {} hosts, {} clients restored",
         store.path.display(),
         loaded.size / 1024,
-        if loaded.created { "created" } else { "opened" },
+        how,
         counts.0,
         counts.1,
         counts.2,

@@ -17,7 +17,9 @@
 //   9. **`/history` の `transfer`** (転送速度と半閉じの分布) が読めること (区間の数・合計と件数の一致。T14.25)
 //  10. **「調査」ページ (`inspect.html`) の描画関数**が `/snapshot` の実出力で例外なく通ること
 //      (タイムライン・遅い接続・山・接続元・RTT の散布・起動からの窓・出来事の印。T14.8)
-//  11. **KPI「CONNECT 確立 p50」が `/status` の `recent_quantiles` (直近 1,024 本の実測) を
+//  11. **「端末から測る」ページ (`probe.html`) の関数** (`median` / `pick` / `render`) が
+//      作り物の数列と `/status` の実出力で通り、「経由している / していない」を判定できること (T14.33)
+//  12. **KPI「CONNECT 確立 p50」が `/status` の `recent_quantiles` (直近 1,024 本の実測) を
 //      使い、無い版の出力では区間の補間に落ちること** (T14.31)
 //
 // 使い方: node scripts/check-dashboard.js [/history の実出力.json] [/status の実出力.json]
@@ -208,45 +210,76 @@ if (api.badHosts([st.hosts, st.hosts], causeNames, 10).length !== bad.length) {
 }
 if (api.badHosts([null, undefined], causeNames, 10).length !== 0) fail('空でも例外なく 0 件のはず');
 
-// 5. canary の配列 (T14.10)。`/history` の応答に**別の配列**として付く
-// (`{"keys":[...],"samples":[[t,dns_ms,connect_ms,"host"],...]}`)。描くのは T14.8 なので、
-// ここでは**出力の形**だけを見る: 列名・行の長さ・型・時刻が古い順であること。
+// 5. canary の配列 (T14.10、T14.37 で 5 列目)。`/history` の応答に**別の配列**として付く
+// (`{"keys":[...],"samples":[[t,dns_ms,connect_ms,"host",ipv6_connect_ms],...]}`)。描くのは
+// T14.8 なので、ここでは**出力の形**だけを見る: 列名・行の長さ・型・時刻が古い順であること。
+//
+// **列は末尾にしか足さない**約束なので、列名は**先頭からの一致**で見る (T14.37 より前の
+// 作り置き = 4 列でも落ちない)。行の長さは `keys` の長さと合っていること。
+const CANARY_KEYS = [
+  't',
+  'canary_dns_ms',
+  'canary_connect_ms',
+  'canary_host',
+  'canary_ipv6_connect_ms',
+];
 function checkCanary(h) {
   const c = h && h.canary;
   if (c === undefined || c === null) return null; // canary の無い版の出力 (飛ばす)
-  const want = ['t', 'canary_dns_ms', 'canary_connect_ms', 'canary_host'];
-  if (!Array.isArray(c.keys) || c.keys.join(',') !== want.join(',')) {
-    fail('canary の keys が ' + want.join(',') + ' でない: ' + JSON.stringify(c.keys));
+  const want = CANARY_KEYS;
+  if (
+    !Array.isArray(c.keys) ||
+    c.keys.length < 4 ||
+    c.keys.length > want.length ||
+    c.keys.some((k, i) => k !== want[i])
+  ) {
+    fail('canary の keys が ' + want.join(',') + ' の先頭からの一致でない: ' + JSON.stringify(c.keys));
   }
   if (!Array.isArray(c.samples)) fail('canary の samples が配列でない');
   let last = 0;
   for (const row of c.samples) {
-    if (!Array.isArray(row) || row.length !== want.length) {
-      fail('canary の 1 行が ' + want.length + ' 列でない: ' + JSON.stringify(row));
+    if (!Array.isArray(row) || row.length !== c.keys.length) {
+      fail('canary の 1 行が ' + c.keys.length + ' 列でない: ' + JSON.stringify(row));
     }
-    const [t, dns, conn, host] = row;
+    const [t, dns, conn, host, v6] = row;
     if (typeof t !== 'number' || !(t > 0)) fail('canary の時刻が epoch 秒でない: ' + t);
     if (t < last) fail('canary の標本が古い順になっていない: ' + t + ' < ' + last);
     last = t;
     if (typeof dns !== 'number' || !(dns >= 0)) fail('canary_dns_ms が数でない: ' + dns);
     if (typeof conn !== 'number' || !(conn >= 0)) fail('canary_connect_ms が数でない: ' + conn);
     if (typeof host !== 'string' || !host) fail('canary_host が空: ' + JSON.stringify(host));
+    // IPv6 側は**繋がらなければ null** (AAAA が無い / 黒穴 / off)。T14.37
+    if (c.keys.length > 4 && v6 !== null && !(typeof v6 === 'number' && v6 >= 0)) {
+      fail('canary_ipv6_connect_ms が数でも null でもない: ' + JSON.stringify(v6));
+    }
   }
   return c.samples.length;
 }
 // 実出力に canary があれば読む (無い版の作り置きでも落ちない)
 const canaryRows = checkCanary(hist);
 // 作り置きに canary が無い版でも検査そのものが動くことを、架空の 2 点で確かめる
+// (IPv6 側は 1 点が `null` = 黒穴、1 点が数 = 生きている)
 const fakeCanary = {
   canary: {
-    keys: ['t', 'canary_dns_ms', 'canary_connect_ms', 'canary_host'],
+    keys: CANARY_KEYS,
     samples: [
-      [1789251460, 3, 8, 'a.example.net:443'],
-      [1789251520, 4, 9, 'a.example.net:443'],
+      [1789251460, 3, 8, 'a.example.net:443', null],
+      [1789251520, 4, 9, 'a.example.net:443', 12],
     ],
   },
 };
 if (checkCanary(fakeCanary) !== 2) fail('canary の 2 点が読めていない');
+// T14.37 より前の 4 列の出力も今までどおり読める
+if (
+  checkCanary({
+    canary: {
+      keys: CANARY_KEYS.slice(0, 4),
+      samples: [[1789251460, 3, 8, 'a.example.net:443']],
+    },
+  }) !== 1
+) {
+  fail('4 列 (T14.37 より前) の canary が読めない');
+}
 // canary が付いても既存の標本の読み方は変わらない (列は 1 つも動かない)
 if (api.toSamples(Object.assign({}, hist, fakeCanary)).length !== samples.length) {
   fail('canary を足したら標本の数が変わった');
@@ -1056,7 +1089,129 @@ if (!restored.persisted || restored.restored !== 7 || restored.kept !== 9) {
   fail('個票の persisted / restored を読めていない');
 }
 
-// 11. KPI「CONNECT 確立 p50」(T14.31)。`recent_quantiles` があれば**区間の補間ではなく
+// 11. 「端末から測る」ページ (`crates/endpoints/src/web/probe.html`。T14.33) の関数。
+//     ブラウザが無いので、(1) 作り物の数列で `median`、(2) `/snapshot` の中の `/status` の
+//     実出力 (5 つ目の引数) で `pick` と `render` を通す。**この 3 つは DOM にも fetch にも
+//     触らない**ので、ここで「経由している / していない」の判定まで確かめられる。
+const probeHtml = fs.readFileSync(
+  path.join(__dirname, '..', 'crates/endpoints/src/web/probe.html'),
+  'utf8'
+);
+if (Buffer.byteLength(probeHtml) > 64 * 1024) {
+  fail('probe.html が 64 KiB を超えた: ' + Buffer.byteLength(probeHtml) + ' B');
+}
+const probeM = probeHtml.match(/<script>([\s\S]*?)<\/script>/);
+if (!probeM) fail('probe.html に <script> が無い');
+try {
+  new Function(probeM[1]);
+} catch (e) {
+  fail('probe.html の JS の構文エラー: ' + e.message);
+}
+const prb = pick(probeM[1], ['median', 'pick', 'render'], 'probe.html');
+
+// (1) 作り物の数列。**平均ではなく中央値**なので、1 回目が遅くても効かない
+if (prb.median([2, 1, 3]) !== 2) fail('median: 奇数の中央値が違う');
+if (prb.median([4, 1, 3, 2]) !== 2.5) fail('median: 偶数は真ん中 2 つの平均のはず');
+if (prb.median([9.9, 0.8, 0.9, 1.0, 0.85]) !== 0.9) fail('median: 1 回目が遅い並びで違う');
+if (prb.median([]) !== null || prb.median(null) !== null) fail('median: 空は null のはず');
+if (prb.median([1, null, 'x', 3, undefined, NaN]) !== 2) fail('median: 数でない要素を落とせていない');
+if (prb.median([5]) !== 5) fail('median: 1 件は そのものはず');
+
+// (2) `/status` の実出力 (`/snapshot` の中の 1 枚) で「経由したか」を見る。
+// プロキシは**自分宛ての要求を `clients[]` に数えない**ので、増えていなければ「経由していない」
+const probeStatus = snap.status || snap;
+if (!probeStatus.clients) fail(path.basename(snapFile) + ' に status.clients[] が無い');
+const probeNow = +(probeStatus.clients[0] || {}).last_seen || snapAt;
+function probeBumped(j, ip, n) {
+  const copy = JSON.parse(JSON.stringify(j));
+  const row = copy.clients.find((c) => c.client === ip);
+  row.requests += n;
+  row.last_seen = probeNow;
+  return copy;
+}
+const probeIp = probeStatus.clients[0].client;
+const probeSame = prb.pick(probeStatus, probeStatus, { now: probeNow, need: 5 });
+if (probeSame.proxied) fail('要求が増えていないのに「経由している」と出た');
+if (probeSame.candidates.length !== 0) fail('増えた行が無いのに候補が出た');
+const probeGrew = prb.pick(probeStatus, probeBumped(probeStatus, probeIp, 5), { now: probeNow, need: 5 });
+if (!probeGrew.proxied || probeGrew.ip !== probeIp || probeGrew.delta !== 5) {
+  fail('要求が 5 増えた行を拾えていない: ' + JSON.stringify([probeGrew.proxied, probeGrew.ip, probeGrew.delta]));
+}
+if (probeGrew.how !== 'delta' || probeGrew.ambiguous) fail('増えた行 1 件を delta で拾えていない');
+// 初めての接続元 (前の枚に行が無い) も「経由している」
+const probeFresh = prb.pick({ clients: [] }, probeBumped(probeStatus, probeIp, 5), { now: probeNow });
+if (!probeFresh.proxied || !probeFresh.first) fail('新しく増えた行を first で拾えていない');
+// 自分の IP が分からないとき (増えた行が無い) は「最終が今」の行を見当にする
+const probeGuess = prb.pick(probeStatus, probeStatus, { now: probeNow, window: 10 });
+if (probeGuess.proxied) fail('見当は「経由している」ではない');
+if (probeStatus.clients.length === 1 && (probeGuess.ip !== probeIp || probeGuess.how !== 'recent')) {
+  fail('「最終が今」の行を見当にできていない');
+}
+if (prb.pick(null, null, {}).proxied) fail('空の入力で「経由している」と出た');
+
+// (3) `render`: 測った数列 + 実出力の `/status` と `/clients` を 1 つの形に畳む
+const probeSamples = [
+  { ms: 3.4, head_ms: 3.0, bytes: 4096, ok: true },
+  { ms: 0.9, head_ms: 0.7, bytes: 4096, ok: true },
+  { ms: 1.1, head_ms: 0.8, bytes: 4096, ok: true },
+  { ms: 1.0, head_ms: 0.8, bytes: 4096, ok: true },
+  { ms: 1.2, head_ms: 0.9, bytes: 4096, ok: true },
+];
+const probeClients = snap.clients && snap.clients.clients ? snap.clients : probeStatus;
+const probeVia = prb.render({
+  direct: probeSamples,
+  probe: { url: 'http://example.com/', samples: [{ ms: 21 }, { ms: 19 }, { ms: 20 }, { ms: 25 }, { ms: 18 }] },
+  before: probeStatus,
+  after: probeBumped(probeStatus, probeIp, 5),
+  clients: probeClients,
+  now: probeNow,
+});
+if (probeVia.direct.median !== 1.1) fail('(1) の中央値が違う: ' + probeVia.direct.median);
+if (!(probeVia.direct.median < 10)) fail('(1) が 1 ms 台にならない (loopback の作り物)');
+if (probeVia.direct.first !== 3.4 || probeVia.direct.ok !== 5) fail('(1) の 1 回目 / 成功数が違う');
+if (probeVia.verdict.key !== 'proxy') fail('経由しているのに ' + probeVia.verdict.key);
+if (probeVia.via.ip !== probeIp || !probeVia.via.exact) fail('経由した端末の IP / 回数が合わない');
+if (probeVia.probe.median !== 20) fail('(2) の中央値が違う: ' + probeVia.probe.median);
+if (!probeVia.me || probeVia.me.client !== probeIp) fail('/clients の自分の行が読めていない');
+// `rtt_ms` (T14.5) は標本 0 なら null。実出力にあるならページの往復と並ぶ
+const probeRttRow = (probeClients.clients || []).find((c) => c.client === probeIp) || {};
+if (probeRttRow.rtt_ms && +probeRttRow.rtt_ms.samples > 0) {
+  if (!probeVia.me.rtt || probeVia.me.rtt.avg !== +probeRttRow.rtt_ms.avg) fail('rtt_ms を読めていない');
+  const gap = probeVia.direct.median - +probeRttRow.rtt_ms.avg;
+  if (Math.abs(probeVia.compare.gap - gap) > 1e-9) fail('往復 − RTT が合わない');
+} else if (probeVia.me.rtt !== null) {
+  fail('標本 0 の rtt_ms を null にできていない');
+}
+// プロキシ設定なし: 取れているのに `clients[]` が 1 行も増えない = 「経由していない」
+const probeDirect = prb.render({
+  direct: probeSamples,
+  probe: { url: 'http://example.com/', samples: [{ ms: 120 }, { ms: 95 }, { ms: 99 }] },
+  before: probeStatus,
+  after: probeStatus,
+  clients: probeClients,
+  now: probeNow,
+});
+if (probeDirect.verdict.key !== 'direct') fail('プロキシ設定なしで ' + probeDirect.verdict.key);
+if (probeDirect.via.proxied || probeDirect.via.delta !== 0) fail('経由していないのに増分が出た');
+// 取得そのものが失敗したら「判定できない」(経由していないと言い切らない)
+const probeFailed = prb.render({
+  direct: probeSamples,
+  probe: { url: 'http://example.com/', samples: [{ ok: false, error: 'Failed to fetch' }] },
+  before: probeStatus,
+  after: probeStatus,
+  clients: probeClients,
+  now: probeNow,
+});
+if (probeFailed.verdict.key !== 'unknown') fail('取得に失敗したのに ' + probeFailed.verdict.key);
+if (probeFailed.probe.fail !== 1 || probeFailed.probe.median !== null) fail('失敗した回を数えられていない');
+// `--probeLite` (接続元を記録していない) と、まだ測っていない状態でも落ちない
+const probeLite = prb.render({ direct: [], probe: { url: '', samples: [] }, before: {}, after: {}, clients: { clients: [] }, now: probeNow });
+if (probeLite.verdict.key !== 'none' || probeLite.me !== null || probeLite.direct.median !== null) fail('--probeLite の形で畳めていない');
+if (!probeLite.notes.join('').includes('記録していません')) fail('--probeLite の断り書きが無い');
+if (prb.render().verdict.key !== 'none') fail('引数なしで落ちた');
+const probeKiB = Math.round(Buffer.byteLength(probeHtml) / 1024);
+
+// 12. KPI「CONNECT 確立 p50」(T14.31)。`recent_quantiles` があれば**区間の補間ではなく
 // 直近 1,024 本の実測**を使い、無い版の `/status` では今までどおり区間の補間に落ちること。
 const kpiWin = api.mergeWindows(samples, 60, 'connect');
 const exactStatus = {
@@ -1206,6 +1361,20 @@ console.log(
     ' / ' +
     samples.length +
     ' 標本' +
+    '。端末から測るページ (probe.html ' +
+    probeKiB +
+    ' KiB) の median / pick / render も通った: (1) の往復 (作り物) の中央値 ' +
+    probeVia.direct.median.toFixed(2) +
+    ' ms、判定は 経由している (増えた要求 ' +
+    probeVia.via.delta +
+    ' 回) / 経由していない / 判定できない の 3 通り' +
+    (probeVia.me && probeVia.me.rtt
+      ? '、カーネルの RTT ' +
+        probeVia.me.rtt.avg.toFixed(2) +
+        ' ms (標本 ' +
+        probeVia.me.rtt.samples +
+        ') と並んだ'
+      : '、カーネルの RTT はこの出力には無い') +
     '。KPI「CONNECT 確立 p50」は ' +
     (liveKpi && liveKpi.exact
       ? '実出力の recent_quantiles (' + liveKpi.n + ' 本) で ' + api.fmtMsFine(liveKpi.p50)
@@ -1213,4 +1382,119 @@ console.log(
     '、無い版では区間の補間 ' +
     api.fmtMsFine(fell.p50) +
     ' に落ちた'
+);
+
+// 11. 匿名化した実データ (T14.35) で 2〜5 と 10 の読み方をもう一度回す。
+// `scripts/testdata/deployed-2026-09-16.anon.json` は**デプロイ先の実出力**を
+// `scripts/anonymize-snapshot.py` に通したもの (ホスト名・接続元 IP・User-Agent だけを
+// 決定的に置き換え、数字は 1 つも変えていない)。上の作り置きは手元のプロキシと架空の個票なので、
+// **本物の分布** (ホスト 817 件、名前解決 90 件、`res=60` は 1,440 標本) で読み方が壊れていないか
+// をここで見る。匿名化済みの名前 (`host-0001.example` / `198.51.100.x`) しか入っていないことも
+// 一緒に確かめる (元の名前が混ざったらここで気づく)。
+function checkAnonymized() {
+  const snapPath = path.join(__dirname, 'testdata', 'deployed-2026-09-16.anon.json');
+  if (!fs.existsSync(snapPath)) return null;
+  const where = path.basename(snapPath);
+  const snap = JSON.parse(fs.readFileSync(snapPath, 'utf8'));
+  const NAME = '(?:host-\\d{4,}\\.example|other|203\\.0\\.113\\.\\d+|192\\.0\\.2\\.\\d+)';
+  const HOSTKEY = new RegExp('^(?:[a-z]+:\\/\\/)?(?:' + NAME + ')(?::\\d+)?$');
+  const CLIENT = /^(?:198\.51\.100\.\d+|198\.18\.\d+\.\d+|2001:db8::[0-9a-f]+)(?::\d+)?$/;
+  let rows = 0, conns = 0;
+  for (const res of Object.keys(snap.history || {})) {
+    const h = snap.history[res] || {};
+    const ss = api.toSamples(h);
+    if (ss.length !== (h.samples || []).length) fail(where + ' の res=' + res + ' の標本の数が合わない');
+    if (ss.length === 0) fail(where + ' の res=' + res + ' に標本が無い');
+    for (const k of h.keys) {
+      if (!(k in ss[0])) fail(where + ' の res=' + res + ' で列 ' + k + ' が読めていない');
+    }
+    for (const s of ss) {
+      if (!s.connects) continue;
+      const p50 = api.winQuantile(s.connect_buckets, s.connects, s.connect_ms_max, 0.5, h.bounds_ms);
+      const p95 = api.winQuantile(s.connect_buckets, s.connects, s.connect_ms_max, 0.95, h.bounds_ms);
+      if (p50 === null) fail(where + ': 件数があるのに p50 が null');
+      if (!(p50 <= p95 + 1e-9)) fail(where + ': p50 ' + p50 + ' > p95 ' + p95);
+      if (!(p95 <= s.connect_ms_max)) fail(where + ': p95 が窓の最大値を超えた');
+      conns += s.connects;
+    }
+    const tail = ss.slice(Math.max(0, ss.length - 60));
+    const merged = api.mergeWindows(ss, 60, 'connect');
+    const want = tail.reduce((a, s) => a + s.connects, 0);
+    if (merged.count !== want) fail(where + ' の mergeWindows の件数 ' + merged.count + ' != ' + want);
+    if (merged.buckets.reduce((a, b) => a + b, 0) !== merged.count) fail(where + ': 区間の合計が件数と合わない');
+    if (api.peak(ss, 60, 'active_max', 'active') === null) fail(where + ': 山が読めていない');
+    rows += ss.length;
+  }
+  if (conns === 0) fail(where + ' に CONNECT のある標本が 1 つも無い');
+  // `/status` (要求数順・エラー順・名前解決順の 3 枚) と個票
+  const st = snap.status || {};
+  const sdn = api.dnsStats(st);
+  if (!(sdn.rate >= 0 && sdn.rate <= 100)) fail(where + ' の名前解決のミス率が範囲外: ' + sdn.rate);
+  if (sdn.lookups !== (st.dns.hits || 0) + (st.dns.misses || 0)) fail(where + ': 解決した回数が合わない');
+  const causes = (snap.history && snap.history['60'] && snap.history['60'].causes) || [];
+  const bad = api.badHosts([st.hosts, (snap.status_errors || {}).hosts, (snap.status_dns || {}).hosts], causes, 10);
+  if (bad.length === 0) fail(where + ': 悪いホストが 1 件も出ない');
+  const hostRows = ((snap.hosts || {}).hosts) || [];
+  if (hostRows.length === 0) fail(where + ' に /hosts の行が無い');
+  for (const h of hostRows.concat(st.hosts || [])) {
+    if (!HOSTKEY.test(h.host)) fail(where + ': 匿名化されていないホストがある (' + h.host.length + ' 文字)');
+  }
+  for (const c of (st.clients || []).concat(((snap.clients || {}).clients) || [])) {
+    if (!CLIENT.test(c.client) && c.client !== 'other') {
+      fail(where + ': 匿名化されていない接続元がある');
+    }
+  }
+  const errRowsA = api.errorRows(snap.errors, 20);
+  const connA = api.connRows(snap.connections, 50);
+  for (const r of connA.rows) {
+    if (r.target && !HOSTKEY.test(r.target)) fail(where + ': /connections の宛先が匿名化されていない');
+    if (!CLIENT.test(r.client)) fail(where + ': /connections の接続元が匿名化されていない');
+  }
+  // 「調査」ページ (T14.8) の読み方も同じ実データで 1 度通す (この版の出力にあるのは `/history` だけ)
+  const insH = (snap.history || {})['60'] || {};
+  const insRows = ins.toSamples(insH);
+  if (insRows.length !== (insH.samples || []).length) fail(where + ': inspect.html が実データの標本を読めない');
+  for (const s2 of insRows) {
+    if (!s2.connects) continue;
+    const q = ins.winQuantile(s2.connect_buckets, s2.connects, s2.connect_ms_max, 0.5, insH.bounds_ms);
+    if (!(q >= 0 && q <= s2.connect_ms_max)) fail(where + ': inspect.html の p50 が範囲外: ' + q);
+  }
+  // T14.6 / T14.12 / T14.25 の窓は、この版の出力には無い (あれば読む)
+  const windows = checkClosed((snap.history || {})['5'] && (snap.history || {})['5'].closed, where) +
+    checkTransfer((snap.history || {})['5'] && (snap.history || {})['5'].transfer, where) +
+    checkKernelHistory((snap.history || {})['5'] && (snap.history || {})['5'].kernel, where);
+  return {
+    resolutions: Object.keys(snap.history || {}).length,
+    rows,
+    conns,
+    hosts: hostRows.length,
+    inspect: insRows.length,
+    bad: bad.length,
+    errors: errRowsA.length,
+    conns_now: connA.rows.length,
+    windows,
+  };
+}
+
+const anon = checkAnonymized();
+console.log(
+  anon === null
+    ? '(匿名化した実データ (T14.35) は無い: scripts/testdata/deployed-2026-09-16.anon.json)'
+    : 'OK: 匿名化した実データ (T14.35) も読めた: /history ' +
+        anon.resolutions +
+        ' 本 (標本 ' +
+        anon.rows +
+        '、CONNECT ' +
+        anon.conns +
+        ' 本)、/hosts ' +
+        anon.hosts +
+        ' 件、悪いホスト ' +
+        anon.bad +
+        ' 件、/errors ' +
+        anon.errors +
+        ' 件、/connections ' +
+        anon.conns_now +
+        ' 本 (inspect.html でも ' +
+        anon.inspect +
+        ' 標本)。ホスト名と接続元は全部 匿名化済みの形だった'
 );

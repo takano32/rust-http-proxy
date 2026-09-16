@@ -51,6 +51,7 @@ pub struct Endpoint<'a> {
 
 mod blocklist;
 mod config;
+mod explain;
 mod health;
 mod pac;
 mod profile;
@@ -62,6 +63,13 @@ const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
 /// **起きたことを時間軸で読む**ための別のページ (個票を描く)。
 /// `--lite` でも 200 で返す (記録が無ければページの中で「記録していません」と出る)。
 const INSPECT_HTML: &str = include_str!("../web/inspect.html");
+
+/// 「端末から測る」ページ (T14.33)。プロキシ側の計測は「プロキシに届いてから」しか
+/// 見えないので、**利用者のブラウザから** `/status` の往復と、プロキシ経由で小さな URL を
+/// 取る時間を測り、`/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) に並べる。
+/// 測った値はサーバーへ送らない (端末の中だけ)。`--lite` でも 200 で返す
+/// (接続元を記録していないことはページの中で伝える)。
+const PROBE_HTML: &str = include_str!("../web/probe.html");
 
 /// 要求ターゲットを自分宛てのパスに直す。**どちらの形式もポートだけで判定する**:
 /// 絶対形式は authority の、オリジン形式は `Host` ヘッダーのポート (無ければ 80) が
@@ -109,6 +117,7 @@ fn endpoint_list(lite: bool) -> String {
          endpoints:\n\
          {}\
          \x20 /inspect                                    control panel: what happened (timeline)\n\
+         \x20 /probe.html                                 measure this proxy from your browser\n\
          \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
          \x20 /connections                                JSON: the connections open right now\n\
@@ -121,6 +130,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
          \x20 /hosts/series?top=16&host=<name>            JSON: per-host series (5 min x 24 h)\n\
          \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
+         \x20 /explain?host=<name> | ?client=<ip>         JSON: one peer, explained in one page\n\
          \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
@@ -175,6 +185,9 @@ pub fn handle(
         // 「調査」ページ (T14.8)。`--lite` でも 200 — 個票が空でもページは開ける
         // (読む人が「記録していません」と分かるのはページの中)
         (200, "text/html; charset=utf-8", INSPECT_HTML.to_string())
+    } else if is_get && (path == "/probe.html" || path == "/probe" || path == "/probe/") {
+        // 「端末から測る」ページ (T14.33)。`--lite` でも 200 — 測れるのは (1) だけになる
+        (200, "text/html; charset=utf-8", PROBE_HTML.to_string())
     } else if is_get && (path == "/dashboard" || path == "/dashboard/") {
         if ep.lite {
             (
@@ -240,6 +253,9 @@ pub fn handle(
     } else if is_get && path == "/clients" {
         // 接続元の個票 (T14.7)。認証なしで誰でも見えるのは他の個票と同じ
         recent::clients(ep, query)
+    } else if is_get && path == "/explain" {
+        // 1 相手の説明 (T14.36)。上の口を横断して読む作業をサーバー側で 1 枚に組む
+        explain::explain(ep, query)
     } else if is_get && path == "/config" {
         // 効いている設定とその出どころ、この環境で何が読めるか (T14.15)
         config::render(ep)
