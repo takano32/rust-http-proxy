@@ -60,7 +60,11 @@ fn test_integration_healthz_is_a_small_health_report() {
     let resp = get(port, "/healthz");
     assert!(resp.starts_with("HTTP/1.1 200 OK"), "{}", resp);
     let body = body_of(&resp);
-    assert!(body.starts_with("{\"ok\":true,\"checks\":{"), "{}", body);
+    assert!(
+        body.starts_with("{\"schema\":1,\"ok\":true,\"checks\":{"),
+        "{}",
+        body
+    );
     // 検査の 6 つが全部あること (読めないものは null)
     for check in [
         "listening",
@@ -135,7 +139,7 @@ fn test_integration_healthz_is_503_when_the_connection_limit_is_full() {
         resp
     );
     let body = body_of(&resp);
-    assert!(body.starts_with("{\"ok\":false,"), "{}", body);
+    assert!(body.starts_with("{\"schema\":1,\"ok\":false,"), "{}", body);
     assert!(
         body.contains("\"connections\":{\"ok\":false,\"active\":1,\"max\":1}"),
         "{}",
@@ -251,7 +255,11 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
     // (4) 状態ファイルがあるので `/healthz` の `state_file` の検査は `null` でなくなる
     let resp = get(proxy.port, "/healthz");
     let health = body_of(&resp);
-    assert!(health.starts_with("{\"ok\":true,"), "{}", health);
+    assert!(
+        health.starts_with("{\"schema\":1,\"ok\":true,"),
+        "{}",
+        health
+    );
     assert!(
         health.contains("\"state_file\":{\"ok\":true,\"write_errors_5m\":0}"),
         "{}",

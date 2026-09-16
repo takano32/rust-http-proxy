@@ -130,7 +130,7 @@ fn test_integration_events_shows_the_start_and_the_reload() {
     );
     let future = endpoint_json(proxy.port, &format!("/events?since={}", reload_at + 3600));
     assert!(
-        future.starts_with("{\"events\":[]"),
+        future.starts_with("{\"schema\":1,\"events\":[]"),
         "先の時刻なら 0 件: {}",
         future
     );

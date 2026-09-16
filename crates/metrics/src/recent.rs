@@ -912,15 +912,24 @@ impl ConnTable {
             return None;
         }
         // 接続元は**この 1 回**だけ記録の形に直し、枠と本数の表の両方に同じ値を使う
-        let client = crate::records::client_key(client);
+        // (`client` は生のまま残す — 下の自己ベンチの判定が IP そのものを見るため)
+        let key = crate::records::client_key(client);
         let mut g = self.inner.locked();
         if self.counting.load(Ordering::Relaxed) {
-            g.add_client(id, &client);
+            g.add_client(id, &key);
         }
         if !on {
             return None;
         }
-        let slot = Arc::new(ConnSlot::new(id, &client, started));
+        // 起動時の自己ベンチ (T14.43) が自分で打った接続は枠を作らない (`--lite` と同じ扱い)。
+        // 作ると 2,000 本の CONNECT が `/recent` の 4,096 件を半分埋め、その個票が
+        // 状態ファイルに残ってしまう。**接続元ごとの上限 (すぐ上の `add_client`) には
+        // ちゃんと数える** (プロキシから見れば本物の負荷なので)。
+        // 費用は自己ベンチが回っていないときの原子の読み 1 回
+        if crate::selfbench::is_client(client) {
+            return None;
+        }
+        let slot = Arc::new(ConnSlot::new(id, &key, started));
         g.slots.insert(id, Arc::clone(&slot));
         Some(slot)
     }

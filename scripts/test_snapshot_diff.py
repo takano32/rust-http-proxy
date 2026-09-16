@@ -459,6 +459,86 @@ class FromFiles(unittest.TestCase):
         self.assertEqual(len(snap["clients"]["clients"]), 2)
 
 
+class Schema(unittest.TestCase):
+    """応答の形の版 (`schema`。T14.49)。
+
+    **版の無い古い出力 (版 0) が今までどおり読める**ことと、版 1 の出力を推測抜きで
+    読めることの両方を見る (`testdata/snapshot-{a,b}.json` は版の無い形のまま置いてある)。
+    """
+
+    def test_the_version_of_a_json_without_schema_is_zero(self):
+        self.assertEqual(pd.schema_of(read(A)), 0)
+        self.assertEqual(pd.schema_of({}), 0)
+        self.assertEqual(pd.schema_of({"schema": 3}), 3)
+        # `true` は 1 ではない (Python の bool は int の仲間なので念のため)
+        self.assertEqual(pd.schema_of({"schema": True}), 0)
+        self.assertEqual(pd.schema_of("文字列"), 0)
+
+    def test_a_snapshot_is_recognised_in_both_versions(self):
+        old = read(A)                                   # 版の無い古い出力
+        self.assertTrue(pd.is_snapshot(old))
+        new = dict(old, schema=1)                       # 版 1
+        self.assertTrue(pd.is_snapshot(new))
+        # 版 1 は `parts` だけで決める (`/status` は `parts` を持たない)
+        self.assertFalse(pd.is_snapshot({"schema": 1, "status": "ok", "hosts": []}))
+        # 版の無い `/status` も雪像ではない (`hosts` が配列)
+        self.assertFalse(pd.is_snapshot(read(A)["status"]))
+
+    def test_unwrap_takes_the_hosts_part_in_both_versions(self):
+        for snap in (read(A), dict(read(A), schema=1)):
+            inner = pd.unwrap(snap)
+            self.assertEqual(len(inner["hosts"]), len(snap["hosts"]["hosts"]))
+            self.assertEqual(inner["snapshot_taken_at"], snap["taken_at"])
+        # 雪像でない JSON はそのまま返る
+        st = read(A)["status"]
+        self.assertIs(pd.unwrap(st), st)
+
+    def test_load_source_reads_both_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, body in (("old.json", read(A)),
+                               ("new.json", dict(read(A), schema=1))):
+                path = os.path.join(tmp, name)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(body, f)
+                snap = sd.load_source(path, False)
+                self.assertEqual(snap["version"], "0.1.0+aaaaaaa")
+                self.assertEqual(len(snap["hosts"]["hosts"]), 6)
+            # 版 1 の `/status` 1 枚も推測せずに読める
+            path = os.path.join(tmp, "2026-09-11T0026Z-status.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(dict(read(B)["status"], schema=1), f)
+            snap = sd.load_source(path, False)
+            self.assertEqual(snap["schema"], 1)
+            self.assertEqual(len(snap["hosts"]["hosts"]), 6)
+
+    def test_the_report_prints_the_version_of_both_snapshots(self):
+        md = run([A, B, "--no-dns"])
+        self.assertIn("- 形の版 `schema` 0 → 0 (0 = 版を持たない古い出力", md)
+        d = json.loads(run([A, B, "--no-dns", "--out", "json"]))
+        self.assertEqual((d["a"]["schema"], d["b"]["schema"]), (0, 0))
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for name, src in (("a.json", A), ("b.json", B)):
+                path = os.path.join(tmp, name)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(dict(read(src), schema=1), f)
+                paths.append(path)
+            d = json.loads(run(paths + ["--no-dns", "--out", "json"]))
+        self.assertEqual((d["a"]["schema"], d["b"]["schema"]), (1, 1))
+
+    def test_a_newer_version_is_still_read_with_one_warning(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            v = pd.warn_newer({"schema": pd.SCHEMA + 1}, "future.json")
+        self.assertEqual(v, pd.SCHEMA + 1)
+        self.assertIn("版 2 の出力です", err.getvalue())
+        # 知っている版なら何も言わない
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            pd.warn_newer({"schema": pd.SCHEMA}, "now.json")
+        self.assertEqual(err.getvalue(), "")
+
+
 @unittest.skipUnless(os.path.isdir(DEPLOYED) and
                      os.path.isfile(os.path.join(DEPLOYED, "2026-09-16T0106Z-status")),
                      "デプロイ先の実出力が無い (リポジトリには入れない)")
