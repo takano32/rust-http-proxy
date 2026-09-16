@@ -771,6 +771,7 @@ pub fn spawn_every(
         let pushed = metrics.history.push(sample);
         if let Some(st) = &store {
             st.write_samples(&pushed);
+            st.write_recent(metrics);
         }
         // 利用者の要求が無い時間帯も待ちを測る (T14.10)。**ここでは測らない**
         // (名前解決と接続は `canary` スレッド 1 本の仕事で、この周期は止めない)

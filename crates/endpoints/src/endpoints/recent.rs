@@ -7,6 +7,11 @@
 //! どれも JSON・`Cache-Control: no-store`・`Connection: close` (組み立ては
 //! [`super::handle`] が共通で行う)。時刻は epoch 秒。
 //!
+//! **`"persisted"` と `"restored"`** (`/recent` `/errors` `/bursts` `/events` `/log`。T14.9):
+//! この 4 つのリングは 5 秒ごとに `$HOME/.rust-http-proxy.recent` (固定 4 MiB、統計の
+//! `.rrd` とは別のファイル) へ追記され、次の起動で読み戻される。`persisted` がその可否、
+//! `restored` が**再起動前から引き継いだ件数**。
+//!
 //! **応答は必ず [`MAX_BODY`] 以下**にする。件数の上限 (`?n=` / `?limit=`) とは別に
 //! バイト数でも打ち切り、切ったときは `"truncated":true` を出す。上限を件数だけで
 //! 決めると、長いホスト名や多いアドレスで簡単に越えてしまう
@@ -56,6 +61,16 @@ fn str_param(query: Option<&str>, key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// 個票を状態ファイルに残しているか (`$HOME/.rust-http-proxy.recent`。T14.9)。
+///
+/// `PROXY_STATS_PERSIST=off` と、ファイルが開けなかったときは `false`
+/// (= 「この口の中身は再起動で消える」の意味)。
+fn persisted(ep: &Endpoint<'_>) -> bool {
+    ep.metrics
+        .recent_persisted
+        .load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `?key=N` を読む (無い / 読めない / 範囲外は既定か端に倒す。`/status?sort=` と同じ方針)。
 fn num_param(query: Option<&str>, key: &str, default: usize, max: usize) -> usize {
     parse_query(query.unwrap_or(""))
@@ -75,11 +90,13 @@ pub fn errors(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     let (shown, cut) = array_within(&mut out, entries.iter().map(|e| e.to_json()));
     let _ = write!(
         out,
-        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"truncated\":{}}}",
+        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"persisted\":{},\"restored\":{},\"truncated\":{}}}",
         shown,
         ep.metrics.errors.len(),
         MAX_ERRORS,
         total,
+        persisted(ep),
+        ep.metrics.errors.restored(),
         cut
     );
     (200, "application/json", out)
@@ -133,7 +150,7 @@ pub fn dns(query: Option<&str>) -> (u16, &'static str, String) {
 ///
 /// `info` のアクセスログは写していない (熱い経路を重くしないため。T10.10)。
 /// 動作環境 (Pterodactyl) のコンソールは流れて消えるので、これがその代わり。
-pub fn log(query: Option<&str>) -> (u16, &'static str, String) {
+pub fn log(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, crate::log::MAX_LOG_LINES);
     let (lines, total) = crate::log::recent(n);
     let mut out = String::with_capacity(8192);
@@ -141,7 +158,7 @@ pub fn log(query: Option<&str>) -> (u16, &'static str, String) {
     let (shown, cut) = array_within(&mut out, lines.iter().map(log_line_json));
     let _ = write!(
         out,
-        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"level\":\"{}\",\"truncated\":{}}}",
+        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"level\":\"{}\",\"persisted\":{},\"restored\":{},\"truncated\":{}}}",
         shown,
         crate::log::recent_len(),
         crate::log::MAX_LOG_LINES,
@@ -150,6 +167,8 @@ pub fn log(query: Option<&str>) -> (u16, &'static str, String) {
             .as_str()
             .trim()
             .to_ascii_lowercase(),
+        persisted(ep),
+        crate::log::restored_count(),
         cut
     );
     (200, "application/json", out)
@@ -349,7 +368,7 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     let (shown, cut) = array_within(&mut out, rows.iter().take(n).map(RecentEntry::to_json));
     let _ = write!(
         out,
-        ",\"count\":{},\"matched\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"sort\":\"{}\",\"since\":{},\"client\":\"{}\",\"truncated\":{},\"lite\":{}}}",
+        ",\"count\":{},\"matched\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"sort\":\"{}\",\"since\":{},\"client\":\"{}\",\"persisted\":{},\"restored\":{},\"truncated\":{},\"lite\":{}}}",
         shown,
         matched,
         shown,
@@ -359,6 +378,8 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
         sort.name(),
         since,
         crate::json::escape(&client),
+        persisted(ep),
+        ep.metrics.closed.restored(),
         cut,
         !ep.metrics.conns.enabled()
     );
@@ -383,7 +404,7 @@ pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     let (shown, cut) = array_within(&mut out, shots.iter().map(BurstShot::to_json));
     let _ = write!(
         out,
-        ",\"count\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"threshold\":{},\"max_conns\":{},\"active\":{},\"armed\":{},\"pending\":{},\"truncated\":{},\"lite\":{}}}",
+        ",\"count\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"threshold\":{},\"max_conns\":{},\"active\":{},\"armed\":{},\"pending\":{},\"persisted\":{},\"restored\":{},\"truncated\":{},\"lite\":{}}}",
         shown,
         shown,
         ep.metrics.bursts.len(),
@@ -396,6 +417,8 @@ pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
             .load(std::sync::atomic::Ordering::Relaxed),
         ep.metrics.bursts.armed(),
         ep.metrics.bursts.pending(),
+        persisted(ep),
+        ep.metrics.bursts.restored(),
         cut,
         !ep.metrics.conns.enabled()
     );
@@ -409,7 +432,7 @@ pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
 /// 増減・状態ファイルの異常・上限での追い出し・accept の失敗・停止シグナルを **1 本の
 /// 時系列**にしたもの。`/log` は warn 以上なので info の出来事が入らず、`/status` の
 /// `settings` は最後の 1 回しか残さない。種類は `kinds` に並ぶ 10 種で固定。
-pub fn events(query: Option<&str>) -> (u16, &'static str, String) {
+pub fn events(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, MAX_EVENTS);
     // `?since=` は `/recent` と同じ扱い (「その時刻以降に起きたもの」。無ければ 0 = 全部)
     let since = parse_query(query.unwrap_or(""))
@@ -423,13 +446,15 @@ pub fn events(query: Option<&str>) -> (u16, &'static str, String) {
     let (shown, cut) = array_within(&mut out, events.iter().map(crate::events::Event::to_json));
     let _ = write!(
         out,
-        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"since\":{},\"kinds\":{},\"truncated\":{}}}",
+        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"since\":{},\"kinds\":{},\"persisted\":{},\"restored\":{},\"truncated\":{}}}",
         shown,
         crate::events::len(),
         MAX_EVENTS,
         total,
         since,
         crate::json::list(crate::events::KINDS.iter().map(|k| k.name())),
+        persisted(ep),
+        crate::events::restored_count(),
         cut
     );
     (200, "application/json", out)
@@ -489,8 +514,8 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)。
         // `--lite` では `{"profile":"off"}` の 1 行になる
         ("profile", super::profile::profile(ep, Some("res=5")).2),
-        ("events", events(Some("n=512")).2),
-        ("log", log(Some("n=1000")).2),
+        ("events", events(ep, Some("n=512")).2),
+        ("log", log(ep, Some("n=1000")).2),
     ];
     let names: Vec<&'static str> = part.iter().map(|(k, _)| *k).collect();
     let dropped = drop_to_fit(&mut part, MAX_SNAPSHOT);
@@ -748,10 +773,31 @@ mod tests {
     #[test]
     fn the_events_endpoint_filters_by_n_and_since() {
         use crate::events::{EventKind, MAX_EVENTS};
+        let m = crate::metrics::Metrics::new();
+        let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
+        let concurrency = || crate::metrics::Concurrency {
+            max_conns: 0,
+            max_threads: 0,
+            live_threads: 0,
+            idle_threads: 0,
+            queued_jobs: 0,
+        };
+        let ep = Endpoint {
+            metrics: &m,
+            cache: &cache,
+            conn_id: 1,
+            port: 8080,
+            host: None,
+            pac_direct: &[],
+            lite: false,
+            readonly: false,
+            version: "test",
+            concurrency: &concurrency,
+        };
         crate::events::clear();
         crate::events::push(EventKind::Start, "version 0.0.0 on port 8080");
         crate::events::push(EventKind::Reload, "PROXY_TIMEOUT_SECS 30 \u{2192} 10");
-        let body = events(None).2;
+        let body = events(&ep, None).2;
         assert!(body.starts_with("{\"events\":["), "{}", body);
         assert!(body.contains("\"kind\":\"reload\""), "{}", body);
         assert!(
@@ -783,11 +829,11 @@ mod tests {
         let second = body.find("\"kind\":\"start\"").unwrap();
         assert!(first < second, "新しい順でない: {}", body);
         // `?n=1` で 1 件
-        let one = events(Some("n=1")).2;
+        let one = events(&ep, Some("n=1")).2;
         assert!(one.contains("\"count\":1"), "{}", one);
         assert!(!one.contains("\"kind\":\"start\""), "{}", one);
         // `?since=` は「その時刻以降」。先の時刻なら 0 件
-        let none = events(Some("since=9999999999")).2;
+        let none = events(&ep, Some("since=9999999999")).2;
         assert!(none.starts_with("{\"events\":[]"), "{}", none);
         assert!(none.contains("\"since\":9999999999"), "{}", none);
         assert!(none.contains("\"recorded\":2"), "通算は残る: {}", none);
@@ -799,7 +845,7 @@ mod tests {
                 &format!("{}{}", "\u{2192}".repeat(50), i),
             );
         }
-        let body = events(Some("n=512")).2;
+        let body = events(&ep, Some("n=512")).2;
         assert!(body.contains("\"count\":512"), "{}", body);
         assert!(body.contains("\"truncated\":false"), "{}", body);
         assert!(body.len() <= MAX_BODY, "{} B", body.len());

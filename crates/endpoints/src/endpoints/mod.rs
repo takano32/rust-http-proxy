@@ -209,7 +209,7 @@ pub fn handle(
     } else if is_get && path == "/events" {
         // 起きたことの時系列 (T14.11)。起動・再読込・ブロックリスト・IPv6・圧迫・
         // バラスト・状態ファイル・追い出し・accept の失敗・停止シグナルを 1 本に
-        recent::events(query)
+        recent::events(ep, query)
     } else if is_get && path == "/snapshot" {
         // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
         recent::snapshot(ep)
@@ -219,7 +219,7 @@ pub fn handle(
         // 1 日 1 行の要約 (T14.20)。`/history` (30 日) が消えたあとも残る
         recent::daily(query)
     } else if is_get && path == "/log" {
-        recent::log(query)
+        recent::log(ep, query)
     } else if is_get && path == "/hosts" {
         recent::hosts(ep, query)
     } else if is_get && path == "/clients" {
