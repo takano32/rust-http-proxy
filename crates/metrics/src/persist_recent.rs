@@ -48,7 +48,7 @@ const HEADER_SIZE: u64 = 4096;
 const SMALL_RECORD: usize = 256;
 /// 閉じた接続 1 件のレコード長。**256 B ではなく 512 B** なのは、段階の ms 6 つと
 /// T14.5 の RTT / 再送 (両側) まで入れると 256 B に収まらないため
-/// (いまの中身は 344 B。領域の大きさは 2 MiB のままで、件数が 8,192 → 4,096 になる)。
+/// (いまの中身は 360 B。領域の大きさは 2 MiB のままで、件数が 8,192 → 4,096 になる)。
 const CLOSED_RECORD: usize = 512;
 /// 山の写真 1 枚のレコード長 (接続元 16 + 宛先 10 の名前が入る)。
 const SHOT_RECORD: usize = 4096;
@@ -89,7 +89,7 @@ const W_TEXT: usize = MAX_TEXT + 4;
 
 /// 1 レコードに収まることを**組み立て時に**確かめる (欄を足して溢れたらここで止まる)。
 /// 数は各 `encode_*` が書く u64 の本数 (先頭の通し番号を含む) + 固定幅の文字列。
-const CLOSED_PAYLOAD: usize = 8 * (12 + STAGES + 2 * SIDES) + W_CLIENT + W_TARGET + W_SNI;
+const CLOSED_PAYLOAD: usize = 8 * (13 + STAGES + 3 * SIDES) + W_CLIENT + W_TARGET + W_SNI;
 const ERROR_PAYLOAD: usize = 8 * 7 + W_ETARGET + W_CLIENT;
 const LOG_PAYLOAD: usize = 8 * 4 + W_MSG;
 const EVENT_PAYLOAD: usize = 8 * 3 + W_TEXT;
@@ -453,7 +453,10 @@ fn encode_closed(seq: u64, e: &RecentEntry) -> Vec<u8> {
         .u64(e.parks as u64)
         .u64(e.status as u64)
         .u64(u64::from(e.connect))
-        .u64(e.reason.code() as u64);
+        .u64(e.reason.code() as u64)
+        // 確立までの SYN の再送 (T14.46)。**数値の末尾に足した** ので、前の版で
+        // 書いたレコードは 0 (= 再送なし) で読み戻る
+        .u64(e.syn_retrans as u64);
     for ms in e.stage_ms {
         enc.u64(ms);
     }
@@ -467,6 +470,12 @@ fn encode_closed(seq: u64, e: &RecentEntry) -> Vec<u8> {
     enc.str(&e.client, W_CLIENT).str(&e.target, W_TARGET);
     // 覗いた SNI (T14.38)。空 = 覗いていない / 読めなかった (読み戻すと `None`)
     enc.str(e.sni.as_deref().unwrap_or(""), W_SNI);
+    // 中継の詰まりの向き (T14.42)。**レコードのいちばん後ろ**に足す (T14.38 の SNI と
+    // 同じ理由: 途中に入れると前の版の文字列の欄がずれる。`Dec` は足りなければ 0 を
+    // 返すので、前の版のレコードは両方 0 で読み戻る = 版は上げない)
+    for v in e.stall_ms {
+        enc.u64(v as u64);
+    }
     enc.0
 }
 
@@ -484,6 +493,7 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
     let status = d.u64() as u16;
     let connect = d.u64() != 0;
     let reason = CloseReason::from_code(d.u64() as u16);
+    let syn_retrans = d.u64().min(u8::MAX as u64) as u8;
     let mut stage_ms = [0u64; STAGES];
     for slot in stage_ms.iter_mut() {
         *slot = d.u64();
@@ -499,6 +509,11 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
     let client = d.str(W_CLIENT);
     let target = d.str(W_TARGET);
     let sni = d.str(W_SNI);
+    // 中継の詰まりの向き (T14.42)。前の版のレコードはここが無いので 0 で戻る
+    let mut stall_ms = [0u32; SIDES];
+    for slot in stall_ms.iter_mut() {
+        *slot = d.u64() as u32;
+    }
     if at == 0 {
         return None;
     }
@@ -520,6 +535,8 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
         rtt_us,
         retrans,
         sni: (!sni.is_empty()).then(|| sni.into()),
+        syn_retrans,
+        stall_ms,
     })
 }
 
@@ -753,6 +770,8 @@ mod tests {
             rtt_us: [1234, 5678],
             retrans: [0, 2],
             sni: Some("mtalk.google.com".into()),
+            syn_retrans: 2,
+            stall_ms: [1500, 0],
         }
     }
 
@@ -778,7 +797,7 @@ mod tests {
                 EVENT_PAYLOAD,
                 SHOT_PAYLOAD
             ),
-            (344, 188, 252, 156, 2016)
+            (368, 188, 252, 156, 2016)
         );
     }
 

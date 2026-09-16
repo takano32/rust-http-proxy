@@ -293,7 +293,7 @@ impl Ctx<'_> {
             stage_ms[STAGE_FIRST_BYTE] = detail.first_byte_ms.unwrap_or(0);
             stage_ms[STAGE_QUEUE] = detail.stages.queue as u64;
             stage_ms[STAGE_CLIENT_READ] = detail.stages.client_read as u64;
-            t.add_request(status, self.up_bytes, bytes, stage_ms);
+            t.add_request(status, self.up_bytes, bytes, stage_ms, detail.syn_retrans);
             cell.set(t);
             // 接続元 1 つの追跡 (`/trace`。T14.27)。**旗が立っている接続だけ** 1 行書く。
             // 立っていない要求の費用はこの分岐 1 回だけで、段階の ms も所要時間も
@@ -1032,7 +1032,12 @@ pub fn handle_http_with_headers(
         guard.complete(FetchOutcome::NotStored);
     }
     let total = client_head.len() as u64 + body_bytes;
-    metrics.add_bytes(total + request_body_bytes);
+    // 起動時の自己ベンチ (T14.43) が自分で打った要求のバイトは合計に足さない
+    // (`/status` の `bytes_forwarded` と `/history` の `bytes` に 20 MB の山が立つため)。
+    // 費用は自己ベンチが回っていないときの原子の読み 1 回
+    if !proxy_metrics::selfbench::is_target(ctx.pool_key) {
+        metrics.add_bytes(total + request_body_bytes);
+    }
     // 個票の「上り」は要求の本文ぶん (ヘッダーぶんは本体クレートが足す。T14.4)
     ctx.up_bytes = request_body_bytes;
     ctx.log(status, total, &cache_state);
@@ -1173,6 +1178,9 @@ fn origin_detail(acquire_started: Instant, cause: Option<ErrCause>, stages: Stag
         dns_misses,
         connect_ms: total_ms.saturating_sub(dns_ms),
         family_v6: crate::dns::take_family(),
+        // 確立までに SYN を送り直した回数 (T14.46)。**プールが接続を張った要求だけ**
+        // 0 でない (使い回せた要求は `net` の確立点を通らないので 0)
+        syn_retrans: crate::dns::take_syn_retrans(),
         cause,
         first_byte_ms: None,
         // ここまでに測った段階 (`queue` / `client_read`) は引き継ぐ (T14.3 (1))

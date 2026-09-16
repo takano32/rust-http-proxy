@@ -280,6 +280,33 @@ fn nodelay(stream: &TcpStream) {
     let _ = stream.set_nodelay(true);
 }
 
+/// 確立したばかりの接続が **SYN を何回送り直したか**を控える (T14.46)。
+///
+/// `getsockopt(SOL_TCP, TCP_INFO)` の `tcpi_total_retrans` は「この接続で再送した通算」
+/// だが、**確立した直後はまだデータを 1 バイトも送っていない**ので、読めた値は
+/// SYN (3-way handshake) の再送回数そのものになる。1 回の再送は Linux の既定
+/// (`tcp_syn_retries`) では 1 秒・3 秒・7 秒…と伸びるので、`connect` が 1 秒や 3 秒に
+/// 飛んだ接続はここが 1 以上になる (T14.16 / T14.47 で見た 1 秒の正体)。
+///
+/// **費用は確立 1 本につき `getsockopt` 1 回**。要求ごとにも中継のバイトごとにも
+/// 読まない (forward はプールが接続を張るときだけ通る)。読めなければ 0 =「再送なし
+/// または読めなかった」で、Linux 以外はソケットを見ずに 0 のまま。
+fn note_syn_retrans(stream: &TcpStream) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+
+        if let Some(info) = proxy_sys::sys::tcp_info(stream.as_raw_fd()) {
+            // 255 で頭打ち (個票の欄は u8。これ以上は「とても多い」で足りる)
+            crate::dns::note_syn_retrans(info.total_retrans.min(u8::MAX as u32) as u8);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = stream;
+    }
+}
+
 /// 1 つのアドレスへ接続する。`timeout` が `None` なら締め切り無し (OS 既定に任せる)。
 fn connect_one(addr: &SocketAddr, timeout: Option<Duration>) -> io::Result<TcpStream> {
     match timeout {
@@ -458,6 +485,8 @@ fn connect_candidates(
             nodelay(s);
             // 確立した族を控える (thread-local への書き込み 1 回。T12.4 (2))
             crate::dns::note_family(v6);
+            // SYN を何回送り直したか (`getsockopt` 1 回。T14.46)
+            note_syn_retrans(s);
         });
     }
 
@@ -505,6 +534,9 @@ fn connect_candidates(
         match got {
             Ok((index, Ok(stream))) => {
                 nodelay(&stream);
+                // SYN を何回送り直したか (`getsockopt` 1 回。T14.46)。**勝った候補だけ**
+                // 読む (捨てる候補のぶんは数えない = 確立 1 本につきちょうど 1 回)
+                note_syn_retrans(&stream);
                 let won_v6 = addrs[index].is_ipv6();
                 // ホスト別の内訳 (`v4_wins` / `v6_wins`) に使う (T12.4 (2))
                 crate::dns::note_family(won_v6);

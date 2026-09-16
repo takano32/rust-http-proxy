@@ -33,4 +33,6 @@ pub use proxy_base::{
 pub use proxy_cache::sys;
 pub use proxy_cache::{cache, signal, sysinfo};
 pub use proxy_net::{acl, dns, net};
+// 起動時の自己ベンチ (T14.43)。`/status` の `self_bench` はここが覚えている結果を読むだけ
 pub use proxy_rrd::rrd;
+pub use proxy_selfbench as selfbench;

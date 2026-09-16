@@ -198,6 +198,9 @@ fn detail_of(total: Duration, cause: Option<ErrCause>, stages: StageMs) -> Detai
         dns_misses,
         connect_ms: total_ms.saturating_sub(dns_ms),
         family_v6: crate::dns::take_family(),
+        // 確立までに SYN を送り直した回数 (T14.46)。読んだのは `net` の確立点の
+        // `getsockopt` 1 回で、ここは thread-local を読んで 0 に戻すだけ
+        syn_retrans: crate::dns::take_syn_retrans(),
         cause,
         // CONNECT は「確立まで」がそのまま窓に入る値なので指定しない
         first_byte_ms: None,
@@ -245,6 +248,7 @@ fn report(
     reason: CloseReason,
     socks: Option<&[TcpStream; 2]>,
     half_close: Option<Duration>,
+    stall_ms: [u32; SIDES],
 ) {
     let transferred = up.saturating_add(down);
     // トンネルの寿命 (時計はここで 1 回だけ読み、アクセスログ・T14.3 の段階・
@@ -281,6 +285,11 @@ fn report(
                 stage_ms,
                 rtt_us,
                 retrans,
+                // 確立までの SYN の再送 (T14.46)。確立の直後に読んだ値をそのまま運ぶ
+                syn_retrans: detail.syn_retrans,
+                // 中継が書けるのを待った ms (T14.42)。中継のループで数え終えた
+                // ものをそのまま運ぶだけで、ここでは時計も割り算も無い
+                stall_ms,
             },
             0,
         );
@@ -297,7 +306,7 @@ fn report(
         o.metrics
             .history
             .transfer
-            .observe(transferred, relay, half_close);
+            .observe(transferred, relay, half_close, stall_ms);
         // 接続元 1 つの追跡 (`/trace`。T14.27)。**旗が立っているトンネルだけ** 1 行書く。
         // 立っていない本数の費用はこの分岐 1 回だけで、宛先・段階の ms・閉じた理由・
         // 寿命はすぐ上で既に組んだものをそのまま渡す (時計も確保も増やさない)
@@ -325,7 +334,10 @@ fn report(
     // CONNECT のホストと SNI の食い違い (T14.38)。旗は中継の入口で 1 回だけ立ててあり、
     // ここはホスト別統計が既に取る鍵の内側へ運ぶだけ (原子もシステムコールも増えない)
     detail.sni_mismatch = o.sni_mismatch;
-    o.metrics.add_bytes(transferred);
+    // 自己ベンチ (T14.43) のトンネルは合計にも足さない (`/hosts` と同じ理由)
+    if !crate::selfbench::is_target(&o.addr_str) {
+        o.metrics.add_bytes(transferred);
+    }
     let host_key = format!("connect://{}", o.addr_str);
     o.metrics.record_host_detail(
         &host_key,
@@ -426,7 +438,16 @@ pub fn handle_connect(
         // 分からない (`/recent` の理由は `shutdown` になる)
         // Linux 以外は `io::copy` が終わった時点でソケットを手放しているので読めない
         // 半閉じ (片側 EOF) がいつ起きたかも分からない (T14.25)
-        report(&info, up, down, CloseReason::Shutdown, None, None);
+        // 詰まりの向き (T14.42) も `io::copy` の中で待つので数えられない (両方 0)
+        report(
+            &info,
+            up,
+            down,
+            CloseReason::Shutdown,
+            None,
+            None,
+            [0; SIDES],
+        );
         Ok(())
     }
 }
@@ -550,7 +571,7 @@ mod relay {
 
     use super::{Info, Opened, report};
     use crate::log_trace;
-    use crate::recent::{CloseReason, ConnSlot, ConnState};
+    use crate::recent::{CLIENT_SIDE, CloseReason, ConnSlot, ConnState, ORIGIN_SIDE, SIDES};
     use crate::sys::{self, POLLERR, POLLHUP, POLLIN, POLLOUT, Pipe, PollFd};
 
     /// 1 回の splice / read で動かす最大バイト数 (パイプ容量と同じ)。
@@ -759,8 +780,26 @@ mod relay {
         /// (または試験用の口) の CONNECT」だけで、**最初にクライアント側が読めた
         /// ときに 1 回覗いて倒す** (トンネル 1 本に `recv(MSG_PEEK)` は多くて 1 回)
         peek_sni: bool,
+        /// 書けるのを待った合計 (us。`[クライアント側, オリジン側]`。T14.42)。
+        ///
+        /// 添字は `socks` の添字と同じで、`0` は「**クライアントへ**書けなくて待った」
+        /// (= 利用者の下り回線か端末が読んでいない)、`1` は「**オリジンへ**書けなくて
+        /// 待った」(= オリジンか利用者の上りが詰まっている)。**時計を読むのは
+        /// `poll` で書けるのを待ちに入る回だけ**で、64 KiB ごとにも splice ごとにも
+        /// 読まない (詰まらない中継は 1 回も読まない)。ms ではなく us で積むのは、
+        /// 1 ms に満たない待ちを何度も繰り返すトンネルで切り捨てが積み上がらないように
+        stall_us: [u64; SIDES],
         /// 本体クレートの持ち分 (同時接続数と `active_connections`)。中身は見ない
         _hold: Box<dyn Send>,
+    }
+
+    /// 積んだ us を個票の ms にする (**時計は読まない**。四捨五入は T14.25 と同じ)。
+    fn stall_ms(us: [u64; SIDES]) -> [u32; SIDES] {
+        let mut out = [0u32; SIDES];
+        for (o, v) in out.iter_mut().zip(us) {
+            *o = ((v + 500) / 1000).min(u32::MAX as u64) as u32;
+        }
+        out
     }
 
     impl Drop for Idle {
@@ -791,6 +830,8 @@ mod relay {
                 reason,
                 Some(&self.socks),
                 half_close,
+                // 中継の詰まりの向き (T14.42)。中継のループで積んだ us を ms に丸めるだけ
+                stall_ms(self.stall_us),
             );
         }
     }
@@ -878,6 +919,8 @@ mod relay {
             let peek_sni = &mut self.peek_sni;
             let sni_mismatch = &mut self.info.sni_mismatch;
             let addr_str = &self.info.addr_str;
+            // 書けるのを待った時間 (T14.42)。預けても引き継ぐので `Idle` の欄
+            let stall_us = &mut self.stall_us;
 
             loop {
                 let mut progressed = false;
@@ -1001,7 +1044,27 @@ mod relay {
                     Some(g) if parkable => g,
                     _ => timeout_ms,
                 };
-                match sys::poll_fds(&mut fds, wait_ms) {
+                // 中継の詰まりの向き (T14.42)。**書けなくて待ちに入る回だけ**時計を
+                // 読む: `events` に `POLLOUT` が立つのは、直前の `drain` (splice) が
+                // `EAGAIN` で止まって `pending` が残っている方向だけなので、
+                // **書けば必ず入る相手 (loopback) では `Instant::now()` を 1 度も
+                // 呼ばない** — ここの比較 1 回で終わる。64 KiB ごとでも splice ごとでも
+                // なく「待ちに入る回」なので、`--lite` でも同じように読む
+                // (T14.25 の「最初の EOF の 1 回」と同じ扱い)
+                let stall_from =
+                    ((events[CLIENT_SIDE] | events[ORIGIN_SIDE]) & POLLOUT != 0).then(Instant::now);
+                let polled = sys::poll_fds(&mut fds, wait_ms);
+                // 待ち終わったのでもう 1 回読み、**書けなかった向きだけ**に積む。
+                // 両方詰まっていれば両方に積む (どちらも「その間書けなかった」ため)
+                if let Some(t) = stall_from {
+                    let waited = t.elapsed().as_micros().min(u64::MAX as u128) as u64;
+                    for (side, ev) in events.iter().enumerate() {
+                        if ev & POLLOUT != 0 {
+                            stall_us[side] = stall_us[side].saturating_add(waited);
+                        }
+                    }
+                }
+                match polled {
                     Ok(0) if parkable => return Outcome::Idle,
                     Ok(0) if wait_ms >= 0 => {
                         log_trace!(Some(conn_id), "tunnel idle timeout after {}ms", wait_ms);
@@ -1069,6 +1132,7 @@ mod relay {
             close: None,
             first_eof: None,
             peek_sni,
+            stall_us: [0; SIDES],
             _hold: hold,
         }));
         Ok(())
