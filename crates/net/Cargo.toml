@@ -8,3 +8,6 @@ path = "src/lib.rs"
 
 [dependencies]
 proxy-base = { path = "../base" }
+# 待ち受けソケットを自分で作るため (`socket` / `bind` / `listen(fd, backlog)`。T14.47)。
+# Linux 以外では使わない (`std` の `bind` のまま)
+proxy-sys = { path = "../sys" }

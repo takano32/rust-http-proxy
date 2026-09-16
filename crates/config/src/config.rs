@@ -281,6 +281,14 @@ pub struct Config {
     pub bind_addrs: Vec<IpAddr>,
     /// IPv6 を使うか (待ち受けと AAAA での接続)。既定 on
     pub ipv6: bool,
+    /// 待ち受けの受け入れ待ち行列の長さ (`PROXY_LISTEN_BACKLOG`、既定 `0` =
+    /// `min(1024, /proc/sys/net/core/somaxconn)`。T14.47)。
+    ///
+    /// **持っているのは実効値** (`0` はここには残らない。`auto` を数に直す `max_conns` と同じ形)。
+    /// `std` の `TcpListener::bind` は 128 固定で、accept ループが 1 本 (§4 の T4.3) なので
+    /// ブラウザの同時 CONNECT で溢れ、**SYN が捨てられてクライアントが 1 秒後に再送する**。
+    /// **`.env` の再読込では変わらない** (待ち受けは起動時に 1 回作るもの)
+    pub listen_backlog: u32,
     pub acl: AclConfig,
     /// 接続・読み書きのタイムアウト (`PROXY_TIMEOUT_SECS`、既定 30 秒、`0` で無期限)。
     ///
@@ -519,6 +527,23 @@ impl Config {
             cfg.ipv6 = !off(v);
             src.mark("PROXY_IPV6");
         }
+        // 待ち受けの backlog (T14.47)。`0` と `auto` は既定 (= min(1024, somaxconn)) に戻す。
+        // 大きすぎる値はカーネルが `somaxconn` で頭打ちにするので、ここでは切らない
+        // (`/config` に書いたとおりの数が出て、実際に効いたかは `ss -ltn` の `Send-Q` で分かる)
+        if let Some(v) = envfile::var("PROXY_LISTEN_BACKLOG") {
+            let v = v.trim();
+            if v.eq_ignore_ascii_case("auto") {
+                cfg.listen_backlog = crate::net::default_backlog();
+                src.mark("PROXY_LISTEN_BACKLOG");
+            } else if let Ok(n) = v.parse::<u32>() {
+                cfg.listen_backlog = if n == 0 {
+                    crate::net::default_backlog()
+                } else {
+                    n
+                };
+                src.mark("PROXY_LISTEN_BACKLOG");
+            }
+        }
         if let Some(v) = envfile::var("PROXY_TLS") {
             cfg.tls_enabled = !off(v);
             src.mark("PROXY_TLS");
@@ -745,6 +770,8 @@ impl Config {
             ),
         );
         add("PROXY_IPV6", self.ipv6.to_string());
+        // backlog は実効値 (`0` を書かれても、ここには決まった数が出る。T14.47)
+        add("PROXY_LISTEN_BACKLOG", self.listen_backlog.to_string());
         // 接続と上限
         add("PROXY_TIMEOUT_SECS", secs(self.timeout));
         add("PROXY_KEEPALIVE_SECS", secs(self.keepalive));
@@ -907,6 +934,7 @@ impl Config {
             port,
             bind_addrs: Vec::new(),
             ipv6: true,
+            listen_backlog: crate::net::default_backlog(),
             acl,
             timeout,
             keepalive: Duration::from_secs(15),

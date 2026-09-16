@@ -585,6 +585,145 @@ impl Drop for Epoll {
     }
 }
 
+/// 待ち受けソケットを自分で作るための定数と束縛 (`socket` / `bind` / `listen`。T14.47)。
+///
+/// `std` の `TcpListener::bind` は **`listen(fd, 128)` 固定**なので、backlog を選ぶには
+/// ソケットを自分で作るしかない。値は [`sockopt`] と同じく **aarch64 / x86_64 だけ**で
+/// 有効にする (`SOCK_CLOEXEC` と `SO_REUSEADDR` は arch によって値が違う)。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+mod listensock {
+    use std::ffi::{c_int, c_void};
+
+    pub const AF_INET: c_int = 2;
+    pub const AF_INET6: c_int = 10;
+    pub const SOCK_STREAM: c_int = 1;
+    /// `SOCK_CLOEXEC` は `O_CLOEXEC` と同じ値 (asm-generic)。
+    pub const SOCK_CLOEXEC: c_int = 0o2000000;
+    pub const SO_REUSEADDR: c_int = 2;
+
+    /// `struct sockaddr_in` (16 B)。`sin_port` と `sin_addr` はネットワークバイト順。
+    #[repr(C)]
+    pub struct SockAddrIn {
+        pub sin_family: u16,
+        pub sin_port: u16,
+        pub sin_addr: [u8; 4],
+        pub sin_zero: [u8; 8],
+    }
+
+    /// `struct sockaddr_in6` (28 B)。
+    #[repr(C)]
+    pub struct SockAddrIn6 {
+        pub sin6_family: u16,
+        pub sin6_port: u16,
+        pub sin6_flowinfo: u32,
+        pub sin6_addr: [u8; 16],
+        pub sin6_scope_id: u32,
+    }
+
+    unsafe extern "C" {
+        pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
+        pub fn bind(fd: c_int, addr: *const c_void, len: u32) -> c_int;
+        pub fn listen(fd: c_int, backlog: c_int) -> c_int;
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+const _: () = assert!(size_of::<listensock::SockAddrIn>() == 16);
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+const _: () = assert!(size_of::<listensock::SockAddrIn6>() == 28);
+
+/// backlog を選んで待ち受けソケットを 1 本作る (`socket` → `SO_REUSEADDR` → `bind` → `listen`。T14.47)。
+///
+/// 返すのは **`listen` まで済んだ生の記述子**で、呼び出し側が `TcpListener::from_raw_fd` で
+/// 包む (包んだ時点で閉じる責任も移る)。途中で失敗したらここで閉じてから `Err` を返す。
+///
+/// `std` の `TcpListener::bind` との違いは **backlog だけ**。`SO_REUSEADDR` は `std` と同じく
+/// `bind` の前に立て、**`IPV6_V6ONLY` は触らない** (カーネルの既定 =
+/// `/proc/sys/net/ipv6/bindv6only` に任せる。`[::]` が IPv4 も受ける今の姿を変えないため)。
+/// `backlog` はカーネルが `/proc/sys/net/core/somaxconn` で頭打ちにするので、
+/// 大きめの値を渡しても溢れない。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+pub fn listen_socket(addr: std::net::SocketAddr, backlog: u32) -> io::Result<RawFd> {
+    use listensock::*;
+
+    let port = addr.port().to_be();
+    let (domain, v4, v6) = match addr.ip() {
+        std::net::IpAddr::V4(ip) => (
+            AF_INET,
+            Some(SockAddrIn {
+                sin_family: AF_INET as u16,
+                sin_port: port,
+                sin_addr: ip.octets(),
+                sin_zero: [0; 8],
+            }),
+            None,
+        ),
+        std::net::IpAddr::V6(ip) => (
+            AF_INET6,
+            None,
+            Some(SockAddrIn6 {
+                sin6_family: AF_INET6 as u16,
+                sin6_port: port,
+                sin6_flowinfo: 0,
+                sin6_addr: ip.octets(),
+                // 待ち受けでは scope id を使わない (リンクローカルを明示するときだけ要る)
+                sin6_scope_id: 0,
+            }),
+        ),
+    };
+    // SAFETY: 引数は定数だけ。失敗は -1 で返る。
+    let fd = unsafe { socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // ここから先の失敗は、開けた記述子を閉じてから返す (漏らさない)
+    let failed = |fd: RawFd| -> io::Error {
+        let e = io::Error::last_os_error();
+        // SAFETY: 自分で開いた fd を 1 回だけ閉じる。
+        unsafe { close(fd) };
+        e
+    };
+    // `std` の `TcpListener::bind` と同じく bind の前に `SO_REUSEADDR` を立てる
+    // (TIME_WAIT の残っているポートにも待ち受けられるように)
+    let one: c_int = 1;
+    if set(fd, sockopt::SOL_SOCKET, SO_REUSEADDR, &one).is_err() {
+        return Err(failed(fd));
+    }
+    // SAFETY: どちらの枝も、その族の `sockaddr` とその大きさを対で渡している。
+    let bound = unsafe {
+        match (&v4, &v6) {
+            (Some(a), _) => bind(
+                fd,
+                a as *const SockAddrIn as *const c_void,
+                size_of::<SockAddrIn>() as u32,
+            ),
+            (_, Some(a)) => bind(
+                fd,
+                a as *const SockAddrIn6 as *const c_void,
+                size_of::<SockAddrIn6>() as u32,
+            ),
+            // `IpAddr` は 2 つしか無いので、どちらかは必ず `Some`
+            (None, None) => -1,
+        }
+    };
+    if bound < 0 {
+        return Err(failed(fd));
+    }
+    // SAFETY: 自分で開いた記述子を listen するだけ。カーネルが somaxconn で頭打ちにする。
+    if unsafe { listen(fd, backlog.min(c_int::MAX as u32) as c_int) } < 0 {
+        return Err(failed(fd));
+    }
+    Ok(fd)
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+pub fn listen_socket(_addr: std::net::SocketAddr, _backlog: u32) -> io::Result<RawFd> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "socket constants are only known for aarch64 and x86_64",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -788,5 +927,65 @@ mod tests {
     fn tcp_info_is_none_for_a_file() {
         let f = std::fs::File::open("/proc/self/cmdline").unwrap();
         assert_eq!(tcp_info(f.as_raw_fd()), None);
+    }
+
+    /// 自分で作った待ち受けが `std` の `TcpListener` と同じように使えること (T14.47)。
+    ///
+    /// `sockaddr` の組み立て (族・ポートのバイト順) が違っていれば `bind` が `EINVAL` に
+    /// なるか、`local_addr` が別のアドレスで返る。
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[test]
+    fn listen_socket_binds_ipv4_with_the_given_backlog() {
+        use std::os::fd::FromRawFd;
+
+        let want: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let fd = listen_socket(want, 5).expect("listen_socket(127.0.0.1:0)");
+        // SAFETY: listen まで済んだ記述子を 1 回だけ包む (以後は TcpListener が閉じる)。
+        let listener = unsafe { TcpListener::from_raw_fd(fd) };
+        let bound = listener.local_addr().unwrap();
+        assert_eq!(bound.ip(), want.ip(), "{}", bound);
+        assert_ne!(bound.port(), 0, "ephemeral port が割り当たっていない");
+
+        let client = TcpStream::connect(bound).unwrap();
+        let (accepted, peer) = listener.accept().unwrap();
+        assert_eq!(peer.ip(), want.ip());
+        drop((client, accepted));
+    }
+
+    /// IPv6 側も同じ (`sockaddr_in6` は 28 B で欄の並びが違う)。
+    /// `::1` が無い機械では黙って飛ばす。
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[test]
+    fn listen_socket_binds_ipv6_with_the_given_backlog() {
+        use std::os::fd::FromRawFd;
+
+        if TcpListener::bind("[::1]:0").is_err() {
+            return;
+        }
+        let want: std::net::SocketAddr = "[::1]:0".parse().unwrap();
+        let fd = listen_socket(want, 1024).expect("listen_socket([::1]:0)");
+        // SAFETY: 上と同じ。
+        let listener = unsafe { TcpListener::from_raw_fd(fd) };
+        let bound = listener.local_addr().unwrap();
+        assert_eq!(bound.ip(), want.ip(), "{}", bound);
+        let client = TcpStream::connect(bound).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        drop((client, accepted));
+    }
+
+    /// 使用中のポートは `AddrInUse` で返り、記述子を漏らさない (失敗の枝で close している)。
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[test]
+    fn listen_socket_reports_address_in_use_without_leaking() {
+        let taken = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = taken.local_addr().unwrap();
+        // `SO_REUSEADDR` は「TIME_WAIT のポートを使える」だけで、生きている待ち受けとは共有しない
+        let open_fds = || std::fs::read_dir("/proc/self/fd").unwrap().count();
+        let before = open_fds();
+        for _ in 0..8 {
+            let err = listen_socket(addr, 128).expect_err("使用中のポートに bind できてしまった");
+            assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{:?}", err);
+        }
+        assert_eq!(open_fds(), before, "失敗した 8 回ぶんの記述子が残っている");
     }
 }

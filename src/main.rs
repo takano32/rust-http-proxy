@@ -168,7 +168,7 @@ fn main() {
     // canary の宛先と周期 (T14.10)。実際に回すのは履歴スレッドの周期から (`--lite` と
     // `PROXY_STATS_PERSIST=off` では履歴スレッドが無いので canary も回らない)
     rust_http_proxy::canary::configure(&config.canary, config.canary_secs, config.canary_ipv6);
-    let listeners = match net::bind_all(&config.bind_addrs, config.port) {
+    let listeners = match net::bind_all(&config.bind_addrs, config.port, config.listen_backlog) {
         Ok(l) => l,
         Err(e) => {
             log_error!(None, "failed to bind port {}: {}", config.port, e);
@@ -331,14 +331,17 @@ fn main() {
     log_info!(
         None,
         // 版を先頭に出す: デプロイ先でどのコミットが動いているかをログだけでも
-        // 追えるようにするため (同じ文字列が `-V` と `/status` の `version` に出る。T12.6)
-        "rust-http-proxy {} listening on {} (log level: {})",
+        // 追えるようにするため (同じ文字列が `-V` と `/status` の `version` に出る。T12.6)。
+        // 待ち受けのあとの backlog は T14.47 (128 では足りないことがあるので、効いている値が
+        // ログだけで分かるようにする。カーネルは somaxconn で頭打ちにする)
+        "rust-http-proxy {} listening on {} (backlog {}, log level: {})",
         rust_http_proxy::VERSION,
         listeners
             .iter()
             .map(net::describe_listener)
             .collect::<Vec<_>>()
             .join(", "),
+        config.listen_backlog,
         log::current_level().as_str().trim()
     );
     // 出来事の時系列の 1 件目 (`/events`。T14.11)。再デプロイの時刻を
