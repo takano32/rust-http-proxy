@@ -392,3 +392,52 @@ fn test_integration_hosts_lists_every_host_while_status_keeps_fifty() {
     assert_eq!(count_hosts(&ten), 10, "{}", ten);
     assert!(ten.contains("\"count\":60"), "{}", ten);
 }
+
+/// ACL で拒否した CONNECT が `/errors` に `acl` として見えること (T14.2 (4))。
+///
+/// 403 は 5xx ではないので集計 (`errors_by_cause`) には乗らない。**誰が何を拒否されたか**を
+/// 読めるのは個票だけなので、そこに出ることを見る。
+#[test]
+fn test_integration_errors_records_a_403_with_its_reason() {
+    use rust_http_proxy::config::Config;
+    use std::time::Duration;
+
+    let mut cfg = Config::new(
+        "0",
+        None,
+        Some("blocked.example, 127.0.0.1"),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    cfg.keepalive = Duration::from_secs(2);
+    let proxy_port = start_test_proxy(cfg);
+
+    // ACL で拒否される CONNECT (127.0.0.1 は deny_hosts に入れてある)
+    let target = "127.0.0.1:443";
+    let out = raw_get(
+        proxy_port,
+        &format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", target, target),
+    );
+    assert!(out.starts_with("HTTP/1.1 403"), "{}", out);
+
+    let json = endpoint_json(proxy_port, "/errors");
+    assert!(json.contains("\"recorded\":1"), "{}", json);
+    assert!(json.contains("\"cause\":\"acl\""), "{}", json);
+    assert!(json.contains("\"status\":403"), "{}", json);
+    assert!(json.contains("\"kind\":\"connect\""), "{}", json);
+    assert!(
+        json.contains(&format!("\"target\":\"{}\"", target)),
+        "宛先が無い: {}",
+        json
+    );
+    assert!(json.contains("\"client\":\"127.0.0.1\""), "{}", json);
+
+    // 集計の方は今までどおり: 403 は `blocked` に数え、`errors_by_cause` は全部 0 のまま
+    let status = endpoint_json(proxy_port, "/status");
+    assert!(status.contains("\"blocked\":1"), "{}", status);
+    assert!(
+        status.contains("\"errors_by_cause\":[0,0,0,0,0,0,0,0]"),
+        "403 が集計の原因別に混ざっている: {}",
+        status
+    );
+}

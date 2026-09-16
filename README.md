@@ -163,7 +163,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **最近のエラー (直近 20)** と **いまの接続 (上位 50)** の表 (どちらも 5 秒ごと)、
     URL の照会と削除、全消去)、`/healthz`, `/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
   - **個票 (集計では読めない「誰が・いつ・なぜ」。T13.4)**: `/errors?n=100` で直近のエラー
-    (時刻・`connect` / `forward`・宛先・原因・名前解決 ms・接続 ms・返した状態コード・接続元。500 件の環状、プロセスのメモリだけ)、
+    (時刻・`connect` / `forward`・宛先・原因・名前解決 ms・接続 ms・返した状態コード・接続元。500 件の環状、プロセスのメモリだけ)。
+    **403 で拒否した要求もここに入ります** (原因は `acl` / `blocklist` / `connect_port` / `local`、状態コード 403)。
+    403 は 5xx ではないので `/status` の `errors_by_cause` (8 つの原因) には乗らず、
+    集計では `hosts[]` の `blocked` に数えるだけです。**誰が何を拒否されたか**はこの個票でだけ読めます、
     `/connections` でいま開いている接続の一覧 (接続 id・接続元・宛先・`connect` / `http`・
     状態 `relaying` / `parked` / `reading` / `serving` / `queued`・開始からの秒・転送バイト・記述子の数。`--lite` では空)、
     `/dns?sort=age|host|misses&limit=300` で名前解決の表の中身 (ホスト・アドレス・解決からの秒・残り TTL・

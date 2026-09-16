@@ -1214,11 +1214,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // ローカル宛ての判定で引いた答え (接続でもう一度引かないために持ち回す。T12.7)
     let mut resolved: Option<dns::Resolved> = None;
     let denied = if !config.acl.is_allowed(target_host) {
-        Some("ACL")
+        Some(metrics::BlockCause::Acl)
     } else if blocklist::is_blocked(bare_host) {
-        Some("blocklist")
+        Some(metrics::BlockCause::Blocklist)
     } else if is_connect && !config.connect_ports.allows(host_port.unwrap_or(443)) {
-        Some("CONNECT port")
+        Some(metrics::BlockCause::ConnectPort)
     } else if !config.allow_local {
         // クラウドのメタデータ (169.254.169.254) 経由の SSRF を止める。
         // **判定に使った答えはそのまま接続へ渡す** (名前解決は 1 要求 1 回。T12.7)。
@@ -1228,7 +1228,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         let _ = dns::take_family();
         let (local, r) = acl::resolve_target(target_host);
         resolved = r;
-        local.then_some("local address")
+        local.then_some(metrics::BlockCause::Local)
     } else {
         None
     };
@@ -1236,7 +1236,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         log_warn!(
             Some(conn_id),
             "403 Forbidden ({} blocked host: {})",
-            why,
+            why.label(),
             target_host
         );
         metrics.record_host(
@@ -1245,6 +1245,9 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             0,
         );
         metrics.record_client(peer_ip, metrics::HostOutcome::Blocked, 0, None);
+        // 個票にも 1 件残す (`/errors`。T14.2 (4))。403 は集計では `blocked` に数えてあり、
+        // `errors_by_cause` には乗らないので、**誰が何を拒否されたか**はここでしか読めない
+        metrics.record_blocked(is_connect, target_host, peer_ip, why);
         (&*client).write_all(FORBIDDEN_RESPONSE)?;
         (&*client).flush()?;
         return Ok(Step::Close);
