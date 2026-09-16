@@ -8,7 +8,7 @@
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
 //! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、`PROXY_CANARY`、`PROXY_CANARY_SECS`、
 //! `PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
-//! `PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`、
+//! `PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`、`PROXY_TRACE_CLIENT`、
 //! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
 //! `/status` と dashboard に「再起動が必要」と出す。
@@ -146,6 +146,13 @@ impl Live {
         if fresh.max_conns_per_client != old.max_conns_per_client {
             next.max_conns_per_client = fresh.max_conns_per_client;
             applied.push("PROXY_MAX_CONNS_PER_CLIENT");
+        }
+        // 追跡する接続元 (T14.27)。旗を立てるのは accept なので**次に来る接続から**効く
+        // (いま開いている接続の旗はそのまま = 途中で追跡が切れたり増えたりしない)
+        if fresh.trace_client != old.trace_client {
+            next.trace_client = fresh.trace_client;
+            next.sources.adopt(&fresh.sources, "PROXY_TRACE_CLIENT");
+            applied.push("PROXY_TRACE_CLIENT");
         }
         if fresh.tunnel_idle != old.tunnel_idle {
             next.tunnel_idle = fresh.tunnel_idle;
