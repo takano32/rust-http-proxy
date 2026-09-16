@@ -1213,8 +1213,11 @@ mod closed_tests {
             json
         );
         assert!(json.ends_with("}}"), "{}", &json[json.len() - 40..]);
-        // 1 時間の解像度は `null`
-        assert!(h.to_json_res(2).ends_with(",\"closed\":null}"));
+        // 1 時間の解像度は `null`。**末尾で見ない**: T14.10 の `canary` がこのうしろに
+        // 付くので、`ends_with` で見ると「別の配列を足したら落ちるテスト」になる
+        let hour = h.to_json_res(2);
+        assert!(hour.contains(",\"closed\":null"), "{}", hour);
+        assert!(hour.ends_with("}"), "{}", hour);
     }
 
     /// 窓が埋まったときの大きさ (1 窓 ≈ 300 B。`/history` が太る分をここで押さえておく)。
