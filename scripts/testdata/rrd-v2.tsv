@@ -4,29 +4,31 @@
 #
 # 名前は**全部架空** (`.invalid` は RFC 2606、IP は RFC 5737 の文書用)。デプロイ先の実名は置かない。
 # 列 (タブ区切り。`#` で始まる行と空行は読み飛ばす):
-#   host   <宛先>       <要求数> <バイト>    <応答 ms の合計> <RTT の標本数>
-#   client <接続元 IP>  <要求数> <バイト>    <応答 ms の合計> <RTT の標本数>
-#   fill   <ホストの水増し> <接続元の水増し> <1 行の要求数>    0
-#   sample <解像度 (秒)> <本数>  <最初の時刻>  0
-#   override <宛先>     <block=1> <期限>     <作った時刻>     0
+#   host   <宛先>       <要求数> <バイト>   <応答 ms の合計> <RTT の標本数> <上りバイト>
+#   client <接続元 IP>  <要求数> <バイト>   <応答 ms の合計> <RTT の標本数> <上りバイト>
+#   fill   <ホストの水増し> <接続元の水増し> <1 行の要求数> 0 0
+#   sample <解像度 (秒)> <本数>  <最初の時刻> 0 0
+#   override <宛先>     <block=1> <期限>    <作った時刻>    0 0
 #
-# RTT の標本数が 0 の行は **T14.5 より前の形 (49 項目 = 520 B)** で書く。
-# 0 でない行は T14.5 のあとの形 (53 項目 = 552 B)。どちらも版 2 のファイルに混ざり得るので、
-# 両方が同じように版 3 へ移ることを見る。
-host	connect://news.fixture.invalid:443	4210	812345678	38912	2105
-host	connect://mail.fixture.invalid:443	2880	104857600	24310	1440
-host	connect://cdn.fixture.invalid:443	1204	938475600	9821	602
-host	connect://api.fixture.invalid:443	903	12345678	7210	451
-host	connect://chat.fixture.invalid:443	421	4194304	3510	0
-host	http://origin.fixture.invalid:80	288	1048576	401	0
-host	connect://ntp.fixture.invalid:123	132	65536	1044	0
-host	connect://gone.fixture.invalid:443	89	0	178200	0
-client	203.0.113.10	6100	612345678	48120	3050
-client	198.51.100.7	3200	304857600	31010	1600
-client	192.0.2.44	827	16777216	9560	0
-fill	392	397	100	0
-sample	5	720	1700000000	0
-sample	60	1440	1699000000	0
-sample	3600	300	1690000000	0
+# 1 行の長さは**末尾の欄がどこまであるか**で決まる (版 2 のファイルには 3 通りが混ざり得る):
+#   上りバイト > 0            → T14.26 のあとの形 (55 項目 = 568 B)
+#   RTT の標本数 > 0          → T14.5 のあとの形  (53 項目 = 552 B)
+#   どちらも 0                → T14.5 より前の形  (49 項目 = 520 B)
+# 3 通りとも同じように版 3 へ移る (欄は末尾に足す決まりなので、短い行は 0 で読み戻る)。
+host	connect://news.fixture.invalid:443	4210	812345678	38912	2105	8123456
+host	connect://mail.fixture.invalid:443	2880	104857600	24310	1440	10485760
+host	connect://cdn.fixture.invalid:443	1204	938475600	9821	602	0
+host	connect://api.fixture.invalid:443	903	12345678	7210	451	0
+host	connect://chat.fixture.invalid:443	421	4194304	3510	0	0
+host	http://origin.fixture.invalid:80	288	1048576	401	0	0
+host	connect://ntp.fixture.invalid:123	132	65536	1044	0	0
+host	connect://gone.fixture.invalid:443	89	0	178200	0	0
+client	203.0.113.10	6100	612345678	48120	3050	6123456
+client	198.51.100.7	3200	304857600	31010	1600	0
+client	192.0.2.44	827	16777216	9560	0	0
+fill	392	397	100	0	0
+sample	5	720	1700000000	0	0
+sample	60	1440	1699000000	0	0
+sample	3600	300	1690000000	0	0
 override	blocked.fixture.invalid	1	0	1700000001	0
 override	allowed.fixture.invalid	0	1900000000	1700000002	0
