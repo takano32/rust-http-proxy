@@ -1291,6 +1291,15 @@ impl Metrics {
         // `/proc` を読むのはこのパスに来たときだけ (要求ごとには読まない)
         let threads = crate::sysinfo::process_threads().unwrap_or(0);
         let (fds, max_fds) = crate::sysinfo::process_fds().unwrap_or((0, 0));
+        // RSS は、キャッシュのプローブ (既定 1 秒ごと) が回っているならその値を使う。
+        // **同じ `/status` の `cache.system.process_rss_bytes` と 1 バイトも違わない**ように
+        // するため (1 枚の中に食い違う RSS が 2 つ並ぶと、どちらを信じるかが分からない)。
+        // プローブが止まっている (`PROXY_CACHE_PROBE_SECS=0` / キャッシュ無効 / `--lite`)
+        // ときは古い値しか無いので、その場で `/proc/self/status` を読む
+        let rss = cache
+            .filter(|c| !c.config().probe_interval.is_zero())
+            .and_then(|c| c.snapshot().rss)
+            .or_else(crate::sysinfo::process_rss);
         let hosts_json: Vec<String> = all_hosts
             .into_iter()
             .take(50)
@@ -1336,7 +1345,8 @@ impl Metrics {
                 // この環境で何が読めるか (T14.15) と canary (T14.10)。どちらも覚えてある結果を読むだけ
                 "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
-                "\"kernel\":{}}}"
+                // (`memory` も同じく末尾。T14.21)
+                "\"kernel\":{},\"memory\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1380,9 +1390,90 @@ impl Metrics {
             // カーネルと cgroup の統計 (5 秒の標本で読んだ最新の値。T14.12)。
             // ここから直に呼べるのは `dns` / `ipv6` と同じ**下の層**だから
             // (`settings` のような上の層の部品は `extra` で受け取る)
-            crate::kernel::status_json()
+            crate::kernel::status_json(),
+            // RSS の内訳 (T14.21)。`mallinfo2` を読むのはこの経路だけ
+            memory_json(rss, threads, extra.concurrency.live_threads as u64, cache)
         )
     }
+}
+
+/// `/status` の `memory` (RSS が何でできているか。T14.21)。
+///
+/// 256 MiB のコンテナで「RSS の内訳」を `/status` 1 枚から読むためのもの。読むのは
+/// **`/status` に来たときだけ**で、要求の経路には 1 命令も足さない (`mallinfo2` は
+/// アリーナの鍵を順に取るので数 us)。
+///
+/// **足して RSS になる形ではない** (README の `/status` の節にも同じ注意を書いてある):
+///
+/// - `rss` は呼び出し側が渡す 1 つの値 (キャッシュのプローブが読んだもの、または今読んだもの)。
+///   同じ `/status` の `cache.system.process_rss_bytes` と食い違わせない
+/// - `heap_used` / `heap_free` / `mmap` は `mallinfo2(3)` の `uordblks` / `fordblks` /
+///   `hblkhd`。`heap_free` は「返していないだけ」で、`MADV_DONTNEED` 済みなら常駐していない。
+///   `mmap` も確保しただけで触っていないページは常駐しない (`calloc` の大きな塊など)
+/// - `stacks_estimate` は**予約**の合計 (実際に触ったページとの差は出せない)。接続スレッド
+///   (`conn`) は 256 KiB、それ以外は Rust の既定 2 MiB
+/// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
+///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
+/// - `rings` は記録のリングが**満杯のときの見積もり** (固定部 + 文字列の上限。T13.4 / T14.4 /
+///   T14.6)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
+/// - `arenas` は `PROXY_MALLOC_ARENAS` で掛けた上限 (`0` = glibc の既定のまま。T5.6)
+///
+/// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
+fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<&Cache>) -> String {
+    use crate::history::{RESOLUTIONS, Sample};
+    use crate::log::{Line, MAX_LOG_LINE, MAX_LOG_LINES};
+    use crate::recent::{
+        BurstShot, ClosedCounts, ErrorEntry, MAX_BURSTS, MAX_CLIENT, MAX_ERRORS, MAX_RECENT,
+        MAX_RECENT_TARGET, MAX_SHOT_CLIENTS, MAX_SHOT_TARGETS, MAX_TARGET, RecentEntry,
+    };
+
+    /// 接続スレッドのスタック (`crates/workers` の `STACK_SIZE` と同じ値)。
+    /// あちらは private なので写してある (変えるときは両方)。
+    const CONN_STACK: u64 = 256 * 1024;
+    /// それ以外のスレッド (`std::thread` の既定)。
+    const THREAD_STACK: u64 = 2 * 1024 * 1024;
+
+    let name = size_of::<(String, u32)>();
+    let recent = (MAX_RECENT * (size_of::<RecentEntry>() + MAX_RECENT_TARGET + MAX_CLIENT)) as u64;
+    let errors = (MAX_ERRORS * (size_of::<ErrorEntry>() + MAX_TARGET + MAX_CLIENT)) as u64;
+    let bursts = (MAX_BURSTS
+        * (size_of::<BurstShot>()
+            + MAX_SHOT_CLIENTS * (name + MAX_CLIENT)
+            + MAX_SHOT_TARGETS * (name + MAX_TARGET))) as u64;
+    let log = (MAX_LOG_LINES * (size_of::<Line>() + MAX_LOG_LINE)) as u64;
+    // 履歴は 3 解像度の標本 (T12.4) と、閉じた接続の分布の窓 2 つ (T14.6)
+    let samples: usize = RESOLUTIONS.iter().map(|(_, n)| n).sum();
+    let history = (samples * size_of::<Sample>()
+        + (RESOLUTIONS[0].1 + RESOLUTIONS[1].1) * size_of::<(u64, ClosedCounts)>())
+        as u64;
+
+    let conn = conn_threads.min(threads);
+    let other = threads.saturating_sub(conn_threads);
+    let stacks = (threads > 0).then(|| conn * CONN_STACK + other * THREAD_STACK);
+    let heap = crate::sysinfo::malloc_info();
+    let opt = |v: Option<u64>| v.map_or_else(|| "null".to_string(), |x| x.to_string());
+
+    format!(
+        concat!(
+            "{{\"rss\":{},\"heap_used\":{},\"heap_free\":{},\"mmap\":{},",
+            "\"stacks_estimate\":{},\"cache_memory\":{},",
+            "\"rings\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
+            "\"history\":{},\"total\":{}}},\"arenas\":{}}}"
+        ),
+        opt(rss),
+        opt(heap.map(|h| h.used)),
+        opt(heap.map(|h| h.free)),
+        opt(heap.map(|h| h.mmap)),
+        opt(stacks),
+        cache.map_or(0, |c| c.mem_usage().0.saturating_add(c.mem_reserved())),
+        recent,
+        errors,
+        bursts,
+        log,
+        history,
+        recent + errors + bursts + log + history,
+        crate::sysinfo::arena_max(),
+    )
 }
 
 /// ホスト別 / 接続元別に共通の統計フィールド (先頭・末尾の波括弧なし)。
