@@ -113,6 +113,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
+         \x20 /hosts/series?top=16&host=<name>            JSON: per-host series (5 min x 24 h)\n\
          \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
          \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
@@ -209,7 +210,7 @@ pub fn handle(
     } else if is_get && path == "/events" {
         // 起きたことの時系列 (T14.11)。起動・再読込・ブロックリスト・IPv6・圧迫・
         // バラスト・状態ファイル・追い出し・accept の失敗・停止シグナルを 1 本に
-        recent::events(query)
+        recent::events(ep, query)
     } else if is_get && path == "/snapshot" {
         // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
         recent::snapshot(ep)
@@ -219,7 +220,10 @@ pub fn handle(
         // 1 日 1 行の要約 (T14.20)。`/history` (30 日) が消えたあとも残る
         recent::daily(query)
     } else if is_get && path == "/log" {
-        recent::log(query)
+        recent::log(ep, query)
+    } else if is_get && path == "/hosts/series" {
+        // ホスト別の時系列 (上位 16 ホスト × 5 分 × 24 時間。T14.22)
+        recent::host_series(ep, query)
     } else if is_get && path == "/hosts" {
         recent::hosts(ep, query)
     } else if is_get && path == "/clients" {

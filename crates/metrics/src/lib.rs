@@ -6,13 +6,16 @@
 //! 層ごとにクレートを分けてあるのは、`rustc` がクレート単位で全部を一度に抱えるため
 //! (動作環境のメモリ上限は 200 MB)。**外部クレートは 1 つも使っていない。**
 
+pub mod anomaly;
 pub mod canary;
 pub mod daily;
 pub mod events;
 pub mod history;
+pub mod hostseries;
 pub mod kernel;
 pub mod metrics;
 pub mod persist;
+pub mod persist_recent;
 pub mod profile;
 pub mod recent;
 pub mod transfer;

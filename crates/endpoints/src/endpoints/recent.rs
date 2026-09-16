@@ -7,6 +7,11 @@
 //! どれも JSON・`Cache-Control: no-store`・`Connection: close` (組み立ては
 //! [`super::handle`] が共通で行う)。時刻は epoch 秒。
 //!
+//! **`"persisted"` と `"restored"`** (`/recent` `/errors` `/bursts` `/events` `/log`。T14.9):
+//! この 4 つのリングは 5 秒ごとに `$HOME/.rust-http-proxy.recent` (固定 4 MiB、統計の
+//! `.rrd` とは別のファイル) へ追記され、次の起動で読み戻される。`persisted` がその可否、
+//! `restored` が**再起動前から引き継いだ件数**。
+//!
 //! **応答は必ず [`MAX_BODY`] 以下**にする。件数の上限 (`?n=` / `?limit=`) とは別に
 //! バイト数でも打ち切り、切ったときは `"truncated":true` を出す。上限を件数だけで
 //! 決めると、長いホスト名や多いアドレスで簡単に越えてしまう
@@ -56,6 +61,16 @@ fn str_param(query: Option<&str>, key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// 個票を状態ファイルに残しているか (`$HOME/.rust-http-proxy.recent`。T14.9)。
+///
+/// `PROXY_STATS_PERSIST=off` と、ファイルが開けなかったときは `false`
+/// (= 「この口の中身は再起動で消える」の意味)。
+fn persisted(ep: &Endpoint<'_>) -> bool {
+    ep.metrics
+        .recent_persisted
+        .load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `?key=N` を読む (無い / 読めない / 範囲外は既定か端に倒す。`/status?sort=` と同じ方針)。
 fn num_param(query: Option<&str>, key: &str, default: usize, max: usize) -> usize {
     parse_query(query.unwrap_or(""))
@@ -75,11 +90,13 @@ pub fn errors(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     let (shown, cut) = array_within(&mut out, entries.iter().map(|e| e.to_json()));
     let _ = write!(
         out,
-        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"truncated\":{}}}",
+        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"persisted\":{},\"restored\":{},\"truncated\":{}}}",
         shown,
         ep.metrics.errors.len(),
         MAX_ERRORS,
         total,
+        persisted(ep),
+        ep.metrics.errors.restored(),
         cut
     );
     (200, "application/json", out)
@@ -133,7 +150,7 @@ pub fn dns(query: Option<&str>) -> (u16, &'static str, String) {
 ///
 /// `info` のアクセスログは写していない (熱い経路を重くしないため。T10.10)。
 /// 動作環境 (Pterodactyl) のコンソールは流れて消えるので、これがその代わり。
-pub fn log(query: Option<&str>) -> (u16, &'static str, String) {
+pub fn log(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, crate::log::MAX_LOG_LINES);
     let (lines, total) = crate::log::recent(n);
     let mut out = String::with_capacity(8192);
@@ -141,7 +158,7 @@ pub fn log(query: Option<&str>) -> (u16, &'static str, String) {
     let (shown, cut) = array_within(&mut out, lines.iter().map(log_line_json));
     let _ = write!(
         out,
-        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"level\":\"{}\",\"truncated\":{}}}",
+        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"level\":\"{}\",\"persisted\":{},\"restored\":{},\"truncated\":{}}}",
         shown,
         crate::log::recent_len(),
         crate::log::MAX_LOG_LINES,
@@ -150,6 +167,8 @@ pub fn log(query: Option<&str>) -> (u16, &'static str, String) {
             .as_str()
             .trim()
             .to_ascii_lowercase(),
+        persisted(ep),
+        crate::log::restored_count(),
         cut
     );
     (200, "application/json", out)
@@ -246,6 +265,78 @@ pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
         restored_since
     );
     (200, "application/json", out)
+}
+
+/// `/hosts/series?top=16&host=<name>` — ホスト別の時系列 (T14.22)。
+///
+/// `/hosts` は**通算**、`/history` は**全体**しか無いので、その間を埋める口。
+/// 直近 1 時間の要求数で選んだ**上位 16 ホスト**について、5 分の窓ごとの
+/// 件数・確立 (forward は初バイト) の合計 ms・最大 ms・名前解決 ms・エラー数を
+/// 24 時間ぶん (288 標本) 返す。`?host=` を渡すとそのホストだけ。
+///
+/// 標本は**古い順**で、`i` 番目の時刻は `t0 + i * window_secs` (`t` を 288 × 16 個
+/// 並べると応答が 50 KB 太るので置いていない)。上位に居ないホストは系列を持たない
+/// (空の一覧になる) ので、`tracked` で「いま何本あるか」が分かる。
+pub fn host_series(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    let host = str_param(query, "host");
+    let top = num_param(
+        query,
+        "top",
+        crate::hostseries::SLOTS,
+        crate::hostseries::SLOTS,
+    );
+    let want = (!host.is_empty()).then_some(host.as_str());
+    let view = ep.metrics.host_series(want, top);
+    let count = view.series.len();
+    let mut out = String::with_capacity(64 * 1024);
+    out.push_str("{\"series\":");
+    let (shown, cut) = array_within(&mut out, view.series.iter().map(series_json));
+    let _ = write!(
+        out,
+        ",\"keys\":[{}],\"window_secs\":{},\"samples\":{},\"slots\":{},\"t0\":{},\"tracked\":{},\"rotations\":{},\"count\":{},\"shown\":{},\"host\":\"{}\",\"top\":{},\"truncated\":{}}}",
+        crate::hostseries::FIELD_NAMES
+            .iter()
+            .map(|k| format!("\"{}\"", k))
+            .collect::<Vec<_>>()
+            .join(","),
+        view.window_secs,
+        crate::hostseries::SAMPLES,
+        crate::hostseries::SLOTS,
+        view.t0,
+        view.tracked,
+        view.rotations,
+        count,
+        shown,
+        crate::json::escape(&host),
+        top,
+        cut
+    );
+    (200, "application/json", out)
+}
+
+/// `/hosts/series` の 1 ホストぶん (標本は古い順の配列の配列。`/history` と同じ作法)。
+fn series_json(s: &crate::hostseries::Series) -> String {
+    let t = s.totals();
+    let mut out = String::with_capacity(8192);
+    let _ = write!(
+        out,
+        "{{\"host\":\"{}\",\"hour_requests\":{},\"total\":[{},{},{},{},{}],\"samples\":[",
+        crate::json::escape(&s.host),
+        s.hour_requests,
+        t[0],
+        t[1],
+        t[2],
+        t[3],
+        t[4]
+    );
+    for (i, r) in s.rows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "[{},{},{},{},{}]", r[0], r[1], r[2], r[3], r[4]);
+    }
+    out.push_str("]}");
+    out
 }
 
 /// `/clients?sort=requests|recent|targets|literal&limit=200` — **全接続元**の個票 (T14.7)。
@@ -349,7 +440,7 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     let (shown, cut) = array_within(&mut out, rows.iter().take(n).map(RecentEntry::to_json));
     let _ = write!(
         out,
-        ",\"count\":{},\"matched\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"sort\":\"{}\",\"since\":{},\"client\":\"{}\",\"truncated\":{},\"lite\":{}}}",
+        ",\"count\":{},\"matched\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"sort\":\"{}\",\"since\":{},\"client\":\"{}\",\"persisted\":{},\"restored\":{},\"truncated\":{},\"lite\":{}}}",
         shown,
         matched,
         shown,
@@ -359,6 +450,8 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
         sort.name(),
         since,
         crate::json::escape(&client),
+        persisted(ep),
+        ep.metrics.closed.restored(),
         cut,
         !ep.metrics.conns.enabled()
     );
@@ -383,7 +476,7 @@ pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     let (shown, cut) = array_within(&mut out, shots.iter().map(BurstShot::to_json));
     let _ = write!(
         out,
-        ",\"count\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"threshold\":{},\"max_conns\":{},\"active\":{},\"armed\":{},\"pending\":{},\"truncated\":{},\"lite\":{}}}",
+        ",\"count\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"threshold\":{},\"max_conns\":{},\"active\":{},\"armed\":{},\"pending\":{},\"persisted\":{},\"restored\":{},\"truncated\":{},\"lite\":{}}}",
         shown,
         shown,
         ep.metrics.bursts.len(),
@@ -396,6 +489,8 @@ pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
             .load(std::sync::atomic::Ordering::Relaxed),
         ep.metrics.bursts.armed(),
         ep.metrics.bursts.pending(),
+        persisted(ep),
+        ep.metrics.bursts.restored(),
         cut,
         !ep.metrics.conns.enabled()
     );
@@ -408,8 +503,9 @@ pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
 /// 起動・設定の再読込・ブロックリストの更新・IPv4 優先の切替・メモリの圧迫・バラストの
 /// 増減・状態ファイルの異常・上限での追い出し・accept の失敗・停止シグナルを **1 本の
 /// 時系列**にしたもの。`/log` は warn 以上なので info の出来事が入らず、`/status` の
-/// `settings` は最後の 1 回しか残さない。種類は `kinds` に並ぶ 10 種で固定。
-pub fn events(query: Option<&str>) -> (u16, &'static str, String) {
+/// `settings` は最後の 1 回しか残さない。種類は `kinds` に並ぶ 11 種で固定
+/// (11 種目は異常の自動検知 `anomaly`。T14.23)。
+pub fn events(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, MAX_EVENTS);
     // `?since=` は `/recent` と同じ扱い (「その時刻以降に起きたもの」。無ければ 0 = 全部)
     let since = parse_query(query.unwrap_or(""))
@@ -423,13 +519,15 @@ pub fn events(query: Option<&str>) -> (u16, &'static str, String) {
     let (shown, cut) = array_within(&mut out, events.iter().map(crate::events::Event::to_json));
     let _ = write!(
         out,
-        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"since\":{},\"kinds\":{},\"truncated\":{}}}",
+        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"since\":{},\"kinds\":{},\"persisted\":{},\"restored\":{},\"truncated\":{}}}",
         shown,
         crate::events::len(),
         MAX_EVENTS,
         total,
         since,
         crate::json::list(crate::events::KINDS.iter().map(|k| k.name())),
+        persisted(ep),
+        crate::events::restored_count(),
         cut
     );
     (200, "application/json", out)
@@ -484,13 +582,15 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ("connections", connections(ep).2),
         ("recent", recent(ep, Some("n=2000")).2),
         ("hosts", hosts(ep, Some("limit=1000")).2),
+        // ホスト別の時系列 (上位 16 × 5 分 × 24 時間。T14.22)
+        ("hosts_series", host_series(ep, Some("top=16")).2),
         ("clients", clients(ep, Some("limit=1000")).2),
         ("bursts", bursts(ep, Some("n=50")).2),
         // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)。
         // `--lite` では `{"profile":"off"}` の 1 行になる
         ("profile", super::profile::profile(ep, Some("res=5")).2),
-        ("events", events(Some("n=512")).2),
-        ("log", log(Some("n=1000")).2),
+        ("events", events(ep, Some("n=512")).2),
+        ("log", log(ep, Some("n=1000")).2),
     ];
     let names: Vec<&'static str> = part.iter().map(|(k, _)| *k).collect();
     let dropped = drop_to_fit(&mut part, MAX_SNAPSHOT);
@@ -748,10 +848,31 @@ mod tests {
     #[test]
     fn the_events_endpoint_filters_by_n_and_since() {
         use crate::events::{EventKind, MAX_EVENTS};
+        let m = crate::metrics::Metrics::new();
+        let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
+        let concurrency = || crate::metrics::Concurrency {
+            max_conns: 0,
+            max_threads: 0,
+            live_threads: 0,
+            idle_threads: 0,
+            queued_jobs: 0,
+        };
+        let ep = Endpoint {
+            metrics: &m,
+            cache: &cache,
+            conn_id: 1,
+            port: 8080,
+            host: None,
+            pac_direct: &[],
+            lite: false,
+            readonly: false,
+            version: "test",
+            concurrency: &concurrency,
+        };
         crate::events::clear();
         crate::events::push(EventKind::Start, "version 0.0.0 on port 8080");
         crate::events::push(EventKind::Reload, "PROXY_TIMEOUT_SECS 30 \u{2192} 10");
-        let body = events(None).2;
+        let body = events(&ep, None).2;
         assert!(body.starts_with("{\"events\":["), "{}", body);
         assert!(body.contains("\"kind\":\"reload\""), "{}", body);
         assert!(
@@ -763,7 +884,7 @@ mod tests {
         assert!(body.contains("\"recorded\":2"), "{}", body);
         assert!(body.contains("\"capacity\":512"), "{}", body);
         assert!(body.contains("\"truncated\":false"), "{}", body);
-        // 10 種の名前が全部出る (README の一覧と合っているか)
+        // 11 種の名前が全部出る (README の一覧と合っているか)
         for kind in [
             "start",
             "reload",
@@ -775,6 +896,7 @@ mod tests {
             "evict",
             "emfile",
             "shutdown",
+            "anomaly",
         ] {
             assert!(body.contains(&format!("\"{}\"", kind)), "{} が無い", kind);
         }
@@ -783,11 +905,11 @@ mod tests {
         let second = body.find("\"kind\":\"start\"").unwrap();
         assert!(first < second, "新しい順でない: {}", body);
         // `?n=1` で 1 件
-        let one = events(Some("n=1")).2;
+        let one = events(&ep, Some("n=1")).2;
         assert!(one.contains("\"count\":1"), "{}", one);
         assert!(!one.contains("\"kind\":\"start\""), "{}", one);
         // `?since=` は「その時刻以降」。先の時刻なら 0 件
-        let none = events(Some("since=9999999999")).2;
+        let none = events(&ep, Some("since=9999999999")).2;
         assert!(none.starts_with("{\"events\":[]"), "{}", none);
         assert!(none.contains("\"since\":9999999999"), "{}", none);
         assert!(none.contains("\"recorded\":2"), "通算は残る: {}", none);
@@ -799,7 +921,7 @@ mod tests {
                 &format!("{}{}", "\u{2192}".repeat(50), i),
             );
         }
-        let body = events(Some("n=512")).2;
+        let body = events(&ep, Some("n=512")).2;
         assert!(body.contains("\"count\":512"), "{}", body);
         assert!(body.contains("\"truncated\":false"), "{}", body);
         assert!(body.len() <= MAX_BODY, "{} B", body.len());
@@ -1257,6 +1379,47 @@ mod tests {
         assert!(none.contains("\"recorded\":0"), "{}", none);
         assert!(none.contains("\"armed\":true"), "{}", none);
         assert!(none.contains("\"pending\":false"), "{}", none);
+    }
+
+    /// `/hosts/series` は 16 ホスト × 288 標本でも 256 KiB 以下 (T14.22)。
+    ///
+    /// デプロイ先並みの値 (5 分に 300 本) なら 16 本が丸ごと入る。どの欄も 20 桁まで
+    /// 振り切った最悪は入りきらないので、そこは**バイト数で打ち切る** (`/hosts` と同じ)。
+    #[test]
+    fn the_host_series_response_stays_under_256_kib() {
+        use crate::hostseries::{FIELDS, SAMPLES, SLOTS, Series};
+
+        let plain: Vec<Series> = (0..SLOTS)
+            .map(|i| Series {
+                host: format!("connect://host{:02}.example.net:443", i),
+                hour_requests: 3_600,
+                // 5 分に 300 本、確立の合計 3,600 ms、最大 250 ms、名前解決 900 ms、エラー 2 件
+                rows: vec![[300, 3_600, 250, 900, 2]; SAMPLES],
+            })
+            .collect();
+        let worst: Vec<Series> = (0..SLOTS)
+            .map(|i| Series {
+                host: format!("connect://host{:02}.cdn.example.net:443", i),
+                hour_requests: u64::MAX,
+                rows: vec![[u64::MAX; FIELDS]; SAMPLES],
+            })
+            .collect();
+        for (name, series, want_cut) in [("deployed-like", plain, false), ("worst", worst, true)] {
+            let mut body = String::from("{\"series\":");
+            let (shown, cut) = array_within(&mut body, series.iter().map(series_json));
+            body.push('}');
+            assert_eq!(cut, want_cut, "{}", name);
+            assert!(body.len() <= MAX_BODY, "{}: {} B", name, body.len());
+            println!(
+                "hosts/series {} ({} ホスト × {} 標本): {} B / 出せたのは {} 本 (上限 {} B)",
+                name,
+                SLOTS,
+                SAMPLES,
+                body.len(),
+                shown,
+                MAX_BODY
+            );
+        }
     }
 
     #[test]

@@ -267,13 +267,19 @@ pub struct HostStats {
     /// その接続たちが再送したセグメントの通算 (`tcpi_total_retrans`)
     pub retrans: u64,
     /// 向き別の転送バイト (T14.26)。`bytes_in` = クライアント → オリジン (上り)、
-    /// `bytes_out` = オリジン → クライアント (下り)。
+    /// `bytes_out` = オリジン → クライアント (下り)。**ここまでが `.rrd` に残る欄**
+    /// ([`HostStats::encode`] の並びと同じ順)。
     ///
     /// CONNECT は `bytes == bytes_in + bytes_out` だが、**forward の `bytes` は
     /// 今までどおり応答のぶんだけ**なので (欄の意味は変えない)、上りを足すと
     /// `bytes_in + bytes_out` の方が大きくなる
     pub bytes_in: u64,
     pub bytes_out: u64,
+    /// ホスト別の時系列 ([`crate::hostseries`]) の枠の番号。**直近 1 時間の要求数で
+    /// 上位 16 に居る間だけ** `Some` で、入れ替えるのは history スレッド (T14.22)。
+    /// 要求の経路はこの旗を見るだけ。`.rrd` には書かない欄なので
+    /// [`HostStats::encode`] / [`HostStats::decode`] は 1 バイトも変えていない
+    pub series_slot: Option<u8>,
 }
 
 impl HostStats {
@@ -905,6 +911,9 @@ struct HostTable {
     /// 直近の標本以降の段階 (`take_stages` が読んで 0 に戻す。T14.3 (1))。
     /// **同じ鍵の内側に置いてある**ので、段階を足しても原子操作は増えない
     stages: crate::profile::Stages,
+    /// 上位 16 ホストの時系列 (`/hosts/series`。T14.22)。**ホスト表と同じ鍵の中**に
+    /// 置いて、要求の経路が鍵を 2 つ取らないようにしてある
+    series: crate::hostseries::HostSeries,
 }
 
 pub struct Metrics {
@@ -946,6 +955,10 @@ pub struct Metrics {
     /// 山の写真 (`/bursts`。T14.6)。accept の経路は閾を越えた瞬間に旗を立てるだけで、
     /// **撮るのは history スレッド** ([`Metrics::take_burst_shot`])
     pub bursts: crate::recent::BurstRing,
+    /// 上の 4 本のリング (`/recent` `/errors` `/bursts` `/log`) を
+    /// `$HOME/.rust-http-proxy.recent` に残しているか (T14.9)。
+    /// `PROXY_STATS_PERSIST=off` と、ファイルが開けなかったときは `false`
+    pub recent_persisted: AtomicBool,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -976,6 +989,7 @@ impl Metrics {
             profile: crate::profile::Profile::default(),
             closed: crate::recent::RecentRing::new(),
             bursts: crate::recent::BurstRing::new(),
+            recent_persisted: AtomicBool::new(false),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }
@@ -1125,6 +1139,12 @@ impl Metrics {
         // `tunnel::report`。前綴りを見るだけで済むので、呼び出し側に旗を持たせない)
         let connect = host.starts_with("connect://");
         let counted = connect || !(host.starts_with("blocked://") || host.starts_with("loop://"));
+        // 窓と時系列に入れる値 (ms)。**1 回だけ作る** (以前は Interval 2 つで 2 回作っていた。T14.22)
+        let ms = took.map(|d| {
+            detail
+                .first_byte_ms
+                .unwrap_or_else(|| d.as_millis().min(u64::MAX as u128) as u64)
+        });
         // 全体の合計も同じ鍵の内側で足す (原子操作を増やさない)
         for iv in [&mut hosts.total, &mut hosts.interval] {
             iv.dns_misses += detail.dns_misses;
@@ -1135,10 +1155,7 @@ impl Metrics {
             if let Some(c) = detail.cause {
                 iv.errors_by_cause[c as usize] += 1;
             }
-            if let Some(d) = took {
-                let ms = detail
-                    .first_byte_ms
-                    .unwrap_or_else(|| d.as_millis().min(u64::MAX as u128) as u64);
+            if let Some(ms) = ms {
                 if connect {
                     iv.connect.observe(ms);
                 } else if counted {
@@ -1158,6 +1175,15 @@ impl Metrics {
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
         if let Some(stats) = hosts.map.get_mut(host) {
             stats.count(outcome, bytes, took, detail);
+            // 上位 16 ホストなら時系列にも 1 標本ぶん (T14.22)。旗が無ければ分岐 1 回で終わり
+            if let Some(slot) = stats.series_slot {
+                hosts.series.add(
+                    slot,
+                    ms.unwrap_or(0),
+                    detail.dns_ms,
+                    outcome == HostOutcome::Error,
+                );
+            }
             return;
         }
         let key = if hosts.map.len() >= MAX_HOSTS {
@@ -1170,6 +1196,29 @@ impl Metrics {
             .entry(key)
             .or_default()
             .count(outcome, bytes, took, detail);
+    }
+
+    /// ホスト別の時系列の窓を進め、上位 16 を入れ替える (T14.22)。
+    ///
+    /// **呼ぶのは history スレッドだけ** (5 秒ごと)。窓の境目 (既定 5 分) でなければ
+    /// ホスト表の鍵 1 回と比較 1 回で戻る。`--lite` は履歴スレッドそのものが立たない
+    /// (`PROXY_STATS_PERSIST=off` と同じ) ので、旗が立つことも配列を確保することも無い。
+    pub fn roll_host_series(&self) {
+        let mut hosts = self.hosts.locked();
+        let t = &mut *hosts;
+        t.series.rotate(crate::cache::now_epoch(), &mut t.map);
+    }
+
+    /// 上位ホストの時系列の写し (`/hosts/series`。T14.22)。
+    ///
+    /// `host` を渡すとそのホストだけ、渡さなければ直近 1 時間の要求数の多い順に `top` 件。
+    pub fn host_series(&self, host: Option<&str>, top: usize) -> crate::hostseries::View {
+        self.hosts.locked().series.view(host, top)
+    }
+
+    /// 時系列の窓を差し替える (**結合テスト用の口**。本番は 5 分。T14.22)。
+    pub fn set_host_series_window(&self, secs: u64) {
+        self.hosts.locked().series.set_window(secs);
     }
 
     /// 直近の標本以降の合計を読み、0 に戻す ([`crate::history::Sample::take`] だけが呼ぶ)。
@@ -1605,7 +1654,7 @@ impl Metrics {
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
 ///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
 /// - `rings` は記録のリングが**満杯のときの見積もり** (固定部 + 文字列の上限。T13.4 / T14.4 /
-///   T14.6 / T14.11 / T14.25)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
+///   T14.6 / T14.11 / T14.22 / T14.25)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
 /// - `arenas` は `PROXY_MALLOC_ARENAS` で掛けた上限 (`0` = glibc の既定のまま。T5.6)
 ///
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
@@ -1634,6 +1683,12 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             + MAX_SHOT_TARGETS * (name + MAX_TARGET))) as u64;
     let log = (MAX_LOG_LINES * (size_of::<Line>() + MAX_LOG_LINE)) as u64;
     let events = (MAX_EVENTS * (size_of::<Event>() + MAX_TEXT)) as u64;
+    // ホスト別の時系列は固定長 (上位 16 ホスト × 288 標本 × 5 項目 × 8 B。T14.22)。
+    // **上位が 1 つ決まるまでは確保しない**ので、これも「満杯のとき」の見積もり
+    let hostseries = (crate::hostseries::SLOTS
+        * crate::hostseries::SAMPLES
+        * crate::hostseries::FIELDS
+        * size_of::<u64>()) as u64;
     // 履歴は 3 解像度の標本 (T12.4) と、閉じた接続の分布の窓 2 つ (T14.6)、
     // 速さと半閉じの窓 2 つ (T14.25)
     let samples: usize = RESOLUTIONS.iter().map(|(_, n)| n).sum();
@@ -1653,7 +1708,7 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             "{{\"rss\":{},\"heap_used\":{},\"heap_free\":{},\"mmap\":{},",
             "\"stacks_estimate\":{},\"cache_memory\":{},",
             "\"rings\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
-            "\"events\":{},\"history\":{},\"total\":{}}},\"arenas\":{}}}"
+            "\"events\":{},\"history\":{},\"hostseries\":{},\"total\":{}}},\"arenas\":{}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -1667,7 +1722,8 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         log,
         events,
         history,
-        recent + errors + bursts + log + events + history,
+        hostseries,
+        recent + errors + bursts + log + events + history + hostseries,
         crate::sysinfo::arena_max(),
     )
 }

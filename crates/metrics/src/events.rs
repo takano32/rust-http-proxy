@@ -10,7 +10,7 @@
 //! 頻度の高いものには歯止めを掛けてある: [`note_evict`] と [`note_accept_error`] は
 //! **1 時間に初めて起きたときだけ**、状態ファイルの書込エラーは最初の 1 回だけ。
 //!
-//! 種類は [`EventKind`] の **10 種で固定** (増やすなら README も)。書く場所:
+//! 種類は [`EventKind`] の **11 種で固定** (増やすなら README も)。書く場所:
 //!
 //! | 種類 | 書く場所 |
 //! |---|---|
@@ -20,6 +20,7 @@
 //! | `ipv6` / `pressure` / `ballast` | [`poll`] (履歴スレッドの周期。下を参照) |
 //! | `state_file` | `crates/metrics/src/persist.rs` (書込エラーの最初の 1 回) |
 //! | `evict` / `emfile` | `src/lib.rs` (上限に当たって閉じた / accept が失敗した) |
+//! | `anomaly` | [`crate::anomaly`] (標本が基準値から外れた / 戻った。T14.23) |
 //!
 //! `ipv6` / `pressure` / `ballast` の 3 つだけ**変わり目を [`poll`] で見る**のは、
 //! それを起こす `proxy-net` と `proxy-cache` が**この層より下**にあるため
@@ -42,7 +43,7 @@ pub const MAX_EVENTS: usize = 512;
 /// 1 件の説明に収める長さ (バイト)。長いものは末尾に `…` を付けて切る。
 pub const MAX_TEXT: usize = 128;
 
-/// 出来事の種類 (**10 種で固定**)。
+/// 出来事の種類 (**11 種で固定**)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventKind {
     /// 起動した (版と、効いている設定の要約)
@@ -65,10 +66,12 @@ pub enum EventKind {
     Emfile,
     /// 停止シグナルを受けた
     Shutdown,
+    /// 標本が直近 1 時間の基準値から外れた / 戻った ([`crate::anomaly`]。T14.23)
+    Anomaly,
 }
 
 /// `/events` の `kinds` に出す全種類 (README の一覧と同じ並び)。
-pub const KINDS: [EventKind; 10] = [
+pub const KINDS: [EventKind; 11] = [
     EventKind::Start,
     EventKind::Reload,
     EventKind::Blocklist,
@@ -79,9 +82,20 @@ pub const KINDS: [EventKind; 10] = [
     EventKind::Evict,
     EventKind::Emfile,
     EventKind::Shutdown,
+    EventKind::Anomaly,
 ];
 
 impl EventKind {
+    /// ファイルに書くときの符号 ([`KINDS`] の添字。T14.9)。
+    pub fn code(self) -> u64 {
+        KINDS.iter().position(|&k| k == self).unwrap_or(0) as u64
+    }
+
+    /// 符号から戻す。知らない値は [`EventKind::Start`]。
+    pub fn from_code(v: u64) -> EventKind {
+        KINDS.get(v as usize).copied().unwrap_or(EventKind::Start)
+    }
+
     /// `/events` の `kind` に出す名前。
     pub fn name(self) -> &'static str {
         match self {
@@ -95,6 +109,7 @@ impl EventKind {
             EventKind::Evict => "evict",
             EventKind::Emfile => "emfile",
             EventKind::Shutdown => "shutdown",
+            EventKind::Anomaly => "anomaly",
         }
     }
 }
@@ -128,6 +143,10 @@ struct EventRing {
     next: usize,
     /// 起動からの通算 (捨てた分も含む)
     total: u64,
+    /// **個票のファイルに書いた所までの通算** (T14.9)
+    written: u64,
+    /// 起動時に読み戻した件数 (`/events` の `"restored"`)
+    restored: usize,
 }
 
 /// 出来事のリング。**書くのは稀な経路だけ**なので、要求を処理する経路はこの鍵を
@@ -136,6 +155,8 @@ static RING: Mutex<EventRing> = Mutex::new(EventRing {
     buf: Vec::new(),
     next: 0,
     total: 0,
+    written: 0,
+    restored: 0,
 });
 
 /// 1 件書く (満杯なら最も古いものを上書きする)。**稀な経路からだけ呼ぶこと。**
@@ -193,6 +214,56 @@ pub fn clear() {
     r.buf.clear();
     r.next = 0;
     r.total = 0;
+    r.written = 0;
+    r.restored = 0;
+}
+
+/// まだ個票のファイルに書いていない件を**古い順**で取り出す (T14.9)。
+///
+/// 呼ぶのは **history スレッドだけ** (5 秒ごと)。`max` を越える分は古い方から落とし、
+/// 落とした件数を 2 つ目に返す。印を位置ではなく通算の件数にしてあるのは、
+/// リングが古い件を上書きするため。
+pub fn take_unwritten(max: usize) -> (Vec<Event>, u64) {
+    let mut r = RING.locked();
+    let len = r.buf.len();
+    let pending = r.total.saturating_sub(r.written).min(len as u64) as usize;
+    r.written = r.total;
+    if pending == 0 {
+        return (Vec::new(), 0);
+    }
+    let take = pending.min(max);
+    let start = if len < MAX_EVENTS { 0 } else { r.next };
+    let out = ((len - take)..len)
+        .map(|i| r.buf[(start + i) % len].clone())
+        .collect();
+    (out, (pending - take) as u64)
+}
+
+/// 個票のファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
+///
+/// 読み戻した件は**書き直さない** (印を通算に合わせる)。件数は `/events` の
+/// `"restored"` に出す。**前の版の `shutdown` や `start` が残るのはこの読み戻しのおかげ。**
+pub fn restore(events: Vec<Event>) {
+    let n = events.len().min(MAX_EVENTS);
+    for e in events {
+        let mut r = RING.locked();
+        r.total += 1;
+        if r.buf.len() < MAX_EVENTS {
+            r.buf.push(e);
+            continue;
+        }
+        let at = r.next;
+        r.buf[at] = e;
+        r.next = (at + 1) % MAX_EVENTS;
+    }
+    let mut r = RING.locked();
+    r.written = r.total;
+    r.restored = n;
+}
+
+/// 再起動前から引き継いだ件数 (`/events` の `"restored"`)。
+pub fn restored_count() -> usize {
+    RING.locked().restored
 }
 
 /// `slot` が覚えている時刻と違う時 (= その 1 時間で最初) なら `true`。
@@ -325,12 +396,14 @@ pub fn poll(cache: &crate::cache::Cache) {
     on_ballast(&LAST_BALLAST, cache.mem_reserved(), cache.disk_reserved());
 }
 
+/// リングは 1 本きり (静的) なので、テストはこの鍵で 1 つずつ通す
+/// ([`crate::anomaly`] のテストもここに書くので、モジュールの外に出してある)。
+#[cfg(test)]
+pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// リングは 1 本きり (静的) なので、テストは 1 つずつ通す。
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn guard() -> std::sync::MutexGuard<'static, ()> {
         let g = TEST_LOCK.locked();
@@ -397,12 +470,12 @@ mod tests {
     }
 
     #[test]
-    fn the_ten_kinds_have_distinct_names() {
+    fn the_eleven_kinds_have_distinct_names() {
         let mut names: Vec<&str> = KINDS.iter().map(|k| k.name()).collect();
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 10, "名前が重なっている");
+        assert_eq!(names.len(), 11, "名前が重なっている");
     }
 
     #[test]
