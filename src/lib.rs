@@ -18,7 +18,7 @@ pub use proxy_cache::cache;
 pub use proxy_config::config;
 pub use proxy_endpoints::endpoints;
 pub use proxy_http::{freshness, http};
-pub use proxy_metrics::{canary, daily, history, kernel, metrics, persist, recent, rrd};
+pub use proxy_metrics::{canary, daily, events, history, kernel, metrics, persist, recent, rrd};
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};
 pub use proxy_origin::{Upstream, origin, pool, request, tls};
@@ -162,6 +162,8 @@ pub fn serve(
                 // 記述子を使い切ったとき (EMFILE/ENFILE) は何度呼んでも同じ失敗が返る。
                 // そのまま回すと 1 コアを 100% 使いながらログを溢れさせるので少し待つ
                 log_error!(None, "accept failed: {}", e);
+                // 出来事の時系列に 1 件 (**1 時間に初めて起きたときだけ**。T14.11)
+                events::note_accept_error(&e);
                 std::thread::sleep(ACCEPT_ERROR_BACKOFF);
                 continue;
             }
@@ -249,6 +251,10 @@ pub fn serve(
         let max = cfg.max_conns;
         if max > 0 && limiter.open() >= max {
             let made_room = park.as_ref().is_some_and(|w| w.evict_oldest_tunnel());
+            if made_room {
+                // 出来事の時系列に 1 件 (**1 時間に初めて起きたときだけ**。T14.11)
+                events::note_evict(limiter.open(), max);
+            }
             // 接続元ごとの上限で枠を取ってあれば、その枠をそのまま使う (二重には取らない)
             if !made_room && overflow.is_none() {
                 overflow = OverflowGuard::try_acquire(&limiter, false);
