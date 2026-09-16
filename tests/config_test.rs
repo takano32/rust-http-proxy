@@ -264,3 +264,69 @@ fn test_integration_config_shows_effective_values_and_their_source() {
     drop(_child);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `rust-http-proxy --check` が**起動せずに**環境と効く設定を印字して終わること (T14.15)。
+///
+/// 終了コードは `capabilities` の 6 項目 (名前解決を除く) が全部読めたら 0、
+/// 1 つでも読めなければ 1。どちらの機械でも落ちないよう、印字と終了コードの
+/// **辻褄が合っていること**を見る (この機械では 0)。
+#[test]
+fn test_integration_check_prints_capabilities_and_settings() {
+    let dir = std::env::temp_dir().join(format!("rhp-t1415-check-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(".env"), "PROXY_DNS_TTL_SECS=30\n").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
+        .arg("--check")
+        // 引数も効く (「この設定で起動したらどうなるか」が見られること)
+        .args(["-p", "3128"])
+        .env("HOME", &dir)
+        .env("PROXY_KEEPALIVE_SECS", "7")
+        .output()
+        .expect("--check が動かない");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let code = out.status.code().expect("exit code");
+
+    // 7 項目が印字される
+    for key in [
+        "proc_syscall",
+        "tcp_info",
+        "cgroup_cpu",
+        "cgroup_pressure",
+        "ipv6_route",
+        "home_writable",
+        "resolver_ms",
+    ] {
+        assert!(text.contains(key), "{} が印字されない:\n{}", key, text);
+    }
+    // 印字と終了コードの辻褄 (読めないものがあれば 1、無ければ 0)
+    if text.contains("check: ok") {
+        assert_eq!(code, 0, "全部読めるなら 0:\n{}", text);
+        assert!(!text.contains("[NO]"), "{}", text);
+    } else {
+        assert_eq!(code, 1, "読めないものがあれば 1:\n{}", text);
+        assert!(text.contains("[NO]"), "{}", text);
+    }
+    #[cfg(target_os = "linux")]
+    assert_eq!(code, 0, "この機械では全部読める:\n{}", text);
+
+    // 効いている設定と出どころ (`.env` / 環境変数 / 引数 / 既定) が並ぶ
+    assert!(
+        text.contains("env_file  PROXY_DNS_TTL_SECS") && text.contains(" 30"),
+        "{}",
+        text
+    );
+    assert!(text.contains("env       PROXY_KEEPALIVE_SECS"), "{}", text);
+    assert!(text.contains("cli       SERVER_PORT"), "{}", text);
+    assert!(text.contains("default   PROXY_TIMEOUT_SECS"), "{}", text);
+    assert!(
+        text.contains(&dir.join(".env").display().to_string()),
+        "{}",
+        text
+    );
+    // 起動していない (待ち受けの行が無い)
+    assert!(!text.contains("listening on"), "{}", text);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

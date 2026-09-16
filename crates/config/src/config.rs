@@ -553,9 +553,15 @@ impl Config {
             "PROXY_PROFILE",
             crate::json::quote_opt(self.lite.then_some("lite")),
         );
+        // `.env` にそのまま書き戻せる形で出す (読むのは大小を問わない)
         add(
             "PROXY_LOG_LEVEL",
-            crate::json::quote(crate::log::current_level().as_str().trim()),
+            crate::json::quote(
+                &crate::log::current_level()
+                    .as_str()
+                    .trim()
+                    .to_ascii_lowercase(),
+            ),
         );
         // キャッシュ (値は `CacheConfig` が持っているもの)
         add("PROXY_CACHE_ENABLED", c.enabled.to_string());

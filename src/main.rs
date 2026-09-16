@@ -30,6 +30,94 @@ fn nofile_limit() -> Option<u64> {
     }
 }
 
+/// `--check`: 起動前に**この環境で何が読めるか**と**効く設定**を印字する (T14.15)。
+///
+/// Pterodactyl のような触れないコンテナで、`/status` を引く前に「統計の `null` は
+/// この環境のせいか」「`.env` に書いた値は効くのか」を確かめるための口。
+/// 終了コードは `capabilities` の 6 項目 (名前解決を除く) が全部読めれば 0、
+/// 1 つでも読めなければ 1。**名前解決を外す**のは、リゾルバが遅い環境でも
+/// プロキシとしては動く (そしてそれ自体が測りたい数字) ため。
+fn check_environment() -> i32 {
+    println!("rust-http-proxy {} --check", rust_http_proxy::VERSION);
+    match rust_http_proxy::envfile::loaded_path() {
+        Some(p) => println!(
+            "settings file: {} ({} variables)",
+            p.display(),
+            rust_http_proxy::envfile::loaded_count()
+        ),
+        None => println!(
+            "settings file: none ({})",
+            rust_http_proxy::envfile::env_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "$HOME is not set".to_string())
+        ),
+    }
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            println!("\nconfiguration error: {}", e);
+            return 1;
+        }
+    };
+
+    // 測るのはここで 1 回だけ (名前解決に最大 2 秒)
+    let caps = rust_http_proxy::sysinfo::capabilities::probe();
+    let what = |name: &str| match name {
+        "proc_syscall" => "/proc/self/task/<tid>/syscall (per-thread state)",
+        "tcp_info" => "getsockopt(SOL_TCP, TCP_INFO) (kernel RTT and retransmits)",
+        "cgroup_cpu" => "cgroup cpu.stat (CPU throttling)",
+        "cgroup_pressure" => "cgroup cpu.pressure (PSI: waiting for the CPU)",
+        "ipv6_route" => "a default route in /proc/net/ipv6_route",
+        _ => "$HOME is writable (statistics file, blocklist)",
+    };
+    println!("\ncapabilities (what this environment lets the proxy read):");
+    for (name, ok) in caps.flags() {
+        println!(
+            "  [{}] {:<16} {}",
+            if ok { "ok" } else { "NO" },
+            name,
+            what(name)
+        );
+    }
+    println!(
+        "  [{}] {:<16} {}",
+        if caps.resolver_ms.is_some() {
+            "ok"
+        } else {
+            "--"
+        },
+        "resolver_ms",
+        match caps.resolver_ms {
+            Some(ms) => format!("{} ms for one lookup (not part of the exit code)", ms),
+            None => "no answer within 2s (not part of the exit code)".to_string(),
+        }
+    );
+
+    println!("\nsettings (source, name, effective value):");
+    for s in config.settings() {
+        // JSON の値をそのまま出すと文字列に引用符が付くので、単純なものは外す
+        let value = match s.value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+            Some(inner) if !inner.is_empty() && !inner.contains('\\') => inner.to_string(),
+            _ => s.value.clone(),
+        };
+        println!("  {:<9} {:<30} {}", s.source.as_str(), s.key, value);
+    }
+
+    let missing = caps.missing();
+    if missing.is_empty() {
+        println!("\ncheck: ok (everything this proxy reads is readable)");
+        0
+    } else {
+        println!(
+            "\ncheck: {} of {} not readable ({}) — those show up as null in /status and /history",
+            missing.len(),
+            caps.flags().len(),
+            missing.join(", ")
+        );
+        1
+    }
+}
+
 fn main() {
     match rust_http_proxy::cli::parse(std::env::args().skip(1), rust_http_proxy::VERSION) {
         rust_http_proxy::cli::Cli::Print(msg, 0) => {
@@ -39,6 +127,11 @@ fn main() {
         rust_http_proxy::cli::Cli::Print(msg, code) => {
             eprintln!("{}", msg);
             process::exit(code);
+        }
+        // `--check` は起動しない: この環境で何が読めるかと、効く設定を印字して終わる
+        rust_http_proxy::cli::Cli::Check(vars) => {
+            rust_http_proxy::envfile::set_overrides(vars);
+            process::exit(check_environment());
         }
         rust_http_proxy::cli::Cli::Run(vars) => rust_http_proxy::envfile::set_overrides(vars),
     }

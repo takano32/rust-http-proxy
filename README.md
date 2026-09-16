@@ -254,11 +254,41 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       --no-cache       キャッシュを止める    (PROXY_CACHE_ENABLED=off)
       --quiet          警告以上だけ出す      (PROXY_LOG_LEVEL=warn)
       --lite           最速の素通しプロファイル (PROXY_PROFILE=lite)
+      --check          起動せずに環境と効く設定を出して終了 (下記)
   -h, --help           使い方を出して終了 (終了コード 0)
   -V, --version        版を出して終了
 ```
 
 `--port=3128` の形式も使えます。知らない引数は使い方を出して終了コード 2 になります。
+
+`--check` は**起動せずに**「この環境で何が読めるか」(`capabilities` の 7 項目) と
+「この設定で起動したら何が効くか」(`/config` と同じ全 `PROXY_*` / `SERVER_*` と出どころ) を印字して終わります。
+Pterodactyl のように触れないコンテナで、**起動前の確認**と**統計の `null` の理由の切り分け**に使えます
+(他の引数も一緒に効くので `--check -p 3128 --lite` のように「その設定なら何が効くか」も見られます)。
+終了コードは `capabilities` の 6 項目 (`resolver_ms` を除く) が全部読めれば **0**、1 つでも読めなければ **1** です
+(名前解決を外すのは、リゾルバが遅い環境でもプロキシとしては動く — そしてそれ自体が測りたい数字 — ため)。
+
+```
+$ rust-http-proxy --check
+rust-http-proxy 0.1.0+28f9064 --check
+settings file: /home/container/.env (3 variables)
+
+capabilities (what this environment lets the proxy read):
+  [ok] proc_syscall     /proc/self/task/<tid>/syscall (per-thread state)
+  [ok] tcp_info         getsockopt(SOL_TCP, TCP_INFO) (kernel RTT and retransmits)
+  [ok] cgroup_cpu       cgroup cpu.stat (CPU throttling)
+  [ok] cgroup_pressure  cgroup cpu.pressure (PSI: waiting for the CPU)
+  [ok] ipv6_route       a default route in /proc/net/ipv6_route
+  [ok] home_writable    $HOME is writable (statistics file, blocklist)
+  [ok] resolver_ms      9 ms for one lookup (not part of the exit code)
+
+settings (source, name, effective value):
+  default   SERVER_PORT                    8080
+  env_file  PROXY_DNS_TTL_SECS             30
+  ...
+
+check: ok (everything this proxy reads is readable)
+```
 
 `-V` が出す版は `0.1.0+144b992` のように **`Cargo.toml` の版 + ビルドしたときの git の短いハッシュ**です
 (作業ツリーに未コミットの変更があれば `0.1.0+144b992-dirty`)。`git` や `.git` の無いところでビルドすると

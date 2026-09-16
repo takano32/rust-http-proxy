@@ -119,7 +119,8 @@ impl Capabilities {
 /// 最後に測った結果 (まだなら `None`)。要求の経路はここを読むだけ。
 static CURRENT: RwLock<Option<Capabilities>> = RwLock::new(None);
 
-/// 待ち受けソケットの記述子 (`TCP_INFO` を試す相手)。0 = まだ (`--check` では立てない)。
+/// 待ち受けソケットの記述子 (`TCP_INFO` を試す相手)。`-1` = まだ (`--check` では立てない)。
+#[cfg(target_os = "linux")]
 static LISTENER_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 /// `TCP_INFO` を試す相手として自分の待ち受けソケットを覚える (起動時に 1 回)。
