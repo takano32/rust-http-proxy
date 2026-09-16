@@ -200,3 +200,72 @@ fn a_hot_name_is_refreshed_in_the_background() {
     }
     rust_http_proxy::dns::set_ttl(Duration::from_secs(60));
 }
+
+/// 直近 W 秒に 2 回以上使われた名前は warm になり、`/status` の `dns.warm` と
+/// `/dns` の `warm` / `next_refresh_secs` に出る (T14.1)。
+///
+/// 1 回しか使われていない名前 (ここでは引けない名前) は warm にならないので、
+/// 「数えているのは 2 回以上の名前だけ」もここで見る。
+#[test]
+fn a_warm_name_shows_up_in_status_and_dns() {
+    let _guard = DNS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    rust_http_proxy::dns::set_ttl(Duration::from_secs(60));
+    rust_http_proxy::dns::set_warm_window(Duration::from_secs(900));
+    rust_http_proxy::dns::clear();
+    let (origin, _origin) = start_mock_origin();
+    let proxy = start_test_proxy(proxy_config());
+    let url = format!("http://localhost:{}/", origin);
+    let host = format!("localhost:{}", origin);
+
+    // 1 回目: 表に載るだけ (まだ warm ではない)
+    let res = get_via_proxy(proxy, &url, &host);
+    assert!(res.starts_with("HTTP/1.1 200"), "{}", res);
+    let dns = dns_status(proxy);
+    assert!(dns.contains("\"warm_secs\":900"), "{}", dns);
+    assert_eq!(
+        status_number(&dns, "warm"),
+        0,
+        "1 回では warm にしない: {}",
+        dns
+    );
+    assert!(
+        endpoint_json(proxy, "/dns").contains("\"warm\":false"),
+        "1 回目は warm ではない"
+    );
+
+    // 引けない名前は 2 回引いても warm にしない (答えが無い = 先回りする期限が無い。
+    // 1 回 約 2 秒の失敗で `dns-refresh` の 1 本を塞がないため)
+    let bogus = "t141-no-such-host.invalid:80";
+    for _ in 0..2 {
+        get_via_proxy(proxy, &format!("http://{}/x", bogus), bogus);
+    }
+    let dns = dns_status(proxy);
+    assert_eq!(
+        status_number(&dns, "warm"),
+        0,
+        "引けない名前は warm にしない: {}",
+        dns
+    );
+
+    // 2 回目: 直近 900 秒に 2 回目なので warm になる
+    let res = get_via_proxy(proxy, &url, &host);
+    assert!(res.starts_with("HTTP/1.1 200"), "{}", res);
+    let dns = dns_status(proxy);
+    assert_eq!(status_number(&dns, "warm"), 1, "2 回目で warm: {}", dns);
+
+    let json = endpoint_json(proxy, "/dns?sort=host");
+    let row = json
+        .split("{\"host\":\"")
+        .find(|s| s.starts_with("localhost\""))
+        .unwrap_or_else(|| panic!("localhost の行が無い: {}", json));
+    assert!(row.contains("\"warm\":true"), "{}", row);
+    let next = status_number(row, "next_refresh_secs");
+    assert!(
+        (43..=45).contains(&next),
+        "3/4 TTL = 45 秒後に予定されている (実際は {} 秒後): {}",
+        next,
+        row
+    );
+    rust_http_proxy::dns::clear();
+    rust_http_proxy::dns::set_warm_window(rust_http_proxy::dns::WARM);
+}

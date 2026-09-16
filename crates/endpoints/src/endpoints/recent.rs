@@ -335,6 +335,8 @@ mod tests {
             win_v6: Some(false),
             failed: None,
             refreshing: false,
+            warm: true,
+            next_refresh_secs: Some(33),
             misses: 4,
             refreshes: 2,
         };
@@ -361,6 +363,8 @@ mod tests {
             win_v6: Some(true),
             failed: Some((u64::MAX, "e".repeat(300))),
             refreshing: true,
+            warm: true,
+            next_refresh_secs: Some(u64::MAX),
             misses: u64::MAX,
             refreshes: u64::MAX,
         };

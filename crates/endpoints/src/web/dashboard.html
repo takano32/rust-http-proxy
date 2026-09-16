@@ -191,7 +191,8 @@ function mergeWindows(samples,n,prefix){
   return out;
 }
 // 名前解決の KPI (`/status` の dns をそのまま読む)。ミス率・ミス 1 回の値段・先回り。
-// `refreshes` と `negative_ttl_secs` は T13.1 で足すキーなので、**無ければ null** (「–」で描く)
+// `refreshes` と `negative_ttl_secs` は T13.1、`warm` は T14.1 で足すキーなので、
+// **無ければ null** (「–」で描く)
 function dnsStats(s){
   var d=(s&&s.dns)||{},hits=+d.hits||0,miss=+d.misses||0,tot=hits+miss;
   return {rate:tot?miss/tot*100:null,avg:d.miss_avg_ms==null?null:+d.miss_avg_ms,
@@ -199,7 +200,9 @@ function dnsStats(s){
     negative:+d.negative_hits||0,stale:+d.stale_served||0,
     ttl:d.ttl_secs==null?null:+d.ttl_secs,
     negttl:d.negative_ttl_secs==null?null:+d.negative_ttl_secs,
-    refreshes:d.refreshes==null?null:+d.refreshes};
+    refreshes:d.refreshes==null?null:+d.refreshes,
+    warm:d.warm==null?null:+d.warm,
+    warmsecs:d.warm_secs==null?null:+d.warm_secs};
 }
 // 「悪いホスト」: `/status?sort=errors` と `?sort=dns` の 2 枚を混ぜて上位 n 件。
 // エラーの多い順 → 名前解決に費やした順で、エラーも名前解決も無いホストは出さない
@@ -341,6 +344,7 @@ function renderStatus(s){
   $('dnsmiss').title='ミス率 = misses ÷ (hits + misses)。ミスの 1 回だけが OS に問い合わせます';
   var dparts=['ミス '+fmtNum(dn.misses)+' / '+fmtNum(dn.lookups),'ミス 1 回 '+fmtMs(dn.avg)];
   if(dn.refreshes!=null)dparts.push('先回り '+fmtNum(dn.refreshes)+' 回');
+  if(dn.warm!=null)dparts.push('warm '+fmtNum(dn.warm)+' 件'+(dn.warmsecs?' ('+dn.warmsecs+' s)':''));
   if(dn.negative)dparts.push('失敗の再利用 '+fmtNum(dn.negative));
   if(dn.stale)dparts.push('古い答え '+fmtNum(dn.stale));
   dparts.push('表 '+fmtNum(dn.entries)+' 件'+(dn.ttl==null?'':' (TTL '+dn.ttl+' s'+(dn.negttl==null?'':' / 失敗 '+dn.negttl+' s')+')'));

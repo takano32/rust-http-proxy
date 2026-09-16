@@ -68,6 +68,7 @@ fn main() {
     net::set_ipv6_enabled(config.ipv6);
     rust_http_proxy::dns::set_ttl(config.dns_ttl);
     rust_http_proxy::dns::set_negative_ttl(config.dns_negative);
+    rust_http_proxy::dns::set_warm_window(config.dns_warm);
     let listeners = match net::bind_all(&config.bind_addrs, config.port) {
         Ok(l) => l,
         Err(e) => {
@@ -225,11 +226,16 @@ fn main() {
     }
     log_info!(
         None,
-        "timeout: {}s, keep-alive: {}s, origin pool: {} per host, DNS cache: {}s, IPv6: {}",
+        "timeout: {}s, keep-alive: {}s, origin pool: {} per host, DNS cache: {}s (keep-warm {}), IPv6: {}",
         config.timeout.as_secs(),
         config.keepalive.as_secs(),
         config.pool_per_host,
         config.dns_ttl.as_secs(),
+        if config.dns_warm.is_zero() {
+            "off".to_string()
+        } else {
+            format!("{}s", config.dns_warm.as_secs())
+        },
         if config.ipv6 {
             "on"
         } else {
