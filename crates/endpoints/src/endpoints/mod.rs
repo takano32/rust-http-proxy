@@ -194,7 +194,7 @@ pub fn handle(
     } else if is_get && path == "/dns" {
         recent::dns(query)
     } else if is_get && path == "/log" {
-        recent::log(query)
+        recent::log(ep, query)
     } else if is_get && path == "/hosts" {
         recent::hosts(ep, query)
     } else if is_get && path == "/clients" {

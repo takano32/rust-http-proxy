@@ -198,6 +198,27 @@ pub fn start_test_proxy_with_history(config: Config, interval: Duration) -> (u16
     (port, metrics)
 }
 
+/// 履歴スレッドと**状態ファイル**付きで起こす版 (T14.9)。
+///
+/// 個票の永続化 (`$HOME/.rust-http-proxy.recent`) は状態ファイルの `Store` が持つので、
+/// 「止めて同じ `$HOME` で起こし直す」を 1 つのプロセスで再現するための口。
+/// `rrd_path` は `<dir>/.rust-http-proxy.rrd` (個票はその隣に置かれる)。
+pub fn start_test_proxy_with_store(
+    config: Config,
+    interval: Duration,
+    rrd_path: std::path::PathBuf,
+) -> (
+    u16,
+    Arc<Metrics>,
+    Option<Arc<rust_http_proxy::persist::Store>>,
+) {
+    let (port, _, metrics) = start_test_proxy_parts(config, CacheConfig::disabled(), None);
+    let store = rust_http_proxy::persist::start(rrd_path, &metrics).map(|(s, _)| s);
+    let cache = Arc::new(Cache::new(CacheConfig::disabled()));
+    rust_http_proxy::history::spawn_every(Arc::clone(&metrics), cache, store.clone(), interval);
+    (port, metrics, store)
+}
+
 /// `.env` の再読込のように**設定を差し替えられる**テスト用プロキシ (T11.6)。
 ///
 /// 返した `RwLock` の中身を入れ替えると、`serve` が次に受ける接続から新しい設定を引く
@@ -789,6 +810,29 @@ impl ProxyProcess {
             port,
             lines: rx,
         }
+    }
+
+    /// **停止シグナル (SIGTERM) を送って終わるまで待つ** (T14.9)。
+    ///
+    /// 後始末 (統計の書き出しと、まだ書いていない個票の追記) を通すための口。
+    /// 5 秒で終わらなければ落とす。
+    pub fn stop(&mut self) {
+        let _ = std::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(self.child.id().to_string())
+            .status();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(20))
+                }
+                _ => break,
+            }
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 
     /// 標準出力に `needle` を含む行が出るまで待つ (`.env` の再読込の完了を待つため。

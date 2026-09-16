@@ -752,6 +752,7 @@ pub fn spawn_every(
         let pushed = metrics.history.push(Sample::take(metrics, cache));
         if let Some(st) = &store {
             st.write_samples(&pushed);
+            st.write_recent(metrics);
         }
     };
     record(&metrics, &cache);

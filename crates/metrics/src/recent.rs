@@ -4,8 +4,11 @@
 //! デプロイ後 58.6 時間の分析では、約 2 秒かかって失敗した名前解決の相手も、バーストで
 //! 218 本を占めていた接続の中身も、エラー 99 件の相手と時刻も読めなかった (T13.0)。
 //!
-//! ここに置くのは**固定長のリング**で、`.rrd` には書かない (再起動で消えてよい個票)。
-//! 書く場所は 2 つだけ:
+//! ここに置くのは**固定長のリング**で、統計の `.rrd` には書かない。代わりに
+//! **隣の固定長ファイル `$HOME/.rust-http-proxy.recent`** に history スレッドが
+//! 5 秒ごとに追記し、次の起動で読み戻す ([`crate::persist_recent`]。T14.9)。
+//! 各リングが持つ「まだ書いていない位置」の印がその口で、**接続の経路は今までどおり
+//! メモリのリングに書くだけ**。書く場所は 2 つだけ:
 //!
 //! - [`ErrorRing`]: エラーを 1 件返したときだけ ([`Metrics::record_error`] 経由)。
 //!   **成功の熱い経路は 1 命令も通らない。**
@@ -16,6 +19,7 @@
 //!   **撮るのは history スレッド**で、越えた接続を受けたスレッドは旗を立てるだけ。
 //! - [`ClosedCounts`]: 閉じた理由・寿命・バイト・預けの分布 (`/history` の `closed`。T14.6)。
 //!   足すのは `/recent` に 1 件書くのと同じ場所で、**既に鍵の内側**。
+//!   これだけは**メモリだけ** (T14.9 が残すのは上の 4 本のリングと `/log`)。
 //!
 //! [`Metrics::record_error`]: crate::metrics::Metrics::record_error
 
@@ -67,6 +71,32 @@ impl EntryCause {
         match self {
             EntryCause::Error(c) => c.name(),
             EntryCause::Blocked(c) => c.name(),
+        }
+    }
+
+    /// ファイルに書くときの符号 (T14.9)。5xx は 0〜7、403 は 100〜103。
+    pub fn code(self) -> u64 {
+        match self {
+            EntryCause::Error(c) => c as u64,
+            EntryCause::Blocked(c) => 100 + c as u64,
+        }
+    }
+
+    /// 符号から戻す。知らない値は [`ErrCause::Other`]。
+    pub fn from_code(v: u64) -> EntryCause {
+        match v {
+            0 => EntryCause::Error(ErrCause::Dns),
+            1 => EntryCause::Error(ErrCause::Refused),
+            2 => EntryCause::Error(ErrCause::Unreachable),
+            3 => EntryCause::Error(ErrCause::Timeout),
+            4 => EntryCause::Error(ErrCause::Reset),
+            5 => EntryCause::Error(ErrCause::Tls),
+            6 => EntryCause::Error(ErrCause::Loop),
+            100 => EntryCause::Blocked(BlockCause::Acl),
+            101 => EntryCause::Blocked(BlockCause::Blocklist),
+            102 => EntryCause::Blocked(BlockCause::ConnectPort),
+            103 => EntryCause::Blocked(BlockCause::Local),
+            _ => EntryCause::Error(ErrCause::Other),
         }
     }
 }
@@ -150,6 +180,35 @@ pub fn clip(s: &str, max: usize) -> String {
     out
 }
 
+/// リングの「まだファイルに書いていない件」を**古い順**で取り出す (T14.9)。
+///
+/// 印を位置ではなく**通算の件数** (`total`) にしてあるのは、リングが古いものを
+/// 上書きするため: 位置で覚えると 1 周したときに「どこまで書いたか」が分からなくなる。
+/// `max` を越える分は**古い方から落とす** (1 周期の書き込みを 64 KiB に抑えるため。
+/// 落とした件数を 2 つ目に返す。メモリのリングには全部残っている)。
+fn drain_unwritten<T: Clone>(
+    buf: &[T],
+    next: usize,
+    cap: usize,
+    total: u64,
+    written: &mut u64,
+    max: usize,
+) -> (Vec<T>, u64) {
+    let len = buf.len();
+    let pending = total.saturating_sub(*written).min(len as u64) as usize;
+    *written = total;
+    if pending == 0 {
+        return (Vec::new(), 0);
+    }
+    let take = pending.min(max);
+    // 満杯になる前は先頭が最古、満杯になってからは次に書く位置が最古
+    let start = if len < cap { 0 } else { next };
+    let out = ((len - take)..len)
+        .map(|i| buf[(start + i) % len].clone())
+        .collect();
+    (out, (pending - take) as u64)
+}
+
 /// 直近のエラーの固定長リング。**書くのはエラーの経路だけ。**
 ///
 /// 置き場は使った分だけ伸び、[`MAX_ERRORS`] 件で頭打ち (そこからは古いものを上書き)。
@@ -165,6 +224,10 @@ struct Ring {
     next: usize,
     /// 起動からの通算 (捨てた分も含む)
     total: u64,
+    /// **ファイルに書いた所までの通算** (T14.9。`total` との差が「まだ書いていない件」)
+    written: u64,
+    /// 起動時に状態ファイルから読み戻した件数 (`/errors` の `"restored"`)
+    restored: usize,
 }
 
 impl Default for ErrorRing {
@@ -215,6 +278,32 @@ impl ErrorRing {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// まだファイルに書いていない件を古い順で取り出す (**history スレッドだけが呼ぶ**。T14.9)。
+    pub fn take_unwritten(&self, max: usize) -> (Vec<ErrorEntry>, u64) {
+        let mut r = self.inner.locked();
+        let g = &mut *r;
+        drain_unwritten(&g.buf, g.next, MAX_ERRORS, g.total, &mut g.written, max)
+    }
+
+    /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
+    ///
+    /// 読み戻した件は**書き直さない** (印を通算に合わせる) 。件数は `/errors` の
+    /// `"restored"` に出す。
+    pub fn restore(&self, entries: Vec<ErrorEntry>) {
+        let n = entries.len().min(MAX_ERRORS);
+        for e in entries {
+            self.push(e);
+        }
+        let mut r = self.inner.locked();
+        r.written = r.total;
+        r.restored = n;
+    }
+
+    /// 再起動前から引き継いだ件数 (`/errors` の `"restored"`)。
+    pub fn restored(&self) -> usize {
+        self.inner.locked().restored
     }
 }
 
@@ -614,8 +703,9 @@ pub enum CloseReason {
 }
 
 impl CloseReason {
-    /// リングに書く前の符号 (0 = まだ決まっていない)。[`ConnSlot`] の原子に入れる。
-    fn code(self) -> u16 {
+    /// リングに書く前の符号 (0 = まだ決まっていない)。[`ConnSlot`] の原子に入れ、
+    /// ファイル (T14.9) にもこの符号で書く。
+    pub fn code(self) -> u16 {
         match self {
             CloseReason::ClientEof => 1,
             CloseReason::ServerEof => 2,
@@ -629,7 +719,7 @@ impl CloseReason {
     }
 
     /// 符号から戻す。知らない値と 0 (未設定) は [`CloseReason::Shutdown`]。
-    fn from_code(v: u16) -> CloseReason {
+    pub fn from_code(v: u16) -> CloseReason {
         match v {
             1 => CloseReason::ClientEof,
             2 => CloseReason::ServerEof,
@@ -807,6 +897,10 @@ struct RecentBuf {
     next: usize,
     /// 起動からの通算 (捨てた分も含む)
     total: u64,
+    /// **ファイルに書いた所までの通算** (T14.9)
+    written: u64,
+    /// 起動時に状態ファイルから読み戻した件数 (`/recent` の `"restored"`)
+    restored: usize,
 }
 
 impl Default for RecentRing {
@@ -861,6 +955,29 @@ impl RecentRing {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// まだファイルに書いていない件を古い順で取り出す (**history スレッドだけが呼ぶ**。T14.9)。
+    pub fn take_unwritten(&self, max: usize) -> (Vec<RecentEntry>, u64) {
+        let mut r = self.inner.locked();
+        let g = &mut *r;
+        drain_unwritten(&g.buf, g.next, MAX_RECENT, g.total, &mut g.written, max)
+    }
+
+    /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
+    pub fn restore(&self, entries: Vec<RecentEntry>) {
+        let n = entries.len().min(MAX_RECENT);
+        for e in entries {
+            self.push(e);
+        }
+        let mut r = self.inner.locked();
+        r.written = r.total;
+        r.restored = n;
+    }
+
+    /// 再起動前から引き継いだ件数 (`/recent` の `"restored"`)。
+    pub fn restored(&self) -> usize {
+        self.inner.locked().restored
     }
 }
 /// 山の写真 (`/bursts`) を何枚覚えておくか (固定。T14.6)。
@@ -1085,6 +1202,10 @@ struct BurstBuf {
     next: usize,
     /// 起動からの通算 (捨てた分も含む)
     total: u64,
+    /// **ファイルに書いた所までの通算** (T14.9)
+    written: u64,
+    /// 起動時に状態ファイルから読み戻した枚数 (`/bursts` の `"restored"`)
+    restored: usize,
 }
 
 impl Default for BurstRing {
@@ -1200,6 +1321,31 @@ impl BurstRing {
 
     pub fn pending(&self) -> bool {
         self.pending.load(Ordering::Relaxed) != 0
+    }
+
+    /// まだファイルに書いていない枚数を古い順で取り出す (**history スレッドだけが呼ぶ**。T14.9)。
+    pub fn take_unwritten(&self, max: usize) -> (Vec<BurstShot>, u64) {
+        let mut r = self.inner.locked();
+        let g = &mut *r;
+        drain_unwritten(&g.buf, g.next, MAX_BURSTS, g.total, &mut g.written, max)
+    }
+
+    /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
+    ///
+    /// 通し番号 (`seq`) は `total` から作るので、読み戻すと再起動前の続きから振られる。
+    pub fn restore(&self, shots: Vec<BurstShot>) {
+        let n = shots.len().min(MAX_BURSTS);
+        for shot in shots {
+            self.push(shot);
+        }
+        let mut r = self.inner.locked();
+        r.written = r.total;
+        r.restored = n;
+    }
+
+    /// 再起動前から引き継いだ枚数 (`/bursts` の `"restored"`)。
+    pub fn restored(&self) -> usize {
+        self.inner.locked().restored
     }
 }
 

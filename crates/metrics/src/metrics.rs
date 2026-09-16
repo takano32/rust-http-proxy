@@ -825,6 +825,10 @@ pub struct Metrics {
     /// 山の写真 (`/bursts`。T14.6)。accept の経路は閾を越えた瞬間に旗を立てるだけで、
     /// **撮るのは history スレッド** ([`Metrics::take_burst_shot`])
     pub bursts: crate::recent::BurstRing,
+    /// 上の 4 本のリング (`/recent` `/errors` `/bursts` `/log`) を
+    /// `$HOME/.rust-http-proxy.recent` に残しているか (T14.9)。
+    /// `PROXY_STATS_PERSIST=off` と、ファイルが開けなかったときは `false`
+    pub recent_persisted: AtomicBool,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -853,6 +857,7 @@ impl Metrics {
             conns: crate::recent::ConnTable::new(),
             closed: crate::recent::RecentRing::new(),
             bursts: crate::recent::BurstRing::new(),
+            recent_persisted: AtomicBool::new(false),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }

@@ -5,7 +5,12 @@
 //! - ブロックリストの上書き: 変更のたびにそのスロットだけ書く ([`crate::blocklist`] から)
 //!
 //! 置き場所は `$HOME/.rust-http-proxy.rrd` (Pterodactyl で永続するのはそこだけ)。
-//! `PROXY_STATS_PERSIST=off` で無効。大きさは約 1 MiB で、以後は伸びない。
+//! `PROXY_STATS_PERSIST=off` で無効。大きさは 4 MiB 固定で、以後は伸びない。
+//!
+//! **個票 (`/recent` `/errors` `/bursts` `/log`) は隣の別のファイル**
+//! `$HOME/.rust-http-proxy.recent` に落とす ([`crate::persist_recent`]。T14.9)。
+//! 同じ `Store` が両方を持ち、history スレッドの 5 秒の周期で一緒に書く
+//! (`.rrd` の版を上げずに個票を残せるようにするため、ファイルを分けてある)。
 
 use crate::sync::LockExt;
 use std::io;
@@ -17,6 +22,7 @@ use std::time::Duration;
 
 use crate::history::{Pushed, Sample};
 use crate::metrics::{HostStats, Metrics};
+use crate::persist_recent::{RecentFile, Restored};
 use crate::rrd::ring::Ring;
 use crate::rrd::{Region, Rrd};
 use crate::{log_info, log_warn};
@@ -31,6 +37,8 @@ pub struct Store {
     /// 書込エラーの回数 (連発しないよう最初だけ警告する)
     write_errors: AtomicU64,
     flushes: AtomicU64,
+    /// 個票のファイル (`$HOME/.rust-http-proxy.recent`。T14.9)。開けなければ `None`
+    recent: Option<RecentFile>,
 }
 
 impl Store {
@@ -39,7 +47,26 @@ impl Store {
         crate::envfile::env_path().map(|p| p.with_file_name(".rust-http-proxy.rrd"))
     }
 
-    /// 開き (無ければ作り)、履歴のリングを読み戻す。
+    /// 個票のファイル (`/status` と結合テストが場所を知るため)。
+    pub fn recent_path(&self) -> PathBuf {
+        crate::persist_recent::path_next_to(&self.path)
+    }
+
+    /// 個票を永続化しているか (`/recent` などの `"persisted"`)。
+    pub fn recent_enabled(&self) -> bool {
+        self.recent.is_some()
+    }
+
+    /// まだ書いていない個票をファイルへ追記する (**history スレッドの 5 秒の周期と、
+    /// 停止シグナルの最後の 1 回**。T14.9)。戻り値は書いたレコード数。
+    pub fn write_recent(&self, metrics: &Metrics) -> usize {
+        self.recent
+            .as_ref()
+            .map(|r| r.write_new(metrics).total())
+            .unwrap_or(0)
+    }
+
+    /// 開き (無ければ作り)、履歴のリングと個票を読み戻す。
     pub fn open(path: PathBuf) -> io::Result<(Arc<Store>, Loaded)> {
         let (rrd, created) = Rrd::open(&path)?;
         let l = rrd.layout;
@@ -56,12 +83,18 @@ impl Store {
                 .filter_map(|(_, p)| HostStats::decode(p))
                 .collect())
         };
+        // 個票は隣の別のファイル (T14.9)。開けなくても統計はそのまま動く
+        let (recent, recent_loaded) = match crate::persist_recent::open_beside(&path) {
+            Some((f, r)) => (Some(f), Some(r)),
+            None => (None, None),
+        };
         let loaded = Loaded {
             created,
             history: [decode(fine_recs), decode(minute_recs), decode(hour_recs)],
             hosts: stats(l.hosts)?,
             clients: stats(l.clients)?,
             size: l.total,
+            recent: recent_loaded,
         };
         let store = Arc::new(Store {
             rrd,
@@ -69,6 +102,7 @@ impl Store {
             rings: Mutex::new([fine, minute, hour]),
             write_errors: AtomicU64::new(0),
             flushes: AtomicU64::new(0),
+            recent,
         });
         Ok((store, loaded))
     }
@@ -145,14 +179,19 @@ impl Store {
             .unwrap_or_default()
     }
 
-    /// `/status` の `"state_file"` 要素。
+    /// `/status` の `"state_file"` 要素。個票のファイルは `"recent"` に入れ子で
+    /// 出す (T14.9。永続化していなければ `null`)。
     pub fn status_json(&self) -> String {
         format!(
-            "{{\"path\":{},\"bytes\":{},\"flushes\":{},\"write_errors\":{}}}",
+            "{{\"path\":{},\"bytes\":{},\"flushes\":{},\"write_errors\":{},\"recent\":{}}}",
             crate::json::quote(&self.path.display().to_string()),
             self.rrd.layout.total,
             self.flushes.load(Ordering::Relaxed),
-            self.write_errors.load(Ordering::Relaxed)
+            self.write_errors.load(Ordering::Relaxed),
+            self.recent
+                .as_ref()
+                .map(|r| r.status_json())
+                .unwrap_or_else(|| "null".to_string())
         )
     }
 }
@@ -174,6 +213,8 @@ pub struct Loaded {
     pub hosts: Vec<(String, HostStats)>,
     pub clients: Vec<(String, HostStats)>,
     pub size: u64,
+    /// 隣の個票のファイルから読み戻したもの (T14.9。開けなければ `None`)
+    pub recent: Option<Restored>,
 }
 
 /// 状態ファイルを開いて `metrics` に読み戻し、定期的な書き出しスレッドを起動する。
@@ -191,6 +232,7 @@ pub fn start(path: PathBuf, metrics: &Arc<Metrics>) -> Option<(Arc<Store>, JoinH
             return None;
         }
     };
+    let recent_loaded = loaded.recent;
     let [fine, minute, hour] = loaded.history;
     let counts = (fine.len(), minute.len(), hour.len());
     metrics.history.restore(0, fine);
@@ -210,6 +252,15 @@ pub fn start(path: PathBuf, metrics: &Arc<Metrics>) -> Option<(Arc<Store>, JoinH
         nh,
         nc
     );
+    // 個票を読み戻す (`/recent?since=` が再起動前に届くようにする。T14.9)
+    if let (Some(file), Some(r)) = (store.recent.as_ref(), recent_loaded) {
+        let created = r.created;
+        let n = r.install(metrics);
+        crate::persist_recent::log_restored(file, created, n);
+        metrics
+            .recent_persisted
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let _ = GLOBAL.set(Arc::clone(&store));
     let st = Arc::clone(&store);
     let m = Arc::clone(metrics);
