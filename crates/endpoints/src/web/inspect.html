@@ -150,10 +150,11 @@ var series=null;    // /hosts/series (T14.22。無ければ null のまま)
 // `error:<原因>` は `error` に畳み、知らない名前は既定の灰色になる
 var REASON_COLORS={client_eof:'#3ecf8e',server_eof:'#5aa9ff',idle_timeout:'#c084fc',
   keepalive_timeout:'#6ee7f9',evicted:'#f5b342',limit:'#a3e635',shutdown:'#94a3b8',error:'#ff6b6b'};
-// 出来事の色 (T14.11 の 10 種)。**T14.23 の `anomaly` のように増えても**既定色で描くだけ
+// 出来事の色 (T14.11 の 10 種 + T14.23 の `anomaly` + T14.54 の `new_client`)。
+// **知らない綴りが増えても**既定色で描くだけ
 var EVENT_COLORS={start:'#3ecf8e',reload:'#5aa9ff',blocklist:'#c084fc',ipv6:'#6ee7f9',
   pressure:'#f5b342',ballast:'#a3e635',state_file:'#fca5a5',evict:'#f59e0b',
-  emfile:'#ff6b6b',shutdown:'#94a3b8',anomaly:'#ff6b6b'};
+  emfile:'#ff6b6b',shutdown:'#94a3b8',anomaly:'#ff6b6b',new_client:'#c084fc'};
 var STAGE_COLORS=['#5aa9ff','#3ecf8e','#f5b342','#c084fc','#ff6b6b','#6ee7f9','#a3e635'];
 // (b) の積み上げに使う段階 (T14.3 の 5 つ。0 の段階は JSON に出てこない = 0 として読む)
 var SLOW_STAGES=['queue','client_read','dns','connect','first_relay'];

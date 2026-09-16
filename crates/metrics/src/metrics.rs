@@ -693,6 +693,28 @@ pub const MAX_CLIENT_TARGETS: usize = 256;
 /// 接続元ごとに覚えておくポートの種類。あふれた分は `ports_other` にまとめる。
 pub const MAX_CLIENT_PORTS: usize = 8;
 
+/// **初めて見た接続元** 1 件の写し ([`Metrics::clients_first_seen_in`] が返す。T14.54)。
+///
+/// [`ClientStats`] を丸ごと写すと宛先の集合 (最大 [`MAX_CLIENT_TARGETS`] 件) まで
+/// 付いてくるので、`/events` の 1 行に要るものだけを持つ。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewClient {
+    /// 接続元 (**表の鍵そのまま**。あふれた分の `other` もここに来る。
+    /// `PROXY_RECORDS=hashed` (T14.41) では鍵が 16 進なので、この値もそれになる)
+    pub client: String,
+    /// 初めて見た時刻 (epoch 秒)
+    pub first_seen: u64,
+    /// 最後に名乗った `User-Agent` (無ければ `None`)
+    pub agent: Option<String>,
+    /// ここまでに数えた要求数
+    pub requests: u64,
+    /// **最初の宛先の種類**: 最初に使ったポート ([`ClientStats::ports`] は出た順に
+    /// 並ぶので先頭が最初の宛先のもの。1 つも無ければ `None`)
+    pub port: Option<u16>,
+    /// 同じく、IP リテラル宛てがあったか (名前を引かずに繋いでいる = 普通の閲覧ではない)
+    pub literal: bool,
+}
+
 /// `/clients` を並べる鍵 (`?sort=`。T14.7)。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ClientSort {
@@ -1898,6 +1920,45 @@ impl Metrics {
             }
         });
         v
+    }
+
+    /// **初めて見た時刻がこの窓の中にある接続元だけ**を拾う (T14.54 の規則 6)。
+    ///
+    /// 窓は `[from, to]` (両端を含む。呼ぶ側は「前に見た時刻」から「いまの時刻」を
+    /// 渡し、同じ秒を二度見ても書かないよう自分で覚えておく)。`first_seen` が `0` の
+    /// 接続元 (状態ファイルから読み戻した = この起動より前から居る) は**新しくない**
+    /// ので外す。並びは `first_seen` の古い順 (同じ秒は名前順) で、`max` 件まで。
+    /// 2 つ目は `max` に入り切らなかった件数。
+    ///
+    /// **鍵の内側でやるのは `first_seen` の比較だけ**で、写すのは拾った数件だけ。
+    /// [`Metrics::clients_sorted_by`] で表を丸ごと写すと、1,000 接続元 × 宛先 256 件の
+    /// clone を 5 秒ごとに鍵を握ったまま行うことになり、要求の経路
+    /// ([`Metrics::record_client`]) が待たされる。
+    pub fn clients_first_seen_in(&self, from: u64, to: u64, max: usize) -> (Vec<NewClient>, usize) {
+        let mut found: Vec<NewClient> = {
+            let clients = self.clients.locked();
+            clients
+                .iter()
+                .filter(|(_, s)| s.first_seen > 0 && s.first_seen >= from && s.first_seen <= to)
+                .map(|(k, s)| NewClient {
+                    client: k.clone(),
+                    first_seen: s.first_seen,
+                    agent: s.agent().map(|a| a.to_string()),
+                    requests: s.stats.requests,
+                    // `ports` は**出た順**に伸びるので、先頭が最初の宛先のポート
+                    port: s.ports.first().map(|(p, _)| *p),
+                    literal: s.literal_targets > 0,
+                })
+                .collect()
+        };
+        found.sort_by(|a, b| {
+            a.first_seen
+                .cmp(&b.first_seen)
+                .then(a.client.cmp(&b.client))
+        });
+        let over = found.len().saturating_sub(max);
+        found.truncate(max);
+        (found, over)
     }
 
     /// 起動時に状態ファイルから読み戻す (今の値が空のときだけ)。

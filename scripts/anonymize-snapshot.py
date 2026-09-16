@@ -19,7 +19,7 @@
 
 | 元 | 後 | 備考 |
 |---|---|---|
-| ホスト名 (`host` / `target` / `canary_host` / `sni`) | `host-0001.example` | 出現順に採番。`connect://host:443` の scheme と port はそのまま |
+| ホスト名 (`host` / `target` / `canary_host` / `sni`) | `host-0001.g0007.example` | 出現順に採番。`connect://host:443` の scheme と port はそのまま |
 | 接続元 IP (`client`) | `198.51.100.1` / `2001:db8::1` | `ip:port` なら port はそのまま |
 | 名前解決の答え (`/dns` の `addrs`) | `203.0.113.1` / `2001:db8:1::1` | 宛先が IP リテラルのときも同じ表を使う |
 | `User-Agent` (`agents`) | `ua-01` | |
@@ -28,7 +28,13 @@
 置き換えないもの: **数字** (件数・ms・区間・閉じた理由・時刻)、`version`、部の名前、
 この機械の設定 (`path` のような個人の閲覧先ではないもの)。
 
-すでに匿名化済みの値 (`host-0001.example`、文書用の IP) はそのまま通す (2 回かけても変わらない)。
+**まとめの粒度を残す** (T14.54): ホスト名の `gNNNN` は**まとめの単位 (eTLD+1)** の番号で、
+`img.dlsite.jp` と `www.dlsite.jp` は同じ `gNNNN` (= 匿名化後も同じ eTLD+1) に落ちる。
+`www.dlsite.com` は別の単位なので別の番号になる。これで匿名化したあとの fixture でも
+`scripts/status-diff.py --group domain` / `snapshot-diff.py --group domain` の粒度が読める。
+
+すでに匿名化済みの値 (`host-0001.g0007.example`、**古い形の `host-0001.example` も**、
+文書用の IP) はそのまま通す (2 回かけても変わらない)。
 
 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 """
@@ -40,6 +46,10 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
+
+# まとめの単位 (eTLD+1 の近似) は `scripts/proxydata.py` と同じ 1 関数を使う (T14.54)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from proxydata import etld1  # noqa: E402
 
 # ---------------------------------------------------------------- 置き換えの対象
 
@@ -58,11 +68,15 @@ TEXT_KEYS = frozenset(("msg", "text", "error", "url", "file"))
 # 越えた分をまとめる行の名前)。**置き換えると「その他」の行の意味が消える**ので、そのまま通す
 RESERVED_NAMES = frozenset(("other",))
 
-# 置き換え先の形
-HOST_FMT = "host-{:04d}.example"
+# 置き換え先の形。`gNNNN` は**まとめの単位 (eTLD+1) の番号**で、同じ単位のホストは
+# 同じ番号に落ちる (T14.54)。`host-0001.g0007.example` の eTLD+1 は `g0007.example` なので、
+# 匿名化した fixture でも `--group domain` が元と同じ粒度でまとまる。
+# **古い形 (`host-0001.example`、T14.35 の最初の版) も匿名化済みとして通す** ので、
+# すでにある fixture を通しても名前は変わらない。
+HOST_FMT = "host-{:04d}.g{:04d}.example"
 UA_FMT = "ua-{:02d}"
-ANON_HOST_RE = re.compile(r"^host-\d{4,}\.example$")
-ANON_HOST_IN_TEXT = re.compile(r"host-\d{4,}\.example")
+ANON_HOST_RE = re.compile(r"^host-\d{4,}(?:\.g(\d{4,}))?\.example$")
+ANON_HOST_IN_TEXT = re.compile(r"host-\d{4,}(?:\.g\d{4,})?\.example")
 ANON_UA_RE = re.compile(r"^ua-\d{2,}$")
 # RFC 5737 / RFC 3849 の文書用。足りなくなったら RFC 2544 の試験用 (198.18.0.0/15) へ続ける
 CLIENT_V4 = ("198.51.100",) + tuple("198.18.{}".format(i) for i in range(256))
@@ -92,7 +106,9 @@ class Anonymizer:
     """名前 / IP / UA の表を持ち、**出現順**に採番する。"""
 
     def __init__(self):
-        self.hosts = {}     # 小文字のホスト名 -> host-0001.example
+        self.hosts = {}     # 小文字のホスト名 -> host-0001.g0007.example
+        self.groups = {}    # まとめの単位 (eTLD+1) -> 7
+        self.used_groups = set()  # すでに出した単位の番号 (入力に混ざっていた分も含む)
         self.ips = {}       # 正規化した IP -> 198.51.100.1 / 203.0.113.1
         self.agents = {}    # User-Agent -> ua-01
         self.used = set()   # すでに出した置き換え先 (入力に混ざっていた分も含む)
@@ -110,8 +126,14 @@ class Anonymizer:
             return name
         if name.lower() in RESERVED_NAMES:
             return name  # 表の上限を越えた分の行 ("other")
-        if ANON_HOST_RE.match(name):
+        anon = ANON_HOST_RE.match(name)
+        if anon:
             self.used.add(name)
+            # すでに匿名化済みの名前が持っている単位の番号を押さえる (同じ番号を
+            # 別の単位に出さないため)。`host-0001.g0007.example` の単位は `g0007.example`
+            if anon.group(1):
+                self.groups.setdefault(etld1(name), int(anon.group(1)))
+                self.used_groups.add(int(anon.group(1)))
             return name
         try:  # IP リテラルの宛先は IP のまま置き換える (名前に化けさせない)
             ipaddress.ip_address(name)
@@ -122,9 +144,21 @@ class Anonymizer:
         low = name.lower()
         got = self.hosts.get(low)
         if got is None:
-            got = self._take(HOST_FMT, len(self.hosts) + 1)
+            got = self._take_host(self.group(low), len(self.hosts) + 1)
             self.hosts[low] = got
             self._dotless = None
+        return got
+
+    def group(self, name):
+        """**まとめの単位 (eTLD+1) の番号** (T14.54)。同じ単位なら同じ番号。"""
+        unit = etld1(name)
+        got = self.groups.get(unit)
+        if got is None:
+            got = len(self.groups) + 1
+            while got in self.used_groups:  # 入力に混ざっていた番号は避ける
+                got += 1
+            self.groups[unit] = got
+            self.used_groups.add(got)
         return got
 
     def ip(self, text, which):
@@ -160,6 +194,15 @@ class Anonymizer:
             got = self._take(UA_FMT, len(self.agents) + 1)
             self.agents[ua] = got
         return got
+
+    def _take_host(self, group_n, n):
+        """ホスト名 1 つぶんの番号を取る (単位の番号は決まっているので、動かすのは前の数)。"""
+        while True:
+            got = HOST_FMT.format(n, group_n)
+            if got not in self.used:
+                self.used.add(got)
+                return got
+            n += 1
 
     def _take(self, fmt, n):
         """すでに入力に混ざっていた置き換え先とぶつからない番号を取る。"""
@@ -386,10 +429,10 @@ class Anonymizer:
         return s
 
     def summary(self):
-        return ("ホスト {} 件、接続元 IP {} 件、答えの IP {} 件、User-Agent {} 件、"
-                "文の中の置き換え {} か所").format(
-            len(self.hosts), self.n_client_ips, self.n_addr_ips, len(self.agents),
-            self.text_hits)
+        return ("ホスト {} 件 (まとめの単位 {} 件)、接続元 IP {} 件、答えの IP {} 件、"
+                "User-Agent {} 件、文の中の置き換え {} か所").format(
+            len(self.hosts), len(self.groups), self.n_client_ips, self.n_addr_ips,
+            len(self.agents), self.text_hits)
 
 
 # ---------------------------------------------------------------- 入力を 1 枚にする

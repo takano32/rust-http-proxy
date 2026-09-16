@@ -10,7 +10,7 @@
 //! 頻度の高いものには歯止めを掛けてある: [`note_evict`] と [`note_accept_error`] は
 //! **1 時間に初めて起きたときだけ**、状態ファイルの書込エラーは最初の 1 回だけ。
 //!
-//! 種類は [`EventKind`] の **11 種で固定** (増やすなら README も)。書く場所:
+//! 種類は [`EventKind`] の **12 種で固定** (増やすなら README も)。書く場所:
 //!
 //! | 種類 | 書く場所 |
 //! |---|---|
@@ -21,6 +21,7 @@
 //! | `state_file` | `crates/metrics/src/persist.rs` (書込エラーの最初の 1 回) |
 //! | `evict` / `emfile` | `src/lib.rs` (上限に当たって閉じた / accept が失敗した) |
 //! | `anomaly` | [`crate::anomaly`] (標本が基準値から外れた / 戻った。T14.23) |
+//! | `new_client` | [`crate::anomaly`] (初めて見た接続元。T14.54 の規則 6) |
 //!
 //! `ipv6` / `pressure` / `ballast` の 3 つだけ**変わり目を [`poll`] で見る**のは、
 //! それを起こす `proxy-net` と `proxy-cache` が**この層より下**にあるため
@@ -43,7 +44,7 @@ pub const MAX_EVENTS: usize = 512;
 /// 1 件の説明に収める長さ (バイト)。長いものは末尾に `…` を付けて切る。
 pub const MAX_TEXT: usize = 128;
 
-/// 出来事の種類 (**11 種で固定**)。
+/// 出来事の種類 (**12 種で固定**)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventKind {
     /// 起動した (版と、効いている設定の要約)
@@ -68,10 +69,12 @@ pub enum EventKind {
     Shutdown,
     /// 標本が直近 1 時間の基準値から外れた / 戻った ([`crate::anomaly`]。T14.23)
     Anomaly,
+    /// 初めて見た接続元 ([`crate::anomaly`] の規則 6。T14.54)
+    NewClient,
 }
 
 /// `/events` の `kinds` に出す全種類 (README の一覧と同じ並び)。
-pub const KINDS: [EventKind; 11] = [
+pub const KINDS: [EventKind; 12] = [
     EventKind::Start,
     EventKind::Reload,
     EventKind::Blocklist,
@@ -83,6 +86,9 @@ pub const KINDS: [EventKind; 11] = [
     EventKind::Emfile,
     EventKind::Shutdown,
     EventKind::Anomaly,
+    // **末尾に足すこと**: ファイルに書く符号は [`KINDS`] の添字なので、間に挟むと
+    // 前の版が書いた個票の種類が 1 つずつずれる (T14.9)
+    EventKind::NewClient,
 ];
 
 impl EventKind {
@@ -110,6 +116,7 @@ impl EventKind {
             EventKind::Emfile => "emfile",
             EventKind::Shutdown => "shutdown",
             EventKind::Anomaly => "anomaly",
+            EventKind::NewClient => "new_client",
         }
     }
 }
@@ -475,12 +482,35 @@ mod tests {
     }
 
     #[test]
-    fn the_eleven_kinds_have_distinct_names() {
+    fn the_twelve_kinds_have_distinct_names() {
         let mut names: Vec<&str> = KINDS.iter().map(|k| k.name()).collect();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 12);
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 11, "名前が重なっている");
+        assert_eq!(names.len(), 12, "名前が重なっている");
+    }
+
+    /// 永続化の符号 ([`KINDS`] の添字。T14.9) は**前の版から動かさない**。
+    /// 12 種目を足したときに 0〜10 がずれていないことを、ここで押さえる。
+    #[test]
+    fn the_codes_of_the_old_kinds_never_move() {
+        for (want, kind) in [
+            (0, EventKind::Start),
+            (1, EventKind::Reload),
+            (2, EventKind::Blocklist),
+            (3, EventKind::Ipv6),
+            (4, EventKind::Pressure),
+            (5, EventKind::Ballast),
+            (6, EventKind::StateFile),
+            (7, EventKind::Evict),
+            (8, EventKind::Emfile),
+            (9, EventKind::Shutdown),
+            (10, EventKind::Anomaly),
+            (11, EventKind::NewClient),
+        ] {
+            assert_eq!(kind.code(), want, "{} の符号が動いた", kind.name());
+            assert_eq!(EventKind::from_code(want), kind);
+        }
     }
 
     #[test]

@@ -125,6 +125,7 @@ scripts/collect-deployed.sh nagoya.sorahost.net:50697 > today.md   # 1 日 1 回
 PROBE=0 scripts/collect-deployed.sh nagoya.sorahost.net:50697      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server nagoya.sorahost.net:50697  # 回し忘れた日を取り寄せる
 scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と最後で差分
+scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json --group domain  # eTLD+1 でまとめる
 ```
 
 **回し忘れても個票は残ります**: プロキシ自身が 1 日 1 回 (UTC 0 時) `/snapshot` を
@@ -148,10 +149,29 @@ scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と�
 ```bash
 scripts/snapshot-diff.py ~/rust-http-proxy-status/2026-09-1{2,6}*-snapshot.json --criteria phase14
 scripts/snapshot-diff.py a.json b.json --aaaa aaaa.json --out json      # 機械で読む形
+scripts/snapshot-diff.py a.json b.json --group domain                   # eTLD+1 でまとめる
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
 scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z \
                          --from-files ~/rust-http-proxy-status/2026-09-16T0106Z
 ```
+
+**`--group domain` は「dlsite 全体で何件か」を読むためのまとめ方です** (T14.54)。`/hosts` は
+`img.dlsite.jp` と `www.dlsite.jp` を別の行で持つので、相手ごとの合計が読めません。
+`--group domain` は **eTLD+1 が同じホスト同士を 1 行にまとめます** (`img.dlsite.jp` +
+`www.dlsite.jp` → `dlsite.jp`。`www.dlsite.com` は eTLD+1 が違うので**別の行**です)。
+`snapshot-diff.py` にも `status-diff.py` にも同じ `--group domain` があります。
+
+- eTLD+1 は **`scripts/proxydata.py` の `etld1()` による近似**です。Public Suffix List
+  (約 9,000 行) は持たず、**ラベルが 2 つ以上の公開接尾辞の短い表** (`co.jp` / `ne.jp` /
+  `ac.jp` / `go.jp` / `or.jp` / `co.uk` / `com.au` …) に当たれば 3 ラベル
+  (`www.dmm.co.jp` → `dmm.co.jp`)、当たらなければ**末尾 2 ラベル** (`a.b.example.io` →
+  `example.io`) にします。事業者が 1 段下を配る形 (`github.io` のような) は分けられません
+  — 外れたら表に 1 行足してください
+- まとめるのは**同じ種類どうし**です (CONNECT と forward は混ぜません)。要求数・バイト・
+  エラー・名前解決・確立の合計 ms は**和**、`avg_ms` は**計測数 (`timed`) で重みづけ**、
+  **p50 / p95 は足せない**ので 2 つ以上まとまった行では出しません (`max` は最大)。
+  `AAAA` は全部同じときだけその値です
+- IP リテラル宛て・`localhost`・表からあふれた `other` は**まとめずにそのまま**出ます
 
 `collect-deployed.sh` は前回の雪像を見つけるとこれを呼び、**要約のいちばん最後に判定表**を置きます
 (`CRITERIA=off` で止められます)。道具の単体テストは `python3 -m unittest discover -s scripts`
@@ -182,10 +202,14 @@ scripts/weekly-report.py ~/rust-http-proxy-status/ --out json    # 表の元の�
 出力は「デプロイ先の現在地」を締める文書と、次の Phase の入力にするためのものです。
 
 **実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T14.35)。雪像には
-個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.example`)・
+個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.g0007.example`)・
 **接続元 IP** (`198.51.100.x`)・**名前解決の答え** (`203.0.113.x`)・**`User-Agent`** (`ua-01`)・
 **`/log` の行と `/events` の説明の中の名前と IP** だけを置き換えれば、本物の分布のまま持ち込めます。
 置き換えは**決定的** (同じ入力からは同じ出力) なので、**匿名化したあとの 2 枚でそのまま差分が取れます**。
+ホスト名の `gNNNN` は**まとめの単位 (eTLD+1) の番号**で、`img.dlsite.jp` と `www.dlsite.jp` は
+同じ番号 (= 匿名化後も同じ eTLD+1 `gNNNN.example`) に落ちます。**上の `--group domain` の粒度が
+匿名化したあとも読める**ようにするためです (T14.54)。古い形 (`host-0001.example`) の
+匿名化済みファイルはそのまま通ります (2 回かけても名前は変わりません)。
 **数字は 1 つも変わりません** (件数・ms・区間・閉じた理由・時刻・`version`・`path`)。`connect://` の
 scheme と port、表の上限を越えた分の行 (`other`) はそのままです。
 
@@ -671,9 +695,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     ±64 MiB 以上動いた) / `state_file` (状態ファイルの書込エラー。**最初の 1 回だけ**) / `evict`
     (上限に当たって暇なトンネルを閉じた。**1 時間に初めて起きたときだけ**) / `emfile`
     (accept の失敗。同じく 1 時間に 1 回) / `shutdown` (停止シグナル) / `anomaly`
-    (下の自動検知) の **11 種で固定**です
+    (下の自動検知) / `new_client` (**初めて見た接続元**。同じく下の自動検知の規則 6) の **12 種で固定**です
     (`kinds` にも並びます)。**書くのは稀な経路だけ**で、要求ごとの経路には 1 命令も増えていません。
-    `ipv6` / `pressure` / `ballast` / `anomaly` の 4 つは履歴スレッドの周期 (5 秒) で状態の変わり目を拾うので、
+    `ipv6` / `pressure` / `ballast` / `anomaly` / `new_client` の 5 つは履歴スレッドの周期 (5 秒) で状態の変わり目を拾うので、
     時刻は最大 5 秒遅れ、`--lite` と `PROXY_STATS_PERSIST=off` (履歴スレッドを起こさない設定) では
     残りません。残りの 7 種は `--lite` でも残ります。**メモリだけ**なので再起動で消えます
     (512 件で 87 KiB、応答は 256 KiB 以下)
@@ -681,7 +705,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     印させます**。履歴スレッドが 5 秒ごとに取る標本を**直近 5 分の窓**に畳み、**直近 1 時間の基準値**と
     比べて外れていたら、上の `/events` に `anomaly` の 1 件を書きます (専用の口は作っていません。
     `/events?n=200` で読みます。畳むのは `/history?summary=1` と同じ関数・同じ切り方です)。
-    判定は **5 種で固定**で、閾は次のとおりです。
+    判定は **5 種 + 規則 6** で固定で、閾は次のとおりです。
 
     | 種類 (説明の頭に出ます) | 立つ条件 |
     |---|---|
@@ -690,6 +714,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     | `errors` | エラーが **5 分で 5 件以上** (原因の内訳も説明に入ります) |
     | `active_high` | 同時接続の山が **`PROXY_MAX_CONNS` の 50% 以上** (`/bursts` の写真と同じ閾。同じ周期で写真が撮れていればその `seq`) |
     | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が**増えた** |
+    | `new_client` (規則 6) | `/clients` の `first_seen` が**この 5 秒の窓の中**にある接続元 (T14.54) |
 
     **同じ種類は収まるまで 1 回だけ**書きます。条件を外れたまま 5 分続いたら
     `cleared: <種類>` で始まる解除の 1 件を書き、また立てるようになります。説明には必ず数字
@@ -700,6 +725,19 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     解除を書いてしまう**ため)。**費用は 0** で、判定するのは履歴スレッドだけです
     (要求ごとの経路には 1 命令もありません。`--lite` と `PROXY_STATS_PERSIST=off` では
     履歴スレッドが無いので判定もしません)
+  - **初めて見た接続元 (T14.54。上の規則 6)**: 認証なしの公開プロキシなので、**見知らぬ接続元は
+    「現れた瞬間」に気づきたい**ものです (2026-09-16 に現れた接続元に気づいたのは 3 日後でした)。
+    上の判定と同じ 5 秒の周期で `/clients` を見て、**`first_seen` がその窓の中**にある接続元を
+    `/events` に **`new_client`** で 1 件残します (種類が `anomaly` ではなく `new_client` なのは、
+    異常ではなく「初めて」だからです)。説明には接続元・要求数・**最初の宛先の種類**
+    (ポートと、名前宛てか IP リテラル宛てか)・`User-Agent` が入ります
+    (例: `new_client: 198.51.100.7 first seen (1 req, first target port 443 (name), agent "curl/8.5.0")`)。
+    **同じ接続元は 1 回だけ**で、2 回目の要求では増えません。走査を受けて 1 周期に何百も現れたときは
+    **8 件まで**書き、残りは `new_client: N more clients first seen in the same 5s window (wrote 8)` の
+    1 行にまとめます (出来事のリング 512 件を 1 回で流さないため)。状態ファイルから読み戻した接続元
+    (`first_seen` が `0` = この起動より前から居た) は「新しい」ではありません。**費用は 0** で、
+    5 秒に 1 回、接続元の表の鍵を取って `first_seen` を比べるだけです
+    (`/clients` を丸ごと写しません。要求ごとの経路には 1 命令もありません)
 
   - **1 要求で全部取る (T14.4)**: `/snapshot` は上の口を **1 つの JSON** にまとめて返します
     (`status` / `status_errors` / `status_dns` / `history` (`5` / `60` / `3600`) / `dns` / `errors` /

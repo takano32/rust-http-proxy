@@ -13,7 +13,7 @@
 #
 # 使い方:
 #   scripts/status-diff.py A.json [B.json] [--aaaa FILE | --no-dns] [--min-timed N] [--top N]
-#                          [--sort errors|dns|slow]
+#                          [--sort errors|dns|slow] [--group domain]
 #     scripts/status-diff.py <(curl -s http://host:port/status)              # いまの通算
 #     curl -s http://host:port/status > a.json; sleep 3600
 #     curl -s http://host:port/status > b.json; scripts/status-diff.py a.json b.json
@@ -32,6 +32,14 @@
 # `--aaaa` と組で 1,000 ホストの AAAA 別集計が取れる。`/hosts` は 1 件 325 B ほどなので
 # 256 KiB に入りきらないと `"truncated": true` を付けて途中で切る (そのときは `--sort` か
 # `?limit=` で絞る)。切れていたらこのスクリプトが 1 行警告を出す。
+#
+# **`--group domain` は eTLD+1 でまとめる** (T14.54)。`/hosts` は `img.dlsite.jp` と
+# `www.dlsite.jp` が別の行なので「dlsite 全体で何件か」が読めない。`--group domain` は
+# **同じ eTLD+1 のホストを 1 行にまとめる** (`img.dlsite.jp` + `www.dlsite.jp` -> `dlsite.jp`。
+# `www.dlsite.com` は eTLD+1 が違うので別の行)。3 ラベルの `co.jp` / `ne.jp` … は
+# `scripts/proxydata.py` の短い表で近似する (Public Suffix List は持たない)。
+# 要求数・バイト・エラー・名前解決は和、`avg_ms` は計測数 (`timed`) で重みづけ、
+# **p50 / p95 は 2 つ以上まとまった行では出ない** (ホスト別の分位点は足せない)。
 #
 # **`--sort` は 1 枚のときだけ** (`/status?sort=errors|dns|slow` を取った JSON をそのまま読んで、
 # 同じ鍵で並べ、名前解決 / 確立の 1 回あたりとエラーの原因の列を足す。T13.3)。
@@ -71,6 +79,7 @@ from proxydata import (  # noqa: E402
     cell,
     fmt_bytes,
     fmt_ms,
+    group_by_domain,
     load,
     median,
     per_conn,
@@ -84,14 +93,19 @@ from proxydata import (  # noqa: E402
 )
 
 
-def print_table(title, rows, diff, aaaa_shown, detail=False):
+def print_table(title, rows, diff, aaaa_shown, detail=False, group=False):
     print()
-    print(f"== {title} ({len(rows)} ホスト) ==")
+    unit = "まとめの単位" if group else "ホスト"
+    print(f"== {title} ({len(rows)} {unit}"
+          + (f"、{sum(r['hosts'] for r in rows)} ホスト) ==" if group else ") =="))
     if not rows:
         print("  (該当なし)")
         return
     width = min(52, max(len(r["name"]) for r in rows))
-    head = f"  {'host':<{width}} {'AAAA':>4} {'req':>7} {'timed':>7} {'avg_ms':>9}"
+    head = f"  {'domain' if group else 'host':<{width}}"
+    if group:
+        head += f" {'n':>3}"
+    head += f" {'AAAA':>4} {'req':>7} {'timed':>7} {'avg_ms':>9}"
     if diff:
         head += f" {'±':>7}"
     head += f" {'p50':>7} {'p95':>7} {'max':>7} {'bytes':>9} {'err':>4}"
@@ -102,8 +116,11 @@ def print_table(title, rows, diff, aaaa_shown, detail=False):
     for r in rows:
         name = r["name"] if len(r["name"]) <= width else r["name"][: width - 1] + "…"
         aaaa = {True: "有", False: "無", None: "?"}[r["aaaa"]] if aaaa_shown else "-"
-        line = (f"  {name:<{width}} {cell(aaaa, 4)} {r['requests']:>7} {r['timed']:>7} "
-                f"{fmt_ms(r['avg_ms']):>9}")
+        line = f"  {name:<{width}}"
+        if group:
+            line += f" {r['hosts']:>3}"
+        line += (f" {cell(aaaa, 4)} {r['requests']:>7} {r['timed']:>7} "
+                 f"{fmt_ms(r['avg_ms']):>9}")
         if diff:
             err = "—" if r["avg_err"] is None else "%.1f" % r["avg_err"]
             line += f" {err:>7}"
@@ -139,7 +156,9 @@ def print_groups(title, rows, diff):
         print("  (差分では p50 / p95 / max は通算の値。区間の分位点は差し引けない)")
 
 
-def main():
+def main(argv=None):
+    # 引数を渡せるようにしてあるのは単体テスト (`scripts/test_status_diff.py`) から
+    # 呼ぶため (`snapshot-diff.py` の `main(argv=None)` と同じ作法)
     p = argparse.ArgumentParser(
         description="デプロイ先の /status (または /hosts) をホスト別に読む "
                     "(1 つなら通算、2 つなら差分)")
@@ -150,10 +169,13 @@ def main():
     p.add_argument("--min-timed", type=int, default=0, metavar="N",
                    help="timed がこの数に満たないホストを表から省く (既定 0)")
     p.add_argument("--top", type=int, default=0, metavar="N", help="表に出すホスト数 (既定は全部)")
+    p.add_argument("--group", choices=["host", "domain"], default="host", metavar="KEY",
+                   help="行のまとめ方 (既定 host)。domain は eTLD+1 でまとめる "
+                        "(img.dlsite.jp と www.dlsite.jp が dlsite.jp の 1 行。T14.54)")
     p.add_argument("--sort", choices=["errors", "dns", "slow"], metavar="KEY",
                    help="1 枚のときの並びを errors|dns|slow にし、内訳の列を足す "
                         "(/status?sort= を取った JSON をそのまま読むため。差分は要求数順の 2 枚で取る)")
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     if len(args.files) > 2:
         p.error("渡せるのは 1 つか 2 つ")
@@ -180,6 +202,10 @@ def main():
     aaaa = resolve_aaaa(names, mode, table)
     for r in rows:
         r["aaaa"] = aaaa.get(r["name"])
+
+    # eTLD+1 でまとめる (AAAA を引いたあと。群ごとに「全部あり / 全部なし」を見るため)
+    if args.group == "domain":
+        rows = group_by_domain(rows)
 
     src = {"dns": "getaddrinfo", "file": args.aaaa, "none": "引かない"}[mode]
     print(f"# status-diff: {' -> '.join(args.files)}")
@@ -225,8 +251,12 @@ def main():
     if args.sort:
         print(f"# 並び  {args.sort} (/status?sort={args.sort} と同じ鍵。"
               "dns/回 = dns_ms_sum ÷ dns_misses、接続/回 = connect_ms_sum ÷ timed)")
-    print_table("CONNECT", con, diff, aaaa_shown, bool(args.sort))
-    print_table("forward", fwd, diff, aaaa_shown, bool(args.sort))
+    group = args.group == "domain"
+    if group:
+        print("# まとめ  eTLD+1 (--group domain。n = まとめたホスト数、"
+              "avg_ms は timed で重みづけ、p50 / p95 は 2 つ以上では出ない)")
+    print_table("CONNECT", con, diff, aaaa_shown, bool(args.sort), group)
+    print_table("forward", fwd, diff, aaaa_shown, bool(args.sort), group)
     if aaaa_shown:
         print_groups("CONNECT", con, diff)
         print_groups("forward", fwd, diff)

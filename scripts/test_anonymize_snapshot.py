@@ -32,6 +32,7 @@ def _load(name, filename):
 
 
 an = _load("anonymize_snapshot", "anonymize-snapshot.py")
+pd = _load("proxydata", "proxydata.py")
 
 
 def sample():
@@ -180,8 +181,10 @@ class Hosts(unittest.TestCase):
     def test_host_names_are_numbered_in_the_order_they_appear(self):
         out = anonymized()
         got = [h["host"] for h in out["status"]["hosts"]]
-        self.assertEqual(got[0], "connect://host-0001.example:443")
-        self.assertEqual(got[1], "http://host-0002.example:80")
+        # `gNNNN` は**まとめの単位 (eTLD+1)** の番号。この 2 つはどちらも
+        # `example.net` なので同じ単位に落ちる (T14.54)
+        self.assertEqual(got[0], "connect://host-0001.g0001.example:443")
+        self.assertEqual(got[1], "http://host-0002.g0001.example:80")
 
     def test_the_scheme_and_the_port_are_kept(self):
         out = anonymized()
@@ -234,22 +237,50 @@ class Addresses(unittest.TestCase):
         self.assertEqual(anonymized()["clients"]["clients"][0]["agents"], ["ua-01", "ua-02"])
 
 
+class Grouping(unittest.TestCase):
+    """**まとめの粒度が残る** (T14.54)。匿名化しても `--group domain` が同じ形にまとまる。"""
+
+    def test_the_same_etld1_lands_in_the_same_unit(self):
+        snap = {"parts": ["hosts"], "hosts": {"hosts": [
+            {"host": "connect://img.dlsite.jp:443", "requests": 100},
+            {"host": "connect://www.dlsite.jp:443", "requests": 300},
+            {"host": "connect://www.dlsite.com:443", "requests": 7},
+            {"host": "connect://www.dmm.co.jp:443", "requests": 5},
+            {"host": "http://a.b.example.io:80", "requests": 2},
+        ]}}
+        before = [h["host"] for h in snap["hosts"]["hosts"]]
+        got = [h["host"] for h in an.Anonymizer().run(snap)["hosts"]["hosts"]]
+        # 元とは 1 つも同じ名前が残っていない
+        self.assertFalse(set(before) & set(got))
+        units_before = [pd.etld1(pd.host_name(k)) for k in before]
+        units_after = [pd.etld1(pd.host_name(k)) for k in got]
+        # 「同じ単位か」の組み合わせが元と後で一致する (dlsite.jp の 2 件だけが同じ)
+        def pairs(units):
+            return {(i, j) for i in range(len(units)) for j in range(i + 1, len(units))
+                    if units[i] == units[j]}
+        self.assertEqual(pairs(units_after), pairs(units_before))
+        self.assertEqual(pairs(units_after), {(0, 1)})
+        self.assertEqual(len(set(units_after)), 4, "単位の数も同じ")
+        self.assertEqual(units_after[0], "g0001.example")
+
+
 class Text(unittest.TestCase):
     def test_a_log_line_keeps_everything_but_the_host_and_the_ip(self):
         out = anonymized()
         msg = out["log"]["lines"][0]["msg"]
         self.assertEqual(
             msg,
-            "connect host-0001.example:443 from 198.51.100.1:51514 failed after 250 ms"
+            "connect host-0001.g0001.example:443 from 198.51.100.1:51514 failed after 250 ms"
             " (dns 12.5 ms, version 0.1.0+abcdef1, see dashboard.html at 10:30:00)")
 
     def test_a_dotless_host_and_a_bracketed_ipv6_in_a_log_line(self):
         msg = anonymized()["log"]["lines"][1]["msg"]
-        self.assertEqual(msg, "parked a tunnel to host-0003.example:8080 for [2001:db8::1]")
+        self.assertEqual(msg,
+                         "parked a tunnel to host-0003.g0002.example:8080 for [2001:db8::1]")
 
     def test_a_name_that_only_shows_up_in_a_line_is_numbered_too(self):
         text = anonymized()["events"]["events"][0]["text"]
-        self.assertEqual(text, "blocked host-0005.example (2)")
+        self.assertEqual(text, "blocked host-0005.g0003.example (2)")
 
     def test_a_path_and_a_version_are_not_touched(self):
         self.assertEqual(anonymized()["status"]["settings"]["path"], "/home/container/.env")
@@ -295,11 +326,18 @@ class Deterministic(unittest.TestCase):
     def test_a_number_that_is_already_taken_is_not_handed_out_twice(self):
         snap = sample()
         # 入力に匿名化済みの名前が混ざっていても、別の名前とぶつからない
-        snap["status"]["hosts"][1]["host"] = "connect://host-0001.example:443"
+        snap["status"]["hosts"][1]["host"] = "connect://host-0001.g0001.example:443"
         out = an.Anonymizer().run(snap)
         got = [h["host"] for h in out["status"]["hosts"][:2]]
-        self.assertEqual(got[1], "connect://host-0001.example:443")
+        self.assertEqual(got[1], "connect://host-0001.g0001.example:443")
         self.assertNotEqual(got[0], got[1])
+
+    def test_the_old_names_without_a_group_are_left_alone(self):
+        # T14.35 の最初の版が作った fixture (`host-0001.example`) を通しても変わらない
+        snap = sample()
+        snap["status"]["hosts"][1]["host"] = "connect://host-0009.example:443"
+        got = an.Anonymizer().run(snap)["status"]["hosts"][1]["host"]
+        self.assertEqual(got, "connect://host-0009.example:443")
 
 
 class Bundle(unittest.TestCase):
@@ -341,8 +379,8 @@ class Bundle(unittest.TestCase):
                 an.main(self.files(tmp) + ["-o", out])
             with open(out, encoding="utf-8") as f:
                 got = json.load(f)
-            self.assertIn("ホスト 4 件", err.getvalue())
-        self.assertEqual(got["status"]["hosts"][0]["host"], "connect://host-0001.example:443")
+            self.assertIn("ホスト 4 件 (まとめの単位 2 件)", err.getvalue())
+        self.assertEqual(got["status"]["hosts"][0]["host"], "connect://host-0001.g0001.example:443")
         self.assertEqual(got["connections"]["connections"][0]["client"], "198.51.100.1:51514")
 
     def test_a_plain_status_json_is_enough(self):
