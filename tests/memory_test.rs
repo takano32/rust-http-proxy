@@ -146,6 +146,7 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
         "bursts",
         "log",
         "events",
+        "trace",
         "history",
         "hostseries",
     ]

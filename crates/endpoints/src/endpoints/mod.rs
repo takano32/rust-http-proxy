@@ -124,6 +124,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /connections                                JSON: the connections open right now\n\
          \x20 /recent?n=200&since=&client=&sort=          JSON: the connections that closed\n\
          \x20 /bursts?n=50                                JSON: snapshots taken at each spike\n\
+         \x20 /trace?n=200&since=                         JSON: one client's requests (PROXY_TRACE_CLIENT)\n\
          \x20 /events?n=200&since=                        JSON: starts, reloads, and other events\n\
          \x20 /snapshot                                   JSON: everything above in one request\n\
          \x20 /snapshots                                  JSON: the daily snapshots kept on disk\n\
@@ -278,6 +279,10 @@ pub fn handle(
     } else if is_get && path == "/bursts" {
         // 山の写真 (T14.6)。同時接続数が上限の一定割合を越えた瞬間の `/connections`
         recent::bursts(ep, query)
+    } else if is_get && path == "/trace" {
+        // 接続元 1 つの追跡 (T14.27)。`PROXY_TRACE_CLIENT` に一致した接続元の要求行と
+        // 応答の状態と段階。**他の個票と違い URL のパスが入る** (追跡中だけ)
+        recent::trace(ep, query)
     } else if is_get && path == "/events" {
         // 起きたことの時系列 (T14.11)。起動・再読込・ブロックリスト・IPv6・圧迫・
         // バラスト・状態ファイル・追い出し・accept の失敗・停止シグナルを 1 本に

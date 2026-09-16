@@ -1,6 +1,6 @@
 //! 個票を読み出すエンドポイント: `/errors` `/connections` `/dns` `/log` `/hosts` (T13.4)、
 //! `/recent` と `/snapshot` (閉じた接続と、1 回で全部。T14.4)、接続元の個票 `/clients` (T14.7)、
-//! 山の写真 `/bursts` (T14.6)。
+//! 山の写真 `/bursts` (T14.6)、接続元 1 つの追跡 `/trace` (T14.27)。
 //!
 //! `/status` (集計) と `/history` (時系列) では「**誰が・いつ・なぜ**」が読めない。
 //! ここは「今この瞬間の中身」と「直近に起きたこと」を、集計に畳む前の形で出す口で、
@@ -23,6 +23,7 @@ use std::time::Instant;
 use super::{Endpoint, parse_query};
 use crate::events::MAX_EVENTS;
 use crate::recent::{BurstShot, MAX_BURSTS, MAX_ERRORS, MAX_RECENT, RecentEntry};
+use crate::trace::{MAX_PATH, MAX_TRACE};
 
 /// 個票の応答 1 本の上限 (256 KiB)。監視が 1 分おきに引いても回線を埋めない大きさで、
 /// `/errors` 500 件・`/connections` 240 件・`/hosts` 1,000 件のどれも収まる。
@@ -505,6 +506,45 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
         crate::json::escape(&client),
         persisted(ep),
         ep.metrics.closed.restored(),
+        cut,
+        !ep.metrics.conns.enabled()
+    );
+    (200, "application/json", out)
+}
+
+/// `/trace?n=200&since=<epoch>` — 追跡中の接続元 1 つの要求の並び (新しい順、既定 200 行・
+/// 最大 [`MAX_TRACE`]。T14.27)。
+///
+/// `PROXY_TRACE_CLIENT=<ip>` を設定している間だけ、**その接続元の**要求行 (メソッド +
+/// URL の先頭 [`MAX_PATH`] バイト + HTTP の版)・応答の状態・段階の ms・運んだバイトと、
+/// CONNECT の宛先と閉じた理由が 1 行ずつ並ぶ。全体のログ水準を `trace` に上げると
+/// アクセスログが全員に乗る (T10.10 の 7.2 us/要求) のに対し、ここは 1 人ぶんだけ。
+///
+/// **他の個票と違い URL のパスが入る**ので (T14.4〜T14.8 の共通の決まりの唯一の例外)、
+/// `/snapshot` には**入れない** (パスが雪像のファイルに残らないように)。リングは
+/// **メモリだけ**なので再起動で消える (T14.9 の永続化の対象ではない)。
+/// `--lite` は枠 (`ConnSlot`) を作らないので旗も立たず、1 行も残らない。
+pub fn trace(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    let n = num_param(query, "n", 200, MAX_TRACE);
+    // `?since=` は `/recent` `/events` と同じ扱い (「その時刻以降に書いたもの」)
+    let since = parse_query(query.unwrap_or(""))
+        .iter()
+        .find(|(k, _)| k == "since")
+        .and_then(|(_, v)| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let (rows, total) = crate::trace::select(since, n);
+    let mut out = String::with_capacity(8192);
+    out.push_str("{\"trace\":");
+    let (shown, cut) = array_within(&mut out, rows.iter().map(crate::trace::TraceLine::to_json));
+    let _ = write!(
+        out,
+        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"since\":{},\"max_path\":{},\"persisted\":false,\"truncated\":{},\"lite\":{}}}",
+        shown,
+        crate::trace::len(),
+        MAX_TRACE,
+        total,
+        since,
+        MAX_PATH,
         cut,
         !ep.metrics.conns.enabled()
     );

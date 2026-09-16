@@ -348,6 +348,15 @@ pub struct Config {
     /// **認証ではなく公平さの上限** (見知らぬ接続元が `PROXY_MAX_CONNS` を 1 人で使い切ると
     /// 本人が 503 になるため。T14.13)
     pub max_conns_per_client: usize,
+    /// 追跡する接続元 (`PROXY_TRACE_CLIENT`、既定 `None` = 無効。T14.27)。
+    ///
+    /// 設定されている間だけ、accept 直後に接続元がこの IP と一致するかを 1 回見て、
+    /// 一致した接続にだけ `ConnSlot` の旗を立てる。旗が立った接続は要求行 (パスの先頭
+    /// 256 B) と応答の状態・段階の ms・CONNECT の閉じた理由を `/trace` のリングに残す。
+    /// **要求ごとの費用は旗を読む分岐 1 回**で、既定 (`None`) では accept ごとの
+    /// `is_some()` 1 回だけ。**v4-mapped IPv6 は IPv4 に直して覚える** (接続元の照合は
+    /// `net::canonical_ip` を通った値と比べるため)
+    pub trace_client: Option<IpAddr>,
     /// 各値の出どころ (`/config` の `source`。T14.15)。効いた値にだけ印が付く
     pub sources: Sources,
 }
@@ -503,6 +512,16 @@ impl Config {
         {
             cfg.max_conns_per_client = n;
             src.mark("PROXY_MAX_CONNS_PER_CLIENT");
+        }
+        // 追跡する接続元 (T14.27)。空 (と読めない書き方) は「追跡しない」= 既定のまま。
+        // 覚えるのは `net::canonical_ip` を通した形なので、`::ffff:1.2.3.4` と書いても
+        // `1.2.3.4` から来た接続に当たる
+        if let Some(ip) = envfile::var("PROXY_TRACE_CLIENT")
+            .and_then(|s| s.trim().parse::<IpAddr>().ok())
+            .map(crate::net::canonical_ip)
+        {
+            cfg.trace_client = Some(ip);
+            src.mark("PROXY_TRACE_CLIENT");
         }
         if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
             cfg.stats_persist = !off(v);
@@ -691,6 +710,16 @@ impl Config {
             "PROXY_ALLOW_CLIENTS",
             crate::json::quote(&self.allow_clients.to_string()),
         );
+        // 追跡する接続元 (T14.27。空 = 追跡していない)
+        add(
+            "PROXY_TRACE_CLIENT",
+            crate::json::quote(
+                &self
+                    .trace_client
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_default(),
+            ),
+        );
         add("PROXY_BURST_PERCENT", self.burst_percent.to_string());
         add("PROXY_BLOCKLIST_FILE", path(self.blocklist_file.as_ref()));
         add(
@@ -842,6 +871,7 @@ impl Config {
             endpoints_readonly: false,
             allow_clients: ClientAcl::default(),
             max_conns_per_client: 0,
+            trace_client: None,
             sources: Sources::default(),
         })
     }
