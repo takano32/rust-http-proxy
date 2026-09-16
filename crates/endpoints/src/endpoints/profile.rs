@@ -18,6 +18,7 @@
 use std::fmt::Write as _;
 
 use super::{Endpoint, parse_query};
+use crate::metrics::{SCHEMA, SCHEMA_HEAD};
 use crate::profile::{self, Profile};
 
 /// 標本を書ける上限 (末尾のキーの並びぶんを空ける)。
@@ -26,7 +27,11 @@ const HEADER_ROOM: usize = 4096;
 /// `/profile?res=5|60` を組み立てる。
 pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     if ep.lite {
-        return (200, "application/json", "{\"profile\":\"off\"}".to_string());
+        return (
+            200,
+            "application/json",
+            format!("{{\"schema\":{},\"profile\":\"off\"}}", SCHEMA),
+        );
     }
     let res = parse_query(query.unwrap_or(""))
         .iter()
@@ -39,9 +44,11 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     let (rows, shown, total, cut) = p.rows_within(res, budget);
 
     let mut out = String::with_capacity(rows.len() + HEADER_ROOM);
+    // 応答の形の版は**いちばん先頭の鍵** (T14.49)
+    out.push_str(SCHEMA_HEAD);
     let _ = write!(
         out,
-        "{{\"interval_secs\":{},\"sample_ms\":{},\"sampler\":\"{}\",\"bounds_ms\":[",
+        "\"interval_secs\":{},\"sample_ms\":{},\"sampler\":\"{}\",\"bounds_ms\":[",
         profile::RESOLUTIONS[res].0,
         profile::sample_ms(),
         p.sampler().name()
