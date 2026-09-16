@@ -6,7 +6,7 @@
 //!
 //! 即時反映できるのは接続単位で参照する値だけ: ACL (`PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS`)、
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
-//! `PROXY_DNS_NEGATIVE_SECS`、
+//! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、
 //! `PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
 //! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
@@ -144,6 +144,13 @@ impl Live {
             next.dns_negative = fresh.dns_negative;
             crate::dns::set_negative_ttl(fresh.dns_negative);
             applied.push("PROXY_DNS_NEGATIVE_SECS");
+        }
+        // keep-warm の窓も長さを変えるだけ (表は捨てない)。0 にしたときだけ
+        // 待ち行列をその場で空にする (`set_warm_window` の中。T14.1)
+        if fresh.dns_warm != old.dns_warm {
+            next.dns_warm = fresh.dns_warm;
+            crate::dns::set_warm_window(fresh.dns_warm);
+            applied.push("PROXY_DNS_WARM_SECS");
         }
         if fresh.pac_direct != old.pac_direct {
             next.pac_direct = fresh.pac_direct.clone();

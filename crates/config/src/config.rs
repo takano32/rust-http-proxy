@@ -128,6 +128,12 @@ pub struct Config {
     /// デプロイ先では失敗する解決が 1 回 約 2 秒かかる (58.6 時間で 80 件)。5 秒では
     /// 「直後の再試行」しか捉えられていなかったので 60 秒にした (T13.1)
     pub dns_negative: Duration,
+    /// 「熱い」と見なす窓 (`PROXY_DNS_WARM_SECS`、0 で keep-warm を止める)。
+    ///
+    /// この秒数に **2 回以上**使われた名前は、使われなくても 3/4 TTL ごとに裏で引き直す。
+    /// TTL (60 秒) を熱さの物差しにすると、間隔が 2〜10 分のデプロイ先の主要ホストを
+    /// 1 つも救えなかった (T14.1)
+    pub dns_warm: Duration,
     /// `/proxy.pac` で DIRECT にするホストの一覧 (`PROXY_PAC_DIRECT`、`*.example.com` 可)
     pub pac_direct: Vec<String>,
     /// ブロックリストのファイル (`PROXY_BLOCKLIST_FILE`、hosts 形式 / 1 行 1 ドメイン)
@@ -277,6 +283,11 @@ impl Config {
         {
             cfg.dns_negative = Duration::from_secs(secs);
         }
+        if let Some(secs) =
+            envfile::var("PROXY_DNS_WARM_SECS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.dns_warm = Duration::from_secs(secs);
+        }
         let list = |v: String| -> Vec<String> {
             v.split(',')
                 .map(|s| s.trim().to_ascii_lowercase())
@@ -347,6 +358,7 @@ impl Config {
             tls_ca_file: None,
             dns_ttl: Duration::from_secs(60),
             dns_negative: crate::dns::NEGATIVE,
+            dns_warm: crate::dns::WARM,
             pac_direct: Vec::new(),
             blocklist_file: None,
             blocklist_url: None,

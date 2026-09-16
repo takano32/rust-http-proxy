@@ -136,6 +136,10 @@ if (api.dnsStats({ dns: {} }).refreshes !== null) fail('無いキーは null の
 if (api.dnsStats({ dns: { refreshes: 7, negative_ttl_secs: 60 } }).refreshes !== 7) {
   fail('refreshes を読めていない');
 }
+if (api.dnsStats({ dns: {} }).warm !== null) fail('warm が無ければ null のはず');
+if (api.dnsStats({ dns: { warm: 5, warm_secs: 900 } }).warm !== 5) {
+  fail('warm を読めていない');
+}
 
 const causeNames = hist.causes || [];
 const bad = api.badHosts([st.hosts], causeNames, 10);
