@@ -3792,7 +3792,7 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     - `/errors` を canary が埋める恐れ: 手で並べた宛先が繋がり続けないと 1 周期に 1 件入る (`auto` は 1 時間で対象が消える)。
       窓は再起動で消える (T14.14 で版を上げるなら標本に入れる候補)。`/history?res=3600` の canary は空。T14.37 の IPv6 側は `probe()` に足す。
     - **デプロイ先の基準 (24 時間で 1 時間に 60 点、利用者の CONNECT 確立 p50 と ±3 ms) は再デプロイ後に見る。**
-- [ ] **T14.11 `/events` (起動・設定の再読込・ブロックリスト更新・IPv6 の切替・圧迫・バラスト・状態ファイルの異常を 1 本の時系列に)**
+- [x] **T14.11 `/events` (起動・設定の再読込・ブロックリスト更新・IPv6 の切替・圧迫・バラスト・状態ファイルの異常を 1 本の時系列に)**
   - 目的: 数字が動いたとき「そのとき何を変えたか」が無い。再読込 (`applied` / `restart_required`) は `/status` の `settings` に最後の
     1 回しか残らず、起動 (= 再デプロイ) の時刻は `since_start_secs` から逆算するしかない。`/log` は warn 以上なので info の出来事
     (再読込、ブロックリストの取得、バラストの増減) は入らない。
@@ -3805,6 +3805,10 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     `pressure` / `ballast` / `state_file` / `evict` / `emfile` / `shutdown` の 10 種で固定 (増やすなら README も)。
   - 受け入れ基準: 結合テストで、起動 → `.env` の `PROXY_TIMEOUT_SECS` を書き換え → `/events` に `start` と `reload` (`PROXY_TIMEOUT_SECS 30 → 10`)
     の 2 件が時刻つきで見える。`?since=` で絞れる。応答 256 KiB 以下。費用 0 (稀な経路だけ)。
+  - 結果 (2026-09-16、`a923856`): 起きたことの時系列 **`/events?n=200&since=<epoch>`** を足した。`crates/metrics/src/events.rs` (新規。T14.9 と並行なので `recent.rs` には触っていない) に **512 件の固定長リング 1 本**を置き、1 件 = 時刻 (epoch 秒)・種類・説明 (128 B まで、超えたら `…`)。種類は `start` / `reload` / `blocklist` / `ipv6` / `pressure` / `ballast` / `state_file` / `evict` / `emfile` / `shutdown` の **10 種で固定** (応答の `kinds` にも出すので、綴りの増減は `scripts/check-dashboard.js` が気づく)。**書くのは稀な経路だけ**で、`start` / `shutdown` は `src/main.rs` (起動の最後と停止シグナルの後始末)、`reload` は `crates/reload/src/reload.rs` (**変わった名前と前後の値**を `Config::settings()` = `/config` と `--check` が並べるのと同じ一覧から引く。再起動が要る項目はその旨も書く)、`blocklist` は一覧を組み直したとき (件数と取得の成否)、`state_file` は書込エラーの最初の 1 回、`evict` と `emfile` は **1 時間に初めて起きたときだけ** (`src/lib.rs` の accept の経路)。**`ipv6` / `pressure` / `ballast` の 3 種だけは履歴スレッドの周期 (5 秒) で状態の変わり目を拾う** (`events::poll()`): 起こす `proxy-net` と `proxy-cache` は `proxy-metrics` より**下の層**で、下から上を呼ぶと依存が輪になるため。この 3 種の時刻は「気づいた時刻」で最大 5 秒遅れ、**`--lite` と `PROXY_STATS_PERSIST=off` では残らない** (残りの 7 種は `--lite` でも残る)。バラストは ±64 MiB 以上動いたときだけ 1 件。**費用 0**: 要求ごとの経路には 1 命令も足していない (増えたのは履歴スレッドの 5 秒周期に原子 3 つの読みと雪像 1 つ)。応答は 1 件 336 B、**512 件の最悪で 88,777 B** (上限 262,144 B)。`/snapshot` の `parts` に `events`、`/` の案内・README・`scripts/check-dashboard.js` の読み手 (`eventRows`) も更新。結合 1 本・単体 12 本を新設 (proxy-metrics 90 本 / proxy-endpoints 22 本)。
+    - 実バイナリの実例: `version 0.1.0+fffb795 on port 18411 (profile default, cache on, timeout 30s, max conns 4096)` と `PROXY_MAX_CONNS 4096 → 100, PROXY_ORIGIN_POOL 64 → 9, PROXY_TIMEOUT_SECS 30 → 10; restart required for PROXY_ORIGIN_POOL`。
+    - **リングはメモリだけ**なので再起動で消える (`shutdown` を読めるのは T14.9 がこのリングも永続化してから)。`emfile` は accept の失敗すべてを 1 つの種類にまとめている (本当の errno は説明に入る)。
+    - 描くのはまだ: T14.8 の調査ページは `check-dashboard.js` の `eventRows` をそのまま描画関数にできる。`scripts/snapshot-summary.py` と `snapshot-diff.py` は `events` を読まない (雪像には入っている)。費用の A/B は測っていない (要求ごとの経路に 1 行も足していないため。親のまとめの計測で見る)。
 - [x] **T14.12 カーネルと cgroup の統計を窓に (`ListenOverflows`、再送、TIME_WAIT、CPU の絞り、PSI) と、本当の `/healthz`**
   - 目的: バーストのとき**カーネル側で何が起きていたか**が無い。受け入れ待ち行列の溢れ (`ListenOverflows` / `ListenDrops`: 溢れると
     クライアントは SYN を 1〜3 秒後に再送するので、プロキシの統計には「遅い接続」としてすら残らない)、再送 (`RetransSegs` /
@@ -4034,13 +4038,30 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
     `sorahost_warm_names`、`sorahost_lock_contention_total{lock=...}`。**ホスト別には出さない** (系列が増えすぎる。T12.4 (4) と同じ判断)。
   - 受け入れ基準: `/metrics` が 400 KiB 以下のまま (いま 185 KB)、単体テストで各系列の HELP / TYPE / 値の形。費用 0 (組み立ては
     `/metrics` のときだけ)。
-- [ ] **T14.20 日次の要約を永久に残す (`$HOME/.rust-http-proxy.daily.jsonl`)**
+- [x] **T14.20 日次の要約を永久に残す (`$HOME/.rust-http-proxy.daily.jsonl`)**
   - 目的: `/history` は 30 日で消える。1 日 1 行 (要求数、CONNECT 確立 p50 / p95、名前解決ミス/接続、エラー、山、RSS、版) の要約なら
     1 年で 100 KB で、**「いつから遅くなったか」「デプロイの前後で何が変わったか」**を年単位で追える。
   - 変更箇所: `crates/metrics/src/persist.rs` (history スレッドが UTC の日付が変わったときに 1 行追記)、`/daily?n=365` (読む口)、README。
   - やること: 上のとおり。ファイルは追記のみ (1 行 ≤ 512 B、上限 2 MiB で古い行から捨てる)。`PROXY_STATS_PERSIST=off` なら書かない。
   - 受け入れ基準: 単体テストで日付の境目をまたぐと 1 行増え、同じ日に 2 回起動しても 1 行のまま (起動時に最後の行の日付を見る)。
     `/daily` が 256 KiB 以下。費用 0。
+  - 結果 (2026-09-16、`72efb3a`): 1 日 1 行の要約を `$HOME/.rust-http-proxy.daily.jsonl` に追記し、`/daily?n=365`
+    (既定 1 年・最大 4,096 日、古い順) で読めるようにした。**書くのは history スレッドが UTC の日付をまたいだ
+    標本のときだけ**で、要求の経路は 1 命令も増えない (書かない設定では `tick` が原子の読み 1 回で戻る)。
+    1 行 = `day` / `t` / `secs` / `samples` (**その日をどれだけ見ていたか**。再起動した日は 1 日ぶんに満たない) /
+    `requests` / `bytes` / `connects` / `connect_p50_ms` / `connect_p95_ms` / `dns_misses` / `dns_per_connect` /
+    `dns_miss_ms` / `errors` / `bursts` / `active_max` / `evicted_idle` / `rss_max` / `rss_avg` / `version` で、
+    累計は**日の境目の値の差**、区間の値は**その日の標本の足し合わせ**、ゲージは**最大と平均**。境目の標本
+    (5 秒の窓はほぼ前日) は終わる日に足してから閉じるので 5 秒も落ちない。大きさは**ありふれた 1 行 336 B
+    (1 年で約 120 KB)・最悪 491 B** (上限 512 B。数は 15 桁、小数は 6 桁 + 1 位、版は 40 文字で頭打ちにして
+    必ず守る)、ファイルは上限 2 MiB = **4,089 行 = 約 11 年**で古い行から捨てる。`/daily` は 512 B の行だけでも
+    479 行 245,727 B (上限 256 KiB) に収まり、既定の 365 行は切られない。**起動時に最後の行の日付を読む**ので
+    同じ日に 2 回起動しても 1 行のまま、`PROXY_STATS_PERSIST=off` (と `--lite`) では `configure` を呼ばないので 1 行も書かない。
+    読む側は壊れた行 (手で触られた行) を読み飛ばす。実装は `crates/metrics/src/daily.rs` (新規) に閉じていて、
+    `history.rs` は 3 行・`persist.rs` は 0 行。テスト 10 本追加 (単体 8 + 結合 2) で全通過。
+    - 限界: 日をまたがずに終わったプロセスのその日は残らない (毎日 00:00 UTC より前に必ず再起動する運用だと 1 行も残らない)。
+      `version` は境目に動いていたバイナリ。デプロイ先で最初の 1 行が出るのは次の UTC 00:00 以降 (再デプロイ直後は `path` が非 `null` まで)。
+    - 小物: `/snapshot` と `scripts/collect-deployed.sh` / `snapshot-diff.py` は `/daily` を拾わない (`parts` に 1 行足す。T14.55〜 の仕上げで)。
 - [ ] **T14.21 メモリの内訳 (`mallinfo2`、スレッドのスタック、キャッシュ、リング) を `/status` の `memory` に**
   - 目的: 256 MiB のコンテナで RSS が何で構成されているか (ヒープの断片、スタック、キャッシュ、個票のリング) が読めない。T3 系で
     `PROXY_MALLOC_ARENAS` を決めたときのような調査を、デプロイ先で `/status` 1 枚からできるようにする。

@@ -23,6 +23,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use crate::events::{Event, EventKind, MAX_EVENTS, MAX_TEXT};
 use crate::log::{Level, Line};
 use crate::metrics::Metrics;
 use crate::recent::{
@@ -35,7 +36,7 @@ use crate::sync::LockExt;
 use crate::{log_info, log_warn};
 
 /// 版の印。**レコードの並びを変えたら末尾を上げる** (古いファイルは読み捨てて作り直す)。
-pub const MAGIC: &[u8; 8] = b"SHPREC01";
+pub const MAGIC: &[u8; 8] = b"SHPREC02";
 
 /// ファイルの大きさ (固定 4 MiB)。`.rrd` と同じで、以後は 1 バイトも伸びない。
 pub const FILE_SIZE: u64 = 4 * 1024 * 1024;
@@ -58,11 +59,13 @@ const SHOT_RECORD: usize = 4096;
 /// ログが 4,096 行ではなく 4,080 行なのは**先頭 4 KiB のヘッダーのぶん**
 /// (メモリのリングは 1,000 行なので、4,080 行でもその 4 倍ある)。
 /// 閉じた接続が 4,096 件なのは 1 件 512 B ([`CLOSED_RECORD`]) にしたため
-/// (それでもメモリのリング 2,000 件の 2 倍持てる)。
+/// (それでもメモリのリング 2,000 件の 2 倍持てる)。出来事 (T14.11) の 128 KiB は
+/// ログから分けた (ログは 4,080 → 3,568 行。メモリのリング 1,000 行の 3.5 倍は残る)。
 pub const CLOSED_SLOTS: usize = 4096;
 pub const ERROR_SLOTS: usize = 2048;
 pub const BURST_SLOTS: usize = 128;
-pub const LOG_SLOTS: usize = 4080;
+pub const EVENT_SLOTS: usize = 512;
+pub const LOG_SLOTS: usize = 3568;
 
 /// 1 周期 (5 秒) に書くレコードの上限。**合計ちょうど 64 KiB** で、越えた分は
 /// 古い方から落とす (メモリのリングには残っている。落とした数は `/status` の `dropped`)。
@@ -70,7 +73,8 @@ pub const LOG_SLOTS: usize = 4080;
 const TICK_CLOSED: usize = 80;
 const TICK_ERRORS: usize = 32;
 const TICK_BURSTS: usize = 2;
-const TICK_LOG: usize = 32;
+const TICK_EVENTS: usize = 8;
+const TICK_LOG: usize = 24;
 
 /// 固定幅の文字列の欄 (先頭 1 バイトが長さなので、入る中身は 1 バイト少ない)。
 const W_CLIENT: usize = 48; // 接続元 IP (最長 45 B)
@@ -79,18 +83,22 @@ const W_ETARGET: usize = 84; // `/errors` と写真の宛先 (`MAX_TARGET` 80 B)
 /// ログ 1 行の本文。レコード 256 B から通し番号・時刻・レベル・conn を引いた残り
 /// (メモリのリングは 1 行 256 B まで持つので、**ファイルに残すときだけ 219 B に切る**)。
 const W_MSG: usize = SMALL_RECORD - 4 - 8 * 4;
+/// 出来事 1 件の説明 (`MAX_TEXT` 128 B + 長さの 1 B。T14.11)。
+const W_TEXT: usize = MAX_TEXT + 4;
 
 /// 1 レコードに収まることを**組み立て時に**確かめる (欄を足して溢れたらここで止まる)。
 /// 数は各 `encode_*` が書く u64 の本数 (先頭の通し番号を含む) + 固定幅の文字列。
 const CLOSED_PAYLOAD: usize = 8 * (12 + STAGES + 2 * SIDES) + W_CLIENT + W_TARGET;
 const ERROR_PAYLOAD: usize = 8 * 7 + W_ETARGET + W_CLIENT;
 const LOG_PAYLOAD: usize = 8 * 4 + W_MSG;
+const EVENT_PAYLOAD: usize = 8 * 3 + W_TEXT;
 const SHOT_PAYLOAD: usize = 8 * (18 + CONN_STATES + 2)
     + MAX_SHOT_CLIENTS * (W_CLIENT + 8)
     + MAX_SHOT_TARGETS * (W_ETARGET + 8);
 const _: () = assert!(CLOSED_PAYLOAD <= CLOSED_RECORD - 4);
 const _: () = assert!(ERROR_PAYLOAD <= SMALL_RECORD - 4);
 const _: () = assert!(LOG_PAYLOAD <= SMALL_RECORD - 4);
+const _: () = assert!(EVENT_PAYLOAD <= SMALL_RECORD - 4);
 const _: () = assert!(SHOT_PAYLOAD <= SHOT_RECORD - 4);
 
 /// 4 本の領域の割り付け。
@@ -99,6 +107,7 @@ pub struct Layout {
     pub closed: Region,
     pub errors: Region,
     pub bursts: Region,
+    pub events: Region,
     pub log: Region,
     /// 領域が実際に使っている大きさ (ちょうど [`FILE_SIZE`])
     pub used: u64,
@@ -126,6 +135,12 @@ impl Layout {
             count: BURST_SLOTS,
         };
         off += bursts.bytes();
+        let events = Region {
+            offset: off,
+            record_size: SMALL_RECORD,
+            count: EVENT_SLOTS,
+        };
+        off += events.bytes();
         let log = Region {
             offset: off,
             record_size: SMALL_RECORD,
@@ -138,6 +153,7 @@ impl Layout {
             closed,
             errors,
             bursts,
+            events,
             log,
             used: off,
             total: FILE_SIZE,
@@ -152,22 +168,25 @@ pub struct Restored {
     pub closed: Vec<RecentEntry>,
     pub errors: Vec<ErrorEntry>,
     pub bursts: Vec<BurstShot>,
+    pub events: Vec<Event>,
     pub log: Vec<Line>,
 }
 
 impl Restored {
     /// メモリのリングへ入れる (**起動時に 1 回だけ**)。戻り値は
-    /// 閉じた接続 / エラー / 写真 / ログの件数。
-    pub fn install(self, metrics: &Metrics) -> [usize; 4] {
+    /// 閉じた接続 / エラー / 写真 / 出来事 / ログの件数。
+    pub fn install(self, metrics: &Metrics) -> [usize; 5] {
         let counts = [
             self.closed.len(),
             self.errors.len(),
             self.bursts.len(),
+            self.events.len(),
             self.log.len(),
         ];
         metrics.closed.restore(self.closed);
         metrics.errors.restore(self.errors);
         metrics.bursts.restore(self.bursts);
+        crate::events::restore(self.events);
         crate::log::restore(self.log);
         counts
     }
@@ -179,12 +198,13 @@ pub struct Written {
     pub closed: usize,
     pub errors: usize,
     pub bursts: usize,
+    pub events: usize,
     pub log: usize,
 }
 
 impl Written {
     pub fn total(&self) -> usize {
-        self.closed + self.errors + self.bursts + self.log
+        self.closed + self.errors + self.bursts + self.events + self.log
     }
 }
 
@@ -193,9 +213,10 @@ struct Rings {
     closed: Ring,
     errors: Ring,
     bursts: Ring,
+    events: Ring,
     log: Ring,
-    /// 閉じた接続 / エラー / 写真 / ログ の次の通し番号 (1 始まり)
-    seq: [u64; 4],
+    /// 閉じた接続 / エラー / 写真 / 出来事 / ログ の次の通し番号 (1 始まり)
+    seq: [u64; 5],
 }
 
 /// 開いた個票のファイル。
@@ -223,11 +244,13 @@ impl RecentFile {
         let (closed, closed_recs) = Ring::load(&file, l.closed)?;
         let (errors, error_recs) = Ring::load(&file, l.errors)?;
         let (bursts, burst_recs) = Ring::load(&file, l.bursts)?;
+        let (events, event_recs) = Ring::load(&file, l.events)?;
         let (log, log_recs) = Ring::load(&file, l.log)?;
         let seq = [
             next_seq(&closed_recs),
             next_seq(&error_recs),
             next_seq(&burst_recs),
+            next_seq(&event_recs),
             next_seq(&log_recs),
         ];
         let restored = Restored {
@@ -235,6 +258,7 @@ impl RecentFile {
             closed: decode_tail(&closed_recs, MAX_RECENT, decode_closed),
             errors: decode_tail(&error_recs, MAX_ERRORS, decode_error),
             bursts: decode_tail(&burst_recs, MAX_BURSTS, decode_shot),
+            events: decode_tail(&event_recs, MAX_EVENTS, decode_event),
             log: decode_tail(&log_recs, crate::log::MAX_LOG_LINES, decode_log),
         };
         let f = RecentFile {
@@ -244,6 +268,7 @@ impl RecentFile {
                 closed,
                 errors,
                 bursts,
+                events,
                 log,
                 seq,
             }),
@@ -267,12 +292,14 @@ impl RecentFile {
         let (closed, d0) = metrics.closed.take_unwritten(TICK_CLOSED);
         let (errors, d1) = metrics.errors.take_unwritten(TICK_ERRORS);
         let (bursts, d2) = metrics.bursts.take_unwritten(TICK_BURSTS);
-        let (lines, d3) = crate::log::take_unwritten(TICK_LOG);
-        let dropped = d0 + d1 + d2 + d3;
+        let (events, d3) = crate::events::take_unwritten(TICK_EVENTS);
+        let (lines, d4) = crate::log::take_unwritten(TICK_LOG);
+        let dropped = d0 + d1 + d2 + d3 + d4;
         let w = Written {
             closed: closed.len(),
             errors: errors.len(),
             bursts: bursts.len(),
+            events: events.len(),
             log: lines.len(),
         };
         let n = w.total();
@@ -295,8 +322,12 @@ impl RecentFile {
                 let p = encode_shot(bump(&mut g.seq[2]), s);
                 self.note("bursts", g.bursts.push(&self.file, &p));
             }
+            for e in &events {
+                let p = encode_event(bump(&mut g.seq[3]), e);
+                self.note("events", g.events.push(&self.file, &p));
+            }
             for line in &lines {
-                let p = encode_log(bump(&mut g.seq[3]), line);
+                let p = encode_log(bump(&mut g.seq[4]), line);
                 self.note("log", g.log.push(&self.file, &p));
             }
         }
@@ -332,7 +363,7 @@ impl RecentFile {
     pub fn status_json(&self) -> String {
         let l = Layout::current();
         format!(
-            "{{\"path\":{},\"bytes\":{},\"writes\":{},\"records\":{},\"dropped\":{},\"write_errors\":{},\"last_write_us\":{},\"max_write_us\":{},\"slots\":{{\"closed\":{},\"errors\":{},\"bursts\":{},\"log\":{}}}}}",
+            "{{\"path\":{},\"bytes\":{},\"writes\":{},\"records\":{},\"dropped\":{},\"write_errors\":{},\"last_write_us\":{},\"max_write_us\":{},\"slots\":{{\"closed\":{},\"errors\":{},\"bursts\":{},\"events\":{},\"log\":{}}}}}",
             crate::json::quote(&self.path.display().to_string()),
             l.total,
             self.writes.load(Ordering::Relaxed),
@@ -344,6 +375,7 @@ impl RecentFile {
             l.closed.count,
             l.errors.count,
             l.bursts.count,
+            l.events.count,
             l.log.count,
         )
     }
@@ -373,17 +405,18 @@ pub fn open_beside(rrd: &std::path::Path) -> Option<(RecentFile, Restored)> {
 }
 
 /// 読み戻した件数を起動ログに 1 行出す (`.rrd` の 1 行と同じ形)。
-pub fn log_restored(file: &RecentFile, created: bool, counts: [usize; 4]) {
+pub fn log_restored(file: &RecentFile, created: bool, counts: [usize; 5]) {
     log_info!(
         None,
-        "recent file {} ({} KiB, {}): {} closed connections, {} errors, {} burst shots, {} log lines restored",
+        "recent file {} ({} KiB, {}): {} closed connections, {} errors, {} burst shots, {} events, {} log lines restored",
         file.path.display(),
         FILE_SIZE / 1024,
         if created { "created" } else { "opened" },
         counts[0],
         counts[1],
         counts[2],
-        counts[3]
+        counts[3],
+        counts[4]
     );
 }
 
@@ -523,6 +556,27 @@ fn decode_error(p: &[u8]) -> Option<ErrorEntry> {
         status,
         client,
     })
+}
+
+fn encode_event(seq: u64, e: &Event) -> Vec<u8> {
+    let mut enc = Enc::new();
+    enc.u64(seq)
+        .u64(e.at)
+        .u64(e.kind.code())
+        .str(&e.text, W_TEXT);
+    enc.0
+}
+
+fn decode_event(p: &[u8]) -> Option<Event> {
+    let mut d = Dec(p);
+    let _seq = d.u64();
+    let at = d.u64();
+    let kind = EventKind::from_code(d.u64());
+    let text = d.str(W_TEXT);
+    if at == 0 {
+        return None;
+    }
+    Some(Event { at, kind, text })
 }
 
 fn encode_log(seq: u64, line: &Line) -> Vec<u8> {
@@ -707,11 +761,18 @@ mod tests {
         assert_eq!(l.closed.record_size, 512);
         assert_eq!(l.errors.bytes(), 512 * 1024);
         assert_eq!(l.bursts.bytes(), 512 * 1024);
-        assert_eq!(l.log.bytes(), 1_044_480);
+        assert_eq!(l.events.bytes(), 128 * 1024);
+        assert_eq!(l.log.bytes(), 913_408);
         // 1 レコードの中身が入ること (組み立て時の assert と同じものを数字で残す)
         assert_eq!(
-            (CLOSED_PAYLOAD, ERROR_PAYLOAD, LOG_PAYLOAD, SHOT_PAYLOAD),
-            (276, 188, 252, 2016)
+            (
+                CLOSED_PAYLOAD,
+                ERROR_PAYLOAD,
+                LOG_PAYLOAD,
+                EVENT_PAYLOAD,
+                SHOT_PAYLOAD
+            ),
+            (276, 188, 252, 156, 2016)
         );
     }
 
@@ -743,6 +804,14 @@ mod tests {
         assert_eq!(decode_log(&encode_log(1, &line)).unwrap(), line);
         let main_line = Line { conn: None, ..line };
         assert_eq!(decode_log(&encode_log(2, &main_line)).unwrap(), main_line);
+
+        let event = Event {
+            at: 1_700_000_300,
+            kind: EventKind::Shutdown,
+            text: "stop signal received".to_string(),
+        };
+        assert_eq!(encode_event(1, &event).len(), EVENT_PAYLOAD);
+        assert_eq!(decode_event(&encode_event(1, &event)).unwrap(), event);
 
         let shot = BurstShot {
             at: 1_700_000_200,
@@ -868,6 +937,7 @@ mod tests {
             TICK_CLOSED * CLOSED_RECORD
                 + TICK_ERRORS * SMALL_RECORD
                 + TICK_BURSTS * SHOT_RECORD
+                + TICK_EVENTS * SMALL_RECORD
                 + TICK_LOG * SMALL_RECORD,
             64 * 1024
         );

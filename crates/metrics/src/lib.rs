@@ -7,6 +7,8 @@
 //! (動作環境のメモリ上限は 200 MB)。**外部クレートは 1 つも使っていない。**
 
 pub mod canary;
+pub mod daily;
+pub mod events;
 pub mod history;
 pub mod kernel;
 pub mod metrics;

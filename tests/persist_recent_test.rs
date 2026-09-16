@@ -27,6 +27,9 @@ const RECENT_SIZE: u64 = 4 * 1024 * 1024;
 /// 引き継がれるかを見る warn の 1 行。
 const WARN_LINE: &str = "t149 individual records must survive a restart";
 
+/// 引き継がれるかを見る出来事 1 件 (T14.11 のリング)。
+const EVENT_TEXT: &str = "t149 event must survive a restart";
+
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("rhp-t149-{}-{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -94,12 +97,13 @@ fn test_integration_individual_records_survive_a_restart() {
     assert!(out.starts_with("HTTP/1.1 403"), "{}", out);
     wait_until(|| metrics.errors.len() == 1, "one error entry");
 
-    // warn を 1 行
+    // warn を 1 行と、出来事を 1 件 (T14.11 のリングも永続化の対象)
     rust_http_proxy::log::log_line(rust_http_proxy::log::Level::Warn, None, WARN_LINE);
+    rust_http_proxy::events::push(rust_http_proxy::events::EventKind::Reload, EVENT_TEXT);
 
     // 周期 1 回ぶん待つ (書くのは history スレッドだけ)
     wait_until(
-        || status_number(&store.status_json(), "records") >= 5,
+        || status_number(&store.status_json(), "records") >= 6,
         "the history thread to append the records",
     );
     assert_eq!(metrics.closed.len(), 3, "403 は `/recent` に残さない");
@@ -121,8 +125,9 @@ fn test_integration_individual_records_survive_a_restart() {
     assert_eq!(std::fs::metadata(&recent).unwrap().len(), RECENT_SIZE);
 
     // ---- 2 つ目の「プロセス」(同じ `$HOME`) ----
-    // ログのリングはプロセスに 1 つなので、起こし直しを再現するために空にする
+    // ログと出来事のリングはプロセスに 1 つなので、起こし直しを再現するために空にする
     rust_http_proxy::log::clear_recent();
+    rust_http_proxy::events::clear();
     let (port2, metrics2, store2) = start_test_proxy_with_store(proxy_config(), TICK, rrd.clone());
     assert!(store2.is_some());
     assert!(metrics2.recent_persisted.load(Ordering::Relaxed));
@@ -176,6 +181,15 @@ fn test_integration_individual_records_survive_a_restart() {
         "restored が無い: {}",
         log
     );
+
+    let events = endpoint_json(port2, "/events");
+    assert!(
+        events.contains(EVENT_TEXT),
+        "出来事が引き継がれていない: {}",
+        events
+    );
+    assert!(events.contains("\"persisted\":true"), "{}", events);
+    assert!(status_number(&events, "restored") >= 1, "{}", events);
 
     // 写真は 1 枚も撮っていないが、口は同じ形で答える
     let bursts = endpoint_json(port2, "/bursts");
@@ -265,7 +279,7 @@ fn test_integration_nothing_is_written_when_persistence_is_off() {
     let json = endpoint_json(proxy.port, "/recent");
     assert!(json.contains("\"persisted\":false"), "{}", json);
     assert!(json.contains("\"restored\":0"), "{}", json);
-    for path in ["/errors", "/log", "/bursts"] {
+    for path in ["/errors", "/log", "/bursts", "/events"] {
         let body = endpoint_json(proxy.port, path);
         assert!(body.contains("\"persisted\":false"), "{} -> {}", path, body);
     }

@@ -312,6 +312,20 @@ fn rebuild(upstream: &Upstream, timeout: Duration, fetch_url: bool) {
             .map(|e| format!("; last error: {}", e))
             .unwrap_or_default()
     );
+    // 出来事の時系列に 1 件 (取得の成否と件数。組み直したときだけ通る。T14.11)
+    crate::events::push(
+        crate::events::EventKind::Blocklist,
+        &format!(
+            "{} domains (file {}, url {}){}",
+            entries,
+            file_entries,
+            url_entries,
+            st.error
+                .as_ref()
+                .map(|e| format!("; error: {}", e))
+                .unwrap_or_default()
+        ),
+    );
 }
 
 /// 監視スレッドの起動に必要なもの (出所が後から設定されたときに使う)。
