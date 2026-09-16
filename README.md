@@ -248,9 +248,23 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `?sort=slow` は確立 (`ms.connect`) の遅い順、`?sort=bytes` は転送の多い順。
     **自分宛て (`/status` `/dashboard` …) だけで終わった接続は残しません** — 監視が 5 秒おきに引くとリングがそれで埋まるためです
     (数は `/status` にあります)
+  - **山の写真 (T14.6)**: `/bursts?n=50` は、同時接続数が `PROXY_MAX_CONNS × PROXY_BURST_PERCENT`
+    (既定 50%) を**下から上に越えた瞬間**に自動で撮った `/connections` の要約です。
+    上限に当たったときの動き (暇なトンネルを 1 本閉じる。`PROXY_MAX_CONNS`) が効いているかは
+    「山が来たとき」にしか見えませんが、来たときに `/connections` を見ている人はいないので、
+    越えた瞬間を機械に撮らせておきます。1 枚 = 撮った時刻 (`at`)・通し番号 (`seq`)・そのときの本数
+    (`active`、旗が立った瞬間は `trigger_active`)・上限と閾 (`max_conns` / `threshold`)・
+    **接続元ごとの本数** (`clients`、多い順に 16 件 + `clients_other`)・**宛先の上位 10** (`targets` + `targets_other`)・
+    状態別 (`states` = `serving` / `reading` / `parked` / `queued` / `relaying`)・種類別 (`kinds`)・
+    `evicted_idle` と `rejected_overload` の累計・スレッド数と記述子 (`threads` / `fds` / `max_fds`)。
+    **同じ山では 1 枚だけ**で、同時接続数が閾の 80% を下回るまで次の 1 枚は撮りません。
+    50 枚の環状 (1 枚 4 KiB 以下)。**撮るのは履歴スレッド** (5 秒周期) で、接続を受けたスレッドは
+    閾を越えた瞬間に旗を 1 つ立てるだけなので、accept の経路には比較が 1 回増えるだけです。
+    `--lite` と `PROXY_BURST_PERCENT=0` では撮りません。**撮るのは履歴スレッドなので
+    `PROXY_STATS_PERSIST=off` (履歴スレッドを起こさない設定) でも撮りません**
   - **1 要求で全部取る (T14.4)**: `/snapshot` は上の口を **1 つの JSON** にまとめて返します
     (`status` / `status_errors` / `status_dns` / `history` (`5` / `60` / `3600`) / `dns` / `errors` /
-    `connections` / `recent` / `hosts` / `log`。何が入っているかは `parts` に並びます)。
+    `connections` / `recent` / `hosts` / `clients` / `bursts` / `log`。何が入っているかは `parts` に並びます)。
     デプロイ先の様子を見るのに 17 本の URL を手で叩いていたのを 1 回で済ませるための口で、
     **組み立ては同じプロセス内の関数呼び出し** (自分へ HTTP で繋ぎ直さないので、接続を 17 本増やしませんし、
     上限に当たっている最中でも取れます)。上限は **4 MiB** で、越えたら `recent` → `log` → `history.5` の順に
@@ -263,7 +277,15 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **`/clients` の `User-Agent` (先頭 128 バイト) が入る唯一のヘッダー**で、URL のパスや問い合わせ文字列、
     本文、その他のヘッダーは 1 つも記録しません
   - `PURGE <url>` / `/purge?url=<url>` / `/purge?all=1` でキャッシュを消す、`/lookup?url=<url>` でエントリの状態を見る
-  - `/history?res=5|60|3600` で 1 時間 / 1 日 / 30 日の履歴、`/blocklist?host=<h>` でブロックリストの判定、
+  - `/history?res=5|60|3600` で 1 時間 / 1 日 / 30 日の履歴。標本の後ろに **`closed`** が付きます (T14.6):
+    その窓に**閉じた接続**の分布で、閉じた理由 8 種の件数 (`reasons`。`/recent` の `reason` と同じ綴り。
+    `error:*` は `error` 1 つにまとめます)・寿命の 12 段 (`life`、境目は `life_bounds_secs`。
+    `PROXY_KEEPALIVE_SECS` の 15 秒と `PROXY_TUNNEL_IDLE_SECS` の 300 秒が境目にあります)・
+    上り / 下りバイトの 12 段 (`up` / `down`、境目は `byte_bounds` = 1 KiB から 4 倍ずつ)・
+    寿命と預かり秒とバイトの合計が並びます。**標本 (`samples`) の形と読み方は変えていません** (別の配列です)。
+    5 秒 × 720 と 60 秒 × 1,440 を**メモリだけ**に持ちます (`res=3600` は `null`、状態ファイルには書きません。
+    標本 1 本の余白が 4 B しか無いため)。件数 0 の窓は出しません (行の先頭に窓の始まりの時刻があります)。
+    `/blocklist?host=<h>` でブロックリストの判定、
     `&action=block|allow|clear[&ttl_secs=N]` で一時的な上書き (既定 24 時間、`0` で無期限。状態ファイルに 256 件まで残る)
 - **タイムアウト制御**:
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
@@ -331,6 +353,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる (`PROXY_PARK_IDLE=on` なら、預かり所が期限を見て引き上げる)。`0` で無期限。`.env` で即時反映 |
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル (`--lite` と同じ)。キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限。上限に当たったら、まず**預かり所の暇な CONNECT トンネルを最古から 1 本閉じて**席を作り、その接続を受ける (閉じた数は `/status` の `evicted_idle` と `/metrics` の `sorahost_evicted_idle_total`。**暇な keep-alive 接続は閉じない** — 次の要求を待っているだけなので、閉じると入れ違いで届いた要求を取りこぼすため)。閉じるものが無い (トンネルが全部中継中、または預かり所が空) ときは、スレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。ただし**自分宛て (`/status` `/metrics` などの内部エンドポイント) は上限 + 4 本まで受ける**: accept の時点では要求が読めないので、4 本までは受けて要求行と `Host` を読み、自分宛てなら普通に応答、それ以外は 503 で閉じる (上限に当たっている最中でも監視が取れるようにするため。この枠で受けた接続は要求行が 2 秒来なければ 503 で閉じる)。`auto` は記述子の上限から `min(4096, (RLIMIT_NOFILE の soft − 予備 64) ÷ 4)` (1 接続が最悪で使う記述子は クライアント 1 + オリジン 1 + 素通しのパイプ 2 = 4 本。`ulimit -n` が 1024 の環境なら 240、4096 なら 1008)。記述子が余っていても 4096 で頭打ちにするのは、上限が fd 以外の資源 (スレッド・RSS) の歯止めでもあるため (同時 5,000 本で RSS 198 MiB の実測)。数値を書けばその値、`0` で無制限。決まった値は起動ログの `max connections:` と `/status` の `max_conns` (`/metrics` は `sorahost_max_connections`) に出る。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
+| `PROXY_BURST_PERCENT` | `50` | 同時接続数が `PROXY_MAX_CONNS` のこの割合を**越えた瞬間**に `/connections` の写真を 1 枚撮って `/bursts` に残す (T14.6)。`0` で撮らない。**同じ山では 1 枚だけ**で、閾の 80% を下回るまで次は撮りません。撮るのは履歴スレッド (5 秒周期) なので、接続を受ける経路に増えるのは比較 1 回だけです。割合を当てるのは `PROXY_MAX_CONNS` だけで、上限の外の枠 4 本 (自分宛て用) は含めません。`PROXY_MAX_CONNS=0` (無制限) と `--lite` では撮りません。**履歴スレッドが撮るので `PROXY_STATS_PERSIST=off` でも撮りません**。`.env` で即時反映 |
 | `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。`.env` で即時反映 (次に受ける接続から効く。**下げても走っているスレッドは殺さず**、仕事を終えたスレッドから順に減ります。`auto` のときは `PROXY_MAX_CONNS` を変えるとこちらも決め直します)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。**裏側の再検証 (stale-while-revalidate) もこの上限の内側で走ります**が、こちらは待たせず捨てます (`/status` の `revalidations_dropped`) |
 | `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 4 MiB) に残し、再起動後に読み戻す。`off` で無効 (履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフは空になる) |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
@@ -870,6 +893,8 @@ curl "http://127.0.0.1:8080/recent?n=200"               # 閉じた接続 (新�
 curl "http://127.0.0.1:8080/recent?sort=slow&n=20"      # 確立のいちばん遅かった 20 本
 curl "http://127.0.0.1:8080/recent?client=198.51.100.7" # ある接続元だけ
 curl "http://127.0.0.1:8080/recent?since=$(( $(date +%s) - 3600 ))"   # 直近 1 時間に開いたもの
+curl "http://127.0.0.1:8080/bursts?n=50"                # 山が立った瞬間の写真 (新しい順)
+curl "http://127.0.0.1:8080/history?res=5"              # 時系列 + 閉じた接続の分布 (closed)
 curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
 
 # キャッシュの操作・確認
