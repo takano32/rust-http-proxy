@@ -150,7 +150,10 @@ fn main() {
     #[cfg(target_os = "linux")]
     if config.malloc_arenas > 0 {
         let max = config.malloc_arenas.min(i32::MAX as usize) as i32;
-        if !rust_http_proxy::sys::limit_malloc_arenas(max) {
+        if rust_http_proxy::sys::limit_malloc_arenas(max) {
+            // 掛かった上限を覚えさせる (`/status` の `memory.arenas`。T14.21)
+            rust_http_proxy::sysinfo::malloc::set_arena_max(max as usize);
+        } else {
             log_debug!(None, "mallopt(M_ARENA_MAX, {}) was refused", max);
         }
     }
