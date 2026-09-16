@@ -242,7 +242,16 @@ pub fn serve(
         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
         // 同時接続数の持ち分は番人として取って仕事へ運ぶ。`Conn::new` が途中で失敗しても、
         // 仕事がワーカーへ渡らずに落ちても、番人の `Drop` が必ず 1 回だけ返す (T9.6)
-        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        let (open, now_open) = OpenGuard::acquire(Arc::clone(&limiter));
+        // 山の写真 (T14.6): 上限の一定割合を**下から上に越えた瞬間**だけ、history スレッドに
+        // 1 枚頼む (旗を立てるだけ)。**越えていない経路はこの比較 1 回で終わる** —
+        // 撮らない設定 (`PROXY_BURST_PERCENT=0` / `PROXY_MAX_CONNS=0` / `--lite`) では
+        // `burst_at` が `usize::MAX` なので、同じ比較がそのまま「撮らない」になる
+        if now_open > cfg.burst_at {
+            metrics
+                .bursts
+                .request(now_open, cfg.burst_at, cfg.max_conns);
+        }
         let m = Arc::clone(&metrics);
         let c = Arc::clone(&cache);
         let p = Arc::clone(&upstream);
@@ -594,9 +603,13 @@ struct OpenGuard(Arc<Limiter>);
 
 impl OpenGuard {
     /// 持ち分を 1 つ取る (返すのは `Drop`)。
-    fn acquire(limiter: Arc<Limiter>) -> OpenGuard {
-        limiter.open.fetch_add(1, Ordering::Relaxed);
-        OpenGuard(limiter)
+    ///
+    /// 2 つ目の戻り値は**取ったあとの本数**。山の写真 (T14.6) が「閾を下から上に越えた
+    /// 瞬間」を知るために要るが、`fetch_add` が返す値を使うので**原子操作は増えない**
+    /// (同じ瞬間に複数のスレッドが accept しても、越えた 1 本だけがこの値を受け取る)。
+    fn acquire(limiter: Arc<Limiter>) -> (OpenGuard, usize) {
+        let open = limiter.open.fetch_add(1, Ordering::Relaxed) + 1;
+        (OpenGuard(limiter), open)
     }
 }
 
@@ -1478,7 +1491,8 @@ mod tests {
             tls: None,
         });
 
-        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        let (open, now_open) = OpenGuard::acquire(Arc::clone(&limiter));
+        assert_eq!(now_open, 1, "取ったあとの本数が返る");
         assert_eq!(limiter.open(), 1, "持ち分を取ったら 1");
         let err = Conn::new(
             stream,
@@ -1523,7 +1537,7 @@ mod tests {
             tls: None,
         });
 
-        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        let (open, _) = OpenGuard::acquire(Arc::clone(&limiter));
         let conn = Conn::new(
             stream,
             Accepted {
@@ -1560,7 +1574,7 @@ mod tests {
     #[test]
     fn open_slot_comes_back_when_the_job_is_dropped() {
         let limiter = Limiter::new();
-        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        let (open, _) = OpenGuard::acquire(Arc::clone(&limiter));
         // `let _ = open;` だと RFC 2229 の分離キャプチャで閉包が捕まえないので `drop` で使う
         let job: Box<dyn FnOnce() + Send> = Box::new(move || drop(open));
         assert_eq!(limiter.open(), 1, "仕事が持ち分を抱えている");

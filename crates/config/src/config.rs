@@ -40,6 +40,28 @@ pub fn default_max_conns() -> usize {
     MAX_CONNS_CAP
 }
 
+/// 山の写真 (`/bursts`) を撮る割合の既定 (`PROXY_BURST_PERCENT`。T14.6)。
+///
+/// `PROXY_MAX_CONNS` の半分を越えたら 1 枚撮る。半分なのは、デプロイ先の山 (218 / 240) が
+/// 上限の 91% まで行った実測 (§2) に対して、**山が立ち始めた時点**を残したいため
+/// (上限の間際まで待つと、T13.2 の追い出しが動いたあとの姿しか撮れない)。
+pub const DEFAULT_BURST_PERCENT: usize = 50;
+
+/// 「この本数を**越えた**瞬間に 1 枚撮る」の本数 (T14.6)。
+///
+/// [`usize::MAX`] は「撮らない」(`PROXY_BURST_PERCENT=0`、`PROXY_MAX_CONNS=0` = 無制限、
+/// `--lite`)。**接続ごとの比較を 1 回で済ませるために先に計算しておく** — 撮らない設定でも
+/// 比較の形は同じなので、accept の経路には分岐が 1 つ増えるだけで済む。
+///
+/// 割合を当てるのは `max_conns` だけで、**T13.2 の「上限の外の枠 4 本」は含めない**
+/// (自分宛ての `/status` を受けるための枠なので、山の大きさの物差しに混ぜない)。
+pub fn burst_threshold(max_conns: usize, percent: usize) -> usize {
+    if max_conns == 0 || percent == 0 {
+        return usize::MAX;
+    }
+    (max_conns.saturating_mul(percent.min(100)) / 100).max(1)
+}
+
 /// `PROXY_MAX_THREADS=auto` の 1 コアあたりの本数と、その下限・上限。
 ///
 /// 接続スレッドは**ほとんどの時間 I/O で寝ている**ので、コア数そのものでは全く足りない
@@ -178,6 +200,12 @@ pub struct Config {
     /// **`.env` の再読込で変わる** (T11.6。`serve` が接続ごとにこの値と `Workers` の
     /// 上限を突き合わせ、食い違ったときだけ当て直す)。`auto` の決め方は [`default_max_threads`]
     pub max_threads: usize,
+    /// 同時接続数が `max_conns` のこの割合を越えた瞬間に `/bursts` へ写真を 1 枚撮る
+    /// (`PROXY_BURST_PERCENT`、既定 [`DEFAULT_BURST_PERCENT`]、`0` で撮らない。T14.6)
+    pub burst_percent: usize,
+    /// 上の割合を `max_conns` に当てた本数 ([`burst_threshold`])。**この本数を越えた瞬間**に 1 枚。
+    /// [`usize::MAX`] なら撮らない (accept の経路はこの値との比較 1 回だけ)
+    pub burst_at: usize,
     pub cache: CacheConfig,
     /// 内部エンドポイントの**書き換える口**を断る (`PROXY_ENDPOINTS_READONLY`、既定 off)。
     ///
@@ -281,6 +309,14 @@ impl Config {
             }
             // `auto` と読めない書き方は既定のまま
         }
+        // 山の写真の閾 (T14.6)。**`PROXY_MAX_CONNS` の後に**決める (割合を当てる相手が上限)。
+        // `--lite` では個票を 1 つも記録しないので、写真も撮らない (T1.4 の方針)
+        if let Some(n) =
+            envfile::var("PROXY_BURST_PERCENT").and_then(|s| s.trim().parse::<usize>().ok())
+        {
+            cfg.burst_percent = n.min(100);
+        }
+        cfg.refresh_burst_at();
         if let Some(secs) =
             envfile::var("PROXY_TUNNEL_IDLE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
         {
@@ -355,6 +391,19 @@ impl Config {
         Ok(cfg.with_cache(cache))
     }
 
+    /// `max_conns` か `burst_percent` を手で書き換えたあとに山の写真の閾を計算し直す (T14.6)。
+    ///
+    /// `from_env` は最後にこれと同じことをしている。**構造体の欄を直に書き換える場所**
+    /// (テストと、設定を組み立てる道具) はここを呼ぶこと。
+    pub fn refresh_burst_at(&mut self) {
+        // `--lite` は個票を 1 つも記録しない (`/connections` の表も空) ので写真も撮らない
+        self.burst_at = if self.lite {
+            usize::MAX
+        } else {
+            burst_threshold(self.max_conns, self.burst_percent)
+        };
+    }
+
     /// キャッシュ設定を差し替える。
     pub fn with_cache(mut self, cache: CacheConfig) -> Self {
         self.cache = cache;
@@ -403,6 +452,8 @@ impl Config {
             max_conns,
             max_requests_per_conn: DEFAULT_MAX_REQUESTS_PER_CONN,
             max_threads: default_max_threads(max_conns),
+            burst_percent: DEFAULT_BURST_PERCENT,
+            burst_at: burst_threshold(max_conns, DEFAULT_BURST_PERCENT),
             cache: CacheConfig::default(),
             endpoints_readonly: false,
             allow_clients: ClientAcl::default(),
@@ -500,5 +551,36 @@ mod tests {
     fn test_invalid_port() {
         assert!(Config::new("invalid", None, None, Duration::from_secs(30)).is_err());
         assert!(Config::new("99999", None, None, Duration::from_secs(30)).is_err());
+    }
+
+    /// 山の写真の閾 (T14.6): 上限 × 割合。撮らない設定は [`usize::MAX`] (比較 1 回のまま)。
+    #[test]
+    fn the_burst_threshold_is_a_share_of_the_connection_limit() {
+        assert_eq!(burst_threshold(8, 50), 4);
+        assert_eq!(burst_threshold(240, 50), 120);
+        assert_eq!(burst_threshold(4096, 90), 3686);
+        // 100% は上限そのもの (T13.2 の「上限の外の枠 4 本」は含めない)
+        assert_eq!(burst_threshold(240, 100), 240);
+        assert_eq!(
+            burst_threshold(240, 150),
+            240,
+            "100 を超える割合は 100 に倒す"
+        );
+        // 小さすぎる上限でも 0 にはしない (0 だと 1 本目から撮ってしまう)
+        assert_eq!(burst_threshold(1, 50), 1);
+        // 撮らない設定
+        assert_eq!(burst_threshold(240, 0), usize::MAX);
+        assert_eq!(burst_threshold(0, 50), usize::MAX, "無制限には閾が無い");
+
+        let mut cfg = Config::new("8080", None, None, Duration::from_secs(30)).unwrap();
+        assert_eq!(cfg.burst_percent, DEFAULT_BURST_PERCENT);
+        assert_eq!(cfg.burst_at, burst_threshold(cfg.max_conns, 50));
+        cfg.max_conns = 8;
+        cfg.refresh_burst_at();
+        assert_eq!(cfg.burst_at, 4);
+        // `--lite` は個票を記録しないので閾そのものを置かない
+        cfg.lite = true;
+        cfg.refresh_burst_at();
+        assert_eq!(cfg.burst_at, usize::MAX);
     }
 }
