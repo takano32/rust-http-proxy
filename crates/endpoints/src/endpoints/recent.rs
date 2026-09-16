@@ -267,6 +267,78 @@ pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
     (200, "application/json", out)
 }
 
+/// `/hosts/series?top=16&host=<name>` — ホスト別の時系列 (T14.22)。
+///
+/// `/hosts` は**通算**、`/history` は**全体**しか無いので、その間を埋める口。
+/// 直近 1 時間の要求数で選んだ**上位 16 ホスト**について、5 分の窓ごとの
+/// 件数・確立 (forward は初バイト) の合計 ms・最大 ms・名前解決 ms・エラー数を
+/// 24 時間ぶん (288 標本) 返す。`?host=` を渡すとそのホストだけ。
+///
+/// 標本は**古い順**で、`i` 番目の時刻は `t0 + i * window_secs` (`t` を 288 × 16 個
+/// 並べると応答が 50 KB 太るので置いていない)。上位に居ないホストは系列を持たない
+/// (空の一覧になる) ので、`tracked` で「いま何本あるか」が分かる。
+pub fn host_series(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    let host = str_param(query, "host");
+    let top = num_param(
+        query,
+        "top",
+        crate::hostseries::SLOTS,
+        crate::hostseries::SLOTS,
+    );
+    let want = (!host.is_empty()).then_some(host.as_str());
+    let view = ep.metrics.host_series(want, top);
+    let count = view.series.len();
+    let mut out = String::with_capacity(64 * 1024);
+    out.push_str("{\"series\":");
+    let (shown, cut) = array_within(&mut out, view.series.iter().map(series_json));
+    let _ = write!(
+        out,
+        ",\"keys\":[{}],\"window_secs\":{},\"samples\":{},\"slots\":{},\"t0\":{},\"tracked\":{},\"rotations\":{},\"count\":{},\"shown\":{},\"host\":\"{}\",\"top\":{},\"truncated\":{}}}",
+        crate::hostseries::FIELD_NAMES
+            .iter()
+            .map(|k| format!("\"{}\"", k))
+            .collect::<Vec<_>>()
+            .join(","),
+        view.window_secs,
+        crate::hostseries::SAMPLES,
+        crate::hostseries::SLOTS,
+        view.t0,
+        view.tracked,
+        view.rotations,
+        count,
+        shown,
+        crate::json::escape(&host),
+        top,
+        cut
+    );
+    (200, "application/json", out)
+}
+
+/// `/hosts/series` の 1 ホストぶん (標本は古い順の配列の配列。`/history` と同じ作法)。
+fn series_json(s: &crate::hostseries::Series) -> String {
+    let t = s.totals();
+    let mut out = String::with_capacity(8192);
+    let _ = write!(
+        out,
+        "{{\"host\":\"{}\",\"hour_requests\":{},\"total\":[{},{},{},{},{}],\"samples\":[",
+        crate::json::escape(&s.host),
+        s.hour_requests,
+        t[0],
+        t[1],
+        t[2],
+        t[3],
+        t[4]
+    );
+    for (i, r) in s.rows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "[{},{},{},{},{}]", r[0], r[1], r[2], r[3], r[4]);
+    }
+    out.push_str("]}");
+    out
+}
+
 /// `/clients?sort=requests|recent|targets|literal&limit=200` — **全接続元**の個票 (T14.7)。
 ///
 /// `/status` の `clients[]` は上位 50 で欄も 4 つだけ。こちらは全部を、`User-Agent` ・
@@ -510,6 +582,8 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ("connections", connections(ep).2),
         ("recent", recent(ep, Some("n=2000")).2),
         ("hosts", hosts(ep, Some("limit=1000")).2),
+        // ホスト別の時系列 (上位 16 × 5 分 × 24 時間。T14.22)
+        ("hosts_series", host_series(ep, Some("top=16")).2),
         ("clients", clients(ep, Some("limit=1000")).2),
         ("bursts", bursts(ep, Some("n=50")).2),
         // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)。
@@ -1303,6 +1377,47 @@ mod tests {
         assert!(none.contains("\"recorded\":0"), "{}", none);
         assert!(none.contains("\"armed\":true"), "{}", none);
         assert!(none.contains("\"pending\":false"), "{}", none);
+    }
+
+    /// `/hosts/series` は 16 ホスト × 288 標本でも 256 KiB 以下 (T14.22)。
+    ///
+    /// デプロイ先並みの値 (5 分に 300 本) なら 16 本が丸ごと入る。どの欄も 20 桁まで
+    /// 振り切った最悪は入りきらないので、そこは**バイト数で打ち切る** (`/hosts` と同じ)。
+    #[test]
+    fn the_host_series_response_stays_under_256_kib() {
+        use crate::hostseries::{FIELDS, SAMPLES, SLOTS, Series};
+
+        let plain: Vec<Series> = (0..SLOTS)
+            .map(|i| Series {
+                host: format!("connect://host{:02}.example.net:443", i),
+                hour_requests: 3_600,
+                // 5 分に 300 本、確立の合計 3,600 ms、最大 250 ms、名前解決 900 ms、エラー 2 件
+                rows: vec![[300, 3_600, 250, 900, 2]; SAMPLES],
+            })
+            .collect();
+        let worst: Vec<Series> = (0..SLOTS)
+            .map(|i| Series {
+                host: format!("connect://host{:02}.cdn.example.net:443", i),
+                hour_requests: u64::MAX,
+                rows: vec![[u64::MAX; FIELDS]; SAMPLES],
+            })
+            .collect();
+        for (name, series, want_cut) in [("deployed-like", plain, false), ("worst", worst, true)] {
+            let mut body = String::from("{\"series\":");
+            let (shown, cut) = array_within(&mut body, series.iter().map(series_json));
+            body.push('}');
+            assert_eq!(cut, want_cut, "{}", name);
+            assert!(body.len() <= MAX_BODY, "{}: {} B", name, body.len());
+            println!(
+                "hosts/series {} ({} ホスト × {} 標本): {} B / 出せたのは {} 本 (上限 {} B)",
+                name,
+                SLOTS,
+                SAMPLES,
+                body.len(),
+                shown,
+                MAX_BODY
+            );
+        }
     }
 
     #[test]

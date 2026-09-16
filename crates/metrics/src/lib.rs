@@ -11,6 +11,7 @@ pub mod canary;
 pub mod daily;
 pub mod events;
 pub mod history;
+pub mod hostseries;
 pub mod kernel;
 pub mod metrics;
 pub mod persist;
