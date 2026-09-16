@@ -1,7 +1,8 @@
 //! プロキシ自身のエンドポイント: `/dashboard` (コントロールパネル)、`/status`
 //! (`?sort=requests|errors|dns|slow` で `hosts[]` の上位 50 の切り出しを変えられる。T13.3)、
 //! `/healthz` (**本当の健康診断**。軽い JSON で、検査が 1 つでも偽なら 503。T14.12)、
-//! `/history` (JSON、`res=5|60|3600`。カーネルと cgroup の窓が `kernel` に付く)、
+//! `/history` (JSON、`res=5|60|3600`。カーネルと cgroup の窓が `kernel` に付く。
+//! `?since=&until=&summary=1` は**期間を畳んだ 1 行だけ**を返す。T14.24)、
 //! `/metrics` (Prometheus)、`/proxy.pac` (ブラウザの自動設定)、
 //! `/purge` と `PURGE` メソッド、`/lookup`、`/blocklist` (判定と手動の上書き)。
 //!
@@ -117,6 +118,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
+         \x20 /history?since=&until=&summary=1            JSON: one summary row for a period\n\
          \x20 /profile?res=5|60                           JSON: stages, threads, locks\n\
          \x20 /daily?n=365                                JSON: one summary line per day (kept forever)\n\
          \x20 /metrics                                    Prometheus text format\n\
@@ -183,10 +185,14 @@ pub fn handle(
         let res = params
             .iter()
             .find(|(k, _)| k == "res")
-            .and_then(|(_, v)| v.parse::<u64>().ok())
-            .map(crate::history::History::index_for)
-            .unwrap_or(0);
-        (200, "application/json", history_body(ep, res))
+            .and_then(|(_, v)| v.parse::<u64>().ok());
+        if params.iter().any(|(k, v)| k == "summary" && v != "0") {
+            // 期間を畳んだ 1 行だけ (標本は返さない。T14.24)
+            (200, "application/json", history_summary(ep, &params, res))
+        } else {
+            let res = res.map_or(0, crate::history::History::index_for);
+            (200, "application/json", history_body(ep, res))
+        }
     } else if is_get && path == "/profile" {
         // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)
         profile::profile(ep, query)
@@ -204,7 +210,7 @@ pub fn handle(
     } else if is_get && path == "/events" {
         // 起きたことの時系列 (T14.11)。起動・再読込・ブロックリスト・IPv6・圧迫・
         // バラスト・状態ファイル・追い出し・accept の失敗・停止シグナルを 1 本に
-        recent::events(query)
+        recent::events(ep, query)
     } else if is_get && path == "/snapshot" {
         // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
         recent::snapshot(ep)
@@ -214,7 +220,7 @@ pub fn handle(
         // 1 日 1 行の要約 (T14.20)。`/history` (30 日) が消えたあとも残る
         recent::daily(query)
     } else if is_get && path == "/log" {
-        recent::log(query)
+        recent::log(ep, query)
     } else if is_get && path == "/hosts/series" {
         // ホスト別の時系列 (上位 16 ホスト × 5 分 × 24 時間。T14.22)
         recent::host_series(ep, query)
@@ -350,6 +356,57 @@ pub(super) fn history_body(ep: &Endpoint<'_>, res: usize) -> String {
     match base.strip_suffix('}') {
         Some(head) => format!("{},\"kernel\":{}}}", head, crate::kernel::history_json(res)),
         None => base,
+    }
+}
+
+/// `/history?since=<epoch>|restart&until=<epoch>&summary=1` の要約 (T14.24)。
+///
+/// **標本は返さない** (期間を畳んだ 1 行だけ)。畳むのは
+/// [`crate::history::summary`] で、`scripts/snapshot-diff.py` が手元でやっている集計と
+/// 同じ求め方。`/history` の他の応答は 1 バイトも変えていない。
+pub(super) fn history_summary(
+    ep: &Endpoint<'_>,
+    params: &[(String, String)],
+    res: Option<u64>,
+) -> String {
+    let now = crate::cache::now_epoch();
+    // `since=restart` は `/status` の `since_start_secs` と同じ起動時刻から
+    let uptime = ep.metrics.start_time.elapsed().as_secs();
+    crate::history::summary::of(
+        &ep.metrics.history,
+        &summary_params(params, res, now, uptime),
+    )
+    .to_json()
+}
+
+/// `?since=&until=&res=&normal_hours_only=` を読む (**時計を持たない**ので試験できる)。
+///
+/// `since=restart` は `now - uptime` (= `/status` の `since_start_secs` で切るのと同じ)。
+/// 数として読めない値と書いていない `since` は 0 (残っているいちばん古い標本から)、
+/// `until` は今。`normal_hours_only=1` で 1 時間 300 本以上の標本を外す (T14.0 の「平常時」)。
+fn summary_params(
+    params: &[(String, String)],
+    res: Option<u64>,
+    now: u64,
+    uptime: u64,
+) -> crate::history::summary::Params {
+    let val = |key: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    crate::history::summary::Params {
+        since: match val("since") {
+            Some("restart") => now.saturating_sub(uptime),
+            Some(v) => v.parse::<u64>().unwrap_or(0),
+            None => 0,
+        },
+        until: val("until")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(now),
+        res,
+        normal_hours_only: val("normal_hours_only").is_some_and(|v| v != "0"),
     }
 }
 
@@ -497,7 +554,7 @@ mod tests {
 
 #[cfg(test)]
 mod local_path_tests {
-    use super::{endpoint_list, local_path};
+    use super::{endpoint_list, local_path, parse_query, summary_params};
 
     #[test]
     fn origin_form_is_local_only_when_the_host_port_is_ours() {
@@ -664,6 +721,38 @@ mod local_path_tests {
             !html.contains("<link rel=\"stylesheet\""),
             "外部 CSS を読み込んでいる"
         );
+    }
+
+    /// `/history?summary=1` の引数の読み方 (T14.24)。**`since=restart` が
+    /// `/status` の `since_start_secs` と合う**ことがこのタスクの受け入れ基準の 1 つ。
+    #[test]
+    fn the_summary_params_read_since_restart_and_the_period() {
+        let now = 1_757_000_000u64;
+        let q = |s: &str| parse_query(s);
+        // `since=restart` = いまから稼働秒数を引いた時刻 (= `/status` の窓の始まり)
+        let p = summary_params(&q("summary=1&since=restart"), None, now, 7_200);
+        assert_eq!((p.since, p.until), (now - 7_200, now));
+        assert!(!p.normal_hours_only);
+        // 期間 2 時間なら 60 秒の窓が自動で選ばれる (1 時間を越えるので 5 秒では足りない)
+        assert_eq!(p.res_index(), 1);
+        // epoch で切る / `?res=` と `normal_hours_only=1` を足す
+        let p = summary_params(
+            &q("since=1756000000&until=1756100000&normal_hours_only=1"),
+            Some(3600),
+            now,
+            10,
+        );
+        assert_eq!((p.since, p.until), (1_756_000_000, 1_756_100_000));
+        assert!(p.normal_hours_only);
+        assert_eq!(p.res_index(), 2);
+        // 書いていなければ「残っている全部」から「今」まで、数として読めない値も同じ
+        let p = summary_params(&q("summary=1&since=yesterday"), None, now, 10);
+        assert_eq!((p.since, p.until), (0, now));
+        assert_eq!(p.res_index(), 2);
+        // `normal_hours_only=0` は切らない
+        assert!(!summary_params(&q("normal_hours_only=0"), None, now, 10).normal_hours_only);
+        // 案内にも載っている
+        assert!(endpoint_list(false).contains("/history?since=&until=&summary=1"));
     }
 
     #[test]

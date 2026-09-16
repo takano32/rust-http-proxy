@@ -916,6 +916,10 @@ pub struct Metrics {
     /// 山の写真 (`/bursts`。T14.6)。accept の経路は閾を越えた瞬間に旗を立てるだけで、
     /// **撮るのは history スレッド** ([`Metrics::take_burst_shot`])
     pub bursts: crate::recent::BurstRing,
+    /// 上の 4 本のリング (`/recent` `/errors` `/bursts` `/log`) を
+    /// `$HOME/.rust-http-proxy.recent` に残しているか (T14.9)。
+    /// `PROXY_STATS_PERSIST=off` と、ファイルが開けなかったときは `false`
+    pub recent_persisted: AtomicBool,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -946,6 +950,7 @@ impl Metrics {
             profile: crate::profile::Profile::default(),
             closed: crate::recent::RecentRing::new(),
             bursts: crate::recent::BurstRing::new(),
+            recent_persisted: AtomicBool::new(false),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }
@@ -1609,7 +1614,7 @@ impl Metrics {
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
 ///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
 /// - `rings` は記録のリングが**満杯のときの見積もり** (固定部 + 文字列の上限。T13.4 / T14.4 /
-///   T14.6 / T14.11 / T14.22)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
+///   T14.6 / T14.11 / T14.22 / T14.25)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
 /// - `arenas` は `PROXY_MALLOC_ARENAS` で掛けた上限 (`0` = glibc の既定のまま。T5.6)
 ///
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
@@ -1621,6 +1626,7 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         BurstShot, ClosedCounts, ErrorEntry, MAX_BURSTS, MAX_CLIENT, MAX_ERRORS, MAX_RECENT,
         MAX_RECENT_TARGET, MAX_SHOT_CLIENTS, MAX_SHOT_TARGETS, MAX_TARGET, RecentEntry,
     };
+    use crate::transfer::TransferCounts;
 
     /// 接続スレッドのスタック (`crates/workers` の `STACK_SIZE` と同じ値)。
     /// あちらは private なので写してある (変えるときは両方)。
@@ -1643,11 +1649,13 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         * crate::hostseries::SAMPLES
         * crate::hostseries::FIELDS
         * size_of::<u64>()) as u64;
-    // 履歴は 3 解像度の標本 (T12.4) と、閉じた接続の分布の窓 2 つ (T14.6)
+    // 履歴は 3 解像度の標本 (T12.4) と、閉じた接続の分布の窓 2 つ (T14.6)、
+    // 速さと半閉じの窓 2 つ (T14.25)
     let samples: usize = RESOLUTIONS.iter().map(|(_, n)| n).sum();
+    let windows = RESOLUTIONS[0].1 + RESOLUTIONS[1].1;
     let history = (samples * size_of::<Sample>()
-        + (RESOLUTIONS[0].1 + RESOLUTIONS[1].1) * size_of::<(u64, ClosedCounts)>())
-        as u64;
+        + windows * size_of::<(u64, ClosedCounts)>()
+        + windows * size_of::<(u64, TransferCounts)>()) as u64;
 
     let conn = conn_threads.min(threads);
     let other = threads.saturating_sub(conn_threads);
