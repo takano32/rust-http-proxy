@@ -57,6 +57,75 @@ pub const DEFAULT_SNAPSHOT_DAYS: usize = 30;
 /// `snapshots::MAX_KEPT_DAYS` と同じ値。この層は計測クレートに依存しないので数値で持つ)。
 pub const MAX_SNAPSHOT_DAYS: usize = 365;
 
+/// SLO の 4 つの閾 (`PROXY_SLO`。T14.50)。**満たす = 値がこれ以下**。
+///
+/// 履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、時間ごと・日ごとの達成率を
+/// `/slo` で返す (判定そのものは `proxy-metrics` の `slo`。この層は値を運ぶだけで、
+/// **既定は [`DEFAULT_SLO`] = `proxy_metrics::slo::DEFAULT` と同じ値**)。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Slo {
+    /// CONNECT 確立の p50 (ms)
+    pub connect_p50_ms: f64,
+    /// CONNECT 確立の p95 (ms)
+    pub connect_p95_ms: f64,
+    /// エラー ÷ 試み (確立 + 転送 + エラー)
+    pub error_rate: f64,
+    /// 名前解決のミス ÷ 確立
+    pub dns_miss_per_connect: f64,
+}
+
+/// `PROXY_SLO` の既定 (`connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2`)。
+///
+/// `proxy-metrics` の `slo::DEFAULT` と同じ値 (この層は計測クレートに依存しないので
+/// 数値で持つ。食い違ったら `tests/slo_test.rs` が落ちる)。
+pub const DEFAULT_SLO: Slo = Slo {
+    connect_p50_ms: 10.0,
+    connect_p95_ms: 100.0,
+    error_rate: 0.005,
+    dns_miss_per_connect: 0.2,
+};
+
+impl Default for Slo {
+    fn default() -> Self {
+        DEFAULT_SLO
+    }
+}
+
+impl Slo {
+    /// `connect_p50_ms=10,error_rate=0.01` のように**書いたものだけ**を当てる
+    /// (書いていない閾と、数として読めない値・負の値・知らない綴りは既定のまま)。
+    pub fn parse(spec: &str) -> Slo {
+        let mut out = DEFAULT_SLO;
+        for item in spec.split(',') {
+            let Some((k, v)) = item.split_once('=') else {
+                continue;
+            };
+            let Ok(n) = v.trim().parse::<f64>() else {
+                continue;
+            };
+            if !n.is_finite() || n < 0.0 {
+                continue;
+            }
+            match k.trim().to_ascii_lowercase().as_str() {
+                "connect_p50_ms" => out.connect_p50_ms = n,
+                "connect_p95_ms" => out.connect_p95_ms = n,
+                "error_rate" => out.error_rate = n,
+                "dns_miss_per_connect" => out.dns_miss_per_connect = n,
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// `.env` にそのまま書き戻せる形 (`/config` と `--check` に出るのもこれ)。
+    pub fn spec(&self) -> String {
+        format!(
+            "connect_p50_ms={},connect_p95_ms={},error_rate={},dns_miss_per_connect={}",
+            self.connect_p50_ms, self.connect_p95_ms, self.error_rate, self.dns_miss_per_connect
+        )
+    }
+}
+
 /// 「この本数を**越えた**瞬間に 1 枚撮る」の本数 (T14.6)。
 ///
 /// [`usize::MAX`] は「撮らない」(`PROXY_BURST_PERCENT=0`、`PROXY_MAX_CONNS=0` = 無制限、
@@ -212,6 +281,14 @@ pub struct Config {
     pub bind_addrs: Vec<IpAddr>,
     /// IPv6 を使うか (待ち受けと AAAA での接続)。既定 on
     pub ipv6: bool,
+    /// 待ち受けの受け入れ待ち行列の長さ (`PROXY_LISTEN_BACKLOG`、既定 `0` =
+    /// `min(1024, /proc/sys/net/core/somaxconn)`。T14.47)。
+    ///
+    /// **持っているのは実効値** (`0` はここには残らない。`auto` を数に直す `max_conns` と同じ形)。
+    /// `std` の `TcpListener::bind` は 128 固定で、accept ループが 1 本 (§4 の T4.3) なので
+    /// ブラウザの同時 CONNECT で溢れ、**SYN が捨てられてクライアントが 1 秒後に再送する**。
+    /// **`.env` の再読込では変わらない** (待ち受けは起動時に 1 回作るもの)
+    pub listen_backlog: u32,
     pub acl: AclConfig,
     /// 接続・読み書きのタイムアウト (`PROXY_TIMEOUT_SECS`、既定 30 秒、`0` で無期限)。
     ///
@@ -291,6 +368,10 @@ pub struct Config {
     ///
     /// 書くのは履歴スレッドなので `PROXY_STATS_PERSIST=off` (と `--lite`) では 0 と同じ (T14.34)
     pub snapshot_days: usize,
+    /// SLO の 4 つの閾 (`PROXY_SLO`、既定 [`DEFAULT_SLO`]。T14.50)。
+    ///
+    /// 履歴スレッドが 5 秒の標本ごとに判定し、達成率は `/slo` で読む。**再起動で反映**
+    pub slo: Slo,
     /// 最速の素通しプロファイル (`PROXY_PROFILE=lite` / `--lite`)。
     /// キャッシュ・統計の永続化・ブロックリストを止め、ログを warn にする
     pub lite: bool,
@@ -454,6 +535,23 @@ impl Config {
             cfg.ipv6 = !off(v);
             src.mark("PROXY_IPV6");
         }
+        // 待ち受けの backlog (T14.47)。`0` と `auto` は既定 (= min(1024, somaxconn)) に戻す。
+        // 大きすぎる値はカーネルが `somaxconn` で頭打ちにするので、ここでは切らない
+        // (`/config` に書いたとおりの数が出て、実際に効いたかは `ss -ltn` の `Send-Q` で分かる)
+        if let Some(v) = envfile::var("PROXY_LISTEN_BACKLOG") {
+            let v = v.trim();
+            if v.eq_ignore_ascii_case("auto") {
+                cfg.listen_backlog = crate::net::default_backlog();
+                src.mark("PROXY_LISTEN_BACKLOG");
+            } else if let Ok(n) = v.parse::<u32>() {
+                cfg.listen_backlog = if n == 0 {
+                    crate::net::default_backlog()
+                } else {
+                    n
+                };
+                src.mark("PROXY_LISTEN_BACKLOG");
+            }
+        }
         if let Some(v) = envfile::var("PROXY_TLS") {
             cfg.tls_enabled = !off(v);
             src.mark("PROXY_TLS");
@@ -546,6 +644,10 @@ impl Config {
         {
             cfg.snapshot_days = n.min(MAX_SNAPSHOT_DAYS);
             src.mark("PROXY_SNAPSHOT_DAYS");
+        }
+        if let Some(v) = envfile::var("PROXY_SLO").filter(|v| !v.trim().is_empty()) {
+            cfg.slo = Slo::parse(&v);
+            src.mark("PROXY_SLO");
         }
         if let Some(path) = envfile::var("PROXY_TLS_CA_FILE").filter(|p| !p.trim().is_empty()) {
             cfg.tls_ca_file = Some(PathBuf::from(path.trim()));
@@ -682,6 +784,8 @@ impl Config {
             ),
         );
         add("PROXY_IPV6", self.ipv6.to_string());
+        // backlog は実効値 (`0` を書かれても、ここには決まった数が出る。T14.47)
+        add("PROXY_LISTEN_BACKLOG", self.listen_backlog.to_string());
         // 接続と上限
         add("PROXY_TIMEOUT_SECS", secs(self.timeout));
         add("PROXY_KEEPALIVE_SECS", secs(self.keepalive));
@@ -750,6 +854,7 @@ impl Config {
         // 記録とプロファイル
         add("PROXY_STATS_PERSIST", self.stats_persist.to_string());
         add("PROXY_SNAPSHOT_DAYS", self.snapshot_days.to_string());
+        add("PROXY_SLO", crate::json::quote(&self.slo.spec()));
         add(
             "PROXY_PROFILE",
             crate::json::quote_opt(self.lite.then_some("lite")),
@@ -844,6 +949,7 @@ impl Config {
             port,
             bind_addrs: Vec::new(),
             ipv6: true,
+            listen_backlog: crate::net::default_backlog(),
             acl,
             timeout,
             keepalive: Duration::from_secs(15),
@@ -870,6 +976,7 @@ impl Config {
             blocklist_exempt: Vec::new(),
             stats_persist: true,
             snapshot_days: DEFAULT_SNAPSHOT_DAYS,
+            slo: DEFAULT_SLO,
             lite: false,
             // 既定 1,000 ms (`proxy_metrics::profile::DEFAULT_SAMPLE_MS` と同じ値。
             // この層は計測クレートに依存しないので数値で持つ)

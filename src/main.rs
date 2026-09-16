@@ -209,7 +209,7 @@ fn main() {
     // canary の宛先と周期 (T14.10)。実際に回すのは履歴スレッドの周期から (`--lite` と
     // `PROXY_STATS_PERSIST=off` では履歴スレッドが無いので canary も回らない)
     rust_http_proxy::canary::configure(&config.canary, config.canary_secs, config.canary_ipv6);
-    let listeners = match net::bind_all(&config.bind_addrs, config.port) {
+    let listeners = match net::bind_all(&config.bind_addrs, config.port, config.listen_backlog) {
         Ok(l) => l,
         Err(e) => {
             log_error!(None, "failed to bind port {}: {}", config.port, e);
@@ -288,6 +288,14 @@ fn main() {
     // 異常の自動検知の閾 (T14.23)。判定するのは履歴スレッドなので、渡すのは
     // 同時接続の上限と、山と見なす本数 (T14.6 の写真と同じ閾) の 2 つだけ
     rust_http_proxy::anomaly::configure(config.max_conns, config.burst_at);
+    // SLO の 4 つの閾 (`PROXY_SLO`。T14.50)。判定するのも履歴スレッドで、
+    // 5 秒の標本 1 本ごとに 4 つを当てて時間ごとの達成率に足す (`/slo`)
+    rust_http_proxy::slo::configure(rust_http_proxy::slo::Thresholds {
+        connect_p50_ms: config.slo.connect_p50_ms,
+        connect_p95_ms: config.slo.connect_p95_ms,
+        error_rate: config.slo.error_rate,
+        dns_miss_per_connect: config.slo.dns_miss_per_connect,
+    });
     // 永続化しないなら履歴スレッドも起動しない (/history とダッシュボードのグラフは空になる)
     let _history = config.stats_persist.then(|| {
         rust_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache), store.clone())
@@ -372,14 +380,17 @@ fn main() {
     log_info!(
         None,
         // 版を先頭に出す: デプロイ先でどのコミットが動いているかをログだけでも
-        // 追えるようにするため (同じ文字列が `-V` と `/status` の `version` に出る。T12.6)
-        "rust-http-proxy {} listening on {} (log level: {})",
+        // 追えるようにするため (同じ文字列が `-V` と `/status` の `version` に出る。T12.6)。
+        // 待ち受けのあとの backlog は T14.47 (128 では足りないことがあるので、効いている値が
+        // ログだけで分かるようにする。カーネルは somaxconn で頭打ちにする)
+        "rust-http-proxy {} listening on {} (backlog {}, log level: {})",
         rust_http_proxy::VERSION,
         listeners
             .iter()
             .map(net::describe_listener)
             .collect::<Vec<_>>()
             .join(", "),
+        config.listen_backlog,
         log::current_level().as_str().trim()
     );
     // 出来事の時系列の 1 件目 (`/events`。T14.11)。再デプロイの時刻を

@@ -357,7 +357,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   最後に接続できた族を覚え、IPv6 が起動から 1 度も勝たずに 3 回続けて負けたら初めて見るホストも
   IPv4 から試す (RFC 8305 §8。600 秒に 1 回だけ IPv6 を先頭に戻して試すので、IPv6 が生き返れば自動で戻る)。
   試行そのものはやめないので、IPv4 が死んでいるホストは IPv6 で拾える。
-  勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。**確実に IPv6 を避けたいなら `off`**
+  勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。**確実に IPv6 を避けたいなら `off`**。
+  待ち受けの**受け入れ待ち行列は既定 `min(1024, somaxconn)`** (`PROXY_LISTEN_BACKLOG`)。Rust の既定の 128 だと、
+  ブラウザが 1 ページで開く数十本の CONNECT で溢れて SYN が捨てられ、クライアントの再送で 1 秒待たされます
 - **RFC 7230 / RFC 9110 準拠**:
   - Hop-by-hop ヘッダーの自動除去
   - `Via` ヘッダーおよび `X-Forwarded-For` ヘッダーの付与・伝搬。`Via` の印は
@@ -444,6 +446,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   - `/` (エンドポイントの一覧。ブラウザでプロキシの URL を開いた人への案内。`--lite` でも出ます)
   - `/config` (**効いている設定とその出どころ**。下記「環境変数」の節)
   - `/dashboard` (ブラウザ用のコントロールパネル: 要求/転送レート・命中率・**CONNECT 確立 p50 (直近 1,024 本の実測)** と p95・
+    **今日の SLO (`PROXY_SLO` の 4 つの閾を満たした 5 秒の割合。T14.50)**・
     **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
     **最近のエラー (直近 20)** と **いまの接続 (上位 50)** の表 (どちらも 5 秒ごと)、
     URL の照会と削除、全消去)、`/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
@@ -757,6 +760,22 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `PROXY_STATS_PERSIST=off` では 1 行も書きません (`/daily` の `path` が `null`)。
     応答は他の個票と同じく 256 KiB 以下 (切ったら `truncated`)。
     この応答をそのまま `scripts/weekly-report.py` に渡せば、雪像が無くても週次の表が出ます
+  - **SLO の達成率 (T14.50)**: `/slo?days=7` (既定 7 日、最大 31 日。「今日」は **UTC**) は、
+    `PROXY_SLO` の 4 つの閾を **5 秒の標本 1 本ごと**に判定した結果を、**日ごと (`daily`)・時間ごと (`hourly`)**
+    の達成率と、**外れた時間帯の一覧 (`breaches`)** にして返します。
+    **読み方**: `ratio` = `met ÷ judged` = **4 つとも満たした 5 秒の割合**で、`judged` は「確立が 1 本以上あった 5 秒」だけを数えます
+    (確立の無い 5 秒は分母に入らないので、静かな時間帯があっても達成率は薄まりません。判定できた標本が 1 本も無ければ `ratio` は
+    `null` で、**0% ではありません**)。`misses` は閾ごとに外した標本の数 (`names` と同じ並び)。
+    `breaches` は**連続する外れを 1 行に畳んだもの**で、1 行 = 開始・終了 (`from` / `to` と、人が読む `from_hour` / `to_hour`)・
+    続いた時間数・その間の `judged` / `met` と、**どの閾を外したか・その最悪の値** (`breached[]` の `name` / `samples` / `worst` / `threshold`)。
+    例: 「99.2% の時間で満たした。外れたのは 09-11 17〜23 時 (`connect_p50_ms` 5,040 本、最悪 46.9 ms、閾 10 ms)」。
+    **使い道 (T14.99)**: Phase の完了の定義は「平常時の CONNECT 確立 p50 6 ms 以下」のような閾値ですが、
+    `PROXY_SLO=connect_p50_ms=6` を入れておけば、`/slo` の `ratio` がそのまま
+    **「その閾を満たしていた時間の割合」**になり、判定が「満たした / 満たさない」ではなく
+    「99.2% の時間で満たした。外れたのはこの時間帯」と数字で書けます。
+    集計は**メモリだけ**で 31 日ぶん (1 時間 1 行 × 744 = 約 48 KiB)、**再起動で消えます** (`first_t` / `last_t` でどこから見ているかが分かります)。
+    応答は **64 KiB 以下** (越えるぶんは外れた時間帯と時間ごとの行から落として `truncated`)。
+    ダッシュボードの KPI「今日の SLO」も同じ口を 30 秒に 1 回読んでいます (`/slo` を持たない版ではカードごと出しません)
   - **日次の snapshot (30 日ぶん。T14.34)**: `/snapshots` は
     `$HOME/.rust-http-proxy/snapshots/` に残してある日付と大きさ (`files[]` の `date` / `bytes` /
     `t` (書いた時刻)、**古い順**) と、置き場所 (`dir`)・残す日数 (`days`)・1 ファイルの上限
@@ -991,6 +1010,7 @@ check: ok (everything this proxy reads is readable)
 | `SERVER_PORT` | `8080` | プロキシが待受を行うポート番号 (Pterodactyl が自動設定) |
 | `PROXY_BIND` | 自動 (`::` + `0.0.0.0`) | 待ち受けアドレスのカンマ区切りリスト (例: `127.0.0.1,[::1]`)。未設定ならデュアルスタックで自動 |
 | `PROXY_IPV6` | `on` | IPv6 を使う (待ち受けと AAAA での接続)。`off` で `0.0.0.0` のみ・A レコードのみ。`on` のままでも、IPv6 が黙って落ちる環境では自動で IPv4 を先に試す (上記。確実に避けたいなら `off`) |
+| `PROXY_LISTEN_BACKLOG` | `0` (= `min(1024, somaxconn)`) | **待ち受けの受け入れ待ち行列の長さ** (`listen(2)` の backlog)。Rust の `TcpListener::bind` は **128 固定**ですが、ブラウザがページを 1 枚開くと数十本の CONNECT が**同時に**来るのに accept ループは 1 本しかありません (増やしても速くならないことを測って決めた設計)。行列が溢れると SYN は**黙って捨てられ**、クライアントは 1 秒後に再送するので、**利用者には 1 秒の待ち**として見えます (統計には「遅い接続」としてすら残りません)。`0` / `auto` は `min(1024, /proc/sys/net/core/somaxconn)`、数値を書けばその値。**カーネルが `somaxconn` で頭打ちにする**ので、それより大きく書いても `somaxconn` までしか効きません (この機械の `somaxconn` は `4096`、既定は `1024`)。効いている値は起動ログの `listening on ... (backlog N, ...)` と `/config` の `PROXY_LISTEN_BACKLOG` に出ます。実際にカーネルに届いたかは `ss -ltn` の `Send-Q` (待ち受けの行) で見られます。溢れた回数は `/status` の `kernel.last_5m.listen_overflows` (Linux)。**`.env` では即時反映されません** (待ち受けは起動時に 1 回作るため。変更を検知すると `restart_required` に出ます)。Linux 以外では `std` のまま 128 です |
 | `SERVER_MEMORY` | なし | コンテナのメモリ割当 (MB)。Pterodactyl が自動設定し、メモリキャッシュの上限として尊重される |
 | `PROXY_DISK_QUOTA_MB` (別名 `SERVER_DISK`) | なし | コンテナのディスク割当。**Pterodactyl はこれを渡してくれない**ので、egg 変数として設定する。MB 数 = パネルの Disk Space、`0` = 無制限、`auto` = `df -B1 /home/container` の total を割当とみなす (下記)。Pterodactyl で未設定ならディスクキャッシュは 512 MiB 固定・先行確保なし |
 | `PROXY_ALLOW_HOSTS` | なし (全許可) | 接続許可ホストのカンマ区切りリスト (例: `*.example.com,api.github.com`) |
@@ -1015,7 +1035,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_CONNECT_PORTS` | なし (制限なし) | `CONNECT` を許すあて先ポート。`443,80,8080-8099` のようにカンマ区切り (範囲可)。ここに無いポートは 403。`.env` で即時反映 |
 | `PROXY_ALLOW_LOCAL` | `off` | ループバック (`127.0.0.0/8`, `::1`) とリンクローカル (`169.254.0.0/16`, `fe80::/10`) 宛てのオリジンを許すか。既定では 403 にしてクラウドのメタデータ (`169.254.169.254`) 経由の SSRF を防ぐ。ローカルのサービスへプロキシしたいときだけ `on`。`.env` で即時反映 |
 | `PROXY_ALLOW_CLIENTS` | なし (全許可) | **受ける接続元**のカンマ区切りリスト (`1.2.3.4,10.0.0.0/8,2001:db8::/32`。1 つの IP は `/32` `/128` と同じ)。ここに無い相手は **accept した直後に、要求を 1 バイトも読まずに閉じます** (応答も返しません)。**内部エンドポイントも含めて閉じる**ので、公開ポートで `/status` や `/clients` の個票が見られることもありません。`PROXY_MAX_CONNS` の 「上限 + 4 本」の枠より**前**で判定します。断った数は `/status` の `rejected_client_acl` と `/metrics` の `sorahost_rejected_client_acl_total`。v4-mapped IPv6 (`::ffff:1.2.3.4`) は IPv4 として照合するので、デュアルスタックで 待ち受けていても `1.2.3.4` の 1 行で書けます。書式が違う項目は読み飛ばします (起動ログの `allowed clients:` に実際に読めた項目が出るので、書き損じはそこで分かります)。**宛先の `PROXY_ALLOW_HOSTS` / `PROXY_ALLOW_LOCAL` とは無関係**で、**認証でもありません** (同じアドレスから来られれば誰でも通ります)。`.env` で即時反映 (次に受ける接続から) |
-| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/snapshots` `/metrics` `/hosts` `/hosts/series` `/clients` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/trace` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
+| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/slo` `/snapshots` `/metrics` `/hosts` `/hosts/series` `/clients` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/trace` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる (`PROXY_PARK_IDLE=on` なら、預かり所が期限を見て引き上げる)。`0` で無期限。`.env` で即時反映 |
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル (`--lite` と同じ)。キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限。上限に当たったら、まず**預かり所の暇な CONNECT トンネルを最古から 1 本閉じて**席を作り、その接続を受ける (閉じた数は `/status` の `evicted_idle` と `/metrics` の `sorahost_evicted_idle_total`。**暇な keep-alive 接続は閉じない** — 次の要求を待っているだけなので、閉じると入れ違いで届いた要求を取りこぼすため)。閉じるものが無い (トンネルが全部中継中、または預かり所が空) ときは、スレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。ただし**自分宛て (`/status` `/metrics` などの内部エンドポイント) は上限 + 4 本まで受ける**: accept の時点では要求が読めないので、4 本までは受けて要求行と `Host` を読み、自分宛てなら普通に応答、それ以外は 503 で閉じる (上限に当たっている最中でも監視が取れるようにするため。この枠で受けた接続は要求行が 2 秒来なければ 503 で閉じる)。`auto` は記述子の上限から `min(4096, (RLIMIT_NOFILE の soft − 予備 64) ÷ 4)` (1 接続が最悪で使う記述子は クライアント 1 + オリジン 1 + 素通しのパイプ 2 = 4 本。`ulimit -n` が 1024 の環境なら 240、4096 なら 1008)。記述子が余っていても 4096 で頭打ちにするのは、上限が fd 以外の資源 (スレッド・RSS) の歯止めでもあるため (同時 5,000 本で RSS 198 MiB の実測)。数値を書けばその値、`0` で無制限。決まった値は起動ログの `max connections:` と `/status` の `max_conns` (`/metrics` は `sorahost_max_connections`) に出る。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
@@ -1025,6 +1045,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。`.env` で即時反映 (次に受ける接続から効く。**下げても走っているスレッドは殺さず**、仕事を終えたスレッドから順に減ります。`auto` のときは `PROXY_MAX_CONNS` を変えるとこちらも決め直します)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。**裏側の再検証 (stale-while-revalidate) もこの上限の内側で走ります**が、こちらは待たせず捨てます (`/status` の `revalidations_dropped`) |
 | `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 8 MiB) に、**個票 (`/recent` `/errors` `/bursts` `/events` `/log`) を `$HOME/.rust-http-proxy.recent` (固定 4 MiB)** に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`)、**ホスト別の時系列** (`/hosts/series`) は空になり、個票の `"persisted"` は `false`、日次の要約も **日次の snapshot** も書きません) |
 | `PROXY_SNAPSHOT_DAYS` | `30` | **日次の snapshot** を残す日数 (T14.34)。履歴スレッドが **UTC の日付をまたいだ瞬間**にその時点の `/snapshot` をまるごと `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` (名前は**終わった日**) に書き、**31 個目を書いたら最古を 1 つ消します**。1 ファイルは `/snapshot` と同じ **4 MiB** まで (30 日で最大 120 MiB、静かなプロキシなら 1 日 20 KB 前後)。`0` で書きません。読む口は `/snapshots` と `/snapshots/<date>`。`PROXY_STATS_PERSIST=off` と `--lite` では履歴スレッドごと無いので書きません。ディスクの空きが `PROXY_DISK_KEEP_FREE_MB` のマージンを割り込むときは書かずに `/events` に 1 件 (`state_file`) 残します。**再起動で反映** |
+| `PROXY_SLO` | `connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2` | **SLO の 4 つの閾** (T14.50)。履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、**4 つとも満たした標本の割合**を `/slo` で返します (`connect_p50_ms` / `connect_p95_ms` = その 5 秒に確立した CONNECT の p50 / p95 (ms)、`error_rate` = エラー ÷ 試み (確立 + 転送 + エラー)、`dns_miss_per_connect` = 名前解決のミス ÷ 確立。**満たす = 閾以下**)。**確立が 1 本も無い 5 秒は「判定なし」**で分母に入れません (誰も使っていない夜中を「達成」と数えると、達成率が「動いていた割合」に化けるため)。書いた閾だけが効き、書いていない閾・知らない綴り・数として読めない値・負の値は既定のままです (例: `PROXY_SLO=connect_p50_ms=6` だけ書けば p50 の閾だけ 6 ms になる)。効いている値は `/config` の `PROXY_SLO` と `/slo` の `thresholds`。判定するのは履歴スレッドなので**要求の経路の費用は 0** で、`PROXY_STATS_PERSIST=off` と `--lite` では 1 本も判定しません。**再起動で反映** |
 | `PROXY_PROFILE_SAMPLE_MS` | `1000` | `/profile` のスレッドの標本を取る間隔 (ms)。`profile-sample` スレッド 1 本が この間隔で `/proc/self/task/*/stat` と `/proc/self/task/*/syscall` を読み、**役割ごと** (`accept` / `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` / `profile-sample` / `other`) に「CPU」と「いま走っているか・どのシステムコールで待っているか・休眠か」を数えます。`0` で標本を止める (段階の窓は 5 秒ごとに畳み続けます)。下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 2 つ開くぶん (実測 約 54 us) で、**140 スレッド・1 秒間隔で 1 コアの 0.75%** (60 秒で 450 ms。128 スレッド相当で 0.69%)。スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。`/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。**`--lite` では `/profile` ごと off** |
 | `PROXY_SELF_BENCH` | `off` | **起動直後に loopback だけで 3 秒の自己ベンチ**を回して CPU/要求 と CPU/本 を測ります (T14.43)。待ち受けを開いた直後に、このプロセスの中へ**固定 1 KiB を返すオリジン** (`no-store`) と**すぐ閉じる sink** を `127.0.0.1` の使い捨てポートに立て、**自分の待ち受けへ** forward 8 並列と CONNECT 8 並列を打ちます。**外へは 1 バイトも出しません**。結果は `/status` の `self_bench` と、起動ログ・`/events` の 1 行 (`self_bench forward 43 us, connect 140 us …`)。**本数に上限があり** (forward **20,000 要求** / CONNECT **2,000 本**)、秒数より先に当たればそこで終わります (上限が無いと CONNECT を 1.5 秒で 22,000 本張り、TIME_WAIT が 44,000 残ります)。**自分で打ったぶんはどの統計にも入れません** (`total_requests` / `bytes_forwarded` / `/hosts` / `/clients` / `/recent` / `/connections` / `/history`)。測る 3 秒だけログ水準を `warn` に下げ (既定の `info` のままだとアクセスログが数万行出て CPU/要求 に乗るため)、**`PROXY_ALLOW_LOCAL=off` (既定) のままでもこの 2 つのポート宛てだけ**を 3 秒間通します。用途は「上の『性能』の表 (この機械の big コア、41.4 us/要求) と**置いた先のコンテナ**を同じ物差しで並べる」ことなので、**普段は `off`** のままにして、再デプロイの直後に 1 回だけ `on` にしてください。`off` では起動時の分岐 1 つ以外何も走りません (`--lite` でも明示すれば回ります)。**再起動で反映** |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
@@ -1064,7 +1085,8 @@ check: ok (everything this proxy reads is readable)
 30 秒ごとの mtime 確認)。即時に反映されるのは `PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS` / `PROXY_TIMEOUT_SECS` /
 `PROXY_KEEPALIVE_SECS` / `PROXY_LOG_LEVEL` / `PROXY_MAX_CONNS` / `PROXY_MAX_THREADS` /
 `PROXY_ALLOW_CLIENTS` / `PROXY_ENDPOINTS_READONLY` / `PROXY_MAX_CONNS_PER_CLIENT` などで、
-既存の keep-alive 接続には次の接続から効きます (どの値を当てたかは `/status` の `settings.applied` に出ます)。ポート・bind・TLS・
+既存の keep-alive 接続には次の接続から効きます (どの値を当てたかは `/status` の `settings.applied` に出ます)。ポート・bind・
+待ち受けの backlog (`PROXY_LISTEN_BACKLOG`)・TLS・
 オリジンプール・キャッシュ予算 (`SERVER_MEMORY` / `SERVER_DISK` / `PROXY_CACHE_*`) は起動時に固定なので、変更を検知すると
 `/status` の `settings.restart_required` と `/dashboard` の帯に「再起動が必要」と出ます。解釈できない値を書いた場合は
 前の設定を維持し、`settings.error` にメッセージが入ります。
@@ -1613,6 +1635,7 @@ curl "http://127.0.0.1:8080/explain?host=mtalk.google.com"   # 1 宛先を 1 枚
 curl -s "http://127.0.0.1:8080/explain?host=mtalk.google.com" | python3 -c 'import json,sys;print(json.load(sys.stdin)["summary"])'
 curl "http://127.0.0.1:8080/explain?client=198.51.100.7"    # 1 接続元を 1 枚に
 curl "http://127.0.0.1:8080/daily?n=365"                # 1 日 1 行の要約 (永久に残る。古い順)
+curl "http://127.0.0.1:8080/slo?days=7"                 # SLO の達成率 (日ごと・時間ごと・外れた時間帯)
 curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
 curl "http://127.0.0.1:8080/snapshots"                  # 日次で残した snapshot の一覧 (30 日ぶん)
 curl -s "http://127.0.0.1:8080/snapshots/2026-09-15" > day.json   # その日ぶんをそのまま

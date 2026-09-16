@@ -156,6 +156,7 @@ name = "proxy-net"
 version = "0.1.0"
 dependencies = [
  "proxy-base",
+ "proxy-sys",
 ]
 
 [[package]]

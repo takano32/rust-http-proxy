@@ -20,7 +20,7 @@ pub use proxy_endpoints::endpoints;
 pub use proxy_http::{freshness, http};
 pub use proxy_metrics::{
     anomaly, canary, daily, events, history, hostseries, kernel, metrics, persist, persist_recent,
-    profile, recent, rrd, snapshots, trace,
+    profile, recent, rrd, slo, snapshots, trace,
 };
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};

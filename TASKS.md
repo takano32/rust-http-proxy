@@ -4067,6 +4067,7 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
     **この条件の CPU/本 は §2 に載せない** (IPv6 の試行スレッドのぶんが乗るので `--only connect` と比べられない)。§1 に節を足した。
     - cgroup 256 MiB はベンチにも掛かる (太るものを測るときは `--memory off`)。`--only connect-multi` は `--only all` に入れていない。
       `crates/bench` に初めての単体テスト 1 本 (`Report::percentile`)。
+    - **訂正 (2026-09-16、T14.47 の切り分け)**: 上の「max 1,011 ms = 待ち行列が溢れて SYN が 1 秒後に再送される」の**溢れているのはプロキシの待ち受けではなく、ベンチ自身の受け皿** (`spawn_sink`、backlog 128、accept 1 スレッド) だった。`--only connect-multi` は 64 本の閉ループなのでプロキシ宛ての SYN は 128 で溢れない。1 秒の固まり (IPv6 の黒穴) の再現そのものは正しい。
 - [x] **T14.17 `scripts/snapshot-diff.py` (2 枚の `/snapshot` から「何が変わったか」を全部出す)**
   - 目的: T14.0 の分析は `/status` の差分・`/history` の再起動時刻での切り分け・`/dns` の個票・`/hosts` の差分を手作業で組み合わせた
     (Python を 5 回書いた)。次の T14.99 で同じことを 1 コマンドにする。`status-diff.py` はホスト別の差分だけ。
@@ -4722,7 +4723,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 受け入れ基準: T14.16 の環境で `--only connect-multi --conc 64` を回すと個票に `syn_retrans` ≥ 1 の接続が現れ、`/status` の
     `syn_retrans_total` が増える。loopback の `--only connect` では 0 のまま。費用: **CONNECT 1 本に `getsockopt` 1 回** (システムコール
     +1。本文に書く)、CPU/本 ±4% (6 組)。forward はプールの接続を張るときだけ (要求ごとは 0)。
-- [ ] **T14.47 待ち受けの backlog (`PROXY_LISTEN_BACKLOG`、既定 `min(1024, somaxconn)`)**
+- [x] **T14.47 待ち受けの backlog (`PROXY_LISTEN_BACKLOG`、既定 `min(1024, somaxconn)`)**
   - 目的: Rust の `TcpListener::bind` は backlog **128** で待ち受ける。ブラウザがページを開くと数十本の CONNECT が同時に来て、accept ループが
     1 本 (T4.3) なので 128 を越えた SYN は捨てられ、**クライアントは 1 秒後に再送する** (利用者に 1 秒の待ちとして見える。T14.16 で
     同じ現象を手元で観測した)。デプロイ先の 09-11 のバースト (1 時間に 4,966 本、山 218) でこれが起きていたかは T14.12 の
@@ -4733,6 +4734,9 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 受け入れ基準: T14.16 の環境で `--only connect-multi --conc 64 --seconds 5` の **max が 300 ms 未満** (いまは 1,011 ms = SYN の再送)、
     `/status` の `syn_retrans_total` (T14.46) または T14.12 の `ListenOverflows` が 0。`--only connect` の CPU/本 ±4%。`ss -ltn` の
     `Send-Q` が設定値になること (Linux)。
+  - 結果 (2026-09-16、`c94ed3f`、マージ `cd6dbd7`): **待ち受けの backlog を選べるようにした** (`PROXY_LISTEN_BACKLOG`、既定 `0` = `min(1024, /proc/sys/net/core/somaxconn)`。この機械の `somaxconn` は 4096 なので既定は 1024)。`std` の `TcpListener::bind` は `listen(fd, 128)` 固定なので、`crates/sys/src/sys.rs` に `socket` / `bind` / `listen` の束縛 (`listensock`、既存の `sockopt` と同じく **aarch64 / x86_64 だけ**) と `listen_socket(addr, backlog) -> RawFd` を足し、`crates/net/src/net.rs` の `bind_all_with` が `std` の `bind` の代わりにそれを呼んで `TcpListener::from_raw_fd` で包む。**`SO_REUSEADDR` は `std` と同じく bind の前に立て、`IPV6_V6ONLY` は触らない** (`[::]` が IPv4 も受ける今の姿は 1 バイトも変わらない)。Linux 以外と定数の分からない arch は `std` の `bind` (128) に落ちる。`.env` では即時反映しない (変えたら `restart_required` に出る)。起動ログの待ち受けの行に `backlog N`、`/config` の `settings` に実効値。**つまみはカーネルまで届いている**: `ss -ltn` の `Send-Q` が **128 → 1024** (`PROXY_LISTEN_BACKLOG=5` なら 5)。費用: `--only connect` の CPU/本 **155.88 → 152.55 us (−2.1%、6 組。±4% の中)**、待ち受けを作るのは起動時だけなので要求ごとは 0 増。テストは新規 7 本 (`tests/backlog_test.rs` 2・`proxy-net` 2・`proxy-sys` 3)。`crates/net` に `proxy-sys` の依存を足した (循環なし、外部クレート 0 のまま)。
+    - **受け入れ基準の「max < 300 ms」「`listen_overflows` 0」は満たしていない。測り方の方が間違っていた** (T14.16 の数字の読み違い)。`deployed-like` の中で **待ち受けごとに `Recv-Q` の山**を撮ると、backlog 1024 のプロキシの待ち受けは **1,024 中 10** までしか溜まらず、張り付いているのは**ベンチ自身の受け皿** (`crates/bench` の `spawn_sink`、`std` の `TcpListener` = backlog 128、accept 1 スレッド) の **109 / 128** だった。`--only connect-multi` は 64 スレッドの**閉ループ**なので、プロキシ宛ての SYN は同時に 64 本しか無く **128 でも溢れない**。max ≈ 1 秒と `listen_overflows` は**プロキシ → ベンチの受け皿**の SYN 再送で、**T14.16 の `結果:` の 1,011 ms も同じもの**だった。対照実験 (backlog だけ変える): 1024 → `Recv-Q` の山 10・`listen_overflows` 278・max 1,064 ms、**5 → 山 6 (満杯)・345・2,084 ms**。つまり「小さすぎる backlog が 1〜2 秒を作る」機構自体は手元で再現でき、既定 1024 はその逆に効く。**手元のベンチでプロキシの待ち受けを溢れさせるには、(a) `spawn_sink` の backlog を上げてベンチ側の律速を外すか、(b) 閉ループではなく一斉に数百本 SYN を出す形が要る** (小物。T14.46 の `syn_retrans` が入れば「どちら側の再送か」も個票で切り分けられる)。T14.12 の「`--only connect` で `ListenOverflows` +122」も同じ可能性 (未切り分け)。
+    - **デプロイ先の基準 (再デプロイ後の `kernel.last_5m.listen_overflows` が 0 のまま) は親が見る。**
 - [ ] **T14.48 http の宛先にポートを付ける (`/connections` と `/recent` の `target`。小物)**
   - 目的: T14.4 の気づき — http 接続の `target` が `example.com` (ポート無し)、CONNECT は `discord.com:443`。個票を読む道具が
     2 つの形を扱うことになる。
@@ -4747,7 +4751,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 受け入れ基準: 結合テストで全エンドポイント (`/status` `/history` `/dns` `/errors` `/connections` `/recent` `/hosts` `/clients` `/log`
     `/snapshot` `/profile` `/bursts` …) の応答の先頭 64 バイトに `"schema":` があること。`check-dashboard.js` が版の無い古い出力
     (`~/rust-http-proxy-status/2026-09-16T0106Z-*`) も読めること。
-- [ ] **T14.50 SLO の達成率 (`/slo`)**
+- [x] **T14.50 SLO の達成率 (`/slo`)**
   - 目的: Phase の完了の定義は「p50 6 ms 以下」のような閾値だが、デプロイ先で**時間の何割がそれを満たしたか**は出ない。閾値を設定で持ち、
     5 秒の標本ごとに満たしたかを判定して、日ごと・時間ごとの達成率を返せば、T14.99 と次の Phase の判定が「満たした / 満たさない」ではなく
     「99.2% の時間で満たした。外れたのは 09-11 18〜19 時」になる。
@@ -4756,6 +4760,10 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     (`/slo?days=7`: 日ごと・時間ごとの達成率と、外れた時間帯の一覧)、ダッシュボードの KPI に「今日の SLO」、README。
   - 受け入れ基準: 単体テストで既知の標本列 (T14.0 の 09-11 のバーストを模した架空の列) から達成率が手計算と一致 (外れた時間帯が
     17〜23 時)。`/slo` が 64 KiB 以下。費用 0 (history スレッドだけ)。
+  - 結果 (2026-09-16、`53b5f33`): **SLO の達成率 `/slo?days=7`** を足した。閾は `PROXY_SLO` の 4 つ (`connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2`、既定はこの値。**書いた閾だけが効き**、知らない綴り・読めない値は既定のまま。`/config` と `/slo` の `thresholds` に効いている値)。判定は `crates/metrics/src/slo.rs` (新規) で、**5 秒の標本 1 本ごと**に 4 つを当てて **4 ビット**にし (`connect_p50_ms` / `connect_p95_ms` = その 5 秒の `connect` 窓の p50 / p95、`error_rate` = **エラー ÷ (確立 + 転送 + エラー)**、`dns_miss_per_connect` = ミス ÷ 確立。**満たす = 閾以下**、**達成 = 4 つとも満たす**)、**確立が 1 本も無い標本は「判定なし」**で分母に入れない (誰も使っていない夜中を達成と数えると、達成率が「動いていた割合」に化けるため)。積むのは**時間ごとの集計だけ** (判定した数・達成した数・閾ごとに外した数と最悪の値 = 1 時間 64 B × 744 時間 ≈ 48 KiB、**メモリだけ・再起動で消える**)。**`Sample` にも `.rrd` にも欄は足していない** (`history.rs` への手は `anomaly::check` の隣の 1 行だけ)。5 秒の標本は 6 時間しか残らないので、**`days=7` を「5 秒の標本ごと」で答えられるのはこの集計を積んでいるからだけ**。応答は `ratio` (= `met ÷ judged`)・`misses` (閾ごと)・`today` (UTC)・`daily` (最大 31 行)・`hourly`・**`breaches` (連続する外れを 1 行に畳み、開始・終了・続いた時間数・どの閾を外したか・その最悪の値)**。**費用は 0** (判定は履歴スレッドの 5 秒周期だけ。1 周期で増えるのは分位点 2 回と割り算 2 回)。受け入れ基準は全部満たした: 単体テストで**架空の 1 日** (5 秒 × 17,280 本、17〜23 時だけ遅い + エラー) から **12,240 / 17,280 = 0.70833 が手計算と一致**し、**外れた時間帯が 17 時〜24 時の 1 行** (外した閾は `connect_p50_ms` / `connect_p95_ms` / `error_rate` の 3 つ)。結合テスト 1 本で `/slo` が 200・**64 KiB 以下**・`thresholds` が既定値 (`/config` の `PROXY_SLO` と一致)。応答は**空 555 B / 1 日ぶん 1,853 B / 実バイナリ 1,046 B / 最悪 (31 日・1 時間おきに外れ) 59,923 B**。ダッシュボードの KPI に「今日の SLO」を 1 枚 (30 秒に 1 回、100% 未満は黄・95% 未満は赤。**`/slo` を持たない版ではカードごと出さない**。`check-dashboard.js` の検査 13)。テストは単体 11 本 + 結合 1 本を新設。
+    - `error_rate` の分母は本文に無かったので決めた (試みたうちの失敗の割合)。`PROXY_SLO` は再起動で反映 (閾を変えても過去の集計は判定し直さない)。既定の数値は `crates/config` の `DEFAULT_SLO` と `crates/metrics` の `slo::DEFAULT` の 2 か所 (食い違えば `tests/slo_test.rs` が落ちる)。外れた時間 = その時間に 1 本でも外した標本がある (多すぎるなら「達成率 N% 未満」に変える余地。上限 128 行)。`--lite` と `PROXY_STATS_PERSIST=off` では判定しない (`ratio` は `null`)。
+    - **T14.99 での使い方**: 再デプロイ後に `PROXY_SLO=connect_p50_ms=6` を入れておけば `ratio` がそのまま「平常時の p50 6 ms 以下」の達成率になる。ただし平常時だけの切り出し (1 時間 300 本) は `/slo` に無い (要るなら `?normal_hours_only=1` を `summary::burst_limit` と同じ式で)。
+    - 気づき (main の赤): `proxy-metrics` の単体 2 本が main で落ちている — `the_direction_columns_fit_in_the_slot_and_old_records_read_back_as_zero` (T14.14 で余白 4 → 68 B になったのに期待値が版 2 のまま) と `anomaly::tests::a_slow_connect_p95_fires_once_and_clears` (T14.32 で 5 秒のリングが 6 時間になり基準値の窓の本数が 1,440 → 1,442)。親が直す。
 - [ ] **T14.51 重い口の同時実行を 1 本に (`/snapshot` `/hosts?limit=1000` `/recent?n=2000` `/profile`)**
   - 目的: 認証なしの公開ポートで、`/snapshot` (4 MiB を組む) を 1 秒に 10 回引かれると CPU と鍵の時間を食う。**同時に組むのは 1 本**にし、
     2 本目からは `503 Retry-After: 1` で断る (軽い `/status` はそのまま)。走査に対する最小限の保護で、認証ではない。
