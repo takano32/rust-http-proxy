@@ -779,7 +779,10 @@ impl History {
         // 古い方を落として新しい方から n 本
         let skip = q.len().saturating_sub(n);
         let mut out = String::with_capacity(256 + (q.len() - skip) * 360);
-        let _ = write!(out, "{{\"interval_secs\":{},\"keys\":[", RESOLUTIONS[res].0);
+        // 応答の形の版は**いちばん先頭の鍵** (T14.49)。`closed` / `transfer` / `canary` /
+        // `kernel` は**この応答の中の配列**なので、版を持つのはここ 1 か所だけ
+        out.push_str(crate::metrics::SCHEMA_HEAD);
+        let _ = write!(out, "\"interval_secs\":{},\"keys\":[", RESOLUTIONS[res].0);
         for (i, k) in KEYS.iter().enumerate() {
             if i > 0 {
                 out.push(',');
@@ -939,9 +942,9 @@ mod tests {
         assert_eq!(h.len(), DEFAULT_N + 5);
         let json = h.to_json();
         assert_eq!(rows(&json), DEFAULT_N);
-        // 標本は配列の配列で、キーは先頭に 1 回だけ (T12.4 (3))
+        // 応答の形の版が先頭、標本は配列の配列で、キーはその後ろに 1 回だけ (T12.4 (3)、T14.49)
         assert!(
-            json.starts_with("{\"interval_secs\":5,\"keys\":[\"t\","),
+            json.starts_with("{\"schema\":1,\"interval_secs\":5,\"keys\":[\"t\","),
             "{}",
             &json[..80]
         );
@@ -1029,7 +1032,7 @@ mod tests {
         assert!((119..=123).contains(&minutes), "minutes {}", minutes);
         assert!((1..=3).contains(&hours), "hours {}", hours);
         let m = h.to_json_res(1);
-        assert!(m.starts_with("{\"interval_secs\":60,"));
+        assert!(m.starts_with("{\"schema\":1,\"interval_secs\":60,"));
         let q = h.rings[1].lock().unwrap();
         let first = q.front().unwrap();
         assert_eq!(first.t % 60, 0, "window start is aligned");
@@ -1448,9 +1451,9 @@ mod closed_tests {
         h.closed.observe(&closed(CloseReason::Evicted, 7));
         h.closed.roll(1_700_000_005);
         let json = h.to_json_res(0);
-        // 既存の形はそのまま
+        // 既存の形はそのまま (先頭の版だけが増えた。T14.49)
         assert!(
-            json.starts_with("{\"interval_secs\":5,\"keys\":[\"t\","),
+            json.starts_with("{\"schema\":1,\"interval_secs\":5,\"keys\":[\"t\","),
             "{}",
             json
         );
@@ -1707,9 +1710,11 @@ pub mod summary {
         /// **同じ数字ではない** (期間が短いほど食い違う)。
         pub fn to_json_with(&self, recent: Option<&str>) -> String {
             let mut out = String::with_capacity(768);
+            // 応答の形の版は**いちばん先頭の鍵** (T14.49)
+            out.push_str(crate::metrics::SCHEMA_HEAD);
             let _ = write!(
                 out,
-                "{{\"from\":{},\"to\":{},\"interval_secs\":{},\"first_t\":{},\"last_t\":{},\
+                "\"from\":{},\"to\":{},\"interval_secs\":{},\"first_t\":{},\"last_t\":{},\
                  \"samples\":{},\"burst_samples\":{},\"normal_hours_only\":{},\
                  \"connects\":{},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"avg_ms\":{:.1},\"max_ms\":{},\
                  \"forwards\":{},\"forward_p50_ms\":{:.1},\"forward_p95_ms\":{:.1},\

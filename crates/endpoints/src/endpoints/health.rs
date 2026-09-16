@@ -15,6 +15,7 @@ use std::sync::atomic::Ordering;
 
 use super::Endpoint;
 use crate::kernel;
+use crate::metrics::SCHEMA_HEAD;
 
 /// 記述子がこの割合を超えたら偽 (`fds` < `max_fds` の 90%)。
 const FD_HEADROOM_NUM: u64 = 9;
@@ -106,7 +107,9 @@ pub(super) fn healthz(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
 
     let ok = checks.iter().all(|c| c.ok != Some(false));
     let mut body = String::with_capacity(512);
-    let _ = write!(body, "{{\"ok\":{},\"checks\":{{", ok);
+    // 応答の形の版は**いちばん先頭の鍵** (T14.49)。`ok` は今までどおりその次
+    body.push_str(SCHEMA_HEAD);
+    let _ = write!(body, "\"ok\":{},\"checks\":{{", ok);
     for (i, c) in checks.iter().enumerate() {
         if i > 0 {
             body.push(',');

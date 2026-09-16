@@ -52,6 +52,11 @@
 # `Δavg_ms` の右にこの誤差の上限を `±` で出すので、**桁で読める幅になるまで間隔をあける**こと
 # (デプロイ先は 0.012 req/s = 80 秒に 1 件なので、1 ホストで数十件貯めるには数時間から 1 日かかる)。
 #
+# **応答の形の版 (`schema`。T14.49)**: 新しいプロキシの応答は先頭に `"schema":1` を持ちます。
+# この道具は版で分岐しますが、**版の無い古い出力 (版 0) も今までどおり読めます**
+# (手元に残っている雪像はどれも版の無い形なので、読めなくなると過去の分析をやり直せない)。
+# 読んだ版は出力の先頭に `# <ファイル> の形の版 schema=N` として出ます。
+#
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
 import argparse
@@ -73,7 +78,9 @@ from proxydata import (  # noqa: E402
     resolve_aaaa,
     reqs,
     row_of,
+    schema_of,
     up,
+    warn_newer,
 )
 
 
@@ -176,6 +183,12 @@ def main():
 
     src = {"dns": "getaddrinfo", "file": args.aaaa, "none": "引かない"}[mode]
     print(f"# status-diff: {' -> '.join(args.files)}")
+    # 応答の形の版 (T14.49)。**版の無い古い出力は「版 0」** として今までどおり読む
+    for name, snap in zip(args.files, snaps):
+        v = schema_of(snap)
+        print(f"# {name} の形の版 schema={v}"
+              + ("" if v else " (版を持たない古い出力。推測で読む)"))
+        warn_newer(snap, name, out=sys.stdout)
     for name, snap in zip(args.files, snaps):
         if snap.get("snapshot_taken_at"):
             print(f"# {name} は /snapshot (T14.4) の中の /hosts を読んだ "

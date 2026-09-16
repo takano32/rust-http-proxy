@@ -30,6 +30,11 @@
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
 #   9. `--criteria phase14` で **Phase の完了の定義に対する判定表** (満たした / 届かず / 判定できず)
 #
+# **応答の形の版 (`schema`。T14.49)**: 新しいプロキシの応答は先頭に `"schema":1` を持ちます。
+# 読む側は版で分岐しますが、**版の無い古い出力 (版 0) も今までどおり読めます**
+# (`~/rust-http-proxy-status/` に残っている雪像はどれも版の無い形)。読んだ版は出力の
+# 「形の版 `schema` A → B」の行と `--out json` の `a.schema` / `b.schema` に出ます。
+#
 # **平常時の切り出し方** (T14.0 と同じ): `/history?res=3600` の標本のうち **1 時間 300 本未満**
 # のものだけを使う。バーストの時間帯 (2026-09-11 17〜23 時のような) を混ぜると、ミス 1 回の平均が
 # 12.6 ms から 36.0 ms に化けて「直した効き」が読めなくなる。分位点の補間は
@@ -59,6 +64,8 @@ from proxydata import (  # noqa: E402
     quantile_ms,
     resolve_aaaa,
     row_of,
+    schema_of,
+    warn_newer,
 )
 
 # `/history` の標本のうちこの道具が読む欄 (`crates/metrics/src/history.rs` の KEYS)。
@@ -155,6 +162,8 @@ def normalize(snap, label, from_files=False):
     st = part(snap, "status")
     snap["label"] = label
     snap["from_files"] = from_files
+    # 応答の形の版 (T14.49)。雪像に無ければ `/status` の部の版、それも無ければ 0
+    snap["schema"] = schema_of(snap) or schema_of(st)
     snap["history"] = {str(k): v for k, v in (snap.get("history") or {}).items()}
     if not snap.get("version"):
         snap["version"] = st.get("version")
@@ -176,21 +185,40 @@ def last_sample_time(snap):
     return best
 
 
+def as_status(d, src):
+    """`/status` 1 枚を `/snapshot` と同じ形に見立てる (`/snapshot` より前の形の入口)。"""
+    return normalize({"taken_at": taken_at_from_name(src), "parts": ["status"], "dropped": [],
+                      "status": d, "history": {},
+                      "hosts": {"hosts": d.get("hosts") or []},
+                      "clients": {"clients": d.get("clients") or []}}, src)
+
+
 def load_source(src, from_files):
+    """1 枚を読む。**応答の形の版 (`schema`。T14.49) で分岐する**。
+
+    版 1 以降は先頭の版で形が決まっているので推測しない (`parts` があれば `/snapshot`、
+    `"status":"ok"` があれば `/status`)。**版の無い古い出力 (版 0) は今までどおり**
+    鍵の有無から推測する — 手元に残っている雪像はどれも版の無い形なので、
+    そちらが読めなくなったら過去の分析をやり直せない。
+    """
     if from_files or not os.path.isfile(src):
         return load_prefix(src)
     with open(src, encoding="utf-8") as f:
         d = json.load(f)
     if not isinstance(d, dict):
         raise SystemExit(f"{src}: JSON の object ではない")
+    warn_newer(d, src)
+    if schema_of(d) >= 1:
+        # 版 1: 先頭の版があるので、あとは `parts` (雪像) か `status` (1 枚) かだけ
+        if isinstance(d.get("parts"), list):
+            return normalize(d, src)
+        if d.get("status") == "ok":
+            return as_status(d, src)
+    # 版 0 (`schema` の無い古い出力): 今までどおり鍵の有無から推測する
     if "parts" in d:
         return normalize(d, src)
     if "uptime_secs" in d or "since_start_secs" in d:
-        # `/status` 1 枚だけを渡されたとき (`/snapshot` より前の形)
-        return normalize({"taken_at": taken_at_from_name(src), "parts": ["status"], "dropped": [],
-                          "status": d, "history": {},
-                          "hosts": {"hosts": d.get("hosts") or []},
-                          "clients": {"clients": d.get("clients") or []}}, src)
+        return as_status(d, src)
     raise SystemExit(f"{src}: /snapshot でも /status でもない JSON")
 
 
@@ -727,10 +755,10 @@ def build(a, b, args):
     out = {
         "a": {"label": a["label"], "taken_at": a["taken_at"], "version": a["version"],
               "uptime_secs": a["uptime_secs"], "parts": a.get("parts") or [],
-              "dropped": a.get("dropped") or []},
+              "dropped": a.get("dropped") or [], "schema": a.get("schema", 0)},
         "b": {"label": b["label"], "taken_at": b["taken_at"], "version": b["version"],
               "uptime_secs": b["uptime_secs"], "parts": b.get("parts") or [],
-              "dropped": b.get("dropped") or []},
+              "dropped": b.get("dropped") or [], "schema": b.get("schema", 0)},
         "aaaa_source": {"dns": "getaddrinfo", "file": args.aaaa, "none": "引かない"}[mode],
         "restart": info,
         "history": hist,
@@ -765,6 +793,10 @@ def render(d, top):
     p()
     p(f"- 取得 {stamp(a['taken_at'])} → {stamp(b['taken_at'])}"
       + (f" (窓 {d['restart']['wall_secs'] / 3600:.1f} 時間)" if d["restart"]["wall_secs"] else ""))
+    # 応答の形の版 (T14.49)。0 = `schema` を持たない古い出力 (推測で読んだ)
+    p(f"- 形の版 `schema` {a.get('schema', 0)} → {b.get('schema', 0)}"
+      + ("" if a.get("schema") and b.get("schema")
+         else " (0 = 版を持たない古い出力。鍵の有無から推測して読んだ)"))
     for who in (a, b):
         if who["dropped"]:
             p(f"- **4 MiB を越えて落とした部分** (`{who['label']}`): "

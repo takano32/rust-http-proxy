@@ -7,6 +7,46 @@ use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 
+/// 応答の JSON の形の版 (T14.49)。**全エンドポイントの応答の先頭の鍵** `"schema"` に出る。
+///
+/// 読む道具 (`scripts/status-diff.py` `scripts/snapshot-diff.py` `scripts/check-dashboard.js`) は
+/// 「この JSON はどの版か」を `parts` の有無などで**推測**していた。先頭に版を書いておけば
+/// 推測が要らない。**形を変えた (鍵を消す・意味を変える・入れ子を変える) ときは +1** し、
+/// README の「応答の形の版 (`schema`) の履歴」の表に 1 行足すこと
+/// (**鍵を末尾に足すだけなら上げない** — 読む側は知らない鍵を無視できる)。
+///
+/// 版 1 = 2026-09-16 の Phase 14 の形。定義はこの 1 か所だけで、`crates/endpoints` は
+/// ここを読む。
+pub const SCHEMA: u32 = 1;
+
+/// JSON を組み始める先頭 (`{` の代わりにこれを書く = `{"schema":1,`)。
+///
+/// 組み立ての熱くない経路でも、要求ごとに整形し直す理由が無いので定数にしてある。
+/// [`SCHEMA`] と食い違ったら**ビルドが止まる** (下の `const _`)。
+pub const SCHEMA_HEAD: &str = "{\"schema\":1,";
+
+// `SCHEMA` と `SCHEMA_HEAD` が食い違わないように (片方だけ直したらここで止まる)。
+// 版が 2 桁になったらこの検査ごと書き換えること
+const _: () = assert!(
+    SCHEMA < 10 && SCHEMA_HEAD.as_bytes()[10] == b'0' + SCHEMA as u8,
+    "SCHEMA と SCHEMA_HEAD が食い違っている"
+);
+
+/// **入れ子にも使う JSON を、応答そのものとして返すとき**に先頭へ版を足す (T14.49)。
+///
+/// 使うのは `/blocklist` (引数なしなら `/status` の `blocklist` と同じ状態をそのまま返す)
+/// のように、1 つの関数の出力が入れ子と応答の両方になる口だけ。**入れ子の側は版を持たない**
+/// (版を持つのは応答の 1 番外側と、`/snapshot` の各部 = それぞれの口の出力そのもの)。
+pub fn with_schema(body: &str) -> String {
+    match body.strip_prefix('{') {
+        // `{}` (空) は `{"schema":N}` に (末尾の `,` を残さない)
+        Some("}") => format!("{{\"schema\":{}}}", SCHEMA),
+        Some(rest) => format!("{}{}", SCHEMA_HEAD, rest),
+        // `{` で始まらないもの (`null` など) は触らない
+        None => body.to_string(),
+    }
+}
+
 /// ホスト別に数える結果の分類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostOutcome {
@@ -1792,7 +1832,8 @@ impl Metrics {
             .collect();
         format!(
             concat!(
-                "{{\"status\":\"ok\",\"version\":\"{}\",\"uptime_secs\":{},\"total_requests\":{},",
+                // 応答の形の版は**いちばん先頭の鍵** (T14.49)。読む道具が先頭 64 バイトで分岐できる
+                "{{\"schema\":{},\"status\":\"ok\",\"version\":\"{}\",\"uptime_secs\":{},\"total_requests\":{},",
                 // 窓の目印 (T12.4 (4)): `since_start_secs` から下は起動から、
                 // `restored_since` は `hosts[]` / `clients[]` が何時からの通算か (epoch 秒、0 = 無し)
                 "\"since_start_secs\":{},\"restored_since\":{},",
@@ -1815,6 +1856,7 @@ impl Metrics {
                 "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
                 "\"rejected_requests\":{},\"sni_mismatches\":{}}}"
             ),
+            SCHEMA,
             crate::json::escape(extra.version),
             uptime,
             requests,
