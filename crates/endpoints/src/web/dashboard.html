@@ -76,6 +76,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
     <div class="card"><h2>転送 / 秒</h2><div class="kpi" id="bps">–</div><div class="hint" id="bytestotal"></div></div>
     <div class="card"><h2>CONNECT 確立 p50 <span class="tag" id="connp50tag">直近 5 分</span></h2><div class="kpi" id="connp50">–</div><div class="hint" id="conndetail"></div></div>
     <div class="card"><h2>名前解決 <span class="tag">通算</span></h2><div class="kpi" id="dnsmiss">–</div><div class="hint" id="dnsdetail"></div></div>
+    <div class="card" id="slocard" hidden><h2>今日の SLO <span class="tag" id="slotag">UTC</span></h2><div class="kpi" id="slokpi">–</div><div class="hint" id="slodetail"></div></div>
     <div class="card"><h2>接続中</h2><div class="kpi" id="active">–</div><div class="hint" id="connlimit"></div><div class="hint" id="threads"></div><div class="hint" id="origins"></div></div>
     <div class="card"><h2>キャッシュ命中率</h2><div class="kpi" id="hitratio">–</div><div class="hint" id="hitdetail"></div></div>
     <div class="card"><h2>メモリキャッシュ</h2><div class="kpi" id="memkpi">–</div><div class="bar"><i id="membar"></i></div><div class="hint" id="memhint"></div></div>
@@ -591,6 +592,34 @@ function connectKpi(s,w,bounds){
   return{exact:false,label:'直近 5 分',p50:p50,p90:null,p99:null,max:w.max,n:w.count,window:null,
     detail:w.count+' 本 · p95 '+fmtMs(p95)+' · 平均 '+fmtMs(w.sum/w.count)+' (区間の補間)'};
 }
+// KPI「今日の SLO」に出す値を選ぶ (T14.50)。`j` は `/slo` の応答。**DOM には触らない**
+// (check-dashboard.js が動かす)。`/slo` を持たない版では `null` を返し、カードごと出さない。
+function sloKpi(j){
+  if(!j||!j.today||!j.names)return null;
+  var t=j.today,th=j.thresholds||{},miss=t.misses||[],names=j.names,worst=null;
+  for(var i=0;i<names.length;i++){if(miss[i]>0&&(worst===null||miss[i]>miss[worst]))worst=i}
+  var parts=[];
+  if(t.judged)parts.push('達成 '+fmtNum(t.met)+' / 判定 '+fmtNum(t.judged)+' 標本 ('+(j.sample_secs||5)+' 秒ごと)');
+  else parts.push('今日はまだ判定できた標本がありません');
+  if(worst!==null)parts.push('外れの最多 '+names[worst]+' '+fmtNum(miss[worst])+' 本 (閾 '+th[names[worst]]+')');
+  var bs=j.breaches||[],last=bs.length?bs[bs.length-1]:null;
+  if(last)parts.push('直近の外れ '+last.from_hour+'〜'+last.to_hour);
+  parts.push('直近 '+j.days+' 日 '+(j.ratio==null?'–':(j.ratio*100).toFixed(2)+'%'));
+  return{date:t.date,judged:t.judged,met:t.met,pct:t.ratio==null?null:t.ratio*100,
+    overall:j.ratio==null?null:j.ratio*100,days:j.days,worst:worst===null?null:names[worst],
+    breaches:bs.length,detail:parts.join(' · ')};
+}
+function renderSlo(j){
+  var k=sloKpi(j);
+  if(!k){$('slocard').hidden=true;return}
+  $('slocard').hidden=false;
+  $('slotag').textContent=k.date||'UTC';
+  $('slokpi').textContent=k.pct==null?'–':k.pct.toFixed(1)+'%';
+  // 100% 未満は黄、95% 未満は赤 (閾を外した時間があることを目で分かるように)
+  $('slokpi').style.color=k.pct==null?'':k.pct>=100?'':k.pct>=95?'var(--warn)':'var(--bad)';
+  $('slokpi').title='PROXY_SLO の 4 つの閾を 5 秒の標本ごとに判定し、4 つとも満たした標本の割合です (UTC の今日)';
+  $('slodetail').textContent=k.detail;
+}
 function renderStatus(s){
   last=s;var c=s.cache||{};
   $('version').textContent=s.version||'';
@@ -731,6 +760,10 @@ function pollStatus(){if($('pause').checked)return;fetchJson('/status').then(fun
 // プロキシ側の仕事が 2 倍になる。並べ替えるだけの応答でも 50 ホストぶんを組み立てる)
 function pollBad(){if($('pause').checked)return;
   ['errors','dns'].forEach(function(k,i){fetchJson('/status?sort='+k).then(function(s){badLists[i]=s.hosts||[];renderBad()}).catch(function(){})})}
+// SLO の達成率は **30 秒に 1 回** (1 日の達成率は 5 秒では動かない。T14.50)。
+// `/slo` を持たない版では 404 になるので、カードを隠したままにする
+function pollSlo(){if($('pause').checked)return;
+  fetchJson('/slo?days=7').then(renderSlo).catch(function(){$('slocard').hidden=true})}
 // 個票は 5 秒ごとに 2 本 (`/errors` は 20 件、`/connections` は今の一覧。T13.4)
 function pollRecent(){if($('pause').checked)return;
   fetchJson('/errors?n=20').then(renderErrors).catch(function(){});
@@ -751,7 +784,7 @@ $('btn-purge').addEventListener('click',function(){var u=$('url').value.trim();i
 $('btn-purge-all').addEventListener('click',function(){if(!confirm('キャッシュを全部消します。よろしいですか？'))return;
   fetchJson('/purge?all=1').then(function(j){$('out').textContent=JSON.stringify(j,null,2);pollStatus()}).catch(function(e){$('out').textContent=e.message})});
 window.addEventListener('resize',redraw);
-pollStatus();pollHistory();pollBad();pollRecent();pollProfile();setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);setInterval(pollRecent,5000);setInterval(pollProfile,5000);
+pollStatus();pollHistory();pollBad();pollRecent();pollProfile();pollSlo();setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);setInterval(pollRecent,5000);setInterval(pollProfile,5000);setInterval(pollSlo,30000);
 })();
 </script>
 </body>
