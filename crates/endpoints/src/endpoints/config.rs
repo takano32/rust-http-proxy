@@ -110,6 +110,7 @@ mod tests {
             host: None,
             pac_direct: &[],
             lite: false,
+            readonly: false,
             version: "0.1.0+test",
             concurrency: &concurrency,
         };
