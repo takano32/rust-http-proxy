@@ -496,6 +496,20 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     寿命と預かり秒とバイトの合計が並びます。**標本 (`samples`) の形と読み方は変えていません** (別の配列です)。
     5 秒 × 720 と 60 秒 × 1,440 を**メモリだけ**に持ちます (`res=3600` は `null`、状態ファイルには書きません。
     標本 1 本の余白が 4 B しか無いため)。件数 0 の窓は出しません (行の先頭に窓の始まりの時刻があります)。
+  - `/history?since=<epoch>|restart&until=<epoch>&summary=1` は、**その期間を畳んだ 1 行だけ**を返します (T14.24)。
+    `{"from","to","interval_secs","first_t","last_t","samples","burst_samples","normal_hours_only","connects",`
+    `"p50_ms","p95_ms","avg_ms","max_ms","forwards","forward_p50_ms","forward_p95_ms","forward_avg_ms","forward_max_ms",`
+    `"dns_misses","dns_miss_per_connect","dns_miss_avg_ms","errors","errors_by_cause","causes","active_max"}` で、
+    **標本そのものは返しません** (応答は 500 B 前後、必ず 4 KiB 以下)。調査で「起動から」「前のデプロイと比べる」を
+    見るのに `/history` を丸ごと (284 KB) 取って手元で集計していたのが 1 要求で済みます。
+    - `since=restart` は `/status` の `since_start_secs` と同じ**起動時刻**から (読み戻した再起動前の標本は入りません)。
+      `since` を書かなければ残っているいちばん古い標本から、`until` を書かなければ今までです。
+    - `normal_hours_only=1` を付けると **1 時間 300 本以上の標本 (バースト) を外した「平常時」**だけを畳みます
+      (T14.0 の定義。外した本数は `burst_samples`)。**5 秒の窓では閾が 1 本**になり確立のあった標本が全部外れるので、
+      平常時を見るのは 60 秒か 1 時間の窓で。
+    - 解像度は `?res=` が無ければ**期間の長さ**で選びます (1 時間までは 5 秒、1 日までは 60 秒、それ以上は 1 時間の窓)。
+    - `p50_ms` / `p95_ms` は**その期間の 12 段のヒストグラムを足し合わせてから**区間内を線形に補間した値
+      (`scripts/snapshot-diff.py` が手元で集計するのと同じ求め方なので、同じ期間を切れば同じ数字が出ます)。
     `/blocklist?host=<h>` でブロックリストの判定、
     `&action=block|allow|clear[&ttl_secs=N]` で一時的な上書き (既定 24 時間、`0` で無期限。状態ファイルに 256 件まで残る)
   - **`/profile?res=5|60`** で「**1 要求の時間がどの段階に消えたか**」「**CPU がどの役割のスレッドで何をして使われたか**」
@@ -1178,6 +1192,7 @@ curl "http://127.0.0.1:8080/bursts?n=50"                # 山が立った瞬間�
 curl "http://127.0.0.1:8080/events?n=200"               # 起動・再読込・圧迫などの出来事 (新しい順)
 curl "http://127.0.0.1:8080/events?since=$(( $(date +%s) - 86400 ))"  # 直近 1 日の出来事だけ
 curl "http://127.0.0.1:8080/history?res=5"              # 時系列 + 閉じた接続の分布 (closed)
+curl "http://127.0.0.1:8080/history?since=restart&summary=1&normal_hours_only=1"  # 起動からの要約 1 行
 curl "http://127.0.0.1:8080/daily?n=365"                # 1 日 1 行の要約 (永久に残る。古い順)
 curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
 
@@ -1201,7 +1216,9 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 接続数・スレッド数・記述子数 (`active` / `threads` / `fds`) はゲージで、粗い解像度へ畳むときは平均と
 **最大** (`active_max` / `threads_max` / `fds_max`) の両方を残します (平均に畳むと山が消えるため)。
 `/history` の応答には**別の配列** `"kernel":{"keys":[...],"samples":[[...]]}` が付きます
-(上の「カーネルと cgroup の窓」。`res=3600` は `null` = この解像度の窓は持っていません)。ブラウザの HTTP プロキシにこのプロキシを設定した状態で `http://ホスト:ポート/dashboard` を開くと要求は
+(上の「カーネルと cgroup の窓」。`res=3600` は `null` = この解像度の窓は持っていません)。
+`?summary=1` を付けると**標本を返さず、その期間を畳んだ 1 行**になります (上の `/history?...&summary=1`。T14.24)。
+ブラウザの HTTP プロキシにこのプロキシを設定した状態で `http://ホスト:ポート/dashboard` を開くと要求は
 絶対形式で届きますが、ポートが自分の待ち受けポートなら自分宛てとして応答します (自分へ転送してループしません)。
 
 **自分宛てかどうかはポートだけで決めます**: 絶対形式 (`GET http://host:PORT/status`) は URL の、

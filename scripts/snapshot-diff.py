@@ -366,6 +366,69 @@ def history_split(a, b, info, burst):
     }
 
 
+# --------------------------------------------- (2b) サーバー側の要約 (`?summary=1`)
+
+def summary_url(since, until, res, normal=True):
+    """同じ期間・同じ切り方をサーバーに畳ませる URL (T14.24)。
+
+    この道具が §2 でやっている集計 (1 時間 300 本以上の標本を外して 12 段の
+    ヒストグラムを足す) と**同じ求め方**がプロキシ側に入っているので、
+    `/history` を丸ごと取らずに 1 要求で同じ数字が取れる。
+    """
+    q = f"/history?summary=1&since={int(since or 0)}"
+    if until:
+        q += f"&until={int(until)}"
+    if res:
+        q += f"&res={int(res)}"
+    if normal:
+        q += "&normal_hours_only=1"
+    return q
+
+
+def load_summary(src):
+    """`/history?...&summary=1` の応答を読む (ファイルか `http://…`)。
+
+    **手元の集計は残す** (これは突き合わせ用)。読めなければ `{"error": …}` を返す。
+    """
+    if not src:
+        return None
+    try:
+        if src.startswith(("http://", "https://")):
+            import urllib.request
+            with urllib.request.urlopen(src, timeout=10) as r:  # noqa: S310
+                return json.loads(r.read().decode("utf-8"))
+        return load(src)
+    except Exception as e:                                       # noqa: BLE001
+        return {"error": f"{type(e).__name__}: {e}", "source": src}
+
+
+def summary_check(server, local):
+    """サーバー側の要約と手元の集計を並べる (差が出たら**どちらかの窓が違う**)。"""
+    if not server or "error" in server or not local:
+        return None
+    pairs = [
+        ("標本", "samples", local.get("samples"), 0),
+        ("外した標本", "burst_samples", local.get("burst_samples"), 0),
+        ("CONNECT 確立", "connects", local.get("connects"), 0),
+        ("p50 (ms)", "p50_ms", local.get("connect_p50"), 1),
+        ("p95 (ms)", "p95_ms", local.get("connect_p95"), 1),
+        ("ミス/接続", "dns_miss_per_connect", local.get("dns_per_connect"), 2),
+        ("ミス 1 回 (ms)", "dns_miss_avg_ms", local.get("ms_per_miss"), 1),
+        ("エラー", "errors", local.get("errors"), 0),
+        ("山", "active_max", local.get("active_max"), 0),
+    ]
+    rows = []
+    for label, key, mine, digits in pairs:
+        theirs = server.get(key)
+        same = None
+        if theirs is not None and mine is not None:
+            same = round(float(theirs), digits) == round(float(mine), digits)
+        rows.append({"label": label, "key": key, "server": theirs, "local": mine, "same": same})
+    return {"rows": rows, "from": server.get("from"), "to": server.get("to"),
+            "normal_hours_only": server.get("normal_hours_only"),
+            "interval_secs": server.get("interval_secs")}
+
+
 # ---------------------------------------------------------------- (3) ホスト別
 
 def host_rows(snap):
@@ -680,6 +743,13 @@ def build(a, b, args):
         "bursts": bursts_info(b, hist),
     }
     out["errors"] = errors_info(a, b, hosts, hist)
+    # サーバー側の要約 (T14.24)。`--summary` があれば読んで手元の集計と並べる
+    if hist:
+        out["summary_url"] = summary_url(info["boundary"], b["taken_at"],
+                                         int(hist["res"]), True)
+        server = load_summary(getattr(args, "summary", None))
+        out["summary"] = server
+        out["summary_check"] = summary_check(server, hist["after"])
     if args.criteria:
         out["criteria"] = judge(args.criteria, hist, hosts, majors, status_b, overload,
                                 CRITERIA[args.criteria])
@@ -767,6 +837,26 @@ def render(d, top):
         p(f"| 山 (`active_max`) / エラー | {n(bef_all['active_max'])} / {n(bef_all['errors'])} 件 "
           f"| {n(aft_all['active_max'])} / {n(aft_all['errors'])} 件 | 同上 |")
         p()
+        if d.get("summary_url"):
+            p(f"「後」の列と同じ数字は**サーバー側で 1 要求**でも取れる (T14.24): "
+              f"`curl \"http://PROXY{d['summary_url']}\"` "
+              "(`since=restart` なら起動から。`/history` を丸ごと取らなくてよい)")
+            p()
+        sc = d.get("summary_check")
+        if d.get("summary") and "error" in d["summary"]:
+            p(f"**`--summary` が読めなかった** (`{d['summary']['error']}`)。手元の集計だけで読む。")
+            p()
+        elif sc:
+            p(f"サーバー側の要約 (`?summary=1`、{stamp(sc['from'])} → {stamp(sc['to'])}、"
+              f"{sc['interval_secs']} 秒の窓、平常時 {'あり' if sc['normal_hours_only'] else 'なし'}) "
+              "と手元の集計を並べる (**窓が同じなら一致する**)。")
+            p()
+            p("| 項目 | サーバー (`?summary=1`) | 手元 (この道具) | |")
+            p("|---|---|---|---|")
+            for r in sc["rows"]:
+                mark = "" if r["same"] is None else ("一致" if r["same"] else "**違う**")
+                p(f"| {r['label']} | {n(r['server'])} | {n(r['local'])} | {mark} |")
+            p()
 
     # --- 3
     hs = d["hosts"]
@@ -944,6 +1034,9 @@ def parser():
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst", type=int, default=BURST_PER_HOUR, metavar="N",
                    help=f"平常時の閾 (1 時間の本数。既定 {BURST_PER_HOUR})")
+    p.add_argument("--summary", metavar="SRC",
+                   help="`/history?...&summary=1` の応答 (ファイルか http:// の URL) を読んで "
+                        "手元の集計と並べる (T14.24。手元の集計はそのまま残る)")
     p.add_argument("--major-hosts", metavar="a,b,c",
                    help="主要ホストを名指しする (既定はその間の要求数の上位 3)")
     return p
