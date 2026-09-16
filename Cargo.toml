@@ -18,6 +18,11 @@ members = [
     "crates/cache",
     "crates/config",
     "crates/selfbench",
+    "crates/metrics-types",
+    "crates/metrics-recent",
+    "crates/metrics-window",
+    "crates/metrics-core",
+    "crates/metrics-watch",
     "crates/metrics",
     "crates/blocklist",
     "crates/reload",
@@ -41,7 +46,7 @@ edition = "2024"
 [dependencies]
 # 自分のコードを層ごとに分けたもの。**外部クレートは 1 つも使わない** (すべて std のみ)。
 # 1 クレートが大きいと rustc がまとめて抱えてビルドの最大 RSS が上がるため
-# (実測: 18,276 行 1 クレートで 330 MB、動作環境の上限は 200 MB = SERVER_MEMORY 256 MiB)。
+# (実測: 18,276 行 1 クレートで 330 MB、動作環境の上限は 180 MB = SERVER_MEMORY 256 MiB)。
 proxy-base = { path = "crates/base" }
 proxy-blocklist = { path = "crates/blocklist" }
 proxy-cache = { path = "crates/cache" }
@@ -65,7 +70,7 @@ proxy-workers = { path = "crates/workers" }
 # クレートを 26 に割っても最終リンクは全部を抱えるので、そこは小さくならなかった。
 #
 # いまのこのプロファイルの実測 (2026-09-08。TASKS.md の §2 が正で、ここはその写し):
-#   手元の cgroup で通る最小 99 MB (98 MB は落ちる。上限 200 MB に対して 101 MB の余裕。T10.9 / T10.11)、
+#   手元の cgroup で通る最小 135 MB (130 MB は落ちる。上限 180 MB に対して 1.33 倍の余裕。T14.55)、
 #   バイナリ 1,381,872 B、CPU 41.4 us/要求 (forward 8 並列。--lite + ログ warn、
 #   プロキシ cpu4-7 / ベンチ cpu0-3 に固定、本文 1 KiB、10 秒 × 3 回の中央値。T10.11)。
 #   通る最小を決めているのはいちばん大きいクレート (proxy-http の RssAnon 85.5 MB) + 14 MB (T10.9)。
@@ -75,7 +80,7 @@ proxy-workers = { path = "crates/workers" }
 #   lto = false → 100 MB、38.7 秒、1,316,336 B、CPU 50.19 us/要求  ← これ
 #   lto = "thin"→ 170 MB、55.4 秒、1,316,328 B、CPU 50.09 us/要求 (-0.2%、ぶれの中)
 #   lto = "fat" → 350 MB、48.8 秒、1,185,248 B、CPU 47.95 us/要求 (-4.5%)
-# fat は効くが上限 200 MB の 1.75 倍。thin は 170 MB 払って何も返ってこない
+# fat は効くが上限 180 MB の約 2 倍。thin は 170 MB 払って何も返ってこない
 # (バイナリは 8 バイトしか変わらない)。よって切ったままにする (T9.1)。
 #
 # 配布するバイナリは下の dist プロファイル (fat LTO) で作る。

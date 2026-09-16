@@ -123,6 +123,16 @@ fn test_integration_two_hosts_get_two_series_with_counts() {
     // 上位に入ってから通したぶんが標本になる
     get_n(proxy_port, origin_a, 3);
     get_n(proxy_port, origin_b, 2);
+    // **並び順は `hour_requests` で決まり、それを更新するのは履歴スレッドの窓送り**なので、
+    // 通した直後は両方 1 のまま (同点) で、同点のときはホスト名 (= ランダムなポート) 順になる。
+    // 畳まれて a > b になるまで待つ (T14.55 で flake を直した)
+    wait_until(
+        || {
+            let v = metrics.host_series(None, 16);
+            v.series.len() == 2 && v.series[0].hour_requests > v.series[1].hour_requests
+        },
+        "直近の窓の要求数が畳まれて a > b になる",
+    );
 
     let json = endpoint_json(proxy_port, "/hosts/series?top=16");
     assert!(json.len() <= MAX_BODY, "{} B", json.len());

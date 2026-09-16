@@ -409,9 +409,12 @@ pub fn poll(cache: &crate::cache::Cache) {
 }
 
 /// リングは 1 本きり (静的) なので、テストはこの鍵で 1 つずつ通す
-/// ([`crate::anomaly`] のテストもここに書くので、モジュールの外に出してある)。
-#[cfg(test)]
-pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+/// (`anomaly` / `snapshots` のテストも同じリングを使うので、モジュールの外に出してある)。
+///
+/// **`#[cfg(test)]` を外して `pub` にしてあるのは、上の層 (`proxy-metrics-watch`) の
+/// テストから引くため** (T14.55 でクレートを割った。別のクレートのテストからは
+/// `cfg(test)` の中の物が見えない)。実体は `Mutex<()>` 1 つで、使うのはテストだけ。
+pub static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {

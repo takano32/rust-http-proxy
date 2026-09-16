@@ -1090,11 +1090,22 @@ mod tests {
         // `SO_REUSEADDR` は「TIME_WAIT のポートを使える」だけで、生きている待ち受けとは共有しない
         let open_fds = || std::fs::read_dir("/proc/self/fd").unwrap().count();
         let before = open_fds();
-        for _ in 0..8 {
+        const TRIES: usize = 64;
+        for _ in 0..TRIES {
             let err = listen_socket(addr, 128).expect_err("使用中のポートに bind できてしまった");
             assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{:?}", err);
         }
-        assert_eq!(open_fds(), before, "失敗した 8 回ぶんの記述子が残っている");
+        // `/proc/self/fd` は**プロセス全体**なので、同じバイナリで並行に走っている別のテストが
+        // 開け閉てした記述子のぶれ (±数本) が乗る。漏れていれば 64 本増えるので、
+        // 幅を持たせても「漏らしていない」ことは見分けられる (T14.55 で flake を直した)
+        let after = open_fds();
+        assert!(
+            after < before + TRIES / 8,
+            "失敗した {} 回ぶんの記述子が残っている ({} -> {})",
+            TRIES,
+            before,
+            after
+        );
     }
 
     /// 消えたクライアントを見つけるための TCP keepalive が、当てたとおりに

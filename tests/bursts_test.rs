@@ -278,7 +278,12 @@ fn test_integration_snapshot_includes_the_bursts() {
         "{}",
         &parts[..200]
     );
-    assert!(json.contains("\"bursts\":{\"bursts\":["), "{}", json);
+    // 応答の先頭の鍵は `schema` (T14.49) なので、`bursts` の**中**に配列があることを見る
+    assert!(
+        json.contains("\"bursts\":{\"schema\":1,\"bursts\":["),
+        "{}",
+        json
+    );
 }
 
 /// `--lite` は個票を 1 つも記録しないので写真も撮らない。

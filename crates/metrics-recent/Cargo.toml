@@ -1,0 +1,12 @@
+[package]
+name = "proxy-metrics-recent"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proxy-metrics-types = { path = "../metrics-types" }
+proxy-cache = { path = "../cache" }
+proxy-selfbench = { path = "../selfbench" }

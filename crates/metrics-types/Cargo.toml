@@ -1,0 +1,13 @@
+[package]
+name = "proxy-metrics-types"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proxy-base = { path = "../base" }
+proxy-net = { path = "../net" }
+proxy-rrd = { path = "../rrd" }
+proxy-sysinfo = { path = "../sysinfo" }

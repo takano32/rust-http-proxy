@@ -358,13 +358,21 @@ pub fn status_json(proxy_port: u16) -> String {
 ///
 /// オリジン形式が自分宛てになるのは `Host` のポートが待ち受けと同じときだけ (T12.3)。
 pub fn endpoint_json(proxy_port: u16, path: &str) -> String {
-    let out = raw_get(
-        proxy_port,
-        &format!(
-            "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
-            path, proxy_port
-        ),
+    let req = format!(
+        "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        path, proxy_port
     );
+    // **重い口は 1 本ずつ** (T14.51) なので、同じテストバイナリで並行に走っている別のテストが
+    // `/snapshot` や `/explain` を引いている間は `503 {"error":"busy"}` が返る。
+    // 実装の誤りではないので、`wait_until` と同じ幅だけ待って引き直す (T14.55)
+    let mut out = raw_get(proxy_port, &req);
+    for _ in 0..500 {
+        if !(out.starts_with("HTTP/1.1 503 ") && out.contains("\"busy\"")) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+        out = raw_get(proxy_port, &req);
+    }
     assert!(out.starts_with("HTTP/1.1 200 "), "{} -> {}", path, out);
     match out.split_once("\r\n\r\n") {
         Some((_, body)) => body.to_string(),

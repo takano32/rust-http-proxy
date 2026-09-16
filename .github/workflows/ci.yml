@@ -11,7 +11,7 @@ on:
       ladder:
         description: "試す上限 (MB) を空白区切りで小さい順に。最初に通った値が答え"
         required: false
-        default: "90 95 100 105 110 115 120 130 150 200"
+        default: "100 110 120 130 135 140 150 160 180"
   # 週 1 回 (月曜 03:17 UTC = 12:17 JST)。放っておくと値が古くなるため。
   # 毎時 0 分は GitHub 側が混んで待たされるので 17 分にずらしてある
   schedule:
@@ -48,14 +48,14 @@ jobs:
       - run: cargo build --release -p proxy-bench
 
       # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る (§0 の関門)。
-      # 200 MB の cgroup (systemd-run --scope -p MemoryMax=200M) の中で実際に
+      # 180 MB の cgroup (systemd-run --scope -p MemoryMax=180M) の中で実際に
       # リリースビルドを回し、rustc が OOM killer に落とされたら失敗する。
       # **これは毎回回す** (通るかどうかは push ごとに知りたい)。
       # 余裕がいくつあるか = 通る最小の上限は下の build-memory-find で測る
       - name: Build memory
         run: |
           cargo clean
-          ./scripts/build-memory.sh 200
+          ./scripts/build-memory.sh 180
 
       # ベンチは数字を残すだけ (閾値では落とさない。CI の機械は揺れるため)
       - name: Benchmark
@@ -157,11 +157,11 @@ jobs:
 
   # ビルドが通る最小のメモリを CI の機械で実測する (T11.7)。
   #
-  # **なぜ push ごとに回さないか**: 上の `Build memory` が §0 の条件 (200 MB で通ること) を
+  # **なぜ push ごとに回さないか**: 上の `Build memory` が §0 の条件 (180 MB で通ること) を
   # 毎回確かめており、守りたいことはそれで足りている。ここで測るのは「余裕がいくつあるか」で、
   # コミット単位で追う必要は無い。段ごとに `cargo clean` からのビルドが 1 回要るので
   # (runner で 1 段 10〜16 秒、既定の 10 段で 2〜3 分)、刻むほど毎回の CI が延びる。
-  # 値は機械の状態で 1 MB 単位にぶれる (境目は薄い。手元では 98 MB が落ちて 99 MB が通る) ので、
+  # 値は機械の状態で 1 MB 単位にぶれる (境目は薄い。手元では 130 MB が落ちて 135 MB が通る) ので、
   # これを push の関門にすると偽陽性で止まる。
   #
   # **なぜ手回し (workflow_dispatch) と週 1 (schedule) の両方か**: 手回しは
@@ -211,7 +211,7 @@ jobs:
         env:
           # schedule のときは github.event.inputs が無いので既定の段になる
           # (`inputs` 文脈は手回しでしか無いので `github.event.inputs` の方を使う)
-          LADDER: ${{ github.event.inputs.ladder || '90 95 100 105 110 115 120 130 150 200' }}
+          LADDER: ${{ github.event.inputs.ladder || '100 110 120 130 135 140 150 160 180' }}
         run: |
           case "$LADDER" in
             "" | *[!0-9\ ]*)

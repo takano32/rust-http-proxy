@@ -5,7 +5,7 @@
 //! - 粗い解像度は細かい標本から作る: 累計カウンタは窓の最後の値、ゲージ (接続数・使用量) は平均、
 //!   **ゲージの山は最大値** (`active_max` / `threads_max` / `fds_max`)、
 //!   **区間の値** (応答時間の分布・エラー・名前解決) は足し合わせ
-//! - 状態ファイル ([`crate::persist`]) があれば各解像度をそこにも書き、起動時に読み戻す
+//! - 状態ファイル (`persist`。1 つ上の層) があれば各解像度をそこにも書き、起動時に読み戻す
 //!
 //! **累計と区間が混ざっている**のは意図したもの (T12.4 (3))。要求数やバイト数は累計を
 //! 置いてブラウザ側で差分を取る (再起動をまたいでも段差が 1 つ出るだけ) が、応答時間の分布は
@@ -14,153 +14,14 @@
 use crate::sync::LockExt;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
 
-use crate::cache::{Cache, now_epoch};
-use crate::metrics::Metrics;
 use crate::recent::ClosedCounts;
 use crate::rrd::{Dec, Enc};
 
-/// 記録の間隔。
-pub const INTERVAL: Duration = Duration::from_secs(5);
-
-/// **メモリ上の** 5 秒のリングが残す本数 (5 秒 × 4,320 = **6 時間**。T14.32)。
-///
-/// 1 時間 (720 本) だったのを 6 時間にしたのは、バーストが数時間続く (T14.0 の 09-11 は
-/// 17〜23 時) のに 5 秒の解像度が 1 時間しか無く、翌朝には 60 秒に畳んだ鈍った山
-/// (`active_max` は最大で残るが p95 は足し合わせで丸くなる) しか読めなかったため。
-///
-/// **伸ばしたのはメモリだけ**: `.rrd` に書くのは今までどおり最新 720 本
-/// ([`crate::rrd::Layout`] の `history_fine` は 720 固定) で、読み戻した 720 本は
-/// このリングの末尾に入る。[`Sample`] 504 B × 4,320 = **2.08 MiB** (満杯のとき)。
-pub const CAPACITY: usize = 4320;
-
-/// 解像度 (秒) と**`.rrd` に書く本数**。
-///
-/// メモリ上の 5 秒のリングだけは [`CAPACITY`] (6 時間) まで伸びる (T14.32) ので、
-/// ここの 720 が効くのは **`.rrd` の領域**・**閉じた接続と転送の窓**
-/// ([`ClosedWindows`] / [`crate::transfer::TransferWindows`])・
-/// **`?res=` を書かないときの解像度の自動選択の閾** (1 時間までは 5 秒。[`summary::Params`])
-/// の 3 つ。メモリ上の本数が要るところは [`History::capacity`] を使うこと。
-pub const RESOLUTIONS: [(u64, usize); 3] = [(5, 720), (60, 1440), (3600, 720)];
-
-/// `/history?res=5` が `n=` を書かないときに返す本数 (T14.32)。
-///
-/// リングは 6 時間ぶん持つが、**既定の応答の大きさは今までどおり 1 時間ぶん**にする
-/// (ダッシュボードも `/snapshot` も `scripts/` も既定で読むため)。遡りたいときだけ
-/// `?res=5&n=4320` と書く。
-pub const DEFAULT_N: usize = RESOLUTIONS[0].1;
-
-/// 履歴の窓ごとの応答時間ヒストグラムの区間 (ms)。**12 段** (T12.4 (3))。
-///
-/// ホスト別の [`crate::metrics::LATENCY_BOUNDS_MS`] (24 段) より粗いのは、
-/// こちらは 2,880 標本 × 2 系列ぶんファイルに載るため。分位点は区間内を補間し、
-/// **その窓で観測した最大値で頭打ちにする** (件数が少ないとき区間の上端が出ないように)。
-pub const WINDOW_BOUNDS_MS: [u64; 12] = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
-
-/// 「その区間の」応答時間 (件数・合計・最大・区間ごとの件数)。累計ではない。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Window {
-    pub count: u64,
-    pub ms_sum: u64,
-    pub ms_max: u64,
-    pub buckets: [u64; WINDOW_BOUNDS_MS.len() + 1],
-}
-
-impl Window {
-    pub fn observe(&mut self, ms: u64) {
-        self.count += 1;
-        self.ms_sum += ms;
-        self.ms_max = self.ms_max.max(ms);
-        let idx = WINDOW_BOUNDS_MS
-            .iter()
-            .position(|&b| ms <= b)
-            .unwrap_or(WINDOW_BOUNDS_MS.len());
-        self.buckets[idx] += 1;
-    }
-
-    /// 粗い解像度へ畳むときは足し合わせる (区間の値なので平均でも最後の値でもない)。
-    pub fn merge(&mut self, o: &Window) {
-        self.count += o.count;
-        self.ms_sum += o.ms_sum;
-        self.ms_max = self.ms_max.max(o.ms_max);
-        for (a, b) in self.buckets.iter_mut().zip(o.buckets.iter()) {
-            *a += *b;
-        }
-    }
-
-    pub fn avg_ms(&self) -> f64 {
-        if self.count == 0 {
-            0.0
-        } else {
-            self.ms_sum as f64 / self.count as f64
-        }
-    }
-
-    /// 区間内を線形に補間した分位点 (ms)。最後の区間と、観測した最大値で頭打ち。
-    pub fn quantile_ms(&self, q: f64) -> f64 {
-        if self.count == 0 {
-            return 0.0;
-        }
-        let rank = (q.clamp(0.0, 1.0) * self.count as f64).max(1.0);
-        let mut seen = 0u64;
-        for (i, &n) in self.buckets.iter().enumerate() {
-            if n == 0 {
-                continue;
-            }
-            if (seen + n) as f64 >= rank {
-                let lo = if i == 0 {
-                    0.0
-                } else {
-                    WINDOW_BOUNDS_MS[i - 1] as f64
-                };
-                let hi = if i < WINDOW_BOUNDS_MS.len() {
-                    WINDOW_BOUNDS_MS[i] as f64
-                } else {
-                    (self.ms_max as f64).max(lo)
-                };
-                let frac = (rank - seen as f64) / n as f64;
-                return (lo + (hi - lo) * frac).min(self.ms_max as f64);
-            }
-            seen += n;
-        }
-        self.ms_max as f64
-    }
-
-    fn encode(&self, e: &mut Enc) {
-        e.u64(self.count).u64(self.ms_sum).u64(self.ms_max);
-        for b in self.buckets {
-            e.u64(b);
-        }
-    }
-
-    fn decode(d: &mut Dec<'_>) -> Window {
-        let mut w = Window {
-            count: d.u64(),
-            ms_sum: d.u64(),
-            ms_max: d.u64(),
-            ..Window::default()
-        };
-        for b in w.buckets.iter_mut() {
-            *b = d.u64();
-        }
-        w
-    }
-
-    fn push_json(&self, out: &mut String) {
-        let _ = write!(out, ",{},{},{},[", self.count, self.ms_sum, self.ms_max);
-        for (i, b) in self.buckets.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            let _ = write!(out, "{}", b);
-        }
-        out.push(']');
-    }
-}
+// 窓そのものと解像度は下の層 (`proxy-metrics-window`) に置いてある (T14.55)。
+// **今までの名前でここから引ける** (`crate::history::Window` / `RESOLUTIONS` …)。
+pub use crate::window::{CAPACITY, DEFAULT_N, INTERVAL, RESOLUTIONS, WINDOW_BOUNDS_MS, Window};
 
 /// 標本 1 本の**固定の欄の数** (この順で [`Sample::encode`] が並べる)。
 ///
@@ -265,45 +126,6 @@ pub const KEYS: [&str; 32] = [
 ];
 
 impl Sample {
-    pub fn take(metrics: &Metrics, cache: &Cache) -> Self {
-        let (mem_used, _) = cache.mem_usage();
-        let (disk_used, _) = cache.disk_usage();
-        let active = metrics.active_connections.load(Ordering::Relaxed);
-        let iv = metrics.take_interval();
-        // `/proc` を読むのは 5 秒の標本のときだけ (要求ごとには読まない)
-        let (threads, fds, max_fds) = process_counts();
-        // カーネルと cgroup の窓 (`/proc/net`・cgroup・PSI) もこの標本のときだけ進める (T14.12)
-        crate::kernel::sample(now_epoch());
-        Self {
-            t: now_epoch(),
-            requests: metrics.total_requests.load(Ordering::Relaxed),
-            bytes: metrics.bytes_forwarded.load(Ordering::Relaxed),
-            active,
-            hits: metrics.cache_hits.load(Ordering::Relaxed),
-            misses: metrics.cache_misses.load(Ordering::Relaxed),
-            stores: cache.stores.load(Ordering::Relaxed),
-            evictions: cache.evictions.load(Ordering::Relaxed),
-            mem_used,
-            mem_limit: cache.mem_capacity(),
-            disk_used,
-            disk_limit: cache.disk_capacity(),
-            rss: cache.snapshot().rss.unwrap_or(0),
-            connect: iv.connect,
-            forward: iv.forward,
-            errors: iv.errors,
-            errors_by_cause: iv.errors_by_cause,
-            dns_misses: iv.dns_misses,
-            dns_ms_sum: iv.dns_ms_sum,
-            threads,
-            fds,
-            max_fds,
-            active_max: active as u64,
-            threads_max: threads,
-            fds_max: fds,
-            evicted_idle: metrics.evicted_idle.load(Ordering::Relaxed),
-        }
-    }
-
     /// 1 標本を配列 1 行として書く ([`KEYS`] の順)。
     fn push_row(&self, out: &mut String) {
         let _ = write!(
@@ -476,14 +298,6 @@ impl Sample {
     }
 }
 
-/// プロセス全体のスレッド数 / 開いている記述子の数 / その上限。
-/// **5 秒の標本のときだけ**呼ぶこと (`/proc` を 2 つ読み、ディレクトリを 1 つ数える)。
-fn process_counts() -> (u64, u64, u64) {
-    let threads = crate::sysinfo::process_threads().unwrap_or(0);
-    let (fds, max_fds) = crate::sysinfo::process_fds().unwrap_or((0, 0));
-    (threads, fds, max_fds)
-}
-
 /// 閉じた接続の分布を残す**メモリ上の窓** (5 秒 × 720 と 60 秒 × 1,440。T14.6)。
 ///
 /// **`.rrd` の標本には足さない。** 標本 1 本の余白は 4 B しか残っていない (T14.2 (3)) ので、
@@ -491,7 +305,7 @@ fn process_counts() -> (u64, u64, u64) {
 /// どうやっても入らない。版を上げれば入るが、上げると統計が全部消える。
 /// **ここは再起動で消えてよい**個票と同じ扱い (T14.4 のリングと同じ方針)。
 ///
-/// 書くのは [`crate::metrics::Metrics::record_closed`] = 接続の終了で 1 回だけで、
+/// 書くのは `Metrics::record_closed` = 接続の終了で 1 回だけで、
 /// 窓を閉じるのは history スレッド ([`ClosedWindows::roll`]) — `/history` の標本と
 /// **同じ周期・同じ境目**で閉じるので、読む側は時刻で突き合わせられる。
 ///
@@ -821,80 +635,10 @@ impl History {
         out.push_str(&self.transfer.to_json_res(res));
         // 利用者の要求が無い時間帯の名前解決と TCP 接続 (T14.10)。**別の配列**に足す
         // ので、既存の `keys` / `samples` を読む側は 1 行も変えなくてよい
-        crate::canary::push_history_json(&mut out, res);
+        crate::canaryhist::push_history_json(&mut out, res);
         out.push('}');
         out
     }
-}
-
-/// 定期的に記録するスレッドを起動する。記録先は `metrics.history`、`store` があれば状態ファイルにも。
-pub fn spawn(
-    metrics: Arc<Metrics>,
-    cache: Arc<Cache>,
-    store: Option<Arc<crate::persist::Store>>,
-) -> JoinHandle<()> {
-    spawn_every(metrics, cache, store, INTERVAL)
-}
-
-/// 周期を指定して起こす版 (**結合テスト用**。本番は [`spawn`] = [`INTERVAL`])。
-///
-/// 山の写真 (T14.6) を撮るのがこのスレッドなので、テストで 5 秒待たずに
-/// 「越えた → 1 枚撮れた」を見るための口。
-pub fn spawn_every(
-    metrics: Arc<Metrics>,
-    cache: Arc<Cache>,
-    store: Option<Arc<crate::persist::Store>>,
-    interval: Duration,
-) -> JoinHandle<()> {
-    // 前に転送速度を控えた時刻 (T14.39)。1 回目は `None` = 控えるだけで速さは出さない
-    let mut swept: Option<Instant> = None;
-    let mut record = move |metrics: &Arc<Metrics>, cache: &Cache| {
-        // いまの転送速度 (`/connections` の `rate_bps`。T14.39)。全 slot の `bytes` を
-        // 控えて差分 ÷ この周期を書く。**書くのはこのスレッドだけ**で、接続の経路は 0 増
-        metrics
-            .conns
-            .update_rates(swept.map_or(0, |t: Instant| t.elapsed().as_millis() as u64));
-        swept = Some(Instant::now());
-        // 山の写真と、閉じた接続の分布の窓 (T14.6)。**標本より先に**撮るのは、
-        // 越えてから撮るまでを 1 周期より短くするため
-        metrics.take_burst_shot();
-        // 下の層 (IPv4 優先の切替・圧迫・バラスト) の変わり目を出来事に 1 件 (T14.11)
-        crate::events::poll(cache);
-        let now = crate::cache::now_epoch();
-        metrics.history.closed.roll(now);
-        // 速さと半閉じの窓も同じ境目で閉じる (`closed` と時刻で突き合わせる。T14.25)
-        metrics.history.transfer.roll(now);
-        // ホスト別の時系列の窓送りと上位 16 の入れ替え (T14.22)。**5 分の境目でだけ**動く
-        metrics.roll_host_series();
-        let sample = Sample::take(metrics, cache);
-        // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
-        crate::daily::tick(metrics, &sample);
-        // 同じ境目で前日ぶんの `/snapshot` を 1 ファイル残す (T14.34)。こちらも
-        // 書かない設定なら原子の読み 1 回で戻る (組むのは日付が変わったときだけ)
-        crate::snapshots::tick(cache, &sample);
-        let pushed = metrics.history.push(sample);
-        // 積んだあとに、直近 5 分が直近 1 時間の基準値から外れていないかを見る (T14.23)
-        crate::anomaly::check(metrics, &sample);
-        // 同じ標本を SLO の 4 つの閾に当て、時間ごとの達成率に 1 本足す (`/slo`。T14.50)
-        crate::slo::observe(&sample);
-        if let Some(st) = &store {
-            st.write_samples(&pushed);
-            st.write_recent(metrics);
-        }
-        // 利用者の要求が無い時間帯も待ちを測る (T14.10)。**ここでは測らない**
-        // (名前解決と接続は `canary` スレッド 1 本の仕事で、この周期は止めない)
-        crate::canary::tick(metrics);
-    };
-    record(&metrics, &cache);
-    thread::Builder::new()
-        .name("history".into())
-        .spawn(move || {
-            loop {
-                thread::sleep(interval);
-                record(&metrics, &cache);
-            }
-        })
-        .expect("spawn history thread")
 }
 
 #[cfg(test)]
