@@ -40,7 +40,7 @@ mod linux {
 
     use crate::recent::{CloseReason, ConnSlot, ConnState};
     use crate::sync::LockExt;
-    use crate::sys::{EPOLLIN, EPOLLRDHUP, Epoll, EpollEvent};
+    use crate::sys::{EPOLLERR, EPOLLIN, EPOLLRDHUP, Epoll, EpollEvent};
     use crate::tunnel;
     use crate::{log_debug, log_error, log_warn};
 
@@ -513,6 +513,27 @@ mod linux {
                 };
                 match what {
                     Parked::Http(conn) => {
+                        // ソケットにエラーが溜まっている (T14.52)。TCP keepalive が
+                        // 尽きた相手は `EPOLLERR` で起こされ、保留エラーが `ETIMEDOUT`
+                        // になっている。**`EPOLLIN` も一緒に立つ** (カーネルが受信を
+                        // 閉じた扱いにする) ので下の枝では拾えず、ワーカーを起こして
+                        // 読ませても errno が返るだけなので、ここで閉じる。
+                        // `ETIMEDOUT` は「相手が黙って消えた」= `client_dead`、それ以外
+                        // (`ECONNRESET` など) は今までどおり原因つきのエラーとして残す。
+                        // `getsockopt(SO_ERROR)` を引くのは **`EPOLLERR` が立った回だけ**
+                        // (ふつうの起床には 1 命令も増えない)
+                        if ev.events() & EPOLLERR != 0
+                            && let Some(err) = conn.take_client_error()
+                        {
+                            closed += 1;
+                            conn.finish(if err.kind() == io::ErrorKind::TimedOut {
+                                CloseReason::ClientDead
+                            } else {
+                                CloseReason::Error(crate::metrics::ErrCause::from_io(&err))
+                            });
+                            drop(conn);
+                            continue;
+                        }
                         if ev.events() & EPOLLIN == 0 {
                             // 読めるものが無いのに知らせが来た = 相手が黙って切った。
                             // わざわざワーカーを起こして 0 バイトを読ませる必要はない

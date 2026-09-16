@@ -146,10 +146,11 @@ var marks=[];       // 直近の eventMarks()
 var scatter=null;   // 直近の rttScatter()
 var series=null;    // /hosts/series (T14.22。無ければ null のまま)
 
-// 閉じた理由の色 (T14.4 の 8 種)。**知らない綴りが増えても壊れない**:
+// 閉じた理由の色 (T14.4 の 8 種 + T14.52 の client_dead)。**知らない綴りが増えても壊れない**:
 // `error:<原因>` は `error` に畳み、知らない名前は既定の灰色になる
 var REASON_COLORS={client_eof:'#3ecf8e',server_eof:'#5aa9ff',idle_timeout:'#c084fc',
-  keepalive_timeout:'#6ee7f9',evicted:'#f5b342',limit:'#a3e635',shutdown:'#94a3b8',error:'#ff6b6b'};
+  keepalive_timeout:'#6ee7f9',evicted:'#f5b342',limit:'#a3e635',shutdown:'#94a3b8',
+  client_dead:'#f472b6',error:'#ff6b6b'};
 // 出来事の色 (T14.11 の 10 種 + T14.23 の `anomaly` + T14.54 の `new_client`)。
 // **知らない綴りが増えても**既定色で描くだけ
 var EVENT_COLORS={start:'#3ecf8e',reload:'#5aa9ff',blocklist:'#c084fc',ipv6:'#6ee7f9',

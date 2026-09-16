@@ -582,8 +582,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **中継の詰まりの向き** (`stall_ms` = `{"client":…,"origin":…}`。T14.42)。
     理由は `client_eof` (クライアントが先に EOF) / `server_eof` (宛先が先に EOF) / `idle_timeout` (トンネルの無通信打ち切り) /
     `keepalive_timeout` (次の要求を待ちきれなかった) / `evicted` (上限に当たって席を作るために閉じた。`PROXY_MAX_CONNS`) /
-    `limit` (1 接続あたりの要求数の上限) / `error:<原因>` (原因は `/status` の `errors_by_cause` と同じ 8 つ) /
-    `shutdown` (その他のプロキシ側の都合) の 8 種類。**書くのは接続の終了で 1 回だけ**で、要求ごとにも中継のバイトごとにも
+    `limit` (1 接続あたりの要求数の上限) / **`client_dead`** (クライアントが黙って消えた。TCP keepalive が尽きて `ETIMEDOUT`。
+    `PROXY_TCP_KEEPALIVE`。T14.52) / `error:<原因>` (原因は `/status` の `errors_by_cause` と同じ 8 つ) /
+    `shutdown` (その他のプロキシ側の都合) の 9 種類。
+    **`client_dead` の読み方**: 端末がスリープしたり回線が切れたりすると FIN も RST も来ないので、そのトンネルは
+    `PROXY_TUNNEL_IDLE_SECS` (300 秒) の期限切れまで残り、keepalive が無ければ `idle_timeout` として数えられます。
+    つまり **`idle_timeout` のうち「本当に暇だった」ぶんと「相手が消えていた」ぶんを切り分けるのがこの理由**です。
+    さらに `stall_ms.client` (上の「中継の詰まりの向き」) と並べると、**消えた相手** (`client_dead`) と
+    **遅いだけの相手** (`client_eof` だが `stall_ms.client` が大きい) が区別できます。**書くのは接続の終了で 1 回だけ**で、要求ごとにも中継のバイトごとにも
     何も書きません。2,000 件の環状 (ありふれた 1 件 348 B)。`?since=` は「開いた時刻がこれ以降」、`?client=` は接続元の完全一致、
     `?sort=slow` は確立 (`ms.connect`) の遅い順、`?sort=bytes` は転送の多い順。
     **自分宛て (`/status` `/dashboard` …) だけで終わった接続は残しません** — 監視が 5 秒おきに引くとリングがそれで埋まるためです
@@ -1036,7 +1042,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **`res=` を書かないときの解像度の自動選択の閾は変えていません** (1 時間までが 5 秒、1 日までが 60 秒)。
     標本の後ろに **`closed`** が付きます (T14.6):
     その窓に**閉じた接続**の分布で、閉じた理由 8 種の件数 (`reasons`。`/recent` の `reason` と同じ綴り。
-    `error:*` は `error` 1 つにまとめます)・寿命の 12 段 (`life`、境目は `life_bounds_secs`。
+    `error:*` は `error` 1 つに、**`client_dead` は `shutdown` にまとめます** — 標本の余白の都合で列は 8 つのままです。
+    1 本ずつ切り分けたいときは `/recent` の `reason` を読んでください。T14.52)・寿命の 12 段 (`life`、境目は `life_bounds_secs`。
     `PROXY_KEEPALIVE_SECS` の 15 秒と `PROXY_TUNNEL_IDLE_SECS` の 300 秒が境目にあります)・
     上り / 下りバイトの 12 段 (`up` / `down`、境目は `byte_bounds` = 1 KiB から 4 倍ずつ)・
     寿命と預かり秒とバイトの合計が並びます。**標本 (`samples`) の形と読み方は変えていません** (別の配列です)。
@@ -1204,6 +1211,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_ALLOW_CLIENTS` | なし (全許可) | **受ける接続元**のカンマ区切りリスト (`1.2.3.4,10.0.0.0/8,2001:db8::/32`。1 つの IP は `/32` `/128` と同じ)。ここに無い相手は **accept した直後に、要求を 1 バイトも読まずに閉じます** (応答も返しません)。**内部エンドポイントも含めて閉じる**ので、公開ポートで `/status` や `/clients` の個票が見られることもありません。`PROXY_MAX_CONNS` の 「上限 + 4 本」の枠より**前**で判定します。断った数は `/status` の `rejected_client_acl` と `/metrics` の `sorahost_rejected_client_acl_total`。v4-mapped IPv6 (`::ffff:1.2.3.4`) は IPv4 として照合するので、デュアルスタックで 待ち受けていても `1.2.3.4` の 1 行で書けます。書式が違う項目は読み飛ばします (起動ログの `allowed clients:` に実際に読めた項目が出るので、書き損じはそこで分かります)。**宛先の `PROXY_ALLOW_HOSTS` / `PROXY_ALLOW_LOCAL` とは無関係**で、**認証でもありません** (同じアドレスから来られれば誰でも通ります)。`.env` で即時反映 (次に受ける接続から) |
 | `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/slo` `/snapshots` `/metrics` `/hosts` `/hosts/series` `/clients` `/readers` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/trace` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる (`PROXY_PARK_IDLE=on` なら、預かり所が期限を見て引き上げる)。`0` で無期限。`.env` で即時反映 |
+| `PROXY_TCP_KEEPALIVE` | `on` (= `on:60:10:3`) | **消えたクライアントを見つける** TCP keepalive です (T14.52)。端末のスリープや回線の切断では FIN も RST も来ないので、CONNECT トンネルは `PROXY_TUNNEL_IDLE_SECS` (既定 300 秒) の期限切れまで残り、閉じた理由が `idle_timeout` になって**「本当に暇」と「相手が消えた」が区別できません**。`on` にしておくと **accept した直後にクライアント側のソケットへ `SO_KEEPALIVE` / `TCP_KEEPIDLE` 60 秒 / `TCP_KEEPINTVL` 10 秒 / `TCP_KEEPCNT` 3 を当てる**ので、消えた相手は **60 + 10 × 3 = 約 90 秒**で `ETIMEDOUT` になり、`/recent` の `reason` が **`client_dead`** になります (`/history` の `closed` の集計では `shutdown` に畳みます)。`on:<idle>:<intvl>:<cnt>` で 3 つとも秒 / 回を指定できます (`on:1:1:2` なら約 3 秒。試験用)。**費用は接続あたり `setsockopt` 4 回**で、要求ごと・中継のバイトごとには 1 つも増えません (`off` なら accept ごとの分岐 1 回だけ)。`TCP_NODELAY` などと違って**待ち受けから継承させていない**のは、`.env` で変えたときに次の接続から効くようにするためです。**`--lite` でも当てます**。当てるのは**クライアント側だけ**で、オリジンへ出ていく接続には当てません (そちらは要求が終われば閉じるか接続プールが捨てるため)。半端な書き方 (`on:1:2` など) は既定に落とします。Linux 以外では何もしません。効いている値は `/config` の `PROXY_TCP_KEEPALIVE`。`.env` で即時反映 (次に受ける接続から。いま開いている接続には当て直しません) |
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル (`--lite` と同じ)。キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限。上限に当たったら、まず**預かり所の暇な CONNECT トンネルを最古から 1 本閉じて**席を作り、その接続を受ける (閉じた数は `/status` の `evicted_idle` と `/metrics` の `sorahost_evicted_idle_total`。**暇な keep-alive 接続は閉じない** — 次の要求を待っているだけなので、閉じると入れ違いで届いた要求を取りこぼすため)。閉じるものが無い (トンネルが全部中継中、または預かり所が空) ときは、スレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。ただし**自分宛て (`/status` `/metrics` などの内部エンドポイント) は上限 + 4 本まで受ける**: accept の時点では要求が読めないので、4 本までは受けて要求行と `Host` を読み、自分宛てなら普通に応答、それ以外は 503 で閉じる (上限に当たっている最中でも監視が取れるようにするため。この枠で受けた接続は要求行が 2 秒来なければ 503 で閉じる)。`auto` は記述子の上限から `min(4096, (RLIMIT_NOFILE の soft − 予備 64) ÷ 4)` (1 接続が最悪で使う記述子は クライアント 1 + オリジン 1 + 素通しのパイプ 2 = 4 本。`ulimit -n` が 1024 の環境なら 240、4096 なら 1008)。記述子が余っていても 4096 で頭打ちにするのは、上限が fd 以外の資源 (スレッド・RSS) の歯止めでもあるため (同時 5,000 本で RSS 198 MiB の実測)。数値を書けばその値、`0` で無制限。決まった値は起動ログの `max connections:` と `/status` の `max_conns` (`/metrics` は `sorahost_max_connections`) に出る。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
 | `PROXY_MAX_CONNS_PER_CLIENT` | `0` (無効) | **1 つの接続元から同時に受ける接続数の上限**。認証なしの公開ポートで、見知らぬ接続元 1 人が `PROXY_MAX_CONNS` (既定 240) を使い切ると**本人が 503 になる**ため、その手前で頭を押さえるつまみです。**認証ではなく公平さの上限**です (同じアドレスから来られれば誰でも通ります)。設定すると accept の直後にその接続元の**いま生きている接続の本数**を数え、上限以上なら `503 Service Unavailable` + `Retry-After: 1` を返して閉じます。断った数は `/status` の `rejected_per_client` と `/metrics` の `sorahost_rejected_per_client_total`、接続元ごとの内訳は `/clients` の行の `rejected`。**自分宛て (`/status` などの内部エンドポイント) は数えません**: accept の時点では要求が読めないので、`PROXY_MAX_CONNS` と同じ「上限 + 4 本」の枠で受けてから要求行を読み、自分宛てなら普通に応答、それ以外は 503 で閉じます (上限に当たっている接続元からでも監視が取れるように)。**数え方**: 数えるのは `/connections` の表と同じ「接続の開始と終了」で ±1 する本数で、鍵は接続元 IP (v4-mapped IPv6 は IPv4 として数えます)。NAT の内側の複数台は 1 人として数えられます。数えるのは**上限を設定している間だけ**で、`0` に戻すと表ごと捨てます (既定の費用は accept ごとの分岐 1 回)。`--lite` でも効きます (`/connections` の行は作らずに本数だけ数えます)。同時に来た数本は上限を少し超えて通ることがあります (数えるのは登録済みの本数のため)。`.env` で即時反映 (次に受ける接続から。あとから入れたときは、そのとき生きている接続から数え直します) |
@@ -1938,7 +1946,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 描くのは 9 枚:
 
 - **タイムライン** (`/recent`): 横 = 時刻、縦 = 接続元 (宛先にも切り替えられます)、線 1 本が接続 1 本で、
-  長さ = 寿命・色 = 閉じた理由 (8 種。`error:<原因>` は 1 色に畳みます)・太さ = 運んだバイト。
+  長さ = 寿命・色 = 閉じた理由 (9 種。`error:<原因>` は 1 色に畳みます)・太さ = 運んだバイト。
   範囲は 1 時間 / 6 時間 / 24 時間 (`/recent?since=`)。**`/events` の出来事**は縦の破線の印で重ねます
   (種類が増えても既定の色で描くだけなので壊れません)
 - **出来事と異常** (`/events?n=200`。T14.11 / T14.23): タイムラインに重ねた印と同じ出来事を、

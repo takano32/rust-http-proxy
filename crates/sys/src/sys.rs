@@ -724,6 +724,114 @@ pub fn listen_socket(_addr: std::net::SocketAddr, _backlog: u32) -> io::Result<R
     ))
 }
 
+/// TCP keepalive の定数 (T14.52)。
+///
+/// `SO_KEEPALIVE` は `SOL_SOCKET` の 9 で、[`sockopt`] の値と同じく **arch によって
+/// 違う** (asm-generic は 9、mips や alpha は別) ので同じ条件で囲む。
+/// `TCP_KEEPIDLE` / `TCP_KEEPINTVL` / `TCP_KEEPCNT` は linux/tcp.h の 4 / 5 / 6 で
+/// arch に依らない ([`TCP_INFO`] と同じ)。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+mod keepalive {
+    use std::ffi::c_int;
+
+    pub const SO_KEEPALIVE: c_int = 9;
+    pub const TCP_KEEPIDLE: c_int = 4;
+    pub const TCP_KEEPINTVL: c_int = 5;
+    pub const TCP_KEEPCNT: c_int = 6;
+}
+
+/// 1 本のソケットに当たっている TCP keepalive (T14.52。読み戻し用)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Keepalive {
+    /// `SO_KEEPALIVE` が立っているか
+    pub on: bool,
+    /// 無通信がこれだけ続いたら最初の探りを送る (秒。`TCP_KEEPIDLE`)
+    pub idle_secs: u32,
+    /// 探りと探りの間隔 (秒。`TCP_KEEPINTVL`)
+    pub intvl_secs: u32,
+    /// 返事の無い探りを何回まで送るか (`TCP_KEEPCNT`)
+    pub count: u32,
+}
+
+/// 消えたクライアントを見つけるための TCP keepalive を 1 本に当てる (T14.52)。
+///
+/// **`setsockopt` を 4 回**呼ぶ (接続あたりの固定費はこの 4 回だけ。当てないときは
+/// 呼び出し側が分岐 1 回で飛ばす)。`TCP_NODELAY` などと違って**待ち受けから継承させて
+/// いない**のは、`PROXY_TCP_KEEPALIVE` を `.env` で変えたときに次の接続から効くように
+/// するため (待ち受けに当てると当て直しの機会が無い)。
+///
+/// 当てたあと相手が消えると、カーネルは `idle_secs + intvl_secs * count` 秒ほどで
+/// そのソケットの保留エラーを `ETIMEDOUT` にする。以後の `read` / `write` / `splice` は
+/// その errno で返るので、呼び出し側は「相手が消えた」と記録できる。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+pub fn set_keepalive(fd: RawFd, idle_secs: u32, intvl_secs: u32, count: u32) -> io::Result<()> {
+    use keepalive::*;
+
+    let on: c_int = 1;
+    set(fd, sockopt::SOL_SOCKET, SO_KEEPALIVE, &on)?;
+    // 0 は「カーネルの既定のまま」になってしまうので、最低 1 秒 / 1 回に上げる
+    let idle: c_int = idle_secs.max(1).min(c_int::MAX as u32) as c_int;
+    let intvl: c_int = intvl_secs.max(1).min(c_int::MAX as u32) as c_int;
+    let cnt: c_int = count.max(1).min(c_int::MAX as u32) as c_int;
+    set(fd, SOL_TCP, TCP_KEEPIDLE, &idle)?;
+    set(fd, SOL_TCP, TCP_KEEPINTVL, &intvl)?;
+    set(fd, SOL_TCP, TCP_KEEPCNT, &cnt)?;
+    Ok(())
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+pub fn set_keepalive(_fd: RawFd, _idle: u32, _intvl: u32, _count: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "SO_KEEPALIVE is only known for aarch64 and x86_64",
+    ))
+}
+
+/// いま当たっている keepalive を読み戻す (`getsockopt` 4 回)。
+///
+/// 使うのは**テストと診断だけ**で、接続の経路からは呼ばない。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+pub fn keepalive_of(fd: RawFd) -> io::Result<Keepalive> {
+    use keepalive::*;
+
+    Ok(Keepalive {
+        on: get_int(fd, sockopt::SOL_SOCKET, SO_KEEPALIVE)? != 0,
+        idle_secs: get_int(fd, SOL_TCP, TCP_KEEPIDLE)?.max(0) as u32,
+        intvl_secs: get_int(fd, SOL_TCP, TCP_KEEPINTVL)?.max(0) as u32,
+        count: get_int(fd, SOL_TCP, TCP_KEEPCNT)?.max(0) as u32,
+    })
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+pub fn keepalive_of(_fd: RawFd) -> io::Result<Keepalive> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "SO_KEEPALIVE is only known for aarch64 and x86_64",
+    ))
+}
+
+/// `getsockopt` で `c_int` を 1 つ読む ([`set`] の裏返し)。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+fn get_int(fd: RawFd, level: c_int, name: c_int) -> io::Result<c_int> {
+    let mut v: c_int = 0;
+    let mut len = size_of::<c_int>() as u32;
+    // SAFETY: `c_int` 1 つぶんの領域とその長さを対で渡している。カーネルは
+    // min(len, 4) バイトだけ書き、書いた長さを len に返す。
+    let r = unsafe {
+        getsockopt(
+            fd,
+            level,
+            name,
+            &mut v as *mut c_int as *mut c_void,
+            &mut len,
+        )
+    };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,5 +1095,72 @@ mod tests {
             assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{:?}", err);
         }
         assert_eq!(open_fds(), before, "失敗した 8 回ぶんの記述子が残っている");
+    }
+
+    /// 消えたクライアントを見つけるための TCP keepalive が、当てたとおりに
+    /// カーネルへ届いていること (T14.52)。`setsockopt` の定数が間違っていれば
+    /// `ENOPROTOOPT` になるか、読み戻した値が食い違う。
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[test]
+    fn keepalive_lands_on_the_socket_and_reads_back() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+
+        // 何も当てていないソケットは off (既定の idle は `/proc/sys/net/ipv4/tcp_keepalive_time`)
+        let before = keepalive_of(accepted.as_raw_fd()).expect("getsockopt");
+        assert!(
+            !before.on,
+            "はじめから SO_KEEPALIVE が立っている: {:?}",
+            before
+        );
+
+        // 既定と違う値を選ぶ (既定の 60/10/3 と取り違えないように)
+        set_keepalive(accepted.as_raw_fd(), 7, 3, 5).expect("setsockopt");
+        assert_eq!(
+            keepalive_of(accepted.as_raw_fd()).expect("getsockopt"),
+            Keepalive {
+                on: true,
+                idle_secs: 7,
+                intvl_secs: 3,
+                count: 5,
+            }
+        );
+        // 当てていない方 (クライアント側) は素のまま
+        assert!(!keepalive_of(client.as_raw_fd()).expect("getsockopt").on);
+        drop((client, accepted));
+    }
+
+    /// 0 を渡しても「カーネルの既定のまま」にはならず 1 に上がること (T14.52)。
+    ///
+    /// `TCP_KEEPIDLE=0` は `setsockopt` が `EINVAL` を返す値なので、丸めずに
+    /// 渡すと 4 回のうち 1 回が失敗して keepalive が中途半端に当たる。
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[test]
+    fn keepalive_rounds_zero_up_to_one() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+
+        set_keepalive(accepted.as_raw_fd(), 0, 0, 0).expect("setsockopt");
+        assert_eq!(
+            keepalive_of(accepted.as_raw_fd()).expect("getsockopt"),
+            Keepalive {
+                on: true,
+                idle_secs: 1,
+                intvl_secs: 1,
+                count: 1,
+            }
+        );
+        drop((client, accepted));
+    }
+
+    /// TCP でない記述子には当たらない (失敗を握りつぶさずに `Err` で返すこと)。
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[test]
+    fn keepalive_fails_on_something_that_is_not_a_socket() {
+        let f = std::fs::File::open("/proc/self/stat").unwrap();
+        assert!(set_keepalive(f.as_raw_fd(), 60, 10, 3).is_err());
+        assert!(keepalive_of(f.as_raw_fd()).is_err());
     }
 }

@@ -576,6 +576,17 @@ mod relay {
 
     /// 1 回の splice / read で動かす最大バイト数 (パイプ容量と同じ)。
     const CHUNK: usize = 1 << 20;
+
+    /// 「相手が黙って消えた」= `ETIMEDOUT` か (T14.52)。
+    ///
+    /// TCP keepalive (`PROXY_TCP_KEEPALIVE`) が尽きると、カーネルはそのソケットの
+    /// 保留エラーを `ETIMEDOUT` にする。以後の `splice` / `read` / `write` / `poll` は
+    /// この errno で返るので、閉じた理由を `client_dead` と書ける。
+    /// `SO_RCVTIMEO` / `SO_SNDTIMEO` の締め切りは Linux では `EAGAIN` (= `WouldBlock`)
+    /// なので**ここには混ざらない**。
+    fn went_away(e: &io::Error) -> bool {
+        e.kind() == io::ErrorKind::TimedOut
+    }
     /// 無期限 (`PROXY_TUNNEL_IDLE_SECS=0`) のトンネルを預けるときの「遠い期限」。
     /// 預かり所は期限の早い順に並べた集合で待つので、期限そのものは必ず要る。
     const FOREVER: Duration = Duration::from_secs(365 * 86400);
@@ -677,6 +688,10 @@ mod relay {
                     match sys::splice_move(socks[self.src].as_raw_fd(), pipe.write_fd, CHUNK) {
                         Ok(n) => Ok(n),
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(e),
+                        // 相手が消えた (T14.52): これは「splice が使えない」ではなく
+                        // 「接続が死んだ」なので、64 KiB の緩衝を確保して読み直さずに
+                        // そのまま上へ返す (呼び出し側が `client_dead` と書く)
+                        Err(e) if went_away(&e) => Err(e),
                         // splice が使えないソケット (EINVAL など) はバッファ方式へ落として次周で読む
                         Err(_) => {
                             self.relay = Relay::Buf(vec![0u8; 64 * 1024]);
@@ -960,7 +975,15 @@ mod relay {
                             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                                 d.readable = false
                             }
-                            Err(_) => {
+                            Err(ref e) => {
+                                // 消えたクライアント (T14.52)。keepalive が尽きた
+                                // ソケットは `ETIMEDOUT` で返るので、`client_eof`
+                                // (ふつうに切った) と区別して記録する。オリジン側の
+                                // `ETIMEDOUT` は「相手が消えた」ではあってもクライアント
+                                // ではないので、従来どおり EOF として扱う
+                                if d.src == CLIENT_SIDE && went_away(e) {
+                                    *close = Some(CloseReason::ClientDead);
+                                }
                                 d.src_eof = true;
                                 first_eof.get_or_insert_with(|| (d.src, Instant::now()));
                                 progressed = true;
@@ -987,7 +1010,11 @@ mod relay {
                             }
                             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                             // 送信先が閉じた: この方向は終わり、相手にも伝える
-                            Err(_) => {
+                            Err(ref e) => {
+                                // 書こうとした先が消えたクライアントだったとき (T14.52)
+                                if d.dst == CLIENT_SIDE && went_away(e) {
+                                    *close = Some(CloseReason::ClientDead);
+                                }
                                 // 先に手を引いたのは**送信先**の側 (T14.4)
                                 first_eof.get_or_insert_with(|| (d.dst, Instant::now()));
                                 d.pending = 0;
@@ -1005,6 +1032,14 @@ mod relay {
                         d.done = true;
                         progressed = true;
                     }
+                }
+                // 相手が消えたトンネルは、残った向き (オリジン → クライアント) を
+                // 待たずにここで閉じる (T14.52)。書き先が死んでいるのでオリジンから
+                // 来るバイトはもう誰にも渡せず、待てば `PROXY_TUNNEL_IDLE_SECS`
+                // (300 秒) までこのトンネルが席を占め続ける
+                if matches!(close, Some(CloseReason::ClientDead)) {
+                    log_trace!(Some(conn_id), "tunnel closed: the client went away");
+                    break;
                 }
                 if dirs.iter().all(|d| d.done) {
                     break;
@@ -1074,7 +1109,13 @@ mod relay {
                     Ok(_) => {}
                     Err(e) => {
                         log_trace!(Some(conn_id), "tunnel poll failed: {}", e);
-                        *close = Some(CloseReason::Error(crate::metrics::ErrCause::from_io(&e)));
+                        // `poll` が `ETIMEDOUT` を返すことはまず無いが、返ってきたなら
+                        // 「相手が消えた」で間違いない (T14.52。比較 1 回)
+                        *close = Some(if went_away(&e) {
+                            CloseReason::ClientDead
+                        } else {
+                            CloseReason::Error(crate::metrics::ErrCause::from_io(&e))
+                        });
                         break;
                     }
                 }

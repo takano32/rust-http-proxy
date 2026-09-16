@@ -8,7 +8,7 @@
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
 //! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、`PROXY_CANARY`、`PROXY_CANARY_SECS`、
 //! `PROXY_CANARY_IPV6`、`PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
-//! `PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`、`PROXY_TRACE_CLIENT`、
+//! `PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`、`PROXY_TRACE_CLIENT`、`PROXY_TCP_KEEPALIVE`、
 //! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
 //! `/status` と dashboard に「再起動が必要」と出す。
@@ -157,6 +157,13 @@ impl Live {
             next.sources.adopt(&fresh.sources, "PROXY_RECORDS");
             crate::records::set(fresh.records);
             applied.push("PROXY_RECORDS");
+        }
+        // 消えたクライアントの検知 (T14.52)。当てるのは accept なので**次に来る接続から**効く
+        // (いま開いている接続のソケットには当て直さない)
+        if fresh.tcp_keepalive != old.tcp_keepalive {
+            next.tcp_keepalive = fresh.tcp_keepalive;
+            next.sources.adopt(&fresh.sources, "PROXY_TCP_KEEPALIVE");
+            applied.push("PROXY_TCP_KEEPALIVE");
         }
         // 追跡する接続元 (T14.27)。旗を立てるのは accept なので**次に来る接続から**効く
         // (いま開いている接続の旗はそのまま = 途中で追跡が切れたり増えたりしない)
