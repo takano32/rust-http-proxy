@@ -4278,7 +4278,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     - `record_client` に向き別の 2 値の引数が増えた (呼ぶ側は CONNECT / forward / 508 / 403 の 4 か所)。`/metrics` にホスト別の
       向き別バイトは出していない (系列が増えすぎる)。`status-diff.py` / `check-dashboard.js` は `bytes` しか読まないので未変更。
     - T14.8 が使う口: `hosts[]` / `clients[]` の `bytes_in` / `bytes_out` (`bytes_out / bytes` で「下り主体か」が 1 列で描ける)。
-- [ ] **T14.27 接続元 1 つの追跡 (`PROXY_TRACE_CLIENT=<ip>` → `/trace`)**
+- [x] **T14.27 接続元 1 つの追跡 (`PROXY_TRACE_CLIENT=<ip>` → `/trace`)**
   - 目的: 見知らぬ接続元 (T14.0) や「この端末だけ遅い」を調べるとき、全体のログ水準を `trace` に上げるとアクセスログが溢れる
     (T10.10 の 7.2 us/要求 が全員に乗る)。**1 つの接続元だけ**、要求行・応答の状態・段階の ms・閉じた理由を 1,000 行のリングに残す。
   - 変更箇所: `crates/config` と `crates/reload` (`PROXY_TRACE_CLIENT`、既定 空、`.env` で即時反映)、`src/lib.rs` (接続の開始で接続元が
@@ -4287,6 +4287,27 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     `/trace?n=200`、README (個票の中身の注意: パスが入るので**追跡中だけ**)。
   - 受け入れ基準: 結合テストで `PROXY_TRACE_CLIENT=127.0.0.1` のとき `/trace` に要求行と状態と段階が並び、`PROXY_TRACE_CLIENT` が別の IP
     なら空。既定 (空) で forward の CPU/要求 が ±ぶれの中 (旗の分岐 1 回)、`--lite` のシステムコールと確保が動かない。
+  - 結果 (2026-09-16、`7da4735`): **`PROXY_TRACE_CLIENT=<ip>`** (既定 空 = 無効) を設定している間だけ、**その接続元 1 つ**の
+    要求を **`/trace?n=200&since=<epoch>`** (新しい順、既定 200 行・最大 1,000) に残すようにした。1 行 = 時刻 (`at`)・接続 id (`conn`)・
+    接続元 (`client`)・**要求行** (`method` + `target` + `version`。forward の `target` は **URL の先頭 256 B**、CONNECT は宛先の `host:port`)・
+    応答の状態 (`status`)・所要 ms (`took_ms`)・バイト (`bytes`)・**段階の ms** (`ms`。T14.3 の 6 つで `/recent` と同じ綴り)・
+    **閉じた理由** (`reason`。CONNECT だけ)。**照合は accept の 1 回だけ** (`PROXY_ALLOW_CLIENTS` / `PROXY_MAX_CONNS_PER_CLIENT` の判定の隣) で、
+    一致した接続の `ConnSlot` に旗 (`traced`) を 1 つ立てる。**要求ごとに見るのはその旗 1 つ**で、書くのは既存の `Ctx::log` (forward) と
+    `tunnel::report` (CONNECT) の中 — 段階の ms も所要時間もそこで既に組んであるものを渡すだけなので、**時計も確保も原子も 1 つも増えていない**。
+    リングは `crates/metrics/src/trace.rs` (新規) の **1,000 行 1 本、メモリだけ** (T14.9 の永続化の対象にしない。`Metrics` に欄を足さず
+    モジュールの静的にした = T14.11 の `events.rs` と同じ作法)。容量は `/status` の `memory.rings.trace` に **525,000 B**。応答はありふれた
+    1 行 **219 B** (CONNECT で段階 5 つ + 理由つきなら 260 B、最悪 636 B)。**個票に URL のパスを入れない決まりの唯一の例外**で、README に
+    「追跡中の 1 接続元だけ・認証なしで見える・調べ終わったら空に戻す」と明記した。**`/snapshot` の `parts` には入れない** (パスが雪像に
+    残らないように)。`--lite` は枠 (`ConnSlot`) を作らないので**旗も立たず 1 行も残らない**。`.env` で即時反映 (次に受ける接続から。いま開いている
+    接続の旗は動かない)、`/config` に効いている値と出どころ (T14.15。追跡していなければ `""`)。費用は forward 46.62 → 47.65 us/要求 (+2.2%)、
+    `--lite` のシステムコール 5.03 → 5.02 回/要求 (どちらもぶれの中。release、前後交互 3 組の中央値、基準は分岐元 `39d9ff6`)。
+    結合 4 本 (`tests/trace_test.rs`) と単体 4 本を新設。
+    - **書くのは成功した要求 / 終わったトンネルだけ**: 502 で終わった CONNECT と、`Ctx` を組む前に 400 で閉じる要求は `report` / `Ctx::log` を
+      通らないので `/trace` には出ない (どちらも `/errors` と `/recent` には残る)。内部エンドポイント (`/status` `/trace` …) も出ない
+      (監視が 5 秒おきに叩いてもリングは埋まらない)。T14.28 で 400 の経路を触るなら、`tunnel::open` の失敗にも 1 行足せる (`slot` は持っている)。
+    - 追跡する接続元は `Option<IpAddr>` で持ち `net::canonical_ip` を通す (`::ffff:1.2.3.4` は `1.2.3.4`)。切り替えた直後は前の接続元の行が
+      残るので 1 行ごとに `client` を持つ。T14.28 へ: accept 直後は 3 段の判定になり `Conn::new` の引数は 14 個 (`traced` が末尾)、
+      `Shared` / `Ctx` に `traced: bool` がある。
 - [ ] **T14.28 400 の理由別カウンタと個票 (`rejected_requests{reason}`、`/errors` の `bad_request:<reason>`)**
   - 目的: 公開ポートには走査 (scanner) の要求が来る。いまは 400 で閉じるだけで、**何が来たか**の数が無い。理由別 (要求行が読めない /
     ヘッダーが長すぎる / 対応しないメソッド / `Host` が無い / 絶対 URI が壊れている / 本文の枠が不正) に数え、`/errors` に個票 (接続元と理由。
