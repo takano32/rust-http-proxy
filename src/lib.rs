@@ -27,6 +27,7 @@ pub use proxy_net::{acl, dns, net};
 pub use proxy_origin::{Upstream, origin, pool, request, tls};
 pub use proxy_prom::prom;
 pub use proxy_reload::reload;
+pub use proxy_selfbench as selfbench;
 pub use proxy_sys::signal;
 #[cfg(target_os = "linux")]
 pub use proxy_sys::sys;

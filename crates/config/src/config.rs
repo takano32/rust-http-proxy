@@ -277,6 +277,14 @@ pub struct Config {
     /// `/profile` のスレッドの標本を取る間隔 (`PROXY_PROFILE_SAMPLE_MS`、既定 1,000、
     /// `0` で止める)。**`--lite` では `/profile` ごと off** (T14.3 (2))
     pub profile_sample_ms: u64,
+    /// 起動直後に **loopback だけで 3 秒**の自己ベンチを回すか
+    /// (`PROXY_SELF_BENCH`、既定 off。T14.43)。
+    ///
+    /// `on` のときだけ、待ち受けを開いた直後に内蔵の小さなオリジンを立て、自分の待ち受けへ
+    /// forward 8 並列と CONNECT 8 並列を 1.5 秒ずつ流して CPU/要求 と CPU/本 を測る
+    /// (`/status` の `self_bench`)。**外へは 1 バイトも出さない。**
+    /// `off` (既定) では `src/main.rs` の分岐 1 回だけで、自己ベンチのコードは 1 命令も走らない
+    pub self_bench: bool,
     /// CONNECT を許すあて先ポート (`PROXY_CONNECT_PORTS`、既定は制限なし)
     pub connect_ports: PortSet,
     /// ループバック・リンクローカル宛てのオリジンを許すか (`PROXY_ALLOW_LOCAL`、既定 off)。
@@ -488,6 +496,12 @@ impl Config {
             cfg.stats_persist = !off(v);
             src.mark("PROXY_STATS_PERSIST");
         }
+        // 起動直後の自己ベンチ (T14.43)。**`--lite` でも明示されればそちらが勝つ**
+        // (測るためだけの旗で、既定は off)
+        if let Some(v) = envfile::var("PROXY_SELF_BENCH") {
+            cfg.self_bench = !off(v);
+            src.mark("PROXY_SELF_BENCH");
+        }
         if let Some(path) = envfile::var("PROXY_TLS_CA_FILE").filter(|p| !p.trim().is_empty()) {
             cfg.tls_ca_file = Some(PathBuf::from(path.trim()));
             src.mark("PROXY_TLS_CA_FILE");
@@ -677,6 +691,7 @@ impl Config {
             "PROXY_PROFILE",
             crate::json::quote_opt(self.lite.then_some("lite")),
         );
+        add("PROXY_SELF_BENCH", self.self_bench.to_string());
         // `.env` にそのまま書き戻せる形で出す (読むのは大小を問わない)
         add(
             "PROXY_LOG_LEVEL",
@@ -794,6 +809,7 @@ impl Config {
             // 既定 1,000 ms (`proxy_metrics::profile::DEFAULT_SAMPLE_MS` と同じ値。
             // この層は計測クレートに依存しないので数値で持つ)
             profile_sample_ms: 1000,
+            self_bench: false,
             connect_ports: PortSet::default(),
             allow_local: false,
             tunnel_idle: Duration::from_secs(300),

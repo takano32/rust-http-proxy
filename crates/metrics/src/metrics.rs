@@ -1584,8 +1584,8 @@ impl Metrics {
                 // この環境で何が読めるか (T14.15) と canary (T14.10)。どちらも覚えてある結果を読むだけ
                 "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
-                // (`memory` も同じく末尾。T14.21)
-                "\"kernel\":{},\"memory\":{}}}"
+                // (`memory` も同じく末尾。T14.21。`self_bench` も同じく末尾。T14.43)
+                "\"kernel\":{},\"memory\":{},\"self_bench\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1631,7 +1631,10 @@ impl Metrics {
             // (`settings` のような上の層の部品は `extra` で受け取る)
             crate::kernel::status_json(),
             // RSS の内訳 (T14.21)。`mallinfo2` を読むのはこの経路だけ
-            memory_json(rss, threads, extra.concurrency.live_threads as u64, cache)
+            memory_json(rss, threads, extra.concurrency.live_threads as u64, cache),
+            // 起動直後に loopback だけで測った CPU/要求 と CPU/本 (T14.43)。
+            // `PROXY_SELF_BENCH=off` (既定) なら `null` (覚えている結果が無い)
+            crate::selfbench::status_json()
         )
     }
 }

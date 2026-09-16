@@ -141,6 +141,7 @@ dependencies = [
  "proxy-cache",
  "proxy-net",
  "proxy-rrd",
+ "proxy-selfbench",
 ]
 
 [[package]]
@@ -194,6 +195,13 @@ name = "proxy-rrd"
 version = "0.1.0"
 
 [[package]]
+name = "proxy-selfbench"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+]
+
+[[package]]
 name = "proxy-sys"
 version = "0.1.0"
 dependencies = [
@@ -244,6 +252,7 @@ dependencies = [
  "proxy-origin",
  "proxy-prom",
  "proxy-reload",
+ "proxy-selfbench",
  "proxy-sys",
  "proxy-sysinfo",
  "proxy-tunnel",
