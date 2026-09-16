@@ -284,8 +284,8 @@ fn main() {
     ));
     let _ = sweeper.set(Arc::clone(&pool));
     let _blocklist = rust_http_proxy::blocklist::spawn(Arc::clone(&pool), config.timeout);
-    // 停止シグナルで統計を状態ファイルに書き、ballast.reserve を空にしてから終わる
-    // (Wings のディスク計測に残さない)
+    // 停止シグナルで統計を状態ファイルに書き、まだ書いていない個票も落とし、
+    // ballast.reserve を空にしてから終わる (Wings のディスク計測に残さない)
     {
         let ballast =
             (config.cache.enabled && config.cache.reserve.is_on()).then(|| cache.ballast_path());
@@ -301,7 +301,14 @@ fn main() {
                 );
                 if let Some(st) = store {
                     st.flush_stats(&m);
-                    log_info!(None, "statistics saved to {}", st.path.display());
+                    // 最後の 5 秒ぶんの個票も書いてから終わる (T14.9)
+                    let n = st.write_recent(&m);
+                    log_info!(
+                        None,
+                        "statistics saved to {} ({} individual records appended)",
+                        st.path.display(),
+                        n
+                    );
                 }
             }),
         );

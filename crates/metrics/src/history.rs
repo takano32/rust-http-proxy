@@ -596,6 +596,8 @@ pub struct History {
     rings: [Mutex<VecDeque<Sample>>; 3],
     /// 閉じた接続の分布 (`/history` の `closed`。T14.6)。**`.rrd` には載せない**
     pub closed: ClosedWindows,
+    /// 転送速度と半閉じの分布 (`/history` の `transfer`。T14.25)。**`.rrd` には載せない**
+    pub transfer: crate::transfer::TransferWindows,
 }
 
 impl History {
@@ -722,6 +724,10 @@ impl History {
         // `samples` の形と読み方は 1 つも変えない。1 時間の解像度では残していないので `null`
         out.push_str("],\"closed\":");
         out.push_str(&self.closed.to_json_res(res));
+        // 転送速度と半閉じの分布は `closed` の隣に**別の配列**で出す (T14.25)。
+        // `closed` の `keys` も標本の形も 1 つも変えていない
+        out.push_str(",\"transfer\":");
+        out.push_str(&self.transfer.to_json_res(res));
         // 利用者の要求が無い時間帯の名前解決と TCP 接続 (T14.10)。**別の配列**に足す
         // ので、既存の `keys` / `samples` を読む側は 1 行も変えなくてよい
         crate::canary::push_history_json(&mut out, res);
@@ -755,7 +761,10 @@ pub fn spawn_every(
         metrics.take_burst_shot();
         // 下の層 (IPv4 優先の切替・圧迫・バラスト) の変わり目を出来事に 1 件 (T14.11)
         crate::events::poll(cache);
-        metrics.history.closed.roll(crate::cache::now_epoch());
+        let now = crate::cache::now_epoch();
+        metrics.history.closed.roll(now);
+        // 速さと半閉じの窓も同じ境目で閉じる (`closed` と時刻で突き合わせる。T14.25)
+        metrics.history.transfer.roll(now);
         let sample = Sample::take(metrics, cache);
         // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
         crate::daily::tick(metrics, &sample);
@@ -764,6 +773,7 @@ pub fn spawn_every(
         crate::anomaly::check(metrics, &sample);
         if let Some(st) = &store {
             st.write_samples(&pushed);
+            st.write_recent(metrics);
         }
         // 利用者の要求が無い時間帯も待ちを測る (T14.10)。**ここでは測らない**
         // (名前解決と接続は `canary` スレッド 1 本の仕事で、この周期は止めない)
@@ -1229,6 +1239,37 @@ mod closed_tests {
         assert!(hour.ends_with("}"), "{}", hour);
     }
 
+    /// 速さと半閉じの窓 (T14.25) は `closed` の**隣**に出る (どちらも標本の後ろ)。
+    #[test]
+    fn history_appends_the_transfer_windows_next_to_the_closed_ones() {
+        let h = History::default();
+        h.push(sample(1_700_000_000));
+        h.transfer.roll(1_700_000_000);
+        h.transfer.observe(
+            1 << 20,
+            std::time::Duration::from_secs(1),
+            Some(std::time::Duration::from_millis(120)),
+        );
+        h.transfer.roll(1_700_000_005);
+        let json = h.to_json_res(0);
+        let closed_at = json.find("\"closed\":").expect("閉じた接続の分布がある");
+        let transfer_at = json.find("\"transfer\":").expect("速さの分布がある");
+        assert!(closed_at < transfer_at, "transfer は closed の後ろ");
+        assert!(
+            json.contains(",\"transfer\":{\"interval_secs\":5,"),
+            "{}",
+            &json[transfer_at..]
+        );
+        assert!(
+            json.contains("[1700000000,1,1,["),
+            "{}",
+            &json[transfer_at..]
+        );
+        // 1 時間の解像度は `closed` と同じく `null`
+        let hour = h.to_json_res(2);
+        assert!(hour.contains(",\"transfer\":null"), "{}", hour);
+    }
+
     /// 窓が埋まったときの大きさ (1 窓 ≈ 300 B。`/history` が太る分をここで押さえておく)。
     ///
     /// デプロイ先は 43 本/時 なので、ほとんどの窓は空で**出さない**。ここで見るのは
@@ -1259,7 +1300,11 @@ mod closed_tests {
         );
     }
 
-    /// 窓が空なら `/history` に足すのは区間の定義ぶん (472 B) だけで、上限は変わらない。
+    /// 窓が空なら `/history` に足すのは区間の定義ぶんだけで、上限は変わらない。
+    ///
+    /// 見ているのは標本 (`samples`) の**後ろに付く別の配列**の合計
+    /// (`closed` = 482 B + `transfer` = 約 400 B + `canary`)。T14.25 で `transfer` が
+    /// 増えたので上限を 600 → 1,200 B にした (それでも 720 標本の本体に対して 0.3%)。
     #[test]
     fn empty_windows_barely_grow_the_history_response() {
         let h = History::default();
@@ -1269,8 +1314,8 @@ mod closed_tests {
         let json = h.to_json_res(0);
         assert!(json.len() <= 512 * 1024, "{} B", json.len());
         let tail = &json[json.find("\"closed\":").unwrap()..];
-        assert!(tail.len() < 600, "空の窓で {} B", tail.len());
-        println!("空の closed が /history に足す分: {} B", tail.len());
+        assert!(tail.len() < 1_200, "空の窓で {} B", tail.len());
+        println!("空の窓が /history に足す分: {} B", tail.len());
     }
 }
 

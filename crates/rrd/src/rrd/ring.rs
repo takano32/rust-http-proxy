@@ -1,9 +1,9 @@
-//! 環状の領域: 時刻付きレコードを順に書き、いっぱいになったら最古を上書きする。
-//! 読み込み時はレコードの時刻からカーソルを復元する。
+//! 環状の領域: 順序の鍵つきレコードを順に書き、いっぱいになったら最古を上書きする。
+//! 読み込み時はレコードの鍵 (先頭 8 バイト) からカーソルを復元する。
 
 use std::io;
 
-use super::{Dec, Region, Rrd};
+use super::{Dec, Fixed, Region};
 
 pub struct Ring {
     region: Region,
@@ -12,10 +12,11 @@ pub struct Ring {
 }
 
 impl Ring {
-    /// 領域を読み、時刻順のペイロード列と、その続きから書けるカーソルを作る。
-    /// ペイロードの先頭 8 バイトが時刻 (epoch 秒) であること。
-    pub fn load(rrd: &Rrd, region: Region) -> io::Result<(Ring, Vec<Vec<u8>>)> {
-        let mut recs: Vec<(u64, usize, Vec<u8>)> = rrd
+    /// 領域を読み、順序の鍵の順に並べたペイロード列と、その続きから書けるカーソルを作る。
+    /// **ペイロードの先頭 8 バイトが順序の鍵** (履歴は時刻 (epoch 秒)、個票は通し番号。
+    /// どちらも 0 は「空」の印なので 1 から始める)。
+    pub fn load(f: &Fixed, region: Region) -> io::Result<(Ring, Vec<Vec<u8>>)> {
+        let mut recs: Vec<(u64, usize, Vec<u8>)> = f
             .read_all(region)?
             .into_iter()
             .map(|(idx, p)| (Dec(&p).u64(), idx, p))
@@ -32,8 +33,8 @@ impl Ring {
         ))
     }
 
-    pub fn push(&mut self, rrd: &Rrd, payload: &[u8]) -> io::Result<()> {
-        rrd.write(self.region, self.next, payload)?;
+    pub fn push(&mut self, f: &Fixed, payload: &[u8]) -> io::Result<()> {
+        f.write(self.region, self.next, payload)?;
         self.next = (self.next + 1) % self.region.count;
         Ok(())
     }
@@ -42,7 +43,7 @@ impl Ring {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rrd::Enc;
+    use crate::rrd::{Enc, Rrd};
 
     #[test]
     fn wraps_and_restores_in_time_order() {

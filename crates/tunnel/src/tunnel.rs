@@ -48,6 +48,12 @@ struct Info {
     /// `/connections` の枠 (T13.4)。状態と運んだバイト数をここに書く。
     /// 登録と抹消は本体クレート (接続の開始と終了) の仕事で、ここは書くだけ
     slot: Option<Arc<ConnSlot>>,
+    /// この接続がトンネルになるまでに預かり所にいた ms (原子の読み 1 回。T14.25)。
+    ///
+    /// 枠の預かり秒は**接続**のもので、HTTP の keep-alive で預けられていた分も入って
+    /// いる。中継の時間から引くのは**トンネルになってからの預け**だけなので、
+    /// ここで印を取って差だけを使う (同じ接続で `GET` のあとに `CONNECT` が来る場合)
+    parked_ms_at_start: u64,
 }
 
 /// 宛先へつなぎ、`200` と先読みぶん (`prefix`) を送る。
@@ -165,6 +171,7 @@ fn open(
             detail,
             established,
             metrics,
+            parked_ms_at_start: slot.as_ref().map_or(0, |s| s.parked_ms()),
             slot,
         },
     })
@@ -221,8 +228,17 @@ fn tcp_rtt(_socks: Option<&[TcpStream; 2]>) -> ([u32; SIDES], [u32; SIDES]) {
 /// `up` はクライアント → 宛先、`down` は宛先 → クライアントのバイト数。
 /// `reason` は閉じた理由 (`/recent`。T14.4) で、外から閉じられた (追い出し・監視の停止)
 /// ときは枠に先に書いてある理由が勝つ。
-fn report(o: &Info, up: u64, down: u64, reason: CloseReason, socks: Option<&[TcpStream; 2]>) {
+fn report(
+    o: &Info,
+    up: u64,
+    down: u64,
+    reason: CloseReason,
+    socks: Option<&[TcpStream; 2]>,
+    half_close: Option<Duration>,
+) {
     let transferred = up.saturating_add(down);
+    // トンネルの寿命 (時計はここで 1 回だけ読み、アクセスログ・T14.3 の段階・
+    // T14.25 の中継の時間で使い回す)
     let alive = o.started.elapsed();
     // 中継の合計 = 生きていた時間 − 確立まで − 預けられていた時間 (T14.3 (1))。
     // **時計は足さない** (アクセスログが読む `alive` をそのまま使う)
@@ -258,6 +274,20 @@ fn report(o: &Info, up: u64, down: u64, reason: CloseReason, socks: Option<&[Tcp
             },
             0,
         );
+        // 速さと半閉じの分布に 1 本足す (T14.25)。**中継の時間 = 寿命 − 確立まで −
+        // 預かり所にいた時間** (預けは利用者が待っていない時間なので中継ではない。
+        // T14.3 の `stages.relay` と同じ引き算だが、あちらは `/profile` が止まっていると
+        // 0 なので、ここは枠の預かり秒 (T14.4) から出す = プロファイルの設定に依らない)。
+        // ここは既に「個票を残す接続」(= `--lite` ではない) の内側で、時計も上で 1 回
+        // 読んだものを使うので、足すのは引き算と割り算 1 回ずつと窓の鍵 1 回だけ
+        let parked = s.parked_ms().saturating_sub(o.parked_ms_at_start);
+        let relay = alive
+            .saturating_sub(o.connect_took)
+            .saturating_sub(Duration::from_millis(parked));
+        o.metrics
+            .history
+            .transfer
+            .observe(transferred, relay, half_close);
     }
     o.metrics.add_bytes(transferred);
     let host_key = format!("connect://{}", o.addr_str);
@@ -358,7 +388,8 @@ pub fn handle_connect(
         // Linux 以外は片方向ずつ `io::copy` するだけなので、どちらが先に EOF を出したかは
         // 分からない (`/recent` の理由は `shutdown` になる)
         // Linux 以外は `io::copy` が終わった時点でソケットを手放しているので読めない
-        report(&info, up, down, CloseReason::Shutdown, None);
+        // 半閉じ (片側 EOF) がいつ起きたかも分からない (T14.25)
+        report(&info, up, down, CloseReason::Shutdown, None, None);
         Ok(())
     }
 }
@@ -679,8 +710,12 @@ mod relay {
         /// 外から閉じられたとき (追い出し・監視の停止) は枠に直接書いてあるので
         /// ここは `None` のままで、`ConnSlot::finish` の先着優先でそちらが勝つ
         close: Option<CloseReason>,
-        /// 先に EOF を出したのはどちら (`0` = クライアント、`1` = 宛先)。T14.4
-        first_eof: Option<usize>,
+        /// 先に EOF を出したのはどちらと、それがいつか (`0` = クライアント、`1` = 宛先)。
+        ///
+        /// 側は閉じた理由 (T14.4)、時刻は**半閉じから反対側が閉じるまで**の分布 (T14.25)。
+        /// 書くのは `get_or_insert_with` の中 = **トンネル 1 本につき多くて 1 回**で、
+        /// バイトを動かす道 (splice の往復) には 1 命令も足していない
+        first_eof: Option<(usize, Instant)>,
         /// 本体クレートの持ち分 (同時接続数と `active_connections`)。中身は見ない
         _hold: Box<dyn Send>,
     }
@@ -697,10 +732,13 @@ mod relay {
             // 閉じた理由 (T14.4): 中継の中で決まっていればそれ、決まっていなければ
             // **先に EOF を出した側**。どちらも無ければプロキシ側の都合 (`shutdown`)
             let reason = self.close.unwrap_or(match self.first_eof {
-                Some(0) => CloseReason::ClientEof,
+                Some((0, _)) => CloseReason::ClientEof,
                 Some(_) => CloseReason::ServerEof,
                 None => CloseReason::Shutdown,
             });
+            // 半閉じで終わったトンネルだけ、半閉じから反対側が閉じる (= いま) までを
+            // 数える (T14.25)。両側とも EOF を出さずに終わったものは `None`
+            let half_close = self.first_eof.map(|(_, at)| at.elapsed());
             // `dirs[0]` はクライアント → 宛先 (上り)、`dirs[1]` は宛先 → クライアント (下り)
             // `socks` はまだ生きている (落ちるのはこの関数を抜けたあと)。T14.5
             report(
@@ -709,6 +747,7 @@ mod relay {
                 self.dirs[1].moved,
                 reason,
                 Some(&self.socks),
+                half_close,
             );
         }
     }
@@ -804,7 +843,7 @@ mod relay {
                         match d.fill(socks) {
                             Ok(0) => {
                                 d.src_eof = true;
-                                first_eof.get_or_insert(d.src);
+                                first_eof.get_or_insert_with(|| (d.src, Instant::now()));
                                 progressed = true;
                             }
                             Ok(n) => {
@@ -817,7 +856,7 @@ mod relay {
                             }
                             Err(_) => {
                                 d.src_eof = true;
-                                first_eof.get_or_insert(d.src);
+                                first_eof.get_or_insert_with(|| (d.src, Instant::now()));
                                 progressed = true;
                             }
                         }
@@ -844,7 +883,7 @@ mod relay {
                             // 送信先が閉じた: この方向は終わり、相手にも伝える
                             Err(_) => {
                                 // 先に手を引いたのは**送信先**の側 (T14.4)
-                                first_eof.get_or_insert(d.dst);
+                                first_eof.get_or_insert_with(|| (d.dst, Instant::now()));
                                 d.pending = 0;
                                 // パイプに残ったぶんはもう渡せない。置き場へ返さずに閉じる
                                 // (返すと次のトンネルに他人のバイトが混ざる)
