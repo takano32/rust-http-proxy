@@ -17,7 +17,7 @@ use std::fmt::Write as _;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::cache::{Cache, now_epoch};
 use crate::metrics::Metrics;
@@ -843,7 +843,15 @@ pub fn spawn_every(
     store: Option<Arc<crate::persist::Store>>,
     interval: Duration,
 ) -> JoinHandle<()> {
-    let record = move |metrics: &Arc<Metrics>, cache: &Cache| {
+    // 前に転送速度を控えた時刻 (T14.39)。1 回目は `None` = 控えるだけで速さは出さない
+    let mut swept: Option<Instant> = None;
+    let mut record = move |metrics: &Arc<Metrics>, cache: &Cache| {
+        // いまの転送速度 (`/connections` の `rate_bps`。T14.39)。全 slot の `bytes` を
+        // 控えて差分 ÷ この周期を書く。**書くのはこのスレッドだけ**で、接続の経路は 0 増
+        metrics
+            .conns
+            .update_rates(swept.map_or(0, |t: Instant| t.elapsed().as_millis() as u64));
+        swept = Some(Instant::now());
         // 山の写真と、閉じた接続の分布の窓 (T14.6)。**標本より先に**撮るのは、
         // 越えてから撮るまでを 1 周期より短くするため
         metrics.take_burst_shot();

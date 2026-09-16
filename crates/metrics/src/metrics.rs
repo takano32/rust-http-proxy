@@ -1644,9 +1644,9 @@ impl Metrics {
                 // この環境で何が読めるか (T14.15) と canary (T14.10)。どちらも覚えてある結果を読むだけ
                 "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
-                // (`memory` も T14.21、`recent_quantiles` も T14.31、`self_bench` も T14.43 で
-                // 同じく末尾)
-                "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"self_bench\":{}}}"
+                // (`memory` も T14.21、`recent_quantiles` も T14.31、`rate_bps_total` も T14.39、
+                // `self_bench` も T14.43 で同じく末尾)
+                "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},\"self_bench\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1695,6 +1695,9 @@ impl Metrics {
             memory_json(rss, threads, extra.concurrency.live_threads as u64, cache),
             // 直近 1,024 本の正確な分位点 (T14.31)。区間の補間ではない実測の並び
             self.recent_quantiles_json(),
+            // いま流れているバイト/秒の合計 (T14.39)。history スレッドが 5 秒ごとに
+            // 書いた値を原子 1 回読むだけ (`/connections` の `rate_bps` の和)
+            self.conns.rate_bps_total(),
             // 起動直後に loopback だけで測った CPU/要求 と CPU/本 (T14.43)。
             // `PROXY_SELF_BENCH=off` (既定) なら `null` (覚えている結果が無い)
             crate::selfbench::status_json()

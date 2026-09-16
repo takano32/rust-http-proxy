@@ -443,6 +443,12 @@ pub struct ConnSlot {
     /// 追跡中の接続元か (`PROXY_TRACE_CLIENT`。T14.27)。**立てるのは accept 直後の
     /// 1 回だけ**で、以降は要求ごとに読むだけ (要求ごとの比較はこの旗 1 つ)
     traced: AtomicBool,
+    /// いまの転送速度を出すための 2 つ (T14.39)。`bytes_prev` は**前の周期で控えた
+    /// `bytes`**、`rate_bps` はその差分 ÷ 周期 (バイト/秒)。**書くのは history
+    /// スレッドだけ** ([`ConnSlot::sweep_rate`]) で、接続の経路は 1 命令も触らない
+    /// (中継は今までどおり [`ConnSlot::set_bytes`] で累計を置くだけ)
+    bytes_prev: AtomicU64,
+    rate_bps: AtomicU64,
 }
 
 /// [`ConnSlot::parked_at`] の「預けられていない」印。
@@ -470,6 +476,8 @@ impl ConnSlot {
             parked_ms: AtomicU64::new(0),
             parked_at: AtomicU64::new(NOT_PARKED),
             traced: AtomicBool::new(false),
+            bytes_prev: AtomicU64::new(0),
+            rate_bps: AtomicU64::new(0),
         }
     }
 
@@ -656,11 +664,36 @@ impl ConnSlot {
         self.bytes.load(Ordering::Relaxed)
     }
 
+    /// 直近の周期の転送速度 (バイト/秒)。**history スレッドが書いた最後の値**を読むだけ。
+    pub fn rate_bps(&self) -> u64 {
+        self.rate_bps.load(Ordering::Relaxed)
+    }
+
+    /// いまの `bytes` を控え、前に控えた値との差分 ÷ `ms` を [`ConnSlot::rate_bps`] に書く。
+    ///
+    /// **呼ぶのは history スレッドの周期だけ** ([`ConnTable::update_rates`])。1 本あたり
+    /// 原子の読み 1 回・入れ替え 1 回・書き 1 回で、接続の経路には 1 命令も増えない
+    /// (`bytes` は中継が暇になるたびに置いている累計をそのまま使う)。
+    /// `ms == 0` (起動直後の 1 回目) は控えるだけで速さを出さない — 割る幅が無いので、
+    /// 「起動より前から居る接続の累計 ÷ 0」という嘘の値を出さないため。
+    pub fn sweep_rate(&self, ms: u64) -> u64 {
+        let now = self.bytes.load(Ordering::Relaxed);
+        let prev = self.bytes_prev.swap(now, Ordering::Relaxed);
+        // `ms == 0` は `checked_div` が `None` = 速さ 0 (控えるだけ)
+        let bps = now
+            .saturating_sub(prev)
+            .saturating_mul(1000)
+            .checked_div(ms)
+            .unwrap_or(0);
+        self.rate_bps.store(bps, Ordering::Relaxed);
+        bps
+    }
+
     /// `/connections` の 1 要素。
     pub fn to_json(&self, now: Instant) -> String {
         let connect = self.is_connect();
         format!(
-            "{{\"id\":{},\"client\":\"{}\",\"target\":\"{}\",\"kind\":\"{}\",\"state\":\"{}\",\"age_secs\":{},\"bytes\":{},\"fds\":{}}}",
+            "{{\"id\":{},\"client\":\"{}\",\"target\":\"{}\",\"kind\":\"{}\",\"state\":\"{}\",\"age_secs\":{},\"bytes\":{},\"fds\":{},\"rate_bps\":{}}}",
             self.id,
             crate::json::escape(&self.client),
             crate::json::escape(&self.target.locked()),
@@ -670,6 +703,8 @@ impl ConnSlot {
             self.bytes(),
             // トンネルはクライアントとオリジンの 2 本、keep-alive はクライアントの 1 本
             if connect { 2 } else { 1 },
+            // 直近の周期の転送速度 (T14.39)。`bytes` が累計なのに対しこちらは「いま」
+            self.rate_bps(),
         )
     }
 }
@@ -684,6 +719,9 @@ impl ConnSlot {
 /// 済ませるためで、上限が `0` (既定) のときはこの表を作らない。
 pub struct ConnTable {
     on: AtomicBool,
+    /// 全接続の転送速度の和 (`/status` の `rate_bps_total`。T14.39)。
+    /// 書くのは history スレッドの周期だけで、`/status` は原子を 1 回読む
+    rate_total: AtomicU64,
     /// 接続元ごとの本数を数えているか (`PROXY_MAX_CONNS_PER_CLIENT` が設定されている間だけ)。
     /// **`--lite` でも数える**: 枠 ([`ConnSlot`]) を作らないまま本数だけ ±1 できるので、
     /// 記録を全部止めたプロファイルでも公平さの上限は効く (T14.13)
@@ -757,6 +795,7 @@ impl ConnTable {
     pub fn new() -> ConnTable {
         ConnTable {
             on: AtomicBool::new(true),
+            rate_total: AtomicU64::new(0),
             counting: AtomicBool::new(false),
             inner: Mutex::new(Conns::default()),
         }
@@ -768,6 +807,7 @@ impl ConnTable {
         if !on {
             // 接続元ごとの本数は `--lite` でも持てるので、捨てるのは枠だけ
             self.inner.locked().slots.clear();
+            self.rate_total.store(0, Ordering::Relaxed);
         }
     }
 
@@ -865,6 +905,30 @@ impl ConnTable {
             self.inner.locked().slots.values().map(Arc::clone).collect();
         v.sort_by_key(|s| s.id);
         v
+    }
+
+    /// 全 slot の `bytes` を控え直して、直近 `ms` の転送速度を書く (T14.39)。
+    ///
+    /// **呼ぶのは history スレッドの周期 (本番は 5 秒) の 1 行だけ**で、接続の経路
+    /// (accept / 中継 / close) には 1 命令も増えない。費用は 240 本で原子の読み書き
+    /// 240 回ぶんと表の鍵 1 回 (数 us)。`snapshot` ではなくここで鍵を取って回すのは、
+    /// 240 本ぶんの [`Arc`] の複製と並べ替えの方が控える仕事より重いため。
+    /// 戻り値と `/status` の `rate_bps_total` は**全接続の和**。
+    pub fn update_rates(&self, ms: u64) -> u64 {
+        let mut total: u64 = 0;
+        {
+            let g = self.inner.locked();
+            for slot in g.slots.values() {
+                total = total.saturating_add(slot.sweep_rate(ms));
+            }
+        }
+        self.rate_total.store(total, Ordering::Relaxed);
+        total
+    }
+
+    /// 全接続の転送速度の和 (`/status` の `rate_bps_total`)。原子の読み 1 回。
+    pub fn rate_bps_total(&self) -> u64 {
+        self.rate_total.load(Ordering::Relaxed)
     }
 
     pub fn len(&self) -> usize {
@@ -1991,6 +2055,62 @@ mod conn_tests {
         assert_eq!(t.len(), 1);
         t.unregister(1);
         assert_eq!(t.len(), 1, "2 回抹消しても増減しない");
+    }
+
+    /// いまの転送速度 (T14.39)。history スレッドの周期が `bytes` の差分を速さにする。
+    #[test]
+    fn sweeping_turns_the_byte_counter_into_a_rate() {
+        let t = ConnTable::new();
+        let now = Instant::now();
+        let a = t.register(1, "198.51.100.7", now).expect("登録できる");
+        let b = t.register(2, "198.51.100.8", now).expect("登録できる");
+        a.begin_tunnel("a.example.net:443");
+        b.begin_tunnel("b.example.net:443");
+
+        // 1 回目は控えるだけ (割る幅が無い)。5 MiB 運んでいても速さは 0
+        a.set_bytes(5 << 20);
+        assert_eq!(t.update_rates(0), 0);
+        assert_eq!(a.rate_bps(), 0);
+
+        // 5 秒で +5 MiB → 1 MiB/s、動かなかった方は 0
+        a.set_bytes(10 << 20);
+        assert_eq!(t.update_rates(5000), 1 << 20);
+        assert_eq!(a.rate_bps(), 1 << 20);
+        assert_eq!(b.rate_bps(), 0);
+        assert_eq!(t.rate_bps_total(), 1 << 20);
+
+        // 和は全接続ぶん
+        a.set_bytes((10 << 20) + (1 << 20));
+        b.set_bytes(2 << 20);
+        assert_eq!(t.update_rates(1000), (1 << 20) + (2 << 20));
+        assert_eq!(t.rate_bps_total(), 3 << 20);
+
+        // `/connections` の行の末尾に出る
+        let json = t.snapshot()[0].to_json(Instant::now());
+        assert!(
+            json.ends_with(",\"fds\":2,\"rate_bps\":1048576}"),
+            "{}",
+            json
+        );
+
+        // 止まれば次の周期で 0 に戻る
+        assert_eq!(t.update_rates(5000), 0);
+        assert_eq!(a.rate_bps(), 0);
+        assert_eq!(t.rate_bps_total(), 0);
+    }
+
+    /// `--lite` (記録しない) では枠ごと捨てるので和も 0 (T14.39)。
+    #[test]
+    fn the_rate_total_is_zero_without_the_table() {
+        let t = ConnTable::new();
+        let slot = t.register(1, "198.51.100.7", Instant::now()).expect("枠");
+        slot.set_bytes(1 << 20);
+        t.update_rates(1000);
+        assert_eq!(t.rate_bps_total(), 1 << 20);
+        t.set_enabled(false);
+        assert_eq!(t.rate_bps_total(), 0);
+        assert!(t.register(2, "198.51.100.8", Instant::now()).is_none());
+        assert_eq!(t.update_rates(1000), 0);
     }
 
     /// 閉じた接続の個票が 1 件ずつ残ること (`/recent`。T14.4)。
