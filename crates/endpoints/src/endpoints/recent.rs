@@ -1121,6 +1121,8 @@ mod tests {
             next_refresh_secs: Some(33),
             misses: 4,
             refreshes: 2,
+            // T14.37 で増えた欄 (引き直しで答えが変わった回数)。1 行の大きさに効く
+            changes: 1,
         };
         let mut body = String::from("{\"entries\":");
         let (shown, cut) = array_within(&mut body, vec![plain; 300].iter().map(|r| r.to_json()));
@@ -1149,6 +1151,7 @@ mod tests {
             next_refresh_secs: Some(u64::MAX),
             misses: u64::MAX,
             refreshes: u64::MAX,
+            changes: u64::MAX,
         };
         let mut body = String::from("{\"entries\":");
         let (shown, cut) = array_within(&mut body, vec![worst; 4096].iter().map(|r| r.to_json()));
