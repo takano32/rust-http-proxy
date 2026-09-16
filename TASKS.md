@@ -4071,7 +4071,7 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
       を動かす — 「測る行為が状態を変える」罠)。断るときに応答を返さないのは、誰が叩いているか分からない相手に「ここに何が居るか」を
       教えないため。**閉め出しの保険は無い** (書き損じると `/status` も読めない。`.env` を直せば次の接続から戻る)。
     - マージのとき `recent.rs` のテストの `Endpoint` リテラル 2 か所に `readonly: false` を親が足した (main が先に進んでいたため)。
-- [ ] **T14.19 `/metrics` に段階・RTT・canary のサマリを出す (Grafana で見たい人のため)**
+- [x] **T14.19 `/metrics` に段階・RTT・canary のサマリを出す (Grafana で見たい人のため)**
   - 目的: T14.3 の段階、T14.5 の RTT、T14.10 の canary は JSON と画面にしか出ない。`/metrics` にも出せば Prometheus + Grafana で
     長期の推移が見られる (このリポジトリのダッシュボードは 30 日まで)。
   - 変更箇所: `crates/prom/src/prom.rs`、README (`/metrics` の一覧)。
@@ -4080,6 +4080,26 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
     `sorahost_warm_names`、`sorahost_lock_contention_total{lock=...}`。**ホスト別には出さない** (系列が増えすぎる。T12.4 (4) と同じ判断)。
   - 受け入れ基準: `/metrics` が 400 KiB 以下のまま (いま 185 KB)、単体テストで各系列の HELP / TYPE / 値の形。費用 0 (組み立ては
     `/metrics` のときだけ)。
+  - 結果 (2026-09-16、`b0cd9d3`): T14.3 の段階と T14.1 の keep-warm、T14.3 (3) のロックの取り合いを `/metrics` に出した
+    (T14.5 の `sorahost_rtt_seconds{side=}` と T14.10 の `sorahost_canary_seconds{stage=}` は既にあるので重複させていない)。
+    **`sorahost_stage_seconds{kind="connect"|"forward",stage=...}`** の `_bucket{le=}` / `_sum` / `_count` で、CONNECT 7 段 +
+    forward 6 段 = 13 本、区間は `/history` と同じ 12 段 + `+Inf`、`le` も `_sum` も秒。**累計は起動から**にした
+    (Prometheus のヒストグラムは単調増加が前提なので、`/profile` の窓 — 1 時間 / 1 日で古い標本が落ちる — の和は使えない。
+    `Profile` に累計の `Stages` を 1 つ持たせ、5 秒ごとの `push` で足す = 熱い経路は 1 命令も増えず、最後の 5 秒ぶんは
+    次の収集で入る)。あわせて `sorahost_warm_names` (gauge) と
+    `sorahost_lock_contention_total{lock="stats"|"dns"|"park"|"workers"}` (counter)。**ホスト別には出さない** (T12.4 (4))。
+    **1 本も観測していないうちは段階の系列を 1 本も出さない** (`--lite` は段階の時計を読まないのでずっとこの形。
+    `sorahost_kernel_*` と同じ判断で、源が無いときに 0 を出すと「一瞬で済んだ」と読めてしまう)。
+    大きさは **200 系列 / +14,192 B** (段階 195 + ロック 4 + keep-warm 1) で、ホスト表と接続元表が満杯のときで
+    **243,218 → 257,410 B** (上限 409,600 B に 148 KiB の残り)。**費用 0** (組み立ては `/metrics` に来たときだけ、
+    累計を足すのは 5 秒に 1 回)。CONNECT 確立のヒストグラムと同じ書き出しは `window_histogram` にまとめた
+    (`sorahost_connect_seconds` の出力は 1 バイトも変わらない)。テストは単体 3 本を新設 (proxy-prom 5 → 8 本)。
+    - `promtool` が無いので形は**目視 + テスト**で見た (族に HELP / TYPE が 1 組、ラベルの組ごとに bucket → sum → count、
+      累積になっていること、0 ms が `≤1 ms` に足し戻ること)。実バイナリでの目視は親の通しと再デプロイ後に。起動直後は段階が
+      累計に入るまで最大 5 秒かかる (`--lite` と区別が付かない点は README に)。`sorahost_queue_*` (ワーカーの待ち行列) は本文に
+      無いので出していない (足すなら 1 行)。
+    - デプロイ先: Grafana で `histogram_quantile(0.95, rate(sorahost_stage_seconds_bucket{kind="connect"}[5m]))` が段階ごとに
+      引ける。累計は再起動で 0 に戻る (`rate()` は増加分だけを見るので問題ない)。
 - [x] **T14.20 日次の要約を永久に残す (`$HOME/.rust-http-proxy.daily.jsonl`)**
   - 目的: `/history` は 30 日で消える。1 日 1 行 (要求数、CONNECT 確立 p50 / p95、名前解決ミス/接続、エラー、山、RSS、版) の要約なら
     1 年で 100 KB で、**「いつから遅くなったか」「デプロイの前後で何が変わったか」**を年単位で追える。

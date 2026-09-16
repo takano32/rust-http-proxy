@@ -503,6 +503,11 @@ fn push_windows(out: &mut String, ws: &[Window]) {
 #[derive(Default)]
 pub struct Profile {
     rings: [Mutex<VecDeque<Sample>>; 2],
+    /// **起動からの累計**の段階 (`/metrics` の `sorahost_stage_seconds`。T14.19)。
+    ///
+    /// Prometheus のヒストグラムは単調増加が前提なので、窓 (環状バッファ) の和ではなく
+    /// ここに積む。足すのは 5 秒に 1 回 ([`Profile::push`]) だけで、熱い経路は通らない。
+    stage_totals: Mutex<Stages>,
     /// スレッドの標本の状態 ([`SamplerState`])
     sampler: std::sync::atomic::AtomicU8,
     /// 表に無いシステムコール番号と回数 (`sys_N` で出す。最大 [`MAX_UNKNOWN`] 種)
@@ -515,8 +520,16 @@ pub const MAX_UNKNOWN: usize = 16;
 impl Profile {
     /// 5 秒の標本を足し、1 分の窓が閉じていればそれも作る。
     pub fn push(&self, s: Sample) {
+        self.stage_totals.locked().merge(&s.stages);
         Self::append(&self.rings[0], s, RESOLUTIONS[0].1);
         self.roll(s.t);
+    }
+
+    /// 起動からの段階の累計 (`/metrics` の `sorahost_stage_seconds`。T14.19)。
+    ///
+    /// 窓と違って 0 に戻らない。最後の 5 秒の標本まで (= [`TICK`] の遅れ) が入る。
+    pub fn stage_totals(&self) -> Stages {
+        *self.stage_totals.locked()
     }
 
     /// 直前の 1 分の窓がまだ無ければ、5 秒の標本から作る ([`crate::history::History`] と同じ形)。

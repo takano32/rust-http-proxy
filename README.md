@@ -584,6 +584,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       入り切らないときは**新しい標本を残して**古い方から落とし `"truncated": true` を出します。**`--lite` では `{"profile":"off"}`**
     - 段階の窓は **ms 刻み**なので、loopback のように 1 要求が 1 ms に満たない環境ではほとんどの段階が 0 に潰れます
       (これはデプロイ先の 6〜30 ms の待ちを読むための道具です。手元の速さを見るなら `cpu_per_request_us` の方)
+    - **Prometheus で長く見るなら** 同じ段階が `/metrics` の
+      `sorahost_stage_seconds{kind="connect"|"forward",stage=...}` にも**起動からの累計**で出ます
+      (`/profile` の窓は 1 時間 / 1 日で古い標本から落ちます)。ロックの取り合いは
+      `sorahost_lock_contention_total{lock=...}` です
 - **タイムアウト制御**:
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
 
@@ -1345,6 +1349,23 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 `cache` の `revalidations_dropped` は、上限に当たって捨てた裏側の再検証の数です
 (こちらは「後でやればいい仕事」なので待たせません)。`cache` の `not_stored_rotations` は
 「保存されないと分かった URL」の記憶 (ブルームフィルタ) を入れ替えた回数です。
+
+**Grafana で段階と待ちを見る**: `/profile` の段階は `/metrics` にも
+`sorahost_stage_seconds{kind="connect"|"forward",stage=...}` の `_bucket{le=}` / `_sum` / `_count` として出ます
+(CONNECT 7 段 = `queue` / `client_read` / `dns` / `connect` / `first_relay` / `relay` / `park`、
+転送 6 段 = `queue` / `client_read` / `origin` / `send` / `ttfb` / `body`。区間は `/history` と同じ 12 段 + `+Inf` で、
+`le` も `_sum` も**秒**)。**累計は起動から**です: Prometheus のヒストグラムは単調増加が前提なので、
+`/profile` の窓 (1 時間 / 1 日で古い標本から落ちる) の和ではなく、起動からの累計を別に持っています
+(再起動で 0 に戻るので、`rate()` / `histogram_quantile()` はそのまま使えます)。段階が累計に入るのは
+**5 秒ごと**なので、最後の 5 秒ぶんは次の収集で入ります。**`--lite` では段階を測っていないので 1 系列も出ません**
+(`sorahost_kernel_*` と同じ判断で、源が無いときに 0 を出しません)。**ホスト別には出しません**
+(系列が増えすぎるため。ホスト別は `/hosts` と `/status` の `hosts[]` で見ます)。
+あわせて `sorahost_warm_names` (keep-warm で裏から引き直し続けている名前の数。gauge) と
+`sorahost_lock_contention_total{lock="stats"|"dns"|"park"|"workers"}`
+(そのロックを取るときに**本当に待たされた**回数の累計。counter) が出ます。
+canary の `sorahost_canary_seconds{stage="dns"|"connect"}` (最後の値) と
+`sorahost_rtt_seconds_sum` / `_count{side=}` は前からあるものです。
+段階の 13 本で `/metrics` は **約 14 KB 増えます** (ホスト表と接続元表が満杯のときで 243 → 257 KB。上限は 400 KiB)。
 
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
