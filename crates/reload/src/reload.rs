@@ -289,6 +289,12 @@ pub fn spawn(live: Arc<Live>, tick: impl Fn() + Send + 'static) -> Option<thread
     let handle = thread::Builder::new()
         .name("env-reload".into())
         .spawn(move || {
+            // この環境で何が読めるか (T14.15) は**起動時 1 回 + 1 時間ごと**。専用のスレッドは
+            // 立てず、この一巡 (最長 `POLL_INTERVAL`) のついでに測り直す (要求の経路では触らない)。
+            // 起動時の 1 回もここで測る: 名前解決の測定だけ最大 2 秒かかるので、
+            // 待ち受けを始めるのを遅らせないため
+            crate::sysinfo::capabilities::refresh();
+            let mut caps_at = std::time::Instant::now();
             let mut seen = stamp(&path);
             loop {
                 let event = match &watch {
@@ -313,6 +319,10 @@ pub fn spawn(live: Arc<Live>, tick: impl Fn() + Send + 'static) -> Option<thread
                 if event || now != seen {
                     seen = now;
                     live.reload();
+                }
+                if caps_at.elapsed() >= crate::sysinfo::capabilities::REFRESH {
+                    caps_at = std::time::Instant::now();
+                    crate::sysinfo::capabilities::refresh();
                 }
                 tick();
             }

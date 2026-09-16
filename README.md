@@ -196,6 +196,16 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
     **最近のエラー (直近 20)** と **いまの接続 (上位 50)** の表 (どちらも 5 秒ごと)、
     URL の照会と削除、全消去)、`/healthz`, `/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
+  - **`capabilities` (この環境で何が読めるか)**: `/status` と `/config` の `capabilities` に
+    `{"proc_syscall":true,"tcp_info":true,"cgroup_cpu":true,"cgroup_pressure":true,"ipv6_route":true,"resolver_ms":9,"home_writable":true,"checked_at":1758...}`。
+    統計の `null` が「無かった」のか「読めなかった」のかを先に答えるためのもので、
+    `proc_syscall` は `/proc/self/task/<tid>/syscall` (スレッドの状態)、`tcp_info` は待ち受けソケットへの
+    `getsockopt(SOL_TCP, TCP_INFO)` (カーネルの RTT と再送)、`cgroup_cpu` / `cgroup_pressure` は自分の cgroup の
+    `cpu.stat` / `cpu.pressure` (CPU の絞りと PSI)、`ipv6_route` は `/proc/net/ipv6_route` の既定経路、
+    `resolver_ms` は `example.com` を 1 回引くのにかかった ms (締め切り 2 秒、失敗は `null`)、
+    `home_writable` は `$HOME` に書けるか (状態ファイルの置き場) を見ます。
+    **判定は起動時 1 回と 1 時間ごと**で (`.env` の監視スレッドのついで。要求の経路では何もしません)、
+    `checked_at` がその時刻です。Linux 以外では `/proc` も cgroup も無いので `false` になります
   - **個票 (集計では読めない「誰が・いつ・なぜ」。T13.4)**: `/errors?n=100` で直近のエラー
     (時刻・`connect` / `forward`・宛先・原因・名前解決 ms・接続 ms・返した状態コード・接続元。500 件の環状、プロセスのメモリだけ)。
     **403 で拒否した要求もここに入ります** (原因は `acl` / `blocklist` / `connect_port` / `local`、状態コード 403)。

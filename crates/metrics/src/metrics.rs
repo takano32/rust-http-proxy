@@ -1234,7 +1234,9 @@ impl Metrics {
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
-                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{}}}"
+                // この環境で何が読めるか (T14.15)。**覚えてある結果を読むだけ**で、
+                // 測るのは起動時と 1 時間ごと (`.env` の監視スレッド)。まだなら `null`
+                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1269,6 +1271,7 @@ impl Metrics {
             crate::net::ipv6_status_json(),
             extra.blocklist,
             extra.state_file,
+            crate::sysinfo::capabilities::status_json(),
             cache_json
         )
     }

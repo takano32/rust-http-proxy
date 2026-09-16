@@ -77,6 +77,12 @@ fn main() {
         }
     };
 
+    // `TCP_INFO` が読めるかを試す相手として、待ち受けソケットを 1 本覚えておく (T14.15)。
+    // 判定そのものは `.env` の監視スレッドが起動時と 1 時間ごとに行う (要求の経路では触らない)
+    if let Some(l) = listeners.first() {
+        rust_http_proxy::sysinfo::capabilities::set_listener(l);
+    }
+
     let live = reload::Live::new(config);
     let config = live.config();
     // 接続プールの掃除は専用スレッドを立てず、.env の監視スレッドの一巡ごとに行う
@@ -92,6 +98,12 @@ fn main() {
             }
         })
     };
+    if _reload.is_none() {
+        // `HOME` が無くて監視スレッドが立たない環境でも、何が読めるかは 1 回測る (T14.15)
+        let _ = thread::Builder::new()
+            .name("capabilities".into())
+            .spawn(rust_http_proxy::sysinfo::capabilities::refresh);
+    }
     let metrics = Arc::new(Metrics::new());
     // `--lite` では `/connections` に登録しない (空の一覧を返す。T1.4 の方針。T13.4)
     metrics.conns.set_enabled(!config.lite);
