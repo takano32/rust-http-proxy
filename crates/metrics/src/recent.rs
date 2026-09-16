@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::metrics::ErrCause;
+use crate::metrics::{BlockCause, ErrCause};
 use crate::sync::LockExt;
 
 /// エラーの個票を何件覚えておくか (固定)。
@@ -40,6 +40,27 @@ pub const MAX_CLIENT: usize = 45;
 /// 記録しておく ms の上限 (7 桁 = 約 2.7 時間)。1 件の長さを決めるために頭打ちにする。
 const MAX_MS: u64 = 9_999_999;
 
+/// 個票 1 件の原因。
+///
+/// 5xx を返したエラーは [`ErrCause`] (`/status` の `errors_by_cause` と同じ 8 つ)、
+/// 403 で拒否したものは [`BlockCause`] (T14.2 (4))。**403 は集計の配列には乗らない**
+/// (乗せると `.rrd` の標本が領域に収まらず、版を上げて統計を捨てることになる)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryCause {
+    Error(ErrCause),
+    Blocked(BlockCause),
+}
+
+impl EntryCause {
+    /// `/errors` の `cause` に出す名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            EntryCause::Error(c) => c.name(),
+            EntryCause::Blocked(c) => c.name(),
+        }
+    }
+}
+
 /// エラー 1 件の個票。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ErrorEntry {
@@ -49,8 +70,9 @@ pub struct ErrorEntry {
     pub connect: bool,
     /// 宛先 (`host:port`)
     pub target: String,
-    /// 原因 ([`ErrCause`]。`/status` の `errors_by_cause` と同じ名前で出す)
-    pub cause: ErrCause,
+    /// 原因 (5xx は [`ErrCause`] = `/status` の `errors_by_cause` と同じ名前、
+    /// 403 は [`BlockCause`] = `acl` / `blocklist` / `connect_port` / `local`)
+    pub cause: EntryCause,
     /// 名前解決に費やした ms
     pub dns_ms: u64,
     /// 接続 (SYN → 確立) に費やした ms
@@ -69,7 +91,7 @@ impl ErrorEntry {
         target: &str,
         client: &str,
         status: u16,
-        cause: ErrCause,
+        cause: EntryCause,
         dns_ms: u64,
         connect_ms: u64,
     ) -> ErrorEntry {
@@ -241,8 +263,9 @@ pub struct ConnSlot {
     /// 受けた時刻 (`age_secs` を出すため)
     pub started: Instant,
     state: AtomicU8,
-    /// CONNECT の宛先。**書くのは 1 本につき 1 回だけ** (トンネルを開いたとき)。
-    /// keep-alive の HTTP 接続は要求ごとに宛先が変わるので空のまま (要求ごとに触らない)
+    /// 宛先。**書くのは 1 本につき 1 回だけ**: CONNECT はトンネルを開いたとき
+    /// ([`ConnSlot::begin_tunnel`])、keep-alive の HTTP 接続は**最初の要求**のとき
+    /// ([`ConnSlot::set_first_target`]。T14.2 (5))。要求ごとには触らない
     target: Mutex<String>,
     /// CONNECT トンネルか (`false` = keep-alive の HTTP)
     connect: AtomicBool,
@@ -270,6 +293,20 @@ impl ConnSlot {
 
     pub fn state(&self) -> ConnState {
         ConnState::from_u8(self.state.load(Ordering::Relaxed))
+    }
+
+    /// keep-alive の HTTP 接続の**最初の要求の宛先**を書く (T14.2 (5))。
+    ///
+    /// T13.4 では「要求ごとに宛先が変わるので空のまま」にしていたが、`/connections` で
+    /// 占有の内訳を読むとき **`http` の行だけ宛先が空** だと何に使われている接続か分からない。
+    /// 要求ごとには書かない方針はそのままで、**接続の最初の 1 回だけ**書く
+    /// (表の鍵は取らない。取るのはこの枠の `target` の鍵 1 つで、接続あたり 1 回)。
+    /// 既に何か入っていれば触らない (CONNECT の宛先を上書きしない)。
+    pub fn set_first_target(&self, target: &str) {
+        let mut t = self.target.locked();
+        if t.is_empty() {
+            *t = clip(target, MAX_TARGET);
+        }
     }
 
     /// CONNECT トンネルになった (宛先が決まった)。**1 本につき 1 回だけ呼ぶ。**
@@ -389,7 +426,7 @@ mod tests {
             &format!("h{}.example.net:443", n),
             "127.0.0.1",
             502,
-            ErrCause::Refused,
+            EntryCause::Error(ErrCause::Refused),
             0,
             1,
         )
@@ -436,7 +473,7 @@ mod tests {
             &long,
             "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6xx",
             502,
-            ErrCause::Unreachable,
+            EntryCause::Error(ErrCause::Unreachable),
             u64::MAX,
             u64::MAX,
         );
@@ -446,6 +483,38 @@ mod tests {
         assert!(json.len() <= 256, "1 件が {} B", json.len());
         assert!(json.contains("\"kind\":\"forward\""));
         assert!(json.contains("\"cause\":\"unreachable\""));
+    }
+
+    /// 403 の個票は `/errors` に `acl` / `blocklist` の名前で出る (T14.2 (4))。
+    ///
+    /// 集計 (`errors_by_cause`) には乗らないので、[`ErrCause`] とは別の型で持つ。
+    #[test]
+    fn blocked_entries_carry_their_own_cause_names() {
+        for (cause, name) in [
+            (BlockCause::Acl, "acl"),
+            (BlockCause::Blocklist, "blocklist"),
+            (BlockCause::ConnectPort, "connect_port"),
+            (BlockCause::Local, "local"),
+        ] {
+            let e = ErrorEntry::new(
+                true,
+                "ads.example.net:443",
+                "198.51.100.7",
+                403,
+                EntryCause::Blocked(cause),
+                0,
+                0,
+            );
+            let json = e.to_json();
+            assert!(
+                json.contains(&format!("\"cause\":\"{}\"", name)),
+                "{}",
+                json
+            );
+            assert!(json.contains("\"status\":403"), "{}", json);
+            assert!(json.contains("\"kind\":\"connect\""), "{}", json);
+            assert!(json.len() <= 256, "1 件が {} B", json.len());
+        }
     }
 
     #[test]

@@ -287,8 +287,6 @@ fn inherit_on_listener(
     None
 }
 
-/// 1 つのクライアント接続で処理する最大要求数 (keep-alive)。
-const MAX_REQUESTS_PER_CONNECTION: usize = 1000;
 /// 要求行・ヘッダー行 1 本の最大長と、ヘッダー行数の上限 (超えたら 414 / 431)。
 const MAX_LINE: usize = 64 * 1024;
 const MAX_HEADER_LINES: usize = 256;
@@ -941,6 +939,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         park,
         workers,
         peer_ip,
+        slot,
         ..
     } = conn;
     let peer_ip: &str = peer_ip;
@@ -1216,11 +1215,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // ローカル宛ての判定で引いた答え (接続でもう一度引かないために持ち回す。T12.7)
     let mut resolved: Option<dns::Resolved> = None;
     let denied = if !config.acl.is_allowed(target_host) {
-        Some("ACL")
+        Some(metrics::BlockCause::Acl)
     } else if blocklist::is_blocked(bare_host) {
-        Some("blocklist")
+        Some(metrics::BlockCause::Blocklist)
     } else if is_connect && !config.connect_ports.allows(host_port.unwrap_or(443)) {
-        Some("CONNECT port")
+        Some(metrics::BlockCause::ConnectPort)
     } else if !config.allow_local {
         // クラウドのメタデータ (169.254.169.254) 経由の SSRF を止める。
         // **判定に使った答えはそのまま接続へ渡す** (名前解決は 1 要求 1 回。T12.7)。
@@ -1230,7 +1229,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         let _ = dns::take_family();
         let (local, r) = acl::resolve_target(target_host);
         resolved = r;
-        local.then_some("local address")
+        local.then_some(metrics::BlockCause::Local)
     } else {
         None
     };
@@ -1238,7 +1237,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         log_warn!(
             Some(conn_id),
             "403 Forbidden ({} blocked host: {})",
-            why,
+            why.label(),
             target_host
         );
         metrics.record_host(
@@ -1247,6 +1246,9 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             0,
         );
         metrics.record_client(peer_ip, metrics::HostOutcome::Blocked, 0, None);
+        // 個票にも 1 件残す (`/errors`。T14.2 (4))。403 は集計では `blocked` に数えてあり、
+        // `errors_by_cause` には乗らないので、**誰が何を拒否されたか**はここでしか読めない
+        metrics.record_blocked(is_connect, target_host, peer_ip, why);
         (&*client).write_all(FORBIDDEN_RESPONSE)?;
         (&*client).flush()?;
         return Ok(Step::Close);
@@ -1272,6 +1274,17 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         });
     }
 
+    // keep-alive の HTTP 接続の宛先を `/connections` に出す (T14.2 (5))。
+    // **書くのは接続の最初の要求のときだけ** (2 本目以降は宛先が変わりうるが、
+    // 要求ごとに表を触らない方針は T13.4 のまま)。CONNECT はトンネルを開くときに書く
+    if *served == 0
+        && let Some(slot) = slot.as_ref()
+    {
+        slot.set_first_target(target_host);
+    }
+    // この接続で処理する最後の要求か (`Config::max_requests_per_conn`。T14.2)。
+    // `http` 側はこれが立っていると応答に `Connection: close` を付け、`keep` に false を返す
+    let last = *served + 1 >= config.max_requests_per_conn;
     let shared = http::Shared {
         timeout: config.timeout,
         keepalive: config.keepalive,
@@ -1283,6 +1296,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         workers: &*workers,
         // プールに無くて繋ぎに行くときは、判定で引いた答えを使う (T12.7)
         resolved: resolved.as_ref(),
+        last,
     };
     let keep = http::handle_http_with_headers(
         client,
@@ -1294,7 +1308,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     )?;
     scratch.request_line = request_line;
     *served += 1;
-    if !keep || *served >= MAX_REQUESTS_PER_CONNECTION {
+    // `last` が立っていれば `keep` は必ず false (応答に `Connection: close` が付いている)
+    if !keep {
         Ok(Step::Close)
     } else {
         Ok(Step::Next)

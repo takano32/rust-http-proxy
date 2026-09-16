@@ -109,6 +109,20 @@ if (bucketSum !== total) fail('区間の合計 ' + bucketSum + ' != 件数 ' + t
 const kpi = api.winQuantile(merged.buckets, merged.count, merged.max, 0.5, hist.bounds_ms);
 if (!(kpi >= 0 && kpi <= merged.max)) fail('KPI の p50 が範囲外: ' + kpi);
 
+// 累計カウンタの列は **0 以上の数**で読めること (ブラウザ側は差分でレートにする)。
+// 列がずれると入れ子の配列 (`connect_buckets` / `errors_by_cause`) や undefined が入るので、
+// 型で気づける。**単調増加は見ない**: 累計は再起動で 0 に戻るので、複数の起動をまたぐ
+// 出力 (`res=3600` は 30 日ぶん) では正しくても減る。
+// `evicted_idle` は T14.2 でレコードの余白に足した列なので、**古い出力には無い** (飛ばす)
+for (const k of ['requests', 'bytes', 'evicted_idle']) {
+  if (!(k in samples[0])) continue;
+  for (const s of samples) {
+    if (typeof s[k] !== 'number' || !(s[k] >= 0)) {
+      fail('累計のはずの ' + k + ' が 0 以上の数で読めていない: ' + JSON.stringify(s[k]));
+    }
+  }
+}
+
 // 直近 60 標本のゲージの山 (「接続中」のカードの「山 (直近 5 分)」。T13.3)
 const want = recent.reduce(
   (a, s) => Math.max(a, s.active_max != null ? s.active_max : s.active),

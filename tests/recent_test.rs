@@ -392,3 +392,100 @@ fn test_integration_hosts_lists_every_host_while_status_keeps_fifty() {
     assert_eq!(count_hosts(&ten), 10, "{}", ten);
     assert!(ten.contains("\"count\":60"), "{}", ten);
 }
+
+/// ACL で拒否した CONNECT が `/errors` に `acl` として見えること (T14.2 (4))。
+///
+/// 403 は 5xx ではないので集計 (`errors_by_cause`) には乗らない。**誰が何を拒否されたか**を
+/// 読めるのは個票だけなので、そこに出ることを見る。
+#[test]
+fn test_integration_errors_records_a_403_with_its_reason() {
+    use rust_http_proxy::config::Config;
+    use std::time::Duration;
+
+    let mut cfg = Config::new(
+        "0",
+        None,
+        Some("blocked.example, 127.0.0.1"),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    cfg.keepalive = Duration::from_secs(2);
+    let proxy_port = start_test_proxy(cfg);
+
+    // ACL で拒否される CONNECT (127.0.0.1 は deny_hosts に入れてある)
+    let target = "127.0.0.1:443";
+    let out = raw_get(
+        proxy_port,
+        &format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", target, target),
+    );
+    assert!(out.starts_with("HTTP/1.1 403"), "{}", out);
+
+    let json = endpoint_json(proxy_port, "/errors");
+    assert!(json.contains("\"recorded\":1"), "{}", json);
+    assert!(json.contains("\"cause\":\"acl\""), "{}", json);
+    assert!(json.contains("\"status\":403"), "{}", json);
+    assert!(json.contains("\"kind\":\"connect\""), "{}", json);
+    assert!(
+        json.contains(&format!("\"target\":\"{}\"", target)),
+        "宛先が無い: {}",
+        json
+    );
+    assert!(json.contains("\"client\":\"127.0.0.1\""), "{}", json);
+
+    // 集計の方は今までどおり: 403 は `blocked` に数え、`errors_by_cause` は全部 0 のまま
+    let status = endpoint_json(proxy_port, "/status");
+    assert!(status.contains("\"blocked\":1"), "{}", status);
+    assert!(
+        status.contains("\"errors_by_cause\":[0,0,0,0,0,0,0,0]"),
+        "403 が集計の原因別に混ざっている: {}",
+        status
+    );
+}
+
+/// keep-alive の HTTP 接続が `/connections` に**最初の要求の宛先つき**で見えること (T14.2 (5))。
+///
+/// T13.4 では `http` の行だけ宛先が空で、占有の内訳を読むときに何に使われている接続か
+/// 分からなかった。**書くのは接続の最初の要求のとき 1 回だけ**なので、2 本目に別のホストへ
+/// 要求しても宛先は変わらない (要求ごとに表を触らないという方針はそのまま)。
+#[test]
+fn test_integration_connections_shows_the_first_target_of_a_keepalive_http_connection() {
+    let (first_port, _first) = start_mock_origin();
+    let (second_port, _second) = start_mock_origin();
+    let proxy_port = start_test_proxy(park_config());
+
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    let first_host = format!("127.0.0.1:{}", first_port);
+    let (head, _) = one_keepalive_request(&mut stream, &first_host, "/one");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+
+    let json = endpoint_json(proxy_port, "/connections");
+    assert!(
+        json.contains(&format!("\"target\":\"{}\",\"kind\":\"http\"", first_host)),
+        "http の行に最初の宛先が無い: {}",
+        json
+    );
+    // 記述子は 1 本 (クライアント側だけ。オリジンへの接続はプールが持つ)
+    assert!(json.contains("\"fds\":1"), "{}", json);
+    // `/connections` を取りに来た接続自身は自分宛てなので宛先を持たない
+    assert!(
+        json.contains("\"target\":\"\",\"kind\":\"http\""),
+        "{}",
+        json
+    );
+
+    // 2 本目は別のホストへ。宛先は最初のままで、行は増えない
+    let second_host = format!("127.0.0.1:{}", second_port);
+    let (head, _) = one_keepalive_request(&mut stream, &second_host, "/two");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    let json = endpoint_json(proxy_port, "/connections");
+    assert!(
+        json.contains(&format!("\"target\":\"{}\",\"kind\":\"http\"", first_host)),
+        "2 本目で宛先が書き換わった: {}",
+        json
+    );
+    assert!(
+        !json.contains(&format!("\"target\":\"{}\"", second_host)),
+        "要求ごとに宛先を書いている: {}",
+        json
+    );
+}

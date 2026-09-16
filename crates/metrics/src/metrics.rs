@@ -95,6 +95,46 @@ pub const ERR_CAUSE_NAMES: [&str; ERR_CAUSES] = [
     "other",
 ];
 
+/// 403 で拒否した理由 (T14.2 (4))。**個票 (`/errors`) にだけ出す。**
+///
+/// [`ErrCause`] に足さないのは、`errors_by_cause` の配列が伸びると履歴の標本 1 本が
+/// `.rrd` の領域 (508 B) に収まらなくなり、**版を上げて統計を全部捨てる**ことになるため
+/// (63 項目 × 8 B = 504 B で、余白はもう 4 B しかない)。403 はそもそもエラー (5xx) ではなく
+/// `HostOutcome::Blocked` として `blocked` に数えてあるので、集計はそのまま。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockCause {
+    /// `PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS` で拒否した
+    Acl,
+    /// ブロックリストに載っていた
+    Blocklist,
+    /// `PROXY_CONNECT_PORTS` の外のポートへの CONNECT だった
+    ConnectPort,
+    /// ループバック・リンクローカル宛て (`PROXY_ALLOW_LOCAL=off` の SSRF 除け)
+    Local,
+}
+
+impl BlockCause {
+    /// `/errors` の `cause` に出す名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            BlockCause::Acl => "acl",
+            BlockCause::Blocklist => "blocklist",
+            BlockCause::ConnectPort => "connect_port",
+            BlockCause::Local => "local",
+        }
+    }
+
+    /// 警告ログに出す文言 (`403 Forbidden (... blocked host: ...)`)。
+    pub fn label(self) -> &'static str {
+        match self {
+            BlockCause::Acl => "ACL",
+            BlockCause::Blocklist => "blocklist",
+            BlockCause::ConnectPort => "CONNECT port",
+            BlockCause::Local => "local address",
+        }
+    }
+}
+
 impl ErrCause {
     /// `io::Error` から原因を決める。**この判定はエラーのときにしか通らない**ので、
     /// 文字列を見るところがあっても熱い経路には乗らない。
@@ -551,9 +591,26 @@ impl Metrics {
             target,
             client,
             status,
-            cause,
+            crate::recent::EntryCause::Error(cause),
             detail.dns_ms,
             detail.connect_ms,
+        ));
+    }
+
+    /// 403 で拒否した 1 件を個票のリングに写す (`/errors`。T14.2 (4))。
+    ///
+    /// 集計 (`errors_by_cause`) は**変えない** ([`BlockCause`] の説明のとおり、
+    /// 配列を伸ばすと `.rrd` の版が上がる)。ここも**拒否した経路からだけ**通るので、
+    /// 通した要求には 1 命令も足さない。
+    pub fn record_blocked(&self, connect: bool, target: &str, client: &str, cause: BlockCause) {
+        self.errors.push(crate::recent::ErrorEntry::new(
+            connect,
+            target,
+            client,
+            403,
+            crate::recent::EntryCause::Blocked(cause),
+            0,
+            0,
         ));
     }
 

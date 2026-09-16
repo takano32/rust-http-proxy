@@ -1,0 +1,7 @@
+# ビルドコンテキストから外すもの (`docker build .` が daemon へ送る前に効く)。
+#
+# `target/` はここでは 1 GB を超える (`cargo build --release` を回した作業ツリー)。
+# `Dockerfile` は `COPY` しないのでイメージには入らないが、**送るだけで遅くなる**ので外す。
+# 2 行目はワークスペースメンバー (`crates/*/target`) の分。
+target/
+**/target/

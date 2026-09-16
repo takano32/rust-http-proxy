@@ -172,11 +172,17 @@ pub struct Sample {
     pub active_max: u64,
     pub threads_max: u64,
     pub fds_max: u64,
+    /// 上限に当たって暇なトンネルを追い出した回数の累計 (T13.2)。
+    ///
+    /// **レコードの末尾に足した** (T14.2)。標本 1 本は 63 項目 × 8 B = 504 B で、
+    /// 領域の 508 B にまだ収まるので `.rrd` の版は上げていない (上げると統計が全部消える)。
+    /// 版 2 で書かれた古いレコードはこの位置がゼロ埋めなので 0 として読み戻る
+    pub evicted_idle: u64,
 }
 
 /// `/history` の 1 標本の列名 (この順で [`Sample::push_row`] が値を並べる)。
 /// **キーを標本ごとに繰り返さない**ため、JSON は配列の配列にしてある (T12.4 (3))。
-pub const KEYS: [&str; 31] = [
+pub const KEYS: [&str; 32] = [
     "t",
     "requests",
     "bytes",
@@ -208,6 +214,7 @@ pub const KEYS: [&str; 31] = [
     "fds",
     "fds_max",
     "max_fds",
+    "evicted_idle",
 ];
 
 impl Sample {
@@ -244,6 +251,7 @@ impl Sample {
             active_max: active as u64,
             threads_max: threads,
             fds_max: fds,
+            evicted_idle: metrics.evicted_idle.load(Ordering::Relaxed),
         }
     }
 
@@ -278,14 +286,15 @@ impl Sample {
         }
         let _ = write!(
             out,
-            "],{},{},{},{},{},{},{}]",
+            "],{},{},{},{},{},{},{},{}]",
             self.dns_misses,
             self.dns_ms_sum,
             self.threads,
             self.threads_max,
             self.fds,
             self.fds_max,
-            self.max_fds
+            self.max_fds,
+            self.evicted_idle
         );
     }
 
@@ -318,7 +327,10 @@ impl Sample {
             .u64(self.max_fds)
             .u64(self.active_max)
             .u64(self.threads_max)
-            .u64(self.fds_max);
+            .u64(self.fds_max)
+            // **末尾に足すこと** (T14.2)。前からある項目の位置が動くと、版 2 で書かれた
+            // 古いレコードが別の意味で読み戻る
+            .u64(self.evicted_idle);
         e.0
     }
 
@@ -358,6 +370,8 @@ impl Sample {
         s.active_max = d.u64();
         s.threads_max = d.u64();
         s.fds_max = d.u64();
+        // 版 2 で書かれたレコードはここから先がゼロ埋めなので 0 になる (`Dec` は足りなければ 0)
+        s.evicted_idle = d.u64();
         Some(s)
     }
 
@@ -405,6 +419,8 @@ impl Sample {
             active_max: max(|s| s.active_max),
             threads_max: max(|s| s.threads_max),
             fds_max: max(|s| s.fds_max),
+            // 累計カウンタなので窓の最後の値 (`requests` と同じ。ブラウザ側で差分を取る)
+            evicted_idle: last.evicted_idle,
         }
     }
 }
@@ -605,7 +621,7 @@ mod tests {
         );
         assert!(json.contains("\"samples\":[[5,10,0,5,0,"), "{}", json);
         assert!(
-            json.ends_with(",0,0,0,0,0,0,0]]}"),
+            json.ends_with(",0,0,0,0,0,0,0,0]]}"),
             "{}",
             &json[json.len() - 60..]
         );
@@ -767,6 +783,7 @@ mod tests {
             active_max: 24,
             threads_max: 25,
             fds_max: 26,
+            evicted_idle: 27,
         };
         let enc = s.encode();
         assert!(
@@ -832,5 +849,44 @@ mod tests {
         // 平均に畳むと 23 になって山が消える
         assert_eq!(agg.active_max, 41);
         assert_eq!(agg.fds_max, 30);
+    }
+
+    /// `evicted_idle` は**レコードの余白に足した**ので `.rrd` の版は上がらない (T14.2 (3))。
+    ///
+    /// 見るのは 2 つ: (a) 63 項目が領域 (508 B) に収まっていて、まだ余白があること、
+    /// (b) 版 2 で書かれた 62 項目のレコード (末尾はゼロ埋め) を読むと
+    /// `evicted_idle` が 0 になり、**手前の項目は 1 つもずれない**こと。
+    /// ずれるような足し方をすると、統計を捨てずに済まなくなる。
+    #[test]
+    fn evicted_idle_fits_in_the_record_slack_and_old_records_still_decode() {
+        let mut s = sample(1_700_000_000);
+        s.active_max = 240;
+        s.threads_max = 128;
+        s.fds_max = 1010;
+        s.max_fds = 1024;
+        s.evicted_idle = 7;
+        let enc = s.encode();
+        assert_eq!(enc.len(), 63 * 8, "63 項目 × 8 B");
+        assert!(
+            enc.len() <= crate::rrd::SAMPLE_RECORD - 4,
+            "{} > {} (版を上げずには入らない)",
+            enc.len(),
+            crate::rrd::SAMPLE_RECORD - 4
+        );
+        assert_eq!(Sample::decode(&enc), Some(s));
+
+        // 版 2 のレコード = 最後の 1 項目が無く、領域の残りはゼロ埋め
+        let mut old = enc[..62 * 8].to_vec();
+        old.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
+        let back = Sample::decode(&old).expect("版 2 のレコードも読める");
+        assert_eq!(back.evicted_idle, 0, "無い項目は 0");
+        assert_eq!(
+            Sample {
+                evicted_idle: 0,
+                ..s
+            },
+            back,
+            "手前の項目は 1 つもずれない"
+        );
     }
 }

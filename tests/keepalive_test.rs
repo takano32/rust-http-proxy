@@ -380,3 +380,62 @@ fn test_integration_requests_wait_instead_of_being_dropped_at_the_thread_limit()
         "全部オリジンへ届く"
     );
 }
+
+/// 上限の要求 (既定 1,000 本目) の応答には `Connection: close` が付き、そのあと閉じる (T14.2)。
+///
+/// 以前は上限に当たった応答にも `Connection: keep-alive` が付いたまま閉じていたので、
+/// その応答を読んだ直後に次の要求を送ったクライアントは**入れ違いで取りこぼしていた**。
+/// 上限は設定 (`Config::max_requests_per_conn`) で渡せるので、ここでは 3 に下げて見る
+/// (環境変数では変えられない値。1,000 本流すと遅いのでテストのために口を開けてある)。
+#[test]
+fn test_integration_the_last_request_gets_connection_close_before_the_close() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let mut cfg = park_config();
+    cfg.max_requests_per_conn = 3;
+    let proxy_port = start_test_proxy(cfg);
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    // 上限の 1 つ手前までは今までどおり keep-alive
+    for i in 1..3 {
+        let (head, body) = one_keepalive_request(&mut stream, &host, &format!("/k{}", i));
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{} 本目: {}", i, head);
+        assert!(
+            head.contains("Connection: keep-alive"),
+            "{} 本目: {}",
+            i,
+            head
+        );
+        assert_eq!(body, b"hello from mock origin");
+    }
+
+    // 上限の要求。応答は普通に返り、そこに `Connection: close` が付く
+    let (head, body) = one_keepalive_request(&mut stream, &host, "/k3");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert!(head.contains("Connection: close"), "{}", head);
+    assert!(!head.contains("Connection: keep-alive"), "{}", head);
+    assert_eq!(body, b"hello from mock origin");
+    assert_eq!(counter.load(Ordering::SeqCst), 3);
+
+    // そのあと接続は閉じる (入れ違いを見るために、閉じるのを待たずに次の要求を送る)。
+    // 書けてしまうことはある (相手の受信バッファに入るだけ) が、読めるのは EOF だけ
+    let _ = stream
+        .write_all(format!("GET http://{}/k4 HTTP/1.1\r\nHost: {}\r\n\r\n", host, host).as_bytes());
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut rest = Vec::new();
+    match stream.read_to_end(&mut rest) {
+        // 閉じ終わっていれば EOF、こちらの書込が先に届いていれば RST。どちらも「閉じた」
+        Ok(_) => assert!(
+            rest.is_empty(),
+            "上限のあとは何も返さずに閉じる: {:?}",
+            String::from_utf8_lossy(&rest)
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Err(e) => panic!("上限のあとは閉じているはず: {}", e),
+    }
+    // 上限を越えた要求はオリジンへ行っていない
+    assert_eq!(counter.load(Ordering::SeqCst), 3);
+}
