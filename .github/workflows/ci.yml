@@ -41,6 +41,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # 文書とコードが同じ集合か (エンドポイント・環境変数・`/snapshot` の部・画面の関数・クレートの表。T14.56)
+      - run: ./scripts/check-docs.sh
       # ワークスペースなので --workspace が要る (無いと下の層のテストが走らない)
       - run: cargo test --workspace
       - run: cargo build --release

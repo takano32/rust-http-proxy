@@ -1572,7 +1572,8 @@ taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 
 ### CI (GitHub Actions)
 
 push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` は `cargo fmt --check` →
-`clippy -D warnings` → `cargo test --workspace` → リリースビルド → **180 MB の cgroup でビルドが通るか**
+`clippy -D warnings` → **文書とコードの整合** (`scripts/check-docs.sh`) → `cargo test --workspace` →
+リリースビルド → **180 MB の cgroup でビルドが通るか**
 (`scripts/build-memory.sh 180`) → 短いベンチ、の順です。それと並べてもう 1 つ、`deployed-like-snapshot` が
 **デプロイ先に似せた条件** (上の `scripts/deployed-like.sh`) を runner の中に作り、`scripts/ci-snapshot.sh` で
 `--only connect-multi` と forward を 10 秒ずつ回して `/snapshot` を**成果物 (artifact) の `snapshot.json`**
@@ -1584,6 +1585,18 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 落ちたときこそ中身が要るので、`snapshot.json` は成功しても失敗しても成果物に付きます (14 日保存)。
 手元で同じものを回すなら `cargo build --release && cargo build --release -p proxy-bench` のあとに
 `scripts/ci-snapshot.sh` (手元で 26 秒。閾は `CI_SNAPSHOT_P50_MAX_MS`、秒数は `--seconds` で変えられます)。
+
+**文書とコードが同じ集合かを見るのは `scripts/check-docs.sh`** (T14.56)。エンドポイントも環境変数も
+別々の作業で増えていくので、「**コードにあるのに文書に無い / 文書にあるのにコードに無い**」を機械で見ます。
+突き合わせるのは 5 つで、(a) `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"` と
+上の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`)、(b) コードの `"PROXY_…"` / `"SERVER_…"` の
+文字列と上の「環境変数」の表の鍵の欄、(c) `/snapshot` の `parts` と個票のエンドポイント、
+(d) `scripts/check-dashboard.js` が画面の HTML から切り出す関数名と、そこで実際に呼んでいる名前、
+(e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(32 + 本体)」の数も見ます)。
+**意図的に外してあるものはスクリプトの中の除外表に理由つきで持ちます** (`/snapshot` に入れない 18 の口、
+ビルド時にしか無い `PROXY_VERSION` など)。差分が 1 件でもあればその名前を印字して終了コード 1 です。
+bash と grep / sed / awk / python3 の標準ライブラリだけで動くので、`cargo` も Node も要りません
+(`scripts/check-docs.sh` を引数なしで回すだけ。CI の `check` が毎回回します)。
 
 ### 起動直後のスレッド数
 
