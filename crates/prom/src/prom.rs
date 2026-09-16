@@ -581,6 +581,17 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
             "stage=\"connect\"",
             p.connect_ms as f64 / 1000.0,
         );
+        // IPv6 側だけの 1 本 (T14.37)。**繋がらなかった回は 1 行も出さない**
+        // (0 秒を出すと「一瞬で繋がった」と読めてしまう。`stage="ipv6_connect"` が
+        // 消えていること自体が「コンテナの IPv6 が死んでいる」の印)
+        if let Some(v6) = p.ipv6_connect_ms {
+            line(
+                &mut out,
+                "canary_seconds",
+                "stage=\"ipv6_connect\"",
+                v6 as f64 / 1000.0,
+            );
+        }
     }
     // 段階ごとの待ち時間 (T14.3 (1) → T14.19)
     stage_metrics(&mut out, m);
