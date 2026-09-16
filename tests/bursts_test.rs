@@ -261,12 +261,9 @@ fn test_integration_history_carries_the_closed_connection_distribution() {
         minute
     );
     let hour = endpoint_json(proxy_port, "/history?res=3600");
-    // **末尾ではない**: T14.10 の canary がこの後ろに続く
-    assert!(
-        hour.contains(",\"closed\":null"),
-        "{}",
-        &hour[hour.len() - 80..]
-    );
+    // **末尾では見ない**: T14.10 の `canary` と T14.12 の `kernel` がこのうしろに
+    // 別の配列として付く (どれも既存の `keys` / `samples` は 1 つも変えていない)
+    assert!(hour.contains(",\"closed\":null"), "{}", hour);
 }
 
 /// `/snapshot` の `parts` に `bursts` が並ぶこと (T14.4 の 1 要求で全部取る口)。

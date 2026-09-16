@@ -1428,7 +1428,9 @@ impl Metrics {
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
                 // この環境で何が読めるか (T14.15) と canary (T14.10)。どちらも覚えてある結果を読むだけ
-                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{}}}"
+                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
+                // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
+                "\"kernel\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1468,7 +1470,11 @@ impl Metrics {
             extra.blocklist,
             extra.state_file,
             crate::sysinfo::capabilities::status_json(),
-            cache_json
+            cache_json,
+            // カーネルと cgroup の統計 (5 秒の標本で読んだ最新の値。T14.12)。
+            // ここから直に呼べるのは `dns` / `ipv6` と同じ**下の層**だから
+            // (`settings` のような上の層の部品は `extra` で受け取る)
+            crate::kernel::status_json()
         )
     }
 }

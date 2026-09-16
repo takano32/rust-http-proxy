@@ -110,6 +110,8 @@ mod tests {
             host: None,
             pac_direct: &[],
             lite: false,
+            // T14.18 で足った欄 (T14.15 はその前に枝を切っていた)。`/config` は読む口なので
+            // 読み取り専用かどうかでは変わらない
             readonly: false,
             version: "0.1.0+test",
             concurrency: &concurrency,
