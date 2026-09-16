@@ -3375,7 +3375,7 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
 プロファイル画面 → T14.3。
 
 **順番 (2026-09-16 に入れ替えた)**: **T14.1 → T14.2 → T14.3 → T14.4 → (T14.5 ∥ T14.7) → T14.6 → T14.8 → [T14.9 → T14.12 → T14.11 → T14.10、T14.15 → T14.18 → T14.17 → T14.14 → T14.16 → T14.20 → T14.19 → T14.21、T14.22 → T14.23 → T14.28 → T14.31 → T14.34 → T14.47 のうち
-再デプロイ前に間に合った分] → 再デプロイ → 24 時間 → T14.99** (T14.24〜T14.27、T14.29、T14.30、T14.32、T14.33、T14.35〜T14.46、T14.48〜T14.51 は再デプロイ後でもよい。T14.41 (記録の一括 off とハッシュ化) だけは
+再デプロイ前に間に合った分] → 再デプロイ → 24 時間 → T14.99** (T14.24〜T14.27、T14.29、T14.30、T14.32、T14.33、T14.35〜T14.46、T14.48〜T14.54 は再デプロイ後でもよい。T14.41 (記録の一括 off とハッシュ化) だけは
 公開ポートで記録の増えた版を動かすなら先に) (T14.4 は個票の形を決めるので先、T14.5 と T14.7 は触るファイルが違うので並列、
 T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.13 は利用者が要ると言ったときだけ。T14.18 は既定無効で入れる (2026-09-16 の指示)。
 T14.14 (`.rrd` 版 3) は履歴に項目を足すと決めたときにその前に 1 回)。T14.99 (デプロイ後の様子見と締め) は
@@ -4226,6 +4226,39 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 変更箇所: `crates/endpoints/src/endpoints/mod.rs` (重い口の一覧と `AtomicBool` 1 つ)、`/status` に `heavy_rejected`、README。
   - 受け入れ基準: 結合テストで `/snapshot` を同時に 4 本引くと 1 本だけ 200 で残りが 503 (`Retry-After: 1`)、順に引けば全部 200。
     費用 0 (重い口だけ)。
+- [ ] **T14.52 消えたクライアントを検知する (`SO_KEEPALIVE` と閉じた理由 `client_dead`)**
+  - 目的: 端末がスリープしたり回線が切れたりすると、トンネルは FIN も RST も来ないまま残り、`PROXY_TUNNEL_IDLE_SECS` (300 秒) の
+    期限切れで `idle_timeout` として閉じる。**`idle_timeout` のうち何割が「本当に暇」で何割が「相手が消えた」か**は分からず、
+    T14.6 の分布を読み違える。クライアント側のソケットに TCP keepalive (`SO_KEEPALIVE` + `TCP_KEEPIDLE` 60 秒、`TCP_KEEPINTVL` 10 秒、
+    `TCP_KEEPCNT` 3) を入れれば、消えた相手は約 90 秒で `ETIMEDOUT` になり、閉じた理由を `client_dead` と記録できる。
+  - 変更箇所: `crates/sys/src/sys.rs` (`setsockopt` の 4 つ。Linux 専用)、`src/lib.rs` (accept 直後に 1 回。**`--lite` でも入れてよい**が
+    システムコールが接続あたり 4 回増えるので `PROXY_TCP_KEEPALIVE=on|off`、既定 `on`)、`crates/tunnel/src/tunnel.rs` と `src/idle.rs`
+    (`ETIMEDOUT` で終わったら `CloseReason::ClientDead`)、`crates/metrics/src/recent.rs` (理由を 9 種に。**`/history` の閉じた理由の
+    集計は 8 種のまま `shutdown` に畳む** — 標本の余白の都合)、README。
+  - 受け入れ基準: 結合テストで、クライアントの側を `SO_LINGER 0` で RST 無しに落とす… は再現が難しいので、**`TCP_KEEPIDLE` を 1 秒に
+    差し替えられる口** (設定ではなくテスト用の `PROXY_TCP_KEEPALIVE=on:1:1:2` の形) で、名前空間の中で相手側の経路を落として
+    (T14.16 の `unshare -rn` で veth 無しの相手は作れないので、**iptables 無しで再現できなければ単体テストでソケットのオプションが
+    付いていることまで**) 個票の `client_dead` を見る。`--no-keepalive` (1 接続 1 要求) の CPU/接続 が +4 システムコール分
+    (103.6 → 約 105 us) 以内、forward keep-alive の要求ごとは 0 増。
+- [ ] **T14.53 内部エンドポイントの読み手を記録する (`/status` の `readers`)**
+  - 目的: T14.7 は自分宛て (`/status` など) だけの接続を `clients[]` に入れない (監視で埋まるため)。しかし公開ポートでは**誰が個票を
+    読んでいるか**も知りたい (走査か、自分の監視か)。接続元ごとに「内部エンドポイントを引いた回数・最後の時刻・最後のパス」だけを
+    別の小さな表 (最大 256 接続元) に持つ。
+  - 変更箇所: `crates/endpoints/src/endpoints/mod.rs` (`handle` の入口で 1 回。要求の経路ではない)、`crates/metrics/src/metrics.rs`
+    (`readers: Mutex<HashMap<String, Reader>>`、`/status` の `readers` (上位 20) と `/readers` (全部))、README。
+  - 受け入れ基準: 結合テストで `/status` を 3 回引いた接続元が `readers` に `count: 3`、`last_path: "/status"`。プロキシとしての要求は
+    数えない。費用 0 (内部エンドポイントの経路だけ)。
+- [ ] **T14.54 新しい接続元の検知 (T14.23 の規則 6) と、ドメインでまとめる集計 (`snapshot-diff.py --group`)**
+  - 目的: (1) 見知らぬ接続元は「現れた瞬間」に気づきたい (T14.0 は 3 日後に気づいた)。T14.23 の異常の規則に **「初めて見た接続元」**
+    (`first_seen` がこの 5 秒の窓の中) を足し、`/events` に `new_client` として残す (`agents` があれば一緒に)。(2) `/hosts` は
+    `img.dlsite.jp` と `www.dlsite.com` が別の行で、「dlsite 全体」が読めない。**eTLD+1 でまとめる**集計を道具に足す
+    (Public Suffix List は持たない: `co.jp` / `ne.jp` / `ac.jp` / `go.jp` / `or.jp` / `com` / `net` / `org` / `io` … の短い表で近似し、
+    残りは末尾 2 ラベル)。
+  - 変更箇所: (1) `crates/metrics/src/history.rs` (T14.23 の判定に 1 つ)、`crates/metrics/src/recent.rs`、README。(2) `scripts/snapshot-diff.py` と
+    `scripts/status-diff.py` (`--group domain`)、`scripts/anonymize-snapshot.py` (T14.35。まとめの粒度が残るように匿名化する)。
+  - 受け入れ基準: (1) 結合テストで新しい接続元の最初の要求のあと 5 秒以内に `/events` に `new_client` (接続元と `agent`)。同じ接続元の
+    2 回目は増えない。(2) `status-diff.py --group domain` で `img.dlsite.jp` と `www.dlsite.com` が `dlsite.com` の 1 行にまとまり、
+    要求数が和になる。`co.jp` の 3 ラベル (`www.dmm.co.jp` → `dmm.co.jp`) が正しくまとまる。
 - [ ] **T14.99 締める (README と §2 と §0 をデプロイ先の数字で書き直す)**
   - 目的: §0 のゴール「同じ条件でこれ以上速くならないところまで」は loopback では Phase 11 で到達し、デプロイ先では Phase 12〜14 で
     「コードで縮む待ち」を使い切る。それを 1 か所に書く。
