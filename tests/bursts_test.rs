@@ -261,10 +261,11 @@ fn test_integration_history_carries_the_closed_connection_distribution() {
         minute
     );
     let hour = endpoint_json(proxy_port, "/history?res=3600");
+    // **末尾ではない**: T14.10 の canary がこの後ろに続く
     assert!(
-        hour.ends_with(",\"closed\":null}"),
+        hour.contains(",\"closed\":null"),
         "{}",
-        &hour[hour.len() - 40..]
+        &hour[hour.len() - 80..]
     );
 }
 
