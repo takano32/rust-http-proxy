@@ -253,8 +253,8 @@ CONNECT (`connect://`) と forward を別の表にし、**AAAA の有無で 2 �
 ### ビルドのメモリの測り方
 
 ```bash
-cargo clean && ./scripts/build-memory.sh 200                 # 200 MB の cgroup で通るか
-./scripts/build-memory.sh --find 100 110 120 130 140 150      # 通る最小の上限を探す
+cargo clean && ./scripts/build-memory.sh 180                 # 180 MB の cgroup で通るか (2026-09-16 に 200 → 180)
+./scripts/build-memory.sh --find 120 130 135 140 150          # 通る最小の上限を探す (T14.55 で 135)
 gh workflow run ci.yml --ref main                             # CI の機械で測る (build-memory-find。T11.7)
 ```
 
@@ -266,7 +266,7 @@ OOM killer に落とされる (実測: 200 MB の cgroup で、並列だと落�
 その cgroup には課金されない。実測: **上限 110 MB の cgroup の中で通ったビルドでも `/usr/bin/time -v` の最大 RSS は
 215 MB** と出る (メジャーフォールトは全クレート 0 = 1 ページも読みに行っていない)。cgroup が必ず抱えるのは
 **RssAnon** の方で、こちらは 36〜86 MB。だからこのスクリプトは **実際にその上限の cgroup の中でビルドして通るか** を見る。
-CI は毎回 200 MB で回す。`scripts/build-memory.sh` が出す参考値も RssAnon 順にしてある (cgroup を作れない機械のときだけ出る)。
+CI は毎回 180 MB で回す (T14.55 まで 200)。`scripts/build-memory.sh` が出す参考値も RssAnon 順にしてある (cgroup を作れない機械のときだけ出る)。
 
 **上限を決めているのはどのクレートか** (T10.9)。`RUSTC_WRAPPER` に `/usr/bin/time -v` を噛ませ、
 `/proc/<pid>/status` を 20 ms ごとに読んで rustc ごとに測った (3 回とも同じ順、±1 MB):
@@ -284,7 +284,7 @@ CI は毎回 200 MB で回す。`scripts/build-memory.sh` が出す参考値も 
 上限を割ったときに rustc が落ちるのもこの上位で、**90 MB では `proxy-blocklist`、95 / 98 MB では `proxy-http`** の
 ところで落ちた。**T9.2 が推定した「本体クレートが最大を決めている」は外れ** (本体は 3 番目)。**行数の順でもない**
 (いちばん長い `proxy-cache` 2,257 行は 6 番目、`proxy-blocklist` は 812 行で 2 番目)。効くのは
-「自分の行数 + 依存から単相化されてくる量」。**通る最小の上限 ≒ いちばん大きいクレートの RssAnon + 14 MB** (85.5 + 14 ≒ 99)。
+「自分の行数 + 依存から単相化されてくる量」。**通る最小の上限 ≒ いちばん大きいクレートの RssAnon + 14〜20 MB** (T10.9: 85.5 + 14 ≒ 99。T14.55: 115.6 + 20 ≒ 135。クレートごとの表は T14.55 の `結果:`)。
 上限 200 MB に当たるにはいちばん大きいクレートの RssAnon が **2.2 倍 (85.5 → 186 MB)** にならないといけない。
 下げたくなったら割るのは `proxy-http` と `proxy-blocklist`。
 
@@ -354,9 +354,9 @@ CI や動作環境 (Pterodactyl コンテナ) の値を代表しない。動作�
 | 1 接続あたりのシステムコール (`--no-keepalive`) | 33.16 (T4.4 前) | **11.02** | 11.02 |
 | CONNECT 1 本あたりのシステムコール | — | **20.08** (T10.0 の 29.06 から -31%。T10.1) | 20.18 |
 | 1 要求あたりの確保回数 | 98.7 | **10.0** (T9.5 時点。T9.5 で指標として無効と分かったので測り直していない) | — |
-| ビルドが通る最小のメモリ | 347 MB でも通らない | **手元 99 MB / CI 100 MB** (T11.7。決めているのは `proxy-http` 85.5 MB / `proxy-blocklist` 84.0 MB — T10.9) — 上限 200 MB に対し **100 MB (2.0 倍) の余裕** | fat LTO なので 350 MB 要る (T9.1、配布は潤沢な環境で作る) |
-| バイナリ | 857 KB | 1,381,872 B | **1,054,184 B** |
-| テスト | 150 単体 + 21 結合 | **206 単体 + 54 結合** (260 本。T11.5 時点、全通過) | — |
+| ビルドが通る最小のメモリ | 347 MB でも通らない | **手元 135 MB** (T14.55。130 MB は落ちる。決めているのは `proxy-endpoints` 115.6 MB / `proxy-metrics-core` 110.2 MB / `proxy-net` 108.5 MB。CI は未測定) — 上限 180 MB に対し **45 MB (1.33 倍) の余裕** (T11.7 の時点は 99 MB / 上限 200 で 2.0 倍) | fat LTO なので 350 MB 要る (T9.1、配布は潤沢な環境で作る) |
+| バイナリ | 857 KB | 2,432,400 B (T14.55。T11.5 の時点は 1,381,872 B) | **1,777,024 B** (T11.5 の時点は 1,054,184 B) |
+| テスト | 150 単体 + 21 結合 | **527 単体 + 200 結合** (727 本。T14.55 時点、3 回連続で全通過。T11.5 時点は 206 + 54 = 260 本) | — |
 
 「暇な keep-alive 接続 2,000 本」の「着手前」列は `PROXY_PARK_IDLE=off PROXY_MAX_THREADS=0` を足して
 測ったもの (T11.4)。この行だけ T10.11 のあとに **T11.4 が `--only idle-conns` を足して測り直した**。
@@ -4886,7 +4886,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
 24 時間 → T14.99。どれもコードの機能は足さない (直すのは壊れているものだけ)。Opus に渡すときは 1 タスク 1 エージェントで、
 **T14.55 は機械を独占する** (他のエージェントを走らせない)。
 
-- [ ] **T14.55 全部マージした main の健全性を確かめる (機械を独占して 1 回)**
+- [x] **T14.55 全部マージした main の健全性を確かめる (機械を独占して 1 回)**
   - 目的: 今日は 10 個のブランチを並列に実装してマージした。個々のブランチは通っていても、合わせたときにだけ起きる壊れ方
     (`/status` のキー順、`/snapshot` の `parts`、`check-dashboard.js` の `api`、ビルドメモリ、flake) は main でしか分からない。
   - 変更箇所: 直すものがあれば最小限 (テストの待ち方、キー順、README の 1 行)。新しい機能は足さない。
@@ -4904,6 +4904,26 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     ことだけは数字で確かめる)。(8) `./target/release/rust-http-proxy --check` (T14.15) が終了コード 0。
   - 受け入れ基準: (1)〜(8) の全部に数字つきの結果。テスト 5 回連続で失敗 0 (直したなら直した内容)。200 MB のクリーンビルド OK。
     `--lite` のシステムコール 5.01 / 確保 10.01 のまま。`--only connect-multi` の p50 < 1 ms。`pgrep -x rust-http-proxy` / `bench` が空。
+  - 結果 (2026-09-17、`6967236` / `13fa546` / `e7dd916` / `c962828` / `2ac988f` / `87ed4de`): **`crates/metrics` (18,220 行、rustc の RssAnon 272.1 MB) を 6 つに割って §0 の関門を戻した**。下から `proxy-metrics-types` (型と定数・分位点・ホスト別の時系列・カーネル) → `proxy-metrics-recent` (閉じた接続の個票・trace・出来事) → `proxy-metrics-window` (窓と解像度・段階の profile・転送・接続元の個票・履歴のリング) → `proxy-metrics-core` (`Metrics` 本体・canary) → `proxy-metrics-watch` (SLO・日次・雪像・異常) → `proxy-metrics` (状態ファイルと、全部の出し直し)。**呼ぶ側は 1 行も変えていない** (各 `lib.rs` が下の層を今までの名前で出し直す)。層の依存に当たった 4 か所は、`history::spawn` と `Sample::take` をいちばん上 (`crates/metrics/src/tick.rs`) へ、`kernel` が読む `persist::write_errors` を「開いた 1 回だけ読み口を預ける」形へ、`profile::spawn` が `Metrics` から読む 3 つを `profile::Source` トレイトへ、`history` が呼ぶ canary の窓を `canaryhist` として下の層へ、で解いた。**`/status` の 50 引数の巨大な `format!` も部ごとの関数に割ったが、rustc のメモリは 158.4 → 159.4 MB で変わらなかった** — 効くのはクレートを割ることだけ (§0 の「ファイルを割っても下がらない」はモジュール内の関数分割にも当てはまる)。**通る最小の上限は 135 MB** (130 MB は落ちる。分割前は 180 でも通らない)、**いちばん大きいクレートは `proxy-endpoints` の 115.6 MB** で「最小 ≒ 最大 + 20 MB」。**関門を 180 MB に**した (最小の 1.33 倍 = 3 割の余裕。`scripts/build-memory.sh` の既定・CI・README・各クレートの冒頭コメント)。**`/status` ほか 24 本のエンドポイントの JSON は入れ子まで鍵の並びが分割の前後で一致** (`/status` は 49 鍵とも同じ順)。小物: 個票ファイルの版の印を **`SHPREC03`** に上げ (T14.46 が数値の途中に `syn_retrans` を差し込んだため)、読み戻しの単体テストを 1 本足した。**`cargo test --workspace --no-fail-fast` は 3 回** (利用者の指示で 5 → 3 回): 1 回目 2 失敗・2 回目 0・3 回目 1 失敗で、**どちらも待ち方の flake** (`events_test` はログ行が `events::push` より先に出る、`hostseries_test` は同点のとき並び順がランダムなポート順) だったので `wait_until` に直し、**その 2 本を 5 回連続で 0 失敗**。着手直後の 1 回目には**別に 6 本**落ちていて (全部マージした main で全体テストを 1 回も回していなかったため)、期待値の古さ 4 本 (個票の JSON の上限 300 → 363 B 実測、560 → 633 B 実測、T14.49 の `schema`、T14.37 の 5 列目) と並行のぶれ 2 本 (T14.51 の重い口の 503、`/proc/self/fd` はプロセス全体) を直した。**テストは 単体 527 + 結合 200 = 727 本**。`cargo clean --release` → `scripts/build-memory.sh 180` は **1 分 24 秒で OK**、`cargo build --profile dist` も通る (1 分 10 秒、1,777,024 B。release は 2,432,400 B)。`node scripts/check-dashboard.js` はデプロイ先の実出力 (`2026-09-16T0106Z-*`) と手元の `/snapshot` の両方で 15 検査すべて OK、`python3 -m unittest discover -s scripts` は 142 本通過。手元のプロキシに `scripts/collect-deployed.sh` を 2 回 (95 行 / 172 行、差分まで)。**`--only connect-multi` (デプロイ先に似せた条件) の p50 は 0.689 ms** で 250 ms の退行なし (各スレッドの 1 本目だけ 263.7 ms = T12.1 の 3 連敗ぶん、`v4_first` が立つ)。§1 のレシピ 1 周は **forward 31,379 req/s・CPU 47.87 us、CONNECT 確立 6,642 /s・168.95 us/本、トンネル 3,624 MiB/s・190.89 us/MiB、HIT 66,108 req/s・24.83 us** で §2 と桁が合う。CPU/要求 が 1 割前後高いのは**この機械の今日の状態**で、**分割前のバイナリ (`dcebb29`) と交互に 6 組**回すと **-3.3% (ぶれの中)** (6 組の間に絶対値が 46 → 65 us へ漂った。§2 との直接比較はしない)。**`--lite` のシステムコールは 5.06 回/要求** (`recvfrom` 3.002 + `sendto` 2.000 + その他 0.059)、**確保は 10.040 回/要求** (数えるアロケータを一時的に当てて測り、外した) で**どちらも動いていない**。T14.52 の「strace の下で keep-alive が効かない」は再現せず (`accept4` 0.001 回/要求。§1 の測り方 = strace の下で起動し、**strace ではなくプロキシの pid に SIGINT**)。`--check` は終了コード 0、`pgrep -x rust-http-proxy` / `bench` は空。
+    - **クレートごとの rustc の RssAnon (T15.0 の材料。手元 aarch64、`cargo build --release`、20 ms ごとに `/proc/<pid>/status`)**:
+
+      | クレート | RssAnon | 非テスト行 |
+      |---|---|---|
+      | **proxy-endpoints** | **115.6 MB** | 2,796 |
+      | **proxy-metrics-core** | **110.2 MB** | 1,800 |
+      | **proxy-net** | **108.5 MB** | 3,170 |
+      | proxy-metrics-window | 97.1 MB | 2,480 |
+      | rust-http-proxy (本体) | 93.8 MB | — |
+      | proxy-metrics-watch | 90.5 MB | 2,146 |
+      | proxy-metrics-recent | 89.2 MB | 2,677 |
+      | proxy-http | 85.8 MB | — |
+      | proxy-blocklist | 83.7 MB | — |
+      | proxy-metrics-types | 83.4 MB | 2,107 |
+      | proxy-sysinfo | 82.9 MB | — |
+      | proxy-base 74.9 / proxy-config 74.0 / proxy-cache 69.8 / proxy-cachemem 66.1 / proxy-metrics (facade) 65.8 / selfbench 63.2 / cachedisk 60.9 / msg 59.1 / origin 59.1 / reload 57.6 / prom 54.8 / tunnel 53.7 / workers 50.5 / rrd 46.7 / freshness 46.5 / cachecfg 44.5 / sys 42.9 / cachekey 42.5 / capacity 37.5 / tls 36.4 / diskprobe 35.8 (最小) | | |
+
+    - **T15.0 へ**: 120 MB を切るには **`proxy-endpoints` (115.6)・`proxy-metrics-core` (110.2)・`proxy-net` (108.5) の 3 つ**を割る (全部 100 MB 未満にすれば最小は約 120)。`endpoints` は `recent.rs` 814 行 + `mod.rs` 778 + `explain.rs` 694 で割りどころがある。**RssAnon は行数に比例しない** (recent 2,677 行で 89.2 MB、core 1,800 行で 110.2 MB) ので、割る順は必ず表の上位から、割ったら測り直す。`format!` の分解は効かない。
+    - 気づき: 別クレートのテストからは `cfg(test)` の中が見えないので `events::TEST_LOCK` を `pub` にした。dev-dependency の輪は通るがテストビルドでクレートが 2 回コンパイルされてトレイトが別物になる (canary を下へ出すのを諦め `canaryhist` に分けた理由)。`metrics-watch` のテストだけの依存に `proxy-cache`。`/status` の `kernel.state_file` は `persist` が読み口を預けるまで `null` (預け忘れに注意)。README のクレート表は 31 + 本体に更新済み (T14.56 の `check-docs.sh` の対象)。`mx` は自分のコマンドラインに `target/release/rust-http-proxy` が入っていると自分に当たって 3 分待つ (親が直した: 自分の pid を除く)。
 - [ ] **T14.56 README とエンドポイント・環境変数の一覧の整合 (`scripts/check-docs.sh`)**
   - 目的: 今日で `/` の案内・README のエンドポイント一覧・環境変数の表・`/snapshot` の `parts`・`check-dashboard.js` の `api` が
     それぞれ別のエージェントの手で伸びた。**コードにあるのに文書に無い / 文書にあるのにコードに無い**を機械で見つける。
