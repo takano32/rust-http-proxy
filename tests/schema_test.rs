@@ -55,6 +55,8 @@ const QUERIES: &[(&str, &str)] = &[
     ("/hosts", "/hosts?limit=200"),
     ("/hosts/series", "/hosts/series?top=16"),
     ("/clients", "/clients?limit=200"),
+    // 内部エンドポイントを引いた接続元 (T14.53)
+    ("/readers", "/readers"),
     ("/explain", "/explain?host=example.com"),
     ("/explain", "/explain?client=198.51.100.7"),
     ("/config", "/config"),

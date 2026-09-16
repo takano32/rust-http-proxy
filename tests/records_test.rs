@@ -121,6 +121,9 @@ fn test_integration_records_off_empties_every_ring_but_keeps_the_statistics() {
         "/events",
         "/trace",
         "/bursts",
+        // 内部エンドポイントを引いた接続元の表 (T14.53)。ここまで来る要求はこの口を
+        // 引いた 1 本そのものなので、止まっていなければ必ず 1 行出る
+        "/readers",
     ] {
         let json = endpoint_json(port, path);
         assert!(
@@ -143,6 +146,8 @@ fn test_integration_records_off_empties_every_ring_but_keeps_the_statistics() {
     // `/events` は起動の 1 件すら残らない
     let events = endpoint_json(port, "/events");
     assert!(!events.contains("\"kind\":\"start\""), "{}", events);
+    // `/status` の `readers` も空 (読み手の表も接続元 1 人ずつの記録なので)
+    assert!(status.contains("\"readers\":[]"), "{}", status);
 
     // **接続元を含まない統計は残る**: ホスト別 (`/hosts`) と `/status` の数字と `/history`
     let hosts = endpoint_json(port, "/hosts");
@@ -178,7 +183,14 @@ fn test_integration_records_hashed_replaces_the_client_everywhere_with_one_value
     let tunnel = make_records(port, origin_port);
     let status = endpoint_json(port, "/status");
     assert!(status.contains("\"records\":\"on\""), "{}", status);
-    for path in ["/recent", "/clients", "/connections", "/errors", "/trace"] {
+    for path in [
+        "/recent",
+        "/clients",
+        "/connections",
+        "/errors",
+        "/trace",
+        "/readers",
+    ] {
         let json = endpoint_json(port, path);
         assert!(
             json.contains("\"client\":\"127.0.0.1\""),
@@ -201,7 +213,7 @@ fn test_integration_records_hashed_replaces_the_client_everywhere_with_one_value
 
     let hashed = text_field(&endpoint_json(port, "/recent"), "client");
     assert!(is_hashed(&hashed), "16 桁の 16 進でない: {}", hashed);
-    for path in ["/clients", "/connections", "/errors", "/trace"] {
+    for path in ["/clients", "/connections", "/errors", "/trace", "/readers"] {
         let json = endpoint_json(port, path);
         assert!(
             json.contains(&format!("\"client\":\"{}\"", hashed)),
