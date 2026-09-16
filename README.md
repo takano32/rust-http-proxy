@@ -664,6 +664,9 @@ curl -x localhost:8080 http://example.com/
 イメージに入れるのは `Cargo.toml` / `Cargo.lock` / `build.rs` / `.cargo` / `crates` / `src` だけです
 (本体は 26 個のクレートに分かれているので `crates` が要ります)。`.git` は入れないので、
 イメージの中の版は `rust-http-proxy 0.1.0+unknown` になります。
+`.dockerignore` で `target/` と `**/target/` を送らないようにしてあります
+(イメージには元から入りませんが、ビルドコンテキストとして daemon へ送ると
+`cargo build` 済みの作業ツリーでは 1 GB を超えて遅くなるため。除いたコンテキストは約 2 MB)。
 
 タグ `v*` を push すると `.github/workflows/release.yml` が x86_64 / aarch64 の
 バイナリ (glibc 2.35 以上) を作って Release に添付します。
