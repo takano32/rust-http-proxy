@@ -99,6 +99,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
+         \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
          \x20 /healthz                                    same as /status\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
          \x20 /metrics                                    Prometheus text format\n\
@@ -172,6 +173,9 @@ pub fn handle(
         recent::log(query)
     } else if is_get && path == "/hosts" {
         recent::hosts(ep, query)
+    } else if is_get && path == "/clients" {
+        // 接続元の個票 (T14.7)。認証なしで誰でも見えるのは他の個票と同じ
+        recent::clients(ep, query)
     } else if is_get && path == "/blocklist" {
         blocklist::handle(&parse_query(query.unwrap_or("")))
     } else if is_get && (path == "/healthz" || path == "/status") {

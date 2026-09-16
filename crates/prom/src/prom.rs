@@ -911,6 +911,7 @@ mod tests {
                 HostOutcome::Bypass,
                 1 << 30,
                 Some(std::time::Duration::from_millis(400)),
+                Some("very-long-host-name.example.com:443"),
             );
         }
         let status = m.to_json();

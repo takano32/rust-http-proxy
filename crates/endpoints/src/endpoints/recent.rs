@@ -1,4 +1,5 @@
-//! 個票を読み出すエンドポイント (T13.4): `/errors` `/connections` `/dns` `/log` `/hosts`。
+//! 個票を読み出すエンドポイント (T13.4): `/errors` `/connections` `/dns` `/log` `/hosts`、
+//! 接続元の個票 `/clients` (T14.7)。
 //!
 //! `/status` (集計) と `/history` (時系列) では「**誰が・いつ・なぜ**」が読めない。
 //! ここは「今この瞬間の中身」と「直近に起きたこと」を、集計に畳む前の形で出す口で、
@@ -204,6 +205,48 @@ pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
         sort_name(sort),
         limit,
         cut,
+        ep.metrics.start_time.elapsed().as_secs(),
+        ep.metrics
+            .total_requests
+            .load(std::sync::atomic::Ordering::Relaxed),
+        restored_since
+    );
+    (200, "application/json", out)
+}
+
+/// `/clients?sort=requests|recent|targets|literal&limit=200` — **全接続元**の個票 (T14.7)。
+///
+/// `/status` の `clients[]` は上位 50 で欄も 4 つだけ。こちらは全部を、`User-Agent` ・
+/// 宛先の種類・使ったポート・IP リテラル宛て・443 / 80 以外のポートまで付けて出す。
+/// 認証なしの公開プロキシなので、**見知らぬ接続元が「誰のどのプログラムで、何をしているか」**
+/// を読むのがこの口の仕事 (T14.0 の判断 5)。
+///
+/// `"persisted":false` は「この行の新しい欄は状態ファイルに残らない (再起動で消える)」の意味。
+/// `.rrd` のスロットに余白が無いので**版を上げずにメモリだけで持つ**と決めた ([`crate::metrics::ClientStats`])。
+pub fn clients(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    let sort = crate::metrics::ClientSort::from_param(&str_param(query, "sort"));
+    let limit = num_param(query, "limit", 200, crate::metrics::MAX_CLIENTS);
+    let all = ep.metrics.clients_sorted_by(sort);
+    let count = all.len();
+    // `clients[]` は `.rrd` の通算なので、いつからの通算かも一緒に出す (`/hosts` と同じ)
+    let restored_since = all
+        .iter()
+        .map(|(_, s)| s.stats.last_seen)
+        .filter(|&t| t > 0)
+        .min()
+        .unwrap_or(0);
+    let mut out = String::with_capacity(16384);
+    out.push_str("{\"clients\":");
+    let (shown, cut) = array_within(&mut out, all.iter().take(limit).map(|(c, s)| s.to_json(c)));
+    let _ = write!(
+        out,
+        ",\"count\":{},\"shown\":{},\"sort\":\"{}\",\"limit\":{},\"truncated\":{},\"persisted\":false,\"max_targets\":{},\"uptime_secs\":{},\"total_requests\":{},\"restored_since\":{}}}",
+        count,
+        shown,
+        sort.name(),
+        limit,
+        cut,
+        crate::metrics::MAX_CLIENT_TARGETS,
         ep.metrics.start_time.elapsed().as_secs(),
         ep.metrics
             .total_requests
@@ -504,6 +547,55 @@ mod tests {
             println!(
                 "hosts 1,000 件 ({}): {} B / 出せたのは {} 件 (上限 {} B)",
                 label, len, shown, MAX_BODY
+            );
+        }
+    }
+
+    /// `/clients` は 1,000 接続元 (`MAX_CLIENTS` = 表に入る全部) でも 256 KiB 以下。
+    ///
+    /// 1 行の最悪は `User-Agent` 4 種 × 128 B が効いて 1 KB 近くになるので、
+    /// **既定の 200 件は丸ごと入り、1,000 件はバイト数で打ち切る**のが設計どおり。
+    #[test]
+    fn the_clients_response_stays_under_256_kib() {
+        use crate::metrics::{ClientSort, HostOutcome, MAX_CLIENTS};
+        use std::time::Duration;
+
+        let m = Metrics::new();
+        for i in 0..MAX_CLIENTS {
+            let ip = format!("2001:db8:1234:5678:9abc:def0:1234:{:04x}", i);
+            for a in 0..4 {
+                m.record_client_agent(&ip, &format!("{}/{}", "x".repeat(200), a));
+            }
+            for p in 0..8u16 {
+                m.record_client(
+                    &ip,
+                    HostOutcome::Bypass,
+                    // 8 本ぶんの合計が桁を振り切る手前まで (1 行の JSON を最悪にする)
+                    u64::MAX / 16,
+                    Some(Duration::from_millis(1234)),
+                    Some(&format!(
+                        "very-long-host-name-{}.example.net:{}",
+                        p,
+                        1000 + p
+                    )),
+                );
+            }
+        }
+        let all = m.clients_sorted_by(ClientSort::Requests);
+        assert_eq!(all.len(), MAX_CLIENTS);
+        for (n, want_cut) in [(200usize, false), (MAX_CLIENTS, true)] {
+            let mut body = String::from("{\"clients\":");
+            let (shown, cut) =
+                array_within(&mut body, all.iter().take(n).map(|(c, s)| s.to_json(c)));
+            body.push('}');
+            assert!(body.len() <= MAX_BODY, "{} 件で {} B", n, body.len());
+            assert_eq!(cut, want_cut, "{} 件", n);
+            println!(
+                "clients {} 件 (最悪の行): {} B / 出せたのは {} 件 (上限 {} B)",
+                n,
+                body.len(),
+                shown,
+                MAX_BODY
             );
         }
     }

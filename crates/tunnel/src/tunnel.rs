@@ -83,7 +83,13 @@ fn open(
             );
             // 個票にも 1 件残す (`/errors`。誰の・いつ・なぜ。T13.4)
             metrics.record_error(true, &addr_str, &client_ip, 502, &detail);
-            metrics.record_client(&client_ip, HostOutcome::Error, 0, Some(started.elapsed()));
+            metrics.record_client(
+                &client_ip,
+                HostOutcome::Error,
+                0,
+                Some(started.elapsed()),
+                Some(&addr_str),
+            );
             access(
                 conn_id,
                 &Access {
@@ -163,6 +169,9 @@ fn report(o: &Info, transferred: u64) {
         HostOutcome::Bypass,
         transferred,
         Some(o.connect_took),
+        // 接続元の個票に宛先の種類とポートを数える (`/clients`。T14.7)。
+        // トンネル 1 本の終わりに 1 回だけで、鍵は record_client のものをそのまま使う
+        Some(&o.addr_str),
     );
     access(
         o.conn_id,
