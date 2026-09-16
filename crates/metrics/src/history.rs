@@ -720,6 +720,9 @@ impl History {
         // `samples` の形と読み方は 1 つも変えない。1 時間の解像度では残していないので `null`
         out.push_str("],\"closed\":");
         out.push_str(&self.closed.to_json_res(res));
+        // 利用者の要求が無い時間帯の名前解決と TCP 接続 (T14.10)。**別の配列**に足す
+        // ので、既存の `keys` / `samples` を読む側は 1 行も変えなくてよい
+        crate::canary::push_history_json(&mut out, res);
         out.push('}');
         out
     }
@@ -744,7 +747,7 @@ pub fn spawn_every(
     store: Option<Arc<crate::persist::Store>>,
     interval: Duration,
 ) -> JoinHandle<()> {
-    let record = move |metrics: &Metrics, cache: &Cache| {
+    let record = move |metrics: &Arc<Metrics>, cache: &Cache| {
         // 山の写真と、閉じた接続の分布の窓 (T14.6)。**標本より先に**撮るのは、
         // 越えてから撮るまでを 1 周期より短くするため
         metrics.take_burst_shot();
@@ -753,6 +756,9 @@ pub fn spawn_every(
         if let Some(st) = &store {
             st.write_samples(&pushed);
         }
+        // 利用者の要求が無い時間帯も待ちを測る (T14.10)。**ここでは測らない**
+        // (名前解決と接続は `canary` スレッド 1 本の仕事で、この周期は止めない)
+        crate::canary::tick(metrics);
     };
     record(&metrics, &cache);
     thread::Builder::new()
@@ -801,7 +807,12 @@ mod tests {
             "{}",
             &json[json.len() - 600..]
         );
-        assert!(json.ends_with("}"), "{}", &json[json.len() - 60..]);
+        // canary (T14.10) は**別の配列**で末尾に付く (既存の列は 1 つも動かない)
+        assert!(
+            json.ends_with(",\"canary\":{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\"],\"samples\":[]}}"),
+            "{}",
+            &json[json.len() - 120..]
+        );
         // 列の数が `KEYS` と合っていること (入れ子の配列は 1 列と数える)
         let first = &json[json.find("\"samples\":[[").unwrap() + 11..];
         let row = &first[..first.find("],[").unwrap() + 1];

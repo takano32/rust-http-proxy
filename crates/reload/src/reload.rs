@@ -6,7 +6,7 @@
 //!
 //! 即時反映できるのは接続単位で参照する値だけ: ACL (`PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS`)、
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
-//! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、
+//! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、`PROXY_CANARY`、`PROXY_CANARY_SECS`、
 //! `PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
 //! `PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`、
 //! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
@@ -177,6 +177,13 @@ impl Live {
             next.sources.adopt(&fresh.sources, "PROXY_DNS_WARM_SECS");
             crate::dns::set_warm_window(fresh.dns_warm);
             applied.push("PROXY_DNS_WARM_SECS");
+        }
+        // canary の宛先と周期 (T14.10)。`canary` スレッドは次の周期から新しい宛先を使う
+        if fresh.canary != old.canary || fresh.canary_secs != old.canary_secs {
+            next.canary = fresh.canary.clone();
+            next.canary_secs = fresh.canary_secs;
+            crate::canary::configure(&fresh.canary, fresh.canary_secs);
+            applied.push("PROXY_CANARY");
         }
         if fresh.pac_direct != old.pac_direct {
             next.pac_direct = fresh.pac_direct.clone();

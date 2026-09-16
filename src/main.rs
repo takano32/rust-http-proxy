@@ -162,6 +162,9 @@ fn main() {
     rust_http_proxy::dns::set_ttl(config.dns_ttl);
     rust_http_proxy::dns::set_negative_ttl(config.dns_negative);
     rust_http_proxy::dns::set_warm_window(config.dns_warm);
+    // canary の宛先と周期 (T14.10)。実際に回すのは履歴スレッドの周期から (`--lite` と
+    // `PROXY_STATS_PERSIST=off` では履歴スレッドが無いので canary も回らない)
+    rust_http_proxy::canary::configure(&config.canary, config.canary_secs);
     let listeners = match net::bind_all(&config.bind_addrs, config.port) {
         Ok(l) => l,
         Err(e) => {
@@ -331,7 +334,7 @@ fn main() {
     }
     log_info!(
         None,
-        "timeout: {}s, keep-alive: {}s, origin pool: {} per host, DNS cache: {}s (keep-warm {}), IPv6: {}",
+        "timeout: {}s, keep-alive: {}s, origin pool: {} per host, DNS cache: {}s (keep-warm {}), canary: {} (every {}s), IPv6: {}",
         config.timeout.as_secs(),
         config.keepalive.as_secs(),
         config.pool_per_host,
@@ -341,6 +344,12 @@ fn main() {
         } else {
             format!("{}s", config.dns_warm.as_secs())
         },
+        if config.stats_persist {
+            config.canary.clone()
+        } else {
+            format!("{} (no history thread)", config.canary)
+        },
+        config.canary_secs.as_secs(),
         if config.ipv6 {
             "on"
         } else {

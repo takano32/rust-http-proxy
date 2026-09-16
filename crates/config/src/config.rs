@@ -250,6 +250,15 @@ pub struct Config {
     /// TTL (60 秒) を熱さの物差しにすると、間隔が 2〜10 分のデプロイ先の主要ホストを
     /// 1 つも救えなかった (T14.1)
     pub dns_warm: Duration,
+    /// canary (`PROXY_CANARY`、`auto` | `off` | `host1,host2`、既定 `auto`)。
+    ///
+    /// 利用者の要求が無い時間帯も名前解決と TCP 接続の時間を測るための宛先 (T14.10)。
+    /// 解釈するのは `proxy-metrics` の `canary` なので、ここでは文字列のまま持つ
+    pub canary: String,
+    /// canary の周期 (`PROXY_CANARY_SECS`、既定 60 秒、最小 1)。
+    ///
+    /// **試験で短くするための口**で、運用では触らない (60 秒に 1 回・1 ホスト 1 本)
+    pub canary_secs: Duration,
     /// `/proxy.pac` で DIRECT にするホストの一覧 (`PROXY_PAC_DIRECT`、`*.example.com` 可)
     pub pac_direct: Vec<String>,
     /// ブロックリストのファイル (`PROXY_BLOCKLIST_FILE`、hosts 形式 / 1 行 1 ドメイン)
@@ -482,6 +491,14 @@ impl Config {
         {
             cfg.dns_warm = Duration::from_secs(secs);
             src.mark("PROXY_DNS_WARM_SECS");
+        }
+        if let Some(v) = envfile::var("PROXY_CANARY") {
+            cfg.canary = v.trim().to_ascii_lowercase();
+        }
+        if let Some(secs) =
+            envfile::var("PROXY_CANARY_SECS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.canary_secs = Duration::from_secs(secs.max(1));
         }
         let list = |v: String| -> Vec<String> {
             v.split(',')
@@ -736,6 +753,10 @@ impl Config {
             dns_ttl: Duration::from_secs(60),
             dns_negative: crate::dns::NEGATIVE,
             dns_warm: crate::dns::WARM,
+            // 既定は `auto` = 直近 1 時間で最も使われた CONNECT の宛先を 60 秒に 1 回
+            // (値の意味は `proxy-metrics` の `canary`。この層は文字列を運ぶだけ)
+            canary: "auto".to_string(),
+            canary_secs: Duration::from_secs(60),
             pac_direct: Vec::new(),
             blocklist_file: None,
             blocklist_url: None,
