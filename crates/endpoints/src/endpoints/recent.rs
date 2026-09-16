@@ -568,14 +568,17 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ("status_errors", super::status_body(ep, HostSort::Errors)),
         ("status_dns", super::status_body(ep, HostSort::Dns)),
         // `/history` と同じ組み立て (カーネルと cgroup の窓も一緒に入る。T14.12)
-        ("history.5", super::history_body(ep, History::index_for(5))),
+        (
+            "history.5",
+            super::history_body(ep, History::index_for(5), None),
+        ),
         (
             "history.60",
-            super::history_body(ep, History::index_for(60)),
+            super::history_body(ep, History::index_for(60), None),
         ),
         (
             "history.3600",
-            super::history_body(ep, History::index_for(3600)),
+            super::history_body(ep, History::index_for(3600), None),
         ),
         ("dns", dns(Some("sort=age&limit=4096")).2),
         ("errors", errors(ep, Some("n=500")).2),
