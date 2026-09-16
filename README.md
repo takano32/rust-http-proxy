@@ -460,7 +460,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     ヘッダーが載っているため。入るのは接続元 IP と時刻と理由だけ)。数だけなら `/status` の
     `rejected_requests` で理由別に読めます)、
     `/connections` でいま開いている接続の一覧 (接続 id・接続元・宛先 (CONNECT はトンネルの相手、
-    keep-alive の HTTP は**最初の要求の宛先**。どちらも接続あたり 1 回しか書きません)・`connect` / `http`・
+    keep-alive の HTTP は**最初の要求の宛先**。どちらも接続あたり 1 回しか書きません。
+    **形はどちらも `host:port`** で、ポートを書かない要求 (`http://example.com/`) には
+    ホスト別統計の鍵 (`scheme://host:port`) と同じ規則でスキームの既定 (http なら 80) を補います)・`connect` / `http`・
     状態 `relaying` / `parked` / `reading` / `serving` / `queued`・開始からの秒・転送バイト・記述子の数・
     **いまの転送速度 `rate_bps`** (直近 5 秒のバイト/秒。下の `rate_bps_total` を参照)。`--lite` では空)、
     `/dns?sort=age|host|misses&limit=300` で名前解決の表の中身 (ホスト・アドレス・解決からの秒・残り TTL・
@@ -486,7 +488,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (552 → 568 B。版 3 (8 MiB 化) で**余白は 4 → 68 B**、数字の欄ならあと 8 つ足せます)
   - **閉じた接続の個票 (T14.4)**: `/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
     `/connections` が「いま」しか見せないのに対し、こちらは「**起きたこと**」です。1 件 = 接続 id・開いた時刻 (`at`、epoch 秒)・
-    接続元 (`client`)・宛先 (`target`)・種類 (`kind` = `connect` / `http`)・寿命 (`secs`)・要求数 (`reqs`、http だけ)・
+    接続元 (`client`)・宛先 (`target`。CONNECT も http も `host:port`)・種類 (`kind` = `connect` / `http`)・
+    寿命 (`secs`)・要求数 (`reqs`、http だけ)・
     **上り / 下り別のバイト** (`up` / `down`)・**閉じた理由** (`reason`)・最後の応答の状態コード (`status`、http だけ)・
     預かり所にいた合計秒と回数 (`parked_secs` / `parks`)・**段階の ms** (`ms` = `dns` / `connect`。`first_byte` は 0 でなければ)・
     **カーネルの RTT と再送** (`rtt_ms` と `retrans`。どちらも `{"client":…,"origin":…}` で
