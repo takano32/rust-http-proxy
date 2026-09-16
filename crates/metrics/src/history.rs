@@ -139,6 +139,28 @@ impl Window {
     }
 }
 
+/// 標本 1 本の**固定の欄の数** (この順で [`Sample::encode`] が並べる)。
+///
+/// 版 3 の 1 レコードは 1,024 B ([`crate::rrd::SAMPLE_RECORD`]) で、CRC 4 B を除いた
+/// 1,020 B のうち固定の欄が `SAMPLE_ITEMS × 8 B`、**残りが予備**
+/// ([`SAMPLE_SPARE_ITEMS`] 項目ぶん)。
+///
+/// **欄を足すときの作法** (T14.14。これを守る限り `.rrd` の版は上がらない =
+/// 通算の統計を捨てなくてよい):
+///
+/// 1. [`Sample`] の**末尾**に欄を足す (手前の欄の位置は絶対に動かさない。動かすと
+///    古いレコードが別の意味で読み戻る)
+/// 2. [`Sample::encode`] の末尾に `u64` を 1 つ足す (= 予備の先頭を 1 つ使う)
+/// 3. [`Sample::decode`] の末尾で読む (古いレコードはそこがゼロ埋めなので 0 になる)
+/// 4. この数を増やす ([`Sample::encode`] の `debug_assert` と下の `const` が見張る)
+pub const SAMPLE_ITEMS: usize = 63;
+
+/// 予備に入る項目数。**これを使い切ったら**版を上げ、[`crate::rrd`] に変換をもう 1 本
+/// 足すことになる (T14.14 の版 2 → 版 3 と同じ手順)。
+pub const SAMPLE_SPARE_ITEMS: usize = ((crate::rrd::SAMPLE_RECORD - 4) - SAMPLE_ITEMS * 8) / 8;
+const _: () = assert!(SAMPLE_ITEMS * 8 <= crate::rrd::SAMPLE_RECORD - 4);
+const _: () = assert!(SAMPLE_SPARE_ITEMS >= 60, "T14.14: 予備は 60 項目ぶん持つ");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sample {
     pub t: u64,
@@ -175,8 +197,9 @@ pub struct Sample {
     pub fds_max: u64,
     /// 上限に当たって暇なトンネルを追い出した回数の累計 (T13.2)。
     ///
-    /// **レコードの末尾に足した** (T14.2)。標本 1 本は 63 項目 × 8 B = 504 B で、
-    /// 領域の 508 B にまだ収まるので `.rrd` の版は上げていない (上げると統計が全部消える)。
+    /// **レコードの末尾に足した** (T14.2)。版 2 では 63 項目 × 8 B = 504 B が
+    /// 領域の 508 B ぎりぎりだったが、版 3 (T14.14) で 1 レコードが 1,024 B になり、
+    /// **ここから先に予備が 64 項目ぶん**ある ([`SAMPLE_SPARE_ITEMS`])。
     /// 版 2 で書かれた古いレコードはこの位置がゼロ埋めなので 0 として読み戻る
     pub evicted_idle: u64,
 }
@@ -331,9 +354,10 @@ impl Sample {
             .u64(self.active_max)
             .u64(self.threads_max)
             .u64(self.fds_max)
-            // **末尾に足すこと** (T14.2)。前からある項目の位置が動くと、版 2 で書かれた
-            // 古いレコードが別の意味で読み戻る
+            // **末尾に足すこと** (T14.2)。前からある項目の位置が動くと、古いレコードが
+            // 別の意味で読み戻る。足したら `SAMPLE_ITEMS` も 1 つ増やす (T14.14)
             .u64(self.evicted_idle);
+        debug_assert_eq!(e.0.len(), SAMPLE_ITEMS * 8, "固定の欄の数と食い違っている");
         e.0
     }
 
@@ -373,7 +397,8 @@ impl Sample {
         s.active_max = d.u64();
         s.threads_max = d.u64();
         s.fds_max = d.u64();
-        // 版 2 で書かれたレコードはここから先がゼロ埋めなので 0 になる (`Dec` は足りなければ 0)
+        // 古いレコードはここから先がゼロ埋めなので 0 になる (`Dec` は足りなければ 0)。
+        // **ここから下が予備** — 欄を足すならこの位置から (T14.14)
         s.evicted_idle = d.u64();
         Some(s)
     }
@@ -1005,6 +1030,57 @@ mod tests {
         assert_eq!(Sample::decode(&[0u8; 104]), None);
     }
 
+    /// 版 3 の予備に **60 項目足しても版は上がらない** (T14.14 の受け入れ基準)。
+    ///
+    /// 「これから足される欄」を今のコードで真似る: 固定の欄のうしろに `u64` を
+    /// 60 個書いて `.rrd` に往復させ、(a) 1 レコード (1,024 B) に収まる、
+    /// (b) 60 項目ともそのまま読み戻る、(c) **その欄を知らない今の `decode` は
+    /// 固定の欄だけを読んで 1 つもずれない**、の 3 つを見る。
+    /// 60 項目は T14.6 (閉じた理由 8 + 寿命とバイトの 24) ・T14.10 (canary 2) ・
+    /// T14.12 (カーネルと cgroup 23) を**全部載せてもまだ入る**量。
+    #[test]
+    fn sixty_more_fields_fit_in_the_version3_slack_and_survive_a_round_trip() {
+        use crate::rrd::ring::Ring;
+        use crate::rrd::{Dec, Enc, Rrd};
+
+        assert_eq!(crate::rrd::SAMPLE_RECORD, 1024, "版 3 の標本のレコード");
+        assert_eq!(SAMPLE_SPARE_ITEMS, 64, "予備 516 B = 64 項目");
+        let mut s = sample(1_700_000_000);
+        s.requests = 12_345;
+        s.evicted_idle = 7;
+        let mut rec = s.encode();
+        let mut e = Enc::new();
+        for i in 1..=60u64 {
+            e.u64(i * 11);
+        }
+        rec.extend_from_slice(&e.0);
+        assert_eq!(rec.len(), (SAMPLE_ITEMS + 60) * 8);
+        assert!(
+            rec.len() <= crate::rrd::SAMPLE_RECORD - 4,
+            "60 項目足すと {} B で 1 レコードに入らない",
+            rec.len()
+        );
+
+        let path = std::env::temp_dir().join(format!("shp-spare-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (rrd, _) = Rrd::open(&path).unwrap();
+        let (mut ring, _) = Ring::load(&rrd, rrd.layout.history_fine).unwrap();
+        ring.push(&rrd, &rec).unwrap();
+        let (_, got) = Ring::load(&rrd, rrd.layout.history_fine).unwrap();
+        assert_eq!(got.len(), 1);
+        // (c) 足した欄を知らない今のコードでも、固定の欄は 1 つもずれない
+        assert_eq!(Sample::decode(&got[0]), Some(s));
+        // (b) 足した 60 項目もそのまま残っている
+        let mut d = Dec(&got[0]);
+        for _ in 0..SAMPLE_ITEMS {
+            d.u64();
+        }
+        for i in 1..=60u64 {
+            assert_eq!(d.u64(), i * 11, "予備の {} 項目目", i);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// 区間の分位点は区間内を補間し、その窓の最大値で頭打ちになる (T12.4 (3) の受け入れ基準)。
     #[test]
     fn window_quantiles_land_inside_the_bucket() {
@@ -1075,7 +1151,7 @@ mod tests {
         s.max_fds = 1024;
         s.evicted_idle = 7;
         let enc = s.encode();
-        assert_eq!(enc.len(), 63 * 8, "63 項目 × 8 B");
+        assert_eq!(enc.len(), SAMPLE_ITEMS * 8, "固定の欄だけで 63 項目 × 8 B");
         assert!(
             enc.len() <= crate::rrd::SAMPLE_RECORD - 4,
             "{} > {} (版を上げずには入らない)",
