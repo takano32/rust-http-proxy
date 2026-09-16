@@ -132,41 +132,45 @@ impl Layout {
     }
 }
 
-/// 開いた状態ファイル。読み書きはオフセット指定で、共有参照から行える。
-pub struct Rrd {
+/// 開いた固定長ファイル 1 本。読み書きはオフセット指定で、共有参照から行える。
+///
+/// 統計の `.rrd` ([`Rrd`]) も個票の `.recent` (T14.9) もこれを共有する: どちらも
+/// 「**先頭 8 バイトの版の印 + 固定長レコードの領域の並び**」で、違うのは識別子と
+/// 割り付けだけなので、伸びないことも CRC もここ 1 か所で面倒を見る。
+pub struct Fixed {
     file: File,
-    pub layout: Layout,
+    /// ファイルの大きさ (固定。以後は伸びない)
+    pub total: u64,
 }
 
-impl Rrd {
+impl Fixed {
     /// 開く。無い・小さい・識別子が違うなら作り直す (ゼロ埋めで実サイズを確保)。
     /// 戻り値の `bool` は「作り直した」。
-    pub fn open(path: &Path) -> io::Result<(Rrd, bool)> {
-        let layout = Layout::current();
+    pub fn open(path: &Path, magic: &[u8; 8], total: u64) -> io::Result<(Fixed, bool)> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(path)?;
-        let mut magic = [0u8; 8];
-        let ok = file.metadata()?.len() >= layout.total
-            && file.read_exact_at(&mut magic, 0).is_ok()
-            && &magic == MAGIC;
+        let mut head = [0u8; 8];
+        let ok = file.metadata()?.len() >= total
+            && file.read_exact_at(&mut head, 0).is_ok()
+            && &head == magic;
         if ok {
-            return Ok((Rrd { file, layout }, false));
+            return Ok((Fixed { file, total }, false));
         }
         file.set_len(0)?;
         let zeros = vec![0u8; 64 * 1024];
         let mut off = 0u64;
-        while off < layout.total {
-            let n = (layout.total - off).min(zeros.len() as u64) as usize;
+        while off < total {
+            let n = (total - off).min(zeros.len() as u64) as usize;
             file.write_all_at(&zeros[..n], off)?;
             off += n as u64;
         }
-        file.write_all_at(MAGIC, 0)?;
+        file.write_all_at(magic, 0)?;
         file.sync_all()?;
-        Ok((Rrd { file, layout }, true))
+        Ok((Fixed { file, total }, true))
     }
 
     /// 領域の `idx` 番目に書く。`payload` は `payload_size()` 以下 (残りはゼロ埋め)。
@@ -213,6 +217,30 @@ impl Rrd {
         let rec = vec![0u8; region.record_size];
         self.file
             .write_all_at(&rec, region.offset + (idx * region.record_size) as u64)
+    }
+}
+
+/// 開いた状態ファイル (`$HOME/.rust-http-proxy.rrd`)。[`Fixed`] に [`Layout`] を添えたもの。
+pub struct Rrd {
+    inner: Fixed,
+    pub layout: Layout,
+}
+
+impl Rrd {
+    /// 開く。無い・小さい・識別子が違う (= 版が違う) なら作り直す。
+    /// 戻り値の `bool` は「作り直した」。
+    pub fn open(path: &Path) -> io::Result<(Rrd, bool)> {
+        let layout = Layout::current();
+        let (inner, created) = Fixed::open(path, MAGIC, layout.total)?;
+        Ok((Rrd { inner, layout }, created))
+    }
+}
+
+/// `rrd.write(..)` `Ring::load(&rrd, ..)` をそのまま通すため (中身は [`Fixed`])。
+impl std::ops::Deref for Rrd {
+    type Target = Fixed;
+    fn deref(&self) -> &Fixed {
+        &self.inner
     }
 }
 
@@ -322,7 +350,8 @@ mod tests {
         let r = rrd.layout.history_fine;
         rrd.write(r, 5, &Enc::new().u64(7).0).unwrap();
         // 1 バイト壊す
-        rrd.file
+        rrd.inner
+            .file
             .write_all_at(&[0xFF], r.offset + (5 * r.record_size) as u64 + 3)
             .unwrap();
         assert!(rrd.read_all(r).unwrap().is_empty());
