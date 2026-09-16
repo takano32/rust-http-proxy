@@ -4331,7 +4331,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     - 追跡する接続元は `Option<IpAddr>` で持ち `net::canonical_ip` を通す (`::ffff:1.2.3.4` は `1.2.3.4`)。切り替えた直後は前の接続元の行が
       残るので 1 行ごとに `client` を持つ。T14.28 へ: accept 直後は 3 段の判定になり `Conn::new` の引数は 14 個 (`traced` が末尾)、
       `Shared` / `Ctx` に `traced: bool` がある。
-- [ ] **T14.28 400 の理由別カウンタと個票 (`rejected_requests{reason}`、`/errors` の `bad_request:<reason>`)**
+- [x] **T14.28 400 の理由別カウンタと個票 (`rejected_requests{reason}`、`/errors` の `bad_request:<reason>`)**
   - 目的: 公開ポートには走査 (scanner) の要求が来る。いまは 400 で閉じるだけで、**何が来たか**の数が無い。理由別 (要求行が読めない /
     ヘッダーが長すぎる / 対応しないメソッド / `Host` が無い / 絶対 URI が壊れている / 本文の枠が不正) に数え、`/errors` に個票 (接続元と理由。
     **要求行そのものは入れない** — 個票の決まり) を残す。
@@ -4340,6 +4340,27 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     `crates/prom/src/prom.rs` (`sorahost_rejected_requests_total{reason=}`)、README。
   - 受け入れ基準: 結合テストで壊れた要求行・長すぎるヘッダー (`PROXY_MAX_HEADER_BYTES` 相当の上限 + 1)・`Host` 無しの HTTP/1.1 を送り、
     それぞれの理由が 1 ずつ増え、`/errors` に 3 件 (状態 400)。成功の経路は 0 増 (400 の経路だけ)。
+  - 結果 (2026-09-16、`f0303db`): 読めずに断った要求を**理由 6 種で固定**して数え、個票にも残すようにした。
+    `/status` の末尾に **`rejected_requests`** (`{"request_line":N,"header_too_large":N,"method":N,"no_host":N,
+    "bad_uri":N,"body_framing":N,"total":N}`)、`/metrics` に **`sorahost_rejected_requests_total{reason=}`** の 6 本、
+    `/errors` に個票 (`cause` が **`bad_request:<reason>`**、`kind` は `forward`、**`target` は空**、状態コードは
+    **実際に返したもの**)。理由が立つ場所は: `request_line` = 要求行が空白で 2 つに割れない (400) と `MAX_LINE`
+    (64 KiB) 超の 414、`header_too_large` = 431 の 3 か所 (1 行が長い・合計 128 KiB 超・256 行超)、`method` =
+    メソッドが HTTP の token として読めない、`no_host` = オリジン形式 (`/path`) なのに `Host` が無い、`bad_uri` = 絶対 URI /
+    マッピング形式にホストが無い、`body_framing` = `Content-Length` と `Transfer-Encoding: chunked` が両方ある (**要求の密輸**)。
+    **個票に要求行そのものは入れない** (入るのは接続元 IP・時刻・理由・状態コードだけ)。**成功の経路は 0 増**なので計測も
+    していない: 足したのは既にある「断る」分岐の中だけで、本文の枠の判定も `chunked` が真のときだけ走る `if` の内側 (通る要求は
+    原子もリングも 1 度も触らない)。実バイナリに 6 種を 1 回ずつ送った直後の `/status` は
+    `"rejected_requests":{"request_line":1,"header_too_large":1,"method":1,"no_host":1,"bad_uri":1,"body_framing":1,"total":6}`、
+    `/errors` の 1 行は `{"at":…,"kind":"forward","target":"","cause":"bad_request:body_framing","dns_ms":0,"connect_ms":0,"status":400,"client":"127.0.0.1"}`。
+    結合 3 本 (`tests/badrequest_test.rs`) を新設。
+    - **応答が 2 か所だけ変わった**: (1) 壊れた要求行は今まで**無応答で閉じていた**のを `400 Bad Request` を返してから閉じる、
+      (2) `Content-Length` と `Transfer-Encoding: chunked` が両方ある要求は今まで chunked として中継していたのを **400 で断る**
+      (RFC 9112 §6.1)。どちらも既存の分岐の中なので費用は変わらない。
+    - 受け入れ基準の「3 件とも状態 400」は 1 つ外した: 長すぎるヘッダーに実際に返すのは **431** なので個票にも 431 (個票に嘘を書かない)。
+    - **要求行が UTF-8 として読めないもの (走査が投げる TLS の ClientHello など) はまだ数えていない**: `read_line` が `InvalidData` を返して
+      `serve_one` が `Err` で抜けるので 400 の分岐を通らない。公開ポートの走査では一番多い形かもしれないので、`serve_one` の `Err` の腕に
+      `InvalidData` を 1 つ足す (T14.41 か T14.99 の小物)。走査が続くと `/errors` (500 件) の個票が押し出される (数は残る)。
 - [x] **T14.29 デプロイ先のパターンを手元で再生する (`bench --replay <recent.json>`)**
   - 目的: バーストのとき T13.2 (追い出し) と T14.6 (写真) が本当に効くかは、バーストが来るまで分からない。`/recent` (T14.4) には
     「いつ・誰が・どこへ・どれだけ」があるので、**同じ時間間隔・同じ本数**で手元の内蔵オリジンへ再生すれば、バーストの形だけ再現できる
