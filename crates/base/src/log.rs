@@ -36,6 +36,17 @@ impl Level {
         }
     }
 
+    /// 符号から戻す (状態ファイルの読み戻し。知らない値は [`Level::Warn`])。
+    pub fn from_u8(v: u8) -> Level {
+        match v {
+            0 => Level::Error,
+            2 => Level::Info,
+            3 => Level::Debug,
+            4 => Level::Trace,
+            _ => Level::Warn,
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Level> {
         match s.trim().to_ascii_lowercase().as_str() {
             "error" | "err" | "0" => Some(Level::Error),
@@ -256,6 +267,10 @@ struct LogRing {
     buf: Vec<Line>,
     next: usize,
     total: u64,
+    /// **状態ファイルに書いた所までの通算** (T14.9。`total` との差が「まだ書いていない行」)
+    written: u64,
+    /// 起動時に状態ファイルから読み戻した行数 (`/log` の `"restored"`)
+    restored: usize,
 }
 
 /// warn 以上の直近の行 (`/log`)。**書くのは警告とエラーのときだけ**なので、
@@ -264,6 +279,8 @@ static RECENT: Mutex<LogRing> = Mutex::new(LogRing {
     buf: Vec::new(),
     next: 0,
     total: 0,
+    written: 0,
+    restored: 0,
 });
 
 /// 直近 `n` 行を**新しい順**で返す。2 つ目は起動からの通算 (捨てた分も含む)。
@@ -291,6 +308,56 @@ pub fn clear_recent() {
     r.buf.clear();
     r.next = 0;
     r.total = 0;
+    r.written = 0;
+    r.restored = 0;
+}
+
+/// まだ状態ファイルに書いていない行を**古い順**で取り出す (T14.9)。
+///
+/// 呼ぶのは **history スレッドだけ** (5 秒ごと)。`max` を越える分は古い方から落とし、
+/// 落とした行数を 2 つ目に返す (1 周期の書き込みを抑えるため。リングには残っている)。
+/// 印を位置ではなく通算の件数にしてあるのは、リングが古い行を上書きするため。
+pub fn take_unwritten(max: usize) -> (Vec<Line>, u64) {
+    let mut r = RECENT.locked();
+    let len = r.buf.len();
+    let pending = r.total.saturating_sub(r.written).min(len as u64) as usize;
+    r.written = r.total;
+    if pending == 0 {
+        return (Vec::new(), 0);
+    }
+    let take = pending.min(max);
+    let start = if len < MAX_LOG_LINES { 0 } else { r.next };
+    let out = ((len - take)..len)
+        .map(|i| r.buf[(start + i) % len].clone())
+        .collect();
+    (out, (pending - take) as u64)
+}
+
+/// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
+///
+/// 読み戻した行は**書き直さない** (印を通算に合わせる)。行数は `/log` の
+/// `"restored"` に出す。
+pub fn restore(lines: Vec<Line>) {
+    let n = lines.len().min(MAX_LOG_LINES);
+    for line in lines {
+        let mut r = RECENT.locked();
+        r.total += 1;
+        if r.buf.len() < MAX_LOG_LINES {
+            r.buf.push(line);
+            continue;
+        }
+        let at = r.next;
+        r.buf[at] = line;
+        r.next = (at + 1) % MAX_LOG_LINES;
+    }
+    let mut r = RECENT.locked();
+    r.written = r.total;
+    r.restored = n;
+}
+
+/// 再起動前から引き継いだ行数 (`/log` の `"restored"`)。
+pub fn restored_count() -> usize {
+    RECENT.locked().restored
 }
 
 /// warn 以上の 1 行をリングに写す (満杯なら最も古いものを上書き)。
