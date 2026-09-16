@@ -2129,3 +2129,95 @@ T14.38。**メモリだけ**なので再起動で 0 に戻ります。合計は 
 `/metrics` も同じ内容を `sorahost_*` 系列で出します。`origin_connections` にオリジンへの新規接続数と再利用回数、`cache` には各層の `used_bytes` / `limit_bytes` (現在の予算) / `reserved_bytes` (バラスト) /
 `keep_free_bytes` (動的マージン) / `mode` (`auto` か `fixed`) と、`system` に直近の計測値 (メモリ総量と空き、
 活性ページキャッシュ、cgroup 制限と使用量、PSI の有無、ディスク総量と空き、自プロセスの RSS) が入ります。
+
+## 運用 (置いた先での手順と、そのあと見るもの)
+
+新しい版を置いたあと**いつ何を見ればよいか**を 1 か所にまとめたものです。
+数字の出どころと期待値は `TASKS.md` の「再デプロイの手引き」にあります。
+
+### 1. 置く前 (`--check`)
+
+```bash
+# 起動せずに「この環境で何が読めるか」と「効いている設定」を印字して終わる
+./rust-http-proxy --check; echo "exit=$?"
+```
+
+`capabilities` の 7 行が `[ok]` で終了コードが `0` なら、`/profile` (`proc_syscall`)・
+カーネルの RTT (`tcp_info`)・CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・
+IPv6 (`ipv6_route`)・統計ファイル (`home_writable`) が全部読めます。
+`[NO]` の行があると終了コードは `1` で、最後に `check: N of 6 not readable (...)` と出ます。
+起動はできますが、その項目は `/status` や `/history` で `null` になります
+(`resolver_ms` だけは終了コードに入らず、2 秒で答えが来なければ `[--]` です)。`settings` の一覧は `source` (`default` /
+`env` / `env_file` / `cli`) つきなので、**書いたのに効いていない設定**がここで分かります。
+
+### 2. 起動直後 (0〜5 分)
+
+```bash
+# 起動ログの 2 行 (待ち受けと統計ファイル)
+#   rust-http-proxy 0.1.0+<commit> listening on [::]:8080 (IPv6 + IPv4) (backlog 1024, log level: INFO)
+#   state file ~/.rust-http-proxy.rrd (8192 KiB, converted from version 2 in 66 ms): history 720/1440/720 samples, 800 hosts, 2 clients restored
+curl -i http://127.0.0.1:8080/healthz     # 200 と "ok":true (503 ならどの検査が偽かが本文に出る)
+curl http://127.0.0.1:8080/               # エンドポイントの案内 (この版で読める口の一覧)
+curl http://127.0.0.1:8080/config > config-$(date -u +%Y%m%dT%H%M%SZ).json   # そのときの設定を 1 枚残す
+```
+
+`backlog` は `PROXY_LISTEN_BACKLOG` の実効値です (既定は `min(1024, somaxconn)`)。
+`state file` の括弧が `converted from version 2 in N ms` なら**版 2 の統計を版 3 に詰め直して引き継いだ**ということで、
+`created` と出たら引き継げずに作り直しています (通算の統計は消えています)。
+隣の `recent file ... (4096 KiB, opened): N closed connections, ... restored` が前の版の個票です。
+
+### 3. 1 時間後
+
+```bash
+# ブラウザ: http://<proxy>/dashboard (グラフとホスト別統計) と http://<proxy>/inspect (個票の時間軸)
+curl http://127.0.0.1:8080/status | python3 -m json.tool | less    # dns / ipv6 / evicted_idle / recent_quantiles
+curl "http://127.0.0.1:8080/dns?sort=misses"                       # warm と next_refresh_secs
+curl "http://127.0.0.1:8080/profile?res=5"                         # 待ちの段階・スレッド・ロック
+```
+
+見るのは `dns.warm` (keep-warm が掴んでいる名前の数。`0` なら効いていません) と
+`dns.misses ÷ CONNECT の本数`、`ipv6` の `v4_first` (`true` なら IPv6 が落ちている環境と判断済み)、
+`evicted_idle` と `rejected_overload` (山が無い時間帯は `0`)、`recent_quantiles`
+(直近 1,024 本の**実測**の分位点。区間の補間ではありません)。
+`/profile` の `stages` は CONNECT が `queue` / `client_read` / `dns` / `connect` / `first_relay` / `relay` / `park`、
+forward が `queue` / `client_read` / `origin` / `send` / `ttfb` / `body` で、**1 本の待ちがどこに消えたか**が読めます。
+
+### 4. 24 時間後
+
+```bash
+# 雪像を 1 枚取り、前回との差分と判定表つきの Markdown を 1 枚にする
+scripts/collect-deployed.sh <host>:<port>
+curl http://127.0.0.1:8080/snapshots    # プロキシ自身が 1 日 1 回残した雪像 (30 日ぶん)
+curl "http://127.0.0.1:8080/daily?n=365"  # 1 日 1 行の要約 (永久)
+curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たした時間の割合
+```
+
+`collect-deployed.sh` は `/snapshot` を 1 回で取って保存し、前回の雪像があれば
+`snapshot-diff.py` の差分 (再起動で切った平常時の前後・ホスト別・接続元別・名前解決・エラー・バースト) と、
+手元から見た待ち (`probe-deployed.sh`) を続けて回します。**保存先は既定で `~/rust-http-proxy-status/`** で、
+個票には接続元 IP と宛先が並ぶのでリポジトリには入れません。取り忘れた日は
+`scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
+7 日ぶん溜まったら `scripts/weekly-report.py` が週次の 1 枚になります。
+
+### 5. 何かおかしいとき
+
+```bash
+curl "http://127.0.0.1:8080/errors?n=100"        # 直近のエラー (誰が・いつ・なぜ。403 も入る)
+curl "http://127.0.0.1:8080/log?n=200"           # 直近の warn 以上のログ
+curl "http://127.0.0.1:8080/events?n=200"        # 起動・再読込・IPv6 の切替・異常の検知
+curl "http://127.0.0.1:8080/recent?n=200&sort=slow"   # 遅かった接続から順に、段階と閉じた理由
+curl "http://127.0.0.1:8080/explain?host=<name>"      # 1 つの相手を 1 枚で (?client=<ip> も)
+```
+
+`/events` の `anomaly` は自動で立った異常 (名前解決が遅い・エラーが増えた・山が来た・新しい接続元) で、
+`reload` には `.env` で変えた名前と前後の値が入ります。
+
+### 6. 止めるとき
+
+`SIGTERM` を送ったあと、**ログに `statistics saved to ... (N individual records appended)` が出るまで待ってから**
+次の版を起動してください。待たずに起動すると最後の書き出しが間に合わず、
+ホスト別・接続元別の通算が読み戻せません (次の起動のログが `0 hosts, 0 clients restored` になります)。
+
+### 7. そのあと
+
+再デプロイ後 24 時間の数字で `TASKS.md` の §2 と §0 を書き直すのが `T14.99` です。
