@@ -58,6 +58,11 @@ mod recent;
 
 const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
 
+/// 「調査」ページ (T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
+/// **起きたことを時間軸で読む**ための別のページ (個票を描く)。
+/// `--lite` でも 200 で返す (記録が無ければページの中で「記録していません」と出る)。
+const INSPECT_HTML: &str = include_str!("../web/inspect.html");
+
 /// 要求ターゲットを自分宛てのパスに直す。**どちらの形式もポートだけで判定する**:
 /// 絶対形式は authority の、オリジン形式は `Host` ヘッダーのポート (無ければ 80) が
 /// 自分の待ち受けポートと同じときだけ自分宛て。それ以外 (他所への転送) は `None`。
@@ -103,6 +108,7 @@ fn endpoint_list(lite: bool) -> String {
          this address as an HTTP proxy (or use /proxy.pac below).\n\n\
          endpoints:\n\
          {}\
+         \x20 /inspect                                    control panel: what happened (timeline)\n\
          \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
          \x20 /connections                                JSON: the connections open right now\n\
@@ -164,6 +170,11 @@ pub fn handle(
         )
     } else if is_purge {
         purge_url(ep, target)
+    } else if is_get && (path == "/inspect" || path == "/inspect/" || path == "/dashboard/inspect")
+    {
+        // 「調査」ページ (T14.8)。`--lite` でも 200 — 個票が空でもページは開ける
+        // (読む人が「記録していません」と分かるのはページの中)
+        (200, "text/html; charset=utf-8", INSPECT_HTML.to_string())
     } else if is_get && (path == "/dashboard" || path == "/dashboard/") {
         if ep.lite {
             (
@@ -714,6 +725,87 @@ mod local_path_tests {
                 "{} へのリンクが無い",
                 link
             );
+        }
+        // 外部ライブラリは読み込まない (依存なしの 1 ページ)
+        assert!(!html.contains("<script src="), "外部 JS を読み込んでいる");
+        assert!(
+            !html.contains("<link rel=\"stylesheet\""),
+            "外部 CSS を読み込んでいる"
+        );
+    }
+
+    /// 「調査」ページに T14.8 が描く図と、node の整形テストが抜き出す関数があること。
+    ///
+    /// 絵はブラウザが無いと確かめられないので、ここで見るのは「消えていないこと」と
+    /// **大きさが 64 KiB 以下**なことだけ (読み方が実出力と合っているかは
+    /// `scripts/check-dashboard.js` が `/snapshot` の実出力で見る)。
+    #[test]
+    fn the_inspect_page_has_what_phase_14_reads() {
+        let html = super::INSPECT_HTML;
+        assert!(
+            html.len() <= 64 * 1024,
+            "inspect.html が 64 KiB を超えた: {} B",
+            html.len()
+        );
+        for id in [
+            "ch-timeline", // (a) タイムライン
+            "lg-timeline",
+            "tllead",
+            "slow", // (b) 遅い接続の表
+            "lg-stages",
+            "bursts",  // (c) 山の写真
+            "clients", // (d) 接続元
+            "ch-rtt",  // (e) RTT の散布
+            "rtt",
+            "win", // (f) 起動からの窓
+            "winkv",
+            "series-card", // T14.22 が入ったときだけ出る折れ線
+            "lite",
+        ] {
+            assert!(html.contains(&format!("id=\"{}\"", id)), "{} が無い", id);
+        }
+        // node の整形テストが名前で抜き出す関数 (名前を変えるならあちらも直すこと)
+        for f in [
+            "function timeline(",
+            "function eventMarks(",
+            "function slowRows(",
+            "function burstCards(",
+            "function clientRows(",
+            "function rttScatter(",
+            "function sinceStart(",
+            "function seriesLines(",
+            "function toSamples(",
+            "function winQuantile(",
+        ] {
+            assert!(html.contains(f), "{} が無い", f);
+        }
+        // (g) 先頭に `/snapshot` へのリンク。個票の口もヘッダーから開ける
+        for link in [
+            "/snapshot",
+            "/recent?n=2000",
+            "/bursts",
+            "/clients?limit=1000",
+        ] {
+            assert!(
+                html.contains(&format!("<a href=\"{}\" target=\"_blank\">", link)),
+                "{} へのリンクが無い",
+                link
+            );
+        }
+        // 段階は T14.3 の 5 つ、閉じた理由は T14.4 の 8 種を色で持つ
+        for stage in ["queue", "client_read", "dns", "connect", "first_relay"] {
+            assert!(html.contains(stage), "段階 {} が無い", stage);
+        }
+        for reason in [
+            "client_eof",
+            "server_eof",
+            "idle_timeout",
+            "keepalive_timeout",
+            "evicted",
+            "limit",
+            "shutdown",
+        ] {
+            assert!(html.contains(reason), "閉じた理由 {} が無い", reason);
         }
         // 外部ライブラリは読み込まない (依存なしの 1 ページ)
         assert!(!html.contains("<script src="), "外部 JS を読み込んでいる");
