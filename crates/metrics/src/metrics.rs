@@ -945,6 +945,52 @@ impl ClientStats {
     }
 }
 
+/// 内部エンドポイントを引いた接続元を覚えておく数 (T14.53)。
+///
+/// 溢れたら**最後に引いたのがいちばん古い行**を捨てる (走査は次々に別の IP で来るので、
+/// 古い行を残すと「いま誰が読んでいるか」が押し出される)。1 行は鍵 (最大
+/// [`crate::recent::MAX_CLIENT`] B) とパス ([`MAX_READER_PATH`] B) で 200 B 前後なので、
+/// 満杯でも 45 KB ほど (`/status` の `memory.rings.readers`)。
+pub const MAX_READERS: usize = 256;
+
+/// `last_path` に残す長さ (バイト)。**問い合わせ文字列 (`?` 以降) は落とす**
+/// (Phase 14 の共通の決まり: 記録に URL の問い合わせ文字列を入れない)。
+pub const MAX_READER_PATH: usize = 64;
+
+/// `/status` の `readers` に出す件数 (上位から。全部は `/readers`)。
+pub const STATUS_READERS: usize = 20;
+
+/// 内部エンドポイント (`/status` `/clients` …) を引いた接続元 1 つ (T14.53)。
+///
+/// T14.7 の `clients[]` は**自分宛てだけの接続を数えない** (監視で埋まってしまうため。
+/// 呼ぶ側 `src/lib.rs` の [`Metrics::record_client_agent`] の手前にその注記がある)。
+/// こちらはその逆で、**自分宛てだけ**を数える別の表: 認証なしの公開ポートで
+/// 「誰が個票を読んでいるか」(走査か、自分の監視か) を見分けるためのもの。
+/// **プロキシとしての要求 (CONNECT / forward) は 1 件も入らない**ので、2 つの表は混ざらない。
+#[derive(Debug, Default, Clone)]
+pub struct Reader {
+    /// 内部エンドポイントを引いた回数
+    pub count: u64,
+    /// 最後に引いた時刻 (epoch 秒)
+    pub last_at: u64,
+    /// 最後に引いたパス (先頭 [`MAX_READER_PATH`] バイト、**`?` 以降は落とす**)
+    pub last_path: String,
+}
+
+impl Reader {
+    /// `/status` の `readers[]` と `/readers` の 1 行 (**形は同じ**。読む道具が
+    /// 両方を 1 つの読み方で扱えるように)。
+    pub fn to_json(&self, client: &str) -> String {
+        format!(
+            "{{\"client\":\"{}\",\"count\":{},\"last_at\":{},\"last_path\":\"{}\"}}",
+            crate::json::escape(client),
+            self.count,
+            self.last_at,
+            crate::json::escape(&self.last_path)
+        )
+    }
+}
+
 /// 宛先 (`scheme://host:port` / `host:port` / `host`) を (ホスト, ポート) に分ける。
 ///
 /// 呼び出し側の鍵の形がまちまち (forward は `http://host:port`、CONNECT は `host:port`、
@@ -1148,6 +1194,10 @@ pub struct Metrics {
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
     clients: Mutex<HashMap<String, ClientStats>>,
+    /// **内部エンドポイントを引いた**接続元の表 (`/status` の `readers` と `/readers`。
+    /// 最大 [`MAX_READERS`]。T14.53)。上の `clients` とは**別の表**で、
+    /// プロキシとして通した要求は 1 件も入らない ([`Metrics::record_reader`])
+    readers: Mutex<HashMap<String, Reader>>,
 }
 
 impl Metrics {
@@ -1179,6 +1229,7 @@ impl Metrics {
             sni_mismatches: AtomicU64::new(0),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
+            readers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1629,6 +1680,122 @@ impl Metrics {
         clients.entry(key).or_insert_with(ClientStats::now).rejected += 1;
     }
 
+    /// 内部エンドポイント (`/status` `/clients` …) を 1 回引かれたことを数える (T14.53)。
+    ///
+    /// **呼ぶのは `endpoints::handle` の入口で 1 回だけ** (要求が自分宛てだと決まった
+    /// あと)。プロキシとして通す要求 (CONNECT / forward) はこの関数を 1 度も通らないので、
+    /// 熱い経路の費用は 0 で、T14.7 の `clients[]` (自分宛てを数えない表) とも混ざらない。
+    ///
+    /// `path` は**問い合わせ文字列を外したパス**を渡すこと (`?` 以降は記録しない)。
+    /// 表が [`MAX_READERS`] で溢れたら、最後に引いたのがいちばん古い行を 1 つ捨てる。
+    pub fn record_reader(&self, client: &str, path: &str) {
+        let now = crate::cache::now_epoch();
+        let mut readers = self.readers.locked();
+        if let Some(r) = readers.get_mut(client) {
+            r.count += 1;
+            r.last_at = now;
+            // 同じパスが続く間は確保しない (監視は同じ口を叩き続ける)。
+            // [`MAX_READER_PATH`] より長いパスだけは毎回切り直すことになるが、
+            // そういう相手は走査なので惜しまない (どのみち自分宛ての経路だけ)
+            if r.last_path != path {
+                r.last_path = crate::recent::clip(path, MAX_READER_PATH);
+            }
+            return;
+        }
+        if readers.len() >= MAX_READERS
+            // 捨てるのは**最後に引いたのがいちばん古い行**。同着は引いた数の少ない方 →
+            // 名前の順で崩すので、どの環境でも捨てる 1 行は同じに決まる
+            && let Some(old) = readers
+                .iter()
+                .min_by(|a, b| {
+                    a.1.last_at
+                        .cmp(&b.1.last_at)
+                        .then_with(|| a.1.count.cmp(&b.1.count))
+                        .then_with(|| a.0.cmp(b.0))
+                })
+                .map(|(k, _)| k.clone())
+        {
+            readers.remove(&old);
+        }
+        readers.insert(
+            client.to_string(),
+            Reader {
+                count: 1,
+                last_at: now,
+                last_path: crate::recent::clip(path, MAX_READER_PATH),
+            },
+        );
+    }
+
+    /// 内部エンドポイントを引いた接続元を、引いた回数の多い順に (T14.53)。
+    ///
+    /// **同点は最後に引いた時刻の新しい順 → 名前**で崩すので、順序は 1 つに決まる
+    /// ([`Metrics::clients_sorted_by`] と同じ作法)。
+    pub fn readers_sorted(&self) -> Vec<(String, Reader)> {
+        let readers = self.readers.locked();
+        let mut v: Vec<(String, Reader)> = readers
+            .iter()
+            .map(|(k, r)| (k.clone(), r.clone()))
+            .collect();
+        v.sort_by(|a, b| {
+            b.1.count
+                .cmp(&a.1.count)
+                .then_with(|| b.1.last_at.cmp(&a.1.last_at))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        v
+    }
+
+    /// `/status` の `readers` (上位 [`STATUS_READERS`] 件の配列だけ)。全部は `/readers`。
+    pub fn readers_json(&self) -> String {
+        let rows: Vec<String> = self
+            .readers_sorted()
+            .into_iter()
+            .take(STATUS_READERS)
+            .map(|(c, r)| r.to_json(&c))
+            .collect();
+        format!("[{}]", rows.join(","))
+    }
+
+    /// `/readers` の応答 (**全部**。`budget` バイトに収まるところまで。T14.53)。
+    ///
+    /// 上限のバイト数は呼ぶ側 (`crates/endpoints` の `recent::MAX_BODY` = 256 KiB) が
+    /// 持っている数で、個票の口と同じ扱いにするために引数で受け取る (この層に写しを
+    /// 置くと 2 か所で食い違う)。満杯 (256 行) でも 30 KB ほどなので普通は切れない。
+    pub fn readers_body(&self, budget: usize) -> String {
+        let all = self.readers_sorted();
+        let count = all.len();
+        // 末尾 (`],"count":...}`) のために空けておくぶん
+        let room = budget.saturating_sub(256);
+        let mut out = String::with_capacity(4096);
+        out.push_str(SCHEMA_HEAD);
+        out.push_str("\"readers\":[");
+        let (mut shown, mut cut) = (0usize, false);
+        for (c, r) in &all {
+            let item = r.to_json(c);
+            if out.len() + item.len() + 2 > room {
+                cut = true;
+                break;
+            }
+            if shown > 0 {
+                out.push(',');
+            }
+            out.push_str(&item);
+            shown += 1;
+        }
+        let _ = write!(
+            out,
+            "],\"count\":{},\"shown\":{},\"truncated\":{},\"max_readers\":{},\"max_path\":{},\"persisted\":false,\"uptime_secs\":{}}}",
+            count,
+            shown,
+            cut,
+            MAX_READERS,
+            MAX_READER_PATH,
+            self.start_time.elapsed().as_secs()
+        );
+        out
+    }
+
     /// 要求数の多い順に並べた接続元別統計 (`.rrd` と `/metrics` が使う欄だけ)。
     pub fn clients_sorted(&self) -> Vec<(String, HostStats)> {
         self.clients_sorted_by(ClientSort::Requests)
@@ -1854,7 +2021,7 @@ impl Metrics {
                 // (`memory` も T14.21、`recent_quantiles` も T14.31、`rate_bps_total` も
                 // T14.39、`rejected_requests` も T14.28、`sni_mismatches` も T14.38 で同じく末尾)
                 "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
-                "\"rejected_requests\":{},\"sni_mismatches\":{}}}"
+                "\"rejected_requests\":{},\"sni_mismatches\":{},\"readers\":{}}}"
             ),
             SCHEMA,
             crate::json::escape(extra.version),
@@ -1910,7 +2077,10 @@ impl Metrics {
             // 読めずに断った要求の理由別 (T14.28)。原子 6 本を読むだけ
             self.rejected_requests_json(),
             // CONNECT のホストと SNI が食い違った本数 (T14.38)
-            self.sni_mismatches.load(Ordering::Relaxed)
+            self.sni_mismatches.load(Ordering::Relaxed),
+            // 内部エンドポイントを引いた接続元の上位 20 (T14.53)。全部は `/readers`。
+            // **プロキシとして通した要求は入らない** (`clients[]` とは別の表)
+            self.readers_json()
         )
     }
 }
@@ -1933,7 +2103,8 @@ impl Metrics {
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
 ///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
 /// - `rings` は記録のリングが**満杯のときの見積もり** (固定部 + 文字列の上限。T13.4 / T14.4 /
-///   T14.6 / T14.11 / T14.22 / T14.25 / T14.27 / T14.31)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
+///   T14.6 / T14.11 / T14.22 / T14.25 / T14.27 / T14.31)。いま何件入っているかは `/recent` や `/errors` の `total` を見る。
+///   `readers` だけは環状ではなく表 (最大 256 行。T14.53) だが、同じ「満杯のとき」の見積もりで並べてある
 /// - `arenas` は `PROXY_MALLOC_ARENAS` で掛けた上限 (`0` = glibc の既定のまま。T5.6)
 ///
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
@@ -1971,6 +2142,10 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         * crate::hostseries::SAMPLES
         * crate::hostseries::FIELDS
         * size_of::<u64>()) as u64;
+    // 内部エンドポイントを引いた接続元の表 (T14.53)。環状ではないが、同じ「満杯のとき」の
+    // 見積もり (最大 256 行 × (鍵 + パス))。**1 行も引かれていなければ 1 バイトも確保しない**
+    let readers =
+        (MAX_READERS * (size_of::<(String, Reader)>() + MAX_CLIENT + MAX_READER_PATH)) as u64;
     // 直近の標本の環状は固定長 (2 系統 × 1,024 本 × 8 B = 16 KiB。T14.31)。
     // 1 本目を書くまで確保しないので、これも「満杯のとき」の見積もり
     let quantiles = crate::quantiles::BYTES as u64;
@@ -1995,7 +2170,7 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             "\"stacks_estimate\":{},\"cache_memory\":{},",
             "\"rings\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
             "\"events\":{},\"trace\":{},\"history\":{},\"hostseries\":{},\"quantiles\":{},",
-            "\"total\":{}}},\"arenas\":{}}}"
+            "\"readers\":{},\"total\":{}}},\"arenas\":{}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -2012,7 +2187,17 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         history,
         hostseries,
         quantiles,
-        recent + errors + bursts + log + events + trace + history + hostseries + quantiles,
+        readers,
+        recent
+            + errors
+            + bursts
+            + log
+            + events
+            + trace
+            + history
+            + hostseries
+            + quantiles
+            + readers,
         crate::sysinfo::arena_max(),
     )
 }

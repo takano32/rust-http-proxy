@@ -488,6 +488,21 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     版 3 で余白が 68 B に広がってもここには入りません)。
     **T14.5 の RTT の 4 欄 (32 B) と T14.26 の向き別のバイト 2 欄 (16 B) はスロットの余白に入ったので残ります**
     (552 → 568 B。版 3 (8 MiB 化) で**余白は 4 → 68 B**、数字の欄ならあと 8 つ足せます)
+  - **内部エンドポイントの読み手 `/readers` (T14.53)**: 上の `/clients` が「**プロキシとして通した相手**」なのに対して、
+    こちらは「**この口 (`/status` `/clients` `/recent` …) を読んでいる相手**」です。認証なしの公開ポートでは
+    誰でも個票が読めるので、**走査なのか自分の監視なのか**を見分けるために、接続元ごとに
+    `count` (引いた回数)・`last_at` (最後に引いた時刻、epoch 秒)・`last_path` (最後に引いたパス) だけを
+    別の小さな表 (最大 **256 接続元**、溢れたら**最後に引いたのがいちばん古い行**から捨てる) に持ちます。
+    `/status` には**上位 20** (`count` の多い順、同数は最後に引いた新しい順 → 名前順) が `readers` に出て、
+    `/readers` は**全部** (256 KiB まで。`count` / `shown` / `truncated` / `max_readers` / `max_path` つき)。
+    **`last_path` は先頭 64 バイトで、`?` 以降は落とします** (記録に問い合わせ文字列を入れない Phase 14 の決まり)。
+    知らないパス (404) も数えます — 走査を見つけるのがこの表の仕事なので、200 だけ数えても意味がありません。
+    **プロキシとしての要求 (CONNECT / forward) は 1 件も入りません** (T14.7 の `clients[]` はその逆で、
+    自分宛てだけの接続を数えません。2 つの表は混ざらないので、`clients[]` に居ない接続元が `readers` に
+    居れば「プロキシは使わずに個票だけ読んでいる相手」です)。**表はメモリだけ**で、状態ファイルには残りません
+    (`"persisted": false`)。費用は内部エンドポイントの経路の鍵 1 回だけで、**要求の経路には 1 命令も足していません**。
+    数えるのは応答を組む**前**なので、**読んだ応答にはその要求自身が入っています** (`/status` を 3 回引いた
+    3 回目の応答が `count: 3`。測る行為が状態を変えるので、`/readers` を引けばその 1 回も数に入ります)
   - **閉じた接続の個票 (T14.4)**: `/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
     `/connections` が「いま」しか見せないのに対し、こちらは「**起きたこと**」です。1 件 = 接続 id・開いた時刻 (`at`、epoch 秒)・
     接続元 (`client`)・宛先 (`target`。CONNECT も http も `host:port`)・種類 (`kind` = `connect` / `http`)・
@@ -798,6 +813,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       `history` (**5 秒 × 4,320** + 60 秒 × 1,440 + 1 時間 × 720 の標本と、閉じた接続の窓、
       速さと半閉じの窓。5 秒の標本を 6 時間ぶん持つので 2.95 → **4.77 MB**。T14.32)、
       `hostseries` (16 ホスト × 288 標本 × 5 項目 × 8 B = 180 KiB。T14.22)、
+      `readers` (内部エンドポイントを引いた接続元の表。環状ではありませんが同じ「満杯のとき」の
+      見積もりで並べてあります。最大 256 行。T14.53)、
       `quantiles` (2 系統 × 1,024 本 × 8 B = 16 KiB。T14.31) と、
       その合計 `total` (この機械では 6.4 MiB)。
       いま何件入っているかは `/recent` や `/errors` の `total` を見てください
@@ -1013,7 +1030,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_CONNECT_PORTS` | なし (制限なし) | `CONNECT` を許すあて先ポート。`443,80,8080-8099` のようにカンマ区切り (範囲可)。ここに無いポートは 403。`.env` で即時反映 |
 | `PROXY_ALLOW_LOCAL` | `off` | ループバック (`127.0.0.0/8`, `::1`) とリンクローカル (`169.254.0.0/16`, `fe80::/10`) 宛てのオリジンを許すか。既定では 403 にしてクラウドのメタデータ (`169.254.169.254`) 経由の SSRF を防ぐ。ローカルのサービスへプロキシしたいときだけ `on`。`.env` で即時反映 |
 | `PROXY_ALLOW_CLIENTS` | なし (全許可) | **受ける接続元**のカンマ区切りリスト (`1.2.3.4,10.0.0.0/8,2001:db8::/32`。1 つの IP は `/32` `/128` と同じ)。ここに無い相手は **accept した直後に、要求を 1 バイトも読まずに閉じます** (応答も返しません)。**内部エンドポイントも含めて閉じる**ので、公開ポートで `/status` や `/clients` の個票が見られることもありません。`PROXY_MAX_CONNS` の 「上限 + 4 本」の枠より**前**で判定します。断った数は `/status` の `rejected_client_acl` と `/metrics` の `sorahost_rejected_client_acl_total`。v4-mapped IPv6 (`::ffff:1.2.3.4`) は IPv4 として照合するので、デュアルスタックで 待ち受けていても `1.2.3.4` の 1 行で書けます。書式が違う項目は読み飛ばします (起動ログの `allowed clients:` に実際に読めた項目が出るので、書き損じはそこで分かります)。**宛先の `PROXY_ALLOW_HOSTS` / `PROXY_ALLOW_LOCAL` とは無関係**で、**認証でもありません** (同じアドレスから来られれば誰でも通ります)。`.env` で即時反映 (次に受ける接続から) |
-| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/slo` `/snapshots` `/metrics` `/hosts` `/hosts/series` `/clients` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/trace` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
+| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/slo` `/snapshots` `/metrics` `/hosts` `/hosts/series` `/clients` `/readers` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/trace` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる (`PROXY_PARK_IDLE=on` なら、預かり所が期限を見て引き上げる)。`0` で無期限。`.env` で即時反映 |
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル (`--lite` と同じ)。キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限。上限に当たったら、まず**預かり所の暇な CONNECT トンネルを最古から 1 本閉じて**席を作り、その接続を受ける (閉じた数は `/status` の `evicted_idle` と `/metrics` の `sorahost_evicted_idle_total`。**暇な keep-alive 接続は閉じない** — 次の要求を待っているだけなので、閉じると入れ違いで届いた要求を取りこぼすため)。閉じるものが無い (トンネルが全部中継中、または預かり所が空) ときは、スレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。ただし**自分宛て (`/status` `/metrics` などの内部エンドポイント) は上限 + 4 本まで受ける**: accept の時点では要求が読めないので、4 本までは受けて要求行と `Host` を読み、自分宛てなら普通に応答、それ以外は 503 で閉じる (上限に当たっている最中でも監視が取れるようにするため。この枠で受けた接続は要求行が 2 秒来なければ 503 で閉じる)。`auto` は記述子の上限から `min(4096, (RLIMIT_NOFILE の soft − 予備 64) ÷ 4)` (1 接続が最悪で使う記述子は クライアント 1 + オリジン 1 + 素通しのパイプ 2 = 4 本。`ulimit -n` が 1024 の環境なら 240、4096 なら 1008)。記述子が余っていても 4096 で頭打ちにするのは、上限が fd 以外の資源 (スレッド・RSS) の歯止めでもあるため (同時 5,000 本で RSS 198 MiB の実測)。数値を書けばその値、`0` で無制限。決まった値は起動ログの `max connections:` と `/status` の `max_conns` (`/metrics` は `sorahost_max_connections`) に出る。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
@@ -1611,6 +1628,7 @@ curl "http://127.0.0.1:8080/hosts/series?host=connect://mtalk.google.com:5228"  
 curl "http://127.0.0.1:8080/explain?host=mtalk.google.com"   # 1 宛先を 1 枚に (統計 + /dns + 個票 + 判定)
 curl -s "http://127.0.0.1:8080/explain?host=mtalk.google.com" | python3 -c 'import json,sys;print(json.load(sys.stdin)["summary"])'
 curl "http://127.0.0.1:8080/explain?client=198.51.100.7"    # 1 接続元を 1 枚に
+curl "http://127.0.0.1:8080/readers"                    # この口を読んでいる相手 (走査か、自分の監視か)
 curl "http://127.0.0.1:8080/daily?n=365"                # 1 日 1 行の要約 (永久に残る。古い順)
 curl "http://127.0.0.1:8080/slo?days=7"                 # SLO の達成率 (日ごと・時間ごと・外れた時間帯)
 curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
