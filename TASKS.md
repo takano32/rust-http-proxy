@@ -4687,7 +4687,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     読まないオリジンなら `stall_ms.origin` ≥ 1,500。費用: `--only tunnel --conc 1` の CPU/MiB が ±ぶれの中 (3 組)。**待ちに入らない
     中継 (loopback) では時計を 1 回も読まない**ことを `strace -c` の `clock_gettime` (vDSO なので出ない) ではなく、コードの経路で
     説明する。
-- [ ] **T14.43 起動時の自己ベンチ (`PROXY_SELF_BENCH=on`、既定 `off`)**
+- [x] **T14.43 起動時の自己ベンチ (`PROXY_SELF_BENCH=on`、既定 `off`)**
   - 目的: §2 の CPU/要求 (41 us) は手元の big.LITTLE の big コアの値で、**デプロイ先のコンテナの CPU で何 us か**は分からない。T14.3 の
     `cpu_per_request_us` は実トラフィックの値だが 0.015 req/s では 5 秒の窓に 0〜1 本しか入らず読めない。起動直後に **loopback だけで
     3 秒** (内蔵の小さなオリジン → 自分へ forward 8 並列と CONNECT 8 並列) 回して CPU/要求 と CPU/本 を測り、`/status` の `self_bench`
@@ -4699,6 +4699,9 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 受け入れ基準: 手元で `PROXY_SELF_BENCH=on` の `forward_us` が §1 のレシピ (`--lite` ではなく既定プロファイル) の値と **±20%** で合う
     (3 秒・8 並列は §1 の 10 秒 × 3 組より粗い。ぶれの幅を報告に書く)。`off` (既定) では 1 命令も走らない。ビルドは 200 MB で通る。
     デプロイ先: 再デプロイ後 `/status` の `self_bench` に値が出て、§2 との比が読めること (親が見る)。
+  - 結果 (2026-09-16、`c87f06d`、README は `c99688e`。前半は `wip:` `9d6fdde`): 入れた。`PROXY_SELF_BENCH=on` (既定 `off`) で、待ち受けを開いた直後に **loopback だけで**内蔵オリジン (固定 1 KiB、`no-store`) へ forward 8 並列、すぐ閉じる sink へ CONNECT 8 並列を打ち、CPU/要求 と CPU/本 を `/status` の `self_bench` (と起動ログ・`/events` の `start` の説明) に残す。**外へは 1 バイトも出さない**。CPU は `clock_gettime(CLOCK_PROCESS_CPUTIME_ID)` の ns 刻みで読み、**自己ベンチ自身のスレッドの取り分を引く** (引かないと打ち手と内蔵オリジンのぶんが乗って 2 倍以上になる)。**本数に上限**: forward 20,000 要求 / CONNECT 2,000 本 (上限なしだと手元では 1.5 秒で 88,000 要求・22,000 本まで行き、`/recent` の個票 4,096 件が自分のぶんで埋まって TIME_WAIT が 44,000 残る)。**自分で打った接続と要求はどの統計にも載せない** (`/recent` `/connections` `/hosts` `/clients` `total_requests` `bytes_forwarded` `/history`。回っている 3 秒だけ立つ旗の原子読み 1 回で判定し、既定では 1 命令も増えない。接続元ごとの上限にはちゃんと数える)。測る 3 秒だけログ水準を warn に下げる。`PROXY_ALLOW_LOCAL=off` でも測れるよう相手役 2 ポートだけ 3 秒間 ACL から外す。実測 (既定プロファイル・warn・cpu4-7、交互 3 組の中央値): 自己ベンチ `forward_us` **41.4 us** (ぶれ **8.0%**) 対 §1 のレシピ **49.83 us** (ぶれ 17.7%) = **−16.9%** (基準 ±20% の内側)、`connect_us` **145.9 us** 対 163.19 us = −10.6%。**自己ベンチの方がぶれが小さい**。全部マージしたあと (load 8.8) の 1 本は 37.1 us 対 50.01 us = −25.8% で基準の外に出たが、この日は `--lite` のレシピ自体が 51.47 us (§2 の表は 41.4 us) と膨らんでいた — **§1 のレシピとの比は機械の混み具合に強く依存する**ので、**置いた先と手元は「自己ベンチどうし」で比べること** (README にそう書いた)。低めに出るのは自分のぶんを統計から外した (= 鍵を取らない) ぶんと、打ち手が同じプロセスの中にいてループバックがキャッシュに乗るため。テストは `proxy-selfbench` 単体 7 本 + 結合 2 本。
+    - **`scripts/build-memory.sh 200` は NG。ただし T14.43 のせいではない**: 落ちるのは `proxy-metrics` で、rustc の RssAnon は **main の `crates/metrics` で 272.1 MB / T14.43 込みで 271.7 MB** (差は誤差。1 クレートだけの上限は 280 MB で NG・320 MB で OK)。T10.9 の 76.1 MB から 3.5 倍 (Phase 14 で `quantiles` / `snapshots` / `trace` / `slo` / `hostseries` / `anomaly` / `daily` と `/status` の巨大な `format!` が全部ここに乗った)。**§0 の 200 MB の関門が main で壊れている — T14.55 で `proxy-metrics` を割ること (最優先)**。
+    - 気づき: `mx` を使っても機械を独占できていない (他のエージェントが `cargo test` / `cargo check` を `mx` の外で回す規則になっているため。§1 の数字を比べる計測は T14.55 のように 1 エージェントだけのときに行う)。scratchpad が共有なので計測スクリプトの名前にタスク番号を付ける。デプロイ先の基準 (再デプロイ後 `/status` の `self_bench` に値が出て、手元の自己ベンチとの比が読めること) は**親が見る**。
 - [x] **T14.44 週次・日次の要約とイベントをダッシュボードの「調査」ページに (T14.8 の続き)**
   - 目的: T14.20 (日次) / T14.23 (異常) / T14.34 (日次 snapshot) / T14.40 (週次) が入ると、読む口が JSON と Markdown に散る。
     調査ページ (T14.8) に「今週」「今日」「出来事と異常」の 3 枚を足して、**見に行く場所を 1 つ**にする。
@@ -4860,6 +4863,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 目的: 今日は 10 個のブランチを並列に実装してマージした。個々のブランチは通っていても、合わせたときにだけ起きる壊れ方
     (`/status` のキー順、`/snapshot` の `parts`、`check-dashboard.js` の `api`、ビルドメモリ、flake) は main でしか分からない。
   - 変更箇所: 直すものがあれば最小限 (テストの待ち方、キー順、README の 1 行)。新しい機能は足さない。
+  - **先にやること (T14.43 の発見、2026-09-16)**: `scripts/build-memory.sh 200` が main で落ちる (`proxy-metrics` の rustc が RssAnon 272 MB。280 MB で NG・320 MB で OK。T10.9 の 76 MB から 3.5 倍)。**`crates/metrics` を割る** (候補: `quantiles` / `snapshots` / `trace` / `slo` / `hostseries` / `anomaly` / `daily` / `events` / `kernel` / `profile` を `crates/metrics-extra` (仮) に、`/status` の巨大な `format!` を部ごとの関数に) — 200 MB で通るまで。機能は 1 つも変えない。
   - やること (全部 `mx` の中、他のエージェント無しで): (1) `cargo fmt --all --check` / `clippy --workspace --all-targets -- -D warnings` /
     `cargo build --release` / `cargo build --profile dist` (配布用も通ること)。(2) **`cargo test --workspace --no-fail-fast` を 5 回連続**
     (落ちたテストは名前と回数を記録し、待ち方の flake なら `wait_until` の形に直す。実装の誤りなら直さずに報告)。(3) `cargo clean --release`
