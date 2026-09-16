@@ -1594,6 +1594,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         // 解決の前に捨てる (次の `take` でこの要求のぶんだけが取れるように。T12.4 (2))
         let _ = dns::take_resolve_cost();
         let _ = dns::take_family();
+        let _ = dns::take_syn_retrans();
         let (local, r) = acl::resolve_target(target_host);
         resolved = r;
         local.then_some(metrics::BlockCause::Local)

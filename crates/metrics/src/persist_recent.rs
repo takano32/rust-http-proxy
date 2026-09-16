@@ -89,7 +89,7 @@ const W_TEXT: usize = MAX_TEXT + 4;
 
 /// 1 レコードに収まることを**組み立て時に**確かめる (欄を足して溢れたらここで止まる)。
 /// 数は各 `encode_*` が書く u64 の本数 (先頭の通し番号を含む) + 固定幅の文字列。
-const CLOSED_PAYLOAD: usize = 8 * (12 + STAGES + 2 * SIDES) + W_CLIENT + W_TARGET + W_SNI;
+const CLOSED_PAYLOAD: usize = 8 * (13 + STAGES + 2 * SIDES) + W_CLIENT + W_TARGET + W_SNI;
 const ERROR_PAYLOAD: usize = 8 * 7 + W_ETARGET + W_CLIENT;
 const LOG_PAYLOAD: usize = 8 * 4 + W_MSG;
 const EVENT_PAYLOAD: usize = 8 * 3 + W_TEXT;
@@ -474,7 +474,10 @@ fn encode_closed(seq: u64, e: &RecentEntry) -> Vec<u8> {
         .u64(e.parks as u64)
         .u64(e.status as u64)
         .u64(u64::from(e.connect))
-        .u64(e.reason.code() as u64);
+        .u64(e.reason.code() as u64)
+        // 確立までの SYN の再送 (T14.46)。**数値の末尾に足した** ので、前の版で
+        // 書いたレコードは 0 (= 再送なし) で読み戻る
+        .u64(e.syn_retrans as u64);
     for ms in e.stage_ms {
         enc.u64(ms);
     }
@@ -505,6 +508,7 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
     let status = d.u64() as u16;
     let connect = d.u64() != 0;
     let reason = CloseReason::from_code(d.u64() as u16);
+    let syn_retrans = d.u64().min(u8::MAX as u64) as u8;
     let mut stage_ms = [0u64; STAGES];
     for slot in stage_ms.iter_mut() {
         *slot = d.u64();
@@ -541,6 +545,7 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
         rtt_us,
         retrans,
         sni: (!sni.is_empty()).then(|| sni.into()),
+        syn_retrans,
     })
 }
 
@@ -774,6 +779,7 @@ mod tests {
             rtt_us: [1234, 5678],
             retrans: [0, 2],
             sni: Some("mtalk.google.com".into()),
+            syn_retrans: 2,
         }
     }
 
@@ -799,7 +805,7 @@ mod tests {
                 EVENT_PAYLOAD,
                 SHOT_PAYLOAD
             ),
-            (344, 188, 252, 156, 2016)
+            (352, 188, 252, 156, 2016)
         );
     }
 

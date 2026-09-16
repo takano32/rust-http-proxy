@@ -79,6 +79,11 @@ thread_local! {
     /// このスレッドで直近に確立した接続の族 (`Some(true)` = IPv6)。
     /// 書くのは [`note_family`] (接続が確立した 1 か所だけ)、読む側が `None` に戻す。
     static LAST_FAMILY: Cell<Option<bool>> = const { Cell::new(None) };
+    /// このスレッドで直近に確立した接続の **SYN の再送回数** (T14.46)。
+    /// 書くのは [`note_syn_retrans`] (確立した直後の 1 か所だけ)、読む側が 0 に戻す。
+    /// 確立直後の `tcpi_total_retrans` は SYN の再送しか数えていないので、
+    /// **値がそのまま「この接続は確立に何回 SYN を送り直したか」**になる
+    static LAST_SYN_RETRANS: Cell<u8> = const { Cell::new(0) };
 }
 
 /// 直近の名前解決の費用を読み、0 に戻す (ms の合計と回数)。
@@ -101,6 +106,21 @@ pub fn take_family() -> Option<bool> {
 /// 書き込み 1 回で、原子操作もシステムコールも増えない。
 pub fn note_family(v6: bool) {
     LAST_FAMILY.set(Some(v6));
+}
+
+/// 直近に確立した接続の SYN の再送回数を読み、0 に戻す (T14.46)。
+///
+/// **測る前にも 1 回呼んで捨てること** ([`take_resolve_cost`] と同じ理由。
+/// 前の要求が残していったぶんを次のホストに付けない)。
+pub fn take_syn_retrans() -> u8 {
+    LAST_SYN_RETRANS.replace(0)
+}
+
+/// 確立した接続の SYN の再送回数を控える (`crate::net` の確立点だけが呼ぶ)。
+/// thread-local への書き込み 1 回で、原子操作は増えない (`getsockopt` 1 回は
+/// 呼ぶ側が払う)。255 で頭打ち。
+pub fn note_syn_retrans(n: u8) {
+    LAST_SYN_RETRANS.set(n);
 }
 
 /// `getaddrinfo` に費やした時間の合計 (us) と回数 (`/metrics` と `/status`)。
