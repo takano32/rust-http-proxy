@@ -12,7 +12,7 @@ pub use proxy_base::{
     log_warn, sync,
 };
 pub use proxy_config::{cache, config, sysinfo};
-pub use proxy_metrics::{history, metrics, persist};
+pub use proxy_metrics::{canary, history, metrics, persist};
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};
 #[cfg(target_os = "linux")]

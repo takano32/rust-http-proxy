@@ -292,6 +292,29 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     );
     let _ = writeln!(out, "sorahost_dns_seconds_sum {}", dns_us as f64 / 1e6);
     let _ = writeln!(out, "sorahost_dns_seconds_count {}", dns_misses);
+    // canary (T14.10): 利用者の要求が無い時間帯も測っている**最後の 1 回**。
+    // まだ 1 回も回っていない (`off`、起動直後、履歴スレッドが無い) ときは 1 行も出さない
+    // — 0 秒を出すと「一瞬で繋がった」と読めてしまう
+    if let Some(p) = crate::canary::last() {
+        header(
+            &mut out,
+            "canary_seconds",
+            "gauge",
+            "Last canary probe to the busiest CONNECT target (no TLS, no request)",
+        );
+        line(
+            &mut out,
+            "canary_seconds",
+            "stage=\"dns\"",
+            p.dns_ms as f64 / 1000.0,
+        );
+        line(
+            &mut out,
+            "canary_seconds",
+            "stage=\"connect\"",
+            p.connect_ms as f64 / 1000.0,
+        );
+    }
     // エラーの原因 (デプロイ先の「エラー 12 件、原因は不明」を無くす)
     header(
         &mut out,

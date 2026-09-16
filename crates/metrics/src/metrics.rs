@@ -892,13 +892,30 @@ impl Metrics {
             return;
         };
         self.errors.push(crate::recent::ErrorEntry::new(
-            connect,
+            crate::recent::EntryKind::from_connect(connect),
             target,
             client,
             status,
             crate::recent::EntryCause::Error(cause),
             detail.dns_ms,
             detail.connect_ms,
+        ));
+    }
+
+    /// canary (T14.10) の失敗を個票のリングに 1 件だけ残す (`/errors` の `kind: "canary"`)。
+    ///
+    /// **集計 (`errors` / `errors_by_cause`) には足さない**: canary は利用者の要求では
+    /// ないので、「利用者に返したエラー」の数に混ざると `/status` が読めなくなる。
+    /// 接続元は空 (自分) で、返した状態コードも無い (0)。
+    pub fn record_canary_error(&self, target: &str, cause: ErrCause, dns_ms: u64, connect_ms: u64) {
+        self.errors.push(crate::recent::ErrorEntry::new(
+            crate::recent::EntryKind::Canary,
+            target,
+            "",
+            0,
+            crate::recent::EntryCause::Error(cause),
+            dns_ms,
+            connect_ms,
         ));
     }
 
@@ -922,7 +939,7 @@ impl Metrics {
     /// 通した要求には 1 命令も足さない。
     pub fn record_blocked(&self, connect: bool, target: &str, client: &str, cause: BlockCause) {
         self.errors.push(crate::recent::ErrorEntry::new(
-            connect,
+            crate::recent::EntryKind::from_connect(connect),
             target,
             client,
             403,
@@ -1251,7 +1268,7 @@ impl Metrics {
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
-                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{}}}"
+                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1283,6 +1300,8 @@ impl Metrics {
             crate::log::current_level().as_str().trim(),
             extra.settings,
             crate::dns::status_json(),
+            // 利用者の要求が無い時間帯の名前解決と TCP 接続 (最後の 1 回。T14.10)
+            crate::canary::status_json(),
             crate::net::ipv6_status_json(),
             extra.blocklist,
             extra.state_file,
@@ -1784,10 +1803,12 @@ mod latency_tests {
             )
         };
         let (a, b) = (of(HostSort::Requests), of(HostSort::Errors));
-        assert_eq!(a.matches("\"host\":").count(), 4);
+        // 数えるのは `hosts[]` の要素 (`{"host":` で始まる) だけ。`canary` にも
+        // `host` の欄がある (T14.10) ので、鍵の名前だけで数えると 1 件多くなる
+        assert_eq!(a.matches("{\"host\":").count(), 4);
         assert_eq!(
-            a.matches("\"host\":").count(),
-            b.matches("\"host\":").count()
+            a.matches("{\"host\":").count(),
+            b.matches("{\"host\":").count()
         );
         assert_eq!(
             a.matches("\"errors_by_cause\":[").count(),

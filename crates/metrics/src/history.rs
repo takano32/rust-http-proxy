@@ -562,7 +562,11 @@ impl History {
             }
             s.push_row(&mut out);
         }
-        out.push_str("]}");
+        out.push(']');
+        // 利用者の要求が無い時間帯の名前解決と TCP 接続 (T14.10)。**別の配列**に足す
+        // ので、既存の `keys` / `samples` を読む側は 1 行も変えなくてよい
+        crate::canary::push_history_json(&mut out, res);
+        out.push('}');
         out
     }
 }
@@ -573,11 +577,14 @@ pub fn spawn(
     cache: Arc<Cache>,
     store: Option<Arc<crate::persist::Store>>,
 ) -> JoinHandle<()> {
-    let record = move |metrics: &Metrics, cache: &Cache| {
+    let record = move |metrics: &Arc<Metrics>, cache: &Cache| {
         let pushed = metrics.history.push(Sample::take(metrics, cache));
         if let Some(st) = &store {
             st.write_samples(&pushed);
         }
+        // 利用者の要求が無い時間帯も待ちを測る (T14.10)。**ここでは測らない**
+        // (名前解決と接続は `canary` スレッド 1 本の仕事で、この周期は止めない)
+        crate::canary::tick(metrics);
     };
     record(&metrics, &cache);
     thread::Builder::new()
@@ -621,9 +628,15 @@ mod tests {
         );
         assert!(json.contains("\"samples\":[[5,10,0,5,0,"), "{}", json);
         assert!(
-            json.ends_with(",0,0,0,0,0,0,0,0]]}"),
+            json.contains(",0,0,0,0,0,0,0,0]]"),
             "{}",
             &json[json.len() - 60..]
+        );
+        // canary (T14.10) は**別の配列**で末尾に付く (既存の列は 1 つも動かない)
+        assert!(
+            json.ends_with(",\"canary\":{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\"],\"samples\":[]}}"),
+            "{}",
+            &json[json.len() - 120..]
         );
         // 列の数が `KEYS` と合っていること (入れ子の配列は 1 列と数える)
         let first = &json[json.find("\"samples\":[[").unwrap() + 11..];
