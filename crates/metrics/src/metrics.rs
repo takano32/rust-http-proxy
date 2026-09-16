@@ -348,6 +348,12 @@ pub struct Detail {
     /// を、ホスト別統計が既に取っている鍵の内側へ運ぶだけ
     pub bytes_in: u64,
     pub bytes_out: u64,
+    /// CONNECT のホストと、覗いた SNI が食い違ったか (`PROXY_PEEK_SNI`。T14.38)。
+    ///
+    /// 立てるのは `tunnel::report` (トンネル 1 本の終わりの 1 回) だけで、forward は
+    /// 常に `false`。IP リテラル宛ての CONNECT (T14.7 の `literal_targets`) は
+    /// 必ず食い違うので、domain fronting と「宛先を IP で書くクライアント」の両方が入る
+    pub sni_mismatch: bool,
 }
 
 /// 1 要求 (1 本) の段階ごとの待ち時間 (ms。T14.3 (1))。
@@ -429,6 +435,10 @@ pub struct HostStats {
     /// 要求の経路はこの旗を見るだけ。`.rrd` には書かない欄なので
     /// [`HostStats::encode`] / [`HostStats::decode`] は 1 バイトも変えていない
     pub series_slot: Option<u8>,
+    /// CONNECT のホストと SNI が食い違った本数 (`PROXY_PEEK_SNI`。T14.38)。
+    /// **`.rrd` には書かない** (スロットの余白は 4 B しか無い。T14.26) ので
+    /// 再起動で 0 に戻る = `series_slot` と同じ扱い。合計は `/status` の `sni_mismatches`
+    pub sni_mismatch: u64,
 }
 
 impl HostStats {
@@ -475,6 +485,11 @@ impl HostStats {
         // ここで増えるのは足し算 2 回だけ (鍵も原子操作もシステムコールも増えない)
         self.bytes_in += d.bytes_in;
         self.bytes_out += d.bytes_out;
+        // CONNECT のホストと SNI の食い違い (T14.38)。**旗は `tunnel::report` が
+        // 立てたもの**で、ここは鍵の内側の足し算 1 回 (メモリだけの欄)
+        if d.sni_mismatch {
+            self.sni_mismatch += 1;
+        }
     }
 
     /// 状態ファイルのレコード (名前 128 バイト + 数値)。
@@ -1126,6 +1141,9 @@ pub struct Metrics {
     /// `$HOME/.rust-http-proxy.recent` に残しているか (T14.9)。
     /// `PROXY_STATS_PERSIST=off` と、ファイルが開けなかったときは `false`
     pub recent_persisted: AtomicBool,
+    /// CONNECT のホストと SNI が食い違った本数の合計 (`/status` の `sni_mismatches`。T14.38)。
+    /// **メモリだけ** (`.rrd` には書かない)。ホスト別は [`HostStats::sni_mismatch`]
+    pub sni_mismatches: AtomicU64,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -1158,6 +1176,7 @@ impl Metrics {
             closed: crate::recent::RecentRing::new(),
             bursts: crate::recent::BurstRing::new(),
             recent_persisted: AtomicBool::new(false),
+            sni_mismatches: AtomicU64::new(0),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }
@@ -1396,6 +1415,11 @@ impl Metrics {
                 hosts.stages.observe_forward(detail);
                 hosts.quantiles.forward.observe(us, now);
             }
+        }
+        // CONNECT のホストと SNI が食い違った本数の合計 (`/status`。T14.38)。
+        // 旗が立つのはトンネルの終わりだけなので、ここは分岐 1 回 (原子は触らない)
+        if detail.sni_mismatch {
+            self.sni_mismatches.fetch_add(1, Ordering::Relaxed);
         }
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
         if let Some(stats) = hosts.map.get_mut(host) {
@@ -1827,10 +1851,10 @@ impl Metrics {
                 // この環境で何が読めるか (T14.15) と canary (T14.10)。どちらも覚えてある結果を読むだけ
                 "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
-                // (`memory` も T14.21、`recent_quantiles` も T14.31、
-                // `rate_bps_total` も T14.39、`rejected_requests` も T14.28 で同じく末尾)
+                // (`memory` も T14.21、`recent_quantiles` も T14.31、`rate_bps_total` も
+                // T14.39、`rejected_requests` も T14.28、`sni_mismatches` も T14.38 で同じく末尾)
                 "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
-                "\"rejected_requests\":{}}}"
+                "\"rejected_requests\":{},\"sni_mismatches\":{}}}"
             ),
             SCHEMA,
             crate::json::escape(extra.version),
@@ -1884,7 +1908,9 @@ impl Metrics {
             // 書いた値を原子 1 回読むだけ (`/connections` の `rate_bps` の和)
             self.conns.rate_bps_total(),
             // 読めずに断った要求の理由別 (T14.28)。原子 6 本を読むだけ
-            self.rejected_requests_json()
+            self.rejected_requests_json(),
+            // CONNECT のホストと SNI が食い違った本数 (T14.38)
+            self.sni_mismatches.load(Ordering::Relaxed)
         )
     }
 }
@@ -2045,6 +2071,9 @@ pub fn stats_json(s: &HostStats, detail: bool) -> String {
             let _ = write!(out, "{}", c);
         }
         out.push(']');
+        // CONNECT のホストと SNI の食い違い (T14.38)。**ホスト別だけ** (接続元別には
+        // 宛先が無い)。**末尾に足した** ので既存の鍵の順は変わらない
+        let _ = write!(out, ",\"sni_mismatch\":{}", s.sni_mismatch);
     }
     out
 }

@@ -1362,6 +1362,7 @@ mod closed_tests {
             stage_ms: [0; STAGES],
             rtt_us: [0; SIDES],
             retrans: [0; SIDES],
+            sni: None,
         }
     }
 
