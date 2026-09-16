@@ -20,6 +20,13 @@ struct Idle {
     timeout: Duration,
 }
 
+/// 捨てるアイドル接続を 1 本ずつ見せる先 (`Pool::on_discard`。T14.5)。
+///
+/// 引数は上流の鍵 (`scheme://host:port` = ホスト別統計の鍵と同じもの) と、
+/// **まだ閉じていない**ソケット。本体クレートがここでカーネルの RTT を読んで
+/// ホスト別統計に足す (このクレートは統計を知らないままでいられる)。
+pub type OnDiscard = Box<dyn Fn(&str, &TcpStream) + Send + Sync>;
+
 pub struct Pool {
     idle: Mutex<HashMap<String, VecDeque<Idle>>>,
     max_per_host: usize,
@@ -29,6 +36,8 @@ pub struct Pool {
     /// 今持っているアイドル接続の数 (上限判定を O(1) にするため別に数える)
     total: AtomicUsize,
     idle_timeout: Duration,
+    /// 捨てる接続の行き先 (T14.5)。挿すのは起動時の 1 回だけで、`None` なら何もしない
+    discard: Option<OnDiscard>,
 }
 
 impl Pool {
@@ -47,6 +56,22 @@ impl Pool {
             max_total,
             total: AtomicUsize::new(0),
             idle_timeout,
+            discard: None,
+        }
+    }
+
+    /// 捨てるアイドル接続を見せる先を挿す (**作った直後に 1 回だけ**。T14.5)。
+    ///
+    /// 呼ばれるのは「期限切れ」と「相手が閉じていた」を捨てるときだけで、
+    /// 使い回せた接続 (熱い経路) では 1 度も通らない。
+    pub fn on_discard(&mut self, f: OnDiscard) {
+        self.discard = Some(f);
+    }
+
+    /// 捨てる 1 本を行き先へ見せる (行き先が無ければ何もしない)。
+    fn note_discard(&self, host: &str, idle: &Idle) {
+        if let Some(f) = &self.discard {
+            f(host, idle.stream.get_ref().tcp());
         }
     }
 
@@ -90,6 +115,9 @@ impl Pool {
                 }
                 return Some(candidate.stream);
             }
+            // 捨てる 1 本 (期限切れか、相手が閉じていた)。閉じる前に
+            // カーネルの RTT を見せる (使い回せた接続はここを通らない。T14.5)
+            self.note_discard(host, &candidate);
         }
     }
 
@@ -137,8 +165,15 @@ impl Pool {
         let now = Instant::now();
         let mut idle = self.idle.locked();
         let before: usize = idle.values().map(|q| q.len()).sum();
-        idle.retain(|_, q| {
-            q.retain(|i| now.duration_since(i.since) < self.idle_timeout);
+        idle.retain(|host, q| {
+            q.retain(|i| {
+                let keep = now.duration_since(i.since) < self.idle_timeout;
+                if !keep {
+                    // 捨てる前にカーネルの RTT を見せる (T14.5)
+                    self.note_discard(host, i);
+                }
+                keep
+            });
             !q.is_empty()
         });
         let after: usize = idle.values().map(|q| q.len()).sum();

@@ -258,8 +258,11 @@ fn main() {
             }
         }
     };
+    let mut origin_pool = Pool::with_total(config.pool_per_host, config.pool_total, ORIGIN_IDLE);
+    // 捨てるオリジン接続のカーネルの RTT をホスト別統計に足す (T14.5)
+    rust_http_proxy::attach_origin_rtt(&mut origin_pool, Arc::clone(&metrics));
     let pool = Arc::new(Upstream {
-        pool: Pool::with_total(config.pool_per_host, config.pool_total, ORIGIN_IDLE),
+        pool: origin_pool,
         tls,
     });
     rust_http_proxy::blocklist::configure(rust_http_proxy::blocklist::Sources::from_config(

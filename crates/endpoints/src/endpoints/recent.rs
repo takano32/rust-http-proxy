@@ -603,7 +603,7 @@ mod tests {
     /// (既定の 200 件は最悪の値でも入る)。ここは `/recent` そのものを通して見る。
     #[test]
     fn the_recent_response_stays_under_256_kib() {
-        use crate::recent::{CloseReason, ConnTally, MAX_RECENT, STAGES};
+        use crate::recent::{CloseReason, ConnTally, MAX_RECENT, SIDES, STAGES};
 
         let m = Metrics::new();
         let now = Instant::now();
@@ -621,6 +621,8 @@ mod tests {
                     down: u64::MAX,
                     status: 599,
                     stage_ms: [u64::MAX; STAGES],
+                    rtt_us: [u32::MAX; SIDES],
+                    retrans: [u32::MAX; SIDES],
                 },
                 u32::MAX,
             );
@@ -731,6 +733,7 @@ mod tests {
                     down: bytes,
                     status: 0,
                     stage_ms: [0, connect_ms, 0, 0, 0, 0],
+                    ..Default::default()
                 },
                 0,
             );

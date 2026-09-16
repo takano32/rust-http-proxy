@@ -1085,7 +1085,7 @@ mod tests {
 #[cfg(test)]
 mod closed_tests {
     use super::*;
-    use crate::recent::{CLOSED_KEYS, CloseReason, RecentEntry, STAGES};
+    use crate::recent::{CLOSED_KEYS, CloseReason, RecentEntry, SIDES, STAGES};
 
     fn sample(t: u64) -> Sample {
         Sample {
@@ -1110,6 +1110,8 @@ mod closed_tests {
             parked_secs: 1,
             parks: 1,
             stage_ms: [0; STAGES],
+            rtt_us: [0; SIDES],
+            retrans: [0; SIDES],
         }
     }
 

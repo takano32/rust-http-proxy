@@ -14,8 +14,8 @@ use crate::log_trace;
 use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics, StageMs};
 use crate::net;
 use crate::recent::{
-    CloseReason, ConnSlot, ConnTally, STAGE_CLIENT_READ, STAGE_CONNECT, STAGE_DNS,
-    STAGE_FIRST_RELAY, STAGE_QUEUE, STAGES,
+    CLIENT_SIDE, CloseReason, ConnSlot, ConnTally, ORIGIN_SIDE, SIDES, STAGE_CLIENT_READ,
+    STAGE_CONNECT, STAGE_DNS, STAGE_FIRST_RELAY, STAGE_QUEUE, STAGES,
 };
 use crate::{log_debug, log_warn};
 
@@ -109,6 +109,8 @@ fn open(
                         down: 0,
                         status: 502,
                         stage_ms,
+                        // 繋がらなかったのでカーネルに聞ける相手がいない (T14.5)
+                        ..ConnTally::default()
                     },
                     0,
                 );
@@ -189,15 +191,39 @@ fn detail_of(total: Duration, cause: Option<ErrCause>, stages: StageMs) -> Detai
     }
 }
 
+/// 両側のカーネルの RTT (us) と再送の通算を読む (`[クライアント側, オリジン側]`)。
+///
+/// **呼ぶのはトンネル 1 本の終わりだけ** (`getsockopt` 2 回)。読めなければ 0 で、
+/// 個票では `null`、統計には足さない。Linux 以外はソケットを見ずに 0。
+#[cfg(target_os = "linux")]
+fn tcp_rtt(socks: Option<&[TcpStream; 2]>) -> ([u32; SIDES], [u32; SIDES]) {
+    use std::os::fd::AsRawFd;
+    let mut rtt = [0u32; SIDES];
+    let mut retrans = [0u32; SIDES];
+    if let Some(socks) = socks {
+        for (i, s) in socks.iter().enumerate() {
+            if let Some(info) = crate::sys::tcp_info(s.as_raw_fd()) {
+                rtt[i] = info.rtt_us;
+                retrans[i] = info.total_retrans;
+            }
+        }
+    }
+    (rtt, retrans)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tcp_rtt(_socks: Option<&[TcpStream; 2]>) -> ([u32; SIDES], [u32; SIDES]) {
+    ([0; SIDES], [0; SIDES])
+}
+
 /// トンネルが終わったときのアクセスログと統計 (どこで終わっても 1 回だけ通る)。
 ///
 /// `up` はクライアント → 宛先、`down` は宛先 → クライアントのバイト数。
 /// `reason` は閉じた理由 (`/recent`。T14.4) で、外から閉じられた (追い出し・監視の停止)
 /// ときは枠に先に書いてある理由が勝つ。
-fn report(o: &Info, up: u64, down: u64, reason: CloseReason) {
+fn report(o: &Info, up: u64, down: u64, reason: CloseReason, socks: Option<&[TcpStream; 2]>) {
     let transferred = up.saturating_add(down);
     let alive = o.started.elapsed();
-    o.metrics.add_bytes(transferred);
     // 中継の合計 = 生きていた時間 − 確立まで − 預けられていた時間 (T14.3 (1))。
     // **時計は足さない** (アクセスログが読む `alive` をそのまま使う)
     let mut detail = o.detail;
@@ -207,6 +233,9 @@ fn report(o: &Info, up: u64, down: u64, reason: CloseReason) {
             o.connect_took.as_millis().min(u64::MAX as u128) as u64 + detail.stages.park as u64;
         detail.stages.relay = total.saturating_sub(head).min(u32::MAX as u64) as u32;
     }
+    // カーネルの RTT と再送を**両側 1 本ずつ** (`getsockopt` 2 回。トンネル 1 本の
+    // 終わりだけで、中継のバイトごとにも要求ごとにも読まない。T14.5)
+    let (rtt_us, retrans) = tcp_rtt(socks);
     // 閉じた接続の個票に 1 件ぶんの値を載せる (原子は接続の終わりのここだけ。T14.4)。
     // 実際にリングへ書くのは本体クレートの `ActiveGuard::drop` (= この直後)。
     // **段階は上で組み立てた `detail`** (T14.3 の `first_relay` まで入っている) から取る
@@ -224,12 +253,16 @@ fn report(o: &Info, up: u64, down: u64, reason: CloseReason) {
                 down,
                 status: 0,
                 stage_ms,
+                rtt_us,
+                retrans,
             },
             0,
         );
     }
+    o.metrics.add_bytes(transferred);
+    let host_key = format!("connect://{}", o.addr_str);
     o.metrics.record_host_detail(
-        &format!("connect://{}", o.addr_str),
+        &host_key,
         HostOutcome::Bypass,
         transferred,
         Some(o.connect_took),
@@ -244,6 +277,12 @@ fn report(o: &Info, up: u64, down: u64, reason: CloseReason) {
         // トンネル 1 本の終わりに 1 回だけで、鍵は record_client のものをそのまま使う
         Some(&o.addr_str),
     );
+    // オリジン側の RTT はホスト別、クライアント側は接続元別へ (どちらも行が
+    // できたあと = 上の 2 つより後に呼ぶこと。読めなければ鍵も取らない。T14.5)
+    o.metrics
+        .record_host_rtt(&host_key, rtt_us[ORIGIN_SIDE], retrans[ORIGIN_SIDE]);
+    o.metrics
+        .record_client_rtt(&o.client_ip, rtt_us[CLIENT_SIDE], retrans[CLIENT_SIDE]);
     access(
         o.conn_id,
         &Access {
@@ -318,7 +357,8 @@ pub fn handle_connect(
         let (up, down) = tunnel(client, server, idle)?;
         // Linux 以外は片方向ずつ `io::copy` するだけなので、どちらが先に EOF を出したかは
         // 分からない (`/recent` の理由は `shutdown` になる)
-        report(&info, up, down, CloseReason::Shutdown);
+        // Linux 以外は `io::copy` が終わった時点でソケットを手放しているので読めない
+        report(&info, up, down, CloseReason::Shutdown, None);
         Ok(())
     }
 }
@@ -662,7 +702,14 @@ mod relay {
                 None => CloseReason::Shutdown,
             });
             // `dirs[0]` はクライアント → 宛先 (上り)、`dirs[1]` は宛先 → クライアント (下り)
-            report(&self.info, self.dirs[0].moved, self.dirs[1].moved, reason);
+            // `socks` はまだ生きている (落ちるのはこの関数を抜けたあと)。T14.5
+            report(
+                &self.info,
+                self.dirs[0].moved,
+                self.dirs[1].moved,
+                reason,
+                Some(&self.socks),
+            );
         }
     }
 
