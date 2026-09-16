@@ -35,7 +35,7 @@
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -233,6 +233,14 @@ impl SamplerState {
 
 /// 記録するかどうか。`--lite` では偽で、**時計も読まない**。
 static ON: AtomicBool = AtomicBool::new(false);
+
+/// 設定されたスレッドの標本の間隔 (ms。`/profile` に出すだけ)。
+static SAMPLE_MS: AtomicU64 = AtomicU64::new(0);
+
+/// `PROXY_PROFILE_SAMPLE_MS` の値 (`/profile` の `sample_ms`)。
+pub fn sample_ms() -> u64 {
+    SAMPLE_MS.load(Ordering::Relaxed)
+}
 
 /// 記録するかどうかを決める (起動時に 1 回だけ呼ぶ)。
 pub fn set_enabled(on: bool) {
@@ -540,19 +548,20 @@ impl Profile {
         self.len(0) == 0
     }
 
-    /// 直近 5 分ぶん (5 秒 × 60) の段階を足し合わせる (画面の積み上げ用)。
-    pub fn recent(&self, res: usize, n: usize) -> Stages {
+    /// 直近 `n` 標本を 1 つに足し合わせる (画面の積み上げと CPU/要求 の要約用)。
+    pub fn recent_totals(&self, res: usize, n: usize) -> Sample {
         let q = self.rings[res.min(1)].locked();
-        let mut out = Stages::default();
+        let mut out = Sample::default();
         for s in q.iter().skip(q.len().saturating_sub(n)) {
-            out.merge(&s.stages);
+            out.t = s.t;
+            out.merge_into(s);
         }
         out
     }
 
     /// **新しい順に** `budget` バイトまで書けるだけ集め、古い順に並べて返す。
-    /// 返すのは (JSON の並び, 全体の件数, 打ち切ったか)。
-    pub fn rows_within(&self, res: usize, budget: usize) -> (String, usize, bool) {
+    /// 返すのは (JSON の並び, 書けた件数, 全体の件数, 打ち切ったか)。
+    pub fn rows_within(&self, res: usize, budget: usize) -> (String, usize, usize, bool) {
         let q = self.rings[res.min(1)].locked();
         let total = q.len();
         let mut rows: Vec<String> = Vec::new();
@@ -570,7 +579,8 @@ impl Profile {
         }
         drop(q);
         rows.reverse();
-        (rows.join(","), total, cut)
+        let shown = rows.len();
+        (rows.join(","), shown, total, cut)
     }
 }
 
@@ -718,6 +728,7 @@ pub const MAX_SAMPLE_MS: u64 = 60_000;
 /// **`--lite` では呼ばない** (窓を 1 本も作らない)。`sample_ms` が `0` なら
 /// スレッドの標本は取らず (`sampler: "off"`)、5 秒ごとに段階の窓だけ畳む。
 pub fn spawn(metrics: std::sync::Arc<Metrics>, sample_ms: u64) -> JoinHandle<()> {
+    SAMPLE_MS.store(sample_ms, Ordering::Relaxed);
     thread::Builder::new()
         .name("profile-sample".into())
         .stack_size(256 * 1024)
@@ -863,7 +874,7 @@ mod tests {
             ..Sample::default()
         });
         assert_eq!(p.len(1), 1);
-        let minute = p.recent(1, 10);
+        let minute = p.recent_totals(1, 10).stages;
         assert_eq!(minute.connect[2].count, 12);
         assert_eq!(minute.connect[2].ms_sum, 120);
     }
@@ -907,11 +918,13 @@ mod tests {
                 ..Sample::default()
             });
         }
-        let (all, total, cut) = p.rows_within(0, 1 << 20);
+        let (all, shown, total, cut) = p.rows_within(0, 1 << 20);
         assert_eq!(total, 50);
+        assert_eq!(shown, 50);
         assert!(!cut);
         assert!(all.starts_with("[1000000,0,"), "{}", &all[..24]);
-        let (small, _, cut2) = p.rows_within(0, 120);
+        let (small, shown2, _, cut2) = p.rows_within(0, 120);
+        assert!(shown2 < 50 && shown2 > 0, "書けた件数: {}", shown2);
         assert!(cut2, "予算に入り切らなければ打ち切る");
         assert!(small.len() <= 120);
         // 残るのは**新しい方**

@@ -44,6 +44,7 @@ pub struct Endpoint<'a> {
 
 mod blocklist;
 mod pac;
+mod profile;
 mod recent;
 
 const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
@@ -101,6 +102,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
          \x20 /healthz                                    same as /status\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
+         \x20 /profile?res=5|60                           JSON: stages, threads, locks\n\
          \x20 /metrics                                    Prometheus text format\n\
          \x20 /proxy.pac                                  browser auto-config script\n\
          \x20 /lookup?url=<url>                           cache entry state\n\
@@ -161,6 +163,9 @@ pub fn handle(
             .map(crate::history::History::index_for)
             .unwrap_or(0);
         (200, "application/json", ep.metrics.history.to_json_res(res))
+    } else if is_get && path == "/profile" {
+        // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)
+        profile::profile(ep, query)
     } else if is_get && path == "/errors" {
         // 個票 (T13.4)。集計 (`/status`) では読めない「誰が・いつ・なぜ」を出す
         recent::errors(ep, query)

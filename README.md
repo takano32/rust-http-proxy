@@ -216,6 +216,21 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   - `PURGE <url>` / `/purge?url=<url>` / `/purge?all=1` でキャッシュを消す、`/lookup?url=<url>` でエントリの状態を見る
   - `/history?res=5|60|3600` で 1 時間 / 1 日 / 30 日の履歴、`/blocklist?host=<h>` でブロックリストの判定、
     `&action=block|allow|clear[&ttl_secs=N]` で一時的な上書き (既定 24 時間、`0` で無期限。状態ファイルに 256 件まで残る)
+  - **`/profile?res=5|60`** で「**1 要求の時間がどの段階に消えたか**」「**CPU がどの役割のスレッドで何をして使われたか**」
+    「**ロックの取り合いと待ち行列の待ち**」を 1 枚で (5 秒 × 720 = 1 時間 と 60 秒 × 1,440 = 1 日 の窓。
+    ダッシュボードの「プロファイル」の節がこれを描きます):
+    - **段階** — CONNECT は `queue` (accept してからワーカーが動き出すまで) / `client_read` (要求行を読んでから `Host` まで) /
+      `dns` / `connect` / `first_relay` (`200 Connection Established` を書いてから最初の中継バイトまで =
+      トンネル越しの TLS 握手の往復) / `relay` / `park` の 7 段、転送は `queue` / `client_read` / `origin` /
+      `send` / `ttfb` / `body` の 6 段。段階 1 つにつき 件数・合計 ms・最大 ms・12 段の区間 (`/history` と同じ 1〜5,000 ms)
+    - **スレッド** — 役割ごとの CPU と「走行中 / どのシステムコールで待っているか / 休眠」の割合 (`PROXY_PROFILE_SAMPLE_MS`)
+    - **CPU/要求** — 窓の CPU (utime + stime の増分) ÷ 窓の要求数。`scripts/cpu-per-request.sh` と同じ物差しの値が
+      デプロイ先でも読めます (`recent.cpu_per_request_us` は直近 5 分)
+    - **ロック** — 統計の表・名前解決の表・預かり所・ワーカーの 4 つが「待たされた」回数と、待ち行列で待った件数 / 合計 ms / 最大 ms
+    - 記録はプロセスのメモリだけ (約 4.9 MB。状態ファイルには書きません)。応答は 256 KiB 以下で、
+      入り切らないときは**新しい標本を残して**古い方から落とし `"truncated": true` を出します。**`--lite` では `{"profile":"off"}`**
+    - 段階の窓は **ms 刻み**なので、loopback のように 1 要求が 1 ms に満たない環境ではほとんどの段階が 0 に潰れます
+      (これはデプロイ先の 6〜30 ms の待ちを読むための道具です。手元の速さを見るなら `cpu_per_request_us` の方)
 - **タイムアウト制御**:
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
 
