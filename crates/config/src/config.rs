@@ -804,11 +804,13 @@ impl Config {
         }
         if let Some(v) = envfile::var("PROXY_CANARY") {
             cfg.canary = v.trim().to_ascii_lowercase();
+            src.mark("PROXY_CANARY");
         }
         if let Some(secs) =
             envfile::var("PROXY_CANARY_SECS").and_then(|s| s.trim().parse::<u64>().ok())
         {
             cfg.canary_secs = Duration::from_secs(secs.max(1));
+            src.mark("PROXY_CANARY_SECS");
         }
         if let Some(v) = envfile::var("PROXY_CANARY_IPV6") {
             cfg.canary_ipv6 = !off(v);
@@ -818,6 +820,7 @@ impl Config {
             envfile::var("PROXY_PROFILE_SAMPLE_MS").and_then(|s| s.trim().parse::<u64>().ok())
         {
             cfg.profile_sample_ms = ms;
+            src.mark("PROXY_PROFILE_SAMPLE_MS");
         }
         let list = |v: String| -> Vec<String> {
             v.split(',')
@@ -958,8 +961,11 @@ impl Config {
         add("PROXY_DNS_TTL_SECS", secs(self.dns_ttl));
         add("PROXY_DNS_NEGATIVE_SECS", secs(self.dns_negative));
         add("PROXY_DNS_WARM_SECS", secs(self.dns_warm));
-        // canary の IPv6 側 (T14.37)。宛先と周期は `proxy-metrics` の持ち物なので
-        // ここには出さない (この層は文字列を運ぶだけ)
+        // canary (T14.10 / T14.37)。宛先の解釈は `proxy-metrics` の仕事だが、
+        // `/config` と `--check` は「効いている設定を全部見る」ための口なので、
+        // 文字列のまま 3 つとも出す (T14.57 の再デプロイの手引きで穴が見つかった)
+        add("PROXY_CANARY", crate::json::quote(&self.canary));
+        add("PROXY_CANARY_SECS", secs(self.canary_secs));
         add("PROXY_CANARY_IPV6", self.canary_ipv6.to_string());
         // あて先の許可・拒否
         add("PROXY_ALLOW_HOSTS", list_value(&self.acl.allow_hosts));
@@ -1016,6 +1022,10 @@ impl Config {
         add(
             "PROXY_PROFILE",
             crate::json::quote_opt(self.lite.then_some("lite")),
+        );
+        add(
+            "PROXY_PROFILE_SAMPLE_MS",
+            self.profile_sample_ms.to_string(),
         );
         add("PROXY_SELF_BENCH", self.self_bench.to_string());
         // `.env` にそのまま書き戻せる形で出す (読むのは大小を問わない)
@@ -1475,6 +1485,9 @@ mod tests {
         assert_eq!(find("PROXY_TLS_CA_FILE"), "null");
         assert_eq!(find("PROXY_TCP_KEEPALIVE"), "\"on:60:10:3\"");
         assert_eq!(find("PROXY_MEM_CACHE_MB"), "\"auto\"");
+        assert_eq!(find("PROXY_CANARY"), "\"auto\"");
+        assert_eq!(find("PROXY_CANARY_SECS"), "60");
+        assert_eq!(find("PROXY_PROFILE_SAMPLE_MS"), "1000");
         assert_eq!(find("SERVER_DISK"), find("PROXY_DISK_QUOTA_MB"), "別名");
         // 出どころは既定 (このテストは環境変数を触っていない)
         assert!(

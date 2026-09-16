@@ -222,6 +222,8 @@ impl Live {
             next.canary = fresh.canary.clone();
             next.canary_secs = fresh.canary_secs;
             next.canary_ipv6 = fresh.canary_ipv6;
+            next.sources.adopt(&fresh.sources, "PROXY_CANARY");
+            next.sources.adopt(&fresh.sources, "PROXY_CANARY_SECS");
             next.sources.adopt(&fresh.sources, "PROXY_CANARY_IPV6");
             crate::canary::configure(&fresh.canary, fresh.canary_secs, fresh.canary_ipv6);
             applied.push("PROXY_CANARY");
