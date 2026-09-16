@@ -107,7 +107,29 @@ scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z 
 
 `collect-deployed.sh` は前回の雪像を見つけるとこれを呼び、**要約のいちばん最後に判定表**を置きます
 (`CRITERIA=off` で止められます)。道具の単体テストは `python3 -m unittest discover -s scripts`
-(架空の雪像 `scripts/testdata/snapshot-a.json` / `snapshot-b.json` で回ります)。
+(架空の雪像 `scripts/testdata/snapshot-a.json` / `snapshot-b.json` と、下の匿名化した実データで回ります)。
+
+**実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T14.35)。雪像には
+個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.example`)・
+**接続元 IP** (`198.51.100.x`)・**名前解決の答え** (`203.0.113.x`)・**`User-Agent`** (`ua-01`)・
+**`/log` の行と `/events` の説明の中の名前と IP** だけを置き換えれば、本物の分布のまま持ち込めます。
+置き換えは**決定的** (同じ入力からは同じ出力) なので、**匿名化したあとの 2 枚でそのまま差分が取れます**。
+**数字は 1 つも変わりません** (件数・ms・区間・閉じた理由・時刻・`version`・`path`)。`connect://` の
+scheme と port、表の上限を越えた分の行 (`other`) はそのままです。
+
+```bash
+scripts/anonymize-snapshot.py ~/rust-http-proxy-status/2026-09-16T0106Z-snapshot.json \
+                              -o scripts/testdata/deployed-2026-09-16.anon.json
+# `/snapshot` より前の形 (1 本ずつ取ったファイル群) からも組めます (`-metrics` 等は飛ばします)
+scripts/anonymize-snapshot.py ~/rust-http-proxy-status/2026-09-16T0106Z-* -o anon.json
+scripts/snapshot-diff.py old.anon.json new.anon.json      # 匿名化したあとでも差分は取れる
+```
+
+同梱の `scripts/testdata/deployed-2026-09-16.anon.json` (778 KiB) がその出力で、**デプロイ先の
+2026-09-16 の雪像そのまま**です (ホスト 817 件・名前解決 90 件・`res=60` は 1,440 標本)。
+`node scripts/check-dashboard.js` と `python3 -m unittest discover -s scripts` がこれを読み、
+`/history?res=3600` を起動時刻で切った平常時から **T14.0 の表と同じ数字** (名前解決 0.55 回/接続、
+CONNECT 確立 p50 8.3 / p95 80.7 ms、ミス 1 回 11.5 ms) が出ることを見ています。
 
 | 項目 | 直す前 (2026-09-10) | いま | 出どころ |
 |---|---|---|---|
@@ -306,7 +328,16 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   ホスト (数分おきの push 通知など) もミスになりません。同時に warm でいられるのは 32 件まで
   (最後の使用が古いものから外れ、最後の使用から 15 分過ぎたら止まります)。
   **名前解決は 1 要求 1 回**: ローカル宛て (SSRF) の判定で引いた答えをそのまま接続に使うので、
-  キャッシュを切っていても判定と接続が別の答えを見ることはない
+  キャッシュを切っていても判定と接続が別の答えを見ることはない。
+  **答えが変わった回数 (`changes`)**: 引き直し (keep-warm と期限切れの再解決) は元々
+  1 つ前の答えを手元に持っているので、**変わったかどうかを数えるだけ**で「その名前の
+  アドレスがどれくらいの頻度で動くか」(CDN のローテーション頻度) が分かります。名前ごとは
+  `/dns` の `changes`、合計は `/status` の `dns.changes` です。**読み方は
+  `changes ÷ (misses + refreshes)`** = 引き直し 1 回あたりに答えが変わる割合で、
+  TTL 60 秒が長すぎるか短すぎるかの材料になります。0 に近ければ答えは固定 = TTL を延ばして
+  引き直しを減らせる (`getaddrinfo` の回数が減る)、1 に近ければ毎回違う = TTL を延ばすと
+  古いアドレスへ繋ぐ窓がそのぶん延びる、と読みます。**順番が入れ替わっただけは数えません**
+  (`getaddrinfo` は同じ答えを違う順で返すことがあるため)
 - **入場制御 & ネガティブキャッシュ**: 層が埋まったら 2 回目に見た URL だけ保存。404 / 410 は既定 60 秒だけ保持
 - **ドメインのブロックリスト**: hosts 形式のファイルや URL (1 日 1 回自動更新) から読み、広告・トラッカーを CONNECT の段階で 403 にする
 - **統計と履歴の永続化**: 固定サイズ (**8 MiB**) の状態ファイルに、履歴 3 解像度 (5 秒 × 1 時間、1 分 × 1 日、
@@ -381,7 +412,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     状態 `relaying` / `parked` / `reading` / `serving` / `queued`・開始からの秒・転送バイト・記述子の数。`--lite` では空)、
     `/dns?sort=age|host|misses&limit=300` で名前解決の表の中身 (ホスト・アドレス・解決からの秒・残り TTL・
     最後に使ってからの秒・勝った族・負のキャッシュなら理由・裏で引き直し中か・**warm か (`warm`) と
-    次に裏で引き直すまでの秒 (`next_refresh_secs`)**・OS に問い合わせた回数)、
+    次に裏で引き直すまでの秒 (`next_refresh_secs`)**・OS に問い合わせた回数・
+    **引き直しで答えが変わった回数 (`changes`)**)、
     `/log?n=200` で **warn 以上**の直近の行 (1,000 行の環状、1 行 256 B まで。
     `info` のアクセスログは写しません — 熱い経路を重くしないため。コンソールが流れて消える環境向け。
     個票のファイルには 1 行 219 B まで残します)、
@@ -498,10 +530,11 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     「遅かったのはプロキシか、回線か、利用者の端末か」が切り分けられませんでした。canary の値が利用者の値と
     合っていれば回線 (またはリゾルバ)、合っていなければ利用者側、と読めます。
     最後の 1 回は `/status` の `canary` (`mode` / `secs` / `runs` / `failures` / `at` / `host` / `dns_ms` /
-    `connect_ms` / `error`)、`/metrics` の `sorahost_canary_seconds{stage="dns"|"connect"}` (最後の値。
+    `connect_ms` / **`ipv6_connect_ms`** / `error`)、`/metrics` の
+    `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最後の値。
     1 回も回っていなければ 1 行も出しません。**失敗した回は届かなかった段階が 0 になる**ので、
     成否は `/status` の `canary.error` と `canary.failures`、`/errors` で見てください)。時系列は **`/history?res=5|60` の `canary`** で、
-    `{"keys":["t","canary_dns_ms","canary_connect_ms","canary_host"],"samples":[[…]]}` という
+    `{"keys":["t","canary_dns_ms","canary_connect_ms","canary_host","canary_ipv6_connect_ms"],"samples":[[…]]}` という
     **別の配列**です (既存の `keys` / `samples` は 1 列も変えていません。`.rrd` の標本には書かないので
     再起動で消えます。窓は 5 秒 × 720 と 60 秒 × 1,440)。失敗は `/errors` に `kind: "canary"` で 1 件だけ残り、
     利用者に返したエラーの集計 (`errors_by_cause`) には混ざりません。
@@ -510,6 +543,16 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (Happy Eyeballs と IPv4 優先の学習) を通ります。回すのは **`canary` スレッド 1 本**だけで、
     利用者の要求の経路には 1 命令も足していません。**履歴スレッドが動いているときだけ回ります**
     (`--lite` と `PROXY_STATS_PERSIST=off` では履歴スレッドごと止まるので canary も回りません)
+  - **canary の IPv6 側 (`PROXY_CANARY_IPV6`、既定 on。T14.37)**: 同じ周期に、canary の名前の
+    **AAAA へ 1 本だけ**繋いでみて `canary.ipv6_connect_ms` に残します (繋がれば ms、
+    **繋がらなければ `null`**: AAAA が無い名前、`PROXY_IPV6=off`、経路が黒穴、`PROXY_CANARY_IPV6=off`)。
+    コンテナの IPv6 が黙って落ちる環境では、プロキシは 3 回続けて負けると初めて見るホストを
+    IPv4 優先に切り替え (`/status` の `ipv6.v4_first`)、**元に戻すかどうかは 600 秒に 1 回の探りだけ**で
+    決めています。この 1 本があれば「IPv6 が生き返ったか」を 1 分の粒度で (利用者を待たせずに) 読めます。
+    **観測だけ**で、Happy Eyeballs も勝敗の記録 (`ipv6.attempts` / `wins` / `losses`) も
+    ホストごとの族の記憶も動かしません (`v4_first` の判定は 1 ビットも変わりません)。
+    失敗は `/errors` にも残しません (黒穴のままだと 1 分に 1 件ずつ個票が埋まってしまうため。
+    生死は `ipv6_connect_ms` が `null` かどうかで読みます)
   - **再起動をまたぐか (`persisted` / `restored`)**: `/recent` `/errors` `/bursts` `/events` `/log` の 5 つは、
     5 秒ごとに `$HOME/.rust-http-proxy.recent` (固定 4 MiB、統計の `.rrd` とは別のファイル) へ新しい分だけ追記され、
     次の起動で読み戻されます。**`"persisted": true|false`** がその可否 (`PROXY_STATS_PERSIST=off` と、
@@ -781,11 +824,12 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_PARK_GRACE_MS` | `3` | 預ける前に同じスレッドで待ってみる時間 (ミリ秒。CONNECT トンネルは下限 100 ms)。続けて要求が来る忙しい接続に、預ける/戻すの往復 (`epoll_ctl` 2 回 + ワーカーの受け渡し、実測 18 µs/要求) を払わせないための猶予。読み取りタイムアウトをこの長さにして空振りを「暇だ」と解釈するので、システムコールは増えない。`0` なら猶予なしで即座に預ける |
 | `PROXY_MALLOC_ARENAS` | `8` | malloc のアリーナ数の上限。`0` で glibc の既定 (コア数 × 8) のまま。接続ごとにスレッドが増えるため、既定のままだとアイドル接続を多く抱えたときに使われないアリーナが RSS に居座る (実測: 2,000 本のアイドル接続で 80.5 → 26.8 kB/接続)。代償は高並列でのロック競合 (実測: 64 並列で CPU/要求 +4%、8 並列では差なし)。実際に掛かった値は `/status` の `memory.arenas` に出ます |
 | `PROXY_ORIGIN_POOL_TOTAL` | `256` | アイドル接続の全ホスト合計の上限。多数のホストへ行くときに `ホスト数 × PROXY_ORIGIN_POOL` まで増えないようにする |
-| `PROXY_DNS_TTL_SECS` | `60` | 名前解決の結果を保持する秒数。`0` で毎回解決 (それでも 1 要求につき 1 回。`/status` の `dns.misses` がその回数)。**直近この秒数以内に使われた名前は期限の 3/4 を過ぎたところで裏で 1 回だけ引き直す**ので、使い続けているホストはミスになりません (`/status` の `dns.refreshes`)。解決に失敗したら 1 時間以内の古い結果を使う。`.env` で即時反映 |
+| `PROXY_DNS_TTL_SECS` | `60` | 名前解決の結果を保持する秒数 (この長さが妥当かは `/dns` の `changes` ÷ (`misses` + `refreshes`) で見ます。答えがほとんど変わらないなら延ばせます)。`0` で毎回解決 (それでも 1 要求につき 1 回。`/status` の `dns.misses` がその回数)。**直近この秒数以内に使われた名前は期限の 3/4 を過ぎたところで裏で 1 回だけ引き直す**ので、使い続けているホストはミスになりません (`/status` の `dns.refreshes`)。解決に失敗したら 1 時間以内の古い結果を使う。`.env` で即時反映 |
 | `PROXY_DNS_NEGATIVE_SECS` | `60` | 名前解決の**失敗**を覚えておく秒数 (`0` で覚えない)。覚えている間は OS に問い合わせずに同じエラーを返します (`/status` の `dns.negative_hits`)。引けない名前 1 つで 2 秒待たされることがあるための蓋で、古い答えが 1 時間以内にあるときはエラーより古い答えを優先します。`.env` で即時反映 |
 | `PROXY_DNS_WARM_SECS` | `900` | **keep-warm**: 直近この秒数に **2 回以上**使われた名前 (warm) は、使われていなくても `PROXY_DNS_TTL_SECS` の 3/4 ごとに裏で引き直し続けます (`0` で無効 = 直近 TTL 内に使われた名前だけ 1 回先回りする動きに戻る)。TTL (60 秒) を熱さの物差しにすると、間隔が TTL より長いホストは 1 つも救えません (デプロイ先の主要 3 件は 2〜10 分間隔で、ミス率は 0.31 / 0.76 / 1.00 でした)。1 回だけ使われた名前は warm にしません (引き直しても二度と来ない)。答えを持っている名前だけが warm になります (引けない名前は負のキャッシュの担当)。同時に warm でいられるのは **32 件**まで (最後の使用がいちばん古いものから外す) で、最後の使用からこの秒数を過ぎたら引き直しを止めます。最悪でも 32 件 ÷ 45 秒 ≈ 0.7 回/秒。いま warm な名前の数は `/status` の `dns.warm`、名前ごとの予定は `/dns` の `warm` / `next_refresh_secs`。`.env` で即時反映 |
-| `PROXY_CANARY` | `auto` | **canary** (利用者の要求が無い時間帯も待ちを測る): `PROXY_CANARY_SECS` 秒に 1 回、宛先へ**名前解決と TCP 接続だけ**を行って時間を残します (握ったらすぐ閉じ、TLS も HTTP も送りません。相手に届くのは 1 分に 1 回の SYN と FIN だけ)。`auto` は**直近 1 時間で最も要求の多い CONNECT の宛先** (`/status` の上位ホストの先頭で、最後に使ってから 1 時間以内のもの) を毎周期選び直します (1 件も無ければ何もしません = 誰も使っていないプロキシは誰にも繋ぎません)。`off` で止める。ホストをカンマ区切りで書けばその全部 (最大 8、ポートを省くと 443)。結果は `/status` の `canary`、`/history?res=5|60` の `canary` の配列、`/metrics` の `sorahost_canary_seconds{stage="dns"|"connect"}`、失敗は `/errors` に `kind: "canary"` で 1 件。名前解決は表を通さず OS に聞くので利用者の `dns` の数字には混ざりません。**履歴スレッドが動いているときだけ回ります** (`--lite` と `PROXY_STATS_PERSIST=off` では回りません)。`.env` で即時反映 |
+| `PROXY_CANARY` | `auto` | **canary** (利用者の要求が無い時間帯も待ちを測る): `PROXY_CANARY_SECS` 秒に 1 回、宛先へ**名前解決と TCP 接続だけ** (と `PROXY_CANARY_IPV6=on` なら AAAA へもう 1 本) を行って時間を残します (握ったらすぐ閉じ、TLS も HTTP も送りません。相手に届くのは 1 分に 1 回の SYN と FIN だけ)。`auto` は**直近 1 時間で最も要求の多い CONNECT の宛先** (`/status` の上位ホストの先頭で、最後に使ってから 1 時間以内のもの) を毎周期選び直します (1 件も無ければ何もしません = 誰も使っていないプロキシは誰にも繋ぎません)。`off` で止める。ホストをカンマ区切りで書けばその全部 (最大 8、ポートを省くと 443)。結果は `/status` の `canary`、`/history?res=5|60` の `canary` の配列、`/metrics` の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}`、失敗は `/errors` に `kind: "canary"` で 1 件。名前解決は表を通さず OS に聞くので利用者の `dns` の数字には混ざりません。**履歴スレッドが動いているときだけ回ります** (`--lite` と `PROXY_STATS_PERSIST=off` では回りません)。`.env` で即時反映 |
 | `PROXY_CANARY_SECS` | `60` | canary の周期 (秒、最小 1)。**試験で短くするための口**で、運用では触りません (60 秒に 1 回・1 宛先 1 本なら、相手にも自分にも負荷はありません)。`.env` で即時反映 |
+| `PROXY_CANARY_IPV6` | `on` | canary の **IPv6 側**: 同じ周期に、canary の名前の **AAAA へ 1 本だけ**繋いでみて `/status` の `canary.ipv6_connect_ms` と `/history` の `canary` の 5 列目 (`canary_ipv6_connect_ms`) に残します。繋がれば ms、**繋がらなければ `null`** (AAAA が無い名前、`PROXY_IPV6=off`、経路が黒穴、ここが `off`)。コンテナの IPv6 が黙って落ちる環境で「生き返ったか」を 1 分の粒度で読むための観測です (`v4_first` の解除は 600 秒に 1 回の探りだけに頼っています)。**観測だけで、Happy Eyeballs も `ipv6` の勝敗もホストごとの族の記憶も動かしません**。失敗は `/errors` に残しません (黒穴のままだと 1 分に 1 件ずつ埋まるため)。`off` にすると 1 本も出しません。`.env` で即時反映 |
 | `PROXY_BLOCKLIST_FILE` | なし | ドメインのブロックリスト (hosts 形式 `0.0.0.0 host` または 1 行 1 ドメイン)。親ドメインの登録で子ドメインも落ちる。`.env` で即時反映、ファイルの更新は 1 分以内に反映 |
 | `PROXY_BLOCKLIST_URL` | なし | ブロックリストを取りに行く URL (StevenBlack の hosts など)。`$HOME/.rust-http-proxy.blocklist` に保存して再起動後も使う。ファイルと両方あれば和集合 |
 | `PROXY_BLOCKLIST_REFRESH_SECS` | `86400` | URL を取り直す間隔 (最小 60)。失敗したら 10 分後に再試行し、その間は前の一覧を使う |
@@ -1452,6 +1496,8 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 `node scripts/check-dashboard.js [/history の出力] [/status の出力] [/profile の出力] [/snapshot の出力]` が
 「JS の構文」と「`/history` の配列の配列・`/status` の読み方が実出力と合っていること」を確かめます
 (Node があるときだけの補助的な確認。引数を省くと `scripts/testdata/` の見本を読みます)。
+最後に**匿名化したデプロイ先の実データ** (`scripts/testdata/deployed-2026-09-16.anon.json`。T14.35) でも
+同じ読み方を回すので、本物の分布 (ホスト 817 件・1,440 標本) で壊れたらここで気づきます。
 
 **`/inspect` は「調査」ページ**です (`/dashboard/inspect` も同じもの。T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
 こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページ (64 KiB 以下) のままです。
@@ -1529,7 +1575,8 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 あわせて `sorahost_warm_names` (keep-warm で裏から引き直し続けている名前の数。gauge) と
 `sorahost_lock_contention_total{lock="stats"|"dns"|"park"|"workers"}`
 (そのロックを取るときに**本当に待たされた**回数の累計。counter) が出ます。
-canary の `sorahost_canary_seconds{stage="dns"|"connect"}` (最後の値) と
+canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最後の値。
+`ipv6_connect` は**繋がった回だけ**出ます = 行が消えていること自体が「IPv6 が死んでいる」の印) と
 `sorahost_rtt_seconds_sum` / `_count{side=}` は前からあるものです。
 段階の 13 本で `/metrics` は **約 14 KB 増えます** (ホスト表と接続元表が満杯のときで 243 → 257 KB。上限は 400 KiB)。
 
@@ -1558,7 +1605,8 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"}` (最後の値) と
 (原子操作もシステムコールも増えません。実測: forward の確保 8.03 → 8.03 回/要求、
 `--lite` のシステムコール 5.00 → 5.00 回/要求)。`dns` には `miss_ms_sum` / `miss_avg_ms` (ミス 1 回の値段) と
 `refreshes` (期限前に裏で引き直した回数) / `negative_ttl_secs` (失敗を覚えておく秒数) /
-`warm_secs` (keep-warm の窓) / **`warm` (いま warm な名前の数)** が出ます。
+`warm_secs` (keep-warm の窓) / **`warm` (いま warm な名前の数)** /
+**`changes` (引き直しで答えの集合が変わった回数の合計)** が出ます。
 **裏の引き直しはミスに数えません** (利用者は待っていないので、`misses` と `miss_avg_ms` に混ぜると
 「ミス 1 回の値段」が読めなくなる)。`/metrics` では `sorahost_dns_lookups_total{result="refresh"}` です。
 `clients[]` にも同じ `rtt_ms` / `retrans` が出ますが、**こちらはクライアント側** (利用者 → プロキシの往復) です。

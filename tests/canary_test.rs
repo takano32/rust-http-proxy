@@ -27,6 +27,10 @@ use rust_http_proxy::canary;
 const PERIOD: Duration = Duration::from_secs(1);
 /// 「1 本も繋がない」ことを見るときに待つ時間 (2 周期 + 余裕)。
 const TWO_PERIODS: Duration = Duration::from_millis(2_500);
+/// IPv6 側 (`PROXY_CANARY_IPV6`。T14.37)。**この結合テストでは止めておく**:
+/// 宛先が `127.0.0.1` (A だけ) なので測るものが無く、試験のオリジンの accept 回数
+/// (「1 本も繋がない」の物差し) に余計な 1 本を混ぜないため。
+const IPV6: bool = false;
 
 /// `/status` の `"canary":{…}` を切り出す (中に入れ子の括弧は無い)。
 fn canary_obj(status: &str) -> String {
@@ -45,7 +49,7 @@ fn test_integration_canary_measures_dns_and_connect_without_any_user_request() {
     let probed = Arc::new(AtomicUsize::new(0));
     let (target_port, _t) = start_counting_origin(Arc::clone(&probed), "");
     let target = format!("127.0.0.1:{}", target_port);
-    canary::configure(&target, PERIOD);
+    canary::configure(&target, PERIOD, IPV6);
 
     // 本番の main.rs と同じ配線: canary を回すのは履歴スレッドの周期 (T14.10)
     let cache = Arc::new(Cache::new(CacheConfig::disabled()));
@@ -82,19 +86,23 @@ fn test_integration_canary_measures_dns_and_connect_without_any_user_request() {
     let canary_series = canary_obj_series(&history);
     assert!(
         canary_series.starts_with(
-            "{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\"],\"samples\":[["
+            "{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\",\"canary_ipv6_connect_ms\"],\"samples\":[["
         ),
         "{}",
         canary_series
     );
     assert!(
-        canary_series.contains(&format!("\"{}\"]", target)),
+        canary_series.contains(&format!("\"{}\",null]", target)),
         "宛先が無い: {}",
         canary_series
     );
     // 1 分の窓にも同じ行がある (`/history?res=60`)
     let minute = canary_obj_series(&endpoint_json(proxy_port, "/history?res=60"));
-    assert!(minute.contains(&format!("\"{}\"]", target)), "{}", minute);
+    assert!(
+        minute.contains(&format!("\"{}\",null]", target)),
+        "{}",
+        minute
+    );
     // /metrics にも最後の値が出る
     let prom = endpoint_json(proxy_port, "/metrics");
     assert!(
@@ -108,7 +116,7 @@ fn test_integration_canary_measures_dns_and_connect_without_any_user_request() {
     assert!(prom.contains("sorahost_canary_seconds{stage=\"connect\"}"));
 
     // (2) `off` にしたら 1 本も繋がない (試験のオリジンの accept 回数 0)
-    canary::configure("off", PERIOD);
+    canary::configure("off", PERIOD, IPV6);
     std::thread::sleep(TWO_PERIODS);
     probed.store(0, Ordering::SeqCst);
     std::thread::sleep(TWO_PERIODS);
@@ -127,7 +135,7 @@ fn test_integration_canary_measures_dns_and_connect_without_any_user_request() {
         .unwrap()
         .port();
     let dead = format!("127.0.0.1:{}", dead_port);
-    canary::configure(&dead, PERIOD);
+    canary::configure(&dead, PERIOD, IPV6);
     wait_until(
         || endpoint_json(proxy_port, "/errors").contains("\"kind\":\"canary\""),
         "canary の失敗が /errors に出る",
@@ -172,7 +180,7 @@ fn test_integration_canary_measures_dns_and_connect_without_any_user_request() {
         "CONNECT の宛先がホスト別統計に載る",
     );
     tunnelled.store(0, Ordering::SeqCst);
-    canary::configure("auto", PERIOD);
+    canary::configure("auto", PERIOD, IPV6);
     wait_until(
         || canary_obj(&status_json(proxy_port)).contains(&format!("\"host\":\"{}\"", origin)),
         "auto が上位ホストを選ぶ",
@@ -186,7 +194,7 @@ fn test_integration_canary_measures_dns_and_connect_without_any_user_request() {
     assert!(auto.contains("\"error\":null"), "{}", auto);
 
     // 後片付け (このプロセスの canary スレッドを黙らせる)
-    canary::configure("off", PERIOD);
+    canary::configure("off", PERIOD, IPV6);
 }
 
 /// `/history` の `"canary":{…}` を切り出す (`samples` の入れ子を数えて閉じる)。

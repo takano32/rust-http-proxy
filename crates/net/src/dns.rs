@@ -57,6 +57,13 @@ static STALE: AtomicU64 = AtomicU64::new(0);
 static FAILURES: AtomicU64 = AtomicU64::new(0);
 /// 期限前に裏で引き直した回数 (T13.1)。利用者は待っていないので**ミスとは別に数える**。
 static REFRESHES: AtomicU64 = AtomicU64::new(0);
+/// 引き直しで**答えの集合が前と変わった**回数 (`/status` の `dns.changes`。T14.37)。
+///
+/// TTL 60 秒が長いか短いかは「答えがどれくらいの頻度で変わるか」で決まるが、その数字が
+/// 無かった。引き直し (keep-warm と期限切れの再解決) は元々 1 つ前の答えを手元に持って
+/// いるので、**比べて数えるだけ**で CDN のローテーション頻度が読める。書くのは引き直しの
+/// 経路 (稀) だけで、当たりの経路には 1 命令も増えない。
+static CHANGES: AtomicU64 = AtomicU64::new(0);
 /// ミスのときに `getaddrinfo` に費やした時間の合計 (us)。**ミスの経路でしか書かない**
 /// ので、当たりの経路 (熱い方) には原子操作が 1 つも増えない (T12.4 (2))。
 /// 裏の引き直しのぶんも入れない (待っていない時間を「ミス 1 回の値段」に混ぜない)。
@@ -126,6 +133,9 @@ struct Entry {
     misses: u64,
     /// この名前を期限前に裏で引き直した回数 (T13.4)
     refreshes: u64,
+    /// 引き直しで答えの集合が変わった回数 (`/dns` の `changes`。T14.37)。
+    /// **最初に答えを得たときは数えない** (変化ではないので)
+    changes: u64,
     /// 直近の失敗 (負のキャッシュ)
     failed_at: Option<(Instant, io::ErrorKind, String)>,
     /// このホストで最後に接続できた族 (`Some(true)` = IPv6)。RFC 8305 §8 の
@@ -147,6 +157,7 @@ impl Entry {
             refreshing: false,
             misses: 0,
             refreshes: 0,
+            changes: 0,
             failed_at: None,
             last_win_v6,
         }
@@ -423,6 +434,8 @@ fn refresh_one(key: &str) {
     // 返ってきたアドレスにあとからポートを詰めるので、ここは 0 でよい
     let result = system_resolve(key, 0);
     let now = Instant::now();
+    // 答えが変わったか。**数える (原子操作) のは鍵を放してから** (T12.4 (2))
+    let mut changed = false;
     {
         let mut guard = TABLE.locked();
         let Some(entry) = guard.as_mut().and_then(|t| t.get_mut(key)) else {
@@ -432,7 +445,11 @@ fn refresh_one(key: &str) {
         entry.refreshing = false;
         entry.refreshes += 1;
         if let Ok(addrs) = result {
-            // 答えが変わっていれば差し替える。族の記憶 (T12.1) は引き継ぐ
+            // 答えが変わっていれば差し替える。族の記憶 (T12.1) は引き継ぐ。
+            // **変わったことも数える** (T14.37): ここは元の答えを手元に持っている
+            // 唯一の場所で、比較の費用は既に取っている鍵の内側の数本の比較だけ
+            changed = addrs_changed(&entry.addrs, &addrs);
+            entry.changes += u64::from(changed);
             entry.addrs = addrs;
             entry.resolved_at = now;
             entry.failed_at = None;
@@ -442,6 +459,25 @@ fn refresh_one(key: &str) {
         // エラーを配らないため
     }
     REFRESHES.fetch_add(1, Ordering::Relaxed);
+    if changed {
+        CHANGES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// 引き直しで**答えの集合**が変わったか (T14.37)。
+///
+/// **順序は見ない**: `getaddrinfo` は同じ答えを毎回違う順で返すことがあり (CDN の
+/// ラウンドロビン、`rotate` を有効にした resolv.conf)、並びの入れ替わりを「変化」と
+/// 数えると `changes` が「本当に別のサーバーに振られた回数」として読めなくなる。
+///
+/// **前の答えが空のとき (= 最初の解決、族の記憶だけ置いた入れ物) は変化と数えない。**
+/// 1 つの名前のアドレスは多くても十数本で、`getaddrinfo` は同じアドレスを 2 度返さない
+/// ので、本数と両向きの包含で足りる (並べ替えも確保もしない)。
+fn addrs_changed(old: &[IpAddr], new: &[IpAddr]) -> bool {
+    if old.is_empty() || old.len() != new.len() {
+        return !old.is_empty();
+    }
+    !new.iter().all(|a| old.contains(a)) || !old.iter().all(|a| new.contains(a))
 }
 
 /// 引き直しの旗を下ろす (頼めなかったとき)。
@@ -639,6 +675,13 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
             // 引き直しでも族の記憶は引き継ぐ。裏の引き直しが走っている最中なら
             // その旗も残す (同じ名前を 2 本引きに行かせない)
             let slot = table.entry(key).or_insert_with(|| Entry::empty(now, pref));
+            // 期限切れの引き直しで答えが変わったか (T14.37。裏の引き直しと同じ物差し)。
+            // ここは既にミスの経路 (`getaddrinfo` を待ったあと) なので、鍵の内側の
+            // 比較 1 回と原子 1 つは測れない
+            if addrs_changed(&slot.addrs, &addrs) {
+                slot.changes += 1;
+                CHANGES.fetch_add(1, Ordering::Relaxed);
+            }
             slot.addrs = addrs.clone();
             slot.resolved_at = now;
             slot.last_used = now;
@@ -783,6 +826,9 @@ pub struct TableRow {
     /// OS に問い合わせた回数と、期限前に裏で引き直した回数
     pub misses: u64,
     pub refreshes: u64,
+    /// 引き直しで答えの集合が変わった回数 (T14.37)。`refreshes + misses` のうち
+    /// どれだけ答えが動いたかが、TTL の長さを決める材料になる
+    pub changes: u64,
 }
 
 impl TableRow {
@@ -799,7 +845,7 @@ impl TableRow {
             None => "null".to_string(),
         };
         format!(
-            "{{\"host\":\"{}\",\"addrs\":[{}],\"addr_count\":{},\"age_secs\":{},\"ttl_left\":{},\"idle_secs\":{},\"win_v6\":{},\"failed\":{},\"refreshing\":{},\"warm\":{},\"next_refresh_secs\":{},\"misses\":{},\"refreshes\":{}}}",
+            "{{\"host\":\"{}\",\"addrs\":[{}],\"addr_count\":{},\"age_secs\":{},\"ttl_left\":{},\"idle_secs\":{},\"win_v6\":{},\"failed\":{},\"refreshing\":{},\"warm\":{},\"next_refresh_secs\":{},\"misses\":{},\"refreshes\":{},\"changes\":{}}}",
             crate::json::escape(&self.host),
             addrs.join(","),
             self.addr_count,
@@ -820,6 +866,7 @@ impl TableRow {
             },
             self.misses,
             self.refreshes,
+            self.changes,
         )
     }
 }
@@ -867,6 +914,7 @@ pub fn table(sort: DnsSort) -> Vec<TableRow> {
                         .map(|at| at.saturating_duration_since(now).as_secs()),
                     misses: e.misses,
                     refreshes: e.refreshes,
+                    changes: e.changes,
                 }
             })
             .collect()
@@ -893,7 +941,7 @@ pub fn status_json() -> String {
     let entries = entries();
     let (us, misses) = resolve_cost_total();
     format!(
-        "{{\"ttl_secs\":{},\"negative_ttl_secs\":{},\"warm_secs\":{},\"entries\":{},\"warm\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{},\"refreshes\":{},\"miss_ms_sum\":{:.1},\"miss_avg_ms\":{:.2}}}",
+        "{{\"ttl_secs\":{},\"negative_ttl_secs\":{},\"warm_secs\":{},\"entries\":{},\"warm\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{},\"refreshes\":{},\"changes\":{},\"miss_ms_sum\":{:.1},\"miss_avg_ms\":{:.2}}}",
         TTL_SECS.load(Ordering::Relaxed),
         NEGATIVE_SECS.load(Ordering::Relaxed),
         WARM_SECS.load(Ordering::Relaxed),
@@ -904,6 +952,7 @@ pub fn status_json() -> String {
         STALE.load(Ordering::Relaxed),
         FAILURES.load(Ordering::Relaxed),
         REFRESHES.load(Ordering::Relaxed),
+        CHANGES.load(Ordering::Relaxed),
         us as f64 / 1000.0,
         if misses == 0 {
             0.0
@@ -1022,14 +1071,28 @@ mod tests {
 
     /// 表に答えを直接置く (`getaddrinfo` を呼ばずに「当たる名前」を作る)。
     fn put(host: &str, last_used_ago: Duration) {
+        put_addrs(host, &[IpAddr::from([127, 0, 0, 1])], last_used_ago);
+    }
+
+    /// [`put`] の、覚えさせる答えを選べる版 (T14.37 の「前の答え」を作る)。
+    fn put_addrs(host: &str, addrs: &[IpAddr], last_used_ago: Duration) {
         let now = Instant::now();
         let mut guard = TABLE.locked();
         let table = guard.get_or_insert_with(HashMap::new);
         let mut e = Entry::empty(now, None);
-        e.addrs = vec![IpAddr::from([127, 0, 0, 1])];
+        e.addrs = addrs.to_vec();
         e.last_used = now - last_used_ago;
         e.prev_used = e.last_used;
         table.insert(host.to_string(), e);
+    }
+
+    /// この名前の答えが変わった回数 (T14.37)。
+    fn changes_of(host: &str) -> u64 {
+        TABLE
+            .locked()
+            .as_ref()
+            .and_then(|t| t.get(host))
+            .map_or(0, |e| e.changes)
     }
 
     /// 覚えている失敗の時計を巻き戻す。
@@ -1405,6 +1468,62 @@ mod tests {
         let (h3, m3, _, _) = tally();
         assert_eq!((h3 - h2, m3 - m2), (1, 0), "t=61 でもヒット");
         set_warm_window(WARM);
+        clear();
+    }
+
+    /// T14.37: 引き直しで**答えの集合**が変わったときだけ `changes` が増える
+    /// (順序が違うだけなら増えない)。`/dns` の行と `/status` の合計にも出る。
+    #[test]
+    fn a_relookup_counts_only_a_real_change_of_the_answer() {
+        let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // (1) 突き合わせそのもの。`getaddrinfo` は同じ答えを違う順で返すことがあるので、
+        // 並びの入れ替わりは「変わった」ではない
+        let a: IpAddr = [192, 0, 2, 1].into();
+        let b: IpAddr = [192, 0, 2, 2].into();
+        assert!(!addrs_changed(&[a, b], &[b, a]), "順序が違うだけ");
+        assert!(!addrs_changed(&[a], &[a]));
+        assert!(!addrs_changed(&[], &[a]), "最初の答えは変化ではない");
+        assert!(addrs_changed(&[a], &[b]), "別のアドレス");
+        assert!(addrs_changed(&[a], &[a, b]), "1 本増えた");
+        assert!(addrs_changed(&[a, b], &[a]), "1 本減った");
+
+        // (2) 表を通した引き直し。期限切れ (齢 1 時間) で、最後の使用も 1 時間前なので
+        // keep-warm の窓 (900 秒) には入らない = 裏の引き直しは走らない
+        set_ttl(Duration::from_secs(60));
+        clear();
+        let host = "localhost";
+        let total0 = CHANGES.load(Ordering::Relaxed);
+        let expire = |ago: Duration| age_entry(host, ago, ago);
+        put_addrs(host, &[a], Duration::from_secs(3600));
+        expire(Duration::from_secs(3600));
+        resolve_host(host, 80).expect("localhost は引ける");
+        assert_eq!(changes_of(host), 1, "答えが差し替わったら +1");
+        assert_eq!(CHANGES.load(Ordering::Relaxed) - total0, 1, "合計も +1");
+
+        // 同じ答えが返る引き直しでは増えない
+        expire(Duration::from_secs(3600));
+        resolve_host(host, 80).expect("localhost は引ける");
+        assert_eq!(changes_of(host), 1, "同じ答えなら増えない");
+        assert_eq!(
+            CHANGES.load(Ordering::Relaxed) - total0,
+            1,
+            "合計も増えない"
+        );
+
+        // (3) `/dns` の行と `/status` の合計に出る
+        let row = table(DnsSort::Host)
+            .into_iter()
+            .find(|r| r.host == host)
+            .expect("表に載っている");
+        assert_eq!(row.changes, 1);
+        let json = row.to_json();
+        assert!(json.contains("\"refreshes\":0,\"changes\":1}"), "{}", json);
+        let status = status_json();
+        assert!(
+            status.contains(&format!("\"changes\":{},", total0 + 1)),
+            "{}",
+            status
+        );
         clear();
     }
 }
