@@ -13,7 +13,8 @@ pub use proxy_base::{
 pub use proxy_cache::{cache, sysinfo};
 pub use proxy_freshness::freshness;
 pub use proxy_metrics::{
-    daily, events, history, hostseries, kernel, metrics, persist, profile, recent, rrd,
+    daily, events, history, hostseries, kernel, metrics, persist, profile, recent, rrd, snapshots,
+    trace,
 };
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};

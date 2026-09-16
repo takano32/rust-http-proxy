@@ -1,7 +1,7 @@
 //! ダッシュボード用の履歴: 標本を 3 つの解像度の環状バッファに残し、`/history` で
 //! JSON にして返す。ブラウザ側で差分からレート (req/s, MB/s) を求める。
 //!
-//! - 5 秒 × 720 (1 時間)、1 分 × 1440 (1 日)、1 時間 × 720 (30 日)
+//! - 5 秒 × 4,320 (**6 時間**。メモリだけ。T14.32)、1 分 × 1440 (1 日)、1 時間 × 720 (30 日)
 //! - 粗い解像度は細かい標本から作る: 累計カウンタは窓の最後の値、ゲージ (接続数・使用量) は平均、
 //!   **ゲージの山は最大値** (`active_max` / `threads_max` / `fds_max`)、
 //!   **区間の値** (応答時間の分布・エラー・名前解決) は足し合わせ
@@ -24,12 +24,35 @@ use crate::metrics::Metrics;
 use crate::recent::ClosedCounts;
 use crate::rrd::{Dec, Enc};
 
-/// 記録の間隔と本数 (5 秒 × 720 = 1 時間)。
+/// 記録の間隔。
 pub const INTERVAL: Duration = Duration::from_secs(5);
-pub const CAPACITY: usize = 720;
 
-/// 解像度 (秒) と本数。
+/// **メモリ上の** 5 秒のリングが残す本数 (5 秒 × 4,320 = **6 時間**。T14.32)。
+///
+/// 1 時間 (720 本) だったのを 6 時間にしたのは、バーストが数時間続く (T14.0 の 09-11 は
+/// 17〜23 時) のに 5 秒の解像度が 1 時間しか無く、翌朝には 60 秒に畳んだ鈍った山
+/// (`active_max` は最大で残るが p95 は足し合わせで丸くなる) しか読めなかったため。
+///
+/// **伸ばしたのはメモリだけ**: `.rrd` に書くのは今までどおり最新 720 本
+/// ([`crate::rrd::Layout`] の `history_fine` は 720 固定) で、読み戻した 720 本は
+/// このリングの末尾に入る。[`Sample`] 504 B × 4,320 = **2.08 MiB** (満杯のとき)。
+pub const CAPACITY: usize = 4320;
+
+/// 解像度 (秒) と**`.rrd` に書く本数**。
+///
+/// メモリ上の 5 秒のリングだけは [`CAPACITY`] (6 時間) まで伸びる (T14.32) ので、
+/// ここの 720 が効くのは **`.rrd` の領域**・**閉じた接続と転送の窓**
+/// ([`ClosedWindows`] / [`crate::transfer::TransferWindows`])・
+/// **`?res=` を書かないときの解像度の自動選択の閾** (1 時間までは 5 秒。[`summary::Params`])
+/// の 3 つ。メモリ上の本数が要るところは [`History::capacity`] を使うこと。
 pub const RESOLUTIONS: [(u64, usize); 3] = [(5, 720), (60, 1440), (3600, 720)];
+
+/// `/history?res=5` が `n=` を書かないときに返す本数 (T14.32)。
+///
+/// リングは 6 時間ぶん持つが、**既定の応答の大きさは今までどおり 1 時間ぶん**にする
+/// (ダッシュボードも `/snapshot` も `scripts/` も既定で読むため)。遡りたいときだけ
+/// `?res=5&n=4320` と書く。
+pub const DEFAULT_N: usize = RESOLUTIONS[0].1;
 
 /// 履歴の窓ごとの応答時間ヒストグラムの区間 (ms)。**12 段** (T12.4 (3))。
 ///
@@ -139,6 +162,28 @@ impl Window {
     }
 }
 
+/// 標本 1 本の**固定の欄の数** (この順で [`Sample::encode`] が並べる)。
+///
+/// 版 3 の 1 レコードは 1,024 B ([`crate::rrd::SAMPLE_RECORD`]) で、CRC 4 B を除いた
+/// 1,020 B のうち固定の欄が `SAMPLE_ITEMS × 8 B`、**残りが予備**
+/// ([`SAMPLE_SPARE_ITEMS`] 項目ぶん)。
+///
+/// **欄を足すときの作法** (T14.14。これを守る限り `.rrd` の版は上がらない =
+/// 通算の統計を捨てなくてよい):
+///
+/// 1. [`Sample`] の**末尾**に欄を足す (手前の欄の位置は絶対に動かさない。動かすと
+///    古いレコードが別の意味で読み戻る)
+/// 2. [`Sample::encode`] の末尾に `u64` を 1 つ足す (= 予備の先頭を 1 つ使う)
+/// 3. [`Sample::decode`] の末尾で読む (古いレコードはそこがゼロ埋めなので 0 になる)
+/// 4. この数を増やす ([`Sample::encode`] の `debug_assert` と下の `const` が見張る)
+pub const SAMPLE_ITEMS: usize = 63;
+
+/// 予備に入る項目数。**これを使い切ったら**版を上げ、[`crate::rrd`] に変換をもう 1 本
+/// 足すことになる (T14.14 の版 2 → 版 3 と同じ手順)。
+pub const SAMPLE_SPARE_ITEMS: usize = ((crate::rrd::SAMPLE_RECORD - 4) - SAMPLE_ITEMS * 8) / 8;
+const _: () = assert!(SAMPLE_ITEMS * 8 <= crate::rrd::SAMPLE_RECORD - 4);
+const _: () = assert!(SAMPLE_SPARE_ITEMS >= 60, "T14.14: 予備は 60 項目ぶん持つ");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sample {
     pub t: u64,
@@ -175,8 +220,9 @@ pub struct Sample {
     pub fds_max: u64,
     /// 上限に当たって暇なトンネルを追い出した回数の累計 (T13.2)。
     ///
-    /// **レコードの末尾に足した** (T14.2)。標本 1 本は 63 項目 × 8 B = 504 B で、
-    /// 領域の 508 B にまだ収まるので `.rrd` の版は上げていない (上げると統計が全部消える)。
+    /// **レコードの末尾に足した** (T14.2)。版 2 では 63 項目 × 8 B = 504 B が
+    /// 領域の 508 B ぎりぎりだったが、版 3 (T14.14) で 1 レコードが 1,024 B になり、
+    /// **ここから先に予備が 64 項目ぶん**ある ([`SAMPLE_SPARE_ITEMS`])。
     /// 版 2 で書かれた古いレコードはこの位置がゼロ埋めなので 0 として読み戻る
     pub evicted_idle: u64,
 }
@@ -331,9 +377,10 @@ impl Sample {
             .u64(self.active_max)
             .u64(self.threads_max)
             .u64(self.fds_max)
-            // **末尾に足すこと** (T14.2)。前からある項目の位置が動くと、版 2 で書かれた
-            // 古いレコードが別の意味で読み戻る
+            // **末尾に足すこと** (T14.2)。前からある項目の位置が動くと、古いレコードが
+            // 別の意味で読み戻る。足したら `SAMPLE_ITEMS` も 1 つ増やす (T14.14)
             .u64(self.evicted_idle);
+        debug_assert_eq!(e.0.len(), SAMPLE_ITEMS * 8, "固定の欄の数と食い違っている");
         e.0
     }
 
@@ -373,7 +420,8 @@ impl Sample {
         s.active_max = d.u64();
         s.threads_max = d.u64();
         s.fds_max = d.u64();
-        // 版 2 で書かれたレコードはここから先がゼロ埋めなので 0 になる (`Dec` は足りなければ 0)
+        // 古いレコードはここから先がゼロ埋めなので 0 になる (`Dec` は足りなければ 0)。
+        // **ここから下が予備** — 欄を足すならこの位置から (T14.14)
         s.evicted_idle = d.u64();
         Some(s)
     }
@@ -607,7 +655,7 @@ impl History {
             fine: Some(s),
             ..Pushed::default()
         };
-        Self::append(&self.rings[0], s, RESOLUTIONS[0].1);
+        Self::append(&self.rings[0], s, Self::capacity(0));
         out.minute = self.roll(0, 1, s.t);
         if out.minute.is_some() {
             out.hour = self.roll(1, 2, s.t);
@@ -636,7 +684,7 @@ impl History {
             return None;
         }
         let agg = Sample::downsample(&window, prev);
-        Self::append(&self.rings[to], agg, RESOLUTIONS[to].1);
+        Self::append(&self.rings[to], agg, Self::capacity(to));
         Some(agg)
     }
 
@@ -653,7 +701,7 @@ impl History {
         let mut q = self.rings[res].locked();
         q.clear();
         q.extend(samples);
-        while q.len() > RESOLUTIONS[res].1 {
+        while q.len() > Self::capacity(res) {
             q.pop_front();
         }
     }
@@ -674,6 +722,33 @@ impl History {
             .unwrap_or(0)
     }
 
+    /// **メモリ上の**リングが残す本数。5 秒だけ [`CAPACITY`] (6 時間。T14.32) で、
+    /// 1 分と 1 時間は [`RESOLUTIONS`] のまま (`.rrd` の本数と同じ)。
+    pub const fn capacity(res: usize) -> usize {
+        if res == 0 {
+            CAPACITY
+        } else {
+            RESOLUTIONS[res].1
+        }
+    }
+
+    /// `?n=` を書かないときに返す本数。**5 秒だけ [`DEFAULT_N`] (720 = 1 時間)** で
+    /// 頭打ちにして、応答の大きさを今までどおりに保つ (T14.32)。
+    pub const fn default_n(res: usize) -> usize {
+        if res == 0 {
+            DEFAULT_N
+        } else {
+            RESOLUTIONS[res].1
+        }
+    }
+
+    /// `?n=` の値を丸める (書いていなければ [`Self::default_n`]、上は
+    /// [`Self::capacity`] で頭打ち。`/errors?n=` などと同じ作法で下は 1)。
+    pub fn clamp_n(res: usize, n: Option<usize>) -> usize {
+        n.unwrap_or_else(|| Self::default_n(res))
+            .clamp(1, Self::capacity(res))
+    }
+
     /// `{"interval_secs":N,"keys":[...],"bounds_ms":[...],"samples":[[...],...]}` (古い順)。
     ///
     /// **標本は配列の配列**にしてある (T12.4 (3))。項目が 13 から 31 に増えたので、
@@ -688,9 +763,22 @@ impl History {
     }
 
     pub fn to_json_res(&self, res: usize) -> String {
+        self.to_json_res_n(res, None)
+    }
+
+    /// `?n=` で**新しい方から何本返すか**を決める版 (T14.32)。
+    ///
+    /// 5 秒のリングは 6 時間ぶん ([`CAPACITY`]) 持つが、`n` を書かなければ今までどおり
+    /// 720 本 ([`DEFAULT_N`]) しか返さない (応答の大きさを変えないため)。効くのは
+    /// **標本の配列だけ**で、隣に並ぶ `closed` / `transfer` / `canary` / `kernel` の窓は
+    /// もともと 720 本までしか持っていないのでそのまま出す。
+    pub fn to_json_res_n(&self, res: usize, n: Option<usize>) -> String {
         let res = res.min(RESOLUTIONS.len() - 1);
+        let n = Self::clamp_n(res, n);
         let q = self.rings[res].locked();
-        let mut out = String::with_capacity(256 + q.len() * 360);
+        // 古い方を落として新しい方から n 本
+        let skip = q.len().saturating_sub(n);
+        let mut out = String::with_capacity(256 + (q.len() - skip) * 360);
         let _ = write!(out, "{{\"interval_secs\":{},\"keys\":[", RESOLUTIONS[res].0);
         for (i, k) in KEYS.iter().enumerate() {
             if i > 0 {
@@ -713,7 +801,7 @@ impl History {
             let _ = write!(out, "\"{}\"", c);
         }
         out.push_str("],\"samples\":[");
-        for (i, s) in q.iter().enumerate() {
+        for (i, s) in q.iter().skip(skip).enumerate() {
             if i > 0 {
                 out.push(',');
             }
@@ -770,6 +858,9 @@ pub fn spawn_every(
         let sample = Sample::take(metrics, cache);
         // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
         crate::daily::tick(metrics, &sample);
+        // 同じ境目で前日ぶんの `/snapshot` を 1 ファイル残す (T14.34)。こちらも
+        // 書かない設定なら原子の読み 1 回で戻る (組むのは日付が変わったときだけ)
+        crate::snapshots::tick(cache, &sample);
         let pushed = metrics.history.push(sample);
         // 積んだあとに、直近 5 分が直近 1 時間の基準値から外れていないかを見る (T14.23)
         crate::anomaly::check(metrics, &sample);
@@ -807,14 +898,37 @@ mod tests {
         }
     }
 
+    /// `"samples":[[..],[..]]` の行数 (入れ子の配列は 1 列として数えない)。
+    fn rows(json: &str) -> usize {
+        let at = json.find("\"samples\":[").unwrap() + "\"samples\":[".len();
+        let (mut depth, mut n) = (0usize, 0usize);
+        for c in json[at..].chars() {
+            match c {
+                '[' => {
+                    depth += 1;
+                    if depth == 1 {
+                        n += 1;
+                    }
+                }
+                ']' if depth == 0 => break,
+                ']' => depth -= 1,
+                _ => {}
+            }
+        }
+        n
+    }
+
     #[test]
     fn keeps_the_newest_samples_in_order() {
         let h = History::default();
-        for t in 0..(CAPACITY as u64 + 5) {
+        for t in 0..(DEFAULT_N as u64 + 5) {
             h.push(sample(t));
         }
-        assert_eq!(h.len(), CAPACITY);
+        // リングは 6 時間ぶん持つので 1 本も落ちていないが、**既定の応答は新しい方の
+        // 720 本だけ** (T14.32。`?n=` で遡る)
+        assert_eq!(h.len(), DEFAULT_N + 5);
         let json = h.to_json();
+        assert_eq!(rows(&json), DEFAULT_N);
         // 標本は配列の配列で、キーは先頭に 1 回だけ (T12.4 (3))
         assert!(
             json.starts_with("{\"interval_secs\":5,\"keys\":[\"t\","),
@@ -830,9 +944,9 @@ mod tests {
         );
         // canary (T14.10) は**別の配列**で末尾に付く (既存の列は 1 つも動かない)
         assert!(
-            json.ends_with(",\"canary\":{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\"],\"samples\":[]}}"),
+            json.ends_with(",\"canary\":{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\",\"canary_ipv6_connect_ms\"],\"samples\":[]}}"),
             "{}",
-            &json[json.len() - 120..]
+            &json[json.len() - 150..]
         );
         // 列の数が `KEYS` と合っていること (入れ子の配列は 1 列と数える)
         let first = &json[json.find("\"samples\":[[").unwrap() + 11..];
@@ -850,6 +964,41 @@ mod tests {
             })
             .count();
         assert_eq!(cols, KEYS.len(), "{}", row);
+    }
+
+    /// T14.32 の受け入れ基準: **5 秒のリングを 5,000 回進めても 4,320 本 (6 時間) で
+    /// 頭打ち**になり、`?n=` で 4,320 本まで返せること。
+    #[test]
+    fn the_five_second_ring_holds_six_hours() {
+        assert_eq!(CAPACITY * 5, 6 * 3600, "5 秒 × 4,320 = 6 時間");
+        let h = History::default();
+        for i in 0..5_000u64 {
+            h.push(sample(i * 5));
+        }
+        assert_eq!(h.len(), CAPACITY);
+        // 残っているのは新しい方の 4,320 本
+        let q = h.rings[0].lock().unwrap();
+        assert_eq!(q.front().unwrap().t, (5_000 - CAPACITY as u64) * 5);
+        assert_eq!(q.back().unwrap().t, 4_999 * 5);
+        drop(q);
+        // 既定は今までどおり 720 本、`n=` は 4,320 本で頭打ち、下は 1 本
+        assert_eq!(rows(&h.to_json()), DEFAULT_N);
+        assert_eq!(rows(&h.to_json_res_n(0, Some(CAPACITY))), CAPACITY);
+        assert_eq!(rows(&h.to_json_res_n(0, Some(99_999))), CAPACITY);
+        assert_eq!(rows(&h.to_json_res_n(0, Some(1))), 1);
+        assert_eq!(rows(&h.to_json_res_n(0, Some(0))), 1);
+        // `n=` で切るのは新しい方から (いちばん新しい標本は必ず入る)
+        let one = h.to_json_res_n(0, Some(1));
+        assert!(one.contains("\"samples\":[[24995,"), "{}", one);
+        // 1 分と 1 時間は 1 本も変えない
+        assert_eq!(History::capacity(1), RESOLUTIONS[1].1);
+        assert_eq!(History::capacity(2), RESOLUTIONS[2].1);
+        assert_eq!(History::default_n(1), RESOLUTIONS[1].1);
+        assert_eq!(History::default_n(2), RESOLUTIONS[2].1);
+        // 読み戻し (`.rrd` の 720 本) はリングの末尾に入る
+        let h2 = History::default();
+        h2.restore(0, (0..RESOLUTIONS[0].1 as u64).map(|i| sample(i * 5)));
+        assert_eq!(h2.len(), RESOLUTIONS[0].1);
     }
 
     #[test]
@@ -909,8 +1058,11 @@ mod tests {
         assert!((agg.connect.avg_ms() - 132.0).abs() < 1e-9);
     }
 
-    /// `/history?res=5` (720 標本) が 512 KiB に収まること (T12.4 (3))。
+    /// `/history?res=5` の**既定** (720 標本) が 512 KiB に収まること (T12.4 (3))。
     /// 値は「1 年動かしたあと」を想定した大きめの桁で埋める (短い数字で測ると通ってしまう)。
+    ///
+    /// リングは 6 時間ぶん (4,320 本) 持つ (T14.32) が、**既定の応答は今までどおり**で、
+    /// `?n=4320` と書いたときだけ 6 倍になる (ここでその大きさも測って印字する)。
     #[test]
     fn a_full_hour_of_samples_fits_in_512_kib() {
         let h = History::default();
@@ -952,10 +1104,25 @@ mod tests {
         }
         let json = h.to_json();
         assert_eq!(h.len(), CAPACITY);
+        assert_eq!(rows(&json), DEFAULT_N);
         assert!(
             json.len() <= 512 * 1024,
             "/history?res=5 が {} B (512 KiB 超)",
             json.len()
+        );
+        let six = h.to_json_res_n(0, Some(CAPACITY));
+        assert_eq!(rows(&six), CAPACITY);
+        assert!(
+            six.len() <= 6 * 512 * 1024,
+            "/history?res=5&n=4320 が {} B",
+            six.len()
+        );
+        println!(
+            "/history?res=5 の既定 {} B ({} 標本)、n=4320 は {} B ({} 標本)",
+            json.len(),
+            DEFAULT_N,
+            six.len(),
+            CAPACITY
         );
     }
 
@@ -1003,6 +1170,57 @@ mod tests {
         );
         assert_eq!(Sample::decode(&enc), Some(s));
         assert_eq!(Sample::decode(&[0u8; 104]), None);
+    }
+
+    /// 版 3 の予備に **60 項目足しても版は上がらない** (T14.14 の受け入れ基準)。
+    ///
+    /// 「これから足される欄」を今のコードで真似る: 固定の欄のうしろに `u64` を
+    /// 60 個書いて `.rrd` に往復させ、(a) 1 レコード (1,024 B) に収まる、
+    /// (b) 60 項目ともそのまま読み戻る、(c) **その欄を知らない今の `decode` は
+    /// 固定の欄だけを読んで 1 つもずれない**、の 3 つを見る。
+    /// 60 項目は T14.6 (閉じた理由 8 + 寿命とバイトの 24) ・T14.10 (canary 2) ・
+    /// T14.12 (カーネルと cgroup 23) を**全部載せてもまだ入る**量。
+    #[test]
+    fn sixty_more_fields_fit_in_the_version3_slack_and_survive_a_round_trip() {
+        use crate::rrd::ring::Ring;
+        use crate::rrd::{Dec, Enc, Rrd};
+
+        assert_eq!(crate::rrd::SAMPLE_RECORD, 1024, "版 3 の標本のレコード");
+        assert_eq!(SAMPLE_SPARE_ITEMS, 64, "予備 516 B = 64 項目");
+        let mut s = sample(1_700_000_000);
+        s.requests = 12_345;
+        s.evicted_idle = 7;
+        let mut rec = s.encode();
+        let mut e = Enc::new();
+        for i in 1..=60u64 {
+            e.u64(i * 11);
+        }
+        rec.extend_from_slice(&e.0);
+        assert_eq!(rec.len(), (SAMPLE_ITEMS + 60) * 8);
+        assert!(
+            rec.len() <= crate::rrd::SAMPLE_RECORD - 4,
+            "60 項目足すと {} B で 1 レコードに入らない",
+            rec.len()
+        );
+
+        let path = std::env::temp_dir().join(format!("shp-spare-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (rrd, _) = Rrd::open(&path).unwrap();
+        let (mut ring, _) = Ring::load(&rrd, rrd.layout.history_fine).unwrap();
+        ring.push(&rrd, &rec).unwrap();
+        let (_, got) = Ring::load(&rrd, rrd.layout.history_fine).unwrap();
+        assert_eq!(got.len(), 1);
+        // (c) 足した欄を知らない今のコードでも、固定の欄は 1 つもずれない
+        assert_eq!(Sample::decode(&got[0]), Some(s));
+        // (b) 足した 60 項目もそのまま残っている
+        let mut d = Dec(&got[0]);
+        for _ in 0..SAMPLE_ITEMS {
+            d.u64();
+        }
+        for i in 1..=60u64 {
+            assert_eq!(d.u64(), i * 11, "予備の {} 項目目", i);
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     /// 区間の分位点は区間内を補間し、その窓の最大値で頭打ちになる (T12.4 (3) の受け入れ基準)。
@@ -1075,7 +1293,7 @@ mod tests {
         s.max_fds = 1024;
         s.evicted_idle = 7;
         let enc = s.encode();
-        assert_eq!(enc.len(), 63 * 8, "63 項目 × 8 B");
+        assert_eq!(enc.len(), SAMPLE_ITEMS * 8, "固定の欄だけで 63 項目 × 8 B");
         assert!(
             enc.len() <= crate::rrd::SAMPLE_RECORD - 4,
             "{} > {} (版を上げずには入らない)",
@@ -1310,7 +1528,7 @@ mod closed_tests {
     #[test]
     fn empty_windows_barely_grow_the_history_response() {
         let h = History::default();
-        for i in 0..(CAPACITY as u64) {
+        for i in 0..(DEFAULT_N as u64) {
             h.push(sample(1_700_000_000 + i * 5));
         }
         let json = h.to_json_res(0);
@@ -1363,7 +1581,12 @@ pub mod summary {
     impl Params {
         /// 使う解像度の添字。`?res=` があればそれ、無ければ期間の長さで選ぶ:
         /// **直近 1 時間は 5 秒、1 日は 60 秒、それ以上は 3,600 秒の窓**
-        /// (境目は環状バッファが覆う長さそのもの = 5 秒 × 720 と 60 秒 × 1,440)。
+        /// (境目は [`RESOLUTIONS`] の 5 秒 × 720 と 60 秒 × 1,440)。
+        ///
+        /// **自動選択の閾は T14.32 でも変えていない**: 5 秒のリングは 6 時間ぶん
+        /// ([`History::capacity`]) 持つようになったので `?res=5` と**明示すれば**
+        /// 6 時間前まで 5 秒で畳めるが、書かなかったときの既定は今までどおり
+        /// 「1 時間を越えたら 60 秒」にする (応答も畳む費用も今までと同じにするため)。
         pub fn res_index(&self) -> usize {
             if let Some(secs) = self.res {
                 return History::index_for(secs);
@@ -1459,9 +1682,19 @@ pub mod summary {
             }
         }
 
+        /// `/history?summary=1` の本体 ([`Summary::to_json_with`] に何も添えない版)。
+        pub fn to_json(&self) -> String {
+            self.to_json_with(None)
+        }
+
         /// `/history?summary=1` の本体。**必ず [`MAX_BODY`] 以下**になる (項目が固定で
         /// 標本を持たないため。桁の上限は 20 桁 × 30 項目 + 名前で 1 KiB 前後)。
-        pub fn to_json(&self) -> String {
+        ///
+        /// `recent` は直近 1,024 本の正確な分位点 (T14.31) を組んだ文字列。**`p50_ms` と
+        /// 混ぜずに別の鍵 `recent_quantiles` で末尾に添える**: こちらは期間 (`from`〜`to`) を
+        /// 畳んだ区間の補間、あちらは期間に関わらず直近 1,024 本の実測なので、
+        /// **同じ数字ではない** (期間が短いほど食い違う)。
+        pub fn to_json_with(&self, recent: Option<&str>) -> String {
             let mut out = String::with_capacity(768);
             let _ = write!(
                 out,
@@ -1503,7 +1736,11 @@ pub mod summary {
             }
             out.push_str("],\"causes\":[");
             super::push_str_array(&mut out, &ERR_CAUSE_NAMES);
-            let _ = write!(out, "],\"active_max\":{}}}", self.active_max);
+            let _ = write!(out, "],\"active_max\":{}", self.active_max);
+            if let Some(q) = recent {
+                let _ = write!(out, ",\"recent_quantiles\":{}", q);
+            }
+            out.push('}');
             out
         }
     }

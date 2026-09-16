@@ -1,6 +1,6 @@
 //! 個票を読み出すエンドポイント: `/errors` `/connections` `/dns` `/log` `/hosts` (T13.4)、
 //! `/recent` と `/snapshot` (閉じた接続と、1 回で全部。T14.4)、接続元の個票 `/clients` (T14.7)、
-//! 山の写真 `/bursts` (T14.6)。
+//! 山の写真 `/bursts` (T14.6)、接続元 1 つの追跡 `/trace` (T14.27)。
 //!
 //! `/status` (集計) と `/history` (時系列) では「**誰が・いつ・なぜ**」が読めない。
 //! ここは「今この瞬間の中身」と「直近に起きたこと」を、集計に畳む前の形で出す口で、
@@ -23,6 +23,7 @@ use std::time::Instant;
 use super::{Endpoint, parse_query};
 use crate::events::MAX_EVENTS;
 use crate::recent::{BurstShot, MAX_BURSTS, MAX_ERRORS, MAX_RECENT, RecentEntry};
+use crate::trace::{MAX_PATH, MAX_TRACE};
 
 /// 個票の応答 1 本の上限 (256 KiB)。監視が 1 分おきに引いても回線を埋めない大きさで、
 /// `/errors` 500 件・`/connections` 240 件・`/hosts` 1,000 件のどれも収まる。
@@ -204,6 +205,59 @@ pub fn daily(query: Option<&str>) -> (u16, &'static str, String) {
         cut || d.truncated
     );
     (200, "application/json", out)
+}
+
+/// `/snapshots` — 日次で残した `/snapshot` の一覧 (T14.34)。
+///
+/// 履歴スレッドが UTC の日付をまたいだ瞬間に `$HOME/.rust-http-proxy/snapshots/<日付>.json`
+/// へ 1 ファイル書いている (既定 30 日ぶん、`PROXY_SNAPSHOT_DAYS`)。ここはその置き場所と
+/// 日付・大きさを並べるだけで、中身を読むのは [`snapshot_file`] (`/snapshots/<date>`)。
+/// `PROXY_STATS_PERSIST=off` と `PROXY_SNAPSHOT_DAYS=0` では 1 つも書いていないので
+/// `dir` が `null` で `files` は空。
+pub fn snapshots() -> (u16, &'static str, String) {
+    let l = crate::snapshots::list();
+    let mut out = String::with_capacity(1024);
+    out.push_str("{\"files\":");
+    let (shown, cut) = array_within(
+        &mut out,
+        l.files.iter().map(|f| {
+            format!(
+                "{{\"date\":\"{}\",\"bytes\":{},\"t\":{}}}",
+                f.date, f.bytes, f.t
+            )
+        }),
+    );
+    let _ = write!(
+        out,
+        ",\"count\":{},\"shown\":{},\"bytes\":{},\"days\":{},\"max_bytes\":{},\"dir\":{},\"truncated\":{}}}",
+        l.files.len(),
+        shown,
+        l.bytes,
+        l.days,
+        crate::snapshots::MAX_FILE,
+        crate::json::quote_opt(l.dir.as_ref().map(|p| p.display().to_string()).as_deref()),
+        cut
+    );
+    (200, "application/json", out)
+}
+
+/// `/snapshots/<YYYY-MM-DD>` — 残してある 1 日ぶんを**そのまま**返す (T14.34)。
+///
+/// 中身は `/snapshot` の応答そのもの (組み直さない) なので、`scripts/snapshot-diff.py` や
+/// `scripts/collect-deployed.sh --from-server` がそのまま読める。日付として読めない名前と
+/// 置いていない日は 404 (`..` を書かれても置き場所の外は見ない)。
+pub fn snapshot_file(date: &str) -> (u16, &'static str, String) {
+    match crate::snapshots::read(date) {
+        Some(body) => (200, "application/json", body),
+        None => (
+            404,
+            "application/json",
+            format!(
+                "{{\"error\":\"no snapshot for that day\",\"date\":{},\"see\":\"/snapshots\"}}",
+                crate::json::quote(date)
+            ),
+        ),
+    }
 }
 
 /// `/log` の 1 要素。`conn` は `[conn#N]` の N (`[main]` なら `null`)。
@@ -458,6 +512,45 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     (200, "application/json", out)
 }
 
+/// `/trace?n=200&since=<epoch>` — 追跡中の接続元 1 つの要求の並び (新しい順、既定 200 行・
+/// 最大 [`MAX_TRACE`]。T14.27)。
+///
+/// `PROXY_TRACE_CLIENT=<ip>` を設定している間だけ、**その接続元の**要求行 (メソッド +
+/// URL の先頭 [`MAX_PATH`] バイト + HTTP の版)・応答の状態・段階の ms・運んだバイトと、
+/// CONNECT の宛先と閉じた理由が 1 行ずつ並ぶ。全体のログ水準を `trace` に上げると
+/// アクセスログが全員に乗る (T10.10 の 7.2 us/要求) のに対し、ここは 1 人ぶんだけ。
+///
+/// **他の個票と違い URL のパスが入る**ので (T14.4〜T14.8 の共通の決まりの唯一の例外)、
+/// `/snapshot` には**入れない** (パスが雪像のファイルに残らないように)。リングは
+/// **メモリだけ**なので再起動で消える (T14.9 の永続化の対象ではない)。
+/// `--lite` は枠 (`ConnSlot`) を作らないので旗も立たず、1 行も残らない。
+pub fn trace(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    let n = num_param(query, "n", 200, MAX_TRACE);
+    // `?since=` は `/recent` `/events` と同じ扱い (「その時刻以降に書いたもの」)
+    let since = parse_query(query.unwrap_or(""))
+        .iter()
+        .find(|(k, _)| k == "since")
+        .and_then(|(_, v)| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let (rows, total) = crate::trace::select(since, n);
+    let mut out = String::with_capacity(8192);
+    out.push_str("{\"trace\":");
+    let (shown, cut) = array_within(&mut out, rows.iter().map(crate::trace::TraceLine::to_json));
+    let _ = write!(
+        out,
+        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"since\":{},\"max_path\":{},\"persisted\":false,\"truncated\":{},\"lite\":{}}}",
+        shown,
+        crate::trace::len(),
+        MAX_TRACE,
+        total,
+        since,
+        MAX_PATH,
+        cut,
+        !ep.metrics.conns.enabled()
+    );
+    (200, "application/json", out)
+}
+
 /// `/bursts?n=50` — 同時接続数が上限の一定割合を越えた瞬間の**写真** (新しい順。T14.6)。
 ///
 /// T13.2 (上限に当たったら暇なトンネルを 1 本閉じる) が本当に効くかは「バーストが来たとき」
@@ -568,14 +661,17 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ("status_errors", super::status_body(ep, HostSort::Errors)),
         ("status_dns", super::status_body(ep, HostSort::Dns)),
         // `/history` と同じ組み立て (カーネルと cgroup の窓も一緒に入る。T14.12)
-        ("history.5", super::history_body(ep, History::index_for(5))),
+        (
+            "history.5",
+            super::history_body(ep, History::index_for(5), None),
+        ),
         (
             "history.60",
-            super::history_body(ep, History::index_for(60)),
+            super::history_body(ep, History::index_for(60), None),
         ),
         (
             "history.3600",
-            super::history_body(ep, History::index_for(3600)),
+            super::history_body(ep, History::index_for(3600), None),
         ),
         ("dns", dns(Some("sort=age&limit=4096")).2),
         ("errors", errors(ep, Some("n=500")).2),
@@ -1068,6 +1164,8 @@ mod tests {
             next_refresh_secs: Some(33),
             misses: 4,
             refreshes: 2,
+            // T14.37 で増えた欄 (引き直しで答えが変わった回数)。1 行の大きさに効く
+            changes: 1,
         };
         let mut body = String::from("{\"entries\":");
         let (shown, cut) = array_within(&mut body, vec![plain; 300].iter().map(|r| r.to_json()));
@@ -1096,6 +1194,7 @@ mod tests {
             next_refresh_secs: Some(u64::MAX),
             misses: u64::MAX,
             refreshes: u64::MAX,
+            changes: u64::MAX,
         };
         let mut body = String::from("{\"entries\":");
         let (shown, cut) = array_within(&mut body, vec![worst; 4096].iter().map(|r| r.to_json()));

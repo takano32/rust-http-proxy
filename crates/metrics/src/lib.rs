@@ -17,7 +17,10 @@ pub mod metrics;
 pub mod persist;
 pub mod persist_recent;
 pub mod profile;
+pub mod quantiles;
 pub mod recent;
+pub mod snapshots;
+pub mod trace;
 pub mod transfer;
 
 // 下の層をこのクレートの名前空間にも出す (`crate::sync` のような書き方をそのまま通すため)。

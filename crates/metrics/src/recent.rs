@@ -440,6 +440,9 @@ pub struct ConnSlot {
     parks: AtomicU32,
     parked_ms: AtomicU64,
     parked_at: AtomicU64,
+    /// 追跡中の接続元か (`PROXY_TRACE_CLIENT`。T14.27)。**立てるのは accept 直後の
+    /// 1 回だけ**で、以降は要求ごとに読むだけ (要求ごとの比較はこの旗 1 つ)
+    traced: AtomicBool,
 }
 
 /// [`ConnSlot::parked_at`] の「預けられていない」印。
@@ -466,7 +469,20 @@ impl ConnSlot {
             parks: AtomicU32::new(0),
             parked_ms: AtomicU64::new(0),
             parked_at: AtomicU64::new(NOT_PARKED),
+            traced: AtomicBool::new(false),
         }
+    }
+
+    /// この接続を追跡する (`PROXY_TRACE_CLIENT` に一致した。T14.27)。
+    ///
+    /// **呼ぶのは accept 直後の 1 回だけ** (一致しなかった接続では 1 度も呼ばない)。
+    pub fn mark_traced(&self) {
+        self.traced.store(true, Ordering::Relaxed);
+    }
+
+    /// 追跡中か (要求ごとに読む唯一の値。原子の読み 1 回)。
+    pub fn traced(&self) -> bool {
+        self.traced.load(Ordering::Relaxed)
     }
 
     /// 状態を書く (原子 1 回。表の鍵は取らない)。

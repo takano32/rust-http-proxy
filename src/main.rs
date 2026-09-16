@@ -208,7 +208,7 @@ fn main() {
     rust_http_proxy::dns::set_warm_window(config.dns_warm);
     // canary の宛先と周期 (T14.10)。実際に回すのは履歴スレッドの周期から (`--lite` と
     // `PROXY_STATS_PERSIST=off` では履歴スレッドが無いので canary も回らない)
-    rust_http_proxy::canary::configure(&config.canary, config.canary_secs);
+    rust_http_proxy::canary::configure(&config.canary, config.canary_secs, config.canary_ipv6);
     let listeners = match net::bind_all(&config.bind_addrs, config.port) {
         Ok(l) => l,
         Err(e) => {
@@ -277,6 +277,12 @@ fn main() {
         rust_http_proxy::daily::configure(
             rust_http_proxy::daily::default_path(),
             rust_http_proxy::VERSION,
+        );
+        // 日次の `/snapshot` (`$HOME/.rust-http-proxy/snapshots/`。T14.34)。書くのも
+        // 履歴スレッドで、組み方は `serve` が預ける。`PROXY_SNAPSHOT_DAYS=0` で止まる
+        rust_http_proxy::snapshots::configure(
+            rust_http_proxy::snapshots::default_dir(),
+            config.snapshot_days,
         );
     }
     // 異常の自動検知の閾 (T14.23)。判定するのは履歴スレッドなので、渡すのは

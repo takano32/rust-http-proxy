@@ -48,6 +48,15 @@ pub fn default_max_conns() -> usize {
 /// (上限の間際まで待つと、T13.2 の追い出しが動いたあとの姿しか撮れない)。
 pub const DEFAULT_BURST_PERCENT: usize = 50;
 
+/// 日次の `/snapshot` を残す日数の既定 (`PROXY_SNAPSHOT_DAYS`。T14.34)。
+///
+/// 1 日 1 ファイル (`/snapshot` と同じ 4 MiB まで) を `$HOME/.rust-http-proxy/snapshots/` に
+/// 残す。30 日なのは `/history` のいちばん粗い解像度 (1 時間 × 30 日) と同じ長さにするため
+pub const DEFAULT_SNAPSHOT_DAYS: usize = 30;
+/// 同じく上限 (書き間違いで `$HOME` を埋めないための歯止め。`proxy-metrics` の
+/// `snapshots::MAX_KEPT_DAYS` と同じ値。この層は計測クレートに依存しないので数値で持つ)。
+pub const MAX_SNAPSHOT_DAYS: usize = 365;
+
 /// 「この本数を**越えた**瞬間に 1 枚撮る」の本数 (T14.6)。
 ///
 /// [`usize::MAX`] は「撮らない」(`PROXY_BURST_PERCENT=0`、`PROXY_MAX_CONNS=0` = 無制限、
@@ -259,6 +268,12 @@ pub struct Config {
     ///
     /// **試験で短くするための口**で、運用では触らない (60 秒に 1 回・1 ホスト 1 本)
     pub canary_secs: Duration,
+    /// canary の IPv6 側 (`PROXY_CANARY_IPV6`、既定 on)。
+    ///
+    /// 同じ周期に canary の名前の **AAAA へ 1 本**だけ繋いでみて、`/status` の
+    /// `canary.ipv6_connect_ms` に残す。デプロイ先のコンテナは IPv6 が黒穴で、
+    /// `v4_first` の解除は 600 秒に 1 回の探りだけに頼っているため (T14.37)
+    pub canary_ipv6: bool,
     /// `/proxy.pac` で DIRECT にするホストの一覧 (`PROXY_PAC_DIRECT`、`*.example.com` 可)
     pub pac_direct: Vec<String>,
     /// ブロックリストのファイル (`PROXY_BLOCKLIST_FILE`、hosts 形式 / 1 行 1 ドメイン)
@@ -271,6 +286,11 @@ pub struct Config {
     pub blocklist_exempt: Vec<String>,
     /// 統計と履歴を `$HOME/.rust-http-proxy.rrd` に残す (`PROXY_STATS_PERSIST`、既定 on)
     pub stats_persist: bool,
+    /// 日次の `/snapshot` を `$HOME/.rust-http-proxy/snapshots/` に残す日数
+    /// (`PROXY_SNAPSHOT_DAYS`、既定 [`DEFAULT_SNAPSHOT_DAYS`] = 30、**`0` で書かない**)。
+    ///
+    /// 書くのは履歴スレッドなので `PROXY_STATS_PERSIST=off` (と `--lite`) では 0 と同じ (T14.34)
+    pub snapshot_days: usize,
     /// 最速の素通しプロファイル (`PROXY_PROFILE=lite` / `--lite`)。
     /// キャッシュ・統計の永続化・ブロックリストを止め、ログを warn にする
     pub lite: bool,
@@ -336,6 +356,15 @@ pub struct Config {
     /// **認証ではなく公平さの上限** (見知らぬ接続元が `PROXY_MAX_CONNS` を 1 人で使い切ると
     /// 本人が 503 になるため。T14.13)
     pub max_conns_per_client: usize,
+    /// 追跡する接続元 (`PROXY_TRACE_CLIENT`、既定 `None` = 無効。T14.27)。
+    ///
+    /// 設定されている間だけ、accept 直後に接続元がこの IP と一致するかを 1 回見て、
+    /// 一致した接続にだけ `ConnSlot` の旗を立てる。旗が立った接続は要求行 (パスの先頭
+    /// 256 B) と応答の状態・段階の ms・CONNECT の閉じた理由を `/trace` のリングに残す。
+    /// **要求ごとの費用は旗を読む分岐 1 回**で、既定 (`None`) では accept ごとの
+    /// `is_some()` 1 回だけ。**v4-mapped IPv6 は IPv4 に直して覚える** (接続元の照合は
+    /// `net::canonical_ip` を通った値と比べるため)
+    pub trace_client: Option<IpAddr>,
     /// 各値の出どころ (`/config` の `source`。T14.15)。効いた値にだけ印が付く
     pub sources: Sources,
 }
@@ -492,6 +521,16 @@ impl Config {
             cfg.max_conns_per_client = n;
             src.mark("PROXY_MAX_CONNS_PER_CLIENT");
         }
+        // 追跡する接続元 (T14.27)。空 (と読めない書き方) は「追跡しない」= 既定のまま。
+        // 覚えるのは `net::canonical_ip` を通した形なので、`::ffff:1.2.3.4` と書いても
+        // `1.2.3.4` から来た接続に当たる
+        if let Some(ip) = envfile::var("PROXY_TRACE_CLIENT")
+            .and_then(|s| s.trim().parse::<IpAddr>().ok())
+            .map(crate::net::canonical_ip)
+        {
+            cfg.trace_client = Some(ip);
+            src.mark("PROXY_TRACE_CLIENT");
+        }
         if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
             cfg.stats_persist = !off(v);
             src.mark("PROXY_STATS_PERSIST");
@@ -501,6 +540,12 @@ impl Config {
         if let Some(v) = envfile::var("PROXY_SELF_BENCH") {
             cfg.self_bench = !off(v);
             src.mark("PROXY_SELF_BENCH");
+        }
+        if let Some(n) =
+            envfile::var("PROXY_SNAPSHOT_DAYS").and_then(|s| s.trim().parse::<usize>().ok())
+        {
+            cfg.snapshot_days = n.min(MAX_SNAPSHOT_DAYS);
+            src.mark("PROXY_SNAPSHOT_DAYS");
         }
         if let Some(path) = envfile::var("PROXY_TLS_CA_FILE").filter(|p| !p.trim().is_empty()) {
             cfg.tls_ca_file = Some(PathBuf::from(path.trim()));
@@ -531,6 +576,10 @@ impl Config {
             envfile::var("PROXY_CANARY_SECS").and_then(|s| s.trim().parse::<u64>().ok())
         {
             cfg.canary_secs = Duration::from_secs(secs.max(1));
+        }
+        if let Some(v) = envfile::var("PROXY_CANARY_IPV6") {
+            cfg.canary_ipv6 = !off(v);
+            src.mark("PROXY_CANARY_IPV6");
         }
         if let Some(ms) =
             envfile::var("PROXY_PROFILE_SAMPLE_MS").and_then(|s| s.trim().parse::<u64>().ok())
@@ -655,6 +704,9 @@ impl Config {
         add("PROXY_DNS_TTL_SECS", secs(self.dns_ttl));
         add("PROXY_DNS_NEGATIVE_SECS", secs(self.dns_negative));
         add("PROXY_DNS_WARM_SECS", secs(self.dns_warm));
+        // canary の IPv6 側 (T14.37)。宛先と周期は `proxy-metrics` の持ち物なので
+        // ここには出さない (この層は文字列を運ぶだけ)
+        add("PROXY_CANARY_IPV6", self.canary_ipv6.to_string());
         // あて先の許可・拒否
         add("PROXY_ALLOW_HOSTS", list_value(&self.acl.allow_hosts));
         add("PROXY_DENY_HOSTS", list_value(&self.acl.deny_hosts));
@@ -672,6 +724,16 @@ impl Config {
             "PROXY_ALLOW_CLIENTS",
             crate::json::quote(&self.allow_clients.to_string()),
         );
+        // 追跡する接続元 (T14.27。空 = 追跡していない)
+        add(
+            "PROXY_TRACE_CLIENT",
+            crate::json::quote(
+                &self
+                    .trace_client
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_default(),
+            ),
+        );
         add("PROXY_BURST_PERCENT", self.burst_percent.to_string());
         add("PROXY_BLOCKLIST_FILE", path(self.blocklist_file.as_ref()));
         add(
@@ -687,6 +749,7 @@ impl Config {
         add("PROXY_TLS_CA_FILE", path(self.tls_ca_file.as_ref()));
         // 記録とプロファイル
         add("PROXY_STATS_PERSIST", self.stats_persist.to_string());
+        add("PROXY_SNAPSHOT_DAYS", self.snapshot_days.to_string());
         add(
             "PROXY_PROFILE",
             crate::json::quote_opt(self.lite.then_some("lite")),
@@ -799,12 +862,14 @@ impl Config {
             // (値の意味は `proxy-metrics` の `canary`。この層は文字列を運ぶだけ)
             canary: "auto".to_string(),
             canary_secs: Duration::from_secs(60),
+            canary_ipv6: true,
             pac_direct: Vec::new(),
             blocklist_file: None,
             blocklist_url: None,
             blocklist_refresh: Duration::from_secs(86400),
             blocklist_exempt: Vec::new(),
             stats_persist: true,
+            snapshot_days: DEFAULT_SNAPSHOT_DAYS,
             lite: false,
             // 既定 1,000 ms (`proxy_metrics::profile::DEFAULT_SAMPLE_MS` と同じ値。
             // この層は計測クレートに依存しないので数値で持つ)
@@ -822,6 +887,7 @@ impl Config {
             endpoints_readonly: false,
             allow_clients: ClientAcl::default(),
             max_conns_per_client: 0,
+            trace_client: None,
             sources: Sources::default(),
         })
     }

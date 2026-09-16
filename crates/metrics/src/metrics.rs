@@ -283,10 +283,19 @@ pub struct HostStats {
 }
 
 impl HostStats {
-    fn count(&mut self, outcome: HostOutcome, bytes: u64, took: Option<Duration>, detail: &Detail) {
+    /// `now` は epoch 秒。**呼ぶ側が 1 回だけ読んだ値**を渡す (直近の標本 (T14.31) と
+    /// `last_seen` で同じ値を使い回すため。壁時計を読む回数は今までと変わらない)。
+    fn count(
+        &mut self,
+        now: u64,
+        outcome: HostOutcome,
+        bytes: u64,
+        took: Option<Duration>,
+        detail: &Detail,
+    ) {
         self.requests += 1;
         self.bytes += bytes;
-        self.last_seen = crate::cache::now_epoch();
+        self.last_seen = now;
         match outcome {
             HostOutcome::Hit => self.hits += 1,
             HostOutcome::Miss => self.misses += 1,
@@ -345,14 +354,14 @@ impl HostStats {
         for c in self.errors_by_cause {
             e.u64(c);
         }
-        // T14.5 の 4 欄は**末尾に足す**だけ (1 スロット 572 B のうち 520 B が既存の
-        // 49 項目、ここで 552 B。版は上げないので、古いファイルは 0 で読み戻る)
+        // 欄は**末尾に足す**だけ (T14.5 の 4 欄で名前 128 B + 53 項目 = 552 B)
         e.u64(self.rtt_us_sum)
             .u64(self.rtt_us_min)
             .u64(self.rtt_samples)
             .u64(self.retrans);
-        // T14.26 の 2 欄も同じ作法で末尾へ (552 → 568 B。**余白は 20 → 4 B** なので
-        // 版を上げずに足せるのはここまで。版を上げると統計を全部捨てることになる)
+        // T14.26 の 2 欄も同じ作法で末尾へ (552 → 568 B)。版 3 の 1 スロットは 640 B =
+        // ペイロード 636 B なので**ここから下が予備の 68 B** (T14.14。8 項目ぶん)。
+        // 足しても版は上がらない (古いファイルはその位置がゼロ埋めなので 0 で読み戻る)
         e.u64(self.bytes_in).u64(self.bytes_out);
         e.0
     }
@@ -388,13 +397,15 @@ impl HostStats {
         for c in s.errors_by_cause.iter_mut() {
             *c = d.u64();
         }
-        // 版を上げていないので、T14.5 より前に書かれたファイルはここで尽きて 0 が返る
+        // 短いレコード (T14.5 より前に書かれた行、版 2 から詰め直した行) は
+        // ここで尽きて 0 が返る
         s.rtt_us_sum = d.u64();
         s.rtt_us_min = d.u64();
         s.rtt_samples = d.u64();
         s.retrans = d.u64();
         // 同じく T14.26 より前のファイルはここで尽きて 0 が返る (向きの分からない
-        // 昔の転送量は `bytes` にだけ入っている)
+        // 昔の転送量は `bytes` にだけ入っている)。**ここから下が予備** — 欄を足す
+        // ならこの位置から (T14.14)
         s.bytes_in = d.u64();
         s.bytes_out = d.u64();
         Some((name, s))
@@ -541,10 +552,10 @@ impl ClientSort {
 ///
 /// 要求数・転送量・応答時間は今までどおり [`HostStats`] で数える (`.rrd` に残る通算)。
 /// **この型が足す欄はメモリだけ**で、再起動で消える (`/clients` の `"persisted":false`)。
-/// `.rrd` の 1 スロットは 572 B で、名前 128 B + 55 項目 × 8 B = 568 B を使っていて
-/// 余白は 4 B しかなく (T14.7 の時点では 52 B、T14.5 の RTT で 20 B、T14.26 の
-/// 向き別のバイトで 4 B)、`agents` だけで 4 × 128 B 要るので入らない。版を上げると
-/// 統計を全部捨てることになるので、**ここは版を上げない**選択をした (本文のとおり)。
+/// `.rrd` の 1 スロットは名前 128 B + 55 項目 × 8 B = 568 B を使っている。版 3 で
+/// ペイロードが 636 B になって余白は 4 → 68 B に広がった (T14.14) が、`agents` だけで
+/// 4 × 128 B 要るので**やはり入らない** (数字の欄なら 8 個ほど足せる)。
+/// 名前の並びを `.rrd` に残したくなったら、領域を増やして版を上げることになる。
 #[derive(Debug, Default, Clone)]
 pub struct ClientStats {
     /// 要求数・転送量・応答時間 (`/status` の `clients[]` の今までの欄)
@@ -618,7 +629,8 @@ impl ClientStats {
             bytes_out: dir.1,
             ..Detail::default()
         };
-        self.stats.count(outcome, bytes, took, &detail);
+        self.stats
+            .count(crate::cache::now_epoch(), outcome, bytes, took, &detail);
         if let Some(t) = target {
             self.note_target(t);
         }
@@ -914,6 +926,9 @@ struct HostTable {
     /// 上位 16 ホストの時系列 (`/hosts/series`。T14.22)。**ホスト表と同じ鍵の中**に
     /// 置いて、要求の経路が鍵を 2 つ取らないようにしてある
     series: crate::hostseries::HostSeries,
+    /// 直近 1,024 本の標本そのもの (`/status` の `recent_quantiles`。T14.31)。
+    /// ここも**同じ鍵の中**で、書くのは 8 バイト 1 回
+    quantiles: crate::quantiles::Quantiles,
 }
 
 pub struct Metrics {
@@ -1130,6 +1145,9 @@ impl Metrics {
         took: Option<Duration>,
         detail: &Detail,
     ) {
+        // 壁時計はここで 1 回だけ読む (ホスト別の `last_seen` と直近の標本 (T14.31) で
+        // 使い回す。**読む回数は今までと同じ 1 回**)
+        let now = crate::cache::now_epoch();
         // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
         let mut hosts = self
             .hosts
@@ -1163,18 +1181,32 @@ impl Metrics {
                 }
             }
         }
-        // 段階の窓 (T14.3 (1))。`--lite` では時計を読んでいないので窓も触らない。
-        // 同じ鍵の内側なので、原子操作も鍵の取り直しも増えない
-        if took.is_some() && counted && crate::profile::on() {
+        // 段階の窓 (T14.3 (1)) と、直近 1,024 本の標本そのもの (T14.31)。どちらも
+        // `--lite` では時計を読んでいないので触らない。**旗も分岐も 1 つにまとめてある**
+        // ので、`--lite` の経路には 1 命令も足していない。同じ鍵の内側なので、
+        // 原子操作も鍵の取り直しも増えない
+        if let Some(d) = took
+            && counted
+            && crate::profile::on()
+        {
+            // 直近の標本は **us のまま**入れる (12 段の区間では 1 ms 単位で読めない)。
+            // forward の初バイトは元が ms 刻みなので ×1,000 するだけ、CONNECT の確立は
+            // `Duration` のまま来るので us が出る (ベンチの p50 と ±0.05 ms で比べる値)
+            let us = match detail.first_byte_ms {
+                Some(fb) => fb.saturating_mul(1_000).min(u32::MAX as u64) as u32,
+                None => d.as_micros().min(u32::MAX as u128) as u32,
+            };
             if connect {
                 hosts.stages.observe_connect(detail);
+                hosts.quantiles.connect.observe(us, now);
             } else {
                 hosts.stages.observe_forward(detail);
+                hosts.quantiles.forward.observe(us, now);
             }
         }
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
         if let Some(stats) = hosts.map.get_mut(host) {
-            stats.count(outcome, bytes, took, detail);
+            stats.count(now, outcome, bytes, took, detail);
             // 上位 16 ホストなら時系列にも 1 標本ぶん (T14.22)。旗が無ければ分岐 1 回で終わり
             if let Some(slot) = stats.series_slot {
                 hosts.series.add(
@@ -1195,7 +1227,7 @@ impl Metrics {
             .map
             .entry(key)
             .or_default()
-            .count(outcome, bytes, took, detail);
+            .count(now, outcome, bytes, took, detail);
     }
 
     /// ホスト別の時系列の窓を進め、上位 16 を入れ替える (T14.22)。
@@ -1219,6 +1251,23 @@ impl Metrics {
     /// 時系列の窓を差し替える (**結合テスト用の口**。本番は 5 分。T14.22)。
     pub fn set_host_series_window(&self, secs: u64) {
         self.hosts.locked().series.set_window(secs);
+    }
+
+    /// 直近 1,024 本の正確な分位点 (`/status` の `recent_quantiles`。T14.31)。
+    ///
+    /// **鍵の内側でするのは値の写しだけ**で、`select_nth_unstable` は鍵を放してから
+    /// 回す (1,024 本で数 us だが、要求の経路が待つ鍵をその間握らない)。
+    /// 呼ぶのは `/status` に来たときだけ。
+    pub fn recent_quantiles(&self) -> (crate::quantiles::Stats, crate::quantiles::Stats) {
+        let (c, f) = self.hosts.locked().quantiles.copy();
+        let now = crate::cache::now_epoch();
+        (c.stats(now), f.stats(now))
+    }
+
+    /// 上の 2 つを `{"connect":{..},"forward":{..}}` にしたもの。
+    pub fn recent_quantiles_json(&self) -> String {
+        let (c, f) = self.recent_quantiles();
+        crate::quantiles::to_json(&c, &f)
     }
 
     /// 直近の標本以降の合計を読み、0 に戻す ([`crate::history::Sample::take`] だけが呼ぶ)。
@@ -1584,8 +1633,9 @@ impl Metrics {
                 // この環境で何が読めるか (T14.15) と canary (T14.10)。どちらも覚えてある結果を読むだけ
                 "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
-                // (`memory` も同じく末尾。T14.21。`self_bench` も同じく末尾。T14.43)
-                "\"kernel\":{},\"memory\":{},\"self_bench\":{}}}"
+                // (`memory` も T14.21、`recent_quantiles` も T14.31、`self_bench` も T14.43 で
+                // 同じく末尾)
+                "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"self_bench\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1632,6 +1682,8 @@ impl Metrics {
             crate::kernel::status_json(),
             // RSS の内訳 (T14.21)。`mallinfo2` を読むのはこの経路だけ
             memory_json(rss, threads, extra.concurrency.live_threads as u64, cache),
+            // 直近 1,024 本の正確な分位点 (T14.31)。区間の補間ではない実測の並び
+            self.recent_quantiles_json(),
             // 起動直後に loopback だけで測った CPU/要求 と CPU/本 (T14.43)。
             // `PROXY_SELF_BENCH=off` (既定) なら `null` (覚えている結果が無い)
             crate::selfbench::status_json()
@@ -1657,13 +1709,13 @@ impl Metrics {
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
 ///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
 /// - `rings` は記録のリングが**満杯のときの見積もり** (固定部 + 文字列の上限。T13.4 / T14.4 /
-///   T14.6 / T14.11 / T14.22 / T14.25)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
+///   T14.6 / T14.11 / T14.22 / T14.25 / T14.27 / T14.31)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
 /// - `arenas` は `PROXY_MALLOC_ARENAS` で掛けた上限 (`0` = glibc の既定のまま。T5.6)
 ///
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
 fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<&Cache>) -> String {
     use crate::events::{Event, MAX_EVENTS, MAX_TEXT};
-    use crate::history::{RESOLUTIONS, Sample};
+    use crate::history::{History, RESOLUTIONS, Sample};
     use crate::log::{Line, MAX_LOG_LINE, MAX_LOG_LINES};
     use crate::recent::{
         BurstShot, ClosedCounts, ErrorEntry, MAX_BURSTS, MAX_CLIENT, MAX_ERRORS, MAX_RECENT,
@@ -1686,15 +1738,22 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             + MAX_SHOT_TARGETS * (name + MAX_TARGET))) as u64;
     let log = (MAX_LOG_LINES * (size_of::<Line>() + MAX_LOG_LINE)) as u64;
     let events = (MAX_EVENTS * (size_of::<Event>() + MAX_TEXT)) as u64;
+    // 接続元 1 つの追跡 (T14.27)。**追跡していなければ 1 バイトも確保していない**ので、
+    // これも他と同じ「満杯のとき」の見積もり
+    let trace = (crate::trace::MAX_TRACE * crate::trace::MAX_LINE_ESTIMATE) as u64;
     // ホスト別の時系列は固定長 (上位 16 ホスト × 288 標本 × 5 項目 × 8 B。T14.22)。
     // **上位が 1 つ決まるまでは確保しない**ので、これも「満杯のとき」の見積もり
     let hostseries = (crate::hostseries::SLOTS
         * crate::hostseries::SAMPLES
         * crate::hostseries::FIELDS
         * size_of::<u64>()) as u64;
-    // 履歴は 3 解像度の標本 (T12.4) と、閉じた接続の分布の窓 2 つ (T14.6)、
-    // 速さと半閉じの窓 2 つ (T14.25)
-    let samples: usize = RESOLUTIONS.iter().map(|(_, n)| n).sum();
+    // 直近の標本の環状は固定長 (2 系統 × 1,024 本 × 8 B = 16 KiB。T14.31)。
+    // 1 本目を書くまで確保しないので、これも「満杯のとき」の見積もり
+    let quantiles = crate::quantiles::BYTES as u64;
+    // 履歴は 3 解像度の標本 (T12.4。**5 秒はメモリだけ 6 時間 = 4,320 本**。T14.32) と、
+    // 閉じた接続の分布の窓 2 つ (T14.6)、速さと半閉じの窓 2 つ (T14.25)。
+    // 窓の方は 5 秒 × 720 のままなので [`RESOLUTIONS`] を使う
+    let samples: usize = (0..RESOLUTIONS.len()).map(History::capacity).sum();
     let windows = RESOLUTIONS[0].1 + RESOLUTIONS[1].1;
     let history = (samples * size_of::<Sample>()
         + windows * size_of::<(u64, ClosedCounts)>()
@@ -1711,7 +1770,8 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             "{{\"rss\":{},\"heap_used\":{},\"heap_free\":{},\"mmap\":{},",
             "\"stacks_estimate\":{},\"cache_memory\":{},",
             "\"rings\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
-            "\"events\":{},\"history\":{},\"hostseries\":{},\"total\":{}}},\"arenas\":{}}}"
+            "\"events\":{},\"trace\":{},\"history\":{},\"hostseries\":{},\"quantiles\":{},",
+            "\"total\":{}}},\"arenas\":{}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -1724,9 +1784,11 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         bursts,
         log,
         events,
+        trace,
         history,
         hostseries,
-        recent + errors + bursts + log + events + history + hostseries,
+        quantiles,
+        recent + errors + bursts + log + events + trace + history + hostseries + quantiles,
         crate::sysinfo::arena_max(),
     )
 }
@@ -1955,11 +2017,18 @@ mod tests {
         assert_eq!(totals[crate::recent::CLIENT_SIDE], (48_300, 1));
         assert_eq!(totals[crate::recent::ORIGIN_SIDE], (50_100, 2));
 
-        // `.rrd` の 1 スロット: 名前 128 B + 55 項目 × 8 B = 568 B (余白 572 - 568 = 4 B。
-        // T14.26 の 2 欄まで入れた形)
+        // `.rrd` の 1 スロット: 名前 128 B + 55 項目 × 8 B = 568 B (T14.26 の 2 欄まで)。
+        // 版 3 (T14.14) でペイロードが 636 B になったので**余白は 68 B**
+        // (版 2 では 4 B しか残っていなかった)。欄を足すとここが減る: 64 B を割ったら
+        // 「予備を使い切りかけている」ので、版を上げる算段をすること
         let enc = s.encode("connect://a:443");
         assert_eq!(enc.len(), 128 + 55 * 8);
-        assert_eq!(crate::rrd::STATS_RECORD - 4 - enc.len(), 4, "残りの余白");
+        let spare = crate::rrd::STATS_RECORD - 4 - enc.len();
+        assert!(
+            (32..=68).contains(&spare),
+            "スロットの余白が {} B (版 3 で足した 64 B を使い切りかけている)",
+            spare
+        );
         assert_eq!(HostStats::decode(&enc).unwrap().1, s);
 
         // T14.5 より前に書かれたレコード (末尾 6 欄が無い) は 0 で読み戻る

@@ -1,7 +1,8 @@
 //! プロキシ自身のエンドポイント: `/dashboard` (コントロールパネル)、`/status`
 //! (`?sort=requests|errors|dns|slow` で `hosts[]` の上位 50 の切り出しを変えられる。T13.3)、
 //! `/healthz` (**本当の健康診断**。軽い JSON で、検査が 1 つでも偽なら 503。T14.12)、
-//! `/history` (JSON、`res=5|60|3600`。カーネルと cgroup の窓が `kernel` に付く。
+//! `/history` (JSON、`res=5|60|3600&n=`。カーネルと cgroup の窓が `kernel` に付く。
+//! `res=5` は 6 時間ぶん持っていて `n=` で 4,320 本まで遡れる。T14.32。
 //! `?since=&until=&summary=1` は**期間を畳んだ 1 行だけ**を返す。T14.24)、
 //! `/metrics` (Prometheus)、`/proxy.pac` (ブラウザの自動設定)、
 //! `/purge` と `PURGE` メソッド、`/lookup`、`/blocklist` (判定と手動の上書き)。
@@ -51,6 +52,7 @@ pub struct Endpoint<'a> {
 
 mod blocklist;
 mod config;
+mod explain;
 mod health;
 mod pac;
 mod profile;
@@ -62,6 +64,13 @@ const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
 /// **起きたことを時間軸で読む**ための別のページ (個票を描く)。
 /// `--lite` でも 200 で返す (記録が無ければページの中で「記録していません」と出る)。
 const INSPECT_HTML: &str = include_str!("../web/inspect.html");
+
+/// 「端末から測る」ページ (T14.33)。プロキシ側の計測は「プロキシに届いてから」しか
+/// 見えないので、**利用者のブラウザから** `/status` の往復と、プロキシ経由で小さな URL を
+/// 取る時間を測り、`/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) に並べる。
+/// 測った値はサーバーへ送らない (端末の中だけ)。`--lite` でも 200 で返す
+/// (接続元を記録していないことはページの中で伝える)。
+const PROBE_HTML: &str = include_str!("../web/probe.html");
 
 /// 要求ターゲットを自分宛てのパスに直す。**どちらの形式もポートだけで判定する**:
 /// 絶対形式は authority の、オリジン形式は `Host` ヘッダーのポート (無ければ 80) が
@@ -109,21 +118,26 @@ fn endpoint_list(lite: bool) -> String {
          endpoints:\n\
          {}\
          \x20 /inspect                                    control panel: what happened (timeline)\n\
+         \x20 /probe.html                                 measure this proxy from your browser\n\
          \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
          \x20 /connections                                JSON: the connections open right now\n\
          \x20 /recent?n=200&since=&client=&sort=          JSON: the connections that closed\n\
          \x20 /bursts?n=50                                JSON: snapshots taken at each spike\n\
+         \x20 /trace?n=200&since=                         JSON: one client's requests (PROXY_TRACE_CLIENT)\n\
          \x20 /events?n=200&since=                        JSON: starts, reloads, and other events\n\
          \x20 /snapshot                                   JSON: everything above in one request\n\
+         \x20 /snapshots                                  JSON: the daily snapshots kept on disk\n\
+         \x20 /snapshots/<YYYY-MM-DD>                     JSON: one saved day (as taken)\n\
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
          \x20 /hosts/series?top=16&host=<name>            JSON: per-host series (5 min x 24 h)\n\
          \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
+         \x20 /explain?host=<name> | ?client=<ip>         JSON: one peer, explained in one page\n\
          \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
-         \x20 /history?res=5|60|3600                      JSON: time series\n\
+         \x20 /history?res=5|60|3600&n=720                JSON: time series (res=5 keeps 6 h)\n\
          \x20 /history?since=&until=&summary=1            JSON: one summary row for a period\n\
          \x20 /profile?res=5|60                           JSON: stages, threads, locks\n\
          \x20 /daily?n=365                                JSON: one summary line per day (kept forever)\n\
@@ -134,6 +148,45 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /blocklist?host=&action=block|allow|clear   blocklist decision and overrides\n",
         dashboard
     )
+}
+
+/// 日次の `/snapshot` (T14.34) を組むのに要るもの。[`register_snapshot`] に渡す。
+pub struct SnapshotSource {
+    pub metrics: std::sync::Arc<Metrics>,
+    pub cache: std::sync::Arc<Cache>,
+    /// 待ち受けポート (`Endpoint` の自分宛て判定と同じ値。中身には出ない)
+    pub port: u16,
+    pub version: &'static str,
+    pub lite: bool,
+    pub readonly: bool,
+    /// 上限といまのスレッド数を引く口 (`/status` を組むときだけ呼ぶ。要求ごとの
+    /// `Endpoint` と同じもので、こちらは履歴スレッドが 1 日 1 回呼ぶ)
+    pub concurrency: Box<dyn Fn() -> metrics::Concurrency + Send + Sync>,
+}
+
+/// **日付の変わり目に `/snapshot` を組む閉包を履歴スレッドへ預ける** (起動時に 1 回。T14.34)。
+///
+/// 組み立ては要求で来たときと**同じ関数** ([`recent::snapshot`]) で、自分へ HTTP で
+/// 繋ぎ直さない (T14.4 と同じ)。預ける形にしてあるのは、書く側の `proxy-metrics` が
+/// この層より**下**にあるため (下から上を呼ぶと依存が輪になる。T14.11 の `events::poll`
+/// と同じ判断で、**向きは上から預ける**)。
+pub fn register_snapshot(src: SnapshotSource) {
+    crate::snapshots::set_builder(Box::new(move || {
+        let ep = Endpoint {
+            metrics: &src.metrics,
+            cache: &src.cache,
+            // 要求で来たわけではないのでログの接続 id は無い (履歴スレッドが組む)
+            conn_id: 0,
+            port: src.port,
+            host: None,
+            pac_direct: &[],
+            lite: src.lite,
+            readonly: src.readonly,
+            version: src.version,
+            concurrency: &*src.concurrency,
+        };
+        recent::snapshot(&ep).2
+    }));
 }
 
 /// 内部エンドポイントなら応答して `Ok(true)` を返す。そうでなければ何もせず `Ok(false)`。
@@ -175,6 +228,9 @@ pub fn handle(
         // 「調査」ページ (T14.8)。`--lite` でも 200 — 個票が空でもページは開ける
         // (読む人が「記録していません」と分かるのはページの中)
         (200, "text/html; charset=utf-8", INSPECT_HTML.to_string())
+    } else if is_get && (path == "/probe.html" || path == "/probe" || path == "/probe/") {
+        // 「端末から測る」ページ (T14.33)。`--lite` でも 200 — 測れるのは (1) だけになる
+        (200, "text/html; charset=utf-8", PROBE_HTML.to_string())
     } else if is_get && (path == "/dashboard" || path == "/dashboard/") {
         if ep.lite {
             (
@@ -202,7 +258,12 @@ pub fn handle(
             (200, "application/json", history_summary(ep, &params, res))
         } else {
             let res = res.map_or(0, crate::history::History::index_for);
-            (200, "application/json", history_body(ep, res))
+            // `n=` は**新しい方から何本返すか** (既定 720、`res=5` だけ 4,320 まで。T14.32)
+            let n = params
+                .iter()
+                .find(|(k, _)| k == "n")
+                .and_then(|(_, v)| v.parse::<usize>().ok());
+            (200, "application/json", history_body(ep, res, n))
         }
     } else if is_get && path == "/profile" {
         // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)
@@ -218,6 +279,10 @@ pub fn handle(
     } else if is_get && path == "/bursts" {
         // 山の写真 (T14.6)。同時接続数が上限の一定割合を越えた瞬間の `/connections`
         recent::bursts(ep, query)
+    } else if is_get && path == "/trace" {
+        // 接続元 1 つの追跡 (T14.27)。`PROXY_TRACE_CLIENT` に一致した接続元の要求行と
+        // 応答の状態と段階。**他の個票と違い URL のパスが入る** (追跡中だけ)
+        recent::trace(ep, query)
     } else if is_get && path == "/events" {
         // 起きたことの時系列 (T14.11)。起動・再読込・ブロックリスト・IPv6・圧迫・
         // バラスト・状態ファイル・追い出し・accept の失敗・停止シグナルを 1 本に
@@ -225,6 +290,12 @@ pub fn handle(
     } else if is_get && path == "/snapshot" {
         // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
         recent::snapshot(ep)
+    } else if is_get && (path == "/snapshots" || path == "/snapshots/") {
+        // 日次で残した `/snapshot` の一覧 (T14.34)
+        recent::snapshots()
+    } else if is_get && let Some(date) = path.strip_prefix("/snapshots/") {
+        // 残してある 1 日ぶんをそのまま (T14.34)。日付として読めない名前は 404
+        recent::snapshot_file(date)
     } else if is_get && path == "/dns" {
         recent::dns(query)
     } else if is_get && path == "/daily" {
@@ -240,6 +311,9 @@ pub fn handle(
     } else if is_get && path == "/clients" {
         // 接続元の個票 (T14.7)。認証なしで誰でも見えるのは他の個票と同じ
         recent::clients(ep, query)
+    } else if is_get && path == "/explain" {
+        // 1 相手の説明 (T14.36)。上の口を横断して読む作業をサーバー側で 1 枚に組む
+        explain::explain(ep, query)
     } else if is_get && path == "/config" {
         // 効いている設定とその出どころ、この環境で何が読めるか (T14.15)
         config::render(ep)
@@ -362,8 +436,10 @@ pub(super) fn status_body(ep: &Endpoint<'_>, sort: metrics::HostSort) -> String 
 /// 残っていない (T14.2 (3)) ので、カーネルの窓はメモリだけの別物になっている。
 /// 項目数も解像度も違うので、同じ行に混ぜずに `"kernel":{"keys":[...],"samples":[[...]]}` で並べる
 /// (1 時間の解像度はこの窓に無いので `null`)。
-pub(super) fn history_body(ep: &Endpoint<'_>, res: usize) -> String {
-    let base = ep.metrics.history.to_json_res(res);
+/// `n` は**新しい方から何本返すか** (`None` = 既定。`res=5` は 6 時間ぶん持っているが
+/// 既定は今までどおり 720 本。T14.32)。カーネルの窓は 720 本までしか無いので `n` で切らない。
+pub(super) fn history_body(ep: &Endpoint<'_>, res: usize, n: Option<usize>) -> String {
+    let base = ep.metrics.history.to_json_res_n(res, n);
     match base.strip_suffix('}') {
         Some(head) => format!("{},\"kernel\":{}}}", head, crate::kernel::history_json(res)),
         None => base,
@@ -387,7 +463,9 @@ pub(super) fn history_summary(
         &ep.metrics.history,
         &summary_params(params, res, now, uptime),
     )
-    .to_json()
+    // 直近 1,024 本の正確な分位点を**別の鍵で**添える (T14.31)。`p50_ms` は期間を畳んだ
+    // 区間の補間、`recent_quantiles` は期間に関わらず直近 1,024 本の実測なので別物
+    .to_json_with(Some(&ep.metrics.recent_quantiles_json()))
 }
 
 /// `?since=&until=&res=&normal_hours_only=` を読む (**時計を持たない**ので試験できる)。
