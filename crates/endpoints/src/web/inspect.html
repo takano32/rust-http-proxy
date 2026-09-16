@@ -30,6 +30,7 @@ td:first-child,th:first-child{text-align:left;max-width:320px;overflow:hidden;te
 .legend b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
 .lead{font-size:13px;font-family:var(--mono);background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:10px;overflow-x:auto;white-space:nowrap}
 .links a{color:var(--accent);text-decoration:none;margin-right:12px;font-size:12px}
+td a,.hint a{color:var(--accent);text-decoration:none}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;background:var(--line);color:var(--muted);margin-left:6px}
 .banner{margin:14px 0 0;padding:10px 14px;border-radius:10px;font-size:13px;background:rgba(245,179,66,.12);border:1px solid var(--warn);color:var(--fg)}
 .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
@@ -51,7 +52,7 @@ select,button{background:#0b0d13;border:1px solid var(--line);color:var(--fg);bo
   <span class="sub" id="version"></span>
   <span class="sub" id="uptime">–</span>
   <div class="right">
-    <span class="links"><a href="/snapshot" target="_blank">/snapshot</a><a href="/dashboard">/dashboard</a><a href="/recent?n=2000" target="_blank">/recent</a><a href="/bursts" target="_blank">/bursts</a><a href="/clients?limit=1000" target="_blank">/clients</a><a href="/hosts?limit=1000" target="_blank">/hosts</a><a href="/events" target="_blank">/events</a></span>
+    <span class="links"><a href="/snapshot" target="_blank">/snapshot</a><a href="/dashboard">/dashboard</a><a href="/recent?n=2000" target="_blank">/recent</a><a href="/bursts" target="_blank">/bursts</a><a href="/clients?limit=1000" target="_blank">/clients</a><a href="/hosts?limit=1000" target="_blank">/hosts</a><a href="/events" target="_blank">/events</a><a href="/daily?n=365" target="_blank">/daily</a><a href="/snapshots" target="_blank">/snapshots</a></span>
     <label>範囲 <select id="range"><option value="3600">1 時間</option><option value="21600">6 時間</option><option value="86400">24 時間</option></select></label>
     <label>縦 <select id="by"><option value="client">接続元</option><option value="target">宛先</option></select></label>
     <label><input type="checkbox" id="pause"> 一時停止</label>
@@ -70,10 +71,31 @@ select,button{background:#0b0d13;border:1px solid var(--line);color:var(--fg);bo
   </section>
 
   <section class="card">
+    <h2>出来事と異常 <span class="r">/events?n=200 · 新しい順 · anomaly は色を変え、cleared: は対にする (T14.11 / T14.23)</span></h2>
+    <div class="legend" id="lg-events"></div>
+    <div style="overflow-x:auto"><table id="events"><thead><tr><th>時刻</th><th>種類</th><th>説明</th><th title="立った異常と cleared: の対 (続いた長さ)">対</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="evhint"></div>
+  </section>
+
+  <section class="card">
     <h2>起動からの窓 <span class="r">/history?since=restart&amp;summary=1 (無ければ手元で切る)</span></h2>
     <div style="margin-bottom:8px">窓 <select id="win"><option value="start">起動から</option><option value="all">通算</option></select></div>
     <div class="kv" id="winkv"></div>
     <div class="hint" id="winhint"></div>
+  </section>
+
+  <section class="card">
+    <h2>今日 <span class="r">/daily?n=14 · 1 日 1 行で永久に残る要約 (T14.20)</span></h2>
+    <div class="kv" id="todaykv"></div>
+    <div style="overflow-x:auto"><table id="daily"><thead><tr><th>日</th><th title="その日をどれだけ見ていたか (24 時間 = 100%)">見ていた</th><th>要求</th><th>転送</th><th>CONNECT</th><th>p50</th><th>p95</th><th title="名前解決のミス ÷ CONNECT">ミス率</th><th title="ミス 1 回の平均">ミス 1 回</th><th>エラー</th><th title="その日の同時接続の山">山</th><th title="その日の RSS の最大 (括弧は平均)">RSS</th><th>版</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="dailyhint"></div>
+  </section>
+
+  <section class="card">
+    <h2>今週 <span class="r">/daily の 7 行をこのページの中で足したもの + /snapshots の一覧 (T14.40 / T14.34)</span></h2>
+    <div class="kv" id="weekkv"></div>
+    <div style="overflow-x:auto"><table id="weekly"><thead><tr><th>日</th><th>要求</th><th>CONNECT</th><th>p50</th><th>p95</th><th title="名前解決のミス ÷ CONNECT">ミス率</th><th>エラー</th><th title="その日の同時接続の山">山</th><th title="その日の /snapshot がディスクにあるか (T14.34)">雪像</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="weekhint"></div>
   </section>
 
   <section class="card">
@@ -377,8 +399,137 @@ function seriesLines(j,key){
   return {key:keys[idx]||'count',lines:lines,n:n,max:max,t0:t0,window:win,
     t1:t0+Math.max(0,n-1)*win,tracked:+(j&&j.tracked)||0};
 }
+// (h) 「今日」: `/daily` の 1 行 = 1 日 (T14.20)。**新しい順**に n 日ぶん返す。
+// `/daily` は**終わった日**しか書かない (履歴スレッドが UTC の日付をまたいだときに 1 行) ので、
+// いちばん新しい行はふつう昨日。今日ぶんは上の「起動からの窓」で読む。
+// **この口を持たない版では呼ぶ側が `null` を渡す** (404) → `available:false`。
+// `--lite` と `PROXY_STATS_PERSIST=off` では 1 行も書いていないので `days` が空の配列。
+function dailyRows(j,n){
+  var src=(j&&j.days)||[],rows=[],max=+n>0?+n:14;
+  for(var i=src.length-1;i>=0&&rows.length<max;i--){
+    var d=src[i]||{},connects=+d.connects||0,secs=+d.secs||0,misses=+d.dns_misses||0;
+    var reqs=+d.requests||0,errs=+d.errors||0;
+    rows.push({day:d.day||'',t:+d.t||0,secs:secs,samples:+d.samples||0,
+      // その日をどれだけ見ていたか (24 時間 = 100%)。再起動した日は 100% に満たない
+      coverage:Math.min(100,secs/864),
+      requests:reqs,bytes:+d.bytes||0,connects:connects,
+      p50:num(d.connect_p50_ms),p95:num(d.connect_p95_ms),dns_misses:misses,
+      // 無い版の行でも読めるように、書いていなければミス ÷ CONNECT を自分で出す
+      dns_per_connect:d.dns_per_connect!=null?+d.dns_per_connect:(connects?misses/connects:null),
+      dns_miss_ms:num(d.dns_miss_ms),errors:errs,error_rate:reqs>0?errs/reqs*100:null,
+      bursts:+d.bursts||0,active_max:+d.active_max||0,evicted_idle:+d.evicted_idle||0,
+      rss_max:+d.rss_max||0,rss_avg:+d.rss_avg||0,version:d.version||'',snapshot:null});
+  }
+  return {rows:rows,shown:rows.length,count:+(j&&j.count)||src.length,
+    // `days` が配列なら口はある (中身が空でも = まだ 1 日も終わっていない)
+    available:!!(j&&j.days&&j.days.length!=null),
+    path:(j&&j.path)||null,bytes:+(j&&j.bytes)||0,truncated:!!(j&&j.truncated)};
+}
+
+// (i) 「今週」: **サーバーに `weekly-report.py` (T14.40) は無い**ので、`/daily` の 7 行を
+// このページの中で足す。足せるのは通算の差と区間の値だけ — 要求・転送・CONNECT・エラー・
+// 名前解決のミス・山。**p50 / p95 は日をまたいで足せない** (区間ヒストグラムは `/daily` に
+// 無い) ので、日ごとの値をそのまま並べて幅 (最小〜最大) だけ出す (T14.40 と同じ判断)。
+// ミス 1 回の ms は**ミスの数で重みを付けた平均**なら日ごとの値から作れる。
+// `/snapshots` (T14.34) を渡せば、その日の雪像がディスクにあるかを行に足す。
+// 返す `rows` は**古い順** (週は左から右に読む)。
+function weeklyRows(dailyJson,snapsJson,n){
+  var days=+n>0?+n:7,d=dailyRows(dailyJson,days),rows=d.rows.slice().reverse();
+  var files=((snapsJson&&snapsJson.files)||[]).map(function(f){
+    return {date:f.date||'',bytes:+f.bytes||0,t:+f.t||0};
+  });
+  var byDate={},fbytes=0;
+  files.forEach(function(f){byDate[f.date]=f;fbytes+=f.bytes});
+  var t={days:0,requests:0,bytes:0,connects:0,errors:0,dns_misses:0,bursts:0,
+    evicted_idle:0,secs:0,samples:0,active_max:0,rss_max:0},ms=0,p50=[],p95=[];
+  rows.forEach(function(r){
+    r.snapshot=byDate[r.day]||null;
+    t.requests+=r.requests;t.bytes+=r.bytes;t.connects+=r.connects;t.errors+=r.errors;
+    t.dns_misses+=r.dns_misses;t.bursts+=r.bursts;t.evicted_idle+=r.evicted_idle;
+    t.secs+=r.secs;t.samples+=r.samples;
+    t.active_max=Math.max(t.active_max,r.active_max);
+    t.rss_max=Math.max(t.rss_max,r.rss_max);
+    ms+=(r.dns_miss_ms||0)*r.dns_misses;
+    if(r.p50!=null)p50.push(r.p50);
+    if(r.p95!=null)p95.push(r.p95);
+  });
+  t.days=rows.length;
+  t.dns_per_connect=t.connects?t.dns_misses/t.connects:null;
+  t.dns_miss_ms=t.dns_misses?ms/t.dns_misses:null;
+  t.error_rate=t.requests?t.errors/t.requests*100:null;
+  t.p50=null;t.p95=null;   // **週の分位点は出せない** (足せないものは足さない)
+  var span=rows.length?Math.round((rows[rows.length-1].t-rows[0].t)/86400)+1:0;
+  return {days:days,rows:rows,total:t,available:d.available,
+    from:rows.length?rows[0].day:'',to:rows.length?rows[rows.length-1].day:'',
+    p50_lo:p50.length?Math.min.apply(null,p50):null,
+    p50_hi:p50.length?Math.max.apply(null,p50):null,
+    p95_lo:p95.length?Math.min.apply(null,p95):null,
+    p95_hi:p95.length?Math.max.apply(null,p95):null,
+    // 足りない日 (窓に対して) と、間の抜けた日 (いちばん古い日といちばん新しい日の間)
+    missing:Math.max(0,days-rows.length),gaps:Math.max(0,span-rows.length),
+    files:files,snapshots:files.length,snapshot_bytes:fbytes,
+    snapshot_days:+(snapsJson&&snapsJson.days)||0,dir:(snapsJson&&snapsJson.dir)||null,
+    has_snapshots:!!(snapsJson&&snapsJson.files),
+    in_week:rows.filter(function(r){return !!r.snapshot}).length};
+}
+
+// (j) 「出来事と異常」: `/events` を**新しい順**の表にする (T14.11 / T14.23)。
+// `eventMarks` はタイムラインに重ねる**印**で、こちらは読む**表** (別の関数のまま)。
+// `anomaly` は色を変え (立った = 赤、`cleared:` = 緑)、**対にする**: 古い順に見て
+// 立った異常を種類ごとに覚え、`cleared: <種類>` が来たら結んで続いた長さを両方の行に入れる。
+// 結ばれずに残ったものが「いま続いている異常」(`open`)。**知らない綴りでも落ちない**。
+function eventRows(j,n){
+  var src=(j&&j.events)||[],rows=[],max=+n>0?+n:200,tally={};
+  for(var i=0;i<src.length&&rows.length<max;i++){
+    var e=src[i]||{},kind=e.kind||'',text=String(e.text||'');
+    var cleared=text.lastIndexOf('cleared:',0)===0;
+    // 異常の説明は `<種類>: …`、解除は `cleared: <種類> after Nm (…)` なので先頭の語が種類
+    var body=cleared?text.slice(8).replace(/^\s+/,''):text;
+    var subject=kind==='anomaly'?(body.split(/[\s:(]/)[0]||''):'';
+    tally[kind]=(tally[kind]||0)+1;
+    rows.push({at:+e.at||0,kind:kind,text:text,subject:subject,
+      anomaly:kind==='anomaly'&&!cleared,cleared:cleared,
+      color:kind==='anomaly'?(cleared?'#3ecf8e':'#ff6b6b'):(EVENT_COLORS[kind]||'#8b91a5'),
+      known:Object.prototype.hasOwnProperty.call(EVENT_COLORS,kind),
+      pair_at:0,secs:null,open:false});
+  }
+  var openBy={},fired=0,clears=0;
+  for(var k=rows.length-1;k>=0;k--){   // 応答は新しい順なので、後ろから = 古い順に見る
+    var r=rows[k];
+    if(r.anomaly){fired++;openBy[r.subject]=r;r.open=true}
+    else if(r.cleared){
+      clears++;
+      var o=openBy[r.subject];
+      if(o){o.open=false;o.pair_at=r.at;o.secs=Math.max(0,r.at-o.at);
+        r.pair_at=o.at;r.secs=o.secs;openBy[r.subject]=null}
+    }
+  }
+  var open=rows.filter(function(r){return r.open});
+  return {rows:rows,shown:rows.length,anomalies:fired,cleared:clears,
+    open:open.length,open_kinds:open.map(function(r){return r.subject}),
+    kinds:Object.keys(tally).map(function(name){
+      return {name:name,count:tally[name],color:EVENT_COLORS[name]||'#8b91a5'};
+    }).sort(function(a,b){return b.count-a.count||(a.name<b.name?-1:1)}),
+    count:+(j&&j.count)||src.length,kept:+(j&&j.kept)||0,capacity:+(j&&j.capacity)||0,
+    recorded:+(j&&j.recorded)||0,persisted:!!(j&&j.persisted),
+    restored:+(j&&j.restored)||0,truncated:!!(j&&j.truncated),
+    available:!!(j&&j.events)};
+}
 // --- ここまでが node からも呼ぶ関数 ---
 
+// `/explain?host=` への導線 (T14.36)。表の宛先は `host:port`、ホスト表の鍵は
+// `scheme://host:port` なので、前綴りと経路を落として `host[:port]` だけ渡す
+function explainHref(name){
+  var s=String(name||''),i=s.indexOf('://');
+  if(i>=0)s=s.slice(i+3);
+  var j=s.indexOf('/');
+  if(j>=0)s=s.slice(0,j);
+  return s?'/explain?host='+encodeURIComponent(s):'';
+}
+function hostLink(name,label){
+  var h=explainHref(name);
+  return h?'<a href="'+h+'" target="_blank" title="'+esc(name)+' を /explain で 1 枚に">'+esc(label)+'</a>':esc(label);
+}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function fmtBytes(n){if(n==null)return'–';var u=['B','KiB','MiB','GiB','TiB'],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return(i?n.toFixed(n<10?2:1):n)+' '+u[i]}
 function fmtNum(n){return n==null?'–':Number(n).toLocaleString()}
@@ -519,7 +670,7 @@ function renderSlow(j){
     var stack=r.total>0?r.stages.map(function(s){
       return s.pct<=0?'':'<i style="width:'+s.pct.toFixed(2)+'%;background:'+s.color+'" title="'+s.name+' '+fmtMs(s.ms)+'"></i>';
     }).join(''):'';
-    return '<tr><td title="'+esc(r.target)+'">'+esc(clip(r.target,42))+'</td><td>'+esc(r.client)+'</td><td>'+esc(r.kind)
+    return '<tr><td>'+hostLink(r.target,clip(r.target,42))+'</td><td>'+esc(r.client)+'</td><td>'+esc(r.kind)
       +'</td><td><div class="stack">'+stack+'</div></td><td>'+fmtMs(r.connect_ms)+'</td><td>'+fmtMs(r.total)
       +'</td><td>'+fmtMs(r.rtt_origin)+'</td><td style="color:'+(r.unexplained>=250?'var(--bad)':r.unexplained>=50?'var(--warn)':'inherit')+'">'
       +fmtMs(r.unexplained)+'</td><td>'+fmtSecs(r.secs)+'</td><td>'+fmtBytes(r.bytes)
@@ -578,7 +729,7 @@ function renderScatter(j){
   scatter=rttScatter(j,{max:200});
   var tb=$('rtt').tBodies[0];
   tb.innerHTML=scatter.points.slice(0,12).map(function(p){
-    return '<tr><td title="'+esc(p.host)+'">'+esc(clip(p.host,40))+'</td><td>'+fmtMs(p.rtt)+'</td><td>'+fmtMs(p.connect)
+    return '<tr><td>'+hostLink(p.host,clip(p.host,40))+'</td><td>'+fmtMs(p.rtt)+'</td><td>'+fmtMs(p.connect)
       +'</td><td style="color:'+(p.ratio>=5?'var(--bad)':p.ratio>=2?'var(--warn)':'inherit')+'">'+p.ratio.toFixed(1)+'×</td><td>'
       +fmtMs(p.gap)+'</td><td>'+fmtNum(p.requests)+'</td><td>'+fmtNum(p.retrans)+'</td></tr>';
   }).join('');
@@ -587,6 +738,104 @@ function renderScatter(j){
       +'緑の対角線が y = x で、上に離れるほど RTT では説明できない待ちです。'
     :'RTT の標本があるホストがまだありません (T14.5 は接続の終わりに 1 回だけ読みます。Linux 以外と --lite では読めません)。';
   drawScatter();
+}
+
+// 「今日」: 日別の要約の表と、いちばん新しい日 (= ふつう昨日) の主な数字
+function renderDaily(j){
+  var d=dailyRows(j,14),last=d.rows[0]||null;
+  $('todaykv').innerHTML=last?[['最後の日',last.day],['見ていた',last.coverage.toFixed(0)+' %'],
+    ['要求',fmtNum(last.requests)],['転送',fmtBytes(last.bytes)],['CONNECT',fmtNum(last.connects)],
+    ['p50',fmtMs(last.p50)],['p95',fmtMs(last.p95)],
+    ['ミス / 接続',last.dns_per_connect==null?'–':last.dns_per_connect.toFixed(3)],
+    ['エラー',fmtNum(last.errors)],['山 (同時接続)',fmtNum(last.active_max)],
+    ['RSS 最大',fmtBytes(last.rss_max)]].map(function(p){
+      return '<div><b>'+p[0]+'</b>'+p[1]+'</div>';
+    }).join(''):'';
+  $('daily').tBodies[0].innerHTML=d.rows.map(function(r){
+    return '<tr><td>'+esc(r.day)+'</td><td'+(r.coverage<99?' style="color:var(--warn)"':'')+'>'
+      +r.coverage.toFixed(0)+' %</td><td>'+fmtNum(r.requests)+'</td><td>'+fmtBytes(r.bytes)
+      +'</td><td>'+fmtNum(r.connects)+'</td><td>'+fmtMs(r.p50)+'</td><td>'+fmtMs(r.p95)
+      +'</td><td>'+(r.dns_per_connect==null?'–':r.dns_per_connect.toFixed(3))
+      +'</td><td>'+fmtMs(r.dns_miss_ms)+'</td><td'+(r.errors?' style="color:var(--bad)"':'')+'>'
+      +fmtNum(r.errors)+'</td><td>'+fmtNum(r.active_max)+'</td><td>'+fmtBytes(r.rss_max)
+      +' <span class="hint" style="display:inline">('+fmtBytes(r.rss_avg)+')</span></td><td>'
+      +esc(clip(r.version,24))+'</td></tr>';
+  }).join('');
+  $('dailyhint').textContent=!d.available
+    ?'この版は /daily (T14.20) を持っていません — 日次の要約を記録していません。'
+    :(d.rows.length
+      ?'1 日 1 行の要約 ('+(d.path||'?')+'、全 '+fmtNum(d.count)+' 行)。書くのは終わった日だけなので、'
+        +'今日ぶんはまだありません (今日は上の「起動からの窓」で読んでください)。'
+        +'「見ていた」が 100% に満たない日は、その日ずっとは動いていなかった日です。'
+      :'まだ 1 日も終わっていません (--lite と PROXY_STATS_PERSIST=off では 1 行も記録していません)。'
+        +' 最初の行は次の UTC 0 時に出ます。');
+}
+
+// 「今週」: `/daily` の 7 行をこのページの中で足したもの + `/snapshots` の一覧
+function renderWeekly(dailyJson,snapsJson){
+  var w=weeklyRows(dailyJson,snapsJson,7),t=w.total;
+  $('weekkv').innerHTML=[['日数',fmtNum(t.days)+' / '+w.days+(w.missing?' (足りない '+w.missing+' 日)':'')],
+    ['期間',w.rows.length?w.from+' → '+w.to:'–'],['要求',fmtNum(t.requests)],
+    ['転送',fmtBytes(t.bytes)],['CONNECT',fmtNum(t.connects)],
+    ['p50 (日ごと)',w.p50_lo==null?'–':fmtMs(w.p50_lo)+' 〜 '+fmtMs(w.p50_hi)],
+    ['p95 (日ごと)',w.p95_lo==null?'–':fmtMs(w.p95_lo)+' 〜 '+fmtMs(w.p95_hi)],
+    ['ミス / 接続',t.dns_per_connect==null?'–':t.dns_per_connect.toFixed(3)],
+    ['ミス 1 回',fmtMs(t.dns_miss_ms)],
+    ['エラー',fmtNum(t.errors)+(t.error_rate==null?'':' ('+t.error_rate.toFixed(3)+' %)')],
+    ['最大同時',fmtNum(t.active_max)],['山',fmtNum(t.bursts)],['RSS 最大',fmtBytes(t.rss_max)],
+    ['雪像',w.has_snapshots?fmtNum(w.snapshots)+' 枚 ('+fmtBytes(w.snapshot_bytes)+')':'–']]
+    .map(function(p){return '<div><b>'+p[0]+'</b>'+p[1]+'</div>'}).join('');
+  $('weekly').tBodies[0].innerHTML=w.rows.map(function(r){
+    return '<tr><td>'+esc(r.day)+'</td><td>'+fmtNum(r.requests)+'</td><td>'+fmtNum(r.connects)
+      +'</td><td>'+fmtMs(r.p50)+'</td><td>'+fmtMs(r.p95)+'</td><td>'
+      +(r.dns_per_connect==null?'–':r.dns_per_connect.toFixed(3))
+      +'</td><td'+(r.errors?' style="color:var(--bad)"':'')+'>'+fmtNum(r.errors)
+      +'</td><td>'+fmtNum(r.active_max)+'</td><td>'
+      +(r.snapshot?'<a href="/snapshots/'+encodeURIComponent(r.day)+'" target="_blank">'
+        +fmtBytes(r.snapshot.bytes)+'</a>':'–')+'</td></tr>';
+  }).join('');
+  $('weekhint').textContent=!w.available
+    ?'この版は /daily (T14.20) を持っていません — 週の要約を組む材料を記録していません。'
+    :(w.rows.length
+      ?'サーバーに weekly-report.py (T14.40) は無いので、/daily の '+fmtNum(t.days)
+        +' 行をこのページの中で足しました。p50 / p95 は日をまたいで足せないので '
+        +'(区間ヒストグラムは /daily に無い)、日ごとの値をそのまま並べています。'
+        +(w.gaps?' 間で '+w.gaps+' 日ぶんが抜けています (その日は動いていませんでした)。':'')
+        +(w.has_snapshots
+          ?' 雪像は '+(w.dir||'?')+' に '+fmtNum(w.snapshots)+' 枚 (残す日数 '+fmtNum(w.snapshot_days)
+            +'、うちこの週は '+fmtNum(w.in_week)+' 枚)。'
+          :' この版は /snapshots (T14.34) を持っていません。')
+      :'週の要約を組む行がまだありません (--lite と PROXY_STATS_PERSIST=off では 1 行も記録していません)。');
+}
+
+// 「出来事と異常」: /events を新しい順の表に (anomaly は色を変え、cleared: は対にする)
+function renderEvents(j){
+  var e=eventRows(j,200);
+  $('lg-events').innerHTML=e.kinds.map(function(k){
+    return '<span><b style="background:'+k.color+'"></b>'+esc(k.name)+' '+fmtNum(k.count)+'</span>';
+  }).join('');
+  $('events').tBodies[0].innerHTML=e.rows.map(function(r){
+    var pair=r.cleared
+      ?(r.pair_at?'立った '+fmtAt(r.pair_at)+' ('+fmtSecs(r.secs)+')':'対の異常はこの窓に無い')
+      :r.anomaly?(r.pair_at?'解除 '+fmtAt(r.pair_at)+' ('+fmtSecs(r.secs)+')':'まだ続いています')
+      :'';
+    return '<tr'+(r.anomaly?' style="background:rgba(255,107,107,.08)"':'')+'><td>'+fmtDay(r.at)
+      +'</td><td style="color:'+r.color+'">'+esc(r.kind)
+      +(r.subject?' <span class="tag">'+esc(r.subject)+'</span>':'')
+      +'</td><td style="text-align:left;white-space:normal;max-width:none">'+esc(r.text)
+      +'</td><td'+(r.open?' style="color:var(--bad)"':'')+'>'+pair+'</td></tr>';
+  }).join('');
+  $('evhint').textContent=!e.available
+    ?'この版は /events (T14.11) を持っていません — 出来事を記録していません。'
+    :(e.rows.length
+      ?'新しい順に '+fmtNum(e.shown)+' 件 (覚えているのは '+fmtNum(e.kept)+' 件 / 上限 '
+        +fmtNum(e.capacity)+'、通算 '+fmtNum(e.recorded)+' 件)。異常 (T14.23) は '
+        +fmtNum(e.anomalies)+' 件・解除 '+fmtNum(e.cleared)+' 件で、'
+        +(e.open?'いま続いているのは '+e.open+' 件 ('+e.open_kinds.join(' / ')+')。'
+                :'いま続いている異常はありません。')
+        +(e.persisted?' 再起動前から '+fmtNum(e.restored)+' 件 (T14.9)。'
+                     :' この版は出来事をファイルに残していません。')
+      :'まだ出来事がありません (--lite と PROXY_STATS_PERSIST=off では異常の判定もしないので記録していません)。');
 }
 
 function renderWindow(sum,label){
@@ -615,12 +864,14 @@ function pollRecent(){
   var s=span(),since=now?now-s:0;
   return Promise.all([
     fetchJson('/recent?n=2000'+(since?'&since='+since:'')),
-    fetchJson('/events?n=200'+(since?'&since='+since:'')).catch(function(){return null}),
+    // `?since=` は付けない: 印は `eventMarks` が窓で切るし、表は**新しい順 200 件**を出す
+    fetchJson('/events?n=200').catch(function(){return null}),
     fetchJson('/recent?sort=slow&n=50')
   ]).then(function(r){
     tl=timeline(r[0],{now:now,span:s,by:$('by').value,lanes:14});
     marks=eventMarks(r[1],tl);
     renderTimeline();
+    renderEvents(r[1]);
     renderSlow(r[2]);
     $('lite').hidden=!r[0].lite;
     if(r[0].lite)$('lite').textContent='--lite (PROXY_PROFILE=lite) では個票を記録していません。このページは開けますが、表と図は空のままです。';
@@ -648,11 +899,17 @@ function pollTables(){
     // 上位 200 まで (デプロイ先の `limit=1000` は 261 KB。散布に描くのも 200 点まで)
     fetchJson('/hosts?sort=requests&limit=200'),
     // T14.22 が入っていれば折れ線も描く (無い版は 404 なので黙って諦める)
-    fetchJson('/hosts/series?top=8').catch(function(){return null})
+    fetchJson('/hosts/series?top=8').catch(function(){return null}),
+    // 「今日」と「今週」(T14.20 / T14.34)。中身が変わるのは日に 1 回だけ。
+    // どちらも無い版では 404 なので `null` にして「記録していません」と出す
+    fetchJson('/daily?n=14').catch(function(){return null}),
+    fetchJson('/snapshots').catch(function(){return null})
   ]).then(function(r){
     renderBursts(r[0]);
     renderClients(r[1]);
     renderScatter(r[2]);
+    renderDaily(r[4]);
+    renderWeekly(r[4],r[5]);
     var sl=r[3]?seriesLines(r[3],'count'):null;
     series=(sl&&sl.lines.length)?sl:null;
     $('series-card').hidden=!series;

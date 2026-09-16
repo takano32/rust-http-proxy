@@ -65,6 +65,46 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 バイナリ 857 KB でした (forward は **205 倍**)。当時の値と、コアを固定せずに測っていた頃の値は
 `TASKS.md` の §2 と付録 A に残してあります。
 
+### 置いた先の CPU/要求 を同じ物差しで測る (`PROXY_SELF_BENCH=on`)
+
+上の表は**この機械の big コア**の値です。置いた先 (小さなコンテナ、別の CPU) で 1 要求が何 us かは、
+実トラフィックからは読めません (0.015 req/s では 5 秒の窓に 0〜1 本しか入らないため)。
+`PROXY_SELF_BENCH=on` で起動すると、**待ち受けを開いた直後に loopback だけで**
+forward 8 並列と CONNECT 8 並列を打ち、同じ指標 (CPU/要求 と CPU/本) を `/status` の `self_bench` に残します。
+**外へは 1 バイトも出しません** (相手はこのプロセスの中に立てた 1 KiB のオリジンと、すぐ閉じる sink)。
+
+```bash
+PROXY_SELF_BENCH=on ./rust-http-proxy            # 起動ログに 1 行出て、3 秒で終わる
+curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
+# {"at":1789558422,"forward_us":42.6,"connect_us":140.0,"cores":4,"requests":20000,
+#  "connects":2000,"secs":3,"note":"stopped early at the caps (20000 requests, 2000 CONNECTs)"}
+```
+
+手元 (既定プロファイル・ログ `warn`・cpu4-7 に固定) では、この `forward_us` は **37〜43 us** に出ます
+(上の表の forward 8 並列 **41.4 us** と同じ桁)。ただし `scripts/cpu-per-request.sh --only forward` を
+**同じ日に回した値より 17〜26% 低め**に出ます。低いのは、自己ベンチが自分の要求を統計に載せない
+(= ホスト別・接続元別の鍵を取らない) ぶんと、打ち手が同じプロセスの中にいてループバックの往復が
+キャッシュに乗るためです。**比べるときは「自己ベンチどうし」で**比べてください: 置いた先の
+`forward_us` を手元の `forward_us` で割れば、「そのコンテナの CPU は手元の big コアの何倍遅いか」が
+1 つの数字になります (同じコードの同じ経路を同じ測り方で測っているので、この比は読めます)。
+
+読むときの注意:
+
+- **本数に上限があります** (forward **20,000 要求** / CONNECT **2,000 本**)。速い機械では 3 秒より早く、
+  先に当たった方で終わります (そのとき `note` に `stopped early at the caps` と出ます)。
+  上限があるのは、上限なしだと 1.5 秒で CONNECT を 22,000 本張ってしまい、**カーネルに TIME_WAIT が
+  44,000 本残る**ためです。`secs` は**回す秒数の上限**で、実際にかかった時間ではありません。
+- **自己ベンチのぶんは統計に 1 件も入りません**: `/status` の `total_requests` / `bytes_forwarded`、
+  `/hosts`、`/clients`、`/recent` (閉じた接続の個票)、`/connections`、`/history` のどれにも載せません
+  (載せると、静かなプロキシでは起動直後の 3 秒が 1 日ぶんの統計を塗りつぶしてしまいます)。
+  残るのは `/status` の `self_bench` と `/events` の 1 行だけです。
+- **測る 3 秒だけログ水準を `warn` に下げます** (既定の `info` のままだとアクセスログが数万行出て、
+  1 行 7.2 us が CPU/要求 に乗ってしまうため)。終わったら元の水準に戻します。
+- `PROXY_ALLOW_LOCAL=off` (既定) のままで構いません。**自己ベンチが使う 2 つのポート宛てだけ**を
+  3 秒間だけ判定から外します (穴はそれ以外に開きません)。
+- 既定は `off` で、そのときは起動時の分岐 1 つ以外**何も走りません**。置いた先では
+  **再デプロイの直後に 1 回だけ** `on` にして数字を取り、`off` に戻す使い方を想定しています。
+
 ### デプロイ先 (実際に使っているプロキシ) の数字
 
 上の表は loopback = 「同じ機械の中でどこまで速いか」です。**利用者が実際に待つ時間**は
@@ -129,6 +169,7 @@ scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z 
 scripts/weekly-report.py ~/rust-http-proxy-status/ -o week.md    # 置き場ごと渡す
 scripts/weekly-report.py ~/rust-http-proxy-status/*-snapshot.json --days 7 --top 10
 curl -s 'http://PROXY/daily?n=7' > daily.json && scripts/weekly-report.py daily.json
+scripts/weekly-report.py ~/rust-http-proxy-status/ --out json    # 表の元の辞書をそのまま
 ```
 
 **数字の求め方は `snapshot-diff.py` と同じ**です: `/history?res=3600` を **UTC の日で切って**
@@ -414,10 +455,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   - `/dashboard` (ブラウザ用のコントロールパネル: 要求/転送レート・命中率・**CONNECT 確立 p50 (直近 1,024 本の実測)** と p95・
     **今日の SLO (`PROXY_SLO` の 4 つの閾を満たした 5 秒の割合。T14.50)**・
     **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
-    **最近のエラー (直近 20)** と **いまの接続 (上位 50)** の表 (どちらも 5 秒ごと)、
+    **最近のエラー (直近 20)** と **いまの接続 (上位 50。列に「速さ」= `rate_bps` = 直近 5 秒のバイト/秒。T14.39)** の表 (どちらも 5 秒ごと)、
     URL の照会と削除、全消去)、`/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
-  - **`/inspect` (「調査」ページ: 起きたことを時間軸で読む。T14.8)**: `/dashboard` が「いま」の画面なのに対して、
-    閉じた接続の個票を**時間軸**で読む別のページです (`/dashboard/inspect` も同じもの)
+  - **`/inspect` (「調査」ページ: 起きたことを時間軸で読む。T14.8 / T14.44)**: `/dashboard` が「いま」の画面なのに対して、
+    閉じた接続の個票を**時間軸**で読む別のページです (`/dashboard/inspect` も同じもの)。
+    **「今日」(`/daily`) と「今週」(`/daily` の 7 行 + `/snapshots`) と「出来事と異常」(`/events`) も
+    このページにあります** — 日次・週次・異常を見に行く場所が 1 つで済むように (T14.44)
   - **`/probe.html` (「端末から測る」ページ。T14.33)**: プロキシ側の計測は「プロキシに届いてから」しか
     見えないので、**利用者のブラウザから** `/status` の往復と、プロキシ経由で小さな URL を取る時間を測り、
     `/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) に並べて読むページです
@@ -824,6 +867,17 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       原子操作もシステムコールも壁時計の読みも増えません。分位点を出すのは `/status`
       (と `/history?summary=1`) に来たときだけです。**`--lite` では 1 本も書きません**
       (`n` が 0 のまま)。メモリだけで `.rrd` には書かないので、再起動で消えます
+  - **起動直後の自己ベンチ** (`/status` の `self_bench`。T14.43):
+    `{"at":1789558422,"forward_us":42.6,"connect_us":140.0,"cores":4,"requests":20000,"connects":2000,"secs":3,"note":null}`。
+    `PROXY_SELF_BENCH=on` で起動したときだけ入り、既定 (`off`) では `null` です。
+    **置いた先のコンテナの CPU で 1 要求が何 us か**を、上の「性能」の表と同じ物差しで出すためのもの
+    (詳しくは「置いた先の CPU/要求 を同じ物差しで測る」)。`forward_us` は CPU/要求、`connect_us` は
+    CPU/本 で、どちらも**プロセスの utime+stime の増分から自己ベンチ自身のスレッドの取り分を引いた値**を
+    操作数で割ったものです (`clock_gettime` の `CLOCK_PROCESS_CPUTIME_ID` / `CLOCK_THREAD_CPUTIME_ID`。
+    `/proc` の 10 ms 刻みでは 1.5 秒の窓に足りません)。`note` には断られた理由か、
+    本数の上限で早く終わったことが入ります。**この 3 秒ぶんは他のどの口にも数えません**
+    (`total_requests` も `/hosts` も `/recent` も素通し)。読めない環境 (Linux 以外) では
+    数字が `null` になり `note` に理由が入ります
   - **いまの転送速度** (`/connections` の各行の `rate_bps` と `/status` の `rate_bps_total`。T14.39):
     `bytes` は接続を受けてからの**累計**なので「いま誰が帯域を使っているか」が読めません。
     履歴スレッドが**5 秒ごとに全接続の `bytes` を控え**、前に控えた値との差分 ÷ その周期を
@@ -839,6 +893,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       `bytes_in` / `bytes_out` (T14.26。接続が閉じてからの集計) を見てください
     - keep-alive の HTTP 接続は中継中に `bytes` を置かないので `rate_bps` は 0 のままです
       (速さが出るのは CONNECT のトンネルです)。`--lite` では表そのものが空なので `rate_bps_total` は 0 です
+    - ダッシュボード (`/dashboard`) の「いまの接続」には**「速さ」の列**として出ます (T14.44)
   - `PURGE <url>` / `/purge?url=<url>` / `/purge?all=1` でキャッシュを消す、`/lookup?url=<url>` でエントリの状態を見る
   - `/history?res=5|60|3600[&n=720]` で **6 時間 / 1 日 / 30 日**の履歴。
     **`res=5` は 5 秒の標本を 6 時間ぶん (4,320 本) メモリに持ちます** (T14.32。バーストは数時間続く
@@ -1026,6 +1081,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_SNAPSHOT_DAYS` | `30` | **日次の snapshot** を残す日数 (T14.34)。履歴スレッドが **UTC の日付をまたいだ瞬間**にその時点の `/snapshot` をまるごと `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` (名前は**終わった日**) に書き、**31 個目を書いたら最古を 1 つ消します**。1 ファイルは `/snapshot` と同じ **4 MiB** まで (30 日で最大 120 MiB、静かなプロキシなら 1 日 20 KB 前後)。`0` で書きません。読む口は `/snapshots` と `/snapshots/<date>`。`PROXY_STATS_PERSIST=off` と `--lite` では履歴スレッドごと無いので書きません。ディスクの空きが `PROXY_DISK_KEEP_FREE_MB` のマージンを割り込むときは書かずに `/events` に 1 件 (`state_file`) 残します。**再起動で反映** |
 | `PROXY_SLO` | `connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2` | **SLO の 4 つの閾** (T14.50)。履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、**4 つとも満たした標本の割合**を `/slo` で返します (`connect_p50_ms` / `connect_p95_ms` = その 5 秒に確立した CONNECT の p50 / p95 (ms)、`error_rate` = エラー ÷ 試み (確立 + 転送 + エラー)、`dns_miss_per_connect` = 名前解決のミス ÷ 確立。**満たす = 閾以下**)。**確立が 1 本も無い 5 秒は「判定なし」**で分母に入れません (誰も使っていない夜中を「達成」と数えると、達成率が「動いていた割合」に化けるため)。書いた閾だけが効き、書いていない閾・知らない綴り・数として読めない値・負の値は既定のままです (例: `PROXY_SLO=connect_p50_ms=6` だけ書けば p50 の閾だけ 6 ms になる)。効いている値は `/config` の `PROXY_SLO` と `/slo` の `thresholds`。判定するのは履歴スレッドなので**要求の経路の費用は 0** で、`PROXY_STATS_PERSIST=off` と `--lite` では 1 本も判定しません。**再起動で反映** |
 | `PROXY_PROFILE_SAMPLE_MS` | `1000` | `/profile` のスレッドの標本を取る間隔 (ms)。`profile-sample` スレッド 1 本が この間隔で `/proc/self/task/*/stat` と `/proc/self/task/*/syscall` を読み、**役割ごと** (`accept` / `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` / `profile-sample` / `other`) に「CPU」と「いま走っているか・どのシステムコールで待っているか・休眠か」を数えます。`0` で標本を止める (段階の窓は 5 秒ごとに畳み続けます)。下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 2 つ開くぶん (実測 約 54 us) で、**140 スレッド・1 秒間隔で 1 コアの 0.75%** (60 秒で 450 ms。128 スレッド相当で 0.69%)。スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。`/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。**`--lite` では `/profile` ごと off** |
+| `PROXY_SELF_BENCH` | `off` | **起動直後に loopback だけで 3 秒の自己ベンチ**を回して CPU/要求 と CPU/本 を測ります (T14.43)。待ち受けを開いた直後に、このプロセスの中へ**固定 1 KiB を返すオリジン** (`no-store`) と**すぐ閉じる sink** を `127.0.0.1` の使い捨てポートに立て、**自分の待ち受けへ** forward 8 並列と CONNECT 8 並列を打ちます。**外へは 1 バイトも出しません**。結果は `/status` の `self_bench` と、起動ログ・`/events` の 1 行 (`self_bench forward 43 us, connect 140 us …`)。**本数に上限があり** (forward **20,000 要求** / CONNECT **2,000 本**)、秒数より先に当たればそこで終わります (上限が無いと CONNECT を 1.5 秒で 22,000 本張り、TIME_WAIT が 44,000 残ります)。**自分で打ったぶんはどの統計にも入れません** (`total_requests` / `bytes_forwarded` / `/hosts` / `/clients` / `/recent` / `/connections` / `/history`)。測る 3 秒だけログ水準を `warn` に下げ (既定の `info` のままだとアクセスログが数万行出て CPU/要求 に乗るため)、**`PROXY_ALLOW_LOCAL=off` (既定) のままでもこの 2 つのポート宛てだけ**を 3 秒間通します。用途は「上の『性能』の表 (この機械の big コア、41.4 us/要求) と**置いた先のコンテナ**を同じ物差しで並べる」ことなので、**普段は `off`** のままにして、再デプロイの直後に 1 回だけ `on` にしてください。`off` では起動時の分岐 1 つ以外何も走りません (`--lite` でも明示すれば回ります)。**再起動で反映** |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
 | `PROXY_TLS_VERIFY` | `on` | オリジンの証明書を検証するか。`off` は自己署名の内部オリジン向け (推奨しない) |
@@ -1281,7 +1337,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 ## クレート構成
 
 **外部クレートは 1 つも使っていません** (すべて `std` のみ)。`crates/` にあるのは全部このリポジトリのコードで、
-責務ごとの層に分けてあります (26 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
+責務ごとの層に分けてあります (27 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
 全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
 
 | クレート | 責務 |
@@ -1311,6 +1367,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 | `proxy-http` | 中継の本体 |
 | `proxy-tunnel` | CONNECT トンネル |
 | `proxy-endpoints` | プロキシ自身のエンドポイント (`/dashboard` `/status` `/metrics` …) |
+| `proxy-selfbench` | 起動直後の自己ベンチ (`PROXY_SELF_BENCH=on`)。内蔵の小さなオリジンと打ち手、CPU の測り方。依存は `proxy-base` だけ |
 | `proxy-bench` | 計測用の道具 (既定のビルド対象から外してあります。`cargo build --release -p proxy-bench`) |
 | `rust-http-proxy` | 接続の受け付け、keep-alive、アイドル接続の預かり |
 
@@ -1735,20 +1792,38 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 同じ読み方を回すので、本物の分布 (ホスト 817 件・1,440 標本) で壊れたらここで気づきます。
 
 **`/inspect` は「調査」ページ**です (`/dashboard/inspect` も同じもの。T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
-こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページ (64 KiB 以下) のままです。
+こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページのままです。
+**大きさの上限は 96 KiB** です (T14.8 は 64 KiB でしたが、T14.44 で「今日」「今週」「出来事と異常」の
+3 枚を足して **58,076 B** になり、64 KiB までの余白が 7 KiB しか残らなかったため上げました。
+外部ライブラリを読み込まない 1 枚という方針は変えていません。`node scripts/check-dashboard.js` が見張ります)。
 更新は**個票 (`/status` `/recent` `/events` `/history?summary=1`) が 10 秒ごと、表と散布 (`/bursts` `/clients`
-`/hosts` `/hosts/series`) は 30 秒ごと**です (`/hosts` は上位 200 まで。開いたままにしても監視より重くならないように)。
-描くのは 6 枚:
+`/hosts` `/hosts/series` `/daily` `/snapshots`) は 30 秒ごと**です (`/hosts` は上位 200 まで。
+`/daily` と `/snapshots` は日に 1 回しか変わらないので重い方に置いています。開いたままにしても監視より重くならないように)。
+描くのは 9 枚:
 
 - **タイムライン** (`/recent`): 横 = 時刻、縦 = 接続元 (宛先にも切り替えられます)、線 1 本が接続 1 本で、
   長さ = 寿命・色 = 閉じた理由 (8 種。`error:<原因>` は 1 色に畳みます)・太さ = 運んだバイト。
   範囲は 1 時間 / 6 時間 / 24 時間 (`/recent?since=`)。**`/events` の出来事**は縦の破線の印で重ねます
   (種類が増えても既定の色で描くだけなので壊れません)
+- **出来事と異常** (`/events?n=200`。T14.11 / T14.23): タイムラインに重ねた印と同じ出来事を、
+  **新しい順の表**で読みます (印は `eventMarks`、表は `eventRows` で別の関数です)。`anomaly` は色を変え、
+  **`cleared: <種類>` は立った出来事と対にして**続いた長さを両方の行に出します
+  (対の見つからない異常は「まだ続いています」)。知らない綴りが増えても既定の色で並ぶだけです
 - **起動からの窓**: `/history?since=restart&summary=1` (T14.24) を 1 要求で読み、「起動から」と「通算」を
   切り替えます。`?summary=1` を持たない版や `--lite` では `/history` の標本を `since_start_secs` で切って
   手元で畳みます (どちらでも同じ 1 行になります)
+- **今日** (`/daily?n=14`。T14.20): 日別の要求・転送・CONNECT・p50 / p95・名前解決のミス率・ミス 1 回・
+  エラー・山・RSS・版の表 (新しい順) と、いちばん新しい日の主な数字。`/daily` は**終わった日**しか書かないので、
+  今日ぶんは上の「起動からの窓」で読みます。「見ていた」の列は `secs ÷ 24 時間` で、
+  再起動した日は 100% に届きません。**この口を持たない版と `--lite` では「記録していません」**と出ます
+- **今週** (`/daily` の 7 行 + `/snapshots`。T14.40 / T14.34): サーバーに `weekly-report.py` は無いので、
+  **`/daily` の 7 行をこのページの中で足して**要求・転送・CONNECT・エラー (と率)・名前解決のミス率・
+  ミス 1 回 (ミスの数で重みを付けた平均)・最大同時・山・RSS を出します。**p50 / p95 は日をまたいで
+  足せない** (区間ヒストグラムが `/daily` に無い) ので、日ごとの値をそのまま並べて幅だけ書きます
+  (`weekly-report.py` と同じ判断)。各日の行には**その日の雪像** (`/snapshots`。T14.34) へのリンクが付きます
 - **遅い接続 (上位 50)** (`/recent?sort=slow`): 段階 (`queue` / `client_read` / `dns` / `connect` / `first_relay`。T14.3) の
-  積み上げ横棒と、**確立 − RTT** の列 (T14.5。RTT では説明できない待ちがどれだけかを 1 列で読むため)
+  積み上げ横棒と、**確立 − RTT** の列 (T14.5。RTT では説明できない待ちがどれだけかを 1 列で読むため)。
+  宛先は `/explain?host=` (T14.36) へのリンクです (1 相手ぶんを 1 枚で読む口)
 - **山の写真** (`/bursts`): 1 枚ずつ、接続元別・宛先別・状態別・種類別の内訳と、そのときのスレッド / fd
 - **接続元** (`/clients`): `User-Agent`・宛先の種類・IP リテラル宛て・RTT・初回 / 最終
   (RTT は標本が無ければ「–」です)
@@ -1758,13 +1833,18 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
   ホストは描きません。接続の平均が 0 ms = 1 ms 未満のホストは y = 0 に描きます)
 - **ホスト別の折れ線** (`/hosts/series?top=8`。T14.22): この口を持っている版でだけ出る枠です
   (無ければ枠ごと出しません)
-- (ページの先頭に `/snapshot` へのリンクがあります。個票を 1 要求で持ち帰るときはそちら)
+- (ページの先頭に `/snapshot` と `/daily` `/snapshots` へのリンクがあります。個票を 1 要求で持ち帰るときはそちら)
 
 描画関数 (`timeline` / `slowRows` / `burstCards` / `clientRows` / `rttScatter` / `sinceStart` / `eventMarks` /
-`seriesLines`) は DOM に触らないので、`node scripts/check-dashboard.js` が
-`scripts/testdata/snapshot-local.json` (手元のベンチで取った `/snapshot` の実出力。宛先は
-`127.0.0.1` と `localhost` だけです) と `scripts/testdata/history-summary.json` (同じく `?summary=1` の実出力)、
+`seriesLines` / `dailyRows` / `weeklyRows` / `eventRows`) は DOM に触らないので、
+`node scripts/check-dashboard.js` が `scripts/testdata/snapshot-local.json` (手元のベンチで取った
+`/snapshot` の実出力。宛先は `127.0.0.1` と `localhost` だけです) と
+`scripts/testdata/history-summary.json` (同じく `?summary=1` の実出力)、
 それに渡せばデプロイ先の `/status` `/history` でも回します。
+「今日」「今週」「出来事と異常」の 3 つは、`/daily` と `/snapshots` の作り置き 9 日ぶん・
+`snapshot-local.json` の本物の `/events` (異常入り)・**匿名化した実データ** (T14.35。この版の雪像には
+`/daily` も `/events` も無いので**「無い版」の分岐**を実データで通し、`/history?res=3600` を UTC の日で
+束ねた週の足し算が `weekly-report.py` (T14.40) の週の数字と一致することも見ます) の 3 つで回ります。
 
 **`/probe.html` は「端末から測る」ページ**です (T14.33)。プロキシ側の計測は「プロキシに届いてから」しか見えないので、
 **利用者のブラウザから**測ってプロキシ側の数字と突き合わせるための 1 ページ (外部ライブラリなし、64 KiB 以下) です。

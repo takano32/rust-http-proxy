@@ -1361,6 +1361,13 @@ impl Metrics {
         took: Option<Duration>,
         detail: &Detail,
     ) {
+        // 起動時の自己ベンチ (T14.43) が自分で打った要求は `/hosts` にも窓にも入れない。
+        // 入れると 20,000 要求ぶんの行・分位点・段階が実トラフィックの統計に混ざり、
+        // デプロイ先の `/status` と `/history` が起動直後の 3 秒に支配される。
+        // 費用は自己ベンチが回っていないときの原子の読み 1 回 (鍵も時計も触る前)
+        if crate::selfbench::is_target(host) {
+            return;
+        }
         // 壁時計はここで 1 回だけ読む (ホスト別の `last_seen` と直近の標本 (T14.31) で
         // 使い回す。**読む回数は今までと同じ 1 回**)
         let now = crate::cache::now_epoch();
@@ -1522,6 +1529,10 @@ impl Metrics {
         took: Option<Duration>,
         target: Option<&str>,
     ) {
+        // ホスト別と同じ理由で、自己ベンチのぶんは `/clients` にも入れない (T14.43)
+        if target.is_some_and(crate::selfbench::is_target) {
+            return;
+        }
         let mut clients = self.clients.locked();
         if let Some(stats) = clients.get_mut(client) {
             stats.count(outcome, bytes, dir, took, target);
@@ -1857,9 +1868,10 @@ impl Metrics {
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
                 // (`memory` も T14.21、`recent_quantiles` も T14.31、`rate_bps_total` も
                 // T14.39、`rejected_requests` も T14.28、`sni_mismatches` も T14.38、
-                // `heavy_rejected` も T14.51 で同じく末尾)
+                // `self_bench` も T14.43、`heavy_rejected` も T14.51 で同じく末尾)
                 "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
-                "\"rejected_requests\":{},\"sni_mismatches\":{},\"heavy_rejected\":{}}}"
+                "\"rejected_requests\":{},\"sni_mismatches\":{},\"self_bench\":{},",
+                "\"heavy_rejected\":{}}}"
             ),
             SCHEMA,
             crate::json::escape(extra.version),
@@ -1916,6 +1928,9 @@ impl Metrics {
             self.rejected_requests_json(),
             // CONNECT のホストと SNI が食い違った本数 (T14.38)
             self.sni_mismatches.load(Ordering::Relaxed),
+            // 起動直後に loopback だけで測った CPU/要求 と CPU/本 (T14.43)。
+            // `PROXY_SELF_BENCH=off` (既定) なら `null` (覚えている結果が無い)
+            crate::selfbench::status_json(),
             // 重い口が 1 本走っている最中に来て 503 で断った数 (T14.51)
             self.heavy_rejected.load(Ordering::Relaxed)
         )

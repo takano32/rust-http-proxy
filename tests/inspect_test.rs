@@ -77,3 +77,51 @@ fn test_integration_inspect_page_is_served_even_in_lite_mode() {
         "lite なのに /dashboard が載った"
     );
 }
+
+/// T14.44 で足した 3 枚 (「今日」「今週」「出来事と異常」) の配線。
+///
+/// 中身が正しいかは `scripts/check-dashboard.js` の 15 番目の検査 (実出力と
+/// 匿名化した実データ) が見るので、ここで見るのは**節がページにあること**と、
+/// **`--lite` でも 200 のまま**であること (3 枚は「記録していません」と出す)。
+#[test]
+fn test_integration_inspect_has_daily_weekly_and_event_sections() {
+    let port = start_test_proxy(proxy_config());
+    let page = get(port, "/inspect");
+    assert!(
+        page.starts_with("HTTP/1.1 200 OK") && page.contains("text/html"),
+        "{}",
+        &page[..page.len().min(200)]
+    );
+    for needle in [
+        // 新しい節の見出しと表
+        ">今日 <",
+        ">今週 <",
+        ">出来事と異常 <",
+        "id=\"daily\"",
+        "id=\"weekly\"",
+        "id=\"events\"",
+        // node の整形テストが抜き出す描画関数 (DOM に触らない 3 つ)
+        "function dailyRows(",
+        "function weeklyRows(",
+        "function eventRows(",
+        // 読む口と導線 (T14.20 / T14.34 / T14.36)
+        "/daily?n=14",
+        "<a href=\"/snapshots\" target=\"_blank\">",
+        "/explain?host=",
+    ] {
+        assert!(page.contains(needle), "{} が無い", needle);
+    }
+
+    // **`--lite` でも 200**。日次も出来事も記録していないことはページの中で伝える
+    let mut lite = proxy_config();
+    lite.lite = true;
+    let lite_port = start_test_proxy(lite);
+    let page = get(lite_port, "/inspect");
+    assert!(
+        page.starts_with("HTTP/1.1 200 OK") && page.contains("text/html"),
+        "{}",
+        &page[..page.len().min(200)]
+    );
+    assert!(page.contains(">今日 <") && page.contains(">今週 <"));
+    assert!(page.contains("記録していません"), "lite の断り書きが無い");
+}
