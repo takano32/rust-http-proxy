@@ -10,7 +10,7 @@
 //! 頻度の高いものには歯止めを掛けてある: [`note_evict`] と [`note_accept_error`] は
 //! **1 時間に初めて起きたときだけ**、状態ファイルの書込エラーは最初の 1 回だけ。
 //!
-//! 種類は [`EventKind`] の **10 種で固定** (増やすなら README も)。書く場所:
+//! 種類は [`EventKind`] の **11 種で固定** (増やすなら README も)。書く場所:
 //!
 //! | 種類 | 書く場所 |
 //! |---|---|
@@ -20,6 +20,7 @@
 //! | `ipv6` / `pressure` / `ballast` | [`poll`] (履歴スレッドの周期。下を参照) |
 //! | `state_file` | `crates/metrics/src/persist.rs` (書込エラーの最初の 1 回) |
 //! | `evict` / `emfile` | `src/lib.rs` (上限に当たって閉じた / accept が失敗した) |
+//! | `anomaly` | [`crate::anomaly`] (標本が基準値から外れた / 戻った。T14.23) |
 //!
 //! `ipv6` / `pressure` / `ballast` の 3 つだけ**変わり目を [`poll`] で見る**のは、
 //! それを起こす `proxy-net` と `proxy-cache` が**この層より下**にあるため
@@ -42,7 +43,7 @@ pub const MAX_EVENTS: usize = 512;
 /// 1 件の説明に収める長さ (バイト)。長いものは末尾に `…` を付けて切る。
 pub const MAX_TEXT: usize = 128;
 
-/// 出来事の種類 (**10 種で固定**)。
+/// 出来事の種類 (**11 種で固定**)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventKind {
     /// 起動した (版と、効いている設定の要約)
@@ -65,10 +66,12 @@ pub enum EventKind {
     Emfile,
     /// 停止シグナルを受けた
     Shutdown,
+    /// 標本が直近 1 時間の基準値から外れた / 戻った ([`crate::anomaly`]。T14.23)
+    Anomaly,
 }
 
 /// `/events` の `kinds` に出す全種類 (README の一覧と同じ並び)。
-pub const KINDS: [EventKind; 10] = [
+pub const KINDS: [EventKind; 11] = [
     EventKind::Start,
     EventKind::Reload,
     EventKind::Blocklist,
@@ -79,6 +82,7 @@ pub const KINDS: [EventKind; 10] = [
     EventKind::Evict,
     EventKind::Emfile,
     EventKind::Shutdown,
+    EventKind::Anomaly,
 ];
 
 impl EventKind {
@@ -105,6 +109,7 @@ impl EventKind {
             EventKind::Evict => "evict",
             EventKind::Emfile => "emfile",
             EventKind::Shutdown => "shutdown",
+            EventKind::Anomaly => "anomaly",
         }
     }
 }
@@ -391,12 +396,14 @@ pub fn poll(cache: &crate::cache::Cache) {
     on_ballast(&LAST_BALLAST, cache.mem_reserved(), cache.disk_reserved());
 }
 
+/// リングは 1 本きり (静的) なので、テストはこの鍵で 1 つずつ通す
+/// ([`crate::anomaly`] のテストもここに書くので、モジュールの外に出してある)。
+#[cfg(test)]
+pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// リングは 1 本きり (静的) なので、テストは 1 つずつ通す。
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn guard() -> std::sync::MutexGuard<'static, ()> {
         let g = TEST_LOCK.locked();
@@ -463,12 +470,12 @@ mod tests {
     }
 
     #[test]
-    fn the_ten_kinds_have_distinct_names() {
+    fn the_eleven_kinds_have_distinct_names() {
         let mut names: Vec<&str> = KINDS.iter().map(|k| k.name()).collect();
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 10, "名前が重なっている");
+        assert_eq!(names.len(), 11, "名前が重なっている");
     }
 
     #[test]

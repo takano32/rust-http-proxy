@@ -230,6 +230,9 @@ fn main() {
             rust_http_proxy::VERSION,
         );
     }
+    // 異常の自動検知の閾 (T14.23)。判定するのは履歴スレッドなので、渡すのは
+    // 同時接続の上限と、山と見なす本数 (T14.6 の写真と同じ閾) の 2 つだけ
+    rust_http_proxy::anomaly::configure(config.max_conns, config.burst_at);
     // 永続化しないなら履歴スレッドも起動しない (/history とダッシュボードのグラフは空になる)
     let _history = config.stats_persist.then(|| {
         rust_http_proxy::history::spawn(Arc::clone(&metrics), Arc::clone(&cache), store.clone())
