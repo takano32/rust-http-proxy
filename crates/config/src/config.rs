@@ -6,6 +6,7 @@ use crate::acl::{AclConfig, ClientAcl, PortSet};
 use crate::cache::config::DEFAULT_TARGET_PERCENT;
 use crate::cache::{CacheConfig, DiskQuota, Limit, MIB};
 use crate::envfile;
+use crate::records;
 
 /// 1 接続が最悪で使う記述子の数: クライアント 1 + オリジン 1 + 素通し中のパイプ 2 (`splice`)。
 pub const FDS_PER_CONN: u64 = 4;
@@ -453,6 +454,15 @@ pub struct Config {
     /// 覗くのは `200 Connection Established` のあと**最初の中継の前に 1 回**
     /// (`recv(MSG_PEEK)` 1 回。バイトは消費しない)。`--lite` では個票の枠が無いので覗かない
     pub peek_sni: Option<u16>,
+    /// 記録の一括 off とハッシュ化 (`PROXY_RECORDS`、既定 `on`。T14.41)。
+    ///
+    /// `on` は今までどおり、`off` は個票のリング (`/recent` `/errors` `/connections`
+    /// `/clients` `/log` `/events` `/trace` `/bursts`) に 1 件も書かない、`hashed` は
+    /// 接続元 IP を[起動ごとの乱数つき FNV-1a 64 ビットの 16 進 16 桁]に置き換えて残す。
+    /// **止まるのは接続元の側だけ**で、ホスト別の統計 (`/hosts`) と `/history` は
+    /// `off` でも残る。当てる先はプロセス全体の旗 ([`crate::records::set`]) で、
+    /// `.env` で書き換えると**次の記録から**効く
+    pub records: crate::records::Mode,
     /// 各値の出どころ (`/config` の `source`。T14.15)。効いた値にだけ印が付く
     pub sources: Sources,
 }
@@ -651,6 +661,14 @@ impl Config {
                 cfg.peek_sni = port;
                 src.mark("PROXY_PEEK_SNI");
             }
+        }
+        // 記録の一括 off とハッシュ化 (T14.41)。読めない書き方は既定 (`on`) のまま
+        if let Some(m) = envfile::var("PROXY_RECORDS")
+            .as_deref()
+            .and_then(records::parse)
+        {
+            cfg.records = m;
+            src.mark("PROXY_RECORDS");
         }
         if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
             cfg.stats_persist = !off(v);
@@ -882,6 +900,7 @@ impl Config {
         add("PROXY_TLS_VERIFY", self.tls_verify.to_string());
         add("PROXY_TLS_CA_FILE", path(self.tls_ca_file.as_ref()));
         // 記録とプロファイル
+        add("PROXY_RECORDS", crate::json::quote(self.records.name()));
         add("PROXY_STATS_PERSIST", self.stats_persist.to_string());
         add("PROXY_SNAPSHOT_DAYS", self.snapshot_days.to_string());
         add("PROXY_SLO", crate::json::quote(&self.slo.spec()));
@@ -1024,6 +1043,7 @@ impl Config {
             max_conns_per_client: 0,
             trace_client: None,
             peek_sni: Some(DEFAULT_PEEK_SNI_PORT),
+            records: crate::records::Mode::On,
             sources: Sources::default(),
         })
     }

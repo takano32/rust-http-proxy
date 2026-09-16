@@ -1478,8 +1478,14 @@ impl Metrics {
         took: Option<Duration>,
         target: Option<&str>,
     ) {
+        // 記録の一括 off とハッシュ化 (T14.41)。`off` は鍵も取らずに戻る
+        // (ホスト別の統計 `/hosts` はこの上の `record_host*` なので残る)
+        if !crate::records::recording() {
+            return;
+        }
+        let client = &crate::records::client_key(client);
         let mut clients = self.clients.locked();
-        if let Some(stats) = clients.get_mut(client) {
+        if let Some(stats) = clients.get_mut(client.as_ref()) {
             stats.count(outcome, bytes, dir, took, target);
             return;
         }
@@ -1516,11 +1522,12 @@ impl Metrics {
     /// 利用者 → プロキシの往復がここで初めて数字になる。[`record_host_rtt`](Self::record_host_rtt)
     /// と同じく**接続の終わりだけ**で、鍵は `record_client` のものと同じ 1 つ。
     pub fn record_client_rtt(&self, client: &str, rtt_us: u32, retrans: u32) {
-        if rtt_us == 0 {
+        if rtt_us == 0 || !crate::records::recording() {
             return;
         }
+        let client = crate::records::client_key(client);
         let mut clients = self.clients.locked();
-        if let Some(c) = clients.get_mut(client) {
+        if let Some(c) = clients.get_mut(client.as_ref()) {
             c.stats.observe_rtt(rtt_us, retrans);
         }
     }
@@ -1553,8 +1560,12 @@ impl Metrics {
     /// ヘッダーの走査も鍵も要求ごとに増えるので、接続 1 本につき 1 回に決めてある
     /// (2 要求目からは呼び出し側の旗で飛ばす)。
     pub fn record_client_agent(&self, client: &str, agent: &str) {
+        if !crate::records::recording() {
+            return;
+        }
+        let client = &crate::records::client_key(client);
         let mut clients = self.clients.locked();
-        if let Some(stats) = clients.get_mut(client) {
+        if let Some(stats) = clients.get_mut(client.as_ref()) {
             stats.note_agent(agent);
             return;
         }
@@ -1574,10 +1585,16 @@ impl Metrics {
     /// **通るのは断った経路だけ**なので、通した接続には 1 命令も足さない。全体の合計
     /// (`rejected_per_client`) も同じ場所で足す (鍵は接続元の表の 1 回)。
     pub fn record_client_rejected(&self, client: &str) {
+        // **合計 (`/status` の `rejected_per_client`) は `off` でも数える**
+        // (「誰が」を含まない数字なので、止めるのは接続元別の表だけ。T14.41)
         self.rejected_per_client
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !crate::records::recording() {
+            return;
+        }
+        let client = &crate::records::client_key(client);
         let mut clients = self.clients.locked();
-        if let Some(stats) = clients.get_mut(client) {
+        if let Some(stats) = clients.get_mut(client.as_ref()) {
             stats.rejected += 1;
             return;
         }
@@ -1628,20 +1645,29 @@ impl Metrics {
     }
 
     /// 起動時に状態ファイルから読み戻す (今の値が空のときだけ)。
+    ///
+    /// **ホスト別はそのまま、接続元別は記録の形に直してから入れる** (T14.41)。
+    /// `off` なら接続元の表は 1 行も戻さず (`.rrd` は消さないので `on` に戻せばまた読める)、
+    /// `hashed` なら前の起動が `on` で書いた生の IP をここで 16 進に直す — 直さないと
+    /// `hashed` で起こし直した直後の `/clients` に生の IP が並ぶ。
     pub fn restore(&self, hosts: Vec<(String, HostStats)>, clients: Vec<(String, HostStats)>) {
         let mut h = self.hosts.locked();
         if h.map.is_empty() {
             h.map.extend(hosts);
         }
+        if !crate::records::recording() {
+            return;
+        }
         let mut c = self.clients.locked();
         if c.is_empty() {
             // 読み戻した接続元は「いつから居るか」が分からない (`first_seen` は
             // `.rrd` に書いていない欄なので 0 のまま = この起動より前から)
-            c.extend(
-                clients
-                    .into_iter()
-                    .map(|(k, s)| (k, ClientStats::restored(s))),
-            );
+            c.extend(clients.into_iter().map(|(k, s)| {
+                (
+                    crate::records::client_key(&k).into_owned(),
+                    ClientStats::restored(s),
+                )
+            }));
         }
     }
 
@@ -1813,7 +1839,9 @@ impl Metrics {
                 // (`memory` も T14.21、`recent_quantiles` も T14.31、`rate_bps_total` も
                 // T14.39、`rejected_requests` も T14.28、`sni_mismatches` も T14.38 で同じく末尾)
                 "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
-                "\"rejected_requests\":{},\"sni_mismatches\":{}}}"
+                // `records` も**末尾** (T14.41)。`off` / `hashed` のとき、この応答より
+                // 下の口 (`/recent` など) が空 / 16 進なのはこの値のせいだと読める
+                "\"rejected_requests\":{},\"sni_mismatches\":{},\"records\":\"{}\"}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1868,7 +1896,9 @@ impl Metrics {
             // 読めずに断った要求の理由別 (T14.28)。原子 6 本を読むだけ
             self.rejected_requests_json(),
             // CONNECT のホストと SNI が食い違った本数 (T14.38)
-            self.sni_mismatches.load(Ordering::Relaxed)
+            self.sni_mismatches.load(Ordering::Relaxed),
+            // 記録の一括 off とハッシュ化 (T14.41)。旗を原子 1 回読むだけ
+            crate::records::mode().name()
         )
     }
 }

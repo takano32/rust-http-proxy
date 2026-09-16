@@ -664,6 +664,38 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     要求行の URL を先頭 256 バイトまで残します。これも認証なしで見えるので、**調べ終わったら
     `PROXY_TRACE_CLIENT` を空に戻してください** (空にすれば次の接続から書かなくなり、
     プロセスを再起動すればリングごと消えます。リングはメモリだけでファイルには残りません)
+  - **記録を一括で止める / 接続元を復元できない形にする (`PROXY_RECORDS`。T14.41)**:
+    上の個票は**認証なしの公開ポートでも誰でも読めます**。利用者以外の人の情報を残さずに
+    動かしたいときのつまみが `PROXY_RECORDS` で、**旗 1 つで全部の個票を止める**か、
+    **接続元 IP をハッシュに置き換える**かを選べます。
+    - **`on` (既定)**: 今までどおり。
+    - **`off`**: `/recent` `/errors` `/connections` `/clients` `/log` `/events` `/trace` `/bursts`
+      **のどれにも 1 件も書きません** (どれも `"count": 0`)。個票のファイル
+      (`$HOME/.rust-http-proxy.recent`) にも 1 バイトも書かず、読み戻しもしません
+      (`"persisted": false`。ファイルは消さないので `on` に戻して再起動すればまた読めます)。
+      **残るもの**: ホスト別の統計 (`/hosts` `/hosts/series` `/explain`)、時系列 (`/history` `/daily`
+      `/snapshots`)、`/status` の数字 (`total_requests` / エラーの原因別 / `rejected_per_client` …)、
+      `/dns`、`/metrics`。個人に結びつくのは**接続元の側**だけで、宛先ホストの集計と時系列に
+      「誰が」は入らないためです。**標準出力のアクセスログは止まりません** (コンテナのログは
+      運用する人の手元にしか出ないので別扱い。止めたいなら `PROXY_LOG_LEVEL=warn` にします)。
+    - **`hashed`**: 個票は残しますが、**接続元 IP を 16 桁の 16 進**に置き換えます
+      (例: `127.0.0.1` → `41b9f5725a1abaf6`)。**起動ごとの乱数 (塩) を混ぜた FNV-1a 64 ビット**
+      なので、**同じ起動の中では同じ接続元がいつも同じ値**になり (`/recent` `/errors`
+      `/connections` `/clients` `/trace` `/bursts` の写真、`/recent?client=` の絞り込みで
+      突き合わせられます)、**プロセスを再起動すると値が変わります** (= 値から IP を引き当てる
+      表を作り置きできません)。`/clients` の鍵も同じ値です。前の起動が `on` のときに
+      残した個票と接続元の統計も、読み戻すときに同じ変換を通します。
+      **宛先ホスト・ポート・`User-Agent`・SNI はそのまま残ります** (置き換えるのは接続元だけ)。
+    - どちらも **`.env` で即時反映**で、効くのは**次の記録から**です (それまでに溜まった個票は
+      書き換えません。消したいなら再起動してください)。いま効いている値は `/status` の
+      末尾の `records` と `/config` の `PROXY_RECORDS` で読めます。
+    - 効かない / 変わらないもの: **判定は必ず生の IP で行います** —
+      `PROXY_ALLOW_CLIENTS` (接続元の ACL)・`PROXY_MAX_CONNS_PER_CLIENT` (接続元ごとの上限)・
+      `PROXY_TRACE_CLIENT` (追跡する接続元) は `off` でも `hashed` でも今までどおり効きます。
+      `--lite` はもともと個票を作りません。**費用は記録の入口ごとに分岐 1 回**で、既定 (`on`) では
+      1 バイトも増えません。
+    - **`off` で 1 つだけ欠けるもの**: `/history` の `closed` (閉じた理由・寿命・バイトの分布) は
+      接続の枠から作るので埋まりません (`--lite` と同じ)。分布も残したいなら `hashed` を使います
   - **カーネルと cgroup の窓 (バーストのときカーネル側で何が起きていたか。T14.12)**:
     プロキシの統計には残らない事象を、**5 秒の標本のときだけ** `/proc` と `/sys/fs/cgroup` を読んで
     メモリ上の窓 (5 秒 × 720 = 1 時間 と 60 秒 × 1,440 = 1 日。1 標本 200 B なので約 420 KiB、
@@ -1020,6 +1052,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_PEEK_SNI` | `on` | CONNECT の最初のバイト (TLS の ClientHello) から **SNI** を読んで個票 (`/recent` の `sni`) に残します (T14.38)。`200 Connection Established` を書いたあと**最初の中継の前に 1 回だけ** `recv(MSG_PEEK)` で 1,024 バイト覗くだけで、**バイトは消費しません** (そのあとの `splice` は今までどおり)。費用は**トンネル 1 本にシステムコール 1 回**で、要求ごとにも中継のバイトごとにも増えません。覗くのは **443 宛ての CONNECT だけ** (それ以外は TLS とは限らないため)。`off` で 1 度も覗きません。`on:<port>` はそのポートも 443 扱いにします (**試験用**。試験のオリジンを 443 に立てられないため)。`--lite` は接続の枠を作らないので覗きません。CONNECT の宛先のホストと SNI が食い違った本数は `/status` の `sni_mismatches` と `/hosts` の `sni_mismatch` (どちらもメモリだけ。**IP リテラル宛ては必ず食い違います**)。再起動が要ります (`.env` では反映しません) |
 | `PROXY_BURST_PERCENT` | `50` | 同時接続数が `PROXY_MAX_CONNS` のこの割合を**越えた瞬間**に `/connections` の写真を 1 枚撮って `/bursts` に残す (T14.6)。`0` で撮らない。**同じ山では 1 枚だけ**で、閾の 80% を下回るまで次は撮りません。撮るのは履歴スレッド (5 秒周期) なので、接続を受ける経路に増えるのは比較 1 回だけです。割合を当てるのは `PROXY_MAX_CONNS` だけで、上限の外の枠 4 本 (自分宛て用) は含めません。`PROXY_MAX_CONNS=0` (無制限) と `--lite` では撮りません。**履歴スレッドが撮るので `PROXY_STATS_PERSIST=off` でも撮りません**。`.env` で即時反映 |
 | `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。`.env` で即時反映 (次に受ける接続から効く。**下げても走っているスレッドは殺さず**、仕事を終えたスレッドから順に減ります。`auto` のときは `PROXY_MAX_CONNS` を変えるとこちらも決め直します)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。**裏側の再検証 (stale-while-revalidate) もこの上限の内側で走ります**が、こちらは待たせず捨てます (`/status` の `revalidations_dropped`) |
+| `PROXY_RECORDS` | `on` | 個票 (`/recent` `/errors` `/connections` `/clients` `/log` `/events` `/trace` `/bursts`) に**何を残すか**の旗です (T14.41)。`on` は今までどおり、**`off` はその 8 つに 1 件も書かず**個票のファイルにも書きません (`"persisted": false`。**ホスト別の統計 `/hosts` と時系列 `/history` `/daily`、`/status` の数字は残ります** — 個人に結びつくのは接続元の側だけなので)、**`hashed` は接続元 IP を 16 桁の 16 進に置き換えて**残します (**起動ごとの乱数つき FNV-1a 64 ビット**。同じ起動の中では同じ接続元が同じ値になり、再起動すると変わります。`/clients` の鍵も同じ値)。**認証を入れない方針なので、公開ポートで個票を誰にも見せたくないときのつまみ**です。**判定は必ず生の IP**で行うので `PROXY_ALLOW_CLIENTS` / `PROXY_MAX_CONNS_PER_CLIENT` / `PROXY_TRACE_CLIENT` は `off` でも効きます。標準出力のアクセスログは止まりません (`PROXY_LOG_LEVEL=warn` で)。費用は記録の入口ごとに分岐 1 回 (既定では変わりません)。`.env` で即時反映 (次の記録から。溜まった個票は書き換えません) |
 | `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 8 MiB) に、**個票 (`/recent` `/errors` `/bursts` `/events` `/log`) を `$HOME/.rust-http-proxy.recent` (固定 4 MiB)** に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`)、**ホスト別の時系列** (`/hosts/series`) は空になり、個票の `"persisted"` は `false`、日次の要約も **日次の snapshot** も書きません) |
 | `PROXY_SNAPSHOT_DAYS` | `30` | **日次の snapshot** を残す日数 (T14.34)。履歴スレッドが **UTC の日付をまたいだ瞬間**にその時点の `/snapshot` をまるごと `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` (名前は**終わった日**) に書き、**31 個目を書いたら最古を 1 つ消します**。1 ファイルは `/snapshot` と同じ **4 MiB** まで (30 日で最大 120 MiB、静かなプロキシなら 1 日 20 KB 前後)。`0` で書きません。読む口は `/snapshots` と `/snapshots/<date>`。`PROXY_STATS_PERSIST=off` と `--lite` では履歴スレッドごと無いので書きません。ディスクの空きが `PROXY_DISK_KEEP_FREE_MB` のマージンを割り込むときは書かずに `/events` に 1 件 (`state_file`) 残します。**再起動で反映** |
 | `PROXY_SLO` | `connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2` | **SLO の 4 つの閾** (T14.50)。履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、**4 つとも満たした標本の割合**を `/slo` で返します (`connect_p50_ms` / `connect_p95_ms` = その 5 秒に確立した CONNECT の p50 / p95 (ms)、`error_rate` = エラー ÷ 試み (確立 + 転送 + エラー)、`dns_miss_per_connect` = 名前解決のミス ÷ 確立。**満たす = 閾以下**)。**確立が 1 本も無い 5 秒は「判定なし」**で分母に入れません (誰も使っていない夜中を「達成」と数えると、達成率が「動いていた割合」に化けるため)。書いた閾だけが効き、書いていない閾・知らない綴り・数として読めない値・負の値は既定のままです (例: `PROXY_SLO=connect_p50_ms=6` だけ書けば p50 の閾だけ 6 ms になる)。効いている値は `/config` の `PROXY_SLO` と `/slo` の `thresholds`。判定するのは履歴スレッドなので**要求の経路の費用は 0** で、`PROXY_STATS_PERSIST=off` と `--lite` では 1 本も判定しません。**再起動で反映** |

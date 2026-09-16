@@ -176,7 +176,28 @@ pub struct Restored {
 impl Restored {
     /// メモリのリングへ入れる (**起動時に 1 回だけ**)。戻り値は
     /// 閉じた接続 / エラー / 写真 / 出来事 / ログの件数。
-    pub fn install(self, metrics: &Metrics) -> [usize; 5] {
+    pub fn install(mut self, metrics: &Metrics) -> [usize; 5] {
+        // 記録の一括 off (T14.41)。`off` で起動したら**前の起動のぶんも読み戻さない**
+        // (ファイルは消さない = `on` に戻して再起動すればまた読める)
+        if !crate::records::recording() {
+            return [0; 5];
+        }
+        // `hashed` で起動したとき、前の起動が `on` だったら生の IP が入っている。
+        // 読み戻すときに**同じ 1 関数**を通して 16 進に直す (前の起動の塩は残って
+        // いないので、どのみち今の起動の値とは突き合わせられない)
+        if crate::records::mode() == crate::records::Mode::Hashed {
+            for e in &mut self.closed {
+                e.client = crate::records::client_key(&e.client).into_owned();
+            }
+            for e in &mut self.errors {
+                e.client = crate::records::client_key(&e.client).into_owned();
+            }
+            for shot in &mut self.bursts {
+                for (client, _) in &mut shot.clients {
+                    *client = crate::records::client_key(client).into_owned();
+                }
+            }
+        }
         let counts = [
             self.closed.len(),
             self.errors.len(),
