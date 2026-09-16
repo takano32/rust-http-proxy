@@ -141,6 +141,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /history?since=&until=&summary=1            JSON: one summary row for a period\n\
          \x20 /profile?res=5|60                           JSON: stages, threads, locks\n\
          \x20 /daily?n=365                                JSON: one summary line per day (kept forever)\n\
+         \x20 /slo?days=7                                 JSON: how much of the time the SLO was met\n\
          \x20 /metrics                                    Prometheus text format\n\
          \x20 /proxy.pac                                  browser auto-config script\n\
          \x20 /lookup?url=<url>                           cache entry state\n\
@@ -298,6 +299,9 @@ pub fn handle(
         recent::snapshot_file(date)
     } else if is_get && path == "/dns" {
         recent::dns(query)
+    } else if is_get && path == "/slo" {
+        // SLO の達成率 (T14.50)。5 秒の標本ごとの判定を日ごと・時間ごとに畳んで返す
+        recent::slo(query)
     } else if is_get && path == "/daily" {
         // 1 日 1 行の要約 (T14.20)。`/history` (30 日) が消えたあとも残る
         recent::daily(query)

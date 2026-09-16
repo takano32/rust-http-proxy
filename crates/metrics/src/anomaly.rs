@@ -556,7 +556,8 @@ mod tests {
         assert_eq!(fired[0].kind, Kind::ConnectP95);
         assert_eq!(
             fired[0].text,
-            "connect_p95: connect p95 136 ms over 5m is 13.9x the 1h baseline 9.8 ms (122 of 1440 connects)"
+            // 基準値の窓 (1 時間) に入る本数は、5 秒のリングが 6 時間になった T14.32 以降 1,442
+            "connect_p95: connect p95 136 ms over 5m is 13.9x the 1h baseline 9.8 ms (122 of 1442 connects)"
         );
         // 平常時に戻して 15 分 (窓から抜けるのに 5 分 + 外れたまま 5 分)
         let (_, back) = calm(&h, &mut d, t, 900);
