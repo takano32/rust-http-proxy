@@ -47,7 +47,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::sync::LockExt;
 use crate::{log_debug, log_error, log_info};
@@ -65,8 +65,9 @@ const STACK_SIZE: usize = 256 * 1024;
 struct Inner {
     /// 空いているスレッドへの送り口 (後入れ先出し)
     idle: Vec<Sender<Job>>,
-    /// 上限に達したので待たせている仕事 (先入れ先出し)。**捨てない**
-    queue: VecDeque<Job>,
+    /// 上限に達したので待たせている仕事 (先入れ先出し)。**捨てない**。
+    /// 積んだ時刻も一緒に持ち、取り出すときに待った時間を数える (T14.3 (3))
+    queue: VecDeque<(Instant, Job)>,
     /// 生きているスレッドの数 (走っている + 空き置き場に積んである + これから起こす)
     live: usize,
 }
@@ -115,7 +116,9 @@ impl Workers {
         let mut job = job;
         // 積んである送り口を新しい順に試す。相手が時間切れで終わっていれば send が失敗する
         loop {
-            let mut inner = self.inner.locked();
+            let mut inner = self
+                .inner
+                .locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_WORKERS]);
             let Some(tx) = inner.idle.pop() else {
                 let cap = self.max_threads();
                 if cap == 0 || inner.live < cap {
@@ -129,8 +132,9 @@ impl Workers {
                     return Err(job);
                 }
                 // 上限に達した: スレッドは増やさず仕事を待たせる。仕事を終えたスレッドが
-                // 空き置き場へ戻る前にここから引き取る (同じ鍵の中で決めるので取りこぼさない)
-                inner.queue.push_back(job);
+                // 空き置き場へ戻る前にここから引き取る (同じ鍵の中で決めるので取りこぼさない)。
+                // **ここを通るのは上限に達しているときだけ**なので、時計は熱い経路に乗らない
+                inner.queue.push_back((Instant::now(), job));
                 return Ok(());
             };
             drop(inner);
@@ -190,10 +194,12 @@ impl Workers {
                 }
                 // 代わりの 1 本ぶんの席を取ってから起こす
                 inner.live += 1;
-                inner
-                    .queue
-                    .pop_front()
-                    .expect("just checked it is not empty")
+                take_queued(
+                    inner
+                        .queue
+                        .pop_front()
+                        .expect("just checked it is not empty"),
+                )
             };
             match self.spawn(job) {
                 Ok(()) => return,
@@ -263,9 +269,10 @@ impl Workers {
             if cap != 0 && inner.live >= cap {
                 return false;
             }
-            let Some(job) = inner.queue.pop_front() else {
+            let Some(queued) = inner.queue.pop_front() else {
                 return false;
             };
+            let job = take_queued(queued);
             // これから起こす 1 本ぶんの席を先に取る (取ってから鍵を放す)
             inner.live += 1;
             job
@@ -277,6 +284,12 @@ impl Workers {
         }
         true
     }
+}
+
+/// 待ち行列から取り出した仕事の「待った時間」を数えて中身を返す (T14.3 (3))。
+fn take_queued((at, job): (Instant, Job)) -> Job {
+    crate::sync::note_queue_wait(at.elapsed().as_millis().min(u64::MAX as u128) as u64);
+    job
 }
 
 /// 生きているスレッド 1 本ぶんの席の番人。落ちると席が戻る (パニックしても通る)。
@@ -297,11 +310,13 @@ fn worker_loop(workers: &Arc<Workers>, tx: Sender<Job>, rx: Receiver<Job>) {
     loop {
         job();
         {
-            let mut inner = workers.inner.locked();
+            let mut inner = workers
+                .inner
+                .locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_WORKERS]);
             // 上限で待たせている仕事があれば、空き置き場へ戻らずそのまま次を取る
             if let Some(next) = inner.queue.pop_front() {
                 drop(inner);
-                job = next;
+                job = take_queued(next);
                 continue;
             }
             // 上限が下がっていたら (T11.6) 空き置き場へ戻らずに終わる。走っている仕事は
@@ -483,6 +498,44 @@ mod tests {
         wait_until(|| done.load(Ordering::SeqCst) == 8);
         assert_eq!(w.queued(), 0);
         assert!(w.live_count() <= 2, "増えていない: {}", w.live_count());
+    }
+
+    /// 待ち行列で待った仕事は件数と待ち時間が数えられる (`/profile` の「待ち行列」。T14.3 (3))。
+    ///
+    /// 数える口はプロセス全体で 1 つなので、**差分**で見る (同じ試験バイナリの他の試験も足す)。
+    #[test]
+    fn queued_jobs_record_how_long_they_waited() {
+        let before = crate::sync::queue_totals();
+        let w = Arc::new(Workers::new(1));
+        let done = Arc::new(AtomicUsize::new(0));
+        let hold = Arc::new(Mutex::new(()));
+        let guard = hold.locked();
+        for _ in 0..3 {
+            let (done, hold) = (Arc::clone(&done), Arc::clone(&hold));
+            w.run(Box::new(move || {
+                let _held = hold.locked();
+                done.fetch_add(1, Ordering::SeqCst);
+            }))
+            .unwrap_or_else(|_| panic!("could not get a thread"));
+        }
+        wait_until(|| w.queued() == 2);
+        // 待たせてから放す (待ち時間が 0 ms にならないように)
+        thread::sleep(Duration::from_millis(20));
+        drop(guard);
+        wait_until(|| done.load(Ordering::SeqCst) == 3);
+        let after = crate::sync::queue_totals();
+        assert!(
+            after[0] - before[0] >= 2,
+            "待たせた 2 つが数えられること: {} -> {}",
+            before[0],
+            after[0]
+        );
+        assert!(
+            after[1] >= before[1] + 20,
+            "待ち時間 (ms) が足されること: {} -> {}",
+            before[1],
+            after[1]
+        );
     }
 
     /// 「後でやればいい仕事」は上限に達したら積まずに返る (T11.3)。

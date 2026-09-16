@@ -455,7 +455,8 @@ const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
 /// `/connections` や `/recent` を変えない)。**保持もしない** (要求ごとに組む)。
 ///
 /// 中身: `status` (`?sort=` の 3 通り)、`history` (5 / 60 / 3600 秒)、`dns`、`errors`、
-/// `connections`、`recent`、`hosts`、`clients` (T14.7)、`bursts` (T14.6)、`log`。
+/// `connections`、`recent`、`hosts`、`clients` (T14.7)、`bursts` (T14.6)、
+/// `profile` (T14.3)、`log`。
 /// **`history.*` にはカーネルと cgroup の窓 (`kernel`) も一緒に入る** (T14.12。`/history` と同じ組み立て)。
 /// **T14.3 の `/profile` は、入ったらここに 1 行足す** (`parts` に名前が出るので、
 /// 読む側は「この版に何が入っていたか」を JSON だけで判別できる)。
@@ -486,6 +487,9 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ("hosts", hosts(ep, Some("limit=1000")).2),
         ("clients", clients(ep, Some("limit=1000")).2),
         ("bursts", bursts(ep, Some("n=50")).2),
+        // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)。
+        // `--lite` では `{"profile":"off"}` の 1 行になる
+        ("profile", super::profile::profile(ep, Some("res=5")).2),
         ("events", events(Some("n=512")).2),
         ("log", log(Some("n=1000")).2),
     ];
@@ -1052,6 +1056,7 @@ mod tests {
                     family_v6: Some(false),
                     cause: None,
                     first_byte_ms: None,
+                    ..Detail::default()
                 },
             );
         }
@@ -1070,6 +1075,7 @@ mod tests {
                     family_v6: Some(true),
                     cause: Some(ErrCause::Dns),
                     first_byte_ms: None,
+                    ..Detail::default()
                 },
             );
         }

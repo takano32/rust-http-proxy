@@ -48,6 +48,11 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
 .banner{margin:0 0 14px;padding:10px 14px;border-radius:10px;font-size:13px;background:rgba(245,179,66,.12);border:1px solid var(--warn);color:var(--fg)}
 .banner.bad{background:rgba(255,107,107,.12);border-color:var(--bad)}
 .banner code{font:12px var(--mono);color:var(--warn)}
+.stack{display:flex;height:20px;border-radius:6px;overflow:hidden;background:var(--line);margin:4px 0}
+.stack i{display:block;height:100%}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--muted);margin-bottom:8px}
+.legend b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.lead{font-size:13px;font-family:var(--mono);background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:10px;overflow-x:auto;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -58,7 +63,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   <span class="sub" id="window"></span>
   <span class="sub" id="blocklist"></span>
   <div class="right">
-    <span class="links"><a href="/status" target="_blank">/status</a><a href="/hosts?limit=1000" target="_blank">/hosts</a><a href="/metrics" target="_blank">/metrics</a><a href="/history" target="_blank">/history</a><a href="/errors" target="_blank">/errors</a><a href="/connections" target="_blank">/connections</a><a href="/dns" target="_blank">/dns</a><a href="/log" target="_blank">/log</a><a href="/proxy.pac" target="_blank">/proxy.pac</a></span>
+    <span class="links"><a href="/status" target="_blank">/status</a><a href="/hosts?limit=1000" target="_blank">/hosts</a><a href="/metrics" target="_blank">/metrics</a><a href="/history" target="_blank">/history</a><a href="/profile" target="_blank">/profile</a><a href="/errors" target="_blank">/errors</a><a href="/connections" target="_blank">/connections</a><a href="/dns" target="_blank">/dns</a><a href="/log" target="_blank">/log</a><a href="/proxy.pac" target="_blank">/proxy.pac</a></span>
     <label>範囲 <select id="range"><option value="5">1 時間</option><option value="60">1 日</option><option value="3600">30 日</option></select></label>
     <label><input type="checkbox" id="pause"> 一時停止</label>
     <span class="dot" id="dot"></span><span id="lastok">接続中…</span>
@@ -122,6 +127,34 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
     <h2>最近のエラー (直近 20) <span class="tag">5 秒ごと</span><span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">/errors?n=20</span></h2>
     <div style="overflow-x:auto"><table id="errors"><thead><tr><th>時刻</th><th>種類</th><th>宛先</th><th title="ERR_CAUSE_NAMES の名前">原因</th><th title="この 1 件で名前解決に費やした ms">名前解決</th><th title="この 1 件で接続 (SYN → 確立) に費やした ms">接続</th><th>状態</th><th>接続元</th></tr></thead><tbody></tbody></table></div>
     <div class="hint" id="errhint"></div>
+  </section>
+
+  <section class="card" style="margin-top:14px">
+    <h2>プロファイル <span class="tag">直近 5 分</span><span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">/profile?res=</span></h2>
+    <div class="lead" id="proflead">読み込み中…</div>
+    <div class="row">
+      <div>
+        <div class="hint">CONNECT の段階 (1 本あたりの平均。上 = 確立まで / 下 = その後)</div>
+        <div class="stack" id="st-connect-setup"></div>
+        <div class="stack" id="st-connect-after"></div>
+        <div class="legend" id="lg-connect"></div>
+      </div>
+      <div>
+        <div class="hint">転送の段階 (1 要求あたりの平均。上 = 応答まで / 下 = 本文)</div>
+        <div class="stack" id="st-forward-setup"></div>
+        <div class="stack" id="st-forward-after"></div>
+        <div class="legend" id="lg-forward"></div>
+      </div>
+    </div>
+    <div style="overflow-x:auto;margin-top:10px"><table id="stages"><thead><tr><th>段階</th><th>件数</th><th title="その段階に費やした合計 ÷ 件数">平均</th><th>割合</th><th>p50</th><th>p95</th><th>最大</th></tr></thead><tbody></tbody></table></div>
+    <div class="grid charts">
+      <div class="card chart"><h2>役割ごとの CPU % (1 コア = 100) <span id="c-rolecpu"></span></h2><canvas id="ch-rolecpu"></canvas></div>
+      <div class="card chart"><h2>CPU / 要求 (us) <span id="c-cpureq"></span></h2><canvas id="ch-cpureq"></canvas></div>
+    </div>
+    <div class="legend" id="lg-roles" style="margin-top:8px"></div>
+    <div style="overflow-x:auto;margin-top:6px"><table id="roles"><thead><tr><th>役割</th><th title="この窓にこの役割が使った CPU (1 コア = 100%)">CPU</th><th>標本</th><th title="どこで待っているか。CPU に乗っている間は中身に関係なく running になります (splice の中継など)。conn には次の仕事を待っているワーカー (futex) も入ります">どこで待っているか</th></tr></thead><tbody></tbody></table></div>
+    <div style="overflow-x:auto;margin-top:10px"><table id="locks"><thead><tr><th>ロック</th><th title="try_lock に失敗した回数 (直近 5 分)">取り合い (5 分)</th><th>通算</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="profhint"></div>
   </section>
 
   <section class="card" style="margin-top:14px">
@@ -247,6 +280,111 @@ function connRows(j,n){
   return {rows:all.slice(0,n||50),states:states,kinds:kinds,bytes:bytes,
     count:(j&&j.count!=null)?+j.count:all.length,lite:!!(j&&j.lite)};
 }
+// --- ここから 5 つは `/profile` を読む側 (T14.3)。DOM に触らないので node からも呼ぶ ---
+// `/profile` の配列の配列を、名前で引ける形に戻す。
+// 段階は件数 0 なら `0` 1 文字、役割は標本 0 なら `0` 1 文字で来るので、そこを開き直す
+function toProfile(j){
+  j=j||{};
+  var st=j.stages||{};
+  var win=function(v){
+    return (v&&v.length)?{count:+v[0]||0,sum:+v[1]||0,max:+v[2]||0,buckets:v[3]||null}
+                        :{count:0,sum:0,max:0,buckets:null};
+  };
+  var role=function(v){
+    return (v&&v.length)?{cpu_us:+v[0]||0,samples:+v[1]||0,states:v[2]||null}
+                        :{cpu_us:0,samples:0,states:null};
+  };
+  return {off:j.profile==='off',
+    interval:+j.interval_secs||5,bounds:j.bounds_ms||[],
+    names:{connect:st.connect||[],forward:st.forward||[]},
+    roles:j.roles||[],states:j.states||[],lockNames:j.lock_names||[],
+    sampler:j.sampler||'off',sampleMs:j.sample_ms==null?null:+j.sample_ms,
+    locksTotal:j.locks_total||[],queueTotal:j.queue_total||[0,0,0],
+    unknown:j.unknown_syscalls||[],recent:j.recent||null,
+    count:+j.count||0,shown:+j.shown||0,truncated:!!j.truncated,
+    samples:(j.samples||[]).map(function(r){
+      return {t:+r[0]||0,requests:+r[1]||0,cpu_us:+r[2]||0,
+        connect:(r[3]||[]).map(win),forward:(r[4]||[]).map(win),
+        threads:(r[5]||[]).map(role),locks:r[6]||[],queue:r[7]||[0,0,0]};
+    })};
+}
+// 直近 n 標本の段階を足し合わせ、1 件あたりの平均・分位点・割合に直す。
+// `kind` は 'connect' か 'forward'。返すのは段階ごとの行と、
+// **「確立まで」と「その後」の切れ目** (段階の合計は「利用者が待った時間」ではないので分けて積む)
+function stageRows(p,n,kind){
+  var names=(p.names&&p.names[kind])||[],a=p.samples||[],rows=[];
+  for(var i=0;i<names.length;i++)rows.push({name:names[i],count:0,sum:0,max:0,buckets:null});
+  for(var k=Math.max(0,a.length-n);k<a.length;k++){
+    var ws=a[k][kind]||[];
+    for(var j=0;j<rows.length&&j<ws.length;j++){
+      var w=ws[j];
+      rows[j].count+=w.count;rows[j].sum+=w.sum;rows[j].max=Math.max(rows[j].max,w.max);
+      if(w.buckets){
+        if(!rows[j].buckets)rows[j].buckets=w.buckets.map(function(){return 0});
+        for(var b=0;b<w.buckets.length;b++)rows[j].buckets[b]+=w.buckets[b];
+      }
+    }
+  }
+  var split=kind==='connect'?5:5;   // connect: queue..first_relay / forward: queue..ttfb
+  var total=0;
+  rows.forEach(function(r){
+    r.avg=r.count?r.sum/r.count:0;
+    r.p50=winQuantile(r.buckets,r.count,r.max,0.5,p.bounds);
+    r.p95=winQuantile(r.buckets,r.count,r.max,0.95,p.bounds);
+    total+=r.avg;
+  });
+  rows.forEach(function(r){r.share=total>0?r.avg/total*100:0});
+  var setup=rows.slice(0,split),after=rows.slice(split);
+  var sum=function(v){return v.reduce(function(x,r){return x+r.avg},0)};
+  return {rows:rows,setup:setup,after:after,
+    setupMs:sum(setup),afterMs:sum(after),total:total,
+    count:rows.length?Math.max.apply(null,rows.map(function(r){return r.count})):0};
+}
+// 先頭の 1 行: **いちばん長い段階** (推定は人がする。数字を並べるのが画面の仕事)
+function longestStage(p,n,kind){
+  var s=stageRows(p,n,kind);
+  if(!s.count)return null;
+  var top=s.rows.slice().sort(function(a,b){return b.avg-a.avg}).slice(0,3)
+    .filter(function(r){return r.avg>0});
+  return {kind:kind,count:s.count,total:s.total,setupMs:s.setupMs,afterMs:s.afterMs,top:top};
+}
+// 直近 n 標本の役割ごとの CPU と状態の割合 (標本 0 の役割は出さない)
+function roleRows(p,n){
+  var a=p.samples||[],names=p.roles||[],states=p.states||[],out=[];
+  var secs=Math.max(1,Math.min(n,a.length))*(p.interval||5);
+  for(var i=0;i<names.length;i++)out.push({role:names[i],cpu_us:0,samples:0,counts:null});
+  for(var k=Math.max(0,a.length-n);k<a.length;k++){
+    var ts=a[k].threads||[];
+    for(var j=0;j<out.length&&j<ts.length;j++){
+      out[j].cpu_us+=ts[j].cpu_us;out[j].samples+=ts[j].samples;
+      if(ts[j].states){
+        if(!out[j].counts)out[j].counts=ts[j].states.map(function(){return 0});
+        for(var b=0;b<ts[j].states.length;b++)out[j].counts[b]+=ts[j].states[b];
+      }
+    }
+  }
+  return out.filter(function(r){return r.samples>0||r.cpu_us>0}).map(function(r){
+    r.cpu_pct=r.cpu_us/1e6/secs*100;
+    r.top=(r.counts||[]).map(function(c,i){return {name:states[i]||('s'+i),pct:r.samples?c/r.samples*100:0}})
+      .filter(function(x){return x.pct>=0.5}).sort(function(x,y){return y.pct-x.pct});
+    return r;
+  }).sort(function(x,y){return y.cpu_us-x.cpu_us});
+}
+// ロックの取り合い (直近 n 標本の増分と通算) と、ワーカーの待ち行列の待ち
+function lockRows(p,n){
+  var a=p.samples||[],names=p.lockNames||[],win=[],q=[0,0,0];
+  for(var i=0;i<names.length;i++)win.push(0);
+  for(var k=Math.max(0,a.length-n);k<a.length;k++){
+    var l=a[k].locks||[];
+    for(var j=0;j<win.length&&j<l.length;j++)win[j]+=+l[j]||0;
+    q[0]+=+a[k].queue[0]||0;q[1]+=+a[k].queue[1]||0;q[2]=Math.max(q[2],+a[k].queue[2]||0);
+  }
+  return {rows:names.map(function(nm,i){
+      return {name:nm,window:win[i]||0,total:+(p.locksTotal||[])[i]||0};
+    }),
+    queue:{waited:q[0],ms_sum:q[1],ms_max:q[2],
+      total:{waited:+(p.queueTotal||[])[0]||0,ms_sum:+(p.queueTotal||[])[1]||0,ms_max:+(p.queueTotal||[])[2]||0}}};
+}
 // 直近 n 標本のゲージの山 (`active_max` の無い古い標本は `active` で代用)。件数 0 なら null
 function peak(samples,n,key,fallback){
   var a=samples||[],mx=null;
@@ -297,6 +435,113 @@ function drawChart(id,series,opts){
   if(hist.length>1){var t0=hist[Math.max(0,hist.length-n)].t,t1=hist[hist.length-1].t;g.fillText(ago(t1-t0),padL,H-4);g.textAlign='right';g.fillText('現在',W-padR,H-4)}
 }
 function ago(s){return s>=86400?Math.round(s/3600)+' 時間前':s>=3600?Math.round(s/60)+' 分前':s>=60?Math.round(s/60)+' 分前':s+' 秒前'}
+// 積み上げの折れ線 (面を下から順に重ねる)。`drawChart` と同じ座標の取り方
+function drawStack(id,series,opts){
+  var c=$(id),dpr=window.devicePixelRatio||1,W=c.clientWidth,H=c.clientHeight;
+  if(c.width!==W*dpr||c.height!==H*dpr){c.width=W*dpr;c.height=H*dpr}
+  var g=c.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);
+  var padL=44,padR=8,padT=8,padB=18,w=W-padL-padR,h=H-padT-padB;
+  var n=0;series.forEach(function(s){n=Math.max(n,s.data.length)});
+  var tops=[],max=opts.max||0;
+  for(var i=0;i<n;i++){var acc=0;tops.push(series.map(function(s){acc+=(s.data[i]||0);return acc}));
+    if(acc>max)max=acc}
+  if(max<=0)max=1;max*=1.1;
+  g.strokeStyle='#262a37';g.lineWidth=1;g.fillStyle='#8b91a5';g.font='11px system-ui';g.textAlign='right';
+  for(var k=0;k<=4;k++){var y=padT+h-h*k/4;g.beginPath();g.moveTo(padL,y);g.lineTo(W-padR,y);g.stroke();
+    var v=max*k/4;g.fillText(opts.fmt?opts.fmt(v):(v>=100?Math.round(v):v.toFixed(v<10?1:0)),padL-6,y+4)}
+  var span=Math.max(1,n-1),X=function(i){return padL+w*i/span},Y=function(v){return padT+h-h*Math.min(v,max)/max};
+  for(var sIdx=series.length-1;sIdx>=0;sIdx--){
+    g.beginPath();g.moveTo(X(0),Y(tops[0]?tops[0][sIdx]:0));
+    for(var i2=1;i2<n;i2++)g.lineTo(X(i2),Y(tops[i2][sIdx]));
+    g.lineTo(X(n-1),padT+h);g.lineTo(X(0),padT+h);g.closePath();
+    g.fillStyle=series[sIdx].color;g.fill();
+  }
+  g.fillStyle='#8b91a5';g.textAlign='left';
+  if(n>1)g.fillText(ago((n-1)*(opts.interval||5)),padL,H-4);
+  g.textAlign='right';if(n>1)g.fillText('現在',W-padR,H-4);
+}
+var STAGE_COLORS=['#5aa9ff','#3ecf8e','#f5b342','#c084fc','#ff6b6b','#6ee7f9','#a3e635'];
+var ROLE_COLORS={accept:'#5aa9ff',conn:'#3ecf8e','idle-watch':'#c084fc','dns-refresh':'#f5b342',
+  history:'#ff6b6b',persist:'#6ee7f9','cache-probe':'#fca5a5','profile-sample':'#a3e635',other:'#8b91a5'};
+function stackHtml(rows,total){
+  if(!(total>0))return '';
+  return rows.map(function(r,i){
+    var pc=r.avg/total*100;
+    return pc<=0?'':'<i style="width:'+pc.toFixed(2)+'%;background:'+STAGE_COLORS[i%STAGE_COLORS.length]
+      +'" title="'+esc(r.name)+' '+fmtMsFine(r.avg)+' ('+pc.toFixed(0)+'%)"></i>';
+  }).join('');
+}
+function renderProfile(j){
+  var p=toProfile(j),n=Math.max(1,Math.round(300/(p.interval||5)));
+  if(p.off){$('proflead').textContent='lite プロファイルでは記録しません (PROXY_PROFILE=lite)';
+    ['stages','roles','locks'].forEach(function(id){$(id).tBodies[0].innerHTML=''});
+    ['st-connect-setup','st-connect-after','st-forward-setup','st-forward-after','lg-connect','lg-forward','lg-roles']
+      .forEach(function(id){$(id).innerHTML=''});
+    $('profhint').textContent='';return}
+  var lines=[];
+  ['connect','forward'].forEach(function(kind){
+    var l=longestStage(p,n,kind);
+    if(!l||!l.top.length){lines.push((kind==='connect'?'CONNECT':'forward')+': この 5 分は '+(l?l.count:0)+' 件');return}
+    lines.push((kind==='connect'?'CONNECT':'forward')+': '
+      +l.top.map(function(r){return r.name+' '+r.share.toFixed(0)+'% ('+fmtMsFine(r.avg)+')'}).join(' > ')
+      +'  [確立まで '+fmtMsFine(l.setupMs)+' / その後 '+fmtMsFine(l.afterMs)+' · '+fmtNum(l.count)+' 件]');
+  });
+  $('proflead').textContent=lines.join('   |   ');
+  // (a) 段階の積み上げと表
+  var tbody=[];
+  ['connect','forward'].forEach(function(kind){
+    var s=stageRows(p,n,kind);
+    $('st-'+kind+'-setup').innerHTML=stackHtml(s.setup,s.setupMs);
+    $('st-'+kind+'-after').innerHTML=stackHtml(s.after,s.afterMs);
+    $('lg-'+kind).innerHTML=s.rows.map(function(r,i){
+      return '<span><b style="background:'+STAGE_COLORS[i%STAGE_COLORS.length]+'"></b>'+esc(r.name)+'</span>'}).join('');
+    tbody.push('<tr><td colspan="7" style="color:var(--muted)">'+(kind==='connect'?'CONNECT':'転送')+'</td></tr>');
+    s.rows.forEach(function(r){
+      tbody.push('<tr><td>'+esc(r.name)+'</td><td>'+fmtNum(r.count)+'</td><td>'+fmtMsFine(r.avg)+'</td>'
+        +'<td>'+r.share.toFixed(0)+'%</td><td>'+fmtMsFine(r.p50)+'</td><td>'+fmtMsFine(r.p95)+'</td><td>'+fmtMsFine(r.max)+'</td></tr>');
+    });
+  });
+  $('stages').tBodies[0].innerHTML=tbody.join('');
+  // (b) 役割ごとの CPU と CPU/要求
+  var roles=roleRows(p,n),shown=roles.slice(0,6);
+  var series=shown.map(function(r){
+    return {color:ROLE_COLORS[r.role]||'#8b91a5',
+      data:p.samples.map(function(s,i){var t=s.threads[p.roles.indexOf(r.role)];
+        return t?t.cpu_us/1e6/(p.interval||5)*100:0})};
+  });
+  drawStack('ch-rolecpu',series,{interval:p.interval});
+  drawChart('ch-cpureq',[{data:p.samples.map(function(s){return s.requests?s.cpu_us/s.requests:null}),
+    color:'#f5b342',fill:'rgba(245,179,66,.12)'}],{});
+  var totalCpu=roles.reduce(function(a,r){return a+r.cpu_pct},0);
+  $('c-rolecpu').textContent=totalCpu.toFixed(0)+'%';
+  $('c-cpureq').textContent=p.recent&&p.recent.cpu_per_request_us!=null?(+p.recent.cpu_per_request_us).toFixed(1)+' us':'–';
+  $('lg-roles').innerHTML=shown.map(function(r){
+    return '<span><b style="background:'+(ROLE_COLORS[r.role]||'#8b91a5')+'"></b>'+esc(r.role)+'</span>'}).join('');
+  // (c) 役割ごとに何をしているか
+  $('roles').tBodies[0].innerHTML=roles.map(function(r){
+    var bar=r.top.slice(0,6).map(function(x,i){
+      return '<i style="width:'+x.pct.toFixed(2)+'%;background:'+STAGE_COLORS[i%STAGE_COLORS.length]
+        +'" title="'+esc(x.name)+' '+x.pct.toFixed(0)+'%"></i>'}).join('');
+    var txt=r.top.slice(0,4).map(function(x){return esc(x.name)+' '+x.pct.toFixed(0)+'%'}).join(' · ')||'–';
+    return '<tr><td>'+esc(r.role)+'</td><td>'+r.cpu_pct.toFixed(1)+'%</td><td>'+fmtNum(r.samples)+'</td>'
+      +'<td style="text-align:left;white-space:normal"><div class="stack" style="height:10px">'+bar+'</div>'+txt+'</td></tr>';
+  }).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--muted)">スレッドの標本はありません (sampler '+esc(p.sampler)+')</td></tr>';
+  // (d) ロックと待ち行列
+  var lk=lockRows(p,n);
+  $('locks').tBodies[0].innerHTML=lk.rows.map(function(r){
+    return '<tr><td>'+esc(r.name)+'</td><td style="color:'+(r.window?'var(--warn)':'inherit')+'">'
+      +fmtNum(r.window)+'</td><td>'+fmtNum(r.total)+'</td></tr>'}).join('')
+    +'<tr><td>待ち行列 (ワーカー待ち)</td><td>'+fmtNum(lk.queue.waited)+' 件 · 合計 '+fmtMsFine(lk.queue.ms_sum)
+    +' · 最大 '+fmtMsFine(lk.queue.ms_max)+'</td><td>'+fmtNum(lk.queue.total.waited)+' 件</td></tr>';
+  var hint=['標本 '+fmtNum(p.shown)+' / '+fmtNum(p.count)+' (刻み '+p.interval+' 秒)',
+    'sampler '+p.sampler+(p.sampleMs!=null?' ('+p.sampleMs+' ms)':'')];
+  if(p.recent&&p.recent.cpu_per_request_us!=null)hint.push('CPU/要求 '+(+p.recent.cpu_per_request_us).toFixed(1)+' us (直近 5 分)');
+  if(p.truncated)hint.push('古い標本は 256 KiB に入らないので落としています');
+  if(p.unknown.length)hint.push('表に無いシステムコール: '+p.unknown.map(function(u){return u[0]+' '+u[1]}).join(' · '));
+  hint.push('段階の窓は ms 刻みなので、1 要求が 1 ms に満たない環境ではほとんどが 0 に潰れます');
+  hint.push('状態は「どこで待っているか」(CPU に乗っている間は running。conn の futex は次の仕事待ちを含む)');
+  $('profhint').textContent=hint.join(' · ');
+}
 function redraw(){
   var r=rates(),lastR=r[r.length-1];
   var pick=function(k){return r.map(function(x){return x[k]})};
@@ -438,6 +683,9 @@ function renderConns(j){
   $('connhint').textContent=parts.join(' · ');
 }
 function fmtMs(ms){return ms==null?'–':ms>=1000?(ms/1000).toFixed(1)+' s':Math.round(ms)+' ms'}
+// 段階は 1 ms を切ることが多い (loopback では全部そう) ので、細かい方は桁を残す
+function fmtMsFine(ms){return ms==null?'–':ms>=1000?(ms/1000).toFixed(2)+' s':ms>=10?Math.round(ms)+' ms'
+  :ms>0?(ms<1?ms.toFixed(3):ms.toFixed(2))+' ms':'0'}
 function latColor(ms){return ms>=2000?'var(--bad)':ms>=500?'var(--warn)':'inherit'}
 function bl(action){var h=$('bhost').value.trim();if(!h)return;var u='/blocklist?host='+encodeURIComponent(h)+(action?'&action='+action:'');
   fetchJson(u).then(function(j){$('out').textContent=JSON.stringify(j,null,2);pollStatus()}).catch(function(e){$('out').textContent=e.message})}
@@ -466,9 +714,13 @@ function pollBad(){if($('pause').checked)return;
 function pollRecent(){if($('pause').checked)return;
   fetchJson('/errors?n=20').then(renderErrors).catch(function(){});
   fetchJson('/connections').then(renderConns).catch(function(){});}
+// プロファイルは 5 秒ごと (`/history` と同じ範囲の選択に合わせる。T14.3)
+function pollProfile(){if($('pause').checked)return;
+  var res=$('range').value==='5'?5:60;
+  fetchJson('/profile?res='+res).then(renderProfile).catch(function(){});}
 function pollHistory(){if($('pause').checked)return;fetchJson('/history?res='+$('range').value).then(function(h){
   interval=h.interval_secs||5;bounds=h.bounds_ms||[];causes=h.causes||[];hist=toSamples(h);redraw()}).catch(function(){})}
-$('range').addEventListener('change',function(){hist=[];pollHistory()});
+$('range').addEventListener('change',function(){hist=[];pollHistory();pollProfile()});
 try{var savedRange=localStorage.getItem('range');if(savedRange)$('range').value=savedRange}catch(e){}
 $('range').addEventListener('change',function(){try{localStorage.setItem('range',$('range').value)}catch(e){}});
 $('f-lookup').addEventListener('submit',function(e){e.preventDefault();var u=$('url').value.trim();if(!u)return;
@@ -478,7 +730,7 @@ $('btn-purge').addEventListener('click',function(){var u=$('url').value.trim();i
 $('btn-purge-all').addEventListener('click',function(){if(!confirm('キャッシュを全部消します。よろしいですか？'))return;
   fetchJson('/purge?all=1').then(function(j){$('out').textContent=JSON.stringify(j,null,2);pollStatus()}).catch(function(e){$('out').textContent=e.message})});
 window.addEventListener('resize',redraw);
-pollStatus();pollHistory();pollBad();pollRecent();setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);setInterval(pollRecent,5000);
+pollStatus();pollHistory();pollBad();pollRecent();pollProfile();setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);setInterval(pollRecent,5000);setInterval(pollProfile,5000);
 })();
 </script>
 </body>

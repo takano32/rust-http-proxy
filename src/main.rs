@@ -150,7 +150,10 @@ fn main() {
     #[cfg(target_os = "linux")]
     if config.malloc_arenas > 0 {
         let max = config.malloc_arenas.min(i32::MAX as usize) as i32;
-        if !rust_http_proxy::sys::limit_malloc_arenas(max) {
+        if rust_http_proxy::sys::limit_malloc_arenas(max) {
+            // 掛かった上限を覚えさせる (`/status` の `memory.arenas`。T14.21)
+            rust_http_proxy::sysinfo::malloc::set_arena_max(max as usize);
+        } else {
             log_debug!(None, "mallopt(M_ARENA_MAX, {}) was refused", max);
         }
     }
@@ -203,6 +206,10 @@ fn main() {
     let metrics = Arc::new(Metrics::new());
     // `--lite` では `/connections` に登録しない (空の一覧を返す。T1.4 の方針。T13.4)
     metrics.conns.set_enabled(!config.lite);
+    // `--lite` では段階の時計も読まない (`/profile` は off。T14.3)
+    rust_http_proxy::profile::set_enabled(!config.lite);
+    let _profile = (!config.lite)
+        .then(|| rust_http_proxy::profile::spawn(Arc::clone(&metrics), config.profile_sample_ms));
     let cache = Arc::new(Cache::new(config.cache.clone()));
     let _probe = Cache::spawn_probe(&cache);
     let store = if config.stats_persist {

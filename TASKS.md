@@ -3500,7 +3500,7 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     - **`.rrd` の標本の余白は残り 4 B**。次に `/history` の項目を足すときは版を上げるしかない (T14.6 / T14.10 / T14.12 で標本に足したいものは
       **メモリ上の窓**にするか、版を 1 回だけ上げてまとめて足す — 上げるなら T14.99 の再デプロイの前に 1 回)。
     - `evicted_idle` はプロセスの原子なので再起動で 0 に戻る。`/errors` の 403 は `dns_ms` / `connect_ms` が 0 固定。
-- [ ] **T14.3 プロファイル画面 (`/profile`): 待ちの段階、スレッドの CPU と状態、ロックの取り合いを 1 枚で見てボトルネックを推定する**
+- [x] **T14.3 プロファイル画面 (`/profile`): 待ちの段階、スレッドの CPU と状態、ロックの取り合いを 1 枚で見てボトルネックを推定する**
   - 目的: いまの統計は「ホスト別の名前解決 / 接続」と「窓つきの確立時間」までで、**1 要求の時間がどの段階に消えているか**
     (クライアントの要求を読む待ち、名前解決、接続、トンネル越しの TLS 握手、中継、ワーカー待ち) と、**プロセスの CPU がどの役割の
     スレッドで、何をして (走っている / どのシステムコールで待っている) 使われているか**は見えない。Phase 10〜11 の計測は
@@ -3562,6 +3562,41 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     時間) ので、画面では **「確立まで」(queue + client_read + dns + connect + first_relay) と「その後」(relay / park) を分けて積む**。
     **T14.1 / T14.2 のあとに着手** (`src/lib.rs` `http/mod.rs` `metrics.rs` を触るため)。再デプロイはこれまで入れて 1 回 (T14.99)。
 
+  - 結果 (2026-09-16、`b56a053` / `cc49de4` / `9c265f5` / `5e1dd59` / `f564906` / `948f419` / `9503bc1`、マージ 7 回): **`/profile?res=5|60` と
+    ダッシュボードの「プロファイル」の節ができた**。(1) 段階の計時: CONNECT 7 段 (`queue` / `client_read` / `dns` / `connect` / `first_relay` /
+    `relay` / `park`) と forward 6 段 (`queue` / `client_read` / `origin` / `send` / `ttfb` / `body`) を 5 秒 × 720 と 60 秒 × 1,440 の窓に
+    件数・合計 ms・最大・12 段の区間で持つ (`crates/metrics/src/profile.rs`、メモリだけ ≈ 2.9 MB、`.rrd` は触らない)。熱い経路に足したのは
+    境目の `Instant::now()` だけで、書くのは `Metrics::record` が既に取っている鍵の内側 (原子操作 0 増)。`--lite` では時計も読まない
+    (`profile::on()` の旗 1 つ)。(2) スレッドの標本: `profile-sample` スレッドが `PROXY_PROFILE_SAMPLE_MS` (既定 1,000) ごとに
+    `/proc/self/task/*/{stat,syscall,comm}` を読み、役割 (`conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` /
+    `profile-sample` / main) × (CPU 秒、走行中 / システムコール名別 / 休眠) を窓に。aarch64 と x86_64 の番号表。読めなければ `partial` / `off`。
+    **プロセスの CPU/要求** (`cpu_per_request_us`) も窓ごとに出す。(3) ロックの取り合い (`locked_counted`、統計の鍵 / DNS の表 / 預かり所 /
+    `Workers` の 4 か所) と待ち行列の待ち時間 (`queue` の段階)。(4) `/profile` は `stages` / `threads` / `locks` / `cpu_per_request_us` /
+    `sampler` / `interval_secs`、実測 2.2〜6.0 KB、全部埋まっても 256 KiB 以下。`--lite` は `{"profile":"off"}`。(5) 画面: 段階の積み上げ
+    (「確立まで」と「その後」を分ける) と段階ごとの p50 / p95、役割ごとの CPU と CPU/要求の推移、役割ごとの状態の割合、ロックと待ち行列、
+    先頭に「いちばん長い段階」の 1 行。(6) `/recent` の個票にも `queue` / `client_read` / `first_relay` を写し (新しい計測は無い)、
+    `/snapshot` に `profile` を足した。
+    **費用**: 最初の実装は既定プロファイルの forward CPU/要求 が **+3.61%** で基準 (+1%) を外していたので、対照実験で「窓の書き込みは主因ではない」
+    「費用はコードの有無ではなく実行時の仕事」「`Instant::now()` は 37 ns」を確かめてから 3 か所削った (要求ごとの時計を forward 3 → 2 回・
+    CONNECT 4 → 3 回、段階の窓に 0 ms 専用の速い道で共有バイトの書き込み 624 → 52 B、`Detail` を参照渡し)。結果 **+0.96%** (45.31 → 45.75 us、
+    2 通りの順 × 6 組 = 12 組の中央値)、CONNECT 確立 −3.0% (±4% の中)、`--lite` は システムコール 5.01 → 5.01・確保 10.01 → 10.01・
+    CPU/要求 −1.4% (ぶれの中)、既定の確保 19.01 → 19.01。マージ後の `--lite` も 5.03 / 10.01 で変わらず。サンプラーは 140 スレッド・
+    1 秒間隔で **1 コアの 0.75%** (128 スレッド相当 0.69%。**基準 0.5% を少し超えた**。1 スレッド 1 標本あたり `/proc` 2 つ ≈ 54 us。
+    減らすなら `stat` を 5 秒の区切りだけにする = 約 −40% の見込み。README の数字は実測に直した)。
+    **既知の答えの再現** (既定プロファイル + `warn`): (c) `cpu_per_request_us` 45.78 vs スクリプト 45.65 us (**+0.3%**、128 並列でも +0.05%) ✓、
+    (d) `PROXY_MAX_THREADS=2` で 8 並列の `queue` が forward の **91.6%** (`Workers` の待ち行列 114,783 件・合計 1,988 ms と一致) ✓、
+    (b) `--only tunnel --conc 1` の `relay` **100.0%** ✓。(a) accept 役の CPU は **11.1%** (45% ではない): §4 T4.3 の 45% は T10.5 (ワーカー置き場)
+    より前の「接続ごとに `thread::spawn`」の値で、いまは仕事を渡すだけ — 「accept は律速していない」という結論は変わらない。
+    (a)(b) の `conn` 役の状態 (`connect` / `splice` 中心) は出ない: `/proc/<tid>/syscall` は**スレッドが CPU に乗っている間は `running`** を返す
+    (`splice` でカーネル時間 93% のスレッドも `running`)、`conn` 役には次の仕事を待つワーカー (`futex`) が混ざる。「状態の割合は
+    どこで待っているか、CPU の行き先は役割ごとの CPU」という読み方を README と画面の注記に書いた。(e) デプロイ先の `dns` の割合
+    (接続 1 本 6.3 ms・確立の 41% と ±10%) は再デプロイ後に親が見る。
+    テスト 356 → 391 本 (profile.rs 8 本、`/profile` が 256 KiB に収まり古い標本から落ちる結合テスト、`partial` の差し替えテスト、
+    段階 3 つが個票に出る単体テスト)。`check-dashboard.js` は手元とデプロイ先の実出力で OK。
+    - マージの要点 (7 回、最大 22 か所): `Ctx::log` と `tunnel::report` は「T14.3 の `detail` を組む → T14.4 の個票に積む → `record_host_detail`」
+      の順、`HostStats::count` が `&Detail` を取るようになったので `ClientStats::count` は `&Detail::default()`。
+    - 申し送り: サンプラーの費用 0.75% (上記)。テスト中に 9 分固まったのは `PROXY_MAX_THREADS=2` でトンネルを 2 本開けたままにしてワーカーを
+      占めたため (T10.5 の「待たせる」方針どおり)。自分宛て要求は既定のスレッド数なら 20 ms で 200。
 **追加の収集 (2026-09-16、利用者の指示: 次のデプロイで取れるデータを限界まで有用にする)**。T14.3 (プロファイル) に加えて、
 2026-09-16 の分析で「あれば答えが出た」ものを 5 つ足す。どれも**成功の熱い経路には 1 命令も足さない** (書くのは接続の開始・終了・
 預ける瞬間・エラーの経路だけ)。**共通の決まり** (T14.4〜T14.8 全部に効く。各タスクの本文にも貼る):
@@ -4062,7 +4097,7 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
     - 限界: 日をまたがずに終わったプロセスのその日は残らない (毎日 00:00 UTC より前に必ず再起動する運用だと 1 行も残らない)。
       `version` は境目に動いていたバイナリ。デプロイ先で最初の 1 行が出るのは次の UTC 00:00 以降 (再デプロイ直後は `path` が非 `null` まで)。
     - 小物: `/snapshot` と `scripts/collect-deployed.sh` / `snapshot-diff.py` は `/daily` を拾わない (`parts` に 1 行足す。T14.55〜 の仕上げで)。
-- [ ] **T14.21 メモリの内訳 (`mallinfo2`、スレッドのスタック、キャッシュ、リング) を `/status` の `memory` に**
+- [x] **T14.21 メモリの内訳 (`mallinfo2`、スレッドのスタック、キャッシュ、リング) を `/status` の `memory` に**
   - 目的: 256 MiB のコンテナで RSS が何で構成されているか (ヒープの断片、スタック、キャッシュ、個票のリング) が読めない。T3 系で
     `PROXY_MALLOC_ARENAS` を決めたときのような調査を、デプロイ先で `/status` 1 枚からできるようにする。
   - 変更箇所: `crates/sysinfo` (`mallinfo2` を `unsafe extern "C"` で。glibc 2.33 以上。無ければ `null`)、`crates/metrics/src/metrics.rs`
@@ -4073,6 +4108,13 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
   - 受け入れ基準: 結合テストで `memory.rss` が `process_rss_bytes` と一致し、`heap_used + heap_free + mmap ≤ rss × 1.1`。
     Linux 以外と glibc 2.33 未満は `null`。費用 0。
 
+  - 結果 (2026-09-16、`ff8cf27`): `/status` の**末尾**に `memory` を 1 節足した (`rss` / `heap_used` / `heap_free` / `mmap` / `stacks_estimate` / `cache_memory` / `rings` / `arenas`、251 B)。ヒープの 3 つは glibc の `mallinfo2(3)` で、**リンク時に決め打ちせず `dlsym(RTLD_DEFAULT, "mallinfo2")` で実行時に探す** (弱い参照 `#[linkage]` は不安定。musl / glibc 2.32 以下 / Linux 以外は 3 つとも `null`)。探すのは `OnceLock` で 1 回だけ、呼ぶのは `/status` に来たときだけで **1.01 us/回** (この機械、10,000 回の平均)。要求の経路は 1 命令も増えない (`memory_json()` を呼ぶのは `to_json_with_cache` = `/status` と `/snapshot` だけ。それ以外の変更は起動時の `mallopt` の隣 1 行)。この機械の実例 (起動直後): `{"rss":32231424,"heap_used":2016016,"heap_free":16395504,"mmap":0,"stacks_estimate":17039360,"cache_memory":0,"rings":{"recent":554000,"errors":110500,"bursts":127200,"log":312000,"events":86016,"history":2384640,"total":3574356},"arenas":8}`。
+    - `rss` は**キャッシュのプローブ (既定 1 秒ごと) が読んだ値をそのまま使う**ので、同じ応答の `cache.system.process_rss_bytes` と 1 バイトも違わない。プローブが止まっている (`PROXY_CACHE_PROBE_SECS=0` / キャッシュ無効 / `--lite`) ときだけその場で `/proc/self/status` を読む。
+    - `stacks_estimate` は**予約**の合計。接続スレッド (`conn`) は 256 KiB (`crates/workers` の `STACK_SIZE` の写し。変えるときは両方)、それ以外は Rust の既定 2 MiB で数える。実使用との差は出せない。
+    - `rings` は**満杯のときの見積もり** (固定部の `size_of` + 文字列の上限): `recent` 554,000 / `errors` 110,500 / `bursts` 127,200 / `log` 312,000 / `events` 86,016 / `history` 2,384,640 = **3.4 MiB**。`size_of` を見ているので個票へ項目が増えると自動で追従する。**リングを新しく足したらここにも 1 行足すこと** (README の一覧と `tests/memory_test.rs` の鍵の配列も)。
+    - `cache_memory` はキャッシュがヒープに持っている量 (`used_bytes` + `reserved_bytes`)。`arenas` は `mallopt(M_ARENA_MAX)` が通ったときだけ覚えた値 (`0` = glibc の既定のまま。T5.6)。
+    - 受け入れ基準の `heap_used + heap_free + mmap ≤ rss × 1.1` はこの機械で満たす (18.4 MB ≤ 35.5 MB) が、**不変条件ではない**: `fordblks` は「アロケータが返していないだけ」で `MADV_DONTNEED` 済みのページは常駐しない。**「RSS のうち説明できる部分」**として読む (README に注記)。
+    - テスト: 結合 2 本 (`tests/memory_test.rs`) と単体 2 本を新設、全通過。`/metrics` とダッシュボードには出していない (候補: `sorahost_heap_used_bytes` と T14.8 の積み上げ棒 1 枚)。デプロイ先は再デプロイ後に `cache_memory` (バラスト) と `heap_free` (断片) を見れば T3 系の調査が `/status` 1 枚でできる (親が見る)。
 **さらに候補 (2026-09-16、続き: T14.22〜)**。ここは「集計を時間軸と相手ごとに割る」「異常を機械に見つけさせる」「特定の相手を追う」
 「デプロイ先の形を手元で再生する」もの。共通の決まりは T14.4〜T14.8 と同じ。**再デプロイ前に入れる価値が高いのは T14.22 / T14.23 /
 T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残りは再デプロイ後でもよい (次の Phase の材料)。

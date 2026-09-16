@@ -485,6 +485,31 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     起動時に最後の行の日付を見るので**同じ日に 2 回起動しても 1 行のまま**です。
     `PROXY_STATS_PERSIST=off` では 1 行も書きません (`/daily` の `path` が `null`)。
     応答は他の個票と同じく 256 KiB 以下 (切ったら `truncated`)
+  - **RSS の内訳** (`/status` の `memory`。T14.21): 256 MiB のコンテナで「RSS が何でできているか」
+    (ヒープの断片・スレッドのスタック・キャッシュ・記録のリング) を 1 枚から読むためのものです。
+    **読むのは `/status` に来たときだけ**で、要求の経路には 1 命令も増えません
+    (`mallinfo2(3)` はアリーナの鍵を順に取るので数 us かかります)。
+    - `heap_used` / `heap_free` / `mmap` は glibc の `mallinfo2(3)` の `uordblks` / `fordblks` / `hblkhd`。
+      **glibc 2.33 以上でだけ読めます**: リンク時に決め打ちせず `dlsym(RTLD_DEFAULT, "mallinfo2")` で
+      実行時に探すので、musl や古い glibc、Linux 以外では落ちずに 3 つとも `null` になります
+    - `rss` はキャッシュのプローブ (既定 1 秒ごと) が読んだ値で、**同じ応答の
+      `cache.system.process_rss_bytes` と同じ値**です (1 枚の中に食い違う RSS が 2 つ並ばないように)。
+      プローブが止まっている (`PROXY_CACHE_PROBE_SECS=0` / キャッシュ無効 / `--lite`) ときだけ、
+      その場で `/proc/self/status` を読みます
+    - `stacks_estimate` は**予約**の合計です (接続スレッド `conn` は 256 KiB、それ以外は Rust の既定 2 MiB)。
+      実際に触ったページとの差は出せないので、RSS のうちスタックのぶんはこれより小さくなります
+    - `cache_memory` はキャッシュがヒープに持っている量 (`cache.memory` の `used_bytes` +
+      先行確保の `reserved_bytes`)
+    - `rings` は記録のリングが**満杯になったときの見積もり** (バイト): `recent` (2,000 件)、
+      `errors` (500 件)、`bursts` (50 枚)、`log` (1,000 行)、`events` (512 件)、
+      `history` (5 秒 × 720 + 60 秒 × 1,440 + 1 時間 × 720 の標本と、閉じた接続の窓) と、
+      その合計 `total` (この機械では 3.5 MiB)。
+      いま何件入っているかは `/recent` や `/errors` の `total` を見てください
+    - `arenas` は `PROXY_MALLOC_ARENAS` で実際に掛けた `M_ARENA_MAX` (`0` = glibc の既定のまま)
+
+    **足して RSS になる形ではありません**: `heap_free` は「アロケータが返していない」だけで常駐しているとは
+    限らず (`MADV_DONTNEED` 済みのページ)、`mmap` も確保しただけで触っていないページは常駐しません。
+    「RSS のうち説明できる部分を上から並べたもの」として読んでください。
   - `PURGE <url>` / `/purge?url=<url>` / `/purge?all=1` でキャッシュを消す、`/lookup?url=<url>` でエントリの状態を見る
   - `/history?res=5|60|3600` で 1 時間 / 1 日 / 30 日の履歴。標本の後ろに **`closed`** が付きます (T14.6):
     その窓に**閉じた接続**の分布で、閉じた理由 8 種の件数 (`reasons`。`/recent` の `reason` と同じ綴り。
@@ -496,6 +521,25 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     標本 1 本の余白が 4 B しか無いため)。件数 0 の窓は出しません (行の先頭に窓の始まりの時刻があります)。
     `/blocklist?host=<h>` でブロックリストの判定、
     `&action=block|allow|clear[&ttl_secs=N]` で一時的な上書き (既定 24 時間、`0` で無期限。状態ファイルに 256 件まで残る)
+  - **`/profile?res=5|60`** で「**1 要求の時間がどの段階に消えたか**」「**CPU がどの役割のスレッドで何をして使われたか**」
+    「**ロックの取り合いと待ち行列の待ち**」を 1 枚で (5 秒 × 720 = 1 時間 と 60 秒 × 1,440 = 1 日 の窓。
+    ダッシュボードの「プロファイル」の節がこれを描きます):
+    - **段階** — CONNECT は `queue` (accept してからワーカーが動き出すまで) / `client_read` (要求行を読んでから `Host` まで) /
+      `dns` / `connect` / `first_relay` (`200 Connection Established` を書いてから最初の中継バイトまで =
+      トンネル越しの TLS 握手の往復) / `relay` / `park` の 7 段、転送は `queue` / `client_read` / `origin` /
+      `send` / `ttfb` / `body` の 6 段。段階 1 つにつき 件数・合計 ms・最大 ms・12 段の区間 (`/history` と同じ 1〜5,000 ms)
+    - **スレッド** — 役割ごとの CPU と「走行中 / どのシステムコールで待っているか / 休眠」の割合 (`PROXY_PROFILE_SAMPLE_MS`)。
+      **状態の割合は「どこで待っているか」で、「どこで CPU を使っているか」ではありません**:
+      `/proc/<tid>/syscall` はスレッドが CPU に乗っている間は中身に関係なく `running` を返すので、
+      カーネルの中で回り続ける処理 (`splice` の中継など) は `running` に出ます。CPU の行き先は役割ごとの CPU を見てください。
+      また `conn` 役には**次の仕事を待っているワーカー**も入ります (`futex`)
+    - **CPU/要求** — 窓の CPU (utime + stime の増分) ÷ 窓の要求数。`scripts/cpu-per-request.sh` と同じ物差しの値が
+      デプロイ先でも読めます (`recent.cpu_per_request_us` は直近 5 分)
+    - **ロック** — 統計の表・名前解決の表・預かり所・ワーカーの 4 つが「待たされた」回数と、待ち行列で待った件数 / 合計 ms / 最大 ms
+    - 記録はプロセスのメモリだけ (約 5.1 MB。状態ファイルには書きません)。応答は 256 KiB 以下で、
+      入り切らないときは**新しい標本を残して**古い方から落とし `"truncated": true` を出します。**`--lite` では `{"profile":"off"}`**
+    - 段階の窓は **ms 刻み**なので、loopback のように 1 要求が 1 ms に満たない環境ではほとんどの段階が 0 に潰れます
+      (これはデプロイ先の 6〜30 ms の待ちを読むための道具です。手元の速さを見るなら `cpu_per_request_us` の方)
 - **タイムアウト制御**:
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
 
@@ -578,7 +622,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_ORIGIN_POOL` | `64` | オリジンへのアイドル接続をホストごとに保持する本数。`0` で再利用しない。少ないと同時要求数が多いときに張り直しが増える (実測: 8 本だと 64 並列で p99 が 40 ms 台、64 本なら 10 ms 前後) |
 | `PROXY_PARK_IDLE` | `on` | アイドルな keep-alive 接続と、両方向とも暇な CONNECT トンネルをスレッドから外し、1 本の監視スレッド (epoll) に預ける。`off` で「1 接続 = 1 スレッドが専任」の動きに戻る。Linux 専用 (それ以外では自動的に無効)。実測: 暇な接続 2,000 本でスレッド 2,004 → 25 本、RSS 68.0 → 25.2 MB、暇なトンネル 5,000 本でスレッド 5,005 → 68 本、RSS 93.9 → 29.9 MB。忙しいときの CPU/要求とシステムコール数は変わらない |
 | `PROXY_PARK_GRACE_MS` | `3` | 預ける前に同じスレッドで待ってみる時間 (ミリ秒。CONNECT トンネルは下限 100 ms)。続けて要求が来る忙しい接続に、預ける/戻すの往復 (`epoll_ctl` 2 回 + ワーカーの受け渡し、実測 18 µs/要求) を払わせないための猶予。読み取りタイムアウトをこの長さにして空振りを「暇だ」と解釈するので、システムコールは増えない。`0` なら猶予なしで即座に預ける |
-| `PROXY_MALLOC_ARENAS` | `8` | malloc のアリーナ数の上限。`0` で glibc の既定 (コア数 × 8) のまま。接続ごとにスレッドが増えるため、既定のままだとアイドル接続を多く抱えたときに使われないアリーナが RSS に居座る (実測: 2,000 本のアイドル接続で 80.5 → 26.8 kB/接続)。代償は高並列でのロック競合 (実測: 64 並列で CPU/要求 +4%、8 並列では差なし) |
+| `PROXY_MALLOC_ARENAS` | `8` | malloc のアリーナ数の上限。`0` で glibc の既定 (コア数 × 8) のまま。接続ごとにスレッドが増えるため、既定のままだとアイドル接続を多く抱えたときに使われないアリーナが RSS に居座る (実測: 2,000 本のアイドル接続で 80.5 → 26.8 kB/接続)。代償は高並列でのロック競合 (実測: 64 並列で CPU/要求 +4%、8 並列では差なし)。実際に掛かった値は `/status` の `memory.arenas` に出ます |
 | `PROXY_ORIGIN_POOL_TOTAL` | `256` | アイドル接続の全ホスト合計の上限。多数のホストへ行くときに `ホスト数 × PROXY_ORIGIN_POOL` まで増えないようにする |
 | `PROXY_DNS_TTL_SECS` | `60` | 名前解決の結果を保持する秒数。`0` で毎回解決 (それでも 1 要求につき 1 回。`/status` の `dns.misses` がその回数)。**直近この秒数以内に使われた名前は期限の 3/4 を過ぎたところで裏で 1 回だけ引き直す**ので、使い続けているホストはミスになりません (`/status` の `dns.refreshes`)。解決に失敗したら 1 時間以内の古い結果を使う。`.env` で即時反映 |
 | `PROXY_DNS_NEGATIVE_SECS` | `60` | 名前解決の**失敗**を覚えておく秒数 (`0` で覚えない)。覚えている間は OS に問い合わせずに同じエラーを返します (`/status` の `dns.negative_hits`)。引けない名前 1 つで 2 秒待たされることがあるための蓋で、古い答えが 1 時間以内にあるときはエラーより古い答えを優先します。`.env` で即時反映 |
@@ -600,6 +644,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_BURST_PERCENT` | `50` | 同時接続数が `PROXY_MAX_CONNS` のこの割合を**越えた瞬間**に `/connections` の写真を 1 枚撮って `/bursts` に残す (T14.6)。`0` で撮らない。**同じ山では 1 枚だけ**で、閾の 80% を下回るまで次は撮りません。撮るのは履歴スレッド (5 秒周期) なので、接続を受ける経路に増えるのは比較 1 回だけです。割合を当てるのは `PROXY_MAX_CONNS` だけで、上限の外の枠 4 本 (自分宛て用) は含めません。`PROXY_MAX_CONNS=0` (無制限) と `--lite` では撮りません。**履歴スレッドが撮るので `PROXY_STATS_PERSIST=off` でも撮りません**。`.env` で即時反映 |
 | `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。`.env` で即時反映 (次に受ける接続から効く。**下げても走っているスレッドは殺さず**、仕事を終えたスレッドから順に減ります。`auto` のときは `PROXY_MAX_CONNS` を変えるとこちらも決め直します)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。**裏側の再検証 (stale-while-revalidate) もこの上限の内側で走ります**が、こちらは待たせず捨てます (`/status` の `revalidations_dropped`) |
 | `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 4 MiB) に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`) は空になり、日次の要約も 1 行も書きません) |
+| `PROXY_PROFILE_SAMPLE_MS` | `1000` | `/profile` のスレッドの標本を取る間隔 (ms)。`profile-sample` スレッド 1 本が この間隔で `/proc/self/task/*/stat` と `/proc/self/task/*/syscall` を読み、**役割ごと** (`accept` / `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` / `profile-sample` / `other`) に「CPU」と「いま走っているか・どのシステムコールで待っているか・休眠か」を数えます。`0` で標本を止める (段階の窓は 5 秒ごとに畳み続けます)。下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 2 つ開くぶん (実測 約 54 us) で、**140 スレッド・1 秒間隔で 1 コアの 0.75%** (60 秒で 450 ms。128 スレッド相当で 0.69%)。スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。`/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。**`--lite` では `/profile` ごと off** |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
 | `PROXY_TLS_VERIFY` | `on` | オリジンの証明書を検証するか。`off` は自己署名の内部オリジン向け (推奨しない) |
