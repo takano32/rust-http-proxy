@@ -14,6 +14,7 @@ pub use crate::request::{Origin, map_locations, parse_origin};
 pub use crate::response::{ResponseHead, read_response_head};
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -34,6 +35,7 @@ use crate::headers;
 use crate::log::{Access, access};
 use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics};
 use crate::origin::{self, OriginStream};
+use crate::recent::{ConnTally, STAGE_CONNECT, STAGE_DNS, STAGE_FIRST_BYTE, STAGES};
 use crate::sync::LockExt;
 use crate::workers::Workers;
 use crate::{log_debug, log_trace, log_warn};
@@ -220,6 +222,12 @@ pub struct Shared<'a> {
     /// `Connection: keep-alive` を付けたまま閉じていたので、その応答を読んだ直後に
     /// 次の要求を送ったクライアントが取りこぼしていた (T12.6 の小物)
     pub last: bool,
+    /// 接続の個票 (`/recent`) に積み上げる箱 (T14.4)。`--lite` では `None`。
+    ///
+    /// **原子ではない**: 1 本の接続を同時に触るスレッドは 1 つだけなので、要求ごとの
+    /// 積み上げは普通の変数で行い、**接続の終了で 1 回だけ**枠へ移す
+    /// (要求ごとの原子操作を 1 つも増やさないため)
+    pub tally: Option<&'a Cell<ConnTally>>,
 }
 
 /// アクセスログと配信に必要なリクエストの文脈。
@@ -242,6 +250,10 @@ struct Ctx<'a> {
     /// 1 要求の内訳 (名前解決 / 接続 / 勝った族 / エラーの原因。T12.4 (2))。
     /// オリジンへ行った経路だけが埋める (キャッシュ HIT では全部 0)
     detail: Detail,
+    /// クライアントから受けたバイト (要求のヘッダーと本文)。接続の個票の「上り」(T14.4)
+    up_bytes: u64,
+    /// 接続の個票に積み上げる箱 (T14.4)。`--lite` では `None`
+    tally: Option<&'a Cell<ConnTally>>,
 }
 
 impl Ctx<'_> {
@@ -249,6 +261,16 @@ impl Ctx<'_> {
         let outcome = HostOutcome::from_access(cache, status);
         // 経過時間は 1 回だけ引く (clock_gettime は要求ごとに効いてくる)
         let took = self.started.elapsed();
+        // 接続の個票 (`/recent`) の積み上げ (T14.4)。箱の中の足し算だけで、原子も鍵も無い
+        if let Some(cell) = self.tally {
+            let mut t = cell.get();
+            let mut stage_ms = [0u64; STAGES];
+            stage_ms[STAGE_DNS] = self.detail.dns_ms;
+            stage_ms[STAGE_CONNECT] = self.detail.connect_ms;
+            stage_ms[STAGE_FIRST_BYTE] = self.detail.first_byte_ms.unwrap_or(0);
+            t.add_request(status, self.up_bytes, bytes, stage_ms);
+            cell.set(t);
+        }
         self.metrics
             .record_host_detail(self.pool_key, outcome, bytes, Some(took), self.detail);
         self.metrics
@@ -398,6 +420,8 @@ pub fn handle_http_with_headers(
         mapped: origin.mapped,
         pool_key,
         detail: Detail::default(),
+        up_bytes: 0,
+        tally: shared.tally,
     };
 
     // ---- キャッシュ参照 ----
@@ -896,6 +920,8 @@ pub fn handle_http_with_headers(
     }
     let total = client_head.len() as u64 + body_bytes;
     metrics.add_bytes(total + request_body_bytes);
+    // 個票の「上り」は要求の本文ぶん (ヘッダーぶんは本体クレートが足す。T14.4)
+    ctx.up_bytes = request_body_bytes;
     ctx.log(status, total, &cache_state);
     Ok(ctx.keep_client)
 }

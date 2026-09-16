@@ -1,4 +1,5 @@
-//! 個票を読み出すエンドポイント (T13.4): `/errors` `/connections` `/dns` `/log` `/hosts`。
+//! 個票を読み出すエンドポイント: `/errors` `/connections` `/dns` `/log` `/hosts` (T13.4) と
+//! `/recent` (閉じた接続。T14.4)。
 //!
 //! `/status` (集計) と `/history` (時系列) では「**誰が・いつ・なぜ**」が読めない。
 //! ここは「今この瞬間の中身」と「直近に起きたこと」を、集計に畳む前の形で出す口で、
@@ -14,7 +15,7 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use super::{Endpoint, parse_query};
-use crate::recent::MAX_ERRORS;
+use crate::recent::{MAX_ERRORS, MAX_RECENT, RecentEntry};
 
 /// 個票の応答 1 本の上限 (256 KiB)。監視が 1 分おきに引いても回線を埋めない大きさで、
 /// `/errors` 500 件・`/connections` 240 件・`/hosts` 1,000 件のどれも収まる。
@@ -213,6 +214,81 @@ pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
     (200, "application/json", out)
 }
 
+/// `/recent` の並べ替えの鍵。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RecentSort {
+    /// 閉じた新しい順 (既定)
+    Time,
+    /// 確立にかかった ms の大きい順 (「遅かった 1 本」を探す)
+    Slow,
+    /// 運んだバイトの多い順
+    Bytes,
+}
+
+impl RecentSort {
+    fn from_param(v: &str) -> RecentSort {
+        match v {
+            "slow" => RecentSort::Slow,
+            "bytes" => RecentSort::Bytes,
+            _ => RecentSort::Time,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            RecentSort::Time => "time",
+            RecentSort::Slow => "slow",
+            RecentSort::Bytes => "bytes",
+        }
+    }
+}
+
+/// `/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes` — **閉じた接続**の個票
+/// (既定 200 件・最大 [`MAX_RECENT`]。T14.4)。
+///
+/// `/connections` は「いま」しか見えず、`/errors` は失敗だけ。ここは閉じた接続 1 本ごとの
+/// 記録なので、**バーストのとき誰が何を開いたか**も**遅かった 1 本がどの段階で遅かったか**も
+/// 後から読める。書くのは接続の終了で 1 回だけ (`ConnSlot` の抹消と同じ場所)。
+pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    let n = num_param(query, "n", 200, MAX_RECENT);
+    let since = parse_query(query.unwrap_or(""))
+        .iter()
+        .find(|(k, _)| k == "since")
+        .and_then(|(_, v)| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let client = str_param(query, "client");
+    let sort = RecentSort::from_param(&str_param(query, "sort"));
+    // 絞りはリングの鍵の内側で済ませる (2,000 件を複製してから捨てない)
+    let (mut rows, total) = ep.metrics.closed.select(since, &client);
+    let matched = rows.len();
+    match sort {
+        // `select` が既に新しい順で返している
+        RecentSort::Time => {}
+        // `sort_by_key` は安定なので、同点は `select` が返した新しい順のまま
+        RecentSort::Slow => rows.sort_by_key(|e| std::cmp::Reverse(e.connect_ms())),
+        RecentSort::Bytes => rows.sort_by_key(|e| std::cmp::Reverse(e.bytes())),
+    }
+    let mut out = String::with_capacity(8192);
+    out.push_str("{\"recent\":");
+    let (shown, cut) = array_within(&mut out, rows.iter().take(n).map(RecentEntry::to_json));
+    let _ = write!(
+        out,
+        ",\"count\":{},\"matched\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"sort\":\"{}\",\"since\":{},\"client\":\"{}\",\"truncated\":{},\"lite\":{}}}",
+        shown,
+        matched,
+        shown,
+        ep.metrics.closed.len(),
+        MAX_RECENT,
+        total,
+        sort.name(),
+        since,
+        crate::json::escape(&client),
+        cut,
+        !ep.metrics.conns.enabled()
+    );
+    (200, "application/json", out)
+}
+
 /// `?sort=` に出す名前 (`/status?sort=` と同じ綴り)。
 fn sort_name(sort: crate::metrics::HostSort) -> &'static str {
     match sort {
@@ -311,6 +387,126 @@ mod tests {
                 MAX_BODY
             );
         }
+    }
+
+    /// `/recent` は 2,000 件のリングを丸ごと読んでも 256 KiB に収まること (T14.4)。
+    ///
+    /// 1 件はありふれた値で 225 B なので **2,000 件 (440 KiB) は入りきらない**のが
+    /// 設計どおり。入らない分はバイト数で打ち切って `"truncated":true` を出す
+    /// (既定の 200 件は最悪の値でも入る)。
+    #[test]
+    fn the_recent_response_stays_under_256_kib() {
+        use crate::recent::{CloseReason, ConnTally, MAX_RECENT, RecentRing, STAGES};
+
+        let ring = RecentRing::new();
+        let table = crate::recent::ConnTable::new();
+        let now = Instant::now();
+        let long_host = format!("{}.example.net:65535", "sub.".repeat(30));
+        for i in 0..(MAX_RECENT as u64) {
+            let slot = table
+                .register(i, "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6", now)
+                .expect("登録できる");
+            slot.begin_tunnel(&long_host);
+            slot.finish(
+                CloseReason::Error(crate::metrics::ErrCause::Unreachable),
+                ConnTally {
+                    up: u64::MAX,
+                    down: u64::MAX,
+                    status: 599,
+                    stage_ms: [u64::MAX; STAGES],
+                },
+                u32::MAX,
+            );
+            ring.push(slot.closed_entry(now).expect("宛先のある接続は残る"));
+        }
+        let (rows, total) = ring.select(0, "");
+        assert_eq!(total, MAX_RECENT as u64);
+        assert_eq!(rows.len(), MAX_RECENT);
+        for (n, want_cut) in [(200usize, false), (MAX_RECENT, true)] {
+            let mut body = String::from("{\"recent\":");
+            let (shown, cut) = array_within(&mut body, rows.iter().take(n).map(|e| e.to_json()));
+            body.push('}');
+            assert_eq!(cut, want_cut, "{} 件", n);
+            assert!(body.len() <= MAX_BODY, "{} 件で {} B", n, body.len());
+            println!(
+                "recent {} 件 (最悪の値) の応答: {} B / 出せたのは {} 件 (上限 {} B)",
+                n,
+                body.len(),
+                shown,
+                MAX_BODY
+            );
+        }
+    }
+
+    /// `?sort=` の並びと `?since=` / `?client=` の絞り (T14.4)。
+    #[test]
+    fn recent_sorts_and_filters() {
+        let m = Metrics::new();
+        let now = Instant::now();
+        for (i, (client, connect_ms, bytes)) in [
+            ("10.0.0.1", 5u64, 100u64),
+            ("10.0.0.2", 90, 10),
+            ("10.0.0.1", 1, 5000),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let slot = m.conns.register(i as u64, client, now).expect("登録できる");
+            slot.begin_tunnel("example.net:443");
+            slot.finish(
+                crate::recent::CloseReason::ClientEof,
+                crate::recent::ConnTally {
+                    up: 0,
+                    down: bytes,
+                    status: 0,
+                    stage_ms: [0, connect_ms, 0, 0, 0, 0],
+                },
+                0,
+            );
+            m.record_closed(i as u64);
+        }
+        let concurrency = || crate::metrics::Concurrency {
+            max_conns: 0,
+            max_threads: 0,
+            live_threads: 0,
+            idle_threads: 0,
+            queued_jobs: 0,
+        };
+        let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
+        let ep = Endpoint {
+            metrics: &m,
+            cache: &cache,
+            conn_id: 1,
+            port: 8080,
+            host: None,
+            pac_direct: &[],
+            lite: false,
+            version: "test",
+            concurrency: &concurrency,
+        };
+        // 既定は閉じた新しい順
+        let body = recent(&ep, None).2;
+        assert!(body.contains("\"count\":3"), "{}", body);
+        assert!(body.contains("\"sort\":\"time\""), "{}", body);
+        let ids = |b: &str| {
+            b.match_indices("\"id\":")
+                .map(|(i, _)| b[i + 5..].split(',').next().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&body), ["2", "1", "0"]);
+        // 確立の遅い順 / 転送の多い順
+        assert_eq!(ids(&recent(&ep, Some("sort=slow")).2), ["1", "0", "2"]);
+        assert_eq!(ids(&recent(&ep, Some("sort=bytes")).2), ["2", "0", "1"]);
+        // 接続元で絞る
+        let mine = recent(&ep, Some("client=10.0.0.1")).2;
+        assert_eq!(ids(&mine), ["2", "0"]);
+        assert!(mine.contains("\"client\":\"10.0.0.1\""), "{}", mine);
+        // 未来の時刻で絞れば 0 件 (`recorded` は減らない)
+        let none = recent(&ep, Some("since=9999999999")).2;
+        assert!(none.contains("\"recent\":[]"), "{}", none);
+        assert!(none.contains("\"recorded\":3"), "{}", none);
+        // `?n=` で件数を絞る
+        assert_eq!(ids(&recent(&ep, Some("n=1")).2).len(), 1);
     }
 
     /// `/dns` は**どんな中身でも** 256 KiB に収まること。

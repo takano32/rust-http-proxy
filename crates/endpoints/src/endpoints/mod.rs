@@ -96,6 +96,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
          \x20 /connections                                JSON: the connections open right now\n\
+         \x20 /recent?n=200&since=&client=&sort=          JSON: the connections that closed\n\
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
@@ -166,6 +167,9 @@ pub fn handle(
         recent::errors(ep, query)
     } else if is_get && path == "/connections" {
         recent::connections(ep)
+    } else if is_get && path == "/recent" {
+        // 閉じた接続の個票 (T14.4)。`/connections` の「いま」に対して「起きたこと」
+        recent::recent(ep, query)
     } else if is_get && path == "/dns" {
         recent::dns(query)
     } else if is_get && path == "/log" {

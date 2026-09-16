@@ -209,6 +209,19 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `info` のアクセスログは写しません — 熱い経路を重くしないため。コンソールが流れて消える環境向け)、
     `/hosts?sort=requests|errors|dns|slow&limit=200` (最大 1,000) で `.rrd` にある**全ホスト**を `/status` の `hosts[]` と同じ形で
     (`/status` の上位 50 は変えません。`scripts/status-diff.py` がこの JSON もそのまま読みます)
+  - **閉じた接続の個票 (T14.4)**: `/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
+    `/connections` が「いま」しか見せないのに対し、こちらは「**起きたこと**」です。1 件 = 接続 id・開いた時刻 (`at`、epoch 秒)・
+    接続元 (`client`)・宛先 (`target`)・種類 (`kind` = `connect` / `http`)・寿命 (`secs`)・要求数 (`reqs`、http だけ)・
+    **上り / 下り別のバイト** (`up` / `down`)・**閉じた理由** (`reason`)・最後の応答の状態コード (`status`、http だけ)・
+    預かり所にいた合計秒と回数 (`parked_secs` / `parks`)・**段階の ms** (`ms` = `dns` / `connect`。`first_byte` は 0 でなければ)。
+    理由は `client_eof` (クライアントが先に EOF) / `server_eof` (宛先が先に EOF) / `idle_timeout` (トンネルの無通信打ち切り) /
+    `keepalive_timeout` (次の要求を待ちきれなかった) / `evicted` (上限に当たって席を作るために閉じた。`PROXY_MAX_CONNS`) /
+    `limit` (1 接続あたりの要求数の上限) / `error:<原因>` (原因は `/status` の `errors_by_cause` と同じ 8 つ) /
+    `shutdown` (その他のプロキシ側の都合) の 8 種類。**書くのは接続の終了で 1 回だけ**で、要求ごとにも中継のバイトごとにも
+    何も書きません。2,000 件の環状 (ありふれた 1 件 225 B)。`?since=` は「開いた時刻がこれ以降」、`?client=` は接続元の完全一致、
+    `?sort=slow` は確立 (`ms.connect`) の遅い順、`?sort=bytes` は転送の多い順。
+    **自分宛て (`/status` `/dashboard` …) だけで終わった接続は残しません** — 監視が 5 秒おきに引くとリングがそれで埋まるためです
+    (数は `/status` にあります)
   - どの個票も応答は 256 KiB 以下 (件数の上限とは別にバイト数でも打ち切り、切ったら `"truncated": true`)。
     リングはプロセスのメモリだけで、状態ファイル (`.rrd`) には書きません (再起動で消えてよい個票)。
     **どれも認証なしで見えます** (このプロキシの方針。`/purge` と同じ)。接続元の IP と宛先ホストが並ぶので、
@@ -814,6 +827,13 @@ curl http://127.0.0.1:8080/
 curl http://127.0.0.1:8080/status
 curl "http://127.0.0.1:8080/status?sort=errors"         # 上位 50 をエラーの多い順で切り出す (dns / slow も)
 curl http://127.0.0.1:8080/metrics                      # Prometheus 形式
+
+# 個票 (誰が・いつ・なぜ)
+curl "http://127.0.0.1:8080/connections"                # いま開いている接続
+curl "http://127.0.0.1:8080/recent?n=200"               # 閉じた接続 (新しい順)
+curl "http://127.0.0.1:8080/recent?sort=slow&n=20"      # 確立のいちばん遅かった 20 本
+curl "http://127.0.0.1:8080/recent?client=198.51.100.7" # ある接続元だけ
+curl "http://127.0.0.1:8080/recent?since=$(( $(date +%s) - 3600 ))"   # 直近 1 時間に開いたもの
 
 # キャッシュの操作・確認
 curl -X PURGE -x http://127.0.0.1:8080 http://example.com/file.zip     # 1 URL (全バリアント) を消す
