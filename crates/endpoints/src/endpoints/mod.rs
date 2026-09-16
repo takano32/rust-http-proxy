@@ -53,6 +53,7 @@ mod blocklist;
 mod config;
 mod health;
 mod pac;
+mod profile;
 mod recent;
 
 const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
@@ -107,6 +108,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /connections                                JSON: the connections open right now\n\
          \x20 /recent?n=200&since=&client=&sort=          JSON: the connections that closed\n\
          \x20 /bursts?n=50                                JSON: snapshots taken at each spike\n\
+         \x20 /events?n=200&since=                        JSON: starts, reloads, and other events\n\
          \x20 /snapshot                                   JSON: everything above in one request\n\
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
@@ -116,6 +118,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
          \x20 /history?since=&until=&summary=1            JSON: one summary row for a period\n\
+         \x20 /profile?res=5|60                           JSON: stages, threads, locks\n\
          \x20 /daily?n=365                                JSON: one summary line per day (kept forever)\n\
          \x20 /metrics                                    Prometheus text format\n\
          \x20 /proxy.pac                                  browser auto-config script\n\
@@ -189,6 +192,9 @@ pub fn handle(
             let res = res.map_or(0, crate::history::History::index_for);
             (200, "application/json", history_body(ep, res))
         }
+    } else if is_get && path == "/profile" {
+        // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)
+        profile::profile(ep, query)
     } else if is_get && path == "/errors" {
         // 個票 (T13.4)。集計 (`/status`) では読めない「誰が・いつ・なぜ」を出す
         recent::errors(ep, query)
@@ -200,6 +206,10 @@ pub fn handle(
     } else if is_get && path == "/bursts" {
         // 山の写真 (T14.6)。同時接続数が上限の一定割合を越えた瞬間の `/connections`
         recent::bursts(ep, query)
+    } else if is_get && path == "/events" {
+        // 起きたことの時系列 (T14.11)。起動・再読込・ブロックリスト・IPv6・圧迫・
+        // バラスト・状態ファイル・追い出し・accept の失敗・停止シグナルを 1 本に
+        recent::events(query)
     } else if is_get && path == "/snapshot" {
         // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
         recent::snapshot(ep)
@@ -602,6 +612,18 @@ mod local_path_tests {
             "errhint",
             "conns",
             "connhint",
+            // プロファイル (T14.3)
+            "proflead",
+            "st-connect-setup",
+            "st-connect-after",
+            "st-forward-setup",
+            "st-forward-after",
+            "stages",
+            "ch-rolecpu",
+            "ch-cpureq",
+            "roles",
+            "locks",
+            "profhint",
         ] {
             assert!(html.contains(&format!("id=\"{}\"", id)), "{} が無い", id);
         }
@@ -616,6 +638,13 @@ mod local_path_tests {
             // 個票を読む側 (T13.4)
             "function errorRows(",
             "function connRows(",
+            // プロファイルを読む側 (T14.3)
+            "function toProfile(",
+            "function stageRows(",
+            "function longestStage(",
+            "function roleRows(",
+            "function lockRows(",
+            "function drawStack(",
         ] {
             assert!(html.contains(f), "{} が無い", f);
         }
@@ -656,6 +685,17 @@ mod local_path_tests {
             "{}",
             "個票が 5 秒ごとになっていない"
         );
+        // プロファイルは 5 秒ごとに `/profile?res=` を 1 本 (T14.3)
+        assert!(
+            html.contains("fetchJson('/profile?res='+res)"),
+            "{}",
+            "/profile を取っていない"
+        );
+        assert!(
+            html.contains("setInterval(pollProfile,5000)"),
+            "{}",
+            "プロファイルが 5 秒ごとになっていない"
+        );
         // ヘッダーから個票へ行けること (T13.4)
         for link in [
             "/dns",
@@ -663,6 +703,7 @@ mod local_path_tests {
             "/hosts?limit=1000",
             "/errors",
             "/connections",
+            "/profile",
         ] {
             assert!(
                 html.contains(&format!("<a href=\"{}\" target=\"_blank\">", link)),
