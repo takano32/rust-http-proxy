@@ -1,0 +1,14 @@
+[package]
+name = "proxy-metrics-watch"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proxy-metrics-core = { path = "../metrics-core" }
+
+# テストだけが使う (`Cache::new` に渡す設定。リリースのビルドには入らない)。
+[dev-dependencies]
+proxy-cache = { path = "../cache" }

@@ -35,9 +35,9 @@ use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crate::history::RESOLUTIONS;
 use crate::recent::SIDES;
 use crate::sync::LockExt;
+use crate::window::RESOLUTIONS;
 
 /// 速さを数える下限 (バイト)。これ未満のトンネルは `tunnels` にだけ数える。
 pub const MIN_BYTES: u64 = 1 << 10;

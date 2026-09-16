@@ -296,6 +296,9 @@ pub fn start(path: PathBuf, metrics: &Arc<Metrics>) -> Option<(Arc<Store>, JoinH
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let _ = GLOBAL.set(Arc::clone(&store));
+    // 書込エラーの数は `/status` の `kernel.state_file` にも出る。下の層 (`kernel`) からは
+    // ここを呼べないので、開いたこの 1 回だけ読み口を預ける (T14.55)
+    crate::kernel::set_state_file_errors(write_errors);
     let st = Arc::clone(&store);
     let m = Arc::clone(metrics);
     let handle = thread::Builder::new()

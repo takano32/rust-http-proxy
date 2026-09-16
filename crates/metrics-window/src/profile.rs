@@ -53,9 +53,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::cache::now_epoch;
-use crate::history::Window;
-use crate::metrics::{Detail, Metrics};
+use crate::metrics::Detail;
 use crate::sync::LockExt;
+use crate::window::Window;
 
 /// 段階の窓を畳む間隔と本数 (5 秒 × 720 = 1 時間、60 秒 × 1,440 = 1 日)。
 pub const RESOLUTIONS: [(u64, usize); 2] = [(5, 720), (60, 1440)];
@@ -650,6 +650,20 @@ impl Profile {
     }
 }
 
+/// [`spawn`] のスレッドが**上の層 (`Metrics`) から読むもの**。これだけ (T14.55)。
+///
+/// `Metrics` は 1 つ上のクレート (`proxy-metrics-core`) に居て、そこから下のここを
+/// 直に呼ぶことはできても逆はできない。**下から上を呼べない**ので、スレッドが要る
+/// 3 つの読み口だけをこの型で受け取る (実装は `Metrics` 側に 1 つだけある)。
+pub trait Source: Send + Sync + 'static {
+    /// 起動からの要求数 (`Metrics::total_requests`)。
+    fn total_requests(&self) -> u64;
+    /// 直近の標本以降の段階を読んで 0 に戻す (`Metrics::take_stages`)。
+    fn take_stages(&self) -> Stages;
+    /// 段階とスレッドの窓 (`Metrics::profile`)。
+    fn profile(&self) -> &Profile;
+}
+
 /// 1 標本ぶんの「前回との差」を取るための覚え書き。
 struct Tick {
     requests: u64,
@@ -660,10 +674,10 @@ struct Tick {
 }
 
 impl Tick {
-    fn now(metrics: &Metrics) -> Tick {
+    fn now<M: Source>(metrics: &M) -> Tick {
         let [queue_waited, queue_ms_sum, _] = crate::sync::queue_totals();
         Tick {
-            requests: metrics.total_requests.load(Ordering::Relaxed),
+            requests: metrics.total_requests(),
             cpu_us: process_cpu_us().unwrap_or(0),
             locks: crate::sync::lock_contended(),
             queue_waited,
@@ -793,13 +807,13 @@ pub const MAX_SAMPLE_MS: u64 = 60_000;
 ///
 /// **`--lite` では呼ばない** (窓を 1 本も作らない)。`sample_ms` が `0` なら
 /// スレッドの標本は取らず (`sampler: "off"`)、5 秒ごとに段階の窓だけ畳む。
-pub fn spawn(metrics: std::sync::Arc<Metrics>, sample_ms: u64) -> JoinHandle<()> {
+pub fn spawn<M: Source>(metrics: std::sync::Arc<M>, sample_ms: u64) -> JoinHandle<()> {
     SAMPLE_MS.store(sample_ms, Ordering::Relaxed);
     thread::Builder::new()
         .name("profile-sample".into())
         .stack_size(256 * 1024)
         .spawn(move || {
-            let mut prev = Tick::now(&metrics);
+            let mut prev = Tick::now(&*metrics);
             let mut sampler = (sample_ms > 0).then(Sampler::for_self);
             let step = match sample_ms {
                 0 => TICK,
@@ -809,12 +823,12 @@ pub fn spawn(metrics: std::sync::Arc<Metrics>, sample_ms: u64) -> JoinHandle<()>
             loop {
                 thread::sleep(step);
                 if let Some(s) = sampler.as_mut() {
-                    s.sample(&metrics.profile);
+                    s.sample(metrics.profile());
                 }
                 waited += step;
                 if waited >= TICK {
                     waited = Duration::ZERO;
-                    tick(&metrics, &mut prev, sampler.as_mut());
+                    tick(&*metrics, &mut prev, sampler.as_mut());
                 }
             }
         })
@@ -822,7 +836,7 @@ pub fn spawn(metrics: std::sync::Arc<Metrics>, sample_ms: u64) -> JoinHandle<()>
 }
 
 /// 1 標本ぶんを窓へ (`spawn` のループの中身。テストからも呼ぶ)。
-fn tick(metrics: &Metrics, prev: &mut Tick, sampler: Option<&mut Sampler>) {
+fn tick<M: Source>(metrics: &M, prev: &mut Tick, sampler: Option<&mut Sampler>) {
     let now = Tick::now(metrics);
     let mut locks = [0u64; crate::sync::LOCK_NAMES.len()];
     for ((o, a), b) in locks
@@ -844,7 +858,7 @@ fn tick(metrics: &Metrics, prev: &mut Tick, sampler: Option<&mut Sampler>) {
         queue_ms_max: crate::sync::take_queue_window_max(),
     };
     *prev = now;
-    metrics.profile.push(s);
+    metrics.profile().push(s);
 }
 
 #[cfg(test)]

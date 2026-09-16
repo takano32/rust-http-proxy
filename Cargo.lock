@@ -139,9 +139,51 @@ version = "0.1.0"
 dependencies = [
  "proxy-base",
  "proxy-cache",
+ "proxy-metrics-watch",
  "proxy-net",
  "proxy-rrd",
  "proxy-selfbench",
+]
+
+[[package]]
+name = "proxy-metrics-core"
+version = "0.1.0"
+dependencies = [
+ "proxy-metrics-window",
+]
+
+[[package]]
+name = "proxy-metrics-recent"
+version = "0.1.0"
+dependencies = [
+ "proxy-cache",
+ "proxy-metrics-types",
+ "proxy-selfbench",
+]
+
+[[package]]
+name = "proxy-metrics-types"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-net",
+ "proxy-rrd",
+ "proxy-sysinfo",
+]
+
+[[package]]
+name = "proxy-metrics-watch"
+version = "0.1.0"
+dependencies = [
+ "proxy-cache",
+ "proxy-metrics-core",
+]
+
+[[package]]
+name = "proxy-metrics-window"
+version = "0.1.0"
+dependencies = [
+ "proxy-metrics-recent",
 ]
 
 [[package]]

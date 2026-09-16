@@ -267,9 +267,22 @@ impl State {
 
 static STATE: Mutex<State> = Mutex::new(State::new());
 
+/// 状態ファイルの書込エラーの数を読む口 (**上の層 `persist` が状態ファイルを開いたときに
+/// 1 回だけ預ける**。T14.55)。
+///
+/// クレートを割る前はここから `persist::write_errors()` を直に呼んでいたが、
+/// 状態ファイルはいちばん上の層なので下のここからは呼べない。**預ける前は `None`** で、
+/// これは `persist::write_errors()` が状態ファイルを開く前に返していた値と同じ。
+static STATE_FILE_ERRORS: std::sync::OnceLock<fn() -> Option<u64>> = std::sync::OnceLock::new();
+
+/// 上の層が読み口を預ける (`persist` が状態ファイルを開いた 1 回だけ)。
+pub fn set_state_file_errors(f: fn() -> Option<u64>) {
+    let _ = STATE_FILE_ERRORS.set(f);
+}
+
 /// 5 秒の標本のときに 1 回だけ呼ぶ (`/proc` を 3 つ + cgroup を 4 つ読む)。
 ///
-/// **要求ごとには呼ばないこと。** 呼ぶのは [`crate::history`] の記録スレッドだけで、
+/// **要求ごとには呼ばないこと。** 呼ぶのは `history` の記録スレッドだけで、
 /// `--lite` や `PROXY_STATS_PERSIST=off` では記録スレッド自体が動かないので窓は空になる。
 pub fn sample(t: u64) {
     let now = read_now(t);
@@ -289,7 +302,7 @@ fn read_now(t: u64) -> Latest {
     let cpu = cgroup_cpu();
     let psi = cgroup_pressure();
     let (dns_us_sum, dns_misses) = crate::dns::resolve_cost_total();
-    let state_file = crate::persist::write_errors();
+    let state_file = STATE_FILE_ERRORS.get().and_then(|f| f());
     let mut l = Latest {
         at: t,
         dns_misses,

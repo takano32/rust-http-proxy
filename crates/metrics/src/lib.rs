@@ -1,28 +1,30 @@
 //! 計測。ホスト別・接続元別の統計、時系列の履歴、状態ファイルへの読み書き。
 //!
-//! この 3 つは互いを参照しているので 1 つにまとめてある (履歴は指標の一部で、
-//! 状態ファイルはその両方を載せる)。
+//! **このクレートは状態ファイル ([`persist`] / [`persist_recent`]) と、割った 4 つの
+//! クレートの出し直しだけ**を持つ。呼ぶ側は今までどおり `proxy_metrics::recent::…` の
+//! ように引ける (T14.55 で `rustc` のメモリを下げるために割った。下から順に
+//! `proxy-metrics-types` → `proxy-metrics-recent` → `proxy-metrics-core` →
+//! `proxy-metrics-watch` → ここ)。
 //!
 //! 層ごとにクレートを分けてあるのは、`rustc` がクレート単位で全部を一度に抱えるため
-//! (動作環境のメモリ上限は 200 MB)。**外部クレートは 1 つも使っていない。**
+//! (動作環境のメモリ上限は 180 MB)。**外部クレートは 1 つも使っていない。**
 
-pub mod anomaly;
-pub mod canary;
-pub mod daily;
-pub mod events;
-pub mod history;
-pub mod hostseries;
-pub mod kernel;
-pub mod metrics;
 pub mod persist;
 pub mod persist_recent;
-pub mod profile;
-pub mod quantiles;
-pub mod recent;
-pub mod slo;
-pub mod snapshots;
-pub mod trace;
-pub mod transfer;
+mod tick;
+
+/// 時系列の履歴 — 窓そのものは下の層 (`proxy-metrics-core`)、5 秒ごとに標本を取る
+/// 記録スレッド ([`spawn`] / [`spawn_every`]) だけがここ (T14.55)。
+pub mod history {
+    pub use crate::tick::{spawn, spawn_every};
+    pub use proxy_metrics_watch::history::*;
+}
+
+// 割った先を今までの名前で出し直す (`proxy_metrics::anomaly` のような書き方をそのまま通す)。
+pub use proxy_metrics_watch::{
+    anomaly, canary, clients, daily, events, hostseries, kernel, metrics, profile, quantiles,
+    recent, slo, snapshots, trace, transfer, window,
+};
 
 // 下の層をこのクレートの名前空間にも出す (`crate::sync` のような書き方をそのまま通すため)。
 pub use proxy_base::{
