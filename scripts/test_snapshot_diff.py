@@ -164,6 +164,62 @@ class History(unittest.TestCase):
         self.assertEqual([r["t"] for r in rows], sorted(r["t"] for r in rows))
 
 
+class ServerSummary(unittest.TestCase):
+    """サーバー側の要約 (`/history?...&summary=1`。T14.24) を読む口。"""
+
+    def setUp(self):
+        self.d = build()
+        self.after = self.d["history"]["after"]
+
+    def server_row(self, **over):
+        """手元の集計と同じ数字を持つ、サーバー側の応答 (架空)。"""
+        row = {
+            "from": self.d["history"]["boundary"], "to": 1789086400,
+            "interval_secs": 3600, "normal_hours_only": True,
+            "samples": self.after["samples"], "burst_samples": self.after["burst_samples"],
+            "connects": self.after["connects"],
+            "p50_ms": self.after["connect_p50"], "p95_ms": self.after["connect_p95"],
+            "dns_miss_per_connect": self.after["dns_per_connect"],
+            "dns_miss_avg_ms": self.after["ms_per_miss"],
+            "errors": self.after["errors"], "active_max": self.after["active_max"],
+        }
+        row.update(over)
+        return row
+
+    def test_the_url_carries_the_period_and_the_normal_hours_filter(self):
+        url = self.d["summary_url"]
+        self.assertIn(f"since={self.d['history']['boundary']}", url)
+        self.assertIn("res=3600", url)
+        self.assertIn("normal_hours_only=1", url)
+        self.assertIn("summary=1", url)
+        self.assertNotIn("normal", sd.summary_url(1, 2, 60, normal=False))
+
+    def test_the_same_numbers_come_out_as_a_match(self):
+        check = sd.summary_check(self.server_row(), self.after)
+        self.assertTrue(all(r["same"] for r in check["rows"]), check["rows"])
+
+    def test_a_different_window_shows_up_as_a_mismatch(self):
+        check = sd.summary_check(self.server_row(p50_ms=99.9), self.after)
+        bad = [r["key"] for r in check["rows"] if r["same"] is False]
+        self.assertEqual(bad, ["p50_ms"])
+
+    def test_a_source_that_cannot_be_read_is_reported_not_raised(self):
+        out = sd.load_summary(os.path.join(DATA, "no-such-summary.json"))
+        self.assertIn("error", out)
+        self.assertIsNone(sd.load_summary(None))
+        self.assertIsNone(sd.summary_check(out, self.after))
+
+    def test_the_markdown_shows_the_one_request_url_and_the_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "summary.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self.server_row(), f)
+            md = run([A, B, "--no-dns", "--summary", path])
+        self.assertIn("サーバー側で 1 要求", md)
+        self.assertIn("| サーバー (`?summary=1`) | 手元 (この道具) |", md)
+        self.assertIn("一致", md)
+
+
 class Hosts(unittest.TestCase):
     def setUp(self):
         self.d = build([A, B, "--aaaa", AAAA])

@@ -1,4 +1,5 @@
-//! 自プロセスの数え物: スレッド数と、開いている記述子の数 / その上限 (T12.4 (3))。
+//! 自プロセスの数え物: スレッド数と、開いている記述子の数 / その上限 (T12.4 (3))、
+//! スレッド 1 本ごとの CPU と「いまどのシステムコールに居るか」(T14.3 (2))。
 //!
 //! Phase 13 が「上限に届いたか」を見るための数字で、**5 秒の標本のときだけ**読む
 //! (`/proc` を 1 つ読み、ディレクトリを 1 つ数え、`getrlimit` を 1 回呼ぶ。
@@ -55,6 +56,101 @@ fn max_fds() -> Option<u64> {
     None
 }
 
+/// スレッド 1 本の標本 (`/proc/<pid>/task/<tid>/`。T14.3 (2))。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskSample {
+    pub tid: u32,
+    /// スレッド名 (`stat` の 2 番目の項目。**15 文字で切られる**)
+    pub comm: String,
+    /// utime + stime (clock tick)
+    pub ticks: u64,
+    /// `stat` の状態 (`R` 走行可能 / `S` 休眠 / `D` 割り込めない休眠 …)
+    pub state: char,
+    /// `syscall` の番号。`Some(n >= 0)` = そのシステムコールの中、`Some(-1)` = 走行中、
+    /// `None` = 読めなかった (seccomp / `hidepid` / Linux 以外)
+    pub syscall: Option<i64>,
+}
+
+/// [`scan_tasks`] の結果。
+#[derive(Debug, Default)]
+pub struct TaskScan {
+    pub tasks: Vec<TaskSample>,
+    /// `syscall` が 1 本でも読めたか (読めなければ `/profile` は `partial`)
+    pub syscalls_readable: bool,
+}
+
+/// `root` (普通は `/proc/self/task`) の下のスレッドを全部読む。
+///
+/// **1 本につき開くのは 2 ファイルだけ** (`stat` と `syscall`)。スレッド名は `stat` の
+/// 2 番目の項目にあるので `comm` は開かない (128 スレッドで 1 秒に 256 回の open)。
+/// ディレクトリが読めなければ `None` (呼び出し側は `sampler: "off"`)。
+///
+/// `buf` は読み取りの使い回し用 (毎回確保しないため)。
+pub fn scan_tasks(root: &std::path::Path, buf: &mut String) -> Option<TaskScan> {
+    let mut out = TaskScan::default();
+    for entry in std::fs::read_dir(root).ok()? {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        let Some(tid) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        let dir = entry.path();
+        let Some(text) = read_into(&dir.join("stat"), buf) else {
+            continue;
+        };
+        let Some((comm, state, ticks)) = parse_task_stat(text) else {
+            continue;
+        };
+        let syscall = read_into(&dir.join("syscall"), buf).and_then(parse_syscall);
+        if syscall.is_some() {
+            out.syscalls_readable = true;
+        }
+        out.tasks.push(TaskSample {
+            tid,
+            comm,
+            ticks,
+            state,
+            syscall,
+        });
+    }
+    Some(out)
+}
+
+/// `path` を `buf` に読み込んで借用で返す (毎回 `String` を作らない)。
+fn read_into<'a>(path: &std::path::Path, buf: &'a mut String) -> Option<&'a str> {
+    use std::io::Read as _;
+    buf.clear();
+    let mut f = std::fs::File::open(path).ok()?;
+    f.read_to_string(buf).ok()?;
+    Some(&buf[..])
+}
+
+/// `/proc/<pid>/task/<tid>/stat` から (名前, 状態, utime + stime) を取る。
+///
+/// **comm は括弧で囲まれていて空白も括弧も含みうる**ので、最初の `(` と最後の `)` で切る。
+pub fn parse_task_stat(text: &str) -> Option<(String, char, u64)> {
+    let open = text.find('(')?;
+    let close = text.rfind(')')?;
+    let comm = text.get(open + 1..close)?.to_string();
+    let mut it = text.get(close + 1..)?.split_whitespace();
+    let state = it.next()?.chars().next()?;
+    // state のあとは ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt
+    // (10 個) が並び、その次が utime (項目 14) と stime (項目 15)
+    let utime: u64 = it.nth(10)?.parse().ok()?;
+    let stime: u64 = it.next()?.parse().ok()?;
+    Some((comm, state, utime + stime))
+}
+
+/// `/proc/<pid>/task/<tid>/syscall` の 1 行目からシステムコール番号を取る。
+/// `running` と `-1` はどちらも「システムコールの中に居ない」= `Some(-1)`。
+pub fn parse_syscall(text: &str) -> Option<i64> {
+    let first = text.split_whitespace().next()?;
+    if first == "running" {
+        return Some(-1);
+    }
+    first.parse::<i64>().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +203,66 @@ mod tests {
             "process_fds {} と ls {} が ±2 で一致しない (20 回とも)",
             last.0, last.1
         );
+    }
+
+    /// `stat` の comm に空白と括弧が入っていても名前・状態・CPU が取れること (T14.3 (2))。
+    #[test]
+    fn parses_a_task_stat_line() {
+        let line = "1234 (we (ir)d name) S 1 1 0 0 -1 4194368 0 0 0 0 111 222 0 0 20 0 8 0 100 0";
+        let (comm, state, ticks) = parse_task_stat(line).expect("読めること");
+        assert_eq!(comm, "we (ir)d name");
+        assert_eq!(state, 'S');
+        assert_eq!(ticks, 333);
+        assert_eq!(parse_task_stat("こわれている"), None);
+    }
+
+    #[test]
+    fn parses_the_syscall_file() {
+        assert_eq!(parse_syscall("running\n"), Some(-1));
+        assert_eq!(parse_syscall("-1 0x0 0x0\n"), Some(-1));
+        assert_eq!(
+            parse_syscall("73 0xffffc32a1e18 0x2 0xffffc32a1d90 0x0 0x0 0x0 0xffff 0xffff\n"),
+            Some(73)
+        );
+        assert_eq!(parse_syscall(""), None);
+    }
+
+    /// `/proc` が無いところを指したら `None` (`/profile` は `sampler: "off"`)。
+    #[test]
+    fn a_missing_task_directory_gives_none() {
+        let mut buf = String::new();
+        assert!(scan_tasks(std::path::Path::new("/nonexistent/task"), &mut buf).is_none());
+    }
+
+    /// `syscall` の無いディレクトリを差し替えると `partial` になること (T14.3 の受け入れ基準)。
+    #[test]
+    fn a_task_directory_without_syscall_is_partial() {
+        let dir = std::env::temp_dir().join(format!("t143-task-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("7")).expect("作れること");
+        std::fs::write(
+            dir.join("7/stat"),
+            "7 (conn) S 1 1 0 0 -1 4194368 0 0 0 0 5 6 0 0 20 0 8 0 100 0\n",
+        )
+        .expect("書けること");
+        let mut buf = String::new();
+        let scan = scan_tasks(&dir, &mut buf).expect("ディレクトリは読める");
+        assert_eq!(scan.tasks.len(), 1);
+        assert_eq!(scan.tasks[0].comm, "conn");
+        assert_eq!(scan.tasks[0].ticks, 11);
+        assert_eq!(scan.tasks[0].syscall, None, "syscall が無ければ None");
+        assert!(!scan.syscalls_readable, "partial に落ちること");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 実機では自分のスレッドが読めること (`/proc` があれば)。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scans_this_process_tasks() {
+        let mut buf = String::new();
+        let scan = scan_tasks(std::path::Path::new("/proc/self/task"), &mut buf).expect("読める");
+        assert!(!scan.tasks.is_empty());
+        let me = std::process::id();
+        assert!(scan.tasks.iter().any(|t| t.tid == me), "主スレッドが居る");
     }
 }

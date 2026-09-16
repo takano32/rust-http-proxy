@@ -19,7 +19,7 @@ pub use proxy_config::config;
 pub use proxy_endpoints::endpoints;
 pub use proxy_http::{freshness, http};
 pub use proxy_metrics::{
-    canary, daily, events, history, kernel, metrics, persist, persist_recent, recent, rrd,
+    canary, daily, events, history, kernel, metrics, persist, persist_recent, profile, recent, rrd,
 };
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};
@@ -289,6 +289,8 @@ pub fn serve(
             }
         }
         let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
+        // 待ち行列の段階 (`queue`) の起点 (T14.3 (1))。`--lite` では時計を読まない
+        let queued_at = profile::mark();
         // 同時接続数の持ち分は番人として取って仕事へ運ぶ。`Conn::new` が途中で失敗しても、
         // 仕事がワーカーへ渡らずに落ちても、番人の `Drop` が必ず 1 回だけ返す (T9.6)
         let (open, now_open) = OpenGuard::acquire(Arc::clone(&limiter));
@@ -324,6 +326,7 @@ pub fn serve(
                 wk,
                 conn_inherited,
                 conn_id,
+                queued_at,
             ) {
                 Ok(conn) => run_conn(Box::new(conn)),
                 Err(e) => log_error!(Some(conn_id), "{}", e),
@@ -627,6 +630,11 @@ pub struct Conn {
     /// `ActiveGuard::drop` の 1 回ずつだけ**で、状態はこの `Arc` の原子に書く
     /// (`--lite` では `None` = 何も記録しない)
     slot: Option<Arc<recent::ConnSlot>>,
+    /// 次の要求に載せる「ワーカーを待った時間」(ms。T14.3 (1))。accept と
+    /// 預かり所からの起床で入り、要求 1 つに載せたら 0 に戻る
+    queue_ms: u32,
+    /// 預かり所がワーカーへ渡した時刻 (`--lite` では `None`。T14.3 (1))
+    queued_at: Option<Instant>,
     /// 閉じた接続の個票 (`/recent`) に載せる値の積み上げ (T14.4)。
     ///
     /// **原子でも鍵でもない**: この接続を同時に触るスレッドは 1 つだけなので、要求ごとの
@@ -654,6 +662,10 @@ pub enum Step {
         addrs: Option<Vec<std::net::IpAddr>>,
         /// そのホストで最後に勝った族 (T12.1)。同じ鍵取りで受け取ったもの
         preferred: Option<bool>,
+        /// ここまでに測った段階 (`queue`。T14.3 (1))
+        stages: metrics::StageMs,
+        /// 要求行が届いた時刻 (`client_read` の起点。終わりは `tunnel::open` の入口の時計)
+        read_started: Option<Instant>,
     },
 }
 
@@ -801,12 +813,14 @@ impl Conn {
         workers: Arc<workers::Workers>,
         inherited: Option<std::time::Duration>,
         conn_id: usize,
+        queued_at: Option<Instant>,
     ) -> io::Result<Conn> {
         metrics.inc_active_conn();
+        let active_started = Instant::now();
         let active = ActiveGuard {
             metrics: Arc::clone(&metrics),
             conn_id,
-            started: Instant::now(),
+            started: active_started,
         };
         log_debug!(Some(conn_id), "accepted connection from {}", accepted.peer);
         if inherited.is_none() {
@@ -839,6 +853,12 @@ impl Conn {
             peer_ip,
             overflow,
             slot,
+            // accept からワーカーが動き出すまで (T14.3 (1))。時計は accept で
+            // 読んだ 1 回だけで、終わりは番人が既に読んでいる `started` を使う
+            queue_ms: queued_at.map_or(0, |t| {
+                profile::ms_u32(active_started.saturating_duration_since(t))
+            }),
+            queued_at: None,
             tally: std::cell::Cell::new(recent::ConnTally::default()),
             _open: open,
             _active: active,
@@ -871,6 +891,12 @@ impl Conn {
     /// `/connections` の枠 (預かり所が状態を書くために借りる)。
     pub fn slot(&self) -> Option<&Arc<recent::ConnSlot>> {
         self.slot.as_ref()
+    }
+
+    /// ワーカーの待ち行列へ入れる直前に呼ぶ (`queue` の段階の起点。T14.3 (1))。
+    /// `--lite` では時計を読まない。
+    pub fn mark_queued(&mut self) {
+        self.queued_at = profile::mark();
     }
 
     /// 閉じた接続の個票 (`/recent`) に載せる値を枠へ移す (**接続の終了で 1 回だけ**。T14.4)。
@@ -935,6 +961,8 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                 prefix,
                 addrs,
                 preferred,
+                stages,
+                read_started,
             } => {
                 // 要るものだけ取り出してトンネルへ渡す (`Conn` に `Drop` は無いので
                 // 分解できる)。**持ち分 (`_open` / `_active`) も一緒に渡すこと**:
@@ -978,6 +1006,8 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                     // `/connections` の枠をそのままトンネルへ運ぶ (T13.4)。
                     // 抹消するのは `hold` の中の `ActiveGuard` なので、寿命は一致する
                     slot,
+                    stages,
+                    read_started,
                 );
             }
         }
@@ -1005,11 +1035,25 @@ fn start_tunnel(
     grace: std::time::Duration,
     hold: Box<dyn Send>,
     slot: Option<Arc<recent::ConnSlot>>,
+    stages: metrics::StageMs,
+    read_started: Option<Instant>,
 ) -> io::Result<()> {
     let park = park.map(|w| (w as Arc<dyn tunnel::Park>, grace));
     tunnel::handle_connect_parked(
-        client, target, prefix, timeout, idle, conn_id, metrics, client_ip, resolved, park, hold,
+        client,
+        target,
+        prefix,
+        timeout,
+        idle,
+        conn_id,
+        metrics,
+        client_ip,
+        resolved,
+        park,
+        hold,
         slot,
+        stages,
+        read_started,
     )
 }
 
@@ -1029,11 +1073,24 @@ fn start_tunnel(
     grace: std::time::Duration,
     hold: Box<dyn Send>,
     slot: Option<Arc<recent::ConnSlot>>,
+    stages: metrics::StageMs,
+    read_started: Option<Instant>,
 ) -> io::Result<()> {
     // 預け先は Linux (epoll) だけ。持ち分はこの関数が終わるまで持っておく
     let _ = (park, grace);
     let result = tunnel::handle_connect(
-        client, target, prefix, timeout, idle, conn_id, metrics, client_ip, resolved, slot,
+        client,
+        target,
+        prefix,
+        timeout,
+        idle,
+        conn_id,
+        metrics,
+        client_ip,
+        resolved,
+        slot,
+        stages,
+        read_started,
     );
     drop(hold);
     result
@@ -1075,8 +1132,13 @@ fn park_now(mut conn: Box<Conn>) -> Result<(), Box<Conn>> {
 
 /// 1 つの接続を最後まで面倒みる。ワーカースレッドに渡す仕事の中身。
 /// 監視スレッドから戻ってきた接続もここに入る。
-pub fn run_conn(conn: Box<Conn>) {
+pub fn run_conn(mut conn: Box<Conn>) {
     let conn_id = conn.conn_id;
+    // 預かり所から戻ってきた接続が待ち行列に居た時間 (T14.3 (1))。
+    // accept の分は `Conn::new` が入れてあるので、ここで読むのは起床した接続だけ
+    if let Some(t) = conn.queued_at.take() {
+        conn.queue_ms = profile::ms_u32(t.elapsed());
+    }
     // ワーカーが取った (預かり所から戻ってきた接続もここを通る。T13.4)
     conn.set_state(recent::ConnState::Serving);
     if let Err(e) = pump(conn) {
@@ -1116,6 +1178,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         workers,
         peer_ip,
         slot,
+        queue_ms,
         tally,
         ..
     } = conn;
@@ -1212,6 +1275,9 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         }
         Err(e) => return Err(e),
     }
+    // ここから `Host` を読み終えるまでが `client_read` の段階 (T14.3 (1))。
+    // **起点は要求行が届いたところ**で、接続を開けたまま黙っている時間は含めない
+    let read_started = profile::mark();
     // 要求の前の空行は読み飛ばす (RFC 9112 §2.2)
     if scratch.request_line.trim().is_empty() {
         return Ok(Step::Next);
@@ -1317,6 +1383,14 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         .and_then(|i| scratch.lines[i].split_once(':'))
         .map(|(_, v)| v.trim());
     let raw_headers = scratch.headers();
+    // この 1 要求ぶんの `queue` は使ったら 0 に戻す (T14.3 (1))。`client_read` の
+    // **終わりの時計は読まない**: 下の層 (`http::handle_http_with_headers` と
+    // `tunnel::open`) が入口で既に `Instant::now()` を読んでいるので、起点だけ渡して
+    // 向こうで引き算させる (要求ごとの時計が 1 回減る)
+    let stages = metrics::StageMs {
+        queue: std::mem::take(queue_ms),
+        ..metrics::StageMs::default()
+    };
 
     // 自分の印の付いた `Via` を受けた = 自分を通った要求が自分に戻ってきた (T12.3 の保険)。
     // 印は起動ごとの乱数なので、rust-http-proxy を 2 段に並べた正当な構成 (別プロセス) は
@@ -1488,6 +1562,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             prefix,
             addrs,
             preferred,
+            stages,
+            read_started,
         });
     }
 
@@ -1514,6 +1590,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         // プールに無くて繋ぎに行くときは、判定で引いた答えを使う (T12.7)
         resolved: resolved.as_ref(),
         last,
+        stages,
+        read_started,
         // 閉じた接続の個票に積み上げる箱 (T14.4)。`--lite` では枠が無いので渡さない
         tally: slot.is_some().then_some(tally),
     };
@@ -1626,6 +1704,7 @@ mod tests {
             Arc::new(workers::Workers::new(0)),
             None,
             1,
+            None,
         );
         assert!(err.is_err(), "ソケットでなければ Conn::new は失敗する");
         drop(err);
@@ -1671,6 +1750,7 @@ mod tests {
             // 継承していない経路 (Linux 以外・継承に失敗した環境) をわざと通す
             None,
             1,
+            None,
         )
         .expect("timeout 0 は無期限なので Conn::new は成功する");
         assert_eq!(

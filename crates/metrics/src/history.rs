@@ -1272,3 +1272,506 @@ mod closed_tests {
         println!("空の closed が /history に足す分: {} B", tail.len());
     }
 }
+
+/// 期間を切ってサーバー側で畳む要約 (`/history?since=&until=&summary=1`。T14.24)。
+///
+/// T14.0 と T14.17 は `/history` を丸ごと取って手元で切って集計していた (284 KB を取って
+/// 5 行を得る)。同じ畳み方をサーバー側でやれば、調査ページの「起動から」「前のデプロイと
+/// 比べる」が **1 要求**で済む。**標本そのものは返さない**ので応答は 1 KiB 前後。
+///
+/// 求め方は `scripts/snapshot-diff.py` の `aggregate()` と**同じ**にしてある:
+/// 区間の値 (確立時間の 12 段のヒストグラム・エラー・名前解決) は期間ぶん**足し合わせ**、
+/// ゲージの山は**最大値**、分位点は足し合わせたヒストグラムを [`Window::quantile_ms`] で
+/// 補間する (区間内は一様、その期間の最大値で頭打ち)。同じ期間を切れば同じ数字が出る。
+///
+/// **費用 0**: 読むのは `/history` に来たときだけで、要求の経路には何も足していない。
+pub mod summary {
+    use super::{History, RESOLUTIONS, Sample, Window};
+    use crate::metrics::{ERR_CAUSE_NAMES, ERR_CAUSES};
+    use crate::sync::LockExt;
+    use std::fmt::Write as _;
+
+    /// 「平常時」の閾 (T14.0): **1 時間に 300 本以上**確立した標本はバーストとして外す。
+    /// `scripts/snapshot-diff.py` の `BURST_PER_HOUR` と同じ値。
+    pub const BURST_PER_HOUR: u64 = 300;
+
+    /// 応答の上限 (T14.24 の受け入れ基準)。標本を返さないので実際は 1 KiB 前後。
+    pub const MAX_BODY: usize = 4 * 1024;
+
+    /// 要求された期間と切り方。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct Params {
+        /// 期間の始まり (epoch 秒。0 = 残っている最古から。`since=restart` は
+        /// 呼ぶ側が `now - since_start_secs` にして渡す)
+        pub since: u64,
+        /// 期間の終わり (epoch 秒。ふつうは今)
+        pub until: u64,
+        /// `?res=` (秒)。無ければ**期間の長さ**で選ぶ
+        pub res: Option<u64>,
+        /// 1 時間 300 本以上の標本を外す (T14.0 の「平常時」)
+        pub normal_hours_only: bool,
+    }
+
+    impl Params {
+        /// 使う解像度の添字。`?res=` があればそれ、無ければ期間の長さで選ぶ:
+        /// **直近 1 時間は 5 秒、1 日は 60 秒、それ以上は 3,600 秒の窓**
+        /// (境目は環状バッファが覆う長さそのもの = 5 秒 × 720 と 60 秒 × 1,440)。
+        pub fn res_index(&self) -> usize {
+            if let Some(secs) = self.res {
+                return History::index_for(secs);
+            }
+            let span = self.until.saturating_sub(self.since);
+            RESOLUTIONS
+                .iter()
+                .position(|(secs, cap)| span <= secs * *cap as u64)
+                .unwrap_or(RESOLUTIONS.len() - 1)
+        }
+    }
+
+    /// その解像度で「バースト」と見なす 1 標本あたりの本数 (1 時間 300 本を割った値)。
+    ///
+    /// `scripts/snapshot-diff.py` の `limit` と同じ計算 (四捨五入、下限 1)。
+    /// 60 秒の窓では 5 本、5 秒の窓では 1 本 — **5 秒の窓で平常時を切ると
+    /// 1 本でも確立した標本は全部外れる**ので、平常時を見るのは 60 秒か 1 時間の窓。
+    pub fn burst_limit(interval_secs: u64) -> u64 {
+        ((BURST_PER_HOUR * interval_secs + 1800) / 3600).max(1)
+    }
+
+    /// 期間を畳んだ結果 (標本は持たない)。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct Summary {
+        /// 要求された期間 (`since` / `until` をそのまま返す)
+        pub from: u64,
+        pub to: u64,
+        /// 使った解像度 (秒)
+        pub interval_secs: u64,
+        /// 実際に入った標本の最初と最後の時刻 (窓の始まり。標本が無ければ 0)
+        pub first_t: u64,
+        pub last_t: u64,
+        /// 畳んだ標本の数と、平常時から外した標本の数
+        pub samples: u64,
+        pub burst_samples: u64,
+        pub normal_hours_only: bool,
+        /// 期間ぶん足し合わせた確立時間の分布 (CONNECT と forward の初バイト)
+        pub connect: Window,
+        pub forward: Window,
+        pub errors: u64,
+        pub errors_by_cause: [u64; ERR_CAUSES],
+        pub dns_misses: u64,
+        pub dns_ms_sum: u64,
+        /// 同時接続数の山 (ゲージなので最大値で畳む)
+        pub active_max: u64,
+    }
+
+    impl Summary {
+        /// 標本 1 本を足す (平常時の判定は呼ぶ側で済ませてある)。
+        fn add(&mut self, s: &Sample) {
+            self.first_t = if self.samples == 0 {
+                s.t
+            } else {
+                self.first_t.min(s.t)
+            };
+            self.last_t = self.last_t.max(s.t);
+            self.samples += 1;
+            self.connect.merge(&s.connect);
+            self.forward.merge(&s.forward);
+            self.errors += s.errors;
+            for (a, b) in self
+                .errors_by_cause
+                .iter_mut()
+                .zip(s.errors_by_cause.iter())
+            {
+                *a += *b;
+            }
+            self.dns_misses += s.dns_misses;
+            self.dns_ms_sum += s.dns_ms_sum;
+            self.active_max = self.active_max.max(s.active_max).max(s.active as u64);
+        }
+
+        /// 確立した CONNECT の本数。
+        pub fn connects(&self) -> u64 {
+            self.connect.count
+        }
+
+        /// 名前解決のミス ÷ 確立した CONNECT (T14.0 の 0.55)。
+        pub fn dns_miss_per_connect(&self) -> f64 {
+            if self.connect.count == 0 {
+                0.0
+            } else {
+                self.dns_misses as f64 / self.connect.count as f64
+            }
+        }
+
+        /// ミス 1 回の平均 ms (T14.0 の 11.5)。
+        pub fn dns_miss_avg_ms(&self) -> f64 {
+            if self.dns_misses == 0 {
+                0.0
+            } else {
+                self.dns_ms_sum as f64 / self.dns_misses as f64
+            }
+        }
+
+        /// `/history?summary=1` の本体。**必ず [`MAX_BODY`] 以下**になる (項目が固定で
+        /// 標本を持たないため。桁の上限は 20 桁 × 30 項目 + 名前で 1 KiB 前後)。
+        pub fn to_json(&self) -> String {
+            let mut out = String::with_capacity(768);
+            let _ = write!(
+                out,
+                "{{\"from\":{},\"to\":{},\"interval_secs\":{},\"first_t\":{},\"last_t\":{},\
+                 \"samples\":{},\"burst_samples\":{},\"normal_hours_only\":{},\
+                 \"connects\":{},\"p50_ms\":{:.1},\"p95_ms\":{:.1},\"avg_ms\":{:.1},\"max_ms\":{},\
+                 \"forwards\":{},\"forward_p50_ms\":{:.1},\"forward_p95_ms\":{:.1},\
+                 \"forward_avg_ms\":{:.1},\"forward_max_ms\":{},\
+                 \"dns_misses\":{},\"dns_miss_per_connect\":{:.3},\"dns_miss_avg_ms\":{:.1},\
+                 \"errors\":{},\"errors_by_cause\":[",
+                self.from,
+                self.to,
+                self.interval_secs,
+                self.first_t,
+                self.last_t,
+                self.samples,
+                self.burst_samples,
+                self.normal_hours_only,
+                self.connect.count,
+                self.connect.quantile_ms(0.5),
+                self.connect.quantile_ms(0.95),
+                self.connect.avg_ms(),
+                self.connect.ms_max,
+                self.forward.count,
+                self.forward.quantile_ms(0.5),
+                self.forward.quantile_ms(0.95),
+                self.forward.avg_ms(),
+                self.forward.ms_max,
+                self.dns_misses,
+                self.dns_miss_per_connect(),
+                self.dns_miss_avg_ms(),
+                self.errors,
+            );
+            for (i, c) in self.errors_by_cause.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                let _ = write!(out, "{}", c);
+            }
+            out.push_str("],\"causes\":[");
+            super::push_str_array(&mut out, &ERR_CAUSE_NAMES);
+            let _ = write!(out, "],\"active_max\":{}}}", self.active_max);
+            out
+        }
+    }
+
+    /// 期間を切って畳む (**`/history` の標本を読むのはここだけ**)。
+    ///
+    /// 窓は始まりの時刻 (`t`) で切る: `since <= t <= until` の標本が入る
+    /// (`scripts/snapshot-diff.py` が再起動時刻で切るのと同じ)。
+    pub fn of(h: &History, p: &Params) -> Summary {
+        let res = p.res_index();
+        let interval = RESOLUTIONS[res].0;
+        let limit = p.normal_hours_only.then(|| burst_limit(interval));
+        let mut out = Summary {
+            from: p.since,
+            to: p.until,
+            interval_secs: interval,
+            normal_hours_only: p.normal_hours_only,
+            ..Summary::default()
+        };
+        let ring = h.rings[res].locked();
+        for s in ring.iter().filter(|s| s.t >= p.since && s.t <= p.until) {
+            // 平常時 = 1 時間 300 本未満の標本だけ (T14.0)。外した数も返す
+            if limit.is_some_and(|l| s.connect.count >= l) {
+                out.burst_samples += 1;
+                continue;
+            }
+            out.add(s);
+        }
+        out
+    }
+}
+
+/// 期間を切ってサーバー側で畳む要約 (T14.24)。
+///
+/// 見るのは 4 つ: **T14.0 の表と同じ数字が出ること** (架空の標本列から p50 / p95 が
+/// 手計算と一致)、平常時の切り出しがバーストを外すこと、解像度の自動選択、応答が 4 KiB 以下。
+#[cfg(test)]
+mod summary_tests {
+    use super::summary::{Params, Summary, burst_limit, of};
+    use super::*;
+
+    /// 1 時間の標本 1 本 (時刻だけ決める)。
+    fn hour(t: u64) -> Sample {
+        Sample {
+            t,
+            ..Sample::default()
+        }
+    }
+
+    /// T14.0 の「平常時」(2026-09-16 の 72.7 時間) と同じ数字になる架空の 72 時間。
+    ///
+    /// **p50 8.3 / p95 80.7 ms は手で置いた分布から出る値**:
+    /// 4,000 本を \[2,5\] に 1,670・\[5,10\] に 500・\[25,50\] に 1,323・\[50,100\] に 500・
+    /// \[100,250\] に 7 本置くと、p50 の順位 2,000 は \[5,10\] の 1,670 本目の次から
+    /// 330 / 500 = 0.66 の位置 → 5 + 5 × 0.66 = **8.3**、p95 の順位 3,800 は \[50,100\] の
+    /// 307 / 500 = 0.614 の位置 → 50 + 50 × 0.614 = **80.7**。
+    /// 名前解決は 1 標本 38 ミス・437 ms (= 11.5 ms/ミス) で、4,000 本に対して 0.551 回/接続。
+    /// バーストの 14 時間 (1 時間 350 本、500 ms、エラー 99、山 218) は平常時から外れる。
+    fn t14_0_hours() -> (Vec<Sample>, u64) {
+        let t0 = 1_757_000_000 - 1_757_000_000 % 3600;
+        let mut normal: Vec<Sample> = (0..58).map(|i| hour(t0 + i * 3600)).collect();
+        for s in normal.iter_mut() {
+            s.dns_misses = 38;
+            s.dns_ms_sum = 437;
+            s.active = 8;
+            s.active_max = 8;
+        }
+        let mut idx = 0usize;
+        let mut in_this = 0u64;
+        for (ms, n) in [(3u64, 1670u64), (8, 500), (30, 1323), (60, 500), (250, 7)] {
+            for _ in 0..n {
+                normal[idx].connect.observe(ms);
+                in_this += 1;
+                // 1 標本 69 本まで (平常時の閾 300 のはるか下)
+                if in_this == 69 && idx + 1 < normal.len() {
+                    idx += 1;
+                    in_this = 0;
+                }
+            }
+        }
+        let mut samples = normal;
+        for i in 0..14u64 {
+            let mut s = hour(t0 + (58 + i) * 3600);
+            for _ in 0..350 {
+                s.connect.observe(500);
+            }
+            s.errors = if i == 0 { 99 } else { 0 };
+            s.errors_by_cause[0] = s.errors;
+            s.dns_misses = 350;
+            s.dns_ms_sum = 35_000;
+            s.active = 218;
+            s.active_max = 218;
+            samples.push(s);
+        }
+        let last = t0 + 71 * 3600;
+        (samples, last)
+    }
+
+    fn t14_0_summary(normal_hours_only: bool) -> Summary {
+        let (samples, last) = t14_0_hours();
+        let h = History::default();
+        h.restore(2, samples);
+        of(
+            &h,
+            &Params {
+                since: 0,
+                until: last,
+                res: None,
+                normal_hours_only,
+            },
+        )
+    }
+
+    /// 受け入れ基準: 既知の標本列から p50 / p95 が**手計算と一致**する。
+    #[test]
+    fn the_normal_hours_of_t14_0_come_back_with_the_same_p50_and_p95() {
+        let s = t14_0_summary(true);
+        assert_eq!(
+            (s.samples, s.burst_samples),
+            (58, 14),
+            "平常時 58 / 72 標本"
+        );
+        assert_eq!(s.interval_secs, 3600, "期間が 1 日を越えるので 1 時間の窓");
+        assert_eq!(s.connects(), 4000);
+        // 手計算: 5 + 5 × (2000 − 1670)/500 = 8.3、50 + 50 × (3800 − 3493)/500 = 80.7
+        assert!(
+            (s.connect.quantile_ms(0.5) - 8.3).abs() < 1e-9,
+            "p50 {}",
+            s.connect.quantile_ms(0.5)
+        );
+        assert!(
+            (s.connect.quantile_ms(0.95) - 80.7).abs() < 1e-9,
+            "p95 {}",
+            s.connect.quantile_ms(0.95)
+        );
+        // 名前解決は T14.0 の 0.55 回/接続・ミス 1 回 11.5 ms
+        assert!(
+            (s.dns_miss_per_connect() - 0.551).abs() < 1e-9,
+            "{}",
+            s.dns_miss_per_connect()
+        );
+        assert!(
+            (s.dns_miss_avg_ms() - 11.5).abs() < 1e-9,
+            "{}",
+            s.dns_miss_avg_ms()
+        );
+        // バーストの時間帯のエラーと山は平常時に入らない (T14.0: 平常時 0、バーストで 99)
+        assert_eq!(s.errors, 0);
+        assert_eq!(s.active_max, 8);
+        let json = s.to_json();
+        assert!(json.contains("\"p50_ms\":8.3"), "{}", json);
+        assert!(json.contains("\"p95_ms\":80.7"), "{}", json);
+        assert!(json.contains("\"dns_miss_per_connect\":0.551"), "{}", json);
+        assert!(json.contains("\"dns_miss_avg_ms\":11.5"), "{}", json);
+        assert!(json.contains("\"normal_hours_only\":true"), "{}", json);
+        // 標本そのものは返さない
+        assert!(!json.contains("\"samples\":["), "{}", json);
+    }
+
+    /// 平常時で切らなければバーストが混ざり、**同じ期間でも数字が化ける** (T14.0 の (参考) の行)。
+    #[test]
+    fn without_the_normal_hours_filter_the_bursts_change_the_answer() {
+        let s = t14_0_summary(false);
+        assert_eq!((s.samples, s.burst_samples), (72, 0));
+        assert_eq!(s.connects(), 4000 + 14 * 350);
+        // 順位 4,450 は [250,500] の 450 / 4,900 の位置 = 250 + 250 × 0.0918
+        assert!(
+            (s.connect.quantile_ms(0.5) - 272.9591836734694).abs() < 1e-9,
+            "p50 {}",
+            s.connect.quantile_ms(0.5)
+        );
+        assert_eq!(s.errors, 99);
+        assert_eq!(s.active_max, 218);
+        assert!(s.dns_miss_avg_ms() > 70.0, "{}", s.dns_miss_avg_ms());
+        assert!(
+            s.to_json().contains("\"normal_hours_only\":false"),
+            "{}",
+            s.to_json()
+        );
+    }
+
+    /// 期間は `?res=` があればそれ、無ければ長さで選ぶ (1 時間 → 5 秒、1 日 → 60 秒、それ以上 → 1 時間)。
+    #[test]
+    fn the_resolution_follows_the_span_unless_res_is_given() {
+        let now = 1_757_000_000;
+        let span = |secs: u64| Params {
+            since: now - secs,
+            until: now,
+            res: None,
+            normal_hours_only: false,
+        };
+        assert_eq!(span(300).res_index(), 0);
+        assert_eq!(span(3600).res_index(), 0, "直近 1 時間は 5 秒の窓");
+        assert_eq!(span(3601).res_index(), 1);
+        assert_eq!(span(86_400).res_index(), 1, "1 日は 60 秒の窓");
+        assert_eq!(span(86_401).res_index(), 2, "それ以上は 1 時間の窓");
+        // `since` を書かなければ残っている全部 = いちばん粗い窓
+        assert_eq!(
+            Params {
+                until: now,
+                ..Params::default()
+            }
+            .res_index(),
+            2
+        );
+        for (secs, want) in [(5u64, 0usize), (60, 1), (3600, 2), (7, 0)] {
+            assert_eq!(
+                Params {
+                    res: Some(secs),
+                    ..span(86_401)
+                }
+                .res_index(),
+                want,
+                "res={}",
+                secs
+            );
+        }
+        // 平常時の閾は 1 時間 300 本を解像度で割った値 (`snapshot-diff.py` と同じ)
+        assert_eq!(burst_limit(3600), 300);
+        assert_eq!(burst_limit(60), 5);
+        assert_eq!(burst_limit(5), 1);
+    }
+
+    /// 窓は始まりの時刻で切る (`since` / `until` はそのまま返す = `since=restart` の確認に使う)。
+    #[test]
+    fn the_period_is_cut_at_since_and_until() {
+        let h = History::default();
+        let t0 = 1_757_000_000;
+        let mut samples = Vec::new();
+        for i in 0..10u64 {
+            let mut s = Sample {
+                t: t0 + i * 5,
+                ..Sample::default()
+            };
+            s.connect.observe(10 + i);
+            samples.push(s);
+        }
+        h.restore(0, samples);
+        let s = of(
+            &h,
+            &Params {
+                since: t0 + 10,
+                until: t0 + 25,
+                res: Some(5),
+                normal_hours_only: false,
+            },
+        );
+        assert_eq!((s.from, s.to), (t0 + 10, t0 + 25), "要求された期間を返す");
+        assert_eq!((s.first_t, s.last_t), (t0 + 10, t0 + 25), "入った標本の端");
+        assert_eq!((s.samples, s.connects()), (4, 4));
+        // 期間の外の標本は 1 本も入らない
+        let none = of(
+            &h,
+            &Params {
+                since: t0 + 1000,
+                until: t0 + 2000,
+                res: Some(5),
+                normal_hours_only: false,
+            },
+        );
+        assert_eq!((none.samples, none.connects()), (0, 0));
+        assert!(
+            none.to_json().contains("\"p50_ms\":0.0"),
+            "{}",
+            none.to_json()
+        );
+    }
+
+    /// 受け入れ基準: 応答 4 KiB 以下 (1 年動かしたあとの桁で埋めても)。
+    #[test]
+    fn the_summary_response_fits_in_4_kib() {
+        let h = History::default();
+        let mut s = Sample {
+            t: 1_757_000_000,
+            active: 240,
+            active_max: 240,
+            errors: 12_345_678,
+            errors_by_cause: [
+                111_111_111,
+                222_222_222,
+                333_333_333,
+                444_444_444,
+                555_555_555,
+                666_666_666,
+                777_777_777,
+                888_888_888,
+            ],
+            dns_misses: 99_999_999,
+            dns_ms_sum: 888_888_888_888,
+            ..Sample::default()
+        };
+        for b in s.connect.buckets.iter_mut() {
+            *b = 999_999_999;
+        }
+        s.connect.count = 12_999_998_987;
+        s.connect.ms_sum = 3_333_333_333_333;
+        s.connect.ms_max = 30_000;
+        s.forward = s.connect;
+        h.restore(2, vec![s]);
+        let json = of(
+            &h,
+            &Params {
+                since: 0,
+                until: u64::MAX,
+                res: Some(3600),
+                // 平常時で切ると 1 時間 300 本以上のこの標本は外れて 0 が並ぶので、
+                // **大きい桁がそのまま載る**方 (切らない) で上限を見る
+                normal_hours_only: false,
+            },
+        )
+        .to_json();
+        assert!(
+            json.len() <= crate::history::summary::MAX_BODY,
+            "/history?summary=1 が {} B (4 KiB 超)",
+            json.len()
+        );
+        println!("summary の大きさ: {} B\n{}", json.len(), json);
+    }
+}
