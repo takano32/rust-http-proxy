@@ -283,10 +283,19 @@ pub struct HostStats {
 }
 
 impl HostStats {
-    fn count(&mut self, outcome: HostOutcome, bytes: u64, took: Option<Duration>, detail: &Detail) {
+    /// `now` は epoch 秒。**呼ぶ側が 1 回だけ読んだ値**を渡す (直近の標本 (T14.31) と
+    /// `last_seen` で同じ値を使い回すため。壁時計を読む回数は今までと変わらない)。
+    fn count(
+        &mut self,
+        now: u64,
+        outcome: HostOutcome,
+        bytes: u64,
+        took: Option<Duration>,
+        detail: &Detail,
+    ) {
         self.requests += 1;
         self.bytes += bytes;
-        self.last_seen = crate::cache::now_epoch();
+        self.last_seen = now;
         match outcome {
             HostOutcome::Hit => self.hits += 1,
             HostOutcome::Miss => self.misses += 1,
@@ -618,7 +627,8 @@ impl ClientStats {
             bytes_out: dir.1,
             ..Detail::default()
         };
-        self.stats.count(outcome, bytes, took, &detail);
+        self.stats
+            .count(crate::cache::now_epoch(), outcome, bytes, took, &detail);
         if let Some(t) = target {
             self.note_target(t);
         }
@@ -914,6 +924,9 @@ struct HostTable {
     /// 上位 16 ホストの時系列 (`/hosts/series`。T14.22)。**ホスト表と同じ鍵の中**に
     /// 置いて、要求の経路が鍵を 2 つ取らないようにしてある
     series: crate::hostseries::HostSeries,
+    /// 直近 1,024 本の標本そのもの (`/status` の `recent_quantiles`。T14.31)。
+    /// ここも**同じ鍵の中**で、書くのは 8 バイト 1 回
+    quantiles: crate::quantiles::Quantiles,
 }
 
 pub struct Metrics {
@@ -1130,6 +1143,9 @@ impl Metrics {
         took: Option<Duration>,
         detail: &Detail,
     ) {
+        // 壁時計はここで 1 回だけ読む (ホスト別の `last_seen` と直近の標本 (T14.31) で
+        // 使い回す。**読む回数は今までと同じ 1 回**)
+        let now = crate::cache::now_epoch();
         // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
         let mut hosts = self
             .hosts
@@ -1163,18 +1179,32 @@ impl Metrics {
                 }
             }
         }
-        // 段階の窓 (T14.3 (1))。`--lite` では時計を読んでいないので窓も触らない。
-        // 同じ鍵の内側なので、原子操作も鍵の取り直しも増えない
-        if took.is_some() && counted && crate::profile::on() {
+        // 段階の窓 (T14.3 (1)) と、直近 1,024 本の標本そのもの (T14.31)。どちらも
+        // `--lite` では時計を読んでいないので触らない。**旗も分岐も 1 つにまとめてある**
+        // ので、`--lite` の経路には 1 命令も足していない。同じ鍵の内側なので、
+        // 原子操作も鍵の取り直しも増えない
+        if let Some(d) = took
+            && counted
+            && crate::profile::on()
+        {
+            // 直近の標本は **us のまま**入れる (12 段の区間では 1 ms 単位で読めない)。
+            // forward の初バイトは元が ms 刻みなので ×1,000 するだけ、CONNECT の確立は
+            // `Duration` のまま来るので us が出る (ベンチの p50 と ±0.05 ms で比べる値)
+            let us = match detail.first_byte_ms {
+                Some(fb) => fb.saturating_mul(1_000).min(u32::MAX as u64) as u32,
+                None => d.as_micros().min(u32::MAX as u128) as u32,
+            };
             if connect {
                 hosts.stages.observe_connect(detail);
+                hosts.quantiles.connect.observe(us, now);
             } else {
                 hosts.stages.observe_forward(detail);
+                hosts.quantiles.forward.observe(us, now);
             }
         }
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
         if let Some(stats) = hosts.map.get_mut(host) {
-            stats.count(outcome, bytes, took, detail);
+            stats.count(now, outcome, bytes, took, detail);
             // 上位 16 ホストなら時系列にも 1 標本ぶん (T14.22)。旗が無ければ分岐 1 回で終わり
             if let Some(slot) = stats.series_slot {
                 hosts.series.add(
@@ -1195,7 +1225,7 @@ impl Metrics {
             .map
             .entry(key)
             .or_default()
-            .count(outcome, bytes, took, detail);
+            .count(now, outcome, bytes, took, detail);
     }
 
     /// ホスト別の時系列の窓を進め、上位 16 を入れ替える (T14.22)。
@@ -1219,6 +1249,23 @@ impl Metrics {
     /// 時系列の窓を差し替える (**結合テスト用の口**。本番は 5 分。T14.22)。
     pub fn set_host_series_window(&self, secs: u64) {
         self.hosts.locked().series.set_window(secs);
+    }
+
+    /// 直近 1,024 本の正確な分位点 (`/status` の `recent_quantiles`。T14.31)。
+    ///
+    /// **鍵の内側でするのは値の写しだけ**で、`select_nth_unstable` は鍵を放してから
+    /// 回す (1,024 本で数 us だが、要求の経路が待つ鍵をその間握らない)。
+    /// 呼ぶのは `/status` に来たときだけ。
+    pub fn recent_quantiles(&self) -> (crate::quantiles::Stats, crate::quantiles::Stats) {
+        let (c, f) = self.hosts.locked().quantiles.copy();
+        let now = crate::cache::now_epoch();
+        (c.stats(now), f.stats(now))
+    }
+
+    /// 上の 2 つを `{"connect":{..},"forward":{..}}` にしたもの。
+    pub fn recent_quantiles_json(&self) -> String {
+        let (c, f) = self.recent_quantiles();
+        crate::quantiles::to_json(&c, &f)
     }
 
     /// 直近の標本以降の合計を読み、0 に戻す ([`crate::history::Sample::take`] だけが呼ぶ)。
@@ -1584,8 +1631,8 @@ impl Metrics {
                 // この環境で何が読めるか (T14.15) と canary (T14.10)。どちらも覚えてある結果を読むだけ
                 "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
-                // (`memory` も同じく末尾。T14.21)
-                "\"kernel\":{},\"memory\":{}}}"
+                // (`memory` も T14.21、`recent_quantiles` も T14.31 で同じく末尾)
+                "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1631,7 +1678,9 @@ impl Metrics {
             // (`settings` のような上の層の部品は `extra` で受け取る)
             crate::kernel::status_json(),
             // RSS の内訳 (T14.21)。`mallinfo2` を読むのはこの経路だけ
-            memory_json(rss, threads, extra.concurrency.live_threads as u64, cache)
+            memory_json(rss, threads, extra.concurrency.live_threads as u64, cache),
+            // 直近 1,024 本の正確な分位点 (T14.31)。区間の補間ではない実測の並び
+            self.recent_quantiles_json()
         )
     }
 }
@@ -1654,7 +1703,7 @@ impl Metrics {
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
 ///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
 /// - `rings` は記録のリングが**満杯のときの見積もり** (固定部 + 文字列の上限。T13.4 / T14.4 /
-///   T14.6 / T14.11 / T14.22 / T14.25)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
+///   T14.6 / T14.11 / T14.22 / T14.25 / T14.31)。いま何件入っているかは `/recent` や `/errors` の `total` を見る
 /// - `arenas` は `PROXY_MALLOC_ARENAS` で掛けた上限 (`0` = glibc の既定のまま。T5.6)
 ///
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
@@ -1689,6 +1738,9 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         * crate::hostseries::SAMPLES
         * crate::hostseries::FIELDS
         * size_of::<u64>()) as u64;
+    // 直近の標本の環状は固定長 (2 系統 × 1,024 本 × 8 B = 16 KiB。T14.31)。
+    // 1 本目を書くまで確保しないので、これも「満杯のとき」の見積もり
+    let quantiles = crate::quantiles::BYTES as u64;
     // 履歴は 3 解像度の標本 (T12.4) と、閉じた接続の分布の窓 2 つ (T14.6)、
     // 速さと半閉じの窓 2 つ (T14.25)
     let samples: usize = RESOLUTIONS.iter().map(|(_, n)| n).sum();
@@ -1708,7 +1760,8 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             "{{\"rss\":{},\"heap_used\":{},\"heap_free\":{},\"mmap\":{},",
             "\"stacks_estimate\":{},\"cache_memory\":{},",
             "\"rings\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
-            "\"events\":{},\"history\":{},\"hostseries\":{},\"total\":{}}},\"arenas\":{}}}"
+            "\"events\":{},\"history\":{},\"hostseries\":{},\"quantiles\":{},",
+            "\"total\":{}}},\"arenas\":{}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -1723,7 +1776,8 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         events,
         history,
         hostseries,
-        recent + errors + bursts + log + events + history + hostseries,
+        quantiles,
+        recent + errors + bursts + log + events + history + hostseries + quantiles,
         crate::sysinfo::arena_max(),
     )
 }
