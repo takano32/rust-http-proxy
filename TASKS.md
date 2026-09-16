@@ -4606,7 +4606,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     - 小物: `PROXY_CANARY` と `PROXY_CANARY_SECS` が `Config::settings()` に載っていない (T14.10 の取りこぼし。`/config` と
       `--check` に出ず、`reload` の出来事も前後の値を出せない。`config.rs` を触る次のタスクで 2 行)。`PROXY_CANARY` を手で
       8 宛先並べると 1 周の最悪が 80 秒 > 周期 60 秒 (`auto` の 1 宛先なら問題ない。並べるなら `PROXY_CANARY_SECS` を延ばすか `off`)。
-- [ ] **T14.38 CONNECT の最初のバイトから SNI を読む (`PROXY_PEEK_SNI`、既定 `on`)**
+- [x] **T14.38 CONNECT の最初のバイトから SNI を読む (`PROXY_PEEK_SNI`、既定 `on`)**
   - 目的: T14.7 の `literal_targets` (IP リテラル宛ての CONNECT) は「本当はどこへ行っているか」が分からない。CONNECT のあとクライアントが
     最初に送るのは TLS の ClientHello で、その中の SNI に宛先の名前がある。`200` を返したあと**最初の中継の前に 1 回だけ `recv(MSG_PEEK)`**
     すれば (バイトは消費しない。そのあとの `splice` はそのまま)、IP リテラル宛てでも名前が分かり、CONNECT のホストと SNI が違う
@@ -4624,6 +4624,10 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     ClientHello を送ると個票の `sni` に `example.test`、CONNECT のホストと違えば `sni_mismatches` +1。
     費用: **トンネル 1 本に `recv(MSG_PEEK)` 1 回** (CONNECT 1 本あたりのシステムコール +1。本文に書く)、CONNECT 確立の CPU/本 ±4% (6 組)、
     `--only tunnel` の CPU/MiB が ±ぶれの中 (中継の経路は変えない)。
+  - 結果 (2026-09-16、`94672e0`): CONNECT の最初のバイトから **SNI** を読むようにした。`200 Connection Established` を書いたあと、**最初の中継の前に 1 回だけ `recv(MSG_PEEK)` (1,024 B)** で TLS の ClientHello を覗き、`server_name` を個票 (`/recent` の `sni`) に残す。**バイトは消費しない**ので、そのあとの `splice` の経路は 1 命令も変わらない (`sys::peek` は T9.x のプール生存確認用の束縛をそのまま使った)。解析は `crates/tunnel/src/sni.rs` (新規) の 52 行 (TLS record `0x16` → handshake `0x01` → extensions → `server_name` の `host_name`)。**覗くのは 443 宛ての CONNECT だけ**で (`PROXY_PEEK_SNI=on|off|on:<port>`、既定 `on`。`on:<port>` はそのポートも 443 扱いにする試験用の口。再起動で反映)、**`--lite` は個票の枠 (`ConnSlot`) を作らないので覗かない**。壊れた record・SNI 無し・1,024 B に収まらないものは `None` で、**中継はそのまま続く**。旗は**トンネル 1 本につき `start` で 1 回**決め、中継のループでは旗を見るだけ。IP リテラル宛ての CONNECT (T14.7 の `literal_targets`) では `sni` が「本当の宛先」で、CONNECT のホストと食い違った本数は `/hosts` の `sni_mismatch` (ホスト別) と `/status` 末尾の `sni_mismatches` (合計)。どちらも**メモリだけ** (`.rrd` の余白は 4 B なので書かない = T14.22 の `series_slot` と同じ扱い)。**費用**: **CONNECT 1 本のシステムコール `recvfrom` 1.01 → 2.01 回/本 (+1.00 ちょうど、500 本の `strace -f -c`)** で他は 0 増、CONNECT 確立 CPU/本 **159.11 → 158.65 us (−0.3%、6 組)**、`--only tunnel --conc 1` の CPU/MiB **190.66 → 187.08 us (−1.9%、3 組)** でどちらもぶれの中。**`--lite` と非 443 では覗く道に入らない**ので上の 2 つは「覗かない経路が重くなっていないこと」の確認で、覗いたときの費用は**同じバイナリで `off` → `on:<port>` にした対照** (既定プロファイル、固定ポートの相手、3,000 本 × 3 組) で 343.33 → 323.33 us (駆動役のぶれ ±15% の中で**差は見えない**)。`/recent` の 1 件は `,"sni":null` で +11 B、名前つきで +9 B + 名前の長さ。個票ファイル (T14.9) の閉じた接続レコードは 276 → **344 B** (余白 232 → 164 B) で**版は上げていない** (前の版は `null` で読み戻る)。単体 7 本・結合 4 本 (`tests/sni_test.rs`。echo で返ってきたバイトが送ったものと一致 = 覗いても消費していない証拠) を新設。
+    - **ベンチでは覗く道に入らない** (`cpu-per-request.sh` は `--lite`、ベンチの CONNECT 先は ephemeral ポート)。覗いた数字が要るときは `PROXY_PEEK_SNI=on:<固定ポート>` と固定ポートの相手。
+    - **`prefix` に ClientHello が入っている接続は読めない**: CONNECT 要求と同じセグメントで ClientHello を送るクライアントでは先読みぶんが既にサーバーへ渡っていて `None` になる (中継は正常。直すなら `prefix` を先に解析する 3 行)。Chrome などの大きい ClientHello (1,700 B 前後) は `server_name` が前にあれば読める。デプロイ先の実データで当たり率を見るのは T14.99。
+    - 食い違いの定義上、**IP リテラル宛ての CONNECT は必ず 1 件数える** (domain fronting と区別できない。README に (a) IP で書いている (b) 設定違い (c) domain fronting の 3 つを並べた)。`/connections` と `/metrics` と画面には出していない。
 - [x] **T14.39 いまの転送速度 (`/connections` の各行に直近 5 秒の bytes/s)**
   - 目的: `/connections` の `bytes` は累計で、「いま誰が帯域を使っているか」が分からない。history スレッドが 5 秒ごとに各接続の `bytes`
     (T13.4 の `ConnSlot` の原子) を控えれば、差分で直近 5 秒の速さが出る。
