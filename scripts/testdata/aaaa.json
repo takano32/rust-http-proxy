@@ -1,0 +1,6 @@
+{
+ "alpha.example.jp": true,
+ "beta.example.jp": false,
+ "gamma.example.net": true,
+ "delta.example.org": true
+}

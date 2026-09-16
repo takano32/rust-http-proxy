@@ -47,6 +47,7 @@ pub struct Endpoint<'a> {
 }
 
 mod blocklist;
+mod config;
 mod pac;
 mod recent;
 
@@ -101,11 +102,13 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
          \x20 /connections                                JSON: the connections open right now\n\
          \x20 /recent?n=200&since=&client=&sort=          JSON: the connections that closed\n\
+         \x20 /bursts?n=50                                JSON: snapshots taken at each spike\n\
          \x20 /snapshot                                   JSON: everything above in one request\n\
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
          \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
+         \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    same as /status\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
          \x20 /metrics                                    Prometheus text format\n\
@@ -184,6 +187,9 @@ pub fn handle(
     } else if is_get && path == "/recent" {
         // 閉じた接続の個票 (T14.4)。`/connections` の「いま」に対して「起きたこと」
         recent::recent(ep, query)
+    } else if is_get && path == "/bursts" {
+        // 山の写真 (T14.6)。同時接続数が上限の一定割合を越えた瞬間の `/connections`
+        recent::bursts(ep, query)
     } else if is_get && path == "/snapshot" {
         // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
         recent::snapshot(ep)
@@ -196,6 +202,9 @@ pub fn handle(
     } else if is_get && path == "/clients" {
         // 接続元の個票 (T14.7)。認証なしで誰でも見えるのは他の個票と同じ
         recent::clients(ep, query)
+    } else if is_get && path == "/config" {
+        // 効いている設定とその出どころ、この環境で何が読めるか (T14.15)
+        config::render(ep)
     } else if is_get && path == "/blocklist" {
         blocklist::handle(&parse_query(query.unwrap_or("")))
     } else if is_get && (path == "/healthz" || path == "/status") {

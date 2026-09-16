@@ -102,6 +102,31 @@ pub fn parse(text: &str) -> HashMap<String, String> {
     out
 }
 
+/// 値がどの層から来たか ([`var`] と同じ優先順)。`/config` の `source` の元になる (T14.15)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VarSource {
+    /// コマンドライン引数による上書き
+    Cli,
+    /// `$HOME/.env`
+    File,
+    /// 実際の環境変数
+    Env,
+}
+
+/// `key` の値が**どの層から来るか**を [`var`] と同じ順で調べる (どこにも無ければ `None`)。
+///
+/// 値そのものではなく出どころだけを返すのは、`/config` が「既定のままか、`.env` に
+/// 書いたのか、パネルが渡しているのか」を見せるため。
+pub fn var_source(key: &str) -> Option<VarSource> {
+    if OVERRIDES.get().is_some_and(|o| o.contains_key(key)) {
+        return Some(VarSource::Cli);
+    }
+    if loaded().vars.contains_key(key) {
+        return Some(VarSource::File);
+    }
+    env::var(key).is_ok().then_some(VarSource::Env)
+}
+
 /// コマンドライン引数 → `$HOME/.env` → 実際の環境変数の順に探す。
 pub fn var(key: &str) -> Option<String> {
     if let Some(v) = OVERRIDES.get().and_then(|o| o.get(key)) {
@@ -145,6 +170,14 @@ mod tests {
         assert_eq!(vars.get("QUOTED").map(String::as_str), Some("a b"));
         assert_eq!(vars.get("TRAIL").map(String::as_str), Some("value"));
         assert_eq!(vars.len(), 5);
+    }
+
+    #[test]
+    fn reports_where_a_value_comes_from() {
+        // 実環境にあるもの (どのテストでも必ずある)
+        assert_eq!(var_source("PATH"), Some(VarSource::Env));
+        // どこにも無いもの
+        assert_eq!(var_source("PROXY_NO_SUCH_KEY_T1415"), None);
     }
 
     #[test]

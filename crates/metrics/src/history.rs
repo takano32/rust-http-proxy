@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use crate::cache::{Cache, now_epoch};
 use crate::metrics::Metrics;
+use crate::recent::ClosedCounts;
 use crate::rrd::{Dec, Enc};
 
 /// 記録の間隔と本数 (5 秒 × 720 = 1 時間)。
@@ -433,6 +434,153 @@ fn process_counts() -> (u64, u64, u64) {
     (threads, fds, max_fds)
 }
 
+/// 閉じた接続の分布を残す**メモリ上の窓** (5 秒 × 720 と 60 秒 × 1,440。T14.6)。
+///
+/// **`.rrd` の標本には足さない。** 標本 1 本の余白は 4 B しか残っていない (T14.2 (3)) ので、
+/// 閉じた理由 8 種 + 寿命 13 段 + 上り 13 段 + 下り 13 段 + 合計 5 つ = 52 個の u64 は
+/// どうやっても入らない。版を上げれば入るが、上げると統計が全部消える。
+/// **ここは再起動で消えてよい**個票と同じ扱い (T14.4 のリングと同じ方針)。
+///
+/// 書くのは [`crate::metrics::Metrics::record_closed`] = 接続の終了で 1 回だけで、
+/// 窓を閉じるのは history スレッド ([`ClosedWindows::roll`]) — `/history` の標本と
+/// **同じ周期・同じ境目**で閉じるので、読む側は時刻で突き合わせられる。
+///
+/// **件数 0 の窓は残さない** (デプロイ先は 43 本/時 なので、残すと 720 本のうち
+/// 719 本がゼロの行になる)。行の先頭に窓の始まりの時刻があるので、抜けていても読める。
+pub struct ClosedWindows {
+    inner: Mutex<ClosedState>,
+}
+
+#[derive(Default)]
+struct ClosedState {
+    /// まだ閉じていない 5 秒の窓と、その始まり (5 秒に丸めた epoch)
+    cur: ClosedCounts,
+    cur_t: u64,
+    /// まだ閉じていない 60 秒の窓 (閉じた 5 秒の窓を足し込む)
+    min_cur: ClosedCounts,
+    min_t: u64,
+    fine: VecDeque<(u64, ClosedCounts)>,
+    minute: VecDeque<(u64, ClosedCounts)>,
+    /// 起動からの通算 (畳んだ本数)
+    total: u64,
+}
+
+impl Default for ClosedWindows {
+    fn default() -> Self {
+        ClosedWindows::new()
+    }
+}
+
+impl ClosedWindows {
+    pub fn new() -> ClosedWindows {
+        ClosedWindows {
+            inner: Mutex::new(ClosedState::default()),
+        }
+    }
+
+    /// 閉じた接続 1 本を今の窓に足す (**接続の終了で 1 回だけ**。鍵 1 回)。
+    pub fn observe(&self, e: &crate::recent::RecentEntry) {
+        let mut w = self.inner.locked();
+        w.total += 1;
+        w.cur.observe(e);
+    }
+
+    /// 窓を閉じる (history スレッドが 5 秒ごとに呼ぶ)。
+    ///
+    /// `/history` の標本と同じ境目 (`now / 5 * 5`、`now / 60 * 60`) で切るので、
+    /// 5 秒の窓の時刻は `/history?res=5` の `t` と、60 秒の窓は `res=60` の `t` と揃う。
+    pub fn roll(&self, now: u64) {
+        let mut w = self.inner.locked();
+        let fine_t = (now / RESOLUTIONS[0].0) * RESOLUTIONS[0].0;
+        if fine_t != w.cur_t {
+            let closed = std::mem::take(&mut w.cur);
+            let at = w.cur_t;
+            w.cur_t = fine_t;
+            if !closed.is_empty() {
+                w.min_cur.merge(&closed);
+                push_window(&mut w.fine, at, closed, RESOLUTIONS[0].1);
+            }
+        }
+        let min_t = (now / RESOLUTIONS[1].0) * RESOLUTIONS[1].0;
+        if min_t != w.min_t {
+            let closed = std::mem::take(&mut w.min_cur);
+            let at = w.min_t;
+            w.min_t = min_t;
+            if !closed.is_empty() {
+                push_window(&mut w.minute, at, closed, RESOLUTIONS[1].1);
+            }
+        }
+    }
+
+    /// 残してある窓の数 (5 秒 / 60 秒) と、畳んだ本数の通算。
+    pub fn counts(&self) -> (usize, usize, u64) {
+        let w = self.inner.locked();
+        (w.fine.len(), w.minute.len(), w.total)
+    }
+
+    /// `/history` の `closed` (解像度の添字は [`RESOLUTIONS`] と同じ)。
+    ///
+    /// **1 時間の解像度では残していない** (`null`)。閉じた接続の分布は「いま効いている
+    /// 設定が長すぎるか短すぎるか」を読むためのもので、30 日ぶんは要らない。
+    pub fn to_json_res(&self, res: usize) -> String {
+        use crate::recent::{BYTE_BOUNDS, CLOSE_REASON_NAMES, CLOSED_KEYS, LIFE_BOUNDS_SECS};
+        if res > 1 {
+            return "null".to_string();
+        }
+        let w = self.inner.locked();
+        let ring = if res == 0 { &w.fine } else { &w.minute };
+        let mut out = String::with_capacity(256 + ring.len() * 140);
+        let _ = write!(out, "{{\"interval_secs\":{},\"keys\":[", RESOLUTIONS[res].0);
+        push_str_array(&mut out, &CLOSED_KEYS);
+        out.push_str("],\"reasons\":[");
+        push_str_array(&mut out, &CLOSE_REASON_NAMES);
+        out.push_str("],\"life_bounds_secs\":[");
+        push_num_array(&mut out, &LIFE_BOUNDS_SECS);
+        out.push_str("],\"byte_bounds\":[");
+        push_num_array(&mut out, &BYTE_BOUNDS);
+        out.push_str("],\"samples\":[");
+        for (i, (t, c)) in ring.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            c.push_row(&mut out, *t);
+        }
+        let _ = write!(
+            out,
+            "],\"windows\":{},\"capacity\":{},\"recorded\":{}}}",
+            ring.len(),
+            RESOLUTIONS[res].1,
+            w.total
+        );
+        out
+    }
+}
+
+fn push_window(ring: &mut VecDeque<(u64, ClosedCounts)>, t: u64, c: ClosedCounts, cap: usize) {
+    if ring.len() >= cap {
+        ring.pop_front();
+    }
+    ring.push_back((t, c));
+}
+
+fn push_str_array(out: &mut String, names: &[&str]) {
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "\"{}\"", n);
+    }
+}
+
+fn push_num_array(out: &mut String, v: &[u64]) {
+    for (i, n) in v.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{}", n);
+    }
+}
+
 /// 1 回の記録で各解像度に加わった標本 (状態ファイルへの書込用)。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Pushed {
@@ -444,6 +592,8 @@ pub struct Pushed {
 #[derive(Default)]
 pub struct History {
     rings: [Mutex<VecDeque<Sample>>; 3],
+    /// 閉じた接続の分布 (`/history` の `closed`。T14.6)。**`.rrd` には載せない**
+    pub closed: ClosedWindows,
 }
 
 impl History {
@@ -526,6 +676,9 @@ impl History {
     /// 標本ごとにキーを繰り返すと `/history?res=5` (720 標本) が 1 MB を超える。
     /// キーは `keys` に 1 回だけ出し、`connect_buckets` / `forward_buckets` /
     /// `errors_by_cause` はその位置に入れ子の配列で入る。
+    ///
+    /// 末尾の `closed` は閉じた接続の分布 ([`ClosedWindows`]。T14.6)。**標本とは別の配列**で、
+    /// `res=5|60` のときだけ中身がある (1 時間では `null`)。
     pub fn to_json(&self) -> String {
         self.to_json_res(0)
     }
@@ -562,7 +715,15 @@ impl History {
             }
             s.push_row(&mut out);
         }
-        out.push_str("]}");
+        drop(q);
+        // 閉じた接続の分布は**標本の後ろに別の配列**で出す (T14.6)。既存の `keys` /
+        // `samples` の形と読み方は 1 つも変えない。1 時間の解像度では残していないので `null`
+        out.push_str("],\"closed\":");
+        out.push_str(&self.closed.to_json_res(res));
+        // 利用者の要求が無い時間帯の名前解決と TCP 接続 (T14.10)。**別の配列**に足す
+        // ので、既存の `keys` / `samples` を読む側は 1 行も変えなくてよい
+        crate::canary::push_history_json(&mut out, res);
+        out.push('}');
         out
     }
 }
@@ -573,18 +734,38 @@ pub fn spawn(
     cache: Arc<Cache>,
     store: Option<Arc<crate::persist::Store>>,
 ) -> JoinHandle<()> {
-    let record = move |metrics: &Metrics, cache: &Cache| {
+    spawn_every(metrics, cache, store, INTERVAL)
+}
+
+/// 周期を指定して起こす版 (**結合テスト用**。本番は [`spawn`] = [`INTERVAL`])。
+///
+/// 山の写真 (T14.6) を撮るのがこのスレッドなので、テストで 5 秒待たずに
+/// 「越えた → 1 枚撮れた」を見るための口。
+pub fn spawn_every(
+    metrics: Arc<Metrics>,
+    cache: Arc<Cache>,
+    store: Option<Arc<crate::persist::Store>>,
+    interval: Duration,
+) -> JoinHandle<()> {
+    let record = move |metrics: &Arc<Metrics>, cache: &Cache| {
+        // 山の写真と、閉じた接続の分布の窓 (T14.6)。**標本より先に**撮るのは、
+        // 越えてから撮るまでを 1 周期より短くするため
+        metrics.take_burst_shot();
+        metrics.history.closed.roll(crate::cache::now_epoch());
         let pushed = metrics.history.push(Sample::take(metrics, cache));
         if let Some(st) = &store {
             st.write_samples(&pushed);
         }
+        // 利用者の要求が無い時間帯も待ちを測る (T14.10)。**ここでは測らない**
+        // (名前解決と接続は `canary` スレッド 1 本の仕事で、この周期は止めない)
+        crate::canary::tick(metrics);
     };
     record(&metrics, &cache);
     thread::Builder::new()
         .name("history".into())
         .spawn(move || {
             loop {
-                thread::sleep(INTERVAL);
+                thread::sleep(interval);
                 record(&metrics, &cache);
             }
         })
@@ -620,10 +801,17 @@ mod tests {
             &json[..80]
         );
         assert!(json.contains("\"samples\":[[5,10,0,5,0,"), "{}", json);
+        // 標本の配列の閉じ方は変えず、その**後ろ**に閉じた接続の分布が付く (T14.6)
         assert!(
-            json.ends_with(",0,0,0,0,0,0,0,0]]}"),
+            json.contains(",0,0,0,0,0,0,0,0]],\"closed\":{"),
             "{}",
-            &json[json.len() - 60..]
+            &json[json.len() - 600..]
+        );
+        // canary (T14.10) は**別の配列**で末尾に付く (既存の列は 1 つも動かない)
+        assert!(
+            json.ends_with(",\"canary\":{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\"],\"samples\":[]}}"),
+            "{}",
+            &json[json.len() - 120..]
         );
         // 列の数が `KEYS` と合っていること (入れ子の配列は 1 列と数える)
         let first = &json[json.find("\"samples\":[[").unwrap() + 11..];
@@ -888,5 +1076,186 @@ mod tests {
             back,
             "手前の項目は 1 つもずれない"
         );
+    }
+}
+
+/// 閉じた接続の分布の窓 (T14.6)。**`.rrd` には載せない**メモリ上の窓。
+#[cfg(test)]
+mod closed_tests {
+    use super::*;
+    use crate::recent::{CLOSED_KEYS, CloseReason, RecentEntry, STAGES};
+
+    fn sample(t: u64) -> Sample {
+        Sample {
+            t,
+            ..Sample::default()
+        }
+    }
+
+    fn closed(reason: CloseReason, secs: u64) -> RecentEntry {
+        RecentEntry {
+            id: 1,
+            at: 1_700_000_000,
+            client: "198.51.100.7".to_string(),
+            target: "example.net:443".to_string(),
+            connect: true,
+            secs,
+            requests: 0,
+            up: 2048,
+            down: 4096,
+            reason,
+            status: 0,
+            parked_secs: 1,
+            parks: 1,
+            stage_ms: [0; STAGES],
+        }
+    }
+
+    /// 5 秒の窓が閉じ、60 秒の窓はその足し合わせになること (境目は `/history` と同じ)。
+    #[test]
+    fn windows_close_on_the_same_boundaries_as_the_samples() {
+        let w = ClosedWindows::new();
+        // 5 秒にも 60 秒にも揃った時刻から始める (窓の始まりを読みやすくするため)
+        let t0 = 1_700_000_100;
+        assert_eq!(t0 % 60, 0);
+        // 最初の呼び出しは「今の窓」を決めるだけ (空の窓は残さない)
+        w.roll(t0 + 2);
+        assert_eq!(w.counts(), (0, 0, 0));
+
+        w.observe(&closed(CloseReason::ClientEof, 3));
+        w.observe(&closed(CloseReason::IdleTimeout, 301));
+        w.roll(t0 + 7);
+        assert_eq!(w.counts(), (1, 0, 2), "5 秒の窓が 1 つ閉じた");
+
+        w.observe(&closed(CloseReason::ClientEof, 1));
+        // 分をまたぐ (60 秒の窓も閉じる)
+        w.roll(t0 + 62);
+        let (fine, minute, total) = w.counts();
+        assert_eq!((fine, minute, total), (2, 1, 3));
+
+        let json = w.to_json_res(0);
+        assert!(
+            json.starts_with("{\"interval_secs\":5,\"keys\":[\"t\","),
+            "{}",
+            json
+        );
+        assert!(json.contains("\"reasons\":[\"client_eof\","), "{}", json);
+        assert!(
+            json.contains("\"life_bounds_secs\":[1,2,5,10,15,"),
+            "{}",
+            json
+        );
+        assert!(json.contains("\"byte_bounds\":[1024,4096,"), "{}", json);
+        assert!(json.contains("\"windows\":2"), "{}", json);
+        assert!(json.contains("\"recorded\":3"), "{}", json);
+        // 窓の始まりは 5 秒に丸めた時刻
+        assert!(json.contains("\"samples\":[[1700000100,2,"), "{}", json);
+        let minute_json = w.to_json_res(1);
+        assert!(
+            minute_json.contains("\"interval_secs\":60"),
+            "{}",
+            minute_json
+        );
+        assert!(minute_json.contains("[1700000100,3,"), "{}", minute_json);
+        // 1 時間の解像度では残していない
+        assert_eq!(w.to_json_res(2), "null");
+        assert_eq!(CLOSED_KEYS[0], "t");
+    }
+
+    /// 件数 0 の窓は残さない (43 本/時 のプロキシで 719 本のゼロ行を作らない)。
+    #[test]
+    fn empty_windows_are_not_kept() {
+        let w = ClosedWindows::new();
+        for i in 0..100u64 {
+            w.roll(1_700_000_000 + i * 5);
+        }
+        assert_eq!(w.counts(), (0, 0, 0));
+        assert!(w.to_json_res(0).contains("\"samples\":[]"));
+    }
+
+    /// 窓は 5 秒 × 720 と 60 秒 × 1,440 で頭打ち。
+    #[test]
+    fn the_windows_are_capped() {
+        let w = ClosedWindows::new();
+        for i in 0..(RESOLUTIONS[0].1 as u64 + 50) {
+            w.observe(&closed(CloseReason::ClientEof, 1));
+            w.roll(1_700_000_000 + (i + 1) * 5);
+        }
+        let (fine, minute, total) = w.counts();
+        assert_eq!(fine, RESOLUTIONS[0].1, "5 秒の窓は 720 で頭打ち");
+        assert_eq!(total, RESOLUTIONS[0].1 as u64 + 50);
+        assert!(minute > 0 && minute <= RESOLUTIONS[1].1);
+    }
+
+    /// `/history` は標本の**後ろに別の配列**として出す (既存の読み方を変えない)。
+    #[test]
+    fn history_appends_the_closed_windows_after_the_samples() {
+        let h = History::default();
+        h.push(sample(1_700_000_000));
+        h.closed.roll(1_700_000_000);
+        h.closed.observe(&closed(CloseReason::Evicted, 7));
+        h.closed.roll(1_700_000_005);
+        let json = h.to_json_res(0);
+        // 既存の形はそのまま
+        assert!(
+            json.starts_with("{\"interval_secs\":5,\"keys\":[\"t\","),
+            "{}",
+            json
+        );
+        let samples_at = json.find("\"samples\":").expect("標本がある");
+        let closed_at = json.find("\"closed\":").expect("分布がある");
+        assert!(samples_at < closed_at, "分布は標本の後ろ");
+        assert!(
+            json.contains("\"closed\":{\"interval_secs\":5,"),
+            "{}",
+            json
+        );
+        assert!(json.ends_with("}}"), "{}", &json[json.len() - 40..]);
+        // 1 時間の解像度は `null`
+        assert!(h.to_json_res(2).ends_with(",\"closed\":null}"));
+    }
+
+    /// 窓が埋まったときの大きさ (1 窓 ≈ 300 B。`/history` が太る分をここで押さえておく)。
+    ///
+    /// デプロイ先は 43 本/時 なので、ほとんどの窓は空で**出さない**。ここで見るのは
+    /// 「忙しいプロキシで 5 秒 × 720 が全部埋まったとき」の上限で、標本 (`samples`) と
+    /// 同じ桁に収まっていること。60 秒 × 1,440 は同じ 1 行の 2 倍の本数になる。
+    #[test]
+    fn a_full_ring_of_closed_windows_stays_the_same_order_as_the_samples() {
+        let w = ClosedWindows::new();
+        let mut e = closed(CloseReason::ClientEof, 1234);
+        e.up = 987_654_321;
+        e.down = 12_345_678_901;
+        e.parked_secs = 300;
+        for i in 0..(RESOLUTIONS[0].1 as u64 + 5) {
+            for _ in 0..200 {
+                w.observe(&e);
+            }
+            w.roll(1_700_000_000 + (i + 1) * 5);
+        }
+        let json = w.to_json_res(0);
+        let windows = json.matches("[1700").count();
+        assert_eq!(windows, RESOLUTIONS[0].1, "{} 窓", windows);
+        assert!(json.len() <= 512 * 1024, "res=5 が {} B", json.len());
+        println!(
+            "closed res=5 が満杯のとき: {} B ({} 窓 = 1 窓 {} B。res=60 は 1,440 窓)",
+            json.len(),
+            windows,
+            json.len() / windows
+        );
+    }
+
+    /// 窓が空なら `/history` に足すのは区間の定義ぶん (472 B) だけで、上限は変わらない。
+    #[test]
+    fn empty_windows_barely_grow_the_history_response() {
+        let h = History::default();
+        for i in 0..(CAPACITY as u64) {
+            h.push(sample(1_700_000_000 + i * 5));
+        }
+        let json = h.to_json_res(0);
+        assert!(json.len() <= 512 * 1024, "{} B", json.len());
+        let tail = &json[json.find("\"closed\":").unwrap()..];
+        assert!(tail.len() < 600, "空の窓で {} B", tail.len());
+        println!("空の closed が /history に足す分: {} B", tail.len());
     }
 }
