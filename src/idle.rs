@@ -214,7 +214,10 @@ mod linux {
         /// 預かる。断ったら渡されたものをそのまま返す。
         fn park_any(&self, what: Parked, deadline: Instant) -> Result<(), Parked> {
             let (fds, n) = what.fds();
-            let mut inner = self.inner.locked();
+            // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
+            let mut inner = self
+                .inner
+                .locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_PARK]);
             if !inner.alive {
                 return Err(what);
             }

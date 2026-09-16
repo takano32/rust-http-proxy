@@ -541,7 +541,8 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
     // 期限前の先回りを頼むか (T13.1) / この参照で warm になったか (T14.1)
     let (mut ask, mut promote) = (false, false);
     {
-        let mut guard = TABLE.locked();
+        // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
+        let mut guard = TABLE.locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_DNS]);
         let table = guard.get_or_insert_with(HashMap::new);
         if let Some(e) = table.get_mut(&key) {
             pref = e.last_win_v6;

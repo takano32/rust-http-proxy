@@ -348,6 +348,12 @@ pub struct Sample {
     pub stages: Stages,
     /// 役割ごとの CPU と状態 (T14.3 (2))
     pub threads: Threads,
+    /// その窓にロックが取り合いになった回数 ([`crate::sync::LOCK_NAMES`] の順。T14.3 (3))
+    pub locks: [u64; crate::sync::LOCK_NAMES.len()],
+    /// その窓にワーカーの待ち行列で待った仕事の数・合計 ms・最大 ms
+    pub queue_waited: u64,
+    pub queue_ms_sum: u64,
+    pub queue_ms_max: u64,
 }
 
 impl Sample {
@@ -363,9 +369,15 @@ impl Sample {
         for (a, b) in self.threads.iter_mut().zip(o.threads.iter()) {
             a.merge(b);
         }
+        for (a, b) in self.locks.iter_mut().zip(o.locks.iter()) {
+            *a += *b;
+        }
+        self.queue_waited += o.queue_waited;
+        self.queue_ms_sum += o.queue_ms_sum;
+        self.queue_ms_max = self.queue_ms_max.max(o.queue_ms_max);
     }
 
-    /// `[t,requests,cpu_us,[connect...],[forward...],[roles...]]`。
+    /// `[t,requests,cpu_us,[connect...],[forward...],[roles...],[locks...],[queue...]]`。
     /// **件数 0 の段階と標本 0 の役割は `0` 1 文字**で書く (静かな窓を小さくするため)。
     fn push_row(&self, out: &mut String) {
         let _ = write!(out, "[{},{},{},[", self.t, self.requests, self.cpu_us);
@@ -390,7 +402,18 @@ impl Sample {
             }
             out.push_str("]]");
         }
-        out.push_str("]]");
+        out.push_str("],[");
+        for (i, l) in self.locks.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let _ = write!(out, "{}", l);
+        }
+        let _ = write!(
+            out,
+            "],[{},{},{}]]",
+            self.queue_waited, self.queue_ms_sum, self.queue_ms_max
+        );
     }
 }
 
@@ -555,6 +578,22 @@ impl Profile {
 struct Tick {
     requests: u64,
     cpu_us: u64,
+    locks: [u64; crate::sync::LOCK_NAMES.len()],
+    queue_waited: u64,
+    queue_ms_sum: u64,
+}
+
+impl Tick {
+    fn now(metrics: &Metrics) -> Tick {
+        let [queue_waited, queue_ms_sum, _] = crate::sync::queue_totals();
+        Tick {
+            requests: metrics.total_requests.load(Ordering::Relaxed),
+            cpu_us: process_cpu_us().unwrap_or(0),
+            locks: crate::sync::lock_contended(),
+            queue_waited,
+            queue_ms_sum,
+        }
+    }
 }
 
 /// スレッドの標本を取る側 (`profile-sample` スレッドが 1 つだけ持つ。T14.3 (2))。
@@ -683,10 +722,7 @@ pub fn spawn(metrics: std::sync::Arc<Metrics>, sample_ms: u64) -> JoinHandle<()>
         .name("profile-sample".into())
         .stack_size(256 * 1024)
         .spawn(move || {
-            let mut prev = Tick {
-                requests: metrics.total_requests.load(Ordering::Relaxed),
-                cpu_us: process_cpu_us().unwrap_or(0),
-            };
+            let mut prev = Tick::now(&metrics);
             let mut sampler = (sample_ms > 0).then(Sampler::for_self);
             let step = match sample_ms {
                 0 => TICK,
@@ -710,16 +746,27 @@ pub fn spawn(metrics: std::sync::Arc<Metrics>, sample_ms: u64) -> JoinHandle<()>
 
 /// 1 標本ぶんを窓へ (`spawn` のループの中身。テストからも呼ぶ)。
 fn tick(metrics: &Metrics, prev: &mut Tick, sampler: Option<&mut Sampler>) {
-    let requests = metrics.total_requests.load(Ordering::Relaxed);
-    let cpu_us = process_cpu_us().unwrap_or(0);
+    let now = Tick::now(metrics);
+    let mut locks = [0u64; crate::sync::LOCK_NAMES.len()];
+    for ((o, a), b) in locks
+        .iter_mut()
+        .zip(now.locks.iter())
+        .zip(prev.locks.iter())
+    {
+        *o = a.saturating_sub(*b);
+    }
     let s = Sample {
         t: now_epoch(),
-        requests: requests.saturating_sub(prev.requests),
-        cpu_us: cpu_us.saturating_sub(prev.cpu_us),
+        requests: now.requests.saturating_sub(prev.requests),
+        cpu_us: now.cpu_us.saturating_sub(prev.cpu_us),
         stages: metrics.take_stages(),
         threads: sampler.map(Sampler::take).unwrap_or_default(),
+        locks,
+        queue_waited: now.queue_waited.saturating_sub(prev.queue_waited),
+        queue_ms_sum: now.queue_ms_sum.saturating_sub(prev.queue_ms_sum),
+        queue_ms_max: crate::sync::take_queue_window_max(),
     };
-    *prev = Tick { requests, cpu_us };
+    *prev = now;
     metrics.profile.push(s);
 }
 
@@ -845,7 +892,7 @@ mod tests {
         .push_row(&mut row);
         assert_eq!(
             row,
-            "[7,0,0,[0,0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0]]"
+            "[7,0,0,[0,0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0],[0,0,0]]"
         );
     }
 

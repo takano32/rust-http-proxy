@@ -658,7 +658,10 @@ impl Metrics {
         took: Option<Duration>,
         detail: Detail,
     ) {
-        let mut hosts = self.hosts.locked();
+        // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
+        let mut hosts = self
+            .hosts
+            .locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_STATS]);
         let hosts = &mut *hosts;
         // 全体の合計も同じ鍵の内側で足す (原子操作を増やさない)
         for iv in [&mut hosts.total, &mut hosts.interval] {
