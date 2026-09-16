@@ -259,6 +259,12 @@ pub struct Config {
     ///
     /// **試験で短くするための口**で、運用では触らない (60 秒に 1 回・1 ホスト 1 本)
     pub canary_secs: Duration,
+    /// canary の IPv6 側 (`PROXY_CANARY_IPV6`、既定 on)。
+    ///
+    /// 同じ周期に canary の名前の **AAAA へ 1 本**だけ繋いでみて、`/status` の
+    /// `canary.ipv6_connect_ms` に残す。デプロイ先のコンテナは IPv6 が黒穴で、
+    /// `v4_first` の解除は 600 秒に 1 回の探りだけに頼っているため (T14.37)
+    pub canary_ipv6: bool,
     /// `/proxy.pac` で DIRECT にするホストの一覧 (`PROXY_PAC_DIRECT`、`*.example.com` 可)
     pub pac_direct: Vec<String>,
     /// ブロックリストのファイル (`PROXY_BLOCKLIST_FILE`、hosts 形式 / 1 行 1 ドメイン)
@@ -518,6 +524,10 @@ impl Config {
         {
             cfg.canary_secs = Duration::from_secs(secs.max(1));
         }
+        if let Some(v) = envfile::var("PROXY_CANARY_IPV6") {
+            cfg.canary_ipv6 = !off(v);
+            src.mark("PROXY_CANARY_IPV6");
+        }
         if let Some(ms) =
             envfile::var("PROXY_PROFILE_SAMPLE_MS").and_then(|s| s.trim().parse::<u64>().ok())
         {
@@ -641,6 +651,9 @@ impl Config {
         add("PROXY_DNS_TTL_SECS", secs(self.dns_ttl));
         add("PROXY_DNS_NEGATIVE_SECS", secs(self.dns_negative));
         add("PROXY_DNS_WARM_SECS", secs(self.dns_warm));
+        // canary の IPv6 側 (T14.37)。宛先と周期は `proxy-metrics` の持ち物なので
+        // ここには出さない (この層は文字列を運ぶだけ)
+        add("PROXY_CANARY_IPV6", self.canary_ipv6.to_string());
         // あて先の許可・拒否
         add("PROXY_ALLOW_HOSTS", list_value(&self.acl.allow_hosts));
         add("PROXY_DENY_HOSTS", list_value(&self.acl.deny_hosts));
@@ -784,6 +797,7 @@ impl Config {
             // (値の意味は `proxy-metrics` の `canary`。この層は文字列を運ぶだけ)
             canary: "auto".to_string(),
             canary_secs: Duration::from_secs(60),
+            canary_ipv6: true,
             pac_direct: Vec::new(),
             blocklist_file: None,
             blocklist_url: None,
