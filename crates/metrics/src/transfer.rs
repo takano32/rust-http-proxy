@@ -23,6 +23,12 @@
 //! 足すのはトンネル 1 本の終わり ([`TransferWindows::observe`] = 鍵 1 回) と、
 //! 中継の中で**最初の EOF を見たとき 1 回だけ**の時計の読み (`Instant::now`。
 //! 呼び出し側が `get_or_insert_with` で囲ってある) だけ。
+//!
+//! T14.42 で**中継の詰まりの向き**の合計 (`stall_client_ms_sum` /
+//! `stall_origin_ms_sum`) を列の**末尾**に足した。1 本ごとの値は `/recent` の
+//! `stall_ms` で、ここはその窓の合計 (`tunnels` で割れば 1 本あたりの平均)。
+//! 時計を読むのは中継が**書けなくて待ちに入る回だけ**なので、詰まらない中継
+//! (loopback) では 1 回も読まない。
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -30,6 +36,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::history::RESOLUTIONS;
+use crate::recent::SIDES;
 use crate::sync::LockExt;
 
 /// 速さを数える下限 (バイト)。これ未満のトンネルは `tunnels` にだけ数える。
@@ -70,7 +77,9 @@ pub const SPEED_BUCKETS: usize = SPEED_BOUNDS_BPS.len() + 1;
 pub const HALF_CLOSE_BUCKETS: usize = HALF_CLOSE_BOUNDS_MS.len() + 1;
 
 /// [`TransferCounts::push_row`] が並べる列の名前 (`/history` の `transfer.keys`)。
-pub const TRANSFER_KEYS: [&str; 9] = [
+///
+/// **末尾の 2 つは T14.42 で足した** (既存の並びは 1 つも変えていない)。
+pub const TRANSFER_KEYS: [&str; 11] = [
     "t",
     "tunnels",
     "speed_n",
@@ -80,6 +89,8 @@ pub const TRANSFER_KEYS: [&str; 9] = [
     "bytes_sum",
     "relay_ms_sum",
     "half_close_ms_sum",
+    "stall_client_ms_sum",
+    "stall_origin_ms_sum",
 ];
 
 /// `bounds` の何段目か (どれにも収まらなければ最後の「上限なし」)。
@@ -104,6 +115,12 @@ pub struct TransferCounts {
     pub bytes_sum: u64,
     pub relay_ms_sum: u64,
     pub half_close_ms_sum: u64,
+    /// 中継が**書けるのを待った** ms の合計 (T14.42)。`client` は
+    /// 「クライアントへ書けなかった」= 利用者の下り回線か端末が読まない、
+    /// `origin` は「オリジンへ書けなかった」= オリジンか利用者の上り。
+    /// **終わったトンネル全部**が対象 ([`MIN_BYTES`] の足切りは掛けない)
+    pub stall_client_ms_sum: u64,
+    pub stall_origin_ms_sum: u64,
 }
 
 impl TransferCounts {
@@ -111,8 +128,22 @@ impl TransferCounts {
     ///
     /// `bytes` は上り + 下り、`relay` は中継の時間 (預かり所にいた時間は引いてある)、
     /// `half_close` は半閉じで終わっていればその時間。
-    pub fn observe(&mut self, bytes: u64, relay: Duration, half_close: Option<Duration>) {
+    pub fn observe(
+        &mut self,
+        bytes: u64,
+        relay: Duration,
+        half_close: Option<Duration>,
+        stall_ms: [u32; SIDES],
+    ) {
         self.tunnels += 1;
+        // 詰まりの向き (T14.42)。1 本ごとの値は中継が既に数え終えているので、
+        // ここは足し算 2 回だけ (速さと違って足切りも割り算も無い)
+        self.stall_client_ms_sum = self
+            .stall_client_ms_sum
+            .saturating_add(stall_ms[crate::recent::CLIENT_SIDE] as u64);
+        self.stall_origin_ms_sum = self
+            .stall_origin_ms_sum
+            .saturating_add(stall_ms[crate::recent::ORIGIN_SIDE] as u64);
         if bytes >= MIN_BYTES {
             // 速さ = バイト ÷ 中継の時間。ループバックの 1 本は 1 ms に満たないので
             // us で割る (0 us は 1 us 扱い。割り算 1 回で、時計はもう読まない)
@@ -145,6 +176,12 @@ impl TransferCounts {
         self.bytes_sum = self.bytes_sum.saturating_add(o.bytes_sum);
         self.relay_ms_sum = self.relay_ms_sum.saturating_add(o.relay_ms_sum);
         self.half_close_ms_sum = self.half_close_ms_sum.saturating_add(o.half_close_ms_sum);
+        self.stall_client_ms_sum = self
+            .stall_client_ms_sum
+            .saturating_add(o.stall_client_ms_sum);
+        self.stall_origin_ms_sum = self
+            .stall_origin_ms_sum
+            .saturating_add(o.stall_origin_ms_sum);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -159,8 +196,12 @@ impl TransferCounts {
         push_u64_array(out, &self.half_close);
         let _ = write!(
             out,
-            ",{},{},{}]",
-            self.bytes_sum, self.relay_ms_sum, self.half_close_ms_sum
+            ",{},{},{},{},{}]",
+            self.bytes_sum,
+            self.relay_ms_sum,
+            self.half_close_ms_sum,
+            self.stall_client_ms_sum,
+            self.stall_origin_ms_sum
         );
     }
 }
@@ -222,10 +263,16 @@ impl TransferWindows {
     }
 
     /// 終わったトンネル 1 本を今の窓に足す (**トンネルの終わりで 1 回だけ**。鍵 1 回)。
-    pub fn observe(&self, bytes: u64, relay: Duration, half_close: Option<Duration>) {
+    pub fn observe(
+        &self,
+        bytes: u64,
+        relay: Duration,
+        half_close: Option<Duration>,
+        stall_ms: [u32; SIDES],
+    ) {
         let mut w = self.inner.locked();
         w.total += 1;
-        w.cur.observe(bytes, relay, half_close);
+        w.cur.observe(bytes, relay, half_close, stall_ms);
     }
 
     /// 窓を閉じる (history スレッドが 5 秒ごとに呼ぶ)。
@@ -309,11 +356,14 @@ fn push_window(ring: &mut VecDeque<(u64, TransferCounts)>, t: u64, c: TransferCo
 mod tests {
     use super::*;
 
+    /// 詰まらなかったトンネル (T14.42)。
+    const NO_STALL: [u32; SIDES] = [0; SIDES];
+
     /// 速さの段は「バイト ÷ 中継の時間」で決まること (1 MiB を 1 秒 = 1 MiB/s)。
     #[test]
     fn the_speed_bucket_comes_from_bytes_over_relay_time() {
         let mut c = TransferCounts::default();
-        c.observe(1 << 20, Duration::from_secs(1), None);
+        c.observe(1 << 20, Duration::from_secs(1), None, NO_STALL);
         // 1 MiB/s はちょうど境目 (`v <= b` なので 1 MiB の段に入る)
         let at = bucket_of(&SPEED_BOUNDS_BPS, 1 << 20);
         assert_eq!(SPEED_BOUNDS_BPS[at], 1 << 20);
@@ -323,7 +373,7 @@ mod tests {
         assert_eq!(c.bytes_sum, 1 << 20);
         assert_eq!(c.relay_ms_sum, 1000);
         // 同じバイトを 4 倍の時間で運ぶと 1 段下がる
-        c.observe(1 << 20, Duration::from_secs(4), None);
+        c.observe(1 << 20, Duration::from_secs(4), None, NO_STALL);
         assert_eq!(c.speed[at - 1], 1);
         assert_eq!(c.speed_n, 2);
     }
@@ -332,13 +382,13 @@ mod tests {
     #[test]
     fn tunnels_under_a_kibibyte_are_counted_but_not_measured() {
         let mut c = TransferCounts::default();
-        c.observe(MIN_BYTES - 1, Duration::from_micros(10), None);
+        c.observe(MIN_BYTES - 1, Duration::from_micros(10), None, NO_STALL);
         assert_eq!(c.tunnels, 1);
         assert_eq!(c.speed_n, 0);
         assert_eq!(c.speed.iter().sum::<u64>(), 0);
         assert_eq!(c.bytes_sum, 0);
         // ちょうど 1 KiB は数える
-        c.observe(MIN_BYTES, Duration::from_secs(1), None);
+        c.observe(MIN_BYTES, Duration::from_secs(1), None, NO_STALL);
         assert_eq!(c.speed_n, 1);
         assert_eq!(c.speed[bucket_of(&SPEED_BOUNDS_BPS, 1024)], 1);
     }
@@ -347,7 +397,7 @@ mod tests {
     #[test]
     fn a_zero_length_relay_does_not_divide_by_zero() {
         let mut c = TransferCounts::default();
-        c.observe(1 << 30, Duration::ZERO, None);
+        c.observe(1 << 30, Duration::ZERO, None, NO_STALL);
         assert_eq!(c.speed_n, 1);
         assert_eq!(c.speed[SPEED_BUCKETS - 1], 1, "上限なしの段");
     }
@@ -356,12 +406,13 @@ mod tests {
     #[test]
     fn only_half_closed_tunnels_land_in_the_half_close_buckets() {
         let mut c = TransferCounts::default();
-        c.observe(4096, Duration::from_millis(10), None);
+        c.observe(4096, Duration::from_millis(10), None, NO_STALL);
         assert_eq!(c.half_close_n, 0);
         c.observe(
             4096,
             Duration::from_millis(10),
             Some(Duration::from_millis(120)),
+            NO_STALL,
         );
         assert_eq!(c.half_close_n, 1);
         // 120 ms は 64 ms 〜 256 ms の段
@@ -370,7 +421,12 @@ mod tests {
         assert_eq!(c.half_close[at], 1);
         assert_eq!(c.half_close_ms_sum, 120);
         // 相手がすぐ閉じた (0 ms) は 1 段目
-        c.observe(4096, Duration::from_millis(10), Some(Duration::ZERO));
+        c.observe(
+            4096,
+            Duration::from_millis(10),
+            Some(Duration::ZERO),
+            NO_STALL,
+        );
         assert_eq!(c.half_close[0], 1);
         assert_eq!(c.tunnels, 3);
     }
@@ -383,9 +439,10 @@ mod tests {
             1 << 20,
             Duration::from_secs(1),
             Some(Duration::from_millis(8)),
+            [20, 5],
         );
         let mut b = TransferCounts::default();
-        b.observe(1 << 20, Duration::from_secs(1), None);
+        b.observe(1 << 20, Duration::from_secs(1), None, [3, 4]);
         a.merge(&b);
         assert_eq!(a.tunnels, 2);
         assert_eq!(a.speed_n, 2);
@@ -393,6 +450,9 @@ mod tests {
         assert_eq!(a.half_close_n, 1);
         assert_eq!(a.bytes_sum, 2 << 20);
         assert_eq!(a.relay_ms_sum, 2000);
+        // 詰まりの向きも足し合わさる (T14.42)
+        assert_eq!(a.stall_client_ms_sum, 23);
+        assert_eq!(a.stall_origin_ms_sum, 9);
     }
 
     /// 窓は `/history` と同じ境目で閉じ、件数 0 の窓は残さない。
@@ -400,7 +460,7 @@ mod tests {
     fn windows_close_on_the_same_boundaries_as_history() {
         let w = TransferWindows::new();
         w.roll(1_700_000_000);
-        w.observe(1 << 20, Duration::from_secs(1), None);
+        w.observe(1 << 20, Duration::from_secs(1), None, NO_STALL);
         w.roll(1_700_000_005);
         // 何も終わらなかった 5 秒は窓を作らない
         w.roll(1_700_000_010);
@@ -432,6 +492,7 @@ mod tests {
                 1 << 20,
                 Duration::from_secs(1),
                 Some(Duration::from_millis(4)),
+                NO_STALL,
             );
         }
         w.roll(1_700_000_005);
@@ -455,6 +516,7 @@ mod tests {
                     987_654_321,
                     Duration::from_secs(30),
                     Some(Duration::from_millis(1234)),
+                    [4_294_967_295, 4_294_967_295],
                 );
             }
             w.roll(1_700_000_000 + (i + 1) * 5);

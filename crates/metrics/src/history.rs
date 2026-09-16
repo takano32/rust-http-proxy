@@ -1364,6 +1364,7 @@ mod closed_tests {
             retrans: [0; SIDES],
             sni: None,
             syn_retrans: 0,
+            stall_ms: [0; SIDES],
         }
     }
 
@@ -1484,6 +1485,7 @@ mod closed_tests {
             1 << 20,
             std::time::Duration::from_secs(1),
             Some(std::time::Duration::from_millis(120)),
+            [0; SIDES],
         );
         h.transfer.roll(1_700_000_005);
         let json = h.to_json_res(0);

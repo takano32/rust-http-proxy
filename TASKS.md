@@ -4677,7 +4677,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     同じ変換)、`/status` に `records: "on"|"off"|"hashed"`、README (方針の説明)。
   - 受け入れ基準: 結合テストで `off` のとき `/recent` `/errors` `/connections` `/clients` `/log` が空 (`"records":"off"`)、`hashed` のとき
     接続元が 16 桁の 16 進で同じ接続元は同じ値、`on` は今までどおり。費用: 旗の分岐 1 回 (既定 `on` では変わらない)。
-- [ ] **T14.42 中継の詰まりの向き (クライアントが読まないのか、オリジンが読まないのか)**
+- [x] **T14.42 中継の詰まりの向き (クライアントが読まないのか、オリジンが読まないのか)**
   - 目的: 転送が遅いとき、遅いのは「クライアントの回線 (下り)」か「オリジン」か「利用者の上り」か。`splice` が `EAGAIN` で止まり
     `poll` で書けるのを待つ時間を**向き別**に足せば、トンネル 1 本ごとに「クライアント側で待った ms / オリジン側で待った ms」が出る。
   - 変更箇所: `crates/tunnel/src/tunnel.rs` (`relay` の `poll` ループ: 書けるのを待つ側と待った時間を積む。**時計を読むのは書けなくて
@@ -4687,6 +4687,11 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     読まないオリジンなら `stall_ms.origin` ≥ 1,500。費用: `--only tunnel --conc 1` の CPU/MiB が ±ぶれの中 (3 組)。**待ちに入らない
     中継 (loopback) では時計を 1 回も読まない**ことを `strace -c` の `clock_gettime` (vDSO なので出ない) ではなく、コードの経路で
     説明する。
+  - 結果 (2026-09-16、`5a23aa3`): **中継の詰まりの向き** (`/recent` の 1 件の `stall_ms` と `/history` の `transfer` の末尾 2 列) を足した。`relay` の `poll` の直前で `events` に `POLLOUT` が立っているかを見て、**立っているときだけ `Instant::now()` を 1 回**、`poll` から戻ったらもう 1 回読んで差を**その回 `POLLOUT` を立てた側だけ**に積む (`Idle::stall_us` に us で持ち、個票へ移すときだけ ms に丸める。預けても引き継ぐ)。**時計を読むのは「書けなくて待ちに入る回」だけ**で、64 KiB ごとでも `splice` ごとでもない — `events[d.dst] |= POLLOUT` が立つのは `d.pending > 0` の方向だけ、`pending` が残るのは直前の `drain` が `EAGAIN` で止まったときだけ、そもそも `poll` に来るのは `progressed == false` のときだけなので、**書けば必ず入る相手 (loopback) はこの枝に 1 度も入らない**。`clock_gettime` は vDSO で `strace -c` に出ないので、外からの証拠は結合テストの「普通に流した 2 MiB の echo」が 0 / 0 になること。`--lite` でも同じ数え方 (T14.25 と同じ扱い) だが、`--lite` は個票の枠を作らないので**出す口が無い**。向きは `client` = クライアントへ書けなかった = **利用者の下り回線か端末が読まない**、`origin` = オリジンへ書けなかった = **オリジンか利用者の上り**。個票は `RecentEntry` の**末尾**に `stall_ms: [u32; 2]` (1 件 297 → **332 B**、T14.46 と合わせて 348 B)、窓 (T14.6 / T14.25) は `transfer` の列の**末尾**に `stall_client_ms_sum` / `stall_origin_ms_sum` (9 → 11 列。`keys` の既存の並びは変えない。1 KiB の足切りは掛けず終わったトンネル全部が対象)。T14.9 の永続化は `encode_closed` / `decode_closed` のいちばん後ろに u64 × 2 で `CLOSED_PAYLOAD` は T14.46 と合わせて **368 B** (余白 140 B)、版は上げていない。**実測** (`tests/stall_test.rs`、結合 3 本): 受信を 2 秒止めたクライアントへ 11.9 MB 流すと **client 1,995 / origin 0**、受信を 2 秒止めたオリジンへ 13.3 MB 流すと **client 0 / origin 2,200**、普通の 2 MiB の echo は **0 / 0** で、窓の合計も一致。**費用**: `--only tunnel --conc 1` の CPU/MiB **186.08 → 187.31 us (+0.7%、10 秒 × 3 組の中央値。ぶれの中)**、システムコールは 0 増。README と `check-dashboard.js` も更新。
+    - 両方向とも詰まったトンネルでは同じ待ちを両方に積む (`client + origin` が寿命を超えうる)。時計は `match` の前で読むので、アイドル打ち切りと `poll` の失敗で終わった回の待ちも積む。Linux 以外は常に 0、http の keep-alive 接続も 0。`/connections` `/metrics` と画面には出していない。
+    - T14.39 の申し送りの確認: `set_bytes` は `POLLOUT` に限らず `poll` に入るたび呼ばれているので、`rate_bps` が古いままになるのは「一度も `poll` に入らずに終わったトンネル」だけ (直す必要は無さそう)。
+    - T14.52 へ: `run_until_idle` の `poll` は `let polled = sys::poll_fds(...)` に変わり、`match polled` の前に詰まりの時計を締めている。`ETIMEDOUT` で `CloseReason::ClientDead` を立てる枝は `match polled` の `Err(e)` の腕に (時計の行は動かさない)。`CloseReason` を 9 種に増やすときは `RecentEntry::to_json` の末尾と `CLOSED_PAYLOAD` (368 B / 余白 140 B) に注意。`client_dead` と `stall_ms.client` を並べれば「消えた相手」と「遅いだけの相手」が切り分けられる。
+    - デプロイ先 (T14.99): `/recent` を `stall_ms.client` の大きい順に読めば「遅かったのは利用者の端末 / 回線」の本数が出る。`/history?res=60` の `stall_*_ms_sum ÷ tunnels` が 1 本あたりの平均で、T14.25 の `speed` の下の段と突き合わせれば「遅いトンネルのうち何本がプロキシのせいではないか」が読める。
 - [x] **T14.43 起動時の自己ベンチ (`PROXY_SELF_BENCH=on`、既定 `off`)**
   - 目的: §2 の CPU/要求 (41 us) は手元の big.LITTLE の big コアの値で、**デプロイ先のコンテナの CPU で何 us か**は分からない。T14.3 の
     `cpu_per_request_us` は実トラフィックの値だが 0.015 req/s では 5 秒の窓に 0〜1 本しか入らず読めない。起動直後に **loopback だけで
@@ -4870,6 +4875,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     (`/status` のキー順、`/snapshot` の `parts`、`check-dashboard.js` の `api`、ビルドメモリ、flake) は main でしか分からない。
   - 変更箇所: 直すものがあれば最小限 (テストの待ち方、キー順、README の 1 行)。新しい機能は足さない。
   - **先にやること (T14.43 の発見、2026-09-16)**: `scripts/build-memory.sh 200` が main で落ちる (`proxy-metrics` の rustc が RssAnon 272 MB。280 MB で NG・320 MB で OK。T10.9 の 76 MB から 3.5 倍)。**`crates/metrics` を割る** (候補: `quantiles` / `snapshots` / `trace` / `slo` / `hostseries` / `anomaly` / `daily` / `events` / `kernel` / `profile` を `crates/metrics-extra` (仮) に、`/status` の巨大な `format!` を部ごとの関数に) — 200 MB で通るまで。機能は 1 つも変えない。
+  - **小物 (T14.42 のマージで気づいた)**: T14.46 は個票ファイル (`.recent`) の閉じた接続レコードの**数値の途中** (`reason` の直後、`stage_ms` の前) に `syn_retrans` を差し込んだので、同じ版の印 `SHPREC02` で**それより前に書いたファイル**は `stage_ms` 以降がずれて読める (デプロイ先にはまだ `.recent` が無いので実害は無いが、手元の古いファイルは壊れる)。T14.55 で `.recent` の版の印を `SHPREC03` に上げて (捨てるだけ。`.rrd` とは独立) 読み戻しの単体テストを 1 本足す。
   - やること (全部 `mx` の中、他のエージェント無しで): (1) `cargo fmt --all --check` / `clippy --workspace --all-targets -- -D warnings` /
     `cargo build --release` / `cargo build --profile dist` (配布用も通ること)。(2) **`cargo test --workspace --no-fail-fast` を 5 回連続**
     (落ちたテストは名前と回数を記録し、待ち方の flake なら `wait_until` の形に直す。実装の誤りなら直さずに報告)。(3) `cargo clean --release`

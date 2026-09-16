@@ -929,6 +929,7 @@ mod tests {
                     rtt_us: [u32::MAX; SIDES],
                     retrans: [u32::MAX; SIDES],
                     syn_retrans: u8::MAX,
+                    stall_ms: [u32::MAX; SIDES],
                 },
                 u32::MAX,
             );
