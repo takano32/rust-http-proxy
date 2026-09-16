@@ -270,10 +270,21 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   それ以外はこのプロキシ経由 (落ちていれば DIRECT)。ブラウザに `http://<host>:<port>/proxy.pac` を設定するだけ
 - **ヘルスチェック & メトリクス & 操作**:
   - `/` (エンドポイントの一覧。ブラウザでプロキシの URL を開いた人への案内。`--lite` でも出ます)
+  - `/config` (**効いている設定とその出どころ**。下記「環境変数」の節)
   - `/dashboard` (ブラウザ用のコントロールパネル: 要求/転送レート・命中率・**CONNECT 確立 p50 / p95**・
     **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
     **最近のエラー (直近 20)** と **いまの接続 (上位 50)** の表 (どちらも 5 秒ごと)、
     URL の照会と削除、全消去)、`/healthz`, `/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
+  - **`capabilities` (この環境で何が読めるか)**: `/status` と `/config` の `capabilities` に
+    `{"proc_syscall":true,"tcp_info":true,"cgroup_cpu":true,"cgroup_pressure":true,"ipv6_route":true,"resolver_ms":9,"home_writable":true,"checked_at":1758...}`。
+    統計の `null` が「無かった」のか「読めなかった」のかを先に答えるためのもので、
+    `proc_syscall` は `/proc/self/task/<tid>/syscall` (スレッドの状態)、`tcp_info` は待ち受けソケットへの
+    `getsockopt(SOL_TCP, TCP_INFO)` (カーネルの RTT と再送)、`cgroup_cpu` / `cgroup_pressure` は自分の cgroup の
+    `cpu.stat` / `cpu.pressure` (CPU の絞りと PSI)、`ipv6_route` は `/proc/net/ipv6_route` の既定経路、
+    `resolver_ms` は `example.com` を 1 回引くのにかかった ms (締め切り 2 秒、失敗は `null`)、
+    `home_writable` は `$HOME` に書けるか (状態ファイルの置き場) を見ます。
+    **判定は起動時 1 回と 1 時間ごと**で (`.env` の監視スレッドのついで。要求の経路では何もしません)、
+    `checked_at` がその時刻です。Linux 以外では `/proc` も cgroup も無いので `false` になります
   - **個票 (集計では読めない「誰が・いつ・なぜ」。T13.4)**: `/errors?n=100` で直近のエラー
     (時刻・`connect` / `forward`・宛先・原因・名前解決 ms・接続 ms・返した状態コード・接続元。500 件の環状、プロセスのメモリだけ)。
     **403 で拒否した要求もここに入ります** (原因は `acl` / `blocklist` / `connect_port` / `local`、状態コード 403)。
@@ -364,11 +375,41 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       --no-cache       キャッシュを止める    (PROXY_CACHE_ENABLED=off)
       --quiet          警告以上だけ出す      (PROXY_LOG_LEVEL=warn)
       --lite           最速の素通しプロファイル (PROXY_PROFILE=lite)
+      --check          起動せずに環境と効く設定を出して終了 (下記)
   -h, --help           使い方を出して終了 (終了コード 0)
   -V, --version        版を出して終了
 ```
 
 `--port=3128` の形式も使えます。知らない引数は使い方を出して終了コード 2 になります。
+
+`--check` は**起動せずに**「この環境で何が読めるか」(`capabilities` の 7 項目) と
+「この設定で起動したら何が効くか」(`/config` と同じ全 `PROXY_*` / `SERVER_*` と出どころ) を印字して終わります。
+Pterodactyl のように触れないコンテナで、**起動前の確認**と**統計の `null` の理由の切り分け**に使えます
+(他の引数も一緒に効くので `--check -p 3128 --lite` のように「その設定なら何が効くか」も見られます)。
+終了コードは `capabilities` の 6 項目 (`resolver_ms` を除く) が全部読めれば **0**、1 つでも読めなければ **1** です
+(名前解決を外すのは、リゾルバが遅い環境でもプロキシとしては動く — そしてそれ自体が測りたい数字 — ため)。
+
+```
+$ rust-http-proxy --check
+rust-http-proxy 0.1.0+28f9064 --check
+settings file: /home/container/.env (3 variables)
+
+capabilities (what this environment lets the proxy read):
+  [ok] proc_syscall     /proc/self/task/<tid>/syscall (per-thread state)
+  [ok] tcp_info         getsockopt(SOL_TCP, TCP_INFO) (kernel RTT and retransmits)
+  [ok] cgroup_cpu       cgroup cpu.stat (CPU throttling)
+  [ok] cgroup_pressure  cgroup cpu.pressure (PSI: waiting for the CPU)
+  [ok] ipv6_route       a default route in /proc/net/ipv6_route
+  [ok] home_writable    $HOME is writable (statistics file, blocklist)
+  [ok] resolver_ms      9 ms for one lookup (not part of the exit code)
+
+settings (source, name, effective value):
+  default   SERVER_PORT                    8080
+  env_file  PROXY_DNS_TTL_SECS             30
+  ...
+
+check: ok (everything this proxy reads is readable)
+```
 
 `-V` が出す版は `0.1.0+144b992` のように **`Cargo.toml` の版 + ビルドしたときの git の短いハッシュ**です
 (作業ツリーに未コミットの変更があれば `0.1.0+144b992-dirty`)。`git` や `.git` の無いところでビルドすると
@@ -463,6 +504,17 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 オリジンプール・キャッシュ予算 (`SERVER_MEMORY` / `SERVER_DISK` / `PROXY_CACHE_*`) は起動時に固定なので、変更を検知すると
 `/status` の `settings.restart_required` と `/dashboard` の帯に「再起動が必要」と出ます。解釈できない値を書いた場合は
 前の設定を維持し、`settings.error` にメッセージが入ります。
+
+**いま何が効いているかは `/config` で 1 枚に出ます** (JSON)。全 `PROXY_*` / `SERVER_*` について
+`{"PROXY_DNS_TTL_SECS":{"value":30,"source":"env_file"}, ...}` の形で、`value` は**いま効いている値**、
+`source` はそれが来た層 (`default` = このコードの既定 / `env` = 実際の環境変数 / `env_file` = `$HOME/.env` /
+`cli` = コマンドライン引数) です。**書いたのに読めない書き方だった行は `default` のまま**出るので、
+「`.env` に書いたのに効かない」がその場で分かります (再起動が要る項目は値が古いままなので、
+同じ応答の `reload.restart_required` を見てください)。別名のあるキー (`SERVER_DISK` は
+`PROXY_DISK_QUOTA_MB` の別名) は、実際に効いた方にだけ `source` が付きます。
+一覧の値 (`PROXY_PAC_DIRECT` など) は 1 KiB で切って `"+N more"` を付けます (全部見たいときは `.env` を読む)。
+同じ応答に `capabilities` (上記) と `.env` の監視の状態も入るので、**データを取るときは `/config` を 1 枚
+一緒に保存しておけば「そのときの設定」が後から読めます**。応答は 64 KiB 以下です。
 
 `PROXY_CACHE_DIR` を指定しない場合は、書き込める最初の候補を使います:
 `$XDG_CACHE_HOME/rust-http-proxy` (または `~/.cache/rust-http-proxy`) → `/var/cache/rust-http-proxy` → `$TMPDIR/rust-http-proxy-cache`。
