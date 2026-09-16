@@ -4142,7 +4142,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     同じ種類は **収まるまで 1 回だけ** (5 分連続で条件を外れたら解除の出来事)。出来事には数字 (何が・いくつ・基準値) を入れる。
   - 受け入れ基準: 単体テストで標本列を流し込んで 5 種それぞれが 1 回だけ立ち、解除が出る。デプロイ先 (再デプロイ後): T14.0 の
     2026-09-11 17〜23 時のようなバーストが来たら `/events` (または `/anomalies`) に (1) (3) (4) が並ぶこと (親が見る)。費用 0 (history スレッドだけ)。
-- [ ] **T14.24 `/history` のサーバー側の要約 (`?since=&until=&summary=1`、`since=restart`)**
+- [x] **T14.24 `/history` のサーバー側の要約 (`?since=&until=&summary=1`、`since=restart`)**
   - 目的: T14.0 と T14.17 は `/history` を丸ごと取って手元で切って集計している (284 KB を取って 5 行を得る)。サーバーが「この期間の
     p50 / p95 / ミス率 / エラー / 山」を返せば、調査ページの「起動から」「前のデプロイと比べる」が 1 要求で済む。
   - 変更箇所: `crates/metrics/src/history.rs` (期間を切って畳む関数 = T12.4 (3) の畳み方の再利用)、`crates/endpoints` (`/history` の引数)、
@@ -4152,6 +4152,30 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     除く (T14.0 の「平常時」の定義)。標本そのものは返さない。
   - 受け入れ基準: 単体テストで既知の標本列 (T14.0 の表と同じ数字になる架空の列) から p50 / p95 が手計算と一致。`since=restart` が
     `since_start_secs` と合う。応答 4 KiB 以下。費用 0。
+  - 結果 (2026-09-16、`b7eb8f4`): `/history?since=<epoch>|restart&until=<epoch>&summary=1` で**期間を畳んだ 1 行だけ**を返すようにした
+    (標本は返さない。応答 **517〜645 B**、上限 4 KiB。同じ期間の `/history?res=5` は手元で 3,145 B、デプロイ先では 284 KB)。
+    畳むのは `crates/metrics/src/history.rs` の末尾に足した **`mod summary`** (`Params` / `Summary` / `of()`。標本を読むのはここだけ) で、
+    **`scripts/snapshot-diff.py` の `aggregate()` と同じ求め方**: 区間の値 (12 段のヒストグラム・エラー・名前解決) は期間ぶん足し合わせ、
+    ゲージの山は最大値、分位点は足し合わせたヒストグラムを `Window::quantile_ms` で補間する。返すのは `from` / `to` / `interval_secs` /
+    `first_t` / `last_t` / `samples` / `burst_samples` / `normal_hours_only` / `connects` / `p50_ms` / `p95_ms` / `avg_ms` / `max_ms` /
+    forward の 5 つ / `dns_misses` / `dns_miss_per_connect` / `dns_miss_avg_ms` / `errors` / `errors_by_cause` / `causes` / `active_max`。
+    `normal_hours_only=1` で **1 時間 300 本以上の標本を外し** (T14.0 の「平常時」。外した数は `burst_samples`)、解像度は `?res=` が
+    無ければ**期間の長さ**で選ぶ (1 時間 → 5 秒、1 日 → 60 秒、それ以上 → 3,600 秒)。`since=restart` は `now − since_start_secs`。
+    **`/history` の他の応答は 1 バイトも変えていない**し、要求の経路は触らない (費用 0)。
+    受け入れ基準は全部満たした: 単体テストで架空の 4,000 本 ([2,5] 1,670・[5,10] 500・[25,50] 1,323・[50,100] 500・[100,250] 7) から
+    **p50 8.3 / p95 80.7 ms が手計算 (5 + 5 × 330/500、50 + 50 × 307/500) と一致**し、0.55 回/接続・ミス 1 回 11.5 ms も出る。
+    バーストの時間帯 (1 時間 350〜400 本) を外すとエラー 99 → 0・山 218 → 8 で T14.0 の表の形になる (外さないと p50 が 29.3 や 273.0 に化ける)。
+    結合テストで `since=restart` の `to − from` が `/status` の `since_start_secs` と ±2 秒で一致し、再起動前の標本が外れる。
+    **手元の実物で突き合わせた**: CONNECT 12 本 + forward 8 本を流し、`/history?res=5` を `snapshot-diff.py` と同じ手順で集計した値と
+    `?summary=1` の値が **10 項目すべて一致**。`scripts/snapshot-diff.py` には `--summary SRC` (ファイルか `http://` の URL) と
+    「同じ数字は 1 要求で取れる」URL の案内を足した (手元の集計はそのまま残す)。テストは単体 5 (proxy-metrics) + 1 (proxy-endpoints) +
+    結合 2 (`tests/history_summary_test.rs`) + Python 5 (40 → 45 本)。
+    - **5 秒の窓で `normal_hours_only=1` を付けると閾が 1 本**になり (300 × 5 ÷ 3,600 の四捨五入。`snapshot-diff.py` と同じ式)、
+      確立のあった標本が全部外れる。平常時を見るのは 60 秒 (閾 5) か 1 時間 (閾 300) の窓 — README に書いた。
+    - ms は小数 1 桁、ミス/接続は 3 桁で返す (`/daily` と同じ)。手元の集計は丸めないので、突き合わせは 1 桁で見ること。
+    - `/snapshot` には足していない (17 本の URL の形は変えない)。`collect-deployed.sh` も要約を保存しない (再デプロイ後に親が
+      `snapshot-diff.py --summary http://PROXY/history?...` で 1 回見る)。ダッシュボードはまだ使っていない (T14.8 の調査ページの候補)。
+      T14.31 (正確な分位点) を入れるときはこの `Summary::to_json` に足す。
 - [ ] **T14.25 転送速度の分布と半閉じの統計 (T14.6 の窓に足す)**
   - 目的: 「遅い」には確立が遅いのと転送が遅いのがある。`/recent` の寿命とバイトから 1 本ごとの速さは割れるが、分布 (どの程度の
     トンネルが 100 KiB/s 未満か) は無い。あわせて、トンネルが片側だけ閉じた (半閉じ) あと反対側が閉じるまでの時間の分布は、
