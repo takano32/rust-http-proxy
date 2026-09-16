@@ -161,3 +161,106 @@ fn test_integration_capabilities_appear_in_status() {
     drop(_child);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `"KEY":{"value":V,"source":"S"}` から (V, S) を取る。
+fn setting(json: &str, key: &str) -> (String, String) {
+    let pat = format!("\"{}\":{{\"value\":", key);
+    let at = json
+        .find(&pat)
+        .unwrap_or_else(|| panic!("{} が無い: {}", key, json))
+        + pat.len();
+    let rest = &json[at..];
+    let end = rest.find(",\"source\":").expect("source");
+    let value = rest[..end].to_string();
+    let src = rest[end + ",\"source\":\"".len()..]
+        .split('"')
+        .next()
+        .expect("source value")
+        .to_string();
+    (value, src)
+}
+
+/// `/config` が**効いている値とその出どころ**を出し、再読込で両方が追随すること (T14.15)。
+#[test]
+fn test_integration_config_shows_effective_values_and_their_source() {
+    let env_file = |ttl: Option<u32>| {
+        let mut text = String::from("SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\n");
+        if let Some(ttl) = ttl {
+            text.push_str(&format!("PROXY_DNS_TTL_SECS={}\n", ttl));
+        }
+        text
+    };
+    // `.env` に 1 つ、実際の環境変数に 1 つ、残りは既定のまま
+    let (_child, port, dir) = start_proxy(
+        "config",
+        &env_file(Some(30)),
+        &[("PROXY_KEEPALIVE_SECS", "7")],
+    );
+
+    let json = endpoint_json(port, "/config");
+    assert_eq!(
+        setting(&json, "PROXY_DNS_TTL_SECS"),
+        ("30".to_string(), "env_file".to_string()),
+        "`.env` に書いた行: {}",
+        json
+    );
+    assert_eq!(
+        setting(&json, "PROXY_KEEPALIVE_SECS"),
+        ("7".to_string(), "env".to_string()),
+        "環境変数で渡した行: {}",
+        json
+    );
+    assert_eq!(
+        setting(&json, "PROXY_TIMEOUT_SECS"),
+        ("30".to_string(), "default".to_string()),
+        "書いていない行: {}",
+        json
+    );
+    // `.env` 自身の場所と、この環境で何が読めるかも同じ 1 枚に出る
+    assert!(
+        json.contains(&dir.join(".env").display().to_string()),
+        "{}",
+        json
+    );
+    assert!(json.contains("\"capabilities\":{"), "{}", json);
+    assert!(json.contains("\"truncated\":false"), "{}", json);
+    // 秘密は無い (証明書はパスだけ、鍵の類の設定はそもそも無い)
+    assert_eq!(
+        setting(&json, "PROXY_TLS_CA_FILE"),
+        ("null".to_string(), "default".to_string())
+    );
+
+    // `.env` を書き換えると値も出どころも追随する
+    std::fs::write(dir.join(".env"), env_file(Some(45))).unwrap();
+    wait_until(
+        || setting(&endpoint_json(port, "/config"), "PROXY_DNS_TTL_SECS").0 == "45",
+        ".env の書き換えが /config に出る",
+    );
+    assert_eq!(
+        setting(&endpoint_json(port, "/config"), "PROXY_DNS_TTL_SECS"),
+        ("45".to_string(), "env_file".to_string())
+    );
+
+    // 消すと既定に戻り、出どころも `default` に戻る
+    std::fs::write(dir.join(".env"), env_file(None)).unwrap();
+    wait_until(
+        || setting(&endpoint_json(port, "/config"), "PROXY_DNS_TTL_SECS").0 == "60",
+        ".env から消すと既定に戻る",
+    );
+    assert_eq!(
+        setting(&endpoint_json(port, "/config"), "PROXY_DNS_TTL_SECS"),
+        ("60".to_string(), "default".to_string())
+    );
+    // 環境変数の行は `.env` の書き換えでは動かない
+    assert_eq!(
+        setting(&endpoint_json(port, "/config"), "PROXY_KEEPALIVE_SECS"),
+        ("7".to_string(), "env".to_string())
+    );
+
+    // `/` の案内にも出ている (ブラウザで開いた人が辿れること)
+    let listing = endpoint_json(port, "/");
+    assert!(listing.contains("/config"), "{}", listing);
+
+    drop(_child);
+    let _ = std::fs::remove_dir_all(&dir);
+}

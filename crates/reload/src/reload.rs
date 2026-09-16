@@ -98,42 +98,55 @@ impl Live {
         let old = self.config();
         let mut next = (*old).clone();
         let mut applied = Vec::new();
+        // 当てた値は**出どころも差し替える** (`/config` の `source` が追随する。T14.15)。
+        // 起動時に固定される項目 (下の `restart` の側) は写さない: `.env` に書いても
+        // 効いていないので、起動時の出どころのままにしておく
         if fresh.acl != old.acl {
             next.acl = fresh.acl.clone();
+            next.sources.adopt(&fresh.sources, "PROXY_ALLOW_HOSTS");
+            next.sources.adopt(&fresh.sources, "PROXY_DENY_HOSTS");
             applied.push("PROXY_ALLOW_HOSTS/PROXY_DENY_HOSTS");
         }
         if fresh.timeout != old.timeout {
             next.timeout = fresh.timeout;
+            next.sources.adopt(&fresh.sources, "PROXY_TIMEOUT_SECS");
             applied.push("PROXY_TIMEOUT_SECS");
         }
         if fresh.keepalive != old.keepalive {
             next.keepalive = fresh.keepalive;
+            next.sources.adopt(&fresh.sources, "PROXY_KEEPALIVE_SECS");
             applied.push("PROXY_KEEPALIVE_SECS");
         }
         if fresh.connect_ports != old.connect_ports {
             next.connect_ports = fresh.connect_ports.clone();
+            next.sources.adopt(&fresh.sources, "PROXY_CONNECT_PORTS");
             applied.push("PROXY_CONNECT_PORTS");
         }
         if fresh.allow_local != old.allow_local {
             next.allow_local = fresh.allow_local;
+            next.sources.adopt(&fresh.sources, "PROXY_ALLOW_LOCAL");
             applied.push("PROXY_ALLOW_LOCAL");
         }
         if fresh.tunnel_idle != old.tunnel_idle {
             next.tunnel_idle = fresh.tunnel_idle;
+            next.sources.adopt(&fresh.sources, "PROXY_TUNNEL_IDLE_SECS");
             applied.push("PROXY_TUNNEL_IDLE_SECS");
         }
         if fresh.max_conns != old.max_conns {
             next.max_conns = fresh.max_conns;
+            next.sources.adopt(&fresh.sources, "PROXY_MAX_CONNS");
             applied.push("PROXY_MAX_CONNS");
         }
         // `auto` は `PROXY_MAX_CONNS` から決まるので、そちらが変わるとこの値も変わる
         // (当てるのは `serve` が接続ごとに `Workers::set_limit` で。T11.6)
         if fresh.max_threads != old.max_threads {
             next.max_threads = fresh.max_threads;
+            next.sources.adopt(&fresh.sources, "PROXY_MAX_THREADS");
             applied.push("PROXY_MAX_THREADS");
         }
         if fresh.dns_ttl != old.dns_ttl {
             next.dns_ttl = fresh.dns_ttl;
+            next.sources.adopt(&fresh.sources, "PROXY_DNS_TTL_SECS");
             crate::dns::set_ttl(fresh.dns_ttl);
             crate::dns::clear();
             applied.push("PROXY_DNS_TTL_SECS");
@@ -142,6 +155,8 @@ impl Live {
         // 新しい長さと比べられるので、0 にすればその場で効かなくなる)
         if fresh.dns_negative != old.dns_negative {
             next.dns_negative = fresh.dns_negative;
+            next.sources
+                .adopt(&fresh.sources, "PROXY_DNS_NEGATIVE_SECS");
             crate::dns::set_negative_ttl(fresh.dns_negative);
             applied.push("PROXY_DNS_NEGATIVE_SECS");
         }
@@ -149,11 +164,13 @@ impl Live {
         // 待ち行列をその場で空にする (`set_warm_window` の中。T14.1)
         if fresh.dns_warm != old.dns_warm {
             next.dns_warm = fresh.dns_warm;
+            next.sources.adopt(&fresh.sources, "PROXY_DNS_WARM_SECS");
             crate::dns::set_warm_window(fresh.dns_warm);
             applied.push("PROXY_DNS_WARM_SECS");
         }
         if fresh.pac_direct != old.pac_direct {
             next.pac_direct = fresh.pac_direct.clone();
+            next.sources.adopt(&fresh.sources, "PROXY_PAC_DIRECT");
             applied.push("PROXY_PAC_DIRECT");
         }
         let bl = crate::blocklist::Sources::from_config(&fresh);
@@ -162,6 +179,14 @@ impl Live {
             next.blocklist_url = fresh.blocklist_url.clone();
             next.blocklist_refresh = fresh.blocklist_refresh;
             next.blocklist_exempt = fresh.blocklist_exempt.clone();
+            for key in [
+                "PROXY_BLOCKLIST_FILE",
+                "PROXY_BLOCKLIST_URL",
+                "PROXY_BLOCKLIST_REFRESH_SECS",
+                "PROXY_BLOCKLIST_EXEMPT",
+            ] {
+                next.sources.adopt(&fresh.sources, key);
+            }
             crate::blocklist::configure(bl);
             applied.push("PROXY_BLOCKLIST_*");
         }
@@ -170,6 +195,7 @@ impl Live {
             .unwrap_or(log::Level::Info);
         if level != log::current_level() {
             log::set_level(level);
+            next.sources.adopt(&fresh.sources, "PROXY_LOG_LEVEL");
             applied.push("PROXY_LOG_LEVEL");
         }
         *self.current.write_locked() = Arc::new(next);

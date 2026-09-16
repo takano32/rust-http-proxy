@@ -192,6 +192,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   それ以外はこのプロキシ経由 (落ちていれば DIRECT)。ブラウザに `http://<host>:<port>/proxy.pac` を設定するだけ
 - **ヘルスチェック & メトリクス & 操作**:
   - `/` (エンドポイントの一覧。ブラウザでプロキシの URL を開いた人への案内。`--lite` でも出ます)
+  - `/config` (**効いている設定とその出どころ**。下記「環境変数」の節)
   - `/dashboard` (ブラウザ用のコントロールパネル: 要求/転送レート・命中率・**CONNECT 確立 p50 / p95**・
     **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
     **最近のエラー (直近 20)** と **いまの接続 (上位 50)** の表 (どちらも 5 秒ごと)、
@@ -348,6 +349,17 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 オリジンプール・キャッシュ予算 (`SERVER_MEMORY` / `SERVER_DISK` / `PROXY_CACHE_*`) は起動時に固定なので、変更を検知すると
 `/status` の `settings.restart_required` と `/dashboard` の帯に「再起動が必要」と出ます。解釈できない値を書いた場合は
 前の設定を維持し、`settings.error` にメッセージが入ります。
+
+**いま何が効いているかは `/config` で 1 枚に出ます** (JSON)。全 `PROXY_*` / `SERVER_*` について
+`{"PROXY_DNS_TTL_SECS":{"value":30,"source":"env_file"}, ...}` の形で、`value` は**いま効いている値**、
+`source` はそれが来た層 (`default` = このコードの既定 / `env` = 実際の環境変数 / `env_file` = `$HOME/.env` /
+`cli` = コマンドライン引数) です。**書いたのに読めない書き方だった行は `default` のまま**出るので、
+「`.env` に書いたのに効かない」がその場で分かります (再起動が要る項目は値が古いままなので、
+同じ応答の `reload.restart_required` を見てください)。別名のあるキー (`SERVER_DISK` は
+`PROXY_DISK_QUOTA_MB` の別名) は、実際に効いた方にだけ `source` が付きます。
+一覧の値 (`PROXY_PAC_DIRECT` など) は 1 KiB で切って `"+N more"` を付けます (全部見たいときは `.env` を読む)。
+同じ応答に `capabilities` (上記) と `.env` の監視の状態も入るので、**データを取るときは `/config` を 1 枚
+一緒に保存しておけば「そのときの設定」が後から読めます**。応答は 64 KiB 以下です。
 
 `PROXY_CACHE_DIR` を指定しない場合は、書き込める最初の候補を使います:
 `$XDG_CACHE_HOME/rust-http-proxy` (または `~/.cache/rust-http-proxy`) → `/var/cache/rust-http-proxy` → `$TMPDIR/rust-http-proxy-cache`。
