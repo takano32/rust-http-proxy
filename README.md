@@ -91,7 +91,8 @@ scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と�
 `$HOME/.rust-http-proxy/snapshots/<日付>.json` に書いているので (既定 30 日ぶん。下記
 `PROXY_SNAPSHOT_DAYS` と `/snapshots`)、`--from-server` を付けると **`/snapshots` の一覧のうち
 手元に無い日付だけ**を取り寄せて `DIR/<日付>T000000Z-snapshot.json` に置きます
-(中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` もそのまま読めます)。
+(中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` も
+`weekly-report.py` もそのまま読めます)。
 
 保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
 
@@ -115,6 +116,29 @@ scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z 
 `collect-deployed.sh` は前回の雪像を見つけるとこれを呼び、**要約のいちばん最後に判定表**を置きます
 (`CRITERIA=off` で止められます)。道具の単体テストは `python3 -m unittest discover -s scripts`
 (架空の雪像 `scripts/testdata/snapshot-a.json` / `snapshot-b.json` と、下の匿名化した実データで回ります)。
+
+**1 週間ぶんをまとめて読むのは `scripts/weekly-report.py`** (T14.40)。`snapshot-diff.py` が
+「2 枚の間に何が変わったか」を見るのに対して、こちらは**溜まった雪像を日で切って 1 週間を 1 枚**にします。
+入力は雪像の置き場 (`~/rust-http-proxy-status/`) でも、`*-snapshot.json` を並べても、
+`/daily` (T14.20) の JSON でも、`$HOME/.rust-http-proxy.daily.jsonl` そのものでも構いません
+(混ぜてよい。**7 日ぶん無ければあるぶんで**出して、何枚・何日ぶんだったかを頭に書きます)。
+出るのは表 8 つ — **要求数 / CONNECT 確立 p50・p95 / 名前解決のミス率 / エラー (原因別) / 山 /
+接続元の出入り / 遅かったホスト上位 / 新しく見たホスト**:
+
+```bash
+scripts/weekly-report.py ~/rust-http-proxy-status/ -o week.md    # 置き場ごと渡す
+scripts/weekly-report.py ~/rust-http-proxy-status/*-snapshot.json --days 7 --top 10
+curl -s 'http://PROXY/daily?n=7' > daily.json && scripts/weekly-report.py daily.json
+```
+
+**数字の求め方は `snapshot-diff.py` と同じ**です: `/history?res=3600` を **UTC の日で切って**
+同じ `aggregate()` に通すので、同じ期間を切れば同じ値が出ます (分位点の補間は
+`crates/metrics/src/history.rs` の `quantile_ms`、「平常時」= 1 時間 300 本未満の標本を使うのも同じ)。
+日ごとの表には出どころ (`/history?res=3600` か `/daily`) が入ります。
+`/hosts` と `/clients` は `.rrd` の通算なので**いちばん古い雪像といちばん新しい雪像の差**で読み、
+雪像が 1 枚しか無いときは「引き算できない」と断って通算のまま並べます。
+「山」は `/bursts` (T14.6) があれば写真の枚数と最大、無ければ `/history` の `active_max` で代えます。
+出力は「デプロイ先の現在地」を締める文書と、次の Phase の入力にするためのものです。
 
 **実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T14.35)。雪像には
 個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.example`)・
@@ -685,13 +709,15 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     ファイルは**追記のみ**で上限 **2 MiB** (越えたら古い行から捨てる = 約 11 年ぶん)、
     起動時に最後の行の日付を見るので**同じ日に 2 回起動しても 1 行のまま**です。
     `PROXY_STATS_PERSIST=off` では 1 行も書きません (`/daily` の `path` が `null`)。
-    応答は他の個票と同じく 256 KiB 以下 (切ったら `truncated`)
+    応答は他の個票と同じく 256 KiB 以下 (切ったら `truncated`)。
+    この応答をそのまま `scripts/weekly-report.py` に渡せば、雪像が無くても週次の表が出ます
   - **日次の snapshot (30 日ぶん。T14.34)**: `/snapshots` は
     `$HOME/.rust-http-proxy/snapshots/` に残してある日付と大きさ (`files[]` の `date` / `bytes` /
     `t` (書いた時刻)、**古い順**) と、置き場所 (`dir`)・残す日数 (`days`)・1 ファイルの上限
     (`max_bytes` = 4 MiB) を返します。`/snapshots/<YYYY-MM-DD>` はその日のファイルを
     **そのまま** (`/snapshot` の応答そのもの) 返すので、`scripts/snapshot-diff.py` や
-    `scripts/status-diff.py` にそのまま渡せます (置いていない日と日付として読めない名前は 404)。
+    `scripts/status-diff.py`、1 週間ぶんを 1 枚にする `scripts/weekly-report.py` に
+    そのまま渡せます (置いていない日と日付として読めない名前は 404)。
     **書くのは履歴スレッドが UTC の日付をまたいだ瞬間の 1 回だけ**で (要求の経路の費用は 0)、
     名前は**終わった日** (前日) の日付です。`PROXY_SNAPSHOT_DAYS` で日数を変えられ、`0` で止まります。
     `PROXY_STATS_PERSIST=off` (と `--lite`) では 1 ファイルも書きません (`dir` が `null`)。
