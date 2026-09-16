@@ -4,16 +4,23 @@
 /// 引数なしなら一覧の状態と上書きの一覧。
 pub(super) fn handle(params: &[(String, String)]) -> (u16, &'static str, String) {
     use crate::blocklist;
+    use crate::metrics::{SCHEMA_HEAD, with_schema};
     let get = |k: &str| params.iter().find(|(x, _)| x == k).map(|(_, v)| v.as_str());
     let Some(host) = get("host").map(str::trim).filter(|h| !h.is_empty()) else {
-        return (200, "application/json", blocklist::status_json());
+        // `status_json()` は `/status` の `blocklist` の入れ子でもある。ここは応答
+        // そのものなので先頭に版を足す (T14.49)
+        return (
+            200,
+            "application/json",
+            with_schema(&blocklist::status_json()),
+        );
     };
     let host = crate::net::split_host_port(host).0.to_ascii_lowercase();
     if host.is_empty() || !host.contains('.') {
         return (
             400,
             "application/json",
-            "{\"error\":\"host must be a domain name\"}".to_string(),
+            format!("{}\"error\":\"host must be a domain name\"}}", SCHEMA_HEAD),
         );
     }
     let ttl = get("ttl_secs")
@@ -30,7 +37,10 @@ pub(super) fn handle(params: &[(String, String)]) -> (u16, &'static str, String)
             return (
                 400,
                 "application/json",
-                "{\"error\":\"action must be block, allow or clear\"}".to_string(),
+                format!(
+                    "{}\"error\":\"action must be block, allow or clear\"}}",
+                    SCHEMA_HEAD
+                ),
             );
         }
     };
@@ -39,7 +49,8 @@ pub(super) fn handle(params: &[(String, String)]) -> (u16, &'static str, String)
         200,
         "application/json",
         format!(
-            "{{\"host\":\"{}\",\"blocked\":{},\"verdict\":\"{}\",\"action\":{},\"overrides\":[{}]}}",
+            "{}\"host\":\"{}\",\"blocked\":{},\"verdict\":\"{}\",\"action\":{},\"overrides\":[{}]}}",
+            SCHEMA_HEAD,
             crate::json::escape(&host),
             v.blocked(),
             v.as_str(),

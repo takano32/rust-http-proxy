@@ -162,6 +162,8 @@ fn start_test_proxy_parts(
 
     // `--lite` では `/connections` に登録しない (本番の main.rs と同じ配線。T13.4)
     metrics.conns.set_enabled(!cfg.lite);
+    // CONNECT の最初のバイトから SNI を覗くか (本番の main.rs と同じ配線。T14.38)
+    rust_http_proxy::sni::set_peek(cfg.peek_sni);
     // 上限は設定から (テストでは既定のまま = コア数から決まる値)
     let workers = Arc::new(rust_http_proxy::workers::Workers::new(cfg.max_threads));
     // park_idle が立っている設定なら、アイドル接続を預ける監視スレッドも起こす

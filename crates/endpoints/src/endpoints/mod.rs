@@ -220,7 +220,10 @@ pub fn handle(
         (
             405,
             "application/json",
-            "{\"error\":\"read-only (PROXY_ENDPOINTS_READONLY=on)\"}".to_string(),
+            format!(
+                "{}\"error\":\"read-only (PROXY_ENDPOINTS_READONLY=on)\"}}",
+                metrics::SCHEMA_HEAD
+            ),
         )
     } else if is_purge {
         purge_url(ep, target)
@@ -351,7 +354,7 @@ pub fn handle(
             (
                 200,
                 "application/json",
-                format!("{{\"purged\":{},\"all\":true}}", n),
+                format!("{}\"purged\":{},\"all\":true}}", metrics::SCHEMA_HEAD, n),
             )
         } else if let Some((_, url)) = params.iter().find(|(k, _)| k == "url") {
             purge_url(ep, url)
@@ -359,7 +362,10 @@ pub fn handle(
             (
                 400,
                 "application/json",
-                "{\"error\":\"use /purge?url=<url> or /purge?all=1\"}".to_string(),
+                format!(
+                    "{}\"error\":\"use /purge?url=<url> or /purge?all=1\"}}",
+                    metrics::SCHEMA_HEAD
+                ),
             )
         }
     } else if is_get && path == "/lookup" {
@@ -369,7 +375,10 @@ pub fn handle(
             None => (
                 400,
                 "application/json",
-                "{\"error\":\"use /lookup?url=<url>\"}".to_string(),
+                format!(
+                    "{}\"error\":\"use /lookup?url=<url>\"}}",
+                    metrics::SCHEMA_HEAD
+                ),
             ),
         }
     } else if is_get && (path == "/" || path.is_empty()) {
@@ -513,7 +522,8 @@ fn purge_url(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
                 200,
                 "application/json",
                 format!(
-                    "{{\"purged\":{},\"url\":\"{}\"}}",
+                    "{}\"purged\":{},\"url\":\"{}\"}}",
+                    metrics::SCHEMA_HEAD,
                     n,
                     crate::json::escape(&canonical)
                 ),
@@ -522,7 +532,11 @@ fn purge_url(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
         Err(e) => (
             400,
             "application/json",
-            format!("{{\"error\":\"{}\"}}", crate::json::escape(&e.to_string())),
+            format!(
+                "{}\"error\":\"{}\"}}",
+                metrics::SCHEMA_HEAD,
+                crate::json::escape(&e.to_string())
+            ),
         ),
     }
 }
@@ -533,7 +547,7 @@ fn lookup(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
         return (
             400,
             "application/json",
-            "{\"error\":\"invalid url\"}".to_string(),
+            format!("{}\"error\":\"invalid url\"}}", metrics::SCHEMA_HEAD),
         );
     };
     let canonical = origin.url();
@@ -545,7 +559,8 @@ fn lookup(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
                 200,
                 "application/json",
                 format!(
-                    "{{\"found\":true,\"url\":\"{}\",\"memory\":{},\"disk\":{},\"size\":{},\"stored_at\":{},\"expires_at\":{},\"fresh\":{},\"ttl_left\":{},\"validators\":{}}}",
+                    "{}\"found\":true,\"url\":\"{}\",\"memory\":{},\"disk\":{},\"size\":{},\"stored_at\":{},\"expires_at\":{},\"fresh\":{},\"ttl_left\":{},\"validators\":{}}}",
+                    metrics::SCHEMA_HEAD,
                     crate::json::escape(&canonical),
                     info.memory,
                     info.disk,
@@ -562,7 +577,8 @@ fn lookup(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
             404,
             "application/json",
             format!(
-                "{{\"found\":false,\"url\":\"{}\"}}",
+                "{}\"found\":false,\"url\":\"{}\"}}",
+                metrics::SCHEMA_HEAD,
                 crate::json::escape(&canonical)
             ),
         ),

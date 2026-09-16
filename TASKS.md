@@ -4606,7 +4606,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     - 小物: `PROXY_CANARY` と `PROXY_CANARY_SECS` が `Config::settings()` に載っていない (T14.10 の取りこぼし。`/config` と
       `--check` に出ず、`reload` の出来事も前後の値を出せない。`config.rs` を触る次のタスクで 2 行)。`PROXY_CANARY` を手で
       8 宛先並べると 1 周の最悪が 80 秒 > 周期 60 秒 (`auto` の 1 宛先なら問題ない。並べるなら `PROXY_CANARY_SECS` を延ばすか `off`)。
-- [ ] **T14.38 CONNECT の最初のバイトから SNI を読む (`PROXY_PEEK_SNI`、既定 `on`)**
+- [x] **T14.38 CONNECT の最初のバイトから SNI を読む (`PROXY_PEEK_SNI`、既定 `on`)**
   - 目的: T14.7 の `literal_targets` (IP リテラル宛ての CONNECT) は「本当はどこへ行っているか」が分からない。CONNECT のあとクライアントが
     最初に送るのは TLS の ClientHello で、その中の SNI に宛先の名前がある。`200` を返したあと**最初の中継の前に 1 回だけ `recv(MSG_PEEK)`**
     すれば (バイトは消費しない。そのあとの `splice` はそのまま)、IP リテラル宛てでも名前が分かり、CONNECT のホストと SNI が違う
@@ -4624,6 +4624,10 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     ClientHello を送ると個票の `sni` に `example.test`、CONNECT のホストと違えば `sni_mismatches` +1。
     費用: **トンネル 1 本に `recv(MSG_PEEK)` 1 回** (CONNECT 1 本あたりのシステムコール +1。本文に書く)、CONNECT 確立の CPU/本 ±4% (6 組)、
     `--only tunnel` の CPU/MiB が ±ぶれの中 (中継の経路は変えない)。
+  - 結果 (2026-09-16、`94672e0`): CONNECT の最初のバイトから **SNI** を読むようにした。`200 Connection Established` を書いたあと、**最初の中継の前に 1 回だけ `recv(MSG_PEEK)` (1,024 B)** で TLS の ClientHello を覗き、`server_name` を個票 (`/recent` の `sni`) に残す。**バイトは消費しない**ので、そのあとの `splice` の経路は 1 命令も変わらない (`sys::peek` は T9.x のプール生存確認用の束縛をそのまま使った)。解析は `crates/tunnel/src/sni.rs` (新規) の 52 行 (TLS record `0x16` → handshake `0x01` → extensions → `server_name` の `host_name`)。**覗くのは 443 宛ての CONNECT だけ**で (`PROXY_PEEK_SNI=on|off|on:<port>`、既定 `on`。`on:<port>` はそのポートも 443 扱いにする試験用の口。再起動で反映)、**`--lite` は個票の枠 (`ConnSlot`) を作らないので覗かない**。壊れた record・SNI 無し・1,024 B に収まらないものは `None` で、**中継はそのまま続く**。旗は**トンネル 1 本につき `start` で 1 回**決め、中継のループでは旗を見るだけ。IP リテラル宛ての CONNECT (T14.7 の `literal_targets`) では `sni` が「本当の宛先」で、CONNECT のホストと食い違った本数は `/hosts` の `sni_mismatch` (ホスト別) と `/status` 末尾の `sni_mismatches` (合計)。どちらも**メモリだけ** (`.rrd` の余白は 4 B なので書かない = T14.22 の `series_slot` と同じ扱い)。**費用**: **CONNECT 1 本のシステムコール `recvfrom` 1.01 → 2.01 回/本 (+1.00 ちょうど、500 本の `strace -f -c`)** で他は 0 増、CONNECT 確立 CPU/本 **159.11 → 158.65 us (−0.3%、6 組)**、`--only tunnel --conc 1` の CPU/MiB **190.66 → 187.08 us (−1.9%、3 組)** でどちらもぶれの中。**`--lite` と非 443 では覗く道に入らない**ので上の 2 つは「覗かない経路が重くなっていないこと」の確認で、覗いたときの費用は**同じバイナリで `off` → `on:<port>` にした対照** (既定プロファイル、固定ポートの相手、3,000 本 × 3 組) で 343.33 → 323.33 us (駆動役のぶれ ±15% の中で**差は見えない**)。`/recent` の 1 件は `,"sni":null` で +11 B、名前つきで +9 B + 名前の長さ。個票ファイル (T14.9) の閉じた接続レコードは 276 → **344 B** (余白 232 → 164 B) で**版は上げていない** (前の版は `null` で読み戻る)。単体 7 本・結合 4 本 (`tests/sni_test.rs`。echo で返ってきたバイトが送ったものと一致 = 覗いても消費していない証拠) を新設。
+    - **ベンチでは覗く道に入らない** (`cpu-per-request.sh` は `--lite`、ベンチの CONNECT 先は ephemeral ポート)。覗いた数字が要るときは `PROXY_PEEK_SNI=on:<固定ポート>` と固定ポートの相手。
+    - **`prefix` に ClientHello が入っている接続は読めない**: CONNECT 要求と同じセグメントで ClientHello を送るクライアントでは先読みぶんが既にサーバーへ渡っていて `None` になる (中継は正常。直すなら `prefix` を先に解析する 3 行)。Chrome などの大きい ClientHello (1,700 B 前後) は `server_name` が前にあれば読める。デプロイ先の実データで当たり率を見るのは T14.99。
+    - 食い違いの定義上、**IP リテラル宛ての CONNECT は必ず 1 件数える** (domain fronting と区別できない。README に (a) IP で書いている (b) 設定違い (c) domain fronting の 3 つを並べた)。`/connections` と `/metrics` と画面には出していない。
 - [x] **T14.39 いまの転送速度 (`/connections` の各行に直近 5 秒の bytes/s)**
   - 目的: `/connections` の `bytes` は累計で、「いま誰が帯域を使っているか」が分からない。history スレッドが 5 秒ごとに各接続の `bytes`
     (T13.4 の `ConnSlot` の原子) を控えれば、差分で直近 5 秒の速さが出る。
@@ -4737,13 +4741,15 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 結果 (2026-09-16、`c94ed3f`、マージ `cd6dbd7`): **待ち受けの backlog を選べるようにした** (`PROXY_LISTEN_BACKLOG`、既定 `0` = `min(1024, /proc/sys/net/core/somaxconn)`。この機械の `somaxconn` は 4096 なので既定は 1024)。`std` の `TcpListener::bind` は `listen(fd, 128)` 固定なので、`crates/sys/src/sys.rs` に `socket` / `bind` / `listen` の束縛 (`listensock`、既存の `sockopt` と同じく **aarch64 / x86_64 だけ**) と `listen_socket(addr, backlog) -> RawFd` を足し、`crates/net/src/net.rs` の `bind_all_with` が `std` の `bind` の代わりにそれを呼んで `TcpListener::from_raw_fd` で包む。**`SO_REUSEADDR` は `std` と同じく bind の前に立て、`IPV6_V6ONLY` は触らない** (`[::]` が IPv4 も受ける今の姿は 1 バイトも変わらない)。Linux 以外と定数の分からない arch は `std` の `bind` (128) に落ちる。`.env` では即時反映しない (変えたら `restart_required` に出る)。起動ログの待ち受けの行に `backlog N`、`/config` の `settings` に実効値。**つまみはカーネルまで届いている**: `ss -ltn` の `Send-Q` が **128 → 1024** (`PROXY_LISTEN_BACKLOG=5` なら 5)。費用: `--only connect` の CPU/本 **155.88 → 152.55 us (−2.1%、6 組。±4% の中)**、待ち受けを作るのは起動時だけなので要求ごとは 0 増。テストは新規 7 本 (`tests/backlog_test.rs` 2・`proxy-net` 2・`proxy-sys` 3)。`crates/net` に `proxy-sys` の依存を足した (循環なし、外部クレート 0 のまま)。
     - **受け入れ基準の「max < 300 ms」「`listen_overflows` 0」は満たしていない。測り方の方が間違っていた** (T14.16 の数字の読み違い)。`deployed-like` の中で **待ち受けごとに `Recv-Q` の山**を撮ると、backlog 1024 のプロキシの待ち受けは **1,024 中 10** までしか溜まらず、張り付いているのは**ベンチ自身の受け皿** (`crates/bench` の `spawn_sink`、`std` の `TcpListener` = backlog 128、accept 1 スレッド) の **109 / 128** だった。`--only connect-multi` は 64 スレッドの**閉ループ**なので、プロキシ宛ての SYN は同時に 64 本しか無く **128 でも溢れない**。max ≈ 1 秒と `listen_overflows` は**プロキシ → ベンチの受け皿**の SYN 再送で、**T14.16 の `結果:` の 1,011 ms も同じもの**だった。対照実験 (backlog だけ変える): 1024 → `Recv-Q` の山 10・`listen_overflows` 278・max 1,064 ms、**5 → 山 6 (満杯)・345・2,084 ms**。つまり「小さすぎる backlog が 1〜2 秒を作る」機構自体は手元で再現でき、既定 1024 はその逆に効く。**手元のベンチでプロキシの待ち受けを溢れさせるには、(a) `spawn_sink` の backlog を上げてベンチ側の律速を外すか、(b) 閉ループではなく一斉に数百本 SYN を出す形が要る** (小物。T14.46 の `syn_retrans` が入れば「どちら側の再送か」も個票で切り分けられる)。T14.12 の「`--only connect` で `ListenOverflows` +122」も同じ可能性 (未切り分け)。
     - **デプロイ先の基準 (再デプロイ後の `kernel.last_5m.listen_overflows` が 0 のまま) は親が見る。**
-- [ ] **T14.48 http の宛先にポートを付ける (`/connections` と `/recent` の `target`。小物)**
+- [x] **T14.48 http の宛先にポートを付ける (`/connections` と `/recent` の `target`。小物)**
   - 目的: T14.4 の気づき — http 接続の `target` が `example.com` (ポート無し)、CONNECT は `discord.com:443`。個票を読む道具が
     2 つの形を扱うことになる。
   - 変更箇所: `src/lib.rs` (T14.2 (5) の `set_first_target` に渡す値を `host:port` に。`pool_key` の `scheme://host:port` から組む)、
     `tests/recent_test.rs` / `tests/clients_test.rs`。
   - 受け入れ基準: 結合テストで http 接続の `target` が `127.0.0.1:<port>`。費用 0 (接続の最初の要求だけ)。
-- [ ] **T14.49 全エンドポイントに `schema` の版を入れる**
+  - 結果 (2026-09-16、`8b8925e`): http 接続の `target` を CONNECT と同じ `host:port` にそろえた。`ConnSlot::set_first_target` に渡す値を、ホスト別統計の鍵 (`pool_key` = `scheme://host:port`) と**同じ規則**で組む (`http://example.com/` → `example.com:80`、`http://host:8080/` → `host:8080`、絶対形式の `https://` なら 443)。スキームだけを**確保せずに**取る `request::target_scheme` を足し、**`parse_origin` の `scheme` と 1 つも食い違わないこと**を単体テストで縛った。`format!` が要るのはポートを省いた要求だけ、通るのは**接続の最初の要求の 1 回**なので要求ごとの費用は 0。`record_client` に渡す値は変えていないので `/clients` の `distinct_targets` / `literal_targets` は今までどおり。`/explain?host=` は `key_host_port` がポートの有無を両方扱うので `?host=127.0.0.1` でも `?host=127.0.0.1:80` でも同じ個票が引ける。`check-dashboard.js` の `HOSTKEY` は元からポート付きを通すので変更なし。結合 1 本 + 単体 1 本を追加。
+    - 宛先の形は個票 (`/connections` `/recent` `/bursts`) が `host:port`、集計の鍵 (`/hosts` `/errors`) が `scheme://host:port` で**2 形のまま** (読む側は `key_host_port` が両方を剥がす)。`/trace` の forward の `target` は URL のまま (意図的)。統一するなら別タスク。
+- [x] **T14.49 全エンドポイントに `schema` の版を入れる**
   - 目的: `/status` `/history` `/recent` … の JSON の形は Phase ごとに増えている。読む道具 (`status-diff.py` `snapshot-diff.py`
     `check-dashboard.js`) が「この JSON はどの版か」を推測している (`parts` の有無など)。各応答の先頭に `"schema": N` (整数、形が変わったら +1)
     を入れ、道具は版で分岐する。
@@ -4751,6 +4757,28 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 受け入れ基準: 結合テストで全エンドポイント (`/status` `/history` `/dns` `/errors` `/connections` `/recent` `/hosts` `/clients` `/log`
     `/snapshot` `/profile` `/bursts` …) の応答の先頭 64 バイトに `"schema":` があること。`check-dashboard.js` が版の無い古い出力
     (`~/rust-http-proxy-status/2026-09-16T0106Z-*`) も読めること。
+  - 結果 (2026-09-16、`6f2ce9d`): JSON を返す口 **27 か所**の応答の**いちばん先頭の鍵**に `"schema":1` を入れた。
+    定義は `crates/metrics/src/metrics.rs` の **`SCHEMA` / `SCHEMA_HEAD` / `with_schema()` の 1 か所**だけで、
+    2 つが食い違ったら `const _: () = assert!(…)` で**ビルドが止まる**。付いたのは `/status` `/history` (`?summary=1` も)
+    `/profile` `/errors` `/connections` `/recent` `/bursts` `/trace` `/events` `/snapshot` `/snapshots` `/dns` `/log`
+    `/hosts` `/hosts/series` `/clients` `/daily` `/explain` `/config` `/healthz` (200 と 503) `/slo` `/blocklist`
+    `/purge` `/lookup` と、**エラーの応答 (400 / 404 / 405)**。`/snapshot` は**外側と 17 部の両方**。**入れ子 (`/status` の
+    `dns` `kernel` `blocklist`、`/history` の `closed` `transfer` `canary`、`/slo` の `thresholds`) は版を持たない** — 版を持つのは
+    「応答の 1 番外側」だけ。`/metrics` `/proxy.pac` と HTML と `--check` は JSON ではないので対象外。
+    道具は **2 分岐** (`proxydata.schema_of` / `is_snapshot` / `warn_newer`): 版 1 以降は `parts` を見るだけ、
+    **版の無い古い出力は「版 0」として今までどおり鍵の有無から推測して読む** (`~/rust-http-proxy-status/` の雪像はどれも版の無い形)。
+    `snapshot-diff.py` は「形の版 `schema` A → B」の行と `--out json` の `a.schema` / `b.schema`、`status-diff.py` は
+    `# <ファイル> の形の版 schema=N`。`check-dashboard.js` の検査 14 は、**版 0 の fixture と、それに `schema` を足した版 1 で読めた
+    中身が完全に一致**することを見る (fixture は**版の無いまま**置いてある = 版 0 が読めることの回帰テスト)。
+    テストは新規 `tests/schema_test.rs` **3 本**: (a) **`/` の案内から口を機械的に取り出して** 30 通りの応答の**先頭 64 バイト**に
+    `"schema":1` があること (案内に出た口が一覧に無ければ落ちるので、口が増えたときに漏れない)、(b) エラーの応答、(c) `/snapshot` の各部。
+    `scripts` の単体テストに `Schema` の 6 本 (118 → 124 本)。費用は応答 1 本あたり **12 バイトと `push_str` 1 回**で、要求の熱い経路には
+    1 命令も足していない。README にエンドポイント一覧の隣へ**版の履歴の表** (版 0 = 〜2026-09-16 / 版 1 = 2026-09-16 Phase 14 の形) と、
+    **形を変えたら +1 して 1 行足す / 鍵を末尾に足すだけなら上げない**決まりを書いた。
+    - 気づき: `/snapshots/<date>` の 200 は置いてあるファイルをそのまま返すので、この版より前の日次ファイルには `schema` が無い (道具は版 0 として読む)。
+      `/blocklist` は引数なしのとき `/status` の `blocklist` と同じ関数の出力なので、そこだけ `with_schema()` で先頭に版を足す。
+      HTML (`dashboard` / `inspect` / `probe`) は `schema` を読んでいない (版 2 で形を変えるときに分岐が要る)。
+      再デプロイ後に雪像を取り直すとき (T14.99) は版 1 の fixture を別に 1 枚足す。
 - [x] **T14.50 SLO の達成率 (`/slo`)**
   - 目的: Phase の完了の定義は「p50 6 ms 以下」のような閾値だが、デプロイ先で**時間の何割がそれを満たしたか**は出ない。閾値を設定で持ち、
     5 秒の標本ごとに満たしたかを判定して、日ごと・時間ごとの達成率を返せば、T14.99 と次の Phase の判定が「満たした / 満たさない」ではなく

@@ -4,17 +4,59 @@
 `scripts/status-diff.py` (T12.0) と `scripts/snapshot-diff.py` (T14.17) が同じ読み方を
 するための置き場。**ここには「読む」しか置かない** (印字は呼ぶ側)。
 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
+
+**応答の形の版 (`schema`。T14.49)**: プロキシの応答は先頭に `"schema":N` を持つ。
+この道具は版で分岐する ([`schema_of`] / [`is_snapshot`]) が、**版の無い古い出力 (版 0) も
+今までどおり読める** — 手元に残っている雪像はどれも版の無い形なので、そちらが読めなく
+なったら過去の分析をやり直せない。
 """
 
 import json
 import socket
 import statistics
+import sys
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
 CONNECT = "connect://"
 # `/status` の `errors_by_cause` の並び (`crates/metrics/src/metrics.rs` の ERR_CAUSE_NAMES)
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
+
+# この道具が知っている応答の形の版 (`crates/metrics/src/metrics.rs` の `SCHEMA`。T14.49)。
+# **版 0 = `schema` の無い古い出力** (2026-09-16 以前に取った雪像) で、そちらは今までどおり
+# 鍵の有無から形を推測して読む。版が上がったらここも上げて、下の分岐に 1 本足す。
+SCHEMA = 1
+
+
+def schema_of(obj):
+    """この JSON の形の版 (`schema` が無い古い出力は 0 = 推測で読む)。"""
+    if not isinstance(obj, dict):
+        return 0
+    v = obj.get("schema")
+    return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+
+def warn_newer(obj, label, out=None):
+    """この道具より新しい版を読もうとしていたら 1 行断る (読むのは続ける)。"""
+    v = schema_of(obj)
+    if v > SCHEMA:
+        print(f"注意: {label} は版 {v} の出力です (この道具が知っているのは版 {SCHEMA} まで。"
+              "読めない欄があるかもしれません)", file=out or sys.stderr)
+    return v
+
+
+def is_snapshot(obj):
+    """`/snapshot` (T14.4) かどうか。
+
+    **版 1 以降は `parts` を見るだけ** (形が版で決まっているので推測しない)。
+    版 0 (`schema` の無い古い出力) は今までどおり「`parts` があって `hosts` が object」で
+    見分ける (`/status` にも `hosts` があるが、あちらは配列)。
+    """
+    if not isinstance(obj, dict):
+        return False
+    if schema_of(obj) >= 1:
+        return isinstance(obj.get("parts"), list)
+    return "parts" in obj and isinstance(obj.get("hosts"), dict)
 
 
 def host_name(key):
@@ -36,8 +78,10 @@ def unwrap(snap):
     `/snapshot` は `/status` も `/hosts` も持っているが、**ここで使うのは `/hosts`**
     (`.rrd` にある全ホスト。`/status` の `hosts[]` は要求数の上位 50 だけ)。
     窓の目印 (`uptime_secs` / `total_requests`) は `/hosts` にも同じ名前で入っている。
+    **`/snapshot` かどうかの見分けは [`is_snapshot`]** (版 1 以降は `parts` だけ、
+    版の無い古い出力は今までどおり推測)。
     """
-    if not (isinstance(snap, dict) and "parts" in snap and isinstance(snap.get("hosts"), dict)):
+    if not (is_snapshot(snap) and isinstance(snap.get("hosts"), dict)):
         return snap
     inner = dict(snap["hosts"])
     inner.setdefault("uptime_secs", snap.get("uptime_secs", 0))
