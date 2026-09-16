@@ -4935,7 +4935,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     (`.github/workflows` があれば 1 行)。
   - 結果 (2026-09-17、`ab7f716` / `343bdb1`): **文書とコードが同じ集合かを機械で見る `scripts/check-docs.sh`** を足し、見つかった差分を直した。突き合わせるのは 5 つで、**(a) エンドポイント** (`endpoints/mod.rs` の `path == "/…"` **31 本** vs README「動作確認 (curl)」の一覧 vs `/` の案内 `endpoint_list`)、**(b) 環境変数** (`"PROXY_…"` / `"SERVER_…"` の文字列 **73 件** vs README の表の鍵)、**(c) `/snapshot` の `parts`** (**17 部 = 13 口** vs 個票のエンドポイント)、**(d) 画面の関数名** (`check-dashboard.js` が切り出す **40 個** vs HTML の `function` と実際の呼び出し)、**(e) クレートの表** (`crates/*/Cargo.toml` の **33** vs README の表と「(N + 本体)」の数)。**意図的に外してあるものはスクリプトの中の除外表に理由つきで持つ**: `/snapshot` に入れない 18 の口 (画面の HTML 3・`?url=` や `?host=` が要る口 4・`/metrics`・`/status` に上位 20 が入る `/readers`・URL が入る `/trace`・`/history` から出し直せる `/slo`・ファイルに永久に残る `/daily` …) と、ビルド時にしか無い `PROXY_VERSION`・テスト用の `PROXY_NO_SUCH_KEY_T1415`。別名 (`/dashboard/inspect` = `/inspect`、`/probe` = `/probe.html`、末尾の `/`) は代表の綴りに寄せてから比べる。**直したのは README の 2 か所だけ**: (1) 「動作確認 (curl)」の一覧が **21 本しかなく 10 本足りなかった** (`/config` `/profile` `/errors` `/log` `/dns` `/hosts` `/clients` `/proxy.pac` `/blocklist` と画面の `/dashboard`) ので足した、(2) クレートの表の前の数を **31 → 32** (実際は 32 クレート + 本体 = 33 パッケージ)。**`/` の案内・`/snapshot` の `parts`・環境変数の表・画面の関数名は直すところが無かった** (README にあってコードに無い口・鍵は 0 件)。CI の `check` に 1 行、README の「CI」の節に 1 段落。使うのは bash と grep / sed / awk / python3 の標準ライブラリだけ (手元で 0.9 秒)。5 つそれぞれについて負の試験 (片方から 1 件消す / 無い名前を足す) をして NG が出て終了コード 1 になることを確かめた。
     - やり残し: T14.20 の小物「`/snapshot` の `parts` に `/daily` を 1 行足す」は未対応で、理由つきで除外表に入れた (足すなら `anonymize-snapshot.py` の `PART_ORDER` と `snapshot-diff.py` / `collect-deployed.sh` もセット。再デプロイ前には入れない)。**README のエンドポイント一覧は「動作確認 (curl)」の節と決めた**ので、新しい口はここに 1 行足さないと CI が落ちる。**CI には `node scripts/check-dashboard.js` も `python3 -m unittest discover -s scripts` も入っていない** (Node の準備と testdata の重さ。Phase 15 の候補)。
-- [ ] **T14.57 再デプロイの手引き (何が変わり、何を見るか)**
+- [x] **T14.57 再デプロイの手引き (何が変わり、何を見るか)**
   - 目的: 今日の版はエンドポイントが 10 本以上増え、既定の挙動も変わった (keep-warm、負のキャッシュ 60 秒、`/errors` に 403、
     上限で暇なトンネルを閉じる、記録の個票)。再デプロイする人 (利用者) が**何が変わるか・何を見ればよいか**を 1 枚で読めるようにする。
   - 変更箇所: `TASKS.md` の Phase 14 に「再デプロイの手引き (2026-09-16 の版)」の小節 (この T14.57 の `結果:` として)、README の
@@ -4947,6 +4947,141 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     `/log` `/events` `/recent?sort=slow`)。
   - 受け入れ基準: 手引きの手順を手元のプロキシで**そのまま**なぞって、書いたとおりの出力が得られること (エージェントが実演し、
     報告に出力を貼る)。README の文章は既存の文体 (日本語、コードは英語)。
+  - 結果 (2026-09-16、`694ee40`、マージ `0663d16`): **再デプロイの手引き (下の小節)** を書き、README に**「運用」の節を新設**した (既存の節は 1 行も触っていない。末尾に足しただけなので T14.56 と衝突しなかった)。README は「置く前 (`--check`) → 起動直後 (0〜5 分) → 1 時間後 → 24 時間後 → 何かおかしいとき → 止めるとき → T14.99」の 7 段で、各段に叩くコマンドと見る欄の名前を書いた。手引きは (a) 変わった既定 11 件と既定では変わらない新設 5 件 (前後の値と戻し方つき)、(b) 増えたエンドポイント 18 本 (`/` の案内が 14 → 32 行。デプロイ先の `/` を 1 回読んで機械的に引き算した)、(c) `.rrd` は版 2 → 3 に変換されて統計は消えない / `.recent` と `snapshots/` と `.daily.jsonl` が新しくできる / ディスク +8 MiB (雪像は最大 +120 MiB)・メモリのリング 6.8 MB、(d) 期待する数字 16 行、(e) 見に行く順番 5 段、の 5 部。**受け入れ基準どおり、手引きの手順を手元の release (`0.1.0+e5a879f`) でそのままなぞって、書いたとおりの欄が出ることを確かめた** (`mx` で 1 本のスクリプトを 1 回: `cargo build --release` → `--check` (exit 0、`capabilities` 7 行が `[ok]`、`settings` 70 件) → 起動 (`listening on [::]:18457 (IPv6 + IPv4) (backlog 1024, ...)` / `state file ... (8192 KiB, created)` / `recent file ... (4096 KiB, created)`) → `/healthz` 200 `"ok":true` (検査 6 つ) → `/` 32 行 → forward 2 本と CONNECT 2 本 → `/status` の `dns.warm` 1 / `ipv6` / `evicted_idle` 0 / `recent_quantiles` / `state_file.version` 3 / `self_bench` null / `kernel.last_5m.listen_overflows` 0 → `/dns` の `warm` と `next_refresh_secs` → `/profile?res=5` の `stages` (connect 7 段 / forward 6 段) → `/snapshots` `/daily` `/slo` → `collect-deployed.sh` が Markdown 119 行 (雪像 30,932 B、`probe-deployed.sh` の `GET /` は 200) → `/errors` `/log` `/events` `/recent?sort=slow` `/explain?host=` → 停止)。**手元は数字が違うだけで欄の名前と形は全部一致**した。`converted_from` だけは新規の `$HOME` なので `null` (版 2 からの変換の実データはデプロイ先の初回起動が最初の実例。`tests/persist_test.rs` の fixture では確かめてある)。**追試で 1 つ分かったこと**: `SIGTERM` の直後に次を起動すると最後の書き出しが間に合わず `0 hosts, 0 clients restored` になる。`statistics saved to ...` の行を待ってから起動すれば `2 hosts, 1 clients restored` / `/recent` の `restored` 3 / `/events` の `restored` 4 (前の起動の `shutdown` も含む) になる — 手引きと README の「止めるとき」にこれを書いた。**エージェントが見つけた穴を親が直した (`9984378`)**: `PROXY_CANARY` / `PROXY_CANARY_SECS` / `PROXY_PROFILE_SAMPLE_MS` の 3 つが「効いているのに `/config` と `--check` の一覧に出ない」(`Config::settings()` に行が無く、`check-docs.sh` (b) は文字列の有無しか見ないので拾えない)。`settings()` に 3 行、読んだときの出どころの印、再読込での写しを足し、単体テストに既定値 (`"auto"` / `60` / `1000`) を足した。`--check` の `settings` は **70 → 73 件**。ほかの申し送り: `mx` の待ちは `pgrep -f` なので同じ文字列を含む別のシェル行にも当たる (1 回 `exit 75` を踏んだ。`pgrep -x` に寄せるのが安い)、GNU `timeout` は転送した TERM で自分も即死するので後始末はログの `statistics saved to` を待つ、`collect-deployed.sh` の「完了の定義に対する判定」は前回の雪像が無いと出ないので**再デプロイ直後に 1 枚取っておく**と 24 時間後の 1 回で判定表まで出る。
+
+**再デプロイの手引き (2026-09-16 の版。T14.57 の成果物。手順のコマンドは README の「運用」の節)**
+
+**今すぐ置く版**: main の先頭 (T14.58 まで。`0.1.0+<main の短い hash>`)。**利用者がすること**: `git push` → 再デプロイ → 24 時間 → `scripts/collect-deployed.sh nagoya.sorahost.net:50697` を 1 回 → T14.99。
+
+いま動いているのは **`0.1.0+b2ae41f` (Phase 13 の全部、2026-09-13 00:22 UTC から)**。
+これから置くのは **Phase 14 を全部入れた版**で、**エンドポイントが 18 本増え、既定の挙動が 7 つ変わる**。
+この小節だけ読めば「何が変わり、何を見ればよいか」が分かるようにしてある
+(手順のコマンドは README の「運用」の節。両方とも手元の release で 1 回なぞって確かめた — T14.57)。
+
+**(a) 変わった既定 (前 → 後、戻し方)**
+
+**挙動が変わるもの** (どれも `.env` に 1 行書けば前の動きに戻せる。`*` の付いた 2 つだけ再起動が要る):
+
+| 環境変数 | 前 (Phase 13) | 後 (この版) | 戻し方 | 何が起きるか |
+|---|---|---|---|---|
+| `PROXY_DNS_WARM_SECS` | (無い。熱さ = 直近 TTL 60 秒) | **`900`** | `0` | warm = 直近 900 秒に **2 回以上**使われた名前 (最大 32)。使われなくても **3/4 TTL ごとに裏で引き直す**。最悪 0.7 回/秒 (T14.1) |
+| `PROXY_CANARY` | (無い) | **`auto`** | `off` | プロキシ自身が **60 秒に 1 回** (`PROXY_CANARY_SECS`)、直近 1 時間で最も多い CONNECT 宛先へ「名前解決 → TCP 接続 → 即 close」。相手に届くのは 1 分に 1 回の SYN / FIN だけ (T14.10) |
+| `PROXY_CANARY_IPV6` | (無い) | **`on`** | `off` | canary が IPv6 側も 1 本試す (T14.37) |
+| `PROXY_LISTEN_BACKLOG` * | 128 固定 (`std`) | **`0` = `min(1024, somaxconn)`** | `128` | 待ち受けの行列。溢れるとクライアントは 1 秒後に再送する (統計に残らない待ち)。効いた値は起動ログの `backlog N` (T14.47) |
+| `PROXY_TCP_KEEPALIVE` | (無い) | **`on`** (= `on:60:10:3`) | `off` | accept 直後にクライアント側へ keepalive。**接続あたり `setsockopt` 4 回** (要求ごとは 0 増)。消えた端末は約 90 秒で `client_dead` として閉じる (T14.52) |
+| `PROXY_PEEK_SNI` * | (無い) | **`on`** | `off` | 443 宛ての CONNECT 1 本につき `recv(MSG_PEEK)` **1 回**。個票に `sni`、食い違いは `/hosts` の `sni_mismatch` (T14.38) |
+| `PROXY_SNAPSHOT_DAYS` | (無い) | **`30`** | `0` | 1 日 1 回 (UTC 0 時) `/snapshot` を `$HOME/.rust-http-proxy/snapshots/<日付>.json` に残す (T14.34) |
+| `PROXY_SLO` | (無い) | `connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2` | 任意の式 | 5 秒の標本ごとに満たしたかを判定し `/slo` の `ratio` に。**T14.99 では `connect_p50_ms=6` にしておく** (T14.50) |
+| `PROXY_PROFILE_SAMPLE_MS` | (無い) | **`1000`** | 大きくすると軽い | `/profile` のスレッドの標本を取る間隔 (T14.3) |
+| `PROXY_RECORDS` | (無い。常に記録) | **`on`** | `off` / `hashed` | `off` で個票 9 種を 1 件も書かない、`hashed` で接続元 IP を起動ごとの塩つき 16 進 16 桁に。判定 (ACL・上限) は常に生の IP (T14.41) |
+| `PROXY_BURST_PERCENT` | (無い) | **`50`** | 任意 | 「山」と呼ぶしきい (上限に対する割合。`/bursts` の写真と `/history` の判定に効く) (T14.6) |
+
+**既定では何も変わらないもの** (要るときだけ立てる。全部この版で新設):
+
+| 環境変数 | 既定 | 立てると |
+|---|---|---|
+| `PROXY_SELF_BENCH` | `off` | 起動直後に loopback だけで 3 秒測り `/status` の `self_bench` に CPU/要求・CPU/本。**`/recent` の個票 4,096 件が自分のぶんで埋まり TIME_WAIT が 2.2 万残る**ので、置いた先で使うなら「再デプロイ直後の 1 回だけ」(T14.43) |
+| `PROXY_MAX_CONNS_PER_CLIENT` | `0` (無効) | 接続元ごとの同時接続の上限 (T14.13) |
+| `PROXY_ENDPOINTS_READONLY` | `off` | `/purge` と `/blocklist?action=` が 405 (読む口はそのまま) (T14.18) |
+| `PROXY_ALLOW_CLIENTS` | なし (全許可) | 並べた接続元以外を accept 直後に、要求を 1 バイトも読まずに閉じる。断った数は `/status` の `rejected_client_acl` (T14.18) |
+| `PROXY_TRACE_CLIENT` | なし | その接続元の要求の並びを `/trace` に (T14.27) |
+
+**環境変数の無い挙動の変化**:
+
+- **`/errors` に 403 が乗る** (`acl` / `blocklist` / `connect_port` / `local`)。集計 (`errors_by_cause` 8 種) は変えていない (T14.2 (4))。
+- **400 が理由別に数えられる** (`rejected_requests{reason}` 6 種、個票は `bad_request:<reason>`) (T14.28)。
+- **1,000 要求目の応答に `Connection: close`** が付いてから閉じる (T14.2 (1))。
+- **`/healthz` が本物の検査になった** (前は `/status` と同じ中身)。6 つの検査 (`listening` / `fds` / `connections` / `state_file` / `listen_overflows` / `resolver`) を見て 200 か 503、本文は軽い JSON (T14.12)。
+- **`/history?res=5` はメモリに 6 時間ぶん (4,320 本)**。既定の応答は今までどおり 720 本で、`n=` を書いたときだけ遡る。`.rrd` に書くのは最新 720 本のまま (T14.32)。
+- **宛先の形がそろった**: `/connections` と `/recent` の `target` は http も CONNECT も `host:port` (T14.48)。
+- **重い口は同時に 1 本だけ** (`/snapshot` `/profile` `/hosts?limit=1000` `/recent?n=2000`)。2 本目は **503 `{"error":"busy"}` + `Retry-After: 1`** (T14.51)。
+- **クレートが 20 → 31 に割れた** (T14.55)。出力も挙動も変わらない。ビルドメモリの関門は 200 → 180 MB。
+
+**(b) 増えたエンドポイント (18 本。`/` の案内が 14 行 → 32 行)**
+
+| 口 | 何が読めるか |
+|---|---|
+| `/inspect` | 画面: 個票を時間軸で読む「調査」ページ (`/dashboard` の相棒) |
+| `/probe.html` | 画面: 利用者の端末から往復とプロキシ経由の取得をブラウザで測る |
+| `/recent?n=200&since=&client=&sort=` | 閉じた接続の個票 (段階ごとの ms、閉じた理由、RTT、再送、SNI、詰まりの向き) |
+| `/bursts?n=50` | 山が来たときに撮った写真 (そのときの接続の一覧と上限) |
+| `/trace?n=200&since=` | `PROXY_TRACE_CLIENT` に指定した接続元 1 つの要求の並び |
+| `/events?n=200&since=` | 起動・再読込・ブロックリスト更新・IPv6 の切替・圧迫・バラスト・異常の検知・新しい接続元 |
+| `/snapshot` | 上の全部を 1 回で (`collect-deployed.sh` が取るもの) |
+| `/snapshots` | プロキシ自身が 1 日 1 回残した雪像の一覧 (30 日) |
+| `/snapshots/<YYYY-MM-DD>` | その 1 日の雪像をそのまま (差分の道具がそのまま読める) |
+| `/hosts/series?top=16&host=<name>` | ホスト別の時系列 (上位 16 ホスト × 5 分 × 24 時間) |
+| `/clients?sort=&limit=200` | 接続元の全部 (`User-Agent`、宛先の多様さ、ポート、RTT、初めて見た時刻) |
+| `/readers` | この内部エンドポイントを誰が読んでいるか (走査か、自分の監視か) |
+| `/explain?host=<name>` / `?client=<ip>` | 1 つの相手の統計・個票・時系列・エラーを 1 枚に |
+| `/config` | 効いている設定 73 件と `source` (`default` / `env` / `env_file` / `cli`) と `capabilities` |
+| `/history?since=&until=&summary=1` | 期間を指定して 1 行の要約 (`since=restart` も可) |
+| `/profile?res=5\|60` | **待ちの段階の内訳**・スレッドの CPU と状態・ロックの取り合い |
+| `/daily?n=365` | 1 日 1 行の要約 (`$HOME/.rust-http-proxy.daily.jsonl`。永久に残る) |
+| `/slo?days=7` | しきい (`PROXY_SLO`) を満たした時間の割合 (日ごと・時間ごと・破れた区間) |
+
+**(c) ファイルとメモリ**
+
+- **`.rrd` は版 2 → 版 3 に変換される。統計は消えない** (T14.14)。起動時に 1 回だけ領域ごとに読んで詰め直す
+  (末尾がゼロで伸びるだけ。実測 66〜97 ms)。**4 MiB → 8,388,608 B 固定**。
+  起動ログが `state file ~/.rust-http-proxy.rrd (8192 KiB, converted from version 2 in N ms): history a/b/c samples, N hosts, M clients restored` なら成功、
+  **`created` と出たら変換に失敗して作り直した** (通算の統計は消えている)。`/status` では `state_file.version` = 3、`converted_from` = 2。
+  `snapshot-diff.py` の `rrd_reset` は**今回は発火しないのが正しい**。
+- **`.recent` が新しくできる** (T14.9)。`$HOME/.rust-http-proxy.recent`、**4,194,304 B 固定**。
+  閉じた接続 4,096 / エラー 2,048 / 山の写真 128 / 出来事 512 / ログ 3,568 行の環状の領域で、
+  **再起動をまたいで `/recent` `/errors` `/bursts` `/events` `/log` が残る** (各応答の `restored` が引き継いだ件数)。
+  書くのは履歴スレッドの 5 秒周期と停止のときだけ (要求の経路は 0 増)。
+- **`snapshots/` が新しくできる** (T14.34)。`$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json`、
+  1 日 1 ファイル・30 日 (`PROXY_SNAPSHOT_DAYS`)、1 ファイルは静かなプロキシで 17,871 B・最大 4 MiB。
+  ディスクの空きが `keep_free` を割り込むときは書かずに `/events` に 1 件。
+- **`.daily.jsonl` が新しくできる** (T14.20)。1 日 1 行、上限 2 MiB、永久。
+- **ディスクの増分**: `.rrd` +4 MiB、`.recent` +4 MiB、`snapshots/` 最大 +120 MiB (静かなら 0.5 MiB)、`.daily.jsonl` ≤ 2 MiB。
+  デプロイ先の `disk_used_percent` は 2.5% なので余裕はある。
+- **メモリの増分**: 5 秒の標本 6 時間で **+2.08 MiB** (T14.32)、ほかに直近 1,024 本の標本 (T14.31)・ホスト別の時系列・個票のリング。
+  内訳は `/status` の `memory.rings` に出る (手元の起動直後で合計 **6,811,548 B**、うち `history` 4.8 MiB)。
+  Phase 13 のデプロイ先の RSS は 21.1 MB なので **28〜32 MB 前後**になる見込み (手元の同じ既定で 29.8〜31.2 MB)。cgroup は 256 MiB なので余裕はある。
+
+**(d) 期待する数字 (24 時間後に判定する)**
+
+| 見るもの | いま (Phase 13) | 期待 | 出どころ |
+|---|---|---|---|
+| 名前解決のミス `dns_misses ÷ connects` | **0.55** | **0.15 未満** | `/history` を再起動時刻で切って平常時どうし |
+| 主要 3 ホストのミス率 (datadog / mtalk.google.com / discord) | 0.31 / **1.00** / 0.76 | **0.05 未満** | `/hosts` の差分 |
+| 裏の引き直し `dns.refreshes` | 442 (72 時間) | **1 時間に warm × 80 回以下** | `/status` の `dns` |
+| 平常時の CONNECT 確立 p50 | **8.3 ms** | **6 ms 以下** | `/history?res=3600` (1 時間 300 本未満の時間帯) |
+| `GET /` (ブラウザでプロキシの URL を開く) | 200 | **200** (案内 32 行) | `probe-deployed.sh` |
+| `/dns` の `warm` | (無い) | **数件以上** (0 なら keep-warm が効いていない) | `/status` の `dns.warm` |
+| `/profile` の段階の内訳 | (無い) | CONNECT が `queue` / `client_read` / `dns` / `connect` / `first_relay` / `relay` / `park`、forward が `queue` / `client_read` / `origin` / `send` / `ttfb` / `body` で読める | `/profile?res=5` |
+| `self_bench` | (無い) | **`null`** (既定 off) | `/status` |
+| `state_file.converted_from` | (無い) | **`2`** (`version` は `3`) | `/status` |
+| `kernel.last_5m.listen_overflows` | (無い) | **`0` のまま** | `/status` |
+| `/slo` の `ratio` | (無い) | 既定のしきいで読める (`connect_p50_ms=6` を入れておけば「p50 6 ms 以下」の達成率そのもの) | `/slo?days=7` |
+| `/snapshots` / `/daily` | (無い) | 24 時間で **各 1 件** | 同左 |
+| `/recent` の `restored` | (無い) | **前の版の個票が残る** (0 なら `.recent` が作り直された) | `/recent` |
+| canary | (無い) | 1 時間に **60 点**、利用者の CONNECT 確立 p50 と **±3 ms** | `/history?res=60` の `canary` |
+| `/clients` | 接続元 2 つ | `161.33.196.121` の `agents` と `distinct_targets` が読める | `/clients` |
+| `evicted_idle` / `rejected_overload` | 0 / 0 | 山の無い時間帯は **0** (山のときだけ `evicted_idle` が増える) | `/status` |
+
+**(e) 見に行く順番**
+
+1. **起動直後 (0〜5 分)**
+   1. `rust-http-proxy --check` — 終了コード **0**、`capabilities` の 7 行が `[ok]`。`[NO]` があればその項目は `/status` で `null` になる。
+   2. 起動ログの 2 行 — `listening on ... (backlog 1024, log level: INFO)` と `state file ... (8192 KiB, **converted from version 2 in N ms**): history …, N hosts, M clients restored`。`created` なら統計が消えている。隣の `recent file ... (4096 KiB, opened): N closed connections … restored` が前の版の個票。
+   3. `/healthz` が **200** で `"ok":true` (503 ならどの検査が偽か本文に出る)。
+   4. `/` の案内が **32 行**あること、`/config` を 1 枚保存しておく (そのときの設定)。
+2. **1 時間後**
+   1. `/dashboard` を開く (グラフとホスト別統計)、`/inspect` (個票の時間軸)。
+   2. `/status` の **`dns.warm`** (数件以上)・`dns.misses`・**`ipv6`** (`v4_first`)・**`evicted_idle`**・**`recent_quantiles`** (直近 1,024 本の実測の分位点)・`canary`・`state_file`。
+   3. `/dns?sort=misses` で各行の `warm` と `next_refresh_secs`、`/profile?res=5` で段階の内訳。
+3. **24 時間後**
+   1. `scripts/collect-deployed.sh nagoya.sorahost.net:50697` を **1 回** (雪像 1 枚 + 差分 + 手元からの待ち + 判定表が Markdown 1 枚で出る)。
+   2. `/snapshots` (1 件)・`/daily` (1 行)・`/slo?days=7` の `ratio`。
+   3. 2 枚目の雪像が溜まったら `scripts/snapshot-diff.py`、7 日ぶんで `scripts/weekly-report.py`。
+4. **何かおかしいとき** — `/errors?n=100` (誰が・いつ・なぜ。403 も入る) → `/log?n=200` → `/events?n=200` (`anomaly` / `reload` / `ipv6` / `start`) → `/recent?n=200&sort=slow` (遅かった接続の段階と閉じた理由) → `/explain?host=<name>` / `?client=<ip>`。
+5. **止めるとき** — `SIGTERM` のあと **`statistics saved to ... (N individual records appended)` の行が出るまで待ってから**次を起動する。待たずに起動すると最後の書き出しが間に合わず、次の起動が `0 hosts, 0 clients restored` になる (手元で 1 回踏んだ)。
+
+---
+
 - [ ] **T14.58 今日の記録を閉じる (TASKS.md の整合、worktree の片づけ、push できる状態)**
   - 目的: 明日以降の自分と Opus が、TASKS.md だけを読んで続きを始められるようにする。
   - 変更箇所: `TASKS.md` (Phase 14 の各タスクの `[x]` と `結果:` が揃っているか、「順番」の行が現状と合うか、完了の定義に今日の版で
