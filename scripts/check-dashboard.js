@@ -21,6 +21,8 @@
 //      作り物の数列と `/status` の実出力で通り、「経由している / していない」を判定できること (T14.33)
 //  12. **KPI「CONNECT 確立 p50」が `/status` の `recent_quantiles` (直近 1,024 本の実測) を
 //      使い、無い版の出力では区間の補間に落ちること** (T14.31)
+//  13. **KPI「今日の SLO」が `/slo` の応答を読めること** (今日の達成率・外れの最多・
+//      直近の外れた時間帯。`/slo` を持たない版では `null` を返してカードごと出さない。T14.50)
 //
 // 使い方: node scripts/check-dashboard.js [/history の実出力.json] [/status の実出力.json]
 //                                         [/profile の実出力.json] [/snapshot の実出力.json]
@@ -68,6 +70,8 @@ const names = [
   'lockRows',
   // KPI「CONNECT 確立 p50」の値を選ぶ側 (T14.31) と、それが使う整形 (どれも DOM に触らない)
   'connectKpi',
+  // KPI「今日の SLO」の値を選ぶ側 (T14.50)
+  'sloKpi',
   'fmtMs',
   'fmtMsFine',
   'fmtNum',
@@ -1262,6 +1266,66 @@ if (st.recent_quantiles) {
   liveKpi = api.connectKpi(st, kpiWin, hist.bounds_ms);
 }
 
+// 13. KPI「今日の SLO」(T14.50)。`/slo` の応答から**今日 (UTC) の達成率**と
+// 「いちばん外した閾」「直近の外れた時間帯」が読めること。`/slo` を持たない版
+// (この口が 404 の版) では `null` を返し、ダッシュボードはカードごと出さない。
+const sloJson = {
+  now: 1789171195,
+  days: 7,
+  from: 1788566400,
+  to: 1789171195,
+  sample_secs: 5,
+  thresholds: { connect_p50_ms: 10, connect_p95_ms: 100, error_rate: 0.005, dns_miss_per_connect: 0.2 },
+  names: ['connect_p50_ms', 'connect_p95_ms', 'error_rate', 'dns_miss_per_connect'],
+  judged: 17280,
+  met: 12240,
+  ratio: 0.70833,
+  misses: [5040, 5040, 5040, 0],
+  first_t: 1789084800,
+  last_t: 1789167600,
+  hours: 24,
+  kept_hours: 744,
+  today: { date: '2026-09-11', t: 1789084800, judged: 17280, met: 12240, ratio: 0.70833, misses: [5040, 5040, 5040, 0] },
+  daily: [{ date: '2026-09-11', t: 1789084800, judged: 17280, met: 12240, ratio: 0.70833, misses: [5040, 5040, 5040, 0] }],
+  breaches: [
+    {
+      from: 1789146000, to: 1789171200, from_hour: '2026-09-11T17Z', to_hour: '2026-09-12T00Z',
+      hours: 7, judged: 5040, met: 0, ratio: 0.0,
+      breached: [
+        { name: 'connect_p50_ms', samples: 5040, worst: 46.875, threshold: 10 },
+        { name: 'connect_p95_ms', samples: 5040, worst: 300, threshold: 100 },
+        { name: 'error_rate', samples: 5040, worst: 0.125, threshold: 0.005 },
+      ],
+    },
+  ],
+  hourly_keys: ['t', 'judged', 'met', 'misses'],
+  hourly: [[1789084800, 720, 720, [0, 0, 0, 0]], [1789146000, 720, 0, [720, 720, 720, 0]]],
+  truncated: false,
+};
+const slo = api.sloKpi(sloJson);
+if (!slo) fail('/slo の応答から KPI が読めていない');
+if (Math.abs(slo.pct - 70.833) > 0.01) fail('今日の達成率が 70.833% になっていない: ' + slo.pct);
+if (slo.date !== '2026-09-11') fail('札が今日 (UTC) の日付になっていない: ' + slo.date);
+if (slo.worst !== 'connect_p50_ms') fail('いちばん外した閾が読めていない: ' + slo.worst);
+if (slo.breaches !== 1) fail('外れた時間帯の数が合わない: ' + slo.breaches);
+for (const part of ['判定 17,280 標本', '2026-09-11T17Z〜2026-09-12T00Z', '直近 7 日']) {
+  if (slo.detail.indexOf(part) < 0) fail('内訳に ' + part + ' が無い: ' + slo.detail);
+}
+// 判定できた標本が 0 本の日は `ratio` が null (「達成率 0%」ではない)
+const sloQuiet = api.sloKpi(
+  Object.assign({}, sloJson, {
+    ratio: null,
+    breaches: [],
+    today: { date: '2026-09-11', t: 1789084800, judged: 0, met: 0, ratio: null, misses: [0, 0, 0, 0] },
+  })
+);
+if (!sloQuiet || sloQuiet.pct !== null) fail('判定 0 本の日が 0% になっている');
+if (sloQuiet.detail.indexOf('まだ判定できた標本がありません') < 0) fail('断り書きが無い: ' + sloQuiet.detail);
+// `/slo` を持たない版 (404 / 空) ではカードごと出さない
+for (const bad of [null, undefined, {}, { today: null }, { today: { judged: 0 } }]) {
+  if (api.sloKpi(bad) !== null) fail('/slo の無い版で null になっていない: ' + JSON.stringify(bad));
+}
+
 console.log(
   'OK: dashboard.html の JS は構文が通り、/history ' +
     samples.length +
@@ -1383,7 +1447,14 @@ console.log(
       : '見本の recent_quantiles で ' + api.fmtMsFine(exact.p50)) +
     '、無い版では区間の補間 ' +
     api.fmtMsFine(fell.p50) +
-    ' に落ちた'
+    ' に落ちた' +
+    '。KPI「今日の SLO」(T14.50) は作り物の /slo で ' +
+    slo.pct.toFixed(1) +
+    '% (外れの最多 ' +
+    slo.worst +
+    '、外れた時間帯 ' +
+    slo.breaches +
+    ' 件)、/slo を持たない版では出さない'
 );
 
 // 11. 匿名化した実データ (T14.35) で 2〜5 と 10 の読み方をもう一度回す。
