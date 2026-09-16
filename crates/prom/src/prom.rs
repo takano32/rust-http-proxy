@@ -481,6 +481,21 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
         "",
         m.rejected_per_client.load(Ordering::Relaxed),
     );
+    // 読めずに断った要求の理由別 (T14.28)。6 種で固定なので系列は 6 本きり
+    header(
+        &mut out,
+        "rejected_requests_total",
+        "counter",
+        "Requests refused before proxying them, by reason (400, 414 or 431)",
+    );
+    for (i, name) in crate::metrics::BAD_REQUEST_REASON_NAMES.iter().enumerate() {
+        line(
+            &mut out,
+            "rejected_requests_total",
+            &format!("reason=\"{}\"", name),
+            m.rejected_requests[i].load(Ordering::Relaxed),
+        );
+    }
     header(
         &mut out,
         "bytes_forwarded_total",

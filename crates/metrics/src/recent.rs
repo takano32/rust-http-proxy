@@ -31,7 +31,7 @@ use std::sync::atomic::{
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::metrics::{BlockCause, ErrCause};
+use crate::metrics::{BadRequestReason, BlockCause, ErrCause};
 use crate::sync::LockExt;
 
 /// エラーの個票を何件覚えておくか (固定)。
@@ -58,12 +58,15 @@ const MAX_SECS: u64 = 99_999_999;
 /// 個票 1 件の原因。
 ///
 /// 5xx を返したエラーは [`ErrCause`] (`/status` の `errors_by_cause` と同じ 8 つ)、
-/// 403 で拒否したものは [`BlockCause`] (T14.2 (4))。**403 は集計の配列には乗らない**
+/// 403 で拒否したものは [`BlockCause`] (T14.2 (4))、読めずに断った要求は
+/// [`BadRequestReason`] (T14.28)。**403 と 400 は集計の配列には乗らない**
 /// (乗せると `.rrd` の標本が領域に収まらず、版を上げて統計を捨てることになる)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryCause {
     Error(ErrCause),
     Blocked(BlockCause),
+    /// 読めずに 400 / 414 / 431 で断った要求 (T14.28)。`cause` は `bad_request:<reason>`
+    BadRequest(BadRequestReason),
 }
 
 impl EntryCause {
@@ -72,14 +75,17 @@ impl EntryCause {
         match self {
             EntryCause::Error(c) => c.name(),
             EntryCause::Blocked(c) => c.name(),
+            EntryCause::BadRequest(r) => r.cause_name(),
         }
     }
 
-    /// ファイルに書くときの符号 (T14.9)。5xx は 0〜7、403 は 100〜103。
+    /// ファイルに書くときの符号 (T14.9)。5xx は 0〜7、403 は 100〜103、
+    /// 読めなかった要求 (400 / 414 / 431) は 200〜205 (T14.28)。
     pub fn code(self) -> u64 {
         match self {
             EntryCause::Error(c) => c as u64,
             EntryCause::Blocked(c) => 100 + c as u64,
+            EntryCause::BadRequest(r) => 200 + r as u64,
         }
     }
 
@@ -97,6 +103,7 @@ impl EntryCause {
             101 => EntryCause::Blocked(BlockCause::Blocklist),
             102 => EntryCause::Blocked(BlockCause::ConnectPort),
             103 => EntryCause::Blocked(BlockCause::Local),
+            200..=205 => EntryCause::BadRequest(BadRequestReason::from_index((v - 200) as usize)),
             _ => EntryCause::Error(ErrCause::Other),
         }
     }
