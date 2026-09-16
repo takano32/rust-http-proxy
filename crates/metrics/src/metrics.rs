@@ -1662,7 +1662,7 @@ impl Metrics {
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
 fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<&Cache>) -> String {
     use crate::events::{Event, MAX_EVENTS, MAX_TEXT};
-    use crate::history::{RESOLUTIONS, Sample};
+    use crate::history::{History, RESOLUTIONS, Sample};
     use crate::log::{Line, MAX_LOG_LINE, MAX_LOG_LINES};
     use crate::recent::{
         BurstShot, ClosedCounts, ErrorEntry, MAX_BURSTS, MAX_CLIENT, MAX_ERRORS, MAX_RECENT,
@@ -1691,9 +1691,10 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         * crate::hostseries::SAMPLES
         * crate::hostseries::FIELDS
         * size_of::<u64>()) as u64;
-    // 履歴は 3 解像度の標本 (T12.4) と、閉じた接続の分布の窓 2 つ (T14.6)、
-    // 速さと半閉じの窓 2 つ (T14.25)
-    let samples: usize = RESOLUTIONS.iter().map(|(_, n)| n).sum();
+    // 履歴は 3 解像度の標本 (T12.4。**5 秒はメモリだけ 6 時間 = 4,320 本**。T14.32) と、
+    // 閉じた接続の分布の窓 2 つ (T14.6)、速さと半閉じの窓 2 つ (T14.25)。
+    // 窓の方は 5 秒 × 720 のままなので [`RESOLUTIONS`] を使う
+    let samples: usize = (0..RESOLUTIONS.len()).map(History::capacity).sum();
     let windows = RESOLUTIONS[0].1 + RESOLUTIONS[1].1;
     let history = (samples * size_of::<Sample>()
         + windows * size_of::<(u64, ClosedCounts)>()

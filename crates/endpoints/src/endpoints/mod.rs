@@ -1,7 +1,8 @@
 //! プロキシ自身のエンドポイント: `/dashboard` (コントロールパネル)、`/status`
 //! (`?sort=requests|errors|dns|slow` で `hosts[]` の上位 50 の切り出しを変えられる。T13.3)、
 //! `/healthz` (**本当の健康診断**。軽い JSON で、検査が 1 つでも偽なら 503。T14.12)、
-//! `/history` (JSON、`res=5|60|3600`。カーネルと cgroup の窓が `kernel` に付く。
+//! `/history` (JSON、`res=5|60|3600&n=`。カーネルと cgroup の窓が `kernel` に付く。
+//! `res=5` は 6 時間ぶん持っていて `n=` で 4,320 本まで遡れる。T14.32。
 //! `?since=&until=&summary=1` は**期間を畳んだ 1 行だけ**を返す。T14.24)、
 //! `/metrics` (Prometheus)、`/proxy.pac` (ブラウザの自動設定)、
 //! `/purge` と `PURGE` メソッド、`/lookup`、`/blocklist` (判定と手動の上書き)。
@@ -123,7 +124,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
          \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
-         \x20 /history?res=5|60|3600                      JSON: time series\n\
+         \x20 /history?res=5|60|3600&n=720                JSON: time series (res=5 keeps 6 h)\n\
          \x20 /history?since=&until=&summary=1            JSON: one summary row for a period\n\
          \x20 /profile?res=5|60                           JSON: stages, threads, locks\n\
          \x20 /daily?n=365                                JSON: one summary line per day (kept forever)\n\
@@ -202,7 +203,12 @@ pub fn handle(
             (200, "application/json", history_summary(ep, &params, res))
         } else {
             let res = res.map_or(0, crate::history::History::index_for);
-            (200, "application/json", history_body(ep, res))
+            // `n=` は**新しい方から何本返すか** (既定 720、`res=5` だけ 4,320 まで。T14.32)
+            let n = params
+                .iter()
+                .find(|(k, _)| k == "n")
+                .and_then(|(_, v)| v.parse::<usize>().ok());
+            (200, "application/json", history_body(ep, res, n))
         }
     } else if is_get && path == "/profile" {
         // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)
@@ -362,8 +368,10 @@ pub(super) fn status_body(ep: &Endpoint<'_>, sort: metrics::HostSort) -> String 
 /// 残っていない (T14.2 (3)) ので、カーネルの窓はメモリだけの別物になっている。
 /// 項目数も解像度も違うので、同じ行に混ぜずに `"kernel":{"keys":[...],"samples":[[...]]}` で並べる
 /// (1 時間の解像度はこの窓に無いので `null`)。
-pub(super) fn history_body(ep: &Endpoint<'_>, res: usize) -> String {
-    let base = ep.metrics.history.to_json_res(res);
+/// `n` は**新しい方から何本返すか** (`None` = 既定。`res=5` は 6 時間ぶん持っているが
+/// 既定は今までどおり 720 本。T14.32)。カーネルの窓は 720 本までしか無いので `n` で切らない。
+pub(super) fn history_body(ep: &Endpoint<'_>, res: usize, n: Option<usize>) -> String {
+    let base = ep.metrics.history.to_json_res_n(res, n);
     match base.strip_suffix('}') {
         Some(head) => format!("{},\"kernel\":{}}}", head, crate::kernel::history_json(res)),
         None => base,
