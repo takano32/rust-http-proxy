@@ -6,6 +6,7 @@
 //! 層ごとにクレートを分けてあるのは、`rustc` がクレート単位で全部を一度に抱えるため
 //! (動作環境のメモリ上限は 200 MB)。**外部クレートは 1 つも使っていない。**
 
+pub mod canary;
 pub mod history;
 pub mod kernel;
 pub mod metrics;

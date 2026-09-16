@@ -11,8 +11,8 @@ pub use proxy_base::{
     log_warn, sync,
 };
 pub use proxy_blocklist::{
-    Upstream, blocklist, body, clientio, headers, history, metrics, origin, persist, pool, request,
-    response, rrd, tls,
+    Upstream, blocklist, body, canary, clientio, headers, history, metrics, origin, persist, pool,
+    request, response, rrd, tls,
 };
 pub use proxy_config::{cache, config};
 pub use proxy_net::{acl, dns, net};

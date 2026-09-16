@@ -16,5 +16,5 @@ pub use proxy_blocklist::{
 #[cfg(target_os = "linux")]
 pub use proxy_cache::sys;
 pub use proxy_cache::{cache, signal, sysinfo};
-pub use proxy_metrics::{history, kernel, metrics, persist, recent, rrd};
+pub use proxy_metrics::{canary, history, kernel, metrics, persist, recent, rrd};
 pub use proxy_net::{acl, dns, net};

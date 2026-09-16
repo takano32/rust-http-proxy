@@ -1,5 +1,6 @@
 //! 個票を読み出すエンドポイント: `/errors` `/connections` `/dns` `/log` `/hosts` (T13.4)、
-//! `/recent` と `/snapshot` (閉じた接続と、1 回で全部。T14.4)、接続元の個票 `/clients` (T14.7)。
+//! `/recent` と `/snapshot` (閉じた接続と、1 回で全部。T14.4)、接続元の個票 `/clients` (T14.7)、
+//! 山の写真 `/bursts` (T14.6)。
 //!
 //! `/status` (集計) と `/history` (時系列) では「**誰が・いつ・なぜ**」が読めない。
 //! ここは「今この瞬間の中身」と「直近に起きたこと」を、集計に畳む前の形で出す口で、
@@ -15,7 +16,7 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use super::{Endpoint, parse_query};
-use crate::recent::{MAX_ERRORS, MAX_RECENT, RecentEntry};
+use crate::recent::{BurstShot, MAX_BURSTS, MAX_ERRORS, MAX_RECENT, RecentEntry};
 
 /// 個票の応答 1 本の上限 (256 KiB)。監視が 1 分おきに引いても回線を埋めない大きさで、
 /// `/errors` 500 件・`/connections` 240 件・`/hosts` 1,000 件のどれも収まる。
@@ -331,6 +332,43 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     (200, "application/json", out)
 }
 
+/// `/bursts?n=50` — 同時接続数が上限の一定割合を越えた瞬間の**写真** (新しい順。T14.6)。
+///
+/// T13.2 (上限に当たったら暇なトンネルを 1 本閉じる) が本当に効くかは「バーストが来たとき」
+/// にしか見えないが、来たときに `/connections` を見ている人はいない。そこで、
+/// `active_connections` が `PROXY_MAX_CONNS × PROXY_BURST_PERCENT` を**下から上に越えた
+/// 瞬間**に 1 枚だけ自動で撮る (同じ山では 1 枚。閾の 80% を下回ると次の 1 枚に備える)。
+///
+/// 撮るのは history スレッドなので、**accept の経路には比較 1 回しか増えていない**。
+/// 裏を返すと **`PROXY_STATS_PERSIST=off` (履歴スレッドを起こさない) では撮らない**。
+/// `--lite` では `/connections` の表そのものが空なので写真も撮らない (`"lite":true`)。
+pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    let n = num_param(query, "n", MAX_BURSTS, MAX_BURSTS);
+    let (shots, total) = ep.metrics.bursts.recent(n);
+    let mut out = String::with_capacity(8192);
+    out.push_str("{\"bursts\":");
+    let (shown, cut) = array_within(&mut out, shots.iter().map(BurstShot::to_json));
+    let _ = write!(
+        out,
+        ",\"count\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"threshold\":{},\"max_conns\":{},\"active\":{},\"armed\":{},\"pending\":{},\"truncated\":{},\"lite\":{}}}",
+        shown,
+        shown,
+        ep.metrics.bursts.len(),
+        MAX_BURSTS,
+        total,
+        ep.metrics.bursts.threshold(),
+        ep.metrics.bursts.max_conns(),
+        ep.metrics
+            .active_connections
+            .load(std::sync::atomic::Ordering::Relaxed),
+        ep.metrics.bursts.armed(),
+        ep.metrics.bursts.pending(),
+        cut,
+        !ep.metrics.conns.enabled()
+    );
+    (200, "application/json", out)
+}
+
 /// `/snapshot` の上限 (4 MiB)。個票 1 本 1 本の上限 ([`MAX_BODY`]) とは別枠。
 ///
 /// デプロイ先から 1 日 1 回取って保存する大きさなので、回線を占めない・エディタで
@@ -350,8 +388,9 @@ const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
 /// `/connections` や `/recent` を変えない)。**保持もしない** (要求ごとに組む)。
 ///
 /// 中身: `status` (`?sort=` の 3 通り)、`history` (5 / 60 / 3600 秒)、`dns`、`errors`、
-/// `connections`、`recent`、`hosts`、`clients` (T14.7)、`log`。**T14.3 の `/profile`、T14.6 の `/bursts` は、
-/// 入ったらここに 1 行ずつ足す** (`parts` に名前が出るので、
+/// `connections`、`recent`、`hosts`、`clients` (T14.7)、`bursts` (T14.6)、`log`。
+/// **`history.*` にはカーネルと cgroup の窓 (`kernel`) も一緒に入る** (T14.12。`/history` と同じ組み立て)。
+/// **T14.3 の `/profile` は、入ったらここに 1 行足す** (`parts` に名前が出るので、
 /// 読む側は「この版に何が入っていたか」を JSON だけで判別できる)。
 pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
     use crate::history::History;
@@ -379,6 +418,7 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ("recent", recent(ep, Some("n=2000")).2),
         ("hosts", hosts(ep, Some("limit=1000")).2),
         ("clients", clients(ep, Some("limit=1000")).2),
+        ("bursts", bursts(ep, Some("n=50")).2),
         ("log", log(Some("n=1000")).2),
     ];
     let names: Vec<&'static str> = part.iter().map(|(k, _)| *k).collect();
@@ -979,6 +1019,97 @@ mod tests {
                 MAX_BODY
             );
         }
+    }
+
+    /// `/bursts` は 50 枚の最悪 (接続元も宛先も上限いっぱい) でも 256 KiB に収まること (T14.6)。
+    #[test]
+    fn the_bursts_response_stays_under_256_kib() {
+        use crate::recent::{BurstShot, MAX_BURSTS, MAX_SHOT_CLIENTS, MAX_SHOT_TARGETS};
+
+        let m = Metrics::new();
+        let now = Instant::now();
+        let long_host = format!("{}.example.net:65535", "sub.".repeat(30));
+        for i in 0..(MAX_SHOT_CLIENTS + MAX_SHOT_TARGETS + 8) as u64 {
+            let slot = m
+                .conns
+                .register(
+                    i,
+                    &format!("2001:0db8:0000:0000:0000:ff00:0042:{:04x}%enp0s31f6", i),
+                    now,
+                )
+                .expect("登録できる");
+            slot.begin_tunnel(&format!("{}{}", i, long_host));
+        }
+        let rows = m.conns.snapshot();
+        for i in 0..(MAX_BURSTS as u64 + 5) {
+            m.bursts.push(BurstShot::take(
+                &rows,
+                i + 1,
+                usize::MAX,
+                usize::MAX,
+                4096,
+                2048,
+                u64::MAX,
+                u64::MAX,
+            ));
+        }
+        assert_eq!(m.bursts.len(), MAX_BURSTS);
+
+        let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
+        let concurrency = || crate::metrics::Concurrency {
+            max_conns: 0,
+            max_threads: 0,
+            live_threads: 0,
+            idle_threads: 0,
+            queued_jobs: 0,
+        };
+        let ep = Endpoint {
+            metrics: &m,
+            cache: &cache,
+            conn_id: 1,
+            port: 8080,
+            host: None,
+            pac_direct: &[],
+            lite: false,
+            readonly: false,
+            version: "test",
+            concurrency: &concurrency,
+        };
+        let body = bursts(&ep, None).2;
+        assert!(body.len() <= MAX_BODY, "{} B", body.len());
+        assert!(
+            body.contains("\"count\":50"),
+            "50 枚が全部入ること: {}",
+            &body[body.len() - 300..]
+        );
+        assert!(
+            body.contains("\"truncated\":false"),
+            "{}",
+            &body[body.len() - 300..]
+        );
+        assert!(
+            body.contains("\"recorded\":55"),
+            "{}",
+            &body[body.len() - 300..]
+        );
+        println!(
+            "bursts 50 枚 (最悪の 1 枚): {} B / 1 枚 {} B (上限 {} B)",
+            body.len(),
+            body.len() / MAX_BURSTS,
+            MAX_BODY
+        );
+        // `?n=` で絞れ、1 枚も無ければ空の一覧
+        assert_eq!(bursts(&ep, Some("n=3")).2.matches("\"seq\":").count(), 3);
+        let empty = Metrics::new();
+        let ep2 = Endpoint {
+            metrics: &empty,
+            ..ep
+        };
+        let none = bursts(&ep2, None).2;
+        assert!(none.contains("\"bursts\":[]"), "{}", none);
+        assert!(none.contains("\"recorded\":0"), "{}", none);
+        assert!(none.contains("\"armed\":true"), "{}", none);
+        assert!(none.contains("\"pending\":false"), "{}", none);
     }
 
     #[test]

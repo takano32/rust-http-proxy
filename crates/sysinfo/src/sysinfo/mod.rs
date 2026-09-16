@@ -6,10 +6,13 @@
 //! - [`proc`]: `/proc/self/status` のスレッド数と `/proc/self/fd` の記述子の数 / `RLIMIT_NOFILE`
 //! - [`net`]: `/proc/net/{netstat,snmp,sockstat}` のカーネルの TCP 統計 (T14.12)
 //! - [`cgroup`]: cgroup v2 の CPU の絞り (`cpu.stat` / `cpu.max`) と PSI (T14.12)
+//! - [`capabilities`]: この環境で何が読めるか (`/proc` の syscall、`TCP_INFO`、cgroup、IPv6、
+//!   リゾルバ、`$HOME`)。`null` が「無かった」のか「読めなかった」のかを先に答える (T14.15)
 //!
 //! Linux 以外や `/proc` が無い環境では各関数が `None` / `Unsupported` を返し、
 //! 呼び出し側 (キャッシュの自動予算) は固定の既定値へフォールバックする。
 
+pub mod capabilities;
 pub mod cgroup;
 pub mod fs;
 pub mod inotify;
@@ -17,6 +20,7 @@ pub mod mem;
 pub mod net;
 pub mod proc;
 
+pub use capabilities::Capabilities;
 pub use cgroup::{CgroupCpu, CgroupPressure, Psi, cgroup_cpu, cgroup_pressure};
 pub use fs::{
     FsInfo, dir_size_excluding, drop_page_cache, fs_info, fs_type, is_ram_backed, is_unsupported,

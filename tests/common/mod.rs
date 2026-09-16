@@ -185,6 +185,19 @@ fn start_test_proxy_parts(
     (port, handle, seen)
 }
 
+/// 履歴スレッド付きで起こす版 (T14.6)。
+///
+/// 山の写真を撮るのは history スレッドなので、写真を見るテストはこれで起こす。
+/// **周期を指定できる**ので 5 秒待たずに済む (`history::spawn_every`)。
+/// 状態ファイルには書かない (`store` は `None`)。
+pub fn start_test_proxy_with_history(config: Config, interval: Duration) -> (u16, Arc<Metrics>) {
+    let (port, _, metrics) = start_test_proxy_parts(config, CacheConfig::disabled(), None);
+    // 履歴の標本はキャッシュの使用量も読むので 1 つ渡す (無効のままでよい)
+    let cache = Arc::new(Cache::new(CacheConfig::disabled()));
+    rust_http_proxy::history::spawn_every(Arc::clone(&metrics), cache, None, interval);
+    (port, metrics)
+}
+
 /// `.env` の再読込のように**設定を差し替えられる**テスト用プロキシ (T11.6)。
 ///
 /// 返した `RwLock` の中身を入れ替えると、`serve` が次に受ける接続から新しい設定を引く
