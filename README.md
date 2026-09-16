@@ -129,6 +129,7 @@ scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z 
 scripts/weekly-report.py ~/rust-http-proxy-status/ -o week.md    # 置き場ごと渡す
 scripts/weekly-report.py ~/rust-http-proxy-status/*-snapshot.json --days 7 --top 10
 curl -s 'http://PROXY/daily?n=7' > daily.json && scripts/weekly-report.py daily.json
+scripts/weekly-report.py ~/rust-http-proxy-status/ --out json    # 表の元の辞書をそのまま
 ```
 
 **数字の求め方は `snapshot-diff.py` と同じ**です: `/history?res=3600` を **UTC の日で切って**
@@ -414,10 +415,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   - `/dashboard` (ブラウザ用のコントロールパネル: 要求/転送レート・命中率・**CONNECT 確立 p50 (直近 1,024 本の実測)** と p95・
     **今日の SLO (`PROXY_SLO` の 4 つの閾を満たした 5 秒の割合。T14.50)**・
     **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
-    **最近のエラー (直近 20)** と **いまの接続 (上位 50)** の表 (どちらも 5 秒ごと)、
+    **最近のエラー (直近 20)** と **いまの接続 (上位 50。列に「速さ」= `rate_bps` = 直近 5 秒のバイト/秒。T14.39)** の表 (どちらも 5 秒ごと)、
     URL の照会と削除、全消去)、`/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
-  - **`/inspect` (「調査」ページ: 起きたことを時間軸で読む。T14.8)**: `/dashboard` が「いま」の画面なのに対して、
-    閉じた接続の個票を**時間軸**で読む別のページです (`/dashboard/inspect` も同じもの)
+  - **`/inspect` (「調査」ページ: 起きたことを時間軸で読む。T14.8 / T14.44)**: `/dashboard` が「いま」の画面なのに対して、
+    閉じた接続の個票を**時間軸**で読む別のページです (`/dashboard/inspect` も同じもの)。
+    **「今日」(`/daily`) と「今週」(`/daily` の 7 行 + `/snapshots`) と「出来事と異常」(`/events`) も
+    このページにあります** — 日次・週次・異常を見に行く場所が 1 つで済むように (T14.44)
   - **`/probe.html` (「端末から測る」ページ。T14.33)**: プロキシ側の計測は「プロキシに届いてから」しか
     見えないので、**利用者のブラウザから** `/status` の往復と、プロキシ経由で小さな URL を取る時間を測り、
     `/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) に並べて読むページです
@@ -839,6 +842,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       `bytes_in` / `bytes_out` (T14.26。接続が閉じてからの集計) を見てください
     - keep-alive の HTTP 接続は中継中に `bytes` を置かないので `rate_bps` は 0 のままです
       (速さが出るのは CONNECT のトンネルです)。`--lite` では表そのものが空なので `rate_bps_total` は 0 です
+    - ダッシュボード (`/dashboard`) の「いまの接続」には**「速さ」の列**として出ます (T14.44)
   - `PURGE <url>` / `/purge?url=<url>` / `/purge?all=1` でキャッシュを消す、`/lookup?url=<url>` でエントリの状態を見る
   - `/history?res=5|60|3600[&n=720]` で **6 時間 / 1 日 / 30 日**の履歴。
     **`res=5` は 5 秒の標本を 6 時間ぶん (4,320 本) メモリに持ちます** (T14.32。バーストは数時間続く
@@ -1714,20 +1718,38 @@ curl -s http://127.0.0.1:8080/status | head -c 32     # {"schema":1,"status":"ok
 同じ読み方を回すので、本物の分布 (ホスト 817 件・1,440 標本) で壊れたらここで気づきます。
 
 **`/inspect` は「調査」ページ**です (`/dashboard/inspect` も同じもの。T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
-こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページ (64 KiB 以下) のままです。
+こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページのままです。
+**大きさの上限は 96 KiB** です (T14.8 は 64 KiB でしたが、T14.44 で「今日」「今週」「出来事と異常」の
+3 枚を足して **58,076 B** になり、64 KiB までの余白が 7 KiB しか残らなかったため上げました。
+外部ライブラリを読み込まない 1 枚という方針は変えていません。`node scripts/check-dashboard.js` が見張ります)。
 更新は**個票 (`/status` `/recent` `/events` `/history?summary=1`) が 10 秒ごと、表と散布 (`/bursts` `/clients`
-`/hosts` `/hosts/series`) は 30 秒ごと**です (`/hosts` は上位 200 まで。開いたままにしても監視より重くならないように)。
-描くのは 6 枚:
+`/hosts` `/hosts/series` `/daily` `/snapshots`) は 30 秒ごと**です (`/hosts` は上位 200 まで。
+`/daily` と `/snapshots` は日に 1 回しか変わらないので重い方に置いています。開いたままにしても監視より重くならないように)。
+描くのは 9 枚:
 
 - **タイムライン** (`/recent`): 横 = 時刻、縦 = 接続元 (宛先にも切り替えられます)、線 1 本が接続 1 本で、
   長さ = 寿命・色 = 閉じた理由 (8 種。`error:<原因>` は 1 色に畳みます)・太さ = 運んだバイト。
   範囲は 1 時間 / 6 時間 / 24 時間 (`/recent?since=`)。**`/events` の出来事**は縦の破線の印で重ねます
   (種類が増えても既定の色で描くだけなので壊れません)
+- **出来事と異常** (`/events?n=200`。T14.11 / T14.23): タイムラインに重ねた印と同じ出来事を、
+  **新しい順の表**で読みます (印は `eventMarks`、表は `eventRows` で別の関数です)。`anomaly` は色を変え、
+  **`cleared: <種類>` は立った出来事と対にして**続いた長さを両方の行に出します
+  (対の見つからない異常は「まだ続いています」)。知らない綴りが増えても既定の色で並ぶだけです
 - **起動からの窓**: `/history?since=restart&summary=1` (T14.24) を 1 要求で読み、「起動から」と「通算」を
   切り替えます。`?summary=1` を持たない版や `--lite` では `/history` の標本を `since_start_secs` で切って
   手元で畳みます (どちらでも同じ 1 行になります)
+- **今日** (`/daily?n=14`。T14.20): 日別の要求・転送・CONNECT・p50 / p95・名前解決のミス率・ミス 1 回・
+  エラー・山・RSS・版の表 (新しい順) と、いちばん新しい日の主な数字。`/daily` は**終わった日**しか書かないので、
+  今日ぶんは上の「起動からの窓」で読みます。「見ていた」の列は `secs ÷ 24 時間` で、
+  再起動した日は 100% に届きません。**この口を持たない版と `--lite` では「記録していません」**と出ます
+- **今週** (`/daily` の 7 行 + `/snapshots`。T14.40 / T14.34): サーバーに `weekly-report.py` は無いので、
+  **`/daily` の 7 行をこのページの中で足して**要求・転送・CONNECT・エラー (と率)・名前解決のミス率・
+  ミス 1 回 (ミスの数で重みを付けた平均)・最大同時・山・RSS を出します。**p50 / p95 は日をまたいで
+  足せない** (区間ヒストグラムが `/daily` に無い) ので、日ごとの値をそのまま並べて幅だけ書きます
+  (`weekly-report.py` と同じ判断)。各日の行には**その日の雪像** (`/snapshots`。T14.34) へのリンクが付きます
 - **遅い接続 (上位 50)** (`/recent?sort=slow`): 段階 (`queue` / `client_read` / `dns` / `connect` / `first_relay`。T14.3) の
-  積み上げ横棒と、**確立 − RTT** の列 (T14.5。RTT では説明できない待ちがどれだけかを 1 列で読むため)
+  積み上げ横棒と、**確立 − RTT** の列 (T14.5。RTT では説明できない待ちがどれだけかを 1 列で読むため)。
+  宛先は `/explain?host=` (T14.36) へのリンクです (1 相手ぶんを 1 枚で読む口)
 - **山の写真** (`/bursts`): 1 枚ずつ、接続元別・宛先別・状態別・種類別の内訳と、そのときのスレッド / fd
 - **接続元** (`/clients`): `User-Agent`・宛先の種類・IP リテラル宛て・RTT・初回 / 最終
   (RTT は標本が無ければ「–」です)
@@ -1737,13 +1759,18 @@ curl -s http://127.0.0.1:8080/status | head -c 32     # {"schema":1,"status":"ok
   ホストは描きません。接続の平均が 0 ms = 1 ms 未満のホストは y = 0 に描きます)
 - **ホスト別の折れ線** (`/hosts/series?top=8`。T14.22): この口を持っている版でだけ出る枠です
   (無ければ枠ごと出しません)
-- (ページの先頭に `/snapshot` へのリンクがあります。個票を 1 要求で持ち帰るときはそちら)
+- (ページの先頭に `/snapshot` と `/daily` `/snapshots` へのリンクがあります。個票を 1 要求で持ち帰るときはそちら)
 
 描画関数 (`timeline` / `slowRows` / `burstCards` / `clientRows` / `rttScatter` / `sinceStart` / `eventMarks` /
-`seriesLines`) は DOM に触らないので、`node scripts/check-dashboard.js` が
-`scripts/testdata/snapshot-local.json` (手元のベンチで取った `/snapshot` の実出力。宛先は
-`127.0.0.1` と `localhost` だけです) と `scripts/testdata/history-summary.json` (同じく `?summary=1` の実出力)、
+`seriesLines` / `dailyRows` / `weeklyRows` / `eventRows`) は DOM に触らないので、
+`node scripts/check-dashboard.js` が `scripts/testdata/snapshot-local.json` (手元のベンチで取った
+`/snapshot` の実出力。宛先は `127.0.0.1` と `localhost` だけです) と
+`scripts/testdata/history-summary.json` (同じく `?summary=1` の実出力)、
 それに渡せばデプロイ先の `/status` `/history` でも回します。
+「今日」「今週」「出来事と異常」の 3 つは、`/daily` と `/snapshots` の作り置き 9 日ぶん・
+`snapshot-local.json` の本物の `/events` (異常入り)・**匿名化した実データ** (T14.35。この版の雪像には
+`/daily` も `/events` も無いので**「無い版」の分岐**を実データで通し、`/history?res=3600` を UTC の日で
+束ねた週の足し算が `weekly-report.py` (T14.40) の週の数字と一致することも見ます) の 3 つで回ります。
 
 **`/probe.html` は「端末から測る」ページ**です (T14.33)。プロキシ側の計測は「プロキシに届いてから」しか見えないので、
 **利用者のブラウザから**測ってプロキシ側の数字と突き合わせるための 1 ページ (外部ライブラリなし、64 KiB 以下) です。

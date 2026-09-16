@@ -478,5 +478,35 @@ class Output(unittest.TestCase):
         self.assertIn("## 7. 遅かったホスト 上位 3 ", run([ANON, "--top", "3"]))
 
 
+class OutJson(unittest.TestCase):
+    """`--out json` は `build()` の辞書をそのまま出す (T14.40 の申し送り → T14.44)。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.j = json.loads(run([ANON, "--out", "json"]))
+        cls.d = build([ANON])
+
+    def test_the_json_is_the_dict_build_returns(self):
+        self.assertEqual(self.j["days"], self.d["days"])
+        self.assertEqual(self.j["week"]["all"]["errors"], self.d["week"]["all"]["errors"])
+        self.assertEqual(self.j["stats"]["2026-09-11"]["all"], self.d["stats"]["2026-09-11"]["all"])
+
+    def test_the_week_numbers_are_the_ones_of_the_markdown(self):
+        self.assertEqual(self.j["week"]["all"]["errors"], 101)
+        self.assertEqual(self.j["week"]["all"]["active_max"], 218)
+        self.assertEqual(self.j["week"]["samples"], self.d["week"]["samples"])
+
+    def test_unreadable_inputs_are_listed_in_the_json_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = os.path.join(tmp, "bad.json")
+            with open(bad, "w", encoding="utf-8") as f:
+                f.write("{")
+            j = json.loads(run([ANON, bad, "--out", "json"]))
+            self.assertEqual([e["path"] for e in j["skipped"]], [bad])
+
+    def test_md_is_still_the_default(self):
+        self.assertIn("## 1. 要求数", run([ANON]))
+
+
 if __name__ == "__main__":
     unittest.main()
