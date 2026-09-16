@@ -70,7 +70,9 @@
 数 % の差は見えない。
 
 **`--only connect` は tunnels/s (ops) を読まない**: TIME_WAIT 律速で同じバイナリでも ±24% 振れ、交互の組の中の位置だけで中央値が
-10% 動く (T14.1 の対照実験)。主指標は CPU/本 だけ、前後交互は **6 組** (T13.4)。
+10% 動く (T14.1 の対照実験)。主指標は CPU/本 だけ、**前後交互は 6 組** (実例: T13.4 の個票を足した変更は 3 組で +5.6% と出て、
+6 組に増やしたら +1.4% に収まった)。他の経路 (forward / HIT / tunnel / 1 接続 1 要求) は 3 組のままでよい。この決まりは
+`scripts/cpu-per-request.sh` の先頭の注記にも書いてある (T14.2 (6))。
 
 **ただし `--only tunnel` だけは例外で、プロキシ cpu4-5 / ベンチ cpu6-7 (両方 big)。**
 ベンチの blaster と reader はどちらも本気で回るスレッドで、LITTLE に置くとベンチが先に頭打ちになる
@@ -161,6 +163,35 @@ CONNECT の計測は 10 秒で 7〜10 万本張るので**毎回バケットを�
 **プロファイル**: `CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release` でシンボルを残し、
 `perf record -e cpu-clock -F 4999 -g -p <pid>` → `perf report`。この環境の `perf` は**ユーザー空間しか数えない**
 (`perf_event_paranoid = 2`。既定の `cycles` はサンプルが取れないので必ず `-e cpu-clock`)。カーネル側は utime/stime の差で見る。
+
+### デプロイ先に似せた条件 (手元で 250 ms を再現する)
+
+**§1 のここまでの数字はすべて loopback** で、デプロイ先の一番の癖 = **IPv6 が黙って落ちる**が入っていない。
+`scripts/deployed-like.sh` が root 無しでその条件を作る (T14.16)。
+
+```bash
+scripts/deployed-like.sh -- scripts/cpu-per-request.sh --only connect-multi --seconds 5
+scripts/cpu-per-request.sh --deployed-like --only connect-multi --seconds 5   # 同じもの
+scripts/deployed-like.sh --memory off --nofile 4096 -- <任意のコマンド>       # 上限は変えられる
+```
+
+作るのは `unshare -rmnC` の中の 5 つ: (1) lo だけのネット名前空間 (外へ出られないのでオリジンはベンチの内蔵のものだけ)、
+(2) **IPv6 の既定経路を `dev lo`** (出た SYN は戻って捨てられ、`connect` は**約 1.02 秒ハングしてから `ENETUNREACH`** =
+デプロイ先の「IPv6 リテラル宛ては約 1.0 秒で 502」と同じ姿)、(3) `/etc/hosts` を「元の内容 + `multi.test` の 2 行」に bind mount
+(`2001:db8::1` = 黒穴 / `127.0.0.1` = 生きている → `getaddrinfo` が AAAA と A の 2 候補を返す)、(4) `ulimit -n 1024` と
+`systemd-run --user --scope -p MemoryMax=256M`、(5) cgroup 名前空間 + `mount -t cgroup2` (プロキシ自身に 256 MiB の上限を見せる)。
+
+**`blackhole` の経路では再現しない**: この機械では `connect` がその場で `EINVAL` を返す (実測 0.000 秒) ので、プロキシは待たずに
+IPv4 へ移り 250 ms が出ない。**「黙って落ちる」ことが要る。**
+
+**`--only connect` は Happy Eyeballs を通らない** (宛先が IP リテラル = 候補 1 つで `crates/net/src/net.rs` の `addrs.len() == 1` の
+短絡に入る。T10.1 が「無罪」と結論した理由)。名前宛ての **`--only connect-multi`** は候補が 2 つになるので通り、**各スレッドの 1 本目の
+確立時間**とそのあとの p50 / p95 / max を出す。**`--conc` は 3 以上**にすること (T12.1 の「3 連敗で IPv4 を先頭」は同時に走り出した
+本数ぶんしか「まだ誰も負けていない」賭けを作らない。2 本目からはホストごとの記憶 `last_win_v6` が効いて IPv6 をそもそも試さない)。
+終わりに `/status` の `"ipv6"` を 1 回引いて印字する。cgroup の上限はベンチにも掛かる (太るものを測るときは `--memory off`)。
+
+**この条件の数字は §2 の表には載せない** (§2 は経路どうしを比べる表で、条件が 1 行だけ違う数字を混ぜられない)。名前空間が作れない
+機械ではスクリプトが「使えない」と印字して**終了コード 2** (名前空間の外で `--only connect-multi` を回したときも 2)。
 
 ### デプロイ先の測り方
 
@@ -3343,12 +3374,12 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
 **待つ間に決めてよいこと (数字に依らない)** → T14.2 にまとめた。**追加 (2026-09-16、利用者の指示)**: ボトルネックを推定できる
 プロファイル画面 → T14.3。
 
-**順番 (2026-09-16 に入れ替えた)**: **T14.1 → T14.2 → T14.3 → T14.4 → (T14.5 ∥ T14.7) → T14.6 → T14.8 → [T14.9 → T14.12 → T14.11 → T14.10 のうち
-再デプロイ前に間に合った分] → 再デプロイ → 24 時間 → T14.99** (T14.4 は個票の形を決めるので先、T14.5 と T14.7 は触るファイルが違うので並列、
-T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.13 は利用者が要ると言ったときだけ)。T14.99 (デプロイ後の様子見と締め) は
-「デプロイ先の数字で書く」タスクなので、T14.3 の `/profile` まで入った版でデータを取ってから書く方が、1 回の再デプロイで済み、
-締めの表に段階の内訳 (どこで待っているか) まで載せられる。T14.1 と T14.2 は並列、T14.3 はその 2 つをマージしてから。
-**採番の決まり (Phase 14 から)**: 各 Phase の `Tn.99` は「デプロイ後の様子見と修正、締めの文書」に予約する (§0)。
+**順番 (2026-09-16 に決め直した: 連番順)**: **T14.1 → T14.2 → T14.3 → … → T14.54 → T14.55 → T14.56 → T14.57 → T14.58 → push (人) → 再デプロイ (人) → 24 時間 → T14.99**。
+**番号順に 1 タスク 1 エージェントで進め、飛ばさない** (2026-09-16 の指示)。**テストは修正のたびに回さず、仕上げに 1 回** (2026-09-16 の指示。
+開発中は `cargo check -p` と対象クレートのテストだけをロック無しで回し、全体の fmt / clippy / test / build は 1 タスクにつき最後に 1 回だけ `mx` で。
+親も複数のブランチをマージしてから 1 回だけ検証する。ビルドとテストが 1 本のロックで直列なので、全体チェックの回数がそのまま待ち時間になる)。触るファイルが重ならないものは並列にしてよいが、着手の順は番号順
+(依存があるものは依存先のマージを待つ: T14.8 は T14.3 / T14.5 / T14.6 の出力を描くので 3 つのあと、T14.9 / T14.11 は T14.6 のリングのあと、
+T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプロイ前に間に合った分」という区切りは無くし、**T14.58 まで終えてから再デプロイ**する。
 
 | 既知の小物 | 出どころ | 何をするか |
 |---|---|---|
@@ -3438,13 +3469,34 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
       `MAX_ENTRIES` (4,096) の追い出しは warm を考慮しない (warm は 45 秒ごとに `resolved_at` が更新されるので事実上守られる)。
     - **デプロイ先の基準 (`dns_misses ÷ connects` 0.55 → 0.15 未満、主要 3 ホストのミス率 0.05 未満、平常時の CONNECT 確立 p50 8.3 → 6 ms
       以下、`refreshes` が 1 時間に warm × 80 回以下) は再デプロイ後 24 時間で見る (T14.99)。**
-- [ ] **T14.2 小物 7 件 (上の表)**
+- [x] **T14.2 小物 7 件 (上の表)**
   - 目的: どれも小さく、Phase 14 が「締める」でも要る。**1 件 1 コミット**。順は表のとおり。`/history` の `evicted_idle` は `.rrd` の版を
     上げずに足せるときだけ (標本の余白があるか先に見る。無ければ「見送り」と書いて次へ)。
   - 受け入れ基準: 各件で `cargo fmt` / `clippy --workspace --all-targets -- -D warnings` / `test --workspace` / `build --release` 全通過。
     1,000 要求目の応答に `Connection: close` が付くテスト、403 が `/errors` に `acl` / `blocklist` で乗るテスト、`/connections` の http 接続に
     最初の宛先が出るテスト。Docker は無い機械なので `.dockerignore` は「`git ls-files` の一覧に `target/` が無いこと」で代用。
     §1 の A/B の組数の記述と README の性能節 (デプロイ先の表) は文章の追加のみ。
+  - 結果 (2026-09-16、`42d46b9` / `19f0581` / `631c0eb` / `58d81be` / `e6dcf38` / `1b3c293` / `dadbd04`): **7 件とも入れた (見送りは無し)**。
+    1. **1,000 要求目の応答に `Connection: close`**: `http::Shared` に `last` を足し、立っていれば `keep_client` を倒す (応答ヘッダーの組み立ては
+       `Ctx::connection_line` の 1 か所)。上限は定数から `Config::max_requests_per_conn` (既定 1,000、環境変数では変えない) へ移し、
+       結合テストは 3 に下げて「3 本目に `Connection: close` が付き、直後に送った 4 本目はオリジンへ行かずに閉じられる」を見る。
+       費用は forward 40.14 → 40.78 us/要求 (+1.6%、3 組とも +0.6 us で揃ったが ±8% のぶれの中)。
+    2. **`.dockerignore`**: `target/` と `**/target/` (この機械の `target/` は 1.2 GB、除いたコンテキストは 2.3 MB)。Docker が無いので
+       `git ls-files` に `target/` が 0 件であることと、2 行が追跡ファイルに当たらないことで代用 (実際の `docker build` は未検証)。
+    3. **`/history` の `evicted_idle`**: **版は上げずに入った**。標本の領域は 508 B で版 2 は 62 項目 = 496 B しか使っておらず、63 項目 =
+       504 B で**残りは 4 B**。`Dec` は足りなければ 0、レコードはゼロ埋めなので、版 2 のレコードは `evicted_idle = 0` で読み戻る。`KEYS` 31 → 32。
+    4. **403 を `/errors` に**: `ErrCause` には足さない (`errors_by_cause` を 8 → 10 にすると標本が 520 B になり領域 508 B を超えて版が
+       上がる)。個票の原因を `EntryCause::Error(ErrCause) | Blocked(BlockCause)` の 2 本立てにし、403 は**個票だけ**に乗せた
+       (`BlockCause` = `acl` / `blocklist` / `connect_port` / `local`。集計は変えない)。
+    5. **keep-alive の HTTP の宛先を `/connections` に**: `ConnSlot::set_first_target` を接続の最初の要求で 1 回だけ (表の鍵は取らない)。
+       `bytes` は 0 のまま (要求ごとに書かない方針)。
+    6. **A/B の組数**: `scripts/cpu-per-request.sh` の先頭に「交互・捨て走り 1 本・3 組、`--only connect` だけ 6 組」を書いた (§1 にも)。
+    7. **README の性能節にデプロイ先の表**: 行ごとに出どころ (日付と道具) を付け、個人の閲覧先のホスト名は載せていない。
+    テスト 350 → 355 本 全通過。7 件すべて入れたあとの通しでも forward 41.41 → 41.30 us/要求 (−0.3%)、1 接続 1 要求 103.73 → 103.59 us/接続
+    (−0.1%) でぶれの中。
+    - **`.rrd` の標本の余白は残り 4 B**。次に `/history` の項目を足すときは版を上げるしかない (T14.6 / T14.10 / T14.12 で標本に足したいものは
+      **メモリ上の窓**にするか、版を 1 回だけ上げてまとめて足す — 上げるなら T14.99 の再デプロイの前に 1 回)。
+    - `evicted_idle` はプロセスの原子なので再起動で 0 に戻る。`/errors` の 403 は `dns_ms` / `connect_ms` が 0 固定。
 - [ ] **T14.3 プロファイル画面 (`/profile`): 待ちの段階、スレッドの CPU と状態、ロックの取り合いを 1 枚で見てボトルネックを推定する**
   - 目的: いまの統計は「ホスト別の名前解決 / 接続」と「窓つきの確立時間」までで、**1 要求の時間がどの段階に消えているか**
     (クライアントの要求を読む待ち、名前解決、接続、トンネル越しの TLS 握手、中継、ワーカー待ち) と、**プロセスの CPU がどの役割の
@@ -3520,7 +3572,7 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
   先頭 128 バイトだけ例外) **は入れない**。認証なしで見える (`/purge` と同じ方針) ので README に書く。
 - `/` の案内 (T12.3)、README のエンドポイント一覧、`scripts/check-dashboard.js` (T14.8 で描く関数) を各タスクで更新する。
 
-- [ ] **T14.4 閉じた接続の個票 `/recent` と、1 回で全部取る `/snapshot`**
+- [x] **T14.4 閉じた接続の個票 `/recent` と、1 回で全部取る `/snapshot`**
   - 目的: 2026-09-16 の分析で最も欲しかったのは「バーストのとき誰が何を開いたか」「遅かった 1 本はどの段階で遅かったか」で、
     `/connections` は**いま**しか見えず、`/errors` は失敗だけ。閉じた接続 1 本ごとの記録があれば、山も遅い接続も後から読める。
     あわせて、データ収集が 17 本の URL を手で叩く作業になっている (T14.0) ので、1 要求で全部取れる `/snapshot` と、それを保存して
@@ -3548,6 +3600,27 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
     (c) `?client=` と `?since=` で絞れる、`?sort=slow` が `connect` の大きい順、(d) `/snapshot` が 1 要求で上の全部を含み 4 MiB 以下
     (各キーがある)、(e) 2,000 件のリングを `n=2000` で読んで 256 KiB で打ち切られる (`truncated`)。費用: 共通の決まり (接続の終了に
     リングの鍵 1 回と 1 件の書き込み)。`collect-deployed.sh` を手元のプロキシに対して回して要約が出ること。
+  - 結果 (2026-09-16、`721e6a4` / `f8e7abf` / `efb3411`): 閉じた接続の個票 **`/recent?n=200&since=&client=&sort=time|slow|bytes`** (既定 200、
+    最大 2,000、リングは 2,000 件固定) を足した。1 件 = 接続 id・開いた時刻・接続元・宛先・種類・寿命・要求数・**上り / 下り別のバイト**・
+    **閉じた理由** (`client_eof` / `server_eof` / `idle_timeout` / `keepalive_timeout` / `evicted` / `limit` / `error:<原因>` / `shutdown` の 8 種)・
+    状態コード・預かり所にいた合計秒と回数・**段階の ms** (`dns` / `connect`、`first_byte`。T14.3 の `queue` / `client_read` / `first_relay` は
+    欄だけ作って 0 — T14.3 のマージで親が繋ぐ)。ありふれた 1 件 225 B、最悪 446 B。書くのは**接続の終了で 1 回だけ** (`ActiveGuard::drop` =
+    `ConnSlot` の抹消と同じ場所)。要求ごとの積み上げは接続を持っているスレッドの箱 (`Cell<ConnTally>`) で行うので**要求ごとの原子操作は
+    1 つも増えない**。閉じた理由は先着優先。**自分宛て (`/status` など) だけで終わった接続は残さない** (監視の 5 秒おきの引きでリングが
+    埋まるため)。**`/snapshot`** は `/status` (`?sort=` 3 通り)・`/history` (5 / 60 / 3600)・`/dns`・`/errors`・`/connections`・`/recent`・`/hosts`・
+    `/clients` (マージで足した)・`/log` を 1 つの JSON に (`parts` に名前が並ぶ)。**組み立ては同じプロセス内の関数呼び出し**で自分へ繋ぎ直さない。
+    上限 4 MiB、越えたら `recent` → `log` → `history.5` の順に `null` へ落として `dropped` に出す。実測 13,708 B (静かなとき) / 21,996 B
+    (要求 20 本のあと)。`scripts/collect-deployed.sh HOST:PORT [DIR]` が `/snapshot` を `~/rust-http-proxy-status/<UTC 時刻>-snapshot.json` に
+    保存し、要点 (`scripts/snapshot-summary.py`)・`status-diff.py` (前回があれば差分)・`check-dashboard.js`・`probe-deployed.sh` を続けて回して
+    Markdown 1 枚を出す (`PROBE=0` で本物の要求を送らない)。**費用**: forward 40.17 → 40.84 us/req (+1.7%)、CONNECT 確立 131.16 → 131.03 us/op
+    (−0.1%、6 組) でどちらもぶれの中、`--lite` のシステムコール 5.01 回/要求 のまま。既定プロファイルの forward 44.54 → 45.06 us/req (+1.2%)、
+    **1 接続 1 要求 109.15 → 111.57 us/req (+2.4 us/接続 = リングの鍵 1 回と文字列 2 本の複製)**。結合 6 本・単体 8 本を新設、テスト 375 本
+    (マージ後の main では 384 本)。
+    - http 接続の `target` にポートが無い (`/connections` と同じ形。直すなら 2 つ一緒に)。403 / 4xx で断った接続は `/recent` に残らない
+      (`/errors` にはある)。手元での確認には `PROXY_STATS_PERSIST=on` が要る (off だと `/history` が空)。
+    - 次が繋ぐ場所: T14.3 は `recent.rs` の `STAGES` の後ろ 3 つ (`queue` / `client_read` / `first_relay`) を `Ctx::log()` と `tunnel::report()` で
+      埋めるだけ。T14.5 は `RecentEntry` に `rtt_ms` / `retrans` を足して `ConnTally` 経由で `ConnSlot::finish` へ。T14.6 は `Metrics::record_closed()`
+      で理由ごとに数える (2,000 件を複製しない)。
 - [ ] **T14.5 カーネルの RTT と再送 (`TCP_INFO`) を接続の個票とホスト別・接続元別に**
   - 目的: 「mtalk.google.com の 30 ms は RTT か」「urlscan.io の 250 ms は RTT か」「利用者 → プロキシの往復は何 ms か」を、これまでは
     接続にかかった時間 (SYN の往復 + α) から推測していた。カーネルは各ソケットの **平滑化 RTT・再送回数・輻輳窓** を持っている
@@ -3573,7 +3646,7 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
     デプロイ先 (再デプロイ後): 手元から `probe-deployed.sh` を回したあと `/status` の `clients[]` にこの機械の IP の `rtt_ms` が
     **40〜60 ms** (手元の `time_connect` 0.04〜0.06 秒と合う) で出ること、`hosts[]` の mtalk.google.com の `rtt_ms` が接続の時間
     (30 ms) と同じ桁で出ること。
-- [ ] **T14.6 山の写真 `/bursts` と、閉じた理由・寿命・バイトの分布**
+- [x] **T14.6 山の写真 `/bursts` と、閉じた理由・寿命・バイトの分布**
   - 目的: T13.2 の効きは「バーストが来たとき」にしか見えないが、来たときに `/connections` を見ている人はいない。同時接続が
     上限の一定割合を超えた瞬間に自動で写真を撮る。あわせて、トンネルが**誰に・どれだけ生きて・なぜ**閉じられたかの分布が無い
     (`PROXY_TUNNEL_IDLE_SECS` 300 秒と `PROXY_KEEPALIVE_SECS` 15 秒が長いのか短いのかを決める材料)。
@@ -3591,7 +3664,26 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
     接続元 1 つ、宛先の上位に試験のホスト)、6〜8 本目では増えず、2 本まで減ってから再び 5 本で 2 枚目。`/history` の標本に閉じた理由と
     寿命の区間が出る (`check-dashboard.js` で読める)。費用: 共通の決まり (越えていない経路は比較 1 回、写真は history スレッド)。
     デプロイ先: 次のバーストで `/bursts` に写真があること (親が見る)。
-- [ ] **T14.7 接続元の個票 `/clients` (`User-Agent`、宛先の多様さ、ポート、RTT)**
+  - 結果 (2026-09-16、`0fbfc40` / `4499d09` / `40b8625`): **山の写真 `/bursts?n=50`** と、**閉じた接続の分布** (`/history` の `closed`) を足した。
+    写真は同時接続数が `PROXY_MAX_CONNS × PROXY_BURST_PERCENT` (既定 50、`0` で撮らない) を**下から上に越えた瞬間**に 1 枚。同じ山では
+    1 枚だけで、閾の 80% を下回るまで次は撮らない。1 枚 = 時刻・通し番号 `seq`・`active` (旗が立った瞬間は `trigger_active`)・
+    `max_conns` / `threshold`・接続元ごとの本数 (上位 16 + `clients_other`)・宛先の上位 10・状態別 5 種・種類別・`evicted_idle` と
+    `rejected_overload` の累計・スレッド / fd。リングは 50 枚 (ありふれた 1 枚 516 B、最悪 2,613 B)。**撮るのは history スレッド**で、
+    **accept の経路に増えたのは `cfg.burst_at` との比較 1 回だけ** (`OpenGuard::acquire` の既存の `fetch_add` の戻り値を使うので原子操作も
+    増えない)。分布は `Metrics::record_closed()` (= `/recent` に 1 件書くのと同じ場所、既に鍵の内側) で、閉じた理由 8 種・寿命の 12 段
+    (境目に `PROXY_KEEPALIVE_SECS` の 15 秒と `PROXY_TUNNEL_IDLE_SECS` の 300 秒を置いた)・上り / 下りバイトの 12 段・寿命と預かり秒と
+    バイトの合計を **5 秒 × 720 と 60 秒 × 1,440 のメモリ上の窓**に畳む (`.rrd` には書かない)。`/history?res=5|60` の標本の後ろに
+    別の配列 (`"closed":{"keys":[...],"samples":[[...]]}`。件数 0 の窓は出さない)。空で 482 B、全部埋まって 123,598 B。`/snapshot` の
+    `parts` に `bursts`。**費用**: forward 42.29 → 41.18 us/req (−2.6%、3 組。変更後が 3 組とも速いのは交互の組の中の位置の効果 = ぶれの中)、
+    CONNECT 確立 136.47 → 136.07 us/op (−0.3%、6 組)、`--lite` のシステムコール 5.02 → 5.01 回/要求。結合 5 本・単体 16 本を新設、
+    テスト 384 → 405 本 全通過。実バイナリで確かめた 1 枚: `active` 5 / `threshold` 4 / 接続元 1 つ 5 本 / `parked` 5 / `threads` 13 / `fds` 21。
+    - 写真は history スレッドが撮るので `PROXY_STATS_PERSIST=off` と `--lite` では撮らない。越えてから撮るまで最大 5 秒。`PROXY_MAX_CONNS` を
+      `.env` で変えたときの `threshold` は次に越えるまで古い値。分布もリングもメモリだけ (T14.9 の対象)。
+    - T14.23 が使う口: `/bursts` の `seq` / `armed` / `pending`、`/history` の `closed.reasons` / `closed.life` / `closed.parked_secs_sum`。
+      T14.8 は `check-dashboard.js` の `closedRows` / `burstRows` をそのまま描画関数へ。
+    - マージのとき `recent.rs` のテストの `Endpoint` リテラル 1 か所に `readonly: false` を親が足した。
+    - **デプロイ先の基準 (次のバーストで `/bursts` に写真) は再デプロイ後に親が見る。**
+- [x] **T14.7 接続元の個票 `/clients` (`User-Agent`、宛先の多様さ、ポート、RTT)**
   - 目的: 2026-09-16 に見知らぬ接続元 (`161.33.196.121`) が現れたが、`/status` の `clients[]` は要求数と応答時間しか無く、**それが誰の
     どのプログラムで、何をしているか**が分からない (宛先の顔ぶれから利用者本人と推測するしかなかった)。認証なしの公開プロキシなので、
     接続元ごとに「初めて見た時刻」「`User-Agent`」「宛先の多様さ」「使ったポート」「IP リテラル宛ての数」が要る。
@@ -3606,6 +3698,21 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
     `distinct_targets` 1、`ports` に 試験のポート、IP リテラル宛てを 1 本足すと `literal_targets` 1。要求ごとの費用 0 (最初の要求だけ
     `User-Agent` を見る。2 要求目からは旗で飛ばす)、forward の CPU/要求 ±ぶれの中。デプロイ先: 再デプロイ後 `/clients` で
     `161.33.196.121` の `agents` と `distinct_targets` が読め、本人の端末かどうかが判断できること (親が見る)。
+  - 結果 (2026-09-16、`1dfeb74`): 接続元の個票を足した。`ClientStats` (接続元の表は `HostStats` からこれに変わった) に `first_seen`
+    (`0` = 状態ファイルから読み戻した)、`agents` (最大 4 種・先頭 128 バイト) と `agents_dropped`、`distinct_targets` (最大 256、超えたら
+    `distinct_targets_capped`)、`ports` (最大 8 種) と `ports_other`、`literal_targets`、`nonstandard_ports`。**書くのは `record_client` が
+    既に取っている鍵の内側**で、原子操作もシステムコールも増えていない。`User-Agent` を拾うのは**接続の最初の要求だけ** (2 要求目からは
+    旗で飛ばす。`--lite` では読まない)。`/clients?sort=requests|recent|targets|literal&limit=200` (全接続元、最大 1,000) と、`/status` の
+    `clients[]` の末尾に `first_seen` / `agent` / `distinct_targets` / `literal_targets`。**`.rrd` の版は上げていない**: 1 スロット 572 B の
+    うち 520 B が埋まっていて余白は 52 B、`agents` だけで 4 × 128 B 要るので新しい欄はメモリだけ (`"persisted":false`)。
+    費用は forward の CPU/要求 **40.57 → 40.96 us (+0.95%、6 組)**、CONNECT 確立 **132.97 → 134.22 us (+0.94%、6 組)**、`--lite` の
+    システムコール 5.01 → 5.01、確保 10.01 → 10.01 回/要求。応答は接続元 1,000 件の最悪で 260,980 B (289 件で打ち切り)、既定 200 件なら
+    180,613 B。テスト 361 → 370 本 全通過。
+    - **宛先の分解を要求ごとにやり直す版は +3.3% だった** (40.94 → 42.27 us、6 組中 5 組が同じ向き)。100 ns の仕事が 1 us になって出るのは、
+      接続元の表の鍵が 8 並列の forward では取り合いになるため。**同じ宛先が続く間は分解も指紋も表の引き直しもしない記憶**
+      (`last_target`) を入れて +0.95% に戻した。宛先は名前ではなく 64 ビットの指紋だけを持つ。
+    - `.rrd` の `HostStats` のスロットに **余白 52 B** (hosts と clients で共用)。T14.5 の RTT 4 欄 (32 B) は版を上げずに入る。
+    - **デプロイ先の基準 (再デプロイ後 `/clients` で `161.33.196.121` の `agents` と `distinct_targets` が読める) は T14.99 で見る。**
 - [ ] **T14.8 ダッシュボードの「調査」ページ (個票を時間軸で読む)**
   - 目的: T14.3〜T14.7 で増える個票を、URL を手で叩かずに読めるようにする。`/dashboard` は「いま」の画面なので、**「起きたこと」を
     時間軸で読む別のページ** (`/dashboard/inspect` または `/inspect`) にする (既存のダッシュボードは増やさない)。
@@ -3621,6 +3728,9 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
   - 受け入れ基準: `node scripts/check-dashboard.js` が `inspect.html` の描画関数 (`timeline` / `slowRows` / `burstCards` / `clientRows` /
     `rttScatter` / `sinceStart`) を手元のベンチで取った `/snapshot` の実出力で例外なく通すこと。`inspect.html` は 64 KiB 以下。
     `/inspect` は `--lite` でも 200 (個票が無ければ「記録していません」)。
+**`.rrd` の標本の余白は残り 4 B (T14.2 (3) の実測)**: T14.6 / T14.10 / T14.12 が「標本の余白に入れば」と書いているものは、実際には
+**入らない**。メモリ上の窓にするか、版を 1 回だけ上げてまとめて足す (上げるなら T14.99 の再デプロイの直前に 1 回。統計は消える)。
+
 **さらに候補 (2026-09-16、利用者の指示: 他にもあれば T14.9〜)**。T14.4〜T14.8 が「何が起きたか」を残すのに対し、ここは
 **「起きたときの環境」(カーネル・cgroup・リゾルバ・設定の変更) と「何も起きていない時間帯」(利用者の要求が無いときの待ち) を残す**もの、
 および再起動をまたいで個票を失わないためのもの。共通の決まりは T14.4〜T14.8 と同じ。**再デプロイ前に間に合った分だけ入れる**
@@ -3640,7 +3750,7 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
   - 受け入れ基準: 結合テストで、プロキシを起動 → CONNECT 3 本を閉じる → 6 秒待つ → 止める → 同じ `$HOME` で起動 → `/recent` に
     3 件が `restored` として見える。ファイルは 4,194,304 B 固定で伸びない (10,000 件閉じても)。`write_errors` 0。費用: 接続の経路は 0 増
     (history スレッドの 5 秒ごとの書き込みだけ。1 回 ≤ 64 KiB)。`cargo test --workspace` 全通過。
-- [ ] **T14.10 canary (利用者の要求が無い時間帯も待ちを測る)**
+- [x] **T14.10 canary (利用者の要求が無い時間帯も待ちを測る)**
   - 目的: 平常時の p50 8.3 ms は利用者の要求があった時間帯だけの値で、深夜や利用者が居ない日は 1 点も無い。名前解決 (リゾルバ) と
     TCP 接続 (回線) の遅さが**利用者側の遅さと切り分けられない** (「遅かったのはプロキシか、回線か、利用者の端末か」)。
     プロキシ自身が 60 秒に 1 回、**直近 1 時間で最も使われたホスト**へ名前解決と TCP 接続 (握って即閉じる。TLS も HTTP も送らない) を
@@ -3657,6 +3767,21 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
     `host` / `at` が入り、`/history` の標本に値が出る。`off` で 1 本も繋がない (試験のオリジンの `accept` 回数 0)。費用: 接続の経路は 0 増。
     デプロイ先: 24 時間の `/history` で canary の `dns_ms` と `connect_ms` が 1 時間に 60 点あり、利用者の要求の CONNECT 確立 p50
     (同じ時間帯) と ±3 ms で合うこと (合わなければ「利用者側」に原因がある、と読める)。
+  - 結果 (2026-09-16、`72058bc` / `c6b689d`): 利用者の要求が無い時間帯も待ちを測る canary を入れた。**`PROXY_CANARY_SECS` 秒 (既定 60、
+    最小 1) に 1 回、`PROXY_CANARY` (`auto` | `off` | `host1,host2`、既定 `auto`、`.env` で即時反映) の宛先へ「名前解決 → TCP 接続 →
+    即 `close`」だけ**を行う (相手に届くのは 1 分に 1 回の名前解決と SYN / FIN だけ)。`auto` は**直近 1 時間で最も要求の多い CONNECT の
+    宛先**を毎周期選び直す。名前解決は表を通さない `dns::resolve_uncached` (新設。表に書くと利用者の `dns.hits` / `dns.misses` と keep-warm が
+    読めなくなる)、接続は `net::connect_resolved` (Happy Eyeballs も IPv4 優先の学習もそのまま)。締め切り 5 秒。**回すのは `canary`
+    スレッド 1 本**で、起こすのは履歴スレッドの周期からの 1 行 (`canary::tick`。履歴スレッドは待たない)。結果は `/status` の `canary`
+    (`mode` / `secs` / `runs` / `failures` / `at` / `host` / `dns_ms` / `connect_ms` / `error`)、**メモリ上の窓** (5 秒 × 720 / 60 秒 × 1,440) を
+    `/history?res=5|60` に別の配列 (`"canary":{"keys":[...],"samples":[[...]]}`)、`/metrics` に `sorahost_canary_seconds{stage="dns"|"connect"}`。
+    失敗は `/errors` に `kind: "canary"` で 1 件 (集計 `errors_by_cause` には足さない)。**`--lite` と `PROXY_STATS_PERSIST=off` では履歴スレッドごと
+    止まるので回らない。** 手元の受け入れ基準は全部満たした (結合テスト 2 本 + 単体 6 本: `off` で 1 本も繋がない、閉じたポートで `/errors` に
+    `canary` / `refused`、`auto` が上位ホストを選ぶ、実バイナリ + `.env` で止められる)。**費用 0**: forward の CPU/要求 42.93 → 41.41 us
+    (3 組、ぶれの中)、`--lite` のシステムコール 5.02 → 5.01 回/要求。テスト 385 本。
+    - `/errors` を canary が埋める恐れ: 手で並べた宛先が繋がり続けないと 1 周期に 1 件入る (`auto` は 1 時間で対象が消える)。
+      窓は再起動で消える (T14.14 で版を上げるなら標本に入れる候補)。`/history?res=3600` の canary は空。T14.37 の IPv6 側は `probe()` に足す。
+    - **デプロイ先の基準 (24 時間で 1 時間に 60 点、利用者の CONNECT 確立 p50 と ±3 ms) は再デプロイ後に見る。**
 - [ ] **T14.11 `/events` (起動・設定の再読込・ブロックリスト更新・IPv6 の切替・圧迫・バラスト・状態ファイルの異常を 1 本の時系列に)**
   - 目的: 数字が動いたとき「そのとき何を変えたか」が無い。再読込 (`applied` / `restart_required`) は `/status` の `settings` に最後の
     1 回しか残らず、起動 (= 再デプロイ) の時刻は `since_start_secs` から逆算するしかない。`/log` は warn 以上なので info の出来事
@@ -3703,6 +3828,564 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
   - 受け入れ基準: 結合テストで `PROXY_MAX_CONNS_PER_CLIENT=2` にして同じ接続元から 3 本目の CONNECT が 503、別の接続元 (`127.0.0.2`) は
     200、`/status` の `rejected_per_client` が 1。既定 (0) では今までどおり (`maxconns_test` / `overload_test` が無修正で通る)。
     費用: 既定では分岐 1 回、設定時は接続ごとに表の鍵 1 回 (登録と同じ鍵)。
+**さらに候補 (2026-09-16、続き: T14.14〜)**。ここからは「データを取る」より **「取ったデータを失わない・読める・再現できる」** ものと、
+公開プロキシとして必要になったときの**止め方**。優先は T14.15 → T14.17 → T14.14 (履歴に足す項目を採ると決めたとき) → T14.16 →
+T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 の指示。順は T14.15 の次)。
+
+- [ ] **T14.14 `.rrd` を版 3 にし、版 2 を読み戻して変換する (統計を捨てない) + 標本に余白を持つ**
+  - 目的: 標本の余白が 4 B しか無い (T14.2 (3))。T14.6 (閉じた理由 8 種・寿命とバイトの 12 段)、T14.10 (canary)、T14.12 (カーネルと
+    cgroup の統計) を `/history` に持ちたければ版を上げるしかないが、今の作りは「版が違えば読み捨てて作り直す」(T12.4) で
+    **通算の統計 (いま 1 万要求 / 800 ホスト) が消える**。1 回だけ版を上げ、**版 2 のレコードを版 3 の形に変換して読み戻す**仕組みを
+    作れば、以後は項目を足しても統計を失わない。
+  - 変更箇所: `crates/metrics/src/persist.rs` (版の印 `SHPRRD02` → `SHPRRD03`、領域の割り付け、変換)、`crates/rrd/` (レコード長の
+    変更に耐える `Ring` の読み戻し)、`crates/metrics/src/history.rs` (`Sample` の項目を「固定の順 + 予備」にする)、README (`.rrd` の
+    大きさと版)。
+  - やること: (1) 標本のレコードを 512 B → **1,024 B** (予備 ≈ 500 B = 60 項目ぶん)、ホスト別のレコードにも予備 64 B、接続元別にも 64 B。
+    ファイルは 4 → **8 MiB** 固定。(2) 起動時に版の印を見て、**版 2 なら領域ごとに読み → 版 3 の形に詰め直して書き戻す** (変換は
+    1 回、数十 ms)。版 1 以前と壊れたファイルは今までどおり捨てる。(3) `state_file` に `"version": 3, "converted_from": 2|null` を出す。
+    (4) 変換のテスト: 版 2 のファイルを fixture (架空のホスト名、`scripts/testdata/`) から起動して、ホスト別の `requests` 合計と
+    `/history?res=3600` の標本数が変換前後で一致する。(5) T14.6 / T14.10 / T14.12 の履歴の項目はこの版で足す (それぞれの本文の
+    「メモリ上の窓」の但し書きはこのタスクを入れたら不要)。
+  - 受け入れ基準: 上の (4) の結合テスト (件数と合計が一致、`write_errors` 0、`converted_from` 2)、新規起動では `converted_from` null。
+    版 3 で 60 項目足しても版が上がらないこと (単体テストで予備を使い切る手前まで足して読み戻す)。ファイルは 8,388,608 B 固定。
+    費用: 変換は起動時 1 回 (時間を報告)、要求の経路は 0 増。**デプロイ先: 再デプロイ後に `state_file.converted_from` が 2 で、
+    `/hosts` の通算 (1 万要求) が残っていること** (親が見る)。
+- [x] **T14.15 `/config` (効いている設定とその出どころ) と `capabilities` (この環境で何が読めるか) と `--check`**
+  - 目的: データを読むとき「そのときの設定は何だったか」「`null` は読めなかったのか無かったのか」が要る。`/status` の `settings` は
+    再読込の回数と最後の結果だけで、**効いている値** (既定 / 環境変数 / `.env` のどれから来たか) が無い。T14.3 / T14.5 / T14.12 は
+    環境によって `partial` / `null` になるので、**この環境で何が読めるか**を 1 か所に出す。
+  - 変更箇所: `crates/config/src/config.rs` (各値の出どころを持つ `Source::{Default, Env, EnvFile}`)、`crates/reload/src/reload.rs`
+    (再読込で出どころを更新)、`crates/endpoints` (`/config`)、`src/main.rs` (`--check`: 起動せずに `capabilities` と `/config` の内容を
+    印字して終わる。終了コードは全部読めれば 0)、`crates/sysinfo` (`capabilities` の判定: `/proc/self/task/*/syscall` が読めるか、
+    `TCP_INFO` が取れるか、cgroup の `cpu.stat` / `*.pressure` があるか、IPv6 の既定経路があるか、リゾルバ (`/etc/resolv.conf` の
+    nameserver) が 1 秒以内に答えるか、`$HOME` に書けるか)、README。
+  - やること: (1) `/config`: 全 `PROXY_*` と `SERVER_*` の**効いている値**と `source`、秘密は無い (このプロキシに秘密の設定は無い。
+    `PROXY_TLS_CA_FILE` はパスのみ)。(2) `capabilities` を `/status` と `/config` に (`{"proc_syscall":true,"tcp_info":true,
+    "cgroup_cpu":false,"ipv6_route":true,"resolver_ms":9,"home_writable":true}`)。判定は起動時 1 回 + 1 時間ごと。
+    (3) `rust-http-proxy --check` は上を印字して終わる (Pterodactyl の起動前確認に使える)。
+  - 受け入れ基準: 結合テストで `.env` に `PROXY_DNS_TTL_SECS=30` を書いて起動 → `/config` の該当行が `{"value":30,"source":"env_file"}`、
+    書いていない行が `"default"`。`--check` の終了コード 0 と印字に `capabilities` の 6 項目。費用 0 (要求の経路は触らない)。
+    デプロイ先: 再デプロイ後の `capabilities` で T14.3 / T14.5 / T14.12 の `partial` / `null` の理由が説明できること。
+  - 結果 (2026-09-16、`b6664b6` / `28f9064` / `151c368`): `/config` (全 `PROXY_*` / `SERVER_*` 57 件の**効いている値**と `source`)、`capabilities`
+    (7 項目)、`--check` を入れた。`source` は `default` / `env` / `env_file` / `cli` で、**効いた値にだけ印を付ける**ので読めない書き方は既定に
+    落ちて `default` のまま出る (「書いたのに効かない」がその場で分かる)。再読込では当てた項目の出どころだけを写し、起動時に固定される項目は
+    起動時のまま (理由は同じ応答の `reload.restart_required`)。`capabilities` は `.env` の監視スレッドが**起動時 1 回 + 1 時間ごと**に測り
+    (専用スレッドを増やさない)、要求の経路は覚えた結果を読むだけで費用 0。`proc_syscall` は `/proc/thread-self/syscall`、`tcp_info` は
+    待ち受けソケットへの `getsockopt(SOL_TCP, TCP_INFO)`、`ipv6_route` は `/proc/net/ipv6_route` の既定経路、`resolver_ms` は表を通さない
+    1 回の解決 (締め切り 2 秒、別スレッド)。大きさ: `/config` 既定 3,639 B・最悪 7,936 B (上限 64 KiB)、`/status` は +約 150 B。
+    この機械の `--check` は**終了コード 0** で 6 項目とも `[ok]`、`resolver_ms` は冷えた 1 回目 862 ms / 温まって 16 ms。テスト 384 本全通過
+    (新規 12 本)。
+    - マージのとき親が `/config` の一覧に `PROXY_ENDPOINTS_READONLY` / `PROXY_ALLOW_CLIENTS` (T14.18) と `PROXY_BURST_PERCENT` (T14.6) を足し、
+      `from_env` の該当箇所に出どころの印を付けた (ブランチが分かれていたため)。
+    - デプロイ先では再デプロイ後に `/config` を 1 枚保存すれば「そのときの設定」が残り、`capabilities` で T14.3 / T14.5 / T14.12 の
+      `partial` / `null` の理由が説明できる (T14.99)。
+- [x] **T14.16 デプロイ先に似せた手元の環境 (`scripts/deployed-like.sh`) と、ベンチの `--only connect-multi`**
+  - 目的: Happy Eyeballs の 250 ms (Phase 12) はベンチが構造上通れない経路に隠れていた (`addrs.len() == 1`)。手元で **IPv6 が黒穴の
+    環境**を作れれば、T12.1 / T14.1 / T14.5 の挙動を本物のプロキシで再現でき、§1 のレシピに「デプロイ先に似た条件」の行が持てる。
+    この機械では `unshare -rn` (root 不要のユーザー名前空間) で `ip -6 route add blackhole default` が通ることを確認済み (2026-09-16)。**ただし実装で分かったこと: `blackhole` では `connect` が即 `EINVAL` で
+    250 ms が出ない。既定経路を `dev lo` に置くと約 1 秒ハングしてデプロイ先と同じ姿になる** (下の `結果:`)。
+  - 変更箇所: `scripts/deployed-like.sh` (新規: `unshare -rn` で lo を上げ、IPv6 の既定経路を blackhole、`ulimit -n 1024`、
+    `systemd-run --user --scope -p MemoryMax=256M` (使えるとき)、その中でプロキシとベンチを回す)、`crates/bench/src/main.rs`
+    (`--only connect-multi`: `PROXY_HOSTS` が無いので、名前解決の注入の代わりに **`/etc/hosts` を名前空間の中で差し替える**
+    (`unshare -rm` でマウント名前空間も作り、`/etc/hosts` に `2001:db8::1 multi.test` と `127.0.0.1 multi.test` を書いた一時ファイルを
+    bind mount) → `multi.test` が AAAA (黒穴) と A (生きている) を持つ)、`scripts/cpu-per-request.sh` (`--deployed-like` で上の中で回す)、
+    §1 の文章 (報告に書く。親が写す)、README (計測の節)。
+  - やること: 上のとおり。名前空間の中では外へ出られない (lo だけ) ので、オリジンはベンチの内蔵のものだけ。
+  - 受け入れ基準: `scripts/deployed-like.sh -- scripts/cpu-per-request.sh --only connect-multi` で、**T12.1 より前のバイナリ
+    (`git worktree` で `41e918f` を作る) なら CONNECT 確立が 250 ms 以上、今のバイナリなら 1 回目 250 ms・2 回目以降 1 ms 未満**が
+    出ること (= Phase 12 の発見を手元で再現し、T12.1 の効きを本物のプロキシで確かめる)。`/status` の `ipv6` が `v4_first: true` に
+    なること。名前空間が作れない機械では「使えない」と印字して終了コード 2。
+  - 結果 (2026-09-16、`2e77564` / `99c3f00` / `3f7d7e1`): **Phase 12 の 250 ms が手元で再現するようになった。** `scripts/deployed-like.sh` は
+    `unshare -rmnC` (root 不要) の中で lo だけの網を作り、**IPv6 の既定経路を `dev lo`** に置く。**本文の `blackhole` では再現しない**のが
+    分かった: この機械では `connect` がその場で `EINVAL` を返す (実測 0.000 秒、6 回とも) ので、プロキシは待たずに IPv4 へ移り 250 ms を
+    払わない。`dev lo` なら出た SYN は lo を回って戻り、自分宛てでないので黙って捨てられ、**1.017〜1.037 秒ハングしてから `ENETUNREACH`**
+    になる (デプロイ先の「IPv6 リテラル宛ては約 1.0 秒で 502」と同じ姿)。残りは `/etc/hosts` の bind mount (`multi.test` に AAAA と A)、
+    `ulimit -n 1024`、`systemd-run --user --scope -p MemoryMax=256M`、cgroup 名前空間 + `mount -t cgroup2`。ベンチの `--only connect-multi` は
+    `multi.test:<内蔵オリジンのポート>` へ CONNECT を張り続け、各スレッドの 1 本目と p50 / p95 / max を出す。
+
+    | プロキシ | 1 本目 (8 スレッドの中央値) | p50 | p95 | max | 確立/秒 | `/status` の `ipv6` |
+    |---|---|---|---|---|---|---|
+    | T12.1 の前 (`41e918f`) | 257.6 ms | **251.7 ms** | 257.0 ms | 269.4 ms | 32 /s | (この版には無い) |
+    | いま | 261.7 ms | **0.57 ms** | 1.60 ms | 1,011 ms | 7,479 /s | `{"attempts":16,"wins":0,"losses":16,"v4_first":true}` |
+
+    (`scripts/deployed-like.sh -- scripts/cpu-per-request.sh --only connect-multi --seconds 5`、`--conc 8`。受け入れ基準どおり
+    **T12.1 の前は毎回 250 ms、今は同時に走り出した本だけ**。) `--conc` は 3 以上でないと `v4_first` が立たない (2 本目からはホストごとの
+    記憶が効いて IPv6 を試さない)。いまの max 1,011 ms は 250 ms ではなく、7,479 本/秒で張ると待ち行列が溢れて SYN が 1 秒後に再送されるぶん。
+    既存の `--only connect` は出力の形も数字も変わらない (135.47 → 132.72 us/本、±4% の中)。名前空間の外で回すと終了コード 2。
+    **この条件の CPU/本 は §2 に載せない** (IPv6 の試行スレッドのぶんが乗るので `--only connect` と比べられない)。§1 に節を足した。
+    - cgroup 256 MiB はベンチにも掛かる (太るものを測るときは `--memory off`)。`--only connect-multi` は `--only all` に入れていない。
+      `crates/bench` に初めての単体テスト 1 本 (`Report::percentile`)。
+- [x] **T14.17 `scripts/snapshot-diff.py` (2 枚の `/snapshot` から「何が変わったか」を全部出す)**
+  - 目的: T14.0 の分析は `/status` の差分・`/history` の再起動時刻での切り分け・`/dns` の個票・`/hosts` の差分を手作業で組み合わせた
+    (Python を 5 回書いた)。次の T14.99 で同じことを 1 コマンドにする。`status-diff.py` はホスト別の差分だけ。
+  - 変更箇所: `scripts/snapshot-diff.py` (新規。標準ライブラリのみ)、`scripts/collect-deployed.sh` (前回の snapshot があれば呼ぶ)、README。
+  - やること: 2 枚の `/snapshot` を受け取り、(1) 再起動をまたいでいるかを `since_start_secs` と `version` で判定して印字、(2) `/history` を
+    再起動時刻で切った「平常時 (1 時間 300 本未満) の CONNECT 確立 p50 / p95・名前解決ミス/接続・ミス 1 回の平均」を前後で並べる
+    (T14.0 の表の形)、(3) ホスト別 (`/hosts` 1,000 件) の差分 (`status-diff.py` の流用)、(4) 接続元別 (`/clients`) の差分、(5) `/dns` の
+    warm と引き直し、(6) `/events` (あれば) の間の出来事、(7) `/errors` の原因別の件数、(8) `/bursts` の枚数、(9) Phase の完了の定義の
+    数字 (引数 `--criteria phase14` で閾値を持つ) に対する **判定表**。出力は Markdown (TASKS.md にそのまま貼れる)。
+  - 受け入れ基準: `~/rust-http-proxy-status/` の 2026-09-12 と 2026-09-16 の実出力 (`/snapshot` 以前の形なので、`/status` +
+    `/history` のファイル群からも組める入口を持つ) から、**T14.0 の表と同じ数字** (平常時 0.55 → 0.55、p50 8.1 → 8.3、ミス 1 回
+    12.6 → 11.5 ms) が出ること。判定表が Phase 14 の完了の定義の 4 行を出すこと (この 2 枚では届かず 3 行・判定できず 1 行)。
+  - 結果 (2026-09-16、`d8bc397` / `f059572`): 2 枚の `/snapshot` から (1)〜(9) を Markdown 1 枚に出す `scripts/snapshot-diff.py` を足した
+    (標準ライブラリだけ、971 行)。**要は窓の取り方**で、再起動を **`version` の違い・`uptime_secs` の減り・uptime の伸びが窓に足りないか**の
+    3 つで判定し (起動時刻 = 後の `taken_at` − `uptime_secs`)、`/history?res=3600` をその時刻で切って**1 時間 300 本未満の標本**どうしを
+    足し合わせる (分位点の補間は `history.rs` の `quantile_ms` と同じ)。デプロイ先の実出力 (`--from-files` = `/snapshot` より前のファイル群から
+    組む入口) から **T14.0 の表がそのまま出た**: 平常時 58 / 72 標本、CONNECT 確立 avg 20.9 → 15.3・**p50 8.1 → 8.3**・p95 90.8 → 80.7 ms、
+    名前解決 **0.55 → 0.55 回/接続**・ミス 1 回 12.6 → 11.5 ms、山 218 → 8、エラー 101 → 0、主要 3 ホストのミス率 0.31 / 1.00 / 0.76、
+    `/dns` の表 90 件の内訳、引き直し 442 回、新しく現れた接続元 1 件。**判定表は「届かず 3 行・判定できず 1 行」** (0.55 / 主要 3 ホスト /
+    p50 8.3 ms が届かず、後の期間にバーストが無いので上限の行は判定できず。依頼文の「届かず 2 行」は数え違い)。`status-diff.py` の読む部分は
+    `scripts/proxydata.py` に出して共有し、既存の出力は 5 通りの呼び方でバイト一致。単体テスト **40 本** (架空の `scripts/testdata/snapshot-{a,b}.json`
+    で 35 本 + デプロイ先の実出力があるときだけ回る 5 本)。`collect-deployed.sh` は前回の雪像があれば呼び、判定表を要約の最後に置く
+    (`CRITERIA=off` で止まる)。
+    - 道具が新しく言うようになったこと: **`.rrd` の通算が作り直されていたら「引き算できない」** (09-10 → 09-12 は Δ要求 が負)、**再起動を
+      またぐ差分は「窓に再起動前の N 時間を含む」**とホスト別の節に出す。`/events` と `/bursts` はまだ無いので「入ったら埋まる」。
+    - 気づき: `/hosts?limit=1000` は 817 件で 256 KiB に切れる (長い窓のホスト別差分は裾が落ちる)。forward の初バイトが後の期間で
+      avg 25.9 → 69.9 ms と出るが標本 24 本で弱い (次の 24 時間で forward が増えたら見る)。T14.40 は `--out json` と同じ関数を使うこと、
+      T14.35 は雪像の匿名化を前処理として足すこと。
+- [x] **T14.18 公開プロキシとしての止め方 (`PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`。既定は無効で入れる — 2026-09-16 の指示)**
+  - 目的: T13.4〜T14.7 で `/purge` `/blocklist?action=` (書き換え) と個票 (接続元 IP・宛先) が認証なしで見える。見知らぬ接続元が
+    現れた 2026-09-16 の状況で、**書き換える口だけ閉じる**手段と、**接続元を絞る**手段 (宛先の `PROXY_ALLOW_HOSTS` と同じ形の ACL。
+    認証ではない) を持つ。既定は両方とも今までどおり (無効)。
+  - 変更箇所: `crates/endpoints` (`PROXY_ENDPOINTS_READONLY=on` で `/purge` `PURGE` `/blocklist?action=` を 405)、`src/lib.rs`
+    (`PROXY_ALLOW_CLIENTS=1.2.3.4,10.0.0.0/8,2001:db8::/32` に無い接続元は accept 直後に閉じる。**内部エンドポイントも含めて閉じる**
+    (公開ポートで個票を見せないため)。CIDR の照合は `crates/net/src/acl.rs` の `is_local_ip` の隣)、`crates/config` と `crates/reload`
+    (`.env` で即時反映)、`/status` に `rejected_client_acl`、README。
+  - 受け入れ基準: 結合テストで `PROXY_ALLOW_CLIENTS=10.0.0.0/8` のとき `127.0.0.1` からの CONNECT と `GET /status` が両方閉じられ
+    (`rejected_client_acl` は数えられる — 上限の外で数える)、`127.0.0.0/8` を足すと通る。`PROXY_ENDPOINTS_READONLY=on` で `/purge?all=1` が
+    405、`/status` は 200。既定では今までのテストが無修正で通る。費用: 既定では分岐 1 回、設定時は accept ごとに CIDR の照合 (≤ 16 件で
+    1 us 未満)。
+  - 結果 (2026-09-16、`990e210` / `283d95a`): 既定は両方とも無効のまま、公開プロキシを止める手段を 2 つ入れた。
+    (1) **`PROXY_ENDPOINTS_READONLY=on`** で `/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?action=` が **405**。読む口は
+    今までどおり。判定は `endpoints::handle` の 1 か所 (`ep.readonly && is_write(..)` の `&&` の右なので既定では問い合わせを二度読まない)。
+    (2) **`PROXY_ALLOW_CLIENTS=1.2.3.4,10.0.0.0/8,2001:db8::/32`** に無い接続元は **accept 直後に、要求を 1 バイトも読まずに閉じる**
+    (応答も返さない。**内部エンドポイントも含めて閉じる**)。判定は T13.2 の「上限 + 4 本」の枠より前。断った数は `/status` の
+    `rejected_client_acl` と `/metrics` の `sorahost_rejected_client_acl_total`。照合は `crates/net/src/acl.rs` の `ClientAcl` (線形)。
+    v4-mapped IPv6 は IPv4 として照合。書式が違う項目は読み飛ばし、読めた項目は起動ログの `allowed clients:` に出す。両方とも `.env` で
+    即時反映。**どちらも認証ではない** (§0 は守る)。費用は forward 43.13 → 42.70 us (−1.0%)、1 接続 1 要求 106.33 → 105.44 us (−0.8%)、
+    `--lite` のシステムコール 5.01 → 5.01 (どれもぶれの中)。設定したときは 16 件でも +1.4% (6 組、ぶれの中)、照合そのものは 12 件で
+    13〜24 ns/回。テスト 370 → 377 本 全通過。
+    - 結合テストは実バイナリを `HOME` 差し替えで起こし、再読込を待つのは起動ログの行 (`/status` を叩いて待つと空振りが `rejected_client_acl`
+      を動かす — 「測る行為が状態を変える」罠)。断るときに応答を返さないのは、誰が叩いているか分からない相手に「ここに何が居るか」を
+      教えないため。**閉め出しの保険は無い** (書き損じると `/status` も読めない。`.env` を直せば次の接続から戻る)。
+    - マージのとき `recent.rs` のテストの `Endpoint` リテラル 2 か所に `readonly: false` を親が足した (main が先に進んでいたため)。
+- [ ] **T14.19 `/metrics` に段階・RTT・canary のサマリを出す (Grafana で見たい人のため)**
+  - 目的: T14.3 の段階、T14.5 の RTT、T14.10 の canary は JSON と画面にしか出ない。`/metrics` にも出せば Prometheus + Grafana で
+    長期の推移が見られる (このリポジトリのダッシュボードは 30 日まで)。
+  - 変更箇所: `crates/prom/src/prom.rs`、README (`/metrics` の一覧)。
+  - やること: `sorahost_stage_seconds{kind="connect"|"forward",stage=...}` の `_sum` / `_count` / `_bucket` (12 段)、
+    `sorahost_rtt_seconds{side="client"|"origin"}` の `_sum` / `_count`、`sorahost_canary_seconds{stage="dns"|"connect"}` の最後の値、
+    `sorahost_warm_names`、`sorahost_lock_contention_total{lock=...}`。**ホスト別には出さない** (系列が増えすぎる。T12.4 (4) と同じ判断)。
+  - 受け入れ基準: `/metrics` が 400 KiB 以下のまま (いま 185 KB)、単体テストで各系列の HELP / TYPE / 値の形。費用 0 (組み立ては
+    `/metrics` のときだけ)。
+- [ ] **T14.20 日次の要約を永久に残す (`$HOME/.rust-http-proxy.daily.jsonl`)**
+  - 目的: `/history` は 30 日で消える。1 日 1 行 (要求数、CONNECT 確立 p50 / p95、名前解決ミス/接続、エラー、山、RSS、版) の要約なら
+    1 年で 100 KB で、**「いつから遅くなったか」「デプロイの前後で何が変わったか」**を年単位で追える。
+  - 変更箇所: `crates/metrics/src/persist.rs` (history スレッドが UTC の日付が変わったときに 1 行追記)、`/daily?n=365` (読む口)、README。
+  - やること: 上のとおり。ファイルは追記のみ (1 行 ≤ 512 B、上限 2 MiB で古い行から捨てる)。`PROXY_STATS_PERSIST=off` なら書かない。
+  - 受け入れ基準: 単体テストで日付の境目をまたぐと 1 行増え、同じ日に 2 回起動しても 1 行のまま (起動時に最後の行の日付を見る)。
+    `/daily` が 256 KiB 以下。費用 0。
+- [ ] **T14.21 メモリの内訳 (`mallinfo2`、スレッドのスタック、キャッシュ、リング) を `/status` の `memory` に**
+  - 目的: 256 MiB のコンテナで RSS が何で構成されているか (ヒープの断片、スタック、キャッシュ、個票のリング) が読めない。T3 系で
+    `PROXY_MALLOC_ARENAS` を決めたときのような調査を、デプロイ先で `/status` 1 枚からできるようにする。
+  - 変更箇所: `crates/sysinfo` (`mallinfo2` を `unsafe extern "C"` で。glibc 2.33 以上。無ければ `null`)、`crates/metrics/src/metrics.rs`
+    (`/status` の `memory`: `rss`、`heap_used` / `heap_free` (mallinfo2 の `uordblks` / `fordblks`)、`mmap` (`hblkhd`)、
+    `stacks_estimate` (スレッド数 × 既定スタック 2 MiB の予約と実使用の差は出せないので予約だけ)、`cache_memory`、`rings` (T13.4 / T14.4 /
+    T14.6 のリングの容量)、`arenas` (`PROXY_MALLOC_ARENAS`))、README。
+  - やること: `/status` のときだけ読む (`mallinfo2` は数 us)。
+  - 受け入れ基準: 結合テストで `memory.rss` が `process_rss_bytes` と一致し、`heap_used + heap_free + mmap ≤ rss × 1.1`。
+    Linux 以外と glibc 2.33 未満は `null`。費用 0。
+
+**さらに候補 (2026-09-16、続き: T14.22〜)**。ここは「集計を時間軸と相手ごとに割る」「異常を機械に見つけさせる」「特定の相手を追う」
+「デプロイ先の形を手元で再生する」もの。共通の決まりは T14.4〜T14.8 と同じ。**再デプロイ前に入れる価値が高いのは T14.22 / T14.23 /
+T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残りは再デプロイ後でもよい (次の Phase の材料)。
+
+- [ ] **T14.22 ホスト別の時系列 (上位 16 ホスト × 5 分 × 24 時間)**
+  - 目的: ホスト別の統計は通算しか無い (`/hosts` の `avg_ms` は 3 日の平均)。「datadog が 15 時に遅かった」「mtalk だけ夜に再送が増えた」は
+    読めない。上位ホストだけ、5 分の窓で件数・確立の合計 ms・最大・名前解決 ms・エラー数を 24 時間ぶん持てば、`/history` (全体) と
+    `/hosts` (通算) の間が埋まる。
+  - 変更箇所: `crates/metrics/src/hostseries.rs` (新規: 直近 1 時間の要求数で選んだ**上位 16 ホスト**、各 288 標本 × 5 項目 × 8 B = 11.5 KiB/ホスト、
+    合計 184 KiB のメモリ)、`crates/metrics/src/metrics.rs` (`record_host_detail` が既に取っている鍵の内側で、そのホストが上位なら標本に足す。
+    **上位の入れ替えは history スレッドが 5 分ごと**に行い、要求の経路は「上位に居るか」の旗 (`HostStats` に `series_slot: Option<u8>`) を見るだけ)、
+    `crates/endpoints` (`/hosts/series?host=<name>` と `/hosts/series?top=16`)、README。T14.8 の調査ページに折れ線を 1 枚 (`/hosts/series?top=8`)。
+  - やること: 上のとおり。上位から落ちたホストの標本は捨てる (再び上がれば 0 から)。`.rrd` には書かない。
+  - 受け入れ基準: 結合テストで 2 ホストへ要求を流し、`/hosts/series?top=16` に 2 本の系列と件数が出る、5 分の窓の境目で標本が進む
+    (テストでは窓を 1 秒に差し替える口)。応答 256 KiB 以下 (16 ホスト × 288 標本)。費用: forward / CONNECT の CPU が ±ぶれの中
+    (鍵の内側で配列 1 要素の加算 5 回)、`--lite` は 0。
+- [ ] **T14.23 異常の自動検知 (`anomaly` を出来事として残す)**
+  - 目的: 24 時間の図を人が全部読むのは T14.0 のように手間がかかる。「いつから」を機械に印させる。history スレッドは 5 秒ごとに
+    全部の窓の値を持っているので、**直近 1 時間の基準値と比べて外れた瞬間**を出来事にできる。
+  - 変更箇所: `crates/metrics/src/history.rs` (標本を取ったあとに判定)、`crates/metrics/src/recent.rs` (T14.11 の出来事のリングに `anomaly` の
+    種類で入れる。T14.11 が無ければ自前の 256 件のリングと `/anomalies`)、`crates/endpoints`、README。T14.8 の調査ページのタイムラインに印。
+  - やること: 判定は 5 種で固定: (1) CONNECT 確立の p95 (直近 5 分) が直近 1 時間の p95 の **3 倍以上**かつ 50 ms 以上、(2) 名前解決の
+    ミス 1 回の平均 (直近 5 分) が **100 ms 以上**、(3) エラーが 5 分で **5 件以上**、(4) 同時接続の山が `max_conns` の **50% 以上**
+    (T14.6 の写真と同じ閾。写真があればその番号を持つ)、(5) `rejected_overload` / `evicted_idle` / `rejected_client_acl` が増えた。
+    同じ種類は **収まるまで 1 回だけ** (5 分連続で条件を外れたら解除の出来事)。出来事には数字 (何が・いくつ・基準値) を入れる。
+  - 受け入れ基準: 単体テストで標本列を流し込んで 5 種それぞれが 1 回だけ立ち、解除が出る。デプロイ先 (再デプロイ後): T14.0 の
+    2026-09-11 17〜23 時のようなバーストが来たら `/events` (または `/anomalies`) に (1) (3) (4) が並ぶこと (親が見る)。費用 0 (history スレッドだけ)。
+- [ ] **T14.24 `/history` のサーバー側の要約 (`?since=&until=&summary=1`、`since=restart`)**
+  - 目的: T14.0 と T14.17 は `/history` を丸ごと取って手元で切って集計している (284 KB を取って 5 行を得る)。サーバーが「この期間の
+    p50 / p95 / ミス率 / エラー / 山」を返せば、調査ページの「起動から」「前のデプロイと比べる」が 1 要求で済む。
+  - 変更箇所: `crates/metrics/src/history.rs` (期間を切って畳む関数 = T12.4 (3) の畳み方の再利用)、`crates/endpoints` (`/history` の引数)、
+    `scripts/snapshot-diff.py` (あれば使う)、README。
+  - やること: `?since=<epoch>|restart&until=<epoch>&summary=1` で `{"from":..,"to":..,"connects":N,"p50_ms":..,"p95_ms":..,"dns_miss_per_connect":..,
+    "dns_miss_avg_ms":..,"errors":N,"active_max":N,"normal_hours_only":bool}` を返す。`normal_hours_only=1` で 1 時間 300 本以上の標本を
+    除く (T14.0 の「平常時」の定義)。標本そのものは返さない。
+  - 受け入れ基準: 単体テストで既知の標本列 (T14.0 の表と同じ数字になる架空の列) から p50 / p95 が手計算と一致。`since=restart` が
+    `since_start_secs` と合う。応答 4 KiB 以下。費用 0。
+- [ ] **T14.25 転送速度の分布と半閉じの統計 (T14.6 の窓に足す)**
+  - 目的: 「遅い」には確立が遅いのと転送が遅いのがある。`/recent` の寿命とバイトから 1 本ごとの速さは割れるが、分布 (どの程度の
+    トンネルが 100 KiB/s 未満か) は無い。あわせて、トンネルが片側だけ閉じた (半閉じ) あと反対側が閉じるまでの時間の分布は、
+    `PROXY_TUNNEL_IDLE_SECS` の設計の材料になる。
+  - 変更箇所: `crates/tunnel/src/tunnel.rs` (`report` で速さ = バイト ÷ 中継の時間、半閉じからの時間)、T14.6 の窓 (`crates/metrics/src/…`)、
+    `/history` か T14.6 の窓の JSON、README。
+  - やること: 1 KiB 以上運んだトンネルだけを対象に、速さを 12 段 (1 KiB/s 〜 1 GiB/s の等比) に数える。半閉じからの時間を 12 段 (ms)。
+    書くのはトンネルの終わりだけ。
+  - 受け入れ基準: 結合テストで、内蔵オリジンから 1 MiB を流したトンネルが速さの区間に 1 件、半閉じで終わらせたトンネルが半閉じの区間に 1 件。費用 0。
+- [ ] **T14.26 ホスト別の上り / 下りのバイト (`bytes_in` / `bytes_out`)**
+  - 目的: `hosts[]` の `bytes` は合計で、アップロード (datadog へのログ送信) とダウンロードの区別が無い。上り主体のホストは
+    「利用者の回線の上り」が律速で、プロキシでもオリジンでもない — 切り分けに要る。
+  - 変更箇所: `crates/metrics/src/metrics.rs` (`HostStats` に 2 欄。`.rrd` のスロットの余白 52 B のうち T14.5 が 32 B 使うので残り 20 B、
+    **16 B で入る** — T14.5 と一緒に `encode` / `decode` の末尾に足す)、`crates/tunnel/src/tunnel.rs` (中継の向き別のバイトは既に持っている)、
+    `crates/http/src/http/mod.rs` (forward は要求本文と応答本文)、`/hosts` `/status` の JSON、README。
+  - 受け入れ基準: 結合テストで 1 KiB を上げて 2 KiB を下ろす CONNECT のあと `bytes_in` ≥ 1,024・`bytes_out` ≥ 2,048、`bytes` は今までどおり
+    その和。古い `.rrd` からは 0 で読み戻る。費用 0 (既に数えているバイトを 2 つに分けるだけ)。
+- [ ] **T14.27 接続元 1 つの追跡 (`PROXY_TRACE_CLIENT=<ip>` → `/trace`)**
+  - 目的: 見知らぬ接続元 (T14.0) や「この端末だけ遅い」を調べるとき、全体のログ水準を `trace` に上げるとアクセスログが溢れる
+    (T10.10 の 7.2 us/要求 が全員に乗る)。**1 つの接続元だけ**、要求行・応答の状態・段階の ms・閉じた理由を 1,000 行のリングに残す。
+  - 変更箇所: `crates/config` と `crates/reload` (`PROXY_TRACE_CLIENT`、既定 空、`.env` で即時反映)、`src/lib.rs` (接続の開始で接続元が
+    一致したときだけ `ConnSlot` に旗を立てる。**要求ごとの比較は旗 1 つ**)、`crates/http/src/http/mod.rs` と `crates/tunnel/src/tunnel.rs`
+    (旗が立っていれば要求行 (パスは先頭 256 B) と応答の状態、段階の ms をリングへ)、`crates/metrics/src/recent.rs` (リング 1,000 行)、
+    `/trace?n=200`、README (個票の中身の注意: パスが入るので**追跡中だけ**)。
+  - 受け入れ基準: 結合テストで `PROXY_TRACE_CLIENT=127.0.0.1` のとき `/trace` に要求行と状態と段階が並び、`PROXY_TRACE_CLIENT` が別の IP
+    なら空。既定 (空) で forward の CPU/要求 が ±ぶれの中 (旗の分岐 1 回)、`--lite` のシステムコールと確保が動かない。
+- [ ] **T14.28 400 の理由別カウンタと個票 (`rejected_requests{reason}`、`/errors` の `bad_request:<reason>`)**
+  - 目的: 公開ポートには走査 (scanner) の要求が来る。いまは 400 で閉じるだけで、**何が来たか**の数が無い。理由別 (要求行が読めない /
+    ヘッダーが長すぎる / 対応しないメソッド / `Host` が無い / 絶対 URI が壊れている / 本文の枠が不正) に数え、`/errors` に個票 (接続元と理由。
+    **要求行そのものは入れない** — 個票の決まり) を残す。
+  - 変更箇所: `src/lib.rs` と `crates/http/src/http/mod.rs` (400 を返す箇所に理由を渡す。6 種で固定)、`crates/metrics/src/metrics.rs`
+    (`rejected_requests: [AtomicU64; 6]`、`/status` に `rejected_requests{...}`)、`crates/metrics/src/recent.rs` (`EntryCause::BadRequest(reason)`)、
+    `crates/prom/src/prom.rs` (`sorahost_rejected_requests_total{reason=}`)、README。
+  - 受け入れ基準: 結合テストで壊れた要求行・長すぎるヘッダー (`PROXY_MAX_HEADER_BYTES` 相当の上限 + 1)・`Host` 無しの HTTP/1.1 を送り、
+    それぞれの理由が 1 ずつ増え、`/errors` に 3 件 (状態 400)。成功の経路は 0 増 (400 の経路だけ)。
+- [ ] **T14.29 デプロイ先のパターンを手元で再生する (`bench --replay <recent.json>`)**
+  - 目的: バーストのとき T13.2 (追い出し) と T14.6 (写真) が本当に効くかは、バーストが来るまで分からない。`/recent` (T14.4) には
+    「いつ・誰が・どこへ・どれだけ」があるので、**同じ時間間隔・同じ本数**で手元の内蔵オリジンへ再生すれば、バーストの形だけ再現できる
+    (宛先は内蔵オリジンに置き換え、RTT は `/hosts` の `rtt_ms` (T14.5) を内蔵オリジンの応答遅延で真似る)。
+  - 変更箇所: `crates/bench/src/main.rs` (`--only replay --replay-file <path> --speed 1|10`: 個票の `opened_at` の間隔を守って CONNECT を張り、
+    寿命とバイトも真似る)、`scripts/deployed-like.sh` の中で回せること、README。
+  - やること: 個票の宛先は `host:port` → 内蔵オリジンの 1 つのポートへ (ホスト名は `Host` / CONNECT の target にそのまま載せる。
+    名前解決は `/etc/hosts` の差し替えで全部 `127.0.0.1` に向ける = T14.16 の仕組み)。`--speed 10` で 10 倍速。
+  - 受け入れ基準: 手元で `--only idle-tunnels --conc 200` 相当の個票 (架空、`scripts/testdata/`) を再生して、プロキシの `/bursts` に写真が
+    撮れ、`evicted_idle` が増え、`rejected_overload` が 0 であること (= T13.2 の受け入れ基準を「デプロイ先の形」で再現)。
+    デプロイ先の実際の `/recent` (個人の閲覧先が入るので**リポジトリには入れない**) を再生した結果を報告に書く。
+- [ ] **T14.30 CI でデプロイ先に似せた条件を回し、`/snapshot` を成果物として残す**
+  - 目的: 今の CI はビルドとテストと 200 MB の関門だけ。§1 のレシピの数字は手元の機械でしか取れないが、**「Happy Eyeballs の 250 ms を
+    払っていない」「段階の内訳が壊れていない」**のような**形の退行**は CI でも見張れる (数字の絶対値は比べない)。
+  - 変更箇所: `.github/workflows/*.yml` (GitHub Actions の ubuntu runner で `unshare -rmn` が使えるか先に確かめる。使えなければ IPv6 の
+    黒穴だけ諦めて残りを回す)、`scripts/ci-snapshot.sh` (新規: `deployed-like.sh` の中で `--only connect-multi` と forward を短く回し、
+    `/snapshot` を artifact に)、README。
+  - 受け入れ基準: CI の 1 回で artifact に `snapshot.json` が付き、その中の `/profile` の段階と `/status` の `ipv6.v4_first` が読めること。
+    `connect-multi` の p50 が **50 ms 以上なら CI を落とす** (250 ms の退行の検知。学習後の値なので 1 ms 台のはず)。CI の時間が +3 分以内。
+    (この 1 件は人が push して CI を回す必要がある — エージェントは `git push` しないので、ワークフローの yml と scripts を用意して手元で
+    `scripts/ci-snapshot.sh` が通るところまで。)
+**さらに候補 (2026-09-16、続き: T14.31〜)**。ここは「数字の精度」「利用者の端末から見た値」「データが勝手に溜まる」「実データを安全に
+テストへ持ち込む」「1 相手の説明」。共通の決まりは T14.4〜T14.8 と同じ。**再デプロイ前に入れる価値が高いのは T14.31 と T14.34**
+(T14.99 の判定 (p50 6 ms 以下) を正確に読むため、データを取り逃さないため)。
+
+- [ ] **T14.31 直近の窓の正確な分位点 (標本を 1,024 本そのまま持つ)**
+  - 目的: いまの p50 / p95 は 12 段の区間の内側を線形補間した値で、**5〜10 ms の区間に入る限り 5.0〜10.0 のどこかを「それらしく」
+    返している** (T12.4 (3))。T14.99 の判定「平常時の p50 8.3 → 6 ms 以下」のように 1 ms 単位で読むには、区間では足りない。
+    直近の確立時間そのものを 1,024 本 (CONNECT / forward 別) の環状に持てば、直近 5 分〜1 時間の p50 / p90 / p99 が**正確に**出る。
+  - 変更箇所: `crates/metrics/src/metrics.rs` (`record_host_detail` の鍵の内側で `[u32; 1024]` の環状に 1 本書く。原子操作は足さない)、
+    `/status` の `recent_quantiles` (`{"connect":{"n":1024,"p50":..,"p90":..,"p99":..,"max":..},"forward":{...}}`)、`/history?summary=1` (T14.24)
+    があればそれにも、ダッシュボードの KPI「CONNECT 確立 p50」を**この値に切り替える** (区間の補間は図に残す)、README。
+  - やること: 環状は `Mutex` の内側 (既に取っている鍵)。分位点は `/status` のときだけ複製して `select_nth_unstable` (1,024 本なら数 us)。
+    `--lite` では書かない。
+  - 受け入れ基準: 単体テストで 1〜1,024 ms を 1 本ずつ入れて p50 = 512、p99 = 1,014 (±1)。結合テストで `/status` に出る。
+    `--only connect` の CPU/本 が ±4% の中 (6 組)、forward は触らない (forward の初バイトも同じ環状に入れるなら forward も 3 組)。
+    **既知の答えの再現**: 手元の `--only connect` で `recent_quantiles.connect.p50` がベンチの p50 (ベンチ側の値) と ±0.05 ms で合うこと。
+- [ ] **T14.32 5 秒の標本を 6 時間ぶん持つ (メモリだけ)**
+  - 目的: バーストは数時間続く (T14.0: 09-11 17〜23 時) が、5 秒の解像度は 1 時間しか無く、60 秒に畳むと山の形が鈍る
+    (`active_max` は最大で畳むので残るが、p95 は区間の足し合わせで丸くなる)。5 秒の標本を 6 時間 (4,320 本 × 512 B = 2.2 MiB) メモリに
+    持てば、翌朝でもバーストの 5 秒刻みが読める。
+  - 変更箇所: `crates/metrics/src/history.rs` (5 秒のリングを 720 → 4,320 に。**`.rrd` に書くのは今までどおり 720 本** — ファイルの形は変えない)、
+    `/history?res=5` の `n=` (既定 720、最大 4,320)、README。
+  - 受け入れ基準: 結合テストで `res=5&n=4320` が 4,320 本まで返し、`.rrd` の大きさが変わらない (4,194,304 B)。`/history?res=5` の既定は
+    今までどおり 720 本 (応答の大きさを変えない)。RSS の増分 ≤ 2.5 MiB (起動直後の RSS で確認)。費用 0。
+- [ ] **T14.33 利用者の端末から測るページ `/probe.html`**
+  - 目的: プロキシ側の計測は「プロキシに届いてから」しか見えない。利用者の端末 (ブラウザ) から `/status` を引く往復と、プロキシ経由で
+    小さな URL を取る時間を測れば、**端末 → プロキシの RTT と、端末が体感する CONNECT + 応答の時間**が、端末の側から数字になる
+    (T14.5 の `TCP_INFO` の RTT と突き合わせられる)。
+  - 変更箇所: `crates/endpoints/src/web/probe.html` (新規、外部ライブラリ無し)、`crates/endpoints/src/endpoints/mod.rs` (配信)、README。
+  - やること: ページを開くと (1) `fetch('/status')` を 5 回 (往復の中央値 = 端末 → プロキシの RTT + 応答)、(2) ブラウザがこのプロキシを
+    経由する設定なら `fetch('http://example.com/')` 相当の小さな取得を 5 回 (`no-store`) — **プロキシ経由かどうかは `/status` の
+    `clients[]` に自分の IP が増えたかで判定**、(3) 結果を表に出し、`/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) を並べる。
+    測定の結果はサーバーに送らない (端末の中だけ。集めたければ手で `/status` を見る)。
+  - 受け入れ基準: `node scripts/check-dashboard.js` に `probe.html` の関数 (`median` / `render`) を載せて通す。手元で開いて (1) が
+    1 ms 台、(2) がプロキシ設定なしでは「経由していない」と出ること (ブラウザは無いので `curl` で HTML が取れることと JS の構文まで)。
+    64 KiB 以下。費用 0。
+- [ ] **T14.34 日次の自動 `/snapshot` 保存 (`$HOME/.rust-http-proxy/snapshots/`、30 日ぶん)**
+  - 目的: `collect-deployed.sh` は外から回す必要があり、回し忘れると個票 (2,000 件 = 数時間ぶん) は消える。プロキシ自身が 1 日 1 回
+    (UTC 0 時) `/snapshot` を `$HOME` に書けば、**見に行ったときに必ず 30 日ぶんの個票がある**。T14.9 (リングの永続化) と違い形式は
+    そのまま JSON (読む道具が同じ)。
+  - 変更箇所: `crates/metrics/src/persist.rs` (history スレッドが日付の変わり目に `snapshot()` を組んで書く。**組むのは同じプロセス内の
+    関数呼び出し** = T14.4 と同じ)、`PROXY_SNAPSHOT_DAYS` (既定 30、0 で止める)、`/snapshots` (保存済みの一覧: 日付と大きさ) と
+    `/snapshots/<date>` (読み出し)、`scripts/collect-deployed.sh` (`--from-server` で保存済みを取り寄せる)、README。
+  - やること: 1 日 1 ファイル (≤ 4 MiB)、31 個目で最古を消す。`PROXY_STATS_PERSIST=off` なら書かない。ディスクの予算 (T12.5 の
+    `keep_free`) を越えるなら書かずに `/events` (T14.11) に 1 件。
+  - 受け入れ基準: 結合テストで日付の境目を差し替えて 1 ファイルできる、31 個目で最古が消える、`/snapshots` に一覧が出て
+    `/snapshots/<date>` が読める。書くのは history スレッドだけ (費用 0)。デプロイ先: 再デプロイ後 24 時間で `/snapshots` に 1 件。
+- [ ] **T14.35 実データを匿名化してテストへ持ち込む (`scripts/anonymize-snapshot.py`)**
+  - 目的: デプロイ先の `/snapshot` には個人の閲覧先が入るのでリポジトリに入れられず、エージェントは毎回架空の fixture を作っている
+    (T13.3 / T14.4 / T14.7)。**ホスト名と接続元 IP を決定的に置き換えた** (同じ入力は同じ出力、`host-0001.example` / `198.51.100.x`)
+    匿名化済みの snapshot なら、本物の分布 (件数・時間・区間・閉じた理由) を持ったまま fixture にでき、`check-dashboard.js` /
+    `snapshot-diff.py` / `status-diff.py` の回帰テストが実データの形で回る。
+  - 変更箇所: `scripts/anonymize-snapshot.py` (新規。標準ライブラリのみ。置き換えるのは `host` / `target` / `client` / `agents` /
+    `/log` の行の中のホストと IP / `/dns` の `host` と `addrs`)、`scripts/testdata/deployed-2026-09-16.anon.json` (匿名化した実データ、
+    `/snapshot` 以前の形なら `/status` + `/history` から組む)、`scripts/check-dashboard.js` と `snapshot-diff.py` のテストでそれを読む、README。
+  - 受け入れ基準: 匿名化後のファイルに元のホスト名と IP が 1 つも残らない (元の一覧との突き合わせで 0 件)、数字は 1 つも変わらない
+    (`requests` の合計、`avg_ms`、`errors_by_cause`、`/history` の標本が一致)、同じ入力で 2 回回して同じ出力。
+    `check-dashboard.js` が匿名化済みの実データで OK。
+- [ ] **T14.36 1 相手の説明 `/explain?host=<name>` / `?client=<ip>`**
+  - 目的: 「この宛先はなぜ遅いか」「この接続元は誰か」を調べるには `/hosts` `/dns` `/recent` `/clients` `/errors` を横断して読む必要が
+    ある (T14.0 でやったこと)。サーバーが 1 相手について**全部を 1 枚に組んで、読める文章 (日本語) と数字**で返す。
+  - 変更箇所: `crates/endpoints/src/endpoints/explain.rs` (新規。既存の関数を呼ぶだけ、新しい記録は無い)、README。
+  - やること: `?host=`: ホスト別の統計 (要求数・確立の平均と p50 / p95・名前解決の平均とミス率・RTT (T14.5)・エラーの原因)、`/dns` の行
+    (warm か、残り TTL、答え)、`/recent` のそのホストの直近 10 本 (段階と閉じた理由)、`/errors` の直近 5 件。末尾に 1 行の判定
+    (`「確立 259 ms のうち接続 250 ms = RTT。名前解決 9 ms。プロキシ側の待ちは 0.3 ms」` のように、段階の数字を並べる形。
+    T14.3 の (e) と同じで推定は人がする)。`?client=`: `/clients` の行 + `/recent` の直近 10 本 + `/errors` + RTT。
+  - 受け入れ基準: 結合テストで、1 ホストへ 3 本の CONNECT のあと `/explain?host=` に 3 本の個票と統計と `/dns` の行が入り、
+    知らないホストは `"known":false`。応答 64 KiB 以下 (個票は 10 本まで)。費用 0。
+- [ ] **T14.37 名前解決の答えの変化を数える (`/dns` の `changes`) と、canary の IPv6 側**
+  - 目的: TTL 60 秒が長いか短いかは「答えがどれくらいの頻度で変わるか」で決まるが、その数字が無い。T14.1 の引き直しは答えを
+    比べているので、**変わった回数**を数えるだけで分かる (CDN のローテーション頻度)。あわせて T14.10 の canary で **IPv6 側だけの
+    接続**も 1 分に 1 回試せば、コンテナの IPv6 が生き返ったかが分かる (`v4_first` の解除は 600 秒に 1 回の探りだけに頼っている)。
+  - 変更箇所: `crates/net/src/dns.rs` (`Entry` に `changes`、引き直しで答えが変わったら +1。書くのは既に鍵の内側)、`/dns` の各行と
+    `/status` の `dns.changes` (合計)、T14.10 の canary (`PROXY_CANARY_IPV6=on|off`、既定 `on`: 名前の AAAA へ 1 本、結果を
+    `canary.ipv6_connect_ms` と `/history`)、README。
+  - 受け入れ基準: 単体テストで答えを差し替えた引き直しで `changes` が 1 増え、同じ答えなら増えない。canary の IPv6 側が黒穴
+    (T14.16 の環境) で `null` (失敗) と出て、生きていれば ms が出る。費用 0。
+**さらに候補 (2026-09-16、続き: T14.38〜)**。ここは「宛先の正体」「いまの速さ」「詰まりの向き」「この機械の実力」「記録を止める口」。
+共通の決まりは T14.4〜T14.8 と同じ。どれも再デプロイ後でもよい (T14.41 だけは、記録が増えた版を公開ポートで動かすなら**先に**入れる価値がある)。
+
+- [ ] **T14.38 CONNECT の最初のバイトから SNI を読む (`PROXY_PEEK_SNI`、既定 `on`)**
+  - 目的: T14.7 の `literal_targets` (IP リテラル宛ての CONNECT) は「本当はどこへ行っているか」が分からない。CONNECT のあとクライアントが
+    最初に送るのは TLS の ClientHello で、その中の SNI に宛先の名前がある。`200` を返したあと**最初の中継の前に 1 回だけ `recv(MSG_PEEK)`**
+    すれば (バイトは消費しない。そのあとの `splice` はそのまま)、IP リテラル宛てでも名前が分かり、CONNECT のホストと SNI が違う
+    (domain fronting、または設定を間違えたクライアント) ことも数えられる。
+  - 変更箇所: `crates/sys/src/sys.rs` (`recv(MSG_PEEK)` の束縛。Linux 専用、他 OS では読まない)、`crates/tunnel/src/tunnel.rs` (`open` の
+    `200` のあと、最初の `poll` でクライアント側が読めるようになったときに 1 回だけ覗く。**ClientHello の解析は 60 行程度**: TLS record
+    (type 0x16) → handshake (type 0x01) → extensions → server_name (type 0x00)。壊れていれば `None` で終わり、中継は続ける)、
+    `crates/metrics/src/recent.rs` (個票に `sni`)、`crates/metrics/src/metrics.rs` (ホスト別の `sni_mismatch` の件数、`/status` に
+    `sni_mismatches` の合計)、`crates/config` (`PROXY_PEEK_SNI=on|off`)、README (個票に SNI が入ること)。
+  - やること: 上のとおり。覗く長さは 1,024 バイト (ClientHello の大半はこれで足りる。足りなければ `None`)。**443 以外のポートでは覗かない**
+    (TLS とは限らない)。`--lite` では覗かない。
+  - 受け入れ基準: 単体テストで手書きの ClientHello (SNI `example.test`) から名前が取れ、壊れた record と SNI 無しで `None`。結合テストで
+    CONNECT `127.0.0.1:443` 相当の宛先 (試験のオリジンを 443 に立てられないので、`PROXY_PEEK_SNI_PORTS` のような試験用の口は作らず、
+    テストでは内蔵オリジンのポートを 443 として扱う差し替えを `cfg(test)` ではなく設定で持つ — `PROXY_PEEK_SNI=on:<port>` の形) へ
+    ClientHello を送ると個票の `sni` に `example.test`、CONNECT のホストと違えば `sni_mismatches` +1。
+    費用: **トンネル 1 本に `recv(MSG_PEEK)` 1 回** (CONNECT 1 本あたりのシステムコール +1。本文に書く)、CONNECT 確立の CPU/本 ±4% (6 組)、
+    `--only tunnel` の CPU/MiB が ±ぶれの中 (中継の経路は変えない)。
+- [ ] **T14.39 いまの転送速度 (`/connections` の各行に直近 5 秒の bytes/s)**
+  - 目的: `/connections` の `bytes` は累計で、「いま誰が帯域を使っているか」が分からない。history スレッドが 5 秒ごとに各接続の `bytes`
+    (T13.4 の `ConnSlot` の原子) を控えれば、差分で直近 5 秒の速さが出る。
+  - 変更箇所: `crates/metrics/src/recent.rs` (`ConnSlot` に `bytes_prev` と `rate_bps` の原子 2 つ。history スレッドが 5 秒ごとに全 slot を
+    なめて更新。**接続の経路は触らない**)、`/connections` の各行に `rate_bps` (上り / 下り別が取れれば 2 つ)、`/status` に `rate_bps_total`、
+    ダッシュボードの「いまの接続」に列 (T14.8 の担当。無ければ `check-dashboard.js` に載せるだけ)、README。
+  - 受け入れ基準: 結合テストで 1 MiB/s で流し続けるトンネルを 12 秒握り、`/connections` の `rate_bps` が 0.5〜2 MiB/s の範囲。
+    費用 0 (history スレッドだけ。240 本なめて 240 回の原子の読み書き)。
+- [ ] **T14.40 週次の要約 (`scripts/weekly-report.py`)**
+  - 目的: T14.34 の日次 snapshot と T14.20 の日次の要約があれば、1 週間の「要求数・p50 / p95・名前解決ミス率・エラー・山・接続元の
+    出入り・遅かったホスト上位・新しく見たホスト」を Markdown 1 枚にできる。T14.99 と、次の Phase の T15.0 の入力になる。
+  - 変更箇所: `scripts/weekly-report.py` (新規。標準ライブラリのみ。入力は `~/rust-http-proxy-status/` の snapshot 群か `/snapshots`)、README。
+  - 受け入れ基準: 匿名化した実データ (T14.35) 7 日ぶん (無ければ 1 日ぶんを複製) から表 8 つが出て、数字が `snapshot-diff.py` (T14.17) の
+    値と一致する。
+- [ ] **T14.41 記録の一括 off とハッシュ化 (`PROXY_RECORDS=on|off|hashed`)**
+  - 目的: T13.4〜T14.7 で個票 (接続元 IP・宛先・`User-Agent`・SNI) が増えた。認証なしの公開ポートで動かすなら、**記録を 1 つの旗で
+    全部止める**か、**接続元 IP を復元できない形 (ハッシュ) で持つ**選択肢が要る (利用者以外の人の情報を残さないため)。
+  - 変更箇所: `crates/config` と `crates/reload` (`PROXY_RECORDS`、既定 `on`、`.env` で即時反映)、`crates/metrics/src/recent.rs` (全リングの
+    書き込みを 1 つの旗で飛ばす。`hashed` は接続元 IP を起動ごとの乱数つき FNV-1a 64 ビットの 16 進で置き換える — `/clients` の鍵も
+    同じ変換)、`/status` に `records: "on"|"off"|"hashed"`、README (方針の説明)。
+  - 受け入れ基準: 結合テストで `off` のとき `/recent` `/errors` `/connections` `/clients` `/log` が空 (`"records":"off"`)、`hashed` のとき
+    接続元が 16 桁の 16 進で同じ接続元は同じ値、`on` は今までどおり。費用: 旗の分岐 1 回 (既定 `on` では変わらない)。
+- [ ] **T14.42 中継の詰まりの向き (クライアントが読まないのか、オリジンが読まないのか)**
+  - 目的: 転送が遅いとき、遅いのは「クライアントの回線 (下り)」か「オリジン」か「利用者の上り」か。`splice` が `EAGAIN` で止まり
+    `poll` で書けるのを待つ時間を**向き別**に足せば、トンネル 1 本ごとに「クライアント側で待った ms / オリジン側で待った ms」が出る。
+  - 変更箇所: `crates/tunnel/src/tunnel.rs` (`relay` の `poll` ループ: 書けるのを待つ側と待った時間を積む。**時計を読むのは書けなくて
+    待ちに入る回だけ** — 64 KiB ごとに 1 回ではない)、`crates/metrics/src/recent.rs` (個票に `stall_ms: {client, origin}`)、T14.6 の窓
+    (向き別の合計)、README。
+  - 受け入れ基準: 結合テストで、読まないクライアント (受信を 2 秒止める) へ 1 MiB を流すと個票の `stall_ms.client` ≥ 1,500、
+    読まないオリジンなら `stall_ms.origin` ≥ 1,500。費用: `--only tunnel --conc 1` の CPU/MiB が ±ぶれの中 (3 組)。**待ちに入らない
+    中継 (loopback) では時計を 1 回も読まない**ことを `strace -c` の `clock_gettime` (vDSO なので出ない) ではなく、コードの経路で
+    説明する。
+- [ ] **T14.43 起動時の自己ベンチ (`PROXY_SELF_BENCH=on`、既定 `off`)**
+  - 目的: §2 の CPU/要求 (41 us) は手元の big.LITTLE の big コアの値で、**デプロイ先のコンテナの CPU で何 us か**は分からない。T14.3 の
+    `cpu_per_request_us` は実トラフィックの値だが 0.015 req/s では 5 秒の窓に 0〜1 本しか入らず読めない。起動直後に **loopback だけで
+    3 秒** (内蔵の小さなオリジン → 自分へ forward 8 並列と CONNECT 8 並列) 回して CPU/要求 と CPU/本 を測り、`/status` の `self_bench`
+    と `/events` に残せば、§2 の表とデプロイ先が**同じ物差し**で並ぶ (外へは 1 バイトも出さない)。
+  - 変更箇所: `src/main.rs` (起動後、待ち受けを開いてから 3 秒だけ)、`crates/bench` の一部を本体から呼べるように切り出す (`crates/bench`
+    は `default-members` 外なので、必要な最小 (内蔵オリジンと forward / CONNECT の打ち手) を `crates/selfbench` に分ける。**ビルドメモリ
+    200 MB の関門に影響しないこと**を `scripts/build-memory.sh` で確かめる)、`/status` の `self_bench` (`{"at":..,"forward_us":..,"connect_us":..,
+    "cores":..}`)、README。
+  - 受け入れ基準: 手元で `PROXY_SELF_BENCH=on` の `forward_us` が §1 のレシピ (`--lite` ではなく既定プロファイル) の値と **±20%** で合う
+    (3 秒・8 並列は §1 の 10 秒 × 3 組より粗い。ぶれの幅を報告に書く)。`off` (既定) では 1 命令も走らない。ビルドは 200 MB で通る。
+    デプロイ先: 再デプロイ後 `/status` の `self_bench` に値が出て、§2 との比が読めること (親が見る)。
+- [ ] **T14.44 週次・日次の要約とイベントをダッシュボードの「調査」ページに (T14.8 の続き)**
+  - 目的: T14.20 (日次) / T14.23 (異常) / T14.34 (日次 snapshot) / T14.40 (週次) が入ると、読む口が JSON と Markdown に散る。
+    調査ページ (T14.8) に「今週」「今日」「出来事と異常」の 3 枚を足して、**見に行く場所を 1 つ**にする。
+  - 変更箇所: `crates/endpoints/src/web/inspect.html`、`scripts/check-dashboard.js`、README。
+  - 受け入れ基準: `node scripts/check-dashboard.js` が新しい描画関数 (`dailyRows` / `weeklyRows` / `eventMarks`) を匿名化した実データ
+    (T14.35) で通す。`inspect.html` は 96 KiB 以下 (T14.8 の 64 KiB から上げる。理由を README に)。
+**さらに候補 (2026-09-16、続き: T14.45〜)**。ここは **T14.7 / T14.16 の実装で見えたこと**から (統計の鍵の取り合いで 100 ns の仕事が 1 us になる、
+7,479 本/秒で待ち受けが溢れて SYN が 1 秒後に再送される、http の宛先にポートが無い) と、運用の口 (SLO、重い口の保護、schema の版)。
+共通の決まりは T14.4〜T14.8 と同じ。**T14.47 (待ち受けの backlog) は利用者に見える遅さの候補**なので再デプロイ前に価値がある。
+
+- [ ] **T14.45 統計の鍵を分割する (取り合いが `/profile` で見えたら)**
+  - 目的: T14.7 で「接続元の表の鍵の内側の 100 ns の仕事が、8 並列の forward では 1 us 以上になって出る」ことが分かった (鍵の取り合い)。
+    ホスト別・接続元別の統計は 1 本の `Mutex` で、要求ごとに取る。T14.3 (3) の `locked_counted` で取り合いの回数が見えるので、
+    **見えたら** 16 分割 (ホスト名 / 接続元のハッシュで shard) にする。見えなければやらない (§4 に 1 行)。
+  - 変更箇所: `crates/metrics/src/metrics.rs` (`hosts` / `clients` の表を `[Mutex<HashMap>; 16]` に。`/status` の組み立てと `persist` は
+    16 本を順に取って合わせる)、README (無し)。
+  - やること: **先に測る**: `mx scripts/cpu-per-request.sh` (forward 8 並列、既定プロファイル) で `/profile` の `locks.stats_contended`
+    が要求数の 1% を超えるか。超えたら分割し、超えなければ §4 に「取り合い N 回 / 要求、分割しない」と書く。
+  - 受け入れ基準: 分割するなら forward 8 並列の CPU/要求 が **−2% 以上** (前後交互 6 組、ぶれの外) か、取り合いが 1% 未満に落ちること。
+    `/status` の出力が分割の前後で同じ (順序テスト)。`.rrd` の形は変えない。
+- [ ] **T14.46 接続確立時の SYN の再送を数える**
+  - 目的: T14.16 で「待ち受けが溢れると SYN が落ち、1 秒後に再送されて確立が 1,011 ms になる」のを見た。デプロイ先でも、オリジン側の
+    待ち受けの溢れや途中の損失で SYN が再送されれば、**確立時間が 1 秒・3 秒と飛ぶ** (T14.0 の `max_ms` 30,029 の中にもあるはず)。
+    確立直後に `TCP_INFO` の `tcpi_total_retrans` (T14.5) を 1 回読めば、その接続が SYN の再送を経たかが分かる。
+  - 変更箇所: `crates/net/src/net.rs` (`connect_candidates` で確立した直後に `sys::tcp_info` を 1 回。Linux 専用)、`crates/metrics/src/metrics.rs`
+    (`Detail` に `syn_retrans: u8`、ホスト別に `syn_retrans` の合計、`/status` に `syn_retrans_total`)、`crates/metrics/src/recent.rs` (個票に
+    `syn_retrans`)、README。
+  - 受け入れ基準: T14.16 の環境で `--only connect-multi --conc 64` を回すと個票に `syn_retrans` ≥ 1 の接続が現れ、`/status` の
+    `syn_retrans_total` が増える。loopback の `--only connect` では 0 のまま。費用: **CONNECT 1 本に `getsockopt` 1 回** (システムコール
+    +1。本文に書く)、CPU/本 ±4% (6 組)。forward はプールの接続を張るときだけ (要求ごとは 0)。
+- [ ] **T14.47 待ち受けの backlog (`PROXY_LISTEN_BACKLOG`、既定 `min(1024, somaxconn)`)**
+  - 目的: Rust の `TcpListener::bind` は backlog **128** で待ち受ける。ブラウザがページを開くと数十本の CONNECT が同時に来て、accept ループが
+    1 本 (T4.3) なので 128 を越えた SYN は捨てられ、**クライアントは 1 秒後に再送する** (利用者に 1 秒の待ちとして見える。T14.16 で
+    同じ現象を手元で観測した)。デプロイ先の 09-11 のバースト (1 時間に 4,966 本、山 218) でこれが起きていたかは T14.12 の
+    `ListenOverflows` で分かるが、backlog を大きくするのは安全で安い。
+  - 変更箇所: `crates/net/src/net.rs` (`bind_all_with`: `std` の `bind` の代わりに `socket` / `bind` / `listen(fd, backlog)` を `crates/sys` で。
+    Linux 以外は `std` のまま)、`crates/config` (`PROXY_LISTEN_BACKLOG`、既定 0 = `min(1024, /proc/sys/net/core/somaxconn)`)、起動ログに
+    backlog を出す、README。
+  - 受け入れ基準: T14.16 の環境で `--only connect-multi --conc 64 --seconds 5` の **max が 300 ms 未満** (いまは 1,011 ms = SYN の再送)、
+    `/status` の `syn_retrans_total` (T14.46) または T14.12 の `ListenOverflows` が 0。`--only connect` の CPU/本 ±4%。`ss -ltn` の
+    `Send-Q` が設定値になること (Linux)。
+- [ ] **T14.48 http の宛先にポートを付ける (`/connections` と `/recent` の `target`。小物)**
+  - 目的: T14.4 の気づき — http 接続の `target` が `example.com` (ポート無し)、CONNECT は `discord.com:443`。個票を読む道具が
+    2 つの形を扱うことになる。
+  - 変更箇所: `src/lib.rs` (T14.2 (5) の `set_first_target` に渡す値を `host:port` に。`pool_key` の `scheme://host:port` から組む)、
+    `tests/recent_test.rs` / `tests/clients_test.rs`。
+  - 受け入れ基準: 結合テストで http 接続の `target` が `127.0.0.1:<port>`。費用 0 (接続の最初の要求だけ)。
+- [ ] **T14.49 全エンドポイントに `schema` の版を入れる**
+  - 目的: `/status` `/history` `/recent` … の JSON の形は Phase ごとに増えている。読む道具 (`status-diff.py` `snapshot-diff.py`
+    `check-dashboard.js`) が「この JSON はどの版か」を推測している (`parts` の有無など)。各応答の先頭に `"schema": N` (整数、形が変わったら +1)
+    を入れ、道具は版で分岐する。
+  - 変更箇所: `crates/endpoints` (全 JSON の先頭に `schema`)、`crates/metrics` (`SCHEMA` 定数 1 か所)、scripts、README (版の履歴の表)。
+  - 受け入れ基準: 結合テストで全エンドポイント (`/status` `/history` `/dns` `/errors` `/connections` `/recent` `/hosts` `/clients` `/log`
+    `/snapshot` `/profile` `/bursts` …) の応答の先頭 64 バイトに `"schema":` があること。`check-dashboard.js` が版の無い古い出力
+    (`~/rust-http-proxy-status/2026-09-16T0106Z-*`) も読めること。
+- [ ] **T14.50 SLO の達成率 (`/slo`)**
+  - 目的: Phase の完了の定義は「p50 6 ms 以下」のような閾値だが、デプロイ先で**時間の何割がそれを満たしたか**は出ない。閾値を設定で持ち、
+    5 秒の標本ごとに満たしたかを判定して、日ごと・時間ごとの達成率を返せば、T14.99 と次の Phase の判定が「満たした / 満たさない」ではなく
+    「99.2% の時間で満たした。外れたのは 09-11 18〜19 時」になる。
+  - 変更箇所: `crates/config` (`PROXY_SLO=connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2`。既定はこの値)、
+    `crates/metrics/src/history.rs` (標本ごとの判定は history スレッド。結果は標本のメモリ上の窓に 4 ビット)、`crates/endpoints`
+    (`/slo?days=7`: 日ごと・時間ごとの達成率と、外れた時間帯の一覧)、ダッシュボードの KPI に「今日の SLO」、README。
+  - 受け入れ基準: 単体テストで既知の標本列 (T14.0 の 09-11 のバーストを模した架空の列) から達成率が手計算と一致 (外れた時間帯が
+    17〜23 時)。`/slo` が 64 KiB 以下。費用 0 (history スレッドだけ)。
+- [ ] **T14.51 重い口の同時実行を 1 本に (`/snapshot` `/hosts?limit=1000` `/recent?n=2000` `/profile`)**
+  - 目的: 認証なしの公開ポートで、`/snapshot` (4 MiB を組む) を 1 秒に 10 回引かれると CPU と鍵の時間を食う。**同時に組むのは 1 本**にし、
+    2 本目からは `503 Retry-After: 1` で断る (軽い `/status` はそのまま)。走査に対する最小限の保護で、認証ではない。
+  - 変更箇所: `crates/endpoints/src/endpoints/mod.rs` (重い口の一覧と `AtomicBool` 1 つ)、`/status` に `heavy_rejected`、README。
+  - 受け入れ基準: 結合テストで `/snapshot` を同時に 4 本引くと 1 本だけ 200 で残りが 503 (`Retry-After: 1`)、順に引けば全部 200。
+    費用 0 (重い口だけ)。
+- [ ] **T14.52 消えたクライアントを検知する (`SO_KEEPALIVE` と閉じた理由 `client_dead`)**
+  - 目的: 端末がスリープしたり回線が切れたりすると、トンネルは FIN も RST も来ないまま残り、`PROXY_TUNNEL_IDLE_SECS` (300 秒) の
+    期限切れで `idle_timeout` として閉じる。**`idle_timeout` のうち何割が「本当に暇」で何割が「相手が消えた」か**は分からず、
+    T14.6 の分布を読み違える。クライアント側のソケットに TCP keepalive (`SO_KEEPALIVE` + `TCP_KEEPIDLE` 60 秒、`TCP_KEEPINTVL` 10 秒、
+    `TCP_KEEPCNT` 3) を入れれば、消えた相手は約 90 秒で `ETIMEDOUT` になり、閉じた理由を `client_dead` と記録できる。
+  - 変更箇所: `crates/sys/src/sys.rs` (`setsockopt` の 4 つ。Linux 専用)、`src/lib.rs` (accept 直後に 1 回。**`--lite` でも入れてよい**が
+    システムコールが接続あたり 4 回増えるので `PROXY_TCP_KEEPALIVE=on|off`、既定 `on`)、`crates/tunnel/src/tunnel.rs` と `src/idle.rs`
+    (`ETIMEDOUT` で終わったら `CloseReason::ClientDead`)、`crates/metrics/src/recent.rs` (理由を 9 種に。**`/history` の閉じた理由の
+    集計は 8 種のまま `shutdown` に畳む** — 標本の余白の都合)、README。
+  - 受け入れ基準: 結合テストで、クライアントの側を `SO_LINGER 0` で RST 無しに落とす… は再現が難しいので、**`TCP_KEEPIDLE` を 1 秒に
+    差し替えられる口** (設定ではなくテスト用の `PROXY_TCP_KEEPALIVE=on:1:1:2` の形) で、名前空間の中で相手側の経路を落として
+    (T14.16 の `unshare -rn` で veth 無しの相手は作れないので、**iptables 無しで再現できなければ単体テストでソケットのオプションが
+    付いていることまで**) 個票の `client_dead` を見る。`--no-keepalive` (1 接続 1 要求) の CPU/接続 が +4 システムコール分
+    (103.6 → 約 105 us) 以内、forward keep-alive の要求ごとは 0 増。
+- [ ] **T14.53 内部エンドポイントの読み手を記録する (`/status` の `readers`)**
+  - 目的: T14.7 は自分宛て (`/status` など) だけの接続を `clients[]` に入れない (監視で埋まるため)。しかし公開ポートでは**誰が個票を
+    読んでいるか**も知りたい (走査か、自分の監視か)。接続元ごとに「内部エンドポイントを引いた回数・最後の時刻・最後のパス」だけを
+    別の小さな表 (最大 256 接続元) に持つ。
+  - 変更箇所: `crates/endpoints/src/endpoints/mod.rs` (`handle` の入口で 1 回。要求の経路ではない)、`crates/metrics/src/metrics.rs`
+    (`readers: Mutex<HashMap<String, Reader>>`、`/status` の `readers` (上位 20) と `/readers` (全部))、README。
+  - 受け入れ基準: 結合テストで `/status` を 3 回引いた接続元が `readers` に `count: 3`、`last_path: "/status"`。プロキシとしての要求は
+    数えない。費用 0 (内部エンドポイントの経路だけ)。
+- [ ] **T14.54 新しい接続元の検知 (T14.23 の規則 6) と、ドメインでまとめる集計 (`snapshot-diff.py --group`)**
+  - 目的: (1) 見知らぬ接続元は「現れた瞬間」に気づきたい (T14.0 は 3 日後に気づいた)。T14.23 の異常の規則に **「初めて見た接続元」**
+    (`first_seen` がこの 5 秒の窓の中) を足し、`/events` に `new_client` として残す (`agents` があれば一緒に)。(2) `/hosts` は
+    `img.dlsite.jp` と `www.dlsite.com` が別の行で、「dlsite 全体」が読めない。**eTLD+1 でまとめる**集計を道具に足す
+    (Public Suffix List は持たない: `co.jp` / `ne.jp` / `ac.jp` / `go.jp` / `or.jp` / `com` / `net` / `org` / `io` … の短い表で近似し、
+    残りは末尾 2 ラベル)。
+  - 変更箇所: (1) `crates/metrics/src/history.rs` (T14.23 の判定に 1 つ)、`crates/metrics/src/recent.rs`、README。(2) `scripts/snapshot-diff.py` と
+    `scripts/status-diff.py` (`--group domain`)、`scripts/anonymize-snapshot.py` (T14.35。まとめの粒度が残るように匿名化する)。
+  - 受け入れ基準: (1) 結合テストで新しい接続元の最初の要求のあと 5 秒以内に `/events` に `new_client` (接続元と `agent`)。同じ接続元の
+    2 回目は増えない。(2) `status-diff.py --group domain` で `img.dlsite.jp` と `www.dlsite.com` が `dlsite.com` の 1 行にまとまり、
+    要求数が和になる。`co.jp` の 3 ラベル (`www.dmm.co.jp` → `dmm.co.jp`) が正しくまとまる。
+**今日 (2026-09-16) の作業を終えるためのタスク (T14.55〜T14.58)**。走っている実装 (T14.3 / T14.5 / T14.6 / T14.15 / T14.18) をマージし
+終えたら、**再デプロイできる状態に main を整える**のがこの 4 つ。順は T14.55 → T14.56 → T14.57 → T14.58 → push (人) → 再デプロイ (人) →
+24 時間 → T14.99。どれもコードの機能は足さない (直すのは壊れているものだけ)。Opus に渡すときは 1 タスク 1 エージェントで、
+**T14.55 は機械を独占する** (他のエージェントを走らせない)。
+
+- [ ] **T14.55 全部マージした main の健全性を確かめる (機械を独占して 1 回)**
+  - 目的: 今日は 10 個のブランチを並列に実装してマージした。個々のブランチは通っていても、合わせたときにだけ起きる壊れ方
+    (`/status` のキー順、`/snapshot` の `parts`、`check-dashboard.js` の `api`、ビルドメモリ、flake) は main でしか分からない。
+  - 変更箇所: 直すものがあれば最小限 (テストの待ち方、キー順、README の 1 行)。新しい機能は足さない。
+  - やること (全部 `mx` の中、他のエージェント無しで): (1) `cargo fmt --all --check` / `clippy --workspace --all-targets -- -D warnings` /
+    `cargo build --release` / `cargo build --profile dist` (配布用も通ること)。(2) **`cargo test --workspace --no-fail-fast` を 5 回連続**
+    (落ちたテストは名前と回数を記録し、待ち方の flake なら `wait_until` の形に直す。実装の誤りなら直さずに報告)。(3) `cargo clean --release`
+    → `scripts/build-memory.sh 200` (クリーンビルドが 200 MB で通る)。(4) `node scripts/check-dashboard.js` をデプロイ先の実出力
+    (`~/rust-http-proxy-status/2026-09-16T0106Z-history_res_60` と `-status`) と手元のベンチの `/snapshot` で。(5) 手元のプロキシ
+    (既定プロファイル、`PROXY_STATS_PERSIST=on`) に `scripts/collect-deployed.sh 127.0.0.1:PORT` を 2 回 (差分まで出る)。
+    (6) `scripts/deployed-like.sh -- scripts/cpu-per-request.sh --only connect-multi --seconds 5` で **p50 が 1 ms 未満** (250 ms の退行が無い)。
+    (7) §1 のレシピを 1 周 (`--only forward` / `--only connect` / `--only tunnel --conc 1` / `--cacheable`) して §2 の表と**桁が合う**ことを見る
+    (5% の差は追わない。今日は個票と段階の時計を足したので、`--lite` のシステムコール 5.01 回/要求 と確保 10.01 回/要求 が**動いていない**
+    ことだけは数字で確かめる)。(8) `./target/release/rust-http-proxy --check` (T14.15) が終了コード 0。
+  - 受け入れ基準: (1)〜(8) の全部に数字つきの結果。テスト 5 回連続で失敗 0 (直したなら直した内容)。200 MB のクリーンビルド OK。
+    `--lite` のシステムコール 5.01 / 確保 10.01 のまま。`--only connect-multi` の p50 < 1 ms。`pgrep -x rust-http-proxy` / `bench` が空。
+- [ ] **T14.56 README とエンドポイント・環境変数の一覧の整合 (`scripts/check-docs.sh`)**
+  - 目的: 今日で `/` の案内・README のエンドポイント一覧・環境変数の表・`/snapshot` の `parts`・`check-dashboard.js` の `api` が
+    それぞれ別のエージェントの手で伸びた。**コードにあるのに文書に無い / 文書にあるのにコードに無い**を機械で見つける。
+  - 変更箇所: `scripts/check-docs.sh` (新規: (a) `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"` の一覧 と README の一覧 と
+    `endpoint_list` の一覧を突き合わせる、(b) `crates/config/src/config.rs` と `envfile::var("PROXY_…")` を grep した環境変数の一覧 と
+    README の表を突き合わせる、(c) `/snapshot` の `part` の一覧 と 個票のエンドポイントの一覧 (`/profile` `/bursts` `/clients` `/recent` …)、
+    (d) `dashboard.html` / `inspect.html` の `api` に載せた関数名 と `check-dashboard.js` が呼ぶ名前)、直した README、`/` の案内、`/snapshot`。
+  - 受け入れ基準: `scripts/check-docs.sh` の差分が **0 件** (あれば直す。直せないものは理由を印字して 0 にしない)。CI に足す
+    (`.github/workflows` があれば 1 行)。
+- [ ] **T14.57 再デプロイの手引き (何が変わり、何を見るか)**
+  - 目的: 今日の版はエンドポイントが 10 本以上増え、既定の挙動も変わった (keep-warm、負のキャッシュ 60 秒、`/errors` に 403、
+    上限で暇なトンネルを閉じる、記録の個票)。再デプロイする人 (利用者) が**何が変わるか・何を見ればよいか**を 1 枚で読めるようにする。
+  - 変更箇所: `TASKS.md` の Phase 14 に「再デプロイの手引き (2026-09-16 の版)」の小節 (この T14.57 の `結果:` として)、README の
+    「運用」の節 (無ければ新設: `--check` → 起動 → 1 時間後に `/dashboard` と `/status` の `dns.warm` `ipv6` `evicted_idle` → 24 時間後に
+    `scripts/collect-deployed.sh` → `T14.99`)。
+  - やること: 変わった既定の一覧 (環境変数名・前後の値・戻し方)、増えたエンドポイントの一覧 (1 行ずつ「何が読めるか」)、
+    `.rrd` は版 2 のまま (統計は消えない)、期待する数字 (名前解決ミス 0.55 → 0.15 未満、p50 8.3 → 6 ms 以下、`GET /` 200、
+    `/dns` の `warm` が数件以上、`/profile` の段階の内訳が読める)、**見に行く順番** (1 時間後 / 24 時間後 / 何かおかしいとき: `/errors`
+    `/log` `/events` `/recent?sort=slow`)。
+  - 受け入れ基準: 手引きの手順を手元のプロキシで**そのまま**なぞって、書いたとおりの出力が得られること (エージェントが実演し、
+    報告に出力を貼る)。README の文章は既存の文体 (日本語、コードは英語)。
+- [ ] **T14.58 今日の記録を閉じる (TASKS.md の整合、worktree の片づけ、push できる状態)**
+  - 目的: 明日以降の自分と Opus が、TASKS.md だけを読んで続きを始められるようにする。
+  - 変更箇所: `TASKS.md` (Phase 14 の各タスクの `[x]` と `結果:` が揃っているか、「順番」の行が現状と合うか、完了の定義に今日の版で
+    確かめたものと再デプロイ後に見るものが分けて書いてあるか)、`git worktree prune`、メモリ (親の担当)。
+  - やること: (1) `grep -n "^- \[x\]" TASKS.md` で Phase 14 の済みの一覧を出し、それぞれに `結果 (2026-09-16` があること。無ければ
+    その担当エージェントの報告から写す (親の作業。Opus に渡すなら「報告の文章はここ」と渡す)。(2) 「順番」の行を「済 / 走行中 / 未着手」で
+    書き直す。(3) `git worktree list` に残った worktree を消す (ブランチは残す。`--no-ff` のマージで履歴から引ける)。(4) `git status` が
+    clean、`git log --oneline origin/main..main` の本数を報告 (push は人がする)。
+  - 受け入れ基準: Phase 14 の `[x]` の全部に `結果:`、「順番」の行が現状どおり、worktree は main だけ、`git status` clean。
+
 - [ ] **T14.99 締める (README と §2 と §0 をデプロイ先の数字で書き直す)**
   - 目的: §0 のゴール「同じ条件でこれ以上速くならないところまで」は loopback では Phase 11 で到達し、デプロイ先では Phase 12〜14 で
     「コードで縮む待ち」を使い切る。それを 1 か所に書く。

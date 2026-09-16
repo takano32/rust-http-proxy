@@ -18,7 +18,7 @@ pub use proxy_cache::cache;
 pub use proxy_config::config;
 pub use proxy_endpoints::endpoints;
 pub use proxy_http::{freshness, http};
-pub use proxy_metrics::{history, metrics, persist, profile, recent, rrd};
+pub use proxy_metrics::{canary, history, metrics, persist, profile, recent, rrd};
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};
 pub use proxy_origin::{Upstream, origin, pool, request, tls};
@@ -167,6 +167,25 @@ pub fn serve(
             }
         };
         let cfg = config_of();
+        // 接続元の ACL (`PROXY_ALLOW_CLIENTS`。T14.18)。**要求を読まずにここで閉じる**ので、
+        // 内部エンドポイントも含めて何も見せない (公開ポートで個票を出さないため)。
+        // 断るのに応答は返さない — 誰が叩いているか分からない相手に、ここに何が居るかを
+        // 教えないため (503 を返す上限のときとは目的が違う)。
+        // T13.2 の「上限の外の枠」より**前**に置く (枠は自分宛ての要求のためのもので、
+        // そもそも繋がせない相手には要らない)。**認証ではない**。
+        // 既定 (空) の費用は `is_empty()` の分岐 1 回だけで、照合には入らない
+        if !cfg.allow_clients.is_empty() && !cfg.allow_clients.allows(peer.ip()) {
+            metrics
+                .rejected_client_acl
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            log_debug!(
+                None,
+                "closing connection from {} (not in PROXY_ALLOW_CLIENTS)",
+                peer.ip()
+            );
+            drop(stream);
+            continue;
+        }
         // この接続が継承したのは「今 待ち受けに当たっている値」。.env の再読込で timeout が
         // 変わった直後だけは食い違うので、その接続は従来どおり接続ごとに設定する
         let conn_inherited = inherited.filter(|t| *t == cfg.timeout);
@@ -225,7 +244,16 @@ pub fn serve(
         let queued_at = profile::mark();
         // 同時接続数の持ち分は番人として取って仕事へ運ぶ。`Conn::new` が途中で失敗しても、
         // 仕事がワーカーへ渡らずに落ちても、番人の `Drop` が必ず 1 回だけ返す (T9.6)
-        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        let (open, now_open) = OpenGuard::acquire(Arc::clone(&limiter));
+        // 山の写真 (T14.6): 上限の一定割合を**下から上に越えた瞬間**だけ、history スレッドに
+        // 1 枚頼む (旗を立てるだけ)。**越えていない経路はこの比較 1 回で終わる** —
+        // 撮らない設定 (`PROXY_BURST_PERCENT=0` / `PROXY_MAX_CONNS=0` / `--lite`) では
+        // `burst_at` が `usize::MAX` なので、同じ比較がそのまま「撮らない」になる
+        if now_open > cfg.burst_at {
+            metrics
+                .bursts
+                .request(now_open, cfg.burst_at, cfg.max_conns);
+        }
         let m = Arc::clone(&metrics);
         let c = Arc::clone(&cache);
         let p = Arc::clone(&upstream);
@@ -497,7 +525,8 @@ fn overload(client: &TcpStream, metrics: &Metrics, conn_id: usize, why: &str, dr
     if drain {
         linger(client);
     }
-    Step::Close
+    // 上限に当たって断った接続はプロキシ側の都合で閉じている (数は `rejected_overload`)
+    Step::Close(recent::CloseReason::Shutdown)
 }
 
 /// 1 つのクライアント接続を、keep-alive なら複数の要求にわたって処理する。
@@ -541,6 +570,11 @@ pub struct Conn {
     queue_ms: u32,
     /// 預かり所がワーカーへ渡した時刻 (`--lite` では `None`。T14.3 (1))
     queued_at: Option<Instant>,
+    /// 閉じた接続の個票 (`/recent`) に載せる値の積み上げ (T14.4)。
+    ///
+    /// **原子でも鍵でもない**: この接続を同時に触るスレッドは 1 つだけなので、要求ごとの
+    /// 足し算はここで済ませ、**接続の終了で 1 回だけ** [`Conn::finish`] が枠へ移す
+    tally: std::cell::Cell<recent::ConnTally>,
     /// 同時接続数と `/status` の active_connections の持ち分 (接続の寿命と一致させる)
     _open: OpenGuard,
     _active: ActiveGuard,
@@ -552,8 +586,8 @@ pub enum Step {
     Next,
     /// 猶予のあいだ次の要求が来なかった。監視スレッドへ預けてスレッドを解放する
     Park,
-    /// この接続は終わり
-    Close,
+    /// この接続は終わり (閉じた理由つき。`/recent` に残す。T14.4)
+    Close(recent::CloseReason),
     /// CONNECT トンネルへ移る
     Connect {
         target: String,
@@ -581,9 +615,13 @@ struct OpenGuard(Arc<Limiter>);
 
 impl OpenGuard {
     /// 持ち分を 1 つ取る (返すのは `Drop`)。
-    fn acquire(limiter: Arc<Limiter>) -> OpenGuard {
-        limiter.open.fetch_add(1, Ordering::Relaxed);
-        OpenGuard(limiter)
+    ///
+    /// 2 つ目の戻り値は**取ったあとの本数**。山の写真 (T14.6) が「閾を下から上に越えた
+    /// 瞬間」を知るために要るが、`fetch_add` が返す値を使うので**原子操作は増えない**
+    /// (同じ瞬間に複数のスレッドが accept しても、越えた 1 本だけがこの値を受け取る)。
+    fn acquire(limiter: Arc<Limiter>) -> (OpenGuard, usize) {
+        let open = limiter.open.fetch_add(1, Ordering::Relaxed) + 1;
+        (OpenGuard(limiter), open)
     }
 }
 
@@ -636,9 +674,10 @@ struct ActiveGuard {
 
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
-        // `/connections` からも外す (登録と抹消は接続の開始と終了で 1 回ずつ。T13.4)。
-        // トンネルへ移った接続も、この番人を一緒に運んでいるので必ずここを通る
-        self.metrics.conns.unregister(self.conn_id as u64);
+        // `/connections` からも外し、閉じた接続の個票を 1 件残す (`/recent`。T14.4)。
+        // 登録と抹消は接続の開始と終了で 1 回ずつ (T13.4)。トンネルへ移った接続も、
+        // この番人を一緒に運んでいるので必ずここを通る
+        self.metrics.record_closed(self.conn_id as u64);
         self.metrics.dec_active_conn();
         log_debug!(
             Some(self.conn_id),
@@ -717,6 +756,7 @@ impl Conn {
                 profile::ms_u32(active_started.saturating_duration_since(t))
             }),
             queued_at: None,
+            tally: std::cell::Cell::new(recent::ConnTally::default()),
             _open: open,
             _active: active,
         })
@@ -756,6 +796,17 @@ impl Conn {
         self.queued_at = profile::mark();
     }
 
+    /// 閉じた接続の個票 (`/recent`) に載せる値を枠へ移す (**接続の終了で 1 回だけ**。T14.4)。
+    ///
+    /// リングへ書くのは持ち分 (`ActiveGuard`) が落ちるときで、ここは「何を書くか」を
+    /// 決めるだけ。理由は先着優先なので、外から閉じられた (追い出し・監視の停止) ものは
+    /// そちらの理由が残る。
+    pub fn finish(&self, reason: recent::CloseReason) {
+        if let Some(slot) = &self.slot {
+            slot.finish(reason, self.tally.get(), self.served as u32);
+        }
+    }
+
     /// 要求と要求の間に抱えている資源を手放す (別のワーカーへ預ける前に呼ぶ)。
     pub fn release_idle_buffers(&mut self) {
         self.scratch = None;
@@ -766,7 +817,15 @@ impl Conn {
 /// 1 つのクライアント接続を、keep-alive なら複数の要求にわたって最後まで処理する。
 fn pump(mut conn: Box<Conn>) -> io::Result<()> {
     loop {
-        match serve_one(&mut conn)? {
+        let step = match serve_one(&mut conn) {
+            Ok(step) => step,
+            Err(e) => {
+                // 入出力で落ちた接続も個票に残す (原因つき。T14.4)
+                conn.finish(recent::CloseReason::Error(metrics::ErrCause::from_io(&e)));
+                return Err(e);
+            }
+        };
+        match step {
             // 猶予 0 の設定では読みにも行かず、その場で預ける
             Step::Next if conn.park.is_some() && conn.config.park_grace.is_zero() => {
                 match park_now(conn) {
@@ -781,7 +840,10 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                 Ok(()) => return Ok(()),
                 Err(back) => conn = back,
             },
-            Step::Close => return Ok(()),
+            Step::Close(why) => {
+                conn.finish(why);
+                return Ok(());
+            }
             Step::Connect {
                 target,
                 prefix,
@@ -1003,9 +1065,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         peer_ip,
         slot,
         queue_ms,
+        tally,
         ..
     } = conn;
     let peer_ip: &str = peer_ip;
+    let tally: &std::cell::Cell<recent::ConnTally> = tally;
     let scratch = scratch.as_mut().expect("just set");
     scratch.reset();
 
@@ -1058,11 +1122,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 MAX_LINE
             );
             reject(client, 414, "URI Too Long")?;
-            return Ok(Step::Close);
+            return Ok(Step::Close(recent::CloseReason::Shutdown));
         }
         Ok(Line::Read(Some(0))) => {
             log_debug!(Some(conn_id), "client closed ({} requests served)", *served);
-            return Ok(Step::Close);
+            return Ok(Step::Close(recent::CloseReason::ClientEof));
         }
         Ok(Line::Read(Some(_))) => {}
         Err(e)
@@ -1075,7 +1139,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 ) =>
         {
             log_debug!(Some(conn_id), "keep-alive idle timeout: {}", e);
-            return Ok(Step::Close);
+            return Ok(Step::Close(recent::CloseReason::KeepaliveTimeout));
         }
         // 上限の外で受けたのに何も送ってこない接続 (T13.2)。自分宛てか分からないまま
         // 枠を握らせておけないので、待つのをやめて 503 で閉じる
@@ -1119,11 +1183,16 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             request_line.trim()
         );
         scratch.request_line = request_line;
-        return Ok(Step::Close);
+        return Ok(Step::Close(recent::CloseReason::Shutdown));
     };
 
     // Host の値は行の添字で覚えておき、読み終わってから借用する (複製しない)
     let mut host_line: Option<usize> = None;
+    // `User-Agent` も行の添字で覚える (`/clients`。T14.7)。**拾うのは接続の最初の要求だけ**で、
+    // 2 要求目からはこの旗が倒れているので、ヘッダー 1 行につき比較 1 回で飛ばせる
+    // (`--lite` では記録しないので端から見ない。Phase 14 の共通の決まり)
+    let want_agent = *served == 0 && !config.lite;
+    let mut agent_line: Option<usize> = None;
     // 受けた Via に自分の印 (起動ごとの 8 桁 16 進) があるか = 自分を通った要求が戻ってきた
     let mut via_loop = false;
     // ヘッダー全体の大きさ (要求行を含む)
@@ -1142,7 +1211,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             None => {
                 log_warn!(Some(conn_id), "431 Request Header Fields Too Large");
                 reject(client, 431, "Request Header Fields Too Large")?;
-                return Ok(Step::Close);
+                return Ok(Step::Close(recent::CloseReason::Shutdown));
             }
             Some(0) => break,
             Some(n) => {
@@ -1154,7 +1223,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                         MAX_HEADER_BYTES
                     );
                     reject(client, 431, "Request Header Fields Too Large")?;
-                    return Ok(Step::Close);
+                    return Ok(Step::Close(recent::CloseReason::Shutdown));
                 }
             }
         }
@@ -1167,7 +1236,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 "431 Request Header Fields Too Large (too many lines)"
             );
             reject(client, 431, "Request Header Fields Too Large")?;
-            return Ok(Step::Close);
+            return Ok(Step::Close(recent::CloseReason::Shutdown));
         }
         if let Some((k, v)) = scratch.lines[index].split_once(':') {
             let k = k.trim();
@@ -1179,6 +1248,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 has_body = true;
             } else if !via_loop && k.eq_ignore_ascii_case("via") {
                 via_loop = via::is_self(v);
+            } else if want_agent && agent_line.is_none() && k.eq_ignore_ascii_case("user-agent") {
+                agent_line = Some(index);
             }
         }
         scratch.commit();
@@ -1188,6 +1259,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         client.set_read_timeout(timeout::for_socket(config.timeout))?;
         *read_timeout = Some(config.timeout);
     }
+    // 接続の個票 (`/recent`) の「上り」に要求のヘッダーぶんを足す (T14.4)。
+    // 箱の中の足し算だけで、原子も鍵も無い (`--lite` でも同じ道を通る)
+    let mut t = tally.get();
+    t.up = t.up.saturating_add(header_bytes as u64);
+    tally.set(t);
     let host_header: Option<&str> = host_line
         .and_then(|i| scratch.lines[i].split_once(':'))
         .map(|(_, v)| v.trim());
@@ -1227,8 +1303,16 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         );
         // 個票にも 1 件残す (`/errors`。T13.4)
         metrics.record_error(false, host_header.unwrap_or(target), peer_ip, 508, &detail);
-        metrics.record_client(peer_ip, metrics::HostOutcome::Error, 0, None);
-        return Ok(Step::Close);
+        metrics.record_client(
+            peer_ip,
+            metrics::HostOutcome::Error,
+            0,
+            None,
+            Some(host_header.unwrap_or(target)),
+        );
+        return Ok(Step::Close(recent::CloseReason::Error(
+            metrics::ErrCause::Loop,
+        )));
     }
 
     // プロキシ自身のエンドポイント (/dashboard, /status, /metrics, /proxy.pac, /purge, /lookup, PURGE)
@@ -1250,11 +1334,12 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         host: host_header,
         pac_direct: &config.pac_direct,
         lite: config.lite,
+        readonly: config.endpoints_readonly,
         version: VERSION,
         concurrency: &concurrency,
     };
     if endpoints::handle(&mut &*client, method, target, &ep)? {
-        return Ok(Step::Close);
+        return Ok(Step::Close(recent::CloseReason::Shutdown));
     }
     // 上限の外で受けた接続で、自分宛てではなかった (T13.2)。判定は上の
     // `endpoints::handle` = T12.3 の `local_path` そのもので、偽ならここへ来る
@@ -1266,6 +1351,16 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             request_line.trim_end(),
             true,
         ));
+    }
+
+    // 接続元の個票に `User-Agent` を写す (`/clients`。T14.7)。ここまで来た要求は
+    // 「自分宛てでもなく、上限の外でもない = プロキシとして通す要求」なので、
+    // `/status` を引いただけの相手で `clients[]` が増えることはない。
+    // **通るのは接続の最初の要求の 1 回だけ** (鍵を取るのも接続 1 本につき 1 回)
+    if let Some(i) = agent_line
+        && let Some((_, v)) = scratch.lines[i].split_once(':')
+    {
+        metrics.record_client_agent(peer_ip, v);
     }
 
     // ACL / Host Check
@@ -1281,7 +1376,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 let _ = (&*client).write_all(
                     b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 );
-                return Ok(Step::Close);
+                return Ok(Step::Close(recent::CloseReason::Shutdown));
             }
         }
     };
@@ -1319,13 +1414,19 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             metrics::HostOutcome::Blocked,
             0,
         );
-        metrics.record_client(peer_ip, metrics::HostOutcome::Blocked, 0, None);
+        metrics.record_client(
+            peer_ip,
+            metrics::HostOutcome::Blocked,
+            0,
+            None,
+            Some(target_host),
+        );
         // 個票にも 1 件残す (`/errors`。T14.2 (4))。403 は集計では `blocked` に数えてあり、
         // `errors_by_cause` には乗らないので、**誰が何を拒否されたか**はここでしか読めない
         metrics.record_blocked(is_connect, target_host, peer_ip, why);
         (&*client).write_all(FORBIDDEN_RESPONSE)?;
         (&*client).flush()?;
-        return Ok(Step::Close);
+        return Ok(Step::Close(recent::CloseReason::Shutdown));
     }
 
     if is_connect {
@@ -1375,6 +1476,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         last,
         stages,
         read_started,
+        // 閉じた接続の個票に積み上げる箱 (T14.4)。`--lite` では枠が無いので渡さない
+        tally: slot.is_some().then_some(tally),
     };
     let keep = http::handle_http_with_headers(
         client,
@@ -1388,7 +1491,13 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     *served += 1;
     // `last` が立っていれば `keep` は必ず false (応答に `Connection: close` が付いている)
     if !keep {
-        Ok(Step::Close)
+        // 1,000 要求で打ち切ったのか、クライアントが `Connection: close` を求めたのか
+        // (どちらも `/recent` の理由になる。T14.4)
+        Ok(Step::Close(if last {
+            recent::CloseReason::Limit
+        } else {
+            recent::CloseReason::ClientEof
+        }))
     } else {
         Ok(Step::Next)
     }
@@ -1460,7 +1569,8 @@ mod tests {
             tls: None,
         });
 
-        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        let (open, now_open) = OpenGuard::acquire(Arc::clone(&limiter));
+        assert_eq!(now_open, 1, "取ったあとの本数が返る");
         assert_eq!(limiter.open(), 1, "持ち分を取ったら 1");
         let err = Conn::new(
             stream,
@@ -1506,7 +1616,7 @@ mod tests {
             tls: None,
         });
 
-        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        let (open, _) = OpenGuard::acquire(Arc::clone(&limiter));
         let conn = Conn::new(
             stream,
             Accepted {
@@ -1544,7 +1654,7 @@ mod tests {
     #[test]
     fn open_slot_comes_back_when_the_job_is_dropped() {
         let limiter = Limiter::new();
-        let open = OpenGuard::acquire(Arc::clone(&limiter));
+        let (open, _) = OpenGuard::acquire(Arc::clone(&limiter));
         // `let _ = open;` だと RFC 2229 の分離キャプチャで閉包が捕まえないので `drop` で使う
         let job: Box<dyn FnOnce() + Send> = Box::new(move || drop(open));
         assert_eq!(limiter.open(), 1, "仕事が持ち分を抱えている");

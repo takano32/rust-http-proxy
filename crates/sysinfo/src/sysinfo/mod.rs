@@ -5,15 +5,19 @@
 //!   マウント種別を調べる
 //! - [`proc`]: `/proc/self/status` のスレッド数と `/proc/self/fd` の記述子の数 / `RLIMIT_NOFILE`、
 //!   `/proc/self/task/*/{stat,syscall}` のスレッド別 CPU と状態 (T14.3 (2))
+//! - [`capabilities`]: この環境で何が読めるか (`/proc` の syscall、`TCP_INFO`、cgroup、IPv6、
+//!   リゾルバ、`$HOME`)。`null` が「無かった」のか「読めなかった」のかを先に答える (T14.15)
 //!
 //! Linux 以外や `/proc` が無い環境では各関数が `None` / `Unsupported` を返し、
 //! 呼び出し側 (キャッシュの自動予算) は固定の既定値へフォールバックする。
 
+pub mod capabilities;
 pub mod fs;
 pub mod inotify;
 pub mod mem;
 pub mod proc;
 
+pub use capabilities::Capabilities;
 pub use fs::{
     FsInfo, dir_size_excluding, drop_page_cache, fs_info, fs_type, is_ram_backed, is_unsupported,
     preallocate,

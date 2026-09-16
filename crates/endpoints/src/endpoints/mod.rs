@@ -8,7 +8,8 @@
 //! 同じときだけ自分宛て。自分宛てで知らないパスは 404、`/` は 200 でこの一覧を返す
 //! (自分へ転送してループしない。T12.3)。ポートの違うオリジン形式は今までどおり転送する。
 //! 応答は常に `Connection: close`。認証は無いので、到達できる人は誰でも purge できる
-//! (公開ポートなら ACL や到達制御で守ること)。
+//! (公開ポートなら ACL や到達制御で守ること)。`PROXY_ENDPOINTS_READONLY=on` にすると
+//! **書き換える口だけ** (`/purge` / `PURGE` / `/blocklist?action=`) を 405 で断る (T14.18)。
 
 use std::io::{self, Write};
 
@@ -32,6 +33,9 @@ pub struct Endpoint<'a> {
     pub pac_direct: &'a [String],
     /// lite プロファイル (ダッシュボードを持たない)
     pub lite: bool,
+    /// 書き換える口 (`/purge` / `PURGE` / `/blocklist?action=`) を 405 で断る
+    /// (`PROXY_ENDPOINTS_READONLY`。読む口は今までどおり。認証ではない。T14.18)
+    pub readonly: bool,
     /// 動いているバイナリの版 (`/status` に出す。本体クレートの `VERSION`)
     pub version: &'a str,
     /// 上限といまのスレッド数を引く口 (`/status` と `/metrics` を組み立てるときだけ呼ぶ)。
@@ -43,6 +47,7 @@ pub struct Endpoint<'a> {
 }
 
 mod blocklist;
+mod config;
 mod pac;
 mod profile;
 mod recent;
@@ -97,9 +102,14 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
          \x20 /connections                                JSON: the connections open right now\n\
+         \x20 /recent?n=200&since=&client=&sort=          JSON: the connections that closed\n\
+         \x20 /bursts?n=50                                JSON: snapshots taken at each spike\n\
+         \x20 /snapshot                                   JSON: everything above in one request\n\
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
+         \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
+         \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    same as /status\n\
          \x20 /history?res=5|60|3600                      JSON: time series\n\
          \x20 /profile?res=5|60                           JSON: stages, threads, locks\n\
@@ -136,7 +146,15 @@ pub fn handle(
         None => (local, None),
     };
     let is_get = method.eq_ignore_ascii_case("GET");
-    let (status, content_type, body) = if is_purge {
+    // `PROXY_ENDPOINTS_READONLY=on` なら**書き換える口だけ**断る (T14.18)。読む口は
+    // 今までどおりなので、これは認証ではなく「消せる口を閉じる」つまみでしかない
+    let (status, content_type, body) = if ep.readonly && is_write(is_purge, path, query) {
+        (
+            405,
+            "application/json",
+            "{\"error\":\"read-only (PROXY_ENDPOINTS_READONLY=on)\"}".to_string(),
+        )
+    } else if is_purge {
         purge_url(ep, target)
     } else if is_get && (path == "/dashboard" || path == "/dashboard/") {
         if ep.lite {
@@ -171,12 +189,27 @@ pub fn handle(
         recent::errors(ep, query)
     } else if is_get && path == "/connections" {
         recent::connections(ep)
+    } else if is_get && path == "/recent" {
+        // 閉じた接続の個票 (T14.4)。`/connections` の「いま」に対して「起きたこと」
+        recent::recent(ep, query)
+    } else if is_get && path == "/bursts" {
+        // 山の写真 (T14.6)。同時接続数が上限の一定割合を越えた瞬間の `/connections`
+        recent::bursts(ep, query)
+    } else if is_get && path == "/snapshot" {
+        // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
+        recent::snapshot(ep)
     } else if is_get && path == "/dns" {
         recent::dns(query)
     } else if is_get && path == "/log" {
         recent::log(query)
     } else if is_get && path == "/hosts" {
         recent::hosts(ep, query)
+    } else if is_get && path == "/clients" {
+        // 接続元の個票 (T14.7)。認証なしで誰でも見えるのは他の個票と同じ
+        recent::clients(ep, query)
+    } else if is_get && path == "/config" {
+        // 効いている設定とその出どころ、この環境で何が読めるか (T14.15)
+        config::render(ep)
     } else if is_get && path == "/blocklist" {
         blocklist::handle(&parse_query(query.unwrap_or("")))
     } else if is_get && (path == "/healthz" || path == "/status") {
@@ -193,23 +226,7 @@ pub fn handle(
         } else {
             metrics::HostSort::Requests
         };
-        (
-            200,
-            "application/json",
-            // `/status` の組み立てはここの仕事。指標は部品を並べるだけにしてある
-            // (下の層が上の層を呼ぶと依存が輪になるため)
-            ep.metrics.to_json_with_cache(
-                Some(ep.cache),
-                metrics::StatusExtras {
-                    settings: &reload::status_json(),
-                    blocklist: &crate::blocklist::status_json(),
-                    state_file: &persist::status_json(),
-                    version: ep.version,
-                    concurrency: (ep.concurrency)(),
-                    sort,
-                },
-            ),
-        )
+        (200, "application/json", status_body(ep, sort))
     } else if is_get && path == "/metrics" {
         (
             200,
@@ -260,6 +277,7 @@ pub fn handle(
         200 => "OK",
         400 => "Bad Request",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         _ => "OK",
     };
     let response = format!(
@@ -280,6 +298,28 @@ pub fn handle(
         status
     );
     Ok(true)
+}
+
+/// `/status` の本体を組み立てる (`?sort=` は `hosts[]` の上位 50 を切り出す鍵。T13.3)。
+///
+/// **`/snapshot` (T14.4) もここを呼ぶ**: 1 要求で全部取るのに自分へ HTTP で繋ぎ直すと、
+/// 上限に当たっているときに取れない・接続を 17 本増やす・測る行為が状態を変える。
+/// 同じプロセス内の関数呼び出しで組む。
+///
+/// `/status` の組み立てはこの層の仕事 (指標は部品を並べるだけにしてある。
+/// 下の層が上の層を呼ぶと依存が輪になるため)。
+pub(super) fn status_body(ep: &Endpoint<'_>, sort: metrics::HostSort) -> String {
+    ep.metrics.to_json_with_cache(
+        Some(ep.cache),
+        metrics::StatusExtras {
+            settings: &reload::status_json(),
+            blocklist: &crate::blocklist::status_json(),
+            state_file: &persist::status_json(),
+            version: ep.version,
+            concurrency: (ep.concurrency)(),
+            sort,
+        },
+    )
 }
 
 /// URL を正規化して全バリアントを消す。
@@ -349,6 +389,19 @@ fn lookup(ep: &Endpoint<'_>, url: &str) -> (u16, &'static str, String) {
 }
 
 /// `a=b&c=d` を (キー, パーセントデコード済みの値) に分ける。
+/// 書き換える口か (`/purge` / `PURGE` / `/blocklist?action=<空でない値>`。T14.18)。
+///
+/// 呼ぶのは `PROXY_ENDPOINTS_READONLY=on` のときだけ (`&&` の右に置いてある) なので、
+/// 既定では `/blocklist` の問い合わせを二度読むことはない。
+fn is_write(is_purge: bool, path: &str, query: Option<&str>) -> bool {
+    is_purge
+        || path == "/purge"
+        || (path == "/blocklist"
+            && parse_query(query.unwrap_or(""))
+                .iter()
+                .any(|(k, v)| k == "action" && !v.is_empty()))
+}
+
 pub fn parse_query(query: &str) -> Vec<(String, String)> {
     query
         .split('&')

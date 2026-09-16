@@ -13,7 +13,7 @@ use crate::log::{Access, access};
 use crate::log_trace;
 use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics, StageMs};
 use crate::net;
-use crate::recent::ConnSlot;
+use crate::recent::{CloseReason, ConnSlot, ConnTally, STAGE_CONNECT, STAGE_DNS, STAGES};
 use crate::{log_debug, log_warn};
 
 #[cfg(target_os = "linux")]
@@ -93,7 +93,30 @@ fn open(
             );
             // 個票にも 1 件残す (`/errors`。誰の・いつ・なぜ。T13.4)
             metrics.record_error(true, &addr_str, &client_ip, 502, &detail);
-            metrics.record_client(&client_ip, HostOutcome::Error, 0, Some(started.elapsed()));
+            // 閉じた接続の個票にも相手を残す (`/recent`。**エラーの経路だけ**。T14.4)
+            if let Some(s) = &slot {
+                s.failed_tunnel(&addr_str);
+                let mut stage_ms = [0u64; STAGES];
+                stage_ms[STAGE_DNS] = detail.dns_ms;
+                stage_ms[STAGE_CONNECT] = detail.connect_ms;
+                s.finish(
+                    CloseReason::Error(ErrCause::from_io(&e)),
+                    ConnTally {
+                        up: 0,
+                        down: 0,
+                        status: 502,
+                        stage_ms,
+                    },
+                    0,
+                );
+            }
+            metrics.record_client(
+                &client_ip,
+                HostOutcome::Error,
+                0,
+                Some(started.elapsed()),
+                Some(&addr_str),
+            );
             access(
                 conn_id,
                 &Access {
@@ -164,7 +187,12 @@ fn detail_of(total: Duration, cause: Option<ErrCause>, stages: StageMs) -> Detai
 }
 
 /// トンネルが終わったときのアクセスログと統計 (どこで終わっても 1 回だけ通る)。
-fn report(o: &Info, transferred: u64) {
+///
+/// `up` はクライアント → 宛先、`down` は宛先 → クライアントのバイト数。
+/// `reason` は閉じた理由 (`/recent`。T14.4) で、外から閉じられた (追い出し・監視の停止)
+/// ときは枠に先に書いてある理由が勝つ。
+fn report(o: &Info, up: u64, down: u64, reason: CloseReason) {
+    let transferred = up.saturating_add(down);
     let alive = o.started.elapsed();
     o.metrics.add_bytes(transferred);
     // 中継の合計 = 生きていた時間 − 確立まで − 預けられていた時間 (T14.3 (1))。
@@ -175,6 +203,23 @@ fn report(o: &Info, transferred: u64) {
         let head =
             o.connect_took.as_millis().min(u64::MAX as u128) as u64 + detail.stages.park as u64;
         detail.stages.relay = total.saturating_sub(head).min(u32::MAX as u64) as u32;
+    }
+    // 閉じた接続の個票に 1 件ぶんの値を載せる (原子は接続の終わりのここだけ。T14.4)。
+    // 実際にリングへ書くのは本体クレートの `ActiveGuard::drop` (= この直後)
+    if let Some(s) = &o.slot {
+        let mut stage_ms = [0u64; STAGES];
+        stage_ms[STAGE_DNS] = detail.dns_ms;
+        stage_ms[STAGE_CONNECT] = detail.connect_ms;
+        s.finish(
+            reason,
+            ConnTally {
+                up,
+                down,
+                status: 0,
+                stage_ms,
+            },
+            0,
+        );
     }
     o.metrics.record_host_detail(
         &format!("connect://{}", o.addr_str),
@@ -188,6 +233,9 @@ fn report(o: &Info, transferred: u64) {
         HostOutcome::Bypass,
         transferred,
         Some(o.connect_took),
+        // 接続元の個票に宛先の種類とポートを数える (`/clients`。T14.7)。
+        // トンネル 1 本の終わりに 1 回だけで、鍵は record_client のものをそのまま使う
+        Some(&o.addr_str),
     );
     access(
         o.conn_id,
@@ -260,8 +308,10 @@ pub fn handle_connect(
             stages,
             read_started,
         )?;
-        let transferred = tunnel(client, server, idle)?;
-        report(&info, transferred);
+        let (up, down) = tunnel(client, server, idle)?;
+        // Linux 以外は片方向ずつ `io::copy` するだけなので、どちらが先に EOF を出したかは
+        // 分からない (`/recent` の理由は `shutdown` になる)
+        report(&info, up, down, CloseReason::Shutdown);
         Ok(())
     }
 }
@@ -321,13 +371,17 @@ pub fn connect_with_timeout(
     net::connect_with(addr_str, resolved, timeout)
 }
 
-/// 双方向にデータを中継し、転送した合計バイト数を返す (Linux 以外)。
+/// 双方向にデータを中継し、(上り, 下り) のバイト数を返す (Linux 以外)。
 ///
 /// `idle` 秒だけ双方向とも動きが無ければ閉じる (`None` で無期限)。
 /// Linux では 1 スレッドで `poll(2)` を回して `splice(2)` でカーネル内をコピーする
 /// ([`relay`]。接続あたりのスレッドが 3 本から 1 本に減り、ユーザー空間へのコピーも無くなる)。
 #[cfg(not(target_os = "linux"))]
-pub fn tunnel(client: TcpStream, server: TcpStream, idle: Option<Duration>) -> io::Result<u64> {
+pub fn tunnel(
+    client: TcpStream,
+    server: TcpStream,
+    idle: Option<Duration>,
+) -> io::Result<(u64, u64)> {
     copy_both_ways(client, server, idle)
 }
 
@@ -337,7 +391,7 @@ fn copy_both_ways(
     mut client: TcpStream,
     mut server: TcpStream,
     idle: Option<Duration>,
-) -> io::Result<u64> {
+) -> io::Result<(u64, u64)> {
     let mut client_clone = client.try_clone()?;
     let mut server_clone = server.try_clone()?;
     // poll が無いので、アイドル打ち切りは読み取りタイムアウトで代用する
@@ -366,7 +420,8 @@ fn copy_both_ways(
     let sent = t1.join().unwrap_or(0);
     let received = t2.join().unwrap_or(0);
     log_trace!(None, "tunnel finished: {}B up / {}B down", sent, received);
-    Ok(total.load(Ordering::Relaxed))
+    let _ = total.load(Ordering::Relaxed);
+    Ok((sent, received))
 }
 
 /// Linux の 1 スレッド中継 (`poll` + `splice`) と、暇なときの預け入れ。
@@ -380,7 +435,7 @@ mod relay {
 
     use super::{Info, Opened, report};
     use crate::log_trace;
-    use crate::recent::{ConnSlot, ConnState};
+    use crate::recent::{CloseReason, ConnSlot, ConnState};
     use crate::sys::{self, POLLERR, POLLHUP, POLLIN, POLLOUT, Pipe, PollFd};
 
     /// 1 回の splice / read で動かす最大バイト数 (パイプ容量と同じ)。
@@ -573,6 +628,12 @@ mod relay {
         parked_at: Option<Instant>,
         /// 預けられていた合計 (ms)
         parked_ms: u32,
+        /// 中継の中で決まった閉じた理由 (アイドル打ち切り / `poll` の失敗。T14.4)。
+        /// 外から閉じられたとき (追い出し・監視の停止) は枠に直接書いてあるので
+        /// ここは `None` のままで、`ConnSlot::finish` の先着優先でそちらが勝つ
+        close: Option<CloseReason>,
+        /// 先に EOF を出したのはどちら (`0` = クライアント、`1` = 宛先)。T14.4
+        first_eof: Option<usize>,
         /// 本体クレートの持ち分 (同時接続数と `active_connections`)。中身は見ない
         _hold: Box<dyn Send>,
     }
@@ -586,7 +647,15 @@ mod relay {
             // 段階 (T14.3 (1))。`relay` は `report` が引き算で出す
             self.info.detail.stages.first_relay = self.first_relay_ms;
             self.info.detail.stages.park = self.parked_ms;
-            report(&self.info, self.transferred);
+            // 閉じた理由 (T14.4): 中継の中で決まっていればそれ、決まっていなければ
+            // **先に EOF を出した側**。どちらも無ければプロキシ側の都合 (`shutdown`)
+            let reason = self.close.unwrap_or(match self.first_eof {
+                Some(0) => CloseReason::ClientEof,
+                Some(_) => CloseReason::ServerEof,
+                None => CloseReason::Shutdown,
+            });
+            // `dirs[0]` はクライアント → 宛先 (上り)、`dirs[1]` は宛先 → クライアント (下り)
+            report(&self.info, self.dirs[0].moved, self.dirs[1].moved, reason);
         }
     }
 
@@ -666,6 +735,9 @@ mod relay {
             let dirs = &mut self.dirs;
             let transferred = &mut self.transferred;
             let first_relay = &mut self.first_relay_ms;
+            // 閉じた理由に使う 2 つ (T14.4)。どちらも 1 本の終わりに 1 回書くだけ
+            let close = &mut self.close;
+            let first_eof = &mut self.first_eof;
 
             loop {
                 let mut progressed = false;
@@ -678,6 +750,7 @@ mod relay {
                         match d.fill(socks) {
                             Ok(0) => {
                                 d.src_eof = true;
+                                first_eof.get_or_insert(d.src);
                                 progressed = true;
                             }
                             Ok(n) => {
@@ -690,6 +763,7 @@ mod relay {
                             }
                             Err(_) => {
                                 d.src_eof = true;
+                                first_eof.get_or_insert(d.src);
                                 progressed = true;
                             }
                         }
@@ -715,6 +789,8 @@ mod relay {
                             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                             // 送信先が閉じた: この方向は終わり、相手にも伝える
                             Err(_) => {
+                                // 先に手を引いたのは**送信先**の側 (T14.4)
+                                first_eof.get_or_insert(d.dst);
                                 d.pending = 0;
                                 // パイプに残ったぶんはもう渡せない。置き場へ返さずに閉じる
                                 // (返すと次のトンネルに他人のバイトが混ざる)
@@ -773,11 +849,13 @@ mod relay {
                     Ok(0) if parkable => return Outcome::Idle,
                     Ok(0) if wait_ms >= 0 => {
                         log_trace!(Some(conn_id), "tunnel idle timeout after {}ms", wait_ms);
+                        *close = Some(CloseReason::IdleTimeout);
                         break;
                     }
                     Ok(_) => {}
                     Err(e) => {
                         log_trace!(Some(conn_id), "tunnel poll failed: {}", e);
+                        *close = Some(CloseReason::Error(crate::metrics::ErrCause::from_io(&e)));
                         break;
                     }
                 }
@@ -823,6 +901,8 @@ mod relay {
             first_relay_ms: 0,
             parked_at: None,
             parked_ms: 0,
+            close: None,
+            first_eof: None,
             _hold: hold,
         }));
         Ok(())

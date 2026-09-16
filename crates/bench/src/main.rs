@@ -19,11 +19,14 @@
 //!      (同じくプロキシ側のスレッド数と RSS を見るためのモード。`--only idle-conns` でだけ走る)
 //!   7. syscall-cost: この機械での `sendto` / `recvfrom` 1 回の実費 (プロキシは使わない。
 //!      `--only syscall-cost` でだけ走る。**`taskset` で cpu を固定して使うこと**)
+//!   8. connect-multi: 4 と同じだが宛先が**名前** (`multi.test`) なので、プロキシ側で
+//!      候補が 2 つ (黒穴の AAAA と生きている A) になり Happy Eyeballs 本体を通る。
+//!      `scripts/deployed-like.sh` の中でだけ走る (`--only connect-multi`)
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,7 +45,7 @@ struct Args {
     body_bytes: usize,
     /// オリジン応答を保存可能にする (キャッシュ HIT 側を測る)
     cacheable: bool,
-    /// 測る種類 ("all" / "direct" / "forward" / "tunnel" / "connect" /
+    /// 測る種類 ("all" / "direct" / "forward" / "tunnel" / "connect" / "connect-multi" /
     /// "idle-tunnels" / "idle-conns" / "syscall-cost")
     only: String,
     /// 1 要求ごとに接続を張り直す (接続あたりの固定費を測る)
@@ -52,7 +55,8 @@ struct Args {
 fn usage() -> ! {
     eprintln!(
         "usage: bench [--proxy HOST:PORT] [--conc N] [--seconds N] [--body-bytes N]\n\
-                     [--only direct|forward|tunnel|connect|idle-tunnels|idle-conns|syscall-cost|all]\n\
+                     [--only direct|forward|tunnel|connect|connect-multi|idle-tunnels|\n\
+                             idle-conns|syscall-cost|all]\n\
          \n\
          Without --proxy only the direct (origin) baseline is measured."
     );
@@ -208,6 +212,26 @@ impl Report {
         self.latencies_us[idx] as f64 / 1000.0
     }
 
+    /// `--only connect-multi` 用の 1 行 (p50 / p95 / **max**)。
+    ///
+    /// この経路で読みたいのは「250 ms を払ったか」なので、p99 より **max** が効く
+    /// (1 本目だけ払って以後は払わない、が正しい姿)。**`(N ops in X.Xs)` の形は
+    /// [`Report::print`] と揃える** (`scripts/cpu-per-request.sh` がこの括弧から
+    /// 操作数を読んで CPU/本 を出す)。
+    fn print_multi(&self, label: &str) {
+        let secs = self.elapsed.as_secs_f64().max(1e-9);
+        println!(
+            "{:<8} {:>9.0} op/s  p50 {:>8.3} ms  p95 {:>8.3} ms  max {:>8.3} ms  ({} ops in {:.1}s)",
+            label,
+            self.ops as f64 / secs,
+            self.percentile(0.50),
+            self.percentile(0.95),
+            self.percentile(1.0),
+            self.ops,
+            secs,
+        );
+    }
+
     fn print(&self, label: &str) {
         let secs = self.elapsed.as_secs_f64().max(1e-9);
         println!(
@@ -341,10 +365,11 @@ fn http_load(
 }
 
 /// CONNECT を張って 200 応答まで読む。
-fn open_tunnel(
-    proxy: SocketAddr,
-    target: SocketAddr,
-) -> io::Result<(TcpStream, BufReader<TcpStream>)> {
+///
+/// `target` は**文字列**。IP リテラル (`127.0.0.1:38123`) なら
+/// プロキシは名前解決を通らず、名前 (`multi.test:38123`) なら通る
+/// (`--only connect` と `--only connect-multi` の違いはここだけ)。
+fn open_tunnel(proxy: SocketAddr, target: &str) -> io::Result<(TcpStream, BufReader<TcpStream>)> {
     let mut sock = TcpStream::connect(proxy)?;
     sock.set_nodelay(true)?;
     let req = format!("CONNECT {0} HTTP/1.1\r\nHost: {0}\r\n\r\n", target);
@@ -891,6 +916,97 @@ mod syscost {
     }
 }
 
+/// `--only connect-multi` の宛先の名前。
+///
+/// `scripts/deployed-like.sh` が名前空間の中の `/etc/hosts` に
+/// **AAAA (黒穴) と A (生きているループバック) の 2 行**で置く。
+/// この名前はどの実在のドメインとも衝突しない (`.test` は RFC 6761 の予約)。
+const MULTI_HOST: &str = "multi.test";
+
+/// 名前宛ての CONNECT を `--seconds` 秒張り続ける (`--only connect-multi`)。
+///
+/// `--only connect` との違いは**宛先だけ**で、IP リテラルではなく名前を書く。プロキシ側では候補が 2 つ (黒穴の AAAA と生きている A) になるので
+/// **Happy Eyeballs の本体** (`crates/net/src/net.rs` の `connect_candidates`) を通る。
+/// `--only connect` は候補が 1 つ (`addrs.len() == 1`) の短絡に入るため、この経路は
+/// Phase 12 まで一度も手元で測れていなかった (T10.1 が「無罪」と結論した理由。T14.16)。
+///
+/// 出す数字は **1 本目の確立時間**と、そのあとの p50 / p95 / max。
+/// T12.1 より前のプロキシは毎回 `STAGGER` の 250 ms を払い、今のプロキシは
+/// 1 本目だけ払って以後は払わない (= p50 が 1 ms 未満)。
+///
+/// **`--conc` は 3 以上にすること。** T12.1 の「全体で 3 回続けて負けたら IPv4 を先頭」は
+/// 1 本目の負けを数えるが、2 本目からはホストごとの記憶 (`last_win_v6`) が効いて
+/// そもそも IPv6 を試さない。同時に走り出した `--conc` 本ぶんだけが「まだ誰も負けていない」
+/// 状態で賭けるので、`/status` の `v4_first` が立つのは `--conc >= 3` のときだけ。
+fn connect_multi(proxy: SocketAddr, conc: usize, seconds: u64) {
+    let sink = spawn_sink().expect("sink");
+    let target = format!("{}:{}", MULTI_HOST, sink.port());
+    // 名前が引けない機械 (= `scripts/deployed-like.sh` の外) では測らずに終わる。
+    // 終了コード 2 は「この機械では測れない」の意味で、スクリプトが見分けられる。
+    let addrs: Vec<SocketAddr> = match (MULTI_HOST, sink.port()).to_socket_addrs() {
+        Ok(it) => it.collect(),
+        Err(e) => {
+            println!(
+                "connect-multi: cannot resolve {} ({}); run it inside scripts/deployed-like.sh",
+                MULTI_HOST, e
+            );
+            std::process::exit(2);
+        }
+    };
+    let v6 = addrs.iter().find(|a| a.is_ipv6());
+    let v4 = addrs.iter().find(|a| a.is_ipv4());
+    let (Some(v6), Some(v4)) = (v6, v4) else {
+        println!(
+            "connect-multi: {} needs one AAAA and one A, got {:?}; \
+             run it inside scripts/deployed-like.sh",
+            MULTI_HOST, addrs
+        );
+        std::process::exit(2);
+    };
+    println!(
+        "cnct-mlt target {} -> {} (v6, blackholed) + {} (v4, alive)",
+        target,
+        v6.ip(),
+        v4.ip()
+    );
+    // 各スレッドの **1 本目**だけ別に集める (まだ誰も負けていない状態で張る 1 本)。
+    // 触るのはスレッドあたり 1 回だけなので、熱い経路に錠は入らない。
+    let firsts = Arc::new(Mutex::new(Vec::<u32>::new()));
+    let collector = Arc::clone(&firsts);
+    let report = run_load(conc, seconds, move |stop, lat, _bytes| {
+        let mut first = true;
+        while !stop.load(Ordering::Relaxed) {
+            let t0 = Instant::now();
+            match open_tunnel(proxy, &target) {
+                Ok((sock, _)) => {
+                    let us = t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
+                    if first {
+                        first = false;
+                        collector.lock().expect("firsts").push(us);
+                    }
+                    lat.push(us);
+                    let _ = sock.shutdown(Shutdown::Both);
+                }
+                Err(_) => thread::sleep(Duration::from_millis(2)),
+            }
+        }
+    });
+    let mut first = firsts.lock().expect("firsts").clone();
+    first.sort_unstable();
+    if first.is_empty() {
+        println!("cnct-mlt no CONNECT succeeded (is the proxy allowed to reach 127.0.0.1?)");
+        std::process::exit(2);
+    }
+    println!(
+        "cnct-mlt first {:>8.3} ms  (median of {} threads' first CONNECT; min {:.3} max {:.3})",
+        first[first.len() / 2] as f64 / 1000.0,
+        first.len(),
+        first[0] as f64 / 1000.0,
+        first[first.len() - 1] as f64 / 1000.0,
+    );
+    report.print_multi("cnct-mlt");
+}
+
 fn parse_addr(s: &str) -> SocketAddr {
     use std::net::ToSocketAddrs;
     s.to_socket_addrs()
@@ -952,6 +1068,7 @@ fn main() {
     // トンネル `--conc N` 本のスループット合計 (他のモードと同じく `--seconds` 秒で終わる)
     if want("tunnel") {
         let blaster = spawn_blaster().expect("blaster");
+        let blaster = blaster.to_string();
         // 2 本目以降を先に張ってスレッドへ渡し、**1 本目はこのスレッドで回す**。
         // こうすると `--conc 1` では下の `for` が 1 度も回らず、スレッドを 1 本も
         // 足さない元のままの経路になる (§2 の「トンネル 1 本」はこの条件の値なので、
@@ -959,7 +1076,7 @@ fn main() {
         let mut readers = Vec::new();
         let mut failed = 0usize;
         for _ in 1..args.conc {
-            match open_tunnel(proxy, blaster) {
+            match open_tunnel(proxy, &blaster) {
                 Ok((sock, reader)) => {
                     let seconds = args.seconds;
                     readers.push(thread::spawn(move || drain_tunnel(sock, reader, seconds)));
@@ -967,7 +1084,7 @@ fn main() {
                 Err(_) => failed += 1,
             }
         }
-        match open_tunnel(proxy, blaster) {
+        match open_tunnel(proxy, &blaster) {
             Ok((sock, reader)) => {
                 let t0 = Instant::now();
                 let mut got = drain_tunnel(sock, reader, args.seconds);
@@ -1015,15 +1132,21 @@ fn main() {
         return;
     }
 
+    // 名前宛ての CONNECT (--only connect-multi のときだけ。名前空間が要るので all には入れない)
+    if args.only == "connect-multi" {
+        connect_multi(proxy, args.conc, args.seconds);
+        return;
+    }
+
     // CONNECT の確立/秒
     if !want("connect") {
         return;
     }
-    let sink = spawn_sink().expect("sink");
+    let sink = spawn_sink().expect("sink").to_string();
     run_load(args.conc, args.seconds, move |stop, lat, _bytes| {
         while !stop.load(Ordering::Relaxed) {
             let t0 = Instant::now();
-            match open_tunnel(proxy, sink) {
+            match open_tunnel(proxy, &sink) {
                 Ok((sock, _)) => {
                     lat.push(t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
                     let _ = sock.shutdown(Shutdown::Both);
@@ -1033,4 +1156,33 @@ fn main() {
         }
     })
     .print("connect");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--only connect-multi` の行は p50 / p95 / **max** を出す (T14.16)。
+    /// max は `percentile(1.0)`。この経路で読みたいのは「250 ms を払った本があるか」なので、
+    /// p99 より max が効く (1 本目だけ払って以後は払わない、が正しい姿)。
+    #[test]
+    fn percentile_covers_median_p95_and_max() {
+        let r = Report {
+            ops: 5,
+            bytes: 0,
+            elapsed: Duration::from_secs(1),
+            latencies_us: vec![1_000, 2_000, 3_000, 4_000, 250_000],
+        };
+        assert_eq!(r.percentile(0.50), 3.0);
+        assert_eq!(r.percentile(0.95), 250.0);
+        assert_eq!(r.percentile(1.0), 250.0);
+        // 1 本も張れなかったときも落ちない
+        let empty = Report {
+            ops: 0,
+            bytes: 0,
+            elapsed: Duration::from_secs(1),
+            latencies_us: Vec::new(),
+        };
+        assert_eq!(empty.percentile(1.0), 0.0);
+    }
 }

@@ -185,6 +185,19 @@ fn start_test_proxy_parts(
     (port, handle, seen)
 }
 
+/// 履歴スレッド付きで起こす版 (T14.6)。
+///
+/// 山の写真を撮るのは history スレッドなので、写真を見るテストはこれで起こす。
+/// **周期を指定できる**ので 5 秒待たずに済む (`history::spawn_every`)。
+/// 状態ファイルには書かない (`store` は `None`)。
+pub fn start_test_proxy_with_history(config: Config, interval: Duration) -> (u16, Arc<Metrics>) {
+    let (port, _, metrics) = start_test_proxy_parts(config, CacheConfig::disabled(), None);
+    // 履歴の標本はキャッシュの使用量も読むので 1 つ渡す (無効のままでよい)
+    let cache = Arc::new(Cache::new(CacheConfig::disabled()));
+    rust_http_proxy::history::spawn_every(Arc::clone(&metrics), cache, None, interval);
+    (port, metrics)
+}
+
 /// `.env` の再読込のように**設定を差し替えられる**テスト用プロキシ (T11.6)。
 ///
 /// 返した `RwLock` の中身を入れ替えると、`serve` が次に受ける接続から新しい設定を引く
@@ -723,4 +736,79 @@ pub fn raw_get(proxy_port: u16, request: &str) -> String {
     let mut out = String::new();
     let _ = stream.read_to_string(&mut out);
     out
+}
+
+/// `HOME` を渡して**実バイナリ**を起こし、`.env` を見る配線ごと確かめるための番人
+/// (T14.18。落ちても子プロセスを残さない)。
+///
+/// 起動ログ (`... listening on 127.0.0.1:PORT ...`) から待ち受けポートを取り、以降の行は
+/// [`ProxyProcess::wait_for_log`] で待てる。標準出力は読み続けないとパイプが詰まるので、
+/// 専用スレッドで全部引き取る。
+pub struct ProxyProcess {
+    child: std::process::Child,
+    pub port: u16,
+    lines: std::sync::mpsc::Receiver<String>,
+}
+
+impl ProxyProcess {
+    /// `HOME=home` で起動し、待ち受けポートが分かるまで待つ。`home/.env` は呼ぶ側が先に置く。
+    pub fn start(home: &std::path::Path) -> ProxyProcess {
+        use std::io::BufRead;
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
+            .env("HOME", home)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("could not start the proxy binary");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if tx.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        let mut port = None;
+        while let Ok(line) = rx.recv_timeout(Duration::from_secs(20)) {
+            if let Some((_, rest)) = line.split_once("listening on ") {
+                port = rest
+                    .split_whitespace()
+                    .next()
+                    .and_then(|a| a.rsplit(':').next())
+                    .and_then(|p| p.parse::<u16>().ok());
+                break;
+            }
+        }
+        let port = port.expect("the proxy did not log its listening port");
+        ProxyProcess {
+            child,
+            port,
+            lines: rx,
+        }
+    }
+
+    /// 標準出力に `needle` を含む行が出るまで待つ (`.env` の再読込の完了を待つため。
+    /// **`/status` を叩いて待つと、それ自体が接続 1 本になって数えたい指標が動く**)。
+    pub fn wait_for_log(&self, needle: &str) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+            match self.lines.recv_timeout(left) {
+                Ok(line) if line.contains(needle) => return line,
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+        panic!("timed out waiting for a log line containing {:?}", needle);
+    }
+}
+
+impl Drop for ProxyProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
