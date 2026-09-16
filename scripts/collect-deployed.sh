@@ -1,9 +1,11 @@
 #!/bin/bash
 # デプロイ先の様子を **1 回で取って 1 枚に読む** (TASKS.md T14.4)。
 #
-# `/snapshot` (T14.4) を保存し、前回の雪像との差分 (`status-diff.py`)、ダッシュボードの
-# 読み方の確認 (`check-dashboard.js`)、手元から見た待ち (`probe-deployed.sh`) を続けて回して、
-# **Markdown 1 枚**を標準出力に出す。T14.0 で 17 本の URL を手で叩いていた作業の代わり。
+# `/snapshot` (T14.4) を保存し、前回の雪像との差分 (`snapshot-diff.py` と `status-diff.py`)、
+# ダッシュボードの読み方の確認 (`check-dashboard.js`)、手元から見た待ち (`probe-deployed.sh`) を
+# 続けて回して、**Markdown 1 枚**を標準出力に出す。T14.0 で 17 本の URL を手で叩いていた作業の代わり。
+# **前回の雪像があれば `snapshot-diff.py` (T14.17) を呼ぶ** (再起動で切った平常時の前後・ホスト別・
+# 接続元別・名前解決・エラー・バースト)。**完了の定義に対する判定表は要約のいちばん最後**に置く。
 #
 # 使い方:
 #   scripts/collect-deployed.sh HOST:PORT [DIR]
@@ -17,6 +19,7 @@
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
+#   CRITERIA (既定 phase14) … 判定表に使う完了の定義。`off` で判定表を出さない
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
 #   AAAA (無指定)       … `status-diff.py --aaaa FILE` に渡す表 (数字を残すときは固定する。§1)
 #
@@ -32,6 +35,7 @@ DIR=${2:-$HOME/rust-http-proxy-status}
 PROBE=${PROBE:-1}
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
+CRITERIA=${CRITERIA:-phase14}
 MAX_TIME=${MAX_TIME:-30}
 AAAA=${AAAA:-}
 
@@ -65,8 +69,28 @@ printf '## 1. 要点\n\n'
 python3 scripts/snapshot-summary.py "$OUT" ${PREV:+--prev "$PREV"} || echo '(要点を組めなかった)'
 printf '\n'
 
-# --- 3. ホスト別 (status-diff.py) ---------------------------------------------
-printf '## 2. ホスト別 (status-diff.py)\n\n```\n'
+# --- 3. 前回との差分 (snapshot-diff.py) ---------------------------------------
+# 判定表 (`## 9.`) だけは要約のいちばん最後に回すので、ここではその手前までを出す
+DIFFMD=
+CRIT=
+[ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
+if [ "$DIFF" = 1 ] && [ -n "$PREV" ]; then
+  DIFFMD=$work/snapshot-diff.md
+  # shellcheck disable=SC2086  # $CRIT は 2 語に分けたい
+  python3 scripts/snapshot-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} $CRIT \
+    >"$DIFFMD" 2>&1 || echo '(snapshot-diff.py が失敗した)' >>"$DIFFMD"
+fi
+printf '## 2. 前回との差分 (snapshot-diff.py)\n\n'
+if [ -n "$DIFFMD" ]; then
+  # 見出しは 1 段下げる (この文書の `## 1.` 〜と番号がぶつからないように)
+  sed -e '/^## 9\. /,$d' -e 's/^#\{1,2\} /### /' "$DIFFMD"
+else
+  echo '(前回の雪像が無いか DIFF=0)'
+fi
+printf '\n'
+
+# --- 4. ホスト別 (status-diff.py) ---------------------------------------------
+printf '## 3. ホスト別 (status-diff.py)\n\n```\n'
 if [ "$DIFF" = 1 ] && [ -n "$PREV" ]; then
   scripts/status-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} --min-timed 1 --top 40 2>&1 ||
     echo '(status-diff.py が失敗した)'
@@ -76,8 +100,8 @@ else
 fi
 printf '```\n\n'
 
-# --- 4. ダッシュボードの読み方 (check-dashboard.js) ---------------------------
-printf '## 3. ダッシュボード (check-dashboard.js)\n\n```\n'
+# --- 5. ダッシュボードの読み方 (check-dashboard.js) ---------------------------
+printf '## 4. ダッシュボード (check-dashboard.js)\n\n```\n'
 if [ "$DASHBOARD" = 1 ] && command -v node >/dev/null 2>&1; then
   python3 - "$OUT" "$work/history.json" "$work/status.json" <<'PY'
 import json, sys
@@ -92,11 +116,23 @@ else
 fi
 printf '```\n\n'
 
-# --- 5. 手元から見た待ち (probe-deployed.sh) ----------------------------------
-printf '## 4. 手元から見た待ち (probe-deployed.sh)\n\n```\n'
+# --- 6. 手元から見た待ち (probe-deployed.sh) ----------------------------------
+printf '## 5. 手元から見た待ち (probe-deployed.sh)\n\n```\n'
 if [ "$PROBE" = 1 ]; then
   scripts/probe-deployed.sh "$PROXY" 2>&1 || echo '(probe-deployed.sh が失敗した)'
 else
   echo '(飛ばした: PROBE=0)'
 fi
-printf '```\n'
+printf '```\n\n'
+
+# --- 7. 完了の定義に対する判定 (要約の末尾) --------------------------------
+printf '## 6. 完了の定義に対する判定'
+[ "$CRITERIA" = off ] || printf ' (snapshot-diff.py --criteria %s)' "$CRITERIA"
+printf '\n'
+if [ -n "$DIFFMD" ] && grep -q '^## 9\. ' "$DIFFMD"; then
+  sed -n '/^## 9\. /,$p' "$DIFFMD" | sed '1d'   # 見出しは上で出している
+elif [ "$CRITERIA" = off ]; then
+  printf '\n(CRITERIA=off なので出していない)\n'
+else
+  printf '\n(前回の雪像が無いか DIFF=0 なので判定できない)\n'
+fi

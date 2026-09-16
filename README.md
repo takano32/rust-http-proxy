@@ -88,6 +88,27 @@ scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と�
 
 保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
 
+**2 枚の雪像から「何が変わったか」を全部読むのは `scripts/snapshot-diff.py A B`** (T14.17)。
+再起動をまたいでいるかを `uptime_secs` と `version` で見て、**`/history` をその再起動時刻で切り**、
+**バーストの無い時間帯 (1 時間 300 本未満の標本) どうし**で CONNECT 確立の p50 / p95 と
+名前解決のミス率を並べます (`/status` の通算は再起動で 0 に戻るので、そのまま引き算すると
+「いつからの値か」が混ざります)。続けてホスト別・接続元別 (**新しく現れた接続元**)・
+名前解決の warm と引き直し・出来事・エラーの原因別・バーストを出し、`--criteria phase14` を
+足すと**完了の定義に対する判定表** (満たした / 届かず / 判定できず) が最後に付きます。
+出力は Markdown なので `TASKS.md` にそのまま貼れます。
+
+```bash
+scripts/snapshot-diff.py ~/rust-http-proxy-status/2026-09-1{2,6}*-snapshot.json --criteria phase14
+scripts/snapshot-diff.py a.json b.json --aaaa aaaa.json --out json      # 機械で読む形
+# `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
+scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z \
+                         --from-files ~/rust-http-proxy-status/2026-09-16T0106Z
+```
+
+`collect-deployed.sh` は前回の雪像を見つけるとこれを呼び、**要約のいちばん最後に判定表**を置きます
+(`CRITERIA=off` で止められます)。道具の単体テストは `python3 -m unittest discover -s scripts`
+(架空の雪像 `scripts/testdata/snapshot-a.json` / `snapshot-b.json` で回ります)。
+
 | 項目 | 直す前 (2026-09-10) | いま | 出どころ |
 |---|---|---|---|
 | CONNECT 確立、**AAAA のあるホスト** | **257 ms** (25 ホストの中央値) | **9 ms** (29 ホスト) | 2026-09-12、`status-diff.py --aaaa` |
