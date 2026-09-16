@@ -19,6 +19,8 @@
 //      (タイムライン・遅い接続・山・接続元・RTT の散布・起動からの窓・出来事の印。T14.8)
 //  11. **「端末から測る」ページ (`probe.html`) の関数** (`median` / `pick` / `render`) が
 //      作り物の数列と `/status` の実出力で通り、「経由している / していない」を判定できること (T14.33)
+//  12. **KPI「CONNECT 確立 p50」が `/status` の `recent_quantiles` (直近 1,024 本の実測) を
+//      使い、無い版の出力では区間の補間に落ちること** (T14.31)
 //
 // 使い方: node scripts/check-dashboard.js [/history の実出力.json] [/status の実出力.json]
 //                                         [/profile の実出力.json] [/snapshot の実出力.json]
@@ -64,6 +66,12 @@ const names = [
   'longestStage',
   'roleRows',
   'lockRows',
+  // KPI「CONNECT 確立 p50」の値を選ぶ側 (T14.31) と、それが使う整形 (どれも DOM に触らない)
+  'connectKpi',
+  'fmtMs',
+  'fmtMsFine',
+  'fmtNum',
+  'fmtDur',
 ];
 // 名前で関数を切り出して 1 つの object にする (DOM に触らない関数だけ渡すこと)
 function pick(source, wanted, where, prelude) {
@@ -1203,6 +1211,55 @@ if (!probeLite.notes.join('').includes('記録していません')) fail('--prob
 if (prb.render().verdict.key !== 'none') fail('引数なしで落ちた');
 const probeKiB = Math.round(Buffer.byteLength(probeHtml) / 1024);
 
+// 12. KPI「CONNECT 確立 p50」(T14.31)。`recent_quantiles` があれば**区間の補間ではなく
+// 直近 1,024 本の実測**を使い、無い版の `/status` では今までどおり区間の補間に落ちること。
+const kpiWin = api.mergeWindows(samples, 60, 'connect');
+const exactStatus = {
+  recent_quantiles: {
+    connect: { n: 1024, p50: 0.712, p90: 1.204, p99: 3.41, max: 9.876, window_secs: 137 },
+    forward: { n: 8, p50: 1.0, p90: 2.0, p99: 2.0, max: 2.0, window_secs: 5 },
+  },
+};
+const exact = api.connectKpi(exactStatus, kpiWin, hist.bounds_ms);
+if (!exact || !exact.exact) fail('recent_quantiles があるのに区間の補間に落ちている');
+if (exact.p50 !== 0.712) fail('KPI が recent_quantiles.connect.p50 になっていない: ' + exact.p50);
+if (exact.label.indexOf('1,024') < 0) fail('札が「直近 1,024 本」になっていない: ' + exact.label);
+for (const part of ['1024 本', 'p90', 'p99', '最大']) {
+  if (exact.detail.indexOf(part) < 0) fail('内訳に ' + part + ' が無い: ' + exact.detail);
+}
+// 1 ms 未満を 1 ms 単位に丸めない (これが T14.31 の目的。fmtMs だと 1 ms になる)
+if (api.fmtMsFine(exact.p50) === api.fmtMs(exact.p50)) fail('1 ms 未満が丸められている');
+// 無い版 (今までの `/status`) では区間の補間に落ちる
+const fell = api.connectKpi({}, kpiWin, hist.bounds_ms);
+if (!fell || fell.exact) fail('recent_quantiles が無いのに実測を名乗っている');
+if (fell.label !== '直近 5 分') fail('落ちた先の札が違う: ' + fell.label);
+if (Math.abs(fell.p50 - kpi) > 1e-9) fail('落ちた先が今までの補間と違う: ' + fell.p50 + ' != ' + kpi);
+if (fell.detail.indexOf('区間の補間') < 0) fail('補間であることが内訳に書かれていない');
+// 標本が 0 本 (件数 0 の窓、n = 0、null) はどれも null
+if (api.connectKpi(null, { count: 0, buckets: [], max: 0, sum: 0 }, hist.bounds_ms) !== null) {
+  fail('CONNECT が 1 本も無ければ null のはず');
+}
+if (api.connectKpi({ recent_quantiles: { connect: { n: 0 } } }, null, hist.bounds_ms) !== null) {
+  fail('n = 0 は無いのと同じ (null) のはず');
+}
+// 実出力に `recent_quantiles` があれば、その形も見る (無い版の出力では飛ばす)
+let liveKpi = null;
+if (st.recent_quantiles) {
+  for (const k of ['connect', 'forward']) {
+    const q = st.recent_quantiles[k];
+    if (!q) fail('recent_quantiles.' + k + ' が無い');
+    for (const f of ['n', 'p50', 'p90', 'p99', 'max', 'window_secs']) {
+      if (typeof q[f] !== 'number') fail('recent_quantiles.' + k + '.' + f + ' が数でない');
+    }
+    if (q.n > 1024) fail(k + ': n が 1,024 を超えている: ' + q.n);
+    if (!(q.p50 <= q.p90 + 1e-9 && q.p90 <= q.p99 + 1e-9 && q.p99 <= q.max + 1e-9)) {
+      fail(k + ': p50 <= p90 <= p99 <= max になっていない');
+    }
+    if (q.n === 0 && q.max !== 0) fail(k + ': 標本 0 本なのに値がある');
+  }
+  liveKpi = api.connectKpi(st, kpiWin, hist.bounds_ms);
+}
+
 console.log(
   'OK: dashboard.html の JS は構文が通り、/history ' +
     samples.length +
@@ -1317,7 +1374,14 @@ console.log(
         ' ms (標本 ' +
         probeVia.me.rtt.samples +
         ') と並んだ'
-      : '、カーネルの RTT はこの出力には無い')
+      : '、カーネルの RTT はこの出力には無い') +
+    '。KPI「CONNECT 確立 p50」は ' +
+    (liveKpi && liveKpi.exact
+      ? '実出力の recent_quantiles (' + liveKpi.n + ' 本) で ' + api.fmtMsFine(liveKpi.p50)
+      : '見本の recent_quantiles で ' + api.fmtMsFine(exact.p50)) +
+    '、無い版では区間の補間 ' +
+    api.fmtMsFine(fell.p50) +
+    ' に落ちた'
 );
 
 // 11. 匿名化した実データ (T14.35) で 2〜5 と 10 の読み方をもう一度回す。

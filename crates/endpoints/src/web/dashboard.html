@@ -74,7 +74,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
   <section class="grid">
     <div class="card"><h2>要求 / 秒</h2><div class="kpi" id="rps">–</div><div class="hint" id="reqtotal"></div></div>
     <div class="card"><h2>転送 / 秒</h2><div class="kpi" id="bps">–</div><div class="hint" id="bytestotal"></div></div>
-    <div class="card"><h2>CONNECT 確立 p50 <span class="tag">直近 5 分</span></h2><div class="kpi" id="connp50">–</div><div class="hint" id="conndetail"></div></div>
+    <div class="card"><h2>CONNECT 確立 p50 <span class="tag" id="connp50tag">直近 5 分</span></h2><div class="kpi" id="connp50">–</div><div class="hint" id="conndetail"></div></div>
     <div class="card"><h2>名前解決 <span class="tag">通算</span></h2><div class="kpi" id="dnsmiss">–</div><div class="hint" id="dnsdetail"></div></div>
     <div class="card"><h2>接続中</h2><div class="kpi" id="active">–</div><div class="hint" id="connlimit"></div><div class="hint" id="threads"></div><div class="hint" id="origins"></div></div>
     <div class="card"><h2>キャッシュ命中率</h2><div class="kpi" id="hitratio">–</div><div class="hint" id="hitdetail"></div></div>
@@ -565,10 +565,31 @@ function redraw(){
     $('c-err').textContent=lastR.dnsps.toFixed(2)+' / '+lastR.errps.toFixed(2);
     $('c-fd').textContent=lastR.threads+' / '+lastR.fds+(lastR.maxfds?' (上限 '+lastR.maxfds+')':'');
     $('rps').textContent=lastR.rps.toFixed(1);$('bps').textContent=fmtBytes(lastR.bps*1048576)+'/s'}
-  // KPI: 直近 5 分 (5 秒 × 60 標本。粗い解像度では 60 標本ぶんそのまま) の CONNECT 確立 p50
+  // KPI: CONNECT 確立 p50。`/status` の `recent_quantiles` (直近 1,024 本の実測。T14.31) が
+  // あればそれ、無ければ直近 5 分 (5 秒 × 60 標本) の区間の補間に落ちる
   var span=Math.max(1,Math.round(300/(interval||5))),w=mergeWindows(hist,span,'connect');
-  $('connp50').textContent=w.count?fmtMs(winQuantile(w.buckets,w.count,w.max,0.5,bounds)):'–';
-  $('conndetail').textContent=w.count?w.count+' 本 · p95 '+fmtMs(winQuantile(w.buckets,w.count,w.max,0.95,bounds))+' · 平均 '+fmtMs(w.sum/w.count):'この窓に CONNECT がありません';
+  var k=connectKpi(last,w,bounds);
+  $('connp50tag').textContent=k?k.label:'直近 5 分';
+  $('connp50tag').title=k&&k.exact?'標本 1,024 本をそのまま持って select_nth_unstable で出した値 (区間の補間ではありません)'
+    :'12 段の区間の内側を線形補間した値 (1 ms 単位では読めません)';
+  $('connp50').textContent=k?fmtMsFine(k.p50):'–';
+  $('conndetail').textContent=k?k.detail:'この窓に CONNECT がありません';
+}
+// KPI「CONNECT 確立 p50」に出す値を選ぶ (T14.31)。`s` は直近の `/status`、`w` は
+// `mergeWindows(hist,span,'connect')` の窓。**DOM には触らない** (check-dashboard.js が動かす)。
+// `recent_quantiles` (直近 1,024 本の実測 ms) があればそれ、無ければ区間の補間に落ちる。
+function connectKpi(s,w,bounds){
+  var q=s&&s.recent_quantiles&&s.recent_quantiles.connect;
+  if(q&&q.n>0){
+    var d=[q.n+' 本','p90 '+fmtMsFine(q.p90),'p99 '+fmtMsFine(q.p99),'最大 '+fmtMsFine(q.max)];
+    if(q.window_secs!=null)d.push('直近 '+(q.window_secs<60?q.window_secs+' s':fmtDur(q.window_secs)));
+    return{exact:true,label:'直近 '+fmtNum(q.n)+' 本',p50:q.p50,p90:q.p90,p99:q.p99,max:q.max,
+      n:q.n,window:q.window_secs==null?null:q.window_secs,detail:d.join(' · ')};
+  }
+  if(!w||!w.count)return null;
+  var p50=winQuantile(w.buckets,w.count,w.max,0.5,bounds),p95=winQuantile(w.buckets,w.count,w.max,0.95,bounds);
+  return{exact:false,label:'直近 5 分',p50:p50,p90:null,p99:null,max:w.max,n:w.count,window:null,
+    detail:w.count+' 本 · p95 '+fmtMs(p95)+' · 平均 '+fmtMs(w.sum/w.count)+' (区間の補間)'};
 }
 function renderStatus(s){
   last=s;var c=s.cache||{};

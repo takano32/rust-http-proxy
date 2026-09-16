@@ -149,6 +149,8 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
         "trace",
         "history",
         "hostseries",
+        // 直近 1,024 本の標本の環状 (T14.31)
+        "quantiles",
     ]
     .iter()
     .map(|k| num(&mem, k).unwrap_or_else(|| panic!("{} が null: {}", k, mem)))

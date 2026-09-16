@@ -463,7 +463,9 @@ pub(super) fn history_summary(
         &ep.metrics.history,
         &summary_params(params, res, now, uptime),
     )
-    .to_json()
+    // 直近 1,024 本の正確な分位点を**別の鍵で**添える (T14.31)。`p50_ms` は期間を畳んだ
+    // 区間の補間、`recent_quantiles` は期間に関わらず直近 1,024 本の実測なので別物
+    .to_json_with(Some(&ep.metrics.recent_quantiles_json()))
 }
 
 /// `?since=&until=&res=&normal_hours_only=` を読む (**時計を持たない**ので試験できる)。

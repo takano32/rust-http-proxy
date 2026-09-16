@@ -1682,9 +1682,19 @@ pub mod summary {
             }
         }
 
+        /// `/history?summary=1` の本体 ([`Summary::to_json_with`] に何も添えない版)。
+        pub fn to_json(&self) -> String {
+            self.to_json_with(None)
+        }
+
         /// `/history?summary=1` の本体。**必ず [`MAX_BODY`] 以下**になる (項目が固定で
         /// 標本を持たないため。桁の上限は 20 桁 × 30 項目 + 名前で 1 KiB 前後)。
-        pub fn to_json(&self) -> String {
+        ///
+        /// `recent` は直近 1,024 本の正確な分位点 (T14.31) を組んだ文字列。**`p50_ms` と
+        /// 混ぜずに別の鍵 `recent_quantiles` で末尾に添える**: こちらは期間 (`from`〜`to`) を
+        /// 畳んだ区間の補間、あちらは期間に関わらず直近 1,024 本の実測なので、
+        /// **同じ数字ではない** (期間が短いほど食い違う)。
+        pub fn to_json_with(&self, recent: Option<&str>) -> String {
             let mut out = String::with_capacity(768);
             let _ = write!(
                 out,
@@ -1726,7 +1736,11 @@ pub mod summary {
             }
             out.push_str("],\"causes\":[");
             super::push_str_array(&mut out, &ERR_CAUSE_NAMES);
-            let _ = write!(out, "],\"active_max\":{}}}", self.active_max);
+            let _ = write!(out, "],\"active_max\":{}", self.active_max);
+            if let Some(q) = recent {
+                let _ = write!(out, ",\"recent_quantiles\":{}", q);
+            }
+            out.push('}');
             out
         }
     }
