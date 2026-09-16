@@ -4062,7 +4062,7 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
     - 限界: 日をまたがずに終わったプロセスのその日は残らない (毎日 00:00 UTC より前に必ず再起動する運用だと 1 行も残らない)。
       `version` は境目に動いていたバイナリ。デプロイ先で最初の 1 行が出るのは次の UTC 00:00 以降 (再デプロイ直後は `path` が非 `null` まで)。
     - 小物: `/snapshot` と `scripts/collect-deployed.sh` / `snapshot-diff.py` は `/daily` を拾わない (`parts` に 1 行足す。T14.55〜 の仕上げで)。
-- [ ] **T14.21 メモリの内訳 (`mallinfo2`、スレッドのスタック、キャッシュ、リング) を `/status` の `memory` に**
+- [x] **T14.21 メモリの内訳 (`mallinfo2`、スレッドのスタック、キャッシュ、リング) を `/status` の `memory` に**
   - 目的: 256 MiB のコンテナで RSS が何で構成されているか (ヒープの断片、スタック、キャッシュ、個票のリング) が読めない。T3 系で
     `PROXY_MALLOC_ARENAS` を決めたときのような調査を、デプロイ先で `/status` 1 枚からできるようにする。
   - 変更箇所: `crates/sysinfo` (`mallinfo2` を `unsafe extern "C"` で。glibc 2.33 以上。無ければ `null`)、`crates/metrics/src/metrics.rs`
@@ -4073,6 +4073,13 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
   - 受け入れ基準: 結合テストで `memory.rss` が `process_rss_bytes` と一致し、`heap_used + heap_free + mmap ≤ rss × 1.1`。
     Linux 以外と glibc 2.33 未満は `null`。費用 0。
 
+  - 結果 (2026-09-16、`ff8cf27`): `/status` の**末尾**に `memory` を 1 節足した (`rss` / `heap_used` / `heap_free` / `mmap` / `stacks_estimate` / `cache_memory` / `rings` / `arenas`、251 B)。ヒープの 3 つは glibc の `mallinfo2(3)` で、**リンク時に決め打ちせず `dlsym(RTLD_DEFAULT, "mallinfo2")` で実行時に探す** (弱い参照 `#[linkage]` は不安定。musl / glibc 2.32 以下 / Linux 以外は 3 つとも `null`)。探すのは `OnceLock` で 1 回だけ、呼ぶのは `/status` に来たときだけで **1.01 us/回** (この機械、10,000 回の平均)。要求の経路は 1 命令も増えない (`memory_json()` を呼ぶのは `to_json_with_cache` = `/status` と `/snapshot` だけ。それ以外の変更は起動時の `mallopt` の隣 1 行)。この機械の実例 (起動直後): `{"rss":32231424,"heap_used":2016016,"heap_free":16395504,"mmap":0,"stacks_estimate":17039360,"cache_memory":0,"rings":{"recent":554000,"errors":110500,"bursts":127200,"log":312000,"events":86016,"history":2384640,"total":3574356},"arenas":8}`。
+    - `rss` は**キャッシュのプローブ (既定 1 秒ごと) が読んだ値をそのまま使う**ので、同じ応答の `cache.system.process_rss_bytes` と 1 バイトも違わない。プローブが止まっている (`PROXY_CACHE_PROBE_SECS=0` / キャッシュ無効 / `--lite`) ときだけその場で `/proc/self/status` を読む。
+    - `stacks_estimate` は**予約**の合計。接続スレッド (`conn`) は 256 KiB (`crates/workers` の `STACK_SIZE` の写し。変えるときは両方)、それ以外は Rust の既定 2 MiB で数える。実使用との差は出せない。
+    - `rings` は**満杯のときの見積もり** (固定部の `size_of` + 文字列の上限): `recent` 554,000 / `errors` 110,500 / `bursts` 127,200 / `log` 312,000 / `events` 86,016 / `history` 2,384,640 = **3.4 MiB**。`size_of` を見ているので個票へ項目が増えると自動で追従する。**リングを新しく足したらここにも 1 行足すこと** (README の一覧と `tests/memory_test.rs` の鍵の配列も)。
+    - `cache_memory` はキャッシュがヒープに持っている量 (`used_bytes` + `reserved_bytes`)。`arenas` は `mallopt(M_ARENA_MAX)` が通ったときだけ覚えた値 (`0` = glibc の既定のまま。T5.6)。
+    - 受け入れ基準の `heap_used + heap_free + mmap ≤ rss × 1.1` はこの機械で満たす (18.4 MB ≤ 35.5 MB) が、**不変条件ではない**: `fordblks` は「アロケータが返していないだけ」で `MADV_DONTNEED` 済みのページは常駐しない。**「RSS のうち説明できる部分」**として読む (README に注記)。
+    - テスト: 結合 2 本 (`tests/memory_test.rs`) と単体 2 本を新設、全通過。`/metrics` とダッシュボードには出していない (候補: `sorahost_heap_used_bytes` と T14.8 の積み上げ棒 1 枚)。デプロイ先は再デプロイ後に `cache_memory` (バラスト) と `heap_free` (断片) を見れば T3 系の調査が `/status` 1 枚でできる (親が見る)。
 **さらに候補 (2026-09-16、続き: T14.22〜)**。ここは「集計を時間軸と相手ごとに割る」「異常を機械に見つけさせる」「特定の相手を追う」
 「デプロイ先の形を手元で再生する」もの。共通の決まりは T14.4〜T14.8 と同じ。**再デプロイ前に入れる価値が高いのは T14.22 / T14.23 /
 T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残りは再デプロイ後でもよい (次の Phase の材料)。
