@@ -340,6 +340,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
     **最近のエラー (直近 20)** と **いまの接続 (上位 50)** の表 (どちらも 5 秒ごと)、
     URL の照会と削除、全消去)、`/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
+  - **`/inspect` (「調査」ページ: 起きたことを時間軸で読む。T14.8)**: `/dashboard` が「いま」の画面なのに対して、
+    閉じた接続の個票を**時間軸**で読む別のページです (`/dashboard/inspect` も同じもの)
   - **`/healthz` (本当の健康診断)**: `{"ok":bool,"checks":{...}}` の**軽い JSON** (1 KiB 弱) で、
     検査が 1 つでも偽なら **`503 Service Unavailable`** を返します (Pterodactyl やモニタが 200 / 503 で
     判断できるように。以前は `/status` の写しで、いつでも 200 でした)。検査は 6 つ:
@@ -391,7 +393,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **`"persisted": false`** は「これらの新しい欄は状態ファイルに残らない (再起動で消える)」の意味です
     (`.rrd` の 1 スロット 572 B は既存の 49 項目で 520 B 使っていて、`agents` だけで 4 × 128 B 要るため。
     版を上げると統計を全部捨てることになるので上げていません)。
-    **T14.5 の RTT の 4 欄 (32 B) はスロットの余白に入ったので残ります** (552 B。余白は 20 B)
+    **T14.5 の RTT の 4 欄 (32 B) と T14.26 の向き別のバイト 2 欄 (16 B) はスロットの余白に入ったので残ります**
+    (552 → 568 B。**余白は 20 → 4 B** で、版を上げずに足せる項目はもうありません)
   - **閉じた接続の個票 (T14.4)**: `/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
     `/connections` が「いま」しか見せないのに対し、こちらは「**起きたこと**」です。1 件 = 接続 id・開いた時刻 (`at`、epoch 秒)・
     接続元 (`client`)・宛先 (`target`)・種類 (`kind` = `connect` / `http`)・寿命 (`secs`)・要求数 (`reqs`、http だけ)・
@@ -556,6 +559,23 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **読めない源は `null`** (Linux 以外、`/proc/net` の無いコンテナ、cgroup v1、PSI 無しのカーネル)。
     `.rrd` (状態ファイル) には書かないので**再起動で消えます** (標本のレコードに余白が 4 B しか無いため)。
     履歴の収集スレッドが動いていない `--lite` / `PROXY_STATS_PERSIST=off` では窓は空 (`kernel` は `null`) です
+  - **ホスト別の時系列 (T14.22)**: `/hosts/series?top=16` と `/hosts/series?host=<name>` は、
+    **直近 1 時間の要求数で選んだ上位 16 ホスト**について、**5 分の窓 × 288 標本 (24 時間)** を返します。
+    `/hosts` は**通算** (`avg_ms` は 3 日の平均)、`/history` は**全体**しか無いので、その間を埋める口です
+    (「datadog が 15 時に遅かった」「mtalk だけ夜に再送が増えた」はどちらでも読めませんでした)。
+    1 標本 = `count` (件数)・`ms_sum` / `ms_max` (CONNECT は**確立まで**、forward は**初バイトまで**の ms)・
+    `dns_ms` (名前解決の合計 ms)・`errors` の 5 項目で、`keys` がその並びです。標本は**古い順**で、
+    `i` 番目の時刻は `t0 + i * window_secs` (`t` を 16 × 288 個並べると応答が 50 KB 太るので置いていません)。
+    ほかに `hour_requests` (直近 1 時間の要求数 = 順位そのもの)、`total` (`keys` と同じ順の合計。`ms_max` だけは最大)、
+    `tracked` (いま系列を持っているホストの数)、`rotations` (窓を進めた回数) が出ます。
+    **上位の入れ替えは履歴スレッドが 5 分ごと**に行い、要求の経路は「上位に居るか」の旗を見て
+    配列 1 要素に 5 回足すだけです (鍵はホスト別統計が既に取っているもの。原子操作もシステムコールも増えません)。
+    **上位から落ちたホストの標本は捨てます** (再び上がれば 0 から)。ただし**枠が余っている間は今の住人を残す**ので、
+    夜だけ動くホストの 24 時間が 1 時間の無音で消えることはありません。
+    メモリは 16 ホスト × 288 標本 × 5 項目 × 8 B = **180 KiB 固定** (上位が 1 つ決まったときに 1 回だけ確保)。
+    `.rrd` (状態ファイル) には**書かない**ので再起動で消えます。履歴スレッドが動いていない
+    `--lite` / `PROXY_STATS_PERSIST=off` では系列を 1 本も持ちません (`series` は空。費用も 0)。
+    応答はデプロイ先並みの値なら 16 本で約 96 KiB、他の個票と同じく 256 KiB 以下 (切ったら `truncated`)
   - **日次の要約 (永久に残る。T14.20)**: `/daily?n=365` (既定 1 年、最大 4,096 日) は
     `$HOME/.rust-http-proxy.daily.jsonl` の中身を**古い順**にそのまま返します。`/history` は 30 日で消えますが、
     こちらは**「いつから遅くなったか」「デプロイの前後で何が変わったか」を年単位で**追うためのもので、
@@ -589,8 +609,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - `rings` は記録のリングが**満杯になったときの見積もり** (バイト): `recent` (2,000 件)、
       `errors` (500 件)、`bursts` (50 枚)、`log` (1,000 行)、`events` (512 件)、
       `history` (5 秒 × 720 + 60 秒 × 1,440 + 1 時間 × 720 の標本と、閉じた接続の窓、
-      速さと半閉じの窓) と、
-      その合計 `total` (この機械では 3.5 MiB)。
+      速さと半閉じの窓)、`hostseries` (16 ホスト × 288 標本 × 5 項目 × 8 B = 180 KiB。T14.22) と、
+      その合計 `total` (この機械では 3.7 MiB)。
       いま何件入っているかは `/recent` や `/errors` の `total` を見てください
     - `arenas` は `PROXY_MALLOC_ARENAS` で実際に掛けた `M_ARENA_MAX` (`0` = glibc の既定のまま)
 
@@ -716,7 +736,8 @@ check: ok (everything this proxy reads is readable)
 
 `--lite` (= `PROXY_PROFILE=lite`) は「認証なし・手軽・最速」の素通し設定です。キャッシュ・統計の永続化・
 ブロックリストの取得を止め、ログを `warn` にします (個別の環境変数を明示すればそちらが勝ちます)。
-`/dashboard` は 1 行の `lite mode: ...` を返し、起動ログの 1 行目に `profile: lite` が出ます。
+`/dashboard` は 1 行の `lite mode: ...` を返し、起動ログの 1 行目に `profile: lite` が出ます
+(**「調査」ページ `/inspect` は `--lite` でも 200 で開けます** — 中の表と図は「記録していません」と出ます)。
 起動直後のスレッドは 4 本 (待ち受け + `env-reload` + `shutdown` + `idle-watch`) だけです
 (`PROXY_PARK_IDLE=off` なら 3 本)。
 
@@ -755,14 +776,14 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_CONNECT_PORTS` | なし (制限なし) | `CONNECT` を許すあて先ポート。`443,80,8080-8099` のようにカンマ区切り (範囲可)。ここに無いポートは 403。`.env` で即時反映 |
 | `PROXY_ALLOW_LOCAL` | `off` | ループバック (`127.0.0.0/8`, `::1`) とリンクローカル (`169.254.0.0/16`, `fe80::/10`) 宛てのオリジンを許すか。既定では 403 にしてクラウドのメタデータ (`169.254.169.254`) 経由の SSRF を防ぐ。ローカルのサービスへプロキシしたいときだけ `on`。`.env` で即時反映 |
 | `PROXY_ALLOW_CLIENTS` | なし (全許可) | **受ける接続元**のカンマ区切りリスト (`1.2.3.4,10.0.0.0/8,2001:db8::/32`。1 つの IP は `/32` `/128` と同じ)。ここに無い相手は **accept した直後に、要求を 1 バイトも読まずに閉じます** (応答も返しません)。**内部エンドポイントも含めて閉じる**ので、公開ポートで `/status` や `/clients` の個票が見られることもありません。`PROXY_MAX_CONNS` の 「上限 + 4 本」の枠より**前**で判定します。断った数は `/status` の `rejected_client_acl` と `/metrics` の `sorahost_rejected_client_acl_total`。v4-mapped IPv6 (`::ffff:1.2.3.4`) は IPv4 として照合するので、デュアルスタックで 待ち受けていても `1.2.3.4` の 1 行で書けます。書式が違う項目は読み飛ばします (起動ログの `allowed clients:` に実際に読めた項目が出るので、書き損じはそこで分かります)。**宛先の `PROXY_ALLOW_HOSTS` / `PROXY_ALLOW_LOCAL` とは無関係**で、**認証でもありません** (同じアドレスから来られれば誰でも通ります)。`.env` で即時反映 (次に受ける接続から) |
-| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/metrics` `/hosts` `/clients` `/errors` `/connections` `/recent` `/bursts` `/events` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
+| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/metrics` `/hosts` `/hosts/series` `/clients` `/errors` `/connections` `/recent` `/bursts` `/events` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる (`PROXY_PARK_IDLE=on` なら、預かり所が期限を見て引き上げる)。`0` で無期限。`.env` で即時反映 |
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル (`--lite` と同じ)。キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限。上限に当たったら、まず**預かり所の暇な CONNECT トンネルを最古から 1 本閉じて**席を作り、その接続を受ける (閉じた数は `/status` の `evicted_idle` と `/metrics` の `sorahost_evicted_idle_total`。**暇な keep-alive 接続は閉じない** — 次の要求を待っているだけなので、閉じると入れ違いで届いた要求を取りこぼすため)。閉じるものが無い (トンネルが全部中継中、または預かり所が空) ときは、スレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。ただし**自分宛て (`/status` `/metrics` などの内部エンドポイント) は上限 + 4 本まで受ける**: accept の時点では要求が読めないので、4 本までは受けて要求行と `Host` を読み、自分宛てなら普通に応答、それ以外は 503 で閉じる (上限に当たっている最中でも監視が取れるようにするため。この枠で受けた接続は要求行が 2 秒来なければ 503 で閉じる)。`auto` は記述子の上限から `min(4096, (RLIMIT_NOFILE の soft − 予備 64) ÷ 4)` (1 接続が最悪で使う記述子は クライアント 1 + オリジン 1 + 素通しのパイプ 2 = 4 本。`ulimit -n` が 1024 の環境なら 240、4096 なら 1008)。記述子が余っていても 4096 で頭打ちにするのは、上限が fd 以外の資源 (スレッド・RSS) の歯止めでもあるため (同時 5,000 本で RSS 198 MiB の実測)。数値を書けばその値、`0` で無制限。決まった値は起動ログの `max connections:` と `/status` の `max_conns` (`/metrics` は `sorahost_max_connections`) に出る。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
 | `PROXY_MAX_CONNS_PER_CLIENT` | `0` (無効) | **1 つの接続元から同時に受ける接続数の上限**。認証なしの公開ポートで、見知らぬ接続元 1 人が `PROXY_MAX_CONNS` (既定 240) を使い切ると**本人が 503 になる**ため、その手前で頭を押さえるつまみです。**認証ではなく公平さの上限**です (同じアドレスから来られれば誰でも通ります)。設定すると accept の直後にその接続元の**いま生きている接続の本数**を数え、上限以上なら `503 Service Unavailable` + `Retry-After: 1` を返して閉じます。断った数は `/status` の `rejected_per_client` と `/metrics` の `sorahost_rejected_per_client_total`、接続元ごとの内訳は `/clients` の行の `rejected`。**自分宛て (`/status` などの内部エンドポイント) は数えません**: accept の時点では要求が読めないので、`PROXY_MAX_CONNS` と同じ「上限 + 4 本」の枠で受けてから要求行を読み、自分宛てなら普通に応答、それ以外は 503 で閉じます (上限に当たっている接続元からでも監視が取れるように)。**数え方**: 数えるのは `/connections` の表と同じ「接続の開始と終了」で ±1 する本数で、鍵は接続元 IP (v4-mapped IPv6 は IPv4 として数えます)。NAT の内側の複数台は 1 人として数えられます。数えるのは**上限を設定している間だけ**で、`0` に戻すと表ごと捨てます (既定の費用は accept ごとの分岐 1 回)。`--lite` でも効きます (`/connections` の行は作らずに本数だけ数えます)。同時に来た数本は上限を少し超えて通ることがあります (数えるのは登録済みの本数のため)。`.env` で即時反映 (次に受ける接続から。あとから入れたときは、そのとき生きている接続から数え直します) |
 | `PROXY_BURST_PERCENT` | `50` | 同時接続数が `PROXY_MAX_CONNS` のこの割合を**越えた瞬間**に `/connections` の写真を 1 枚撮って `/bursts` に残す (T14.6)。`0` で撮らない。**同じ山では 1 枚だけ**で、閾の 80% を下回るまで次は撮りません。撮るのは履歴スレッド (5 秒周期) なので、接続を受ける経路に増えるのは比較 1 回だけです。割合を当てるのは `PROXY_MAX_CONNS` だけで、上限の外の枠 4 本 (自分宛て用) は含めません。`PROXY_MAX_CONNS=0` (無制限) と `--lite` では撮りません。**履歴スレッドが撮るので `PROXY_STATS_PERSIST=off` でも撮りません**。`.env` で即時反映 |
 | `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。`.env` で即時反映 (次に受ける接続から効く。**下げても走っているスレッドは殺さず**、仕事を終えたスレッドから順に減ります。`auto` のときは `PROXY_MAX_CONNS` を変えるとこちらも決め直します)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。**裏側の再検証 (stale-while-revalidate) もこの上限の内側で走ります**が、こちらは待たせず捨てます (`/status` の `revalidations_dropped`) |
-| `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 4 MiB) に、**個票 (`/recent` `/errors` `/bursts` `/events` `/log`) を `$HOME/.rust-http-proxy.recent` (固定 4 MiB)** に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`) は空になり、個票の `"persisted"` は `false`、日次の要約も 1 行も書きません) |
+| `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 4 MiB) に、**個票 (`/recent` `/errors` `/bursts` `/events` `/log`) を `$HOME/.rust-http-proxy.recent` (固定 4 MiB)** に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`)、**ホスト別の時系列** (`/hosts/series`) は空になり、個票の `"persisted"` は `false`、日次の要約も 1 行も書きません) |
 | `PROXY_PROFILE_SAMPLE_MS` | `1000` | `/profile` のスレッドの標本を取る間隔 (ms)。`profile-sample` スレッド 1 本が この間隔で `/proc/self/task/*/stat` と `/proc/self/task/*/syscall` を読み、**役割ごと** (`accept` / `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` / `profile-sample` / `other`) に「CPU」と「いま走っているか・どのシステムコールで待っているか・休眠か」を数えます。`0` で標本を止める (段階の窓は 5 秒ごとに畳み続けます)。下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 2 つ開くぶん (実測 約 54 us) で、**140 スレッド・1 秒間隔で 1 コアの 0.75%** (60 秒で 450 ms。128 スレッド相当で 0.69%)。スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。`/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。**`--lite` では `/profile` ごと off** |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
@@ -1101,6 +1122,22 @@ cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 3
 ```
 
+### CI (GitHub Actions)
+
+push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` は `cargo fmt --check` →
+`clippy -D warnings` → `cargo test --workspace` → リリースビルド → **200 MB の cgroup でビルドが通るか**
+(`scripts/build-memory.sh 200`) → 短いベンチ、の順です。それと並べてもう 1 つ、`deployed-like-snapshot` が
+**デプロイ先に似せた条件** (上の `scripts/deployed-like.sh`) を runner の中に作り、`scripts/ci-snapshot.sh` で
+`--only connect-multi` と forward を 10 秒ずつ回して `/snapshot` を**成果物 (artifact) の `snapshot.json`**
+に残します。見張るのは**形の退行だけ**で、数字の絶対値は比べません (runner は世代も負荷も毎回違うため):
+`connect-multi` の **p50 が 50 ms 以上なら CI が落ちます** (= Happy Eyeballs の 250 ms がまた毎回乗っている)、
+`/snapshot` が 1 要求で取れて JSON として読めること、その中に `/status` の `ipv6.v4_first` と `/profile` の段階が
+入っていて**全部 0 ではない**こと。runner でユーザー名前空間 (`unshare -rmnC`) が作れないときは
+**IPv6 の黒穴だけ諦めて**残りを回します (`ipv6_blackhole: false` と印字し、CONNECT は IP リテラル宛て)。
+落ちたときこそ中身が要るので、`snapshot.json` は成功しても失敗しても成果物に付きます (14 日保存)。
+手元で同じものを回すなら `cargo build --release && cargo build --release -p proxy-bench` のあとに
+`scripts/ci-snapshot.sh` (手元で 26 秒。閾は `CI_SNAPSHOT_P50_MAX_MS`、秒数は `--seconds` で変えられます)。
+
 ### 起動直後のスレッド数
 
 「使わない機能にはコストを払わない」方針なので、無効にした機能のスレッドは起動しません。
@@ -1325,8 +1362,11 @@ curl "http://127.0.0.1:8080/events?since=$(( $(date +%s) - 86400 ))"  # 直近 1
 curl -s "http://127.0.0.1:8080/events?n=512" | grep -o '"kind":"anomaly","text":"[^"]*"'  # 自動検知だけ
 curl "http://127.0.0.1:8080/history?res=5"              # 時系列 + 閉じた接続の分布 (closed) + 速さと半閉じ (transfer)
 curl "http://127.0.0.1:8080/history?since=restart&summary=1&normal_hours_only=1"  # 起動からの要約 1 行
+curl "http://127.0.0.1:8080/hosts/series?top=16"        # 上位 16 ホストの 5 分 × 24 時間
+curl "http://127.0.0.1:8080/hosts/series?host=connect://mtalk.google.com:5228"  # 1 ホストだけ
 curl "http://127.0.0.1:8080/daily?n=365"                # 1 日 1 行の要約 (永久に残る。古い順)
 curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
+# ブラウザで読むなら http://127.0.0.1:8080/inspect (上の個票を時間軸で描く「調査」ページ)
 
 # キャッシュの操作・確認
 curl -X PURGE -x http://127.0.0.1:8080 http://example.com/file.zip     # 1 URL (全バリアント) を消す
@@ -1389,9 +1429,41 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 (`connect_ms_sum ÷ timed`) が読めます (エラーも名前解決も無いホストは出しません)。
 ヘッダーには動いている版と、**どちらの窓か** (起動から / 通算) が出ます。
 外部ライブラリは 1 つも読み込まない 1 ページのままです。ブラウザの無い環境では
-`node scripts/check-dashboard.js [/history の出力] [/status の出力]` が「JS の構文」と
-「`/history` の配列の配列・`/status` の読み方が実出力と合っていること」を確かめます
+`node scripts/check-dashboard.js [/history の出力] [/status の出力] [/profile の出力] [/snapshot の出力]` が
+「JS の構文」と「`/history` の配列の配列・`/status` の読み方が実出力と合っていること」を確かめます
 (Node があるときだけの補助的な確認。引数を省くと `scripts/testdata/` の見本を読みます)。
+
+**`/inspect` は「調査」ページ**です (`/dashboard/inspect` も同じもの。T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
+こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページ (64 KiB 以下) のままです。
+更新は**個票 (`/status` `/recent` `/events` `/history?summary=1`) が 10 秒ごと、表と散布 (`/bursts` `/clients`
+`/hosts` `/hosts/series`) は 30 秒ごと**です (`/hosts` は上位 200 まで。開いたままにしても監視より重くならないように)。
+描くのは 6 枚:
+
+- **タイムライン** (`/recent`): 横 = 時刻、縦 = 接続元 (宛先にも切り替えられます)、線 1 本が接続 1 本で、
+  長さ = 寿命・色 = 閉じた理由 (8 種。`error:<原因>` は 1 色に畳みます)・太さ = 運んだバイト。
+  範囲は 1 時間 / 6 時間 / 24 時間 (`/recent?since=`)。**`/events` の出来事**は縦の破線の印で重ねます
+  (種類が増えても既定の色で描くだけなので壊れません)
+- **起動からの窓**: `/history?since=restart&summary=1` (T14.24) を 1 要求で読み、「起動から」と「通算」を
+  切り替えます。`?summary=1` を持たない版や `--lite` では `/history` の標本を `since_start_secs` で切って
+  手元で畳みます (どちらでも同じ 1 行になります)
+- **遅い接続 (上位 50)** (`/recent?sort=slow`): 段階 (`queue` / `client_read` / `dns` / `connect` / `first_relay`。T14.3) の
+  積み上げ横棒と、**確立 − RTT** の列 (T14.5。RTT では説明できない待ちがどれだけかを 1 列で読むため)
+- **山の写真** (`/bursts`): 1 枚ずつ、接続元別・宛先別・状態別・種類別の内訳と、そのときのスレッド / fd
+- **接続元** (`/clients`): `User-Agent`・宛先の種類・IP リテラル宛て・RTT・初回 / 最終
+  (RTT は標本が無ければ「–」です)
+- **RTT × 接続時間の散布** (`/hosts`): x = カーネルの平滑化 RTT の平均、y = 接続 1 回の平均
+  (`connect_ms_sum ÷ timed`)。対角線 (y = x) から上に離れた点が「RTT では説明できない待ち」で、
+  右の表に差の大きい順で 12 件出ます (`rtt_ms` が `null` = 標本 0 のホストと、接続を 1 度も測っていない
+  ホストは描きません。接続の平均が 0 ms = 1 ms 未満のホストは y = 0 に描きます)
+- **ホスト別の折れ線** (`/hosts/series?top=8`。T14.22): この口を持っている版でだけ出る枠です
+  (無ければ枠ごと出しません)
+- (ページの先頭に `/snapshot` へのリンクがあります。個票を 1 要求で持ち帰るときはそちら)
+
+描画関数 (`timeline` / `slowRows` / `burstCards` / `clientRows` / `rttScatter` / `sinceStart` / `eventMarks` /
+`seriesLines`) は DOM に触らないので、`node scripts/check-dashboard.js` が
+`scripts/testdata/snapshot-local.json` (手元のベンチで取った `/snapshot` の実出力。宛先は
+`127.0.0.1` と `localhost` だけです) と `scripts/testdata/history-summary.json` (同じく `?summary=1` の実出力)、
+それに渡せばデプロイ先の `/status` `/history` でも回します。
 
 `/status` のトップレベルの `version` には動いているバイナリの版が出ます (`-V` と起動ログと同じ文字列)。
 
@@ -1444,6 +1516,12 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
+バイト数は合計 (`bytes`) のほかに**向き別の `bytes_in` / `bytes_out`** が並びます (T14.26。`bytes_in` =
+クライアント → オリジン = 上り、`bytes_out` = オリジン → クライアント = 下り)。上り主体の相手 (ログ送信) は
+「利用者の回線の上り」が律速で、プロキシでもオリジンでもない — その切り分けに使います。
+**CONNECT は `bytes == bytes_in + bytes_out`** ですが、**forward の `bytes` は今までどおり応答のぶんだけ**なので
+(欄の意味は変えていません)、要求本文のある相手では `bytes_in + bytes_out` の方が大きくなります。
+数え直しはしていません (中継が方向ごとに持っている値と、要求本文 / 応答のバイトをそのまま渡すだけです)。
 **`?sort=requests|errors|dns|slow` でこの 50 件の切り出し方を変えられます** (既定は `requests` = 今までどおりの要求数順。
 `errors` はエラー件数、`dns` は名前解決に費やした合計 `dns_ms_sum`、`slow` は応答 (CONNECT は確立) の平均 `avg_ms` の
 多い / 遅い順。**知らない値は既定に倒します**)。JSON の形も件数も変わらず、変わるのは `hosts[]` の並びだけです
@@ -1466,6 +1544,7 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 **裏の引き直しはミスに数えません** (利用者は待っていないので、`misses` と `miss_avg_ms` に混ぜると
 「ミス 1 回の値段」が読めなくなる)。`/metrics` では `sorahost_dns_lookups_total{result="refresh"}` です。
 `clients[]` にも同じ `rtt_ms` / `retrans` が出ますが、**こちらはクライアント側** (利用者 → プロキシの往復) です。
+`bytes_in` / `bytes_out` も同じ向き (`bytes_in` = その端末が上げた量) で出るので、「この端末は上りが主か下りが主か」が読めます。
 `/status` の `clients[]` には接続元 IP ごとの要求数・転送量・拒否数・応答時間が要求数順に最大 50 件入り、
 末尾に **`first_seen`** (初めて見た時刻。`0` = この起動より前から居る) / **`agent`** (最後に見た `User-Agent` 1 つ。
 無ければ `null`) / **`distinct_targets`** (宛先ホストの種類) / **`literal_targets`** (IP リテラル宛ての要求数) が付きます

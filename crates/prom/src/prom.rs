@@ -1234,6 +1234,7 @@ mod tests {
                 &format!("2001:db8:1234:5678:9abc:def0:1234:{:04x}", i),
                 HostOutcome::Bypass,
                 1 << 30,
+                (1 << 20, 1 << 30),
                 Some(std::time::Duration::from_millis(400)),
                 Some("very-long-host-name.example.com:443"),
             );

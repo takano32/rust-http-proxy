@@ -140,10 +140,18 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     }
 
     // (4) リングの容量は足し算が合っていて、`/status` を太らせない大きさに収まっている
-    let rings: u64 = ["recent", "errors", "bursts", "log", "events", "history"]
-        .iter()
-        .map(|k| num(&mem, k).unwrap_or_else(|| panic!("{} が null: {}", k, mem)))
-        .sum();
+    let rings: u64 = [
+        "recent",
+        "errors",
+        "bursts",
+        "log",
+        "events",
+        "history",
+        "hostseries",
+    ]
+    .iter()
+    .map(|k| num(&mem, k).unwrap_or_else(|| panic!("{} が null: {}", k, mem)))
+    .sum();
     assert_eq!(num(&mem, "total"), Some(rings), "{}", mem);
     assert!(rings > 0 && rings < 64 * 1024 * 1024, "{}", mem);
     assert!(mem.len() < 512, "{} バイト: {}", mem.len(), mem);
