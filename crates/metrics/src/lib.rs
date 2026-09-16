@@ -8,6 +8,7 @@
 
 pub mod canary;
 pub mod history;
+pub mod kernel;
 pub mod metrics;
 pub mod persist;
 pub mod persist_recent;

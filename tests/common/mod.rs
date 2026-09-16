@@ -541,6 +541,57 @@ pub fn start_echo_server() -> u16 {
     port
 }
 
+/// 送信元アドレスを固定して `127.0.0.1:port` へ繋ぐ (`127.0.0.2` のような「別の接続元」を
+/// 作るため。T14.13)。
+///
+/// `std` には bind してから connect する口が無いので、`crates/sys` と同じ作法で
+/// `socket` / `bind` / `connect` を直に宣言する (外部クレートは足さない)。ループバックは
+/// `127.0.0.0/8` が丸ごと自分のアドレスなので、`127.0.0.2` は root でなくても bind できる。
+#[cfg(target_os = "linux")]
+pub fn connect_from(src: [u8; 4], port: u16) -> TcpStream {
+    use std::os::fd::FromRawFd;
+
+    #[repr(C)]
+    struct SockAddrIn {
+        family: u16,
+        port: u16,
+        addr: [u8; 4],
+        zero: [u8; 8],
+    }
+    unsafe extern "C" {
+        fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+        fn bind(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
+        fn connect(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
+        fn close(fd: i32) -> i32;
+    }
+    const AF_INET: u16 = 2;
+    const SOCK_STREAM: i32 = 1;
+
+    let len = std::mem::size_of::<SockAddrIn>() as u32;
+    let fd = unsafe { socket(AF_INET as i32, SOCK_STREAM, 0) };
+    assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+    let from = SockAddrIn {
+        family: AF_INET,
+        port: 0,
+        addr: src,
+        zero: [0; 8],
+    };
+    let to = SockAddrIn {
+        family: AF_INET,
+        // ポートだけはネットワークバイト順
+        port: port.to_be(),
+        addr: [127, 0, 0, 1],
+        zero: [0; 8],
+    };
+    let ok = unsafe { bind(fd, &from, len) == 0 && connect(fd, &to, len) == 0 };
+    if !ok {
+        let e = std::io::Error::last_os_error();
+        unsafe { close(fd) };
+        panic!("could not connect from {:?}: {}", src, e);
+    }
+    unsafe { TcpStream::from_raw_fd(fd) }
+}
+
 /// CONNECT の 200 応答を読み切る。
 pub fn read_connect_response(stream: &mut TcpStream) -> String {
     let mut buf = Vec::new();
