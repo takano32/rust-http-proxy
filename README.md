@@ -1480,7 +1480,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 ## クレート構成
 
 **外部クレートは 1 つも使っていません** (すべて `std` のみ)。`crates/` にあるのは全部このリポジトリのコードで、
-責務ごとの層に分けてあります (31 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
+責務ごとの層に分けてあります (32 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
 全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
 
 | クレート | 責務 |
@@ -1796,9 +1796,13 @@ curl -i http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/status
 curl "http://127.0.0.1:8080/status?sort=errors"         # 上位 50 をエラーの多い順で切り出す (dns / slow も)
 curl http://127.0.0.1:8080/metrics                      # Prometheus 形式
+curl http://127.0.0.1:8080/config                       # 効いている設定とその出どころ (下記「環境変数」)
+curl "http://127.0.0.1:8080/profile?res=5"              # 待ちの段階・スレッドの CPU と状態・ロックの取り合い
 
 # 個票 (誰が・いつ・なぜ)
 curl "http://127.0.0.1:8080/connections"                # いま開いている接続
+curl "http://127.0.0.1:8080/errors?n=100"               # 直近のエラー (誰が・いつ・どの原因で)
+curl "http://127.0.0.1:8080/log?n=200"                  # 直近の警告とエラーのログ行
 curl "http://127.0.0.1:8080/recent?n=200"               # 閉じた接続 (新しい順)
 curl "http://127.0.0.1:8080/recent?sort=slow&n=20"      # 確立のいちばん遅かった 20 本
 curl "http://127.0.0.1:8080/recent?client=198.51.100.7" # ある接続元だけ
@@ -1811,6 +1815,9 @@ curl -s "http://127.0.0.1:8080/events?n=512" | grep -o '"kind":"anomaly","text":
 curl "http://127.0.0.1:8080/history?res=5"              # 時系列 (既定 720 標本 = 1 時間) + closed + transfer
 curl "http://127.0.0.1:8080/history?res=5&n=4320"       # 5 秒刻みで 6 時間ぶん (T14.32)
 curl "http://127.0.0.1:8080/history?since=restart&summary=1&normal_hours_only=1"  # 起動からの要約 1 行
+curl "http://127.0.0.1:8080/dns?sort=misses"            # 名前解決の表 (age / host / misses で並べ替え)
+curl "http://127.0.0.1:8080/hosts?sort=slow&limit=200"  # 全ホスト (/status の hosts[] は上位 50 だけ)
+curl "http://127.0.0.1:8080/clients?sort=requests&limit=200"  # 全接続元 (User-Agent・宛先の種類・ポート)
 curl "http://127.0.0.1:8080/hosts/series?top=16"        # 上位 16 ホストの 5 分 × 24 時間
 curl "http://127.0.0.1:8080/hosts/series?host=connect://mtalk.google.com:5228"  # 1 ホストだけ
 curl "http://127.0.0.1:8080/explain?host=mtalk.google.com"   # 1 宛先を 1 枚に (統計 + /dns + 個票 + 判定)
@@ -1822,8 +1829,13 @@ curl "http://127.0.0.1:8080/slo?days=7"                 # SLO の達成率 (日�
 curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
 curl "http://127.0.0.1:8080/snapshots"                  # 日次で残した snapshot の一覧 (30 日ぶん)
 curl -s "http://127.0.0.1:8080/snapshots/2026-09-15" > day.json   # その日ぶんをそのまま
+# ブラウザで開くなら http://127.0.0.1:8080/dashboard (「いま」を見るコントロールパネル)
 # ブラウザで読むなら http://127.0.0.1:8080/inspect (上の個票を時間軸で描く「調査」ページ)
 # 端末から測るなら http://127.0.0.1:8080/probe.html (往復とプロキシ経由の取得をブラウザで測る)
+
+# ブラウザの自動設定と、ブロックリストの判定
+curl http://127.0.0.1:8080/proxy.pac                    # 自動設定スクリプト (ブラウザにこの URL を設定する)
+curl "http://127.0.0.1:8080/blocklist?host=example.com" # ブロックしているか (action=block|allow|clear で上書き)
 
 # キャッシュの操作・確認
 curl -X PURGE -x http://127.0.0.1:8080 http://example.com/file.zip     # 1 URL (全バリアント) を消す
