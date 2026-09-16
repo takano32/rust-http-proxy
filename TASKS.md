@@ -3393,7 +3393,8 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
 - **再開の手順**: (1) 人が `git push` → 再デプロイ (「再デプロイの手引き」の (e) 1 = `--check`、起動ログ 2 行、`/healthz`、`/` 32 行、`/config` を保存)。
   **再デプロイ直後に `scripts/collect-deployed.sh nagoya.sorahost.net:50697 <dir>` を 1 枚** (0 時間の雪像。24 時間後の差分の相手。`~/rust-http-proxy-status/` に置き、リポジトリには入れない)。
   (2) 24 時間後にもう 1 枚 → **T14.99** (README / §2 / §0 をデプロイ先の数字で。判定の表は手引きの (d))。(3) **T15.0** (関門 120 MB) は T14.99 のデータ取りと並行してよい (T14.55 の表から)。
-- 2026-09-16 09:40 UTC に 35 / 60 で一度止め (利用者の時間の上限)、同日に再開して T14.58 まで終えた。途中で止めた枝は T14.43 だけで、再開して T14.43 の `結果:` に書いた。
+- 2026-09-16 09:40 UTC に 35 / 60 で一度止め (利用者の時間の上限)、同日に再開して T14.58 まで終えた。
+- **再デプロイ済み (2026-09-16 16:47:05 UTC = epoch 1789577225、版 `0.1.0+9b50254` = main の先頭。利用者が push とデプロイ)**。直後に親が手引きの (e) 1 をなぞった: `/healthz` 200 `"ok":true`、`/` 32 行、`/config` 73 件 (`~/rust-http-proxy-status/2026-09-16T1648Z-config.json`)、`/status` の `state_file` は `version` 3・**`converted_from` 2** (統計は消えていない。`restored_since` は初回起動の日のまま)、`.recent` は新規 (`restored` 0 = Phase 13 に無かったので当然)、`capabilities` は `cgroup_pressure` だけ NO (コンテナで PSI が読めない → `/status` の `kernel.pressure` は null)、`ipv6` は起動 2 分で 3 敗 → `v4_first` (warn 1 行、canary の初回だけ 258 ms を払った)、`dns.warm` は 2 分で 4。**0 時間の雪像** = `~/rust-http-proxy-status/2026-09-16T164806Z-snapshot.json` (+ `2026-09-16T1648Z-collect.md`。RSS 17.3 MB、`GET /` 200)。**T14.99 は 2026-09-17 16:47 UTC 以降**にもう 1 枚取り、`/history` はこの再起動時刻で切る。途中で止めた枝は T14.43 だけで、再開して T14.43 の `結果:` に書いた。
 - **決まりの補足 (2026-09-16 の事故から)**: エージェントは `pkill -x rust-http-proxy` を使わず**自分の PID だけ** kill する (T14.22 / T14.31 の走りが
   他人の `pkill` で死んだ)。デバッグ用プロキシは `timeout 120`、curl は `-m 5`、自分宛てにしない。`mx` は命令の終了時にプロセスグループを
   丸ごと殺す作りに直してある (`~/.local/bin/mx`)。ベンチ用スクリプトに `PROXY_STATS_PERSIST=off` を付けると履歴スレッドが立たず
