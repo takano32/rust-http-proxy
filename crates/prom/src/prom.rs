@@ -176,6 +176,66 @@ fn kernel_metrics(out: &mut String) {
     }
 }
 
+/// 段階ごとの待ち時間 (CONNECT 7 段 / forward 6 段。T14.3 (1)) を**起動からの累計**で
+/// 出す (T14.19)。Prometheus のヒストグラムは単調増加が前提なので、`/profile` の窓
+/// (1 時間 / 1 日で古い標本が落ちる) の和ではなく
+/// [`crate::profile::Profile::stage_totals`] を読む。
+///
+/// **1 本も観測していないうちは 1 系列も出さない**。`--lite` は段階の時計を読まないので
+/// ずっとここを通らない (`kernel` と同じ判断: 源が無いときに 0 を出すと「一瞬で済んだ」と
+/// 読めてしまう)。窓へ渡るのは 5 秒ごとなので、**最後の 5 秒ぶんは次の収集で入る**。
+///
+/// **ホスト別には出さない** (系列が増えすぎる。T12.4 (4) と同じ判断)。
+fn stage_metrics(out: &mut String, m: &Metrics) {
+    let stages = m.profile.stage_totals();
+    if stages.is_empty() {
+        return;
+    }
+    header(
+        out,
+        "stage_seconds",
+        "histogram",
+        "Time in each stage of a CONNECT tunnel (kind=connect) or a forwarded request (kind=forward)",
+    );
+    let connect = stages.folded_connect();
+    for (stage, w) in crate::profile::CONNECT_STAGES.iter().zip(connect.iter()) {
+        let l = format!("kind=\"connect\",stage=\"{}\"", stage);
+        window_histogram(out, "stage_seconds", &l, w);
+    }
+    let forward = stages.folded_forward();
+    for (stage, w) in crate::profile::FORWARD_STAGES.iter().zip(forward.iter()) {
+        let l = format!("kind=\"forward\",stage=\"{}\"", stage);
+        window_histogram(out, "stage_seconds", &l, w);
+    }
+}
+
+/// 12 段のヒストグラム 1 本を書く (区間は `/history` と同じ
+/// [`crate::history::WINDOW_BOUNDS_MS`]、`le` は秒。最後は `+Inf`)。
+/// `labels` が空でなければ `le` の前に置く。
+fn window_histogram(out: &mut String, name: &str, labels: &str, w: &crate::history::Window) {
+    let mut cum = 0u64;
+    for (i, n) in w.buckets.iter().enumerate() {
+        cum += n;
+        let le = match crate::history::WINDOW_BOUNDS_MS.get(i) {
+            Some(b) => format!("le=\"{}\"", *b as f64 / 1000.0),
+            None => "le=\"+Inf\"".to_string(),
+        };
+        let l = if labels.is_empty() {
+            le
+        } else {
+            format!("{},{}", labels, le)
+        };
+        line(out, &format!("{}_bucket", name), &l, cum);
+    }
+    line(
+        out,
+        &format!("{}_sum", name),
+        labels,
+        w.ms_sum as f64 / 1000.0,
+    );
+    line(out, &format!("{}_count", name), labels, w.count);
+}
+
 /// ラベル値のエスケープ (RFC: `\`、`"`、改行)。
 fn escape(v: &str) -> String {
     v.replace('\\', "\\\\")
@@ -234,6 +294,15 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     );
     // 期限前に裏で引き直した回数 (T13.1)。利用者は待っていないので `miss` とは別系列
     line(&mut out, "dns_lookups_total", "result=\"refresh\"", refresh);
+    // keep-warm で裏から引き直し続けている名前の数 (T14.1)。
+    // `PROXY_DNS_WARM_SECS=0` (keep-warm を止めた) と `--lite` では 0
+    header(
+        &mut out,
+        "warm_names",
+        "gauge",
+        "Names kept warm by background re-resolution (PROXY_DNS_WARM_SECS)",
+    );
+    line(&mut out, "warm_names", "", crate::dns::warm_count());
     // Happy Eyeballs の族ごとの勝敗 (T12.1)。`v4_first` は `/status` に出す
     header(
         &mut out,
@@ -453,29 +522,7 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
         "histogram",
         "Time to establish a CONNECT tunnel (name resolution + TCP)",
     );
-    let mut cum = 0u64;
-    for (i, n) in totals.connect.buckets.iter().enumerate() {
-        cum += n;
-        let le = match crate::history::WINDOW_BOUNDS_MS.get(i) {
-            Some(b) => format!("{}", *b as f64 / 1000.0),
-            None => "+Inf".to_string(),
-        };
-        let _ = writeln!(
-            out,
-            "sorahost_connect_seconds_bucket{{le=\"{}\"}} {}",
-            le, cum
-        );
-    }
-    let _ = writeln!(
-        out,
-        "sorahost_connect_seconds_sum {}",
-        totals.connect.ms_sum as f64 / 1000.0
-    );
-    let _ = writeln!(
-        out,
-        "sorahost_connect_seconds_count {}",
-        totals.connect.count
-    );
+    window_histogram(&mut out, "connect_seconds", "", &totals.connect);
     // 名前解決のミス 1 回の値段 (デプロイ先ではミス率 26%。Phase 13 の候補 1 の分子)
     let (dns_us, dns_misses) = crate::dns::resolve_cost_total();
     header(
@@ -533,6 +580,27 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
             "canary_seconds",
             "stage=\"connect\"",
             p.connect_ms as f64 / 1000.0,
+        );
+    }
+    // 段階ごとの待ち時間 (T14.3 (1) → T14.19)
+    stage_metrics(&mut out, m);
+    // ロックの取り合い (T14.3 (3))。`try_lock` が失敗した = **本当に待たされた**回数の
+    // 累計で、4 つのロックは別々のクレート (統計 / 名前解決 / 預かり所 / ワーカー) に居る
+    header(
+        &mut out,
+        "lock_contention_total",
+        "counter",
+        "Times a shared lock was already held when a thread took it (try_lock failed)",
+    );
+    for (lock, n) in crate::sync::LOCK_NAMES
+        .iter()
+        .zip(crate::sync::lock_contended())
+    {
+        line(
+            &mut out,
+            "lock_contention_total",
+            &format!("lock=\"{}\"", lock),
+            n,
         );
     }
     // エラーの原因 (デプロイ先の「エラー 12 件、原因は不明」を無くす)
@@ -1161,8 +1229,151 @@ mod tests {
         }
         let status = m.to_json();
         assert!(status.len() <= 64 * 1024, "/status が {} B", status.len());
+        let before = render(&m, None, Concurrency::default()).len();
+        // 段階の 13 本が全部の区間に埋まった最悪 (T14.19)
+        let mut stages = crate::profile::Stages::default();
+        for ms in [
+            0, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 30_000,
+        ] {
+            let d = crate::metrics::Detail {
+                dns_ms: ms,
+                connect_ms: ms,
+                first_byte_ms: Some(ms),
+                stages: crate::metrics::StageMs {
+                    queue: ms as u32,
+                    client_read: ms as u32,
+                    first_relay: ms as u32,
+                    relay: ms as u32,
+                    park: ms as u32,
+                    send: ms as u32,
+                    body: ms as u32,
+                },
+                ..crate::metrics::Detail::default()
+            };
+            stages.observe_connect(&d);
+            stages.observe_forward(&d);
+        }
+        m.profile.push(crate::profile::Sample {
+            t: 1,
+            stages,
+            ..crate::profile::Sample::default()
+        });
         let text = render(&m, None, Concurrency::default());
         assert!(text.len() <= 400 * 1024, "/metrics が {} B", text.len());
+        // T14.19 の増分 (段階 + keep-warm + ロック) は 20 KiB を超えない
+        assert!(
+            text.len() - before <= 20 * 1024,
+            "段階の増分が {} B (表が満杯のとき /metrics は {} B)",
+            text.len() - before,
+            text.len()
+        );
+    }
+
+    /// 段階の窓を 1 標本ぶん積む (T14.19 のテスト用。CONNECT 1 本 + forward 1 要求)。
+    fn push_one_sample(m: &Metrics) {
+        use crate::metrics::StageMs;
+        let mut stages = crate::profile::Stages::default();
+        stages.observe_connect(&crate::metrics::Detail {
+            dns_ms: 30,
+            connect_ms: 4,
+            stages: StageMs {
+                // `queue` と `park` は 0 ms = 速い道 (読むときに足し戻される)
+                client_read: 1,
+                first_relay: 120,
+                relay: 900,
+                ..StageMs::default()
+            },
+            ..crate::metrics::Detail::default()
+        });
+        stages.observe_forward(&crate::metrics::Detail {
+            first_byte_ms: Some(60),
+            stages: StageMs {
+                queue: 2,
+                client_read: 1,
+                body: 7,
+                ..StageMs::default()
+            },
+            ..crate::metrics::Detail::default()
+        });
+        m.profile.push(crate::profile::Sample {
+            t: 1,
+            stages,
+            ..crate::profile::Sample::default()
+        });
+    }
+
+    /// 段階・keep-warm・ロックの取り合いが `/metrics` に出ること (T14.19)。
+    /// 段階は **12 段 + `+Inf` の累積**、値は秒、累計は起動から。
+    #[test]
+    fn renders_the_stage_histograms_the_warm_gauge_and_the_lock_counters() {
+        let m = Metrics::new();
+        push_one_sample(&m);
+        let text = render(&m, None, Concurrency::default());
+        assert_eq!(
+            text.matches("# TYPE sorahost_stage_seconds histogram\n")
+                .count(),
+            1,
+            "HELP / TYPE は族に 1 組だけ:\n{}",
+            text
+        );
+        for pat in [
+            // 0 ms の観測は `≤ 1 ms` の区間に足し戻る (`queue` / `park`)
+            "sorahost_stage_seconds_bucket{kind=\"connect\",stage=\"queue\",le=\"0.001\"} 1\n",
+            "sorahost_stage_seconds_sum{kind=\"connect\",stage=\"queue\"} 0\n",
+            "sorahost_stage_seconds_count{kind=\"connect\",stage=\"queue\"} 1\n",
+            // 名前解決 30 ms → `≤ 25 ms` には入らず `≤ 50 ms` に入る
+            "sorahost_stage_seconds_bucket{kind=\"connect\",stage=\"dns\",le=\"0.025\"} 0\n",
+            "sorahost_stage_seconds_bucket{kind=\"connect\",stage=\"dns\",le=\"0.05\"} 1\n",
+            "sorahost_stage_seconds_bucket{kind=\"connect\",stage=\"dns\",le=\"+Inf\"} 1\n",
+            "sorahost_stage_seconds_sum{kind=\"connect\",stage=\"dns\"} 0.03\n",
+            "sorahost_stage_seconds_count{kind=\"connect\",stage=\"dns\"} 1\n",
+            // トンネル越しの TLS 握手 120 ms と中継 900 ms
+            "sorahost_stage_seconds_sum{kind=\"connect\",stage=\"first_relay\"} 0.12\n",
+            "sorahost_stage_seconds_sum{kind=\"connect\",stage=\"relay\"} 0.9\n",
+            // forward の初バイト 60 ms は `≤ 100 ms`
+            "sorahost_stage_seconds_bucket{kind=\"forward\",stage=\"ttfb\",le=\"0.05\"} 0\n",
+            "sorahost_stage_seconds_bucket{kind=\"forward\",stage=\"ttfb\",le=\"0.1\"} 1\n",
+            "sorahost_stage_seconds_sum{kind=\"forward\",stage=\"body\"} 0.007\n",
+            // keep-warm な名前の数 (T14.1) と ロックの取り合い (T14.3 (3))
+            "# TYPE sorahost_warm_names gauge\nsorahost_warm_names ",
+            "# TYPE sorahost_lock_contention_total counter\n",
+            "sorahost_lock_contention_total{lock=\"stats\"} ",
+            "sorahost_lock_contention_total{lock=\"workers\"} ",
+        ] {
+            assert!(text.contains(pat), "{} が無い:\n{}", pat, text);
+        }
+        // 13 段 (CONNECT 7 + forward 6) × (12 段 + `+Inf`) と `_sum` / `_count`
+        let stages = crate::profile::CONNECT_STAGES.len() + crate::profile::FORWARD_STAGES.len();
+        assert_eq!(stages, 13);
+        assert_eq!(
+            text.matches("sorahost_stage_seconds_bucket{").count(),
+            stages * (crate::history::WINDOW_BOUNDS_MS.len() + 1)
+        );
+        assert_eq!(text.matches("sorahost_stage_seconds_sum{").count(), stages);
+        assert_eq!(
+            text.matches("sorahost_stage_seconds_count{").count(),
+            stages
+        );
+        assert_eq!(
+            text.matches("sorahost_lock_contention_total{").count(),
+            crate::sync::LOCK_NAMES.len()
+        );
+    }
+
+    /// **1 本も観測していないうちは段階の系列を 1 本も出さない** (T14.19)。
+    /// `--lite` は段階の時計を読まないので、ずっとこの形 (`kernel` と同じ判断)。
+    #[test]
+    fn the_stage_series_are_absent_until_the_first_observation() {
+        let m = Metrics::new();
+        let text = render(&m, None, Concurrency::default());
+        assert!(!text.contains("sorahost_stage_seconds"), "{}", text);
+        // 段階に依らないもの (keep-warm とロック) は `--lite` でも出る
+        assert!(text.contains("sorahost_warm_names "), "{}", text);
+        assert!(
+            text.contains("sorahost_lock_contention_total{lock=\"dns\"} "),
+            "{}",
+            text
+        );
     }
 
     /// 「合流を飛ばす鍵」の記憶を入れ替えた回数が `/metrics` にも出ること (T12.6)。
