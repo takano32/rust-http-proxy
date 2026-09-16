@@ -14,8 +14,11 @@
 //! 応答は常に `Connection: close`。認証は無いので、到達できる人は誰でも purge できる
 //! (公開ポートなら ACL や到達制御で守ること)。`PROXY_ENDPOINTS_READONLY=on` にすると
 //! **書き換える口だけ** (`/purge` / `PURGE` / `/blocklist?action=`) を 405 で断る (T14.18)。
+//! **重い口** (`/snapshot` `/profile` `/explain` と大きく引いた `/hosts` `/recent` `/history`) は
+//! **同時に 1 本だけ**組み、2 本目からは `503` + `Retry-After: 1` で断る (T14.51)。
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cache::{Cache, cache_key};
 use crate::http::parse_origin;
@@ -197,6 +200,82 @@ pub fn register_snapshot(src: SnapshotSource) {
     }));
 }
 
+/// **重い口を組んでいる最中か** (T14.51)。旗はプロセスに 1 つだけ。
+///
+/// 認証なしの公開ポートでは `/snapshot` (4 MiB を組む。T14.4) を誰でも好きなだけ叩けるので、
+/// 1 秒に 10 回引かれると CPU と鍵の時間をそれだけで食う。**同時に組むのは 1 本**にして、
+/// 2 本目からは断る。走査に対する最小限の保護で、**認証ではない** (§0 は守る。
+/// 順に引けば誰でも全部取れる)。
+static HEAVY_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// 旗を取れているあいだ生きる番人 (T14.51)。
+///
+/// **落ちるときに必ず旗を戻す**ので、組んでいる途中で `?` で抜けてもパニックしても
+/// 旗が立ったままにならない (`AtomicBool` を手で戻すと、戻し忘れた経路が 1 本でもあると
+/// 以後ずっと 503 になる)。
+pub struct HeavyGuard {
+    _private: (),
+}
+
+impl Drop for HeavyGuard {
+    fn drop(&mut self) {
+        HEAVY_BUSY.store(false, Ordering::Release);
+    }
+}
+
+/// 重い口を組み始める。**空いていれば番人**、既に 1 本走っていれば `None` (T14.51)。
+///
+/// 待たない (待つと、断るより高くつく「4 MiB を組む行列」ができる)。
+///
+/// **`.is_ok().then_some(HeavyGuard { .. })` と書いてはいけない**: `then_some` は引数を
+/// 先に組むので、**取れなかったときにも番人が 1 つ出来てすぐ落ち**、その `Drop` が
+/// **他人の握っている旗を戻して**しまう (同時 4 本のうち 2 本が通る、で最初に踏んだ)。
+pub fn begin_heavy() -> Option<HeavyGuard> {
+    if HEAVY_BUSY
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
+    {
+        Some(HeavyGuard { _private: () })
+    } else {
+        None
+    }
+}
+
+/// **重い口の一覧はここ 1 か所** (T14.51)。
+///
+/// 重いのは「大きい応答を組む」口で、`/status` `/healthz` `/metrics` のような軽い口は
+/// 入れない (監視が 5 秒ごとに叩く口を断ると、断ったこと自体が事故になる)。
+/// `/hosts` `/recent` `/history` は**大きく引いたときだけ**重い (既定のままなら軽い)。
+/// 問い合わせを読むのはこの 3 つのパスに来たときだけなので、他の口は文字列の照合 1 回で抜ける。
+fn is_heavy(is_get: bool, path: &str, query: Option<&str>) -> bool {
+    if !is_get {
+        return false;
+    }
+    match path {
+        // 17 部を 1 つの JSON に組む (T14.4)。無条件に重い
+        "/snapshot" => true,
+        // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)
+        "/profile" => true,
+        // 1 相手を上の口から横断して読む (T14.36)
+        "/explain" => true,
+        // 既定の `limit` / `n` を越えて引いたときだけ (T14.32 の `/history?res=5&n=4320` は 1.9 MB)
+        "/hosts" => num_over(query, "limit", 200),
+        "/recent" => num_over(query, "n", 500),
+        "/history" => num_over(query, "n", 720),
+        _ => false,
+    }
+}
+
+/// 問い合わせの `key=` が `limit` を越えているか (無い・読めない値は「越えていない」)。
+fn num_over(query: Option<&str>, key: &str, limit: u64) -> bool {
+    let Some(q) = query else {
+        return false;
+    };
+    parse_query(q)
+        .iter()
+        .any(|(k, v)| k == key && v.parse::<u64>().is_ok_and(|n| n > limit))
+}
+
 /// 内部エンドポイントなら応答して `Ok(true)` を返す。そうでなければ何もせず `Ok(false)`。
 pub fn handle(
     client: &mut impl Write,
@@ -231,9 +310,32 @@ pub fn handle(
     if let Some(client) = ep.client {
         ep.metrics.record_reader(client, path);
     }
+    // **重い口は同時に 1 本だけ**組む (T14.51)。取れなければ下で `503` + `Retry-After: 1`。
+    // 番人は下の `if` 連鎖より長く生き、**組み終わったところ**で旗を戻す (途中で `?` で
+    // 抜けてもパニックしても戻る)。軽い口はこの `if` にも原子にも触らない。
+    // **読み手の記録 (T14.53) の直後**に置くので、断った要求も読み手としては数える
+    // (走査が来ていることが `/readers` から読める)
+    let mut heavy_busy = false;
+    let heavy_guard = if is_heavy(is_get, path, query) {
+        let guard = begin_heavy();
+        if guard.is_none() {
+            heavy_busy = true;
+            ep.metrics.heavy_rejected.fetch_add(1, Ordering::Relaxed);
+        }
+        guard
+    } else {
+        None
+    };
     // `PROXY_ENDPOINTS_READONLY=on` なら**書き換える口だけ**断る (T14.18)。読む口は
     // 今までどおりなので、これは認証ではなく「消せる口を閉じる」つまみでしかない
-    let (status, content_type, body) = if ep.readonly && is_write(is_purge, path, query) {
+    let (status, content_type, body) = if heavy_busy {
+        // 既に 1 本走っている (T14.51)。**組まずに**断るので、これ自体は安い
+        (
+            503,
+            "application/json",
+            format!("{}\"error\":\"busy\"}}", metrics::SCHEMA_HEAD),
+        )
+    } else if ep.readonly && is_write(is_purge, path, query) {
         (
             405,
             "application/json",
@@ -418,21 +520,27 @@ pub fn handle(
             format!("not found.\n\n{}", endpoint_list(ep.lite)),
         )
     };
+    // **組み終わったので旗を戻す** (T14.51)。client への書き出しまで握ると、読むのが
+    // 遅い相手 1 人で `/snapshot` `/profile` が全員に 503 を返し続けることになる
+    drop(heavy_guard);
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
-        // `/healthz` の検査が 1 つでも偽 (T14.12)
+        // `/healthz` の検査が 1 つでも偽 (T14.12)、または重い口が 1 本走っている (T14.51)
         503 => "Service Unavailable",
         _ => "OK",
     };
     let response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Cache-Control: no-store\r\nConnection: close\r\n\r\n{}",
         status,
         reason,
         content_type,
         body.len(),
+        // 重い口を断ったときだけ「1 秒後に」 (T14.51)。`/healthz` の 503 には付けない
+        // (あちらは「治るまで待て」ではなく「この検査が偽」なので、目安の秒が出せない)
+        if heavy_busy { "Retry-After: 1\r\n" } else { "" },
         body
     );
     client.write_all(response.as_bytes())?;
