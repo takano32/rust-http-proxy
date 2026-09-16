@@ -248,6 +248,10 @@ impl Live {
         if fresh.bind_addrs != boot.bind_addrs || fresh.ipv6 != boot.ipv6 {
             restart.push("PROXY_BIND/PROXY_IPV6");
         }
+        // 待ち受けは起動時に 1 回作るので backlog も起動時のまま (T14.47)
+        if fresh.listen_backlog != boot.listen_backlog {
+            restart.push("PROXY_LISTEN_BACKLOG");
+        }
         if fresh.tls_enabled != boot.tls_enabled
             || fresh.tls_verify != boot.tls_verify
             || fresh.tls_ca_file != boot.tls_ca_file

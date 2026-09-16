@@ -297,7 +297,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   最後に接続できた族を覚え、IPv6 が起動から 1 度も勝たずに 3 回続けて負けたら初めて見るホストも
   IPv4 から試す (RFC 8305 §8。600 秒に 1 回だけ IPv6 を先頭に戻して試すので、IPv6 が生き返れば自動で戻る)。
   試行そのものはやめないので、IPv4 が死んでいるホストは IPv6 で拾える。
-  勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。**確実に IPv6 を避けたいなら `off`**
+  勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。**確実に IPv6 を避けたいなら `off`**。
+  待ち受けの**受け入れ待ち行列は既定 `min(1024, somaxconn)`** (`PROXY_LISTEN_BACKLOG`)。Rust の既定の 128 だと、
+  ブラウザが 1 ページで開く数十本の CONNECT で溢れて SYN が捨てられ、クライアントの再送で 1 秒待たされます
 - **RFC 7230 / RFC 9110 準拠**:
   - Hop-by-hop ヘッダーの自動除去
   - `Via` ヘッダーおよび `X-Forwarded-For` ヘッダーの付与・伝搬。`Via` の印は
@@ -892,6 +894,7 @@ check: ok (everything this proxy reads is readable)
 | `SERVER_PORT` | `8080` | プロキシが待受を行うポート番号 (Pterodactyl が自動設定) |
 | `PROXY_BIND` | 自動 (`::` + `0.0.0.0`) | 待ち受けアドレスのカンマ区切りリスト (例: `127.0.0.1,[::1]`)。未設定ならデュアルスタックで自動 |
 | `PROXY_IPV6` | `on` | IPv6 を使う (待ち受けと AAAA での接続)。`off` で `0.0.0.0` のみ・A レコードのみ。`on` のままでも、IPv6 が黙って落ちる環境では自動で IPv4 を先に試す (上記。確実に避けたいなら `off`) |
+| `PROXY_LISTEN_BACKLOG` | `0` (= `min(1024, somaxconn)`) | **待ち受けの受け入れ待ち行列の長さ** (`listen(2)` の backlog)。Rust の `TcpListener::bind` は **128 固定**ですが、ブラウザがページを 1 枚開くと数十本の CONNECT が**同時に**来るのに accept ループは 1 本しかありません (増やしても速くならないことを測って決めた設計)。行列が溢れると SYN は**黙って捨てられ**、クライアントは 1 秒後に再送するので、**利用者には 1 秒の待ち**として見えます (統計には「遅い接続」としてすら残りません)。`0` / `auto` は `min(1024, /proc/sys/net/core/somaxconn)`、数値を書けばその値。**カーネルが `somaxconn` で頭打ちにする**ので、それより大きく書いても `somaxconn` までしか効きません (この機械の `somaxconn` は `4096`、既定は `1024`)。効いている値は起動ログの `listening on ... (backlog N, ...)` と `/config` の `PROXY_LISTEN_BACKLOG` に出ます。実際にカーネルに届いたかは `ss -ltn` の `Send-Q` (待ち受けの行) で見られます。溢れた回数は `/status` の `kernel.last_5m.listen_overflows` (Linux)。**`.env` では即時反映されません** (待ち受けは起動時に 1 回作るため。変更を検知すると `restart_required` に出ます)。Linux 以外では `std` のまま 128 です |
 | `SERVER_MEMORY` | なし | コンテナのメモリ割当 (MB)。Pterodactyl が自動設定し、メモリキャッシュの上限として尊重される |
 | `PROXY_DISK_QUOTA_MB` (別名 `SERVER_DISK`) | なし | コンテナのディスク割当。**Pterodactyl はこれを渡してくれない**ので、egg 変数として設定する。MB 数 = パネルの Disk Space、`0` = 無制限、`auto` = `df -B1 /home/container` の total を割当とみなす (下記)。Pterodactyl で未設定ならディスクキャッシュは 512 MiB 固定・先行確保なし |
 | `PROXY_ALLOW_HOSTS` | なし (全許可) | 接続許可ホストのカンマ区切りリスト (例: `*.example.com,api.github.com`) |
@@ -964,7 +967,8 @@ check: ok (everything this proxy reads is readable)
 30 秒ごとの mtime 確認)。即時に反映されるのは `PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS` / `PROXY_TIMEOUT_SECS` /
 `PROXY_KEEPALIVE_SECS` / `PROXY_LOG_LEVEL` / `PROXY_MAX_CONNS` / `PROXY_MAX_THREADS` /
 `PROXY_ALLOW_CLIENTS` / `PROXY_ENDPOINTS_READONLY` / `PROXY_MAX_CONNS_PER_CLIENT` などで、
-既存の keep-alive 接続には次の接続から効きます (どの値を当てたかは `/status` の `settings.applied` に出ます)。ポート・bind・TLS・
+既存の keep-alive 接続には次の接続から効きます (どの値を当てたかは `/status` の `settings.applied` に出ます)。ポート・bind・
+待ち受けの backlog (`PROXY_LISTEN_BACKLOG`)・TLS・
 オリジンプール・キャッシュ予算 (`SERVER_MEMORY` / `SERVER_DISK` / `PROXY_CACHE_*`) は起動時に固定なので、変更を検知すると
 `/status` の `settings.restart_required` と `/dashboard` の帯に「再起動が必要」と出ます。解釈できない値を書いた場合は
 前の設定を維持し、`settings.error` にメッセージが入ります。
