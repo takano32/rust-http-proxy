@@ -820,6 +820,9 @@ pub struct Metrics {
     /// 閉じた接続の個票 (`/recent`。T14.4)。**書くのは接続の終了で 1 回だけ**で、
     /// 要求ごとにも中継のバイトごとにも触らない
     pub closed: crate::recent::RecentRing,
+    /// 山の写真 (`/bursts`。T14.6)。accept の経路は閾を越えた瞬間に旗を立てるだけで、
+    /// **撮るのは history スレッド** ([`Metrics::take_burst_shot`])
+    pub bursts: crate::recent::BurstRing,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -846,6 +849,7 @@ impl Metrics {
             errors: crate::recent::ErrorRing::new(),
             conns: crate::recent::ConnTable::new(),
             closed: crate::recent::RecentRing::new(),
+            bursts: crate::recent::BurstRing::new(),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }
@@ -911,8 +915,37 @@ impl Metrics {
         if let Some(slot) = self.conns.unregister(id)
             && let Some(entry) = slot.closed_entry(std::time::Instant::now())
         {
+            // 閉じた理由・寿命・上り下りのバイト・預けられていた秒を窓に畳む (T14.6)。
+            // **2,000 件のリングを読み直さない**: 1 件を作ったこの場で、区間の値として
+            // 足しておく (どちらも鍵 1 回、原子操作もシステムコールも増えない)
+            self.history.closed.observe(&entry);
             self.closed.push(entry);
         }
+    }
+
+    /// 山の写真を 1 枚撮る (**history スレッドが 5 秒ごとに呼ぶ**。T14.6)。
+    ///
+    /// 頼まれていなければ、山が引いたかどうかだけ見て戻る (原子の読み 2 回)。
+    /// 頼まれていたら `/connections` の表から 1 枚作る (**表の鍵 1 回**)。
+    /// 越えた接続を受けたスレッドは旗を立てるだけなので、accept の経路に鍵は増えない。
+    pub fn take_burst_shot(&self) {
+        let active = self.active_connections.load(Ordering::Relaxed);
+        let Some(trigger) = self.bursts.take_pending() else {
+            self.bursts.rearm_if_calm(active);
+            return;
+        };
+        let rows = self.conns.snapshot();
+        let shot = crate::recent::BurstShot::take(
+            &rows,
+            self.bursts.next_seq(),
+            active,
+            trigger,
+            self.bursts.max_conns(),
+            self.bursts.threshold(),
+            self.evicted_idle.load(Ordering::Relaxed),
+            self.rejected_overload.load(Ordering::Relaxed),
+        );
+        self.bursts.push(shot);
     }
 
     /// 403 で拒否した 1 件を個票のリングに写す (`/errors`。T14.2 (4))。
