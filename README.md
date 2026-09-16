@@ -1100,6 +1100,22 @@ cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 3
 ```
 
+### CI (GitHub Actions)
+
+push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` は `cargo fmt --check` →
+`clippy -D warnings` → `cargo test --workspace` → リリースビルド → **200 MB の cgroup でビルドが通るか**
+(`scripts/build-memory.sh 200`) → 短いベンチ、の順です。それと並べてもう 1 つ、`deployed-like-snapshot` が
+**デプロイ先に似せた条件** (上の `scripts/deployed-like.sh`) を runner の中に作り、`scripts/ci-snapshot.sh` で
+`--only connect-multi` と forward を 10 秒ずつ回して `/snapshot` を**成果物 (artifact) の `snapshot.json`**
+に残します。見張るのは**形の退行だけ**で、数字の絶対値は比べません (runner は世代も負荷も毎回違うため):
+`connect-multi` の **p50 が 50 ms 以上なら CI が落ちます** (= Happy Eyeballs の 250 ms がまた毎回乗っている)、
+`/snapshot` が 1 要求で取れて JSON として読めること、その中に `/status` の `ipv6.v4_first` と `/profile` の段階が
+入っていて**全部 0 ではない**こと。runner でユーザー名前空間 (`unshare -rmnC`) が作れないときは
+**IPv6 の黒穴だけ諦めて**残りを回します (`ipv6_blackhole: false` と印字し、CONNECT は IP リテラル宛て)。
+落ちたときこそ中身が要るので、`snapshot.json` は成功しても失敗しても成果物に付きます (14 日保存)。
+手元で同じものを回すなら `cargo build --release && cargo build --release -p proxy-bench` のあとに
+`scripts/ci-snapshot.sh` (手元で 26 秒。閾は `CI_SNAPSHOT_P50_MAX_MS`、秒数は `--seconds` で変えられます)。
+
 ### 起動直後のスレッド数
 
 「使わない機能にはコストを払わない」方針なので、無効にした機能のスレッドは起動しません。
