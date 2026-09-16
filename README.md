@@ -80,9 +80,13 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 #  "connects":2000,"secs":3,"note":"stopped early at the caps (20000 requests, 2000 CONNECTs)"}
 ```
 
-手元 (既定プロファイル・ログ `warn`・cpu4-7 に固定) では、この `forward_us` が
-`scripts/cpu-per-request.sh --only forward` の値と**数 % で合います**。置いた先の `forward_us` を
-上の表の **41.4 us** で割れば、「そのコンテナの CPU は手元の big コアの何倍遅いか」が 1 つの数字になります。
+手元 (既定プロファイル・ログ `warn`・cpu4-7 に固定) では、この `forward_us` は **37〜43 us** に出ます
+(上の表の forward 8 並列 **41.4 us** と同じ桁)。ただし `scripts/cpu-per-request.sh --only forward` を
+**同じ日に回した値より 17〜26% 低め**に出ます。低いのは、自己ベンチが自分の要求を統計に載せない
+(= ホスト別・接続元別の鍵を取らない) ぶんと、打ち手が同じプロセスの中にいてループバックの往復が
+キャッシュに乗るためです。**比べるときは「自己ベンチどうし」で**比べてください: 置いた先の
+`forward_us` を手元の `forward_us` で割れば、「そのコンテナの CPU は手元の big コアの何倍遅いか」が
+1 つの数字になります (同じコードの同じ経路を同じ測り方で測っているので、この比は読めます)。
 
 読むときの注意:
 
