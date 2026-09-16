@@ -413,5 +413,37 @@ class Fixture(unittest.TestCase):
         self.assertEqual(an.Anonymizer().run(json.loads(json.dumps(self.snap))), self.snap)
 
 
+@unittest.skipUnless(os.path.isfile(os.path.join(DATA, "snapshot-local.json")),
+                     "手元の `/snapshot` の作り置きが無い")
+class WholeSnapshot(unittest.TestCase):
+    """**いまの `/snapshot` の全部の部**を通す (T14.8 の `snapshot-local.json`)。
+
+    部が増えたときに「置き換え忘れた欄」があればここで気づく (新しい欄にホスト名が入ったら、
+    `HOST_KEYS` に足す)。中身は手元のベンチのものなので、値そのものは見ない。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(DATA, "snapshot-local.json"), encoding="utf-8") as f:
+            cls.raw = json.load(f)
+        cls.out = an.Anonymizer().run(json.loads(json.dumps(cls.raw)))
+
+    def test_every_part_survives_and_no_number_changes(self):
+        self.assertEqual(list(self.out), list(self.raw))
+        self.assertEqual(self.out["parts"], self.raw["parts"])
+        self.assertEqual(numbers(self.raw), numbers(self.out))
+
+    def test_no_field_is_left_behind(self):
+        keys = an.HOST_KEYS | an.CLIENT_KEYS | an.ADDR_KEYS | an.AGENT_KEYS
+        left = [(k, v) for (k, v), (k2, w) in zip(strings(self.raw), strings(self.out))
+                if v == w and v and k in keys and v.lower() not in an.RESERVED_NAMES]
+        self.assertEqual(left, [])
+
+    def test_the_names_in_the_log_lines_are_replaced_too(self):
+        for line in self.out.get("log", {}).get("lines", []):
+            self.assertNotRegex(line["msg"], r"(?<![\w.-])localhost(?![\w-])")
+            self.assertNotIn("127.0.0.1", line["msg"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -71,6 +71,90 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # デプロイ先に似せた条件で短く回し、`/snapshot` を成果物として残す (T14.30)。
+  #
+  # **見張るのは「形の退行」だけで、数字の絶対値は比べない** (CI の runner は世代も負荷も毎回違う。
+  # §1 のレシピの数字は手元の機械でしか取れない)。落とすのは 3 つだけ:
+  #   1. `--only connect-multi` の p50 が 50 ms 以上 (= Happy Eyeballs の 250 ms が戻ってきた。T12.1)
+  #   2. `/snapshot` が 1 要求で取れない・JSON として読めない (T14.4)
+  #   3. `/status` の `ipv6.v4_first` か `/profile` の段階 (T14.3) が入っていない・全部 0
+  #
+  # **`check` とは並べて回す** (`needs:` を付けない) ので、CI の総時間はほとんど伸びない
+  # (このジョブ自身は release ビルド + ベンチ 2 本 × 10 秒 + `/snapshot` で、手元では
+  # スクリプトの部分が 26 秒。`check` の方が長いので、通算の待ち時間は増えない)。
+  deployed-like-snapshot:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.96
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup default 1.96.0
+      # **読むだけ** (`restore`)。同じ鍵の保存は上の check ジョブに任せる
+      # (同じ鍵で 2 つのジョブが保存すると後から来た方が「もうある」で終わるだけなので、
+      # 鍵の持ち主を 1 つに決めておく)
+      - name: Cache (restore only)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # **先に**名前空間が作れるかを確かめて記録する。`scripts/deployed-like.sh` は
+      # `unshare -rmnC` (ユーザー + マウント + ネット + cgroup) を要求し、作れなければ
+      # 終了コード 2 で終わる。runner で作れないときは `scripts/ci-snapshot.sh` が
+      # **IPv6 の黒穴だけ諦めて**残りを回す (`ipv6_blackhole: false`、CONNECT は IP リテラル宛て)
+      - name: Can this runner build a user namespace?
+        run: |
+          if unshare -rmnC true 2>/dev/null; then
+            ns='`unshare -rmnC` が通る → IPv6 の黒穴まで再現できる (`--only connect-multi`)'
+          elif unshare -rmn true 2>/dev/null; then
+            ns='`unshare -rmn` は通るが `-C` が通らない → 黒穴は諦める (`--only connect`)'
+          else
+            ns='ユーザー名前空間が作れない → 黒穴は諦める (`--only connect`)'
+          fi
+          echo "$ns"
+          {
+            echo '### デプロイ先に似せた条件 (T14.30)'
+            echo ''
+            echo "- 名前空間: $ns"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - run: cargo build --release
+      - run: cargo build --release -p proxy-bench
+
+      # プロキシもベンチもスクリプトの中で `timeout` 付きで起動し、最後に自分で片づける
+      - name: Deployed-like snapshot
+        run: |
+          set +e
+          ./scripts/ci-snapshot.sh --seconds 10 --conc 8 2>&1 | tee ci-snapshot.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          {
+            echo ''
+            echo '```'
+            grep -E '^(ci-snapshot|cnct-mlt|connect|forward|deployed-like)' ci-snapshot.txt || tail -20 ci-snapshot.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+      # **落ちたときこそ中身が要る**ので `if: always()`
+      - name: Upload snapshot.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployed-like-snapshot
+          path: |
+            snapshot.json
+            ci-snapshot.txt
+          if-no-files-found: warn
+          retention-days: 14
+
   # ビルドが通る最小のメモリを CI の機械で実測する (T11.7)。
   #
   # **なぜ push ごとに回さないか**: 上の `Build memory` が §0 の条件 (200 MB で通ること) を

@@ -765,10 +765,14 @@ pub fn spawn_every(
         metrics.history.closed.roll(now);
         // 速さと半閉じの窓も同じ境目で閉じる (`closed` と時刻で突き合わせる。T14.25)
         metrics.history.transfer.roll(now);
+        // ホスト別の時系列の窓送りと上位 16 の入れ替え (T14.22)。**5 分の境目でだけ**動く
+        metrics.roll_host_series();
         let sample = Sample::take(metrics, cache);
         // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
         crate::daily::tick(metrics, &sample);
         let pushed = metrics.history.push(sample);
+        // 積んだあとに、直近 5 分が直近 1 時間の基準値から外れていないかを見る (T14.23)
+        crate::anomaly::check(metrics, &sample);
         if let Some(st) = &store {
             st.write_samples(&pushed);
             st.write_recent(metrics);

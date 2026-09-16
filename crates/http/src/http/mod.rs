@@ -289,6 +289,11 @@ impl Ctx<'_> {
             t.add_request(status, self.up_bytes, bytes, stage_ms);
             cell.set(t);
         }
+        // 向き別のバイト (T14.26)。**新しい計数はしていない**: 上りは要求本文
+        // (個票が既に使っている `up_bytes`)、下りはこの応答のバイト (アクセスログに
+        // 出すのと同じ値) をそのまま運ぶだけ。ホスト別統計の鍵の内側で足す
+        detail.bytes_in = self.up_bytes;
+        detail.bytes_out = bytes;
         self.metrics
             .record_host_detail(self.pool_key, outcome, bytes, Some(took), detail);
         self.metrics
@@ -298,6 +303,7 @@ impl Ctx<'_> {
                 self.client_ip,
                 outcome,
                 bytes,
+                (self.up_bytes, bytes),
                 Some(took),
                 Some(self.pool_key),
             );
@@ -1110,6 +1116,9 @@ fn origin_detail(acquire_started: Instant, cause: Option<ErrCause>, stages: Stag
         first_byte_ms: None,
         // ここまでに測った段階 (`queue` / `client_read`) は引き継ぐ (T14.3 (1))
         stages,
+        // 向き別のバイト (T14.26) は応答を流し終えてからでないと分からない
+        // ([`Ctx::log`] が入れる)
+        ..Detail::default()
     }
 }
 
