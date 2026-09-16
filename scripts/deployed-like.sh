@@ -28,13 +28,24 @@
 #      自分の cgroup 名前空間の外にできる。`scripts/cgroup-run.sh` の頭に同じ話がある)
 #
 # 使い方:
-#   scripts/deployed-like.sh [--memory 256M] [--nofile 1024] -- <コマンド...>
+#   scripts/deployed-like.sh [--memory 256M] [--nofile 1024] [--hosts-from FILE] -- <コマンド...>
 #
 #   scripts/deployed-like.sh -- scripts/cpu-per-request.sh --only connect-multi --seconds 5
 #   scripts/deployed-like.sh --memory off -- ./target/release/rust-http-proxy --lite -p 18080
+#   scripts/deployed-like.sh --hosts-from scripts/testdata/replay-burst.json -- \
+#     ./target/release/bench --proxy 127.0.0.1:18080 --only replay \
+#       --replay-file scripts/testdata/replay-burst.json --speed 10
 #
 #   --memory SIZE   cgroup の MemoryMax (既定 256M。`off` / `0` で付けない)
 #   --nofile N      名前空間の中の `ulimit -n` (既定 1024)
+#   --hosts-from F  **個票 (`/recent` / `/snapshot` / `/connections` の JSON) に出てくる宛先の
+#                   ホスト名を全部 `127.0.0.1` に向ける** (T14.29 の `bench --only replay` 用。
+#                   何度でも渡せる)。`"target":"host:port"` を拾い、名前 (IP リテラルでない
+#                   もの) だけを **A レコードとして**足す。**AAAA は足さない** — IPv6 の黒穴を
+#                   見るのは `multi.test` の役目で、再生に混ぜるとバーストの形ではなく
+#                   Happy Eyeballs を測ることになるため。
+#                   **足した名前は名前空間の中の `/etc/hosts` にしか出ない** (元の
+#                   `/etc/hosts` も、このリポジトリも書き換えない)
 #
 # **名前空間が作れない機械では「使えない」と印字して終了コード 2** で終わる
 # (中のコマンドは走らせない)。中で走るコマンドには `RHP_DEPLOYED_LIKE=1` が見える。
@@ -49,16 +60,18 @@ cd "$(dirname "$0")/.."
 MULTI_HOST=multi.test
 MEMORY=256M
 NOFILE=1024
+HOSTS_FROM=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --memory) MEMORY=$2; shift 2 ;;
     --nofile) NOFILE=$2; shift 2 ;;
+    --hosts-from) HOSTS_FROM+=("$2"); shift 2 ;;
     --) shift; break ;;
-    -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,56p' "$0"; exit 0 ;;
     *) echo "deployed-like: unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[ $# -gt 0 ] || { echo "usage: scripts/deployed-like.sh [--memory 256M] [--nofile 1024] -- <command...>" >&2; exit 2; }
+[ $# -gt 0 ] || { echo "usage: scripts/deployed-like.sh [--memory 256M] [--nofile 1024] [--hosts-from FILE] -- <command...>" >&2; exit 2; }
 
 # 入れ子で呼ばれたら (`--deployed-like` を渡した `cpu-per-request.sh` が中でまた呼ぶ等)
 # もう一度作らずにそのまま走らせる。
@@ -78,6 +91,35 @@ trap 'rm -rf "$work"' EXIT
 # 元の /etc/hosts に 2 行足したものを名前空間の中で bind mount する
 # (元の行を消さないので、localhost も自分のホスト名も今までどおり引ける)
 { cat /etc/hosts; printf '2001:db8::1 %s\n127.0.0.1 %s\n' "$MULTI_HOST" "$MULTI_HOST"; } >"$work/hosts"
+
+# --hosts-from: 個票に出てくる宛先の名前を全部 127.0.0.1 へ (T14.29 の再生用)。
+# **A だけ**足す (AAAA を足すと再生が Happy Eyeballs の測定になってしまう)。
+REPLAY_NAMES=0
+for f in ${HOSTS_FROM[@]+"${HOSTS_FROM[@]}"}; do
+  [ -r "$f" ] || { echo "deployed-like: --hosts-from $f が読めません" >&2; exit 2; }
+done
+if [ -n "${HOSTS_FROM[*]+x}" ] && [ ${#HOSTS_FROM[@]} -gt 0 ]; then
+  # `"target":"host:port"` の host だけを拾う。scheme (`connect://`) とポートを落とし、
+  # IP リテラル (v4 / v6) と空の宛先は足さない (名前解決を通らないので要らない)
+  names=$(
+    grep -ho '"target":"[^"]*"' ${HOSTS_FROM[@]+"${HOSTS_FROM[@]}"} |
+      sed -e 's/^"target":"//' -e 's/"$//' -e 's#^[a-z][a-z0-9+.-]*://##' -e 's/:[0-9]*$//' |
+      grep -Ev '^(\[|$)' |
+      grep -E '^[A-Za-z0-9_.-]+$' |
+      grep -Ev '^([0-9]{1,3}\.){3}[0-9]{1,3}$' |
+      LC_ALL=C sort -u
+  )
+  if [ -n "$names" ]; then
+    while IFS= read -r n; do
+      printf '127.0.0.1 %s\n' "$n" >>"$work/hosts"
+      REPLAY_NAMES=$((REPLAY_NAMES + 1))
+    done <<<"$names"
+  fi
+  if [ "$REPLAY_NAMES" -eq 0 ]; then
+    echo "deployed-like: --hosts-from に名前の宛先がありません (\"target\":\"host:port\" を探します)" >&2
+    exit 2
+  fi
+fi
 
 cat >"$work/inner.sh" <<'INNER'
 set -u
@@ -111,7 +153,9 @@ else
   MEMORY="(none)"
 fi
 
+note=""
+[ "$REPLAY_NAMES" -gt 0 ] && note=" + 再生の名前 $REPLAY_NAMES 件 (A だけ)"
 echo "deployed-like: netns (lo only) | IPv6 default dev lo (SYN は黙って落ちる) |" \
-  "/etc/hosts + $MULTI_HOST (2001:db8::1 + 127.0.0.1) | ulimit -n $NOFILE | MemoryMax=$MEMORY"
+  "/etc/hosts + $MULTI_HOST (2001:db8::1 + 127.0.0.1)$note | ulimit -n $NOFILE | MemoryMax=$MEMORY"
 RHP_DEPLOYED_LIKE=1 ${scope[@]+"${scope[@]}"} \
   unshare -rmnC bash "$work/inner.sh" "$work/hosts" "$NOFILE" "$MULTI_HOST" "$@"
