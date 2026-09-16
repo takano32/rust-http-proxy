@@ -10,7 +10,7 @@
 //! T14.32 で 6 時間ぶんになった) を 2 回畳むだけで、システムコールは増えない
 //! (畳むのは直近 5 分と直近 1 時間の標本だけで、残りは時刻の比較 1 回で飛ばす)。
 //!
-//! 判定は **5 種で固定** ([`Kind`])。閾は本文 (T14.23) のとおり:
+//! 判定は **5 種で固定** ([`Kind`]) + **規則 6** ([`NewClients`])。閾は本文のとおり:
 //!
 //! | 種類 | 立つ条件 |
 //! |---|---|
@@ -19,6 +19,13 @@
 //! | `errors` | エラーが 5 分で [`ERRORS_MIN`] 件以上 |
 //! | `active_high` | 同時接続の山が `max_conns` の [`ACTIVE_PERCENT`]% 以上 (T14.6 の写真と同じ閾。写真があればその番号) |
 //! | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が増えた |
+//! | `new_client` | `/clients` の `first_seen` がこの周期の窓の中 (**規則 6**。T14.54) |
+//!
+//! **規則 6 だけは形が違う**: 上の 5 種が「立つ / 収まる」の状態を持つ (同じ種類は
+//! 収まるまで 1 回) のに対し、規則 6 は**接続元ごとに 1 回**で、立ちっ放しにも
+//! 解除にもならない。出来事の種類も `anomaly` ではなく **`new_client`**
+//! ([`crate::events::EventKind::NewClient`]。[`crate::events::KINDS`] の末尾に足したので
+//! T14.9 の永続化の符号 0〜10 は動いていない)。
 //!
 //! **同じ種類は収まるまで 1 回だけ**書く。条件を外れたまま [`CLEAR_SECS`] 秒
 //! (5 分) 続いたら `cleared: <種類>` で始まる解除の 1 件を書き、また立てるようになる。
@@ -33,7 +40,8 @@
 //! `?summary=1` と同じ関数・同じ切り方)。標本を自前に写し取ると、同じ畳み方が 2 つ
 //! できて食い違うし、1 時間ぶん (720 標本 × 504 B = 350 KiB) の持ち直しになる。
 //! 判定がここで覚えているのは**リングから読めないものだけ** ([`Counters`] = 断った数の
-//! 累計と山の写真の通算) と、種類ごとの立ち上がり ([`KindState`])。
+//! 累計と山の写真の通算) と、種類ごとの立ち上がり ([`KindState`])、
+//! それに規則 6 の「もう書いた接続元」 ([`NewClients`]) だけ。
 
 use std::fmt::Write as _;
 use std::sync::Mutex;
@@ -41,7 +49,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::history::summary::{self, Params, Summary};
 use crate::history::{History, Sample};
-use crate::metrics::{ERR_CAUSE_NAMES, ERR_CAUSES, Metrics};
+use crate::metrics::{ERR_CAUSE_NAMES, ERR_CAUSES, Metrics, NewClient};
 use crate::sync::LockExt;
 
 /// (1) CONNECT 確立の p95 が基準値の何倍で立つか。
@@ -54,6 +62,28 @@ pub const DNS_MISS_MS: f64 = 100.0;
 pub const ERRORS_MIN: u64 = 5;
 /// (4) 同時接続の山が `max_conns` のこの割合 (%) 以上で立つ (T14.6 の写真と同じ閾)。
 pub const ACTIVE_PERCENT: usize = 50;
+/// (6) 1 周期に `new_client` を書く上限 (越えた分は 1 件にまとめる)。
+///
+/// 走査を受けると 1 周期に何百もの接続元が初めて現れうる。**出来事のリングは 512 件**
+/// (T14.11) なので、上限を置かないと 1 回の走査で今までの出来事が全部流れてしまう。
+pub const NEW_CLIENT_MAX: usize = 8;
+/// (6) 「もう書いた接続元」を覚えておく数の上限。
+///
+/// 接続元の表そのものが [`crate::metrics::MAX_CLIENTS`] 件で頭打ち (あふれた分は
+/// `other` の 1 行) なので、ここもその数で足りる。越えたら**忘れずに数える**のを
+/// やめる (窓の判定だけが残るので、境目の秒に現れた接続元が二度出ることがある)。
+pub const NEW_CLIENT_REMEMBER: usize = crate::metrics::MAX_CLIENTS;
+/// (6) 1 周期に鍵の内側から写す上限 ([`NEW_CLIENT_MAX`] より多めに取る)。
+///
+/// 窓の境目の秒に現れた接続元は「もう書いた」側に落ちるので、[`NEW_CLIENT_MAX`] ちょうどで
+/// 取ると**書いたものだけで埋まって新しいものが落ちる**ことがある。4 倍を写して、
+/// 落としてから上限を当てる。
+const NEW_CLIENT_SCAN: usize = NEW_CLIENT_MAX * 4;
+/// (6) 説明に入れる `User-Agent` の長さ (バイト)。
+///
+/// 出来事 1 件は [`crate::events::MAX_TEXT`] (128 B) で切られる。`User-Agent` は
+/// **説明の最後**に置いてあるので、切られるのはここだけ (接続元と数字は残る)。
+const NEW_CLIENT_AGENT_BYTES: usize = 48;
 
 /// 直近の窓 (秒)。判定はこの窓の値を [`BASE_SECS`] の窓と比べる。
 pub const WINDOW_SECS: u64 = 300;
@@ -163,6 +193,23 @@ pub struct Detector {
     /// 1 本前の山の写真の通算
     last_shots: Option<u64>,
     state: [KindState; KINDS.len()],
+    /// 規則 6 (初めて見た接続元。T14.54)
+    new_clients: NewClients,
+}
+
+/// 規則 6 の覚えていること (T14.54)。
+///
+/// 窓は**前に見た時刻から今まで** (両端を含む)。両端を含むのは、周期のちょうどその秒に
+/// 現れた接続元を落とさないため (`first_seen` は epoch 秒なので、標本を取った直後に
+/// 来た接続元は同じ秒を持つ)。二度書かないのは [`NewClients::seen`] の役目。
+#[derive(Debug, Default)]
+struct NewClients {
+    /// 前に見た時刻 (`None` = まだ 1 度も見ていない)。**1 本目は基準にするだけ**で
+    /// 書かない (起動時に状態ファイルから読み戻した接続元を新しいと言わないため。
+    /// 読み戻した側は `first_seen == 0` でも外れるので、これは二重の歯止め)
+    last_t: Option<u64>,
+    /// もう `/events` に書いた接続元 ([`NEW_CLIENT_REMEMBER`] 件まで)
+    seen: std::collections::HashSet<String>,
 }
 
 impl Default for Detector {
@@ -179,6 +226,7 @@ impl Detector {
             last_totals: None,
             last_shots: None,
             state: [KindState::default(); KINDS.len()],
+            new_clients: NewClients::default(),
         }
     }
 
@@ -268,6 +316,46 @@ impl Detector {
                     text: cleared_text(kind, &w5, mins),
                 });
             }
+        }
+        out
+    }
+
+    /// **規則 6**: この周期に初めて見た接続元を `/events` の 1 行にする (T14.54)。
+    ///
+    /// 上の 5 種と違って「立つ / 収まる」を持たない (**接続元ごとに 1 回**)。
+    /// 返すのは説明だけで、書くのは呼んだ側 ([`check`]。鍵を握ったまま
+    /// 出来事のリングに触らないため)。
+    ///
+    /// 見るのは [`Metrics::clients_first_seen_in`] だけ = **鍵の内側でやるのは
+    /// `first_seen` の比較**で、標本のリングは 1 度も畳まない。
+    pub fn observe_clients(&mut self, metrics: &Metrics, now: u64) -> Vec<String> {
+        // 1 本目は「前に見た時刻」を置くだけ (それ以前から居た接続元は新しくない)
+        let Some(from) = self.new_clients.last_t.replace(now) else {
+            return Vec::new();
+        };
+        let (found, mut over) = metrics.clients_first_seen_in(from, now, NEW_CLIENT_SCAN);
+        let mut out = Vec::new();
+        for c in found {
+            if self.new_clients.seen.contains(&c.client) {
+                continue; // 窓の境目の秒。同じ接続元は 1 回だけ
+            }
+            if self.new_clients.seen.len() < NEW_CLIENT_REMEMBER {
+                self.new_clients.seen.insert(c.client.clone());
+            }
+            if out.len() >= NEW_CLIENT_MAX {
+                over += 1;
+                continue;
+            }
+            out.push(new_client_text(&c));
+        }
+        if over > 0 {
+            // 走査を受けたとき。出来事のリング (512 件) を 1 回で流さないための 1 行
+            out.push(format!(
+                "new_client: {} more clients first seen in the same {}s window (wrote {})",
+                over,
+                now.saturating_sub(from).max(1),
+                out.len()
+            ));
         }
         out
     }
@@ -437,6 +525,38 @@ fn cleared_text(kind: Kind, w5: &Summary, mins: u64) -> String {
     }
 }
 
+/// **規則 6** の説明 (T14.54)。接続元・要求数・最初の宛先の種類・`User-Agent` の順。
+///
+/// `User-Agent` を最後に置いてあるのは、[`crate::events::MAX_TEXT`] (128 B) で切られる
+/// ときに**接続元と数字を残す**ため。
+fn new_client_text(c: &NewClient) -> String {
+    let mut s = format!("new_client: {} first seen ({} req", c.client, c.requests);
+    match c.port {
+        // `ports` は出た順なので、先頭が最初の宛先のポート (443 / 80 / それ以外)
+        Some(p) => {
+            let _ = write!(
+                s,
+                ", first target port {} ({})",
+                p,
+                if c.literal { "literal" } else { "name" }
+            );
+        }
+        // `User-Agent` だけ先に読めていて、要求がまだ数えられていない瞬間
+        None => s.push_str(", no target yet"),
+    }
+    match &c.agent {
+        Some(a) => {
+            let _ = write!(
+                s,
+                ", agent \"{}\")",
+                crate::recent::clip(a, NEW_CLIENT_AGENT_BYTES)
+            );
+        }
+        None => s.push_str(", no agent)"),
+    }
+    s
+}
+
 /// 同時接続数の上限と、山と見なす本数 ([`configure`] が入れる)。
 static MAX_CONNS: AtomicUsize = AtomicUsize::new(0);
 static THRESHOLD: AtomicUsize = AtomicUsize::new(0);
@@ -465,18 +585,23 @@ pub fn configure(max_conns: usize, burst_at: usize) {
 /// 通算 1 つ・5 秒のリングを 2 回畳むぶん (720 標本 × 2 = 約 7 万回の加算) だけで、
 /// 5 秒に 1 回なら測れない。
 pub fn check(metrics: &Metrics, sample: &Sample) {
-    let fired = {
+    let (fired, newcomers) = {
         let mut guard = DETECTOR.locked();
         let d = guard.get_or_insert_with(Detector::new);
         d.set_limits(
             MAX_CONNS.load(Ordering::Relaxed),
             THRESHOLD.load(Ordering::Relaxed),
         );
-        d.observe(&metrics.history, Counters::take(metrics, sample))
+        let fired = d.observe(&metrics.history, Counters::take(metrics, sample));
+        // 規則 6 (初めて見た接続元。T14.54)。標本ではなく `/clients` を見る
+        (fired, d.observe_clients(metrics, sample.t))
     };
     // 書くのは鍵の外 (出来事のリングと判定の鍵を同時に握らない)
     for f in fired {
         crate::events::push(crate::events::EventKind::Anomaly, &f.text);
+    }
+    for text in newcomers {
+        crate::events::push(crate::events::EventKind::NewClient, &text);
     }
 }
 
@@ -844,11 +969,13 @@ mod tests {
         let (t, _) = calm(&h, &mut d, 0, 2 * BASE_SECS);
         let w5 = fold(&h, t - 5, WINDOW_SECS);
         let base = fold(&h, t - 5, BASE_SECS);
-        // 窓は両端を含むので 5 分 = 61 標本、1 時間 = 721 標本ぶん (リングは 720 本)
+        // 窓は両端を含むので 5 分 = 61 標本、1 時間 = 721 標本。
+        // **T14.32 で 5 秒のリングが 1 時間 (720 本) から 6 時間 (4,320 本) になった**ので、
+        // 基準値の窓はリングに切られず 721 本そろう (それ以前は 720 本で頭打ちだった)
         assert_eq!(w5.samples, WINDOW_SECS / 5 + 1);
         assert_eq!(w5.connect.count, 2 * (WINDOW_SECS / 5 + 1));
-        assert_eq!(base.samples, BASE_SECS / 5, "リングが覆うのは 1 時間");
-        assert_eq!(base.connect.count, 2 * BASE_SECS / 5);
+        assert_eq!(base.samples, BASE_SECS / 5 + 1, "リングが覆うのは 6 時間");
+        assert_eq!(base.connect.count, 2 * (BASE_SECS / 5 + 1));
         assert_eq!(base.interval_secs, 5);
     }
 
@@ -904,6 +1031,186 @@ mod tests {
         assert_eq!(events[0].text, "rejected: rejected_client_acl +7 (total 7)");
         // 同じ種類は収まるまで 1 回だけ
         sample.t += 5;
+        check(&metrics, &sample);
+        assert_eq!(crate::events::len(), 1);
+        crate::events::clear();
+        reset();
+    }
+
+    // ------------------------------------------------------------ 規則 6 (T14.54)
+
+    /// 接続元 1 件を 1 要求ぶん記録する (本番と同じ口だけを使う)。
+    fn visit(m: &Metrics, client: &str, agent: Option<&str>, target: &str) {
+        if let Some(a) = agent {
+            // `User-Agent` を読むのは接続の最初の要求だけ (T14.7)
+            m.record_client_agent(client, a);
+        }
+        m.record_client(
+            client,
+            crate::metrics::HostOutcome::Bypass,
+            0,
+            (0, 0),
+            None,
+            Some(target),
+        );
+    }
+
+    /// いま入っている接続元の `first_seen` (**本物の壁時計**)。
+    ///
+    /// 窓はこの値に合わせて置く: 標本の時刻は注入できても `first_seen` は
+    /// [`crate::cache::now_epoch`] なので、勝手な時刻で窓を切ると秒の境目で落ちる。
+    fn first_seen_of(m: &Metrics, client: &str) -> u64 {
+        m.clients_first_seen_in(0, u64::MAX, 100)
+            .0
+            .iter()
+            .find(|c| c.client == client)
+            .unwrap_or_else(|| panic!("{} が居ない", client))
+            .first_seen
+    }
+
+    /// (6) 初めて見た接続元が 1 回だけ出る (2 回目の要求では増えない)。
+    #[test]
+    fn f_a_new_client_is_written_once_per_client() {
+        let m = Metrics::new();
+        let mut d = Detector::new();
+        visit(
+            &m,
+            "198.51.100.7",
+            Some("t1454/1.0"),
+            "connect://a.example:443",
+        );
+        let ta = first_seen_of(&m, "198.51.100.7");
+        assert!(
+            d.observe_clients(&m, ta - 1).is_empty(),
+            "1 本目は基準にするだけ"
+        );
+        assert_eq!(
+            d.observe_clients(&m, ta),
+            vec![
+                "new_client: 198.51.100.7 first seen \
+                 (1 req, first target port 443 (name), agent \"t1454/1.0\")"
+                    .to_string()
+            ]
+        );
+        // 2 回目の要求では増えない。窓 (`[ta, tb]`) はこの接続元の `first_seen` を
+        // また含むので、「もう書いた」を覚えていないと 2 件目が出る
+        visit(
+            &m,
+            "198.51.100.7",
+            Some("t1454/1.0"),
+            "connect://b.example:443",
+        );
+        // 別の接続元は出る (IP リテラル宛て・`User-Agent` 無し)
+        visit(&m, "198.51.100.8", None, "connect://203.0.113.9:8443");
+        let tb = first_seen_of(&m, "198.51.100.8");
+        assert_eq!(
+            d.observe_clients(&m, tb),
+            vec![
+                "new_client: 198.51.100.8 first seen \
+                 (1 req, first target port 8443 (literal), no agent)"
+                    .to_string()
+            ]
+        );
+    }
+
+    /// (6) 読み戻した接続元 (`first_seen == 0`) は「新しい」ではない。
+    #[test]
+    fn f_restored_clients_are_not_new() {
+        let m = Metrics::new();
+        let mut d = Detector::new();
+        let t0 = crate::cache::now_epoch();
+        m.restore(
+            Vec::new(),
+            vec![(
+                "198.51.100.1".to_string(),
+                crate::metrics::HostStats {
+                    requests: 42,
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(d.observe_clients(&m, t0 - 1).is_empty());
+        assert!(
+            d.observe_clients(&m, t0 + 300).is_empty(),
+            "前から居た接続元は新しくない"
+        );
+    }
+
+    /// (6) 1 周期に何百も現れたら (走査) 上限で切って、残りは 1 行にまとめる。
+    #[test]
+    fn f_a_scan_is_folded_into_one_line() {
+        let m = Metrics::new();
+        let mut d = Detector::new();
+        for i in 1..=(NEW_CLIENT_MAX + 3) {
+            visit(
+                &m,
+                &format!("198.51.100.{}", i),
+                None,
+                "connect://a.example:443",
+            );
+        }
+        let seen: Vec<u64> = m
+            .clients_first_seen_in(0, u64::MAX, 100)
+            .0
+            .iter()
+            .map(|c| c.first_seen)
+            .collect();
+        let (lo, hi) = (*seen.iter().min().unwrap(), *seen.iter().max().unwrap());
+        assert!(d.observe_clients(&m, lo - 1).is_empty());
+        let out = d.observe_clients(&m, hi);
+        assert_eq!(out.len(), NEW_CLIENT_MAX + 1, "{:?}", out);
+        assert!(
+            out[NEW_CLIENT_MAX].starts_with("new_client: 3 more clients first seen in the same "),
+            "{}",
+            out[NEW_CLIENT_MAX]
+        );
+        assert!(
+            out[NEW_CLIENT_MAX].ends_with(&format!("window (wrote {})", NEW_CLIENT_MAX)),
+            "{}",
+            out[NEW_CLIENT_MAX]
+        );
+        // まとめた分も「もう書いた」に入るので、次の周期では出てこない
+        assert!(d.observe_clients(&m, hi).is_empty());
+    }
+
+    /// 履歴スレッドの口 ([`check`]) が `/events` に `new_client` で 1 件書き、
+    /// 長い `User-Agent` でも 1 件 128 B に収まる (接続元と数字は残る)。
+    #[test]
+    fn check_writes_one_new_client_event() {
+        let _g = crate::events::TEST_LOCK.locked();
+        crate::events::clear();
+        reset();
+        let metrics = Metrics::new();
+        let mut sample = Sample {
+            t: crate::cache::now_epoch(),
+            ..Sample::default()
+        };
+        check(&metrics, &sample);
+        assert!(crate::events::is_empty(), "1 本目では書かない");
+        visit(
+            &metrics,
+            "198.51.100.9",
+            Some(&"u".repeat(200)),
+            "connect://a.example:443",
+        );
+        sample.t = first_seen_of(&metrics, "198.51.100.9");
+        check(&metrics, &sample);
+        let (events, _) = crate::events::select(0, 10);
+        assert_eq!(events.len(), 1, "{:?}", events);
+        assert_eq!(events[0].kind, crate::events::EventKind::NewClient);
+        assert!(
+            events[0]
+                .text
+                .starts_with("new_client: 198.51.100.9 first seen (1 req, first target port 443"),
+            "{}",
+            events[0].text
+        );
+        assert!(
+            events[0].text.len() <= crate::events::MAX_TEXT,
+            "{} B",
+            events[0].text.len()
+        );
+        // 同じ接続元は 1 回だけ (同じ秒の窓をもう一度見ても増えない)
         check(&metrics, &sample);
         assert_eq!(crate::events::len(), 1);
         crate::events::clear();

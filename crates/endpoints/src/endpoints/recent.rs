@@ -630,8 +630,9 @@ pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
 /// 起動・設定の再読込・ブロックリストの更新・IPv4 優先の切替・メモリの圧迫・バラストの
 /// 増減・状態ファイルの異常・上限での追い出し・accept の失敗・停止シグナルを **1 本の
 /// 時系列**にしたもの。`/log` は warn 以上なので info の出来事が入らず、`/status` の
-/// `settings` は最後の 1 回しか残さない。種類は `kinds` に並ぶ 11 種で固定
-/// (11 種目は異常の自動検知 `anomaly`。T14.23)。
+/// `settings` は最後の 1 回しか残さない。種類は `kinds` に並ぶ 12 種で固定
+/// (11 種目は異常の自動検知 `anomaly` (T14.23)、12 種目は初めて見た接続元
+/// `new_client` (T14.54 の規則 6))。
 pub fn events(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, MAX_EVENTS);
     // `?since=` は `/recent` と同じ扱い (「その時刻以降に起きたもの」。無ければ 0 = 全部)
@@ -1018,7 +1019,7 @@ mod tests {
         assert!(body.contains("\"recorded\":2"), "{}", body);
         assert!(body.contains("\"capacity\":512"), "{}", body);
         assert!(body.contains("\"truncated\":false"), "{}", body);
-        // 11 種の名前が全部出る (README の一覧と合っているか)
+        // 12 種の名前が全部出る (README の一覧と合っているか)
         for kind in [
             "start",
             "reload",
@@ -1031,6 +1032,7 @@ mod tests {
             "emfile",
             "shutdown",
             "anomaly",
+            "new_client",
         ] {
             assert!(body.contains(&format!("\"{}\"", kind)), "{} が無い", kind);
         }

@@ -12,7 +12,7 @@
 //   5. **`/history` の `closed` (閉じた接続の分布) と `/bursts` の写真**が読めること
 //      (区間の数・合計と件数の一致・並び。T14.6)
 //   6. **カーネルと cgroup の窓** (`/history` の `kernel`、`/status` の `kernel`) が読めること (T14.12)
-//   7. **`/events` の時系列**が読めること (11 種の綴り・新しい順・`?since=` の絞り。T14.11 / T14.23)
+//   7. **`/events` の時系列**が読めること (12 種の綴り・新しい順・`?since=` の絞り。T14.11 / T14.23 / T14.54)
 //   8. **`/profile` を読む関数** (段階・スレッド・ロック) が実出力と合っていること (T14.3)
 //   9. **`/history` の `transfer`** (転送速度と半閉じの分布) が読めること (区間の数・合計と件数の一致。T14.25)
 //  10. **「調査」ページ (`inspect.html`) の描画関数**が `/snapshot` の実出力で例外なく通ること
@@ -519,11 +519,11 @@ if (st.kernel) {
   if (!st.kernel.last_5m) fail('/status の kernel に last_5m が無い');
 }
 
-// 7. `/events` の時系列 (T14.11)。11 種で固定なので、綴りが増減したらここで気づく
-// (`anomaly` は異常の自動検知が書く 1 件。T14.23)
+// 7. `/events` の時系列 (T14.11)。12 種で固定なので、綴りが増減したらここで気づく
+// (`anomaly` は異常の自動検知が書く 1 件 (T14.23)、`new_client` は初めて見た接続元 (T14.54))
 const EVENT_KINDS = [
   'start', 'reload', 'blocklist', 'ipv6', 'pressure', 'ballast',
-  'state_file', 'evict', 'emfile', 'shutdown', 'anomaly',
+  'state_file', 'evict', 'emfile', 'shutdown', 'anomaly', 'new_client',
 ];
 
 function eventRows(json, since) {
@@ -546,7 +546,7 @@ const evs = eventRows(eventJson, 0);
 if (evs.length !== 4) fail('eventRows の件数が合わない');
 if (evs.some((e, i) => i > 0 && evs[i - 1].at < e.at)) fail('出来事が新しい順でない');
 if (!evs.every((e) => EVENT_KINDS.includes(e.kind))) fail('知らない種類がある');
-if (eventJson.kinds.length !== 11) fail('種類は 11 種で固定のはず');
+if (eventJson.kinds.length !== 12) fail('種類は 12 種で固定のはず');
 if (eventJson.kinds.join(',') !== EVENT_KINDS.join(',')) fail('種類の綴りか並びが変わった');
 if (evs.some((e) => e.text.length > 128)) fail('説明が 128 バイトを超えた');
 if (eventRows(eventJson, 1789251468).length !== 2) fail('since で絞れていない');
