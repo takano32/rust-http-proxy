@@ -1145,6 +1145,13 @@ impl Metrics {
         took: Option<Duration>,
         detail: &Detail,
     ) {
+        // 起動時の自己ベンチ (T14.43) が自分で打った要求は `/hosts` にも窓にも入れない。
+        // 入れると 20,000 要求ぶんの行・分位点・段階が実トラフィックの統計に混ざり、
+        // デプロイ先の `/status` と `/history` が起動直後の 3 秒に支配される。
+        // 費用は自己ベンチが回っていないときの原子の読み 1 回 (鍵も時計も触る前)
+        if crate::selfbench::is_target(host) {
+            return;
+        }
         // 壁時計はここで 1 回だけ読む (ホスト別の `last_seen` と直近の標本 (T14.31) で
         // 使い回す。**読む回数は今までと同じ 1 回**)
         let now = crate::cache::now_epoch();
@@ -1301,6 +1308,10 @@ impl Metrics {
         took: Option<Duration>,
         target: Option<&str>,
     ) {
+        // ホスト別と同じ理由で、自己ベンチのぶんは `/clients` にも入れない (T14.43)
+        if target.is_some_and(crate::selfbench::is_target) {
+            return;
+        }
         let mut clients = self.clients.locked();
         if let Some(stats) = clients.get_mut(client) {
             stats.count(outcome, bytes, dir, took, target);

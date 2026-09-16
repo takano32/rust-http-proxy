@@ -316,7 +316,10 @@ fn report(
     // `if let` を通らない) でもホスト別統計は生きているので、ここは枠の外に置く
     detail.bytes_in = up;
     detail.bytes_out = down;
-    o.metrics.add_bytes(transferred);
+    // 自己ベンチ (T14.43) のトンネルは合計にも足さない (`/hosts` と同じ理由)
+    if !crate::selfbench::is_target(&o.addr_str) {
+        o.metrics.add_bytes(transferred);
+    }
     let host_key = format!("connect://{}", o.addr_str);
     o.metrics.record_host_detail(
         &host_key,

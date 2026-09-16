@@ -82,9 +82,23 @@ fn test_integration_self_bench_fills_status() {
         "コア数が出ていない: {}",
         body
     );
+    // 断られていないこと (`note` に書くのは「断られた」か「上限で早く終わった」だけ)
     assert!(
-        body.contains("\"note\":null"),
-        "断られた理由が付いている: {}",
+        !body.contains("refused"),
+        "自己ベンチが断られている: {}",
+        line
+    );
+    // 本数の上限 (T14.43)。速い機械では必ずここで止まり、遅い機械では秒数で止まる
+    assert!(
+        requests <= 20_000.0,
+        "forward の上限を超えた: {} ({})",
+        requests,
+        line
+    );
+    assert!(
+        connects <= 2_000.0,
+        "CONNECT の上限を超えた: {} ({})",
+        connects,
         line
     );
     // 数字そのものは機械で変わるので、**あり得ない値でないこと**だけを見る
@@ -116,6 +130,41 @@ fn test_integration_self_bench_fills_status() {
         !events.contains("\"kind\":\"self_bench\""),
         "種類を増やしてはいけない: {}",
         events
+    );
+
+    // --- 自己ベンチのぶんは実トラフィックの統計に載せない (T14.43) ---
+    // 載せると `/recent` の 4,096 件が 2,000 本の CONNECT で半分埋まり、`/hosts` に
+    // 相手役の行が立ち、`/status` の合計が 20,000 要求になる
+    let full = endpoint_json(proxy.port, "/status");
+    let total = number(&full, "total_requests").expect("要求の合計");
+    assert!(
+        total < 100.0,
+        "自己ベンチの要求が合計に乗っている: {} ({})",
+        total,
+        line
+    );
+    let bytes = number(&full, "bytes_forwarded").expect("運んだバイト");
+    assert!(
+        bytes < 1_000_000.0,
+        "自己ベンチのバイトが合計に乗っている: {} ({})",
+        bytes,
+        line
+    );
+    let hosts = endpoint_json(proxy.port, "/hosts");
+    assert!(
+        !hosts.contains("\"host\":\"http://127.0.0.1")
+            && !hosts.contains("\"host\":\"connect://127.0.0.1"),
+        "相手役が /hosts に載っている: {}",
+        hosts
+    );
+    let recent = endpoint_json(proxy.port, "/recent");
+    let after_rows = recent.find("],\"count\":").expect("/recent の count");
+    let shown = number(&recent[after_rows + 1..], "count").expect("個票の件数");
+    assert!(
+        shown < 50.0,
+        "自己ベンチの個票が {} 件残っている: {}",
+        shown,
+        line
     );
 
     // 穴は 3 秒で閉じる: ループバック宛ての要求は元どおり 403

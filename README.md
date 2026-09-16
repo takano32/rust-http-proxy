@@ -65,6 +65,42 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 バイナリ 857 KB でした (forward は **205 倍**)。当時の値と、コアを固定せずに測っていた頃の値は
 `TASKS.md` の §2 と付録 A に残してあります。
 
+### 置いた先の CPU/要求 を同じ物差しで測る (`PROXY_SELF_BENCH=on`)
+
+上の表は**この機械の big コア**の値です。置いた先 (小さなコンテナ、別の CPU) で 1 要求が何 us かは、
+実トラフィックからは読めません (0.015 req/s では 5 秒の窓に 0〜1 本しか入らないため)。
+`PROXY_SELF_BENCH=on` で起動すると、**待ち受けを開いた直後に loopback だけで**
+forward 8 並列と CONNECT 8 並列を打ち、同じ指標 (CPU/要求 と CPU/本) を `/status` の `self_bench` に残します。
+**外へは 1 バイトも出しません** (相手はこのプロセスの中に立てた 1 KiB のオリジンと、すぐ閉じる sink)。
+
+```bash
+PROXY_SELF_BENCH=on ./rust-http-proxy            # 起動ログに 1 行出て、3 秒で終わる
+curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
+# {"at":1789558422,"forward_us":42.6,"connect_us":140.0,"cores":4,"requests":20000,
+#  "connects":2000,"secs":3,"note":"stopped early at the caps (20000 requests, 2000 CONNECTs)"}
+```
+
+手元 (既定プロファイル・ログ `warn`・cpu4-7 に固定) では、この `forward_us` が
+`scripts/cpu-per-request.sh --only forward` の値と**数 % で合います**。置いた先の `forward_us` を
+上の表の **41.4 us** で割れば、「そのコンテナの CPU は手元の big コアの何倍遅いか」が 1 つの数字になります。
+
+読むときの注意:
+
+- **本数に上限があります** (forward **20,000 要求** / CONNECT **2,000 本**)。速い機械では 3 秒より早く、
+  先に当たった方で終わります (そのとき `note` に `stopped early at the caps` と出ます)。
+  上限があるのは、上限なしだと 1.5 秒で CONNECT を 22,000 本張ってしまい、**カーネルに TIME_WAIT が
+  44,000 本残る**ためです。`secs` は**回す秒数の上限**で、実際にかかった時間ではありません。
+- **自己ベンチのぶんは統計に 1 件も入りません**: `/status` の `total_requests` / `bytes_forwarded`、
+  `/hosts`、`/clients`、`/recent` (閉じた接続の個票)、`/connections`、`/history` のどれにも載せません
+  (載せると、静かなプロキシでは起動直後の 3 秒が 1 日ぶんの統計を塗りつぶしてしまいます)。
+  残るのは `/status` の `self_bench` と `/events` の 1 行だけです。
+- **測る 3 秒だけログ水準を `warn` に下げます** (既定の `info` のままだとアクセスログが数万行出て、
+  1 行 7.2 us が CPU/要求 に乗ってしまうため)。終わったら元の水準に戻します。
+- `PROXY_ALLOW_LOCAL=off` (既定) のままで構いません。**自己ベンチが使う 2 つのポート宛てだけ**を
+  3 秒間だけ判定から外します (穴はそれ以外に開きません)。
+- 既定は `off` で、そのときは起動時の分岐 1 つ以外**何も走りません**。置いた先では
+  **再デプロイの直後に 1 回だけ** `on` にして数字を取り、`off` に戻す使い方を想定しています。
+
 ### デプロイ先 (実際に使っているプロキシ) の数字
 
 上の表は loopback = 「同じ機械の中でどこまで速いか」です。**利用者が実際に待つ時間**は
@@ -743,6 +779,17 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       原子操作もシステムコールも壁時計の読みも増えません。分位点を出すのは `/status`
       (と `/history?summary=1`) に来たときだけです。**`--lite` では 1 本も書きません**
       (`n` が 0 のまま)。メモリだけで `.rrd` には書かないので、再起動で消えます
+  - **起動直後の自己ベンチ** (`/status` の `self_bench`。T14.43):
+    `{"at":1789558422,"forward_us":42.6,"connect_us":140.0,"cores":4,"requests":20000,"connects":2000,"secs":3,"note":null}`。
+    `PROXY_SELF_BENCH=on` で起動したときだけ入り、既定 (`off`) では `null` です。
+    **置いた先のコンテナの CPU で 1 要求が何 us か**を、上の「性能」の表と同じ物差しで出すためのもの
+    (詳しくは「置いた先の CPU/要求 を同じ物差しで測る」)。`forward_us` は CPU/要求、`connect_us` は
+    CPU/本 で、どちらも**プロセスの utime+stime の増分から自己ベンチ自身のスレッドの取り分を引いた値**を
+    操作数で割ったものです (`clock_gettime` の `CLOCK_PROCESS_CPUTIME_ID` / `CLOCK_THREAD_CPUTIME_ID`。
+    `/proc` の 10 ms 刻みでは 1.5 秒の窓に足りません)。`note` には断られた理由か、
+    本数の上限で早く終わったことが入ります。**この 3 秒ぶんは他のどの口にも数えません**
+    (`total_requests` も `/hosts` も `/recent` も素通し)。読めない環境 (Linux 以外) では
+    数字が `null` になり `note` に理由が入ります
   - `PURGE <url>` / `/purge?url=<url>` / `/purge?all=1` でキャッシュを消す、`/lookup?url=<url>` でエントリの状態を見る
   - `/history?res=5|60|3600[&n=720]` で **6 時間 / 1 日 / 30 日**の履歴。
     **`res=5` は 5 秒の標本を 6 時間ぶん (4,320 本) メモリに持ちます** (T14.32。バーストは数時間続く
@@ -927,6 +974,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 8 MiB) に、**個票 (`/recent` `/errors` `/bursts` `/events` `/log`) を `$HOME/.rust-http-proxy.recent` (固定 4 MiB)** に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`)、**ホスト別の時系列** (`/hosts/series`) は空になり、個票の `"persisted"` は `false`、日次の要約も **日次の snapshot** も書きません) |
 | `PROXY_SNAPSHOT_DAYS` | `30` | **日次の snapshot** を残す日数 (T14.34)。履歴スレッドが **UTC の日付をまたいだ瞬間**にその時点の `/snapshot` をまるごと `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` (名前は**終わった日**) に書き、**31 個目を書いたら最古を 1 つ消します**。1 ファイルは `/snapshot` と同じ **4 MiB** まで (30 日で最大 120 MiB、静かなプロキシなら 1 日 20 KB 前後)。`0` で書きません。読む口は `/snapshots` と `/snapshots/<date>`。`PROXY_STATS_PERSIST=off` と `--lite` では履歴スレッドごと無いので書きません。ディスクの空きが `PROXY_DISK_KEEP_FREE_MB` のマージンを割り込むときは書かずに `/events` に 1 件 (`state_file`) 残します。**再起動で反映** |
 | `PROXY_PROFILE_SAMPLE_MS` | `1000` | `/profile` のスレッドの標本を取る間隔 (ms)。`profile-sample` スレッド 1 本が この間隔で `/proc/self/task/*/stat` と `/proc/self/task/*/syscall` を読み、**役割ごと** (`accept` / `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` / `profile-sample` / `other`) に「CPU」と「いま走っているか・どのシステムコールで待っているか・休眠か」を数えます。`0` で標本を止める (段階の窓は 5 秒ごとに畳み続けます)。下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 2 つ開くぶん (実測 約 54 us) で、**140 スレッド・1 秒間隔で 1 コアの 0.75%** (60 秒で 450 ms。128 スレッド相当で 0.69%)。スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。`/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。**`--lite` では `/profile` ごと off** |
+| `PROXY_SELF_BENCH` | `off` | **起動直後に loopback だけで 3 秒の自己ベンチ**を回して CPU/要求 と CPU/本 を測ります (T14.43)。待ち受けを開いた直後に、このプロセスの中へ**固定 1 KiB を返すオリジン** (`no-store`) と**すぐ閉じる sink** を `127.0.0.1` の使い捨てポートに立て、**自分の待ち受けへ** forward 8 並列と CONNECT 8 並列を打ちます。**外へは 1 バイトも出しません**。結果は `/status` の `self_bench` と、起動ログ・`/events` の 1 行 (`self_bench forward 43 us, connect 140 us …`)。**本数に上限があり** (forward **20,000 要求** / CONNECT **2,000 本**)、秒数より先に当たればそこで終わります (上限が無いと CONNECT を 1.5 秒で 22,000 本張り、TIME_WAIT が 44,000 残ります)。**自分で打ったぶんはどの統計にも入れません** (`total_requests` / `bytes_forwarded` / `/hosts` / `/clients` / `/recent` / `/connections` / `/history`)。測る 3 秒だけログ水準を `warn` に下げ (既定の `info` のままだとアクセスログが数万行出て CPU/要求 に乗るため)、**`PROXY_ALLOW_LOCAL=off` (既定) のままでもこの 2 つのポート宛てだけ**を 3 秒間通します。用途は「上の『性能』の表 (この機械の big コア、41.4 us/要求) と**置いた先のコンテナ**を同じ物差しで並べる」ことなので、**普段は `off`** のままにして、再デプロイの直後に 1 回だけ `on` にしてください。`off` では起動時の分岐 1 つ以外何も走りません (`--lite` でも明示すれば回ります)。**再起動で反映** |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
 | `PROXY_TLS_VERIFY` | `on` | オリジンの証明書を検証するか。`off` は自己署名の内部オリジン向け (推奨しない) |
@@ -1181,7 +1229,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 ## クレート構成
 
 **外部クレートは 1 つも使っていません** (すべて `std` のみ)。`crates/` にあるのは全部このリポジトリのコードで、
-責務ごとの層に分けてあります (26 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
+責務ごとの層に分けてあります (27 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
 全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
 
 | クレート | 責務 |
@@ -1211,6 +1259,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 | `proxy-http` | 中継の本体 |
 | `proxy-tunnel` | CONNECT トンネル |
 | `proxy-endpoints` | プロキシ自身のエンドポイント (`/dashboard` `/status` `/metrics` …) |
+| `proxy-selfbench` | 起動直後の自己ベンチ (`PROXY_SELF_BENCH=on`)。内蔵の小さなオリジンと打ち手、CPU の測り方。依存は `proxy-base` だけ |
 | `proxy-bench` | 計測用の道具 (既定のビルド対象から外してあります。`cargo build --release -p proxy-bench`) |
 | `rust-http-proxy` | 接続の受け付け、keep-alive、アイドル接続の預かり |
 

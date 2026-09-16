@@ -7,6 +7,13 @@
 //! 1.5 秒 + CONNECT 8 並列 1.5 秒) 回し、CPU/要求 と CPU/本 を測って `/status` の `self_bench`
 //! に残す。**外へは 1 バイトも出さない** (相手は全部この プロセスの中の 127.0.0.1)。
 //!
+//! **本数に上限がある** ([`MAX_REQUESTS`] = 20,000 要求 / [`MAX_CONNECTS`] = 2,000 本)。
+//! 秒数だけで止めると手元の big コアでは 88,000 要求・22,000 本まで行き、**`/recent` の
+//! 個票 4,096 件が自分のぶんで埋まって TIME_WAIT が 44,000 残る**。上限に当たったら
+//! そこで終わる (`note` に書く)。それでも自分のぶんが統計に混ざるのは困るので、
+//! 回っている 3 秒だけ旗を立て ([`active`])、**自分で打った接続と要求を `/recent`・
+//! `/connections`・`/hosts`・`/clients`・要求の合計から外す** ([`is_client`] / [`is_target`])。
+//!
 //! 測り方は §1 の `scripts/cpu-per-request.sh` と同じ「**プロセスの utime+stime の増分 ÷
 //! 操作数**」だが、スクリプトと違って**打ち手 (負荷) と内蔵オリジンが同じプロセスの中にいる**
 //! ので、そのぶんを引かないと 2 倍以上の数字になる。自己ベンチのスレッドは終わるときに
@@ -28,7 +35,7 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -42,6 +49,20 @@ pub const SECS: u64 = 3;
 
 /// 並列数 (forward / CONNECT とも)。§1 の既定のベンチ (`--conc 8`) と揃えてある。
 pub const CONC: usize = 8;
+
+/// forward の要求数の上限 (T14.43)。**秒数より先にここへ当たったら早く終わる。**
+///
+/// 手元 (big コア) の 1.5 秒は 88,000 要求まで行くが、CPU/要求 を読むのに 88,000 本は
+/// 要らない。要求が多いほど `/status` の合計と `/history` に自分のぶんが積もるだけなので、
+/// **読める最小**で止める。
+pub const MAX_REQUESTS: u64 = 20_000;
+
+/// CONNECT の本数の上限。
+///
+/// 1 本ごとに TCP を 2 本 (クライアント側とオリジン側) 使い捨てるので、手元の 1.5 秒
+/// (約 22,000 本) では **TIME_WAIT が約 44,000 残る**。2,000 本あれば CPU/本 は十分読めて、
+/// 残る TIME_WAIT は約 4,000 で収まる。
+pub const MAX_CONNECTS: u64 = 2_000;
 
 /// 内蔵オリジンが返す本文の大きさ。§1 の既定 (`--body-bytes 1024`) と揃えてある。
 const BODY_BYTES: usize = 1024;
@@ -64,9 +85,11 @@ pub struct Report {
     pub requests: u64,
     /// 確立できた CONNECT の本数
     pub connects: u64,
-    /// 回した秒数 (forward と CONNECT の合計)
+    /// 回す秒数の上限 (forward と CONNECT の合計)。**本数の上限
+    /// ([`MAX_REQUESTS`] / [`MAX_CONNECTS`]) に当たると実際はもっと早く終わる**
+    /// (そのときは `note` にそう書く)
     pub secs: u64,
-    /// 数字が出なかったときの理由 (128 バイトまで)。出たときは `None`
+    /// 数字が出なかった理由、または早く終わった理由 (128 バイトまで)。無ければ `None`
     pub note: Option<String>,
 }
 
@@ -75,6 +98,70 @@ static LAST: Mutex<Option<Report>> = Mutex::new(None);
 
 /// 自己ベンチのスレッドが使った CPU の合計 (us)。窓の増分からこれを引く。
 static SB_CPU_US: AtomicU64 = AtomicU64::new(0);
+
+/// 自己ベンチが**いま回っているか** (T14.43)。回っている 3 秒の間だけ真。
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 相手役 (内蔵オリジンと sink) のポート (`127.0.0.1` の使い捨て。`0` = 無し)。
+///
+/// `crates/net/src/acl.rs` にも同じ 2 つを預ける (`run` の `exempt`) が、あちらは
+/// **`PROXY_ALLOW_LOCAL=off` の穴**のためで、こちらは**統計から自分のぶんを外す**ため。
+/// 依存の向きが逆 (`proxy-net` → `proxy-selfbench` は無い) なので、2 か所が同じ値を持つ。
+static PORTS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+/// 自己ベンチが回っているか (**原子の読み 1 回**)。
+///
+/// 回っていないとき ( = 既定、そして起動 3 秒後からずっと) はこの 1 回で終わる。
+pub fn active() -> bool {
+    ACTIVE.load(Ordering::Relaxed)
+}
+
+/// この宛先の鍵が自己ベンチの相手役か (`/hosts` `/clients` から外すため)。
+///
+/// 受けるのはホスト別統計の鍵 (`http://127.0.0.1:41234` / `connect://127.0.0.1:41235`) と
+/// 接続元の個票が持つ宛先 (`127.0.0.1:41235`) の 3 通り。どれも末尾が `:ポート` なので、
+/// **ポートが一致して、かつホストがループバック**のときだけ真にする
+/// (ポートだけの一致で外すと、たまたま同じポート番号の外向きの相手が消えてしまう)。
+pub fn is_target(key: &str) -> bool {
+    if !active() {
+        return false;
+    }
+    let Some((host, port)) = key.rsplit_once(':') else {
+        return false;
+    };
+    let Ok(port) = port.parse::<u32>() else {
+        return false;
+    };
+    port != 0
+        && PORTS.iter().any(|p| p.load(Ordering::Relaxed) == port)
+        && (host.ends_with("127.0.0.1") || host.ends_with("[::1]"))
+}
+
+/// この接続元が自己ベンチの打ち手か (`/recent` `/connections` と要求の合計から外すため)。
+///
+/// 打ち手はこのプロセスの中にいるので、接続元は必ずループバック。**起動直後の 3 秒**に
+/// ループバックから来る接続は自己ベンチのものとして扱う (同じ 3 秒に人が
+/// `127.0.0.1` から繋いだら、その 1 本も個票に残らない。個票が 1 件減るだけで、
+/// 統計も遮断も変わらない)。
+pub fn is_client(ip: &str) -> bool {
+    active() && (ip == "127.0.0.1" || ip == "::1")
+}
+
+/// 相手役のポートを覚えて旗を立てる ([`run`] だけが呼ぶ)。
+fn arm(ports: [u16; 2]) {
+    for (slot, port) in PORTS.iter().zip(ports) {
+        slot.store(u32::from(port), Ordering::Relaxed);
+    }
+    ACTIVE.store(true, Ordering::Relaxed);
+}
+
+/// 旗を下ろしてポートを忘れる。
+fn disarm() {
+    ACTIVE.store(false, Ordering::Relaxed);
+    for slot in &PORTS {
+        slot.store(0, Ordering::Relaxed);
+    }
+}
 
 /// 最後の結果 (無ければ `None`)。
 pub fn last() -> Option<Report> {
@@ -163,14 +250,19 @@ pub fn run(proxy: SocketAddr, exempt: &dyn Fn(&[u16])) -> Report {
         Err(e) => return publish(report, &format!("cannot start the built-in sink: {}", e)),
     };
     // `PROXY_ALLOW_LOCAL=off` (既定) でも、この 2 つのポートだけは通してもらう
-    exempt(&[origin.addr.port(), sink.addr.port()]);
+    let ports = [origin.addr.port(), sink.addr.port()];
+    exempt(&ports);
+    // 自分で打ったぶんを `/hosts` `/clients` `/recent` と要求の合計から外すための旗
+    // (`is_target` / `is_client`)。**立っているのはこの 3 秒だけ**
+    arm(ports);
 
     let target = origin.addr;
     let window = Window::start();
-    let (requests, failed) = spawn_load(
+    let (requests, failed, fwd_capped) = spawn_load(
         "sb-fwd",
-        move |deadline| forward_worker(proxy, target, deadline),
+        move |deadline, budget| forward_worker(proxy, target, deadline, budget),
         half,
+        MAX_REQUESTS,
     );
     // 内蔵オリジンのスレッドが自分の CPU を足し終えてから窓を閉じる
     origin.stop();
@@ -183,10 +275,11 @@ pub fn run(proxy: SocketAddr, exempt: &dyn Fn(&[u16])) -> Report {
     // --- CONNECT 8 並列 ---
     let target = sink.addr;
     let window = Window::start();
-    let (connects, refused) = spawn_load(
+    let (connects, refused, cnct_capped) = spawn_load(
         "sb-cnct",
-        move |deadline| connect_worker(proxy, target, deadline),
+        move |deadline, budget| connect_worker(proxy, target, deadline, budget),
         half,
+        MAX_CONNECTS,
     );
     sink.stop();
     let connect_cpu = window.end();
@@ -195,7 +288,12 @@ pub fn run(proxy: SocketAddr, exempt: &dyn Fn(&[u16])) -> Report {
         report.connect_us = Some(connect_cpu as f64 / connects as f64);
     }
 
-    // 穴を閉じる (ここから先はループバック宛ても普通に 403)
+    // 最後のトンネルを閉じたプロキシ側のスレッドが統計を書き終えるまで少しだけ待つ
+    // (打ち手は `shutdown` した時点で次へ行くので、`/hosts` に書くのはその後になる)。
+    // **CPU の窓は既に閉じてある**ので、この待ちは数字に乗らない
+    thread::sleep(Duration::from_millis(50));
+    // 旗と穴を閉じる (ここから先はループバック宛ても普通に 403 で、統計にも普通に載る)
+    disarm();
     exempt(&[]);
 
     let note = match (requests, connects) {
@@ -208,7 +306,17 @@ pub fn run(proxy: SocketAddr, exempt: &dyn Fn(&[u16])) -> Report {
             "the proxy refused all {} CONNECTs (PROXY_CONNECT_PORTS?)",
             refused
         ),
-        _ => String::new(),
+        // 上限に当たって早く終わった場合 (手元の速い CPU では普通にこうなる)。
+        // 秒数より本数で止めたことが読めないと、`secs` から割った ops が合わなくなる
+        (_, _) => match (fwd_capped, cnct_capped) {
+            (true, true) => format!(
+                "stopped early at the caps ({} requests, {} CONNECTs)",
+                MAX_REQUESTS, MAX_CONNECTS
+            ),
+            (true, false) => format!("stopped early at the {}-request cap", MAX_REQUESTS),
+            (false, true) => format!("stopped early at the {}-CONNECT cap", MAX_CONNECTS),
+            (false, false) => String::new(),
+        },
     };
     publish(report, &note)
 }
@@ -333,19 +441,47 @@ fn cpu_us(_clock: i32) -> Option<u64> {
 
 // ------------------------------------------------------------------ 打ち手
 
-/// `CONC` 本のスレッドで `work` を `dur` のあいだ回し、(成功, 失敗) の合計を返す。
-fn spawn_load<F>(name: &'static str, work: F, dur: Duration) -> (u64, u64)
+/// 打ち手 `CONC` 本が分け合う「あと何回やってよいか」(T14.43 の上限)。
+///
+/// 秒数だけで止めると、速い CPU では 88,000 要求 / 22,000 本まで行ってしまう
+/// ([`MAX_REQUESTS`] / [`MAX_CONNECTS`] の説明)。**原子 1 つを 8 本で取り合う**が、
+/// 1 要求に 1 回なので、要求そのものの数十 us に比べれば無視できる。
+struct Budget {
+    used: AtomicU64,
+    cap: u64,
+}
+
+impl Budget {
+    /// 1 回ぶん取る (取れたら真)。
+    fn take(&self) -> bool {
+        self.used.fetch_add(1, Ordering::Relaxed) < self.cap
+    }
+
+    /// 上限に当たって止めたか (全部が終わってから読む)。
+    fn spent(&self) -> bool {
+        self.used.load(Ordering::Relaxed) >= self.cap
+    }
+}
+
+/// `CONC` 本のスレッドで `work` を `dur` のあいだ (または `cap` 回まで) 回し、
+/// (成功, 失敗, 上限に当たったか) を返す。
+fn spawn_load<F>(name: &'static str, work: F, dur: Duration, cap: u64) -> (u64, u64, bool)
 where
-    F: Fn(Instant) -> (u64, u64) + Send + Sync + 'static,
+    F: Fn(Instant, &Budget) -> (u64, u64) + Send + Sync + 'static,
 {
     let deadline = Instant::now() + dur;
     let work = Arc::new(work);
+    let budget = Arc::new(Budget {
+        used: AtomicU64::new(0),
+        cap,
+    });
     let mut handles: Vec<JoinHandle<(u64, u64)>> = Vec::with_capacity(CONC);
     for _ in 0..CONC {
         let work = Arc::clone(&work);
+        let budget = Arc::clone(&budget);
         let spawned = thread::Builder::new().name(name.into()).spawn(move || {
             let _charge = Charge;
-            work(deadline)
+            work(deadline, &budget)
         });
         if let Ok(h) = spawned {
             handles.push(h);
@@ -358,16 +494,23 @@ where
             bad += b;
         }
     }
-    (ok, bad)
+    (ok, bad, budget.spent())
 }
 
 /// keep-alive の forward を回す 1 本ぶん (200 が返った数と、それ以外の数)。
-fn forward_worker(proxy: SocketAddr, origin: SocketAddr, deadline: Instant) -> (u64, u64) {
+fn forward_worker(
+    proxy: SocketAddr,
+    origin: SocketAddr,
+    deadline: Instant,
+    budget: &Budget,
+) -> (u64, u64) {
     let request = format!("GET http://{0}/ HTTP/1.1\r\nHost: {0}\r\n\r\n", origin).into_bytes();
     let (mut ok, mut bad) = (0u64, 0u64);
     let mut conn: Option<(TcpStream, BufReader<TcpStream>)> = None;
     let mut line = String::new();
-    while Instant::now() < deadline {
+    // **秒数の判定が先**。上限を取るのは「まだ時間がある」ときだけ (時間切れで
+    // 抜けた回まで上限を食うと、当たっていないのに当たったことになる)
+    while Instant::now() < deadline && budget.take() {
         if conn.is_none() {
             let Ok(sock) = TcpStream::connect(proxy) else {
                 bad += 1;
@@ -408,9 +551,14 @@ fn forward_worker(proxy: SocketAddr, origin: SocketAddr, deadline: Instant) -> (
 }
 
 /// CONNECT を張っては閉じる 1 本ぶん (確立できた本数と、断られた数)。
-fn connect_worker(proxy: SocketAddr, sink: SocketAddr, deadline: Instant) -> (u64, u64) {
+fn connect_worker(
+    proxy: SocketAddr,
+    sink: SocketAddr,
+    deadline: Instant,
+    budget: &Budget,
+) -> (u64, u64) {
     let (mut ok, mut bad) = (0u64, 0u64);
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && budget.take() {
         match open_tunnel(proxy, sink) {
             Ok(sock) => {
                 ok += 1;
@@ -730,6 +878,55 @@ mod tests {
             p,
             t
         );
+    }
+
+    /// 自己ベンチが回っている 3 秒だけ、相手役と打ち手を統計から外せること (T14.43)。
+    #[test]
+    fn the_partners_are_recognised_only_while_the_bench_runs() {
+        assert!(!active(), "回していないときは旗が下りている");
+        assert!(!is_target("http://127.0.0.1:41234"));
+        assert!(!is_client("127.0.0.1"));
+        arm([41234, 41235]);
+        assert!(is_target("http://127.0.0.1:41234"), "forward の鍵");
+        assert!(is_target("connect://127.0.0.1:41235"), "CONNECT の鍵");
+        assert!(is_target("127.0.0.1:41235"), "接続元の個票が持つ宛先");
+        assert!(!is_target("http://127.0.0.1:41236"), "覚えていないポート");
+        assert!(
+            !is_target("http://example.com:41234"),
+            "ポートだけの一致では外さない"
+        );
+        assert!(!is_target("http://example.com"), "ポートが無い鍵");
+        assert!(
+            is_client("127.0.0.1") && is_client("::1"),
+            "打ち手は自分の中"
+        );
+        assert!(!is_client("203.0.113.9"), "外から来た接続元はそのまま");
+        disarm();
+        assert!(!is_target("http://127.0.0.1:41234"), "3 秒で閉じる");
+        assert!(!is_client("127.0.0.1"));
+    }
+
+    /// 本数の上限は打ち手 8 本で分け合っても、超えも足りなくもしない。
+    #[test]
+    fn the_budget_is_shared_by_all_the_workers() {
+        let budget = Arc::new(Budget {
+            used: AtomicU64::new(0),
+            cap: 100,
+        });
+        let mut handles = Vec::with_capacity(CONC);
+        for _ in 0..CONC {
+            let budget = Arc::clone(&budget);
+            handles.push(thread::spawn(move || {
+                let mut n = 0u64;
+                while budget.take() {
+                    n += 1;
+                }
+                n
+            }));
+        }
+        let total: u64 = handles.into_iter().map(|h| h.join().unwrap()).sum();
+        assert_eq!(total, 100, "8 本で分け合っても合計は上限ちょうど");
+        assert!(budget.spent(), "上限に当たったことが読める");
     }
 
     /// 自己ベンチのスレッドの取り分は、Drop のたびに足される。

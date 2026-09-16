@@ -10,7 +10,9 @@ pub use proxy_base::{
     cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info, log_trace,
     log_warn, sync,
 };
-pub use proxy_metrics::{cache, history, metrics, persist, profile, recent, rrd, sysinfo, trace};
+pub use proxy_metrics::{
+    cache, history, metrics, persist, profile, recent, rrd, selfbench, sysinfo, trace,
+};
 pub use proxy_net::{acl, dns, net};
 pub use proxy_sys::signal;
 #[cfg(target_os = "linux")]
