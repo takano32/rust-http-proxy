@@ -363,17 +363,15 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ("status", super::status_body(ep, HostSort::Requests)),
         ("status_errors", super::status_body(ep, HostSort::Errors)),
         ("status_dns", super::status_body(ep, HostSort::Dns)),
-        (
-            "history.5",
-            ep.metrics.history.to_json_res(History::index_for(5)),
-        ),
+        // `/history` と同じ組み立て (カーネルと cgroup の窓も一緒に入る。T14.12)
+        ("history.5", super::history_body(ep, History::index_for(5))),
         (
             "history.60",
-            ep.metrics.history.to_json_res(History::index_for(60)),
+            super::history_body(ep, History::index_for(60)),
         ),
         (
             "history.3600",
-            ep.metrics.history.to_json_res(History::index_for(3600)),
+            super::history_body(ep, History::index_for(3600)),
         ),
         ("dns", dns(Some("sort=age&limit=4096")).2),
         ("errors", errors(ep, Some("n=500")).2),

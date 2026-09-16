@@ -1255,7 +1255,9 @@ impl Metrics {
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
-                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{}}}"
+                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{},",
+                // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
+                "\"kernel\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1291,7 +1293,11 @@ impl Metrics {
             crate::net::ipv6_status_json(),
             extra.blocklist,
             extra.state_file,
-            cache_json
+            cache_json,
+            // カーネルと cgroup の統計 (5 秒の標本で読んだ最新の値。T14.12)。
+            // ここから直に呼べるのは `dns` / `ipv6` と同じ**下の層**だから
+            // (`settings` のような上の層の部品は `extra` で受け取る)
+            crate::kernel::status_json()
         )
     }
 }

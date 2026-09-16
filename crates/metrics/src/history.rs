@@ -225,6 +225,8 @@ impl Sample {
         let iv = metrics.take_interval();
         // `/proc` を読むのは 5 秒の標本のときだけ (要求ごとには読まない)
         let (threads, fds, max_fds) = process_counts();
+        // カーネルと cgroup の窓 (`/proc/net`・cgroup・PSI) もこの標本のときだけ進める (T14.12)
+        crate::kernel::sample(now_epoch());
         Self {
             t: now_epoch(),
             requests: metrics.total_requests.load(Ordering::Relaxed),

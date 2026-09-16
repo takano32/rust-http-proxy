@@ -7,6 +7,7 @@
 //! (動作環境のメモリ上限は 200 MB)。**外部クレートは 1 つも使っていない。**
 
 pub mod history;
+pub mod kernel;
 pub mod metrics;
 pub mod persist;
 pub mod recent;
