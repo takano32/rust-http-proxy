@@ -54,6 +54,11 @@ struct Info {
     /// いる。中継の時間から引くのは**トンネルになってからの預け**だけなので、
     /// ここで印を取って差だけを使う (同じ接続で `GET` のあとに `CONNECT` が来る場合)
     parked_ms_at_start: u64,
+    /// 覗いた SNI が CONNECT のホストと食い違ったか (`PROXY_PEEK_SNI`。T14.38)。
+    ///
+    /// 名前そのものは覗いたその場で `/connections` の枠 ([`ConnSlot::set_sni`]) へ
+    /// 書くので、ここに持つのは統計に足す旗 1 つだけ (`report` が `Detail` に載せる)
+    sni_mismatch: bool,
 }
 
 /// 宛先へつなぎ、`200` と先読みぶん (`prefix`) を送る。
@@ -175,6 +180,7 @@ fn open(
             metrics,
             parked_ms_at_start: slot.as_ref().map_or(0, |s| s.parked_ms()),
             slot,
+            sni_mismatch: false,
         },
     })
 }
@@ -316,6 +322,9 @@ fn report(
     // `if let` を通らない) でもホスト別統計は生きているので、ここは枠の外に置く
     detail.bytes_in = up;
     detail.bytes_out = down;
+    // CONNECT のホストと SNI の食い違い (T14.38)。旗は中継の入口で 1 回だけ立ててあり、
+    // ここはホスト別統計が既に取る鍵の内側へ運ぶだけ (原子もシステムコールも増えない)
+    detail.sni_mismatch = o.sni_mismatch;
     // 自己ベンチ (T14.43) のトンネルは合計にも足さない (`/hosts` と同じ理由)
     if !crate::selfbench::is_target(&o.addr_str) {
         o.metrics.add_bytes(transferred);
@@ -747,6 +756,12 @@ mod relay {
         /// 書くのは `get_or_insert_with` の中 = **トンネル 1 本につき多くて 1 回**で、
         /// バイトを動かす道 (splice の往復) には 1 命令も足していない
         first_eof: Option<(usize, Instant)>,
+        /// まだ SNI を覗いていないか (`PROXY_PEEK_SNI`。T14.38)。
+        ///
+        /// 立っているのは「個票の枠があり (= `--lite` ではない)、宛先が 443
+        /// (または試験用の口) の CONNECT」だけで、**最初にクライアント側が読めた
+        /// ときに 1 回覗いて倒す** (トンネル 1 本に `recv(MSG_PEEK)` は多くて 1 回)
+        peek_sni: bool,
         /// 本体クレートの持ち分 (同時接続数と `active_connections`)。中身は見ない
         _hold: Box<dyn Send>,
     }
@@ -862,6 +877,10 @@ mod relay {
             // 閉じた理由に使う 2 つ (T14.4)。どちらも 1 本の終わりに 1 回書くだけ
             let close = &mut self.close;
             let first_eof = &mut self.first_eof;
+            // SNI を覗く枠 (T14.38)。`Info` の別々の欄なので `slot` と一緒に借りられる
+            let peek_sni = &mut self.peek_sni;
+            let sni_mismatch = &mut self.info.sni_mismatch;
+            let addr_str = &self.info.addr_str;
 
             loop {
                 let mut progressed = false;
@@ -871,6 +890,22 @@ mod relay {
                     }
                     // 送信元 → 中継 (読めると分かってから中継バッファを用意する)
                     if !d.src_eof && d.pending == 0 && d.readable {
+                        // CONNECT の最初のバイトから SNI を覗く (T14.38)。**`200` を
+                        // 書いたあと、最初の中継の前に 1 回だけ** `recv(MSG_PEEK)` で、
+                        // バイトは消費しないので下の `fill` (splice) はそのまま通る。
+                        // 壊れていれば `None` で中継は続く (ここで閉じない)
+                        if *peek_sni && d.src == 0 {
+                            *peek_sni = false;
+                            let mut buf = [0u8; crate::sni::PEEK_LEN];
+                            if let Ok(n) = sys::peek(socks[0].as_raw_fd(), &mut buf)
+                                && let Some(name) = crate::sni::parse_client_hello(&buf[..n])
+                            {
+                                if let Some(s) = slot {
+                                    s.set_sni(name);
+                                }
+                                *sni_mismatch = crate::sni::differs(addr_str, name);
+                            }
+                        }
                         match d.fill(socks) {
                             Ok(0) => {
                                 d.src_eof = true;
@@ -1015,6 +1050,15 @@ mod relay {
         } = opened;
         client.set_nonblocking(true)?;
         server.set_nonblocking(true)?;
+        // 覗くかどうかは**トンネル 1 本につきここで 1 回**決める (中継のループでは
+        // 旗を見るだけ)。個票の枠が無い `--lite` と、443 以外のポート (TLS とは
+        // 限らない) では覗かない。T14.38
+        let peek_sni = info.slot.is_some()
+            && crate::sni::peek_on(
+                crate::net::split_host_port_ref(&info.addr_str)
+                    .1
+                    .unwrap_or(0),
+            );
         drive(Box::new(Idle {
             socks: [client, server],
             dirs: [Dir::new(0, 1), Dir::new(1, 0)],
@@ -1027,6 +1071,7 @@ mod relay {
             parked_ms: 0,
             close: None,
             first_eof: None,
+            peek_sni,
             _hold: hold,
         }));
         Ok(())

@@ -32,7 +32,7 @@ pub use proxy_sys::signal;
 #[cfg(target_os = "linux")]
 pub use proxy_sys::sys;
 pub use proxy_sysinfo::sysinfo;
-pub use proxy_tunnel::tunnel;
+pub use proxy_tunnel::{sni, tunnel};
 pub use proxy_workers::workers;
 
 use std::io::{self, BufRead, Read, Write};
@@ -1647,11 +1647,23 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
 
     // keep-alive の HTTP 接続の宛先を `/connections` に出す (T14.2 (5))。
     // **書くのは接続の最初の要求のときだけ** (2 本目以降は宛先が変わりうるが、
-    // 要求ごとに表を触らない方針は T13.4 のまま)。CONNECT はトンネルを開くときに書く
+    // 要求ごとに表を触らない方針は T13.4 のまま)。CONNECT はトンネルを開くときに書く。
+    //
+    // 宛先は CONNECT と同じ `host:port` の形にそろえる (T14.48)。ポートを書かない要求
+    // (`http://example.com/`) には、ホスト別統計の鍵 (`pool_key` = `scheme://host:port`) と
+    // **同じ規則**でスキームの既定 (http なら 80) を補うので、個票を読む道具は
+    // 「ポートのある形」と「無い形」の 2 つを扱わなくてよい。確保が要るのはポートを
+    // 省いたときだけで、通るのは接続の最初の要求の 1 回
     if *served == 0
         && let Some(slot) = slot.as_ref()
     {
-        slot.set_first_target(target_host);
+        match host_port {
+            Some(_) => slot.set_first_target(target_host),
+            None => slot.set_first_target(&net::join_host_port(
+                bare_host,
+                request::target_scheme(target).default_port(),
+            )),
+        }
     }
     // この接続で処理する最後の要求か (`Config::max_requests_per_conn`。T14.2)。
     // `http` 側はこれが立っていると応答に `Connection: close` を付け、`keep` に false を返す

@@ -285,6 +285,20 @@ pub fn target_host<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Res
     Ok(target)
 }
 
+/// 要求ターゲットのスキームだけを**確保せずに**取り出す ([`parse_origin`] と同じ規則)。
+///
+/// ポートを書かない要求 (`http://example.com/`) の宛先を `pool_key` と同じ `host:port` に
+/// そろえるために使う (T14.48)。既定のポートはスキームで決まる ([`Scheme::default_port`]) ので、
+/// そのためだけに [`parse_origin`] を呼んで `String` を 2 本作らずに済ませる。
+pub fn target_scheme(target: &str) -> Scheme {
+    if target.starts_with("https://") || target.starts_with("/https/") {
+        Scheme::Https
+    } else {
+        // `http://` も `/http/` も、オリジン形式 (`/p`) もホストだけの形 (`h`) も http
+        Scheme::Http
+    }
+}
+
 /// マッピング形式のクライアント向けに、絶対 URL の Location / Content-Location を `/https/h/p` 形式へ。
 pub fn map_locations(lines: &mut [String]) {
     for line in lines.iter_mut() {
@@ -340,5 +354,28 @@ mod target_host_tests {
             assert!(parse_origin(target, host).is_err());
             assert!(target_host(target, host).is_err());
         }
+    }
+
+    /// [`target_scheme`] が [`parse_origin`] の `scheme` と食い違わないこと (T14.48)。
+    ///
+    /// 食い違うと、個票の宛先に補う既定のポートが `pool_key` のものとずれる。
+    #[test]
+    fn the_scheme_matches_parse_origin() {
+        let cases = [
+            ("http://example.com/a/b", None),
+            ("https://example.com/a/b", None),
+            ("https://[::1]:8443/x", None),
+            ("/https/example.com/a", None),
+            ("/http/example.com:81/a", None),
+            ("/only/path", Some("host.example")),
+            ("example.com:443", None),
+            ("example.com", None),
+        ];
+        for (target, host) in cases {
+            let want = parse_origin(target, host).unwrap().scheme;
+            assert_eq!(want, target_scheme(target), "target={:?}", target);
+        }
+        assert_eq!(target_scheme("https://h/x").default_port(), 443);
+        assert_eq!(target_scheme("h").default_port(), 80);
     }
 }

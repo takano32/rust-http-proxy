@@ -490,6 +490,55 @@ fn test_integration_connections_shows_the_first_target_of_a_keepalive_http_conne
     );
 }
 
+/// http の宛先も CONNECT と同じ `host:port` の形で出ること (T14.48)。
+///
+/// ポートを書かない要求 (`http://127.0.0.1/`) の宛先には、ホスト別統計の鍵
+/// (`pool_key` = `scheme://host:port`) と同じ規則でスキームの既定 (http なら 80) を補う。
+/// 宛先を書くのは**要求を読んだ時点**なので、80 番に相手が居るかどうかは関係しない
+/// (この機械では繋がらないので 502 になるが、見るのは個票の宛先だけ)。
+#[test]
+fn test_integration_an_http_target_without_a_port_gets_the_default_port() {
+    use std::io::Write;
+
+    let proxy_port = start_test_proxy(proxy_config());
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(b"GET http://127.0.0.1/t1448 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .unwrap();
+    let (head, _) = read_response(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 "), "{}", head);
+    drop(stream);
+
+    wait_until(
+        || endpoint_json(proxy_port, "/recent").contains("\"kind\":\"http\""),
+        "閉じた http 接続が /recent に出る",
+    );
+    let json = endpoint_json(proxy_port, "/recent");
+    assert!(
+        json.contains("\"target\":\"127.0.0.1:80\",\"kind\":\"http\""),
+        "http の宛先にポートが付いていない: {}",
+        json
+    );
+    // `/explain?host=` はポート付きの宛先でも、ポートを書かずに引ける (T14.36)
+    let explain = endpoint_json(proxy_port, "/explain?host=127.0.0.1");
+    assert!(explain.contains("\"known\":true"), "{}", explain);
+    assert!(
+        explain.contains("\"target\":\"127.0.0.1:80\""),
+        "個票がホスト名で引けていない: {}",
+        explain
+    );
+    // ポートを書いても同じ 1 件が引ける
+    let with_port = endpoint_json(proxy_port, "/explain?host=127.0.0.1:80");
+    assert!(
+        with_port.contains("\"target\":\"127.0.0.1:80\""),
+        "ポート付きで引けていない: {}",
+        with_port
+    );
+}
+
 // ---------------------------------------------------------------------------
 // `/recent` — 閉じた接続の個票 (T14.4)
 // ---------------------------------------------------------------------------

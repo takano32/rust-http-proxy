@@ -456,6 +456,10 @@ pub struct ConnSlot {
     /// (中継は今までどおり [`ConnSlot::set_bytes`] で累計を置くだけ)
     bytes_prev: AtomicU64,
     rate_bps: AtomicU64,
+    /// CONNECT の最初のバイトから覗いた SNI (`PROXY_PEEK_SNI`。T14.38)。
+    /// **書くのはトンネル 1 本につき多くて 1 回** (覗けて名前が読めたときだけ) で、
+    /// 空は「覗いていない / 読めなかった」。443 以外と `--lite` では常に空
+    sni: Mutex<String>,
 }
 
 /// [`ConnSlot::parked_at`] の「預けられていない」印。
@@ -485,6 +489,7 @@ impl ConnSlot {
             traced: AtomicBool::new(false),
             bytes_prev: AtomicU64::new(0),
             rate_bps: AtomicU64::new(0),
+            sni: Mutex::new(String::new()),
         }
     }
 
@@ -498,6 +503,14 @@ impl ConnSlot {
     /// 追跡中か (要求ごとに読む唯一の値。原子の読み 1 回)。
     pub fn traced(&self) -> bool {
         self.traced.load(Ordering::Relaxed)
+    }
+
+    /// 覗いた SNI を書く (`PROXY_PEEK_SNI`。T14.38)。
+    ///
+    /// **呼ぶのはトンネル 1 本につき多くて 1 回** (`recv(MSG_PEEK)` が ClientHello を
+    /// 読めたときだけ)。名前が読めなかったトンネルはこの枠に 1 度も触らない。
+    pub fn set_sni(&self, name: &str) {
+        *self.sni.locked() = clip(name, MAX_SNI);
     }
 
     /// 状態を書く (原子 1 回。表の鍵は取らない)。
@@ -636,6 +649,11 @@ impl ConnSlot {
         for (out, cell) in stage_ms.iter_mut().zip(self.stage_ms.iter()) {
             *out = cell.load(Ordering::Relaxed) as u64;
         }
+        // 覗いた SNI (T14.38)。空 (覗いていない / 読めなかった) なら個票では `null`
+        let sni = {
+            let s = self.sni.locked();
+            (!s.is_empty()).then(|| s.as_str().into())
+        };
         Some(RecentEntry {
             id: self.id,
             // 開いた時刻は「いま − 寿命」で出す (接続を受けるときに時計を読まない)
@@ -660,6 +678,7 @@ impl ConnSlot {
                 self.retrans[CLIENT_SIDE].load(Ordering::Relaxed),
                 self.retrans[ORIGIN_SIDE].load(Ordering::Relaxed),
             ],
+            sni,
         })
     }
 
@@ -959,6 +978,13 @@ pub const MAX_RECENT: usize = 2000;
 /// 一緒に**入れるため。`host:port` は実際には 20〜40 B なので、切れるのは異様に長い名前だけ。
 pub const MAX_RECENT_TARGET: usize = 48;
 
+/// 個票に収める SNI の長さ (バイト。T14.38)。
+///
+/// 覗いた ClientHello の `server_name` はここで切る (DNS の名前の上限は 255 B だが、
+/// 実際の名前は 10〜40 B)。個票のファイル ([`crate::persist_recent`]) の欄も
+/// この長さ + 4 B で取ってある。
+pub const MAX_SNI: usize = 64;
+
 /// 段階の ms の数 ([`STAGE_NAMES`] と同じ並び)。
 pub const STAGES: usize = 6;
 
@@ -1153,6 +1179,10 @@ pub struct RecentEntry {
     /// `0` は「読めなかった」(Linux 以外・`--lite`・もう閉じていた) で JSON では `null`
     pub rtt_us: [u32; SIDES],
     pub retrans: [u32; SIDES],
+    /// CONNECT の最初のバイトから覗いた SNI (`PROXY_PEEK_SNI`。T14.38)。
+    /// `None` は「覗いていない (443 以外・`--lite`・`off`) / 読めなかった」で JSON では `null`。
+    /// **IP リテラル宛ての CONNECT では、これが「本当の宛先」**
+    pub sni: Option<Box<str>>,
 }
 
 /// `us` を ms の JSON にする (`0` = 読めなかった → `null`。T14.5)。
@@ -1216,12 +1246,20 @@ impl RecentEntry {
         // (Linux 以外・`--lite`・もう閉じていた) は `null` — 0 ms と区別させないため
         let _ = write!(
             out,
-            ",\"rtt_ms\":{{\"client\":{},\"origin\":{}}},\"retrans\":{{\"client\":{},\"origin\":{}}}}}",
+            ",\"rtt_ms\":{{\"client\":{},\"origin\":{}}},\"retrans\":{{\"client\":{},\"origin\":{}}}",
             rtt_ms_json(self.rtt_us[CLIENT_SIDE]),
             rtt_ms_json(self.rtt_us[ORIGIN_SIDE]),
             self.retrans[CLIENT_SIDE],
             self.retrans[ORIGIN_SIDE],
         );
+        // 覗いた SNI (T14.38)。**末尾に足した** (既存の鍵の順は変えない)。
+        // 覗いていない (443 以外・`--lite`・`off`) と読めなかったときは `null`
+        match &self.sni {
+            Some(name) => {
+                let _ = write!(out, ",\"sni\":\"{}\"}}", crate::json::escape(name));
+            }
+            None => out.push_str(",\"sni\":null}"),
+        }
         out
     }
 }
@@ -2258,6 +2296,7 @@ mod conn_tests {
                 stage_ms: [0, i, 0, 0, 0, 0],
                 rtt_us: [0; SIDES],
                 retrans: [0; SIDES],
+                sni: None,
             });
         }
         let (all, total) = ring.select(0, "");
@@ -2418,6 +2457,7 @@ mod burst_tests {
             stage_ms: [0; STAGES],
             rtt_us: [0; SIDES],
             retrans: [0; SIDES],
+            sni: None,
         }
     }
 
