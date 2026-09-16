@@ -4827,12 +4827,16 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     - `error_rate` の分母は本文に無かったので決めた (試みたうちの失敗の割合)。`PROXY_SLO` は再起動で反映 (閾を変えても過去の集計は判定し直さない)。既定の数値は `crates/config` の `DEFAULT_SLO` と `crates/metrics` の `slo::DEFAULT` の 2 か所 (食い違えば `tests/slo_test.rs` が落ちる)。外れた時間 = その時間に 1 本でも外した標本がある (多すぎるなら「達成率 N% 未満」に変える余地。上限 128 行)。`--lite` と `PROXY_STATS_PERSIST=off` では判定しない (`ratio` は `null`)。
     - **T14.99 での使い方**: 再デプロイ後に `PROXY_SLO=connect_p50_ms=6` を入れておけば `ratio` がそのまま「平常時の p50 6 ms 以下」の達成率になる。ただし平常時だけの切り出し (1 時間 300 本) は `/slo` に無い (要るなら `?normal_hours_only=1` を `summary::burst_limit` と同じ式で)。
     - 気づき (main の赤): `proxy-metrics` の単体 2 本が main で落ちている — `the_direction_columns_fit_in_the_slot_and_old_records_read_back_as_zero` (T14.14 で余白 4 → 68 B になったのに期待値が版 2 のまま) と `anomaly::tests::a_slow_connect_p95_fires_once_and_clears` (T14.32 で 5 秒のリングが 6 時間になり基準値の窓の本数が 1,440 → 1,442)。親が直す。
-- [ ] **T14.51 重い口の同時実行を 1 本に (`/snapshot` `/hosts?limit=1000` `/recent?n=2000` `/profile`)**
+- [x] **T14.51 重い口の同時実行を 1 本に (`/snapshot` `/hosts?limit=1000` `/recent?n=2000` `/profile`)**
   - 目的: 認証なしの公開ポートで、`/snapshot` (4 MiB を組む) を 1 秒に 10 回引かれると CPU と鍵の時間を食う。**同時に組むのは 1 本**にし、
     2 本目からは `503 Retry-After: 1` で断る (軽い `/status` はそのまま)。走査に対する最小限の保護で、認証ではない。
   - 変更箇所: `crates/endpoints/src/endpoints/mod.rs` (重い口の一覧と `AtomicBool` 1 つ)、`/status` に `heavy_rejected`、README。
   - 受け入れ基準: 結合テストで `/snapshot` を同時に 4 本引くと 1 本だけ 200 で残りが 503 (`Retry-After: 1`)、順に引けば全部 200。
     費用 0 (重い口だけ)。
+  - 結果 (2026-09-16、`cd0d53e`): **重い口を同時に 1 本だけ**組むようにした。重い口の一覧は `endpoints::is_heavy` の **1 か所**で、`/snapshot` `/profile` `/explain` は**いつも**、`/hosts` は `limit` > 200、`/recent` は `n` > 500、`/history` は `n` > 720 の**大きく引いたときだけ**。旗は `AtomicBool` 1 つ (`HEAVY_BUSY`) の CAS で、取れたら `HeavyGuard` が返り `Drop` で必ず戻す。**旗を戻すのは「組み終わったところ」**で、client への書き出しまでは握らない (読むのが遅い相手 1 人で全員に 503 を返し続けない)。取れなかった 2 本目からは **`503` + `Retry-After: 1`**、本文は `{"schema":1,"error":"busy"}` の 27 B。判定は `handle` の分岐の手前、**T14.53 の読み手の記録の直後**なので**断った要求も `/readers` に残る**。軽い口は判定にも原子にも触らない。断った累計は `/status` 末尾の `heavy_rejected`。**走査に対する最小限の保護で認証ではない**。**費用は 0** (重い口に来たときの原子 1 回だけ。転送には 1 命令も足していない)。テストは新規 `tests/heavy_test.rs` 3 本 (同時 4 本で 1 本だけ 200・3 本が 503・`heavy_rejected` 3、順に引けば全部 200、軽い口は同時 4 本とも 200、旗を握った状態で重い 6 口が 503・軽い 16 口が 200)。10 回連続 0 失敗。
+    - **踏んだ罠**: `compare_exchange(..).is_ok().then_some(HeavyGuard {..})` と書くと `then_some` が引数を先に組むので、取れなかったときにも番人が出来てすぐ落ち、その `Drop` が**他人の旗を戻していた** (同時 4 本のうち 2 本が 200)。`if … { Some } else { None }` に直した (`Drop` を持つ型を `then_some` に渡してはいけない)。
+    - 日次の `/snapshot` (T14.34) は `recent::snapshot` を直に呼ぶので旗を取らない。画面は 1 枚なら重い要求は同時 1 本だが、**同じプロキシに 2 タブ開くと片方が 503** (dashboard は黙って 1 周期飛ばす、inspect は「取得失敗: HTTP 503」)。`/clients?limit=1000` は重い口に入れていない。`/metrics` にも出していない。
+    - main の赤 (T14.55 へ): `tests/profile_test.rs` の `--lite` の `/profile` が `{"profile":"off"}` の `assert_eq!` のまま (T14.49 で `schema` が付いた) → 親が直した。`tests/history_depth_test.rs` の RSS の検査が**同じバイナリの隣のテスト**と並行して 20 回中 5 回落ちる (隣が 1.9 MB の応答を組む) → 親が 3 本を直列にした。
 - [ ] **T14.52 消えたクライアントを検知する (`SO_KEEPALIVE` と閉じた理由 `client_dead`)**
   - 目的: 端末がスリープしたり回線が切れたりすると、トンネルは FIN も RST も来ないまま残り、`PROXY_TUNNEL_IDLE_SECS` (300 秒) の
     期限切れで `idle_timeout` として閉じる。**`idle_timeout` のうち何割が「本当に暇」で何割が「相手が消えた」か**は分からず、
