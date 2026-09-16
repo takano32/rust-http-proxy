@@ -18,11 +18,17 @@
 //! - 結果は `/status` の `canary` (最後の 1 回) と、**メモリ上の窓** (5 秒 × 720 /
 //!   60 秒 × 1,440) に持ち、`/history` に `"canary"` の配列として出す。`.rrd` の標本には
 //!   書かない (標本の余白は 4 B しか無い。T14.2 (3))。失敗は `/errors` に `kind: "canary"`。
+//! - **IPv6 側だけの 1 本** (`PROXY_CANARY_IPV6`、既定 `on`。T14.37): 同じ周期に、同じ名前の
+//!   **AAAA へ 1 本**だけ繋いでみる。デプロイ先のコンテナは IPv6 が黒穴で、いまは
+//!   `v4_first` の解除を [`crate::net`] の 600 秒に 1 回の探りだけに頼っているので、
+//!   「生き返ったか」を 1 分の粒度で見るための観測を別に持つ。**勝敗も族の記憶も書かない**
+//!   ので `v4_first` の判定は 1 ビットも動かない。繋がらなかったとき・AAAA が無い名前・
+//!   IPv6 を切ってあるときは `null`。
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -109,6 +115,9 @@ pub struct Probe {
     pub dns_ms: u64,
     /// TCP 接続 (SYN → 確立) にかかった ms。名前解決で失敗したら 0
     pub connect_ms: u64,
+    /// IPv6 側だけの 1 本にかかった ms (T14.37)。**繋がらなければ `null`**
+    /// (AAAA が無い名前、IPv6 を切ってある、経路が黒穴、`PROXY_CANARY_IPV6=off`)
+    pub ipv6_connect_ms: Option<u64>,
     /// 失敗の理由 (成功なら `None`)
     pub error: Option<String>,
     /// 失敗の原因 (利用者のエラーと同じ物差し。成功なら `None`)
@@ -120,11 +129,12 @@ impl Probe {
     fn push_json(&self, out: &mut String) {
         let _ = write!(
             out,
-            "\"at\":{},\"host\":\"{}\",\"dns_ms\":{},\"connect_ms\":{},\"error\":",
+            "\"at\":{},\"host\":\"{}\",\"dns_ms\":{},\"connect_ms\":{},\"ipv6_connect_ms\":{},\"error\":",
             self.at,
             crate::json::escape(&self.host),
             self.dns_ms,
-            self.connect_ms
+            self.connect_ms,
+            num_or_null(self.ipv6_connect_ms),
         );
         match &self.error {
             Some(e) => {
@@ -142,15 +152,29 @@ struct Row {
     dns_ms: u64,
     connect_ms: u64,
     host: String,
+    /// IPv6 側だけの 1 本 (繋がらなければ `null`。T14.37)
+    ipv6_connect_ms: Option<u64>,
 }
 
 /// `/history` の `canary` の列名 (この順で並ぶ)。
-pub const KEYS: [&str; 4] = ["t", "canary_dns_ms", "canary_connect_ms", "canary_host"];
+///
+/// **足すのは末尾だけ** (T14.37 で `canary_ipv6_connect_ms` を 5 列目に足した)。
+/// 読む側 (`scripts/check-dashboard.js`) は先頭からの一致で見るので、列を増やしても
+/// 古い版の出力がそのまま読める。
+pub const KEYS: [&str; 5] = [
+    "t",
+    "canary_dns_ms",
+    "canary_connect_ms",
+    "canary_host",
+    "canary_ipv6_connect_ms",
+];
 
 /// いまの設定 (`PROXY_CANARY`)。
 static MODE: Mutex<Mode> = Mutex::new(Mode::Auto);
 /// 周期 (秒)。`PROXY_CANARY_SECS` (最小 1)。
 static PERIOD_SECS: AtomicU64 = AtomicU64::new(SECS);
+/// IPv6 側だけの 1 本を試すか (`PROXY_CANARY_IPV6`、既定 `on`。T14.37)。
+static IPV6: AtomicBool = AtomicBool::new(true);
 /// 最後の結果 (`/status` と `/metrics`)。
 static LAST: Mutex<Option<Probe>> = Mutex::new(None);
 /// メモリ上の窓 (5 秒 × 720 / 60 秒 × 1,440)。**`.rrd` には書かない。**
@@ -168,10 +192,12 @@ enum Msg {
     Wake,
 }
 
-/// `PROXY_CANARY` と `PROXY_CANARY_SECS` を当てる (起動時と `.env` の再読込から)。
-pub fn configure(spec: &str, period: Duration) {
+/// `PROXY_CANARY` / `PROXY_CANARY_SECS` / `PROXY_CANARY_IPV6` を当てる
+/// (起動時と `.env` の再読込から)。
+pub fn configure(spec: &str, period: Duration, ipv6: bool) {
     *MODE.locked() = Mode::parse(spec);
     PERIOD_SECS.store(period.as_secs().max(1), Ordering::Relaxed);
+    IPV6.store(ipv6, Ordering::Relaxed);
     // 既にスレッドが居れば、次の待ち時間を計算し直させる (`.env` で即時反映)
     if let Some(Some(tx)) = THREAD.get() {
         let _ = tx.send(Msg::Wake);
@@ -186,6 +212,11 @@ pub fn mode() -> Mode {
 /// いまの周期。
 pub fn period() -> Duration {
     Duration::from_secs(PERIOD_SECS.load(Ordering::Relaxed).max(1))
+}
+
+/// IPv6 側だけの 1 本を試すか (`PROXY_CANARY_IPV6`)。
+pub fn ipv6_enabled() -> bool {
+    IPV6.load(Ordering::Relaxed)
 }
 
 /// 最後の結果 (`/metrics` が読む)。
@@ -292,6 +323,8 @@ fn probe(target: &str) -> Probe {
                 host: target.to_string(),
                 dns_ms: ms(started.elapsed()),
                 connect_ms: 0,
+                // 名前が引けなければ AAAA も無い
+                ipv6_connect_ms: None,
                 error: Some(clip(&e.to_string())),
                 // 名前解決で終わったのだから原因は `dns` (文言から当てない)
                 cause: Some(ErrCause::Dns),
@@ -299,6 +332,11 @@ fn probe(target: &str) -> Probe {
         }
     };
     let dns_ms = ms(started.elapsed());
+    // IPv6 側だけの 1 本の相手 (T14.37)。**族で絞る前**に AAAA の先頭を控える
+    let v6 = addrs
+        .iter()
+        .find(|ip| ip.is_ipv6())
+        .map(|&ip| SocketAddr::new(ip, port));
     // IPv6 を切ってあるときは利用者の経路と同じく A レコードだけを試す
     let addrs: Vec<SocketAddr> = addrs
         .into_iter()
@@ -311,6 +349,8 @@ fn probe(target: &str) -> Probe {
             host: target.to_string(),
             dns_ms,
             connect_ms: 0,
+            // ここに来るのは `PROXY_IPV6=off` で AAAA しか無い名前 (利用者も繋げない)
+            ipv6_connect_ms: None,
             error: Some("no address for this family".to_string()),
             cause: Some(ErrCause::Dns),
         };
@@ -322,14 +362,32 @@ fn probe(target: &str) -> Probe {
         // 原因は `io::Error` から決める (利用者のエラーと同じ `refused` / `timeout` …)
         Err(e) => (Some(clip(&e.to_string())), Some(ErrCause::from_io(&e))),
     };
+    let connect_ms = ms(started.elapsed());
     Probe {
         at,
         host: target.to_string(),
         dns_ms,
-        connect_ms: ms(started.elapsed()),
+        connect_ms,
+        ipv6_connect_ms: probe_ipv6(v6),
         error,
         cause,
     }
+}
+
+/// IPv6 側だけの 1 本 (T14.37)。繋がった ms、繋がらなければ `None`。
+///
+/// **利用者の経路も `v4_first` の判定も動かさない**: 繋ぐのは
+/// [`crate::net::connect_addr`] (Happy Eyeballs も勝敗の記録も族の記憶も通らない) で、
+/// 失敗しても `/errors` には 1 件も残さない — デプロイ先の IPv6 は黒穴なので、
+/// 個票に残すと 1 分に 1 件ずつ `/errors` が埋まってしまう。生死は
+/// `/status` の `canary.ipv6_connect_ms` が `null` かどうかで読む。
+fn probe_ipv6(addr: Option<SocketAddr>) -> Option<u64> {
+    // `PROXY_IPV6=off` のときは利用者も AAAA を使わないので測らない
+    let addr = addr.filter(|_| ipv6_enabled() && crate::net::ipv6_enabled())?;
+    let started = Instant::now();
+    // 握れたら**その場で捨てる** (`drop` = FIN)。TLS も HTTP も送らない
+    crate::net::connect_addr(&addr, DEADLINE).ok()?;
+    Some(ms(started.elapsed()))
 }
 
 /// 結果を残す: 最後の 1 回・窓・(失敗なら) `/errors` の個票 1 件。
@@ -365,6 +423,7 @@ fn push_row(probe: &Probe) {
             dns_ms: probe.dns_ms,
             connect_ms: probe.connect_ms,
             host: probe.host.clone(),
+            ipv6_connect_ms: probe.ipv6_connect_ms,
         };
         match ring.back_mut() {
             Some(back) if back.t == t => *back = row,
@@ -392,7 +451,9 @@ pub fn status_json() -> String {
     match last() {
         Some(p) => p.push_json(&mut out),
         // まだ 1 回も回っていない (`off`、起動直後、履歴スレッドが無い)
-        None => out.push_str("\"at\":0,\"host\":\"\",\"dns_ms\":0,\"connect_ms\":0,\"error\":null"),
+        None => out.push_str(
+            "\"at\":0,\"host\":\"\",\"dns_ms\":0,\"connect_ms\":0,\"ipv6_connect_ms\":null,\"error\":null",
+        ),
     }
     out.push('}');
     out
@@ -420,16 +481,25 @@ pub fn push_history_json(out: &mut String, res: usize) {
             }
             let _ = write!(
                 out,
-                "[{},{},{},\"{}\"]",
+                "[{},{},{},\"{}\",{}]",
                 r.t,
                 r.dns_ms,
                 r.connect_ms,
-                crate::json::escape(&r.host)
+                crate::json::escape(&r.host),
+                num_or_null(r.ipv6_connect_ms),
             );
         }
     }
     drop(guard);
     out.push_str("]}");
+}
+
+/// JSON の数 (繋がらなかった IPv6 側は `null`。T14.37)。
+fn num_or_null(v: Option<u64>) -> String {
+    match v {
+        Some(n) => n.to_string(),
+        None => "null".to_string(),
+    }
 }
 
 /// ms に丸める (0.5 ms 以上は 1 ms。手元の loopback は 0 ms になる)。
@@ -446,6 +516,7 @@ fn clip(s: &str) -> String {
 fn reset() {
     *MODE.locked() = Mode::Auto;
     PERIOD_SECS.store(SECS, Ordering::Relaxed);
+    IPV6.store(true, Ordering::Relaxed);
     *LAST.locked() = None;
     *RINGS.locked() = None;
     RUNS.store(0, Ordering::Relaxed);
@@ -556,6 +627,8 @@ mod tests {
             host: "a.example.net:443".to_string(),
             dns_ms: dns,
             connect_ms: conn,
+            // 5 列目 (T14.37)。偶数の周だけ IPv6 側が繋がった、という形にする
+            ipv6_connect_ms: at.is_multiple_of(2).then_some(conn + 1),
             error: None,
             cause: None,
         };
@@ -567,13 +640,19 @@ mod tests {
         let mut fine = String::new();
         push_history_json(&mut fine, 0);
         assert!(
-            fine.starts_with(",\"canary\":{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\"],\"samples\":[["),
+            fine.starts_with(",\"canary\":{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\",\"canary_ipv6_connect_ms\"],\"samples\":[["),
             "{}",
             fine
         );
         assert!(
-            fine.contains("[1000000,4,9,\"a.example.net:443\"],[1000005,5,10,"),
+            fine.contains("[1000000,4,9,\"a.example.net:443\",10],[1000005,5,10,"),
             "5 秒の窓は 2 行で、同じ窓は上書き: {}",
+            fine
+        );
+        // 繋がらなかった IPv6 側は `null` (T14.37)
+        assert!(
+            fine.ends_with("[1000005,5,10,\"a.example.net:443\",null]]}"),
+            "{}",
             fine
         );
         let mut minute = String::new();
@@ -584,7 +663,11 @@ mod tests {
             "1 分の窓は 1 行: {}",
             minute
         );
-        assert!(minute.contains("[999960,5,10,"), "{}", minute);
+        assert!(
+            minute.contains("[999960,5,10,\"a.example.net:443\",null]"),
+            "{}",
+            minute
+        );
         // 1 時間の解像度は窓を持たない (空の配列)
         let mut hour = String::new();
         push_history_json(&mut hour, 2);
@@ -609,6 +692,7 @@ mod tests {
                 host: "a.example.net:443".to_string(),
                 dns_ms: 7,
                 connect_ms: 9,
+                ipv6_connect_ms: Some(11),
                 error: None,
                 cause: None,
             },
@@ -618,7 +702,11 @@ mod tests {
         assert!(json.contains("\"runs\":1"), "{}", json);
         assert!(json.contains("\"failures\":0"), "{}", json);
         assert!(json.contains("\"host\":\"a.example.net:443\""), "{}", json);
-        assert!(json.contains("\"dns_ms\":7,\"connect_ms\":9"), "{}", json);
+        assert!(
+            json.contains("\"dns_ms\":7,\"connect_ms\":9,\"ipv6_connect_ms\":11"),
+            "{}",
+            json
+        );
         assert!(json.contains("\"error\":null"), "{}", json);
         assert!(m.errors.is_empty(), "成功は個票に残さない");
 
@@ -628,6 +716,7 @@ mod tests {
                 host: "a.example.net:443".to_string(),
                 dns_ms: 12,
                 connect_ms: 0,
+                ipv6_connect_ms: None,
                 error: Some("Connection refused (os error 111)".to_string()),
                 cause: Some(ErrCause::Refused),
             },
@@ -636,6 +725,8 @@ mod tests {
         let json = status_json();
         assert!(json.contains("\"failures\":1"), "{}", json);
         assert!(json.contains("\"error\":\"Connection"), "{}", json);
+        // 繋がらなかった IPv6 側は `null` (T14.37)
+        assert!(json.contains("\"ipv6_connect_ms\":null"), "{}", json);
         let (entries, total) = m.errors.recent(10);
         assert_eq!(total, 1);
         assert_eq!(entries.len(), 1);
@@ -661,11 +752,15 @@ mod tests {
             None,
             Detail::default(),
         );
-        configure("off", Duration::from_secs(1));
+        configure("off", Duration::from_secs(1), true);
         assert!(targets(&m).is_empty());
-        configure("auto", Duration::from_secs(1));
+        configure("auto", Duration::from_secs(1), true);
         assert_eq!(targets(&m), vec!["a.example.net:443".to_string()]);
-        configure("x.example.net,y.example.net:8443", Duration::from_secs(1));
+        configure(
+            "x.example.net,y.example.net:8443",
+            Duration::from_secs(1),
+            true,
+        );
         assert_eq!(
             targets(&m),
             vec![
@@ -673,9 +768,45 @@ mod tests {
                 "y.example.net:8443".to_string()
             ]
         );
-        // 周期は最小 1 秒
-        configure("off", Duration::from_secs(0));
+        // 周期は最小 1 秒。IPv6 側は `PROXY_CANARY_IPV6` でその場で止まる (T14.37)
+        configure("off", Duration::from_secs(0), false);
         assert_eq!(period(), Duration::from_secs(1));
+        assert!(!ipv6_enabled(), "off なら IPv6 側は測らない");
+        reset();
+    }
+
+    /// T14.37: canary の IPv6 側は **AAAA が有るときだけ** 1 本繋いで ms を出し、
+    /// 繋がらなければ (AAAA が無い / 断られた / `PROXY_CANARY_IPV6=off`) `null`。
+    #[test]
+    fn the_ipv6_side_is_one_extra_connection_and_null_when_it_cannot_connect() {
+        let _s = SERIAL.locked();
+        reset();
+        // (1) AAAA があって生きていれば ms が出る
+        let v6 = TcpListener::bind("[::1]:0").expect("この機械の lo は ::1 を持つ");
+        let v6_port = v6.local_addr().unwrap().port();
+        let got = probe(&format!("[::1]:{}", v6_port));
+        assert!(got.error.is_none(), "{:?}", got);
+        assert!(got.ipv6_connect_ms.is_some(), "生きていれば ms: {:?}", got);
+
+        // (2) AAAA が無い名前 (A だけ) は `null` — 余計な 1 本も出さない
+        let v4 = TcpListener::bind("127.0.0.1:0").unwrap();
+        let v4_port = v4.local_addr().unwrap().port();
+        let got = probe(&format!("127.0.0.1:{}", v4_port));
+        assert!(got.error.is_none(), "{:?}", got);
+        assert_eq!(got.ipv6_connect_ms, None, "A だけの宛先: {:?}", got);
+
+        // (3) AAAA はあるが繋がらない (閉じたポート = 黒穴と同じ「失敗」) なら `null`
+        drop(v6);
+        let got = probe(&format!("[::1]:{}", v6_port));
+        assert_eq!(got.ipv6_connect_ms, None, "繋がらなければ null: {:?}", got);
+
+        // (4) `PROXY_CANARY_IPV6=off` なら生きていても測らない
+        let v6 = TcpListener::bind("[::1]:0").unwrap();
+        let v6_port = v6.local_addr().unwrap().port();
+        configure("auto", Duration::from_secs(60), false);
+        let got = probe(&format!("[::1]:{}", v6_port));
+        assert!(got.error.is_none(), "{:?}", got);
+        assert_eq!(got.ipv6_connect_ms, None, "off: {:?}", got);
         reset();
     }
 }
