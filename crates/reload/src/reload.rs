@@ -137,6 +137,11 @@ impl Live {
             next.allow_clients = fresh.allow_clients.clone();
             applied.push("PROXY_ALLOW_CLIENTS");
         }
+        // 接続元ごとの上限も `serve` が accept ごとに引き直す (次に来る接続から効く)
+        if fresh.max_conns_per_client != old.max_conns_per_client {
+            next.max_conns_per_client = fresh.max_conns_per_client;
+            applied.push("PROXY_MAX_CONNS_PER_CLIENT");
+        }
         if fresh.tunnel_idle != old.tunnel_idle {
             next.tunnel_idle = fresh.tunnel_idle;
             next.sources.adopt(&fresh.sources, "PROXY_TUNNEL_IDLE_SECS");

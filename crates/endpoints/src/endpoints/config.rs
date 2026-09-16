@@ -138,6 +138,7 @@ mod tests {
             "PROXY_DNS_NEGATIVE_SECS",
             "PROXY_DNS_WARM_SECS",
             "PROXY_MAX_CONNS",
+            "PROXY_MAX_CONNS_PER_CLIENT",
             "PROXY_MAX_THREADS",
             "PROXY_TLS_CA_FILE",
             "PROXY_LOG_LEVEL",
