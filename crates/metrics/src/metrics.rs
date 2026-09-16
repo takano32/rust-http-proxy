@@ -1233,6 +1233,9 @@ pub struct Metrics {
     /// 確立までに SYN を送り直した回数の合計 (`/status` の `syn_retrans_total`。T14.46)。
     /// **メモリだけ** (`.rrd` には書かない)。ホスト別は [`HostStats::syn_retrans`]
     pub syn_retrans_total: AtomicU64,
+    /// 重い口 (`/snapshot` `/profile` …) が既に 1 本走っていたので 503 で断った数 (T14.51)。
+    /// 足すのは内部エンドポイントの経路だけで、プロキシとしての要求は 1 度も触らない
+    pub heavy_rejected: AtomicU64,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -1271,6 +1274,7 @@ impl Metrics {
             recent_persisted: AtomicBool::new(false),
             sni_mismatches: AtomicU64::new(0),
             syn_retrans_total: AtomicU64::new(0),
+            heavy_rejected: AtomicU64::new(0),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
             readers: Mutex::new(HashMap::new()),
@@ -2153,12 +2157,13 @@ impl Metrics {
                 // (`memory` も T14.21、`recent_quantiles` も T14.31、`rate_bps_total` も
                 // T14.39、`rejected_requests` も T14.28、`sni_mismatches` も T14.38、
                 // `self_bench` も T14.43、`readers` も T14.53、`syn_retrans_total` も
-                // T14.46 で同じく末尾)
+                // T14.46、`heavy_rejected` も T14.51 で同じく末尾)
                 "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
                 // `records` も**末尾** (T14.41)。`off` / `hashed` のとき、この応答より
                 // 下の口 (`/recent` など) が空 / 16 進なのはこの値のせいだと読める
                 "\"rejected_requests\":{},\"sni_mismatches\":{},\"self_bench\":{},",
-                "\"readers\":{},\"syn_retrans_total\":{},\"records\":\"{}\"}}"
+                "\"readers\":{},\"syn_retrans_total\":{},\"records\":\"{}\",",
+                "\"heavy_rejected\":{}}}"
             ),
             SCHEMA,
             crate::json::escape(extra.version),
@@ -2224,7 +2229,9 @@ impl Metrics {
             // 確立までに SYN を送り直した回数の合計 (T14.46)
             self.syn_retrans_total.load(Ordering::Relaxed),
             // 記録の一括 off とハッシュ化 (T14.41)。旗を原子 1 回読むだけ
-            crate::records::mode().name()
+            crate::records::mode().name(),
+            // 重い口が 1 本走っている最中に来て 503 で断った数 (T14.51)
+            self.heavy_rejected.load(Ordering::Relaxed)
         )
     }
 }
