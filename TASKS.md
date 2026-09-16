@@ -4740,7 +4740,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     - 小物: `/profile` の `locks` に接続元の表の鍵が出ない (`LOCK_NAMES` を 5 本にして `record_client` を `locked_counted` に。3 行)。
       手元のベンチで鍵の分割を判定するには宛先を N 種類に散らす口 (`--hosts N`) が要る。計測中は他のエージェントの `cargo test` が同時に
       走っていた (load 3.5) が、プリエンプションは取り合いを増やす向きなので「1% 未満」は安全側。
-- [ ] **T14.46 接続確立時の SYN の再送を数える**
+- [x] **T14.46 接続確立時の SYN の再送を数える**
   - 目的: T14.16 で「待ち受けが溢れると SYN が落ち、1 秒後に再送されて確立が 1,011 ms になる」のを見た。デプロイ先でも、オリジン側の
     待ち受けの溢れや途中の損失で SYN が再送されれば、**確立時間が 1 秒・3 秒と飛ぶ** (T14.0 の `max_ms` 30,029 の中にもあるはず)。
     確立直後に `TCP_INFO` の `tcpi_total_retrans` (T14.5) を 1 回読めば、その接続が SYN の再送を経たかが分かる。
@@ -4750,6 +4750,9 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 受け入れ基準: T14.16 の環境で `--only connect-multi --conc 64` を回すと個票に `syn_retrans` ≥ 1 の接続が現れ、`/status` の
     `syn_retrans_total` が増える。loopback の `--only connect` では 0 のまま。費用: **CONNECT 1 本に `getsockopt` 1 回** (システムコール
     +1。本文に書く)、CPU/本 ±4% (6 組)。forward はプールの接続を張るときだけ (要求ごとは 0)。
+  - 結果 (2026-09-16、`6622c44`): **接続を確立した直後に `getsockopt(SOL_TCP, TCP_INFO)` を 1 回だけ読み、SYN を何回送り直したかを個票に残す**ようにした。確立直後はまだデータを 1 バイトも送っていないので `tcpi_total_retrans` (T14.5) は **SYN の再送回数そのもの**で、Linux の既定では 1 回で確立が約 1 秒、2 回で約 3 秒よけいにかかる。読むのは `crates/net/src/net.rs` の `connect_candidates` の**確立点 2 か所だけ** (候補が 1 つのときの短絡と、Happy Eyeballs で勝った候補。**負けた候補では読まない**)。値は `dns.rs` の thread-local (`note_syn_retrans` / `take_syn_retrans`。T12.4 (2) の `note_family` と同じ作法で**原子操作は 1 つも増えない**) で運び、`Detail.syn_retrans: u8` に受ける。canary はこの道を通らない。出口は 4 つ: `/recent` の 1 件の `syn_retrans` (`RecentEntry` の末尾)、`/hosts` と `/status` の `hosts[]` の `syn_retrans` (合計)、`/status` 末尾の `syn_retrans_total`。ホスト別と合計は**メモリだけ**、**接続元別には出さない** (繋ぎに行く先が無いため)。個票ファイル (T14.9) は 344 → **352 B** (余白 156 B) で版は上げていない。**費用**: **CONNECT 1 本の `getsockopt` 2.00 → 3.00 回 (+1.00 ちょうど)**、システムコール合計 22.22 → 23.16 回/本、**forward (`--lite`) は 5.04 → 5.04 回/要求 で 0 増** (`getsockopt` はプールを張った 8 本ぶんだけ)、CONNECT 確立 CPU/本 **159.37 → 151.46 us (−5.0%、6 組。この経路は ±25% 暴れるのでぶれの中)**、`/recent` の 1 件は 297 → 313 B。**再現**: `deployed-like` の中で `--only connect-multi --conc 64 --seconds 5` (38,158 本、max 1,070 ms) を回すと `/status` の `syn_retrans_total` が **134**、`/recent` の 824 件のうち **29 件が `syn_retrans` = 1** で、**その 29 件の `ms.connect` は 1,047〜1,057 ms に固まり、宛先は全部ベンチの受け皿**、再送の無い 795 件は p50 1 ms / p95 6 ms / max 15 ms。**T14.47 の「max ≈ 1 秒はプロキシ → ベンチの受け皿の SYN 再送」という切り分けが、個票の数字として裏付けられた**。結合 2 本 (`tests/synretrans_test.rs`) を新設。
+    - **「loopback の `--only connect` では 0 のまま」は負荷をかけると成り立たない**: 名前空間の外の `--only connect` (45,489 本) でも `syn_retrans_total` が **28 (0.06%)** 出た。これもベンチの受け皿の溢れ。**「相手の待ち受けが溢れなければ 0」**が正しい読み方 (静かな 1 本は 0)。
+    - `.rrd` には残していない (版 3 の余白 68 B なら 8 B で入る — 別タスク)。`/metrics` と画面には出していない。thread-local の持ち越し (確立したのに `Detail` を組む前に落ちた経路) は `take_family` / `take_resolve_cost` と同じ穴 (直すなら 3 つまとめて)。
 - [x] **T14.47 待ち受けの backlog (`PROXY_LISTEN_BACKLOG`、既定 `min(1024, somaxconn)`)**
   - 目的: Rust の `TcpListener::bind` は backlog **128** で待ち受ける。ブラウザがページを開くと数十本の CONNECT が同時に来て、accept ループが
     1 本 (T4.3) なので 128 を越えた SYN は捨てられ、**クライアントは 1 秒後に再送する** (利用者に 1 秒の待ちとして見える。T14.16 で
