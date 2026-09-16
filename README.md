@@ -85,6 +85,7 @@ scripts/collect-deployed.sh nagoya.sorahost.net:50697 > today.md   # 1 日 1 回
 PROBE=0 scripts/collect-deployed.sh nagoya.sorahost.net:50697      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server nagoya.sorahost.net:50697  # 回し忘れた日を取り寄せる
 scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と最後で差分
+scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json --group domain  # eTLD+1 でまとめる
 ```
 
 **回し忘れても個票は残ります**: プロキシ自身が 1 日 1 回 (UTC 0 時) `/snapshot` を
@@ -108,10 +109,29 @@ scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と�
 ```bash
 scripts/snapshot-diff.py ~/rust-http-proxy-status/2026-09-1{2,6}*-snapshot.json --criteria phase14
 scripts/snapshot-diff.py a.json b.json --aaaa aaaa.json --out json      # 機械で読む形
+scripts/snapshot-diff.py a.json b.json --group domain                   # eTLD+1 でまとめる
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
 scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z \
                          --from-files ~/rust-http-proxy-status/2026-09-16T0106Z
 ```
+
+**`--group domain` は「dlsite 全体で何件か」を読むためのまとめ方です** (T14.54)。`/hosts` は
+`img.dlsite.jp` と `www.dlsite.jp` を別の行で持つので、相手ごとの合計が読めません。
+`--group domain` は **eTLD+1 が同じホスト同士を 1 行にまとめます** (`img.dlsite.jp` +
+`www.dlsite.jp` → `dlsite.jp`。`www.dlsite.com` は eTLD+1 が違うので**別の行**です)。
+`snapshot-diff.py` にも `status-diff.py` にも同じ `--group domain` があります。
+
+- eTLD+1 は **`scripts/proxydata.py` の `etld1()` による近似**です。Public Suffix List
+  (約 9,000 行) は持たず、**ラベルが 2 つ以上の公開接尾辞の短い表** (`co.jp` / `ne.jp` /
+  `ac.jp` / `go.jp` / `or.jp` / `co.uk` / `com.au` …) に当たれば 3 ラベル
+  (`www.dmm.co.jp` → `dmm.co.jp`)、当たらなければ**末尾 2 ラベル** (`a.b.example.io` →
+  `example.io`) にします。事業者が 1 段下を配る形 (`github.io` のような) は分けられません
+  — 外れたら表に 1 行足してください
+- まとめるのは**同じ種類どうし**です (CONNECT と forward は混ぜません)。要求数・バイト・
+  エラー・名前解決・確立の合計 ms は**和**、`avg_ms` は**計測数 (`timed`) で重みづけ**、
+  **p50 / p95 は足せない**ので 2 つ以上まとまった行では出しません (`max` は最大)。
+  `AAAA` は全部同じときだけその値です
+- IP リテラル宛て・`localhost`・表からあふれた `other` は**まとめずにそのまま**出ます
 
 `collect-deployed.sh` は前回の雪像を見つけるとこれを呼び、**要約のいちばん最後に判定表**を置きます
 (`CRITERIA=off` で止められます)。道具の単体テストは `python3 -m unittest discover -s scripts`
@@ -141,10 +161,14 @@ curl -s 'http://PROXY/daily?n=7' > daily.json && scripts/weekly-report.py daily.
 出力は「デプロイ先の現在地」を締める文書と、次の Phase の入力にするためのものです。
 
 **実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T14.35)。雪像には
-個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.example`)・
+個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.g0007.example`)・
 **接続元 IP** (`198.51.100.x`)・**名前解決の答え** (`203.0.113.x`)・**`User-Agent`** (`ua-01`)・
 **`/log` の行と `/events` の説明の中の名前と IP** だけを置き換えれば、本物の分布のまま持ち込めます。
 置き換えは**決定的** (同じ入力からは同じ出力) なので、**匿名化したあとの 2 枚でそのまま差分が取れます**。
+ホスト名の `gNNNN` は**まとめの単位 (eTLD+1) の番号**で、`img.dlsite.jp` と `www.dlsite.jp` は
+同じ番号 (= 匿名化後も同じ eTLD+1 `gNNNN.example`) に落ちます。**上の `--group domain` の粒度が
+匿名化したあとも読める**ようにするためです (T14.54)。古い形 (`host-0001.example`) の
+匿名化済みファイルはそのまま通ります (2 回かけても名前は変わりません)。
 **数字は 1 つも変わりません** (件数・ms・区間・閉じた理由・時刻・`version`・`path`)。`connect://` の
 scheme と port、表の上限を越えた分の行 (`other`) はそのままです。
 

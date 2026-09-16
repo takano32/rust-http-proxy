@@ -11,6 +11,7 @@
 なったら過去の分析をやり直せない。
 """
 
+import ipaddress
 import json
 import socket
 import statistics
@@ -65,6 +66,122 @@ def host_name(key):
     if rest.startswith("["):  # IPv6 リテラル
         return rest.split("]", 1)[0][1:]
     return rest.rsplit(":", 1)[0] if ":" in rest else rest
+
+
+# ---------------------------------------------------------------- まとめの単位 (T14.54)
+
+# eTLD+1 を近似するための、**ラベルが 2 つ以上ある公開接尾辞**の短い表。
+#
+# Public Suffix List (約 9,000 行) は持たない (このリポジトリの方針どおり外部の表も
+# 外部パッケージも入れない)。**1 ラベルの接尾辞 (`com` / `net` / `org` / `io` / `jp` …)
+# はここに要らない**: 下の既定「末尾 2 ラベル」がそのまま正しい答えになる。
+# ここに要るのは `www.dmm.co.jp` -> `dmm.co.jp` のように**3 ラベルになるもの**だけ。
+# 近似なので外れることがある (`github.io` や `s3.amazonaws.com` のような「事業者が
+# 配る 1 段下」は分けられない)。外れたら表に 1 行足す。
+MULTI_SUFFIXES = frozenset("""
+co.jp ne.jp or.jp ac.jp go.jp ad.jp ed.jp gr.jp lg.jp
+co.uk org.uk ac.uk gov.uk me.uk net.uk sch.uk
+com.au net.au org.au edu.au gov.au
+co.nz net.nz org.nz
+co.kr or.kr ne.kr re.kr pe.kr go.kr
+com.cn net.cn org.cn gov.cn edu.cn ac.cn
+com.tw org.tw net.tw idv.tw
+com.hk org.hk net.hk idv.hk
+com.sg net.sg org.sg com.my com.ph com.vn co.th in.th co.id
+com.br net.br org.br com.mx com.ar com.co
+co.in net.in org.in
+co.za com.tr com.ua co.il com.ru org.ru net.ru
+""".split())
+
+
+def etld1(host):
+    """ホスト名を**まとめの単位** (eTLD+1 の近似) にする (`--group domain`。T14.54)。
+
+        img.dlsite.jp  -> dlsite.jp        www.dlsite.com -> dlsite.com  (別の単位)
+        www.dmm.co.jp  -> dmm.co.jp        a.b.example.io -> example.io
+
+    IP リテラル・ラベルが 1 つの名前 (`localhost`、表の `other`)・空はそのまま返す
+    (まとめる相手がいないため)。判定に使うのは [`MULTI_SUFFIXES`] だけで、
+    載っていない接尾辞は**末尾 2 ラベル**にする。
+    """
+    if not host:
+        return host
+    name = host.strip().rstrip(".").lower()
+    if not name:
+        return host
+    try:  # IP リテラルはまとめない (別の相手なので)
+        ipaddress.ip_address(name)
+        return name
+    except ValueError:
+        pass
+    labels = name.split(".")
+    if len(labels) < 2 or not all(labels):
+        return name
+    if len(labels) > 2 and ".".join(labels[-2:]) in MULTI_SUFFIXES:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def group_by_domain(rows):
+    """ホスト別の行 ([`row_of`] が作る形) を **eTLD+1 でまとめる** (T14.54)。
+
+    まとめるのは**同じ種類どうし** (CONNECT と forward は混ぜない) で、
+    `img.dlsite.jp` と `www.dlsite.jp` は `dlsite.jp` の 1 行になる
+    (`www.dlsite.com` は別の単位なので別の行)。
+
+    - 要求数・計測数・バイト・エラー・名前解決・確立の合計 ms は**和**
+    - `avg_ms` は**計測した要求数 (`timed`) で重みづけ**した平均
+      (`avg_ms × timed` の和 ÷ `timed` の和 = その単位の合計 ms ÷ 計測数)。
+      `±` (丸めの誤差) も同じ重みで畳む
+    - **`p50` / `p95` は足せない** (ホストごとの分位点しか無く、区間の件数は
+      `/hosts` に出ていない) ので、2 つ以上まとまった行では `None` にする。
+      `max` は最大値なので最大を採る
+    - `AAAA` は**全部同じときだけ**その値 (混ざっていたら `None` = 不明)
+
+    増える欄は `hosts` (まとめたホスト数) と `names` (その名前。多い順)。
+    """
+    groups = {}
+    for r in rows:
+        groups.setdefault((bool(r["connect"]), etld1(r["name"])), []).append(r)
+    out = []
+    for (connect, domain), g in groups.items():
+        g.sort(key=lambda r: (-r["requests"], r["name"]))
+        weight = sum(r["timed"] for r in g if r["avg_ms"] is not None and r["timed"] > 0)
+
+        def folded(field):
+            total = sum(r[field] * r["timed"] for r in g
+                        if r[field] is not None and r["timed"] > 0)
+            return (total / weight) if weight > 0 else None
+
+        aaaa = {r["aaaa"] for r in g} if all("aaaa" in r for r in g) else {None}
+        quantiles = g[0] if len(g) == 1 else {}
+        if len(g) == 1:
+            key = g[0]["key"]
+        else:
+            key = (CONNECT + domain) if connect else ("http://" + domain)
+        out.append({
+            "key": key,
+            "name": domain,
+            "connect": connect,
+            "hosts": len(g),
+            "names": [r["name"] for r in g],
+            "requests": sum(r["requests"] for r in g),
+            "timed": sum(r["timed"] for r in g),
+            "avg_ms": folded("avg_ms"),
+            "avg_err": folded("avg_err"),
+            "bytes": sum(r["bytes"] for r in g),
+            "errors": sum(r["errors"] for r in g),
+            "p50_ms": quantiles.get("p50_ms"),
+            "p95_ms": quantiles.get("p95_ms"),
+            "max_ms": max((r["max_ms"] for r in g if r["max_ms"] is not None), default=None),
+            "dns_ms_sum": sum(r["dns_ms_sum"] for r in g),
+            "dns_misses": sum(r["dns_misses"] for r in g),
+            "connect_ms_sum": sum(r["connect_ms_sum"] for r in g),
+            "errors_by_cause": [sum(x) for x in zip(*(r["errors_by_cause"] for r in g))],
+            "aaaa": aaaa.pop() if len(aaaa) == 1 else None,
+        })
+    out.sort(key=lambda r: (-r["requests"], r["name"]))
+    return out
 
 
 def load(path):

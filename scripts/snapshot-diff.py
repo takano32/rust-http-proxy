@@ -8,6 +8,7 @@
 # 使い方:
 #   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase14]
 #                            [--out md|json] [--top N] [--burst N] [--major-hosts a,b,c]
+#                            [--group domain]
 #     scripts/snapshot-diff.py ~/rust-http-proxy-status/2026-09-1*-snapshot.json
 #     scripts/snapshot-diff.py a.json b.json --criteria phase14 >> TASKS.md
 #
@@ -22,7 +23,9 @@
 # 出すもの (T14.17 の (1)〜(9)):
 #   1. 再起動をまたいでいるか (`uptime_secs` / `since_start_secs` と `version`)
 #   2. `/history` を**再起動時刻で切った**平常時 (1 時間 300 本未満の標本) の前後 — T14.0 の表の形
-#   3. ホスト別 (`/hosts` 最大 1,000 件) の差分 (`status-diff.py` と同じ読み方)
+#   3. ホスト別 (`/hosts` 最大 1,000 件) の差分 (`status-diff.py` と同じ読み方)。
+#      **`--group domain` で eTLD+1 にまとめられる** (T14.54。`img.dlsite.jp` と
+#      `www.dlsite.jp` が `dlsite.jp` の 1 行。`www.dlsite.com` は別の単位)
 #   4. 接続元別 (`/clients`) の差分と**新しく現れた接続元**
 #   5. 名前解決 (`/dns`) の warm と引き直し
 #   6. その間の出来事 (`/events`。無い版では飛ばす)
@@ -59,6 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from proxydata import (  # noqa: E402
     CAUSE_NAMES,
     fmt_bytes,
+    group_by_domain,
     load,
     median,
     quantile_ms,
@@ -493,7 +497,7 @@ def rrd_reset(a, b, rows):
     return {"restored_since": since, "dropped_hosts": dropped, "after_a": after_a}
 
 
-def host_diff(a, b, aaaa_mode, aaaa_table):
+def host_diff(a, b, aaaa_mode, aaaa_table, group="host"):
     a_rows, a_cut, a_src = host_rows(a)
     b_rows, b_cut, b_src = host_rows(b)
     older = {h["host"]: h for h in a_rows}
@@ -502,11 +506,15 @@ def host_diff(a, b, aaaa_mode, aaaa_table):
     flags = resolve_aaaa(names, aaaa_mode, aaaa_table)
     for r in rows:
         r["aaaa"] = flags.get(r["name"])
+    # `.rrd` の作り直しはまとめる前のホストの数で数える (まとめると負の行が打ち消し合う)
+    reset = rrd_reset(a, b, rows)
+    if group == "domain":
+        rows = group_by_domain(rows)  # eTLD+1 でまとめる (T14.54)
     rows.sort(key=lambda r: (-r["requests"], r["name"]))
     gone = [h for k, h in older.items() if k not in {x["host"] for x in b_rows}]
     return {"rows": rows, "truncated": a_cut or b_cut, "source": [a_src, b_src],
-            "gone": len(gone), "aaaa": aaaa_mode != "none",
-            "rrd_reset": rrd_reset(a, b, rows)}
+            "gone": len(gone), "aaaa": aaaa_mode != "none", "group": group,
+            "hosts": len(names), "rrd_reset": reset}
 
 
 def aaaa_groups(rows):
@@ -746,7 +754,7 @@ def build(a, b, args):
         mode = "none"
     elif args.aaaa:
         mode, table = "file", load(args.aaaa)
-    hosts = host_diff(a, b, mode, table)
+    hosts = host_diff(a, b, mode, table, getattr(args, "group", "host"))
     majors = major_hosts(hosts["rows"], args.major_hosts.split(",") if args.major_hosts else None)
     status_b = part(b, "status")
     # `rejected_overload` は起動からの通算なので、再起動していなければその間の差を見る
@@ -892,8 +900,16 @@ def render(d, top):
 
     # --- 3
     hs = d["hosts"]
-    p("## 3. ホスト別 (`/hosts` の差分)")
+    grouped = hs.get("group") == "domain"
+    p("## 3. ホスト別 (`/hosts` の差分)"
+      + ("、**eTLD+1 でまとめた** (`--group domain`)" if grouped else ""))
     p()
+    if grouped:
+        p(f"**{hs.get('hosts', 0)} ホストを {len(hs['rows'])} のまとめの単位に畳んだ** "
+          "(`img.dlsite.jp` と `www.dlsite.jp` は `dlsite.jp` の 1 行。`www.dlsite.com` は"
+          "別の単位)。要求数・名前解決・エラーは和、`Δavg` は計測数で重みづけ。"
+          "**分位点 (p50 / p95) は足せない**ので 2 つ以上まとまった行では出さない。")
+        p()
     p(f"出どころ `{hs['source'][0]}` → `{hs['source'][1]}`"
       + ("、**途中で切れている雪像がある** (`?limit=` か `?sort=` で絞ること)" if hs["truncated"] else "")
       + f"。AAAA の判定: {d['aaaa_source']}")
@@ -912,7 +928,8 @@ def render(d, top):
           f"(`.rrd` の通算の引き算なので、**再起動前の {before / 3600:.1f} 時間を含む**)。"
           "再起動で切った平常時の前後は §2 を見ること。")
         p()
-    p("| ホスト | Δ要求 | Δ計測 | Δavg (±) | Δ名前解決 | ミス率 | Δ確立/本 | Δエラー |")
+    p(("| まとめの単位 (ホスト数)" if grouped else "| ホスト")
+      + " | Δ要求 | Δ計測 | Δavg (±) | Δ名前解決 | ミス率 | Δ確立/本 | Δエラー |")
     p("|---|---|---|---|---|---|---|---|")
     shown = [r for r in hs["rows"] if r["requests"] or r["errors"]][:top]
     for r in shown:
@@ -921,6 +938,8 @@ def render(d, top):
         flag = " (AAAA)" if hs["aaaa"] and r["aaaa"] else ""
         # `other` は表からあふれたぶんの置き場なので種類を持たない
         kind = "" if r["connect"] or "://" not in r["key"] else " (forward)"
+        if grouped:
+            kind += f" ({r['hosts']} ホスト)"
         dns = n(r["dns_misses"]) + " 回" + (f" / 1 回 {ms(per_m)} ms" if per_m is not None else "")
         p(f"| `{r['name']}`{kind}{flag} | {n(r['requests'])} | {n(r['timed'])} "
           f"| {ms(r['avg_ms'])} (±{ms(r['avg_err'])}) "
@@ -1071,6 +1090,9 @@ def parser():
                         "手元の集計と並べる (T14.24。手元の集計はそのまま残る)")
     p.add_argument("--major-hosts", metavar="a,b,c",
                    help="主要ホストを名指しする (既定はその間の要求数の上位 3)")
+    p.add_argument("--group", choices=["host", "domain"], default="host", metavar="KEY",
+                   help="ホスト別の表のまとめ方 (既定 host)。domain は eTLD+1 でまとめる "
+                        "(img.dlsite.jp と www.dlsite.jp が dlsite.jp の 1 行。T14.54)")
     return p
 
 

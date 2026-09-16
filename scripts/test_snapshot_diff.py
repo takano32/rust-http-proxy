@@ -261,6 +261,35 @@ class Hosts(unittest.TestCase):
         self.assertAlmostEqual(groups["AAAA なし"]["avg_median"], 12.0)  # beta
         self.assertAlmostEqual(groups["AAAA 不明"]["avg_median"], 20.0)  # zeta (表に無い)
 
+    def test_group_domain_folds_the_hosts_into_etld1(self):
+        """`--group domain` (T14.54)。`alpha` と `beta` と `zeta` が `example.jp` の 1 行。"""
+        d = build([A, B, "--aaaa", AAAA, "--group", "domain"])
+        rows = {(r["name"], r["connect"]): r for r in d["hosts"]["rows"]}
+        jp = rows[("example.jp", True)]
+        self.assertEqual(jp["hosts"], 3, "alpha + beta + zeta")
+        self.assertEqual(jp["requests"], 200 + 100 + 30)
+        self.assertEqual(jp["errors"], 3)
+        self.assertEqual(jp["dns_misses"], 2 + 10 + 15)
+        # avg は計測数で重みづけ ((4.0×200 + 12.0×100 + 20.0×30) / 330)
+        self.assertAlmostEqual(jp["avg_ms"], (4.0 * 200 + 12.0 * 100 + 20.0 * 30) / 330)
+        self.assertIsNone(jp["p50_ms"], "分位点は足せない")
+        self.assertIsNone(jp["aaaa"], "AAAA が混ざっている単位は「不明」")
+        # `.net` は別の単位、forward の `.org` も別の行、`other` はそのまま
+        self.assertEqual(rows[("example.net", True)]["hosts"], 1)
+        self.assertEqual(rows[("example.org", False)]["requests"], 30)
+        self.assertEqual(rows[("other", False)]["requests"], 500)
+        self.assertEqual(d["hosts"]["group"], "domain")
+        self.assertEqual(d["hosts"]["hosts"], 6, "まとめる前のホスト数")
+        # Markdown にも粒度が出る
+        md = run([A, B, "--aaaa", AAAA, "--group", "domain"])
+        self.assertIn("**eTLD+1 でまとめた**", md)
+        self.assertIn("`example.jp` (3 ホスト)", md)
+
+    def test_the_default_keeps_one_row_per_host(self):
+        self.assertEqual(self.d["hosts"]["group"], "host")
+        self.assertIn("alpha.example.jp", self.rows)
+        self.assertNotIn("example.jp", self.rows)
+
     def test_a_rebuilt_rrd_is_called_out(self):
         a = sd.load_source(A, False)
         b = read(B)
