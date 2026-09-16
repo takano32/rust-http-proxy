@@ -144,6 +144,81 @@ fn test_integration_profile_resolution() {
     );
 }
 
+/// 窓が埋まっても応答は 256 KiB 以下で、入り切らない古い標本は落ちること (T14.3 (4))。
+///
+/// 全部の段階と全部の役割が埋まった「いちばん大きい標本」を上限まで積む
+/// (デプロイ先の静かな窓は `0` 1 文字なのでずっと小さい)。
+#[test]
+fn test_integration_profile_stays_under_256_kib() {
+    profile::set_enabled(true);
+    let (port, metrics) = start_test_proxy_with_metrics(proxy_config());
+    let mut stages = profile::Stages::default();
+    let d = rust_http_proxy::metrics::Detail {
+        dns_ms: 7,
+        connect_ms: 9,
+        first_byte_ms: Some(20),
+        stages: rust_http_proxy::metrics::StageMs {
+            queue: 1,
+            client_read: 2,
+            first_relay: 30,
+            relay: 4000,
+            park: 90_000,
+            send: 3,
+            body: 40,
+        },
+        ..rust_http_proxy::metrics::Detail::default()
+    };
+    // どの段階も 12 段ぜんぶに値が入るようにする (区間の配列がいちばん長くなる)
+    for i in 0..13u64 {
+        let mut d = d;
+        d.dns_ms = i * 400;
+        stages.observe_connect(&d);
+        stages.observe_forward(&d);
+    }
+    let mut threads = profile::Threads::default();
+    for (i, t) in threads.iter_mut().enumerate() {
+        t.cpu_us = 1_234_567 + i as u64;
+        t.samples = 5;
+        for (k, c) in t.states.iter_mut().enumerate() {
+            *c = 10_000 + k as u32;
+        }
+    }
+    for i in 0..profile::RESOLUTIONS[0].1 as u64 {
+        metrics.profile.push(profile::Sample {
+            t: 1_800_000_000 + i * 5,
+            requests: 123_456,
+            cpu_us: 4_567_890,
+            stages,
+            threads,
+            locks: [11, 22, 33, 44],
+            queue_waited: 5,
+            queue_ms_sum: 500,
+            queue_ms_max: 250,
+        });
+    }
+    let json = endpoint_json(port, "/profile");
+    assert!(
+        json.len() <= 256 * 1024,
+        "応答が 256 KiB を超えた: {} B",
+        json.len()
+    );
+    assert!(json.contains("\"truncated\":true"), "打ち切りの印が無い");
+    assert!(
+        json.contains(&format!("\"count\":{}", profile::RESOLUTIONS[0].1)),
+        "全体の件数が出ていない"
+    );
+    // 残るのは**新しい方**
+    let last = 1_800_000_000 + (profile::RESOLUTIONS[0].1 as u64 - 1) * 5;
+    assert!(
+        json.contains(&format!("[{},123456,", last)),
+        "新しい標本が無い"
+    );
+    assert!(
+        !json.contains("[1800000000,123456,"),
+        "いちばん古い標本が残っている (新しい方から詰めるはず)"
+    );
+}
+
 /// `--lite` では `{"profile":"off"}` だけ (段階の時計も読んでいない)。
 #[test]
 fn test_integration_profile_is_off_in_lite_mode() {

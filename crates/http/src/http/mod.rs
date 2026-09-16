@@ -220,9 +220,12 @@ pub struct Shared<'a> {
     /// `Connection: keep-alive` を付けたまま閉じていたので、その応答を読んだ直後に
     /// 次の要求を送ったクライアントが取りこぼしていた (T12.6 の小物)
     pub last: bool,
-    /// ここまでに測った段階 (`queue` と `client_read`。T14.3 (1))。
+    /// ここまでに測った段階 (`queue`。T14.3 (1))。
     /// **本体クレートが測った値をそのまま運ぶだけ**で、ここでは時計を読まない
     pub stages: crate::metrics::StageMs,
+    /// 要求行が届いた時刻 (`client_read` の起点)。終わりは**この関数の入口で既に
+    /// 読んでいる `started`** を使うので、要求ごとの時計は 1 回も増えない
+    pub read_started: Option<Instant>,
 }
 
 /// アクセスログと配信に必要なリクエストの文脈。
@@ -407,9 +410,15 @@ pub fn handle_http_with_headers(
         head_only,
         mapped: origin.mapped,
         pool_key,
-        // `queue` と `client_read` は本体クレートが測った値 (T14.3 (1))
+        // `queue` は本体クレートが測った値、`client_read` は「要求行が届いてから
+        // `started` まで」(入口で読んだ時計をそのまま使う。T14.3 (1))
         detail: Detail {
-            stages: shared.stages,
+            stages: StageMs {
+                client_read: shared.read_started.map_or(0, |t| {
+                    crate::profile::ms_u32(started.saturating_duration_since(t))
+                }),
+                ..shared.stages
+            },
             ..Detail::default()
         },
     };
@@ -596,7 +605,7 @@ pub fn handle_http_with_headers(
             }
         };
         if !reused {
-            ctx.detail = origin_detail(acquire_started, None, shared.stages);
+            ctx.detail = origin_detail(acquire_started, None, ctx.detail.stages);
         }
         metrics.inc_origin_conn(reused);
         let sent = server

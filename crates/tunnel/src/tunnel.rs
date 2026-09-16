@@ -60,9 +60,15 @@ fn open(
     client_ip: String,
     resolved: Option<&dns::Resolved<'_>>,
     slot: Option<Arc<ConnSlot>>,
-    stages: StageMs,
+    mut stages: StageMs,
+    read_started: Option<Instant>,
 ) -> io::Result<Opened> {
     let started = Instant::now();
+    // `client_read` は「要求行が届いてからここまで」(入口で読んだ時計をそのまま使うので、
+    // 1 本あたりの時計は増えない。T14.3 (1))
+    if let Some(t) = read_started {
+        stages.client_read = crate::profile::ms_u32(started.saturating_duration_since(t));
+    }
     let addr_str = net::with_default_port(target, 443);
 
     log_debug!(Some(conn_id), "start CONNECT {}", addr_str);
@@ -214,6 +220,7 @@ pub fn handle_connect(
     resolved: Option<&dns::Resolved<'_>>,
     slot: Option<Arc<ConnSlot>>,
     stages: StageMs,
+    read_started: Option<Instant>,
 ) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -231,6 +238,7 @@ pub fn handle_connect(
             Box::new(()),
             slot,
             stages,
+            read_started,
         )
     }
     #[cfg(not(target_os = "linux"))]
@@ -240,7 +248,17 @@ pub fn handle_connect(
             server,
             info,
         } = open(
-            client, target, prefix, timeout, conn_id, metrics, client_ip, resolved, slot, stages,
+            client,
+            target,
+            prefix,
+            timeout,
+            conn_id,
+            metrics,
+            client_ip,
+            resolved,
+            slot,
+            stages,
+            read_started,
         )?;
         let transferred = tunnel(client, server, idle)?;
         report(&info, transferred);
@@ -273,9 +291,20 @@ pub fn handle_connect_parked(
     hold: Box<dyn Send>,
     slot: Option<Arc<ConnSlot>>,
     stages: StageMs,
+    read_started: Option<Instant>,
 ) -> io::Result<()> {
     let opened = open(
-        client, target, prefix, timeout, conn_id, metrics, client_ip, resolved, slot, stages,
+        client,
+        target,
+        prefix,
+        timeout,
+        conn_id,
+        metrics,
+        client_ip,
+        resolved,
+        slot,
+        stages,
+        read_started,
     )?;
     // トンネルの猶予は HTTP の keep-alive より長く取る (下限 [`relay::MIN_PARK_GRACE`])
     let park = park.map(|(w, grace)| (w, grace.max(relay::MIN_PARK_GRACE)));

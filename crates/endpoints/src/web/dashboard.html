@@ -152,7 +152,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
       <div class="card chart"><h2>CPU / 要求 (us) <span id="c-cpureq"></span></h2><canvas id="ch-cpureq"></canvas></div>
     </div>
     <div class="legend" id="lg-roles" style="margin-top:8px"></div>
-    <div style="overflow-x:auto;margin-top:6px"><table id="roles"><thead><tr><th>役割</th><th title="この窓にこの役割が使った CPU (1 コア = 100%)">CPU</th><th>標本</th><th title="走行中 / システムコール名 / 休眠 の割合">何をしているか</th></tr></thead><tbody></tbody></table></div>
+    <div style="overflow-x:auto;margin-top:6px"><table id="roles"><thead><tr><th>役割</th><th title="この窓にこの役割が使った CPU (1 コア = 100%)">CPU</th><th>標本</th><th title="どこで待っているか。CPU に乗っている間は中身に関係なく running になります (splice の中継など)。conn には次の仕事を待っているワーカー (futex) も入ります">どこで待っているか</th></tr></thead><tbody></tbody></table></div>
     <div style="overflow-x:auto;margin-top:10px"><table id="locks"><thead><tr><th>ロック</th><th title="try_lock に失敗した回数 (直近 5 分)">取り合い (5 分)</th><th>通算</th></tr></thead><tbody></tbody></table></div>
     <div class="hint" id="profhint"></div>
   </section>
@@ -539,6 +539,7 @@ function renderProfile(j){
   if(p.truncated)hint.push('古い標本は 256 KiB に入らないので落としています');
   if(p.unknown.length)hint.push('表に無いシステムコール: '+p.unknown.map(function(u){return u[0]+' '+u[1]}).join(' · '));
   hint.push('段階の窓は ms 刻みなので、1 要求が 1 ms に満たない環境ではほとんどが 0 に潰れます');
+  hint.push('状態は「どこで待っているか」(CPU に乗っている間は running。conn の futex は次の仕事待ちを含む)');
   $('profhint').textContent=hint.join(' · ');
 }
 function redraw(){

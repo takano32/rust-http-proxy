@@ -563,8 +563,10 @@ pub enum Step {
         addrs: Option<Vec<std::net::IpAddr>>,
         /// そのホストで最後に勝った族 (T12.1)。同じ鍵取りで受け取ったもの
         preferred: Option<bool>,
-        /// ここまでに測った段階 (`queue` / `client_read`。T14.3 (1))
+        /// ここまでに測った段階 (`queue`。T14.3 (1))
         stages: metrics::StageMs,
+        /// 要求行が届いた時刻 (`client_read` の起点。終わりは `tunnel::open` の入口の時計)
+        read_started: Option<Instant>,
     },
 }
 
@@ -786,6 +788,7 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                 addrs,
                 preferred,
                 stages,
+                read_started,
             } => {
                 // 要るものだけ取り出してトンネルへ渡す (`Conn` に `Drop` は無いので
                 // 分解できる)。**持ち分 (`_open` / `_active`) も一緒に渡すこと**:
@@ -830,6 +833,7 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                     // 抹消するのは `hold` の中の `ActiveGuard` なので、寿命は一致する
                     slot,
                     stages,
+                    read_started,
                 );
             }
         }
@@ -858,11 +862,24 @@ fn start_tunnel(
     hold: Box<dyn Send>,
     slot: Option<Arc<recent::ConnSlot>>,
     stages: metrics::StageMs,
+    read_started: Option<Instant>,
 ) -> io::Result<()> {
     let park = park.map(|w| (w as Arc<dyn tunnel::Park>, grace));
     tunnel::handle_connect_parked(
-        client, target, prefix, timeout, idle, conn_id, metrics, client_ip, resolved, park, hold,
-        slot, stages,
+        client,
+        target,
+        prefix,
+        timeout,
+        idle,
+        conn_id,
+        metrics,
+        client_ip,
+        resolved,
+        park,
+        hold,
+        slot,
+        stages,
+        read_started,
     )
 }
 
@@ -883,11 +900,23 @@ fn start_tunnel(
     hold: Box<dyn Send>,
     slot: Option<Arc<recent::ConnSlot>>,
     stages: metrics::StageMs,
+    read_started: Option<Instant>,
 ) -> io::Result<()> {
     // 預け先は Linux (epoll) だけ。持ち分はこの関数が終わるまで持っておく
     let _ = (park, grace);
     let result = tunnel::handle_connect(
-        client, target, prefix, timeout, idle, conn_id, metrics, client_ip, resolved, slot, stages,
+        client,
+        target,
+        prefix,
+        timeout,
+        idle,
+        conn_id,
+        metrics,
+        client_ip,
+        resolved,
+        slot,
+        stages,
+        read_started,
     );
     drop(hold);
     result
@@ -1163,10 +1192,12 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         .and_then(|i| scratch.lines[i].split_once(':'))
         .map(|(_, v)| v.trim());
     let raw_headers = scratch.headers();
-    // ここまでが段階の計時 (T14.3 (1))。この 1 要求ぶんの `queue` は使ったら 0 に戻す
+    // この 1 要求ぶんの `queue` は使ったら 0 に戻す (T14.3 (1))。`client_read` の
+    // **終わりの時計は読まない**: 下の層 (`http::handle_http_with_headers` と
+    // `tunnel::open`) が入口で既に `Instant::now()` を読んでいるので、起点だけ渡して
+    // 向こうで引き算させる (要求ごとの時計が 1 回減る)
     let stages = metrics::StageMs {
         queue: std::mem::take(queue_ms),
-        client_read: profile::elapsed_ms(read_started),
         ..metrics::StageMs::default()
     };
 
@@ -1315,6 +1346,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             addrs,
             preferred,
             stages,
+            read_started,
         });
     }
 
@@ -1342,6 +1374,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         resolved: resolved.as_ref(),
         last,
         stages,
+        read_started,
     };
     let keep = http::handle_http_with_headers(
         client,

@@ -196,7 +196,8 @@ pub struct Detail {
 ///
 /// [`Detail`] の中に置いてあるので、書くのは [`Metrics::record`] が既に取っている
 /// 鍵の内側だけ = **原子操作は 1 つも増えない**。熱い経路で増えるのは境目の
-/// `Instant::now()` だけ (CONNECT 5 回、forward 4 回)。`--lite` では時計も読まない。
+/// `Instant::now()` だけ (要求ごとに forward 2 回 / CONNECT 3 回 + 接続ごとに 1 回)。
+/// `--lite` では時計も読まない。
 ///
 /// `dns` / `connect` は [`Detail::dns_ms`] / [`Detail::connect_ms`]、forward の `ttfb` は
 /// [`Detail::first_byte_ms`] がそのまま段階になるので、ここには持たない
@@ -251,7 +252,7 @@ pub struct HostStats {
 }
 
 impl HostStats {
-    fn count(&mut self, outcome: HostOutcome, bytes: u64, took: Option<Duration>, detail: Detail) {
+    fn count(&mut self, outcome: HostOutcome, bytes: u64, took: Option<Duration>, detail: &Detail) {
         self.requests += 1;
         self.bytes += bytes;
         self.last_seen = crate::cache::now_epoch();
@@ -269,7 +270,7 @@ impl HostStats {
     }
 
     /// 内訳を足す (鍵の内側。全部 0 の [`Detail::default`] でも同じ道を通る)。
-    fn add_detail(&mut self, d: Detail) {
+    fn add_detail(&mut self, d: &Detail) {
         self.dns_ms_sum += d.dns_ms;
         self.dns_misses += d.dns_misses;
         self.connect_ms_sum += d.connect_ms;
@@ -584,12 +585,12 @@ impl Metrics {
 
     /// ホスト別に 1 要求を数える (応答時間なし)。
     pub fn record_host(&self, host: &str, outcome: HostOutcome, bytes: u64) {
-        self.record(host, outcome, bytes, None, Detail::default());
+        self.record(host, outcome, bytes, None, &Detail::default());
     }
 
     /// ホスト別に 1 要求と応答時間を数える。
     pub fn record_host_timed(&self, host: &str, outcome: HostOutcome, bytes: u64, took: Duration) {
-        self.record(host, outcome, bytes, Some(took), Detail::default());
+        self.record(host, outcome, bytes, Some(took), &Detail::default());
     }
 
     /// [`record_host_timed`](Self::record_host_timed) に内訳を添えた版 (T12.4 (2))。
@@ -602,7 +603,7 @@ impl Metrics {
         took: Option<Duration>,
         detail: Detail,
     ) {
-        self.record(host, outcome, bytes, took, detail);
+        self.record(host, outcome, bytes, took, &detail);
     }
 
     /// エラー 1 件を個票のリングに写す (`/errors`。T13.4)。
@@ -656,13 +657,17 @@ impl Metrics {
         outcome: HostOutcome,
         bytes: u64,
         took: Option<Duration>,
-        detail: Detail,
+        detail: &Detail,
     ) {
         // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
         let mut hosts = self
             .hosts
             .locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_STATS]);
         let hosts = &mut *hosts;
+        // 鍵の種類は 1 回だけ見る (CONNECT のホスト別統計の鍵は `connect://` で始まる。
+        // `tunnel::report`。前綴りを見るだけで済むので、呼び出し側に旗を持たせない)
+        let connect = host.starts_with("connect://");
+        let counted = connect || !(host.starts_with("blocked://") || host.starts_with("loop://"));
         // 全体の合計も同じ鍵の内側で足す (原子操作を増やさない)
         for iv in [&mut hosts.total, &mut hosts.interval] {
             iv.dns_misses += detail.dns_misses;
@@ -677,22 +682,20 @@ impl Metrics {
                 let ms = detail
                     .first_byte_ms
                     .unwrap_or_else(|| d.as_millis().min(u64::MAX as u128) as u64);
-                // CONNECT のホスト別統計の鍵は `connect://` で始まる (`tunnel::report`)。
-                // 前綴りを見るだけで済むので、呼び出し側に旗を持たせない
-                if host.starts_with("connect://") {
+                if connect {
                     iv.connect.observe(ms);
-                } else if !host.starts_with("blocked://") && !host.starts_with("loop://") {
+                } else if counted {
                     iv.forward.observe(ms);
                 }
             }
         }
         // 段階の窓 (T14.3 (1))。`--lite` では時計を読んでいないので窓も触らない。
         // 同じ鍵の内側なので、原子操作も鍵の取り直しも増えない
-        if took.is_some() && crate::profile::on() {
-            if host.starts_with("connect://") {
-                hosts.stages.observe_connect(&detail);
-            } else if !host.starts_with("blocked://") && !host.starts_with("loop://") {
-                hosts.stages.observe_forward(&detail);
+        if took.is_some() && counted && crate::profile::on() {
+            if connect {
+                hosts.stages.observe_connect(detail);
+            } else {
+                hosts.stages.observe_forward(detail);
             }
         }
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
@@ -739,7 +742,7 @@ impl Metrics {
     ) {
         let mut clients = self.clients.locked();
         if let Some(stats) = clients.get_mut(client) {
-            stats.count(outcome, bytes, took, Detail::default());
+            stats.count(outcome, bytes, took, &Detail::default());
             return;
         }
         let key = if clients.len() >= MAX_CLIENTS {
@@ -750,7 +753,7 @@ impl Metrics {
         clients
             .entry(key)
             .or_default()
-            .count(outcome, bytes, took, Detail::default());
+            .count(outcome, bytes, took, &Detail::default());
     }
 
     /// 要求数の多い順に並べた接続元別統計。
