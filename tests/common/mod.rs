@@ -152,8 +152,11 @@ fn start_test_proxy_parts(
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(cache_cfg));
     let tls = TlsClient::load(true, ca_file.as_deref()).ok().flatten();
+    let mut origin_pool = Pool::new(cfg.pool_per_host, Duration::from_secs(30));
+    // 捨てるオリジン接続のカーネルの RTT をホスト別統計に足す (本番の main.rs と同じ配線。T14.5)
+    rust_http_proxy::attach_origin_rtt(&mut origin_pool, Arc::clone(&metrics));
     let pool = Arc::new(Upstream {
-        pool: Pool::new(cfg.pool_per_host, Duration::from_secs(30)),
+        pool: origin_pool,
         tls,
     });
 

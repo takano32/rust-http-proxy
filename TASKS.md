@@ -3624,7 +3624,7 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     - 次が繋ぐ場所: T14.3 は `recent.rs` の `STAGES` の後ろ 3 つ (`queue` / `client_read` / `first_relay`) を `Ctx::log()` と `tunnel::report()` で
       埋めるだけ。T14.5 は `RecentEntry` に `rtt_ms` / `retrans` を足して `ConnTally` 経由で `ConnSlot::finish` へ。T14.6 は `Metrics::record_closed()`
       で理由ごとに数える (2,000 件を複製しない)。
-- [ ] **T14.5 カーネルの RTT と再送 (`TCP_INFO`) を接続の個票とホスト別・接続元別に**
+- [x] **T14.5 カーネルの RTT と再送 (`TCP_INFO`) を接続の個票とホスト別・接続元別に**
   - 目的: 「mtalk.google.com の 30 ms は RTT か」「urlscan.io の 250 ms は RTT か」「利用者 → プロキシの往復は何 ms か」を、これまでは
     接続にかかった時間 (SYN の往復 + α) から推測していた。カーネルは各ソケットの **平滑化 RTT・再送回数・輻輳窓** を持っている
     (`getsockopt(SOL_TCP, TCP_INFO)`)。これを接続の終わりに 2 本 (クライアント側・オリジン側) 読めば、**物理 (RTT) と自分 (それ以外) が
@@ -3649,6 +3649,13 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
     デプロイ先 (再デプロイ後): 手元から `probe-deployed.sh` を回したあと `/status` の `clients[]` にこの機械の IP の `rtt_ms` が
     **40〜60 ms** (手元の `time_connect` 0.04〜0.06 秒と合う) で出ること、`hosts[]` の mtalk.google.com の `rtt_ms` が接続の時間
     (30 ms) と同じ桁で出ること。
+  - 結果 (2026-09-16、`a343fa7`): カーネルの RTT と再送を**接続の終わりに 1 回だけ**読むようにした。`sys::tcp_info(fd) -> Option<TcpInfo { rtt_us, rttvar_us, retrans, total_retrans, lost, cwnd, pmtu }>` は 104 バイトの緩衝に `getsockopt(SOL_TCP=6, TCP_INFO=11)` 1 回。**欄の位置は動作環境の `/usr/include/linux/tcp.h` を `offsetof` で確かめた** (`sizeof(struct tcp_info)` = 280。`tcpi_lost` 32 / `tcpi_retrans` 36 / `tcpi_pmtu` 60 / `tcpi_rtt` 68 / `tcpi_rttvar` 72 / `tcpi_snd_cwnd` 80 / `tcpi_total_retrans` 100 — **本文の見込みと 7 つとも一致**)。カーネルは `min(len, sizeof)` しか書かないので古いカーネルでも溢れず、`tcpi_rttvar` まで書かれなければ `None`。読むのは 3 か所だけ: `tunnel::report` で**両側** (`getsockopt` 2 回)、`Conn::finish` でクライアント側 (1 回。`--lite` は枠が無いので通らない)、`crates/origin/src/pool.rs` の新しい `on_discard` フックでオリジン側 (**期限切れか相手が閉じていた接続を捨てるときだけ**で、使い回せた接続は 1 度も通らない)。**要求ごとには読まない**。出口は `/recent` の 1 件 (`rtt_ms` / `retrans` を `{"client":…,"origin":…}`。読めなかった側は `null`)、`/hosts` と `/status` の `hosts[]` (オリジン側) / `clients[]` (クライアント側) の `rtt_ms` (`avg` / `min` / `samples`) と `retrans`、`/metrics` の `sorahost_rtt_seconds_{sum,count}{side="client"|"origin"}` (**ホスト別は出さない** — 系列が増えすぎる)。`HostStats` の末尾に `rtt_us_sum` / `rtt_us_min` / `rtt_samples` / `retrans` の 4 欄 (32 B) を足して `.rrd` は 1 スロット 520 → **552 B** (**余白 52 → 20 B**)、**版は上げていない** (T14.5 より前のファイルは新しい欄が 0 で読み戻る。古い形のレコードを書いた `.rrd` を置いて実バイナリで確かめた)。**費用**: CONNECT 確立 CPU/本 **134.89 → 137.97 us (+2.3%、6 組。基準 ±4% の中)**、**CONNECT 1 本のシステムコール 20.06 → 22.11** (`getsockopt` ちょうど 2.00 回/本)、forward の CPU/要求 42.24 → 41.91 us (−0.8%、3 組 = ぶれの中) で**要求ごとは 0 増** (`--lite` のシステムコール 5.02 → 5.02)、1 接続 1 要求 108.13 → 106.74 us (−1.3%、3 組)。`/recent` の 1 件は 225 → **298 B** (最悪 446 → 551 B)。結合 3 本・単体 3 本を新設、テスト 384 → 390 本。
+    - 個票の `rtt_ms` / `retrans` は**両側とも必ず出す** (`null` と 0 ms を区別させるため) ので 1 件が 73 B 太った。`[client, origin]` の配列にすれば 262 B に収まるが、読みやすさを採った。
+    - `--lite` でも**トンネルは両側を読む** (ホスト別統計は `--lite` でも生きているため)。`Conn::finish` は枠が無いので読まない = forward の 5.02 回/要求 が動かない。
+    - `crates/sysinfo` の `capabilities::tcp_info_ok` (T14.15) が `getsockopt` をもう 1 つ別に宣言している。`proxy-sysinfo` は `proxy-sys` に依存しているので `sys::tcp_info` に寄せられる (判定の意味が違うので今回は触らず。小物 1 件)。
+    - ホスト表が `MAX_HOSTS` (1000) で溢れて `other` に畳まれた相手と `MAX_CLIENTS` 越えの接続元は、行を作らない方針なのでその 1 標本を捨てる。
+    - 次が繋ぐ場所: T14.8 は `/recent` の `rtt_ms` と `/hosts` の `rtt_ms` × `connect` の散布、`/clients` の表の RTT 列 (`samples` 0 は `null` なので描かない分岐が要る)。T14.26 は `.rrd` の**残り 20 B = u64 2 項目**。
+    - **デプロイ先の基準 (再デプロイ後、`probe-deployed.sh` のあと `clients[]` にこの機械の `rtt_ms` 40〜60 ms、`hosts[]` の mtalk.google.com が接続の時間と同じ桁) は親が見る。**
 - [x] **T14.6 山の写真 `/bursts` と、閉じた理由・寿命・バイトの分布**
   - 目的: T13.2 の効きは「バーストが来たとき」にしか見えないが、来たときに `/connections` を見ている人はいない。同時接続が
     上限の一定割合を超えた瞬間に自動で写真を撮る。あわせて、トンネルが**誰に・どれだけ生きて・なぜ**閉じられたかの分布が無い
