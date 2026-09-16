@@ -3544,7 +3544,7 @@ T14.14 (`.rrd` 版 3) は履歴に項目を足すと決めたときにその前�
   先頭 128 バイトだけ例外) **は入れない**。認証なしで見える (`/purge` と同じ方針) ので README に書く。
 - `/` の案内 (T12.3)、README のエンドポイント一覧、`scripts/check-dashboard.js` (T14.8 で描く関数) を各タスクで更新する。
 
-- [ ] **T14.4 閉じた接続の個票 `/recent` と、1 回で全部取る `/snapshot`**
+- [x] **T14.4 閉じた接続の個票 `/recent` と、1 回で全部取る `/snapshot`**
   - 目的: 2026-09-16 の分析で最も欲しかったのは「バーストのとき誰が何を開いたか」「遅かった 1 本はどの段階で遅かったか」で、
     `/connections` は**いま**しか見えず、`/errors` は失敗だけ。閉じた接続 1 本ごとの記録があれば、山も遅い接続も後から読める。
     あわせて、データ収集が 17 本の URL を手で叩く作業になっている (T14.0) ので、1 要求で全部取れる `/snapshot` と、それを保存して
@@ -3572,6 +3572,27 @@ T14.14 (`.rrd` 版 3) は履歴に項目を足すと決めたときにその前�
     (c) `?client=` と `?since=` で絞れる、`?sort=slow` が `connect` の大きい順、(d) `/snapshot` が 1 要求で上の全部を含み 4 MiB 以下
     (各キーがある)、(e) 2,000 件のリングを `n=2000` で読んで 256 KiB で打ち切られる (`truncated`)。費用: 共通の決まり (接続の終了に
     リングの鍵 1 回と 1 件の書き込み)。`collect-deployed.sh` を手元のプロキシに対して回して要約が出ること。
+  - 結果 (2026-09-16、`721e6a4` / `f8e7abf` / `efb3411`): 閉じた接続の個票 **`/recent?n=200&since=&client=&sort=time|slow|bytes`** (既定 200、
+    最大 2,000、リングは 2,000 件固定) を足した。1 件 = 接続 id・開いた時刻・接続元・宛先・種類・寿命・要求数・**上り / 下り別のバイト**・
+    **閉じた理由** (`client_eof` / `server_eof` / `idle_timeout` / `keepalive_timeout` / `evicted` / `limit` / `error:<原因>` / `shutdown` の 8 種)・
+    状態コード・預かり所にいた合計秒と回数・**段階の ms** (`dns` / `connect`、`first_byte`。T14.3 の `queue` / `client_read` / `first_relay` は
+    欄だけ作って 0 — T14.3 のマージで親が繋ぐ)。ありふれた 1 件 225 B、最悪 446 B。書くのは**接続の終了で 1 回だけ** (`ActiveGuard::drop` =
+    `ConnSlot` の抹消と同じ場所)。要求ごとの積み上げは接続を持っているスレッドの箱 (`Cell<ConnTally>`) で行うので**要求ごとの原子操作は
+    1 つも増えない**。閉じた理由は先着優先。**自分宛て (`/status` など) だけで終わった接続は残さない** (監視の 5 秒おきの引きでリングが
+    埋まるため)。**`/snapshot`** は `/status` (`?sort=` 3 通り)・`/history` (5 / 60 / 3600)・`/dns`・`/errors`・`/connections`・`/recent`・`/hosts`・
+    `/clients` (マージで足した)・`/log` を 1 つの JSON に (`parts` に名前が並ぶ)。**組み立ては同じプロセス内の関数呼び出し**で自分へ繋ぎ直さない。
+    上限 4 MiB、越えたら `recent` → `log` → `history.5` の順に `null` へ落として `dropped` に出す。実測 13,708 B (静かなとき) / 21,996 B
+    (要求 20 本のあと)。`scripts/collect-deployed.sh HOST:PORT [DIR]` が `/snapshot` を `~/rust-http-proxy-status/<UTC 時刻>-snapshot.json` に
+    保存し、要点 (`scripts/snapshot-summary.py`)・`status-diff.py` (前回があれば差分)・`check-dashboard.js`・`probe-deployed.sh` を続けて回して
+    Markdown 1 枚を出す (`PROBE=0` で本物の要求を送らない)。**費用**: forward 40.17 → 40.84 us/req (+1.7%)、CONNECT 確立 131.16 → 131.03 us/op
+    (−0.1%、6 組) でどちらもぶれの中、`--lite` のシステムコール 5.01 回/要求 のまま。既定プロファイルの forward 44.54 → 45.06 us/req (+1.2%)、
+    **1 接続 1 要求 109.15 → 111.57 us/req (+2.4 us/接続 = リングの鍵 1 回と文字列 2 本の複製)**。結合 6 本・単体 8 本を新設、テスト 375 本
+    (マージ後の main では 384 本)。
+    - http 接続の `target` にポートが無い (`/connections` と同じ形。直すなら 2 つ一緒に)。403 / 4xx で断った接続は `/recent` に残らない
+      (`/errors` にはある)。手元での確認には `PROXY_STATS_PERSIST=on` が要る (off だと `/history` が空)。
+    - 次が繋ぐ場所: T14.3 は `recent.rs` の `STAGES` の後ろ 3 つ (`queue` / `client_read` / `first_relay`) を `Ctx::log()` と `tunnel::report()` で
+      埋めるだけ。T14.5 は `RecentEntry` に `rtt_ms` / `retrans` を足して `ConnTally` 経由で `ConnSlot::finish` へ。T14.6 は `Metrics::record_closed()`
+      で理由ごとに数える (2,000 件を複製しない)。
 - [ ] **T14.5 カーネルの RTT と再送 (`TCP_INFO`) を接続の個票とホスト別・接続元別に**
   - 目的: 「mtalk.google.com の 30 ms は RTT か」「urlscan.io の 250 ms は RTT か」「利用者 → プロキシの往復は何 ms か」を、これまでは
     接続にかかった時間 (SYN の往復 + α) から推測していた。カーネルは各ソケットの **平滑化 RTT・再送回数・輻輳窓** を持っている
