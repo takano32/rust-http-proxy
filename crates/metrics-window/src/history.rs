@@ -5,7 +5,7 @@
 //! - 粗い解像度は細かい標本から作る: 累計カウンタは窓の最後の値、ゲージ (接続数・使用量) は平均、
 //!   **ゲージの山は最大値** (`active_max` / `threads_max` / `fds_max`)、
 //!   **区間の値** (応答時間の分布・エラー・名前解決) は足し合わせ
-//! - 状態ファイル ([`crate::persist`]) があれば各解像度をそこにも書き、起動時に読み戻す
+//! - 状態ファイル (`persist`。1 つ上の層) があれば各解像度をそこにも書き、起動時に読み戻す
 //!
 //! **累計と区間が混ざっている**のは意図したもの (T12.4 (3))。要求数やバイト数は累計を
 //! 置いてブラウザ側で差分を取る (再起動をまたいでも段差が 1 つ出るだけ) が、応答時間の分布は
@@ -15,10 +15,7 @@ use crate::sync::LockExt;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
 
-use crate::cache::{Cache, now_epoch};
-use crate::metrics::Metrics;
 use crate::recent::ClosedCounts;
 use crate::rrd::{Dec, Enc};
 
@@ -129,45 +126,6 @@ pub const KEYS: [&str; 32] = [
 ];
 
 impl Sample {
-    pub fn take(metrics: &Metrics, cache: &Cache) -> Self {
-        let (mem_used, _) = cache.mem_usage();
-        let (disk_used, _) = cache.disk_usage();
-        let active = metrics.active_connections.load(Ordering::Relaxed);
-        let iv = metrics.take_interval();
-        // `/proc` を読むのは 5 秒の標本のときだけ (要求ごとには読まない)
-        let (threads, fds, max_fds) = process_counts();
-        // カーネルと cgroup の窓 (`/proc/net`・cgroup・PSI) もこの標本のときだけ進める (T14.12)
-        crate::kernel::sample(now_epoch());
-        Self {
-            t: now_epoch(),
-            requests: metrics.total_requests.load(Ordering::Relaxed),
-            bytes: metrics.bytes_forwarded.load(Ordering::Relaxed),
-            active,
-            hits: metrics.cache_hits.load(Ordering::Relaxed),
-            misses: metrics.cache_misses.load(Ordering::Relaxed),
-            stores: cache.stores.load(Ordering::Relaxed),
-            evictions: cache.evictions.load(Ordering::Relaxed),
-            mem_used,
-            mem_limit: cache.mem_capacity(),
-            disk_used,
-            disk_limit: cache.disk_capacity(),
-            rss: cache.snapshot().rss.unwrap_or(0),
-            connect: iv.connect,
-            forward: iv.forward,
-            errors: iv.errors,
-            errors_by_cause: iv.errors_by_cause,
-            dns_misses: iv.dns_misses,
-            dns_ms_sum: iv.dns_ms_sum,
-            threads,
-            fds,
-            max_fds,
-            active_max: active as u64,
-            threads_max: threads,
-            fds_max: fds,
-            evicted_idle: metrics.evicted_idle.load(Ordering::Relaxed),
-        }
-    }
-
     /// 1 標本を配列 1 行として書く ([`KEYS`] の順)。
     fn push_row(&self, out: &mut String) {
         let _ = write!(
@@ -340,14 +298,6 @@ impl Sample {
     }
 }
 
-/// プロセス全体のスレッド数 / 開いている記述子の数 / その上限。
-/// **5 秒の標本のときだけ**呼ぶこと (`/proc` を 2 つ読み、ディレクトリを 1 つ数える)。
-fn process_counts() -> (u64, u64, u64) {
-    let threads = crate::sysinfo::process_threads().unwrap_or(0);
-    let (fds, max_fds) = crate::sysinfo::process_fds().unwrap_or((0, 0));
-    (threads, fds, max_fds)
-}
-
 /// 閉じた接続の分布を残す**メモリ上の窓** (5 秒 × 720 と 60 秒 × 1,440。T14.6)。
 ///
 /// **`.rrd` の標本には足さない。** 標本 1 本の余白は 4 B しか残っていない (T14.2 (3)) ので、
@@ -355,7 +305,7 @@ fn process_counts() -> (u64, u64, u64) {
 /// どうやっても入らない。版を上げれば入るが、上げると統計が全部消える。
 /// **ここは再起動で消えてよい**個票と同じ扱い (T14.4 のリングと同じ方針)。
 ///
-/// 書くのは [`crate::metrics::Metrics::record_closed`] = 接続の終了で 1 回だけで、
+/// 書くのは `Metrics::record_closed` = 接続の終了で 1 回だけで、
 /// 窓を閉じるのは history スレッド ([`ClosedWindows::roll`]) — `/history` の標本と
 /// **同じ周期・同じ境目**で閉じるので、読む側は時刻で突き合わせられる。
 ///
@@ -685,7 +635,7 @@ impl History {
         out.push_str(&self.transfer.to_json_res(res));
         // 利用者の要求が無い時間帯の名前解決と TCP 接続 (T14.10)。**別の配列**に足す
         // ので、既存の `keys` / `samples` を読む側は 1 行も変えなくてよい
-        crate::canary::push_history_json(&mut out, res);
+        crate::canaryhist::push_history_json(&mut out, res);
         out.push('}');
         out
     }

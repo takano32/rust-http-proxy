@@ -7,10 +7,11 @@
 //! (T14.55 でクレートを割ったときに、この 1 関数だけを上へ出した)。
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::cache::Cache;
+use crate::cache::{Cache, now_epoch};
 use crate::history::{INTERVAL, Sample};
 use crate::metrics::Metrics;
 
@@ -53,7 +54,7 @@ pub fn spawn_every(
         metrics.history.transfer.roll(now);
         // ホスト別の時系列の窓送りと上位 16 の入れ替え (T14.22)。**5 分の境目でだけ**動く
         metrics.roll_host_series();
-        let sample = Sample::take(metrics, cache);
+        let sample = take_sample(metrics, cache);
         // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
         crate::daily::tick(metrics, &sample);
         // 同じ境目で前日ぶんの `/snapshot` を 1 ファイル残す (T14.34)。こちらも
@@ -82,4 +83,56 @@ pub fn spawn_every(
             }
         })
         .expect("spawn history thread")
+}
+
+/// 5 秒の標本を 1 本取る (`history` スレッドと状態ファイルが使う 1 本)。
+///
+/// **ここに置いてあるのは層の都合** (T14.55): 窓そのもの ([`crate::history::Sample`]) は
+/// 下の層 (`proxy-metrics-window`) に居て、[`Metrics`] は 1 つ上のクレートに居る。
+/// 読むのは `Metrics` の原子 6 本と区間の合計、キャッシュの使用量、`/proc` の 3 つ。
+pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
+    let (mem_used, _) = cache.mem_usage();
+    let (disk_used, _) = cache.disk_usage();
+    let active = metrics.active_connections.load(Ordering::Relaxed);
+    let iv = metrics.take_interval();
+    // `/proc` を読むのは 5 秒の標本のときだけ (要求ごとには読まない)
+    let (threads, fds, max_fds) = process_counts();
+    // カーネルと cgroup の窓 (`/proc/net`・cgroup・PSI) もこの標本のときだけ進める (T14.12)
+    crate::kernel::sample(now_epoch());
+    Sample {
+        t: now_epoch(),
+        requests: metrics.total_requests.load(Ordering::Relaxed),
+        bytes: metrics.bytes_forwarded.load(Ordering::Relaxed),
+        active,
+        hits: metrics.cache_hits.load(Ordering::Relaxed),
+        misses: metrics.cache_misses.load(Ordering::Relaxed),
+        stores: cache.stores.load(Ordering::Relaxed),
+        evictions: cache.evictions.load(Ordering::Relaxed),
+        mem_used,
+        mem_limit: cache.mem_capacity(),
+        disk_used,
+        disk_limit: cache.disk_capacity(),
+        rss: cache.snapshot().rss.unwrap_or(0),
+        connect: iv.connect,
+        forward: iv.forward,
+        errors: iv.errors,
+        errors_by_cause: iv.errors_by_cause,
+        dns_misses: iv.dns_misses,
+        dns_ms_sum: iv.dns_ms_sum,
+        threads,
+        fds,
+        max_fds,
+        active_max: active as u64,
+        threads_max: threads,
+        fds_max: fds,
+        evicted_idle: metrics.evicted_idle.load(Ordering::Relaxed),
+    }
+}
+
+/// プロセス全体のスレッド数 / 開いている記述子の数 / その上限。
+/// **5 秒の標本のときだけ**呼ぶこと (`/proc` を 2 つ読み、ディレクトリを 1 つ数える)。
+fn process_counts() -> (u64, u64, u64) {
+    let threads = crate::sysinfo::process_threads().unwrap_or(0);
+    let (fds, max_fds) = crate::sysinfo::process_fds().unwrap_or((0, 0));
+    (threads, fds, max_fds)
 }

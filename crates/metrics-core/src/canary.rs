@@ -25,7 +25,6 @@
 //!   ので `v4_first` の判定は 1 ビットも動かない。繋がらなかったとき・AAAA が無い名前・
 //!   IPv6 を切ってあるときは `null`。
 
-use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -43,9 +42,10 @@ pub const SECS: u64 = 60;
 pub const DEADLINE: Duration = Duration::from_secs(5);
 /// 相手に既定で繋ぐポート (`PROXY_CANARY=example.com` のようにポートを省いたとき)。
 pub const DEFAULT_PORT: u16 = 443;
-/// 窓の解像度と本数。**履歴 ([`crate::history::RESOLUTIONS`]) の 5 秒と 1 分に揃える**
-/// (`/history` の標本と同じ `t` で並ぶので、利用者の確立時間と重ねて読める)。
-pub const RESOLUTIONS: [(u64, usize); 2] = [(5, 720), (60, 1440)];
+// 窓 (`/history` の `canary` の列) は下の層 (`proxy-metrics-window`) に置いてある
+// (T14.55。読むのは `history` の `/history` の組み立てで、そちらが下の層に居るため)。
+// **今までの名前でここから引ける**。
+pub use crate::canaryhist::{KEYS, RESOLUTIONS, push_history_json};
 /// 手で並べられるホストの上限 (`PROXY_CANARY=a,b,...`)。1 周で繋ぐ本数の歯止め。
 pub const MAX_HOSTS: usize = 8;
 /// `auto` が「直近」と見なす窓 (秒)。この間に使われた CONNECT の宛先から選ぶ。
@@ -145,30 +145,6 @@ impl Probe {
     }
 }
 
-/// 窓の 1 行 (`/history` の `canary` の 1 標本)。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Row {
-    t: u64,
-    dns_ms: u64,
-    connect_ms: u64,
-    host: String,
-    /// IPv6 側だけの 1 本 (繋がらなければ `null`。T14.37)
-    ipv6_connect_ms: Option<u64>,
-}
-
-/// `/history` の `canary` の列名 (この順で並ぶ)。
-///
-/// **足すのは末尾だけ** (T14.37 で `canary_ipv6_connect_ms` を 5 列目に足した)。
-/// 読む側 (`scripts/check-dashboard.js`) は先頭からの一致で見るので、列を増やしても
-/// 古い版の出力がそのまま読める。
-pub const KEYS: [&str; 5] = [
-    "t",
-    "canary_dns_ms",
-    "canary_connect_ms",
-    "canary_host",
-    "canary_ipv6_connect_ms",
-];
-
 /// いまの設定 (`PROXY_CANARY`)。
 static MODE: Mutex<Mode> = Mutex::new(Mode::Auto);
 /// 周期 (秒)。`PROXY_CANARY_SECS` (最小 1)。
@@ -177,8 +153,6 @@ static PERIOD_SECS: AtomicU64 = AtomicU64::new(SECS);
 static IPV6: AtomicBool = AtomicBool::new(true);
 /// 最後の結果 (`/status` と `/metrics`)。
 static LAST: Mutex<Option<Probe>> = Mutex::new(None);
-/// メモリ上の窓 (5 秒 × 720 / 60 秒 × 1,440)。**`.rrd` には書かない。**
-static RINGS: Mutex<Option<[VecDeque<Row>; RESOLUTIONS.len()]>> = Mutex::new(None);
 /// 回した回数と、そのうち失敗した回数。
 static RUNS: AtomicU64 = AtomicU64::new(0);
 static FAILURES: AtomicU64 = AtomicU64::new(0);
@@ -412,29 +386,15 @@ fn record(probe: &Probe, metrics: &Metrics) {
     *LAST.locked() = Some(probe.clone());
 }
 
-/// 窓に 1 行足す (同じ窓に 2 回入ったら**新しい方で置き換える**)。
+/// 窓に 1 行足す (下の層の環状バッファへ。T14.55)。
 fn push_row(probe: &Probe) {
-    let mut guard = RINGS.locked();
-    let rings = guard.get_or_insert_with(Default::default);
-    for (ring, (step, cap)) in rings.iter_mut().zip(RESOLUTIONS) {
-        let t = (probe.at / step) * step;
-        let row = Row {
-            t,
-            dns_ms: probe.dns_ms,
-            connect_ms: probe.connect_ms,
-            host: probe.host.clone(),
-            ipv6_connect_ms: probe.ipv6_connect_ms,
-        };
-        match ring.back_mut() {
-            Some(back) if back.t == t => *back = row,
-            _ => {
-                if ring.len() >= cap {
-                    ring.pop_front();
-                }
-                ring.push_back(row);
-            }
-        }
-    }
+    crate::canaryhist::push(
+        probe.at,
+        probe.dns_ms,
+        probe.connect_ms,
+        &probe.host,
+        probe.ipv6_connect_ms,
+    );
 }
 
 /// `/status` の `"canary"` 要素 (組み立ては `/status` のときだけ)。
@@ -457,41 +417,6 @@ pub fn status_json() -> String {
     }
     out.push('}');
     out
-}
-
-/// `/history` の応答に `,"canary":{"keys":[...],"samples":[[...]]}` を足す (T14.10)。
-///
-/// **既存の `keys` / `samples` の形は変えない** (読む側を壊さないため、別の配列にする)。
-/// `res` は [`crate::history::RESOLUTIONS`] の添字で、1 時間の解像度 (2) には窓を
-/// 持たないので空の配列を出す。
-pub fn push_history_json(out: &mut String, res: usize) {
-    out.push_str(",\"canary\":{\"keys\":[");
-    for (i, k) in KEYS.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        let _ = write!(out, "\"{}\"", k);
-    }
-    out.push_str("],\"samples\":[");
-    let guard = RINGS.locked();
-    if let Some(ring) = guard.as_ref().and_then(|rings| rings.get(res)) {
-        for (i, r) in ring.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            let _ = write!(
-                out,
-                "[{},{},{},\"{}\",{}]",
-                r.t,
-                r.dns_ms,
-                r.connect_ms,
-                crate::json::escape(&r.host),
-                num_or_null(r.ipv6_connect_ms),
-            );
-        }
-    }
-    drop(guard);
-    out.push_str("]}");
 }
 
 /// JSON の数 (繋がらなかった IPv6 側は `null`。T14.37)。
@@ -518,7 +443,7 @@ fn reset() {
     PERIOD_SECS.store(SECS, Ordering::Relaxed);
     IPV6.store(true, Ordering::Relaxed);
     *LAST.locked() = None;
-    *RINGS.locked() = None;
+    crate::canaryhist::clear();
     RUNS.store(0, Ordering::Relaxed);
     FAILURES.store(0, Ordering::Relaxed);
 }
