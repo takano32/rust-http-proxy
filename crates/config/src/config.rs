@@ -79,6 +79,12 @@ pub fn default_max_threads(max_conns: usize) -> usize {
     if max_conns > 0 { n.min(max_conns) } else { n }
 }
 
+/// 1 本のクライアント接続で処理する要求数の既定の上限 (keep-alive)。
+///
+/// 認証なしの開放プロキシなので、1 本の接続を無限に使い回されないところで切る。
+/// 上限の要求は普通に応答し、その応答に `Connection: close` を付けてから閉じる。
+pub const DEFAULT_MAX_REQUESTS_PER_CONN: usize = 1000;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// 待ち受けポート
@@ -153,6 +159,13 @@ pub struct Config {
     /// 同時に受ける接続数の上限 (`PROXY_MAX_CONNS`、既定 `auto`、`0` で無制限)。
     /// 超えた接続には 503 を返して閉じる (スレッドは起こさない)。`auto` の決め方は [`auto_max_conns`]
     pub max_conns: usize,
+    /// 1 本のクライアント接続 (keep-alive) で処理する要求数の上限 (既定 [`DEFAULT_MAX_REQUESTS_PER_CONN`])。
+    ///
+    /// **環境変数では変えない** (運用で触る値ではなく、上限に当たったときの振る舞いを
+    /// 試すための口。T14.2)。上限の要求には応答に `Connection: close` を付けてから閉じるので、
+    /// クライアントは「次も使える」と思ったまま閉じられることがない。
+    /// `0` は 1 接続 1 要求 (`PROXY_KEEPALIVE_SECS=0` と同じ形)。
+    pub max_requests_per_conn: usize,
     /// 同時に生きていてよい接続スレッドの上限 (`PROXY_MAX_THREADS`、既定 `auto`、`0` で無制限)。
     ///
     /// 上限に達したら新しいスレッドを起こさず仕事を待たせる (捨てない)。
@@ -358,6 +371,7 @@ impl Config {
             allow_local: false,
             tunnel_idle: Duration::from_secs(300),
             max_conns,
+            max_requests_per_conn: DEFAULT_MAX_REQUESTS_PER_CONN,
             max_threads: default_max_threads(max_conns),
             cache: CacheConfig::default(),
         })

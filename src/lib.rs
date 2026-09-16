@@ -287,8 +287,6 @@ fn inherit_on_listener(
     None
 }
 
-/// 1 つのクライアント接続で処理する最大要求数 (keep-alive)。
-const MAX_REQUESTS_PER_CONNECTION: usize = 1000;
 /// 要求行・ヘッダー行 1 本の最大長と、ヘッダー行数の上限 (超えたら 414 / 431)。
 const MAX_LINE: usize = 64 * 1024;
 const MAX_HEADER_LINES: usize = 256;
@@ -1272,6 +1270,9 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         });
     }
 
+    // この接続で処理する最後の要求か (`Config::max_requests_per_conn`。T14.2)。
+    // `http` 側はこれが立っていると応答に `Connection: close` を付け、`keep` に false を返す
+    let last = *served + 1 >= config.max_requests_per_conn;
     let shared = http::Shared {
         timeout: config.timeout,
         keepalive: config.keepalive,
@@ -1283,6 +1284,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         workers: &*workers,
         // プールに無くて繋ぎに行くときは、判定で引いた答えを使う (T12.7)
         resolved: resolved.as_ref(),
+        last,
     };
     let keep = http::handle_http_with_headers(
         client,
@@ -1294,7 +1296,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     )?;
     scratch.request_line = request_line;
     *served += 1;
-    if !keep || *served >= MAX_REQUESTS_PER_CONNECTION {
+    // `last` が立っていれば `keep` は必ず false (応答に `Connection: close` が付いている)
+    if !keep {
         Ok(Step::Close)
     } else {
         Ok(Step::Next)

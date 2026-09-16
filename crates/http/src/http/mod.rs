@@ -213,6 +213,13 @@ pub struct Shared<'a> {
     /// ACL の判定 (`acl::resolve_target`) が引いた答え。オリジンへ繋ぐときはこれを使い、
     /// 名前解決を 1 要求 1 回にする (T12.7)。判定を飛ばした経路では `None`
     pub resolved: Option<&'a dns::Resolved<'a>>,
+    /// この接続で処理する**最後の要求**か (`Config::max_requests_per_conn` に当たった。T14.2)。
+    ///
+    /// 立っていたらクライアントが keep-alive を求めていても `keep_client` を倒すので、
+    /// **応答に `Connection: close` が付いてから閉じる**。以前は 1,000 要求目の応答に
+    /// `Connection: keep-alive` を付けたまま閉じていたので、その応答を読んだ直後に
+    /// 次の要求を送ったクライアントが取りこぼしていた (T12.6 の小物)
+    pub last: bool,
 }
 
 /// アクセスログと配信に必要なリクエストの文脈。
@@ -348,7 +355,8 @@ pub fn handle_http_with_headers(
     };
     let version = parts.next().unwrap_or("HTTP/1.0");
     let http11 = version.eq_ignore_ascii_case("HTTP/1.1");
-    let keep_client = !shared.keepalive.is_zero()
+    let keep_client = !shared.last
+        && !shared.keepalive.is_zero()
         && if http11 {
             !req.connection_close
         } else {
