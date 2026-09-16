@@ -211,6 +211,8 @@ fn test_integration_which_endpoints_are_heavy() {
         "/history",
         "/history?res=5&n=720",
         "/hosts/series?top=16",
+        // 読み手の表 (T14.53)。最大 256 行なので軽い
+        "/readers",
         "/connections",
         "/errors",
         "/dns",

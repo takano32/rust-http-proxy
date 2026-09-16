@@ -36,6 +36,10 @@ pub struct Endpoint<'a> {
     pub port: u16,
     /// 要求の `Host` ヘッダー (`/proxy.pac` が自分の名前を知るため)
     pub host: Option<&'a str>,
+    /// 接続元 IP (`readers` に 1 行残すため。T14.53)。**要求で来たときだけ**入り、
+    /// 日次の `/snapshot` を履歴スレッドが組むときは `None` (誰も引いていないので
+    /// 数えない)
+    pub client: Option<&'a str>,
     /// `/proxy.pac` で DIRECT にするホストのパターン
     pub pac_direct: &'a [String],
     /// lite プロファイル (ダッシュボードを持たない)
@@ -137,6 +141,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
          \x20 /hosts/series?top=16&host=<name>            JSON: per-host series (5 min x 24 h)\n\
          \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
+         \x20 /readers                                    JSON: who reads these endpoints (scan or monitor)\n\
          \x20 /explain?host=<name> | ?client=<ip>         JSON: one peer, explained in one page\n\
          \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
@@ -183,6 +188,8 @@ pub fn register_snapshot(src: SnapshotSource) {
             conn_id: 0,
             port: src.port,
             host: None,
+            // 要求で来たわけではないので読み手は数えない (T14.53)
+            client: None,
             pac_direct: &[],
             lite: src.lite,
             readonly: src.readonly,
@@ -293,9 +300,21 @@ pub fn handle(
         None => (local, None),
     };
     let is_get = method.eq_ignore_ascii_case("GET");
+    // **内部エンドポイントを引いた接続元を 1 行残す** (`/status` の `readers` と
+    // `/readers`。T14.53)。ここまで来た要求は自分宛てと決まっているので、
+    // プロキシとして通す要求 (CONNECT / forward) はこの行を 1 度も通らない
+    // (T14.7 の `clients[]` はその逆で、自分宛てだけの接続を数えない)。
+    // 渡すのは**問い合わせ文字列を外したパス**で、数えるのは 1 要求につき 1 回だけ。
+    // 応答を組む前に数えるので、**読んだ応答にはその要求自身が入っている**
+    // (`/status` を 3 回引いた 3 回目の応答が `count: 3`)
+    if let Some(client) = ep.client {
+        ep.metrics.record_reader(client, path);
+    }
     // **重い口は同時に 1 本だけ**組む (T14.51)。取れなければ下で `503` + `Retry-After: 1`。
     // 番人は下の `if` 連鎖より長く生き、**組み終わったところ**で旗を戻す (途中で `?` で
-    // 抜けてもパニックしても戻る)。軽い口はこの `if` にも原子にも触らない
+    // 抜けてもパニックしても戻る)。軽い口はこの `if` にも原子にも触らない。
+    // **読み手の記録 (T14.53) の直後**に置くので、断った要求も読み手としては数える
+    // (走査が来ていることが `/readers` から読める)
     let mut heavy_busy = false;
     let heavy_guard = if is_heavy(is_get, path, query) {
         let guard = begin_heavy();
@@ -418,6 +437,15 @@ pub fn handle(
     } else if is_get && path == "/clients" {
         // 接続元の個票 (T14.7)。認証なしで誰でも見えるのは他の個票と同じ
         recent::clients(ep, query)
+    } else if is_get && path == "/readers" {
+        // 内部エンドポイントを**引いた側**の一覧 (T14.53)。`/clients` が
+        // 「プロキシとして通した相手」なのに対して、こちらは「個票を読んでいる相手」。
+        // 上限のバイト数は個票の口と同じ 256 KiB (`recent::MAX_BODY`)
+        (
+            200,
+            "application/json",
+            ep.metrics.readers_body(recent::MAX_BODY),
+        )
     } else if is_get && path == "/explain" {
         // 1 相手の説明 (T14.36)。上の口を横断して読む作業をサーバー側で 1 枚に組む
         explain::explain(ep, query)
