@@ -1,4 +1,4 @@
-//! Linux のシステムコールを直接叩く薄い層 (`poll`, `pipe2`, `splice`, `recv`, `epoll`, `setsockopt`)。
+//! Linux のシステムコールを直接叩く薄い層 (`poll`, `pipe2`, `splice`, `recv`, `epoll`, `setsockopt`, `getsockopt`)。
 //! 外部クレートは使わず `unsafe extern "C"` で宣言する。Linux 以外ではこのモジュール自体が無い。
 
 use std::ffi::{c_int, c_uint, c_void};
@@ -30,6 +30,14 @@ unsafe extern "C" {
         name: c_int,
         value: *const c_void,
         len: u32, // socklen_t
+    ) -> c_int;
+    fn getsockopt(
+        fd: c_int,
+        level: c_int,
+        name: c_int,
+        value: *mut c_void,
+        // socklen_t の入出力。渡した長さを、カーネルが書いた長さで上書きして返す
+        len: *mut u32,
     ) -> c_int;
 }
 
@@ -306,6 +314,96 @@ fn set<T>(fd: RawFd, level: c_int, name: c_int, value: &T) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// カーネルが持っている TCP 接続 1 本の様子 (`getsockopt(SOL_TCP, TCP_INFO)` の一部。T14.5)。
+///
+/// 平滑化 RTT が読めれば「物理 (往復) と自分 (それ以外)」が切り分けられ、再送の数で
+/// 相手までの回線の質が分かる。読むのは**接続の終わりに 1 回だけ** (要求ごとには読まない)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TcpInfo {
+    /// 平滑化 RTT (us)。`tcpi_rtt`
+    pub rtt_us: u32,
+    /// RTT のばらつき (us)。`tcpi_rttvar`
+    pub rttvar_us: u32,
+    /// いま再送中のセグメント数。`tcpi_retrans`
+    pub retrans: u32,
+    /// この接続で再送した通算。`tcpi_total_retrans`
+    pub total_retrans: u32,
+    /// 失われたと見なしたセグメント数。`tcpi_lost`
+    pub lost: u32,
+    /// 輻輳窓 (セグメント)。`tcpi_snd_cwnd`
+    pub cwnd: u32,
+    /// 経路 MTU。`tcpi_pmtu`
+    pub pmtu: u32,
+}
+
+/// `struct tcp_info` の欄の位置 (バイト)。**先頭 8 バイトが `__u8` の旗** で、
+/// 以後は `__u32` が並ぶ。値は動作環境の `/usr/include/linux/tcp.h` を
+/// `offsetof` で実際に確かめたもの (2026-09-16、Linux 6.6 のヘッダーで
+/// `sizeof(struct tcp_info)` は 280。カーネルが増えても**前の欄は動かない**)。
+mod tcpinfo {
+    pub const LOST: usize = 32;
+    pub const RETRANS: usize = 36;
+    pub const PMTU: usize = 60;
+    pub const RTT: usize = 68;
+    pub const RTTVAR: usize = 72;
+    pub const SND_CWND: usize = 80;
+    pub const TOTAL_RETRANS: usize = 100;
+    /// 読む緩衝の大きさ (`tcpi_total_retrans` の次まで)。カーネルは `min(len, sizeof)`
+    /// しか書かないので、これより新しい欄は取らないし、古いカーネルでも落ちない
+    pub const LEN: usize = TOTAL_RETRANS + 4;
+    /// ここまで書かれていれば RTT は読めた (`tcpi_rttvar` の次まで)
+    pub const MIN_USEFUL: usize = RTTVAR + 4;
+}
+
+/// `getsockopt` の `level` に使う TCP (= `IPPROTO_TCP`)。
+///
+/// [`inherit_socket_options`] の定数と違い、**この 2 つはどの arch でも同じ値**
+/// (`IPPROTO_*` は IANA の番号、`TCP_*` は linux/tcp.h で arch に依らない) なので、
+/// `tcp_info` は arch で切り分けずに使える。
+const SOL_TCP: c_int = 6;
+/// `TCP_INFO` (linux/tcp.h)。
+const TCP_INFO: c_int = 11;
+
+/// カーネルの RTT と再送を 1 本ぶん読む (`getsockopt` 1 回)。
+///
+/// 読めない相手 (TCP でない・もう閉じている) や、RTT の欄まで書かれなかった
+/// 古いカーネルでは `None`。**呼ぶのは接続の終わりだけ** — 要求ごとに呼ぶと
+/// システムコールが 1 要求 1 回増える。
+pub fn tcp_info(fd: RawFd) -> Option<TcpInfo> {
+    let mut buf = [0u8; tcpinfo::LEN];
+    let mut len = tcpinfo::LEN as u32;
+    // SAFETY: buf は LEN バイトの配列で、その長さを socklen_t として渡している。
+    // カーネルは min(len, sizeof(struct tcp_info)) バイトだけ書き、書いた長さを len に返す。
+    let r = unsafe {
+        getsockopt(
+            fd,
+            SOL_TCP,
+            TCP_INFO,
+            buf.as_mut_ptr() as *mut c_void,
+            &mut len,
+        )
+    };
+    if r < 0 || (len as usize) < tcpinfo::MIN_USEFUL {
+        return None;
+    }
+    // 書かれなかった後ろの欄は 0 のまま返る (緩衝を 0 で作ってある)
+    let at = |off: usize| {
+        if off + 4 > len as usize {
+            return 0;
+        }
+        u32::from_ne_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
+    };
+    Some(TcpInfo {
+        rtt_us: at(tcpinfo::RTT),
+        rttvar_us: at(tcpinfo::RTTVAR),
+        retrans: at(tcpinfo::RETRANS),
+        total_retrans: at(tcpinfo::TOTAL_RETRANS),
+        lost: at(tcpinfo::LOST),
+        cwnd: at(tcpinfo::SND_CWND),
+        pmtu: at(tcpinfo::PMTU),
+    })
 }
 
 /// `getrlimit(2)` / `setrlimit(2)` の定数と `struct rlimit`。
@@ -661,5 +759,34 @@ mod tests {
         let a = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let mut fds = [PollFd::new(a.as_raw_fd(), POLLIN)];
         assert_eq!(poll_fds(&mut fds, 10).unwrap(), 0);
+    }
+
+    /// `TCP_INFO` が loopback の接続で読めること (欄の位置が合っているかの確認。T14.5)。
+    ///
+    /// 位置がずれていれば RTT が桁違いになるか、MTU が 65,536 (loopback) で出なくなる。
+    #[test]
+    fn reads_the_kernel_rtt_of_a_loopback_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+
+        for s in [&client, &server] {
+            let i = tcp_info(s.as_raw_fd()).expect("TCP_INFO が読めない");
+            // loopback の往復は 1 ms 未満 (0 も含む。確立直後は RTT の標本が 1 つ)
+            assert!(i.rtt_us < 1_000, "loopback の RTT が大きすぎる: {:?}", i);
+            assert_eq!(i.retrans, 0, "{:?}", i);
+            assert_eq!(i.total_retrans, 0, "{:?}", i);
+            assert_eq!(i.lost, 0, "{:?}", i);
+            // 輻輳窓と MTU は「欄の位置が合っているか」の目印 (ずれると 0 か桁違いになる)
+            assert!(i.cwnd > 0 && i.cwnd < 100_000, "cwnd が変: {:?}", i);
+            assert!((1_000..=70_000).contains(&i.pmtu), "経路 MTU が変: {:?}", i);
+        }
+    }
+
+    /// TCP でない記述子は `None` (落ちない)。
+    #[test]
+    fn tcp_info_is_none_for_a_file() {
+        let f = std::fs::File::open("/proc/self/cmdline").unwrap();
+        assert_eq!(tcp_info(f.as_raw_fd()), None);
     }
 }

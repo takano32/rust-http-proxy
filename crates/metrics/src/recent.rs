@@ -284,6 +284,10 @@ pub struct ConnSlot {
     status: AtomicU16,
     requests: AtomicU32,
     stage_ms: [AtomicU32; STAGES],
+    /// カーネルの RTT (us) と再送の通算 (`[クライアント側, オリジン側]`。T14.5)。
+    /// 読むのは接続の終わりの `getsockopt` だけで、`0` は「読めなかった」
+    rtt_us: [AtomicU32; SIDES],
+    retrans: [AtomicU32; SIDES],
     /// 預けられた回数と、預かり所にいた合計 ms、いま預けられた時刻
     /// (接続を受けてからの ms。[`NOT_PARKED`] なら預けられていない)。
     /// **書くのは預ける / 引き上げる瞬間だけ**で、要求ごとには触らない
@@ -311,6 +315,8 @@ impl ConnSlot {
             status: AtomicU16::new(0),
             requests: AtomicU32::new(0),
             stage_ms: [const { AtomicU32::new(0) }; STAGES],
+            rtt_us: [const { AtomicU32::new(0) }; SIDES],
+            retrans: [const { AtomicU32::new(0) }; SIDES],
             parks: AtomicU32::new(0),
             parked_ms: AtomicU64::new(0),
             parked_at: AtomicU64::new(NOT_PARKED),
@@ -385,6 +391,13 @@ impl ConnSlot {
         for (cell, ms) in self.stage_ms.iter().zip(tally.stage_ms) {
             cell.store(ms.min(MAX_MS) as u32, Ordering::Relaxed);
         }
+        // カーネルの RTT と再送 (T14.5)。読めなかった側は 0 のまま
+        for (cell, v) in self.rtt_us.iter().zip(tally.rtt_us) {
+            cell.store(v, Ordering::Relaxed);
+        }
+        for (cell, v) in self.retrans.iter().zip(tally.retrans) {
+            cell.store(v, Ordering::Relaxed);
+        }
     }
 
     /// 預かり所に入った (原子 2 回。**預ける瞬間だけ**で、要求ごとには触らない)。
@@ -447,6 +460,14 @@ impl ConnSlot {
             parked_secs: (parked_ms / 1000).min(MAX_SECS),
             parks: self.parks.load(Ordering::Relaxed),
             stage_ms,
+            rtt_us: [
+                self.rtt_us[CLIENT_SIDE].load(Ordering::Relaxed),
+                self.rtt_us[ORIGIN_SIDE].load(Ordering::Relaxed),
+            ],
+            retrans: [
+                self.retrans[CLIENT_SIDE].load(Ordering::Relaxed),
+                self.retrans[ORIGIN_SIDE].load(Ordering::Relaxed),
+            ],
         })
     }
 
@@ -577,6 +598,12 @@ pub const STAGE_NAMES: [&str; STAGES] = [
     "first_relay",
 ];
 
+/// カーネルの RTT と再送を持つ側の数 (クライアント側とオリジン側。T14.5)。
+pub const SIDES: usize = 2;
+/// [`RecentEntry::rtt_us`] / [`ConnTally::rtt_us`] の添字。
+pub const CLIENT_SIDE: usize = 0;
+pub const ORIGIN_SIDE: usize = 1;
+
 /// [`STAGE_NAMES`] の添字。
 pub const STAGE_DNS: usize = 0;
 pub const STAGE_CONNECT: usize = 1;
@@ -673,6 +700,10 @@ pub struct ConnTally {
     pub status: u16,
     /// 段階の ms (いちばん大きかった要求の値)。並びは [`STAGE_NAMES`]
     pub stage_ms: [u64; STAGES],
+    /// カーネルの平滑化 RTT (us) と再送の通算 (`[クライアント側, オリジン側]`。T14.5)。
+    /// 書くのは**接続の終わりに `getsockopt` を呼んだ 1 回だけ**で、`0` は「読めなかった」
+    pub rtt_us: [u32; SIDES],
+    pub retrans: [u32; SIDES],
 }
 
 impl ConnTally {
@@ -716,6 +747,22 @@ pub struct RecentEntry {
     pub parks: u32,
     /// 段階の ms ([`STAGE_NAMES`] の並び)
     pub stage_ms: [u64; STAGES],
+    /// カーネルの平滑化 RTT (us) と再送の通算 (`[クライアント側, オリジン側]`。T14.5)。
+    /// `0` は「読めなかった」(Linux 以外・`--lite`・もう閉じていた) で JSON では `null`
+    pub rtt_us: [u32; SIDES],
+    pub retrans: [u32; SIDES],
+}
+
+/// `us` を ms の JSON にする (`0` = 読めなかった → `null`。T14.5)。
+///
+/// 桁は成り行きに任せる (`{}` は往復できる最短の表記を出すので、us を 1000 で割った値は
+/// `0.052` / `30.1` / `4294967.295` のように**余計な 0 が付かない**)。us のままにしないのは、
+/// `/hosts` の `rtt_ms` と `/recent` の `ms`(段階) が ms なので単位を揃えるため。
+fn rtt_ms_json(us: u32) -> String {
+    if us == 0 {
+        return "null".to_string();
+    }
+    format!("{}", us as f64 / 1000.0)
 }
 
 impl RecentEntry {
@@ -762,7 +809,17 @@ impl RecentEntry {
             }
             let _ = write!(out, "{}\"{}\":{}", if i == 0 { "" } else { "," }, name, ms);
         }
-        out.push_str("}}");
+        out.push('}');
+        // カーネルの RTT と再送 (T14.5)。**両側とも必ず出す**が、読めなかった側
+        // (Linux 以外・`--lite`・もう閉じていた) は `null` — 0 ms と区別させないため
+        let _ = write!(
+            out,
+            ",\"rtt_ms\":{{\"client\":{},\"origin\":{}}},\"retrans\":{{\"client\":{},\"origin\":{}}}}}",
+            rtt_ms_json(self.rtt_us[CLIENT_SIDE]),
+            rtt_ms_json(self.rtt_us[ORIGIN_SIDE]),
+            self.retrans[CLIENT_SIDE],
+            self.retrans[ORIGIN_SIDE],
+        );
         out
     }
 }
@@ -1005,6 +1062,9 @@ mod conn_tests {
                 down: 65536,
                 status: 0,
                 stage_ms: [3, 9, 0, 0, 0, 0],
+                // カーネルの RTT: 利用者は 48 ms、宛先は 30 ms (T14.5)
+                rtt_us: [48_300, 30_100],
+                retrans: [0, 0],
             },
             0,
         );
@@ -1038,9 +1098,21 @@ mod conn_tests {
             "{}",
             json
         );
+        // カーネルの RTT と再送は両側とも必ず出る (T14.5)
+        assert_eq!(e.rtt_us, [48_300, 30_100]);
+        assert!(
+            json.contains("\"rtt_ms\":{\"client\":48.3,\"origin\":30.1}"),
+            "{}",
+            json
+        );
+        assert!(
+            json.contains("\"retrans\":{\"client\":0,\"origin\":0}"),
+            "{}",
+            json
+        );
         // T14.3 が埋める段階はまだ 0 なので 1 バイトも出さない
         assert!(!json.contains("queue"), "{}", json);
-        assert!(json.len() <= 256, "ありふれた 1 件が {} B", json.len());
+        assert!(json.len() <= 300, "ありふれた 1 件が {} B", json.len());
         println!("closed entry: typical {} B\n  {}", json.len(), json);
     }
 
@@ -1110,6 +1182,8 @@ mod conn_tests {
                 parked_secs: 0,
                 parks: 0,
                 stage_ms: [0, i, 0, 0, 0, 0],
+                rtt_us: [0; SIDES],
+                retrans: [0; SIDES],
             });
         }
         let (all, total) = ring.select(0, "");
@@ -1127,11 +1201,12 @@ mod conn_tests {
         assert!(ring.select(9_999_999, "").0.is_empty());
     }
 
-    /// 桁を振り切った 1 件でも 448 B に収まること (**リングの大きさの上限**)。
+    /// 桁を振り切った 1 件でも 560 B に収まること (**リングの大きさの上限**)。
     ///
-    /// 1 件の目安は 256 B (T13.4 の `/errors` と同じ) で、**ありふれた 1 件は上のテストの
-    /// とおり 225 B**。ここで見るのは「起こりえない桁 (転送 20 桁、段階の ms が 6 つとも
-    /// 7 桁) を並べてもリングが 2,000 × 448 B = 875 KiB を越えない」ことだけで、
+    /// 1 件の目安は 300 B (T14.5 のカーネルの RTT 2 側ぶんで 256 B から上がった)。
+    /// ここで見るのは「起こりえない桁 (転送 20 桁、段階の ms が 6 つとも 7 桁、
+    /// RTT と再送が 4,294,967,295) を並べてもリングが 2,000 × 560 B = 1,094 KiB を
+    /// 越えない」ことだけで、
     /// `/recent?n=2000` の応答は 256 KiB のバイト数打ち切りに当たるのが設計どおり
     /// (`crates/endpoints` のテストで見る)。
     #[test]
@@ -1150,6 +1225,8 @@ mod conn_tests {
                 down: u64::MAX,
                 status: 599,
                 stage_ms: [u64::MAX; STAGES],
+                rtt_us: [u32::MAX; SIDES],
+                retrans: [u32::MAX; SIDES],
             },
             u32::MAX,
         );
@@ -1159,7 +1236,7 @@ mod conn_tests {
         assert!(e.target.len() <= MAX_RECENT_TARGET, "{}", e.target.len());
         assert!(e.client.len() <= MAX_CLIENT, "{}", e.client.len());
         let json = e.to_json();
-        assert!(json.len() <= 448, "最悪の 1 件が {} B", json.len());
+        assert!(json.len() <= 560, "最悪の 1 件が {} B", json.len());
         println!("closed entry: worst {} B", json.len());
     }
 

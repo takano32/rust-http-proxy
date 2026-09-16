@@ -621,6 +621,34 @@ impl Drop for OverflowGuard {
     }
 }
 
+/// 捨てるオリジン接続のカーネルの RTT をホスト別統計に足す配線 (T14.5)。
+///
+/// **通るのは「期限切れ」と「相手が閉じていた」を捨てるときだけ**で、使い回せた接続
+/// (熱い経路) では 1 度も呼ばれない。挿すのはプールを作った直後の 1 回きり。
+/// 鍵はプールの鍵 (`scheme://host:port`) で、ホスト別統計の鍵と同じもの。
+pub fn attach_origin_rtt(pool: &mut pool::Pool, metrics: Arc<Metrics>) {
+    pool.on_discard(Box::new(move |host, tcp| {
+        let (rtt_us, retrans) = tcp_rtt(tcp);
+        metrics.record_host_rtt(host, rtt_us, retrans);
+    }));
+}
+
+/// ソケット 1 本のカーネルの RTT (us) と再送の通算 (`getsockopt` 1 回。T14.5)。
+/// 読めなければ 0 (個票では `null`、統計には足さない)。Linux 以外は聞かない。
+#[cfg(target_os = "linux")]
+fn tcp_rtt(tcp: &TcpStream) -> (u32, u32) {
+    use std::os::fd::AsRawFd;
+    match sys::tcp_info(tcp.as_raw_fd()) {
+        Some(i) => (i.rtt_us, i.total_retrans),
+        None => (0, 0),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tcp_rtt(_tcp: &TcpStream) -> (u32, u32) {
+    (0, 0)
+}
+
 /// `/status` の active_connections の持ち分。
 struct ActiveGuard {
     metrics: Arc<Metrics>,
@@ -745,7 +773,16 @@ impl Conn {
     /// そちらの理由が残る。
     pub fn finish(&self, reason: recent::CloseReason) {
         if let Some(slot) = &self.slot {
-            slot.finish(reason, self.tally.get(), self.served as u32);
+            // クライアント側のカーネルの RTT と再送を 1 回だけ読む
+            // (`getsockopt` 1 回 / 接続。要求ごとには読まない。`--lite` は枠が無いので
+            // ここへ来ない。オリジン側は接続プールが捨てるときに読む。T14.5)
+            let (rtt_us, retrans) = tcp_rtt(&self.client);
+            let mut tally = self.tally.get();
+            tally.rtt_us[recent::CLIENT_SIDE] = rtt_us;
+            tally.retrans[recent::CLIENT_SIDE] = retrans;
+            slot.finish(reason, tally, self.served as u32);
+            self.metrics
+                .record_client_rtt(&self.peer_ip, rtt_us, retrans);
         }
     }
 

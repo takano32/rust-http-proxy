@@ -907,3 +907,187 @@ fn test_integration_snapshot_has_every_part_in_one_request() {
     assert!(json_is_balanced(&again));
     assert!(again.contains("\"dropped\":[]"), "{}", again);
 }
+
+// ---------------------------------------------------------------------------
+// カーネルの RTT と再送 (`TCP_INFO`。T14.5)
+// ---------------------------------------------------------------------------
+
+/// `"key":<数>` に続く小数を取る (`null` なら `None`)。
+fn json_f64(json: &str, key: &str) -> Option<f64> {
+    let pat = format!("\"{}\":", key);
+    let at = json
+        .find(&pat)
+        .unwrap_or_else(|| panic!("{} が無い: {}", key, json))
+        + pat.len();
+    let v: String = json[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+    v.parse().ok()
+}
+
+/// 閉じたトンネルの個票に**両側**のカーネルの RTT が載り、`/hosts` と `/status` の
+/// `clients[]` にも出ること (T14.5)。
+///
+/// loopback なので RTT は両側とも 1 ms 未満、再送は 0 が期待値。
+#[test]
+#[cfg(target_os = "linux")]
+fn test_integration_recent_records_the_kernel_rtt_of_both_sides() {
+    use std::io::{Read, Write};
+
+    let origin_port = start_echo_origin();
+    let proxy_port = start_test_proxy(park_config());
+
+    let mut tunnel = open_tunnel(proxy_port, origin_port);
+    tunnel.write_all(b"rtt").unwrap();
+    let mut back = [0u8; 3];
+    tunnel.read_exact(&mut back).unwrap();
+    tunnel.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut rest = Vec::new();
+    let _ = tunnel.read_to_end(&mut rest);
+    drop(tunnel);
+
+    wait_until(
+        || endpoint_json(proxy_port, "/recent").contains("\"kind\":\"connect\""),
+        "閉じたトンネルが /recent に出る",
+    );
+    let json = endpoint_json(proxy_port, "/recent");
+
+    // ---- 個票: 両側の RTT と再送 ----
+    let rtt = json
+        .split("\"rtt_ms\":")
+        .nth(1)
+        .unwrap_or_else(|| panic!("rtt_ms が無い: {}", json));
+    let client_rtt = json_f64(rtt, "client").expect("クライアント側の RTT が null");
+    let origin_rtt = json_f64(rtt, "origin").expect("オリジン側の RTT が null");
+    assert!(
+        client_rtt < 1.0 && client_rtt > 0.0,
+        "loopback のクライアント側 RTT が 1 ms 未満でない: {} ms ({})",
+        client_rtt,
+        json
+    );
+    assert!(
+        origin_rtt < 1.0 && origin_rtt > 0.0,
+        "loopback のオリジン側 RTT が 1 ms 未満でない: {} ms ({})",
+        origin_rtt,
+        json
+    );
+    assert!(
+        json.contains("\"retrans\":{\"client\":0,\"origin\":0}"),
+        "loopback で再送が出ている: {}",
+        json
+    );
+
+    // ---- `/hosts`: オリジン側 (`connect://127.0.0.1:<port>` の行だけを見る) ----
+    let hosts = endpoint_json(proxy_port, "/hosts");
+    let key = format!("\"host\":\"connect://127.0.0.1:{}\"", origin_port);
+    let host_rtt = hosts
+        .split(&key)
+        .nth(1)
+        .unwrap_or_else(|| panic!("{} が /hosts に無い: {}", key, hosts))
+        .split("\"rtt_ms\":")
+        .nth(1)
+        .unwrap_or_else(|| panic!("/hosts に rtt_ms が無い: {}", hosts));
+    let avg = json_f64(host_rtt, "avg").expect("/hosts の avg が null");
+    let min = json_f64(host_rtt, "min").expect("/hosts の min が null");
+    assert!(avg < 1.0 && min <= avg, "/hosts の RTT が変: {}", hosts);
+    // 標本はトンネル 1 本の終わりの 1 つだけ (要求ごとには読まない)
+    assert!(host_rtt.contains("\"samples\":1"), "{}", hosts);
+    assert!(host_rtt.contains("\"retrans\":0"), "{}", hosts);
+
+    // ---- `/status` の `clients[]`: クライアント側 ----
+    let status = status_json(proxy_port);
+    let clients = status
+        .split("\"clients\":[")
+        .nth(1)
+        .unwrap_or_else(|| panic!("clients[] が無い: {}", status));
+    assert!(clients.contains("\"client\":\"127.0.0.1\""), "{}", status);
+    let c_rtt = clients
+        .split("\"rtt_ms\":")
+        .nth(1)
+        .unwrap_or_else(|| panic!("clients[] に rtt_ms が無い: {}", status));
+    let c_avg = json_f64(c_rtt, "avg").expect("clients[] の avg が null");
+    assert!(c_avg < 1.0, "接続元の RTT が 1 ms 未満でない: {}", c_avg);
+    assert!(c_rtt.contains("\"retrans\":0"), "{}", status);
+
+    // ---- `/metrics`: 全体の sum / count (ホスト別は出さない) ----
+    // `/metrics` は Prometheus 形式だが、本文をそのまま返す口は同じもの。
+    // **件数は 1 とは限らない**: `/recent` `/hosts` `/status` を引いた接続自身も
+    // 閉じるときにクライアント側の RTT を 1 つ残すため
+    let prom = endpoint_json(proxy_port, "/metrics");
+    let rtt_lines: Vec<&str> = prom
+        .lines()
+        .filter(|l| l.starts_with("sorahost_rtt_seconds"))
+        .collect();
+    for side in ["client", "origin"] {
+        let count = rtt_lines
+            .iter()
+            .find(|l| l.starts_with(&format!("sorahost_rtt_seconds_count{{side=\"{}\"}}", side)))
+            .and_then(|l| l.rsplit(' ').next())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or_else(|| panic!("{} の _count が無い: {:?}", side, rtt_lines));
+        assert!(count >= 1, "{} の標本が 0: {:?}", side, rtt_lines);
+        let sum = rtt_lines
+            .iter()
+            .find(|l| l.starts_with(&format!("sorahost_rtt_seconds_sum{{side=\"{}\"}}", side)))
+            .and_then(|l| l.rsplit(' ').next())
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or_else(|| panic!("{} の _sum が無い: {:?}", side, rtt_lines));
+        assert!(sum > 0.0 && sum < 1.0, "{} の秒が変: {:?}", side, rtt_lines);
+    }
+    assert!(
+        !prom.contains("sorahost_host_rtt_seconds"),
+        "ホスト別の RTT は出さない (系列が増えすぎる)"
+    );
+}
+
+/// http の keep-alive 接続も、閉じるときにクライアント側の RTT を 1 回だけ読むこと (T14.5)。
+#[test]
+#[cfg(target_os = "linux")]
+fn test_integration_a_closed_http_connection_records_the_client_rtt() {
+    use std::io::Write;
+
+    let (origin_port, _origin) = common::start_keepalive_origin(
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    );
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let mut s = std::net::TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    common::one_keepalive_request(&mut s, &host, "/a");
+    s.write_all(
+        format!(
+            "GET http://{}/b HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            host, host
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let _ = common::read_response(&mut s);
+    drop(s);
+
+    wait_until(
+        || endpoint_json(proxy_port, "/recent").contains("\"kind\":\"http\""),
+        "閉じた http 接続が /recent に出る",
+    );
+    let json = endpoint_json(proxy_port, "/recent");
+    let entry = json
+        .split("\"kind\":\"http\"")
+        .nth(1)
+        .unwrap_or_else(|| panic!("http の 1 件が無い: {}", json));
+    let rtt = entry
+        .split("\"rtt_ms\":")
+        .nth(1)
+        .unwrap_or_else(|| panic!("rtt_ms が無い: {}", json));
+    let client_rtt = json_f64(rtt, "client").expect("クライアント側の RTT が null");
+    assert!(client_rtt < 1.0, "{} ms: {}", client_rtt, json);
+    // オリジン側はトンネルではないので個票には載らない (プールが捨てるときにホスト別へ)
+    assert!(
+        rtt.starts_with(&format!("{{\"client\":{},\"origin\":null}}", client_rtt)),
+        "http の個票にオリジン側が載っている: {}",
+        &rtt[..60.min(rtt.len())]
+    );
+}
