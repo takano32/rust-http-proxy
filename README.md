@@ -169,6 +169,53 @@ IPv6 を試さないので、「3 回続けて負けたら IPv4 を先頭」は�
 **名前空間が作れない機械では「使えない」と印字して終了コード 2** で終わります
 (`--only connect-multi` を名前空間の外で回したときも同じく 2)。
 
+### デプロイ先のパターンを手元で再生する (`bench --only replay`)
+
+バーストのときに「上限に当たったら暇なトンネルを 1 本閉じる」(`PROXY_MAX_CONNS` の行) と
+「山の写真」(`/bursts`) が本当に効くかは、**バーストが来るまで分かりません**。`/recent` には
+閉じた接続 1 本ごとの「いつ・どこへ・どれだけ・どれだけ生きたか」があるので、**同じ時間間隔・
+同じ本数**で手元の内蔵オリジンへ張り直せば、バーストの形だけ再現できます。
+
+```bash
+scripts/deployed-like.sh --nofile 4096 --hosts-from scripts/testdata/replay-burst.json -- \
+  ./target/release/bench --proxy 127.0.0.1:18080 --only replay \
+    --replay-file scripts/testdata/replay-burst.json \
+    --rtt-file scripts/testdata/replay-hosts.json --speed 10
+```
+
+- **`--replay-file`** が読むのは `/recent` の応答・`/snapshot`・`/connections` の JSON です
+  (`/connections` はまだ閉じていない接続なので寿命が無く、`age_secs` を「開いてからの秒」と
+  「これから生きる秒」の両方に使い、`bytes` は全部下りに寄せます)
+- 宛先は**ホスト名をそのまま** CONNECT の target に載せ、**ポートだけ内蔵オリジンのもの**に
+  置き換えます。名前解決は `scripts/deployed-like.sh --hosts-from <個票>` が名前空間の中の
+  `/etc/hosts` に `127.0.0.1` の A を並べて引き受けます (**AAAA は足しません** — IPv6 の
+  黒穴を見るのは `multi.test` の役目で、混ぜるとバーストではなく Happy Eyeballs を測ることに
+  なります)。足した名前は名前空間の中にしか出ません
+- `opened_at` (`at`) の**間隔**と**寿命**と**上り / 下りのバイト**を真似ます。`--speed 10` で
+  10 倍速 (間隔も寿命も 1/10)。`--replay-secs N` で途中で打ち切れます
+- RTT は `--rtt-file` (`/hosts` の JSON) の `rtt_ms.avg` を**内蔵オリジンの応答遅延**として
+  真似ます (個票が `/snapshot` なら中の `hosts` を自動で見ます。無ければ 0 ms)
+- 終わりに本数・掛かった時間・CONNECT 確立の p50 / p95 / max・失敗の数と、プロキシの
+  `/status` の `evicted_idle` / `rejected_overload` と `/bursts` の枚数を印字します
+  (引く先は `--admin HOST:PORT`、既定は `--proxy` と同じ)
+- **再生するのは CONNECT だけ**です (`kind` が `http` の個票は数えて飛ばします)。上りは
+  合図の 16 バイトが必ず流れるので、上り 16 B 未満の個票はそのぶんだけ多く流れます
+
+同梱の `scripts/testdata/replay-burst.json` は**架空の個票** (ホスト名は `example.invalid`) で、
+デプロイ先で見た山 (同時 218 / 上限 240) の形を 260 本で作ってあります。`PROXY_MAX_CONNS=240`
+のプロキシに対して 10 倍速で再生すると:
+
+| 見るもの | 実測 (2026-09-16) |
+|---|---|
+| 張れたトンネル / 失敗 | **260 / 0** |
+| プロキシに閉じられた本数 (上限に当たった追い出し) | **20** |
+| CONNECT 確立 p50 / p95 / max | **0.754 / 10.541 / 28.423 ms** |
+| `/status` の `evicted_idle` / `rejected_overload` | **20 / 0** |
+| `/bursts` の写真 | **1 枚** (`active` 240 / `threshold` 120 / `parked` 235 / `relaying` 5 / 宛先 4 種) |
+
+`rejected_overload` が 0 のまま 20 本ぶん席を作れているので、山が上限を越えても 503 を返さずに
+受けられていることが手元で確かめられます。
+
 ### 注: トンネルの MiB/s はプロキシの上限ではありません
 
 **この行だけはベンチ側が律速しています。** プロキシは `splice(2)` で 1 バイトもコピーしませんが、
@@ -374,7 +421,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     50 枚の環状 (1 枚 4 KiB 以下)。**撮るのは履歴スレッド** (5 秒周期) で、接続を受けたスレッドは
     閾を越えた瞬間に旗を 1 つ立てるだけなので、accept の経路には比較が 1 回増えるだけです。
     `--lite` と `PROXY_BURST_PERCENT=0` では撮りません。**撮るのは履歴スレッドなので
-    `PROXY_STATS_PERSIST=off` (履歴スレッドを起こさない設定) でも撮りません**
+    `PROXY_STATS_PERSIST=off` (履歴スレッドを起こさない設定) でも撮りません**。
+    山が来るのを待たずに手元で確かめるには、`/recent` の個票を同じ間隔・同じ本数で張り直す
+    `bench --only replay` を使います (上の「デプロイ先のパターンを手元で再生する」)
   - **起きたことの時系列 (T14.11)**: `/events?n=200&since=<epoch>` は、**プロキシに起きた出来事**を
     1 本の時系列にしたものです (新しい順、既定 200 件、512 件の環状)。数字が動いたときに
     「**そのとき何を変えたか**」を読むための口で、`/status` の `settings` は最後の 1 回しか残さず、
@@ -1016,12 +1065,15 @@ cargo run --release
 # ベンチ (オリジンもベンチ内で起動する。プロキシは別端末で PROXY_ALLOW_LOCAL=on を付けて先に上げておく)
 cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 # --conc 並列数 / --seconds 測定秒数 / --body-bytes 応答本文の大きさ
-# --only direct|forward|tunnel|connect|idle-tunnels|idle-conns|syscall-cost|all で 1 種だけ測れる
+# --only direct|forward|tunnel|connect|connect-multi|idle-tunnels|idle-conns|syscall-cost|
+#        replay|all で 1 種だけ測れる
 # direct 行はプロキシを通さないオリジン直結 (ベンチ自身の上限。固定しなければ 26〜30 万 req/s、
 #   LITTLE に固定すると 5.5 万 req/s)
 # tunnel 行も --seconds 秒だけ 1 本のトンネルに流す (この行はベンチ律速。上の「性能」の注)
 # idle-tunnels / idle-conns は --conc 本を張ったまま --seconds 秒握る (スレッド数と RSS 用)。
 #   idle-conns は 1 要求ずつ通してから握る。どちらも PROXY_MAX_CONNS=8192 を付けて測る
+# connect-multi と replay は scripts/deployed-like.sh の中で回す (上の「デプロイ先に似せた条件」)。
+#   replay は /recent の個票を同じ間隔・同じ本数で張り直す (--replay-file / --speed / --rtt-file)
 
 # この機械での sendto / recvfrom 1 回の実費 (プロキシは使わない。CPU の固定が要る)
 taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 3
