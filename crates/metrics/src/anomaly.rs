@@ -552,12 +552,10 @@ mod tests {
         assert_eq!(fired.len(), 1, "立つのは 1 回だけ: {:?}", fired);
         assert!(!fired[0].cleared);
         assert_eq!(fired[0].kind, Kind::ConnectP95);
-        assert!(
-            fired[0].text.starts_with("connect_p95: connect p95 "),
-            "{}",
-            fired[0].text
+        assert_eq!(
+            fired[0].text,
+            "connect_p95: connect p95 136 ms over 5m is 13.9x the 1h baseline 9.8 ms (122 of 1440 connects)"
         );
-        assert!(fired[0].text.contains("1h baseline"), "{}", fired[0].text);
         // 平常時に戻して 15 分 (窓から抜けるのに 5 分 + 外れたまま 5 分)
         let (_, back) = calm(&h, &mut d, t, 900);
         assert_eq!(back.len(), 1, "解除も 1 回だけ: {:?}", back);
