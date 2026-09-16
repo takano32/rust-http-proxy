@@ -229,6 +229,12 @@ fn main() {
             rust_http_proxy::daily::default_path(),
             rust_http_proxy::VERSION,
         );
+        // 日次の `/snapshot` (`$HOME/.rust-http-proxy/snapshots/`。T14.34)。書くのも
+        // 履歴スレッドで、組み方は `serve` が預ける。`PROXY_SNAPSHOT_DAYS=0` で止まる
+        rust_http_proxy::snapshots::configure(
+            rust_http_proxy::snapshots::default_dir(),
+            config.snapshot_days,
+        );
     }
     // 異常の自動検知の閾 (T14.23)。判定するのは履歴スレッドなので、渡すのは
     // 同時接続の上限と、山と見なす本数 (T14.6 の写真と同じ閾) の 2 つだけ

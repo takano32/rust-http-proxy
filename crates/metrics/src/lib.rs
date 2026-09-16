@@ -18,6 +18,7 @@ pub mod persist;
 pub mod persist_recent;
 pub mod profile;
 pub mod recent;
+pub mod snapshots;
 pub mod trace;
 pub mod transfer;
 

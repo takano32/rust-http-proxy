@@ -83,8 +83,15 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 ```bash
 scripts/collect-deployed.sh nagoya.sorahost.net:50697 > today.md   # 1 日 1 回
 PROBE=0 scripts/collect-deployed.sh nagoya.sorahost.net:50697      # 本物の要求を送らずに取る
+scripts/collect-deployed.sh --from-server nagoya.sorahost.net:50697  # 回し忘れた日を取り寄せる
 scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と最後で差分
 ```
+
+**回し忘れても個票は残ります**: プロキシ自身が 1 日 1 回 (UTC 0 時) `/snapshot` を
+`$HOME/.rust-http-proxy/snapshots/<日付>.json` に書いているので (既定 30 日ぶん。下記
+`PROXY_SNAPSHOT_DAYS` と `/snapshots`)、`--from-server` を付けると **`/snapshots` の一覧のうち
+手元に無い日付だけ**を取り寄せて `DIR/<日付>T000000Z-snapshot.json` に置きます
+(中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` もそのまま読めます)。
 
 保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
 
@@ -346,6 +353,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   版を上げても通算の統計 (要求数・ホスト・履歴) は消えない (下記「状態ファイルの版」)。
   停止シグナル (SIGTERM / SIGINT) では表を書き出してから終了する (3 秒以内、2 回目のシグナルで即終了)。
   あわせて **1 日 1 行の要約**を `$HOME/.rust-http-proxy.daily.jsonl` に**永久に**残す (下記 `/daily`)
+- **日次の snapshot**: **1 日 1 回 (UTC 0 時)**、その時点の `/snapshot` をまるごと
+  `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` に残す (既定 30 日ぶん、31 個目で最古を消す。
+  1 ファイル 4 MiB まで)。**外から取りに行かなくても、見に行ったときに 30 日ぶんの個票がある**。
+  読む口は `/snapshots` (一覧) と `/snapshots/<date>` (下記 `PROXY_SNAPSHOT_DAYS`)
 - **個票の永続化**: 上の状態ファイルの隣にもう 1 つ、**固定サイズ (4 MiB) の個票のファイル**
   (`$HOME/.rust-http-proxy.recent`) を置き、`/recent` (閉じた接続) ・`/errors` ・`/bursts` (山の写真) ・
   `/events` (出来事) ・`/log` を再起動をまたいで残す。書くのは**履歴スレッドの 5 秒の周期だけ** (接続を受ける経路は今までどおりメモリのリングに
@@ -674,6 +685,17 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     起動時に最後の行の日付を見るので**同じ日に 2 回起動しても 1 行のまま**です。
     `PROXY_STATS_PERSIST=off` では 1 行も書きません (`/daily` の `path` が `null`)。
     応答は他の個票と同じく 256 KiB 以下 (切ったら `truncated`)
+  - **日次の snapshot (30 日ぶん。T14.34)**: `/snapshots` は
+    `$HOME/.rust-http-proxy/snapshots/` に残してある日付と大きさ (`files[]` の `date` / `bytes` /
+    `t` (書いた時刻)、**古い順**) と、置き場所 (`dir`)・残す日数 (`days`)・1 ファイルの上限
+    (`max_bytes` = 4 MiB) を返します。`/snapshots/<YYYY-MM-DD>` はその日のファイルを
+    **そのまま** (`/snapshot` の応答そのもの) 返すので、`scripts/snapshot-diff.py` や
+    `scripts/status-diff.py` にそのまま渡せます (置いていない日と日付として読めない名前は 404)。
+    **書くのは履歴スレッドが UTC の日付をまたいだ瞬間の 1 回だけ**で (要求の経路の費用は 0)、
+    名前は**終わった日** (前日) の日付です。`PROXY_SNAPSHOT_DAYS` で日数を変えられ、`0` で止まります。
+    `PROXY_STATS_PERSIST=off` (と `--lite`) では 1 ファイルも書きません (`dir` が `null`)。
+    ディスクの空きが予算 (`PROXY_DISK_KEEP_FREE_MB` のマージン) を割り込むときは**書かずに**
+    `/events` に 1 件 (`state_file`) 残します
   - **RSS の内訳** (`/status` の `memory`。T14.21): 256 MiB のコンテナで「RSS が何でできているか」
     (ヒープの断片・スレッドのスタック・キャッシュ・記録のリング) を 1 枚から読むためのものです。
     **読むのは `/status` に来たときだけ**で、要求の経路には 1 命令も増えません
@@ -872,7 +894,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_CONNECT_PORTS` | なし (制限なし) | `CONNECT` を許すあて先ポート。`443,80,8080-8099` のようにカンマ区切り (範囲可)。ここに無いポートは 403。`.env` で即時反映 |
 | `PROXY_ALLOW_LOCAL` | `off` | ループバック (`127.0.0.0/8`, `::1`) とリンクローカル (`169.254.0.0/16`, `fe80::/10`) 宛てのオリジンを許すか。既定では 403 にしてクラウドのメタデータ (`169.254.169.254`) 経由の SSRF を防ぐ。ローカルのサービスへプロキシしたいときだけ `on`。`.env` で即時反映 |
 | `PROXY_ALLOW_CLIENTS` | なし (全許可) | **受ける接続元**のカンマ区切りリスト (`1.2.3.4,10.0.0.0/8,2001:db8::/32`。1 つの IP は `/32` `/128` と同じ)。ここに無い相手は **accept した直後に、要求を 1 バイトも読まずに閉じます** (応答も返しません)。**内部エンドポイントも含めて閉じる**ので、公開ポートで `/status` や `/clients` の個票が見られることもありません。`PROXY_MAX_CONNS` の 「上限 + 4 本」の枠より**前**で判定します。断った数は `/status` の `rejected_client_acl` と `/metrics` の `sorahost_rejected_client_acl_total`。v4-mapped IPv6 (`::ffff:1.2.3.4`) は IPv4 として照合するので、デュアルスタックで 待ち受けていても `1.2.3.4` の 1 行で書けます。書式が違う項目は読み飛ばします (起動ログの `allowed clients:` に実際に読めた項目が出るので、書き損じはそこで分かります)。**宛先の `PROXY_ALLOW_HOSTS` / `PROXY_ALLOW_LOCAL` とは無関係**で、**認証でもありません** (同じアドレスから来られれば誰でも通ります)。`.env` で即時反映 (次に受ける接続から) |
-| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/metrics` `/hosts` `/hosts/series` `/clients` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/trace` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
+| `PROXY_ENDPOINTS_READONLY` | `off` | `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。読む口 (`/status` `/healthz` `/history` `/daily` `/snapshots` `/metrics` `/hosts` `/hosts/series` `/clients` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/trace` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。**認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。`.env` で即時反映 |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる (`PROXY_PARK_IDLE=on` なら、預かり所が期限を見て引き上げる)。`0` で無期限。`.env` で即時反映 |
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル (`--lite` と同じ)。キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限。上限に当たったら、まず**預かり所の暇な CONNECT トンネルを最古から 1 本閉じて**席を作り、その接続を受ける (閉じた数は `/status` の `evicted_idle` と `/metrics` の `sorahost_evicted_idle_total`。**暇な keep-alive 接続は閉じない** — 次の要求を待っているだけなので、閉じると入れ違いで届いた要求を取りこぼすため)。閉じるものが無い (トンネルが全部中継中、または預かり所が空) ときは、スレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。ただし**自分宛て (`/status` `/metrics` などの内部エンドポイント) は上限 + 4 本まで受ける**: accept の時点では要求が読めないので、4 本までは受けて要求行と `Host` を読み、自分宛てなら普通に応答、それ以外は 503 で閉じる (上限に当たっている最中でも監視が取れるようにするため。この枠で受けた接続は要求行が 2 秒来なければ 503 で閉じる)。`auto` は記述子の上限から `min(4096, (RLIMIT_NOFILE の soft − 予備 64) ÷ 4)` (1 接続が最悪で使う記述子は クライアント 1 + オリジン 1 + 素通しのパイプ 2 = 4 本。`ulimit -n` が 1024 の環境なら 240、4096 なら 1008)。記述子が余っていても 4096 で頭打ちにするのは、上限が fd 以外の資源 (スレッド・RSS) の歯止めでもあるため (同時 5,000 本で RSS 198 MiB の実測)。数値を書けばその値、`0` で無制限。決まった値は起動ログの `max connections:` と `/status` の `max_conns` (`/metrics` は `sorahost_max_connections`) に出る。`.env` で即時反映。断った数は `/status` の `rejected_overload` と `/metrics` の `rejected_overload_total` |
@@ -880,7 +902,8 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_TRACE_CLIENT` | なし (追跡しない) | **1 つの接続元だけ**を追いかけて、その要求を `/trace` に残します (T14.27)。値は IP を 1 つ (`198.51.100.7` / `2001:db8::1`。v4-mapped IPv6 は IPv4 として照合します)。設定すると **accept した直後に接続元がこの IP かどうかを 1 回だけ**見て、一致した接続に旗を立てます。旗の立った接続は、要求ごとに**要求行** (メソッド + **URL の先頭 256 バイト** + HTTP の版)・応答の状態・所要 ms・バイト・**段階の ms**を、CONNECT はトンネルの終わりに**宛先と閉じた理由**を、**1,000 行の環状バッファ**に 1 行書きます (`/trace?n=200&since=<epoch>`、既定 200 行・最大 1,000)。**全体のログ水準を `trace` に上げるのとは違い、費用が乗るのはその 1 人だけ**です (アクセスログ 1 行は 7.2 us/要求。既定 (空) では accept ごとの分岐 1 回、設定していても一致しない接続元は要求ごとに旗を読む分岐 1 回だけ)。**この口だけは URL のパスが入ります** (他の個票は入れません)。認証なしで誰でも読めるので、**調べ終わったら空に戻してください**。リングは**メモリだけ**で、個票のファイル (`$HOME/.rust-http-proxy.recent`) にも `/snapshot` にも入れません (パスが保存したファイルに残らないように)。`--lite` は接続の枠を作らないので**追跡しません**。`.env` で即時反映 (次に受ける接続から。いま開いている接続の旗は動きません) |
 | `PROXY_BURST_PERCENT` | `50` | 同時接続数が `PROXY_MAX_CONNS` のこの割合を**越えた瞬間**に `/connections` の写真を 1 枚撮って `/bursts` に残す (T14.6)。`0` で撮らない。**同じ山では 1 枚だけ**で、閾の 80% を下回るまで次は撮りません。撮るのは履歴スレッド (5 秒周期) なので、接続を受ける経路に増えるのは比較 1 回だけです。割合を当てるのは `PROXY_MAX_CONNS` だけで、上限の外の枠 4 本 (自分宛て用) は含めません。`PROXY_MAX_CONNS=0` (無制限) と `--lite` では撮りません。**履歴スレッドが撮るので `PROXY_STATS_PERSIST=off` でも撮りません**。`.env` で即時反映 |
 | `PROXY_MAX_THREADS` | `auto` | 同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。`auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。`.env` で即時反映 (次に受ける接続から効く。**下げても走っているスレッドは殺さず**、仕事を終えたスレッドから順に減ります。`auto` のときは `PROXY_MAX_CONNS` を変えるとこちらも決め直します)。決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。**裏側の再検証 (stale-while-revalidate) もこの上限の内側で走ります**が、こちらは待たせず捨てます (`/status` の `revalidations_dropped`) |
-| `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 8 MiB) に、**個票 (`/recent` `/errors` `/bursts` `/events` `/log`) を `$HOME/.rust-http-proxy.recent` (固定 4 MiB)** に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`)、**ホスト別の時系列** (`/hosts/series`) は空になり、個票の `"persisted"` は `false`、日次の要約も 1 行も書きません) |
+| `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 8 MiB) に、**個票 (`/recent` `/errors` `/bursts` `/events` `/log`) を `$HOME/.rust-http-proxy.recent` (固定 4 MiB)** に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`)、**ホスト別の時系列** (`/hosts/series`) は空になり、個票の `"persisted"` は `false`、日次の要約も **日次の snapshot** も書きません) |
+| `PROXY_SNAPSHOT_DAYS` | `30` | **日次の snapshot** を残す日数 (T14.34)。履歴スレッドが **UTC の日付をまたいだ瞬間**にその時点の `/snapshot` をまるごと `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` (名前は**終わった日**) に書き、**31 個目を書いたら最古を 1 つ消します**。1 ファイルは `/snapshot` と同じ **4 MiB** まで (30 日で最大 120 MiB、静かなプロキシなら 1 日 20 KB 前後)。`0` で書きません。読む口は `/snapshots` と `/snapshots/<date>`。`PROXY_STATS_PERSIST=off` と `--lite` では履歴スレッドごと無いので書きません。ディスクの空きが `PROXY_DISK_KEEP_FREE_MB` のマージンを割り込むときは書かずに `/events` に 1 件 (`state_file`) 残します。**再起動で反映** |
 | `PROXY_PROFILE_SAMPLE_MS` | `1000` | `/profile` のスレッドの標本を取る間隔 (ms)。`profile-sample` スレッド 1 本が この間隔で `/proc/self/task/*/stat` と `/proc/self/task/*/syscall` を読み、**役割ごと** (`accept` / `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` / `profile-sample` / `other`) に「CPU」と「いま走っているか・どのシステムコールで待っているか・休眠か」を数えます。`0` で標本を止める (段階の窓は 5 秒ごとに畳み続けます)。下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 2 つ開くぶん (実測 約 54 us) で、**140 スレッド・1 秒間隔で 1 コアの 0.75%** (60 秒で 450 ms。128 スレッド相当で 0.69%)。スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。`/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。**`--lite` では `/profile` ごと off** |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
@@ -1468,6 +1491,8 @@ curl -s "http://127.0.0.1:8080/explain?host=mtalk.google.com" | python3 -c 'impo
 curl "http://127.0.0.1:8080/explain?client=198.51.100.7"    # 1 接続元を 1 枚に
 curl "http://127.0.0.1:8080/daily?n=365"                # 1 日 1 行の要約 (永久に残る。古い順)
 curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
+curl "http://127.0.0.1:8080/snapshots"                  # 日次で残した snapshot の一覧 (30 日ぶん)
+curl -s "http://127.0.0.1:8080/snapshots/2026-09-15" > day.json   # その日ぶんをそのまま
 # ブラウザで読むなら http://127.0.0.1:8080/inspect (上の個票を時間軸で描く「調査」ページ)
 # 端末から測るなら http://127.0.0.1:8080/probe.html (往復とプロキシ経由の取得をブラウザで測る)
 

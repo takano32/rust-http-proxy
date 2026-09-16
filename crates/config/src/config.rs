@@ -48,6 +48,15 @@ pub fn default_max_conns() -> usize {
 /// (上限の間際まで待つと、T13.2 の追い出しが動いたあとの姿しか撮れない)。
 pub const DEFAULT_BURST_PERCENT: usize = 50;
 
+/// 日次の `/snapshot` を残す日数の既定 (`PROXY_SNAPSHOT_DAYS`。T14.34)。
+///
+/// 1 日 1 ファイル (`/snapshot` と同じ 4 MiB まで) を `$HOME/.rust-http-proxy/snapshots/` に
+/// 残す。30 日なのは `/history` のいちばん粗い解像度 (1 時間 × 30 日) と同じ長さにするため
+pub const DEFAULT_SNAPSHOT_DAYS: usize = 30;
+/// 同じく上限 (書き間違いで `$HOME` を埋めないための歯止め。`proxy-metrics` の
+/// `snapshots::MAX_KEPT_DAYS` と同じ値。この層は計測クレートに依存しないので数値で持つ)。
+pub const MAX_SNAPSHOT_DAYS: usize = 365;
+
 /// 「この本数を**越えた**瞬間に 1 枚撮る」の本数 (T14.6)。
 ///
 /// [`usize::MAX`] は「撮らない」(`PROXY_BURST_PERCENT=0`、`PROXY_MAX_CONNS=0` = 無制限、
@@ -277,6 +286,11 @@ pub struct Config {
     pub blocklist_exempt: Vec<String>,
     /// 統計と履歴を `$HOME/.rust-http-proxy.rrd` に残す (`PROXY_STATS_PERSIST`、既定 on)
     pub stats_persist: bool,
+    /// 日次の `/snapshot` を `$HOME/.rust-http-proxy/snapshots/` に残す日数
+    /// (`PROXY_SNAPSHOT_DAYS`、既定 [`DEFAULT_SNAPSHOT_DAYS`] = 30、**`0` で書かない**)。
+    ///
+    /// 書くのは履歴スレッドなので `PROXY_STATS_PERSIST=off` (と `--lite`) では 0 と同じ (T14.34)
+    pub snapshot_days: usize,
     /// 最速の素通しプロファイル (`PROXY_PROFILE=lite` / `--lite`)。
     /// キャッシュ・統計の永続化・ブロックリストを止め、ログを warn にする
     pub lite: bool,
@@ -513,6 +527,12 @@ impl Config {
             cfg.stats_persist = !off(v);
             src.mark("PROXY_STATS_PERSIST");
         }
+        if let Some(n) =
+            envfile::var("PROXY_SNAPSHOT_DAYS").and_then(|s| s.trim().parse::<usize>().ok())
+        {
+            cfg.snapshot_days = n.min(MAX_SNAPSHOT_DAYS);
+            src.mark("PROXY_SNAPSHOT_DAYS");
+        }
         if let Some(path) = envfile::var("PROXY_TLS_CA_FILE").filter(|p| !p.trim().is_empty()) {
             cfg.tls_ca_file = Some(PathBuf::from(path.trim()));
             src.mark("PROXY_TLS_CA_FILE");
@@ -715,6 +735,7 @@ impl Config {
         add("PROXY_TLS_CA_FILE", path(self.tls_ca_file.as_ref()));
         // 記録とプロファイル
         add("PROXY_STATS_PERSIST", self.stats_persist.to_string());
+        add("PROXY_SNAPSHOT_DAYS", self.snapshot_days.to_string());
         add(
             "PROXY_PROFILE",
             crate::json::quote_opt(self.lite.then_some("lite")),
@@ -833,6 +854,7 @@ impl Config {
             blocklist_refresh: Duration::from_secs(86400),
             blocklist_exempt: Vec::new(),
             stats_persist: true,
+            snapshot_days: DEFAULT_SNAPSHOT_DAYS,
             lite: false,
             // 既定 1,000 ms (`proxy_metrics::profile::DEFAULT_SAMPLE_MS` と同じ値。
             // この層は計測クレートに依存しないので数値で持つ)
