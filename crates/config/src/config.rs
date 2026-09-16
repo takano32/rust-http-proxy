@@ -14,6 +14,14 @@ pub const FDS_PER_CONN: u64 = 4;
 /// ブロックリストの取得 + キャッシュのディスク I/O + 標準入出力。多めに見て 64。
 const NOFILE_RESERVE: u64 = 64;
 
+/// CONNECT の最初のバイトから SNI を覗くポートの既定 (`PROXY_PEEK_SNI`、既定 `on`。T14.38)。
+///
+/// TLS の既定のポート。**ここ以外では覗かない** (CONNECT の宛先が TLS とは限らない)。
+/// `on:<port>` を指定すると 443 に加えてそのポートでも覗く (試験のオリジンを 443 に
+/// 立てられないため。`proxy-tunnel` の `sni::TLS_PORT` と同じ値で、この層は
+/// トンネルのクレートに依存しないので数値で持つ)。
+pub const DEFAULT_PEEK_SNI_PORT: u16 = 443;
+
 /// `PROXY_MAX_CONNS=auto` の頭打ち。
 ///
 /// 記述子が余っていてもここで止める。上限は記述子だけの歯止めではなく、
@@ -438,6 +446,13 @@ pub struct Config {
     /// `is_some()` 1 回だけ。**v4-mapped IPv6 は IPv4 に直して覚える** (接続元の照合は
     /// `net::canonical_ip` を通った値と比べるため)
     pub trace_client: Option<IpAddr>,
+    /// CONNECT の最初のバイトから SNI を覗くか (`PROXY_PEEK_SNI`、既定 `on` = 443 だけ。T14.38)。
+    ///
+    /// `off` は `None` (1 度も覗かない)、`on` は `Some(443)`、`on:<port>` は
+    /// `Some(<port>)` で **443 に加えて**そのポートでも覗く (試験用の口)。
+    /// 覗くのは `200 Connection Established` のあと**最初の中継の前に 1 回**
+    /// (`recv(MSG_PEEK)` 1 回。バイトは消費しない)。`--lite` では個票の枠が無いので覗かない
+    pub peek_sni: Option<u16>,
     /// 各値の出どころ (`/config` の `source`。T14.15)。効いた値にだけ印が付く
     pub sources: Sources,
 }
@@ -621,6 +636,22 @@ impl Config {
             cfg.trace_client = Some(ip);
             src.mark("PROXY_TRACE_CLIENT");
         }
+        // CONNECT の最初のバイトから SNI を覗くか (T14.38)。`off` / `on` / `on:<port>` で、
+        // 読めない書き方は既定 (`on` = 443 だけ) のまま
+        if let Some(v) = envfile::var("PROXY_PEEK_SNI") {
+            let v = v.trim().to_ascii_lowercase();
+            let (head, port) = match v.split_once(':') {
+                Some((head, port)) => (head, port.trim().parse::<u16>().ok()),
+                None => (v.as_str(), None),
+            };
+            if off(head.to_string()) {
+                cfg.peek_sni = None;
+                src.mark("PROXY_PEEK_SNI");
+            } else if port.is_some_and(|p| p > 0) {
+                cfg.peek_sni = port;
+                src.mark("PROXY_PEEK_SNI");
+            }
+        }
         if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
             cfg.stats_persist = !off(v);
             src.mark("PROXY_STATS_PERSIST");
@@ -735,6 +766,17 @@ impl Config {
         };
     }
 
+    /// `PROXY_PEEK_SNI` の効いている値 (`off` / `on` / `on:<port>`。T14.38)。
+    ///
+    /// `on` は 443 だけ、`on:<port>` は 443 に加えてそのポートでも覗く。
+    pub fn peek_sni_spec(&self) -> String {
+        match self.peek_sni {
+            None => "off".to_string(),
+            Some(DEFAULT_PEEK_SNI_PORT) => "on".to_string(),
+            Some(p) => format!("on:{}", p),
+        }
+    }
+
     /// 全 `PROXY_*` / `SERVER_*` の**効いている値**と、その出どころ (`/config` と `--check`。T14.15)。
     ///
     /// 値はいまプロキシが使っているもの (既定・`.env`・環境変数・引数のどれから来たかは
@@ -824,6 +866,8 @@ impl Config {
                     .unwrap_or_default(),
             ),
         );
+        // CONNECT の最初のバイトから SNI を覗くか (T14.38。`off` / `on` / `on:<port>`)
+        add("PROXY_PEEK_SNI", crate::json::quote(&self.peek_sni_spec()));
         add("PROXY_BURST_PERCENT", self.burst_percent.to_string());
         add("PROXY_BLOCKLIST_FILE", path(self.blocklist_file.as_ref()));
         add(
@@ -979,6 +1023,7 @@ impl Config {
             allow_clients: ClientAcl::default(),
             max_conns_per_client: 0,
             trace_client: None,
+            peek_sni: Some(DEFAULT_PEEK_SNI_PORT),
             sources: Sources::default(),
         })
     }

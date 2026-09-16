@@ -28,7 +28,7 @@ use crate::log::{Level, Line};
 use crate::metrics::Metrics;
 use crate::recent::{
     BurstShot, CONN_STATES, CloseReason, EntryCause, EntryKind, ErrorEntry, MAX_BURSTS, MAX_ERRORS,
-    MAX_RECENT, MAX_SHOT_CLIENTS, MAX_SHOT_TARGETS, RecentEntry, SIDES, STAGES,
+    MAX_RECENT, MAX_SHOT_CLIENTS, MAX_SHOT_TARGETS, MAX_SNI, RecentEntry, SIDES, STAGES,
 };
 use crate::rrd::ring::Ring;
 use crate::rrd::{Dec, Enc, Fixed, Region};
@@ -48,7 +48,7 @@ const HEADER_SIZE: u64 = 4096;
 const SMALL_RECORD: usize = 256;
 /// 閉じた接続 1 件のレコード長。**256 B ではなく 512 B** なのは、段階の ms 6 つと
 /// T14.5 の RTT / 再送 (両側) まで入れると 256 B に収まらないため
-/// (いまの中身は 276 B。領域の大きさは 2 MiB のままで、件数が 8,192 → 4,096 になる)。
+/// (いまの中身は 344 B。領域の大きさは 2 MiB のままで、件数が 8,192 → 4,096 になる)。
 const CLOSED_RECORD: usize = 512;
 /// 山の写真 1 枚のレコード長 (接続元 16 + 宛先 10 の名前が入る)。
 const SHOT_RECORD: usize = 4096;
@@ -80,6 +80,7 @@ const TICK_LOG: usize = 24;
 const W_CLIENT: usize = 48; // 接続元 IP (最長 45 B)
 const W_TARGET: usize = 52; // `/recent` の宛先 (`MAX_RECENT_TARGET` 48 B)
 const W_ETARGET: usize = 84; // `/errors` と写真の宛先 (`MAX_TARGET` 80 B)
+const W_SNI: usize = MAX_SNI + 4; // 覗いた SNI (`MAX_SNI` 64 B。T14.38)
 /// ログ 1 行の本文。レコード 256 B から通し番号・時刻・レベル・conn を引いた残り
 /// (メモリのリングは 1 行 256 B まで持つので、**ファイルに残すときだけ 219 B に切る**)。
 const W_MSG: usize = SMALL_RECORD - 4 - 8 * 4;
@@ -88,7 +89,7 @@ const W_TEXT: usize = MAX_TEXT + 4;
 
 /// 1 レコードに収まることを**組み立て時に**確かめる (欄を足して溢れたらここで止まる)。
 /// 数は各 `encode_*` が書く u64 の本数 (先頭の通し番号を含む) + 固定幅の文字列。
-const CLOSED_PAYLOAD: usize = 8 * (12 + STAGES + 2 * SIDES) + W_CLIENT + W_TARGET;
+const CLOSED_PAYLOAD: usize = 8 * (12 + STAGES + 2 * SIDES) + W_CLIENT + W_TARGET + W_SNI;
 const ERROR_PAYLOAD: usize = 8 * 7 + W_ETARGET + W_CLIENT;
 const LOG_PAYLOAD: usize = 8 * 4 + W_MSG;
 const EVENT_PAYLOAD: usize = 8 * 3 + W_TEXT;
@@ -464,6 +465,8 @@ fn encode_closed(seq: u64, e: &RecentEntry) -> Vec<u8> {
         enc.u64(v as u64);
     }
     enc.str(&e.client, W_CLIENT).str(&e.target, W_TARGET);
+    // 覗いた SNI (T14.38)。空 = 覗いていない / 読めなかった (読み戻すと `None`)
+    enc.str(e.sni.as_deref().unwrap_or(""), W_SNI);
     enc.0
 }
 
@@ -495,6 +498,7 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
     }
     let client = d.str(W_CLIENT);
     let target = d.str(W_TARGET);
+    let sni = d.str(W_SNI);
     if at == 0 {
         return None;
     }
@@ -515,6 +519,7 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
         stage_ms,
         rtt_us,
         retrans,
+        sni: (!sni.is_empty()).then(|| sni.into()),
     })
 }
 
@@ -747,6 +752,7 @@ mod tests {
             stage_ms: [1, 2, 3, 0, 0, 0],
             rtt_us: [1234, 5678],
             retrans: [0, 2],
+            sni: Some("mtalk.google.com".into()),
         }
     }
 
@@ -772,7 +778,7 @@ mod tests {
                 EVENT_PAYLOAD,
                 SHOT_PAYLOAD
             ),
-            (276, 188, 252, 156, 2016)
+            (344, 188, 252, 156, 2016)
         );
     }
 

@@ -31,7 +31,7 @@ pub use proxy_sys::signal;
 #[cfg(target_os = "linux")]
 pub use proxy_sys::sys;
 pub use proxy_sysinfo::sysinfo;
-pub use proxy_tunnel::tunnel;
+pub use proxy_tunnel::{sni, tunnel};
 pub use proxy_workers::workers;
 
 use std::io::{self, BufRead, Read, Write};

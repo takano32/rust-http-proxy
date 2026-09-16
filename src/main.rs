@@ -208,6 +208,8 @@ fn main() {
     metrics.conns.set_enabled(!config.lite);
     // `--lite` では段階の時計も読まない (`/profile` は off。T14.3)
     rust_http_proxy::profile::set_enabled(!config.lite);
+    // CONNECT の最初のバイトから SNI を覗くか (`PROXY_PEEK_SNI`、既定 `on` = 443 だけ。T14.38)
+    rust_http_proxy::sni::set_peek(config.peek_sni);
     let _profile = (!config.lite)
         .then(|| rust_http_proxy::profile::spawn(Arc::clone(&metrics), config.profile_sample_ms));
     let cache = Arc::new(Cache::new(config.cache.clone()));
