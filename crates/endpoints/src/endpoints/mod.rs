@@ -116,6 +116,8 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /bursts?n=50                                JSON: snapshots taken at each spike\n\
          \x20 /events?n=200&since=                        JSON: starts, reloads, and other events\n\
          \x20 /snapshot                                   JSON: everything above in one request\n\
+         \x20 /snapshots                                  JSON: the daily snapshots kept on disk\n\
+         \x20 /snapshots/<YYYY-MM-DD>                     JSON: one saved day (as taken)\n\
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
@@ -134,6 +136,45 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /blocklist?host=&action=block|allow|clear   blocklist decision and overrides\n",
         dashboard
     )
+}
+
+/// 日次の `/snapshot` (T14.34) を組むのに要るもの。[`register_snapshot`] に渡す。
+pub struct SnapshotSource {
+    pub metrics: std::sync::Arc<Metrics>,
+    pub cache: std::sync::Arc<Cache>,
+    /// 待ち受けポート (`Endpoint` の自分宛て判定と同じ値。中身には出ない)
+    pub port: u16,
+    pub version: &'static str,
+    pub lite: bool,
+    pub readonly: bool,
+    /// 上限といまのスレッド数を引く口 (`/status` を組むときだけ呼ぶ。要求ごとの
+    /// `Endpoint` と同じもので、こちらは履歴スレッドが 1 日 1 回呼ぶ)
+    pub concurrency: Box<dyn Fn() -> metrics::Concurrency + Send + Sync>,
+}
+
+/// **日付の変わり目に `/snapshot` を組む閉包を履歴スレッドへ預ける** (起動時に 1 回。T14.34)。
+///
+/// 組み立ては要求で来たときと**同じ関数** ([`recent::snapshot`]) で、自分へ HTTP で
+/// 繋ぎ直さない (T14.4 と同じ)。預ける形にしてあるのは、書く側の `proxy-metrics` が
+/// この層より**下**にあるため (下から上を呼ぶと依存が輪になる。T14.11 の `events::poll`
+/// と同じ判断で、**向きは上から預ける**)。
+pub fn register_snapshot(src: SnapshotSource) {
+    crate::snapshots::set_builder(Box::new(move || {
+        let ep = Endpoint {
+            metrics: &src.metrics,
+            cache: &src.cache,
+            // 要求で来たわけではないのでログの接続 id は無い (履歴スレッドが組む)
+            conn_id: 0,
+            port: src.port,
+            host: None,
+            pac_direct: &[],
+            lite: src.lite,
+            readonly: src.readonly,
+            version: src.version,
+            concurrency: &*src.concurrency,
+        };
+        recent::snapshot(&ep).2
+    }));
 }
 
 /// 内部エンドポイントなら応答して `Ok(true)` を返す。そうでなければ何もせず `Ok(false)`。
@@ -225,6 +266,12 @@ pub fn handle(
     } else if is_get && path == "/snapshot" {
         // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
         recent::snapshot(ep)
+    } else if is_get && (path == "/snapshots" || path == "/snapshots/") {
+        // 日次で残した `/snapshot` の一覧 (T14.34)
+        recent::snapshots()
+    } else if is_get && let Some(date) = path.strip_prefix("/snapshots/") {
+        // 残してある 1 日ぶんをそのまま (T14.34)。日付として読めない名前は 404
+        recent::snapshot_file(date)
     } else if is_get && path == "/dns" {
         recent::dns(query)
     } else if is_get && path == "/daily" {

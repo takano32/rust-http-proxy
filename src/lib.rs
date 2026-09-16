@@ -20,7 +20,7 @@ pub use proxy_endpoints::endpoints;
 pub use proxy_http::{freshness, http};
 pub use proxy_metrics::{
     anomaly, canary, daily, events, history, hostseries, kernel, metrics, persist, persist_recent,
-    profile, recent, rrd,
+    profile, recent, rrd, snapshots,
 };
 pub use proxy_msg::{body, clientio, headers, response};
 pub use proxy_net::{acl, dns, net};
@@ -138,6 +138,30 @@ pub fn serve(
     // 当たらなかった環境では None のままで、従来どおり接続ごとに設定する。
     // timeout 0 (= 無期限、T10.6) も `timeval {0, 0}` としてそのまま継承させる
     let mut inherited = inherit_on_listener(&listener, config_of().timeout);
+    // 日付の変わり目に `/snapshot` を 1 枚組む閉包を履歴スレッドへ預ける (T14.34)。
+    // 組み立ては要求で来たときと同じ関数で、**下の層 (`proxy-metrics`) から上の層を
+    // 呼ばない**ためにここで預ける。書くかどうかを決めるのは `snapshots::configure`
+    // (`PROXY_STATS_PERSIST=off` では呼ばれないので、預けても 1 ファイルも書かない)
+    {
+        let cfg = config_of();
+        let workers = Arc::clone(&workers);
+        let max_conns = cfg.max_conns;
+        endpoints::register_snapshot(endpoints::SnapshotSource {
+            metrics: Arc::clone(&metrics),
+            cache: Arc::clone(&cache),
+            port: local_port,
+            version: VERSION,
+            lite: cfg.lite,
+            readonly: cfg.endpoints_readonly,
+            concurrency: Box::new(move || crate::metrics::Concurrency {
+                max_conns,
+                max_threads: workers.max_threads(),
+                live_threads: workers.live_count(),
+                idle_threads: workers.idle_count(),
+                queued_jobs: workers.queued(),
+            }),
+        });
+    }
     loop {
         // incoming() は accept() の戻り値のアドレスを捨てるので accept() を直接呼ぶ
         // (接続ごとの getpeername が 1 回減る)

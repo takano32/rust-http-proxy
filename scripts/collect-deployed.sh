@@ -14,6 +14,13 @@
 #   保存先の既定は ~/rust-http-proxy-status/ (`<UTC 時刻>-snapshot.json`、秒まで)。
 #   **リポジトリには保存しない** (個票には接続元 IP と宛先ホストが並ぶため)。
 #
+#   scripts/collect-deployed.sh --from-server HOST:PORT [DIR]
+#     プロキシ自身が 1 日 1 回書いている日次の snapshot (T14.34) のうち、**手元に無い日付だけ**を
+#     `/snapshots` の一覧から取り寄せる (取りに行くのは `/snapshots/<date>` で、中身は
+#     `/snapshot` そのもの)。名前は今の流儀に合わせて `<日付>T000000Z-snapshot.json`
+#     (日付は**その 1 日を写したもの**。実際に撮られたのは翌日 00:00 UTC の直後)。
+#     回し忘れた日の個票がこれで埋まる。
+#
 # 環境変数:
 #   PROBE (既定 1)      … 0 で `probe-deployed.sh` を飛ばす (デプロイ先へ本物の要求を
 #                         15 本送るので、何度も回すときは 0 にする)
@@ -26,11 +33,19 @@
 # 出口: 雪像が取れなければ 1 (それ以外は、途中の道具が失敗しても 1 枚は出す)。
 set -u
 cd "$(dirname "$0")/.."
+FROM_SERVER=0
+if [ "${1:-}" = --from-server ]; then
+  FROM_SERVER=1
+  shift
+fi
 PROXY=${1:-}
 if [ -z "$PROXY" ]; then
-  echo "usage: $0 HOST:PORT [DIR]   (例: $0 nagoya.sorahost.net:50697)" >&2
+  echo "usage: $0 [--from-server] HOST:PORT [DIR]   (例: $0 nagoya.sorahost.net:50697)" >&2
   exit 2
 fi
+# `http://host:port` と書かれても `host:port` として扱う (URL でも通るように)
+PROXY=${PROXY#http://}
+PROXY=${PROXY%/}
 DIR=${2:-$HOME/rust-http-proxy-status}
 PROBE=${PROBE:-1}
 DASHBOARD=${DASHBOARD:-1}
@@ -40,6 +55,55 @@ MAX_TIME=${MAX_TIME:-30}
 AAAA=${AAAA:-}
 
 mkdir -p "$DIR" || exit 1
+
+# --- 0. 保存済みの日次 snapshot を取り寄せる (--from-server。T14.34) ----------
+# プロキシが `$HOME/.rust-http-proxy/snapshots/` に 1 日 1 ファイル書いているので、
+# 手元に無い日付だけを取って `$DIR` に置く (`/snapshots` の一覧 → `/snapshots/<date>`)。
+if [ "$FROM_SERVER" = 1 ]; then
+  LIST=$(curl -s --max-time "$MAX_TIME" "http://$PROXY/snapshots") || LIST=
+  if [ -z "$LIST" ]; then
+    echo "failed to fetch http://$PROXY/snapshots" >&2
+    exit 1
+  fi
+  DAYS=$(printf '%s' "$LIST" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit("not JSON")
+for f in d.get("files") or []:
+    print(f.get("date"), f.get("bytes", 0))
+') || exit 1
+  printf '# rust-http-proxy — 日次の snapshot を取り寄せる (%s)\n\n' "$PROXY"
+  printf -- '- 保存先: `%s`\n' "$DIR"
+  got=0
+  skipped=0
+  failed=0
+  while read -r day bytes; do
+    [ -n "$day" ] || continue
+    out="$DIR/${day}T000000Z-snapshot.json"
+    if [ -f "$out" ]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if curl -s --max-time "$MAX_TIME" "http://$PROXY/snapshots/$day" -o "$out.part" &&
+      python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$out.part" 2>/dev/null; then
+      mv "$out.part" "$out"
+      got=$((got + 1))
+      printf -- '- 取り寄せた: `%s` (%s B、サーバー側 %s B)\n' "$out" "$(wc -c <"$out" | tr -d ' ')" "$bytes"
+    else
+      rm -f "$out.part"
+      failed=$((failed + 1))
+      printf -- '- **取れなかった**: %s\n' "$day"
+    fi
+  done <<EOF
+$DAYS
+EOF
+  printf -- '- 取り寄せ %d 件、手元にあった %d 件、失敗 %d 件\n' "$got" "$skipped" "$failed"
+  [ "$failed" = 0 ] || exit 1
+  exit 0
+fi
+
 STAMP=$(date -u +%Y-%m-%dT%H%M%SZ)
 OUT="$DIR/$STAMP-snapshot.json"
 work=$(mktemp -d)

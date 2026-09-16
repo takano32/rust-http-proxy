@@ -206,6 +206,59 @@ pub fn daily(query: Option<&str>) -> (u16, &'static str, String) {
     (200, "application/json", out)
 }
 
+/// `/snapshots` — 日次で残した `/snapshot` の一覧 (T14.34)。
+///
+/// 履歴スレッドが UTC の日付をまたいだ瞬間に `$HOME/.rust-http-proxy/snapshots/<日付>.json`
+/// へ 1 ファイル書いている (既定 30 日ぶん、`PROXY_SNAPSHOT_DAYS`)。ここはその置き場所と
+/// 日付・大きさを並べるだけで、中身を読むのは [`snapshot_file`] (`/snapshots/<date>`)。
+/// `PROXY_STATS_PERSIST=off` と `PROXY_SNAPSHOT_DAYS=0` では 1 つも書いていないので
+/// `dir` が `null` で `files` は空。
+pub fn snapshots() -> (u16, &'static str, String) {
+    let l = crate::snapshots::list();
+    let mut out = String::with_capacity(1024);
+    out.push_str("{\"files\":");
+    let (shown, cut) = array_within(
+        &mut out,
+        l.files.iter().map(|f| {
+            format!(
+                "{{\"date\":\"{}\",\"bytes\":{},\"t\":{}}}",
+                f.date, f.bytes, f.t
+            )
+        }),
+    );
+    let _ = write!(
+        out,
+        ",\"count\":{},\"shown\":{},\"bytes\":{},\"days\":{},\"max_bytes\":{},\"dir\":{},\"truncated\":{}}}",
+        l.files.len(),
+        shown,
+        l.bytes,
+        l.days,
+        crate::snapshots::MAX_FILE,
+        crate::json::quote_opt(l.dir.as_ref().map(|p| p.display().to_string()).as_deref()),
+        cut
+    );
+    (200, "application/json", out)
+}
+
+/// `/snapshots/<YYYY-MM-DD>` — 残してある 1 日ぶんを**そのまま**返す (T14.34)。
+///
+/// 中身は `/snapshot` の応答そのもの (組み直さない) なので、`scripts/snapshot-diff.py` や
+/// `scripts/collect-deployed.sh --from-server` がそのまま読める。日付として読めない名前と
+/// 置いていない日は 404 (`..` を書かれても置き場所の外は見ない)。
+pub fn snapshot_file(date: &str) -> (u16, &'static str, String) {
+    match crate::snapshots::read(date) {
+        Some(body) => (200, "application/json", body),
+        None => (
+            404,
+            "application/json",
+            format!(
+                "{{\"error\":\"no snapshot for that day\",\"date\":{},\"see\":\"/snapshots\"}}",
+                crate::json::quote(date)
+            ),
+        ),
+    }
+}
+
 /// `/log` の 1 要素。`conn` は `[conn#N]` の N (`[main]` なら `null`)。
 fn log_line_json(line: &crate::log::Line) -> String {
     format!(
