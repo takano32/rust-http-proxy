@@ -27,7 +27,7 @@ use crate::log::{Level, Line};
 use crate::metrics::Metrics;
 use crate::recent::{
     BurstShot, CONN_STATES, CloseReason, EntryCause, EntryKind, ErrorEntry, MAX_BURSTS, MAX_ERRORS,
-    MAX_RECENT, MAX_SHOT_CLIENTS, MAX_SHOT_TARGETS, RecentEntry, STAGES,
+    MAX_RECENT, MAX_SHOT_CLIENTS, MAX_SHOT_TARGETS, RecentEntry, SIDES, STAGES,
 };
 use crate::rrd::ring::Ring;
 use crate::rrd::{Dec, Enc, Fixed, Region};
@@ -43,8 +43,12 @@ pub const FILE_SIZE: u64 = 4 * 1024 * 1024;
 /// 先頭の版の印を置く場所 (`.rrd` と同じ 4 KiB)。
 const HEADER_SIZE: u64 = 4096;
 
-/// 個票 1 件のレコード長 (末尾 4 B が CRC)。
+/// 個票 1 件のレコード長 (末尾 4 B が CRC)。エラーとログはこちら。
 const SMALL_RECORD: usize = 256;
+/// 閉じた接続 1 件のレコード長。**256 B ではなく 512 B** なのは、段階の ms 6 つと
+/// T14.5 の RTT / 再送 (両側) まで入れると 256 B に収まらないため
+/// (いまの中身は 276 B。領域の大きさは 2 MiB のままで、件数が 8,192 → 4,096 になる)。
+const CLOSED_RECORD: usize = 512;
 /// 山の写真 1 枚のレコード長 (接続元 16 + 宛先 10 の名前が入る)。
 const SHOT_RECORD: usize = 4096;
 
@@ -53,15 +57,17 @@ const SHOT_RECORD: usize = 4096;
 /// ログ 1,020 KiB)。写真が 256 枚ではなく 128 枚なのは 4 MiB に収めるため、
 /// ログが 4,096 行ではなく 4,080 行なのは**先頭 4 KiB のヘッダーのぶん**
 /// (メモリのリングは 1,000 行なので、4,080 行でもその 4 倍ある)。
-pub const CLOSED_SLOTS: usize = 8192;
+/// 閉じた接続が 4,096 件なのは 1 件 512 B ([`CLOSED_RECORD`]) にしたため
+/// (それでもメモリのリング 2,000 件の 2 倍持てる)。
+pub const CLOSED_SLOTS: usize = 4096;
 pub const ERROR_SLOTS: usize = 2048;
 pub const BURST_SLOTS: usize = 128;
 pub const LOG_SLOTS: usize = 4080;
 
 /// 1 周期 (5 秒) に書くレコードの上限。**合計ちょうど 64 KiB** で、越えた分は
 /// 古い方から落とす (メモリのリングには残っている。落とした数は `/status` の `dropped`)。
-/// 閉じた接続の 160 件/5 秒 = 32 本/秒 は、デプロイ先の実測 (43 本/時) の 2,700 倍。
-const TICK_CLOSED: usize = 160;
+/// 閉じた接続の 80 件/5 秒 = 16 本/秒 は、デプロイ先の実測 (43 本/時) の 1,300 倍。
+const TICK_CLOSED: usize = 80;
 const TICK_ERRORS: usize = 32;
 const TICK_BURSTS: usize = 2;
 const TICK_LOG: usize = 32;
@@ -76,13 +82,13 @@ const W_MSG: usize = SMALL_RECORD - 4 - 8 * 4;
 
 /// 1 レコードに収まることを**組み立て時に**確かめる (欄を足して溢れたらここで止まる)。
 /// 数は各 `encode_*` が書く u64 の本数 (先頭の通し番号を含む) + 固定幅の文字列。
-const CLOSED_PAYLOAD: usize = 8 * (12 + STAGES) + W_CLIENT + W_TARGET;
+const CLOSED_PAYLOAD: usize = 8 * (12 + STAGES + 2 * SIDES) + W_CLIENT + W_TARGET;
 const ERROR_PAYLOAD: usize = 8 * 7 + W_ETARGET + W_CLIENT;
 const LOG_PAYLOAD: usize = 8 * 4 + W_MSG;
 const SHOT_PAYLOAD: usize = 8 * (18 + CONN_STATES + 2)
     + MAX_SHOT_CLIENTS * (W_CLIENT + 8)
     + MAX_SHOT_TARGETS * (W_ETARGET + 8);
-const _: () = assert!(CLOSED_PAYLOAD <= SMALL_RECORD - 4);
+const _: () = assert!(CLOSED_PAYLOAD <= CLOSED_RECORD - 4);
 const _: () = assert!(ERROR_PAYLOAD <= SMALL_RECORD - 4);
 const _: () = assert!(LOG_PAYLOAD <= SMALL_RECORD - 4);
 const _: () = assert!(SHOT_PAYLOAD <= SHOT_RECORD - 4);
@@ -104,7 +110,7 @@ impl Layout {
         let mut off = HEADER_SIZE;
         let closed = Region {
             offset: off,
-            record_size: SMALL_RECORD,
+            record_size: CLOSED_RECORD,
             count: CLOSED_SLOTS,
         };
         off += closed.bytes();
@@ -417,6 +423,13 @@ fn encode_closed(seq: u64, e: &RecentEntry) -> Vec<u8> {
     for ms in e.stage_ms {
         enc.u64(ms);
     }
+    // カーネルの RTT と再送 (クライアント側 / オリジン側。T14.5)
+    for v in e.rtt_us {
+        enc.u64(v as u64);
+    }
+    for v in e.retrans {
+        enc.u64(v as u64);
+    }
     enc.str(&e.client, W_CLIENT).str(&e.target, W_TARGET);
     enc.0
 }
@@ -439,6 +452,14 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
     for slot in stage_ms.iter_mut() {
         *slot = d.u64();
     }
+    let mut rtt_us = [0u32; SIDES];
+    for slot in rtt_us.iter_mut() {
+        *slot = d.u64() as u32;
+    }
+    let mut retrans = [0u32; SIDES];
+    for slot in retrans.iter_mut() {
+        *slot = d.u64() as u32;
+    }
     let client = d.str(W_CLIENT);
     let target = d.str(W_TARGET);
     if at == 0 {
@@ -459,6 +480,8 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
         parked_secs,
         parks,
         stage_ms,
+        rtt_us,
+        retrans,
     })
 }
 
@@ -668,6 +691,8 @@ mod tests {
             parked_secs: 7,
             parks: 2,
             stage_ms: [1, 2, 3, 0, 0, 0],
+            rtt_us: [1234, 5678],
+            retrans: [0, 2],
         }
     }
 
@@ -679,13 +704,14 @@ mod tests {
         assert_eq!(l.total, 4 * 1024 * 1024);
         assert_eq!(l.used, l.total, "ヘッダー + 4 領域でちょうど埋まる");
         assert_eq!(l.closed.bytes(), 2 * 1024 * 1024);
+        assert_eq!(l.closed.record_size, 512);
         assert_eq!(l.errors.bytes(), 512 * 1024);
         assert_eq!(l.bursts.bytes(), 512 * 1024);
         assert_eq!(l.log.bytes(), 1_044_480);
         // 1 レコードの中身が入ること (組み立て時の assert と同じものを数字で残す)
         assert_eq!(
             (CLOSED_PAYLOAD, ERROR_PAYLOAD, LOG_PAYLOAD, SHOT_PAYLOAD),
-            (244, 188, 252, 2016)
+            (276, 188, 252, 2016)
         );
     }
 
@@ -754,7 +780,7 @@ mod tests {
         e.client = "x".repeat(200);
         e.target = "y".repeat(200);
         let rec = encode_closed(1, &e);
-        assert!(rec.len() <= SMALL_RECORD - 4, "{}", rec.len());
+        assert!(rec.len() <= CLOSED_RECORD - 4, "{}", rec.len());
         let back = decode_closed(&rec).unwrap();
         assert_eq!(back.client.len(), W_CLIENT - 1);
         assert_eq!(back.target.len(), W_TARGET - 1);
@@ -839,7 +865,7 @@ mod tests {
     #[test]
     fn one_tick_writes_at_most_sixty_four_kib() {
         assert_eq!(
-            TICK_CLOSED * SMALL_RECORD
+            TICK_CLOSED * CLOSED_RECORD
                 + TICK_ERRORS * SMALL_RECORD
                 + TICK_BURSTS * SHOT_RECORD
                 + TICK_LOG * SMALL_RECORD,
