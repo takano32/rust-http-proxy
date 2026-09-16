@@ -515,17 +515,17 @@ mod tests {
     ///
     /// 1 件はありふれた値で 225 B なので **2,000 件 (440 KiB) は入りきらない**のが
     /// 設計どおり。入らない分はバイト数で打ち切って `"truncated":true` を出す
-    /// (既定の 200 件は最悪の値でも入る)。
+    /// (既定の 200 件は最悪の値でも入る)。ここは `/recent` そのものを通して見る。
     #[test]
     fn the_recent_response_stays_under_256_kib() {
-        use crate::recent::{CloseReason, ConnTally, MAX_RECENT, RecentRing, STAGES};
+        use crate::recent::{CloseReason, ConnTally, MAX_RECENT, STAGES};
 
-        let ring = RecentRing::new();
-        let table = crate::recent::ConnTable::new();
+        let m = Metrics::new();
         let now = Instant::now();
         let long_host = format!("{}.example.net:65535", "sub.".repeat(30));
         for i in 0..(MAX_RECENT as u64) {
-            let slot = table
+            let slot = m
+                .conns
                 .register(i, "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6", now)
                 .expect("登録できる");
             slot.begin_tunnel(&long_host);
@@ -539,20 +539,47 @@ mod tests {
                 },
                 u32::MAX,
             );
-            ring.push(slot.closed_entry(now).expect("宛先のある接続は残る"));
+            m.record_closed(i);
         }
-        let (rows, total) = ring.select(0, "");
-        assert_eq!(total, MAX_RECENT as u64);
-        assert_eq!(rows.len(), MAX_RECENT);
-        for (n, want_cut) in [(200usize, false), (MAX_RECENT, true)] {
-            let mut body = String::from("{\"recent\":");
-            let (shown, cut) = array_within(&mut body, rows.iter().take(n).map(|e| e.to_json()));
-            body.push('}');
-            assert_eq!(cut, want_cut, "{} 件", n);
-            assert!(body.len() <= MAX_BODY, "{} 件で {} B", n, body.len());
+        assert_eq!(m.closed.len(), MAX_RECENT);
+        assert!(m.conns.is_empty(), "抹消は接続の終了で 1 回ずつ");
+
+        let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
+        let concurrency = || crate::metrics::Concurrency {
+            max_conns: 0,
+            max_threads: 0,
+            live_threads: 0,
+            idle_threads: 0,
+            queued_jobs: 0,
+        };
+        let ep = Endpoint {
+            metrics: &m,
+            cache: &cache,
+            conn_id: 1,
+            port: 8080,
+            host: None,
+            pac_direct: &[],
+            lite: false,
+            version: "test",
+            concurrency: &concurrency,
+        };
+        // **エンドポイントそのものを通す** (既定の 200 件は最悪の値でも入り、2,000 件は切れる)
+        for (q, want_cut) in [("n=200", false), ("n=2000", true)] {
+            let body = recent(&ep, Some(q)).2;
+            assert!(body.len() <= MAX_BODY, "{} で {} B", q, body.len());
+            assert!(
+                body.contains(&format!("\"truncated\":{}", want_cut)),
+                "{} の truncated が {} でない: …{}",
+                q,
+                want_cut,
+                &body[body.len() - 220..]
+            );
+            assert!(body.contains("\"matched\":2000"), "{}", q);
+            let shown = body.matches("\"id\":").count();
+            assert_eq!(shown == 200, !want_cut, "{} で {} 件", q, shown);
             println!(
-                "recent {} 件 (最悪の値) の応答: {} B / 出せたのは {} 件 (上限 {} B)",
-                n,
+                "recent {} (最悪の値) の応答: {} B / 出せたのは {} 件 (上限 {} B)",
+                q,
                 body.len(),
                 shown,
                 MAX_BODY

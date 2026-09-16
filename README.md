@@ -73,6 +73,21 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 **ホスト別の平均は 2 枚の差分で読みます** (`/status` の `hosts[]` は状態ファイルに残って再起動をまたいで
 通算されるので、そのまま読むと直す前の値が何日も混ざります)。
 
+**1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T14.4)。`/snapshot` を
+`DIR/<UTC 時刻>-snapshot.json` (既定 `~/rust-http-proxy-status/`) に保存し、要点
+(`scripts/snapshot-summary.py`)・ホスト別 (`status-diff.py`。**前回の雪像があれば差分**)・
+ダッシュボードの読み方 (`check-dashboard.js`)・手元から見た待ち (`probe-deployed.sh`) を
+続けて回して **Markdown 1 枚**を標準出力に出します。`status-diff.py` は `/snapshot` の JSON を
+そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
+
+```bash
+scripts/collect-deployed.sh nagoya.sorahost.net:50697 > today.md   # 1 日 1 回
+PROBE=0 scripts/collect-deployed.sh nagoya.sorahost.net:50697      # 本物の要求を送らずに取る
+scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と最後で差分
+```
+
+保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
+
 | 項目 | 直す前 (2026-09-10) | いま | 出どころ |
 |---|---|---|---|
 | CONNECT 確立、**AAAA のあるホスト** | **257 ms** (25 ホストの中央値) | **9 ms** (29 ホスト) | 2026-09-12、`status-diff.py --aaaa` |
