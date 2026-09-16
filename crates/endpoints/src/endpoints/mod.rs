@@ -107,6 +107,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /connections                                JSON: the connections open right now\n\
          \x20 /recent?n=200&since=&client=&sort=          JSON: the connections that closed\n\
          \x20 /bursts?n=50                                JSON: snapshots taken at each spike\n\
+         \x20 /events?n=200&since=                        JSON: starts, reloads, and other events\n\
          \x20 /snapshot                                   JSON: everything above in one request\n\
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
@@ -199,6 +200,10 @@ pub fn handle(
     } else if is_get && path == "/bursts" {
         // 山の写真 (T14.6)。同時接続数が上限の一定割合を越えた瞬間の `/connections`
         recent::bursts(ep, query)
+    } else if is_get && path == "/events" {
+        // 起きたことの時系列 (T14.11)。起動・再読込・ブロックリスト・IPv6・圧迫・
+        // バラスト・状態ファイル・追い出し・accept の失敗・停止シグナルを 1 本に
+        recent::events(query)
     } else if is_get && path == "/snapshot" {
         // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
         recent::snapshot(ep)

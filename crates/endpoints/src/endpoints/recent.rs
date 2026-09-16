@@ -16,6 +16,7 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use super::{Endpoint, parse_query};
+use crate::events::MAX_EVENTS;
 use crate::recent::{BurstShot, MAX_BURSTS, MAX_ERRORS, MAX_RECENT, RecentEntry};
 
 /// 個票の応答 1 本の上限 (256 KiB)。監視が 1 分おきに引いても回線を埋めない大きさで、
@@ -401,6 +402,39 @@ pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     (200, "application/json", out)
 }
 
+/// `/events?n=200&since=<epoch>` — 起きたことの時系列 (新しい順、既定 200 件・最大
+/// [`MAX_EVENTS`]。T14.11)。
+///
+/// 起動・設定の再読込・ブロックリストの更新・IPv4 優先の切替・メモリの圧迫・バラストの
+/// 増減・状態ファイルの異常・上限での追い出し・accept の失敗・停止シグナルを **1 本の
+/// 時系列**にしたもの。`/log` は warn 以上なので info の出来事が入らず、`/status` の
+/// `settings` は最後の 1 回しか残さない。種類は `kinds` に並ぶ 10 種で固定。
+pub fn events(query: Option<&str>) -> (u16, &'static str, String) {
+    let n = num_param(query, "n", 200, MAX_EVENTS);
+    // `?since=` は `/recent` と同じ扱い (「その時刻以降に起きたもの」。無ければ 0 = 全部)
+    let since = parse_query(query.unwrap_or(""))
+        .iter()
+        .find(|(k, _)| k == "since")
+        .and_then(|(_, v)| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let (events, total) = crate::events::select(since, n);
+    let mut out = String::with_capacity(8192);
+    out.push_str("{\"events\":");
+    let (shown, cut) = array_within(&mut out, events.iter().map(crate::events::Event::to_json));
+    let _ = write!(
+        out,
+        ",\"count\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"since\":{},\"kinds\":{},\"truncated\":{}}}",
+        shown,
+        crate::events::len(),
+        MAX_EVENTS,
+        total,
+        since,
+        crate::json::list(crate::events::KINDS.iter().map(|k| k.name())),
+        cut
+    );
+    (200, "application/json", out)
+}
+
 /// `/snapshot` の上限 (4 MiB)。個票 1 本 1 本の上限 ([`MAX_BODY`]) とは別枠。
 ///
 /// デプロイ先から 1 日 1 回取って保存する大きさなので、回線を占めない・エディタで
@@ -455,6 +489,7 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)。
         // `--lite` では `{"profile":"off"}` の 1 行になる
         ("profile", super::profile::profile(ep, Some("res=5")).2),
+        ("events", events(Some("n=512")).2),
         ("log", log(Some("n=1000")).2),
     ];
     let names: Vec<&'static str> = part.iter().map(|(k, _)| *k).collect();
@@ -705,6 +740,75 @@ mod tests {
                 MAX_BODY
             );
         }
+    }
+
+    /// `/events` の形と、`?n=` `?since=` の絞り (T14.11)。
+    ///
+    /// リングは静的に 1 本なので、ここでは 1 つのテストにまとめて順に見る。
+    #[test]
+    fn the_events_endpoint_filters_by_n_and_since() {
+        use crate::events::{EventKind, MAX_EVENTS};
+        crate::events::clear();
+        crate::events::push(EventKind::Start, "version 0.0.0 on port 8080");
+        crate::events::push(EventKind::Reload, "PROXY_TIMEOUT_SECS 30 \u{2192} 10");
+        let body = events(None).2;
+        assert!(body.starts_with("{\"events\":["), "{}", body);
+        assert!(body.contains("\"kind\":\"reload\""), "{}", body);
+        assert!(
+            body.contains("PROXY_TIMEOUT_SECS 30 \u{2192} 10"),
+            "前後の値が出る: {}",
+            body
+        );
+        assert!(body.contains("\"count\":2"), "{}", body);
+        assert!(body.contains("\"recorded\":2"), "{}", body);
+        assert!(body.contains("\"capacity\":512"), "{}", body);
+        assert!(body.contains("\"truncated\":false"), "{}", body);
+        // 10 種の名前が全部出る (README の一覧と合っているか)
+        for kind in [
+            "start",
+            "reload",
+            "blocklist",
+            "ipv6",
+            "pressure",
+            "ballast",
+            "state_file",
+            "evict",
+            "emfile",
+            "shutdown",
+        ] {
+            assert!(body.contains(&format!("\"{}\"", kind)), "{} が無い", kind);
+        }
+        // 新しい順
+        let first = body.find("reload").unwrap();
+        let second = body.find("\"kind\":\"start\"").unwrap();
+        assert!(first < second, "新しい順でない: {}", body);
+        // `?n=1` で 1 件
+        let one = events(Some("n=1")).2;
+        assert!(one.contains("\"count\":1"), "{}", one);
+        assert!(!one.contains("\"kind\":\"start\""), "{}", one);
+        // `?since=` は「その時刻以降」。先の時刻なら 0 件
+        let none = events(Some("since=9999999999")).2;
+        assert!(none.starts_with("{\"events\":[]"), "{}", none);
+        assert!(none.contains("\"since\":9999999999"), "{}", none);
+        assert!(none.contains("\"recorded\":2"), "通算は残る: {}", none);
+        // 満杯 (512 件) の最悪でも 256 KiB に収まる
+        crate::events::clear();
+        for i in 0..MAX_EVENTS + 10 {
+            crate::events::push(
+                EventKind::Blocklist,
+                &format!("{}{}", "\u{2192}".repeat(50), i),
+            );
+        }
+        let body = events(Some("n=512")).2;
+        assert!(body.contains("\"count\":512"), "{}", body);
+        assert!(body.contains("\"truncated\":false"), "{}", body);
+        assert!(body.len() <= MAX_BODY, "{} B", body.len());
+        println!(
+            "events 512 件の応答: {} B (上限 {} B)",
+            body.len(),
+            MAX_BODY
+        );
+        crate::events::clear();
     }
 
     /// 4 MiB を越えたら `/recent` → `/log` → `/history?res=5` の順に落とすこと (T14.4)。

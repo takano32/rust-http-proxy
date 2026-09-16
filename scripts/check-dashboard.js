@@ -11,8 +11,9 @@
 //      (作り置きは架空のホスト名。T13.4)
 //   5. **`/history` の `closed` (閉じた接続の分布) と `/bursts` の写真**が読めること
 //      (区間の数・合計と件数の一致・並び。T14.6)
-//   6. **カーネルと cgroup の窓** (`/history` の `kernel` と `/status` の `kernel`。T14.12)
-//   7. **`/profile` を読む関数** (段階・スレッド・ロック) が実出力と合っていること (T14.3)
+//   6. **カーネルと cgroup の窓** (`/history` の `kernel`、`/status` の `kernel`) が読めること (T14.12)
+//   7. **`/events` の時系列**が読めること (10 種の綴り・新しい順・`?since=` の絞り。T14.11)
+//   8. **`/profile` を読む関数** (段階・スレッド・ロック) が実出力と合っていること (T14.3)
 //
 // 使い方: node scripts/check-dashboard.js [/history の実出力.json] [/status の実出力.json] [/profile の実出力.json]
 //   引数を省くと下の作り置き (手元のプロキシから取った実出力と、架空のホスト名の見本) を使う。
@@ -461,7 +462,40 @@ if (st.kernel) {
   if (!st.kernel.last_5m) fail('/status の kernel に last_5m が無い');
 }
 
-// 7. `/profile` を読む関数 (段階・スレッド・ロック。T14.3)
+// 7. `/events` の時系列 (T14.11)。10 種で固定なので、綴りが増減したらここで気づく
+const EVENT_KINDS = [
+  'start', 'reload', 'blocklist', 'ipv6', 'pressure', 'ballast',
+  'state_file', 'evict', 'emfile', 'shutdown',
+];
+
+function eventRows(json, since) {
+  const events = (json && json.events) || [];
+  return events
+    .filter((e) => (e.at || 0) >= (since || 0))
+    .map((e) => ({ at: e.at || 0, kind: e.kind || '', text: e.text || '' }));
+}
+
+const eventJson = {
+  events: [
+    { at: 1789251470, kind: 'reload', text: 'PROXY_TIMEOUT_SECS 30 \u2192 10' },
+    { at: 1789251468, kind: 'ballast', text: 'ballast +256 MiB -> 256 MiB (memory 0 MiB, disk 256 MiB)' },
+    { at: 1789251465, kind: 'start', text: 'version 0.1.0+abcdef1 on port 8080 (profile default, cache on, timeout 30s, max conns 240)' },
+  ],
+  count: 3, kept: 3, capacity: 512, recorded: 3, since: 0, kinds: EVENT_KINDS, truncated: false,
+};
+const evs = eventRows(eventJson, 0);
+if (evs.length !== 3) fail('eventRows の件数が合わない');
+if (evs[0].at < evs[1].at || evs[1].at < evs[2].at) fail('出来事が新しい順でない');
+if (!evs.every((e) => EVENT_KINDS.includes(e.kind))) fail('知らない種類がある');
+if (eventJson.kinds.length !== 10) fail('種類は 10 種で固定のはず');
+if (eventJson.kinds.join(',') !== EVENT_KINDS.join(',')) fail('種類の綴りか並びが変わった');
+if (evs.some((e) => e.text.length > 128)) fail('説明が 128 バイトを超えた');
+if (eventRows(eventJson, 1789251468).length !== 2) fail('since で絞れていない');
+if (eventRows({}, 0).length !== 0) fail('空でも例外なく 0 件のはず');
+if (eventRows(null, 0).length !== 0) fail('null でも例外なく 0 件のはず');
+if (eventRows({ events: [{}] }, 0)[0].kind !== '') fail('無いキーは空のはず');
+
+// 8. `/profile` を読む関数 (段階・スレッド・ロック。T14.3)
 const profFile = process.argv[4] || path.join(__dirname, 'testdata', 'profile-res5.json');
 const pj = JSON.parse(fs.readFileSync(profFile, 'utf8'));
 const prof = api.toProfile(pj);
@@ -591,6 +625,11 @@ console.log(
     (hist.kernel ? kernelRows + ' 標本' : 'この出力には無い') +
     '、/status の kernel は ' +
     (st.kernel ? '読めた' : 'この出力には無い') +
+    '。出来事 (T14.11) は ' +
+    evs.length +
+    ' 件 / ' +
+    EVENT_KINDS.length +
+    ' 種' +
     '。/profile (' +
     path.basename(profFile) +
     ') は標本 ' +

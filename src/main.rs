@@ -288,6 +288,11 @@ fn main() {
         signal::install(
             ballast.as_deref(),
             Box::new(move || {
+                // 出来事の時系列に 1 件 (シグナルハンドラではなく後始末のスレッドで走る。T14.11)
+                rust_http_proxy::events::push(
+                    rust_http_proxy::events::EventKind::Shutdown,
+                    "stop signal received; saving statistics",
+                );
                 if let Some(st) = store {
                     st.flush_stats(&m);
                     log_info!(None, "statistics saved to {}", st.path.display());
@@ -308,6 +313,20 @@ fn main() {
             .collect::<Vec<_>>()
             .join(", "),
         log::current_level().as_str().trim()
+    );
+    // 出来事の時系列の 1 件目 (`/events`。T14.11)。再デプロイの時刻を
+    // `since_start_secs` から逆算しなくて済むように、版と設定の要約をここで残す
+    rust_http_proxy::events::push(
+        rust_http_proxy::events::EventKind::Start,
+        &format!(
+            "version {} on port {} (profile {}, cache {}, timeout {}s, max conns {})",
+            rust_http_proxy::VERSION,
+            config.port,
+            if config.lite { "lite" } else { "default" },
+            if config.cache.enabled { "on" } else { "off" },
+            config.timeout.as_secs(),
+            config.max_conns,
+        ),
     );
     if let Some(path) = rust_http_proxy::envfile::loaded_path() {
         log_info!(

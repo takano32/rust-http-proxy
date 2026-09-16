@@ -90,6 +90,11 @@ impl Live {
             Ok(c) => c,
             Err(e) => {
                 log_warn!(None, "settings reload: {} (keeping previous settings)", e);
+                // 出来事の時系列にも 1 件 (読めなかったことが分かるように。T14.11)
+                crate::events::push(
+                    crate::events::EventKind::Reload,
+                    &format!("rejected: {} (keeping the previous settings)", e),
+                );
                 st.error = Some(e);
                 st.applied.clear();
                 return;
@@ -256,6 +261,20 @@ impl Live {
                 format!(", restart required for [{}]", restart.join(", "))
             }
         );
+        // 出来事の時系列に「変わった名前と前後の値」を 1 件 (T14.11)。`/status` の
+        // `settings` は最後の 1 回しか残さないので、いつ何を変えたかはここでだけ読める
+        crate::events::push(
+            crate::events::EventKind::Reload,
+            &format!(
+                "{}{}",
+                changed_values(&changed, &old, &fresh),
+                if restart.is_empty() {
+                    String::new()
+                } else {
+                    format!("; restart required for {}", restart.join(", "))
+                }
+            ),
+        );
         st.applied = applied.into_iter().map(String::from).collect();
         st.restart_required = restart.into_iter().map(String::from).collect();
     }
@@ -283,6 +302,34 @@ impl Live {
             crate::json::quote_opt(st.error.as_deref()),
         )
     }
+}
+
+/// `/events` の `reload` に書く「変わった名前と前後の値」(T14.11)。
+///
+/// [`envfile::reload`] が返すのは**変わったキーの名前だけ**なので、値は
+/// `/config` と `--check` が並べるのと同じ一覧 ([`Config::settings`]) から前後を引く。
+/// 一覧に無いキー (このプロキシが読まない名前) と、書き換えても効く値が変わらなかった
+/// キーは名前だけを出す。**再起動が要る項目も前後は出す** (`.env` は変わっているので)。
+fn changed_values(changed: &[String], old: &Config, fresh: &Config) -> String {
+    let (before, after) = (old.settings(), fresh.settings());
+    let value = |all: &[crate::config::Setting], key: &str| {
+        all.iter().find(|s| s.key == key).map(|s| {
+            // JSON の値をそのまま出すと文字列に引用符が付くので、単純なものは外す
+            // (`--check` の印字と同じ扱い)
+            match s.value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+                Some(inner) if !inner.contains('\\') => inner.to_string(),
+                _ => s.value.clone(),
+            }
+        })
+    };
+    changed
+        .iter()
+        .map(|key| match (value(&before, key), value(&after, key)) {
+            (Some(b), Some(a)) if b != a => format!("{} {} \u{2192} {}", key, b, a),
+            _ => key.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// プロセス全体の設定 (main が [`Live::new`] を呼んでいなければ `None`)。
