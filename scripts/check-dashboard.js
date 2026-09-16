@@ -181,6 +181,50 @@ if (api.badHosts([st.hosts, st.hosts], causeNames, 10).length !== bad.length) {
 }
 if (api.badHosts([null, undefined], causeNames, 10).length !== 0) fail('空でも例外なく 0 件のはず');
 
+// 5. canary の配列 (T14.10)。`/history` の応答に**別の配列**として付く
+// (`{"keys":[...],"samples":[[t,dns_ms,connect_ms,"host"],...]}`)。描くのは T14.8 なので、
+// ここでは**出力の形**だけを見る: 列名・行の長さ・型・時刻が古い順であること。
+function checkCanary(h) {
+  const c = h && h.canary;
+  if (c === undefined || c === null) return null; // canary の無い版の出力 (飛ばす)
+  const want = ['t', 'canary_dns_ms', 'canary_connect_ms', 'canary_host'];
+  if (!Array.isArray(c.keys) || c.keys.join(',') !== want.join(',')) {
+    fail('canary の keys が ' + want.join(',') + ' でない: ' + JSON.stringify(c.keys));
+  }
+  if (!Array.isArray(c.samples)) fail('canary の samples が配列でない');
+  let last = 0;
+  for (const row of c.samples) {
+    if (!Array.isArray(row) || row.length !== want.length) {
+      fail('canary の 1 行が ' + want.length + ' 列でない: ' + JSON.stringify(row));
+    }
+    const [t, dns, conn, host] = row;
+    if (typeof t !== 'number' || !(t > 0)) fail('canary の時刻が epoch 秒でない: ' + t);
+    if (t < last) fail('canary の標本が古い順になっていない: ' + t + ' < ' + last);
+    last = t;
+    if (typeof dns !== 'number' || !(dns >= 0)) fail('canary_dns_ms が数でない: ' + dns);
+    if (typeof conn !== 'number' || !(conn >= 0)) fail('canary_connect_ms が数でない: ' + conn);
+    if (typeof host !== 'string' || !host) fail('canary_host が空: ' + JSON.stringify(host));
+  }
+  return c.samples.length;
+}
+// 実出力に canary があれば読む (無い版の作り置きでも落ちない)
+const canaryRows = checkCanary(hist);
+// 作り置きに canary が無い版でも検査そのものが動くことを、架空の 2 点で確かめる
+const fakeCanary = {
+  canary: {
+    keys: ['t', 'canary_dns_ms', 'canary_connect_ms', 'canary_host'],
+    samples: [
+      [1789251460, 3, 8, 'a.example.net:443'],
+      [1789251520, 4, 9, 'a.example.net:443'],
+    ],
+  },
+};
+if (checkCanary(fakeCanary) !== 2) fail('canary の 2 点が読めていない');
+// canary が付いても既存の標本の読み方は変わらない (列は 1 つも動かない)
+if (api.toSamples(Object.assign({}, hist, fakeCanary)).length !== samples.length) {
+  fail('canary を足したら標本の数が変わった');
+}
+
 // 4. 個票 (`/errors` `/connections`) を読む関数 (T13.4)。実出力の作り置きは無いので、
 // 形だけ同じ架空のデータで見る (ホスト名は架空、接続元はドキュメント用の範囲)
 const errJson = {
@@ -252,5 +296,6 @@ console.log(
     errRows.length +
     ' 件、/connections ' +
     conn.rows.length +
-    ' 本) も読めた'
+    ' 本) も読めた。canary は ' +
+    (canaryRows === null ? 'この出力には無い' : canaryRows + ' 点')
 );
