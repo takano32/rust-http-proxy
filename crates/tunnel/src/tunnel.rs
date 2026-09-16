@@ -13,7 +13,10 @@ use crate::log::{Access, access};
 use crate::log_trace;
 use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics, StageMs};
 use crate::net;
-use crate::recent::{CloseReason, ConnSlot, ConnTally, STAGE_CONNECT, STAGE_DNS, STAGES};
+use crate::recent::{
+    CloseReason, ConnSlot, ConnTally, STAGE_CLIENT_READ, STAGE_CONNECT, STAGE_DNS,
+    STAGE_FIRST_RELAY, STAGE_QUEUE, STAGES,
+};
 use crate::{log_debug, log_warn};
 
 #[cfg(target_os = "linux")]
@@ -205,11 +208,15 @@ fn report(o: &Info, up: u64, down: u64, reason: CloseReason) {
         detail.stages.relay = total.saturating_sub(head).min(u32::MAX as u64) as u32;
     }
     // 閉じた接続の個票に 1 件ぶんの値を載せる (原子は接続の終わりのここだけ。T14.4)。
-    // 実際にリングへ書くのは本体クレートの `ActiveGuard::drop` (= この直後)
+    // 実際にリングへ書くのは本体クレートの `ActiveGuard::drop` (= この直後)。
+    // **段階は上で組み立てた `detail`** (T14.3 の `first_relay` まで入っている) から取る
     if let Some(s) = &o.slot {
         let mut stage_ms = [0u64; STAGES];
         stage_ms[STAGE_DNS] = detail.dns_ms;
         stage_ms[STAGE_CONNECT] = detail.connect_ms;
+        stage_ms[STAGE_QUEUE] = detail.stages.queue as u64;
+        stage_ms[STAGE_CLIENT_READ] = detail.stages.client_read as u64;
+        stage_ms[STAGE_FIRST_RELAY] = detail.stages.first_relay as u64;
         s.finish(
             reason,
             ConnTally {

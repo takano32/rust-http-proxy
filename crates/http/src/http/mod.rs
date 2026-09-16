@@ -35,7 +35,9 @@ use crate::headers;
 use crate::log::{Access, access};
 use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics, StageMs};
 use crate::origin::{self, OriginStream};
-use crate::recent::{ConnTally, STAGE_CONNECT, STAGE_DNS, STAGE_FIRST_BYTE, STAGES};
+use crate::recent::{
+    ConnTally, STAGE_CLIENT_READ, STAGE_CONNECT, STAGE_DNS, STAGE_FIRST_BYTE, STAGE_QUEUE, STAGES,
+};
 use crate::sync::LockExt;
 use crate::workers::Workers;
 use crate::{log_debug, log_trace, log_warn};
@@ -274,13 +276,16 @@ impl Ctx<'_> {
             let total = took.as_millis().min(u64::MAX as u128) as u64;
             detail.stages.body = total.saturating_sub(detail.first_byte_ms.unwrap_or(0)) as u32;
         }
-        // 接続の個票 (`/recent`) の積み上げ (T14.4)。箱の中の足し算だけで、原子も鍵も無い
+        // 接続の個票 (`/recent`) の積み上げ (T14.4)。箱の中の足し算だけで、原子も鍵も無い。
+        // **段階は T14.3 の `StageMs` からも入れる** (`first_relay` は CONNECT だけなので 0)
         if let Some(cell) = self.tally {
             let mut t = cell.get();
             let mut stage_ms = [0u64; STAGES];
             stage_ms[STAGE_DNS] = detail.dns_ms;
             stage_ms[STAGE_CONNECT] = detail.connect_ms;
             stage_ms[STAGE_FIRST_BYTE] = detail.first_byte_ms.unwrap_or(0);
+            stage_ms[STAGE_QUEUE] = detail.stages.queue as u64;
+            stage_ms[STAGE_CLIENT_READ] = detail.stages.client_read as u64;
             t.add_request(status, self.up_bytes, bytes, stage_ms);
             cell.set(t);
         }
