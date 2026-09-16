@@ -95,6 +95,115 @@ pub const ERR_CAUSE_NAMES: [&str; ERR_CAUSES] = [
     "other",
 ];
 
+/// 要求を読めずに断った理由 (T14.28)。**6 種で固定**。
+///
+/// 公開ポートには走査 (scanner) の要求が来る。今までは 400 / 414 / 431 で閉じるだけで
+/// **何が来たか**の数が無かったので、`/status` の `rejected_requests` (理由別) と
+/// `/errors` の個票 (`cause` が `bad_request:<reason>`) に残す。
+///
+/// [`ErrCause`] にも [`BlockCause`] にも足さないのは [`BlockCause`] と同じ理由
+/// (`errors_by_cause` を伸ばすと `.rrd` の標本が領域に収まらず、版を上げて統計を捨てることになる)。
+/// **数えるのは断る経路だけ**なので、通した要求には 1 命令も足していない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum BadRequestReason {
+    /// 要求行が読めない (空白で 2 つに割れない / `MAX_LINE` を越えて 414 で閉じた)
+    RequestLine = 0,
+    /// ヘッダーが長すぎる (1 行が長い / 合計が `MAX_HEADER_BYTES` 超 / 行数が多すぎる。431)
+    HeaderTooLarge = 1,
+    /// メソッドが HTTP のメソッド (token。RFC 9110 §5.6.2) として読めない
+    Method = 2,
+    /// オリジン形式 (`/path`) なのに `Host` が無い
+    NoHost = 3,
+    /// 絶対 URI (`http://…`) やマッピング形式 (`/https/…`) にホストが無い
+    BadUri = 4,
+    /// 本文の枠が不正 (`Content-Length` と `Transfer-Encoding: chunked` が両方ある = 要求の密輸)
+    BodyFraming = 5,
+}
+
+/// [`BadRequestReason`] の数 (`rejected_requests` の配列の長さ)。
+pub const BAD_REQUEST_REASONS: usize = 6;
+
+/// `/status` の鍵と `/metrics` のラベルに使う名前 ([`BadRequestReason`] と同じ順)。
+pub const BAD_REQUEST_REASON_NAMES: [&str; BAD_REQUEST_REASONS] = [
+    "request_line",
+    "header_too_large",
+    "method",
+    "no_host",
+    "bad_uri",
+    "body_framing",
+];
+
+impl BadRequestReason {
+    /// `/status` の鍵と `/metrics` のラベルに使う名前。
+    pub fn name(self) -> &'static str {
+        BAD_REQUEST_REASON_NAMES[self as usize]
+    }
+
+    /// `/errors` の `cause` に出す名前 (`bad_request:<reason>`)。
+    pub fn cause_name(self) -> &'static str {
+        match self {
+            BadRequestReason::RequestLine => "bad_request:request_line",
+            BadRequestReason::HeaderTooLarge => "bad_request:header_too_large",
+            BadRequestReason::Method => "bad_request:method",
+            BadRequestReason::NoHost => "bad_request:no_host",
+            BadRequestReason::BadUri => "bad_request:bad_uri",
+            BadRequestReason::BodyFraming => "bad_request:body_framing",
+        }
+    }
+
+    /// 符号 (0〜5) から戻す。知らない値は [`BadRequestReason::RequestLine`]。
+    pub fn from_index(v: usize) -> BadRequestReason {
+        match v {
+            1 => BadRequestReason::HeaderTooLarge,
+            2 => BadRequestReason::Method,
+            3 => BadRequestReason::NoHost,
+            4 => BadRequestReason::BadUri,
+            5 => BadRequestReason::BodyFraming,
+            _ => BadRequestReason::RequestLine,
+        }
+    }
+
+    /// 空白で 2 つに割れなかった要求行の理由を決める。
+    ///
+    /// **断る経路からしか呼ばない**ので、文字列を見ても熱い経路には乗らない
+    /// ([`ErrCause::from_io`] と同じ作法)。メソッドらしきものが token として
+    /// 読めなければ [`BadRequestReason::Method`] (走査が投げるゴミ)、
+    /// 読めるなら要求行そのものの形が足りない ([`BadRequestReason::RequestLine`])。
+    pub fn of_request_line(line: &str) -> BadRequestReason {
+        match line.split_whitespace().next() {
+            Some(m) if !is_method_token(m) => BadRequestReason::Method,
+            _ => BadRequestReason::RequestLine,
+        }
+    }
+
+    /// 要求ターゲットが解けなかったときの理由を決める (**断る経路からだけ**)。
+    ///
+    /// `proxy-origin` の `parse_origin` / `target_host` が `Err` を返すのは 2 通りしか
+    /// 無い: スキーム付き (`http://` `https://`) とマッピング形式 (`/http/` `/https/`) で
+    /// ホストが空 = [`BadRequestReason::BadUri`]、オリジン形式 (`/path`) で `Host` が
+    /// 無い = [`BadRequestReason::NoHost`]。メソッドが token として読めなければ
+    /// そちらを先に返す (要求行ごとゴミなら理由は `method` の方が読む人に近い)。
+    pub fn of_target(method: &str, target: &str) -> BadRequestReason {
+        if !is_method_token(method) {
+            return BadRequestReason::Method;
+        }
+        const WITH_HOST: [&str; 4] = ["http://", "https://", "/http/", "/https/"];
+        if WITH_HOST.iter().any(|p| target.starts_with(p)) {
+            BadRequestReason::BadUri
+        } else {
+            BadRequestReason::NoHost
+        }
+    }
+}
+
+/// メソッドが HTTP の token (RFC 9110 §5.6.2) として読めるか。**断る経路からだけ**呼ぶ。
+fn is_method_token(m: &str) -> bool {
+    !m.is_empty()
+        && m.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+}
+
 /// 403 で拒否した理由 (T14.2 (4))。**個票 (`/errors`) にだけ出す。**
 ///
 /// [`ErrCause`] に足さないのは、`errors_by_cause` の配列が伸びると履歴の標本 1 本が
@@ -948,6 +1057,9 @@ pub struct Metrics {
     pub rejected_client_acl: AtomicU64,
     /// 接続元ごとの同時接続の上限 (`PROXY_MAX_CONNS_PER_CLIENT`) に当たって 503 で断った数 (T14.13)
     pub rejected_per_client: AtomicU64,
+    /// 要求を読めずに断った数 (理由別。`/status` の `rejected_requests`。T14.28)。
+    /// **書くのは断る経路だけ**なので、通した要求はこの配列を 1 度も触らない
+    pub rejected_requests: [AtomicU64; BAD_REQUEST_REASONS],
     pub bytes_forwarded: AtomicU64,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
@@ -993,6 +1105,7 @@ impl Metrics {
             evicted_idle: AtomicU64::new(0),
             rejected_client_acl: AtomicU64::new(0),
             rejected_per_client: AtomicU64::new(0),
+            rejected_requests: [const { AtomicU64::new(0) }; BAD_REQUEST_REASONS],
             bytes_forwarded: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
@@ -1135,6 +1248,46 @@ impl Metrics {
             0,
             0,
         ));
+    }
+
+    /// 読めなかった要求を 1 件数え、個票のリングにも写す (`/errors`。T14.28)。
+    ///
+    /// **断る経路からだけ呼ぶこと** (400 / 414 / 431 を返して閉じる場所)。
+    /// `status` は**実際にクライアントへ返した状態コード**で、要求行が壊れていた
+    /// ときと絶対 URI / `Host` が無いときは 400、要求行が長すぎたときは 414、
+    /// ヘッダーが長すぎたときは 431 になる (`/errors` に嘘を書かないため)。
+    ///
+    /// **個票に要求行そのものは入れない** (個票の決まり: 入れてよいのは接続元 IP・
+    /// 宛先 `host:port`・時刻・数字だけ。壊れた要求行には URL もヘッダーも載っている)。
+    /// 宛先はまだ解けていないので空のままにする。集計 (`errors_by_cause`) にも
+    /// 足さない: 4xx はエラー (5xx) ではないので、混ぜると `/status` が読めなくなる。
+    pub fn record_bad_request(&self, reason: BadRequestReason, client: &str, status: u16) {
+        self.rejected_requests[reason as usize].fetch_add(1, Ordering::Relaxed);
+        self.errors.push(crate::recent::ErrorEntry::new(
+            // まだメソッドを解いていない (CONNECT か転送か分からない) 段階なので
+            // `forward` で揃える
+            crate::recent::EntryKind::Forward,
+            "",
+            client,
+            status,
+            crate::recent::EntryCause::BadRequest(reason),
+            0,
+            0,
+        ));
+    }
+
+    /// `/status` の `rejected_requests` (理由別と合計)。
+    pub fn rejected_requests_json(&self) -> String {
+        let mut out = String::with_capacity(160);
+        let mut total = 0u64;
+        out.push('{');
+        for (i, name) in BAD_REQUEST_REASON_NAMES.iter().enumerate() {
+            let n = self.rejected_requests[i].load(Ordering::Relaxed);
+            total += n;
+            let _ = write!(out, "\"{}\":{},", name, n);
+        }
+        let _ = write!(out, "\"total\":{}}}", total);
+        out
     }
 
     fn record(
@@ -1634,8 +1787,9 @@ impl Metrics {
                 "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{},",
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
                 // (`memory` も T14.21、`recent_quantiles` も T14.31、
-                // `rate_bps_total` も T14.39 で同じく末尾)
-                "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{}}}"
+                // `rate_bps_total` も T14.39、`rejected_requests` も T14.28 で同じく末尾)
+                "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
+                "\"rejected_requests\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1686,7 +1840,9 @@ impl Metrics {
             self.recent_quantiles_json(),
             // いま流れているバイト/秒の合計 (T14.39)。history スレッドが 5 秒ごとに
             // 書いた値を原子 1 回読むだけ (`/connections` の `rate_bps` の和)
-            self.conns.rate_bps_total()
+            self.conns.rate_bps_total(),
+            // 読めずに断った要求の理由別 (T14.28)。原子 6 本を読むだけ
+            self.rejected_requests_json()
         )
     }
 }

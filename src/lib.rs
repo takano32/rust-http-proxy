@@ -1276,6 +1276,9 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 "414 URI Too Long (request line over {} bytes)",
                 MAX_LINE
             );
+            // 理由別に 1 件数えて個票にも残す (`/errors`。T14.28)。**断る経路だけ**を通るので
+            // 通した要求には 1 命令も足していない
+            metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 414);
             reject(client, 414, "URI Too Long")?;
             return Ok(Step::Close(recent::CloseReason::Shutdown));
         }
@@ -1338,6 +1341,16 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             "malformed request line: {:?}",
             request_line.trim()
         );
+        // メソッドが token として読めなければ `method`、読めるなら `request_line` (T14.28)。
+        // **個票に要求行そのものは入れない** (壊れた行にも URL が載っているため)
+        metrics.record_bad_request(
+            metrics::BadRequestReason::of_request_line(&request_line),
+            peer_ip,
+            400,
+        );
+        // 今までは応答を返さずに閉じていた。理由を数えるからには**返した状態コードを
+        // 個票に正しく書く**必要があるので、414 / 431 と同じ形で 400 を返してから閉じる
+        reject(client, 400, "Bad Request")?;
         scratch.request_line = request_line;
         return Ok(Step::Close(recent::CloseReason::Shutdown));
     };
@@ -1366,6 +1379,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         match line {
             None => {
                 log_warn!(Some(conn_id), "431 Request Header Fields Too Large");
+                metrics.record_bad_request(metrics::BadRequestReason::HeaderTooLarge, peer_ip, 431);
                 reject(client, 431, "Request Header Fields Too Large")?;
                 return Ok(Step::Close(recent::CloseReason::Shutdown));
             }
@@ -1377,6 +1391,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                         Some(conn_id),
                         "431 Request Header Fields Too Large (headers over {} bytes)",
                         MAX_HEADER_BYTES
+                    );
+                    metrics.record_bad_request(
+                        metrics::BadRequestReason::HeaderTooLarge,
+                        peer_ip,
+                        431,
                     );
                     reject(client, 431, "Request Header Fields Too Large")?;
                     return Ok(Step::Close(recent::CloseReason::Shutdown));
@@ -1391,6 +1410,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 Some(conn_id),
                 "431 Request Header Fields Too Large (too many lines)"
             );
+            metrics.record_bad_request(metrics::BadRequestReason::HeaderTooLarge, peer_ip, 431);
             reject(client, 431, "Request Header Fields Too Large")?;
             return Ok(Step::Close(recent::CloseReason::Shutdown));
         }
@@ -1532,6 +1552,13 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             Ok(h) => h,
             Err(e) => {
                 log_warn!(Some(conn_id), "400 Bad Request: {}", e);
+                // `Host` が無い (`no_host`) のか絶対 URI が壊れている (`bad_uri`) のかを
+                // 分けて数える (T14.28)。判定は**断る経路だけ**を通る
+                metrics.record_bad_request(
+                    metrics::BadRequestReason::of_target(method, target),
+                    peer_ip,
+                    400,
+                );
                 let _ = (&*client).write_all(
                     b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 );
