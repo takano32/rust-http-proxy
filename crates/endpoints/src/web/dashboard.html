@@ -160,7 +160,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
 
   <section class="card" style="margin-top:14px">
     <h2>いまの接続 (上位 50) <span class="tag">5 秒ごと</span><span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">/connections</span></h2>
-    <div style="overflow-x:auto"><table id="conns"><thead><tr><th>id</th><th>接続元</th><th>宛先</th><th>種類</th><th title="relaying 中継中 / parked 預かり所 (epoll) / reading スレッドで次の要求待ち / serving 処理中 / queued ワーカー待ち">状態</th><th>経過</th><th>転送</th><th title="この接続が握っている記述子の数">fd</th></tr></thead><tbody></tbody></table></div>
+    <div style="overflow-x:auto"><table id="conns"><thead><tr><th>id</th><th>接続元</th><th>宛先</th><th>種類</th><th title="relaying 中継中 / parked 預かり所 (epoll) / reading スレッドで次の要求待ち / serving 処理中 / queued ワーカー待ち">状態</th><th>経過</th><th>転送</th><th title="直近 5 秒の転送速度 (T14.39。history スレッドが 5 秒ごとに控えた差分。速さが出るのは CONNECT のトンネルだけ)">速さ</th><th title="この接続が握っている記述子の数">fd</th></tr></thead><tbody></tbody></table></div>
     <div class="hint" id="connhint"></div>
   </section>
 
@@ -723,8 +723,10 @@ function renderConns(j){
     return'<tr><td>'+fmtNum(r.id)+'</td><td>'+esc(r.client)+'</td>'
       +'<td title="'+esc(r.target||'')+'">'+esc(r.target||'–')+'</td><td>'+esc(r.kind)+'</td>'
       +'<td style="color:'+st+'">'+esc(r.state)+'</td><td>'+ago(+r.age_secs||0)+'</td>'
-      +'<td>'+fmtBytes(+r.bytes||0)+'</td><td>'+fmtNum(r.fds)+'</td></tr>'
-  }).join('')||'<tr><td colspan="8" style="text-align:center;color:var(--muted)">'
+      +'<td>'+fmtBytes(+r.bytes||0)+'</td>'
+      +'<td>'+(r.rate_bps==null?'–':(+r.rate_bps>0?fmtBytes(+r.rate_bps)+'/s':'0'))+'</td>'
+      +'<td>'+fmtNum(r.fds)+'</td></tr>'
+  }).join('')||'<tr><td colspan="9" style="text-align:center;color:var(--muted)">'
     +(c.lite?'lite プロファイルでは記録しません':'接続はありません')+'</td></tr>';
   var parts=['開いている '+fmtNum(c.count)+' 本',
     'トンネル '+fmtNum(c.kinds.connect)+' / keep-alive '+fmtNum(c.kinds.http),

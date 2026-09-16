@@ -27,6 +27,7 @@ pub use proxy_net::{acl, dns, net};
 pub use proxy_origin::{Upstream, origin, pool, request, tls};
 pub use proxy_prom::prom;
 pub use proxy_reload::reload;
+pub use proxy_selfbench as selfbench;
 pub use proxy_sys::signal;
 #[cfg(target_os = "linux")]
 pub use proxy_sys::sys;
@@ -1326,7 +1327,12 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     if scratch.request_line.trim().is_empty() {
         return Ok(Step::Next);
     }
-    metrics.inc_requests();
+    // 起動時の自己ベンチ (T14.43) が自分で打った要求は `/status` の合計に数えない
+    // (20,000 要求が乗ると、0.015 req/s のデプロイ先では合計が自己ベンチだけになる)。
+    // 費用は自己ベンチが回っていないときの原子の読み 1 回
+    if !selfbench::is_client(peer_ip) {
+        metrics.inc_requests();
+    }
     log_trace!(
         Some(conn_id),
         "request line: {}",

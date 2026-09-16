@@ -10,6 +10,7 @@
 # 使い方:
 #   scripts/weekly-report.py ~/rust-http-proxy-status/                    # 置き場ごと渡す
 #   scripts/weekly-report.py ~/rust-http-proxy-status/*-snapshot.json --days 7 -o week.md
+#   scripts/weekly-report.py ~/rust-http-proxy-status/ --out json          # 表の元の辞書をそのまま
 #   curl -s 'http://PROXY/daily?n=7' > daily.json && scripts/weekly-report.py daily.json
 #
 # 出す表 8 つ:
@@ -713,6 +714,8 @@ def parser():
                    help=f"ホスト・接続元の一覧に出す行数 (既定 {DEFAULT_TOP})")
     p.add_argument("--burst", type=int, default=sd.BURST_PER_HOUR, metavar="N",
                    help=f"平常時の閾 (1 時間の本数。既定 {sd.BURST_PER_HOUR})")
+    p.add_argument("--out", choices=["md", "json"], default="md",
+                   help="出力の形 (既定 md。json は build() の辞書をそのまま出す)")
     p.add_argument("-o", "--output", metavar="FILE", help="書き出し先 (既定は標準出力)")
     return p
 
@@ -726,9 +729,14 @@ def main(argv=None):
     if not snaps and not daily:
         raise SystemExit("雪像も /daily も読めなかった: "
                          + "; ".join(f"{p}: {why}" for p, why in skipped))
-    md = render(build(snaps, daily, args), args.top)
-    if skipped:
-        md += "\n" + "\n".join(f"- **読めなかった**: `{p}` ({why})" for p, why in skipped) + "\n"
+    d = build(snaps, daily, args)
+    if args.out == "json":
+        d["skipped"] = [{"path": p, "why": why} for p, why in skipped]
+        md = json.dumps(d, ensure_ascii=False, indent=1, default=str) + "\n"
+    else:
+        md = render(d, args.top)
+        if skipped:
+            md += "\n" + "\n".join(f"- **読めなかった**: `{p}` ({why})" for p, why in skipped) + "\n"
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(md)
