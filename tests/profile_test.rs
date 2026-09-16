@@ -226,7 +226,8 @@ fn test_integration_profile_is_off_in_lite_mode() {
     lite.lite = true;
     let port = start_test_proxy(lite);
     let json = endpoint_json(port, "/profile");
-    assert_eq!(json.trim(), "{\"profile\":\"off\"}", "{}", json);
+    // T14.49 で先頭に `"schema":1,` が付いたので、`profile` の値だけを見る
+    assert!(json.contains("\"profile\":\"off\""), "{}", json);
     // 案内 (`/`) には出す (`--lite` でも口はある)
     assert!(endpoint_json(port, "/").contains("/profile"));
 }

@@ -23,6 +23,10 @@ const RRD_SIZE: u64 = 8 * 1024 * 1024;
 /// 標本の並びの起点 (5 で割り切れる適当な epoch)。
 const T0: u64 = 1_770_000_000;
 
+/// 3 本目が**プロセス全体の RSS** の差を見るので、同じバイナリの隣のテストが 1.9 MB の応答を
+/// 組む瞬間と重なると 2.5 MiB の上限を越える (20 回に 5 回)。3 本を直列にする
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("rhp-t1432-{}-{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -74,6 +78,7 @@ fn sample(t: u64) -> Sample {
 /// **受け入れ基準**: `res=5&n=4320` が 4,320 本まで返し、既定は今までどおり 720 本。
 #[test]
 fn test_integration_history_res5_keeps_six_hours_and_defaults_to_720() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (port, metrics) = start_test_proxy_with_metrics(proxy_config());
     // 5 秒の標本を 5,000 本 (6 時間より多く) 積む → リングは 4,320 本で頭打ち
     metrics
@@ -139,6 +144,7 @@ fn test_integration_history_res5_keeps_six_hours_and_defaults_to_720() {
 /// 今までどおり最新 720 本。
 #[test]
 fn test_integration_the_state_file_still_keeps_only_720_five_second_samples() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let dir = temp_dir("rrd");
     let rrd = dir.join(".rust-http-proxy.rrd");
     let (_port, metrics) = start_test_proxy_with_metrics(proxy_config());
@@ -178,6 +184,7 @@ fn test_integration_the_state_file_still_keeps_only_720_five_second_samples() {
 /// 満杯にしたときの RSS の増分も 2.5 MiB 以下 (debug で見る)。
 #[test]
 fn test_integration_six_hours_of_samples_cost_less_than_2_5_mib() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let one = size_of::<Sample>();
     let full = one * CAPACITY;
     let grown = one * (CAPACITY - RESOLUTIONS[0].1);
