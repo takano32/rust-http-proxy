@@ -1516,6 +1516,10 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         // 実際に受けたポート (テストや複数 bind でも自分宛て判定が合うように)
         port: local_port,
         host: host_header,
+        // 内部エンドポイントを引いた接続元を 1 行残すため (`/status` の `readers`。T14.53)。
+        // 数えるのは `endpoints::handle` が「自分宛て」と決めたあとなので、
+        // プロキシとして通す要求はこの値を 1 度も使わない
+        client: Some(peer_ip),
         pac_direct: &config.pac_direct,
         lite: config.lite,
         readonly: config.endpoints_readonly,

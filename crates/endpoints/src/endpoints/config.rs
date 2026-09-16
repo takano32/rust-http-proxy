@@ -111,6 +111,7 @@ mod tests {
             conn_id: 1,
             port: 8080,
             host: None,
+            client: None,
             pac_direct: &[],
             lite: false,
             // T14.18 で足った欄 (T14.15 はその前に枝を切っていた)。`/config` は読む口なので
