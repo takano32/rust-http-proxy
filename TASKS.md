@@ -3335,7 +3335,8 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
 残っていないなら、このリポジトリは「締める」段階に入る**。→ **答え (T14.0): 名前解決はまだ残っている (Phase 13 で減っていない)。
 それを直したら締める。**
 
-**待つ間に決めてよいこと (数字に依らない)** → T14.2 にまとめた。
+**待つ間に決めてよいこと (数字に依らない)** → T14.2 にまとめた。**追加 (2026-09-16、利用者の指示)**: ボトルネックを推定できる
+プロファイル画面 → T14.4。
 
 | 既知の小物 | 出どころ | 何をするか |
 |---|---|---|
@@ -3425,8 +3426,72 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
   - 受け入れ基準: README の性能節と §2 の数字が同じ日付の同じ `/status` `/history` から出ていること (出どころの JSON 名を書く)。
     `TASKS.md` §0 のゴールの行に到達の日付と数字があること。コードは触らない (`docs:` 1〜2 コミット)。
 
+- [ ] **T14.4 プロファイル画面 (`/profile`): 待ちの段階、スレッドの CPU と状態、ロックの取り合いを 1 枚で見てボトルネックを推定する**
+  - 目的: いまの統計は「ホスト別の名前解決 / 接続」と「窓つきの確立時間」までで、**1 要求の時間がどの段階に消えているか**
+    (クライアントの要求を読む待ち、名前解決、接続、トンネル越しの TLS 握手、中継、ワーカー待ち) と、**プロセスの CPU がどの役割の
+    スレッドで、何をして (走っている / どのシステムコールで待っている) 使われているか**は見えない。Phase 10〜11 の計測は
+    `perf` / `strace` を手元で回して得たもので、デプロイ先 (Pterodactyl) では両方使えない。**デプロイ先でも「どこが律速か」を
+    §2 の「数字の読み方」と同じ精度で推定できる画面**を作る。外部クレートは使わない。`.rrd` は触らない (メモリ上の環状バッファだけ。
+    再起動で消えてよい)。
+  - 変更箇所: `crates/metrics/src/profile.rs` (新規: 段階ごとの窓、スレッドの標本、ロックの計数)、`crates/base/src/sync.rs`
+    (`LockExt::locked` に取り合いを数える口)、`crates/workers/src/workers.rs` (待ち行列の待ち時間)、`src/lib.rs` (accept → 要求読み →
+    振り分けの境目)、`crates/tunnel/src/tunnel.rs` (200 → 最初の中継バイト、中継の合計)、`crates/http/src/http/mod.rs` (送信 → 応答ヘッダー
+    → 本文)、`crates/sysinfo/src/sysinfo/proc.rs` (`/proc/self/task/*/stat` と `/proc/self/task/*/syscall`)、`crates/endpoints`
+    (`/profile`)、`crates/endpoints/src/web/dashboard.html` (「プロファイル」の画面)、`scripts/check-dashboard.js`、README。
+  - やること (1 件 1 コミット):
+    1. **段階の計時**。CONNECT: `queue` (accept してからワーカーが動き出すまで) / `client_read` (要求行と `Host` を読み終えるまで) /
+       `dns` / `connect` (どちらも T12.4 の値をそのまま) / `first_relay` (`200 Connection Established` を書いてから最初の中継バイトまで =
+       トンネル越しの TLS 握手の往復) / `relay` (中継の合計) / `park` (預けられていた合計)。forward: `queue` / `client_read` /
+       `origin` (プール命中なら 0、それ以外は `dns` + `connect`) / `send` / `ttfb` (T12.4 の初バイト) / `body` (本文を流し終えるまで)。
+       それぞれ 5 秒 × 720 (1 時間) と 60 秒 × 1,440 (1 日) の窓に **件数・合計 ms・最大・12 段の区間** (T12.4 (3) と同じ区間) で持つ。
+       **熱い経路に足すのは境目の `Instant::now()` だけ** (vDSO、システムコール 0)。CONNECT で最大 5 回、forward で最大 4 回。
+       書き込みは既存の鍵の内側 (`record_host_timed` の `Detail` を広げる) で、原子操作は足さない。`--lite` では**時計も読まない**
+       (旗 1 つの分岐だけ。T1.4)。
+    2. **スレッドの標本**。1 本のスレッド (`profile-sample`) が `PROXY_PROFILE_SAMPLE_MS` (既定 1,000、0 で止める) ごとに
+       `/proc/self/task/*/stat` (utime / stime / state) と `/proc/self/task/*/syscall` (いま居るシステムコールの番号、`running` なら走行中) を
+       読み、スレッド名 (`/proc/self/task/*/comm`: `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` /
+       `profile-sample` / main = accept) で役割に束ねる。窓ごとに **役割 × (CPU 秒、状態の割合: 走行中 / システムコール名別 / 休眠)** を持つ。
+       システムコール番号 → 名前は aarch64 と x86_64 の表を持つ (`recvfrom` `sendto` `ppoll` `epoll_pwait` `futex` `splice` `accept4`
+       `connect` `close` `read` `write` `nanosleep` `clock_nanosleep` `getsockopt` `setsockopt` `socket` `shutdown` `openat` `fstat`、
+       それ以外は `sys_N`)。読めない環境 (`/proc/self/task/*/syscall` が無い、Linux 以外) では状態だけにし、`/profile` に `sampler: "partial"|"off"`。
+       あわせて **プロセスの CPU/要求** (窓の utime+stime の増分 ÷ 窓の要求数) を出す — §2 の loopback の 41 us/要求 と、デプロイ先の
+       値が初めて同じ物差しで並ぶ。
+    3. **ロックの取り合いと待ち行列**。`LockExt::locked` に `try_lock` → 失敗したときだけ数える版 (`locked_counted(&COUNTER)`) を足し、
+       統計の鍵 (`record_host_timed`)、DNS の表、預かり所、`Workers` の待ち行列の 4 か所で使う (取り合いが無ければ費用は同じ CAS 1 回)。
+       `Workers` は待ち行列に積んでから取り出すまでの時間を `queue` の段階として (既に鍵の内側)。
+    4. **`/profile?res=5|60`** (JSON、256 KiB 以下、`Cache-Control: no-store`): `stages` (種類 × 段階 × 窓の配列。`/history` と同じ
+       配列の配列の形)、`threads` (役割 × 窓)、`locks` (4 つの取り合い回数の累計と窓ごとの増分)、`cpu_per_request_us` (窓ごと)、
+       `sampler` の状態、`interval_secs`。`--lite` は `{"profile":"off"}`。
+    5. **画面**。`/dashboard` に「プロファイル」の節 (または `/profile.html`。既存の描画の流儀、外部ライブラリ無し):
+       (a) **段階の積み上げ** — CONNECT と forward それぞれ、直近 5 分の「1 本あたりの平均時間の内訳」を横棒 1 本に積み、段階ごとの
+       p50 / p95 を表で (どの段階が長いかが一目で分かる)。(b) **役割ごとの CPU** の積み上げと **CPU/要求** の推移。
+       (c) **スレッドは何をしているか** — 役割ごとに「走行中 / システムコール名 / 休眠」の割合。(d) **ロックの取り合い**と**待ち行列の待ち**。
+       (e) 先頭に **「いちばん長い段階」** を種類ごとに 1 行 (例: `CONNECT: dns 41% (6.3 ms) > connect 35% > first_relay 20%`)。
+       ヒューリスティックはこの 1 行だけにする (推定は人がする。数字を並べるのが画面の仕事)。
+    6. **費用の確認と、既知の答えの再現**。
+  - 受け入れ基準:
+    - **既知の答えを再現する** (これが本体。§1 の道具で回して `/profile` を読む): (a) `--only connect` で **accept 役 (main) の CPU が
+      1 コアの 40〜50%** (§4 T4.3 の実測 45%)、`conn` 役の状態が `connect` / `ppoll` / `close` 中心。(b) `--only tunnel --conc 1` で
+      `relay` が段階の 90% 以上、`conn` 役が `splice` / `ppoll` に居る割合 80% 以上。(c) forward 8 並列で **`cpu_per_request_us` が
+      §1 のレシピの CPU/要求 (`scripts/cpu-per-request.sh` の値) と ±10% で一致**、`conn` 役が `recvfrom` / `sendto` 中心。
+      (d) 手元で `PROXY_MAX_THREADS=2` にして 8 並列を流すと `queue` の段階が forward の時間の 50% 以上に出る (待ち行列が見える)。
+      (e) デプロイ先 (再デプロイ後): CONNECT の `dns` の割合が `/status` の名前解決の値 (接続 1 本あたり 6.3 ms、確立の 41%) と
+      ±10% で合う。
+    - **費用**: `--lite` で 0 (システムコール 5.01 回/要求、確保、CPU/要求 が変わらない — 旗の分岐だけ)。既定プロファイルで forward の
+      CPU/要求 が **+1% 以内** (前後交互 6 組の中央値)、CONNECT 確立 ±4%、確保が要求ごとに増えない。サンプラーは 128 スレッドのとき
+      **1 コアの 0.5% 以下** (`/proc/self/task/profile-sample/stat` で自分を測る)。`/profile` の応答が 256 KiB 以下。
+    - `node scripts/check-dashboard.js` が `/profile` の実出力 (手元のベンチで取ったもの) で OK。`cargo test --workspace` 全通過、
+      `/proc` が読めない環境のテスト (ディレクトリを差し替えて `partial` になること)。
+  - 注意: **測る側が熱い経路を重くしたら本末転倒** (T12.4 と同じ)。時計は境目にしか置かない。`/proc/self/task/*/syscall` は
+    Yama の `ptrace_scope` が 1 でも同じスレッドグループなら読めるが、コンテナの seccomp / `hidepid` で読めないことがあるので
+    必ず `partial` に落ちる道を持つ。段階の合計は「利用者が待った時間」と一致しない (中継は利用者が使っている時間、預けは待っていない
+    時間) ので、画面では **「確立まで」(queue + client_read + dns + connect + first_relay) と「その後」(relay / park) を分けて積む**。
+    **T14.1 / T14.2 のあとに着手** (`src/lib.rs` `http/mod.rs` `metrics.rs` を触るため)。
+
 **Phase 14 の完了の定義**: T14.1 を再デプロイして 24 時間で **名前解決のミス率 0.15 未満・主要 3 ホスト 0.05 未満・平常時の CONNECT 確立
 p50 6 ms 以下**、T14.2 の 7 件が済み (見送りは理由つき)、T14.3 で README / §2 / §0 がデプロイ先の数字で書かれていること。
+加えて **T14.4 の `/profile` が既知の答え (accept 45%、tunnel の `splice`、forward の CPU/要求) を再現し、デプロイ先で CONNECT の
+段階の内訳が読めること**。
 
 ## 付録 A. 計測の記録 (時系列)
 
