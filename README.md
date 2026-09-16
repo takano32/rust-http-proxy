@@ -127,7 +127,8 @@ scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と�
 `$HOME/.rust-http-proxy/snapshots/<日付>.json` に書いているので (既定 30 日ぶん。下記
 `PROXY_SNAPSHOT_DAYS` と `/snapshots`)、`--from-server` を付けると **`/snapshots` の一覧のうち
 手元に無い日付だけ**を取り寄せて `DIR/<日付>T000000Z-snapshot.json` に置きます
-(中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` もそのまま読めます)。
+(中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` も
+`weekly-report.py` もそのまま読めます)。
 
 保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
 
@@ -151,6 +152,29 @@ scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z 
 `collect-deployed.sh` は前回の雪像を見つけるとこれを呼び、**要約のいちばん最後に判定表**を置きます
 (`CRITERIA=off` で止められます)。道具の単体テストは `python3 -m unittest discover -s scripts`
 (架空の雪像 `scripts/testdata/snapshot-a.json` / `snapshot-b.json` と、下の匿名化した実データで回ります)。
+
+**1 週間ぶんをまとめて読むのは `scripts/weekly-report.py`** (T14.40)。`snapshot-diff.py` が
+「2 枚の間に何が変わったか」を見るのに対して、こちらは**溜まった雪像を日で切って 1 週間を 1 枚**にします。
+入力は雪像の置き場 (`~/rust-http-proxy-status/`) でも、`*-snapshot.json` を並べても、
+`/daily` (T14.20) の JSON でも、`$HOME/.rust-http-proxy.daily.jsonl` そのものでも構いません
+(混ぜてよい。**7 日ぶん無ければあるぶんで**出して、何枚・何日ぶんだったかを頭に書きます)。
+出るのは表 8 つ — **要求数 / CONNECT 確立 p50・p95 / 名前解決のミス率 / エラー (原因別) / 山 /
+接続元の出入り / 遅かったホスト上位 / 新しく見たホスト**:
+
+```bash
+scripts/weekly-report.py ~/rust-http-proxy-status/ -o week.md    # 置き場ごと渡す
+scripts/weekly-report.py ~/rust-http-proxy-status/*-snapshot.json --days 7 --top 10
+curl -s 'http://PROXY/daily?n=7' > daily.json && scripts/weekly-report.py daily.json
+```
+
+**数字の求め方は `snapshot-diff.py` と同じ**です: `/history?res=3600` を **UTC の日で切って**
+同じ `aggregate()` に通すので、同じ期間を切れば同じ値が出ます (分位点の補間は
+`crates/metrics/src/history.rs` の `quantile_ms`、「平常時」= 1 時間 300 本未満の標本を使うのも同じ)。
+日ごとの表には出どころ (`/history?res=3600` か `/daily`) が入ります。
+`/hosts` と `/clients` は `.rrd` の通算なので**いちばん古い雪像といちばん新しい雪像の差**で読み、
+雪像が 1 枚しか無いときは「引き算できない」と断って通算のまま並べます。
+「山」は `/bursts` (T14.6) があれば写真の枚数と最大、無ければ `/history` の `active_max` で代えます。
+出力は「デプロイ先の現在地」を締める文書と、次の Phase の入力にするためのものです。
 
 **実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T14.35)。雪像には
 個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.example`)・
@@ -457,7 +481,17 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     500 件の環状、プロセスのメモリだけ)。
     **403 で拒否した要求もここに入ります** (原因は `acl` / `blocklist` / `connect_port` / `local`、状態コード 403)。
     403 は 5xx ではないので `/status` の `errors_by_cause` (8 つの原因) には乗らず、
-    集計では `hosts[]` の `blocked` に数えるだけです。**誰が何を拒否されたか**はこの個票でだけ読めます、
+    集計では `hosts[]` の `blocked` に数えるだけです。**誰が何を拒否されたか**はこの個票でだけ読めます。
+    **読めずに断った要求もここに入ります** (T14.28。原因は `bad_request:<reason>` の 6 種
+    = `bad_request:request_line` (要求行が空白で 2 つに割れない / 長すぎて 414) /
+    `bad_request:header_too_large` (ヘッダーが長すぎて 431) / `bad_request:method` (メソッドが
+    HTTP の token として読めない) / `bad_request:no_host` (オリジン形式なのに `Host` が無い) /
+    `bad_request:bad_uri` (絶対 URI やマッピング形式にホストが無い) / `bad_request:body_framing`
+    (`Content-Length` と `Transfer-Encoding: chunked` が両方ある = 要求の密輸)。
+    状態コードは**実際に返したもの**なので `400` / `414` / `431` のどれかで、
+    **宛先 (`target`) は空**です — 要求行そのものは個票に入れません (壊れた要求行にも URL や
+    ヘッダーが載っているため。入るのは接続元 IP と時刻と理由だけ)。数だけなら `/status` の
+    `rejected_requests` で理由別に読めます)、
     `/connections` でいま開いている接続の一覧 (接続 id・接続元・宛先 (CONNECT はトンネルの相手、
     keep-alive の HTTP は**最初の要求の宛先**。どちらも接続あたり 1 回しか書きません)・`connect` / `http`・
     状態 `relaying` / `parked` / `reading` / `serving` / `queued`・開始からの秒・転送バイト・記述子の数・
@@ -721,13 +755,15 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     ファイルは**追記のみ**で上限 **2 MiB** (越えたら古い行から捨てる = 約 11 年ぶん)、
     起動時に最後の行の日付を見るので**同じ日に 2 回起動しても 1 行のまま**です。
     `PROXY_STATS_PERSIST=off` では 1 行も書きません (`/daily` の `path` が `null`)。
-    応答は他の個票と同じく 256 KiB 以下 (切ったら `truncated`)
+    応答は他の個票と同じく 256 KiB 以下 (切ったら `truncated`)。
+    この応答をそのまま `scripts/weekly-report.py` に渡せば、雪像が無くても週次の表が出ます
   - **日次の snapshot (30 日ぶん。T14.34)**: `/snapshots` は
     `$HOME/.rust-http-proxy/snapshots/` に残してある日付と大きさ (`files[]` の `date` / `bytes` /
     `t` (書いた時刻)、**古い順**) と、置き場所 (`dir`)・残す日数 (`days`)・1 ファイルの上限
     (`max_bytes` = 4 MiB) を返します。`/snapshots/<YYYY-MM-DD>` はその日のファイルを
     **そのまま** (`/snapshot` の応答そのもの) 返すので、`scripts/snapshot-diff.py` や
-    `scripts/status-diff.py` にそのまま渡せます (置いていない日と日付として読めない名前は 404)。
+    `scripts/status-diff.py`、1 週間ぶんを 1 枚にする `scripts/weekly-report.py` に
+    そのまま渡せます (置いていない日と日付として読めない名前は 404)。
     **書くのは履歴スレッドが UTC の日付をまたいだ瞬間の 1 回だけ**で (要求の経路の費用は 0)、
     名前は**終わった日** (前日) の日付です。`PROXY_SNAPSHOT_DAYS` で日数を変えられ、`0` で止まります。
     `PROXY_STATS_PERSIST=off` (と `--lite`) では 1 ファイルも書きません (`dir` が `null`)。
@@ -1733,6 +1769,8 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 `/metrics` にはこのほか `sorahost_connect_seconds`(`_bucket{le=}` / `_sum` / `_count`。CONNECT 確立の
 ヒストグラム。区間は `/history` と同じ 12 段)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
 かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
+**`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing"}`**
+(読めずに 400 / 414 / 431 で断った要求。6 本で固定。T14.28)、
 `sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads`、
 **`sorahost_rtt_seconds_sum` / `_count`** (`{side="client"|"origin"}`。カーネルの平滑化 RTT。
 標本は接続 1 本の終わりに 1 つで、ホスト別は出しません) が出ます。
@@ -1761,6 +1799,18 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 `ipv6_connect` は**繋がった回だけ**出ます = 行が消えていること自体が「IPv6 が死んでいる」の印) と
 `sorahost_rtt_seconds_sum` / `_count{side=}` は前からあるものです。
 段階の 13 本で `/metrics` は **約 14 KB 増えます** (ホスト表と接続元表が満杯のときで 243 → 257 KB。上限は 400 KiB)。
+
+`/status` の **`rejected_requests`** は、**要求を読めずに断った数**を理由別に並べた欄です (T14.28)。
+`{"request_line":0,"header_too_large":0,"method":0,"no_host":0,"bad_uri":0,"body_framing":0,"total":0}` の形で、
+理由は上の `/errors` の `bad_request:<reason>` と同じ 6 種、`total` はその合計です。公開ポートには走査 (scanner) の
+要求が来るので、**何が来たか**をこの 1 行で読むためのものです。エラー (5xx) ではないので `errors` /
+`errors_by_cause` には混ぜていません。**数えるのは断る経路だけ**で、通した要求は原子を 1 つも触りません。
+誰がいつ送ってきたかは `/errors` の個票 (`cause` が `bad_request:<reason>`) で読めます。
+この 2 つを足すときに応答が 2 か所だけ変わりました: **壊れた要求行**には今までは何も返さずに閉じていましたが
+`400 Bad Request` を返してから閉じます (返した状態コードを個票に正しく書くため)、
+**`Content-Length` と `Transfer-Encoding: chunked` が両方ある要求**は今までは chunked として中継していましたが
+`400` で断ります (RFC 9112 §6.1 は中継してはならないと書いています。前段と後段で本文の切れ目が食い違う
+「要求の密輸」を通さないため)。判定はどちらも既にある分岐の中なので、通る要求の費用は変わりません。
 
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
