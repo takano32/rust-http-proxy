@@ -2337,7 +2337,9 @@ mod conn_tests {
         );
         // T14.3 が埋める段階はまだ 0 なので 1 バイトも出さない
         assert!(!json.contains("queue"), "{}", json);
-        assert!(json.len() <= 300, "ありふれた 1 件が {} B", json.len());
+        // 上限は Phase 14 で欄が増えたぶん引き上げてある (T14.5 の `rtt_ms` / `retrans`、
+        // T14.26 の向き別、T14.46 の `syn_retrans`。実測 363 B。T14.55 で測り直した)
+        assert!(json.len() <= 400, "ありふれた 1 件が {} B", json.len());
         println!("closed entry: typical {} B\n  {}", json.len(), json);
     }
 
@@ -2474,7 +2476,8 @@ mod conn_tests {
         assert!(e.target.len() <= MAX_RECENT_TARGET, "{}", e.target.len());
         assert!(e.client.len() <= MAX_CLIENT, "{}", e.client.len());
         let json = e.to_json();
-        assert!(json.len() <= 560, "最悪の 1 件が {} B", json.len());
+        // 上限は Phase 14 で欄が増えたぶん引き上げてある (実測 633 B。T14.55 で測り直した)
+        assert!(json.len() <= 700, "最悪の 1 件が {} B", json.len());
         println!("closed entry: worst {} B", json.len());
     }
 

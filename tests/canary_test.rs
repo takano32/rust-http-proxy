@@ -304,7 +304,8 @@ fn test_integration_the_env_file_turns_the_canary_on_and_off() {
     );
     assert!(status_number(&canary, "at") > 1_700_000_000, "{}", canary);
     let series = canary_obj_series(&endpoint_json(port, "/history?res=5"));
-    assert!(series.contains(&format!("\"{}\"]", target)), "{}", series);
+    // 系列の末尾には IPv6 側の 1 本 (T14.37) が付くので、**宛先の名前だけ**を見る
+    assert!(series.contains(&format!("\"{}\"", target)), "{}", series);
 
     // `.env` を書き換えたら止まる (即時反映)
     write_env(&dir, "off");
