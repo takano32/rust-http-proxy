@@ -14,7 +14,8 @@
 //   6. **カーネルと cgroup の窓** (`/history` の `kernel`、`/status` の `kernel`) が読めること (T14.12)
 //   7. **`/events` の時系列**が読めること (11 種の綴り・新しい順・`?since=` の絞り。T14.11 / T14.23)
 //   8. **`/profile` を読む関数** (段階・スレッド・ロック) が実出力と合っていること (T14.3)
-//   9. **`/history` の `transfer`** (転送速度と半閉じの分布) が読めること (区間の数・合計と件数の一致。T14.25)
+//   9. **`/history` の `transfer`** (転送速度と半閉じの分布) が読めること (区間の数・合計と件数の一致。T14.25。
+//      末尾の `stall_client_ms_sum` / `stall_origin_ms_sum` = 中継の詰まりの向きの合計は T14.42)
 //  10. **「調査」ページ (`inspect.html`) の描画関数**が `/snapshot` の実出力で例外なく通ること
 //      (タイムライン・遅い接続・山・接続元・RTT の散布・起動からの窓・出来事の印。T14.8)
 //  11. **「端末から測る」ページ (`probe.html`) の関数** (`median` / `pick` / `render`) が
@@ -689,6 +690,10 @@ function checkTransfer(transfer, where) {
     if (r.half_close_n > r.tunnels) fail(where + ': 半閉じの件数が本数を超えた');
     if (r.speed_n > 0 && !(r.bytes_sum > 0)) fail(where + ': 運んだバイトの合計が読めていない');
     if (!(r.relay_ms_sum >= 0) || !(r.half_close_ms_sum >= 0)) fail(where + ': 合計が数で読めていない');
+    // 中継の詰まりの向き (T14.42)。古い `/history` には無いので「あれば数」だけ見る
+    for (const k of ['stall_client_ms_sum', 'stall_origin_ms_sum']) {
+      if (r[k] !== undefined && !(r[k] >= 0)) fail(where + ': ' + k + ' が数で読めていない: ' + r[k]);
+    }
   }
   // 窓を 1 つに畳む (T14.8 が「直近 1 時間の速さの分布」を描くときの読み方)
   const merged = rows.reduce((a, r) => {
@@ -702,13 +707,13 @@ function checkTransfer(transfer, where) {
 
 const transferSample = {
   interval_secs: 5,
-  keys: ['t', 'tunnels', 'speed_n', 'speed', 'half_close_n', 'half_close', 'bytes_sum', 'relay_ms_sum', 'half_close_ms_sum'],
+  keys: ['t', 'tunnels', 'speed_n', 'speed', 'half_close_n', 'half_close', 'bytes_sum', 'relay_ms_sum', 'half_close_ms_sum', 'stall_client_ms_sum', 'stall_origin_ms_sum'],
   speed_bounds_bps: [1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864, 268435456, 1073741824, 4294967296],
   half_close_bounds_ms: [1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304],
   min_bytes: 1024,
   samples: [
-    [1789251460, 3, 2, [0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0], 1, [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], 1258291, 4200, 150],
-    [1789251465, 1, 1, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], 0, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 20971520, 2000, 0],
+    [1789251460, 3, 2, [0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0], 1, [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], 1258291, 4200, 150, 1800, 0],
+    [1789251465, 1, 1, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], 0, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 20971520, 2000, 0, 0, 0],
   ],
   windows: 2,
   capacity: 720,

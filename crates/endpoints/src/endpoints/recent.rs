@@ -905,6 +905,7 @@ mod tests {
                     stage_ms: [u64::MAX; STAGES],
                     rtt_us: [u32::MAX; SIDES],
                     retrans: [u32::MAX; SIDES],
+                    stall_ms: [u32::MAX; SIDES],
                 },
                 u32::MAX,
             );

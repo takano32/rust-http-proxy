@@ -216,7 +216,7 @@ fn test_integration_a_megabyte_lands_in_one_speed_bucket() {
     assert!(block.contains("\"interval_secs\":5"), "{}", block);
     assert!(
         block.contains(
-            "\"keys\":[\"t\",\"tunnels\",\"speed_n\",\"speed\",\"half_close_n\",\"half_close\",\"bytes_sum\",\"relay_ms_sum\",\"half_close_ms_sum\"]"
+            "\"keys\":[\"t\",\"tunnels\",\"speed_n\",\"speed\",\"half_close_n\",\"half_close\",\"bytes_sum\",\"relay_ms_sum\",\"half_close_ms_sum\",\"stall_client_ms_sum\",\"stall_origin_ms_sum\"]"
         ),
         "{}",
         block
@@ -240,7 +240,8 @@ fn test_integration_a_megabyte_lands_in_one_speed_bucket() {
     assert!(block.contains("\"recorded\":1"), "{}", block);
 
     let row = first_row(&block);
-    assert_eq!(row.len(), 9, "列の数が keys と合わない: {:?}", row);
+    // 末尾の 2 列は T14.42 (詰まりの向きの合計)
+    assert_eq!(row.len(), 11, "列の数が keys と合わない: {:?}", row);
     assert!(num(&row[0]) > 1_700_000_000, "窓の時刻: {}", row[0]);
     assert_eq!(num(&row[1]), 1, "終わったトンネルは 1 本");
     assert_eq!(num(&row[2]), 1, "速さを数えたのは 1 本");
