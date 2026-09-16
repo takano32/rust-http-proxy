@@ -486,6 +486,32 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     );
     let _ = writeln!(out, "sorahost_dns_seconds_sum {}", dns_us as f64 / 1e6);
     let _ = writeln!(out, "sorahost_dns_seconds_count {}", dns_misses);
+    // カーネルの平滑化 RTT (`TCP_INFO`。T14.5)。標本は**接続 1 本の終わりに 1 つ**で、
+    // **ホスト別は出さない** (系列が増えすぎる)。利用者側 (`client`) と
+    // オリジン側 (`origin`) を分けると「物理」と「自分」が切り分けられる
+    header(
+        &mut out,
+        "rtt_seconds",
+        "summary",
+        "Smoothed kernel RTT (TCP_INFO), sampled once per closed connection",
+    );
+    let rtt = m.rtt_totals();
+    for (side, (us_sum, count)) in [
+        ("client", rtt[crate::recent::CLIENT_SIDE]),
+        ("origin", rtt[crate::recent::ORIGIN_SIDE]),
+    ] {
+        let _ = writeln!(
+            out,
+            "sorahost_rtt_seconds_sum{{side=\"{}\"}} {}",
+            side,
+            us_sum as f64 / 1e6
+        );
+        let _ = writeln!(
+            out,
+            "sorahost_rtt_seconds_count{{side=\"{}\"}} {}",
+            side, count
+        );
+    }
     // canary (T14.10): 利用者の要求が無い時間帯も測っている**最後の 1 回**。
     // まだ 1 回も回っていない (`off`、起動直後、履歴スレッドが無い) ときは 1 行も出さない
     // — 0 秒を出すと「一瞬で繋がった」と読めてしまう

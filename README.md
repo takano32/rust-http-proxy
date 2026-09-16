@@ -326,20 +326,34 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `rejected` (`PROXY_MAX_CONNS_PER_CLIENT` に当たって断った本数。T14.13) が出ます。
     **`"persisted": false`** は「これらの新しい欄は状態ファイルに残らない (再起動で消える)」の意味です
     (`.rrd` の 1 スロット 572 B は既存の 49 項目で 520 B 使っていて、`agents` だけで 4 × 128 B 要るため。
-    版を上げると統計を全部捨てることになるので上げていません)
+    版を上げると統計を全部捨てることになるので上げていません)。
+    **T14.5 の RTT の 4 欄 (32 B) はスロットの余白に入ったので残ります** (552 B。余白は 20 B)
   - **閉じた接続の個票 (T14.4)**: `/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
     `/connections` が「いま」しか見せないのに対し、こちらは「**起きたこと**」です。1 件 = 接続 id・開いた時刻 (`at`、epoch 秒)・
     接続元 (`client`)・宛先 (`target`)・種類 (`kind` = `connect` / `http`)・寿命 (`secs`)・要求数 (`reqs`、http だけ)・
     **上り / 下り別のバイト** (`up` / `down`)・**閉じた理由** (`reason`)・最後の応答の状態コード (`status`、http だけ)・
-    預かり所にいた合計秒と回数 (`parked_secs` / `parks`)・**段階の ms** (`ms` = `dns` / `connect`。`first_byte` は 0 でなければ)。
+    預かり所にいた合計秒と回数 (`parked_secs` / `parks`)・**段階の ms** (`ms` = `dns` / `connect`。`first_byte` は 0 でなければ)・
+    **カーネルの RTT と再送** (`rtt_ms` と `retrans`。どちらも `{"client":…,"origin":…}` で
+    `client` = 利用者 → プロキシ、`origin` = プロキシ → 宛先。T14.5)。
     理由は `client_eof` (クライアントが先に EOF) / `server_eof` (宛先が先に EOF) / `idle_timeout` (トンネルの無通信打ち切り) /
     `keepalive_timeout` (次の要求を待ちきれなかった) / `evicted` (上限に当たって席を作るために閉じた。`PROXY_MAX_CONNS`) /
     `limit` (1 接続あたりの要求数の上限) / `error:<原因>` (原因は `/status` の `errors_by_cause` と同じ 8 つ) /
     `shutdown` (その他のプロキシ側の都合) の 8 種類。**書くのは接続の終了で 1 回だけ**で、要求ごとにも中継のバイトごとにも
-    何も書きません。2,000 件の環状 (ありふれた 1 件 225 B)。`?since=` は「開いた時刻がこれ以降」、`?client=` は接続元の完全一致、
+    何も書きません。2,000 件の環状 (ありふれた 1 件 297 B)。`?since=` は「開いた時刻がこれ以降」、`?client=` は接続元の完全一致、
     `?sort=slow` は確立 (`ms.connect`) の遅い順、`?sort=bytes` は転送の多い順。
     **自分宛て (`/status` `/dashboard` …) だけで終わった接続は残しません** — 監視が 5 秒おきに引くとリングがそれで埋まるためです
     (数は `/status` にあります)
+  - **カーネルの RTT と再送 (T14.5)**: Linux では接続が閉じるときに `getsockopt(SOL_TCP, TCP_INFO)` を読み、
+    **平滑化 RTT (`tcpi_rtt`) と再送の通算 (`tcpi_total_retrans`)** を残します。「30 ms は RTT か、それとも
+    プロキシの待ちか」が初めて切り分けられ、利用者側の回線の質 (再送) も数字になります。
+    読むのは**接続の終わりだけ**です: CONNECT トンネルは終わりに両側 (`getsockopt` 2 回)、
+    keep-alive の HTTP 接続は終わりにクライアント側 (1 回)、オリジンへのプールの接続は
+    **捨てるとき** (期限切れか相手が閉じていたとき) にオリジン側。**要求ごとには 1 度も読みません**。
+    出るのは 3 か所: `/recent` の 1 件 (`rtt_ms` / `retrans` の両側)、`/hosts` と `/status` の
+    `hosts[]` (オリジン側) と `clients[]` (クライアント側) の `rtt_ms` (`avg` / `min` / `samples`) と `retrans`、
+    `/metrics` の `sorahost_rtt_seconds_sum` / `_count` (`{side="client"|"origin"}` の 2 系列だけ。
+    **ホスト別は出しません** — 系列が増えすぎるため)。**Linux 以外と `--lite` では読まないので `null` / 0 です**
+    (`/recent` の `rtt_ms` はその側が `null`、`hosts[]` / `clients[]` は `"rtt_ms":null`)
   - **山の写真 (T14.6)**: `/bursts?n=50` は、同時接続数が `PROXY_MAX_CONNS × PROXY_BURST_PERCENT`
     (既定 50%) を**下から上に越えた瞬間**に自動で撮った `/connections` の要約です。
     上限に当たったときの動き (暇なトンネルを 1 本閉じる。`PROXY_MAX_CONNS`) が効いているかは
@@ -1169,7 +1183,9 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 `/metrics` にはこのほか `sorahost_connect_seconds`(`_bucket{le=}` / `_sum` / `_count`。CONNECT 確立の
 ヒストグラム。区間は `/history` と同じ 12 段)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
 かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
-`sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads` が出ます。
+`sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads`、
+**`sorahost_rtt_seconds_sum` / `_count`** (`{side="client"|"origin"}`。カーネルの平滑化 RTT。
+標本は接続 1 本の終わりに 1 つで、ホスト別は出しません) が出ます。
 ホスト別の応答時間ヒストグラム (`sorahost_host_request_duration_seconds`) は区間が 24 段になったので
 **上位 50 ホストまで**です (数え上げの系列はこれまでどおり上位 100 ホスト)。ダッシュボードの「接続中」にも
 `スレッド 7 / 256 (空き 3) · 接続上限 1008` の 1 行が出ます。数えるには接続スレッドで共有している鍵が要るので、
@@ -1189,7 +1205,10 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 ホスト別の行にはさらに**待ちの内訳**が入ります: `dns_ms_sum` / `dns_misses` (名前解決を OS に聞いた合計時間と回数)、
 `connect_ms_sum` (接続にかかった合計時間。名前解決のぶんは含みません)、`v4_wins` / `v6_wins` (確立した族)、
 `errors_by_cause` (`[dns, refused, unreachable, timeout, reset, tls, loop, other]` の順の件数。
-`loop` は自分の `Via` が付いて `508` で閉じたもの)。**測るための費用は熱い経路に乗せていません**:
+`loop` は自分の `Via` が付いて `508` で閉じたもの)、**`rtt_ms`** (`{"avg":…,"min":…,"samples":N}`。
+カーネルの平滑化 RTT (`TCP_INFO`)。標本は**接続 1 本の終わりに 1 つ**なので `timed` (要求数) とは数が合いません。
+1 本も閉じていなければ `null`) と **`retrans`** (その接続たちが再送したセグメントの通算)。
+**測るための費用は熱い経路に乗せていません**:
 名前解決の時計はキャッシュを外したときだけ読み、内訳はホスト別統計が既に取っている鍵の内側で足します
 (原子操作もシステムコールも増えません。実測: forward の確保 8.03 → 8.03 回/要求、
 `--lite` のシステムコール 5.00 → 5.00 回/要求)。`dns` には `miss_ms_sum` / `miss_avg_ms` (ミス 1 回の値段) と
@@ -1197,6 +1216,7 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 `warm_secs` (keep-warm の窓) / **`warm` (いま warm な名前の数)** が出ます。
 **裏の引き直しはミスに数えません** (利用者は待っていないので、`misses` と `miss_avg_ms` に混ぜると
 「ミス 1 回の値段」が読めなくなる)。`/metrics` では `sorahost_dns_lookups_total{result="refresh"}` です。
+`clients[]` にも同じ `rtt_ms` / `retrans` が出ますが、**こちらはクライアント側** (利用者 → プロキシの往復) です。
 `/status` の `clients[]` には接続元 IP ごとの要求数・転送量・拒否数・応答時間が要求数順に最大 50 件入り、
 末尾に **`first_seen`** (初めて見た時刻。`0` = この起動より前から居る) / **`agent`** (最後に見た `User-Agent` 1 つ。
 無ければ `null`) / **`distinct_targets`** (宛先ホストの種類) / **`literal_targets`** (IP リテラル宛ての要求数) が付きます
