@@ -17,6 +17,7 @@ members = [
     "crates/cachedisk",
     "crates/cache",
     "crates/config",
+    "crates/selfbench",
     "crates/metrics",
     "crates/blocklist",
     "crates/reload",
@@ -53,6 +54,7 @@ proxy-net = { path = "crates/net" }
 proxy-origin = { path = "crates/origin" }
 proxy-prom = { path = "crates/prom" }
 proxy-reload = { path = "crates/reload" }
+proxy-selfbench = { path = "crates/selfbench" }
 proxy-sys = { path = "crates/sys" }
 proxy-sysinfo = { path = "crates/sysinfo" }
 proxy-tunnel = { path = "crates/tunnel" }

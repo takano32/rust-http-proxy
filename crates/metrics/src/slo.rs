@@ -361,9 +361,11 @@ impl Report {
     /// `/slo` の応答 (**[`MAX_BODY`] 以下**。越えるぶんは時間ごとの行から落として `truncated`)。
     pub fn to_json(&self) -> String {
         let mut out = String::with_capacity(8 * 1024);
+        // 応答の形の版は**いちばん先頭の鍵** (T14.49)。`thresholds` は入れ子なので持たない
+        out.push_str(crate::metrics::SCHEMA_HEAD);
         let _ = write!(
             out,
-            "{{\"now\":{},\"days\":{},\"from\":{},\"to\":{},\"sample_secs\":{},\
+            "\"now\":{},\"days\":{},\"from\":{},\"to\":{},\"sample_secs\":{},\
              \"thresholds\":{},\"names\":[",
             self.now,
             self.days,

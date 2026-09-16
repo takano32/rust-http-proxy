@@ -11,3 +11,4 @@ proxy-base = { path = "../base" }
 proxy-rrd = { path = "../rrd" }
 proxy-net = { path = "../net" }
 proxy-cache = { path = "../cache" }
+proxy-selfbench = { path = "../selfbench" }
