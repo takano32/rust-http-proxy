@@ -144,10 +144,16 @@ static RING: Mutex<TraceRing> = Mutex::new(TraceRing {
 /// **旗 (`ConnSlot::traced`) が立っている接続からだけ呼ぶこと。** 追跡していない
 /// 要求はこの関数まで来ない (呼ぶ側の分岐 1 回で終わる)。
 pub fn push(line: Line<'_>) {
+    // 記録の一括 off (T14.41)。`PROXY_TRACE_CLIENT` の照合は accept 直後に**生の IP**で
+    // 済んでいるので、ここで止めるのは残す側だけ (`off` なら `/trace` は空のまま)
+    if !crate::records::recording() {
+        return;
+    }
     let entry = TraceLine {
         at: crate::cache::now_epoch(),
         conn_id: line.conn_id as u64,
-        client: clip(line.client, MAX_CLIENT),
+        // 接続元は他の個票と同じ 1 関数を通す (`hashed` なら 16 桁の 16 進)
+        client: clip(&crate::records::client_key(line.client), MAX_CLIENT),
         method: clip(line.method, MAX_METHOD),
         target: clip(line.target, MAX_PATH),
         version: clip(line.version, MAX_VERSION),

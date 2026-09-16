@@ -1518,7 +1518,9 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         host: host_header,
         // 内部エンドポイントを引いた接続元を 1 行残すため (`/status` の `readers`。T14.53)。
         // 数えるのは `endpoints::handle` が「自分宛て」と決めたあとなので、
-        // プロキシとして通す要求はこの値を 1 度も使わない
+        // プロキシとして通す要求はこの値を 1 度も使わない。**渡すのは生の IP**で、
+        // `PROXY_RECORDS` の off / hashed は記録の入口 (`Metrics::record_reader`) が
+        // 見る (接続元を記録の形に直す関数は 1 つだけ。T14.41)
         client: Some(peer_ip),
         pac_direct: &config.pac_direct,
         lite: config.lite,
@@ -1592,6 +1594,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         // 解決の前に捨てる (次の `take` でこの要求のぶんだけが取れるように。T12.4 (2))
         let _ = dns::take_resolve_cost();
         let _ = dns::take_family();
+        let _ = dns::take_syn_retrans();
         let (local, r) = acl::resolve_target(target_host);
         resolved = r;
         local.then_some(metrics::BlockCause::Local)

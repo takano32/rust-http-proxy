@@ -68,9 +68,13 @@ fn str_param(query: Option<&str>, key: &str) -> String {
 /// `PROXY_STATS_PERSIST=off` と、ファイルが開けなかったときは `false`
 /// (= 「この口の中身は再起動で消える」の意味)。
 fn persisted(ep: &Endpoint<'_>) -> bool {
-    ep.metrics
-        .recent_persisted
-        .load(std::sync::atomic::Ordering::Relaxed)
+    // `PROXY_RECORDS=off` は個票そのものを作らないので、ファイルにも 1 バイトも書かない
+    // (= `false`。T14.41)
+    crate::records::recording()
+        && ep
+            .metrics
+            .recent_persisted
+            .load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// `?key=N` を読む (無い / 読めない / 範囲外は既定か端に倒す。`/status?sort=` と同じ方針)。
@@ -924,6 +928,8 @@ mod tests {
                     stage_ms: [u64::MAX; STAGES],
                     rtt_us: [u32::MAX; SIDES],
                     retrans: [u32::MAX; SIDES],
+                    syn_retrans: u8::MAX,
+                    stall_ms: [u32::MAX; SIDES],
                 },
                 u32::MAX,
             );

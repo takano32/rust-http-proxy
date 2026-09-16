@@ -354,6 +354,14 @@ pub struct Detail {
     /// 常に `false`。IP リテラル宛ての CONNECT (T14.7 の `literal_targets`) は
     /// 必ず食い違うので、domain fronting と「宛先を IP で書くクライアント」の両方が入る
     pub sni_mismatch: bool,
+    /// この接続を確立するまでに **SYN を送り直した回数** (T14.46)。
+    ///
+    /// 確立した直後に `getsockopt(TCP_INFO)` を 1 回読んだ `tcpi_total_retrans` で
+    /// (まだデータを送っていないので SYN の再送しか入っていない)、`0` は「再送なし /
+    /// 読めなかった / Linux 以外」。1 回の再送で確立は 1 秒、2 回で 3 秒に飛ぶので、
+    /// **`connect_ms` が 1,000 ms 台の接続はここが 1 以上**になる。
+    /// forward は**プールが接続を張ったときだけ**値が入る (使い回した要求は 0)
+    pub syn_retrans: u8,
 }
 
 /// 1 要求 (1 本) の段階ごとの待ち時間 (ms。T14.3 (1))。
@@ -439,6 +447,13 @@ pub struct HostStats {
     /// **`.rrd` には書かない** (スロットの余白は 4 B しか無い。T14.26) ので
     /// 再起動で 0 に戻る = `series_slot` と同じ扱い。合計は `/status` の `sni_mismatches`
     pub sni_mismatch: u64,
+    /// そのホストへの接続が **SYN を送り直した回数の合計** (T14.46)。
+    /// **`.rrd` には書かない** ([`HostStats::sni_mismatch`] と同じ扱い。スロットの
+    /// 余白は 4 B しか無い) ので再起動で 0 に戻る。合計は `/status` の `syn_retrans_total`。
+    ///
+    /// [`HostStats::retrans`] (T14.5) は**接続の終わり**に読んだ通算 (データの再送を含む)、
+    /// こちらは**確立の直後**なので SYN の再送だけ = 「繋ぐのに何回やり直したか」
+    pub syn_retrans: u64,
 }
 
 impl HostStats {
@@ -490,6 +505,9 @@ impl HostStats {
         if d.sni_mismatch {
             self.sni_mismatch += 1;
         }
+        // 確立までの SYN の再送 (T14.46)。**読んだのは `net` の確立点**で、
+        // ここは鍵の内側の足し算 1 回 (メモリだけの欄)
+        self.syn_retrans += d.syn_retrans as u64;
     }
 
     /// 状態ファイルのレコード (名前 128 バイト + 数値)。
@@ -1190,6 +1208,9 @@ pub struct Metrics {
     /// CONNECT のホストと SNI が食い違った本数の合計 (`/status` の `sni_mismatches`。T14.38)。
     /// **メモリだけ** (`.rrd` には書かない)。ホスト別は [`HostStats::sni_mismatch`]
     pub sni_mismatches: AtomicU64,
+    /// 確立までに SYN を送り直した回数の合計 (`/status` の `syn_retrans_total`。T14.46)。
+    /// **メモリだけ** (`.rrd` には書かない)。ホスト別は [`HostStats::syn_retrans`]
+    pub syn_retrans_total: AtomicU64,
     /// 重い口 (`/snapshot` `/profile` …) が既に 1 本走っていたので 503 で断った数 (T14.51)。
     /// 足すのは内部エンドポイントの経路だけで、プロキシとしての要求は 1 度も触らない
     pub heavy_rejected: AtomicU64,
@@ -1230,6 +1251,7 @@ impl Metrics {
             bursts: crate::recent::BurstRing::new(),
             recent_persisted: AtomicBool::new(false),
             sni_mismatches: AtomicU64::new(0),
+            syn_retrans_total: AtomicU64::new(0),
             heavy_rejected: AtomicU64::new(0),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
@@ -1483,6 +1505,12 @@ impl Metrics {
         if detail.sni_mismatch {
             self.sni_mismatches.fetch_add(1, Ordering::Relaxed);
         }
+        // 確立までの SYN の再送の合計 (`/status`。T14.46)。再送は稀なので、
+        // 普通の接続はこの分岐 1 回で終わる (原子は触らない)
+        if detail.syn_retrans != 0 {
+            self.syn_retrans_total
+                .fetch_add(detail.syn_retrans as u64, Ordering::Relaxed);
+        }
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
         if let Some(stats) = hosts.map.get_mut(host) {
             stats.count(now, outcome, bytes, took, detail);
@@ -1584,8 +1612,14 @@ impl Metrics {
         if target.is_some_and(crate::selfbench::is_target) {
             return;
         }
+        // 記録の一括 off とハッシュ化 (T14.41)。`off` は鍵も取らずに戻る
+        // (ホスト別の統計 `/hosts` はこの上の `record_host*` なので残る)
+        if !crate::records::recording() {
+            return;
+        }
+        let client = &crate::records::client_key(client);
         let mut clients = self.clients.locked();
-        if let Some(stats) = clients.get_mut(client) {
+        if let Some(stats) = clients.get_mut(client.as_ref()) {
             stats.count(outcome, bytes, dir, took, target);
             return;
         }
@@ -1622,11 +1656,12 @@ impl Metrics {
     /// 利用者 → プロキシの往復がここで初めて数字になる。[`record_host_rtt`](Self::record_host_rtt)
     /// と同じく**接続の終わりだけ**で、鍵は `record_client` のものと同じ 1 つ。
     pub fn record_client_rtt(&self, client: &str, rtt_us: u32, retrans: u32) {
-        if rtt_us == 0 {
+        if rtt_us == 0 || !crate::records::recording() {
             return;
         }
+        let client = crate::records::client_key(client);
         let mut clients = self.clients.locked();
-        if let Some(c) = clients.get_mut(client) {
+        if let Some(c) = clients.get_mut(client.as_ref()) {
             c.stats.observe_rtt(rtt_us, retrans);
         }
     }
@@ -1659,8 +1694,12 @@ impl Metrics {
     /// ヘッダーの走査も鍵も要求ごとに増えるので、接続 1 本につき 1 回に決めてある
     /// (2 要求目からは呼び出し側の旗で飛ばす)。
     pub fn record_client_agent(&self, client: &str, agent: &str) {
+        if !crate::records::recording() {
+            return;
+        }
+        let client = &crate::records::client_key(client);
         let mut clients = self.clients.locked();
-        if let Some(stats) = clients.get_mut(client) {
+        if let Some(stats) = clients.get_mut(client.as_ref()) {
             stats.note_agent(agent);
             return;
         }
@@ -1680,10 +1719,16 @@ impl Metrics {
     /// **通るのは断った経路だけ**なので、通した接続には 1 命令も足さない。全体の合計
     /// (`rejected_per_client`) も同じ場所で足す (鍵は接続元の表の 1 回)。
     pub fn record_client_rejected(&self, client: &str) {
+        // **合計 (`/status` の `rejected_per_client`) は `off` でも数える**
+        // (「誰が」を含まない数字なので、止めるのは接続元別の表だけ。T14.41)
         self.rejected_per_client
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !crate::records::recording() {
+            return;
+        }
+        let client = &crate::records::client_key(client);
         let mut clients = self.clients.locked();
-        if let Some(stats) = clients.get_mut(client) {
+        if let Some(stats) = clients.get_mut(client.as_ref()) {
             stats.rejected += 1;
             return;
         }
@@ -1704,9 +1749,15 @@ impl Metrics {
     /// `path` は**問い合わせ文字列を外したパス**を渡すこと (`?` 以降は記録しない)。
     /// 表が [`MAX_READERS`] で溢れたら、最後に引いたのがいちばん古い行を 1 つ捨てる。
     pub fn record_reader(&self, client: &str, path: &str) {
+        // 記録の一括 off とハッシュ化 (T14.41)。読み手の表も接続元 1 人ずつの記録なので、
+        // `off` なら鍵も取らずに戻り、`hashed` なら他の個票と同じ 1 関数を通す
+        if !crate::records::recording() {
+            return;
+        }
+        let client = &crate::records::client_key(client);
         let now = crate::cache::now_epoch();
         let mut readers = self.readers.locked();
-        if let Some(r) = readers.get_mut(client) {
+        if let Some(r) = readers.get_mut(client.as_ref()) {
             r.count += 1;
             r.last_at = now;
             // 同じパスが続く間は確保しない (監視は同じ口を叩き続ける)。
@@ -1850,20 +1901,29 @@ impl Metrics {
     }
 
     /// 起動時に状態ファイルから読み戻す (今の値が空のときだけ)。
+    ///
+    /// **ホスト別はそのまま、接続元別は記録の形に直してから入れる** (T14.41)。
+    /// `off` なら接続元の表は 1 行も戻さず (`.rrd` は消さないので `on` に戻せばまた読める)、
+    /// `hashed` なら前の起動が `on` で書いた生の IP をここで 16 進に直す — 直さないと
+    /// `hashed` で起こし直した直後の `/clients` に生の IP が並ぶ。
     pub fn restore(&self, hosts: Vec<(String, HostStats)>, clients: Vec<(String, HostStats)>) {
         let mut h = self.hosts.locked();
         if h.map.is_empty() {
             h.map.extend(hosts);
         }
+        if !crate::records::recording() {
+            return;
+        }
         let mut c = self.clients.locked();
         if c.is_empty() {
             // 読み戻した接続元は「いつから居るか」が分からない (`first_seen` は
             // `.rrd` に書いていない欄なので 0 のまま = この起動より前から)
-            c.extend(
-                clients
-                    .into_iter()
-                    .map(|(k, s)| (k, ClientStats::restored(s))),
-            );
+            c.extend(clients.into_iter().map(|(k, s)| {
+                (
+                    crate::records::client_key(&k).into_owned(),
+                    ClientStats::restored(s),
+                )
+            }));
         }
     }
 
@@ -2035,11 +2095,14 @@ impl Metrics {
                 // `kernel` は**末尾に足した** (T14.12)。既存の鍵の順は 1 つも変えない
                 // (`memory` も T14.21、`recent_quantiles` も T14.31、`rate_bps_total` も
                 // T14.39、`rejected_requests` も T14.28、`sni_mismatches` も T14.38、
-                // `self_bench` も T14.43、`readers` も T14.53、`heavy_rejected` も T14.51 で
-                // 同じく末尾)
+                // `self_bench` も T14.43、`readers` も T14.53、`syn_retrans_total` も
+                // T14.46、`heavy_rejected` も T14.51 で同じく末尾)
                 "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
+                // `records` も**末尾** (T14.41)。`off` / `hashed` のとき、この応答より
+                // 下の口 (`/recent` など) が空 / 16 進なのはこの値のせいだと読める
                 "\"rejected_requests\":{},\"sni_mismatches\":{},\"self_bench\":{},",
-                "\"readers\":{},\"heavy_rejected\":{}}}"
+                "\"readers\":{},\"syn_retrans_total\":{},\"records\":\"{}\",",
+                "\"heavy_rejected\":{}}}"
             ),
             SCHEMA,
             crate::json::escape(extra.version),
@@ -2102,6 +2165,10 @@ impl Metrics {
             // 内部エンドポイントを引いた接続元の上位 20 (T14.53)。全部は `/readers`。
             // **プロキシとして通した要求は入らない** (`clients[]` とは別の表)
             self.readers_json(),
+            // 確立までに SYN を送り直した回数の合計 (T14.46)
+            self.syn_retrans_total.load(Ordering::Relaxed),
+            // 記録の一括 off とハッシュ化 (T14.41)。旗を原子 1 回読むだけ
+            crate::records::mode().name(),
             // 重い口が 1 本走っている最中に来て 503 で断った数 (T14.51)
             self.heavy_rejected.load(Ordering::Relaxed)
         )
@@ -2282,6 +2349,10 @@ pub fn stats_json(s: &HostStats, detail: bool) -> String {
         // CONNECT のホストと SNI の食い違い (T14.38)。**ホスト別だけ** (接続元別には
         // 宛先が無い)。**末尾に足した** ので既存の鍵の順は変わらない
         let _ = write!(out, ",\"sni_mismatch\":{}", s.sni_mismatch);
+        // 確立までの SYN の再送 (T14.46)。**ホスト別だけ** (`sni_mismatch` と同じく
+        // `detail` の内側 — 接続元別には「繋ぎに行く先」が無い)。
+        // **末尾に足した**ので既存の鍵の順は変わらない
+        let _ = write!(out, ",\"syn_retrans\":{}", s.syn_retrans);
     }
     out
 }

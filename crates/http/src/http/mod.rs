@@ -293,7 +293,7 @@ impl Ctx<'_> {
             stage_ms[STAGE_FIRST_BYTE] = detail.first_byte_ms.unwrap_or(0);
             stage_ms[STAGE_QUEUE] = detail.stages.queue as u64;
             stage_ms[STAGE_CLIENT_READ] = detail.stages.client_read as u64;
-            t.add_request(status, self.up_bytes, bytes, stage_ms);
+            t.add_request(status, self.up_bytes, bytes, stage_ms, detail.syn_retrans);
             cell.set(t);
             // 接続元 1 つの追跡 (`/trace`。T14.27)。**旗が立っている接続だけ** 1 行書く。
             // 立っていない要求の費用はこの分岐 1 回だけで、段階の ms も所要時間も
@@ -1178,6 +1178,9 @@ fn origin_detail(acquire_started: Instant, cause: Option<ErrCause>, stages: Stag
         dns_misses,
         connect_ms: total_ms.saturating_sub(dns_ms),
         family_v6: crate::dns::take_family(),
+        // 確立までに SYN を送り直した回数 (T14.46)。**プールが接続を張った要求だけ**
+        // 0 でない (使い回せた要求は `net` の確立点を通らないので 0)
+        syn_retrans: crate::dns::take_syn_retrans(),
         cause,
         first_byte_ms: None,
         // ここまでに測った段階 (`queue` / `client_read`) は引き継ぐ (T14.3 (1))

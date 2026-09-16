@@ -22,6 +22,13 @@
 //!   足すのは `/recent` に 1 件書くのと同じ場所で、**既に鍵の内側**。
 //!   これだけは**メモリだけ** (T14.9 が残すのは上の 4 本のリングと `/log`)。
 //!
+//! **`PROXY_RECORDS` (T14.41)**: 上のどのリングも、書き込みの入口に
+//! [`crate::records::recording`] の分岐が 1 つある。`off` なら**鍵も取らずに捨てる**
+//! (`/hosts` と `/history` は接続元を含まないのでそのまま残る)。`hashed` のときは
+//! 接続元 IP を [`crate::records::client_key`] で 16 桁の 16 進に置き換えて記録する —
+//! 通すのは [`ErrorEntry::new`] と [`ConnTable::register`] の 2 か所だけで、
+//! `/recent` (枠から作る) も `/bursts` (表から作る) もそこから流れてくる。
+//!
 //! [`Metrics::record_error`]: crate::metrics::Metrics::record_error
 
 use std::collections::HashMap;
@@ -200,7 +207,9 @@ impl ErrorEntry {
             dns_ms: dns_ms.min(MAX_MS),
             connect_ms: connect_ms.min(MAX_MS),
             status,
-            client: clip(client, MAX_CLIENT),
+            // 接続元は**この 1 関数**を通して記録の形に直す (T14.41)。
+            // 既定 (`on`) は借りたまま返るので確保も比較も増えない
+            client: clip(&crate::records::client_key(client), MAX_CLIENT),
         }
     }
 
@@ -301,7 +310,12 @@ impl ErrorRing {
     }
 
     /// 1 件書く (満杯なら最も古いものを上書きする)。
+    ///
+    /// `PROXY_RECORDS=off` なら**鍵も取らずに捨てる** (T14.41)。
     pub fn push(&self, entry: ErrorEntry) {
+        if !crate::records::recording() {
+            return;
+        }
         let mut r = self.inner.locked();
         r.total += 1;
         if r.buf.len() < MAX_ERRORS {
@@ -460,6 +474,14 @@ pub struct ConnSlot {
     /// **書くのはトンネル 1 本につき多くて 1 回** (覗けて名前が読めたときだけ) で、
     /// 空は「覗いていない / 読めなかった」。443 以外と `--lite` では常に空
     sni: Mutex<String>,
+    /// 確立までに SYN を送り直した回数 (T14.46)。**書くのは接続の終わりの
+    /// [`ConnSlot::finish`] だけ**で、読んだのは `net` の確立点 (`getsockopt` 1 回)
+    syn_retrans: AtomicU8,
+    /// 中継が**書けるのを待った**合計 ms (`[クライアント側, オリジン側]`。T14.42)。
+    /// `client` が大きい = 利用者の下り回線か端末が読まない、`origin` が大きい =
+    /// オリジンか利用者の上りが詰まっている。**書くのは接続の終わりの 1 回だけ**
+    /// ([`ConnSlot::finish`]) で、中継のループ (splice の往復) は 1 度も触らない
+    stall_ms: [AtomicU32; SIDES],
 }
 
 /// [`ConnSlot::parked_at`] の「預けられていない」印。
@@ -490,6 +512,8 @@ impl ConnSlot {
             bytes_prev: AtomicU64::new(0),
             rate_bps: AtomicU64::new(0),
             sni: Mutex::new(String::new()),
+            syn_retrans: AtomicU8::new(0),
+            stall_ms: [const { AtomicU32::new(0) }; SIDES],
         }
     }
 
@@ -588,6 +612,13 @@ impl ConnSlot {
         for (cell, v) in self.retrans.iter().zip(tally.retrans) {
             cell.store(v, Ordering::Relaxed);
         }
+        // 確立までの SYN の再送 (T14.46)
+        self.syn_retrans.store(tally.syn_retrans, Ordering::Relaxed);
+        // 中継が書けるのを待った ms (T14.42)。中継の中では方向ごとの箱に足すだけで、
+        // 原子に移すのはここ 1 回 (`rtt_us` / `retrans` と同じ扱い)
+        for (cell, v) in self.stall_ms.iter().zip(tally.stall_ms) {
+            cell.store(v, Ordering::Relaxed);
+        }
     }
 
     /// 預かり所に入った (原子 2 回。**預ける瞬間だけ**で、要求ごとには触らない)。
@@ -679,6 +710,12 @@ impl ConnSlot {
                 self.retrans[ORIGIN_SIDE].load(Ordering::Relaxed),
             ],
             sni,
+            syn_retrans: self.syn_retrans.load(Ordering::Relaxed),
+            // 中継の詰まりの向き (T14.42)。トンネルでなければ両方 0
+            stall_ms: [
+                self.stall_ms[CLIENT_SIDE].load(Ordering::Relaxed),
+                self.stall_ms[ORIGIN_SIDE].load(Ordering::Relaxed),
+            ],
         })
     }
 
@@ -852,13 +889,17 @@ impl ConnTable {
     /// (登録・抹消と同じ鍵) で、数えるのは `HashMap` を 1 回引くだけ。初めて呼ばれたときに
     /// 「数える」へ切り替え、そのとき生きている接続から数え直す。
     pub fn at_client_limit(&self, client: &str, limit: usize) -> bool {
+        // 表の鍵は `register` と同じ**記録の形** (`PROXY_RECORDS=hashed` ならハッシュ)
+        // なので、引くときも同じ 1 関数を通す。判定そのものは呼ぶ側が渡した**生の IP**
+        // から始まっていて、同じ接続元は必ず同じ鍵になる = 数え方は 3 つの値で同じ (T14.41)
+        let key = crate::records::client_key(client);
         let mut g = self.inner.locked();
         if !self.counting.load(Ordering::Relaxed) {
             g.recount_clients();
             self.counting.store(true, Ordering::Relaxed);
         }
         g.per_client
-            .get(client)
+            .get(key.as_ref())
             .is_some_and(|&n| n as usize >= limit)
     }
 
@@ -871,24 +912,34 @@ impl ConnTable {
 
     /// この接続元のいまの本数 (数えていなければ `0`)。
     pub fn client_conns(&self, client: &str) -> u32 {
+        let key = crate::records::client_key(client);
         self.inner
             .locked()
             .per_client
-            .get(client)
+            .get(key.as_ref())
             .copied()
             .unwrap_or(0)
     }
 
     /// 接続を 1 本登録する (接続の開始で 1 回だけ)。`--lite` なら `None`。
+    ///
+    /// **`PROXY_RECORDS=off` は `--lite` と同じ扱い** (枠を作らない = `/connections` も
+    /// `/recent` も `/bursts` も空)。ただし接続元ごとの本数は `--lite` と同じく数え続ける
+    /// ので、`PROXY_MAX_CONNS_PER_CLIENT` の公平さの上限は `off` でも効く (T14.41)。
+    /// **旗を見るのはここ 1 回**で、抹消 ([`ConnTable::unregister`]) は見ない —
+    /// 途中で `on` → `off` に変えたときに、既に登録してある枠が表に残ってしまうため
     pub fn register(&self, id: u64, client: &str, started: Instant) -> Option<Arc<ConnSlot>> {
-        let on = self.enabled();
+        let on = self.enabled() && crate::records::recording();
         // `--lite` で上限も使っていないときは鍵を取らない (今までどおり費用 0)
         if !on && !self.counting_clients() {
             return None;
         }
+        // 接続元は**この 1 回**だけ記録の形に直し、枠と本数の表の両方に同じ値を使う
+        // (`client` は生のまま残す — 下の自己ベンチの判定が IP そのものを見るため)
+        let key = crate::records::client_key(client);
         let mut g = self.inner.locked();
         if self.counting.load(Ordering::Relaxed) {
-            g.add_client(id, client);
+            g.add_client(id, &key);
         }
         if !on {
             return None;
@@ -901,7 +952,7 @@ impl ConnTable {
         if crate::selfbench::is_client(client) {
             return None;
         }
-        let slot = Arc::new(ConnSlot::new(id, client, started));
+        let slot = Arc::new(ConnSlot::new(id, &key, started));
         g.slots.insert(id, Arc::clone(&slot));
         Some(slot)
     }
@@ -1132,17 +1183,31 @@ pub struct ConnTally {
     /// 書くのは**接続の終わりに `getsockopt` を呼んだ 1 回だけ**で、`0` は「読めなかった」
     pub rtt_us: [u32; SIDES],
     pub retrans: [u32; SIDES],
+    /// 確立までに SYN を送り直した回数 (T14.46)。keep-alive の HTTP 接続では
+    /// **いちばん多かった要求**の値 (プールが接続を張った要求だけ 0 でない)
+    pub syn_retrans: u8,
+    /// 中継が**書けるのを待った**合計 ms (`[クライアント側, オリジン側]`。T14.42)。
+    /// トンネルだけが埋める (http の接続と、繋がらなかった CONNECT は 0)
+    pub stall_ms: [u32; SIDES],
 }
 
 impl ConnTally {
-    /// 1 要求ぶんを足す (段階の ms は**いちばん遅かった要求**を採る)。
-    pub fn add_request(&mut self, status: u16, up: u64, down: u64, stage_ms: [u64; STAGES]) {
+    /// 1 要求ぶんを足す (段階の ms と SYN の再送は**いちばん大きかった要求**を採る)。
+    pub fn add_request(
+        &mut self,
+        status: u16,
+        up: u64,
+        down: u64,
+        stage_ms: [u64; STAGES],
+        syn_retrans: u8,
+    ) {
         self.up = self.up.saturating_add(up);
         self.down = self.down.saturating_add(down);
         self.status = status;
         for (slot, ms) in self.stage_ms.iter_mut().zip(stage_ms) {
             *slot = (*slot).max(ms);
         }
+        self.syn_retrans = self.syn_retrans.max(syn_retrans);
     }
 }
 
@@ -1183,6 +1248,14 @@ pub struct RecentEntry {
     /// `None` は「覗いていない (443 以外・`--lite`・`off`) / 読めなかった」で JSON では `null`。
     /// **IP リテラル宛ての CONNECT では、これが「本当の宛先」**
     pub sni: Option<Box<str>>,
+    /// 確立までに SYN を送り直した回数 (T14.46)。`0` は「再送なし / 読めなかった /
+    /// Linux 以外」。**1 回で確立が 1 秒、2 回で 3 秒に飛ぶ**ので、`ms.connect` が
+    /// 1,000 ms 台の個票はここが 1 以上になる (どちら側の待ち受けが溢れたかの手掛かり)
+    pub syn_retrans: u8,
+    /// 中継が**書けるのを待った**合計 ms (`[クライアント側, オリジン側]`。T14.42)。
+    /// `client` が大きい = 利用者の下り回線か端末が読んでいない、`origin` が大きい =
+    /// オリジンか利用者の上りが詰まっている。CONNECT のトンネルだけが埋める
+    pub stall_ms: [u32; SIDES],
 }
 
 /// `us` を ms の JSON にする (`0` = 読めなかった → `null`。T14.5)。
@@ -1256,10 +1329,20 @@ impl RecentEntry {
         // 覗いていない (443 以外・`--lite`・`off`) と読めなかったときは `null`
         match &self.sni {
             Some(name) => {
-                let _ = write!(out, ",\"sni\":\"{}\"}}", crate::json::escape(name));
+                let _ = write!(out, ",\"sni\":\"{}\"", crate::json::escape(name));
             }
-            None => out.push_str(",\"sni\":null}"),
+            None => out.push_str(",\"sni\":null"),
         }
+        // 確立までの SYN の再送 (T14.46)。**末尾に足した** (既存の鍵の順は変えない)。
+        // 0 でも必ず出す (「欄が無い」= 古い版と区別させるため)
+        let _ = write!(out, ",\"syn_retrans\":{}", self.syn_retrans);
+        // 中継の詰まりの向き (T14.42)。**末尾に足した** (既存の鍵の順は変えない)。
+        // 両方 0 でも必ず出す (「詰まっていない」と「欄が無い」を区別させるため)
+        let _ = write!(
+            out,
+            ",\"stall_ms\":{{\"client\":{},\"origin\":{}}}}}",
+            self.stall_ms[CLIENT_SIDE], self.stall_ms[ORIGIN_SIDE],
+        );
         out
     }
 }
@@ -1300,7 +1383,12 @@ impl RecentRing {
     }
 
     /// 1 件書く (満杯なら最も古いものを上書きする)。**接続の終了で 1 回だけ。**
+    ///
+    /// `PROXY_RECORDS=off` なら**鍵も取らずに捨てる** (T14.41)。
     pub fn push(&self, entry: RecentEntry) {
+        if !crate::records::recording() {
+            return;
+        }
         let mut r = self.inner.locked();
         r.total += 1;
         if r.buf.len() < MAX_RECENT {
@@ -1649,7 +1737,13 @@ impl BurstRing {
     }
 
     /// 1 枚書く (満杯なら最も古いものを上書きする)。
+    ///
+    /// `PROXY_RECORDS=off` なら**鍵も取らずに捨てる** (T14.41)。写真の中身は
+    /// `/connections` の表から作るので、`off` ではそもそも接続元が 1 つも入らない
     pub fn push(&self, shot: BurstShot) {
+        if !crate::records::recording() {
+            return;
+        }
         let mut r = self.inner.locked();
         r.total += 1;
         if r.buf.len() < MAX_BURSTS {
@@ -1942,7 +2036,7 @@ mod tests {
         ms[STAGE_QUEUE] = 159;
         ms[STAGE_CLIENT_READ] = 2;
         ms[STAGE_FIRST_RELAY] = 37;
-        tally.add_request(0, 4, 4, ms);
+        tally.add_request(0, 4, 4, ms, 0);
         slot.finish(CloseReason::ClientEof, tally, 0);
         let json = t
             .unregister(3)
@@ -2177,6 +2271,10 @@ mod conn_tests {
                 // カーネルの RTT: 利用者は 48 ms、宛先は 30 ms (T14.5)
                 rtt_us: [48_300, 30_100],
                 retrans: [0, 0],
+                // 確立まで SYN を 1 回送り直した (= 1 秒待たされた接続。T14.46)
+                syn_retrans: 1,
+                // 中継の詰まり: クライアントへ書けずに 1,800 ms 待った (T14.42)
+                stall_ms: [1_800, 0],
             },
             0,
         );
@@ -2296,7 +2394,9 @@ mod conn_tests {
                 stage_ms: [0, i, 0, 0, 0, 0],
                 rtt_us: [0; SIDES],
                 retrans: [0; SIDES],
+                stall_ms: [0; SIDES],
                 sni: None,
+                syn_retrans: 0,
             });
         }
         let (all, total) = ring.select(0, "");
@@ -2340,6 +2440,8 @@ mod conn_tests {
                 stage_ms: [u64::MAX; STAGES],
                 rtt_us: [u32::MAX; SIDES],
                 retrans: [u32::MAX; SIDES],
+                syn_retrans: u8::MAX,
+                stall_ms: [u32::MAX; SIDES],
             },
             u32::MAX,
         );
@@ -2455,9 +2557,11 @@ mod burst_tests {
             parked_secs: 3,
             parks: 2,
             stage_ms: [0; STAGES],
+            stall_ms: [0; SIDES],
             rtt_us: [0; SIDES],
             retrans: [0; SIDES],
             sni: None,
+            syn_retrans: 0,
         }
     }
 
