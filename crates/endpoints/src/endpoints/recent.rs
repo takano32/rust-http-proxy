@@ -1260,6 +1260,8 @@ mod tests {
                     HostOutcome::Bypass,
                     // 8 本ぶんの合計が桁を振り切る手前まで (1 行の JSON を最悪にする)
                     u64::MAX / 16,
+                    // 向き別も同じだけ振り切らせる (T14.26 の 2 欄ぶん行が太る最悪)
+                    (u64::MAX / 16, u64::MAX / 16),
                     Some(Duration::from_millis(1234)),
                     Some(&format!(
                         "very-long-host-name-{}.example.net:{}",

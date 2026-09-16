@@ -4225,7 +4225,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     - `closed` (T14.6) は HTTP の接続も含む全接続、`transfer` は CONNECT のトンネルだけなので**本数は一致しない** (読むときの注意)。上の 2 段 (1,048,576 ms 以上、4 GiB/s) は既定の設定では空のまま (空 = 壊れている、ではない)。
     - T14.8 が使う口: `/history` の `transfer.speed` / `transfer.half_close` と `speed_bounds_bps` / `half_close_bounds_ms` (`check-dashboard.js` の `transferRows` / `checkTransfer`)。T14.26 は同じ `report` の同じ `if let Some(s) = &o.slot` の中 (`record_host_detail` の手前) に足す。
     - デプロイ先 (T14.99): `/history?res=60` の `transfer` で「100 KiB/s 未満のトンネルが何本か」(`speed` の下から 5 段) と、半閉じが 1 秒未満に固まっているか (固まっていれば `PROXY_TUNNEL_IDLE_SECS` を短くしても失うものが無い)。
-- [ ] **T14.26 ホスト別の上り / 下りのバイト (`bytes_in` / `bytes_out`)**
+- [x] **T14.26 ホスト別の上り / 下りのバイト (`bytes_in` / `bytes_out`)**
   - 目的: `hosts[]` の `bytes` は合計で、アップロード (datadog へのログ送信) とダウンロードの区別が無い。上り主体のホストは
     「利用者の回線の上り」が律速で、プロキシでもオリジンでもない — 切り分けに要る。
   - 変更箇所: `crates/metrics/src/metrics.rs` (`HostStats` に 2 欄。`.rrd` のスロットの余白 52 B のうち T14.5 が 32 B 使うので残り 20 B、
@@ -4233,6 +4233,24 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     `crates/http/src/http/mod.rs` (forward は要求本文と応答本文)、`/hosts` `/status` の JSON、README。
   - 受け入れ基準: 結合テストで 1 KiB を上げて 2 KiB を下ろす CONNECT のあと `bytes_in` ≥ 1,024・`bytes_out` ≥ 2,048、`bytes` は今までどおり
     その和。古い `.rrd` からは 0 で読み戻る。費用 0 (既に数えているバイトを 2 つに分けるだけ)。
+  - 結果 (2026-09-16、`c2507ef`): ホスト別・接続元別の転送量を**向き別に割った**。`HostStats` の末尾に
+    `bytes_in` (クライアント → オリジン = 上り) / `bytes_out` (オリジン → クライアント = 下り) の 2 欄 (u64 × 2 = 16 B)。
+    **新しい計数は 1 つも足していない** ので費用 0: CONNECT は中継が方向ごとに既に持っている `up` / `down`
+    (T14.4 の個票に渡すのと同じ値) を `tunnel::report` で `Detail` に載せ、forward は要求本文 (`Ctx` の `up_bytes`) と
+    応答のバイト (アクセスログに出すのと同じ値) をそのまま載せるだけで、書くのは**ホスト別統計が既に取っている鍵の内側**の
+    足し算 2 回。原子操作もシステムコールも増えていない。`bytes` は**今までどおり**で、CONNECT は
+    `bytes == bytes_in + bytes_out`、**forward の `bytes` は応答のぶんだけ**なので (欄の意味は変えない) 要求本文のある
+    相手では `bytes_in + bytes_out` の方が大きくなる (forward の上りは**要求本文だけ**でヘッダーは含まない。キャッシュ HIT は `bytes_out` だけ)。
+    出口は `stats_json` の 1 か所なので `/hosts`・`/status` の `hosts[]`・`/clients`・`/status` の `clients[]` の
+    **`bytes` の隣**に同時に並ぶ (接続元側は「この端末は上りが主か下りが主か」)。`--lite` でもホスト別統計は生きているので、
+    `report` では個票の枠 (`if let Some(s) = &o.slot`) の**外**に置いた。`.rrd` は 1 スロット 552 → **568 B**
+    (**余白 20 → 4 B**)、**版は上げていない** (T14.26 より前のファイルは新しい 2 欄が 0 で読み戻る。53 項目のレコードを
+    書いた `.rrd` を置いて実バイナリで確かめ、T14.5 の RTT 4 欄も化けない)。結合 3 本 (`tests/bytes_dir_test.rs`) と単体 1 本を新設。
+    - **版を上げずに足せる項目はこれで尽きた** (余白 4 B)。次にホスト別の欄が要るときは T14.22 の `series_slot` のように
+      メモリだけにするか、T14.14 の版 3 (予備 64 B) を待つ。マージでは T14.22 の `series_slot` を `.rrd` に残る欄のあとに置いた。
+    - `record_client` に向き別の 2 値の引数が増えた (呼ぶ側は CONNECT / forward / 508 / 403 の 4 か所)。`/metrics` にホスト別の
+      向き別バイトは出していない (系列が増えすぎる)。`status-diff.py` / `check-dashboard.js` は `bytes` しか読まないので未変更。
+    - T14.8 が使う口: `hosts[]` / `clients[]` の `bytes_in` / `bytes_out` (`bytes_out / bytes` で「下り主体か」が 1 列で描ける)。
 - [ ] **T14.27 接続元 1 つの追跡 (`PROXY_TRACE_CLIENT=<ip>` → `/trace`)**
   - 目的: 見知らぬ接続元 (T14.0) や「この端末だけ遅い」を調べるとき、全体のログ水準を `trace` に上げるとアクセスログが溢れる
     (T10.10 の 7.2 us/要求 が全員に乗る)。**1 つの接続元だけ**、要求行・応答の状態・段階の ms・閉じた理由を 1,000 行のリングに残す。
