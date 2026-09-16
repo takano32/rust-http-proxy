@@ -3345,9 +3345,10 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
 **待つ間に決めてよいこと (数字に依らない)** → T14.2 にまとめた。**追加 (2026-09-16、利用者の指示)**: ボトルネックを推定できる
 プロファイル画面 → T14.3。
 
-**順番 (2026-09-16 に入れ替えた)**: **T14.1 → T14.2 → T14.3 → T14.4 → (T14.5 ∥ T14.7) → T14.6 → T14.8 → [T14.9 → T14.12 → T14.11 → T14.10 のうち
+**順番 (2026-09-16 に入れ替えた)**: **T14.1 → T14.2 → T14.3 → T14.4 → (T14.5 ∥ T14.7) → T14.6 → T14.8 → [T14.9 → T14.12 → T14.11 → T14.10、T14.15 → T14.17 → T14.14 → T14.16 → T14.20 → T14.19 → T14.21 のうち
 再デプロイ前に間に合った分] → 再デプロイ → 24 時間 → T14.99** (T14.4 は個票の形を決めるので先、T14.5 と T14.7 は触るファイルが違うので並列、
-T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.13 は利用者が要ると言ったときだけ)。T14.99 (デプロイ後の様子見と締め) は
+T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.13 と T14.18 は利用者が要ると言ったときだけ。
+T14.14 (`.rrd` 版 3) は履歴に項目を足すと決めたときにその前に 1 回)。T14.99 (デプロイ後の様子見と締め) は
 「デプロイ先の数字で書く」タスクなので、T14.3 の `/profile` まで入った版でデータを取ってから書く方が、1 回の再デプロイで済み、
 締めの表に段階の内訳 (どこで待っているか) まで載せられる。T14.1 と T14.2 は並列、T14.3 はその 2 つをマージしてから。
 **採番の決まり (Phase 14 から)**: 各 Phase の `Tn.99` は「デプロイ後の様子見と修正、締めの文書」に予約する (§0)。
@@ -3729,6 +3730,110 @@ T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.
   - 受け入れ基準: 結合テストで `PROXY_MAX_CONNS_PER_CLIENT=2` にして同じ接続元から 3 本目の CONNECT が 503、別の接続元 (`127.0.0.2`) は
     200、`/status` の `rejected_per_client` が 1。既定 (0) では今までどおり (`maxconns_test` / `overload_test` が無修正で通る)。
     費用: 既定では分岐 1 回、設定時は接続ごとに表の鍵 1 回 (登録と同じ鍵)。
+**さらに候補 (2026-09-16、続き: T14.14〜)**。ここからは「データを取る」より **「取ったデータを失わない・読める・再現できる」** ものと、
+公開プロキシとして必要になったときの**止め方**。優先は T14.15 → T14.17 → T14.14 (履歴に足す項目を採ると決めたとき) → T14.16 →
+T14.20 → T14.19 → T14.21。T14.18 は利用者が要ると言ったときだけ。
+
+- [ ] **T14.14 `.rrd` を版 3 にし、版 2 を読み戻して変換する (統計を捨てない) + 標本に余白を持つ**
+  - 目的: 標本の余白が 4 B しか無い (T14.2 (3))。T14.6 (閉じた理由 8 種・寿命とバイトの 12 段)、T14.10 (canary)、T14.12 (カーネルと
+    cgroup の統計) を `/history` に持ちたければ版を上げるしかないが、今の作りは「版が違えば読み捨てて作り直す」(T12.4) で
+    **通算の統計 (いま 1 万要求 / 800 ホスト) が消える**。1 回だけ版を上げ、**版 2 のレコードを版 3 の形に変換して読み戻す**仕組みを
+    作れば、以後は項目を足しても統計を失わない。
+  - 変更箇所: `crates/metrics/src/persist.rs` (版の印 `SHPRRD02` → `SHPRRD03`、領域の割り付け、変換)、`crates/rrd/` (レコード長の
+    変更に耐える `Ring` の読み戻し)、`crates/metrics/src/history.rs` (`Sample` の項目を「固定の順 + 予備」にする)、README (`.rrd` の
+    大きさと版)。
+  - やること: (1) 標本のレコードを 512 B → **1,024 B** (予備 ≈ 500 B = 60 項目ぶん)、ホスト別のレコードにも予備 64 B、接続元別にも 64 B。
+    ファイルは 4 → **8 MiB** 固定。(2) 起動時に版の印を見て、**版 2 なら領域ごとに読み → 版 3 の形に詰め直して書き戻す** (変換は
+    1 回、数十 ms)。版 1 以前と壊れたファイルは今までどおり捨てる。(3) `state_file` に `"version": 3, "converted_from": 2|null` を出す。
+    (4) 変換のテスト: 版 2 のファイルを fixture (架空のホスト名、`scripts/testdata/`) から起動して、ホスト別の `requests` 合計と
+    `/history?res=3600` の標本数が変換前後で一致する。(5) T14.6 / T14.10 / T14.12 の履歴の項目はこの版で足す (それぞれの本文の
+    「メモリ上の窓」の但し書きはこのタスクを入れたら不要)。
+  - 受け入れ基準: 上の (4) の結合テスト (件数と合計が一致、`write_errors` 0、`converted_from` 2)、新規起動では `converted_from` null。
+    版 3 で 60 項目足しても版が上がらないこと (単体テストで予備を使い切る手前まで足して読み戻す)。ファイルは 8,388,608 B 固定。
+    費用: 変換は起動時 1 回 (時間を報告)、要求の経路は 0 増。**デプロイ先: 再デプロイ後に `state_file.converted_from` が 2 で、
+    `/hosts` の通算 (1 万要求) が残っていること** (親が見る)。
+- [ ] **T14.15 `/config` (効いている設定とその出どころ) と `capabilities` (この環境で何が読めるか) と `--check`**
+  - 目的: データを読むとき「そのときの設定は何だったか」「`null` は読めなかったのか無かったのか」が要る。`/status` の `settings` は
+    再読込の回数と最後の結果だけで、**効いている値** (既定 / 環境変数 / `.env` のどれから来たか) が無い。T14.3 / T14.5 / T14.12 は
+    環境によって `partial` / `null` になるので、**この環境で何が読めるか**を 1 か所に出す。
+  - 変更箇所: `crates/config/src/config.rs` (各値の出どころを持つ `Source::{Default, Env, EnvFile}`)、`crates/reload/src/reload.rs`
+    (再読込で出どころを更新)、`crates/endpoints` (`/config`)、`src/main.rs` (`--check`: 起動せずに `capabilities` と `/config` の内容を
+    印字して終わる。終了コードは全部読めれば 0)、`crates/sysinfo` (`capabilities` の判定: `/proc/self/task/*/syscall` が読めるか、
+    `TCP_INFO` が取れるか、cgroup の `cpu.stat` / `*.pressure` があるか、IPv6 の既定経路があるか、リゾルバ (`/etc/resolv.conf` の
+    nameserver) が 1 秒以内に答えるか、`$HOME` に書けるか)、README。
+  - やること: (1) `/config`: 全 `PROXY_*` と `SERVER_*` の**効いている値**と `source`、秘密は無い (このプロキシに秘密の設定は無い。
+    `PROXY_TLS_CA_FILE` はパスのみ)。(2) `capabilities` を `/status` と `/config` に (`{"proc_syscall":true,"tcp_info":true,
+    "cgroup_cpu":false,"ipv6_route":true,"resolver_ms":9,"home_writable":true}`)。判定は起動時 1 回 + 1 時間ごと。
+    (3) `rust-http-proxy --check` は上を印字して終わる (Pterodactyl の起動前確認に使える)。
+  - 受け入れ基準: 結合テストで `.env` に `PROXY_DNS_TTL_SECS=30` を書いて起動 → `/config` の該当行が `{"value":30,"source":"env_file"}`、
+    書いていない行が `"default"`。`--check` の終了コード 0 と印字に `capabilities` の 6 項目。費用 0 (要求の経路は触らない)。
+    デプロイ先: 再デプロイ後の `capabilities` で T14.3 / T14.5 / T14.12 の `partial` / `null` の理由が説明できること。
+- [ ] **T14.16 デプロイ先に似せた手元の環境 (`scripts/deployed-like.sh`) と、ベンチの `--only connect-multi`**
+  - 目的: Happy Eyeballs の 250 ms (Phase 12) はベンチが構造上通れない経路に隠れていた (`addrs.len() == 1`)。手元で **IPv6 が黒穴の
+    環境**を作れれば、T12.1 / T14.1 / T14.5 の挙動を本物のプロキシで再現でき、§1 のレシピに「デプロイ先に似た条件」の行が持てる。
+    この機械では `unshare -rn` (root 不要のユーザー名前空間) で `ip -6 route add blackhole default` が通ることを確認済み (2026-09-16)。
+  - 変更箇所: `scripts/deployed-like.sh` (新規: `unshare -rn` で lo を上げ、IPv6 の既定経路を blackhole、`ulimit -n 1024`、
+    `systemd-run --user --scope -p MemoryMax=256M` (使えるとき)、その中でプロキシとベンチを回す)、`crates/bench/src/main.rs`
+    (`--only connect-multi`: `PROXY_HOSTS` が無いので、名前解決の注入の代わりに **`/etc/hosts` を名前空間の中で差し替える**
+    (`unshare -rm` でマウント名前空間も作り、`/etc/hosts` に `2001:db8::1 multi.test` と `127.0.0.1 multi.test` を書いた一時ファイルを
+    bind mount) → `multi.test` が AAAA (黒穴) と A (生きている) を持つ)、`scripts/cpu-per-request.sh` (`--deployed-like` で上の中で回す)、
+    §1 の文章 (報告に書く。親が写す)、README (計測の節)。
+  - やること: 上のとおり。名前空間の中では外へ出られない (lo だけ) ので、オリジンはベンチの内蔵のものだけ。
+  - 受け入れ基準: `scripts/deployed-like.sh -- scripts/cpu-per-request.sh --only connect-multi` で、**T12.1 より前のバイナリ
+    (`git worktree` で `41e918f` を作る) なら CONNECT 確立が 250 ms 以上、今のバイナリなら 1 回目 250 ms・2 回目以降 1 ms 未満**が
+    出ること (= Phase 12 の発見を手元で再現し、T12.1 の効きを本物のプロキシで確かめる)。`/status` の `ipv6` が `v4_first: true` に
+    なること。名前空間が作れない機械では「使えない」と印字して終了コード 2。
+- [ ] **T14.17 `scripts/snapshot-diff.py` (2 枚の `/snapshot` から「何が変わったか」を全部出す)**
+  - 目的: T14.0 の分析は `/status` の差分・`/history` の再起動時刻での切り分け・`/dns` の個票・`/hosts` の差分を手作業で組み合わせた
+    (Python を 5 回書いた)。次の T14.99 で同じことを 1 コマンドにする。`status-diff.py` はホスト別の差分だけ。
+  - 変更箇所: `scripts/snapshot-diff.py` (新規。標準ライブラリのみ)、`scripts/collect-deployed.sh` (前回の snapshot があれば呼ぶ)、README。
+  - やること: 2 枚の `/snapshot` を受け取り、(1) 再起動をまたいでいるかを `since_start_secs` と `version` で判定して印字、(2) `/history` を
+    再起動時刻で切った「平常時 (1 時間 300 本未満) の CONNECT 確立 p50 / p95・名前解決ミス/接続・ミス 1 回の平均」を前後で並べる
+    (T14.0 の表の形)、(3) ホスト別 (`/hosts` 1,000 件) の差分 (`status-diff.py` の流用)、(4) 接続元別 (`/clients`) の差分、(5) `/dns` の
+    warm と引き直し、(6) `/events` (あれば) の間の出来事、(7) `/errors` の原因別の件数、(8) `/bursts` の枚数、(9) Phase の完了の定義の
+    数字 (引数 `--criteria phase14` で閾値を持つ) に対する **判定表**。出力は Markdown (TASKS.md にそのまま貼れる)。
+  - 受け入れ基準: `~/rust-http-proxy-status/` の 2026-09-12 と 2026-09-16 の実出力 (`/snapshot` 以前の形なので、`/status` +
+    `/history` のファイル群からも組める入口を持つ) から、**T14.0 の表と同じ数字** (平常時 0.55 → 0.55、p50 8.1 → 8.3、ミス 1 回
+    12.6 → 11.5 ms) が出ること。判定表が Phase 14 の完了の定義の 4 行を出すこと。
+- [ ] **T14.18 公開プロキシとしての止め方 (`PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`。利用者が要ると言ったときだけ)**
+  - 目的: T13.4〜T14.7 で `/purge` `/blocklist?action=` (書き換え) と個票 (接続元 IP・宛先) が認証なしで見える。見知らぬ接続元が
+    現れた 2026-09-16 の状況で、**書き換える口だけ閉じる**手段と、**接続元を絞る**手段 (宛先の `PROXY_ALLOW_HOSTS` と同じ形の ACL。
+    認証ではない) を持つ。既定は両方とも今までどおり (無効)。
+  - 変更箇所: `crates/endpoints` (`PROXY_ENDPOINTS_READONLY=on` で `/purge` `PURGE` `/blocklist?action=` を 405)、`src/lib.rs`
+    (`PROXY_ALLOW_CLIENTS=1.2.3.4,10.0.0.0/8,2001:db8::/32` に無い接続元は accept 直後に閉じる。**内部エンドポイントも含めて閉じる**
+    (公開ポートで個票を見せないため)。CIDR の照合は `crates/net/src/acl.rs` の `is_local_ip` の隣)、`crates/config` と `crates/reload`
+    (`.env` で即時反映)、`/status` に `rejected_client_acl`、README。
+  - 受け入れ基準: 結合テストで `PROXY_ALLOW_CLIENTS=10.0.0.0/8` のとき `127.0.0.1` からの CONNECT と `GET /status` が両方閉じられ
+    (`rejected_client_acl` は数えられる — 上限の外で数える)、`127.0.0.0/8` を足すと通る。`PROXY_ENDPOINTS_READONLY=on` で `/purge?all=1` が
+    405、`/status` は 200。既定では今までのテストが無修正で通る。費用: 既定では分岐 1 回、設定時は accept ごとに CIDR の照合 (≤ 16 件で
+    1 us 未満)。
+- [ ] **T14.19 `/metrics` に段階・RTT・canary のサマリを出す (Grafana で見たい人のため)**
+  - 目的: T14.3 の段階、T14.5 の RTT、T14.10 の canary は JSON と画面にしか出ない。`/metrics` にも出せば Prometheus + Grafana で
+    長期の推移が見られる (このリポジトリのダッシュボードは 30 日まで)。
+  - 変更箇所: `crates/prom/src/prom.rs`、README (`/metrics` の一覧)。
+  - やること: `sorahost_stage_seconds{kind="connect"|"forward",stage=...}` の `_sum` / `_count` / `_bucket` (12 段)、
+    `sorahost_rtt_seconds{side="client"|"origin"}` の `_sum` / `_count`、`sorahost_canary_seconds{stage="dns"|"connect"}` の最後の値、
+    `sorahost_warm_names`、`sorahost_lock_contention_total{lock=...}`。**ホスト別には出さない** (系列が増えすぎる。T12.4 (4) と同じ判断)。
+  - 受け入れ基準: `/metrics` が 400 KiB 以下のまま (いま 185 KB)、単体テストで各系列の HELP / TYPE / 値の形。費用 0 (組み立ては
+    `/metrics` のときだけ)。
+- [ ] **T14.20 日次の要約を永久に残す (`$HOME/.rust-http-proxy.daily.jsonl`)**
+  - 目的: `/history` は 30 日で消える。1 日 1 行 (要求数、CONNECT 確立 p50 / p95、名前解決ミス/接続、エラー、山、RSS、版) の要約なら
+    1 年で 100 KB で、**「いつから遅くなったか」「デプロイの前後で何が変わったか」**を年単位で追える。
+  - 変更箇所: `crates/metrics/src/persist.rs` (history スレッドが UTC の日付が変わったときに 1 行追記)、`/daily?n=365` (読む口)、README。
+  - やること: 上のとおり。ファイルは追記のみ (1 行 ≤ 512 B、上限 2 MiB で古い行から捨てる)。`PROXY_STATS_PERSIST=off` なら書かない。
+  - 受け入れ基準: 単体テストで日付の境目をまたぐと 1 行増え、同じ日に 2 回起動しても 1 行のまま (起動時に最後の行の日付を見る)。
+    `/daily` が 256 KiB 以下。費用 0。
+- [ ] **T14.21 メモリの内訳 (`mallinfo2`、スレッドのスタック、キャッシュ、リング) を `/status` の `memory` に**
+  - 目的: 256 MiB のコンテナで RSS が何で構成されているか (ヒープの断片、スタック、キャッシュ、個票のリング) が読めない。T3 系で
+    `PROXY_MALLOC_ARENAS` を決めたときのような調査を、デプロイ先で `/status` 1 枚からできるようにする。
+  - 変更箇所: `crates/sysinfo` (`mallinfo2` を `unsafe extern "C"` で。glibc 2.33 以上。無ければ `null`)、`crates/metrics/src/metrics.rs`
+    (`/status` の `memory`: `rss`、`heap_used` / `heap_free` (mallinfo2 の `uordblks` / `fordblks`)、`mmap` (`hblkhd`)、
+    `stacks_estimate` (スレッド数 × 既定スタック 2 MiB の予約と実使用の差は出せないので予約だけ)、`cache_memory`、`rings` (T13.4 / T14.4 /
+    T14.6 のリングの容量)、`arenas` (`PROXY_MALLOC_ARENAS`))、README。
+  - やること: `/status` のときだけ読む (`mallinfo2` は数 us)。
+  - 受け入れ基準: 結合テストで `memory.rss` が `process_rss_bytes` と一致し、`heap_used + heap_free + mmap ≤ rss × 1.1`。
+    Linux 以外と glibc 2.33 未満は `null`。費用 0。
+
 - [ ] **T14.99 締める (README と §2 と §0 をデプロイ先の数字で書き直す)**
   - 目的: §0 のゴール「同じ条件でこれ以上速くならないところまで」は loopback では Phase 11 で到達し、デプロイ先では Phase 12〜14 で
     「コードで縮む待ち」を使い切る。それを 1 か所に書く。
