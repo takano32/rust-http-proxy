@@ -155,6 +155,9 @@ pub struct Config {
     /// 最速の素通しプロファイル (`PROXY_PROFILE=lite` / `--lite`)。
     /// キャッシュ・統計の永続化・ブロックリストを止め、ログを warn にする
     pub lite: bool,
+    /// `/profile` のスレッドの標本を取る間隔 (`PROXY_PROFILE_SAMPLE_MS`、既定 1,000、
+    /// `0` で止める)。**`--lite` では `/profile` ごと off** (T14.3 (2))
+    pub profile_sample_ms: u64,
     /// CONNECT を許すあて先ポート (`PROXY_CONNECT_PORTS`、既定は制限なし)
     pub connect_ports: PortSet,
     /// ループバック・リンクローカル宛てのオリジンを許すか (`PROXY_ALLOW_LOCAL`、既定 off)。
@@ -301,6 +304,11 @@ impl Config {
         {
             cfg.dns_warm = Duration::from_secs(secs);
         }
+        if let Some(ms) =
+            envfile::var("PROXY_PROFILE_SAMPLE_MS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.profile_sample_ms = ms;
+        }
         let list = |v: String| -> Vec<String> {
             v.split(',')
                 .map(|s| s.trim().to_ascii_lowercase())
@@ -379,6 +387,9 @@ impl Config {
             blocklist_exempt: Vec::new(),
             stats_persist: true,
             lite: false,
+            // 既定 1,000 ms (`proxy_metrics::profile::DEFAULT_SAMPLE_MS` と同じ値。
+            // この層は計測クレートに依存しないので数値で持つ)
+            profile_sample_ms: 1000,
             connect_ports: PortSet::default(),
             allow_local: false,
             tunnel_idle: Duration::from_secs(300),

@@ -21,7 +21,15 @@
 //! 最初の中継バイト)、forward で 4 回 (accept / 要求行 / ヘッダー / オリジンへ送り終えた直後)。
 //! **`--lite` では時計も読まない** ([`on`] が偽なら [`mark`] が `None` を返すだけ。T1.4)。
 //!
-//! 窓のメモリは 1 標本 1,352 B × (720 + 1,440) ≈ **2.9 MB**。`--lite` では標本を 1 本も
+//! # スレッドの標本 (T14.3 (2))
+//!
+//! `profile-sample` スレッド 1 本が `PROXY_PROFILE_SAMPLE_MS` (既定 1,000、`0` で止める)
+//! ごとに `/proc/self/task/*/stat` (名前 / 状態 / utime / stime) と
+//! `/proc/self/task/*/syscall` (いま居るシステムコールの番号) を読み、
+//! **役割 × (CPU、状態の割合)** に束ねる。読めない環境 (seccomp / `hidepid` / Linux 以外)
+//! では `sampler` が `"partial"` か `"off"` に落ちる。
+//!
+//! 窓のメモリは 1 標本 2,288 B × (720 + 1,440) ≈ **4.9 MB**。`--lite` では標本を 1 本も
 //! 作らないので 0 (環状バッファは空のまま)。
 
 use std::collections::VecDeque;
@@ -64,6 +72,164 @@ pub const CONNECT_STAGES: [&str; 7] = [
 /// `send` は要求をオリジンへ送り終えるまで、`ttfb` は応答ヘッダーを読み終えるまで
 /// (キャッシュ HIT では 0)、`body` は本文を流し終えるまで。
 pub const FORWARD_STAGES: [&str; 6] = ["queue", "client_read", "origin", "send", "ttfb", "body"];
+
+/// スレッドの役割 ([`Threads`] の順。T14.3 (2))。
+///
+/// `accept` は主スレッド (tid == pid)、残りはスレッド名 (`/proc/<pid>/task/<tid>/stat` の
+/// 2 番目の項目) で決める。表に無い名前 (`env-reload` / `blocklist` / `shutdown` …) は `other`。
+pub const ROLES: [&str; 9] = [
+    "accept",
+    "conn",
+    "idle-watch",
+    "dns-refresh",
+    "history",
+    "persist",
+    "cache-probe",
+    "profile-sample",
+    "other",
+];
+
+/// 番号が分かるシステムコールの名前 ([`SYSCALL_NRS`] と同じ順)。
+pub const SYSCALL_NAMES: [&str; 19] = [
+    "recvfrom",
+    "sendto",
+    "ppoll",
+    "epoll_pwait",
+    "futex",
+    "splice",
+    "accept4",
+    "connect",
+    "close",
+    "read",
+    "write",
+    "nanosleep",
+    "clock_nanosleep",
+    "getsockopt",
+    "setsockopt",
+    "socket",
+    "shutdown",
+    "openat",
+    "fstat",
+];
+
+/// aarch64 (asm-generic) のシステムコール番号 ([`SYSCALL_NAMES`] の順)。
+#[cfg(target_arch = "aarch64")]
+const SYSCALL_NRS: [i64; SYSCALL_NAMES.len()] = [
+    207, 206, 73, 22, 98, 76, 242, 203, 57, 63, 64, 101, 115, 209, 208, 198, 210, 56, 80,
+];
+
+/// x86_64 のシステムコール番号 ([`SYSCALL_NAMES`] の順)。
+#[cfg(target_arch = "x86_64")]
+const SYSCALL_NRS: [i64; SYSCALL_NAMES.len()] = [
+    45, 44, 271, 281, 202, 275, 288, 42, 3, 0, 1, 35, 230, 55, 54, 41, 48, 257, 5,
+];
+
+/// 表を持っていない機械では名前を出さない (全部 `other` に落ちる)。
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+const SYSCALL_NRS: [i64; SYSCALL_NAMES.len()] = [-1; SYSCALL_NAMES.len()];
+
+/// 走行中の枠 ([`STATES`] の先頭)。
+const STATE_RUNNING: usize = 0;
+/// 休眠の枠 (`syscall` が読めなかったときの受け皿)。
+const STATE_SLEEPING: usize = 1 + SYSCALL_NAMES.len();
+/// 表に無いシステムコール・分からない状態の枠。
+const STATE_OTHER: usize = STATE_SLEEPING + 1;
+/// 状態の数。
+pub const NSTATES: usize = STATE_OTHER + 1;
+
+/// スレッドの状態の名前 (走行中 / システムコール名 / 休眠 / その他)。
+pub fn state_names() -> [&'static str; NSTATES] {
+    let mut out = ["other"; NSTATES];
+    out[STATE_RUNNING] = "running";
+    for (i, n) in SYSCALL_NAMES.iter().enumerate() {
+        out[1 + i] = n;
+    }
+    out[STATE_SLEEPING] = "sleeping";
+    out
+}
+
+/// スレッド名から役割を決める (主スレッドは tid で見分ける)。
+pub fn role_of(tid: u32, main_tid: u32, comm: &str) -> usize {
+    if tid == main_tid {
+        return 0;
+    }
+    ROLES
+        .iter()
+        .position(|r| *r == comm)
+        .filter(|i| *i > 0)
+        .unwrap_or(ROLES.len() - 1)
+}
+
+/// 標本 1 つを [`STATES`] の枠に落とす。表に無い番号は (`other`, その番号) を返す。
+pub fn state_slot(syscall: Option<i64>, state: char) -> (usize, Option<i64>) {
+    match syscall {
+        Some(nr) if nr >= 0 => match SYSCALL_NRS.iter().position(|n| *n == nr) {
+            Some(i) => (1 + i, None),
+            None => (STATE_OTHER, Some(nr)),
+        },
+        // `running` / `-1` = システムコールの中に居ない
+        Some(_) => (STATE_RUNNING, None),
+        // `syscall` が読めない環境は `stat` の状態だけ (`sampler: "partial"`)
+        None => match state {
+            'R' => (STATE_RUNNING, None),
+            'S' | 'D' | 'I' => (STATE_SLEEPING, None),
+            _ => (STATE_OTHER, None),
+        },
+    }
+}
+
+/// 1 つの役割の窓 (CPU と状態の内訳)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RoleWindow {
+    /// その窓にこの役割のスレッドが使った CPU (us)
+    pub cpu_us: u64,
+    /// 標本の数 (スレッド数 × 標本回数)。割合はこれで割る
+    pub samples: u64,
+    /// 状態の内訳 ([`state_names`] の順)
+    pub states: [u32; NSTATES],
+}
+
+impl RoleWindow {
+    fn merge(&mut self, o: &RoleWindow) {
+        self.cpu_us += o.cpu_us;
+        self.samples += o.samples;
+        for (a, b) in self.states.iter_mut().zip(o.states.iter()) {
+            *a += *b;
+        }
+    }
+}
+
+/// 役割ごとの窓。
+pub type Threads = [RoleWindow; ROLES.len()];
+
+/// スレッドの標本がどこまで取れているか (`/profile` の `sampler`)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SamplerState {
+    /// `PROXY_PROFILE_SAMPLE_MS=0`、または `/proc/self/task` が読めない
+    Off = 0,
+    /// スレッドは読めるが `syscall` が読めない (状態は `running` / `sleeping` だけ)
+    Partial = 1,
+    /// CPU も状態もシステムコールまで読めている
+    On = 2,
+}
+
+impl SamplerState {
+    pub fn name(self) -> &'static str {
+        match self {
+            SamplerState::Off => "off",
+            SamplerState::Partial => "partial",
+            SamplerState::On => "on",
+        }
+    }
+
+    fn from_u8(v: u8) -> SamplerState {
+        match v {
+            2 => SamplerState::On,
+            1 => SamplerState::Partial,
+            _ => SamplerState::Off,
+        }
+    }
+}
 
 /// 記録するかどうか。`--lite` では偽で、**時計も読まない**。
 static ON: AtomicBool = AtomicBool::new(false);
@@ -180,6 +346,8 @@ pub struct Sample {
     /// その窓にプロセスが使った CPU (us。`/proc/self/stat` の utime + stime の増分)
     pub cpu_us: u64,
     pub stages: Stages,
+    /// 役割ごとの CPU と状態 (T14.3 (2))
+    pub threads: Threads,
 }
 
 impl Sample {
@@ -192,24 +360,37 @@ impl Sample {
         self.requests += o.requests;
         self.cpu_us += o.cpu_us;
         self.stages.merge(&o.stages);
+        for (a, b) in self.threads.iter_mut().zip(o.threads.iter()) {
+            a.merge(b);
+        }
     }
 
-    /// `[t,requests,cpu_us,[connect...],[forward...]]`。
-    /// **件数 0 の段階は `0` 1 文字**で書く (静かな窓を小さくするため)。
+    /// `[t,requests,cpu_us,[connect...],[forward...],[roles...]]`。
+    /// **件数 0 の段階と標本 0 の役割は `0` 1 文字**で書く (静かな窓を小さくするため)。
     fn push_row(&self, out: &mut String) {
         let _ = write!(out, "[{},{},{},[", self.t, self.requests, self.cpu_us);
-        push_windows(out, &self.connect_windows());
+        push_windows(out, &self.stages.connect);
         out.push_str("],[");
-        push_windows(out, &self.forward_windows());
+        push_windows(out, &self.stages.forward);
+        out.push_str("],[");
+        for (i, r) in self.threads.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            if r.samples == 0 {
+                out.push('0');
+                continue;
+            }
+            let _ = write!(out, "[{},{},[", r.cpu_us, r.samples);
+            for (j, c) in r.states.iter().enumerate() {
+                if j > 0 {
+                    out.push(',');
+                }
+                let _ = write!(out, "{}", c);
+            }
+            out.push_str("]]");
+        }
         out.push_str("]]");
-    }
-
-    fn connect_windows(&self) -> [Window; CONNECT_STAGES.len()] {
-        self.stages.connect
-    }
-
-    fn forward_windows(&self) -> [Window; FORWARD_STAGES.len()] {
-        self.stages.forward
     }
 }
 
@@ -234,11 +415,18 @@ fn push_windows(out: &mut String, ws: &[Window]) {
     }
 }
 
-/// 段階の窓の環状バッファ (5 秒 × 720 と 60 秒 × 1,440)。
+/// 段階とスレッドの窓の環状バッファ (5 秒 × 720 と 60 秒 × 1,440)。
 #[derive(Default)]
 pub struct Profile {
     rings: [Mutex<VecDeque<Sample>>; 2],
+    /// スレッドの標本の状態 ([`SamplerState`])
+    sampler: std::sync::atomic::AtomicU8,
+    /// 表に無いシステムコール番号と回数 (`sys_N` で出す。最大 [`MAX_UNKNOWN`] 種)
+    unknown: Mutex<Vec<(i64, u64)>>,
 }
+
+/// 覚えておく「表に無いシステムコール番号」の種類数。
+pub const MAX_UNKNOWN: usize = 16;
 
 impl Profile {
     /// 5 秒の標本を足し、1 分の窓が閉じていればそれも作る。
@@ -283,6 +471,33 @@ impl Profile {
             q.pop_front();
         }
         q.push_back(s);
+    }
+
+    /// スレッドの標本の状態を書く (`profile-sample` スレッドだけが呼ぶ)。
+    pub fn set_sampler(&self, state: SamplerState) {
+        self.sampler.store(state as u8, Ordering::Relaxed);
+    }
+
+    /// スレッドの標本の状態。
+    pub fn sampler(&self) -> SamplerState {
+        SamplerState::from_u8(self.sampler.load(Ordering::Relaxed))
+    }
+
+    /// 表に無いシステムコール番号を 1 回数える (`/profile` に `sys_N` で出す)。
+    pub fn note_unknown_syscall(&self, nr: i64) {
+        let mut v = self.unknown.locked();
+        if let Some(e) = v.iter_mut().find(|e| e.0 == nr) {
+            e.1 += 1;
+        } else if v.len() < MAX_UNKNOWN {
+            v.push((nr, 1));
+        }
+    }
+
+    /// 表に無いシステムコール番号の控え (多い順)。
+    pub fn unknown_syscalls(&self) -> Vec<(i64, u64)> {
+        let mut v = self.unknown.locked().clone();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        v
     }
 
     /// 解像度 (秒) から添字を引く。合わなければ 5 秒。
@@ -342,6 +557,81 @@ struct Tick {
     cpu_us: u64,
 }
 
+/// スレッドの標本を取る側 (`profile-sample` スレッドが 1 つだけ持つ。T14.3 (2))。
+///
+/// **CPU はスレッドごとの増分**で積む。新しく生まれたスレッドは前回が無いので
+/// 「生まれてからのぶん」がそのまま増分になり (正しい)、消えたスレッドは最後の
+/// 1 標本ぶんだけ落ちる (役割別の CPU はその分だけ少なめに出る。`cpu_us` =
+/// プロセス全体はこの取りこぼしが無いので、**CPU/要求 は正確**)。
+pub struct Sampler {
+    /// 普通は `/proc/self/task` (テストは差し替える)
+    root: std::path::PathBuf,
+    /// 主スレッド = accept 役の tid (= pid)
+    main_tid: u32,
+    /// 前回のスレッド別 utime + stime (clock tick)
+    prev: std::collections::HashMap<u32, u64>,
+    /// 読み取りの使い回し用
+    buf: String,
+    /// 1 clock tick の us
+    tick_us: u64,
+    /// 5 秒の窓へ渡す前の溜め
+    pending: Threads,
+}
+
+impl Sampler {
+    pub fn new(root: std::path::PathBuf, main_tid: u32) -> Sampler {
+        Sampler {
+            root,
+            main_tid,
+            prev: std::collections::HashMap::new(),
+            buf: String::with_capacity(1024),
+            tick_us: 1_000_000 / clock_tick(),
+            pending: Threads::default(),
+        }
+    }
+
+    /// 自プロセス用 (`/proc/self/task`)。
+    pub fn for_self() -> Sampler {
+        Sampler::new(
+            std::path::PathBuf::from("/proc/self/task"),
+            std::process::id(),
+        )
+    }
+
+    /// 1 回ぶん取る。読めなければ [`SamplerState::Off`] を書いて何もしない。
+    pub fn sample(&mut self, profile: &Profile) {
+        let Some(scan) = crate::sysinfo::scan_tasks(&self.root, &mut self.buf) else {
+            profile.set_sampler(SamplerState::Off);
+            return;
+        };
+        let mut next = std::collections::HashMap::with_capacity(scan.tasks.len());
+        for t in &scan.tasks {
+            let role = role_of(t.tid, self.main_tid, &t.comm);
+            let prev = self.prev.get(&t.tid).copied().unwrap_or(0);
+            next.insert(t.tid, t.ticks);
+            let w = &mut self.pending[role];
+            w.cpu_us += t.ticks.saturating_sub(prev) * self.tick_us;
+            w.samples += 1;
+            let (slot, unknown) = state_slot(t.syscall, t.state);
+            w.states[slot] += 1;
+            if let Some(nr) = unknown {
+                profile.note_unknown_syscall(nr);
+            }
+        }
+        self.prev = next;
+        profile.set_sampler(if scan.syscalls_readable {
+            SamplerState::On
+        } else {
+            SamplerState::Partial
+        });
+    }
+
+    /// 溜めた標本を取り出して 0 に戻す (5 秒の窓へ)。
+    fn take(&mut self) -> Threads {
+        std::mem::take(&mut self.pending)
+    }
+}
+
 /// `/proc/self/stat` の utime + stime (us)。読めなければ `None`。
 pub fn process_cpu_us() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/self/stat").ok()?;
@@ -377,28 +667,49 @@ fn clock_tick() -> u64 {
     100
 }
 
-/// 段階の窓を畳むスレッドを起こす (`profile-sample`)。
+/// スレッドの標本の既定の間隔 (ms)。`PROXY_PROFILE_SAMPLE_MS` で変える (`0` で止める)。
+pub const DEFAULT_SAMPLE_MS: u64 = 1000;
+
+/// 標本の間隔の下限と上限 (ms)。下限を置くのは自分の CPU を使い切らないため。
+pub const MIN_SAMPLE_MS: u64 = 50;
+pub const MAX_SAMPLE_MS: u64 = 60_000;
+
+/// 段階の窓を畳み、スレッドの標本を取るスレッドを起こす (`profile-sample`)。
 ///
-/// **`--lite` では呼ばない** (窓を 1 本も作らない)。
-pub fn spawn(metrics: std::sync::Arc<Metrics>) -> JoinHandle<()> {
+/// **`--lite` では呼ばない** (窓を 1 本も作らない)。`sample_ms` が `0` なら
+/// スレッドの標本は取らず (`sampler: "off"`)、5 秒ごとに段階の窓だけ畳む。
+pub fn spawn(metrics: std::sync::Arc<Metrics>, sample_ms: u64) -> JoinHandle<()> {
     thread::Builder::new()
         .name("profile-sample".into())
-        .stack_size(128 * 1024)
+        .stack_size(256 * 1024)
         .spawn(move || {
             let mut prev = Tick {
                 requests: metrics.total_requests.load(Ordering::Relaxed),
                 cpu_us: process_cpu_us().unwrap_or(0),
             };
+            let mut sampler = (sample_ms > 0).then(Sampler::for_self);
+            let step = match sample_ms {
+                0 => TICK,
+                ms => Duration::from_millis(ms.clamp(MIN_SAMPLE_MS, MAX_SAMPLE_MS)),
+            };
+            let mut waited = Duration::ZERO;
             loop {
-                thread::sleep(TICK);
-                tick(&metrics, &mut prev);
+                thread::sleep(step);
+                if let Some(s) = sampler.as_mut() {
+                    s.sample(&metrics.profile);
+                }
+                waited += step;
+                if waited >= TICK {
+                    waited = Duration::ZERO;
+                    tick(&metrics, &mut prev, sampler.as_mut());
+                }
             }
         })
         .expect("spawn profile-sample thread")
 }
 
 /// 1 標本ぶんを窓へ (`spawn` のループの中身。テストからも呼ぶ)。
-fn tick(metrics: &Metrics, prev: &mut Tick) {
+fn tick(metrics: &Metrics, prev: &mut Tick, sampler: Option<&mut Sampler>) {
     let requests = metrics.total_requests.load(Ordering::Relaxed);
     let cpu_us = process_cpu_us().unwrap_or(0);
     let s = Sample {
@@ -406,6 +717,7 @@ fn tick(metrics: &Metrics, prev: &mut Tick) {
         requests: requests.saturating_sub(prev.requests),
         cpu_us: cpu_us.saturating_sub(prev.cpu_us),
         stages: metrics.take_stages(),
+        threads: sampler.map(Sampler::take).unwrap_or_default(),
     };
     *prev = Tick { requests, cpu_us };
     metrics.profile.push(s);
@@ -494,6 +806,7 @@ mod tests {
                 requests: 2,
                 cpu_us: 100,
                 stages: st,
+                ..Sample::default()
             });
         }
         // まだ次の分に入っていないので 1 分の窓はできない
@@ -530,7 +843,10 @@ mod tests {
             ..Sample::default()
         }
         .push_row(&mut row);
-        assert_eq!(row, "[7,0,0,[0,0,0,0,0,0,0],[0,0,0,0,0,0]]");
+        assert_eq!(
+            row,
+            "[7,0,0,[0,0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0]]"
+        );
     }
 
     /// 予算に入らない古い標本は落とし、`truncated` を立てる。
@@ -568,5 +884,143 @@ mod tests {
     #[test]
     fn this_process_has_used_some_cpu() {
         assert!(process_cpu_us().is_some());
+    }
+
+    /// 役割は主スレッド (tid == pid) とスレッド名で決まり、知らない名前は `other`。
+    #[test]
+    fn roles_come_from_the_thread_name() {
+        assert_eq!(ROLES[role_of(7, 7, "rust-http-proxy")], "accept");
+        assert_eq!(ROLES[role_of(9, 7, "conn")], "conn");
+        assert_eq!(ROLES[role_of(9, 7, "idle-watch")], "idle-watch");
+        assert_eq!(ROLES[role_of(9, 7, "profile-sample")], "profile-sample");
+        assert_eq!(ROLES[role_of(9, 7, "env-reload")], "other");
+        // 主スレッドの名前は実行ファイル名なので、名前より tid を先に見る
+        assert_eq!(ROLES[role_of(7, 7, "conn")], "accept");
+    }
+
+    /// 状態は「走行中 / システムコール名 / 休眠 / その他」に落ちる。
+    #[test]
+    fn states_map_to_syscall_names() {
+        let names = state_names();
+        assert_eq!(names[state_slot(Some(-1), 'R').0], "running");
+        assert_eq!(names[state_slot(None, 'R').0], "running");
+        assert_eq!(names[state_slot(None, 'S').0], "sleeping");
+        assert_eq!(names[state_slot(None, 'Z').0], "other");
+        // 表にある番号は名前で、無い番号は `other` + 番号を返す
+        let nr = SYSCALL_NRS[2]; // ppoll
+        assert_eq!(names[state_slot(Some(nr), 'S').0], "ppoll");
+        assert_eq!(state_slot(Some(99_999), 'S'), (NSTATES - 1, Some(99_999)));
+        assert_eq!(names.len(), NSTATES);
+        assert_eq!(names[1], "recvfrom");
+    }
+
+    /// 番号の表は名前と同じ長さで、同じ番号が 2 つ無いこと。
+    #[test]
+    fn the_syscall_table_is_consistent() {
+        assert_eq!(SYSCALL_NRS.len(), SYSCALL_NAMES.len());
+        for (i, a) in SYSCALL_NRS.iter().enumerate() {
+            for b in SYSCALL_NRS.iter().skip(i + 1) {
+                assert_ne!(a, b, "番号が重複している: {}", a);
+            }
+        }
+    }
+
+    /// 差し替えたディレクトリから取ると、役割ごとに CPU と状態が積まれる。
+    /// 2 回目は**増分だけ**が積まれること (累計をそのまま足さない)。
+    #[test]
+    fn the_sampler_accumulates_per_role_deltas() {
+        let dir = std::env::temp_dir().join(format!("t143-sampler-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let write = |tid: u32, comm: &str, ticks: u64, syscall: Option<&str>| {
+            let d = dir.join(tid.to_string());
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("stat"),
+                format!(
+                    "{} ({}) S 1 1 0 0 -1 0 0 0 0 0 {} 0 0 0 20 0 8 0 100 0\n",
+                    tid, comm, ticks
+                ),
+            )
+            .unwrap();
+            match syscall {
+                Some(v) => std::fs::write(d.join("syscall"), v).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(d.join("syscall"));
+                }
+            }
+        };
+        write(1, "proxy", 10, Some("running\n"));
+        write(
+            2,
+            "conn",
+            20,
+            Some(format!("{} 0x0\n", SYSCALL_NRS[5]).as_str()),
+        );
+        let p = Profile::default();
+        let mut s = Sampler::new(dir.clone(), 1);
+        s.sample(&p);
+        assert_eq!(p.sampler(), SamplerState::On);
+        let names = state_names();
+        let accept = s.pending[0];
+        let conn = s.pending[1];
+        assert_eq!(accept.samples, 1);
+        assert_eq!(
+            accept.states[names.iter().position(|n| *n == "running").unwrap()],
+            1
+        );
+        assert_eq!(
+            conn.states[names.iter().position(|n| *n == "splice").unwrap()],
+            1
+        );
+        let first = conn.cpu_us;
+        assert!(first > 0, "はじめて見たスレッドは累計がそのまま増分");
+        // 2 回目: 5 tick だけ進める
+        write(
+            2,
+            "conn",
+            25,
+            Some(format!("{} 0x0\n", SYSCALL_NRS[5]).as_str()),
+        );
+        s.sample(&p);
+        let delta = s.pending[1].cpu_us - first;
+        assert_eq!(delta, 5 * (1_000_000 / clock_tick()), "増分だけ積む");
+        // `syscall` が無ければ partial
+        write(2, "conn", 25, None);
+        write(1, "proxy", 10, None);
+        s.sample(&p);
+        assert_eq!(p.sampler(), SamplerState::Partial);
+        assert!(s.pending[1].states[names.iter().position(|n| *n == "sleeping").unwrap()] >= 1);
+        // 取り出したら 0 に戻る
+        let taken = s.take();
+        assert!(taken.iter().any(|r| r.samples > 0));
+        assert!(s.pending.iter().all(|r| r.samples == 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `/proc` が読めない環境では `off` に落ちる (受け入れ基準)。
+    #[test]
+    fn an_unreadable_proc_turns_the_sampler_off() {
+        let p = Profile::default();
+        p.set_sampler(SamplerState::On);
+        let mut s = Sampler::new(std::path::PathBuf::from("/nonexistent/task"), 1);
+        s.sample(&p);
+        assert_eq!(p.sampler(), SamplerState::Off);
+        assert_eq!(p.sampler().name(), "off");
+    }
+
+    /// 表に無いシステムコール番号は `sys_N` 用に控える (上限 [`MAX_UNKNOWN`] 種)。
+    #[test]
+    fn unknown_syscall_numbers_are_kept() {
+        let p = Profile::default();
+        for _ in 0..3 {
+            p.note_unknown_syscall(999);
+        }
+        p.note_unknown_syscall(998);
+        for i in 0..MAX_UNKNOWN as i64 {
+            p.note_unknown_syscall(500 + i);
+        }
+        let v = p.unknown_syscalls();
+        assert_eq!(v[0], (999, 3));
+        assert_eq!(v.len(), MAX_UNKNOWN);
     }
 }
