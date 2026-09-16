@@ -261,10 +261,11 @@ fn test_integration_history_carries_the_closed_connection_distribution() {
         minute
     );
     let hour = endpoint_json(proxy_port, "/history?res=3600");
+    // 1 時間は残していない (その後ろに canary の配列が付く。T14.10 とのマージ)
     assert!(
-        hour.ends_with(",\"closed\":null}"),
+        hour.contains(",\"closed\":null,\"canary\":"),
         "{}",
-        &hour[hour.len() - 40..]
+        &hour[hour.len() - 120..]
     );
 }
 
