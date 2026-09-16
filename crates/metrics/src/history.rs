@@ -756,6 +756,8 @@ pub fn spawn_every(
         // 下の層 (IPv4 優先の切替・圧迫・バラスト) の変わり目を出来事に 1 件 (T14.11)
         crate::events::poll(cache);
         metrics.history.closed.roll(crate::cache::now_epoch());
+        // ホスト別の時系列の窓送りと上位 16 の入れ替え (T14.22)。**5 分の境目でだけ**動く
+        metrics.roll_host_series();
         let sample = Sample::take(metrics, cache);
         // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
         crate::daily::tick(metrics, &sample);

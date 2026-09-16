@@ -112,6 +112,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
+         \x20 /hosts/series?top=16&host=<name>            JSON: per-host series (5 min x 24 h)\n\
          \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
          \x20 /config                                     JSON: effective settings and where they came from\n\
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
@@ -214,6 +215,9 @@ pub fn handle(
         recent::daily(query)
     } else if is_get && path == "/log" {
         recent::log(query)
+    } else if is_get && path == "/hosts/series" {
+        // ホスト別の時系列 (上位 16 ホスト × 5 分 × 24 時間。T14.22)
+        recent::host_series(ep, query)
     } else if is_get && path == "/hosts" {
         recent::hosts(ep, query)
     } else if is_get && path == "/clients" {
