@@ -10,7 +10,7 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{ProxyProcess, endpoint_json};
+use common::{ProxyProcess, endpoint_json, wait_until};
 
 /// テスト用の `.env` を書く (変えるのは `PROXY_TIMEOUT_SECS` だけ)。
 ///
@@ -82,6 +82,13 @@ fn test_integration_events_shows_the_start_and_the_reload() {
     std::thread::sleep(Duration::from_millis(1100));
     write_env(&dir, 10);
     proxy.wait_for_log("settings reloaded");
+    // **ログ行の方が先に出る** (`crates/reload/src/reload.rs` は `log_info!` のあとに
+    // `events::push`)。ログで待つとまだ 1 件のままのことがあるので、出来事が入るまで待つ
+    // (T14.55 で flake を直した)
+    wait_until(
+        || endpoint_json(proxy.port, "/events").contains("\"kind\":\"reload\""),
+        "再読込が出来事に入る",
+    );
 
     let body = endpoint_json(proxy.port, "/events");
     assert!(
