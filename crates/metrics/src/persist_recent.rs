@@ -36,7 +36,12 @@ use crate::sync::LockExt;
 use crate::{log_info, log_warn};
 
 /// 版の印。**レコードの並びを変えたら末尾を上げる** (古いファイルは読み捨てて作り直す)。
-pub const MAGIC: &[u8; 8] = b"SHPREC02";
+///
+/// 版 3 = T14.55。T14.46 が閉じた接続のレコードの**数値の途中** (`reason` の直後、
+/// `stage_ms` の前) に `syn_retrans` を差し込んだのに版 2 のままだったので、それより前に
+/// 書いたファイルは `stage_ms` 以降が 1 つずれて読めていた。**捨てるだけ**で実害は無い
+/// (`.rrd` とは独立したファイルで、統計はそちらに残る)。
+pub const MAGIC: &[u8; 8] = b"SHPREC03";
 
 /// ファイルの大きさ (固定 4 MiB)。`.rrd` と同じで、以後は 1 バイトも伸びない。
 pub const FILE_SIZE: u64 = 4 * 1024 * 1024;
@@ -973,6 +978,43 @@ mod tests {
         let (_, restored) = RecentFile::open(path.clone()).unwrap();
         assert!(restored.created);
         assert_eq!(std::fs::metadata(&path).unwrap().len(), FILE_SIZE);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 閉じた接続のレコードが**書いた順のまま**読み戻ること (T14.55)。
+    ///
+    /// T14.46 が数値の途中に `syn_retrans` を差し込んだので、版の印を `SHPREC03` に
+    /// 上げた。ずれていれば `stage_ms` 以降が 1 つずれて読めるので、**全部の欄**を
+    /// 突き合わせる。版 2 のファイルは読み捨てられること (中身が混ざらないこと) も見る。
+    #[test]
+    fn a_closed_record_reads_back_field_by_field() {
+        let path = tmp("layout");
+        let metrics = Metrics::new();
+        // 数値の欄を全部違う値にして、1 つでもずれたら気づけるようにする
+        let mut want = closed_entry(7);
+        want.syn_retrans = 3;
+        want.stage_ms = [11, 22, 33, 44, 55, 66];
+        want.rtt_us = [77, 88];
+        want.retrans = [9, 10];
+        want.stall_ms = [1234, 4321];
+        {
+            let (file, _) = RecentFile::open(path.clone()).unwrap();
+            metrics.closed.push(want.clone());
+            assert_eq!(file.write_new(&metrics).closed, 1);
+        }
+        let (file, restored) = RecentFile::open(path.clone()).unwrap();
+        assert!(!restored.created, "同じ版なら作り直さない");
+        assert_eq!(restored.closed.len(), 1);
+        assert_eq!(restored.closed[0], want, "欄の並びがずれている");
+
+        // 版 2 の印を書いたファイルは読み捨てる (T14.46 より前のレコードは並びが違う)
+        drop(file);
+        let mut raw = std::fs::read(&path).unwrap();
+        raw[..8].copy_from_slice(b"SHPREC02");
+        std::fs::write(&path, &raw).unwrap();
+        let (_, restored) = RecentFile::open(path.clone()).unwrap();
+        assert!(restored.created, "版 2 は作り直す");
+        assert!(restored.closed.is_empty(), "中身は捨てる");
         let _ = std::fs::remove_file(&path);
     }
 
