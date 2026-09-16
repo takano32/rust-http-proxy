@@ -773,6 +773,7 @@ mod local_path_tests {
             "function clientRows(",
             "function rttScatter(",
             "function sinceStart(",
+            "function seriesLines(",
             "function toSamples(",
             "function winQuantile(",
         ] {

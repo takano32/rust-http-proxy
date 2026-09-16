@@ -1396,8 +1396,10 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
 (Node があるときだけの補助的な確認。引数を省くと `scripts/testdata/` の見本を読みます)。
 
 **`/inspect` は「調査」ページ**です (`/dashboard/inspect` も同じもの。T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
-こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページ (64 KiB 以下) のまま
-10 秒ごとに更新します。描くのは 6 枚:
+こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページ (64 KiB 以下) のままです。
+更新は**個票 (`/status` `/recent` `/events` `/history?summary=1`) が 10 秒ごと、表と散布 (`/bursts` `/clients`
+`/hosts` `/hosts/series`) は 30 秒ごと**です (`/hosts` は上位 200 まで。開いたままにしても監視より重くならないように)。
+描くのは 6 枚:
 
 - **タイムライン** (`/recent`): 横 = 時刻、縦 = 接続元 (宛先にも切り替えられます)、線 1 本が接続 1 本で、
   長さ = 寿命・色 = 閉じた理由 (8 種。`error:<原因>` は 1 色に畳みます)・太さ = 運んだバイト。
@@ -1413,12 +1415,17 @@ curl "http://127.0.0.1:8080/lookup?url=http://example.com/file.zip"    # 保存�
   (RTT は標本が無ければ「–」です)
 - **RTT × 接続時間の散布** (`/hosts`): x = カーネルの平滑化 RTT の平均、y = 接続 1 回の平均
   (`connect_ms_sum ÷ timed`)。対角線 (y = x) から上に離れた点が「RTT では説明できない待ち」で、
-  右の表に差の大きい順で 12 件出ます (`rtt_ms` が `null` = 標本 0 のホストは描きません)
+  右の表に差の大きい順で 12 件出ます (`rtt_ms` が `null` = 標本 0 のホストと、接続を 1 度も測っていない
+  ホストは描きません。接続の平均が 0 ms = 1 ms 未満のホストは y = 0 に描きます)
+- **ホスト別の折れ線** (`/hosts/series?top=8`。T14.22): この口を持っている版でだけ出る枠です
+  (無ければ枠ごと出しません)
 - (ページの先頭に `/snapshot` へのリンクがあります。個票を 1 要求で持ち帰るときはそちら)
 
-描画関数 (`timeline` / `slowRows` / `burstCards` / `clientRows` / `rttScatter` / `sinceStart` / `eventMarks`) は
-DOM に触らないので、`node scripts/check-dashboard.js` が `scripts/testdata/snapshot-local.json`
-(手元のベンチで取った `/snapshot` の実出力) と、渡せばデプロイ先の `/status` `/history` でも回します。
+描画関数 (`timeline` / `slowRows` / `burstCards` / `clientRows` / `rttScatter` / `sinceStart` / `eventMarks` /
+`seriesLines`) は DOM に触らないので、`node scripts/check-dashboard.js` が
+`scripts/testdata/snapshot-local.json` (手元のベンチで取った `/snapshot` の実出力。宛先は
+`127.0.0.1` と `localhost` だけです) と `scripts/testdata/history-summary.json` (同じく `?summary=1` の実出力)、
+それに渡せばデプロイ先の `/status` `/history` でも回します。
 
 `/status` のトップレベルの `version` には動いているバイナリの版が出ます (`-V` と起動ログと同じ文字列)。
 

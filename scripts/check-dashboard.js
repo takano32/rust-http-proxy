@@ -704,7 +704,8 @@ const insPrelude = ['REASON_COLORS', 'EVENT_COLORS', 'STAGE_COLORS', 'SLOW_STAGE
 const ins = pick(
   insJs,
   ['num', 'reasonKey', 'reasonColor', 'weightOf', 'toSamples', 'winQuantile',
-    'timeline', 'eventMarks', 'slowRows', 'burstCards', 'clientRows', 'rttScatter', 'sinceStart'],
+    'timeline', 'eventMarks', 'slowRows', 'burstCards', 'clientRows', 'rttScatter', 'sinceStart',
+    'seriesLines'],
   'inspect.html',
   insPrelude
 );
@@ -873,6 +874,11 @@ function checkClients(clients, where) {
     if (!Array.isArray(c.agents)) fail(where + ': agents が配列でない');
     if (!Array.isArray(c.ports)) fail(where + ': ports が配列でない');
     if (c.rtt !== null && !(c.rtt.samples > 0 && c.rtt.avg >= 0)) fail(where + ': RTT の形が違う');
+    // T14.26 の上り / 下り (無い版では 0 で、割合は null)
+    if (c.bytes_in + c.bytes_out > 0 && c.down_pct === null) fail(where + ': 下りの割合が出ていない');
+    if (c.down_pct !== null && !(c.down_pct >= 0 && c.down_pct <= 100.01)) {
+      fail(where + ': 下りの割合が範囲外: ' + c.down_pct);
+    }
   }
   return rows;
 }
@@ -892,6 +898,14 @@ if (rttRows[0].client !== '198.51.100.8' || rttRows[0].rtt !== null) fail('rtt_m
 if (rttRows[1].rtt.avg !== 48.3 || rttRows[1].rtt.samples !== 3) fail('rtt_ms を読めていない');
 if (rttRows[2].rtt !== null) fail('標本 0 は描かない (null) はず');
 if (ins.clientRows(rttClients, 50, 'bytes')[0].bytes !== 200) fail('転送量で並べ替えられていない');
+const dirRows = ins.clientRows(
+  { clients: [{ client: '198.51.100.7', requests: 1, bytes: 1000, bytes_in: 200, bytes_out: 800 }] },
+  50
+);
+if (dirRows[0].down_pct !== 80) fail('下りの割合 (T14.26) が読めていない: ' + dirRows[0].down_pct);
+if (ins.clientRows({ clients: [{ client: 'x', bytes: 10 }] }, 50)[0].down_pct !== null) {
+  fail('bytes_in / bytes_out の無い版は null のはず');
+}
 if (ins.clientRows(rttClients, 1, 'requests').length !== 1) fail('n で絞れていない');
 
 // (e) RTT の散布 (T14.5)。`rtt_ms` が null / 標本 0 / 接続を測っていない行は描かない
@@ -905,7 +919,8 @@ function checkScatter(hosts, where) {
     if (sc.points[i - 1].gap < sc.points[i].gap) fail(where + ': 差の大きい順でない');
   }
   for (const p of sc.points) {
-    if (!(p.rtt > 0) || !(p.connect > 0)) fail(where + ': 0 以下の点が入った');
+    // 接続の平均は 0 ms (loopback) がありうるが、RTT が 0 の行は描かない
+    if (!(p.rtt > 0) || !(p.connect >= 0)) fail(where + ': 描けない点が入った');
     if (Math.abs(p.gap - (p.connect - p.rtt)) > 1e-9) fail(where + ': 差が 接続 − RTT でない');
     if (Math.abs(p.ratio - p.connect / p.rtt) > 1e-9) fail(where + ': 倍が 接続 ÷ RTT でない');
     if (p.rtt > sc.maxX || p.connect > sc.maxY) fail(where + ': 最大値が点を含んでいない');
@@ -924,11 +939,16 @@ const scFake = ins.rttScatter(
       { host: 'c.example.net:443', requests: 10, timed: 10, connect_ms_sum: 100, rtt_ms: null },
       { host: 'd.example.net:443', requests: 10, timed: 0, connect_ms_sum: 0, rtt_ms: { avg: 5, min: 5, samples: 2 } },
       { host: 'e.example.net:443', requests: 10, timed: 10, connect_ms_sum: 100, rtt_ms: { avg: 0, min: 0, samples: 0 } },
+      // 接続の平均が 0 ms (loopback) の行は**描く** (捨てると手元の出力が 1 点も残らない)
+      { host: 'f.example.net:443', requests: 10, timed: 10, connect_ms_sum: 0, rtt_ms: { avg: 0.1, min: 0.05, samples: 7 } },
     ],
   },
   {}
 );
-if (scFake.count !== 2 || scFake.skipped !== 3) fail('描く行の選び方が違う: ' + JSON.stringify([scFake.count, scFake.skipped]));
+if (scFake.count !== 3 || scFake.skipped !== 3) fail('描く行の選び方が違う: ' + JSON.stringify([scFake.count, scFake.skipped]));
+if (scFake.points[2].host !== 'f.example.net:443' || scFake.points[2].connect !== 0) {
+  fail('接続 0 ms の行が最後に来ていない');
+}
 if (scFake.points[0].host !== 'a.example.net:443') fail('対角線から遠い順でない');
 if (Math.round(scFake.points[0].connect) !== 257) fail('接続の平均が connect_ms_sum ÷ timed でない');
 if (Math.round(scFake.points[0].gap) !== 227) fail('差が 227 ms でない: ' + scFake.points[0].gap);
@@ -967,12 +987,66 @@ const summaryJson = {
   dns_misses: 2200, dns_miss_per_connect: 0.55, dns_miss_avg_ms: 11.5,
   errors: 99, errors_by_cause: [80, 0, 0, 10, 9, 0, 0, 0], causes: causeNames, active_max: 218,
 };
+// (T14.22) ホスト別の折れ線。`/snapshot` の `hosts_series` があればそれで、無ければ見本で。
+// `count` の欄は窓ごとの件数なので、**足すと `total` に一致する** (`ms_max` だけは最大)
+function checkSeries(j, where) {
+  const sl = ins.seriesLines(j, 'count');
+  const rows = (j && j.series) || [];
+  if (sl.lines.length !== rows.length) fail(where + ': 系列の本数が合わない');
+  for (let i = 1; i < sl.lines.length; i++) {
+    if (sl.lines[i - 1].total < sl.lines[i].total) fail(where + ': 多い順になっていない');
+  }
+  for (const l of sl.lines) {
+    if (l.values.length > sl.n) fail(where + ': 標本の数が揃っていない');
+    const s2 = l.values.reduce((a, b) => a + b, 0);
+    if (s2 !== l.total) fail(where + ': 窓の合計 ' + s2 + ' != total ' + l.total + ' (' + l.host + ')');
+    for (const v of l.values) if (v > sl.max) fail(where + ': 最大値が点を含んでいない');
+    if (typeof l.color !== 'string' || l.color[0] !== '#') fail(where + ': 色が読めない');
+  }
+  if (sl.t1 - sl.t0 !== Math.max(0, sl.n - 1) * sl.window) {
+    fail(where + ': 時刻が t0 + i × window_secs になっていない');
+  }
+  return sl;
+}
+const seriesSample = {
+  series: [
+    { host: 'connect://a.example.net:443', hour_requests: 120, total: [30, 900, 120, 40, 1],
+      samples: [[10, 300, 90, 20, 0], [20, 600, 120, 20, 1]] },
+    { host: 'http://b.example.net:80', hour_requests: 10, total: [3, 9, 5, 0, 0],
+      samples: [[1, 3, 5, 0, 0], [2, 6, 4, 0, 0]] },
+  ],
+  keys: ['count', 'ms_sum', 'ms_max', 'dns_ms', 'errors'],
+  window_secs: 300, samples: 288, slots: 16, t0: 1789251000, tracked: 2, rotations: 0,
+  count: 2, shown: 2, host: '', top: 8, truncated: false,
+};
+const seriesLines = checkSeries(seriesSample, '見本の折れ線');
+if (seriesLines.lines[0].host.indexOf('a.example.net') < 0) fail('多い順の先頭が違う');
+if (ins.seriesLines(seriesSample, 'ms_sum').lines[0].total !== 900) fail('欄を選べていない');
+if (ins.seriesLines(seriesSample, 'nonesuch').key !== 'count') fail('知らない欄は count に倒すはず');
+if (snap.hosts_series) checkSeries(snap.hosts_series, path.basename(snapFile) + ' の /hosts/series');
+if (ins.seriesLines(null, 'count').lines.length !== 0) fail('null でも 0 本のはず');
+if (ins.seriesLines({ series: [{}] }, 'count').lines[0].total !== 0) fail('無いキーは 0 のはず');
+
 const sum = ins.sinceStart(summaryJson, 0, 0);
 if (sum.mode !== 'summary') fail('?summary=1 の応答を要約として読めていない');
 if (sum.connects !== 4000 || sum.p50 !== 8.3 || sum.p95 !== 80.7) fail('要約の数が読めていない');
 if (sum.dns_per_connect !== 0.55 || sum.dns_avg !== 11.5) fail('要約の名前解決が読めていない');
 if (sum.active_max !== 218 || sum.errors !== 99) fail('要約の山とエラーが読めていない');
 if (sum.to - sum.from !== 3600) fail('要約の期間が読めていない');
+// 実出力の要約 (手元のプロキシから取った 1 行。無ければ飛ばす)
+const sumFile = path.join(__dirname, 'testdata', 'history-summary.json');
+if (fs.existsSync(sumFile)) {
+  const real = ins.sinceStart(JSON.parse(fs.readFileSync(sumFile, 'utf8')), 0, 0);
+  if (real.mode !== 'summary') fail('実出力の ?summary=1 を要約として読めていない');
+  if (!(real.to >= real.from)) fail('要約の期間が逆');
+  if (!(real.samples >= 0) || !(real.connects >= 0)) fail('要約の数が読めていない');
+  if (real.connects && !(real.p50 <= real.p95 + 1e-9)) fail('要約の p50 > p95');
+}
+// T14.9 の `persisted` / `restored` (無い版の出力では false / 0)
+const restored = ins.timeline({ recent: [], persisted: true, restored: 7, kept: 9 }, { now: snapAt, span: 60 });
+if (!restored.persisted || restored.restored !== 7 || restored.kept !== 9) {
+  fail('個票の persisted / restored を読めていない');
+}
 
 console.log(
   'OK: dashboard.html の JS は構文が通り、/history ' +
@@ -1062,5 +1136,17 @@ console.log(
     cut.connects +
     ' 本' +
     (cut.p50 == null ? '' : '、p50 ' + cut.p50.toFixed(2) + ' ms') +
-    ')'
+    ')。デプロイ先の雪像 (' +
+    path.basename(statusFile) +
+    ' + ' +
+    path.basename(file) +
+    ') でも通った: RTT の点 ' +
+    ins.rttScatter(st, {}).count +
+    ' 個 / ホスト ' +
+    st.hosts.length +
+    ' 件、起動からの窓 ' +
+    deployed.rows.length +
+    ' / ' +
+    samples.length +
+    ' 標本'
 );
