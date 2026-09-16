@@ -13,6 +13,15 @@
 # **キャッシュは `--cacheable` を渡せばこのスクリプトが自分で入れる** (`--lite` のまま
 # `PROXY_CACHE_ENABLED=on`)。条件は毎回 1 行目に印字するので、出力を見れば再現できる。
 #
+# **`--deployed-like` はデプロイ先に似せた条件で測る** (T14.16)。`scripts/deployed-like.sh` の中で
+# 自分自身をもう一度回すだけで、中身は上と同じ (`taskset` は名前空間の中でも効く)。
+# 違うのは **IPv6 が黙って落ちること**・`ulimit -n` 1024・cgroup 256 MiB・`/etc/hosts` に
+# `multi.test` (黒穴の AAAA + 生きている A) があることで、`--only connect-multi` はこの名前宛てに
+# CONNECT する。**この条件でしか Happy Eyeballs の 250 ms は出ない** (`--only connect` は宛先が
+# IP リテラルなので候補が 1 つになり、`crates/net/src/net.rs` の短絡に入る)。
+# 終わる前に `/status` の `"ipv6"` を 1 回引いて印字する (T12.1 の記憶が効いたかはここで見る)。
+# §2 の表 (経路どうしを比べる表) はこの条件では測らない — 条件が 1 行だけ違う数字になる。
+#
 # **`--only tunnel` だけは既定の配置が違う** (プロキシ cpu4-5 / ベンチ cpu6-7。T10.8 で実測して決めた)。
 # この経路のベンチは blaster (送る) と reader (受ける) の 2 スレッドがどちらも本気で回るので、
 # LITTLE に置くと**ベンチが先に頭打ちになってプロキシの実力が見えない** (実測 1.20 → 2.42 GiB/s)。
@@ -20,12 +29,15 @@
 # 出力の `proxy NN% of one core` が 100% に届かない限り、MiB/s はプロキシの上限ではない。
 #
 # 使い方:
-#   scripts/cpu-per-request.sh [--only forward|connect|tunnel|idle-tunnels|idle-conns] [bench の残りの引数...]
+#   scripts/cpu-per-request.sh [--deployed-like]
+#     [--only forward|connect|connect-multi|tunnel|idle-tunnels|idle-conns] [bench の残りの引数...]
 #     既定は --only forward --conc 8 --seconds 10
 #   例:
 #     scripts/cpu-per-request.sh                                  # keep-alive の forward
 #     scripts/cpu-per-request.sh --only forward --no-keepalive    # 1 接続 1 要求
 #     scripts/cpu-per-request.sh --only connect                   # CONNECT の確立
+#     scripts/deployed-like.sh -- scripts/cpu-per-request.sh --only connect-multi
+#                                                                 # 名前宛ての CONNECT (下)
 #     scripts/cpu-per-request.sh --only tunnel --conc 1           # トンネル 1 本 (主指標は CPU/MiB)
 #       ← **§2 の「トンネル」の行はこの `--conc 1` の値**。`--conc N` にすると N 本を
 #         並列に張って運んだ MiB の合計で割るので、別の数字になる (比べるときは本数を揃える)
@@ -76,9 +88,11 @@ ARGS=()
 CONC_GIVEN=0
 SECS_GIVEN=0
 CACHEABLE=0
+DEPLOYED_LIKE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --only) ONLY=$2; shift 2 ;;
+    --deployed-like) DEPLOYED_LIKE=1; shift ;;
     --conc) CONC_GIVEN=1; ARGS+=("$1" "$2"); shift 2 ;;
     --seconds) SECS_GIVEN=1; ARGS+=("$1" "$2"); shift 2 ;;
     --cacheable) CACHEABLE=1; ARGS+=("$1"); shift ;;
@@ -87,6 +101,14 @@ while [ $# -gt 0 ]; do
 done
 [ $CONC_GIVEN -eq 1 ] || ARGS+=(--conc 8)
 [ $SECS_GIVEN -eq 1 ] || ARGS+=(--seconds 10)
+
+# `--deployed-like`: デプロイ先に似せた条件の中で自分自身をもう一度回す (T14.16)。
+# 中では RHP_DEPLOYED_LIKE=1 が立つので、入れ子にはならない。
+# 名前空間が作れない機械では `scripts/deployed-like.sh` が終了コード 2 で終わる。
+if [ $DEPLOYED_LIKE -eq 1 ] && [ "${RHP_DEPLOYED_LIKE:-0}" != 1 ]; then
+  exec "$PWD/scripts/deployed-like.sh" -- \
+    "$PWD/scripts/$(basename "$0")" --only "$ONLY" ${ARGS[@]+"${ARGS[@]}"}
+fi
 
 # コアの割り当ては測る種類で変える (上の説明を参照)。tunnel はベンチも big に置く。
 if [ "$ONLY" = tunnel ]; then
@@ -121,9 +143,11 @@ if [ $CACHEABLE -eq 1 ]; then
 else
   cache_desc="cache=(profile default)"
 fi
+where=""
+if [ "${RHP_DEPLOYED_LIKE:-0}" = 1 ]; then where=" | deployed-like"; fi
 echo "run: ${PROXY_ARGS:-(default profile)} PROXY_LOG_LEVEL=$PROXY_LOG_LEVEL" \
   "$cache_desc reserve=$PROXY_CACHE_RESERVE | --only $ONLY ${ARGS[*]}" \
-  "| proxy cpu$PROXY_CPUS / bench cpu$BENCH_CPUS | $BIN"
+  "| proxy cpu$PROXY_CPUS / bench cpu$BENCH_CPUS | $BIN$where"
 # shellcheck disable=SC2086
 HOME=$work PROXY_ALLOW_LOCAL=on PROXY_STATS_PERSIST=off \
   taskset -c "$PROXY_CPUS" "$BIN" $PROXY_ARGS -p "$PORT" --bind 127.0.0.1 >"$work/proxy.log" 2>&1 &
@@ -171,6 +195,15 @@ rc=$?
 out=$(cat "$work/bench.out")
 read -r real buser bsys <"$work/bench.time"
 read -r u1 s1 < <(awk '{print $14, $15}' "/proc/$pid/stat")
+# Happy Eyeballs の記憶が効いたかは `/status` の "ipv6" でしか見えないので、
+# デプロイ先に似せた条件と名前宛ての CONNECT では終わる前に 1 回だけ引く (T14.16)。
+ipv6=""
+if [ "$ONLY" = connect-multi ] || [ "${RHP_DEPLOYED_LIKE:-0}" = 1 ]; then
+  ipv6=$( { exec 3<>"/dev/tcp/127.0.0.1/$PORT" &&
+            printf 'GET /status HTTP/1.1\r\nHost: 127.0.0.1:%s\r\nConnection: close\r\n\r\n' "$PORT" >&3 &&
+            cat <&3; } 2>/dev/null | sed -n 's/.*"ipv6":\({[^}]*}\).*/\1/p' | tail -1)
+  ipv6=${ipv6:-"(この版の /status には出ない)"}
+fi
 hwm=$(awk '/^VmHWM/{print $2}' "/proc/$pid/status")
 threads1=$(awk '/^Threads/{print $2}' "/proc/$pid/status")
 rm -f "$work/sampling"
@@ -208,3 +241,4 @@ awk -v u=$((u1 - u0)) -v s=$((s1 - s0)) -v ops="$ops" -v tick="$tick" -v hwm="$h
     printf "  proxy %.0f%% of one core  |  bench %.2f us/%s (%.0f%% of one core, user %.2f / sys %.2f)  in %.2fs\n",
       (u + s) / tick / real * 100, bench * 1e6 / ops, unit, bench / real * 100, bu, bs, real
 }'
+if [ -n "$ipv6" ]; then echo "  /status ipv6: $ipv6"; fi
