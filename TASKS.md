@@ -3374,8 +3374,8 @@ AAAA なしのホストと同じ桁 (10 ms 台) になっている**こと。`GE
 **待つ間に決めてよいこと (数字に依らない)** → T14.2 にまとめた。**追加 (2026-09-16、利用者の指示)**: ボトルネックを推定できる
 プロファイル画面 → T14.3。
 
-**順番 (2026-09-16 に入れ替えた)**: **T14.1 → T14.2 → T14.3 → T14.4 → (T14.5 ∥ T14.7) → T14.6 → T14.8 → [T14.9 → T14.12 → T14.11 → T14.10、T14.15 → T14.18 → T14.17 → T14.14 → T14.16 → T14.20 → T14.19 → T14.21、T14.22 → T14.23 → T14.28 → T14.31 → T14.34 のうち
-再デプロイ前に間に合った分] → 再デプロイ → 24 時間 → T14.99** (T14.24〜T14.27、T14.29、T14.30、T14.32、T14.33、T14.35〜T14.44 は再デプロイ後でもよい。T14.41 (記録の一括 off とハッシュ化) だけは
+**順番 (2026-09-16 に入れ替えた)**: **T14.1 → T14.2 → T14.3 → T14.4 → (T14.5 ∥ T14.7) → T14.6 → T14.8 → [T14.9 → T14.12 → T14.11 → T14.10、T14.15 → T14.18 → T14.17 → T14.14 → T14.16 → T14.20 → T14.19 → T14.21、T14.22 → T14.23 → T14.28 → T14.31 → T14.34 → T14.47 のうち
+再デプロイ前に間に合った分] → 再デプロイ → 24 時間 → T14.99** (T14.24〜T14.27、T14.29、T14.30、T14.32、T14.33、T14.35〜T14.46、T14.48〜T14.51 は再デプロイ後でもよい。T14.41 (記録の一括 off とハッシュ化) だけは
 公開ポートで記録の増えた版を動かすなら先に) (T14.4 は個票の形を決めるので先、T14.5 と T14.7 は触るファイルが違うので並列、
 T14.6 は T14.4 のリングを使う、T14.8 は全部の個票を描く。T14.13 は利用者が要ると言ったときだけ。T14.18 は既定無効で入れる (2026-09-16 の指示)。
 T14.14 (`.rrd` 版 3) は履歴に項目を足すと決めたときにその前に 1 回)。T14.99 (デプロイ後の様子見と締め) は
@@ -4162,6 +4162,70 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 変更箇所: `crates/endpoints/src/web/inspect.html`、`scripts/check-dashboard.js`、README。
   - 受け入れ基準: `node scripts/check-dashboard.js` が新しい描画関数 (`dailyRows` / `weeklyRows` / `eventMarks`) を匿名化した実データ
     (T14.35) で通す。`inspect.html` は 96 KiB 以下 (T14.8 の 64 KiB から上げる。理由を README に)。
+**さらに候補 (2026-09-16、続き: T14.45〜)**。ここは **T14.7 / T14.16 の実装で見えたこと**から (統計の鍵の取り合いで 100 ns の仕事が 1 us になる、
+7,479 本/秒で待ち受けが溢れて SYN が 1 秒後に再送される、http の宛先にポートが無い) と、運用の口 (SLO、重い口の保護、schema の版)。
+共通の決まりは T14.4〜T14.8 と同じ。**T14.47 (待ち受けの backlog) は利用者に見える遅さの候補**なので再デプロイ前に価値がある。
+
+- [ ] **T14.45 統計の鍵を分割する (取り合いが `/profile` で見えたら)**
+  - 目的: T14.7 で「接続元の表の鍵の内側の 100 ns の仕事が、8 並列の forward では 1 us 以上になって出る」ことが分かった (鍵の取り合い)。
+    ホスト別・接続元別の統計は 1 本の `Mutex` で、要求ごとに取る。T14.3 (3) の `locked_counted` で取り合いの回数が見えるので、
+    **見えたら** 16 分割 (ホスト名 / 接続元のハッシュで shard) にする。見えなければやらない (§4 に 1 行)。
+  - 変更箇所: `crates/metrics/src/metrics.rs` (`hosts` / `clients` の表を `[Mutex<HashMap>; 16]` に。`/status` の組み立てと `persist` は
+    16 本を順に取って合わせる)、README (無し)。
+  - やること: **先に測る**: `mx scripts/cpu-per-request.sh` (forward 8 並列、既定プロファイル) で `/profile` の `locks.stats_contended`
+    が要求数の 1% を超えるか。超えたら分割し、超えなければ §4 に「取り合い N 回 / 要求、分割しない」と書く。
+  - 受け入れ基準: 分割するなら forward 8 並列の CPU/要求 が **−2% 以上** (前後交互 6 組、ぶれの外) か、取り合いが 1% 未満に落ちること。
+    `/status` の出力が分割の前後で同じ (順序テスト)。`.rrd` の形は変えない。
+- [ ] **T14.46 接続確立時の SYN の再送を数える**
+  - 目的: T14.16 で「待ち受けが溢れると SYN が落ち、1 秒後に再送されて確立が 1,011 ms になる」のを見た。デプロイ先でも、オリジン側の
+    待ち受けの溢れや途中の損失で SYN が再送されれば、**確立時間が 1 秒・3 秒と飛ぶ** (T14.0 の `max_ms` 30,029 の中にもあるはず)。
+    確立直後に `TCP_INFO` の `tcpi_total_retrans` (T14.5) を 1 回読めば、その接続が SYN の再送を経たかが分かる。
+  - 変更箇所: `crates/net/src/net.rs` (`connect_candidates` で確立した直後に `sys::tcp_info` を 1 回。Linux 専用)、`crates/metrics/src/metrics.rs`
+    (`Detail` に `syn_retrans: u8`、ホスト別に `syn_retrans` の合計、`/status` に `syn_retrans_total`)、`crates/metrics/src/recent.rs` (個票に
+    `syn_retrans`)、README。
+  - 受け入れ基準: T14.16 の環境で `--only connect-multi --conc 64` を回すと個票に `syn_retrans` ≥ 1 の接続が現れ、`/status` の
+    `syn_retrans_total` が増える。loopback の `--only connect` では 0 のまま。費用: **CONNECT 1 本に `getsockopt` 1 回** (システムコール
+    +1。本文に書く)、CPU/本 ±4% (6 組)。forward はプールの接続を張るときだけ (要求ごとは 0)。
+- [ ] **T14.47 待ち受けの backlog (`PROXY_LISTEN_BACKLOG`、既定 `min(1024, somaxconn)`)**
+  - 目的: Rust の `TcpListener::bind` は backlog **128** で待ち受ける。ブラウザがページを開くと数十本の CONNECT が同時に来て、accept ループが
+    1 本 (T4.3) なので 128 を越えた SYN は捨てられ、**クライアントは 1 秒後に再送する** (利用者に 1 秒の待ちとして見える。T14.16 で
+    同じ現象を手元で観測した)。デプロイ先の 09-11 のバースト (1 時間に 4,966 本、山 218) でこれが起きていたかは T14.12 の
+    `ListenOverflows` で分かるが、backlog を大きくするのは安全で安い。
+  - 変更箇所: `crates/net/src/net.rs` (`bind_all_with`: `std` の `bind` の代わりに `socket` / `bind` / `listen(fd, backlog)` を `crates/sys` で。
+    Linux 以外は `std` のまま)、`crates/config` (`PROXY_LISTEN_BACKLOG`、既定 0 = `min(1024, /proc/sys/net/core/somaxconn)`)、起動ログに
+    backlog を出す、README。
+  - 受け入れ基準: T14.16 の環境で `--only connect-multi --conc 64 --seconds 5` の **max が 300 ms 未満** (いまは 1,011 ms = SYN の再送)、
+    `/status` の `syn_retrans_total` (T14.46) または T14.12 の `ListenOverflows` が 0。`--only connect` の CPU/本 ±4%。`ss -ltn` の
+    `Send-Q` が設定値になること (Linux)。
+- [ ] **T14.48 http の宛先にポートを付ける (`/connections` と `/recent` の `target`。小物)**
+  - 目的: T14.4 の気づき — http 接続の `target` が `example.com` (ポート無し)、CONNECT は `discord.com:443`。個票を読む道具が
+    2 つの形を扱うことになる。
+  - 変更箇所: `src/lib.rs` (T14.2 (5) の `set_first_target` に渡す値を `host:port` に。`pool_key` の `scheme://host:port` から組む)、
+    `tests/recent_test.rs` / `tests/clients_test.rs`。
+  - 受け入れ基準: 結合テストで http 接続の `target` が `127.0.0.1:<port>`。費用 0 (接続の最初の要求だけ)。
+- [ ] **T14.49 全エンドポイントに `schema` の版を入れる**
+  - 目的: `/status` `/history` `/recent` … の JSON の形は Phase ごとに増えている。読む道具 (`status-diff.py` `snapshot-diff.py`
+    `check-dashboard.js`) が「この JSON はどの版か」を推測している (`parts` の有無など)。各応答の先頭に `"schema": N` (整数、形が変わったら +1)
+    を入れ、道具は版で分岐する。
+  - 変更箇所: `crates/endpoints` (全 JSON の先頭に `schema`)、`crates/metrics` (`SCHEMA` 定数 1 か所)、scripts、README (版の履歴の表)。
+  - 受け入れ基準: 結合テストで全エンドポイント (`/status` `/history` `/dns` `/errors` `/connections` `/recent` `/hosts` `/clients` `/log`
+    `/snapshot` `/profile` `/bursts` …) の応答の先頭 64 バイトに `"schema":` があること。`check-dashboard.js` が版の無い古い出力
+    (`~/rust-http-proxy-status/2026-09-16T0106Z-*`) も読めること。
+- [ ] **T14.50 SLO の達成率 (`/slo`)**
+  - 目的: Phase の完了の定義は「p50 6 ms 以下」のような閾値だが、デプロイ先で**時間の何割がそれを満たしたか**は出ない。閾値を設定で持ち、
+    5 秒の標本ごとに満たしたかを判定して、日ごと・時間ごとの達成率を返せば、T14.99 と次の Phase の判定が「満たした / 満たさない」ではなく
+    「99.2% の時間で満たした。外れたのは 09-11 18〜19 時」になる。
+  - 変更箇所: `crates/config` (`PROXY_SLO=connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2`。既定はこの値)、
+    `crates/metrics/src/history.rs` (標本ごとの判定は history スレッド。結果は標本のメモリ上の窓に 4 ビット)、`crates/endpoints`
+    (`/slo?days=7`: 日ごと・時間ごとの達成率と、外れた時間帯の一覧)、ダッシュボードの KPI に「今日の SLO」、README。
+  - 受け入れ基準: 単体テストで既知の標本列 (T14.0 の 09-11 のバーストを模した架空の列) から達成率が手計算と一致 (外れた時間帯が
+    17〜23 時)。`/slo` が 64 KiB 以下。費用 0 (history スレッドだけ)。
+- [ ] **T14.51 重い口の同時実行を 1 本に (`/snapshot` `/hosts?limit=1000` `/recent?n=2000` `/profile`)**
+  - 目的: 認証なしの公開ポートで、`/snapshot` (4 MiB を組む) を 1 秒に 10 回引かれると CPU と鍵の時間を食う。**同時に組むのは 1 本**にし、
+    2 本目からは `503 Retry-After: 1` で断る (軽い `/status` はそのまま)。走査に対する最小限の保護で、認証ではない。
+  - 変更箇所: `crates/endpoints/src/endpoints/mod.rs` (重い口の一覧と `AtomicBool` 1 つ)、`/status` に `heavy_rejected`、README。
+  - 受け入れ基準: 結合テストで `/snapshot` を同時に 4 本引くと 1 本だけ 200 で残りが 503 (`Retry-After: 1`)、順に引けば全部 200。
+    費用 0 (重い口だけ)。
 - [ ] **T14.99 締める (README と §2 と §0 をデプロイ先の数字で書き直す)**
   - 目的: §0 のゴール「同じ条件でこれ以上速くならないところまで」は loopback では Phase 11 で到達し、デプロイ先では Phase 12〜14 で
     「コードで縮む待ち」を使い切る。それを 1 か所に書く。
