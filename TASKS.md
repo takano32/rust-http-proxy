@@ -4331,7 +4331,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     - 追跡する接続元は `Option<IpAddr>` で持ち `net::canonical_ip` を通す (`::ffff:1.2.3.4` は `1.2.3.4`)。切り替えた直後は前の接続元の行が
       残るので 1 行ごとに `client` を持つ。T14.28 へ: accept 直後は 3 段の判定になり `Conn::new` の引数は 14 個 (`traced` が末尾)、
       `Shared` / `Ctx` に `traced: bool` がある。
-- [ ] **T14.28 400 の理由別カウンタと個票 (`rejected_requests{reason}`、`/errors` の `bad_request:<reason>`)**
+- [x] **T14.28 400 の理由別カウンタと個票 (`rejected_requests{reason}`、`/errors` の `bad_request:<reason>`)**
   - 目的: 公開ポートには走査 (scanner) の要求が来る。いまは 400 で閉じるだけで、**何が来たか**の数が無い。理由別 (要求行が読めない /
     ヘッダーが長すぎる / 対応しないメソッド / `Host` が無い / 絶対 URI が壊れている / 本文の枠が不正) に数え、`/errors` に個票 (接続元と理由。
     **要求行そのものは入れない** — 個票の決まり) を残す。
@@ -4340,6 +4340,27 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     `crates/prom/src/prom.rs` (`sorahost_rejected_requests_total{reason=}`)、README。
   - 受け入れ基準: 結合テストで壊れた要求行・長すぎるヘッダー (`PROXY_MAX_HEADER_BYTES` 相当の上限 + 1)・`Host` 無しの HTTP/1.1 を送り、
     それぞれの理由が 1 ずつ増え、`/errors` に 3 件 (状態 400)。成功の経路は 0 増 (400 の経路だけ)。
+  - 結果 (2026-09-16、`f0303db`): 読めずに断った要求を**理由 6 種で固定**して数え、個票にも残すようにした。
+    `/status` の末尾に **`rejected_requests`** (`{"request_line":N,"header_too_large":N,"method":N,"no_host":N,
+    "bad_uri":N,"body_framing":N,"total":N}`)、`/metrics` に **`sorahost_rejected_requests_total{reason=}`** の 6 本、
+    `/errors` に個票 (`cause` が **`bad_request:<reason>`**、`kind` は `forward`、**`target` は空**、状態コードは
+    **実際に返したもの**)。理由が立つ場所は: `request_line` = 要求行が空白で 2 つに割れない (400) と `MAX_LINE`
+    (64 KiB) 超の 414、`header_too_large` = 431 の 3 か所 (1 行が長い・合計 128 KiB 超・256 行超)、`method` =
+    メソッドが HTTP の token として読めない、`no_host` = オリジン形式 (`/path`) なのに `Host` が無い、`bad_uri` = 絶対 URI /
+    マッピング形式にホストが無い、`body_framing` = `Content-Length` と `Transfer-Encoding: chunked` が両方ある (**要求の密輸**)。
+    **個票に要求行そのものは入れない** (入るのは接続元 IP・時刻・理由・状態コードだけ)。**成功の経路は 0 増**なので計測も
+    していない: 足したのは既にある「断る」分岐の中だけで、本文の枠の判定も `chunked` が真のときだけ走る `if` の内側 (通る要求は
+    原子もリングも 1 度も触らない)。実バイナリに 6 種を 1 回ずつ送った直後の `/status` は
+    `"rejected_requests":{"request_line":1,"header_too_large":1,"method":1,"no_host":1,"bad_uri":1,"body_framing":1,"total":6}`、
+    `/errors` の 1 行は `{"at":…,"kind":"forward","target":"","cause":"bad_request:body_framing","dns_ms":0,"connect_ms":0,"status":400,"client":"127.0.0.1"}`。
+    結合 3 本 (`tests/badrequest_test.rs`) を新設。
+    - **応答が 2 か所だけ変わった**: (1) 壊れた要求行は今まで**無応答で閉じていた**のを `400 Bad Request` を返してから閉じる、
+      (2) `Content-Length` と `Transfer-Encoding: chunked` が両方ある要求は今まで chunked として中継していたのを **400 で断る**
+      (RFC 9112 §6.1)。どちらも既存の分岐の中なので費用は変わらない。
+    - 受け入れ基準の「3 件とも状態 400」は 1 つ外した: 長すぎるヘッダーに実際に返すのは **431** なので個票にも 431 (個票に嘘を書かない)。
+    - **要求行が UTF-8 として読めないもの (走査が投げる TLS の ClientHello など) はまだ数えていない**: `read_line` が `InvalidData` を返して
+      `serve_one` が `Err` で抜けるので 400 の分岐を通らない。公開ポートの走査では一番多い形かもしれないので、`serve_one` の `Err` の腕に
+      `InvalidData` を 1 つ足す (T14.41 か T14.99 の小物)。走査が続くと `/errors` (500 件) の個票が押し出される (数は残る)。
 - [x] **T14.29 デプロイ先のパターンを手元で再生する (`bench --replay <recent.json>`)**
   - 目的: バーストのとき T13.2 (追い出し) と T14.6 (写真) が本当に効くかは、バーストが来るまで分からない。`/recent` (T14.4) には
     「いつ・誰が・どこへ・どれだけ」があるので、**同じ時間間隔・同じ本数**で手元の内蔵オリジンへ再生すれば、バーストの形だけ再現できる
@@ -4602,7 +4623,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     ClientHello を送ると個票の `sni` に `example.test`、CONNECT のホストと違えば `sni_mismatches` +1。
     費用: **トンネル 1 本に `recv(MSG_PEEK)` 1 回** (CONNECT 1 本あたりのシステムコール +1。本文に書く)、CONNECT 確立の CPU/本 ±4% (6 組)、
     `--only tunnel` の CPU/MiB が ±ぶれの中 (中継の経路は変えない)。
-- [ ] **T14.39 いまの転送速度 (`/connections` の各行に直近 5 秒の bytes/s)**
+- [x] **T14.39 いまの転送速度 (`/connections` の各行に直近 5 秒の bytes/s)**
   - 目的: `/connections` の `bytes` は累計で、「いま誰が帯域を使っているか」が分からない。history スレッドが 5 秒ごとに各接続の `bytes`
     (T13.4 の `ConnSlot` の原子) を控えれば、差分で直近 5 秒の速さが出る。
   - 変更箇所: `crates/metrics/src/recent.rs` (`ConnSlot` に `bytes_prev` と `rate_bps` の原子 2 つ。history スレッドが 5 秒ごとに全 slot を
@@ -4610,12 +4631,37 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
     ダッシュボードの「いまの接続」に列 (T14.8 の担当。無ければ `check-dashboard.js` に載せるだけ)、README。
   - 受け入れ基準: 結合テストで 1 MiB/s で流し続けるトンネルを 12 秒握り、`/connections` の `rate_bps` が 0.5〜2 MiB/s の範囲。
     費用 0 (history スレッドだけ。240 本なめて 240 回の原子の読み書き)。
-- [ ] **T14.40 週次の要約 (`scripts/weekly-report.py`)**
+  - 結果 (2026-09-16、`645b161`): **いまの転送速度** (`/connections` の各行の `rate_bps` と `/status` の `rate_bps_total`) を足した。`ConnSlot` の**末尾に原子 2 つ** (`bytes_prev` / `rate_bps`) を置き、**history スレッドの周期 (本番 5 秒) の先頭 1 行** (`ConnTable::update_rates`) で全 slot の `bytes` を控えて **差分 ÷ その周期 (バイト/秒)** を書く。**費用 0**: 接続を受ける経路にも中継 (splice の往復) にも**1 命令も足していない** — 中継が暇になるたびに置いている累計 (`set_bytes`、T13.4) をそのまま控えるだけで、増えたのは履歴スレッドの周期に**表の鍵 1 回と 1 本あたり原子 3 回** (240 本で数 us) だけ。割る幅は**実際に控えてからの経過 ms** で、周期を縮めたテスト (`spawn_every`) でも本番の 5 秒でも同じ式。**1 回目は控えるだけ** (速さ 0) で「履歴スレッドより前から居る接続の累計 ÷ 0」を出さない。`rate_bps_total` は全接続の和を `ConnTable` の原子 1 つに置くので `/status` は原子の読み 1 回。実測 (`tests/rate_test.rs`、周期 1 秒): 1 MiB/s で 12 秒流し続けたトンネルの実際の流量 **1,050,746 B/s** に対し `rate_bps` は 10 窓とも **1,037,167〜1,110,779** (差 0.3%、受け入れ基準 0.5〜2 MiB/s の内側)、流し終えて暇にすると `bytes` 2,097,152 が残ったまま `rate_bps` は 0 に戻る。結合 2 本と単体 2 本を新設。README と `scripts/check-dashboard.js` (行に `rate_bps` が残ることの 1 行) も更新。
+    - **上り / 下りの別は無い** (`rate_bps` 1 つ): 中継は方向別のバイトを中継スレッドの中だけで持ち、`ConnSlot` に置くのはトンネルの終わりの 1 回 (T14.26) なので、中継中に方向別を読む口が無い (方向別にするには中継の経路に原子を 2 つ増やす)。**速さが出るのは CONNECT のトンネルだけ** (keep-alive の HTTP 接続は中継中に `bytes` を置かない)。値は直近 1 周期の平均で最大 5 秒遅れる。
+    - 既存の性質: `set_bytes` は `poll` で待ちに入る直前と預ける直前だけなので、**両方向とも一度も待ちに入らないトンネル**では累計が古いまま → `rate_bps` が 0 に見えてから跳ねる (loopback の 1 MiB/s では起きない。T14.42 が同じループを触るのでそこで見る)。`/connections` の 1,000 本の最悪は 256,907 B (上限 262,144 B、余白 5 KB) — 次に行へ欄を足す人は打ち切りかテストの本数の判断が要る。
+    - ダッシュボードの「いまの接続」の列は T14.44 (`connRows` は行をそのまま通すので `r.rate_bps` が読める)。`/metrics` には出していない。
+- [x] **T14.40 週次の要約 (`scripts/weekly-report.py`)**
   - 目的: T14.34 の日次 snapshot と T14.20 の日次の要約があれば、1 週間の「要求数・p50 / p95・名前解決ミス率・エラー・山・接続元の
     出入り・遅かったホスト上位・新しく見たホスト」を Markdown 1 枚にできる。T14.99 と、次の Phase の T15.0 の入力になる。
   - 変更箇所: `scripts/weekly-report.py` (新規。標準ライブラリのみ。入力は `~/rust-http-proxy-status/` の snapshot 群か `/snapshots`)、README。
   - 受け入れ基準: 匿名化した実データ (T14.35) 7 日ぶん (無ければ 1 日ぶんを複製) から表 8 つが出て、数字が `snapshot-diff.py` (T14.17) の
     値と一致する。
+  - 結果 (2026-09-16、`1b70ddb`): 溜まった雪像と `/daily` を読んで 1 週間を Markdown 1 枚にする
+    `scripts/weekly-report.py` (標準ライブラリだけ、741 行) を足した。入力は**雪像の置き場**
+    (`~/rust-http-proxy-status/` をディレクトリごと渡すと `*-snapshot.json` を拾う)、**雪像を並べたもの** (T14.34 の
+    `<日付>T000000Z-snapshot.json` も同じ形)、**`/daily` の応答**、**`$HOME/.rust-http-proxy.daily.jsonl` そのもの** のどれでもよく、
+    **混ぜてよい** (`--days 7` の窓はいちばん新しい日から遡り、**7 日ぶん無ければあるぶんで**出して「雪像 N 枚、M 日ぶん (足りない K 日)」を
+    頭に書く)。**要は `snapshot-diff.py` (T14.17) と同じ読み方**で、`/history?res=3600` を **UTC の日で切って同じ `aggregate()`** に通す
+    (分位点の補間は `history.rs` の `quantile_ms`、平常時 = 1 時間 300 本未満の標本、も同じ)。出す表は 8 つ: **要求数** (バースト込み) /
+    **CONNECT 確立 avg・p50・p95** (平常時、forward の初バイトも) / **名前解決のミス率** / **エラーの原因別** / **山** (`/bursts` があれば
+    写真の枚数・最大同時、無ければ `active_max` と外したバーストの窓の数、`/daily` なら `bursts`) / **接続元の出入り** (`/clients` の
+    `first_seen` / `last_seen`。無い版では「初めて出た雪像の日」で代える) / **遅かったホスト上位 10** (`avg_ms` × 要求数) /
+    **新しく見たホスト** (隣り合う雪像の差)。`/hosts` と `/clients` は `.rrd` の通算なので**いちばん古い雪像と新しい雪像の差**で読み、
+    雪像が 1 枚なら「引き算できない」と断って通算のまま並べる (`.rrd` が作り直されていたら `rrd_reset` の注意書き)。匿名化した実データ
+    (T14.35) 1 枚で 7 日 (2026-09-10〜09-16) の表 8 つが出て、**週ぜんたい 要求 522,251・CONNECT p50 8.2 / p95 83.4 ms・名前解決
+    0.55 回/接続・エラー 101 (dns 80)・最大同時 218**、バーストの窓は 09-11 に 4・09-12 に 2 (T14.0 が見た山と同じ日)。
+    単体テスト **42 本**を新設 (`scripts` は 76 → **118 本**)。受け入れ基準の本体は「1 日ぶんを 7 日に複製した雪像 7 枚」で、表 8 つが出て
+    **日別の 13 欄が `snapshot-diff.py` の `aggregate()` と 1 つ残らず一致**し、週の集計が「窓を 1 回で `aggregate()` に通したもの」と完全一致。
+    - 限界: `/clients` の無い版の雪像では「新しく来た」が初めて出た雪像の日でしか分からない。`/hosts` は 256 KiB で切れる (817 / 1,000) ので
+      切れ目が動くと「新しく見たホスト」に偽陽性が出る。`/daily` しか無い日は分位点を日をまたいで足せないので週の p50 / p95 は「出せない」。
+      本物の 7 日ぶん (雪像 7 枚の経路) は再デプロイ後に `collect-deployed.sh --from-server` で溜まってから 1 回回す (T14.99)。
+    - 小物: `--out json` は無い (T14.44 の `weeklyRows` が要るなら `snapshot-diff.py --out json` と同じ 5 行)。`collect-deployed.sh` からは呼んでいない。
+      `snapshot-diff.py` の `aggregate()` の `out["requests"]` は初期化だけで足していない死に欄 (T14.17 の持ち物)。
 - [ ] **T14.41 記録の一括 off とハッシュ化 (`PROXY_RECORDS=on|off|hashed`)**
   - 目的: T13.4〜T14.7 で個票 (接続元 IP・宛先・`User-Agent`・SNI) が増えた。認証なしの公開ポートで動かすなら、**記録を 1 つの旗で
     全部止める**か、**接続元 IP を復元できない形 (ハッシュ) で持つ**選択肢が要る (利用者以外の人の情報を残さないため)。

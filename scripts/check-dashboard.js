@@ -306,9 +306,9 @@ if (api.errorRows({ errors: [{}] }, 20)[0].cause !== '') fail('無いキーは�
 
 const connJson = {
   connections: [
-    { id: 3, client: '198.51.100.7', target: 'a.example.net:443', kind: 'connect', state: 'parked', age_secs: 120, bytes: 4096, fds: 2 },
-    { id: 9, client: '198.51.100.9', target: '', kind: 'http', state: 'serving', age_secs: 0, bytes: 0, fds: 1 },
-    { id: 5, client: '198.51.100.8', target: 'b.example.net:443', kind: 'connect', state: 'relaying', age_secs: 900, bytes: 1048576, fds: 2 },
+    { id: 3, client: '198.51.100.7', target: 'a.example.net:443', kind: 'connect', state: 'parked', age_secs: 120, bytes: 4096, fds: 2, rate_bps: 0 },
+    { id: 9, client: '198.51.100.9', target: '', kind: 'http', state: 'serving', age_secs: 0, bytes: 0, fds: 1, rate_bps: 0 },
+    { id: 5, client: '198.51.100.8', target: 'b.example.net:443', kind: 'connect', state: 'relaying', age_secs: 900, bytes: 1048576, fds: 2, rate_bps: 1048576 },
   ],
   count: 3, shown: 3, truncated: false, lite: false,
 };
@@ -325,6 +325,8 @@ if (conn.states.parked !== 1 || conn.states.relaying !== 1 || conn.states.servin
 }
 if (conn.bytes !== 4096 + 1048576) fail('転送の合計が合わない: ' + conn.bytes);
 if (conn.count !== 3) fail('count が読めていない');
+// 直近 5 秒の転送速度 (T14.39)。描くのは画面の仕事なので、ここは行に残ることだけ見る
+if (conn.rows[0].rate_bps !== 1048576) fail('rate_bps が行に残っていない: ' + conn.rows[0].rate_bps);
 if (api.connRows(connJson, 1).rows.length !== 1) fail('n で絞れていない');
 const lite = api.connRows({ connections: [], count: 0, lite: true }, 50);
 if (lite.rows.length !== 0 || !lite.lite) fail('lite の空一覧が読めていない');
