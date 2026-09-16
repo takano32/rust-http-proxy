@@ -475,6 +475,18 @@ mod local_path_tests {
             "errhint",
             "conns",
             "connhint",
+            // プロファイル (T14.3)
+            "proflead",
+            "st-connect-setup",
+            "st-connect-after",
+            "st-forward-setup",
+            "st-forward-after",
+            "stages",
+            "ch-rolecpu",
+            "ch-cpureq",
+            "roles",
+            "locks",
+            "profhint",
         ] {
             assert!(html.contains(&format!("id=\"{}\"", id)), "{} が無い", id);
         }
@@ -489,6 +501,13 @@ mod local_path_tests {
             // 個票を読む側 (T13.4)
             "function errorRows(",
             "function connRows(",
+            // プロファイルを読む側 (T14.3)
+            "function toProfile(",
+            "function stageRows(",
+            "function longestStage(",
+            "function roleRows(",
+            "function lockRows(",
+            "function drawStack(",
         ] {
             assert!(html.contains(f), "{} が無い", f);
         }
@@ -529,6 +548,17 @@ mod local_path_tests {
             "{}",
             "個票が 5 秒ごとになっていない"
         );
+        // プロファイルは 5 秒ごとに `/profile?res=` を 1 本 (T14.3)
+        assert!(
+            html.contains("fetchJson('/profile?res='+res)"),
+            "{}",
+            "/profile を取っていない"
+        );
+        assert!(
+            html.contains("setInterval(pollProfile,5000)"),
+            "{}",
+            "プロファイルが 5 秒ごとになっていない"
+        );
         // ヘッダーから個票へ行けること (T13.4)
         for link in [
             "/dns",
@@ -536,6 +566,7 @@ mod local_path_tests {
             "/hosts?limit=1000",
             "/errors",
             "/connections",
+            "/profile",
         ] {
             assert!(
                 html.contains(&format!("<a href=\"{}\" target=\"_blank\">", link)),
