@@ -11,11 +11,18 @@
 //!   **成功の熱い経路は 1 命令も通らない。**
 //! - [`ConnTable`]: いまの接続の一覧 (`/connections`)。**表の鍵を取るのは
 //!   接続の開始と終了の 2 回だけ**で、状態と転送バイトは [`ConnSlot`] の原子に書く。
+//! - [`RecentRing`]: 閉じた接続の個票 (`/recent`。T14.4)。接続の終了で 1 回。
+//! - [`BurstRing`]: 同時接続数が上限の一定割合を越えた瞬間の写真 (`/bursts`。T14.6)。
+//!   **撮るのは history スレッド**で、越えた接続を受けたスレッドは旗を立てるだけ。
+//! - [`ClosedCounts`]: 閉じた理由・寿命・バイト・預けの分布 (`/history` の `closed`。T14.6)。
+//!   足すのは `/recent` に 1 件書くのと同じ場所で、**既に鍵の内側**。
 //!
 //! [`Metrics::record_error`]: crate::metrics::Metrics::record_error
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -64,13 +71,44 @@ impl EntryCause {
     }
 }
 
+/// 個票 1 件の種類 (`/errors` の `kind`)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryKind {
+    /// 要求を中継する経路 (`GET http://…`)
+    Forward,
+    /// CONNECT トンネルの確立
+    Connect,
+    /// プロキシ自身の canary (利用者の要求ではない。T14.10)
+    Canary,
+}
+
+impl EntryKind {
+    /// `/errors` の `kind` に出す名前。
+    pub fn name(self) -> &'static str {
+        match self {
+            EntryKind::Forward => "forward",
+            EntryKind::Connect => "connect",
+            EntryKind::Canary => "canary",
+        }
+    }
+
+    /// 利用者の経路の旗 (`true` = CONNECT) から。
+    pub fn from_connect(connect: bool) -> EntryKind {
+        if connect {
+            EntryKind::Connect
+        } else {
+            EntryKind::Forward
+        }
+    }
+}
+
 /// エラー 1 件の個票。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ErrorEntry {
     /// いつ (epoch 秒)
     pub at: u64,
-    /// CONNECT の確立で失敗したか (`false` = forward)
-    pub connect: bool,
+    /// どの経路の 1 件か (forward / connect / canary)
+    pub kind: EntryKind,
     /// 宛先 (`host:port`)
     pub target: String,
     /// 原因 (5xx は [`ErrCause`] = `/status` の `errors_by_cause` と同じ名前、
@@ -90,7 +128,7 @@ impl ErrorEntry {
     /// 長さを切り詰めて 1 件を作る (時刻は今)。
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        connect: bool,
+        kind: EntryKind,
         target: &str,
         client: &str,
         status: u16,
@@ -100,7 +138,7 @@ impl ErrorEntry {
     ) -> ErrorEntry {
         ErrorEntry {
             at: crate::cache::now_epoch(),
-            connect,
+            kind,
             target: clip(target, MAX_TARGET),
             cause,
             dns_ms: dns_ms.min(MAX_MS),
@@ -115,7 +153,7 @@ impl ErrorEntry {
         format!(
             "{{\"at\":{},\"kind\":\"{}\",\"target\":\"{}\",\"cause\":\"{}\",\"dns_ms\":{},\"connect_ms\":{},\"status\":{},\"client\":\"{}\"}}",
             self.at,
-            if self.connect { "connect" } else { "forward" },
+            self.kind.name(),
             crate::json::escape(&self.target),
             self.cause.name(),
             self.dns_ms,
@@ -669,6 +707,23 @@ impl CloseReason {
         }
     }
 
+    /// 分布の添字 ([`CLOSE_REASON_NAMES`] の並び。T14.6)。
+    ///
+    /// `Error` は原因を落として 1 つにまとめる (原因別は `/status` の `errors_by_cause` と
+    /// `/errors` にあるので、窓の列を 8 つ増やさない)。
+    pub fn index(self) -> usize {
+        match self {
+            CloseReason::ClientEof => 0,
+            CloseReason::ServerEof => 1,
+            CloseReason::IdleTimeout => 2,
+            CloseReason::KeepaliveTimeout => 3,
+            CloseReason::Evicted => 4,
+            CloseReason::Limit => 5,
+            CloseReason::Shutdown => 6,
+            CloseReason::Error(_) => 7,
+        }
+    }
+
     /// `/recent` の `reason` に出す綴り (`error:` は原因を連れる)。
     pub fn text(self) -> std::borrow::Cow<'static, str> {
         use std::borrow::Cow;
@@ -896,13 +951,532 @@ impl RecentRing {
         self.len() == 0
     }
 }
+/// 山の写真 (`/bursts`) を何枚覚えておくか (固定。T14.6)。
+///
+/// 1 枚 4 KiB 以下 (下のテストで見る) なので 50 枚で 200 KiB。デプロイ先の山は
+/// 1 日に数回なので、50 枚あれば 1 週間以上さかのぼれる。
+pub const MAX_BURSTS: usize = 50;
+
+/// 1 枚に載せる接続元の数 (それ以外は `clients_other` に本数だけ)。
+pub const MAX_SHOT_CLIENTS: usize = 16;
+
+/// 1 枚に載せる宛先の数 (それ以外は `targets_other` に本数だけ)。
+pub const MAX_SHOT_TARGETS: usize = 10;
+
+/// [`ConnState`] の数と、その名前 (`ConnState as usize` が添字)。
+pub const CONN_STATES: usize = 5;
+pub const CONN_STATE_NAMES: [&str; CONN_STATES] =
+    ["serving", "reading", "parked", "queued", "relaying"];
+
+/// 山の写真 1 枚 (`/bursts`。T14.6)。
+///
+/// 撮るのは **history スレッド**で、中身は `/connections` の表から作る (鍵 1 回)。
+/// 越えた接続を受けたスレッドは [`BurstRing::request`] で旗を立てるだけなので、
+/// **accept の経路に鍵は 1 つも増えない**。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BurstShot {
+    /// 撮った時刻 (epoch 秒)
+    pub at: u64,
+    /// 何枚目か (捨てた分も含む通し番号)
+    pub seq: u64,
+    /// 撮った瞬間の同時接続数 (`/status` の `active_connections`)
+    pub active: usize,
+    /// 旗が立った瞬間の本数 (撮るまでに最大 1 周期あるので `active` とは違いうる)
+    pub trigger_active: usize,
+    /// そのときの上限と閾 (`max_conns` × `PROXY_BURST_PERCENT`)
+    pub max_conns: usize,
+    pub threshold: usize,
+    /// 接続元ごとの本数 (多い順、上位 [`MAX_SHOT_CLIENTS`])
+    pub clients: Vec<(String, u32)>,
+    pub clients_distinct: usize,
+    pub clients_other: u32,
+    /// 宛先ごとの本数 (多い順、上位 [`MAX_SHOT_TARGETS`])
+    pub targets: Vec<(String, u32)>,
+    pub targets_distinct: usize,
+    pub targets_other: u32,
+    /// 状態別 ([`CONN_STATE_NAMES`] の並び) と種類別
+    pub states: [u32; CONN_STATES],
+    pub connects: u32,
+    pub https: u32,
+    /// そのときの累計 (T13.2 の追い出しと、上限で断った数)
+    pub evicted_idle: u64,
+    pub rejected_overload: u64,
+    /// プロセスのスレッド数と記述子 (`/proc`。history スレッドが読む)
+    pub threads: u64,
+    pub fds: u64,
+    pub max_fds: u64,
+}
+
+impl BurstShot {
+    /// `/connections` の表から 1 枚作る (`ConnTable::snapshot` の鍵 1 回のあと)。
+    #[allow(clippy::too_many_arguments)]
+    pub fn take(
+        rows: &[Arc<ConnSlot>],
+        seq: u64,
+        active: usize,
+        trigger_active: usize,
+        max_conns: usize,
+        threshold: usize,
+        evicted_idle: u64,
+        rejected_overload: u64,
+    ) -> BurstShot {
+        let mut by_client: HashMap<&str, u32> = HashMap::new();
+        let mut by_target: HashMap<String, u32> = HashMap::new();
+        let mut states = [0u32; CONN_STATES];
+        let (mut connects, mut https) = (0u32, 0u32);
+        for slot in rows {
+            *by_client.entry(slot.client.as_str()).or_insert(0) += 1;
+            let target = slot.target.locked().clone();
+            if !target.is_empty() {
+                *by_target.entry(target).or_insert(0) += 1;
+            }
+            states[slot.state() as usize] += 1;
+            if slot.is_connect() {
+                connects += 1;
+            } else {
+                https += 1;
+            }
+        }
+        let (clients, clients_other) = top_counts(
+            by_client.into_iter().map(|(k, n)| (k.to_string(), n)),
+            MAX_SHOT_CLIENTS,
+        );
+        let clients_distinct = clients.len() + usize::from(clients_other > 0);
+        let (targets, targets_other) = top_counts(by_target.into_iter(), MAX_SHOT_TARGETS);
+        let targets_distinct = targets.len() + usize::from(targets_other > 0);
+        let (threads, fds, max_fds) = process_counts();
+        BurstShot {
+            at: crate::cache::now_epoch(),
+            seq,
+            active,
+            trigger_active,
+            max_conns,
+            threshold,
+            clients,
+            clients_distinct,
+            clients_other,
+            targets,
+            targets_distinct,
+            targets_other,
+            states,
+            connects,
+            https,
+            evicted_idle,
+            rejected_overload,
+            threads,
+            fds,
+            max_fds,
+        }
+    }
+
+    /// `/bursts` の 1 要素。
+    pub fn to_json(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::with_capacity(2048);
+        let _ = write!(
+            out,
+            "{{\"at\":{},\"seq\":{},\"active\":{},\"trigger_active\":{},\"max_conns\":{},\"threshold\":{},\"clients\":",
+            self.at, self.seq, self.active, self.trigger_active, self.max_conns, self.threshold,
+        );
+        push_counts(&mut out, "client", &self.clients);
+        let _ = write!(
+            out,
+            ",\"clients_distinct\":{},\"clients_other\":{},\"targets\":",
+            self.clients_distinct, self.clients_other
+        );
+        push_counts(&mut out, "target", &self.targets);
+        let _ = write!(
+            out,
+            ",\"targets_distinct\":{},\"targets_other\":{},\"states\":{{",
+            self.targets_distinct, self.targets_other
+        );
+        for (i, name) in CONN_STATE_NAMES.iter().enumerate() {
+            let _ = write!(
+                out,
+                "{}\"{}\":{}",
+                if i == 0 { "" } else { "," },
+                name,
+                self.states[i]
+            );
+        }
+        let _ = write!(
+            out,
+            "}},\"kinds\":{{\"connect\":{},\"http\":{}}},\"evicted_idle\":{},\"rejected_overload\":{},\"threads\":{},\"fds\":{},\"max_fds\":{}}}",
+            self.connects,
+            self.https,
+            self.evicted_idle,
+            self.rejected_overload,
+            self.threads,
+            self.fds,
+            self.max_fds,
+        );
+        out
+    }
+}
+
+/// 多い順に `max` 件まで取り、残りの本数を返す (同数は名前の順で安定させる)。
+fn top_counts(items: impl Iterator<Item = (String, u32)>, max: usize) -> (Vec<(String, u32)>, u32) {
+    let mut all: Vec<(String, u32)> = items.collect();
+    all.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let other = all.iter().skip(max).map(|(_, n)| *n).sum();
+    all.truncate(max);
+    (all, other)
+}
+
+/// `[{"<key>":"…","conns":N},…]`。
+fn push_counts(out: &mut String, key: &str, rows: &[(String, u32)]) {
+    use std::fmt::Write as _;
+    out.push('[');
+    for (i, (name, n)) in rows.iter().enumerate() {
+        let _ = write!(
+            out,
+            "{}{{\"{}\":\"{}\",\"conns\":{}}}",
+            if i == 0 { "" } else { "," },
+            key,
+            crate::json::escape(name),
+            n
+        );
+    }
+    out.push(']');
+}
+
+/// プロセスのスレッド数 / 記述子 / その上限。**写真を撮るときだけ**読む (`/proc` 2 つ)。
+fn process_counts() -> (u64, u64, u64) {
+    let threads = crate::sysinfo::process_threads().unwrap_or(0);
+    let (fds, max_fds) = crate::sysinfo::process_fds().unwrap_or((0, 0));
+    (threads, fds, max_fds)
+}
+
+/// 山の写真のリングと、「撮ってくれ」の旗 (T14.6)。
+///
+/// **accept の経路がするのは、閾を越えたときに原子の読み 1 回** ([`BurstRing::request`])
+/// だけ。撮るのは history スレッド ([`BurstRing::take_pending`] → [`BurstShot::take`] →
+/// [`BurstRing::push`]) で、5 秒以内に 1 枚撮れる。
+///
+/// **同じ山では 1 枚だけ**: 撮ると旗を下ろし、同時接続数が閾の 80% を下回るまで
+/// 次の 1 枚を撮らない ([`BurstRing::rearm_if_calm`])。
+pub struct BurstRing {
+    /// 次の山で 1 枚撮ってよいか
+    armed: AtomicBool,
+    /// history スレッドへの「撮ってくれ」= 旗が立った瞬間の本数 (0 = 頼まれていない)
+    pending: AtomicUsize,
+    /// 旗を立てた接続が見ていた閾と上限 (写真と、山が引いたかの判定に使う)
+    threshold: AtomicUsize,
+    max_conns: AtomicUsize,
+    inner: Mutex<BurstBuf>,
+}
+
+#[derive(Default)]
+struct BurstBuf {
+    buf: Vec<BurstShot>,
+    /// 次に書く位置 (`buf` が満杯になってからだけ意味を持つ)
+    next: usize,
+    /// 起動からの通算 (捨てた分も含む)
+    total: u64,
+}
+
+impl Default for BurstRing {
+    fn default() -> Self {
+        BurstRing::new()
+    }
+}
+
+impl BurstRing {
+    pub fn new() -> BurstRing {
+        BurstRing {
+            armed: AtomicBool::new(true),
+            pending: AtomicUsize::new(0),
+            threshold: AtomicUsize::new(0),
+            max_conns: AtomicUsize::new(0),
+            inner: Mutex::new(BurstBuf::default()),
+        }
+    }
+
+    /// 閾を**越えた瞬間**に accept の経路から呼ぶ (T14.6)。
+    ///
+    /// 呼び出し側は `open > cfg.burst_at` の**比較 1 回**で来るかどうかを決める。
+    /// ここでも原子の読みが 1 回で、旗が下りていれば (= 同じ山の 2 本目以降) すぐ戻る。
+    pub fn request(&self, active: usize, threshold: usize, max_conns: usize) {
+        if !self.armed.load(Ordering::Relaxed) {
+            return;
+        }
+        // 同じ瞬間に複数のスレッドが越えても、旗を取れるのは 1 つだけ
+        if !self.armed.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        self.threshold.store(threshold, Ordering::Relaxed);
+        self.max_conns.store(max_conns, Ordering::Relaxed);
+        // 0 は「頼まれていない」の印なので 1 未満にはしない
+        self.pending.store(active.max(1), Ordering::Relaxed);
+    }
+
+    /// 頼まれていれば旗を下ろし、立った瞬間の本数を返す (history スレッド)。
+    pub fn take_pending(&self) -> Option<usize> {
+        match self.pending.swap(0, Ordering::Relaxed) {
+            0 => None,
+            n => Some(n),
+        }
+    }
+
+    /// 山が引いたら次の 1 枚に備える (history スレッド)。
+    ///
+    /// 戻す境目を閾そのものではなく **80%** にしてあるのは、閾のすぐ上で出入りする
+    /// 接続が 1 本あるだけで写真がリングを埋めてしまうため。
+    pub fn rearm_if_calm(&self, active: usize) {
+        let threshold = self.threshold.load(Ordering::Relaxed);
+        if threshold == 0 || self.pending.load(Ordering::Relaxed) != 0 {
+            return;
+        }
+        if active.saturating_mul(100) < threshold.saturating_mul(80) {
+            self.armed.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// 1 枚書く (満杯なら最も古いものを上書きする)。
+    pub fn push(&self, shot: BurstShot) {
+        let mut r = self.inner.locked();
+        r.total += 1;
+        if r.buf.len() < MAX_BURSTS {
+            r.buf.push(shot);
+            return;
+        }
+        let at = r.next;
+        r.buf[at] = shot;
+        r.next = (at + 1) % MAX_BURSTS;
+    }
+
+    /// 次に撮る 1 枚の通し番号 (1 始まり)。
+    pub fn next_seq(&self) -> u64 {
+        self.inner.locked().total + 1
+    }
+
+    /// 直近 `n` 枚を**新しい順**で返す。2 つ目は起動からの通算 (捨てた分も含む)。
+    pub fn recent(&self, n: usize) -> (Vec<BurstShot>, u64) {
+        let r = self.inner.locked();
+        let len = r.buf.len();
+        let n = n.min(len);
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let start = if len < MAX_BURSTS { len } else { r.next };
+            let at = (start + len - 1 - i) % len;
+            out.push(r.buf[at].clone());
+        }
+        (out, r.total)
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.locked().buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// いまの閾と上限 (`/bursts` に出す。旗が 1 度も立っていなければ 0)。
+    pub fn threshold(&self) -> usize {
+        self.threshold.load(Ordering::Relaxed)
+    }
+
+    pub fn max_conns(&self) -> usize {
+        self.max_conns.load(Ordering::Relaxed)
+    }
+
+    /// 次の山で撮る用意ができているか / 撮ってくれと頼まれているか (`/bursts` に出す)。
+    pub fn armed(&self) -> bool {
+        self.armed.load(Ordering::Relaxed)
+    }
+
+    pub fn pending(&self) -> bool {
+        self.pending.load(Ordering::Relaxed) != 0
+    }
+}
+
+/// 閉じた理由の数 ([`CLOSE_REASON_NAMES`] と同じ。T14.6)。
+///
+/// [`CloseReason`] は 8 種類で、`Error` だけは原因を連れている。分布では
+/// **`error:*` を 1 つにまとめる** (原因別は `/status` の `errors_by_cause` と
+/// `/errors` にあるので、ここで 8 + 8 = 15 列に増やさない)。
+pub const CLOSE_REASONS: usize = 8;
+pub const CLOSE_REASON_NAMES: [&str; CLOSE_REASONS] = [
+    "client_eof",
+    "server_eof",
+    "idle_timeout",
+    "keepalive_timeout",
+    "evicted",
+    "limit",
+    "shutdown",
+    "error",
+];
+
+/// 寿命の区間 (秒)。**12 段** (T14.6)。
+///
+/// `PROXY_KEEPALIVE_SECS` (15) と `PROXY_TUNNEL_IDLE_SECS` (300) を**区間の境目に
+/// 置いてある**: 「その設定で切られた接続がどれだけ居るか」を読むのがこの分布の仕事なので、
+/// 境目が設定とずれていると読めない。
+pub const LIFE_BOUNDS_SECS: [u64; 12] = [1, 2, 5, 10, 15, 30, 60, 120, 300, 900, 3600, 21600];
+
+/// 上り・下りバイトの区間。**12 段、1 KiB から 4 倍ずつ** (T14.6)。
+///
+/// 1 KiB (要求 1 本ぶんのヘッダー) から 1 GiB (10 段目) までを 4 倍刻みで覆う。
+/// 最後の 1 段 (4 GiB) は「桁が違う 1 本」を上限なしの区間に落とさないための余白。
+pub const BYTE_BOUNDS: [u64; 12] = [
+    1 << 10,
+    1 << 12,
+    1 << 14,
+    1 << 16,
+    1 << 18,
+    1 << 20,
+    1 << 22,
+    1 << 24,
+    1 << 26,
+    1 << 28,
+    1 << 30,
+    1 << 32,
+];
+
+/// 区間の数 (上限なしの 1 段を足す)。
+pub const LIFE_BUCKETS: usize = LIFE_BOUNDS_SECS.len() + 1;
+pub const BYTE_BUCKETS: usize = BYTE_BOUNDS.len() + 1;
+
+/// 「その窓に閉じた接続」の分布 (T14.6)。**累計ではない。**
+///
+/// 足すのは [`crate::metrics::Metrics::record_closed`] = 接続の終了で 1 回だけで、
+/// **既に鍵の内側**なので原子操作もシステムコールも増えない。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClosedCounts {
+    /// 閉じた接続の数
+    pub closed: u64,
+    /// 閉じた理由別 ([`CLOSE_REASON_NAMES`] の並び)
+    pub reasons: [u64; CLOSE_REASONS],
+    /// 寿命の区間 ([`LIFE_BOUNDS_SECS`] + 上限なし)
+    pub life: [u64; LIFE_BUCKETS],
+    /// 上り / 下りバイトの区間 ([`BYTE_BOUNDS`] + 上限なし)
+    pub up: [u64; BYTE_BUCKETS],
+    pub down: [u64; BYTE_BUCKETS],
+    /// 合計 (平均を出すため)
+    pub life_secs_sum: u64,
+    pub parked_secs_sum: u64,
+    pub parks: u64,
+    pub up_bytes: u64,
+    pub down_bytes: u64,
+}
+
+impl Default for ClosedCounts {
+    fn default() -> Self {
+        ClosedCounts {
+            closed: 0,
+            reasons: [0; CLOSE_REASONS],
+            life: [0; LIFE_BUCKETS],
+            up: [0; BYTE_BUCKETS],
+            down: [0; BYTE_BUCKETS],
+            life_secs_sum: 0,
+            parked_secs_sum: 0,
+            parks: 0,
+            up_bytes: 0,
+            down_bytes: 0,
+        }
+    }
+}
+
+/// `bounds` の何段目か (どれにも収まらなければ最後の「上限なし」)。
+fn bucket_of(bounds: &[u64], v: u64) -> usize {
+    bounds.iter().position(|&b| v <= b).unwrap_or(bounds.len())
+}
+
+impl ClosedCounts {
+    /// 閉じた接続 1 本を足す (`/recent` に残す 1 件と同じもの)。
+    pub fn observe(&mut self, e: &RecentEntry) {
+        self.closed += 1;
+        self.reasons[e.reason.index()] += 1;
+        self.life[bucket_of(&LIFE_BOUNDS_SECS, e.secs)] += 1;
+        self.up[bucket_of(&BYTE_BOUNDS, e.up)] += 1;
+        self.down[bucket_of(&BYTE_BOUNDS, e.down)] += 1;
+        self.life_secs_sum = self.life_secs_sum.saturating_add(e.secs);
+        self.parked_secs_sum = self.parked_secs_sum.saturating_add(e.parked_secs);
+        self.parks = self.parks.saturating_add(e.parks as u64);
+        self.up_bytes = self.up_bytes.saturating_add(e.up);
+        self.down_bytes = self.down_bytes.saturating_add(e.down);
+    }
+
+    /// 粗い解像度へ畳むときは足し合わせる (区間の値なので平均でも最後の値でもない)。
+    pub fn merge(&mut self, o: &ClosedCounts) {
+        self.closed += o.closed;
+        for (a, b) in self.reasons.iter_mut().zip(o.reasons.iter()) {
+            *a += *b;
+        }
+        for (a, b) in self.life.iter_mut().zip(o.life.iter()) {
+            *a += *b;
+        }
+        for (a, b) in self.up.iter_mut().zip(o.up.iter()) {
+            *a += *b;
+        }
+        for (a, b) in self.down.iter_mut().zip(o.down.iter()) {
+            *a += *b;
+        }
+        self.life_secs_sum = self.life_secs_sum.saturating_add(o.life_secs_sum);
+        self.parked_secs_sum = self.parked_secs_sum.saturating_add(o.parked_secs_sum);
+        self.parks = self.parks.saturating_add(o.parks);
+        self.up_bytes = self.up_bytes.saturating_add(o.up_bytes);
+        self.down_bytes = self.down_bytes.saturating_add(o.down_bytes);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.closed == 0
+    }
+
+    /// 1 窓を配列 1 行として書く ([`CLOSED_KEYS`] の順。先頭は窓の始まりの時刻)。
+    pub fn push_row(&self, out: &mut String, t: u64) {
+        use std::fmt::Write as _;
+        let _ = write!(out, "[{},{},", t, self.closed);
+        push_u64_array(out, &self.reasons);
+        out.push(',');
+        push_u64_array(out, &self.life);
+        out.push(',');
+        push_u64_array(out, &self.up);
+        out.push(',');
+        push_u64_array(out, &self.down);
+        let _ = write!(
+            out,
+            ",{},{},{},{},{}]",
+            self.life_secs_sum, self.parked_secs_sum, self.parks, self.up_bytes, self.down_bytes
+        );
+    }
+}
+
+/// [`ClosedCounts::push_row`] が並べる列の名前 (`/history` の `closed.keys`)。
+pub const CLOSED_KEYS: [&str; 11] = [
+    "t",
+    "closed",
+    "reasons",
+    "life",
+    "up",
+    "down",
+    "life_secs_sum",
+    "parked_secs_sum",
+    "parks",
+    "up_bytes",
+    "down_bytes",
+];
+
+fn push_u64_array(out: &mut String, v: &[u64]) {
+    use std::fmt::Write as _;
+    out.push('[');
+    for (i, n) in v.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{}", n);
+    }
+    out.push(']');
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn entry(n: u64) -> ErrorEntry {
         ErrorEntry::new(
-            true,
+            EntryKind::Connect,
             &format!("h{}.example.net:443", n),
             "127.0.0.1",
             502,
@@ -949,7 +1523,7 @@ mod tests {
     fn one_entry_fits_in_256_bytes() {
         let long = "a".repeat(300);
         let e = ErrorEntry::new(
-            false,
+            EntryKind::Forward,
             &long,
             "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6xx",
             502,
@@ -977,7 +1551,7 @@ mod tests {
             (BlockCause::Local, "local"),
         ] {
             let e = ErrorEntry::new(
-                true,
+                EntryKind::Connect,
                 "ads.example.net:443",
                 "198.51.100.7",
                 403,
@@ -1263,5 +1837,291 @@ mod conn_tests {
         assert!(json.contains("\"target\":\"\""), "{}", json);
         assert!(json.contains("\"fds\":1"), "{}", json);
         assert!(json.contains("\"id\":7"), "{}", json);
+    }
+}
+
+/// 山の写真と、閉じた接続の分布 (T14.6)。
+#[cfg(test)]
+mod burst_tests {
+    use super::*;
+
+    fn closed(reason: CloseReason, secs: u64, up: u64, down: u64) -> RecentEntry {
+        RecentEntry {
+            id: 1,
+            at: 1_700_000_000,
+            client: "198.51.100.7".to_string(),
+            target: "example.net:443".to_string(),
+            connect: true,
+            secs,
+            requests: 0,
+            up,
+            down,
+            reason,
+            status: 0,
+            parked_secs: 3,
+            parks: 2,
+            stage_ms: [0; STAGES],
+            rtt_us: [0; SIDES],
+            retrans: [0; SIDES],
+        }
+    }
+
+    /// **閾を越えた瞬間の 1 本だけ**が旗を立て、同じ山の 2 本目以降は立てない。
+    #[test]
+    fn only_the_connection_that_crosses_raises_the_flag() {
+        let ring = BurstRing::new();
+        assert!(ring.armed());
+        assert!(!ring.pending());
+        // 閾 4 (上限 8 × 50%) を越えるのは 5 本目
+        ring.request(5, 4, 8);
+        assert_eq!(ring.take_pending(), Some(5), "越えた本数が旗に乗る");
+        assert!(!ring.armed(), "撮ると旗は下りる");
+        // 6〜8 本目は何も頼まない
+        for n in 6..=8 {
+            ring.request(n, 4, 8);
+        }
+        assert_eq!(ring.take_pending(), None, "同じ山では 1 枚だけ");
+        assert_eq!(ring.threshold(), 4);
+        assert_eq!(ring.max_conns(), 8);
+    }
+
+    /// 閾の 80% を下回るまでは次の 1 枚を撮らない。
+    #[test]
+    fn the_next_shot_waits_until_the_spike_is_over() {
+        let ring = BurstRing::new();
+        ring.request(5, 4, 8);
+        assert_eq!(ring.take_pending(), Some(5));
+        // 閾の 80% (4 × 0.8 = 3.2 本) 以上のあいだは戻らない
+        for active in [8, 5, 4] {
+            ring.rearm_if_calm(active);
+            assert!(!ring.armed(), "{} 本ではまだ戻らない", active);
+        }
+        ring.rearm_if_calm(3);
+        assert!(ring.armed(), "3 本 (< 3.2) まで減ったら次の 1 枚に備える");
+        ring.request(5, 4, 8);
+        assert_eq!(ring.take_pending(), Some(5), "2 枚目が撮れる");
+    }
+
+    /// まだ撮っていない旗を、山が引いたからといって消さない。
+    #[test]
+    fn a_pending_shot_is_not_lost_when_the_spike_passes() {
+        let ring = BurstRing::new();
+        ring.request(5, 4, 8);
+        ring.rearm_if_calm(0);
+        assert!(!ring.armed(), "頼んだ 1 枚を撮るまでは戻らない");
+        assert_eq!(ring.take_pending(), Some(5));
+        ring.rearm_if_calm(0);
+        assert!(ring.armed());
+    }
+
+    /// 写真は `/connections` の表から作る (接続元・宛先・状態・種類の内訳)。
+    #[test]
+    fn a_shot_summarises_the_connection_table() {
+        let t = ConnTable::new();
+        let now = Instant::now();
+        for i in 0..5u64 {
+            let slot = t.register(i, "198.51.100.7", now).unwrap();
+            slot.begin_tunnel("mtalk.google.com:5228");
+            slot.set_state(ConnState::Parked);
+        }
+        let other = t.register(9, "203.0.113.9", now).unwrap();
+        other.set_first_target("example.net:80");
+        other.set_state(ConnState::Reading);
+
+        let shot = BurstShot::take(&t.snapshot(), 1, 6, 5, 8, 4, 2, 7);
+        assert_eq!(shot.seq, 1);
+        assert_eq!(shot.active, 6);
+        assert_eq!(shot.trigger_active, 5);
+        assert_eq!(shot.max_conns, 8);
+        assert_eq!(shot.threshold, 4);
+        assert_eq!(shot.clients.len(), 2);
+        assert_eq!(shot.clients[0], ("198.51.100.7".to_string(), 5), "多い順");
+        assert_eq!(shot.clients_distinct, 2);
+        assert_eq!(shot.targets[0], ("mtalk.google.com:5228".to_string(), 5));
+        assert_eq!(shot.targets_distinct, 2);
+        assert_eq!(shot.states[ConnState::Parked as usize], 5);
+        assert_eq!(shot.states[ConnState::Reading as usize], 1);
+        assert_eq!((shot.connects, shot.https), (5, 1));
+        assert_eq!((shot.evicted_idle, shot.rejected_overload), (2, 7));
+        let json = shot.to_json();
+        assert!(json.contains("\"active\":6"), "{}", json);
+        assert!(
+            json.contains(
+                "\"states\":{\"serving\":0,\"reading\":1,\"parked\":5,\"queued\":0,\"relaying\":0}"
+            ),
+            "{}",
+            json
+        );
+        assert!(
+            json.contains("\"kinds\":{\"connect\":5,\"http\":1}"),
+            "{}",
+            json
+        );
+        assert!(
+            json.contains("{\"client\":\"198.51.100.7\",\"conns\":5}"),
+            "{}",
+            json
+        );
+        assert!(
+            json.contains("{\"target\":\"mtalk.google.com:5228\",\"conns\":5}"),
+            "{}",
+            json
+        );
+        assert!(json.contains("\"evicted_idle\":2"), "{}", json);
+        println!("burst shot: typical {} B", json.len());
+    }
+
+    /// 1 枚は 4 KiB 以内 (50 枚で 200 KiB。`/bursts` の 256 KiB に収まる大きさ)。
+    #[test]
+    fn one_shot_fits_in_4_kib() {
+        let t = ConnTable::new();
+        let now = Instant::now();
+        // 接続元も宛先も上限いっぱいの長さで、載せる数より多い種類を作る
+        for i in 0..(MAX_SHOT_CLIENTS as u64 + MAX_SHOT_TARGETS as u64 + 20) {
+            let slot = t
+                .register(
+                    i,
+                    &format!("2001:0db8:0000:0000:0000:ff00:0042:{:04x}%enp0s31f6xx", i),
+                    now,
+                )
+                .unwrap();
+            // **通し番号は先頭に置く**: 宛先は 80 B で切られるので、末尾に置くと
+            // 切られたあとが全部同じ名前になって「種類が 1 つ」になってしまう
+            slot.begin_tunnel(&format!("{:03}{}example.net:65535", i, "sub.".repeat(20)));
+        }
+        let shot = BurstShot::take(
+            &t.snapshot(),
+            u64::MAX,
+            usize::MAX,
+            usize::MAX,
+            4096,
+            2048,
+            u64::MAX,
+            u64::MAX,
+        );
+        assert_eq!(shot.clients.len(), MAX_SHOT_CLIENTS);
+        assert_eq!(shot.targets.len(), MAX_SHOT_TARGETS);
+        assert!(
+            shot.clients_other > 0 && shot.targets_other > 0,
+            "残りは本数だけ"
+        );
+        let json = shot.to_json();
+        assert!(json.len() <= 4096, "1 枚が {} B", json.len());
+        println!("burst shot: worst {} B", json.len());
+    }
+
+    /// リングは 50 枚で頭打ち、新しい順に返る。
+    #[test]
+    fn the_burst_ring_keeps_the_newest_fifty() {
+        let ring = BurstRing::new();
+        let t = ConnTable::new();
+        for i in 0..(MAX_BURSTS as u64 + 3) {
+            assert_eq!(ring.next_seq(), i + 1);
+            ring.push(BurstShot::take(&t.snapshot(), i + 1, 5, 5, 8, 4, 0, 0));
+        }
+        let (got, total) = ring.recent(MAX_BURSTS);
+        assert_eq!(total, MAX_BURSTS as u64 + 3);
+        assert_eq!(got.len(), MAX_BURSTS);
+        assert_eq!(got[0].seq, MAX_BURSTS as u64 + 3, "新しい順");
+        assert_eq!(got[MAX_BURSTS - 1].seq, 4, "最古は 50 枚前");
+        assert_eq!(ring.recent(2).0.len(), 2);
+    }
+
+    /// 閉じた理由・寿命・バイト・預けの分布が 1 本ずつ積み上がること。
+    #[test]
+    fn the_distribution_counts_reasons_lifetimes_and_bytes() {
+        let mut c = ClosedCounts::default();
+        assert!(c.is_empty());
+        // 寿命 12 秒 (10 < 12 <= 15 = `PROXY_KEEPALIVE_SECS` の段)、上り 2 KiB、下り 3 MiB
+        c.observe(&closed(CloseReason::KeepaliveTimeout, 12, 2048, 3 << 20));
+        c.observe(&closed(CloseReason::Error(ErrCause::Reset), 0, 0, 0));
+        c.observe(&closed(
+            CloseReason::Error(ErrCause::Dns),
+            100_000,
+            u64::MAX,
+            1,
+        ));
+        assert_eq!(c.closed, 3);
+        assert_eq!(c.reasons[CloseReason::KeepaliveTimeout.index()], 1);
+        assert_eq!(c.reasons[7], 2, "`error:*` は 1 つにまとめる");
+        assert_eq!(c.life[4], 1, "12 秒は 15 秒の段");
+        assert_eq!(c.life[0], 1, "0 秒は 1 秒の段");
+        assert_eq!(c.life[LIFE_BUCKETS - 1], 1, "100,000 秒は上限なしの段");
+        assert_eq!(c.up[1], 1, "2 KiB は 4 KiB の段");
+        assert_eq!(c.up[0], 1, "0 B は 1 KiB の段");
+        assert_eq!(c.up[BYTE_BUCKETS - 1], 1, "20 桁は上限なしの段");
+        assert_eq!(c.down[6], 1, "3 MiB は 4 MiB の段");
+        assert_eq!(c.life_secs_sum, 12 + 100_000);
+        assert_eq!(c.parked_secs_sum, 9);
+        assert_eq!(c.parks, 6);
+        assert_eq!(c.down_bytes, (3 << 20) + 1);
+        // 畳むと足し合わせ
+        let mut agg = ClosedCounts::default();
+        agg.merge(&c);
+        agg.merge(&c);
+        assert_eq!(agg.closed, 6);
+        assert_eq!(agg.reasons[7], 4);
+        assert_eq!(agg.life[4], 2);
+        assert_eq!(agg.parks, 12);
+
+        let mut out = String::new();
+        c.push_row(&mut out, 1_700_000_005);
+        assert!(
+            out.starts_with("[1700000005,3,[0,0,0,1,0,0,0,2],"),
+            "{}",
+            out
+        );
+        assert!(
+            out.ends_with(",100012,9,6,18446744073709551615,3145729]"),
+            "{}",
+            out
+        );
+        // 列の数が `CLOSED_KEYS` と合っていること (入れ子の配列は 1 列)
+        let mut depth = 0;
+        let cols = 1 + out
+            .chars()
+            .filter(|ch| {
+                match ch {
+                    '[' => depth += 1,
+                    ']' => depth -= 1,
+                    _ => {}
+                }
+                *ch == ',' && depth == 1
+            })
+            .count();
+        assert_eq!(cols, CLOSED_KEYS.len(), "{}", out);
+    }
+
+    /// 8 つの理由が分布の 8 列に 1 対 1 で並ぶこと (名前も同じ綴り)。
+    #[test]
+    fn every_reason_has_its_own_column() {
+        let all = [
+            CloseReason::ClientEof,
+            CloseReason::ServerEof,
+            CloseReason::IdleTimeout,
+            CloseReason::KeepaliveTimeout,
+            CloseReason::Evicted,
+            CloseReason::Limit,
+            CloseReason::Shutdown,
+            CloseReason::Error(ErrCause::Refused),
+        ];
+        for (i, reason) in all.into_iter().enumerate() {
+            assert_eq!(reason.index(), i, "{}", reason.text());
+            // `error:*` 以外は `/recent` の綴りと同じ名前
+            if i < 7 {
+                assert_eq!(CLOSE_REASON_NAMES[i], reason.text());
+            }
+        }
+        assert_eq!(CLOSE_REASON_NAMES[7], "error");
+        // 区間は 12 段ずつで、単調に増える
+        assert_eq!(LIFE_BOUNDS_SECS.len(), 12);
+        assert_eq!(BYTE_BOUNDS.len(), 12);
+        assert!(LIFE_BOUNDS_SECS.windows(2).all(|w| w[0] < w[1]));
+        assert!(BYTE_BOUNDS.windows(2).all(|w| w[0] < w[1]));
+        // 設定の値そのものが境目にある (T14.6 の目的)
+        assert!(LIFE_BOUNDS_SECS.contains(&15), "PROXY_KEEPALIVE_SECS");
+        assert!(LIFE_BOUNDS_SECS.contains(&300), "PROXY_TUNNEL_IDLE_SECS");
+        assert_eq!(BYTE_BOUNDS[0], 1024);
+        assert_eq!(BYTE_BOUNDS[10], 1 << 30);
     }
 }

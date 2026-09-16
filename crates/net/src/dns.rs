@@ -319,6 +319,16 @@ fn system_resolve(host: &str, port: u16) -> io::Result<Vec<IpAddr>> {
     Ok(addrs)
 }
 
+/// **表を通さずに** OS へ問い合わせる (canary。T14.10)。
+///
+/// 表には書かず、当たり外れも数えない: canary が測るのは**リゾルバの実力**で、
+/// 1 分に 1 回の自分の問い合わせを利用者の統計 (`dns.hits` / `dns.misses` と
+/// ミス 1 回の平均) に混ぜてしまうと、両方が読めなくなる。keep-warm (T14.1) の
+/// 窓にも入らない (canary が触った名前が warm になっては本末転倒)。
+pub fn resolve_uncached(host: &str, port: u16) -> io::Result<Vec<IpAddr>> {
+    system_resolve(host, port)
+}
+
 /// `dns-refresh` スレッドへの用件。
 enum Msg {
     /// この名前を 1 回だけ引き直す (期限前の先回り。T13.1)

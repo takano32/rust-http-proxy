@@ -844,6 +844,8 @@ pub struct Metrics {
     pub rejected_overload: AtomicU64,
     /// 上限に当たったときに、席を作るために閉じた暇なトンネルの数 (T13.2)
     pub evicted_idle: AtomicU64,
+    /// `PROXY_ALLOW_CLIENTS` に無い接続元として accept 直後に閉じた数 (T14.18)
+    pub rejected_client_acl: AtomicU64,
     pub bytes_forwarded: AtomicU64,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
@@ -861,6 +863,9 @@ pub struct Metrics {
     /// 閉じた接続の個票 (`/recent`。T14.4)。**書くのは接続の終了で 1 回だけ**で、
     /// 要求ごとにも中継のバイトごとにも触らない
     pub closed: crate::recent::RecentRing,
+    /// 山の写真 (`/bursts`。T14.6)。accept の経路は閾を越えた瞬間に旗を立てるだけで、
+    /// **撮るのは history スレッド** ([`Metrics::take_burst_shot`])
+    pub bursts: crate::recent::BurstRing,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -878,6 +883,7 @@ impl Metrics {
             park_watcher_alive: AtomicBool::new(false),
             rejected_overload: AtomicU64::new(0),
             evicted_idle: AtomicU64::new(0),
+            rejected_client_acl: AtomicU64::new(0),
             bytes_forwarded: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
@@ -887,6 +893,7 @@ impl Metrics {
             errors: crate::recent::ErrorRing::new(),
             conns: crate::recent::ConnTable::new(),
             closed: crate::recent::RecentRing::new(),
+            bursts: crate::recent::BurstRing::new(),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
         }
@@ -933,13 +940,30 @@ impl Metrics {
             return;
         };
         self.errors.push(crate::recent::ErrorEntry::new(
-            connect,
+            crate::recent::EntryKind::from_connect(connect),
             target,
             client,
             status,
             crate::recent::EntryCause::Error(cause),
             detail.dns_ms,
             detail.connect_ms,
+        ));
+    }
+
+    /// canary (T14.10) の失敗を個票のリングに 1 件だけ残す (`/errors` の `kind: "canary"`)。
+    ///
+    /// **集計 (`errors` / `errors_by_cause`) には足さない**: canary は利用者の要求では
+    /// ないので、「利用者に返したエラー」の数に混ざると `/status` が読めなくなる。
+    /// 接続元は空 (自分) で、返した状態コードも無い (0)。
+    pub fn record_canary_error(&self, target: &str, cause: ErrCause, dns_ms: u64, connect_ms: u64) {
+        self.errors.push(crate::recent::ErrorEntry::new(
+            crate::recent::EntryKind::Canary,
+            target,
+            "",
+            0,
+            crate::recent::EntryCause::Error(cause),
+            dns_ms,
+            connect_ms,
         ));
     }
 
@@ -952,8 +976,37 @@ impl Metrics {
         if let Some(slot) = self.conns.unregister(id)
             && let Some(entry) = slot.closed_entry(std::time::Instant::now())
         {
+            // 閉じた理由・寿命・上り下りのバイト・預けられていた秒を窓に畳む (T14.6)。
+            // **2,000 件のリングを読み直さない**: 1 件を作ったこの場で、区間の値として
+            // 足しておく (どちらも鍵 1 回、原子操作もシステムコールも増えない)
+            self.history.closed.observe(&entry);
             self.closed.push(entry);
         }
+    }
+
+    /// 山の写真を 1 枚撮る (**history スレッドが 5 秒ごとに呼ぶ**。T14.6)。
+    ///
+    /// 頼まれていなければ、山が引いたかどうかだけ見て戻る (原子の読み 2 回)。
+    /// 頼まれていたら `/connections` の表から 1 枚作る (**表の鍵 1 回**)。
+    /// 越えた接続を受けたスレッドは旗を立てるだけなので、accept の経路に鍵は増えない。
+    pub fn take_burst_shot(&self) {
+        let active = self.active_connections.load(Ordering::Relaxed);
+        let Some(trigger) = self.bursts.take_pending() else {
+            self.bursts.rearm_if_calm(active);
+            return;
+        };
+        let rows = self.conns.snapshot();
+        let shot = crate::recent::BurstShot::take(
+            &rows,
+            self.bursts.next_seq(),
+            active,
+            trigger,
+            self.bursts.max_conns(),
+            self.bursts.threshold(),
+            self.evicted_idle.load(Ordering::Relaxed),
+            self.rejected_overload.load(Ordering::Relaxed),
+        );
+        self.bursts.push(shot);
     }
 
     /// 403 で拒否した 1 件を個票のリングに写す (`/errors`。T14.2 (4))。
@@ -963,7 +1016,7 @@ impl Metrics {
     /// 通した要求には 1 命令も足さない。
     pub fn record_blocked(&self, connect: bool, target: &str, client: &str, cause: BlockCause) {
         self.errors.push(crate::recent::ErrorEntry::new(
-            connect,
+            crate::recent::EntryKind::from_connect(connect),
             target,
             client,
             403,
@@ -1341,11 +1394,13 @@ impl Metrics {
                 "\"parked_connections\":{},\"parked_tunnels\":{},",
                 "\"parking\":{},",
                 "\"live_threads\":{},\"idle_threads\":{},\"queued_jobs\":{},\"max_threads\":{},",
-                "\"rejected_overload\":{},\"evicted_idle\":{},\"bytes_forwarded\":{},",
+                "\"rejected_overload\":{},\"evicted_idle\":{},\"rejected_client_acl\":{},",
+                "\"bytes_forwarded\":{},",
                 "\"cache_hits\":{},\"cache_misses\":{},",
                 "\"origin_connections\":{{\"new\":{},\"reused\":{},\"pool_hit_ratio\":{:.4}}},",
                 "\"hosts\":[{}],\"clients\":[{}],",
-                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"cache\":{}}}"
+                // この環境で何が読めるか (T14.15) と canary (T14.10)。どちらも覚えてある結果を読むだけ
+                "\"log_level\":\"{}\",\"settings\":{},\"dns\":{},\"canary\":{},\"ipv6\":{},\"blocklist\":{},\"state_file\":{},\"capabilities\":{},\"cache\":{}}}"
             ),
             crate::json::escape(extra.version),
             uptime,
@@ -1366,6 +1421,7 @@ impl Metrics {
             extra.concurrency.max_threads,
             self.rejected_overload.load(Ordering::Relaxed),
             self.evicted_idle.load(Ordering::Relaxed),
+            self.rejected_client_acl.load(Ordering::Relaxed),
             bytes,
             self.cache_hits.load(Ordering::Relaxed),
             self.cache_misses.load(Ordering::Relaxed),
@@ -1377,9 +1433,12 @@ impl Metrics {
             crate::log::current_level().as_str().trim(),
             extra.settings,
             crate::dns::status_json(),
+            // 利用者の要求が無い時間帯の名前解決と TCP 接続 (最後の 1 回。T14.10)
+            crate::canary::status_json(),
             crate::net::ipv6_status_json(),
             extra.blocklist,
             extra.state_file,
+            crate::sysinfo::capabilities::status_json(),
             cache_json
         )
     }
@@ -1950,10 +2009,12 @@ mod latency_tests {
             )
         };
         let (a, b) = (of(HostSort::Requests), of(HostSort::Errors));
-        assert_eq!(a.matches("\"host\":").count(), 4);
+        // 数えるのは `hosts[]` の要素 (`{"host":` で始まる) だけ。`canary` にも
+        // `host` の欄がある (T14.10) ので、鍵の名前だけで数えると 1 件多くなる
+        assert_eq!(a.matches("{\"host\":").count(), 4);
         assert_eq!(
-            a.matches("\"host\":").count(),
-            b.matches("\"host\":").count()
+            a.matches("{\"host\":").count(),
+            b.matches("{\"host\":").count()
         );
         assert_eq!(
             a.matches("\"errors_by_cause\":[").count(),

@@ -6,8 +6,9 @@
 //!
 //! 即時反映できるのは接続単位で参照する値だけ: ACL (`PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS`)、
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
-//! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、
+//! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、`PROXY_CANARY`、`PROXY_CANARY_SECS`、
 //! `PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
+//! `PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`、
 //! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
 //! TLS、オリジンプール、キャッシュ予算) は起動時に固定されるので、変更を検知したら
 //! `/status` と dashboard に「再起動が必要」と出す。
@@ -98,42 +99,64 @@ impl Live {
         let old = self.config();
         let mut next = (*old).clone();
         let mut applied = Vec::new();
+        // 当てた値は**出どころも差し替える** (`/config` の `source` が追随する。T14.15)。
+        // 起動時に固定される項目 (下の `restart` の側) は写さない: `.env` に書いても
+        // 効いていないので、起動時の出どころのままにしておく
         if fresh.acl != old.acl {
             next.acl = fresh.acl.clone();
+            next.sources.adopt(&fresh.sources, "PROXY_ALLOW_HOSTS");
+            next.sources.adopt(&fresh.sources, "PROXY_DENY_HOSTS");
             applied.push("PROXY_ALLOW_HOSTS/PROXY_DENY_HOSTS");
         }
         if fresh.timeout != old.timeout {
             next.timeout = fresh.timeout;
+            next.sources.adopt(&fresh.sources, "PROXY_TIMEOUT_SECS");
             applied.push("PROXY_TIMEOUT_SECS");
         }
         if fresh.keepalive != old.keepalive {
             next.keepalive = fresh.keepalive;
+            next.sources.adopt(&fresh.sources, "PROXY_KEEPALIVE_SECS");
             applied.push("PROXY_KEEPALIVE_SECS");
         }
         if fresh.connect_ports != old.connect_ports {
             next.connect_ports = fresh.connect_ports.clone();
+            next.sources.adopt(&fresh.sources, "PROXY_CONNECT_PORTS");
             applied.push("PROXY_CONNECT_PORTS");
         }
         if fresh.allow_local != old.allow_local {
             next.allow_local = fresh.allow_local;
+            next.sources.adopt(&fresh.sources, "PROXY_ALLOW_LOCAL");
             applied.push("PROXY_ALLOW_LOCAL");
+        }
+        if fresh.endpoints_readonly != old.endpoints_readonly {
+            next.endpoints_readonly = fresh.endpoints_readonly;
+            applied.push("PROXY_ENDPOINTS_READONLY");
+        }
+        // 接続元の ACL は `serve` が accept ごとに引き直すので、次に来る接続から効く
+        if fresh.allow_clients != old.allow_clients {
+            next.allow_clients = fresh.allow_clients.clone();
+            applied.push("PROXY_ALLOW_CLIENTS");
         }
         if fresh.tunnel_idle != old.tunnel_idle {
             next.tunnel_idle = fresh.tunnel_idle;
+            next.sources.adopt(&fresh.sources, "PROXY_TUNNEL_IDLE_SECS");
             applied.push("PROXY_TUNNEL_IDLE_SECS");
         }
         if fresh.max_conns != old.max_conns {
             next.max_conns = fresh.max_conns;
+            next.sources.adopt(&fresh.sources, "PROXY_MAX_CONNS");
             applied.push("PROXY_MAX_CONNS");
         }
         // `auto` は `PROXY_MAX_CONNS` から決まるので、そちらが変わるとこの値も変わる
         // (当てるのは `serve` が接続ごとに `Workers::set_limit` で。T11.6)
         if fresh.max_threads != old.max_threads {
             next.max_threads = fresh.max_threads;
+            next.sources.adopt(&fresh.sources, "PROXY_MAX_THREADS");
             applied.push("PROXY_MAX_THREADS");
         }
         if fresh.dns_ttl != old.dns_ttl {
             next.dns_ttl = fresh.dns_ttl;
+            next.sources.adopt(&fresh.sources, "PROXY_DNS_TTL_SECS");
             crate::dns::set_ttl(fresh.dns_ttl);
             crate::dns::clear();
             applied.push("PROXY_DNS_TTL_SECS");
@@ -142,6 +165,8 @@ impl Live {
         // 新しい長さと比べられるので、0 にすればその場で効かなくなる)
         if fresh.dns_negative != old.dns_negative {
             next.dns_negative = fresh.dns_negative;
+            next.sources
+                .adopt(&fresh.sources, "PROXY_DNS_NEGATIVE_SECS");
             crate::dns::set_negative_ttl(fresh.dns_negative);
             applied.push("PROXY_DNS_NEGATIVE_SECS");
         }
@@ -149,11 +174,20 @@ impl Live {
         // 待ち行列をその場で空にする (`set_warm_window` の中。T14.1)
         if fresh.dns_warm != old.dns_warm {
             next.dns_warm = fresh.dns_warm;
+            next.sources.adopt(&fresh.sources, "PROXY_DNS_WARM_SECS");
             crate::dns::set_warm_window(fresh.dns_warm);
             applied.push("PROXY_DNS_WARM_SECS");
         }
+        // canary の宛先と周期 (T14.10)。`canary` スレッドは次の周期から新しい宛先を使う
+        if fresh.canary != old.canary || fresh.canary_secs != old.canary_secs {
+            next.canary = fresh.canary.clone();
+            next.canary_secs = fresh.canary_secs;
+            crate::canary::configure(&fresh.canary, fresh.canary_secs);
+            applied.push("PROXY_CANARY");
+        }
         if fresh.pac_direct != old.pac_direct {
             next.pac_direct = fresh.pac_direct.clone();
+            next.sources.adopt(&fresh.sources, "PROXY_PAC_DIRECT");
             applied.push("PROXY_PAC_DIRECT");
         }
         let bl = crate::blocklist::Sources::from_config(&fresh);
@@ -162,6 +196,14 @@ impl Live {
             next.blocklist_url = fresh.blocklist_url.clone();
             next.blocklist_refresh = fresh.blocklist_refresh;
             next.blocklist_exempt = fresh.blocklist_exempt.clone();
+            for key in [
+                "PROXY_BLOCKLIST_FILE",
+                "PROXY_BLOCKLIST_URL",
+                "PROXY_BLOCKLIST_REFRESH_SECS",
+                "PROXY_BLOCKLIST_EXEMPT",
+            ] {
+                next.sources.adopt(&fresh.sources, key);
+            }
             crate::blocklist::configure(bl);
             applied.push("PROXY_BLOCKLIST_*");
         }
@@ -170,6 +212,7 @@ impl Live {
             .unwrap_or(log::Level::Info);
         if level != log::current_level() {
             log::set_level(level);
+            next.sources.adopt(&fresh.sources, "PROXY_LOG_LEVEL");
             applied.push("PROXY_LOG_LEVEL");
         }
         *self.current.write_locked() = Arc::new(next);
@@ -289,6 +332,12 @@ pub fn spawn(live: Arc<Live>, tick: impl Fn() + Send + 'static) -> Option<thread
     let handle = thread::Builder::new()
         .name("env-reload".into())
         .spawn(move || {
+            // この環境で何が読めるか (T14.15) は**起動時 1 回 + 1 時間ごと**。専用のスレッドは
+            // 立てず、この一巡 (最長 `POLL_INTERVAL`) のついでに測り直す (要求の経路では触らない)。
+            // 起動時の 1 回もここで測る: 名前解決の測定だけ最大 2 秒かかるので、
+            // 待ち受けを始めるのを遅らせないため
+            crate::sysinfo::capabilities::refresh();
+            let mut caps_at = std::time::Instant::now();
             let mut seen = stamp(&path);
             loop {
                 let event = match &watch {
@@ -313,6 +362,10 @@ pub fn spawn(live: Arc<Live>, tick: impl Fn() + Send + 'static) -> Option<thread
                 if event || now != seen {
                     seen = now;
                     live.reload();
+                }
+                if caps_at.elapsed() >= crate::sysinfo::capabilities::REFRESH {
+                    caps_at = std::time::Instant::now();
+                    crate::sysinfo::capabilities::refresh();
                 }
                 tick();
             }
