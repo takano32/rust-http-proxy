@@ -756,7 +756,10 @@ pub fn spawn_every(
         // 下の層 (IPv4 優先の切替・圧迫・バラスト) の変わり目を出来事に 1 件 (T14.11)
         crate::events::poll(cache);
         metrics.history.closed.roll(crate::cache::now_epoch());
-        let pushed = metrics.history.push(Sample::take(metrics, cache));
+        let sample = Sample::take(metrics, cache);
+        // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
+        crate::daily::tick(metrics, &sample);
+        let pushed = metrics.history.push(sample);
         if let Some(st) = &store {
             st.write_samples(&pushed);
         }
