@@ -4067,6 +4067,7 @@ T14.20 → T14.19 → T14.21。T14.18 は既定無効で入れる (2026-09-16 �
     **この条件の CPU/本 は §2 に載せない** (IPv6 の試行スレッドのぶんが乗るので `--only connect` と比べられない)。§1 に節を足した。
     - cgroup 256 MiB はベンチにも掛かる (太るものを測るときは `--memory off`)。`--only connect-multi` は `--only all` に入れていない。
       `crates/bench` に初めての単体テスト 1 本 (`Report::percentile`)。
+    - **訂正 (2026-09-16、T14.47 の切り分け)**: 上の「max 1,011 ms = 待ち行列が溢れて SYN が 1 秒後に再送される」の**溢れているのはプロキシの待ち受けではなく、ベンチ自身の受け皿** (`spawn_sink`、backlog 128、accept 1 スレッド) だった。`--only connect-multi` は 64 本の閉ループなのでプロキシ宛ての SYN は 128 で溢れない。1 秒の固まり (IPv6 の黒穴) の再現そのものは正しい。
 - [x] **T14.17 `scripts/snapshot-diff.py` (2 枚の `/snapshot` から「何が変わったか」を全部出す)**
   - 目的: T14.0 の分析は `/status` の差分・`/history` の再起動時刻での切り分け・`/dns` の個票・`/hosts` の差分を手作業で組み合わせた
     (Python を 5 回書いた)。次の T14.99 で同じことを 1 コマンドにする。`status-diff.py` はホスト別の差分だけ。
@@ -4722,7 +4723,7 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 受け入れ基準: T14.16 の環境で `--only connect-multi --conc 64` を回すと個票に `syn_retrans` ≥ 1 の接続が現れ、`/status` の
     `syn_retrans_total` が増える。loopback の `--only connect` では 0 のまま。費用: **CONNECT 1 本に `getsockopt` 1 回** (システムコール
     +1。本文に書く)、CPU/本 ±4% (6 組)。forward はプールの接続を張るときだけ (要求ごとは 0)。
-- [ ] **T14.47 待ち受けの backlog (`PROXY_LISTEN_BACKLOG`、既定 `min(1024, somaxconn)`)**
+- [x] **T14.47 待ち受けの backlog (`PROXY_LISTEN_BACKLOG`、既定 `min(1024, somaxconn)`)**
   - 目的: Rust の `TcpListener::bind` は backlog **128** で待ち受ける。ブラウザがページを開くと数十本の CONNECT が同時に来て、accept ループが
     1 本 (T4.3) なので 128 を越えた SYN は捨てられ、**クライアントは 1 秒後に再送する** (利用者に 1 秒の待ちとして見える。T14.16 で
     同じ現象を手元で観測した)。デプロイ先の 09-11 のバースト (1 時間に 4,966 本、山 218) でこれが起きていたかは T14.12 の
@@ -4733,6 +4734,9 @@ T14.28** (安くて、次の 24 時間の読み取りが楽になる)。残り�
   - 受け入れ基準: T14.16 の環境で `--only connect-multi --conc 64 --seconds 5` の **max が 300 ms 未満** (いまは 1,011 ms = SYN の再送)、
     `/status` の `syn_retrans_total` (T14.46) または T14.12 の `ListenOverflows` が 0。`--only connect` の CPU/本 ±4%。`ss -ltn` の
     `Send-Q` が設定値になること (Linux)。
+  - 結果 (2026-09-16、`c94ed3f`、マージ `cd6dbd7`): **待ち受けの backlog を選べるようにした** (`PROXY_LISTEN_BACKLOG`、既定 `0` = `min(1024, /proc/sys/net/core/somaxconn)`。この機械の `somaxconn` は 4096 なので既定は 1024)。`std` の `TcpListener::bind` は `listen(fd, 128)` 固定なので、`crates/sys/src/sys.rs` に `socket` / `bind` / `listen` の束縛 (`listensock`、既存の `sockopt` と同じく **aarch64 / x86_64 だけ**) と `listen_socket(addr, backlog) -> RawFd` を足し、`crates/net/src/net.rs` の `bind_all_with` が `std` の `bind` の代わりにそれを呼んで `TcpListener::from_raw_fd` で包む。**`SO_REUSEADDR` は `std` と同じく bind の前に立て、`IPV6_V6ONLY` は触らない** (`[::]` が IPv4 も受ける今の姿は 1 バイトも変わらない)。Linux 以外と定数の分からない arch は `std` の `bind` (128) に落ちる。`.env` では即時反映しない (変えたら `restart_required` に出る)。起動ログの待ち受けの行に `backlog N`、`/config` の `settings` に実効値。**つまみはカーネルまで届いている**: `ss -ltn` の `Send-Q` が **128 → 1024** (`PROXY_LISTEN_BACKLOG=5` なら 5)。費用: `--only connect` の CPU/本 **155.88 → 152.55 us (−2.1%、6 組。±4% の中)**、待ち受けを作るのは起動時だけなので要求ごとは 0 増。テストは新規 7 本 (`tests/backlog_test.rs` 2・`proxy-net` 2・`proxy-sys` 3)。`crates/net` に `proxy-sys` の依存を足した (循環なし、外部クレート 0 のまま)。
+    - **受け入れ基準の「max < 300 ms」「`listen_overflows` 0」は満たしていない。測り方の方が間違っていた** (T14.16 の数字の読み違い)。`deployed-like` の中で **待ち受けごとに `Recv-Q` の山**を撮ると、backlog 1024 のプロキシの待ち受けは **1,024 中 10** までしか溜まらず、張り付いているのは**ベンチ自身の受け皿** (`crates/bench` の `spawn_sink`、`std` の `TcpListener` = backlog 128、accept 1 スレッド) の **109 / 128** だった。`--only connect-multi` は 64 スレッドの**閉ループ**なので、プロキシ宛ての SYN は同時に 64 本しか無く **128 でも溢れない**。max ≈ 1 秒と `listen_overflows` は**プロキシ → ベンチの受け皿**の SYN 再送で、**T14.16 の `結果:` の 1,011 ms も同じもの**だった。対照実験 (backlog だけ変える): 1024 → `Recv-Q` の山 10・`listen_overflows` 278・max 1,064 ms、**5 → 山 6 (満杯)・345・2,084 ms**。つまり「小さすぎる backlog が 1〜2 秒を作る」機構自体は手元で再現でき、既定 1024 はその逆に効く。**手元のベンチでプロキシの待ち受けを溢れさせるには、(a) `spawn_sink` の backlog を上げてベンチ側の律速を外すか、(b) 閉ループではなく一斉に数百本 SYN を出す形が要る** (小物。T14.46 の `syn_retrans` が入れば「どちら側の再送か」も個票で切り分けられる)。T14.12 の「`--only connect` で `ListenOverflows` +122」も同じ可能性 (未切り分け)。
+    - **デプロイ先の基準 (再デプロイ後の `kernel.last_5m.listen_overflows` が 0 のまま) は親が見る。**
 - [ ] **T14.48 http の宛先にポートを付ける (`/connections` と `/recent` の `target`。小物)**
   - 目的: T14.4 の気づき — http 接続の `target` が `example.com` (ポート無し)、CONNECT は `discord.com:443`。個票を読む道具が
     2 つの形を扱うことになる。
