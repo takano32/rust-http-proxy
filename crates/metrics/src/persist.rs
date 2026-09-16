@@ -64,6 +64,12 @@ impl Store {
     /// まだ書いていない個票をファイルへ追記する (**history スレッドの 5 秒の周期と、
     /// 停止シグナルの最後の 1 回**。T14.9)。戻り値は書いたレコード数。
     pub fn write_recent(&self, metrics: &Metrics) -> usize {
+        // 記録の一括 off (T14.41)。メモリのリングは既に空なので書くものは無いが、
+        // `on` → `off` に切り替えた瞬間にまだ書いていない件が残りうるのでここでも止める
+        // (`off` の間は**ファイルに 1 バイトも足さない**)
+        if !crate::records::recording() {
+            return 0;
+        }
         self.recent
             .as_ref()
             .map(|r| r.write_new(metrics).total())
