@@ -226,7 +226,17 @@ fn test_integration_dns_shows_the_resolver_table() {
     assert!(json.contains("\"negative_ttl_secs\":"), "{}", json);
     // 引けた名前: アドレスと残り TTL と「最後に使ってからの秒」がある
     assert!(json.contains("\"host\":\"localhost\""), "{}", json);
-    assert!(json.contains("\"addrs\":[\"127.0.0.1\""), "{}", json);
+    // 答えの並びは OS の resolver しだい (CI の runner は `::1` が先) なので、順番は見ない
+    let addrs = json
+        .split("\"host\":\"localhost\",\"addrs\":[")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or_else(|| panic!("localhost の addrs が無い: {}", json));
+    assert!(
+        addrs.contains("\"127.0.0.1\""),
+        "addrs に 127.0.0.1 が無い: {}",
+        json
+    );
     assert!(json.contains("\"ttl_left\":"), "{}", json);
     assert!(json.contains("\"idle_secs\":"), "{}", json);
     assert!(json.contains("\"refreshing\":false"), "{}", json);
