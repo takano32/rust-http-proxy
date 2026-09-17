@@ -116,7 +116,21 @@ fn test_integration_explain_host_gathers_stats_dns_and_the_records() {
     assert!(json.contains("\"dns\":{\"host\":\"localhost\""), "{}", json);
     assert!(json.contains("\"ttl_left\":"), "{}", json);
     assert!(json.contains("\"warm\":"), "{}", json);
-    assert!(json.contains("\"addrs\":[\"127.0.0.1\""), "{}", json);
+    // 答えの並びは OS の resolver しだい (CI の runner は `::1` が先) なので、順番は見ない
+    let dns_block = json
+        .split("\"dns\":{\"host\":\"localhost\"")
+        .nth(1)
+        .unwrap_or_else(|| panic!("dns が無い: {}", json));
+    let addrs = dns_block
+        .split("\"addrs\":[")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or_else(|| panic!("addrs が無い: {}", json));
+    assert!(
+        addrs.contains("\"127.0.0.1\""),
+        "addrs に 127.0.0.1 が無い: {}",
+        json
+    );
 
     // (4) 直近 10 本までの個票 (段階と閉じた理由)
     let recent = json
