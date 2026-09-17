@@ -55,7 +55,7 @@
 **作業の進め方 (毎タスク共通)**:
 
 1. 着手前に対象ファイルを読み、README の該当箇所を確認する。**着手前に「今どうなっているか」を測る。**
-2. 実装 → `cargo fmt` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace` → `cargo build --release`。
+2. 実装 → `cargo fmt` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace --no-fail-fast` (CI と同じ。1 本落ちても残りを走らせる) → `cargo build --release`。
 3. 性能に関わるタスクは **変更前後の計測値** を取り、コミットメッセージ本文に貼る (§1)。
 4. 環境変数や挙動を足したら README の表と説明を更新する。
 5. コミットメッセージは既存に合わせて `feat:` / `fix:` / `perf:` / `docs:` / `chore:` / `refactor:` / `test:` の接頭辞。

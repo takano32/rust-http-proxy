@@ -44,7 +44,8 @@ jobs:
       # 文書とコードが同じ集合か (エンドポイント・環境変数・`/snapshot` の部・画面の関数・クレートの表。T14.56)
       - run: ./scripts/check-docs.sh
       # ワークスペースなので --workspace が要る (無いと下の層のテストが走らない)
-      - run: cargo test --workspace
+      # 1 本落ちても残りの test binary を走らせる (落ちた全部を 1 回の CI で見る。2026-09-16)
+      - run: cargo test --workspace --no-fail-fast
       - run: cargo build --release
       # ベンチは既定のビルド対象から外してあるので明示的に作る
       - run: cargo build --release -p proxy-bench
