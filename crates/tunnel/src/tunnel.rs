@@ -587,6 +587,16 @@ mod relay {
     fn went_away(e: &io::Error) -> bool {
         e.kind() == io::ErrorKind::TimedOut
     }
+
+    /// `poll` に渡す記述子。**関心 (`events`) が無いなら `-1`** (T15.5)。
+    ///
+    /// `poll(2)` は負の記述子を無視して `revents` を 0 にする。関心が 0 の記述子を
+    /// そのまま渡すと、`events` に関係なく返る `POLLERR` / `POLLHUP` で
+    /// 「誰も面倒を見ない起床」が起きて空回りになる (呼ぶ側の注記を見よ)。
+    fn poll_fd(sock: &TcpStream, events: i16) -> RawFd {
+        if events == 0 { -1 } else { sock.as_raw_fd() }
+    }
+
     /// 無期限 (`PROXY_TUNNEL_IDLE_SECS=0`) のトンネルを預けるときの「遠い期限」。
     /// 預かり所は期限の早い順に並べた集合で待つので、期限そのものは必ず要る。
     const FOREVER: Duration = Duration::from_secs(365 * 86400);
@@ -1061,9 +1071,27 @@ mod relay {
                         events[d.dst] |= POLLOUT;
                     }
                 }
+                // **関心の無い記述子は `poll` に渡さない** (T15.5)。`poll(2)` は
+                // `events` が 0 でも `POLLERR` / `POLLHUP` を必ず返すので、渡すと
+                // 「誰も面倒を見ない起床」が生まれる: 上の輪は `readable` を立てるだけで、
+                // その記述子を読む向きが `done` なら輪の先頭で飛ばされ、反対の向きは
+                // 自分の送信元しか見ていないので 1 バイトも進まない (`progressed = false`)。
+                // `poll` が 0 を返さないのでアイドル打ち切りにも永久に当たらず、
+                // **1 本のトンネルが 1 スレッドを回し続ける** (2026-09-18 のデプロイ先は
+                // この形のトンネル 2 本で CPU 割り当て 0.5 コアを 27 時間食い切っていた。
+                // `mtalk.google.com:5228`、齢 25.4 時間、通算 9 kB、0 bps)。
+                //
+                // 負の記述子は `poll(2)` が無視して `revents` を 0 にするので、これで
+                // **`poll` が返した起床は必ず、その記述子への `fill` か `drain` の
+                // システムコール 1 回につながる**という不変条件が立つ (関心が `POLLIN`
+                // なら `fill` が EOF かエラーを返して進み、`POLLOUT` なら `drain` が
+                // 書けるかエラーを返して進む)。どの向きも `done` でなければ `POLLIN` か
+                // `POLLOUT` を 1 つは立てる (すぐ上の輪) ので、両方 0 になるのは
+                // 「全部 `done`」= この手前で輪を抜けるときだけ。死んだ半閉じの
+                // トンネルは今までどおりアイドル打ち切り (`PROXY_TUNNEL_IDLE_SECS`) で閉じる
                 let mut fds = [
-                    PollFd::new(socks[0].as_raw_fd(), events[0]),
-                    PollFd::new(socks[1].as_raw_fd(), events[1]),
+                    PollFd::new(poll_fd(&socks[0], events[0]), events[0]),
+                    PollFd::new(poll_fd(&socks[1], events[1]), events[1]),
                 ];
                 // 両方向とも暇なら、待つのは猶予のあいだだけ。空振りしたら預ける。
                 // **片方向だけ EOF (half-close) のトンネルは預けない**: 残った方向は
