@@ -109,5 +109,121 @@ class Errors(unittest.TestCase):
         self.assertNotIn("`1789050000`", md)
 
 
+class Restart(unittest.TestCase):
+    """再起動をまたいだら `/status` の通算は引き算しない (T14.99)。"""
+
+    def pair(self, same_version):
+        """後の雪像 (`/status` の通算 1,200 件) と、その 24 時間前の雪像。"""
+        b = read(B)
+        b["status"].update(uptime_secs=43200, total_requests=1200)
+        b["uptime_secs"] = 43200
+        a = read(B)
+        a["taken_at"] = b["taken_at"] - 86400
+        if same_version:
+            # 24 時間ぶん `uptime_secs` が伸びていれば再起動していない
+            a["status"].update(uptime_secs=200000 - 86400, total_requests=200)
+            b["status"].update(uptime_secs=200000)
+            b["uptime_secs"] = 200000
+        else:
+            # 版が違えば再起動 (`uptime_secs` は 61 秒 → 43,200 秒で**減っていない**)
+            a["version"] = a["status"]["version"] = "0.1.0+aaaaaaa"
+            a["status"].update(uptime_secs=61, total_requests=11)
+        a["status"]["dns"].update(misses=1, miss_ms_sum=10.0, refreshes=0)
+        b["status"]["dns"].update(misses=484, miss_ms_sum=7900.0, refreshes=9223)
+        return a, b
+
+    def test_a_restart_that_only_shows_in_the_version_is_caught(self):
+        """`uptime_secs` の大小だけだと、**再起動の直後に取った**雪像を見落とす。"""
+        a, b = self.pair(same_version=False)
+        with written(a=a, b=b) as paths:
+            md = run([paths["b"], "--prev", paths["a"]])
+        self.assertIn("**再起動をまたいでいる**", md)
+        self.assertIn("は「起動から」の値**", md)
+        self.assertIn("| 要求 | 1,200 ", md)              # 1,200 − 11 にしない
+        # 484 − 1 にしない。閾 0.15 と読み違えないよう 1 要求あたりは 3 桁
+        self.assertIn("| ミス | 484 (0.403 /要求) |", md)
+        self.assertIn("| 表 / warm / 引き直し | 12 / 3 / 9,223 |", md)
+
+    def test_without_a_restart_the_totals_are_still_subtracted(self):
+        a, b = self.pair(same_version=True)
+        with written(a=a, b=b) as paths:
+            md = run([paths["b"], "--prev", paths["a"]])
+        self.assertNotIn("再起動をまたいでいる", md)
+        self.assertIn("| 要求 | 1,000 ", md)              # 1,200 − 200
+        self.assertIn("| ミス | 483 ", md)                # 484 − 1
+
+
+class Truncated(unittest.TestCase):
+    """256 KiB で切れた部を先頭で知らせる (T14.99)。"""
+
+    def test_the_truncated_parts_are_listed(self):
+        b = read(B)
+        b["hosts"].update(truncated=True, count=1000, shown=6)
+        b["parts"].append("profile")
+        b["profile"] = {"samples": [], "count": 720, "shown": 456, "truncated": True}
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("- **応答が 256 KiB で切れている部**: `hosts` (6/1,000 件)、"
+                      "`profile` (456/720 件)", md)
+
+    def test_a_nested_part_name_is_followed(self):
+        """`parts` の名前は `history.5` のような入れ子もある。"""
+        b = read(B)
+        b["history"]["5"].update(truncated=True, count=4320, shown=2000)
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("`history.5` (2,000/4,320 件)", md)
+
+    def test_nothing_is_printed_when_no_part_is_cut(self):
+        self.assertNotIn("応答が 256 KiB で切れている部", run([B]))
+
+
+class Recent(unittest.TestCase):
+    """個票の「そろっている窓」(T14.99)。"""
+
+    def snapshot(self, truncated):
+        b = read(B)
+        b["dropped"] = []
+        # 3 本: 取得の 2 時間前に開いて 1 時間前に閉じた 1 本と、直前の 2 本
+        b["recent"] = {
+            "recent": [
+                {"id": 3, "at": b["taken_at"] - 7200, "secs": 3600, "reason": "server_eof",
+                 "kind": "connect", "client": "192.0.2.10", "target": "alpha.example.jp:443",
+                 "up": 1024, "down": 2048, "ms": {"connect": 5, "dns": 1}},
+                {"id": 4, "at": b["taken_at"] - 600, "secs": 60, "reason": "client_eof",
+                 "kind": "connect", "client": "192.0.2.10", "target": "beta.example.jp:443",
+                 "up": 10, "down": 20, "ms": {"connect": 7, "dns": 0}},
+                {"id": 5, "at": b["taken_at"] - 300, "secs": 30, "reason": "client_eof",
+                 "kind": "connect", "client": "192.0.2.10", "target": "beta.example.jp:443",
+                 "up": 10, "down": 20, "ms": {"connect": 9, "dns": 0}},
+            ],
+            "count": 3, "shown": 3, "recorded": 900, "truncated": truncated}
+        return b
+
+    def test_the_window_starts_at_the_earliest_close_not_the_earliest_open(self):
+        with written(b=self.snapshot(True)) as paths:
+            md = run([paths["b"]])
+        # 最小の `at` は 22:26:40Z だが、そろっているのは最小の `at + secs` から
+        self.assertIn("  - そろっている窓: 2026-09-10 23:26:40Z → 2026-09-11 00:26:40Z"
+                      " (`min(at + secs)` から取得まで)", md)
+        self.assertIn("**これより前に閉じた接続は応答から落ちている**", md)
+
+    def test_a_complete_answer_has_no_caveat(self):
+        with written(b=self.snapshot(False)) as paths:
+            md = run([paths["b"]])
+        self.assertIn("  - そろっている窓: 2026-09-10 23:26:40Z", md)
+        self.assertNotIn("応答から落ちている", md)
+
+
+class Bytes(unittest.TestCase):
+    def test_the_unit_matches_the_divisor(self):
+        """1,024 で割るなら KiB / MiB / GiB (`GB` / `MB` だと 2.4〜7.4% 小さく読める)。"""
+        self.assertEqual(ss.fmt_bytes(1 << 20), "1.0 MiB")
+        self.assertEqual(ss.fmt_bytes(1536), "1.5 KiB")
+        self.assertEqual(ss.fmt_bytes(3 << 30), "3.0 GiB")
+        self.assertEqual(ss.fmt_bytes(999), "999 B")
+        self.assertIn("| 転送 | 42.0 MiB |", run([B, "--prev", A]))
+
+
 if __name__ == "__main__":
     unittest.main()

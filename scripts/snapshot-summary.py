@@ -43,9 +43,13 @@ def stamp(t):
 
 
 def fmt_bytes(n):
+    """バイト数を読める形に (`scripts/proxydata.py` の `fmt_bytes()` と同じ単位)。
+
+    **割るのは 1,024 なので単位は GiB / MiB / KiB** (画面の `fmtBytes` と同じ)。
+    """
     if n is None:
         return "—"
-    for unit, div in (("GB", 1 << 30), ("MB", 1 << 20), ("kB", 1 << 10)):
+    for unit, div in (("GiB", 1 << 30), ("MiB", 1 << 20), ("KiB", 1 << 10)):
         if abs(n) >= div:
             return f"{n / div:.1f} {unit}"
     return f"{n} B"
@@ -168,8 +172,45 @@ def error_delta(cur, prev):
 
 
 def part(snap, name):
-    v = snap.get(name)
+    """雪像の部を取り出す (`parts` の `history.5` のような入れ子の名前も辿る)。"""
+    v = snap
+    for key in name.split("."):
+        v = v.get(key) if isinstance(v, dict) else None
     return v if isinstance(v, dict) else {}
+
+
+def restart_between(a, b, wall):
+    """2 枚の間に再起動があったか (`snapshot-diff.py` の `restart_info()` と同じ見方)。
+
+    `uptime_secs` の大小だけを見ると、**再起動の直後に取った雪像**が前のときに見落とす
+    (2026-09-16 の 0 時間の雪像は `uptime_secs` 61 秒で、後の 131,881 秒より小さい)。
+    版の違いと「`uptime_secs` の伸びが窓に足りない」も再起動として数える。
+    """
+    va, vb = a.get("version"), b.get("version")
+    if va and vb and va != vb:
+        return True
+    ua = (part(a, "status").get("uptime_secs") or 0)
+    ub = (part(b, "status").get("uptime_secs") or 0)
+    if ub < ua:
+        return True
+    # 時計のずれと取得の間の分を見込んで、窓の 1% (最低 60 秒) は許す
+    return bool(wall and wall > 0 and (ub - ua) + max(60, wall // 100) < wall)
+
+
+def truncated_parts(snap):
+    """**応答が 256 KiB で切れている部**を (名前, 出た件数, 全件) で並べる。
+
+    雪像の top-level の `dropped` は「4 MiB を越えたので**部ごと**落とした」の意味で
+    (`crates/endpoints/src/endpoints/recent.rs`)、部の中の打ち切りは載らない。
+    2026-09-18 の雪像は `dropped` が空のまま `recent` / `hosts` / `profile` の 3 つが
+    切れていて、要約からは「CPU は 1 日ぶんでなく 456 標本ぶん」が読めなかった。
+    """
+    out = []
+    for name in snap.get("parts") or []:
+        v = part(snap, name)
+        if v.get("truncated"):
+            out.append((name, v.get("shown"), v.get("count")))
+    return out
 
 
 def main(argv=None):
@@ -185,20 +226,26 @@ def main(argv=None):
 
     st = part(d, "status")
     pst = part(prev, "status") if prev else {}
-    window = ""
+    window, restarted = "", False
     if prev:
         dt = (d.get("taken_at") or 0) - (prev.get("taken_at") or 0)
-        restarted = (st.get("uptime_secs") or 0) < (pst.get("uptime_secs") or 0)
+        restarted = restart_between(prev, d, dt)
         window = (f" (前回からの窓 {dt / 3600:.1f} 時間"
                   + ("、**再起動をまたいでいる**" if restarted else "") + ")")
 
     def delta(path, default=0):
-        """`status` の通算から前回を引く (`--prev` が無ければそのまま)。"""
+        """`status` の通算から前回を引く (`--prev` が無ければそのまま)。
+
+        **再起動をまたいだら引き算しない**。`/status` の通算は再起動で 0 に戻るので、
+        前の雪像 (別のプロセス) の値を引くとその分だけ足りなくなる
+        (2026-09-16 の 2 枚では要求 3,312 − 11 = 3,301 と、前の版の 11 件を引いていた)。
+        `snapshot-diff.py` の §1 と同じく「起動から」の値として読む。
+        """
         cur, old = st, pst
         for k in path[:-1]:
             cur, old = cur.get(k, {}) or {}, (old.get(k, {}) or {})
         c = cur.get(path[-1], default)
-        if not prev:
+        if not prev or restarted:
             return c
         o = old.get(path[-1], default)
         if isinstance(c, (int, float)) and isinstance(o, (int, float)) and c >= o:
@@ -206,13 +253,27 @@ def main(argv=None):
         return c
 
     print(f"- 版 `{d.get('version')}` / 起動から {(st.get('uptime_secs') or 0) / 3600:.1f} 時間"
-          f" / 取得 {d.get('taken_at')}{window}")
+          f" / 取得 {stamp(d.get('taken_at'))} (`{d.get('taken_at')}`){window}")
     if d.get("dropped"):
         print(f"- **4 MiB を越えたので落とした部分**: {', '.join(d['dropped'])}")
+    cut = truncated_parts(d)
+    if cut:
+        print("- **応答が 256 KiB で切れている部**: "
+              + "、".join(f"`{name}` ({num(shown)}"
+                         + (f"/{num(count)}" if count and count != shown else "") + " 件)"
+                         for name, shown, count in cut)
+              + " (top-level の `dropped` は**部ごと**落としたもの。部の中の打ち切りは"
+                "その部の `truncated` を見る)")
     print()
 
     reqs = delta(["total_requests"])
-    secs = (d.get("taken_at", 0) - prev.get("taken_at", 0)) if prev else (st.get("uptime_secs") or 0)
+    # 通算を引き算した窓は「取得から取得まで」、引かないなら「起動から」
+    secs = ((d.get("taken_at", 0) - prev.get("taken_at", 0)) if (prev and not restarted)
+            else (st.get("uptime_secs") or 0))
+    if restarted:
+        print("**再起動をまたいでいるので、`/status` の通算 (要求・転送・名前解決・上限で断った) は"
+              "「起動から」の値** (引き算すると前の版のぶんを引いてしまう)。")
+        print()
     print("| 全体 | 値 |")
     print("|---|---|")
     print(f"| 要求 | {num(reqs)} ({reqs / secs:.3f} /s) |" if secs else f"| 要求 | {num(reqs)} |")
@@ -231,15 +292,17 @@ def main(argv=None):
     print()
 
     dns = st.get("dns") or {}
-    pdns = (pst.get("dns") or {}) if prev else {}
-    misses = dns.get("misses", 0) - (pdns.get("misses", 0) if prev else 0)
-    ms_sum = dns.get("miss_ms_sum", 0.0) - (pdns.get("miss_ms_sum", 0.0) if prev else 0.0)
+    pdns = (pst.get("dns") or {}) if (prev and not restarted) else {}
+    misses = dns.get("misses", 0) - pdns.get("misses", 0)
+    ms_sum = dns.get("miss_ms_sum", 0.0) - pdns.get("miss_ms_sum", 0.0)
     print("| 名前解決 | 値 |")
     print("|---|---|")
-    print(f"| ミス | {num(misses)} ({misses / reqs:.2f} /要求) |" if reqs else f"| ミス | {num(misses)} |")
+    # 完了の定義の閾が 0.15 なので、2 桁だと 0.146 が「0.15」に丸まって判定を読み違える
+    print(f"| ミス | {num(misses)} ({misses / reqs:.3f} /要求) |" if reqs
+          else f"| ミス | {num(misses)} |")
     print(f"| ミス 1 回 | {ms_sum / misses:.1f} ms |" if misses else "| ミス 1 回 | — |")
     print(f"| 表 / warm / 引き直し | {num(dns.get('entries'))} / {num(dns.get('warm'))}"
-          f" / {num(dns.get('refreshes', 0) - (pdns.get('refreshes', 0) if prev else 0))} |")
+          f" / {num(dns.get('refreshes', 0) - pdns.get('refreshes', 0))} |")
     print(f"| 負のキャッシュ命中 / 古い答えで代用 | {num(dns.get('negative_hits'))}"
           f" / {num(dns.get('stale_served'))} |")
     print()
@@ -287,6 +350,16 @@ def main(argv=None):
     print(f"- 閉じた接続 (`/recent`): 通算 {num(rec.get('recorded'))} 本 / 覚えている {len(rows)} 本"
           + ("" if not rec.get("truncated") else " (**応答は 256 KiB で切れている**)"))
     if rows:
+        # **そろっている窓は「いちばん早く閉じた接続」から取得まで** (`at` の最小からではない)。
+        # 応答が切れているとき残っているのは「最後に閉じた N 本」なので、`at` の最小で窓を
+        # 切ると、その窓の中に**開始して窓の中で閉じなかった**接続が抜けたまま「全部」に見える。
+        ends = [r.get("at", 0) + r.get("secs", 0) for r in rows if r.get("at")]
+        if ends:
+            print(f"  - そろっている窓: {stamp(min(ends))} → {stamp(d.get('taken_at'))}"
+                  " (`min(at + secs)` から取得まで)"
+                  + ("。**これより前に閉じた接続は応答から落ちている** "
+                     "(`/recent?since=` を付けて取り直せば切れない)"
+                     if rec.get("truncated") else ""))
         print(f"  - 閉じた理由: " + ", ".join(f"{k} {v}" for k, v in tally(rows, "reason").items()))
         print(f"  - 種類: " + ", ".join(f"{k} {v}" for k, v in tally(rows, "kind").items()))
         secs_all = [r.get("secs", 0) for r in rows]

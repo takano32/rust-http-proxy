@@ -442,6 +442,17 @@ class EventsErrorsBursts(unittest.TestCase):
         self.assertNotIn("(山 —)", md)
         self.assertIn("その時間帯の山は下の `active_max`", md)
 
+    def test_the_byte_unit_matches_the_divisor(self):
+        """T14.99: 1,024 で割るなら KiB / MiB / GiB (画面の `fmtBytes` と同じ)。
+
+        `GB` / `MB` / `kB` と書いていたので、報告のバイト数が 2.4〜7.4% 小さい
+        十進の量に読めていた (§4 の Δバイト は README / §2 に写す数字)。
+        """
+        self.assertEqual(pd.fmt_bytes(1 << 20), "1.0 MiB")
+        self.assertEqual(pd.fmt_bytes(-(1 << 30)), "-1.0 GiB")
+        self.assertEqual(pd.fmt_bytes(1536), "1.5 KiB")
+        self.assertEqual(pd.fmt_bytes(999), "999 B")
+
     def test_an_old_snapshot_with_peak_still_prints(self):
         """手で組んだ古い雪像 (`peak`) も読めること (保険の分岐)。"""
         self.assertEqual(sd.shot_text({"at": 1789052400, "peak": 99}),
