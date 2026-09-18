@@ -2141,8 +2141,9 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 **待ちの内訳**が読めます (この並べ替えは受け取った 50 件の中での並び替えで、**どの 50 件を切り出すか**は
 `/status?sort=` の側です)。
 
-ダッシュボードの図は 9 枚で、上段の KPI に「**CONNECT 確立 p50 (直近 1,024 本)**」と「**名前解決**」
-(ミス率 = `misses ÷ (hits + misses)`、ミス 1 回の値段 `miss_avg_ms`、あれば先回りの回数) が出ます。
+ダッシュボードの図は 11 枚で、上段の KPI に「**CONNECT 確立 p50 (直近 1,024 本)**」「**利用者が待つ時間 p50**」
+「**名前解決**」(ミス率 = `misses ÷ (hits + misses)`、ミス 1 回の値段 `miss_avg_ms`、あれば先回りの回数)
+「**CPU の絞り**」が出ます。
 **p50 の KPI は `/status` の `recent_quantiles.connect` (直近 1,024 本の実測。T14.31)** で、
 札に本数・下に p90 / p99 / 最大とその窓の秒数が付き、**1 ms 未満も丸めません**。
 `recent_quantiles` を持たない版の `/status` (や `--lite`) では、今までどおり
@@ -2159,6 +2160,22 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 (Node があるときだけの補助的な確認。引数を省くと `scripts/testdata/` の見本を読みます)。
 最後に**匿名化したデプロイ先の実データ** (`scripts/testdata/deployed-2026-09-16.anon.json`。T14.35) でも
 同じ読み方を回すので、本物の分布 (ホスト 817 件・1,440 標本) で壊れたらここで気づきます。
+**`dashboard.html` の大きさの上限は 80 KiB** です (T15.0 (14) で下の 5 枚を足して 81,429 B。
+`node scripts/check-dashboard.js` が見張ります。外部ライブラリを読み込まない 1 ページという方針を
+守るための歯止めなので、超えたら中身を削るか上限を上げるかを先に決めてください — **余白は 491 B しかありません**)。
+
+**次の判断に要る 5 枚 (T15.0 (14))**。どれも**新しい `fetch` を 1 本も増やしていません** (既にある
+2 秒 / 5 秒 / 30 秒の取り直しに相乗り) し、**欄を持たない版の応答では「記録していません」と断って
+空のまま描きます** (`--lite` も同じ)。
+
+| カード | 読む口 | 欄 | 無い版のふるまい |
+|---|---|---|---|
+| **CPU の絞り** (KPI + 図) | `/status` の `kernel.cgroup_cpu`、`/history` の `kernel` | `nr_throttled` ÷ `nr_periods` を % で、下に直近 5 分・待たされた合計 (`throttled_usec`)・`quota_cores` (null なら「割り当て なし」)・`since_start`・`path`。図は `cpu_nr_periods` / `cpu_nr_throttled` を周期 / 秒で 2 系列 | `kernel.cgroup_cpu` が無い版と cgroup v2 の読めない環境では KPI が「–」 |
+| **CPU を使っているスレッド** (プロファイルの節の表) | `/profile` の `threads_top` | `tid` (= `/connections` の `tid` と同じ番号)・`comm`・役割・CPU %・走っていた標本数。直近 5 分を **tid で束ねて**上位 8 | 列を持たない版では 0 行 |
+| **動かないトンネル** (「いまの接続」の下の表) | `/connections` | **`idle_secs` が 300 秒以上の CONNECT** だけを、止まっている長い順に 20 本。`target` `age_secs` `idle_secs` `bytes` `half_closed` (+ 秒) `spins` `revents` (client / origin) `tid`。下の行に「空回りの合計」と「1 度も空回りしていない本数」(**0 のままなら待っている・増え続けるなら回っている**) | `idle_secs` を持たない版では 0 件 |
+| **名前解決の内訳** | `/status` の `dns`、`/history` の `dns_warm` | warm な名前の数の推移 (図) と、ミスの種類別の横棒 1 本 (`misses_by_kind` = `cold` / `expired` / `warm_stale` / `negative` の**起動からの通算**。画面では差分を溜めません)。KPI の下には `refresh_failures` / `refresh_late` / 引き直し 1 回の平均も出ます | `misses_by_kind` を持たない版では横棒を出さない |
+| **受付待ち** | `/profile` の `stages.connect` の `queue` と `run_delay_us` | `queue` の段を **12 段の区間**に開いた横棒 1 本 (二峰ならワーカー待ちで待たされています) と、件数・平均・p50 / p95 / 最大。下は `run_delay_us` (全役割の合計) を us / 秒 の折れ線で | `run_delay_us` が `null` (schedstat の読めない環境) の標本では折れ線が切れる |
+| **利用者が待つ時間 p50** (KPI + 図) | `/status` の `recent_quantiles.wait`、`/history` の `wait_*` | `queue + client_read + dns + connect` の和 (T15.0 (2))。札に本数・下に p90 / p99 / 最大。**まだ外にあるのは accept から要求行が届くまでと、200 の後の `first_relay`** | `recent_quantiles.wait` が無ければ `/history` の `wait_*` の区間の補間に落ち、それも無ければ「–」 |
 
 **`/inspect` は「調査」ページ**です (`/dashboard/inspect` も同じもの。T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
 こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページのままです。
