@@ -73,7 +73,13 @@ pub struct Metrics {
     ///
     /// `active_max` は 5 秒ごとの瞬間値の最大なので、5 秒より短い山を取りこぼす
     /// (実測で取りこぼしが分かっていたので、この列を足した)。ここは
-    /// [`Metrics::inc_active_conn`] が数え上げるたびに見るので、山を 1 本も落とさない。
+    /// [`Metrics::inc_active_conn`] が数え上げるたびに見るので、**5 秒より短い山も拾う**。
+    ///
+    /// 厳密に「1 本も落とさない」ではない: 5 秒に 1 回の読み出し
+    /// ([`Metrics::take_active_peak`]) の「今の本数を読む」と「山を取り出して書き戻す」の
+    /// 間 (命令 2 つぶん) に接続が 1 本増えると、書き戻す値がその 1 本を含まない。
+    /// 読み出し側が `max(今の本数)` を取って補正しているので、**張ったままの接続では
+    /// 下振れしない**が、その 1 本が次の読み出しまでに閉じた場合だけ 1 本ぶん低く出る。
     ///
     /// **要求の経路に足す原子操作は読み 1 回と比較 1 回だけ** (越えたときだけ `fetch_max`)。
     /// T15.0 の決まり「要求の経路は増やさない」の**例外その 2** (もう 1 つは
@@ -968,9 +974,14 @@ impl Metrics {
     /// 0 ではなく今の本数に戻すのは、次の区間の山が「いま張っている本数」より小さく
     /// 出ないようにするため (山は「その区間に何本まで居たか」であって
     /// 「その区間に何本増えたか」ではない)。**呼ぶのは 5 秒の標本のときだけ**。
+    ///
+    /// 読みと `swap` の間に接続が増えると、書き戻す `now` がその 1 本を含まない
+    /// ([`Metrics::active_peak`] の但し書き)。**戻り値だけは `now` で下から押さえて**
+    /// おくと、張ったままの接続が次の区間で 1 本ぶん消えることはない。
     pub fn take_active_peak(&self) -> usize {
         let now = self.active_connections.load(Ordering::Relaxed);
-        self.active_peak.swap(now, Ordering::Relaxed)
+        let peak = self.active_peak.swap(now, Ordering::Relaxed);
+        peak.max(now)
     }
 
     pub fn add_bytes(&self, bytes: u64) {
@@ -1523,9 +1534,10 @@ mod tests {
 
     /// 同時接続の**山** (`/history` の `active_peak`。T15.0 (10))。
     ///
-    /// 見るのは 3 つ: (a) 5 秒より短い山は瞬間値 (`active_connections`) からは
+    /// 見るのは 4 つ: (a) 5 秒より短い山は瞬間値 (`active_connections`) からは
     /// 見えないが山には残る、(b) 読むと **0 ではなく今の本数**に戻る
-    /// (張りっぱなしの接続が次の区間で消えないように)、(c) 山は下がらない。
+    /// (張りっぱなしの接続が次の区間で消えないように)、(c) 山は下がらない、
+    /// (d) 読みと書き戻しの競合で山が今の本数より低くなっても、戻り値は下振れしない。
     #[test]
     fn the_active_peak_keeps_spikes_the_instant_value_misses() {
         let m = Metrics::new();
@@ -1555,6 +1567,17 @@ mod tests {
         m.dec_active_conn();
         m.inc_active_conn();
         assert_eq!(m.take_active_peak(), 3);
+
+        // (d) 「今の本数を読む」と「山を書き戻す」の間に 1 本増えた状態を手で作る
+        // (`swap` が読んだときの本数で上書きするので、山が今の本数より低くなる)。
+        // 戻り値は今の本数で下から押さえるので、張ったままの接続は消えない
+        m.active_peak.store(1, Ordering::Relaxed);
+        assert_eq!(m.active_connections.load(Ordering::Relaxed), 3);
+        assert_eq!(
+            m.take_active_peak(),
+            3,
+            "競合で山が低く書き戻されても、張っている本数より下には出ない"
+        );
     }
 
     /// 版は上の層から渡ったものがそのまま `/status` に出ること (T12.6)。

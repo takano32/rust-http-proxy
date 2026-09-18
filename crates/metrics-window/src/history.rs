@@ -190,7 +190,9 @@ pub const KEYS: [&str; 40] = [
 /// - `cumulative` … **起動からの通算**。レートが欲しければ隣の標本との差を取る
 ///   (粗い解像度へは窓の最後の値で畳む。再起動をまたぐと段差が 1 つ出る)
 /// - `delta` … **その区間に起きたぶん**だけ (粗い解像度へは足し合わせ)
-/// - `gauge` … その瞬間の値 (粗い解像度へは平均。山は消える)
+/// - `gauge` … その瞬間の値 (粗い解像度へは平均。山は消える)。
+///   **上限の列 (`max_fds`) だけは窓の最後の値**で畳む ([`Sample::downsample`]。
+///   `RLIMIT_NOFILE` はほぼ定数で、平均にすると上限が変わった瞬間だけ中途半端な数になる)
 /// - `peak` … その区間の最大 (粗い解像度へも最大)
 /// - `buckets` … **入れ子の配列**。要素ごとに足して畳む
 ///   (区間は `bounds_ms`、`errors_by_cause` は `causes` が名前を持つ)
@@ -425,6 +427,8 @@ impl Sample {
             dns_ms_sum: sum(|s| s.dns_ms_sum),
             threads: avg(|s| s.threads),
             fds: avg(|s| s.fds),
+            // 上限は `gauge` だが**窓の最後の値** (`RLIMIT_NOFILE` はほぼ定数。
+            // [`KEY_KINDS`] の `gauge` の行に但し書きがある)
             max_fds: last.max_fds,
             active_max: max(|s| s.active_max),
             threads_max: max(|s| s.threads_max),

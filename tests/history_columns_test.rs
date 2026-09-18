@@ -10,6 +10,7 @@
 //! - `requests_delta` / `bytes_delta` が**その区間だけ**を数え、通算の `requests` /
 //!   `bytes` はそのまま残っていること (1 本目の標本は前の通算が無いので 0)
 //! - `dns_warm` が `/status` の `dns.warm` と同じ数であること
+//!   (**warm な名前を 1 つ作ってから**比べる。名前を引かないと両方 0 で恒等式になる)
 //!
 //! 周期は `history::spawn_every` で縮める (`tests/rate_test.rs` と同じ作法)。
 #![cfg(target_os = "linux")]
@@ -145,7 +146,15 @@ fn test_integration_active_peak_catches_a_spike_shorter_than_the_sample() {
     wait_until(|| !rows(&history_json(port)).is_empty(), "最初の標本");
 
     // 張ってすぐ閉じる = 標本と標本の間で終わる山。**実際に socket を張らない**のは、
-    // 50 本の accept が周期をまたいでしまうと「短い山」にならないため
+    // 50 本の accept が周期をまたいでしまうと「短い山」にならないため。
+    //
+    // この山は原子を直に叩いているので、**接続の経路に `inc_active_conn` が居ること**は
+    // ここでは縛れない。それを見ているのは `tests/overload_test.rs` (8 本張って
+    // `metrics.active_connections` が 8、`/status` の `active_connections` は
+    // 9 = 8 本 + `/status` 自身) と `tests/bursts_test.rs` (4 本 → 8 本 → 2 本)。
+    // `active_connections` を増やすのは
+    // `Metrics::inc_active_conn` だけ (`crates/metrics-core/src/metrics.rs`) なので、
+    // あの 2 本が通る限り `Conn::new` (`src/lib.rs`) からの呼び出しは生きている
     for _ in 0..SPIKE {
         metrics.inc_active_conn();
     }
@@ -249,24 +258,72 @@ fn test_integration_request_deltas_count_only_their_own_interval() {
     );
 }
 
+/// `/status` の `dns` の中の `warm` (同じ綴りの鍵が他にもあるので切り出してから引く)。
+fn status_dns_warm(port: u16) -> u64 {
+    let status = status_json(port);
+    let dns = &status[status.find("\"dns\":{").expect("no dns in status")..];
+    status_number(dns, "warm")
+}
+
 /// `dns_warm` は `/status` の `dns.warm` と同じ**件数**。
+///
+/// **名前を 1 つも引かないと `dns.warm` も列も 0 で、`assert_eq!(0, 0)` の恒等式になる**
+/// (`tick.rs` の `dns_warm: …warm_count()` を `0` に書き換えても通ってしまう)。
+/// そうならないように、`tests/dns_test.rs` と同じ作法で **warm な名前を 1 つ作ってから**
+/// 比べ、どちらも 0 でないことを見る (IP リテラルは表に載らないので、名前で通すこと)。
 #[test]
 fn test_integration_dns_warm_column_matches_the_status_gauge() {
+    // 名前解決の表はプロセスで 1 つ。このテストバイナリで**名前**を引くのはここだけで、
+    // 他の 3 本は IP リテラル (表に載らない) なので、鍵は要らない
+    rust_http_proxy::dns::set_ttl(Duration::from_secs(60));
+    rust_http_proxy::dns::set_warm_window(Duration::from_secs(900));
+    rust_http_proxy::dns::clear();
+
+    let (origin_port, _origin) = start_mock_origin();
     let (port, _metrics) = start_test_proxy_with_history(proxy_config(), TICK);
     wait_until(|| !rows(&history_json(port)).is_empty(), "最初の標本");
+    assert_eq!(status_dns_warm(port), 0, "まだ名前を引いていない");
 
-    let status = status_json(port);
-    // `/status` の `dns` の中の `warm` (同じ綴りの鍵が他にもあるので切り出してから引く)
-    let dns = &status[status.find("\"dns\":{").expect("no dns in status")..];
-    let warm = status_number(dns, "warm");
+    // 直近 900 秒に **2 回**使われた名前が warm になる (1 回目は表に載るだけ)
+    let url = format!("http://localhost:{}/", origin_port);
+    let host = format!("localhost:{}", origin_port);
+    for _ in 0..2 {
+        let res = get_via_proxy(port, &url, &host);
+        assert!(res.starts_with("HTTP/1.1 200"), "{}", res);
+    }
+    let warm = status_dns_warm(port);
+    assert!(warm > 0, "2 回通しても warm が 0 (この比較は恒等式になる)");
+
+    // warm になったあとの標本を待つ (それより前の標本は 0 のまま = 正しい)
+    let keys = str_array(&history_json(port), "keys");
+    wait_until(
+        || {
+            let json = history_json(port);
+            rows(&json).last().map(|r| col(&keys, r, "dns_warm")) == Some(warm)
+        },
+        "dns_warm が warm を写した標本",
+    );
+
     let json = history_json(port);
-    let keys = str_array(&json, "keys");
-    for row in rows(&json) {
-        assert_eq!(
-            col(&keys, &row, "dns_warm"),
+    let rows = rows(&json);
+    let last = col(&keys, rows.last().unwrap(), "dns_warm");
+    assert!(last > 0, "最後の標本の dns_warm が 0: {:?}", rows.last());
+    assert_eq!(
+        last,
+        status_dns_warm(port),
+        "/status の dns.warm と食い違う: {:?}",
+        rows.last()
+    );
+    for row in &rows {
+        let v = col(&keys, row, "dns_warm");
+        assert!(
+            v == 0 || v == warm,
+            "dns_warm が 0 でも {} でもない {}",
             warm,
-            "/status の dns.warm = {} と食い違う",
-            warm
+            v
         );
     }
+
+    rust_http_proxy::dns::clear();
+    rust_http_proxy::dns::set_warm_window(rust_http_proxy::dns::WARM);
 }
