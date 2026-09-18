@@ -495,6 +495,214 @@ class Criteria(unittest.TestCase):
         self.assertIn("バーストが無かった", c["rows"][3][4])
 
 
+@contextlib.contextmanager
+def written(**snaps):
+    """書き換えた雪像を一時ディレクトリに置いて、そのパスを返す (`test_snapshot_summary.py` と同じ)。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = {}
+        for name, body in snaps.items():
+            paths[name] = os.path.join(tmp, name + ".json")
+            with open(paths[name], "w", encoding="utf-8") as f:
+                json.dump(body, f)
+        yield paths
+
+
+def set_column(snap, res, name, value):
+    """`/history` の 1 列を全標本で書き換える (**位置ではなく `keys` の名前で引く**)。"""
+    h = snap["history"][res]
+    i = h["keys"].index(name)
+    for row in h["samples"]:
+        row[i] = value
+
+
+class NewColumns(unittest.TestCase):
+    """T15.0 (10) で末尾に足した 8 列 (`HFIELDS` は名前で引く)。"""
+
+    def test_the_wait_columns_are_aggregated_like_connect(self):
+        h = build([A, B, "--no-dns"])["history"]
+        # 後の平常時 2 標本 × 200 本、合計 3,200 ms、[5,10) ms のバケツ
+        self.assertEqual(h["after"]["waits"], 400)
+        self.assertAlmostEqual(h["after"]["wait_avg"], 8.0)
+        self.assertAlmostEqual(h["after"]["wait_p50"], 7.5)
+        self.assertEqual(h["after"]["wait_ms_max"], 12)
+
+    def test_the_gauge_is_averaged_and_the_peak_is_maxed(self):
+        h = build([A, B, "--no-dns"])["history"]
+        self.assertAlmostEqual(h["after"]["dns_warm_avg"], 25.0)   # 24 と 26
+        self.assertEqual(h["after"]["active_peak"], 7)
+        self.assertEqual(h["after"]["requests_delta"], 410)
+        self.assertEqual(h["after"]["bytes_delta"], 410000)
+
+    def test_an_old_snapshot_leaves_them_empty_instead_of_crashing(self):
+        """欄の無い雪像 (A) でも読めること。`dns_warm` は `None` (0 と混ぜない)。"""
+        a = sd.load_source(A, False)
+        rows, bounds, _c, _i = sd.merged_history(a, a, "3600")
+        agg = sd.aggregate(rows, bounds, None)
+        self.assertIsNone(agg["dns_warm_avg"])
+        self.assertEqual((agg["waits"], agg["active_peak"]), (0, 0))
+        self.assertIsNone(agg["wait_buckets"])
+
+
+class Criteria15(unittest.TestCase):
+    """`--criteria phase15` の 6 行 (T15.4 が 3 行、T15.5 が 2 行、T15.6 が 1 行)。"""
+
+    def judge(self, a=None, b=None, th=None, argv=None):
+        args = sd.parser().parse_args(argv or [A, B, "--no-dns", "--criteria", "phase15"])
+        sa, sb = sd.load_source(a or A, False), sd.load_source(b or B, False)
+        d = sd.build(sa, sb, args)
+        if th is None:
+            return d["criteria"]
+        return sd.judge("phase15", d["history"], d["hosts"], d["majors"],
+                        sd.part(sb, "status"), 0, th, a=sa, b=sb,
+                        info=d["restart"], dns=d["dns"], errors=d["errors"])
+
+    def test_phase15_gives_six_rows_with_a_verdict_each(self):
+        c = self.judge()
+        self.assertEqual(len(c["rows"]), 6)
+        self.assertEqual(sum(c["tally"].values()), 6)
+        self.assertTrue(all(r[3] in (sd.MET, sd.MISSED, sd.UNKNOWN) for r in c["rows"]))
+
+    def test_phase14_still_has_its_own_four_rows(self):
+        """**閾の表を足すだけでは Phase 14 の行が phase15 の閾で出る**のが前の版の穴。"""
+        self.assertEqual(len(self.judge(argv=[A, B, "--no-dns",
+                                              "--criteria", "phase14"])["rows"]), 4)
+        self.assertEqual(len(sd.RULES["phase14"]), 4)
+        self.assertEqual(len(sd.RULES["phase15"]), 6)
+
+    def test_a_host_that_is_not_in_the_table_cannot_be_judged(self):
+        row = self.judge()["rows"][0]
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`discord.com` が無い", row[4])
+
+    def test_the_named_host_is_judged_from_the_hosts_diff(self):
+        th = dict(sd.PHASE15, watch_host="beta.example.jp")
+        row = self.judge(th=th)["rows"][0]
+        self.assertEqual(row[3], sd.MISSED)          # 10 ミス / 100 要求 = 0.10
+        self.assertIn("**0.10** (10 ミス / 100 要求)", row[2])
+        row = self.judge(th=dict(sd.PHASE15, watch_host="alpha.example.jp"))["rows"][0]
+        self.assertEqual(row[3], sd.MET)             # 2 ミス / 200 要求 = 0.01
+
+    def test_the_refresh_rate_is_per_warm_name_per_hour(self):
+        """**通算の平均で割らない** (実勢を 35〜60% 過小に見せる)。"""
+        row = self.judge()["rows"][1]
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("24 回 ÷ 12.0 時間 ÷ warm 25.0 件", row[2])
+
+    def test_too_many_refreshes_per_name_is_missed(self):
+        b = read(B)
+        b["status"]["dns"]["refreshes"] = 30000      # 30,000 ÷ 12 時間 ÷ 25 件 = 100 回/時
+        with written(b=b) as paths:
+            row = self.judge(b=paths["b"])["rows"][1]
+        self.assertEqual(row[3], sd.MISSED)
+
+    def test_without_dns_warm_the_refresh_rate_cannot_be_judged(self):
+        b = read(B)
+        for res in b["history"]:
+            i = b["history"][res]["keys"].index("dns_warm")
+            b["history"][res]["keys"][i] = "dns_warm_x"   # 名前が違えば「無い」
+        with written(b=b) as paths:
+            row = self.judge(b=paths["b"])["rows"][1]
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`dns_warm`", row[4])
+
+    def test_a_miss_rate_below_the_band_is_missed_not_met(self):
+        """**低すぎても見込み違い** (幅は「どこに落ち着くか」の予想)。"""
+        row = self.judge()["rows"][2]
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**幅より低い**", row[2])
+
+    def test_a_miss_rate_inside_the_band_is_met(self):
+        b = read(B)
+        set_column(b, "3600", "dns_misses", 14)      # 平常時 2 標本 × 14 ÷ 400 本 = 0.07
+        with written(b=b) as paths:
+            row = self.judge(b=paths["b"])["rows"][2]
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**0.07** 回/接続", row[2])
+
+    def test_the_conn_role_cpu_comes_from_the_profile_part(self):
+        row = self.judge()["rows"][3]
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**0.004** コア", row[2])       # 720,000 us ÷ 180 秒
+        self.assertIn("3 標本 (180 秒)", row[4])
+
+    def test_a_spinning_conn_role_is_missed(self):
+        b = read(B)
+        ti = b["profile"]["keys"].index("threads")
+        for row in b["profile"]["samples"]:
+            row[ti][1][0] = 30_000_000               # 1 標本 30 秒ぶん = 0.5 コア
+        with written(b=b) as paths:
+            row = self.judge(b=paths["b"])["rows"][3]
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**0.500** コア", row[2])
+
+    def test_a_snapshot_without_profile_cannot_judge_the_cpu(self):
+        b = read(B)
+        del b["profile"]
+        with written(b=b) as paths:
+            row = self.judge(b=paths["b"])["rows"][3]
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`/profile` の部が無い", row[4])
+
+    def recent(self, n_rows, idle, half):
+        """閉じた接続 `n_rows` 本のうち `idle` 本が `idle_timeout`、`half` 本が半閉じ。"""
+        rows = []
+        for i in range(n_rows):
+            rows.append({"id": i, "at": 1789000000, "secs": 10, "kind": "connect",
+                         "reason": "idle_timeout" if i < idle else "client_eof",
+                         "half_closed": "client" if i < half else None})
+        return {"recent": rows, "count": n_rows, "shown": n_rows, "truncated": False}
+
+    def test_the_closed_shares_are_ratios_not_counts(self):
+        """**本数は窓の長さで変わる** (雪像 1 枚に入るのは最後に閉じた N 本)。"""
+        a, b = read(A), read(B)
+        a["recent"] = self.recent(100, 20, 10)       # 0.20 / 0.10
+        b["recent"] = self.recent(600, 120, 60)      # 同じ割合、本数は 6 倍
+        with written(a=a, b=b) as paths:
+            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("`idle_timeout` 0.20 → 0.20 (+0%)", row[2])
+        self.assertIn("100 本 → 600 本", row[4])
+
+    def test_a_changed_share_is_missed(self):
+        a, b = read(A), read(B)
+        a["recent"] = self.recent(100, 20, 10)
+        b["recent"] = self.recent(100, 40, 10)       # `idle_timeout` が 2 倍
+        with written(a=a, b=b) as paths:
+            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("(+100%)", row[2])
+
+    def test_without_recent_the_shares_cannot_be_judged(self):
+        row = self.judge()["rows"][4]                # B の `recent` は落ちている (`dropped`)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`/recent` の部が無い", row[4])
+
+    def test_the_timeout_errors_are_compared_per_hour(self):
+        """前後で標本の数が違うので、件数ではなく**1 時間あたり**で比べる。"""
+        row = self.judge()["rows"][5]
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**0.00** 件/時 (前 0.25 件/時)", row[2])
+
+    def test_more_timeouts_than_before_is_missed(self):
+        b = read(B)
+        i = b["history"]["3600"]["keys"].index("errors_by_cause")
+        for row in b["history"]["3600"]["samples"]:
+            if row[0] >= 1789043200:                 # 再起動より後の標本だけ
+                row[i] = [0, 0, 0, 9, 0, 0, 0, 0]    # timeout は 4 番目
+        with written(b=b) as paths:
+            row = self.judge(b=paths["b"])["rows"][5]
+        self.assertEqual(row[3], sd.MISSED)
+
+    def test_the_markdown_names_the_parts_it_needs(self):
+        md = run([A, B, "--no-dns", "--criteria", "phase15"])
+        self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase15`)", md)
+        self.assertIn("**その部が雪像に無い行は「判定できず」**", md)
+        self.assertIn("判定できず", md)
+
+    def test_both_criteria_can_be_chosen(self):
+        self.assertEqual(sorted(sd.CRITERIA), ["phase14", "phase15"])
+
+
 class Output(unittest.TestCase):
     def test_markdown_has_all_nine_sections(self):
         md = run([A, B, "--aaaa", AAAA, "--criteria", "phase14"])
