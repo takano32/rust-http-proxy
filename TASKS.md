@@ -5456,7 +5456,8 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
            `half_closed_ms`。永続化は `crates/metrics/src/persist_recent.rs` の `encode_closed` (469〜505 行) と `decode_closed` (508〜566 行) の
            **いちばん末尾**に u64 を 3 本 (`spins`、側 + 1、ms)。`CLOSED_PAYLOAD` (97 行) の `8 * (13 + …)` を `8 * (16 + …)` に。
            余白は 512 − 4 − 368 = 140 B あるので `CLOSED_RECORD` も領域の境界も動かない。
-           **`the_layout_fills_exactly_four_mib` (818〜827 行) の `368` を `392` に直す** (名指しで回す)。
+           **`the_layout_fills_exactly_four_mib` (807 行〜。期待値の `368` は 826 行) を `392` に直し、56 行の doc「いまの中身は 368 B … 余白 140 B」も
+           「392 B … 余白 116 B」に直す** (このテストは名指しで回す)。
       - 手本: T14.42 の `stall_ms` が「輪で積む → `Idle` の欄 → `ConnTally` → `finish` → 個票 → 永続化の末尾 → 結合テスト」を丸ごと
         やっている (`tests/stall_test.rs`。`open_tunnel` は 59〜73 行)。
       - テスト: (a) 結合: **accept して黙るだけの `TcpListener`** をオリジン役に立て (`start_echo_server` ではなく)、CONNECT → `200` →
