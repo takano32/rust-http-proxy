@@ -159,7 +159,7 @@ class Truncated(unittest.TestCase):
     def test_the_truncated_parts_are_listed(self):
         b = read(B)
         b["hosts"].update(truncated=True, count=1000, shown=6)
-        b["parts"].append("profile")
+        # `profile` は T15.0 の fixture で `parts` に入ったので、ここでは切れた形に差し替える
         b["profile"] = {"samples": [], "count": 720, "shown": 456, "truncated": True}
         with written(b=b) as paths:
             md = run([paths["b"]])
@@ -213,6 +213,157 @@ class Recent(unittest.TestCase):
             md = run([paths["b"]])
         self.assertIn("  - そろっている窓: 2026-09-10 23:26:40Z", md)
         self.assertNotIn("応答から落ちている", md)
+
+
+class Cpu(unittest.TestCase):
+    """CPU の表 (`/profile` + `kernel.cgroup_cpu`。T15.0 (15))。"""
+
+    def test_the_cores_are_printed_with_three_digits(self):
+        """**1 桁だと 0.006 コアも 0.04 コアも「0.0」に潰れる** (張り付きが読めない)。"""
+        md = run([B])
+        self.assertIn("| 使用 | 0.006 コア / 割り当て 2.0 コア の **0.3%**"
+                      " (`/profile` 3 標本 × 60 秒) |", md)
+
+    def test_the_throttled_share_is_a_ratio_not_a_count(self):
+        """「41 回絞られた」だけでは 41/8,123 なのか 41/41 なのか決まらない (T15.0 (6))。"""
+        self.assertIn("| 絞られた周期 | **0.5%** (41/8,123)、起動から 0.8% (30/4,000) |",
+                      run([B]))
+
+    def test_without_nr_periods_the_ratio_is_not_printed(self):
+        b = read(B)
+        del b["status"]["kernel"]["cgroup_cpu"]["nr_periods"]
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("**この版に分母 `nr_periods` が無い**ので割合は出せない", md)
+        self.assertNotIn("| 絞られた周期 | **", md)
+
+    def test_the_top_threads_are_summed_over_the_window(self):
+        """上位スレッドは**窓ごとに出る**ので、tid で足してから並べ直す。"""
+        md = run([B])
+        self.assertIn("| 上位スレッド | `conn-7` (tid 41、conn、540 ms、走行 126 標本)、"
+                      "`conn-3` (tid 39、conn、180 ms、走行 36 標本)", md)
+
+    def test_the_run_delay_is_per_role_and_sorted(self):
+        self.assertIn("| 走れずに待った (`run_delay_us`) | conn 45.0 ms、", run([B]))
+
+    def test_a_kernel_without_schedstat_has_no_run_delay_row(self):
+        b = read(B)
+        for row in b["profile"]["samples"]:
+            row[9] = None
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("| 上位スレッド |", md)
+        self.assertNotIn("run_delay_us", md)
+
+    def test_a_snapshot_without_profile_or_kernel_has_no_cpu_table(self):
+        """古い雪像 (A) には `/profile` も `kernel` も無いので表ごと出さない。"""
+        self.assertNotIn("| CPU | 値 |", run([A]))
+
+    def test_the_kernel_alone_is_enough_for_the_throttling_row(self):
+        b = read(B)
+        del b["profile"]
+        b["parts"].remove("profile")
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("| 絞られた周期 |", md)
+        self.assertNotIn("| 使用 |", md)
+
+
+class MissKinds(unittest.TestCase):
+    """名前解決のミスの種類別と引き直しの様子 (T15.0 (7))。"""
+
+    def test_the_kinds_are_printed_in_the_order_of_the_json(self):
+        self.assertIn("| ミスの種類別 (起動から) | cold 12 / expired 24 / warm_stale 3"
+                      " / negative 1 |", run([B]))
+
+    def test_the_refresh_failures_and_the_late_ones_are_printed(self):
+        self.assertIn("| 引き直しの失敗 / 遅れ / 最大 (起動から) | 2 回 / 1 回 / 260.0 ms |",
+                      run([B]))
+
+    def test_an_old_snapshot_has_neither_row(self):
+        md = run([A])
+        self.assertNotIn("ミスの種類別", md)
+        self.assertNotIn("引き直しの失敗", md)
+
+
+class Wait(unittest.TestCase):
+    """利用者が待つ時間の行 (`/history` の `waits`。T15.0 (2) + (10))。"""
+
+    def test_the_row_uses_the_waits_column_for_the_count(self):
+        # 直近 1 日 (res=60) の 1 標本: 3 本・合計 27 ms・[5,10) ms のバケツ
+        self.assertIn("| 利用者が待つ `wait` (直近 1 日) | 3 本 | 9.0 ms | 7.5 / 9.8 ms | 12 ms |",
+                      run([B]))
+
+    def test_an_old_snapshot_says_the_column_is_missing(self):
+        """**「0 本」と書くと「誰も待っていない」と読まれる**ので、列の有無は分けて書く。"""
+        self.assertIn("| 利用者が待つ `wait` (直近 1 日) | (この雪像にその列は無い) |", run([A]))
+
+    def test_a_real_zero_is_still_zero(self):
+        b = read(B)
+        h = b["history"]["60"]
+        i = h["keys"].index("waits")
+        for row in h["samples"]:
+            row[i] = 0
+            row[i + 3] = [0] * 13
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("| 利用者が待つ `wait` (直近 1 日) | 0 本 |", md)
+
+
+class StuckTunnels(unittest.TestCase):
+    """動かないトンネル (`idle_secs` ≥ 300 秒。T15.0 (4))。"""
+
+    def test_only_the_tunnels_over_the_threshold_are_listed(self):
+        """預かり中の 280 秒の 1 本は閾の下なので入らない。"""
+        md = run([B])
+        self.assertIn("  - **動かないトンネル (`idle_secs` ≥ 300 秒)**: 2 本"
+                      " (半閉じ 2 本、`spins` の合計 3,050,000)", md)
+        self.assertNotIn("zeta.example.jp", md)
+
+    def test_the_evidence_is_on_one_line(self):
+        self.assertIn("    - `alpha.example.jp:443` idle 98,800 秒 / 齢 99,000 秒 / 8.9 KiB"
+                      " / 0 bps / tid 41 / spins 1,840,000 / 半閉じ client 98,800 秒"
+                      " / revents client=`HUP|ERR`", run([B]))
+
+    def test_a_default_row_prints_without_the_new_fields(self):
+        """`/connections` は**既定のままの欄を 1 バイトも出さない**ので「無ければ既定値」。"""
+        b = read(B)
+        b["connections"]["connections"] = [
+            {"id": 1, "client": "192.0.2.10", "target": "alpha.example.jp:443",
+             "kind": "connect", "state": "relaying", "age_secs": 900, "bytes": 10,
+             "fds": 2, "rate_bps": 0, "idle_secs": 800}]
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("    - `alpha.example.jp:443` idle 800 秒 / 齢 900 秒 / 10 B / 0 bps\n", md)
+        self.assertIn("(半閉じ 0 本、`spins` の合計 0)", md)
+
+    def test_nothing_is_printed_when_no_tunnel_is_stuck(self):
+        b = read(B)
+        for c in b["connections"]["connections"]:
+            c.pop("idle_secs", None)
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("- いまの接続 (`/connections`): 5 本", md)
+        self.assertNotIn("動かないトンネル", md)
+
+
+class StatusBefore(unittest.TestCase):
+    """RSS だけは雪像の**前**に取った `/status` を使う (T15.0 (15))。"""
+
+    def test_the_rss_comes_from_the_status_taken_before_the_snapshot(self):
+        # 雪像を配ること自体が RSS を約 1.0 MB 押し上げるので、雪像の中の 20.0 MiB とは違う値
+        st = {"status": "ok", "cache": {"system": {"process_rss_bytes": 19 << 20}}}
+        with written(before=st) as paths:
+            md = run([B, "--status-before", paths["before"]])
+        self.assertIn("| RSS | 19.0 MiB (**RSS は雪像の前に取った `/status` の値**) |", md)
+
+    def test_without_the_option_the_rss_is_the_one_in_the_snapshot(self):
+        self.assertIn("| RSS | 20.0 MiB |\n", run([B]))
+
+    def test_a_status_without_rss_falls_back_to_the_snapshot(self):
+        with written(before={"status": "ok"}) as paths:
+            md = run([B, "--status-before", paths["before"]])
+        self.assertIn("| RSS | 20.0 MiB |\n", md)
 
 
 class Bytes(unittest.TestCase):
