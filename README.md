@@ -927,8 +927,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - **再送** (`retrans_segs` / `syn_retrans` / `tcp_timeouts` / `abort_on_timeout`)
     - **TIME_WAIT の本数** (`time_wait`) と TCP ソケットの数 (`sockets_inuse` / `sockets_alloc` / `curr_estab`)。
       手元で CONNECT のベンチを回すと `tcp_max_tw_buckets` (この機械は 32,768) に張り付きます
-    - **cgroup の CPU の絞り** (`cpu_nr_throttled` / `cpu_throttled_usec` と `cpu.max` の `quota_cores`)。
-      CPU 上限を持つコンテナで「自分が遅い」のか「絞られて待たされた」のかが分かれます
+    - **cgroup の CPU の絞り** (`cpu_nr_periods` / `cpu_nr_throttled` / `cpu_throttled_usec` と
+      `cpu.max` の `quota_cores`)。CPU 上限を持つコンテナで「自分が遅い」のか「絞られて待たされた」のかが
+      分かれます。**読むのは割合** (`cpu_nr_throttled` ÷ `cpu_nr_periods`) で、`cpu_nr_periods` がその分母です
+      (T15.0 (6)。「41 回絞られた」だけでは 41/8,123 = 0.5% なのか 41/41 = 100% なのか決まりません)。
+      `/status` の `kernel.cgroup_cpu` には累計のほかに **`path`** (階層のどこの `cpu.stat` を読んでいるか。
+      自分の cgroup に cpu コントローラが無いと**親の値**を読みます。`--check` にも同じ道が出ます) と
+      **`since_start`** (`nr_periods` / `nr_throttled` / `throttled_usec` の**このプロセスが始まってからの
+      増分**。累計はプロセスより長生きなので、起動直後の雪像にも `nr_throttled` が乗ります) が出ます
     - **PSI** (`psi_cpu_some_avg10` など。直近 10 秒のうち、その資源を待って進めなかった時間の割合 %)。
       隣のコンテナに CPU を取られている時間が読めます
     - 一緒に取るもの: 名前解決のミスの回数とミス 1 回の ms、状態ファイルの書込エラー
@@ -938,10 +944,11 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (`tcp` / `cgroup_cpu` / `psi` / 直近 5 分の `last_5m`)、時系列は `/history` の `kernel`、
     Prometheus では `sorahost_kernel_listen_overflows_total` などの累計と
     `sorahost_kernel_time_wait` / `sorahost_cgroup_cpu_throttled_seconds_total` /
+    `sorahost_cgroup_cpu_throttled_periods_total` ÷ `sorahost_cgroup_cpu_periods_total` (絞られた割合) /
     `sorahost_psi_some_avg10{resource="cpu"|"memory"|"io"}` です。
     **読めない源は `null`** (Linux 以外、`/proc/net` の無いコンテナ、cgroup v1、PSI 無しのカーネル)。
     `.rrd` (状態ファイル) には書かないので**再起動で消えます** (版 3 で標本 1 本の余白は 516 B = 64 項目に
-    広がったので、入れるなら 23 列は収まります。移すかどうかは項目ごとに決めます)。
+    広がったので、入れるなら 24 列は収まります。移すかどうかは項目ごとに決めます)。
     履歴の収集スレッドが動いていない `--lite` / `PROXY_STATS_PERSIST=off` では窓は空 (`kernel` は `null`) です
   - **ホスト別の時系列 (T14.22)**: `/hosts/series?top=16` と `/hosts/series?host=<name>` は、
     **直近 1 時間の要求数で選んだ上位 16 ホスト**について、**5 分の窓 × 288 標本 (24 時間)** を返します。
@@ -1226,8 +1233,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 「この設定で起動したら何が効くか」(`/config` と同じ全 `PROXY_*` / `SERVER_*` と出どころ) を印字して終わります。
 Pterodactyl のように触れないコンテナで、**起動前の確認**と**統計の `null` の理由の切り分け**に使えます
 (他の引数も一緒に効くので `--check -p 3128 --lite` のように「その設定なら何が効くか」も見られます)。
-終了コードは `capabilities` の 6 項目 (`resolver_ms` を除く) が全部読めれば **0**、1 つでも読めなければ **1** です
-(名前解決を外すのは、リゾルバが遅い環境でもプロキシとしては動く — そしてそれ自体が測りたい数字 — ため)。
+終了コードは `capabilities` の 7 項目 (`resolver_ms` と `cgroup_cpu_path` を除く) が全部読めれば **0**、
+1 つでも読めなければ **1** です (名前解決を外すのは、リゾルバが遅い環境でもプロキシとしては動く —
+そしてそれ自体が測りたい数字 — ため。`cgroup_cpu_path` は真偽ではなく「どの階層の `cpu.stat` を読むか」を
+見せるだけの行です。T15.0 (6))。
 
 ```
 $ rust-http-proxy --check
@@ -1241,7 +1250,9 @@ capabilities (what this environment lets the proxy read):
   [ok] cgroup_pressure  cgroup cpu.pressure (PSI: waiting for the CPU)
   [ok] ipv6_route       a default route in /proc/net/ipv6_route
   [ok] home_writable    $HOME is writable (statistics file, blocklist)
+  [ok] proc_schedstat   /proc/self/task/<tid>/schedstat (time runnable but not running)
   [ok] resolver_ms      9 ms for one lookup (not part of the exit code)
+  [ok] cgroup_cpu_path  /sys/fs/cgroup/cpu.stat (where nr_throttled is read)
 
 settings (source, name, effective value):
   default   SERVER_PORT                    8080

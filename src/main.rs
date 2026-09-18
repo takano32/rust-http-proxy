@@ -94,6 +94,19 @@ fn check_environment() -> i32 {
             None => "no answer within 2s (not part of the exit code)".to_string(),
         }
     );
+    // どの階層の `cpu.stat` を読むことになるか (T15.0 (6))。自分の cgroup に cpu
+    // コントローラが無いと親の値を読むので、`nr_throttled` が誰のものかはここで分かる。
+    // **引くのはここと `/status` を組むときだけ** (5 秒の標本では引かない)
+    let cpu_path = rust_http_proxy::sysinfo::cgroup::cgroup_cpu_path();
+    println!(
+        "  [{}] {:<16} {}",
+        if cpu_path.is_some() { "ok" } else { "--" },
+        "cgroup_cpu_path",
+        match &cpu_path {
+            Some(p) => format!("{} (where nr_throttled is read)", p.display()),
+            None => "no cgroup v2 cpu.stat (not part of the exit code)".to_string(),
+        }
+    );
 
     println!("\nsettings (source, name, effective value):");
     for s in config.settings() {

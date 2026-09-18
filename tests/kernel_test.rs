@@ -190,7 +190,13 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
         "{}",
         &kernel[..80.min(kernel.len())]
     );
-    for key in ["time_wait", "psi_cpu_some_avg10", "listen_overflows"] {
+    for key in [
+        "time_wait",
+        "psi_cpu_some_avg10",
+        "listen_overflows",
+        // T15.0 (6) で `keys` の末尾に足した列 (絞られた割合の分母)
+        "cpu_nr_periods",
+    ] {
         assert!(kernel.contains(&format!("\"{}\"", key)), "{} が無い", key);
     }
     // 標本が 1 本以上あり、列の数が keys と合っている
@@ -231,6 +237,30 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
     assert!(k.contains("\"time_wait\":"), "{}", k);
     assert!(k.contains("\"psi\":"), "{}", k);
     assert!(k.contains("\"last_5m\":"), "{}", k);
+    // cgroup が読める機械なら、絞りの割合の分母と読んでいる道と起動からの増分が出る
+    // (T15.0 (6))。cgroup v1 / cgroup 無しの機械では節ごと `null`
+    let cg = k
+        .split_once("\"cgroup_cpu\":")
+        .map(|(_, r)| r)
+        .unwrap_or_else(|| panic!("/status に cgroup_cpu が無い: {}", k));
+    if !cg.starts_with("null") {
+        for key in ["nr_periods", "path", "since_start"] {
+            assert!(
+                cg.contains(&format!("\"{}\":", key)),
+                "{} が無い: {}",
+                key,
+                cg
+            );
+        }
+        let since = cg
+            .split_once("\"since_start\":")
+            .map(|(_, r)| r.split('}').next().unwrap())
+            .unwrap();
+        // 起動からの増分は「いまの累計 − 最初に読んだ累計」なので、数えた期間より多くない
+        for key in ["nr_periods", "nr_throttled", "throttled_usec"] {
+            assert!(since.contains(&format!("\"{}\":", key)), "{}", since);
+        }
+    }
     let tw = k
         .split_once("\"time_wait\":")
         .map(|(_, r)| r.split([',', '}']).next().unwrap())

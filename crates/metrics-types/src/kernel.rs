@@ -7,7 +7,8 @@
 //!   SYN を 1〜3 秒後に再送するので、**プロキシの統計には「遅い接続」としてすら残らない**
 //! - 再送 (`RetransSegs` / `TCPSynRetrans` / `TCPTimeouts` / `TCPAbortOnTimeout`)
 //! - TIME_WAIT の本数 (loopback の CONNECT のベンチを律速していたもの。TASKS.md §1)
-//! - cgroup の CPU の絞り (`cpu.stat` の `nr_throttled` / `throttled_usec`)
+//! - cgroup の CPU の絞り (`cpu.stat` の `nr_periods` / `nr_throttled` / `throttled_usec`。
+//!   **割合で読む**ので分母の `nr_periods` も要る。T15.0 (6))
 //! - PSI (`cpu.pressure` / `memory.pressure` / `io.pressure` の `some` / `full` の avg10)
 //! - 一緒に取ると読みやすいもの: 名前解決のミス (`/healthz` のリゾルバの検査) と
 //!   状態ファイルの書込エラー
@@ -43,7 +44,7 @@ pub const SRC_PSI_IO: u8 = 1 << 6;
 pub const SRC_STATE_FILE: u8 = 1 << 7;
 
 /// `/history` の `kernel` の 1 標本の列名 ([`Sample::push_row`] がこの順で並べる)。
-pub const KEYS: [&str; 23] = [
+pub const KEYS: [&str; 24] = [
     "t",
     // 累計の**増分** (この窓で何回起きたか)
     "listen_overflows",
@@ -72,6 +73,9 @@ pub const KEYS: [&str; 23] = [
     "dns_misses",
     "dns_miss_ms",
     "state_file_errors",
+    // **末尾に足したもの** (古い読み手は位置で開くので、途中に入れない)。
+    // `cpu_nr_throttled` の分母 (T15.0 (6))
+    "cpu_nr_periods",
 ];
 
 /// 窓の 1 標本。
@@ -103,6 +107,9 @@ pub struct Sample {
     pub dns_miss_ms: u64,
     /// この窓に増えた状態ファイルの書込エラー
     pub state_file_errors: u64,
+    /// この窓に過ぎた CPU の期間の数 (`cpu.stat` の `nr_periods` の増分。T15.0 (6))。
+    /// [`Sample::cpu_nr_throttled`] の**分母**
+    pub cpu_nr_periods: u64,
 }
 
 impl Sample {
@@ -151,6 +158,9 @@ impl Sample {
         push_u64(out, self.dns_miss_ms, self.dns_misses > 0);
         out.push(',');
         push_u64(out, self.state_file_errors, self.has(SRC_STATE_FILE));
+        // **[`KEYS`] の末尾に足したもの** (T15.0 (6))
+        out.push(',');
+        push_u64(out, self.cpu_nr_periods, cpu);
         out.push(']');
     }
 
@@ -194,6 +204,8 @@ impl Sample {
                 .checked_div(misses)
                 .unwrap_or(0),
             state_file_errors: sum(|s| s.state_file_errors),
+            // 増分なので足し合わせ (T15.0 (6))
+            cpu_nr_periods: sum(|s| s.cpu_nr_periods),
         }
     }
 }
@@ -217,6 +229,8 @@ pub struct Latest {
     pub sockets_mem: u64,
     pub cpu_nr_throttled: u64,
     pub cpu_throttled_usec: u64,
+    /// `cpu.stat` の `nr_periods` の累計 (T15.0 (6))。絞られた**割合**の分母
+    pub cpu_nr_periods: u64,
     /// `cpu.max` の quota ÷ period (0 = 無制限か読めない)
     pub cpu_quota_cores: f64,
     pub psi_cpu_some: f64,
@@ -247,6 +261,19 @@ pub struct Health {
     pub state_file_errors_5m: Option<u64>,
     /// 直近 5 分でいちばん新しい標本の「名前解決のミス 1 回の ms」
     pub dns_miss_ms: Option<u64>,
+    /// 直近 5 分の cgroup の CPU の絞り `(nr_throttled の増分, nr_periods の増分)`
+    /// (T15.0 (6))。**割合は呼ぶ側が割る** (分母が 0 の窓を型で持たないため)
+    pub cpu_throttled_5m: Option<(u64, u64)>,
+}
+
+impl Health {
+    /// 直近 5 分に絞られた期間の割合 (0.0〜1.0)。読めないか期間が 0 なら `None`。
+    pub fn cpu_throttled_ratio(&self) -> Option<f64> {
+        match self.cpu_throttled_5m {
+            Some((throttled, periods)) if periods > 0 => Some(throttled as f64 / periods as f64),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -254,6 +281,10 @@ struct State {
     rings: [VecDeque<Sample>; 2],
     /// 前回の生の値 (増分を出すため)。まだ 1 回も読んでいなければ `None`
     last: Option<Latest>,
+    /// **いちばん最初に読んだ生の値** (T15.0 (6))。`/status` の `since_start` は
+    /// 「いまの累計 − これ」で出す。起動直後の雪像に `nr_throttled` 915 が
+    /// 乗っていたのは、累計が**このプロセスより前から**動いている親の階層の値だから
+    first: Option<Latest>,
 }
 
 impl State {
@@ -261,6 +292,7 @@ impl State {
         State {
             rings: [VecDeque::new(), VecDeque::new()],
             last: None,
+            first: None,
         }
     }
 }
@@ -292,6 +324,10 @@ pub fn sample(t: u64) {
         // 1 本目は増分が出せない (前が無い) ので、値だけ入れて増分は 0
         None => diff(&now, &now),
     };
+    // 起動からの増分を出すための最初の 1 本 (T15.0 (6))
+    if st.first.is_none() {
+        st.first = Some(now);
+    }
     st.last = Some(now);
     push(&mut st, sample);
 }
@@ -330,10 +366,11 @@ fn read_now(t: u64) -> Latest {
         l.sockets_mem = s.mem;
     }
     // cgroup v2 で cpu.stat が読めたときだけ (v1 と読めない環境は `null`)
-    if cpu.nr_throttled.is_some() || cpu.throttled_usec.is_some() {
+    if cpu.nr_throttled.is_some() || cpu.throttled_usec.is_some() || cpu.nr_periods.is_some() {
         l.avail |= SRC_CGROUP_CPU;
         l.cpu_nr_throttled = cpu.nr_throttled.unwrap_or(0);
         l.cpu_throttled_usec = cpu.throttled_usec.unwrap_or(0);
+        l.cpu_nr_periods = cpu.nr_periods.unwrap_or(0);
     }
     l.cpu_quota_cores = cpu.quota_cores.unwrap_or(0.0);
     if let Some(p) = psi.cpu {
@@ -380,6 +417,7 @@ fn diff(prev: &Latest, now: &Latest) -> Sample {
         sockets_mem: now.sockets_mem,
         cpu_nr_throttled: d(now.cpu_nr_throttled, prev.cpu_nr_throttled),
         cpu_throttled_usec: d(now.cpu_throttled_usec, prev.cpu_throttled_usec),
+        cpu_nr_periods: d(now.cpu_nr_periods, prev.cpu_nr_periods),
         psi_cpu_some: now.psi_cpu_some,
         psi_cpu_full: now.psi_cpu_full,
         psi_mem_some: now.psi_mem_some,
@@ -429,6 +467,14 @@ pub fn latest() -> Option<Latest> {
     STATE.locked().last
 }
 
+/// **起動して最初に**読んだ生の値 (T15.0 (6))。まだ 1 回も読んでいなければ `None`。
+///
+/// cgroup の累計はプロセスより長生き (親の階層の値) なので、`nr_throttled` の
+/// 生の値だけでは「自分が絞られたか」が分からない。引き算の相手がこれ。
+pub fn first() -> Option<Latest> {
+    STATE.locked().first
+}
+
 /// `/healthz` の検査に渡す直近 5 分の値。
 pub fn health() -> Health {
     let st = STATE.locked();
@@ -446,6 +492,11 @@ pub fn health() -> Health {
         if s.has(SRC_STATE_FILE) {
             h.state_file_errors_5m =
                 Some(h.state_file_errors_5m.unwrap_or(0) + s.state_file_errors);
+        }
+        // 絞られた期間と過ぎた期間の増分 (T15.0 (6))。割合は読む側が割る
+        if s.has(SRC_CGROUP_CPU) {
+            let (throttled, periods) = h.cpu_throttled_5m.unwrap_or((0, 0));
+            h.cpu_throttled_5m = Some((throttled + s.cpu_nr_throttled, periods + s.cpu_nr_periods));
         }
         // いちばん新しい「ミスのあった窓」の値 (古い順に見るので最後の 1 つが残る)
         if s.dns_misses > 0 {
@@ -494,6 +545,30 @@ pub fn status_json() -> String {
             l.cpu_nr_throttled, l.cpu_throttled_usec
         );
         push_f64(&mut out, l.cpu_quota_cores, l.cpu_quota_cores > 0.0);
+        // **ここから下は T15.0 (6) で末尾に足したもの** (既存の 3 鍵の順は動かさない)。
+        // `nr_periods` は割合の分母、`path` はどの階層を読んでいるか、
+        // `since_start` は**このプロセスが始まってからの**増分 (累計は親の値を含む)
+        let _ = write!(out, ",\"nr_periods\":{},\"path\":", l.cpu_nr_periods);
+        // 道を引くのはここ (`/status` を組むとき) と `--check` だけ。5 秒ごとには引かない
+        match crate::sysinfo::cgroup::cgroup_cpu_path() {
+            Some(p) => {
+                let _ = write!(out, "\"{}\"", crate::json::escape(&p.display().to_string()));
+            }
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"since_start\":");
+        match first() {
+            Some(f) => {
+                let _ = write!(
+                    out,
+                    "{{\"nr_periods\":{},\"nr_throttled\":{},\"throttled_usec\":{}}}",
+                    l.cpu_nr_periods.saturating_sub(f.cpu_nr_periods),
+                    l.cpu_nr_throttled.saturating_sub(f.cpu_nr_throttled),
+                    l.cpu_throttled_usec.saturating_sub(f.cpu_throttled_usec),
+                );
+            }
+            None => out.push_str("null"),
+        }
         out.push('}');
     } else {
         out.push_str("null");
@@ -651,6 +726,59 @@ mod tests {
         assert_eq!(agg.psi_cpu_some, 90.0);
         assert_eq!(agg.dns_misses, 4);
         assert_eq!(agg.dns_miss_ms, 25, "回数で重みを付けた平均 (10+90)/4");
+    }
+
+    /// CPU の絞りは**割合**で読む: 期間の数が分母、絞られた期間が分子 (T15.0 (6))。
+    ///
+    /// 累計はこのプロセスより前から動いている (親の階層の値) ので、生の値ではなく
+    /// 増分どうしを割る。1 分へ畳むときは分子も分母も足し合わせる。
+    #[test]
+    fn the_cpu_periods_are_the_denominator_of_the_throttling() {
+        let raw = |t: u64, periods: u64, throttled: u64| Latest {
+            at: t,
+            avail: SRC_CGROUP_CPU,
+            cpu_nr_periods: periods,
+            cpu_nr_throttled: throttled,
+            ..Latest::default()
+        };
+        // 起動より前から動いている累計 (8,000 期間のうち 915 絞られていた)
+        let a = raw(1_000_000, 8_000, 915);
+        let b = raw(1_000_005, 8_050, 965);
+        assert_eq!(diff(&a, &a).cpu_nr_periods, 0, "1 本目は増分が出せない");
+        let s = diff(&a, &b);
+        assert_eq!(s.cpu_nr_periods, 50);
+        assert_eq!(s.cpu_nr_throttled, 50, "この 5 秒は 50/50 = 100%");
+        // 畳むと分子も分母も足し合わせ (割合が保たれる)
+        let c = diff(&b, &raw(1_000_010, 8_100, 1_015));
+        let agg = Sample::downsample(&[s, c], 1_000_000);
+        assert_eq!((agg.cpu_nr_throttled, agg.cpu_nr_periods), (100, 100));
+        // 列は [`KEYS`] の**末尾**に出る (古い読み手は位置で開く)
+        let mut out = String::new();
+        s.push_row(&mut out);
+        let cols: Vec<&str> = out.trim_matches(['[', ']']).split(',').collect();
+        assert_eq!(cols.len(), KEYS.len(), "{}", out);
+        assert_eq!(*KEYS.last().unwrap(), "cpu_nr_periods");
+        assert_eq!(cols[KEYS.len() - 1], "50");
+        // cgroup が読めない環境では `null`
+        let mut out = String::new();
+        Sample::default().push_row(&mut out);
+        assert!(out.ends_with(",null]"), "{}", out);
+    }
+
+    /// 直近 5 分の絞りは `/healthz` と異常の規則が読む割合になる (T15.0 (6))。
+    #[test]
+    fn the_five_minute_throttling_is_a_ratio() {
+        assert_eq!(Health::default().cpu_throttled_ratio(), None, "読めない");
+        let h = Health {
+            cpu_throttled_5m: Some((45, 60)),
+            ..Health::default()
+        };
+        assert_eq!(h.cpu_throttled_ratio(), Some(0.75));
+        let zero = Health {
+            cpu_throttled_5m: Some((0, 0)),
+            ..Health::default()
+        };
+        assert_eq!(zero.cpu_throttled_ratio(), None, "分母 0 は割らない");
     }
 
     /// 読めない源の列は `null` で出る (Linux 以外・cgroup v1・`/proc/net` の無いコンテナ)。
