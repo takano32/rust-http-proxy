@@ -131,6 +131,22 @@ pub const BASE_SECS: u64 = 3600;
 /// 条件を外れてから解除の 1 件を書くまで (秒)。
 pub const CLEAR_SECS: u64 = WINDOW_SECS;
 
+/// CPU の絞りを判定してよいか (**5 分ぶん標本が溜まったか**。T15.0 (6))。
+///
+/// 渡すのは「**いちばん最初に読めた標本からの秒**」で、窓の両端の差ではない。
+/// 標本の時刻は生の epoch 秒 (`now_epoch()`) で、履歴スレッドの 1 周は
+/// `sleep(5s)` の**あと**に 1 周ぶんの仕事をするので必ず 5 秒より長く、6 秒の
+/// 間隔が周期的に混ざる。畳んだ窓の両端の差は構造上 [`WINDOW_SECS`] を越えられない
+/// ([`Detector::cpu_window`] の枝打ち) ので、それを `>= WINDOW_SECS` で見ると
+/// **整数がちょうど一致する刻みでしか開かない門**になり、1 周が 17 ms 伸びただけで
+/// 二度と開かなくなる (しかも絞られている最中は 1 周が伸びる側)。
+/// **起点からの経過**で見れば刻みのずれに左右されない。
+///
+/// `/healthz` の検査 `cpu` ([`crate::kernel::Health::sampled_secs`]) も同じ関数を通る。
+pub fn cpu_window_is_full(sampled_secs: u64) -> bool {
+    sampled_secs >= WINDOW_SECS
+}
+
 /// 判定の種類 (**8 種で固定**。出来事の種類はどれも `anomaly` で、これは説明の頭に出る)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -268,6 +284,9 @@ struct CpuPoint {
 struct CpuWindow {
     /// 窓の秒 (点が 1 つしか無ければ 0)
     secs: u64,
+    /// **5 分ぶん溜まったか** ([`cpu_window_is_full`]。窓の両端の差ではなく、
+    /// いちばん最初に読めた標本からの経過で見る)
+    full: bool,
     throttled: u64,
     periods: u64,
     used_us: u64,
@@ -342,6 +361,9 @@ pub struct Detector {
     new_clients: NewClients,
     /// 直近 5 分ぶんの CPU の累計 (T15.0 (6))。61 点しか持たない
     cpu_hist: VecDeque<CpuPoint>,
+    /// **いちばん最初に読めた** cgroup の標本の時刻 (T15.0 (6))。
+    /// 「窓が 5 分ぶん溜まったか」([`cpu_window_is_full`]) の起点
+    cpu_since: Option<u64>,
     /// 回りっ放しのトンネルを最初に見つけた時刻 (T15.0 (6))。
     /// [`KindState`] は「立つ / 解除」しか持たないので、「1 分続いたら」は
     /// **[`KINDS`] の外に状態を持つ規則** ([`NewClients`] と同じ形) で数える
@@ -379,6 +401,7 @@ impl Detector {
             state: [KindState::default(); KINDS.len()],
             new_clients: NewClients::default(),
             cpu_hist: VecDeque::new(),
+            cpu_since: None,
             spin_since: None,
         }
     }
@@ -466,7 +489,7 @@ impl Detector {
             (self.threshold > 0 && peak >= self.threshold as u64) || shot.is_some(),
             delta.iter().any(|&d| d > 0),
             // 窓が 5 分ぶん溜まるまでは判定しない (「5 分のあいだ絞られ続けた」が条件)
-            cpu.secs >= WINDOW_SECS && cpu.ratio().is_some_and(|r| r >= cpu_limit),
+            cpu.full && cpu.ratio().is_some_and(|r| r >= cpu_limit),
             spinning_total > 0 && spin_secs >= TUNNEL_SPIN_SECS,
             c.uptime_secs >= DNS_MISS_RATE_WARMUP_SECS
                 && base.connects() >= DNS_MISS_RATE_MIN_CONNECTS
@@ -525,7 +548,17 @@ impl Detector {
     /// 累計そのものは**このプロセスより前から**動いている (自分の階層に cpu
     /// コントローラが無ければ親の値を読む) ので、生の値では何も言えない。
     /// 覚えておくのは 5 分ぶん = 61 点だけ。
+    ///
+    /// **「5 分ぶん溜まったか」は窓の両端の差では測らない** ([`cpu_window_is_full`]。
+    /// 差は枝打ちの側で [`WINDOW_SECS`] 以下に固定されるので、刻みが 1 秒ずれると
+    /// 二度と届かない)。起点はこの [`Detector`] が**最初に読めた**標本の時刻。
     fn cpu_window(&mut self, c: Counters) -> CpuWindow {
+        // 読めない標本 (cgroup v1 / Linux 以外 / 上限なし) は窓に入れない。0 を混ぜると
+        // 「読めるようになった瞬間」に**累計そのもの** (親の階層の値) が増分に化ける
+        if c.cpu_nr_periods == 0 {
+            return CpuWindow::default();
+        }
+        let since = *self.cpu_since.get_or_insert(c.t);
         self.cpu_hist.push_back(CpuPoint {
             t: c.t,
             throttled: c.cpu_nr_throttled,
@@ -545,6 +578,7 @@ impl Detector {
         };
         CpuWindow {
             secs: last.t.saturating_sub(first.t),
+            full: cpu_window_is_full(c.t.saturating_sub(since)),
             throttled: last.throttled.saturating_sub(first.throttled),
             periods: last.periods.saturating_sub(first.periods),
             used_us: last.used_us.saturating_sub(first.used_us),
@@ -1418,6 +1452,41 @@ mod tests {
             "cleared: cpu_throttled after 9m (0% of 3000 cpu periods throttled in 5m)"
         );
         assert!(d.firing().is_empty());
+    }
+
+    /// (7) **刻みが 1 秒ずれても立つ** (T15.0 単位 4 のレビュー)。
+    ///
+    /// 履歴スレッドの 1 周は `sleep(5s)` の**あと**に 1 周ぶんの仕事をするので、
+    /// 5 秒ちょうどにはならず 6 秒の間隔が周期的に混ざる。「5 分ぶん溜まったか」を
+    /// **窓の両端の差**で見ていたころは、この系列では門が 1 度も開かなかった
+    /// (差は 296〜299 秒にしかならず、300 に一致する刻みが来ない)。
+    #[test]
+    fn cpu_throttling_fires_even_when_the_ticks_drift() {
+        let h = History::default();
+        let mut d = Detector::new();
+        let (mut throttled, mut periods, mut used) = (915u64, 8_000u64, 0u64);
+        let (mut t, mut step) = (0u64, 0usize);
+        let mut fired = Vec::new();
+        while t <= 2 * WINDOW_SECS {
+            fired.extend(feed_cpu(&h, &mut d, point(t), throttled, periods, used));
+            if t < WINDOW_SECS {
+                assert!(
+                    fired.is_empty(),
+                    "5 分に満たない間は判定しない: {:?}",
+                    fired
+                );
+            }
+            // 5, 5, 6, 5, 5, 6, … (1 周が 5 秒より長い = 本番の周期)
+            let gap = if step % 3 == 2 { 6 } else { 5 };
+            step += 1;
+            t += gap;
+            periods += 10 * gap; // 100 ms の期間が 1 秒に 10 個
+            throttled += 10 * gap; // そのうち全部絞られた
+            used += 800_000 * gap; // 0.8 コア
+        }
+        assert_eq!(fired.len(), 1, "立つのは 1 回だけ: {:?}", fired);
+        assert_eq!(fired[0].kind, Kind::CpuThrottled);
+        assert!(d.firing().contains(&Kind::CpuThrottled), "{:?}", d.firing());
     }
 
     /// (7) `cpu.stat` が読めない環境 (cgroup v1・Linux 以外) では 1 件も立たない。

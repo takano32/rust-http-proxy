@@ -1228,10 +1228,14 @@ impl ConnTable {
     /// 経路には 1 命令も増えない。読むのは [`ConnTable::update_rates`] が同じ周期に
     /// 書いた値なので、`update_rates` の**あと**に呼ぶこと。
     /// 平常時は 1 本も越えないので、確保もほとんど起きない。
+    ///
+    /// **鍵の内側では文字列を作らない**: 表の鍵は accept の経路が取り合うもので、
+    /// 事故の最中 (越えた接続が何十本もある) こそ長く握ってはいけない。内側で
+    /// 拾うのは枠の参照 (原子の足し算 1 回) だけにして、宛先の複製は上位 `max` 本に
+    /// 絞ってから行う (呼ぶ側は `max = 1`)。
     pub fn spinning(&self, min_delta: u64, max: usize) -> (Vec<SpinningConn>, usize) {
         let now = Instant::now();
-        let mut found: Vec<SpinningConn> = Vec::new();
-        let mut total = 0usize;
+        let mut over: Vec<(u64, u64, Arc<ConnSlot>)> = Vec::new();
         {
             let g = self.inner.locked();
             for slot in g.slots.values() {
@@ -1239,19 +1243,24 @@ impl ConnTable {
                 if spins_delta < min_delta {
                     continue;
                 }
-                total += 1;
-                found.push(SpinningConn {
-                    id: slot.id,
-                    target: slot.target.locked().clone(),
-                    age_secs: now.saturating_duration_since(slot.started).as_secs(),
-                    half_closed: slot.half_closed_side(),
-                    spins_delta,
-                });
+                over.push((spins_delta, slot.id, Arc::clone(slot)));
             }
         }
+        let total = over.len();
         // 多い順 (同点は通し番号の小さい方 = 古い方が先)
-        found.sort_by_key(|c| (std::cmp::Reverse(c.spins_delta), c.id));
-        found.truncate(max);
+        over.sort_by_key(|&(spins_delta, id, _)| (std::cmp::Reverse(spins_delta), id));
+        over.truncate(max);
+        let found = over
+            .into_iter()
+            .map(|(spins_delta, id, slot)| SpinningConn {
+                id,
+                // 鍵を放してから複製する (取るのは枠ごとの鍵で、表の鍵ではない)
+                target: slot.target.locked().clone(),
+                age_secs: now.saturating_duration_since(slot.started).as_secs(),
+                half_closed: slot.half_closed_side(),
+                spins_delta,
+            })
+            .collect();
         (found, total)
     }
 

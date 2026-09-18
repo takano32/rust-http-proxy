@@ -264,6 +264,13 @@ pub struct Health {
     /// 直近 5 分の cgroup の CPU の絞り `(nr_throttled の増分, nr_periods の増分)`
     /// (T15.0 (6))。**割合は呼ぶ側が割る** (分母が 0 の窓を型で持たないため)
     pub cpu_throttled_5m: Option<(u64, u64)>,
+    /// **いちばん最初に読んだ標本からの秒** (T15.0 (6))。まだ 1 本も無ければ `None`。
+    ///
+    /// 上の 5 分の値は「いちばん新しい標本から 300 秒ぶん」を足しただけなので、
+    /// 起動 10 秒後 (標本 2 本) でもその 5 秒ぶんの割合が出てしまう。**5 分に
+    /// 満たない窓で割合を出さない**ための物差しがこれで、異常の規則と同じ
+    /// 関数 (`anomaly::cpu_window_is_full`) を通す
+    pub sampled_secs: Option<u64>,
 }
 
 impl Health {
@@ -484,7 +491,11 @@ pub fn health() -> Health {
     };
     let since = newest.saturating_sub(300);
     let recent = ring.iter().filter(|s| s.t >= since);
-    let mut h = Health::default();
+    let mut h = Health {
+        // 起動して最初に読んだ標本からの秒 (T15.0 (6))。窓が 5 分ぶん溜まったかの物差し
+        sampled_secs: st.first.map(|f| newest.saturating_sub(f.at)),
+        ..Health::default()
+    };
     for s in recent {
         if s.has(SRC_NETSTAT) {
             h.listen_overflows_5m = Some(h.listen_overflows_5m.unwrap_or(0) + s.listen_overflows);
