@@ -10,11 +10,13 @@
   "history.3600",
   "dns",
   "errors",
+  "connections",
   "hosts",
   "clients",
   "log",
   "events",
-  "bursts"
+  "bursts",
+  "profile"
  ],
  "dropped": [
   "recent"
@@ -48,7 +50,17 @@
    "negative_hits": 1,
    "refreshes": 24,
    "miss_ms_sum": 440.0,
-   "miss_avg_ms": 11.0
+   "miss_avg_ms": 11.0,
+   "misses_by_kind": {
+    "cold": 12,
+    "expired": 24,
+    "warm_stale": 3,
+    "negative": 1
+   },
+   "refresh_failures": 2,
+   "refresh_ms_sum": 480.0,
+   "refresh_ms_max": 260.0,
+   "refresh_late": 1
   },
   "ipv6": {
    "attempts": 4,
@@ -307,7 +319,118 @@
     "ports_other": 0,
     "nonstandard_ports": 0
    }
-  ]
+  ],
+  "kernel": {
+   "at": 1789086390,
+   "tcp": {
+    "listen_overflows": 0,
+    "listen_drops": 0,
+    "tcp_timeouts": 3,
+    "syn_retrans": 1,
+    "abort_on_timeout": 0,
+    "retrans_segs": 12,
+    "curr_estab": 6,
+    "sockets_inuse": 9,
+    "time_wait": 40,
+    "sockets_alloc": 12,
+    "sockets_mem": 0
+   },
+   "cgroup_cpu": {
+    "nr_throttled": 41,
+    "throttled_usec": 1230000,
+    "quota_cores": 2.0,
+    "nr_periods": 8123,
+    "path": "/sys/fs/cgroup/cpu.stat",
+    "since_start": {
+     "nr_periods": 4000,
+     "nr_throttled": 30,
+     "throttled_usec": 900000
+    }
+   },
+   "psi": {
+    "cpu": {
+     "some_avg10": 0.4,
+     "full_avg10": 0.0
+    },
+    "memory": {
+     "some_avg10": 0.0,
+     "full_avg10": 0.0
+    },
+    "io": {
+     "some_avg10": 0.1,
+     "full_avg10": 0.0
+    }
+   },
+   "last_5m": {
+    "listen_overflows": 0,
+    "state_file_errors": 0,
+    "dns_miss_ms": 11
+   },
+   "samples": 60
+  },
+  "recent_quantiles": {
+   "connect": {
+    "n": 614,
+    "p50": 8.0,
+    "p90": 50.0,
+    "p99": 63.4,
+    "max": 112.0,
+    "window_secs": 3600
+   },
+   "forward": {
+    "n": 12,
+    "p50": 20.0,
+    "p90": 44.0,
+    "p99": 44.0,
+    "max": 44.0,
+    "window_secs": 3600
+   },
+   "wait": {
+    "n": 614,
+    "p50": 8.0,
+    "p90": 63.0,
+    "p99": 76.0,
+    "max": 140.0,
+    "window_secs": 3600
+   }
+  },
+  "memory": {
+   "rss": 21000000,
+   "heap_used": 6000000,
+   "heap_free": 1200000,
+   "mmap": 8000000,
+   "stacks_estimate": 2000000,
+   "cache_memory": 0,
+   "rings": {
+    "recent": 828000,
+    "errors": 60000,
+    "bursts": 6400,
+    "log": 256000,
+    "events": 65536,
+    "trace": 256000,
+    "history": 5840000,
+    "hostseries": 184320,
+    "quantiles": 24576,
+    "readers": 16384,
+    "profile": 6773760,
+    "total": 14310976
+   },
+   "arenas": 2,
+   "rings_used": {
+    "recent": 254200,
+    "errors": 1242,
+    "bursts": 256,
+    "log": 5120,
+    "events": 2048,
+    "trace": 0,
+    "history": 1610000,
+    "hostseries": 46080,
+    "quantiles": 9824,
+    "readers": 512,
+    "profile": 3010560,
+    "total": 4939842
+   }
+  }
  },
  "history": {
   "5": {
@@ -344,7 +467,15 @@
     "fds",
     "fds_max",
     "max_fds",
-    "evicted_idle"
+    "evicted_idle",
+    "waits",
+    "wait_ms_sum",
+    "wait_ms_max",
+    "wait_buckets",
+    "dns_warm",
+    "requests_delta",
+    "bytes_delta",
+    "active_peak"
    ],
    "bounds_ms": [
     1,
@@ -370,7 +501,49 @@
     "loop",
     "other"
    ],
-   "samples": []
+   "samples": [],
+   "key_kinds": [
+    "time",
+    "cumulative",
+    "cumulative",
+    "gauge",
+    "peak",
+    "cumulative",
+    "cumulative",
+    "cumulative",
+    "cumulative",
+    "gauge",
+    "gauge",
+    "gauge",
+    "gauge",
+    "gauge",
+    "delta",
+    "delta",
+    "peak",
+    "buckets",
+    "delta",
+    "delta",
+    "peak",
+    "buckets",
+    "delta",
+    "buckets",
+    "delta",
+    "delta",
+    "gauge",
+    "peak",
+    "gauge",
+    "peak",
+    "gauge",
+    "cumulative",
+    "delta",
+    "delta",
+    "peak",
+    "buckets",
+    "gauge",
+    "delta",
+    "delta",
+    "peak"
+   ]
   },
   "60": {
    "interval_secs": 60,
@@ -406,7 +579,15 @@
     "fds",
     "fds_max",
     "max_fds",
-    "evicted_idle"
+    "evicted_idle",
+    "waits",
+    "wait_ms_sum",
+    "wait_ms_max",
+    "wait_buckets",
+    "dns_warm",
+    "requests_delta",
+    "bytes_delta",
+    "active_peak"
    ],
    "bounds_ms": [
     1,
@@ -502,8 +683,72 @@
      20,
      40,
      1024,
-     0
+     0,
+     3,
+     27.0,
+     12,
+     [
+      0,
+      0,
+      0,
+      3,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     26,
+     3,
+     3000,
+     2
     ]
+   ],
+   "key_kinds": [
+    "time",
+    "cumulative",
+    "cumulative",
+    "gauge",
+    "peak",
+    "cumulative",
+    "cumulative",
+    "cumulative",
+    "cumulative",
+    "gauge",
+    "gauge",
+    "gauge",
+    "gauge",
+    "gauge",
+    "delta",
+    "delta",
+    "peak",
+    "buckets",
+    "delta",
+    "delta",
+    "peak",
+    "buckets",
+    "delta",
+    "buckets",
+    "delta",
+    "delta",
+    "gauge",
+    "peak",
+    "gauge",
+    "peak",
+    "gauge",
+    "cumulative",
+    "delta",
+    "delta",
+    "peak",
+    "buckets",
+    "gauge",
+    "delta",
+    "delta",
+    "peak"
    ]
   },
   "3600": {
@@ -540,7 +785,15 @@
     "fds",
     "fds_max",
     "max_fds",
-    "evicted_idle"
+    "evicted_idle",
+    "waits",
+    "wait_ms_sum",
+    "wait_ms_max",
+    "wait_buckets",
+    "dns_warm",
+    "requests_delta",
+    "bytes_delta",
+    "active_peak"
    ],
    "bounds_ms": [
     1,
@@ -636,6 +889,28 @@
      20,
      40,
      1024,
+     0,
+     0,
+     0.0,
+     0,
+     [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     0,
+     0,
+     0,
      0
     ],
     [
@@ -707,6 +982,28 @@
      20,
      40,
      1024,
+     0,
+     0,
+     0.0,
+     0,
+     [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     0,
+     0,
+     0,
      0
     ],
     [
@@ -778,6 +1075,28 @@
      20,
      40,
      1024,
+     0,
+     0,
+     0.0,
+     0,
+     [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     0,
+     0,
+     0,
      0
     ],
     [
@@ -849,6 +1168,28 @@
      20,
      40,
      1024,
+     0,
+     0,
+     0.0,
+     0,
+     [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     0,
+     0,
+     0,
      0
     ],
     [
@@ -920,7 +1261,29 @@
      20,
      40,
      1024,
-     0
+     0,
+     200,
+     1600.0,
+     12,
+     [
+      0,
+      0,
+      0,
+      200,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     24,
+     205,
+     205000,
+     7
     ],
     [
      1789048800,
@@ -991,7 +1354,29 @@
      20,
      40,
      1024,
-     0
+     0,
+     200,
+     1600.0,
+     12,
+     [
+      0,
+      0,
+      0,
+      200,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     26,
+     205,
+     205000,
+     7
     ],
     [
      1789052400,
@@ -1062,8 +1447,72 @@
      20,
      40,
      1024,
-     0
+     0,
+     350,
+     61250.0,
+     240,
+     [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      350,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     28,
+     350,
+     350000,
+     130
     ]
+   ],
+   "key_kinds": [
+    "time",
+    "cumulative",
+    "cumulative",
+    "gauge",
+    "peak",
+    "cumulative",
+    "cumulative",
+    "cumulative",
+    "cumulative",
+    "gauge",
+    "gauge",
+    "gauge",
+    "gauge",
+    "gauge",
+    "delta",
+    "delta",
+    "peak",
+    "buckets",
+    "delta",
+    "delta",
+    "peak",
+    "buckets",
+    "delta",
+    "buckets",
+    "delta",
+    "delta",
+    "gauge",
+    "peak",
+    "gauge",
+    "peak",
+    "gauge",
+    "cumulative",
+    "delta",
+    "delta",
+    "peak",
+    "buckets",
+    "gauge",
+    "delta",
+    "delta",
+    "peak"
    ]
   }
  },
@@ -1580,5 +2029,1180 @@
   ],
   "count": 2
  },
- "recent": null
+ "recent": null,
+ "profile": {
+  "schema": 1,
+  "interval_secs": 60,
+  "sample_ms": 1000,
+  "sampler": "full",
+  "bounds_ms": [
+   1,
+   2,
+   5,
+   10,
+   25,
+   50,
+   100,
+   250,
+   500,
+   1000,
+   2500,
+   5000
+  ],
+  "stages": {
+   "connect": [
+    "queue",
+    "client_read",
+    "dns",
+    "connect",
+    "first_relay",
+    "relay",
+    "park"
+   ],
+   "forward": [
+    "queue",
+    "client_read",
+    "origin",
+    "send",
+    "ttfb",
+    "body"
+   ]
+  },
+  "roles": [
+   "accept",
+   "conn",
+   "idle-watch",
+   "dns-refresh",
+   "history",
+   "persist",
+   "cache-probe",
+   "profile-sample",
+   "other"
+  ],
+  "states": [
+   "running",
+   "recvfrom",
+   "sendto",
+   "ppoll",
+   "epoll_pwait",
+   "futex",
+   "splice",
+   "accept4",
+   "connect",
+   "close",
+   "read",
+   "write",
+   "nanosleep",
+   "clock_nanosleep",
+   "getsockopt",
+   "setsockopt",
+   "socket",
+   "shutdown",
+   "openat",
+   "fstat",
+   "sleeping",
+   "other"
+  ],
+  "lock_names": [
+   "stats",
+   "dns",
+   "park",
+   "workers"
+  ],
+  "keys": [
+   "t",
+   "requests",
+   "cpu_us",
+   "connect",
+   "forward",
+   "threads",
+   "locks",
+   "queue",
+   "threads_top",
+   "run_delay_us"
+  ],
+  "samples": [
+   [
+    1789086000,
+    3,
+    360000,
+    [
+     [
+      3,
+      6.0,
+      4,
+      [
+       0,
+       3,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     0,
+     [
+      1,
+      12.0,
+      12,
+      [
+       0,
+       0,
+       0,
+       0,
+       1,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     [
+      3,
+      12.0,
+      5,
+      [
+       0,
+       0,
+       3,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     0,
+     0,
+     0
+    ],
+    [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    [
+     [
+      1200,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       2,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       58,
+       0
+      ]
+     ],
+     [
+      240000,
+      60,
+      [
+       2,
+       0,
+       0,
+       40,
+       0,
+       0,
+       18,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     [
+      200,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       60,
+       0
+      ]
+     ],
+     [
+      150,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       60,
+       0
+      ]
+     ],
+     [
+      9000,
+      60,
+      [
+       3,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       57,
+       0
+      ]
+     ],
+     [
+      400,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       60,
+       0
+      ]
+     ],
+     0,
+     [
+      3000,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       5,
+       0,
+       55,
+       0
+      ]
+     ],
+     0
+    ],
+    [
+     2,
+     1,
+     0,
+     0
+    ],
+    [
+     1,
+     8,
+     8
+    ],
+    [
+     [
+      41,
+      "conn-7",
+      1,
+      180000,
+      42
+     ],
+     [
+      39,
+      "conn-3",
+      1,
+      60000,
+      12
+     ],
+     [
+      7,
+      "history",
+      4,
+      9000,
+      3
+     ]
+    ],
+    [
+     0,
+     15000,
+     0,
+     0,
+     200,
+     0,
+     0,
+     100,
+     0
+    ]
+   ],
+   [
+    1789086060,
+    2,
+    340000,
+    [
+     [
+      2,
+      4.0,
+      4,
+      [
+       0,
+       2,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     0,
+     [
+      1,
+      12.0,
+      12,
+      [
+       0,
+       0,
+       0,
+       0,
+       1,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     [
+      2,
+      8.0,
+      5,
+      [
+       0,
+       0,
+       2,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     0,
+     0,
+     0
+    ],
+    [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    [
+     [
+      1200,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       2,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       58,
+       0
+      ]
+     ],
+     [
+      230000,
+      60,
+      [
+       2,
+       0,
+       0,
+       40,
+       0,
+       0,
+       18,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     [
+      200,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       60,
+       0
+      ]
+     ],
+     [
+      150,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       60,
+       0
+      ]
+     ],
+     [
+      9000,
+      60,
+      [
+       3,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       57,
+       0
+      ]
+     ],
+     [
+      400,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       60,
+       0
+      ]
+     ],
+     0,
+     [
+      3000,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       5,
+       0,
+       55,
+       0
+      ]
+     ],
+     0
+    ],
+    [
+     2,
+     1,
+     0,
+     0
+    ],
+    [
+     1,
+     8,
+     8
+    ],
+    [
+     [
+      41,
+      "conn-7",
+      1,
+      170000,
+      40
+     ],
+     [
+      39,
+      "conn-3",
+      1,
+      60000,
+      11
+     ],
+     [
+      7,
+      "history",
+      4,
+      9000,
+      3
+     ]
+    ],
+    [
+     0,
+     12000,
+     0,
+     0,
+     180,
+     0,
+     0,
+     90,
+     0
+    ]
+   ],
+   [
+    1789086120,
+    4,
+    380000,
+    [
+     [
+      4,
+      8.0,
+      4,
+      [
+       0,
+       4,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     0,
+     [
+      1,
+      12.0,
+      12,
+      [
+       0,
+       0,
+       0,
+       0,
+       1,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     [
+      4,
+      16.0,
+      5,
+      [
+       0,
+       0,
+       4,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     0,
+     0,
+     0
+    ],
+    [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    [
+     [
+      1200,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       2,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       58,
+       0
+      ]
+     ],
+     [
+      250000,
+      60,
+      [
+       2,
+       0,
+       0,
+       40,
+       0,
+       0,
+       18,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0
+      ]
+     ],
+     [
+      200,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       60,
+       0
+      ]
+     ],
+     [
+      150,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       60,
+       0
+      ]
+     ],
+     [
+      9000,
+      60,
+      [
+       3,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       57,
+       0
+      ]
+     ],
+     [
+      400,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       60,
+       0
+      ]
+     ],
+     0,
+     [
+      3000,
+      60,
+      [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       5,
+       0,
+       55,
+       0
+      ]
+     ],
+     0
+    ],
+    [
+     2,
+     1,
+     0,
+     0
+    ],
+    [
+     1,
+     8,
+     8
+    ],
+    [
+     [
+      41,
+      "conn-7",
+      1,
+      190000,
+      44
+     ],
+     [
+      39,
+      "conn-3",
+      1,
+      60000,
+      13
+     ],
+     [
+      7,
+      "history",
+      4,
+      9000,
+      3
+     ]
+    ],
+    [
+     0,
+     18000,
+     0,
+     0,
+     220,
+     0,
+     0,
+     110,
+     0
+    ]
+   ]
+  ],
+  "locks_total": [
+   120,
+   40,
+   6,
+   2
+  ],
+  "queue_total": [
+   30,
+   240,
+   18
+  ],
+  "unknown_syscalls": [],
+  "recent": {
+   "secs": 300,
+   "requests": 9,
+   "cpu_us": 1080000,
+   "cpu_per_request_us": 120000.0
+  },
+  "count": 3,
+  "shown": 3,
+  "truncated": false,
+  "n": 1440,
+  "offset": 0,
+  "next_offset": null
+ },
+ "connections": {
+  "schema": 1,
+  "connections": [
+   {
+    "id": 8801,
+    "client": "192.0.2.10",
+    "target": "alpha.example.jp:443",
+    "kind": "connect",
+    "state": "relaying",
+    "age_secs": 99000,
+    "bytes": 9096,
+    "fds": 2,
+    "rate_bps": 0,
+    "tid": 41,
+    "spins": 1840000,
+    "revents": {
+     "client": "HUP|ERR",
+     "origin": ""
+    },
+    "half_closed": "client",
+    "half_closed_secs": 98800,
+    "idle_secs": 98800
+   },
+   {
+    "id": 8802,
+    "client": "192.0.2.10",
+    "target": "beta.example.jp:443",
+    "kind": "connect",
+    "state": "relaying",
+    "age_secs": 99000,
+    "bytes": 9032,
+    "fds": 2,
+    "rate_bps": 0,
+    "tid": 39,
+    "spins": 1210000,
+    "revents": {
+     "client": "HUP",
+     "origin": ""
+    },
+    "half_closed": "origin",
+    "half_closed_secs": 98700,
+    "idle_secs": 98700
+   },
+   {
+    "id": 9310,
+    "client": "198.51.100.7",
+    "target": "gamma.example.net:443",
+    "kind": "connect",
+    "state": "relaying",
+    "age_secs": 120,
+    "bytes": 1048576,
+    "fds": 2,
+    "rate_bps": 81920,
+    "tid": 44
+   },
+   {
+    "id": 9311,
+    "client": "198.51.100.7",
+    "target": "zeta.example.jp:443",
+    "kind": "connect",
+    "state": "parked",
+    "age_secs": 300,
+    "bytes": 4096,
+    "fds": 2,
+    "rate_bps": 0,
+    "idle_secs": 280
+   },
+   {
+    "id": 9312,
+    "client": "192.0.2.10",
+    "target": "delta.example.org:80",
+    "kind": "http",
+    "state": "serving",
+    "age_secs": 2,
+    "bytes": 512,
+    "fds": 1,
+    "rate_bps": 256,
+    "tid": 45
+   }
+  ],
+  "count": 5,
+  "shown": 5,
+  "truncated": false,
+  "lite": false
+ }
 }

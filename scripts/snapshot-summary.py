@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 # `/snapshot` (T14.4) を 1 枚の Markdown の「要点」に畳む (`scripts/collect-deployed.sh` が呼ぶ)。
 #
-# 見るのは T14.0 の分析で実際に要った順: 全体 → 名前解決 → エラー → 閉じた接続 → いまの接続。
+# 見るのは T14.0 の分析で実際に要った順: 全体 → CPU → 名前解決 → エラー → 閉じた接続 → いまの接続。
 # **`--prev` を渡すと通算の指標は差分**になる (`/status` の数はどれも起動からの通算なので、
 # そのまま読むと「いつからの値か」が混ざる)。
 #
-# 使い方: scripts/snapshot-summary.py SNAP.json [--prev PREV.json]
+# **T15.0 (15) で足した欄** (どれも「無ければ出さない」ので、古い雪像もそのまま読める):
+#   - CPU の表 … `/profile` の CPU (割り当てに対する使用率)・`/status` の `kernel.cgroup_cpu`
+#     (絞られた周期の割合)・`threads_top` (上位スレッド)・`run_delay_us` (走れずに待った時間)
+#   - 名前解決 … `misses_by_kind` (ミスの種類別) と引き直しの失敗・遅れ・最大 ms
+#   - 待ち … `/history` の `wait` (利用者が待つ時間 = `queue + client_read + dns + connect`)
+#   - いまの接続 … **動かないトンネル** (`idle_secs` ≥ 300 秒) の `spins` / `revents` / 半閉じ
+#
+# 使い方: scripts/snapshot-summary.py SNAP.json [--prev PREV.json] [--status-before STATUS.json]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
 import argparse
@@ -16,6 +23,10 @@ from datetime import datetime, timezone
 
 # `/status` の `errors_by_cause` の並び (`crates/metrics/src/metrics.rs` の ERR_CAUSE_NAMES)
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
+# 名前解決のミスの種類 (`crates/net/src/dns.rs` の `misses_by_kind_json`。この順で和が `misses`)
+MISS_KINDS = ["cold", "expired", "warm_stale", "negative"]
+# 「動かないトンネル」と見なす秒 (T15.0 (14) の画面と同じ固定の閾。見出しに書く)
+IDLE_TUNNEL_SECS = 300
 
 
 def load(path):
@@ -72,6 +83,10 @@ def quantile(buckets, count, top, p, bounds):
     return top
 
 
+# 分布の列に対する「件数」の列 (`wait` は T15.0 (10) で足した `waits`)
+COUNT_KEY = {"connect": "connects", "forward": "forwards", "wait": "waits"}
+
+
 def merge(history, prefix, last=None):
     """履歴の標本を足し合わせて (件数, バケツ, 最大, 合計 ms) にする。`last` で直近 N 標本だけ。"""
     if not history:
@@ -81,8 +96,7 @@ def merge(history, prefix, last=None):
     if last:
         rows = rows[-last:]
     idx = {k: i for i, k in enumerate(keys)}
-    need = [prefix + "_buckets", prefix + "_ms_max", prefix + "_ms_sum",
-            "connects" if prefix == "connect" else "forwards"]
+    need = [prefix + "_buckets", prefix + "_ms_max", prefix + "_ms_sum", COUNT_KEY[prefix]]
     if any(k not in idx for k in need):
         return 0, None, 0, 0.0
     count, buckets, top, total = 0, None, 0, 0.0
@@ -103,6 +117,16 @@ def merge(history, prefix, last=None):
 def latency_line(label, history, prefix, last=None):
     count, buckets, top, total = merge(history, prefix, last)
     if not count:
+        # **「0 本」と「その列が無い」と「部ごと入っていない」は 3 つとも別**。
+        # `wait` は T15.0 より前の雪像に無く、0 本と書くと「誰も待っていない」と
+        # 読まれる。`history.5` は `/snapshot` が大きいときに落とす 3 つのうちの 1 つ
+        # (`crates/endpoints/src/endpoints/recent.rs` の `DROP_ORDER`) なので、
+        # 落ちたときに「その列は無い」と書くと「この版は測っていない」と読まれる (T15.0 (15))
+        keys = history.get("keys") or []
+        if not keys:
+            return f"| {label} | (この部は雪像に入っていない) | — | — | — |"
+        if prefix + "_buckets" not in keys:
+            return f"| {label} | (この雪像にその列は無い) | — | — | — |"
         return f"| {label} | 0 本 | — | — | — |"
     bounds = history.get("bounds_ms") or []
     p50 = quantile(buckets, count, top, 0.5, bounds)
@@ -171,6 +195,87 @@ def error_delta(cur, prev):
             "windowed": True}
 
 
+def profile_totals(snap):
+    """`/profile` の標本を足して (窓の秒数・CPU・役割ごとの CPU・上位スレッド・遅れ) にする。
+
+    1 標本は `[t, requests, cpu_us, [connect...], [forward...], [roles...], [locks...],
+    [queue...], threads_top, run_delay_us]` で、**位置ではなく `keys` の名前で引く**
+    (`crates/endpoints/src/endpoints/profile.rs` の `keys`)。役割の枠は標本 0 なら `0` 1 文字、
+    上位スレッドは 1 本も無い窓なら `0`、`schedstat` の無いカーネルでは `run_delay_us` が `null`。
+    部が無い版では `None` を返す (呼ぶ側が表ごと出さない)。
+    """
+    p = part(snap, "profile")
+    rows = p.get("samples") or []
+    keys = p.get("keys") or []
+    if not rows or "cpu_us" not in keys:
+        return None
+    idx = {k: i for i, k in enumerate(keys)}
+    roles = p.get("roles") or []
+    out = {"samples": len(rows), "interval_secs": p.get("interval_secs") or 0,
+           "roles": roles, "cpu_us": 0, "role_cpu_us": [0] * len(roles),
+           "run_delay_us": None, "top": []}
+
+    def col(row, name):
+        i = idx.get(name)
+        return row[i] if i is not None and i < len(row) else None
+
+    top = {}
+    for r in rows:
+        out["cpu_us"] += col(r, "cpu_us") or 0
+        for i, t in enumerate(col(r, "threads") or []):
+            if t and i < len(out["role_cpu_us"]):
+                out["role_cpu_us"][i] += t[0] or 0
+        delay = col(r, "run_delay_us")
+        if delay:
+            if out["run_delay_us"] is None:
+                out["run_delay_us"] = [0] * len(roles)
+            for i, v in enumerate(delay):
+                if i < len(out["run_delay_us"]):
+                    out["run_delay_us"][i] += v or 0
+        for t in col(r, "threads_top") or []:
+            tid, comm, role, cpu_us, running = (list(t) + [0] * 5)[:5]
+            cur = top.setdefault(tid, {"comm": comm, "role": role, "cpu_us": 0, "running": 0})
+            cur["comm"], cur["role"] = comm, role
+            cur["cpu_us"] += cpu_us or 0
+            cur["running"] += running or 0
+    out["secs"] = out["samples"] * out["interval_secs"]
+    out["top"] = sorted(({"tid": k, **v} for k, v in top.items()), key=lambda x: -x["cpu_us"])
+    return out
+
+
+def cores(cpu_us, secs):
+    """CPU の us と窓の秒から「何コアぶん」か (窓が 0 秒なら None)。"""
+    return (cpu_us / 1e6 / secs) if secs else None
+
+
+def idle_tunnels(conns, edge=IDLE_TUNNEL_SECS):
+    """**1 バイトも動いていないトンネル** (`idle_secs` ≥ `edge`) を長い順に (T15.0 (4))。
+
+    `idle_secs` は CONNECT の行にしか出ず、既定値 (0) の行では**欄ごと出ない**ので
+    「無ければ 0」と読む (`crates/metrics-recent/src/recent.rs` の `Slot::to_json`)。
+    """
+    rows = [c for c in conns if (c.get("idle_secs") or 0) >= edge]
+    return sorted(rows, key=lambda c: -(c.get("idle_secs") or 0))
+
+
+def conn_evidence(c):
+    """`/connections` の 1 行のうち T15.0 (4) が足した証拠だけを 1 行に (無い欄は飛ばす)。"""
+    out = [f"idle {num(c.get('idle_secs'))} 秒", f"齢 {num(c.get('age_secs'))} 秒",
+           fmt_bytes(c.get("bytes")), f"{num(c.get('rate_bps'))} bps"]
+    if c.get("tid"):
+        out.append(f"tid {c['tid']}")
+    if c.get("spins"):
+        out.append(f"spins {num(c['spins'])}")
+    if c.get("half_closed"):
+        out.append(f"半閉じ {c['half_closed']} {num(c.get('half_closed_secs'))} 秒")
+    # 旗は**立っている側だけ**書く (`{"client":"HUP","origin":""}` の空の側を出すと読みにくい)
+    rev = c.get("revents") or {}
+    flags = [f"{side}=`{rev[side]}`" for side in ("client", "origin") if rev.get(side)]
+    if flags:
+        out.append("revents " + " ".join(flags))
+    return " / ".join(out)
+
+
 def part(snap, name):
     """雪像の部を取り出す (`parts` の `history.5` のような入れ子の名前も辿る)。"""
     v = snap
@@ -217,9 +322,14 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="/snapshot を 1 枚の要点に畳む")
     p.add_argument("snapshot")
     p.add_argument("--prev", metavar="PREV.json", help="前回の雪像 (通算の指標を差分にする)")
+    # 雪像を配ること自体が RSS を約 1.0 MB 押し上げるので、RSS だけは雪像の**前**に
+    # 取った `/status` を使う (T15.0 (15)。ほかの通算は 1 秒差で意味が変わらない)
+    p.add_argument("--status-before", metavar="STATUS.json",
+                   help="雪像の前に取った /status (**RSS だけ**こちらの値を使う)")
     args = p.parse_args(argv)
     d = load(args.snapshot)
     prev = load(args.prev) if args.prev else None
+    before = load(args.status_before) if args.status_before else None
     if "parts" not in d:
         print("(これは /snapshot の JSON ではない)")
         return 1
@@ -288,8 +398,53 @@ def main(argv=None):
     sysinfo = cache.get("system") or {}
     print(f"| キャッシュ | 命中率 {num(cache.get('hit_ratio'))} "
           f"(使用 {fmt_bytes((cache.get('memory') or {}).get('used_bytes'))}) |")
-    print(f"| RSS | {fmt_bytes(sysinfo.get('process_rss_bytes'))} |")
+    rss, rss_note = sysinfo.get("process_rss_bytes"), ""
+    if before:
+        early = ((before.get("cache") or {}).get("system") or {}).get("process_rss_bytes")
+        if early is not None:
+            rss, rss_note = early, " (**RSS は雪像の前に取った `/status` の値**)"
+    print(f"| RSS | {fmt_bytes(rss)}{rss_note} |")
     print()
+
+    # CPU (割り当てに対する使用率・絞られた周期の割合・上位スレッド・走れずに待った時間)。
+    # **どちらの源も無い版では表ごと出さない** (T15.0 (15))
+    prof = profile_totals(d)
+    cg = (st.get("kernel") or {}).get("cgroup_cpu") or {}
+    if prof or cg:
+        print("| CPU | 値 |")
+        print("|---|---|")
+        if prof:
+            used = cores(prof["cpu_us"], prof["secs"])
+            quota = cg.get("quota_cores")
+            share = (f" / 割り当て {num(quota)} コア の **{used / quota * 100:.1f}%**"
+                     if quota and used is not None else " (cgroup の割り当ては無い)")
+            # **コアは 3 桁**。1 桁だと 0.006 コアも 0.04 コアも「0.0」に潰れる
+            print(f"| 使用 | {'—' if used is None else f'{used:.3f}'} コア{share}"
+                  f" (`/profile` {prof['samples']} 標本 × {prof['interval_secs']} 秒) |")
+        periods = cg.get("nr_periods")
+        if periods:
+            since = cg.get("since_start") or {}
+            sp, sth = since.get("nr_periods"), since.get("nr_throttled")
+            extra = (f"、起動から {sth / sp * 100:.1f}% ({num(sth)}/{num(sp)})"
+                     if sp else "")
+            print(f"| 絞られた周期 | **{cg.get('nr_throttled', 0) / periods * 100:.1f}%** "
+                  f"({num(cg.get('nr_throttled'))}/{num(periods)}){extra} |")
+        elif cg:
+            print(f"| 絞られた周期 | 絞られ {num(cg.get('nr_throttled'))} 回 "
+                  "(**この版に分母 `nr_periods` が無い**ので割合は出せない) |")
+        if prof and prof["top"]:
+            roles = prof["roles"]
+            shown = "、".join(
+                f"`{t['comm']}` (tid {t['tid']}"
+                + (f"、{roles[t['role']]}" if 0 <= t["role"] < len(roles) else "")
+                + f"、{t['cpu_us'] / 1000:,.0f} ms、走行 {num(t['running'])} 標本)"
+                for t in prof["top"][:3])
+            print(f"| 上位スレッド | {shown} |")
+        if prof and prof["run_delay_us"]:
+            pairs = sorted(zip(prof["roles"], prof["run_delay_us"]), key=lambda kv: -kv[1])
+            shown = "、".join(f"{r} {us / 1000:,.1f} ms" for r, us in pairs[:3] if us) or "—"
+            print(f"| 走れずに待った (`run_delay_us`) | {shown} |")
+        print()
 
     dns = st.get("dns") or {}
     pdns = (pst.get("dns") or {}) if (prev and not restarted) else {}
@@ -305,17 +460,29 @@ def main(argv=None):
           f" / {num(dns.get('refreshes', 0) - pdns.get('refreshes', 0))} |")
     print(f"| 負のキャッシュ命中 / 古い答えで代用 | {num(dns.get('negative_hits'))}"
           f" / {num(dns.get('stale_served'))} |")
+    # ミスの種類別と引き直しの様子 (T15.0 (7))。**どちらも起動からの通算**なので
+    # `--prev` でも引き算しない (`expired` が主なら窓、`warm_stale` なら引き直しの詰まり)
+    kinds = dns.get("misses_by_kind")
+    if kinds:
+        print("| ミスの種類別 (起動から) | "
+              + " / ".join(f"{k} {num(kinds.get(k, 0))}" for k in MISS_KINDS) + " |")
+    if any(k in dns for k in ("refresh_failures", "refresh_late", "refresh_ms_max")):
+        print(f"| 引き直しの失敗 / 遅れ / 最大 (起動から) | "
+              f"{num(dns.get('refresh_failures'))} 回 / {num(dns.get('refresh_late'))} 回"
+              f" / {num(dns.get('refresh_ms_max'))} ms |")
     print()
 
     hist = (d.get("history") or {})
     print("| 待ち (履歴の全標本) | 本数 | 平均 | p50 / p95 | 最大 |")
     print("|---|---|---|---|---|")
-    for label, res, last in (("CONNECT 確立 (直近 1 時間)", "5", None),
-                             ("CONNECT 確立 (直近 1 日)", "60", None),
-                             ("CONNECT 確立 (通算)", "3600", None),
-                             ("forward 初バイト (直近 1 時間)", "5", None),
-                             ("forward 初バイト (通算)", "3600", None)):
-        prefix = "connect" if label.startswith("CONNECT") else "forward"
+    # `wait` は**利用者が待つ時間** (`queue + client_read + dns + connect`。T15.0 (2))。
+    # `connect` は要求行を読んだ後からしか測らないので、次の完了の定義の基準線はこちら
+    for label, prefix, res, last in (("CONNECT 確立 (直近 1 時間)", "connect", "5", None),
+                                     ("CONNECT 確立 (直近 1 日)", "connect", "60", None),
+                                     ("CONNECT 確立 (通算)", "connect", "3600", None),
+                                     ("利用者が待つ `wait` (直近 1 日)", "wait", "60", None),
+                                     ("forward 初バイト (直近 1 時間)", "forward", "5", None),
+                                     ("forward 初バイト (通算)", "forward", "3600", None)):
         print(latency_line(label, hist.get(res) or {}, prefix, last))
     print()
 
@@ -381,6 +548,15 @@ def main(argv=None):
     conns = part(d, "connections").get("connections") or []
     print(f"- いまの接続 (`/connections`): {len(conns)} 本"
           + ((" / " + ", ".join(f"{k} {v}" for k, v in tally(conns, "state").items())) if conns else ""))
+    # 動かないトンネル (T15.0 (4) の証拠つき)。**閾は固定の 300 秒**なので見出しに書く
+    stuck = idle_tunnels(conns)
+    if stuck:
+        spins = sum(c.get("spins") or 0 for c in stuck)
+        half = sum(1 for c in stuck if c.get("half_closed"))
+        print(f"  - **動かないトンネル (`idle_secs` ≥ {IDLE_TUNNEL_SECS} 秒)**: {len(stuck)} 本"
+              f" (半閉じ {half} 本、`spins` の合計 {num(spins)})")
+        for c in stuck[:5]:
+            print(f"    - `{c.get('target')}` {conn_evidence(c)}")
     log = part(d, "log").get("lines") or []
     print(f"- 警告と失敗 (`/log`): {len(log)} 行"
           + ((" / 直近 `" + (log[0].get("msg") or "")[:120] + "`") if log else ""))
