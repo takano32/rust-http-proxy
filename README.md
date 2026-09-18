@@ -124,6 +124,7 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 scripts/collect-deployed.sh nagoya.sorahost.net:50697 > today.md   # 1 日 1 回
 PROBE=0 scripts/collect-deployed.sh nagoya.sorahost.net:50697      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server nagoya.sorahost.net:50697  # 回し忘れた日を取り寄せる
+scripts/collect-deployed.sh --full nagoya.sorahost.net:50697       # 切れた部の続きも `offset=` で追う
 scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と最後で差分
 scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json --group domain  # eTLD+1 でまとめる
 ```
@@ -2409,6 +2410,12 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 手元から見た待ち (`probe-deployed.sh`) を続けて回します。**保存先は既定で `~/rust-http-proxy-status/`** で、
 個票には接続元 IP と宛先が並ぶのでリポジトリには入れません。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
+**`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
+`next_offset` が `null` になるまで追い**、`<UTC 時刻>-<部>-<何枚目>.json` に落とします (T15.0 (11)。
+1 枚には `/recent` は 2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 しか
+入りません)。**既定では追いません** — 続きはどれも重い口で、重い口は同時 1 本 (上の「重い口は同時に 1 本だけ」) なので
+順に引くしかなく、収集にかかる時間が数倍になるためです。1 つの部で追う枚数の上限は `MAX_PAGES` (既定 8)。
+`snapshot-summary.py` に渡す雪像の形は変わりません (落とすのは別ファイルです)。
 7 日ぶん溜まったら `scripts/weekly-report.py` が週次の 1 枚になります。
 
 **読むときの注意** (2026-09-18 に実際に判定して分かったこと):
