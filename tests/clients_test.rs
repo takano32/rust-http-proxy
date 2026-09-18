@@ -211,3 +211,67 @@ fn test_integration_clients_reads_the_user_agent_only_on_the_first_request() {
     assert_eq!(status_number(&row, "distinct_targets"), 1, "{}", row);
     assert_eq!(status_number(&row, "literal_targets"), 2, "{}", row);
 }
+
+/// `rtt_ms` の母数に**内部エンドポイントだけを読んだ接続を混ぜない** (T15.0 (12))。
+///
+/// 同じ行の中で `requests` は「プロキシとして通した要求」、`rtt_ms.samples` は
+/// 「閉じた接続すべて」だったので、`/status` を 5 秒おきに引く監視が居るだけで
+/// **プロキシとしても使っている IP** の `samples` だけが際限なく積み上がっていた
+/// (デプロイ先の実測: `requests` 27 に対して `samples` 68)。しかも `.rrd` に残るので
+/// 再起動をまたいで残る。
+///
+/// 見るのは「行が出来たあとに自分宛てを何回引いても `samples` が `requests` を
+/// 越えない」こと。**直す前は落ちる** (引いた回数だけ `samples` が増える)。
+///
+/// **Linux だけ**: ほかの OS では `tcp_rtt` が `(0, 0)` を返し (`src/lib.rs` の
+/// `#[cfg(not(target_os = "linux"))]` の側)、`record_client_rtt` が `rtt_us == 0` で
+/// 早く返るので `rtt_ms` は常に `null` になる。RTT に寄りかかる結合テストは
+/// このリポジトリでは全部こうしてある (`tests/recent_test.rs` の T14.5 の 2 本)。
+#[test]
+#[cfg(target_os = "linux")]
+fn test_integration_clients_rtt_counts_only_proxied_connections() {
+    let (origin_port, _origin) = start_mock_origin();
+    let proxy_port = start_test_proxy(proxy_config());
+
+    // (1) まず 1 本通して行を作る (`record_client_rtt` は**既にある行しか**更新しないので、
+    //     行が無いうちに自分宛てを引いても混ざらない = 順番が要る)
+    let body = get_via_proxy(
+        proxy_port,
+        &format!("http://127.0.0.1:{}/hello", origin_port),
+        &format!("127.0.0.1:{}", origin_port),
+    );
+    assert!(body.contains("hello from mock origin"), "{}", body);
+    wait_until(
+        || {
+            let json = endpoint_json(proxy_port, "/clients");
+            json.contains("{\"client\":\"127.0.0.1\"")
+                && status_number(&client_row(&json), "requests") >= 1
+        },
+        "/clients に転送の 1 本目が出る",
+    );
+
+    // (2) 自分宛てだけの接続を 12 本 (`Connection: close` なので 12 本閉じる)。
+    //     `endpoint_json` 自身も 1 本なので、読む行為でも増えないことを一緒に見る
+    for _ in 0..12 {
+        let json = endpoint_json(proxy_port, "/status");
+        assert!(json.contains("\"uptime_secs\":"), "{}", json);
+    }
+
+    let row = client_row(&endpoint_json(proxy_port, "/clients"));
+    let requests = status_number(&row, "requests");
+    assert_eq!(requests, 1, "通したのは 1 要求だけ: {}", row);
+    // loopback でも `tcpi_rtt` は 0 にならないので、行には RTT が入っている
+    assert!(
+        !row.contains("\"rtt_ms\":null"),
+        "RTT が 1 本も無い: {}",
+        row
+    );
+    let samples = status_number(&row, "samples");
+    assert!(
+        samples <= requests,
+        "rtt_ms.samples ({}) が requests ({}) を越えた = 自分宛ての接続が混ざっている: {}",
+        samples,
+        requests,
+        row
+    );
+}

@@ -130,7 +130,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /status[?sort=errors|dns|slow]              JSON: counters, hosts, cache, threads\n\
          \x20 /errors?n=100                               JSON: the last errors (who, when, why)\n\
          \x20 /connections                                JSON: the connections open right now\n\
-         \x20 /recent?n=200&since=&client=&sort=          JSON: the connections that closed\n\
+         \x20 /recent?n=200&since=&client=&sort=&offset=  JSON: the connections that closed\n\
          \x20 /bursts?n=50                                JSON: snapshots taken at each spike\n\
          \x20 /trace?n=200&since=                         JSON: one client's requests (PROXY_TRACE_CLIENT)\n\
          \x20 /events?n=200&since=                        JSON: starts, reloads, and other events\n\
@@ -139,7 +139,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /snapshots/<YYYY-MM-DD>                     JSON: one saved day (as taken)\n\
          \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
-         \x20 /hosts?sort=&limit=200                      JSON: every host (/status keeps 50)\n\
+         \x20 /hosts?sort=&limit=200&offset=              JSON: every host (/status keeps 50)\n\
          \x20 /hosts/series?top=16&host=<name>            JSON: per-host series (5 min x 24 h)\n\
          \x20 /clients?sort=&limit=200                    JSON: every client (agent, targets, ports)\n\
          \x20 /readers                                    JSON: who reads these endpoints (scan or monitor)\n\
@@ -148,7 +148,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /healthz                                    health checks (503 when unhealthy)\n\
          \x20 /history?res=5|60|3600&n=720                JSON: time series (res=5 keeps 6 h)\n\
          \x20 /history?since=&until=&summary=1            JSON: one summary row for a period\n\
-         \x20 /profile?res=5|60                           JSON: stages, threads, locks\n\
+         \x20 /profile?res=5|60&n=&offset=&summary=1      JSON: stages, threads, locks\n\
          \x20 /daily?n=365                                JSON: one summary line per day (kept forever)\n\
          \x20 /slo?days=7                                 JSON: how much of the time the SLO was met\n\
          \x20 /metrics                                    Prometheus text format\n\
@@ -255,8 +255,9 @@ fn is_heavy(is_get: bool, path: &str, query: Option<&str>) -> bool {
     match path {
         // 17 部を 1 つの JSON に組む (T14.4)。無条件に重い
         "/snapshot" => true,
-        // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)
-        "/profile" => true,
+        // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)。
+        // **`?summary=1` だけは軽い** (標本を 1 本も組まず 3 段に畳んだ数字だけ返す。T15.0 (11))
+        "/profile" => !has_flag(query, "summary"),
         // 1 相手を上の口から横断して読む (T14.36)
         "/explain" => true,
         // 既定の `limit` / `n` を越えて引いたときだけ (T14.32 の `/history?res=5&n=4320` は 1.9 MB)
@@ -264,6 +265,37 @@ fn is_heavy(is_get: bool, path: &str, query: Option<&str>) -> bool {
         "/recent" => num_over(query, "n", 500),
         "/history" => num_over(query, "n", 720),
         _ => false,
+    }
+}
+
+/// 問い合わせに `key=` が**立っている**か (`/history?summary=1` と同じ読み方。`0` は偽)。
+pub(super) fn has_flag(query: Option<&str>, key: &str) -> bool {
+    let Some(q) = query else {
+        return false;
+    };
+    parse_query(q).iter().any(|(k, v)| k == key && v != "0")
+}
+
+/// `?offset=N` を読む (無い / 読めない値は 0。上は `max` で止める。T15.0 (11))。
+///
+/// 読むのは `/recent` `/hosts` `/profile` の 3 つで、**読み方はここ 1 か所**に置く。
+/// `recent.rs` の `num_param` と別なのは**下限が 0** だから (あちらは `.clamp(1, max)` なので
+/// 「1 件目から」を表せない)。意味は「いまの並びを何本飛ばすか」で、並びは `/recent` が
+/// 閉じた新しい順、`/hosts` が `sort=` の順、`/profile` が新しい標本の順。
+pub(super) fn offset_param(query: Option<&str>, max: usize) -> usize {
+    parse_query(query.unwrap_or(""))
+        .iter()
+        .find(|(k, _)| k == "offset")
+        .and_then(|(_, v)| v.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(max)
+}
+
+/// 次の頁の `offset` (続きが無ければ `null`)。上の 3 つが同じ綴りで応答の末尾に出す。
+pub(super) fn next_offset(offset: usize, shown: usize, total: usize) -> String {
+    match offset + shown < total {
+        true => (offset + shown).to_string(),
+        false => "null".to_string(),
     }
 }
 

@@ -21,6 +21,19 @@
 #     (日付は**その 1 日を写したもの**。実際に撮られたのは翌日 00:00 UTC の直後)。
 #     回し忘れた日の個票がこれで埋まる。
 #
+#   scripts/collect-deployed.sh --full HOST:PORT [DIR]
+#     雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
+#     追って `<UTC 時刻>-page<何枚目>-<部>.json` に落とす (T15.0 (11))。雪像 1 枚には `/recent` は
+#     2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 しか
+#     入らないので、全部を残したい日だけ付ける。**既定では追わない**: 続きはどれも重い口で、
+#     重い口は同時 1 本 (T14.51) なので順に引くしかなく、収集にかかる時間が数倍になる。
+#     `snapshot-summary.py` に渡す雪像の形は変わらない (落とすのは別ファイル)。
+#     **名前が `page<N>-<部>` の順なのはわざと**: `<部>-<N>` にすると
+#     `snapshot-diff.py --from-files` と `anonymize-snapshot.py` の `classify()` が
+#     「`<UTC 時刻>-` の後ろが部の名前で始まれば 1 口 1 ファイル」と見分けるので、
+#     続きの 1 枚を部そのものと取り違える (`page2-hosts.json` はどちらも読み飛ばす)。
+#     `--from-server` とは併用できない (あちらは保存済みの雪像を取り寄せるだけ)。
+#
 # 環境変数:
 #   PROBE (既定 1)      … 0 で `probe-deployed.sh` を飛ばす (デプロイ先へ本物の要求を
 #                         15 本送るので、何度も回すときは 0 にする)
@@ -28,19 +41,32 @@
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
 #   CRITERIA (既定 phase14) … 判定表に使う完了の定義。`off` で判定表を出さない
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
+#   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限
 #   AAAA (無指定)       … `status-diff.py --aaaa FILE` に渡す表 (数字を残すときは固定する。§1)
 #
 # 出口: 雪像が取れなければ 1 (それ以外は、途中の道具が失敗しても 1 枚は出す)。
 set -u
 cd "$(dirname "$0")/.."
 FROM_SERVER=0
-if [ "${1:-}" = --from-server ]; then
-  FROM_SERVER=1
-  shift
-fi
+FULL=0
+while :; do
+  case "${1:-}" in
+    --from-server)
+      FROM_SERVER=1
+      shift
+      ;;
+    --full)
+      FULL=1
+      shift
+      ;;
+    *) break ;;
+  esac
+done
 PROXY=${1:-}
 if [ -z "$PROXY" ]; then
-  echo "usage: $0 [--from-server] HOST:PORT [DIR]   (例: $0 nagoya.sorahost.net:50697)" >&2
+  # **2 つの旗は排他** (`--from-server` は保存済みの雪像を取り寄せるだけで、続きを引く相手が居ない)
+  echo "usage: $0 [--full] HOST:PORT [DIR]   (例: $0 nagoya.sorahost.net:50697)" >&2
+  echo "       $0 --from-server HOST:PORT [DIR]   (回し忘れた日を取り寄せる。--full は効きません)" >&2
   exit 2
 fi
 # `http://host:port` と書かれても `host:port` として扱う (URL でも通るように)
@@ -52,6 +78,7 @@ DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
 CRITERIA=${CRITERIA:-phase14}
 MAX_TIME=${MAX_TIME:-30}
+MAX_PAGES=${MAX_PAGES:-8}
 AAAA=${AAAA:-}
 
 mkdir -p "$DIR" || exit 1
@@ -60,6 +87,11 @@ mkdir -p "$DIR" || exit 1
 # プロキシが `$HOME/.rust-http-proxy/snapshots/` に 1 日 1 ファイル書いているので、
 # 手元に無い日付だけを取って `$DIR` に置く (`/snapshots` の一覧 → `/snapshots/<date>`)。
 if [ "$FROM_SERVER" = 1 ]; then
+  # `--full` はこの枝では効かない (取り寄せるのは保存済みの雪像そのもので、
+  # `offset=` で続きを引く相手が居ない)。黙って無視しないで 1 行断る
+  if [ "$FULL" = 1 ]; then
+    echo "note: --full は --from-server では効きません (保存済みの雪像をそのまま取り寄せます)" >&2
+  fi
   LIST=$(curl -s --max-time "$MAX_TIME" "http://$PROXY/snapshots") || LIST=
   if [ -z "$LIST" ]; then
     echo "failed to fetch http://$PROXY/snapshots" >&2
@@ -126,6 +158,94 @@ PREV=$(ls -1 "$DIR"/*-snapshot.json 2>/dev/null | grep -vF "$OUT" | tail -1)
 printf '# rust-http-proxy — %s (%s)\n\n' "$PROXY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf -- '- 雪像: `%s` (%s B)\n' "$OUT" "$(wc -c <"$OUT" | tr -d ' ')"
 [ -n "$PREV" ] && printf -- '- 前回: `%s`\n' "$PREV"
+
+# --- 1b. 切れた部の続きを取る (--full。T15.0 (11)) -----------------------------
+# 雪像 1 枚は部ごとに 256 KiB で切れる (`truncated`)。`offset=` を持つ 3 つの部だけ、
+# `next_offset` が `null` になるまで**追加の URL で**引いて別ファイルに落とす。
+# 続きはどれも重い口 (同時 1 本) なので順に引き、断られたら `Retry-After: 1` に従う。
+if [ "$FULL" = 1 ]; then
+  printf -- '- `--full`: 切れた部の続きを `offset=` で追います (重い口は同時 1 本なので順に引きます)\n'
+  PAGES=$(python3 - "$OUT" <<'PAGESPY'
+import json, sys
+
+# 続きを引ける部と、その URL の形 (雪像がその部を組むときの引数 + `offset=`)
+URL = {
+    "recent": "/recent?n=2000&offset=",
+    "hosts": "/hosts?limit=1000&offset=",
+    "profile": "/profile?res=5&offset=",
+}
+try:
+    d = json.load(open(sys.argv[1]))
+except ValueError:
+    sys.exit(0)
+for name, tmpl in URL.items():
+    p = d.get(name)
+    if not isinstance(p, dict) or not p.get("truncated"):
+        continue
+    nxt = p.get("next_offset")
+    if nxt is None:                      # `offset=` を知らない古いプロキシ
+        print("-", name, "この版のプロキシに offset= がありません")
+        continue
+    print("+", name, tmpl, nxt)
+# 切れているのに続きを引けない部は名前だけ知らせる
+for name, p in sorted(d.items()):
+    if name in URL or not isinstance(p, dict):
+        continue
+    if p.get("truncated"):
+        print("-", name, "この部に offset= はありません (1 枚ぶんだけです)")
+PAGESPY
+) || PAGES=
+  # 1 行は `+ <部> <URL の形> <次の offset>` か `- <部> <引けない理由>`
+  while read -r kind part rest; do
+    [ -n "${kind:-}" ] || continue
+    if [ "$kind" = - ]; then
+      printf -- '  - **%s** は切れていますが続きを引けません (%s)\n' "$part" "$rest"
+      continue
+    fi
+    off=${rest##* }    # 最後の語が次の offset
+    rest=${rest% *}    # その手前までが URL の形
+    page=2
+    while [ "${off:-null}" != null ] && [ "$page" -le "$MAX_PAGES" ]; do
+      # 名前は `page<N>-<部>` の順 (`<部>-<N>` だと `snapshot-diff.py --from-files` と
+      # `anonymize-snapshot.py` の `classify()` が「後ろが部の名前で始まれば 1 口 1 ファイル」と
+      # 見分けるので、続きの 1 枚を部そのものと取り違える)
+      f="$DIR/$STAMP-page$page-$part.json"
+      ok=0
+      for try in 1 2 3; do
+        if curl -s --max-time "$MAX_TIME" "http://$PROXY$rest$off" -o "$f"; then
+          if grep -q '"error":"busy"' "$f" 2>/dev/null; then
+            sleep 1 # 重い口は同時 1 本 (T14.51)。`Retry-After: 1` に従う
+            continue
+          fi
+          ok=1
+          break
+        fi
+        sleep 1
+      done
+      if [ "$ok" != 1 ]; then
+        printf -- '  - **取れなかった**: %s の %s 枚目 (%s 回試した)\n' "$part" "$page" "$try"
+        rm -f "$f"
+        break
+      fi
+      next=$(python3 -c 'import json, sys
+try:
+    v = json.load(open(sys.argv[1])).get("next_offset")
+except Exception:
+    v = None
+print("null" if v is None else v)' "$f" 2>/dev/null) || next=null
+      printf -- '  - `%s` (%s B、offset=%s、次は %s)\n' \
+        "$f" "$(wc -c <"$f" | tr -d ' ')" "$off" "$next"
+      off=$next
+      page=$((page + 1))
+    done
+    if [ "${off:-null}" != null ]; then
+      printf -- '  - **%s はまだ続きがあります** (offset=%s。MAX_PAGES=%s で止めました)\n' \
+        "$part" "$off" "$MAX_PAGES"
+    fi
+  done <<EOF
+$PAGES
+EOF
+fi
 printf '\n'
 
 # --- 2. 要点 ------------------------------------------------------------------

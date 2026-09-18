@@ -124,6 +124,7 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 scripts/collect-deployed.sh nagoya.sorahost.net:50697 > today.md   # 1 日 1 回
 PROBE=0 scripts/collect-deployed.sh nagoya.sorahost.net:50697      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server nagoya.sorahost.net:50697  # 回し忘れた日を取り寄せる
+scripts/collect-deployed.sh --full nagoya.sorahost.net:50697       # 切れた部の続きも `offset=` で追う
 scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と最後で差分
 scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json --group domain  # eTLD+1 でまとめる
 ```
@@ -609,8 +610,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `/log?n=200` で **warn 以上**の直近の行 (1,000 行の環状、1 行 256 B まで。
     `info` のアクセスログは写しません — 熱い経路を重くしないため。コンソールが流れて消える環境向け。
     個票のファイルには 1 行 219 B まで残します)、
-    `/hosts?sort=requests|errors|dns|slow&limit=200` (最大 1,000) で `.rrd` にある**全ホスト**を `/status` の `hosts[]` と同じ形で
-    (`/status` の上位 50 は変えません。`scripts/status-diff.py` がこの JSON もそのまま読みます)、
+    `/hosts?sort=requests|errors|dns|slow&limit=200&offset=0` (最大 1,000) で `.rrd` にある**全ホスト**を `/status` の `hosts[]` と同じ形で
+    (`/status` の上位 50 は変えません。`scripts/status-diff.py` がこの JSON もそのまま読みます。
+    **`offset=` は `sort=` で並べたあとの列を何本飛ばすか**で、応答の `next_offset` が次の頁の `offset` です
+    (続きが無ければ `null`)。1,000 件 × 408 B = 398 KiB は 1 枚 256 KiB に入らず 639 件で切れていました。T15.0 (11))、
     **`/clients?sort=requests|recent|targets|literal&limit=200`** (最大 1,000) で**全接続元**の個票 (T14.7)。
     `/status` の `clients[]` と同じ欄に加えて `first_seen` (初めて見た時刻。`0` はこの起動より前から居る)、
     `agents` (見た `User-Agent` 最大 4 種・先頭 128 バイト。**拾うのは接続の最初の要求だけ**) と `agents_dropped`、
@@ -638,7 +641,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (`"persisted": false`)。費用は内部エンドポイントの経路の鍵 1 回だけで、**要求の経路には 1 命令も足していません**。
     数えるのは応答を組む**前**なので、**読んだ応答にはその要求自身が入っています** (`/status` を 3 回引いた
     3 回目の応答が `count: 3`。測る行為が状態を変えるので、`/readers` を引けばその 1 回も数に入ります)
-  - **閉じた接続の個票 (T14.4)**: `/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
+  - **閉じた接続の個票 (T14.4)**: `/recent?n=200&offset=0&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
     `/connections` が「いま」しか見せないのに対し、こちらは「**起きたこと**」です。1 件 = 接続 id・開いた時刻 (`at`、epoch 秒)・
     接続元 (`client`)・宛先 (`target`。CONNECT も http も `host:port`)・種類 (`kind` = `connect` / `http`)・
     寿命 (`secs`)・要求数 (`reqs`、http だけ)・
@@ -668,6 +671,13 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `?sort=slow` は確立 (`ms.connect`) の遅い順、`?sort=bytes` は転送の多い順。
     **自分宛て (`/status` `/dashboard` …) だけで終わった接続は残しません** — 監視が 5 秒おきに引くとリングがそれで埋まるためです
     (数は `/status` にあります)。
+    **`?offset=` で全部読む (T15.0 (11))**: 2,000 件は 1 件 424 B で応答の上限 256 KiB の 3.2 倍あり、1 枚では
+    **615 件しか返りません** (`"truncated": true`)。`offset=` は**いまの並び** (`sort=` のあと。既定は**閉じた新しい順**) を
+    何本飛ばすかで、応答の `next_offset` が次の頁の `offset` です (続きが無ければ `null`)。
+    **`id` や `at` は頁を跨ぐ目印には使えません**: `id` は accept 順、`at` は開いた時刻で、どちらも「閉じた順」の並びとは
+    一致しないためです (長生きのトンネルは若い `id` で最後に閉じます)。取っている間に新しく接続が閉じると並びが 1 つずれて
+    **同じ行が 2 つの頁に出ることはあります** (**欠けることはありません**)。行に `id` があるので読む側で落としてください。
+    `?client=` の絞りは頁より先に効くので、1 人ぶんを追うときは今までどおり `?client=` だけで環の最古まで届きます。
     **`ms.connect` と `ms.client_read` の読み方 (2026-09-18 に直しました。T15.0 (1))**: 接続の段は「確立までの全体 − 名前解決」
     で出していますが、`PROXY_ALLOW_LOCAL=false` (既定) では**宛先が社内アドレスでないかを確かめる入口の判定が、確立の時計より前に
     名前を引きます**。この日までは時計に入っていないその費用まで引いていたので、**名前解決を払った個票の `connect` が 0 に潰れ**
@@ -687,7 +697,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `hosts[]` (オリジン側) と `clients[]` (クライアント側) の `rtt_ms` (`avg` / `min` / `samples`) と `retrans`、
     `/metrics` の `sorahost_rtt_seconds_sum` / `_count` (`{side="client"|"origin"}` の 2 系列だけ。
     **ホスト別は出しません** — 系列が増えすぎるため)。**Linux 以外と `--lite` では読まないので `null` / 0 です**
-    (`/recent` の `rtt_ms` はその側が `null`、`hosts[]` / `clients[]` は `"rtt_ms":null`)
+    (`/recent` の `rtt_ms` はその側が `null`、`hosts[]` / `clients[]` は `"rtt_ms":null`)。
+    **`clients[]` の `rtt_ms` / `retrans` の母数 (2026-09-18 に直しました。T15.0 (12))**: この行に入れるのは
+    **プロキシとして使われた接続だけ**です。それまでは閉じた接続を無条件に入れていたので、`/status` を
+    5 秒おきに引く監視が居るだけで、**プロキシとしても使っている IP** の `samples` だけが `requests` と
+    関係なく積み上がっていました (デプロイ先の実測: `requests` 27 に対して `samples` 68。この欄は `.rrd` に
+    残るので再起動をまたいで残ります)。いまは同じ行の `requests` と同じ母数 = 「プロキシとして通した接続」で、
+    **自分宛て (`/status` `/clients` …) だけで終わった接続は 1 本も入りません** (その相手は `readers` の側です)。
+    接続 1 本ごとの RTT が要るときは `/recent` の `rtt_ms` を読んでください (そちらは今までどおり全部の接続に出ます)
   - **CONNECT の SNI (T14.38)**: CONNECT のあとクライアントが最初に送るのは TLS の
     ClientHello で、その中の SNI (`server_name`) に**本当の宛先の名前**があります。
     `200 Connection Established` を書いたあと、**最初の中継の前に 1 回だけ `recv(MSG_PEEK)`**
@@ -1263,6 +1280,16 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - **ロック** — 統計の表・名前解決の表・預かり所・ワーカーの 4 つが「待たされた」回数と、待ち行列で待った件数 / 合計 ms / 最大 ms
     - 記録はプロセスのメモリだけ (約 6.8 MB = 1 標本 3,136 B × (720 + 1,440)。状態ファイルには書きません)。応答は 256 KiB 以下で、
       入り切らないときは**新しい標本を残して**古い方から落とし `"truncated": true` を出します。**`--lite` では `{"profile":"off"}`**
+    - **`?n=` と `?offset=` (T15.0 (11))** — 1 標本 3,136 B なので `?res=5` は 720 標本のうち **456 本**、
+      `?res=60` は 1,440 標本のうち **362 本**しか 1 枚に入りません。`n=` が 1 枚に返す標本の数
+      (既定はその解像度の全部、上は 720 / 1,440)、`offset=` が**新しい方から何本飛ばすか**です。
+      応答の末尾に `n` / `offset` / `next_offset` が出て、`next_offset` が `null` ならそれで終わりです。
+      **時刻では引けません** (`since=` / `until=` は足していません) — 環は新しい順に詰めるだけの作りで、
+      標本の `t` は 1 つ目の欄にあるので、読む側で切ってください
+    - **`?summary=1`** — **標本を 1 本も返さず**、`5m` / `1h` / `all` の 3 段に畳んだ
+      `requests` / `cpu_us` / `cpu_per_request_us` (と畳んだ標本の数 `samples`) だけを返します。
+      **これだけは重い口ではありません** (`/snapshot` を組んでいる最中でも 503 になりません) ので、
+      「いまこの機械が 1 要求に何 us 使っているか」を 5 秒おきに引く監視はこちらを使ってください
     - 段階の窓は **ms 刻み**なので、loopback のように 1 要求が 1 ms に満たない環境ではほとんどの段階が 0 に潰れます
       (これはデプロイ先の 6〜30 ms の待ちを読むための道具です。手元の速さを見るなら `cpu_per_request_us` の方)
     - **Prometheus で長く見るなら** 同じ段階が `/metrics` の
@@ -1975,6 +2002,8 @@ curl "http://127.0.0.1:8080/status?sort=errors"         # 上位 50 をエラー
 curl http://127.0.0.1:8080/metrics                      # Prometheus 形式
 curl http://127.0.0.1:8080/config                       # 効いている設定とその出どころ (下記「環境変数」)
 curl "http://127.0.0.1:8080/profile?res=5"              # 待ちの段階・スレッドの CPU と状態・ロックの取り合い
+curl "http://127.0.0.1:8080/profile?res=5&n=180&offset=180"   # 続きの 180 標本 (next_offset が null になるまで)
+curl "http://127.0.0.1:8080/profile?summary=1"          # 標本なし。5 分 / 1 時間 / 全部 の CPU/要求 だけ (重い口ではない)
 
 # 個票 (誰が・いつ・なぜ)
 curl "http://127.0.0.1:8080/connections"                # いま開いている接続
@@ -1984,6 +2013,7 @@ curl "http://127.0.0.1:8080/recent?n=200"               # 閉じた接続 (新�
 curl "http://127.0.0.1:8080/recent?sort=slow&n=20"      # 確立のいちばん遅かった 20 本
 curl "http://127.0.0.1:8080/recent?client=198.51.100.7" # ある接続元だけ
 curl "http://127.0.0.1:8080/recent?since=$(( $(date +%s) - 3600 ))"   # 直近 1 時間に開いたもの
+curl "http://127.0.0.1:8080/recent?n=500&offset=500"    # 続きの 500 本 (next_offset が null になるまで)
 curl "http://127.0.0.1:8080/bursts?n=50"                # 山が立った瞬間の写真 (新しい順)
 curl "http://127.0.0.1:8080/trace?n=200"                # 追跡中の 1 接続元の要求 (PROXY_TRACE_CLIENT。URL が入る)
 curl "http://127.0.0.1:8080/events?n=200"               # 起動・再読込・圧迫などの出来事 (新しい順)
@@ -1994,6 +2024,7 @@ curl "http://127.0.0.1:8080/history?res=5&n=4320"       # 5 秒刻みで 6 時�
 curl "http://127.0.0.1:8080/history?since=restart&summary=1&normal_hours_only=1"  # 起動からの要約 1 行
 curl "http://127.0.0.1:8080/dns?sort=misses"            # 名前解決の表 (age / host / misses で並べ替え)
 curl "http://127.0.0.1:8080/hosts?sort=slow&limit=200"  # 全ホスト (/status の hosts[] は上位 50 だけ)
+curl "http://127.0.0.1:8080/hosts?limit=500&offset=500" # 続きの 500 件 (1,000 件は 1 枚に入らない)
 curl "http://127.0.0.1:8080/clients?sort=requests&limit=200"  # 全接続元 (User-Agent・宛先の種類・ポート)
 curl "http://127.0.0.1:8080/hosts/series?top=16"        # 上位 16 ホストの 5 分 × 24 時間
 curl "http://127.0.0.1:8080/hosts/series?host=connect://mtalk.google.com:5228"  # 1 ホストだけ
@@ -2091,7 +2122,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 | 口 | 重いと見なす条件 |
 |---|---|
 | `/snapshot` | いつも (17 部・最大 4 MiB を組む) |
-| `/profile` | いつも (段階・スレッドの CPU と状態・ロックの取り合いの窓) |
+| `/profile` | `?summary=1` **以外**はいつも (段階・スレッドの CPU と状態・ロックの取り合いの窓。要約は標本を 1 本も組まないので軽い口です。T15.0 (11)) |
 | `/explain` | いつも (上の口を横断して 1 枚に組む) |
 | `/hosts` | `limit` が **200 より大きい**とき (`/hosts?limit=1000` など) |
 | `/recent` | `n` が **500 より大きい**とき (`/recent?n=2000` など) |
@@ -2401,6 +2432,18 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 手元から見た待ち (`probe-deployed.sh`) を続けて回します。**保存先は既定で `~/rust-http-proxy-status/`** で、
 個票には接続元 IP と宛先が並ぶのでリポジトリには入れません。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
+**`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
+`next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0 (11)。
+1 枚には `/recent` は 2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 しか
+入りません)。**既定では追いません** — 続きはどれも重い口で、重い口は同時 1 本 (上の「重い口は同時に 1 本だけ」) なので
+順に引くしかなく、収集にかかる時間が数倍になるためです。1 つの部で追う枚数の上限は `MAX_PAGES` (既定 8)。
+`snapshot-summary.py` に渡す雪像の形は変わりません (落とすのは別ファイルです)。
+**名前が `page<何枚目>-<部>` の順なのはわざと**です: `<部>-<何枚目>` にすると
+`snapshot-diff.py --from-files` と `anonymize-snapshot.py` が「`<UTC 時刻>-` の後ろが部の名前で始まれば
+その部を 1 本ずつ取ったファイル」と見分けるので、**続きの 1 枚を部そのものと取り違えます**
+(`page2-hosts.json` はどちらの道具も読み飛ばすので、`--full` を回した置き場に `--from-files` を掛けても
+雪像 1 枚ぶんが混ざりません)。`--full` は `--from-server` とは併用できません (あちらは保存済みの雪像を
+そのまま取り寄せるだけなので、続きを引く相手が居ません。両方付けると 1 行断って `--from-server` だけを行います)。
 7 日ぶん溜まったら `scripts/weekly-report.py` が週次の 1 枚になります。
 
 **読むときの注意** (2026-09-18 に実際に判定して分かったこと):

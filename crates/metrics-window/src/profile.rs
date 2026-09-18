@@ -799,12 +799,34 @@ impl Profile {
     /// **新しい順に** `budget` バイトまで書けるだけ集め、古い順に並べて返す。
     /// 返すのは (JSON の並び, 書けた件数, 全体の件数, 打ち切ったか)。
     pub fn rows_within(&self, res: usize, budget: usize) -> (String, usize, usize, bool) {
+        self.rows_within_page(res, budget, usize::MAX, 0)
+    }
+
+    /// [`Profile::rows_within`] の**ページ送りつき** (`/profile?n=&offset=`。T15.0 (11))。
+    ///
+    /// 環は時刻で引ける作りになっていない (新しい順に詰めるだけ) ので、`since=` /
+    /// `until=` ではなく「新しい方から何本飛ばして、何本返すか」で切る。`offset` は
+    /// **新しい順の並び**を飛ばす本数で、返す並びは今までどおり**古い順**。
+    /// `budget` はページ 1 枚ぶんに効く (飛ばしたぶんは数えない)。
+    ///
+    /// 打ち切り (4 つ目の戻り) は**バイト数で切れたときだけ**真で、`n` で切れたぶんは
+    /// 「続きがある」= 呼ぶ側が `offset + 書けた件数` で次を引く。
+    pub fn rows_within_page(
+        &self,
+        res: usize,
+        budget: usize,
+        n: usize,
+        offset: usize,
+    ) -> (String, usize, usize, bool) {
         let q = self.rings[res.min(1)].locked();
         let total = q.len();
         let mut rows: Vec<String> = Vec::new();
         let mut used = 0usize;
         let mut cut = false;
-        for s in q.iter().rev() {
+        for s in q.iter().rev().skip(offset) {
+            if rows.len() >= n {
+                break;
+            }
             let mut row = String::with_capacity(160);
             s.push_row(&mut row);
             if used + row.len() + 1 > budget {
@@ -1246,6 +1268,75 @@ mod tests {
         assert!(small.len() <= 120);
         // 残るのは**新しい方**
         assert!(small.contains("[1000245,49,"), "{}", small);
+    }
+
+    /// `rows_within_page` は「新しい方から `offset` 本飛ばして `n` 本」(T15.0 (11))。
+    ///
+    /// 環は時刻で引けないので頁は本数で切る。縛るのは 3 つ: **返す並びは古い順**のまま、
+    /// 頁を継いでいくと**全部が重複なく揃う**、`n` で切れたぶんは打ち切りではない
+    /// (バイト数で切れたときだけ `cut`)。
+    #[test]
+    fn rows_can_be_paged_from_the_newest_end() {
+        let p = Profile::default();
+        for i in 0..50u64 {
+            p.push(Sample {
+                t: 1_000_000 + i * 5,
+                requests: i,
+                ..Sample::default()
+            });
+        }
+        // 1 頁目 = いちばん新しい 10 本 (t は 1000200..1000245)。並びは古い順
+        let (page1, shown, total, cut) = p.rows_within_page(0, 1 << 20, 10, 0);
+        assert_eq!(
+            (shown, total, cut),
+            (10, 50, false),
+            "n で切るのは打ち切りではない"
+        );
+        assert!(page1.starts_with("[1000200,40,"), "{}", &page1[..24]);
+        assert!(page1.contains("[1000245,49,"), "{}", page1);
+        assert!(
+            !page1.contains("[1000195,39,"),
+            "11 本目が入っている: {}",
+            page1
+        );
+
+        // 2 頁目 = その次の 10 本
+        let (page2, shown2, _, _) = p.rows_within_page(0, 1 << 20, 10, 10);
+        assert_eq!(shown2, 10);
+        assert!(page2.starts_with("[1000150,30,"), "{}", &page2[..24]);
+        assert!(page2.contains("[1000195,39,"), "{}", page2);
+
+        // 5 頁で 50 本が重複なく揃う (1 標本の目印は先頭の `[t,requests,`。
+        // 入れ子の配列は 0 埋めの窓なので、この綴りとは当たらない)
+        let mut seen: Vec<u64> = Vec::new();
+        for page in 0..5 {
+            let (rows, n, _, _) = p.rows_within_page(0, 1 << 20, 10, page * 10);
+            assert_eq!(n, 10, "{} 頁目", page + 1);
+            for i in 0..50u64 {
+                if rows.contains(&format!("[{},{},", 1_000_000 + i * 5, i)) {
+                    seen.push(i);
+                }
+            }
+        }
+        assert_eq!(seen.len(), 50, "同じ標本が 2 つの頁に出た: {:?}", seen);
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 50, "欠けがある");
+
+        // 環の外を指したら空 (エラーにはしない)
+        let (empty, shown3, total3, cut3) = p.rows_within_page(0, 1 << 20, 10, 50);
+        assert_eq!((empty.as_str(), shown3, total3, cut3), ("", 0, 50, false));
+
+        // 予算はページ 1 枚に効く (飛ばしたぶんは数えない)
+        let (tight, shown4, _, cut4) = p.rows_within_page(0, 120, 10, 10);
+        assert!(shown4 < 10 && shown4 > 0, "書けた件数: {}", shown4);
+        assert!(cut4, "バイト数で切れたら打ち切り");
+        assert!(tight.contains("[1000195,39,"), "{}", tight);
+
+        // `rows_within` は今までどおり (= 頁を切らない呼び方と同じ)
+        let (all, shown5, _, _) = p.rows_within(0, 1 << 20);
+        let (same, shown6, _, _) = p.rows_within_page(0, 1 << 20, usize::MAX, 0);
+        assert_eq!((all, shown5), (same, shown6));
     }
 
     /// `/proc/<pid>/stat` の comm に空白と括弧が入っていても utime / stime を読める。

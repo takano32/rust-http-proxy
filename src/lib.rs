@@ -693,6 +693,18 @@ pub struct Conn {
     workers: Arc<workers::Workers>,
     /// 接続元の IP を文字列にしたもの (X-Forwarded-For と統計に毎要求要るので接続ごとに 1 回だけ作る)
     peer_ip: String,
+    /// この接続で **1 回でもプロキシとして通す要求を受けたか** (T15.0 (12))。
+    ///
+    /// `clients[]` の同じ行の中で `requests` は「プロキシとして通した要求」なのに
+    /// `rtt_ms.samples` は「閉じた接続すべて」で母数が違っていた (`/status` を引くだけの
+    /// 接続でも [`Conn::finish`] が `record_client_rtt` を呼ぶので、**プロキシとしても
+    /// 使っている IP** の行だけが監視のぶんで黙って積み上がる)。立てるのは
+    /// `endpoints::handle` が「自分宛てではない」と決めた直後の 1 か所だけで、
+    /// `finish` はこれが真のときしか RTT を入れない。
+    ///
+    /// **`served` では代用できない**: `*served += 1` は転送が終わってからなので、
+    /// 403 も 508 も CONNECT もそこを通らないのに、そのどれもが `record_client` で行を作る。
+    proxied: bool,
     /// 上限の外で受けた枠の持ち分 (T13.2)。`Some` = 「自分宛てのときだけ応える接続」で、
     /// 内部エンドポイント以外は要求を読んだあと 503 で閉じる。`Drop` で枠を返す
     overflow: Option<OverflowGuard>,
@@ -942,6 +954,8 @@ impl Conn {
             park,
             workers,
             peer_ip,
+            // プロキシとして通す要求はまだ 1 つも来ていない (T15.0 (12))
+            proxied: false,
             overflow,
             slot,
             // accept からワーカーが動き出すまで (T14.3 (1))。時計は accept で
@@ -1024,8 +1038,14 @@ impl Conn {
             tally.rtt_us[recent::CLIENT_SIDE] = rtt_us;
             tally.retrans[recent::CLIENT_SIDE] = retrans;
             slot.finish(reason, tally, self.served as u32);
-            self.metrics
-                .record_client_rtt(&self.peer_ip, rtt_us, retrans);
+            // 接続元の表 (`clients[]`) に入れるのは**プロキシとして使われた接続だけ** (T15.0 (12))。
+            // `/status` を引くだけの接続を混ぜると、同じ行の `requests` (プロキシとして通した
+            // 要求) と `rtt_ms.samples` (閉じた接続すべて) で母数が食い違う。個票 (`/recent`) の
+            // `rtt_ms` は接続 1 本ごとの値なので、こちらは今までどおり全部に入れる
+            if self.proxied {
+                self.metrics
+                    .record_client_rtt(&self.peer_ip, rtt_us, retrans);
+            }
         }
     }
 
@@ -1294,6 +1314,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         park,
         workers,
         peer_ip,
+        proxied,
         slot,
         queue_ms,
         tally,
@@ -1560,6 +1581,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         );
         // 個票にも 1 件残す (`/errors`。T13.4)
         metrics.record_error(false, host_header.unwrap_or(target), peer_ip, 508, &detail);
+        // この枝は下の `endpoints::handle` より**手前**で return するので、下の
+        // `*proxied = true` を通らない。ここも `record_client` で `clients[]` の行を
+        // 作る側なので、母数 (T15.0 (12)) にはこの枝も入れる。自分宛ての要求は
+        // 自分の `Via` を持たないので、ここへ来るのはプロキシとして受けた要求だけ
+        *proxied = true;
         metrics.record_client(
             peer_ip,
             metrics::HostOutcome::Error,
@@ -1606,6 +1632,12 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     if endpoints::handle(&mut &*client, method, target, &ep)? {
         return Ok(Step::Close(recent::CloseReason::Shutdown));
     }
+    // ここから下は「自分宛てではない = プロキシとして扱う要求」なので、この接続を
+    // `clients[]` の母数に入れる (T15.0 (12))。**代入 1 回だけ**で、原子も鍵も取らない。
+    // 立てる場所がここなのは、断る枝 (503 / 403) も CONNECT も `record_client` で
+    // 行を作るのに、どれも `*served += 1` を通らないため (508 だけはここより手前で
+    // return するので、あちらの枝で立てている)
+    *proxied = true;
     // 上限の外で受けた接続で、自分宛てではなかった (T13.2)。判定は上の
     // `endpoints::handle` = T12.3 の `local_path` そのもので、偽ならここへ来る
     if overflow {
