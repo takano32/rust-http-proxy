@@ -869,8 +869,18 @@ mod tests {
     }
 
     /// 240 本 (デプロイ先の上限) でも、1,000 本でも 256 KiB に収まること。
+    ///
+    /// **余りは 1 行あたり 5 B しか無い** (欄を足す前の実測 1,000 本で 256,918 B、
+    /// [`array_within`] の予算は 261,632 B)。T15.0 (4) で足した 5 つの欄が
+    /// 「既定のままなら 1 バイトも出さない」形なのはこのためで、ここでは**最悪の値が
+    /// 全部入った行を 10 本混ぜて**、それでも 1,000 本入ることを見る。
     #[test]
     fn the_connections_response_stays_under_256_kib() {
+        use crate::recent::{ORIGIN_SIDE, pack_revents};
+
+        /// 最悪の値を入れる行数 (残りは既定のまま = 新しい欄が 1 つも出ない)。
+        const WORST: usize = 10;
+
         let m = Metrics::new();
         let long_host = format!("{}.example.net:65535", "sub.".repeat(30));
         let now = Instant::now();
@@ -882,10 +892,28 @@ mod tests {
             slot.begin_tunnel(&long_host);
             slot.set_bytes(u64::MAX);
             slot.set_state(ConnState::Parked);
+            if (i as usize) < WORST {
+                // T15.0 (4) の 5 つが全部、起こりえない桁で入っている行。
+                // `0x03d` = `IN|OUT|ERR|HUP|NVAL` (旗の名前が最長になる組み合わせ)
+                slot.set_tid(u32::MAX);
+                slot.set_relaying(u64::MAX, u64::MAX, pack_revents(0x03d, 0x03d));
+                slot.set_half_closed(ORIGIN_SIDE);
+                slot.sweep_rate(999_999_999_999);
+                slot.sweep_rate(999_999_999_999);
+            }
         }
         let all = m.conns.snapshot();
         assert_eq!(all.len(), 1000);
         assert_eq!(all[0].id, 0, "古い順に並ぶ");
+        let worst = all[0].to_json(now);
+        let plain = all[WORST].to_json(now);
+        println!(
+            "connections の 1 行: 最悪 {} B / 既定 {} B",
+            worst.len(),
+            plain.len()
+        );
+        println!("  最悪の 1 行: {}", worst);
+        assert!(worst.len() > plain.len(), "最悪の行に欄が出ていない");
         for n in [240usize, 1000] {
             let mut body = String::from(SCHEMA_HEAD) + "\"connections\":";
             let (shown, cut) = array_within(&mut body, all.iter().take(n).map(|c| c.to_json(now)));
