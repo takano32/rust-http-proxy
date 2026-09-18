@@ -519,15 +519,23 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) に並べて読むページです
     (**測った値はサーバーへ送りません**。`--lite` でも開けます)
   - **`/healthz` (本当の健康診断)**: `{"ok":bool,"checks":{...}}` の**軽い JSON** (1 KiB 弱) で、
-    検査が 1 つでも偽なら **`503 Service Unavailable`** を返します (Pterodactyl やモニタが 200 / 503 で
-    判断できるように。以前は `/status` の写しで、いつでも 200 でした)。検査は 6 つ:
+    **`fatal` な検査**が 1 つでも偽なら **`503 Service Unavailable`** を返します (Pterodactyl やモニタが
+    200 / 503 で判断できるように。以前は `/status` の写しで、いつでも 200 でした)。検査は 7 つ:
     `listening` (待ち受けが生きている = この応答が届いている)、`fds` (開いている記述子が `max_fds` の 90% 未満)、
     `connections` (いまの接続数が `PROXY_MAX_CONNS` 未満。**この `/healthz` 自身の 1 本は除きます** —
     上限に当たっている最中でも T13.2 の「上限 + 4 本」の枠でこの応答は届くため)、
     `state_file` (状態ファイルの書込エラーが直近 5 分で増えていない)、
     `listen_overflows` (受け入れ待ち行列が直近 5 分で溢れていない。**ネットワーク名前空間ごとの数**なので、
     同じ名前空間に他の待ち受けがあるとそちらの溢れも数えます。コンテナなら実質このプロキシのぶんです)、
-    `resolver` (名前解決の最後のミスが 2 秒未満 = リゾルバが死んでいない)。
+    `resolver` (名前解決の最後のミスが 2 秒未満 = リゾルバが死んでいない)、
+    `cpu` (cgroup の CPU の上限で**直近 5 分に絞られた期間が 50% 未満**。`"throttled_5m"` /
+    `"periods_5m"` / `"percent"` も出ます。T15.0 (6)。**起動から 5 分に満たない間は `null`** —
+    5 分の窓は「いちばん新しい標本から 300 秒ぶん」を足すだけなので、溜まる前は数秒ぶんの
+    割合しか出ません。異常の規則と同じ物差しで黙ります)。
+    **`cpu` だけは `fatal` ではありません** (`"fatal":false` が出ます): 偽になると本文の `ok` は
+    偽になりますが、**状態は 200 のまま**です。絞られているのは「遅いが動いている」状態で、
+    パネルが 503 で再起動をかける作りだと再起動の輪に入るためです (503 にするかは運用の決めごと)。
+    `"fatal"` は**偽のときだけ**出ます (無い = `fatal`)。
     **この環境で調べられないものは `null`** で、`ok` の判定に入れません
     (Linux 以外・`/proc/net` の無いコンテナ・状態ファイル無し・まだ名前解決をしていない・
     履歴スレッドが動いていない `--lite` / `PROXY_STATS_PERSIST=off`)。問い合わせ (`?sort=` など) は読みません
@@ -803,15 +811,18 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     印させます**。履歴スレッドが 5 秒ごとに取る標本を**直近 5 分の窓**に畳み、**直近 1 時間の基準値**と
     比べて外れていたら、上の `/events` に `anomaly` の 1 件を書きます (専用の口は作っていません。
     `/events?n=200` で読みます。畳むのは `/history?summary=1` と同じ関数・同じ切り方です)。
-    判定は **5 種 + 規則 6** で固定で、閾は次のとおりです。
+    判定は **8 種 + 規則 6** で固定で、閾は次のとおりです。
 
     | 種類 (説明の頭に出ます) | 立つ条件 |
     |---|---|
-    | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が**直近 1 時間の p95 の 3 倍以上**、かつ 50 ms 以上 |
+    | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が**直近 1 時間の p95 の 3 倍以上**、かつ 50 ms 以上、かつ**その窓に 20 本以上**あるとき (T15.0 (9)) |
     | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が **100 ms 以上** |
     | `errors` | エラーが **5 分で 5 件以上** (原因の内訳も説明に入ります) |
     | `active_high` | 同時接続の山が **`PROXY_MAX_CONNS` の 50% 以上** (`/bursts` の写真と同じ閾。同じ周期で写真が撮れていればその `seq`) |
     | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が**増えた** |
+    | `cpu_throttled` | cgroup の CPU の上限で**直近 5 分に絞られた期間が 50% 以上** (解除は 25% 未満。説明に `quota_cores` と使ったコア数と `/profile` の上位スレッドの tid が入ります。T15.0 (6)) |
+    | `tunnel_spin` | 「起こされたのに 1 バイトも進まない」が **1 周期 1,000 回以上のトンネルが 1 分続いた** (説明に接続の `id` と宛先と齢と `half_closed`。T15.0 (6)) |
+    | `dns_miss_rate` | 名前解決のミスが**直近 1 時間で 0.40 回/接続 以上** (解除は 0.25 未満。**起動から 6 時間は判定しません** — 再起動の直後はどの名前も warm でないため。1 時間に 30 本以上の確立があるときだけ。T15.0 (9)) |
     | `new_client` (規則 6) | `/clients` の `first_seen` が**この 5 秒の窓の中**にある接続元 (T14.54) |
 
     **同じ種類は収まるまで 1 回だけ**書きます。条件を外れたまま 5 分続いたら
@@ -944,8 +955,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - **再送** (`retrans_segs` / `syn_retrans` / `tcp_timeouts` / `abort_on_timeout`)
     - **TIME_WAIT の本数** (`time_wait`) と TCP ソケットの数 (`sockets_inuse` / `sockets_alloc` / `curr_estab`)。
       手元で CONNECT のベンチを回すと `tcp_max_tw_buckets` (この機械は 32,768) に張り付きます
-    - **cgroup の CPU の絞り** (`cpu_nr_throttled` / `cpu_throttled_usec` と `cpu.max` の `quota_cores`)。
-      CPU 上限を持つコンテナで「自分が遅い」のか「絞られて待たされた」のかが分かれます
+    - **cgroup の CPU の絞り** (`cpu_nr_periods` / `cpu_nr_throttled` / `cpu_throttled_usec` と
+      `cpu.max` の `quota_cores`)。CPU 上限を持つコンテナで「自分が遅い」のか「絞られて待たされた」のかが
+      分かれます。**読むのは割合** (`cpu_nr_throttled` ÷ `cpu_nr_periods`) で、`cpu_nr_periods` がその分母です
+      (T15.0 (6)。「41 回絞られた」だけでは 41/8,123 = 0.5% なのか 41/41 = 100% なのか決まりません)。
+      `/status` の `kernel.cgroup_cpu` には累計のほかに **`path`** (階層のどこの `cpu.stat` を読んでいるか。
+      自分の cgroup に cpu コントローラが無いと**親の値**を読みます。`--check` にも同じ道が出ます) と
+      **`since_start`** (`nr_periods` / `nr_throttled` / `throttled_usec` の**このプロセスが始まってからの
+      増分**。累計はプロセスより長生きなので、起動直後の雪像にも `nr_throttled` が乗ります) が出ます
     - **PSI** (`psi_cpu_some_avg10` など。直近 10 秒のうち、その資源を待って進めなかった時間の割合 %)。
       隣のコンテナに CPU を取られている時間が読めます
     - 一緒に取るもの: 名前解決のミスの回数とミス 1 回の ms、状態ファイルの書込エラー
@@ -955,10 +972,11 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (`tcp` / `cgroup_cpu` / `psi` / 直近 5 分の `last_5m`)、時系列は `/history` の `kernel`、
     Prometheus では `sorahost_kernel_listen_overflows_total` などの累計と
     `sorahost_kernel_time_wait` / `sorahost_cgroup_cpu_throttled_seconds_total` /
+    `sorahost_cgroup_cpu_throttled_periods_total` ÷ `sorahost_cgroup_cpu_periods_total` (絞られた割合) /
     `sorahost_psi_some_avg10{resource="cpu"|"memory"|"io"}` です。
     **読めない源は `null`** (Linux 以外、`/proc/net` の無いコンテナ、cgroup v1、PSI 無しのカーネル)。
     `.rrd` (状態ファイル) には書かないので**再起動で消えます** (版 3 で標本 1 本の余白は 516 B = 64 項目に
-    広がったので、入れるなら 23 列は収まります。移すかどうかは項目ごとに決めます)。
+    広がったので、入れるなら 24 列は収まります。移すかどうかは項目ごとに決めます)。
     履歴の収集スレッドが動いていない `--lite` / `PROXY_STATS_PERSIST=off` では窓は空 (`kernel` は `null`) です
   - **ホスト別の時系列 (T14.22)**: `/hosts/series?top=16` と `/hosts/series?host=<name>` は、
     **直近 1 時間の要求数で選んだ上位 16 ホスト**について、**5 分の窓 × 288 標本 (24 時間)** を返します。
@@ -1302,8 +1320,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 「この設定で起動したら何が効くか」(`/config` と同じ全 `PROXY_*` / `SERVER_*` と出どころ) を印字して終わります。
 Pterodactyl のように触れないコンテナで、**起動前の確認**と**統計の `null` の理由の切り分け**に使えます
 (他の引数も一緒に効くので `--check -p 3128 --lite` のように「その設定なら何が効くか」も見られます)。
-終了コードは `capabilities` の 6 項目 (`resolver_ms` を除く) が全部読めれば **0**、1 つでも読めなければ **1** です
-(名前解決を外すのは、リゾルバが遅い環境でもプロキシとしては動く — そしてそれ自体が測りたい数字 — ため)。
+終了コードは `capabilities` の 7 項目 (`resolver_ms` と `cgroup_cpu_path` を除く) が全部読めれば **0**、
+1 つでも読めなければ **1** です (名前解決を外すのは、リゾルバが遅い環境でもプロキシとしては動く —
+そしてそれ自体が測りたい数字 — ため。`cgroup_cpu_path` は真偽ではなく「どの階層の `cpu.stat` を読むか」を
+見せるだけの行です。T15.0 (6))。
 
 ```
 $ rust-http-proxy --check
@@ -1317,7 +1337,9 @@ capabilities (what this environment lets the proxy read):
   [ok] cgroup_pressure  cgroup cpu.pressure (PSI: waiting for the CPU)
   [ok] ipv6_route       a default route in /proc/net/ipv6_route
   [ok] home_writable    $HOME is writable (statistics file, blocklist)
+  [ok] proc_schedstat   /proc/self/task/<tid>/schedstat (time runnable but not running)
   [ok] resolver_ms      9 ms for one lookup (not part of the exit code)
+  [ok] cgroup_cpu_path  /sys/fs/cgroup/cpu.stat (where nr_throttled is read)
 
 settings (source, name, effective value):
   default   SERVER_PORT                    8080
@@ -2442,7 +2464,8 @@ curl "http://127.0.0.1:8080/recent?n=200&sort=slow"   # 遅かった接続から
 curl "http://127.0.0.1:8080/explain?host=<name>"      # 1 つの相手を 1 枚で (?client=<ip> も)
 ```
 
-`/events` の `anomaly` は自動で立った異常 (名前解決が遅い・エラーが増えた・山が来た・新しい接続元) で、
+`/events` の `anomaly` は自動で立った異常 (名前解決が遅い・**ミスの率が高い**・エラーが増えた・山が来た・
+**CPU が絞られ続けている**・**回りっ放しのトンネルがある**・新しい接続元) で、
 `reload` には `.env` で変えた名前と前後の値が入ります。
 
 ### 6. 止めるとき

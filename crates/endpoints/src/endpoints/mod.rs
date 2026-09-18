@@ -1,6 +1,7 @@
 //! プロキシ自身のエンドポイント: `/dashboard` (コントロールパネル)、`/status`
 //! (`?sort=requests|errors|dns|slow` で `hosts[]` の上位 50 の切り出しを変えられる。T13.3)、
-//! `/healthz` (**本当の健康診断**。軽い JSON で、検査が 1 つでも偽なら 503。T14.12)、
+//! `/healthz` (**本当の健康診断**。軽い JSON で、**`fatal` な**検査が 1 つでも偽なら 503。
+//! 本文の `ok` は `fatal` でない検査も込み。T14.12 / T15.0 (6))、
 //! `/history` (JSON、`res=5|60|3600&n=`。カーネルと cgroup の窓が `kernel` に付く。
 //! `res=5` は 6 時間ぶん持っていて `n=` で 4,320 本まで遡れる。T14.32。
 //! `?since=&until=&summary=1` は**期間を畳んだ 1 行だけ**を返す。T14.24)、
@@ -465,7 +466,8 @@ pub fn handle(
         blocklist::handle(&parse_query(query.unwrap_or("")))
     } else if is_get && path == "/healthz" {
         // `/status` の写しではなく**本当の健康診断** (T14.12)。軽い JSON で、
-        // 1 つでも検査が偽なら 503。**問い合わせは読まない** (監視が叩く口の意味を変えない)
+        // **`fatal` な**検査が 1 つでも偽なら 503 (本文の `ok` は全部込み。T15.0 (6))。
+        // **問い合わせは読まない** (監視が叩く口の意味を変えない)
         health::healthz(ep)
     } else if is_get && path == "/status" {
         // `?sort=requests|errors|dns|slow` は `hosts[]` の上位 50 を切り出す鍵だけを変える
@@ -537,7 +539,8 @@ pub fn handle(
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
-        // `/healthz` の検査が 1 つでも偽 (T14.12)、または重い口が 1 本走っている (T14.51)
+        // `/healthz` の **`fatal` な**検査が 1 つでも偽 (T14.12 / T15.0 (6))、
+        // または重い口が 1 本走っている (T14.51)
         503 => "Service Unavailable",
         _ => "OK",
     };

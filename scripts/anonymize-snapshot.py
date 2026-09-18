@@ -24,9 +24,11 @@
 | 名前解決の答え (`/dns` の `addrs`) | `203.0.113.1` / `2001:db8:1::1` | 宛先が IP リテラルのときも同じ表を使う |
 | `User-Agent` (`agents`) | `ua-01` | |
 | `/log` の行・`/events` の説明の中のホストと IP | 上と同じ表 | 行の他の語はそのまま |
+| cgroup の道 (`kernel.cgroup_cpu.path`) | `/sys/fs/cgroup/…/…/cpu.stat` | 深さと最後の名前だけ残す (T15.0 (6)) |
 
 置き換えないもの: **数字** (件数・ms・区間・閉じた理由・時刻)、`version`、部の名前、
-この機械の設定 (`path` のような個人の閲覧先ではないもの)。
+この機械の設定 (`settings.path` のような個人の閲覧先ではないもの)。
+**例外は cgroup の道だけ** — `pterodactyl-<uuid>.scope` はコンテナを 1 つに特定できる。
 
 **まとめの粒度を残す** (T14.54): ホスト名の `gNNNN` は**まとめの単位 (eTLD+1)** の番号で、
 `img.dlsite.jp` と `www.dlsite.jp` は同じ `gNNNN` (= 匿名化後も同じ eTLD+1) に落ちる。
@@ -64,6 +66,13 @@ ADDR_KEYS = frozenset(("addrs",))
 AGENT_KEYS = frozenset(("agents",))
 # 値が文 (中にホストや IP が混ざる。行の他の語は変えない)
 TEXT_KEYS = frozenset(("msg", "text", "error", "url", "file"))
+# この鍵の下の `path` だけは潰す (`/status` の `kernel.cgroup_cpu.path` = T15.0 (6))。
+# 道は `/sys/fs/cgroup/system.slice/pterodactyl-<uuid>.scope/cpu.stat` のような形で、
+# **コンテナを 1 つに特定できる**。この機械の設定の `path` (`~/.rust-http-proxy.state` の
+# ような、個人の閲覧先ではないもの) は今までどおりそのまま通す
+CGROUP_PARENTS = frozenset(("cgroup_cpu",))
+# 潰したあとに残す先頭 (どれも固定の道で、機械を特定しない)
+CGROUP_ROOT = "/sys/fs/cgroup"
 # ホスト名でも接続元でもない鍵 (`crates/metrics/src/metrics.rs` の `MAX_HOSTS` / `MAX_CLIENTS` を
 # 越えた分をまとめる行の名前)。**置き換えると「その他」の行の意味が消える**ので、そのまま通す
 RESERVED_NAMES = frozenset(("other",))
@@ -263,6 +272,31 @@ class Anonymizer:
             return self.ip(head, "client") + ":" + port
         return self.ip(value, "client")
 
+    # ------------------------------------------------- cgroup の道 (T15.0 (6))
+
+    def cgroup_path(self, s):
+        """`kernel.cgroup_cpu.path` を `/sys/fs/cgroup/…/…/cpu.stat` に潰す。
+
+        読みたいのは「**いま読んでいるのは自分の階層か親か**」= 深さと最後の名前だけで、
+        途中の名前 (`pterodactyl-<uuid>.scope` のようなコンテナの識別子) は要らない。
+        深さを残すのは、`nr_throttled` が親の値かどうかの切り分けに効くため。
+        2 回かけても変わらない (`…` は `…` のまま)。
+        """
+        if not s:
+            return s
+        head, rest = "", s
+        if s.startswith(CGROUP_ROOT + "/"):
+            head, rest = CGROUP_ROOT, s[len(CGROUP_ROOT) + 1:]
+        elif s.startswith("/"):
+            head, rest = "", s[1:]
+        parts = rest.split("/")
+        if not parts:
+            return s
+        hidden = ["…"] * (len(parts) - 1) + [parts[-1]]
+        if head:
+            return head + "/" + "/".join(hidden)
+        return ("/" if s.startswith("/") else "") + "/".join(hidden)
+
     # ------------------------------------------------------------ 文 1 つぶん
 
     def text(self, s):
@@ -342,17 +376,18 @@ class Anonymizer:
         self._walk(node, None, "learn")
         return self._walk(node, None, "rewrite")
 
-    def _walk(self, node, key, mode):
+    def _walk(self, node, key, mode, parent=None):
         if isinstance(node, dict):
             table = self._table(node, mode)
-            out = {k: (table if k == "samples" and table is not None else self._walk(v, k, mode))
+            out = {k: (table if k == "samples" and table is not None
+                       else self._walk(v, k, mode, key))
                    for k, v in node.items()}
             return out if mode == "rewrite" else node
         if isinstance(node, list):
-            out = [self._walk(v, key, mode) for v in node]
+            out = [self._walk(v, key, mode, parent) for v in node]
             return out if mode == "rewrite" else node
         if isinstance(node, str):
-            return self._value(node, key, mode)
+            return self._value(node, key, mode, parent)
         return node
 
     def _table(self, node, mode):
@@ -388,9 +423,11 @@ class Anonymizer:
             return "client"
         return None
 
-    def _value(self, s, key, mode):
+    def _value(self, s, key, mode, parent=None):
         if mode == "reserve":
             return self._reserve(s, key)
+        if key == "path" and parent in CGROUP_PARENTS:
+            return self.cgroup_path(s) if mode == "rewrite" else s
         if key in HOST_KEYS:
             return self.target(s)
         if key in CLIENT_KEYS:

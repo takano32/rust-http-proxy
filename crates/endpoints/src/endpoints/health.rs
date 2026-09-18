@@ -3,9 +3,15 @@
 //! 以前は `/status` の写し (同じ 20 KB の JSON、いつでも 200) だったので、
 //! Pterodactyl やモニタが「生きているか」を 200 / 503 で判断できなかった。
 //!
-//! 6 つ調べて、1 つでも偽なら **503** を返す。読めないもの (Linux 以外、`/proc/net` の
-//! 無いコンテナ、状態ファイル無し、まだ名前解決をしていない) は `null` で、
-//! **検査に入れない** (分からないことを理由に落とさない)。
+//! 7 つ調べて、**`fatal` な検査**が 1 つでも偽なら **503** を返す。読めないもの
+//! (Linux 以外、`/proc/net` の無いコンテナ、状態ファイル無し、まだ名前解決をしていない、
+//! **起動から 5 分に満たない** CPU の絞り) は `null` で、**検査に入れない**
+//! (分からないことを理由に落とさない)。
+//!
+//! **`fatal` でない検査** (T15.0 (6) の `cpu`) は本文の `ok` を偽にするが、状態は 200 の
+//! まま。CPU の絞りは「遅いが動いている」状態で、パネルが 503 で再起動をかける作りだと
+//! **再起動の輪に入る**ため (503 にするかは利用者が決める)。JSON では `"fatal":false` の
+//! ときだけその鍵が出る (**無い = `fatal`**。既存の検査の形は 1 バイトも変わらない)。
 //!
 //! 応答は `/status` と別の**軽い JSON** (1 KiB 弱)。監視が 5 秒ごとに叩いても、
 //! 読むのは `/proc/self/fd` を 1 回と、5 秒の標本が残したメモリ上の窓だけ。
@@ -30,6 +36,9 @@ struct Check {
     ok: Option<bool>,
     /// `"key":value` の並び (`ok` の隣に出す数字)
     detail: String,
+    /// この検査が偽のとき **503 にするか** (T15.0 (6))。
+    /// `false` の検査は本文の `ok` だけを偽にして、状態は 200 のまま
+    fatal: bool,
 }
 
 impl Check {
@@ -38,6 +47,15 @@ impl Check {
             name,
             ok: Some(ok),
             detail,
+            fatal: true,
+        }
+    }
+
+    /// 偽でも 503 にしない検査 (T15.0 (6))。
+    fn soft(name: &'static str, ok: bool, detail: String) -> Check {
+        Check {
+            fatal: false,
+            ..Check::new(name, ok, detail)
         }
     }
 
@@ -46,11 +64,52 @@ impl Check {
             name,
             ok: None,
             detail: String::new(),
+            fatal: true,
         }
     }
 }
 
-/// `/healthz` の本体。`ok` が偽なら 503。
+/// 検査の一覧から `(本文の ok, 200 で出すか)` を決める (T15.0 (6))。
+///
+/// **本文の `ok` は全部込み、状態は `fatal` な検査だけ**。`None` (この環境では
+/// 調べられない) はどちらにも入れない — 分からないことを理由に落とさない。
+/// 2 行の取り違え (soft な検査で 503) は口の振舞いを変えてしまうので、
+/// ここだけ切り出して単体テストで縛ってある。
+fn verdict(checks: &[Check]) -> (bool, bool) {
+    let ok = checks.iter().all(|c| c.ok != Some(false));
+    let serving = checks.iter().all(|c| !c.fatal || c.ok != Some(false));
+    (ok, serving)
+}
+
+/// `"checks"` の中身を書く (`{` と `}` は呼ぶ側)。
+///
+/// `"fatal":false` は **soft な検査のときだけ**出す (**無い = `fatal`**。
+/// 既存の検査の形を 1 バイトも変えないため。T15.0 (6))。
+fn write_checks(body: &mut String, checks: &[Check]) {
+    for (i, c) in checks.iter().enumerate() {
+        if i > 0 {
+            body.push(',');
+        }
+        let _ = write!(body, "\"{}\":", c.name);
+        match c.ok {
+            Some(v) => {
+                let _ = write!(body, "{{\"ok\":{}", v);
+                if !c.fatal {
+                    body.push_str(",\"fatal\":false");
+                }
+                if !c.detail.is_empty() {
+                    body.push(',');
+                    body.push_str(&c.detail);
+                }
+                body.push('}');
+            }
+            // 調べられないものは `null` (Linux 以外、状態ファイル無し、ミスがまだ無い)
+            None => body.push_str("null"),
+        }
+    }
+}
+
+/// `/healthz` の本体。**`fatal` な検査**が偽なら 503 (本文の `ok` は全部込み)。
 pub(super) fn healthz(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
     let conc = (ep.concurrency)();
     let active = ep.metrics.active_connections.load(Ordering::Relaxed);
@@ -103,36 +162,104 @@ pub(super) fn healthz(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
                 format!("\"last_miss_ms\":{}", ms),
             ),
         },
+        // CPU の絞り (T15.0 (6))。**`fatal` ではない**ので 503 にはしない。
+        // 27 時間絞られ続けていたのに、この口にも異常の規則にも CPU が無かった
+        match (h.cpu_throttled_ratio(), h.cpu_throttled_5m) {
+            // **窓が 5 分ぶん溜まってから**だけ答える (異常の規則と同じ物差し。
+            // `cpu_throttled_5m` は「いちばん新しい標本から 300 秒ぶん」を足すだけなので、
+            // 起動 10 秒後 (標本 2 本) でもその 5 秒の割合で `ok:false` を出してしまう)
+            (Some(ratio), Some((throttled, periods)))
+                if h.sampled_secs
+                    .is_some_and(crate::anomaly::cpu_window_is_full) =>
+            {
+                Check::soft(
+                    "cpu",
+                    ratio < crate::anomaly::CPU_THROTTLED,
+                    format!(
+                        "\"throttled_5m\":{},\"periods_5m\":{},\"percent\":{:.0}",
+                        throttled,
+                        periods,
+                        ratio * 100.0
+                    ),
+                )
+            }
+            // cgroup v1 / Linux 以外 / 履歴スレッドが動いていない / まだ 1 期間も過ぎていない /
+            // 起動から 5 分に満たない
+            _ => Check::skipped("cpu"),
+        },
     ];
 
-    let ok = checks.iter().all(|c| c.ok != Some(false));
+    let (ok, serving) = verdict(&checks);
     let mut body = String::with_capacity(512);
     // 応答の形の版は**いちばん先頭の鍵** (T14.49)。`ok` は今までどおりその次
     body.push_str(SCHEMA_HEAD);
     let _ = write!(body, "\"ok\":{},\"checks\":{{", ok);
-    for (i, c) in checks.iter().enumerate() {
-        if i > 0 {
-            body.push(',');
-        }
-        let _ = write!(body, "\"{}\":", c.name);
-        match c.ok {
-            Some(v) => {
-                let _ = write!(body, "{{\"ok\":{}", v);
-                if !c.detail.is_empty() {
-                    body.push(',');
-                    body.push_str(&c.detail);
-                }
-                body.push('}');
-            }
-            // 調べられないものは `null` (Linux 以外、状態ファイル無し、ミスがまだ無い)
-            None => body.push_str("null"),
-        }
-    }
+    write_checks(&mut body, &checks);
     let _ = write!(
         body,
         "}},\"uptime_secs\":{},\"version\":\"{}\"}}",
         ep.metrics.start_time.elapsed().as_secs(),
         crate::json::escape(ep.version)
     );
-    (if ok { 200 } else { 503 }, "application/json", body)
+    (if serving { 200 } else { 503 }, "application/json", body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn detail() -> String {
+        "\"n\":1".to_string()
+    }
+
+    /// **`fatal` な検査**が偽のときだけ 503 (T15.0 (6))。
+    ///
+    /// この 2 行 (`ok` と `serving`) はこの単位でいちばん効く振舞いで、取り違えても
+    /// 口を叩くテストでは (`cpu` が読める機械でしか偽にならないので) 気づけない。
+    #[test]
+    fn a_soft_check_turns_ok_false_but_keeps_serving() {
+        let all_true = [
+            Check::new("listening", true, detail()),
+            Check::soft("cpu", true, detail()),
+            Check::skipped("fds"),
+        ];
+        assert_eq!(verdict(&all_true), (true, true), "全部真");
+
+        let soft_false = [
+            Check::new("listening", true, detail()),
+            // 絞られている = 遅いが動いている。**状態は 200 のまま**
+            Check::soft("cpu", false, detail()),
+        ];
+        assert_eq!(verdict(&soft_false), (false, true), "soft な偽は 200");
+
+        let fatal_false = [
+            Check::new("listening", false, detail()),
+            Check::soft("cpu", true, detail()),
+        ];
+        assert_eq!(verdict(&fatal_false), (false, false), "fatal な偽は 503");
+
+        // 調べられないもの (`null`) はどちらにも入れない
+        let skipped = [Check::skipped("cpu"), Check::skipped("fds")];
+        assert_eq!(verdict(&skipped), (true, true), "`null` では落とさない");
+    }
+
+    /// `"fatal":false` は **soft な検査のときだけ**出る (無い = `fatal`)。
+    #[test]
+    fn only_a_soft_check_prints_the_fatal_key() {
+        let mut out = String::new();
+        write_checks(
+            &mut out,
+            &[
+                Check::new("listening", true, "\"port\":8080".to_string()),
+                Check::soft("cpu", false, "\"percent\":98".to_string()),
+                Check::skipped("fds"),
+            ],
+        );
+        assert_eq!(
+            out,
+            "\"listening\":{\"ok\":true,\"port\":8080},\
+             \"cpu\":{\"ok\":false,\"fatal\":false,\"percent\":98},\
+             \"fds\":null"
+        );
+    }
 }
