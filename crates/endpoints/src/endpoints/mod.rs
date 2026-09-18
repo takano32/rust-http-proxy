@@ -276,6 +276,29 @@ pub(super) fn has_flag(query: Option<&str>, key: &str) -> bool {
     parse_query(q).iter().any(|(k, v)| k == key && v != "0")
 }
 
+/// `?offset=N` を読む (無い / 読めない値は 0。上は `max` で止める。T15.0 (11))。
+///
+/// 読むのは `/recent` `/hosts` `/profile` の 3 つで、**読み方はここ 1 か所**に置く。
+/// `recent.rs` の `num_param` と別なのは**下限が 0** だから (あちらは `.clamp(1, max)` なので
+/// 「1 件目から」を表せない)。意味は「いまの並びを何本飛ばすか」で、並びは `/recent` が
+/// 閉じた新しい順、`/hosts` が `sort=` の順、`/profile` が新しい標本の順。
+pub(super) fn offset_param(query: Option<&str>, max: usize) -> usize {
+    parse_query(query.unwrap_or(""))
+        .iter()
+        .find(|(k, _)| k == "offset")
+        .and_then(|(_, v)| v.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(max)
+}
+
+/// 次の頁の `offset` (続きが無ければ `null`)。上の 3 つが同じ綴りで応答の末尾に出す。
+pub(super) fn next_offset(offset: usize, shown: usize, total: usize) -> String {
+    match offset + shown < total {
+        true => (offset + shown).to_string(),
+        false => "null".to_string(),
+    }
+}
+
 /// 問い合わせの `key=` が `limit` を越えているか (無い・読めない値は「越えていない」)。
 fn num_over(query: Option<&str>, key: &str, limit: u64) -> bool {
     let Some(q) = query else {

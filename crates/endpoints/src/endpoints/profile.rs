@@ -24,7 +24,7 @@
 
 use std::fmt::Write as _;
 
-use super::{Endpoint, parse_query};
+use super::{Endpoint, has_flag, next_offset, offset_param, parse_query};
 use crate::metrics::{SCHEMA, SCHEMA_HEAD};
 use crate::profile::{self, Profile};
 
@@ -53,13 +53,14 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     let res = num("res").map(Profile::index_for).unwrap_or(0);
     let p = &ep.metrics.profile;
     // 標本を返さない要約 (**重い口ではない**。T15.0 (11))
-    if super::has_flag(query, "summary") {
+    if has_flag(query, "summary") {
         return (200, "application/json", summary(ep, res));
     }
     // `n=` と `offset=` の端はその解像度の環の大きさ (720 本 / 1,440 本)
     let cap = profile::RESOLUTIONS[res].1;
     let n = num("n").map_or(cap, |v| (v as usize).clamp(1, cap));
-    let offset = num("offset").map_or(0, |v| (v as usize).min(cap));
+    // `offset=` の読み方は 3 つの口で 1 か所 (`super::offset_param`)
+    let offset = offset_param(query, cap);
     let budget = super::recent::MAX_BODY.saturating_sub(HEADER_ROOM);
     let (rows, shown, total, cut) = p.rows_within_page(res, budget, n, offset);
 
@@ -130,14 +131,6 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
         next_offset(offset, shown, total)
     );
     (200, "application/json", out)
-}
-
-/// 続きの `offset` (無ければ `null`)。`/recent` `/hosts` と同じ綴りで出す。
-pub(super) fn next_offset(offset: usize, shown: usize, total: usize) -> String {
-    match offset + shown < total {
-        true => (offset + shown).to_string(),
-        false => "null".to_string(),
-    }
 }
 
 /// `?summary=1` — 標本を返さず、5 分 / 1 時間 / 全部の 3 段に畳んだ CPU/要求 だけ (T15.0 (11))。

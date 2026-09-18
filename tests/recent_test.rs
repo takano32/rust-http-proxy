@@ -1071,8 +1071,10 @@ fn test_integration_recent_records_the_kernel_rtt_of_both_sides() {
 
     // ---- `/metrics`: 全体の sum / count (ホスト別は出さない) ----
     // `/metrics` は Prometheus 形式だが、本文をそのまま返す口は同じもの。
-    // **件数は 1 とは限らない**: `/recent` `/hosts` `/status` を引いた接続自身も
-    // 閉じるときにクライアント側の RTT を 1 つ残すため
+    // **自分宛てだけの接続は入らない** (`/recent` `/hosts` `/status` を引いただけの接続は
+    // `clients[]` に RTT を 1 本も残さない = T15.0 (12)。`sorahost_rtt_seconds` の client 側は
+    // その表の合計 = `Metrics::rtt_totals`)。ここで数えるのは**トンネル 1 本ぶん**で、
+    // オリジン側は接続プールが捨てるときにも残るので、どちらも下限だけを見る
     let prom = endpoint_json(proxy_port, "/metrics");
     let rtt_lines: Vec<&str> = prom
         .lines()

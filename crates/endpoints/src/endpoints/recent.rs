@@ -20,7 +20,7 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use super::{Endpoint, parse_query};
+use super::{Endpoint, next_offset, offset_param, parse_query};
 use crate::events::MAX_EVENTS;
 use crate::metrics::SCHEMA_HEAD;
 use crate::recent::{BurstShot, MAX_BURSTS, MAX_ERRORS, MAX_RECENT, RecentEntry};
@@ -85,20 +85,6 @@ fn num_param(query: Option<&str>, key: &str, default: usize, max: usize) -> usiz
         .and_then(|(_, v)| v.parse::<usize>().ok())
         .unwrap_or(default)
         .clamp(1, max)
-}
-
-/// `?offset=N` を読む (無い / 読めない値は 0。上は `max` で止める。T15.0 (11))。
-///
-/// [`num_param`] と別なのは**下限が 0** だから (あちらは `.clamp(1, max)` なので
-/// 「1 件目から」を表せない)。意味は「いまの並びを何本飛ばすか」で、並びは
-/// `/recent` が閉じた新しい順、`/hosts` が `sort=` の順。
-fn offset_param(query: Option<&str>, max: usize) -> usize {
-    parse_query(query.unwrap_or(""))
-        .iter()
-        .find(|(k, _)| k == "offset")
-        .and_then(|(_, v)| v.parse::<usize>().ok())
-        .unwrap_or(0)
-        .min(max)
 }
 
 /// `/errors?n=100` — 直近のエラーの個票 (新しい順、既定 100 件・最大 [`MAX_ERRORS`])。
@@ -372,7 +358,7 @@ pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
             .load(std::sync::atomic::Ordering::Relaxed),
         restored_since,
         offset,
-        super::profile::next_offset(offset, shown, count)
+        next_offset(offset, shown, count)
     );
     (200, "application/json", out)
 }
@@ -581,7 +567,7 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
         cut,
         !ep.metrics.conns.enabled(),
         offset,
-        super::profile::next_offset(offset, shown, matched)
+        next_offset(offset, shown, matched)
     );
     (200, "application/json", out)
 }
@@ -1761,7 +1747,6 @@ mod tests {
     /// `next_offset` は「続きがあれば次の `offset`、無ければ `null`」(T15.0 (11))。
     #[test]
     fn the_next_offset_is_null_at_the_end() {
-        use super::super::profile::next_offset;
         assert_eq!(next_offset(0, 500, 2000), "500");
         assert_eq!(next_offset(1500, 500, 2000), "null");
         assert_eq!(next_offset(0, 0, 0), "null");

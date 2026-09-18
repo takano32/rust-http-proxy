@@ -23,11 +23,16 @@
 #
 #   scripts/collect-deployed.sh --full HOST:PORT [DIR]
 #     雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
-#     追って `<UTC 時刻>-<部>-<何枚目>.json` に落とす (T15.0 (11))。雪像 1 枚には `/recent` は
+#     追って `<UTC 時刻>-page<何枚目>-<部>.json` に落とす (T15.0 (11))。雪像 1 枚には `/recent` は
 #     2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 しか
 #     入らないので、全部を残したい日だけ付ける。**既定では追わない**: 続きはどれも重い口で、
 #     重い口は同時 1 本 (T14.51) なので順に引くしかなく、収集にかかる時間が数倍になる。
 #     `snapshot-summary.py` に渡す雪像の形は変わらない (落とすのは別ファイル)。
+#     **名前が `page<N>-<部>` の順なのはわざと**: `<部>-<N>` にすると
+#     `snapshot-diff.py --from-files` と `anonymize-snapshot.py` の `classify()` が
+#     「`<UTC 時刻>-` の後ろが部の名前で始まれば 1 口 1 ファイル」と見分けるので、
+#     続きの 1 枚を部そのものと取り違える (`page2-hosts.json` はどちらも読み飛ばす)。
+#     `--from-server` とは併用できない (あちらは保存済みの雪像を取り寄せるだけ)。
 #
 # 環境変数:
 #   PROBE (既定 1)      … 0 で `probe-deployed.sh` を飛ばす (デプロイ先へ本物の要求を
@@ -59,7 +64,9 @@ while :; do
 done
 PROXY=${1:-}
 if [ -z "$PROXY" ]; then
-  echo "usage: $0 [--from-server] [--full] HOST:PORT [DIR]   (例: $0 nagoya.sorahost.net:50697)" >&2
+  # **2 つの旗は排他** (`--from-server` は保存済みの雪像を取り寄せるだけで、続きを引く相手が居ない)
+  echo "usage: $0 [--full] HOST:PORT [DIR]   (例: $0 nagoya.sorahost.net:50697)" >&2
+  echo "       $0 --from-server HOST:PORT [DIR]   (回し忘れた日を取り寄せる。--full は効きません)" >&2
   exit 2
 fi
 # `http://host:port` と書かれても `host:port` として扱う (URL でも通るように)
@@ -80,6 +87,11 @@ mkdir -p "$DIR" || exit 1
 # プロキシが `$HOME/.rust-http-proxy/snapshots/` に 1 日 1 ファイル書いているので、
 # 手元に無い日付だけを取って `$DIR` に置く (`/snapshots` の一覧 → `/snapshots/<date>`)。
 if [ "$FROM_SERVER" = 1 ]; then
+  # `--full` はこの枝では効かない (取り寄せるのは保存済みの雪像そのもので、
+  # `offset=` で続きを引く相手が居ない)。黙って無視しないで 1 行断る
+  if [ "$FULL" = 1 ]; then
+    echo "note: --full は --from-server では効きません (保存済みの雪像をそのまま取り寄せます)" >&2
+  fi
   LIST=$(curl -s --max-time "$MAX_TIME" "http://$PROXY/snapshots") || LIST=
   if [ -z "$LIST" ]; then
     echo "failed to fetch http://$PROXY/snapshots" >&2
@@ -194,7 +206,10 @@ PAGESPY
     rest=${rest% *}    # その手前までが URL の形
     page=2
     while [ "${off:-null}" != null ] && [ "$page" -le "$MAX_PAGES" ]; do
-      f="$DIR/$STAMP-$part-$page.json"
+      # 名前は `page<N>-<部>` の順 (`<部>-<N>` だと `snapshot-diff.py --from-files` と
+      # `anonymize-snapshot.py` の `classify()` が「後ろが部の名前で始まれば 1 口 1 ファイル」と
+      # 見分けるので、続きの 1 枚を部そのものと取り違える)
+      f="$DIR/$STAMP-page$page-$part.json"
       ok=0
       for try in 1 2 3; do
         if curl -s --max-time "$MAX_TIME" "http://$PROXY$rest$off" -o "$f"; then

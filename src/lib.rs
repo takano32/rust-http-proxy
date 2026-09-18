@@ -1581,6 +1581,11 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         );
         // 個票にも 1 件残す (`/errors`。T13.4)
         metrics.record_error(false, host_header.unwrap_or(target), peer_ip, 508, &detail);
+        // この枝は下の `endpoints::handle` より**手前**で return するので、下の
+        // `*proxied = true` を通らない。ここも `record_client` で `clients[]` の行を
+        // 作る側なので、母数 (T15.0 (12)) にはこの枝も入れる。自分宛ての要求は
+        // 自分の `Via` を持たないので、ここへ来るのはプロキシとして受けた要求だけ
+        *proxied = true;
         metrics.record_client(
             peer_ip,
             metrics::HostOutcome::Error,
@@ -1630,7 +1635,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // ここから下は「自分宛てではない = プロキシとして扱う要求」なので、この接続を
     // `clients[]` の母数に入れる (T15.0 (12))。**代入 1 回だけ**で、原子も鍵も取らない。
     // 立てる場所がここなのは、断る枝 (503 / 403) も CONNECT も `record_client` で
-    // 行を作るのに、どれも `*served += 1` を通らないため
+    // 行を作るのに、どれも `*served += 1` を通らないため (508 だけはここより手前で
+    // return するので、あちらの枝で立てている)
     *proxied = true;
     // 上限の外で受けた接続で、自分宛てではなかった (T13.2)。判定は上の
     // `endpoints::handle` = T12.3 の `local_path` そのもので、偽ならここへ来る
