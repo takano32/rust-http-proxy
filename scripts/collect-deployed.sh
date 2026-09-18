@@ -39,7 +39,8 @@
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
-#   CRITERIA (既定 phase14) … 判定表に使う完了の定義。`off` で判定表を出さない
+#   CRITERIA (既定 phase15) … 判定表に使う完了の定義 (`phase14` も残してある)。
+#                         `off` で判定表を出さない
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
 #   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限
 #   AAAA (無指定)       … `status-diff.py --aaaa FILE` に渡す表 (数字を残すときは固定する。§1)
@@ -76,7 +77,7 @@ DIR=${2:-$HOME/rust-http-proxy-status}
 PROBE=${PROBE:-1}
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
-CRITERIA=${CRITERIA:-phase14}
+CRITERIA=${CRITERIA:-phase15}
 MAX_TIME=${MAX_TIME:-30}
 MAX_PAGES=${MAX_PAGES:-8}
 AAAA=${AAAA:-}
@@ -142,6 +143,16 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # --- 1. 取る -----------------------------------------------------------------
+# **雪像の前に `/status` を 1 本** (T15.0 (15))。要約が使うのは **RSS だけ**で、
+# `/snapshot` は 17 部・最大 4 MiB を 1 つの文字列に組むので、**雪像を配ること自体が
+# RSS を約 1.0 MB 押し上げる**。ほかの通算は 1 秒差で意味が変わらないのでそのまま雪像を使う。
+# 取れなくても続ける (そのときは雪像の中の `/status` の RSS になる)。
+BEFORE="$work/status-before.json"
+if ! curl -s --max-time "$MAX_TIME" "http://$PROXY/status" -o "$BEFORE" ||
+  ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$BEFORE" 2>/dev/null; then
+  rm -f "$BEFORE"
+  BEFORE=
+fi
 if ! curl -s --max-time "$MAX_TIME" "http://$PROXY/snapshot" -o "$OUT"; then
   echo "failed to fetch http://$PROXY/snapshot" >&2
   rm -f "$OUT"
@@ -250,7 +261,8 @@ printf '\n'
 
 # --- 2. 要点 ------------------------------------------------------------------
 printf '## 1. 要点\n\n'
-python3 scripts/snapshot-summary.py "$OUT" ${PREV:+--prev "$PREV"} || echo '(要点を組めなかった)'
+python3 scripts/snapshot-summary.py "$OUT" ${PREV:+--prev "$PREV"} \
+  ${BEFORE:+--status-before "$BEFORE"} || echo '(要点を組めなかった)'
 printf '\n'
 
 # --- 3. 前回との差分 (snapshot-diff.py) ---------------------------------------
