@@ -906,6 +906,30 @@ mod local_path_tests {
             "roles",
             "locks",
             "profhint",
+            // T15.0 (14) の 5 枚: (a) CPU の絞り / (b) 動かないトンネル /
+            // (c) 名前解決の内訳 / (d) 受付待ち / (e) 利用者が待つ時間
+            "cputag",
+            "cpukpi",
+            "cpubar",
+            "cpudetail",
+            "ch-cpu",
+            "topthreads",
+            "topthreadshint",
+            "idleconns",
+            "idleconnhint",
+            "ch-dnswarm",
+            "lg-dnskind",
+            "st-dnskind",
+            "dnskindhint",
+            "lg-queue",
+            "st-queue",
+            "queuehint",
+            "ch-rundelay",
+            "rundelayhint",
+            "waitp50",
+            "waitp50tag",
+            "waitdetail",
+            "ch-wait",
         ] {
             assert!(html.contains(&format!("id=\"{}\"", id)), "{} が無い", id);
         }
@@ -927,6 +951,15 @@ mod local_path_tests {
             "function roleRows(",
             "function lockRows(",
             "function drawStack(",
+            // T15.0 (14) の 5 枚が読む側 (`scripts/check-dashboard.js` が名前で切り出す)
+            "function toKernel(",
+            "function cpuThrottle(",
+            "function topThreads(",
+            "function runDelay(",
+            "function queueSpread(",
+            "function idleTunnels(",
+            "function dnsMissKinds(",
+            "function waitKpi(",
         ] {
             assert!(html.contains(f), "{} が無い", f);
         }

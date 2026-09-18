@@ -53,6 +53,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
 .legend{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--muted);margin-bottom:8px}
 .legend b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
 .lead{font-size:13px;font-family:var(--mono);background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:10px;overflow-x:auto;white-space:nowrap}
+.card h2 .src{float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -75,7 +76,9 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
     <div class="card"><h2>要求 / 秒</h2><div class="kpi" id="rps">–</div><div class="hint" id="reqtotal"></div></div>
     <div class="card"><h2>転送 / 秒</h2><div class="kpi" id="bps">–</div><div class="hint" id="bytestotal"></div></div>
     <div class="card"><h2>CONNECT 確立 p50 <span class="tag" id="connp50tag">直近 5 分</span></h2><div class="kpi" id="connp50">–</div><div class="hint" id="conndetail"></div></div>
+    <div class="card"><h2>利用者が待つ時間 p50 <span class="tag" id="waitp50tag">直近 5 分</span></h2><div class="kpi" id="waitp50">–</div><div class="hint" id="waitdetail"></div></div>
     <div class="card"><h2>名前解決 <span class="tag">通算</span></h2><div class="kpi" id="dnsmiss">–</div><div class="hint" id="dnsdetail"></div></div>
+    <div class="card"><h2>CPU の絞り <span class="tag" id="cputag">通算</span></h2><div class="kpi" id="cpukpi">–</div><div class="bar"><i id="cpubar"></i></div><div class="hint" id="cpudetail"></div></div>
     <div class="card" id="slocard" hidden><h2>今日の SLO <span class="tag" id="slotag">UTC</span></h2><div class="kpi" id="slokpi">–</div><div class="hint" id="slodetail"></div></div>
     <div class="card"><h2>接続中</h2><div class="kpi" id="active">–</div><div class="hint" id="connlimit"></div><div class="hint" id="threads"></div><div class="hint" id="origins"></div></div>
     <div class="card"><h2>キャッシュ命中率</h2><div class="kpi" id="hitratio">–</div><div class="hint" id="hitdetail"></div></div>
@@ -88,11 +91,13 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
     <div class="card chart"><h2>転送 MB / 秒 <span id="c-bps"></span></h2><canvas id="ch-bps"></canvas></div>
     <div class="card chart"><h2>命中率 % (区間) <span id="c-hit"></span></h2><canvas id="ch-hit"></canvas></div>
     <div class="card chart"><h2>CONNECT 確立 p50 / p95 (ms) <span id="c-conn"></span></h2><canvas id="ch-conn"></canvas></div>
+    <div class="card chart"><h2>利用者が待つ時間 p50 / p95 (ms) <span id="c-wait"></span></h2><canvas id="ch-wait"></canvas></div>
     <div class="card chart"><h2>名前解決ミス / 秒 · エラー / 秒 <span id="c-err"></span></h2><canvas id="ch-err"></canvas></div>
     <div class="card chart"><h2>スレッド / fd <span id="c-fd"></span></h2><canvas id="ch-fd"></canvas></div>
     <div class="card chart"><h2>接続数 <span id="c-active"></span></h2><canvas id="ch-active"></canvas></div>
     <div class="card chart"><h2>メモリ MB (使用 / 上限 / RSS) <span id="c-mem"></span></h2><canvas id="ch-mem"></canvas></div>
     <div class="card chart"><h2>ディスク MB (使用 / 上限) <span id="c-disk"></span></h2><canvas id="ch-disk"></canvas></div>
+    <div class="card chart"><h2>CPU の絞り 周期 / 秒 (全部 · 絞られた) <span id="c-cpu"></span></h2><canvas id="ch-cpu"></canvas></div>
   </section>
 
   <section class="row">
@@ -154,14 +159,45 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
     </div>
     <div class="legend" id="lg-roles" style="margin-top:8px"></div>
     <div style="overflow-x:auto;margin-top:6px"><table id="roles"><thead><tr><th>役割</th><th title="この窓にこの役割が使った CPU (1 コア = 100%)">CPU</th><th>標本</th><th title="どこで待っているか。CPU に乗っている間は中身に関係なく running になります (splice の中継など)。conn には次の仕事を待っているワーカー (futex) も入ります">どこで待っているか</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" style="margin-top:10px">CPU を使っているスレッド (上位 8。<code>tid</code> は <code>/connections</code> と同じ番号)</div>
+    <div style="overflow-x:auto"><table id="topthreads"><thead><tr><th>tid</th><th title="/proc/&lt;tid&gt;/comm">comm</th><th>役割</th><th title="この窓にこのスレッドが使った CPU (1 コア = 100%)">CPU</th><th title="標本のうち走っていた数">走っていた</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="topthreadshint"></div>
     <div style="overflow-x:auto;margin-top:10px"><table id="locks"><thead><tr><th>ロック</th><th title="try_lock に失敗した回数 (直近 5 分)">取り合い (5 分)</th><th>通算</th></tr></thead><tbody></tbody></table></div>
     <div class="hint" id="profhint"></div>
+  </section>
+
+  <section class="row">
+    <div class="card">
+      <h2>名前解決の内訳 <span class="tag">通算</span><span class="src">/status.dns + /history</span></h2>
+      <div class="hint">先回りで引き直している名前の数 (<code>dns_warm</code>)</div>
+      <canvas id="ch-dnswarm"></canvas>
+      <div class="hint" style="margin-top:6px">ミスの種類 (通算。<code>misses_by_kind</code>)</div>
+      <div class="legend" id="lg-dnskind"></div>
+      <div class="stack" id="st-dnskind"></div>
+      <div class="hint" id="dnskindhint"></div>
+    </div>
+    <div class="card">
+      <h2>受付待ち <span class="tag">直近 5 分</span><span class="src">/profile</span></h2>
+      <div class="hint">CONNECT の <code>queue</code> の段の分布 (12 段。二峰ならワーカー待ち)</div>
+      <div class="legend" id="lg-queue"></div>
+      <div class="stack" id="st-queue"></div>
+      <div class="hint" id="queuehint"></div>
+      <div class="hint" style="margin-top:6px">走れずに待った時間 (<code>run_delay_us</code> の全役割の合計。us / 秒)</div>
+      <canvas id="ch-rundelay"></canvas>
+      <div class="hint" id="rundelayhint"></div>
+    </div>
   </section>
 
   <section class="card" style="margin-top:14px">
     <h2>いまの接続 (上位 50) <span class="tag">5 秒ごと</span><span style="float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">/connections</span></h2>
     <div style="overflow-x:auto"><table id="conns"><thead><tr><th>id</th><th>接続元</th><th>宛先</th><th>種類</th><th title="relaying 中継中 / parked 預かり所 (epoll) / reading スレッドで次の要求待ち / serving 処理中 / queued ワーカー待ち">状態</th><th>経過</th><th>転送</th><th title="直近 5 秒の転送速度 (T14.39。history スレッドが 5 秒ごとに控えた差分。速さが出るのは CONNECT のトンネルだけ)">速さ</th><th title="この接続が握っている記述子の数">fd</th></tr></thead><tbody></tbody></table></div>
     <div class="hint" id="connhint"></div>
+  </section>
+
+  <section class="card" style="margin-top:14px">
+    <h2>動かないトンネル (300 秒以上 1 バイトも動いていない) <span class="tag">5 秒ごと</span><span class="src">/connections</span></h2>
+    <div style="overflow-x:auto"><table id="idleconns"><thead><tr><th>id</th><th>宛先</th><th>経過</th><th title="1 バイトも動いていない秒 (idle_secs)">止まって</th><th>転送</th><th title="半分だけ閉じている向きと経った秒">半閉じ</th><th title="起こされたのに進まなかった回数 (spins)">空回り</th><th title="直前の poll が返した旗 (client / origin)">旗</th><th title="受け持っているスレッド (0 = 預かり中)">tid</th></tr></thead><tbody></tbody></table></div>
+    <div class="hint" id="idleconnhint"></div>
   </section>
 
   <section class="card" style="margin-top:14px">
@@ -174,6 +210,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
 'use strict';
 var $=function(id){return document.getElementById(id)};
 var hist=[];       // 正規化した標本 (`/history` の keys でキー名を戻したもの)
+var kern=[];       // `/history` の `kernel` の窓 (T14.12 の別の配列。T15.0 (14))
 var interval=5;    // いま見ている解像度 (秒)。`/history` の interval_secs
 var bounds=[];     // 窓のヒストグラムの区間 (ms)。`/history` の bounds_ms
 var causes=[];     // エラーの原因の名前。`/history` の causes
@@ -183,7 +220,7 @@ var badLists=[null,null];  // [?sort=errors, ?sort=dns] の hosts[] (30 秒ご�
 // エラーの原因の既定の名前 (`/history` の causes が来るまで、と来なかったとき)
 var CAUSES=['dns','refused','unreachable','timeout','reset','tls','loop','other'];
 
-// --- ここから下の 8 つは node の整形テストからも呼ぶ (DOM に触らないこと) ---
+// --- ここから下は node の整形テストからも呼ぶ (DOM に触らないこと) ---
 // `/history` は標本を配列の配列で返す (キーは keys に 1 回だけ)。列名で引ける形に戻す
 function toSamples(h){
   var idx={},keys=h.keys||[];
@@ -218,15 +255,16 @@ function mergeWindows(samples,n,prefix){
     if(!b)continue;
     if(!out.buckets)out.buckets=b.map(function(){return 0});
     for(var j=0;j<b.length;j++)out.buckets[j]+=b[j];
-    out.count+=s[prefix==='connect'?'connects':'forwards']||0;
+    // 件数の列だけ綴りが違う (`connects` / `waits` / `forwards`。T15.0 (10))
+    out.count+=s[prefix==='connect'?'connects':prefix==='wait'?'waits':'forwards']||0;
     out.sum+=s[prefix+'_ms_sum']||0;
     out.max=Math.max(out.max,s[prefix+'_ms_max']||0);
   }
   return out;
 }
 // 名前解決の KPI (`/status` の dns をそのまま読む)。ミス率・ミス 1 回の値段・先回り。
-// `refreshes` と `negative_ttl_secs` は T13.1、`warm` は T14.1 で足すキーなので、
-// **無ければ null** (「–」で描く)
+// `refreshes` と `negative_ttl_secs` は T13.1、`warm` は T14.1、引き直しの様子
+// (`refresh_*`) は T15.0 (7) で足すキーなので、**無ければ null** (「–」で描く)
 function dnsStats(s){
   var d=(s&&s.dns)||{},hits=+d.hits||0,miss=+d.misses||0,tot=hits+miss;
   return {rate:tot?miss/tot*100:null,avg:d.miss_avg_ms==null?null:+d.miss_avg_ms,
@@ -236,7 +274,20 @@ function dnsStats(s){
     negttl:d.negative_ttl_secs==null?null:+d.negative_ttl_secs,
     refreshes:d.refreshes==null?null:+d.refreshes,
     warm:d.warm==null?null:+d.warm,
-    warmsecs:d.warm_secs==null?null:+d.warm_secs};
+    warmsecs:d.warm_secs==null?null:+d.warm_secs,
+    reffail:d.refresh_failures==null?null:+d.refresh_failures,
+    refms:d.refresh_ms_sum==null?null:+d.refresh_ms_sum,
+    refmax:d.refresh_ms_max==null?null:+d.refresh_ms_max,
+    reflate:d.refresh_late==null?null:+d.refresh_late};
+}
+// ミスの種類別 (`/status` の `dns.misses_by_kind`。T15.0 (7))。並びは固定。
+// **画面では差分を溜めない** (通算をそのまま横棒 1 本に)。持たない版では null
+function dnsMissKinds(s){
+  var d=(s&&s.dns)||{},k=d.misses_by_kind;
+  if(!k)return null;
+  var names=['cold','expired','warm_stale','negative'];
+  var rows=names.map(function(nm){return {name:nm,avg:+k[nm]||0}});
+  return {rows:rows,total:rows.reduce(function(a,r){return a+r.avg},0)};
 }
 // 「悪いホスト」: `/status?sort=errors` と `?sort=dns` の 2 枚を混ぜて上位 n 件。
 // エラーの多い順 → 名前解決に費やした順で、エラーも名前解決も無いホストは出さない
@@ -281,7 +332,54 @@ function connRows(j,n){
   return {rows:all.slice(0,n||50),states:states,kinds:kinds,bytes:bytes,
     count:(j&&j.count!=null)?+j.count:all.length,lite:!!(j&&j.lite)};
 }
-// --- ここから 5 つは `/profile` を読む側 (T14.3)。DOM に触らないので node からも呼ぶ ---
+// 「動かないトンネル」: **`idle_secs` が `secs` 以上の CONNECT** だけ (T15.0 (4))。
+// 欄は「無い = 既定値」で来る (256 KiB に 1,000 本入れる口なので既定の行には書かない)
+function idleTunnels(j,secs,n){
+  var want=secs||300,all=[],tunnels=0,spins=0,half=0,quiet=0;
+  ((j&&j.connections)||[]).forEach(function(c){
+    if(!c||c.kind!=='connect')return;
+    tunnels++;
+    if((+c.idle_secs||0)<want)return;
+    all.push(c);spins+=+c.spins||0;
+    if(c.half_closed)half++;
+    if(!(+c.spins>0))quiet++;
+  });
+  all.sort(function(a,b){return (+b.idle_secs||0)-(+a.idle_secs||0)||(+b.age_secs||0)-(+a.age_secs||0)});
+  return {rows:all.slice(0,n||20),count:all.length,secs:want,tunnels:tunnels,
+    spins:spins,half_closed:half,quiet:quiet,lite:!!(j&&j.lite)};
+}
+// `/history` の `kernel` (T14.12 の**標本とは別の配列**) を列名で引ける形に戻す。
+// 画面はここまで 1 行も読んでいなかった。読めない源は `null` で来る (T15.0 (14))
+function toKernel(h){
+  var k=(h&&h.kernel)||null;
+  if(!k||!Array.isArray(k.samples))return [];
+  var keys=k.keys||[];
+  return k.samples.map(function(row){
+    var o={};
+    for(var i=0;i<keys.length;i++)o[keys[i]]=row[i];
+    return o});
+}
+// CPU の絞り (`/status` の `kernel.cgroup_cpu` と `/history` の `kernel`。T15.0 (6))。
+// 割合 = `nr_throttled ÷ nr_periods`。**`quota_cores` が null なら割り当てが無い**。
+// 持たない版 (`nr_periods` は T15.0 (6) の欄。分母が無いと割合が出せない) と、
+// cgroup v2 の読めない環境では null
+function cpuThrottle(s,rows,n){
+  var c=s&&s.kernel&&s.kernel.cgroup_cpu;
+  if(!c||typeof c.nr_periods!=='number')return null;
+  var per=+c.nr_periods||0,thr=+c.nr_throttled||0,ss=c.since_start||null;
+  var a=rows||[],wp=0,wt=0,seen=0;
+  for(var i=Math.max(0,a.length-(n||60));i<a.length;i++){
+    if(typeof a[i].cpu_nr_periods!=='number')continue;
+    wp+=a[i].cpu_nr_periods;wt+=+a[i].cpu_nr_throttled||0;seen++;
+  }
+  return {periods:per,throttled:thr,usec:+c.throttled_usec||0,
+    pct:per>0?thr/per*100:null,
+    quota:c.quota_cores==null?null:+c.quota_cores,
+    path:c.path==null?null:String(c.path),
+    since:ss?{periods:+ss.nr_periods||0,throttled:+ss.nr_throttled||0,usec:+ss.throttled_usec||0}:null,
+    window:{samples:seen,periods:wp,throttled:wt,pct:wp>0?wt/wp*100:null}};
+}
+// --- ここから下は `/profile` を読む側 (T14.3、T15.0 (5))。DOM に触らないので node からも呼ぶ ---
 // `/profile` の配列の配列を、名前で引ける形に戻す。
 // 段階は件数 0 なら `0` 1 文字、役割は標本 0 なら `0` 1 文字で来るので、そこを開き直す
 function toProfile(j){
@@ -295,6 +393,12 @@ function toProfile(j){
     return (v&&v.length)?{cpu_us:+v[0]||0,samples:+v[1]||0,states:v[2]||null}
                         :{cpu_us:0,samples:0,states:null};
   };
+  // 上位スレッド (T15.0 (5))。**空の窓は `0` 1 文字**、持たない版は undefined
+  var top=function(v){
+    return (v&&v.length)?v.map(function(t){
+      return {tid:+t[0]||0,comm:t[1]||'',role:+t[2]||0,cpu_us:+t[3]||0,running:+t[4]||0};
+    }):[];
+  };
   return {off:j.profile==='off',
     interval:+j.interval_secs||5,bounds:j.bounds_ms||[],
     names:{connect:st.connect||[],forward:st.forward||[]},
@@ -304,9 +408,11 @@ function toProfile(j){
     unknown:j.unknown_syscalls||[],recent:j.recent||null,
     count:+j.count||0,shown:+j.shown||0,truncated:!!j.truncated,
     samples:(j.samples||[]).map(function(r){
+      // **末尾の 2 列は T15.0 (5) で足したもの**。位置で開くので、持たない版は空 / null
       return {t:+r[0]||0,requests:+r[1]||0,cpu_us:+r[2]||0,
         connect:(r[3]||[]).map(win),forward:(r[4]||[]).map(win),
-        threads:(r[5]||[]).map(role),locks:r[6]||[],queue:r[7]||[0,0,0]};
+        threads:(r[5]||[]).map(role),locks:r[6]||[],queue:r[7]||[0,0,0],
+        top:top(r[8]),delay:Array.isArray(r[9])?r[9]:null};
     })};
 }
 // 直近 n 標本の段階を足し合わせ、1 件あたりの平均・分位点・割合に直す。
@@ -386,6 +492,59 @@ function lockRows(p,n){
     queue:{waited:q[0],ms_sum:q[1],ms_max:q[2],
       total:{waited:+(p.queueTotal||[])[0]||0,ms_sum:+(p.queueTotal||[])[1]||0,ms_max:+(p.queueTotal||[])[2]||0}}};
 }
+// CPU を使っているスレッド (`/profile` の `threads_top`。T15.0 (5))。直近 n 標本を
+// **tid で束ねて** CPU の多い順に。持たない版は 0 件
+function topThreads(p,n){
+  var a=(p&&p.samples)||[],roles=(p&&p.roles)||[],by={},out=[];
+  for(var i=Math.max(0,a.length-(n||60));i<a.length;i++){
+    var ts=a[i].top||[];
+    for(var j=0;j<ts.length;j++){
+      var t=ts[j],e=by[t.tid];
+      if(!t.tid)continue;
+      if(!e){e=by[t.tid]={tid:t.tid,comm:'',role:roles[t.role]||('role'+t.role),
+        cpu_us:0,running:0,windows:0};out.push(e)}
+      if(t.comm)e.comm=t.comm;
+      e.cpu_us+=t.cpu_us;e.running+=t.running;e.windows++;
+    }
+  }
+  var secs=Math.max(1,Math.min(n||60,a.length))*((p&&p.interval)||5);
+  out.forEach(function(r){r.cpu_pct=r.cpu_us/1e6/secs*100});
+  return out.sort(function(x,y){return y.cpu_us-x.cpu_us});
+}
+// 走れるのに走れなかった時間 (`/profile` の `run_delay_us`。T15.0 (5))。
+// **読めない環境は標本ごと `null`** なので折れ線はそこで切れる (`ok` = 1 つでも読めたか)
+function runDelay(p,n){
+  var a=(p&&p.samples)||[],roles=(p&&p.roles)||[],secs=(p&&p.interval)||5;
+  var by=roles.map(function(){return 0}),ok=false;
+  var series=a.map(function(s){
+    if(!s.delay)return null;
+    var sum=0;
+    for(var i=0;i<s.delay.length;i++)sum+=+s.delay[i]||0;
+    return sum/secs});
+  for(var k=Math.max(0,a.length-(n||60));k<a.length;k++){
+    var d=a[k].delay;
+    if(!d)continue;
+    ok=true;
+    for(var i2=0;i2<by.length&&i2<d.length;i2++)by[i2]+=+d[i2]||0;
+  }
+  return {series:series,ok:ok,
+    total:by.reduce(function(x,y){return x+y},0),
+    roles:roles.map(function(nm,i){return {role:nm,us:by[i]}})
+      .filter(function(r){return r.us>0}).sort(function(x,y){return y.us-x.us})};
+}
+// 受付待ちの分布 (`stageRows` の `queue` を **12 段の区間ごと**に開く)。二峰かどうかを
+// 横棒 1 本で見るため (描くのは既存の `stackHtml`)。件数 0 の窓は null
+function queueSpread(p,n,kind){
+  var k=kind||'connect',names=(p&&p.names&&p.names[k])||[],s=stageRows(p,n||60,k),row=null;
+  for(var i=0;i<s.rows.length;i++)if(names[i]==='queue')row=s.rows[i];
+  if(!row||!row.count)return null;
+  var b=row.buckets||[],bnds=(p&&p.bounds)||[],rows=[];
+  for(var j=0;j<b.length;j++){
+    var lo=j===0?0:bnds[j-1];
+    rows.push({name:j<bnds.length?lo+'–'+bnds[j]+' ms':'> '+lo+' ms',avg:+b[j]||0})}
+  return {rows:rows,total:rows.reduce(function(x,r){return x+r.avg},0),
+    count:row.count,avg:row.avg,p50:row.p50,p95:row.p95,max:row.max};
+}
 // 直近 n 標本のゲージの山 (`active_max` の無い古い標本は `active` で代用)。件数 0 なら null
 function peak(samples,n,key,fallback){
   var a=samples||[],mx=null;
@@ -411,6 +570,10 @@ function rates(){ // hist から区間ごとの派生値
       mem:b.mem_used/1048576,memlim:b.mem_limit/1048576,rss:b.rss/1048576,disk:b.disk_used/1048576,disklim:b.disk_limit/1048576,
       cp50:winQuantile(b.connect_buckets,b.connects,b.connect_ms_max,0.5,bounds),
       cp95:winQuantile(b.connect_buckets,b.connects,b.connect_ms_max,0.95,bounds),
+      // 利用者が待つ時間 (T15.0 (10) の `wait_*`)。この列を持たない版では null = 折れ線が出ない
+      wp50:b.wait_buckets?winQuantile(b.wait_buckets,b.waits,b.wait_ms_max,0.5,bounds):null,
+      wp95:b.wait_buckets?winQuantile(b.wait_buckets,b.waits,b.wait_ms_max,0.95,bounds):null,
+      warm:b.dns_warm==null?null:b.dns_warm,
       dnsps:(b.dns_misses||0)/dt,errps:(b.errors||0)/dt,
       threads:b.threads_max!=null?b.threads_max:b.threads,fds:b.fds_max!=null?b.fds_max:b.fds,maxfds:b.max_fds});}
   return r;
@@ -433,7 +596,7 @@ function drawChart(id,series,opts){
     g.stroke();g.setLineDash([]);
     if(s.fill){g.lineTo(padL+w*(s.data.length-1)/span,padT+h);g.lineTo(padL,padT+h);g.closePath();g.fillStyle=s.fill;g.fill()}});
   g.fillStyle='#8b91a5';g.textAlign='left';
-  if(hist.length>1){var t0=hist[Math.max(0,hist.length-n)].t,t1=hist[hist.length-1].t;g.fillText(ago(t1-t0),padL,H-4);g.textAlign='right';g.fillText('現在',W-padR,H-4)}
+  if(n>0&&hist.length>1){var t0=hist[Math.max(0,hist.length-n)].t,t1=hist[hist.length-1].t;g.fillText(ago(t1-t0),padL,H-4);g.textAlign='right';g.fillText('現在',W-padR,H-4)}
 }
 function ago(s){return s>=86400?Math.round(s/3600)+' 時間前':s>=3600?Math.round(s/60)+' 分前':s>=60?Math.round(s/60)+' 分前':s+' 秒前'}
 // 積み上げの折れ線 (面を下から順に重ねる)。`drawChart` と同じ座標の取り方
@@ -464,20 +627,25 @@ function drawStack(id,series,opts){
 var STAGE_COLORS=['#5aa9ff','#3ecf8e','#f5b342','#c084fc','#ff6b6b','#6ee7f9','#a3e635'];
 var ROLE_COLORS={accept:'#5aa9ff',conn:'#3ecf8e','idle-watch':'#c084fc','dns-refresh':'#f5b342',
   history:'#ff6b6b',persist:'#6ee7f9','cache-probe':'#fca5a5','profile-sample':'#a3e635',other:'#8b91a5'};
-function stackHtml(rows,total){
+// 100% の横棒 1 本。`fmt` を渡さなければ ms として整形する
+// (T15.0 (14) で件数を積む使い方ができたので `fmtNum` を渡せるようにした)
+function stackHtml(rows,total,fmt){
   if(!(total>0))return '';
+  var f=fmt||fmtMsFine;
   return rows.map(function(r,i){
     var pc=r.avg/total*100;
     return pc<=0?'':'<i style="width:'+pc.toFixed(2)+'%;background:'+STAGE_COLORS[i%STAGE_COLORS.length]
-      +'" title="'+esc(r.name)+' '+fmtMsFine(r.avg)+' ('+pc.toFixed(0)+'%)"></i>';
+      +'" title="'+esc(r.name)+' '+f(r.avg)+' ('+pc.toFixed(0)+'%)"></i>';
   }).join('');
 }
 function renderProfile(j){
   var p=toProfile(j),n=Math.max(1,Math.round(300/(p.interval||5)));
   if(p.off){$('proflead').textContent='lite プロファイルでは記録しません (PROXY_PROFILE=lite)';
-    ['stages','roles','locks'].forEach(function(id){$(id).tBodies[0].innerHTML=''});
-    ['st-connect-setup','st-connect-after','st-forward-setup','st-forward-after','lg-connect','lg-forward','lg-roles']
-      .forEach(function(id){$(id).innerHTML=''});
+    ['stages','roles','locks','topthreads'].forEach(function(id){$(id).tBodies[0].innerHTML=''});
+    ['st-connect-setup','st-connect-after','st-forward-setup','st-forward-after','lg-connect','lg-forward','lg-roles',
+      'st-queue','lg-queue'].forEach(function(id){$(id).innerHTML=''});
+    ['topthreadshint','queuehint','rundelayhint'].forEach(function(id){
+      $(id).textContent='lite プロファイルでは記録しません'});
     $('profhint').textContent='';return}
   var lines=[];
   ['connect','forward'].forEach(function(kind){
@@ -527,6 +695,33 @@ function renderProfile(j){
     return '<tr><td>'+esc(r.role)+'</td><td>'+r.cpu_pct.toFixed(1)+'%</td><td>'+fmtNum(r.samples)+'</td>'
       +'<td style="text-align:left;white-space:normal"><div class="stack" style="height:10px">'+bar+'</div>'+txt+'</td></tr>';
   }).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--muted)">スレッドの標本はありません (sampler '+esc(p.sampler)+')</td></tr>';
+  // (a) CPU を使っているスレッド。`roles` の表と同じ作り
+  var tt=topThreads(p,n);
+  $('topthreads').tBodies[0].innerHTML=tt.slice(0,8).map(function(r){
+    return '<tr><td>'+fmtNum(r.tid)+'</td><td>'+esc(r.comm)+'</td><td>'+esc(r.role)+'</td>'
+      +'<td style="color:'+(r.cpu_pct>=90?'var(--bad)':r.cpu_pct>=50?'var(--warn)':'inherit')+'">'
+      +r.cpu_pct.toFixed(1)+'%</td><td>'+fmtNum(r.running)+'</td></tr>';
+  }).join('')||'<tr><td colspan="5" style="text-align:center;color:var(--muted)">'
+    +'スレッド単位の CPU (threads_top) を記録していません</td></tr>';
+  $('topthreadshint').textContent=tt.length
+    ?tt.length+' 本が上位に入りました (直近 5 分。1 コアを丸ごと使い続けていれば 100%)'
+    :'threads_top を持たない版か、標本を取れていない窓です';
+  // (d) 受付待ちの分布と、走れずに待った時間
+  var qs=queueSpread(p,n,'connect');
+  $('st-queue').innerHTML=qs?stackHtml(qs.rows,qs.total,fmtNum):'';
+  $('lg-queue').innerHTML=qs?qs.rows.map(function(r,i){
+    return r.avg?'<span><b style="background:'+STAGE_COLORS[i%STAGE_COLORS.length]+'"></b>'
+      +esc(r.name)+' '+fmtNum(r.avg)+'</span>':''}).join(''):'';
+  $('queuehint').textContent=qs
+    ?'queue '+fmtNum(qs.count)+' 件 · 平均 '+fmtMsFine(qs.avg)+' · p50 '+fmtMsFine(qs.p50)
+      +' · p95 '+fmtMsFine(qs.p95)+' · 最大 '+fmtMsFine(qs.max)
+    :'この 5 分は受付待ちの段 (queue) を記録していません';
+  var rd=runDelay(p,n);
+  drawChart('ch-rundelay',[{data:rd.series,color:'#6ee7f9',fill:'rgba(110,231,249,.12)'}],{});
+  $('rundelayhint').textContent=rd.ok
+    ?'直近 5 分の合計 '+fmtMsFine(rd.total/1000)+' · '
+      +(rd.roles.slice(0,4).map(function(r){return esc(r.role)+' '+fmtMsFine(r.us/1000)}).join(' · ')||'–')
+    :'run_delay_us を記録していません (schedstat が読めない環境か、持たない版)';
   // (d) ロックと待ち行列
   var lk=lockRows(p,n);
   $('locks').tBodies[0].innerHTML=lk.rows.map(function(r){
@@ -550,7 +745,9 @@ function redraw(){
   drawChart('ch-bps',[{data:pick('bps'),color:'#3ecf8e',fill:'rgba(62,207,142,.12)'}],{});
   drawChart('ch-hit',[{data:pick('hit'),color:'#f5b342'}],{max:100});
   drawChart('ch-conn',[{data:pick('cp95'),color:'#f5b342',width:1},{data:pick('cp50'),color:'#5aa9ff',fill:'rgba(90,169,255,.12)'}],{});
+  drawChart('ch-wait',[{data:pick('wp95'),color:'#f5b342',width:1},{data:pick('wp50'),color:'#c084fc',fill:'rgba(192,132,252,.12)'}],{});
   drawChart('ch-err',[{data:pick('errps'),color:'#ff6b6b',width:1.6},{data:pick('dnsps'),color:'#f5b342',fill:'rgba(245,179,66,.12)'}],{});
+  drawChart('ch-dnswarm',[{data:pick('warm'),color:'#3ecf8e',fill:'rgba(62,207,142,.12)'}],{});
   // fd の上限は「近いときだけ」点線で描く。`ulimit -n` が 524288 のような機械では
   // 上限に軸を取られて実際の本数が潰れてしまう (デプロイ先は 1024 なので出る)
   var fdPeak=Math.max.apply(null,[1].concat(pick('fds').concat(pick('threads')).filter(function(v){return v!=null}))),
@@ -575,12 +772,70 @@ function redraw(){
     :'12 段の区間の内側を線形補間した値 (1 ms 単位では読めません)';
   $('connp50').textContent=k?fmtMsFine(k.p50):'–';
   $('conndetail').textContent=k?k.detail:'この窓に CONNECT がありません';
+  // (e) 利用者が待つ時間 (T15.0 (2))
+  var wk=waitKpi(last,mergeWindows(hist,span,'wait'),bounds);
+  $('waitp50tag').textContent=wk?wk.label:'直近 5 分';
+  $('waitp50').textContent=wk?fmtMsFine(wk.p50):'–';
+  $('waitp50').title='queue + client_read + dns + connect の和。まだ外にあるのは '
+    +'accept から要求行が届くまでと、200 の後の first_relay';
+  $('waitdetail').textContent=wk?wk.detail
+    :'利用者が待つ時間を記録していません (wait を持たない版、--lite、またはこの窓に CONNECT なし)';
+  $('c-wait').textContent=lastR&&lastR.wp50!=null?fmtMs(lastR.wp50)+' / '+fmtMs(lastR.wp95):'–';
+  // (a) CPU の絞りの図 (`/history` の `kernel`。T15.0 (6))。周期 / 秒
+  var kr=function(key){return kern.map(function(x){
+    return typeof x[key]==='number'?x[key]/(interval||5):null})};
+  drawChart('ch-cpu',[{data:kr('cpu_nr_periods'),color:'#8b91a5',dash:[4,4],width:1},
+    {data:kr('cpu_nr_throttled'),color:'#ff6b6b',fill:'rgba(255,107,107,.12)'}],{});
+  var lastK=kern.length?kern[kern.length-1]:null;
+  $('c-cpu').textContent=lastK&&typeof lastK.cpu_nr_periods==='number'
+    ?(lastK.cpu_nr_periods/(interval||5)).toFixed(1)+' / '+((+lastK.cpu_nr_throttled||0)/(interval||5)).toFixed(1):'–';
+  if(last)renderCpu(last);   // 窓が来た直後にカードの「直近 5 分」も埋める
+}
+// (a) CPU の絞りのカード (T15.0 (14))。読めない環境と持たない版では断る
+function renderCpu(s){
+  var c=cpuThrottle(s,kern,Math.max(1,Math.round(300/(interval||5))));
+  if(!c){
+    $('cputag').textContent='通算';
+    $('cpukpi').textContent='–';$('cpubar').style.width='0%';$('cpubar').className='';
+    $('cpudetail').textContent='CPU の絞りを記録していません (cgroup v2 の cpu.stat が'
+      +'読めない環境か、cgroup_cpu / nr_periods を持たない版)';
+    return;
+  }
+  // 札は '通算' のまま (KPI は cgroup の通算。起動からの増分は hint の '起動から')
+  $('cpukpi').textContent=c.pct==null?'–':c.pct.toFixed(2)+'%';
+  $('cpukpi').title='nr_throttled ÷ nr_periods (cgroup の通算で、起動前を含みます)。'
+    +'1 周期は既定 100 ms で、絞られた周期は残りを走れずに待たされています';
+  var p=c.pct||0;
+  $('cpubar').style.width=Math.min(100,p)+'%';$('cpubar').className=barClass(p);
+  var parts=['絞られた周期 '+fmtNum(c.throttled)+' / '+fmtNum(c.periods),
+    '直近 5 分 '+(c.window.pct==null?'–':c.window.pct.toFixed(2)+'%'),
+    '待たされた合計 '+fmtMs(c.usec/1000),
+    '割り当て '+(c.quota==null?'なし':c.quota.toFixed(2)+' コア')];
+  if(c.since)parts.push('起動から '+fmtNum(c.since.throttled)+' / '+fmtNum(c.since.periods));
+  if(c.path)parts.push(c.path);
+  $('cpudetail').textContent=parts.join(' · ');
 }
 // KPI「CONNECT 確立 p50」に出す値を選ぶ (T14.31)。`s` は直近の `/status`、`w` は
 // `mergeWindows(hist,span,'connect')` の窓。**DOM には触らない** (check-dashboard.js が動かす)。
 // `recent_quantiles` (直近 1,024 本の実測 ms) があればそれ、無ければ区間の補間に落ちる。
 function connectKpi(s,w,bounds){
   var q=s&&s.recent_quantiles&&s.recent_quantiles.connect;
+  if(q&&q.n>0){
+    var d=[q.n+' 本','p90 '+fmtMsFine(q.p90),'p99 '+fmtMsFine(q.p99),'最大 '+fmtMsFine(q.max)];
+    if(q.window_secs!=null)d.push('直近 '+(q.window_secs<60?q.window_secs+' s':fmtDur(q.window_secs)));
+    return{exact:true,label:'直近 '+fmtNum(q.n)+' 本',p50:q.p50,p90:q.p90,p99:q.p99,max:q.max,
+      n:q.n,window:q.window_secs==null?null:q.window_secs,detail:d.join(' · ')};
+  }
+  if(!w||!w.count)return null;
+  var p50=winQuantile(w.buckets,w.count,w.max,0.5,bounds),p95=winQuantile(w.buckets,w.count,w.max,0.95,bounds);
+  return{exact:false,label:'直近 5 分',p50:p50,p90:null,p99:null,max:w.max,n:w.count,window:null,
+    detail:w.count+' 本 · p95 '+fmtMs(p95)+' · 平均 '+fmtMs(w.sum/w.count)+' (区間の補間)'};
+}
+// KPI「利用者が待つ時間 p50」(T15.0 (2))。`connectKpi` と同じ作りで、読むのは
+// `recent_quantiles.wait` = **queue + client_read + dns + connect の和**。無い版では
+// `/history` の `wait_*` の補間に落ち、それも無ければ null。**DOM には触らない**
+function waitKpi(s,w,bounds){
+  var q=s&&s.recent_quantiles&&s.recent_quantiles.wait;
   if(q&&q.n>0){
     var d=[q.n+' 本','p90 '+fmtMsFine(q.p90),'p99 '+fmtMsFine(q.p99),'最大 '+fmtMsFine(q.max)];
     if(q.window_secs!=null)d.push('直近 '+(q.window_secs<60?q.window_secs+' s':fmtDur(q.window_secs)));
@@ -642,8 +897,24 @@ function renderStatus(s){
   if(dn.warm!=null)dparts.push('warm '+fmtNum(dn.warm)+' 件'+(dn.warmsecs?' ('+dn.warmsecs+' s)':''));
   if(dn.negative)dparts.push('失敗の再利用 '+fmtNum(dn.negative));
   if(dn.stale)dparts.push('古い答え '+fmtNum(dn.stale));
+  // 引き直しの様子 (T15.0 (7))。失敗・遅れ・1 回の値段の 3 語
+  if(dn.reffail!=null)dparts.push('引き直しの失敗 '+fmtNum(dn.reffail));
+  if(dn.reflate!=null)dparts.push('遅れ '+fmtNum(dn.reflate));
+  if(dn.refms!=null&&dn.refreshes)dparts.push('引き直し 1 回 '+fmtMs(dn.refms/dn.refreshes)
+    +(dn.refmax==null?'':' (最大 '+fmtMs(dn.refmax)+')'));
   dparts.push('表 '+fmtNum(dn.entries)+' 件'+(dn.ttl==null?'':' (TTL '+dn.ttl+' s'+(dn.negttl==null?'':' / 失敗 '+dn.negttl+' s')+')'));
   $('dnsdetail').textContent=dparts.join(' · ');
+  // (c) ミスの種類別の横棒 1 本 (T15.0 (7))
+  var mk=dnsMissKinds(s);
+  $('st-dnskind').innerHTML=mk?stackHtml(mk.rows,mk.total,fmtNum):'';
+  $('lg-dnskind').innerHTML=mk?mk.rows.map(function(r,i){
+    return '<span><b style="background:'+STAGE_COLORS[i%STAGE_COLORS.length]+'"></b>'
+      +esc(r.name)+' '+fmtNum(r.avg)+'</span>'}).join(''):'';
+  $('dnskindhint').textContent=mk
+    ?'ミス '+fmtNum(mk.total)+' 回の内訳 · cold = 初めて / expired = TTL 切れ / '
+      +'warm_stale = 先回りが間に合わなかった / negative = 失敗の再利用'
+    :'ミスの種類 (dns.misses_by_kind) を記録していません';
+  renderCpu(s);
   // 接続の上限と山 (T13.3): 503 に届く前に「あと何本か」が読めるように。
   // 山は `/history` の直近 5 分の `active_max` の最大 (平均に畳むと山が消える)
   var span5=Math.max(1,Math.round(300/(interval||5))),pk=peak(hist,span5,'active_max','active');
@@ -733,6 +1004,24 @@ function renderConns(j){
     '転送 '+fmtBytes(c.bytes)];
   Object.keys(c.states).sort().forEach(function(k){parts.push(k+' '+fmtNum(c.states[k]))});
   $('connhint').textContent=parts.join(' · ');
+  // (b) 動かないトンネル。`idle_secs` が 300 秒以上の CONNECT だけ
+  var idle=idleTunnels(j,300,20);
+  $('idleconns').tBodies[0].innerHTML=idle.rows.map(function(r){
+    var rv=r.revents?((r.revents.client||'–')+' / '+(r.revents.origin||'–')):'–';
+    return'<tr><td>'+fmtNum(r.id)+'</td><td title="'+esc(r.target||'')+'">'+esc(r.target||'–')+'</td>'
+      +'<td>'+ago(+r.age_secs||0)+'</td><td style="color:var(--warn)">'+ago(+r.idle_secs||0)+'</td>'
+      +'<td>'+fmtBytes(+r.bytes||0)+'</td>'
+      +'<td>'+(r.half_closed?esc(r.half_closed)+' ('+ago(+r.half_closed_secs||0)+')':'–')+'</td>'
+      +'<td style="color:'+(r.spins?'var(--bad)':'inherit')+'">'+fmtNum(+r.spins||0)+'</td>'
+      +'<td>'+esc(rv)+'</td><td>'+fmtNum(+r.tid||0)+'</td></tr>';
+  }).join('')||'<tr><td colspan="9" style="text-align:center;color:var(--muted)">'
+    +(idle.lite?'lite プロファイルでは記録しません'
+      :'300 秒以上動いていないトンネルはありません (idle_secs を持たない版では記録していません)')
+    +'</td></tr>';
+  $('idleconnhint').textContent='トンネル '+fmtNum(idle.tunnels)+' 本のうち '+fmtNum(idle.count)
+    +' 本が '+idle.secs+' 秒以上 1 バイトも動いていません · 空回り '+fmtNum(idle.spins)
+    +' (0 のまま '+fmtNum(idle.quiet)+' 本) · 半閉じ '+fmtNum(idle.half_closed)+' 本'
+    +' · 空回りが 0 なら「待っている」、増え続けるなら「回っている」';
 }
 function fmtMs(ms){return ms==null?'–':ms>=1000?(ms/1000).toFixed(1)+' s':Math.round(ms)+' ms'}
 // 段階は 1 ms を切ることが多い (loopback では全部そう) ので、細かい方は桁を残す
@@ -775,8 +1064,10 @@ function pollProfile(){if($('pause').checked)return;
   var res=$('range').value==='5'?5:60;
   fetchJson('/profile?res='+res).then(renderProfile).catch(function(){});}
 function pollHistory(){if($('pause').checked)return;fetchJson('/history?res='+$('range').value).then(function(h){
-  interval=h.interval_secs||5;bounds=h.bounds_ms||[];causes=h.causes||[];hist=toSamples(h);redraw()}).catch(function(){})}
-$('range').addEventListener('change',function(){hist=[];pollHistory();pollProfile()});
+  interval=h.interval_secs||5;bounds=h.bounds_ms||[];causes=h.causes||[];hist=toSamples(h);
+  // カーネルの窓は**標本とは別の配列** (`res=3600` は null = この解像度には無い)
+  kern=toKernel(h);redraw()}).catch(function(){})}
+$('range').addEventListener('change',function(){hist=[];kern=[];pollHistory();pollProfile()});
 try{var savedRange=localStorage.getItem('range');if(savedRange)$('range').value=savedRange}catch(e){}
 $('range').addEventListener('change',function(){try{localStorage.setItem('range',$('range').value)}catch(e){}});
 $('f-lookup').addEventListener('submit',function(e){e.preventDefault();var u=$('url').value.trim();if(!u)return;
