@@ -243,3 +243,131 @@ fn test_integration_profile_is_off_in_lite_mode() {
     // 案内 (`/`) には出す (`--lite` でも口はある)
     assert!(endpoint_json(port, "/").contains("/profile"));
 }
+
+/// `?n=` と `?offset=` で **720 標本ぜんぶが 1 枚ずつ読める** (T15.0 (11))。
+///
+/// `/profile?res=5` は 720 標本のうち 456 しか返らない (1 標本 3,136 B で 256 KiB に
+/// 入り切らない) ので、雪像 1 枚で全部読むには頁が要る。ここで縛るのは
+/// 「頁を継ぐと落ちも重なりもしない」ことと、`next_offset` が最後だけ `null` になること。
+#[test]
+fn test_integration_profile_pages_the_samples_with_n_and_offset() {
+    profile::set_enabled(true);
+    let (port, metrics) = start_test_proxy_with_metrics(proxy_config());
+    let total = profile::RESOLUTIONS[0].1;
+    for i in 0..total as u64 {
+        close_window(&metrics, 1_800_000_000 + i * 5, 100 + i, 1_000 + i);
+    }
+
+    // `?n=` だけ: 新しい方から 10 本 (打ち切りではない = 続きは `next_offset`)
+    let head = endpoint_json(port, "/profile?n=10");
+    assert!(head.contains("\"shown\":10"), "{}", tail(&head));
+    assert!(head.contains("\"truncated\":false"), "{}", tail(&head));
+    assert!(head.contains("\"offset\":0"), "{}", tail(&head));
+    assert!(head.contains("\"next_offset\":10"), "{}", tail(&head));
+    let newest = 1_800_000_000 + (total as u64 - 1) * 5;
+    assert!(head.contains(&format!("[{},{},", newest, 100 + total as u64 - 1)));
+
+    // 頁を継ぐと 720 本が重複なく揃う (1 頁 180 本 × 4)
+    let page = 180;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut dup = 0usize;
+    let mut offset = 0usize;
+    for p in 0..(total / page) {
+        let json = endpoint_json(port, &format!("/profile?n={}&offset={}", page, offset));
+        assert!(
+            json.contains("\"truncated\":false"),
+            "{} 頁目がバイト数で切れた ({} B)",
+            p + 1,
+            json.len()
+        );
+        assert!(
+            json.contains(&format!("\"offset\":{}", offset)),
+            "{}",
+            p + 1
+        );
+        for i in 0..total as u64 {
+            if json.contains(&format!("[{},{},", 1_800_000_000 + i * 5, 100 + i)) && !seen.insert(i)
+            {
+                dup += 1;
+            }
+        }
+        offset += page;
+        let want = match offset < total {
+            true => format!("\"next_offset\":{}", offset),
+            false => "\"next_offset\":null".to_string(),
+        };
+        assert!(json.contains(&want), "{} 頁目に {} が無い", p + 1, want);
+    }
+    assert_eq!(dup, 0, "同じ標本が 2 つの頁に出た");
+    assert_eq!(seen.len(), total, "欠けがある");
+
+    // 環の外を指したら空の頁 (エラーにはしない)
+    let past = endpoint_json(port, &format!("/profile?offset={}", total));
+    assert!(past.contains("\"samples\":[]"), "{}", tail(&past));
+    assert!(past.contains("\"next_offset\":null"), "{}", tail(&past));
+    assert!(
+        past.contains(&format!("\"count\":{}", total)),
+        "{}",
+        tail(&past)
+    );
+}
+
+/// `?summary=1` は標本を返さず、5 分 / 1 時間 / 全部 の 3 段だけ (T15.0 (11))。
+#[test]
+fn test_integration_profile_summary_folds_three_spans() {
+    profile::set_enabled(true);
+    let (port, metrics) = start_test_proxy_with_metrics(proxy_config());
+    // 5 秒 × 720 = 1 時間ぶん。1 標本 要求 10 件・CPU 1,000 us = 100 us/要求
+    let total = profile::RESOLUTIONS[0].1;
+    for i in 0..total as u64 {
+        close_window(&metrics, 1_800_000_000 + i * 5, 10, 1_000);
+    }
+    let json = endpoint_json(port, "/profile?summary=1");
+    assert!(json.contains("\"summary\":true"), "{}", json);
+    // **標本は 1 本も返さない** (雪像に入り切らない部を出さないための口。
+    // 段の中の `"samples":60` は「畳んだ標本の数」なので、配列の方だけを見る)
+    assert!(!json.contains("\"samples\":["), "{}", json);
+    assert!(!json.contains("\"keys\""), "{}", json);
+    assert!(json.contains("\"interval_secs\":5"), "{}", json);
+    assert!(json.contains(&format!("\"count\":{}", total)), "{}", json);
+    assert!(
+        json.contains(&format!("\"capacity\":{}", total)),
+        "{}",
+        json
+    );
+    // 5 分 = 60 標本、1 時間 = 720 標本、全部 = 環に残っている全部
+    assert!(
+        json.contains("{\"name\":\"5m\",\"secs\":300,\"samples\":60,\"requests\":600,\"cpu_us\":60000,\"cpu_per_request_us\":100.00}"),
+        "{}",
+        json
+    );
+    assert!(
+        json.contains("{\"name\":\"1h\",\"secs\":3600,\"samples\":720,\"requests\":7200,\"cpu_us\":720000,\"cpu_per_request_us\":100.00}"),
+        "{}",
+        json
+    );
+    assert!(
+        json.contains("{\"name\":\"all\",\"secs\":3600,\"samples\":720,"),
+        "{}",
+        json
+    );
+
+    // 窓が 1 つも閉じていなければ 0 本 (`cpu_per_request_us` は `null`)
+    let (empty_port, _m) = start_test_proxy_with_metrics(proxy_config());
+    let empty = endpoint_json(empty_port, "/profile?summary=1");
+    assert!(empty.contains("\"count\":0"), "{}", empty);
+    assert!(empty.contains("\"cpu_per_request_us\":null"), "{}", empty);
+    // `--lite` は今までどおり `{"profile":"off"}` (要約でも同じ)
+    let mut lite = proxy_config();
+    lite.lite = true;
+    let lite_port = start_test_proxy(lite);
+    assert!(
+        endpoint_json(lite_port, "/profile?summary=1").contains("\"profile\":\"off\""),
+        "lite"
+    );
+}
+
+/// 応答の末尾だけ (assert のメッセージに 256 KiB を貼らない)。
+fn tail(json: &str) -> &str {
+    &json[json.len().saturating_sub(240)..]
+}

@@ -210,6 +210,8 @@ fn test_integration_which_endpoints_are_heavy() {
         "/recent?n=500",
         "/history",
         "/history?res=5&n=720",
+        // 標本を組まない要約は軽い (T15.0 (11))
+        "/profile?summary=1",
         "/hosts/series?top=16",
         // 読み手の表 (T14.53)。最大 256 行なので軽い
         "/readers",
@@ -255,5 +257,40 @@ fn test_integration_which_endpoints_are_heavy() {
         status_number(&endpoint_json(port, "/status"), "heavy_rejected"),
         heavy.len() as u64,
         "断ったのは重い口のぶんだけ"
+    );
+}
+
+/// `/profile?summary=1` は**重い口が 1 本走っている最中でも 200** (T15.0 (11))。
+///
+/// `/profile` は標本を 256 KiB ぶん組むので無条件に重い口だが、`?summary=1` は
+/// 3 段に畳んだ数字だけで標本を 1 本も組まない。雪像を取っている最中でも
+/// 「この機械がいま 1 要求に何 us 使っているか」だけは読めるようにしておくための口。
+#[test]
+fn test_integration_profile_summary_is_not_a_heavy_endpoint() {
+    let _one_at_a_time = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
+    let port = start_test_proxy(proxy_config());
+
+    {
+        // 1 本目のふりをして旗を握る (`/snapshot` を組んでいる最中と同じ状態)
+        let _built_by_someone_else =
+            rust_http_proxy::endpoints::begin_heavy().expect("旗は空いているはず");
+        // 標本を返す方は今までどおり断る
+        assert_eq!(status_code(&get(port, "/profile")), 503, "標本つきは重い口");
+        assert_eq!(status_code(&get(port, "/profile?res=60")), 503);
+        // 要約は通る (`summary=0` は「立てていない」= 今までどおり重い)
+        for path in ["/profile?summary=1", "/profile?res=60&summary=1"] {
+            let resp = get(port, path);
+            assert_eq!(status_code(&resp), 200, "{} -> {}", path, resp);
+            assert!(resp.contains("\"summary\":true"), "{} -> {}", path, resp);
+            assert!(!resp.contains("\"samples\":["), "{} -> {}", path, resp);
+        }
+        assert_eq!(status_code(&get(port, "/profile?summary=0")), 503);
+    }
+
+    // 断ったのは標本つきの 3 本だけ (要約は旗に触っていない)
+    assert_eq!(
+        status_number(&endpoint_json(port, "/status"), "heavy_rejected"),
+        3,
+        "要約が旗を取っている"
     );
 }

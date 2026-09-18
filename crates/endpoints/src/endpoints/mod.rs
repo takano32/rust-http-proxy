@@ -254,8 +254,9 @@ fn is_heavy(is_get: bool, path: &str, query: Option<&str>) -> bool {
     match path {
         // 17 部を 1 つの JSON に組む (T14.4)。無条件に重い
         "/snapshot" => true,
-        // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)
-        "/profile" => true,
+        // 待ちの段階・スレッドの CPU と状態・ロックの取り合い (T14.3)。
+        // **`?summary=1` だけは軽い** (標本を 1 本も組まず 3 段に畳んだ数字だけ返す。T15.0 (11))
+        "/profile" => !has_flag(query, "summary"),
         // 1 相手を上の口から横断して読む (T14.36)
         "/explain" => true,
         // 既定の `limit` / `n` を越えて引いたときだけ (T14.32 の `/history?res=5&n=4320` は 1.9 MB)
@@ -264,6 +265,14 @@ fn is_heavy(is_get: bool, path: &str, query: Option<&str>) -> bool {
         "/history" => num_over(query, "n", 720),
         _ => false,
     }
+}
+
+/// 問い合わせに `key=` が**立っている**か (`/history?summary=1` と同じ読み方。`0` は偽)。
+pub(super) fn has_flag(query: Option<&str>, key: &str) -> bool {
+    let Some(q) = query else {
+        return false;
+    };
+    parse_query(q).iter().any(|(k, v)| k == key && v != "0")
 }
 
 /// 問い合わせの `key=` が `limit` を越えているか (無い・読めない値は「越えていない」)。

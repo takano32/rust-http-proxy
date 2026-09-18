@@ -87,6 +87,20 @@ fn num_param(query: Option<&str>, key: &str, default: usize, max: usize) -> usiz
         .clamp(1, max)
 }
 
+/// `?offset=N` を読む (無い / 読めない値は 0。上は `max` で止める。T15.0 (11))。
+///
+/// [`num_param`] と別なのは**下限が 0** だから (あちらは `.clamp(1, max)` なので
+/// 「1 件目から」を表せない)。意味は「いまの並びを何本飛ばすか」で、並びは
+/// `/recent` が閉じた新しい順、`/hosts` が `sort=` の順。
+fn offset_param(query: Option<&str>, max: usize) -> usize {
+    parse_query(query.unwrap_or(""))
+        .iter()
+        .find(|(k, _)| k == "offset")
+        .and_then(|(_, v)| v.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(max)
+}
+
 /// `/errors?n=100` — 直近のエラーの個票 (新しい順、既定 100 件・最大 [`MAX_ERRORS`])。
 pub fn errors(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 100, MAX_ERRORS);
@@ -306,15 +320,21 @@ fn log_line_json(line: &crate::log::Line) -> String {
     )
 }
 
-/// `/hosts?sort=requests|errors|dns|slow&limit=200` — `.rrd` にある**全ホスト**を
+/// `/hosts?sort=requests|errors|dns|slow&limit=200&offset=0` — `.rrd` にある**全ホスト**を
 /// `/status` の `hosts[]` と同じ形で (T13.4)。
 ///
 /// `/status` の上位 50 は変えない (監視が 5 秒ごとに引く口を太らせない)。
 /// 上位 50 に入らない残り 950 ホストを見るのがこちらの仕事で、
 /// `scripts/status-diff.py` がそのまま読めるように窓の目印も同じ名前で出す。
+///
+/// **`?offset=` (T15.0 (11))**: 1,000 件 × 408 B = 398 KiB は [`MAX_BODY`] に入らず
+/// 639 件で切れていた (2 枚の雪像の差分から 8 ホストが黙って落ちた)。`offset` は
+/// **`sort=` で並べたあとの列**を何本飛ばすかで、`next_offset` が次の頁の `offset`。
+/// `limit` の最大 1,000 と「200 を越えたら重い口」はそのまま。
 pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let sort = crate::metrics::HostSort::from_param(&str_param(query, "sort"));
     let limit = num_param(query, "limit", 200, crate::metrics::MAX_HOSTS);
+    let offset = offset_param(query, crate::metrics::MAX_HOSTS);
     let all = ep.metrics.hosts_sorted_by(sort);
     let count = all.len();
     // `hosts[]` は `.rrd` の通算なので、いつからの通算かも一緒に出す (`/status` と同じ)
@@ -329,7 +349,7 @@ pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
     out.push_str("\"hosts\":");
     let (shown, cut) = array_within(
         &mut out,
-        all.iter().take(limit).map(|(h, s)| {
+        all.iter().skip(offset).take(limit).map(|(h, s)| {
             format!(
                 "{{\"host\":\"{}\",{}}}",
                 crate::json::escape(h),
@@ -337,9 +357,10 @@ pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
             )
         }),
     );
+    // 新しい欄は**末尾**に足す (既存の鍵の順は変えない)
     let _ = write!(
         out,
-        ",\"count\":{},\"shown\":{},\"sort\":\"{}\",\"limit\":{},\"truncated\":{},\"uptime_secs\":{},\"total_requests\":{},\"restored_since\":{}}}",
+        ",\"count\":{},\"shown\":{},\"sort\":\"{}\",\"limit\":{},\"truncated\":{},\"uptime_secs\":{},\"total_requests\":{},\"restored_since\":{},\"offset\":{},\"next_offset\":{}}}",
         count,
         shown,
         sort_name(sort),
@@ -349,7 +370,9 @@ pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
         ep.metrics
             .total_requests
             .load(std::sync::atomic::Ordering::Relaxed),
-        restored_since
+        restored_since,
+        offset,
+        super::profile::next_offset(offset, shown, count)
     );
     (200, "application/json", out)
 }
@@ -499,14 +522,23 @@ impl RecentSort {
     }
 }
 
-/// `/recent?n=200&since=<epoch>&client=<ip>&sort=time|slow|bytes` — **閉じた接続**の個票
+/// `/recent?n=200&offset=0&since=<epoch>&client=<ip>&sort=time|slow|bytes` — **閉じた接続**の個票
 /// (既定 200 件・最大 [`MAX_RECENT`]。T14.4)。
 ///
 /// `/connections` は「いま」しか見えず、`/errors` は失敗だけ。ここは閉じた接続 1 本ごとの
 /// 記録なので、**バーストのとき誰が何を開いたか**も**遅かった 1 本がどの段階で遅かったか**も
 /// 後から読める。書くのは接続の終了で 1 回だけ (`ConnSlot` の抹消と同じ場所)。
+///
+/// **`?offset=` (T15.0 (11))**: 2,000 件は 1 件 424 B で [`MAX_BODY`] の 3.2 倍あり、
+/// 1 枚では 615 件しか返らない。`offset` は**いまの並び** (`sort=` のあと。既定は
+/// **閉じた新しい順**) を何本飛ばすかで、`next_offset` が次の頁の `offset`
+/// (続きが無ければ `null`)。**`id` は accept 順・`at` は開いた時刻**でどちらも並びとは
+/// 一致しない (長生きのトンネルは若い `id` で最後に閉じる) ので、頁を跨ぐ目印には使えない。
+/// 取っている間に新しく閉じた接続があると並びがずれて**同じ行が 2 つの頁に出る**ことは
+/// あるが (**欠けることは無い**)、行に `id` があるので読む側で落とせる。
 pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, MAX_RECENT);
+    let offset = offset_param(query, MAX_RECENT);
     let since = parse_query(query.unwrap_or(""))
         .iter()
         .find(|(k, _)| k == "since")
@@ -527,10 +559,14 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     let mut out = String::with_capacity(8192);
     out.push_str(SCHEMA_HEAD);
     out.push_str("\"recent\":");
-    let (shown, cut) = array_within(&mut out, rows.iter().take(n).map(RecentEntry::to_json));
+    let (shown, cut) = array_within(
+        &mut out,
+        rows.iter().skip(offset).take(n).map(RecentEntry::to_json),
+    );
+    // 新しい欄は**末尾**に足す (既存の鍵の順は変えない)
     let _ = write!(
         out,
-        ",\"count\":{},\"matched\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"sort\":\"{}\",\"since\":{},\"client\":\"{}\",\"persisted\":{},\"restored\":{},\"truncated\":{},\"lite\":{}}}",
+        ",\"count\":{},\"matched\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"sort\":\"{}\",\"since\":{},\"client\":\"{}\",\"persisted\":{},\"restored\":{},\"truncated\":{},\"lite\":{},\"offset\":{},\"next_offset\":{}}}",
         shown,
         matched,
         shown,
@@ -543,7 +579,9 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
         persisted(ep),
         ep.metrics.closed.restored(),
         cut,
-        !ep.metrics.conns.enabled()
+        !ep.metrics.conns.enabled(),
+        offset,
+        super::profile::next_offset(offset, shown, matched)
     );
     (200, "application/json", out)
 }
@@ -1703,5 +1741,207 @@ mod tests {
         assert_eq!(str_param(Some("sort=host"), "sort"), "host");
         assert_eq!(str_param(Some("a=1&sort=misses"), "sort"), "misses");
         assert_eq!(str_param(None, "sort"), "");
+    }
+
+    /// `?offset=` は**下限 0** (`num_param` は `.clamp(1, max)` なので 0 を通せない。T15.0 (11))。
+    #[test]
+    fn the_offset_parameter_starts_at_zero() {
+        assert_eq!(offset_param(None, 2000), 0);
+        assert_eq!(offset_param(Some("offset=0"), 2000), 0);
+        assert_eq!(offset_param(Some("offset=1"), 2000), 1);
+        assert_eq!(offset_param(Some("n=200&offset=1500"), 2000), 1500);
+        // 端は上だけ止める (`n=` と同じ方針)
+        assert_eq!(offset_param(Some("offset=99999"), 2000), 2000);
+        assert_eq!(offset_param(Some("offset=abc"), 2000), 0);
+        assert_eq!(offset_param(Some("offset="), 2000), 0);
+        // `?n=` の方は今までどおり 1 が下限
+        assert_eq!(num_param(Some("offset=0"), "n", 200, 2000), 200);
+    }
+
+    /// `next_offset` は「続きがあれば次の `offset`、無ければ `null`」(T15.0 (11))。
+    #[test]
+    fn the_next_offset_is_null_at_the_end() {
+        use super::super::profile::next_offset;
+        assert_eq!(next_offset(0, 500, 2000), "500");
+        assert_eq!(next_offset(1500, 500, 2000), "null");
+        assert_eq!(next_offset(0, 0, 0), "null");
+        // バイト数で切れた頁でも続きの位置は出す (切れた所から次を引ける)
+        assert_eq!(next_offset(0, 615, 2000), "615");
+        // 並びの外を指した頁は空で終わり
+        assert_eq!(next_offset(2000, 0, 2000), "null");
+    }
+
+    /// `/recent?offset=` の 4 頁で **2,000 本が重複なく揃う** (T15.0 (11))。
+    ///
+    /// 1 枚では [`MAX_BODY`] に 615 本しか入らない (1 件 424 B × 2,000 = 828 KiB) ので、
+    /// 雪像を 1 枚で読むには頁が要る。ここで縛るのは「4 頁の `id` の集合が
+    /// 0..2,000 と完全に一致する」= **落ちない・重ならない**こと。
+    #[test]
+    fn the_recent_endpoint_pages_through_the_whole_ring_with_offset() {
+        use crate::recent::{CloseReason, ConnTally, MAX_RECENT};
+
+        let m = Metrics::new();
+        let now = Instant::now();
+        for i in 0..(MAX_RECENT as u64) {
+            let slot = m
+                .conns
+                .register(i, "198.51.100.7", now)
+                .expect("登録できる");
+            slot.begin_tunnel("host.example.net:443");
+            slot.finish(CloseReason::ClientEof, ConnTally::default(), 1);
+            m.record_closed(i);
+        }
+        assert_eq!(m.closed.len(), MAX_RECENT);
+
+        let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
+        let concurrency = || crate::metrics::Concurrency {
+            max_conns: 0,
+            max_threads: 0,
+            live_threads: 0,
+            idle_threads: 0,
+            queued_jobs: 0,
+        };
+        let ep = Endpoint {
+            metrics: &m,
+            cache: &cache,
+            conn_id: 1,
+            port: 8080,
+            host: None,
+            client: None,
+            pac_direct: &[],
+            lite: false,
+            readonly: false,
+            version: "test",
+            concurrency: &concurrency,
+        };
+
+        let page = 500;
+        let mut seen: Vec<u64> = Vec::with_capacity(MAX_RECENT);
+        let mut offset = 0usize;
+        for p in 0..4 {
+            let body = recent(&ep, Some(&format!("n={}&offset={}", page, offset))).2;
+            assert!(body.len() <= MAX_BODY, "{} 頁目で {} B", p + 1, body.len());
+            assert!(
+                body.contains("\"truncated\":false"),
+                "{} 頁目がバイト数で切れた ({} B)",
+                p + 1,
+                body.len()
+            );
+            assert!(
+                body.contains(&format!("\"offset\":{}", offset)),
+                "{}",
+                p + 1
+            );
+            let ids: Vec<u64> = body
+                .match_indices("\"id\":")
+                .map(|(at, pat)| {
+                    body[at + pat.len()..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect::<String>()
+                        .parse()
+                        .expect("id は数")
+                })
+                .collect();
+            assert_eq!(ids.len(), page, "{} 頁目の件数", p + 1);
+            seen.extend(ids);
+            // 最後の頁だけ `next_offset` が `null`
+            let want_next = if p == 3 {
+                "\"next_offset\":null".to_string()
+            } else {
+                format!("\"next_offset\":{}", offset + page)
+            };
+            assert!(body.contains(&want_next), "{} 頁目: {}", p + 1, want_next);
+            offset += page;
+        }
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), MAX_RECENT, "重複か欠けがある");
+        assert_eq!(seen[0], 0);
+        assert_eq!(seen[MAX_RECENT - 1], MAX_RECENT as u64 - 1);
+
+        // 並びの外を指したら空の頁 (エラーにはしない)
+        let past = recent(&ep, Some("n=200&offset=2000")).2;
+        assert!(past.contains("\"recent\":[]"), "{}", past);
+        assert!(past.contains("\"next_offset\":null"), "{}", past);
+        assert!(past.contains("\"matched\":2000"), "{}", past);
+    }
+
+    /// `/hosts?offset=` の 2 頁で **1,000 ホストが重複なく揃う** (T15.0 (11))。
+    ///
+    /// 1 枚では 639 件で切れていた (1,000 件 × 408 B = 398 KiB)。2 枚の雪像の差分から
+    /// 8 ホストが黙って落ちたのがこの欄を足した理由なので、**落ちないこと**を縛る。
+    #[test]
+    fn the_hosts_endpoint_pages_through_every_host_with_offset() {
+        use crate::metrics::{HostOutcome, MAX_HOSTS};
+        use std::time::Duration;
+
+        let m = Metrics::new();
+        for i in 0..MAX_HOSTS {
+            m.record_host_timed(
+                &format!("connect://host{:04}.example.net:443", i),
+                HostOutcome::Bypass,
+                1_234,
+                Duration::from_millis(12),
+            );
+        }
+        let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
+        let concurrency = || crate::metrics::Concurrency {
+            max_conns: 0,
+            max_threads: 0,
+            live_threads: 0,
+            idle_threads: 0,
+            queued_jobs: 0,
+        };
+        let ep = Endpoint {
+            metrics: &m,
+            cache: &cache,
+            conn_id: 1,
+            port: 8080,
+            host: None,
+            client: None,
+            pac_direct: &[],
+            lite: false,
+            readonly: false,
+            version: "test",
+            concurrency: &concurrency,
+        };
+
+        let page = 500;
+        let mut seen: Vec<String> = Vec::with_capacity(MAX_HOSTS);
+        for (p, offset) in [0usize, page].into_iter().enumerate() {
+            let body = hosts(
+                &ep,
+                Some(&format!("sort=requests&limit={}&offset={}", page, offset)),
+            )
+            .2;
+            assert!(body.len() <= MAX_BODY, "{} 頁目で {} B", p + 1, body.len());
+            assert!(
+                body.contains("\"truncated\":false"),
+                "{} 頁目がバイト数で切れた ({} B)",
+                p + 1,
+                body.len()
+            );
+            assert!(body.contains("\"count\":1000"), "{}", body.len());
+            assert!(
+                body.contains(&format!("\"offset\":{}", offset)),
+                "{}",
+                p + 1
+            );
+            for (at, pat) in body.match_indices("{\"host\":\"") {
+                let rest = &body[at + pat.len()..];
+                let end = rest.find('"').expect("閉じ引用符");
+                seen.push(rest[..end].to_string());
+            }
+            let want_next = if p == 0 {
+                format!("\"next_offset\":{}", page)
+            } else {
+                "\"next_offset\":null".to_string()
+            };
+            assert!(body.contains(&want_next), "{} 頁目: {}", p + 1, want_next);
+        }
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), MAX_HOSTS, "重複か欠けがある");
     }
 }

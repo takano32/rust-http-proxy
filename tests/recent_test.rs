@@ -1150,3 +1150,83 @@ fn test_integration_a_closed_http_connection_records_the_client_rtt() {
         &rtt[..60.min(rtt.len())]
     );
 }
+
+/// `/recent?offset=` と `/hosts?offset=` が**口を通して**効くこと (T15.0 (11))。
+///
+/// 中の切り方は単体 (`crates/endpoints` の `..._pages_through_...`) で縛ってあるので、
+/// ここで見るのは「問い合わせが handler まで届き、`offset` / `next_offset` が応答に出て、
+/// 頁を継ぐと落ちも重なりもしない」ことだけ。1 件ずつ頁を切って読む。
+#[test]
+#[cfg(target_os = "linux")]
+fn test_integration_recent_and_hosts_can_be_paged_with_offset() {
+    use std::io::{Read, Write};
+
+    let origin_port = start_echo_origin();
+    let proxy_port = start_test_proxy(park_config());
+
+    // 何も閉じていないうちは 1 頁目で終わり
+    let empty = endpoint_json(proxy_port, "/recent");
+    assert!(empty.contains("\"offset\":0"), "{}", empty);
+    assert!(empty.contains("\"next_offset\":null"), "{}", empty);
+
+    // トンネルを 3 本、順に開いて閉じる
+    for i in 0..3u8 {
+        let mut tunnel = open_tunnel(proxy_port, origin_port);
+        tunnel.write_all(&[b'a' + i]).unwrap();
+        let mut back = [0u8; 1];
+        tunnel.read_exact(&mut back).unwrap();
+        tunnel.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut rest = Vec::new();
+        let _ = tunnel.read_to_end(&mut rest);
+        drop(tunnel);
+        let want = i as u64 + 1;
+        wait_until(
+            || status_number(&endpoint_json(proxy_port, "/recent"), "matched") >= want,
+            "閉じたトンネルが /recent に出る",
+        );
+    }
+
+    // 1 件ずつ 3 頁。並びは閉じた新しい順なので、`id` は降順で重複しない
+    let mut ids = Vec::new();
+    for offset in 0..3usize {
+        let json = endpoint_json(proxy_port, &format!("/recent?n=1&offset={}", offset));
+        assert!(json.contains(&format!("\"offset\":{}", offset)), "{}", json);
+        assert!(json.contains("\"matched\":3"), "{}", json);
+        let want_next = match offset {
+            2 => "\"next_offset\":null".to_string(),
+            _ => format!("\"next_offset\":{}", offset + 1),
+        };
+        assert!(json.contains(&want_next), "offset={}: {}", offset, json);
+        let page = recent_ids(&json);
+        assert_eq!(page.len(), 1, "offset={}: {}", offset, json);
+        ids.push(page[0]);
+    }
+    let sorted = {
+        let mut v = ids.clone();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    assert_eq!(sorted.len(), 3, "頁が重なっている: {:?}", ids);
+    // 並びは新しい順 = `id` の降順 (同じ接続で順に開いたので `id` も昇順に振られる)
+    let mut desc = ids.clone();
+    desc.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(ids, desc, "新しい順になっていない: {:?}", ids);
+
+    // 並びの外を指したら空の頁
+    let past = endpoint_json(proxy_port, "/recent?n=1&offset=3");
+    assert!(past.contains("\"recent\":[]"), "{}", past);
+    assert!(past.contains("\"next_offset\":null"), "{}", past);
+
+    // `/hosts` も同じ綴り (このプロキシが見たホストは 1 つだけ)
+    let hosts = endpoint_json(proxy_port, "/hosts?limit=1&offset=0");
+    assert!(hosts.contains("\"offset\":0"), "{}", hosts);
+    assert!(hosts.contains("\"next_offset\":null"), "{}", hosts);
+    let past_hosts = endpoint_json(proxy_port, "/hosts?limit=1&offset=1");
+    assert!(past_hosts.contains("\"hosts\":[]"), "{}", past_hosts);
+    assert!(
+        past_hosts.contains("\"next_offset\":null"),
+        "{}",
+        past_hosts
+    );
+}
