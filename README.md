@@ -566,7 +566,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     最後に使ってからの秒・勝った族・負のキャッシュなら理由・裏で引き直し中か・**warm か (`warm`) と
     次に裏で引き直すまでの秒 (`next_refresh_secs`)**・OS に問い合わせた回数・
     **引き直しで答えが変わった回数 (`changes`)**・**warm の間に引かれた回数 (`warm_requests`。
-    `refreshes` と比べると「引き直し 1 回で何本の要求を救ったか」が読めます)**・
+    `refreshes` と比べると「引き直し 1 回で何本の要求を救ったか」が読めます。
+    ただし **warm なのにミスした回 (`misses_by_kind.warm_stale`) も入る**ので、
+    実際に救えた数は `warm_requests − misses_by_kind.warm_stale` です)**・
     **ミスの内訳 (`misses_by_kind` = `cold` / `expired` / `warm_stale` / `negative`。
     和はその行の `misses` と一致します)**)、
     `/log?n=200` で **warn 以上**の直近の行 (1,000 行の環状、1 行 256 B まで。

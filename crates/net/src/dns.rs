@@ -1163,6 +1163,23 @@ mod tests {
             .map(|e| (e.addrs.len(), e.failed_at.is_some()))
     }
 
+    /// JSON の `"<鍵>":` の後ろの数字を読む (`tests/common/mod.rs` の `status_number` と
+    /// 同じ形)。**末尾の `}` で突き合わせない**ため: 鍵の後ろに欄が足されても落ちず、
+    /// `contains` と違って `1` が `12` に前方一致することもない。
+    fn json_number(json: &str, key: &str) -> u64 {
+        let pat = format!("\"{}\":", key);
+        let at = json
+            .find(&pat)
+            .unwrap_or_else(|| panic!("no {} in {}", key, json))
+            + pat.len();
+        json[at..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap_or_else(|_| panic!("{} is not a number in {}", key, json))
+    }
+
     /// (hits, misses, negative_hits, refreshes)。
     fn tally() -> (u64, u64, u64, u64) {
         let [hits, misses, _, negative, refreshes] = counters();
@@ -1855,9 +1872,11 @@ mod tests {
             "(d) の 1 件だけ残っている"
         );
         let json = row.to_json();
+        // **末尾の `}` は突き合わせない** (`misses_by_kind` の入れ子の閉じまで)。
+        // 行の末尾に欄を足す次の担当がここで落ちないため (T15.0 (7))
         assert!(
             json.contains(
-                "\"warm_requests\":0,\"misses_by_kind\":{\"cold\":0,\"expired\":0,\"warm_stale\":0,\"negative\":1}}"
+                "\"warm_requests\":0,\"misses_by_kind\":{\"cold\":0,\"expired\":0,\"warm_stale\":0,\"negative\":1}"
             ),
             "{}",
             json
@@ -1904,8 +1923,9 @@ mod tests {
             "遅れていない引き直しは数えない"
         );
         let status = status_json();
-        assert!(
-            status.contains(&format!("\"refresh_late\":{}}}", late0 + 1)),
+        assert_eq!(
+            json_number(&status, "refresh_late"),
+            late0 + 1,
             "{}",
             status
         );
