@@ -15,9 +15,9 @@ pub use proxy_blocklist::{blocklist, config};
 pub use proxy_cache::sys;
 pub use proxy_cache::{cache, signal, sysinfo};
 pub use proxy_http::{
-    Upstream, body, clientio, daily, events, freshness, headers, history, hostseries, http, kernel,
-    metrics, origin, persist, pool, profile, recent, request, response, rrd, slo, snapshots, tls,
-    trace,
+    Upstream, anomaly, body, clientio, daily, events, freshness, headers, history, hostseries,
+    http, kernel, metrics, origin, persist, pool, profile, recent, request, response, rrd, slo,
+    snapshots, tls, trace,
 };
 pub use proxy_net::{acl, dns, net};
 pub use proxy_prom::prom;

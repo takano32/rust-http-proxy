@@ -3,9 +3,14 @@
 //! 以前は `/status` の写し (同じ 20 KB の JSON、いつでも 200) だったので、
 //! Pterodactyl やモニタが「生きているか」を 200 / 503 で判断できなかった。
 //!
-//! 6 つ調べて、1 つでも偽なら **503** を返す。読めないもの (Linux 以外、`/proc/net` の
-//! 無いコンテナ、状態ファイル無し、まだ名前解決をしていない) は `null` で、
-//! **検査に入れない** (分からないことを理由に落とさない)。
+//! 7 つ調べて、**`fatal` な検査**が 1 つでも偽なら **503** を返す。読めないもの
+//! (Linux 以外、`/proc/net` の無いコンテナ、状態ファイル無し、まだ名前解決をしていない) は
+//! `null` で、**検査に入れない** (分からないことを理由に落とさない)。
+//!
+//! **`fatal` でない検査** (T15.0 (6) の `cpu`) は本文の `ok` を偽にするが、状態は 200 の
+//! まま。CPU の絞りは「遅いが動いている」状態で、パネルが 503 で再起動をかける作りだと
+//! **再起動の輪に入る**ため (503 にするかは利用者が決める)。JSON では `"fatal":false` の
+//! ときだけその鍵が出る (**無い = `fatal`**。既存の検査の形は 1 バイトも変わらない)。
 //!
 //! 応答は `/status` と別の**軽い JSON** (1 KiB 弱)。監視が 5 秒ごとに叩いても、
 //! 読むのは `/proc/self/fd` を 1 回と、5 秒の標本が残したメモリ上の窓だけ。
@@ -30,6 +35,9 @@ struct Check {
     ok: Option<bool>,
     /// `"key":value` の並び (`ok` の隣に出す数字)
     detail: String,
+    /// この検査が偽のとき **503 にするか** (T15.0 (6))。
+    /// `false` の検査は本文の `ok` だけを偽にして、状態は 200 のまま
+    fatal: bool,
 }
 
 impl Check {
@@ -38,6 +46,15 @@ impl Check {
             name,
             ok: Some(ok),
             detail,
+            fatal: true,
+        }
+    }
+
+    /// 偽でも 503 にしない検査 (T15.0 (6))。
+    fn soft(name: &'static str, ok: bool, detail: String) -> Check {
+        Check {
+            fatal: false,
+            ..Check::new(name, ok, detail)
         }
     }
 
@@ -46,11 +63,12 @@ impl Check {
             name,
             ok: None,
             detail: String::new(),
+            fatal: true,
         }
     }
 }
 
-/// `/healthz` の本体。`ok` が偽なら 503。
+/// `/healthz` の本体。**`fatal` な検査**が偽なら 503 (本文の `ok` は全部込み)。
 pub(super) fn healthz(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
     let conc = (ep.concurrency)();
     let active = ep.metrics.active_connections.load(Ordering::Relaxed);
@@ -103,9 +121,27 @@ pub(super) fn healthz(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
                 format!("\"last_miss_ms\":{}", ms),
             ),
         },
+        // CPU の絞り (T15.0 (6))。**`fatal` ではない**ので 503 にはしない。
+        // 27 時間絞られ続けていたのに、この口にも異常の規則にも CPU が無かった
+        match (h.cpu_throttled_ratio(), h.cpu_throttled_5m) {
+            (Some(ratio), Some((throttled, periods))) => Check::soft(
+                "cpu",
+                ratio < crate::anomaly::CPU_THROTTLED,
+                format!(
+                    "\"throttled_5m\":{},\"periods_5m\":{},\"percent\":{:.0}",
+                    throttled,
+                    periods,
+                    ratio * 100.0
+                ),
+            ),
+            // cgroup v1 / Linux 以外 / 履歴スレッドが動いていない / まだ 1 期間も過ぎていない
+            _ => Check::skipped("cpu"),
+        },
     ];
 
+    // 本文の `ok` は全部込み、**状態は `fatal` な検査だけ**で決める (T15.0 (6))
     let ok = checks.iter().all(|c| c.ok != Some(false));
+    let serving = checks.iter().all(|c| !c.fatal || c.ok != Some(false));
     let mut body = String::with_capacity(512);
     // 応答の形の版は**いちばん先頭の鍵** (T14.49)。`ok` は今までどおりその次
     body.push_str(SCHEMA_HEAD);
@@ -118,6 +154,10 @@ pub(super) fn healthz(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         match c.ok {
             Some(v) => {
                 let _ = write!(body, "{{\"ok\":{}", v);
+                // **無い = `fatal`** (既存の検査の形を 1 バイトも変えないため。T15.0 (6))
+                if !c.fatal {
+                    body.push_str(",\"fatal\":false");
+                }
                 if !c.detail.is_empty() {
                     body.push(',');
                     body.push_str(&c.detail);
@@ -134,5 +174,5 @@ pub(super) fn healthz(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ep.metrics.start_time.elapsed().as_secs(),
         crate::json::escape(ep.version)
     );
-    (if ok { 200 } else { 503 }, "application/json", body)
+    (if serving { 200 } else { 503 }, "application/json", body)
 }

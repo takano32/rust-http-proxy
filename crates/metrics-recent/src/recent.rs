@@ -512,6 +512,13 @@ pub struct ConnSlot {
     /// 続ける飽和したトンネルは、全速で流れていてもここが伸びる (`rate_bps` も同じ
     /// 性質。`spins` と併せて読む)
     idle_ms: AtomicU64,
+    /// **前の周期で控えた** [`ConnSlot::spins`] と、その差分 (T15.0 (6))。
+    /// [`ConnSlot::bytes_prev`] / [`ConnSlot::rate_bps`] と同じ流儀で、
+    /// **書くのは history スレッドだけ** ([`ConnSlot::sweep_rate`])。
+    /// 通算の `spins` は「今までに何回空回りしたか」しか言わないので、
+    /// 「**いま**回っている」の判定 ([`ConnTable::spinning`]) はこの差分で行う
+    spins_prev: AtomicU64,
+    spins_delta: AtomicU64,
 }
 
 /// [`ConnSlot::parked_at`] の「預けられていない」印。
@@ -590,6 +597,8 @@ impl ConnSlot {
             revents: AtomicU32::new(0),
             half_closed: AtomicU64::new(0),
             idle_ms: AtomicU64::new(0),
+            spins_prev: AtomicU64::new(0),
+            spins_delta: AtomicU64::new(0),
         }
     }
 
@@ -862,6 +871,17 @@ impl ConnSlot {
         self.rate_bps.load(Ordering::Relaxed)
     }
 
+    /// 直近の周期に空回りした回数 (T15.0 (6))。[`ConnSlot::rate_bps`] と同じで、
+    /// **history スレッドが書いた最後の値**を読むだけ。
+    pub fn spins_delta(&self) -> u64 {
+        self.spins_delta.load(Ordering::Relaxed)
+    }
+
+    /// 半閉じの向きの名前 (まだなら `None`。T15.0 (6))。
+    pub fn half_closed_side(&self) -> Option<&'static str> {
+        self.half_closed_at().map(|(side, _)| SIDE_NAMES[side])
+    }
+
     /// いまの `bytes` を控え、前に控えた値との差分 ÷ `ms` を [`ConnSlot::rate_bps`] に書く。
     ///
     /// **呼ぶのは history スレッドの周期だけ** ([`ConnTable::update_rates`])。1 本あたり
@@ -870,6 +890,11 @@ impl ConnSlot {
     /// `ms == 0` (起動直後の 1 回目) は控えるだけで速さを出さない — 割る幅が無いので、
     /// 「起動より前から居る接続の累計 ÷ 0」という嘘の値を出さないため。
     pub fn sweep_rate(&self, ms: u64) -> u64 {
+        // 空回りの**この周期ぶん** (T15.0 (6))。同じ原子 1 対で `bytes` と同じ流儀
+        let spins_now = self.spins.load(Ordering::Relaxed);
+        let spins_prev = self.spins_prev.swap(spins_now, Ordering::Relaxed);
+        self.spins_delta
+            .store(spins_now.saturating_sub(spins_prev), Ordering::Relaxed);
         let now = self.bytes.load(Ordering::Relaxed);
         let prev = self.bytes_prev.swap(now, Ordering::Relaxed);
         // 1 バイトも動かなかった周期を足す (T15.0 (4))。動いたら 0 に戻す。
@@ -1196,6 +1221,40 @@ impl ConnTable {
         self.rate_total.load(Ordering::Relaxed)
     }
 
+    /// **直近の周期に `min_delta` 回以上空回りした接続**を、多い順に `max` 本まで
+    /// (と、閾を越えた接続の総数)。T15.0 (6)。
+    ///
+    /// **呼ぶのは history スレッドの周期だけ** ([`crate::anomaly`] の判定) で、接続の
+    /// 経路には 1 命令も増えない。読むのは [`ConnTable::update_rates`] が同じ周期に
+    /// 書いた値なので、`update_rates` の**あと**に呼ぶこと。
+    /// 平常時は 1 本も越えないので、確保もほとんど起きない。
+    pub fn spinning(&self, min_delta: u64, max: usize) -> (Vec<SpinningConn>, usize) {
+        let now = Instant::now();
+        let mut found: Vec<SpinningConn> = Vec::new();
+        let mut total = 0usize;
+        {
+            let g = self.inner.locked();
+            for slot in g.slots.values() {
+                let spins_delta = slot.spins_delta();
+                if spins_delta < min_delta {
+                    continue;
+                }
+                total += 1;
+                found.push(SpinningConn {
+                    id: slot.id,
+                    target: slot.target.locked().clone(),
+                    age_secs: now.saturating_duration_since(slot.started).as_secs(),
+                    half_closed: slot.half_closed_side(),
+                    spins_delta,
+                });
+            }
+        }
+        // 多い順 (同点は通し番号の小さい方 = 古い方が先)
+        found.sort_by_key(|c| (std::cmp::Reverse(c.spins_delta), c.id));
+        found.truncate(max);
+        (found, total)
+    }
+
     pub fn len(&self) -> usize {
         self.inner.locked().slots.len()
     }
@@ -1203,6 +1262,24 @@ impl ConnTable {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// 「いま空回りしている」接続 1 本 ([`ConnTable::spinning`] が返す。T15.0 (6))。
+///
+/// 異常の説明 1 件は [`crate::events::MAX_TEXT`] (128 B) で切られるので、持つのは
+/// **1 行に書けるものだけ** (どの接続か・どこ宛てか・いつからか・半閉じか)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpinningConn {
+    /// 接続の通し番号 (ログの `conn#N` と `/connections` の `id`)
+    pub id: u64,
+    /// 宛先 (`host:port`)
+    pub target: String,
+    /// 受けてからの秒
+    pub age_secs: u64,
+    /// 半閉じの向き (`"client"` / `"origin"`。まだなら `None`)
+    pub half_closed: Option<&'static str>,
+    /// 直近の周期に空回りした回数
+    pub spins_delta: u64,
 }
 
 /// 閉じた接続の個票を何件覚えておくか (固定。T14.4)。

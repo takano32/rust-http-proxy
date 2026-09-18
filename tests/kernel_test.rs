@@ -65,7 +65,7 @@ fn test_integration_healthz_is_a_small_health_report() {
         "{}",
         body
     );
-    // 検査の 6 つが全部あること (読めないものは null)
+    // 検査の 7 つが全部あること (読めないものは null)
     for check in [
         "listening",
         "fds",
@@ -73,6 +73,8 @@ fn test_integration_healthz_is_a_small_health_report() {
         "state_file",
         "listen_overflows",
         "resolver",
+        // T15.0 (6)。履歴スレッドの動いていないこの配線では `null`
+        "cpu",
     ] {
         assert!(
             body.contains(&format!("\"{}\":", check)),
@@ -83,6 +85,10 @@ fn test_integration_healthz_is_a_small_health_report() {
     // 待ち受けと記述子はこの環境でも必ず調べられる
     assert!(body.contains("\"listening\":{\"ok\":true"), "{}", body);
     assert!(body.contains("\"fds\":{\"ok\":true"), "{}", body);
+    // CPU は**読めなくても `ok` を落とさない** (分からないことを理由に落とさない)
+    assert!(body.contains("\"cpu\":null"), "{}", body);
+    // 既存の検査の形は 1 バイトも変わっていない (`fatal` は `false` のときだけ出る)
+    assert!(!body.contains("\"fatal\":true"), "{}", body);
     // **`/status` の写しではない**: ホスト別統計も設定も入っていない軽い応答
     assert!(!body.contains("\"hosts\":"), "{}", body);
     assert!(!body.contains("\"settings\":"), "{}", body);
@@ -300,6 +306,18 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
         "{}",
         health
     );
+    // CPU の検査 (T15.0 (6))。cgroup が読める機械なら数が出て、**`fatal` ではない**。
+    // 読めない機械 (cgroup v1・上限なし) では `null` のまま `ok` は落ちない
+    let cpu = health
+        .split_once("\"cpu\":")
+        .map(|(_, r)| r.split('}').next().unwrap())
+        .unwrap_or_else(|| panic!("/healthz に cpu が無い: {}", health));
+    if !cpu.starts_with("null") {
+        assert!(cpu.contains("\"fatal\":false"), "{}", cpu);
+        for key in ["throttled_5m", "periods_5m", "percent"] {
+            assert!(cpu.contains(&format!("\"{}\":", key)), "{}", cpu);
+        }
+    }
 
     drop(proxy);
     let _ = std::fs::remove_dir_all(&dir);

@@ -10,22 +10,25 @@
 //! T14.32 で 6 時間ぶんになった) を 2 回畳むだけで、システムコールは増えない
 //! (畳むのは直近 5 分と直近 1 時間の標本だけで、残りは時刻の比較 1 回で飛ばす)。
 //!
-//! 判定は **5 種で固定** ([`Kind`]) + **規則 6** ([`NewClients`])。閾は本文のとおり:
+//! 判定は **8 種で固定** ([`Kind`]) + **規則 6** ([`NewClients`])。閾は本文のとおり:
 //!
 //! | 種類 | 立つ条件 |
 //! |---|---|
-//! | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が直近 1 時間の p95 の [`CONNECT_RATIO`] 倍以上、かつ [`CONNECT_MIN_MS`] 以上 |
+//! | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が直近 1 時間の p95 の [`CONNECT_RATIO`] 倍以上、かつ [`CONNECT_MIN_MS`] 以上、かつ [`CONNECT_MIN_SAMPLES`] 本以上 |
 //! | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が [`DNS_MISS_MS`] 以上 |
 //! | `errors` | エラーが 5 分で [`ERRORS_MIN`] 件以上 |
 //! | `active_high` | 同時接続の山が `max_conns` の [`ACTIVE_PERCENT`]% 以上 (T14.6 の写真と同じ閾。写真があればその番号) |
 //! | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が増えた |
+//! | `cpu_throttled` | 直近 5 分に絞られた期間の割合が [`CPU_THROTTLED`] 以上 (T15.0 (6)) |
+//! | `tunnel_spin` | 5 秒に [`TUNNEL_SPIN_DELTA`] 回以上空回りするトンネルが [`TUNNEL_SPIN_SECS`] 秒続いた (T15.0 (6)) |
+//! | `dns_miss_rate` | 名前解決のミスが直近 1 時間で [`DNS_MISS_RATE`] 回/接続 以上 (T15.0 (9)) |
 //! | `new_client` | `/clients` の `first_seen` がこの周期の窓の中 (**規則 6**。T14.54) |
 //!
-//! **規則 6 だけは形が違う**: 上の 5 種が「立つ / 収まる」の状態を持つ (同じ種類は
+//! **規則 6 だけは形が違う**: 上の 8 種が「立つ / 収まる」の状態を持つ (同じ種類は
 //! 収まるまで 1 回) のに対し、規則 6 は**接続元ごとに 1 回**で、立ちっ放しにも
 //! 解除にもならない。出来事の種類も `anomaly` ではなく **`new_client`**
 //! ([`crate::events::EventKind::NewClient`]。[`crate::events::KINDS`] の末尾に足したので
-//! T14.9 の永続化の符号 0〜10 は動いていない)。
+//! T14.9 の永続化の符号 0〜10 は動いていない)。上の 8 種はどれも `anomaly` のまま。
 //!
 //! **同じ種類は収まるまで 1 回だけ**書く。条件を外れたまま [`CLEAR_SECS`] 秒
 //! (5 分) 続いたら `cleared: <種類>` で始まる解除の 1 件を書き、また立てるようになる。
@@ -43,6 +46,7 @@
 //! 累計と山の写真の通算) と、種類ごとの立ち上がり ([`KindState`])、
 //! それに規則 6 の「もう書いた接続元」 ([`NewClients`]) だけ。
 
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -50,18 +54,53 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::history::summary::{self, Params, Summary};
 use crate::history::{History, Sample};
 use crate::metrics::{ERR_CAUSE_NAMES, ERR_CAUSES, Metrics, NewClient};
+use crate::recent::{ConnTable, SpinningConn};
 use crate::sync::LockExt;
 
 /// (1) CONNECT 確立の p95 が基準値の何倍で立つか。
 pub const CONNECT_RATIO: f64 = 3.0;
 /// (1) かつ、この ms 以上のときだけ (速いところの 3 倍は異常ではない)。
 pub const CONNECT_MIN_MS: f64 = 50.0;
+/// (1) かつ、5 分の窓にこの本数以上あるときだけ (T15.0 (9))。
+///
+/// p95 は 250 ms 超が 1〜2 本しかない窓では**窓の最大値に潰れる**
+/// ([`crate::window`] の `.min(self.ms_max)`。**これは仕様で、触らない**)。
+/// 257 / 265 / 275 ms で立った件はどれも「1 本の 250 ms 級」だった。
+pub const CONNECT_MIN_SAMPLES: u64 = 20;
 /// (2) 名前解決のミス 1 回の平均 (ms)。
 pub const DNS_MISS_MS: f64 = 100.0;
 /// (3) 5 分のエラー件数。
 pub const ERRORS_MIN: u64 = 5;
 /// (4) 同時接続の山が `max_conns` のこの割合 (%) 以上で立つ (T14.6 の写真と同じ閾)。
 pub const ACTIVE_PERCENT: usize = 50;
+/// (7) 直近 5 分に絞られた期間の割合がこれ以上で立つ (T15.0 (6))。
+///
+/// 2026-09-18 のデプロイ先は約 100%、0 時間の雪像ではほぼ 0% だったので、
+/// この 2 つを分けられる所に置く。
+pub const CPU_THROTTLED: f64 = 0.50;
+/// (7) 立っている間はこの割合を下回るまで収まらない (`connect_p95` と同じ形)。
+pub const CPU_THROTTLED_CLEAR: f64 = 0.25;
+/// (8) 1 周期にこの回数以上空回りしたトンネルを「回っている」とみなす (T15.0 (6))。
+///
+/// 本番の周期は 5 秒なので「5 秒で 1,000 回以上」= 200 回/秒。T15.5 の空回りは
+/// 秒あたり数万で増え続ける形だったので、平常時とは桁が違う。
+pub const TUNNEL_SPIN_DELTA: u64 = 1_000;
+/// (8) 回りっ放しがこの秒だけ続いたら 1 件 (T15.0 (6))。
+pub const TUNNEL_SPIN_SECS: u64 = 60;
+/// (9) 名前解決のミスが直近 1 時間でこの回数/接続 以上で立つ (T15.0 (9))。
+///
+/// 閾の根拠: Phase 13 (keep-warm が効かない世界) が 0.55、いまの切り方 9 通りの幅が
+/// 0.094〜0.171、再起動後の最初の 6 時間だけが 0.291。
+pub const DNS_MISS_RATE: f64 = 0.40;
+/// (9) 立っている間はこの値を下回るまで収まらない。
+pub const DNS_MISS_RATE_CLEAR: f64 = 0.25;
+/// (9) 1 時間の窓にこの本数以上の確立があるときだけ判定する (率の分母)。
+pub const DNS_MISS_RATE_MIN_CONNECTS: u64 = 30;
+/// (9) 起動からこの秒が経つまでは判定しない (T15.0 (9))。
+///
+/// 再起動の直後は**どの名前もまだ warm でない**ので、ミス率は構造的に高い
+/// (実測 0.291)。それを「異常」と書くと、再起動のたびに 1 件出る。
+pub const DNS_MISS_RATE_WARMUP_SECS: u64 = 6 * 3600;
 /// (6) 1 周期に `new_client` を書く上限 (越えた分は 1 件にまとめる)。
 ///
 /// 走査を受けると 1 周期に何百もの接続元が初めて現れうる。**出来事のリングは 512 件**
@@ -92,7 +131,7 @@ pub const BASE_SECS: u64 = 3600;
 /// 条件を外れてから解除の 1 件を書くまで (秒)。
 pub const CLEAR_SECS: u64 = WINDOW_SECS;
 
-/// 判定の種類 (**5 種で固定**。出来事の種類はどれも `anomaly` で、これは説明の頭に出る)。
+/// 判定の種類 (**8 種で固定**。出来事の種類はどれも `anomaly` で、これは説明の頭に出る)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// CONNECT の確立が急に遅くなった
@@ -105,16 +144,39 @@ pub enum Kind {
     ActiveHigh,
     /// 上限や接続元の一覧で断った / 追い出した
     Rejected,
+    /// cgroup の CPU の上限で絞られ続けている (T15.0 (6))
+    CpuThrottled,
+    /// 起こされても 1 バイトも進まないトンネルが回り続けている (T15.0 (6))
+    TunnelSpin,
+    /// 名前解決のミスの**率**が高い (T15.0 (9))
+    DnsMissRate,
 }
 
 /// 全種類 (README の一覧と同じ並び)。
-pub const KINDS: [Kind; 5] = [
+///
+/// **[`Detector::state`] と [`Detector::observe`] の `hits` は添字でここに対応する**
+/// (ずれても型では落ちない)。**足すのは末尾だけ** — 既存 5 種の添字を動かすと、
+/// 立っている状態が別の種類のものとして読み継がれる。
+pub const KINDS: [Kind; 8] = [
     Kind::ConnectP95,
     Kind::DnsSlow,
     Kind::Errors,
     Kind::ActiveHigh,
     Kind::Rejected,
+    Kind::CpuThrottled,
+    Kind::TunnelSpin,
+    Kind::DnsMissRate,
 ];
+
+/// [`KINDS`] の添字 (**直値で引かない**。足すたびにずれるため)。
+pub const I_CONNECT_P95: usize = 0;
+pub const I_DNS_SLOW: usize = 1;
+pub const I_ERRORS: usize = 2;
+pub const I_ACTIVE_HIGH: usize = 3;
+pub const I_REJECTED: usize = 4;
+pub const I_CPU_THROTTLED: usize = 5;
+pub const I_TUNNEL_SPIN: usize = 6;
+pub const I_DNS_MISS_RATE: usize = 7;
 
 impl Kind {
     /// 説明の頭に出す名前 (`cleared:` のあとに出るのもこれ)。
@@ -125,13 +187,18 @@ impl Kind {
             Kind::Errors => "errors",
             Kind::ActiveHigh => "active_high",
             Kind::Rejected => "rejected",
+            Kind::CpuThrottled => "cpu_throttled",
+            Kind::TunnelSpin => "tunnel_spin",
+            Kind::DnsMissRate => "dns_miss_rate",
         }
     }
 }
 
 /// 標本 (`/history` のリング) から読めない値。**テストはここへ直接流し込む**
-/// (時刻も `t` で注入する)。どれも**累計**で、判定は 1 本前との差だけを見る。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// (時刻も `t` で注入する)。累計のものは判定が 1 本前 (か 5 分前) との差だけを見る。
+///
+/// `Eq` を持たないのは [`Counters::cpu_quota_cores`] が `f64` だから (T15.0 (6))。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Counters {
     /// いつ (epoch 秒。標本の `t` と同じ)
     pub t: u64,
@@ -143,11 +210,31 @@ pub struct Counters {
     pub rejected_client_acl: u64,
     /// 山の写真の通算 (T14.6)。増えていれば「この周期で 1 枚撮れた」= その番号
     pub shots: u64,
+    /// cgroup の `cpu.stat` の累計 (T15.0 (6))。**親の階層の値のことがある**ので、
+    /// 判定が見るのは 5 分の窓の**増分どうしの比**だけ
+    pub cpu_nr_throttled: u64,
+    pub cpu_nr_periods: u64,
+    /// `cpu.max` の quota ÷ period (0 = 無制限か読めない)
+    pub cpu_quota_cores: f64,
+    /// このプロセスが使った CPU の累計 (us。`/proc/self/stat` の utime + stime)
+    pub cpu_used_us: u64,
+    /// 直近の窓でいちばん CPU を使ったスレッド (`/profile` の `threads_top` の先頭。
+    /// `0` = 標本が無い / `--lite`) と、その [`crate::profile::ROLES`] の添字
+    pub cpu_top_tid: u32,
+    pub cpu_top_role: u8,
+    /// 起動からの秒 (T15.0 (9))。**`Detector` が最初の `t` を覚える案は採らない** —
+    /// `.rrd` から読み戻した直後の窓を「起動直後」と区別できないため
+    pub uptime_secs: u64,
 }
 
 impl Counters {
-    /// 標本 1 本ぶん集める (履歴スレッドから)。原子 2 つと写真の通算 1 つだけ。
+    /// 標本 1 本ぶん集める (履歴スレッドから)。原子 2 つと写真の通算 1 つ、
+    /// それに T15.0 (6)(9) の 4 つ (メモリ上の窓 2 つと `/proc/self/stat` 1 回)。
     fn take(metrics: &Metrics, s: &Sample) -> Counters {
+        // カーネルの窓は同じ周期で既に進んでいる (`tick.rs` が標本を取るときに読む)
+        let k = crate::kernel::latest().unwrap_or_default();
+        // 直近の 5 秒の窓の上位スレッド 1 本 (`--lite` と標本が無い窓では tid 0)
+        let top = metrics.profile.recent_totals(0, 1).threads_top[0];
         Counters {
             t: s.t,
             // 標本が既に持っている (`/history` の列。T14.2 (3))
@@ -156,7 +243,65 @@ impl Counters {
             rejected_client_acl: metrics.rejected_client_acl.load(Ordering::Relaxed),
             // 次に撮る番号の 1 つ前 = いままでに撮った枚数 (= 最後の 1 枚の `seq`)
             shots: metrics.bursts.next_seq().saturating_sub(1),
+            cpu_nr_throttled: k.cpu_nr_throttled,
+            cpu_nr_periods: k.cpu_nr_periods,
+            cpu_quota_cores: k.cpu_quota_cores,
+            cpu_used_us: crate::profile::process_cpu_us().unwrap_or(0),
+            cpu_top_tid: top.tid,
+            cpu_top_role: top.role,
+            uptime_secs: metrics.start_time.elapsed().as_secs(),
         }
+    }
+}
+
+/// [`Detector`] が覚えておく CPU の 1 点 (5 分の増分を出すため。T15.0 (6))。
+#[derive(Clone, Copy, Debug, Default)]
+struct CpuPoint {
+    t: u64,
+    throttled: u64,
+    periods: u64,
+    used_us: u64,
+}
+
+/// 5 分の窓ぶんの CPU の増分 (いちばん古い点と今の点の差)。
+#[derive(Clone, Copy, Debug, Default)]
+struct CpuWindow {
+    /// 窓の秒 (点が 1 つしか無ければ 0)
+    secs: u64,
+    throttled: u64,
+    periods: u64,
+    used_us: u64,
+    /// `cpu.max` の quota ÷ period (0 = 無制限か読めない)
+    quota_cores: f64,
+    top_tid: u32,
+    top_role: u8,
+}
+
+impl CpuWindow {
+    /// 絞られた期間の割合 (0.0〜1.0)。期間が 1 つも過ぎていなければ `None`。
+    fn ratio(&self) -> Option<f64> {
+        (self.periods > 0).then(|| self.throttled as f64 / self.periods as f64)
+    }
+
+    /// この窓で使った CPU のコア数 (1.0 = 1 コアを丸ごと)。
+    fn cores(&self) -> f64 {
+        if self.secs == 0 {
+            0.0
+        } else {
+            self.used_us as f64 / (self.secs as f64 * 1e6)
+        }
+    }
+
+    /// 上位スレッドの「tid と役割」(標本が無ければ空文字列)。
+    fn top(&self) -> String {
+        if self.top_tid == 0 {
+            return String::new();
+        }
+        let role = crate::profile::ROLES
+            .get(self.top_role as usize)
+            .copied()
+            .unwrap_or("other");
+        format!(", tid {} {}", self.top_tid, role)
     }
 }
 
@@ -195,6 +340,12 @@ pub struct Detector {
     state: [KindState; KINDS.len()],
     /// 規則 6 (初めて見た接続元。T14.54)
     new_clients: NewClients,
+    /// 直近 5 分ぶんの CPU の累計 (T15.0 (6))。61 点しか持たない
+    cpu_hist: VecDeque<CpuPoint>,
+    /// 回りっ放しのトンネルを最初に見つけた時刻 (T15.0 (6))。
+    /// [`KindState`] は「立つ / 解除」しか持たないので、「1 分続いたら」は
+    /// **[`KINDS`] の外に状態を持つ規則** ([`NewClients`] と同じ形) で数える
+    spin_since: Option<u64>,
 }
 
 /// 規則 6 の覚えていること (T14.54)。
@@ -227,6 +378,8 @@ impl Detector {
             last_shots: None,
             state: [KindState::default(); KINDS.len()],
             new_clients: NewClients::default(),
+            cpu_hist: VecDeque::new(),
+            spin_since: None,
         }
     }
 
@@ -241,7 +394,11 @@ impl Detector {
     /// 窓を畳むのは [`summary::of`] (T14.24) で、`/history?summary=1` と同じ切り方
     /// (`since <= t <= until`、5 秒の解像度)。**本番では `h` に今の標本が積まれた
     /// あとに呼ぶ** (履歴スレッドの `push` の直後)。
-    pub fn observe(&mut self, h: &History, c: Counters) -> Vec<Fired> {
+    ///
+    /// `conns` は「いま空回りしているトンネル」を引く先 (T15.0 (6))。
+    /// **[`ConnTable::update_rates`] のあと**に呼ぶこと (同じ周期の差分を読むため)。
+    /// `None` なら `tunnel_spin` は判定しない。
+    pub fn observe(&mut self, h: &History, conns: Option<&ConnTable>, c: Counters) -> Vec<Fired> {
         let now = c.t;
         let totals = [c.rejected_overload, c.evicted_idle, c.rejected_client_acl];
         // 1 本目は比べる相手が無いので増分 0 (途中から見始めても古い数で立てない)
@@ -267,23 +424,66 @@ impl Detector {
         // 直近の窓を含むので、山が 1 時間続くと基準値そのものが山になって倍率が 1 に戻り、
         // 山の最中に解除を書いてしまう (T14.0 の 17〜23 時のような 6 時間の山がこれ)。
         // 「収まるまで 1 回だけ」の「収まる」は**元の基準値に戻ること**にする
-        let p95_ref = if self.state[0].firing {
-            self.state[0].base_p95
+        let p95_ref = if self.state[I_CONNECT_P95].firing {
+            self.state[I_CONNECT_P95].base_p95
         } else {
             p95_base
+        };
+        // (7) CPU の絞り: 5 分の窓の**増分どうしの比** (累計は親の階層の値のことがある)
+        let cpu = self.cpu_window(c);
+        let cpu_limit = if self.state[I_CPU_THROTTLED].firing {
+            CPU_THROTTLED_CLEAR
+        } else {
+            CPU_THROTTLED
+        };
+        // (8) 回っているトンネル。**1 分続いたら**立てる (回り始めた瞬間ではない)
+        let (spinning, spinning_total) = match conns {
+            Some(t) => t.spinning(TUNNEL_SPIN_DELTA, 1),
+            None => (Vec::new(), 0),
+        };
+        let spin_secs = if spinning_total > 0 {
+            now.saturating_sub(*self.spin_since.get_or_insert(now))
+        } else {
+            self.spin_since = None;
+            0
+        };
+        // (9) ミスの**率**。窓は 1 時間 (`base`) で、立っている間は `CLEAR` の閾を使う
+        let miss_rate = base.dns_miss_per_connect();
+        let miss_limit = if self.state[I_DNS_MISS_RATE].firing {
+            DNS_MISS_RATE_CLEAR
+        } else {
+            DNS_MISS_RATE
         };
         let hits = [
             // 直近の窓は基準値の中にも入っているので、起動直後 (1 時間ぶんが全部この
             // 5 分) は倍率がちょうど 1 になり、立たない
-            p95 >= CONNECT_MIN_MS && p95_ref > 0.0 && p95 >= CONNECT_RATIO * p95_ref,
+            p95 >= CONNECT_MIN_MS
+                && p95_ref > 0.0
+                && p95 >= CONNECT_RATIO * p95_ref
+                && w5.connect.count >= CONNECT_MIN_SAMPLES,
             w5.dns_miss_avg_ms() >= DNS_MISS_MS,
             w5.errors >= ERRORS_MIN,
             (self.threshold > 0 && peak >= self.threshold as u64) || shot.is_some(),
             delta.iter().any(|&d| d > 0),
+            // 窓が 5 分ぶん溜まるまでは判定しない (「5 分のあいだ絞られ続けた」が条件)
+            cpu.secs >= WINDOW_SECS && cpu.ratio().is_some_and(|r| r >= cpu_limit),
+            spinning_total > 0 && spin_secs >= TUNNEL_SPIN_SECS,
+            c.uptime_secs >= DNS_MISS_RATE_WARMUP_SECS
+                && base.connects() >= DNS_MISS_RATE_MIN_CONNECTS
+                && miss_rate >= miss_limit,
         ];
 
         // 説明を組むのに要るだけ (下で `self.state` を可変に借りるので先に写しておく)
-        let limits = (self.max_conns, self.threshold);
+        let facts = Facts {
+            limits: (self.max_conns, self.threshold),
+            delta,
+            totals,
+            shot,
+            cpu,
+            spinning: &spinning,
+            spinning_total,
+            spin_secs,
+        };
         let mut out = Vec::new();
         for (i, &hit) in hits.iter().enumerate() {
             let kind = KINDS[i];
@@ -297,7 +497,7 @@ impl Detector {
                     out.push(Fired {
                         kind,
                         cleared: false,
-                        text: fired_text(kind, &w5, &base, limits, delta, totals, shot),
+                        text: fired_text(kind, &w5, &base, &facts),
                     });
                 }
                 continue;
@@ -313,11 +513,45 @@ impl Detector {
                 out.push(Fired {
                     kind,
                     cleared: true,
-                    text: cleared_text(kind, &w5, mins),
+                    text: cleared_text(kind, &w5, &base, &facts, mins),
                 });
             }
         }
         out
+    }
+
+    /// 直近 [`WINDOW_SECS`] 秒ぶんの CPU の増分 (T15.0 (6))。
+    ///
+    /// 累計そのものは**このプロセスより前から**動いている (自分の階層に cpu
+    /// コントローラが無ければ親の値を読む) ので、生の値では何も言えない。
+    /// 覚えておくのは 5 分ぶん = 61 点だけ。
+    fn cpu_window(&mut self, c: Counters) -> CpuWindow {
+        self.cpu_hist.push_back(CpuPoint {
+            t: c.t,
+            throttled: c.cpu_nr_throttled,
+            periods: c.cpu_nr_periods,
+            used_us: c.cpu_used_us,
+        });
+        while self.cpu_hist.len() > 2
+            && self
+                .cpu_hist
+                .front()
+                .is_some_and(|p| c.t.saturating_sub(p.t) > WINDOW_SECS)
+        {
+            self.cpu_hist.pop_front();
+        }
+        let (Some(first), Some(last)) = (self.cpu_hist.front(), self.cpu_hist.back()) else {
+            return CpuWindow::default();
+        };
+        CpuWindow {
+            secs: last.t.saturating_sub(first.t),
+            throttled: last.throttled.saturating_sub(first.throttled),
+            periods: last.periods.saturating_sub(first.periods),
+            used_us: last.used_us.saturating_sub(first.used_us),
+            quota_cores: c.cpu_quota_cores,
+            top_tid: c.cpu_top_tid,
+            top_role: c.cpu_top_role,
+        }
     }
 
     /// **規則 6**: この周期に初めて見た接続元を `/events` の 1 行にする (T14.54)。
@@ -411,17 +645,35 @@ fn causes(counts: &[u64; ERR_CAUSES]) -> String {
     s
 }
 
-/// 立ったときの説明 (**数字を必ず入れる**: 何が・いくつ・基準値)。
-fn fired_text(
-    kind: Kind,
-    w5: &Summary,
-    base: &Summary,
+/// 説明を組むのに要る「窓から読めないもの」をひとまとめにしたもの。
+///
+/// [`Detector::observe`] が 1 周期ぶん作り、[`fired_text`] と [`cleared_text`] が読む。
+struct Facts<'a> {
+    /// (`max_conns`, 山と見なす本数)
     limits: (usize, usize),
+    /// 断った / 追い出した数の増分と累計
     delta: [u64; 3],
     totals: [u64; 3],
+    /// この周期に撮れた山の写真の番号
     shot: Option<u64>,
-) -> String {
-    let (max_conns, threshold) = limits;
+    /// 直近 5 分の CPU の絞り (T15.0 (6))
+    cpu: CpuWindow,
+    /// いちばん回っているトンネル (多くて 1 本) と、閾を越えた本数、続いている秒
+    spinning: &'a [SpinningConn],
+    spinning_total: usize,
+    spin_secs: u64,
+}
+
+/// 異常の説明に入れる宛先の長さ (バイト)。
+///
+/// 出来事 1 件は [`crate::events::MAX_TEXT`] (128 B) で切られるので、長い名前で
+/// 後ろの数字を押し出さない。
+const TARGET_BYTES: usize = 24;
+
+/// 立ったときの説明 (**数字を必ず入れる**: 何が・いくつ・基準値)。
+fn fired_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>) -> String {
+    let (max_conns, threshold) = f.limits;
+    let (delta, totals, shot) = (f.delta, f.totals, f.shot);
     let head = kind.name();
     match kind {
         Kind::ConnectP95 => {
@@ -500,11 +752,56 @@ fn fired_text(
             s.pop();
             s
         }
+        // CPU の上限で絞られ続けている (T15.0 (6))。**割合**で書く
+        Kind::CpuThrottled => format!(
+            "{}: {:.0}% of {} cpu periods throttled in {}m (threshold {:.0}%; quota {:.2} cores, used {:.2}{})",
+            head,
+            f.cpu.ratio().unwrap_or(0.0) * 100.0,
+            f.cpu.periods,
+            f.cpu.secs.div_ceil(60),
+            CPU_THROTTLED * 100.0,
+            f.cpu.quota_cores,
+            f.cpu.cores(),
+            f.cpu.top(),
+        ),
+        // 起こされても進まないトンネルが回り続けている (T15.0 (6))
+        Kind::TunnelSpin => {
+            let mut s = format!("{}:", head);
+            match f.spinning.first() {
+                Some(c) => {
+                    let _ = write!(
+                        s,
+                        " conn#{} spun {} times/tick for {}s ({}, age {}s, half_closed {})",
+                        c.id,
+                        c.spins_delta,
+                        f.spin_secs,
+                        crate::recent::clip(&c.target, TARGET_BYTES),
+                        c.age_secs,
+                        c.half_closed.unwrap_or("no"),
+                    );
+                }
+                // 本数だけ分かって個票が取れない周期 (起こりえないが黙らない)
+                None => s.push_str(" a tunnel is spinning"),
+            }
+            if f.spinning_total > 1 {
+                let _ = write!(s, ", {} tunnels", f.spinning_total);
+            }
+            s
+        }
+        // 名前解決のミスの**率** (T15.0 (9))。窓は 1 時間
+        Kind::DnsMissRate => format!(
+            "{}: dns misses {:.2}/connect over 1h (threshold {:.2}; {} misses, {} connects)",
+            head,
+            base.dns_miss_per_connect(),
+            DNS_MISS_RATE,
+            base.dns_misses,
+            base.connects(),
+        ),
     }
 }
 
 /// 解除の説明 (**`cleared: <種類>` で始める**。いまの値も入れる)。
-fn cleared_text(kind: Kind, w5: &Summary, mins: u64) -> String {
+fn cleared_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>, mins: u64) -> String {
     let head = format!("cleared: {} after {}m", kind.name(), mins);
     match kind {
         Kind::ConnectP95 => format!(
@@ -522,6 +819,19 @@ fn cleared_text(kind: Kind, w5: &Summary, mins: u64) -> String {
         Kind::Errors => format!("{} ({} errors in 5m)", head, w5.errors),
         Kind::ActiveHigh => format!("{} (active peaked at {} in 5m)", head, w5.active_max),
         Kind::Rejected => format!("{} (no new rejects for {}m)", head, CLEAR_SECS / 60),
+        Kind::CpuThrottled => format!(
+            "{} ({:.0}% of {} cpu periods throttled in 5m)",
+            head,
+            f.cpu.ratio().unwrap_or(0.0) * 100.0,
+            f.cpu.periods
+        ),
+        Kind::TunnelSpin => format!("{} (no tunnel spinning for {}m)", head, CLEAR_SECS / 60),
+        Kind::DnsMissRate => format!(
+            "{} (dns misses {:.2}/connect over 1h, {} connects)",
+            head,
+            base.dns_miss_per_connect(),
+            base.connects()
+        ),
     }
 }
 
@@ -592,7 +902,13 @@ pub fn check(metrics: &Metrics, sample: &Sample) {
             MAX_CONNS.load(Ordering::Relaxed),
             THRESHOLD.load(Ordering::Relaxed),
         );
-        let fired = d.observe(&metrics.history, Counters::take(metrics, sample));
+        // `conns` を渡すのは (8) のため。`update_rates` (`tick.rs` の周期の頭) が
+        // **同じ周期で先に**空回りの差分を書いているので、ここで読めば同じ 5 秒の値
+        let fired = d.observe(
+            &metrics.history,
+            Some(&metrics.conns),
+            Counters::take(metrics, sample),
+        );
         // 規則 6 (初めて見た接続元。T14.54)。標本ではなく `/clients` を見る
         (fired, d.observe_clients(metrics, sample.t))
     };
@@ -640,13 +956,62 @@ mod tests {
 
     /// リングから読めない累計 (断った数・写真の通算) も付けて 1 本流す。
     fn feed_with(h: &History, d: &mut Detector, s: Sample, c: Counters) -> Vec<Fired> {
+        feed_conns(h, d, None, s, c)
+    }
+
+    /// 接続の表も渡して 1 本流す (`tunnel_spin` の判定に要る。T15.0 (6))。
+    fn feed_conns(
+        h: &History,
+        d: &mut Detector,
+        conns: Option<&ConnTable>,
+        s: Sample,
+        c: Counters,
+    ) -> Vec<Fired> {
         h.push(s);
         d.observe(
             h,
+            conns,
             Counters {
                 t: s.t,
                 evicted_idle: s.evicted_idle,
                 ..c
+            },
+        )
+    }
+
+    /// **起動からの秒**を渡せる版 (T15.0 (9))。[`feed`] は [`Counters::default`] を
+    /// 渡すので `uptime_secs` が 0 のまま = 暖機中扱いになる。
+    fn feed_uptime(h: &History, d: &mut Detector, s: Sample, uptime: u64) -> Vec<Fired> {
+        feed_with(
+            h,
+            d,
+            s,
+            Counters {
+                uptime_secs: uptime,
+                ..Counters::default()
+            },
+        )
+    }
+
+    /// cgroup の CPU の**累計**を渡して 1 本流す (T15.0 (6))。
+    fn feed_cpu(
+        h: &History,
+        d: &mut Detector,
+        s: Sample,
+        throttled: u64,
+        periods: u64,
+        used_us: u64,
+    ) -> Vec<Fired> {
+        feed_with(
+            h,
+            d,
+            s,
+            Counters {
+                cpu_nr_throttled: throttled,
+                cpu_nr_periods: periods,
+                cpu_quota_cores: 1.0,
+                cpu_used_us: used_us,
+                ..Counters::default()
             },
         )
     }
@@ -980,12 +1345,252 @@ mod tests {
     }
 
     #[test]
-    fn the_five_kinds_have_distinct_names() {
+    fn the_eight_kinds_have_distinct_names() {
         let mut names: Vec<&str> = KINDS.iter().map(|k| k.name()).collect();
-        assert_eq!(names.len(), 5);
+        assert_eq!(names.len(), 8);
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 5, "名前が重なっている");
+        assert_eq!(names.len(), 8, "名前が重なっている");
+        // **添字の定数と `KINDS` の並びが合っていること** (ずれても型では落ちない)
+        for (i, kind) in [
+            (I_CONNECT_P95, Kind::ConnectP95),
+            (I_DNS_SLOW, Kind::DnsSlow),
+            (I_ERRORS, Kind::Errors),
+            (I_ACTIVE_HIGH, Kind::ActiveHigh),
+            (I_REJECTED, Kind::Rejected),
+            (I_CPU_THROTTLED, Kind::CpuThrottled),
+            (I_TUNNEL_SPIN, Kind::TunnelSpin),
+            (I_DNS_MISS_RATE, Kind::DnsMissRate),
+        ] {
+            assert_eq!(KINDS[i], kind, "添字 {} がずれている", i);
+        }
+        // 既存 5 種の添字は動いていない (T14.9 以来の並び)
+        assert_eq!(I_REJECTED, 4);
+    }
+
+    // ------------------------------------------------- T15.0 (6)(9) で足した 3 種
+
+    /// (7) CPU の絞りは**割合**で立つ (50% 以上) — 5 分ぶん溜まるまでは判定しない。
+    ///
+    /// 累計そのものは親の階層の値なので、見るのは 5 分の窓の増分どうしの比。
+    #[test]
+    fn cpu_throttling_fires_over_half_and_clears_under_a_quarter() {
+        let h = History::default();
+        let mut d = Detector::new();
+        // 起動より前から動いている累計 (0 時間の雪像にも 915 が乗っていた)
+        let (mut throttled, mut periods, mut used) = (915u64, 8_000u64, 0u64);
+        let mut t = 0u64;
+        let mut fired = Vec::new();
+        while t <= WINDOW_SECS {
+            fired.extend(feed_cpu(&h, &mut d, point(t), throttled, periods, used));
+            if t < WINDOW_SECS {
+                assert!(
+                    fired.is_empty(),
+                    "5 分に満たない窓では判定しない: {:?}",
+                    fired
+                );
+            }
+            t += 5;
+            periods += 50; // 5 秒 = 100 ms の期間 50 個
+            throttled += 50; // そのうち全部絞られた (2026-09-18 のデプロイ先は約 100%)
+            used += 4_000_000; // 4 秒ぶん = 0.8 コア
+        }
+        assert_eq!(fired.len(), 1, "立つのは 1 回だけ: {:?}", fired);
+        assert_eq!(fired[0].kind, Kind::CpuThrottled);
+        assert_eq!(
+            fired[0].text,
+            "cpu_throttled: 100% of 3000 cpu periods throttled in 5m \
+             (threshold 50%; quota 1.00 cores, used 0.80)"
+        );
+        assert!(fired[0].text.len() <= crate::events::MAX_TEXT);
+        // 絞られなくなったら、窓から抜けて 25% を下回り、そこから 5 分で解除
+        let mut back = Vec::new();
+        while t <= 1_500 {
+            back.extend(feed_cpu(&h, &mut d, point(t), throttled, periods, used));
+            t += 5;
+            periods += 50; // 期間は過ぎ続けるが絞られない
+            used += 1_000_000;
+        }
+        assert_eq!(back.len(), 1, "解除も 1 回だけ: {:?}", back);
+        assert!(back[0].cleared);
+        assert_eq!(
+            back[0].text,
+            "cleared: cpu_throttled after 9m (0% of 3000 cpu periods throttled in 5m)"
+        );
+        assert!(d.firing().is_empty());
+    }
+
+    /// (7) `cpu.stat` が読めない環境 (cgroup v1・Linux 以外) では 1 件も立たない。
+    #[test]
+    fn a_machine_without_a_cpu_quota_never_fires_cpu_throttled() {
+        let h = History::default();
+        let mut d = Detector::new();
+        let (_, out) = calm(&h, &mut d, 0, 2 * BASE_SECS);
+        assert!(out.is_empty(), "{:?}", out);
+        assert!(
+            !d.firing().contains(&Kind::CpuThrottled),
+            "{:?}",
+            d.firing()
+        );
+    }
+
+    /// (8) 回りっ放しのトンネルは **1 分続いてから** 1 件だけ立つ。
+    #[test]
+    fn a_spinning_tunnel_fires_once_after_a_minute() {
+        let h = History::default();
+        let mut d = Detector::new();
+        let conns = ConnTable::new();
+        let slot = conns
+            .register(77, "198.51.100.5", std::time::Instant::now())
+            .expect("枠ができる");
+        slot.begin_tunnel("origin.example:443");
+        slot.set_half_closed(crate::recent::CLIENT_SIDE);
+        conns.update_rates(0); // 1 回目は控えるだけ (起動直後の周期)
+        // 「起こされたのに 1 バイトも進まなかった」が 1 周期で 45,000 回
+        slot.set_relaying(0, 45_000, 0);
+        conns.update_rates(5_000); // 2 回目で差分が出る
+        assert_eq!(slot.spins_delta(), 45_000);
+
+        let mut t = 0u64;
+        let mut fired = Vec::new();
+        while t <= TUNNEL_SPIN_SECS {
+            fired.extend(feed_conns(
+                &h,
+                &mut d,
+                Some(&conns),
+                point(t),
+                Counters::default(),
+            ));
+            if t < TUNNEL_SPIN_SECS {
+                assert!(
+                    fired.is_empty(),
+                    "1 分に満たないうちは立たない: {:?}",
+                    fired
+                );
+            }
+            t += 5;
+        }
+        assert_eq!(fired.len(), 1, "立つのは 1 回だけ: {:?}", fired);
+        assert_eq!(fired[0].kind, Kind::TunnelSpin);
+        assert_eq!(
+            fired[0].text,
+            "tunnel_spin: conn#77 spun 45000 times/tick for 60s \
+             (origin.example:443, age 0s, half_closed client)"
+        );
+        assert!(fired[0].text.len() <= crate::events::MAX_TEXT);
+        // 回らなくなったら 5 分で解除 (差分は 0 に戻る)
+        slot.set_relaying(1_000, 45_000, 0);
+        conns.update_rates(5_000);
+        assert_eq!(slot.spins_delta(), 0);
+        let mut back = Vec::new();
+        while t <= TUNNEL_SPIN_SECS + CLEAR_SECS + 10 {
+            back.extend(feed_conns(
+                &h,
+                &mut d,
+                Some(&conns),
+                point(t),
+                Counters::default(),
+            ));
+            t += 5;
+        }
+        assert_eq!(back.len(), 1, "{:?}", back);
+        assert_eq!(
+            back[0].text,
+            "cleared: tunnel_spin after 6m (no tunnel spinning for 5m)"
+        );
+    }
+
+    /// (8) 表を渡さなければ (テストと `--lite`) `tunnel_spin` は判定しない。
+    #[test]
+    fn without_a_conn_table_the_spin_rule_is_quiet() {
+        let h = History::default();
+        let mut d = Detector::new();
+        let (_, out) = calm(&h, &mut d, 0, 600);
+        assert!(out.is_empty(), "{:?}", out);
+    }
+
+    /// (9) ミスの**率**が 0.40/接続 以上で立つ。ただし**起動から 6 時間**は立てない。
+    ///
+    /// 再起動の直後はどの名前も warm でないので、率は構造的に高い (実測 0.291)。
+    #[test]
+    fn a_high_dns_miss_rate_fires_after_the_warmup() {
+        let h = History::default();
+        let mut d = Detector::new();
+        // 1 標本 20 本の確立に 11 回のミス = 0.55/接続 (Phase 13 と同じ高さ)。
+        // ミス 1 回は 10 ms なので `dns_slow` (100 ms) は立たない
+        let sample = |t: u64| {
+            let mut p = connects(t, 20, 10);
+            p.dns_misses = 11;
+            p.dns_ms_sum = 11 * 10;
+            p
+        };
+        // 起動から 3 時間: 率は 0.55 でも立たない (暖機中)
+        let mut t = 0u64;
+        let mut warmup = Vec::new();
+        while t <= BASE_SECS {
+            warmup.extend(feed_uptime(&h, &mut d, sample(t), 3 * 3600));
+            t += 5;
+        }
+        assert!(warmup.is_empty(), "暖機中は書かない: {:?}", warmup);
+        // 6 時間を越えると同じ率で立つ
+        let fired = feed_uptime(&h, &mut d, sample(t), DNS_MISS_RATE_WARMUP_SECS);
+        assert_eq!(fired.len(), 1, "{:?}", fired);
+        assert_eq!(fired[0].kind, Kind::DnsMissRate);
+        assert_eq!(
+            fired[0].text,
+            "dns_miss_rate: dns misses 0.55/connect over 1h \
+             (threshold 0.40; 7931 misses, 14420 connects)"
+        );
+        assert!(fired[0].text.len() <= crate::events::MAX_TEXT);
+        t += 5;
+        // 同じ種類は収まるまで 1 回だけ
+        assert!(feed_uptime(&h, &mut d, sample(t), DNS_MISS_RATE_WARMUP_SECS).is_empty());
+    }
+
+    /// (9) いまの切り方 (0.094〜0.171) では立たない。
+    #[test]
+    fn a_normal_dns_miss_rate_never_fires() {
+        let h = History::default();
+        let mut d = Detector::new();
+        // 1 標本 20 本の確立に 3 回のミス = 0.15/接続 (2026-09-18 の実測の上の方)
+        let mut t = 0u64;
+        let mut out = Vec::new();
+        while t <= BASE_SECS + 600 {
+            let mut p = connects(t, 20, 10);
+            p.dns_misses = 3;
+            p.dns_ms_sum = 3 * 10;
+            out.extend(feed_uptime(&h, &mut d, p, 24 * 3600));
+            t += 5;
+        }
+        assert!(out.is_empty(), "0.15/接続 では書かない: {:?}", out);
+    }
+
+    /// (9) 確立が 20 本に満たない 5 分の窓では `connect_p95` を立てない。
+    ///
+    /// p95 は 250 ms 超が 1〜2 本しかない窓では**窓の最大値に潰れる**
+    /// (仕様なので触らない)。257 / 265 / 275 ms で立った件はどれもこれだった。
+    #[test]
+    fn connect_p95_needs_twenty_samples_in_the_window() {
+        let h = History::default();
+        let mut d = Detector::new();
+        // 基準値 (1 時間で 10 ms) を作る
+        let (mut t, quiet) = calm(&h, &mut d, 0, BASE_SECS);
+        assert!(quiet.is_empty(), "{:?}", quiet);
+        // 5 分ぶん静かにして、直近の窓から確立を抜く
+        while t < BASE_SECS + WINDOW_SECS + 5 {
+            assert!(feed(&h, &mut d, point(t)).is_empty());
+            t += 5;
+        }
+        // 19 本の 250 ms では立たない (窓の最大値に潰れた p95 で立てない)
+        let mut p = connects(t, 19, 250);
+        p.t = t;
+        assert!(feed(&h, &mut d, p).is_empty(), "19 本では立ってはいけない");
+        t += 5;
+        // 20 本目で立つ
+        let fired = feed(&h, &mut d, connects(t, 1, 250));
+        assert_eq!(fired.len(), 1, "{:?}", fired);
+        assert_eq!(fired[0].kind, Kind::ConnectP95);
+        assert_eq!(CONNECT_MIN_SAMPLES, 20);
     }
 
     /// 閾は `PROXY_BURST_PERCENT` と同じ本数。写真を撮らない設定なら本文の 50%。
