@@ -276,6 +276,10 @@ impl TopThread {
 ///
 /// 60 秒の窓は 5 秒の標本 12 本を畳むので、同じスレッドが何度も出てくる。
 /// **確保はしない** (最大 2 × [`TOP_THREADS`] の局所配列だけ)。
+///
+/// `a` が古い側・`b` が新しい側 ([`Sample::merge_into`] は古い順に呼ぶ)。同じ tid の
+/// **名前と役割は新しい方を採る** — 生まれたばかりのスレッドは `pthread_setname_np` を
+/// 呼ぶまで親の `comm` を名乗るので、古い方を残すと親の名前が 60 秒の窓まで残る。
 fn merge_top(
     a: &[TopThread; TOP_THREADS],
     b: &[TopThread; TOP_THREADS],
@@ -286,6 +290,8 @@ fn merge_top(
         if let Some(e) = buf[..n].iter_mut().find(|e| e.tid == t.tid) {
             e.cpu_us += t.cpu_us;
             e.running += t.running;
+            e.comm = t.comm;
+            e.role = t.role;
             continue;
         }
         buf[n] = *t;
@@ -848,7 +854,8 @@ pub struct Sampler {
     pending: Threads,
     /// 同上、スレッド単位 (tid → その窓の CPU と `running` の数)。**窓ごとに空にする**
     pending_top: std::collections::HashMap<u32, TopThread>,
-    /// 同上、役割ごとの「走れずに待った時間」(us)
+    /// 同上、役割ごとの「走れずに待った時間」(**ns**)。us へ落とすのは
+    /// [`Sampler::take`] で 1 度だけ (標本ごとに割ると 1 us 未満の待ちが毎回消える)
     pending_run_delay: [u64; ROLES.len()],
     /// `schedstat` が 1 本でも読めたか (読めなければ `run_delay_us` は `null`)
     schedstat_readable: bool,
@@ -900,15 +907,20 @@ impl Sampler {
                 profile.note_unknown_syscall(nr);
             }
             // **走れるのに走れなかった時間**も増分で積む (はじめて見たスレッドは
-            // 「生まれてからのぶん」がそのまま入る。CPU と同じ流儀)
-            self.pending_run_delay[role] += delay_ns.saturating_sub(prev_delay) / 1_000;
-            // スレッド単位 (上位 8 本を切り出す元。**窓のあいだだけ持つ**)
-            let e = self.pending_top.entry(t.tid).or_insert(TopThread {
-                tid: t.tid,
-                role: role as u8,
-                comm: TopThread::comm_bytes(&t.comm),
-                ..TopThread::default()
-            });
+            // 「生まれてからのぶん」がそのまま入る。CPU と同じ流儀)。
+            // **ns のまま積む** — ここで us に落とすと 1 us 未満の待ちが標本ごと・
+            // スレッドごとにまるごと消え、140 スレッド × 5 標本の窓で最大 700 us
+            // (平均 350 us) ぶん**下向きに**外れる。割るのは [`Sampler::take`] で 1 度だけ
+            self.pending_run_delay[role] += delay_ns.saturating_sub(prev_delay);
+            // スレッド単位 (上位 8 本を切り出す元。**窓のあいだだけ持つ**)。
+            // **名前と役割は標本ごとに書き直す**: Linux は `clone` のとき子に親の `comm` を
+            // 継がせ、子が `pthread_setname_np` を呼ぶまでそのままなので、はじめて見たときの
+            // 値を入れっぱなしにすると、生まれたばかりのスレッドが**親の名前**のまま
+            // 窓じゅう (60 秒の窓まで) 居座る。この欄は tid と名前で犯人を指すためのもの
+            let e = self.pending_top.entry(t.tid).or_default();
+            e.tid = t.tid;
+            e.role = role as u8;
+            e.comm = TopThread::comm_bytes(&t.comm);
             e.cpu_us += cpu_us;
             e.running += u32::from(slot == STATE_RUNNING);
         }
@@ -944,7 +956,11 @@ impl Sampler {
         for (o, t) in top.iter_mut().zip(all.iter()) {
             *o = *t;
         }
-        let run_delay = std::mem::take(&mut self.pending_run_delay);
+        // ns で積んであるので、**ここで 1 度だけ** us に落とす
+        let mut run_delay = std::mem::take(&mut self.pending_run_delay);
+        for v in run_delay.iter_mut() {
+            *v /= 1_000;
+        }
         let run_delay = self.schedstat_readable.then_some(run_delay);
         (std::mem::take(&mut self.pending), top, run_delay)
     }
@@ -1322,9 +1338,10 @@ mod tests {
         );
         let first = conn.cpu_us;
         assert!(first > 0, "はじめて見たスレッドは累計がそのまま増分");
-        // 走れずに待った時間も「はじめて見たスレッド」は累計がそのまま増分 (us へ落とす)
-        assert_eq!(s.pending_run_delay[0], 1);
-        assert_eq!(s.pending_run_delay[1], 5);
+        // 走れずに待った時間も「はじめて見たスレッド」は累計がそのまま増分。
+        // **溜めは ns のまま** (us へ落とすのは `take` で 1 度だけ)
+        assert_eq!(s.pending_run_delay[0], 1_000);
+        assert_eq!(s.pending_run_delay[1], 5_000);
         // 2 回目: 5 tick だけ進め、待ち時間も 3,000 ns 進める
         write(
             2,
@@ -1336,7 +1353,11 @@ mod tests {
         s.sample(&p);
         let delta = s.pending[1].cpu_us - first;
         assert_eq!(delta, 5 * (1_000_000 / clock_tick()), "増分だけ積む");
-        assert_eq!(s.pending_run_delay[1], 5 + 3, "待ち時間も増分だけ積む");
+        assert_eq!(
+            s.pending_run_delay[1],
+            5_000 + 3_000,
+            "待ち時間も増分だけ積む"
+        );
         // `syscall` が無ければ partial
         write(2, "conn", 25, None, Some(8_000));
         write(1, "proxy", 10, None, Some(1_000));
@@ -1361,6 +1382,49 @@ mod tests {
         assert_eq!(d[1], 8);
         assert!(s.pending_run_delay.iter().all(|v| *v == 0));
         assert!(s.pending_top.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **1 us 未満の待ちが標本ごとに消えないこと** (T15.0 単位 3 のレビュー)。
+    ///
+    /// 溜めを us で持つと 600 ns の増分が毎回 0 に落ち、窓じゅう「待たされていない」と
+    /// 読めてしまう。ns で積んで [`Sampler::take`] で 1 度だけ割るので 3 回で 1 us になる。
+    /// **名前も標本ごとに書き直す** (生まれたばかりのスレッドは親の `comm` を名乗る)。
+    #[test]
+    fn sub_microsecond_run_delays_add_up_and_the_name_is_refreshed() {
+        let dir = std::env::temp_dir().join(format!("t150-subus-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let write = |comm: &str, delay_ns: u64| {
+            let d = dir.join("1");
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("stat"),
+                format!(
+                    "1 ({}) R 1 1 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 8 0 100 0\n",
+                    comm
+                ),
+            )
+            .unwrap();
+            std::fs::write(d.join("schedstat"), format!("999 {} 3\n", delay_ns)).unwrap();
+        };
+        let p = Profile::default();
+        let mut s = Sampler::new(dir.clone(), 1);
+        // 1 本目は「親の名前」、増分は 600 ns
+        write("parent-name", 600);
+        s.sample(&p);
+        // 2・3 本目は本当の名前で、増分はそれぞれ 600 ns (合計 1,800 ns = 1 us)
+        write("real-name", 1_200);
+        s.sample(&p);
+        write("real-name", 1_800);
+        s.sample(&p);
+        let (_, top, run_delay) = s.take();
+        let d = run_delay.expect("schedstat が読めている");
+        assert_eq!(d[0], 1, "600 ns × 3 が丸ごと消えている: {:?}", d);
+        assert_eq!(
+            top[0].comm_str(),
+            "real-name",
+            "名前がはじめて見たときのまま固まっている"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -7,13 +7,15 @@
 //! | 項目 | 何が読めるか | 読めないと何が `null` / `partial` になるか |
 //! |---|---|---|
 //! | `proc_syscall` | `/proc/self/task/<tid>/syscall` | スレッドが今どのシステムコールに居るか (T14.3) |
-//! | `proc_schedstat` | `/proc/self/task/<tid>/schedstat` | 走れるのに走れなかった時間 (`/profile` の `run_delay_us`。T15.0 (5)) |
 //! | `tcp_info` | `getsockopt(SOL_TCP, TCP_INFO)` | カーネルの RTT と再送 (T14.5) |
 //! | `cgroup_cpu` | cgroup の `cpu.stat` | CPU の絞り (`nr_throttled`。T14.12) |
 //! | `cgroup_pressure` | cgroup の `cpu.pressure` | PSI (隣に CPU を取られている割合。T14.12) |
 //! | `ipv6_route` | `/proc/net/ipv6_route` の既定経路 | IPv6 で出られるか (T12.1 / T14.5 の読み方) |
 //! | `resolver_ms` | `example.com` を 1 回引く所要 ms | リゾルバが生きているか (失敗は `null`) |
 //! | `home_writable` | `$HOME` に書けるか | 状態ファイル・ブロックリストの保存 |
+//! | `proc_schedstat` | `/proc/self/task/<tid>/schedstat` | 走れるのに走れなかった時間 (`/profile` の `run_delay_us`。T15.0 (5)) |
+//!
+//! 並びは `flags()` / `to_json()` / `--check` の印字と同じ (新しい項目は**末尾**に足す)。
 //!
 //! **判定は起動時 1 回 + 1 時間ごと**で、要求の経路では触らない (`/status` と `/config` は
 //! 覚えてある結果を読むだけ)。専用のスレッドは立てず、`.env` の監視スレッドの一巡
@@ -196,7 +198,8 @@ fn proc_syscall_readable() -> bool {
 /// `/proc/self/task/<自分の tid>/<name>` が読めるか。
 ///
 /// `/proc/thread-self` は `/proc/self/task/<tid>` への symlink。コンテナの seccomp や
-/// `hidepid`、カーネルの設定 (`schedstat` は `CONFIG_SCHED_INFO`) で読めないことがあるので、
+/// `hidepid`、カーネルの設定 (`schedstat` を作るかどうかは `CONFIG_SCHEDSTATS`。これが
+/// 内部の `CONFIG_SCHED_INFO` を select する) で読めないことがあるので、
 /// **読めるかどうか**をここで答える。
 fn proc_task_file_readable(name: &str) -> bool {
     if readable(&format!("/proc/thread-self/{}", name)) {

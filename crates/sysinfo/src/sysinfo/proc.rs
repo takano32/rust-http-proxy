@@ -70,7 +70,7 @@ pub struct TaskSample {
     /// `None` = 読めなかった (seccomp / `hidepid` / Linux 以外)
     pub syscall: Option<i64>,
     /// **走れるのに走れなかった時間** の通算 (ns。`schedstat` の 2 番目の項目)。
-    /// `None` = 読めなかった (`CONFIG_SCHED_INFO` の無いカーネル / Linux 以外)
+    /// `None` = 読めなかった (`CONFIG_SCHEDSTATS` の無いカーネル / Linux 以外)
     pub run_delay_ns: Option<u64>,
 }
 
