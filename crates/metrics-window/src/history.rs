@@ -1109,6 +1109,8 @@ mod closed_tests {
             sni: None,
             syn_retrans: 0,
             stall_ms: [0; SIDES],
+            spins: 0,
+            half_closed: None,
         }
     }
 

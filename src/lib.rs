@@ -822,6 +822,20 @@ pub fn attach_origin_rtt(pool: &mut pool::Pool, metrics: Arc<Metrics>) {
     }));
 }
 
+/// いまのスレッドの番号 (`gettid`。T15.0 (4))。Linux 以外は `0` = 「分からない」。
+///
+/// システムコールを引くのは**スレッドの一生に 1 回**だけで (`sys::gettid` が
+/// スレッドローカルに控える)、ここは 2 回目からは読み出し 1 回。
+#[cfg(target_os = "linux")]
+fn current_tid() -> u32 {
+    sys::gettid()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn current_tid() -> u32 {
+    0
+}
+
 /// ソケット 1 本のカーネルの RTT (us) と再送の通算 (`getsockopt` 1 回。T14.5)。
 /// 読めなければ 0 (個票では `null`、統計には足さない)。Linux 以外は聞かない。
 #[cfg(target_os = "linux")]
@@ -979,6 +993,14 @@ impl Conn {
     /// `/connections` の枠 (預かり所が状態を書くために借りる)。
     pub fn slot(&self) -> Option<&Arc<recent::ConnSlot>> {
         self.slot.as_ref()
+    }
+
+    /// いま受け持っているスレッドの番号を枠へ書く (原子 1 回。`--lite` では何もしない。
+    /// T15.0 (4))。**呼ぶのはワーカーがこの接続を取ったときだけ**で、要求ごとには触らない。
+    pub fn set_tid(&self) {
+        if let Some(slot) = &self.slot {
+            slot.set_tid(current_tid());
+        }
     }
 
     /// ワーカーの待ち行列へ入れる直前に呼ぶ (`queue` の段階の起点。T14.3 (1))。
@@ -1229,6 +1251,13 @@ pub fn run_conn(mut conn: Box<Conn>) {
     }
     // ワーカーが取った (預かり所から戻ってきた接続もここを通る。T13.4)
     conn.set_state(recent::ConnState::Serving);
+    // いま受け持っているスレッドの番号 (T15.0 (4))。**accept 直後の 1 本目も、
+    // 預かり所から起こされた 1 本も、ワーカーのスレッドで通るのはここ**なので、
+    // 書き先は 1 か所で足りる (`Conn::new` の登録はこのすぐ手前・同じスレッド、
+    // `IdleWatch::resume_conn` は監視スレッドなのでそこで書くと監視の番号になる)。
+    // CONNECT のトンネルが預かり所から戻る道だけは別のスレッドなので、
+    // そちらは `tunnel::resume` が書く
+    conn.set_tid();
     if let Err(e) = pump(conn) {
         if e.kind() != io::ErrorKind::UnexpectedEof
             && e.kind() != io::ErrorKind::ConnectionReset

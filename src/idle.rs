@@ -112,6 +112,17 @@ mod linux {
             }
         }
 
+        /// 受け持つスレッドが居なくなったことを書く (原子 1 回。T15.0 (4))。
+        ///
+        /// 預けたものは**どのスレッドも持っていない** (起こすのは監視スレッドで、
+        /// 続きを走らせるのはそのとき空いていた別のワーカー) ので、`tid` は `0` に戻す。
+        /// 戻ってきたときは `run_conn` / `tunnel::resume` が書き直す。
+        fn clear_tid(&self) {
+            if let Some(s) = self.slot() {
+                s.set_tid(0);
+            }
+        }
+
         /// 預かり所に入った / 出た (預けられた回数と合計秒。`/recent`。T14.4)。
         ///
         /// **書くのは預ける瞬間と引き上げる瞬間だけ**で、要求ごとにも中継のバイトごとにも
@@ -267,6 +278,8 @@ mod linux {
             inner.deadlines.insert((deadline, key));
             // `/connections` に「預かり所にいる」と書く (T13.4)
             what.set_state(ConnState::Parked);
+            // 受け持つスレッドが居なくなった (T15.0 (4))
+            what.clear_tid();
             // 預けられた回数と、預かっていた時間の起点 (`/recent`。T14.4)
             what.on_park();
             inner.entries.insert(key, Entry { what, deadline });

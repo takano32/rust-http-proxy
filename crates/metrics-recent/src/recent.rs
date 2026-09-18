@@ -482,10 +482,81 @@ pub struct ConnSlot {
     /// オリジンか利用者の上りが詰まっている。**書くのは接続の終わりの 1 回だけ**
     /// ([`ConnSlot::finish`]) で、中継のループ (splice の往復) は 1 度も触らない
     stall_ms: [AtomicU32; SIDES],
+    /// いまこの接続を受け持っているスレッドの番号 (`gettid`。T15.0 (4))。
+    /// **`0` = 預かり所にいる / 分からない**。書くのは「ワーカーが取ったとき」と
+    /// 「預けるとき (0 に戻す)」だけで、要求ごとにも中継のバイトごとにも触らない。
+    /// `/profile` の `threads_top` の `tid` と同じ番号なので、**CPU を食っている
+    /// スレッドと、そのスレッドが抱えている接続**を突き合わせられる
+    tid: AtomicU32,
+    /// 中継の輪が「`poll` に起こされたのに 1 バイトも進まなかった」回数の通算
+    /// (T15.0 (4))。T15.5 の空回りはこれが秒あたり数万で増え続ける形だった。
+    /// **書くのは待ちに入るたびの 1 回** ([`ConnSlot::set_relaying`]) で、数え上げ
+    /// そのものは中継の輪が持つ欄 (`Idle::spins`)
+    spins: AtomicU64,
+    /// **前の周の** `poll` が返した旗 (`i16` 2 つを詰めた。T15.0 (4))。
+    /// 下位 16 bit がクライアント側、上位 16 bit がオリジン側。`0` は
+    /// 「まだ待ちに入っていない / 何も立っていない」。`POLLHUP` や `POLLERR` が
+    /// 立ったまま進まない = 空回りの型。
+    /// **預かり所から戻った直後の 1 回は旗を持たない** (`0` を書く): 旗は中継の輪の
+    /// 局所変数で、`run_until_idle` に入り直すたびに 0 から始まるため
+    revents: AtomicU32,
+    /// 半閉じの向きと、それが起きた時刻 (T15.0 (4))。**上位 8 bit = 側 + 1**
+    /// (`0` = まだ半閉じしていない)、**下位 56 bit = 接続を受けてからの ms**。
+    /// [`ConnSlot::parked_at`] と同じ流儀で **1 本につき 1 回だけ**書き、
+    /// `/connections` は `age − それ` で秒を、`/recent` は同じ引き算で ms を出す
+    half_closed: AtomicU64,
+    /// 同じ `bytes` のまま経った ms (T15.0 (4))。**書くのは history スレッドだけ**
+    /// ([`ConnSlot::sweep_rate`]) で、接続の経路は 1 命令も触らない。
+    /// `bytes` を置くのはトンネルだけなので、http の行では意味を持たない。
+    /// **`bytes` を書くのは中継が待ちに入る回だけ**なので、`EAGAIN` に落ちずに進み
+    /// 続ける飽和したトンネルは、全速で流れていてもここが伸びる (`rate_bps` も同じ
+    /// 性質。`spins` と併せて読む)
+    idle_ms: AtomicU64,
 }
 
 /// [`ConnSlot::parked_at`] の「預けられていない」印。
 const NOT_PARKED: u64 = u64::MAX;
+
+/// [`ConnSlot::half_closed`] の「側 + 1」を入れる位置 (上位 8 bit)。
+const HALF_CLOSED_SHIFT: u32 = 56;
+/// [`ConnSlot::half_closed`] の ms の部分の覆い (56 bit = 228 万年ぶん)。
+const HALF_CLOSED_MS_MASK: u64 = (1u64 << HALF_CLOSED_SHIFT) - 1;
+
+/// `poll(2)` の旗の名前 (`/connections` の `revents`)。値は `poll(2)` のもので、
+/// `crates/sys/src/sys.rs` の `POLLIN` … と同じ (この層は Linux 以外でも組むので、
+/// 書き出しに要るぶんだけここに持つ)。
+const POLL_FLAGS: [(i16, &str); 5] = [
+    (0x001, "IN"),
+    (0x004, "OUT"),
+    (0x008, "ERR"),
+    (0x010, "HUP"),
+    (0x020, "NVAL"),
+];
+
+/// `poll` が返した 2 つの旗を原子 1 本に詰める (T15.0 (4))。
+/// **下位 16 bit がクライアント側、上位 16 bit がオリジン側**。
+pub fn pack_revents(client: i16, origin: i16) -> u32 {
+    (client as u16 as u32) | ((origin as u16 as u32) << 16)
+}
+
+/// 詰めた旗を `IN|HUP` のような名前にする (立っていなければ空文字列)。
+fn revents_names(packed: u32, side: usize) -> String {
+    let bits = if side == CLIENT_SIDE {
+        packed as u16 as i16
+    } else {
+        (packed >> 16) as u16 as i16
+    };
+    let mut out = String::new();
+    for (bit, name) in POLL_FLAGS {
+        if bits & bit != 0 {
+            if !out.is_empty() {
+                out.push('|');
+            }
+            out.push_str(name);
+        }
+    }
+    out
+}
 
 impl ConnSlot {
     fn new(id: u64, client: &str, started: Instant) -> ConnSlot {
@@ -514,6 +585,11 @@ impl ConnSlot {
             sni: Mutex::new(String::new()),
             syn_retrans: AtomicU8::new(0),
             stall_ms: [const { AtomicU32::new(0) }; SIDES],
+            tid: AtomicU32::new(0),
+            spins: AtomicU64::new(0),
+            revents: AtomicU32::new(0),
+            half_closed: AtomicU64::new(0),
+            idle_ms: AtomicU64::new(0),
         }
     }
 
@@ -579,6 +655,48 @@ impl ConnSlot {
     /// 運んだ合計バイト数を書く (中継が止まるところで 1 回。バイトごとには書かない)。
     pub fn set_bytes(&self, bytes: u64) {
         self.bytes.store(bytes, Ordering::Relaxed);
+    }
+
+    /// 中継が**待ちに入る直前**に、その 1 本の証拠をまとめて置く (原子 3 回。T15.0 (4))。
+    ///
+    /// 呼ぶのは [`ConnSlot::set_bytes`] と同じ「待ちに入る所」1 か所だけで、バイトごとにも
+    /// `splice` ごとにも書かない。`spins` は「起こされたのに 1 バイトも進まなかった」回数の
+    /// 通算 (数え上げは中継の輪が持つ)、`revents` は**前の周の** `poll` が返した旗
+    /// ([`pack_revents`] で 2 つ詰めたもの)。この 3 つが揃うと、`/connections` の 1 行から
+    /// 「回っているのか (spins が伸びる) / 待っているのか (伸びない)」が読める。
+    pub fn set_relaying(&self, bytes: u64, spins: u64, revents: u32) {
+        self.bytes.store(bytes, Ordering::Relaxed);
+        self.spins.store(spins, Ordering::Relaxed);
+        self.revents.store(revents, Ordering::Relaxed);
+    }
+
+    /// いま受け持っているスレッドの番号を書く (原子 1 回。T15.0 (4))。
+    ///
+    /// 書くのは**ワーカーがこの接続を取ったとき**と、**預けるとき (`0`)** だけ。
+    /// 預かり所から戻ると別のスレッドが受け持つので、戻った側が書き直す。
+    pub fn set_tid(&self, tid: u32) {
+        self.tid.store(tid, Ordering::Relaxed);
+    }
+
+    /// 半閉じの向きを書く (**1 本につき多くて 1 回**。原子 1 回と時計 1 回。T15.0 (4))。
+    ///
+    /// `side` は `0` = クライアント、`1` = オリジンで、中継の `Idle::first_eof` と同じ値。
+    /// 時刻は枠が自分の [`ConnSlot::started`] から出す ([`ConnSlot::on_park`] と同じ流儀) —
+    /// 中継は「接続を受けた時刻」を持っていないため。既に入っていれば触らない
+    /// (先に EOF を出した側だけを残す)。
+    pub fn set_half_closed(&self, side: usize) {
+        let ms = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let v = ((side as u64 + 1) << HALF_CLOSED_SHIFT) | (ms & HALF_CLOSED_MS_MASK);
+        let _ = self
+            .half_closed
+            .compare_exchange(0, v, Ordering::Relaxed, Ordering::Relaxed);
+    }
+
+    /// 半閉じの (側, 起きたときの「接続を受けてからの ms」)。まだなら `None`。
+    fn half_closed_at(&self) -> Option<(usize, u64)> {
+        let v = self.half_closed.load(Ordering::Relaxed);
+        let side = (v >> HALF_CLOSED_SHIFT) as usize;
+        (side > 0).then(|| (side - 1, v & HALF_CLOSED_MS_MASK))
     }
 
     /// 閉じた理由を書く (**先に書いた方が勝つ**。T14.4)。
@@ -716,6 +834,18 @@ impl ConnSlot {
                 self.stall_ms[CLIENT_SIDE].load(Ordering::Relaxed),
                 self.stall_ms[ORIGIN_SIDE].load(Ordering::Relaxed),
             ],
+            // 空回りの証拠 (T15.0 (4))。トンネルでなければ 0
+            spins: self.spins.load(Ordering::Relaxed),
+            // 半閉じの向きと、そこから閉じる (= いま) までの ms。半閉じしていなければ `None`
+            // (`Idle::first_eof` と同じ値になるので、T14.25 の分布と突き合わせられる)
+            half_closed: self.half_closed_at().map(|(side, at)| {
+                (
+                    side,
+                    (age.as_millis().min(u64::MAX as u128) as u64)
+                        .saturating_sub(at)
+                        .min(MAX_MS),
+                )
+            }),
         })
     }
 
@@ -742,6 +872,13 @@ impl ConnSlot {
     pub fn sweep_rate(&self, ms: u64) -> u64 {
         let now = self.bytes.load(Ordering::Relaxed);
         let prev = self.bytes_prev.swap(now, Ordering::Relaxed);
+        // 1 バイトも動かなかった周期を足す (T15.0 (4))。動いたら 0 に戻す。
+        // **数えるのは history スレッドだけ**で、接続の経路には 1 命令も増えない
+        if now == prev {
+            self.idle_ms.fetch_add(ms, Ordering::Relaxed);
+        } else {
+            self.idle_ms.store(0, Ordering::Relaxed);
+        }
         // `ms == 0` は `checked_div` が `None` = 速さ 0 (控えるだけ)
         let bps = now
             .saturating_sub(prev)
@@ -753,22 +890,73 @@ impl ConnSlot {
     }
 
     /// `/connections` の 1 要素。
+    ///
+    /// **T15.0 (4) で足した 5 つ (`tid` / `spins` / `revents` / `half_closed` +
+    /// `half_closed_secs` / `idle_secs`) は、既定のままの行では 1 バイトも出さない。**
+    /// `/connections` は「256 KiB に 1,000 本入る」を守る口で、実測の余りは
+    /// **1 行あたり 4.7 B しか無い** (1,000 本で 256,918 B / 予算 261,632 B) —
+    /// `,"tid":0` の 8 B すら常には置けない。`/recent` の `ms` が 0 の段を出さないのと
+    /// 同じ作法で、**無い = 既定値** と読む (`tid` 0 = 預かり中 / 不明、`spins` 0、
+    /// 旗なし、半閉じなし、`idle_secs` 0 または http の行)。
     pub fn to_json(&self, now: Instant) -> String {
+        use std::fmt::Write as _;
         let connect = self.is_connect();
-        format!(
-            "{{\"id\":{},\"client\":\"{}\",\"target\":\"{}\",\"kind\":\"{}\",\"state\":\"{}\",\"age_secs\":{},\"bytes\":{},\"fds\":{},\"rate_bps\":{}}}",
+        let age = now.saturating_duration_since(self.started);
+        let mut out = String::with_capacity(256);
+        let _ = write!(
+            out,
+            "{{\"id\":{},\"client\":\"{}\",\"target\":\"{}\",\"kind\":\"{}\",\"state\":\"{}\",\"age_secs\":{},\"bytes\":{},\"fds\":{},\"rate_bps\":{}",
             self.id,
             crate::json::escape(&self.client),
             crate::json::escape(&self.target.locked()),
             if connect { "connect" } else { "http" },
             self.state().name(),
-            now.saturating_duration_since(self.started).as_secs(),
+            age.as_secs(),
             self.bytes(),
             // トンネルはクライアントとオリジンの 2 本、keep-alive はクライアントの 1 本
             if connect { 2 } else { 1 },
             // 直近の周期の転送速度 (T14.39)。`bytes` が累計なのに対しこちらは「いま」
             self.rate_bps(),
-        )
+        );
+        // 受け持っているスレッド (T15.0 (4))。`/profile` の `threads_top` と同じ番号
+        let tid = self.tid.load(Ordering::Relaxed);
+        if tid != 0 {
+            let _ = write!(out, ",\"tid\":{}", tid);
+        }
+        // 起こされたのに進まなかった回数 (T15.0 (4))
+        let spins = self.spins.load(Ordering::Relaxed);
+        if spins != 0 {
+            let _ = write!(out, ",\"spins\":{}", spins);
+        }
+        // 前の周の `poll` が返した旗 (T15.0 (4))
+        let revents = self.revents.load(Ordering::Relaxed);
+        if revents != 0 {
+            let _ = write!(
+                out,
+                ",\"revents\":{{\"client\":\"{}\",\"origin\":\"{}\"}}",
+                revents_names(revents, CLIENT_SIDE),
+                revents_names(revents, ORIGIN_SIDE),
+            );
+        }
+        // 半閉じの向きと、そこから経った秒 (T15.0 (4))
+        if let Some((side, at)) = self.half_closed_at() {
+            let _ = write!(
+                out,
+                ",\"half_closed\":\"{}\",\"half_closed_secs\":{}",
+                SIDE_NAMES[side],
+                age.as_secs().saturating_sub(at / 1000),
+            );
+        }
+        // 1 バイトも動いていない秒 (T15.0 (4))。`bytes` を置くのはトンネルだけなので
+        // http の行には出さない (無い = `null` と読む)
+        if connect {
+            let idle_ms = self.idle_ms.load(Ordering::Relaxed);
+            if idle_ms != 0 {
+                let _ = write!(out, ",\"idle_secs\":{}", idle_ms / 1000);
+            }
+        }
+        out.push('}');
+        out
     }
 }
 
@@ -1058,6 +1246,8 @@ pub const SIDES: usize = 2;
 /// [`RecentEntry::rtt_us`] / [`ConnTally::rtt_us`] の添字。
 pub const CLIENT_SIDE: usize = 0;
 pub const ORIGIN_SIDE: usize = 1;
+/// 側の名前 ([`CLIENT_SIDE`] / [`ORIGIN_SIDE`] の並び。`half_closed` の値。T15.0 (4))。
+pub const SIDE_NAMES: [&str; SIDES] = ["client", "origin"];
 
 /// [`STAGE_NAMES`] の添字。
 pub const STAGE_DNS: usize = 0;
@@ -1270,6 +1460,13 @@ pub struct RecentEntry {
     /// `client` が大きい = 利用者の下り回線か端末が読んでいない、`origin` が大きい =
     /// オリジンか利用者の上りが詰まっている。CONNECT のトンネルだけが埋める
     pub stall_ms: [u32; SIDES],
+    /// 中継の輪が「起こされたのに 1 バイトも進まなかった」回数の通算 (T15.0 (4))。
+    /// 寿命に対して桁違いに大きければ空回り (T15.5 の形)。トンネルだけが埋める
+    pub spins: u64,
+    /// 半閉じの (向き, 半閉じから閉じるまでの ms)。半閉じしていなければ `None`。
+    /// 向きは「**先に EOF を出した側**」で、閉じた理由 (`client_eof` / `server_eof`) と
+    /// 同じ出どころ (`Idle::first_eof`)。T15.0 (4)
+    pub half_closed: Option<(usize, u64)>,
 }
 
 /// `us` を ms の JSON にする (`0` = 読めなかった → `null`。T14.5)。
@@ -1354,9 +1551,24 @@ impl RecentEntry {
         // 両方 0 でも必ず出す (「詰まっていない」と「欄が無い」を区別させるため)
         let _ = write!(
             out,
-            ",\"stall_ms\":{{\"client\":{},\"origin\":{}}}}}",
+            ",\"stall_ms\":{{\"client\":{},\"origin\":{}}}",
             self.stall_ms[CLIENT_SIDE], self.stall_ms[ORIGIN_SIDE],
         );
+        // 空回りの回数と半閉じの向き (T15.0 (4))。**末尾に足した** (既存の鍵の順は
+        // 変えない)。`/connections` と違ってここは件数で切る口なので、0 でも必ず出す
+        // (`syn_retrans` / `stall_ms` と同じ扱い)。半閉じしていない接続は `null`
+        let _ = write!(out, ",\"spins\":{}", self.spins);
+        match self.half_closed {
+            Some((side, ms)) => {
+                let _ = write!(
+                    out,
+                    ",\"half_closed\":\"{}\",\"half_closed_ms\":{}}}",
+                    SIDE_NAMES[side.min(SIDES - 1)],
+                    ms
+                );
+            }
+            None => out.push_str(",\"half_closed\":null,\"half_closed_ms\":null}"),
+        }
         out
     }
 }
@@ -2337,9 +2549,17 @@ mod conn_tests {
         );
         // T14.3 が埋める段階はまだ 0 なので 1 バイトも出さない
         assert!(!json.contains("queue"), "{}", json);
-        // 上限は Phase 14 で欄が増えたぶん引き上げてある (T14.5 の `rtt_ms` / `retrans`、
-        // T14.26 の向き別、T14.46 の `syn_retrans`。実測 363 B。T14.55 で測り直した)
-        assert!(json.len() <= 400, "ありふれた 1 件が {} B", json.len());
+        // 空回りと半閉じ (T15.0 (4)) は、`/connections` と違ってここでは 0 でも `null` でも
+        // 必ず出す (件数で切る口なので「欄が無い」= 古い版と区別させるため)
+        assert!(json.contains("\"spins\":0"), "{}", json);
+        assert!(
+            json.contains("\"half_closed\":null,\"half_closed_ms\":null"),
+            "{}",
+            json
+        );
+        // 上限は欄が増えたぶん引き上げてある (T14.5 の `rtt_ms` / `retrans`、T14.26 の
+        // 向き別、T14.46 の `syn_retrans` で 363 B、T15.0 (4) の 3 欄で +51 B = 実測 414 B)
+        assert!(json.len() <= 450, "ありふれた 1 件が {} B", json.len());
         println!("closed entry: typical {} B\n  {}", json.len(), json);
     }
 
@@ -2422,6 +2642,8 @@ mod conn_tests {
                 stall_ms: [0; SIDES],
                 sni: None,
                 syn_retrans: 0,
+                spins: 0,
+                half_closed: None,
             });
         }
         let (all, total) = ring.select(0, "");
@@ -2439,12 +2661,12 @@ mod conn_tests {
         assert!(ring.select(9_999_999, "").0.is_empty());
     }
 
-    /// 桁を振り切った 1 件でも 560 B に収まること (**リングの大きさの上限**)。
+    /// 桁を振り切った 1 件でも 760 B に収まること (**リングの大きさの上限**)。
     ///
     /// 1 件の目安は 300 B (T14.5 のカーネルの RTT 2 側ぶんで 256 B から上がった)。
     /// ここで見るのは「起こりえない桁 (転送 20 桁、段階の ms が 6 つとも 7 桁、
-    /// RTT と再送が 4,294,967,295) を並べてもリングが 2,000 × 560 B = 1,094 KiB を
-    /// 越えない」ことだけで、
+    /// RTT と再送が 4,294,967,295、T15.0 (4) の `spins` が 20 桁) を並べても
+    /// リングが 2,000 × 760 B = 1,484 KiB を越えない」ことだけで、
     /// `/recent?n=2000` の応答は 256 KiB のバイト数打ち切りに当たるのが設計どおり
     /// (`crates/endpoints` のテストで見る)。
     #[test]
@@ -2456,6 +2678,9 @@ mod conn_tests {
         );
         slot.begin_tunnel(&"sub.".repeat(40));
         slot.on_park();
+        // トンネル 1 本の証拠も最悪の値で (T15.0 (4))
+        slot.set_relaying(u64::MAX, u64::MAX, pack_revents(0x03d, 0x03d));
+        slot.set_half_closed(ORIGIN_SIDE);
         slot.finish(
             CloseReason::KeepaliveTimeout,
             ConnTally {
@@ -2476,9 +2701,110 @@ mod conn_tests {
         assert!(e.target.len() <= MAX_RECENT_TARGET, "{}", e.target.len());
         assert!(e.client.len() <= MAX_CLIENT, "{}", e.client.len());
         let json = e.to_json();
-        // 上限は Phase 14 で欄が増えたぶん引き上げてある (実測 633 B。T14.55 で測り直した)
-        assert!(json.len() <= 700, "最悪の 1 件が {} B", json.len());
+        // 上限は欄が増えたぶん引き上げてある (T14.55 で 633 B、T15.0 (4) の
+        // `spins` / `half_closed` / `half_closed_ms` で +71 B = 実測 704 B)
+        assert!(json.len() <= 760, "最悪の 1 件が {} B", json.len());
         println!("closed entry: worst {} B", json.len());
+    }
+
+    /// トンネル 1 本の証拠 (`tid` / `spins` / `revents` / 半閉じ / 暇な秒) が枠に入り、
+    /// `/connections` の 1 行と個票の両方に出ること (T15.0 (4))。
+    ///
+    /// **既定のままの行には 1 バイトも足さない**ことも一緒に縛る: `/connections` は
+    /// 「256 KiB に 1,000 本」の口で、実測の余りは 1 行あたり 4.7 B しか無い。
+    #[test]
+    fn a_tunnel_slot_carries_the_evidence_of_a_spin() {
+        let slot = ConnSlot::new(7, "198.51.100.9", Instant::now());
+        slot.begin_tunnel("mtalk.google.com:5228");
+        let now = Instant::now();
+
+        // まだ何も起きていない行は、欄を足す前と 1 バイトも変わらない
+        let plain = slot.to_json(now);
+        for key in ["tid", "spins", "revents", "half_closed", "idle_secs"] {
+            assert!(
+                !plain.contains(&format!("\"{}\"", key)),
+                "既定の行に {} が出ている: {}",
+                key,
+                plain
+            );
+        }
+
+        // 中継が待ちに入るたびに置く 3 つ。旗はクライアント側に `POLLERR | POLLHUP` が
+        // 立ったまま = 空回りの型 (T15.5 が消した形)
+        slot.set_tid(4242);
+        slot.set_relaying(9_000, 12_345, pack_revents(0x008 | 0x010, 0));
+        slot.set_half_closed(CLIENT_SIDE);
+        let json = slot.to_json(now);
+        assert!(json.contains("\"tid\":4242"), "{}", json);
+        assert!(json.contains("\"spins\":12345"), "{}", json);
+        assert!(
+            json.contains("\"revents\":{\"client\":\"ERR|HUP\",\"origin\":\"\"}"),
+            "{}",
+            json
+        );
+        assert!(json.contains("\"half_closed\":\"client\""), "{}", json);
+        assert!(json.contains("\"half_closed_secs\":0"), "{}", json);
+        assert!(!json.contains("\"idle_secs\""), "まだ動いている: {}", json);
+
+        // 暇な秒を数えるのは history スレッドだけ (同じ `bytes` の周期を足す)
+        assert_eq!(slot.sweep_rate(1000), 9_000, "1 周期で 9,000 B 動いた");
+        slot.sweep_rate(1000);
+        slot.sweep_rate(1000);
+        let json = slot.to_json(now);
+        assert!(json.contains("\"idle_secs\":2"), "{}", json);
+        assert!(json.contains("\"rate_bps\":0"), "動いていない: {}", json);
+
+        // 個票にも同じ 2 つが移る (`half_closed_ms` は半閉じから閉じるまで)
+        let e = slot
+            .closed_entry(Instant::now())
+            .expect("宛先のある接続は残る");
+        assert_eq!(e.spins, 12_345);
+        let (side, ms) = e.half_closed.expect("半閉じしている");
+        assert_eq!(side, CLIENT_SIDE);
+        assert!(ms < 60_000, "半閉じからの ms が大きすぎる: {}", ms);
+        let j = e.to_json();
+        assert!(j.contains("\"spins\":12345"), "{}", j);
+        assert!(j.contains("\"half_closed\":\"client\""), "{}", j);
+        assert!(j.contains(&format!("\"half_closed_ms\":{}", ms)), "{}", j);
+    }
+
+    /// 半閉じは**先に EOF を出した側**だけを残す (1 本につき 1 回。T15.0 (4))。
+    /// http の行には `idle_secs` を出さない (`bytes` を置くのはトンネルだけ)。
+    #[test]
+    fn the_first_half_close_wins_and_http_rows_have_no_idle_secs() {
+        let slot = ConnSlot::new(1, "10.0.0.1", Instant::now());
+        slot.begin_tunnel("example.net:443");
+        slot.set_half_closed(ORIGIN_SIDE);
+        slot.set_half_closed(CLIENT_SIDE);
+        assert!(
+            slot.to_json(Instant::now())
+                .contains("\"half_closed\":\"origin\""),
+            "先に書いた方が勝つ"
+        );
+
+        let http = ConnSlot::new(2, "10.0.0.2", Instant::now());
+        http.set_first_target("example.net:80");
+        http.sweep_rate(1000);
+        http.sweep_rate(1000);
+        let json = http.to_json(Instant::now());
+        assert!(json.contains("\"kind\":\"http\""), "{}", json);
+        assert!(
+            !json.contains("idle_secs"),
+            "http の行には出さない: {}",
+            json
+        );
+        // 半閉じしていない接続の個票は `null` (「欄が無い」と区別させる)
+        let e = http
+            .closed_entry(Instant::now())
+            .expect("宛先のある接続は残る");
+        assert_eq!(e.half_closed, None);
+        let j = e.to_json();
+        assert!(j.contains("\"spins\":0"), "{}", j);
+        assert!(
+            j.contains("\"half_closed\":null,\"half_closed_ms\":null"),
+            "{}",
+            j
+        );
     }
 
     /// 接続元ごとの本数は、上限が設定されたときだけ数える (T14.13)。
@@ -2588,6 +2914,8 @@ mod burst_tests {
             retrans: [0; SIDES],
             sni: None,
             syn_retrans: 0,
+            spins: 0,
+            half_closed: None,
         }
     }
 
