@@ -269,3 +269,82 @@ fn a_warm_name_shows_up_in_status_and_dns() {
     rust_http_proxy::dns::clear();
     rust_http_proxy::dns::set_warm_window(rust_http_proxy::dns::WARM);
 }
+
+/// ミスの内訳 (`misses_by_kind`) と引き直しの費用が `/status` の `dns` と `/dns` の
+/// 行に出る (T15.0 (7))。
+///
+/// 見るのは**増分と不変量** (4 種の和 = `misses`) だけ。カウンタはプロセスに 1 組で、
+/// 同じ束の他のテストが動かすため。
+#[test]
+fn the_miss_breakdown_shows_up_in_status_and_dns() {
+    let _guard = DNS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    rust_http_proxy::dns::set_ttl(Duration::from_secs(60));
+    rust_http_proxy::dns::set_warm_window(Duration::from_secs(900));
+    rust_http_proxy::dns::clear();
+    let (origin, _origin) = start_mock_origin();
+    let proxy = start_test_proxy(proxy_config());
+    let url = format!("http://localhost:{}/", origin);
+    let host = format!("localhost:{}", origin);
+
+    // 1 本目: 表に無い名前なので `cold` のミス
+    let before = status_number(&dns_status(proxy), "cold");
+    let res = get_via_proxy(proxy, &url, &host);
+    assert!(res.starts_with("HTTP/1.1 200"), "{}", res);
+    let dns = dns_status(proxy);
+    assert_eq!(
+        status_number(&dns, "cold"),
+        before + 1,
+        "1 回目は cold: {}",
+        dns
+    );
+    // 受け入れ基準: 4 種の和は必ず `dns.misses` と一致する
+    let sum = status_number(&dns, "cold")
+        + status_number(&dns, "expired")
+        + status_number(&dns, "warm_stale")
+        + status_number(&dns, "negative");
+    assert_eq!(
+        sum,
+        status_number(&dns, "misses"),
+        "4 種の和 = misses: {}",
+        dns
+    );
+    // 引き直しの側の 4 欄も出ている
+    for key in [
+        "refresh_failures",
+        "refresh_ms_sum",
+        "refresh_ms_max",
+        "refresh_late",
+    ] {
+        assert!(
+            dns.contains(&format!("\"{}\":", key)),
+            "{} が無い: {}",
+            key,
+            dns
+        );
+    }
+
+    // 2 本目で warm になり、3 本目が「warm の間に来た要求」として行に出る
+    for _ in 0..2 {
+        let res = get_via_proxy(proxy, &url, &host);
+        assert!(res.starts_with("HTTP/1.1 200"), "{}", res);
+    }
+    let json = endpoint_json(proxy, "/dns?sort=host");
+    let row = json
+        .split("{\"host\":\"")
+        .find(|s| s.starts_with("localhost\""))
+        .unwrap_or_else(|| panic!("localhost の行が無い: {}", json));
+    assert!(row.contains("\"warm\":true"), "{}", row);
+    assert_eq!(
+        status_number(row, "warm_requests"),
+        1,
+        "warm になった参照は数えず、その次の 1 本だけ: {}",
+        row
+    );
+    assert!(
+        row.contains("\"misses_by_kind\":{\"cold\":1,"),
+        "名前ごとの内訳にも出る: {}",
+        row
+    );
+    rust_http_proxy::dns::clear();
+    rust_http_proxy::dns::set_warm_window(rust_http_proxy::dns::WARM);
+}
