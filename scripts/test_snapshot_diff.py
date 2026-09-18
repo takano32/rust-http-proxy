@@ -332,6 +332,27 @@ class Clients(unittest.TestCase):
         b["clients"]["clients"][0]["first_seen"] = a["taken_at"] + 1
         self.assertEqual(len(sd.client_diff(a, b)["new"]), 2)
 
+    def test_the_since_start_columns_are_blank_for_a_client_last_seen_before_the_restart(self):
+        """T14.99: `distinct_targets` / `agent` は `.rrd` に残らない**起動からの**欄。
+
+        窓が再起動をまたぐと、再起動より前にしか居ない接続元は「Δ要求 200 なのに
+        宛先の種類 0・User-Agent は前の起動のもの」になり、同じ行で時間軸が食い違う。
+        """
+        b = read(B)
+        # この接続元を最後に見たのは再起動 (取得 − uptime) より前
+        b["clients"]["clients"][0]["last_seen"] = b["taken_at"] - b["uptime_secs"] - 1
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "b.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(b, f)
+            md = run([A, path, "--no-dns"])
+        self.assertIn("| 宛先の種類 (起動から) |", md)
+        self.assertIn("再起動より後に一度も見ていない接続元は", md)
+        self.assertRegex(md, r"\| `192\.0\.2\.10` \| 200 \|[^\n]*\| — \| — \|")
+        # 再起動の後にも見ている接続元はそのまま出る
+        self.assertIn("| `198.51.100.7` **新** | 300 |", md)
+        self.assertIn("| 3 | Mozilla/5.0 (fictional) |", md)
+
 
 class Dns(unittest.TestCase):
     def setUp(self):
@@ -366,11 +387,32 @@ class EventsErrorsBursts(unittest.TestCase):
     def test_only_the_events_inside_the_window(self):
         ev = self.d["events"]
         self.assertEqual(ev["count"], 2)
-        self.assertEqual([e["kind"] for e in ev["between"]], ["config"])
+        self.assertEqual([e["kind"] for e in ev["between"]], ["reload"])
 
     def test_no_events_endpoint_is_said_so(self):
         a = sd.load_source(A, False)
         self.assertIsNone(sd.events_between(a, a))
+
+    def test_the_text_of_an_event_is_printed(self):
+        """T14.99: サーバーが出す鍵は `text` (`events.rs` の `Event::to_json`)。
+
+        `what` / `msg` だけを読んでいたので §6 の「中身」が全行 `—` になっていた。
+        """
+        md = run([A, B, "--no-dns"])
+        self.assertIn("| reload | reload: PROXY_DNS_WARM_SECS 300 -> 900 |", md)
+        self.assertNotIn("| reload | — |", md)
+
+    def test_an_old_snapshot_with_what_still_prints(self):
+        """手で組んだ古い雪像 (`what`) も読めること (保険の分岐)。"""
+        b = read(B)
+        e = b["events"]["events"][0]
+        b["events"]["events"][0] = {"at": e["at"], "kind": e["kind"], "what": "hand made"}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "b.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(b, f)
+            md = run([A, path, "--no-dns"])
+        self.assertIn("| reload | hand made |", md)
 
     def test_error_causes_from_hosts_and_from_the_records(self):
         er = self.d["errors"]
@@ -388,6 +430,33 @@ class EventsErrorsBursts(unittest.TestCase):
         self.assertEqual(bu["shots"], 2)
         self.assertEqual(bu["burst_windows"], [1, 1])
         self.assertEqual(bu["active_max"], [210, 120])
+
+    def test_the_shot_prints_the_active_at_the_moment_it_crossed(self):
+        """T14.99: 写真に `peak` という欄は無い (`active` / `threshold` / `max_conns`)。
+
+        `s.get('peak')` を読んでいたので §8 が「(山 —)」になっていた。写真は
+        **閾を越えた瞬間**の 1 枚なので、山 (`active_max`) と混ぜない。
+        """
+        md = run([A, B, "--no-dns"])
+        self.assertIn("(越えた瞬間 120 本 / 閾 120・上限 240)", md)
+        self.assertNotIn("(山 —)", md)
+        self.assertIn("その時間帯の山は下の `active_max`", md)
+
+    def test_the_byte_unit_matches_the_divisor(self):
+        """T14.99: 1,024 で割るなら KiB / MiB / GiB (画面の `fmtBytes` と同じ)。
+
+        `GB` / `MB` / `kB` と書いていたので、報告のバイト数が 2.4〜7.4% 小さい
+        十進の量に読めていた (§4 の Δバイト は README / §2 に写す数字)。
+        """
+        self.assertEqual(pd.fmt_bytes(1 << 20), "1.0 MiB")
+        self.assertEqual(pd.fmt_bytes(-(1 << 30)), "-1.0 GiB")
+        self.assertEqual(pd.fmt_bytes(1536), "1.5 KiB")
+        self.assertEqual(pd.fmt_bytes(999), "999 B")
+
+    def test_an_old_snapshot_with_peak_still_prints(self):
+        """手で組んだ古い雪像 (`peak`) も読めること (保険の分岐)。"""
+        self.assertEqual(sd.shot_text({"at": 1789052400, "peak": 99}),
+                         "2026-09-10 15:00:00Z (越えた瞬間 99 本)")
 
 
 class Criteria(unittest.TestCase):
