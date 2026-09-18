@@ -97,6 +97,30 @@ pub fn take_resolve_cost() -> (u64, u64) {
     ((us + 500) / 1000, n)
 }
 
+/// 直近の名前解決の費用を**読むだけ** (0 に戻さない。T15.0 (1))。丸め方は
+/// [`take_resolve_cost`] と同じなので、同じ箱を読んでいる限り値は一致する。
+///
+/// 使い道は 1 つで、**自分の時計を始める前に「もう払われているぶん」を控える**こと。
+/// `PROXY_ALLOW_LOCAL=false` (既定) では入口の ACL (`src/lib.rs` の `acl::resolve_target`)
+/// がトンネルの時計より前に名前を引くので、あとで `take` した費用には**自分の窓の外**の
+/// ぶんが混ざっている。それを引かずに「全体 − 名前解決」をすると、接続の段が 0 に潰れる。
+pub fn peek_resolve_cost() -> (u64, u64) {
+    let (us, n) = RESOLVE_COST.get();
+    ((us + 500) / 1000, n)
+}
+
+/// 名前解決の費用 (us と回数) をこのスレッドの箱に足す (**テストの口**)。
+///
+/// 本番でここに書くのは [`resolve_host`] のミスの経路 1 か所だけ (原子と同じ場所で
+/// 書いている) なので、呼ぶのはテストだけ。入口の ACL が**時計より前に**払った状態を
+/// 作って、[`peek_resolve_cost`] を使う引き算 (T15.0 (1)) を確かめるために使う。
+pub fn note_resolve_cost(us: u64, misses: u64) {
+    RESOLVE_COST.set({
+        let (s, n) = RESOLVE_COST.get();
+        (s + us, n + misses)
+    });
+}
+
 /// 直近に確立した接続の族を読み、`None` に戻す。
 pub fn take_family() -> Option<bool> {
     LAST_FAMILY.replace(None)
@@ -1545,5 +1569,30 @@ mod tests {
             status
         );
         clear();
+    }
+
+    /// `peek` は読むだけ、`take` は読んで 0 に戻す (T15.0 (1))。
+    ///
+    /// 入口の ACL (`src/lib.rs`) が時計より前に払ったぶんを、トンネルと forward が
+    /// **消さずに**控えるための口なので、2 回読んでも同じ値が出ることが要点。
+    #[test]
+    fn peeking_the_resolve_cost_does_not_take_it() {
+        // このテストのスレッドの箱を空にしてから始める (thread-local)
+        let _ = take_resolve_cost();
+        assert_eq!(peek_resolve_cost(), (0, 0));
+
+        note_resolve_cost(11_400, 1);
+        assert_eq!(
+            peek_resolve_cost(),
+            (11, 1),
+            "0.5 ms で丸める (take と同じ)"
+        );
+        assert_eq!(peek_resolve_cost(), (11, 1), "読むだけなので減らない");
+
+        note_resolve_cost(600, 1);
+        assert_eq!(peek_resolve_cost(), (12, 2), "足される");
+        assert_eq!(take_resolve_cost(), (12, 2), "peek と同じ値が取れる");
+        assert_eq!(peek_resolve_cost(), (0, 0), "take のあとは空");
+        assert_eq!(take_resolve_cost(), (0, 0));
     }
 }
