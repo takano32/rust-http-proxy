@@ -7,6 +7,7 @@
 //! | 項目 | 何が読めるか | 読めないと何が `null` / `partial` になるか |
 //! |---|---|---|
 //! | `proc_syscall` | `/proc/self/task/<tid>/syscall` | スレッドが今どのシステムコールに居るか (T14.3) |
+//! | `proc_schedstat` | `/proc/self/task/<tid>/schedstat` | 走れるのに走れなかった時間 (`/profile` の `run_delay_us`。T15.0 (5)) |
 //! | `tcp_info` | `getsockopt(SOL_TCP, TCP_INFO)` | カーネルの RTT と再送 (T14.5) |
 //! | `cgroup_cpu` | cgroup の `cpu.stat` | CPU の絞り (`nr_throttled`。T14.12) |
 //! | `cgroup_pressure` | cgroup の `cpu.pressure` | PSI (隣に CPU を取られている割合。T14.12) |
@@ -60,6 +61,9 @@ pub struct Capabilities {
     pub home_writable: bool,
     /// 最後に測った時刻 (epoch 秒)
     pub checked_at: u64,
+    /// `/proc/self/task/<tid>/schedstat` が読める (T15.0 (5) の `run_delay_us`)。
+    /// **並びの末尾に足す** (`--check` の印字も JSON の鍵も既存の順を動かさない)
+    pub proc_schedstat: bool,
 }
 
 impl Capabilities {
@@ -79,6 +83,7 @@ impl Capabilities {
             ("cgroup_pressure", self.cgroup_pressure),
             ("ipv6_route", self.ipv6_route),
             ("home_writable", self.home_writable),
+            ("proc_schedstat", self.proc_schedstat),
         ]
         .into_iter()
         .filter(|(_, ok)| !ok)
@@ -86,8 +91,8 @@ impl Capabilities {
         .collect()
     }
 
-    /// 真偽の 6 項目 (名前と値。`--check` の印字と JSON で同じ順に並べる)。
-    pub fn flags(&self) -> [(&'static str, bool); 6] {
+    /// 真偽の 7 項目 (名前と値。`--check` の印字と JSON で同じ順に並べる)。
+    pub fn flags(&self) -> [(&'static str, bool); 7] {
         [
             ("proc_syscall", self.proc_syscall),
             ("tcp_info", self.tcp_info),
@@ -95,13 +100,15 @@ impl Capabilities {
             ("cgroup_pressure", self.cgroup_pressure),
             ("ipv6_route", self.ipv6_route),
             ("home_writable", self.home_writable),
+            ("proc_schedstat", self.proc_schedstat),
         ]
     }
 
     pub fn to_json(&self) -> String {
         format!(
             "{{\"proc_syscall\":{},\"tcp_info\":{},\"cgroup_cpu\":{},\"cgroup_pressure\":{},\
-             \"ipv6_route\":{},\"resolver_ms\":{},\"home_writable\":{},\"checked_at\":{}}}",
+             \"ipv6_route\":{},\"resolver_ms\":{},\"home_writable\":{},\"checked_at\":{},\
+             \"proc_schedstat\":{}}}",
             self.proc_syscall,
             self.tcp_info,
             self.cgroup_cpu,
@@ -112,6 +119,7 @@ impl Capabilities {
                 .unwrap_or_else(|| "null".to_string()),
             self.home_writable,
             self.checked_at,
+            self.proc_schedstat,
         )
     }
 }
@@ -169,6 +177,7 @@ pub fn probe() -> Capabilities {
 fn probe_fast() -> Capabilities {
     Capabilities {
         proc_syscall: proc_syscall_readable(),
+        proc_schedstat: proc_task_file_readable("schedstat"),
         tcp_info: tcp_info_works(),
         cgroup_cpu: cgroup_file_here("cpu.stat"),
         cgroup_pressure: cgroup_file_here("cpu.pressure"),
@@ -180,11 +189,17 @@ fn probe_fast() -> Capabilities {
 }
 
 /// `/proc/self/task/<自分の tid>/syscall` が読めるか (T14.3 が読む先そのもの)。
+fn proc_syscall_readable() -> bool {
+    proc_task_file_readable("syscall")
+}
+
+/// `/proc/self/task/<自分の tid>/<name>` が読めるか。
 ///
 /// `/proc/thread-self` は `/proc/self/task/<tid>` への symlink。コンテナの seccomp や
-/// `hidepid` で読めないことがあるので、**読めるかどうか**をここで答える。
-fn proc_syscall_readable() -> bool {
-    if readable("/proc/thread-self/syscall") {
+/// `hidepid`、カーネルの設定 (`schedstat` は `CONFIG_SCHED_INFO`) で読めないことがあるので、
+/// **読めるかどうか**をここで答える。
+fn proc_task_file_readable(name: &str) -> bool {
+    if readable(&format!("/proc/thread-self/{}", name)) {
         return true;
     }
     // `/proc/thread-self` の無い古いカーネル向け: 自分のスレッドを 1 本選んで試す
@@ -193,7 +208,7 @@ fn proc_syscall_readable() -> bool {
     };
     dir.flatten()
         .next()
-        .is_some_and(|e| readable(&e.path().join("syscall").to_string_lossy()))
+        .is_some_and(|e| readable(&e.path().join(name).to_string_lossy()))
 }
 
 fn readable(path: &str) -> bool {
@@ -372,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn the_json_has_all_seven_items() {
+    fn the_json_has_all_eight_items() {
         let caps = Capabilities {
             proc_syscall: true,
             tcp_info: true,
@@ -382,6 +397,7 @@ mod tests {
             resolver_ms: Some(9),
             home_writable: true,
             checked_at: 1_700_000_000,
+            proc_schedstat: true,
         };
         let json = caps.to_json();
         for key in [
@@ -392,6 +408,7 @@ mod tests {
             "ipv6_route",
             "resolver_ms",
             "home_writable",
+            "proc_schedstat",
         ] {
             assert!(json.contains(key), "{} が無い: {}", key, json);
         }
@@ -407,6 +424,19 @@ mod tests {
         };
         assert!(ok.all_readable());
         assert!(ok.to_json().contains("\"resolver_ms\":null"));
+        // 新しい欄は**いちばん末尾** (既存の鍵の順は 1 つも動かさない)
+        assert!(
+            ok.to_json().ends_with(",\"proc_schedstat\":true}"),
+            "{}",
+            ok.to_json()
+        );
+        assert_eq!(ok.flags().len(), 7);
+        // 読めない環境では `missing()` の末尾に出る (`--check` は 1 で終わる)
+        let no_schedstat = Capabilities {
+            proc_schedstat: false,
+            ..ok
+        };
+        assert_eq!(no_schedstat.missing(), vec!["proc_schedstat"]);
     }
 
     /// 実機で測れること (この機械は全部読める。`--check` が 0 で終わるのと同じ判定)。
@@ -415,6 +445,13 @@ mod tests {
     fn probes_this_machine() {
         let caps = probe_fast();
         assert!(caps.proc_syscall, "/proc/thread-self/syscall が読めない");
+        // `schedstat` は `CONFIG_SCHEDSTATS` の無いカーネルでは**ファイルごと無い**
+        // (この開発機がそれ)。値そのものではなく「ファイルの有無と一致すること」を見る
+        assert_eq!(
+            caps.proc_schedstat,
+            Path::new("/proc/thread-self/schedstat").exists(),
+            "schedstat の有無と判定が食い違う"
+        );
         assert!(caps.tcp_info, "getsockopt(TCP_INFO) が通らない");
         assert!(caps.checked_at > 0);
         // 覚えた結果が読めること (要求の経路はこれを読むだけ)

@@ -69,6 +69,9 @@ pub struct TaskSample {
     /// `syscall` の番号。`Some(n >= 0)` = そのシステムコールの中、`Some(-1)` = 走行中、
     /// `None` = 読めなかった (seccomp / `hidepid` / Linux 以外)
     pub syscall: Option<i64>,
+    /// **走れるのに走れなかった時間** の通算 (ns。`schedstat` の 2 番目の項目)。
+    /// `None` = 読めなかった (`CONFIG_SCHED_INFO` の無いカーネル / Linux 以外)
+    pub run_delay_ns: Option<u64>,
 }
 
 /// [`scan_tasks`] の結果。
@@ -77,12 +80,14 @@ pub struct TaskScan {
     pub tasks: Vec<TaskSample>,
     /// `syscall` が 1 本でも読めたか (読めなければ `/profile` は `partial`)
     pub syscalls_readable: bool,
+    /// `schedstat` が 1 本でも読めたか (読めなければ `/profile` の `run_delay_us` は `null`)
+    pub schedstat_readable: bool,
 }
 
 /// `root` (普通は `/proc/self/task`) の下のスレッドを全部読む。
 ///
-/// **1 本につき開くのは 2 ファイルだけ** (`stat` と `syscall`)。スレッド名は `stat` の
-/// 2 番目の項目にあるので `comm` は開かない (128 スレッドで 1 秒に 256 回の open)。
+/// **1 本につき開くのは 3 ファイルだけ** (`stat` と `syscall` と `schedstat`)。スレッド名は
+/// `stat` の 2 番目の項目にあるので `comm` は開かない (128 スレッドで 1 秒に 384 回の open)。
 /// ディレクトリが読めなければ `None` (呼び出し側は `sampler: "off"`)。
 ///
 /// `buf` は読み取りの使い回し用 (毎回確保しないため)。
@@ -105,12 +110,17 @@ pub fn scan_tasks(root: &std::path::Path, buf: &mut String) -> Option<TaskScan> 
         if syscall.is_some() {
             out.syscalls_readable = true;
         }
+        let run_delay_ns = read_into(&dir.join("schedstat"), buf).and_then(parse_schedstat);
+        if run_delay_ns.is_some() {
+            out.schedstat_readable = true;
+        }
         out.tasks.push(TaskSample {
             tid,
             comm,
             ticks,
             state,
             syscall,
+            run_delay_ns,
         });
     }
     Some(out)
@@ -139,6 +149,15 @@ pub fn parse_task_stat(text: &str) -> Option<(String, char, u64)> {
     let utime: u64 = it.nth(10)?.parse().ok()?;
     let stime: u64 = it.next()?.parse().ok()?;
     Some((comm, state, utime + stime))
+}
+
+/// `/proc/<pid>/task/<tid>/schedstat` の 1 行目から **走れるのに走れなかった時間** (ns) を取る。
+///
+/// 1 行は `"run_time_ns wait_time_ns nr_timeslices"` で、**2 番目**が
+/// 「走行可能なのに CPU に乗れずに待たされた ns の通算」(`sched_info.run_delay`)。
+/// CPU の絞り (cgroup の quota) と隣のプロセスとの取り合いは、どちらもここに出る。
+pub fn parse_schedstat(text: &str) -> Option<u64> {
+    text.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// `/proc/<pid>/task/<tid>/syscall` の 1 行目からシステムコール番号を取る。
@@ -227,6 +246,17 @@ mod tests {
         assert_eq!(parse_syscall(""), None);
     }
 
+    /// `schedstat` の **2 番目** (走れるのに待たされた ns) を取ること (T15.0 (5))。
+    #[test]
+    fn parses_the_schedstat_file() {
+        assert_eq!(parse_schedstat("123456 7890 42\n"), Some(7890));
+        assert_eq!(parse_schedstat("0 0 0\n"), Some(0));
+        // 項目が足りない / 数でないものは読めなかった扱い
+        assert_eq!(parse_schedstat("123456\n"), None);
+        assert_eq!(parse_schedstat(""), None);
+        assert_eq!(parse_schedstat("123456 x 42\n"), None);
+    }
+
     /// `/proc` が無いところを指したら `None` (`/profile` は `sampler: "off"`)。
     #[test]
     fn a_missing_task_directory_gives_none() {
@@ -252,6 +282,14 @@ mod tests {
         assert_eq!(scan.tasks[0].ticks, 11);
         assert_eq!(scan.tasks[0].syscall, None, "syscall が無ければ None");
         assert!(!scan.syscalls_readable, "partial に落ちること");
+        // `schedstat` も無いので `run_delay_us` は `null` になる側 (T15.0 (5))
+        assert_eq!(scan.tasks[0].run_delay_ns, None);
+        assert!(!scan.schedstat_readable);
+        // 置いてやれば読める
+        std::fs::write(dir.join("7/schedstat"), "100 250 3\n").expect("書けること");
+        let scan = scan_tasks(&dir, &mut buf).expect("ディレクトリは読める");
+        assert_eq!(scan.tasks[0].run_delay_ns, Some(250));
+        assert!(scan.schedstat_readable);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
