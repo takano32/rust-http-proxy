@@ -661,6 +661,23 @@ def errors_info(a, b, hosts, hist):
 
 # ---------------------------------------------------------------- (8) バースト
 
+def shot_text(s):
+    """`/bursts` の写真 1 枚の 1 行。
+
+    **`peak` という欄は無い** (`crates/metrics-recent/src/recent.rs` の `Shot::to_json` は
+    `at` / `seq` / `active` / `trigger_active` / `max_conns` / `threshold` …)。
+    しかも写真は**閾を越えた瞬間**の 1 枚なので、その `active` はその時間帯の山ではない
+    (山は `/history` の `active_max`)。`peak` は手で組んだ古い雪像のための保険。
+    """
+    act = s.get("active", s.get("peak"))
+    th = s.get("threshold")
+    mx = s.get("max_conns")
+    tail = ""
+    if th is not None:
+        tail = f" / 閾 {n(th)}" + (f"・上限 {n(mx)}" if mx is not None else "")
+    return f"{stamp(s.get('at'))} (越えた瞬間 {n(act)} 本{tail})"
+
+
 def bursts_info(b, hist):
     shots = part(b, "bursts").get("bursts")
     out = {"shots": len(shots) if isinstance(shots, list) else None, "rows": shots or []}
@@ -957,15 +974,26 @@ def render(d, top):
 
     # --- 4
     cl = d["clients"]
+    # `distinct_targets` / `agent` / `ports` は `.rrd` に残らない**起動からの**欄なので、
+    # 窓が再起動をまたぐと同じ行の中で時間軸が食い違う (Δ要求 9 なのに宛先 0 種、など)
+    boundary = d["restart"]["started_at"] if d["restart"]["restarted"] else None
     p("## 4. 接続元別 (`/clients` の差分)")
     p()
-    p("| 接続元 | Δ要求 | Δバイト | Δavg (±) | 宛先の種類 | User-Agent | 初めて見た |")
+    if boundary:
+        p(f"**`宛先の種類` と `User-Agent` は差分ではなく起動 ({stamp(boundary)}) からの値** "
+          "(`.rrd` に残らないので再起動で 0 に戻る)。**再起動より後に一度も見ていない接続元は "
+          "`—`** にしてある — その行の Δ要求 は再起動の前に入ったぶん。")
+        p()
+    p("| 接続元 | Δ要求 | Δバイト | Δavg (±) | 宛先の種類 (起動から) | User-Agent | 初めて見た |")
     p("|---|---|---|---|---|---|---|")
     for r in cl["rows"][:top]:
         mark = " **新**" if r["new"] else ""
+        seen_now = not boundary or (r.get("last_seen") or 0) >= boundary
+        targets = n(r["distinct_targets"]) if seen_now else "—"
+        agent = (r["agent"] or "—") if seen_now else "—"
         p(f"| `{r['client']}`{mark} | {n(r['requests'])} | {fmt_bytes(r['bytes'])} "
-          f"| {ms(r['avg_ms'])} (±{ms(r['avg_err'])}) | {n(r['distinct_targets'])} "
-          f"| {r['agent'] or '—'} | {stamp(r['first_seen'])} |")
+          f"| {ms(r['avg_ms'])} (±{ms(r['avg_err'])}) | {targets} "
+          f"| {agent} | {stamp(r['first_seen'])} |")
     if not cl["rows"]:
         p("| (接続元の記録が無い) | | | | | | |")
     p()
@@ -1012,7 +1040,10 @@ def render(d, top):
         p("| 時刻 | 種類 | 中身 |")
         p("|---|---|---|")
         for e in ev["between"][:top]:
-            p(f"| {stamp(e.get('at'))} | {e.get('kind', '—')} | {e.get('what', e.get('msg', '—'))} |")
+            # 本文の鍵は `text` (`crates/metrics-recent/src/events.rs` の `Event::to_json`)。
+            # `what` / `msg` は手で組んだ古い雪像のための保険。
+            p(f"| {stamp(e.get('at'))} | {e.get('kind', '—')} "
+              f"| {e.get('text') or e.get('what') or e.get('msg') or '—'} |")
     p()
 
     # --- 7
@@ -1045,8 +1076,10 @@ def render(d, top):
         p("(この版に `/bursts` は無い — T14.6 が入ったら埋まる)")
     else:
         p(f"写真 **{bu['shots']} 枚**"
-          + (f": " + "、".join(f"{stamp(s.get('at'))} (山 {n(s.get('peak'))})"
-                               for s in bu["rows"][:top]) if bu["rows"] else ""))
+          + (f": " + "、".join(shot_text(s) for s in bu["rows"][:top]) if bu["rows"] else ""))
+        if bu["rows"]:
+            # 写真は**閾を越えた瞬間**の 1 枚なので、その `active` はその時間帯の山ではない
+            p("(写真の数は閾を越えた瞬間の同時接続。その時間帯の山は下の `active_max`)")
     if "burst_windows" in bu:
         p(f"- `/history` から数えたバーストの窓 (1 標本 {bu['limit']} 本以上): "
           f"前 **{bu['burst_windows'][0]}** / 後 **{bu['burst_windows'][1]}**"

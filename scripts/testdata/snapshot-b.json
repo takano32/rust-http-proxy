@@ -1484,13 +1484,13 @@
   "events": [
    {
     "at": 1789050000,
-    "kind": "config",
-    "what": "PROXY_DNS_WARM_SECS=900 に変えた"
+    "kind": "reload",
+    "text": "reload: PROXY_DNS_WARM_SECS 300 -> 900"
    },
    {
     "at": 1788990000,
-    "kind": "restart",
-    "what": "起動 (前の雪像より古い)"
+    "kind": "start",
+    "text": "version 0.1.0+aaaaaaa on port 8080 (older than the first snapshot)"
    }
   ],
   "count": 2
@@ -1499,15 +1499,83 @@
   "bursts": [
    {
     "at": 1789052400,
-    "peak": 120,
-    "conns": 118,
-    "reason": "active>=50%"
+    "seq": 2,
+    "active": 120,
+    "trigger_active": 118,
+    "max_conns": 240,
+    "threshold": 120,
+    "clients": [
+     {
+      "client": "192.0.2.10",
+      "conns": 120
+     }
+    ],
+    "clients_distinct": 1,
+    "clients_other": 0,
+    "targets": [
+     {
+      "target": "alpha.example.jp:443",
+      "conns": 120
+     }
+    ],
+    "targets_distinct": 1,
+    "targets_other": 0,
+    "states": {
+     "serving": 0,
+     "reading": 0,
+     "parked": 0,
+     "queued": 0,
+     "relaying": 120
+    },
+    "kinds": {
+     "connect": 120,
+     "http": 0
+    },
+    "evicted_idle": 0,
+    "rejected_overload": 0,
+    "threads": 124,
+    "fds": 260,
+    "max_fds": 1024
    },
    {
     "at": 1789030800,
-    "peak": 210,
-    "conns": 205,
-    "reason": "active>=50%"
+    "seq": 1,
+    "active": 210,
+    "trigger_active": 205,
+    "max_conns": 240,
+    "threshold": 120,
+    "clients": [
+     {
+      "client": "192.0.2.10",
+      "conns": 210
+     }
+    ],
+    "clients_distinct": 1,
+    "clients_other": 0,
+    "targets": [
+     {
+      "target": "alpha.example.jp:443",
+      "conns": 210
+     }
+    ],
+    "targets_distinct": 1,
+    "targets_other": 0,
+    "states": {
+     "serving": 0,
+     "reading": 0,
+     "parked": 0,
+     "queued": 0,
+     "relaying": 210
+    },
+    "kinds": {
+     "connect": 210,
+     "http": 0
+    },
+    "evicted_idle": 0,
+    "rejected_overload": 0,
+    "threads": 214,
+    "fds": 440,
+    "max_fds": 1024
    }
   ],
   "count": 2
