@@ -245,3 +245,66 @@ fn test_integration_a_half_closed_tunnel_shows_its_evidence() {
     drop(held);
     drop(client);
 }
+
+/// **普通に流れているトンネルは `spins` を 1 つも数えないこと** (数え方の回帰テスト)。
+///
+/// `spins` は「`poll` に起こされたのに 1 バイトも進まなかった」回数なので、
+/// **往復するたびに増えてはいけない**。ところが「前の周の `poll` が起床を返したか」
+/// だけで決めると、起こされた次の周は `fill` が進んで `continue` し、その次の周に
+/// `EAGAIN` で待ちへ来るため、**1 往復ごとに 1 つ数えてしまう**。それを防ぐのが
+/// 中継の輪の `if progressed { poll_woke = false; … }` (`crates/tunnel/src/tunnel.rs`) で、
+/// **そこを外すとこのテストが落ちる** (`ROUNDS` 往復ぶんまで伸びる)。
+///
+/// 上の半閉じのテストではこれを見られない: あちらで中継の輪が待ちに入るのは 2 回だけで、
+/// 1 回目は `poll_woke` がまだ `false`、2 回目はそのまま打ち切りまでブロックするので、
+/// 旗を倒さない実装でも `spins` は 1 で止まって `spins <= 1` を素通りする。
+#[test]
+fn test_integration_a_busy_tunnel_does_not_count_spins() {
+    /// 往復の回数。旗を倒さない実装ではここまで `spins` が伸びる。
+    const ROUNDS: usize = 20;
+    /// 通してよい `spins` (往復とは関係の無い `poll` の空振りのぶん)。
+    /// `ROUNDS` とは十分に離しておく。
+    const ALLOWED: u64 = 2;
+    /// 1 往復で流すバイト数。
+    const CHUNK: usize = 8;
+
+    let origin_port = start_echo_server();
+    let proxy_port = start_test_proxy(evidence_config());
+
+    let mut client = open_tunnel(proxy_port, origin_port);
+    // **1 往復ずつ**、返ってくるまで待ってから次を送る (中継の輪を
+    // 「起きる → 進む → 待つ」に毎回通すため。まとめて送ると 1 回の起床で流れきってしまう)
+    let mut echoed = [0u8; CHUNK];
+    for i in 0..ROUNDS {
+        let msg = [b'a' + (i % 26) as u8; CHUNK];
+        client.write_all(&msg).unwrap();
+        client.flush().unwrap();
+        client.read_exact(&mut echoed).unwrap();
+        assert_eq!(echoed, msg, "{} 往復目がそのまま返らない", i + 1);
+    }
+
+    // 最後の往復のぶんが枠に届く (= 輪が待ちに戻って `set_relaying` を呼ぶ) まで待つ。
+    // 上りと下りで `ROUNDS * CHUNK * 2` バイト
+    let want = (ROUNDS * CHUNK * 2) as u64;
+    wait_until(
+        || {
+            connect_row(&endpoint_json(proxy_port, "/connections"))
+                .and_then(|r| num_field(&r, "bytes"))
+                .is_some_and(|b| b >= want)
+        },
+        "the tunnel to report the bytes it relayed",
+    );
+    let row = connect_row(&endpoint_json(proxy_port, "/connections")).expect("CONNECT の行がある");
+    println!("{} 往復のあとの 1 行: {{{}}}", ROUNDS, row);
+
+    let spins = num_field(&row, "spins").unwrap_or(0);
+    assert!(
+        spins <= ALLOWED,
+        "{} 往復で spins が {} = 往復ごとに数えている (`if progressed {{ poll_woke = false; }}` が効いていない): {}",
+        ROUNDS,
+        spins,
+        row
+    );
+
+    drop(client);
+}

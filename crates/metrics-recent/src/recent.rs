@@ -496,7 +496,9 @@ pub struct ConnSlot {
     /// **前の周の** `poll` が返した旗 (`i16` 2 つを詰めた。T15.0 (4))。
     /// 下位 16 bit がクライアント側、上位 16 bit がオリジン側。`0` は
     /// 「まだ待ちに入っていない / 何も立っていない」。`POLLHUP` や `POLLERR` が
-    /// 立ったまま進まない = 空回りの型
+    /// 立ったまま進まない = 空回りの型。
+    /// **預かり所から戻った直後の 1 回は旗を持たない** (`0` を書く): 旗は中継の輪の
+    /// 局所変数で、`run_until_idle` に入り直すたびに 0 から始まるため
     revents: AtomicU32,
     /// 半閉じの向きと、それが起きた時刻 (T15.0 (4))。**上位 8 bit = 側 + 1**
     /// (`0` = まだ半閉じしていない)、**下位 56 bit = 接続を受けてからの ms**。
@@ -505,7 +507,10 @@ pub struct ConnSlot {
     half_closed: AtomicU64,
     /// 同じ `bytes` のまま経った ms (T15.0 (4))。**書くのは history スレッドだけ**
     /// ([`ConnSlot::sweep_rate`]) で、接続の経路は 1 命令も触らない。
-    /// `bytes` を置くのはトンネルだけなので、http の行では意味を持たない
+    /// `bytes` を置くのはトンネルだけなので、http の行では意味を持たない。
+    /// **`bytes` を書くのは中継が待ちに入る回だけ**なので、`EAGAIN` に落ちずに進み
+    /// 続ける飽和したトンネルは、全速で流れていてもここが伸びる (`rate_bps` も同じ
+    /// 性質。`spins` と併せて読む)
     idle_ms: AtomicU64,
 }
 
@@ -2697,7 +2702,7 @@ mod conn_tests {
         assert!(e.client.len() <= MAX_CLIENT, "{}", e.client.len());
         let json = e.to_json();
         // 上限は欄が増えたぶん引き上げてある (T14.55 で 633 B、T15.0 (4) の
-        // `spins` / `half_closed` / `half_closed_ms` で +?? B。数字は下に出る)
+        // `spins` / `half_closed` / `half_closed_ms` で +71 B = 実測 704 B)
         assert!(json.len() <= 760, "最悪の 1 件が {} B", json.len());
         println!("closed entry: worst {} B", json.len());
     }

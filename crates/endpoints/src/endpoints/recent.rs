@@ -874,6 +874,11 @@ mod tests {
     /// [`array_within`] の予算は 261,632 B)。T15.0 (4) で足した 5 つの欄が
     /// 「既定のままなら 1 バイトも出さない」形なのはこのためで、ここでは**最悪の値が
     /// 全部入った行を 10 本混ぜて**、それでも 1,000 本入ることを見る。
+    ///
+    /// **このテストが担保しているのは「証拠つきの行が少数である 1,000 本」だけ**である
+    /// (デプロイ先の上限は 240 本で、そのうち欄を持つのは `relaying` のトンネルだけ)。
+    /// **全部の行が証拠つきなら 1,000 本は入らない** — どこで切れるかは
+    /// [`the_connections_response_cuts_when_every_row_carries_evidence`] が実測で縛る。
     #[test]
     fn the_connections_response_stays_under_256_kib() {
         use crate::recent::{ORIGIN_SIDE, pack_revents};
@@ -926,6 +931,90 @@ mod tests {
                 n,
                 body.len(),
                 MAX_BODY
+            );
+        }
+    }
+
+    /// **全部の行が証拠つきだと 1,000 本は入らない** (単位 7 の `offset=` が入るまでの
+    /// 既知の穴。T15.0 (4))。
+    ///
+    /// 上の [`the_connections_response_stays_under_256_kib`] は「1,000 本のうち証拠つきは
+    /// 少数」を前提にしていて、そこだけ読むと「1,000 本はいつでも担保されている」と
+    /// 誤読できる。ここでは逆に**全部の行に証拠を入れて**、入る本数を実測で縛る。
+    ///
+    /// 実測 (2026-09-18):
+    ///
+    /// | 行の中身 | 1 行 | 入る本数 |
+    /// |---|---|---|
+    /// | 既定 (新しい欄が 1 つも出ない) | 255 B | 1,000 本 (上のテスト) |
+    /// | 現実的な `relaying` の行 (`tid` と `revents` だけ) | 301 B | **860 本** |
+    /// | 最悪 (5 つとも起こりえない桁) | 442 B | **588 本** |
+    ///
+    /// 切れても黙って落ちることは無く、`shown` が入った本数・`truncated` が `true` に
+    /// なる (口の側は `count` も返すので、読む側は「全部は見えていない」と分かる)。
+    #[test]
+    fn the_connections_response_cuts_when_every_row_carries_evidence() {
+        use crate::recent::{ORIGIN_SIDE, pack_revents};
+
+        /// 「`tid` と旗だけ」の現実的な行がこれより少なければ知らせる (回帰の下限)。
+        const REALISTIC_MIN: usize = 800;
+        /// 「5 つとも最悪」の行がこれより少なければ知らせる (回帰の下限)。
+        const WORST_MIN: usize = 550;
+
+        // `worst` = 5 つとも最悪、`false` = `tid` と `revents` だけの現実的な行
+        let fill = |worst: bool| -> Vec<String> {
+            let m = Metrics::new();
+            let long_host = format!("{}.example.net:65535", "sub.".repeat(30));
+            let now = Instant::now();
+            for i in 0..1000u64 {
+                let slot = m
+                    .conns
+                    .register(i, "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6", now)
+                    .expect("登録できる");
+                slot.begin_tunnel(&long_host);
+                slot.set_state(ConnState::Relaying);
+                slot.set_tid(u32::MAX);
+                if worst {
+                    // `0x03d` = `IN|OUT|ERR|HUP|NVAL` (旗の名前が最長になる組み合わせ)
+                    slot.set_relaying(u64::MAX, u64::MAX, pack_revents(0x03d, 0x03d));
+                    slot.set_half_closed(ORIGIN_SIDE);
+                    slot.sweep_rate(999_999_999_999);
+                    slot.sweep_rate(999_999_999_999);
+                } else {
+                    // 生きているトンネルのありふれた形: 起床の旗はあるが空回りしていない
+                    slot.set_relaying(1 << 30, 0, pack_revents(0x001, 0x000));
+                }
+            }
+            m.conns.snapshot().iter().map(|c| c.to_json(now)).collect()
+        };
+
+        for (what, rows, least) in [
+            ("tid と旗だけ", fill(false), REALISTIC_MIN),
+            ("5 つとも最悪", fill(true), WORST_MIN),
+        ] {
+            let mut body = String::from(SCHEMA_HEAD) + "\"connections\":";
+            let (shown, cut) = array_within(&mut body, rows.iter().cloned());
+            body.push('}');
+            println!(
+                "connections 1,000 本が全部「{}」: 1 行 {} B → 入るのは {} 本 ({} B / 上限 {} B)",
+                what,
+                rows[0].len(),
+                shown,
+                body.len(),
+                MAX_BODY
+            );
+            assert!(body.len() <= MAX_BODY, "{}: {} B", what, body.len());
+            assert!(
+                shown < 1000 && cut,
+                "{}: 1,000 本入ってしまった (欄が縮んだなら上の表と README を直す)",
+                what
+            );
+            assert!(
+                shown >= least,
+                "{}: 入るのが {} 本まで減った (期待は {} 本以上)",
+                what,
+                shown,
+                least
             );
         }
     }
