@@ -34,7 +34,8 @@ fn test_integration_profile_has_the_shape_the_dashboard_reads() {
         "\"sample_ms\":",
         "\"sampler\":\"off\"",
         "\"bounds_ms\":[1,2,5,10,25,50,100,250,500,1000,2500,5000]",
-        "\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\"]",
+        // 新しい欄は**末尾**に足す (画面は位置で開くので、古い読み手はそのまま動く。T15.0 (5))
+        "\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\",\"threads_top\",\"run_delay_us\"]",
         "\"lock_names\":[\"stats\",\"dns\",\"park\",\"workers\"]",
         "\"locks_total\":[",
         "\"queue_total\":[",
@@ -183,6 +184,15 @@ fn test_integration_profile_stays_under_256_kib() {
             *c = 10_000 + k as u32;
         }
     }
+    // 上位のスレッドも 8 本ぜんぶ埋める (名前は 15 文字 = `/proc` の `comm` の上限)
+    let mut threads_top = [profile::TopThread::default(); profile::TOP_THREADS];
+    for (i, t) in threads_top.iter_mut().enumerate() {
+        t.tid = 4_000_000 + i as u32;
+        t.role = (i % profile::ROLES.len()) as u8;
+        t.cpu_us = 1_234_567 + i as u64;
+        t.running = 5;
+        t.comm = *b"conn-123456789\0\0";
+    }
     for i in 0..profile::RESOLUTIONS[0].1 as u64 {
         metrics.profile.push(profile::Sample {
             t: 1_800_000_000 + i * 5,
@@ -194,6 +204,8 @@ fn test_integration_profile_stays_under_256_kib() {
             queue_waited: 5,
             queue_ms_sum: 500,
             queue_ms_max: 250,
+            threads_top,
+            run_delay_us: Some([9_876_543; profile::ROLES.len()]),
         });
     }
     let json = endpoint_json(port, "/profile");

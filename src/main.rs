@@ -69,6 +69,7 @@ fn check_environment() -> i32 {
         "cgroup_cpu" => "cgroup cpu.stat (CPU throttling)",
         "cgroup_pressure" => "cgroup cpu.pressure (PSI: waiting for the CPU)",
         "ipv6_route" => "a default route in /proc/net/ipv6_route",
+        "proc_schedstat" => "/proc/self/task/<tid>/schedstat (time runnable but not running)",
         _ => "$HOME is writable (statistics file, blocklist)",
     };
     println!("\ncapabilities (what this environment lets the proxy read):");

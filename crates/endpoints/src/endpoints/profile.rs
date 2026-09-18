@@ -3,12 +3,16 @@
 //! `/history` と同じく**標本は配列の配列**で返す (キーは 1 回だけ)。1 標本の中身は
 //!
 //! ```text
-//! [t, requests, cpu_us, [connect の 7 段], [forward の 6 段], [役割 9 つ], [ロック 4 つ], [待ち行列 3 つ]]
+//! [t, requests, cpu_us, [connect の 7 段], [forward の 6 段], [役割 9 つ], [ロック 4 つ],
+//!  [待ち行列 3 つ], [上位スレッド 最大 8], [走れずに待った時間 9 つ]]
 //! ```
 //!
 //! で、段階 1 つは `[count, ms_sum, ms_max, [12 段 + 上限なし]]`、役割 1 つは
-//! `[cpu_us, samples, [状態 22 枠]]`。**件数 0 の段階と標本 0 の役割は `0` 1 文字**で
-//! 書くので、静かな窓は 1 標本 60 バイト程度にしかならない。
+//! `[cpu_us, samples, [状態 22 枠]]`、上位スレッド 1 本は
+//! `[tid, "comm", roles の添字, cpu_us, running]` (T15.0 (5))。
+//! **件数 0 の段階と標本 0 の役割と上位スレッドの無い窓は `0` 1 文字**で書くので、
+//! 静かな窓は 1 標本 60 バイト程度にしかならない。`run_delay_us` は
+//! `/proc/<tid>/schedstat` が読めない環境では `null`。
 //!
 //! 応答は [`super::recent::MAX_BODY`] (256 KiB) 以下。入り切らないときは**新しい方を残して**
 //! 古い標本から落とし、`"truncated":true` を出す (`/errors` などと同じ方針)。
@@ -68,7 +72,8 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     join(&mut out, crate::sync::LOCK_NAMES.iter(), quoted);
     // 1 標本の並び (`/history` の `keys` と同じ役)
     out.push_str(
-        "],\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\"],\"samples\":[",
+        "],\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\",\
+         \"threads_top\",\"run_delay_us\"],\"samples\":[",
     );
     out.push_str(&rows);
     out.push_str("],\"locks_total\":[");
