@@ -12,6 +12,7 @@ import argparse
 import json
 import statistics
 import sys
+from datetime import datetime, timezone
 
 # `/status` の `errors_by_cause` の並び (`crates/metrics/src/metrics.rs` の ERR_CAUSE_NAMES)
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
@@ -28,6 +29,17 @@ def num(v, unit=""):
     if isinstance(v, float):
         return f"{v:,.1f}{unit}"
     return f"{v:,}{unit}"
+
+
+def stamp(t):
+    """epoch 秒を UTC の読める形に (`scripts/snapshot-diff.py` の `stamp()` と同じ綴り)。
+
+    同じ Markdown の中で `1789601514` と `2026-09-16 23:31:54Z` が混ざると、
+    読み手がどの時間帯の話か計算しないと分からない。
+    """
+    if not t:
+        return "—"
+    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
 def fmt_bytes(n):
@@ -103,15 +115,56 @@ def tally(rows, key):
 
 
 def host_errors(snap):
-    """`/hosts` の全ホストを足して (エラー件数, 原因別) を出す (`/status` に合計が無いため)。"""
-    rows = part(snap, "hosts").get("hosts") or []
-    total = sum(h.get("errors", 0) for h in rows)
-    causes = [0] * len(CAUSE_NAMES)
-    for h in rows:
-        for i, n in enumerate(h.get("errors_by_cause") or []):
+    """`/hosts` を**ホストの鍵で引ける形**にする (エラー件数と原因別、切れているか)。
+
+    `/status` にエラーの合計が無いのでホスト別を足すしかないが、**表ごと足して引く**と
+    `/hosts` が 256 KiB で切れているときに「後の表から消えたホスト」のぶんが負の数になる。
+    """
+    h = part(snap, "hosts")
+    rows = h.get("hosts") or []
+    out = {}
+    for r in rows:
+        causes = [0] * len(CAUSE_NAMES)
+        for i, v in enumerate(r.get("errors_by_cause") or []):
             if i < len(causes):
-                causes[i] += n
-    return total, causes
+                causes[i] = v
+        out[r.get("host")] = (r.get("errors", 0), causes)
+    return {"rows": out, "truncated": bool(h.get("truncated")),
+            "count": h.get("count"), "shown": h.get("shown") or len(rows)}
+
+
+def error_delta(cur, prev):
+    """前後の `/hosts` を**ホストの鍵で突き合わせて**引く (`--prev` が無ければ後の合計)。
+
+    2026-09-18 の実測 (`2026-09-18T053213Z-snapshot.json` と 2 日前の雪像): 表ごとの
+    合計は 52 → 48 で **−4 件**、鍵で突き合わせると **+4 件** (dns 1・refused 1・timeout 2)
+    で `/errors` の個票 4 件と一致した。差は「後の表から消えた 8 ホスト (エラー 8 件)」で、
+    どちらの `/hosts` も `truncated` (1,000 件中 643 / 639 件) なので下位は簡単に出入りする。
+    ホスト 1 件の通算が**減っている**ときは `.rrd` の作り直しなので引き算しない。
+    """
+    now = host_errors(cur)
+    zero = (0, [0] * len(CAUSE_NAMES))
+    if prev is None:
+        causes = [sum(c[i] for _, c in now["rows"].values()) for i in range(len(CAUSE_NAMES))]
+        return {"total": sum(e for e, _ in now["rows"].values()), "causes": causes,
+                "back": 0, "gone": 0, "gone_errors": 0, "truncated": now["truncated"],
+                "shown": [now["shown"]], "count": [now["count"]], "windowed": False}
+    old = host_errors(prev)
+    total, causes, back = 0, [0] * len(CAUSE_NAMES), 0
+    for key, (errs, cs) in now["rows"].items():
+        oe, oc = old["rows"].get(key, zero)
+        if errs < oe:
+            back += 1
+            continue
+        total += errs - oe
+        for i in range(len(CAUSE_NAMES)):
+            causes[i] += cs[i] - oc[i]
+    gone = [k for k in old["rows"] if k not in now["rows"]]
+    return {"total": total, "causes": causes, "back": back, "gone": len(gone),
+            "gone_errors": sum(old["rows"][k][0] for k in gone),
+            "truncated": now["truncated"] or old["truncated"],
+            "shown": [old["shown"], now["shown"]], "count": [old["count"], now["count"]],
+            "windowed": True}
 
 
 def part(snap, name):
@@ -119,11 +172,11 @@ def part(snap, name):
     return v if isinstance(v, dict) else {}
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description="/snapshot を 1 枚の要点に畳む")
     p.add_argument("snapshot")
     p.add_argument("--prev", metavar="PREV.json", help="前回の雪像 (通算の指標を差分にする)")
-    args = p.parse_args()
+    args = p.parse_args(argv)
     d = load(args.snapshot)
     prev = load(args.prev) if args.prev else None
     if "parts" not in d:
@@ -203,18 +256,28 @@ def main():
         print(latency_line(label, hist.get(res) or {}, prefix, last))
     print()
 
-    # エラーの合計は `/status` に無いので、`/hosts` (全ホスト) を足して出す
+    # エラーの合計は `/status` に無いので、`/hosts` (全ホスト) から出す。
+    # **表ごとの合計は引き算しない** (切れた表どうしだと負になる。上の `error_delta` を見る)
     errors = part(d, "errors").get("errors") or []
-    total_err, causes = host_errors(d)
-    if prev:
-        old_err, old_causes = host_errors(prev)
-        total_err -= old_err
-        causes = [a - b for a, b in zip(causes, old_causes)]
-    shown = " ".join(f"{CAUSE_NAMES[i]} {n}" for i, n in enumerate(causes) if n) or "—"
-    print(f"- エラー: {num(total_err)} 件 (`.rrd` の通算をホストで足したもの) / 原因 {shown}"
-          f" / 個票 {len(errors)} 件")
+    ed = error_delta(d, prev)
+    where = "`/hosts` をホストの鍵で突き合わせた差分" if ed["windowed"] else "`/hosts` の合計"
+    if ed["back"]:
+        print(f"- エラー: **引き算できない** ({ed['back']} ホストで `/hosts` の通算が減っている"
+              f" — `.rrd` が作り直された疑い。`scripts/snapshot-diff.py` の §7 を見ること)"
+              f" / 個票 {len(errors)} 件")
+    else:
+        shown = " ".join(f"{CAUSE_NAMES[i]} {n}" for i, n in enumerate(ed["causes"]) if n) or "—"
+        print(f"- エラー: {num(ed['total'])} 件 ({where}) / 原因 {shown}"
+              f" / 個票 {len(errors)} 件")
+    if ed["windowed"] and ed["gone"]:
+        print(f"  - 後の `/hosts` から消えたホスト {ed['gone']} 件 (通算のエラー"
+              f" {ed['gone_errors']} 件) は差分から外した")
+    if ed["truncated"]:
+        pairs = "、".join(f"{num(s)}/{num(c)} 件" for s, c in zip(ed["shown"], ed["count"]))
+        print(f"  - `/hosts` は **256 KiB で切れている** ({pairs}) ので、"
+              "下位のホストは前後で出入りする (合計どうしを引くと負になる)")
     for e in errors[:5]:
-        print(f"  - `{e.get('at')}` {e.get('kind')} {e.get('target')} → {e.get('status')}"
+        print(f"  - `{stamp(e.get('at'))}` {e.get('kind')} {e.get('target')} → {e.get('status')}"
               f" ({e.get('cause')}、dns {e.get('dns_ms')} ms / connect {e.get('connect_ms')} ms、"
               f"from {e.get('client')})")
     print()
