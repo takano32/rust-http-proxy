@@ -77,6 +77,14 @@ def sample():
             "dns": {"ttl_secs": 60, "hits": 18, "misses": 12, "miss_ms_sum": 150.0,
                     "miss_avg_ms": 12.5, "refreshes": 4},
             "settings": {"path": "/home/container/.env", "reloads": 0},
+            "kernel": {
+                "at": 1789520760,
+                "cgroup_cpu": {
+                    "nr_throttled": 41282, "nr_periods": 41905, "quota_cores": 1.0,
+                    # コンテナを 1 つに特定できる道 (T15.0 (6))
+                    "path": "/sys/fs/cgroup/system.slice/pterodactyl-6f2c.scope/cpu.stat",
+                },
+            },
         },
         "history": {"5": {
             "interval_secs": 5,
@@ -286,6 +294,24 @@ class Text(unittest.TestCase):
         self.assertEqual(anonymized()["status"]["settings"]["path"], "/home/container/.env")
         self.assertEqual(anonymized()["version"], "0.1.0+abcdef1")
 
+    def test_the_cgroup_path_is_flattened(self):
+        """`kernel.cgroup_cpu.path` はコンテナを特定できるので深さだけ残す (T15.0 (6))。"""
+        cpu = anonymized()["status"]["kernel"]["cgroup_cpu"]
+        self.assertEqual(cpu["path"], "/sys/fs/cgroup/…/…/cpu.stat")
+        self.assertNotIn("pterodactyl", json.dumps(anonymized(), ensure_ascii=False))
+        self.assertEqual(cpu["nr_throttled"], 41282)  # 数字は 1 つも変わらない
+
+    def test_the_cgroup_path_survives_a_second_pass(self):
+        once = anonymized()
+        twice = an.Anonymizer().run(json.loads(json.dumps(once)))
+        self.assertEqual(twice["status"]["kernel"]["cgroup_cpu"]["path"],
+                         "/sys/fs/cgroup/…/…/cpu.stat")
+
+    def test_a_cgroup_path_outside_the_usual_root_is_flattened_too(self):
+        got = an.Anonymizer().run(
+            {"kernel": {"cgroup_cpu": {"path": "/somewhere/else/cpu.stat"}}})
+        self.assertEqual(got["kernel"]["cgroup_cpu"]["path"], "/…/…/cpu.stat")
+
 
 class Numbers(unittest.TestCase):
     def test_not_one_number_changes(self):
@@ -307,8 +333,9 @@ class Numbers(unittest.TestCase):
         pairs = list(zip(strings(sample()), strings(anonymized())))
         changed = [a for (ka, a), (kb, b) in pairs if a != b]
         kept = [a for (ka, a), (kb, b) in pairs if a == b]
-        # 置き換わるのは 24 か所 (宛先 7・接続元 6・答えの IP 3・UA 2・canary 1・文 3 ほか)
-        self.assertEqual(len(changed), 24)
+        # 置き換わるのは 25 か所 (宛先 7・接続元 6・答えの IP 3・UA 2・canary 1・文 3 ほか、
+        # それに cgroup の道 1 = T15.0 (6))
+        self.assertEqual(len(changed), 25)
         self.assertIn("ok", kept)          # `/status` の `status`
         self.assertIn("connect", kept)     # 種類
         self.assertIn("dns", kept)         # 原因の名前

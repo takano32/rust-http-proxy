@@ -23,6 +23,11 @@ pub struct CgroupCpu {
     pub throttled_usec: Option<u64>,
     /// `cpu.max` の quota ÷ period (= 使えるコア数)。`max` (無制限) なら `None`
     pub quota_cores: Option<f64>,
+    /// `cpu.stat` の `nr_periods` (CPU の期間の数、累計。T15.0 (6))。
+    ///
+    /// **`nr_throttled` の分母**。これが無いと「41 回絞られた」が
+    /// 「41 / 8,123 = 0.5%」なのか「41 / 41 = 100%」なのか決まらない。
+    pub nr_periods: Option<u64>,
 }
 
 /// cgroup v2 の PSI 3 つ。
@@ -87,17 +92,37 @@ pub fn cgroup_pressure() -> CgroupPressure {
 
 /// 読む先を差し替えられる版 (テスト用)。`dir` から `root` まで遡って最初に読めたものを使う。
 pub fn cgroup_cpu_in(dir: &Path, root: &Path) -> CgroupCpu {
-    let stat = find_up(dir, root, "cpu.stat", |t| {
-        let n = stat_field(t, "nr_throttled");
-        let us = stat_field(t, "throttled_usec");
-        (n.is_some() || us.is_some()).then_some((n, us))
-    });
+    let stat = find_up(dir, root, "cpu.stat", parse_cpu_stat);
     CgroupCpu {
-        nr_throttled: stat.and_then(|(n, _)| n),
-        throttled_usec: stat.and_then(|(_, us)| us),
+        nr_throttled: stat.and_then(|(_, n, _)| n),
+        throttled_usec: stat.and_then(|(_, _, us)| us),
         // 上限は階層のどこにでも掛かるので、**いちばんきつい値**を採る
         quota_cores: tightest_quota(dir, root),
+        nr_periods: stat.and_then(|(p, _, _)| p),
     }
+}
+
+/// `cpu.stat` から `(nr_periods, nr_throttled, throttled_usec)`。
+/// 3 つとも無ければ `None` (= この階層には cpu コントローラが無い)。
+fn parse_cpu_stat(text: &str) -> Option<(Option<u64>, Option<u64>, Option<u64>)> {
+    let p = stat_field(text, "nr_periods");
+    let n = stat_field(text, "nr_throttled");
+    let us = stat_field(text, "throttled_usec");
+    (p.is_some() || n.is_some() || us.is_some()).then_some((p, n, us))
+}
+
+/// いま `cpu.stat` を実際に読んでいるファイルの道 (T15.0 (6))。
+///
+/// **5 秒ごとには呼ばない** — 呼ぶのは `/status` を組むときと `--check` のときだけ。
+/// 自分の階層に cpu コントローラが無いと [`find_up`] は**親の値**を読むので、
+/// 「絞られた 915 回」が自分のものか親のものかは、この道を見ないと決まらない。
+pub fn cgroup_cpu_path() -> Option<PathBuf> {
+    cgroup_v2_dir().and_then(|dir| cgroup_cpu_path_in(&dir, Path::new("/sys/fs/cgroup")))
+}
+
+/// 読む先を差し替えられる版 (テスト用)。
+pub fn cgroup_cpu_path_in(dir: &Path, root: &Path) -> Option<PathBuf> {
+    find_up_at(dir, root, "cpu.stat", parse_cpu_stat).map(|(path, _)| path)
 }
 
 /// 差し替えられる版の PSI (テスト用。`/proc/pressure` への落とし込みはしない)。
@@ -115,12 +140,23 @@ pub fn cgroup_pressure_in(dir: &Path, root: &Path) -> CgroupPressure {
 /// コンテナでは自分の cgroup に cpu コントローラが有効でないことがある
 /// (その場合は親の値が効いている) ので、1 段だけ見て諦めない。
 fn find_up<T>(dir: &Path, root: &Path, name: &str, parse: impl Fn(&str) -> Option<T>) -> Option<T> {
+    find_up_at(dir, root, name, parse).map(|(_, v)| v)
+}
+
+/// [`find_up`] と同じ探し方で、**読めたファイルの道も**返す (T15.0 (6))。
+fn find_up_at<T>(
+    dir: &Path,
+    root: &Path,
+    name: &str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Option<(PathBuf, T)> {
     let mut at = dir.to_path_buf();
     loop {
-        if let Ok(text) = fs::read_to_string(at.join(name))
+        let file = at.join(name);
+        if let Ok(text) = fs::read_to_string(&file)
             && let Some(v) = parse(&text)
         {
-            return Some(v);
+            return Some((file, v));
         }
         if at == root {
             return None;
@@ -212,6 +248,13 @@ full avg10=2.99 avg60=2.10 avg300=0.90 total=166527343
         assert_eq!(cpu.nr_throttled, Some(41));
         assert_eq!(cpu.throttled_usec, Some(1_234_567));
         assert_eq!(cpu.quota_cores, Some(2.0));
+        // `nr_throttled` の分母 (T15.0 (6))。41 / 8,123 = 0.5% と読める
+        assert_eq!(cpu.nr_periods, Some(8_123));
+        // 読んだのは自分の階層の `cpu.stat` (親の値ではない)
+        assert_eq!(
+            cgroup_cpu_path_in(&leaf, &root),
+            Some(leaf.join("cpu.stat"))
+        );
         let psi = cgroup_pressure_in(&leaf, &root).cpu.unwrap();
         assert_eq!(psi.some_avg10, 43.02);
         assert_eq!(psi.full_avg10, 2.99);
@@ -231,7 +274,13 @@ full avg10=2.99 avg60=2.10 avg300=0.90 total=166527343
 
         let cpu = cgroup_cpu_in(&leaf, &root);
         assert_eq!(cpu.nr_throttled, Some(41), "親の cpu.stat まで遡る");
+        assert_eq!(cpu.nr_periods, Some(8_123), "分母も同じ階層から");
         assert_eq!(cpu.quota_cores, Some(1.5), "1.5 < 4.0 (max は無制限)");
+        // **どの階層を読んだか**が道で分かる (自分のではなく根の `cpu.stat`。T15.0 (6))
+        assert_eq!(
+            cgroup_cpu_path_in(&leaf, &root),
+            Some(root.join("cpu.stat"))
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -242,6 +291,7 @@ full avg10=2.99 avg60=2.10 avg300=0.90 total=166527343
         let leaf = root.join("user.slice/app.scope");
         assert_eq!(cgroup_cpu_in(&leaf, &root), CgroupCpu::default());
         assert_eq!(cgroup_pressure_in(&leaf, &root), CgroupPressure::default());
+        assert_eq!(cgroup_cpu_path_in(&leaf, &root), None, "読む先が無い");
         // v1 だけの `/proc/self/cgroup` には `0::` の行が無い
         assert!(v2_dir_from("3:cpu,cpuacct:/app\n8:memory:/app\n", &root).is_none());
         assert_eq!(

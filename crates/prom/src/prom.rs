@@ -114,6 +114,15 @@ fn kernel_metrics(out: &mut String) {
             "",
             k.cpu_nr_throttled,
         );
+        // 絞られた**割合**を出すための分母 (T15.0 (6))。
+        // `rate(throttled_periods[5m]) / rate(periods[5m])` で読む
+        header(
+            out,
+            "cgroup_cpu_periods_total",
+            "counter",
+            "CPU quota periods that elapsed for this cgroup (cpu.stat nr_periods)",
+        );
+        line(out, "cgroup_cpu_periods_total", "", k.cpu_nr_periods);
     }
     if k.cpu_quota_cores > 0.0 {
         header(
