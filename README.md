@@ -679,7 +679,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `hosts[]` (オリジン側) と `clients[]` (クライアント側) の `rtt_ms` (`avg` / `min` / `samples`) と `retrans`、
     `/metrics` の `sorahost_rtt_seconds_sum` / `_count` (`{side="client"|"origin"}` の 2 系列だけ。
     **ホスト別は出しません** — 系列が増えすぎるため)。**Linux 以外と `--lite` では読まないので `null` / 0 です**
-    (`/recent` の `rtt_ms` はその側が `null`、`hosts[]` / `clients[]` は `"rtt_ms":null`)
+    (`/recent` の `rtt_ms` はその側が `null`、`hosts[]` / `clients[]` は `"rtt_ms":null`)。
+    **`clients[]` の `rtt_ms` / `retrans` の母数 (2026-09-18 に直しました。T15.0 (12))**: この行に入れるのは
+    **プロキシとして使われた接続だけ**です。それまでは閉じた接続を無条件に入れていたので、`/status` を
+    5 秒おきに引く監視が居るだけで、**プロキシとしても使っている IP** の `samples` だけが `requests` と
+    関係なく積み上がっていました (デプロイ先の実測: `requests` 27 に対して `samples` 68。この欄は `.rrd` に
+    残るので再起動をまたいで残ります)。いまは同じ行の `requests` と同じ母数 = 「プロキシとして通した接続」で、
+    **自分宛て (`/status` `/clients` …) だけで終わった接続は 1 本も入りません** (その相手は `readers` の側です)。
+    接続 1 本ごとの RTT が要るときは `/recent` の `rtt_ms` を読んでください (そちらは今までどおり全部の接続に出ます)
   - **CONNECT の SNI (T14.38)**: CONNECT のあとクライアントが最初に送るのは TLS の
     ClientHello で、その中の SNI (`server_name`) に**本当の宛先の名前**があります。
     `200 Connection Established` を書いたあと、**最初の中継の前に 1 回だけ `recv(MSG_PEEK)`**
