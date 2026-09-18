@@ -28,9 +28,13 @@
 //!
 //! `profile-sample` スレッド 1 本が `PROXY_PROFILE_SAMPLE_MS` (既定 1,000、`0` で止める)
 //! ごとに `/proc/self/task/*/stat` (名前 / 状態 / utime / stime) と
-//! `/proc/self/task/*/syscall` (いま居るシステムコールの番号) を読み、
-//! **役割 × (CPU、状態の割合)** に束ねる。読めない環境 (seccomp / `hidepid` / Linux 以外)
-//! では `sampler` が `"partial"` か `"off"` に落ちる。
+//! `/proc/self/task/*/syscall` (いま居るシステムコールの番号) と
+//! `/proc/self/task/*/schedstat` (走れるのに走れなかった時間) を読み、
+//! **役割 × (CPU、状態の割合、走れずに待った時間)** に束ねる。読めない環境
+//! (seccomp / `hidepid` / Linux 以外) では `sampler` が `"partial"` か `"off"` に落ちる。
+//!
+//! 役割の集計だけでは「どのスレッドが回っているか」が出ないので、**その窓で CPU を
+//! 多く使ったスレッド上位 8 本** ([`TopThread`]) も一緒に持つ (T15.0 (5))。
 //!
 //! **状態の割合は「どこで待っているか」であって「どこで CPU を使っているか」ではない。**
 //! `/proc/<tid>/syscall` は、そのスレッドが CPU に乗っている間は中身に関係なく
@@ -42,8 +46,10 @@
 //! `recv_timeout` = `futex`)。短い仕事を大量にさばく経路 (`--only connect`) では
 //! こちらが標本の大半を占めるので、状態を読むときは `futex` を「待機列」と見ること。
 //!
-//! 窓のメモリは 1 標本 2,340 B × (720 + 1,440) ≈ **5.1 MB**。`--lite` では標本を 1 本も
-//! 作らないので 0 (環状バッファは空のまま)。
+//! 窓のメモリは `size_of::<Sample>()` × (720 + 1,440)。**数字はここに書き写さない**
+//! (型を足すたびに古くなる。実際の値は単体テスト
+//! `a_sample_stays_small_enough_for_the_rings` を `-- --nocapture` で回すと出る)。
+//! `--lite` では標本を 1 本も作らないので 0 (環状バッファは空のまま)。
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -214,6 +220,84 @@ impl RoleWindow {
 
 /// 役割ごとの窓。
 pub type Threads = [RoleWindow; ROLES.len()];
+
+/// `threads_top` に残すスレッドの数 (CPU の多い順)。
+pub const TOP_THREADS: usize = 8;
+
+/// **その窓で CPU を多く使ったスレッド 1 本** (T15.0 (5))。
+///
+/// 役割ごとの集計では「`conn` 役の `running` がいつも 2.0 本」までしか読めず、
+/// **どのスレッドが回っているか**が出ない。空回り (T15.5) や確立の尾を追うときは
+/// tid まで要るので、CPU の多い順に [`TOP_THREADS`] 本だけ残す。
+///
+/// **`String` は入れない** ([`Sample`] が `Copy` を失うと [`Profile::roll`] の `.copied()` と
+/// [`Profile::recent_totals`] が壊れる)。名前は `/proc` の `comm` と同じ**固定長 16 バイト**
+/// (`comm` は 15 文字で切られる)。空の枠は `tid == 0`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TopThread {
+    /// その窓にこのスレッドが使った CPU (us)
+    pub cpu_us: u64,
+    /// スレッド番号 (`0` = 空の枠)
+    pub tid: u32,
+    /// [`state_slot`] が `running` を返した標本の数
+    pub running: u32,
+    /// [`ROLES`] の添字
+    pub role: u8,
+    /// スレッド名 (`/proc/<pid>/task/<tid>/stat` の 2 番目。末尾は `0` 詰め)
+    pub comm: [u8; 16],
+}
+
+impl TopThread {
+    /// 名前を `[u8; 16]` に詰める (16 バイトを超えるぶんは捨てる)。
+    fn comm_bytes(comm: &str) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        for (o, b) in out.iter_mut().zip(comm.as_bytes()) {
+            *o = *b;
+        }
+        out
+    }
+
+    /// 名前 (`0` 詰めを外し、JSON に出せない文字は `.` に落とす)。
+    pub fn comm_str(&self) -> String {
+        self.comm
+            .iter()
+            .take_while(|b| **b != 0)
+            .map(|b| match b {
+                // `"` と `\` を書かない = 逃がし方を考えなくてよい。`comm` は
+                // カーネルが任意のバイトを許すので、印字できない文字も落とす
+                0x20..=0x7e if *b != b'"' && *b != b'\\' => *b as char,
+                _ => '.',
+            })
+            .collect()
+    }
+}
+
+/// 上位のスレッドを tid を鍵に足し合わせ、CPU の多い順に [`TOP_THREADS`] 本へ切り直す。
+///
+/// 60 秒の窓は 5 秒の標本 12 本を畳むので、同じスレッドが何度も出てくる。
+/// **確保はしない** (最大 2 × [`TOP_THREADS`] の局所配列だけ)。
+fn merge_top(
+    a: &[TopThread; TOP_THREADS],
+    b: &[TopThread; TOP_THREADS],
+) -> [TopThread; TOP_THREADS] {
+    let mut buf = [TopThread::default(); TOP_THREADS * 2];
+    let mut n = 0usize;
+    for t in a.iter().chain(b.iter()).filter(|t| t.tid != 0) {
+        if let Some(e) = buf[..n].iter_mut().find(|e| e.tid == t.tid) {
+            e.cpu_us += t.cpu_us;
+            e.running += t.running;
+            continue;
+        }
+        buf[n] = *t;
+        n += 1;
+    }
+    buf[..n].sort_unstable_by(|x, y| y.cpu_us.cmp(&x.cpu_us).then(x.tid.cmp(&y.tid)));
+    let mut out = [TopThread::default(); TOP_THREADS];
+    for (o, t) in out.iter_mut().zip(buf[..n].iter()) {
+        *o = *t;
+    }
+    out
+}
 
 /// スレッドの標本がどこまで取れているか (`/profile` の `sampler`)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,6 +499,11 @@ pub struct Sample {
     pub queue_waited: u64,
     pub queue_ms_sum: u64,
     pub queue_ms_max: u64,
+    /// その窓に CPU を多く使ったスレッド (多い順。空の枠は `tid == 0`。T15.0 (5))
+    pub threads_top: [TopThread; TOP_THREADS],
+    /// **走れるのに走れなかった時間**の増分 (us。[`ROLES`] の順)。
+    /// `None` = `schedstat` が読めない環境 (`/profile` では `null`)
+    pub run_delay_us: Option<[u64; ROLES.len()]>,
 }
 
 impl Sample {
@@ -436,10 +525,23 @@ impl Sample {
         self.queue_waited += o.queue_waited;
         self.queue_ms_sum += o.queue_ms_sum;
         self.queue_ms_max = self.queue_ms_max.max(o.queue_ms_max);
+        self.threads_top = merge_top(&self.threads_top, &o.threads_top);
+        // 片方でも読めていれば足す (読めない窓は無かったことにする)
+        self.run_delay_us = match (self.run_delay_us, o.run_delay_us) {
+            (Some(mut a), Some(b)) => {
+                for (x, y) in a.iter_mut().zip(b.iter()) {
+                    *x += *y;
+                }
+                Some(a)
+            }
+            (a, b) => a.or(b),
+        };
     }
 
-    /// `[t,requests,cpu_us,[connect...],[forward...],[roles...],[locks...],[queue...]]`。
+    /// `[t,requests,cpu_us,[connect...],[forward...],[roles...],[locks...],[queue...],`
+    /// `[threads_top...],[run_delay_us...]]`。
     /// **件数 0 の段階と標本 0 の役割は `0` 1 文字**で書く (静かな窓を小さくするため)。
+    /// 上位のスレッドが 1 本も無い窓も `0`、`schedstat` が読めなければ `run_delay_us` は `null`。
     fn push_row(&self, out: &mut String) {
         let _ = write!(out, "[{},{},{},[", self.t, self.requests, self.cpu_us);
         push_windows(out, &self.stages.folded_connect());
@@ -472,9 +574,48 @@ impl Sample {
         }
         let _ = write!(
             out,
-            "],[{},{},{}]]",
+            "],[{},{},{}],",
             self.queue_waited, self.queue_ms_sum, self.queue_ms_max
         );
+        // 上位のスレッド: `[[tid,"comm",role,cpu_us,running],…]` (空の窓は `0`)
+        if self.threads_top[0].tid == 0 {
+            out.push('0');
+        } else {
+            out.push('[');
+            for (i, t) in self
+                .threads_top
+                .iter()
+                .take_while(|t| t.tid != 0)
+                .enumerate()
+            {
+                if i > 0 {
+                    out.push(',');
+                }
+                let _ = write!(
+                    out,
+                    "[{},\"{}\",{},{},{}]",
+                    t.tid,
+                    t.comm_str(),
+                    t.role,
+                    t.cpu_us,
+                    t.running
+                );
+            }
+            out.push(']');
+        }
+        match &self.run_delay_us {
+            None => out.push_str(",null]"),
+            Some(v) => {
+                out.push_str(",[");
+                for (i, d) in v.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    let _ = write!(out, "{}", d);
+                }
+                out.push_str("]]");
+            }
+        }
     }
 }
 
@@ -697,14 +838,20 @@ pub struct Sampler {
     root: std::path::PathBuf,
     /// 主スレッド = accept 役の tid (= pid)
     main_tid: u32,
-    /// 前回のスレッド別 utime + stime (clock tick)
-    prev: std::collections::HashMap<u32, u64>,
+    /// 前回のスレッド別 (utime + stime (clock tick)、`schedstat` の走れずに待った ns)
+    prev: std::collections::HashMap<u32, (u64, u64)>,
     /// 読み取りの使い回し用
     buf: String,
     /// 1 clock tick の us
     tick_us: u64,
     /// 5 秒の窓へ渡す前の溜め
     pending: Threads,
+    /// 同上、スレッド単位 (tid → その窓の CPU と `running` の数)。**窓ごとに空にする**
+    pending_top: std::collections::HashMap<u32, TopThread>,
+    /// 同上、役割ごとの「走れずに待った時間」(us)
+    pending_run_delay: [u64; ROLES.len()],
+    /// `schedstat` が 1 本でも読めたか (読めなければ `run_delay_us` は `null`)
+    schedstat_readable: bool,
 }
 
 impl Sampler {
@@ -716,6 +863,9 @@ impl Sampler {
             buf: String::with_capacity(1024),
             tick_us: 1_000_000 / clock_tick(),
             pending: Threads::default(),
+            pending_top: std::collections::HashMap::new(),
+            pending_run_delay: [0; ROLES.len()],
+            schedstat_readable: false,
         }
     }
 
@@ -734,18 +884,33 @@ impl Sampler {
             return;
         };
         let mut next = std::collections::HashMap::with_capacity(scan.tasks.len());
+        self.schedstat_readable |= scan.schedstat_readable;
         for t in &scan.tasks {
             let role = role_of(t.tid, self.main_tid, &t.comm);
-            let prev = self.prev.get(&t.tid).copied().unwrap_or(0);
-            next.insert(t.tid, t.ticks);
+            let (prev_ticks, prev_delay) = self.prev.get(&t.tid).copied().unwrap_or((0, 0));
+            let delay_ns = t.run_delay_ns.unwrap_or(0);
+            next.insert(t.tid, (t.ticks, delay_ns));
+            let cpu_us = t.ticks.saturating_sub(prev_ticks) * self.tick_us;
             let w = &mut self.pending[role];
-            w.cpu_us += t.ticks.saturating_sub(prev) * self.tick_us;
+            w.cpu_us += cpu_us;
             w.samples += 1;
             let (slot, unknown) = state_slot(t.syscall, t.state);
             w.states[slot] += 1;
             if let Some(nr) = unknown {
                 profile.note_unknown_syscall(nr);
             }
+            // **走れるのに走れなかった時間**も増分で積む (はじめて見たスレッドは
+            // 「生まれてからのぶん」がそのまま入る。CPU と同じ流儀)
+            self.pending_run_delay[role] += delay_ns.saturating_sub(prev_delay) / 1_000;
+            // スレッド単位 (上位 8 本を切り出す元。**窓のあいだだけ持つ**)
+            let e = self.pending_top.entry(t.tid).or_insert(TopThread {
+                tid: t.tid,
+                role: role as u8,
+                comm: TopThread::comm_bytes(&t.comm),
+                ..TopThread::default()
+            });
+            e.cpu_us += cpu_us;
+            e.running += u32::from(slot == STATE_RUNNING);
         }
         self.prev = next;
         profile.set_sampler(if scan.syscalls_readable {
@@ -756,8 +921,32 @@ impl Sampler {
     }
 
     /// 溜めた標本を取り出して 0 に戻す (5 秒の窓へ)。
-    fn take(&mut self) -> Threads {
-        std::mem::take(&mut self.pending)
+    ///
+    /// 返すのは (役割ごと, CPU の多い順の上位 [`TOP_THREADS`] 本, 役割ごとの
+    /// 走れずに待った時間 (`schedstat` が読めなければ `None`))。
+    fn take(
+        &mut self,
+    ) -> (
+        Threads,
+        [TopThread; TOP_THREADS],
+        Option<[u64; ROLES.len()]>,
+    ) {
+        // **何もしなかったスレッドは残さない** (暇なとき 140 本のうち 8 本を
+        // 「CPU 0 の役立たず」で埋めても読む人の助けにならない)
+        let mut all: Vec<TopThread> = self
+            .pending_top
+            .drain()
+            .map(|(_, t)| t)
+            .filter(|t| t.cpu_us > 0 || t.running > 0)
+            .collect();
+        all.sort_unstable_by(|x, y| y.cpu_us.cmp(&x.cpu_us).then(x.tid.cmp(&y.tid)));
+        let mut top = [TopThread::default(); TOP_THREADS];
+        for (o, t) in top.iter_mut().zip(all.iter()) {
+            *o = *t;
+        }
+        let run_delay = std::mem::take(&mut self.pending_run_delay);
+        let run_delay = self.schedstat_readable.then_some(run_delay);
+        (std::mem::take(&mut self.pending), top, run_delay)
     }
 }
 
@@ -846,16 +1035,19 @@ fn tick<M: Source>(metrics: &M, prev: &mut Tick, sampler: Option<&mut Sampler>) 
     {
         *o = a.saturating_sub(*b);
     }
+    let (threads, threads_top, run_delay_us) = sampler.map(Sampler::take).unwrap_or_default();
     let s = Sample {
         t: now_epoch(),
         requests: now.requests.saturating_sub(prev.requests),
         cpu_us: now.cpu_us.saturating_sub(prev.cpu_us),
         stages: metrics.take_stages(),
-        threads: sampler.map(Sampler::take).unwrap_or_default(),
+        threads,
         locks,
         queue_waited: now.queue_waited.saturating_sub(prev.queue_waited),
         queue_ms_sum: now.queue_ms_sum.saturating_sub(prev.queue_ms_sum),
         queue_ms_max: crate::sync::take_queue_window_max(),
+        threads_top,
+        run_delay_us,
     };
     *prev = now;
     metrics.profile().push(s);
@@ -985,9 +1177,10 @@ mod tests {
             ..Sample::default()
         }
         .push_row(&mut row);
+        // 上位のスレッドが 1 本も無い窓も `0` 1 文字、`schedstat` が読めなければ `null`
         assert_eq!(
             row,
-            "[7,0,0,[0,0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0],[0,0,0]]"
+            "[7,0,0,[0,0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0],[0,0,0],0,null]"
         );
     }
 
@@ -1075,30 +1268,41 @@ mod tests {
     fn the_sampler_accumulates_per_role_deltas() {
         let dir = std::env::temp_dir().join(format!("t143-sampler-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let write = |tid: u32, comm: &str, ticks: u64, syscall: Option<&str>| {
-            let d = dir.join(tid.to_string());
-            std::fs::create_dir_all(&d).unwrap();
-            std::fs::write(
-                d.join("stat"),
-                format!(
-                    "{} ({}) S 1 1 0 0 -1 0 0 0 0 0 {} 0 0 0 20 0 8 0 100 0\n",
-                    tid, comm, ticks
-                ),
-            )
-            .unwrap();
-            match syscall {
-                Some(v) => std::fs::write(d.join("syscall"), v).unwrap(),
-                None => {
-                    let _ = std::fs::remove_file(d.join("syscall"));
+        // `schedstat` は `"run_time_ns wait_time_ns nr_timeslices"` の 1 行 (`None` で置かない)
+        let write =
+            |tid: u32, comm: &str, ticks: u64, syscall: Option<&str>, delay_ns: Option<u64>| {
+                let d = dir.join(tid.to_string());
+                std::fs::create_dir_all(&d).unwrap();
+                std::fs::write(
+                    d.join("stat"),
+                    format!(
+                        "{} ({}) S 1 1 0 0 -1 0 0 0 0 0 {} 0 0 0 20 0 8 0 100 0\n",
+                        tid, comm, ticks
+                    ),
+                )
+                .unwrap();
+                match syscall {
+                    Some(v) => std::fs::write(d.join("syscall"), v).unwrap(),
+                    None => {
+                        let _ = std::fs::remove_file(d.join("syscall"));
+                    }
                 }
-            }
-        };
-        write(1, "proxy", 10, Some("running\n"));
+                match delay_ns {
+                    Some(ns) => {
+                        std::fs::write(d.join("schedstat"), format!("999 {} 3\n", ns)).unwrap()
+                    }
+                    None => {
+                        let _ = std::fs::remove_file(d.join("schedstat"));
+                    }
+                }
+            };
+        write(1, "proxy", 10, Some("running\n"), Some(1_000));
         write(
             2,
             "conn",
             20,
             Some(format!("{} 0x0\n", SYSCALL_NRS[5]).as_str()),
+            Some(5_000),
         );
         let p = Profile::default();
         let mut s = Sampler::new(dir.clone(), 1);
@@ -1118,27 +1322,198 @@ mod tests {
         );
         let first = conn.cpu_us;
         assert!(first > 0, "はじめて見たスレッドは累計がそのまま増分");
-        // 2 回目: 5 tick だけ進める
+        // 走れずに待った時間も「はじめて見たスレッド」は累計がそのまま増分 (us へ落とす)
+        assert_eq!(s.pending_run_delay[0], 1);
+        assert_eq!(s.pending_run_delay[1], 5);
+        // 2 回目: 5 tick だけ進め、待ち時間も 3,000 ns 進める
         write(
             2,
             "conn",
             25,
             Some(format!("{} 0x0\n", SYSCALL_NRS[5]).as_str()),
+            Some(8_000),
         );
         s.sample(&p);
         let delta = s.pending[1].cpu_us - first;
         assert_eq!(delta, 5 * (1_000_000 / clock_tick()), "増分だけ積む");
+        assert_eq!(s.pending_run_delay[1], 5 + 3, "待ち時間も増分だけ積む");
         // `syscall` が無ければ partial
-        write(2, "conn", 25, None);
-        write(1, "proxy", 10, None);
+        write(2, "conn", 25, None, Some(8_000));
+        write(1, "proxy", 10, None, Some(1_000));
         s.sample(&p);
         assert_eq!(p.sampler(), SamplerState::Partial);
         assert!(s.pending[1].states[names.iter().position(|n| *n == "sleeping").unwrap()] >= 1);
         // 取り出したら 0 に戻る
-        let taken = s.take();
+        let (taken, top, run_delay) = s.take();
         assert!(taken.iter().any(|r| r.samples > 0));
         assert!(s.pending.iter().all(|r| r.samples == 0));
+        // 上位のスレッドは CPU の多い順 (conn の tid 2 が先)
+        assert_eq!(top[0].tid, 2);
+        assert_eq!(top[0].comm_str(), "conn");
+        assert_eq!(ROLES[top[0].role as usize], "conn");
+        assert_eq!(top[1].tid, 1);
+        assert_eq!(top[2], TopThread::default(), "残りは空の枠");
+        assert_eq!(top[0].running, 0, "conn は splice の中に居た");
+        assert_eq!(top[1].running, 2, "主スレッドは 1・2 回目が running");
+        // 役割ごとの待ち時間 (accept 1 us / conn 8 us) が取り出せ、次の窓は 0 から
+        let d = run_delay.expect("schedstat が読めている");
+        assert_eq!(d[0], 1);
+        assert_eq!(d[1], 8);
+        assert!(s.pending_run_delay.iter().all(|v| *v == 0));
+        assert!(s.pending_top.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `schedstat` が読めない環境では `run_delay_us` が `null` になること (受け入れ基準)。
+    #[test]
+    fn the_run_delay_is_null_without_schedstat() {
+        let dir = std::env::temp_dir().join(format!("t150-noschedstat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("1")).unwrap();
+        std::fs::write(
+            dir.join("1/stat"),
+            "1 (proxy) R 1 1 0 0 -1 0 0 0 0 0 10 0 0 0 20 0 8 0 100 0\n",
+        )
+        .unwrap();
+        let p = Profile::default();
+        let mut s = Sampler::new(dir.clone(), 1);
+        s.sample(&p);
+        let (_, top, run_delay) = s.take();
+        assert_eq!(run_delay, None, "schedstat が無ければ null");
+        assert_eq!(top[0].tid, 1, "上位のスレッドは読めている");
+        // JSON も `null` で書かれること (dashboard は位置で開くので数を変えない)
+        let mut row = String::new();
+        Sample {
+            threads_top: top,
+            run_delay_us: run_delay,
+            ..Sample::default()
+        }
+        .push_row(&mut row);
+        assert!(row.ends_with(",null]"), "{}", row);
+        assert!(row.contains("[[1,\"proxy\",0,"), "{}", row);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 空の窓は `threads_top` が `0` 1 文字、`run_delay_us` は配列のまま。
+    #[test]
+    fn an_empty_window_writes_a_bare_zero() {
+        let mut row = String::new();
+        Sample {
+            run_delay_us: Some([0; ROLES.len()]),
+            ..Sample::default()
+        }
+        .push_row(&mut row);
+        assert!(row.ends_with(",0,[0,0,0,0,0,0,0,0,0]]"), "{}", row);
+    }
+
+    /// 60 秒へ畳むとき、上位のスレッドは **tid を鍵に**足して上位 8 に切り直す。
+    #[test]
+    fn the_top_threads_merge_by_tid() {
+        let t = |tid: u32, cpu_us: u64| TopThread {
+            tid,
+            cpu_us,
+            running: 1,
+            role: 1,
+            comm: TopThread::comm_bytes("conn"),
+        };
+        let mut a = Sample {
+            threads_top: [
+                t(1, 10),
+                t(2, 5),
+                t(3, 4),
+                t(4, 3),
+                t(5, 2),
+                t(6, 1),
+                t(7, 1),
+                t(8, 1),
+            ],
+            run_delay_us: Some([1; ROLES.len()]),
+            ..Sample::default()
+        };
+        let b = Sample {
+            threads_top: [
+                t(9, 9),
+                t(2, 100),
+                t(3, 1),
+                t(4, 1),
+                t(5, 1),
+                t(6, 1),
+                t(7, 1),
+                t(8, 1),
+            ],
+            run_delay_us: Some([2; ROLES.len()]),
+            ..Sample::default()
+        };
+        a.merge_into(&b);
+        // tid 2 は 5 + 100 = 105 で首位、同じ tid が 2 度出ない
+        assert_eq!(a.threads_top[0].tid, 2);
+        assert_eq!(a.threads_top[0].cpu_us, 105);
+        assert_eq!(a.threads_top[0].running, 2);
+        assert_eq!(a.threads_top[1].tid, 1);
+        let mut tids: Vec<u32> = a.threads_top.iter().map(|x| x.tid).collect();
+        tids.sort_unstable();
+        tids.dedup();
+        assert_eq!(tids.len(), TOP_THREADS, "8 本とも別のスレッド");
+        assert_eq!(a.run_delay_us, Some([3; ROLES.len()]));
+        // 片方しか読めていない窓は読めた方をそのまま残す
+        let mut c = Sample::default();
+        c.merge_into(&b);
+        assert_eq!(c.run_delay_us, Some([2; ROLES.len()]));
+    }
+
+    /// **実機で**、回り続けているスレッドが `threads_top` の先頭に出ること (T15.0 (5))。
+    ///
+    /// `sample` は 2 回呼ぶ (CPU は前回との差で積むので、1 回目は「生まれてからのぶん」)。
+    /// 空回りの犯人を名前で指せるのがこの欄の目的なので `comm` も見る。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_busiest_thread_comes_first_in_threads_top() {
+        use std::sync::Arc;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let s2 = Arc::clone(&stop);
+        let spinner = thread::Builder::new()
+            .name("t150-spin".into())
+            .spawn(move || {
+                // 最長 2 秒回し続ける (1 clock tick = 10 ms なので 200 tick ぶん)
+                let until = Instant::now() + Duration::from_secs(2);
+                let mut x = 0u64;
+                while Instant::now() < until && !s2.load(Ordering::Relaxed) {
+                    for _ in 0..10_000 {
+                        x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                    }
+                }
+                std::hint::black_box(x);
+            })
+            .expect("spawn t150-spin");
+
+        let p = Profile::default();
+        let mut s = Sampler::for_self();
+        s.sample(&p);
+        thread::sleep(Duration::from_millis(500));
+        s.sample(&p);
+        stop.store(true, Ordering::Relaxed);
+        let (_, top, run_delay) = s.take();
+        assert_eq!(
+            top[0].comm_str(),
+            "t150-spin",
+            "回り続けているスレッドが先頭に出ない: {:?}",
+            top.iter()
+                .map(|t| (t.tid, t.comm_str(), t.cpu_us))
+                .collect::<Vec<_>>()
+        );
+        assert!(top[0].tid != 0 && top[0].tid != std::process::id());
+        assert!(top[0].cpu_us > 0);
+        assert!(top[0].running > 0, "走っている標本が 1 つも無い");
+        // `schedstat` は `CONFIG_SCHEDSTATS` の無いカーネルでは**ファイルごと無い**
+        // (この開発機がそれ。受け入れ基準の「読めない環境で `null`」はここで通る)
+        let has_schedstat = std::path::Path::new("/proc/thread-self/schedstat").exists();
+        assert_eq!(
+            run_delay.is_some(),
+            has_schedstat,
+            "schedstat の読める / 読めないと `run_delay_us` が食い違う"
+        );
+        let _ = spinner.join();
     }
 
     /// `/proc` が読めない環境では `off` に落ちる (受け入れ基準)。
@@ -1150,6 +1525,17 @@ mod tests {
         s.sample(&p);
         assert_eq!(p.sampler(), SamplerState::Off);
         assert_eq!(p.sampler().name(), "off");
+    }
+
+    /// 1 標本の大きさ (窓のメモリ = これ × (720 + 1,440))。
+    ///
+    /// **数字を doc に書き写さない**ため、知りたいときはこのテストを `-- --nocapture` で
+    /// 回す。縛るのは上限だけ (増えたことに気づけるように)。
+    #[test]
+    fn a_sample_stays_small_enough_for_the_rings() {
+        let bytes = std::mem::size_of::<Sample>();
+        eprintln!("size_of::<Sample>() = {} B", bytes);
+        assert!(bytes <= 4096, "1 標本が大きすぎる: {} B", bytes);
     }
 
     /// 表に無いシステムコール番号は `sys_N` 用に控える (上限 [`MAX_UNKNOWN`] 種)。
