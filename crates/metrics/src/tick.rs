@@ -36,6 +36,10 @@ pub fn spawn_every(
 ) -> JoinHandle<()> {
     // 前に転送速度を控えた時刻 (T14.39)。1 回目は `None` = 控えるだけで速さは出さない
     let mut swept: Option<Instant> = None;
+    // 前の標本の通算 (`requests` / `bytes`)。**区間の値をここで作る** (T15.0 (10))。
+    // リングから引き算で作らないのは、再起動の段差と欠けた標本で狂うため。
+    // 1 回目は `None` = 控えるだけで差は出さない (`swept` と同じ形)
+    let mut totals: Option<(u64, u64)> = None;
     let mut record = move |metrics: &Arc<Metrics>, cache: &Cache| {
         // いまの転送速度 (`/connections` の `rate_bps`。T14.39)。全 slot の `bytes` を
         // 控えて差分 ÷ この周期を書く。**書くのはこのスレッドだけ**で、接続の経路は 0 増
@@ -54,7 +58,14 @@ pub fn spawn_every(
         metrics.history.transfer.roll(now);
         // ホスト別の時系列の窓送りと上位 16 の入れ替え (T14.22)。**5 分の境目でだけ**動く
         metrics.roll_host_series();
-        let sample = take_sample(metrics, cache);
+        let mut sample = take_sample(metrics, cache);
+        // 通算を標本化した 2 列 (`requests` / `bytes`) の**区間の値** (T15.0 (10))。
+        // 既存の 2 列はそのまま残し、隣に足す
+        if let Some((requests, bytes)) = totals {
+            sample.requests_delta = sample.requests.saturating_sub(requests);
+            sample.bytes_delta = sample.bytes.saturating_sub(bytes);
+        }
+        totals = Some((sample.requests, sample.bytes));
         // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
         crate::daily::tick(metrics, &sample);
         // 同じ境目で前日ぶんの `/snapshot` を 1 ファイル残す (T14.34)。こちらも
@@ -126,6 +137,17 @@ pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
         threads_max: threads,
         fds_max: fds,
         evicted_idle: metrics.evicted_idle.load(Ordering::Relaxed),
+        // 利用者が待つ時間 (`queue + client_read + dns + connect`。T15.0 (2) が埋めた)
+        wait: iv.wait,
+        // いま warm な名前の**件数** (`/status` の `dns.warm` と同じ数。T15.0 (8))。
+        // `config.dns_warm` は窓の**秒数**で意味が違う
+        dns_warm: crate::dns::warm_count() as u64,
+        // 区間の値は `spawn_every` のクロージャが前回の通算との差で埋める (T15.0 (10))。
+        // ここで `take_sample` 単体を呼ぶ道 (`/history?summary=1` の道具など) では 0
+        requests_delta: 0,
+        bytes_delta: 0,
+        // 5 秒より短い山も落とさない同時接続の山 (T15.0 (10))。読むと今の本数に戻る
+        active_peak: metrics.take_active_peak() as u64,
     }
 }
 

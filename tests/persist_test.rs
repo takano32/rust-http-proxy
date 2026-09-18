@@ -266,6 +266,9 @@ mod v2 {
     pub const FILE_SIZE: usize = 4 * 1024 * 1024;
     const HEADER: usize = 4096;
     const SAMPLE_RECORD: usize = 512;
+    /// 版 2 の標本の固定の欄の数 (62 項目 × 8 B = 496 B。残りが CRC までの余白)。
+    /// `evicted_idle` は T14.2 で 63 項目目に足したので、版 2 には入っていない。
+    pub const SAMPLE_ITEMS: usize = 62;
     const STATS_RECORD: usize = 576;
     const OVERRIDE_RECORD: usize = 160;
     /// `(レコード長, 本数)` を割り付けの順に。
@@ -472,7 +475,10 @@ fn write_version_two_rrd(path: &std::path::Path, fx: &Fixture) {
                 active: i % 7,
                 ..Sample::default()
             };
-            v2::put(&mut buf, res, i, &s.encode());
+            // 版 2 の 1 レコードは 512 B (payload 508 B) で、標本は **62 項目**だった
+            // (`evicted_idle` は T14.2 で 63 項目目に足したもの。T15.0 (10) で今の
+            // `encode` は 83 項目 = 664 B になったので、版 2 のぶんだけ切って書く)
+            v2::put(&mut buf, res, i, &s.encode()[..v2::SAMPLE_ITEMS * 8]);
         }
     }
     for (i, (host, block, expires, created)) in fx.overrides.iter().enumerate() {

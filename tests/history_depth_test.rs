@@ -7,15 +7,20 @@
 //! - `?n=4320` で 6 時間ぶん (4,320 本) 返り、`?n=` は上下に丸まる
 //! - `?res=60` / `?res=3600` は 1 本も変えない
 //! - **`.rrd` は 8,388,608 B のまま**で、書くのも読み戻すのも今までどおり最新 720 本
-//! - メモリの増分 (`Sample` の `size_of` × 4,320 と、満杯にしたときの RSS) が 2.5 MiB 以下
+//! - メモリの増分 (`Sample` の `size_of` × 4,320 と、満杯にしたときの RSS) が上限以下
 
 mod common;
 
 use common::*;
 use rust_http_proxy::history::{CAPACITY, DEFAULT_N, History, RESOLUTIONS, Sample};
 
-/// 受け入れ基準のメモリ上限 (2.5 MiB)。
-const MAX_GROWTH: usize = 2_621_440;
+/// 受け入れ基準のメモリ上限 (**3.25 MiB**)。
+///
+/// T14.32 の受け入れ基準は 2.5 MiB で、標本 1 本が 504 B のときの数字だった。
+/// T15.0 (10) で `wait` の窓 16 項目 + 4 列 = **1 本 +160 B** (664 B) になったので、
+/// 5 秒のリングのぶん (160 B × 4,320 = 0.66 MiB) を足して引き直してある
+/// (余裕は T14.32 のときと同じ 0.4 MiB 強)。
+const MAX_GROWTH: usize = 3_407_872;
 
 /// `.rrd` の固定の大きさ (版 3。T14.14)。
 const RRD_SIZE: u64 = 8 * 1024 * 1024;
@@ -24,7 +29,7 @@ const RRD_SIZE: u64 = 8 * 1024 * 1024;
 const T0: u64 = 1_770_000_000;
 
 /// 3 本目が**プロセス全体の RSS** の差を見るので、同じバイナリの隣のテストが 1.9 MB の応答を
-/// 組む瞬間と重なると 2.5 MiB の上限を越える (20 回に 5 回)。3 本を直列にする
+/// 組む瞬間と重なると上限を越える (20 回に 5 回)。3 本を直列にする
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -180,10 +185,10 @@ fn test_integration_the_state_file_still_keeps_only_720_five_second_samples() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **受け入れ基準**: 増えるメモリは `Sample` の `size_of` × 4,320 だけで 2.5 MiB 以下。
-/// 満杯にしたときの RSS の増分も 2.5 MiB 以下 (debug で見る)。
+/// **受け入れ基準**: 増えるメモリは `Sample` の `size_of` × 4,320 だけで [`MAX_GROWTH`] 以下。
+/// 満杯にしたときの RSS の増分も同じ上限以下 (debug で見る)。
 #[test]
-fn test_integration_six_hours_of_samples_cost_less_than_2_5_mib() {
+fn test_integration_six_hours_of_samples_stay_under_the_memory_cap() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let one = size_of::<Sample>();
     let full = one * CAPACITY;
@@ -229,7 +234,8 @@ fn test_integration_six_hours_of_samples_cost_less_than_2_5_mib() {
     );
     assert!(
         delta <= MAX_GROWTH as u64,
-        "RSS の増分が {} B (2.5 MiB 超)",
-        delta
+        "RSS の増分が {} B (上限 {} B 超)",
+        delta,
+        MAX_GROWTH
     );
 }
