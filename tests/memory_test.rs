@@ -60,6 +60,38 @@ fn memory_of(status: &str) -> String {
     panic!("memory の括弧が閉じていない: {}", rest);
 }
 
+/// `memory` の `rings` / `rings_used` の 1 つを切り出す (同じ鍵が 2 度出るので必要。T15.0 (13))。
+fn sub_object(mem: &str, key: &str) -> String {
+    let pat = format!("\"{}\":{{", key);
+    let at = mem
+        .find(&pat)
+        .unwrap_or_else(|| panic!("no {} in {}", key, mem));
+    let rest = &mem[at + pat.len() - 1..];
+    let end = rest
+        .find('}')
+        .unwrap_or_else(|| panic!("{} の括弧が閉じていない: {}", key, rest));
+    rest[..=end].to_string()
+}
+
+/// `rings` と `rings_used` が持つ鍵 (`total` を除く。この順でなくてよい)。
+///
+/// `quantiles` は直近 1,024 本の標本の環状 (T14.31)、`readers` は内部エンドポイントを
+/// 引いた接続元の表 (環状ではない。T14.53)、`profile` は段階とスレッドの窓
+/// (T14.3。T14.21 が落としていたのを T15.0 (13) で足した)。
+const RING_KEYS: [&str; 11] = [
+    "recent",
+    "errors",
+    "bursts",
+    "log",
+    "events",
+    "trace",
+    "history",
+    "hostseries",
+    "quantiles",
+    "readers",
+    "profile",
+];
+
 /// `null` を含めて `process_rss_bytes` を文字列で取る。
 fn cache_rss(status: &str) -> String {
     status
@@ -140,26 +172,33 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     }
 
     // (4) リングの容量は足し算が合っていて、`/status` を太らせない大きさに収まっている
-    let rings: u64 = [
-        "recent",
-        "errors",
-        "bursts",
-        "log",
-        "events",
-        "trace",
-        "history",
-        "hostseries",
-        // 直近 1,024 本の標本の環状 (T14.31)
-        "quantiles",
-        // 内部エンドポイントを引いた接続元の表 (環状ではない。T14.53)
-        "readers",
-    ]
-    .iter()
-    .map(|k| num(&mem, k).unwrap_or_else(|| panic!("{} が null: {}", k, mem)))
-    .sum();
-    assert_eq!(num(&mem, "total"), Some(rings), "{}", mem);
+    let rings_json = sub_object(&mem, "rings");
+    let rings: u64 = RING_KEYS
+        .iter()
+        .map(|k| num(&rings_json, k).unwrap_or_else(|| panic!("{} が null: {}", k, rings_json)))
+        .sum();
+    assert_eq!(num(&rings_json, "total"), Some(rings), "{}", rings_json);
     assert!(rings > 0 && rings < 64 * 1024 * 1024, "{}", mem);
-    assert!(mem.len() < 512, "{} バイト: {}", mem.len(), mem);
+    assert!(mem.len() < 1024, "{} バイト: {}", mem.len(), mem);
+
+    // (4b) いま埋まっているぶんは同じ鍵で、どれも容量を越えない (T15.0 (13))
+    let used_json = sub_object(&mem, "rings_used");
+    let used: u64 = RING_KEYS
+        .iter()
+        .map(|k| {
+            let cap = num(&rings_json, k).unwrap();
+            let now = num(&used_json, k).unwrap_or_else(|| panic!("{} が null: {}", k, used_json));
+            assert!(now <= cap, "rings_used.{} {} > rings.{} {}", k, now, k, cap);
+            now
+        })
+        .sum();
+    assert_eq!(num(&used_json, "total"), Some(used), "{}", used_json);
+    assert!(
+        used <= rings,
+        "rings_used.total {} > rings.total {}",
+        used,
+        rings
+    );
 
     // (5) キャッシュは空なのでヒープには何も持っていない。`mallopt` を掛けるのは
     // `main.rs` だけなので、この場では `0` (= glibc の既定のまま) が正しい

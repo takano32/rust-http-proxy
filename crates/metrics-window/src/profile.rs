@@ -66,6 +66,22 @@ use crate::window::Window;
 /// 段階の窓を畳む間隔と本数 (5 秒 × 720 = 1 時間、60 秒 × 1,440 = 1 日)。
 pub const RESOLUTIONS: [(u64, usize); 2] = [(5, 720), (60, 1440)];
 
+/// 標本 1 本のバイト (`/status` の `memory.rings` の見積もりが使う。T15.0 (13))。
+///
+/// **数字をここに書き写さない** (型を足すたびに古くなる)。実際の値は単体テスト
+/// `a_sample_stays_small_enough_for_the_rings` を `-- --nocapture` で回すと出る。
+pub const fn sample_bytes() -> usize {
+    size_of::<Sample>()
+}
+
+/// 2 つの環が**満杯のとき**のバイト (`/status` の `memory.rings.profile`。T15.0 (13))。
+///
+/// T14.21 の `rings` は「満杯のときの見積もり」で揃えてあるので、ここも同じ数え方。
+/// いま埋まっているぶんは [`Profile::used_bytes`]。
+pub const fn capacity_bytes() -> usize {
+    (RESOLUTIONS[0].1 + RESOLUTIONS[1].1) * sample_bytes()
+}
+
 /// 細かい方の刻み。
 pub const TICK: Duration = Duration::from_secs(RESOLUTIONS[0].0);
 
@@ -759,6 +775,14 @@ impl Profile {
 
     pub fn is_empty(&self) -> bool {
         self.len(0) == 0
+    }
+
+    /// **いま環に入っているぶん**のバイト (`/status` の `memory.rings_used.profile`。T15.0 (13))。
+    ///
+    /// `--lite` では標本を 1 本も作らないので 0。満杯のときの見積もりは
+    /// [`capacity_bytes`]。
+    pub fn used_bytes(&self) -> usize {
+        (self.len(0) + self.len(1)) * sample_bytes()
     }
 
     /// 直近 `n` 標本を 1 つに足し合わせる (画面の積み上げと CPU/要求 の要約用)。
@@ -1598,8 +1622,47 @@ mod tests {
     #[test]
     fn a_sample_stays_small_enough_for_the_rings() {
         let bytes = std::mem::size_of::<Sample>();
-        eprintln!("size_of::<Sample>() = {} B", bytes);
+        eprintln!(
+            "size_of::<Sample>() = {} B、満杯の窓 = {} B ({:.2} MiB)",
+            bytes,
+            capacity_bytes(),
+            capacity_bytes() as f64 / 1_048_576.0
+        );
         assert!(bytes <= 4096, "1 標本が大きすぎる: {} B", bytes);
+        assert_eq!(sample_bytes(), bytes);
+        assert_eq!(
+            capacity_bytes(),
+            (RESOLUTIONS[0].1 + RESOLUTIONS[1].1) * bytes
+        );
+    }
+
+    /// `used_bytes` は**いま入っているぶん**なので、標本を積むと増える (T15.0 (13))。
+    ///
+    /// 「起動直後と 1 時間後で増える」は待てないので、`push` を 2 回して見る。
+    /// 満杯の見積もり ([`capacity_bytes`]) は動かない。
+    #[test]
+    fn used_bytes_grows_with_the_samples_and_never_passes_the_capacity() {
+        let p = Profile::default();
+        assert_eq!(p.used_bytes(), 0, "`--lite` と起動直後は 1 本も無い");
+        p.push(Sample {
+            t: 1_700_000_000,
+            requests: 1,
+            ..Sample::default()
+        });
+        let one = p.used_bytes();
+        assert_eq!(one, sample_bytes(), "5 秒の環に 1 本");
+        p.push(Sample {
+            t: 1_700_000_005,
+            requests: 2,
+            ..Sample::default()
+        });
+        assert!(p.used_bytes() > one, "{} -> {}", one, p.used_bytes());
+        assert!(
+            p.used_bytes() <= capacity_bytes(),
+            "{} > {}",
+            p.used_bytes(),
+            capacity_bytes()
+        );
     }
 
     /// 表に無いシステムコール番号は `sys_N` 用に控える (上限 [`MAX_UNKNOWN`] 種)。

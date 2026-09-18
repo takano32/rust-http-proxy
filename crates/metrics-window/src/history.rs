@@ -670,6 +670,14 @@ impl History {
         self.rings[0].locked().len()
     }
 
+    /// その解像度の標本数 (`res` は 0=5 秒, 1=1 分, 2=1 時間)。
+    ///
+    /// [`Self::len`] は 5 秒しか返さないので、3 つ足した「いま埋まっているぶん」
+    /// (`/status` の `memory.rings_used.history`) を出すのに要る (T15.0 (13))。
+    pub fn len_res(&self, res: usize) -> usize {
+        self.rings[res.min(RESOLUTIONS.len() - 1)].locked().len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

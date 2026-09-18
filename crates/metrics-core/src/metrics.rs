@@ -1003,6 +1003,15 @@ impl Metrics {
         }
     }
 
+    /// `memory.rings_used` が要る 2 つの件数 (分位点の標本と、追っているホストの枠)。
+    ///
+    /// どちらも**ホスト表と同じ鍵の中**に居る (T14.22 / T14.31) ので、1 回で両方読む。
+    /// 鍵の内側でするのは長さを 2 つ読むことだけ (T15.0 (13))。
+    fn rings_used_counts(&self) -> (usize, usize) {
+        let h = self.hosts.locked();
+        (h.quantiles.used_slots(), h.series.tracked())
+    }
+
     pub fn to_json(&self) -> String {
         self.to_json_with_cache(None, StatusExtras::default())
     }
@@ -1176,7 +1185,7 @@ impl Metrics {
             // (`settings` のような上の層の部品は `extra` で受け取る)
             crate::kernel::status_json(),
             // RSS の内訳 (T14.21)。`mallinfo2` を読むのはこの経路だけ
-            memory_json(rss, threads, conn_threads, cache),
+            memory_json(self, rss, threads, conn_threads, cache),
             // 直近 1,024 本の正確な分位点 (T14.31)。区間の補間ではない実測の並び
             self.recent_quantiles_json(),
             // いま流れているバイト/秒の合計 (T14.39)。history スレッドが 5 秒ごとに
@@ -1278,12 +1287,23 @@ fn push_env(out: &mut String, extra: &StatusExtras<'_>, cache_json: &str) {
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
 ///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
 /// - `rings` は記録のリングが**満杯のときの見積もり** (固定部 + 文字列の上限。T13.4 / T14.4 /
-///   T14.6 / T14.11 / T14.22 / T14.25 / T14.27 / T14.31)。いま何件入っているかは `/recent` や `/errors` の `total` を見る。
-///   `readers` だけは環状ではなく表 (最大 256 行。T14.53) だが、同じ「満杯のとき」の見積もりで並べてある
+///   T14.6 / T14.11 / T14.22 / T14.25 / T14.27 / T14.31 / T15.0)。0 時間でも 36.6 時間でも
+///   1 バイトも変わらない。`readers` だけは環状ではなく表 (最大 256 行。T14.53) だが、
+///   同じ「満杯のとき」の見積もりで並べてある
 /// - `arenas` は `PROXY_MALLOC_ARENAS` で掛けた上限 (`0` = glibc の既定のまま。T5.6)
+/// - `rings_used` は同じ鍵で**いま埋まっているぶんの実バイト** (T15.0 (13))。
+///   `rings` と同じ 1 件あたりの見積もりに、いま入っている件数を掛けたもので、
+///   必ず `rings_used.<名前> <= rings.<名前>`。割合は出さない (`used ÷ capacity` で
+///   出せるが、割合からは実バイトを戻せない)
 ///
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
-fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<&Cache>) -> String {
+fn memory_json(
+    me: &Metrics,
+    rss: Option<u64>,
+    threads: u64,
+    conn_threads: u64,
+    cache: Option<&Cache>,
+) -> String {
     use crate::events::{Event, MAX_EVENTS, MAX_TEXT};
     use crate::history::{History, RESOLUTIONS, Sample};
     use crate::log::{Line, MAX_LOG_LINE, MAX_LOG_LINES};
@@ -1299,39 +1319,72 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
     /// それ以外のスレッド (`std::thread` の既定)。
     const THREAD_STACK: u64 = 2 * 1024 * 1024;
 
+    // **1 件あたりの見積もりを控えてから**「満杯 = 上限 × 1 件」「いま = 件数 × 1 件」を
+    // 出す (T15.0 (13))。同じ数から作るので `rings_used <= rings` が必ず成り立つ
     let name = size_of::<(String, u32)>();
-    let recent = (MAX_RECENT * (size_of::<RecentEntry>() + MAX_RECENT_TARGET + MAX_CLIENT)) as u64;
-    let errors = (MAX_ERRORS * (size_of::<ErrorEntry>() + MAX_TARGET + MAX_CLIENT)) as u64;
-    let bursts = (MAX_BURSTS
-        * (size_of::<BurstShot>()
-            + MAX_SHOT_CLIENTS * (name + MAX_CLIENT)
-            + MAX_SHOT_TARGETS * (name + MAX_TARGET))) as u64;
-    let log = (MAX_LOG_LINES * (size_of::<Line>() + MAX_LOG_LINE)) as u64;
-    let events = (MAX_EVENTS * (size_of::<Event>() + MAX_TEXT)) as u64;
+    let per_recent = size_of::<RecentEntry>() + MAX_RECENT_TARGET + MAX_CLIENT;
+    let per_error = size_of::<ErrorEntry>() + MAX_TARGET + MAX_CLIENT;
+    let per_burst = size_of::<BurstShot>()
+        + MAX_SHOT_CLIENTS * (name + MAX_CLIENT)
+        + MAX_SHOT_TARGETS * (name + MAX_TARGET);
+    let per_log = size_of::<Line>() + MAX_LOG_LINE;
+    let per_event = size_of::<Event>() + MAX_TEXT;
     // 接続元 1 つの追跡 (T14.27)。**追跡していなければ 1 バイトも確保していない**ので、
     // これも他と同じ「満杯のとき」の見積もり
-    let trace = (crate::trace::MAX_TRACE * crate::trace::MAX_LINE_ESTIMATE) as u64;
+    let per_trace = crate::trace::MAX_LINE_ESTIMATE;
     // ホスト別の時系列は固定長 (上位 16 ホスト × 288 標本 × 5 項目 × 8 B。T14.22)。
     // **上位が 1 つ決まるまでは確保しない**ので、これも「満杯のとき」の見積もり
-    let hostseries = (crate::hostseries::SLOTS
-        * crate::hostseries::SAMPLES
-        * crate::hostseries::FIELDS
-        * size_of::<u64>()) as u64;
+    let per_host_slot = crate::hostseries::SAMPLES * crate::hostseries::FIELDS * size_of::<u64>();
     // 内部エンドポイントを引いた接続元の表 (T14.53)。環状ではないが、同じ「満杯のとき」の
     // 見積もり (最大 256 行 × (鍵 + パス))。**1 行も引かれていなければ 1 バイトも確保しない**
-    let readers =
-        (MAX_READERS * (size_of::<(String, Reader)>() + MAX_CLIENT + MAX_READER_PATH)) as u64;
+    let per_reader = size_of::<(String, Reader)>() + MAX_CLIENT + MAX_READER_PATH;
     // 直近の標本の環状は固定長 (3 系統 × 1,024 本 × 8 B = 24 KiB。T14.31、T15.0 (2))。
     // 1 本目を書くまで確保しないので、これも「満杯のとき」の見積もり
+    let per_quantile_slot = crate::quantiles::BYTES / (3 * crate::quantiles::SAMPLES);
+
+    let recent = (MAX_RECENT * per_recent) as u64;
+    let errors = (MAX_ERRORS * per_error) as u64;
+    let bursts = (MAX_BURSTS * per_burst) as u64;
+    let log = (MAX_LOG_LINES * per_log) as u64;
+    let events = (MAX_EVENTS * per_event) as u64;
+    let trace = (crate::trace::MAX_TRACE * per_trace) as u64;
+    let hostseries = (crate::hostseries::SLOTS * per_host_slot) as u64;
+    let readers = (MAX_READERS * per_reader) as u64;
     let quantiles = crate::quantiles::BYTES as u64;
     // 履歴は 3 解像度の標本 (T12.4。**5 秒はメモリだけ 6 時間 = 4,320 本**。T14.32) と、
     // 閉じた接続の分布の窓 2 つ (T14.6)、速さと半閉じの窓 2 つ (T14.25)。
     // 窓の方は 5 秒 × 720 のままなので [`RESOLUTIONS`] を使う
     let samples: usize = (0..RESOLUTIONS.len()).map(History::capacity).sum();
     let windows = RESOLUTIONS[0].1 + RESOLUTIONS[1].1;
-    let history = (samples * size_of::<Sample>()
-        + windows * size_of::<(u64, ClosedCounts)>()
-        + windows * size_of::<(u64, TransferCounts)>()) as u64;
+    let per_closed = size_of::<(u64, ClosedCounts)>();
+    let per_transfer = size_of::<(u64, TransferCounts)>();
+    let history =
+        (samples * size_of::<Sample>() + windows * per_closed + windows * per_transfer) as u64;
+    // 段階とスレッドの窓 (`/profile`。T14.3)。**T14.21 はこれを落としていた**ので、
+    // `rings.total` が `/status` の見出しの RSS と説明が合わなかった (T15.0 (13))
+    let profile = crate::profile::capacity_bytes() as u64;
+
+    // ここから「いま埋まっているぶん」(T15.0 (13))。読むのは `/status` に来たときだけで、
+    // 数えるのはどれも `len()` (鍵の内側で長さを 1 つ読むだけ)
+    let (quantile_slots, host_slots) = me.rings_used_counts();
+    let recent_used = (me.closed.len() * per_recent) as u64;
+    let errors_used = (me.errors.len() * per_error) as u64;
+    let bursts_used = (me.bursts.len() * per_burst) as u64;
+    let log_used = (crate::log::recent_len() * per_log) as u64;
+    let events_used = (crate::events::len() * per_event) as u64;
+    let trace_used = (crate::trace::len() * per_trace) as u64;
+    let hostseries_used = (host_slots * per_host_slot) as u64;
+    let readers_used = (me.readers.locked().len() * per_reader) as u64;
+    let quantiles_used = (quantile_slots * per_quantile_slot) as u64;
+    let (closed_fine, closed_min, _) = me.history.closed.counts();
+    let (transfer_fine, transfer_min, _) = me.history.transfer.counts();
+    let history_used = ((0..RESOLUTIONS.len())
+        .map(|r| me.history.len_res(r))
+        .sum::<usize>()
+        * size_of::<Sample>()
+        + (closed_fine + closed_min) * per_closed
+        + (transfer_fine + transfer_min) * per_transfer) as u64;
+    let profile_used = me.profile.used_bytes() as u64;
 
     let conn = conn_threads.min(threads);
     let other = threads.saturating_sub(conn_threads);
@@ -1345,7 +1398,10 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             "\"stacks_estimate\":{},\"cache_memory\":{},",
             "\"rings\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
             "\"events\":{},\"trace\":{},\"history\":{},\"hostseries\":{},\"quantiles\":{},",
-            "\"readers\":{},\"total\":{}}},\"arenas\":{}}}"
+            "\"readers\":{},\"profile\":{},\"total\":{}}},\"arenas\":{},",
+            "\"rings_used\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
+            "\"events\":{},\"trace\":{},\"history\":{},\"hostseries\":{},\"quantiles\":{},",
+            "\"readers\":{},\"profile\":{},\"total\":{}}}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -1363,6 +1419,9 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
         hostseries,
         quantiles,
         readers,
+        // **`profile` は `total` の手前に足した** (`readers` までの並びは 1 つも動かさず、
+        // `total` は今までどおり `rings` の最後)。T15.0 (13)
+        profile,
         recent
             + errors
             + bursts
@@ -1372,8 +1431,33 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
             + history
             + hostseries
             + quantiles
-            + readers,
+            + readers
+            + profile,
         crate::sysinfo::arena_max(),
+        // いま埋まっているぶん (T15.0 (13))。**`memory` の鍵の末尾に足した**ので、
+        // `arenas` までの並びは 1 つも動いていない
+        recent_used,
+        errors_used,
+        bursts_used,
+        log_used,
+        events_used,
+        trace_used,
+        history_used,
+        hostseries_used,
+        quantiles_used,
+        readers_used,
+        profile_used,
+        recent_used
+            + errors_used
+            + bursts_used
+            + log_used
+            + events_used
+            + trace_used
+            + history_used
+            + hostseries_used
+            + quantiles_used
+            + readers_used
+            + profile_used,
     )
 }
 

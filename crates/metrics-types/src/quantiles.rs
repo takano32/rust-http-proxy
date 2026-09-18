@@ -217,6 +217,15 @@ impl Quantiles {
     pub fn copy(&self) -> (Copied, Copied, Copied) {
         (self.connect.copy(), self.forward.copy(), self.wait.copy())
     }
+
+    /// **いま環に入っている**標本の数 (3 系統の合計。`/status` の
+    /// `memory.rings_used.quantiles` がバイトに直す。T15.0 (13))。
+    ///
+    /// 満杯なら `3 × SAMPLES` で、そのときのバイトが [`BYTES`]。
+    /// 鍵の内側で数えるのは 3 つの `len()` だけ (写しは取らない)。
+    pub fn used_slots(&self) -> usize {
+        self.connect.len() + self.forward.len() + self.wait.len()
+    }
 }
 
 /// `{"connect":{..},"forward":{..},"wait":{..}}` (`/status` の `recent_quantiles`)。
