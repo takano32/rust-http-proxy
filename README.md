@@ -531,13 +531,16 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (Linux 以外・`/proc/net` の無いコンテナ・状態ファイル無し・まだ名前解決をしていない・
     履歴スレッドが動いていない `--lite` / `PROXY_STATS_PERSIST=off`)。問い合わせ (`?sort=` など) は読みません
   - **`capabilities` (この環境で何が読めるか)**: `/status` と `/config` の `capabilities` に
-    `{"proc_syscall":true,"tcp_info":true,"cgroup_cpu":true,"cgroup_pressure":true,"ipv6_route":true,"resolver_ms":9,"home_writable":true,"checked_at":1758...}`。
+    `{"proc_syscall":true,"tcp_info":true,"cgroup_cpu":true,"cgroup_pressure":true,"ipv6_route":true,"resolver_ms":9,"home_writable":true,"checked_at":1758...,"proc_schedstat":true}`。
     統計の `null` が「無かった」のか「読めなかった」のかを先に答えるためのもので、
     `proc_syscall` は `/proc/self/task/<tid>/syscall` (スレッドの状態)、`tcp_info` は待ち受けソケットへの
     `getsockopt(SOL_TCP, TCP_INFO)` (カーネルの RTT と再送)、`cgroup_cpu` / `cgroup_pressure` は自分の cgroup の
     `cpu.stat` / `cpu.pressure` (CPU の絞りと PSI)、`ipv6_route` は `/proc/net/ipv6_route` の既定経路、
     `resolver_ms` は `example.com` を 1 回引くのにかかった ms (締め切り 2 秒、失敗は `null`)、
-    `home_writable` は `$HOME` に書けるか (状態ファイルの置き場) を見ます。
+    `home_writable` は `$HOME` に書けるか (状態ファイルの置き場)、
+    `proc_schedstat` は `/proc/self/task/<tid>/schedstat` (走れるのに走れなかった時間。`/profile` の
+    `run_delay_us`) を見ます。`schedstat` は `CONFIG_SCHEDSTATS` を入れていないカーネルでは
+    **ファイルごと無い**ので、そこでは `false` = `/profile` の `run_delay_us` が `null` になります。
     **判定は起動時 1 回と 1 時間ごと**で (`.env` の監視スレッドのついで。要求の経路では何もしません)、
     `checked_at` がその時刻です。Linux 以外では `/proc` も cgroup も無いので `false` になります
   - **個票 (集計では読めない「誰が・いつ・なぜ」。T13.4)**: `/errors?n=100` で直近のエラー
@@ -589,7 +592,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     このほか、`/dns?sort=age|host|misses&limit=300` で名前解決の表の中身 (ホスト・アドレス・解決からの秒・残り TTL・
     最後に使ってからの秒・勝った族・負のキャッシュなら理由・裏で引き直し中か・**warm か (`warm`) と
     次に裏で引き直すまでの秒 (`next_refresh_secs`)**・OS に問い合わせた回数・
-    **引き直しで答えが変わった回数 (`changes`)**)、
+    **引き直しで答えが変わった回数 (`changes`)**・**warm の間に引かれた回数 (`warm_requests`。
+    `refreshes` と比べると「引き直し 1 回で何本の要求を救ったか」が読めます。
+    ただし **warm なのにミスした回 (`misses_by_kind.warm_stale`) も入る**ので、
+    実際に救えた数は `warm_requests − misses_by_kind.warm_stale` です)**・
+    **ミスの内訳 (`misses_by_kind` = `cold` / `expired` / `warm_stale` / `negative`。
+    和はその行の `misses` と一致します)**)、
     `/log?n=200` で **warn 以上**の直近の行 (1,000 行の環状、1 行 256 B まで。
     `info` のアクセスログは写しません — 熱い経路を重くしないため。コンソールが流れて消える環境向け。
     個票のファイルには 1 行 219 B まで残します)、
@@ -651,7 +659,16 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     何も書きません。2,000 件の環状 (ありふれた 1 件 414 B。T15.0 (4) の `spins` と半閉じ 2 つで 363 B から +51 B)。`?since=` は「開いた時刻がこれ以降」、`?client=` は接続元の完全一致、
     `?sort=slow` は確立 (`ms.connect`) の遅い順、`?sort=bytes` は転送の多い順。
     **自分宛て (`/status` `/dashboard` …) だけで終わった接続は残しません** — 監視が 5 秒おきに引くとリングがそれで埋まるためです
-    (数は `/status` にあります)
+    (数は `/status` にあります)。
+    **`ms.connect` と `ms.client_read` の読み方 (2026-09-18 に直しました。T15.0 (1))**: 接続の段は「確立までの全体 − 名前解決」
+    で出していますが、`PROXY_ALLOW_LOCAL=false` (既定) では**宛先が社内アドレスでないかを確かめる入口の判定が、確立の時計より前に
+    名前を引きます**。この日までは時計に入っていないその費用まで引いていたので、**名前解決を払った個票の `connect` が 0 に潰れ**
+    (デプロイ先の実測: ミスした 54 本のうち 40 本が 0 ms。そのカーネル RTT の中央値は 11.4 ms)、同じぶんが `client_read` に
+    二重に乗っていました。いまは**自分の窓の内側で払ったぶんだけ**を引き、`client_read` からは除きます。
+    **見出しの確立 p50 (`/status` の `recent_quantiles.connect`、`/history` の `connect`、`/slo`) は 1 ms も変わりません**
+    (時計そのものは動かしていないため)。なお **forward (http) で既にあるオリジン接続を使い回した要求**だけは、入口の判定が払った
+    名前解決がどの段にも出ません (`dns` も `connect` も 0 のまま、`client_read` に乗ったまま)。直っているのは
+    **新しくオリジンへ繋いだ要求**です
   - **カーネルの RTT と再送 (T14.5)**: Linux では接続が閉じるときに `getsockopt(SOL_TCP, TCP_INFO)` を読み、
     **平滑化 RTT (`tcpi_rtt`) と再送の通算 (`tcpi_total_retrans`)** を残します。「30 ms は RTT か、それとも
     プロキシの待ちか」が初めて切り分けられ、利用者側の回線の質 (再送) も数字になります。
@@ -1034,7 +1051,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       `hostseries` (16 ホスト × 288 標本 × 5 項目 × 8 B = 180 KiB。T14.22)、
       `readers` (内部エンドポイントを引いた接続元の表。環状ではありませんが同じ「満杯のとき」の
       見積もりで並べてあります。最大 256 行。T14.53)、
-      `quantiles` (2 系統 × 1,024 本 × 8 B = 16 KiB。T14.31) と、
+      `quantiles` (3 系統 × 1,024 本 × 8 B = 24 KiB。T14.31、T15.0 (2) で `wait` を足して 16 → 24 KiB) と、
       その合計 `total` (この機械では 6.4 MiB)。
       いま何件入っているかは `/recent` や `/errors` の `total` を見てください
     - `arenas` は `PROXY_MALLOC_ARENAS` で実際に掛けた `M_ARENA_MAX` (`0` = glibc の既定のまま)
@@ -1043,7 +1060,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     限らず (`MADV_DONTNEED` 済みのページ)、`mmap` も確保しただけで触っていないページは常駐しません。
     「RSS のうち説明できる部分を上から並べたもの」として読んでください。
   - **直近の窓の正確な分位点** (`/status` の `recent_quantiles`。T14.31):
-    `{"connect":{"n":1024,"p50":0.712,"p90":1.204,"p99":3.410,"max":9.876,"window_secs":137},"forward":{…}}`。
+    `{"connect":{"n":1024,"p50":0.712,"p90":1.204,"p99":3.410,"max":9.876,"window_secs":137},"forward":{…},"wait":{…}}`。
     `hosts[]` の `p50_ms` / `p95_ms` や `/history` の分位点は **区間 (ホスト別 24 段・履歴 12 段) の内側を
     線形に補間した値**で、5〜10 ms の区間に入る限り 5.0〜10.0 のどこかを返します。こちらは
     **確立時間そのものを 1,024 本そのまま**持った環状バッファから `select_nth_unstable` で出す
@@ -1056,6 +1073,15 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       (= この `n` 本が何秒ぶんか)。忙しければ数秒、暇なら数時間になります。
     - `connect` は CONNECT の**確立まで** (`connect://` の鍵のもの)、`forward` は forward の**初バイトまで**。
       どちらも失敗した 1 本 (502 など) も入ります (`/history` の分布と同じ数え方)。
+    - **`wait` は利用者が待つ時間** (`queue + client_read + dns + connect` の和。**CONNECT だけ**。T15.0 (2))。
+      `connect` は要求行を読んだ**後**から測るので、accept してワーカーが動き出すまでの待ち (`queue`)
+      も `Host` を読み終えるまで (`client_read`) も名前解決も入っていません。**次の「完了の定義」の
+      基準線はこの `wait` を見てください**。まだ外にあるのは 2 つだけです: accept から要求行が届くまでと、
+      `200 Connection Established` を書いた後のトンネル越しの TLS 握手 (`first_relay`)。
+      形は `connect` / `forward` と同じ 6 つの欄で、**同じ 1 本の接続を数えるので `n` は `connect` と一致し、
+      各分位点は `connect` の同じ分位点以上**になります。`--lite` では書きません
+      (`queue` と `client_read` が 0 なので「4 段の和」を名乗れないため)。
+      **`connect` の系列は 1 バイトも変えていない**ので、Phase 12〜14 の p50 と比べる値はそのままです。
     - 書くのは**ホスト別統計が既に取っている鍵の内側**で 8 バイト 1 回だけなので、
       原子操作もシステムコールも壁時計の読みも増えません。分位点を出すのは `/status`
       (と `/history?summary=1`) に来たときだけです。**`--lite` では 1 本も書きません**
@@ -1156,10 +1182,19 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       `/proc/<tid>/syscall` はスレッドが CPU に乗っている間は中身に関係なく `running` を返すので、
       カーネルの中で回り続ける処理 (`splice` の中継など) は `running` に出ます。CPU の行き先は役割ごとの CPU を見てください。
       また `conn` 役には**次の仕事を待っているワーカー**も入ります (`futex`)
+    - **`threads_top` (どのスレッドが回っているか)** — その窓で CPU を多く使ったスレッドを**最大 8 本**、
+      `[tid, "comm", roles の添字, cpu_us, その窓に走行中だった標本の数]` で。役割ごとの集計では
+      「`conn` 役の `running` がいつも 2.0 本」までしか読めず、**どのスレッド**かが出ないので、
+      空回り (回り続けているのに何も進んでいないトンネル) を tid と名前で指すための欄です。
+      何もしなかったスレッドは並べません (1 本も無い窓は `0` 1 文字)
+    - **`run_delay_us` (走れずに待った時間)** — 役割ごとに「走行可能なのに CPU に乗れなかった」時間の
+      その窓の増分 (us。`/proc/self/task/<tid>/schedstat` の 2 番目)。CPU の絞り (cgroup の quota) と
+      隣のプロセスとの取り合いがどちらもここに出るので、**確立の尾がプロキシのせいか機械のせいか**を
+      切り分けられます。`CONFIG_SCHEDSTATS` の無いカーネルでは `null` (`capabilities` の `proc_schedstat` が偽)
     - **CPU/要求** — 窓の CPU (utime + stime の増分) ÷ 窓の要求数。`scripts/cpu-per-request.sh` と同じ物差しの値が
       デプロイ先でも読めます (`recent.cpu_per_request_us` は直近 5 分)
     - **ロック** — 統計の表・名前解決の表・預かり所・ワーカーの 4 つが「待たされた」回数と、待ち行列で待った件数 / 合計 ms / 最大 ms
-    - 記録はプロセスのメモリだけ (約 5.1 MB。状態ファイルには書きません)。応答は 256 KiB 以下で、
+    - 記録はプロセスのメモリだけ (約 6.8 MB = 1 標本 3,136 B × (720 + 1,440)。状態ファイルには書きません)。応答は 256 KiB 以下で、
       入り切らないときは**新しい標本を残して**古い方から落とし `"truncated": true` を出します。**`--lite` では `{"profile":"off"}`**
     - 段階の窓は **ms 刻み**なので、loopback のように 1 要求が 1 ms に満たない環境ではほとんどの段階が 0 に潰れます
       (これはデプロイ先の 6〜30 ms の待ちを読むための道具です。手元の速さを見るなら `cpu_per_request_us` の方)
@@ -1281,7 +1316,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_STATS_PERSIST` | `on` | 統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 8 MiB) に、**個票 (`/recent` `/errors` `/bursts` `/events` `/log`) を `$HOME/.rust-http-proxy.recent` (固定 4 MiB)** に残し、再起動後に読み戻す。**1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。`off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`)、**ホスト別の時系列** (`/hosts/series`) は空になり、個票の `"persisted"` は `false`、日次の要約も **日次の snapshot** も書きません) |
 | `PROXY_SNAPSHOT_DAYS` | `30` | **日次の snapshot** を残す日数 (T14.34)。履歴スレッドが **UTC の日付をまたいだ瞬間**にその時点の `/snapshot` をまるごと `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` (名前は**終わった日**) に書き、**31 個目を書いたら最古を 1 つ消します**。1 ファイルは `/snapshot` と同じ **4 MiB** まで (30 日で最大 120 MiB、静かなプロキシなら 1 日 20 KB 前後)。`0` で書きません。読む口は `/snapshots` と `/snapshots/<date>`。`PROXY_STATS_PERSIST=off` と `--lite` では履歴スレッドごと無いので書きません。ディスクの空きが `PROXY_DISK_KEEP_FREE_MB` のマージンを割り込むときは書かずに `/events` に 1 件 (`state_file`) 残します。**再起動で反映** |
 | `PROXY_SLO` | `connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2` | **SLO の 4 つの閾** (T14.50)。履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、**4 つとも満たした標本の割合**を `/slo` で返します (`connect_p50_ms` / `connect_p95_ms` = その 5 秒に確立した CONNECT の p50 / p95 (ms)、`error_rate` = エラー ÷ 試み (確立 + 転送 + エラー)、`dns_miss_per_connect` = 名前解決のミス ÷ 確立。**満たす = 閾以下**)。**確立が 1 本も無い 5 秒は「判定なし」**で分母に入れません (誰も使っていない夜中を「達成」と数えると、達成率が「動いていた割合」に化けるため)。書いた閾だけが効き、書いていない閾・知らない綴り・数として読めない値・負の値は既定のままです (例: `PROXY_SLO=connect_p50_ms=6` だけ書けば p50 の閾だけ 6 ms になる)。効いている値は `/config` の `PROXY_SLO` と `/slo` の `thresholds`。判定するのは履歴スレッドなので**要求の経路の費用は 0** で、`PROXY_STATS_PERSIST=off` と `--lite` では 1 本も判定しません。**再起動で反映** |
-| `PROXY_PROFILE_SAMPLE_MS` | `1000` | `/profile` のスレッドの標本を取る間隔 (ms)。`profile-sample` スレッド 1 本が この間隔で `/proc/self/task/*/stat` と `/proc/self/task/*/syscall` を読み、**役割ごと** (`accept` / `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` / `profile-sample` / `other`) に「CPU」と「いま走っているか・どのシステムコールで待っているか・休眠か」を数えます。`0` で標本を止める (段階の窓は 5 秒ごとに畳み続けます)。下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 2 つ開くぶん (実測 約 54 us) で、**140 スレッド・1 秒間隔で 1 コアの 0.75%** (60 秒で 450 ms。128 スレッド相当で 0.69%)。スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。`/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。**`--lite` では `/profile` ごと off** |
+| `PROXY_PROFILE_SAMPLE_MS` | `1000` | `/profile` のスレッドの標本を取る間隔 (ms)。`profile-sample` スレッド 1 本が この間隔で `/proc/self/task/*/stat` と `/proc/self/task/*/syscall` と `/proc/self/task/*/schedstat` を読み、**役割ごと** (`accept` / `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` / `profile-sample` / `other`) に「CPU」と「いま走っているか・どのシステムコールで待っているか・休眠か」と「走れずに待った時間」を数え、**CPU を多く使ったスレッド上位 8 本** (`threads_top`) を残します。`0` で標本を止める (段階の窓は 5 秒ごとに畳み続けます)。下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 3 つ開くぶん (実測 約 84 us。`schedstat` を足す前は同じ測り方で 68 us) で、**140 スレッド・1 秒間隔で 1 コアの 1.2%** (60 秒で 700 ms)。スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。`/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。`schedstat` だけが無いカーネル (`CONFIG_SCHEDSTATS` 無し) では `run_delay_us` が `null` になるだけで、ほかは変わりません。**`--lite` では `/profile` ごと off** |
 | `PROXY_SELF_BENCH` | `off` | **起動直後に loopback だけで 3 秒の自己ベンチ**を回して CPU/要求 と CPU/本 を測ります (T14.43)。待ち受けを開いた直後に、このプロセスの中へ**固定 1 KiB を返すオリジン** (`no-store`) と**すぐ閉じる sink** を `127.0.0.1` の使い捨てポートに立て、**自分の待ち受けへ** forward 8 並列と CONNECT 8 並列を打ちます。**外へは 1 バイトも出しません**。結果は `/status` の `self_bench` と、起動ログ・`/events` の 1 行 (`self_bench forward 43 us, connect 140 us …`)。**本数に上限があり** (forward **20,000 要求** / CONNECT **2,000 本**)、秒数より先に当たればそこで終わります (上限が無いと CONNECT を 1.5 秒で 22,000 本張り、TIME_WAIT が 44,000 残ります)。**自分で打ったぶんはどの統計にも入れません** (`total_requests` / `bytes_forwarded` / `/hosts` / `/clients` / `/recent` / `/connections` / `/history`)。測る 3 秒だけログ水準を `warn` に下げ (既定の `info` のままだとアクセスログが数万行出て CPU/要求 に乗るため)、**`PROXY_ALLOW_LOCAL=off` (既定) のままでもこの 2 つのポート宛てだけ**を 3 秒間通します。用途は「上の『性能』の表 (この機械の big コア、41.4 us/要求) と**置いた先のコンテナ**を同じ物差しで並べる」ことなので、**普段は `off`** のままにして、再デプロイの直後に 1 回だけ `on` にしてください。`off` では起動時の分岐 1 つ以外何も走りません (`--lite` でも明示すれば回ります)。**再起動で反映** |
 | `PROXY_PAC_DIRECT` | なし | `/proxy.pac` でプロキシを通さず DIRECT にするホストのカンマ区切り (`*.example.com` 可)。`.env` で即時反映 |
 | `PROXY_TLS` | `on` | HTTPS のオリジンから取得するか (システムの OpenSSL を実行時に読み込む)。`off` で無効 |
@@ -2184,7 +2219,10 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 ホスト別の行にはさらに**待ちの内訳**が入ります: `dns_ms_sum` / `dns_misses` (名前解決を OS に聞いた合計時間と回数)、
 `connect_ms_sum` (接続にかかった合計時間。名前解決のぶんは含みません)、`v4_wins` / `v6_wins` (確立した族)、
 `errors_by_cause` (`[dns, refused, unreachable, timeout, reset, tls, loop, other]` の順の件数。
-`loop` は自分の `Via` が付いて `508` で閉じたもの)、**`rtt_ms`** (`{"avg":…,"min":…,"samples":N}`。
+`loop` は自分の `Via` が付いて `508` で閉じたもの。**複数の候補を並行に試して (Happy Eyeballs)
+締め切りまで 1 本も確立できなかったときは `timeout`** です — 2026-09-18 より前は、その間に 1 本だけ先に
+返ってきた `ECONNREFUSED` などが最後のエラーとして残り、締め切りいっぱい待った接続が `refused` に
+数えられていました。T15.0 (3))、**`rtt_ms`** (`{"avg":…,"min":…,"samples":N}`。
 カーネルの平滑化 RTT (`TCP_INFO`)。標本は**接続 1 本の終わりに 1 つ**なので `timed` (要求数) とは数が合いません。
 1 本も閉じていなければ `null`) と **`retrans`** (その接続たちが再送したセグメントの通算)、
 **`sni_mismatch`** (そのホスト宛ての CONNECT で、宛先のホストと覗いた SNI が食い違った本数。
@@ -2202,6 +2240,18 @@ T14.38。**メモリだけ**なので再起動で 0 に戻ります。合計は 
 **`changes` (引き直しで答えの集合が変わった回数の合計)** が出ます。
 **裏の引き直しはミスに数えません** (利用者は待っていないので、`misses` と `miss_avg_ms` に混ぜると
 「ミス 1 回の値段」が読めなくなる)。`/metrics` では `sorahost_dns_lookups_total{result="refresh"}` です。
+さらに **`misses_by_kind`** (ミスの内訳。`cold` = 表にまだ答えが無い / `expired` = 答えは持っていたが
+TTL を過ぎた / `warm_stale` = **warm なのにミスした** = 裏の引き直しが間に合っていない /
+`negative` = 覚えている失敗の期限が切れたので引き直した。**4 つの和は必ず `misses` と一致します**) と、
+裏の引き直しの様子 **`refresh_failures`** (引き直しが失敗した回数) / **`refresh_ms_sum`** /
+**`refresh_ms_max`** (引き直しの `getaddrinfo` にかかった時間の合計と最大 ms) /
+**`refresh_late`** (予定の時刻から **5 秒以上**遅れて始まった引き直しの回数。引き直しは
+`dns-refresh` スレッド 1 本が順にやるので、1 回 約 2 秒かかる名前が続くと後ろが詰まります。
+要求の経路が頼んだ先回りは予定の時刻を持たないので数えません) が出ます。
+**読み方**: `expired` が主なら窓 (`PROXY_DNS_WARM_SECS`) の外で期限が切れている =
+窓を延ばすと効く、`warm_stale` が出ていれば引き直しが間に合っていない = 窓ではなく
+`refresh_failures` / `refresh_late` を先に見る、という順で読みます (どちらに手を入れるかは
+この内訳でしか決まりません)。
 `clients[]` にも同じ `rtt_ms` / `retrans` が出ますが、**こちらはクライアント側** (利用者 → プロキシの往復) です。
 `bytes_in` / `bytes_out` も同じ向き (`bytes_in` = その端末が上げた量) で出るので、「この端末は上りが主か下りが主か」が読めます。
 `/status` の `clients[]` には接続元 IP ごとの要求数・転送量・拒否数・応答時間が要求数順に最大 50 件入り、

@@ -8,6 +8,12 @@
 //! ここは**確立時間そのもの**を、CONNECT (確立) と forward (初バイト) 別々の
 //! 1,024 本の環状に持つ。直近 1,024 本ぶんの p50 / p90 / p99 / 最大が**正確に**出る。
 //!
+//! 3 本目の `wait` は**利用者が待つ時間** (`queue + client_read + dns + connect`。
+//! T15.0 (2))。`connect` の環が `open()` の入口 (要求行を読んだ後) から測るのに対し、
+//! こちらは accept してワーカーが動き出すまでの待ちと名前解決も入る。**CONNECT だけ**で、
+//! `--lite` では書かない (`queue` と `client_read` が 0 なので「4 段の和」を名乗れない)。
+//! `connect` の環は 1 バイトも変えていないので、Phase 12〜14 の p50 と比べる値は残る。
+//!
 //! **費用**: 書くのは [`crate::metrics::Metrics::record_host_detail`] が**既に取っている
 //! 鍵の内側**なので、原子操作もシステムコールも鍵も増えない。増えるのは 8 バイトの
 //! 書き込み 1 回と添字の +1 だけで、**時計も読まない** (ホスト別統計の `last_seen` が
@@ -19,7 +25,7 @@
 //! 元が ms 刻み** ([`crate::metrics::Detail::first_byte_ms`]) なので、×1,000 して
 //! 入るだけで細かくはならない (CONNECT の確立は `Duration` のまま来るので us が出る)。
 //!
-//! `.rrd` には書かない (メモリだけ、16 KiB 固定。再起動で消える)。`--lite` では書かない。
+//! `.rrd` には書かない (メモリだけ、24 KiB 固定。再起動で消える)。`--lite` では書かない。
 
 use std::fmt::Write as _;
 
@@ -31,16 +37,17 @@ pub const SAMPLES: usize = 1024;
 /// 1 つの構造体にして 1 行で済ませる。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Slot {
-    /// 確立 (CONNECT) / 初バイト (forward) までの時間 (us)
+    /// 確立 (CONNECT) / 初バイト (forward) / 利用者の待ち (`wait`) までの時間 (us)
     us: u32,
     /// 書いた時刻 (epoch 秒。2106 年まで)
     t: u32,
 }
 
-/// 満杯のときに使うメモリ (`/status` の `memory.rings.quantiles`)。
-pub const BYTES: usize = 2 * SAMPLES * size_of::<Slot>();
+/// 満杯のときに使うメモリ (`/status` の `memory.rings.quantiles`)。**3 系統ぶん**
+/// (T15.0 (2) で `wait` を足して 16 → 24 KiB)。
+pub const BYTES: usize = 3 * SAMPLES * size_of::<Slot>();
 
-/// 1 系統 (CONNECT の確立 / forward の初バイト) の環状バッファ。
+/// 1 系統 (CONNECT の確立 / forward の初バイト / 利用者の待ち) の環状バッファ。
 ///
 /// 満ちるまでは `push` で伸ばす (`--lite` は 1 本も書かないので**確保もしない**)。
 #[derive(Debug, Default)]
@@ -180,7 +187,7 @@ impl Stats {
     }
 }
 
-/// 2 系統ぶん (`/status` の `recent_quantiles`)。
+/// 3 系統ぶん (`/status` の `recent_quantiles`)。
 ///
 /// **ホスト表と同じ鍵の中**に置いて、要求の経路が鍵を 2 つ取らないようにしてある
 /// (T14.22 の `series` と同じ置き方)。
@@ -190,6 +197,9 @@ pub struct Quantiles {
     pub connect: Ring,
     /// forward の初バイト
     pub forward: Ring,
+    /// 利用者が待つ時間 (`queue + client_read + dns + connect`。**CONNECT だけ**。
+    /// T15.0 (2))。書くのは [`crate::metrics::Metrics`] の `record` の中の 1 か所
+    pub wait: Ring,
 }
 
 impl Quantiles {
@@ -203,19 +213,22 @@ impl Quantiles {
         }
     }
 
-    /// 鍵の内側でするのは写しだけ。
-    pub fn copy(&self) -> (Copied, Copied) {
-        (self.connect.copy(), self.forward.copy())
+    /// 鍵の内側でするのは写しだけ (`connect` / `forward` / `wait` の順)。
+    pub fn copy(&self) -> (Copied, Copied, Copied) {
+        (self.connect.copy(), self.forward.copy(), self.wait.copy())
     }
 }
 
-/// `{"connect":{..},"forward":{..}}` (`/status` の `recent_quantiles`)。
-pub fn to_json(connect: &Stats, forward: &Stats) -> String {
-    let mut out = String::with_capacity(224);
+/// `{"connect":{..},"forward":{..},"wait":{..}}` (`/status` の `recent_quantiles`)。
+/// **`wait` は末尾に足した** (既存の鍵の順は変えない。T15.0 (2))。
+pub fn to_json(connect: &Stats, forward: &Stats, wait: &Stats) -> String {
+    let mut out = String::with_capacity(336);
     out.push_str("{\"connect\":");
     connect.push_json(&mut out);
     out.push_str(",\"forward\":");
     forward.push_json(&mut out);
+    out.push_str(",\"wait\":");
+    wait.push_json(&mut out);
     out.push('}');
     out
 }
@@ -239,6 +252,34 @@ mod tests {
         assert_eq!(s.p99_us, 1_014_000, "p99 = 1,014 ms");
         assert_eq!(s.max_us, 1_024_000);
         assert_eq!(s.window_secs, 60);
+    }
+
+    /// 3 本目の環 `wait` は独立していて、`connect` とも `forward` とも混ざらない
+    /// (T15.0 (2))。標本ごとに `wait ≥ connect` なら**分位点も必ず** `wait ≥ connect`
+    /// になる (同じ本数の順序統計量なので。結合テストの受け入れ基準はこの関係)。
+    #[test]
+    fn the_wait_ring_is_separate_and_never_below_the_connect_ring() {
+        let mut q = Quantiles::default();
+        for i in 1..=100u32 {
+            let connect_us = i * 1_000;
+            q.observe(true, connect_us, 50);
+            // 待ちは確立に「その前の段」(queue + client_read + dns) を足したもの
+            q.wait.observe(connect_us + 7_000, 50);
+        }
+        let (c, f, w) = q.copy();
+        let (c, f, w) = (c.stats(50), f.stats(50), w.stats(50));
+        assert_eq!((c.n, w.n), (100, 100), "確立と待ちは同じ本数");
+        assert_eq!(f.n, 0, "forward には 1 本も入らない");
+        for (a, b) in [
+            (w.p50_us, c.p50_us),
+            (w.p90_us, c.p90_us),
+            (w.p99_us, c.p99_us),
+            (w.max_us, c.max_us),
+        ] {
+            assert!(a >= b, "wait {} < connect {}", a, b);
+        }
+        assert_eq!(w.p50_us, c.p50_us + 7_000);
+        assert!(w.p50_us <= w.p90_us && w.p90_us <= w.p99_us && w.p99_us <= w.max_us);
     }
 
     /// 入れる順を逆にしても同じ答え (環の位置と分位点は無関係)。
@@ -310,7 +351,9 @@ mod tests {
         let q = Quantiles::default();
         assert_eq!(q.connect.buf.capacity(), 0);
         assert_eq!(q.forward.buf.capacity(), 0);
-        assert_eq!(BYTES, 16_384);
+        assert_eq!(q.wait.buf.capacity(), 0);
+        // 3 系統 × 1,024 本 × 8 B (T15.0 (2) で 16 → 24 KiB)
+        assert_eq!(BYTES, 24_576);
     }
 
     /// `/status` に出る形と大きさ。
@@ -319,12 +362,15 @@ mod tests {
         let mut q = Quantiles::default();
         q.observe(true, 1_500, 1000);
         q.observe(false, 2_500, 1000);
-        let (c, f) = q.copy();
-        let json = to_json(&c.stats(1000), &f.stats(1000));
+        // `wait` は `observe` の二択に無い (CONNECT の 1 か所だけが直に書く)
+        q.wait.observe(3_500, 1000);
+        let (c, f, w) = q.copy();
+        let json = to_json(&c.stats(1000), &f.stats(1000), &w.stats(1000));
         assert_eq!(
             json,
             "{\"connect\":{\"n\":1,\"p50\":1.500,\"p90\":1.500,\"p99\":1.500,\"max\":1.500,\"window_secs\":0},\
-             \"forward\":{\"n\":1,\"p50\":2.500,\"p90\":2.500,\"p99\":2.500,\"max\":2.500,\"window_secs\":0}}"
+             \"forward\":{\"n\":1,\"p50\":2.500,\"p90\":2.500,\"p99\":2.500,\"max\":2.500,\"window_secs\":0},\
+             \"wait\":{\"n\":1,\"p50\":3.500,\"p90\":3.500,\"p99\":3.500,\"max\":3.500,\"window_secs\":0}}"
         );
         // 満杯・大きな値でも `/status` を太らせない
         let mut big = Ring::default();
@@ -332,7 +378,8 @@ mod tests {
             big.observe(u32::MAX, 0);
         }
         let s = big.copy().stats(u32::MAX as u64);
-        assert!(to_json(&s, &s).len() <= 256, "{}", to_json(&s, &s).len());
+        let json = to_json(&s, &s, &s);
+        assert!(json.len() <= 384, "{}", json.len());
     }
 
     /// 順位の定義 (境目の丸め方)。

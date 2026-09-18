@@ -498,6 +498,9 @@ fn connect_candidates(
     let mut tried_v6 = false;
     let mut next_launch = Instant::now();
     let mut last_err: Option<io::Error> = None;
+    // 締め切りで抜けたか (T15.0 (3))。立てるのは下の**締め切りの `break` だけ**で、
+    // 「全候補が失敗した」の `break` では立てない (そのときの `last_err` は本物の理由)
+    let mut timed_out = false;
 
     loop {
         let now = Instant::now();
@@ -562,11 +565,22 @@ fn connect_candidates(
             }
             Err(RecvTimeoutError::Timeout) => {
                 if deadline.is_some_and(|d| Instant::now() >= d) {
+                    timed_out = true;
                     break;
                 }
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
+    }
+    // 締め切りで抜けたときは「終わった理由」を返す (T15.0 (3))。ここで `last_err`
+    // (先に返ってきた 1 本の `ECONNREFUSED` 等) を返すと、30 秒黙って待った接続が
+    // `/errors` にも `/hosts` の `errors_by_cause` にも `refused` として残り、
+    // 原因別の集計がそのまま狂う (`ErrCause::from_io` はこの 1 つの札しか見ない)
+    if timed_out {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "connection attempts timed out",
+        ));
     }
     Err(last_err.unwrap_or_else(|| {
         io::Error::new(io::ErrorKind::TimedOut, "connection attempts timed out")
@@ -726,6 +740,68 @@ mod tests {
         let live = TcpListener::bind("127.0.0.1:0").ok()?;
         let live_addr = live.local_addr().ok()?;
         Some((hole, filler, live, vec![hole_addr, live_addr]))
+    }
+
+    /// `127.0.0.1` の黒穴だけ (`listen(fd, 0)` + 詰め物 1 本で受け入れ待ち行列を埋める)。
+    ///
+    /// 手本は [`blackhole_v6_and_live_v4`] だが、こちらは **IPv6 の全体状態
+    /// (`IPV6_ATTEMPTS` など) に一切触らない**ので `IPV6_TEST_LOCK` も要らない。
+    #[cfg(target_os = "linux")]
+    fn blackhole_v4() -> Option<(TcpListener, TcpStream, SocketAddr)> {
+        use std::os::fd::AsRawFd;
+        // `libc` は使わない (§0)。`listen(2)` だけ直接宣言する
+        unsafe extern "C" {
+            fn listen(fd: i32, backlog: i32) -> i32;
+        }
+        let hole = TcpListener::bind("127.0.0.1:0").ok()?;
+        if unsafe { listen(hole.as_raw_fd(), 0) } != 0 {
+            return None;
+        }
+        let hole_addr = hole.local_addr().ok()?;
+        // 1 本つないで待ち行列を埋める (accept しない)
+        let filler = TcpStream::connect_timeout(&hole_addr, Duration::from_secs(1)).ok()?;
+        Some((hole, filler, hole_addr))
+    }
+
+    /// 締め切りで抜けたときの札は `TimedOut` (T15.0 (3))。
+    ///
+    /// 候補 2 つ = 「閉じたポート (即 `ECONNREFUSED`)」+「黒穴 (SYN を黙って捨てる)」。
+    /// 直す前は先に返った `ECONNREFUSED` が `last_err` に残り、**締め切りまで待った
+    /// 接続が `refused` として集計されていた** (デプロイ先の実例: `cause=refused` なのに
+    /// `connect` 29,992 ms = 締め切り 30 秒)。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_deadline_reports_timed_out_not_the_first_refusal() {
+        let Some((_hole, _filler, hole_addr)) = blackhole_v4() else {
+            eprintln!("cannot build a v4 blackhole; skipping");
+            return;
+        };
+        // 閉じたポート = 即 `ECONNREFUSED` (loopback なので確実に返る)
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_addr = closed.local_addr().unwrap();
+        drop(closed);
+
+        let started = Instant::now();
+        let err = connect_resolved(
+            "t150-deadline.invalid",
+            vec![closed_addr, hole_addr],
+            // `STAGGER` (250 ms) より十分長い締め切り
+            Duration::from_secs(1),
+        )
+        .expect_err("どの候補も確立しないはず");
+        let took = started.elapsed();
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::TimedOut,
+            "締め切りで抜けたのに {:?} ({:?})",
+            err.kind(),
+            took
+        );
+        assert!(
+            took >= Duration::from_secs(1),
+            "締め切りより前に諦めている: {:?}",
+            took
+        );
     }
 
     /// T12.1 の受け入れ基準 (手元): 黒穴 `[::1]` + 生きている `127.0.0.1` で

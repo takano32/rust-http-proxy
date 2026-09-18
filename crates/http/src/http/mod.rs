@@ -676,6 +676,9 @@ pub fn handle_http_with_headers(
         // 接続にかかった時間は「オリジンを掴むまで − 名前解決」で出す。時計を読むのは
         // ここで 1 回だけで、プールから再利用できたときは 2 回目を読まない (熱い経路)
         let acquire_started = Instant::now();
+        // この時計より**前に**払われた名前解決 (入口の ACL) を控える (T15.0 (1))。
+        // thread-local の読み 1 回で、時計もシステムコールも増えない
+        let dns_before = crate::dns::peek_resolve_cost().0;
         let (mut server, reused) = match acquire_origin(
             &shared.upstream,
             origin_timeout,
@@ -692,8 +695,12 @@ pub fn handle_http_with_headers(
                     server_addr,
                     e
                 );
-                ctx.detail =
-                    origin_detail(acquire_started, Some(ErrCause::from_io(&e)), shared.stages);
+                ctx.detail = origin_detail(
+                    acquire_started,
+                    Some(ErrCause::from_io(&e)),
+                    shared.stages,
+                    dns_before,
+                );
                 if let Some((entry, source)) = stale.take()
                     && !force_revalidate
                     && can_serve_stale(&entry)
@@ -709,7 +716,7 @@ pub fn handle_http_with_headers(
             }
         };
         if !reused {
-            ctx.detail = origin_detail(acquire_started, None, ctx.detail.stages);
+            ctx.detail = origin_detail(acquire_started, None, ctx.detail.stages, dns_before);
         }
         metrics.inc_origin_conn(reused);
         let sent = server
@@ -1170,21 +1177,41 @@ fn write_error(client: &mut impl Write, status: u16, reason: &str) -> io::Result
 
 /// オリジンを掴むまでの内訳を組み立てる (T12.4 (2))。**接続を試した直後の 1 回だけ**呼ぶ
 /// (thread-local を読んで 0 に戻すので、2 回呼ぶと 2 回目が空になる)。
-fn origin_detail(acquire_started: Instant, cause: Option<ErrCause>, stages: StageMs) -> Detail {
+///
+/// **`dns_before` は `acquire_started` より前に既に払われていた名前解決 (ms)**
+/// (T15.0 (1)。トンネル側の `detail_of` と同じ引き算)。入口の ACL
+/// (`PROXY_ALLOW_LOCAL=false` が既定) がここより前に名前を引くので、それを引かずに
+/// 「全体 − 名前解決」をすると接続の段が 0 に潰れ、同じぶんが `client_read` にも
+/// 二重に乗る。**プールを使い回した要求はこの関数を通らない**ので、そちらの
+/// `client_read` には ACL の名前解決が入ったままになる (要求の 1%。README に 1 行)。
+fn origin_detail(
+    acquire_started: Instant,
+    cause: Option<ErrCause>,
+    stages: StageMs,
+    dns_before: u64,
+) -> Detail {
     let (dns_ms, dns_misses) = crate::dns::take_resolve_cost();
     let total_ms = acquire_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    // `acquire_started` からの窓の**内側**で払った名前解決だけを引く
+    let dns_inside = dns_ms.saturating_sub(dns_before);
     Detail {
         dns_ms,
         dns_misses,
-        connect_ms: total_ms.saturating_sub(dns_ms),
+        connect_ms: total_ms.saturating_sub(dns_inside),
         family_v6: crate::dns::take_family(),
         // 確立までに SYN を送り直した回数 (T14.46)。**プールが接続を張った要求だけ**
         // 0 でない (使い回せた要求は `net` の確立点を通らないので 0)
         syn_retrans: crate::dns::take_syn_retrans(),
         cause,
         first_byte_ms: None,
-        // ここまでに測った段階 (`queue` / `client_read`) は引き継ぐ (T14.3 (1))
-        stages,
+        // ここまでに測った段階 (`queue` / `client_read`) は引き継ぐ (T14.3 (1))。
+        // `client_read` には時計より前の名前解決が丸ごと入っているので除く (T15.0 (1))
+        stages: StageMs {
+            client_read: stages
+                .client_read
+                .saturating_sub(dns_before.min(u32::MAX as u64) as u32),
+            ..stages
+        },
         // 向き別のバイト (T14.26) は応答を流し終えてからでないと分からない
         // ([`Ctx::log`] が入れる)
         ..Detail::default()

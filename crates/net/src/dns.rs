@@ -68,6 +68,29 @@ static CHANGES: AtomicU64 = AtomicU64::new(0);
 /// ので、当たりの経路 (熱い方) には原子操作が 1 つも増えない (T12.4 (2))。
 /// 裏の引き直しのぶんも入れない (待っていない時間を「ミス 1 回の値段」に混ぜない)。
 static RESOLVE_US_SUM: AtomicU64 = AtomicU64::new(0);
+/// ミスの種類別の回数 (`/status` の `dns.misses_by_kind`。T15.0 (7))。並びは
+/// [`MissKind::index`] (cold / expired / warm_stale / negative) で、**4 つの和は必ず
+/// `MISSES` と一致する**。窓 (`PROXY_DNS_WARM_SECS`) を延ばすのと TTL を延ばすのとの
+/// どちらが効くかは、この内訳でしか決まらない (T15.4 の材料): `expired` が主なら
+/// 窓の外で期限が切れている、`warm_stale` が出ていれば裏の引き直しが間に合っていない。
+static MISS_COLD: AtomicU64 = AtomicU64::new(0);
+static MISS_EXPIRED: AtomicU64 = AtomicU64::new(0);
+static MISS_WARM_STALE: AtomicU64 = AtomicU64::new(0);
+static MISS_NEGATIVE: AtomicU64 = AtomicU64::new(0);
+/// 裏の引き直しが失敗した回数と、その `getaddrinfo` に費やした時間 (us の合計と最大)。
+/// **書くのは `dns-refresh` スレッド 1 本だけ**なので、要求の経路には 1 命令も増えない。
+/// 引き直しは失敗しても `resolved_at` を進めない (= 期限が来ればミスになる) ので、
+/// `misses_by_kind.warm_stale` と対で読む。
+static REFRESH_FAILURES: AtomicU64 = AtomicU64::new(0);
+static REFRESH_US_SUM: AtomicU64 = AtomicU64::new(0);
+static REFRESH_US_MAX: AtomicU64 = AtomicU64::new(0);
+/// 予定の時刻から [`REFRESH_LATE_AFTER`] 以上遅れて始まった引き直しの回数 (T15.0 (7))。
+/// 引き直しは 1 本のスレッドが順にやるので、1 回 約 2 秒かかる `getaddrinfo` が続くと
+/// 後ろが詰まる。**要求の経路が頼んだ先回り (`Msg::Refresh`) は予定の時刻を持たない**
+/// ので数えない。
+static REFRESH_LATE: AtomicU64 = AtomicU64::new(0);
+/// 引き直しが「遅れた」と数える閾。
+const REFRESH_LATE_AFTER: Duration = Duration::from_secs(5);
 
 thread_local! {
     /// このスレッドが直近に払った名前解決の費用 (us の合計と回数)。**ホスト別の内訳に
@@ -95,6 +118,30 @@ pub fn take_resolve_cost() -> (u64, u64) {
     // 1 ms 未満のミス (手元の loopback) は 0 ms として数える。デプロイ先の
     // ミスは Docker の内蔵 DNS 越しで ms の単位なので、この丸めで足りる
     ((us + 500) / 1000, n)
+}
+
+/// 直近の名前解決の費用を**読むだけ** (0 に戻さない。T15.0 (1))。丸め方は
+/// [`take_resolve_cost`] と同じなので、同じ箱を読んでいる限り値は一致する。
+///
+/// 使い道は 1 つで、**自分の時計を始める前に「もう払われているぶん」を控える**こと。
+/// `PROXY_ALLOW_LOCAL=false` (既定) では入口の ACL (`src/lib.rs` の `acl::resolve_target`)
+/// がトンネルの時計より前に名前を引くので、あとで `take` した費用には**自分の窓の外**の
+/// ぶんが混ざっている。それを引かずに「全体 − 名前解決」をすると、接続の段が 0 に潰れる。
+pub fn peek_resolve_cost() -> (u64, u64) {
+    let (us, n) = RESOLVE_COST.get();
+    ((us + 500) / 1000, n)
+}
+
+/// 名前解決の費用 (us と回数) をこのスレッドの箱に足す (**テストの口**)。
+///
+/// 本番でここに書くのは [`resolve_host`] のミスの経路 1 か所だけ (原子と同じ場所で
+/// 書いている) なので、呼ぶのはテストだけ。入口の ACL が**時計より前に**払った状態を
+/// 作って、[`peek_resolve_cost`] を使う引き算 (T15.0 (1)) を確かめるために使う。
+pub fn note_resolve_cost(us: u64, misses: u64) {
+    RESOLVE_COST.set({
+        let (s, n) = RESOLVE_COST.get();
+        (s + us, n + misses)
+    });
 }
 
 /// 直近に確立した接続の族を読み、`None` に戻す。
@@ -156,6 +203,15 @@ struct Entry {
     /// 引き直しで答えの集合が変わった回数 (`/dns` の `changes`。T14.37)。
     /// **最初に答えを得たときは数えない** (変化ではないので)
     changes: u64,
+    /// この名前のミスを種類別に数えたもの (`/dns` の `misses_by_kind`。T15.0 (7))。
+    /// 並びは [`MissKind::index`] で、**和は `misses` と一致する**。
+    /// 表いっぱい (4,096 件) でも +128 KiB
+    misses_by_kind: [u64; 4],
+    /// **warm な状態で**この名前が引かれた回数 (`/dns` の `warm_requests`。T15.0 (7))。
+    /// keep-warm が実際に何回の要求を救ったかは、これと `refreshes` を比べて読む
+    /// (引き直し 1 回あたり何回の要求が当たったか)。比べる相手が累計なので、
+    /// **warm を外れて入り直しても 0 に戻さない**
+    warm_requests: u64,
     /// 直近の失敗 (負のキャッシュ)
     failed_at: Option<(Instant, io::ErrorKind, String)>,
     /// このホストで最後に接続できた族 (`Some(true)` = IPv6)。RFC 8305 §8 の
@@ -178,6 +234,8 @@ impl Entry {
             misses: 0,
             refreshes: 0,
             changes: 0,
+            misses_by_kind: [0; 4],
+            warm_requests: 0,
             failed_at: None,
             last_win_v6,
         }
@@ -289,8 +347,9 @@ fn warm_promote(table: &mut HashMap<String, Entry>, key: &str, now: Instant, ttl
 
 /// `refresher` スレッドの次の仕事。
 enum Next {
-    /// この名前を裏で引き直す (`refreshing` は立てたあと)
-    Refresh(String),
+    /// この名前を裏で引き直す (`refreshing` は立てたあと)。2 つ目は**予定の時刻からの
+    /// 遅れ** (T15.0 (7))。予定は待ち行列の鍵そのものなので、ここでしか測れない
+    Refresh(String, Duration),
     /// 次の期限までこれだけ待つ
     Wait(Duration),
     /// warm な名前が無い (要求が来るまで眠る)
@@ -315,7 +374,7 @@ fn warm_next(now: Instant) -> Next {
             return Next::Wait(first.0 - now);
         }
         q.remove(&first);
-        let (_, key) = first;
+        let (due, key) = first;
         let Some(e) = table.get_mut(&key) else {
             // 表から消えた名前 (`MAX_ENTRIES` で追い出された) は黙って落とす
             continue;
@@ -335,7 +394,9 @@ fn warm_next(now: Instant) -> Next {
             continue;
         }
         e.refreshing = true;
-        return Next::Refresh(key);
+        // 予定 (`due`) からどれだけ遅れて取り出せたか。前の引き直しが詰まっていれば
+        // ここに出る (T15.0 (7))
+        return Next::Refresh(key, now.saturating_duration_since(due));
     }
 }
 
@@ -400,7 +461,12 @@ fn refresher_loop(rx: mpsc::Receiver<Msg>) {
     loop {
         let next = warm_next(Instant::now());
         let got = match next {
-            Next::Refresh(key) => {
+            Next::Refresh(key, late) => {
+                // 予定より大きく遅れて始まった = 前の引き直し (1 回 約 2 秒のことがある)
+                // が詰まっていた。**引き直しの前に数える** (T15.0 (7))
+                if late >= REFRESH_LATE_AFTER {
+                    REFRESH_LATE.fetch_add(1, Ordering::Relaxed);
+                }
                 refresh_one(&key);
                 // 期限の来た名前が他にもあるかもしれないので、すぐ次を見る
                 continue;
@@ -450,10 +516,18 @@ fn wake_refresher() {
 /// **ミスとしては数えない**: 利用者はこの時間を待っていないので、`misses` と
 /// `miss_avg_ms` (`sorahost_dns_seconds_*`) に混ぜると「ミス 1 回の値段」が読めなくなる。
 fn refresh_one(key: &str) {
+    // 引き直しにかかった時間 (T15.0 (7))。下の `now` と引き算するので時計は 1 回増えるだけ
+    let t0 = Instant::now();
     // `getaddrinfo` にポート (サービス) は渡らない。std は service を NULL で引いて、
     // 返ってきたアドレスにあとからポートを詰めるので、ここは 0 でよい
     let result = system_resolve(key, 0);
     let now = Instant::now();
+    // `result` は下の `if let Ok(addrs)` で move されるので、先に控える (T15.0 (7))
+    let failed = result.is_err();
+    let us = now
+        .saturating_duration_since(t0)
+        .as_micros()
+        .min(u64::MAX as u128) as u64;
     // 答えが変わったか。**数える (原子操作) のは鍵を放してから** (T12.4 (2))
     let mut changed = false;
     {
@@ -479,6 +553,13 @@ fn refresh_one(key: &str) {
         // エラーを配らないため
     }
     REFRESHES.fetch_add(1, Ordering::Relaxed);
+    REFRESH_US_SUM.fetch_add(us, Ordering::Relaxed);
+    REFRESH_US_MAX.fetch_max(us, Ordering::Relaxed);
+    if failed {
+        // 失敗しても `resolved_at` は動かさない (上のコメント) ので、この名前は次の
+        // 期限でミスになる。**warm なら `misses_by_kind.warm_stale`** に出る
+        REFRESH_FAILURES.fetch_add(1, Ordering::Relaxed);
+    }
     if changed {
         CHANGES.fetch_add(1, Ordering::Relaxed);
     }
@@ -583,6 +664,52 @@ enum Looked {
     Negative(io::Error),
 }
 
+/// ミス 1 件の種類 (T15.0 (7))。**表の鍵の内側でしか決められない**: 鍵を放したあとの
+/// 書き戻しは `entry().or_insert_with()` で入れ物を作り直すので、「ミスの直前の姿」が
+/// 読めない。[`Looked`] と同じ流儀で、鍵の内側で決めて外で数える。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissKind {
+    /// 表にまだ答えが無い (初めての名前、追い出された名前、族の記憶だけの入れ物、TTL 0)
+    Cold,
+    /// 答えは持っていたが TTL を過ぎた (窓の外なので誰も引き直していない)
+    Expired,
+    /// **warm なのにミスした** = 裏の引き直しが間に合っていない (T15.4 の主役)
+    WarmStale,
+    /// 覚えている失敗の期限が切れたので引き直す (前回引けなかった名前)
+    Negative,
+}
+
+impl MissKind {
+    /// `misses_by_kind` の添字 (`/status` と `/dns` の並びと同じ)。
+    fn index(self) -> usize {
+        match self {
+            MissKind::Cold => 0,
+            MissKind::Expired => 1,
+            MissKind::WarmStale => 2,
+            MissKind::Negative => 3,
+        }
+    }
+
+    /// この種類を数える静的カウンタ。
+    fn counter(self) -> &'static AtomicU64 {
+        match self {
+            MissKind::Cold => &MISS_COLD,
+            MissKind::Expired => &MISS_EXPIRED,
+            MissKind::WarmStale => &MISS_WARM_STALE,
+            MissKind::Negative => &MISS_NEGATIVE,
+        }
+    }
+}
+
+/// `misses_by_kind` の JSON (`/status` の `dns` と `/dns` の 1 行で同じ形)。
+/// 並びは [`MissKind::index`]。
+fn misses_by_kind_json(v: &[u64; 4]) -> String {
+    format!(
+        "{{\"cold\":{},\"expired\":{},\"warm_stale\":{},\"negative\":{}}}",
+        v[0], v[1], v[2], v[3]
+    )
+}
+
 /// ホスト名を解決して**アドレスだけ**を返す (T12.7)。`port` は `getaddrinfo` に渡す
 /// サービス番号で、キャッシュの鍵はホスト名だけ (返す側でポートを付ける)。
 ///
@@ -596,6 +723,8 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
     let ttl = ttl();
     if ttl.is_zero() {
         MISSES.fetch_add(1, Ordering::Relaxed);
+        // 表を触らないので「直前の姿」も無い = いつも `cold` (T15.0 (7))
+        MISS_COLD.fetch_add(1, Ordering::Relaxed);
         return system_resolve(host, port).map(|a| (a, None));
     }
     let key = host.to_ascii_lowercase();
@@ -604,6 +733,8 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
     let mut pref = None;
     // 表から答えが出たか (**数えるのは鍵を放してから**。T12.4 (2))
     let mut found: Option<Looked> = None;
+    // ミスだったときの種類 (T15.0 (7))。表に載っていない名前は `cold`
+    let mut miss_kind = MissKind::Cold;
     // 期限前の先回りを頼むか (T13.1) / この参照で warm になったか (T14.1)
     let (mut ask, mut promote) = (false, false);
     {
@@ -612,6 +743,9 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
         let table = guard.get_or_insert_with(HashMap::new);
         if let Some(e) = table.get_mut(&key) {
             pref = e.last_win_v6;
+            // **`warm` はここで読む** (T15.0 (7)): 下の `warm_promote` が `e.warm = true` を
+            // 書くので、あとで読むと「2 回目の使用でミスした」が `warm_stale` に化ける
+            let was_warm = e.warm;
             // 「熱い」= **この参照の 1 つ前**の使用が TTL 以内。印はここで更新する
             let idle = now.duration_since(e.last_used);
             let hot = idle < ttl;
@@ -622,6 +756,10 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
             // 待ち行列に入れると `dns-refresh` の 1 本が本当に熱い名前を待たせる
             promote = !e.warm && !window.is_zero() && idle < window && !e.addrs.is_empty();
             e.prev_used = e.last_used;
+            // warm の間に来た要求を数える (T15.0 (7)。**「要求の経路は増やさない」の
+            // 例外その 1**: 既に握っている鍵の内側の、非原子の加算 1 つ・分岐なしで、
+            // システムコールも確保も増えない)
+            e.warm_requests += u64::from(was_warm);
             e.last_used = now;
             let age = now.duration_since(e.resolved_at);
             if !e.addrs.is_empty() && age < ttl {
@@ -648,6 +786,23 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
                         Looked::Negative(io::Error::new(*kind, msg.clone()))
                     });
                 }
+            }
+            if found.is_none() {
+                // ここまで来た = 表では答えられない = このあとミスになる。種類の優先順位は
+                // **warm_stale → negative → expired → cold** (T15.0 (7))。`refresh_one` は
+                // 失敗しても `failed_at` を書かない (上のコメント) ので、warm な名前に
+                // 載っている失敗は要求の経路が書いたもの = 「引き直しが間に合っていない」の
+                // 証拠は `warm` の旗の方が強い
+                miss_kind = if was_warm {
+                    MissKind::WarmStale
+                } else if e.failed_at.is_some() {
+                    MissKind::Negative
+                } else if !e.addrs.is_empty() {
+                    MissKind::Expired
+                } else {
+                    // 答えを持っていない入れ物 (`remember_family` が族の記憶だけ置いた等)
+                    MissKind::Cold
+                };
             }
             if promote {
                 warm_promote(table, &key, now, ttl);
@@ -676,6 +831,8 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
         None => {}
     }
     MISSES.fetch_add(1, Ordering::Relaxed);
+    // 種類別も同じ場所で 1 つ (T15.0 (7)。**4 つの和は `MISSES` と一致する**)
+    miss_kind.counter().fetch_add(1, Ordering::Relaxed);
     // ミスのときだけ `Instant` を 2 回読む (当たりの経路は 1 命令も増えない。T12.4 (2))
     let t0 = Instant::now();
     let result = system_resolve(host, port);
@@ -706,6 +863,7 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
             slot.resolved_at = now;
             slot.last_used = now;
             slot.misses += 1;
+            slot.misses_by_kind[miss_kind.index()] += 1;
             slot.failed_at = None;
             if slot.last_win_v6.is_none() {
                 slot.last_win_v6 = pref;
@@ -715,6 +873,7 @@ pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bo
         Err(e) => {
             let entry = table.entry(key).or_insert_with(|| Entry::empty(now, None));
             entry.misses += 1;
+            entry.misses_by_kind[miss_kind.index()] += 1;
             entry.failed_at = Some((now, e.kind(), e.to_string()));
             if !entry.addrs.is_empty() && now.duration_since(entry.resolved_at) < STALE_MAX {
                 STALE.fetch_add(1, Ordering::Relaxed);
@@ -849,6 +1008,11 @@ pub struct TableRow {
     /// 引き直しで答えの集合が変わった回数 (T14.37)。`refreshes + misses` のうち
     /// どれだけ答えが動いたかが、TTL の長さを決める材料になる
     pub changes: u64,
+    /// warm な状態でこの名前が引かれた回数 (通算。T15.0 (7))
+    pub warm_requests: u64,
+    /// ミスの種類別の回数 (通算。並びは cold / expired / warm_stale / negative。
+    /// T15.0 (7))。**和は `misses` と一致する**
+    pub misses_by_kind: [u64; 4],
 }
 
 impl TableRow {
@@ -865,7 +1029,7 @@ impl TableRow {
             None => "null".to_string(),
         };
         format!(
-            "{{\"host\":\"{}\",\"addrs\":[{}],\"addr_count\":{},\"age_secs\":{},\"ttl_left\":{},\"idle_secs\":{},\"win_v6\":{},\"failed\":{},\"refreshing\":{},\"warm\":{},\"next_refresh_secs\":{},\"misses\":{},\"refreshes\":{},\"changes\":{}}}",
+            "{{\"host\":\"{}\",\"addrs\":[{}],\"addr_count\":{},\"age_secs\":{},\"ttl_left\":{},\"idle_secs\":{},\"win_v6\":{},\"failed\":{},\"refreshing\":{},\"warm\":{},\"next_refresh_secs\":{},\"misses\":{},\"refreshes\":{},\"changes\":{},\"warm_requests\":{},\"misses_by_kind\":{}}}",
             crate::json::escape(&self.host),
             addrs.join(","),
             self.addr_count,
@@ -887,6 +1051,8 @@ impl TableRow {
             self.misses,
             self.refreshes,
             self.changes,
+            self.warm_requests,
+            misses_by_kind_json(&self.misses_by_kind),
         )
     }
 }
@@ -935,6 +1101,8 @@ pub fn table(sort: DnsSort) -> Vec<TableRow> {
                     misses: e.misses,
                     refreshes: e.refreshes,
                     changes: e.changes,
+                    warm_requests: e.warm_requests,
+                    misses_by_kind: e.misses_by_kind,
                 }
             })
             .collect()
@@ -960,8 +1128,16 @@ pub fn entries() -> usize {
 pub fn status_json() -> String {
     let entries = entries();
     let (us, misses) = resolve_cost_total();
+    // ミスの内訳と引き直しの様子 (T15.0 (7))。`misses_by_kind` の 4 つの和は `misses` と
+    // 一致する。`refresh_*` は `dns-refresh` スレッド 1 本ぶん
+    let by_kind = [
+        MISS_COLD.load(Ordering::Relaxed),
+        MISS_EXPIRED.load(Ordering::Relaxed),
+        MISS_WARM_STALE.load(Ordering::Relaxed),
+        MISS_NEGATIVE.load(Ordering::Relaxed),
+    ];
     format!(
-        "{{\"ttl_secs\":{},\"negative_ttl_secs\":{},\"warm_secs\":{},\"entries\":{},\"warm\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{},\"refreshes\":{},\"changes\":{},\"miss_ms_sum\":{:.1},\"miss_avg_ms\":{:.2}}}",
+        "{{\"ttl_secs\":{},\"negative_ttl_secs\":{},\"warm_secs\":{},\"entries\":{},\"warm\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{},\"refreshes\":{},\"changes\":{},\"miss_ms_sum\":{:.1},\"miss_avg_ms\":{:.2},\"misses_by_kind\":{},\"refresh_failures\":{},\"refresh_ms_sum\":{:.1},\"refresh_ms_max\":{:.1},\"refresh_late\":{}}}",
         TTL_SECS.load(Ordering::Relaxed),
         NEGATIVE_SECS.load(Ordering::Relaxed),
         WARM_SECS.load(Ordering::Relaxed),
@@ -979,6 +1155,11 @@ pub fn status_json() -> String {
         } else {
             us as f64 / 1000.0 / misses as f64
         },
+        misses_by_kind_json(&by_kind),
+        REFRESH_FAILURES.load(Ordering::Relaxed),
+        REFRESH_US_SUM.load(Ordering::Relaxed) as f64 / 1000.0,
+        REFRESH_US_MAX.load(Ordering::Relaxed) as f64 / 1000.0,
+        REFRESH_LATE.load(Ordering::Relaxed),
     )
 }
 
@@ -1004,6 +1185,23 @@ mod tests {
             .as_ref()
             .and_then(|t| t.get(host))
             .map(|e| (e.addrs.len(), e.failed_at.is_some()))
+    }
+
+    /// JSON の `"<鍵>":` の後ろの数字を読む (`tests/common/mod.rs` の `status_number` と
+    /// 同じ形)。**末尾の `}` で突き合わせない**ため: 鍵の後ろに欄が足されても落ちず、
+    /// `contains` と違って `1` が `12` に前方一致することもない。
+    fn json_number(json: &str, key: &str) -> u64 {
+        let pat = format!("\"{}\":", key);
+        let at = json
+            .find(&pat)
+            .unwrap_or_else(|| panic!("no {} in {}", key, json))
+            + pat.len();
+        json[at..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap_or_else(|_| panic!("{} is not a number in {}", key, json))
     }
 
     /// (hits, misses, negative_hits, refreshes)。
@@ -1061,7 +1259,13 @@ mod tests {
 
     /// 「次に引き直す時刻」を今にして `dns-refresh` を起こす (秒を待たずに周期を回す)。
     fn warm_due_now(host: &str) {
-        let now = Instant::now();
+        warm_due_ago(host, Duration::ZERO);
+    }
+
+    /// [`warm_due_now`] の、予定を `ago` だけ過去に置く版 (T15.0 (7))。
+    /// **予定に遅れて取り出される引き直し**を秒を待たずに作れる。
+    fn warm_due_ago(host: &str, ago: Duration) {
+        let due = Instant::now() - ago;
         {
             let mut guard = TABLE.locked();
             let table = guard.get_or_insert_with(HashMap::new);
@@ -1070,9 +1274,9 @@ mod tests {
             for o in old {
                 q.remove(&o);
             }
-            q.insert((now, host.to_string()));
+            q.insert((due, host.to_string()));
             if let Some(e) = table.get_mut(host) {
-                e.next_refresh = Some(now);
+                e.next_refresh = Some(due);
             }
         }
         wake_refresher();
@@ -1115,6 +1319,50 @@ mod tests {
             .map_or(0, |e| e.changes)
     }
 
+    /// この名前が warm の間に引かれた回数 (T15.0 (7))。
+    fn warm_requests_of(host: &str) -> u64 {
+        TABLE
+            .locked()
+            .as_ref()
+            .and_then(|t| t.get(host))
+            .map_or(0, |e| e.warm_requests)
+    }
+
+    /// この名前のミスの内訳 (T15.0 (7))。
+    fn misses_by_kind_of(host: &str) -> [u64; 4] {
+        TABLE
+            .locked()
+            .as_ref()
+            .and_then(|t| t.get(host))
+            .map_or([0; 4], |e| e.misses_by_kind)
+    }
+
+    /// ミスの種類別の合計 (cold / expired / warm_stale / negative。T15.0 (7))。
+    fn miss_kinds() -> [u64; 4] {
+        [
+            MISS_COLD.load(Ordering::Relaxed),
+            MISS_EXPIRED.load(Ordering::Relaxed),
+            MISS_WARM_STALE.load(Ordering::Relaxed),
+            MISS_NEGATIVE.load(Ordering::Relaxed),
+        ]
+    }
+
+    /// 2 つの [`miss_kinds`] の差 (この 1 手で何が増えたか)。
+    fn kinds_delta(before: [u64; 4], after: [u64; 4]) -> [u64; 4] {
+        std::array::from_fn(|i| after[i] - before[i])
+    }
+
+    /// 「前に引けなかった」状態を直接作る (`getaddrinfo` の失敗を待たずに
+    /// 負のキャッシュを置く。T15.0 (7))。
+    fn put_failed(host: &str) {
+        let now = Instant::now();
+        let mut guard = TABLE.locked();
+        let table = guard.get_or_insert_with(HashMap::new);
+        let mut e = Entry::empty(now, None);
+        e.failed_at = Some((now, io::ErrorKind::NotFound, "test".to_string()));
+        table.insert(host.to_string(), e);
+    }
+
     /// 覚えている失敗の時計を巻き戻す。
     fn age_failure(host: &str, ago: Duration) {
         let now = Instant::now();
@@ -1129,17 +1377,25 @@ mod tests {
 
     /// 裏の引き直しが `want` 回になるまで待つ (最大 5 秒)。
     fn wait_refreshes(want: u64) {
-        for _ in 0..500 {
+        wait_refreshes_within(want, Duration::from_secs(5));
+    }
+
+    /// [`wait_refreshes`] の、待つ長さを選べる版。引けない名前の `getaddrinfo` は
+    /// 1 回 約 2 秒かかることがあるので、失敗を待つ側は長めに取る。
+    fn wait_refreshes_within(want: u64, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        loop {
             if REFRESHES.load(Ordering::Relaxed) >= want {
                 return;
             }
+            assert!(
+                Instant::now() < deadline,
+                "refreshes = {} (expected {})",
+                REFRESHES.load(Ordering::Relaxed),
+                want
+            );
             thread::sleep(Duration::from_millis(10));
         }
-        panic!(
-            "refreshes = {} (expected {})",
-            REFRESHES.load(Ordering::Relaxed),
-            want
-        );
     }
 
     #[test]
@@ -1537,7 +1793,13 @@ mod tests {
             .expect("表に載っている");
         assert_eq!(row.changes, 1);
         let json = row.to_json();
-        assert!(json.contains("\"refreshes\":0,\"changes\":1}"), "{}", json);
+        // T15.0 (7) で `changes` の後ろに 2 欄 (`warm_requests` / `misses_by_kind`) が
+        // 付いたので、末尾の `}` ではなく次の鍵で突き合わせる
+        assert!(
+            json.contains("\"refreshes\":0,\"changes\":1,\"warm_requests\":"),
+            "{}",
+            json
+        );
         let status = status_json();
         assert!(
             status.contains(&format!("\"changes\":{},", total0 + 1)),
@@ -1545,5 +1807,222 @@ mod tests {
             status
         );
         clear();
+    }
+
+    /// T15.0 (7): ミス 1 件ごとに「そのとき何だったか」を 4 種で残す。
+    /// **4 種の和は `dns.misses` と一致する** (受け入れ基準)。
+    #[test]
+    fn misses_are_counted_by_kind() {
+        let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_ttl(Duration::from_secs(60));
+        set_warm_window(WARM);
+        clear();
+        let host = "localhost";
+        let (m0, k0) = (tally().1, miss_kinds());
+
+        // (a) cold: 表に無い名前の 1 回目
+        resolve_host(host, 80).expect("localhost は引ける");
+        assert_eq!(kinds_delta(k0, miss_kinds()), [1, 0, 0, 0], "1 回目は cold");
+        assert!(!is_warm(host), "1 回では warm にしない");
+
+        // (b) expired: 答えは持っているが TTL を過ぎた (窓の中なのでこの参照で warm になる)
+        let k1 = miss_kinds();
+        age_entry(host, Duration::from_secs(61), Duration::from_secs(61));
+        resolve_host(host, 80).unwrap();
+        assert_eq!(
+            kinds_delta(k1, miss_kinds()),
+            [0, 1, 0, 0],
+            "期限切れは expired"
+        );
+        assert!(is_warm(host), "2 回目の使用で warm");
+        assert_eq!(
+            warm_requests_of(host),
+            0,
+            "warm になった参照そのものは warm の要求ではない"
+        );
+
+        // (c) warm_stale: warm なのに期限が切れていた = 裏の引き直しが間に合っていない
+        let k2 = miss_kinds();
+        age_entry(host, Duration::from_secs(61), Duration::from_secs(1));
+        resolve_host(host, 80).unwrap();
+        assert_eq!(
+            kinds_delta(k2, miss_kinds()),
+            [0, 0, 1, 0],
+            "warm のミスは warm_stale"
+        );
+        assert_eq!(warm_requests_of(host), 1, "warm の間に来た要求だけ数える");
+        assert_eq!(
+            misses_by_kind_of(host),
+            [1, 1, 1, 0],
+            "名前ごとの行にも 1 件ずつ残る"
+        );
+
+        // (d) negative: 覚えている失敗の期限が切れたので引き直した
+        let k3 = miss_kinds();
+        clear();
+        put_failed(host);
+        age_failure(host, Duration::from_secs(61));
+        resolve_host(host, 80).unwrap();
+        assert_eq!(
+            kinds_delta(k3, miss_kinds()),
+            [0, 0, 0, 1],
+            "失敗のあとの引き直しは negative"
+        );
+
+        // (e) `PROXY_DNS_TTL_SECS=0` は表を触らない = 「直前の姿」が無いので cold
+        let k4 = miss_kinds();
+        set_ttl(Duration::ZERO);
+        resolve_host(host, 80).unwrap();
+        set_ttl(Duration::from_secs(60));
+        assert_eq!(kinds_delta(k4, miss_kinds()), [1, 0, 0, 0], "TTL 0 は cold");
+
+        // 和は `dns.misses` と一致する
+        let k5 = miss_kinds();
+        assert_eq!(
+            tally().1 - m0,
+            kinds_delta(k0, k5).iter().sum::<u64>(),
+            "4 種の和 = misses"
+        );
+
+        // `/dns` の行と `/status` に出る
+        let status = status_json();
+        let row = table(DnsSort::Host)
+            .into_iter()
+            .find(|r| r.host == host)
+            .expect("表に載っている");
+        assert_eq!(
+            row.misses_by_kind,
+            [0, 0, 0, 1],
+            "(d) の 1 件だけ残っている"
+        );
+        let json = row.to_json();
+        // **末尾の `}` は突き合わせない** (`misses_by_kind` の入れ子の閉じまで)。
+        // 行の末尾に欄を足す次の担当がここで落ちないため (T15.0 (7))
+        assert!(
+            json.contains(
+                "\"warm_requests\":0,\"misses_by_kind\":{\"cold\":0,\"expired\":0,\"warm_stale\":0,\"negative\":1}"
+            ),
+            "{}",
+            json
+        );
+        assert!(
+            status.contains(&format!("\"misses_by_kind\":{}", misses_by_kind_json(&k5))),
+            "{}",
+            status
+        );
+        clear();
+    }
+
+    /// T15.0 (7): 予定から [`REFRESH_LATE_AFTER`] 以上遅れて始まった引き直しを数える
+    /// (引き直しは 1 本のスレッドが順にやるので、詰まるとここに出る)。
+    #[test]
+    fn a_late_refresh_is_counted() {
+        let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_ttl(Duration::from_secs(60));
+        set_warm_window(WARM);
+        clear();
+        let host = "localhost";
+        // 答えを表に直接置いてから引く = 当たり + 2 回目の使用で warm (`getaddrinfo` は呼ばない)
+        put(host, Duration::from_secs(1));
+        resolve_host(host, 80).unwrap();
+        assert!(is_warm(host), "2 回目の使用で warm");
+
+        let late0 = REFRESH_LATE.load(Ordering::Relaxed);
+        let r0 = tally().3;
+        warm_due_ago(host, Duration::from_secs(6));
+        wait_refreshes(r0 + 1);
+        assert_eq!(
+            REFRESH_LATE.load(Ordering::Relaxed),
+            late0 + 1,
+            "6 秒遅れて取り出された引き直しは 1 件"
+        );
+
+        // 予定どおりに取り出せた引き直しは数えない
+        let r1 = tally().3;
+        warm_due_now(host);
+        wait_refreshes(r1 + 1);
+        assert_eq!(
+            REFRESH_LATE.load(Ordering::Relaxed),
+            late0 + 1,
+            "遅れていない引き直しは数えない"
+        );
+        let status = status_json();
+        assert_eq!(
+            json_number(&status, "refresh_late"),
+            late0 + 1,
+            "{}",
+            status
+        );
+        clear();
+    }
+
+    /// T15.0 (7): 裏の引き直しの**失敗**と所要時間を数える。失敗しても
+    /// `resolved_at` は動かないので、この名前は次の期限でミスになる。
+    #[test]
+    fn a_failed_refresh_is_counted_with_its_time() {
+        let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_ttl(Duration::from_secs(60));
+        set_warm_window(WARM);
+        clear();
+        // 引けない名前に「前の答え」を置いて warm にする。要求の経路は当たりで帰るので、
+        // `getaddrinfo` の失敗を待つのは `dns-refresh` スレッドだけ
+        let host = "t150-no-such-host.invalid";
+        put(host, Duration::from_secs(1));
+        resolve_host(host, 80).unwrap();
+        assert!(is_warm(host), "2 回目の使用で warm");
+
+        let f0 = REFRESH_FAILURES.load(Ordering::Relaxed);
+        let s0 = REFRESH_US_SUM.load(Ordering::Relaxed);
+        let r0 = tally().3;
+        warm_due_now(host);
+        // 引けない名前は 1 回 約 2 秒かかることがある
+        wait_refreshes_within(r0 + 1, Duration::from_secs(20));
+        assert_eq!(
+            REFRESH_FAILURES.load(Ordering::Relaxed),
+            f0 + 1,
+            "引けなかった引き直しは 1 件"
+        );
+        assert!(
+            REFRESH_US_SUM.load(Ordering::Relaxed) > s0,
+            "かかった時間が足されている"
+        );
+        assert!(
+            REFRESH_US_MAX.load(Ordering::Relaxed) > 0,
+            "最大も入っている"
+        );
+        // 失敗しても古い答えは残る (T13.1 の決まり)
+        assert_eq!(cached(host).map(|(n, _)| n), Some(1), "古い答えは捨てない");
+        let status = status_json();
+        assert!(
+            status.contains(&format!("\"refresh_failures\":{},", f0 + 1)),
+            "{}",
+            status
+        );
+        clear();
+    }
+
+    /// `peek` は読むだけ、`take` は読んで 0 に戻す (T15.0 (1))。
+    ///
+    /// 入口の ACL (`src/lib.rs`) が時計より前に払ったぶんを、トンネルと forward が
+    /// **消さずに**控えるための口なので、2 回読んでも同じ値が出ることが要点。
+    #[test]
+    fn peeking_the_resolve_cost_does_not_take_it() {
+        // このテストのスレッドの箱を空にしてから始める (thread-local)
+        let _ = take_resolve_cost();
+        assert_eq!(peek_resolve_cost(), (0, 0));
+
+        note_resolve_cost(11_400, 1);
+        assert_eq!(
+            peek_resolve_cost(),
+            (11, 1),
+            "0.5 ms で丸める (take と同じ)"
+        );
+        assert_eq!(peek_resolve_cost(), (11, 1), "読むだけなので減らない");
+
+        note_resolve_cost(600, 1);
+        assert_eq!(peek_resolve_cost(), (12, 2), "足される");
+        assert_eq!(take_resolve_cost(), (12, 2), "peek と同じ値が取れる");
+        assert_eq!(peek_resolve_cost(), (0, 0), "take のあとは空");
+        assert_eq!(take_resolve_cost(), (0, 0));
     }
 }

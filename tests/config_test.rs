@@ -89,7 +89,27 @@ fn value_of(json: &str, key: &str) -> String {
         .to_string()
 }
 
-/// `capabilities` の 7 項目が `/status` に出ること (T14.15)。
+/// `--check` の最後の行から「読めなかったものの名前」を取り出す。
+///
+/// `check: ok (…)` なら空、`check: 1 of 7 not readable (proc_schedstat) — …` なら
+/// `["proc_schedstat"]`。どちらの行にも括弧があるので `ok` を先に見る。
+fn check_missing(text: &str) -> Vec<String> {
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("check: "))
+        .unwrap_or_else(|| panic!("check: の行が無い:\n{}", text));
+    if line.starts_with("check: ok") {
+        return Vec::new();
+    }
+    let inner = line
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .unwrap_or_else(|| panic!("読めなかったものの名前が無い: {}", line))
+        .0;
+    inner.split(',').map(|s| s.trim().to_string()).collect()
+}
+
+/// `capabilities` の 8 項目が `/status` に出ること (T14.15、T15.0 (5) で 1 つ増えた)。
 ///
 /// 測るのは `.env` の監視スレッドなので、起動直後の一瞬は `null` のことがある
 /// (名前解決の測定に最大 2 秒かかる)。出そろうまで待って形を見る。
@@ -113,6 +133,7 @@ fn test_integration_capabilities_appear_in_status() {
         "ipv6_route",
         "resolver_ms",
         "home_writable",
+        "proc_schedstat",
     ] {
         assert!(
             status.contains(&format!("\"{}\":", key)),
@@ -270,9 +291,13 @@ fn test_integration_config_shows_effective_values_and_their_source() {
 
 /// `rust-http-proxy --check` が**起動せずに**環境と効く設定を印字して終わること (T14.15)。
 ///
-/// 終了コードは `capabilities` の 6 項目 (名前解決を除く) が全部読めたら 0、
+/// 終了コードは `capabilities` の 7 項目 (名前解決を除く) が全部読めたら 0、
 /// 1 つでも読めなければ 1。どちらの機械でも落ちないよう、印字と終了コードの
-/// **辻褄が合っていること**を見る (この機械では 0)。
+/// **辻褄が合っていること**を見る。
+///
+/// Linux では `proc_schedstat` **だけ**は読めなくてよい (`CONFIG_SCHEDSTATS` の無い
+/// カーネルには `/proc/<tid>/schedstat` がファイルごと無い。T15.0 (5))。ほかが 1 つでも
+/// 読めなければ、それはこの機械の設定がおかしいので落とす。
 #[test]
 fn test_integration_check_prints_capabilities_and_settings() {
     let dir = std::env::temp_dir().join(format!("rhp-t1415-check-{}", std::process::id()));
@@ -291,7 +316,7 @@ fn test_integration_check_prints_capabilities_and_settings() {
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let code = out.status.code().expect("exit code");
 
-    // 7 項目が印字される
+    // 8 項目が印字される
     for key in [
         "proc_syscall",
         "tcp_info",
@@ -299,20 +324,28 @@ fn test_integration_check_prints_capabilities_and_settings() {
         "cgroup_pressure",
         "ipv6_route",
         "home_writable",
+        "proc_schedstat",
         "resolver_ms",
     ] {
         assert!(text.contains(key), "{} が印字されない:\n{}", key, text);
     }
     // 印字と終了コードの辻褄 (読めないものがあれば 1、無ければ 0)
-    if text.contains("check: ok") {
+    let missing = check_missing(&text);
+    if missing.is_empty() {
         assert_eq!(code, 0, "全部読めるなら 0:\n{}", text);
         assert!(!text.contains("[NO]"), "{}", text);
     } else {
         assert_eq!(code, 1, "読めないものがあれば 1:\n{}", text);
         assert!(text.contains("[NO]"), "{}", text);
     }
+    // この機械で読めなくてよいのは `proc_schedstat` だけ (カーネルの設定しだい)
     #[cfg(target_os = "linux")]
-    assert_eq!(code, 0, "この機械では全部読める:\n{}", text);
+    assert!(
+        missing.iter().all(|m| m == "proc_schedstat"),
+        "proc_schedstat 以外も読めない ({:?}):\n{}",
+        missing,
+        text
+    );
 
     // 効いている設定と出どころ (`.env` / 環境変数 / 引数 / 既定) が並ぶ
     assert!(

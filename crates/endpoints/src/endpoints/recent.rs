@@ -1332,6 +1332,9 @@ mod tests {
             refreshes: 2,
             // T14.37 で増えた欄 (引き直しで答えが変わった回数)。1 行の大きさに効く
             changes: 1,
+            // T15.0 (7) で増えた欄 (warm のまま引かれた回数とミスの内訳)。同上
+            warm_requests: 9,
+            misses_by_kind: [2, 1, 0, 1],
         };
         let mut body = String::from(SCHEMA_HEAD) + "\"entries\":";
         let (shown, cut) = array_within(&mut body, vec![plain; 300].iter().map(|r| r.to_json()));
@@ -1361,6 +1364,8 @@ mod tests {
             misses: u64::MAX,
             refreshes: u64::MAX,
             changes: u64::MAX,
+            warm_requests: u64::MAX,
+            misses_by_kind: [u64::MAX; 4],
         };
         let mut body = String::from(SCHEMA_HEAD) + "\"entries\":";
         let (shown, cut) = array_within(&mut body, vec![worst; 4096].iter().map(|r| r.to_json()));

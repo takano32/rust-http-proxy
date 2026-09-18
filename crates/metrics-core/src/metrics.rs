@@ -37,6 +37,13 @@ pub struct Interval {
     pub errors_by_cause: [u64; ERR_CAUSES],
     pub dns_misses: u64,
     pub dns_ms_sum: u64,
+    /// **利用者が待つ時間** (`queue + client_read + dns + connect` の ms。CONNECT だけ。
+    /// T15.0 (2))。`connect` の窓は `open()` の入口 (要求行を読んだ後) から測るので、
+    /// accept してワーカーが動き出すまでの待ちも名前解決も入っていない。
+    /// **`--lite` では書かない** (`queue` と `client_read` が 0 なので「4 段の和」を
+    /// 名乗れない)。`/history` に列として出すのは T15.0 (10) の仕事で、ここは値を
+    /// 用意するところまで。**欄は末尾に足す** (既存の並びを動かさない)
+    pub wait: crate::history::Window,
 }
 
 /// ホスト別統計の表と、区間の合計。1 つの鍵で守る。
@@ -394,6 +401,26 @@ impl Metrics {
             if connect {
                 hosts.stages.observe_connect(detail);
                 hosts.quantiles.connect.observe(us, now);
+                // **利用者が待つ時間** = `queue + client_read + dns + connect` (T15.0 (2))。
+                // 4 つがそろうのはここだけ。`--lite` はこの分岐に入らない
+                let total_ms = ms.unwrap_or(0);
+                // `connect_ms` は「全体 − 窓の内側の名前解決」なので、差が窓の内側のぶん
+                let dns_inside = total_ms.saturating_sub(detail.connect_ms);
+                let head_ms = (detail.stages.queue as u64 + detail.stages.client_read as u64)
+                    .saturating_add(detail.dns_ms)
+                    .saturating_sub(dns_inside);
+                // 窓 (ms) は素直に 4 段の和
+                let wait_ms = head_ms.saturating_add(total_ms);
+                // 環は **us のまま**: 確立の段だけ `d` の us を使う (ms に丸めると
+                // 1 ms 未満の確立が 0 に潰れて `connect` の環と比べられなくなる)。
+                // これで標本ごとに必ず `wait ≥ connect` になる
+                let wait_us = head_ms
+                    .saturating_mul(1_000)
+                    .saturating_add(us as u64)
+                    .min(u32::MAX as u64) as u32;
+                hosts.quantiles.wait.observe(wait_us, now);
+                hosts.total.wait.observe(wait_ms);
+                hosts.interval.wait.observe(wait_ms);
             } else {
                 hosts.stages.observe_forward(detail);
                 hosts.quantiles.forward.observe(us, now);
@@ -464,16 +491,23 @@ impl Metrics {
     /// **鍵の内側でするのは値の写しだけ**で、`select_nth_unstable` は鍵を放してから
     /// 回す (1,024 本で数 us だが、要求の経路が待つ鍵をその間握らない)。
     /// 呼ぶのは `/status` に来たときだけ。
-    pub fn recent_quantiles(&self) -> (crate::quantiles::Stats, crate::quantiles::Stats) {
-        let (c, f) = self.hosts.locked().quantiles.copy();
+    pub fn recent_quantiles(
+        &self,
+    ) -> (
+        crate::quantiles::Stats,
+        crate::quantiles::Stats,
+        crate::quantiles::Stats,
+    ) {
+        let (c, f, w) = self.hosts.locked().quantiles.copy();
         let now = crate::cache::now_epoch();
-        (c.stats(now), f.stats(now))
+        (c.stats(now), f.stats(now), w.stats(now))
     }
 
-    /// 上の 2 つを `{"connect":{..},"forward":{..}}` にしたもの。
+    /// 上の 3 つを `{"connect":{..},"forward":{..},"wait":{..}}` にしたもの
+    /// (`wait` は T15.0 (2) で**末尾に**足した)。
     pub fn recent_quantiles_json(&self) -> String {
-        let (c, f) = self.recent_quantiles();
-        crate::quantiles::to_json(&c, &f)
+        let (c, f, w) = self.recent_quantiles();
+        crate::quantiles::to_json(&c, &f, &w)
     }
 
     /// 直近の標本以降の合計を読み、0 に戻す ([`crate::history::Sample::take`] だけが呼ぶ)。
@@ -1260,7 +1294,7 @@ fn memory_json(rss: Option<u64>, threads: u64, conn_threads: u64, cache: Option<
     // 見積もり (最大 256 行 × (鍵 + パス))。**1 行も引かれていなければ 1 バイトも確保しない**
     let readers =
         (MAX_READERS * (size_of::<(String, Reader)>() + MAX_CLIENT + MAX_READER_PATH)) as u64;
-    // 直近の標本の環状は固定長 (2 系統 × 1,024 本 × 8 B = 16 KiB。T14.31)。
+    // 直近の標本の環状は固定長 (3 系統 × 1,024 本 × 8 B = 24 KiB。T14.31、T15.0 (2))。
     // 1 本目を書くまで確保しないので、これも「満杯のとき」の見積もり
     let quantiles = crate::quantiles::BYTES as u64;
     // 履歴は 3 解像度の標本 (T12.4。**5 秒はメモリだけ 6 時間 = 4,320 本**。T14.32) と、
@@ -1776,6 +1810,70 @@ mod latency_tests {
         );
         assert_eq!(ErrCause::Loop.name(), "loop");
         assert_eq!(ERR_CAUSE_NAMES.len(), ERR_CAUSES);
+    }
+
+    /// 利用者が待つ時間の系列 `wait` (T15.0 (2))。
+    ///
+    /// 4 つの値がそろうのは [`Metrics::record`] だけなので、和を作るのもここ 1 か所。
+    /// **既存の `connect` の系列は 1 バイトも触らない** (新しい系列として足す)。
+    #[test]
+    fn the_wait_series_is_the_sum_of_four_stages() {
+        // 段階の窓と同じ旗 (`--lite` では書かない)。この binary の他のテストは見ていない
+        crate::profile::set_enabled(true);
+        let m = Metrics::new();
+        m.record_host_detail(
+            "connect://w:443",
+            HostOutcome::Bypass,
+            0,
+            Some(Duration::from_millis(30)),
+            Detail {
+                dns_ms: 10,
+                dns_misses: 1,
+                // 30 ms のうち 4 ms は窓の内側の名前解決 (残り 6 ms は入口の ACL)
+                connect_ms: 26,
+                stages: StageMs {
+                    queue: 5,
+                    client_read: 2,
+                    ..StageMs::default()
+                },
+                ..Detail::default()
+            },
+        );
+        let (c, f, w) = m.recent_quantiles();
+        assert_eq!((c.n, w.n), (1, 1), "確立と待ちは同じ本数");
+        assert_eq!(f.n, 0, "forward には入らない");
+        // 5 + 2 + 10 + 26 = 43 ms (環は us。確立の段は `took` の端数を残す)
+        assert_eq!(w.p50_us, 43_000);
+        assert!(w.p50_us >= c.p50_us, "待ちが確立より短いことはない");
+        // 区間の窓 (`/history` の列を足すのは T15.0 (10))
+        let iv = m.take_interval();
+        assert_eq!((iv.wait.count, iv.wait.ms_sum, iv.wait.ms_max), (1, 43, 43));
+        assert_eq!(iv.connect.count, 1, "確立の窓は今までどおり");
+        assert_eq!(iv.connect.ms_max, 30, "確立の値は動かさない");
+        assert_eq!(m.take_interval().wait.count, 0, "読むと 0 に戻る");
+
+        // `--lite` では 1 本も書かない (環も窓も増えない)
+        crate::profile::set_enabled(false);
+        m.record_host_detail(
+            "connect://w:443",
+            HostOutcome::Bypass,
+            0,
+            Some(Duration::from_millis(30)),
+            Detail {
+                stages: StageMs {
+                    queue: 5,
+                    ..StageMs::default()
+                },
+                ..Detail::default()
+            },
+        );
+        assert_eq!(m.recent_quantiles().2.n, 1, "`--lite` で環に書いた");
+        assert_eq!(m.take_interval().wait.count, 0, "`--lite` で窓に書いた");
+        assert_eq!(
+            m.totals().connect.count,
+            2,
+            "確立の窓は `--lite` でも数える (今までどおり)"
+        );
     }
 
     /// 内訳はホスト別の行と区間の合計の両方に乗る (T12.4 (2) / (3))。
