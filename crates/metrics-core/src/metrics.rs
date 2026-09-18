@@ -69,6 +69,17 @@ pub struct Metrics {
     pub start_time: Instant,
     pub total_requests: AtomicU64,
     pub active_connections: AtomicUsize,
+    /// **前回の標本からの同時接続の真の山** (`/history` の `active_peak`。T15.0 (10))。
+    ///
+    /// `active_max` は 5 秒ごとの瞬間値の最大なので、5 秒より短い山を取りこぼす
+    /// (実測で取りこぼしが分かっていたので、この列を足した)。ここは
+    /// [`Metrics::inc_active_conn`] が数え上げるたびに見るので、山を 1 本も落とさない。
+    ///
+    /// **要求の経路に足す原子操作は読み 1 回と比較 1 回だけ** (越えたときだけ `fetch_max`)。
+    /// T15.0 の決まり「要求の経路は増やさない」の**例外その 2** (もう 1 つは
+    /// `dns` の `warm_requests`)。システムコールも確保も増えない。
+    /// 読み出しは [`Metrics::take_active_peak`] (5 秒に 1 回)
+    active_peak: AtomicUsize,
     /// アイドルなまま監視スレッド (epoll) に預けている接続数と、その監視が生きているか
     pub parked_connections: AtomicUsize,
     /// そのうち CONNECT トンネルの数 (両方向とも暇なもの。T8.1)
@@ -136,6 +147,7 @@ impl Metrics {
             start_time: Instant::now(),
             total_requests: AtomicU64::new(0),
             active_connections: AtomicUsize::new(0),
+            active_peak: AtomicUsize::new(0),
             parked_connections: AtomicUsize::new(0),
             parked_tunnels: AtomicUsize::new(0),
             park_watcher_alive: AtomicBool::new(false),
@@ -939,11 +951,26 @@ impl Metrics {
     }
 
     pub fn inc_active_conn(&self) {
-        self.active_connections.fetch_add(1, Ordering::Relaxed);
+        // 戻り + 1 = いまの本数。5 秒ごとの瞬間値では取りこぼす短い山を、ここで拾う
+        // (T15.0 (10))。**足すのは原子の読み 1 回と比較 1 回**で、越えたときだけ書く
+        let now = self.active_connections.fetch_add(1, Ordering::Relaxed) + 1;
+        if now > self.active_peak.load(Ordering::Relaxed) {
+            self.active_peak.fetch_max(now, Ordering::Relaxed);
+        }
     }
 
     pub fn dec_active_conn(&self) {
         self.active_connections.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// 前回からの同時接続の山を読み、**いまの本数に**戻す (`/history` の `active_peak`)。
+    ///
+    /// 0 ではなく今の本数に戻すのは、次の区間の山が「いま張っている本数」より小さく
+    /// 出ないようにするため (山は「その区間に何本まで居たか」であって
+    /// 「その区間に何本増えたか」ではない)。**呼ぶのは 5 秒の標本のときだけ**。
+    pub fn take_active_peak(&self) -> usize {
+        let now = self.active_connections.load(Ordering::Relaxed);
+        self.active_peak.swap(now, Ordering::Relaxed)
     }
 
     pub fn add_bytes(&self, bytes: u64) {
@@ -1408,6 +1435,42 @@ mod tests {
                 "\"live_threads\":0,\"idle_threads\":0,\"queued_jobs\":0,\"max_threads\":0"
             )
         );
+    }
+
+    /// 同時接続の**山** (`/history` の `active_peak`。T15.0 (10))。
+    ///
+    /// 見るのは 3 つ: (a) 5 秒より短い山は瞬間値 (`active_connections`) からは
+    /// 見えないが山には残る、(b) 読むと **0 ではなく今の本数**に戻る
+    /// (張りっぱなしの接続が次の区間で消えないように)、(c) 山は下がらない。
+    #[test]
+    fn the_active_peak_keeps_spikes_the_instant_value_misses() {
+        let m = Metrics::new();
+        // (a) 50 本張ってすぐ閉じる = 標本と標本の間で終わる山
+        for _ in 0..50 {
+            m.inc_active_conn();
+        }
+        for _ in 0..50 {
+            m.dec_active_conn();
+        }
+        assert_eq!(
+            m.active_connections.load(Ordering::Relaxed),
+            0,
+            "瞬間値はもう 0"
+        );
+        assert_eq!(m.take_active_peak(), 50, "山は残る");
+        // (b) 読んだあとは「いまの本数」 (この時点では 0)
+        assert_eq!(m.take_active_peak(), 0);
+
+        // (c) 張ったままの 3 本は次の区間でも山として数える
+        for _ in 0..3 {
+            m.inc_active_conn();
+        }
+        assert_eq!(m.take_active_peak(), 3);
+        assert_eq!(m.take_active_peak(), 3, "0 ではなくいまの本数に戻る");
+        // 山より低い出入りでは動かない
+        m.dec_active_conn();
+        m.inc_active_conn();
+        assert_eq!(m.take_active_peak(), 3);
     }
 
     /// 版は上の層から渡ったものがそのまま `/status` に出ること (T12.6)。

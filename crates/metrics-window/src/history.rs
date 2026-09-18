@@ -10,6 +10,11 @@
 //! **累計と区間が混ざっている**のは意図したもの (T12.4 (3))。要求数やバイト数は累計を
 //! 置いてブラウザ側で差分を取る (再起動をまたいでも段差が 1 つ出るだけ) が、応答時間の分布は
 //! 差分が取れない (区間ごとの分位点が要る) ので、**その 5 秒に起きたぶんだけ**を置く。
+//!
+//! 混ざっていること自体は変えられない (既存の列の意味は変えない) ので、**どの列を
+//! どう読むか**を [`KEY_KINDS`] (`/history` の `key_kinds`) で隣に出す (T15.0 (10))。
+//! 通算しか無かった `requests` / `bytes` には区間の値 (`requests_delta` / `bytes_delta`) を
+//! 並べて足した。
 
 use crate::sync::LockExt;
 use std::collections::VecDeque;
@@ -37,13 +42,27 @@ pub use crate::window::{CAPACITY, DEFAULT_N, INTERVAL, RESOLUTIONS, WINDOW_BOUND
 /// 2. [`Sample::encode`] の末尾に `u64` を 1 つ足す (= 予備の先頭を 1 つ使う)
 /// 3. [`Sample::decode`] の末尾で読む (古いレコードはそこがゼロ埋めなので 0 になる)
 /// 4. この数を増やす ([`Sample::encode`] の `debug_assert` と下の `const` が見張る)
-pub const SAMPLE_ITEMS: usize = 63;
+pub const SAMPLE_ITEMS: usize = 83;
+
+/// **版 3 を始めた時点の**固定の欄の数 (T14.14 のときの [`SAMPLE_ITEMS`])。
+///
+/// 「予備は 60 項目ぶん持って始まった」は**版 3 の割り付けについての事実**で、
+/// 欄を足すたびに減ってよい今の予備 ([`SAMPLE_SPARE_ITEMS`]) の話ではない。
+/// T14.14 はそれを `SAMPLE_SPARE_ITEMS >= 60` と書き損ねていて、**4 項目を超えて
+/// 足すと組み立てで落ちた** (T15.0 (10) で式を直した)。
+const V3_FIXED_ITEMS: usize = 63;
 
 /// 予備に入る項目数。**これを使い切ったら**版を上げ、[`crate::rrd`] に変換をもう 1 本
 /// 足すことになる (T14.14 の版 2 → 版 3 と同じ手順)。
 pub const SAMPLE_SPARE_ITEMS: usize = ((crate::rrd::SAMPLE_RECORD - 4) - SAMPLE_ITEMS * 8) / 8;
+/// 版 3 を始めた時点の予備 (64 項目)。
+pub const V3_SPARE_ITEMS: usize = ((crate::rrd::SAMPLE_RECORD - 4) - V3_FIXED_ITEMS * 8) / 8;
 const _: () = assert!(SAMPLE_ITEMS * 8 <= crate::rrd::SAMPLE_RECORD - 4);
-const _: () = assert!(SAMPLE_SPARE_ITEMS >= 60, "T14.14: 予備は 60 項目ぶん持つ");
+const _: () = assert!(
+    V3_SPARE_ITEMS >= 60,
+    "T14.14: 版 3 の割り付けは 60 項目ぶんの予備を持って始まった"
+);
+const _: () = assert!(SAMPLE_SPARE_ITEMS >= 1, "予備を使い切った (版を上げること)");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sample {
@@ -86,11 +105,39 @@ pub struct Sample {
     /// **ここから先に予備が 64 項目ぶん**ある ([`SAMPLE_SPARE_ITEMS`])。
     /// 版 2 で書かれた古いレコードはこの位置がゼロ埋めなので 0 として読み戻る
     pub evicted_idle: u64,
+    /// その区間の**利用者が待つ時間** (`queue + client_read + dns + connect` の ms。
+    /// CONNECT だけ。T15.0 (2) が [`crate::metrics::Interval::wait`] を埋め、
+    /// T15.0 (10) がここに列として出した)。
+    ///
+    /// [`Self::connect`] は `open()` の入口 (要求行を読んだ後) からしか測らないので、
+    /// accept してワーカーが動き出すまでの待ちも名前解決も入っていない。
+    /// **見出しの「利用者が待った時間」はこちらを読むこと**
+    pub wait: Window,
+    /// その標本の瞬間の **warm な名前の件数** (`/status` の `dns.warm`。T15.0 (8))。
+    ///
+    /// **件数のゲージ**で、`config.dns_warm` (窓の**秒数**) とは意味が違う。
+    /// 裏の引き直しの速さ (`refreshes/h`) をこの数で割ると 1 名前あたりになる
+    /// (通算の平均で割ると実勢を 35〜60% 過小に見せる)
+    pub dns_warm: u64,
+    /// **その区間に増えた**要求数とバイト数 (T15.0 (10))。
+    ///
+    /// [`Self::requests`] / [`Self::bytes`] は**通算を標本化した値**なので、
+    /// 同じ表の中で [`Self::connect`] や [`Self::errors`] などの区間の値と混ざっていた。
+    /// 差は**標本を作るときに**取る (リングから引き算で作ると、再起動の段差と
+    /// 欠けた標本で狂う)。既存の 2 列は消していない
+    pub requests_delta: u64,
+    pub bytes_delta: u64,
+    /// その区間の同時接続の**真の山** (T15.0 (10))。
+    ///
+    /// [`Self::active_max`] は 5 秒ごとの瞬間値の最大なので、5 秒より短い山を
+    /// 取りこぼす。こちらは接続を数え上げるたびに更新した値
+    /// (`Metrics::inc_active_conn`) を 5 秒ごとに読み取ったもの
+    pub active_peak: u64,
 }
 
 /// `/history` の 1 標本の列名 (この順で [`Sample::push_row`] が値を並べる)。
 /// **キーを標本ごとに繰り返さない**ため、JSON は配列の配列にしてある (T12.4 (3))。
-pub const KEYS: [&str; 32] = [
+pub const KEYS: [&str; 40] = [
     "t",
     "requests",
     "bytes",
@@ -123,6 +170,71 @@ pub const KEYS: [&str; 32] = [
     "fds_max",
     "max_fds",
     "evicted_idle",
+    "waits",
+    "wait_ms_sum",
+    "wait_ms_max",
+    "wait_buckets",
+    "dns_warm",
+    "requests_delta",
+    "bytes_delta",
+    "active_peak",
+];
+
+/// [`KEYS`] と**同じ長さ・同じ並び**の「その列の読み方」(`/history` の `key_kinds`。T15.0 (10))。
+///
+/// 累計と区間が同じ表に混ざっている (T12.4 (3) で意図してそうした) ので、読む側が
+/// 取り違える — T14.99 では分析役が 2 か所で間違えた。**列の名前からは読み方が分からない**
+/// (`requests` は通算、`connects` は区間) ので、綴りを変えずに読み方を隣に出す:
+///
+/// - `time` … 窓の先頭の時刻 (epoch 秒)
+/// - `cumulative` … **起動からの通算**。レートが欲しければ隣の標本との差を取る
+///   (粗い解像度へは窓の最後の値で畳む。再起動をまたぐと段差が 1 つ出る)
+/// - `delta` … **その区間に起きたぶん**だけ (粗い解像度へは足し合わせ)
+/// - `gauge` … その瞬間の値 (粗い解像度へは平均。山は消える)
+/// - `peak` … その区間の最大 (粗い解像度へも最大)
+/// - `buckets` … **入れ子の配列**。要素ごとに足して畳む
+///   (区間は `bounds_ms`、`errors_by_cause` は `causes` が名前を持つ)
+pub const KEY_KINDS: [&str; KEYS.len()] = [
+    "time",       // t
+    "cumulative", // requests
+    "cumulative", // bytes
+    "gauge",      // active
+    "peak",       // active_max
+    "cumulative", // hits
+    "cumulative", // misses
+    "cumulative", // stores
+    "cumulative", // evictions
+    "gauge",      // mem_used
+    "gauge",      // mem_limit
+    "gauge",      // disk_used
+    "gauge",      // disk_limit
+    "gauge",      // rss
+    "delta",      // connects
+    "delta",      // connect_ms_sum
+    "peak",       // connect_ms_max
+    "buckets",    // connect_buckets
+    "delta",      // forwards
+    "delta",      // forward_ms_sum
+    "peak",       // forward_ms_max
+    "buckets",    // forward_buckets
+    "delta",      // errors
+    "buckets",    // errors_by_cause
+    "delta",      // dns_misses
+    "delta",      // dns_ms_sum
+    "gauge",      // threads
+    "peak",       // threads_max
+    "gauge",      // fds
+    "peak",       // fds_max
+    "gauge",      // max_fds
+    "cumulative", // evicted_idle
+    "delta",      // waits
+    "delta",      // wait_ms_sum
+    "peak",       // wait_ms_max
+    "buckets",    // wait_buckets
+    "gauge",      // dns_warm
+    "delta",      // requests_delta
+    "delta",      // bytes_delta
+    "peak",       // active_peak
 ];
 
 impl Sample {
@@ -157,7 +269,7 @@ impl Sample {
         }
         let _ = write!(
             out,
-            "],{},{},{},{},{},{},{},{}]",
+            "],{},{},{},{},{},{},{},{}",
             self.dns_misses,
             self.dns_ms_sum,
             self.threads,
@@ -166,6 +278,13 @@ impl Sample {
             self.fds_max,
             self.max_fds,
             self.evicted_idle
+        );
+        // **末尾に足すこと** (T15.0 (10))。`connect` / `forward` と同じ 4 列の形
+        self.wait.push_json(out);
+        let _ = write!(
+            out,
+            ",{},{},{},{}]",
+            self.dns_warm, self.requests_delta, self.bytes_delta, self.active_peak
         );
     }
 
@@ -202,6 +321,14 @@ impl Sample {
             // **末尾に足すこと** (T14.2)。前からある項目の位置が動くと、古いレコードが
             // 別の意味で読み戻る。足したら `SAMPLE_ITEMS` も 1 つ増やす (T14.14)
             .u64(self.evicted_idle);
+        // T15.0 (10) で足した 20 項目。**`decode` と同じ順に並べること** —
+        // `/history` の列数しか見ていない検査は順番の食い違いを通してしまい、
+        // 統計が別の意味で読み戻る
+        self.wait.encode(&mut e);
+        e.u64(self.dns_warm)
+            .u64(self.requests_delta)
+            .u64(self.bytes_delta)
+            .u64(self.active_peak);
         debug_assert_eq!(e.0.len(), SAMPLE_ITEMS * 8, "固定の欄の数と食い違っている");
         e.0
     }
@@ -245,6 +372,13 @@ impl Sample {
         // 古いレコードはここから先がゼロ埋めなので 0 になる (`Dec` は足りなければ 0)。
         // **ここから下が予備** — 欄を足すならこの位置から (T14.14)
         s.evicted_idle = d.u64();
+        // T15.0 (10)。**`encode` と同じ順**。版 3 の 63 項目のレコードはここが
+        // ゼロ埋めなので、新しい欄は 0 で読み戻り、手前の欄は 1 つもずれない
+        s.wait = Window::decode(&mut d);
+        s.dns_warm = d.u64();
+        s.requests_delta = d.u64();
+        s.bytes_delta = d.u64();
+        s.active_peak = d.u64();
         Some(s)
     }
 
@@ -258,10 +392,13 @@ impl Sample {
         let sum = |f: fn(&Sample) -> u64| window.iter().map(f).sum::<u64>();
         let mut connect = Window::default();
         let mut forward = Window::default();
+        // 利用者が待つ時間も区間の値なので `connect` と同じ畳み方 (T15.0 (10))
+        let mut wait = Window::default();
         let mut errors_by_cause = [0u64; crate::metrics::ERR_CAUSES];
         for s in window {
             connect.merge(&s.connect);
             forward.merge(&s.forward);
+            wait.merge(&s.wait);
             for (a, b) in errors_by_cause.iter_mut().zip(s.errors_by_cause.iter()) {
                 *a += *b;
             }
@@ -294,6 +431,15 @@ impl Sample {
             fds_max: max(|s| s.fds_max),
             // 累計カウンタなので窓の最後の値 (`requests` と同じ。ブラウザ側で差分を取る)
             evicted_idle: last.evicted_idle,
+            wait,
+            // warm な名前の**件数のゲージ**。平均で畳むのは、受け入れ基準の
+            // 「`refreshes/h ÷ その時間の平均 warm`」がそのまま読めるようにするため
+            dns_warm: avg(|s| s.dns_warm),
+            // 区間の値なので足し合わせ (通算の `requests` / `bytes` とは畳み方が違う)
+            requests_delta: sum(|s| s.requests_delta),
+            bytes_delta: sum(|s| s.bytes_delta),
+            // 山なので最大 (平均に畳むと消える。`active_max` と同じ扱い)
+            active_peak: max(|s| s.active_peak),
         }
     }
 }
@@ -603,6 +749,15 @@ impl History {
             }
             let _ = write!(out, "\"{}\"", k);
         }
+        // 列の**読み方**を同じ長さで隣に出す (T15.0 (10))。綴り (`keys`) は 1 つも
+        // 変えていないので、読む側は添字でも名前でも今までどおり引ける
+        out.push_str("],\"key_kinds\":[");
+        for (i, k) in KEY_KINDS.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let _ = write!(out, "\"{}\"", k);
+        }
         out.push_str("],\"bounds_ms\":[");
         for (i, b) in WINDOW_BOUNDS_MS.iter().enumerate() {
             if i > 0 {
@@ -693,12 +848,25 @@ mod tests {
             &json[..80]
         );
         assert!(json.contains("\"samples\":[[5,10,0,5,0,"), "{}", json);
-        // 標本の配列の閉じ方は変えず、その**後ろ**に閉じた接続の分布が付く (T14.6)
+        // 標本の配列の閉じ方は変えず、その**後ろ**に閉じた接続の分布が付く (T14.6)。
+        // 末尾は T15.0 (10) で足した `wait_buckets` と 4 列 (`dns_warm` /
+        // `requests_delta` / `bytes_delta` / `active_peak`)
         assert!(
-            json.contains(",0,0,0,0,0,0,0,0]],\"closed\":{"),
+            json.contains(",0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0,0]],\"closed\":{"),
             "{}",
             &json[json.len() - 600..]
         );
+        // `keys` の隣に同じ長さの `key_kinds` が並ぶ (T15.0 (10))
+        assert!(
+            json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\"],\"key_kinds\":[\"time\",\"cumulative\","),
+            "{}",
+            &json[..900]
+        );
+        let kinds = json
+            [json.find("\"key_kinds\":[").unwrap() + 13..json.find("],\"bounds_ms\"").unwrap()]
+            .split(',')
+            .count();
+        assert_eq!(kinds, KEYS.len(), "`key_kinds` は `keys` と同じ長さ");
         // canary (T14.10) は**別の配列**で末尾に付く (既存の列は 1 つも動かない)
         assert!(
             json.ends_with(",\"canary\":{\"keys\":[\"t\",\"canary_dns_ms\",\"canary_connect_ms\",\"canary_host\",\"canary_ipv6_connect_ms\"],\"samples\":[]}}"),
@@ -883,6 +1051,12 @@ mod tests {
         );
     }
 
+    /// 全部の欄に**違う値**を入れて `.rrd` のレコードへ往復させる。
+    ///
+    /// 縛っているのは値の保存だけでなく **[`Sample::encode`] と [`Sample::decode`] の
+    /// 並びが同じこと**。`/history` の列数を見る検査 (`the_history_json_is_compact`) は
+    /// 順番の食い違いを通してしまい、統計が別の意味で読み戻る (T15.0 (10))。
+    /// 同じ値を 2 つ置くとその 2 つの入れ替えが見えなくなるので、**値は全部違える**こと。
     #[test]
     fn sample_encoding_round_trips() {
         let mut connect = Window::default();
@@ -890,6 +1064,11 @@ mod tests {
         connect.observe(3);
         let mut forward = Window::default();
         forward.observe(9999);
+        // `connect` / `forward` のどちらとも件数・合計・最大・段が違う窓 (T15.0 (10))
+        let mut wait = Window::default();
+        wait.observe(1);
+        wait.observe(40);
+        wait.observe(4000);
         let s = Sample {
             t: 5,
             requests: 6,
@@ -917,6 +1096,11 @@ mod tests {
             threads_max: 25,
             fds_max: 26,
             evicted_idle: 27,
+            wait,
+            dns_warm: 28,
+            requests_delta: 29,
+            bytes_delta: 30,
+            active_peak: 31,
         };
         let enc = s.encode();
         assert!(
@@ -927,36 +1111,61 @@ mod tests {
         );
         assert_eq!(Sample::decode(&enc), Some(s));
         assert_eq!(Sample::decode(&[0u8; 104]), None);
+
+        // T15.0 (10) で足した 20 項目が**レコードの末尾**に並んでいること (手前の欄は
+        // 1 つも動いていない = 版 3 のレコードがそのまま読み継げる)
+        let mut d = crate::rrd::Dec(&enc[V3_FIXED_ITEMS * 8..]);
+        assert_eq!(
+            Window::decode(&mut d),
+            wait,
+            "予備の先頭は `wait` の窓 16 項目"
+        );
+        assert_eq!(
+            [d.u64(), d.u64(), d.u64(), d.u64()],
+            [28, 29, 30, 31],
+            "`dns_warm` `requests_delta` `bytes_delta` `active_peak` の順"
+        );
     }
 
-    /// 版 3 の予備に **60 項目足しても版は上がらない** (T14.14 の受け入れ基準)。
+    /// 版 3 の予備は **60 項目ぶんで始まり、まだ残っている** (T14.14 の受け入れ基準)。
     ///
-    /// 「これから足される欄」を今のコードで真似る: 固定の欄のうしろに `u64` を
-    /// 60 個書いて `.rrd` に往復させ、(a) 1 レコード (1,024 B) に収まる、
-    /// (b) 60 項目ともそのまま読み戻る、(c) **その欄を知らない今の `decode` は
-    /// 固定の欄だけを読んで 1 つもずれない**、の 3 つを見る。
-    /// 60 項目は T14.6 (閉じた理由 8 + 寿命とバイトの 24) ・T14.10 (canary 2) ・
-    /// T14.12 (カーネルと cgroup 23) を**全部載せてもまだ入る**量。
+    /// 「これから足される欄」を今のコードで真似る: 固定の欄のうしろに残っている予備
+    /// ([`SAMPLE_SPARE_ITEMS`]) ぶんの `u64` を書いて `.rrd` に往復させ、
+    /// (a) 1 レコード (1,024 B) に収まる、(b) 全部そのまま読み戻る、
+    /// (c) **その欄を知らない今の `decode` は固定の欄だけを読んで 1 つもずれない**、の 3 つを見る。
+    ///
+    /// **T14.14 の 60 は「版 3 を始めた時点の予備」** ([`V3_SPARE_ITEMS`] = 64) の話で、
+    /// 欄を足すたびに減る今の予備の話ではない。T14.14 はそれを
+    /// `SAMPLE_SPARE_ITEMS >= 60` と書き損ねていて、**4 項目を超えて足すと組み立てで
+    /// 落ちた** (T15.0 (10) で式を直した。60 項目は T14.6 の閉じた理由 8 + 寿命とバイトの 24・
+    /// T14.10 の canary 2・T14.12 のカーネルと cgroup 23 を全部載せてもまだ入る量)。
     #[test]
-    fn sixty_more_fields_fit_in_the_version3_slack_and_survive_a_round_trip() {
+    fn the_version3_slack_started_at_sixty_and_what_is_left_survives_a_round_trip() {
         use crate::rrd::ring::Ring;
         use crate::rrd::{Dec, Enc, Rrd};
 
         assert_eq!(crate::rrd::SAMPLE_RECORD, 1024, "版 3 の標本のレコード");
-        assert_eq!(SAMPLE_SPARE_ITEMS, 64, "予備 516 B = 64 項目");
+        assert_eq!(
+            V3_SPARE_ITEMS, 64,
+            "版 3 を始めた時点の予備 516 B = 64 項目"
+        );
+        // 「版 3 の予備は 60 項目ぶん」と「今の予備が 1 項目以上」は上の `const _: ()` が
+        // 組み立てのときに見ている (ここで書くと `clippy::assertions_on_constants`)
+        let n = SAMPLE_SPARE_ITEMS as u64;
         let mut s = sample(1_700_000_000);
         s.requests = 12_345;
         s.evicted_idle = 7;
+        s.active_peak = 9;
         let mut rec = s.encode();
         let mut e = Enc::new();
-        for i in 1..=60u64 {
+        for i in 1..=n {
             e.u64(i * 11);
         }
         rec.extend_from_slice(&e.0);
-        assert_eq!(rec.len(), (SAMPLE_ITEMS + 60) * 8);
+        assert_eq!(rec.len(), (SAMPLE_ITEMS + SAMPLE_SPARE_ITEMS) * 8);
         assert!(
             rec.len() <= crate::rrd::SAMPLE_RECORD - 4,
-            "60 項目足すと {} B で 1 レコードに入らない",
+            "予備を使い切ると {} B で 1 レコードに入らない",
             rec.len()
         );
 
@@ -969,12 +1178,12 @@ mod tests {
         assert_eq!(got.len(), 1);
         // (c) 足した欄を知らない今のコードでも、固定の欄は 1 つもずれない
         assert_eq!(Sample::decode(&got[0]), Some(s));
-        // (b) 足した 60 項目もそのまま残っている
+        // (b) 足した項目もそのまま残っている
         let mut d = Dec(&got[0]);
         for _ in 0..SAMPLE_ITEMS {
             d.u64();
         }
-        for i in 1..=60u64 {
+        for i in 1..=n {
             assert_eq!(d.u64(), i * 11, "予備の {} 項目目", i);
         }
         let _ = std::fs::remove_file(&path);
@@ -1016,6 +1225,13 @@ mod tests {
         a.dns_misses = 2;
         a.active_max = 5;
         a.fds_max = 30;
+        a.wait.observe(300);
+        a.requests = 100;
+        a.requests_delta = 10;
+        a.bytes = 4_000;
+        a.bytes_delta = 400;
+        a.dns_warm = 3;
+        a.active_peak = 7;
         let mut b = sample(5);
         b.connect.observe(7);
         b.errors = 2;
@@ -1023,6 +1239,13 @@ mod tests {
         b.dns_misses = 1;
         b.active_max = 41;
         b.fds_max = 12;
+        b.wait.observe(11);
+        b.requests = 130;
+        b.requests_delta = 30;
+        b.bytes = 4_900;
+        b.bytes_delta = 900;
+        b.dns_warm = 5;
+        b.active_peak = 62;
         let agg = Sample::downsample(&[a, b], 0);
         assert_eq!(agg.connect.count, 2);
         assert_eq!(agg.connect.ms_max, 257);
@@ -1033,6 +1256,15 @@ mod tests {
         // 平均に畳むと 23 になって山が消える
         assert_eq!(agg.active_max, 41);
         assert_eq!(agg.fds_max, 30);
+        // T15.0 (10) で足した列。`wait` は `connect` と同じ区間の窓なので足し合わせ
+        assert_eq!((agg.wait.count, agg.wait.ms_max), (2, 300));
+        // 通算は最後の値、その隣の区間の値は足し合わせ (同じ表に 2 種類あることを縛る)
+        assert_eq!((agg.requests, agg.requests_delta), (130, 40));
+        assert_eq!((agg.bytes, agg.bytes_delta), (4_900, 1_300));
+        // warm な名前の件数は**平均** (`refreshes/h ÷ 平均 warm` がそのまま読める)
+        assert_eq!(agg.dns_warm, 4);
+        // 同時接続の山は最大 (平均に畳むと 34 になって消える)
+        assert_eq!(agg.active_peak, 62);
     }
 
     /// `evicted_idle` は**レコードの余白に足した**ので `.rrd` の版は上がらない (T14.2 (3))。
@@ -1050,7 +1282,12 @@ mod tests {
         s.max_fds = 1024;
         s.evicted_idle = 7;
         let enc = s.encode();
-        assert_eq!(enc.len(), SAMPLE_ITEMS * 8, "固定の欄だけで 63 項目 × 8 B");
+        assert_eq!(
+            enc.len(),
+            SAMPLE_ITEMS * 8,
+            "固定の欄だけで {} 項目 × 8 B",
+            SAMPLE_ITEMS
+        );
         assert!(
             enc.len() <= crate::rrd::SAMPLE_RECORD - 4,
             "{} > {} (版を上げずには入らない)",
@@ -1067,6 +1304,64 @@ mod tests {
         assert_eq!(
             Sample {
                 evicted_idle: 0,
+                ..s
+            },
+            back,
+            "手前の項目は 1 つもずれない"
+        );
+    }
+
+    /// T15.0 (10) の 20 列も**レコードの余白に足した**ので `.rrd` の版は上がらない。
+    ///
+    /// 見るのは 3 つ: (a) 83 項目が 1 レコード (1,020 B) に収まっていて予備が残っている、
+    /// (b) **版 3 の 63 項目のレコード** (末尾はゼロ埋め) を読むと新しい 20 列が 0 になり、
+    /// **手前の項目は 1 つもずれない**、(c) その 20 列の値を入れた標本も往復する。
+    #[test]
+    fn the_new_columns_fit_in_the_record_slack_and_version3_records_still_decode() {
+        let mut s = sample(1_700_000_000);
+        s.active_max = 240;
+        s.evicted_idle = 7;
+        s.wait.observe(12);
+        s.wait.observe(3400);
+        s.dns_warm = 5;
+        s.requests_delta = 1234;
+        s.bytes_delta = 987_654;
+        s.active_peak = 251;
+        let enc = s.encode();
+        // (a)
+        assert_eq!(SAMPLE_ITEMS, 83, "63 + `wait` の窓 16 + 4 列");
+        assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
+        assert!(
+            enc.len() <= crate::rrd::SAMPLE_RECORD - 4 && SAMPLE_SPARE_ITEMS >= 1,
+            "{} B、予備 {} 項目",
+            enc.len(),
+            SAMPLE_SPARE_ITEMS
+        );
+        // (c)
+        assert_eq!(Sample::decode(&enc), Some(s));
+
+        // (b) 版 3 のレコード = 手前の 63 項目だけ書かれていて、残りはゼロ埋め
+        let mut v3 = enc[..V3_FIXED_ITEMS * 8].to_vec();
+        v3.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
+        let back = Sample::decode(&v3).expect("版 3 のレコードも読める");
+        assert_eq!(
+            (
+                back.wait,
+                back.dns_warm,
+                back.requests_delta,
+                back.bytes_delta,
+                back.active_peak
+            ),
+            (Window::default(), 0, 0, 0, 0),
+            "無い項目は 0"
+        );
+        assert_eq!(
+            Sample {
+                wait: Window::default(),
+                dns_warm: 0,
+                requests_delta: 0,
+                bytes_delta: 0,
+                active_peak: 0,
                 ..s
             },
             back,
