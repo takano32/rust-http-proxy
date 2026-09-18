@@ -19,6 +19,10 @@ unsafe extern "C" {
         flags: c_uint,
     ) -> isize;
     fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int;
+    /// `gettid(2)`。このスレッドの番号 (`/proc/self/task/<tid>` の名前と同じ値)。
+    /// 下の [`gettid`] と名前がぶつかるので、宣言だけ別名にしてある
+    #[link_name = "gettid"]
+    fn c_gettid() -> i32;
     fn recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize;
     fn close(fd: c_int) -> c_int;
     fn epoll_create1(flags: c_int) -> c_int;
@@ -86,6 +90,21 @@ const M_ARENA_MAX: c_int = -8;
 pub fn limit_malloc_arenas(max: c_int) -> bool {
     // SAFETY: 定数のパラメータ番号と値を渡すだけ。失敗は 0 で返る。
     unsafe { mallopt(M_ARENA_MAX, max) == 1 }
+}
+
+thread_local! {
+    /// このスレッドの番号。**スレッドの一生に 1 回だけ**システムコールを引く (T15.0 (4))。
+    static TID: u32 = unsafe { c_gettid() } as u32;
+}
+
+/// このスレッドの番号 (`gettid(2)`。`/proc/self/task/<tid>` の名前と同じ値。T15.0 (4))。
+///
+/// **システムコールを引くのはスレッドごとに 1 回だけ**で、2 回目からはスレッドローカルの
+/// 読み出し 1 回。`/connections` の `tid` に出して「どの接続をどのスレッドが受け持って
+/// いるか」を結ぶために使う (`/profile` の `threads_top` の `tid` と同じ番号)。
+/// スレッドの後始末の最中 (スレッドローカルが落ちたあと) は `0` = 「分からない」。
+pub fn gettid() -> u32 {
+    TID.try_with(|t| *t).unwrap_or(0)
 }
 
 /// `poll(2)`。`timeout_ms` が負なら無期限。戻り値は準備できた記述子の数 (0 はタイムアウト)。

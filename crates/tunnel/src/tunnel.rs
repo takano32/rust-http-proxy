@@ -841,6 +841,13 @@ mod relay {
         /// 読まない (詰まらない中継は 1 回も読まない)。ms ではなく us で積むのは、
         /// 1 ms に満たない待ちを何度も繰り返すトンネルで切り捨てが積み上がらないように
         stall_us: [u64; SIDES],
+        /// **起こされたのに 1 バイトも進まなかった**周の数 (T15.0 (4))。
+        ///
+        /// T15.5 で消した空回りの型 (`poll` が `POLLHUP` で返るのに誰も読まない) は、
+        /// これが秒あたり数万で増え続ける形だった。預けても引き継ぐので `Idle` の欄
+        /// (`stall_us` と同じ扱い) で、`/connections` と個票へは
+        /// [`ConnSlot::set_relaying`] が待ちに入るたびに 1 回だけ写す
+        spins: u64,
         /// 本体クレートの持ち分 (同時接続数と `active_connections`)。中身は見ない
         _hold: Box<dyn Send>,
     }
@@ -973,6 +980,24 @@ mod relay {
             let addr_str = &self.info.addr_str;
             // 書けるのを待った時間 (T14.42)。預けても引き継ぐので `Idle` の欄
             let stall_us = &mut self.stall_us;
+            // 空回りの証拠 (T15.0 (4))。`spins` は預けても引き継ぐので `Idle` の欄、
+            // 残りの 2 つは**前の周の `poll`** の結果なので輪の外の局所変数
+            // (待ちに入る所は `poll` の前なので、そこで置けるのは 1 周前の旗)
+            let spins = &mut self.spins;
+            let mut poll_woke = false;
+            let mut last_revents = 0u32;
+            // 先に EOF を出した側を 1 回だけ控える (T14.4 の閉じた理由 / T14.25 の
+            // 半閉じの秒) のと同じ場所で、`/connections` の枠にも向きを置く
+            // (T15.0 (4))。**トンネル 1 本につき多くて 1 回**で、2 回目からは
+            // `is_none()` の比較だけ
+            let mut note_eof = |side: usize| {
+                if first_eof.is_none() {
+                    *first_eof = Some((side, Instant::now()));
+                    if let Some(s) = slot {
+                        s.set_half_closed(side);
+                    }
+                }
+            };
 
             loop {
                 let mut progressed = false;
@@ -1001,7 +1026,7 @@ mod relay {
                         match d.fill(socks) {
                             Ok(0) => {
                                 d.src_eof = true;
-                                first_eof.get_or_insert_with(|| (d.src, Instant::now()));
+                                note_eof(d.src);
                                 progressed = true;
                             }
                             Ok(n) => {
@@ -1022,7 +1047,7 @@ mod relay {
                                     *close = Some(CloseReason::ClientDead);
                                 }
                                 d.src_eof = true;
-                                first_eof.get_or_insert_with(|| (d.src, Instant::now()));
+                                note_eof(d.src);
                                 progressed = true;
                             }
                         }
@@ -1053,7 +1078,7 @@ mod relay {
                                     *close = Some(CloseReason::ClientDead);
                                 }
                                 // 先に手を引いたのは**送信先**の側 (T14.4)
-                                first_eof.get_or_insert_with(|| (d.dst, Instant::now()));
+                                note_eof(d.dst);
                                 d.pending = 0;
                                 // パイプに残ったぶんはもう渡せない。置き場へ返さずに閉じる
                                 // (返すと次のトンネルに他人のバイトが混ざる)
@@ -1082,6 +1107,12 @@ mod relay {
                     break;
                 }
                 if progressed {
+                    // 1 バイトでも動いた (EOF を読んだのも「動いた」) ので、前の周の
+                    // 起床はちゃんと仕事になった = 空回りではない (T15.0 (4))。
+                    // **ここで倒さないと、普通に流れているトンネルが 1 往復ごとに
+                    // 1 回数えて**しまう: 起こされた次の周は `fill` が進んで
+                    // `continue` し、その次の周に `EAGAIN` で待ちへ来るため
+                    poll_woke = false;
                     continue;
                 }
 
@@ -1125,9 +1156,17 @@ mod relay {
                 // 「相手に shutdown を伝えて閉じる」までが仕事で、そこまで預かり所に
                 // 持たせると起こし方が 2 通りになる。寿命も短いので単純さを採る
                 // ここで止まる = 今の合計が落ち着いた値。`/connections` に見せるのは
-                // この 1 回だけで、バイトごとにも splice ごとにも書かない (T13.4)
+                // この 1 回だけで、バイトごとにも splice ごとにも書かない (T13.4)。
+                // **T15.0 (4)**: 同じ 1 回で空回りの証拠も置く。ここに来た時点で
+                // 「1 バイトも進まなかった」は確定している (上の `if progressed` を
+                // 通り抜けている) ので、空回りかどうかは「**前の周の `poll` が
+                // 起床を返したか**」だけで決まる。数え上げも書き込みも `slot` の
+                // 内側なので、**`--lite` は 0 増**
                 if let Some(s) = slot {
-                    s.set_bytes(*transferred);
+                    if poll_woke {
+                        *spins = spins.saturating_add(1);
+                    }
+                    s.set_relaying(*transferred, *spins, last_revents);
                 }
                 let parkable = grace_ms.is_some() && dirs.iter().all(Dir::quiet);
                 let wait_ms = match grace_ms {
@@ -1154,6 +1193,13 @@ mod relay {
                         }
                     }
                 }
+                // 次に待ちへ入るときに置く証拠 (T15.0 (4))。旗は**この周の `poll` が
+                // 返したもの**で、置くのは次の周の待ちの直前 (待ちに入る所は `poll` の
+                // 前なので、そこで置けるのは 1 周前の旗)。T15.5 で関心の無い記述子には
+                // `-1` を渡すようにしたので、`revents` が立つのは面倒を見る向きがある
+                // ときだけ
+                poll_woke = matches!(polled, Ok(n) if n > 0);
+                last_revents = crate::recent::pack_revents(fds[0].revents, fds[1].revents);
                 match polled {
                     Ok(0) if parkable => return Outcome::Idle,
                     Ok(0) if wait_ms >= 0 => {
@@ -1229,6 +1275,7 @@ mod relay {
             first_eof: None,
             peek_sni,
             stall_us: [0; SIDES],
+            spins: 0,
             _hold: hold,
         }));
         Ok(())
@@ -1239,6 +1286,9 @@ mod relay {
         idle.unpark();
         if let Some(s) = idle.slot() {
             s.set_state(ConnState::Relaying);
+            // 預かり所から戻ると**別のスレッド**が受け持つ (T15.0 (4))。
+            // 番号を引くのはスレッドの一生に 1 回で、ここは原子の書き込み 1 回
+            s.set_tid(sys::gettid());
         }
         drive(idle);
     }

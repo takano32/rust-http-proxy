@@ -53,7 +53,7 @@ const HEADER_SIZE: u64 = 4096;
 const SMALL_RECORD: usize = 256;
 /// 閉じた接続 1 件のレコード長。**256 B ではなく 512 B** なのは、段階の ms 6 つと
 /// T14.5 の RTT / 再送 (両側) まで入れると 256 B に収まらないため
-/// (いまの中身は 368 B = T14.46 の `syn_retrans` と T14.42 の `stall_ms` 込み、余白 140 B。領域の大きさは 2 MiB のままで、件数が 8,192 → 4,096 になる)。
+/// (いまの中身は 392 B = T14.46 の `syn_retrans`・T14.42 の `stall_ms`・T15.0 (4) の `spins` と半閉じ 2 本 込み、余白 116 B。領域の大きさは 2 MiB のままで、件数が 8,192 → 4,096 になる)。
 const CLOSED_RECORD: usize = 512;
 /// 山の写真 1 枚のレコード長 (接続元 16 + 宛先 10 の名前が入る)。
 const SHOT_RECORD: usize = 4096;
@@ -94,7 +94,7 @@ const W_TEXT: usize = MAX_TEXT + 4;
 
 /// 1 レコードに収まることを**組み立て時に**確かめる (欄を足して溢れたらここで止まる)。
 /// 数は各 `encode_*` が書く u64 の本数 (先頭の通し番号を含む) + 固定幅の文字列。
-const CLOSED_PAYLOAD: usize = 8 * (13 + STAGES + 3 * SIDES) + W_CLIENT + W_TARGET + W_SNI;
+const CLOSED_PAYLOAD: usize = 8 * (16 + STAGES + 3 * SIDES) + W_CLIENT + W_TARGET + W_SNI;
 const ERROR_PAYLOAD: usize = 8 * 7 + W_ETARGET + W_CLIENT;
 const LOG_PAYLOAD: usize = 8 * 4 + W_MSG;
 const EVENT_PAYLOAD: usize = 8 * 3 + W_TEXT;
@@ -502,6 +502,15 @@ fn encode_closed(seq: u64, e: &RecentEntry) -> Vec<u8> {
     for v in e.stall_ms {
         enc.u64(v as u64);
     }
+    // 空回りの回数と半閉じ (T15.0 (4))。同じ理由で**さらにいちばん後ろ**へ 3 本
+    // (`spins`、**側 + 1** = `0` は「半閉じしていない」、半閉じから閉じるまでの ms)。
+    // 版は上げない (`SHPREC03` のまま) — 前の版のレコードは 3 本とも 0 で読み戻る
+    enc.u64(e.spins);
+    let (side, ms) = match e.half_closed {
+        Some((side, ms)) => (side as u64 + 1, ms),
+        None => (0, 0),
+    };
+    enc.u64(side).u64(ms);
     enc.0
 }
 
@@ -540,6 +549,12 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
     for slot in stall_ms.iter_mut() {
         *slot = d.u64() as u32;
     }
+    // 空回りと半閉じ (T15.0 (4))。前の版のレコードはここが無いので 0 = 「空回り無し・
+    // 半閉じ無し」で戻る (`Dec` は足りなければ 0 を返す)
+    let spins = d.u64();
+    let half_side = d.u64();
+    let half_ms = d.u64();
+    let half_closed = (half_side > 0).then(|| ((half_side - 1) as usize, half_ms));
     if at == 0 {
         return None;
     }
@@ -563,6 +578,8 @@ fn decode_closed(p: &[u8]) -> Option<RecentEntry> {
         sni: (!sni.is_empty()).then(|| sni.into()),
         syn_retrans,
         stall_ms,
+        spins,
+        half_closed,
     })
 }
 
@@ -798,6 +815,8 @@ mod tests {
             sni: Some("mtalk.google.com".into()),
             syn_retrans: 2,
             stall_ms: [1500, 0],
+            spins: 9,
+            half_closed: Some((crate::recent::ORIGIN_SIDE, 250)),
         }
     }
 
@@ -823,7 +842,33 @@ mod tests {
                 EVENT_PAYLOAD,
                 SHOT_PAYLOAD
             ),
-            (368, 188, 252, 156, 2016)
+            (392, 188, 252, 156, 2016)
+        );
+    }
+
+    /// **版 3 のまま**、T15.0 (4) より前に書いたレコードが読み継げること。
+    ///
+    /// 前の版は 368 B しか書いていない (`spins` と半閉じの 3 本が無い)。`Dec` は
+    /// 足りなければ 0 を返すので、新しいコードで読むと**新しい欄だけが既定値**になり、
+    /// 古い欄は 1 つもずれない。`.recent` の `MAGIC` (`SHPREC03`) は上げない。
+    #[test]
+    fn a_record_written_before_the_spin_fields_still_reads_back() {
+        let e = closed_entry(3);
+        let full = encode_closed(1, &e);
+        assert_eq!(full.len(), 392, "いまの中身は 392 B");
+        // 前の版が書いた長さ (T14.42 の `stall_ms` まで)
+        let old = &full[..368];
+        let got = decode_closed(old).expect("前の版のレコードも読める");
+        assert_eq!(got.spins, 0, "無い欄は 0");
+        assert_eq!(got.half_closed, None, "無い欄は「半閉じしていない」");
+        // 古い欄は 1 つもずれない
+        assert_eq!(
+            RecentEntry {
+                spins: 0,
+                half_closed: None,
+                ..e
+            },
+            got
         );
     }
 
