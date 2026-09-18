@@ -2377,10 +2377,12 @@ TTL を過ぎた / `warm_stale` = **warm なのにミスした** = 裏の引き�
 ./rust-http-proxy --check; echo "exit=$?"
 ```
 
-`capabilities` の 7 行が `[ok]` で終了コードが `0` なら、`/profile` (`proc_syscall`)・
-カーネルの RTT (`tcp_info`)・CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・
-IPv6 (`ipv6_route`)・統計ファイル (`home_writable`) が全部読めます。
-`[NO]` の行があると終了コードは `1` で、最後に `check: N of 6 not readable (...)` と出ます。
+`capabilities` の 9 行のうち**終了コードに入る 7 行**が `[ok]` で終了コードが `0` なら、
+`/profile` (`proc_syscall` と `proc_schedstat`)・カーネルの RTT (`tcp_info`)・
+CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・IPv6 (`ipv6_route`)・
+統計ファイル (`home_writable`) が全部読めます (残る 2 行 `resolver_ms` と `cgroup_cpu_path` は
+真偽ではないので終了コードに入りません)。
+`[NO]` の行があると終了コードは `1` で、最後に `check: N of 7 not readable (...)` と出ます。
 起動はできますが、その項目は `/status` や `/history` で `null` になります
 (`resolver_ms` だけは終了コードに入らず、2 秒で答えが来なければ `[--]` です)。`settings` の一覧は `source` (`default` /
 `env` / `env_file` / `cli`) つきなので、**書いたのに効いていない設定**がここで分かります。
@@ -2408,6 +2410,7 @@ curl http://127.0.0.1:8080/config > config-$(date -u +%Y%m%dT%H%M%SZ).json   # �
 curl http://127.0.0.1:8080/status | python3 -m json.tool | less    # dns / ipv6 / evicted_idle / recent_quantiles
 curl "http://127.0.0.1:8080/dns?sort=misses"                       # warm と next_refresh_secs
 curl "http://127.0.0.1:8080/profile?res=5"                         # 待ちの段階・スレッド・ロック
+curl "http://127.0.0.1:8080/connections"                           # いま開いている接続 (tid と spins)
 ```
 
 見るのは `dns.warm` (keep-warm が掴んでいる名前の数。`0` なら効いていません) と
@@ -2416,6 +2419,19 @@ curl "http://127.0.0.1:8080/profile?res=5"                         # 待ちの�
 (直近 1,024 本の**実測**の分位点。区間の補間ではありません)。
 `/profile` の `stages` は CONNECT が `queue` / `client_read` / `dns` / `connect` / `first_relay` / `relay` / `park`、
 forward が `queue` / `client_read` / `origin` / `send` / `ttfb` / `body` で、**1 本の待ちがどこに消えたか**が読めます。
+
+**T15.0 で足した欄** (次の判断 — 窓を伸ばすか・空回りが直ったか・確立の尾は誰のせいか — に要るもの):
+
+| 口 | 欄 | 読み方 |
+|---|---|---|
+| `/status` | `recent_quantiles.wait` | **利用者が待つ時間** (`queue + client_read + dns + connect`)。`connect` は要求行を読んだ後からなので、**基準線はこちら** |
+| `/status` | `dns.misses_by_kind` | `expired` が主なら窓 (`PROXY_DNS_WARM_SECS`) が短い、`warm_stale` が出ていれば裏の引き直しが間に合っていない。隣の `refresh_failures` / `refresh_late` / `refresh_ms_max` を先に見ます |
+| `/status` | `kernel.cgroup_cpu` | **割合で読む** (`nr_throttled ÷ nr_periods`)。`since_start` はこのプロセスが始まってからの増分、`path` は読んでいる階層 |
+| `/status` | `memory.rings_used` | `rings` と同じ鍵で「いま埋まっているぶん」。`rings` は 0 時間でも 36.6 時間でも変わりません |
+| `/profile` | `threads_top` / `run_delay_us` | どの tid が回っているか (`/connections` の `tid` と同じ番号) と、**走れるのに CPU に乗れなかった**時間 |
+| `/connections` | `idle_secs` / `spins` / `revents` / `half_closed` | 「回っているのか・待っているのか」。**既定のままの欄は出さない**ので「無ければ既定値」と読みます |
+| `/history` | `key_kinds` | `keys` と同じ長さで、列ごとの読み方 (`cumulative` = 通算 / `delta` = 区間 / `gauge` / `peak` / `buckets`) |
+| `/healthz` | `checks.cpu` | 直近 5 分に絞られた期間の割合。**起動から 5 分に満たない間は `null`** |
 
 ### 4. 24 時間後
 
@@ -2430,7 +2446,11 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 `collect-deployed.sh` は `/snapshot` を 1 回で取って保存し、前回の雪像があれば
 `snapshot-diff.py` の差分 (再起動で切った平常時の前後・ホスト別・接続元別・名前解決・エラー・バースト) と、
 手元から見た待ち (`probe-deployed.sh`) を続けて回します。**保存先は既定で `~/rust-http-proxy-status/`** で、
-個票には接続元 IP と宛先が並ぶのでリポジトリには入れません。取り忘れた日は
+個票には接続元 IP と宛先が並ぶのでリポジトリには入れません。
+**雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
+1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
+意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase15`**
+(T15.4 / T15.5 / T15.6 の 6 行) で、`CRITERIA=phase14` も今までどおり使えます。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
 `next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0 (11)。
@@ -2459,6 +2479,15 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
   `/recent` 615/2,000・`/hosts` 639/1,000・`/profile?res=60` 362/1,440 が切れているのに `dropped` は `[]` でした。
 - **`/recent` に残るのは「最後に閉じた N 本」**です。`at` (開始時刻) の最小で窓を切ると手前が抜けるので
   (2026-09-18 の雪像では 2 時間ぶん 85 本)、窓の左端は **`min(at + secs)`** で取ってください。
+- **T15.0 で足した `/history` の 8 列は、再デプロイより前の標本では 0 です**
+  (`waits` / `wait_ms_sum` / `wait_ms_max` / `wait_buckets` / `dns_warm` / `requests_delta` /
+  `bytes_delta` / `active_peak`)。版を上げずにレコードの余白へ足したので、前の版が書いた `.rrd` の
+  レコードはそこがゼロ埋めで読み戻ります。再デプロイ直後の `/history` にはその 0 が
+  `?res=5` で最大 1 時間・`?res=60` で最大 1 日・**`?res=3600` で最大 30 日**ぶん並ぶので、
+  **`t` が最後の再起動 (`/status` の `uptime_secs` から出せます) より前の標本ではこの 8 列を読まないでください**
+  (`active_peak >= active_max` もそこでは成り立ちません)。`wait` の p50 を次の完了の定義の基準線にするときも、
+  見るのは再起動より後の標本だけです。`scripts/snapshot-diff.py` は**再起動の時刻で切った「後」の期間**しか
+  判定に使わないので、この穴を踏みません (`--criteria phase15`)。
 
 ### 5. 何かおかしいとき
 
