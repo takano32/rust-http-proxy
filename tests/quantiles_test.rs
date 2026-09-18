@@ -10,7 +10,12 @@
 //! (a) CONNECT と forward が別々に数えられ、p50 ≤ p90 ≤ p99 ≤ max で出る、
 //! (b) `--lite` (段階の窓と同じ旗) では 1 本も書かない、
 //! (c) `/history?summary=1` (T14.24) にも**別の鍵で**同じ値が添う、
-//! (d) `memory.rings.quantiles` が 16 KiB 固定。
+//! (d) `memory.rings.quantiles` が 24 KiB 固定。
+//!
+//! 3 本目の環 `wait` (利用者が待つ時間 = `queue + client_read + dns + connect`。
+//! T15.0 (2)) も同じ 4 点で見る。縛るのは **`wait.n == connect.n`** と
+//! **`wait` の各分位点 ≥ `connect` の同じ分位点** (`queue` が 0 でない状況は手元では
+//! 作りにくいので、数字そのものは縛らない)。
 //!
 //! **`--lite` の旗は処理系で 1 つ**なので、この 2 本のテストは鍵を取って順に回す
 //! (`tests/*.rs` は 1 ファイル 1 プロセス)。
@@ -156,6 +161,22 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
     assert!(cp50 > 0.0, "確立の p50 が 0: {}", connect);
     assert!(cp50 < 1000.0, "loopback で 1 秒はかからない: {}", connect);
 
+    // 3 本目の環 `wait` (T15.0 (2))。本数は確立と同じで、各分位点は確立以上
+    let wait = object_of(&q, "wait");
+    let (wn, wp50) = check_shape(&wait, "wait");
+    assert_eq!(wn, cn, "`wait` の本数が確立と違う: {}", q);
+    assert!(wp50 >= cp50, "wait p50 {} < connect p50 {}", wp50, cp50);
+    for key in ["p50", "p90", "p99", "max"] {
+        assert!(
+            num(&wait, key) >= num(&connect, key),
+            "wait {} {} < connect {}: {}",
+            key,
+            num(&wait, key),
+            num(&connect, key),
+            q
+        );
+    }
+
     let (fnum, _) = check_shape(&forward, "forward");
     // `/status` を取りに行った自分宛ての要求は数えない (`counted` は宛先のホストだけ)
     assert!(
@@ -166,11 +187,11 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
         forward
     );
 
-    // `memory.rings.quantiles` は固定 16 KiB (2 系統 × 1,024 本 × 8 B)
+    // `memory.rings.quantiles` は固定 24 KiB (3 系統 × 1,024 本 × 8 B。T15.0 (2))
     let rings = object_of(&last_object_of(&status, "memory"), "rings");
-    assert_eq!(num(&rings, "quantiles"), 16384.0, "{}", rings);
+    assert_eq!(num(&rings, "quantiles"), 24576.0, "{}", rings);
     assert!(
-        num(&rings, "total") >= 16384.0,
+        num(&rings, "total") >= 24576.0,
         "合計に入っていない: {}",
         rings
     );
@@ -210,15 +231,18 @@ fn test_integration_b_lite_records_no_samples() {
         "the tunnels to be counted",
     );
 
-    let (c, f) = metrics.recent_quantiles();
+    let (c, f, w) = metrics.recent_quantiles();
     assert_eq!(
-        (c.n, c.total, f.n, f.total),
-        (0, 0, 0, 0),
+        (c.n, c.total, f.n, f.total, w.n, w.total),
+        (0, 0, 0, 0, 0, 0),
         "`--lite` で書いた"
     );
     let q = object_of(&status_json(proxy_port), "recent_quantiles");
     assert_eq!(num(&object_of(&q, "connect"), "n"), 0.0, "{}", q);
     assert_eq!(num(&object_of(&q, "connect"), "max"), 0.0, "{}", q);
+    // 3 本目も同じ (`queue` と `client_read` が 0 なので「4 段の和」を名乗れない)
+    assert_eq!(num(&object_of(&q, "wait"), "n"), 0.0, "{}", q);
+    assert_eq!(num(&object_of(&q, "wait"), "max"), 0.0, "{}", q);
 
     // 後始末 (このプロセスの他のテストを巻き込まない)
     rust_http_proxy::profile::set_enabled(true);
