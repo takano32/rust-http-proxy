@@ -91,6 +91,9 @@ const names = [
   'idleTunnels',
   'dnsMissKinds',
   'waitKpi',
+  // 100% の横棒 1 本を組み立てる側 (T15.0 (14) で tooltip の整形を呼ぶ側に渡せるようにした)
+  'stackHtml',
+  'esc',
   'fmtMs',
   'fmtMsFine',
   'fmtNum',
@@ -113,7 +116,10 @@ function pick(source, wanted, where, prelude) {
   }
   return new Function(src + 'return {' + wanted.join(',') + '};')();
 }
-const api = pick(js, names, 'dashboard.html');
+// `stackHtml` が使う色だけは関数ではないので、HTML からそのまま切り出して前置きにする
+const stageColors = js.match(/var STAGE_COLORS=\[[^\]]*\];/);
+if (!stageColors) fail('dashboard.html に STAGE_COLORS が無い');
+const api = pick(js, names, 'dashboard.html', stageColors[0] + '\n');
 
 const file = process.argv[2] || path.join(__dirname, 'testdata', 'history-res5.json');
 const hist = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -1483,8 +1489,41 @@ console.log(
 );
 
 // 16. T15.0 (14) の 5 枚のカード。作り物は**インラインの定数**で、5 枚それぞれに
-// 「欄がある版」と「**欄が無い古い版**」の 2 通りを通す (古い版は作り置きの実出力そのもの —
-// `history-res5.json` も `status.json` も `profile-res5.json` も T15.0 より前に取ったもの)。
+// 「欄がある版」と「**欄が無い古い版**」の 2 通りを通す。
+//
+// 「古い版」は**引数で渡された実出力から T15.0 の欄を消して**作る。作り置きの実出力
+// (`history-res5.json` / `status.json` / `profile-res5.json`) はたしかに T15.0 より前のものだが、
+// この確認は `scripts/collect-deployed.sh` からも**デプロイ先の実出力**を引数に呼ばれるので
+// (296 行)、引数をそのまま「古い版」に使うと、新しい欄を持つプロキシを相手にした日に必ず落ちる。
+
+// `keys` + 配列の配列 (`/history` も `/profile` も同じ形) から列を落として「その欄を持たない版」を作る
+function withoutCols(j, drop) {
+  const out = JSON.parse(JSON.stringify(j || {}));
+  const keep = [];
+  (out.keys || []).forEach((k, i) => {
+    if (drop.indexOf(k) < 0) keep.push(i);
+  });
+  const keys = out.keys || [];
+  out.keys = keep.map((i) => keys[i]);
+  if (Array.isArray(out.key_kinds)) {
+    const kinds = out.key_kinds;
+    out.key_kinds = keep.map((i) => kinds[i]);
+  }
+  out.samples = (out.samples || []).map((row) => keep.map((i) => row[i]));
+  return out;
+}
+// `/status` から T15.0 の欄を消した「古い版」(kernel = 単位 4、dns の 5 つ = 単位 5、wait = 単位 1)
+const oldStatus = JSON.parse(JSON.stringify(st));
+delete oldStatus.kernel;
+for (const k of ['misses_by_kind', 'refresh_failures', 'refresh_ms_sum', 'refresh_ms_max', 'refresh_late']) {
+  if (oldStatus.dns) delete oldStatus.dns[k];
+}
+if (oldStatus.recent_quantiles) delete oldStatus.recent_quantiles.wait;
+// `/history` から単位 6 の `wait_*` を消した「古い版」と、その標本
+const oldHist = withoutCols(hist, ['waits', 'wait_ms_sum', 'wait_ms_max', 'wait_buckets']);
+const oldSamples = api.toSamples(oldHist);
+// `/profile` から単位 3 の末尾 2 列を消した「古い版」
+const oldProf = api.toProfile(withoutCols(pj, ['threads_top', 'run_delay_us']));
 
 // (a) CPU の絞り。`/history` の `kernel` に T15.0 (6) が `cpu_nr_periods` を**末尾に**足した版
 const fakeKernelNew = {
@@ -1526,9 +1565,36 @@ const noQuota = api.cpuThrottle(
 );
 if (!noQuota || noQuota.quota !== null || noQuota.pct !== null) fail('割り当ての無い環境が読めていない');
 // 古い版 (`/status` に kernel が無い) と cgroup v2 の読めない環境ではカードごと断る
-if (api.cpuThrottle(st, kernNew, 60) !== null) fail('kernel の無い /status で null になっていない');
+if (api.cpuThrottle(oldStatus, kernNew, 60) !== null) fail('kernel の無い /status で null になっていない');
 if (api.cpuThrottle({ kernel: { cgroup_cpu: null } }, [], 60) !== null) fail('cgroup_cpu が null なら null のはず');
+// `cgroup_cpu` は在るが `nr_periods` (単位 4 で足した分母) がまだ無い版 = T15.0 より前のデプロイ先。
+// 分母 0 の比を見せないために、ここも「記録していません」に落とす
+if (api.cpuThrottle({ kernel: { cgroup_cpu: { nr_throttled: 1069258, throttled_usec: 152029542480, quota_cores: 0.5 } } }, [], 60) !== null) {
+  fail('nr_periods を持たない古い版で null になっていない');
+}
 if (api.cpuThrottle(null, null, 60) !== null) fail('null でも例外なく null のはず');
+// `kern` が空のとき `ch-cpu` に**長さ 0 の系列**が 2 本渡る (`/history` の `kernel` が無い版、
+// `res=3600` = 解像度が 2 つしか無いので `kernel` は null、cgroup が読めない環境)。
+// `drawChart` の末尾の目盛りが `hist[hist.length].t` を読んで TypeError を投げると、
+// 例外は `pollHistory` の catch が握り潰すので **`redraw` の残りが 5 秒ごとに黙って飛ぶ**。
+// ここだけ DOM に触るので、作り物の canvas を前置きにして別に切り出す
+const chartApi = pick(js, ['drawChart', 'ago'], 'dashboard.html',
+  'var window={devicePixelRatio:1};' +
+  'var el={clientWidth:900,clientHeight:300,width:0,height:0,' +
+  'getContext:function(){return new Proxy({},{get:function(){return function(){}}})}};' +
+  'function $(){return el}var hist=[{t:100},{t:105},{t:110}];\n');
+for (const [what, series] of [
+  ['長さ 0 の系列 2 本 (kernel を持たない版と res=3600)', [
+    { data: [], color: '#8b91a5', dash: [4, 4], width: 1 },
+    { data: [], color: '#ff6b6b', fill: 'rgba(255,107,107,.12)' }]],
+  ['ふつうの系列', [{ data: [1, null, 3], color: '#5aa9ff', fill: 'rgba(90,169,255,.12)' }]],
+]) {
+  try {
+    chartApi.drawChart('ch-cpu', series, {});
+  } catch (e) {
+    fail('drawChart が ' + what + ' で落ちた: ' + e.message);
+  }
+}
 
 // (b) 動かないトンネル。T15.0 (4) の欄は**既定のままなら 1 バイトも出ない**ので、
 // 古い版の応答と「何も起きていない応答」は同じ形になる (どちらも 0 件)
@@ -1568,11 +1634,14 @@ const bothConns = api.connRows(idleConnJson, 50);
 if (bothConns.rows.length !== 4 || bothConns.rows[0].id !== 11) fail('connRows の並びが変わった');
 if (bothConns.kinds.connect !== 3 || bothConns.kinds.http !== 1) fail('connRows の内訳が変わった');
 
-// (c) 名前解決の内訳。`misses_by_kind` の 4 つの和は `misses` と一致する
+// (c) 名前解決の内訳。`misses_by_kind` の 4 つの和は、プロキシ側では `misses` と一致する
+// (この確認が突き合わせるのは作り物自身の和。引数の実出力の `misses` とは無関係)
+const fakeMissKinds = { cold: 800, expired: 300, warm_stale: 80, negative: 26 };
+const fakeMissTotal = 800 + 300 + 80 + 26;
 const dnsStatus = {
-  dns: Object.assign({}, st.dns, {
-    warm: 12, warm_secs: 900, refreshes: 340,
-    misses_by_kind: { cold: 800, expired: 300, warm_stale: 80, negative: 26 },
+  dns: Object.assign({}, oldStatus.dns, {
+    warm: 12, warm_secs: 900, refreshes: 340, misses: fakeMissTotal,
+    misses_by_kind: fakeMissKinds,
     refresh_failures: 4, refresh_ms_sum: 12000.5, refresh_ms_max: 640, refresh_late: 7,
   }),
 };
@@ -1581,14 +1650,17 @@ if (!missKinds) fail('misses_by_kind があるのに null');
 if (missKinds.rows.map((r) => r.name).join(',') !== 'cold,expired,warm_stale,negative') {
   fail('ミスの種類の綴りか並びが変わった: ' + missKinds.rows.map((r) => r.name).join(','));
 }
-if (missKinds.total !== (st.dns.misses || 0)) fail('種類別の合計 ' + missKinds.total + ' != misses ' + st.dns.misses);
+if (missKinds.total !== fakeMissTotal) fail('種類別の合計 ' + missKinds.total + ' != ' + fakeMissTotal);
+if (missKinds.total !== (dnsStatus.dns.misses || 0)) {
+  fail('種類別の合計 ' + missKinds.total + ' != misses ' + dnsStatus.dns.misses);
+}
 const dn2 = api.dnsStats(dnsStatus);
 if (dn2.reffail !== 4 || dn2.reflate !== 7) fail('引き直しの失敗と遅れが読めていない');
 if (Math.abs(dn2.refms - 12000.5) > 1e-9 || dn2.refmax !== 640) fail('引き直しの ms が読めていない');
 if (dn2.warm !== 12) fail('warm が読めていない (T14.1 の枝が壊れた)');
 // 古い版 (`misses_by_kind` も `refresh_*` も無い `/status`)
-if (api.dnsMissKinds(st) !== null) fail('欄の無い版は null のはず');
-if (api.dnsStats(st).reffail !== null) fail('refresh_failures の無い版は null のはず');
+if (api.dnsMissKinds(oldStatus) !== null) fail('欄の無い版は null のはず');
+if (api.dnsStats(oldStatus).reffail !== null) fail('refresh_failures の無い版は null のはず');
 if (api.dnsMissKinds({}) !== null || api.dnsMissKinds(null) !== null) fail('空でも null のはず');
 
 // (d) 受付待ち。二峰 (1 ms 未満と 50〜100 ms) の作り物を 12 段の区間で読む
@@ -1623,6 +1695,18 @@ if (qs.rows[0].name !== '0–1 ms') fail('区間の名前が違う: ' + qs.rows[
 if (qs.rows[qs.rows.length - 1].name.indexOf('>') !== 0) fail('いちばん上の区間が「より大きい」でない');
 if (!(qs.p95 > 50 && qs.p95 <= 95)) fail('p95 が上の峰に来ていない: ' + qs.p95);
 if (!(qs.p50 <= 1)) fail('p50 が下の峰に来ていない: ' + qs.p50);
+// (c) と (d) の横棒は**件数**を積むので、tooltip の整形は呼ぶ側が渡す (既定は今までどおり ms)。
+// `stackHtml` の第 3 引数が効いていないと「cold 800 ms」という嘘の tooltip になる
+const qbar = api.stackHtml(qs.rows, qs.total, api.fmtNum);
+if (qbar.indexOf('title="0–1 ms 80 (80%)"') < 0) fail('件数の横棒の tooltip が件数になっていない: ' + qbar);
+const mkbar = api.stackHtml(missKinds.rows, missKinds.total, api.fmtNum);
+if (mkbar.indexOf(' ms') >= 0) fail('件数の横棒の tooltip に ms が入っている: ' + mkbar);
+if (mkbar.indexOf('title="cold 800 (66%)"') < 0) fail('ミスの種類の横棒が件数になっていない: ' + mkbar);
+// 整形を渡さなければ今までどおり ms (既存の 2 か所はここに乗っている)
+if (api.stackHtml(missKinds.rows, missKinds.total).indexOf('title="cold 800 ms (66%)"') < 0) {
+  fail('整形を渡さないときは ms のはず: ' + api.stackHtml(missKinds.rows, missKinds.total));
+}
+if (api.stackHtml(qs.rows, 0) !== '') fail('合計 0 の横棒は空のはず');
 const rd = api.runDelay(fprof, 60);
 if (!rd.ok) fail('run_delay_us があるのに ok でない');
 if (rd.total !== 123000) fail('直近の合計が合わない: ' + rd.total);
@@ -1636,8 +1720,8 @@ if (tt[0].windows !== 2) fail('窓をまたいだ数が合わない: ' + tt[0].w
 if (tt[0].role !== 'conn' || tt[1].role !== 'history') fail('役割が roles の添字で戻っていない');
 if (Math.abs(tt[0].cpu_pct - 97) > 1e-9) fail('CPU % が合わない: ' + tt[0].cpu_pct);
 // 古い版 (`threads_top` も `run_delay_us` も無い 8 列の `/profile`)
-if (api.topThreads(prof, n5).length !== 0) fail('列の無い版で 0 件になっていない');
-const oldRd = api.runDelay(prof, n5);
+if (api.topThreads(oldProf, n5).length !== 0) fail('列の無い版で 0 件になっていない');
+const oldRd = api.runDelay(oldProf, n5);
 if (oldRd.ok || oldRd.total !== 0) fail('列の無い版で ok になっている');
 if (oldRd.series.some((v) => v !== null)) fail('列の無い版の折れ線が null で切れていない');
 if (api.queueSpread(api.toProfile(null), 60, 'connect') !== null) fail('空なら null のはず');
@@ -1668,10 +1752,11 @@ const wc = waitStatus.recent_quantiles;
 for (const q of ['p50', 'p90', 'p99', 'max']) {
   if (!(wc.wait[q] >= wc.connect[q])) fail('wait.' + q + ' が connect を下回った');
 }
-// `/history` に T15.0 (10) の 4 列を足した版 (末尾に足すだけ)
-const waitHist = Object.assign({}, hist, {
-  keys: hist.keys.concat(['waits', 'wait_ms_sum', 'wait_ms_max', 'wait_buckets']),
-  samples: hist.samples.map((row, i) =>
+// `/history` に T15.0 (10) の 4 列を足した版 (**古い版の末尾に**足すだけ。既に持っている
+// 実出力を渡されても鍵が重複しないように、土台は列を落とした `oldHist`)
+const waitHist = Object.assign({}, oldHist, {
+  keys: oldHist.keys.concat(['waits', 'wait_ms_sum', 'wait_ms_max', 'wait_buckets']),
+  samples: oldHist.samples.map((row, i) =>
     row.concat(
       i % 2
         ? [4, 260, 95, [2, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]]
@@ -1680,8 +1765,8 @@ const waitHist = Object.assign({}, hist, {
   ),
 });
 const wsamples = api.toSamples(waitHist);
-if (wsamples.length !== samples.length) fail('列を足したら標本の数が変わった');
-if (wsamples[0].connect_buckets.length !== samples[0].connect_buckets.length) fail('既存の列がずれた');
+if (wsamples.length !== oldSamples.length) fail('列を足したら標本の数が変わった');
+if (wsamples[0].connect_buckets.length !== oldSamples[0].connect_buckets.length) fail('既存の列がずれた');
 const wwin = api.mergeWindows(wsamples, 60, 'wait');
 const waitTotal = wsamples.slice(Math.max(0, wsamples.length - 60)).reduce((a, s) => a + (s.waits || 0), 0);
 if (wwin.count !== waitTotal) fail('mergeWindows が waits を数えていない: ' + wwin.count + ' != ' + waitTotal);
@@ -1692,10 +1777,10 @@ if (wfell.label !== '直近 5 分') fail('落ちた先の札が違う: ' + wfell
 if (wfell.detail.indexOf('区間の補間') < 0) fail('補間であることが内訳に書かれていない');
 if (!(wfell.p50 >= 0 && wfell.p50 <= wwin.max)) fail('落ちた先の p50 が範囲外: ' + wfell.p50);
 // 古い版 (`recent_quantiles.wait` も `wait_*` も無い) ではカードを「–」のままにする
-if (api.waitKpi(st, api.mergeWindows(samples, 60, 'wait'), hist.bounds_ms) !== null) {
+if (api.waitKpi(oldStatus, api.mergeWindows(oldSamples, 60, 'wait'), hist.bounds_ms) !== null) {
   fail('wait をどこにも持たない版で null になっていない');
 }
-if (api.mergeWindows(samples, 60, 'wait').count !== 0) fail('古い標本で waits が数えられている');
+if (api.mergeWindows(oldSamples, 60, 'wait').count !== 0) fail('古い標本で waits が数えられている');
 if (api.waitKpi(null, null, hist.bounds_ms) !== null) fail('null でも例外なく null のはず');
 if (api.waitKpi({ recent_quantiles: { wait: { n: 0 } } }, null, hist.bounds_ms) !== null) {
   fail('n = 0 は無いのと同じ (null) のはず');
@@ -1722,7 +1807,7 @@ console.log(
     '(e) 利用者が待つ時間 p50 ' + api.fmtMsFine(wexact.p50) + ' (無い版では区間の補間 ' +
     api.fmtMsFine(wfell.p50) + '、どちらも無い版では出さない)。' +
     '欄の無い古い版 (' + path.basename(file) + ' / ' + path.basename(statusFile) + ' / ' +
-    path.basename(profFile) + ') では 5 枚とも「無い」に落ちた。' +
+    path.basename(profFile) + ' から T15.0 の欄を落としたもの) では 5 枚とも「無い」に落ちた。' +
     'dashboard.html は ' + dashBytes + ' B / 上限 ' + DASH_MAX + ' B'
 );
 

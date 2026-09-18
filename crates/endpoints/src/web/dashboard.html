@@ -361,10 +361,11 @@ function toKernel(h){
 }
 // CPU の絞り (`/status` の `kernel.cgroup_cpu` と `/history` の `kernel`。T15.0 (6))。
 // 割合 = `nr_throttled ÷ nr_periods`。**`quota_cores` が null なら割り当てが無い**。
-// 持たない版と cgroup v2 の読めない環境では null
+// 持たない版 (`nr_periods` は T15.0 (6) の欄。分母が無いと割合が出せない) と、
+// cgroup v2 の読めない環境では null
 function cpuThrottle(s,rows,n){
   var c=s&&s.kernel&&s.kernel.cgroup_cpu;
-  if(!c)return null;
+  if(!c||typeof c.nr_periods!=='number')return null;
   var per=+c.nr_periods||0,thr=+c.nr_throttled||0,ss=c.since_start||null;
   var a=rows||[],wp=0,wt=0,seen=0;
   for(var i=Math.max(0,a.length-(n||60));i<a.length;i++){
@@ -595,7 +596,7 @@ function drawChart(id,series,opts){
     g.stroke();g.setLineDash([]);
     if(s.fill){g.lineTo(padL+w*(s.data.length-1)/span,padT+h);g.lineTo(padL,padT+h);g.closePath();g.fillStyle=s.fill;g.fill()}});
   g.fillStyle='#8b91a5';g.textAlign='left';
-  if(hist.length>1){var t0=hist[Math.max(0,hist.length-n)].t,t1=hist[hist.length-1].t;g.fillText(ago(t1-t0),padL,H-4);g.textAlign='right';g.fillText('現在',W-padR,H-4)}
+  if(n>0&&hist.length>1){var t0=hist[Math.max(0,hist.length-n)].t,t1=hist[hist.length-1].t;g.fillText(ago(t1-t0),padL,H-4);g.textAlign='right';g.fillText('現在',W-padR,H-4)}
 }
 function ago(s){return s>=86400?Math.round(s/3600)+' 時間前':s>=3600?Math.round(s/60)+' 分前':s>=60?Math.round(s/60)+' 分前':s+' 秒前'}
 // 積み上げの折れ線 (面を下から順に重ねる)。`drawChart` と同じ座標の取り方
@@ -797,13 +798,13 @@ function renderCpu(s){
     $('cputag').textContent='通算';
     $('cpukpi').textContent='–';$('cpubar').style.width='0%';$('cpubar').className='';
     $('cpudetail').textContent='CPU の絞りを記録していません (cgroup v2 の cpu.stat が'
-      +'読めない環境か、kernel.cgroup_cpu を持たない版)';
+      +'読めない環境か、cgroup_cpu / nr_periods を持たない版)';
     return;
   }
-  $('cputag').textContent='起動から';
+  // 札は '通算' のまま (KPI は cgroup の通算。起動からの増分は hint の '起動から')
   $('cpukpi').textContent=c.pct==null?'–':c.pct.toFixed(2)+'%';
-  $('cpukpi').title='nr_throttled ÷ nr_periods。1 周期は既定 100 ms で、'
-    +'絞られた周期は残りを走れずに待たされています';
+  $('cpukpi').title='nr_throttled ÷ nr_periods (cgroup の通算で、起動前を含みます)。'
+    +'1 周期は既定 100 ms で、絞られた周期は残りを走れずに待たされています';
   var p=c.pct||0;
   $('cpubar').style.width=Math.min(100,p)+'%';$('cpubar').className=barClass(p);
   var parts=['絞られた周期 '+fmtNum(c.throttled)+' / '+fmtNum(c.periods),
