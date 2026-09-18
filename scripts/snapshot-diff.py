@@ -788,14 +788,30 @@ def closed_shares(snap):
 
     **本数そのものは比べられない**: 雪像 1 枚に入るのは「最後に閉じた N 本」で、
     窓の長さが前後で違う (2026-09-18 の雪像は 2,000 件中 615 件)。割合なら比べられる。
+
+    **母数は CONNECT だけ** (`kind` が `http` の行 = forward は外す)。T15.5 が見たいのは
+    トンネルの閉じ方で、http と CONNECT の混ざり具合が前後で変われば中継の振る舞いが
+    同じでも割合が動く (`crates/metrics-recent/src/recent.rs` の `to_json` は
+    `"kind":"connect"|"http"` を必ず出す)。
+
+    **半閉じは「欄が無い」と「0 本」を分ける**: `half_closed` は T15.0 (4) が足した欄で、
+    それより前の版の `/recent` には**欄そのものが無い**。無いのを 0.00 と読むと
+    「半閉じが 1 本も無かった」という前の値ができてしまい、最初の前後比べ
+    (再デプロイ前の雪像 × 後の雪像) が必ず「届かず」になる。新しい版は半閉じして
+    いなくても `"half_closed":null` を必ず出すので、**欄の有無がそのまま版の目印**になる。
     """
     rows = part(snap, "recent").get("recent")
     if not isinstance(rows, list) or not rows:
         return None
+    rows = [r for r in rows if r.get("kind") == "connect"]
+    if not rows:
+        return None
+    has_half = any("half_closed" in r for r in rows)
     idle = sum(1 for r in rows if r.get("reason") == "idle_timeout")
-    half = sum(1 for r in rows if r.get("half_closed"))
+    half = sum(1 for r in rows if r.get("half_closed")) if has_half else None
     return {"rows": len(rows), "idle_n": idle, "half_n": half,
-            "idle_timeout": idle / len(rows), "half_closed": half / len(rows)}
+            "idle_timeout": idle / len(rows),
+            "half_closed": (half / len(rows)) if has_half else None}
 
 
 # --- Phase 14 の 4 行 (**出力は 1 文字も変えない**。既存のテストが見張っている) ---
@@ -916,22 +932,33 @@ def _p15_conn_cores(c, th):
 
 
 def _p15_closed_shape(c, th):
-    """T15.5: 直しの前後で閉じ方が変わっていないか (`idle_timeout` と半閉じの割合)。"""
+    """T15.5: 直しの前後で閉じ方が変わっていないか (`idle_timeout` と半閉じの割合)。
+
+    **片方の雪像にその欄が無い項目は飛ばす** (0 とは書かない)。半閉じは T15.0 (4) で
+    足した欄なので、**最初の前後比べ (再デプロイ前 × 後) では必ず前の側に無い**。
+    両方飛んだら行ごと「判定できず」、片方だけなら残る項目で判定する。
+    """
     tol = th["closed_tolerance"]
     label = "`idle_timeout` と半閉じの割合が前後で変わらない"
     limit = f"±{tol * 100:.0f}%"
     now, old = closed_shares(c["b"]), closed_shares(c["a"])
     if not now or not old:
-        return (label, limit, "—", UNKNOWN, "前後のどちらかに `/recent` の部が無い")
-    shown, verdict = [], MET
+        return (label, limit, "—", UNKNOWN,
+                "前後のどちらかに `/recent` の部が無い (または CONNECT の行が 1 本も無い)")
+    shown, verdict, judged = [], MET, 0
     for key, title in (("idle_timeout", "`idle_timeout`"), ("half_closed", "半閉じ")):
+        if now[key] is None or old[key] is None:
+            side = "後" if now[key] is None else "前"
+            shown.append(f"{title} —**{side}の版にその欄は無い**")
+            continue
+        judged += 1
         d = change(now[key], old[key])
         shown.append(f"{title} {ratio(old[key])} → {ratio(now[key])}"
                      + (f" ({d * 100:+.0f}%)" if d is not None else " (前が 0)"))
         if d is None or abs(d) > tol:
             verdict = MISSED
-    return (label, limit, "、".join(shown), verdict,
-            f"`/recent` の割合 ({old['rows']} 本 → {now['rows']} 本。"
+    return (label, limit, "、".join(shown), verdict if judged else UNKNOWN,
+            f"`/recent` の **CONNECT だけ**の割合 ({old['rows']} 本 → {now['rows']} 本。"
             "**本数は窓の長さで変わる**ので割合で見る)")
 
 
@@ -1323,8 +1350,10 @@ def render(d, top):
         if c["name"] == "phase15":
             # T15.0 (15)。材料が雪像に無い行は「0 だった」ではなく「判定できず」にする
             p("材料は `/hosts` `/status` の `dns` `/history` (`dns_warm` と `errors_by_cause`)・"
-              "`/profile` (`conn` 役の CPU)・`/recent` (閉じた理由と半閉じ) です。"
-              "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+              "`/profile` (`conn` 役の CPU)・`/recent` (**CONNECT の行だけ**の閉じた理由と半閉じ) です。"
+              "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。"
+              "**前後のどちらかの版にその欄が無い項目も同じ**で、飛ばして残りで判定します "
+              "(半閉じは T15.0 (4) で足した欄なので、再デプロイ前の雪像には入っていません)。")
             p()
         p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
         p("|---|---|---|---|---|")

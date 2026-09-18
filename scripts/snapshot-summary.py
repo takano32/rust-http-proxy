@@ -117,9 +117,15 @@ def merge(history, prefix, last=None):
 def latency_line(label, history, prefix, last=None):
     count, buckets, top, total = merge(history, prefix, last)
     if not count:
-        # **「0 本」と「その列が無い」は別**。`wait` は T15.0 より前の雪像に無く、
-        # 0 本と書くと「誰も待っていない」と読まれる (T15.0 (15))
-        if prefix + "_buckets" not in (history.get("keys") or []):
+        # **「0 本」と「その列が無い」と「部ごと入っていない」は 3 つとも別**。
+        # `wait` は T15.0 より前の雪像に無く、0 本と書くと「誰も待っていない」と
+        # 読まれる。`history.5` は `/snapshot` が大きいときに落とす 3 つのうちの 1 つ
+        # (`crates/endpoints/src/endpoints/recent.rs` の `DROP_ORDER`) なので、
+        # 落ちたときに「その列は無い」と書くと「この版は測っていない」と読まれる (T15.0 (15))
+        keys = history.get("keys") or []
+        if not keys:
+            return f"| {label} | (この部は雪像に入っていない) | — | — | — |"
+        if prefix + "_buckets" not in keys:
             return f"| {label} | (この雪像にその列は無い) | — | — | — |"
         return f"| {label} | 0 本 | — | — | — |"
     bounds = history.get("bounds_ms") or []

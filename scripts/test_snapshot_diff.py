@@ -643,14 +643,27 @@ class Criteria15(unittest.TestCase):
         self.assertEqual(row[3], sd.UNKNOWN)
         self.assertIn("`/profile` の部が無い", row[4])
 
-    def recent(self, n_rows, idle, half):
-        """閉じた接続 `n_rows` 本のうち `idle` 本が `idle_timeout`、`half` 本が半閉じ。"""
+    def recent(self, n_rows, idle, half, old=False, http=0):
+        """閉じた接続 `n_rows` 本のうち `idle` 本が `idle_timeout`、`half` 本が半閉じ。
+
+        `old=True` で **T15.0 (4) より前の版** (`half_closed` の欄そのものが無い)、
+        `http` で forward の行 (`kind` が `http`) を後ろに足す。
+        """
         rows = []
         for i in range(n_rows):
-            rows.append({"id": i, "at": 1789000000, "secs": 10, "kind": "connect",
-                         "reason": "idle_timeout" if i < idle else "client_eof",
-                         "half_closed": "client" if i < half else None})
-        return {"recent": rows, "count": n_rows, "shown": n_rows, "truncated": False}
+            r = {"id": i, "at": 1789000000, "secs": 10, "kind": "connect",
+                 "reason": "idle_timeout" if i < idle else "client_eof"}
+            if not old:
+                r["half_closed"] = "client" if i < half else None
+            rows.append(r)
+        for i in range(http):
+            r = {"id": 10000 + i, "at": 1789000000, "secs": 1, "kind": "http",
+                 "reason": "idle_timeout"}
+            if not old:
+                r["half_closed"] = None
+            rows.append(r)
+        n = n_rows + http
+        return {"recent": rows, "count": n, "shown": n, "truncated": False}
 
     def test_the_closed_shares_are_ratios_not_counts(self):
         """**本数は窓の長さで変わる** (雪像 1 枚に入るのは最後に閉じた N 本)。"""
@@ -676,6 +689,57 @@ class Criteria15(unittest.TestCase):
         row = self.judge()["rows"][4]                # B の `recent` は落ちている (`dropped`)
         self.assertEqual(row[3], sd.UNKNOWN)
         self.assertIn("`/recent` の部が無い", row[4])
+
+    def test_an_old_snapshot_has_no_half_closed_field_at_all(self):
+        """**最初の前後比べ (再デプロイ前 × 後) が必ずこの形**になる (T15.0 (15) のレビュー)。
+
+        前の版に `half_closed` の欄が無いのを 0.00 と読むと、半閉じが増えた形になって
+        `change(0.10, 0)` が `None` を返し、直しが効いていても「届かず」と書かれる。
+        """
+        a, b = read(A), read(B)
+        a["recent"] = self.recent(100, 20, 0, old=True)   # 欄そのものが無い版
+        b["recent"] = self.recent(100, 20, 10)            # 10% が半閉じ
+        with written(a=a, b=b) as paths:
+            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+        self.assertEqual(row[3], sd.MET)                  # `idle_timeout` だけで判定する
+        self.assertIn("`idle_timeout` 0.20 → 0.20 (+0%)", row[2])
+        self.assertIn("半閉じ —**前の版にその欄は無い**", row[2])
+        self.assertNotIn("0.00", row[2])
+
+    def test_the_newer_side_missing_the_field_is_skipped_too(self):
+        a, b = read(A), read(B)
+        a["recent"] = self.recent(100, 20, 10)
+        b["recent"] = self.recent(100, 20, 0, old=True)
+        with written(a=a, b=b) as paths:
+            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("半閉じ —**後の版にその欄は無い**", row[2])
+
+    def test_only_the_connect_rows_are_counted(self):
+        """母数は CONNECT だけ。**http の混ざり具合**で割合が動いてはいけない。"""
+        a, b = read(A), read(B)
+        a["recent"] = self.recent(100, 20, 10)            # http 0 本
+        b["recent"] = self.recent(100, 20, 10, http=100)  # 同じ CONNECT + http 100 本
+        with written(a=a, b=b) as paths:
+            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("`idle_timeout` 0.20 → 0.20 (+0%)", row[2])
+        self.assertIn("100 本 → 100 本", row[4])          # 200 本ではない
+        self.assertIn("**CONNECT だけ**", row[4])
+
+    def test_a_snapshot_with_only_http_rows_cannot_be_judged(self):
+        a, b = read(A), read(B)
+        a["recent"] = self.recent(100, 20, 10)
+        b["recent"] = self.recent(0, 0, 0, http=50)
+        with written(a=a, b=b) as paths:
+            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("CONNECT の行が 1 本も無い", row[4])
+
+    def test_the_markdown_says_the_missing_field_is_skipped(self):
+        md = run([A, B, "--no-dns", "--criteria", "phase15"])
+        self.assertIn("**CONNECT の行だけ**", md)
+        self.assertIn("その欄が無い項目も同じ", md)
 
     def test_the_timeout_errors_are_compared_per_hour(self):
         """前後で標本の数が違うので、件数ではなく**1 時間あたり**で比べる。"""

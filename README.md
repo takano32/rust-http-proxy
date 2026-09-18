@@ -2384,7 +2384,7 @@ CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・IPv6 (`ipv6_route`)・
 真偽ではないので終了コードに入りません)。
 `[NO]` の行があると終了コードは `1` で、最後に `check: N of 7 not readable (...)` と出ます。
 起動はできますが、その項目は `/status` や `/history` で `null` になります
-(`resolver_ms` だけは終了コードに入らず、2 秒で答えが来なければ `[--]` です)。`settings` の一覧は `source` (`default` /
+(`resolver_ms` は 2 秒で答えが来なければ `[--]` です)。`settings` の一覧は `source` (`default` /
 `env` / `env_file` / `cli`) つきなので、**書いたのに効いていない設定**がここで分かります。
 
 ### 2. 起動直後 (0〜5 分)

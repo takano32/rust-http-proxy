@@ -295,8 +295,35 @@ class Wait(unittest.TestCase):
                       run([B]))
 
     def test_an_old_snapshot_says_the_column_is_missing(self):
-        """**「0 本」と書くと「誰も待っていない」と読まれる**ので、列の有無は分けて書く。"""
-        self.assertIn("| 利用者が待つ `wait` (直近 1 日) | (この雪像にその列は無い) |", run([A]))
+        """**「0 本」と書くと「誰も待っていない」と読まれる**ので、列の有無は分けて書く。
+
+        部は入っているのに列だけ無い = **その版が測っていない**。
+        """
+        b = read(B)
+        h = b["history"]["60"]
+        i = h["keys"].index("waits")
+        del h["keys"][i:i + 4]                       # `waits` から `wait_buckets` までの 4 列
+        for row in h["samples"]:
+            del row[i:i + 4]
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("| 利用者が待つ `wait` (直近 1 日) | (この雪像にその列は無い) |", md)
+
+    def test_a_dropped_part_is_not_a_missing_column(self):
+        """`history.5` は `/snapshot` の `DROP_ORDER` に入っていて**落ちることがある**。
+
+        落ちたときに「その列は無い」と書くと「この版は connect を測っていない」と
+        読まれる (T15.0 (15) のレビュー)。
+        """
+        b = read(B)
+        del b["history"]["5"]
+        b["parts"] = [p for p in b["parts"] if p != "history.5"]
+        b["dropped"] = (b.get("dropped") or []) + ["history.5"]
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("| CONNECT 確立 (直近 1 時間) | (この部は雪像に入っていない) |", md)
+        # 部が丸ごと無い A も同じ (`history.60` がそもそも入っていない)
+        self.assertIn("| 利用者が待つ `wait` (直近 1 日) | (この部は雪像に入っていない) |", run([A]))
 
     def test_a_real_zero_is_still_zero(self):
         b = read(B)
