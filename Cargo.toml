@@ -37,6 +37,7 @@ members = [
     "crates/endpoints-explain",
     "crates/endpoints",
     "crates/server",
+    "crates/run",
     "crates/bench",
 ]
 
@@ -55,6 +56,7 @@ edition = "2024"
 # (実測: 18,276 行 1 クレートで 330 MB、動作環境の上限は 180 MB = SERVER_MEMORY 256 MiB)。
 # ルートのパッケージは **facade と bin だけ** (T15.12 段 6')。本体は `crates/server`。
 proxy-server = { path = "crates/server" }
+proxy-run = { path = "crates/run" }
 
 # メモリの小さい環境 (Pterodactyl コンテナ) でも通ることを優先した既定のプロファイル。
 # LTO を切っているのは、まとめて最適化する**最終リンクの 1 回**が大きいため。

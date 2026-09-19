@@ -277,6 +277,13 @@ name = "proxy-rrd"
 version = "0.1.0"
 
 [[package]]
+name = "proxy-run"
+version = "0.1.0"
+dependencies = [
+ "proxy-server",
+]
+
+[[package]]
 name = "proxy-selfbench"
 version = "0.1.0"
 dependencies = [
@@ -349,5 +356,6 @@ dependencies = [
 name = "rust-http-proxy"
 version = "0.1.0"
 dependencies = [
+ "proxy-run",
  "proxy-server",
 ]

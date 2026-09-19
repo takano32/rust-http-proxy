@@ -26,7 +26,7 @@
 //! `/proc` の値は 10 ms 刻みなので、1.5 秒の窓で 10 本前後のスレッドを引き算すると
 //! 切り捨てが積もって数 % 動いてしまう (§1 の 10 秒の計測では無視できる誤差だが、ここでは効く)。
 //!
-//! `off` (既定) ではこのクレートの関数は 1 つも呼ばれない (`src/main.rs` の旗の分岐 1 回だけ)。
+//! `off` (既定) ではこのクレートの関数は 1 つも呼ばれない (`crates/run/src/lib.rs` の旗の分岐 1 回だけ)。
 //!
 //! **`crates/bench` から写したもの** (`crates/bench` は `default-members` の外なので本体から
 //! 呼べない): 固定応答を返す keep-alive オリジン、すぐ閉じる sink、CONNECT を張って 200 を
@@ -218,7 +218,7 @@ impl Report {
 ///
 /// `proxy` は**自分の待ち受け**(loopback に読み替えたもの)。`exempt` は「このループバックの
 /// ポートだけは `PROXY_ALLOW_LOCAL=off` の判定から外す」という届け出で、終わったら空の
-/// スライスで呼び戻す (穴は 3 秒で閉じる)。呼ぶのは `src/main.rs` の 1 か所だけ。
+/// スライスで呼び戻す (穴は 3 秒で閉じる)。呼ぶのは `crates/run/src/lib.rs` の 1 か所だけ。
 pub fn run(proxy: SocketAddr, exempt: &dyn Fn(&[u16])) -> Report {
     let mut report = Report {
         at: clock::now_epoch(),

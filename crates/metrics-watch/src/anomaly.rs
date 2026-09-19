@@ -908,7 +908,7 @@ static THRESHOLD: AtomicUsize = AtomicUsize::new(0);
 /// 判定の入れ物。**触るのは履歴スレッドだけ** (5 秒に 1 回)。
 static DETECTOR: Mutex<Option<Detector>> = Mutex::new(None);
 
-/// 同時接続の山の閾を教える (`src/main.rs` の起動時に 1 回)。
+/// 同時接続の山の閾を教える (`crates/run/src/lib.rs` の起動時に 1 回)。
 ///
 /// `burst_at` は T14.6 の写真と同じ閾 (`PROXY_MAX_CONNS × PROXY_BURST_PERCENT`)。
 /// 写真を撮らない設定 (`PROXY_BURST_PERCENT=0` と `--lite`) では [`usize::MAX`] が

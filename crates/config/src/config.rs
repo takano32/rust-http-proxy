@@ -498,7 +498,7 @@ pub struct Config {
     /// `on` のときだけ、待ち受けを開いた直後に内蔵の小さなオリジンを立て、自分の待ち受けへ
     /// forward 8 並列と CONNECT 8 並列を 1.5 秒ずつ流して CPU/要求 と CPU/本 を測る
     /// (`/status` の `self_bench`)。**外へは 1 バイトも出さない。**
-    /// `off` (既定) では `src/main.rs` の分岐 1 回だけで、自己ベンチのコードは 1 命令も走らない
+    /// `off` (既定) では `crates/run/src/lib.rs` の分岐 1 回だけで、自己ベンチのコードは 1 命令も走らない
     pub self_bench: bool,
     /// CONNECT を許すあて先ポート (`PROXY_CONNECT_PORTS`、既定は制限なし)
     pub connect_ports: PortSet,

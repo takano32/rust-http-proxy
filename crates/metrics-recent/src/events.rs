@@ -14,7 +14,7 @@
 //!
 //! | 種類 | 書く場所 |
 //! |---|---|
-//! | `start` / `shutdown` | `src/main.rs` (起動の最後、停止シグナルの後始末) |
+//! | `start` / `shutdown` | `crates/run/src/lib.rs` (起動の最後、停止シグナルの後始末) |
 //! | `reload` | `crates/reload/src/reload.rs` (`.env` を読み直したとき) |
 //! | `blocklist` | `crates/blocklist` (一覧を組み直したとき) |
 //! | `ipv6` / `pressure` / `ballast` | [`poll`] (履歴スレッドの周期。下を参照) |
