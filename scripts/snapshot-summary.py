@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 # `/status` の `errors_by_cause` の並び (`crates/metrics/src/metrics.rs` の ERR_CAUSE_NAMES)
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
-# 名前解決のミスの種類 (`crates/net/src/dns.rs` の `misses_by_kind_json`。この順で和が `misses`)
+# 名前解決のミスの種類 (`crates/net-dns/src/dns.rs` の `misses_by_kind_json`。この順で和が `misses`)
 MISS_KINDS = ["cold", "expired", "warm_stale", "negative"]
 # 「動かないトンネル」と見なす秒 (T15.0 (14) の画面と同じ固定の閾。見出しに書く)
 IDLE_TUNNEL_SECS = 300

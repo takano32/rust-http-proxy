@@ -5,7 +5,7 @@
 # **見るのは `time_appconnect − time_connect`** で、これが「CONNECT の確立 + TLS 握手」
 # (手元からプロキシまでの TCP は `time_connect` に入っているので引き算で落ちる)。
 # CONNECT は AAAA のあるホストと無いホストを 1 つずつ叩く: **Happy Eyeballs の 250 ms
-# (`crates/net/src/net.rs` の `STAGGER`) を払うのは AAAA のあるホストだけ**なので、
+# (`crates/net-conn/src/net.rs` の `STAGGER`) を払うのは AAAA のあるホストだけ**なので、
 # この 2 行の差が Phase 12 で削ろうとしている待ちそのものになる。
 #
 # 使い方:

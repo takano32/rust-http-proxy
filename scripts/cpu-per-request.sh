@@ -18,7 +18,7 @@
 # 違うのは **IPv6 が黙って落ちること**・`ulimit -n` 1024・cgroup 256 MiB・`/etc/hosts` に
 # `multi.test` (黒穴の AAAA + 生きている A) があることで、`--only connect-multi` はこの名前宛てに
 # CONNECT する。**この条件でしか Happy Eyeballs の 250 ms は出ない** (`--only connect` は宛先が
-# IP リテラルなので候補が 1 つになり、`crates/net/src/net.rs` の短絡に入る)。
+# IP リテラルなので候補が 1 つになり、`crates/net-conn/src/net.rs` の短絡に入る)。
 # 終わる前に `/status` の `"ipv6"` を 1 回引いて印字する (T12.1 の記憶が効いたかはここで見る)。
 # §2 の表 (経路どうしを比べる表) はこの条件では測らない — 条件が 1 行だけ違う数字になる。
 #

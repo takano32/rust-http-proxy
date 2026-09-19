@@ -7,7 +7,7 @@
 //! **ACL の枝そのものは結合テストでは再現できない** (`acl::is_local_ip` は loopback を
 //! local と見るので `localhost` 宛ては 403、IP リテラル宛ては名前を引かずに早期 return
 //! する)。引き算の中身は単体テスト (`crates/tunnel/src/tunnel.rs` の `mod tests` と
-//! `crates/net/src/dns.rs` の `peeking_the_resolve_cost_does_not_take_it`) で見ているので、
+//! `crates/net-dns/src/dns.rs` の `peeking_the_resolve_cost_does_not_take_it`) で見ているので、
 //! ここで縛るのは**個票に `connect` と `client_read` の欄が出ること**だけ。
 //!
 //! `client_read` は 0 のとき JSON に出さない決まり (`STAGE_NAMES`) なので、要求行を

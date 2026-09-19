@@ -1,5 +1,5 @@
 [package]
-name = "proxy-net"
+name = "proxy-net-dns"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,4 +7,4 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-proxy-net-conn = { path = "../net-conn" }
+proxy-base = { path = "../base" }

@@ -197,8 +197,23 @@ dependencies = [
 name = "proxy-net"
 version = "0.1.0"
 dependencies = [
+ "proxy-net-conn",
+]
+
+[[package]]
+name = "proxy-net-conn"
+version = "0.1.0"
+dependencies = [
  "proxy-base",
+ "proxy-net-dns",
  "proxy-sys",
+]
+
+[[package]]
+name = "proxy-net-dns"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
 ]
 
 [[package]]

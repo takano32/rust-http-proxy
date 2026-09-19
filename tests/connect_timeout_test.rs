@@ -4,7 +4,7 @@
 //! `config.timeout` (5 秒) と別の値 (1 秒) を入れて、黒穴への CONNECT が 5 秒ではなく
 //! 1 秒あまりで 502 になり、`/errors` の原因が `timeout` になることを確かめる。
 //!
-//! 黒穴の作り方は `crates/net/src/net.rs` の `blackhole_v4`
+//! 黒穴の作り方は `crates/net-conn/src/net.rs` の `blackhole_v4`
 //! (`mod tests` の中の private なので `tests/` からは呼べない。中身を写す)。
 //! `listen(fd, 0)` で受け入れ待ち行列を 1 本にして、詰め物 1 本で埋めると、
 //! 以後の SYN は黙って捨てられる (`tcp_abort_on_overflow = 0` の既定)。
