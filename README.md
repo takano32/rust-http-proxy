@@ -2036,7 +2036,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 ## クレート構成
 
 **外部クレートは 1 つも使っていません** (すべて `std` のみ)。`crates/` にあるのは全部このリポジトリのコードで、
-責務ごとの層に分けてあります (34 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
+責務ごとの層に分けてあります (37 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
 全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
 
 | クレート | 責務 |
@@ -2072,6 +2072,9 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 | `proxy-freshness` | RFC 9111 の鮮度判定 |
 | `proxy-http` | 中継の本体 |
 | `proxy-tunnel` | CONNECT トンネル |
+| `proxy-endpoints-core` | エンドポイントの共通の土台 (要求 1 本ぶんの文脈、問い合わせ `?a=1&b=2` の読み方) |
+| `proxy-endpoints-explain` | 1 相手の説明 (`/explain?host=` `?client=`) |
+| `proxy-web` | ブラウザで開くページの HTML (`/dashboard` `/inspect` `/probe.html`) の実体。const 3 つだけの葉 |
 | `proxy-endpoints` | プロキシ自身のエンドポイント (`/dashboard` `/status` `/metrics` …) |
 | `proxy-selfbench` | 起動直後の自己ベンチ (`PROXY_SELF_BENCH=on`)。内蔵の小さなオリジンと打ち手、CPU の測り方。依存は `proxy-base` だけ |
 | `proxy-bench` | 計測用の道具 (既定のビルド対象から外してあります。`cargo build --release -p proxy-bench`) |

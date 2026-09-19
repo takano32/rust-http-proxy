@@ -1,5 +1,5 @@
 [package]
-name = "proxy-endpoints"
+name = "proxy-endpoints-explain"
 version = "0.1.0"
 edition = "2024"
 
@@ -12,9 +12,4 @@ proxy-net = { path = "../net" }
 proxy-cache = { path = "../cache" }
 proxy-http = { path = "../http" }
 proxy-metrics = { path = "../metrics" }
-proxy-blocklist = { path = "../blocklist" }
-proxy-reload = { path = "../reload" }
-proxy-prom = { path = "../prom" }
 proxy-endpoints-core = { path = "../endpoints-core" }
-proxy-endpoints-explain = { path = "../endpoints-explain" }
-proxy-web = { path = "../web" }

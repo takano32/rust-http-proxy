@@ -29,56 +29,38 @@ use crate::persist;
 use crate::prom;
 use crate::reload;
 
-pub struct Endpoint<'a> {
-    pub metrics: &'a Metrics,
-    pub cache: &'a Cache,
-    pub conn_id: usize,
-    /// 自分の待ち受けポート (絶対形式の自分宛て判定に使う)
-    pub port: u16,
-    /// 要求の `Host` ヘッダー (`/proxy.pac` が自分の名前を知るため)
-    pub host: Option<&'a str>,
-    /// 接続元 IP (`readers` に 1 行残すため。T14.53)。**要求で来たときだけ**入り、
-    /// 日次の `/snapshot` を履歴スレッドが組むときは `None` (誰も引いていないので
-    /// 数えない)
-    pub client: Option<&'a str>,
-    /// `/proxy.pac` で DIRECT にするホストのパターン
-    pub pac_direct: &'a [String],
-    /// lite プロファイル (ダッシュボードを持たない)
-    pub lite: bool,
-    /// 書き換える口 (`/purge` / `PURGE` / `/blocklist?action=`) を 405 で断る
-    /// (`PROXY_ENDPOINTS_READONLY`。読む口は今までどおり。認証ではない。T14.18)
-    pub readonly: bool,
-    /// 動いているバイナリの版 (`/status` に出す。本体クレートの `VERSION`)
-    pub version: &'a str,
-    /// 上限といまのスレッド数を引く口 (`/status` と `/metrics` を組み立てるときだけ呼ぶ)。
-    ///
-    /// 値そのものではなく関数で受け取るのは、生きているスレッド数と待ち行列を数えるのに
-    /// **全接続スレッドで共有している鍵**を取るため。`Endpoint` は要求ごとに組むので、
-    /// ここで数えると熱い経路に乗ってしまう (この 2 つのパスに来たときだけ引く)
-    pub concurrency: &'a dyn Fn() -> metrics::Concurrency,
-}
+// 要求 1 本ぶんの文脈と問い合わせの読み方は葉クレート `proxy-endpoints-core` に、
+// `/explain` は `proxy-endpoints-explain` にある (T15.12 段 1 (ii))。
+// **今までと同じ綴りで使えるように**ここで出し直す (`crate::endpoints::Endpoint`、
+// 子モジュールの `super::parse_query` / `super::has_flag` / `super::offset_param` /
+// `super::next_offset`、`explain::explain`)。
+pub use proxy_endpoints_core::{Endpoint, parse_query, percent_decode};
+use proxy_endpoints_core::{has_flag, next_offset, offset_param};
+use proxy_endpoints_explain as explain;
 
 mod blocklist;
 mod config;
-mod explain;
 mod health;
 mod pac;
 mod profile;
 mod recent;
 
-const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
+// HTML 3 本の実体は葉クレート `proxy-web` (`crates/web/src/*.html`) に置いてある
+// (T15.12 段 1: 163 KB の文字列定数を このクレートの rustc から外に出すため)。
+// 綴りを変えないよう、ここでは今までと同じ名前の私有 const で受ける。
+const DASHBOARD_HTML: &str = proxy_web::DASHBOARD_HTML;
 
 /// 「調査」ページ (T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
 /// **起きたことを時間軸で読む**ための別のページ (個票を描く)。
 /// `--lite` でも 200 で返す (記録が無ければページの中で「記録していません」と出る)。
-const INSPECT_HTML: &str = include_str!("../web/inspect.html");
+const INSPECT_HTML: &str = proxy_web::INSPECT_HTML;
 
 /// 「端末から測る」ページ (T14.33)。プロキシ側の計測は「プロキシに届いてから」しか
 /// 見えないので、**利用者のブラウザから** `/status` の往復と、プロキシ経由で小さな URL を
 /// 取る時間を測り、`/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) に並べる。
 /// 測った値はサーバーへ送らない (端末の中だけ)。`--lite` でも 200 で返す
 /// (接続元を記録していないことはページの中で伝える)。
-const PROBE_HTML: &str = include_str!("../web/probe.html");
+const PROBE_HTML: &str = proxy_web::PROBE_HTML;
 
 /// 要求ターゲットを自分宛てのパスに直す。**どちらの形式もポートだけで判定する**:
 /// 絶対形式は authority の、オリジン形式は `Host` ヘッダーのポート (無ければ 80) が
@@ -265,37 +247,6 @@ fn is_heavy(is_get: bool, path: &str, query: Option<&str>) -> bool {
         "/recent" => num_over(query, "n", 500),
         "/history" => num_over(query, "n", 720),
         _ => false,
-    }
-}
-
-/// 問い合わせに `key=` が**立っている**か (`/history?summary=1` と同じ読み方。`0` は偽)。
-pub(super) fn has_flag(query: Option<&str>, key: &str) -> bool {
-    let Some(q) = query else {
-        return false;
-    };
-    parse_query(q).iter().any(|(k, v)| k == key && v != "0")
-}
-
-/// `?offset=N` を読む (無い / 読めない値は 0。上は `max` で止める。T15.0 (11))。
-///
-/// 読むのは `/recent` `/hosts` `/profile` の 3 つで、**読み方はここ 1 か所**に置く。
-/// `recent.rs` の `num_param` と別なのは**下限が 0** だから (あちらは `.clamp(1, max)` なので
-/// 「1 件目から」を表せない)。意味は「いまの並びを何本飛ばすか」で、並びは `/recent` が
-/// 閉じた新しい順、`/hosts` が `sort=` の順、`/profile` が新しい標本の順。
-pub(super) fn offset_param(query: Option<&str>, max: usize) -> usize {
-    parse_query(query.unwrap_or(""))
-        .iter()
-        .find(|(k, _)| k == "offset")
-        .and_then(|(_, v)| v.parse::<usize>().ok())
-        .unwrap_or(0)
-        .min(max)
-}
-
-/// 次の頁の `offset` (続きが無ければ `null`)。上の 3 つが同じ綴りで応答の末尾に出す。
-pub(super) fn next_offset(offset: usize, shown: usize, total: usize) -> String {
-    match offset + shown < total {
-        true => (offset + shown).to_string(),
-        false => "null".to_string(),
     }
 }
 
@@ -766,49 +717,6 @@ fn is_write(is_purge: bool, path: &str, query: Option<&str>) -> bool {
             && parse_query(query.unwrap_or(""))
                 .iter()
                 .any(|(k, v)| k == "action" && !v.is_empty()))
-}
-
-pub fn parse_query(query: &str) -> Vec<(String, String)> {
-    query
-        .split('&')
-        .filter(|p| !p.is_empty())
-        .map(|p| match p.split_once('=') {
-            Some((k, v)) => (percent_decode(k), percent_decode(v)),
-            None => (percent_decode(p), String::new()),
-        })
-        .collect()
-}
-
-/// `%XX` を戻す (`+` はそのまま: URL の中の `+` を壊さない)。
-pub fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let (Some(h), Some(l)) = (
-                hex(bytes[i + 1]),
-                hex(bytes.get(i + 2).copied().unwrap_or(0)),
-            )
-        {
-            out.push(h << 4 | l);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

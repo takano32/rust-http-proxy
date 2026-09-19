@@ -18,9 +18,9 @@
 
 use std::fmt::Write as _;
 
-use super::{Endpoint, parse_query};
 use crate::metrics::{ERR_CAUSE_NAMES, HostStats, SCHEMA_HEAD};
 use crate::recent::{MAX_ERRORS, RecentEntry};
+use crate::{Endpoint, parse_query};
 
 /// 応答 1 本の上限 (64 KiB)。個票の口 (256 KiB) より小さいのは、ここが
 /// 「1 相手ぶんを 1 画面で読む」口で、件数の上限 (10 本 / 5 件) がそもそも小さいため。

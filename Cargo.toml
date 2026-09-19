@@ -32,6 +32,9 @@ members = [
     "crates/freshness",
     "crates/http",
     "crates/tunnel",
+    "crates/web",
+    "crates/endpoints-core",
+    "crates/endpoints-explain",
     "crates/endpoints",
     "crates/bench",
 ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ダッシュボード (`crates/endpoints/src/web/dashboard.html`) の JS を、ブラウザ無しで確かめる。
+// ダッシュボード (`crates/web/src/dashboard.html`) の JS を、ブラウザ無しで確かめる。
 //
 // ブラウザが無い環境でも壊れに気づけるように、見るのは 3 つだけ:
 //   1. <script> の中身が構文として通ること (`new Function` = `node --check` と同じ判定)
@@ -43,7 +43,7 @@ const fs = require('fs');
 const path = require('path');
 
 const html = fs.readFileSync(
-  path.join(__dirname, '..', 'crates/endpoints/src/web/dashboard.html'),
+  path.join(__dirname, '..', 'crates/web/src/dashboard.html'),
   'utf8'
 );
 const m = html.match(/<script>([\s\S]*?)<\/script>/);
@@ -749,12 +749,12 @@ if (transferWindows < 2) fail('速さと半閉じの分布を 1 窓も読めて�
 if (transferRows(null).length !== 0) fail('transfer が無くても例外なく 0 件のはず');
 if (transferRows({ samples: [] }).length !== 0) fail('空の窓でも 0 件のはず');
 
-// 10. 「調査」ページ (`crates/endpoints/src/web/inspect.html`。T14.8) の描画関数。
+// 10. 「調査」ページ (`crates/web/src/inspect.html`。T14.8) の描画関数。
 //    `/dashboard` と同じ作法で **DOM に触らない 9 つ**を名前で抜き出し、
 //    (1) 手元のベンチで取った `/snapshot` の実出力、(2) デプロイ先の雪像 (`/status` と
 //    `/history`)、(3) まだ実出力に無い欄の架空の見本、の 3 つで通す。
 const insHtml = fs.readFileSync(
-  path.join(__dirname, '..', 'crates/endpoints/src/web/inspect.html'),
+  path.join(__dirname, '..', 'crates/web/src/inspect.html'),
   'utf8'
 );
 // T14.8 は 64 KiB だったが、T14.44 で「今日」「今週」「出来事と異常」の 3 枚を足したので
@@ -1126,12 +1126,12 @@ if (!restored.persisted || restored.restored !== 7 || restored.kept !== 9) {
   fail('個票の persisted / restored を読めていない');
 }
 
-// 11. 「端末から測る」ページ (`crates/endpoints/src/web/probe.html`。T14.33) の関数。
+// 11. 「端末から測る」ページ (`crates/web/src/probe.html`。T14.33) の関数。
 //     ブラウザが無いので、(1) 作り物の数列で `median`、(2) `/snapshot` の中の `/status` の
 //     実出力 (5 つ目の引数) で `pick` と `render` を通す。**この 3 つは DOM にも fetch にも
 //     触らない**ので、ここで「経由している / していない」の判定まで確かめられる。
 const probeHtml = fs.readFileSync(
-  path.join(__dirname, '..', 'crates/endpoints/src/web/probe.html'),
+  path.join(__dirname, '..', 'crates/web/src/probe.html'),
   'utf8'
 );
 if (Buffer.byteLength(probeHtml) > 64 * 1024) {
