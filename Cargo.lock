@@ -108,6 +108,7 @@ dependencies = [
  "proxy-net",
  "proxy-prom",
  "proxy-reload",
+ "proxy-web",
 ]
 
 [[package]]
@@ -286,6 +287,10 @@ dependencies = [
  "proxy-net",
  "proxy-sys",
 ]
+
+[[package]]
+name = "proxy-web"
+version = "0.1.0"
 
 [[package]]
 name = "proxy-workers"

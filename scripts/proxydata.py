@@ -294,7 +294,7 @@ def fmt_bytes(n):
     """バイト数を読める形に。
 
     **割るのは 1,024 なので単位は GiB / MiB / KiB** (画面の `fmtBytes` と同じ。
-    `crates/endpoints/src/web/dashboard.html`)。`GB` / `MB` と書いていたので、
+    `crates/web/src/dashboard.html`)。`GB` / `MB` と書いていたので、
     報告の数字が 2.4〜7.4% 小さい十進の量に読めていた (T14.99)。
     """
     if n < 0:

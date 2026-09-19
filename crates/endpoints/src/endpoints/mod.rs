@@ -66,19 +66,22 @@ mod pac;
 mod profile;
 mod recent;
 
-const DASHBOARD_HTML: &str = include_str!("../web/dashboard.html");
+// HTML 3 本の実体は葉クレート `proxy-web` (`crates/web/src/*.html`) に置いてある
+// (T15.12 段 1: 163 KB の文字列定数を このクレートの rustc から外に出すため)。
+// 綴りを変えないよう、ここでは今までと同じ名前の私有 const で受ける。
+const DASHBOARD_HTML: &str = proxy_web::DASHBOARD_HTML;
 
 /// 「調査」ページ (T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
 /// **起きたことを時間軸で読む**ための別のページ (個票を描く)。
 /// `--lite` でも 200 で返す (記録が無ければページの中で「記録していません」と出る)。
-const INSPECT_HTML: &str = include_str!("../web/inspect.html");
+const INSPECT_HTML: &str = proxy_web::INSPECT_HTML;
 
 /// 「端末から測る」ページ (T14.33)。プロキシ側の計測は「プロキシに届いてから」しか
 /// 見えないので、**利用者のブラウザから** `/status` の往復と、プロキシ経由で小さな URL を
 /// 取る時間を測り、`/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) に並べる。
 /// 測った値はサーバーへ送らない (端末の中だけ)。`--lite` でも 200 で返す
 /// (接続元を記録していないことはページの中で伝える)。
-const PROBE_HTML: &str = include_str!("../web/probe.html");
+const PROBE_HTML: &str = proxy_web::PROBE_HTML;
 
 /// 要求ターゲットを自分宛てのパスに直す。**どちらの形式もポートだけで判定する**:
 /// 絶対形式は authority の、オリジン形式は `Host` ヘッダーのポート (無ければ 80) が

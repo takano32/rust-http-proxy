@@ -167,7 +167,7 @@ for m in re.finditer(
     var, arr, html = m.groups()
     listed = re.findall(r"'([A-Za-z_]\w*)'", arr[1:-1] if arr.startswith('[') else consts.get(arr, ''))
     if html not in pages:
-        page = open('crates/endpoints/src/web/' + html, encoding='utf-8').read()
+        page = open('crates/web/src/' + html, encoding='utf-8').read()
         pages[html] = re.search(r"<script>([\s\S]*?)</script>", page).group(1)
     js = pages[html]
     bodies = {n: body_of(js, n) for n in listed}
