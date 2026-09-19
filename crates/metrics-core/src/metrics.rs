@@ -1265,6 +1265,10 @@ fn push_tables(out: &mut String, hosts_json: &[String], clients_json: &[String])
 /// (`secs` は `canary::SECS` = 60 の既定)。縛っているのは
 /// `proxy-metrics-watch` の単体テスト
 /// `canary::tests::the_default_canary_status_is_byte_identical_to_off`。
+///
+/// **canary 側の静的な既定は `Mode::Auto`** (`canary.rs` の `static MODE`) なので、誰も預けないまま
+/// `/status` を組む処理系では、`auto` ではなくここの `off` の形が出る (製品のバイナリは
+/// `src/main.rs` が待ち受けを立てる前に必ず `canary::configure` を呼ぶので `/status` は変わらない)。
 pub const CANARY_STATUS_UNSET: &str = concat!(
     "{\"mode\":\"off\",\"secs\":60,\"runs\":0,\"failures\":0,",
     "\"at\":0,\"host\":\"\",\"dns_ms\":0,\"connect_ms\":0,\"ipv6_connect_ms\":null,\"error\":null}"
