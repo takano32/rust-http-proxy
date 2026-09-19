@@ -7,7 +7,7 @@
 //!
 //! それだけでは**熱さが TTL に縛られる**ので、間隔が TTL より長いホスト (デプロイ先の主要 3 件は
 //! 2〜10 分間隔) は 1 つも救えなかった。そこで熱さの窓を TTL から切り離し、**直近 [`warm_window`]
-//! 秒 (`PROXY_DNS_WARM_SECS`、既定 900 秒、0 で無効) に 2 回以上使われた名前 (= warm) は、
+//! 秒 (`PROXY_DNS_WARM_SECS`、既定 3,600 秒、0 で無効) に 2 回以上使われた名前 (= warm) は、
 //! 使われていなくても 3/4 TTL ごとに裏で引き直し続ける** (keep-warm。T14.1)。warm でいられるのは
 //! 同時に [`MAX_WARM`] 件までで、最後の使用から窓を過ぎた名前は待ち行列から外れる。
 //!
@@ -38,8 +38,10 @@ pub const NEGATIVE: Duration = Duration::from_secs(60);
 /// warm と見なす窓の既定 (`PROXY_DNS_WARM_SECS` で変える。0 で keep-warm を止める)。
 ///
 /// デプロイ先の主要ホストのアクセス間隔は 2〜10 分 (`/dns` の 90 件のうち 60 秒以内に
-/// 使われたものは 2 件しか無かった)。15 分あれば 3 件とも窓に入る (T14.1)。
-pub const WARM: Duration = Duration::from_secs(900);
+/// 使われたものは 2 件しか無かった。T14.1)。900 秒から **3,600 秒**に広げた (T15.4):
+/// `discord.com` は 2〜4 本の塊が約 1,800 秒おきに来るので 900 秒では毎回外れ、
+/// T15.0 の版の 9 時間ではミス 26 回のうち 25 回が窓の外だった。
+pub const WARM: Duration = Duration::from_secs(3600);
 /// 保持するホスト数の上限 (超えたら最も古いものを捨てる)。
 const MAX_ENTRIES: usize = 4096;
 /// 同時に warm でいられる名前の上限 (超えたら最後の使用が最も古いものを外す)。
@@ -1763,21 +1765,22 @@ mod tests {
         assert!(addrs_changed(&[a], &[a, b]), "1 本増えた");
         assert!(addrs_changed(&[a, b], &[a]), "1 本減った");
 
-        // (2) 表を通した引き直し。期限切れ (齢 1 時間) で、最後の使用も 1 時間前なので
-        // keep-warm の窓 (900 秒) には入らない = 裏の引き直しは走らない
+        // (2) 表を通した引き直し。期限切れ (齢 7,200 秒) で、最後の使用も 7,200 秒前なので
+        // keep-warm の窓 (既定 3,600 秒) の外 = 裏の引き直しは走らない
         set_ttl(Duration::from_secs(60));
         clear();
         let host = "localhost";
         let total0 = CHANGES.load(Ordering::Relaxed);
         let expire = |ago: Duration| age_entry(host, ago, ago);
-        put_addrs(host, &[a], Duration::from_secs(3600));
-        expire(Duration::from_secs(3600));
+        put_addrs(host, &[a], Duration::from_secs(7200));
+        expire(Duration::from_secs(7200));
         resolve_host(host, 80).expect("localhost は引ける");
+        assert!(!is_warm(host), "窓の外なので warm にしない");
         assert_eq!(changes_of(host), 1, "答えが差し替わったら +1");
         assert_eq!(CHANGES.load(Ordering::Relaxed) - total0, 1, "合計も +1");
 
         // 同じ答えが返る引き直しでは増えない
-        expire(Duration::from_secs(3600));
+        expire(Duration::from_secs(7200));
         resolve_host(host, 80).expect("localhost は引ける");
         assert_eq!(changes_of(host), 1, "同じ答えなら増えない");
         assert_eq!(
