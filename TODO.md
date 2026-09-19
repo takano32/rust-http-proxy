@@ -6337,6 +6337,56 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
     - 気づき: (1) 重さは「移す」だけでは減らない。canary の約 25 MB のように、**どのモジュールが何 MB 持っているかを先に測ってから線を引く** (段 5 以降の前提)。
       (2) 計測スクリプトは機械上の全 rustc を拾うので、`mx` が 2 口のときは 1 回の値を信じない (2 回取る)。(3) 揺れるテストが 1 本見つかった (`clientacl_test`。Phase 14 の「既知の小物」に足した)。
 
+  - **何が重いのかの調査 (2026-09-19、親が測った。段 5 以降の前提)**: `RUSTC_BOOTSTRAP=1 mx cargo rustc --release -p proxy-metrics-watch -- -Ztime-passes` (安定版の rustc 1.96.0 でそのまま動く。
+    `rss:` は VmRSS でファイル由来のページを含むので、絶対値ではなく段の間の差を見る) で、**山はコード生成 (LLVM) の段**だった: 型検査の終わり 151 MB → メタデータ 187 MB →
+    `codegen_to_LLVM_IR` + `LLVM_passes` で **259 MB (+72 MB)**。`[profile.release]` の `codegen-units = 1` (最初のコミットからあり、**一度も測って決めていない**。`git log -S` で確認) が
+    クレート全体の LLVM IR を 1 つのモジュールとして一度に抱えさせている。
+    - **`codegen-units` を増やすと山が削れる** (`jobs = 1` なので rustc の中の LLVM の並列もトークン 1 つで、モジュールは順に最適化して捨てられる)。全クレートに当てた実測
+      (`CARGO_PROFILE_RELEASE_CODEGEN_UNITS=<n>`、測り方は上の表と同じ):
+
+      | | `codegen-units = 1` (いま) | `= 4` | `= 16` |
+      |---|---|---|---|
+      | `proxy-metrics-watch` | 121.7 MB | **92.5** | 84.3 |
+      | `proxy-metrics-window` | 106.8 | 83.2 | 81.4 |
+      | `proxy-endpoints` | 97.9 | 80.2 | 80.2 |
+      | 本体 (`rust_http_proxy`。lib と bin が同じ名前で混ざる) | 94.6 | 79.2 | 79.3 |
+      | `proxy-metrics-recent` | 95.5 | 76.9 | 75.4 |
+      | `proxy-config` / `proxy-http` / `metrics-core` / `metrics-types` / `net-dns` | 76.0 / 86.3 / 88.6 / 85.1 / 89.7 | 74.6 / 72.4 / 70.5 / 68.9 / 68.1 | 74.6 / 71.8 / 69.7 / 66.6 / 66.6 |
+      | **通る最小の上限** (`--find`) | **140 MB** | **120 MB** (115 は落ちる) | 115 でも通らない (それ以上は未測定) |
+      | release ビルドの時間 / バイナリ | 95 秒 / 2,498,360 B | 106 秒 / 2,694,968 B | 133 秒 / 2,760,504 B |
+
+      4 → 16 はほとんど増えない (コード生成の前の段 = 型検査とメタデータの床が約 80 MB)。**4 で十分**。
+    - **`= 4` にすると床が「最後の 1 段」に移る**: 115 MB で落ちるのは `proxy-metrics-watch` ではなく、**bin の `rust-http-proxy` (`src/main.rs` 599 行) をコンパイルしてリンクする最後の段**。
+      `touch src/main.rs` してこの段だけを cgroup に入れると 110 MB で落ち 118 MB で通る (110〜118 の間は回ごとに揺れる)。`dmesg` の OOM の記録は毎回
+      `Killed process (rustc) anon-rss:55 MB, file-rss:79 MB`。`-Ztime-passes` では bin なのに `codegen_crate` が **+62 MB** (130 → 192 MB、LLVM 1.5 秒) ある = lib から bin へ単相化・インライン化されて
+      来るものが多い。リンカを変えても効かない (`-fuse-ld=gold` は 95 MB で落ちる。`-Wl,--no-keep-memory` は 110 MB が通るようになる程度)。**ここを削らないと、クレートをどれだけ割っても通る最小は約 115 MB から下がらない。**
+    - 代償は実行時の速さの可能性 (クレートの中でのインライン化の範囲が狭まる)。CPU/要求 の 7 割はカーネル側 (T9.1) なので大きくは動かないはずだが、**測って決める**。
+      いまこの機械は利用者のほかの作業で CPU が汚れていて A/B が取れない (2026-09-19) → **要求の経路に乗らないクレートだけ先に 4 にする** (段 5)。要求の経路のクレートは静かな機械で A/B を取ってから (段 7)。
+  - **続きの段 (2026-09-19 に足した。段 5 と段 6 は触るファイルが別なので並列でよい。枝は `wave11/<id>`)**:
+    5. **要求の経路に乗らないクレートの `codegen-units` を 4 にする** (`t1512s5`)。ルートの `Cargo.toml` に `[profile.release.package.<名前>]` `codegen-units = 4` を並べる (`dist` は `inherits = "release"` なので
+       同じ上書きが効く。`dist` は関門の外で fat LTO なので、`[profile.dist.package.<名前>]` で 1 に戻す必要があるかを `cargo build --profile dist` のバイナリの大きさで確かめ、変わるなら戻す)。
+       **対象 (親が決めた。1 要求・1 接続ごとには呼ばれない = tick スレッド・管理用の口・起動と再読込・道具)**: `proxy-metrics-watch`、`proxy-metrics-window`、`proxy-endpoints`、`proxy-endpoints-explain`、
+       `proxy-endpoints-core`、`proxy-config`、`proxy-sysinfo`、`proxy-prom`、`proxy-reload`、`proxy-selfbench`、`proxy-rrd`、`proxy-diskprobe`、`proxy-capacity`、`proxy-bench`。
+       **対象にしない (要求か接続ごとに通る。段 7 まで 1 のまま)**: 本体、`proxy-http`、`proxy-tunnel`、`proxy-net` / `-conn` / `-dns`、`proxy-base`、`proxy-sys`、`proxy-metrics` / `-types` / `-core` / `-recent`、
+       `proxy-blocklist`、`proxy-cache*`、`proxy-origin`、`proxy-msg`、`proxy-tls`、`proxy-workers`、`proxy-freshness`、`proxy-web`。着手したら、対象のクレートの関数が要求の経路から呼ばれていないことを
+       `src/lib.rs` の `handle_client` からたどって確かめ、呼ばれているものがあれば対象から外して報告する (`proxy-config` の `Config` の読み出しはフィールドの参照なので対象のままでよい)。
+       受け入れ基準: 対象のクレートが全部 95 MB 未満 (表)、`--find` の通る最小が 140 MB から下がること (見込みは 115〜120。`metrics-recent` 95.5 + 18 と最後の段のどちらかで決まる)、
+       `--lite` の システムコール/要求 と 確保/要求 が不変 (`scripts/cpu-per-request.sh`。CPU/要求 は機械が汚れているので参考値)、全体テスト全通過、`cargo build --profile dist` が通ること。
+       `Cargo.toml` の `[profile.release]` のコメントに、この実測の表 (1 / 4 / 16) と「要求の経路のクレートは 1 のまま」の理由を書く。
+    6. **最後の段 (bin のコンパイルとリンク) を 95 MB で通るようにする** (`t1512s6`)。まず再現と切り分け: `mx cargo build --release` のあと `touch src/main.rs` →
+       `mx systemd-run --user --scope --quiet -p MemoryMax=<N>M -p MemorySwapMax=0 "$(command -v cargo)" rustc --release --bin rust-http-proxy` を N = 90 / 100 / 110 / 120 で (各 3 回。110〜118 は揺れる)。
+       `-Ztime-passes` と、cgroup の `memory.peak` / `memory.stat` (anon / file) を 20 ms ごとに読んで、**山が rustc のコード生成なのかリンカなのか**を先に決める。コード生成なら、bin に単相化されて来るものを
+       `RUSTC_BOOTSTRAP=1 cargo rustc --release --bin rust-http-proxy -- -Zprint-mono-items=lazy` (または `--emit=llvm-ir` の大きさ) で数え、`src/main.rs` の `main` の中身 (`check_environment` / `run_self_bench` /
+       起動の組み立て) を **lib の側の、総称でも `#[inline]` でもない `pub fn`** へ移して、bin は `fn main() { std::process::exit(rust_http_proxy::run_main()) }` に近い形にする
+       (lib の側が太るので、lib の RssAnon が 95 MB を超えないことを表で確かめる。超えるなら移す先を新しいクレートにする)。リンカが山なら `.cargo/config.toml` の `[target.…] rustflags` ではなく
+       (全クレートが作り直しになり、利用者の環境のリンカに依存する) まず rlib の大きさ (`target/release/deps/*.rlib` 合計 26 MB) と `strip` / `debuginfo` の設定を見る。
+       **挙動は 1 バイトも変えない** (`--check` の 9 行、`--help`、終了コード、起動ログの順序。`tests/` の起動系のテストと `scripts/check-docs.sh` が見張っている)。
+       受け入れ基準: 最後の段だけを入れた cgroup が **95 MB で 3 回中 3 回通る**こと、前後の `-Ztime-passes` の比較、全体テスト全通過、`--lite` の費用が不変。届かなければ、測った内訳と「次に何を動かせば何 MB 減るか」を報告する (変更なしでもよい)。
+    7. **(静かな機械で。T15.99 のあと)** 全クレートを `codegen-units = 4` にしたときの CPU/要求 の A/B (`mx` を 1 口に戻し、§1 の前後交互 3 組、CONNECT は 6 組)。ぶれの中なら `[profile.release]` を 4 にして段 5 の上書きを消す
+       (通る最小は最後の段で決まる値まで下がる)。悪くなるなら、要求の経路の 80 MB 超え (`metrics-recent` 95.5 / 本体 94.6 / `net-dns` 89.7 / `metrics-core` 88.6 / `http` 86.3 / `metrics-types` 85.1 / `blocklist` 81.9) を
+       クレートを割って下げる (割る前に、どのモジュールが何 MB 持っているかを `-Ztime-passes` とモジュールを 1 つ抜いたビルドで測る)。
+    8. 5〜7 のあと `--find` が 100 未満で通るようになったら、段 4 (関門を 120 に下げる書き換え) をやる。
+
 - [x] **T15.13 README の横に長い表を読みやすい形に直す (環境変数の表ほか)**
   - 目的: README の「環境変数」の表は 74 行 × 3 列で、説明の欄が 1 行 1,000 文字を超えるものがあり (最長 1,017 文字、中央値 122)、横に長すぎて読めない
     (2026-09-19、利用者の指摘)。同じ形の表がほかに 2 つある (性能節の「デプロイ先の数字」= 4 列・最長 398 文字、「動作確認 (curl)」= 4 列・最長 415 文字)。
