@@ -5202,7 +5202,7 @@ p50 6 ms 以下**、T14.2 の 7 件が済み (見送りは理由つき)、T14.99
 残ったもの**だけを並べた。反証で落ちた候補は「測ってから決める」(下の一覧) に 1 行ずつ置いた。
 
 **順番 (2026-09-19 に決め直した)**: T15.5 (済み。`c753e82`) → T15.0 (済み。main `71e9c67`、2026-09-18 14:52 UTC にデプロイ) →
-**T15.4 と T15.6 の (1) を Opus 2 人で並列に** (触るファイルが重ならない) → 再デプロイの直前に親が雪像を 1 枚 (カーネル側と `/profile` の系列は
+**T15.4 と T15.6 の (1) を Opus 2 人で並列に** (Rust は別のクレート。**`README.md` の環境変数の表だけは両方が触る** — 9 行離れた別の行なので自動マージは通る見込みだが、取り込みは 1 件ずつ行い、後の方は取り込み前に `git merge main` して表を目で確かめる) → 再デプロイの直前に親が雪像を 1 枚 (カーネル側と `/profile` の系列は
 メモリだけで再起動で消える) → push (人) → 再デプロイ (人) → 24 時間 → **T15.99** (様子見と修正、締めの文書。24 時間走らせたあとに見る・決めるものは全部ここ)。T15.10 と T15.11 は済み。
 **T15.12 (関門 120 MB) はデプロイのあと、24 時間の待ちに充てる** (2026-09-19、利用者の決定: 時間がかかるのでデプロイを待たせない。中身を変えない分割なので
 次のデプロイに入れば足りる)。段 1 (`proxy-endpoints`) と段 2 (`canary` を上へ) と段 3 (`proxy-net`) を別々の Opus で並列にできるかは下読みで確かめる。
@@ -5942,18 +5942,34 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
   - 目的: Phase 14 で唯一届かなかったホスト `discord.com` (ミス率 0.15) を基準 0.05 未満に入れる。残る 336 回の「2 度目以降のミス」は
     ほぼ全部が「使われる間隔が窓より長い名前」で、デプロイ先の利用の形 (**2〜4 本の塊が約 1,800 秒おきに来る**) に対して
     900 秒の窓は短すぎる。窓を伸ばすと空振りの引き直しが「次に本当に使われるまでの待ち」に変わるので、費用の質も良くなる。
-  - 変更箇所 (値は 1 行だが、一緒に動くのは 7 か所): `crates/net/src/dns.rs:42` の `pub const WARM: Duration = Duration::from_secs(900);`
-    (`crates/config/src/config.rs:1134` が `dns_warm: crate::dns::WARM` で受けるので Config 側は自動)、`dns.rs:10` の module doc「既定 900 秒」、
-    `dns.rs:39-41` の `WARM` の doc「15 分あれば 3 件とも窓に入る」、`README.md:1229` の表の既定と説明、`README.md:252`、`README.md:452` の
-    「直近 15 分」、**単体テスト `dns.rs:1495-1512` の `a_relookup_counts_only_a_real_change_of_the_answer`** (`age_entry(host, 3600, 3600)` で
-    `last_used` をちょうど 3,600 秒前にしており、窓が 3,600 になると `promote` の条件 `idle < window` = `dns.rs:623` を辛うじて通るだけになる →
-    老化を 7,200 秒に広げてコメントも直し、窓の値に寄りかからないテストにする。**名指しで回す**)。
-    `--check` と `/config` は実効値を出すので追加の変更なし。`crates/base/src/cli.rs` の help にこの鍵の行は無い。
-    `tests/dns_test.rs:213,224` と `config.rs:1469` は 900 を明示的に入れているので壊れない。
+  - 変更箇所 (**2026-09-19 の下読みで、T15.0 のあとの main に対して確かめ直した**。触るのは `crates/net/src/dns.rs` と `README.md` の 2 ファイルだけ):
+    1. `crates/net/src/dns.rs:42` の `pub const WARM: Duration = Duration::from_secs(900);` → 3600 (`crates/config/src/config.rs:1134` の
+       `dns_warm: crate::dns::WARM`、`settings()` の 963 行、`src/main.rs:471-474` の `--check`、`/config` は全部ここから実効値を読むので**変更不要**)。
+    2. `dns.rs:10` の module doc「既定 900 秒」。
+    3. `dns.rs:38-41` の `WARM` の doc (41 行が「15 分あれば 3 件とも窓に入る (T14.1)」)。T14.1 の根拠 (2〜10 分間隔) は残し、2 文目を T15.4 の根拠に差し替える
+       (`discord.com` は 2〜4 本の塊が約 1,800 秒おきに来るので 900 秒では毎回外れた。T15.0 の版の 9 時間でミス 26 回中 25 回が窓の外)。
+       **「1 時間」と書かず「3,600 秒」と書く** (`STALE_MAX` も 3,600 秒なので、「1 時間」が 2 つ並ぶと取り違える)。
+    4. `README.md:1392` の環境変数の表の行。**この 1 セルの中に `900` が 2 回ある** (既定の欄と、末尾の「900 秒の窓をいつも外れ」)。既定の欄を `3600` にし、
+       末尾は「(当時の既定) 900 秒の窓を」と明記して実測の記述として残す (同じセルの中で矛盾させない)。
+    5. `README.md:253-254` (Phase 14 の「届かなかった 2 つ」の記述)。**消さずに時制を変える**: 253 行の「既定 900 秒」→「当時の既定 900 秒」、254 行の
+       「次はそこを 1 行変えて確かめます (T15.4)」→「T15.4 で既定を 3,600 秒にしました。デプロイ先での効きの判定は T15.99」。0.15 という数字は Phase 14 の実測なので触らない。
+    6. `README.md:453` の「直近 15 分」と、同じ段落の **`README.md:456`「最後の使用から 15 分過ぎたら止まります」** (前の版の本文に挙がっていなかった)。
+    7. 単体テスト `a_relookup_counts_only_a_real_change_of_the_answer` (`dns.rs:1752-1812`)。**前の版の「窓が 3,600 になると辛うじて通るだけになる」は誤りで、
+       このテストは既定を変えても落ちない** (`age_entry` が `last_used = now − 3600s` を書いたあと、`resolve_host` はより後の時刻で `idle ≥ 3600s` を計算するので
+       `idle < window` は常に偽)。壊れるのは余裕がゼロになることと、`dns.rs:1767` のコメント「keep-warm の窓 (900 秒) には入らない」が嘘になること。
+       1773 / 1774 / 1780 行の `3600` を **7,200** に広げ、コメントを「窓 (既定 3,600 秒) の外」に直し、**`assert!(!is_warm(host), "窓の外なので warm にしない");` を 1 行足す**
+       (いまは「warm にならないこと」が暗黙の前提で、壊れても気づけない。`is_warm` は `dns.rs:1227` に既にある)。
+    - **触らないもの** (確かめ済み): `MAX_WARM` (`dns.rs:49`) と README の「最悪でも 0.7 回/秒」(分母は 3/4 TTL だけで窓に依らない)、`warm_promote` (`dns.rs:321-346`)、
+      `warm_next` の窓外し (`dns.rs:363-400`)、`promote` の条件 (`dns.rs:757`)、T15.0 (9) の `DNS_MISS_RATE` 0.40 (窓を延ばすと立ちにくくなる向き)、
+      `scripts/snapshot-diff.py` の `refresh_per_warm_hour: 80.0` (窓に依らない)。`tests/dns_test.rs:213,224,282` と `tests/history_columns_test.rs:279` は
+      900 を**明示して** assert する自己完結の形なので 3,600 に揃えない。`scripts/test_snapshot_diff.py:363` と `scripts/check-dashboard.js` の `warm_secs: 900` は
+      作り物の入力なので変更不要。`/config` の既定値を直値で見張るテストは足さない (窓を変えるたびに直す場所が増えるだけ)。
+    - `scripts/check-docs.sh` は鍵の集合しか見ないので、**README の既定値の直し漏れは誰にも見つからない**。上の 4・5・6 を `grep -n "900\|15 分" README.md` で自分で確かめる。
+    - 手本のコミット: `77879bd` (T14.1。`WARM = 900` を入れた当のコミット) と `122d75e` (T13.1。`NEGATIVE` を 5 → 60 に変えて const / module doc / README の表 / README の説明文を揃えた)。
   - やること: **判断は済み (2026-09-19、T15.0 の版の 9 時間の実測。上の「T15.0 のあと」の段落)**: 窓を採る。一律 TTL 300 秒は採らない。
     **既定を変える** (`.env` で様子を見る段は置かない)。引き直しの上限は `MAX_WARM` 32 ÷ (3/4 TTL = 45 秒) で**窓に依らない** (`dns.rs:45-49`) ので
     README の「最悪でも 0.7 回/秒」は書き換えない。変わるのは 32 枠の取り合いの頻度だけ (満杯なら `warm_promote` = `dns.rs:263-287` が
-    「最後の使用がいちばん古い」名前を 1 つ外す)。行番号は T15.0 の単位 1・5 が同じ `dns.rs` を触ったあとなので**ずれている** (`grep -n` で確かめる)。
+    「最後の使用がいちばん古い」名前を 1 つ外す)。
   - 根拠: 個票 612 本 (9.08 時間) を使った行事駆動の再生 (`dns.rs` の `resolve_host` / `warm_promote` / `warm_next` / TTL 60 秒 /
     引き直し 45 秒をそのまま写したもの。2 人が別々に書いて一致)。実測 55 ミスに対し模擬 57、ホスト別も一致 (discord 21/21)。
     窓を 0 にした再生は 0.549 回/接続 = Phase 13 の実測 0.551 と同じ水準に戻るので、模型は「keep-warm が無い世界」を再現できている。
@@ -5968,7 +5984,8 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
   - 先に要るもの: T15.0 (7)(8)(9)。ミスの種類別で `expired` (窓の外) が主なら窓、`warm_stale` / `refresh_late` が出ていれば
     引き直しの詰まりを先に直す。一律 TTL 300 秒 (下の「測ってから決める」) と比べるのもこの数字で。
   - 受け入れ基準 (このタスク = 実装): 既定が 3,600 秒になり (`/config` の `PROXY_DNS_WARM_SECS` が `3600`・`source: default`)、上の 7 か所が揃い、
-    名指しの単体テストと `mx cargo test -p proxy-net dns`、`mx cargo test --test dns_test` が通ること。
+    `mx cargo test -p proxy-net dns`、`mx cargo test --test dns_test`、`mx cargo test --test history_columns_test` が通り、`./scripts/check-docs.sh` が差分 0 であること。
+    新規テストは 0 本 (既存 1 本の齢を広げて assert を 1 行足すだけ)。変更は 2 ファイル・約 15 行。
     **デプロイ先での効きの判定 (discord のミス率 0.05 未満 / `refreshes ÷ 時間 ÷ 平均 dns_warm` ≤ 80 / 全体 0.06〜0.09) は T15.99**。
 
 - [x] **T15.5 CPU 割り当て (0.5 コア) を食い切っている空回りを止める (2026-09-18 に前倒し。T15.0 を待たない)**
@@ -6103,13 +6120,30 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
     遅い応答を 10 秒で切ることになる。
   - **決定**: connect 専用の鍵 **`PROXY_CONNECT_TIMEOUT_SECS`** を足す (未設定なら `PROXY_TIMEOUT_SECS` に落ちる = **入れただけでは挙動は
     変わらない**)。鍵が 1 本増えるのは §0 の「単純な方」に反するが、根拠のある所だけを縮めるにはこれしか無い。
-  - 変更箇所: `crates/config/src/config.rs` (`timeout` の欄 368 行の隣に `connect_timeout: Duration`、読む所は 561〜564 行の `.unwrap_or(30)` の隣、
-    出どころの印 `src.mark`、`settings()` 943 行あたりに 1 行)、使う所は (a) の `tunnel.rs:90` と、(b) のうち**接続だけ**
-    (`origin.rs:99-105` の connect の呼び出し。読み書きのタイムアウトは `timeout` のまま)、`crates/reload/src/reload.rs` (`.env` で即時反映:
-    `applied` に積み、`sources.adopt`。手本は同じファイルの `PROXY_TIMEOUT_SECS` = 121 行あたり)、`crates/base/src/cli.rs:40` の説明、
-    README の環境変数表 (`README.md:1220` の隣に 1 行)、単体テスト 2 本 (未設定なら `timeout` と同じ / 設定すれば connect だけ変わる)。
-    `tests/config_test.rs:216-219` は `PROXY_TIMEOUT_SECS == ("30","default")` を見ているが、`PROXY_TIMEOUT_SECS` の既定は変えないので壊れない。
-    `scripts/check-docs.sh` の (b) は「コードの鍵の集合 = README の表の鍵の集合」を見るので、**README の表に足し忘れると落ちる**。
+  - **決めたこと (2026-09-19 の下読みで、実装担当が推測しなくて済むように)**:
+    1. **効かせるのは CONNECT のオリジン接続だけ** (`src/lib.rs:1113` の `let timeout = config.timeout;` → `start_tunnel`)。forward の接続
+       (`crates/http/src/http/mod.rs:1116` の `origin::connect`) と blocklist の取得 (`src/main.rs:365`) は**今回は変えない**: 根拠の 22,317 本は CONNECT で、
+       forward は `origin::connect` の署名を変えることになり、`http/mod.rs:745-746` と `crates/origin/src/pool.rs:113` が読み書きの timeout でプールを選び直す所と混ざる。
+       README に「いまは CONNECT にだけ効く」と 1 文書く。canary と自己ベンチは `config.timeout` を使っていない (前の版の本文の記述は空振り)。
+    2. **未設定なら `PROXY_TIMEOUT_SECS` の値をそのまま写す。0 (無期限) も写す** (`PROXY_TIMEOUT_SECS=0` の既存の意味 = T10.6、`tests/keepalive_test.rs:270,320` を壊さない)。
+    3. **持ち方は `pub connect_timeout: Duration` (実効値。`Option` にしない)**。`Config::new` (`crates/config/src/config.rs:1105-1115`) の中で `connect_timeout: timeout` と
+       写せば、`Config::new` を呼ぶ既存の所 (`tests/common/mod.rs:266`、`crates/endpoints/src/endpoints/config.rs:49`、各テスト) が自動で追随する。
+    4. **再読込**: `crates/reload/src/reload.rs:119-123` (`PROXY_TIMEOUT_SECS` の扱い) の直後に独立した `if fresh.connect_timeout != old.connect_timeout { … }` を 5 行
+       (`applied` に積み、`sources.adopt`)。`PROXY_TIMEOUT_SECS` だけ動いたときは `applied` に 2 行出るが、実際に効く値が動いたのだからそれが正しい
+       (既存の検査 `tests/events_test.rs:95,154` と `crates/endpoints/src/endpoints/recent.rs:1163` は `contains` なので通る)。
+    5. **CLI 引数は足さない** (`crates/base/src/cli.rs:81-94` に `--timeout` という引数はそもそも無い)。help の列 (`cli.rs:40` の隣) に 1 行足すだけ。
+    6. **`crates/net` は 1 行も触らない**。`connect_candidates` (`crates/net/src/net.rs:475`) の `deadline` と T15.0 (3) の `timed_out` は引数の `timeout` をそのまま使うので、
+       呼ぶ側が短い値を渡せば `TimedOut` の札がそのまま効く。`crates/tunnel` も署名を変えない (`timeout` は `connect_with_timeout` = `tunnel.rs:529-535` にしか使われていない)。
+    7. `/config` と `--check` は `Config::settings()` を回すだけなので、`settings()` に `add` を 1 行足せば両方に出る。
+  - 変更箇所 (いまの main の行番号): `crates/config/src/config.rs` — 欄は 373 行 (`timeout`) の隣、`Config::new` の初期化、環境変数を読むのは 564 行の `.unwrap_or(30)` と
+    `Self::new(...)` (566 行) の**後**に `PROXY_KEEPALIVE_SECS` の形 (592〜597 行) を写して `cfg.connect_timeout = …; src.mark("PROXY_CONNECT_TIMEOUT_SECS");`、`settings()` は
+    943 行の直後に `add("PROXY_CONNECT_TIMEOUT_SECS", secs(self.connect_timeout));`。`src/lib.rs:1113` を `config.connect_timeout` に (**使う所の変更はこの 1 行だけ**)。
+    `crates/reload/src/reload.rs:123` の直後。`crates/base/src/cli.rs:40` の隣。README は環境変数の表 (`README.md:1383` の `PROXY_TIMEOUT_SECS` の行の隣)、
+    「即時に反映されるのは…」の列挙 (`README.md:1453-1455`)、機能の箇条書き (`README.md:1300`)。手本は `PROXY_MAX_CONNS_PER_CLIENT` の足し方 (`reload.rs:148-152` + `config.rs` + README)。
+  - **直値で見張っている既存のもの** (回さないと最後まで気づけない): `scripts/check-docs.sh` の (b) は「`.rs` に出てくる `"PROXY_…"` の文字列の集合 = README の `## 環境変数`
+    (`README.md:1371`〜) の表の第 1 列の集合」を見るので、**`.rs` に文字列を書いた瞬間に README の表の行が要る**。`crates/config/src/config.rs:1316` の `test_valid_port`、
+    1463〜1503 行の `settings_show_the_effective_value_of_every_key` (末尾に「全キーが重複しない」の検査)、`crates/endpoints/src/endpoints/config.rs:128-213` の 2 本
+    (鍵の表と 64 KiB)、`tests/config_test.rs:237-241` と 358 行 (隣に新しい鍵の行を足す)、`tests/keepalive_test.rs:270,320` (決定 2 を外すと落ちる)。
   - やること: **このタスクは (1) 鍵を足すところまで** (Opus の 1 タスク。未設定なら `PROXY_TIMEOUT_SECS` と同じ値なので、入れただけでは挙動は変わらない)。
     **(2) デプロイ先の `.env` に `PROXY_CONNECT_TIMEOUT_SECS=10` を 1 行 (人。再読込で効く) → 24 時間 → (3) `/errors` の `timeout` が増えなければ既定を 10 に、は T15.99**。
     なおこの区間も名前解決を含まない時計なので、閾は「名前解決の後の connect」に効く。
@@ -6121,9 +6155,16 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
   - 危険: 5 秒は攻めすぎ (250 ms の遠いオリジン + SYN の再送 1 秒 → 3 秒 が重なると 4 秒台まで伸びうる)。10 秒なら実測の最大
     (失敗を除いて 337 ms) の 30 倍。Happy Eyeballs の締め切りも同じ値を使う (`connect_candidates` の `deadline`) ので、T15.0 (3) の
     `TimedOut` の札が先に入っていると、短くした効果が `/errors` の `timeout` として正しく数えられる。
-  - 受け入れ基準 (このタスク = (1)): 未設定のとき `/config` の `PROXY_CONNECT_TIMEOUT_SECS` が `PROXY_TIMEOUT_SECS` と同じ値・`source: default`、
-    設定したとき connect だけが変わること (黒穴への CONNECT が設定した秒数で 504 になる結合テスト 1 本。黒穴の作り方は `crates/net/src/net.rs` の
-    `blackhole_v6_and_live_v4` と T15.0 (3) の回帰テスト)。`./scripts/check-docs.sh` が差分 0 (README の環境変数の表に足し忘れると落ちる)。
+  - テスト: **単体 2 本** (`crates/config/src/config.rs` の `mod tests`。手本は 1463 行の `settings_show_the_effective_value_of_every_key`): `Config::new` で
+    `connect_timeout == timeout`、`settings()` に `PROXY_CONNECT_TIMEOUT_SECS` が出る。**結合 1 本** (新しい `tests/connect_timeout_test.rs`): 黒穴は
+    `crates/net/src/net.rs:726-743` の `blackhole_v4` の中身を**写す** (`mod tests` の中の private なので `tests/` からは呼べない。`TcpListener::bind("127.0.0.1:0")` +
+    `unsafe extern "C" { fn listen(fd: i32, backlog: i32) -> i32; }` で `listen(fd, 0)` + 詰め物 1 本。`tests/` で `unsafe extern "C"` を宣言する先例は
+    `tests/common/mod.rs:565-580`)。`let mut cfg = proxy_config(); cfg.connect_timeout = Duration::from_secs(1);` (`proxy_config()` は `allow_local = true` なので loopback 宛ての
+    CONNECT が通り、`cfg.timeout` は 5 秒なので短くなったことが区別できる) → 黒穴への CONNECT が **`HTTP/1.1 502`** (**504 ではない**。コードに 504 は無く、CONNECT の接続失敗は
+    `crates/tunnel/src/tunnel.rs:103` の 502) で、経過が 3 秒未満、`/errors` の `cause` が `timeout`。手本は `tests/recent_test.rs:18-53`。**`/config` 1 本**:
+    `tests/config_test.rs:241` の隣に `PROXY_CONNECT_TIMEOUT_SECS` = `("30","default")`。
+  - 受け入れ基準 (このタスク = (1)): 上のテストと、名指しの `mx cargo test -p proxy-config`、`mx cargo test -p proxy-endpoints config`、`mx cargo test --test config_test`、
+    `mx cargo test --test keepalive_test`、`mx cargo test --test events_test` が通ること。`./scripts/check-docs.sh` が差分 0。実装 約 40 行 + テスト 約 90 行。
 
 - [x] **T15.10 `PROXY_MAX_CONNS_PER_CLIENT` と `PROXY_CONNECT_PORTS` を既定のままにするかを 1 回だけ決める**
   - 目的: 判断材料が 2026-09-18 に初めて出たので、「入れる / 入れない」を数字つきで書き留める。**認証を入れないのは §0 の決まり、
