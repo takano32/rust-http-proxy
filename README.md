@@ -2063,8 +2063,8 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 | `proxy-metrics-types` | 計測の型と定数 (ホスト別統計・1 要求の内訳・エラーの原因)、分位点、ホスト別の時系列、カーネルと cgroup の統計 |
 | `proxy-metrics-recent` | 記録の個票 (閉じた接続・1 つの接続元の要求の並び・出来事の時系列) |
 | `proxy-metrics-window` | 時系列の窓 (解像度と 1 区間の応答時間)、段階ごとの待ちとスレッドの標本、転送の速さ、接続元の個票、履歴のリング |
-| `proxy-metrics-core` | 計測の本体 (`Metrics`。`/status` の組み立て) と、利用者が居ない時間帯の様子見 (canary) |
-| `proxy-metrics-watch` | 窓を読んで判定するもの (SLO・日次の要約・日次の雪像・異常の検知) |
+| `proxy-metrics-core` | 計測の本体 (`Metrics`。`/status` の組み立て) |
+| `proxy-metrics-watch` | 窓を読んで判定するもの (SLO・日次の要約・日次の雪像・異常の検知・利用者が居ない時間帯の様子見 (canary)) |
 | `proxy-metrics` | 状態ファイルへの読み書きと、5 秒ごとの記録スレッド。上の 5 つを今までの名前で出し直す口 |
 | `proxy-blocklist` | ドメインのブロックリスト |
 | `proxy-reload` | `$HOME/.env` の再読込 (`inotify` で見張る) |

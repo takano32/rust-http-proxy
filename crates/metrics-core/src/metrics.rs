@@ -1259,6 +1259,41 @@ fn push_tables(out: &mut String, hosts_json: &[String], clients_json: &[String])
     );
 }
 
+/// 預かっていないときに `/status` の `canary` に出す文字列 (T15.12)。
+///
+/// **canary が `off` で 1 回も回っていないときの `canary::status_json()` と 1 バイト同じ**
+/// (`secs` は `canary::SECS` = 60 の既定)。縛っているのは
+/// `proxy-metrics-watch` の単体テスト
+/// `canary::tests::the_default_canary_status_is_byte_identical_to_off`。
+///
+/// **canary 側の静的な既定は `Mode::Auto`** (`canary.rs` の `static MODE`) なので、誰も預けないまま
+/// `/status` を組む処理系では、`auto` ではなくここの `off` の形が出る (製品のバイナリは
+/// `src/main.rs` が待ち受けを立てる前に必ず `canary::configure` を呼ぶので `/status` は変わらない)。
+pub const CANARY_STATUS_UNSET: &str = concat!(
+    "{\"mode\":\"off\",\"secs\":60,\"runs\":0,\"failures\":0,",
+    "\"at\":0,\"host\":\"\",\"dns_ms\":0,\"connect_ms\":0,\"ipv6_connect_ms\":null,\"error\":null}"
+);
+
+/// `/status` の `canary` を組む口 (**上の層 `canary` が 1 回だけ預ける**。T15.12)。
+///
+/// canary はクレートを割って 1 つ上の層 (`proxy-metrics-watch`) へ上げたので、下のここからは
+/// 直に呼べない (`kernel::set_state_file_errors` と同じ形)。**預ける前は
+/// [`CANARY_STATUS_UNSET`]** = canary が `off` のときと同じ文字列。
+static CANARY_STATUS: std::sync::OnceLock<fn() -> String> = std::sync::OnceLock::new();
+
+/// 上の層が組み立ての口を預ける (`canary::configure` / `canary::tick` から)。
+pub fn set_canary_status(f: fn() -> String) {
+    let _ = CANARY_STATUS.set(f);
+}
+
+/// `/status` の `canary` の中身 (預かっていなければ [`CANARY_STATUS_UNSET`])。
+fn canary_status_json() -> String {
+    match CANARY_STATUS.get() {
+        Some(f) => f(),
+        None => CANARY_STATUS_UNSET.to_string(),
+    }
+}
+
 /// `/status` の「この環境で何が読めるか」(T14.15) と canary (T14.10)。
 ///
 /// `settings` / `blocklist` / `state_file` は**上の層が組んだものを受け取る**
@@ -1271,7 +1306,7 @@ fn push_env(out: &mut String, extra: &StatusExtras<'_>, cache_json: &str) {
         extra.settings,
         crate::dns::status_json(),
         // 利用者の要求が無い時間帯の名前解決と TCP 接続 (最後の 1 回。T14.10)
-        crate::canary::status_json(),
+        canary_status_json(),
         crate::net::ipv6_status_json(),
         extra.blocklist,
         extra.state_file,
@@ -1499,6 +1534,24 @@ impl crate::profile::Source for Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// canary を預かっていないときの `/status` の `canary` (T15.12)。
+    ///
+    /// canary は 1 つ上の層 (`proxy-metrics-watch`) に居るので、**この binary では
+    /// 誰も預けない** = 既定の文字列が出る。`canary` が `off` のときと 1 バイト同じ
+    /// であることは向こう側のテスト
+    /// (`canary::tests::the_default_canary_status_is_byte_identical_to_off`) が縛る。
+    #[test]
+    fn the_status_canary_falls_back_to_the_off_shaped_default_when_nobody_deposited_it() {
+        assert_eq!(canary_status_json(), CANARY_STATUS_UNSET);
+        let mut out = String::new();
+        push_env(&mut out, &StatusExtras::default(), "{}");
+        assert!(
+            out.contains(&format!("\"canary\":{},", CANARY_STATUS_UNSET)),
+            "{}",
+            out
+        );
+    }
 
     #[test]
     fn test_metrics() {
