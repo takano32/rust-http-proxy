@@ -89,11 +89,75 @@ proxy-workers = { path = "crates/workers" }
 # (バイナリは 8 バイトしか変わらない)。よって切ったままにする (T9.1)。
 #
 # 配布するバイナリは下の dist プロファイル (fat LTO) で作る。
+#
+# `codegen-units` は 2026-09-19 (T15.12 段 5) まで**一度も測らずに** 1 だったので測った。
+# ビルドの山はコード生成 (LLVM) の段で、1 だとクレート全体の LLVM IR を 1 つのモジュールとして
+# 一度に抱える。全クレートに当てた実測 (手元 aarch64、`jobs = 1`、`cargo clean --release` →
+# `cargo build --release`、20 ms ごとの RssAnon の最大):
+#
+#   クレート                   1 (既定)    4        16
+#   proxy-metrics-watch        121.7 MB    92.5     84.3
+#   proxy-metrics-window       106.8       83.2     81.4
+#   proxy-endpoints             97.9       80.2     80.2
+#   本体 (rust_http_proxy)      94.6       79.2     79.3
+#   proxy-metrics-recent        95.5       76.9     75.4
+#   通る最小 (`--find`)        140 MB     120 MB   115 でも通らない
+#   release の時間 / バイナリ  95 秒      106 秒   133 秒
+#                              2,498,360 B 2,694,968 B 2,760,504 B
+#
+# 4 → 16 はほとんど減らない (コード生成の前の段 = 型検査とメタデータの床が約 80 MB) ので **4 で十分**。
+# ただし `codegen-units` を増やすとクレートの中のインライン化の範囲が狭まるので、
+# **要求の経路 (1 要求・1 接続ごとに通るコード) のクレートは 1 のまま**にしてある
+# (この機械は CPU が汚れていて A/B が取れない。静かな機械で測ってから決める = T15.12 段 7)。
+# 下の上書きは「tick スレッド・管理用の口・起動・道具しか呼ばないクレート」だけ。
 [profile.release]
 opt-level = 3
 lto = false
 strip = true
 codegen-units = 1
+
+# ここから下は**要求の経路に乗らないクレート**だけ (T15.12 段 5、2026-09-19)。
+# `src/lib.rs` の `serve` の accept ループ → `run_conn` → `serve_one` → forward / トンネルの転送を
+# たどって、1 要求・1 接続ごとに関数が呼ばれないことを確かめたものを並べてある。
+# `[profile.dist]` は `inherits = "release"` なので同じ上書きが効く (バイナリの大きさが
+# 変わらないことを確かめてある)。
+
+# 窓を読んで判定するもの (SLO / 日次 / 雪像 / 異常 / canary)。呼ぶのは tick スレッドと管理用の口だけ。
+[profile.release.package.proxy-metrics-watch]
+codegen-units = 4
+
+# `/explain` の本文。管理用の口からしか呼ばれない。
+[profile.release.package.proxy-endpoints-explain]
+codegen-units = 4
+
+# 口の共通の土台 (`Endpoint` の型と問い合わせ文字列の読み方)。`Endpoint` の組み立ては
+# 呼び出し側のコードなので、このクレートの関数は口の中からしか呼ばれない。
+[profile.release.package.proxy-endpoints-core]
+codegen-units = 4
+
+# 設定の読み取り。要求の経路が触るのは `Config` のフィールドの参照だけ (関数を呼ばない)。
+[profile.release.package.proxy-config]
+codegen-units = 4
+
+# `/metrics` (Prometheus 形式) の組み立て。
+[profile.release.package.proxy-prom]
+codegen-units = 4
+
+# 状態ファイルの読み書き (`.rrd` / `.recent`)。書くのは tick スレッド、読むのは起動のとき。
+[profile.release.package.proxy-rrd]
+codegen-units = 4
+
+# ディスクの容量の探り。`DiskProbe::load` は起動、`tick` は probe スレッド。
+[profile.release.package.proxy-diskprobe]
+codegen-units = 4
+
+# キャッシュの割当の計算。`budget` は probe スレッド、`quota::is_permanent` は失敗した枝だけ。
+[profile.release.package.proxy-capacity]
+codegen-units = 4
+
+# 計測用の道具 (`default-members` の外なので `cargo build --release` では作られない)。
+[profile.release.package.proxy-bench]
+codegen-units = 4
 
 # 配布用。速さとバイナリの小ささを優先し、ビルドのメモリは気にしない
 # (GitHub Actions のような潤沢な環境で使う)。`cargo build --profile dist`

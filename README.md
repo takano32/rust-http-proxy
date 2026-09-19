@@ -15,7 +15,7 @@ curl -x localhost:8080 http://example.com/        # 動作確認
 プロキシ設定の「自動プロキシ設定 URL」に入れるだけです (このプロキシが落ちていれば DIRECT に落ちます)。
 
 `cargo install --git https://github.com/takano32/rust-http-proxy` でも入ります
-(ビルドはメモリ 140 MB で通ります。下の「ビルド・テスト」を参照)。
+(ビルドはメモリ 120 MB で通ります。下の「ビルド・テスト」を参照)。
 
 キャッシュ・ダッシュボード・統計まで使うなら `--lite` を外します。
 
@@ -2084,11 +2084,12 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 
 
 > **メモリの小さい環境向けの設定**: `.cargo/config.toml` で `jobs = 1` にしてあります。
-> このリポジトリは **140 MB のメモリでリリースビルドが通ります** (2026-09-19、手元の aarch64 で実測。
-> 135 MB は落ちます。CI が毎回確かめているのは **180 MB の関門を通るかどうかだけ**で、CI で通る最小は
-> 測っていません)。LTO を既定で切っているのもこのためです (下の「プロファイルの設定」)。
-> `rustc` はクレート単位で全部を一度に抱えるため、いちばん大きいクレート (`proxy-metrics-watch`) の 1 プロセスで
-> **RssAnon 121.7 MB** 使い (通る最小はここに 20 MB ほど足した値になります。`/usr/bin/time -v` の最大 RSS は
+> このリポジトリは **120 MB のメモリでリリースビルドが通ります** (2026-09-19、手元の aarch64 で実測。
+> 115 MB は落ちます。CI が毎回確かめているのは **180 MB の関門を通るかどうかだけ**で、CI で通る最小は
+> 測っていません)。LTO を既定で切っているのと、要求の経路に乗らないクレートを `codegen-units = 4` に
+> してあるのもこのためです (下の「プロファイルの設定」)。
+> `rustc` はクレート単位で全部を一度に抱えるため、いちばん大きいクレート (`proxy-metrics-window`) の 1 プロセスで
+> **RssAnon 107.7 MB** 使い (通る最小はここに 12〜20 MB 足した値になります。`/usr/bin/time -v` の最大 RSS は
 > 246 MB と出ますが、そのうち 110〜122 MB は `librustc_driver` のファイル由来のページで、ページキャッシュに
 > 載っていれば cgroup には課金されません)、既定の並列数だと
 > その合計がコンテナのメモリ上限を超えて OOM killer に落とされます (実測: 180 MB の cgroup で、
@@ -2096,7 +2097,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 > (8 コアで 32.3 秒 → 14.9 秒)。
 >
 > 手元で確かめるなら `cargo clean && scripts/build-memory.sh 180` (通る最小を探すなら
-> `scripts/build-memory.sh --find 120 130 135 140 150`)。このスクリプトは **実際にその上限の
+> `scripts/build-memory.sh --find 110 115 120 130 140`)。このスクリプトは **実際にその上限の
 > cgroup の中でビルドします** — RSS を測るだけだと、メモリ圧のかかっていない機械ほど大きく出て
 > 機械をまたいだ判定にならないためです。cgroup は systemd に作らせます (システムの `systemd-run --scope`、
 > 無ければ**ユーザーの** `systemd-run --user --scope`。どちらも無い環境では参考の RSS だけ出して判定しません)。
@@ -2285,8 +2286,8 @@ curl -x localhost:8080 http://example.com/
 |---|---|---|
 | `opt-level` | `3` | `"s"` |
 | `lto` | `false` | `true` (fat) |
-| `codegen-units` / `strip` | `1` / あり | 同じ |
-| ビルドが通る最小のメモリ | **140 MB** (手元。CI では未測定) | 350 MB 以上 |
+| `codegen-units` / `strip` | 要求の経路は `1`、それ以外は `4` / あり | 同じ (fat LTO が呑むのでバイナリは変わらない) |
+| ビルドが通る最小のメモリ | **120 MB** (手元。CI では未測定) | 350 MB 以上 |
 | バイナリ | 1,381,872 B | **1,054,184 B** (327 KB 小さい) |
 | CPU/要求 (forward 8 並列) | 41.4 us | **39.6 us** |
 
@@ -2306,6 +2307,18 @@ CI で通る最小は測っていません):
 
 `fat` は効きますが 180 MB の約 2 倍のメモリが要ります。`thin` は 170 MB 払ってもバイナリが
 8 バイトしか変わらず、速さもぶれの中です。配布バイナリだけ `dist` (fat LTO) で作ります。
+
+**`codegen-units` を 4 にしてあるクレート** (2026-09-19): ビルドの山はコード生成 (LLVM) の段で、
+`codegen-units = 1` はクレート全体の LLVM IR を 1 つのモジュールとして一度に抱えます。
+全クレートに当てて測った実測 (手元 aarch64、`jobs = 1`、RssAnon の最大) は
+`proxy-metrics-watch` 121.7 → 92.5 MB (`= 4`) → 84.3 MB (`= 16`)、通る最小は 140 → 120 MB (`= 16` でも 115 は通らない)、
+クリーンビルド 95 → 106 → 133 秒で、**4 より上げても減りません** (コード生成の前の段 = 型検査とメタデータの床が約 80 MB)。
+ただし `codegen-units` を増やすとクレートの中でのインライン化の範囲が狭まるので、
+**1 要求・1 接続ごとに通るクレートは `1` のまま**にし、tick スレッド・管理用の口・起動・道具しか
+呼ばないクレート (`proxy-metrics-watch` / `proxy-endpoints-explain` / `proxy-endpoints-core` /
+`proxy-config` / `proxy-prom` / `proxy-rrd` / `proxy-diskprobe` / `proxy-capacity` / `proxy-bench`) だけを
+`[profile.release.package.<名前>]` で `4` にしてあります。`--lite` のシステムコール 5.04 → 5.03 回/要求、
+確保 10.013 → 10.013 回/要求 で、要求の経路の費用は動いていません。
 
 **最適化レベル**: `release` は `opt-level = 3`、`dist` は `"s"` です (`dist` はサイズを優先)。
 fat LTO と合わせた `dist` の実測は `release` に対して forward 8 並列 **+1.9%** (CPU/要求 41.4 → 39.6 us で -4.4%)、

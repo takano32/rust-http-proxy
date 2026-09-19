@@ -15,10 +15,12 @@
 # あれば同じ判定ができる (手元の機械はこちら。PID 1 が systemd でなくてもユーザーの
 # インスタンスは動いていて、上限も効く)。どちらも無いときだけ RSS を出すだけにして判定しない。
 #
-# **上限を決めているクレート** (T15.12 段 1〜3 の後の実測 2026-09-19、RssAnon の最大。手元 aarch64):
-#   proxy-metrics-watch 121.7 MB > proxy-metrics-window 106.8 > proxy-endpoints 97.9
-#   > proxy-metrics-recent 95.5 > 本体 (rust-http-proxy) 94.6 > proxy-net-dns 89.7 > proxy-metrics-core 88.6
-#   > proxy-http 86.3 > … > proxy-tls 35.6 (いちばん小さいクレートでも 36 MB は要る)
+# **上限を決めているクレート** (T15.12 段 5 の後の実測 2026-09-19、RssAnon の最大。手元 aarch64。通る最小は 120 MB):
+#   proxy-metrics-window 107.7 MB > proxy-endpoints 98.5 > proxy-metrics-recent 95.7 > 本体 (rust-http-proxy) 93.7
+#   > proxy-metrics-watch 92.2 (`codegen-units = 4`) > proxy-net-dns 89.2 > proxy-metrics-core 89.3
+#   > proxy-http 84.3 > … > proxy-endpoints-core 29.7 (`= 4`。`= 1` のいちばん小さい proxy-tls でも 36 MB は要る)
+# 要求の経路に乗らないクレートは `Cargo.toml` の `[profile.release.package.<名前>]` で
+# `codegen-units = 4` にしてある (T15.12 段 5)。残りの上位はまだ `= 1`。
 # 行数の順ではない。効くのは「自分の行数 + 依存から単相化されてくる量」。
 # 上限を下げたいならこの上位から割ること (T14.55 で `proxy-metrics` 1 つ 272 MB を 6 つに割った)。
 #
