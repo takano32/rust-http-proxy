@@ -103,12 +103,35 @@ dependencies = [
  "proxy-base",
  "proxy-blocklist",
  "proxy-cache",
+ "proxy-endpoints-core",
+ "proxy-endpoints-explain",
  "proxy-http",
  "proxy-metrics",
  "proxy-net",
  "proxy-prom",
  "proxy-reload",
  "proxy-web",
+]
+
+[[package]]
+name = "proxy-endpoints-core"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cache",
+ "proxy-metrics",
+]
+
+[[package]]
+name = "proxy-endpoints-explain"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-cache",
+ "proxy-endpoints-core",
+ "proxy-http",
+ "proxy-metrics",
+ "proxy-net",
 ]
 
 [[package]]

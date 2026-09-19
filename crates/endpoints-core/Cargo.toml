@@ -1,0 +1,12 @@
+[package]
+name = "proxy-endpoints-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proxy-base = { path = "../base" }
+proxy-cache = { path = "../cache" }
+proxy-metrics = { path = "../metrics" }
