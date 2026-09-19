@@ -15,6 +15,17 @@ use std::time::{Duration, Instant};
 
 use crate::{log_debug, log_warn};
 
+// `host:port` の分解と組み立ては `proxy-base` の `hostport` に置いてある
+// (名前解決・接続・判定の 3 クレートが使うため)。今までどおり `net::split_host_port_ref`
+// の綴りで呼べるように、このモジュールから出し直す。
+pub use crate::hostport::{
+    join_host_port, split_host_port, split_host_port_ref, with_default_port,
+};
+
+/// IPv6 を絡めるテストは**全体の状態 (連敗と勝敗の数) を共有する**ので直列に回す。
+/// 判定 (`proxy-net` の `acl`) 側のテストも取るので `pub`。
+pub static IPV6_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Happy Eyeballs で次の接続試行を始めるまでの間隔。
 const STAGGER: Duration = Duration::from_millis(250);
 
@@ -45,57 +56,6 @@ pub fn set_ipv6_enabled(on: bool) {
 
 pub fn ipv6_enabled() -> bool {
     IPV6_ENABLED.load(Ordering::Relaxed)
-}
-
-/// `host:port` / `[v6]:port` / `[v6]` / `host` / 素の `v6` を (ホスト, ポート) に分ける。
-/// 文字列を作らない版 ([`split_host_port`] は所有権が要るときに使う)。
-#[inline]
-pub fn split_host_port_ref(s: &str) -> (&str, Option<u16>) {
-    // 要求ごとに何度も通るので、区切りの探索も空白の除去も ASCII だけで済ませる
-    let s = s.trim_ascii();
-    if let Some(rest) = s.strip_prefix('[') {
-        if let Some(end) = rest.as_bytes().iter().position(|b| *b == b']') {
-            let host = &rest[..end];
-            let port = rest[end + 1..]
-                .strip_prefix(':')
-                .and_then(|p| p.parse::<u16>().ok());
-            return (host, port);
-        }
-        return (s, None);
-    }
-    // ':' が 2 つ以上あれば括弧無しの IPv6 リテラル (ポート無し)
-    if crate::ascii::count(s, b':') >= 2 {
-        return (s, None);
-    }
-    match crate::ascii::rsplit_once(s, b':') {
-        Some((host, port)) => match port.parse::<u16>() {
-            Ok(p) => (host, Some(p)),
-            Err(_) => (s, None),
-        },
-        None => (s, None),
-    }
-}
-
-/// [`split_host_port_ref`] のホストを複製して返す版。
-#[inline]
-pub fn split_host_port(s: &str) -> (String, Option<u16>) {
-    let (host, port) = split_host_port_ref(s);
-    (host.to_string(), port)
-}
-
-/// ホストとポートを `host:port` に組み立てる (IPv6 リテラルは括弧で囲む)。
-pub fn join_host_port(host: &str, port: u16) -> String {
-    if host.contains(':') && !host.starts_with('[') {
-        format!("[{}]:{}", host, port)
-    } else {
-        format!("{}:{}", host, port)
-    }
-}
-
-/// ポートが無ければ `default` を補った `host:port` を返す。
-pub fn with_default_port(s: &str, default: u16) -> String {
-    let (host, port) = split_host_port(s);
-    join_host_port(&host, port.unwrap_or(default))
 }
 
 /// v4-mapped IPv6 (`::ffff:1.2.3.4`) を IPv4 に戻す。
@@ -592,33 +552,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn splits_host_and_port_forms() {
-        assert_eq!(
-            split_host_port("example.com:8080"),
-            ("example.com".into(), Some(8080))
-        );
-        assert_eq!(split_host_port("example.com"), ("example.com".into(), None));
-        assert_eq!(
-            split_host_port("[2001:db8::1]:443"),
-            ("2001:db8::1".into(), Some(443))
-        );
-        assert_eq!(
-            split_host_port("[2001:db8::1]"),
-            ("2001:db8::1".into(), None)
-        );
-        assert_eq!(split_host_port("2001:db8::1"), ("2001:db8::1".into(), None));
-        assert_eq!(
-            split_host_port("host:notaport"),
-            ("host:notaport".into(), None)
-        );
-        assert_eq!(with_default_port("example.com", 80), "example.com:80");
-        assert_eq!(with_default_port("[::1]", 80), "[::1]:80");
-        assert_eq!(with_default_port("::1", 443), "[::1]:443");
-        assert_eq!(with_default_port("[::1]:8080", 80), "[::1]:8080");
-        assert_eq!(join_host_port("1.2.3.4", 1), "1.2.3.4:1");
-    }
-
-    #[test]
     fn canonicalizes_mapped_addresses() {
         let mapped: IpAddr = "::ffff:192.0.2.1".parse().unwrap();
         assert_eq!(canonical_ip(mapped), "192.0.2.1".parse::<IpAddr>().unwrap());
@@ -702,9 +635,6 @@ mod tests {
         let big = bind_all(&[IpAddr::V4(Ipv4Addr::LOCALHOST)], 0, 1 << 20).expect("listener");
         assert_eq!(big.len(), 1);
     }
-
-    /// IPv6 を絡めるテストは**全体の状態 (連敗と勝敗の数) を共有する**ので直列に回す。
-    static IPV6_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// 起動直後の状態に戻す (テスト同士が互いの連敗を見ないように)。ホストごとの記憶は
     /// 消さない (テストごとに違うホスト名を使っている。`dns::clear()` は同じ表を使う
@@ -1173,52 +1103,6 @@ mod tests {
             started.elapsed() < Duration::from_secs(3),
             "did not wait for the dead address"
         );
-    }
-
-    /// T12.7: **判定 (ACL) と接続で名前解決を 2 回しない。**
-    ///
-    /// `PROXY_DNS_TTL_SECS=0` (キャッシュ無効) でも 1 要求 1 回で、接続は判定と同じ
-    /// 答えを使う (別の答えを引くと DNS rebinding でローカル宛ての判定をすり抜けられる)。
-    /// 表とカウンタは全テストで共有しているので直列に回す。
-    #[test]
-    fn the_check_and_the_connect_share_one_lookup() {
-        let _resolve = crate::dns::RESOLVE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // localhost が 2 候補 (::1 と 127.0.0.1) の環境では Happy Eyeballs の
-        // 全体の勝敗が動くので、そちらのテストとも直列にする
-        let _ipv6 = IPV6_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = format!("localhost:{}", listener.local_addr().unwrap().port());
-        let lookups = || {
-            let [hits, misses, _, _, _] = crate::dns::counters();
-            hits + misses
-        };
-        for ttl in [Duration::from_secs(60), Duration::ZERO] {
-            crate::dns::set_ttl(ttl);
-            crate::dns::clear();
-            let before = lookups();
-
-            // 1. ローカル宛ての判定: ここで 1 回だけ引き、答えを持って帰る
-            let (local, resolved) = crate::acl::resolve_target(&addr);
-            assert!(local, "localhost はローカル宛て");
-            let resolved = resolved.expect("判定に使った答えが返る");
-            assert_eq!(lookups() - before, 1, "判定で 1 回 (ttl={:?})", ttl);
-
-            // 2. 接続: 判定の答えを使うので引き直さない
-            let stream = connect_with(&addr, Some(&resolved), Duration::from_secs(5)).unwrap();
-            assert!(
-                resolved.addrs().contains(&stream.peer_addr().unwrap().ip()),
-                "判定に使った答えの中の 1 つに繋いでいる"
-            );
-            assert_eq!(lookups() - before, 1, "接続では引かない (ttl={:?})", ttl);
-
-            // 3. 答えを渡さなければ (T12.7 の前の形) もう 1 回引く
-            drop(connect_with(&addr, None, Duration::from_secs(5)).unwrap());
-            assert_eq!(lookups() - before, 2, "渡さないと 2 回 (ttl={:?})", ttl);
-        }
-        crate::dns::set_ttl(Duration::from_secs(60));
-        crate::dns::clear();
     }
 
     #[test]

@@ -445,4 +445,57 @@ mod local_tests {
         assert!(!is_local_target("93.184.216.34"));
         assert!(!is_local_target("10.0.0.1"), "私有アドレスは対象外");
     }
+
+    /// T12.7: **判定 (ACL) と接続で名前解決を 2 回しない。**
+    ///
+    /// `PROXY_DNS_TTL_SECS=0` (キャッシュ無効) でも 1 要求 1 回で、接続は判定と同じ
+    /// 答えを使う (別の答えを引くと DNS rebinding でローカル宛ての判定をすり抜けられる)。
+    /// 表とカウンタは全テストで共有しているので直列に回す。
+    #[test]
+    fn the_check_and_the_connect_share_one_lookup() {
+        let _resolve = crate::dns::RESOLVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // localhost が 2 候補 (::1 と 127.0.0.1) の環境では Happy Eyeballs の
+        // 全体の勝敗が動くので、そちらのテストとも直列にする
+        let _ipv6 = crate::net::IPV6_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = format!("localhost:{}", listener.local_addr().unwrap().port());
+        let lookups = || {
+            let [hits, misses, _, _, _] = crate::dns::counters();
+            hits + misses
+        };
+        for ttl in [
+            std::time::Duration::from_secs(60),
+            std::time::Duration::ZERO,
+        ] {
+            crate::dns::set_ttl(ttl);
+            crate::dns::clear();
+            let before = lookups();
+
+            // 1. ローカル宛ての判定: ここで 1 回だけ引き、答えを持って帰る
+            let (local, resolved) = crate::acl::resolve_target(&addr);
+            assert!(local, "localhost はローカル宛て");
+            let resolved = resolved.expect("判定に使った答えが返る");
+            assert_eq!(lookups() - before, 1, "判定で 1 回 (ttl={:?})", ttl);
+
+            // 2. 接続: 判定の答えを使うので引き直さない
+            let stream =
+                crate::net::connect_with(&addr, Some(&resolved), std::time::Duration::from_secs(5))
+                    .unwrap();
+            assert!(
+                resolved.addrs().contains(&stream.peer_addr().unwrap().ip()),
+                "判定に使った答えの中の 1 つに繋いでいる"
+            );
+            assert_eq!(lookups() - before, 1, "接続では引かない (ttl={:?})", ttl);
+
+            // 3. 答えを渡さなければ (T12.7 の前の形) もう 1 回引く
+            drop(crate::net::connect_with(&addr, None, std::time::Duration::from_secs(5)).unwrap());
+            assert_eq!(lookups() - before, 2, "渡さないと 2 回 (ttl={:?})", ttl);
+        }
+        crate::dns::set_ttl(std::time::Duration::from_secs(60));
+        crate::dns::clear();
+    }
 }

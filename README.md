@@ -1676,19 +1676,21 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 ## クレート構成
 
 **外部クレートは 1 つも使っていません** (すべて `std` のみ)。`crates/` にあるのは全部このリポジトリのコードで、
-責務ごとの層に分けてあります (32 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
+責務ごとの層に分けてあります (34 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
 全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
 
 | クレート | 責務 |
 |---|---|
 | `proxy-sys` | Linux のシステムコールを直接叩く薄い層 (`poll`/`epoll`/`splice`/`pipe2`/`recv`) とシグナル |
-| `proxy-base` | ロック、壁時計、JSON の組み立て、`.env` の読み取り、ログ、HTTP 日付、コマンドライン引数、ASCII だけを見る文字列の分割、起動ごとの `Via` の印 |
+| `proxy-base` | ロック、壁時計、JSON の組み立て、`.env` の読み取り、ログ、HTTP 日付、`host:port` の分解と組み立て、コマンドライン引数、ASCII だけを見る文字列の分割、起動ごとの `Via` の印 |
 | `proxy-rrd` | 固定長のリングバッファ (状態ファイルと個票のファイルに共通の保存形式) |
 | `proxy-sysinfo` | 機械の観測 (メモリ、ディスク、cgroup の上限、`inotify`) |
 | `proxy-workers` | 接続スレッドの使い回し |
 | `proxy-tls` | システムの OpenSSL を `dlopen` で使う TLS クライアント |
 | `proxy-msg` | HTTP メッセージの表現 (ヘッダー、本文の枠、読み取りバッファ、応答の先頭) |
-| `proxy-net` | 名前解決 (Happy Eyeballs)、接続、アドレスの判定 |
+| `proxy-net-dns` | 名前解決 (`getaddrinfo` の答えのキャッシュ、族の記憶、よく使う名前の先読み) |
+| `proxy-net-conn` | 接続 (Happy Eyeballs で A / AAAA を並行に試す) と待ち受けソケットの用意 |
+| `proxy-net` | アドレスの判定 (ACL とローカル宛ての拒否)、上の 2 つをまとめた facade |
 | `proxy-origin` | オリジンへの接続とその使い回し、要求 URL の解釈 |
 | `proxy-cachekey` | キャッシュの保存形式と鍵 |
 | `proxy-cachecfg` | キャッシュの設定 |
@@ -1788,7 +1790,7 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 上の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`)、(b) コードの `"PROXY_…"` / `"SERVER_…"` の
 文字列と上の「環境変数」の表の鍵の欄、(c) `/snapshot` の `parts` と個票のエンドポイント、
 (d) `scripts/check-dashboard.js` が画面の HTML から切り出す関数名と、そこで実際に呼んでいる名前、
-(e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(32 + 本体)」の数も見ます)。
+(e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(34 + 本体)」の数も見ます)。
 **意図的に外してあるものはスクリプトの中の除外表に理由つきで持ちます** (`/snapshot` に入れない 18 の口、
 ビルド時にしか無い `PROXY_VERSION` など)。差分が 1 件でもあればその名前を印字して終了コード 1 です。
 bash と grep / sed / awk / python3 の標準ライブラリだけで動くので、`cargo` も Node も要りません

@@ -254,8 +254,11 @@ static WARM_QUEUE: Mutex<BTreeSet<(Instant, String)>> = Mutex::new(BTreeSet::new
 
 /// 解決の回数 (`HITS` / `MISSES`) を数えるテストは、表もカウンタも全テストで共有している
 /// ので直列に回す。`dns` と `acl` と `net` のテストが同じロックを取る。
-#[cfg(test)]
-pub(crate) static RESOLVE_TEST_LOCK: Mutex<()> = Mutex::new(());
+///
+/// **T15.12 でクレートを 3 つに割ってからは、`acl` と `net` のテストは別プロセスで走る**
+/// ので、このロックが効くのは同じクレートの中だけになった (`proxy-metrics-recent` の
+/// `events::TEST_LOCK` と同じ作法で、クレートをまたぐために `pub` にしてある)。
+pub static RESOLVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// キャッシュの TTL。0 で無効 (毎回解決)。
 pub fn set_ttl(ttl: Duration) {
@@ -592,8 +595,8 @@ fn clear_refreshing(key: &str) {
 
 /// 判定 (ACL) が引いた答えを、そのまま接続まで運ぶための入れ物 (T12.7)。
 ///
-/// ローカル宛ての判定 ([`crate::acl::resolve_target`]) と、その直後の接続
-/// ([`crate::net::connect_with`]) は**同じ答えを使う**。名前解決が 1 要求 1 回で
+/// ローカル宛ての判定 (`proxy_net::acl::resolve_target`) と、その直後の接続
+/// (`proxy_net::net::connect_with`) は**同じ答えを使う**。名前解決が 1 要求 1 回で
 /// 済むだけでなく、`PROXY_DNS_TTL_SECS=0` (キャッシュ無効) でも判定と接続が
 /// 別の答えを引かない (DNS rebinding で判定をすり抜けられない)。
 pub struct Resolved<'a> {
@@ -643,7 +646,7 @@ pub fn resolve(addr_str: &str) -> io::Result<Vec<SocketAddr>> {
 /// [`resolve`] に「最後に勝った族」の記憶を添えて返す (T12.1)。**表を引くのは 1 回だけ**
 /// にするためで、接続側が別に [`preferred_family`] を呼ぶと鍵を 2 回取ることになる。
 pub fn resolve_with_pref(addr_str: &str) -> io::Result<(Vec<SocketAddr>, Option<bool>)> {
-    let (host, port) = crate::net::split_host_port_ref(addr_str);
+    let (host, port) = crate::hostport::split_host_port_ref(addr_str);
     let Some(port) = port else {
         return addr_str.to_socket_addrs().map(|i| (i.collect(), None));
     };
