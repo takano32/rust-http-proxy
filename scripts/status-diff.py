@@ -8,7 +8,7 @@
 #
 # CONNECT (`connect://host:port`) と forward (`http://host:port`) は別の表にする
 # (デプロイ先は要求の 98% が CONNECT で、混ぜると forward の 3 ホストが見えない)。
-# さらに **AAAA の有無で 2 群に分ける**: Happy Eyeballs の 250 ms (`crates/net/src/net.rs` の
+# さらに **AAAA の有無で 2 群に分ける**: Happy Eyeballs の 250 ms (`crates/net-conn/src/net.rs` の
 # `STAGGER`) を払うのは AAAA のあるホストだけなので、この 2 群の中央値の差が Phase 12 の主指標。
 #
 # 使い方:
