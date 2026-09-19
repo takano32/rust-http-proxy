@@ -351,8 +351,11 @@ fn test_integration_failed_connects_land_in_errors_by_cause() {
         p
     };
     let mut cfg = proxy_config();
-    // TEST-NET-1 が「時間切れ」になるまでを短くする (既定 5 秒だとテストが遅い)
+    // TEST-NET-1 が「時間切れ」になるまでを短くする (既定 5 秒だとテストが遅い)。
+    // 欄に直に代入するので `Config::new` の写し (T15.6) は効かない。CONNECT の
+    // オリジン接続が見るのは `connect_timeout` なので、両方を短くする
     cfg.timeout = Duration::from_millis(300);
+    cfg.connect_timeout = Duration::from_millis(300);
     let proxy_port = start_test_proxy(cfg);
 
     for target in [format!("127.0.0.1:{}", closed_port), "192.0.2.1:443".into()] {

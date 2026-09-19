@@ -89,9 +89,12 @@ fn test_integration_connect_timeout_cuts_the_connect_short() {
 
 /// 書かなければ `PROXY_TIMEOUT_SECS` と同じ値 = **入れただけでは挙動は変わらない**。
 ///
-/// `src/lib.rs` の 1 行を `config.timeout` から `config.connect_timeout` に替えたので、
-/// 普通の CONNECT が今までどおり通ることを見る (`/config` の側は `tests/config_test.rs` が
-/// 実バイナリで見ている — ここの `/config` は `Live` が無いと環境から組み直すため)。
+/// 見張っているのは `Config::new` の写し (下の `assert_eq!`) と、**写した値でも普通の
+/// CONNECT が今までどおり 200 で通ること** (煙試験)。`src/lib.rs` の 1 行
+/// (`config.timeout` → `config.connect_timeout`) の見張りは 1 本目
+/// (`…cuts_the_connect_short`) の方で、この 1 本はその 1 行を戻しても通る
+/// (どちらも 5 秒なので区別できない)。`/config` の側は `tests/config_test.rs` が
+/// 実バイナリで見ている (ここの `/config` は `Live` が無いと環境から組み直すため)。
 #[test]
 fn test_integration_connect_still_works_with_the_copied_timeout() {
     let (origin_port, _origin) = start_mock_origin();
