@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# デプロイ先の `/status` をホスト別に読む道具 (TASKS.md §1「デプロイ先の測り方」)。
+# デプロイ先の `/status` をホスト別に読む道具 (TODO.md §1「デプロイ先の測り方」)。
 #
 # ホスト別統計 (`hosts[]`) は `.rrd` に永続化されて**再起動をまたいで通算される**ので、
 # `avg_ms` をそのまま読むと直す前の値が混ざり続ける。だから 2 回取って差分で見る:
@@ -49,7 +49,7 @@
 # **AAAA の判定はリゾルバ次第**なので注意。既定は `socket.getaddrinfo(host, AF_INET6)` だが、
 # **この機械のリゾルバは一部のホストで AAAA を落とすことがある** (2026-09-10 の合議のときは
 # www.google.com が「無し」と出た。同じ日に引き直したときは 50 ホスト全部が下の表と一致した)。
-# **数字を残すときは引いた表を `--aaaa` で渡して固定する**。TASKS.md の表は dns.google の DoH の表:
+# **数字を残すときは引いた表を `--aaaa` で渡して固定する**。TODO.md の表は dns.google の DoH の表:
 #   scripts/status-diff.py snap.json --aaaa ~/rust-http-proxy-status/2026-09-10-aaaa-by-dns-google.json
 # `--aaaa FILE` は `{"www.dlsite.com": true, "discord.com": false}` 形式の JSON。
 # `--no-dns` は判定を省く (群分けをせず、全ホストを 1 つの表に出す)。

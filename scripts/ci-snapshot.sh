@@ -1,5 +1,5 @@
 #!/bin/bash
-# CI で「デプロイ先に似せた条件」を短く回し、`/snapshot` を成果物として残す (TASKS.md T14.30)。
+# CI で「デプロイ先に似せた条件」を短く回し、`/snapshot` を成果物として残す (TODO.md T14.30)。
 #
 # §1 のレシピの数字は手元の機械でしか取れない (CI の runner は世代も負荷も毎回違う) ので、
 # **ここで見張るのは「形の退行」だけ**で、数字の絶対値は比べない:
@@ -172,7 +172,7 @@ echo "ci-snapshot: ipv6_blackhole: $BLACKHOLE"
 printf 'ci-snapshot: %s p50 %s ms (閾 %s ms) / forward p50 %s ms\n' "$ONLY" "$p50" "$P50_MAX" "${fp50:-?}"
 if awk -v v="$p50" -v m="$P50_MAX" 'BEGIN { exit !(v + 0 >= m + 0) }'; then
   echo "ci-snapshot: **退行**: $ONLY の p50 が $p50 ms (閾 $P50_MAX ms 以上)。Happy Eyeballs の 250 ms" \
-    "(TASKS.md T12.1) をまた払っていないか、snapshot.json の /status の ipv6 と /profile の dns / connect を見てください"
+    "(TODO.md T12.1) をまた払っていないか、snapshot.json の /status の ipv6 と /profile の dns / connect を見てください"
   fail=1
 fi
 

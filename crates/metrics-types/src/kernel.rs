@@ -6,7 +6,7 @@
 //! - 受け入れ待ち行列の溢れ (`ListenOverflows` / `ListenDrops`)。溢れるとクライアントは
 //!   SYN を 1〜3 秒後に再送するので、**プロキシの統計には「遅い接続」としてすら残らない**
 //! - 再送 (`RetransSegs` / `TCPSynRetrans` / `TCPTimeouts` / `TCPAbortOnTimeout`)
-//! - TIME_WAIT の本数 (loopback の CONNECT のベンチを律速していたもの。TASKS.md §1)
+//! - TIME_WAIT の本数 (loopback の CONNECT のベンチを律速していたもの。TODO.md §1)
 //! - cgroup の CPU の絞り (`cpu.stat` の `nr_periods` / `nr_throttled` / `throttled_usec`。
 //!   **割合で読む**ので分母の `nr_periods` も要る。T15.0 (6))
 //! - PSI (`cpu.pressure` / `memory.pressure` / `io.pressure` の `some` / `full` の avg10)

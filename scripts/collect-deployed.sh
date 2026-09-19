@@ -1,5 +1,5 @@
 #!/bin/bash
-# デプロイ先の様子を **1 回で取って 1 枚に読む** (TASKS.md T14.4)。
+# デプロイ先の様子を **1 回で取って 1 枚に読む** (TODO.md T14.4)。
 #
 # `/snapshot` (T14.4) を保存し、前回の雪像との差分 (`snapshot-diff.py` と `status-diff.py`)、
 # ダッシュボードの読み方の確認 (`check-dashboard.js`)、手元から見た待ち (`probe-deployed.sh`) を

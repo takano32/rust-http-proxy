@@ -1,5 +1,5 @@
 #!/bin/bash
-# デプロイ先のプロキシを手元から測る (TASKS.md §1「デプロイ先の測り方」)。
+# デプロイ先のプロキシを手元から測る (TODO.md §1「デプロイ先の測り方」)。
 #
 # `curl -w` の `time_connect` / `time_appconnect` / `time_starttransfer` を 3 回ずつ取る。
 # **見るのは `time_appconnect − time_connect`** で、これが「CONNECT の確立 + TLS 握手」

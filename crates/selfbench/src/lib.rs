@@ -404,7 +404,7 @@ const CLOCK_THREAD_CPUTIME_ID: i32 = 3;
 /// `clock_gettime` で CPU 時間を us で読む。読めない環境では `None`
 /// (呼び出し側は数字を出さずに `note` を書く)。
 ///
-/// 外部クレートは使わない (TASKS.md §0)。`crates/sys/src/sys.rs` と同じく
+/// 外部クレートは使わない (TODO.md §0)。`crates/sys/src/sys.rs` と同じく
 /// `unsafe extern "C"` で宣言し、64 ビットの Linux 以外では「無い」と出す
 /// (`timespec` の中身が 64 ビットであることに寄りかかっているため)。
 #[cfg(all(

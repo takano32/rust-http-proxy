@@ -11,7 +11,7 @@
 //!   3. tunnel  : CONNECT トンネル `--conc N` 本のスループット合計 (MiB/s、`--seconds` 秒)。
 //!      **この経路はベンチ側が律速する** (プロキシは `splice` でコピー 0 回、ベンチは送りと受けで
 //!      コピー 2 回)。`scripts/cpu-per-request.sh --only tunnel` は両方を big コアに置いて測る (T10.8)。
-//!      TASKS.md §2 の「トンネル 1 本」は `--conc 1` の値
+//!      TODO.md §2 の「トンネル 1 本」は `--conc 1` の値
 //!   4. connect : CONNECT の確立/秒 (短命トンネル)
 //!   5. idle-tunnels: `--conc N` 本の CONNECT を張ったまま `--seconds` 秒握る
 //!      (プロキシ側のスレッド数と RSS を見るためのモード。`--only idle-tunnels` でだけ走る)
@@ -631,7 +631,7 @@ mod syscost {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    // 外部クレートは使わない (TASKS.md §0)。crates/sys/src/sys.rs と同じ形で宣言する。
+    // 外部クレートは使わない (TODO.md §0)。crates/sys/src/sys.rs と同じ形で宣言する。
     unsafe extern "C" {
         fn getppid() -> c_int;
         fn gettid() -> c_int;

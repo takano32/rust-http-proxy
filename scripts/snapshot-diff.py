@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-# 2 枚の `/snapshot` から「**何が変わったか**」を全部出す (TASKS.md T14.17)。
+# 2 枚の `/snapshot` から「**何が変わったか**」を全部出す (TODO.md T14.17)。
 #
 # T14.0 の分析は `/status` の差分・`/history` の再起動時刻での切り分け・`/dns` の個票・
 # `/hosts` の差分を手作業で組み合わせたもので、Python を 5 回書いた。それを 1 コマンドにする。
-# 出力は Markdown なので `TASKS.md` にそのまま貼れる。
+# 出力は Markdown なので `TODO.md` にそのまま貼れる。
 #
 # 使い方:
 #   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase14]
 #                            [--out md|json] [--top N] [--burst N] [--major-hosts a,b,c]
 #                            [--group domain]
 #     scripts/snapshot-diff.py ~/rust-http-proxy-status/2026-09-1*-snapshot.json
-#     scripts/snapshot-diff.py a.json b.json --criteria phase14 >> TASKS.md
+#     scripts/snapshot-diff.py a.json b.json --criteria phase14 >> TODO.md
 #
 #   **`/snapshot` より前の形** (`/status` と `/history` を 1 本ずつ curl で取ったファイル群) からも
 #   組める。`--from-files` に **時刻までの接頭辞**を渡すと `PREFIX-*` を集めて 1 枚に見立てる:
@@ -718,7 +718,7 @@ def bursts_info(b, hist):
 # 関数が受け取る `c` は下の `context()` が作る辞書で、**材料の部が雪像に無ければ
 # `UNKNOWN` (判定できず) を返す**のが規則 (「0 だった」と「読めなかった」を混ぜない)。
 
-# Phase 14 の完了の定義のうち**数字で判定できる 4 行** (TASKS.md §5 Phase 14 の末尾と
+# Phase 14 の完了の定義のうち**数字で判定できる 4 行** (TODO.md §5 Phase 14 の末尾と
 # Phase 13 の「状態」の表。T14.1 の「デプロイ先の受け入れ基準」と同じ閾値)。
 PHASE14 = {
     "dns_per_connect": 0.15,
@@ -727,7 +727,7 @@ PHASE14 = {
     "overload": 0,
 }
 
-# T15.0 を載せて 24 時間ぶん溜めたあとに読む 6 行 (TASKS.md の T15.4 / T15.5 / T15.6)。
+# T15.0 を載せて 24 時間ぶん溜めたあとに読む 6 行 (TODO.md の T15.4 / T15.5 / T15.6)。
 PHASE15 = {
     # T15.4: 窓を伸ばすか一律 TTL にするかを決めるための 3 行
     "watch_host": "discord.com",     # Phase 14 で唯一届かなかった相手

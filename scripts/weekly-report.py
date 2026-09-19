@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 1 週間ぶんの雪像から「週次の要約」を **Markdown 1 枚**にする (TASKS.md T14.40)。
+# 1 週間ぶんの雪像から「週次の要約」を **Markdown 1 枚**にする (TODO.md T14.40)。
 #
 # 入力は `~/rust-http-proxy-status/` に溜まった雪像 (`*-snapshot.json`)。プロキシ自身が
 # 1 日 1 回 (UTC 0 時) 書いている日次の `/snapshot` (T14.34) を

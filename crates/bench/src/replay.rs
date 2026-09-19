@@ -20,7 +20,7 @@
 //! RTT は `/hosts` の `rtt_ms.avg` (T14.5) があれば**内蔵オリジンの応答遅延**で真似る
 //! (無ければ 0)。デプロイ先が Phase 13 のうちは `rtt_ms` 自体が無いので 0 になる。
 //!
-//! **外部クレートは使わない** (TASKS.md §0) ので、JSON も下の小さな読み取りで済ませる。
+//! **外部クレートは使わない** (TODO.md §0) ので、JSON も下の小さな読み取りで済ませる。
 
 use std::collections::HashMap;
 use std::io::{self, BufReader, Read, Write};
