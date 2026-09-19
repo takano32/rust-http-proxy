@@ -955,7 +955,7 @@ const MULTI_HOST: &str = "multi.test";
 /// 名前宛ての CONNECT を `--seconds` 秒張り続ける (`--only connect-multi`)。
 ///
 /// `--only connect` との違いは**宛先だけ**で、IP リテラルではなく名前を書く。プロキシ側では候補が 2 つ (黒穴の AAAA と生きている A) になるので
-/// **Happy Eyeballs の本体** (`crates/net/src/net.rs` の `connect_candidates`) を通る。
+/// **Happy Eyeballs の本体** (`crates/net-conn/src/net.rs` の `connect_candidates`) を通る。
 /// `--only connect` は候補が 1 つ (`addrs.len() == 1`) の短絡に入るため、この経路は
 /// Phase 12 まで一度も手元で測れていなかった (T10.1 が「無罪」と結論した理由。T14.16)。
 ///

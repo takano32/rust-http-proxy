@@ -7,6 +7,8 @@ members = [
     "crates/workers",
     "crates/tls",
     "crates/msg",
+    "crates/net-dns",
+    "crates/net-conn",
     "crates/net",
     "crates/origin",
     "crates/cachekey",

@@ -4,7 +4,7 @@
 # 手元の loopback とデプロイ先の一番の違いは **IPv6 が黙って落ちること**で、
 # Phase 12 で見つけた 250 ms (Happy Eyeballs の Connection Attempt Delay = `STAGGER`) は
 # その条件でしか出ない。ベンチの `--only connect` は宛先が IP リテラルなので候補が 1 つ
-# (`crates/net/src/net.rs` の `addrs.len() == 1` の短絡) になり、**Happy Eyeballs 本体を
+# (`crates/net-conn/src/net.rs` の `addrs.len() == 1` の短絡) になり、**Happy Eyeballs 本体を
 # 一度も通っていなかった** (T10.1 が「無罪」と結論した理由)。この 2 つを同時に埋めるのが
 # このスクリプトと `--only connect-multi` で、中で回せば手元で 250 ms が再現できる。
 #
