@@ -5228,11 +5228,12 @@ Phase 15 は T14.99 の分析が T15.0〜T15.11 を一度に書き出し、そ�
 **Phase 15 の渡し方 (2026-09-18 版。§5 冒頭の「実装を Opus に渡すときの決まり」より新しく、食い違う所はこちらが正)**:
 Phase 14 で固まった運用を 1 つの型にした。親は下の型を指示文に貼り、`<…>` を埋める。**1 単位 (または 1 タスク) = 1 エージェント = 1 worktree**。
 
-1. **作業場所**: 最初に worktree を自分で作る — `git -C /home/takano32/GitHub/rust-http-proxy worktree add -b wave8/<id> /home/takano32/GitHub/rust-http-proxy-wt/<id> main`。
+1. **作業場所**: 最初に worktree を自分で作る — `git -C /home/takano32/GitHub/rust-http-proxy worktree add -b <波の名前>/<id> /home/takano32/GitHub/rust-http-proxy-wt/<id> main`
+   (波の名前は親が指示文に書く。T15.0 の波は `wave8`、T15.4 / T15.6 は `wave9`)。
    以後はそこだけで作業し、main のチェックアウトは触らない。`git push` はしない。**`TASKS.md` は編集しない** (`結果:` の文面は最後の報告に書き、親が貼る)。
    デプロイ先 (`nagoya.sorahost.net`)、`~/rust-http-proxy-status/`、本物の `~/.rust-http-proxy.*` には触らない。
 2. **最初に読むもの**: `TASKS.md` の §0、§1 の「速さの測り方」、この「渡し方」、T15.0 の「決まり」と「欄の名前」、自分の単位の本文。
-   本文が挙げるソースは**関数の全体と呼び出し元**まで読む。**本文の行番号は 2026-09-18 の main (`71d1d0b`) のもの**なので、ずれていたら近くを
+   本文が挙げるソースは**関数の全体と呼び出し元**まで読む。**本文の行番号は書いた時点の main のもの** (T15.0 の本文は `71d1d0b`、T15.4 / T15.6 / T15.99 は T15.0 のあとの `5f6523b` で確かめ直した。T15.12 は着手の前にもう 1 回確かめる) なので、ずれていたら近くを
    `grep` して確かめてから触る。本文と違う事実を見つけたら、直す前に「どこがどう違うか」を控えて報告に書く。
 3. **確かめ**: `cargo fmt --all` → 触ったクレートだけ `cargo clippy -p <crate> --all-targets -- -D warnings` (結合テストを足したら
    `-p rust-http-proxy --all-targets` も) → **自分が書いたテストと、本文が名指しした既存のテストだけ**を名前で回す
@@ -5256,6 +5257,7 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
    `TASKS.md` に貼る `結果 (<日付>、<hash>): …` の 1 段落。**T15.0 の単位はこれに加えて「後ろの単位のために残すもの」**:
    (a) 足した欄の名前・型・単位・「通算か区間か」の表、(b) その欄を含む**作り物の JSON の例**を 1 つ (値は架空。本物の雪像から写さない)、
    (c) README の該当する口の説明に自分で足した行 (`scripts/check-docs.sh` は欄の説明を見ないので、足し忘れは誰にも見つからない)。
+   **(c) は T15.0 以外のタスクにも効く** (`check-docs.sh` は README の説明文も既定値も見ない)。README の環境変数の表は**自分の行だけ**触る (並列のマージの衝突を避ける)。
 
 **親がすること** (マージごと): `git merge --no-ff` → **触ったクレートごとに** `cargo check -p <crate> --all-targets` (ワークスペース全体の check は
 テストの中の壊れを 1 回見逃した) → `python3 -m unittest discover -s scripts`、`node scripts/check-dashboard.js`、`./scripts/check-docs.sh` →
@@ -5849,7 +5851,7 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
       - 関門: `dashboard.html` は `include_str!` (`mod.rs:68`) なので rustc は中身を解析せず、+10 KiB でビルドメモリは動かない。
       - 受け入れ基準: `node scripts/check-dashboard.js` (引数なし) が通り、`cargo test -p proxy-endpoints --lib` が通ること
         (回すのはこの 2 本だけ)。`./scripts/check-docs.sh` が差分 0。
-    - **単位 9 の結果 (2026-09-18、`603ac50`): **dashboard に 5 枚を足した** — (a) CPU の絞り (KPI `nr_throttled ÷ nr_periods` + 待たされた合計 + `quota_cores` + `since_start` + `path`、`/history` の `kernel` を周期/秒で 2 系列、`threads_top` を tid で束ねた上位 8 の表)、(b) 動かないトンネル (`idle_secs >= 300` の CONNECT を止まっている長い順に 20 本。`half_closed` / `spins` / `revents` / `tid`、下に「空回りが 0 のまま何本か」)、(c) 名前解決の内訳 (`dns_warm` の推移 + `misses_by_kind` の横棒 1 本 + `refresh_failures` / `refresh_late` / 引き直し 1 回の平均)、(d) 受付待ち (`queue` の段を 12 段の区間に開いた横棒 = 二峰を見る + `run_delay_us` の折れ線)、(e) 利用者が待つ時間 (`recent_quantiles.wait` の KPI = `connectKpi` を写した `waitKpi` + `/history` の `wait_*` の折れ線)。**新しい `fetch` は 1 本も増やしていない**。読む側の 8 つ (`toKernel` / `cpuThrottle` / `topThreads` / `runDelay` / `queueSpread` / `idleTunnels` / `dnsMissKinds` / `waitKpi`) は DOM に触らない帯に置き、`check-dashboard.js` が 5 枚それぞれ「欄がある版 (インラインの作り物)」と「**欄が無い古い版** (作り置きの実出力そのもの)」の 2 通りで回す (`fail()` 89 本追加)。古い版では例外を出さず `null` / 0 件に落ち、画面は inspect と同じ「記録していません」で断る。既存の読み方の変更は 3 つだけ: `mergeWindows` の件数の列に `waits`、`toProfile` に末尾 2 列、`stackHtml` に整形の引数 (件数を積む使い道ができたため)。**`dashboard.html` に 80 KiB の上限を足した** — ただし 5 枚で 62,339 → **81,429 B** になり、**余白は 491 B しかない** (inspect は 58,188 B / 64 KiB)。次にカードを足す単位は先に上限を上げること。本文と違っていた事実: `/connections` の T15.0 (4) の欄は**既定のままなら 1 バイトも出ない**ので画面は「無い = 既定値」で読む、`README.md:2166` が inspect の上限を 96 KiB と書いているがコードは 64 KiB (`mod.rs:1013`。未修正)、Rust の配列は `mod.rs:879-1002`・inspect の上限は `mod.rs:1012-1016` (本文の 844-935 / 976-982 からずれ)。確かめ: `node scripts/check-dashboard.js` (引数なし)、`cargo test -p proxy-endpoints --lib` 36 本、`./scripts/check-docs.sh` 差分 0、fmt / clippy (`-p proxy-endpoints`) 無警告。 ---** レビュー: must_fix 2 件・should_fix 2 件 → 取り込み前に修正 (`184f045`)。main への取り込み `71e9c67`。
+    - **単位 9 の結果 (2026-09-18、`603ac50`): **dashboard に 5 枚を足した** — (a) CPU の絞り (KPI `nr_throttled ÷ nr_periods` + 待たされた合計 + `quota_cores` + `since_start` + `path`、`/history` の `kernel` を周期/秒で 2 系列、`threads_top` を tid で束ねた上位 8 の表)、(b) 動かないトンネル (`idle_secs >= 300` の CONNECT を止まっている長い順に 20 本。`half_closed` / `spins` / `revents` / `tid`、下に「空回りが 0 のまま何本か」)、(c) 名前解決の内訳 (`dns_warm` の推移 + `misses_by_kind` の横棒 1 本 + `refresh_failures` / `refresh_late` / 引き直し 1 回の平均)、(d) 受付待ち (`queue` の段を 12 段の区間に開いた横棒 = 二峰を見る + `run_delay_us` の折れ線)、(e) 利用者が待つ時間 (`recent_quantiles.wait` の KPI = `connectKpi` を写した `waitKpi` + `/history` の `wait_*` の折れ線)。**新しい `fetch` は 1 本も増やしていない**。読む側の 8 つ (`toKernel` / `cpuThrottle` / `topThreads` / `runDelay` / `queueSpread` / `idleTunnels` / `dnsMissKinds` / `waitKpi`) は DOM に触らない帯に置き、`check-dashboard.js` が 5 枚それぞれ「欄がある版 (インラインの作り物)」と「**欄が無い古い版** (作り置きの実出力そのもの)」の 2 通りで回す (`fail()` 89 本追加)。古い版では例外を出さず `null` / 0 件に落ち、画面は inspect と同じ「記録していません」で断る。既存の読み方の変更は 3 つだけ: `mergeWindows` の件数の列に `waits`、`toProfile` に末尾 2 列、`stackHtml` に整形の引数 (件数を積む使い道ができたため)。**`dashboard.html` に 80 KiB の上限を足した** — ただし 5 枚で 62,339 → **81,673 B (レビューの修正のあとの実物)** になり、**余白は 491 B しかない** (inspect は 58,188 B / 64 KiB)。次にカードを足す単位は先に上限を上げること。本文と違っていた事実: `/connections` の T15.0 (4) の欄は**既定のままなら 1 バイトも出ない**ので画面は「無い = 既定値」で読む、`README.md:2166` が inspect の上限を 96 KiB と書いているがコードは 64 KiB (`mod.rs:1013`。未修正)、Rust の配列は `mod.rs:879-1002`・inspect の上限は `mod.rs:1012-1016` (本文の 844-935 / 976-982 からずれ)。確かめ: `node scripts/check-dashboard.js` (引数なし)、`cargo test -p proxy-endpoints --lib` 36 本、`./scripts/check-docs.sh` 差分 0、fmt / clippy (`-p proxy-endpoints`) 無警告。 ---** レビュー: must_fix 2 件・should_fix 2 件 → 取り込み前に修正 (`184f045`)。main への取り込み `71e9c67`。
   - 再デプロイの前 (親の作業): 居座っている 2 本の証拠は **2026-09-18 07:38 UTC に保存した**
     (`~/rust-http-proxy-status/2026-09-18T0738Z-t155-evidence/`: `/connections` `/status` `/profile?res=5|60` `/history?res=60`
     `/recent?client=` `/events` `/dns`。リポジトリには入れない)。このとき 2 本は齢 27.5 時間・9,096 B / 9,032 B・0 bps・`relaying` の
@@ -5911,7 +5913,7 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
 
 **(a) の `PROXY_SLO` の行の「何が起きるか」の末尾に追記**:
 
-**`.env` に書いても効きません — 再起動でしか反映されません**。しかも `/status` の `settings.restart_required` にも出ない (`crates/reload/src/reload.rs` に `slo` の分岐が 1 つも無く、`src/main.rs:309-314` が起動時に 1 回 `slo::configure` するだけ) ので、**書き換えたのに `/slo` の `thresholds` が変わらない**という形でしか気づけません。T14.99 で `connect_p50_ms=6` にするなら**起動前**に置いてください。
+**`.env` に書いても効きません — 再起動でしか反映されません**。しかも `/status` の `settings.restart_required` にも出ない (`crates/reload/src/reload.rs` に `slo` の分岐が 1 つも無く、`src/main.rs:309-314` が起動時に 1 回 `slo::configure` するだけ) ので、**書き換えたのに `/slo` の `thresholds` が変わらない**という形でしか気づけません。閾を変えるなら**起動前**に置いてください (なお `connect_p50_ms=6` は §4 のとおり物理的に届かない数字なので入れない)。
 
 **(d) の表に足す新しい欄の期待値** (再デプロイ後 1 時間の目安):
 
@@ -6217,77 +6219,101 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
     (再起動をまたいだ引き算をやめたぶん)、エラー −4 → **+4** (切れた `/hosts` の合計どうしを引かなくなったぶん)。
     試験 142 → **161 本** (`python3 -m unittest discover -s scripts` 全通過)。
 
-- [ ] **T15.12 ビルドメモリの関門を 120 MB にする (理想値。旧 T15.0 — 2026-09-18 に番号を移した。T15.0 の単位 1〜7 のあと)**
+- [ ] **T15.12 ビルドメモリの関門を 120 MB にする (理想値。旧 T15.0 — 2026-09-18 に番号を移した。デプロイのあと、24 時間の待ちに充てる)**
   - 目的: 関門は `jobs = 1` なので効くのは**いちばん重い 1 クレート**。T10.9 の 26 クレート構成では 100 MB で通っていた (最大 85.5 MB、最小 36 MB)。
     120 MB を切るには**全クレートを 100 MB 未満**に保つ必要がある (T14.55 の実測: 全部 100 MB 未満なら通る最小は約 120)。
-  - **前提の訂正 (2026-09-18 の下読み)**:
-    - **T15.0 と並行しない**。前の版は「デプロイ先の数字に依存しないので、いつでも並行できる」と書いたが、それはデータの依存の話で、
-      コードでは成り立たない: T15.0 は `crates/net` (単位 1・5)、`crates/metrics-core` (単位 1・6)、`crates/endpoints` (単位 3・4・7・9) に行を足す =
-      **このタスクが割ろうとしている 3 クレート全部**。しかもここは**ファイルを割る**ので git の rename 検出が外れ、delete / modify の衝突になる。
-      さらに T15.0 はコードを足す波なので、先に 120 を通しても後で破れる (T14.43 の再現: `proxy-metrics` が Phase 14 で 76 → 272 MB)。
-    - **割る対象は 3 つだけ**: T14.55 の表で 100 MB を超えているのは `proxy-endpoints` 115.6 / `proxy-metrics-core` 110.2 / `proxy-net` 108.5。
-      前の版の「`metrics` の残りを 7〜8 個まで」は古い (`proxy-metrics` は T14.55 で **6 個**に割れて main に入っている。`metrics-window` 97.1、
-      本体 93.8、`metrics-watch` 90.5、`metrics-recent` 89.2、`metrics-types` 83.4、facade の `proxy-metrics` 65.8)。
-    - **行数は総行数と非テスト行が混ざっていた** (`wc -l` と `#[cfg(test)]` の位置で数え直し): `proxy-endpoints` 総 4,188 / 非テスト **2,801**
-      (`endpoints/mod.rs` 779、`recent.rs` 815、`explain.rs` 695、`health.rs` 138、`profile.rs` 123、`config.rs` 98、`blocklist.rs` 67、`pac.rs` 62、
-      `lib.rs` 24。ほかに `src/web/*.html` を `include_str!` で 3 本 = 計 144 KB)。`proxy-metrics-core` 総 3,042 / 非テスト **1,802**
-      (`metrics.rs` 1,343、`canary.rs` 440、`lib.rs` 19)。`proxy-net` 総 3,170 / 非テスト **1,896** (`dns.rs` 996、`net.rs` 576、`acl.rs` 310、
-      `lib.rs` 14。T14.55 の表の「非テスト行 3,170」は総行数の誤記)。**RssAnon は行数に比例しない** (net は endpoints の 2/3 の行数で 108.5 MB)。
-  - 材料: T14.55 の `結果:` にある**クレートごとの RssAnon の表**と、T14.55 が `proxy-metrics` を割った手順 (再輸出する facade の作り =
-    `crates/metrics/src/lib.rs`、層の制約のほどき方 = 「開いた 1 回だけ読み口を預ける」形、気づき「dev-dependency の輪はテストビルドで
-    クレートが 2 回コンパイルされてトレイトが別物になる」)。**T15.0 が終わった時点で表を測り直してから始める** (T15.0 が 3 クレートとも太らせる)。
-  - やること (**4 つに分けて、1 つ = 1 エージェント = 1 コミット。1〜3 は単独でマージできて価値がある**):
-    1. **`proxy-endpoints` を割る** (逆依存は**本体だけ**なのでいちばん安全)。submodule はいま私有 (`mod.rs:82-88`) で、`Endpoint` 構造体
-       (`mod.rs:33-65`) が全部の引数。割るには `Endpoint` を下のクレートに置いて `pub` にする。いちばん切りやすいのは **`explain.rs` (695 行)**
-       (`mod.rs:451` の `explain::explain(ep, query)` の 1 か所からしか呼ばれない)、次が **`recent.rs` (815 行)** (`/recent` `/errors` `/connections`
-       `/bursts` `/trace` `/events` `/snapshot` `/snapshots` `/dns` `/slo` `/daily` `/log` `/hosts` `/hosts/series` `/clients` を持ち、`mod.rs:199` と
-       396〜447 行から呼ばれる)。「画面の配信で 2 つに」は、コードが HTML 3 本 + 分岐 3 か所 (`mod.rs:349-366`) の 20 行ほどしか無いので割り方として
-       弱いが、144 KB の文字列定数が rustc に効くかは未測定で、移すのが最も安いので**最初に測る**。
-    2. **`proxy-metrics-core` から `canary` を上 (`proxy-metrics-watch`) へ上げる** (逆依存は `metrics-watch` だけ)。妨げは 2 つ:
-       (i) `metrics.rs:1193` の `crate::canary::status_json()` (`push_env` の中) → T14.55 が `persist::write_errors` でやった形でほどく。
-       (ii) `canary.rs:36` の `use crate::metrics::{ErrCause, Metrics}` と 206〜368 行が `&Metrics` を取る → 上へ上げれば向きが揃う。
-       `canary.rs:454-736` のテストが `Metrics` を使うので、上の dev-dependency の罠に注意 (`metrics-watch` がテストだけ `proxy-cache` に
-       依存している前例が参考)。足りなければ `/status` の組み立て (`push_head` 1149 行、`push_tables` 1172、`push_env` 1185、`memory_json` 1225。
-       引数が平の値と文字列だけ) を別クレートへ出す。
-    3. **`proxy-net` を `dns` / `net` / `acl` に割る** (逆依存 **11 クレート**: endpoints / blocklist / metrics / config / http / origin /
-       metrics-types / prom / reload / tunnel / 本体)。層は `dns` → `net` → `acl` (`net.rs` は `crate::dns` を非テストで 7 か所、`acl.rs` は
-       `crate::dns` と `crate::net` の両方)。**逆向きは 1 か所だけ** — `dns.rs:563` の `crate::net::split_host_port_ref`。これを `proxy-base` へ
-       下ろせば `proxy-net-dns` → `proxy-net-conn` → `proxy-net` (acl + facade) に割れる。**facade の形 (`crates/net/src/lib.rs:6-14`) を
-       崩さなければ 11 クレートは 1 行も変わらない**。
-    4. **3 つ入って `--find` が 120 で通ったら**、関門を 120 に下げる。書き換え先: `scripts/build-memory.sh:26,31,32`、
-       `.github/workflows/ci.yml:54,61,163`、`README.md:1555,1561,1565,1604,1605,1747,1762,1774`、`src/lib.rs:6`、
-       **`crates/*/src/lib.rs` の冒頭コメント約 30 本**、この TASKS.md の §0 (57 行あたり) / §1 (267・280 行あたり) / §2 (368 行あたり。親が書く)。
-       通らなければ 4 はやらず、測った表だけ残す。
-    - どの段も**中身は 1 バイトも変えない**。割るたびに `scripts/build-memory.sh --find 115 120 125 130` で最小を測り (いまの最小は 135 MB)、
+  - **T15.0 / T15.4 / T15.6 と並行しない**: このタスクが割るのは `proxy-endpoints` / `proxy-metrics-core` / `proxy-net` の 3 つで、しかも**ファイルを割る**ので、同じクレートに
+    行を足すタスクと並行すると delete / modify の衝突になる。T15.4 (`crates/net/src/dns.rs`) が main に入ってから始める。**着手の前に、まず `scripts/build-memory.sh --find` と
+    クレートごとの RssAnon の表を測り直す** (T14.55 の表は T15.0 の波の前のもの。T15.0 は 3 クレートとも太らせた)。
+  - **いまの大きさ (2026-09-19 の下読み。main `5f6523b`、総行数 / 非テスト行)**: `proxy-endpoints` **4,808 / 3,001** (`endpoints/mod.rs` 1,158 / 813、`recent.rs` 1,932 / 838、
+    `explain.rs` 817 / 694、`health.rs` 265 / 206、`profile.rs` 201 / 201、`config.rs` 214 / 97、`pac.rs` 130 / 61、`blocklist.rs` 67、`lib.rs` 24。ほかに `src/web/` の HTML 3 本 =
+    81,673 + 58,188 + 23,754 = **163,615 B** を `include_str!`)。`proxy-metrics-core` **3,310 / 1,956** (`metrics.rs` 2,554 / 1,498、`canary.rs` 737 / 439、`lib.rs` 19)。
+    `proxy-net` **3,725 / 2,088** (`dns.rs` 2,028 / 1,176、`net.rs` 1,235 / 589、`acl.rs` 448 / 309、`lib.rs` 14)。T14.55 の表で 100 MB を超えていたのはこの 3 つだけ
+    (115.6 / 110.2 / 108.5 MB)。**RssAnon は行数に比例しない** (net は endpoints の 2/3 の行数でほぼ同じ)。
+  - **割るときに当たる所 (下読みが見つけた。知らずに始めると途中で設計をやり直すことになる)**:
+    - `recent.rs` は **`mod.rs` を上向きに呼ぶ**: `recent::snapshot` の中の `recent.rs:724-726` → `super::status_body`、`730,734,738` → `super::history_body`、
+      **`751` → `super::profile::profile`**。`profile.rs:64` も `super::recent::MAX_BODY`。submodule が使う私有ヘルパは `pub(super)` の `has_flag` (`mod.rs:272`) / `offset_param` (285) /
+      `next_offset` (295) / `status_body` (601) / `history_body` (623) / `history_summary` (636) と `pub` の `parse_query` (771) / `percent_decode` (783)。
+    - `health.rs:173` は `crate::anomaly::cpu_window_is_full` (= `proxy-metrics-watch`) を見る (T15.0 (6))。facade 越しなのでクレートの層は壊さない。
+    - **`pub(crate) static RESOLVE_TEST_LOCK`** (`crates/net/src/dns.rs:256`) を `net.rs:1185` と `acl.rs:436` のテストが取る → 割るとコンパイルが通らない (`pub` にする。
+      T14.55 の `events::TEST_LOCK` と同じ)。割ったあとは 3 クレートのテストが**別プロセスになり、この鍵では直列化が効かなくなる** (`dns.rs:253-256` のコメントが前提を書いている)
+      ので、`mx cargo test -p proxy-net-dns` / `-p proxy-net-conn` / `-p proxy-net` を別々に回す。
+    - **`net.rs:1203` のテストが `crate::acl::resolve_target` を呼ぶ** → そのまま割ると `proxy-net-conn` が dev-dependency で acl 側を要求し、**T14.55 が踏んだ
+      「dev-dependency の輪でクレートが 2 回コンパイルされてトレイトが別物になる」そのもの**になる。このテスト (`net.rs:1185-1225` 付近) は acl 側へ移す。
+    - 逆向きの依存は本文どおり 1 か所: `crates/net/src/dns.rs:644` の `crate::net::split_host_port_ref`。`proxy-sys` を使うのは `net.rs:158,299` だけなので、
+      `proxy-net-dns` の依存は `proxy-base` だけで済む。
+  - やること (**4 つに分けて、1 つ = 1 エージェント = 1 worktree。1〜3 は単独でマージできて価値がある。順番は 段 2 と段 3 を同時に着手 → 段 2 を先に取り込み → 段 3 →
+    段 1 → 段 4**。段 2 は新しいクレートを作らないので `Cargo.toml` の `members`・`Cargo.lock`・README のクレートの表・`check-docs.sh` の (e) に一切触らず、ほかの段と完全に並列でよい。
+    段 1 と段 3 はその 4 つを共有する (行の追加なので衝突は自明に解ける)。段 1 は `explain.rs:92,176` / `pac.rs:17` / `blocklist.rs:18` で `split_host_port_ref` を呼ぶので、
+    段 3 を先に取り込めば段 1 のリベースは 1 回で済む):
+    1. **`proxy-endpoints` を割る** (逆依存は本体だけ)。**段階的に、測りながら**: (i) まず HTML 3 本だけを葉クレート `proxy-web` (中身は `include_str!` の 3 つの const だけ) に出して
+       `--find` で測る (160 KB の文字列定数が rustc に効くかは未測定。逆依存ゼロ・20 行で、効けばここで終わる)。(ii) 足りなければ `explain.rs` (694 行。`super::{Endpoint, parse_query}` しか
+       使わず、呼ぶのは `mod.rs:484` の 1 か所) を下ろす。(iii) それでも足りなければ `Endpoint` (`mod.rs:32-59`) + 私有ヘルパ + `status_body` / `history_body` / `history_summary` +
+       recent / profile / health / config / pac / blocklist をまとめて下の 1 クレート (`proxy-endpoints-detail`) へ移し、`mod.rs` には `handle` (313 行〜)・`local_path`・`endpoint_list`・
+       `is_heavy` / `begin_heavy`・`register_snapshot`・`purge_url`・`lookup` を残す (`path == "/…"` の 33 本が `mod.rs` に残るので `check-docs.sh` の (a) が生きる。recent → mod の
+       上向き 3 本もこれで一方向になる)。
+    2. **`canary` を `proxy-metrics-core` から `proxy-metrics-watch` へ上げる** (逆依存は `metrics-watch` だけ)。`crates/metrics-core/src/metrics.rs:1274` (`push_env` の中) の
+       `crate::canary::status_json()` は、**`crates/metrics-types/src/kernel.rs:312-318` の `set_state_file_errors(f: fn() -> Option<u64>)` を写した口**
+       (`metrics::set_canary_status(fn() -> String)`) でほどく。**既定 (預けていないとき) は canary が off のときと 1 バイト同じ文字列を返すこと** (預け忘れると `/status` の `canary` が
+       静かに変わる)。`crates/metrics-watch/src/lib.rs:16` の再輸出から `canary` を外して `pub mod canary;` にし、`crates/metrics/src/lib.rs:24-27` の再輸出はそのまま →
+       `prom.rs:589` / `reload.rs:228` / `tick.rs:85` / `tests/canary_test.rs` は 1 行も変わらない。`canary.rs` のテスト (440〜737 行) は `Metrics` を使うが、上へ上げれば向きが揃う。
+       `metrics-watch` は T14.55 で 90.5 MB だったので、canary を足して 100 を超えたら `push_head` / `push_tables` / `push_env` / `memory_json` (`metrics.rs:1230-1450` 付近。
+       引数は平の値と文字列だけ) を新しい葉クレートへ出す。
+    3. **`proxy-net` を `proxy-net-dns` → `proxy-net-conn` → `proxy-net` (acl + facade) に割る** (逆依存 11 クレート)。`split_host_port` と `split_host_port_ref` (とそのテスト) を
+       **`proxy-base` の新しい `hostport` モジュール**へ移し、`proxy-net-conn` の `net` モジュールで `pub use` して**綴りを維持**する (使っているのは 12 か所)。
+       **facade の形 (`crates/net/src/lib.rs:6-14`) を崩さなければ 11 クレートは 1 行も変わらない**。
+    4. **3 つ入って `--find` が 120 で通ったら**関門を 120 に下げる。書き換え先: `scripts/build-memory.sh:26,31,32`、`.github/workflows/ci.yml:54,61,163` (+ ladder の既定の 14 行と 217 行)、
+       `src/lib.rs:6`、**`crates/*/src/lib.rs` の冒頭コメント ちょうど 30 本** (`grep -l "180 MB" crates/*/src/lib.rs`)、`README.md:1717,1718,1724,1728,1729,1767,1768,1910,1925,1937` と
+       1674 行の「(32 + 本体)」・1720〜1721 行の「いちばん大きいクレート」・1886 / 1926〜1927 行の「26 クレート」、この TASKS.md の §0 (57 行) / §1 (267・280 行) / §2 (368 行。親が書く)。
+       手本は `2ac988f` (関門の数字を 29 ファイル一括で書き換えた)。通らなければ 4 はやらず、測った表だけ残す。
+    - どの段も**中身は 1 バイトも変えない**。手本は `6967236` (`proxy-metrics` を 6 つに割った。`git mv` で rename の検出を効かせ、各 `lib.rs` で下の層を今までの名前で再輸出) と
+      `13fa546` (層の制約を分けてほどいた形)。割るたびに `mx bash -c 'cargo clean --release && scripts/build-memory.sh --find 110 115 120 125 130 135'` (1 周 約 1 分 24 秒。いまの最小は 135 MB) と
       クレートごとの RssAnon の表を `結果:` に貼る。配布用 `dist` (LTO) は関門の外のまま。
-  - テスト: 新しいテストは要らない。T14.55 と同じ確かめ: `cargo test --workspace --no-fail-fast` (**このタスクは全体テストを回す** — 中身を変えない
-    ことの証拠がそれしか無い)、**24 本のエンドポイントを分割の前後で取り、入れ子まで鍵の並びを突き合わせる** (`/status` の出力の順序)、
-    `cargo build --profile dist`、`node scripts/check-dashboard.js`、`./scripts/check-docs.sh` (**README のクレートの表の数 = (e) が必ず落ちる**ので
-    表を更新する。T14.56 の `結果:`)。
+  - **直値で見張っているもの** (動かすと落ちる): `scripts/check-docs.sh` の (e) (README のクレートの表と「(32 + 本体)」の数 → 段 1 と 3 で必ず落ちるので表を直す)、同 26 行の
+    `MOD=crates/endpoints/src/endpoints/mod.rs`・27 行の `REC=…/recent.rs`・170 行の `open('crates/endpoints/src/web/' + html)` (段 1 でファイルを動かしたら 3 か所とも書き換える)、
+    `scripts/check-dashboard.js:46 / 757 / 1134` (HTML 3 本を直に開く。**`dashboard.html` は上限まで余り 247 B なので、移すときに 1 バイトも増やさない**)、
+    `crates/endpoints/src/endpoints/mod.rs:880` と `:1043` のテスト (私有の `super::DASHBOARD_HTML` / `super::INSPECT_HTML` を読み、`inspect.html <= 64 KiB` を直値で見る → const と一緒に動かす)。
+  - テスト: 新しいテストは要らない (移したテストが同じ名前で残ることを確かめる)。段ごとに `mx cargo test --test schema_test` (`/` の案内から全部の口を機械的に取り出して触る、いちばん安い全口の確かめ)、
+    `node scripts/check-dashboard.js`、`./scripts/check-docs.sh`。**このタスクは段ごとに全体テストを回す** (`cargo test --workspace --no-fail-fast`。中身を変えないことの証拠がそれしか無い)。
+    段 1 は、24 本のエンドポイントを分割の前後で取り、入れ子まで鍵の並びを突き合わせる (`/status` の出力の順序)。最後に `cargo build --profile dist`。
   - 受け入れ基準: 1〜3 はそれぞれ、割ったクレートの RssAnon が 100 MB 未満になったことを表で示すこと。4 は `scripts/build-memory.sh 120` が通ること。
     ビルド時間の増分を報告 (クレートが増えるぶん)。全体テスト全通過、24 本の JSON の鍵の並びが前後で同じ。
 
 - [ ] **T15.99 締める (T15.4 と T15.6 を入れた版を 24 時間走らせたあとに見る・決める・書く)**
   - 目的: §0 の決まりどおり、デプロイして数字を見てから決めること・直すこと・書くことを Phase の最後の 1 つにまとめる (T14.99 と同じ。2026-09-19 の方針変更で、
     T15.4 / T15.5 / T15.6 と「T15.0 のあと」に散っていた「24 時間後に見る」をここへ集めた)。
-  - 前提: T15.4 と T15.6 (1) を入れた版を再デプロイして 24 時間 (できれば同時接続の山を 1 回含む)。再デプロイの直前に親が取った雪像が「前」、
-    `scripts/collect-deployed.sh nagoya.sorahost.net:50697` (判定表の既定は `phase15`) の 1 枚が「後」。雪像は `~/rust-http-proxy-status/` に置き、リポジトリには入れない。
+  - 前提: T15.4 と T15.6 (1) を入れた版を再デプロイして 24 時間 (できれば同時接続の山を 1 回含む)。**再デプロイと同じとき (起動の前) に、デプロイ先の `.env` に
+    `PROXY_CONNECT_TIMEOUT_SECS=10` を 1 行入れておく** (人。あとから入れると、もう 24 時間と 2 枚目の雪像が要り、1 回の収集で読めなくなる。戻すときはその行を消す = 再読込で効く)。
+    「前」は再デプロイの直前に親が取った雪像、「後」は 24 時間後の 1 枚。**判定は「前」を明示して回す**:
+    `python3 scripts/snapshot-diff.py <再デプロイ直前の雪像> <24 時間後の雪像> --criteria phase15` (`scripts/collect-deployed.sh` は保存先の名前順で 1 つ前を自動で
+    選ぶので、24 時間の間に試しに 1 回回すと「前」が入れ替わる)。雪像は `~/rust-http-proxy-status/` に置き、リポジトリには入れない。
+  - **道具が覆う範囲 (2026-09-19 の下読み)**: 判定表 (`scripts/snapshot-diff.py` の `PHASE15` = 731〜742 行、閾は本文と一致) が自動で出すのは 6 行 —
+    1 の 3 条件 (`_p15_watch_host` / `_p15_refresh_rate` / `_p15_miss_band`)、3 の conn 役の CPU (`_p15_conn_cores`)、閉じ方の形 (`_p15_closed_shape`)、4 の `timeout`
+    (`_p15_timeout`)。1 枚の要約 (`scripts/snapshot-summary.py`) が CPU の表・ミスの種類別・動かないトンネルを出す。**2・5・6・7 は手で引く**。
+    **雪像に入っていないので別に取る口**: `/healthz` (7 の `checks.cpu`)、**`/profile?res=60`** (雪像は `res=5` だけで、しかも 256 KiB で切れて約 38 分ぶん。
+    24 時間の `run_delay_us` と `threads_top` は 60 秒 × 1,440 の側を引く。`_p15_conn_cores` も 38 分の窓しか見ないので、24 時間ぶんは
+    `kernel.cgroup_cpu.since_start` と `/history?res=60` の `kernel` で見る)、`/slo`、`/daily`、`/config`。
   - 見る・決めること:
     1. **T15.4 の効き**: `discord.com` のミス率 **0.05 未満** (T15.0 の版の 9 時間は 0.441)、全体のミス率 **0.06〜0.09 回/接続** (同 0.14。外れたら再生の模型が
-       間違っていたということなので、そう書く)、`/status` の `dns.refreshes` の差 ÷ 時間 ÷ `/history` の `dns_warm` の平均が **80 以下**。ミスの種類別で `expired` が
-       減り `cold` が残ること (`warm_stale` と `refresh_late` が増えていたら、窓を延ばしたせいで引き直しのスレッドが詰まっている)。
-    2. **`MAX_WARM` 32 の取り合い**: バーストの時間帯に `/history?res=5` の `dns_warm` が 32 に張り付いたか。張り付いていて主要ホストが外されていたら、
+       間違っていたということなので、そう書く)、`/status` の `dns.refreshes` の差 ÷ 時間 ÷ `/history` の `dns_warm` の平均が **80 以下**。ミスの種類別は**構成比で比べる** (`misses_by_kind` は
+       起動からの通算で、2 枚を引き算できない。T15.0 の版の 9 時間は `cold` 0.45 : `expired` 0.55 : `warm_stale` 0 : `negative` 0): `expired` の比が下がり `cold` が
+       主になること (`warm_stale` と `refresh_late` が出ていたら、窓を延ばしたせいで引き直しのスレッドが詰まっている)。
+    2. **`MAX_WARM` 32 の取り合い**: バーストの時間帯に `/history?res=5` の `dns_warm` 列 (ゲージ) の**最大**が 32 に張り付いたか (判定表は平均しか持たないので手で読む)。張り付いていて主要ホストが外されていたら、
        「2 回だけ使われた名前が 1 時間居座る」害が出ている → 枠を増やすか、外す順を見直すかを数字つきで決める。
     3. **T15.5 が効いたこと**: `/events` に `cpu_throttled` / `tunnel_spin` が 0 件、`/connections` に「`spins` が伸びる行」「`idle_secs` が時間単位の `relaying`」が 0 本、
        `kernel.cgroup_cpu.since_start` の絞りがほぼ 0、`/profile` の conn 役の CPU が 0.01 コア未満 (T15.0 の版の 9 時間は全体で 0.0013 コア)。
-       閉じた理由の `idle_timeout` は前より**増えるのが正常**。再発していたら `half_closed` の向き・`revents`・`tid` を控えて T15.5 をやり直す。
-    4. **T15.6 の (2)(3)**: デプロイ先の `.env` に `PROXY_CONNECT_TIMEOUT_SECS=10` を 1 行 (人。再読込で効く) → 24 時間 → `/errors` の `timeout` が増えなければ
+       閉じ方の形 (`idle_timeout` と半閉じの割合) は、**今回の「前」も「後」も T15.5 入りの版なので「変わらない」が正しい** (判定表は ±10% を越えると「届かず」。
+       「増えるのが正常」は T15.5 を入れる前の版と比べたときだけの話)。再発していたら `half_closed` の向き・`revents`・`tid` を控えて T15.5 をやり直す。
+    4. **T15.6 の (2)(3)**: 前提のとおり `.env` の 10 秒で 24 時間走らせ、**`/history` の `errors_by_cause` の `timeout` の件/時**が増えなければ (判定表の許容は +10%。
+       `/errors` は 500 件の環で 24 時間だと巻くので、相手と秒数を見るためだけに使う)
        既定を 10 秒にする (1 行 + README + 単体テストの期待値。これは Opus の小さい 1 タスク)。増えたら増えた相手と秒数を書いて、既定は変えない。
     5. **確立の尾の正体**: `wait` と `connect` の p90 の差 (9 時間の読みで約 27 ms、約 1 割の接続) が `queue` / `client_read` / `dns` のどれか、その時間帯に
        `/profile` の `run_delay_us` (コンテナで読めることは確認済み) が立っているか。機械 (スケジューラ) のせいなら「コードでは縮まない」と書いて §4 に 1 行、
        コードのせいなら次の Phase のタスクにする。
-    6. **次の完了の定義の基準線**: `wait` の p50 / p90 / p95 (p50 だけで判定しない。Phase 14 は測れない量を判定して空振りした)。
+    6. **次の完了の定義の基準線**: `/history` の「後」の期間の `wait` の **p50 / p95** (24 時間ぶん。道具が出せるのはこの 2 つ) を基準線にし、
+       `/status` の `recent_quantiles.wait` の p90 / p99 (直近 1,024 本) を参考値として併記する (p50 だけで判定しない。Phase 14 は測れない量を判定して空振りした)。
     7. 手元で確かめられなかった欄がデプロイ先で意味のある値を出していること: `run_delay_us`、`/healthz` の `checks.cpu`、`misses_by_kind`、`since_start`。
+       あわせて「次の雪像を 1 枚で読めるか」(完了の定義 (c) の 5 行目): `truncated` の立った部を `collect-deployed.sh --full` で追えたか、`memory.rings_used.total` が `rings.total` 以下か。
   - 書くこと: §2 の「デプロイ先の現在地」を最新の 1 枚に (いまの 2026-09-18 の 1 枚は付録 A へ)、§0 のゴールの行、README の性能節の「デプロイ先の数字」、
     下の「Phase 15 の完了の定義」に対する判定、届かなかったものの理由と次の Phase への持ち越し。数字には出どころの JSON 名を書く。
   - 受け入れ基準: 上の 1〜7 のそれぞれに実測と判定があること。README と §2 の数字が同じ日付の同じ雪像から出ていること。プロキシのコードを触るのは 4 の
@@ -6305,7 +6331,7 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
 
 - **`promote` から `idle < window` を外す** (`crates/net/src/dns.rs:623`) — 再生でミス 57 → 45 (**-21%**)、引き直し +5%。
   T15.4 (-51%、費用も軽い) に両方の軸で負けるので、T15.4 を入れたあとに測り直してから。
-- **名前ごとの TTL (`changes` が 0 の名前だけ 60 → 300 秒)** — `Entry` (`dns.rs:134-164`) に名前ごとの TTL を持つ場所が無く、
+- **名前ごとの TTL (`changes` が 0 の名前だけ 60 → 300 秒)** (**2026-09-19 に決着: 採らない**。T15.0 の版の 9 時間で、プロキシ全体の CPU は 0.0013 コアで引き直しの費用は問題にならず、`mtalk.google.com` は引き直しの 94% で答えが変わっていた。「T15.0 のあと」の段落) — `Entry` (`dns.rs:134-164`) に名前ごとの TTL を持つ場所が無く、
   `ttl()` は 1 つの大域 (`dns.rs:205-207`)。`refresh_after` / `hot` / `age` / `/dns` の出力まで触ることになる。
   **一律 TTL 300 秒なら 1 行**で、再生では ミス 57 → 44 (-23%) と引き直し 222 → 43 回/時 (**-81%**)、T15.4 と合わせると
   ミス 27 (-53%) かつ 引き直し 57 回/時 (-74%) で費用の向きが逆になる。賭けの中身 (成功した答えを最大 300 秒持つ。いまも失敗時は
@@ -6341,7 +6367,7 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
   変化 0 回、直近 3 時間はほぼ止まっている)。やるなら「リングの確保を起動時にまとめて触って RSS の天井を先に見せる」方が筋。
   ついでに `/status` の `memory.rings` に `/profile` の窓 (2,160 標本 × 2,340 B ≒ 5.1 MB) が入っていない (`metrics.rs:1229` は
   `history::RESOLUTIONS` しか足していない) ので、rings で RSS を説明しようとすると必ず約 5 MB 足りなくなる — これは 5 行で直る。
-- **`PROXY_SLO=connect_p50_ms=6` を入れる** — **再読込では効かない** (`reload.rs` の `applied` 21 件に無く、`slo.rs:529` の
+- **`PROXY_SLO=connect_p50_ms=6` を入れる** (**やらない**: §4 のとおり 6 ms は物理的に届かない数字で、次の基準線は T15.99 の 6 で `wait` から決める) — **再読込では効かない** (`reload.rs` の `applied` 21 件に無く、`slo.rs:529` の
   `configure` は起動時に 1 回) ので再起動が要る。しかも判定は 5 秒の標本ごとに**そのときの閾**で met/miss を畳む作りなので
   (`slo.rs:540` の `observe`)、**過去を読み直せない**。いま使えるのは `/slo` の hourly 39 行 (閾 10 ms を外した標本の割合は
   トンネル誕生の前 33.5% → 後 21.4%) と `/daily` の `connect_p50_ms` (9.8 → 8.2)。閾を変えるなら次の再デプロイのときに。
