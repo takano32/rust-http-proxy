@@ -3449,6 +3449,7 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
 | オリジンを掴めなかった forward の個票で `client_read` が 0 のまま落ちる (`crates/http/src/http/mod.rs:698-703` がエラーの経路で `ctx.detail.stages` ではなく `shared.stages` を渡している) | T15.0 単位 1 の気づき | 1 行の直し。forward は要求の 1% なので急がない |
 | `proxy-base` の `log::tests::the_ring_clips_long_lines_and_wraps_at_1000` が稀に落ちる (`crates/base/src/log.rs:725` の `total == MAX_LOG_LINES + 5`。2026-09-18 の全体テストで 1 回、同じ binary の回し直しは 5 / 5 通過) | T15.5 のマージ後の全体チェック | リングとログ水準を触るテスト 4 本は全部 `RING_TEST_LOCK` を取っているので、**鍵を取らずに warn 以上を書く (か水準を変える) 別のテストが同じ binary にいる**はず。落ちたときの `left` / `right` を控えて (多いのか少ないのか)、犯人のテストに同じ鍵を取らせる |
 | `tests/clientacl_test.rs:117` `test_integration_allow_clients_closes_strangers_and_counts_them` が稀に落ちる (`.env` 再読込のあとの CONNECT が 403。単独 5 / 5 通過。再読込のログが出てから ACL が入れ替わるまでの間に CONNECT を送る競合に見える) | T15.12 段 2 の全体テスト (2026-09-19) | テストの側で「入れ替わった」を `/config` で待ってから送る。製品の側の順序 (ログ → 入れ替え) も見る |
+| `tests/history_depth_test.rs:235` `test_integration_six_hours_of_samples_stay_under_the_memory_cap` が稀に落ちる (プロセス全体の RSS の差を上限 3,407,872 B と比べる。失敗時 4,968,448 B。5 回中 1 回) | T15.12 波 11 の全体チェック (2026-09-19) | 同じファイルの 31〜33 行の注記どおり、隣のテストが大きな応答を組む瞬間と重なると越える。RSS の差ではなく、標本のリングの大きさ (`memory.rings`) で見るテストに変える |
 
 **候補と決め方 → 判断** (T14.0、2026-09-16):
 
@@ -5230,7 +5231,7 @@ Phase 15 は T14.99 の分析が T15.0〜T15.11 を一度に書き出し、そ�
 | T15.7 / T15.8 / T15.9 | **欠番** — T15.0 の (3) / (12) / (11) に畳んだ | (T15.0 の中で済み) |
 | T15.10 | 接続の制限を入れるかの決定 → 入れない | 済み (2026-09-18) |
 | T15.11 | 1 枚の要約の直し | 済み (2026-09-18) |
-| T15.12 | ビルドメモリの関門を 120 MB に (旧 T15.0 の中身。目安は通る最小 100 MB 未満) | **途中** (2026-09-19: 段 1〜3 済み、段 4 は通らず。通る最小 140 MB。段 5 以降を足す) |
+| T15.12 | ビルドメモリの関門を 120 MB に (旧 T15.0 の中身。目安は通る最小 100 MB 未満) | **途中** (2026-09-19: 段 1〜3 と段 5 済み。通る最小 140 → **120 MB**。床は bin の最後の段。次は段 6' → 段 7) |
 | T15.13 | README の横に長い表を読みやすい形に直す | 済み (2026-09-19、`d169b12`) |
 | T15.14 | `TASKS.md` を `TODO.md` にリネームする | 済み (2026-09-19) |
 | T15.99 | 締める (24 時間走らせたあとに見る・決める・書く) | デプロイのあと |
@@ -6358,12 +6359,14 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
     - **`= 4` にすると床が「最後の 1 段」に移る**: 115 MB で落ちるのは `proxy-metrics-watch` ではなく、**bin の `rust-http-proxy` (`src/main.rs` 599 行) をコンパイルしてリンクする最後の段**。
       `touch src/main.rs` してこの段だけを cgroup に入れると 110 MB で落ち 118 MB で通る (110〜118 の間は回ごとに揺れる)。`dmesg` の OOM の記録は毎回
       `Killed process (rustc) anon-rss:55 MB, file-rss:79 MB`。`-Ztime-passes` では bin なのに `codegen_crate` が **+62 MB** (130 → 192 MB、LLVM 1.5 秒) ある = lib から bin へ単相化・インライン化されて
-      来るものが多い。リンカを変えても効かない (`-fuse-ld=gold` は 95 MB で落ちる。`-Wl,--no-keep-memory` は 110 MB が通るようになる程度)。**ここを削らないと、クレートをどれだけ割っても通る最小は約 115 MB から下がらない。**
+      来るものが多い。~~リンカを変えても効かない~~ (`-fuse-ld=gold` は 95 MB で落ちる。`-Wl,--no-keep-memory` は 110 MB が通るようになる)。
+      **(2026-09-19 訂正、段 6 の実測: 最後の段の山はコード生成ではなく「リンク中」= rustc が 55〜59 MB を握ったまま `ld` が 38〜49 MB を積む。`ld` は子プロセスなので `-Ztime-passes` の `rss:` に入らず、親が見落とした。下の段 6 の結果)****ここを削らないと、クレートをどれだけ割っても通る最小は約 115 MB から下がらない。**
     - 代償は実行時の速さの可能性 (クレートの中でのインライン化の範囲が狭まる)。CPU/要求 の 7 割はカーネル側 (T9.1) なので大きくは動かないはずだが、**測って決める**。
       いまこの機械は利用者のほかの作業で CPU が汚れていて A/B が取れない (2026-09-19) → **要求の経路に乗らないクレートだけ先に 4 にする** (段 5)。要求の経路のクレートは静かな機械で A/B を取ってから (段 7)。
   - **続きの段 (2026-09-19 に足した。段 5 と段 6 は触るファイルが別なので並列でよい。枝は `wave11/<id>`)**:
     5. **要求の経路に乗らないクレートの `codegen-units` を 4 にする** (`t1512s5`)。ルートの `Cargo.toml` に `[profile.release.package.<名前>]` `codegen-units = 4` を並べる (`dist` は `inherits = "release"` なので
        同じ上書きが効く。`dist` は関門の外で fat LTO なので、`[profile.dist.package.<名前>]` で 1 に戻す必要があるかを `cargo build --profile dist` のバイナリの大きさで確かめ、変わるなら戻す)。
+       **(2026-09-19 訂正: 下の 14 個のうち `proxy-endpoints` / `proxy-metrics-window` / `proxy-selfbench` / `proxy-reload` / `proxy-sysinfo` の 5 つは要求の経路から呼ばれていた。親の思い込み。`src/lib.rs` に `handle_client` という関数も無い。段 5 の結果)**
        **対象 (親が決めた。1 要求・1 接続ごとには呼ばれない = tick スレッド・管理用の口・起動と再読込・道具)**: `proxy-metrics-watch`、`proxy-metrics-window`、`proxy-endpoints`、`proxy-endpoints-explain`、
        `proxy-endpoints-core`、`proxy-config`、`proxy-sysinfo`、`proxy-prom`、`proxy-reload`、`proxy-selfbench`、`proxy-rrd`、`proxy-diskprobe`、`proxy-capacity`、`proxy-bench`。
        **対象にしない (要求か接続ごとに通る。段 7 まで 1 のまま)**: 本体、`proxy-http`、`proxy-tunnel`、`proxy-net` / `-conn` / `-dns`、`proxy-base`、`proxy-sys`、`proxy-metrics` / `-types` / `-core` / `-recent`、
@@ -6385,6 +6388,35 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
        (通る最小は最後の段で決まる値まで下がる)。悪くなるなら、要求の経路の 80 MB 超え (`metrics-recent` 95.5 / 本体 94.6 / `net-dns` 89.7 / `metrics-core` 88.6 / `http` 86.3 / `metrics-types` 85.1 / `blocklist` 81.9) を
        クレートを割って下げる (割る前に、どのモジュールが何 MB 持っているかを `-Ztime-passes` とモジュールを 1 つ抜いたビルドで測る)。
     8. 5〜7 のあと `--find` が 100 未満で通るようになったら、段 4 (関門を 120 に下げる書き換え) をやる。
+  - 結果 (段 5・段 6、2026-09-19、波 `wave11`。段 5 は `2746075` / `687820f`、取り込み `65b7667`。段 6 はコミット無し): **通る最小 140 → 120 MB。関門の目標 120 にちょうど届いたが余裕は 0 で、床は bin の最後の段 (リンク中)**。
+    全体チェック: fmt / clippy 警告 0 / **792 本通過** (1 回目に `history_depth_test` が 1 本揺れた。下) / 関門 180 通過 / `--find` は 100〜115 が本物の OOM で 120 が通る / `--lite` は 5.026 回・9.99 回で不変 /
+    release 2,563,896 B (+65 KB)、`dist` 1,842,984 B (fat LTO が CGU の分割を呑むので前後で不変)。`.rs` は 1 本も変わっていない。
+    - **段 5**: 親が挙げた 14 個のうち **5 個は要求の経路から呼ばれていた**ので実装担当が外した: `proxy-endpoints` (`endpoints::handle` → `local_path`。プロキシとして通す要求も毎回通る、`src/lib.rs:1639`)、
+      `proxy-metrics-window` (`profile::mark` ほか + `Window::observe` = 毎要求・毎接続)、`proxy-selfbench` (`is_client`、`src/lib.rs:1431` = 毎要求)、`proxy-reload` (`Live::config` = accept のたび)、
+      `proxy-sysinfo` (`drop_page_cache` = キャッシュ HIT / 書き込みごと)。要求の経路は `serve` (`src/lib.rs:122`) → `run_conn` (:1267) → `pump` (:1060) → `serve_one` (:1296) → forward / `tunnel`。
+      残りの 9 個 (`proxy-metrics-watch` / `-endpoints-explain` / `-endpoints-core` / `-config` / `-prom` / `-rrd` / `-diskprobe` / `-capacity` / `-bench`) を `[profile.release.package.<名前>] codegen-units = 4` に。
+      `proxy-metrics-watch` 121.7 → **92.2 MB**。いまの上位: `metrics-window` **107.7** > `endpoints` 98.7 > `metrics-recent` 94.9 > 本体 93.5 > `metrics-watch` 92.0 > `net-dns` 89.5 > `metrics-core` 88.8 > `http` 86.6。
+      経験則「最大 + 18〜20」は今回は当たらない (107.7 + 12 = 120。決めているのは最後の段)。レビューの should_fix: `Cargo.toml` と README の `dist` / release のバイナリの大きさが 2026-09-08 の古い値のままだった (直した)。
+      全体チェックの指摘: `proxy-sysinfo` / `proxy-reload` / `proxy-selfbench` を外した理由が `Cargo.toml` のコメントに無い (理由はこの段落。次に `Cargo.toml` を触るときに 1 行足す)。
+    - **段 6 (変更なし。測った内訳が収穫)**: 最後の段を 20 ms ごとに rustc と `cc` / `ld` の全子孫の `/proc/<pid>/status` で見ると、同時刻の RssAnon の合計の最大は**リンク中**:
+      `codegen-units = 1` で rustc 59 + `ld` 38 + cargo 9 = **106.1 MB**、`= 4` では rustc 55 + `ld` 49 + cargo 9 = **112.9 MB** (オブジェクトが増えて `ld` が太る = 4 は最後の段を悪くする)。
+      cgroup での合否 (各 3 回): 90 MB 0/3、100 MB 0/3、110 MB 2/3、120 MB 3/3。**bin が重い正体は `serve` が `config_of: impl Fn()` の総称 (`src/lib.rs:126`) で、`serve` 全体が bin の側で単相化されること**
+      (bin の `codegen_crate` +103 MB、LLVM 3.3 秒。lib の 95 MB には `serve` のコード生成が入っていない)。
+      試した直し: `src/main.rs` の中身を lib の `pub fn run::main()` へ → 最後の段 106.1 → **66.0 MB** (95 MB の cgroup 3/3、70 MB でも 3/3)、`--help` / `-V` / `--check` / 終了コード / バイナリ 2,498,360 B まで同一。
+      だが **lib が 95.3 → 134.8 MB** になり `--find` は **140 → 155 MB** に悪化 → 捨てた。呼び出しのクロージャの型を揃えて単相化を 1 回にしても lib は −1.7 MB だけ。
+      本文の「新しいクレートへ」はそのままでは組めない (`crates/run` → ルートの lib → … ルートの bin → `crates/run` でパッケージが輪になる)。`build.rs` の `cargo::rustc-link-arg-bins=-Wl,--no-keep-memory` は約 8 MB。
+      cgroup の `memory.peak` は読めない (`systemd-run --user --scope` の scope がこの機械の cgroup 名前空間の外に出る)。
+    - 気づき: (1) **親の 2 つの誤り (山はコード生成 / 14 個は経路の外) はどちらも「測らずに / たどらずに書いた」もの**で、実装担当が測って / たどって見つけた。下読みを省いた代償。
+      (2) 総量は移しても減らない (段 2 の canary と同じ形): `serve` のコード生成 約 40 MB は lib に置いても bin に置いても要る。減らすには**別の rustc プロセスに分ける** = クレートを分けるしかない。
+      (3) 全体チェックが 1 時間半かかった — エージェントが裏のコマンドを毎回 10 分ちょうど待った (6 回) のと、親が測るものを積みすぎた。設定だけの波は fmt / clippy / テスト / 関門 1 回に絞り、待ちは 60 秒刻みで確かめさせる。
+      (4) 揺れるテストがもう 1 本 (`history_depth_test`。Phase 14 の「既知の小物」に足した)。
+  - **次の段 (2026-09-19 に足した。段 6 の置き換え)**:
+    6'. **ルートの lib の中身を下のクレートへ下ろして、bin を薄くする** (輪を切る形)。`src/lib.rs` の中身 (`serve` / `run_conn` / `pump` / `serve_one` / `Upstream` / `Limiter` / `idle` ほか) を `crates/server` (`proxy-server`) へ
+       `git mv` し、ルートの lib は `pub use proxy_server::*;` + 今までのモジュールの再輸出だけの facade にする (`tests/` と `crates/bench` は `rust_http_proxy::…` の綴りのまま)。`src/main.rs` の中身は
+       `crates/run` (`proxy-run`。`proxy-server` に依存し、ルートには依存しない) の総称でない `pub fn main()` へ移し、ルートの bin は `fn main() { proxy_run::main() }` だけにする
+       (bin はルートのパッケージに残るので `env!("CARGO_BIN_EXE_rust-http-proxy")` の結合テスト 8 本はそのまま)。見込み (段 6 の実測から): `proxy-server` 約 95 MB、`proxy-run` 約 89 MB、最後の段 約 66 MB。
+       `proxy-server` と `proxy-run` が重ければ、`serve` の総称の引数を `&(dyn Fn() -> Arc<Config> + Sync)` にして単相化を `proxy-server` の側に寄せるかどうかを測って決める
+       (accept のたびに間接呼び出しが 1 回増える。要求の経路の費用が不変であることを `--lite` で確かめる)。**着手の前に下読み (読むだけの Opus 1 つ) を通す**。
 
 - [x] **T15.13 README の横に長い表を読みやすい形に直す (環境変数の表ほか)**
   - 目的: README の「環境変数」の表は 74 行 × 3 列で、説明の欄が 1 行 1,000 文字を超えるものがあり (最長 1,017 文字、中央値 122)、横に長すぎて読めない
