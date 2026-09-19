@@ -1299,8 +1299,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       `sorahost_lock_contention_total{lock=...}` です
 - **タイムアウト制御**:
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
-  - `PROXY_CONNECT_TIMEOUT_SECS` で **`CONNECT` のオリジン接続だけ**を別の (短い) 締め切りにできます
-    (未設定なら `PROXY_TIMEOUT_SECS` と同じ値)
+  - `PROXY_CONNECT_TIMEOUT_SECS` で **`CONNECT` のオリジン接続だけ**に短い締め切りを置いています
+    (**既定 10 秒**。未設定なら 10 秒と `PROXY_TIMEOUT_SECS` の小さい方)
 
 ## コマンドライン引数
 
@@ -1384,7 +1384,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_ALLOW_HOSTS` | なし (全許可) | 接続許可ホストのカンマ区切りリスト (例: `*.example.com,api.github.com`) |
 | `PROXY_DENY_HOSTS` | なし | 接続拒否ホストのカンマ区切りリスト (例: `bad.com,*.blocked.org`) |
 | `PROXY_TIMEOUT_SECS` | `30` | 接続およびデータ転送タイムアウト（秒）。`0` で**無期限** (`PROXY_TUNNEL_IDLE_SECS` と同じ意味): 何も送ってこないクライアント接続を閉じず、オリジンへの接続と読み書きにも締め切りを置かない (OS 既定に任せる)。`PROXY_KEEPALIVE_SECS` (要求と要求の間) と `PROXY_TUNNEL_IDLE_SECS` は別に効く |
-| `PROXY_CONNECT_TIMEOUT_SECS` | `PROXY_TIMEOUT_SECS` と同じ値 (既定では `30`) | **`CONNECT` のオリジン接続だけ**の締め切り (秒)。`0` で**無期限** (`PROXY_TIMEOUT_SECS` と同じ意味)。**いまは `CONNECT` にだけ効きます**: forward のオリジン接続・オリジンとの読み書き・クライアントソケットの読み書き・ブロックリストの取得は `PROXY_TIMEOUT_SECS` のままです。繋がらない相手を待つ時間 (利用者から見える「固まっている」時間) だけを縮めたいときに使います — `PROXY_TIMEOUT_SECS` を短くすると大きな本文の転送や遅い応答まで切ってしまうためです。Happy Eyeballs の締め切りも同じ値なので、締め切りで抜けた接続は `/errors` に `cause: "timeout"` で残ります。**名前解決の時間は含みません** (名前を引いたあとの `connect` に効きます)。未設定なら `PROXY_TIMEOUT_SECS` をそのまま写すので、**書かなければ挙動は変わりません**。`.env` で即時反映 |
+| `PROXY_CONNECT_TIMEOUT_SECS` | `10` | **`CONNECT` のオリジン接続だけ**の締め切り (秒)。**未設定なら 10 秒と `PROXY_TIMEOUT_SECS` の小さい方**です (全体を 5 秒にしていれば 5 秒)。**`PROXY_TIMEOUT_SECS=0` (無期限) でも 10 秒**です — 繋がらない相手を無期限に待つ意味が無いためで、**無期限にしたいときは `0` と明示**してください。**既定を 30 → 10 秒にした根拠**: 8 日ぶんの通算 22,317 本で 2.5 秒を越えて成功した確立は 1 本も無く (失敗を除いた実測の最大は 337 ms)、10 秒はその 30 倍の余裕です。**戻すには `.env` に `PROXY_CONNECT_TIMEOUT_SECS=30`** の 1 行 (再読込で効きます)。**いまは `CONNECT` にだけ効きます**: forward のオリジン接続・オリジンとの読み書き・クライアントソケットの読み書き・ブロックリストの取得は `PROXY_TIMEOUT_SECS` のままです。繋がらない相手を待つ時間 (利用者から見える「固まっている」時間) だけを縮めるための鍵です — `PROXY_TIMEOUT_SECS` を短くすると大きな本文の転送や遅い応答まで切ってしまうためです。Happy Eyeballs の締め切りも同じ値なので、締め切りで抜けた接続は `/errors` に `cause: "timeout"` で残ります。**名前解決の時間は含みません** (名前を引いたあとの `connect` に効きます)。`.env` で即時反映 |
 | `PROXY_KEEPALIVE_SECS` | `15` | クライアント接続を次の要求まで待つアイドル時間 (秒)。`0` で 1 接続 1 要求。**待つ長さとは別に、1 本の接続で 1,000 要求を捌いたらその接続は閉じます** (下記) |
 | `PROXY_ORIGIN_POOL` | `64` | オリジンへのアイドル接続をホストごとに保持する本数。`0` で再利用しない。少ないと同時要求数が多いときに張り直しが増える (実測: 8 本だと 64 並列で p99 が 40 ms 台、64 本なら 10 ms 前後) |
 | `PROXY_PARK_IDLE` | `on` | アイドルな keep-alive 接続と、両方向とも暇な CONNECT トンネルをスレッドから外し、1 本の監視スレッド (epoll) に預ける。`off` で「1 接続 = 1 スレッドが専任」の動きに戻る。Linux 専用 (それ以外では自動的に無効)。実測: 暇な接続 2,000 本でスレッド 2,004 → 25 本、RSS 68.0 → 25.2 MB、暇なトンネル 5,000 本でスレッド 5,005 → 68 本、RSS 93.9 → 29.9 MB。忙しいときの CPU/要求とシステムコール数は変わらない |

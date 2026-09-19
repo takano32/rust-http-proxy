@@ -1111,7 +1111,7 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                     ..
                 } = *conn;
                 // CONNECT のオリジン接続だけは専用の締め切りを使う (`PROXY_CONNECT_TIMEOUT_SECS`。
-                // 未設定なら `config.timeout` と同じ値が写っている。T15.6)
+                // 未設定なら 10 秒と `config.timeout` の小さい方が入っている。T15.6)
                 let timeout = config.connect_timeout;
                 let idle = (!config.tunnel_idle.is_zero()).then_some(config.tunnel_idle);
                 let hold: Box<dyn Send> = Box::new((_open, _active));

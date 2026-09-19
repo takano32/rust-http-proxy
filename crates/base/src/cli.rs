@@ -39,7 +39,7 @@ Every setting can also be given as an environment variable or in $HOME/.env
   PROXY_MAX_CONNS          maximum concurrent connections (auto, 0 = unlimited)
   PROXY_TIMEOUT_SECS       origin timeout (30)
   PROXY_CONNECT_TIMEOUT_SECS
-                           CONNECT origin connect timeout (PROXY_TIMEOUT_SECS)
+                           CONNECT origin connect timeout (10, 0 = unlimited)
   PROXY_KEEPALIVE_SECS     client keep-alive idle time (15)
   PROXY_TUNNEL_IDLE_SECS   CONNECT tunnel idle timeout (300, 0 = never)
   PROXY_ALLOW_LOCAL        allow loopback/link-local origins (off)

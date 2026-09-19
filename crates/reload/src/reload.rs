@@ -121,9 +121,10 @@ impl Live {
             next.sources.adopt(&fresh.sources, "PROXY_TIMEOUT_SECS");
             applied.push("PROXY_TIMEOUT_SECS");
         }
-        // CONNECT のオリジン接続だけの締め切り (T15.6)。未設定なら `PROXY_TIMEOUT_SECS` を
-        // 写した実効値なので、`PROXY_TIMEOUT_SECS` だけを動かすと `applied` に 2 行出る
-        // (実際に効く値が 2 つとも動いたのだから、それが正しい)
+        // CONNECT のオリジン接続だけの締め切り (T15.6)。`fresh` は `Config::from_env` =
+        // `proxy_config::connect_timeout_for` を通った実効値なので、未設定のまま
+        // `PROXY_TIMEOUT_SECS` だけが 10 秒を跨いで動いた (例: 30 → 5) ときの計算し直しも
+        // ここに入る。そのとき `applied` に 2 行出るが、効く値が 2 つとも動いたのだから正しい
         if fresh.connect_timeout != old.connect_timeout {
             next.connect_timeout = fresh.connect_timeout;
             next.sources
