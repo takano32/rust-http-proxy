@@ -15,10 +15,12 @@
 # あれば同じ判定ができる (手元の機械はこちら。PID 1 が systemd でなくてもユーザーの
 # インスタンスは動いていて、上限も効く)。どちらも無いときだけ RSS を出すだけにして判定しない。
 #
-# **上限を決めているクレート** (T15.12 段 5 の後の実測 2026-09-19、RssAnon の最大。手元 aarch64。通る最小は 120 MB):
-#   proxy-metrics-window 107.7 MB > proxy-endpoints 98.5 > proxy-metrics-recent 95.7 > 本体 (rust-http-proxy) 93.7
-#   > proxy-metrics-watch 92.2 (`codegen-units = 4`) > proxy-metrics-core 89.3 > proxy-net-dns 89.2
-#   > proxy-http 84.3 > … > proxy-endpoints-core 29.7 (`= 4`。`= 1` のいちばん小さい proxy-tls でも 36 MB は要る)
+# **上限を決めているクレート** (T15.12 段 6' の後の実測 2026-09-19、RssAnon の最大。手元 aarch64。通る最小は 120〜125 MB):
+#   proxy-metrics-window 107.8 MB > proxy-endpoints 98.4 > proxy-metrics-recent 95.7 > proxy-server 94.9 > proxy-run 94.7
+#   > proxy-metrics-watch 91.5 (`codegen-units = 4`) > proxy-net-dns 89.9 > proxy-metrics-core 88.0
+#   > proxy-http 86.1 > … > proxy-endpoints-core 29.8 (`= 4`) > ルートの rust-http-proxy 18.1 (facade + bin だけ)
+#   (段 6' で本体を `proxy-server` (中身) と `proxy-run` (`main` の中身) に分けたので、
+#    「本体 93.7」の 1 行はこの 3 つに割れた。`= 1` のいちばん小さい proxy-tls でも 38 MB は要る)
 # 要求の経路に乗らないクレートは `Cargo.toml` の `[profile.release.package.<名前>]` で
 # `codegen-units = 4` にしてある (T15.12 段 5)。残りの上位はまだ `= 1`。
 # 行数の順ではない。効くのは「自分の行数 + 依存から単相化されてくる量」。
