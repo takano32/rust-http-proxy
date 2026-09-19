@@ -1,0 +1,28 @@
+[package]
+name = "proxy-server"
+# ルートの `rust-http-proxy` と同じ版にそろえる (`build.rs` が `CARGO_PKG_VERSION` から
+# `PROXY_VERSION` を作るので、ここがずれると `-V` の文字列がずれる。T15.12 段 6')。
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proxy-base = { path = "../base" }
+proxy-blocklist = { path = "../blocklist" }
+proxy-cache = { path = "../cache" }
+proxy-config = { path = "../config" }
+proxy-endpoints = { path = "../endpoints" }
+proxy-http = { path = "../http" }
+proxy-metrics = { path = "../metrics" }
+proxy-msg = { path = "../msg" }
+proxy-net = { path = "../net" }
+proxy-origin = { path = "../origin" }
+proxy-prom = { path = "../prom" }
+proxy-reload = { path = "../reload" }
+proxy-selfbench = { path = "../selfbench" }
+proxy-sys = { path = "../sys" }
+proxy-sysinfo = { path = "../sysinfo" }
+proxy-tunnel = { path = "../tunnel" }
+proxy-workers = { path = "../workers" }

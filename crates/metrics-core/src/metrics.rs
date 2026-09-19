@@ -641,7 +641,7 @@ impl Metrics {
 
     /// 接続元の `User-Agent` を 1 つ覚える (`/clients`。T14.7)。
     ///
-    /// **呼ぶのは接続の最初の要求のときだけ** (`src/lib.rs`)。要求ごとに見ると
+    /// **呼ぶのは接続の最初の要求のときだけ** (`crates/server/src/lib.rs`)。要求ごとに見ると
     /// ヘッダーの走査も鍵も要求ごとに増えるので、接続 1 本につき 1 回に決めてある
     /// (2 要求目からは呼び出し側の旗で飛ばす)。
     pub fn record_client_agent(&self, client: &str, agent: &str) {
@@ -1268,7 +1268,7 @@ fn push_tables(out: &mut String, hosts_json: &[String], clients_json: &[String])
 ///
 /// **canary 側の静的な既定は `Mode::Auto`** (`canary.rs` の `static MODE`) なので、誰も預けないまま
 /// `/status` を組む処理系では、`auto` ではなくここの `off` の形が出る (製品のバイナリは
-/// `src/main.rs` が待ち受けを立てる前に必ず `canary::configure` を呼ぶので `/status` は変わらない)。
+/// `crates/run/src/lib.rs` が待ち受けを立てる前に必ず `canary::configure` を呼ぶので `/status` は変わらない)。
 pub const CANARY_STATUS_UNSET: &str = concat!(
     "{\"mode\":\"off\",\"secs\":60,\"runs\":0,\"failures\":0,",
     "\"at\":0,\"host\":\"\",\"dns_ms\":0,\"connect_ms\":0,\"ipv6_connect_ms\":null,\"error\":null}"

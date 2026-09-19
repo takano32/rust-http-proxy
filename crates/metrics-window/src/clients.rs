@@ -272,7 +272,7 @@ pub const STATUS_READERS: usize = 20;
 /// 内部エンドポイント (`/status` `/clients` …) を引いた接続元 1 つ (T14.53)。
 ///
 /// T14.7 の `clients[]` は**自分宛てだけの接続を数えない** (監視で埋まってしまうため。
-/// 呼ぶ側 `src/lib.rs` の [`Metrics::record_client_agent`] の手前にその注記がある)。
+/// 呼ぶ側 `crates/server/src/lib.rs` の [`Metrics::record_client_agent`] の手前にその注記がある)。
 /// こちらはその逆で、**自分宛てだけ**を数える別の表: 認証なしの公開ポートで
 /// 「誰が個票を読んでいるか」(走査か、自分の監視か) を見分けるためのもの。
 /// **プロキシとしての要求 (CONNECT / forward) は 1 件も入らない**ので、2 つの表は混ざらない。

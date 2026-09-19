@@ -257,7 +257,7 @@ pub fn resolve_target(host_or_addr: &str) -> (bool, Option<Resolved<'_>>) {
 /// sink) で、どちらも**このプロセスの中**にある。`PROXY_ALLOW_LOCAL=off` (既定) のままでは
 /// 自分の中のオリジンにも 403 を返してしまい、測れるのが「403 を返す費用」になってしまうので、
 /// **自己ベンチが回っている 3 秒だけ**この 2 ポートを判定から外す。
-/// 開けるのも閉じるのも `src/main.rs` の自己ベンチの前後 1 回ずつで、外から同じポートを
+/// 開けるのも閉じるのも `crates/run/src/lib.rs` の自己ベンチの前後 1 回ずつで、外から同じポートを
 /// 指されても行き先は 1 KiB を返すオリジンか、すぐ閉じる sink しかない。
 static SELF_BENCH_PORTS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 

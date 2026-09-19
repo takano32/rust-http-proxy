@@ -14,12 +14,12 @@
 //!
 //! | 種類 | 書く場所 |
 //! |---|---|
-//! | `start` / `shutdown` | `src/main.rs` (起動の最後、停止シグナルの後始末) |
+//! | `start` / `shutdown` | `crates/run/src/lib.rs` (起動の最後、停止シグナルの後始末) |
 //! | `reload` | `crates/reload/src/reload.rs` (`.env` を読み直したとき) |
 //! | `blocklist` | `crates/blocklist` (一覧を組み直したとき) |
 //! | `ipv6` / `pressure` / `ballast` | [`poll`] (履歴スレッドの周期。下を参照) |
 //! | `state_file` | `crates/metrics/src/persist.rs` (書込エラーの最初の 1 回) |
-//! | `evict` / `emfile` | `src/lib.rs` (上限に当たって閉じた / accept が失敗した) |
+//! | `evict` / `emfile` | `crates/server/src/lib.rs` (上限に当たって閉じた / accept が失敗した) |
 //! | `anomaly` | [`crate::anomaly`] (標本が基準値から外れた / 戻った。T14.23) |
 //! | `new_client` | [`crate::anomaly`] (初めて見た接続元。T14.54 の規則 6) |
 //!

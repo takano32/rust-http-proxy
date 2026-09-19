@@ -277,10 +277,40 @@ name = "proxy-rrd"
 version = "0.1.0"
 
 [[package]]
+name = "proxy-run"
+version = "0.1.0"
+dependencies = [
+ "proxy-server",
+]
+
+[[package]]
 name = "proxy-selfbench"
 version = "0.1.0"
 dependencies = [
  "proxy-base",
+]
+
+[[package]]
+name = "proxy-server"
+version = "0.1.0"
+dependencies = [
+ "proxy-base",
+ "proxy-blocklist",
+ "proxy-cache",
+ "proxy-config",
+ "proxy-endpoints",
+ "proxy-http",
+ "proxy-metrics",
+ "proxy-msg",
+ "proxy-net",
+ "proxy-origin",
+ "proxy-prom",
+ "proxy-reload",
+ "proxy-selfbench",
+ "proxy-sys",
+ "proxy-sysinfo",
+ "proxy-tunnel",
+ "proxy-workers",
 ]
 
 [[package]]
@@ -326,21 +356,6 @@ dependencies = [
 name = "rust-http-proxy"
 version = "0.1.0"
 dependencies = [
- "proxy-base",
- "proxy-blocklist",
- "proxy-cache",
- "proxy-config",
- "proxy-endpoints",
- "proxy-http",
- "proxy-metrics",
- "proxy-msg",
- "proxy-net",
- "proxy-origin",
- "proxy-prom",
- "proxy-reload",
- "proxy-selfbench",
- "proxy-sys",
- "proxy-sysinfo",
- "proxy-tunnel",
- "proxy-workers",
+ "proxy-run",
+ "proxy-server",
 ]
