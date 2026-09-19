@@ -23,6 +23,21 @@ use common::*;
 /// 版が入っていなければならない先頭のバイト数 (T14.49 の受け入れ基準)。
 const HEAD: usize = 64;
 
+/// **重い口を叩く 3 本を 1 本ずつ通す鍵**。
+///
+/// 重い口 (`/snapshot` `/explain` `/profile`) を同時に組むのは 1 本だけで、2 本目からは
+/// `503 {"schema":1,"error":"busy"}` で断る (T14.51)。その旗
+/// (`crates/endpoints/src/endpoints/mod.rs` の `HEAVY_BUSY`) は**プロセスに 1 つ**しかない。
+/// 本番は 1 プロセス = 1 プロキシなので正しいが、このテストバイナリは 3 本のテストが
+/// **同じプロセスの別スレッド**でそれぞれ別のプロキシを立てて重い口を叩くので、
+/// 旗を取り合って負けた側が 503 を受け取る (プロキシの誤りではない)。
+///
+/// 下の [`get_body`] は 400 / 404 / 405 の**状態コードごと**見るのが仕事なので、503 を待って
+/// 引き直す `common::endpoint_json` (`tests/common/mod.rs`。200 でなければ落ちる) を使えない。
+/// だから 3 本を直列にする (手本は `tests/history_depth_test.rs` の `SERIAL`)。
+/// 鍵が毒されていても `into_inner` で進める (先に落ちたテストが残りを道連れにしないように)。
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// JSON を返さない口 (この一覧にある口は 1 の確認から外す)。**外す理由も一緒に持つ**ので、
 /// 新しい口が案内に出たときは「JSON か、そうでないか」をここで 1 度考えることになる。
 const NOT_JSON: &[(&str, &str)] = &[
@@ -162,6 +177,8 @@ fn connect_once(proxy_port: u16, target: &str) {
 /// 1. `/` の案内に載っている JSON の口の**全部**に版があること。
 #[test]
 fn test_integration_every_endpoint_starts_with_the_schema_version() {
+    // `/snapshot` `/explain` `/profile?res=5` を引く ([`SERIAL`] の理由)
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let echo = start_echo_server();
     let proxy_port = start_test_proxy(proxy_config());
     // 個票と統計が空でない状態で引く (空の一覧でだけ通るテストにしないため)。
@@ -227,6 +244,9 @@ fn test_integration_every_endpoint_starts_with_the_schema_version() {
 /// 読む道具は成功も失敗も同じ入口で読むので、**失敗だけ版が無い**と分岐が 2 つに割れる。
 #[test]
 fn test_integration_error_bodies_carry_the_schema_version_too() {
+    // `/explain` を引く。重い口の判定は引数を読む前なので、旗が取れないと 400 の代わりに
+    // 503 が返る ([`SERIAL`] の理由)
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     // `PROXY_ENDPOINTS_READONLY=on` の 405 も JSON (T14.18)
     let mut readonly = proxy_config();
     readonly.endpoints_readonly = true;
@@ -260,6 +280,8 @@ fn test_integration_error_bodies_carry_the_schema_version_too() {
 /// (`scripts/snapshot-diff.py` の `--from-files` は逆に、1 本ずつのファイルから雪像を組む)。
 #[test]
 fn test_integration_snapshot_carries_the_version_on_every_part() {
+    // `/snapshot` を引く ([`SERIAL`] の理由)
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let echo = start_echo_server();
     let proxy_port = start_test_proxy(proxy_config());
     connect_once(proxy_port, &format!("localhost:{}", echo));

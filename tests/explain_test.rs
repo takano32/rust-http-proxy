@@ -12,6 +12,17 @@ use std::net::TcpStream;
 
 use common::*;
 
+/// **`/explain` を叩く 3 本を 1 本ずつ通す鍵** (`tests/schema_test.rs` の `SERIAL` と同じ理由)。
+///
+/// `/explain` は重い口なので同時に組むのは 1 本だけで、2 本目からは
+/// `503 {"schema":1,"error":"busy"}` で断る (T14.51)。その旗
+/// (`crates/endpoints/src/endpoints/mod.rs` の `HEAVY_BUSY`) は**プロセスに 1 つ**しかなく、
+/// このバイナリは 3 本のテストが同じプロセスの別スレッドで別々のプロキシを立てて `/explain`
+/// を叩く。下の `..._answers_400` だけは状態コードを見るので `raw_get` で直に読んでいて
+/// (503 を待って引き直す `common::endpoint_json` は 200 しか通さない)、旗を取り損ねると
+/// 400 の代わりに 503 を読む。だから 3 本を直列にする。毒された鍵でも `into_inner` で進める。
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// CONNECT を 1 本張って 1 往復し、閉じる (閉じたところで統計と個票に入る)。
 fn connect_once(proxy_port: u16, target: &str) {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
@@ -57,6 +68,7 @@ fn string_value(json: &str, key: &str) -> String {
 /// 3 本の個票・1 行の判定が揃うこと (受け入れ基準そのもの)。
 #[test]
 fn test_integration_explain_host_gathers_stats_dns_and_the_records() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let echo = start_echo_server();
     let proxy_port = start_test_proxy(proxy_config());
 
@@ -221,6 +233,7 @@ fn test_integration_explain_host_gathers_stats_dns_and_the_records() {
 /// `?client=<ip>` に `/clients` の行と個票が入ること。
 #[test]
 fn test_integration_explain_client_gathers_the_row_and_the_records() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let echo = start_echo_server();
     let proxy_port = start_test_proxy(proxy_config());
     let target = format!("127.0.0.1:{}", echo);
@@ -280,6 +293,7 @@ fn test_integration_explain_client_gathers_the_row_and_the_records() {
 /// 引数が無ければ 400 で使い方を返す (`/lookup` と同じ方針)。案内にも載っている。
 #[test]
 fn test_integration_explain_without_a_target_answers_400() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let proxy_port = start_test_proxy(proxy_config());
     let out = raw_get(
         proxy_port,
