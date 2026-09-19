@@ -6411,12 +6411,28 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
       (3) 全体チェックが 1 時間半かかった — エージェントが裏のコマンドを毎回 10 分ちょうど待った (6 回) のと、親が測るものを積みすぎた。設定だけの波は fmt / clippy / テスト / 関門 1 回に絞り、待ちは 60 秒刻みで確かめさせる。
       (4) 揺れるテストがもう 1 本 (`history_depth_test`。Phase 14 の「既知の小物」に足した)。
   - **次の段 (2026-09-19 に足した。段 6 の置き換え)**:
-    6'. **ルートの lib の中身を下のクレートへ下ろして、bin を薄くする** (輪を切る形)。`src/lib.rs` の中身 (`serve` / `run_conn` / `pump` / `serve_one` / `Upstream` / `Limiter` / `idle` ほか) を `crates/server` (`proxy-server`) へ
-       `git mv` し、ルートの lib は `pub use proxy_server::*;` + 今までのモジュールの再輸出だけの facade にする (`tests/` と `crates/bench` は `rust_http_proxy::…` の綴りのまま)。`src/main.rs` の中身は
-       `crates/run` (`proxy-run`。`proxy-server` に依存し、ルートには依存しない) の総称でない `pub fn main()` へ移し、ルートの bin は `fn main() { proxy_run::main() }` だけにする
-       (bin はルートのパッケージに残るので `env!("CARGO_BIN_EXE_rust-http-proxy")` の結合テスト 8 本はそのまま)。見込み (段 6 の実測から): `proxy-server` 約 95 MB、`proxy-run` 約 89 MB、最後の段 約 66 MB。
-       `proxy-server` と `proxy-run` が重ければ、`serve` の総称の引数を `&(dyn Fn() -> Arc<Config> + Sync)` にして単相化を `proxy-server` の側に寄せるかどうかを測って決める
-       (accept のたびに間接呼び出しが 1 回増える。要求の経路の費用が不変であることを `--lite` で確かめる)。**着手の前に下読み (読むだけの Opus 1 つ) を通す**。
+    6'. **ルートの lib の中身を下のクレートへ下ろして、bin を薄くする** (輪を切る形。`t1512s6b`、枝 `wave12/t1512s6b`。2026-09-19 の下読みで書き直した)。
+       - **効果の範囲 (下読みの指摘)**: 床は 2 つある — 最後の段 (106〜113 MB) と `proxy-metrics-window` (107.7 + 12 ≒ 120)。この段が外すのは前者だけなので、**通る最小は 120 のまま動かない見込み**。
+         100 未満へ行くには段 7 (要求の経路のクレートも 4 に) が要り、この段はその前提 (段 7 で 4 にすると最後の段は 112.9 MB に悪化するので、先に薄くしておく)。
+       - **移すもの**: `src/` は `lib.rs` / `idle.rs` (620 行) / `main.rs` (599 行) の 3 本だけ。`src/lib.rs` の自前の中身は `VERSION` (:54)・`Accepted` (:65)・`Limiter` (:77)・`serve` (:122)・`Conn` (:672)・`Step` (:731)・
+         `attach_origin_rtt` (:830)・`run_conn` (:1267)・私有の `pump` / `serve_one` と、17 本の `pub use` (`Upstream` は `proxy_origin` の再輸出で、ここの中身ではない)。
+         `crates/` の中でルートの lib に依存しているものは 0 件 (`crates/bench` も本体を 1 行も参照しない)。`rust_http_proxy::…` の綴りを守る相手は `tests/` だけ (62 種。全部 glob の再輸出で届く)。
+       - **決めたこと**: (a) **版の文字列**: `src/lib.rs:54` の `env!("PROXY_VERSION")` はルートの `build.rs:47` の `cargo:rustc-env` なので、移した先では見えずビルドが落ちる → **`git mv build.rs crates/server/build.rs`**。
+         `proxy-server` の `version` は `0.1.0` (ルートと揃える、と両方の `Cargo.toml` に注。`tests/proxy_test.rs:131` がルートの `CARGO_PKG_VERSION` と比べる)。`build.rs:30` の `git rev-parse --git-path` が
+         クレートの直下から解決できるか (コミットを 1 つ積んで `--version` の hash が変わるか) を 1 回確かめる。`Dockerfile:11` の `COPY Cargo.toml Cargo.lock build.rs ./` から `build.rs` を消す。
+         (b) **facade**: ルートの `src/lib.rs` は冒頭のコメント + `pub use proxy_server::*;` だけ。ルートの `[dependencies]` は `proxy-server` と `proxy-run` の 2 つに減らす
+         (`[dev-dependencies]` はテストが使うものを残す)。`log_*` マクロ (`crates/base/src/log.rs:457-490`、`$crate` = `proxy_base`) は glob の再輸出で通る。
+         (c) **`serve` の総称の引数 (`src/lib.rs:126`) は変えない** (`&dyn Fn` にすると単相化 約 40 MB が `proxy-server` の側に出て 95 → 135 MB になる。段 6 の実測)。単相化は `proxy-run` の側に出る。
+         (d) `proxy-server` / `proxy-run` の `codegen-units` は 1 のまま (要求の経路)。
+       - **道筋 (コミット 2 つ、段ごとに測る)**: 1. **server**: `git mv src/lib.rs src/idle.rs build.rs` → `crates/server/` (`src/lib.rs` / `src/idle.rs` / `build.rs`)、ルートの lib を facade に、`members` に追加 →
+         `mx cargo test --workspace --no-fail-fast` (`-p proxy-server` に単体テスト 5 本が同じ名前で残る) + クレートごとの RssAnon。2. **run**: `git mv src/main.rs crates/run/src/lib.rs` → `pub fn main()`、
+         `rust_http_proxy::` → `proxy_server::` (約 40 か所)、ルートの `src/main.rs` は `fn main() { proxy_run::main() }` → `--help` / `-V` / `--check` / 未知のフラグの出力と終了コードを前後で `diff`、
+         最後の段の cgroup、`--find`、`--lite` の費用。
+       - **直値で見張っているもの**: `scripts/check-docs.sh:191-205` の (e) は必ず落ちる → README のクレートの表に 2 行、「(37 + 本体)」→「(39 + 本体)」(README の 2 か所)。パスのコメント:
+         `crates/selfbench/src/lib.rs:29,221`、`scripts/ci-snapshot.sh:127`、ほか `grep -rn "src/lib.rs\|src/main.rs"` で当たる所 (TODO.md は親が直す)。`check-docs.sh` が `src/lib.rs` / `src/main.rs` を直に開いていれば道具の側のパスも直す。
+         無傷のはず: `env!("CARGO_BIN_EXE_rust-http-proxy")` の 8 ファイル、`tests/` の綴り、`build-memory.sh`、`ci.yml`。ついでに `src/lib.rs:3` の doc リンク `[proxy_stats]` (存在しないクレート) を直す。
+       - 受け入れ基準: **最後の段だけの cgroup が 70 MB で 3 回中 3 回通る**、`--find` の通る最小が 120 から悪化しない、`proxy-server` と `proxy-run` の RssAnon がどちらも 100 MB 未満 (表)、
+         `--help` / `-V` / `--check` / 終了コードが前後で同一、全体テスト全通過 (792 本から減らない)、`--lite` のシステムコール/要求・確保/要求が不変、`mx cargo build --profile dist` が通る。
 
 - [x] **T15.13 README の横に長い表を読みやすい形に直す (環境変数の表ほか)**
   - 目的: README の「環境変数」の表は 74 行 × 3 列で、説明の欄が 1 行 1,000 文字を超えるものがあり (最長 1,017 文字、中央値 122)、横に長すぎて読めない
