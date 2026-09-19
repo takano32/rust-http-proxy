@@ -17,7 +17,7 @@
 #
 # **上限を決めているクレート** (T15.12 段 5 の後の実測 2026-09-19、RssAnon の最大。手元 aarch64。通る最小は 120 MB):
 #   proxy-metrics-window 107.7 MB > proxy-endpoints 98.5 > proxy-metrics-recent 95.7 > 本体 (rust-http-proxy) 93.7
-#   > proxy-metrics-watch 92.2 (`codegen-units = 4`) > proxy-net-dns 89.2 > proxy-metrics-core 89.3
+#   > proxy-metrics-watch 92.2 (`codegen-units = 4`) > proxy-metrics-core 89.3 > proxy-net-dns 89.2
 #   > proxy-http 84.3 > … > proxy-endpoints-core 29.7 (`= 4`。`= 1` のいちばん小さい proxy-tls でも 36 MB は要る)
 # 要求の経路に乗らないクレートは `Cargo.toml` の `[profile.release.package.<名前>]` で
 # `codegen-units = 4` にしてある (T15.12 段 5)。残りの上位はまだ `= 1`。
