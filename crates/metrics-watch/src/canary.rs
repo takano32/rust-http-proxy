@@ -166,9 +166,22 @@ enum Msg {
     Wake,
 }
 
+/// `/status` の `canary` を組む口を下の層 (`proxy-metrics-core` の `push_env`) に預ける
+/// (T15.12。`kernel::set_state_file_errors` と同じ形)。
+///
+/// canary はこのクレートに居て、`/status` を組むのは 1 つ下の層なので下からは呼べない。
+/// **預ける前は canary が `off` のときと 1 バイト同じ文字列**
+/// ([`crate::metrics::CANARY_STATUS_UNSET`]) が出るので、預け忘れても鍵は変わらない。
+/// 呼ぶのは canary に用がある 2 か所 ([`configure`] と [`tick`]) で、2 度目からは
+/// 何もしない (`OnceLock`)。
+fn install() {
+    crate::metrics::set_canary_status(status_json);
+}
+
 /// `PROXY_CANARY` / `PROXY_CANARY_SECS` / `PROXY_CANARY_IPV6` を当てる
 /// (起動時と `.env` の再読込から)。
 pub fn configure(spec: &str, period: Duration, ipv6: bool) {
+    install();
     *MODE.locked() = Mode::parse(spec);
     PERIOD_SECS.store(period.as_secs().max(1), Ordering::Relaxed);
     IPV6.store(ipv6, Ordering::Relaxed);
@@ -204,6 +217,7 @@ pub fn last() -> Option<Probe> {
 /// だけで、**名前解決も接続もしない** (5 秒の標本の周期を 5 秒の締め切りで止めない)。
 /// `off` のときはスレッドも作らない。
 pub fn tick(metrics: &Arc<Metrics>) {
+    install();
     if matches!(*MODE.locked(), Mode::Off) && THREAD.get().is_none() {
         return;
     }
@@ -456,6 +470,25 @@ mod tests {
 
     /// この単体テストたちは**同じプロセスの静的な状態**を触るので直列にする。
     static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// canary をクレートの上へ上げても `/status` の `canary` が 1 バイトも変わらないこと
+    /// (T15.12)。
+    ///
+    /// 下の層 (`proxy-metrics-core`) は canary を預かっていないとき
+    /// [`crate::metrics::CANARY_STATUS_UNSET`] を出す。**それが `off` の
+    /// [`status_json`] と 1 バイト同じ**でなければ、預け忘れたときに `/status` の
+    /// `canary` が静かに変わってしまう。
+    #[test]
+    fn the_default_canary_status_is_byte_identical_to_off() {
+        let _s = SERIAL.locked();
+        reset();
+        *MODE.locked() = Mode::Off;
+        assert_eq!(status_json(), crate::metrics::CANARY_STATUS_UNSET);
+        // 預けた口は下の層でも同じ文字列を組む (`configure` が預ける)
+        configure("off", Duration::from_secs(SECS), true);
+        assert_eq!(status_json(), crate::metrics::CANARY_STATUS_UNSET);
+        reset();
+    }
 
     #[test]
     fn the_setting_is_read_as_auto_off_or_a_list_of_hosts() {
