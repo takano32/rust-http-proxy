@@ -59,10 +59,14 @@ fn non_local_hostname() -> Option<String> {
 
 /// 判定を通す設定 (`PROXY_ALLOW_LOCAL` は既定の off)。宛先には届かなくてよいので
 /// 締め切りは短くする (届かない相手への CONNECT がテストを待たせないように)。
+///
+/// 欄に直に代入するので `Config::new` の写し (T15.6) は効かない。CONNECT の
+/// オリジン接続が見るのは `connect_timeout` なので、**両方**を短くする。
 fn checking_config() -> rust_http_proxy::config::Config {
     let mut cfg = proxy_config();
     cfg.allow_local = false;
     cfg.timeout = Duration::from_secs(1);
+    cfg.connect_timeout = Duration::from_secs(1);
     cfg
 }
 

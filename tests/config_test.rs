@@ -240,6 +240,14 @@ fn test_integration_config_shows_effective_values_and_their_source() {
         "書いていない行: {}",
         json
     );
+    // CONNECT 専用の締め切りも書いていないので、`PROXY_TIMEOUT_SECS` の値が
+    // 出どころ `default` のまま写っている (T15.6 (1))
+    assert_eq!(
+        setting(&json, "PROXY_CONNECT_TIMEOUT_SECS"),
+        ("30".to_string(), "default".to_string()),
+        "書いていない行 (共通の締め切りを写す): {}",
+        json
+    );
     // `.env` 自身の場所と、この環境で何が読めるかも同じ 1 枚に出る
     assert!(
         json.contains(&dir.join(".env").display().to_string()),

@@ -1299,6 +1299,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       `sorahost_lock_contention_total{lock=...}` です
 - **タイムアウト制御**:
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
+  - `PROXY_CONNECT_TIMEOUT_SECS` で **`CONNECT` のオリジン接続だけ**を別の (短い) 締め切りにできます
+    (未設定なら `PROXY_TIMEOUT_SECS` と同じ値)
 
 ## コマンドライン引数
 
@@ -1382,6 +1384,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_ALLOW_HOSTS` | なし (全許可) | 接続許可ホストのカンマ区切りリスト (例: `*.example.com,api.github.com`) |
 | `PROXY_DENY_HOSTS` | なし | 接続拒否ホストのカンマ区切りリスト (例: `bad.com,*.blocked.org`) |
 | `PROXY_TIMEOUT_SECS` | `30` | 接続およびデータ転送タイムアウト（秒）。`0` で**無期限** (`PROXY_TUNNEL_IDLE_SECS` と同じ意味): 何も送ってこないクライアント接続を閉じず、オリジンへの接続と読み書きにも締め切りを置かない (OS 既定に任せる)。`PROXY_KEEPALIVE_SECS` (要求と要求の間) と `PROXY_TUNNEL_IDLE_SECS` は別に効く |
+| `PROXY_CONNECT_TIMEOUT_SECS` | `PROXY_TIMEOUT_SECS` と同じ値 (既定では `30`) | **`CONNECT` のオリジン接続だけ**の締め切り (秒)。`0` で**無期限** (`PROXY_TIMEOUT_SECS` と同じ意味)。**いまは `CONNECT` にだけ効きます**: forward のオリジン接続・オリジンとの読み書き・クライアントソケットの読み書き・ブロックリストの取得は `PROXY_TIMEOUT_SECS` のままです。繋がらない相手を待つ時間 (利用者から見える「固まっている」時間) だけを縮めたいときに使います — `PROXY_TIMEOUT_SECS` を短くすると大きな本文の転送や遅い応答まで切ってしまうためです。Happy Eyeballs の締め切りも同じ値なので、締め切りで抜けた接続は `/errors` に `cause: "timeout"` で残ります。**名前解決の時間は含みません** (名前を引いたあとの `connect` に効きます)。未設定なら `PROXY_TIMEOUT_SECS` をそのまま写すので、**書かなければ挙動は変わりません**。`.env` で即時反映 |
 | `PROXY_KEEPALIVE_SECS` | `15` | クライアント接続を次の要求まで待つアイドル時間 (秒)。`0` で 1 接続 1 要求。**待つ長さとは別に、1 本の接続で 1,000 要求を捌いたらその接続は閉じます** (下記) |
 | `PROXY_ORIGIN_POOL` | `64` | オリジンへのアイドル接続をホストごとに保持する本数。`0` で再利用しない。少ないと同時要求数が多いときに張り直しが増える (実測: 8 本だと 64 並列で p99 が 40 ms 台、64 本なら 10 ms 前後) |
 | `PROXY_PARK_IDLE` | `on` | アイドルな keep-alive 接続と、両方向とも暇な CONNECT トンネルをスレッドから外し、1 本の監視スレッド (epoll) に預ける。`off` で「1 接続 = 1 スレッドが専任」の動きに戻る。Linux 専用 (それ以外では自動的に無効)。実測: 暇な接続 2,000 本でスレッド 2,004 → 25 本、RSS 68.0 → 25.2 MB、暇なトンネル 5,000 本でスレッド 5,005 → 68 本、RSS 93.9 → 29.9 MB。忙しいときの CPU/要求とシステムコール数は変わらない |
@@ -1452,6 +1455,7 @@ check: ok (everything this proxy reads is readable)
 
 `.env` は起動後も監視していて、保存すると再起動なしで読み直します (`$HOME` を inotify で監視、使えないファイルシステムでは
 30 秒ごとの mtime 確認)。即時に反映されるのは `PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS` / `PROXY_TIMEOUT_SECS` /
+`PROXY_CONNECT_TIMEOUT_SECS` /
 `PROXY_KEEPALIVE_SECS` / `PROXY_LOG_LEVEL` / `PROXY_MAX_CONNS` / `PROXY_MAX_THREADS` /
 `PROXY_ALLOW_CLIENTS` / `PROXY_ENDPOINTS_READONLY` / `PROXY_MAX_CONNS_PER_CLIENT` などで、
 既存の keep-alive 接続には次の接続から効きます (どの値を当てたかは `/status` の `settings.applied` に出ます)。ポート・bind・

@@ -110,7 +110,8 @@ pub enum ErrCause {
     Refused = 1,
     /// 経路が無い (ENETUNREACH / EHOSTUNREACH / EADDRNOTAVAIL)
     Unreachable = 2,
-    /// 締め切りに間に合わなかった (`PROXY_TIMEOUT_SECS`)
+    /// 締め切りに間に合わなかった (`PROXY_TIMEOUT_SECS` / CONNECT のオリジン接続は
+    /// `PROXY_CONNECT_TIMEOUT_SECS`。T15.6)
     Timeout = 3,
     /// つないだあとで切られた (ECONNRESET / EPIPE / EOF)
     Reset = 4,
