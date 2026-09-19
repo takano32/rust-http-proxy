@@ -7,8 +7,9 @@ FROM rust:1.96 AS build
 WORKDIR /src
 # ワークスペースの土台。`Cargo.lock` を入れるのは版を固定するため
 # (外部クレートは 1 つも使わないが、lock が無いと生成しに行く)。
-# build.rs は版の文字列を作るだけ。.git は入れないので `0.1.0+unknown` になる
-COPY Cargo.toml Cargo.lock build.rs ./
+# 版の文字列を作る build.rs は `crates/server/` にある (T15.12 段 6')。
+# .git は入れないので `0.1.0+unknown` になる
+COPY Cargo.toml Cargo.lock ./
 # `jobs = 1` (メモリの小さい環境でも通す設定)。手元・CI・Docker で同じ条件にする
 COPY .cargo ./.cargo
 # 本体は 26 個のクレートに分かれている (`Cargo.toml` の workspace members)。

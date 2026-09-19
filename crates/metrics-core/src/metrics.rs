@@ -641,7 +641,7 @@ impl Metrics {
 
     /// 接続元の `User-Agent` を 1 つ覚える (`/clients`。T14.7)。
     ///
-    /// **呼ぶのは接続の最初の要求のときだけ** (`src/lib.rs`)。要求ごとに見ると
+    /// **呼ぶのは接続の最初の要求のときだけ** (`crates/server/src/lib.rs`)。要求ごとに見ると
     /// ヘッダーの走査も鍵も要求ごとに増えるので、接続 1 本につき 1 回に決めてある
     /// (2 要求目からは呼び出し側の旗で飛ばす)。
     pub fn record_client_agent(&self, client: &str, agent: &str) {

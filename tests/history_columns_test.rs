@@ -154,7 +154,7 @@ fn test_integration_active_peak_catches_a_spike_shorter_than_the_sample() {
     // 9 = 8 本 + `/status` 自身) と `tests/bursts_test.rs` (4 本 → 8 本 → 2 本)。
     // `active_connections` を増やすのは
     // `Metrics::inc_active_conn` だけ (`crates/metrics-core/src/metrics.rs`) なので、
-    // あの 2 本が通る限り `Conn::new` (`src/lib.rs`) からの呼び出しは生きている
+    // あの 2 本が通る限り `Conn::new` (`crates/server/src/lib.rs`) からの呼び出しは生きている
     for _ in 0..SPIKE {
         metrics.inc_active_conn();
     }

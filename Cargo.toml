@@ -36,6 +36,7 @@ members = [
     "crates/endpoints-core",
     "crates/endpoints-explain",
     "crates/endpoints",
+    "crates/server",
     "crates/bench",
 ]
 
@@ -52,23 +53,8 @@ edition = "2024"
 # 自分のコードを層ごとに分けたもの。**外部クレートは 1 つも使わない** (すべて std のみ)。
 # 1 クレートが大きいと rustc がまとめて抱えてビルドの最大 RSS が上がるため
 # (実測: 18,276 行 1 クレートで 330 MB、動作環境の上限は 180 MB = SERVER_MEMORY 256 MiB)。
-proxy-base = { path = "crates/base" }
-proxy-blocklist = { path = "crates/blocklist" }
-proxy-cache = { path = "crates/cache" }
-proxy-config = { path = "crates/config" }
-proxy-endpoints = { path = "crates/endpoints" }
-proxy-http = { path = "crates/http" }
-proxy-metrics = { path = "crates/metrics" }
-proxy-msg = { path = "crates/msg" }
-proxy-net = { path = "crates/net" }
-proxy-origin = { path = "crates/origin" }
-proxy-prom = { path = "crates/prom" }
-proxy-reload = { path = "crates/reload" }
-proxy-selfbench = { path = "crates/selfbench" }
-proxy-sys = { path = "crates/sys" }
-proxy-sysinfo = { path = "crates/sysinfo" }
-proxy-tunnel = { path = "crates/tunnel" }
-proxy-workers = { path = "crates/workers" }
+# ルートのパッケージは **facade と bin だけ** (T15.12 段 6')。本体は `crates/server`。
+proxy-server = { path = "crates/server" }
 
 # メモリの小さい環境 (Pterodactyl コンテナ) でも通ることを優先した既定のプロファイル。
 # LTO を切っているのは、まとめて最適化する**最終リンクの 1 回**が大きいため。
@@ -123,7 +109,7 @@ strip = true
 codegen-units = 1
 
 # ここから下は**要求の経路に乗らないクレート**だけ (T15.12 段 5、2026-09-19)。
-# `src/lib.rs` の `serve` の accept ループ → `run_conn` → `serve_one` → forward / トンネルの転送を
+# `crates/server/src/lib.rs` の `serve` の accept ループ → `run_conn` → `serve_one` → forward / トンネルの転送を
 # たどって、1 要求・1 接続ごとに関数が呼ばれないことを確かめたものを並べてある。
 # `[profile.dist]` は `inherits = "release"` なので同じ上書きが効く (バイナリの大きさが
 # 変わらないことを確かめてある)。

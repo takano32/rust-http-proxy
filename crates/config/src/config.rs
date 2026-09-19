@@ -407,7 +407,7 @@ pub struct Config {
     /// 合流待ちにも効くので、「繋がらない相手を待つ時間」だけを縮めるにはこちらを使う。
     ///
     /// **持っているのは実効値** (`Option` にしない。明示の `0` = 無期限はそのまま写す。T10.6)。
-    /// 効くのは `src/lib.rs` の CONNECT から `start_tunnel` へ渡す 1 か所だけで、
+    /// 効くのは `crates/server/src/lib.rs` の CONNECT から `start_tunnel` へ渡す 1 か所だけで、
     /// forward のオリジン接続 (`origin::connect`) と blocklist の取得は `timeout` のまま。
     pub connect_timeout: Duration,
     /// クライアント接続を keep-alive で待つアイドル時間。0 なら 1 接続 1 要求

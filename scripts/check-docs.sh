@@ -79,7 +79,7 @@ echo "    別名: /inspect=/dashboard/inspect, /probe.html=/probe, 末尾の / �
 # コード側は `crates/` と `src/` の `"PROXY_…"` / `"SERVER_…"` の文字列すべて
 # (`config.rs` の `src.mark()` と各クレートの `envfile::var()` はここに入る)。
 cat >"$W/env-skip" <<'EOF'
-PROXY_VERSION	build.rs が作るビルド時の値 (`env!`)。実行時に読む設定ではない
+PROXY_VERSION	crates/server/build.rs が作るビルド時の値 (`env!`)。実行時に読む設定ではない
 PROXY_NO_SUCH_KEY_T1415	「設定されていない鍵」を確かめるテスト専用の名前
 EOF
 grep -rhoE '"(PROXY|SERVER)_[A-Z0-9]+[A-Z0-9_]*"' --include='*.rs' crates/ src/ |

@@ -223,7 +223,7 @@ fn test_integration_clients_reads_the_user_agent_only_on_the_first_request() {
 /// 見るのは「行が出来たあとに自分宛てを何回引いても `samples` が `requests` を
 /// 越えない」こと。**直す前は落ちる** (引いた回数だけ `samples` が増える)。
 ///
-/// **Linux だけ**: ほかの OS では `tcp_rtt` が `(0, 0)` を返し (`src/lib.rs` の
+/// **Linux だけ**: ほかの OS では `tcp_rtt` が `(0, 0)` を返し (`crates/server/src/lib.rs` の
 /// `#[cfg(not(target_os = "linux"))]` の側)、`record_client_rtt` が `rtt_us == 0` で
 /// 早く返るので `rtt_ms` は常に `null` になる。RTT に寄りかかる結合テストは
 /// このリポジトリでは全部こうしてある (`tests/recent_test.rs` の T14.5 の 2 本)。
