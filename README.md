@@ -15,7 +15,7 @@ curl -x localhost:8080 http://example.com/        # 動作確認
 プロキシ設定の「自動プロキシ設定 URL」に入れるだけです (このプロキシが落ちていれば DIRECT に落ちます)。
 
 `cargo install --git https://github.com/takano32/rust-http-proxy` でも入ります
-(ビルドはメモリ 135 MB で通ります。下の「ビルド・テスト」を参照)。
+(ビルドはメモリ 140 MB で通ります。下の「ビルド・テスト」を参照)。
 
 キャッシュ・ダッシュボード・統計まで使うなら `--lite` を外します。
 
@@ -2084,11 +2084,11 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 
 
 > **メモリの小さい環境向けの設定**: `.cargo/config.toml` で `jobs = 1` にしてあります。
-> このリポジトリは **135 MB のメモリでリリースビルドが通ります** (2026-09-17、手元の aarch64 で実測。
-> 130 MB は落ちます。CI が毎回確かめているのは **180 MB の関門を通るかどうかだけ**で、CI で通る最小は
+> このリポジトリは **140 MB のメモリでリリースビルドが通ります** (2026-09-19、手元の aarch64 で実測。
+> 135 MB は落ちます。CI が毎回確かめているのは **180 MB の関門を通るかどうかだけ**で、CI で通る最小は
 > 測っていません)。LTO を既定で切っているのもこのためです (下の「プロファイルの設定」)。
-> `rustc` はクレート単位で全部を一度に抱えるため、いちばん大きいクレート (`proxy-endpoints`) の 1 プロセスで
-> **RssAnon 115.3 MB** 使い (通る最小はここに 20 MB ほど足した値になります。`/usr/bin/time -v` の最大 RSS は
+> `rustc` はクレート単位で全部を一度に抱えるため、いちばん大きいクレート (`proxy-metrics-watch`) の 1 プロセスで
+> **RssAnon 121.7 MB** 使い (通る最小はここに 20 MB ほど足した値になります。`/usr/bin/time -v` の最大 RSS は
 > 246 MB と出ますが、そのうち 110〜122 MB は `librustc_driver` のファイル由来のページで、ページキャッシュに
 > 載っていれば cgroup には課金されません)、既定の並列数だと
 > その合計がコンテナのメモリ上限を超えて OOM killer に落とされます (実測: 180 MB の cgroup で、
@@ -2153,7 +2153,7 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 上の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`)、(b) コードの `"PROXY_…"` / `"SERVER_…"` の
 文字列と上の「環境変数」の表の鍵の欄、(c) `/snapshot` の `parts` と個票のエンドポイント、
 (d) `scripts/check-dashboard.js` が画面の HTML から切り出す関数名と、そこで実際に呼んでいる名前、
-(e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(34 + 本体)」の数も見ます)。
+(e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(37 + 本体)」の数も見ます)。
 **意図的に外してあるものはスクリプトの中の除外表に理由つきで持ちます** (`/snapshot` に入れない 18 の口、
 ビルド時にしか無い `PROXY_VERSION` など)。差分が 1 件でもあればその名前を印字して終了コード 1 です。
 bash と grep / sed / awk / python3 の標準ライブラリだけで動くので、`cargo` も Node も要りません
@@ -2286,7 +2286,7 @@ curl -x localhost:8080 http://example.com/
 | `opt-level` | `3` | `"s"` |
 | `lto` | `false` | `true` (fat) |
 | `codegen-units` / `strip` | `1` / あり | 同じ |
-| ビルドが通る最小のメモリ | **135 MB** (手元。CI では未測定) | 350 MB 以上 |
+| ビルドが通る最小のメモリ | **140 MB** (手元。CI では未測定) | 350 MB 以上 |
 | バイナリ | 1,381,872 B | **1,054,184 B** (327 KB 小さい) |
 | CPU/要求 (forward 8 並列) | 41.4 us | **39.6 us** |
 
