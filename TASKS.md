@@ -5209,6 +5209,8 @@ p50 6 ms 以下**、T14.2 の 7 件が済み (見送りは理由つき)、T14.99
 物差しと証拠を先に入れる、という順は変えていない — Phase 14 の完了の定義は測れない量を判定していたので、T15.0 を先に入れた。
 番号の対応: 旧 T15.0 → **T15.12**、旧 T15.1 / T15.2 / T15.7 → **T15.0 (1)(2)(3)**、旧 T15.3 → **T15.0 (8)**、旧 T15.9 → **T15.0 (11)**、旧 T15.8 → **T15.0 (12)**。
 
+**デプロイ前の全体チェック (2026-09-19、main `d820c8e` = T15.4 と T15.6 (1) のあと)**: fmt 通過、clippy `-D warnings` 警告 0、`cargo test --workspace --no-fail-fast` は 118 binary・**790 本中 789 本通過**、release 2,498,344 B、`scripts/build-memory.sh 180` 通過、scripts 213 本、dashboard と docs の検査も通過。手元の release で `/config` の `PROXY_DNS_WARM_SECS` = 3600・`default`、`PROXY_CONNECT_TIMEOUT_SECS` = `PROXY_TIMEOUT_SECS` と同じ 30・`default`、環境変数で 1 にすると 1・`env`。**落ちた 1 本は今回の変更と無関係**: `tests/schema_test.rs` の 3 本が、「重い口は同時に 1 本だけ」の旗 `HEAVY_BUSY` (`crates/endpoints/src/endpoints/mod.rs:210`。**プロセスに 1 つ**) を同じプロセスの別スレッドから取り合い、負けた側が 503 になる (その binary を 5 回回すと 4 回落ち、落ちる名前は毎回違う。`--test-threads=1` なら 5 回とも通る。波の前の main でも 5 回中 2 回落ちた)。本番は 1 プロセス = 1 プロキシなので挙動の問題ではない。テストの側を直列にする直しを、T15.6 (2) と並べて入れている。
+
 **番号の一覧 (なぜ欠番があるか)**: §0 の決まりで「番号は付けた順で、並び替えても振り直さない」(コミットメッセージと `結果:` から引けるようにするため)。
 Phase 15 は T14.99 の分析が T15.0〜T15.11 を一度に書き出し、そのあと 2026-09-18 に「計器を先に載せる」へ組み替えたので、**畳んだ番号は欠番のまま**にしてある。
 
@@ -5216,9 +5218,9 @@ Phase 15 は T14.99 の分析が T15.0〜T15.11 を一度に書き出し、そ�
 |---|---|---|
 | T15.0 | 次の判断に要る情報を先に載せる (9 単位、(1)〜(15)) | 済み (2026-09-18) |
 | T15.1 / T15.2 / T15.3 | **欠番** — T15.0 の (1) / (2) / (8) に畳んだ | (T15.0 の中で済み) |
-| T15.4 | keep-warm の窓の既定を 900 → 3,600 秒 | **実装中** |
+| T15.4 | keep-warm の窓の既定を 900 → 3,600 秒 | 済み (2026-09-19) |
 | T15.5 | CPU の空回りを止める | 済み (2026-09-18) |
-| T15.6 | connect 専用のタイムアウトの設定を足し、既定を 10 秒に | **実装中** |
+| T15.6 | connect 専用のタイムアウトの設定を足し、既定を 10 秒に | (1) 済み、**(2) 実装中** |
 | T15.7 / T15.8 / T15.9 | **欠番** — T15.0 の (3) / (12) / (11) に畳んだ | (T15.0 の中で済み) |
 | T15.10 | 接続の制限を入れるかの決定 → 入れない | 済み (2026-09-18) |
 | T15.11 | 1 枚の要約の直し | 済み (2026-09-18) |
@@ -5941,7 +5943,7 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
 
 24 時間後の `scripts/collect-deployed.sh` は **`/snapshot` の前に `/status` を 1 本**取り、要約の RSS だけそちらを使う (雪像を配ること自体が RSS を約 1.0 MB 押し上げるため)。判定表の既定は **`CRITERIA=phase15`** で、Phase 14 の 4 行を見たいときだけ `CRITERIA=phase14` を付ける。
 
-- [ ] **T15.4 `PROXY_DNS_WARM_SECS` の既定を 900 → 3600 にする (1 行)**
+- [x] **T15.4 `PROXY_DNS_WARM_SECS` の既定を 900 → 3600 にする (1 行)**
   - 目的: Phase 14 で唯一届かなかったホスト `discord.com` (ミス率 0.15) を基準 0.05 未満に入れる。残る 336 回の「2 度目以降のミス」は
     ほぼ全部が「使われる間隔が窓より長い名前」で、デプロイ先の利用の形 (**2〜4 本の塊が約 1,800 秒おきに来る**) に対して
     900 秒の窓は短すぎる。窓を伸ばすと空振りの引き直しが「次に本当に使われるまでの待ち」に変わるので、費用の質も良くなる。
@@ -5990,6 +5992,7 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
     `mx cargo test -p proxy-net dns`、`mx cargo test --test dns_test`、`mx cargo test --test history_columns_test` が通り、`./scripts/check-docs.sh` が差分 0 であること。
     新規テストは 0 本 (既存 1 本の齢を広げて assert を 1 行足すだけ)。変更は 2 ファイル・約 15 行。
     **デプロイ先での効きの判定 (discord のミス率 0.05 未満 / `refreshes ÷ 時間 ÷ 平均 dns_warm` ≤ 80 / 全体 0.06〜0.09) は T15.99**。
+  - **結果 (2026-09-19、`4391e7a`)**: `crates/net/src/dns.rs:42` の `WARM` を 900 → **3,600 秒**にし、本文の 7 か所を揃えた (2 ファイル・17 挿入 13 削除、新規テスト 0 本)。`/config` の `PROXY_DNS_WARM_SECS` は実際に起動して `{"value":3600,"source":"default"}` を確認 (`config.rs` / `settings()` / `--check` / `/config` は全部 `dns::WARM` から実効値を読むので変更不要、という下読みのとおりだった)。`dns.rs` は module doc (10 行) と `WARM` の doc (38-41 行、T14.1 の「2〜10 分間隔」は残し 2 文目を T15.4 の根拠 = discord は 2〜4 本の塊が約 1,800 秒おき・T15.0 の版の 9 時間でミス 26 回中 25 回が窓の外、に差し替え。`STALE_MAX` と取り違えないよう「1 時間」とは書かず「3,600 秒」と書いた)。README は環境変数の表 (`README.md:1393`、既定の欄を `3600` にし、同じセルの末尾の実測は「**(当時の既定) 900 秒**の窓をいつも外れ」と明記して残したうえで「そこで T15.4 で既定を 900 → 3,600 秒に広げました (判定は T15.99)」を足した)、Phase 14 の「届かなかった 2 つ」(`253-255`、消さずに時制だけ変えた。0.15 は触っていない)、keep-warm の説明の「15 分」2 か所 (`454` / `457` → 3,600 秒)。単体テスト `a_relookup_counts_only_a_real_change_of_the_answer` は齢 3,600 → **7,200 秒**に広げ (既定と同値では余裕が 0 になり、コメントも嘘になる)、`assert!(!is_warm(host), "窓の外なので warm にしない")` を 1 行足した。`mx cargo test -p proxy-net dns` 20 本・`--test dns_test` 5 本・`--test history_columns_test` 4 本すべて通過、`cargo clippy -p proxy-net --all-targets -- -D warnings` 警告 0、`./scripts/check-docs.sh` 差分 0。本文の行番号は 11 か所すべて一致し、違っていた事実は無し。**デプロイ先での効きの判定 (discord のミス率 0.05 未満 / `refreshes ÷ 時間 ÷ 平均 dns_warm` ≤ 80 / 全体 0.06〜0.09) は T15.99**。 レビュー: 指摘 0 件 (`ok`)。main への取り込み `e66e1f6` (衝突なし)。
 
 - [x] **T15.5 CPU 割り当て (0.5 コア) を食い切っている空回りを止める (2026-09-18 に前倒し。T15.0 を待たない)**
   - 目的: プロセスの CPU が cgroup の割り当て 0.5 コアに張り付き、**24 時間ずっと毎 CFS 周期 (100 ms) 絞られている**。
@@ -6178,6 +6181,7 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
     `tests/config_test.rs:241` の隣に `PROXY_CONNECT_TIMEOUT_SECS` = `("30","default")`。
   - 受け入れ基準 (このタスク = (1)): 上のテストと、名指しの `mx cargo test -p proxy-config`、`mx cargo test -p proxy-endpoints config`、`mx cargo test --test config_test`、
     `mx cargo test --test keepalive_test`、`mx cargo test --test events_test` が通ること。`./scripts/check-docs.sh` が差分 0。実装 約 40 行 + テスト 約 90 行。
+  - **(1) の**結果 (2026-09-19、640f52f): **(1) 設定を足すところまで完了** (既定は変えていない)。`Config::connect_timeout: Duration` は実効値 (`Option` にしない) で、`Config::new` が `timeout` をそのまま写す (`0` = 無期限も写す) ので**書かなければ挙動は変わらない**。効かせたのは `src/lib.rs:1115` の CONNECT → `start_tunnel` の 1 行だけで、forward の `origin::connect` と blocklist の取得は `PROXY_TIMEOUT_SECS` のまま。`crates/net` と `crates/tunnel` は 1 行も触っていない。再読込は `crates/reload/src/reload.rs` に独立の 7 行、`settings()` に 1 行 (= `/config` と `--check` の両方に出る)、CLI 引数は足さず help に 1 行。実測: `connect_timeout` 1 秒・`timeout` 5 秒で黒穴への CONNECT が **1001.5 ms** で 502、`/errors` の `cause` は `timeout` (`src/lib.rs` の 1 行を戻すと同じテストが 5.11 秒かかって落ちる = テストは効いている)。テストは `crates/config` の単体 2 本、`tests/connect_timeout_test.rs` の結合 2 本、`tests/config_test.rs` の `/config` 1 行を追加し、`-p proxy-config` 14 / `-p proxy-reload` 0 / `-p proxy-endpoints config` 2 / `--test config_test` 3 / `--test connect_timeout_test` 2 / `--test keepalive_test` 15 / `--test events_test` 1 が全通過、`./scripts/check-docs.sh` 差分 0。**(2) 既定を 10 秒に (`176504e` で本文に入った規則) は未実施** — 指示が (1) までだったため。`/config` は `reload::global()` が無いと環境から組み直す (`endpoints/config.rs:47-54`) ので、渡した `Config` の値は `/config` に出ない (本文の決定 3 の読み方に注意)。 レビュー: should_fix 1 件 → 取り込み前に修正 (`Config` の欄に `timeout` を直に代入している既存の結合テスト 2 本 = `tests/dns_test.rs` と `tests/tunnel_test.rs` の「届かない相手への CONNECT を短く切る」が新しい欄に追随せず、300 ms のはずが 5,001 ms・1 秒のはずが 5,005 ms かかっていた。`connect_timeout` も明示する形に直して 301 ms / 1,001 ms に戻した)。main への取り込み `d820c8e` (衝突なし)。**(2) 既定を 10 秒に、は続けて実装中 (2026-09-19)**。
 
 - [x] **T15.10 `PROXY_MAX_CONNS_PER_CLIENT` と `PROXY_CONNECT_PORTS` を既定のままにするかを 1 回だけ決める**
   - 目的: 判断材料が 2026-09-18 に初めて出たので、「入れる / 入れない」を数字つきで書き留める。**認証を入れないのは §0 の決まり、
