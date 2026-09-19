@@ -121,6 +121,15 @@ impl Live {
             next.sources.adopt(&fresh.sources, "PROXY_TIMEOUT_SECS");
             applied.push("PROXY_TIMEOUT_SECS");
         }
+        // CONNECT のオリジン接続だけの締め切り (T15.6)。未設定なら `PROXY_TIMEOUT_SECS` を
+        // 写した実効値なので、`PROXY_TIMEOUT_SECS` だけを動かすと `applied` に 2 行出る
+        // (実際に効く値が 2 つとも動いたのだから、それが正しい)
+        if fresh.connect_timeout != old.connect_timeout {
+            next.connect_timeout = fresh.connect_timeout;
+            next.sources
+                .adopt(&fresh.sources, "PROXY_CONNECT_TIMEOUT_SECS");
+            applied.push("PROXY_CONNECT_TIMEOUT_SECS");
+        }
         if fresh.keepalive != old.keepalive {
             next.keepalive = fresh.keepalive;
             next.sources.adopt(&fresh.sources, "PROXY_KEEPALIVE_SECS");

@@ -371,6 +371,17 @@ pub struct Config {
     /// ソケットへ渡すときは [`proxy_base::timeout::for_socket`] で `None` に直す
     /// (`std` は `Duration::ZERO` を `InvalidInput` で断るため)。
     pub timeout: Duration,
+    /// **CONNECT のオリジン接続だけ**に効く締め切り (`PROXY_CONNECT_TIMEOUT_SECS`、`0` で無期限)。
+    ///
+    /// 未設定なら [`Config::timeout`] と同じ値 (`Config::new` が写す) なので、**足しただけでは
+    /// 挙動は変わらない** (T15.6 (1))。`PROXY_TIMEOUT_SECS` は CONNECT のオリジン接続だけでなく
+    /// forward の読み書き・クライアントソケット・キャッシュの合流待ちにも効くので、
+    /// 「繋がらない相手を待つ時間」だけを縮めるにはこちらを使う。
+    ///
+    /// **持っているのは実効値** (`Option` にしない。`0` = 無期限はそのまま写す。T10.6)。
+    /// 効くのは `src/lib.rs` の CONNECT から `start_tunnel` へ渡す 1 か所だけで、
+    /// forward のオリジン接続 (`origin::connect`) と blocklist の取得は `timeout` のまま。
+    pub connect_timeout: Duration,
     /// クライアント接続を keep-alive で待つアイドル時間。0 なら 1 接続 1 要求
     pub keepalive: Duration,
     /// オリジンへのアイドル接続をホストごとに何本まで保持するか。0 で再利用しない
@@ -588,6 +599,15 @@ impl Config {
         if let Some(bind) = envfile::var("PROXY_BIND") {
             cfg.bind_addrs = parse_bind_list(&bind)?;
             src.mark("PROXY_BIND");
+        }
+        // CONNECT のオリジン接続だけを縮めたいときの口 (T15.6)。書かなければ `cfg.connect_timeout`
+        // は `Config::new` が写した `PROXY_TIMEOUT_SECS` の値のまま = 挙動は変わらない。
+        // `0` は `PROXY_TIMEOUT_SECS` と同じく無期限 (T10.6)
+        if let Some(secs) =
+            envfile::var("PROXY_CONNECT_TIMEOUT_SECS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.connect_timeout = Duration::from_secs(secs);
+            src.mark("PROXY_CONNECT_TIMEOUT_SECS");
         }
         if let Some(secs) =
             envfile::var("PROXY_KEEPALIVE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
@@ -941,6 +961,8 @@ impl Config {
         add("PROXY_LISTEN_BACKLOG", self.listen_backlog.to_string());
         // 接続と上限
         add("PROXY_TIMEOUT_SECS", secs(self.timeout));
+        // 実効値 (未設定なら `PROXY_TIMEOUT_SECS` と同じ数が出る。T15.6)
+        add("PROXY_CONNECT_TIMEOUT_SECS", secs(self.connect_timeout));
         add("PROXY_KEEPALIVE_SECS", secs(self.keepalive));
         add("PROXY_TUNNEL_IDLE_SECS", secs(self.tunnel_idle));
         add("PROXY_MAX_CONNS", self.max_conns.to_string());
@@ -1120,6 +1142,9 @@ impl Config {
             listen_backlog: crate::net::default_backlog(),
             acl,
             timeout,
+            // 未設定なら `timeout` をそのまま写す (`0` = 無期限も写す)。ここで写しておくと
+            // `Config::new` を呼ぶ既存の所 (テストと `/config` の組み立て) が自動で追随する
+            connect_timeout: timeout,
             keepalive: Duration::from_secs(15),
             pool_per_host: 64,
             pool_total: 256,
@@ -1458,6 +1483,41 @@ mod tests {
         cfg.tcp_keepalive = None;
         assert_eq!(cfg.tcp_keepalive_spec(), "off");
         assert_eq!(TcpKeepalive::parse("off"), Some(None));
+    }
+
+    /// `PROXY_CONNECT_TIMEOUT_SECS` を書かなければ `PROXY_TIMEOUT_SECS` の実効値がそのまま
+    /// 写る (`0` = 無期限も写す)。**足しただけでは挙動が変わらない**ことの土台 (T15.6 (1))。
+    #[test]
+    fn connect_timeout_copies_the_shared_timeout_by_default() {
+        for secs in [0u64, 1, 10, 30] {
+            let cfg = Config::new("9090", None, None, Duration::from_secs(secs)).expect("port");
+            assert_eq!(cfg.timeout, Duration::from_secs(secs));
+            assert_eq!(
+                cfg.connect_timeout, cfg.timeout,
+                "PROXY_TIMEOUT_SECS={} を写していない",
+                secs
+            );
+        }
+    }
+
+    /// `settings()` (= `/config` と `--check`) に実効値で出る。短くしても
+    /// `PROXY_TIMEOUT_SECS` の側は動かない (効くのは CONNECT のオリジン接続だけ。T15.6)。
+    #[test]
+    fn settings_show_the_connect_timeout() {
+        let mut cfg = Config::new("9090", None, None, Duration::from_secs(30)).expect("port");
+        let find = |cfg: &Config, key: &str| {
+            cfg.settings()
+                .iter()
+                .find(|s| s.key == key)
+                .unwrap_or_else(|| panic!("{} が無い", key))
+                .value
+                .clone()
+        };
+        assert_eq!(find(&cfg, "PROXY_CONNECT_TIMEOUT_SECS"), "30");
+        assert_eq!(find(&cfg, "PROXY_TIMEOUT_SECS"), "30");
+        cfg.connect_timeout = Duration::from_secs(10);
+        assert_eq!(find(&cfg, "PROXY_CONNECT_TIMEOUT_SECS"), "10");
+        assert_eq!(find(&cfg, "PROXY_TIMEOUT_SECS"), "30", "共通の側は動かない");
     }
 
     #[test]
