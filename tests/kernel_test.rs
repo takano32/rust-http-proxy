@@ -202,6 +202,9 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
         "listen_overflows",
         // T15.0 (6) で `keys` の末尾に足した列 (絞られた割合の分母)
         "cpu_nr_periods",
+        // T16.0 で末尾に足した列 (cgroup のユーザー空間とカーネル側の増分)
+        "cpu_user_usec",
+        "cpu_system_usec",
     ] {
         assert!(kernel.contains(&format!("\"{}\"", key)), "{} が無い", key);
     }
@@ -250,7 +253,15 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
         .map(|(_, r)| r)
         .unwrap_or_else(|| panic!("/status に cgroup_cpu が無い: {}", k));
     if !cg.starts_with("null") {
-        for key in ["nr_periods", "path", "since_start"] {
+        // T16.0 で末尾に足した `usage_usec` / `user_usec` / `system_usec` (行が無ければ `null`)
+        for key in [
+            "nr_periods",
+            "path",
+            "since_start",
+            "usage_usec",
+            "user_usec",
+            "system_usec",
+        ] {
             assert!(
                 cg.contains(&format!("\"{}\":", key)),
                 "{} が無い: {}",
@@ -263,7 +274,14 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
             .map(|(_, r)| r.split('}').next().unwrap())
             .unwrap();
         // 起動からの増分は「いまの累計 − 最初に読んだ累計」なので、数えた期間より多くない
-        for key in ["nr_periods", "nr_throttled", "throttled_usec"] {
+        for key in [
+            "nr_periods",
+            "nr_throttled",
+            "throttled_usec",
+            "usage_usec",
+            "user_usec",
+            "system_usec",
+        ] {
             assert!(since.contains(&format!("\"{}\":", key)), "{}", since);
         }
     }

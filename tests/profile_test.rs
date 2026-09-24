@@ -13,11 +13,14 @@ use common::*;
 use rust_http_proxy::profile;
 
 /// 窓を 1 つ閉じる (本番の `profile-sample` スレッドが 5 秒ごとにするのと同じこと)。
+/// ユーザー空間は CPU の 3 割にしておく (T16.0 の `cpu_user_us` が畳まれるのを見るため。
+/// デプロイ先の実測もカーネル側が約 7 割)。
 fn close_window(metrics: &rust_http_proxy::metrics::Metrics, t: u64, requests: u64, cpu_us: u64) {
     metrics.profile.push(profile::Sample {
         t,
         requests,
         cpu_us,
+        cpu_user_us: cpu_us * 3 / 10,
         stages: metrics.take_stages(),
         ..profile::Sample::default()
     });
@@ -35,7 +38,8 @@ fn test_integration_profile_has_the_shape_the_dashboard_reads() {
         "\"sampler\":\"off\"",
         "\"bounds_ms\":[1,2,5,10,25,50,100,250,500,1000,2500,5000]",
         // 新しい欄は**末尾**に足す (画面は位置で開くので、古い読み手はそのまま動く。T15.0 (5))
-        "\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\",\"threads_top\",\"run_delay_us\"]",
+        // T16.0 は `user_us` (役割ごと) と `cpu_user_us` (プロセス全体) を末尾に足した
+        "\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\",\"threads_top\",\"run_delay_us\",\"user_us\",\"cpu_user_us\"]",
         "\"lock_names\":[\"stats\",\"dns\",\"park\",\"workers\"]",
         "\"locks_total\":[",
         "\"queue_total\":[",
@@ -179,6 +183,7 @@ fn test_integration_profile_stays_under_256_kib() {
     let mut threads = profile::Threads::default();
     for (i, t) in threads.iter_mut().enumerate() {
         t.cpu_us = 1_234_567 + i as u64;
+        t.user_us = 1_234_000 + i as u64;
         t.samples = 5;
         for (k, c) in t.states.iter_mut().enumerate() {
             *c = 10_000 + k as u32;
@@ -206,6 +211,7 @@ fn test_integration_profile_stays_under_256_kib() {
             queue_ms_max: 250,
             threads_top,
             run_delay_us: Some([9_876_543; profile::ROLES.len()]),
+            cpu_user_us: 3_456_789,
         });
     }
     let json = endpoint_json(port, "/profile");
@@ -337,12 +343,12 @@ fn test_integration_profile_summary_folds_three_spans() {
     );
     // 5 分 = 60 標本、1 時間 = 720 標本、全部 = 環に残っている全部
     assert!(
-        json.contains("{\"name\":\"5m\",\"secs\":300,\"samples\":60,\"requests\":600,\"cpu_us\":60000,\"cpu_per_request_us\":100.00}"),
+        json.contains("{\"name\":\"5m\",\"secs\":300,\"samples\":60,\"requests\":600,\"cpu_us\":60000,\"cpu_per_request_us\":100.00,\"cpu_user_us\":18000}"),
         "{}",
         json
     );
     assert!(
-        json.contains("{\"name\":\"1h\",\"secs\":3600,\"samples\":720,\"requests\":7200,\"cpu_us\":720000,\"cpu_per_request_us\":100.00}"),
+        json.contains("{\"name\":\"1h\",\"secs\":3600,\"samples\":720,\"requests\":7200,\"cpu_us\":720000,\"cpu_per_request_us\":100.00,\"cpu_user_us\":216000}"),
         "{}",
         json
     );

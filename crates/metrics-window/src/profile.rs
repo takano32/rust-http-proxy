@@ -218,6 +218,8 @@ pub fn state_slot(syscall: Option<i64>, state: char) -> (usize, Option<i64>) {
 pub struct RoleWindow {
     /// その窓にこの役割のスレッドが使った CPU (us)
     pub cpu_us: u64,
+    /// そのうちユーザー空間 (us。utime の増分。T16.0)。カーネル側は `cpu_us - user_us`
+    pub user_us: u64,
     /// 標本の数 (スレッド数 × 標本回数)。割合はこれで割る
     pub samples: u64,
     /// 状態の内訳 ([`state_names`] の順)
@@ -227,6 +229,7 @@ pub struct RoleWindow {
 impl RoleWindow {
     fn merge(&mut self, o: &RoleWindow) {
         self.cpu_us += o.cpu_us;
+        self.user_us += o.user_us;
         self.samples += o.samples;
         for (a, b) in self.states.iter_mut().zip(o.states.iter()) {
             *a += *b;
@@ -526,6 +529,9 @@ pub struct Sample {
     /// **走れるのに走れなかった時間**の増分 (us。[`ROLES`] の順)。
     /// `None` = `schedstat` が読めない環境 (`/profile` では `null`)
     pub run_delay_us: Option<[u64; ROLES.len()]>,
+    /// その窓にプロセスが使った CPU のうち**ユーザー空間** (us。`/proc/self/stat` の utime の増分。T16.0)。
+    /// カーネル側は `cpu_us - cpu_user_us` (sys は持たない)。役割ごとは [`RoleWindow::user_us`]
+    pub cpu_user_us: u64,
 }
 
 impl Sample {
@@ -537,6 +543,7 @@ impl Sample {
     fn merge_into(&mut self, o: &Sample) {
         self.requests += o.requests;
         self.cpu_us += o.cpu_us;
+        self.cpu_user_us += o.cpu_user_us;
         self.stages.merge(&o.stages);
         for (a, b) in self.threads.iter_mut().zip(o.threads.iter()) {
             a.merge(b);
@@ -561,9 +568,10 @@ impl Sample {
     }
 
     /// `[t,requests,cpu_us,[connect...],[forward...],[roles...],[locks...],[queue...],`
-    /// `[threads_top...],[run_delay_us...]]`。
+    /// `[threads_top...],[run_delay_us...],[user_us...],cpu_user_us]`。
     /// **件数 0 の段階と標本 0 の役割は `0` 1 文字**で書く (静かな窓を小さくするため)。
     /// 上位のスレッドが 1 本も無い窓も `0`、`schedstat` が読めなければ `run_delay_us` は `null`。
+    /// `user_us` (役割ごとのユーザー空間。T16.0) は `roles` と同じ長さの配列で、いつも数を書く。
     fn push_row(&self, out: &mut String) {
         let _ = write!(out, "[{},{},{},[", self.t, self.requests, self.cpu_us);
         push_windows(out, &self.stages.folded_connect());
@@ -626,7 +634,7 @@ impl Sample {
             out.push(']');
         }
         match &self.run_delay_us {
-            None => out.push_str(",null]"),
+            None => out.push_str(",null"),
             Some(v) => {
                 out.push_str(",[");
                 for (i, d) in v.iter().enumerate() {
@@ -635,9 +643,18 @@ impl Sample {
                     }
                     let _ = write!(out, "{}", d);
                 }
-                out.push_str("]]");
+                out.push(']');
             }
         }
+        // 新しい列は末尾に足す (T16.0): 役割ごとのユーザー空間と、プロセス全体のユーザー空間
+        out.push_str(",[");
+        for (i, r) in self.threads.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let _ = write!(out, "{}", r.user_us);
+        }
+        let _ = write!(out, "],{}]", self.cpu_user_us);
     }
 }
 
@@ -861,6 +878,8 @@ pub trait Source: Send + Sync + 'static {
 struct Tick {
     requests: u64,
     cpu_us: u64,
+    /// そのうちユーザー空間 (T16.0。同じ `/proc/self/stat` の 1 回の読みから取る)
+    cpu_user_us: u64,
     locks: [u64; crate::sync::LOCK_NAMES.len()],
     queue_waited: u64,
     queue_ms_sum: u64,
@@ -869,9 +888,12 @@ struct Tick {
 impl Tick {
     fn now<M: Source>(metrics: &M) -> Tick {
         let [queue_waited, queue_ms_sum, _] = crate::sync::queue_totals();
+        // 合計とユーザー空間は**同じ 1 回の読み**から取る (読む回数を増やさない。T16.0)
+        let (cpu_us, cpu_user_us) = process_cpu_split_us().unwrap_or((0, 0));
         Tick {
             requests: metrics.total_requests(),
-            cpu_us: process_cpu_us().unwrap_or(0),
+            cpu_us,
+            cpu_user_us,
             locks: crate::sync::lock_contended(),
             queue_waited,
             queue_ms_sum,
@@ -890,8 +912,9 @@ pub struct Sampler {
     root: std::path::PathBuf,
     /// 主スレッド = accept 役の tid (= pid)
     main_tid: u32,
-    /// 前回のスレッド別 (utime + stime (clock tick)、`schedstat` の走れずに待った ns)
-    prev: std::collections::HashMap<u32, (u64, u64)>,
+    /// 前回のスレッド別 (utime + stime (clock tick)、utime (clock tick。T16.0)、
+    /// `schedstat` の走れずに待った ns)
+    prev: std::collections::HashMap<u32, (u64, u64, u64)>,
     /// 読み取りの使い回し用
     buf: String,
     /// 1 clock tick の us
@@ -940,12 +963,16 @@ impl Sampler {
         self.schedstat_readable |= scan.schedstat_readable;
         for t in &scan.tasks {
             let role = role_of(t.tid, self.main_tid, &t.comm);
-            let (prev_ticks, prev_delay) = self.prev.get(&t.tid).copied().unwrap_or((0, 0));
+            let (prev_ticks, prev_utime, prev_delay) =
+                self.prev.get(&t.tid).copied().unwrap_or((0, 0, 0));
             let delay_ns = t.run_delay_ns.unwrap_or(0);
-            next.insert(t.tid, (t.ticks, delay_ns));
+            next.insert(t.tid, (t.ticks, t.utime, delay_ns));
             let cpu_us = t.ticks.saturating_sub(prev_ticks) * self.tick_us;
             let w = &mut self.pending[role];
             w.cpu_us += cpu_us;
+            // ユーザー空間も同じ流儀の増分 (T16.0。同じ `stat` の 1 回の読みから取るので、
+            // 役割ごとには user <= 合計 がいつも成り立つ)
+            w.user_us += t.utime.saturating_sub(prev_utime) * self.tick_us;
             w.samples += 1;
             let (slot, unknown) = state_slot(t.syscall, t.state);
             w.states[slot] += 1;
@@ -1021,13 +1048,28 @@ pub fn process_cpu_us() -> Option<u64> {
 /// `/proc/<pid>/stat` の utime (14) + stime (15) を us で返す。
 ///
 /// **comm は括弧で囲まれていて空白も括弧も含みうる**ので、最後の `)` から後ろを数える。
+/// (異常の見張りと `tunnel_spin_test` が使うので残す。`/profile` は [`parse_stat_cpu_split_us`])
 pub fn parse_stat_cpu_us(text: &str) -> Option<u64> {
+    parse_stat_cpu_split_us(text).map(|(total, _)| total)
+}
+
+/// `/proc/self/stat` の (utime + stime, utime) (us)。読めなければ `None` (T16.0)。
+pub fn process_cpu_split_us() -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string("/proc/self/stat").ok()?;
+    parse_stat_cpu_split_us(&text)
+}
+
+/// `/proc/<pid>/stat` の (utime + stime, utime) を us で返す (T16.0)。
+///
+/// **持つのはユーザー空間だけ** (カーネル側は合計から引けば出る)。
+pub fn parse_stat_cpu_split_us(text: &str) -> Option<(u64, u64)> {
     let rest = &text[text.rfind(')')? + 1..];
     let mut it = rest.split_whitespace();
     // 最後の ')' の次は state (3 番目の項目) なので、utime は 11 個先
     let utime: u64 = it.nth(11)?.parse().ok()?;
     let stime: u64 = it.next()?.parse().ok()?;
-    Some((utime + stime) * (1_000_000 / clock_tick()))
+    let tick_us = 1_000_000 / clock_tick();
+    Some(((utime + stime) * tick_us, utime * tick_us))
 }
 
 /// `sysconf(_SC_CLK_TCK)`。Linux では実質いつも 100。
@@ -1110,6 +1152,7 @@ fn tick<M: Source>(metrics: &M, prev: &mut Tick, sampler: Option<&mut Sampler>) 
         queue_ms_max: crate::sync::take_queue_window_max(),
         threads_top,
         run_delay_us,
+        cpu_user_us: now.cpu_user_us.saturating_sub(prev.cpu_user_us),
     };
     *prev = now;
     metrics.profile().push(s);
@@ -1242,7 +1285,7 @@ mod tests {
         // 上位のスレッドが 1 本も無い窓も `0` 1 文字、`schedstat` が読めなければ `null`
         assert_eq!(
             row,
-            "[7,0,0,[0,0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0],[0,0,0],0,null]"
+            "[7,0,0,[0,0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],[0,0,0,0],[0,0,0],0,null,[0,0,0,0,0,0,0,0,0],0]"
         );
     }
 
@@ -1346,6 +1389,12 @@ mod tests {
         line.push_str("111 222 0 0 20 0 8 0 100 0 0");
         let us = parse_stat_cpu_us(&line).expect("読めること");
         assert_eq!(us, (111 + 222) * (1_000_000 / clock_tick()));
+        // ユーザー空間は utime (項目 14) だけ。合計は `parse_stat_cpu_us` と同じ (T16.0)
+        let (total, user) = parse_stat_cpu_split_us(&line).expect("読めること");
+        assert_eq!(total, us);
+        assert_eq!(user, 111 * (1_000_000 / clock_tick()));
+        assert_eq!(parse_stat_cpu_split_us("42 (x) S 1"), None);
+        assert_eq!(parse_stat_cpu_split_us("括弧が無い"), None);
     }
 
     #[cfg(target_os = "linux")]
@@ -1543,6 +1592,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **役割ごとのユーザー空間**が utime の増分だけで積まれ、合計 (utime + stime) と
+    /// 別に読めること (T16.0)。行の末尾は `[user_us...],cpu_user_us`。
+    #[test]
+    fn the_user_time_is_split_per_role() {
+        let dir = std::env::temp_dir().join(format!("t160-user-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let write = |utime: u64, stime: u64| {
+            let d = dir.join("2");
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("stat"),
+                format!(
+                    "2 (conn) S 1 1 0 0 -1 0 0 0 0 0 {} {} 0 0 20 0 8 0 100 0\n",
+                    utime, stime
+                ),
+            )
+            .unwrap();
+        };
+        let tick = 1_000_000 / clock_tick();
+        let p = Profile::default();
+        let mut s = Sampler::new(dir.clone(), 1);
+        write(7, 13);
+        s.sample(&p);
+        // はじめて見たスレッドは累計がそのまま増分 (CPU と同じ流儀)
+        assert_eq!(s.pending[1].cpu_us, 20 * tick);
+        assert_eq!(s.pending[1].user_us, 7 * tick);
+        // 2 回目: user 3 tick、kernel 7 tick 進める
+        write(10, 20);
+        s.sample(&p);
+        assert_eq!(s.pending[1].cpu_us, 30 * tick);
+        assert_eq!(s.pending[1].user_us, 10 * tick, "user は utime の増分だけ");
+        let (threads, _, _) = s.take();
+        assert_eq!(threads[1].user_us, 10 * tick);
+        assert!(s.pending.iter().all(|r| r.user_us == 0), "取り出したら 0");
+        // 60 秒へ畳むと足し合わせ、行の末尾に役割の順で出る
+        let mut a = Sample {
+            threads,
+            cpu_us: 30 * tick,
+            cpu_user_us: 10 * tick,
+            ..Sample::default()
+        };
+        let b = a;
+        a.merge_into(&b);
+        assert_eq!(a.threads[1].user_us, 20 * tick);
+        assert_eq!(a.cpu_user_us, 20 * tick);
+        let mut row = String::new();
+        a.push_row(&mut row);
+        assert!(
+            row.ends_with(&format!(
+                ",null,[0,{},0,0,0,0,0,0,0],{}]",
+                20 * tick,
+                20 * tick
+            )),
+            "{}",
+            row
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `schedstat` が読めない環境では `run_delay_us` が `null` になること (受け入れ基準)。
     #[test]
     fn the_run_delay_is_null_without_schedstat() {
@@ -1568,7 +1676,7 @@ mod tests {
             ..Sample::default()
         }
         .push_row(&mut row);
-        assert!(row.ends_with(",null]"), "{}", row);
+        assert!(row.ends_with(",null,[0,0,0,0,0,0,0,0,0],0]"), "{}", row);
         assert!(row.contains("[[1,\"proxy\",0,"), "{}", row);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1582,7 +1690,11 @@ mod tests {
             ..Sample::default()
         }
         .push_row(&mut row);
-        assert!(row.ends_with(",0,[0,0,0,0,0,0,0,0,0]]"), "{}", row);
+        assert!(
+            row.ends_with(",0,[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0],0]"),
+            "{}",
+            row
+        );
     }
 
     /// 60 秒へ畳むとき、上位のスレッドは **tid を鍵に**足して上位 8 に切り直す。

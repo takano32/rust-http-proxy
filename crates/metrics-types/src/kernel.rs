@@ -33,18 +33,24 @@ use crate::sysinfo::net::tcp_stats;
 pub const RESOLUTIONS: [(u64, usize); 2] = [(5, 720), (60, 1440)];
 
 /// 読めた源の旗 ([`Sample::avail`] / [`Latest::avail`])。立っていない項目は `null`。
-pub const SRC_NETSTAT: u8 = 1 << 0;
-pub const SRC_SNMP: u8 = 1 << 1;
-pub const SRC_SOCKSTAT: u8 = 1 << 2;
-pub const SRC_CGROUP_CPU: u8 = 1 << 3;
-pub const SRC_PSI_CPU: u8 = 1 << 4;
-pub const SRC_PSI_MEM: u8 = 1 << 5;
-pub const SRC_PSI_IO: u8 = 1 << 6;
+///
+/// 8 ビットが埋まったので T16.0 で `u16` に広げた (窓はメモリだけで `.rrd` には書かないので、
+/// 幅を変えても読み継ぎの問題は無い)。
+pub const SRC_NETSTAT: u16 = 1 << 0;
+pub const SRC_SNMP: u16 = 1 << 1;
+pub const SRC_SOCKSTAT: u16 = 1 << 2;
+pub const SRC_CGROUP_CPU: u16 = 1 << 3;
+pub const SRC_PSI_CPU: u16 = 1 << 4;
+pub const SRC_PSI_MEM: u16 = 1 << 5;
+pub const SRC_PSI_IO: u16 = 1 << 6;
 /// 状態ファイルがあるか (無ければ書込エラーの検査は `null`)
-pub const SRC_STATE_FILE: u8 = 1 << 7;
+pub const SRC_STATE_FILE: u16 = 1 << 7;
+/// `cpu.stat` に `usage_usec` / `user_usec` / `system_usec` の行があるか (T16.0)。
+/// 無いファイル (古いカーネル) ではこの 3 欄を `null`
+pub const SRC_CGROUP_USAGE: u16 = 1 << 8;
 
 /// `/history` の `kernel` の 1 標本の列名 ([`Sample::push_row`] がこの順で並べる)。
-pub const KEYS: [&str; 24] = [
+pub const KEYS: [&str; 26] = [
     "t",
     // 累計の**増分** (この窓で何回起きたか)
     "listen_overflows",
@@ -76,13 +82,16 @@ pub const KEYS: [&str; 24] = [
     // **末尾に足したもの** (古い読み手は位置で開くので、途中に入れない)。
     // `cpu_nr_throttled` の分母 (T15.0 (6))
     "cpu_nr_periods",
+    // cgroup の CPU のユーザー空間とカーネル側 (増分 us。T16.0)
+    "cpu_user_usec",
+    "cpu_system_usec",
 ];
 
 /// 窓の 1 標本。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Sample {
     pub t: u64,
-    pub avail: u8,
+    pub avail: u16,
     pub listen_overflows: u64,
     pub listen_drops: u64,
     pub tcp_timeouts: u64,
@@ -110,10 +119,14 @@ pub struct Sample {
     /// この窓に過ぎた CPU の期間の数 (`cpu.stat` の `nr_periods` の増分。T15.0 (6))。
     /// [`Sample::cpu_nr_throttled`] の**分母**
     pub cpu_nr_periods: u64,
+    /// この窓に cgroup が使った CPU のユーザー空間とカーネル側 (`cpu.stat` の
+    /// `user_usec` / `system_usec` の増分 us。T16.0)
+    pub cpu_user_usec: u64,
+    pub cpu_system_usec: u64,
 }
 
 impl Sample {
-    fn has(&self, src: u8) -> bool {
+    fn has(&self, src: u16) -> bool {
         self.avail & src != 0
     }
 
@@ -161,6 +174,12 @@ impl Sample {
         // **[`KEYS`] の末尾に足したもの** (T15.0 (6))
         out.push(',');
         push_u64(out, self.cpu_nr_periods, cpu);
+        // T16.0 で末尾に足したもの (`user_usec` の行が無い `cpu.stat` では `null`)
+        let usage = self.has(SRC_CGROUP_USAGE);
+        out.push(',');
+        push_u64(out, self.cpu_user_usec, usage);
+        out.push(',');
+        push_u64(out, self.cpu_system_usec, usage);
         out.push(']');
     }
 
@@ -206,6 +225,9 @@ impl Sample {
             state_file_errors: sum(|s| s.state_file_errors),
             // 増分なので足し合わせ (T15.0 (6))
             cpu_nr_periods: sum(|s| s.cpu_nr_periods),
+            // 同じく増分 (T16.0)
+            cpu_user_usec: sum(|s| s.cpu_user_usec),
+            cpu_system_usec: sum(|s| s.cpu_system_usec),
         }
     }
 }
@@ -215,7 +237,7 @@ impl Sample {
 pub struct Latest {
     /// この値を読んだ時刻 (epoch 秒)
     pub at: u64,
-    pub avail: u8,
+    pub avail: u16,
     pub listen_overflows: u64,
     pub listen_drops: u64,
     pub tcp_timeouts: u64,
@@ -231,6 +253,11 @@ pub struct Latest {
     pub cpu_throttled_usec: u64,
     /// `cpu.stat` の `nr_periods` の累計 (T15.0 (6))。絞られた**割合**の分母
     pub cpu_nr_periods: u64,
+    /// `cpu.stat` の `usage_usec` / `user_usec` / `system_usec` の累計 (T16.0。
+    /// [`SRC_CGROUP_USAGE`] が立っているときだけ意味がある)
+    pub cpu_usage_usec: u64,
+    pub cpu_user_usec: u64,
+    pub cpu_system_usec: u64,
     /// `cpu.max` の quota ÷ period (0 = 無制限か読めない)
     pub cpu_quota_cores: f64,
     pub psi_cpu_some: f64,
@@ -247,7 +274,7 @@ pub struct Latest {
 }
 
 impl Latest {
-    pub fn has(&self, src: u8) -> bool {
+    pub fn has(&self, src: u16) -> bool {
         self.avail & src != 0
     }
 }
@@ -378,6 +405,16 @@ fn read_now(t: u64) -> Latest {
         l.cpu_nr_throttled = cpu.nr_throttled.unwrap_or(0);
         l.cpu_throttled_usec = cpu.throttled_usec.unwrap_or(0);
         l.cpu_nr_periods = cpu.nr_periods.unwrap_or(0);
+        // 同じファイルの `usage_usec` / `user_usec` / `system_usec` (T16.0)。
+        // カーネルは 3 行を揃えて書くので、3 つとも読めたときだけ数で出す
+        if let (Some(usage), Some(user), Some(system)) =
+            (cpu.usage_usec, cpu.user_usec, cpu.system_usec)
+        {
+            l.avail |= SRC_CGROUP_USAGE;
+            l.cpu_usage_usec = usage;
+            l.cpu_user_usec = user;
+            l.cpu_system_usec = system;
+        }
     }
     l.cpu_quota_cores = cpu.quota_cores.unwrap_or(0.0);
     if let Some(p) = psi.cpu {
@@ -425,6 +462,8 @@ fn diff(prev: &Latest, now: &Latest) -> Sample {
         cpu_nr_throttled: d(now.cpu_nr_throttled, prev.cpu_nr_throttled),
         cpu_throttled_usec: d(now.cpu_throttled_usec, prev.cpu_throttled_usec),
         cpu_nr_periods: d(now.cpu_nr_periods, prev.cpu_nr_periods),
+        cpu_user_usec: d(now.cpu_user_usec, prev.cpu_user_usec),
+        cpu_system_usec: d(now.cpu_system_usec, prev.cpu_system_usec),
         psi_cpu_some: now.psi_cpu_some,
         psi_cpu_full: now.psi_cpu_full,
         psi_mem_some: now.psi_mem_some,
@@ -568,18 +607,38 @@ pub fn status_json() -> String {
             None => out.push_str("null"),
         }
         out.push_str(",\"since_start\":");
+        let usage = l.has(SRC_CGROUP_USAGE);
         match first() {
             Some(f) => {
                 let _ = write!(
                     out,
-                    "{{\"nr_periods\":{},\"nr_throttled\":{},\"throttled_usec\":{}}}",
+                    "{{\"nr_periods\":{},\"nr_throttled\":{},\"throttled_usec\":{}",
                     l.cpu_nr_periods.saturating_sub(f.cpu_nr_periods),
                     l.cpu_nr_throttled.saturating_sub(f.cpu_nr_throttled),
                     l.cpu_throttled_usec.saturating_sub(f.cpu_throttled_usec),
                 );
+                // T16.0 で末尾に足したもの (起動からの増分)。最初の 1 本で読めていなければ
+                // 引き算の相手が無いので `null`
+                let since_ok = usage && f.has(SRC_CGROUP_USAGE);
+                push_usage(
+                    &mut out,
+                    [
+                        l.cpu_usage_usec.saturating_sub(f.cpu_usage_usec),
+                        l.cpu_user_usec.saturating_sub(f.cpu_user_usec),
+                        l.cpu_system_usec.saturating_sub(f.cpu_system_usec),
+                    ],
+                    since_ok,
+                );
+                out.push('}');
             }
             None => out.push_str("null"),
         }
+        // T16.0 で末尾に足したもの (累計 us。`/proc/self/stat` と違いコンテナ全体)
+        push_usage(
+            &mut out,
+            [l.cpu_usage_usec, l.cpu_user_usec, l.cpu_system_usec],
+            usage,
+        );
         out.push('}');
     } else {
         out.push_str("null");
@@ -655,6 +714,14 @@ pub fn history_json(res: usize) -> String {
     }
     out.push_str("]}");
     out
+}
+
+/// `,"usage_usec":…,"user_usec":…,"system_usec":…` (T16.0。読めなければ 3 つとも `null`)。
+fn push_usage(out: &mut String, v: [u64; 3], ok: bool) {
+    for (k, v) in ["usage_usec", "user_usec", "system_usec"].iter().zip(v) {
+        let _ = write!(out, ",\"{}\":", k);
+        push_u64(out, v, ok);
+    }
 }
 
 fn push_u64(out: &mut String, v: u64, ok: bool) {
@@ -768,12 +835,51 @@ mod tests {
         s.push_row(&mut out);
         let cols: Vec<&str> = out.trim_matches(['[', ']']).split(',').collect();
         assert_eq!(cols.len(), KEYS.len(), "{}", out);
-        assert_eq!(*KEYS.last().unwrap(), "cpu_nr_periods");
-        assert_eq!(cols[KEYS.len() - 1], "50");
+        let at = |k: &str| cols[KEYS.iter().position(|n| *n == k).unwrap()];
+        assert_eq!(at("cpu_nr_periods"), "50");
         // cgroup が読めない環境では `null`
         let mut out = String::new();
         Sample::default().push_row(&mut out);
         assert!(out.ends_with(",null]"), "{}", out);
+    }
+
+    /// cgroup のユーザー空間とカーネル側は**増分**で窓に入り、畳むと足し合わせ、
+    /// 行の末尾 2 列に出る。`user_usec` の行が無ければ `null` (T16.0)。
+    #[test]
+    fn the_cgroup_user_and_system_time_are_deltas_at_the_end() {
+        let raw = |t: u64, user: u64, system: u64| Latest {
+            at: t,
+            avail: SRC_CGROUP_CPU | SRC_CGROUP_USAGE,
+            cpu_usage_usec: user + system,
+            cpu_user_usec: user,
+            cpu_system_usec: system,
+            ..Latest::default()
+        };
+        let a = raw(1_000_000, 13_000_000, 18_000_000);
+        let b = raw(1_000_005, 13_300_000, 18_700_000);
+        let c = raw(1_000_010, 13_400_000, 18_800_000);
+        let s1 = diff(&a, &b);
+        assert_eq!((s1.cpu_user_usec, s1.cpu_system_usec), (300_000, 700_000));
+        let s2 = diff(&b, &c);
+        let agg = Sample::downsample(&[s1, s2], 1_000_000);
+        assert_eq!((agg.cpu_user_usec, agg.cpu_system_usec), (400_000, 800_000));
+        assert_eq!(
+            agg.avail & SRC_CGROUP_USAGE,
+            SRC_CGROUP_USAGE,
+            "旗は 9 ビット目も残る"
+        );
+        let mut out = String::new();
+        s1.push_row(&mut out);
+        let cols: Vec<&str> = out.trim_matches(['[', ']']).split(',').collect();
+        assert_eq!(cols.len(), KEYS.len(), "{}", out);
+        assert_eq!(KEYS[KEYS.len() - 2..], ["cpu_user_usec", "cpu_system_usec"]);
+        assert!(out.ends_with(",300000,700000]"), "{}", out);
+        // 行の無いファイル (旗が立たない) は、絞りの列は数のまま、この 2 列だけ `null`
+        let mut old = s1;
+        old.avail = SRC_CGROUP_CPU;
+        let mut out = String::new();
+        old.push_row(&mut out);
+        assert!(out.ends_with(",0,null,null]"), "{}", out);
     }
 
     /// 直近 5 分の絞りは `/healthz` と異常の規則が読む割合になる (T15.0 (6))。

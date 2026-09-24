@@ -28,6 +28,24 @@ pub struct CgroupCpu {
     /// **`nr_throttled` の分母**。これが無いと「41 回絞られた」が
     /// 「41 / 8,123 = 0.5%」なのか「41 / 41 = 100%」なのか決まらない。
     pub nr_periods: Option<u64>,
+    /// `cpu.stat` の `usage_usec` / `user_usec` / `system_usec` (累計 us。T16.0)。
+    ///
+    /// 上の 3 つと**同じファイル**から読む (探し方は変えない)。プロセスの `/proc/self/stat` と
+    /// 違ってコンテナ全体 (同居するほかのプロセスも入る) のユーザー空間とカーネル側
+    pub usage_usec: Option<u64>,
+    pub user_usec: Option<u64>,
+    pub system_usec: Option<u64>,
+}
+
+/// `cpu.stat` から読んだ行 ([`parse_cpu_stat`] の戻り)。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CpuStat {
+    nr_periods: Option<u64>,
+    nr_throttled: Option<u64>,
+    throttled_usec: Option<u64>,
+    usage_usec: Option<u64>,
+    user_usec: Option<u64>,
+    system_usec: Option<u64>,
 }
 
 /// cgroup v2 の PSI 3 つ。
@@ -92,23 +110,35 @@ pub fn cgroup_pressure() -> CgroupPressure {
 
 /// 読む先を差し替えられる版 (テスト用)。`dir` から `root` まで遡って最初に読めたものを使う。
 pub fn cgroup_cpu_in(dir: &Path, root: &Path) -> CgroupCpu {
-    let stat = find_up(dir, root, "cpu.stat", parse_cpu_stat);
+    let stat = find_up(dir, root, "cpu.stat", parse_cpu_stat).unwrap_or_default();
     CgroupCpu {
-        nr_throttled: stat.and_then(|(_, n, _)| n),
-        throttled_usec: stat.and_then(|(_, _, us)| us),
+        nr_throttled: stat.nr_throttled,
+        throttled_usec: stat.throttled_usec,
         // 上限は階層のどこにでも掛かるので、**いちばんきつい値**を採る
         quota_cores: tightest_quota(dir, root),
-        nr_periods: stat.and_then(|(p, _, _)| p),
+        nr_periods: stat.nr_periods,
+        usage_usec: stat.usage_usec,
+        user_usec: stat.user_usec,
+        system_usec: stat.system_usec,
     }
 }
 
-/// `cpu.stat` から `(nr_periods, nr_throttled, throttled_usec)`。
-/// 3 つとも無ければ `None` (= この階層には cpu コントローラが無い)。
-fn parse_cpu_stat(text: &str) -> Option<(Option<u64>, Option<u64>, Option<u64>)> {
-    let p = stat_field(text, "nr_periods");
-    let n = stat_field(text, "nr_throttled");
-    let us = stat_field(text, "throttled_usec");
-    (p.is_some() || n.is_some() || us.is_some()).then_some((p, n, us))
+/// `cpu.stat` から `nr_periods` / `nr_throttled` / `throttled_usec` と、
+/// T16.0 で足した `usage_usec` / `user_usec` / `system_usec` を読む。
+///
+/// **「読めた」の判定は今までどおり絞りの 3 つだけで決める** (3 つとも無ければ `None`
+/// = この階層には cpu コントローラが無い → [`find_up`] は親へ遡る)。`usage_usec` の類は
+/// cpu コントローラが無くても書かれるので、判定に混ぜると遡る先が変わってしまう。
+fn parse_cpu_stat(text: &str) -> Option<CpuStat> {
+    let s = CpuStat {
+        nr_periods: stat_field(text, "nr_periods"),
+        nr_throttled: stat_field(text, "nr_throttled"),
+        throttled_usec: stat_field(text, "throttled_usec"),
+        usage_usec: stat_field(text, "usage_usec"),
+        user_usec: stat_field(text, "user_usec"),
+        system_usec: stat_field(text, "system_usec"),
+    };
+    (s.nr_periods.is_some() || s.nr_throttled.is_some() || s.throttled_usec.is_some()).then_some(s)
 }
 
 /// いま `cpu.stat` を実際に読んでいるファイルの道 (T15.0 (6))。
@@ -250,6 +280,10 @@ full avg10=2.99 avg60=2.10 avg300=0.90 total=166527343
         assert_eq!(cpu.quota_cores, Some(2.0));
         // `nr_throttled` の分母 (T15.0 (6))。41 / 8,123 = 0.5% と読める
         assert_eq!(cpu.nr_periods, Some(8_123));
+        // ユーザー空間とカーネル側 (T16.0)。同じファイルから
+        assert_eq!(cpu.usage_usec, Some(31_572_850_999));
+        assert_eq!(cpu.user_usec, Some(13_527_968_994));
+        assert_eq!(cpu.system_usec, Some(18_044_882_005));
         // 読んだのは自分の階層の `cpu.stat` (親の値ではない)
         assert_eq!(
             cgroup_cpu_path_in(&leaf, &root),
@@ -280,6 +314,52 @@ full avg10=2.99 avg60=2.10 avg300=0.90 total=166527343
         assert_eq!(
             cgroup_cpu_path_in(&leaf, &root),
             Some(root.join("cpu.stat"))
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `user_usec` の行が無い `cpu.stat` (古いカーネルの形) では、その 3 欄だけ `None` で
+    /// 絞りの 3 つは今までどおり読める (T16.0)。
+    #[test]
+    fn a_cpu_stat_without_the_usage_lines_keeps_the_throttling() {
+        let with = parse_cpu_stat(CPU_STAT).expect("読める");
+        assert_eq!(with.user_usec, Some(13_527_968_994));
+        assert_eq!(with.system_usec, Some(18_044_882_005));
+        assert_eq!(with.usage_usec, Some(31_572_850_999));
+        let without = parse_cpu_stat("nr_periods 10\nnr_throttled 2\nthrottled_usec 300\n")
+            .expect("絞りの 3 つがあれば読める");
+        assert_eq!(
+            (
+                without.nr_periods,
+                without.nr_throttled,
+                without.throttled_usec
+            ),
+            (Some(10), Some(2), Some(300))
+        );
+        assert_eq!(
+            (without.usage_usec, without.user_usec, without.system_usec),
+            (None, None, None)
+        );
+        // **判定は絞りの 3 つだけ**: usage の類しか無い (cpu コントローラの無い階層) なら
+        // 読めなかった扱いで、親へ遡る (探し方を変えない)
+        assert_eq!(
+            parse_cpu_stat("usage_usec 5\nuser_usec 3\nsystem_usec 2\n"),
+            None
+        );
+        let root = tree("usage-only");
+        let leaf = root.join("user.slice/app.scope");
+        fs::write(
+            leaf.join("cpu.stat"),
+            "usage_usec 5\nuser_usec 3\nsystem_usec 2\n",
+        )
+        .unwrap();
+        fs::write(root.join("cpu.stat"), CPU_STAT).unwrap();
+        let cpu = cgroup_cpu_in(&leaf, &root);
+        assert_eq!(cpu.nr_throttled, Some(41), "今までどおり親まで遡る");
+        assert_eq!(
+            cpu.user_usec,
+            Some(13_527_968_994),
+            "同じ (親の) ファイルの値"
         );
         let _ = fs::remove_dir_all(&root);
     }
