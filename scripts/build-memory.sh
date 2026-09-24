@@ -15,14 +15,13 @@
 # あれば同じ判定ができる (手元の機械はこちら。PID 1 が systemd でなくてもユーザーの
 # インスタンスは動いていて、上限も効く)。どちらも無いときだけ RSS を出すだけにして判定しない。
 #
-# **上限を決めているクレート** (T15.12 段 6' の後の実測 2026-09-19、RssAnon の最大。手元 aarch64。通る最小は 120〜125 MB):
-#   proxy-metrics-window 107.8 MB > proxy-endpoints 98.4 > proxy-metrics-recent 95.7 > proxy-server 94.9 > proxy-run 94.7
-#   > proxy-metrics-watch 91.5 (`codegen-units = 4`) > proxy-net-dns 89.9 > proxy-metrics-core 88.0
-#   > proxy-http 86.1 > … > proxy-endpoints-core 29.8 (`= 4`) > ルートの rust-http-proxy 18.1 (facade + bin だけ)
-#   (段 6' で本体を `proxy-server` (中身) と `proxy-run` (`main` の中身) に分けたので、
-#    「本体 93.7」の 1 行はこの 3 つに割れた。`= 1` のいちばん小さい proxy-tls でも 38 MB は要る)
-# 要求の経路に乗らないクレートは `Cargo.toml` の `[profile.release.package.<名前>]` で
-# `codegen-units = 4` にしてある (T15.12 段 5)。残りの上位はまだ `= 1`。
+# **上限を決めているクレート** (T15.12 段 7 の後の実測 2026-09-24、全クレート `codegen-units = 4`。RssAnon の最大。
+# 手元 aarch64。通る最小は 105 MB 前後: 100 以下は毎回落ち、105 は 2 回中 1 回通る境目):
+#   proxy-metrics-watch 92.3 MB > proxy-metrics-window 82.9 > proxy-endpoints 79.9 > proxy-server 79.6
+#   > proxy-metrics-recent 75.4 > proxy-config 73.9 > proxy-http 72.2 > proxy-metrics-core 70.8
+#   > proxy-net-dns 68.0 > proxy-metrics-types 66.9 > … > proxy-endpoints-core 29.6 > ルートの rust-http-proxy 18.1 (bin)
+#   (段 7 の前 = 要求の経路のクレートが `= 1` だった頃は proxy-metrics-window 107.8 MB がいちばん上で、
+#    通る最小は 120〜125 MB。`codegen-units` は `Cargo.toml` の `[profile.release]` の 1 行)
 # 行数の順ではない。効くのは「自分の行数 + 依存から単相化されてくる量」。
 # 上限を下げたいならこの上位から割ること (T14.55 で `proxy-metrics` 1 つ 272 MB を 6 つに割った)。
 #

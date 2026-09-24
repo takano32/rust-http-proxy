@@ -62,12 +62,13 @@ proxy-run = { path = "crates/run" }
 # LTO を切っているのは、まとめて最適化する**最終リンクの 1 回**が大きいため。
 # クレートを 26 に割っても最終リンクは全部を抱えるので、そこは小さくならなかった。
 #
-# いまのこのプロファイルの実測 (2026-09-19、T15.12 段 5。手元 aarch64):
-#   手元の cgroup で通る最小 120〜125 MB (115 MB は落ちる。120 は回ごとに揺れる境目。
-#   上限 180 MB に対して 1.4 倍以上の余裕)、
-#   バイナリ 2,563,896 B (段 5 の前は 2,498,360 B)。
+# いまのこのプロファイルの実測 (2026-09-24、T15.12 段 7 = 全クレート `codegen-units = 4`。手元 aarch64):
+#   手元の cgroup で通る最小は 105 MB 前後 (100 MB 以下は 2 回とも落ちる。105 MB は 2 回中 1 回通った境目。
+#   110 MB 以上は測りきれていない。上限 180 MB に対して 1.6 倍以上の余裕)、
+#   バイナリ 2,694,968 B (段 7 の前は 2,563,896 B)。
+#   段 5 (2026-09-19) の時点は通る最小 120〜125 MB (115 MB は落ちる。120 は回ごとに揺れる境目)。
 #   CPU は 41.4 us/要求 (forward 8 並列。--lite + ログ warn、プロキシ cpu4-7 / ベンチ cpu0-3 に固定、
-#   本文 1 KiB、10 秒 × 3 回の中央値。2026-09-08 の T10.11 の値。段 5 では測り直していない)。
+#   本文 1 KiB、10 秒 × 3 回の中央値。2026-09-08 の T10.11 の値。段 5 / 段 7 では測り直していない)。
 #   以下は歴史: 通る最小 135 MB / バイナリ 1,381,872 B (2026-09-08、T14.55 / T11.5)、
 #   通る最小を決めているのはいちばん大きいクレート + 14 MB (proxy-http 85.5 MB の頃。T10.9)。
 #
@@ -86,11 +87,6 @@ proxy-run = { path = "crates/run" }
 # 一度に抱える。全クレートに当てた実測 (手元 aarch64、`jobs = 1`、`cargo clean --release` →
 # `cargo build --release`、20 ms ごとの RssAnon の最大):
 #
-# (この表の 4 / 16 の列は**全クレートに当てたとき**の値で、下に並べた実際の上書きでの値ではない。
-#  実際の設定では要求の経路の proxy-metrics-window と proxy-endpoints は `= 1` のままなので
-#  107.8 / 98.4 MB、`= 4` にした proxy-metrics-watch は 91.5 MB。通る最小はどちらも 120〜125 MB
-#  (同じ機械でも回ごとに揺れる。README の「ビルド・テスト」の注)。)
-#
 #   クレート                   1 (既定)    4        16
 #   proxy-metrics-watch        121.7 MB    92.5     84.3
 #   proxy-metrics-window       106.8       83.2     81.4
@@ -102,70 +98,40 @@ proxy-run = { path = "crates/run" }
 #                              2,498,360 B 2,694,968 B 2,760,504 B
 #
 # この表の「本体 (rust_http_proxy)」の行は T15.12 段 6' より前のもの。段 6' で本体を
-# `proxy-server` (中身) と `proxy-run` (`main` の中身) に分けたので、`= 1` の実測は
-# proxy-server 94.9 / proxy-run 94.7 / ルートの rust-http-proxy 18.1 MB (facade + bin だけ) に割れた
-# (2026-09-19)。どちらも要求の経路なので `= 1` のまま。
+# `proxy-server` (中身) と `proxy-run` (`main` の中身) に分けた。
 #
 # 4 → 16 はほとんど減らない (コード生成の前の段 = 型検査とメタデータの床が約 80 MB) ので **4 で十分**。
-# ただし `codegen-units` を増やすとクレートの中のインライン化の範囲が狭まるので、
-# **要求の経路 (1 要求・1 接続ごとに通るコード) のクレートは 1 のまま**にしてある
-# (この機械は CPU が汚れていて A/B が取れない。静かな機械で測ってから決める = T15.12 段 7)。
-# 下の上書きは「tick スレッド・管理用の口・起動・道具しか呼ばないクレート」だけ。
+#
+# **全クレートを 4 にしてある** (T15.12 段 7、2026-09-24 の利用者の決定: 4 で次の再デプロイに入れて試す)。
+# `codegen-units` を増やすとクレートの中のインライン化の範囲が狭まるので、速さへの効きは
+# **デプロイ先で「桁で悪くなっていないか」だけを見る** (conn 役のコア/要求が前の 1.3 倍を超える、
+# `/profile` のユーザー空間の段階が目に見えて太る、`cpu_throttled` が出る、のどれか。数 % の差は読まない。
+# この機械もデプロイ先も共有で CPU/要求 が ±4% 以上ぶれるので、手元の A/B は取っていない)。
+# **悪くなっていたら下の `codegen-units = 4` を 1 に戻す 1 行で戻る**。
+# 手元で確かめた揺れない数字 (2026-09-24): `--lite` のシステムコール 5.022 → 5.023 回/要求、
+# 確保 10.006 → 10.006 回/要求 (要求の経路のシステムコールと確保は変わらない)。
+# 全クレート 4 の RssAnon の上位: proxy-metrics-watch 92.3 > proxy-metrics-window 82.9
+# > proxy-endpoints 79.9 > proxy-server 79.6 > proxy-metrics-recent 75.4 MB (クリーンの release 97 → 103 秒)。
+# 歴史: 2026-09-19 (段 5) から 2026-09-24 (段 7) までは、要求の経路に乗らない 9 個
+# (proxy-metrics-watch / -endpoints-explain / -endpoints-core / -config / -prom / -rrd / -diskprobe /
+# -capacity / proxy-bench) だけを `[profile.release.package.<名前>]` で 4 にし、要求の経路のクレートは
+# 1 のままにしていた (proxy-endpoints / -metrics-window / -selfbench / -reload / -sysinfo は
+# 要求の経路から呼ばれるので 1。段 5 の結果)。その頃の上位は proxy-metrics-window 107.8 > proxy-endpoints 98.4 MB。
 [profile.release]
 opt-level = 3
 lto = false
 strip = true
-codegen-units = 1
-
-# ここから下は**要求の経路に乗らないクレート**だけ (T15.12 段 5、2026-09-19)。
-# `crates/server/src/lib.rs` の `serve` の accept ループ → `run_conn` → `serve_one` → forward / トンネルの転送を
-# たどって、1 要求・1 接続ごとに関数が呼ばれないことを確かめたものを並べてある。
-# `[profile.dist]` は `inherits = "release"` なので同じ上書きが効く (バイナリの大きさが
-# 変わらないことを確かめてある)。
-
-# 窓を読んで判定するもの (SLO / 日次 / 雪像 / 異常 / canary)。呼ぶのは tick スレッドと管理用の口だけ。
-[profile.release.package.proxy-metrics-watch]
-codegen-units = 4
-
-# `/explain` の本文。管理用の口からしか呼ばれない。
-[profile.release.package.proxy-endpoints-explain]
-codegen-units = 4
-
-# 口の共通の土台 (`Endpoint` の型と問い合わせ文字列の読み方)。`Endpoint` の組み立ては
-# 呼び出し側のコードなので、このクレートの関数は口の中からしか呼ばれない。
-[profile.release.package.proxy-endpoints-core]
-codegen-units = 4
-
-# 設定の読み取り。要求の経路が触るのは `Config` のフィールドの参照だけ (関数を呼ばない)。
-[profile.release.package.proxy-config]
-codegen-units = 4
-
-# `/metrics` (Prometheus 形式) の組み立て。
-[profile.release.package.proxy-prom]
-codegen-units = 4
-
-# 状態ファイルの読み書き (`.rrd` / `.recent`)。書くのは tick スレッド、読むのは起動のとき。
-[profile.release.package.proxy-rrd]
-codegen-units = 4
-
-# ディスクの容量の探り。`DiskProbe::load` は起動、`tick` は probe スレッド。
-[profile.release.package.proxy-diskprobe]
-codegen-units = 4
-
-# キャッシュの割当の計算。`budget` は probe スレッド、`quota::is_permanent` は失敗した枝だけ。
-[profile.release.package.proxy-capacity]
-codegen-units = 4
-
-# 計測用の道具 (`default-members` の外なので `cargo build --release` では作られない)。
-[profile.release.package.proxy-bench]
 codegen-units = 4
 
 # 配布用。速さとバイナリの小ささを優先し、ビルドのメモリは気にしない
 # (GitHub Actions のような潤沢な環境で使う)。`cargo build --profile dist`
-# release との違いは 2 つだけ: `opt-level` が "s"、`lto` が fat。
-# 実測 (2026-09-19、T15.12 段 6'): 1,842,976 B (release は 2,563,896 B なので 721 KB 小さい。
-# 段 5 の codegen-units の上書きは dist にも伝わるが、fat LTO が CGU の分割を呑むので
-# dist のバイナリは段 5 の前後とも 1,842,984 B で変わらず、段 6' で -8 B になっただけ)。
+# release との違いは 3 つ: `opt-level` が "s"、`lto` が fat、`codegen-units` が 1。
+# `codegen-units = 1` は T15.12 段 7 (2026-09-24) で足した: release を全クレート 4 にすると、dist は
+# ファイルの大きさこそ 1,842,976 B のまま (ページの詰め物で隠れる) だが `.text` が 1,769,784 → 1,786,700 B
+# (+16.9 KB) に太った (fat LTO でも CGU の分割は全部は呑まれない)。1 に戻すと `.text` 1,766,292 B
+# (段 5 の 9 個の上書きも消えたので段 5 の前の形。ファイルは 1,842,976 B)。
+# 実測 (2026-09-24、T15.12 段 7): 1,842,976 B (release は 2,694,968 B なので 852 KB 小さい)。
+# 段 6' (2026-09-19) の時点も 1,842,976 B (release 2,563,896 B)。
 # ビルドには 350 MB 以上要る (T9.1)。
 # 歴史: 2026-09-08 の時点は dist 1,054,184 B / release 1,381,872 B (327 KB 小さい)。
 # 速さは release に対して forward 8 並列 +1.9% (CPU/要求 41.4 → 39.6 us で -4.4%。2026-09-08 の値)、
@@ -176,4 +142,5 @@ codegen-units = 4
 inherits = "release"
 opt-level = "s"
 lto = true
+codegen-units = 1
 
