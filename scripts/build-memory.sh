@@ -141,7 +141,7 @@ case $? in
     ;;
   *)
     echo "NG: ${LIMIT_MB} MB の中でビルドが通りませんでした (rustc が OOM killer に落とされたか、ビルド自体の失敗)"
-    echo "    落ちるのは上限を決めているクレート (実測では proxy-endpoints か proxy-net) のところ。"
+    echo "    落ちるのは上限を決めているクレート (2026-09-24 の実測では proxy-metrics-watch か proxy-metrics-window) のところ。"
     echo "    順位は cgroup を作れない機械で参考値 (RssAnon) を出すと見られます"
     exit 1
     ;;
