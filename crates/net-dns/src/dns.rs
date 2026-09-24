@@ -93,6 +93,14 @@ static REFRESH_US_MAX: AtomicU64 = AtomicU64::new(0);
 static REFRESH_LATE: AtomicU64 = AtomicU64::new(0);
 /// 引き直しが「遅れた」と数える閾。
 const REFRESH_LATE_AFTER: Duration = Duration::from_secs(5);
+/// warm の枠 ([`MAX_WARM`]) が満杯で、新しく warm になる名前のために**ほかの名前を外した**回数
+/// (`/status` の `dns.warm_evicted`。T16.0)。`/history` の `dns_warm` は 5 秒ごとの瞬間値なので、
+/// 枠が埋まって押し出しが起きていたかはこれでしか分からない。
+///
+/// **「要求の経路は増やさない」の例外**: 書くのは [`warm_promote`] の満杯の枝だけ
+/// (その名前が窓の中で 2 回目に使われ、かつ枠が満杯のとき)。既に `TABLE` と `WARM_QUEUE` の
+/// 鍵を握っている内側の原子の加算 1 つで、システムコールも確保も増えない。
+static WARM_EVICTED: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
     /// このスレッドが直近に払った名前解決の費用 (us の合計と回数)。**ホスト別の内訳に
@@ -338,6 +346,8 @@ fn warm_promote(table: &mut HashMap<String, Entry>, key: &str, now: Instant, ttl
             .cloned()
     {
         q.remove(&victim);
+        // 満杯で押し出した回数 (T16.0。要求の経路の例外。上の `WARM_EVICTED` を参照)
+        WARM_EVICTED.fetch_add(1, Ordering::Relaxed);
         if let Some(e) = table.get_mut(&victim.1) {
             e.warm = false;
             e.next_refresh = None;
@@ -1142,7 +1152,7 @@ pub fn status_json() -> String {
         MISS_NEGATIVE.load(Ordering::Relaxed),
     ];
     format!(
-        "{{\"ttl_secs\":{},\"negative_ttl_secs\":{},\"warm_secs\":{},\"entries\":{},\"warm\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{},\"refreshes\":{},\"changes\":{},\"miss_ms_sum\":{:.1},\"miss_avg_ms\":{:.2},\"misses_by_kind\":{},\"refresh_failures\":{},\"refresh_ms_sum\":{:.1},\"refresh_ms_max\":{:.1},\"refresh_late\":{}}}",
+        "{{\"ttl_secs\":{},\"negative_ttl_secs\":{},\"warm_secs\":{},\"entries\":{},\"warm\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{},\"refreshes\":{},\"changes\":{},\"miss_ms_sum\":{:.1},\"miss_avg_ms\":{:.2},\"misses_by_kind\":{},\"refresh_failures\":{},\"refresh_ms_sum\":{:.1},\"refresh_ms_max\":{:.1},\"refresh_late\":{},\"warm_evicted\":{}}}",
         TTL_SECS.load(Ordering::Relaxed),
         NEGATIVE_SECS.load(Ordering::Relaxed),
         WARM_SECS.load(Ordering::Relaxed),
@@ -1165,6 +1175,8 @@ pub fn status_json() -> String {
         REFRESH_US_SUM.load(Ordering::Relaxed) as f64 / 1000.0,
         REFRESH_US_MAX.load(Ordering::Relaxed) as f64 / 1000.0,
         REFRESH_LATE.load(Ordering::Relaxed),
+        // T16.0 で末尾に足したもの (起動からの通算)
+        WARM_EVICTED.load(Ordering::Relaxed),
     )
 }
 
@@ -1710,12 +1722,29 @@ mod tests {
         for n in &names {
             put(n, Duration::from_secs(1));
         }
+        // 押し出しの通算 (T16.0)。**満杯のときだけ**増える (ほかのテストも同じ原子を
+        // 触りうるが、warm にするテストは全部 `RESOLVE_TEST_LOCK` を握っている)
+        let evicted0 = WARM_EVICTED.load(Ordering::Relaxed);
         for (i, n) in names.iter().enumerate() {
             resolve_host(n, 80).unwrap();
             assert!(is_warm(n), "{} は warm", n);
             let want = (i + 1).min(MAX_WARM);
             assert_eq!(warm_count(), want, "{} 件目", i + 1);
+            let evicted = WARM_EVICTED.load(Ordering::Relaxed) - evicted0;
+            assert_eq!(
+                evicted,
+                u64::from(i >= MAX_WARM),
+                "{} 件目: 枠が満杯になるまでは押し出さない",
+                i + 1
+            );
         }
+        assert!(
+            status_json().ends_with(&format!(
+                ",\"warm_evicted\":{}}}",
+                WARM_EVICTED.load(Ordering::Relaxed)
+            )),
+            "`/status` の `dns` の末尾に出る"
+        );
         assert!(!is_warm(&names[0]), "33 件目で最古 ({}) が外れる", names[0]);
         assert_eq!(next_in_ms(&names[0]), None);
         assert!(is_warm(&names[MAX_WARM]), "いちばん新しいものは warm");

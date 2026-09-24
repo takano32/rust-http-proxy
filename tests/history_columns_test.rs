@@ -90,7 +90,7 @@ fn history_json(port: u16) -> String {
     endpoint_json(port, "/history?res=5")
 }
 
-/// `keys` は 40 個で末尾が新しい 8 列、`key_kinds` は同じ長さで 6 種類しか出ない。
+/// `keys` は 43 個で T15.0 の 8 列と T16.0 の 3 列が末尾、`key_kinds` は同じ長さで 6 種類しか出ない。
 #[test]
 fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     let (port, _metrics) = start_test_proxy_with_history(proxy_config(), TICK);
@@ -98,10 +98,10 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     let keys = str_array(&json, "keys");
     let kinds = str_array(&json, "key_kinds");
 
-    assert_eq!(keys.len(), 40, "{:?}", keys);
+    assert_eq!(keys.len(), 43, "{:?}", keys);
     assert_eq!(kinds.len(), keys.len(), "keys {:?} kinds {:?}", keys, kinds);
     assert_eq!(
-        &keys[32..],
+        &keys[32..40],
         &[
             "waits",
             "wait_ms_sum",
@@ -113,6 +113,12 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
             "active_peak",
         ],
         "末尾に足す (既存の 32 列は 1 つも動かさない)"
+    );
+    // T16.0 で足した 3 列 (`dns_warm` の最大と、平均を出すための合計と標本数)
+    assert_eq!(
+        &keys[40..],
+        &["dns_warm_max", "dns_warm_sum", "gauge_n"],
+        "T16.0 も末尾に足す"
     );
     // 既存の綴りが 1 つも変わっていないこと (読む側は名前で引く)
     assert_eq!(keys[0], "t");
@@ -128,6 +134,9 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     assert_eq!(kind("connects"), "delta");
     assert_eq!(kind("dns_warm"), "gauge");
     assert_eq!(kind("active_peak"), "peak");
+    assert_eq!(kind("dns_warm_max"), "peak");
+    assert_eq!(kind("dns_warm_sum"), "delta");
+    assert_eq!(kind("gauge_n"), "delta");
     assert_eq!(kind("wait_buckets"), "buckets");
 
     // 標本の 1 行の列数も同じ (入れ子の配列は 1 列)
@@ -322,6 +331,10 @@ fn test_integration_dns_warm_column_matches_the_status_gauge() {
             warm,
             v
         );
+        // 5 秒の標本は「1 本ぶん」: 最大も合計も値そのもの、標本数 1 (T16.0)
+        assert_eq!(col(&keys, row, "dns_warm_max"), v, "{:?}", row);
+        assert_eq!(col(&keys, row, "dns_warm_sum"), v, "{:?}", row);
+        assert_eq!(col(&keys, row, "gauge_n"), 1, "{:?}", row);
     }
 
     rust_http_proxy::dns::clear();

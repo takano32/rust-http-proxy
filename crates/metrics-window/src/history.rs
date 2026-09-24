@@ -42,7 +42,7 @@ pub use crate::window::{CAPACITY, DEFAULT_N, INTERVAL, RESOLUTIONS, WINDOW_BOUND
 /// 2. [`Sample::encode`] の末尾に `u64` を 1 つ足す (= 予備の先頭を 1 つ使う)
 /// 3. [`Sample::decode`] の末尾で読む (古いレコードはそこがゼロ埋めなので 0 になる)
 /// 4. この数を増やす ([`Sample::encode`] の `debug_assert` と下の `const` が見張る)
-pub const SAMPLE_ITEMS: usize = 83;
+pub const SAMPLE_ITEMS: usize = 86;
 
 /// **版 3 を始めた時点の**固定の欄の数 (T14.14 のときの [`SAMPLE_ITEMS`])。
 ///
@@ -133,11 +133,26 @@ pub struct Sample {
     /// 取りこぼす。こちらは接続を数え上げるたびに更新した値
     /// (`Metrics::inc_active_conn`) を 5 秒ごとに読み取ったもの
     pub active_peak: u64,
+    /// その区間の **warm な名前の件数の最大** (T16.0)。
+    ///
+    /// [`Self::dns_warm`] は平均で畳むので、`MAX_WARM` (32) がバーストで埋まったかは
+    /// 60 秒 / 1 時間の窓からは読めなかった (5 秒のリングは 6 時間ぶんしか無い)。
+    /// 5 秒の標本では `dns_warm` と同じ値
+    pub dns_warm_max: u64,
+    /// その区間の `dns_warm` の**合計**と、畳んだ 5 秒の標本の数 (T16.0)。
+    ///
+    /// 平均を `u64` の割り算で 2 段 (5 秒 → 60 秒 → 1 時間) 切り捨てると下に偏るので、
+    /// 平均は `round(Σ dns_warm_sum / Σ gauge_n)` で出す。`gauge_n` はほかのゲージ 8 つ
+    /// (`active` / `mem_used` / … / `fds`) の重みにも使う。5 秒の標本は `sum = 値, n = 1`。
+    /// **古いレコード (T16.0 より前) はどちらも 0** で読み戻るので、`gauge_n == 0` は
+    /// `(値, 1)` として読む ([`Sample::gauge_weight`])
+    pub dns_warm_sum: u64,
+    pub gauge_n: u64,
 }
 
 /// `/history` の 1 標本の列名 (この順で [`Sample::push_row`] が値を並べる)。
 /// **キーを標本ごとに繰り返さない**ため、JSON は配列の配列にしてある (T12.4 (3))。
-pub const KEYS: [&str; 40] = [
+pub const KEYS: [&str; 43] = [
     "t",
     "requests",
     "bytes",
@@ -178,6 +193,10 @@ pub const KEYS: [&str; 40] = [
     "requests_delta",
     "bytes_delta",
     "active_peak",
+    // T16.0 で末尾に足したもの
+    "dns_warm_max",
+    "dns_warm_sum",
+    "gauge_n",
 ];
 
 /// [`KEYS`] と**同じ長さ・同じ並び**の「その列の読み方」(`/history` の `key_kinds`。T15.0 (10))。
@@ -237,6 +256,9 @@ pub const KEY_KINDS: [&str; KEYS.len()] = [
     "delta",      // requests_delta
     "delta",      // bytes_delta
     "peak",       // active_peak
+    "peak",       // dns_warm_max
+    "delta",      // dns_warm_sum
+    "delta",      // gauge_n
 ];
 
 impl Sample {
@@ -285,9 +307,31 @@ impl Sample {
         self.wait.push_json(out);
         let _ = write!(
             out,
-            ",{},{},{},{}]",
-            self.dns_warm, self.requests_delta, self.bytes_delta, self.active_peak
+            ",{},{},{},{},{},{},{}]",
+            self.dns_warm,
+            self.requests_delta,
+            self.bytes_delta,
+            self.active_peak,
+            // T16.0 で末尾に足したもの
+            self.dns_warm_max,
+            self.dns_warm_sum,
+            self.gauge_n
         );
+    }
+
+    /// ゲージを畳むときの重み (= その行に畳んだ 5 秒の標本の数。T16.0)。
+    /// 古いレコード (`gauge_n` が 0) は 1 本ぶんとして読む。
+    fn gauge_weight(&self) -> u64 {
+        self.gauge_n.max(1)
+    }
+
+    /// `dns_warm` の合計 (T16.0)。古いレコード (`gauge_n` が 0) は値そのものを 1 本ぶんの合計として読む。
+    fn dns_warm_total(&self) -> u64 {
+        if self.gauge_n == 0 {
+            self.dns_warm
+        } else {
+            self.dns_warm_sum
+        }
     }
 
     /// 状態ファイルのレコード (先頭が時刻)。
@@ -330,7 +374,11 @@ impl Sample {
         e.u64(self.dns_warm)
             .u64(self.requests_delta)
             .u64(self.bytes_delta)
-            .u64(self.active_peak);
+            .u64(self.active_peak)
+            // T16.0 で足した 3 項目 (`decode` と同じ順)
+            .u64(self.dns_warm_max)
+            .u64(self.dns_warm_sum)
+            .u64(self.gauge_n);
         debug_assert_eq!(e.0.len(), SAMPLE_ITEMS * 8, "固定の欄の数と食い違っている");
         e.0
     }
@@ -381,15 +429,37 @@ impl Sample {
         s.requests_delta = d.u64();
         s.bytes_delta = d.u64();
         s.active_peak = d.u64();
+        // T16.0。T16.0 より前のレコードはここがゼロ埋めなので 0 で読み戻る
+        // (畳むときは `gauge_n == 0` を `(値, 1)` として読む)
+        s.dns_warm_max = d.u64();
+        s.dns_warm_sum = d.u64();
+        s.gauge_n = d.u64();
         Some(s)
     }
 
     /// 窓の標本をひとつにまとめる: 累計は最後の値、ゲージは平均 (山は最大値)、
     /// 区間の値は足し合わせ、時刻は窓の先頭。
+    ///
+    /// **ゲージの平均は標本の数で重みを付けて四捨五入する** (T16.0)。前は `Σ / 行数` の
+    /// 切り捨てで、5 秒 → 60 秒 → 1 時間 の 2 段で最大 2 近く下に偏っていた (1 時間の行は
+    /// 60 秒の行をどれも同じ重みで平均していたので、途中で欠けた分も同じ重みだった)。
+    /// `dns_warm` は合計 (`dns_warm_sum`) を持つので `round(Σ合計 / Σ標本数)` で**真の平均 ±0.5**。
+    /// ほかの 8 つは 60 秒の行の平均が丸めてあるので、1 時間の行は最悪 ±1.0。
     fn downsample(window: &[Sample], t: u64) -> Sample {
         let last = window.last().copied().unwrap_or_default();
-        let n = window.len().max(1) as u64;
-        let avg = |f: fn(&Sample) -> u64| window.iter().map(f).sum::<u64>() / n;
+        // この行に畳む 5 秒の標本の数 (古いレコードは 1 行 = 1 本)
+        let gauge_n: u64 = window.iter().map(Sample::gauge_weight).sum();
+        let n = gauge_n.max(1) as u128;
+        let round = |total: u128| ((total + n / 2) / n) as u64;
+        let avg = |f: fn(&Sample) -> u64| {
+            round(
+                window
+                    .iter()
+                    .map(|s| f(s) as u128 * s.gauge_weight() as u128)
+                    .sum::<u128>(),
+            )
+        };
+        let dns_warm_sum: u64 = window.iter().map(Sample::dns_warm_total).sum();
         let max = |f: fn(&Sample) -> u64| window.iter().map(f).max().unwrap_or(0);
         let sum = |f: fn(&Sample) -> u64| window.iter().map(f).sum::<u64>();
         let mut connect = Window::default();
@@ -437,13 +507,18 @@ impl Sample {
             evicted_idle: last.evicted_idle,
             wait,
             // warm な名前の**件数のゲージ**。平均で畳むのは、受け入れ基準の
-            // 「`refreshes/h ÷ その時間の平均 warm`」がそのまま読めるようにするため
-            dns_warm: avg(|s| s.dns_warm),
+            // 「`refreshes/h ÷ その時間の平均 warm`」がそのまま読めるようにするため。
+            // T16.0 から平均は合計 ÷ 標本数 (行ごとの丸めを重ねない)
+            dns_warm: round(dns_warm_sum as u128),
             // 区間の値なので足し合わせ (通算の `requests` / `bytes` とは畳み方が違う)
             requests_delta: sum(|s| s.requests_delta),
             bytes_delta: sum(|s| s.bytes_delta),
             // 山なので最大 (平均に畳むと消える。`active_max` と同じ扱い)
             active_peak: max(|s| s.active_peak),
+            // T16.0。古いレコードは `dns_warm_max` が 0 なので、平均の値を下限にする
+            dns_warm_max: max(|s| s.dns_warm_max.max(s.dns_warm)),
+            dns_warm_sum,
+            gauge_n,
         }
     }
 }
@@ -862,15 +937,16 @@ mod tests {
         assert!(json.contains("\"samples\":[[5,10,0,5,0,"), "{}", json);
         // 標本の配列の閉じ方は変えず、その**後ろ**に閉じた接続の分布が付く (T14.6)。
         // 末尾は T15.0 (10) で足した `wait_buckets` と 4 列 (`dns_warm` /
-        // `requests_delta` / `bytes_delta` / `active_peak`)
+        // `requests_delta` / `bytes_delta` / `active_peak`)、そのうしろが T16.0 の 3 列
+        // (`dns_warm_max` / `dns_warm_sum` / `gauge_n`)
         assert!(
-            json.contains(",0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0,0]],\"closed\":{"),
+            json.contains(",0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0,0,0,0,0]],\"closed\":{"),
             "{}",
             &json[json.len() - 600..]
         );
         // `keys` の隣に同じ長さの `key_kinds` が並ぶ (T15.0 (10))
         assert!(
-            json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\"],\"key_kinds\":[\"time\",\"cumulative\","),
+            json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\",\"dns_warm_max\",\"dns_warm_sum\",\"gauge_n\"],\"key_kinds\":[\"time\",\"cumulative\","),
             "{}",
             &json[..900]
         );
@@ -1113,6 +1189,9 @@ mod tests {
             requests_delta: 29,
             bytes_delta: 30,
             active_peak: 31,
+            dns_warm_max: 32,
+            dns_warm_sum: 33,
+            gauge_n: 34,
         };
         let enc = s.encode();
         assert!(
@@ -1136,6 +1215,12 @@ mod tests {
             [d.u64(), d.u64(), d.u64(), d.u64()],
             [28, 29, 30, 31],
             "`dns_warm` `requests_delta` `bytes_delta` `active_peak` の順"
+        );
+        // T16.0 の 3 項目はそのうしろ
+        assert_eq!(
+            [d.u64(), d.u64(), d.u64()],
+            [32, 33, 34],
+            "`dns_warm_max` `dns_warm_sum` `gauge_n` の順"
         );
     }
 
@@ -1279,6 +1364,137 @@ mod tests {
         assert_eq!(agg.active_peak, 62);
     }
 
+    /// **ゲージの平均が真の平均 ±0.5 に入り、最大が残る** (T16.0)。
+    ///
+    /// 5 秒の値を並べた作り物を `History` に 2 時間ぶん流し、60 秒と 1 時間の行の `dns_warm` を
+    /// 5 秒の値の真の平均と比べる。値は 3 と 4 を 3 対 1 で混ぜる (真の平均 3.25。
+    /// 前の `Σ / 行数` の切り捨ては 60 秒で 3、1 時間でも 3 = 0.25 下。ただし 3.917 のような
+    /// 窓では 60 秒で 3 = 0.917 下に落ち、それを 1 時間でさらに切り捨てていた)。
+    #[test]
+    fn gauge_averages_stay_within_half_of_the_true_mean_and_the_max_survives() {
+        let h = History::default();
+        let base = 1_800_000_000u64; // 時の頭 (3600 で割り切れる)
+        // 5 秒ごとの warm: 11 本 4 と 1 本 3 を 12 本の周期で (真の平均 3 + 11/12 = 3.9167)、
+        // 1 時間に 1 回だけ 32 (バーストで満杯)。`active` も同じ並び
+        let warm_at = |i: u64| -> u64 {
+            if i % 720 == 100 {
+                32
+            } else if i.is_multiple_of(12) {
+                3
+            } else {
+                4
+            }
+        };
+        let steps = 2 * 720 + 13;
+        let mut fine = Vec::new();
+        for i in 0..steps {
+            let w = warm_at(i);
+            let s = Sample {
+                t: base + i * 5,
+                active: w as usize,
+                dns_warm: w,
+                dns_warm_max: w,
+                dns_warm_sum: w,
+                gauge_n: 1,
+                ..Sample::default()
+            };
+            fine.push(s);
+            h.push(s);
+        }
+        let true_mean = |from: u64, secs: u64| -> f64 {
+            let v: Vec<u64> = fine
+                .iter()
+                .filter(|s| s.t >= from && s.t < from + secs)
+                .map(|s| s.dns_warm)
+                .collect();
+            v.iter().sum::<u64>() as f64 / v.len() as f64
+        };
+        // 60 秒: 12 本 = 3 が 1 本と 4 が 11 本 (3.9167 → 4。切り捨てなら 3)
+        let minutes: Vec<Sample> = h.rings[1].locked().iter().copied().collect();
+        assert!(minutes.len() >= 120, "{}", minutes.len());
+        for m in &minutes {
+            let want = true_mean(m.t, 60);
+            assert!(
+                (m.dns_warm as f64 - want).abs() <= 0.5,
+                "60 秒 t={} の dns_warm {} が真の平均 {:.4} から 0.5 より離れた",
+                m.t,
+                m.dns_warm,
+                want
+            );
+            assert!((m.active as f64 - want).abs() <= 0.5, "active も同じ");
+            assert_eq!(m.gauge_n, 12, "12 本を畳んだ");
+            assert_eq!(m.dns_warm_sum, (want * 12.0).round() as u64);
+        }
+        // 1 時間: 真の平均 (3.9167 × 719 + 32) / 720 ≈ 3.956 → 4、最大 32 が残る
+        let hours: Vec<Sample> = h.rings[2].locked().iter().copied().collect();
+        assert!(!hours.is_empty());
+        for hr in &hours {
+            let want = true_mean(hr.t, 3600);
+            assert!(
+                (hr.dns_warm as f64 - want).abs() <= 0.5,
+                "1 時間 t={} の dns_warm {} が真の平均 {:.4} から 0.5 より離れた",
+                hr.t,
+                hr.dns_warm,
+                want
+            );
+            assert_eq!(hr.dns_warm_max, 32, "バーストの 32 が 1 時間の行に残る");
+            assert_eq!(hr.gauge_n, 720);
+            // ほかのゲージ 8 つは 60 秒の丸めを重ねるので最悪 ±1.0
+            assert!((hr.active as f64 - want).abs() <= 1.0);
+        }
+        // 60 秒の行でも最大は残る (平均は 4 に埋もれる)
+        let burst = minutes
+            .iter()
+            .find(|m| m.t <= base + 500 && base + 500 < m.t + 60)
+            .expect("バーストの窓");
+        assert_eq!(burst.dns_warm_max, 32);
+        assert!(burst.dns_warm < 32);
+    }
+
+    /// T16.0 より前のレコード (`dns_warm_max` / `dns_warm_sum` / `gauge_n` が 0) を畳んでも、
+    /// 平均は今までの値の平均 (1 行 = 1 本)、最大は `dns_warm` を下限にする。
+    #[test]
+    fn old_records_without_the_gauge_sums_fold_as_one_sample_each() {
+        let old = |t: u64, warm: u64, active: usize| Sample {
+            t,
+            dns_warm: warm,
+            active,
+            mem_used: 100,
+            ..Sample::default()
+        };
+        // 古い 60 秒の行 3 本 (平均 5, 6, 8)
+        let rows = [old(0, 5, 2), old(60, 6, 3), old(120, 8, 3)];
+        let agg = Sample::downsample(&rows, 0);
+        assert_eq!(agg.gauge_n, 3, "古い行は 1 本ずつ");
+        assert_eq!(agg.dns_warm_sum, 19);
+        assert_eq!(agg.dns_warm, 6, "19 / 3 = 6.33 → 6");
+        assert_eq!(agg.dns_warm_max, 8, "最大は dns_warm を下限にする");
+        assert_eq!(agg.active, 3, "8 / 3 = 2.67 → 3 (切り捨てなら 2)");
+        assert_eq!(agg.mem_used, 100);
+        // 新しい行と混ざっても、新しい行は標本の数で重みが付く
+        let new = Sample {
+            t: 180,
+            dns_warm: 10,
+            dns_warm_max: 12,
+            dns_warm_sum: 120,
+            gauge_n: 12,
+            ..Sample::default()
+        };
+        let mixed = Sample::downsample(&[rows[0], new], 0);
+        assert_eq!(mixed.gauge_n, 13);
+        assert_eq!(mixed.dns_warm_sum, 125);
+        assert_eq!(mixed.dns_warm, 10, "125 / 13 = 9.6 → 10");
+        assert_eq!(mixed.dns_warm_max, 12);
+        // 古いレコードを `.rrd` から読み戻しても値は変わらない (新しい欄は 0)
+        let enc = rows[2].encode();
+        let back = Sample::decode(&enc[..83 * 8]).expect("T16.0 より前の長さでも読める");
+        assert_eq!(back, rows[2]);
+        assert_eq!(
+            (back.dns_warm_max, back.dns_warm_sum, back.gauge_n),
+            (0, 0, 0)
+        );
+    }
+
     /// `evicted_idle` は**レコードの余白に足した**ので `.rrd` の版は上がらない (T14.2 (3))。
     ///
     /// 見るのは 2 つ: (a) 63 項目が領域 (508 B) に収まっていて、まだ余白があること、
@@ -1341,7 +1557,10 @@ mod tests {
         s.active_peak = 251;
         let enc = s.encode();
         // (a)
-        assert_eq!(SAMPLE_ITEMS, 83, "63 + `wait` の窓 16 + 4 列");
+        assert_eq!(
+            SAMPLE_ITEMS, 86,
+            "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列"
+        );
         assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
         assert!(
             enc.len() <= crate::rrd::SAMPLE_RECORD - 4 && SAMPLE_SPARE_ITEMS >= 1,
