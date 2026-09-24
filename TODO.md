@@ -6523,7 +6523,7 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
   - 受け入れ基準: 5 秒の値を並べた作り物で 3600 秒の平均が真の平均 ±0.5 に入る単体テスト。`.rrd` の版は変えない。
 
   - **次のターンの準備 (§0 の決まり。2026-09-24 に足した)**: 次の再デプロイで判定するのは (i) T15.12 段 7 の `codegen-units = 4` の速さ (大きな悪化だけ)、(ii) T15.99 で「判定できず」だった
-    `MAX_WARM` 32 の取り合い、(iii) 引き直しの回数 (T15.15 で道具を直したあとの物差し)。デプロイ先のいまの計器で足りないもの 3 つ → **T16.0 として再デプロイの前に入れる**:
+    `MAX_WARM` 32 の取り合い、(iii) 引き直しの回数 (T15.15 で道具を直したあとの物差し)。デプロイ先のいまの計器で足りないもの 3 つ → **T16.0 として再デプロイの前に入れる** (Phase 16 の節):
     役ごとの CPU のユーザー空間 / カーネルの内訳 (`/profile` は `utime + stime` の合計だけ、`crates/metrics-window/src/profile.rs:1021`) と cgroup の `cpu.stat` の `user_usec` / `system_usec`、
     `/history` の窓ごとの `dns_warm` の最大、`dns_warm` の平均の切り捨て (T15.16 をここへ畳む)。(i) の大きな悪化だけなら今の計器でも判定できるが、細かい問いが出たときに 24 時間が無駄になるので先に入れる。
 
@@ -6583,6 +6583,39 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
   来るので `/readers` には 1 行も出ない** (今回まさに、forward と CONNECT だけを投げた新しい接続元は `/readers` に 1 行も残していない)。
   `/readers` が空なのは「内部エンドポイントのパスを叩かれていない」証拠であって「走査が無い」証拠ではない。出すべきは
   「新しい接続元」「`distinct_targets` が増えた接続元」「宛先が IP リテラル / 非標準ポートの要求」。
+
+### Phase 16 (2026-09-24〜: 次の再デプロイ = `codegen-units = 4` を試す版。計器が先)
+
+T15.99 の「次のターンの準備」(§0 の決まり) で、次の再デプロイで判定したいことに要る計器が 3 つ足りないと分かった。**T16.0 を入れてから 1 回で再デプロイする**
+(中身は T15.12 段 5〜7 の `codegen-units = 4`、クレートの組み替え、T16.0)。「前」の雪像は `2026-09-24T093400Z` (T15.99 の「後」)。
+
+- [ ] **T16.0 次の判定に要る計器 3 つ (役ごとの CPU のユーザー空間、`dns_warm` の最大、平均の切り捨て。T15.16 を畳む)**
+  - 目的: (i) `codegen-units = 4` が効くのはユーザー空間だけで、CPU の約 7 割はカーネル側なので、合計 (`utime + stime`) では差が埋もれる。(ii) T15.99 で「`MAX_WARM` 32 がバーストで埋まるか」が判定できなかった
+    (`/history` の `dns_warm` は平均だけ、5 秒のリングは 1 時間ぶん)。(iii) `dns_warm` をはじめゲージ 9 つの平均が `u64` の割り算で 2 段切り捨てられ、下に偏る。
+  - **決めたこと (2026-09-24 の下読みから。行番号は `dd3e6c6` のもの)**:
+    1. **役ごとの CPU**: `crates/sysinfo/src/sysinfo/proc.rs:141` の `parse_task_stat` が utime も返すようにし `TaskSample` に `utime` を足す。`crates/metrics-window/src/profile.rs:943` 付近の前回値を (合計, user, run_delay) にし、
+       役ごとの窓に `user_us`。`/profile` の `keys` の**末尾**に `user_us` (`roles` と同じ長さの配列。`run_delay_us` と同じ形)。プロセス全体は `parse_stat_cpu_split_us` を新しく足し (`parse_stat_cpu_us` は
+       anomaly と `tunnel_spin_test` が使うので残す)、`keys` の末尾に `cpu_user_us` (スカラー。`summary=1` の段と `recent` にも)。**持つのは user だけ** (sys は `cpu_us − user`)。
+    2. **cgroup**: `crates/sysinfo/src/sysinfo/cgroup.rs:107` の `parse_cpu_stat` で `usage_usec` / `user_usec` / `system_usec` も読む (同じファイル・同じ `path`。探し方 `find_up` は変えない)。
+       `/status` の `kernel.cgroup_cpu` と `since_start` の**末尾**に `usage_usec` / `user_usec` / `system_usec`、`/history` の `kernel.keys` の末尾に `cpu_user_usec` / `cpu_system_usec` (区間の値、足し合わせで畳む)。
+       `crates/metrics-types/src/kernel.rs:36-44` の `avail` の旗は 8 ビット埋まっているので **`u16` に広げて `SRC_CGROUP_USAGE`**。行が無いファイルではこの 3 欄を `null`。
+    3. **`dns_warm` の最大と平均**: `/history` の `Sample` に `dns_warm_max` (`key_kinds` は `peak`)、`dns_warm_sum` と `gauge_n` (その行に畳んだ 5 秒の標本の数。どちらも `delta`)。
+       `dns_warm` は `round(Σsum / Σn)`。**ほかのゲージ 8 つ** (`active` / `mem_used` / `mem_limit` / `disk_used` / `disk_limit` / `rss` / `threads` / `fds`、`history.rs:412-429`) も同じ `avg` で畳んでいるので、
+       `avg` を合計と標本数から出す形にそろえる (四捨五入を 2 段かけると最悪 ±1.0 ずれるので、合計を持つ)。5 秒の標本は `sum = 値, n = 1, max = 値`。古いレコード (新しい欄が 0) は
+       `gauge_n == 0` を `(値, 1)`、最大を `max(dns_warm_max, dns_warm)` で読む。**`.rrd` は版 3 のまま** (`SAMPLE_ITEMS` 83 → 86、`KEYS` 40 → 43、予備 44 → 41)。`.recent` の MAGIC も変えない。
+    4. **warm の追い出しの通算**: `/status` の `dns` の末尾に `warm_evicted` (`crates/net-dns/src/dns.rs:334` 付近の、満杯で追い出す枝に原子の加算 1 つ)。**要求の経路の例外**として README に書く
+       (通るのはミスで名前解決をした直後、枠が満杯のときだけ。名前解決そのもの (ms) に比べて無視できる)。
+    5. **dashboard には足さない** (81,673 / 81,920 B)。判定は JSON に出ていれば足りる。
+  - 道具 (最小): `scripts/snapshot-diff.py` の `HFIELDS` (:80) に 3 列、`aggregate` で最大と Σsum/Σn (無ければ今の平均)。`scripts/snapshot-summary.py` の CPU の表に「ユーザー / カーネル」の 1 行
+    (`since_start.user_usec` / `system_usec` と `/profile` の `user_us` の役ごとの上位)。T15.15 (道具の 3 つの誤り) とは別 (同じ `aggregate` を触るので T15.15 はこのあと)。
+  - **直値で見張っているもの (壊れるはず)**: `tests/profile_test.rs:38` (`keys` の文字列)・`:197-209` (構造体の書き方)、`crates/endpoints/src/endpoints/profile.rs:92-93`、`crates/sysinfo/src/sysinfo/proc.rs:231`、
+    `crates/metrics-types/src/kernel.rs:47` (`[&str; 24]`)・`:771`、`crates/metrics-window/src/history.rs:140` (`[&str; 40]`)・`:1344` (`SAMPLE_ITEMS`)・`:1328-1365` (版 3 の往復)、`tests/history_columns_test.rs:101,103-115`。
+  - 費用: 読むファイルは既に 5 秒ごとに読んでいるものだけ (`/proc/self/stat`、`/proc/self/task/*/stat`、cgroup の `cpu.stat`)。システムコールは増えない。メモリは満杯で +約 360 KB
+    (`history_depth_test` の上限 3,407,872 B に対し 2,972,160 B で収まる見込み)。`/profile` の 1 行が 20〜40 B 太り、雪像の 256 KiB に入る本数が少し減る。
+  - テスト: `parse_task_stat` / `parse_stat_cpu_split_us` / `parse_cpu_stat` (`user_usec` の有る版と無い版)、5 秒の値を並べた作り物で 60 秒と 3600 秒の平均が真の平均 ±0.5 に入ること、最大が残ること、
+    古い形のレコード (新しい欄 0) を読み戻して値が変わらないこと、`warm_evicted` が満杯のときだけ増えること。手元のコンテナは `cpu.stat` の `user_usec` が読める (`nr_periods` は 0)。
+  - 受け入れ基準: 全体テスト全通過 (792 本から減らない)、`--lite` のシステムコール/要求・確保/要求が不変 (5.023 / 10.006)、関門 180、`check-docs` 差分 0、`check-dashboard.js` 通過、
+    手元で起動して `/profile` に `user_us` と `cpu_user_us`、`/status` に `user_usec` と `warm_evicted`、`/history` に `dns_warm_max` が出ること。**この機械はメモリが逼迫しているので `MX_SLOTS=1`**。
 
 ## 付録 A. 計測の記録 (時系列)
 
