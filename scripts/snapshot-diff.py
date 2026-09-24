@@ -87,6 +87,9 @@ HFIELDS = (
     # その瞬間の warm な名前の件数、`*_delta` は区間の増分、`active_peak` は区間の真の山
     "waits", "wait_ms_sum", "wait_ms_max", "wait_buckets",
     "dns_warm", "requests_delta", "bytes_delta", "active_peak",
+    # T16.0 で末尾に足した 3 列: `dns_warm` の区間の最大と、平均を出すための合計と標本数
+    # (5 秒の行は `sum = 値, n = 1`。無い版と T16.0 より前の行は下の `aggregate` が今の平均に戻す)
+    "dns_warm_max", "dns_warm_sum", "gauge_n",
 )
 # 平常時の閾 (T14.0: 1 時間 300 本未満の標本だけを「平常時」とする)
 BURST_PER_HOUR = 300
@@ -348,7 +351,9 @@ def aggregate(rows, bounds, limit):
            "dns_misses": 0, "dns_ms_sum": 0.0, "errors": 0,
            "causes": [0] * len(CAUSE_NAMES), "active_max": 0, "requests": None,
            # T15.0 (10) の列 (無い版では `dns_warm_avg` が None、残りは 0 のまま)
-           "active_peak": 0, "requests_delta": 0, "bytes_delta": 0, "dns_warm_avg": None}
+           "active_peak": 0, "requests_delta": 0, "bytes_delta": 0, "dns_warm_avg": None,
+           # T16.0 の列 (無い版では None)
+           "dns_warm_max": None}
     warm_sum, warm_n = 0, 0
     for r in rows:
         c = r["connects"] or 0
@@ -380,10 +385,20 @@ def aggregate(rows, bounds, limit):
         out["requests_delta"] += (r["requests_delta"] or 0)
         out["bytes_delta"] += (r["bytes_delta"] or 0)
         # **平均する** (`dns_warm` はその瞬間のゲージ)。T15.0 より前に撮った標本は 0 で
-        # 読み戻るので、再起動をまたいだ「前」の期間では 0 に引きずられる
+        # 読み戻るので、再起動をまたいだ「前」の期間では 0 に引きずられる。
+        # T16.0 からは行ごとの合計と標本数 (`dns_warm_sum` / `gauge_n`) で Σsum / Σn
+        # (行の平均は丸めてあるので、平均の平均にしない)。無い行は今までどおり 1 行 = 1 本
         if r["dns_warm"] is not None:
-            warm_sum += r["dns_warm"]
-            warm_n += 1
+            if r["gauge_n"]:
+                warm_sum += r["dns_warm_sum"] or 0
+                warm_n += r["gauge_n"]
+            else:
+                warm_sum += r["dns_warm"]
+                warm_n += 1
+            # 最大は `dns_warm_max` (T16.0)。T16.0 より前の行は 0 なので平均を下限にする
+            if r["dns_warm_max"] is not None:
+                out["dns_warm_max"] = max(out["dns_warm_max"] or 0,
+                                          r["dns_warm_max"] or 0, r["dns_warm"])
     if warm_n:
         out["dns_warm_avg"] = warm_sum / warm_n
     for kind in ("connect", "forward", "wait"):

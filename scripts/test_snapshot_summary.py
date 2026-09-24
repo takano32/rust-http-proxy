@@ -255,6 +255,29 @@ class Cpu(unittest.TestCase):
         self.assertIn("| 上位スレッド |", md)
         self.assertNotIn("run_delay_us", md)
 
+    def test_the_user_and_kernel_split_is_one_row(self):
+        """T16.0: コンテナ (cgroup の起動から)・プロセス・役割の上位 3 つを「ユーザー / カーネル」で。"""
+        b = read(B)
+        p = b["profile"]
+        p["keys"] = p["keys"] + ["user_us", "cpu_user_us"]
+        # プロセスの CPU 1,080 ms のうち 3 割がユーザー空間。役割も 3 割 (conn / history / accept)
+        for row, user in zip(p["samples"], (108000, 102000, 114000)):
+            role_user = [300, 72000, 0, 0, 2700, 0, 0, 0, 0]
+            row.extend([role_user, user])
+        since = b["status"]["kernel"]["cgroup_cpu"]["since_start"]
+        since.update(usage_usec=4_000_000, user_usec=1_200_000, system_usec=2_800_000)
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("| ユーザー / カーネル | コンテナ (起動から) 1.2 / 2.8 秒 (ユーザー **30.0%**)。"
+                      "プロセス 324 / 756 ms (ユーザー **30.0%**)。"
+                      "役割の上位 conn 216 / 504 ms、history 8 / 19 ms、accept 1 / 3 ms |", md)
+
+    def test_a_snapshot_without_the_split_has_no_user_kernel_row(self):
+        """T16.0 より前の版 (`user_us` も `user_usec` も無い) では行ごと出さない。"""
+        md = run([B])
+        self.assertIn("| 使用 |", md)
+        self.assertNotIn("| ユーザー / カーネル |", md)
+
     def test_a_snapshot_without_profile_or_kernel_has_no_cpu_table(self):
         """古い雪像 (A) には `/profile` も `kernel` も無いので表ごと出さない。"""
         self.assertNotIn("| CPU | 値 |", run([A]))

@@ -543,6 +543,50 @@ class NewColumns(unittest.TestCase):
         self.assertIsNone(agg["wait_buckets"])
 
 
+def with_warm_columns(snap, per_row):
+    """`/history?res=3600` の末尾に T16.0 の 3 列を足す (`per_row` は `t` → (max, sum, n))。
+
+    無い `t` の行は 0 (T16.0 より前に書かれた行と同じ形)。
+    """
+    h = snap["history"]["3600"]
+    h["keys"] = h["keys"] + ["dns_warm_max", "dns_warm_sum", "gauge_n"]
+    if h.get("key_kinds"):
+        h["key_kinds"] = h["key_kinds"] + ["peak", "delta", "delta"]
+    for row in h["samples"]:
+        row.extend(per_row.get(row[0], (0, 0, 0)))
+    return snap
+
+
+class WarmMaxAndSums(unittest.TestCase):
+    """T16.0: `dns_warm` の最大と、平均を Σsum / Σn で出すこと (無い版は今の平均)。"""
+
+    def agg(self, per_row):
+        b = with_warm_columns(read(B), per_row)
+        with written(b=b) as paths:
+            return build([A, paths["b"], "--no-dns"])["history"]["after"]
+
+    def test_the_mean_comes_from_the_sums_and_the_max_survives(self):
+        # 後の平常時は `dns_warm` 24 と 26 の 2 行 (行の平均は丸めてある)。
+        # 合計は 24.4 × 720 と 26.2 × 720 = 真の平均 25.3 (行の平均の平均なら 25.0)。
+        # バーストの行 (28、最大 40) は平常時の閾で外れる
+        after = self.agg({1789045200: (30, 17568, 720), 1789048800: (31, 18864, 720),
+                          1789052400: (40, 20160, 720)})
+        self.assertAlmostEqual(after["dns_warm_avg"], 25.3)
+        self.assertEqual(after["dns_warm_max"], 31)
+
+    def test_rows_without_the_sums_count_as_one_sample(self):
+        """T16.0 より前の行 (3 列が 0) は 1 行 = 1 本、最大は `dns_warm` を下限にする。"""
+        after = self.agg({1789048800: (27, 18864, 720)})
+        self.assertAlmostEqual(after["dns_warm_avg"], (24 + 18864) / 721)
+        self.assertEqual(after["dns_warm_max"], 27)
+        old = self.agg({})
+        self.assertAlmostEqual(old["dns_warm_avg"], 25.0, msg="列が 0 なら今の平均のまま")
+        self.assertEqual(old["dns_warm_max"], 26, msg="最大は dns_warm を下限にする")
+
+    def test_a_snapshot_without_the_columns_has_no_max(self):
+        self.assertIsNone(build([A, B, "--no-dns"])["history"]["after"]["dns_warm_max"])
+
+
 class Criteria15(unittest.TestCase):
     """`--criteria phase15` の 6 行 (T15.4 が 3 行、T15.5 が 2 行、T15.6 が 1 行)。"""
 

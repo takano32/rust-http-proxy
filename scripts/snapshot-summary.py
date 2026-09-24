@@ -195,13 +195,42 @@ def error_delta(cur, prev):
             "windowed": True}
 
 
+def user_kernel(prof, cg):
+    """CPU のユーザー空間とカーネル側 (T16.0)。どの源も無ければ None (行ごと出さない)。
+
+    コンテナは `kernel.cgroup_cpu.since_start` の `user_usec` / `system_usec` (起動から)、
+    プロセスは `/profile` の `cpu_user_us` (カーネル側は `cpu_us − cpu_user_us`)、
+    役割は `user_us` の多い順に上位 3 つを「ユーザー / カーネル」で。
+    """
+    parts = []
+    since = (cg or {}).get("since_start") or {}
+    su, ss = since.get("user_usec"), since.get("system_usec")
+    if su is not None and ss is not None and su + ss > 0:
+        parts.append(f"コンテナ (起動から) {su / 1e6:,.1f} / {ss / 1e6:,.1f} 秒"
+                     f" (ユーザー **{su / (su + ss) * 100:.1f}%**)")
+    if prof and prof.get("cpu_user_us") is not None and prof["cpu_us"] > 0:
+        u, c = prof["cpu_user_us"], prof["cpu_us"]
+        parts.append(f"プロセス {u / 1000:,.0f} / {max(0, c - u) / 1000:,.0f} ms"
+                     f" (ユーザー **{u / c * 100:.1f}%**)")
+    if prof and prof.get("role_user_us"):
+        rows = sorted(zip(prof["roles"], prof["role_user_us"], prof["role_cpu_us"]),
+                      key=lambda x: (-x[1], -x[2]))
+        shown = "、".join(f"{r} {u / 1000:,.0f} / {max(0, c - u) / 1000:,.0f} ms"
+                         for r, u, c in rows[:3] if u or c)
+        if shown:
+            parts.append(f"役割の上位 {shown}")
+    return "。".join(parts) or None
+
+
 def profile_totals(snap):
     """`/profile` の標本を足して (窓の秒数・CPU・役割ごとの CPU・上位スレッド・遅れ) にする。
 
     1 標本は `[t, requests, cpu_us, [connect...], [forward...], [roles...], [locks...],
-    [queue...], threads_top, run_delay_us]` で、**位置ではなく `keys` の名前で引く**
+    [queue...], threads_top, run_delay_us, user_us, cpu_user_us]` で、**位置ではなく `keys` の名前で引く**
     (`crates/endpoints/src/endpoints/profile.rs` の `keys`)。役割の枠は標本 0 なら `0` 1 文字、
     上位スレッドは 1 本も無い窓なら `0`、`schedstat` の無いカーネルでは `run_delay_us` が `null`。
+    `user_us` (役割ごと) と `cpu_user_us` (プロセス全体) は CPU のうちユーザー空間 (T16.0)。
+    無い版では `role_user_us` / `cpu_user_us` が `None`。
     部が無い版では `None` を返す (呼ぶ側が表ごと出さない)。
     """
     p = part(snap, "profile")
@@ -213,7 +242,9 @@ def profile_totals(snap):
     roles = p.get("roles") or []
     out = {"samples": len(rows), "interval_secs": p.get("interval_secs") or 0,
            "roles": roles, "cpu_us": 0, "role_cpu_us": [0] * len(roles),
-           "run_delay_us": None, "top": []}
+           "run_delay_us": None, "top": [],
+           # T16.0 (無い版では None のまま)
+           "cpu_user_us": None, "role_user_us": None}
 
     def col(row, name):
         i = idx.get(name)
@@ -222,6 +253,16 @@ def profile_totals(snap):
     top = {}
     for r in rows:
         out["cpu_us"] += col(r, "cpu_us") or 0
+        user = col(r, "cpu_user_us")
+        if user is not None:
+            out["cpu_user_us"] = (out["cpu_user_us"] or 0) + user
+        role_user = col(r, "user_us")
+        if role_user:
+            if out["role_user_us"] is None:
+                out["role_user_us"] = [0] * len(roles)
+            for i, v in enumerate(role_user):
+                if i < len(out["role_user_us"]):
+                    out["role_user_us"][i] += v or 0
         for i, t in enumerate(col(r, "threads") or []):
             if t and i < len(out["role_cpu_us"]):
                 out["role_cpu_us"][i] += t[0] or 0
@@ -421,6 +462,9 @@ def main(argv=None):
             # **コアは 3 桁**。1 桁だと 0.006 コアも 0.04 コアも「0.0」に潰れる
             print(f"| 使用 | {'—' if used is None else f'{used:.3f}'} コア{share}"
                   f" (`/profile` {prof['samples']} 標本 × {prof['interval_secs']} 秒) |")
+        split = user_kernel(prof, cg)
+        if split:
+            print(f"| ユーザー / カーネル | {split} |")
         periods = cg.get("nr_periods")
         if periods:
             since = cg.get("since_start") or {}
