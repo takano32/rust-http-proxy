@@ -252,8 +252,8 @@ fn test_integration_profile_is_off_in_lite_mode() {
 
 /// `?n=` と `?offset=` で **720 標本ぜんぶが 1 枚ずつ読める** (T15.0 (11))。
 ///
-/// `/profile?res=5` は 720 標本のうち 456 しか返らない (1 標本 3,136 B で 256 KiB に
-/// 入り切らない) ので、雪像 1 枚で全部読むには頁が要る。ここで縛るのは
+/// `/profile?res=5` はデプロイ先の実測で 720 標本のうち 456 しか返らない (T15.0 の行の形。
+/// 標本の JSON の行が 256 KiB に入り切らない。T16.0 で行が太ったので少し減るが未測定) ので、雪像 1 枚で全部読むには頁が要る。ここで縛るのは
 /// 「頁を継ぐと落ちも重なりもしない」ことと、`next_offset` が最後だけ `null` になること。
 #[test]
 fn test_integration_profile_pages_the_samples_with_n_and_offset() {

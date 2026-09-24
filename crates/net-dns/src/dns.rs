@@ -346,9 +346,10 @@ fn warm_promote(table: &mut HashMap<String, Entry>, key: &str, now: Instant, ttl
             .cloned()
     {
         q.remove(&victim);
-        // 満杯で押し出した回数 (T16.0。要求の経路の例外。上の `WARM_EVICTED` を参照)
-        WARM_EVICTED.fetch_add(1, Ordering::Relaxed);
         if let Some(e) = table.get_mut(&victim.1) {
+            // 満杯で押し出した回数 (T16.0。要求の経路の例外。上の `WARM_EVICTED` を参照)。
+            // 表から既に消えた名前の予定を外しただけのときは warm を押し出していないので数えない
+            WARM_EVICTED.fetch_add(1, Ordering::Relaxed);
             e.warm = false;
             e.next_refresh = None;
         }
