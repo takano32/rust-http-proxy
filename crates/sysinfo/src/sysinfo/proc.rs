@@ -64,6 +64,8 @@ pub struct TaskSample {
     pub comm: String,
     /// utime + stime (clock tick)
     pub ticks: u64,
+    /// そのうちユーザー空間の utime (clock tick。T16.0。カーネル側は `ticks - utime`)
+    pub utime: u64,
     /// `stat` の状態 (`R` 走行可能 / `S` 休眠 / `D` 割り込めない休眠 …)
     pub state: char,
     /// `syscall` の番号。`Some(n >= 0)` = そのシステムコールの中、`Some(-1)` = 走行中、
@@ -103,7 +105,7 @@ pub fn scan_tasks(root: &std::path::Path, buf: &mut String) -> Option<TaskScan> 
         let Some(text) = read_into(&dir.join("stat"), buf) else {
             continue;
         };
-        let Some((comm, state, ticks)) = parse_task_stat(text) else {
+        let Some((comm, state, ticks, utime)) = parse_task_stat(text) else {
             continue;
         };
         let syscall = read_into(&dir.join("syscall"), buf).and_then(parse_syscall);
@@ -118,6 +120,7 @@ pub fn scan_tasks(root: &std::path::Path, buf: &mut String) -> Option<TaskScan> 
             tid,
             comm,
             ticks,
+            utime,
             state,
             syscall,
             run_delay_ns,
@@ -135,10 +138,12 @@ fn read_into<'a>(path: &std::path::Path, buf: &'a mut String) -> Option<&'a str>
     Some(&buf[..])
 }
 
-/// `/proc/<pid>/task/<tid>/stat` から (名前, 状態, utime + stime) を取る。
+/// `/proc/<pid>/task/<tid>/stat` から (名前, 状態, utime + stime, utime) を取る。
 ///
 /// **comm は括弧で囲まれていて空白も括弧も含みうる**ので、最初の `(` と最後の `)` で切る。
-pub fn parse_task_stat(text: &str) -> Option<(String, char, u64)> {
+/// utime を別に返すのは、ユーザー空間とカーネル側を分けて読むため (T16.0。
+/// `codegen-units` の類が効くのはユーザー空間だけで、合計では差が埋もれる)。
+pub fn parse_task_stat(text: &str) -> Option<(String, char, u64, u64)> {
     let open = text.find('(')?;
     let close = text.rfind(')')?;
     let comm = text.get(open + 1..close)?.to_string();
@@ -148,7 +153,7 @@ pub fn parse_task_stat(text: &str) -> Option<(String, char, u64)> {
     // (10 個) が並び、その次が utime (項目 14) と stime (項目 15)
     let utime: u64 = it.nth(10)?.parse().ok()?;
     let stime: u64 = it.next()?.parse().ok()?;
-    Some((comm, state, utime + stime))
+    Some((comm, state, utime + stime, utime))
 }
 
 /// `/proc/<pid>/task/<tid>/schedstat` の 1 行目から **走れるのに走れなかった時間** (ns) を取る。
@@ -228,10 +233,12 @@ mod tests {
     #[test]
     fn parses_a_task_stat_line() {
         let line = "1234 (we (ir)d name) S 1 1 0 0 -1 4194368 0 0 0 0 111 222 0 0 20 0 8 0 100 0";
-        let (comm, state, ticks) = parse_task_stat(line).expect("読めること");
+        let (comm, state, ticks, utime) = parse_task_stat(line).expect("読めること");
         assert_eq!(comm, "we (ir)d name");
         assert_eq!(state, 'S');
         assert_eq!(ticks, 333);
+        // ユーザー空間は utime (項目 14) だけ (T16.0)
+        assert_eq!(utime, 111);
         assert_eq!(parse_task_stat("こわれている"), None);
     }
 
@@ -280,6 +287,7 @@ mod tests {
         assert_eq!(scan.tasks.len(), 1);
         assert_eq!(scan.tasks[0].comm, "conn");
         assert_eq!(scan.tasks[0].ticks, 11);
+        assert_eq!(scan.tasks[0].utime, 5, "utime は項目 14 だけ (T16.0)");
         assert_eq!(scan.tasks[0].syscall, None, "syscall が無ければ None");
         assert!(!scan.syscalls_readable, "partial に落ちること");
         // `schedstat` も無いので `run_delay_us` は `null` になる側 (T15.0 (5))

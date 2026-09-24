@@ -4,7 +4,8 @@
 //!
 //! ```text
 //! [t, requests, cpu_us, [connect の 7 段], [forward の 6 段], [役割 9 つ], [ロック 4 つ],
-//!  [待ち行列 3 つ], [上位スレッド 最大 8], [走れずに待った時間 9 つ]]
+//!  [待ち行列 3 つ], [上位スレッド 最大 8], [走れずに待った時間 9 つ],
+//!  [ユーザー空間の CPU 9 つ], プロセスのユーザー空間の CPU]
 //! ```
 //!
 //! で、段階 1 つは `[count, ms_sum, ms_max, [12 段 + 上限なし]]`、役割 1 つは
@@ -12,7 +13,8 @@
 //! `[tid, "comm", roles の添字, cpu_us, running]` (T15.0 (5))。
 //! **件数 0 の段階と標本 0 の役割と上位スレッドの無い窓は `0` 1 文字**で書くので、
 //! 静かな窓は 1 標本 60 バイト程度にしかならない。`run_delay_us` は
-//! `/proc/<tid>/schedstat` が読めない環境では `null`。
+//! `/proc/<tid>/schedstat` が読めない環境では `null`。`user_us` (役割ごと) と `cpu_user_us`
+//! (プロセス全体) は CPU のうちユーザー空間のぶん (us。T16.0)。カーネル側は `cpu_us` から引く。
 //!
 //! 応答は [`super::recent::MAX_BODY`] (256 KiB) 以下。入り切らないときは**新しい方を残して**
 //! 古い標本から落とし、`"truncated":true` を出す (`/errors` などと同じ方針)。
@@ -90,7 +92,7 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     // 1 標本の並び (`/history` の `keys` と同じ役)
     out.push_str(
         "],\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\",\
-         \"threads_top\",\"run_delay_us\"],\"samples\":[",
+         \"threads_top\",\"run_delay_us\",\"user_us\",\"cpu_user_us\"],\"samples\":[",
     );
     out.push_str(&rows);
     out.push_str("],\"locks_total\":[");
@@ -109,14 +111,15 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     let recent = p.recent_totals(res, 300 / profile::RESOLUTIONS[res].0 as usize);
     let _ = write!(
         out,
-        "],\"recent\":{{\"secs\":{},\"requests\":{},\"cpu_us\":{},\"cpu_per_request_us\":{}}}",
+        "],\"recent\":{{\"secs\":{},\"requests\":{},\"cpu_us\":{},\"cpu_per_request_us\":{},\"cpu_user_us\":{}}}",
         300,
         recent.requests,
         recent.cpu_us,
         match recent.cpu_per_request_us() {
             Some(v) => format!("{:.2}", v),
             None => "null".to_string(),
-        }
+        },
+        recent.cpu_user_us
     );
     // 新しい欄は**末尾**に足す (古い読み手はそのまま動く)。`next_offset` が `null` なら
     // その並びはここで終わり = もう続きは無い
@@ -161,7 +164,7 @@ fn summary(ep: &Endpoint<'_>, res: usize) -> String {
         let s = p.recent_totals(res, want);
         let _ = write!(
             o,
-            "{{\"name\":\"{}\",\"secs\":{},\"samples\":{},\"requests\":{},\"cpu_us\":{},\"cpu_per_request_us\":{}}}",
+            "{{\"name\":\"{}\",\"secs\":{},\"samples\":{},\"requests\":{},\"cpu_us\":{},\"cpu_per_request_us\":{},\"cpu_user_us\":{}}}",
             name,
             folded as u64 * interval,
             folded,
@@ -170,7 +173,8 @@ fn summary(ep: &Endpoint<'_>, res: usize) -> String {
             match s.cpu_per_request_us() {
                 Some(v) => format!("{:.2}", v),
                 None => "null".to_string(),
-            }
+            },
+            s.cpu_user_us
         );
     });
     let _ = write!(

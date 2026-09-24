@@ -108,6 +108,8 @@ pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
     let iv = metrics.take_interval();
     // `/proc` を読むのは 5 秒の標本のときだけ (要求ごとには読まない)
     let (threads, fds, max_fds) = process_counts();
+    // 瞬間値を 1 回だけ読む (平均・最大・合計の 3 列に同じ値を入れる。T16.0)
+    let dns_warm = crate::dns::warm_count() as u64;
     // カーネルと cgroup の窓 (`/proc/net`・cgroup・PSI) もこの標本のときだけ進める (T14.12)
     crate::kernel::sample(now_epoch());
     Sample {
@@ -141,13 +143,18 @@ pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
         wait: iv.wait,
         // いま warm な名前の**件数** (`/status` の `dns.warm` と同じ数。T15.0 (8))。
         // `config.dns_warm` は窓の**秒数**で意味が違う
-        dns_warm: crate::dns::warm_count() as u64,
+        dns_warm,
         // 区間の値は `spawn_every` のクロージャが前回の通算との差で埋める (T15.0 (10))。
         // ここで `take_sample` 単体を呼ぶ道 (`/history?summary=1` の道具など) では 0
         requests_delta: 0,
         bytes_delta: 0,
         // 5 秒より短い山も落とさない同時接続の山 (T15.0 (10))。読むと今の本数に戻る
         active_peak: metrics.take_active_peak() as u64,
+        // 5 秒の標本は「1 本ぶん」: 最大も合計も値そのもの、標本数 1 (T16.0)。
+        // 粗い解像度へは最大・合計・合計で畳み、平均は合計 ÷ 標本数で出す
+        dns_warm_max: dns_warm,
+        dns_warm_sum: dns_warm,
+        gauge_n: 1,
     }
 }
 

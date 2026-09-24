@@ -318,6 +318,8 @@ fn the_miss_breakdown_shows_up_in_status_and_dns() {
         "refresh_ms_sum",
         "refresh_ms_max",
         "refresh_late",
+        // T16.0 で末尾に足した、warm の枠が満杯で押し出した回数
+        "warm_evicted",
     ] {
         assert!(
             dns.contains(&format!("\"{}\":", key)),
