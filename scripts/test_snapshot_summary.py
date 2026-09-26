@@ -550,5 +550,36 @@ class Bytes(unittest.TestCase):
         self.assertIn("| 転送 | 42.0 MiB |", run([B, "--prev", A]))
 
 
+ANON_0926 = os.path.join(DATA, "deployed-2026-09-26.anon.json")
+ANON_0916 = os.path.join(DATA, "deployed-2026-09-16.anon.json")
+
+
+@unittest.skipUnless(os.path.isfile(ANON_0926) and os.path.isfile(ANON_0916),
+                     "匿名化した実データが無い")
+class Anonymized(unittest.TestCase):
+    """T17.16 の匿名化した実データ (2026-09-26、起動から 47.2 時間) で 1 枚の要約が組めること。
+
+    **数字は T16.99 の `結果:` と同じ** (`dns_slow` 29 件 = 0.615 件/時)。名前は匿名化のあと
+    (`host-NNNN.gNNNN.example` / `198.51.100.x` / `ua-NN`) しか出ない。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.md = run([ANON_0926, "--prev", ANON_0916])
+
+    def test_the_head_line(self):
+        self.assertIn("- 版 `0.1.0+2e57626` / 起動から 47.2 時間", self.md)
+        self.assertIn("**再起動をまたいでいる**", self.md)
+
+    def test_the_anomaly_table_gives_the_numbers_of_t1699(self):
+        self.assertIn("| `/events` の anomaly (起動から 47.2 時間) | 件 | 件/時 |\n|---|---|---|\n"
+                      "| `dns_slow` | 29 | 0.615 |\n| `connect_p95` | 7 | 0.148 |\n", self.md)
+
+    def test_only_anonymized_clients_and_agents_come_out(self):
+        self.assertIn("| `198.51.100.1` | 226,089 |", self.md)
+        self.assertIn("| ua-01 |", self.md)
+        self.assertRegex(self.md, r"host-\d{4}\.g\d{4}\.example:443")
+
+
 if __name__ == "__main__":
     unittest.main()

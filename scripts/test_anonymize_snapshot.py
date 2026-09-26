@@ -6,13 +6,15 @@
 
 架空の雪像 (下の `sample()`) で「**名前と IP と UA だけが変わり、数字は 1 つも変わらない**」
 「同じ入力からは同じ出力」を見る。あわせて、**コミットしてある匿名化済みの実データ**
-(`testdata/deployed-2026-09-16.anon.json`) に元の名前が残っていないことも見る
+(`testdata/deployed-2026-09-16.anon.json` と T17.16 の `deployed-2026-09-26.anon.json`) に元の名前が残っていないことも見る
 (実データそのものはリポジトリに入れないので、突き合わせは作った人が 1 回やる。ここでは
 「匿名化済みの形になっているか」だけを見る)。
 """
 
 import importlib.util
 import io
+import ipaddress
+import re
 import json
 import os
 import tempfile
@@ -22,6 +24,14 @@ from contextlib import redirect_stderr
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "testdata")
 FIXTURE = os.path.join(DATA, "deployed-2026-09-16.anon.json")
+# T17.16 の 2 枚目 (`recent` / `profile` / `events` / `hosts_series` のある版) と、隣の口 2 つ
+FIXTURE_0926 = os.path.join(DATA, "deployed-2026-09-26.anon.json")
+FIXTURE_0926_SIDES = tuple(os.path.join(DATA, "deployed-2026-09-26-{}.anon.json".format(n))
+                           for n in ("daily", "profile_res_60"))
+# 文書用の範囲 (置き換え先) と、ループバック・未指定 (`0.0.0.0`) は残ってよい IP
+ALLOWED_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "198.51.100.0/24", "203.0.113.0/24", "192.0.2.0/24", "198.18.0.0/15", "2001:db8::/32",
+    "127.0.0.0/8", "0.0.0.0/32", "::1/128", "::/128"))
 
 
 def _load(name, filename):
@@ -518,13 +528,18 @@ class Side(unittest.TestCase):
         self.assertEqual(an.side_target("a/x-daily.json=b/y.json"), ("a/x-daily.json", "b/y.json"))
 
 
-@unittest.skipUnless(os.path.isfile(FIXTURE), "匿名化した実データが無い")
-class Fixture(unittest.TestCase):
-    """コミットしてある匿名化済みの実データ (T14.35) に、元の名前が残っていないこと。"""
+class FixtureNames:
+    """コミットしてある匿名化済みの実データに、元の名前が残っていないこと (2 枚に共通)。
+
+    `unittest.TestCase` を継がない (これ自身は回らない)。下の 2 つが `PATH` を決めて継ぐ。
+    """
+
+    PATH = FIXTURE
+    HOSTS_AT_LEAST = 800
 
     @classmethod
     def setUpClass(cls):
-        with open(FIXTURE, encoding="utf-8") as f:
+        with open(cls.PATH, encoding="utf-8") as f:
             cls.snap = json.load(f)
 
     def test_every_host_is_anonymized(self):
@@ -540,7 +555,7 @@ class Fixture(unittest.TestCase):
                 an.ANON_HOST_RE.match(name) or name in an.RESERVED_NAMES
                 or name.startswith(("203.0.113.", "192.0.2.", "2001:db8:1::")),
                 "匿名化されていない宛先がある (長さ %d)" % len(name))
-        self.assertGreater(seen, 800)
+        self.assertGreater(seen, self.HOSTS_AT_LEAST)
 
     def test_every_client_and_answer_is_in_the_documentation_ranges(self):
         for key, value in strings(self.snap):
@@ -557,6 +572,14 @@ class Fixture(unittest.TestCase):
             elif key in an.AGENT_KEYS:
                 self.assertRegex(value, an.ANON_UA_RE)
 
+    def test_it_does_not_change_if_it_is_anonymized_again(self):
+        self.assertEqual(an.Anonymizer().run(json.loads(json.dumps(self.snap))), self.snap)
+
+
+@unittest.skipUnless(os.path.isfile(FIXTURE), "匿名化した実データが無い")
+class Fixture(FixtureNames, unittest.TestCase):
+    """T14.35 の 1 枚目 (2026-09-16)。"""
+
     def test_the_numbers_of_2026_09_16_are_still_there(self):
         # T14.0 / T14.17 が読んだ数字 (匿名化で 1 つも変えていないこと)
         st = self.snap["status"]
@@ -572,8 +595,75 @@ class Fixture(unittest.TestCase):
         self.assertEqual({res: len(h["samples"]) for res, h in self.snap["history"].items()},
                          {"5": 720, "60": 1440, "3600": 136})
 
-    def test_it_does_not_change_if_it_is_anonymized_again(self):
-        self.assertEqual(an.Anonymizer().run(json.loads(json.dumps(self.snap))), self.snap)
+
+@unittest.skipUnless(all(os.path.isfile(p) for p in (FIXTURE_0926,) + FIXTURE_0926_SIDES),
+                     "匿名化した実データ (2026-09-26) が無い")
+class Fixture0926(FixtureNames, unittest.TestCase):
+    """T17.16 の 2 枚目。上の 2 つ (宛先・接続元・答え・UA の欄) に加えて、**欄の外**も見る。
+
+    生の雪像はリポジトリに無いので「元の値が 0 件」の突き合わせは作った人が 1 回やった
+    (報告に手順を書いた)。ここでは、置き換え忘れがあれば必ず残る形 (文書用でない IP、
+    `.example` でないホスト名、UA らしい `名前/版`) が**ファイルのどこにも**無いことを見る。
+    """
+
+    PATH = FIXTURE_0926
+    HOSTS_AT_LEAST = 700
+
+    def texts(self):
+        for path in (self.PATH,) + FIXTURE_0926_SIDES:
+            with open(path, encoding="utf-8") as f:
+                yield from strings(json.load(f))
+
+    def test_no_ip_outside_the_documentation_ranges(self):
+        found = 0
+        for _key, value in self.texts():
+            for m in re.findall(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.])", value):
+                addr = ipaddress.ip_address(m)
+                found += 1
+                self.assertTrue(any(addr in n for n in ALLOWED_NETS if n.version == 4),
+                                "文書用でない IPv4 がある")
+            for m in re.findall(r"(?<![\w:.])([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})(?![\w:.])",
+                                value):
+                try:
+                    addr = ipaddress.ip_address(m)
+                except ValueError:
+                    continue  # 時刻 (10:30:00) のようなもの
+                self.assertTrue(any(addr in n for n in ALLOWED_NETS if n.version == 6),
+                                "文書用でない IPv6 がある")
+        self.assertGreater(found, 500)
+
+    def test_no_host_name_outside_example(self):
+        for key, value in self.texts():
+            if key in ("path",):
+                continue  # この機械の設定の道 (`.rust-http-proxy.rrd` のような)
+            for m in re.findall(r"(?<![\w.\-/])[0-9A-Za-z_\-]+(?:\.[0-9A-Za-z_\-]+)+", value):
+                if re.search(r"\.[A-Za-z][A-Za-z0-9\-]+$", m):
+                    self.assertTrue(m.endswith(".example"), "`.example` でない名前がある (鍵 %s)" % key)
+
+    def test_no_user_agent_is_left(self):
+        for key, value in self.texts():
+            if key in ("path", "last_path"):
+                continue
+            self.assertIsNone(re.search(r"[A-Za-z]+/\d", value), "UA らしい文字列がある (鍵 %s)" % key)
+
+    def test_the_side_files_have_no_names(self):
+        # `/daily` と `/profile?res=60` にはホストも接続元も無い (匿名化しても中身は同じ)
+        for path in FIXTURE_0926_SIDES:
+            with open(path, encoding="utf-8") as f:
+                body = json.load(f)
+            self.assertEqual(an.Anonymizer().run(json.loads(json.dumps(body))), body)
+
+    def test_the_fixtures_are_under_4_mib(self):
+        total = sum(os.path.getsize(p) for p in (self.PATH,) + FIXTURE_0926_SIDES)
+        self.assertLess(total, 4 << 20)
+
+    def test_the_numbers_of_2026_09_26_are_still_there(self):
+        # T16.99 が読んだ数字 (匿名化で 1 つも変えていないこと)
+        self.assertEqual((self.snap["version"], self.snap["uptime_secs"]),
+                         ("0.1.0+2e57626", 169783))
+        self.assertEqual(len(self.snap["parts"]), 17)
+        self.assertEqual(self.snap["dropped"], [])
+        self.assertEqual(self.snap["status"]["total_requests"], 114325)
 
 
 @unittest.skipUnless(os.path.isfile(os.path.join(DATA, "snapshot-local.json")),
