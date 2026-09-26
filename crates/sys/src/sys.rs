@@ -1101,9 +1101,41 @@ mod tests {
     }
 
     /// 使用中のポートは `AddrInUse` で返り、記述子を漏らさない (失敗の枝で close している)。
+    ///
+    /// `/proc/self/fd` は**プロセス全体**なので、同じバイナリで並行に走っている別のテストが
+    /// 開け閉てした記述子が乗る (T14.55 で幅を持たせたが、それでも 1 回揺れた)。そこで
+    /// **このテストだけを子プロセスで 1 本で**走らせ直し、数えるのは子の中でする (T17.14)。
+    /// 子の中には他のテストのスレッドが居ないので、前後の本数は 1 本も違わない
+    /// (Rust の記述子は `CLOEXEC` なので、親で開いている別のテストの記述子も子へ来ない)。
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     #[test]
     fn listen_socket_reports_address_in_use_without_leaking() {
+        /// 子で走っている印 (テストの中だけで使う名前。設定の環境変数ではない)
+        const CHILD: &str = "SYS_FD_LEAK_TEST_CHILD";
+        const NAME: &str = "listen_socket_reports_address_in_use_without_leaking";
+        if std::env::var_os(CHILD).is_none() {
+            // 親: 同じテストバイナリを、このテスト 1 本だけ・1 スレッドで起こし直す。
+            // テストの名前は `module_path!()` から crate 名を外したもの
+            let module = module_path!().split_once("::").map_or("", |(_, rest)| rest);
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!("{}::{}", module, NAME),
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .expect("テストバイナリを子として起こせない");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && stdout.contains("1 passed"),
+                "子のテストが通っていない: {}\n{}\n{}",
+                out.status,
+                stdout,
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
         let taken = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = taken.local_addr().unwrap();
         // `SO_REUSEADDR` は「TIME_WAIT のポートを使える」だけで、生きている待ち受けとは共有しない
@@ -1114,16 +1146,12 @@ mod tests {
             let err = listen_socket(addr, 128).expect_err("使用中のポートに bind できてしまった");
             assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{:?}", err);
         }
-        // `/proc/self/fd` は**プロセス全体**なので、同じバイナリで並行に走っている別のテストが
-        // 開け閉てした記述子のぶれ (±数本) が乗る。漏れていれば 64 本増えるので、
-        // 幅を持たせても「漏らしていない」ことは見分けられる (T14.55 で flake を直した)
+        // 子の中はこのテストだけなので、幅を持たせずに「1 本も増えていない」を見る
         let after = open_fds();
-        assert!(
-            after < before + TRIES / 8,
+        assert_eq!(
+            after, before,
             "失敗した {} 回ぶんの記述子が残っている ({} -> {})",
-            TRIES,
-            before,
-            after
+            TRIES, before, after
         );
     }
 
