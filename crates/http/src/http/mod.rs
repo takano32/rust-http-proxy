@@ -695,10 +695,12 @@ pub fn handle_http_with_headers(
                     server_addr,
                     e
                 );
+                // 入口で測った `client_read` は `ctx.detail` にしか無いので、
+                // `shared.stages` ではなくこちらを引き継ぐ (T17.4)
                 ctx.detail = origin_detail(
                     acquire_started,
                     Some(ErrCause::from_io(&e)),
-                    shared.stages,
+                    ctx.detail.stages,
                     dns_before,
                 );
                 if let Some((entry, source)) = stale.take()
