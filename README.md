@@ -161,6 +161,11 @@ scripts/snapshot-diff.py a.json b.json --aaaa aaaa.json --out json      # 機械
 scripts/snapshot-diff.py a.json b.json --group domain                   # eTLD+1 でまとめる
 # phase15 の判定。`/daily` は雪像に入っていないので、同時刻に取ったものを渡すと日ごとのミスの幅が並ぶ
 scripts/snapshot-diff.py a.json b.json --criteria phase15 --daily b-daily.json
+# phase17 の 8 行 (phase15 の 4 行 + conn 役の CPU/要求・`dns_warm_max` と `warm_evicted`・
+# `/events` の anomaly の種類別 件/時 (起動から、`cleared:` は数えない)・cgroup の起動からの CPU)。
+# `/profile?res=60` も雪像に入らないので渡す (無ければ雪像の `/profile` の部で「参考」)
+scripts/snapshot-diff.py a.json b.json --criteria phase17 --daily b-daily.json \
+                         --profile b-profile_res_60.json   # 前も比べるなら --profile-before FILE
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
 scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
                          --from-files status/2026-09-16T0106Z
