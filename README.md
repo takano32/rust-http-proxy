@@ -1142,6 +1142,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       (起動直後はほぼ 0)。割合は出しません (`used ÷ capacity` で出せますが、割合からは実バイトを戻せません)。
       件数そのものは `/recent` や `/errors` の `total` を見てください
     - `arenas` は `PROXY_MALLOC_ARENAS` で実際に掛けた `M_ARENA_MAX` (`0` = glibc の既定のまま)
+    - `rings_touched` (bool。T17.8) は、起動時にリングの置き場を満杯のぶん確保して 1 ページに 1 バイトずつ
+      触ったか。`true` なら **RSS は起動直後から天井の近く**に居るので、そこから増えたらリングが埋まった
+      せいではなく、そのまま「増えた」の信号として読めます (この機械で 12.9 MiB を 3〜5 ms。満杯にしても
+      RSS は +36 KiB。触らなければ満ちるまでの 1 日で約 12 MiB 増えていました)。触るのは `history`
+      (`PROXY_STATS_PERSIST=off` では触らない) と `profile`、`recent` / `errors` / `bursts` / `events` / `log`
+      の 1 件の固定部 (`PROXY_RECORDS=off` では触らない) で、文字列は来たときに確保します。`trace`・
+      `hostseries`・`quantiles` は使い始めに 1 回だけ確保する作りのまま触りません。触っても件数は
+      増えないので `rings_used` は変わりません。**`--lite` と Linux 以外は `false`** (今までどおり満ちるまで伸びる)
 
     **足して RSS になる形ではありません**: `heap_free` は「アロケータが返していない」だけで常駐しているとは
     限らず (`MADV_DONTNEED` 済みのページ)、`mmap` も確保しただけで触っていないページは常駐しません。

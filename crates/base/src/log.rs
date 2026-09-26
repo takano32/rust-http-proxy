@@ -333,6 +333,14 @@ pub fn take_unwritten(max: usize) -> (Vec<Line>, u64) {
     (out, (pending - take) as u64)
 }
 
+/// `/log` のリングの置き場を [`MAX_LOG_LINES`] 行ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
+///
+/// 触るのは行の固定部 (`Line` の大きさ × 行数) だけで、本文の `String` は行が来たときに
+/// 確保する。返すのは触ったバイト数。呼ぶのは既定のプロファイルの Linux だけ。
+pub fn prefault() -> usize {
+    crate::prefault::vec(&mut RECENT.locked().buf, MAX_LOG_LINES)
+}
+
 /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
 ///
 /// 読み戻した行は**書き直さない** (印を通算に合わせる)。行数は `/log` の

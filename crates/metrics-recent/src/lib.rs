@@ -14,7 +14,7 @@ pub use proxy_cache::cache;
 pub use proxy_metrics_types::sys;
 pub use proxy_metrics_types::{
     acl, ascii, cli, clock, dns, envfile, hostseries, httpdate, json, kernel, log, log_at,
-    log_debug, log_error, log_info, log_trace, log_warn, metrics, net, quantiles, records, rrd,
-    signal, sync, sysinfo,
+    log_debug, log_error, log_info, log_trace, log_warn, metrics, net, prefault, quantiles,
+    records, rrd, signal, sync, sysinfo,
 };
 pub use proxy_selfbench as selfbench;

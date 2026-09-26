@@ -295,6 +295,22 @@ pub fn main() {
         None
     };
     let store = store.map(|(s, _handle)| s);
+    // 記録のリングの置き場を満杯のぶん確保して触る (T17.8)。RSS を起動直後から天井の
+    // 近くに置き、そこから増えたらそのまま「増えた」と読めるようにする。状態ファイルを
+    // 読み戻したあとに置いたが、読み戻した件はそのまま残る (前でも後でも同じ結果)。
+    // `--lite` は「使わないときに一切コストがかからない」の対象なので触らない。
+    // Linux 以外は今までどおり (満ちるまで伸びる)
+    #[cfg(target_os = "linux")]
+    if !config.lite {
+        let t = std::time::Instant::now();
+        let bytes = metrics.prefault_rings(config.stats_persist);
+        log_info!(
+            None,
+            "record rings prefaulted: {} KiB in {:.1} ms",
+            bytes / 1024,
+            t.elapsed().as_secs_f64() * 1000.0
+        );
+    }
     if let Some(s) = &store {
         proxy_server::blocklist::set_store(Arc::clone(s));
     }
