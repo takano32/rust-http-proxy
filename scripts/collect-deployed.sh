@@ -14,6 +14,8 @@
 #   保存先の既定はリポジトリの `status/` (`<UTC 時刻>-snapshot.json`、秒まで)。
 #   同じ時刻の名前で、要約 (`-collect.md`)・道具の文句 (`-collect.err`、空なら残さない)・雪像に入らない口
 #   (`-daily.json` `-healthz.json` `-slo.json` `-config.json` `-profile_res_60.json`) も隣に置く。
+#   `-profile_res_60.json` は 1 枚 (256 KiB) で切れるので、`--full` が無くても `offset=` で追って
+#   24 時間ぶんを 1 つに繋ぐ (T17.0b。`samples` を連結して `truncated` は `false`)。
 #   **`status/` は .gitignore 済みでコミットしない** (個票には接続元 IP と宛先ホストが並ぶため)。
 #   `$HOME` には書かない (2026-09-26、利用者の決定。前の既定は ~/rust-http-proxy-status/)。
 #
@@ -42,10 +44,11 @@
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
-#   CRITERIA (既定 phase15) … 判定表に使う完了の定義 (`phase14` も残してある)。
+#   CRITERIA (既定 phase17) … 判定表に使う完了の定義 (`phase15` と `phase14` も残してある)。
 #                         `off` で判定表を出さない
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
-#   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限
+#   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` を
+#                         繋ぐ枚数の上限 (1 枚目を含む) にも使う
 #   AAAA (無指定)       … `status-diff.py --aaaa FILE` に渡す表 (数字を残すときは固定する。§1)
 #
 # 出口: 雪像が取れなければ 1 (それ以外は、途中の道具が失敗しても 1 枚は出す)。
@@ -84,7 +87,7 @@ DIR=${2:-status}
 PROBE=${PROBE:-1}
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
-CRITERIA=${CRITERIA:-phase15}
+CRITERIA=${CRITERIA:-phase17}
 MAX_TIME=${MAX_TIME:-30}
 MAX_PAGES=${MAX_PAGES:-8}
 AAAA=${AAAA:-}
@@ -200,8 +203,10 @@ for spec in daily:/daily healthz:/healthz slo:/slo config:/config 'profile_res_6
   f="$DIR/$STAMP-$name.json"
   ok=0
   for _ in 1 2 3; do
+    # 重い口が塞がっていると `{"error":"busy"}` (503) も JSON で返るので、それは取れていない扱い
     if curl -s --max-time "$MAX_TIME" "http://$PROXY$path" -o "$f" &&
-      python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" 2>/dev/null; then
+      python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" 2>/dev/null &&
+      ! grep -q '"error":"busy"' "$f"; then
       ok=1
       break
     fi
@@ -216,6 +221,78 @@ for spec in daily:/daily healthz:/healthz slo:/slo config:/config 'profile_res_6
   fi
 done
 DAILY="$DIR/$STAMP-daily.json"
+
+# `/profile?res=60` の 1 枚は 256 KiB で切れ、24 時間 (1,440 標本) のうち約 5 時間 (308 標本) しか
+# 入らない (T16.99)。**`--full` を付けなくても** `next_offset` が `null` になるまで `offset=` で追い、
+# 1 つの JSON に繋いで同じ名前 (`<時刻>-profile_res_60.json`) に置き直す (T17.0b)。1 日 1 回の口で、
+# 重い口は同時 1 本 (T14.51) なので順に引く。枚数の上限は `--full` と同じ `MAX_PAGES` (1 枚目を含む)。
+# `offset` は**新しい順**に飛ばす本数で、各頁の中は古い順なので、後の頁ほど古い = 前に繋ぐ。
+# 頁の間に標本が 1 本増えると境目の 1 本が 2 枚に出るので、`t` で重ねを落とす。
+# 途中で取れなくなったら取れたぶんだけ繋ぎ、`truncated` と `next_offset` は残りを指したままにする
+PROFILE_NOTE=
+PROFILE60="$DIR/$STAMP-profile_res_60.json"
+if [ -f "$PROFILE60" ]; then
+  pages=("$PROFILE60")
+  off=$(python3 -c 'import json, sys
+v = json.load(open(sys.argv[1])).get("next_offset")
+print("null" if v is None else v)' "$PROFILE60" 2>/dev/null) || off=null
+  page=2
+  while [ "${off:-null}" != null ] && [ "$page" -le "$MAX_PAGES" ]; do
+    pf="$work/profile_res_60-page$page.json"
+    ok=0
+    for _ in 1 2 3; do
+      if curl -s --max-time "$MAX_TIME" "http://$PROXY/profile?res=60&offset=$off" -o "$pf" &&
+        python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$pf" 2>/dev/null &&
+        ! grep -q '"error":"busy"' "$pf"; then
+        ok=1
+        break
+      fi
+      sleep 1 # 重い口は同時 1 本 (T14.51)。`Retry-After: 1` に従う
+    done
+    if [ "$ok" != 1 ]; then
+      echo "failed to fetch http://$PROXY/profile?res=60&offset=$off" >&2
+      break
+    fi
+    pages+=("$pf")
+    off=$(python3 -c 'import json, sys
+v = json.load(open(sys.argv[1])).get("next_offset")
+print("null" if v is None else v)' "$pf" 2>/dev/null) || off=null
+    page=$((page + 1))
+  done
+  if [ "${#pages[@]}" -gt 1 ]; then
+    PROFILE_NOTE=$(python3 - "$PROFILE60" "${pages[@]}" <<'JOINPY'
+import json, os, sys
+
+out, paths = sys.argv[1], sys.argv[2:]
+docs = [json.load(open(p)) for p in paths]
+# 1 枚目 (いちばん新しい頁) の形 (`keys` / `roles` ほか) を土台に、`samples` だけ差し替える
+base = docs[0]
+seen = set()
+merged = []
+# 後の頁ほど古い。古い頁から順に足し、`t` (標本の先頭) が同じものは 2 本目を捨てる
+for d in reversed(docs):
+    for s in d.get("samples") or []:
+        t = s[0] if isinstance(s, list) and s else None
+        if t is not None and t in seen:
+            continue
+        seen.add(t)
+        merged.append(s)
+rest = docs[-1].get("next_offset")
+base["samples"] = merged
+base["shown"] = len(merged)
+# 最後の頁に続きが無ければ切れていない。取れなくなって止めたときは残りを指したまま
+base["truncated"] = rest is not None
+base["next_offset"] = rest
+tmp = out + ".part"
+with open(tmp, "w") as f:
+    json.dump(base, f, ensure_ascii=False, separators=(",", ":"))
+os.replace(tmp, out)
+print(f"{len(docs)} 枚を繋いだ ({len(merged)} / {base.get('count')} 標本、"
+      f"truncated={'true' if base['truncated'] else 'false'})")
+JOINPY
+) || PROFILE_NOTE='繋げなかった (1 枚目のまま)'
+  fi
+fi
 [ -f "$DAILY" ] || DAILY=
 
 # 前回の雪像 (名前が UTC 時刻なので、名前順の 1 つ前が前回)
@@ -225,6 +302,7 @@ printf '# rust-http-proxy — %s (%s)\n\n' "$PROXY" "$(date -u +%Y-%m-%dT%H:%M:%
 printf -- '- 雪像: `%s` (%s B)\n' "$OUT" "$(wc -c <"$OUT" | tr -d ' ')"
 [ -n "$EXTRA_GOT" ] && printf -- '- 雪像に入らない口: `%s-{%s}.json`\n' "$DIR/$STAMP" "$(echo $EXTRA_GOT | tr ' ' ',')"
 [ -n "$EXTRA_FAILED" ] && printf -- '- **取れなかった口**:%s\n' "$EXTRA_FAILED"
+[ -n "$PROFILE_NOTE" ] && printf -- '- `/profile?res=60` は `offset=` で追って %s\n' "$PROFILE_NOTE"
 [ -n "$PREV" ] && printf -- '- 前回: `%s`\n' "$PREV"
 
 # --- 1b. 切れた部の続きを取る (--full。T15.0 (11)) -----------------------------
@@ -326,13 +404,23 @@ printf '\n'
 # 判定表 (`## 9.`) だけは要約のいちばん最後に回すので、ここではその手前までを出す
 DIFFMD=
 CRIT=
+PROFILE_AFTER=
+[ -f "$PROFILE60" ] && PROFILE_AFTER=$PROFILE60
+PROFILE_BEFORE=
+[ -n "$PREV" ] && [ -f "${PREV%-snapshot.json}-profile_res_60.json" ] &&
+  PROFILE_BEFORE=${PREV%-snapshot.json}-profile_res_60.json
 [ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
 if [ "$DIFF" = 1 ] && [ -n "$PREV" ]; then
   DIFFMD=$work/snapshot-diff.md
   # shellcheck disable=SC2086  # $CRIT は 2 語に分けたい
   # `/daily` は雪像に無いので、取れていれば判定表のミスの行に日ごとの幅を並べる (T15.15 (2))
+  # `/profile?res=60` (上で繋いだ 24 時間ぶん) は phase17 の conn 役の CPU/要求 の材料 (T17.0a)。
+  # 前回の雪像の隣に同じ時刻の `-profile_res_60.json` があれば `--profile-before` で前にも渡す
+  # (`--from-server` で取り寄せた日の雪像には無いので、そのときは雪像の `/profile` の部で参考になる)
   python3 scripts/snapshot-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} $CRIT \
     ${CRIT:+${DAILY:+--daily "$DAILY"}} \
+    ${CRIT:+${PROFILE_AFTER:+--profile "$PROFILE_AFTER"}} \
+    ${CRIT:+${PROFILE_BEFORE:+--profile-before "$PROFILE_BEFORE"}} \
     >"$DIFFMD" 2>&1 || echo '(snapshot-diff.py が失敗した)' >>"$DIFFMD"
 fi
 printf '## 2. 前回との差分 (snapshot-diff.py)\n\n'

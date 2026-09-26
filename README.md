@@ -118,7 +118,8 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 (`scripts/snapshot-summary.py`)・ホスト別 (`status-diff.py`。**前回の雪像があれば差分**)・
 ダッシュボードの読み方 (`check-dashboard.js`)・手元から見た待ち (`probe-deployed.sh`) を
 続けて回して **Markdown 1 枚**を標準出力に出します (同じものを雪像の隣の `<時刻>-collect.md` にも残し、
-雪像に入らない `/daily` `/healthz` `/slo` `/config` `/profile?res=60` も `<時刻>-<口>.json` で隣に置きます)。`status-diff.py` は `/snapshot` の JSON を
+雪像に入らない `/daily` `/healthz` `/slo` `/config` `/profile?res=60` も `<時刻>-<口>.json` で隣に置きます。
+`/profile?res=60` は 1 枚 (256 KiB) だと 24 時間のうち約 5 時間しか入らないので、`--full` が無くても `next_offset` が `null` になるまで `offset=` で追い、`samples` を 1 つに繋いで `truncated` を `false` にしたものを置きます。枚数の上限は `MAX_PAGES`)。`status-diff.py` は `/snapshot` の JSON を
 そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
 
 ```bash
@@ -2903,8 +2904,8 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 個票には接続元 IP と宛先が並ぶので `.gitignore` に入れてあり、コミットしません。
 **雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
 1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
-意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase15`**
-(T15.4 / T15.5 / T15.6 の 6 行) で、`CRITERIA=phase14` も今までどおり使えます。取り忘れた日は
+意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase17`**
+(phase15 の 4 行 + T17.0a の 4 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、前回の雪像の隣にあればそれを `--profile-before` で渡します) で、`CRITERIA=phase15` (T15.4 / T15.5 / T15.6 の 6 行) と `CRITERIA=phase14` も今までどおり使えます。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
 `next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0 (11)。
