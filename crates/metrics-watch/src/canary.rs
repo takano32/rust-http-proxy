@@ -19,11 +19,12 @@
 //!   60 秒 × 1,440) に持ち、`/history` に `"canary"` の配列として出す。`.rrd` の標本には
 //!   書かない (標本の余白は 4 B しか無い。T14.2 (3))。失敗は `/errors` に `kind: "canary"`。
 //! - **IPv6 側だけの 1 本** (`PROXY_CANARY_IPV6`、既定 `on`。T14.37): 同じ周期に、同じ名前の
-//!   **AAAA へ 1 本**だけ繋いでみる。デプロイ先のコンテナは IPv6 が黒穴で、いまは
-//!   `v4_first` の解除を [`crate::net`] の 600 秒に 1 回の探りだけに頼っているので、
-//!   「生き返ったか」を 1 分の粒度で見るための観測を別に持つ。**勝敗も族の記憶も書かない**
-//!   ので `v4_first` の判定は 1 ビットも動かない。繋がらなかったとき・AAAA が無い名前・
-//!   IPv6 を切ってあるときは `null`。
+//!   **AAAA へ 1 本**だけ繋いでみる。デプロイ先のコンテナは IPv6 が黒穴で、
+//!   「生き返ったか」を 1 分の粒度で見るための観測を別に持つ。**勝敗も族の記憶も書かない**。
+//!   繋がらなかったとき・AAAA が無い名前・IPv6 を切ってあるときは `null`。
+//!   T17.7 からは**この 1 本が IPv6 の探りを引き受ける**: 試している間は [`crate::net`] が
+//!   利用者の経路で 600 秒に 1 回 IPv6 を先頭に戻すのをやめ (`/status` の
+//!   `ipv6.probe_by` が `"canary"`)、繋がったら `v4_first` を解く。
 
 use std::fmt::Write as _;
 use std::net::SocketAddr;
@@ -364,18 +365,22 @@ fn probe(target: &str) -> Probe {
 
 /// IPv6 側だけの 1 本 (T14.37)。繋がった ms、繋がらなければ `None`。
 ///
-/// **利用者の経路も `v4_first` の判定も動かさない**: 繋ぐのは
-/// [`crate::net::connect_addr`] (Happy Eyeballs も勝敗の記録も族の記憶も通らない) で、
+/// 繋ぐのは [`crate::net::connect_addr`] (Happy Eyeballs も勝敗の記録も族の記憶も通らない) で、
 /// 失敗しても `/errors` には 1 件も残さない — デプロイ先の IPv6 は黒穴なので、
 /// 個票に残すと 1 分に 1 件ずつ `/errors` が埋まってしまう。生死は
 /// `/status` の `canary.ipv6_connect_ms` が `null` かどうかで読む。
+///
+/// **試した結果は [`crate::net::note_canary_ipv6`] で下の層に渡す** (T17.7): 試している間は
+/// 利用者の経路が 600 秒に 1 回の探り (利用者を `stagger()` ぶん待たせる) をやめ、
+/// 繋がったら `v4_first` が解ける。勝敗の数 (`ipv6.attempts` / `wins` / `losses`) には足さない。
 fn probe_ipv6(addr: Option<SocketAddr>) -> Option<u64> {
     // `PROXY_IPV6=off` のときは利用者も AAAA を使わないので測らない
     let addr = addr.filter(|_| ipv6_enabled() && crate::net::ipv6_enabled())?;
     let started = Instant::now();
     // 握れたら**その場で捨てる** (`drop` = FIN)。TLS も HTTP も送らない
-    crate::net::connect_addr(&addr, DEADLINE).ok()?;
-    Some(ms(started.elapsed()))
+    let connected = crate::net::connect_addr(&addr, DEADLINE).is_ok();
+    crate::net::note_canary_ipv6(connected);
+    connected.then(|| ms(started.elapsed()))
 }
 
 /// 結果を残す: 最後の 1 回・窓・(失敗なら) `/errors` の個票 1 件。
@@ -765,6 +770,30 @@ mod tests {
         let got = probe(&format!("[::1]:{}", v6_port));
         assert!(got.error.is_none(), "{:?}", got);
         assert_eq!(got.ipv6_connect_ms, None, "off: {:?}", got);
+        reset();
+    }
+
+    /// T17.7: canary の IPv6 側の 1 本は、試したことを下の層に渡す
+    /// (`/status` の `ipv6.probe_by` が `"canary"` になり、繋がれば `v4_first` が解ける)。
+    /// **勝敗の数 (`attempts` / `wins` / `losses`) は 1 つも動かさない**。
+    #[test]
+    fn the_canary_ipv6_side_takes_over_the_ipv6_probe() {
+        let _s = SERIAL.locked();
+        let _ipv6 = crate::net::IPV6_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        reset();
+        let before = crate::net::ipv6_counters();
+        let v6 = TcpListener::bind("[::1]:0").expect("この機械の lo は ::1 を持つ");
+        let v6_port = v6.local_addr().unwrap().port();
+        let got = probe(&format!("[::1]:{}", v6_port));
+        assert!(got.ipv6_connect_ms.is_some(), "{:?}", got);
+        let status = crate::net::ipv6_status_json();
+        assert!(status.contains("\"probe_by\":\"canary\""), "{}", status);
+        assert!(!crate::net::ipv6_v4_first(), "{}", status);
+        // canary 本体の 1 本は IP リテラル 1 つ (Happy Eyeballs を通らない) なので、
+        // 勝敗の数が動いたら IPv6 側の 1 本が数えたことになる
+        assert_eq!(crate::net::ipv6_counters(), before, "{}", status);
         reset();
     }
 }
