@@ -299,6 +299,14 @@ impl TransferWindows {
         }
     }
 
+    /// 2 つの窓の置き場を満杯のぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
+    /// 返すのは触ったバイト数。
+    pub fn prefault(&self) -> usize {
+        let mut w = self.inner.locked();
+        crate::prefault::deque(&mut w.fine, RESOLUTIONS[0].1)
+            + crate::prefault::deque(&mut w.minute, RESOLUTIONS[1].1)
+    }
+
     /// 残してある窓の数 (5 秒 / 60 秒) と、畳んだトンネルの本数の通算。
     pub fn counts(&self) -> (usize, usize, u64) {
         let w = self.inner.locked();

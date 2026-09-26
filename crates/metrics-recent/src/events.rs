@@ -251,6 +251,14 @@ pub fn take_unwritten(max: usize) -> (Vec<Event>, u64) {
     (out, (pending - take) as u64)
 }
 
+/// 出来事のリングの置き場を [`MAX_EVENTS`] 件ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
+///
+/// 既定のプロファイルの Linux だけが呼ぶ (呼べば「1 件も起きなければ 1 バイトも確保しない」
+/// は外れる)。触るのは 1 件の固定部だけで、説明の文字列は書くときに確保する。返すのは触ったバイト数。
+pub fn prefault() -> usize {
+    crate::prefault::vec(&mut RING.locked().buf, MAX_EVENTS)
+}
+
 /// 個票のファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
 ///
 /// 読み戻した件は**書き直さない** (印を通算に合わせる)。件数は `/events` の

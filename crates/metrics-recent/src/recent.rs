@@ -358,6 +358,14 @@ impl ErrorRing {
         drain_unwritten(&g.buf, g.next, MAX_ERRORS, g.total, &mut g.written, max)
     }
 
+    /// 置き場を [`MAX_ERRORS`] 件ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
+    ///
+    /// 既定のプロファイルの Linux だけが呼ぶ (呼べば「1 件も出なければ 1 バイトも確保しない」
+    /// は外れる)。触るのは 1 件の固定部だけで、文字列は書くときに確保する。返すのは触ったバイト数。
+    pub fn prefault(&self) -> usize {
+        crate::prefault::vec(&mut self.inner.locked().buf, MAX_ERRORS)
+    }
+
     /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
     ///
     /// 読み戻した件は**書き直さない** (印を通算に合わせる) 。件数は `/errors` の
@@ -1747,6 +1755,13 @@ impl RecentRing {
         drain_unwritten(&g.buf, g.next, MAX_RECENT, g.total, &mut g.written, max)
     }
 
+    /// 置き場を [`MAX_RECENT`] 件ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
+    ///
+    /// 触るのは 1 件の固定部だけで、文字列は書くときに確保する。返すのは触ったバイト数。
+    pub fn prefault(&self) -> usize {
+        crate::prefault::vec(&mut self.inner.locked().buf, MAX_RECENT)
+    }
+
     /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
     pub fn restore(&self, entries: Vec<RecentEntry>) {
         let n = entries.len().min(MAX_RECENT);
@@ -2117,6 +2132,13 @@ impl BurstRing {
         let mut r = self.inner.locked();
         let g = &mut *r;
         drain_unwritten(&g.buf, g.next, MAX_BURSTS, g.total, &mut g.written, max)
+    }
+
+    /// 置き場を [`MAX_BURSTS`] 枚ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
+    ///
+    /// 触るのは 1 枚の固定部だけで、写真の中の一覧は撮るときに確保する。返すのは触ったバイト数。
+    pub fn prefault(&self) -> usize {
+        crate::prefault::vec(&mut self.inner.locked().buf, MAX_BURSTS)
     }
 
     /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。

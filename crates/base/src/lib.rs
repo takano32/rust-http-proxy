@@ -13,6 +13,7 @@ pub mod hostport;
 pub mod httpdate;
 pub mod json;
 pub mod log;
+pub mod prefault;
 pub mod records;
 pub mod sync;
 pub mod timeout;

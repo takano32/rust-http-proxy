@@ -750,6 +750,16 @@ impl Profile {
         q.push_back(s);
     }
 
+    /// 2 つの環の置き場を満杯のぶん ([`capacity_bytes`]) 確保して触る
+    /// (**起動時に 1 回だけ**。T17.8)。返すのは触ったバイト数。
+    ///
+    /// 件数は増えないので [`Profile::used_bytes`] (`memory.rings_used.profile`) は変わらない。
+    pub fn prefault(&self) -> usize {
+        (0..RESOLUTIONS.len())
+            .map(|res| crate::prefault::deque(&mut self.rings[res].locked(), RESOLUTIONS[res].1))
+            .sum()
+    }
+
     /// スレッドの標本の状態を書く (`profile-sample` スレッドだけが呼ぶ)。
     pub fn set_sampler(&self, state: SamplerState) {
         self.sampler.store(state as u8, Ordering::Relaxed);

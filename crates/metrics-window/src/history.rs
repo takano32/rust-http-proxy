@@ -601,6 +601,14 @@ impl ClosedWindows {
         }
     }
 
+    /// 2 つの窓の置き場を満杯のぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
+    /// 返すのは触ったバイト数。
+    pub fn prefault(&self) -> usize {
+        let mut w = self.inner.locked();
+        crate::prefault::deque(&mut w.fine, RESOLUTIONS[0].1)
+            + crate::prefault::deque(&mut w.minute, RESOLUTIONS[1].1)
+    }
+
     /// 残してある窓の数 (5 秒 / 60 秒) と、畳んだ本数の通算。
     pub fn counts(&self) -> (usize, usize, u64) {
         let w = self.inner.locked();
@@ -733,6 +741,18 @@ impl History {
             q.pop_front();
         }
         q.push_back(s);
+    }
+
+    /// 3 つの解像度の標本と `closed` / `transfer` の窓の置き場を、満杯のぶん確保して触る
+    /// (**起動時に 1 回だけ**。T17.8)。返すのは触ったバイト数。
+    ///
+    /// 触っても件数は増えないので、`memory.rings_used.history` (件数 × 1 本) は変わらない。
+    /// 読み戻した標本はそのまま残る (状態ファイルを読む前でも後でも呼べる)。
+    pub fn prefault(&self) -> usize {
+        let rings: usize = (0..RESOLUTIONS.len())
+            .map(|res| crate::prefault::deque(&mut self.rings[res].locked(), Self::capacity(res)))
+            .sum();
+        rings + self.closed.prefault() + self.transfer.prefault()
     }
 
     /// 起動時に状態ファイルから読み戻す (`res` は 0=5 秒, 1=1 分, 2=1 時間)。

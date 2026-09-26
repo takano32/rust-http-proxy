@@ -18,6 +18,6 @@ pub mod window;
 pub use proxy_metrics_recent::sys;
 pub use proxy_metrics_recent::{
     acl, ascii, cache, cli, clock, dns, envfile, events, hostseries, httpdate, json, kernel, log,
-    log_at, log_debug, log_error, log_info, log_trace, log_warn, metrics, net, quantiles, recent,
-    records, rrd, selfbench, signal, sync, sysinfo, trace,
+    log_at, log_debug, log_error, log_info, log_trace, log_warn, metrics, net, prefault, quantiles,
+    recent, records, rrd, selfbench, signal, sync, sysinfo, trace,
 };

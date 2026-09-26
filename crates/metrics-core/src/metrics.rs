@@ -137,6 +137,9 @@ pub struct Metrics {
     /// 重い口 (`/snapshot` `/profile` …) が既に 1 本走っていたので 503 で断った数 (T14.51)。
     /// 足すのは内部エンドポイントの経路だけで、プロキシとしての要求は 1 度も触らない
     pub heavy_rejected: AtomicU64,
+    /// 起動時にリングの置き場を確保して触ったか (`/status` の `memory.rings_touched`。T17.8)。
+    /// 立てるのは [`Metrics::prefault_rings`] だけ
+    rings_touched: AtomicBool,
     /// ホスト (`scheme://host:port`) ごとの統計と、区間の合計
     hosts: Mutex<HostTable>,
     /// 接続元 IP ごとの個票 (上位 `MAX_CLIENTS`、あふれた分は "other")
@@ -177,10 +180,48 @@ impl Metrics {
             sni_mismatches: AtomicU64::new(0),
             syn_retrans_total: AtomicU64::new(0),
             heavy_rejected: AtomicU64::new(0),
+            rings_touched: AtomicBool::new(false),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),
             readers: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// 記録のリングの置き場を満杯のぶん確保して、1 ページに 1 バイトずつ触る (T17.8)。
+    ///
+    /// **起動時に 1 回だけ、既定のプロファイルの Linux から**呼ぶ (`--lite` は呼ばない)。
+    /// リングは満ちるまで伸びるので、呼ばなければ RSS は起動から 1 日かけて天井まで上がる。
+    /// 先に触っておけば起動直後から天井の近くに居て、そこから増えたらそのまま信号になる。
+    ///
+    /// - `/profile` の窓は必ず触る (`--lite` 以外では `profile` スレッドが 5 秒ごとに積む)
+    /// - `history`: `/history` の標本と `closed` / `transfer` の窓 (履歴スレッドが回らない
+    ///   `PROXY_STATS_PERSIST=off` では `false` を渡す。1 本も積まないリングの置き場は持たない)
+    /// - `/recent` `/errors` `/bursts` `/events` `/log` の固定部は `PROXY_RECORDS=off` なら
+    ///   触らない (1 件も書かないリングの置き場を持たない)。`/trace` は追跡する接続元を
+    ///   決めたときだけ書くので触らない。`hostseries` と `quantiles` は最初の 1 件で
+    ///   1 回だけ確保する固定長 (合わせて 0.2 MB) なので触らない
+    ///
+    /// 触っても件数は増えないので `memory.rings_used` は 1 バイトも変わらない。
+    /// 返すのは触ったバイト数 (起動のログに出す)。
+    pub fn prefault_rings(&self, history: bool) -> usize {
+        let mut bytes = self.profile.prefault();
+        if history {
+            bytes += self.history.prefault();
+        }
+        if crate::records::recording() {
+            bytes += self.closed.prefault()
+                + self.errors.prefault()
+                + self.bursts.prefault()
+                + crate::events::prefault()
+                + crate::log::prefault();
+        }
+        self.rings_touched.store(true, Ordering::Relaxed);
+        bytes
+    }
+
+    /// [`Metrics::prefault_rings`] が済んでいるか (`/status` の `memory.rings_touched`)。
+    pub fn rings_touched(&self) -> bool {
+        self.rings_touched.load(Ordering::Relaxed)
     }
 
     /// ホスト別に 1 要求を数える (応答時間なし)。
@@ -1341,6 +1382,8 @@ fn push_env(out: &mut String, extra: &StatusExtras<'_>, cache_json: &str) {
 ///   `rings` と同じ 1 件あたりの見積もりに、いま入っている件数を掛けたもので、
 ///   必ず `rings_used.<名前> <= rings.<名前>`。割合は出さない (`used ÷ capacity` で
 ///   出せるが、割合からは実バイトを戻せない)
+/// - `rings_touched` は起動時に `rings` の置き場を確保して触ったか (T17.8)。`true` なら
+///   `rss` は起動直後から天井の近くに居る (`--lite` と Linux 以外は `false`)
 ///
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
 fn memory_json(
@@ -1447,7 +1490,7 @@ fn memory_json(
             "\"readers\":{},\"profile\":{},\"total\":{}}},\"arenas\":{},",
             "\"rings_used\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
             "\"events\":{},\"trace\":{},\"history\":{},\"hostseries\":{},\"quantiles\":{},",
-            "\"readers\":{},\"profile\":{},\"total\":{}}}}}"
+            "\"readers\":{},\"profile\":{},\"total\":{}}},\"rings_touched\":{}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -1504,6 +1547,8 @@ fn memory_json(
             + quantiles_used
             + readers_used
             + profile_used,
+        // 起動時にリングを触ったか (T17.8)。**`memory` の鍵の末尾に足した**
+        me.rings_touched(),
     )
 }
 
