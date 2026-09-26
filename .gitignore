@@ -1,3 +1,5 @@
 /target
 __pycache__/
 /snapshot.json
+# デプロイ先の雪像の置き場 (リポジトリには入れない)
+/status/
