@@ -39,7 +39,7 @@
 # 出口: 0 = 全部通った / 1 = 形の退行 (p50 が閾以上、`/snapshot` が読めない、`ipv6` や `/profile` の段階が無い)
 #       2 = そもそも測れない (道具が無い、プロキシが上がらない、ベンチが失敗した)
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 OUT=${OUT:-snapshot.json}
 PORT=${PORT:-18080}
@@ -105,6 +105,7 @@ fi
 
 work=$(mktemp -d)
 pid=
+# shellcheck disable=SC2317,SC2329  # trap から呼ぶ (shellcheck には呼び出しが見えない)
 cleanup() {
   if [ -n "$pid" ]; then
     kill "$pid" 2>/dev/null

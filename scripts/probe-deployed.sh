@@ -58,7 +58,7 @@ printf '%-32s %3s %5s %8s %11s %13s %9s %9s\n' \
 # probe LABEL curl-args...
 probe() {
   local label=$1; shift
-  local i out code tc ta ts tt sz diff
+  local i out code tc ta ts tt diff
   for i in $(seq 1 "$REPEAT"); do
     if [ $(( $(date +%s) - START )) -ge "$BUDGET" ]; then
       printf '%-32s %3s %5s %8s %11s %13s %9s %9s\n' "$label" "$i" skip - - - - -
@@ -69,7 +69,7 @@ probe() {
       printf '%-32s %3s %5s %8s %11s %13s %9s %9s\n' "$label" "$i" fail - - - - -
       continue
     fi
-    read -r code tc ta ts tt sz <<<"$out"
+    read -r code tc ta ts tt _ <<<"$out"
     # TLS を張らない経路は appconnect が 0 なので引き算しない
     diff=$(awk -v a="$ta" -v c="$tc" 'BEGIN { if (a + 0 == 0) print "-"; else printf "%.3f", a - c }')
     printf '%-32s %3s %5s %8s %11s %13s %9s %9s\n' "$label" "$i" "$code" "$tc" "$ta" "$ts" "$tt" "$diff"
