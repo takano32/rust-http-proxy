@@ -22,6 +22,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "collect-deployed.sh")
 SNAPSHOT = os.path.join(HERE, "testdata", "snapshot-a.json")
 
+KEYS = ["t", "requests", "cpu_us", "threads", "pad"]
+
 # プロキシの `MAX_BODY` (256 KiB) − `HEADER_ROOM` (4 KiB)
 BUDGET = 256 * 1024 - 4096
 
@@ -31,7 +33,9 @@ class FakeProfile:
 
     def __init__(self, count, pad=800):
         # 1 標本 ≈ 850 B (T16.99 の実測: 256 KiB に 308 標本)
-        self.samples = [[1_000_000 + 60 * i, "x" * pad] for i in range(count)]
+        # 並びは `keys` のとおり: 時刻・要求・プロセスの CPU (us)・役割ごとの `[cpu_us, 標本, 状態]`・詰め物
+        self.samples = [[1_000_000 + 60 * i, 10, 2000, [0, [500, 60, 0]], "x" * pad]
+                        for i in range(count)]
         self.busy_once = set()  # この offset の 1 回目は `busy` で断る
         self.grow_after_first = False  # 1 枚目のあとに新しい標本を 1 本足す (頁の間の重なり)
 
@@ -52,7 +56,7 @@ class FakeProfile:
             "schema": 1,
             "interval_secs": 60,
             "roles": ["accept", "conn"],
-            "keys": ["t", "pad"],
+            "keys": KEYS,
             "samples": rows,
             "count": total,
             "shown": shown,
@@ -90,7 +94,7 @@ def serve(profile):
                 body = json.dumps(profile.page(off)).encode()
                 if off == 0 and profile.grow_after_first:
                     t = profile.samples[-1][0] + 60
-                    profile.samples.append([t, "y" * 800])
+                    profile.samples.append([t, 10, 2000, [0, [500, 60, 0]], "y" * 800])
                     profile.grow_after_first = False
                 return self.reply(200, body)
             return self.reply(200, b'{"schema":1}')
@@ -101,14 +105,19 @@ def serve(profile):
 
 
 class CollectProfileTest(unittest.TestCase):
-    def run_collect(self, profile, **env):
+    def run_collect(self, profile, prev=None, **env):
         srv = serve(profile)
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         d = tempfile.mkdtemp(prefix="t170b-")
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", d]))
+        # 前回の雪像とその隣の口 (`{名前: 中身}`) を先に置いておく
+        for name, body in (prev or {}).items():
+            with open(os.path.join(d, name), "w") as f:
+                json.dump(body, f)
         e = dict(os.environ, PROBE="0", DASHBOARD="0", DIFF="0", CRITERIA="off",
-                 COLLECT_STAMP="2026-01-01T000000Z", **env)
+                 COLLECT_STAMP="2026-01-01T000000Z")
+        e.update(env)
         r = subprocess.run(
             [SCRIPT, "127.0.0.1:%d" % srv.server_address[1], d],
             env=e, capture_output=True, text=True, timeout=120,
@@ -127,7 +136,7 @@ class CollectProfileTest(unittest.TestCase):
         self.assertFalse(got["truncated"])
         self.assertIsNone(got["next_offset"])
         self.assertEqual(got["shown"], 1440)
-        self.assertEqual(got["keys"], ["t", "pad"])
+        self.assertEqual(got["keys"], KEYS)
         self.assertEqual(got["roles"], ["accept", "conn"])
         self.assertIn("5 枚を繋いだ (1440 / 1440 標本、truncated=false)", out)
 
@@ -162,6 +171,30 @@ class CollectProfileTest(unittest.TestCase):
         self.assertEqual(got["shown"], got["next_offset"])
         self.assertEqual(got["samples"][-1][0], p.samples[-1][0])
         self.assertIn("2 枚を繋いだ", out)
+
+    def test_profile_passed_to_diff(self):
+        # 繋いだ `-profile_res_60.json` は `snapshot-diff.py --profile` に、前回の雪像の隣の
+        # 同じ時刻の `-profile_res_60.json` は `--profile-before` に渡る (phase17 の conn 役の行)
+        p = FakeProfile(1440)
+        before = FakeProfile(100).page(0)
+        with open(SNAPSHOT) as f:
+            snap = json.load(f)
+        _, out = self.run_collect(p, prev={
+            "2025-12-31T000000Z-snapshot.json": snap,
+            "2025-12-31T000000Z-profile_res_60.json": before,
+        }, DIFF="1", CRITERIA="phase17")
+        self.assertIn("後: `--profile` 1440 標本 (24.0 時間", out)
+        self.assertIn("前: `--profile` 100 標本", out)
+
+    def test_profile_before_missing(self):
+        # 前回の隣に `-profile_res_60.json` が無ければ `--profile-before` は渡さない
+        p = FakeProfile(20)
+        with open(SNAPSHOT) as f:
+            snap = json.load(f)
+        _, out = self.run_collect(p, prev={"2025-12-31T000000Z-snapshot.json": snap},
+                                  DIFF="1", CRITERIA="phase17")
+        self.assertIn("後: `--profile` 20 標本", out)
+        self.assertNotIn("前: `--profile`", out)
 
 
 if __name__ == "__main__":

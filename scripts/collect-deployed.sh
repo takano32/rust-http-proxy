@@ -404,13 +404,23 @@ printf '\n'
 # 判定表 (`## 9.`) だけは要約のいちばん最後に回すので、ここではその手前までを出す
 DIFFMD=
 CRIT=
+PROFILE_AFTER=
+[ -f "$PROFILE60" ] && PROFILE_AFTER=$PROFILE60
+PROFILE_BEFORE=
+[ -n "$PREV" ] && [ -f "${PREV%-snapshot.json}-profile_res_60.json" ] &&
+  PROFILE_BEFORE=${PREV%-snapshot.json}-profile_res_60.json
 [ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
 if [ "$DIFF" = 1 ] && [ -n "$PREV" ]; then
   DIFFMD=$work/snapshot-diff.md
   # shellcheck disable=SC2086  # $CRIT は 2 語に分けたい
   # `/daily` は雪像に無いので、取れていれば判定表のミスの行に日ごとの幅を並べる (T15.15 (2))
+  # `/profile?res=60` (上で繋いだ 24 時間ぶん) は phase17 の conn 役の CPU/要求 の材料 (T17.0a)。
+  # 前回の雪像の隣に同じ時刻の `-profile_res_60.json` があれば `--profile-before` で前にも渡す
+  # (`--from-server` で取り寄せた日の雪像には無いので、そのときは雪像の `/profile` の部で参考になる)
   python3 scripts/snapshot-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} $CRIT \
     ${CRIT:+${DAILY:+--daily "$DAILY"}} \
+    ${CRIT:+${PROFILE_AFTER:+--profile "$PROFILE_AFTER"}} \
+    ${CRIT:+${PROFILE_BEFORE:+--profile-before "$PROFILE_BEFORE"}} \
     >"$DIFFMD" 2>&1 || echo '(snapshot-diff.py が失敗した)' >>"$DIFFMD"
 fi
 printf '## 2. 前回との差分 (snapshot-diff.py)\n\n'
