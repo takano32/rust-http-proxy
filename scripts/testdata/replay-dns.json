@@ -1,0 +1,802 @@
+{
+ "schema": 1,
+ "taken_at": 1789007200,
+ "version": "0.0.0+fixture",
+ "uptime_secs": 90000,
+ "recent": {
+  "schema": 1,
+  "recent": [
+   {
+    "id": 10,
+    "at": 1789006500,
+    "client": "198.51.100.7",
+    "target": "chat.example.invalid:443",
+    "kind": "connect",
+    "secs": 0,
+    "reqs": 0,
+    "up": 100,
+    "down": 200,
+    "reason": "client_eof",
+    "status": 0,
+    "parked_secs": 0,
+    "parks": 0,
+    "ms": {
+     "dns": 9,
+     "connect": 8
+    }
+   },
+   {
+    "id": 9,
+    "at": 1789005000,
+    "client": "198.51.100.7",
+    "target": "api.example.invalid:80",
+    "kind": "http",
+    "secs": 0,
+    "reqs": 0,
+    "up": 100,
+    "down": 200,
+    "reason": "client_eof",
+    "status": 0,
+    "parked_secs": 0,
+    "parks": 0,
+    "ms": {
+     "dns": 8,
+     "connect": 8
+    }
+   },
+   {
+    "id": 8,
+    "at": 1789004500,
+    "client": "198.51.100.7",
+    "target": "192.0.2.1:443",
+    "kind": "connect",
+    "secs": 0,
+    "reqs": 0,
+    "up": 100,
+    "down": 200,
+    "reason": "client_eof",
+    "status": 0,
+    "parked_secs": 0,
+    "parks": 0,
+    "ms": {
+     "dns": 0,
+     "connect": 8
+    }
+   },
+   {
+    "id": 7,
+    "at": 1789004000,
+    "client": "198.51.100.7",
+    "target": "new.example.invalid:443",
+    "kind": "connect",
+    "secs": 0,
+    "reqs": 0,
+    "up": 100,
+    "down": 200,
+    "reason": "client_eof",
+    "status": 0,
+    "parked_secs": 0,
+    "parks": 0,
+    "ms": {
+     "dns": 12,
+     "connect": 8
+    }
+   },
+   {
+    "id": 6,
+    "at": 1789003600,
+    "client": "198.51.100.7",
+    "target": "old.example.invalid:443",
+    "kind": "connect",
+    "secs": 0,
+    "reqs": 0,
+    "up": 100,
+    "down": 200,
+    "reason": "client_eof",
+    "status": 0,
+    "parked_secs": 0,
+    "parks": 0,
+    "ms": {
+     "dns": 10,
+     "connect": 8
+    }
+   },
+   {
+    "id": 5,
+    "at": 1789003000,
+    "client": "198.51.100.7",
+    "target": "old.example.invalid:443",
+    "kind": "connect",
+    "secs": 0,
+    "reqs": 0,
+    "up": 100,
+    "down": 200,
+    "reason": "client_eof",
+    "status": 0,
+    "parked_secs": 0,
+    "parks": 0,
+    "ms": {
+     "dns": 10,
+     "connect": 8
+    }
+   },
+   {
+    "id": 4,
+    "at": 1789002000,
+    "client": "198.51.100.7",
+    "target": "chat.example.invalid:443",
+    "kind": "connect",
+    "secs": 0,
+    "reqs": 0,
+    "up": 100,
+    "down": 200,
+    "reason": "client_eof",
+    "status": 0,
+    "parked_secs": 0,
+    "parks": 0,
+    "ms": {
+     "dns": 0,
+     "connect": 8
+    }
+   },
+   {
+    "id": 3,
+    "at": 1789001000,
+    "client": "198.51.100.7",
+    "target": "chat.example.invalid:443",
+    "kind": "connect",
+    "secs": 0,
+    "reqs": 0,
+    "up": 100,
+    "down": 200,
+    "reason": "client_eof",
+    "status": 0,
+    "parked_secs": 0,
+    "parks": 0,
+    "ms": {
+     "dns": 0,
+     "connect": 8
+    }
+   },
+   {
+    "id": 2,
+    "at": 1789000000,
+    "client": "198.51.100.7",
+    "target": "chat.example.invalid:443",
+    "kind": "connect",
+    "secs": 0,
+    "reqs": 0,
+    "up": 100,
+    "down": 200,
+    "reason": "client_eof",
+    "status": 0,
+    "parked_secs": 0,
+    "parks": 0,
+    "ms": {
+     "dns": 0,
+     "connect": 8
+    }
+   },
+   {
+    "id": 1,
+    "at": 1788990000,
+    "client": "198.51.100.7",
+    "target": "chat.example.invalid:443",
+    "kind": "connect",
+    "secs": 10000,
+    "reqs": 0,
+    "up": 100,
+    "down": 200,
+    "reason": "client_eof",
+    "status": 0,
+    "parked_secs": 0,
+    "parks": 0,
+    "ms": {
+     "dns": 0,
+     "connect": 8
+    }
+   }
+  ],
+  "count": 10,
+  "truncated": true
+ },
+ "connections": {
+  "schema": 1,
+  "connections": [
+   {
+    "id": 11,
+    "target": "live.example.invalid:443",
+    "kind": "connect",
+    "state": "parked",
+    "age_secs": 1200
+   }
+  ],
+  "count": 1
+ },
+ "hosts_series": {
+  "schema": 1,
+  "keys": [
+   "count",
+   "ms_sum",
+   "ms_max",
+   "dns_ms",
+   "errors"
+  ],
+  "window_secs": 300,
+  "samples": 24,
+  "t0": 1788996400,
+  "series": [
+   {
+    "host": "other",
+    "samples": [
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      0
+     ]
+    ]
+   },
+   {
+    "host": "connect://chat.example.invalid:443",
+    "samples": [
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ]
+    ]
+   },
+   {
+    "host": "connect://192.0.2.1:443",
+    "samples": [
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ],
+     [
+      1,
+      8,
+      8,
+      0,
+      0
+     ]
+    ]
+   }
+  ]
+ },
+ "dns": {
+  "schema": 1,
+  "entries": [
+   {
+    "host": "chat.example.invalid",
+    "misses": 2
+   },
+   {
+    "host": "old.example.invalid",
+    "misses": 3
+   },
+   {
+    "host": "new.example.invalid",
+    "misses": 1
+   },
+   {
+    "host": "api.example.invalid",
+    "misses": 1
+   }
+  ]
+ },
+ "history": {
+  "60": {
+   "interval_secs": 60,
+   "keys": [
+    "t",
+    "connects",
+    "forwards",
+    "dns_misses"
+   ],
+   "samples": [
+    [
+     1788999900,
+     50,
+     0,
+     7
+    ],
+    [
+     1789000000,
+     5,
+     1,
+     2
+    ],
+    [
+     1789003600,
+     4,
+     0,
+     2
+    ]
+   ]
+  }
+ }
+}
