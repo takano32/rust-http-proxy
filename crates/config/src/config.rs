@@ -478,8 +478,8 @@ pub struct Config {
     /// canary の IPv6 側 (`PROXY_CANARY_IPV6`、既定 on)。
     ///
     /// 同じ周期に canary の名前の **AAAA へ 1 本**だけ繋いでみて、`/status` の
-    /// `canary.ipv6_connect_ms` に残す。デプロイ先のコンテナは IPv6 が黒穴で、
-    /// `v4_first` の解除は 600 秒に 1 回の探りだけに頼っているため (T14.37)
+    /// `canary.ipv6_connect_ms` に残す (T14.37)。この 1 本が試している間は利用者の経路で
+    /// 600 秒に 1 回の IPv6 の探りをせず、繋がったら `v4_first` を解く (T17.7)
     pub canary_ipv6: bool,
     /// `/proxy.pac` で DIRECT にするホストの一覧 (`PROXY_PAC_DIRECT`、`*.example.com` 可)
     pub pac_direct: Vec<String>,

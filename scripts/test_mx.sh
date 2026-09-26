@@ -30,6 +30,7 @@ FAKE="$W/target/release/rust-http-proxy"
 
 # 自分が起動したものだけを覚えておき、最後に止める
 PIDS=()
+# shellcheck disable=SC2317,SC2329  # trap から呼ぶ (shellcheck には呼び出しが見えない)
 finish() {
   local p
   for p in "${PIDS[@]}"; do kill -KILL "$p" 2>/dev/null; done
@@ -83,13 +84,13 @@ fi
 echo "1. 終了コード"
 "$MX" sh -c 'exit 7'
 rc=$?
-[ "$rc" = 7 ] && ok "命令の 7 をそのまま返す" || ng "exit 7 が $rc になった"
+if [ "$rc" = 7 ]; then ok "命令の 7 をそのまま返す"; else ng "exit 7 が $rc になった"; fi
 "$MX" true
 rc=$?
-[ "$rc" = 0 ] && ok "命令の 0 をそのまま返す" || ng "true が $rc になった"
+if [ "$rc" = 0 ]; then ok "命令の 0 をそのまま返す"; else ng "true が $rc になった"; fi
 "$MX" 2>/dev/null
 rc=$?
-[ "$rc" = 2 ] && ok "引数なしは 2" || ng "引数なしが $rc になった"
+if [ "$rc" = 2 ]; then ok "引数なしは 2"; else ng "引数なしが $rc になった"; fi
 
 # --- 2. 残った子の片付け --------------------------------------------------------
 echo "2. 残った子の片付け"
@@ -150,10 +151,16 @@ case "$order" in
   ;;
 *) ng "走った順が違う: $order" ;;
 esac
-grep -q '機械の占有を待っています' "$W/err3b1" && ok "MX_SLOTS=1 の側は「占有を待っています」と言う" ||
+if grep -q '機械の占有を待っています' "$W/err3b1"; then
+  ok "MX_SLOTS=1 の側は「占有を待っています」と言う"
+else
   ng "MX_SLOTS=1 の待ちの知らせが無い: $(cat "$W/err3b1")"
-grep -q '空いている口を待っています' "$W/err3b2" && ok "MX_SLOTS=2 の側は「空いている口を待っています」と言う" ||
+fi
+if grep -q '空いている口を待っています' "$W/err3b2"; then
+  ok "MX_SLOTS=2 の側は「空いている口を待っています」と言う"
+else
   ng "MX_SLOTS=2 の待ちの知らせが無い: $(cat "$W/err3b2")"
+fi
 
 # --- 4. 2 口の並列 --------------------------------------------------------------
 echo "4. 2 口の並列 (MX_SLOTS=2)"
@@ -178,7 +185,11 @@ if wait_file "$W/p4a" 10 && wait_file "$W/p4b" 10; then
   touch "$W/release4"
   wait "$p4c"
   rc=$?
-  [ "$rc" = 0 ] && [ -e "$W/p4c" ] && ok "口が空いたら 3 本目が走る" || ng "3 本目が走らなかった (rc=$rc)"
+  if [ "$rc" = 0 ] && [ -e "$W/p4c" ]; then
+    ok "口が空いたら 3 本目が走る"
+  else
+    ng "3 本目が走らなかった (rc=$rc)"
+  fi
 else
   touch "$W/release4"
   ng "2 本が同時に走らなかった"
@@ -187,7 +198,9 @@ wait "$p4a"
 ra=$?
 wait "$p4b"
 rb=$?
-[ "$ra" = 0 ] && [ "$rb" = 0 ] || ng "並列の 2 本の終了コードが 0 でない ($ra, $rb)"
+if [ "$ra" != 0 ] || [ "$rb" != 0 ]; then
+  ng "並列の 2 本の終了コードが 0 でない ($ra, $rb)"
+fi
 
 # --- 5. 他人のベンチ待ち --------------------------------------------------------
 echo "5. 他人のベンチ待ち"
@@ -206,8 +219,11 @@ if wait_fake_visible 5; then
   else
     ng "他人のベンチを待たなかった (rc=$rc、${ms} ms)"
   fi
-  grep -q '他人のベンチ' "$W/err5" && ok "「他人のベンチ … を待っています」と言う" ||
+  if grep -q '他人のベンチ' "$W/err5"; then
+    ok "「他人のベンチ … を待っています」と言う"
+  else
     ng "他人のベンチの知らせが無い: $(cat "$W/err5")"
+  fi
 else
   ng "偽物のベンチが pgrep に見えない"
 fi
@@ -230,8 +246,11 @@ if wait_fake_visible 5; then
   else
     ng "MX_WAIT を過ぎても 75 にならない (rc=$rc、命令は $([ -e "$W/ran6" ] && echo 走った || echo 走らなかった))"
   fi
-  grep -q '1 秒待っても終わらなかった' "$W/err6" && ok "待ちきれなかったことを言う" ||
+  if grep -q '1 秒待っても終わらなかった' "$W/err6"; then
+    ok "待ちきれなかったことを言う"
+  else
     ng "待ちきれなかった知らせが無い: $(cat "$W/err6")"
+  fi
 else
   kill -KILL "$f" 2>/dev/null
   ng "偽物のベンチが pgrep に見えない"

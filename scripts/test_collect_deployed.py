@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""`scripts/collect-deployed.sh` が `/profile?res=60` を `offset=` で追って 1 つに繋ぐ試験 (T17.0b)。
+"""`scripts/collect-deployed.sh` が `/profile?res=60` を `offset=` で追って 1 つに繋ぐ試験 (T17.0b) と、
+雪像の隣に匿名化した写しを置く試験 (T17.16)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
@@ -195,6 +196,65 @@ class CollectProfileTest(unittest.TestCase):
                                   DIFF="1", CRITERIA="phase17")
         self.assertIn("後: `--profile` 20 標本", out)
         self.assertNotIn("前: `--profile`", out)
+
+
+
+class CollectAnonTest(unittest.TestCase):
+    """雪像の隣に匿名化した写し (`-snapshot.anon.json` と隣の口の `.anon.json`) を置く (T17.16)。"""
+
+    def run_collect(self, **env):
+        srv = serve(FakeProfile(10))
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        d = tempfile.mkdtemp(prefix="t1716-")
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", d]))
+        e = dict(os.environ, PROBE="0", DASHBOARD="0", DIFF="0", CRITERIA="off",
+                 COLLECT_STAMP="2026-01-01T000000Z")
+        e.update(env)
+        r = subprocess.run([SCRIPT, "127.0.0.1:%d" % srv.server_address[1], d],
+                           env=e, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return d, r.stdout
+
+    def test_the_anonymized_copies_are_next_to_the_snapshot(self):
+        d, out = self.run_collect()
+        stamp = os.path.join(d, "2026-01-01T000000Z-")
+        with open(stamp + "snapshot.anon.json") as f:
+            text = f.read()
+        snap = json.loads(text)
+        with open(SNAPSHOT) as f:
+            raw = json.load(f)
+        # 数字と部はそのまま、宛先と接続元だけが置き換わる
+        self.assertEqual(snap["parts"], raw["parts"])
+        self.assertEqual(snap["uptime_secs"], raw["uptime_secs"])
+        for h in raw["hosts"]["hosts"]:
+            name = h["host"].split("://")[-1].rsplit(":", 1)[0]
+            if name != "other":
+                self.assertNotIn(name, text)
+        self.assertRegex(snap["hosts"]["hosts"][0]["host"], r"host-\d{4}\.g\d{4}\.example")
+        # 隣の口 (`/daily` と繋いだ `/profile?res=60`) も同じ表で
+        for name in ("daily", "profile_res_60"):
+            with open(stamp + name + ".json") as f, open(stamp + name + ".anon.json") as g:
+                self.assertEqual(json.load(f), json.load(g))
+        self.assertIn("- 匿名化した写し: `%ssnapshot.anon.json` (隣の口 2 つも同じ表で)" % stamp, out)
+
+    def test_the_anonymized_copy_is_not_the_previous_snapshot(self):
+        # 次の回の「前回」は生の雪像 (`-snapshot.json`) で、`.anon.json` は拾わない
+        d, _ = self.run_collect()
+        e = dict(os.environ, PROBE="0", DASHBOARD="0", DIFF="0", CRITERIA="off",
+                 COLLECT_STAMP="2026-01-02T000000Z")
+        srv = serve(FakeProfile(10))
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        r = subprocess.run([SCRIPT, "127.0.0.1:%d" % srv.server_address[1], d],
+                           env=e, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("- 前回: `%s`" % os.path.join(d, "2026-01-01T000000Z-snapshot.json"), r.stdout)
+
+    def test_anon_0_skips_it(self):
+        d, out = self.run_collect(ANON="0")
+        self.assertFalse([n for n in os.listdir(d) if n.endswith(".anon.json")])
+        self.assertNotIn("匿名化した写し", out)
 
 
 if __name__ == "__main__":

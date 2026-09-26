@@ -39,7 +39,7 @@
 #   NOFILE             (既定 1024。scope の中で `ulimit -n` に使う)
 #   その他 PROXY_* / SERVER_MEMORY は**そのまま**プロキシに渡る
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 LIMIT_MB=256
 PORT=${PORT:-18080}
@@ -429,11 +429,12 @@ if [ "$HOG_MB" -gt 0 ]; then
   echo "== hog: ${HOG_MB} MiB を cgroup の中で ${HOG_SECS} 秒確保する"
   echo "$HOG_MB $HOG_SECS $HOG_STEP_MIB $HOG_STEP_MS" >"$work/hog"
   ramp=0
+  # shellcheck disable=SC2017  # 先に割るのはわざと (確保は HOG_STEP_MIB 刻みの整数の段で進むので、段の数 × 1 段の ms)
   [ "$HOG_STEP_MIB" -gt 0 ] && ramp=$((HOG_MB / HOG_STEP_MIB * HOG_STEP_MS / 1000))
   sleep $((HOG_SECS + ramp + 8))
   echo cooldown >"$work/phase"
   sleep 5
-  cat "$work/hog.log" 2>/dev/null | sed 's/^/  hog: /'
+  sed 's/^/  hog: /' "$work/hog.log" 2>/dev/null
 fi
 
 echo idle >"$work/phase"

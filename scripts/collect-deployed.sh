@@ -17,6 +17,8 @@
 #   `-profile_res_60.json` は 1 枚 (256 KiB) で切れるので、`--full` が無くても `offset=` で追って
 #   24 時間ぶんを 1 つに繋ぐ (T17.0b。`samples` を連結して `truncated` は `false`)。
 #   **`status/` は .gitignore 済みでコミットしない** (個票には接続元 IP と宛先ホストが並ぶため)。
+#   テストへ持ち込めるように、**匿名化した写し** (`-snapshot.anon.json`、`-daily.anon.json`、
+#   `-profile_res_60.anon.json`) も隣に置く (T17.16。`anonymize-snapshot.py --side` で同じ表を使う)。
 #   `$HOME` には書かない (2026-09-26、利用者の決定。前の既定は ~/rust-http-proxy-status/)。
 #
 #   scripts/collect-deployed.sh --from-server HOST:PORT [DIR]
@@ -50,13 +52,14 @@
 #   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` を
 #                         繋ぐ枚数の上限 (1 枚目を含む) にも使う
 #   AAAA (無指定)       … `status-diff.py --aaaa FILE` に渡す表 (数字を残すときは固定する。§1)
+#   ANON (既定 1)       … 0 で匿名化した写し (`<時刻>-snapshot.anon.json` ほか) を置かない
 #
 # 出口: 雪像が取れなければ 1 (それ以外は、途中の道具が失敗しても 1 枚は出す)。
 set -u
 # 要約をファイルにも残すため、自分をもう 1 回呼ぶ (下の「1. 取る」の手前)。`cd` の前に絶対パスにしておく
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 ORIG_ARGS=("$@")
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 FROM_SERVER=0
 FULL=0
 while :; do
@@ -91,6 +94,7 @@ CRITERIA=${CRITERIA:-phase17}
 MAX_TIME=${MAX_TIME:-30}
 MAX_PAGES=${MAX_PAGES:-8}
 AAAA=${AAAA:-}
+ANON=${ANON:-1}
 
 mkdir -p "$DIR" || exit 1
 
@@ -295,14 +299,39 @@ JOINPY
 fi
 [ -f "$DAILY" ] || DAILY=
 
+# --- 1c. 匿名化した写しを隣に置く (T17.16) ---------------------------------------
+# 雪像は `status/` にしか置けない (閲覧先と接続元が並ぶ) ので、テストへ持ち込めるように
+# `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた写しを `<時刻>-snapshot.anon.json` に置く。
+# `/daily` と (繋いだあとの) `/profile?res=60` も `--side` で**同じ表**に通して `<時刻>-<口>.anon.json` に。
+# 失敗しても雪像と要約は出す (写しを消して 1 行知らせるだけ)
+ANON_NOTE=
+if [ "$ANON" = 1 ]; then
+  ANON_OUT="$DIR/$STAMP-snapshot.anon.json"
+  ANON_SIDES=()
+  for name in daily profile_res_60; do
+    [ -f "$DIR/$STAMP-$name.json" ] && ANON_SIDES+=(--side "$DIR/$STAMP-$name.json")
+  done
+  if python3 scripts/anonymize-snapshot.py -q "$OUT" -o "$ANON_OUT" "${ANON_SIDES[@]}"; then
+    ANON_NOTE="\`$ANON_OUT\`"
+    [ "${#ANON_SIDES[@]}" -gt 0 ] && ANON_NOTE="$ANON_NOTE (隣の口 $((${#ANON_SIDES[@]} / 2)) つも同じ表で)"
+  else
+    rm -f "$ANON_OUT"
+    echo "anonymize-snapshot.py failed (no .anon.json this time)" >&2
+    ANON_NOTE='**作れなかった**'
+  fi
+fi
+
 # 前回の雪像 (名前が UTC 時刻なので、名前順の 1 つ前が前回)
+# shellcheck disable=SC2010  # 名前は自分で付けた UTC 時刻 (英数字と - だけ) なので ls | grep で足りる
 PREV=$(ls -1 "$DIR"/*-snapshot.json 2>/dev/null | grep -vF "$OUT" | tail -1)
 
 printf '# rust-http-proxy — %s (%s)\n\n' "$PROXY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf -- '- 雪像: `%s` (%s B)\n' "$OUT" "$(wc -c <"$OUT" | tr -d ' ')"
+# shellcheck disable=SC2086  # 先頭の空白を落とすため、わざと語に割る
 [ -n "$EXTRA_GOT" ] && printf -- '- 雪像に入らない口: `%s-{%s}.json`\n' "$DIR/$STAMP" "$(echo $EXTRA_GOT | tr ' ' ',')"
 [ -n "$EXTRA_FAILED" ] && printf -- '- **取れなかった口**:%s\n' "$EXTRA_FAILED"
 [ -n "$PROFILE_NOTE" ] && printf -- '- `/profile?res=60` は `offset=` で追って %s\n' "$PROFILE_NOTE"
+[ -n "$ANON_NOTE" ] && printf -- '- 匿名化した写し: %s\n' "$ANON_NOTE"
 [ -n "$PREV" ] && printf -- '- 前回: `%s`\n' "$PREV"
 
 # --- 1b. 切れた部の続きを取る (--full。T15.0 (11)) -----------------------------

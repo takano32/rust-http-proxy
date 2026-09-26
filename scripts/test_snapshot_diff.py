@@ -1320,5 +1320,58 @@ class Anonymized(unittest.TestCase):
         self.assertEqual(f"{agg['ms_per_miss']:.1f}", "11.5")
 
 
+ANON_0926 = os.path.join(DATA, "deployed-2026-09-26.anon.json")
+ANON_0926_DAILY = os.path.join(DATA, "deployed-2026-09-26-daily.anon.json")
+ANON_0926_PROFILE = os.path.join(DATA, "deployed-2026-09-26-profile_res_60.anon.json")
+
+
+@unittest.skipUnless(all(os.path.isfile(p) for p in (ANON_0926, ANON_0926_DAILY, ANON_0926_PROFILE)),
+                     "匿名化した実データ (2026-09-26) が無い")
+class Anonymized0926(unittest.TestCase):
+    """T17.16 の匿名化した実データ (`testdata/deployed-2026-09-26.anon.json` と隣の 2 つ) で回る。
+
+    `recent` / `profile` / `events` / `hosts_series` / T16.0 の 3 列のある版 (`0.1.0+2e57626`、起動から
+    47.2 時間)。「前」は 2026-09-16 の fixture (別に匿名化したので名前の番号は前後で合わない。判定表の
+    行はどれも名前に依らない数か、名前で引くものは「判定できず」になる)。
+    **数字は T16.99 の `結果:` と同じ** (`Deployed17` が `status/` の生の雪像で見ているものを、匿名化の
+    あとでもリポジトリの中だけで見る)。
+    """
+
+    def rows(self, criteria, *extra):
+        return build([os.path.join(DATA, "deployed-2026-09-16.anon.json"), ANON_0926, "--no-dns",
+                      "--criteria", criteria, "--daily", ANON_0926_DAILY, *extra]
+                     )["criteria"]["rows"]
+
+    def test_the_parts_of_the_current_version_are_there(self):
+        snap = sd.load_source(ANON_0926, False)
+        self.assertEqual((snap["version"], snap["uptime_secs"]), ("0.1.0+2e57626", 169783))
+        for name in ("recent", "profile", "events", "hosts_series"):
+            self.assertIn(name, snap["parts"])
+            self.assertTrue(snap[name], name)
+        # T16.0 の 3 列 (履歴の `dns_warm` の和と最大)
+        keys = snap["history"]["3600"]["keys"]
+        self.assertEqual(keys[-3:], ["dns_warm_max", "dns_warm_sum", "gauge_n"])
+
+    def test_the_phase15_table(self):
+        rows = self.rows("phase15")
+        self.assertEqual([r[3] for r in rows],
+                         [sd.UNKNOWN, sd.MET, sd.MET, sd.MET, sd.UNKNOWN, sd.MET])
+        # 見張る名前 (`discord.com`) は匿名化で消えているので、引けないと言う
+        self.assertIn("`discord.com` が無い", rows[0][4])
+        self.assertIn("**0.06** 回/接続", rows[2][2])
+
+    def test_the_phase17_table_gives_the_numbers_of_t1699(self):
+        rows = self.rows("phase17", "--profile", ANON_0926_PROFILE)
+        self.assertEqual(len(rows), 8)
+        self.assertEqual([r[3] for r in rows],
+                         [sd.UNKNOWN, sd.MET, sd.MET, sd.MET, sd.UNKNOWN, sd.MET, sd.MISSED,
+                          sd.UNKNOWN])
+        # 前の fixture (2026-09-16) に `/profile?res=60` が無いので倍率は出ない (値だけ)
+        self.assertIn("1,038 us/要求、プロセス全体 0.0013 コア", rows[4][2])
+        self.assertIn("最大 **15** 件、`warm_evicted` **0**", rows[5][2])
+        self.assertIn("`dns_slow` **0.61** 件/時 (29 件", rows[6][2])
+        self.assertIn("後 **0.0022 コア、user 31%**", rows[7][2])
+
+
 if __name__ == "__main__":
     unittest.main()

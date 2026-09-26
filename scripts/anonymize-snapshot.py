@@ -14,6 +14,12 @@
     scripts/anonymize-snapshot.py status/2026-09-16T0106Z-* \
                                   -o scripts/testdata/deployed-2026-09-16.anon.json
     scripts/anonymize-snapshot.py a-snapshot.json -o -        # 標準出力へ
+    # 雪像に入らない口 (`collect-deployed.sh` が隣に置く `-daily.json` `-profile_res_60.json` など) も
+    # **同じ表で**置き換える (T17.16)。既定の出力は隣の `<名前>.anon.json`、`IN=OUT` で置き場を指せる
+    scripts/anonymize-snapshot.py status/2026-09-26T114602Z-snapshot.json \
+        -o status/2026-09-26T114602Z-snapshot.anon.json \
+        --side status/2026-09-26T114602Z-daily.json \
+        --side status/2026-09-26T114602Z-profile_res_60.json=/tmp/p60.anon.json
 
 置き換えるもの (**決定的**: 同じ入力からは同じ出力になるので、匿名化した 2 枚で差分が取れる):
 
@@ -22,8 +28,9 @@
 | ホスト名 (`host` / `target` / `canary_host` / `sni`) | `host-0001.g0007.example` | 出現順に採番。`connect://host:443` の scheme と port はそのまま |
 | 接続元 IP (`client`) | `198.51.100.1` / `2001:db8::1` | `ip:port` なら port はそのまま |
 | 名前解決の答え (`/dns` の `addrs`) | `203.0.113.1` / `2001:db8:1::1` | 宛先が IP リテラルのときも同じ表を使う |
-| `User-Agent` (`agents`) | `ua-01` | |
+| `User-Agent` (`agents` と、いまの版の `agent`) | `ua-01` | 同じ UA は同じ番号 |
 | `/log` の行・`/events` の説明の中のホストと IP | 上と同じ表 | 行の他の語はそのまま |
+| `/events` の `new_client:` の `agent "…"` | `ua-01` | 上の UA と同じ表 (T17.16。切られた UA は別の番号) |
 | cgroup の道 (`kernel.cgroup_cpu.path`) | `/sys/fs/cgroup/…/…/cpu.stat` | 深さと最後の名前だけ残す (T15.0 (6)) |
 
 置き換えないもの: **数字** (件数・ms・区間・閉じた理由・時刻)、`version`、部の名前、
@@ -62,8 +69,10 @@ HOST_KEYS = frozenset(("host", "target", "canary_host", "sni"))
 CLIENT_KEYS = frozenset(("client",))
 # 値が名前解決の答えの一覧 (`/dns` の `addrs`)
 ADDR_KEYS = frozenset(("addrs",))
-# 値が `User-Agent` の一覧 (T14.7 の接続元の個票)
-AGENT_KEYS = frozenset(("agents",))
+# 値が `User-Agent` の一覧 (T14.7 の接続元の個票)。**`agent` (単数) も**: いまの `/status` と
+# `/clients` の接続元の行は、一覧ではなく最後に見た 1 つを `agent` に出す (T17.16 で気づいた。
+# 2026-09-16 の版は `agents` だけだったので、前の fixture には出てこない)
+AGENT_KEYS = frozenset(("agents", "agent"))
 # 値が文 (中にホストや IP が混ざる。行の他の語は変えない)
 TEXT_KEYS = frozenset(("msg", "text", "error", "url", "file"))
 # この鍵の下の `path` だけは潰す (`/status` の `kernel.cgroup_cpu.path` = T15.0 (6))。
@@ -102,6 +111,9 @@ TEXT_V6_BRACKET = re.compile(r"\[([0-9A-Fa-f:.]{2,45})\]")
 TEXT_V6 = re.compile(r"(?<![\w:.\-])([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})(?![\w:.\-])")
 TEXT_V4 = re.compile(r"(?<![\w.\-])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])")
 TEXT_HOST = re.compile(r"(?<![\w.\-])([0-9A-Za-z_\-]+(?:\.[0-9A-Za-z_\-]+)+)(?::(\d{1,5}))?(?![\w.\-])")
+# `/events` の `new_client:` の説明の終わりにある `User-Agent` (`crates/metrics-watch/src/anomaly.rs` の
+# `new_client_text`: `…, agent "<UA>")`)。UA は 128 B で切られることがあり、そのときは閉じの `")` が無い
+TEXT_AGENT = re.compile(r'(, agent ")(.*?)(?="\)$|$)')
 TLD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]{1,23}$")
 # 文の中の `なにか.なにか` のうち、ホスト名ではないもの (拡張子)。**表に無い**ものだけに効く
 # (表にある名前 = どこかの欄でホストとして現れた名前は、拡張子に見えても置き換える)
@@ -301,7 +313,11 @@ class Anonymizer:
 
     def text(self, s):
         """`/log` の行や `/events` の説明。**ホストと IP だけ**を置き換え、他の語と数字は残す。"""
-        if not s or ("." not in s and ":" not in s):
+        if not s:
+            return s
+        # UA は先に置き換える (中の `ForestEngine/1.0` のような語をホスト名と取り違えないように)
+        s = TEXT_AGENT.sub(self._text_agent, s)
+        if "." not in s and ":" not in s:
             return s
         s = TEXT_V6_BRACKET.sub(lambda m: "[" + self._text_ip(m.group(1)) + "]", s)
         s = TEXT_V6.sub(lambda m: self._text_ip(m.group(1)), s)
@@ -310,6 +326,12 @@ class Anonymizer:
         if dotless is not None:
             s = dotless.sub(lambda m: self._text_host(m.group(0)), s)
         return TEXT_HOST.sub(self._text_hostport, s)
+
+    def _text_agent(self, m):
+        got = self.agent(m.group(2))
+        if got != m.group(2):
+            self.text_hits += 1
+        return m.group(1) + got
 
     def _text_ip(self, text):
         try:
@@ -445,6 +467,9 @@ class Anonymizer:
         if not s:
             return s
         self.used.update(ANON_HOST_IN_TEXT.findall(s))
+        if key in TEXT_KEYS:  # 文の中の置き換え済みの UA (`agent "ua-01")`) も押さえる
+            self.used.update(m.group(2) for m in TEXT_AGENT.finditer(s)
+                             if ANON_UA_RE.match(m.group(2)))
         if key in AGENT_KEYS:
             if ANON_UA_RE.match(s):
                 self.used.add(s)
@@ -551,6 +576,10 @@ def guess(body):
 def load_inputs(paths):
     """`/snapshot` 1 枚、または個別ファイルの束を `/snapshot` と同じ形にして返す。"""
     found, bodies = {}, {}
+    if len(paths) > 1:
+        # `status/<時刻>-*` で束を渡されたとき、`collect-deployed.sh` が隣に置いた
+        # 匿名化済みの出力 (`-snapshot.anon.json` ほか。T17.16) は入力ではないので外す
+        paths = [p for p in paths if not p.endswith(ANON_SUFFIX)]
     for path in paths:
         body = read_json(path)
         if not isinstance(body, dict):
@@ -585,6 +614,30 @@ def load_inputs(paths):
     return snap
 
 
+# 匿名化した出力の名前の終わり (`collect-deployed.sh` が雪像の隣に置く形。T17.16)
+ANON_SUFFIX = ".anon.json"
+
+
+def side_target(spec):
+    """`--side IN` / `--side IN=OUT` を (入力, 出力) にする。既定の出力は隣の `<名前>.anon.json`。"""
+    src, sep, dst = spec.partition("=")
+    if sep and dst:
+        return src, dst
+    base = src[:-len(".json")] if src.endswith(".json") else src
+    return src, base + ANON_SUFFIX
+
+
+def write_json(path, body):
+    """1 行の JSON で書く (`-` なら標準出力)。書いた B を返す。"""
+    text = json.dumps(body, ensure_ascii=False, separators=(",", ":")) + "\n"
+    if path == "-":
+        sys.stdout.write(text)
+    else:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    return len(text.encode("utf-8"))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         description="デプロイ先の `/snapshot` を、数字を 1 つも変えずに匿名化する (T14.35)")
@@ -592,22 +645,30 @@ def main(argv=None):
                    help="`/snapshot` の JSON 1 枚、または `-status` `-history_res_5` … のファイル群")
     p.add_argument("-o", "--out", required=True, metavar="OUT",
                    help="書き出し先 (`-` で標準出力)")
+    p.add_argument("--side", action="append", default=[], metavar="IN[=OUT]",
+                   help="雪像に入らない口の JSON (`-daily.json` `-profile_res_60.json` など) を"
+                        "**雪像と同じ表で**置き換える (何回でも)。既定の出力は隣の `<名前>.anon.json`")
     p.add_argument("-q", "--quiet", action="store_true", help="件数を出さない")
     args = p.parse_args(argv)
 
     snap = load_inputs(args.inputs)
     anon = Anonymizer()
-    out = anon.run(snap)
-    text = json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n"
-    if args.out == "-":
-        sys.stdout.write(text)
-    else:
-        with open(args.out, "w", encoding="utf-8") as f:
-            f.write(text)
+    # 雪像を先に通す (隣の口を足しても雪像の番号は変わらない = `--side` 無しの出力と同じ)。
+    # 隣の口は同じ `Anonymizer` に続けて通すので、雪像に出た名前は同じ番号になる
+    size = write_json(args.out, anon.run(snap))
+    sides = []
+    for spec in args.side:
+        src, dst = side_target(spec)
+        body = read_json(src)
+        if body is None:
+            raise SystemExit("読めない JSON: " + src)
+        sides.append((dst, write_json(dst, anon.run(body))))
     if not args.quiet:
         print("匿名化: {} ({} B){}".format(
-            anon.summary(), len(text.encode("utf-8")),
+            anon.summary(), size,
             "" if args.out == "-" else " -> " + args.out), file=sys.stderr)
+        for dst, n in sides:
+            print("  隣の口: {} ({} B)".format(dst, n), file=sys.stderr)
     return 0
 
 

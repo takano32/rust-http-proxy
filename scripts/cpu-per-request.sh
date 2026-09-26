@@ -77,7 +77,7 @@
 #       ballast ができて RSS が跳ね、CPU/要求 が 62〜103 us の間で暴れる (T10.10 の落とし穴)
 #   BIN / BENCH (既定 target/release/{rust-http-proxy,bench})
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 PORT=${PORT:-18080}
 BIN=${BIN:-target/release/rust-http-proxy}
 BENCH=${BENCH:-target/release/bench}
@@ -226,7 +226,10 @@ else
   ops=$(echo "$out" | sed -n 's/.*(\([0-9]*\) ops in.*/\1/p' | tail -1)
   unit=$([ "$ONLY" = forward ] && echo req || echo op)
 fi
-[ -n "$ops" ] && [ "$ops" -gt 0 ] || { echo "could not read the number of operations"; exit 1; }
+if ! { [ -n "$ops" ] && [ "$ops" -gt 0 ]; }; then
+  echo "could not read the number of operations"
+  exit 1
+fi
 # `proxy NN% of one core` はプロキシが使い切ったコアの数 (100% = 1 コアを丸ごと)。
 # ベンチ側と見比べて、**どちらが律速しているか**をその場で判断するためのもの。
 awk -v u=$((u1 - u0)) -v s=$((s1 - s0)) -v ops="$ops" -v tick="$tick" -v hwm="$hwm" \

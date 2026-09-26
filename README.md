@@ -119,7 +119,8 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 ダッシュボードの読み方 (`check-dashboard.js`)・手元から見た待ち (`probe-deployed.sh`) を
 続けて回して **Markdown 1 枚**を標準出力に出します (同じものを雪像の隣の `<時刻>-collect.md` にも残し、
 雪像に入らない `/daily` `/healthz` `/slo` `/config` `/profile?res=60` も `<時刻>-<口>.json` で隣に置きます。
-`/profile?res=60` は 1 枚 (256 KiB) だと 24 時間のうち約 5 時間しか入らないので、`--full` が無くても `next_offset` が `null` になるまで `offset=` で追い、`samples` を 1 つに繋いで `truncated` を `false` にしたものを置きます。枚数の上限は `MAX_PAGES`)。`status-diff.py` は `/snapshot` の JSON を
+`/profile?res=60` は 1 枚 (256 KiB) だと 24 時間のうち約 5 時間しか入らないので、`--full` が無くても `next_offset` が `null` になるまで `offset=` で追い、`samples` を 1 つに繋いで `truncated` を `false` にしたものを置きます。枚数の上限は `MAX_PAGES`。
+さらに、下の `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた**匿名化した写し** `<時刻>-snapshot.anon.json` と、同じ表で通した `<時刻>-daily.anon.json` `<時刻>-profile_res_60.anon.json` も隣に置きます (T17.16。`ANON=0` で置きません)。テストへ持ち込むときはこの写しを `scripts/testdata/` へ移します)。`status-diff.py` は `/snapshot` の JSON を
 そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
 
 ```bash
@@ -220,7 +221,8 @@ scripts/weekly-report.py status/ --out json    # 表の元の辞書をそのま�
 
 **実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T14.35)。雪像には
 個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.g0007.example`)・
-**接続元 IP** (`198.51.100.x`)・**名前解決の答え** (`203.0.113.x`)・**`User-Agent`** (`ua-01`)・
+**接続元 IP** (`198.51.100.x`)・**名前解決の答え** (`203.0.113.x`)・**`User-Agent`** (`ua-01`。`agents` の一覧も、
+いまの版の `agent` (単数) も、`/events` の `new_client:` の説明の終わりの `agent "…"` も同じ表)・
 **`/log` の行と `/events` の説明の中の名前と IP** だけを置き換えれば、本物の分布のまま持ち込めます。
 置き換えは**決定的** (同じ入力からは同じ出力) なので、**匿名化したあとの 2 枚でそのまま差分が取れます**。
 ホスト名の `gNNNN` は**まとめの単位 (eTLD+1) の番号**で、`img.dlsite.jp` と `www.dlsite.jp` は
@@ -236,6 +238,9 @@ scripts/anonymize-snapshot.py status/2026-09-16T0106Z-snapshot.json \
 # `/snapshot` より前の形 (1 本ずつ取ったファイル群) からも組めます (`-metrics` 等は飛ばします)
 scripts/anonymize-snapshot.py status/2026-09-16T0106Z-* -o anon.json
 scripts/snapshot-diff.py old.anon.json new.anon.json      # 匿名化したあとでも差分は取れる
+# 雪像に入らない口 (`/daily` `/profile?res=60`) も雪像と同じ表で (既定の出力は隣の `<名前>.anon.json`。T17.16)
+scripts/anonymize-snapshot.py status/2026-09-26T114602Z-snapshot.json -o new.anon.json \
+    --side status/2026-09-26T114602Z-daily.json --side status/2026-09-26T114602Z-profile_res_60.json=p60.anon.json
 ```
 
 同梱の `scripts/testdata/deployed-2026-09-16.anon.json` (778 KiB) がその出力で、**デプロイ先の
@@ -243,6 +248,11 @@ scripts/snapshot-diff.py old.anon.json new.anon.json      # 匿名化したあ�
 `node scripts/check-dashboard.js` と `python3 -m unittest discover -s scripts` がこれを読み、
 `/history?res=3600` を起動時刻で切った平常時から **T14.0 の表と同じ数字** (名前解決 0.55 回/接続、
 CONNECT 確立 p50 8.3 / p95 80.7 ms、ミス 1 回 11.5 ms) が出ることを見ています。
+2 枚目の `scripts/testdata/deployed-2026-09-26.anon.json` (2.3 MiB。隣に `-daily.anon.json` と `-profile_res_60.anon.json`) は
+**2026-09-26 の雪像** (版 `0.1.0+2e57626`、起動から 47.2 時間) で、2026-09-16 の版に無かった `recent` / `profile` / `events` /
+`hosts_series` と T16.0 の 3 列が入っています。2026-09-16 → 2026-09-26 で `--criteria phase15` / `phase17` の判定表が出て、
+T16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 0、`dns_slow` 0.61 件/時) が出ることを見ています
+(T17.16。名前は番号が前後で合わないので、`discord.com` を見張る行は「判定できず」になります)。
 
 **いまの数字は 2026-09-24、Phase 15 (T15.4 + T15.6) を再デプロイして 126.6 時間の実測**です。出どころは雪像 1 枚
 (`scripts/collect-deployed.sh` が取った `status/2026-09-24T093400Z-snapshot.json` と、同時刻の
@@ -288,7 +298,8 @@ RSS **215.9 → 21.1 MB** (先行確保 201.3 → 0、2026-09-16)、`GET /` **50
 返らなければ 250 ms (RFC 8305 の Connection Attempt Delay) 待ってから IPv4 に移ります。IPv6 が**黙って落ちる**
 この環境では、AAAA のあるホスト全部でこの 250 ms を毎回払っていました。今はホストごとに最後に勝った族を覚え、
 IPv6 が起動から 1 度も勝たずに 3 回続けて負けたら初めて見るホストも IPv4 から試します
-(「特徴」の IPv4 / IPv6 の項。600 秒に 1 回は IPv6 を先頭に戻すので、IPv6 が生き返れば自動で戻ります)。
+(「特徴」の IPv4 / IPv6 の項。IPv6 が生き返ったかは canary が 1 分に 1 回見ていて、繋がれば自動で戻ります。
+canary が IPv6 を見ていないときは 600 秒に 1 回、利用者の要求で IPv6 を先頭に戻して試します)。
 
 **残っている待ちは 2 つ**です。(1) **遠いホストの RTT** — 上のとおり確立の中央値は 1 往復そのもので、
 プロキシ側では縮みません。(2) **尾 (p90 53.5 / p95 78.0 ms)** — こちらは網ではなく箱の中です
@@ -434,9 +445,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   `http://[2001:db8::1]:8080/` などの IPv6 リテラルにも対応。`PROXY_IPV6=off` で IPv4 のみにできる。
   **IPv6 が黙って落ちる環境 (経路はあるのに繋がらない) では自動で IPv4 を先にする**: ホストごとに
   最後に接続できた族を覚え、IPv6 が起動から 1 度も勝たずに 3 回続けて負けたら初めて見るホストも
-  IPv4 から試す (RFC 8305 §8。600 秒に 1 回だけ IPv6 を先頭に戻して試すので、IPv6 が生き返れば自動で戻る)。
+  IPv4 から試す (RFC 8305 §8)。IPv6 が生き返ったかは **canary の IPv6 側の 1 本** (1 分に 1 回、利用者を待たせない) が見ていて、
+  繋がれば自動で戻る。canary が IPv6 を見ていないとき (`PROXY_CANARY=off`、`PROXY_CANARY_IPV6=off`、`--lite` と `PROXY_STATS_PERSIST=off`、
+  canary の宛先に AAAA が無い) は、今までどおり 600 秒に 1 回だけ利用者の要求で IPv6 を先頭に戻して試す (T17.7)。
   試行そのものはやめないので、IPv4 が死んでいるホストは IPv6 で拾える。
-  勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。**確実に IPv6 を避けたいなら `off`**。
+  勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。`/status` の `ipv6.probe_by` は
+  いま IPv6 を探っているのが誰か (`"canary"` = canary が直近 600 秒に IPv6 を 1 本試した、`"request"` = 利用者の要求で探る)。**確実に IPv6 を避けたいなら `off`**。
   待ち受けの**受け入れ待ち行列は既定 `min(1024, somaxconn)`** (`PROXY_LISTEN_BACKLOG`)。Rust の既定の 128 だと、
   ブラウザが 1 ページで開く数十本の CONNECT で溢れて SYN が捨てられ、クライアントの再送で 1 秒待たされます
 - **RFC 7230 / RFC 9110 準拠**:
@@ -905,10 +919,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **AAAA へ 1 本だけ**繋いでみて `canary.ipv6_connect_ms` に残します (繋がれば ms、
     **繋がらなければ `null`**: AAAA が無い名前、`PROXY_IPV6=off`、経路が黒穴、`PROXY_CANARY_IPV6=off`)。
     コンテナの IPv6 が黙って落ちる環境では、プロキシは 3 回続けて負けると初めて見るホストを
-    IPv4 優先に切り替え (`/status` の `ipv6.v4_first`)、**元に戻すかどうかは 600 秒に 1 回の探りだけ**で
-    決めています。この 1 本があれば「IPv6 が生き返ったか」を 1 分の粒度で (利用者を待たせずに) 読めます。
-    **観測だけ**で、Happy Eyeballs も勝敗の記録 (`ipv6.attempts` / `wins` / `losses`) も
-    ホストごとの族の記憶も動かしません (`v4_first` の判定は 1 ビットも変わりません)。
+    IPv4 優先に切り替えます (`/status` の `ipv6.v4_first`)。この 1 本があれば「IPv6 が生き返ったか」を
+    1 分の粒度で (利用者を待たせずに) 読めます。**T17.7 からは元に戻すかどうかもこの 1 本が決めます**:
+    この 1 本が試している間 (直近 600 秒に 1 本、`ipv6.probe_by` が `"canary"`) は利用者の要求で
+    600 秒に 1 回 IPv6 を先頭に戻す探りをやめ (探りの 1 本は利用者を Happy Eyeballs の間隔ぶん待たせていた)、
+    **繋がったら `v4_first` を解きます**。Happy Eyeballs も勝敗の記録 (`ipv6.attempts` / `wins` / `losses`) も
+    ホストごとの族の記憶も動かしません。
     失敗は `/errors` にも残しません (黒穴のままだと 1 分に 1 件ずつ個票が埋まってしまうため。
     生死は `ipv6_connect_ms` が `null` かどうかで読みます)
   - **再起動をまたぐか (`persisted` / `restored`)**: `/recent` `/errors` `/bursts` `/events` `/log` の 5 つは、
@@ -1671,8 +1687,9 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 - **`PROXY_CANARY_IPV6`** (既定 `on`)
   canary の **IPv6 側**: 同じ周期に、canary の名前の **AAAA へ 1 本だけ**繋いでみて `/status` の `canary.ipv6_connect_ms` と `/history` の `canary` の 5 列目 (`canary_ipv6_connect_ms`) に残します。
   繋がれば ms、**繋がらなければ `null`** (AAAA が無い名前、`PROXY_IPV6=off`、経路が黒穴、ここが `off`)。
-  コンテナの IPv6 が黙って落ちる環境で「生き返ったか」を 1 分の粒度で読むための観測です (`v4_first` の解除は 600 秒に 1 回の探りだけに頼っています)。
-  **観測だけで、Happy Eyeballs も `ipv6` の勝敗もホストごとの族の記憶も動かしません**。
+  コンテナの IPv6 が黙って落ちる環境で「生き返ったか」を 1 分の粒度で読むための観測で、**IPv6 の探りも引き受けます** (T17.7):
+  この 1 本が試している間は利用者の要求で 600 秒に 1 回 IPv6 を先頭に戻す探りをやめ (`/status` の `ipv6.probe_by` が `"canary"`)、繋がれば `v4_first` を解きます。
+  **Happy Eyeballs も `ipv6` の勝敗 (`attempts` / `wins` / `losses`) もホストごとの族の記憶も動かしません**。`off` にすると、最後の 1 本から 600 秒で探りは利用者の要求に戻ります。
   失敗は `/errors` に残しません (黒穴のままだと 1 分に 1 件ずつ埋まるため)。
   `off` にすると 1 本も出しません。`.env` で即時反映
 
@@ -2182,9 +2199,10 @@ taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 
 ### CI (GitHub Actions)
 
 push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` は `cargo fmt --check` →
-`clippy -D warnings` → **文書とコードの整合** (`scripts/check-docs.sh`) → `cargo test --workspace` →
-リリースビルド → **180 MB の cgroup でビルドが通るか**
-(`scripts/build-memory.sh 180`) → 短いベンチ、の順です。それと並べてもう 1 つ、`deployed-like-snapshot` が
+`clippy -D warnings` → **文書とコードの整合** (`scripts/check-docs.sh`) → `scripts/` の単体テスト →
+**`shellcheck scripts/*.sh scripts/mx`** (切った指摘とその理由は `scripts/.shellcheckrc`) → `cargo test --workspace` →
+リリースビルド → 短いベンチ、の順です。**180 MB の cgroup でビルドが通るか** (`scripts/build-memory.sh 180`) は
+別のジョブ `build-memory` で並べて回します。それと並べてもう 1 つ、`deployed-like-snapshot` が
 **デプロイ先に似せた条件** (上の `scripts/deployed-like.sh`) を runner の中に作り、`scripts/ci-snapshot.sh` で
 `--only connect-multi` と forward を 10 秒ずつ回して `/snapshot` を**成果物 (artifact) の `snapshot.json`**
 に残します。見張るのは**形の退行だけ**で、数字の絶対値は比べません (runner は世代も負荷も毎回違うため):

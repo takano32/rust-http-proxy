@@ -30,7 +30,7 @@
 #   scripts/build-memory.sh --find 130 140 150   通る最小の上限を探す (調べるとき用)
 set -u
 MODE=gate
-if [ "${1:-}" = "--find" ]; then MODE=find; shift; fi
+if [ "${1:-}" = "--find" ]; then MODE="find"; shift; fi
 LIMIT_MB="${1:-180}"
 LADDER="${*:-180}"
 

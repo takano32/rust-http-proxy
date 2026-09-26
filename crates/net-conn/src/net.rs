@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::{log_debug, log_warn};
+use crate::{log_debug, log_info, log_warn};
 
 // `host:port` の分解と組み立ては `proxy-base` の `hostport` に置いてある
 // (名前解決・接続・判定の 3 クレートが使うため)。今までどおり `net::split_host_port_ref`
@@ -69,6 +69,16 @@ static IPV6_LOSS_STREAK: AtomicU64 = AtomicU64::new(0);
 static IPV6_PROBE_AT: AtomicU64 = AtomicU64::new(0);
 /// 切り替えの `warn` を出したか (1 回だけ)。
 static IPV6_WARNED: AtomicBool = AtomicBool::new(false);
+/// canary が最後に IPv6 側の 1 本を試した時刻 (epoch 秒。0 = 1 度も試していない。T17.7)。
+///
+/// これが [`IPV6_PROBE_SECS`] より新しい間は、**利用者の経路で 600 秒に 1 回の探りをしない**
+/// (探りは canary が 1 分に 1 回、利用者を待たせずにしている)。canary が `off`・`--lite`・
+/// `PROXY_CANARY_IPV6=off`・AAAA の無い宛先しか選べない、のどれでもここが古くなるので、
+/// そのときは今までどおり利用者の経路で探る。
+static IPV6_CANARY_AT: AtomicU64 = AtomicU64::new(0);
+/// canary の IPv6 側の 1 本が 1 度でも繋がったか (T17.7)。立ったら `v4_first` を解く
+/// (利用者の要求で IPv6 が 1 度勝ったときと同じ扱い)。
+static IPV6_CANARY_OK: AtomicBool = AtomicBool::new(false);
 
 pub fn set_ipv6_enabled(on: bool) {
     IPV6_ENABLED.store(on, Ordering::Relaxed);
@@ -298,9 +308,8 @@ fn connect_one(addr: &SocketAddr, timeout: Option<Duration>) -> io::Result<TcpSt
 /// **1 つのアドレスへ繋ぐだけ** (canary の IPv6 側。T14.37)。
 ///
 /// Happy Eyeballs も、勝敗の記録 ([`ipv6_status_json`] の `attempts` / `wins` / `losses`) も、
-/// ホストごとの族の記憶 ([`crate::dns::remember_family`]) も**動かさない**: これは
-/// 「コンテナの IPv6 がいま生きているか」を 1 分に 1 回見るだけの観測で、
-/// `v4_first` の判定 (600 秒に 1 回の探り) を動かしてはいけない。
+/// ホストごとの族の記憶 ([`crate::dns::remember_family`]) も**動かさない**。
+/// 結果を `v4_first` の判定に渡すのは canary が別に [`note_canary_ipv6`] を呼んだとき (T17.7)。
 pub fn connect_addr(addr: &SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
     connect_one(addr, proxy_base::timeout::for_socket(timeout))
 }
@@ -399,19 +408,52 @@ fn note_ipv6_loss() {
     }
 }
 
-/// 起動から 1 度も IPv6 が勝たず、連続 [`IPV6_LOSS_LIMIT`] 回負けている状態か。
+/// 起動から 1 度も IPv6 が勝たず (canary の IPv6 側の 1 本も繋がらず。T17.7)、
+/// 連続 [`IPV6_LOSS_LIMIT`] 回負けている状態か。
 pub fn ipv6_v4_first() -> bool {
+    IPV6_WINS.load(Ordering::Relaxed) == 0
+        && IPV6_LOSS_STREAK.load(Ordering::Relaxed) >= IPV6_LOSS_LIMIT
+        && !IPV6_CANARY_OK.load(Ordering::Relaxed)
+}
+
+/// canary の IPv6 側の 1 本の結果を受け取る (canary スレッドから 1 分に 1 回。T17.7)。
+///
+/// 下の層 (このクレート) は canary を知らないので、canary の方から呼んでもらう。
+/// 勝敗の数 (`attempts` / `wins` / `losses`) と族の記憶には**足さない** (利用者の要求ではない)。
+/// 繋がったら `v4_first` を解く。繋がっても繋がらなくても「canary が探っている」印を更新する。
+pub fn note_canary_ipv6(connected: bool) {
+    IPV6_CANARY_AT.store(crate::clock::now_epoch(), Ordering::Relaxed);
+    if connected && !IPV6_CANARY_OK.swap(true, Ordering::Relaxed) && ipv6_v4_first_by_losses() {
+        log_info!(None, "IPv6 reachable (canary); trying IPv6 first again");
+    }
+}
+
+/// `v4_first` のうち、canary の結果を除いた部分 (解いたときのログを 1 回だけ出すため)。
+fn ipv6_v4_first_by_losses() -> bool {
     IPV6_WINS.load(Ordering::Relaxed) == 0
         && IPV6_LOSS_STREAK.load(Ordering::Relaxed) >= IPV6_LOSS_LIMIT
 }
 
+/// いま IPv6 の探りを canary が引き受けているか (直近 [`IPV6_PROBE_SECS`] 秒に 1 本試した。T17.7)。
+fn ipv6_probe_by_canary(now: u64) -> bool {
+    let at = IPV6_CANARY_AT.load(Ordering::Relaxed);
+    at != 0 && now.saturating_sub(at) < IPV6_PROBE_SECS
+}
+
 /// 記憶の無いホストで IPv6 を先頭に置くか。IPv4 を先頭にしている間も
 /// [`IPV6_PROBE_SECS`] に 1 回だけ `true` を返して IPv6 を試す (勝てば解除される)。
+///
+/// **canary が IPv6 を探っている間は利用者の経路で探らない** (T17.7。探りの 1 本は
+/// `stagger()` ぶん利用者を待たせるため)。解除は canary の 1 本が繋がったとき
+/// ([`note_canary_ipv6`])。
 fn ipv6_first_for_new_host() -> bool {
     if !ipv6_v4_first() {
         return true;
     }
     let now = crate::clock::now_epoch();
+    if ipv6_probe_by_canary(now) {
+        return false;
+    }
     let at = IPV6_PROBE_AT.load(Ordering::Relaxed);
     now >= at
         && IPV6_PROBE_AT
@@ -427,11 +469,17 @@ fn ipv6_first_for_new_host() -> bool {
 /// `/status` の `"ipv6"` 要素 (組み立ては `/status` のときだけ)。
 pub fn ipv6_status_json() -> String {
     format!(
-        "{{\"attempts\":{},\"wins\":{},\"losses\":{},\"v4_first\":{}}}",
+        "{{\"attempts\":{},\"wins\":{},\"losses\":{},\"v4_first\":{},\"probe_by\":\"{}\"}}",
         IPV6_ATTEMPTS.load(Ordering::Relaxed),
         IPV6_WINS.load(Ordering::Relaxed),
         IPV6_LOSSES.load(Ordering::Relaxed),
         ipv6_v4_first(),
+        // 誰が IPv6 を探っているか (T17.7): canary が直近 600 秒に試していれば `canary`
+        if ipv6_probe_by_canary(crate::clock::now_epoch()) {
+            "canary"
+        } else {
+            "request"
+        },
     )
 }
 
@@ -667,6 +715,8 @@ mod tests {
         }
         IPV6_PROBE_AT.store(0, Ordering::Relaxed);
         IPV6_WARNED.store(false, Ordering::Relaxed);
+        IPV6_CANARY_AT.store(0, Ordering::Relaxed);
+        IPV6_CANARY_OK.store(false, Ordering::Relaxed);
         set_stagger(DEFAULT_STAGGER);
     }
 
@@ -880,6 +930,113 @@ mod tests {
         .expect("IPv6 should pick it up");
         assert!(stream.peer_addr().unwrap().is_ipv6());
         assert!(!ipv6_v4_first(), "1 度勝ったら解除: {}", ipv6_status_json());
+    }
+
+    /// IPv4 優先に落ちた状態を作る (3 連敗、探りの時刻はもう来ている)。
+    fn force_v4_first() {
+        IPV6_LOSS_STREAK.store(IPV6_LOSS_LIMIT, Ordering::Relaxed);
+        IPV6_PROBE_AT.store(0, Ordering::Relaxed);
+        assert!(ipv6_v4_first());
+    }
+
+    /// T17.7: canary が IPv6 を探っている間は、探りの時刻が来ても**利用者の経路では探らない**
+    /// (IPv6 を先頭に戻さない = `stagger()` を払わない、`attempts` も増えない)。
+    #[test]
+    fn ipv6_probe_is_left_to_the_canary_while_it_probes() {
+        let _guard = IPV6_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_ipv6_state();
+        force_v4_first();
+        assert!(
+            ipv6_status_json().ends_with(",\"probe_by\":\"request\"}"),
+            "{}",
+            ipv6_status_json()
+        );
+        // canary の IPv6 側が 1 本試して繋がらなかった (黒穴の網)
+        note_canary_ipv6(false);
+        assert!(ipv6_v4_first(), "繋がらなければ解かない");
+        assert!(
+            ipv6_status_json().ends_with(",\"v4_first\":true,\"probe_by\":\"canary\"}"),
+            "{}",
+            ipv6_status_json()
+        );
+        for _ in 0..3 {
+            assert!(
+                !ipv6_first_for_new_host(),
+                "canary が探っている間は探らない"
+            );
+        }
+        assert_eq!(
+            IPV6_PROBE_AT.load(Ordering::Relaxed),
+            0,
+            "探りの予約も動かさない"
+        );
+
+        // 実際に繋いでも IPv6 の候補は起動されない (IPv4 が先頭で即勝つ)
+        let Ok(closed_v6) = TcpListener::bind("[::1]:0") else {
+            eprintln!("no IPv6 loopback; skipping the connect half");
+            return;
+        };
+        let v6_addr = closed_v6.local_addr().unwrap();
+        drop(closed_v6);
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = connect_resolved(
+            "t177-canary-probes.invalid",
+            vec![v6_addr, live.local_addr().unwrap()],
+            Duration::from_secs(5),
+        )
+        .expect("v4 should win");
+        assert!(stream.peer_addr().unwrap().is_ipv4());
+        assert_eq!(ipv6_counters(), [0, 0, 0], "{}", ipv6_status_json());
+    }
+
+    /// T17.7: canary の IPv6 側が繋がったら `v4_first` が解ける (勝敗の数には足さない)。
+    #[test]
+    fn ipv6_canary_success_lifts_v4_first() {
+        let _guard = IPV6_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_ipv6_state();
+        force_v4_first();
+        note_canary_ipv6(true);
+        assert!(!ipv6_v4_first(), "{}", ipv6_status_json());
+        assert!(ipv6_first_for_new_host(), "解けたら IPv6 が先頭");
+        assert_eq!(ipv6_counters(), [0, 0, 0]);
+        assert!(
+            ipv6_status_json().ends_with(",\"v4_first\":false,\"probe_by\":\"canary\"}"),
+            "{}",
+            ipv6_status_json()
+        );
+    }
+
+    /// T17.7: canary が探っていない (`off`・`--lite`・`PROXY_CANARY_IPV6=off`・AAAA の無い宛先)
+    /// か、最後に試してから 600 秒を過ぎたら、**今までどおり**利用者の経路で 600 秒に 1 回探る。
+    #[test]
+    fn ipv6_probe_stays_on_requests_without_the_canary() {
+        let _guard = IPV6_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_ipv6_state();
+        force_v4_first();
+        // canary が 1 度も試していない: 1 回だけ探り、次は 600 秒後
+        assert!(
+            ipv6_first_for_new_host(),
+            "探りの時刻が来ていれば 1 回だけ探る"
+        );
+        assert!(!ipv6_first_for_new_host(), "2 回目は探らない");
+        let now = crate::clock::now_epoch();
+        let at = IPV6_PROBE_AT.load(Ordering::Relaxed);
+        assert!(
+            at >= now + IPV6_PROBE_SECS - 1,
+            "次の探りは 600 秒後: {} / {}",
+            at,
+            now
+        );
+        assert!(ipv6_status_json().ends_with(",\"probe_by\":\"request\"}"));
+
+        // canary が最後に試したのが 600 秒より前 (止まった): 利用者の経路に戻る
+        IPV6_PROBE_AT.store(0, Ordering::Relaxed);
+        IPV6_CANARY_AT.store(now - IPV6_PROBE_SECS, Ordering::Relaxed);
+        assert!(ipv6_status_json().ends_with(",\"probe_by\":\"request\"}"));
+        assert!(
+            ipv6_first_for_new_host(),
+            "古い canary の印では探りを止めない"
+        );
     }
 
     /// IPv6 が生きている条件では今までどおり IPv6 が勝ち、IPv4 優先には落ちない。
