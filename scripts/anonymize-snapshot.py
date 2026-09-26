@@ -14,6 +14,12 @@
     scripts/anonymize-snapshot.py status/2026-09-16T0106Z-* \
                                   -o scripts/testdata/deployed-2026-09-16.anon.json
     scripts/anonymize-snapshot.py a-snapshot.json -o -        # 標準出力へ
+    # 雪像に入らない口 (`collect-deployed.sh` が隣に置く `-daily.json` `-profile_res_60.json` など) も
+    # **同じ表で**置き換える (T17.16)。既定の出力は隣の `<名前>.anon.json`、`IN=OUT` で置き場を指せる
+    scripts/anonymize-snapshot.py status/2026-09-26T114602Z-snapshot.json \
+        -o status/2026-09-26T114602Z-snapshot.anon.json \
+        --side status/2026-09-26T114602Z-daily.json \
+        --side status/2026-09-26T114602Z-profile_res_60.json=/tmp/p60.anon.json
 
 置き換えるもの (**決定的**: 同じ入力からは同じ出力になるので、匿名化した 2 枚で差分が取れる):
 
@@ -553,6 +559,10 @@ def guess(body):
 def load_inputs(paths):
     """`/snapshot` 1 枚、または個別ファイルの束を `/snapshot` と同じ形にして返す。"""
     found, bodies = {}, {}
+    if len(paths) > 1:
+        # `status/<時刻>-*` で束を渡されたとき、`collect-deployed.sh` が隣に置いた
+        # 匿名化済みの出力 (`-snapshot.anon.json` ほか。T17.16) は入力ではないので外す
+        paths = [p for p in paths if not p.endswith(ANON_SUFFIX)]
     for path in paths:
         body = read_json(path)
         if not isinstance(body, dict):
@@ -587,6 +597,30 @@ def load_inputs(paths):
     return snap
 
 
+# 匿名化した出力の名前の終わり (`collect-deployed.sh` が雪像の隣に置く形。T17.16)
+ANON_SUFFIX = ".anon.json"
+
+
+def side_target(spec):
+    """`--side IN` / `--side IN=OUT` を (入力, 出力) にする。既定の出力は隣の `<名前>.anon.json`。"""
+    src, sep, dst = spec.partition("=")
+    if sep and dst:
+        return src, dst
+    base = src[:-len(".json")] if src.endswith(".json") else src
+    return src, base + ANON_SUFFIX
+
+
+def write_json(path, body):
+    """1 行の JSON で書く (`-` なら標準出力)。書いた B を返す。"""
+    text = json.dumps(body, ensure_ascii=False, separators=(",", ":")) + "\n"
+    if path == "-":
+        sys.stdout.write(text)
+    else:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    return len(text.encode("utf-8"))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         description="デプロイ先の `/snapshot` を、数字を 1 つも変えずに匿名化する (T14.35)")
@@ -594,22 +628,30 @@ def main(argv=None):
                    help="`/snapshot` の JSON 1 枚、または `-status` `-history_res_5` … のファイル群")
     p.add_argument("-o", "--out", required=True, metavar="OUT",
                    help="書き出し先 (`-` で標準出力)")
+    p.add_argument("--side", action="append", default=[], metavar="IN[=OUT]",
+                   help="雪像に入らない口の JSON (`-daily.json` `-profile_res_60.json` など) を"
+                        "**雪像と同じ表で**置き換える (何回でも)。既定の出力は隣の `<名前>.anon.json`")
     p.add_argument("-q", "--quiet", action="store_true", help="件数を出さない")
     args = p.parse_args(argv)
 
     snap = load_inputs(args.inputs)
     anon = Anonymizer()
-    out = anon.run(snap)
-    text = json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n"
-    if args.out == "-":
-        sys.stdout.write(text)
-    else:
-        with open(args.out, "w", encoding="utf-8") as f:
-            f.write(text)
+    # 雪像を先に通す (隣の口を足しても雪像の番号は変わらない = `--side` 無しの出力と同じ)。
+    # 隣の口は同じ `Anonymizer` に続けて通すので、雪像に出た名前は同じ番号になる
+    size = write_json(args.out, anon.run(snap))
+    sides = []
+    for spec in args.side:
+        src, dst = side_target(spec)
+        body = read_json(src)
+        if body is None:
+            raise SystemExit("読めない JSON: " + src)
+        sides.append((dst, write_json(dst, anon.run(body))))
     if not args.quiet:
         print("匿名化: {} ({} B){}".format(
-            anon.summary(), len(text.encode("utf-8")),
+            anon.summary(), size,
             "" if args.out == "-" else " -> " + args.out), file=sys.stderr)
+        for dst, n in sides:
+            print("  隣の口: {} ({} B)".format(dst, n), file=sys.stderr)
     return 0
 
 

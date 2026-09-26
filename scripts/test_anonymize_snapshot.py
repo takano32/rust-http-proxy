@@ -430,6 +430,69 @@ class Bundle(unittest.TestCase):
         self.assertEqual(snap["parts"], ["status"])
         self.assertEqual(snap["taken_at"], 1789018620)
 
+    def test_the_anonymized_outputs_next_to_the_bundle_are_not_inputs(self):
+        """`collect-deployed.sh` が隣に置いた `.anon.json` は束の入力に混ぜない (T17.16)。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self.files(tmp)
+            anon = os.path.join(tmp, "2026-09-16T0106Z-snapshot.anon.json")
+            with open(anon, "w", encoding="utf-8") as f:
+                json.dump(anonymized(), f)
+            snap = an.load_inputs(sorted(files + [anon]))
+        self.assertEqual(snap["parts"],
+                         ["status", "history.5", "dns", "errors", "connections", "log"])
+
+
+class Side(unittest.TestCase):
+    """`--side`: 雪像に入らない口を**雪像と同じ表で**置き換える (T17.16)。"""
+
+    def run_main(self, tmp, sides, side_bodies):
+        snap_path = os.path.join(tmp, "2026-09-26T114602Z-snapshot.json")
+        with open(snap_path, "w", encoding="utf-8") as f:
+            json.dump(sample(), f)
+        for name, body in side_bodies.items():
+            with open(os.path.join(tmp, name), "w", encoding="utf-8") as f:
+                json.dump(body, f)
+        out = os.path.join(tmp, "2026-09-26T114602Z-snapshot.anon.json")
+        with redirect_stderr(io.StringIO()):
+            an.main([snap_path, "-o", out]
+                    + [a for s in sides for a in ("--side", os.path.join(tmp, s))])
+        with open(out, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_a_side_file_uses_the_same_numbers_as_the_snapshot(self):
+        side = {"hosts": [{"host": "two.example.net:443"}, {"host": "new.example.org:443"}],
+                "clients": [{"client": "100.64.3.9", "agent": "curl/8.5.0"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            got = self.run_main(tmp, ["2026-09-26T114602Z-extra.json"],
+                                {"2026-09-26T114602Z-extra.json": side})
+            with open(os.path.join(tmp, "2026-09-26T114602Z-extra.anon.json"),
+                      encoding="utf-8") as f:
+                out = json.load(f)
+        # 雪像の出力は `--side` 無しと同じ (隣の口を足しても番号は動かない)
+        self.assertEqual(got, anonymized())
+        # 雪像に出た名前 (`/dns` の 2 行目の two.example.net) は雪像と同じ番号
+        two = got["dns"]["entries"][1]["host"]
+        self.assertEqual(out["hosts"][0]["host"], two + ":443")
+        # 雪像に無かった名前は続きの番号
+        self.assertRegex(out["hosts"][1]["host"], r"^host-\d{4}\.g\d{4}\.example:443$")
+        self.assertNotEqual(out["hosts"][1]["host"], two + ":443")
+        self.assertEqual(out["clients"][0], {"client": "198.51.100.1", "agent": "ua-01"})
+
+    def test_a_side_file_without_names_comes_out_unchanged(self):
+        body = {"schema": 1, "days": [{"day": "2026-09-25", "dns_per_connect": 0.05,
+                                        "version": "0.1.0+abcdef1"}],
+                "path": "/home/container/.rust-http-proxy.daily.jsonl"}
+        with tempfile.TemporaryDirectory() as tmp:
+            self.run_main(tmp, ["2026-09-26T114602Z-daily.json"],
+                          {"2026-09-26T114602Z-daily.json": body})
+            with open(os.path.join(tmp, "2026-09-26T114602Z-daily.anon.json"),
+                      encoding="utf-8") as f:
+                self.assertEqual(json.load(f), body)
+
+    def test_the_output_can_be_named(self):
+        self.assertEqual(an.side_target("a/x-daily.json"), ("a/x-daily.json", "a/x-daily.anon.json"))
+        self.assertEqual(an.side_target("a/x-daily.json=b/y.json"), ("a/x-daily.json", "b/y.json"))
+
 
 @unittest.skipUnless(os.path.isfile(FIXTURE), "匿名化した実データが無い")
 class Fixture(unittest.TestCase):
