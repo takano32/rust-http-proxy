@@ -268,6 +268,16 @@ pub const DEFAULT_MAX_REQUESTS_PER_CONN: usize = 1000;
 /// 250 ms に SYN の再送 (1 秒 → 3 秒) が重なると 4 秒台まで伸びうるため (5 秒は攻めすぎ)。
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// `PROXY_HE_STAGGER_MS` の値を読む (T17.6)。数でないか範囲 ([`crate::net::STAGGER_RANGE_MS`]) の
+/// 外なら `None` (呼ぶ側が既定に戻して warn する)。
+pub fn parse_stagger_ms(v: &str) -> Option<Duration> {
+    v.trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|ms| crate::net::STAGGER_RANGE_MS.contains(ms))
+        .map(Duration::from_millis)
+}
+
 /// CONNECT のオリジン接続の締め切りの**実効値を決める唯一の場所** (T15.6 (2))。
 ///
 /// `Config::new`・`Config::from_env`・再読込 (`Config::from_env` を回す) が全部ここを通る。
@@ -410,6 +420,12 @@ pub struct Config {
     /// 効くのは `crates/server/src/lib.rs` の CONNECT から `start_tunnel` へ渡す 1 か所だけで、
     /// forward のオリジン接続 (`origin::connect`) と blocklist の取得は `timeout` のまま。
     pub connect_timeout: Duration,
+    /// Happy Eyeballs で次の候補を試し始めるまでの間隔 (`PROXY_HE_STAGGER_MS`、既定 250 ms。T17.6)。
+    ///
+    /// 範囲は [`crate::net::STAGGER_RANGE_MS`] (10〜2,000 ms)。外れた値と読めない値は warn を 1 行出して
+    /// 既定に戻す (出どころも `default` のまま)。**起動時に 1 回だけ** `net::set_stagger` へ渡し、
+    /// `.env` の再読込では変わらない (変えたら `restart_required` に出る)
+    pub he_stagger: Duration,
     /// クライアント接続を keep-alive で待つアイドル時間。0 なら 1 接続 1 要求
     pub keepalive: Duration,
     /// オリジンへのアイドル接続をホストごとに何本まで保持するか。0 で再利用しない
@@ -636,6 +652,23 @@ impl Config {
         {
             cfg.connect_timeout = connect_timeout_for(cfg.timeout, Some(Duration::from_secs(secs)));
             src.mark("PROXY_CONNECT_TIMEOUT_SECS");
+        }
+        // Happy Eyeballs の間隔 (T17.6)。範囲外は既定のまま (出どころも `default`) にして 1 行知らせる
+        if let Some(v) = envfile::var("PROXY_HE_STAGGER_MS") {
+            match parse_stagger_ms(&v) {
+                Some(d) => {
+                    cfg.he_stagger = d;
+                    src.mark("PROXY_HE_STAGGER_MS");
+                }
+                None => crate::log_warn!(
+                    None,
+                    "PROXY_HE_STAGGER_MS={:?} is not a number in {}..={} ms; using the default {} ms",
+                    v.trim(),
+                    crate::net::STAGGER_RANGE_MS.start(),
+                    crate::net::STAGGER_RANGE_MS.end(),
+                    crate::net::DEFAULT_STAGGER.as_millis()
+                ),
+            }
         }
         if let Some(secs) =
             envfile::var("PROXY_KEEPALIVE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
@@ -991,6 +1024,10 @@ impl Config {
         add("PROXY_TIMEOUT_SECS", secs(self.timeout));
         // 実効値 (未設定なら既定の 10 秒と `PROXY_TIMEOUT_SECS` の小さい方が出る。T15.6)
         add("PROXY_CONNECT_TIMEOUT_SECS", secs(self.connect_timeout));
+        add(
+            "PROXY_HE_STAGGER_MS",
+            self.he_stagger.as_millis().to_string(),
+        );
         add("PROXY_KEEPALIVE_SECS", secs(self.keepalive));
         add("PROXY_TUNNEL_IDLE_SECS", secs(self.tunnel_idle));
         add("PROXY_MAX_CONNS", self.max_conns.to_string());
@@ -1174,6 +1211,7 @@ impl Config {
             // `timeout` が 10 秒より短ければそちらに合わせる。T15.6 (2))。ここで入れておくと
             // `Config::new` を呼ぶ既存の所 (テストと `/config` の組み立て) が自動で追随する
             connect_timeout: connect_timeout_for(timeout, None),
+            he_stagger: crate::net::DEFAULT_STAGGER,
             keepalive: Duration::from_secs(15),
             pool_per_host: 64,
             pool_total: 256,
@@ -1584,6 +1622,35 @@ mod tests {
         cfg.connect_timeout = connect_timeout_for(cfg.timeout, Some(Duration::from_secs(30)));
         assert_eq!(find(&cfg, "PROXY_CONNECT_TIMEOUT_SECS"), "30");
         assert_eq!(find(&cfg, "PROXY_TIMEOUT_SECS"), "30", "共通の側は動かない");
+    }
+
+    /// `PROXY_HE_STAGGER_MS` (T17.6): 範囲 10〜2,000 ms の中だけ受け、外れた値と読めない値は
+    /// `None` (= 既定の 250 ms のまま)。`settings()` には既定が ms で出る。
+    #[test]
+    fn he_stagger_accepts_only_the_rfc_range() {
+        let ms = Duration::from_millis;
+        for (v, want) in [
+            ("250", Some(ms(250))),
+            (" 100 ", Some(ms(100))),
+            ("10", Some(ms(10))),
+            ("2000", Some(ms(2000))),
+            ("9", None),
+            ("0", None),
+            ("2001", None),
+            ("-5", None),
+            ("fast", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_stagger_ms(v), want, "PROXY_HE_STAGGER_MS={:?}", v);
+        }
+        let cfg = Config::new("9090", None, None, Duration::from_secs(30)).expect("port");
+        assert_eq!(cfg.he_stagger, crate::net::DEFAULT_STAGGER);
+        let s = cfg
+            .settings()
+            .into_iter()
+            .find(|s| s.key == "PROXY_HE_STAGGER_MS")
+            .expect("PROXY_HE_STAGGER_MS が無い");
+        assert_eq!(s.value, "250");
     }
 
     #[test]

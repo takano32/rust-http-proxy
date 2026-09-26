@@ -278,6 +278,10 @@ impl Live {
         if fresh.bind_addrs != boot.bind_addrs || fresh.ipv6 != boot.ipv6 {
             restart.push("PROXY_BIND/PROXY_IPV6");
         }
+        // Happy Eyeballs の間隔は起動時に 1 回だけ渡す (T17.6)
+        if fresh.he_stagger != boot.he_stagger {
+            restart.push("PROXY_HE_STAGGER_MS");
+        }
         // 待ち受けは起動時に 1 回作るので backlog も起動時のまま (T14.47)
         if fresh.listen_backlog != boot.listen_backlog {
             restart.push("PROXY_LISTEN_BACKLOG");

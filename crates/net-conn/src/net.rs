@@ -26,8 +26,28 @@ pub use crate::hostport::{
 /// 判定 (`proxy-net` の `acl`) 側のテストも取るので `pub`。
 pub static IPV6_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Happy Eyeballs で次の接続試行を始めるまでの間隔。
-const STAGGER: Duration = Duration::from_millis(250);
+/// Happy Eyeballs で次の接続試行を始めるまでの間隔の既定 (RFC 8305 の Connection Attempt Delay)。
+pub const DEFAULT_STAGGER: Duration = Duration::from_millis(250);
+/// `PROXY_HE_STAGGER_MS` で受ける範囲 (ms)。外れた値は設定の側で既定に戻す (T17.6)。
+///
+/// 10 ms〜2 秒は RFC 8305 §5 が Connection Attempt Delay に置く下限と上限。
+pub const STAGGER_RANGE_MS: std::ops::RangeInclusive<u64> = 10..=2_000;
+/// いま効いている間隔 (ms)。起動時に 1 回だけ [`set_stagger`] で決める (T17.6)。
+///
+/// 要求の経路で読むのは `Relaxed` の load 1 回だけ (システムコールも確保も増えない)。
+/// `IPV6_ENABLED` と同じ形で、`OnceLock` にしないのはテストが既定へ戻せるようにするため。
+static STAGGER_MS: AtomicU64 = AtomicU64::new(DEFAULT_STAGGER.as_millis() as u64);
+
+/// Happy Eyeballs の間隔を決める (起動時に 1 回。範囲の確かめは呼ぶ側 = 設定の仕事)。
+pub fn set_stagger(d: Duration) {
+    STAGGER_MS.store(d.as_millis() as u64, Ordering::Relaxed);
+}
+
+/// いま効いている Happy Eyeballs の間隔。
+#[inline]
+pub fn stagger() -> Duration {
+    Duration::from_millis(STAGGER_MS.load(Ordering::Relaxed))
+}
 
 /// IPv6 を使うか (既定 on)。起動時に設定から決める。
 static IPV6_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -346,11 +366,11 @@ pub fn connect_resolved(
 /// 「IPv6 が負けた」の定義 (T12.1):
 ///
 /// **IPv6 の候補を試し始めたのに、最後に確立できたのが IPv4 の候補だったとき**を 1 回の負けと数える。
-/// これは 2 つの場合をまとめたもので、どちらも「IPv6 を先頭に置いたせいで `STAGGER` (250 ms) 待たされた」
+/// これは 2 つの場合をまとめたもので、どちらも「IPv6 を先頭に置いたせいで `stagger()` (既定 250 ms) 待たされた」
 /// という同じ結果になるので区別しない:
 ///
 /// - IPv6 の試行が先に失敗し、そのあと IPv4 が勝った (デプロイ先の「経路はあるが約 1 秒で失敗」)
-/// - IPv6 の試行が `STAGGER` を過ぎても返らないうちに IPv4 が勝った (SYN が黙って落ちる網)
+/// - IPv6 の試行が `stagger()` を過ぎても返らないうちに IPv4 が勝った (SYN が黙って落ちる網)
 ///
 /// **どの候補も確立できなかったときは勝ちにも負けにも数えない** (IPv6 の善し悪しではなく、
 /// 宛先か網が落ちているだけなので)。勝敗を書くのは確立した時点で 1 回だけ。
@@ -457,6 +477,8 @@ fn connect_candidates(
     let mut pending = 0usize;
     let mut tried_v6 = false;
     let mut next_launch = Instant::now();
+    // 間隔は 1 回の接続の中では変わらないので、ループの外で 1 回だけ読む
+    let stagger = stagger();
     let mut last_err: Option<io::Error> = None;
     // 締め切りで抜けたか (T15.0 (3))。立てるのは下の**締め切りの `break` だけ**で、
     // 「全候補が失敗した」の `break` では立てない (そのときの `last_err` は本物の理由)
@@ -481,7 +503,7 @@ fn connect_candidates(
             });
             launched += 1;
             pending += 1;
-            next_launch = now + STAGGER;
+            next_launch = now + stagger;
         }
         // 締め切りが無いときは、まだ launch していないぶんの間隔だけ待ち、
         // 全部 launch したあとは結果が出るまで待つ (無期限)
@@ -645,6 +667,7 @@ mod tests {
         }
         IPV6_PROBE_AT.store(0, Ordering::Relaxed);
         IPV6_WARNED.store(false, Ordering::Relaxed);
+        set_stagger(DEFAULT_STAGGER);
     }
 
     /// `[::1]` の黒穴 (backlog 0 の待ち受けを 1 本で埋める) と、生きている `127.0.0.1` の 2 候補。
@@ -754,7 +777,7 @@ mod tests {
         let first = started.elapsed();
         assert_eq!(stream.peer_addr().unwrap().port(), port);
         assert!(
-            first >= STAGGER && first < Duration::from_secs(3),
+            first >= DEFAULT_STAGGER && first < Duration::from_secs(3),
             "1 回目は STAGGER を待って IPv4 で確立するはず: {:?}",
             first
         );
@@ -776,6 +799,36 @@ mod tests {
         );
     }
 
+    /// `PROXY_HE_STAGGER_MS` (T17.6): 間隔を縮めると、黒穴の IPv6 を先頭にした 1 回目が
+    /// **縮めた間隔だけ**待って IPv4 で確立する (既定の 250 ms は待たない)。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ipv6_blackhole_waits_only_the_configured_stagger() {
+        let _guard = IPV6_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_ipv6_state();
+        let Some((_hole, _filler, live, addrs)) = blackhole_v6_and_live_v4() else {
+            eprintln!("no IPv6 loopback; skipping");
+            return;
+        };
+        let port = live.local_addr().unwrap().port();
+        let short = Duration::from_millis(20);
+        set_stagger(short);
+        assert_eq!(stagger(), short);
+
+        let started = Instant::now();
+        let stream = connect_resolved("t176-stagger.invalid", addrs, Duration::from_secs(5))
+            .expect("v4 should win");
+        let took = started.elapsed();
+        // 後のテストのために既定へ戻す (失敗しても `reset_ipv6_state` が戻す)
+        set_stagger(DEFAULT_STAGGER);
+        assert_eq!(stream.peer_addr().unwrap().port(), port);
+        assert!(
+            took >= short && took < DEFAULT_STAGGER,
+            "縮めた間隔だけ待って IPv4 で確立するはず: {:?}",
+            took
+        );
+    }
+
     /// 全体の記憶: 連続 3 回負けたら**初めて見るホストも** IPv4 を先頭にする (T12.1 の 2)。
     #[cfg(target_os = "linux")]
     #[test]
@@ -791,7 +844,7 @@ mod tests {
             let host = format!("t121-loser-{}.invalid", i);
             let started = Instant::now();
             connect_resolved(&host, addrs.clone(), Duration::from_secs(5)).expect("v4 should win");
-            assert!(started.elapsed() >= STAGGER, "{} 回目: 待つはず", i);
+            assert!(started.elapsed() >= DEFAULT_STAGGER, "{} 回目: 待つはず", i);
         }
         assert!(ipv6_v4_first(), "{}", ipv6_status_json());
 
