@@ -824,7 +824,270 @@ class Criteria15(unittest.TestCase):
         self.assertIn("判定できず", md)
 
     def test_both_criteria_can_be_chosen(self):
-        self.assertEqual(sorted(sd.CRITERIA), ["phase14", "phase15"])
+        self.assertEqual(sorted(sd.CRITERIA), ["phase14", "phase15", "phase17"])
+
+
+def conn_profile(conn_us_per_row):
+    """B の `/profile` (60 秒 × 3 標本、要求 3 / 2 / 4 本) の conn 役の CPU だけ書き換えた写し。"""
+    p = json.loads(json.dumps(read(B)["profile"]))
+    ti, ri = p["keys"].index("threads"), p["roles"].index("conn")
+    for row in p["samples"]:
+        row[ti][ri][0] = conn_us_per_row
+    return p
+
+
+class Criteria17(unittest.TestCase):
+    """`--criteria phase17` の 8 行 (T17.0a。前の 4 行は phase15 の関数、後ろの 4 行が T16.99 の判定)。
+
+    雪像は `testdata/snapshot-{a,b}.json` に**作り物の欄を足して**使う (ファイルは書き換えない)。
+    B の起動は 1789086400 − 43200 = 1789043200 (12 時間前)。
+    """
+
+    START = 1789043200
+
+    def judge(self, a=None, b=None, extra=()):
+        argv = [a or A, b or B, "--no-dns", "--criteria", "phase17", *extra]
+        return build(argv)["criteria"]
+
+    def row(self, i, a=None, b=None, extra=()):
+        return self.judge(a, b, extra)["rows"][i]
+
+    def test_phase17_gives_eight_rows_with_a_verdict_each(self):
+        c = self.judge()
+        self.assertEqual(len(sd.RULES["phase17"]), 8)
+        self.assertEqual(len(c["rows"]), 8)
+        self.assertEqual(sum(c["tally"].values()), 8)
+        self.assertTrue(all(r[3] in (sd.MET, sd.MISSED, sd.UNKNOWN) for r in c["rows"]))
+
+    def test_the_first_four_rows_are_the_phase15_ones(self):
+        self.assertEqual(sd.RULES["phase17"][:4], (sd._p15_watch_host, sd._p15_refresh_rate,
+                                                   sd._p15_miss_band, sd._p15_timeout))
+        rows15 = build([A, B, "--no-dns", "--criteria", "phase15"])["criteria"]["rows"]
+        rows17 = self.judge()["rows"]
+        self.assertEqual(rows17[:3], rows15[:3])
+        self.assertEqual(rows17[3], rows15[5])
+
+    def test_every_row_can_come_out_as_met_missed_and_unknown(self):
+        """受け入れ基準: 後ろの 4 行のどれもが 3 つの判定のどれにもなれること (下の各テストの要約)。"""
+        seen = {i: set() for i in range(4, 8)}
+        for i, a, b, extra in self.cases():
+            seen[i].add(self.row(i, a, b, extra)[3])
+        for i, got in seen.items():
+            self.assertEqual(got, {sd.MET, sd.MISSED, sd.UNKNOWN}, f"{i} 行目")
+
+    def cases(self):
+        """`(行, A, B, 追加の引数)` を順に返す (一時ファイルは呼ぶ側の `with` の中で使い切る)。"""
+        with written(a=self.cgroup(read(A), 100, 30), b=self.cgroup(read(B), 150, 40),
+                     big=self.cgroup(read(B), 5000, 4000),
+                     warm=self.warm(read(B), 30, 0), full=self.warm(read(B), 32, 0),
+                     slow=self.slow(read(B), 24), noev=self.drop(read(B), "events"),
+                     noprof=self.drop(read(B), "profile"),
+                     fast=conn_profile(200_000), slowp=conn_profile(150_000)) as p:
+            yield 4, None, None, ("--profile-before", p["fast"])
+            yield 4, None, None, ("--profile-before", p["slowp"])
+            yield 4, None, p["noprof"], ()
+            yield 5, None, p["warm"], ()
+            yield 5, None, p["full"], ()
+            yield 5, None, None, ()
+            yield 6, None, None, ()
+            yield 6, None, p["slow"], ()
+            yield 6, None, p["noev"], ()
+            yield 7, p["a"], p["b"], ()
+            yield 7, p["a"], p["big"], ()
+            yield 7, None, p["b"], ()
+
+    @staticmethod
+    def drop(snap, name):
+        del snap[name]
+        return snap
+
+    # --- conn 役の CPU/要求 (`--profile`)
+
+    def test_without_a_profile_before_the_ratio_cannot_be_judged(self):
+        """A には `/profile` が無い。後は B の雪像の部 (80,000 us/要求) で「参考」。"""
+        row = self.row(4)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("80,000 us/要求", row[2])
+        self.assertIn("前の雪像に `/profile` の部が無い", row[4])
+        self.assertIn("雪像の `/profile` の部 (**参考**)", row[4])
+
+    def test_the_ratio_to_the_profile_before_is_judged(self):
+        with written(fast=conn_profile(200_000), slow=conn_profile(150_000)) as p:
+            met = self.row(4, extra=("--profile-before", p["fast"]))
+            missed = self.row(4, extra=("--profile-before", p["slow"]))
+        # 720,000 us ÷ 9 本 = 80,000。前は 600,000 ÷ 9 = 66,667 (1.20 倍) と 50,000 (1.60 倍)
+        self.assertEqual(met[3], sd.MET)
+        self.assertIn("**1.20** 倍 (66,667 → 80,000 us/要求)", met[2])
+        self.assertEqual(missed[3], sd.MISSED)
+        self.assertIn("**1.60** 倍", missed[2])
+        # プロセス全体のコア数も並ぶ (1,080,000 us ÷ 180 秒)
+        self.assertIn("プロセス全体 0.0060 → **0.0060** コア", met[2])
+
+    def test_the_profile_file_wins_over_the_snapshot_part(self):
+        with written(after=conn_profile(450_000), before=conn_profile(300_000)) as p:
+            row = self.row(4, extra=("--profile", p["after"], "--profile-before", p["before"]))
+        self.assertEqual(row[3], sd.MISSED)                  # 1.50 倍
+        self.assertIn("**1.50** 倍 (100,000 → 150,000 us/要求)", row[2])
+        self.assertIn("後: `--profile` 3 標本", row[4])
+        self.assertNotIn("参考", row[4])
+
+    def test_without_any_profile_the_cpu_cannot_be_judged(self):
+        b = read(B)
+        del b["profile"]
+        with written(b=b) as p:
+            row = self.row(4, b=p["b"])
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`--profile` も渡されていない", row[4])
+
+    # --- `dns_warm_max` と `warm_evicted`
+
+    @staticmethod
+    def warm(snap, peak, evicted):
+        """後の期間の 1 時間の行 (バーストの行も) に `dns_warm_max` を足し、`warm_evicted` を置く。
+
+        B の `dns_warm` は 24 / 26 / 28 なので、最大はそれより下にならない (`aggregate` の下限)。
+        """
+        with_warm_columns(snap, {t: (peak, 17568, 720)
+                                 for t in (1789045200, 1789048800, 1789052400)})
+        snap["status"]["dns"]["warm_evicted"] = evicted
+        return snap
+
+    def test_the_warm_peak_and_no_evictions_are_met(self):
+        with written(b=self.warm(read(B), 30, 0)) as p:
+            row = self.row(5, b=p["b"])
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("最大 **30** 件、`warm_evicted` **0**", row[2])
+        self.assertIn("(起動から)", row[4])
+
+    def test_a_full_table_or_an_eviction_is_missed(self):
+        with written(full=self.warm(read(B), 32, 0), ev=self.warm(read(B), 30, 1)) as p:
+            self.assertEqual(self.row(5, b=p["full"])[3], sd.MISSED)
+            self.assertEqual(self.row(5, b=p["ev"])[3], sd.MISSED)
+
+    def test_an_old_version_without_the_columns_cannot_be_judged(self):
+        row = self.row(5)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`dns_warm_max` が無い", row[4])
+
+    # --- `/events` の種類別 件/時
+
+    def slow(self, snap, count, cleared=True):
+        """起動より後に `dns_slow` を `count` 件 (と解けた知らせ)、起動より前に 5 件足す。"""
+        ev = snap["events"]["events"]
+        for i in range(count):
+            at = self.START + 60 + i * 600
+            ev.append({"at": at, "kind": "anomaly",
+                       "text": "dns_slow: dns miss 400 ms avg over 5m (threshold 100 ms; "
+                               "1 misses, 400 ms total)"})
+            if cleared:
+                ev.append({"at": at + 360, "kind": "anomaly",
+                           "text": "cleared: dns_slow after 6m (dns miss 0.0 ms avg over 5m, "
+                                   "0 misses)"})
+        ev.append({"at": self.START + 100, "kind": "anomaly",
+                   "text": "connect_p95: connect p95 105 ms over 5m is 10.6x the 1h baseline"})
+        for i in range(5):                     # 前の版から読み継いだ出来事 (数えない)
+            ev.append({"at": self.START - 1000 - i, "kind": "anomaly",
+                       "text": "dns_slow: dns miss 300 ms avg over 5m"})
+        return snap
+
+    def test_no_anomaly_is_zero_per_hour_and_met(self):
+        row = self.row(6)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("`dns_slow` **0.00** 件/時 (0 件)", row[2])
+        self.assertIn("前の雪像に `/events` が無い", row[4])
+        self.assertIn("起動からの 12.0 時間", row[4])
+
+    def test_the_rates_are_per_hour_since_start_without_cleared(self):
+        with written(b=self.slow(read(B), 24)) as p:
+            row = self.row(6, b=p["b"])
+        # 24 件 ÷ 12 時間 = 2.0 (解けた知らせ 24 件と起動より前の 5 件は数えない)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("`dns_slow` **2.00** 件/時 (24 件)", row[2])
+        self.assertIn("`connect_p95` 0.08 件/時 (1 件)", row[2])     # 閾の無い種類は表示だけ
+
+    def test_one_slow_event_in_twelve_hours_is_met(self):
+        with written(b=self.slow(read(B), 1)) as p:
+            row = self.row(6, b=p["b"])
+        self.assertEqual(row[3], sd.MET)                  # 1 ÷ 12 = 0.08 ≤ 0.1
+        self.assertIn("**0.08**", row[2])
+
+    def test_the_before_snapshot_is_shown_next_to_it(self):
+        a = read(A)
+        a["events"] = {"events": [], "count": 0}
+        with written(a=a, b=self.slow(read(B), 24)) as p:
+            row = self.row(6, a=p["a"], b=p["b"])
+        self.assertIn("(24 件、前 0.00)", row[2])
+        self.assertNotIn("前の雪像に `/events` が無い", row[4])
+
+    def test_without_events_the_rates_cannot_be_judged(self):
+        with written(b=self.drop(read(B), "events")) as p:
+            row = self.row(6, b=p["b"])
+        self.assertEqual(row[3], sd.UNKNOWN)
+
+    # --- cgroup の起動からの CPU
+
+    @staticmethod
+    def cgroup(snap, user_s, sys_s):
+        """`/status` の `kernel.cgroup_cpu.since_start` に T16.0 の 3 欄を足す (秒で与える)。"""
+        k = snap["status"].setdefault("kernel", {})
+        cg = k.setdefault("cgroup_cpu", {})
+        ss = cg.setdefault("since_start", {"nr_periods": 10, "nr_throttled": 0,
+                                           "throttled_usec": 0})
+        ss.update(usage_usec=(user_s + sys_s) * 1_000_000, user_usec=user_s * 1_000_000,
+                  system_usec=sys_s * 1_000_000)
+        return snap
+
+    def test_the_cgroup_cpu_of_both_sides_in_the_same_order_is_met(self):
+        with written(a=self.cgroup(read(A), 100, 300), b=self.cgroup(read(B), 150, 280)) as p:
+            row = self.row(7, a=p["a"], b=p["b"])
+        self.assertEqual(row[3], sd.MET)
+        # 前 400 秒 ÷ 200,000 秒 = 0.0020、後 430 ÷ 43,200 = 0.0100 (user 35%)
+        self.assertIn("0.0020 コア、user 25% → **0.0100 コア、user 35%**", row[2])
+        self.assertIn("絞り 30 / 4,000 周期", row[4])
+
+    def test_ten_times_more_is_missed(self):
+        with written(a=self.cgroup(read(A), 100, 300), b=self.cgroup(read(B), 2000, 280)) as p:
+            row = self.row(7, a=p["a"], b=p["b"])
+        self.assertEqual(row[3], sd.MISSED)                # user 0.0005 → 0.0463 コア
+        self.assertIn("user が桁で増えた", row[2])
+
+    def test_an_old_before_snapshot_says_the_column_is_missing(self):
+        with written(b=self.cgroup(read(B), 150, 280)) as p:
+            row = self.row(7, b=p["b"])
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("前の版に欄が無い", row[4])
+        self.assertIn("後 **0.0100 コア、user 35%**", row[2])
+
+    def test_without_the_columns_the_cgroup_cannot_be_judged(self):
+        row = self.row(7)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`usage_usec` が無い", row[4])
+
+    def test_the_markdown_names_the_phase17_parts(self):
+        md = run([A, B, "--no-dns", "--criteria", "phase17"])
+        self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase17`)", md)
+        self.assertIn("前の 4 行は phase15 と同じ物差しです", md)
+        self.assertIn("**その部が雪像に無い行は「判定できず」**", md)
+
+
+@unittest.skipUnless(all(os.path.isfile(os.path.join(DEPLOYED, f)) for f in (
+    "2026-09-24T093400Z-snapshot.json", "2026-09-26T114602Z-snapshot.json",
+    "2026-09-26T114602Z-profile_res_60.json")), "デプロイ先の雪像が無い (リポジトリには入れない)")
+class Deployed17(unittest.TestCase):
+    """T17.0a の受け入れ基準: 2026-09-24 → 2026-09-26 の 2 枚で T16.99 の `結果:` と同じ数字。"""
+
+    def test_the_numbers_of_t1699(self):
+        rows = build([os.path.join(DEPLOYED, "2026-09-24T093400Z-snapshot.json"),
+                      os.path.join(DEPLOYED, "2026-09-26T114602Z-snapshot.json"),
+                      "--no-dns", "--criteria", "phase17", "--profile",
+                      os.path.join(DEPLOYED, "2026-09-26T114602Z-profile_res_60.json")]
+                     )["criteria"]["rows"]
+        self.assertIn("**0.0013** コア", rows[4][2])
+        self.assertIn("最大 **15** 件、`warm_evicted` **0**", rows[5][2])
+        # 29 件 ÷ 起動から 47.16 時間 = 0.615 (T16.99 は 47 時間で割って 0.62 と書いた)
+        self.assertIn("`dns_slow` **0.61** 件/時 (29 件、前 0.09)", rows[6][2])
+        self.assertIn("後 **0.0022 コア、user 31%**", rows[7][2])
+        self.assertEqual(rows[7][3], sd.UNKNOWN)            # 前の版に `usage_usec` が無い
 
 
 class Output(unittest.TestCase):
