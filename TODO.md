@@ -70,8 +70,8 @@
 - **既存機能を壊さない**。`cargo test --workspace` は常に全通過。キャッシュ・ダッシュボード等は
   「使わないときに一切コストがかからない」ようにするのが方針で、削除はしない。
 - Rust は `edition = "2024"`、stable の `rustc` で動くこと (版は固定しない)。`cargo clippy --workspace --all-targets` の警告を増やさない。
-- **`cargo build --release` はメモリ 180 MB で通ること** (動作環境のコンテナが小さい。2026-09-16 に 200 → 180 に下げた。
-  理想は 120 MB で、それは Phase 15 の T15.12)。`scripts/build-memory.sh` が CI で見張っている (実際にその cgroup に入れてビルドする)。
+- **`cargo build --release` はメモリ 120 MB で通ること** (動作環境のコンテナが小さい。2026-09-16 に 200 → 180、2026-09-26 に T17.11 (T15.12 段 8) で 180 → 120 に下げた。
+  手元の通る最小は 90 MB)。`scripts/build-memory.sh` が CI で見張っている (実際にその cgroup に入れてビルドする)。
   効くのは 2 つだけ: **クレートを小さく割ること** (`rustc` はクレート単位で全部を抱える。
   **ファイルを割っても下がらない**) と、**`jobs = 1`** (`.cargo/config.toml`。並列に走る rustc の
   合計が上限を超えるため)。
@@ -284,8 +284,8 @@ CONNECT (`connect://`) と forward を別の表にし、**AAAA の有無で 2 �
 ### ビルドのメモリの測り方
 
 ```bash
-cargo clean && ./scripts/build-memory.sh 180                 # 180 MB の cgroup で通るか (2026-09-16 に 200 → 180)
-./scripts/build-memory.sh --find 120 130 135 140 150          # 通る最小の上限を探す (T14.55 で 135、T15.12 段 6' の後は 120〜125。境目は揺れるので 2〜3 回回す)
+cargo clean && ./scripts/build-memory.sh 120                 # 120 MB の cgroup で通るか (2026-09-16 に 200 → 180、2026-09-26 に 180 → 120)
+./scripts/build-memory.sh --find 80 85 90 95 100 110 120     # 通る最小の上限を探す (T14.55 で 135、T15.12 段 6' の後は 120〜125、T17.11 の後は 90。境目は揺れるので 2〜3 回回す)
 gh workflow run ci.yml --ref main                             # CI の機械で測る (build-memory-find。T11.7)
 ```
 
@@ -297,7 +297,7 @@ OOM killer に落とされる (実測: 200 MB の cgroup で、並列だと落�
 その cgroup には課金されない。実測: **上限 110 MB の cgroup の中で通ったビルドでも `/usr/bin/time -v` の最大 RSS は
 215 MB** と出る (メジャーフォールトは全クレート 0 = 1 ページも読みに行っていない)。cgroup が必ず抱えるのは
 **RssAnon** の方で、こちらは 36〜86 MB。だからこのスクリプトは **実際にその上限の cgroup の中でビルドして通るか** を見る。
-CI は毎回 180 MB で回す (T14.55 まで 200)。`scripts/build-memory.sh` が出す参考値も RssAnon 順にしてある (cgroup を作れない機械のときだけ出る)。
+CI は毎回 120 MB で回す (T14.55 まで 200、T17.11 まで 180。ジョブ `build-memory`、ubuntu-24.04)。`scripts/build-memory.sh` が出す参考値も RssAnon 順にしてある (cgroup を作れない機械のときだけ出る)。
 
 **上限を決めているのはどのクレートか** (T10.9)。`RUSTC_WRAPPER` に `/usr/bin/time -v` を噛ませ、
 `/proc/<pid>/status` を 20 ms ごとに読んで rustc ごとに測った (3 回とも同じ順、±1 MB):
@@ -385,7 +385,7 @@ CI や動作環境 (Pterodactyl コンテナ) の値を代表しない。動作�
 | 1 接続あたりのシステムコール (`--no-keepalive`) | 33.16 (T4.4 前) | **11.02** | 11.02 |
 | CONNECT 1 本あたりのシステムコール | — | **20.08** (T10.0 の 29.06 から -31%。T10.1) | 20.18 |
 | 1 要求あたりの確保回数 | 98.7 | **10.0** (T9.5 時点。T9.5 で指標として無効と分かったので測り直していない) | — |
-| ビルドが通る最小のメモリ | 347 MB でも通らない | **手元 120〜125 MB** (2026-09-19、T15.12 段 1〜3・5・6' の後。125 は毎回通り、120 は通ったり落ちたりする境目、115 以下は毎回落ちる。いちばん重いのは `proxy-metrics-window` 107.8 MB。関門 180 に対し 55 MB の余裕。段 1〜3 の直後は 140 MB。以下は T14.55 の時点の記録 →) 手元 135 MB (T14.55。130 MB は落ちる。決めているのは `proxy-endpoints` 115.6 MB / `proxy-metrics-core` 110.2 MB / `proxy-net` 108.5 MB。CI は未測定) — 上限 180 MB に対し **45 MB (1.33 倍) の余裕** (T11.7 の時点は 99 MB / 上限 200 で 2.0 倍) | fat LTO なので 350 MB 要る (T9.1、配布は潤沢な環境で作る) |
+| ビルドが通る最小のメモリ | 347 MB でも通らない | **手元 90 MB** (2026-09-26、T17.11 = T15.12 段 8 の後。90 は 4 回とも通り、85 以下は毎回落ちる。いちばん重いのは `proxy-endpoints` 82.5 MB。関門 120 に対し 30 MB の余裕。CI は未測定。以下は前の記録 →) 手元 120〜125 MB (2026-09-19、T15.12 段 1〜3・5・6' の後。125 は毎回通り、120 は通ったり落ちたりする境目、115 以下は毎回落ちる。いちばん重いのは `proxy-metrics-window` 107.8 MB。関門 180 に対し 55 MB の余裕。段 1〜3 の直後は 140 MB。以下は T14.55 の時点の記録 →) 手元 135 MB (T14.55。130 MB は落ちる。決めているのは `proxy-endpoints` 115.6 MB / `proxy-metrics-core` 110.2 MB / `proxy-net` 108.5 MB。CI は未測定) — 上限 180 MB に対し **45 MB (1.33 倍) の余裕** (T11.7 の時点は 99 MB / 上限 200 で 2.0 倍) | fat LTO なので 350 MB 要る (T9.1、配布は潤沢な環境で作る) |
 | バイナリ | 857 KB | 2,498,344 B (T15.0 の波のあと。T14.55 は 2,432,400 B、T11.5 の時点は 1,381,872 B) | **1,777,024 B** (T11.5 の時点は 1,054,184 B) |
 | テスト | 150 単体 + 21 結合 | **793 本** (T16.0 のあと、全通過 / 1 ignored。T15.0 の波のあとは 569 単体 + 217 結合 = 786 本。T14.55 時点は 527 + 200 = 727 本、T11.5 時点は 206 + 54 = 260 本) | — |
 
@@ -6691,7 +6691,7 @@ T15.99 の「次のターンの準備」(§0 の決まり) で、次の再デプ
 T16.99 のあとに候補を 22 挙げ (§4・Phase 15 の「測ってから決める」・T14.99 / T15.99 の穴・既知の小物・T16.0 のレビューの nit・T16.99 の気づき)、
 **利用者の決定 (2026-09-26): 全部やる。実装は Opus (medium) に渡し、投入は利用者が手で行う** (指示文は「Phase 15 の渡し方」の型 + そのタスクの本文。worktree は `wave15/<id>` から、`mx` は `scripts/mx`)。
 親 (この文書を書く側) がやるのは T17.10 / T17.17 / T17.18 / T17.19 / T17.21 と、マージ・全体チェック・この文書。**まだ着手していない** (この節を書いた時点)。
-**2026-09-26 の進み**: 波 15〜17 (T17.0a〜T17.8・T17.13〜T17.16・T17.20) は親が Opus を並列に投入して main に入れた (`a82799d`。全体テスト 133 バイナリ 814 通過 / 0 失敗 / 1 ignored、clippy 警告 0、scripts 297 本、check-docs 差分 0)。T17.5 は模型だけ入れて `dns.rs` は採らない。T17.11 は `MX_SLOTS=1` で実施中。push・再デプロイはまだ。
+**2026-09-26 の進み**: 波 15〜17 (T17.0a〜T17.8・T17.13〜T17.16・T17.20) は親が Opus を並列に投入して main に入れた (`a82799d`。全体テスト 133 バイナリ 814 通過 / 0 失敗 / 1 ignored、clippy 警告 0、scripts 297 本、check-docs 差分 0)。T17.5 は模型だけ入れて `dns.rs` は採らない。T17.11 も入れて関門を 120 MB に下げた (`ed19678`)。push・再デプロイはまだ。
 
 **Phase 17 の指示文 (利用者が Opus (medium) に貼る型。`<ID>` `<題>` `<N>` `<id>` を埋める。2026-09-26)**:
 
@@ -6854,12 +6854,13 @@ README の環境変数の表は自分の行だけ触る。TODO.md §0 の「守�
   - やること: `gh workflow run ci.yml --ref main -f ladder="95 100 105 110 120"` を 1 回。手元 (aarch64、2 コア) の「毎回落ちる最大 100 / 毎回通る最小 105」と CI (x86_64) の値を T15.12 の `結果:` に並べる。月曜の cron でも回るので急がない。
   - 受け入れ基準: CI の値が T15.12 に書いてあること。
 
-- [ ] **T17.11 T15.12 段 8: 上位のクレートを割って通る最小を 100 MB 未満に → 関門 120 (1 本だけ、`MX_SLOTS=1`、24 時間の待ちの間に)**
+- [x] **T17.11 T15.12 段 8: 上位のクレートを割って通る最小を 100 MB 未満に → 関門 120 (1 本だけ、`MX_SLOTS=1`、24 時間の待ちの間に)**
   - 目的: T15.12 の残り。stable 1.98 で 100 は 2/2 落ち、105 は 2/2 通る。目安 (通る最小 100 未満) に届いていない。
   - 変更箇所: `proxy-metrics-watch` 92.3 MB → `proxy-metrics-window` 82.9 → `proxy-endpoints` 79.9 → `proxy-server` 79.6 (`scripts/build-memory.sh` の冒頭の表)。手本は `6967236` (`git mv` + 再輸出、中身は 1 バイトも変えない) と `13fa546`。
   - やること: 上から 1 つずつ割り、割るたびに `scripts/mx bash -c 'cargo clean --release && scripts/build-memory.sh --find 90 95 100 105 110'` を **2 回**と RssAnon の表。**毎回通る最小が 100 未満**になったら段 4 (関門を 120 に下げる書き換え。書き換え先は T15.12 の 4 の一覧、`grep -l "180 MB" crates/*/src/lib.rs` の 30 本を含む) まで。届かなければ表だけ残す。
     **T17.1 と T17.7 (`metrics-watch`)、T17.8 (`metrics-*`) が main に入ってから**始める (delete / modify の衝突)。
   - 受け入れ基準: 割ったクレートの RssAnon が全部 100 MB 未満の表。全体テスト全通過 (本数が減らない)。`--lite` の費用が不変。関門を下げたなら `scripts/build-memory.sh 120` が手元で 2/2 通り、CI の `Build memory` も通る。
+  - 結果 (2026-09-26、`9269394` → `a25f2cd` → `0633f7d`、取り込み `ed19678`): **段 8 で上位の 2 クレートを割り、手元の通る最小が 105 → 90 MB になった (目安の 100 MB 未満)。段 4 として関門を 180 → 120 MB に下げた。** (1) `proxy-metrics-watch` 95.4 MB から `daily` / `slo` / `snapshots` を新しいクレート `proxy-metrics-slo` へ `git mv` した → watch 72.4 / slo 63.1 MB、`--find` は 2 回とも 100 MB で通る (95 は window で落ちる)。(2) `proxy-metrics-window` 91.9 MB から `window` / `profile` を新しいクレート `proxy-metrics-profile` へ `git mv` した → window 67.7 / profile 69.2 MB、`--find 90…110` は 2 回とも 90 MB で通り、`--find 75 80 85 90` は 2 回とも 85 まで落ちて 90 で通る (**毎回落ちる最大 85 / 毎回通る最小 90**)。いまの最大は `proxy-endpoints` 82.5 > `proxy-server` 81.5 > `proxy-metrics-recent` 76.9 MB。中身は 1 バイトも変えていない (rename 100%、上の層が今までの名前で出し直す)。`scripts/build-memory.sh 120` は `cargo clean` から 2/2 通った。書き換えたのは `build-memory.sh` の既定と表、CI の `Build memory` と `build-memory-find` の ladder の既定 (`80 85 90 95 100 105 110 120`)、`crates/*/src/lib.rs` 38 本 (本文の 30 本 + 段 1〜3 で増えた分 + 新しい 2 本) と `endpoints-core/src/core.rs`、`crates/server/src/lib.rs`、`Cargo.toml`、README。着手前の main は本文の表より重かった (watch 95.4 / window 91.1。T17.8 などの後)。クレートは 39 → 41 + 本体、全体テスト 137 バイナリ 814 通過 / 1 ignored (1 回目は `proxy_test` の `request_body_on_a_reused_connection` が負荷の下で 1 回 502、単独 5/5 と 2 回目の全体では通過。既知の小物に足す)、clippy 警告 0、check-docs 差分 0、scripts 297 本 OK。release のバイナリは 2,760,504 B で main と同じ (`.text` +9.6 KB)。`--lite` の forward のシステムコールは 5.036 / 5.040 → 5.033 / 5.035 回/要求。移したファイルの doc リンク `[crate::anomaly::check]` (slo.rs)・`[crate::history…]` (profile.rs) は新しいクレートから解決しない (中身を変えない決まりで残した。rustdoc の警告だけ)。§0・§1・§2 の 180 MB は親が 120 に直した。**CI の `Build memory` (120 MB) は push 後に確かめること。**
 
 - [x] **T17.12 (T17.13 に畳んだ) `ubuntu-latest` の Ubuntu 26 移行 (2026-10-19) への備え**
 
