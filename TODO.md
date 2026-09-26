@@ -6517,6 +6517,13 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
     平常時だけで比べる。`idle_timeout` と半閉じは同じ信号の裏表なので 1 行にまとめる。
   - テスト: `scripts/test_snapshot_diff.py` (あれば。無ければ既存の `python3 -m unittest discover -s scripts` の流儀で) に、2026-09-24 の形を写した作り物の雪像で 3 つの期待値。**本物の雪像はリポジトリに入れない**。
   - 受け入れ基準: 2026-09-19 / 2026-09-24 の 2 枚で回し直して、1c が 80 以下、3' が「変わらない」か「理由つきの変化」になること (結果には数字だけ書き、ホスト名は 3 つの許可された名前以外を書かない)。
+  - 結果 (2026-09-26、`036de40`。道具とテストまで。**実物の雪像での回し直しは未実施**): (1) 判定は `/dns` の名前ごとの `refreshes ÷ uptime_secs` の最大 (`dns_name_refreshes`)、
+    参考の「通算 ÷ 時間 ÷ warm」は warm を `after_all` から。`/dns` の無い雪像だけ参考の値で判定する。(2) 閾を `miss_max` 0.09 の 1 つにし、`--daily FILE` (と `--from-files` の `-daily`) で
+    その版の日だけの幅を併記。(3) `tunnel_closes`: `/history?res=60` の `transfer.tunnels` を母数に、`closed.reasons` の `idle_timeout` と `transfer.half_close_n` を分子に、
+    その分が入る 1 時間の標本が 300 本未満の分だけ足す (1 時間の標本がまだ無い分も外す)。判定は `idle_timeout` の割合の変化、半閉じは参考。`closed_shares` (`/recent`) は消した。
+    行の数は 6 のまま。scripts の unittest 218 → 222 (古い物差しの 12 本を 16 本に置き換え)、check-docs 差分 0。
+    **残り**: 受け入れ基準の 2 枚 (`~/rust-http-proxy-status/2026-09-19T022515Z-snapshot.json` / `2026-09-24T093400Z-snapshot.json`) はこの機械に無い。雪像のある機械で
+    `scripts/snapshot-diff.py <2 枚> --criteria phase15 --daily 2026-09-24T0934Z-daily.json` を回して 1c と 3' を確かめたら `[x]` にする。
 - [x] **T15.16 `/history` の `dns_warm` の平均が整数の割り算で切り捨てられる**
   - `crates/metrics-window/src/history.rs:391,441` で 5 秒 → 60 秒 → 3600 秒の平均を `u64` の割り算で取るので、2 段で小数が落ちる (重なる 23 時間で 3600 秒の平均 2.74、60 秒から平均し直すと 3.04)。
     ゲージの列 (`dns_warm` と、同じ畳み方をしているほかのゲージ) を、四捨五入にするか、畳む側で合計と標本数を持つかを決める。`.rrd` の形 (版 3、標本の余白 64) を変えずに済む方を採る。
