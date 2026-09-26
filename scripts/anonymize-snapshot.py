@@ -22,7 +22,7 @@
 | ホスト名 (`host` / `target` / `canary_host` / `sni`) | `host-0001.g0007.example` | 出現順に採番。`connect://host:443` の scheme と port はそのまま |
 | 接続元 IP (`client`) | `198.51.100.1` / `2001:db8::1` | `ip:port` なら port はそのまま |
 | 名前解決の答え (`/dns` の `addrs`) | `203.0.113.1` / `2001:db8:1::1` | 宛先が IP リテラルのときも同じ表を使う |
-| `User-Agent` (`agents`) | `ua-01` | |
+| `User-Agent` (`agents` と、いまの版の `agent`) | `ua-01` | 同じ UA は同じ番号 |
 | `/log` の行・`/events` の説明の中のホストと IP | 上と同じ表 | 行の他の語はそのまま |
 | cgroup の道 (`kernel.cgroup_cpu.path`) | `/sys/fs/cgroup/…/…/cpu.stat` | 深さと最後の名前だけ残す (T15.0 (6)) |
 
@@ -62,8 +62,10 @@ HOST_KEYS = frozenset(("host", "target", "canary_host", "sni"))
 CLIENT_KEYS = frozenset(("client",))
 # 値が名前解決の答えの一覧 (`/dns` の `addrs`)
 ADDR_KEYS = frozenset(("addrs",))
-# 値が `User-Agent` の一覧 (T14.7 の接続元の個票)
-AGENT_KEYS = frozenset(("agents",))
+# 値が `User-Agent` の一覧 (T14.7 の接続元の個票)。**`agent` (単数) も**: いまの `/status` と
+# `/clients` の接続元の行は、一覧ではなく最後に見た 1 つを `agent` に出す (T17.16 で気づいた。
+# 2026-09-16 の版は `agents` だけだったので、前の fixture には出てこない)
+AGENT_KEYS = frozenset(("agents", "agent"))
 # 値が文 (中にホストや IP が混ざる。行の他の語は変えない)
 TEXT_KEYS = frozenset(("msg", "text", "error", "url", "file"))
 # この鍵の下の `path` だけは潰す (`/status` の `kernel.cgroup_cpu.path` = T15.0 (6))。

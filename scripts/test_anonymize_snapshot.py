@@ -244,6 +244,17 @@ class Addresses(unittest.TestCase):
     def test_agents_become_ua_numbers(self):
         self.assertEqual(anonymized()["clients"]["clients"][0]["agents"], ["ua-01", "ua-02"])
 
+    def test_the_single_agent_of_the_current_version_is_replaced_too(self):
+        """いまの版の接続元の行は `agent` (単数、最後に見た 1 つ) も出す (T17.16)。"""
+        snap = sample()
+        row = snap["clients"]["clients"][0]
+        row["agent"] = row["agents"][1]
+        snap["status"]["clients"] = [{"client": row["client"], "agent": "curl/8.5.0"}]
+        out = anonymized(snap)
+        self.assertEqual(out["status"]["clients"][0]["agent"], "ua-01")
+        self.assertEqual(out["clients"]["clients"][0]["agent"], "ua-02")
+        self.assertNotIn("Firefox", json.dumps(out))
+
 
 class Grouping(unittest.TestCase):
     """**まとめの粒度が残る** (T14.54)。匿名化しても `--group domain` が同じ形にまとまる。"""
