@@ -56,7 +56,7 @@ set -u
 # 要約をファイルにも残すため、自分をもう 1 回呼ぶ (下の「1. 取る」の手前)。`cd` の前に絶対パスにしておく
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 ORIG_ARGS=("$@")
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 FROM_SERVER=0
 FULL=0
 while :; do
@@ -296,10 +296,12 @@ fi
 [ -f "$DAILY" ] || DAILY=
 
 # 前回の雪像 (名前が UTC 時刻なので、名前順の 1 つ前が前回)
+# shellcheck disable=SC2010  # 名前は自分で付けた UTC 時刻 (英数字と - だけ) なので ls | grep で足りる
 PREV=$(ls -1 "$DIR"/*-snapshot.json 2>/dev/null | grep -vF "$OUT" | tail -1)
 
 printf '# rust-http-proxy — %s (%s)\n\n' "$PROXY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf -- '- 雪像: `%s` (%s B)\n' "$OUT" "$(wc -c <"$OUT" | tr -d ' ')"
+# shellcheck disable=SC2086  # 先頭の空白を落とすため、わざと語に割る
 [ -n "$EXTRA_GOT" ] && printf -- '- 雪像に入らない口: `%s-{%s}.json`\n' "$DIR/$STAMP" "$(echo $EXTRA_GOT | tr ' ' ',')"
 [ -n "$EXTRA_FAILED" ] && printf -- '- **取れなかった口**:%s\n' "$EXTRA_FAILED"
 [ -n "$PROFILE_NOTE" ] && printf -- '- `/profile?res=60` は `offset=` で追って %s\n' "$PROFILE_NOTE"

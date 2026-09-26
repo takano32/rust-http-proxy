@@ -47,22 +47,19 @@ jobs:
       - run: ./scripts/check-docs.sh
       # scripts/ の道具の単体テスト (雪像の要約・判定・匿名化と、`scripts/mx` の test_mx.sh。T17.15)
       - run: python3 -m unittest discover -s scripts
+      # scripts/ のシェルの静的検査 (T17.13)。設定 (切った指摘とその理由) は scripts/.shellcheckrc。
+      # runner の像に入っていればそれを使い、無ければ入れる (ubuntu-latest が 2026-10-19 に Ubuntu 26 へ移るため)
+      - name: shellcheck
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q shellcheck; }
+          shellcheck --version
+          shellcheck scripts/*.sh scripts/mx
       # ワークスペースなので --workspace が要る (無いと下の層のテストが走らない)
       # 1 本落ちても残りの test binary を走らせる (落ちた全部を 1 回の CI で見る。2026-09-16)
       - run: cargo test --workspace --no-fail-fast
       - run: cargo build --release
       # ベンチは既定のビルド対象から外してあるので明示的に作る
       - run: cargo build --release -p proxy-bench
-
-      # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る (§0 の関門)。
-      # 180 MB の cgroup (systemd-run --scope -p MemoryMax=180M) の中で実際に
-      # リリースビルドを回し、rustc が OOM killer に落とされたら失敗する。
-      # **これは毎回回す** (通るかどうかは push ごとに知りたい)。
-      # 余裕がいくつあるか = 通る最小の上限は下の build-memory-find で測る
-      - name: Build memory
-        run: |
-          cargo clean
-          ./scripts/build-memory.sh 180
 
       # ベンチは数字を残すだけ (閾値では落とさない。CI の機械は揺れるため)
       - name: Benchmark
@@ -77,6 +74,33 @@ jobs:
             cat bench.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る (§0 の関門)。
+  # 180 MB の cgroup (systemd-run --scope -p MemoryMax=180M) の中で実際に
+  # リリースビルドを回し、rustc が OOM killer に落とされたら失敗する。
+  # **これは毎回回す** (通るかどうかは push ごとに知りたい)。
+  # 余裕がいくつあるか = 通る最小の上限は下の build-memory-find で測る。
+  #
+  # **`ubuntu-24.04` に固定する** (T17.13): `ubuntu-latest` は 2026-10-19 に Ubuntu 26 へ移る。
+  # 関門の数字 (180 MB) とその余裕は runner の像ごとに測ったものなので、像が変わると出どころが動く。
+  # 移すときは build-memory-find を新しい像で回してから、ここと下を一緒に変える。
+  #
+  # check ジョブの中の 1 段だったのを別のジョブにした (像を分けるため)。空の target から
+  # 始まるので `cargo clean` は要らない。キャッシュも張らない (check のキャッシュを汚さない)。
+  # なお check の中にあった頃は、この段の `cargo clean` で target/release/bench が消え、後ろの
+  # Benchmark が「No such file or directory」のまま成功扱いになっていた (パイプの終了コードは tee のもの)
+  build-memory:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust (stable)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build memory
+        run: ./scripts/build-memory.sh 180
 
   # デプロイ先に似せた条件で短く回し、`/snapshot` を成果物として残す (T14.30)。
   #
@@ -180,7 +204,8 @@ jobs:
   # なお schedule は既定ブランチでしか走らず、リポジトリが 60 日動かないと GitHub に止められる。
   build-memory-find:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    # 上の build-memory と同じ像に固定する (測った最小と関門が同じ機械の数字になるように。T17.13)
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
