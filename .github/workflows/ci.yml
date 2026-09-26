@@ -26,7 +26,7 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust (stable)
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
@@ -34,7 +34,7 @@ jobs:
           # stable は版が上がるので、キャッシュの鍵に版を入れる (上がったら作り直す)
           echo "RUSTC_VERSION=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_ENV"
       - name: Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust (stable)
         run: |
           rustup toolchain install stable --profile minimal
@@ -103,7 +103,7 @@ jobs:
       # (同じ鍵で 2 つのジョブが保存すると後から来た方が「もうある」で終わるだけなので、
       # 鍵の持ち主を 1 つに決めておく)
       - name: Cache (restore only)
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
@@ -153,7 +153,7 @@ jobs:
       # **落ちたときこそ中身が要る**ので `if: always()`
       - name: Upload snapshot.json
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deployed-like-snapshot
           path: |
@@ -181,7 +181,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust (stable)
         run: |
           rustup toolchain install stable --profile minimal
