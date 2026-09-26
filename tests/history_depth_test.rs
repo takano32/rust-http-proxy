@@ -7,7 +7,8 @@
 //! - `?n=4320` で 6 時間ぶん (4,320 本) 返り、`?n=` は上下に丸まる
 //! - `?res=60` / `?res=3600` は 1 本も変えない
 //! - **`.rrd` は 8,388,608 B のまま**で、書くのも読み戻すのも今までどおり最新 720 本
-//! - メモリの増分 (`Sample` の `size_of` × 4,320 と、満杯にしたときの RSS) が上限以下
+//! - メモリの増分 (`Sample` の `size_of` × 4,320 と、満杯にしたときの `memory.rings_used.history`
+//!   の差) が上限以下 (RSS の差は参考に印字するだけ。T17.14)
 
 mod common;
 
@@ -28,8 +29,10 @@ const RRD_SIZE: u64 = 8 * 1024 * 1024;
 /// 標本の並びの起点 (5 で割り切れる適当な epoch)。
 const T0: u64 = 1_770_000_000;
 
-/// 3 本目が**プロセス全体の RSS** の差を見るので、同じバイナリの隣のテストが 1.9 MB の応答を
-/// 組む瞬間と重なると上限を越える (20 回に 5 回)。3 本を直列にする
+/// 3 本目は満杯にする前後の `/status` を比べるので、隣のテストが同じ時に標本を積むと差が
+/// 混ざる。3 本を直列にする (もとは RSS の差を見ていて、隣が 1.9 MB の応答を組む瞬間と
+/// 重なると 20 回に 5 回越えた。T17.14 で比べる物を `rings_used` に替えたあとも、
+/// 1 本目・2 本目がリングを積み直すのと混ざらないように直列のまま)
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -186,7 +189,15 @@ fn test_integration_the_state_file_still_keeps_only_720_five_second_samples() {
 }
 
 /// **受け入れ基準**: 増えるメモリは `Sample` の `size_of` × 4,320 だけで [`MAX_GROWTH`] 以下。
-/// 満杯にしたときの RSS の増分も同じ上限以下 (debug で見る)。
+/// 満杯にしたときの `/status` の `memory.rings_used.history` の増分も同じ上限以下。
+///
+/// **RSS の差は上限と比べない** (T17.14)。RSS はプロセス全体の数で、同じバイナリの前のテストが
+/// 大きな応答を組んで返したあと (glibc は返った塊の大きさで `mmap` の閾と切り詰めの閾を
+/// 上げる) は、同じ 2.9 MB の確保がヒープに載って余りごと常駐し、全体テストで
+/// 4,968,448 B (上限の 1.46 倍) まで振れた (2026-09-19)。どのテストが先に走ったかで決まる
+/// 揺れで、リングの大きさとは関係が無い。`rings_used` は「いま入っている件数 × 1 件の大きさ」
+/// なので、この試験が積んだぶんだけが差に出る (T17.8 が起動時にリングを触るようにしても、
+/// その触ったぶんは `rings_used` に入らない)。RSS の差は読めるように印字だけ残す。
 #[test]
 fn test_integration_six_hours_of_samples_stay_under_the_memory_cap() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -217,24 +228,46 @@ fn test_integration_six_hours_of_samples_stay_under_the_memory_cap() {
         full
     );
 
-    let before = status_number(&status_json(port), "rss");
+    // `memory.rings_used.history` (いま埋まっているぶんの実バイト) と、参考の RSS
+    let used = |json: &str| {
+        let at = json.find("\"rings_used\":").expect("no rings_used");
+        status_number(&json[at..], "history")
+    };
+    let before_json = status_json(port);
+    let (before, rss_before) = (used(&before_json), status_number(&before_json, "rss"));
     // 6 時間ぶんを一度に積む (`Vec` を作らず反復子のまま渡すので、確保はリングのぶんだけ)
     metrics
         .history
         .restore(0, (0..CAPACITY as u64).map(|i| sample(T0 + i * 5)));
     assert_eq!(metrics.history.len(), CAPACITY);
-    let after = status_number(&status_json(port), "rss");
+    let after_json = status_json(port);
+    let (after, rss_after) = (used(&after_json), status_number(&after_json, "rss"));
     let delta = after.saturating_sub(before);
     println!(
-        "RSS {} → {} B (増分 {} B = {:.2} MiB)",
+        "rings_used.history {} → {} B (増分 {} B = {:.2} MiB)。参考: RSS {} → {} B (増分 {} B)",
         before,
         after,
         delta,
-        delta as f64 / 1_048_576.0
+        delta as f64 / 1_048_576.0,
+        rss_before,
+        rss_after,
+        rss_after.saturating_sub(rss_before)
+    );
+    assert!(
+        after >= full as u64,
+        "満杯にしたのに rings_used.history が {} B (標本のぶん {} B に届かない)",
+        after,
+        full
+    );
+    assert!(
+        after <= rings,
+        "rings_used.history {} が満杯の見積もり {} を越えた",
+        after,
+        rings
     );
     assert!(
         delta <= MAX_GROWTH as u64,
-        "RSS の増分が {} B (上限 {} B 超)",
+        "rings_used.history の増分が {} B (上限 {} B 超)",
         delta,
         MAX_GROWTH
     );
