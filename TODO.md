@@ -1197,10 +1197,11 @@ README の環境変数の表は自分の行だけ触る。TODO.md §0 の「守�
   - 結果 (2026-09-26、e2bef7c): (1) `crates/web/src/probe.html:137` のコメントの道を `src/lib.rs` → `crates/server/src/lib.rs` に直した (文言だけ。`check-dashboard.js` の probe.html 64 KiB 上限と構文は通過)。(2) は T14.2 (5) / T14.48 で既に済んでいた。`ConnSlot::set_first_target` を接続の最初の要求 (`*served == 0`) で 1 回だけ呼び、`host:port` を書く。既存の `tests/recent_test.rs` の `test_integration_connections_shows_the_first_target_of_a_keepalive_http_connection` が通ることを確かめた (`tests/connections_test.rs` は無い)。要求の経路は不変。残り: keep-alive の HTTP 行の `/connections` の `bytes` は生きている間 0 のまま (`set_bytes` はトンネルだけ)。Phase 14 の表の「バイト数」の半分は未着手。
   - 親 (3) (2026-09-26): 既知の小物の表から済んだ 10 行を消した (`Connection: close` (T14.2)・`.dockerignore`・`evicted_idle` の系列・403 の `/errors`・`--only connect` 6 組・README のデプロイ先の表・`client_read` (T17.4)・揺れるテスト 3 本 (T17.14))。`.dockerignore` と最後の要求の判定は main にあることを親が見た。keep-alive の行は「バイト数」だけに縮め、Phase 17 で見つかった 6 件 (揺れるテスト 3 本・`mx` の 2 つ・`warm_promote` の予定・T17.11 の doc リンク) を足した。T17.5 の「採らない」を §4 に 1 行足した。
 
-- [ ] **T17.21 `v*` タグを 1 つ切って `release.yml` (`action-gh-release@v3`) を動かす (親。**利用者が決める**)**
+- [x] **T17.21 `v*` タグを 1 つ切って `release.yml` (`action-gh-release@v3`) を動かす (親。**利用者が決める**)**
   - 目的: 2026-09-26 に上げた `softprops/action-gh-release` v3 は、タグを切るまで試せない。
   - やること: 利用者が「切ってよい」と言ったら `v0.1.0` (版は `Cargo.toml` の 0.1.0) を Phase 17 のデプロイの版に打ち、`release.yml` が 2 つの target のバイナリを付けることを見る。**タグは外に出るものなので、利用者の明示の許可なしに打たない**。
   - 受け入れ基準: GitHub の Release に `rust-http-proxy-x86_64-unknown-linux-gnu` と `-aarch64-…` が付いていること。付かなければ理由を書いて v2 に戻す。
+  - 結果 (2026-09-26、run 36250794855): 利用者の決定でタグは本文の `v0.1.0` ではなく **`v0.17.21`** にし、`2bcf57f` (Phase 17 の波 15〜17 と T17.11 を入れ、CI が通った版) に打った。`release.yml` (`softprops/action-gh-release@v3`) は 2 つとも通り、Release に `rust-http-proxy-x86_64-unknown-linux-gnu` (2,005,088 B) と `rust-http-proxy-aarch64-unknown-linux-gnu` (1,830,584 B) が付いた (https://github.com/takano32/rust-http-proxy/releases/tag/v0.17.21)。v3 のままでよい。`Cargo.toml` の版は 0.1.0 のままなので、バイナリの `--version` と `/status` の `version` は `0.1.0+<commit>` と出る (タグと揃えるかは次に決める)。
 
 - [ ] **T17.99 締める (Phase 17 の版を 24 時間走らせたあとに見る・決める・書く)**
   - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): 版 `0.1.0+<commit>` (未)、起動時刻 `YYYY-MM-DDTHH:MM:SSZ` (未)、「前」の雪像 `status/<時刻>-snapshot.json` (未)、「0 時間」の雪像 (未)。
