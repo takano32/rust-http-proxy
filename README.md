@@ -2876,6 +2876,8 @@ TTL を過ぎた / `warm_stale` = **warm なのにミスした** = 裏の引き�
 
 ### 1. 置く前 (`--check`)
 
+**止める直前に `scripts/collect-deployed.sh` で雪像を 1 枚**撮っておきます (次の版の判定の「前」になります。T17.19)。
+
 ```bash
 # 起動せずに「この環境で何が読めるか」と「効いている設定」を印字して終わる
 ./rust-http-proxy --check; echo "exit=$?"
@@ -2892,6 +2894,8 @@ CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・IPv6 (`ipv6_route`)・
 `env` / `env_file` / `cli`) つきなので、**書いたのに効いていない設定**がここで分かります。
 
 ### 2. 起動直後 (0〜5 分)
+
+起動したら**すぐ `scripts/collect-deployed.sh` でもう 1 枚** (0 時間の雪像) 撮り、`/status` の `version` と起動時刻 (UTC) を `TODO.md` のその Phase の `Tn.99` の前提に書きます (T17.19)。
 
 ```bash
 # 起動ログの 2 行 (待ち受けと統計ファイル)
@@ -3015,4 +3019,4 @@ curl "http://127.0.0.1:8080/explain?host=<name>"      # 1 つの相手を 1 枚�
 
 ### 7. そのあと
 
-再デプロイ後 24 時間の数字で `TODO.md` の §2 と §0 を書き直すのが、その Phase の `Tn.99` (Phase 14 は `T14.99`、いまは `T15.99`) です。
+再デプロイ後 24 時間の数字で `TODO.md` の §2 と §0 を書き直すのが、その Phase の `Tn.99` (Phase 14 は `T14.99`、いまは `T17.99`) です。

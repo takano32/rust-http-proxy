@@ -93,6 +93,7 @@
 6. 判断に迷ったら「速い方・単純な方・既定で安全な方」を選び、理由をコメントに残す。
 7. 終わったらこの文書の該当タスクを `[x]` にし、`結果:` に実測値とコミットを書く。§2 の表に効く数字が変わったら更新する。
 8. 実装を Opus (サブエージェント) に渡すときは §5 冒頭の「実装を Opus に渡すときの決まり」を指示文に貼る。
+9. **再デプロイの直前と直後に `scripts/collect-deployed.sh` を 1 枚ずつ撮る** (直前 = 判定の「前」、直後 = 0 時間の雪像)。利用者が再起動したら親が撮り、その Phase の `Tn.99` の前提に**版 (`/status` の `version`) と起動時刻 (UTC)** を書く (T17.19。T16 の再デプロイは記録が無く、2026-09-26 に `uptime_secs` から起こした)。README の「運用」の 1 と 2 も同じ内容。
 
 ## 1. 計測の作法
 
@@ -818,6 +819,7 @@ Phase 0〜4 の後、設計上の前提を 8 つの観点から疑い直した�
 | **確立 p50 を 6 ms 以下にする (T14.1 の目標、T14.99 で判定)** | デプロイ先の平常時の確立 p50 は 8.2 → **8.4 ms** で動かず。確立 − カーネル RTT の中央値は **−0.21 ms** (個票 614 本) で**プロキシの取り分は中央値で 0**。窓に出る宛先で最良 RTT が 6 ms 未満のものは **0 本** (`rtt_ms.origin` の最小 6.72 ms、要求で重み付けた最良 RTT の中央値 6.59 ms)。名前解決を 6.4 → 2.8 ms/接続 に減らしても p50 は +0.15 ms しか動かない (払う接続が 0.144 回/接続 = 少数派なので中央値は定義上動かない) | **物理なので追わない**。中央値の接続は既にオリジンまでの 1 RTT で、コードで削れる余地は無い。1 RTT を下回るには要求が来る前に繋いでおく (先張り) しかなく、それは「利用者が頼んでいない接続を張る」設計判断。**次の Phase の基準は「6 ms」のような固定値ではなく「そのときのホストの RTT + N ms」にする**。なお 6 ms の根拠 (T14.1 の「名前解決 6.3 ms/接続 = p50 の床のうち動かせる唯一の部分」) は平均の引き算を中央値に当てたもので、しかも判定が見ている確立の時計に名前解決は 1 ms も入っていなかった (T15.0 (1)) |
 | Happy Eyeballs の負けた試行を 1 スレッドにまとめる (T12.2) | T12.1 のあと、黒穴 `[::1]` + 生きた `127.0.0.1` へ 100 本 (締め切り 2 秒) で残るのは **3 スレッド / 3 fd、1.7 秒で消える** (同じホストなら 0、600 秒ごとの探りは 1)。残る時間は締め切りそのもの (2 秒 → 1.8、4 秒 → 3.8) | **10 本未満なので採らない**。`d466ace` (240 行の `unsafe`、T11.1 で CPU +1.0% として戻したもの) を資源のために復活させる理由が無い。T12.1 が「先頭が勝つ」を作った時点で、負けた試行は起動から 3 本と 600 秒に 1 本しか生まれない |
 | **確立の尾 (平常時 p95 約 187〜189 ms) を縮める (T15.99 で正体を測った)** | デプロイ先の 126.6 時間 (`2026-09-24T093400Z-snapshot.json`) の平常時で、p90 は `wait` 約 120 / `connect` 約 117 ms、差は約 3 ms (平均の差 1.6 ms は名前解決)。尾は**遠い相手の connect** (100〜250 ms の区間に 10.7%)。`/profile?res=60` の `run_delay_us` は conn 役で 5.45 時間に合計 72 ms、CPU の絞り 0 / 889,600 周期 | **相手までの距離のせいで、コードでは縮まない** (機械のせいでもコードのせいでもない)。次の基準線は平常時の `wait` p50 約 8.2 / p95 約 189 ms (T15.99 の 6) |
+| `promote` から `idle < window` を外す (T17.5、`scripts/dns-replay.py` の模型で 09-26 の雪像 6.53 時間・到着 558 件を再生) | いまの規則の模型は実機に ±30% で合う (ミス 0.075 対 0.063 回/到着、引き直し 481 対 436 回/時)。外すとミス 42 → 37 (**−11.9%**)、引き直し 3,143 → 3,613 (**+15.0%**)。前から居た名前を置かない下限側は −2.4% / +11.3% | 目安「ミス −15% 以上かつ引き直し +10% 以内」に両方届かない。採らない (T15.4 の前の再生の −21% は窓 3,600 秒でほぼ食われていた) |
 
 ## 5. これから (未着手)
 
@@ -3407,19 +3409,15 @@ T14.13 は T14.18 のあと)。T14.13 も既定無効で入れる。「再デプ
 
 | 既知の小物 | 出どころ | 何をするか |
 |---|---|---|
-| 1,000 要求目の応答に `Connection: close` が付かない (`MAX_REQUESTS_PER_CONNECTION`) | T12.6 の小物 | `http` 側へ「これが最後」を渡し、応答に `Connection: close` を付けてから閉じる |
-| `.dockerignore` が無い (`target/` がビルドコンテキストに入る) | T12.6 の小物 | `target/` と `**/target/` の 2 行。Docker のある機械で `docker build .` を 1 回 |
-| `/history` に `evicted_idle` の系列が無い | T13.2 | `.rrd` の版を上げずに足せるか (標本の余白) を先に見る。上げるなら統計が消えるので Phase 14 の最初に 1 回だけ |
-| 403 (ACL / ブロックリスト) が `/errors` に入らない | T13.4 | `Blocked` に原因 `acl` / `blocklist` を持たせて個票に乗せる |
-| keep-alive の HTTP 接続が `/connections` で宛先とバイト数を出さない | T13.4 | 要求ごとに書かない方針のまま、**接続の最初の要求の宛先だけ**を登録時に書く (1 回) |
-| `--only connect` の A/B は 3 組で足りないことがある (+5.6% → 6 組で +1.4%) | T13.4 | §1 の「前後交互 3 回」を CONNECT だけ 6 組にする |
-| README の性能節が loopback の表だけ | §2 | 「デプロイ先の現在地」(2026-09-12 と 2026-09-16) を README にも写す |
+| keep-alive の HTTP 接続が `/connections` でバイト数を出さない (宛先は T14.2 (5) / T14.48 で済。`set_bytes` を呼ぶのはトンネルだけ) | T13.4、T17.20 の気づき | 要求ごとに書かない方針とどう両立させるかを先に決める |
 | `dashboard.html` が上限まで余り 247 B (81,673 / 81,920 B) | T15.0 単位 9 と全体チェック | 次にカードを足す前に、`scripts/check-dashboard.js` の上限を上げるか、古いカードの説明文を削る |
-| オリジンを掴めなかった forward の個票で `client_read` が 0 のまま落ちる (`crates/http/src/http/mod.rs:698-703` がエラーの経路で `ctx.detail.stages` ではなく `shared.stages` を渡している) | T15.0 単位 1 の気づき | 1 行の直し。forward は要求の 1% なので急がない |
 | `proxy-base` の `log::tests::the_ring_clips_long_lines_and_wraps_at_1000` が稀に落ちる (`crates/base/src/log.rs:725` の `total == MAX_LOG_LINES + 5`。2026-09-18 の全体テストで 1 回、同じ binary の回し直しは 5 / 5 通過) | T15.5 のマージ後の全体チェック | リングとログ水準を触るテスト 4 本は全部 `RING_TEST_LOCK` を取っているので、**鍵を取らずに warn 以上を書く (か水準を変える) 別のテストが同じ binary にいる**はず。落ちたときの `left` / `right` を控えて (多いのか少ないのか)、犯人のテストに同じ鍵を取らせる |
-| `tests/clientacl_test.rs:117` `test_integration_allow_clients_closes_strangers_and_counts_them` が稀に落ちる (`.env` 再読込のあとの CONNECT が 403。単独 5 / 5 通過。再読込のログが出てから ACL が入れ替わるまでの間に CONNECT を送る競合に見える) | T15.12 段 2 の全体テスト (2026-09-19) | テストの側で「入れ替わった」を `/config` で待ってから送る。製品の側の順序 (ログ → 入れ替え) も見る |
-| `tests/history_depth_test.rs:235` `test_integration_six_hours_of_samples_stay_under_the_memory_cap` が稀に落ちる (プロセス全体の RSS の差を上限 3,407,872 B と比べる。失敗時 4,968,448 B。5 回中 1 回) | T15.12 波 11 の全体チェック (2026-09-19) | 同じファイルの 31〜33 行の注記どおり、隣のテストが大きな応答を組む瞬間と重なると越える。RSS の差ではなく、標本のリングの大きさ (`memory.rings`) で見るテストに変える |
-| `proxy-sys` の `sys::tests::listen_socket_reports_address_in_use_without_leaking` が稀に落ちる (`/proc/self/fd` をプロセス全体で数えるので、並んで走る隣のテストの fd を拾う。17 → 26 本で閾 +8 を 1 本超過。単独 18 / 18 通過) | T15.12 段 6' の全体テスト (2026-09-19) | 数えるのを「自分が開いたソケットの fd が閉じているか」に変えるか、このテストだけ直列にする |
+| `a_probe_measures_a_real_connect_and_a_refused_one` (`proxy-metrics-watch`) が混んだ機械で稀に落ちる (`dns_ms == 0` の判定。IP リテラルの名前解決が 1 ms に丸め上がる。main でも同じ) | T17.7 | 0 ではなく「数 ms 以下」で見るか、IP リテラルでは測らない |
+| `happy_eyeballs_skips_unreachable_first_candidate` (`proxy-net-conn`) の「2 回目 < 50 ms」が混んだ機械で稀に落ちる | T17.6 | 時間ではなく試行の順で見る |
+| `tests/proxy_test.rs` の `test_integration_request_body_on_a_reused_connection` が全体テストの負荷の下で 1 回 502 (単独 5 / 5 通過) | T17.11 の全体テスト | 原因を先に見る (再利用した接続の生存確認と本文の送り直し) |
+| `scripts/mx` の TERM の trap を張るのが命令の起動後 (隙間の TERM で子が残る)、`others()` の子孫除外が `CHILD` 未設定の時点で呼ばれて効いていない | T17.15 | trap を起動前に張る。子孫除外は手順 3 の後で数えるか外す (動きが変わるので単独のタスクで) |
+| `warm_promote` が次の予定を「上げた時刻 + 45 秒」に置く (答えを引いた時刻ではない。齢 60〜75 秒が期限切れになりうる。実機の `warm_stale` の一部かも) | T17.5 の模型 | 予定を答えの齢から出す。`scripts/dns-replay.py` で先に数える |
+| T17.11 で移した `slo.rs` の `[crate::anomaly::check]`・`profile.rs` の `[crate::history…]` の doc リンクが新しいクレートから解決しない (rustdoc の警告だけ) | T17.11 | 次にそのファイルを触るとき、上のクレートの道に直す |
 
 **候補と決め方 → 判断** (T14.0、2026-09-16):
 
@@ -6908,10 +6906,11 @@ README の環境変数の表は自分の行だけ触る。TODO.md §0 の「守�
     `git grep 'TODO.md'` で行を指している所 (`scripts/` / README / crates のコメント) が無いか先に見る。**T17 の波が全部マージされてから** (親の `TODO.md` の編集とぶつからないように、最後)。
   - 受け入れ基準: `./scripts/check-docs.sh` 差分 0、`python3 -m unittest discover -s scripts` 通過、`TODO.md` が 2,000 行以下。
 
-- [ ] **T17.19 再デプロイの記録の決まり (親)**
+- [x] **T17.19 再デプロイの記録の決まり (親)**
   - 目的: T16 の再デプロイは `TODO.md` に書かれておらず、2026-09-26 に `uptime_secs` から起こした。
   - やること: §0 の「作業の進め方」に「**再デプロイの直前と直後に `scripts/collect-deployed.sh` を 1 枚ずつ** (直前 = 判定の「前」、直後 = 0 時間の雪像)。利用者が再起動したら親が撮り、その Phase の `Tn.99` の前提に版と起動時刻を書く」を足す。README 運用 §2 と同じ内容。
   - 受け入れ基準: §0 に 1 行、T17.99 の前提がその形で書けていること。
+  - 結果 (2026-09-26): §0 の「作業の進め方」に 9 を足した (再デプロイの直前と直後に 1 枚ずつ、`Tn.99` の前提に版と起動時刻)。README の「運用」の 1 (止める直前に 1 枚) と 2 (起動直後に 1 枚、版と起動時刻を `Tn.99` へ) に同じことを書き、7 の「いまは `T15.99`」を `T17.99` に直した。T17.99 の前提はその形 (版・起動時刻・「前」・「0 時間」の 4 つ、未記入) に書き換えた。
 
 - [x] **T17.20 小物 (次にそのファイルを触るとき、と書いてあったもの)**
   - やること: (1) `crates/web/src/probe.html:137` の「`src/lib.rs` の `record_client_agent` の手前」→ `crates/server/src/lib.rs` (呼び出しは 1663 行、本体は `crates/metrics-core/src/metrics.rs:647`)。配る HTML なので `scripts/check-dashboard.js` と同じ上限の検査があれば通す。
@@ -6919,6 +6918,7 @@ README の環境変数の表は自分の行だけ触る。TODO.md §0 の「守�
     (3) Phase 14 の表で済んでいるもの (`Connection: close`、`.dockerignore`、`evicted_idle` の系列、403 の `/errors`、`--only connect` 6 組、README のデプロイ先の表) は親が表から消す。
   - 受け入れ基準: (1) は HTML の文言だけ。(2) は `tests/connections_test.rs` (あれば) に 1 本。要求の経路に増えるのは登録時の 1 回だけ (`--lite` の費用は不変)。
   - 結果 (2026-09-26、e2bef7c): (1) `crates/web/src/probe.html:137` のコメントの道を `src/lib.rs` → `crates/server/src/lib.rs` に直した (文言だけ。`check-dashboard.js` の probe.html 64 KiB 上限と構文は通過)。(2) は T14.2 (5) / T14.48 で既に済んでいた。`ConnSlot::set_first_target` を接続の最初の要求 (`*served == 0`) で 1 回だけ呼び、`host:port` を書く。既存の `tests/recent_test.rs` の `test_integration_connections_shows_the_first_target_of_a_keepalive_http_connection` が通ることを確かめた (`tests/connections_test.rs` は無い)。要求の経路は不変。残り: keep-alive の HTTP 行の `/connections` の `bytes` は生きている間 0 のまま (`set_bytes` はトンネルだけ)。Phase 14 の表の「バイト数」の半分は未着手。
+  - 親 (3) (2026-09-26): 既知の小物の表から済んだ 10 行を消した (`Connection: close` (T14.2)・`.dockerignore`・`evicted_idle` の系列・403 の `/errors`・`--only connect` 6 組・README のデプロイ先の表・`client_read` (T17.4)・揺れるテスト 3 本 (T17.14))。`.dockerignore` と最後の要求の判定は main にあることを親が見た。keep-alive の行は「バイト数」だけに縮め、Phase 17 で見つかった 6 件 (揺れるテスト 3 本・`mx` の 2 つ・`warm_promote` の予定・T17.11 の doc リンク) を足した。T17.5 の「採らない」を §4 に 1 行足した。
 
 - [ ] **T17.21 `v*` タグを 1 つ切って `release.yml` (`action-gh-release@v3`) を動かす (親。**利用者が決める**)**
   - 目的: 2026-09-26 に上げた `softprops/action-gh-release` v3 は、タグを切るまで試せない。
@@ -6926,7 +6926,8 @@ README の環境変数の表は自分の行だけ触る。TODO.md §0 の「守�
   - 受け入れ基準: GitHub の Release に `rust-http-proxy-x86_64-unknown-linux-gnu` と `-aarch64-…` が付いていること。付かなければ理由を書いて v2 に戻す。
 
 - [ ] **T17.99 締める (Phase 17 の版を 24 時間走らせたあとに見る・決める・書く)**
-  - 前提: 波 15〜17 を入れた版を再デプロイして 24 時間。「前」は再デプロイの直前に親が撮った雪像、「後」は 24 時間後の 1 枚 (T17.19)。判定は `scripts/snapshot-diff.py <前> <後> --criteria phase17 --daily <後の -daily.json> --profile <後の -profile_res_60.json>` を明示で回す。
+  - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): 版 `0.1.0+<commit>` (未)、起動時刻 `YYYY-MM-DDTHH:MM:SSZ` (未)、「前」の雪像 `status/<時刻>-snapshot.json` (未)、「0 時間」の雪像 (未)。
+    波 15〜17 を入れた版を再デプロイして 24 時間。「前」は再デプロイの直前に親が撮った雪像、「後」は 24 時間後の 1 枚 (T17.19)。判定は `scripts/snapshot-diff.py <前> <後> --criteria phase17 --daily <後の -daily.json> --profile <後の -profile_res_60.json>` を明示で回す。
   - **Phase 17 の完了の定義 (下書き)**: (a) `/events` の `dns_slow` が **0.1 件/時以下** (T16.99 は 0.62)、`dns_miss_rate` は立たない (実測 0.05 に対し閾 0.20)。(b) T17.5 を採ったなら平常時のミスが 0.06 回/接続から下がり、引き直しが名前ごとに 80 回/時以下のまま。採らなかったなら「変わらない」。
     (c) **CPU の桁** (rustc 1.96 → 1.98 と T17.6〜T17.8 のぶん): conn 役のコア/要求が前の 1.3 倍以下、cgroup の起動からの user / sys が前後で同じ桁、`cpu_throttled` 0 件。(d) T17.8: 起動 1 時間後の RSS と 24 時間後の RSS の差が **5 MB 未満**。
     (e) T17.7: `/status` の `ipv6` が `probe_by: canary` で、`attempts` が増えない。(f) 判定表 `--criteria phase17` の 7 行が**全部自動で**出ること (「判定できず」が 0)。
