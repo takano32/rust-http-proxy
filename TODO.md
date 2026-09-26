@@ -65,7 +65,7 @@
   `#[cfg(target_os = "linux")]` で囲んで他 OS には従来コードへのフォールバックを残す。
 - **既存機能を壊さない**。`cargo test --workspace` は常に全通過。キャッシュ・ダッシュボード等は
   「使わないときに一切コストがかからない」ようにするのが方針で、削除はしない。
-- Rust は `edition = "2024"`、`rustc 1.96` で動くこと。`cargo clippy --workspace --all-targets` の警告を増やさない。
+- Rust は `edition = "2024"`、stable の `rustc` で動くこと (版は固定しない)。`cargo clippy --workspace --all-targets` の警告を増やさない。
 - **`cargo build --release` はメモリ 180 MB で通ること** (動作環境のコンテナが小さい。2026-09-16 に 200 → 180 に下げた。
   理想は 120 MB で、それは Phase 15 の T15.12)。`scripts/build-memory.sh` が CI で見張っている (実際にその cgroup に入れてビルドする)。
   効くのは 2 つだけ: **クレートを小さく割ること** (`rustc` はクレート単位で全部を抱える。

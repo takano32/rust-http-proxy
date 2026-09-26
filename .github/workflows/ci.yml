@@ -27,10 +27,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust 1.96
+      - name: Install Rust (stable)
         run: |
-          rustup toolchain install 1.96.0 --profile minimal --component rustfmt,clippy
-          rustup default 1.96.0
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          # stable は版が上がるので、キャッシュの鍵に版を入れる (上がったら作り直す)
+          echo "RUSTC_VERSION=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_ENV"
       - name: Cache
         uses: actions/cache@v4
         with:
@@ -38,7 +40,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-${{ env.RUSTC_VERSION }}-${{ hashFiles('**/Cargo.toml') }}
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # 文書とコードが同じ集合か (エンドポイント・環境変数・`/snapshot` の部・画面の関数・クレートの表。T14.56)
@@ -91,10 +93,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust 1.96
+      - name: Install Rust (stable)
         run: |
-          rustup toolchain install 1.96.0 --profile minimal
-          rustup default 1.96.0
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          # stable は版が上がるので、キャッシュの鍵に版を入れる (上がったら作り直す)
+          echo "RUSTC_VERSION=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_ENV"
       # **読むだけ** (`restore`)。同じ鍵の保存は上の check ジョブに任せる
       # (同じ鍵で 2 つのジョブが保存すると後から来た方が「もうある」で終わるだけなので、
       # 鍵の持ち主を 1 つに決めておく)
@@ -105,8 +109,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-${{ env.RUSTC_VERSION }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-${{ env.RUSTC_VERSION }}-
 
       # **先に**名前空間が作れるかを確かめて記録する。`scripts/deployed-like.sh` は
       # `unshare -rmnC` (ユーザー + マウント + ネット + cgroup) を要求し、作れなければ
@@ -178,10 +182,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust 1.96
+      - name: Install Rust (stable)
         run: |
-          rustup toolchain install 1.96.0 --profile minimal
-          rustup default 1.96.0
+          rustup toolchain install stable --profile minimal
+          rustup default stable
       # キャッシュは張らない。--find は段ごとに `cargo clean` するので当たらないし、
       # 空になった target を check ジョブのキャッシュに上書きさせたくない
 
