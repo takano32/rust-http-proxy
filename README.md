@@ -118,7 +118,8 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 (`scripts/snapshot-summary.py`)・ホスト別 (`status-diff.py`。**前回の雪像があれば差分**)・
 ダッシュボードの読み方 (`check-dashboard.js`)・手元から見た待ち (`probe-deployed.sh`) を
 続けて回して **Markdown 1 枚**を標準出力に出します (同じものを雪像の隣の `<時刻>-collect.md` にも残し、
-雪像に入らない `/daily` `/healthz` `/slo` `/config` `/profile?res=60` も `<時刻>-<口>.json` で隣に置きます)。`status-diff.py` は `/snapshot` の JSON を
+雪像に入らない `/daily` `/healthz` `/slo` `/config` `/profile?res=60` も `<時刻>-<口>.json` で隣に置きます。
+`/profile?res=60` は 1 枚 (256 KiB) だと 24 時間のうち約 5 時間しか入らないので、`--full` が無くても `next_offset` が `null` になるまで `offset=` で追い、`samples` を 1 つに繋いで `truncated` を `false` にしたものを置きます。枚数の上限は `MAX_PAGES`)。`status-diff.py` は `/snapshot` の JSON を
 そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
 
 ```bash
@@ -137,6 +138,13 @@ scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまと
 (中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` も
 `weekly-report.py` もそのまま読めます)。
 
+要点 (`snapshot-summary.py`) の最後には 2 つの表が付きます (T17.0c): **`/events` の anomaly を種類別に「起動からの件/時」**
+(`cleared:` は数えず、状態ファイルから読み戻した起動より前の出来事は外します) と、**接続元の見張り** — 新しく現れた接続元
+(`--prev` があれば前の `/clients` に居ないもの、無ければ `first_seen` が起動より後)・IP リテラル宛ての要求・443 / 80 以外への
+CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)・`/events` の `new_client`・**`/readers` に居て `/clients` に居ない
+接続元** (プロキシを使わず `GET /` などで内部の口だけを引いた走査)。認証なしのプロキシで実際に起きる危険は乱用なので、その手がかりを
+1 か所に集めています。IP とホスト名はそのまま出ます。
+
 保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
 
 **2 枚の雪像から「何が変わったか」を全部読むのは `scripts/snapshot-diff.py A B`** (T14.17)。
@@ -154,6 +162,11 @@ scripts/snapshot-diff.py a.json b.json --aaaa aaaa.json --out json      # 機械
 scripts/snapshot-diff.py a.json b.json --group domain                   # eTLD+1 でまとめる
 # phase15 の判定。`/daily` は雪像に入っていないので、同時刻に取ったものを渡すと日ごとのミスの幅が並ぶ
 scripts/snapshot-diff.py a.json b.json --criteria phase15 --daily b-daily.json
+# phase17 の 8 行 (phase15 の 4 行 + conn 役の CPU/要求・`dns_warm_max` と `warm_evicted`・
+# `/events` の anomaly の種類別 件/時 (起動から、`cleared:` は数えない)・cgroup の起動からの CPU)。
+# `/profile?res=60` も雪像に入らないので渡す (無ければ雪像の `/profile` の部で「参考」)
+scripts/snapshot-diff.py a.json b.json --criteria phase17 --daily b-daily.json \
+                         --profile b-profile_res_60.json   # 前も比べるなら --profile-before FILE
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
 scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
                          --from-files status/2026-09-16T0106Z
@@ -462,6 +475,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   使われていなくても 45 秒 (3/4 TTL) ごとに裏で引き直し続ける**ので、TTL より長い間隔で来る
   ホスト (数分おきの push 通知など) もミスになりません。同時に warm でいられるのは 32 件まで
   (最後の使用が古いものから外れ、最後の使用から 3,600 秒過ぎたら止まります)。
+  この規則を変えたらミスと引き直しがどう動くかは、**`scripts/dns-replay.py SNAP.json`** が雪像 1 枚
+  (`/recent` の到着列と `/hosts_series` の助走) で見積もります (T17.5。いまの規則の値を同じ区間の
+  `/history` と並べ、`promote` の条件を差し替えた案と比べる。`--json` で機械で読む形)。
   **名前解決は 1 要求 1 回**: ローカル宛て (SSRF) の判定で引いた答えをそのまま接続に使うので、
   キャッシュを切っていても判定と接続が別の答えを見ることはない。
   **答えが変わった回数 (`changes`)**: 引き直し (keep-warm と期限切れの再解決) は元々
@@ -824,13 +840,13 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     | 種類 (説明の頭に出ます) | 立つ条件 |
     |---|---|
     | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が**直近 1 時間の p95 の 3 倍以上**、かつ 50 ms 以上、かつ**その窓に 20 本以上**あるとき (T15.0 (9)) |
-    | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が **100 ms 以上** |
+    | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が **100 ms と canary の名前解決の中央値 (直近 1 時間) の 3 倍の大きい方以上**、かつ**その窓にミスが 3 回以上**あるとき (canary が `off` なら 100 ms だけ。5 分に 1 回の重いミスだけでは立ちません。T17.1) |
     | `errors` | エラーが **5 分で 5 件以上** (原因の内訳も説明に入ります) |
     | `active_high` | 同時接続の山が **`PROXY_MAX_CONNS` の 50% 以上** (`/bursts` の写真と同じ閾。同じ周期で写真が撮れていればその `seq`) |
     | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が**増えた** |
     | `cpu_throttled` | cgroup の CPU の上限で**直近 5 分に絞られた期間が 50% 以上** (解除は 25% 未満。説明に `quota_cores` と使ったコア数と `/profile` の上位スレッドの tid が入ります。T15.0 (6)) |
     | `tunnel_spin` | 「起こされたのに 1 バイトも進まない」が **1 周期 1,000 回以上のトンネルが 1 分続いた** (説明に接続の `id` と宛先と齢と `half_closed`。T15.0 (6)) |
-    | `dns_miss_rate` | 名前解決のミスが**直近 1 時間で 0.40 回/接続 以上** (解除は 0.25 未満。**起動から 6 時間は判定しません** — 再起動の直後はどの名前も warm でないため。1 時間に 30 本以上の確立があるときだけ。T15.0 (9)) |
+    | `dns_miss_rate` | 名前解決のミスが**直近 1 時間で 0.20 回/接続 以上** (解除は 0.10 未満。**起動から 6 時間は判定しません** — 再起動の直後はどの名前も warm でないため。1 時間に 30 本以上の確立があるときだけ。T15.0 (9)) |
     | `new_client` (規則 6) | `/clients` の `first_seen` が**この 5 秒の窓の中**にある接続元 (T14.54) |
 
     **同じ種類は収まるまで 1 回だけ**書きます。条件を外れたまま 5 分続いたら
@@ -1410,6 +1426,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_LISTEN_BACKLOG` | `0` (= `min(1024, somaxconn)`) | 待ち受けの受け入れ待ち行列の長さ (`listen(2)`) |
 | `PROXY_TIMEOUT_SECS` | `30` | 接続とデータ転送の締め切り (秒)。`0` で無期限 |
 | `PROXY_CONNECT_TIMEOUT_SECS` | `10` | `CONNECT` のオリジン接続だけの締め切り (秒) |
+| `PROXY_HE_STAGGER_MS` | `250` | Happy Eyeballs で次の候補を試し始めるまでの間隔 (ms、10〜2000) |
 | `PROXY_KEEPALIVE_SECS` | `15` | クライアント接続を次の要求まで待つ時間 (秒) |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り (秒) |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限 |
@@ -1550,6 +1567,12 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   Happy Eyeballs の締め切りも同じ値なので、締め切りで抜けた接続は `/errors` に `cause: "timeout"` で残ります。
   **名前解決の時間は含みません** (名前を引いたあとの `connect` に効きます)。
   `.env` で即時反映
+- **`PROXY_HE_STAGGER_MS`** (既定 `250`)
+  Happy Eyeballs (RFC 8305) で、名前が複数のアドレスを返したときに**先頭の候補が返らなければ次の候補を試し始めるまでの間隔** (ms)。
+  受けるのは **10〜2000** (RFC 8305 の範囲) で、外れた値と数でない値は起動ログに `WARN` を 1 行出して既定の 250 に戻します (`/config` の出どころも `default` のまま)。
+  **起動時に 1 回だけ読みます** (`.env` を書き換えても効かず、`/status` の `settings.restart_required` に出ます)。
+  IPv6 が黙って落ちる網ではホストごとに勝った族を覚えるので (上の「250 ms が消えたのは」)、この間隔を払うのは初めて見るホストと 600 秒に 1 回の IPv6 の探りだけです。
+  縮めると SYN が遅いだけの相手にも 2 本目を同時に張る回数が増えるので、既定から動かす理由が無ければそのままにしてください
 - **`PROXY_KEEPALIVE_SECS`** (既定 `15`)
   クライアント接続を次の要求まで待つアイドル時間 (秒)。`0` で 1 接続 1 要求。
   **待つ長さとは別に、1 本の接続で 1,000 要求を捌いたらその接続は閉じます** (下記)
@@ -2891,8 +2914,8 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 個票には接続元 IP と宛先が並ぶので `.gitignore` に入れてあり、コミットしません。
 **雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
 1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
-意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase15`**
-(T15.4 / T15.5 / T15.6 の 6 行) で、`CRITERIA=phase14` も今までどおり使えます。取り忘れた日は
+意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase17`**
+(phase15 の 4 行 + T17.0a の 4 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、前回の雪像の隣にあればそれを `--profile-before` で渡します) で、`CRITERIA=phase15` (T15.4 / T15.5 / T15.6 の 6 行) と `CRITERIA=phase14` も今までどおり使えます。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
 `next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0 (11)。

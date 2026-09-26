@@ -1752,6 +1752,47 @@ mod tests {
         clear();
     }
 
+    /// T17.3: 枠が満杯でも、外す相手が**表から既に消えている** (`evict_oldest` で表だけから
+    /// 落ち、待ち行列に予定が残った) なら warm を押し出していないので `warm_evicted` は増えない。
+    /// T17.0a の判定 `warm_evicted == 0` が誤って崩れないことを見張る。
+    #[test]
+    fn warm_evicted_does_not_count_a_victim_already_gone_from_the_table() {
+        let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_ttl(Duration::from_secs(60));
+        set_warm_window(WARM);
+        clear();
+        let names: Vec<String> = (0..=MAX_WARM).map(|i| format!("t173-warm-{i}")).collect();
+        for n in &names {
+            put(n, Duration::from_secs(1));
+        }
+        // 32 件で枠を埋める (ここまでは押し出しが無い)
+        for n in &names[..MAX_WARM] {
+            resolve_host(n, 80).unwrap();
+            assert!(is_warm(n), "{} は warm", n);
+        }
+        assert_eq!(warm_count(), MAX_WARM);
+        // 作り物: 最初の名前を**表からだけ**消す (待ち行列には予定が残る)
+        let gone = &names[0];
+        TABLE.locked().as_mut().unwrap().remove(gone);
+        assert_eq!(warm_count(), MAX_WARM, "待ち行列には残っている");
+
+        let evicted0 = WARM_EVICTED.load(Ordering::Relaxed);
+        // 33 件目: 満杯の枝に入り、外す相手は表に無い `gone` (`None` が最小) になる
+        let newest = &names[MAX_WARM];
+        resolve_host(newest, 80).unwrap();
+        assert!(is_warm(newest), "33 件目は warm");
+        assert_eq!(
+            WARM_EVICTED.load(Ordering::Relaxed) - evicted0,
+            0,
+            "表から消えた名前の予定を外しただけなら数えない"
+        );
+        assert_eq!(warm_count(), MAX_WARM, "消えた名前の予定が外れて 32 件");
+        for n in &names[1..] {
+            assert!(is_warm(n), "{} は warm のまま (誰も押し出されない)", n);
+        }
+        clear();
+    }
+
     /// T14.1 (e): `PROXY_DNS_WARM_SECS=0` なら keep-warm は働かず、T13.1 の動き
     /// (直近 TTL 内に使われた名前だけ、当たりのついでに 1 回引き直す) に戻る。
     #[test]

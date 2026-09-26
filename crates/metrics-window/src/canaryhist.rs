@@ -98,6 +98,29 @@ pub fn push_history_json(out: &mut String, res: usize) {
     out.push_str("]}");
 }
 
+/// 窓の中 (`since <= t <= until`) の canary の名前解決 (`dns_ms`) の中央値 (T17.1)。
+///
+/// `dns_slow` (`proxy-metrics-watch` の `anomaly`) が「いまのリゾルバの速さ」の基準線に
+/// 使う。読むのは 5 秒の窓 (720 行 = 1 時間) で、1 行も無ければ `None`
+/// (canary が `off`、起動直後、履歴スレッドが無い)。偶数本なら下の中央値
+/// (整数の ms のまま。平均しない)。**失敗した回も入る** (名前解決で落ちた回は締め切り
+/// までの ms) が、中央値なので半分を越えて落ちない限り動かない。
+pub fn dns_p50_ms(since: u64, until: u64) -> Option<u64> {
+    let mut v: Vec<u64> = {
+        let guard = RINGS.locked();
+        let ring = guard.as_ref()?.first()?;
+        ring.iter()
+            .filter(|r| since <= r.t && r.t <= until)
+            .map(|r| r.dns_ms)
+            .collect()
+    };
+    if v.is_empty() {
+        return None;
+    }
+    let mid = (v.len() - 1) / 2;
+    Some(*v.select_nth_unstable(mid).1)
+}
+
 /// JSON の数 (繋がらなかった IPv6 側は `null`。T14.37)。
 fn num_or_null(v: Option<u64>) -> String {
     match v {
@@ -112,4 +135,30 @@ fn num_or_null(v: Option<u64>) -> String {
 /// そちらのテストから引くため (T14.55)。実体は 1 行。
 pub fn clear() {
     *RINGS.locked() = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T17.1: 窓の中の `dns_ms` の中央値。窓の外と、1 行も無いときは数えない。
+    /// (このクレートで [`RINGS`] に触るテストはこれ 1 本だけ)
+    #[test]
+    fn the_dns_median_reads_only_the_window() {
+        clear();
+        assert_eq!(dns_p50_ms(0, u64::MAX), None, "空なら None");
+        push(1_000, 900, 5, "a:443", None); // 窓の外 (古い)
+        push(3_600, 12, 5, "a:443", None);
+        push(3_660, 8, 5, "a:443", None);
+        push(3_720, 300, 5, "a:443", None);
+        push(3_780, 9, 5, "a:443", None);
+        assert_eq!(
+            dns_p50_ms(3_000, 4_000),
+            Some(9),
+            "8, 9, 12, 300 の下の中央値"
+        );
+        assert_eq!(dns_p50_ms(3_700, 4_000), Some(9), "300, 9");
+        assert_eq!(dns_p50_ms(5_000, 6_000), None, "窓に 1 行も無い");
+        clear();
+    }
 }

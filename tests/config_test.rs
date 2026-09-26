@@ -248,6 +248,13 @@ fn test_integration_config_shows_effective_values_and_their_source() {
         "書いていない行 (既定は 10 秒): {}",
         json
     );
+    // Happy Eyeballs の間隔も書いていないので、既定の 250 ms が出どころ `default` で出る (T17.6)
+    assert_eq!(
+        setting(&json, "PROXY_HE_STAGGER_MS"),
+        ("250".to_string(), "default".to_string()),
+        "書いていない行 (既定は 250 ms): {}",
+        json
+    );
     // `.env` 自身の場所と、この環境で何が読めるかも同じ 1 枚に出る
     assert!(
         json.contains(&dir.join(".env").display().to_string()),
@@ -370,6 +377,8 @@ fn test_integration_check_prints_capabilities_and_settings() {
         "{}",
         text
     );
+    // Happy Eyeballs の間隔も `--check` に出る (書いていないので既定の 250 ms。T17.6)
+    assert!(text.contains("default   PROXY_HE_STAGGER_MS"), "{}", text);
     assert!(
         text.contains(&dir.join(".env").display().to_string()),
         "{}",
@@ -377,6 +386,75 @@ fn test_integration_check_prints_capabilities_and_settings() {
     );
     // 起動していない (待ち受けの行が無い)
     assert!(!text.contains("listening on"), "{}", text);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `PROXY_HE_STAGGER_MS` (T17.6): 範囲の中なら書いた値が出どころつきで効き、範囲の外は
+/// **warn を 1 行出して既定の 250 ms (出どころ `default`) に戻す**。`--check` で両方を見る。
+#[test]
+fn test_integration_he_stagger_is_read_once_and_falls_back_when_out_of_range() {
+    let dir = std::env::temp_dir().join(format!("rhp-t176-stagger-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let check = |env_file: &str| {
+        std::fs::write(dir.join(".env"), env_file).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
+            .arg("--check")
+            .env("HOME", &dir)
+            .env("XDG_CACHE_HOME", &dir)
+            .env_remove("PROXY_HE_STAGGER_MS")
+            .output()
+            .expect("--check が動かない");
+        // ログがどちらへ出ても拾えるように両方を繋ぐ
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    };
+    let line = |text: &str| {
+        text.lines()
+            // 設定の行 (`  <出どころ> <名前> <値>`) だけを拾う (warn の行にも名前が入るため)
+            .find(|l| l.split_whitespace().nth(1) == Some("PROXY_HE_STAGGER_MS"))
+            .unwrap_or_else(|| panic!("PROXY_HE_STAGGER_MS の行が無い:\n{}", text))
+            .to_string()
+    };
+
+    // 範囲の中: `.env` の値が出どころ `env_file` で効く
+    let text = check("PROXY_HE_STAGGER_MS=100\n");
+    let l = line(&text);
+    let l = l.trim_start();
+    assert!(
+        l.starts_with("env_file  PROXY_HE_STAGGER_MS") && l.trim_end().ends_with(" 100"),
+        "{}",
+        text
+    );
+    assert!(
+        !text.contains("PROXY_HE_STAGGER_MS=\""),
+        "警告は出ない:\n{}",
+        text
+    );
+
+    // 範囲の外 (5 ms と 5,000 ms): 既定の 250 ms・出どころ `default` に戻して 1 行知らせる
+    for bad in ["5", "5000"] {
+        let text = check(&format!("PROXY_HE_STAGGER_MS={}\n", bad));
+        let l = line(&text);
+        let l = l.trim_start();
+        assert!(
+            l.starts_with("default   PROXY_HE_STAGGER_MS") && l.trim_end().ends_with(" 250"),
+            "{}: {}",
+            bad,
+            text
+        );
+        assert_eq!(
+            text.matches(&format!("PROXY_HE_STAGGER_MS=\"{}\"", bad))
+                .count(),
+            1,
+            "warn は 1 行: {}",
+            text
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }
