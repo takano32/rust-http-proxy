@@ -138,3 +138,52 @@ fn a_tunnel_records_both_the_connect_and_the_client_read_stage() {
         entry
     );
 }
+
+/// forward でオリジンを掴めなかった (502) 要求でも、個票の `client_read` が 0 に
+/// 潰れないこと (T17.4)。
+///
+/// 掴めなかった枝は `origin_detail` に本体クレートの段 (`queue` だけ) を渡していて、
+/// 入口で測った `client_read` を落としていた。閉じたポートへ、要求行と `Host` の間を
+/// 空けて forward の GET を 1 本送り、`/recent` の http の 1 件を読む。
+#[test]
+fn a_failed_forward_keeps_its_client_read_stage() {
+    rust_http_proxy::profile::set_enabled(true);
+
+    let dead_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", dead_port);
+
+    let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    s.write_all(format!("GET http://{}/t174 HTTP/1.1\r\n", host).as_bytes())
+        .unwrap();
+    s.flush().unwrap();
+    thread::sleep(Duration::from_millis(40));
+    s.write_all(format!("Host: {}\r\nConnection: close\r\n\r\n", host).as_bytes())
+        .unwrap();
+    let (head, _) = read_response(&mut s);
+    assert!(head.starts_with("HTTP/1.1 502"), "{}", head);
+    drop(s);
+
+    wait_until(
+        || endpoint_json(proxy_port, "/recent?n=50").contains("\"kind\":\"http\""),
+        "/recent に閉じた http 接続が 1 本",
+    );
+    let body = endpoint_json(proxy_port, "/recent?n=50");
+    let entry = row_with(&body, "recent", "\"kind\":\"http\"");
+    // 0 の段は JSON に出ない決まりなので、欄があること自体が「0 でない」印
+    assert!(
+        entry.contains("\"client_read\":"),
+        "502 の個票で `client_read` が 0 に落ちた: {}",
+        entry
+    );
+    assert!(
+        num(&entry, "client_read") >= 30,
+        "空けた 40 ms が入っていない: {}",
+        entry
+    );
+}
