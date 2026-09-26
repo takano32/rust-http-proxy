@@ -44,7 +44,7 @@
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
-#   CRITERIA (既定 phase15) … 判定表に使う完了の定義 (`phase14` も残してある)。
+#   CRITERIA (既定 phase17) … 判定表に使う完了の定義 (`phase15` と `phase14` も残してある)。
 #                         `off` で判定表を出さない
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
 #   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` を
@@ -87,7 +87,7 @@ DIR=${2:-status}
 PROBE=${PROBE:-1}
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
-CRITERIA=${CRITERIA:-phase15}
+CRITERIA=${CRITERIA:-phase17}
 MAX_TIME=${MAX_TIME:-30}
 MAX_PAGES=${MAX_PAGES:-8}
 AAAA=${AAAA:-}
