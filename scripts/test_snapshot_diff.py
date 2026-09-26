@@ -626,21 +626,40 @@ class Criteria15(unittest.TestCase):
         row = self.judge(th=dict(sd.PHASE15, watch_host="alpha.example.jp"))["rows"][0]
         self.assertEqual(row[3], sd.MET)             # 2 ミス / 200 要求 = 0.01
 
-    def test_the_refresh_rate_is_per_warm_name_per_hour(self):
-        """**通算の平均で割らない** (実勢を 35〜60% 過小に見せる)。"""
+    def test_the_refresh_rate_is_judged_per_name_from_the_dns_part(self):
+        """**閾は 1 名前あたりの上限**なので、`/dns` の名前ごとの最大で判定する (T15.15 (1))。"""
         row = self.judge()["rows"][1]
         self.assertEqual(row[3], sd.MET)
-        self.assertIn("24 回 ÷ 12.0 時間 ÷ warm 25.0 件", row[2])
+        # alpha の 18 回 ÷ 起動から 12 時間
+        self.assertIn("**1.5** 回/時 (`alpha.example.jp` 18 回、名前ごとの最大)", row[2])
+        self.assertIn("5 名前", row[4])
 
-    def test_too_many_refreshes_per_name_is_missed(self):
+    def test_the_average_uses_the_warm_mean_over_all_hours(self):
+        """参考の平均は warm を**全時間** (バーストの時間も) から取り、通算の分子と窓を揃える。"""
+        row = self.judge()["rows"][1]
+        # 後の期間の `dns_warm` は 24 / 26 / 28 (28 はバーストの時間)。平常時だけなら 25.0
+        self.assertIn("通算 24 回 ÷ 12.0 時間 ÷ warm 26.0 件", row[2])
+
+    def test_one_busy_name_is_missed_even_if_the_average_is_low(self):
         b = read(B)
-        b["status"]["dns"]["refreshes"] = 30000      # 30,000 ÷ 12 時間 ÷ 25 件 = 100 回/時
+        b["dns"]["entries"][0]["refreshes"] = 1200    # 1,200 ÷ 12 時間 = 100 回/時
         with written(b=b) as paths:
             row = self.judge(b=paths["b"])["rows"][1]
         self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**100.0** 回/時", row[2])
 
-    def test_without_dns_warm_the_refresh_rate_cannot_be_judged(self):
+    def test_without_the_dns_part_the_average_is_used(self):
         b = read(B)
+        del b["dns"]
+        b["status"]["dns"]["refreshes"] = 30000       # 30,000 ÷ 12 時間 ÷ 26 件 ≒ 96 回/時
+        with written(b=b) as paths:
+            row = self.judge(b=paths["b"])["rows"][1]
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("`/dns` の部が無い", row[4])
+
+    def test_without_dns_or_dns_warm_the_refresh_rate_cannot_be_judged(self):
+        b = read(B)
+        del b["dns"]
         for res in b["history"]:
             i = b["history"][res]["keys"].index("dns_warm")
             b["history"][res]["keys"][i] = "dns_warm_x"   # 名前が違えば「無い」
@@ -649,19 +668,41 @@ class Criteria15(unittest.TestCase):
         self.assertEqual(row[3], sd.UNKNOWN)
         self.assertIn("`dns_warm`", row[4])
 
-    def test_a_miss_rate_below_the_band_is_missed_not_met(self):
-        """**低すぎても見込み違い** (幅は「どこに落ち着くか」の予想)。"""
+    def test_a_low_miss_rate_is_met(self):
+        """**下の閾は外した** (T15.15 (2)。T15.99 の 0.05 が「幅より低い」で届かずになった)。"""
         row = self.judge()["rows"][2]
-        self.assertEqual(row[3], sd.MISSED)
-        self.assertIn("**幅より低い**", row[2])
+        self.assertEqual(row[3], sd.MET)
+        self.assertEqual(row[1], "≤ 0.09")
+        self.assertNotIn("幅より", row[2])
 
-    def test_a_miss_rate_inside_the_band_is_met(self):
+    def test_a_miss_rate_above_the_limit_is_missed(self):
         b = read(B)
-        set_column(b, "3600", "dns_misses", 14)      # 平常時 2 標本 × 14 ÷ 400 本 = 0.07
+        set_column(b, "3600", "dns_misses", 40)      # 平常時 2 標本 × 40 ÷ 400 本 = 0.20
         with written(b=b) as paths:
             row = self.judge(b=paths["b"])["rows"][2]
-        self.assertEqual(row[3], sd.MET)
-        self.assertIn("**0.07** 回/接続", row[2])
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**0.20** 回/接続", row[2])
+
+    def daily(self, version="0.1.0+bbbbbbb"):
+        day = {"connects": 100, "version": version}
+        return {"days": [dict(day, day="2026-09-20", dns_per_connect=0.02),
+                         dict(day, day="2026-09-21", dns_per_connect=0.12),
+                         dict(day, day="2026-09-22", dns_per_connect=0.30, version="0.1.0+old"),
+                         dict(day, day="2026-09-23", dns_per_connect=0.0, connects=0)]}
+
+    def test_the_daily_band_is_shown_for_this_version_only(self):
+        with written(d=self.daily()) as paths:
+            row = self.judge(argv=[A, B, "--no-dns", "--criteria", "phase15",
+                                   "--daily", paths["d"]])["rows"][2]
+        # 前の版の日 (0.30) と接続 0 の日は入れない
+        self.assertIn("日ごとの幅 0.02〜0.12 (2 日)", row[2])
+        self.assertIn("`/daily`", row[4])
+
+    def test_without_daily_there_is_no_band(self):
+        self.assertNotIn("日ごとの幅", self.judge()["rows"][2][2])
+
+    def test_a_daily_file_next_to_the_prefix_is_read(self):
+        self.assertEqual(sd.classify("daily.json"), "daily")
 
     def test_the_conn_role_cpu_comes_from_the_profile_part(self):
         row = self.judge()["rows"][3]
@@ -687,103 +728,78 @@ class Criteria15(unittest.TestCase):
         self.assertEqual(row[3], sd.UNKNOWN)
         self.assertIn("`/profile` の部が無い", row[4])
 
-    def recent(self, n_rows, idle, half, old=False, http=0):
-        """閉じた接続 `n_rows` 本のうち `idle` 本が `idle_timeout`、`half` 本が半閉じ。
+    def minutes(self, snap, rows, closed=True):
+        """`/history?res=60` に `closed` と `transfer` を足す (`rows` は `(t, 終わったトンネル, idle_timeout, 半閉じ)`)。
 
-        `old=True` で **T15.0 (4) より前の版** (`half_closed` の欄そのものが無い)、
-        `http` で forward の行 (`kind` が `http`) を後ろに足す。
+        `closed=False` で `closed` の部が無い形。
         """
-        rows = []
-        for i in range(n_rows):
-            r = {"id": i, "at": 1789000000, "secs": 10, "kind": "connect",
-                 "reason": "idle_timeout" if i < idle else "client_eof"}
-            if not old:
-                r["half_closed"] = "client" if i < half else None
-            rows.append(r)
-        for i in range(http):
-            r = {"id": 10000 + i, "at": 1789000000, "secs": 1, "kind": "http",
-                 "reason": "idle_timeout"}
-            if not old:
-                r["half_closed"] = None
-            rows.append(r)
-        n = n_rows + http
-        return {"recent": rows, "count": n, "shown": n, "truncated": False}
+        h = snap["history"].setdefault("60", {"interval_secs": 60, "keys": [], "samples": []})
+        h["transfer"] = {"interval_secs": 60,
+                         "keys": ["t", "tunnels", "speed_n", "speed", "half_close_n", "half_close"],
+                         "samples": [[t, n, 0, [], half, []] for t, n, _i, half in rows]}
+        if closed:
+            reasons = ["client_eof", "server_eof", "idle_timeout", "keepalive_timeout",
+                       "evicted", "limit", "shutdown", "error"]
+            # 母数に forward が混ざっても (closed は http も数える) 割合は動かない
+            h["closed"] = {"interval_secs": 60, "keys": ["t", "closed", "reasons"],
+                           "reasons": reasons,
+                           "samples": [[t, n + 50, [n - i, 50, i, 0, 0, 0, 0, 0]]
+                                       for t, n, i, _h in rows]}
+        return snap
 
-    def test_the_closed_shares_are_ratios_not_counts(self):
-        """**本数は窓の長さで変わる** (雪像 1 枚に入るのは最後に閉じた N 本)。"""
+    # 前 = 1789020000 台の平常時 (100 本/時)、1789030800 はバースト (400 本/時)。
+    # 後 = 1789045200 台の平常時 (200 本/時)、1789052400 はバースト (350 本/時)
+    BEFORE = 1789020000
+    AFTER = 1789045200
+
+    def closed_row(self, before, after, closed=True):
         a, b = read(A), read(B)
-        a["recent"] = self.recent(100, 20, 10)       # 0.20 / 0.10
-        b["recent"] = self.recent(600, 120, 60)      # 同じ割合、本数は 6 倍
+        self.minutes(a, before, closed)
+        self.minutes(b, after, closed)
         with written(a=a, b=b) as paths:
-            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+            return self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+
+    def test_the_closed_shares_come_from_the_minute_counts(self):
+        """**全数の割合**で比べる (T15.15 (3)。`/recent` は 256 KiB で切れて窓が毎回違う)。"""
+        row = self.closed_row([(self.BEFORE, 100, 20, 10)],
+                              [(self.AFTER, 300, 60, 30), (self.AFTER + 60, 300, 60, 30)])
         self.assertEqual(row[3], sd.MET)
-        self.assertIn("`idle_timeout` 0.20 → 0.20 (+0%)", row[2])
-        self.assertIn("100 本 → 600 本", row[4])
+        self.assertIn("`idle_timeout` 0.20 → **0.20** (+0%)、半閉じ 0.10 → 0.10", row[2])
+        self.assertIn("前 1 分 100 本 / 後 2 分 600 本", row[4])
 
     def test_a_changed_share_is_missed(self):
-        a, b = read(A), read(B)
-        a["recent"] = self.recent(100, 20, 10)
-        b["recent"] = self.recent(100, 40, 10)       # `idle_timeout` が 2 倍
-        with written(a=a, b=b) as paths:
-            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+        row = self.closed_row([(self.BEFORE, 100, 20, 10)], [(self.AFTER, 100, 40, 10)])
         self.assertEqual(row[3], sd.MISSED)
         self.assertIn("(+100%)", row[2])
 
-    def test_without_recent_the_shares_cannot_be_judged(self):
-        row = self.judge()["rows"][4]                # B の `recent` は落ちている (`dropped`)
-        self.assertEqual(row[3], sd.UNKNOWN)
-        self.assertIn("`/recent` の部が無い", row[4])
-
-    def test_an_old_snapshot_has_no_half_closed_field_at_all(self):
-        """**最初の前後比べ (再デプロイ前 × 後) が必ずこの形**になる (T15.0 (15) のレビュー)。
-
-        前の版に `half_closed` の欄が無いのを 0.00 と読むと、半閉じが増えた形になって
-        `change(0.10, 0)` が `None` を返し、直しが効いていても「届かず」と書かれる。
-        """
-        a, b = read(A), read(B)
-        a["recent"] = self.recent(100, 20, 0, old=True)   # 欄そのものが無い版
-        b["recent"] = self.recent(100, 20, 10)            # 10% が半閉じ
-        with written(a=a, b=b) as paths:
-            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
-        self.assertEqual(row[3], sd.MET)                  # `idle_timeout` だけで判定する
-        self.assertIn("`idle_timeout` 0.20 → 0.20 (+0%)", row[2])
-        self.assertIn("半閉じ —**前の版にその欄は無い**", row[2])
-        self.assertNotIn("0.00", row[2])
-
-    def test_the_newer_side_missing_the_field_is_skipped_too(self):
-        a, b = read(A), read(B)
-        a["recent"] = self.recent(100, 20, 10)
-        b["recent"] = self.recent(100, 20, 0, old=True)
-        with written(a=a, b=b) as paths:
-            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+    def test_burst_hours_and_unknown_hours_are_left_out(self):
+        """平常時だけ: バーストの時間の分と、1 時間の標本がまだ無い分は数えない。"""
+        row = self.closed_row([(self.BEFORE, 100, 20, 10), (1789030800 + 60, 1000, 900, 0)],
+                              [(self.AFTER, 100, 20, 10), (1789052400, 1000, 900, 0),
+                               (1789086000, 1000, 900, 0)])
         self.assertEqual(row[3], sd.MET)
-        self.assertIn("半閉じ —**後の版にその欄は無い**", row[2])
+        self.assertIn("バーストの時間 2 分・時間の標本が無い 1 分は外した", row[4])
 
-    def test_only_the_connect_rows_are_counted(self):
-        """母数は CONNECT だけ。**http の混ざり具合**で割合が動いてはいけない。"""
-        a, b = read(A), read(B)
-        a["recent"] = self.recent(100, 20, 10)            # http 0 本
-        b["recent"] = self.recent(100, 20, 10, http=100)  # 同じ CONNECT + http 100 本
-        with written(a=a, b=b) as paths:
-            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
-        self.assertEqual(row[3], sd.MET)
-        self.assertIn("`idle_timeout` 0.20 → 0.20 (+0%)", row[2])
-        self.assertIn("100 本 → 100 本", row[4])          # 200 本ではない
-        self.assertIn("**CONNECT だけ**", row[4])
-
-    def test_a_snapshot_with_only_http_rows_cannot_be_judged(self):
-        a, b = read(A), read(B)
-        a["recent"] = self.recent(100, 20, 10)
-        b["recent"] = self.recent(0, 0, 0, http=50)
-        with written(a=a, b=b) as paths:
-            row = self.judge(a=paths["a"], b=paths["b"])["rows"][4]
+    def test_without_transfer_the_shape_cannot_be_judged(self):
+        row = self.judge()["rows"][4]
         self.assertEqual(row[3], sd.UNKNOWN)
-        self.assertIn("CONNECT の行が 1 本も無い", row[4])
+        self.assertIn("`transfer` が無い", row[4])
 
-    def test_the_markdown_says_the_missing_field_is_skipped(self):
+    def test_a_side_with_no_tunnels_cannot_be_judged(self):
+        row = self.closed_row([], [(self.AFTER, 100, 20, 10)])
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("前の平常時に閉じたトンネルが無い", row[4])
+
+    def test_without_closed_only_the_half_close_is_shown(self):
+        row = self.closed_row([(self.BEFORE, 100, 20, 10)], [(self.AFTER, 100, 20, 10)],
+                              closed=False)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`closed` の部が無い", row[2])
+        self.assertIn("半閉じ 0.10 → 0.10", row[2])
+
+    def test_the_markdown_names_the_minute_counts(self):
         md = run([A, B, "--no-dns", "--criteria", "phase15"])
-        self.assertIn("**CONNECT の行だけ**", md)
-        self.assertIn("その欄が無い項目も同じ", md)
+        self.assertIn("**平常時の 1 分ごとの全数**", md)
 
     def test_the_timeout_errors_are_compared_per_hour(self):
         """前後で標本の数が違うので、件数ではなく**1 時間あたり**で比べる。"""

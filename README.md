@@ -151,6 +151,8 @@ scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json --group domain  
 scripts/snapshot-diff.py ~/rust-http-proxy-status/2026-09-1{2,6}*-snapshot.json --criteria phase14
 scripts/snapshot-diff.py a.json b.json --aaaa aaaa.json --out json      # 機械で読む形
 scripts/snapshot-diff.py a.json b.json --group domain                   # eTLD+1 でまとめる
+# phase15 の判定。`/daily` は雪像に入っていないので、同時刻に取ったものを渡すと日ごとのミスの幅が並ぶ
+scripts/snapshot-diff.py a.json b.json --criteria phase15 --daily b-daily.json
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
 scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z \
                          --from-files ~/rust-http-proxy-status/2026-09-16T0106Z

@@ -8,7 +8,7 @@
 # 使い方:
 #   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase14]
 #                            [--out md|json] [--top N] [--burst N] [--major-hosts a,b,c]
-#                            [--group domain]
+#                            [--group domain] [--daily FILE]
 #     scripts/snapshot-diff.py ~/rust-http-proxy-status/2026-09-1*-snapshot.json
 #     scripts/snapshot-diff.py a.json b.json --criteria phase14 >> TODO.md
 #
@@ -124,7 +124,7 @@ def classify(suffix):
     if m:
         return "history." + m.group(1)
     for name in ("hosts", "clients", "dns", "errors", "connections", "recent",
-                 "log", "events", "bursts"):
+                 "log", "events", "bursts", "daily"):
         if s.startswith(name):
             return name
     return None
@@ -748,7 +748,9 @@ PHASE15 = {
     "watch_host": "discord.com",     # Phase 14 で唯一届かなかった相手
     "major_miss_rate": 0.05,
     "refresh_per_warm_hour": 80.0,   # TTL 60 秒 の 3/4 = 45 秒おきに 1 名前 = 80 回/時
-    "miss_band": (0.06, 0.09),       # 窓 3,600 秒 で落ち着くと見込んだ幅
+    # 窓 3,600 秒 で落ち着くと見込んだ上限。**下の閾は外した** (T15.15 (2)。T15.99 の 0.05 は
+    # 幅 0.06〜0.09 を良い方に外れて「届かず」と書かれた。低いのは見込み違いではなく良いこと)
+    "miss_max": 0.09,
     # T15.5: 空回りを直したあとに「別の空回りが無い」ことを見る 2 行
     "conn_cores": 0.01,
     "closed_tolerance": 0.10,
@@ -798,35 +800,97 @@ def profile_role_cores(snap, role):
     return {"cores": cpu_us / 1e6 / secs, "samples": len(rows), "secs": secs}
 
 
-def closed_shares(snap):
-    """`/recent` から `idle_timeout` で閉じた割合と半閉じの割合 (T15.5 の前後比べ)。
+def minute_parts(a, b, name):
+    """2 枚の `/history?res=60` の `name` (`closed` / `transfer`) を時刻で重ねる。
 
-    **本数そのものは比べられない**: 雪像 1 枚に入るのは「最後に閉じた N 本」で、
-    窓の長さが前後で違う (2026-09-18 の雪像は 2,000 件中 615 件)。割合なら比べられる。
-
-    **母数は CONNECT だけ** (`kind` が `http` の行 = forward は外す)。T15.5 が見たいのは
-    トンネルの閉じ方で、http と CONNECT の混ざり具合が前後で変われば中継の振る舞いが
-    同じでも割合が動く (`crates/metrics-recent/src/recent.rs` の `to_json` は
-    `"kind":"connect"|"http"` を必ず出す)。
-
-    **半閉じは「欄が無い」と「0 本」を分ける**: `half_closed` は T15.0 (4) が足した欄で、
-    それより前の版の `/recent` には**欄そのものが無い**。無いのを 0.00 と読むと
-    「半閉じが 1 本も無かった」という前の値ができてしまい、最初の前後比べ
-    (再デプロイ前の雪像 × 後の雪像) が必ず「届かず」になる。新しい版は半閉じして
-    いなくても `"half_closed":null` を必ず出すので、**欄の有無がそのまま版の目印**になる。
+    どちらも `keys` と `samples` を持つ別の配列 (T14.6 / T14.25)。同じ時刻は**新しい雪像の値**。
+    欄が無い版は飛ばす。返すのは `({t: {鍵: 値}}, 最初に見つかった部の頭)` か、どちらにも無ければ None。
     """
-    rows = part(snap, "recent").get("recent")
-    if not isinstance(rows, list) or not rows:
+    rows, head = {}, None
+    for snap in (a, b):
+        part_ = ((snap.get("history") or {}).get("60") or {}).get(name)
+        if not isinstance(part_, dict) or not part_.get("keys"):
+            continue
+        head = head or part_
+        keys = part_["keys"]
+        for r in part_.get("samples") or []:
+            if r:
+                rows[r[0]] = {k: (r[i] if i < len(r) else None) for i, k in enumerate(keys)}
+    return (rows, head) if head else None
+
+
+def tunnel_closes(a, b, boundary, burst):
+    """`/history?res=60` から、**平常時に閉じたトンネル**の `idle_timeout` と半閉じの割合 (T15.15 (3))。
+
+    前の版は `/recent` (雪像では 256 KiB で切れ、窓の長さが毎回違う) から割合を取っていた。
+    こちらは 1 分ごとの**全数**: 母数は `transfer.tunnels` (終わったトンネルの数)、
+    分子は `closed.reasons` の `idle_timeout` (トンネルにしか付かない理由) と `transfer.half_close_n`。
+
+    **平常時だけ**: その分が入る 1 時間の標本 (`/history?res=3600`) が `burst` 本以上なら外す
+    (T14.0 の平常時の定義と同じ物差し)。その時間の標本がまだ無い分 (取得の途中の 1 時間) も外す。
+    """
+    transfer = minute_parts(a, b, "transfer")
+    if transfer is None:
         return None
-    rows = [r for r in rows if r.get("kind") == "connect"]
-    if not rows:
+    t_rows, _ = transfer
+    closed = minute_parts(a, b, "closed")
+    c_rows, c_head = closed if closed else ({}, None)
+    reasons = (c_head or {}).get("reasons") or []
+    ri = reasons.index("idle_timeout") if "idle_timeout" in reasons else None
+    hours = {r["t"]: (r["connects"] or 0) for r in merged_history(a, b, "3600")[0]}
+
+    def side():
+        return {"minutes": 0, "tunnels": 0, "idle": 0 if ri is not None else None, "half": 0}
+    out = {"before": side(), "after": side(), "burst_minutes": 0, "unknown_minutes": 0}
+    for t in sorted(t_rows):
+        c = hours.get(t // 3600 * 3600)
+        if c is None:
+            out["unknown_minutes"] += 1
+            continue
+        if c >= burst:
+            out["burst_minutes"] += 1
+            continue
+        acc = out["before"] if t < boundary else out["after"]
+        acc["minutes"] += 1
+        acc["tunnels"] += t_rows[t].get("tunnels") or 0
+        acc["half"] += t_rows[t].get("half_close_n") or 0
+        if ri is not None:
+            rs = (c_rows.get(t) or {}).get("reasons") or []
+            acc["idle"] += rs[ri] if ri < len(rs) else 0
+    for acc in (out["before"], out["after"]):
+        n_ = acc["tunnels"]
+        acc["idle_share"] = (acc["idle"] / n_) if n_ and acc["idle"] is not None else None
+        acc["half_share"] = (acc["half"] / n_) if n_ else None
+    return out
+
+
+def dns_name_refreshes(snap):
+    """`/dns` の名前ごとの引き直しを 1 時間あたりに直した最大 (T15.15 (1))。
+
+    閾 80 回/時は **1 名前あたりの上限** (TTL 60 秒の 3/4 おき) なので、物差しは名前ごとの値。
+    `refreshes` はその名前の起動からの通算なので、`uptime_secs` で割る (T15.99 の 78.2 と同じ読み方)。
+    """
+    entries = part(snap, "dns").get("entries")
+    up = snap.get("uptime_secs") or 0
+    if not isinstance(entries, list) or not entries or not up:
         return None
-    has_half = any("half_closed" in r for r in rows)
-    idle = sum(1 for r in rows if r.get("reason") == "idle_timeout")
-    half = sum(1 for r in rows if r.get("half_closed")) if has_half else None
-    return {"rows": len(rows), "idle_n": idle, "half_n": half,
-            "idle_timeout": idle / len(rows),
-            "half_closed": (half / len(rows)) if has_half else None}
+    best = max(entries, key=lambda e: e.get("refreshes") or 0)
+    return {"host": best.get("host"), "refreshes": best.get("refreshes") or 0,
+            "per_hour": (best.get("refreshes") or 0) / (up / 3600.0), "names": len(entries)}
+
+
+def daily_band(snap):
+    """`/daily` の 1 日ごとの `dns_per_connect` の幅 (**その版の日だけ**。T15.15 (2))。"""
+    days = part(snap, "daily").get("days")
+    if not isinstance(days, list):
+        return None
+    ver = snap.get("version")
+    vals = [d["dns_per_connect"] for d in days
+            if d.get("connects") and d.get("dns_per_connect") is not None
+            and (not ver or d.get("version") == ver)]
+    if not vals:
+        return None
+    return {"lo": min(vals), "hi": max(vals), "days": len(vals)}
 
 
 # --- Phase 14 の 4 行 (**出力は 1 文字も変えない**。既存のテストが見張っている) ---
@@ -905,33 +969,51 @@ def _p15_watch_host(c, th):
 
 
 def _p15_refresh_rate(c, th):
-    """T15.4: 裏の引き直しが 1 名前あたり何回/時か (**通算の平均で割らない**)。"""
+    """T15.4: 裏の引き直しが 1 名前あたり何回/時か。
+
+    **判定は `/dns` の名前ごとの最大** (T15.15 (1)。閾は 1 名前あたりの上限なので)。
+    参考に「通算 ÷ 時間 ÷ warm の平均」も並べる。warm の平均は**全時間** (`after_all`) から取り、
+    分子の `dns.refreshes` (起動からの通算、バーストの時間も含む) と窓を揃える。
+    """
     limit = f"≤ {th['refresh_per_warm_hour']:.0f} 回/時/名前"
     label = "裏の引き直しが 1 名前あたり 1 時間 80 回以下"
-    warm, hours = c["after"].get("dns_warm_avg"), c["hours"]
+    warm, hours = c["after_all"].get("dns_warm_avg"), c["hours"]
     refreshes = (c["dns"] or {}).get("refreshes")
-    if not warm or not hours or refreshes is None:
+    avg = (refreshes / hours / warm) if warm and hours and refreshes is not None else None
+    avg_text = (f"通算 {n(refreshes)} 回 ÷ {hours:,.1f} 時間 ÷ warm {ms(warm)} 件 = {avg:,.1f}"
+                if avg is not None else None)
+    top = dns_name_refreshes(c["b"])
+    if top is not None:
+        v = top["per_hour"]
+        return (label, limit,
+                f"**{v:,.1f}** 回/時 (`{top['host']}` {n(top['refreshes'])} 回、名前ごとの最大)"
+                + (f"。参考: {avg_text}" if avg_text else ""),
+                MET if v <= th["refresh_per_warm_hour"] else MISSED,
+                f"`/dns` の名前ごとの `refreshes` ÷ `uptime_secs` ({top['names']} 名前)")
+    if avg is None:
         return (label, limit, "—", UNKNOWN,
-                "`/history` に `dns_warm` が無いか、窓の長さか `dns.refreshes` が取れない")
-    v = refreshes / hours / warm
-    return (label, limit,
-            f"**{v:,.1f}** 回/時/名前 ({n(refreshes)} 回 ÷ {hours:,.1f} 時間 ÷ warm {ms(warm)} 件)",
-            MET if v <= th["refresh_per_warm_hour"] else MISSED,
-            "`/status` の `dns.refreshes` と `/history` の `dns_warm` の平均")
+                "`/dns` の部が無く、`/history` に `dns_warm` が無いか、窓の長さか "
+                "`dns.refreshes` が取れない")
+    return (label, limit, f"**{avg:,.1f}** 回/時/名前 ({avg_text.split(' = ')[0]})",
+            MET if avg <= th["refresh_per_warm_hour"] else MISSED,
+            "`/dns` の部が無いので `/status` の `dns.refreshes` と `/history` の `dns_warm` の"
+            "全時間の平均 (名前ごとの最大より甘い)")
 
 
 def _p15_miss_band(c, th):
-    """T15.4: 平常時のミス率が**見込んだ幅**に入るか (低すぎても見込み違い)。"""
-    lo, hi = th["miss_band"]
-    label = f"平常時の名前解決のミスが {lo}〜{hi} 回/接続 の幅に入る"
-    limit = f"{lo}〜{hi}"
+    """T15.4: 平常時のミス率が見込んだ上限以下か (T15.15 (2) で下の閾を外した)。"""
+    hi = th["miss_max"]
+    label = f"平常時の名前解決のミスが {hi} 回/接続 以下"
+    limit = f"≤ {hi}"
     v = c["after"].get("dns_per_connect")
     if v is None:
         return (label, limit, "—", UNKNOWN, "`/history` にこの期間の標本が無い")
-    inside = lo <= v <= hi
-    side = "" if inside else ("、**幅より低い**" if v < lo else "、**幅より高い**")
-    return (label, limit, f"**{ratio(v)}** 回/接続{side}", MET if inside else MISSED,
-            f"平常時 {c['after'].get('samples', 0)} 標本 / {n(c['after'].get('connects'))} 本")
+    band = daily_band(c["b"])
+    days = (f"、日ごとの幅 {ratio(band['lo'])}〜{ratio(band['hi'])} ({band['days']} 日)"
+            if band else "")
+    return (label, limit, f"**{ratio(v)}** 回/接続{days}", MET if v <= hi else MISSED,
+            f"平常時 {c['after'].get('samples', 0)} 標本 / {n(c['after'].get('connects'))} 本"
+            + ("、日ごとは `/daily` (その版の日だけ)" if band else ""))
 
 
 def _p15_conn_cores(c, th):
@@ -947,34 +1029,33 @@ def _p15_conn_cores(c, th):
 
 
 def _p15_closed_shape(c, th):
-    """T15.5: 直しの前後で閉じ方が変わっていないか (`idle_timeout` と半閉じの割合)。
+    """T15.5: 直しの前後でトンネルの閉じ方が変わっていないか (T15.15 (3))。
 
-    **片方の雪像にその欄が無い項目は飛ばす** (0 とは書かない)。半閉じは T15.0 (4) で
-    足した欄なので、**最初の前後比べ (再デプロイ前 × 後) では必ず前の側に無い**。
-    両方飛んだら行ごと「判定できず」、片方だけなら残る項目で判定する。
+    材料は `/history?res=60` の `closed` と `transfer` の**全数** (平常時だけ)。
+    `idle_timeout` と半閉じは**同じ信号の裏表** (半閉じのまま相手が黙ると `idle_timeout` で
+    閉じる) なので 1 行にまとめ、判定は `idle_timeout` の割合、半閉じは参考に並べる。
     """
     tol = th["closed_tolerance"]
-    label = "`idle_timeout` と半閉じの割合が前後で変わらない"
+    label = "トンネルの `idle_timeout` の割合が前後で変わらない (半閉じは参考)"
     limit = f"±{tol * 100:.0f}%"
-    now, old = closed_shares(c["b"]), closed_shares(c["a"])
-    if not now or not old:
+    t = tunnel_closes(c["a"], c["b"], c["info"].get("boundary") or 0, c["burst"])
+    if t is None:
         return (label, limit, "—", UNKNOWN,
-                "前後のどちらかに `/recent` の部が無い (または CONNECT の行が 1 本も無い)")
-    shown, verdict, judged = [], MET, 0
-    for key, title in (("idle_timeout", "`idle_timeout`"), ("half_closed", "半閉じ")):
-        if now[key] is None or old[key] is None:
-            side = "後" if now[key] is None else "前"
-            shown.append(f"{title} —**{side}の版にその欄は無い**")
-            continue
-        judged += 1
-        d = change(now[key], old[key])
-        shown.append(f"{title} {ratio(old[key])} → {ratio(now[key])}"
-                     + (f" ({d * 100:+.0f}%)" if d is not None else " (前が 0)"))
-        if d is None or abs(d) > tol:
-            verdict = MISSED
-    return (label, limit, "、".join(shown), verdict if judged else UNKNOWN,
-            f"`/recent` の **CONNECT だけ**の割合 ({old['rows']} 本 → {now['rows']} 本。"
-            "**本数は窓の長さで変わる**ので割合で見る)")
+                "前後のどちらにも `/history?res=60` の `transfer` が無い")
+    bef, aft = t["before"], t["after"]
+    src = (f"`/history?res=60` の `closed` / `transfer` の平常時 (前 {bef['minutes']} 分 "
+           f"{n(bef['tunnels'])} 本 / 後 {aft['minutes']} 分 {n(aft['tunnels'])} 本。"
+           f"バーストの時間 {t['burst_minutes']} 分・時間の標本が無い {t['unknown_minutes']} 分は外した)")
+    if not bef["tunnels"] or not aft["tunnels"]:
+        side = "前" if not bef["tunnels"] else "後"
+        return (label, limit, "—", UNKNOWN, f"{side}の平常時に閉じたトンネルが無い。" + src)
+    half = f"、半閉じ {ratio(bef['half_share'])} → {ratio(aft['half_share'])}"
+    if bef["idle_share"] is None or aft["idle_share"] is None:
+        return (label, limit, "`idle_timeout` —**`closed` の部が無い**" + half, UNKNOWN, src)
+    d = change(aft["idle_share"], bef["idle_share"])
+    shown = (f"`idle_timeout` {ratio(bef['idle_share'])} → **{ratio(aft['idle_share'])}**"
+             + (f" ({d * 100:+.0f}%)" if d is not None else " (前が 0)") + half)
+    return (label, limit, shown, MISSED if d is None or abs(d) > tol else MET, src)
 
 
 def _p15_timeout(c, th):
@@ -1005,7 +1086,7 @@ RULES = {
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,
-          a=None, b=None, info=None, dns=None, errors=None):
+          a=None, b=None, info=None, dns=None, errors=None, burst=BURST_PER_HOUR):
     """`RULES[name]` の各行を順に呼んで判定表にする。
 
     `a` / `b` (雪像そのもの) と `info` / `dns` / `errors` は **phase15 の行だけが使う**
@@ -1018,6 +1099,8 @@ def judge(name, hist, hosts, majors, status_b, overload, th,
         "after_all": (hist or {}).get("after_all") or {},
         "hosts": hosts, "majors": majors, "status_b": status_b, "overload": overload,
         "a": a or {}, "b": b or {}, "info": info, "dns": dns, "errors": errors,
+        # 平常時の閾 (1 時間の本数)。閉じ方の行が分ごとの標本をこれで切る
+        "burst": burst,
         # `dns.refreshes` は再起動をまたぐと「起動から」の値なので、割る時間もそちらに合わせる
         "hours": (hours or 0) / 3600.0,
     }
@@ -1029,6 +1112,9 @@ def judge(name, hist, hosts, majors, status_b, overload, th,
 # ---------------------------------------------------------------- 組み立て
 
 def build(a, b, args):
+    # `/daily` は雪像に入っていないので、渡されたら新しい雪像の部として足す (T15.15 (2))
+    if getattr(args, "daily", None):
+        b["daily"] = load(args.daily)
     info = restart_info(a, b)
     hist = history_split(a, b, info, args.burst)
     mode, table = "dns", {}
@@ -1071,7 +1157,7 @@ def build(a, b, args):
     if args.criteria:
         out["criteria"] = judge(args.criteria, hist, hosts, majors, status_b, overload,
                                 CRITERIA[args.criteria], a=a, b=b, info=info,
-                                dns=out["dns"], errors=out["errors"])
+                                dns=out["dns"], errors=out["errors"], burst=args.burst)
     return out
 
 
@@ -1364,11 +1450,12 @@ def render(d, top):
             p()
         if c["name"] == "phase15":
             # T15.0 (15)。材料が雪像に無い行は「0 だった」ではなく「判定できず」にする
-            p("材料は `/hosts` `/status` の `dns` `/history` (`dns_warm` と `errors_by_cause`)・"
-              "`/profile` (`conn` 役の CPU)・`/recent` (**CONNECT の行だけ**の閉じた理由と半閉じ) です。"
+            p("材料は `/hosts` `/status` の `dns` `/dns` (名前ごとの引き直し)・"
+              "`/history` (`dns_warm` と `errors_by_cause`、`res=60` の `closed` / `transfer`)・"
+              "`/profile` (`conn` 役の CPU)・`--daily` (日ごとのミス) です。"
               "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。"
-              "**前後のどちらかの版にその欄が無い項目も同じ**で、飛ばして残りで判定します "
-              "(半閉じは T15.0 (4) で足した欄なので、再デプロイ前の雪像には入っていません)。")
+              "閉じ方の行は**平常時の 1 分ごとの全数**で比べます (`/recent` は 256 KiB で切れて"
+              "窓の長さが毎回違うので使いません。T15.15)。")
             p()
         p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
         p("|---|---|---|---|---|")
@@ -1393,7 +1480,7 @@ def parser():
     p.add_argument("--no-dns", action="store_true", help="AAAA を引かない")
     p.add_argument("--criteria", choices=sorted(CRITERIA), metavar="NAME",
                    help="完了の定義に対する判定表を出す (phase14 = Phase 14 の 4 行、"
-                        "phase15 = T15.4 / T15.5 / T15.6 の 6 行)")
+                        "phase15 = T15.4 / T15.5 / T15.6 の 6 行。T15.15 で物差しを直した)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst", type=int, default=BURST_PER_HOUR, metavar="N",
@@ -1401,6 +1488,9 @@ def parser():
     p.add_argument("--summary", metavar="SRC",
                    help="`/history?...&summary=1` の応答 (ファイルか http:// の URL) を読んで "
                         "手元の集計と並べる (T14.24。手元の集計はそのまま残る)")
+    p.add_argument("--daily", metavar="FILE",
+                   help="`/daily` の応答 (`{\"days\":[...]}`) を新しい雪像に足す。phase15 の "
+                        "ミスの行に日ごとの幅を並べる (T15.15 (2)。雪像には入っていない)")
     p.add_argument("--major-hosts", metavar="a,b,c",
                    help="主要ホストを名指しする (既定はその間の要求数の上位 3)")
     p.add_argument("--group", choices=["host", "domain"], default="host", metavar="KEY",
