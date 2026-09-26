@@ -15,7 +15,7 @@
 //! | 種類 | 立つ条件 |
 //! |---|---|
 //! | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が直近 1 時間の p95 の [`CONNECT_RATIO`] 倍以上、かつ [`CONNECT_MIN_MS`] 以上、かつ [`CONNECT_MIN_SAMPLES`] 本以上 |
-//! | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が [`DNS_MISS_MS`] 以上 |
+//! | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が [`DNS_MISS_MS`] と canary の基準線の [`DNS_CANARY_RATIO`] 倍の大きい方以上、かつ [`DNS_MIN_MISSES`] 回以上 (T17.1) |
 //! | `errors` | エラーが 5 分で [`ERRORS_MIN`] 件以上 |
 //! | `active_high` | 同時接続の山が `max_conns` の [`ACTIVE_PERCENT`]% 以上 (T14.6 の写真と同じ閾。写真があればその番号) |
 //! | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が増えた |
@@ -67,8 +67,19 @@ pub const CONNECT_MIN_MS: f64 = 50.0;
 /// ([`crate::window`] の `.min(self.ms_max)`。**これは仕様で、触らない**)。
 /// 257 / 265 / 275 ms で立った件はどれも「1 本の 250 ms 級」だった。
 pub const CONNECT_MIN_SAMPLES: u64 = 20;
-/// (2) 名前解決のミス 1 回の平均 (ms)。
+/// (2) 名前解決のミス 1 回の平均 (ms)。これより低い閾にはしない (canary が速くても)。
 pub const DNS_MISS_MS: f64 = 100.0;
+/// (2) かつ、5 分の窓にこの回数以上のミスがあるときだけ (T17.1)。
+///
+/// [`CONNECT_MIN_SAMPLES`] と同じ考え方。keep-warm (T14.1 / T15.4) で安いミスが消え、
+/// 残ったのは**たまにしか引かない名前の高いミス** (平均 98 ms) なので、5 分に 1 回の
+/// ミスが 240〜470 ms だとそれだけで平均が閾を越えた (T16.99: 47 時間で 29 件)。
+pub const DNS_MIN_MISSES: u64 = 3;
+/// (2) canary の名前解決の中央値 (直近 1 時間) のこの倍を閾にする (T17.1)。
+///
+/// リゾルバそのものが遅い網では 100 ms を常に越えるので、「いつもより遅い」を
+/// 見るための基準線。canary が `off` か 1 回も回っていなければ [`DNS_MISS_MS`] だけ。
+pub const DNS_CANARY_RATIO: f64 = 3.0;
 /// (3) 5 分のエラー件数。
 pub const ERRORS_MIN: u64 = 5;
 /// (4) 同時接続の山が `max_conns` のこの割合 (%) 以上で立つ (T14.6 の写真と同じ閾)。
@@ -241,6 +252,9 @@ pub struct Counters {
     /// 起動からの秒 (T15.0 (9))。**`Detector` が最初の `t` を覚える案は採らない** —
     /// `.rrd` から読み戻した直後の窓を「起動直後」と区別できないため
     pub uptime_secs: u64,
+    /// canary の名前解決の中央値 (ms。直近 [`BASE_SECS`] 秒。T17.1)。
+    /// `None` = canary が `off` か、窓に 1 回も無い
+    pub canary_dns_p50_ms: Option<u64>,
 }
 
 impl Counters {
@@ -266,6 +280,12 @@ impl Counters {
             cpu_top_tid: top.tid,
             cpu_top_role: top.role,
             uptime_secs: metrics.start_time.elapsed().as_secs(),
+            // 窓は 5 秒 × 720 行を 1 回舐めるだけ。`off` に切り替えたあとは古い行を見ない
+            canary_dns_p50_ms: if crate::canary::mode() == crate::canary::Mode::Off {
+                None
+            } else {
+                crate::canaryhist::dns_p50_ms(s.t.saturating_sub(BASE_SECS), s.t)
+            },
         }
     }
 }
@@ -477,6 +497,8 @@ impl Detector {
         } else {
             DNS_MISS_RATE
         };
+        // (2) ミスの平均の閾。canary の基準線の 3 倍と 100 ms の大きい方 (T17.1)
+        let dns_limit = dns_miss_limit(c.canary_dns_p50_ms);
         let hits = [
             // 直近の窓は基準値の中にも入っているので、起動直後 (1 時間ぶんが全部この
             // 5 分) は倍率がちょうど 1 になり、立たない
@@ -484,7 +506,7 @@ impl Detector {
                 && p95_ref > 0.0
                 && p95 >= CONNECT_RATIO * p95_ref
                 && w5.connect.count >= CONNECT_MIN_SAMPLES,
-            w5.dns_miss_avg_ms() >= DNS_MISS_MS,
+            w5.dns_misses >= DNS_MIN_MISSES && w5.dns_miss_avg_ms() >= dns_limit,
             w5.errors >= ERRORS_MIN,
             (self.threshold > 0 && peak >= self.threshold as u64) || shot.is_some(),
             delta.iter().any(|&d| d > 0),
@@ -506,6 +528,7 @@ impl Detector {
             spinning: &spinning,
             spinning_total,
             spin_secs,
+            dns_limit,
         };
         let mut out = Vec::new();
         for (i, &hit) in hits.iter().enumerate() {
@@ -696,6 +719,17 @@ struct Facts<'a> {
     spinning: &'a [SpinningConn],
     spinning_total: usize,
     spin_secs: u64,
+    /// `dns_slow` の閾 (ms。[`dns_miss_limit`])
+    dns_limit: f64,
+}
+
+/// `dns_slow` の閾 (ms): [`DNS_MISS_MS`] と canary の基準線の [`DNS_CANARY_RATIO`] 倍の
+/// 大きい方 (T17.1)。基準線が無ければ [`DNS_MISS_MS`]。
+fn dns_miss_limit(canary_p50_ms: Option<u64>) -> f64 {
+    match canary_p50_ms {
+        Some(b) => DNS_MISS_MS.max(DNS_CANARY_RATIO * b as f64),
+        None => DNS_MISS_MS,
+    }
 }
 
 /// 異常の説明に入れる宛先の長さ (バイト)。
@@ -727,7 +761,7 @@ fn fired_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>) -> String
             "{}: dns miss {} ms avg over 5m (threshold {} ms; {} misses, {} ms total)",
             head,
             ms(w5.dns_miss_avg_ms()),
-            DNS_MISS_MS as u64,
+            f.dns_limit as u64,
             w5.dns_misses,
             w5.dns_ms_sum
         ),
@@ -1123,6 +1157,78 @@ mod tests {
             "{}",
             back[0].text
         );
+    }
+
+    /// 平常時の 1 時間のあと、`misses` 回のミス (1 回 `each_ms`) を 1 分おきに流し、
+    /// canary の基準線 `canary` を付けて、出た変わり目を全部返す (T17.1)。
+    fn dns_misses_once_a_minute(misses: u64, each_ms: u64, canary: Option<u64>) -> Vec<Fired> {
+        let h = History::default();
+        let mut d = Detector::new();
+        let (mut t, quiet) = calm(&h, &mut d, 0, BASE_SECS);
+        assert!(quiet.is_empty(), "{:?}", quiet);
+        let mut out = Vec::new();
+        // 4 分 (48 標本) のうち、1 分ごとの頭の標本にだけミスを 1 回
+        for i in 0..48u64 {
+            let mut p = connects(t, 2, 10);
+            if i % 12 == 0 && i / 12 < misses {
+                p.dns_misses = 1;
+                p.dns_ms_sum = each_ms;
+            }
+            let c = Counters {
+                t,
+                canary_dns_p50_ms: canary,
+                ..Counters::default()
+            };
+            out.extend(feed_with(&h, &mut d, p, c));
+            t += 5;
+        }
+        out
+    }
+
+    /// T17.1: 5 分に 1 回だけの重いミス (400 ms) では `dns_slow` を立てない。
+    ///
+    /// T16.99 の 29 件はほぼ全部これ (5 分に 1 回、240〜470 ms)。
+    #[test]
+    fn one_slow_dns_miss_alone_does_not_fire() {
+        let out = dns_misses_once_a_minute(1, 400, None);
+        assert!(out.is_empty(), "1 回では立たない: {:?}", out);
+        assert_eq!(DNS_MIN_MISSES, 3);
+    }
+
+    /// T17.1: 5 分に 3 回の 400 ms は立つ (canary が無ければ閾は 100 ms)。
+    #[test]
+    fn three_slow_dns_misses_fire() {
+        let out = dns_misses_once_a_minute(3, 400, None);
+        assert_eq!(out.len(), 1, "{:?}", out);
+        assert_eq!(out[0].kind, Kind::DnsSlow);
+        assert_eq!(
+            out[0].text,
+            "dns_slow: dns miss 400 ms avg over 5m (threshold 100 ms; 3 misses, 1200 ms total)"
+        );
+        // 2 回目までは立たない (3 回目の標本で立つ)
+        assert_eq!(dns_misses_once_a_minute(2, 400, None), Vec::new());
+    }
+
+    /// T17.1: canary の名前解決が 200 ms の網では閾は 3 倍の 600 ms。500 ms は立たない。
+    #[test]
+    fn a_slow_canary_raises_the_dns_threshold() {
+        let out = dns_misses_once_a_minute(3, 500, Some(200));
+        assert!(
+            out.is_empty(),
+            "canary 200 ms なら 500 ms は平常: {:?}",
+            out
+        );
+        // 同じ網で 3 倍を越えれば立ち、説明の閾は基準線から引いた値になる
+        let out = dns_misses_once_a_minute(3, 700, Some(200));
+        assert_eq!(out.len(), 1, "{:?}", out);
+        assert!(
+            out[0].text.contains("(threshold 600 ms; 3 misses"),
+            "{}",
+            out[0].text
+        );
+        // 速い canary (9 ms) では 100 ms の下限が残る (27 ms には下げない)
+        assert_eq!(dns_miss_limit(Some(9)), DNS_MISS_MS);
+        assert_eq!(dns_miss_limit(None), DNS_MISS_MS);
     }
 
     /// (3) エラーが 5 分で 5 件以上。
