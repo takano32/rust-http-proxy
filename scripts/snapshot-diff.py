@@ -9,6 +9,7 @@
 #   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase14]
 #                            [--out md|json] [--top N] [--burst N] [--major-hosts a,b,c]
 #                            [--group domain] [--daily FILE]
+#                            [--profile FILE] [--profile-before FILE]
 #     scripts/snapshot-diff.py status/2026-09-1*-snapshot.json
 #     scripts/snapshot-diff.py a.json b.json --criteria phase14 >> TODO.md
 #
@@ -31,7 +32,7 @@
 #   6. その間の出来事 (`/events`。無い版では飛ばす)
 #   7. エラーの原因別の件数 (`/hosts` の `errors_by_cause` の差分と `/errors` の個票)
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
-#   9. `--criteria phase14|phase15` で **Phase の完了の定義に対する判定表**
+#   9. `--criteria phase14|phase15|phase17` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
 #      (T15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)
 #
@@ -757,7 +758,25 @@ PHASE15 = {
     # T15.6: 締め切りを 10 秒にしたら `timeout` が増えないか
     "timeout_tolerance": 0.10,
 }
-CRITERIA = {"phase14": PHASE14, "phase15": PHASE15}
+# T17.0a: Phase 17 の版を 24 時間走らせたあとに読む 8 行 (TODO.md の T17.99 の完了の定義)。
+# 前の 4 行は phase15 の関数をそのまま使う (閾も同じ値)。後ろの 4 行は T16.99 で手で引いた
+# 判定 (i)〜(iii) と、`/events` の種類別 件/時 (`dns_slow` の 7 倍を道具が見つけるため)
+PHASE17 = {
+    "watch_host": PHASE15["watch_host"],
+    "major_miss_rate": PHASE15["major_miss_rate"],
+    "refresh_per_warm_hour": PHASE15["refresh_per_warm_hour"],
+    "miss_max": PHASE15["miss_max"],
+    "timeout_tolerance": PHASE15["timeout_tolerance"],
+    # conn 役の CPU/要求 が前の何倍までなら「桁で悪くなっていない」か (T15.12 段 7 の基準)
+    "conn_per_request_factor": 1.3,
+    # `MAX_WARM` (`crates/net-dns/src/dns.rs`)。最大がこれに届いたら枠の取り合いがある
+    "warm_max_limit": 32,
+    # `/events` の anomaly の種類ごとの閾 (起動からの 件/時)。**ここに無い種類は表示だけ**
+    "events_per_hour": {"dns_slow": 0.1},
+    # cgroup の起動からの user / sys (コア数) が前の何倍までなら「同じ桁」か
+    "cgroup_factor": 10.0,
+}
+CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17}
 
 MET, MISSED, UNKNOWN = "満たした", "届かず", "判定できず"
 
@@ -1078,10 +1097,234 @@ def _p15_timeout(c, th):
             "バースト込み)")
 
 
+# --- Phase 17 の 4 行 (T17.0a。前の 4 行は phase15 の関数をそのまま使う) ---
+
+def profile_source(snap):
+    """その雪像の `/profile` の材料と出どころ (無ければ `(None, None)`)。
+
+    `--profile FILE` (`/profile?res=60` の JSON。`build` が `profile_res_60` に入れる) を先に採る。
+    無ければ雪像の `/profile` の部 (5 秒の標本で 1 時間未満しか無い) で、そのときは**参考**。
+    """
+    p = snap.get("profile_res_60")
+    if isinstance(p, dict) and p.get("samples"):
+        return p, "`--profile`"
+    p = part(snap, "profile")
+    if p.get("samples"):
+        return p, "雪像の `/profile` の部 (**参考**)"
+    return None, None
+
+
+def profile_cost(p, role):
+    """`/profile` の JSON 1 つから、`role` の CPU/要求 とプロセス全体のコア数を出す。
+
+    材料は各標本の `requests` と `cpu_us` (プロセス全体) と `threads` の役割ごとの
+    `[cpu_us, samples, [states...]]` (`profile_role_cores` と同じ読み方)。欄が無ければ None。
+    """
+    keys = p.get("keys") or []
+    roles = p.get("roles") or []
+    rows = p.get("samples") or []
+    interval = p.get("interval_secs") or 0
+    if not rows or not interval or role not in roles or not all(
+            k in keys for k in ("threads", "requests", "cpu_us")):
+        return None
+    ti, qi, ci, ri = (keys.index("threads"), keys.index("requests"), keys.index("cpu_us"),
+                      roles.index(role))
+    role_us = cpu_us = requests = 0
+    for r in rows:
+        threads = r[ti] if ti < len(r) else None
+        t = threads[ri] if threads and ri < len(threads) else None
+        if t:
+            role_us += t[0] or 0
+        requests += (r[qi] if qi < len(r) else 0) or 0
+        cpu_us += (r[ci] if ci < len(r) else 0) or 0
+    secs = len(rows) * interval
+    return {"role_us": role_us, "requests": requests,
+            "per_request_us": (role_us / requests) if requests else None,
+            "cores": cpu_us / 1e6 / secs, "samples": len(rows), "secs": secs,
+            "truncated": bool(p.get("truncated"))}
+
+
+def _p17_conn_per_request(c, th):
+    """T17.99 (c): conn 役の CPU/要求 が前の 1.3 倍以下 (T16.99 の (i) を自動で)。
+
+    材料は `--profile` (`/profile?res=60`)。無ければ雪像の `/profile` の部で「参考」と書く。
+    **プロセス全体のコア数も並べる** (要求の中身で conn 役の値が振れるので、桁はこちらで見る)。
+    """
+    k = th["conn_per_request_factor"]
+    label = f"`conn` 役の CPU/要求 が前の {k} 倍以下"
+    limit = f"≤ 前 ×{k}"
+
+    def side(snap, who):
+        p, src = profile_source(snap)
+        v = profile_cost(p, "conn") if p else None
+        if v is None:
+            return None, None
+        cut = "、256 KiB で切れている" if v["truncated"] else ""
+        return v, (f"{who}: {src} {v['samples']} 標本 ({v['secs'] / 3600:,.1f} 時間{cut}、"
+                   f"要求 {n(v['requests'])} 本)")
+    aft, a_src = side(c["b"], "後")
+    bef, b_src = side(c["a"], "前")
+    if aft is None:
+        return (label, limit, "—", UNKNOWN,
+                "後の雪像に `/profile` の部が無く、`--profile` も渡されていない")
+    after_text = f"プロセス全体 {aft['cores']:.4f} コア"
+    if not aft["requests"]:
+        return (label, limit, after_text, UNKNOWN, a_src + "。要求が無いので 1 要求あたりが出ない")
+    if bef is None or not bef["requests"]:
+        why = "前の雪像に `/profile` の部が無い" if bef is None else "前の材料に要求が無い"
+        return (label, limit, f"{aft['per_request_us']:,.0f} us/要求、{after_text}", UNKNOWN,
+                f"{a_src}。{why} (`--profile-before` で渡せる)")
+    ratio_ = aft["per_request_us"] / bef["per_request_us"] if bef["per_request_us"] else None
+    if ratio_ is None:
+        return (label, limit, f"{aft['per_request_us']:,.0f} us/要求、{after_text}", UNKNOWN,
+                f"{a_src}。{b_src}。前の conn 役の CPU が 0")
+    return (label, limit,
+            f"**{ratio_:.2f}** 倍 ({bef['per_request_us']:,.0f} → {aft['per_request_us']:,.0f} "
+            f"us/要求)、プロセス全体 {bef['cores']:.4f} → **{aft['cores']:.4f}** コア",
+            MET if ratio_ <= k else MISSED, f"{a_src}。{b_src}")
+
+
+def _p17_warm_max(c, th):
+    """T17.99 (T16.99 の (ii)): `MAX_WARM` 32 が埋まらず、warm の追い出しが 0。"""
+    lim = th["warm_max_limit"]
+    label = f"`dns_warm` の最大が {lim} 未満かつ `dns.warm_evicted` が 0"
+    limit = f"< {lim} かつ = 0"
+    mx = c["after_all"].get("dns_warm_max")
+    sb = part(c["b"], "status").get("dns") or {}
+    sa = part(c["a"], "status").get("dns") or {}
+    ev = sb.get("warm_evicted")
+    # `warm_evicted` は起動からの通算。再起動していなければ前の雪像を引いてその間の値にする
+    windowed = ev is not None and not (c["info"] or {}).get("restarted") \
+        and sa.get("warm_evicted") is not None
+    if windowed:
+        ev -= sa["warm_evicted"]
+    hist = c["hist"] or {}
+    src = (f"`/history?res={hist.get('res')}` の後の期間 (バースト込み) の `dns_warm_max`、"
+           f"`/status` の `dns.warm_evicted` ({'その間' if windowed else '起動から'})")
+    shown = f"最大 **{n(mx)}** 件、`warm_evicted` **{n(ev)}**"
+    if mx is None or ev is None:
+        miss = "`/history` に `dns_warm_max` が無い" if mx is None else \
+            "`/status` の `dns` に `warm_evicted` が無い"
+        return (label, limit, shown, UNKNOWN, f"{miss} (T16.0 より前の版)。" + src)
+    return (label, limit, shown, MET if mx < lim and ev == 0 else MISSED, src)
+
+
+def anomaly_rates(snap):
+    """`/events` の anomaly を種類別に「起動からの 件/時」にする (部が無ければ None)。
+
+    種類は `text` の先頭の `<kind>:` (`crates/metrics-watch/src/anomaly.rs` の文面)。
+    **`cleared:` (解けた知らせ) は数えない**。前の版から読み継いだ出来事が混ざるので、
+    起動 (`taken_at − uptime_secs`) より前の `at` は外す。
+    """
+    ev = part(snap, "events")
+    rows = ev.get("events")
+    up = snap.get("uptime_secs") or 0
+    if not isinstance(rows, list) or not up:
+        return None
+    started = (snap.get("taken_at") or 0) - up
+    counts = {}
+    for e in rows:
+        text = e.get("text") or ""
+        if e.get("kind") != "anomaly" or text.startswith("cleared:") or ":" not in text:
+            continue
+        if started and (e.get("at") or 0) < started:
+            continue
+        kind = text.split(":", 1)[0].strip()
+        counts[kind] = counts.get(kind, 0) + 1
+    hours = up / 3600.0
+    return {"hours": hours, "truncated": bool(ev.get("truncated")),
+            "kinds": {k: {"count": v, "per_hour": v / hours} for k, v in counts.items()}}
+
+
+def _p17_events(c, th):
+    """T17.99 (a): `/events` の種類別 件/時。閾があるのは `dns_slow` (0.1 件/時) だけ。"""
+    limits = th["events_per_hour"]
+    label = "`/events` の anomaly の種類別 件/時 (" + "、".join(
+        f"`{k}` {v} 以下" for k, v in limits.items()) + "。ほかは表示だけ)"
+    limit = "、".join(f"`{k}` ≤ {v}" for k, v in limits.items())
+    aft, bef = anomaly_rates(c["b"]), anomaly_rates(c["a"])
+    if aft is None:
+        return (label, limit, "—", UNKNOWN, "後の雪像に `/events` の部が無い")
+    kinds = sorted(set(aft["kinds"]) | set(limits),
+                   key=lambda k: (k not in limits, -aft["kinds"].get(k, {}).get("count", 0), k))
+    shown, verdict = [], MET
+    for k in kinds:
+        v = aft["kinds"].get(k, {"count": 0, "per_hour": 0.0})
+        before = (bef or {}).get("kinds", {}).get(k, {"count": 0, "per_hour": 0.0})
+        was = f"、前 {before['per_hour']:.2f}" if bef is not None else ""
+        text = f"`{k}` {v['per_hour']:.2f} 件/時 ({v['count']} 件{was})"
+        if k in limits:
+            text = f"`{k}` **{v['per_hour']:.2f}** 件/時 ({v['count']} 件{was})"
+            if v["per_hour"] > limits[k]:
+                verdict = MISSED
+        shown.append(text)
+    src = (f"`/events` の `kind == \"anomaly\"` を `text` の先頭で分け、`cleared:` を除き、"
+           f"起動からの {aft['hours']:,.1f} 時間で割った")
+    if bef is None:
+        src += "。前の雪像に `/events` が無い"
+    if aft["truncated"]:
+        src += "。**`/events` が切れている** (件数は下限)"
+    return (label, limit, "、".join(shown), verdict, src)
+
+
+def cgroup_since_start(snap):
+    """`/status` の `kernel.cgroup_cpu.since_start` の起動からの CPU (欄が無ければ None)。"""
+    cg = (part(snap, "status").get("kernel") or {}).get("cgroup_cpu") or {}
+    ss = cg.get("since_start") or {}
+    up = snap.get("uptime_secs") or 0
+    usage = ss.get("usage_usec")
+    if usage is None or not up:
+        return None
+    user = ss.get("user_usec")
+    system = ss.get("system_usec")
+    if system is None and user is not None:
+        system = usage - user
+    return {"cores": usage / 1e6 / up,
+            "user_cores": (user / 1e6 / up) if user is not None else None,
+            "sys_cores": (system / 1e6 / up) if system is not None else None,
+            "user_share": (user / usage) if user is not None and usage else None,
+            "throttled": ss.get("nr_throttled"), "periods": ss.get("nr_periods"),
+            "hours": up / 3600.0}
+
+
+def _p17_cgroup(c, th):
+    """T17.99 (c): cgroup の起動からの user / sys が前後で同じ桁 (T16.0 で足した欄)。"""
+    k = th["cgroup_factor"]
+    label = "cgroup の起動からの CPU (user / sys) が前と同じ桁"
+    limit = f"user・sys とも ≤ 前 ×{k:.0f}"
+    aft, bef = cgroup_since_start(c["b"]), cgroup_since_start(c["a"])
+
+    def text(v):
+        share = f"、user {v['user_share'] * 100:.0f}%" if v["user_share"] is not None else ""
+        return f"{v['cores']:.4f} コア{share}"
+    if aft is None:
+        return (label, limit, "—", UNKNOWN,
+                "後の雪像の `kernel.cgroup_cpu.since_start` に `usage_usec` が無い")
+    thr = ""
+    if aft["throttled"] is not None and aft["periods"] is not None:
+        thr = f"、絞り {n(aft['throttled'])} / {n(aft['periods'])} 周期"
+    src = f"`kernel.cgroup_cpu.since_start` ÷ `uptime_secs` (後 {aft['hours']:,.1f} 時間{thr})"
+    if bef is None:
+        return (label, limit, f"後 **{text(aft)}**", UNKNOWN,
+                "前の版に欄が無い (`usage_usec` は T16.0 から)。" + src)
+    worse = []
+    for key, name in (("user_cores", "user"), ("sys_cores", "sys")):
+        if aft[key] is None or bef[key] is None:
+            return (label, limit, f"{text(bef)} → **{text(aft)}**", UNKNOWN,
+                    f"`{name}_usec` がどちらかに無い。" + src)
+        if (bef[key] and aft[key] > bef[key] * k) or (not bef[key] and aft[key]):
+            worse.append(name)
+    return (label, limit, f"{text(bef)} → **{text(aft)}**"
+            + (f" ({'・'.join(worse)} が桁で増えた)" if worse else ""),
+            MISSED if worse else MET, src + f"、前 {bef['hours']:,.1f} 時間")
+
+
 RULES = {
     "phase14": (_p14_dns_per_connect, _p14_major_hosts, _p14_connect_p50, _p14_overload),
     "phase15": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band,
                 _p15_conn_cores, _p15_closed_shape, _p15_timeout),
+    "phase17": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band, _p15_timeout,
+                _p17_conn_per_request, _p17_warm_max, _p17_events, _p17_cgroup),
 }
 
 
@@ -1089,7 +1332,7 @@ def judge(name, hist, hosts, majors, status_b, overload, th,
           a=None, b=None, info=None, dns=None, errors=None, burst=BURST_PER_HOUR):
     """`RULES[name]` の各行を順に呼んで判定表にする。
 
-    `a` / `b` (雪像そのもの) と `info` / `dns` / `errors` は **phase15 の行だけが使う**
+    `a` / `b` (雪像そのもの) と `info` / `dns` / `errors` は **phase15 / phase17 の行だけが使う**
     (phase14 の 4 行は今までどおりの 7 つの引数だけで足りる)。
     """
     info = info or {}
@@ -1115,6 +1358,11 @@ def build(a, b, args):
     # `/daily` は雪像に入っていないので、渡されたら新しい雪像の部として足す (T15.15 (2))
     if getattr(args, "daily", None):
         b["daily"] = load(args.daily)
+    # `/profile?res=60` も雪像に入らない (256 KiB で切れる部とは別に取る)。phase17 の CPU の行の材料 (T17.0a)
+    if getattr(args, "profile", None):
+        b["profile_res_60"] = load(args.profile)
+    if getattr(args, "profile_before", None):
+        a["profile_res_60"] = load(args.profile_before)
     info = restart_info(a, b)
     hist = history_split(a, b, info, args.burst)
     mode, table = "dns", {}
@@ -1457,6 +1705,15 @@ def render(d, top):
               "閉じ方の行は**平常時の 1 分ごとの全数**で比べます (`/recent` は 256 KiB で切れて"
               "窓の長さが毎回違うので使いません。T15.15)。")
             p()
+        if c["name"] == "phase17":
+            # T17.0a。前の 4 行は phase15 と同じ関数、後ろの 4 行が T16.99 で手で引いていた判定
+            p("前の 4 行は phase15 と同じ物差しです。後ろの 4 行の材料は `--profile` "
+              "(`/profile?res=60`。無ければ雪像の `/profile` の部で**参考**)・`/history` の "
+              "`dns_warm_max` と `/status` の `dns.warm_evicted`・`/events` の anomaly "
+              "(起動からの 件/時、`cleared:` は数えない)・`/status` の "
+              "`kernel.cgroup_cpu.since_start` です。**その部が雪像に無い行は「判定できず」**で、"
+              "0 とは書きません。")
+            p()
         p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
         p("|---|---|---|---|---|")
         for row in c["rows"]:
@@ -1480,7 +1737,8 @@ def parser():
     p.add_argument("--no-dns", action="store_true", help="AAAA を引かない")
     p.add_argument("--criteria", choices=sorted(CRITERIA), metavar="NAME",
                    help="完了の定義に対する判定表を出す (phase14 = Phase 14 の 4 行、"
-                        "phase15 = T15.4 / T15.5 / T15.6 の 6 行。T15.15 で物差しを直した)")
+                        "phase15 = T15.4 / T15.5 / T15.6 の 6 行。T15.15 で物差しを直した。"
+                        "phase17 = T17.99 の 8 行)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst", type=int, default=BURST_PER_HOUR, metavar="N",
@@ -1491,6 +1749,11 @@ def parser():
     p.add_argument("--daily", metavar="FILE",
                    help="`/daily` の応答 (`{\"days\":[...]}`) を新しい雪像に足す。phase15 の "
                         "ミスの行に日ごとの幅を並べる (T15.15 (2)。雪像には入っていない)")
+    p.add_argument("--profile", metavar="FILE",
+                   help="`/profile?res=60` の応答を新しい雪像に足す。phase17 の conn 役の "
+                        "CPU/要求 の行の材料 (T17.0a。無ければ雪像の `/profile` の部で参考)")
+    p.add_argument("--profile-before", metavar="FILE",
+                   help="同じものを古い雪像に足す (前の CPU/要求 も `/profile?res=60` で比べる)")
     p.add_argument("--major-hosts", metavar="a,b,c",
                    help="主要ホストを名指しする (既定はその間の要求数の上位 3)")
     p.add_argument("--group", choices=["host", "domain"], default="host", metavar="KEY",
