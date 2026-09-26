@@ -12,10 +12,16 @@
 #   - 待ち … `/history` の `wait` (利用者が待つ時間 = `queue + client_read + dns + connect`)
 #   - いまの接続 … **動かないトンネル** (`idle_secs` ≥ 300 秒) の `spins` / `revents` / 半閉じ
 #
+# **T17.0c で足した表** (これも部が無ければ出さない):
+#   - `/events` の anomaly を種類別に「起動からの件/時」(`cleared:` は数えない)
+#   - 接続元の見張り … 新しく現れた接続元・IP リテラル宛て・443 / 80 以外の CONNECT・
+#     `/events` の `new_client`・内部の口だけを引いた接続元 (`readers`)
+#
 # 使い方: scripts/snapshot-summary.py SNAP.json [--prev PREV.json] [--status-before STATUS.json]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
 import argparse
+import ipaddress
 import json
 import statistics
 import sys
@@ -359,6 +365,239 @@ def truncated_parts(snap):
     return out
 
 
+def started_at(snap):
+    """起動の時刻 (epoch 秒) = 取得の時刻 − `uptime_secs`。どちらかが無ければ None。"""
+    up = part(snap, "status").get("uptime_secs") or snap.get("uptime_secs")
+    t = snap.get("taken_at")
+    return (t - up) if (t and up is not None) else None
+
+
+def anomaly_rates(snap):
+    """`/events` の `anomaly` を**種類別に「起動からの件/時」**にする (T17.0c)。
+
+    種類は `text` の先頭の `<kind>:` (`crates/metrics-watch/src/anomaly.rs` の文面)。
+    **`cleared:` (収まった) は数えない** — 立った回数が知りたいので、収まりまで数えると 2 倍に読める。
+    `/events` のリングは状態ファイルに残って再起動をまたぐ (`restored`) ので、
+    **起動より前の出来事は外す** (前の版の件数が混ざると、直した版の件/時が読めない)。
+    部が無い版では None (呼ぶ側が表ごと出さない)。
+    """
+    ev = part(snap, "events")
+    rows = ev.get("events")
+    if not isinstance(rows, list):
+        return None
+    start = started_at(snap)
+    up = (snap.get("taken_at") or 0) - start if start is not None else 0
+    counts, cleared, before, oldest = {}, 0, 0, None
+    for e in rows:
+        if e.get("kind") != "anomaly":
+            continue
+        at = e.get("at") or 0
+        if start is not None and at < start:
+            before += 1
+            continue
+        oldest = at if oldest is None else min(oldest, at)
+        text = e.get("text") or ""
+        kind = text.split(":", 1)[0].strip() if ":" in text else "?"
+        if kind == "cleared":
+            cleared += 1
+            continue
+        counts[kind] = counts.get(kind, 0) + 1
+    hours = up / 3600 if up > 0 else None
+    table = sorted(((k, n, (n / hours) if hours else None) for k, n in counts.items()),
+                   key=lambda r: (-r[1], r[0]))
+    # リングが満杯なら古い方から落ちているので、起動直後のぶんが欠けているかもしれない
+    full = bool(ev.get("capacity") and len(rows) >= ev["capacity"])
+    return {"rows": table, "cleared": cleared, "before": before, "hours": hours,
+            "truncated": bool(ev.get("truncated")) or full, "oldest": oldest}
+
+
+def target_host_port(target):
+    """`/recent` の `target` (`host:port`、IPv6 は `[addr]:port`) を (ホスト, ポート) に。
+
+    forward の古い形 (`http://host:port/…`) も念のため読む。ポートが読めなければ None。
+    """
+    t = target or ""
+    if "://" in t:
+        t = t.split("://", 1)[1].split("/", 1)[0]
+    if t.startswith("["):
+        host, _, rest = t[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    else:
+        host, sep, port = t.rpartition(":")
+        if not sep:
+            host, port = t, ""
+    return host, (int(port) if port.isdigit() else None)
+
+
+def is_ip_literal(host):
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def recent_watch(snap):
+    """`/recent` の窓の中で、接続元ごとに**IP リテラル宛て**と**443 / 80 以外への CONNECT**を数える。
+
+    `/recent` は 256 KiB で切れる (覚えているのは最後に閉じた N 本) ので「窓の中で」の数。
+    通算は `/clients` の `literal_targets` / `nonstandard_ports` の方。
+    """
+    out = {}
+    for r in part(snap, "recent").get("recent") or []:
+        host, port = target_host_port(r.get("target"))
+        lit = is_ip_literal(host)
+        odd = r.get("kind") == "connect" and port is not None and port not in (443, 80)
+        if lit or odd:
+            cur = out.setdefault(r.get("client"), [0, 0])
+            cur[0] += 1 if lit else 0
+            cur[1] += 1 if odd else 0
+    return out
+
+
+def client_watch(snap, prev):
+    """接続元の見張り (T17.0c)。認証なしプロキシで実際に起きる危険は乱用なので、その手がかりを 1 か所に。
+
+    - **新しく現れた**: `--prev` があれば前の `/clients` に居ない / `first_seen` が前の取得より後
+      (`snapshot-diff.py` の `client_diff` と同じ見方)。無ければ `first_seen` が起動より後
+      (`first_seen` 0 は状態ファイルから読み戻した = この起動より前から居た)
+    - **IP リテラル / 非標準ポート**: `/clients` の `literal_targets` / `nonstandard_ports`
+      (**起動からの通算**。`.rrd` に残らない欄) と、`/recent` の窓の中の数
+    - `/events` の `new_client` (規則 6。**起動をまたいで残る**ので窓の外のものも印を付けて出す)
+    - `/readers` に居て `/clients` に居ない = **プロキシは使わず内部の口だけを引いた**接続元
+      (走査が `GET /` で来ると、こちらにだけ残る)
+
+    ホスト名と IP はそのまま出す (要約は手元に置くもの。匿名化は T17.16)。
+    """
+    rows = part(snap, "clients").get("clients")
+    if not isinstance(rows, list):
+        return None
+    older = None
+    if prev is not None:
+        pr = part(prev, "clients").get("clients")
+        older = {c.get("client"): c for c in pr} if isinstance(pr, list) else None
+    since = prev.get("taken_at") if (prev is not None and older is not None) else started_at(snap)
+    recent = recent_watch(snap)
+    out = []
+    for c in rows:
+        key = c.get("client")
+        req = c.get("requests") or 0
+        o = (older or {}).get(key)
+        if o is not None and req >= (o.get("requests") or 0):
+            req -= o.get("requests") or 0
+        first = c.get("first_seen") or 0
+        if older is not None:
+            new = key not in older or bool(first and since and first > since)
+        else:
+            new = bool(first and since and first >= since)
+        rl, rn = recent.get(key, (0, 0))
+        out.append({"client": key, "requests": req, "new": new, "first_seen": first,
+                    "last_seen": c.get("last_seen"), "agent": c.get("agent"),
+                    "targets": c.get("distinct_targets"),
+                    "capped": c.get("distinct_targets_capped"),
+                    "literal": c.get("literal_targets"), "nonstandard": c.get("nonstandard_ports"),
+                    "recent_literal": rl, "recent_nonstandard": rn})
+    known = {c.get("client") for c in rows}
+    readers = [r for r in (part(snap, "status").get("readers") or [])
+               if r.get("client") not in known]
+    events = [e for e in (part(snap, "events").get("events") or []) if e.get("kind") == "new_client"]
+    events.sort(key=lambda e: -(e.get("at") or 0))
+    c = part(snap, "clients")
+    # `/recent` は `/snapshot` が 4 MiB を越えると部ごと落ちる (`dropped`)。そのときの「窓」は 0 本ではなく不明
+    has_recent = isinstance(part(snap, "recent").get("recent"), list)
+    return {"rows": out, "since": since, "windowed": older is not None, "readers": readers,
+            "has_recent": has_recent,
+            "events": events, "recent_truncated": bool(part(snap, "recent").get("truncated")),
+            "recent_literal": sum(v[0] for v in recent.values()),
+            "recent_nonstandard": sum(v[1] for v in recent.values()),
+            "truncated": bool(c.get("truncated")), "count": c.get("count"),
+            "prev_without_clients": prev is not None and older is None}
+
+
+# 接続元の見張りの表に出す行数 (印の付いた行は全部、残りは要求の多い順にここまで)
+WATCH_TOP = 5
+
+
+def print_client_watch(w):
+    """`client_watch` の結果を Markdown に (表 1 つ + 箇条書き)。"""
+    since = stamp(w["since"])
+    base = "前回の取得" if w["windowed"] else "起動"
+    print(f"- 接続元の見張り (`/clients` {len(w['rows'])} 件"
+          + (f"/{num(w['count'])} 件、**256 KiB で切れている**" if w["truncated"] else "")
+          + f"。「新」は {base} ({since}) より後に初めて見た。"
+          "IP リテラル / 非標準ポートは `/clients` の起動からの通算と、`/recent` の窓の中の数)")
+    flagged = [r for r in w["rows"]
+               if r["new"] or r["literal"] or r["nonstandard"]
+               or r["recent_literal"] or r["recent_nonstandard"]]
+    rest = sorted((r for r in w["rows"] if r not in flagged), key=lambda r: -r["requests"])
+    shown = flagged + rest[:WATCH_TOP]
+    print()
+    print(f"| 接続元 | 要求 ({'前回から' if w['windowed'] else '通算'}) | 宛先の種類 "
+          "| IP リテラル (起動から / 窓) | 443・80 以外の CONNECT (起動から / 窓) "
+          "| 初めて見た | 最後 | User-Agent |")
+    print("|---|---|---|---|---|---|---|---|")
+    win = (lambda v: num(v)) if w["has_recent"] else (lambda v: "—")
+    for r in shown:
+        mark = " **新**" if r["new"] else ""
+        targets = num(r["targets"]) + ("+" if r["capped"] else "")
+        print(f"| `{r['client']}`{mark} | {num(r['requests'])} | {targets} "
+              f"| {num(r['literal'])} / {win(r['recent_literal'])} "
+              f"| {num(r['nonstandard'])} / {win(r['recent_nonstandard'])} "
+              f"| {stamp(r['first_seen']) if r['first_seen'] else '(前の起動から)'} "
+              f"| {stamp(r['last_seen'])} | {r['agent'] or '—'} |")
+    if not shown:
+        print("| (接続元の記録が無い) | | | | | | | |")
+    if len(w["rows"]) > len(shown):
+        print(f"\n(印の無い残り {len(w['rows']) - len(shown)} 件は省いた)")
+    print()
+    new = [r for r in w["rows"] if r["new"]]
+    print(f"  - 新しく現れた接続元: {len(new)} 件"
+          + (": " + "、".join(f"`{r['client']}` ({num(r['requests'])} 要求)" for r in new[:10])
+             if new else "")
+          + (" (前の雪像に `/clients` が無いので差分は取れず、`first_seen` で見た)"
+             if w["prev_without_clients"] else ""))
+    if w["has_recent"]:
+        print(f"  - `/recent` の窓の中 (256 KiB で切れることがある"
+              + ("。**この雪像は切れている**" if w["recent_truncated"] else "")
+              + f"): IP リテラル宛て {num(w['recent_literal'])} 本、443・80 以外の CONNECT"
+              f" {num(w['recent_nonstandard'])} 本")
+    else:
+        print("  - `/recent` はこの雪像に入っていない (窓の中の数は出せない。表の「窓」は `—`)")
+    ev = w["events"]
+    if ev:
+        inside = [e for e in ev if w["since"] and (e.get("at") or 0) >= w["since"]]
+        print(f"  - `/events` の `new_client`: リングに {len(ev)} 件 (うち {base}より後 {len(inside)} 件)。"
+              "新しい順に:")
+        for e in ev[:5]:
+            out = "" if (w["since"] and (e.get("at") or 0) >= w["since"]) else " (窓の外)"
+            print(f"    - `{stamp(e.get('at'))}`{out} {e.get('text') or '—'}")
+    if w["readers"]:
+        print("  - **内部の口だけを引いた接続元** (`/status` の `readers` に居て `/clients` に居ない。"
+              "走査が `GET /` で来るとここにだけ残る): "
+              + "、".join(f"`{r.get('client')}` {num(r.get('count'))} 回 (最後 `{r.get('last_path')}`"
+                         f" {stamp(r.get('last_at'))})" for r in w["readers"][:10]))
+
+
+def print_anomalies(a):
+    """`anomaly_rates` の結果を Markdown の表に。"""
+    hours = f"{a['hours']:.1f} 時間" if a["hours"] else "起動からの時間が分からない"
+    print(f"| `/events` の anomaly (起動から {hours}) | 件 | 件/時 |")
+    print("|---|---|---|")
+    for kind, n, rate in a["rows"]:
+        # **件/時は 3 桁**。閾 0.1 件/時の近くで 2 桁に丸めると判定を読み違える
+        print(f"| `{kind}` | {num(n)} | {'—' if rate is None else f'{rate:.3f}'} |")
+    if not a["rows"]:
+        print("| (起動から 1 件も立っていない) | 0 | — |")
+    notes = [f"収まった (`cleared:`) {a['cleared']} 件は数えない"]
+    if a["before"]:
+        notes.append(f"起動より前の {a['before']} 件 (状態ファイルから読み戻した前の版のぶん) は外した")
+    if a["truncated"]:
+        notes.append("**リングが満杯か応答が切れているので、起動直後のぶんが落ちているかもしれない**"
+                     + (f" (残っている最古は {stamp(a['oldest'])})" if a["oldest"] else ""))
+    print()
+    print("- " + "。".join(notes))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="/snapshot を 1 枚の要点に畳む")
     p.add_argument("snapshot")
@@ -604,6 +843,17 @@ def main(argv=None):
     log = part(d, "log").get("lines") or []
     print(f"- 警告と失敗 (`/log`): {len(log)} 行"
           + ((" / 直近 `" + (log[0].get("msg") or "")[:120] + "`") if log else ""))
+
+    # T17.0c: `/events` の anomaly の種類別 件/時 と、接続元の見張り。
+    # **どちらも部が無い版では出さない** (古い雪像もそのまま読める)
+    rates = anomaly_rates(d)
+    if rates is not None:
+        print()
+        print_anomalies(rates)
+    watch = client_watch(d, prev)
+    if watch is not None:
+        print()
+        print_client_watch(watch)
     return 0
 
 
