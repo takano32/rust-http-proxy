@@ -22,6 +22,7 @@ members = [
     "crates/selfbench",
     "crates/metrics-types",
     "crates/metrics-recent",
+    "crates/metrics-profile",
     "crates/metrics-window",
     "crates/metrics-core",
     "crates/metrics-slo",

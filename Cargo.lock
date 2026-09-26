@@ -177,6 +177,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxy-metrics-profile"
+version = "0.1.0"
+dependencies = [
+ "proxy-metrics-recent",
+]
+
+[[package]]
 name = "proxy-metrics-recent"
 version = "0.1.0"
 dependencies = [
@@ -214,7 +221,7 @@ dependencies = [
 name = "proxy-metrics-window"
 version = "0.1.0"
 dependencies = [
- "proxy-metrics-recent",
+ "proxy-metrics-profile",
 ]
 
 [[package]]

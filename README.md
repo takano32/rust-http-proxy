@@ -2098,7 +2098,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 ## クレート構成
 
 **外部クレートは 1 つも使っていません** (すべて `std` のみ)。`crates/` にあるのは全部このリポジトリのコードで、
-責務ごとの層に分けてあります (40 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
+責務ごとの層に分けてあります (41 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
 全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
 
 | クレート | 責務 |
@@ -2124,11 +2124,12 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 | `proxy-config` | 起動時の設定 |
 | `proxy-metrics-types` | 計測の型と定数 (ホスト別統計・1 要求の内訳・エラーの原因)、分位点、ホスト別の時系列、カーネルと cgroup の統計 |
 | `proxy-metrics-recent` | 記録の個票 (閉じた接続・1 つの接続元の要求の並び・出来事の時系列) |
-| `proxy-metrics-window` | 時系列の窓 (解像度と 1 区間の応答時間)、段階ごとの待ちとスレッドの標本、転送の速さ、接続元の個票、履歴のリング |
+| `proxy-metrics-profile` | 時系列の窓の土台 (解像度と 1 区間の応答時間)、段階ごとの待ちとスレッドの標本 |
+| `proxy-metrics-window` | 転送の速さ、接続元の個票、履歴のリング。`proxy-metrics-profile` の 2 つも今までの名前で出し直す |
 | `proxy-metrics-core` | 計測の本体 (`Metrics`。`/status` の組み立て) |
 | `proxy-metrics-slo` | 窓を読んで要約するもの (SLO・日次の要約・日次の雪像) |
 | `proxy-metrics-watch` | 窓を読んで判定するもの (異常の検知・利用者が居ない時間帯の様子見 (canary))。`proxy-metrics-slo` の 3 つも今までの名前で出し直す |
-| `proxy-metrics` | 状態ファイルへの読み書きと、5 秒ごとの記録スレッド。上の 6 つを今までの名前で出し直す口 |
+| `proxy-metrics` | 状態ファイルへの読み書きと、5 秒ごとの記録スレッド。上の 7 つを今までの名前で出し直す口 |
 | `proxy-blocklist` | ドメインのブロックリスト |
 | `proxy-reload` | `$HOME/.env` の再読込 (`inotify` で見張る) |
 | `proxy-prom` | Prometheus 形式の出力 |
@@ -2221,7 +2222,7 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 上の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`)、(b) コードの `"PROXY_…"` / `"SERVER_…"` の
 文字列と上の「環境変数」の表の鍵の欄、(c) `/snapshot` の `parts` と個票のエンドポイント、
 (d) `scripts/check-dashboard.js` が画面の HTML から切り出す関数名と、そこで実際に呼んでいる名前、
-(e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(40 + 本体)」の数も見ます)。
+(e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(41 + 本体)」の数も見ます)。
 **意図的に外してあるものはスクリプトの中の除外表に理由つきで持ちます** (`/snapshot` に入れない 18 の口、
 ビルド時にしか無い `PROXY_VERSION` など)。差分が 1 件でもあればその名前を印字して終了コード 1 です。
 bash と grep / sed / awk / python3 の標準ライブラリだけで動くので、`cargo` も Node も要りません
