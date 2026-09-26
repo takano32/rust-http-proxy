@@ -798,7 +798,7 @@ def profile_role_cores(snap, role):
     """`/profile` の標本から**その役割の CPU** を「何コアぶん」で出す (部が無ければ None)。
 
     1 標本の `threads` は役割ごとに `0` (標本 0) か `[cpu_us, samples, [states...]]`
-    (`crates/metrics-window/src/profile.rs` の `push_row`)。位置ではなく `keys` と
+    (`crates/metrics-profile/src/profile.rs` の `push_row`)。位置ではなく `keys` と
     `roles` の名前で引くので、役割が増えても読み方は変わらない。
     """
     p = part(snap, "profile")

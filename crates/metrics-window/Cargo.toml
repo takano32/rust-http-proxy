@@ -7,4 +7,4 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-proxy-metrics-recent = { path = "../metrics-recent" }
+proxy-metrics-profile = { path = "../metrics-profile" }

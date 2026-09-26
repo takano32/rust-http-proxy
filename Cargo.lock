@@ -177,12 +177,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxy-metrics-profile"
+version = "0.1.0"
+dependencies = [
+ "proxy-metrics-recent",
+]
+
+[[package]]
 name = "proxy-metrics-recent"
 version = "0.1.0"
 dependencies = [
  "proxy-cache",
  "proxy-metrics-types",
  "proxy-selfbench",
+]
+
+[[package]]
+name = "proxy-metrics-slo"
+version = "0.1.0"
+dependencies = [
+ "proxy-cache",
+ "proxy-metrics-core",
 ]
 
 [[package]]
@@ -199,15 +214,14 @@ dependencies = [
 name = "proxy-metrics-watch"
 version = "0.1.0"
 dependencies = [
- "proxy-cache",
- "proxy-metrics-core",
+ "proxy-metrics-slo",
 ]
 
 [[package]]
 name = "proxy-metrics-window"
 version = "0.1.0"
 dependencies = [
- "proxy-metrics-recent",
+ "proxy-metrics-profile",
 ]
 
 [[package]]

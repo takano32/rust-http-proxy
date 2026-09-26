@@ -2,21 +2,24 @@
 //! スレッドの標本 ([`profile`])、転送の速さと半閉じ ([`transfer`])。
 //! 接続元の個票 ([`clients`]) と履歴 ([`history`]) も、`Metrics` が抱える側なので
 //! ここに置いてある。
+//! 窓の土台 ([`window`]) と段階の標本 ([`profile`]) は T17.11 で下の層 (`proxy-metrics-profile`) へ割り、
+//! ここでは今までの名前で出し直すだけ。
 //!
 //! 層ごとにクレートを分けてあるのは、`rustc` がクレート単位で全部を一度に抱えるため
-//! (動作環境のメモリ上限は 180 MB)。**外部クレートは 1 つも使っていない。**
+//! (動作環境のメモリ上限は 120 MB)。**外部クレートは 1 つも使っていない。**
 
 pub mod canaryhist;
 pub mod clients;
 pub mod history;
-pub mod profile;
 pub mod transfer;
-pub mod window;
+
+// 割った先を今までの名前で出し直す (`proxy_metrics_window::profile` のような書き方をそのまま通す)。
+pub use proxy_metrics_profile::{profile, window};
 
 // 下の層をこのクレートの名前空間にも出す (`crate::sync` のような書き方をそのまま通すため)。
 #[cfg(target_os = "linux")]
-pub use proxy_metrics_recent::sys;
-pub use proxy_metrics_recent::{
+pub use proxy_metrics_profile::sys;
+pub use proxy_metrics_profile::{
     acl, ascii, cache, cli, clock, dns, envfile, events, hostseries, httpdate, json, kernel, log,
     log_at, log_debug, log_error, log_info, log_trace, log_warn, metrics, net, prefault, quantiles,
     recent, records, rrd, selfbench, signal, sync, sysinfo, trace,
