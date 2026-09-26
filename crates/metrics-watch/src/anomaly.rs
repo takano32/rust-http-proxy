@@ -101,10 +101,11 @@ pub const TUNNEL_SPIN_SECS: u64 = 60;
 /// (9) 名前解決のミスが直近 1 時間でこの回数/接続 以上で立つ (T15.0 (9))。
 ///
 /// 閾の根拠: Phase 13 (keep-warm が効かない世界) が 0.55、いまの切り方 9 通りの幅が
-/// 0.094〜0.171、再起動後の最初の 6 時間だけが 0.291。
-pub const DNS_MISS_RATE: f64 = 0.40;
-/// (9) 立っている間はこの値を下回るまで収まらない。
-pub const DNS_MISS_RATE_CLEAR: f64 = 0.25;
+/// 0.094〜0.171、再起動後の最初の 6 時間だけが 0.291。T15.4 (窓 3,600 秒) のあとの
+/// 平常時は 0.05 で、0.40 (その 8 倍) では 0.30 に戻っても立たないので 0.20 に下げた (T17.1)。
+pub const DNS_MISS_RATE: f64 = 0.20;
+/// (9) 立っている間はこの値を下回るまで収まらない (閾の半分。`cpu_throttled` と同じ比)。
+pub const DNS_MISS_RATE_CLEAR: f64 = 0.10;
 /// (9) 1 時間の窓にこの本数以上の確立があるときだけ判定する (率の分母)。
 pub const DNS_MISS_RATE_MIN_CONNECTS: u64 = 30;
 /// (9) 起動からこの秒が経つまでは判定しない (T15.0 (9))。
@@ -1714,7 +1715,7 @@ mod tests {
         assert_eq!(
             fired[0].text,
             "dns_miss_rate: dns misses 0.55/connect over 1h \
-             (threshold 0.40; 7931 misses, 14420 connects)"
+             (threshold 0.20; 7931 misses, 14420 connects)"
         );
         assert!(fired[0].text.len() <= crate::events::MAX_TEXT);
         t += 5;
