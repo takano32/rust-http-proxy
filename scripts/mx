@@ -1,0 +1,125 @@
+#!/bin/bash
+# 機械のロック: ビルド・テスト・ベンチを「口」の数までしか同時に走らせない (T14 から使っている `mx`)。
+#
+# 使い方:
+#   scripts/mx cargo test --test foo
+#   scripts/mx bash -c 'cargo clean --release && scripts/build-memory.sh --find 100 105 110'
+#   MX_SLOTS=1 scripts/mx scripts/cpu-per-request.sh      # 機械を 1 本で占有する (計測・メモリが逼迫しているとき)
+#
+# やること:
+#   1. 口 (`MX_SLOTS`、既定 2) のどれかを `flock` で取るまで待つ。口は `MX_DIR` の `slot.<N>` で、
+#      持っているのはこのスクリプトだけ (命令には fd を渡さないので、命令の子が残っても口は空く)。
+#   2. **他人のベンチ**が走っている間は待つ。探すのは**命令の先頭が** `target/release/rust-http-proxy` の
+#      プロセスだけ (`pgrep -f` を行全体に当てると、その文字列を含む別のシェル行にも当たって
+#      3 分待ちを踏んだ。2026-09-17、T14.57)。自分の命令の子孫は数えない。
+#      `MX_WAIT` 秒 (既定 180) 待っても居なくならなければ **75 で抜ける** (EX_TEMPFAIL)。
+#   3. 命令を**自分のプロセスグループ**で走らせ、終わったら (Ctrl-C でも) **グループごと止める**
+#      (ベンチのプロキシや `timeout` の子が残って次の計測を汚したことがある)。
+#   出口: 命令の終了コード (待ちきれなければ 75)。
+#
+# 環境変数:
+#   MX_SLOTS (既定 2)   同時に走らせる本数。1 で機械を占有する
+#   MX_WAIT  (既定 180) 他人のベンチを待つ秒数
+#   MX_DIR   (既定 ${XDG_RUNTIME_DIR:-/tmp}/rust-http-proxy-mx) 口のファイルを置く場所
+#   MX_QUIET (既定 0)   1 で「待っています」を出さない
+set -u
+if [ $# -eq 0 ]; then
+  echo "usage: $0 COMMAND [ARGS...]   (MX_SLOTS=1 で占有)" >&2
+  exit 2
+fi
+SLOTS=${MX_SLOTS:-2}
+WAIT=${MX_WAIT:-180}
+DIR=${MX_DIR:-${XDG_RUNTIME_DIR:-/tmp}/rust-http-proxy-mx}
+QUIET=${MX_QUIET:-0}
+mkdir -p "$DIR" || exit 1
+
+say() { [ "$QUIET" = 1 ] || echo "mx: $*" >&2; }
+
+# --- 1. 口を取る ---------------------------------------------------------------
+# `MX_SLOTS=1` の人と 2 の人が混ざっても占有が効くように、**占有は全部の口を取る**
+# (口の数は機械で 1 つに決めておく方が素直だが、占有したい 1 回だけ 1 にする使い方が多い)
+exec {LOCK0}>"$DIR/slot.0"
+held=()
+if [ "$SLOTS" -le 1 ]; then
+  n=0
+  while :; do
+    ok=1
+    for i in 0 1 2 3; do
+      exec {fd}>"$DIR/slot.$i"
+      if flock -n "$fd"; then
+        held+=("$fd")
+      else
+        ok=0
+        exec {fd}>&-
+        break
+      fi
+    done
+    [ "$ok" = 1 ] && break
+    for fd in "${held[@]}"; do exec {fd}>&-; done
+    held=()
+    [ $n -eq 0 ] && say "機械の占有を待っています (ほかの mx が走っている)"
+    n=$((n + 1))
+    sleep 1
+  done
+else
+  n=0
+  got=
+  while [ -z "$got" ]; do
+    for ((i = 0; i < SLOTS; i++)); do
+      exec {fd}>"$DIR/slot.$i"
+      if flock -n "$fd"; then
+        got=$i
+        held+=("$fd")
+        break
+      fi
+      exec {fd}>&-
+    done
+    if [ -z "$got" ]; then
+      [ $n -eq 0 ] && say "空いている口を待っています (MX_SLOTS=$SLOTS)"
+      n=$((n + 1))
+      sleep 1
+    fi
+  done
+fi
+exec {LOCK0}>&-
+
+# --- 2. 他人のベンチを待つ ------------------------------------------------------
+others() {
+  # 命令の先頭 (argv[0]) が target/release/rust-http-proxy のものだけ。自分の命令の子孫は除く
+  local p
+  for p in $(pgrep -f '^[^ ]*target/release/rust-http-proxy( |$)' 2>/dev/null); do
+    [ -n "${CHILD:-}" ] && [ "$(ps -o sid= -p "$p" 2>/dev/null | tr -d ' ')" = "$CHILD" ] && continue
+    echo "$p"
+  done
+}
+start=$SECONDS
+if [ -n "$(others)" ]; then
+  say "他人のベンチ (target/release/rust-http-proxy) が終わるのを待っています (最大 ${WAIT} 秒)"
+  while [ -n "$(others)" ]; do
+    if [ $((SECONDS - start)) -ge "$WAIT" ]; then
+      say "${WAIT} 秒待っても終わらなかった: $(others | tr '\n' ' ')"
+      exit 75
+    fi
+    sleep 2
+  done
+fi
+
+# --- 3. 自分のプロセスグループで走らせ、終わったらグループごと止める ----------------
+# `setsid` で新しいセッション (= プロセスグループ) を作る。バックグラウンドで起動するので
+# `setsid` は fork せず、`$!` がそのままグループの番号になる。口の fd は命令に渡さない
+close=()
+for fd in "${held[@]}"; do close+=("$fd>&-"); done
+eval "setsid \"\$@\" ${close[*]} &"
+CHILD=$!
+cleanup() {
+  kill -TERM -- "-$CHILD" 2>/dev/null
+  sleep 0.2
+  kill -KILL -- "-$CHILD" 2>/dev/null
+}
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+wait "$CHILD"
+rc=$?
+# 命令の本体が終わっても、グループの中に残った子 (ベンチのプロキシなど) は止める
+cleanup
+exit "$rc"

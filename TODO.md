@@ -4,7 +4,8 @@
 > 済んだタスクの本文と `結果:`、過去のコミットメッセージに出てくる `TASKS.md` はこのファイルのことで、歴史としてそのまま残してある。
 >
 > **雪像の置き場は 2026-09-26 に `~/rust-http-proxy-status/` からリポジトリの `status/` (`.gitignore` 済み) へ移した** (利用者の決定。`$HOME` には書かない)。
-> `scripts/collect-deployed.sh` の既定の `DIR` も `status/`。済んだタスクの本文に出てくる `~/rust-http-proxy-status/…` は、いまは `status/…` にある。
+> `scripts/collect-deployed.sh` の既定の `DIR` も `status/`。
+> **機械のロック `mx` は `scripts/mx`** (同じ日にリポジトリへ入れた。本文の `mx …` は `scripts/mx …` のこと)。済んだタスクの本文に出てくる `~/rust-http-proxy-status/…` は、いまは `status/…` にある。
 
 **この文書の形式**: 済んだ作業もこれからの作業も、同じ 1 つの形で書く。
 
@@ -5210,7 +5211,7 @@ Phase 14 で固まった運用を 1 つの型にした。親は下の型を指�
 3. **確かめ**: `cargo fmt --all` → 触ったクレートだけ `cargo clippy -p <crate> --all-targets -- -D warnings` (結合テストを足したら
    `-p rust-http-proxy --all-targets` も) → **自分が書いたテストと、本文が名指しした既存のテストだけ**を名前で回す
    (`cargo test -p <crate> <名前>` / `cargo test --test <ファイル名>`)。**`cargo test --workspace` は回さない** (全体テストは波の最後に親が 1 回)。
-   cargo とベンチは**必ず `~/.local/bin/mx` 経由** (機械のロック。`mx cargo test --test foo`)。A/B の一式は 1 回の `mx bash -c '…'` の中で。
+   cargo とベンチは**必ず `scripts/mx` 経由** (2026-09-26 まで `~/.local/bin/mx` にしか無かったのをリポジトリに入れた) (機械のロック。`mx cargo test --test foo`)。A/B の一式は 1 回の `mx bash -c '…'` の中で。
    `.cargo/config.toml` の `jobs = 1` はそのまま。
 4. **プロセス**: 手でプロキシを起動するときは `timeout 120`、`HOME` **と `XDG_CACHE_HOME` (か `PROXY_CACHE_DIR`)** は一時ディレクトリ (既定プロファイルの
    ディスクキャッシュは `HOME` を見ないので、`HOME` だけだと本物の `~/.cache/rust-http-proxy` を開く)、curl は `-m 5`、プロキシを自分宛てにしない。
