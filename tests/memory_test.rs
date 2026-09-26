@@ -9,6 +9,7 @@
 //! 3. `mallinfo2` が読める環境では `heap_used + heap_free + mmap ≤ rss × 1.1`、
 //!    読めない環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`
 //! 4. `arenas` は `mallopt(M_ARENA_MAX)` で実際に掛けた上限 (`PROXY_MALLOC_ARENAS`)
+//! 5. `rings_touched` は実バイナリ (既定のプロファイル、Linux) だけ `true` (T17.8)
 
 use std::time::Duration;
 
@@ -204,6 +205,14 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     // `main.rs` だけなので、この場では `0` (= glibc の既定のまま) が正しい
     assert_eq!(num(&mem, "cache_memory"), Some(0), "{}", mem);
     assert_eq!(num(&mem, "arenas"), Some(0), "{}", mem);
+
+    // (6) リングを起動時に触るのは `main` だけ (T17.8)。テスト用プロキシは触らないので `false`。
+    // 鍵は `memory` の末尾に足した (`rings_used` までの並びは動かさない)
+    assert!(
+        mem.ends_with("},\"rings_touched\":false}"),
+        "rings_touched が末尾に無い: {}",
+        mem
+    );
 }
 
 /// 実バイナリでは、`memory.rss` が `cache.system.process_rss_bytes` と一致し、
@@ -240,6 +249,13 @@ fn test_integration_memory_rss_matches_the_probe_in_the_real_binary() {
     // 起動しただけのプロキシでも、リングの容量とスタックの予約は出ている
     assert!(num(&mem, "total").unwrap_or(0) > 0, "{}", mem);
     assert!(num(&mem, "stacks_estimate").unwrap_or(0) > 0, "{}", mem);
+    // 既定のプロファイルの Linux では起動時にリングを触っている (T17.8)
+    assert_eq!(
+        mem.ends_with(",\"rings_touched\":true}"),
+        cfg!(target_os = "linux"),
+        "{}",
+        mem
+    );
 
     drop(proxy);
     let _ = std::fs::remove_dir_all(&dir);
