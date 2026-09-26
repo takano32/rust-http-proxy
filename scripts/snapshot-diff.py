@@ -9,13 +9,13 @@
 #   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase14]
 #                            [--out md|json] [--top N] [--burst N] [--major-hosts a,b,c]
 #                            [--group domain] [--daily FILE]
-#     scripts/snapshot-diff.py ~/rust-http-proxy-status/2026-09-1*-snapshot.json
+#     scripts/snapshot-diff.py status/2026-09-1*-snapshot.json
 #     scripts/snapshot-diff.py a.json b.json --criteria phase14 >> TODO.md
 #
 #   **`/snapshot` より前の形** (`/status` と `/history` を 1 本ずつ curl で取ったファイル群) からも
 #   組める。`--from-files` に **時刻までの接頭辞**を渡すと `PREFIX-*` を集めて 1 枚に見立てる:
-#     scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z \
-#                              --from-files ~/rust-http-proxy-status/2026-09-16T0106Z
+#     scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
+#                              --from-files status/2026-09-16T0106Z
 #   (`-status` `-history_res_3600` `-hosts_sort_requests_limit_1000` `-dns_sort_misses_limit_300`
 #    `-errors_n_500` `-connections` `-log_n_500` … を名前で見分ける。取得時刻は接頭辞の
 #    `YYYY-MM-DDTHHMM[SS]Z` から読む。`-metrics` と `-dashboard` は JSON ではないので見ない。)
@@ -37,7 +37,7 @@
 #
 # **応答の形の版 (`schema`。T14.49)**: 新しいプロキシの応答は先頭に `"schema":1` を持ちます。
 # 読む側は版で分岐しますが、**版の無い古い出力 (版 0) も今までどおり読めます**
-# (`~/rust-http-proxy-status/` に残っている雪像はどれも版の無い形)。読んだ版は出力の
+# (`status/` に残っている雪像はどれも版の無い形)。読んだ版は出力の
 # 「形の版 `schema` A → B」の行と `--out json` の `a.schema` / `b.schema` に出ます。
 #
 # **平常時の切り出し方** (T14.0 と同じ): `/history?res=3600` の標本のうち **1 時間 300 本未満**

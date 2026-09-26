@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # 1 週間ぶんの雪像から「週次の要約」を **Markdown 1 枚**にする (TODO.md T14.40)。
 #
-# 入力は `~/rust-http-proxy-status/` に溜まった雪像 (`*-snapshot.json`)。プロキシ自身が
+# 入力は `status/` に溜まった雪像 (`*-snapshot.json`)。プロキシ自身が
 # 1 日 1 回 (UTC 0 時) 書いている日次の `/snapshot` (T14.34) を
 # `scripts/collect-deployed.sh --from-server` で取り寄せた `<日付>T000000Z-snapshot.json` も
 # 同じ形なので、そのまま混ぜてよい。`/daily` (T14.20) の JSON だけでも出る。
 # **7 日ぶん無ければあるぶんで**出す (何枚・何日ぶんあったかは頭に書く)。
 #
 # 使い方:
-#   scripts/weekly-report.py ~/rust-http-proxy-status/                    # 置き場ごと渡す
-#   scripts/weekly-report.py ~/rust-http-proxy-status/*-snapshot.json --days 7 -o week.md
-#   scripts/weekly-report.py ~/rust-http-proxy-status/ --out json          # 表の元の辞書をそのまま
+#   scripts/weekly-report.py status/                    # 置き場ごと渡す
+#   scripts/weekly-report.py status/*-snapshot.json --days 7 -o week.md
+#   scripts/weekly-report.py status/ --out json          # 表の元の辞書をそのまま
 #   curl -s 'http://PROXY/daily?n=7' > daily.json && scripts/weekly-report.py daily.json
 #
 # 出す表 8 つ:
@@ -706,7 +706,7 @@ def parser():
     p = argparse.ArgumentParser(
         description="1 週間ぶんの雪像から週次の要約を Markdown 1 枚にする (T14.40)")
     p.add_argument("inputs", nargs="+", metavar="DIR|FILE",
-                   help="雪像の置き場 (`~/rust-http-proxy-status/`)、`*-snapshot.json`、"
+                   help="雪像の置き場 (`status/`)、`*-snapshot.json`、"
                         "`/daily` の JSON のどれでも。混ぜてよい")
     p.add_argument("--days", type=int, default=DEFAULT_DAYS, metavar="N",
                    help=f"いちばん新しい日から遡る日数 (既定 {DEFAULT_DAYS}、0 で全部)")

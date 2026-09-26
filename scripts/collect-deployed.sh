@@ -11,8 +11,9 @@
 #   scripts/collect-deployed.sh HOST:PORT [DIR]
 #     例: scripts/collect-deployed.sh nagoya.sorahost.net:50697
 #         scripts/collect-deployed.sh 127.0.0.1:8080 /tmp/snaps      # 手元のプロキシで試す
-#   保存先の既定は ~/rust-http-proxy-status/ (`<UTC 時刻>-snapshot.json`、秒まで)。
-#   **リポジトリには保存しない** (個票には接続元 IP と宛先ホストが並ぶため)。
+#   保存先の既定はリポジトリの `status/` (`<UTC 時刻>-snapshot.json`、秒まで)。
+#   **`status/` は .gitignore 済みでコミットしない** (個票には接続元 IP と宛先ホストが並ぶため)。
+#   `$HOME` には書かない (2026-09-26、利用者の決定。前の既定は ~/rust-http-proxy-status/)。
 #
 #   scripts/collect-deployed.sh --from-server HOST:PORT [DIR]
 #     プロキシ自身が 1 日 1 回書いている日次の snapshot (T14.34) のうち、**手元に無い日付だけ**を
@@ -73,7 +74,8 @@ fi
 # `http://host:port` と書かれても `host:port` として扱う (URL でも通るように)
 PROXY=${PROXY#http://}
 PROXY=${PROXY%/}
-DIR=${2:-$HOME/rust-http-proxy-status}
+# 相対パスはリポジトリの根から (上の `cd`)
+DIR=${2:-status}
 PROBE=${PROBE:-1}
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}

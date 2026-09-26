@@ -22,7 +22,7 @@
 # **`/snapshot` の JSON もそのまま読める** (T14.4)。中の `/hosts` の部分 (最大 1,000 ホスト) を
 # 使うので、`scripts/collect-deployed.sh` が保存したファイルをそのまま 1 枚でも 2 枚でも渡せる:
 #     scripts/collect-deployed.sh nagoya.sorahost.net:50697        # 1 日 1 回取る
-#     scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json   # 最初と最後で差分
+#     scripts/status-diff.py status/*-snapshot.json   # 最初と最後で差分
 #
 # **`/hosts` の JSON もそのまま読める** (T13.4)。`/status` の `hosts[]` は要求数の上位 50 だけ
 # なので、`.rrd` にある全ホスト (最大 1,000) を見たいときはこちら:
@@ -50,7 +50,7 @@
 # **この機械のリゾルバは一部のホストで AAAA を落とすことがある** (2026-09-10 の合議のときは
 # www.google.com が「無し」と出た。同じ日に引き直したときは 50 ホスト全部が下の表と一致した)。
 # **数字を残すときは引いた表を `--aaaa` で渡して固定する**。TODO.md の表は dns.google の DoH の表:
-#   scripts/status-diff.py snap.json --aaaa ~/rust-http-proxy-status/2026-09-10-aaaa-by-dns-google.json
+#   scripts/status-diff.py snap.json --aaaa status/2026-09-10-aaaa-by-dns-google.json
 # `--aaaa FILE` は `{"www.dlsite.com": true, "discord.com": false}` 形式の JSON。
 # `--no-dns` は判定を省く (群分けをせず、全ホストを 1 つの表に出す)。
 #

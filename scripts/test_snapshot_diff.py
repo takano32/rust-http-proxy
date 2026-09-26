@@ -6,7 +6,7 @@
 
 架空の雪像 2 枚 (`testdata/snapshot-a.json` / `snapshot-b.json`) は **手で計算できる値**で
 組んである (標本はバケツ 1 つに固め、`avg_ms` は差分が割り切れる数にしてある)。
-デプロイ先の実出力 (`~/rust-http-proxy-status/`) があるときだけ回るテストが最後に 1 本あり、
+デプロイ先の実出力 (リポジトリの `status/`) があるときだけ回るテストが最後に 1 本あり、
 **T14.0 の表と同じ数字が出ること**を見る (実データはリポジトリに入れないので、無ければ飛ばす)。
 """
 
@@ -20,7 +20,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "testdata")
-DEPLOYED = os.path.join(os.path.expanduser("~"), "rust-http-proxy-status")
+DEPLOYED = os.path.join(os.path.dirname(HERE), "status")
 
 
 def _load(name, filename):
@@ -1029,7 +1029,7 @@ class Deployed(unittest.TestCase):
 class Anonymized(unittest.TestCase):
     """T14.35 の匿名化した実データ (`testdata/deployed-2026-09-16.anon.json`) で回る。
 
-    上の `Deployed` は `~/rust-http-proxy-status/` があるときだけ回るが、これは
+    上の `Deployed` は リポジトリの `status/` があるときだけ回るが、これは
     **リポジトリの中の実データ** (ホスト名と IP と UA だけを置き換えた雪像) なのでいつでも回る。
     """
 

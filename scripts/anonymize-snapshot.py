@@ -7,11 +7,11 @@
 (件数・時間・区間・閉じた理由) を持ったまま fixture にできる。
 
 使い方:
-    scripts/anonymize-snapshot.py ~/rust-http-proxy-status/2026-09-16T0106Z-snapshot.json \
+    scripts/anonymize-snapshot.py status/2026-09-16T0106Z-snapshot.json \
                                   -o scripts/testdata/deployed-2026-09-16.anon.json
     # `/snapshot` より前の形 (`collect-deployed.sh` 以前に 1 本ずつ取ったファイル群) からも組める。
     # `-metrics` `-dashboard` のような JSON でないものは黙って飛ばす
-    scripts/anonymize-snapshot.py ~/rust-http-proxy-status/2026-09-16T0106Z-* \
+    scripts/anonymize-snapshot.py status/2026-09-16T0106Z-* \
                                   -o scripts/testdata/deployed-2026-09-16.anon.json
     scripts/anonymize-snapshot.py a-snapshot.json -o -        # 標準出力へ
 

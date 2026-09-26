@@ -2,6 +2,9 @@
 
 > このファイルは 2026-09-19 まで `TASKS.md` という名前だった (T15.14 で改名。`git log --follow TODO.md` で履歴を追える)。
 > 済んだタスクの本文と `結果:`、過去のコミットメッセージに出てくる `TASKS.md` はこのファイルのことで、歴史としてそのまま残してある。
+>
+> **雪像の置き場は 2026-09-26 に `~/rust-http-proxy-status/` からリポジトリの `status/` (`.gitignore` 済み) へ移した** (利用者の決定。`$HOME` には書かない)。
+> `scripts/collect-deployed.sh` の既定の `DIR` も `status/`。済んだタスクの本文に出てくる `~/rust-http-proxy-status/…` は、いまは `status/…` にある。
 
 **この文書の形式**: 済んだ作業もこれからの作業も、同じ 1 つの形で書く。
 
@@ -30,7 +33,7 @@
 | §2 | 現在地 (数字の一覧) |
 | §3 | やったこと (Phase 0〜7) |
 | §4 | 測って採らなかったもの |
-| §5 | これから (Phase 8〜16。Phase 12 は完了、Phase 13 は個票まで完了・名前解決は届かず、Phase 14 は T14.0 で T14.1〜T14.3 を決めた、Phase 15 は T15.12 / T15.15 が残り、Phase 16 は T16.0 (計器) まで済んで再デプロイ待ち) |
+| §5 | これから (Phase 8〜16。Phase 12 は完了、Phase 13 は個票まで完了・名前解決は届かず、Phase 14 は T14.0 で T14.1〜T14.3 を決めた、Phase 15 は T15.12 / T15.15 が残り、Phase 16 は T16.0 (計器) まで済み、2026-09-24 12:36 UTC に版 `2e57626` で再デプロイ済み) |
 | 付録 A | 計測の記録 (時系列) |
 
 ## 0. ゴールと前提
@@ -40,7 +43,7 @@
 
 **到達**: loopback は Phase 11 まで (§2 の表)。**デプロイ先** (`nagoya.sorahost.net:50697`、Pterodactyl コンテナ) は
 **2026-09-24、Phase 15 (T15.4 + T15.6) をデプロイして 126.6 時間の実測** (§2 の「デプロイ先の現在地 (2026-09-24)」。出どころは
-`~/rust-http-proxy-status/2026-09-24T093400Z-snapshot.json`。Phase 14 の 36.6 時間の 1 枚は付録 A の「デプロイ先の現在地 (2026-09-18)」):
+`status/2026-09-24T093400Z-snapshot.json`。Phase 14 の 36.6 時間の 1 枚は付録 A の「デプロイ先の現在地 (2026-09-18)」):
 
 - **AAAA のあるホストの CONNECT 確立 257 → 9 ms** (Phase 12 / T12.1。Happy Eyeballs の `STAGGER` 250 ms を払わなくなった)
 - **名前解決のミス 0.55 → 0.144 回/接続** (Phase 14 / T14.1 の keep-warm。接続 1 本あたり 6.4 → 2.8 ms)
@@ -470,7 +473,7 @@ CONNECT 確立 8,283 /s (T4.3)** も固定なしの値だった。上の表に�
 
 2026-09-19 03:00:28 UTC ごろに版 `0.1.0+9f07de4` (T15.4 の keep-warm 3,600 秒、T15.5 の空回りの修正、T15.6 の connect 既定 10 秒、T15.0 の計器) で
 起動し直し、`.env` には特別な行を入れずに走らせた。2026-09-24 09:34:01 UTC (起動から 126.6 時間 = 5.3 日、`uptime_secs` 455,613) に
-`scripts/collect-deployed.sh nagoya.sorahost.net:50697` で雪像を 1 枚取った。出どころは `~/rust-http-proxy-status/2026-09-24T093400Z-snapshot.json`
+`scripts/collect-deployed.sh nagoya.sorahost.net:50697` で雪像を 1 枚取った。出どころは `status/2026-09-24T093400Z-snapshot.json`
 (同時刻に `2026-09-24T0934Z-{healthz,profile_res_60,slo,daily,config}.json` も取った。1 枚の要約は `2026-09-24T0934Z-collect.md`、判定表は
 `2026-09-24T0934Z-phase15.md` = 再デプロイ直前の `2026-09-19T022515Z-snapshot.json` との差分)。**雪像はリポジトリに入れない**。
 前後は `$.history["3600"].samples` を起動時刻で切り、**バーストの無い時間帯 (1 標本 300 本未満) どうし**で並べる

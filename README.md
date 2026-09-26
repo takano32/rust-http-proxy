@@ -114,7 +114,7 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 通算されるので、そのまま読むと直す前の値が何日も混ざります)。
 
 **1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T14.4)。`/snapshot` を
-`DIR/<UTC 時刻>-snapshot.json` (既定 `~/rust-http-proxy-status/`) に保存し、要点
+`DIR/<UTC 時刻>-snapshot.json` (既定はリポジトリの `status/`。`.gitignore` 済み) に保存し、要点
 (`scripts/snapshot-summary.py`)・ホスト別 (`status-diff.py`。**前回の雪像があれば差分**)・
 ダッシュボードの読み方 (`check-dashboard.js`)・手元から見た待ち (`probe-deployed.sh`) を
 続けて回して **Markdown 1 枚**を標準出力に出します。`status-diff.py` は `/snapshot` の JSON を
@@ -125,8 +125,8 @@ scripts/collect-deployed.sh nagoya.sorahost.net:50697 > today.md   # 1 日 1 回
 PROBE=0 scripts/collect-deployed.sh nagoya.sorahost.net:50697      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server nagoya.sorahost.net:50697  # 回し忘れた日を取り寄せる
 scripts/collect-deployed.sh --full nagoya.sorahost.net:50697       # 切れた部の続きも `offset=` で追う
-scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json    # 最初と最後で差分
-scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json --group domain  # eTLD+1 でまとめる
+scripts/status-diff.py status/*-snapshot.json    # 最初と最後で差分
+scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまとめる
 ```
 
 **回し忘れても個票は残ります**: プロキシ自身が 1 日 1 回 (UTC 0 時) `/snapshot` を
@@ -148,14 +148,14 @@ scripts/status-diff.py ~/rust-http-proxy-status/*-snapshot.json --group domain  
 出力は Markdown なので `TODO.md` にそのまま貼れます。
 
 ```bash
-scripts/snapshot-diff.py ~/rust-http-proxy-status/2026-09-1{2,6}*-snapshot.json --criteria phase14
+scripts/snapshot-diff.py status/2026-09-1{2,6}*-snapshot.json --criteria phase14
 scripts/snapshot-diff.py a.json b.json --aaaa aaaa.json --out json      # 機械で読む形
 scripts/snapshot-diff.py a.json b.json --group domain                   # eTLD+1 でまとめる
 # phase15 の判定。`/daily` は雪像に入っていないので、同時刻に取ったものを渡すと日ごとのミスの幅が並ぶ
 scripts/snapshot-diff.py a.json b.json --criteria phase15 --daily b-daily.json
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
-scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z \
-                         --from-files ~/rust-http-proxy-status/2026-09-16T0106Z
+scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
+                         --from-files status/2026-09-16T0106Z
 ```
 
 **`--group domain` は「dlsite 全体で何件か」を読むためのまとめ方です** (T14.54)。`/hosts` は
@@ -182,17 +182,17 @@ scripts/snapshot-diff.py --from-files ~/rust-http-proxy-status/2026-09-12T2018Z 
 
 **1 週間ぶんをまとめて読むのは `scripts/weekly-report.py`** (T14.40)。`snapshot-diff.py` が
 「2 枚の間に何が変わったか」を見るのに対して、こちらは**溜まった雪像を日で切って 1 週間を 1 枚**にします。
-入力は雪像の置き場 (`~/rust-http-proxy-status/`) でも、`*-snapshot.json` を並べても、
+入力は雪像の置き場 (`status/`) でも、`*-snapshot.json` を並べても、
 `/daily` (T14.20) の JSON でも、`$HOME/.rust-http-proxy.daily.jsonl` そのものでも構いません
 (混ぜてよい。**7 日ぶん無ければあるぶんで**出して、何枚・何日ぶんだったかを頭に書きます)。
 出るのは表 8 つ — **要求数 / CONNECT 確立 p50・p95 / 名前解決のミス率 / エラー (原因別) / 山 /
 接続元の出入り / 遅かったホスト上位 / 新しく見たホスト**:
 
 ```bash
-scripts/weekly-report.py ~/rust-http-proxy-status/ -o week.md    # 置き場ごと渡す
-scripts/weekly-report.py ~/rust-http-proxy-status/*-snapshot.json --days 7 --top 10
+scripts/weekly-report.py status/ -o week.md    # 置き場ごと渡す
+scripts/weekly-report.py status/*-snapshot.json --days 7 --top 10
 curl -s 'http://PROXY/daily?n=7' > daily.json && scripts/weekly-report.py daily.json
-scripts/weekly-report.py ~/rust-http-proxy-status/ --out json    # 表の元の辞書をそのまま
+scripts/weekly-report.py status/ --out json    # 表の元の辞書をそのまま
 ```
 
 **数字の求め方は `snapshot-diff.py` と同じ**です: `/history?res=3600` を **UTC の日で切って**
@@ -217,10 +217,10 @@ scripts/weekly-report.py ~/rust-http-proxy-status/ --out json    # 表の元の�
 scheme と port、表の上限を越えた分の行 (`other`) はそのままです。
 
 ```bash
-scripts/anonymize-snapshot.py ~/rust-http-proxy-status/2026-09-16T0106Z-snapshot.json \
+scripts/anonymize-snapshot.py status/2026-09-16T0106Z-snapshot.json \
                               -o scripts/testdata/deployed-2026-09-16.anon.json
 # `/snapshot` より前の形 (1 本ずつ取ったファイル群) からも組めます (`-metrics` 等は飛ばします)
-scripts/anonymize-snapshot.py ~/rust-http-proxy-status/2026-09-16T0106Z-* -o anon.json
+scripts/anonymize-snapshot.py status/2026-09-16T0106Z-* -o anon.json
 scripts/snapshot-diff.py old.anon.json new.anon.json      # 匿名化したあとでも差分は取れる
 ```
 
@@ -231,7 +231,7 @@ scripts/snapshot-diff.py old.anon.json new.anon.json      # 匿名化したあ�
 CONNECT 確立 p50 8.3 / p95 80.7 ms、ミス 1 回 11.5 ms) が出ることを見ています。
 
 **いまの数字は 2026-09-24、Phase 15 (T15.4 + T15.6) を再デプロイして 126.6 時間の実測**です。出どころは雪像 1 枚
-(`scripts/collect-deployed.sh` が取った `~/rust-http-proxy-status/2026-09-24T093400Z-snapshot.json` と、同時刻の
+(`scripts/collect-deployed.sh` が取った `status/2026-09-24T093400Z-snapshot.json` と、同時刻の
 `/healthz` `/profile?res=60` `/daily`)。版は `0.1.0+9f07de4` です。前後は `$.history["3600"].samples` を再起動時刻
 (2026-09-19 03:00:28Z ごろ) で切り、**バーストの無い時間帯 (1 標本 300 本未満) どうし**で並べています
 (前 = 200 標本 11,802 本、いま = 111 標本 5,452 本)。`TODO.md` の §2「デプロイ先の現在地 (2026-09-24)」と同じ数字です。
@@ -2886,8 +2886,8 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 
 `collect-deployed.sh` は `/snapshot` を 1 回で取って保存し、前回の雪像があれば
 `snapshot-diff.py` の差分 (再起動で切った平常時の前後・ホスト別・接続元別・名前解決・エラー・バースト) と、
-手元から見た待ち (`probe-deployed.sh`) を続けて回します。**保存先は既定で `~/rust-http-proxy-status/`** で、
-個票には接続元 IP と宛先が並ぶのでリポジトリには入れません。
+手元から見た待ち (`probe-deployed.sh`) を続けて回します。**保存先は既定でリポジトリの `status/`** で、
+個票には接続元 IP と宛先が並ぶので `.gitignore` に入れてあり、コミットしません。
 **雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
 1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
 意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase15`**
