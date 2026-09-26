@@ -298,7 +298,8 @@ RSS **215.9 → 21.1 MB** (先行確保 201.3 → 0、2026-09-16)、`GET /` **50
 返らなければ 250 ms (RFC 8305 の Connection Attempt Delay) 待ってから IPv4 に移ります。IPv6 が**黙って落ちる**
 この環境では、AAAA のあるホスト全部でこの 250 ms を毎回払っていました。今はホストごとに最後に勝った族を覚え、
 IPv6 が起動から 1 度も勝たずに 3 回続けて負けたら初めて見るホストも IPv4 から試します
-(「特徴」の IPv4 / IPv6 の項。600 秒に 1 回は IPv6 を先頭に戻すので、IPv6 が生き返れば自動で戻ります)。
+(「特徴」の IPv4 / IPv6 の項。IPv6 が生き返ったかは canary が 1 分に 1 回見ていて、繋がれば自動で戻ります。
+canary が IPv6 を見ていないときは 600 秒に 1 回、利用者の要求で IPv6 を先頭に戻して試します)。
 
 **残っている待ちは 2 つ**です。(1) **遠いホストの RTT** — 上のとおり確立の中央値は 1 往復そのもので、
 プロキシ側では縮みません。(2) **尾 (p90 53.5 / p95 78.0 ms)** — こちらは網ではなく箱の中です
@@ -444,9 +445,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   `http://[2001:db8::1]:8080/` などの IPv6 リテラルにも対応。`PROXY_IPV6=off` で IPv4 のみにできる。
   **IPv6 が黙って落ちる環境 (経路はあるのに繋がらない) では自動で IPv4 を先にする**: ホストごとに
   最後に接続できた族を覚え、IPv6 が起動から 1 度も勝たずに 3 回続けて負けたら初めて見るホストも
-  IPv4 から試す (RFC 8305 §8。600 秒に 1 回だけ IPv6 を先頭に戻して試すので、IPv6 が生き返れば自動で戻る)。
+  IPv4 から試す (RFC 8305 §8)。IPv6 が生き返ったかは **canary の IPv6 側の 1 本** (1 分に 1 回、利用者を待たせない) が見ていて、
+  繋がれば自動で戻る。canary が IPv6 を見ていないとき (`PROXY_CANARY=off`、`PROXY_CANARY_IPV6=off`、`--lite` と `PROXY_STATS_PERSIST=off`、
+  canary の宛先に AAAA が無い) は、今までどおり 600 秒に 1 回だけ利用者の要求で IPv6 を先頭に戻して試す (T17.7)。
   試行そのものはやめないので、IPv4 が死んでいるホストは IPv6 で拾える。
-  勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。**確実に IPv6 を避けたいなら `off`**。
+  勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。`/status` の `ipv6.probe_by` は
+  いま IPv6 を探っているのが誰か (`"canary"` = canary が直近 600 秒に IPv6 を 1 本試した、`"request"` = 利用者の要求で探る)。**確実に IPv6 を避けたいなら `off`**。
   待ち受けの**受け入れ待ち行列は既定 `min(1024, somaxconn)`** (`PROXY_LISTEN_BACKLOG`)。Rust の既定の 128 だと、
   ブラウザが 1 ページで開く数十本の CONNECT で溢れて SYN が捨てられ、クライアントの再送で 1 秒待たされます
 - **RFC 7230 / RFC 9110 準拠**:
@@ -485,6 +489,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   使われていなくても 45 秒 (3/4 TTL) ごとに裏で引き直し続ける**ので、TTL より長い間隔で来る
   ホスト (数分おきの push 通知など) もミスになりません。同時に warm でいられるのは 32 件まで
   (最後の使用が古いものから外れ、最後の使用から 3,600 秒過ぎたら止まります)。
+  この規則を変えたらミスと引き直しがどう動くかは、**`scripts/dns-replay.py SNAP.json`** が雪像 1 枚
+  (`/recent` の到着列と `/hosts_series` の助走) で見積もります (T17.5。いまの規則の値を同じ区間の
+  `/history` と並べ、`promote` の条件を差し替えた案と比べる。`--json` で機械で読む形)。
   **名前解決は 1 要求 1 回**: ローカル宛て (SSRF) の判定で引いた答えをそのまま接続に使うので、
   キャッシュを切っていても判定と接続が別の答えを見ることはない。
   **答えが変わった回数 (`changes`)**: 引き直し (keep-warm と期限切れの再解決) は元々
@@ -912,10 +919,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **AAAA へ 1 本だけ**繋いでみて `canary.ipv6_connect_ms` に残します (繋がれば ms、
     **繋がらなければ `null`**: AAAA が無い名前、`PROXY_IPV6=off`、経路が黒穴、`PROXY_CANARY_IPV6=off`)。
     コンテナの IPv6 が黙って落ちる環境では、プロキシは 3 回続けて負けると初めて見るホストを
-    IPv4 優先に切り替え (`/status` の `ipv6.v4_first`)、**元に戻すかどうかは 600 秒に 1 回の探りだけ**で
-    決めています。この 1 本があれば「IPv6 が生き返ったか」を 1 分の粒度で (利用者を待たせずに) 読めます。
-    **観測だけ**で、Happy Eyeballs も勝敗の記録 (`ipv6.attempts` / `wins` / `losses`) も
-    ホストごとの族の記憶も動かしません (`v4_first` の判定は 1 ビットも変わりません)。
+    IPv4 優先に切り替えます (`/status` の `ipv6.v4_first`)。この 1 本があれば「IPv6 が生き返ったか」を
+    1 分の粒度で (利用者を待たせずに) 読めます。**T17.7 からは元に戻すかどうかもこの 1 本が決めます**:
+    この 1 本が試している間 (直近 600 秒に 1 本、`ipv6.probe_by` が `"canary"`) は利用者の要求で
+    600 秒に 1 回 IPv6 を先頭に戻す探りをやめ (探りの 1 本は利用者を Happy Eyeballs の間隔ぶん待たせていた)、
+    **繋がったら `v4_first` を解きます**。Happy Eyeballs も勝敗の記録 (`ipv6.attempts` / `wins` / `losses`) も
+    ホストごとの族の記憶も動かしません。
     失敗は `/errors` にも残しません (黒穴のままだと 1 分に 1 件ずつ個票が埋まってしまうため。
     生死は `ipv6_connect_ms` が `null` かどうかで読みます)
   - **再起動をまたぐか (`persisted` / `restored`)**: `/recent` `/errors` `/bursts` `/events` `/log` の 5 つは、
@@ -1433,6 +1442,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_LISTEN_BACKLOG` | `0` (= `min(1024, somaxconn)`) | 待ち受けの受け入れ待ち行列の長さ (`listen(2)`) |
 | `PROXY_TIMEOUT_SECS` | `30` | 接続とデータ転送の締め切り (秒)。`0` で無期限 |
 | `PROXY_CONNECT_TIMEOUT_SECS` | `10` | `CONNECT` のオリジン接続だけの締め切り (秒) |
+| `PROXY_HE_STAGGER_MS` | `250` | Happy Eyeballs で次の候補を試し始めるまでの間隔 (ms、10〜2000) |
 | `PROXY_KEEPALIVE_SECS` | `15` | クライアント接続を次の要求まで待つ時間 (秒) |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り (秒) |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限 |
@@ -1573,6 +1583,12 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   Happy Eyeballs の締め切りも同じ値なので、締め切りで抜けた接続は `/errors` に `cause: "timeout"` で残ります。
   **名前解決の時間は含みません** (名前を引いたあとの `connect` に効きます)。
   `.env` で即時反映
+- **`PROXY_HE_STAGGER_MS`** (既定 `250`)
+  Happy Eyeballs (RFC 8305) で、名前が複数のアドレスを返したときに**先頭の候補が返らなければ次の候補を試し始めるまでの間隔** (ms)。
+  受けるのは **10〜2000** (RFC 8305 の範囲) で、外れた値と数でない値は起動ログに `WARN` を 1 行出して既定の 250 に戻します (`/config` の出どころも `default` のまま)。
+  **起動時に 1 回だけ読みます** (`.env` を書き換えても効かず、`/status` の `settings.restart_required` に出ます)。
+  IPv6 が黙って落ちる網ではホストごとに勝った族を覚えるので (上の「250 ms が消えたのは」)、この間隔を払うのは初めて見るホストと 600 秒に 1 回の IPv6 の探りだけです。
+  縮めると SYN が遅いだけの相手にも 2 本目を同時に張る回数が増えるので、既定から動かす理由が無ければそのままにしてください
 - **`PROXY_KEEPALIVE_SECS`** (既定 `15`)
   クライアント接続を次の要求まで待つアイドル時間 (秒)。`0` で 1 接続 1 要求。
   **待つ長さとは別に、1 本の接続で 1,000 要求を捌いたらその接続は閉じます** (下記)
@@ -1663,8 +1679,9 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 - **`PROXY_CANARY_IPV6`** (既定 `on`)
   canary の **IPv6 側**: 同じ周期に、canary の名前の **AAAA へ 1 本だけ**繋いでみて `/status` の `canary.ipv6_connect_ms` と `/history` の `canary` の 5 列目 (`canary_ipv6_connect_ms`) に残します。
   繋がれば ms、**繋がらなければ `null`** (AAAA が無い名前、`PROXY_IPV6=off`、経路が黒穴、ここが `off`)。
-  コンテナの IPv6 が黙って落ちる環境で「生き返ったか」を 1 分の粒度で読むための観測です (`v4_first` の解除は 600 秒に 1 回の探りだけに頼っています)。
-  **観測だけで、Happy Eyeballs も `ipv6` の勝敗もホストごとの族の記憶も動かしません**。
+  コンテナの IPv6 が黙って落ちる環境で「生き返ったか」を 1 分の粒度で読むための観測で、**IPv6 の探りも引き受けます** (T17.7):
+  この 1 本が試している間は利用者の要求で 600 秒に 1 回 IPv6 を先頭に戻す探りをやめ (`/status` の `ipv6.probe_by` が `"canary"`)、繋がれば `v4_first` を解きます。
+  **Happy Eyeballs も `ipv6` の勝敗 (`attempts` / `wins` / `losses`) もホストごとの族の記憶も動かしません**。`off` にすると、最後の 1 本から 600 秒で探りは利用者の要求に戻ります。
   失敗は `/errors` に残しません (黒穴のままだと 1 分に 1 件ずつ埋まるため)。
   `off` にすると 1 本も出しません。`.env` で即時反映
 
@@ -2174,9 +2191,10 @@ taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 
 ### CI (GitHub Actions)
 
 push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` は `cargo fmt --check` →
-`clippy -D warnings` → **文書とコードの整合** (`scripts/check-docs.sh`) → `cargo test --workspace` →
-リリースビルド → **180 MB の cgroup でビルドが通るか**
-(`scripts/build-memory.sh 180`) → 短いベンチ、の順です。それと並べてもう 1 つ、`deployed-like-snapshot` が
+`clippy -D warnings` → **文書とコードの整合** (`scripts/check-docs.sh`) → `scripts/` の単体テスト →
+**`shellcheck scripts/*.sh scripts/mx`** (切った指摘とその理由は `scripts/.shellcheckrc`) → `cargo test --workspace` →
+リリースビルド → 短いベンチ、の順です。**180 MB の cgroup でビルドが通るか** (`scripts/build-memory.sh 180`) は
+別のジョブ `build-memory` で並べて回します。それと並べてもう 1 つ、`deployed-like-snapshot` が
 **デプロイ先に似せた条件** (上の `scripts/deployed-like.sh`) を runner の中に作り、`scripts/ci-snapshot.sh` で
 `--only connect-multi` と forward を 10 秒ずつ回して `/snapshot` を**成果物 (artifact) の `snapshot.json`**
 に残します。見張るのは**形の退行だけ**で、数字の絶対値は比べません (runner は世代も負荷も毎回違うため):

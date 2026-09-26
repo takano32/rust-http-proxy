@@ -54,7 +54,7 @@
 # 外からは中の 127.0.0.1 に届かない)。`taskset` は名前空間の中でも効くので、
 # `scripts/cpu-per-request.sh` の固定はそのまま使える。
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 # ベンチの `--only connect-multi` が使う名前 (`crates/bench/src/main.rs` の `MULTI_HOST` と同じ)
 MULTI_HOST=multi.test
