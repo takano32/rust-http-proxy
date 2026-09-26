@@ -138,6 +138,13 @@ scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまと
 (中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` も
 `weekly-report.py` もそのまま読めます)。
 
+要点 (`snapshot-summary.py`) の最後には 2 つの表が付きます (T17.0c): **`/events` の anomaly を種類別に「起動からの件/時」**
+(`cleared:` は数えず、状態ファイルから読み戻した起動より前の出来事は外します) と、**接続元の見張り** — 新しく現れた接続元
+(`--prev` があれば前の `/clients` に居ないもの、無ければ `first_seen` が起動より後)・IP リテラル宛ての要求・443 / 80 以外への
+CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)・`/events` の `new_client`・**`/readers` に居て `/clients` に居ない
+接続元** (プロキシを使わず `GET /` などで内部の口だけを引いた走査)。認証なしのプロキシで実際に起きる危険は乱用なので、その手がかりを
+1 か所に集めています。IP とホスト名はそのまま出ます。
+
 保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
 
 **2 枚の雪像から「何が変わったか」を全部読むのは `scripts/snapshot-diff.py A B`** (T14.17)。
@@ -155,6 +162,11 @@ scripts/snapshot-diff.py a.json b.json --aaaa aaaa.json --out json      # 機械
 scripts/snapshot-diff.py a.json b.json --group domain                   # eTLD+1 でまとめる
 # phase15 の判定。`/daily` は雪像に入っていないので、同時刻に取ったものを渡すと日ごとのミスの幅が並ぶ
 scripts/snapshot-diff.py a.json b.json --criteria phase15 --daily b-daily.json
+# phase17 の 8 行 (phase15 の 4 行 + conn 役の CPU/要求・`dns_warm_max` と `warm_evicted`・
+# `/events` の anomaly の種類別 件/時 (起動から、`cleared:` は数えない)・cgroup の起動からの CPU)。
+# `/profile?res=60` も雪像に入らないので渡す (無ければ雪像の `/profile` の部で「参考」)
+scripts/snapshot-diff.py a.json b.json --criteria phase17 --daily b-daily.json \
+                         --profile b-profile_res_60.json   # 前も比べるなら --profile-before FILE
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
 scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
                          --from-files status/2026-09-16T0106Z

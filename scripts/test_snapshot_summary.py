@@ -416,6 +416,130 @@ class StatusBefore(unittest.TestCase):
         self.assertIn("| RSS | 20.0 MiB |\n", md)
 
 
+class Anomalies(unittest.TestCase):
+    """`/events` の anomaly の種類別 件/時 (T17.0c)。B は起動から 12 時間 (起動 1789043200)。"""
+
+    def snapshot(self, extra):
+        b = read(B)
+        b["events"]["events"] = extra + b["events"]["events"]
+        return b
+
+    def test_the_kinds_are_counted_per_hour_since_the_start(self):
+        """`cleared:` と、起動より前 (状態ファイルから読み戻した前の版) の 1 件は数えない。"""
+        t = read(B)["taken_at"]
+        ev = [{"at": t - 100, "kind": "anomaly", "text": "cleared: dns_slow after 5m (…)"},
+              {"at": t - 400, "kind": "anomaly", "text": "dns_slow: dns miss avg 400 ms over 5m (1 misses)"},
+              {"at": t - 3600, "kind": "anomaly", "text": "dns_slow: dns miss avg 300 ms over 5m (1 misses)"},
+              {"at": t - 7200, "kind": "anomaly", "text": "connect_p95: connect p95 105 ms over 5m"},
+              {"at": t - 7000, "kind": "anomaly", "text": "cleared: connect_p95 after 6m (…)"},
+              {"at": t - 40000, "kind": "anomaly", "text": "dns_slow: dns miss avg 250 ms over 5m"},
+              # 起動 (t − 43,200) より前
+              {"at": t - 50000, "kind": "anomaly", "text": "dns_slow: from the previous version"},
+              {"at": t - 500, "kind": "new_client", "text": "new_client: 192.0.2.99 first seen (…)"}]
+        with written(b=self.snapshot(ev)) as paths:
+            md = run([paths["b"]])
+        self.assertIn("| `/events` の anomaly (起動から 12.0 時間) | 件 | 件/時 |\n|---|---|---|\n"
+                      "| `dns_slow` | 3 | 0.250 |\n| `connect_p95` | 1 | 0.083 |\n", md)
+        self.assertIn("- 収まった (`cleared:`) 2 件は数えない。起動より前の 1 件"
+                      " (状態ファイルから読み戻した前の版のぶん) は外した\n", md)
+        self.assertNotIn("落ちているかもしれない", md)
+
+    def test_no_anomaly_since_the_start_is_a_zero_row(self):
+        md = run([B])
+        self.assertIn("| (起動から 1 件も立っていない) | 0 | — |", md)
+
+    def test_a_full_ring_says_the_start_may_be_missing(self):
+        t = read(B)["taken_at"]
+        b = self.snapshot([{"at": t - 60, "kind": "anomaly", "text": "active_high: 200 of 240"}])
+        b["events"]["capacity"] = 3
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("**リングが満杯か応答が切れているので、起動直後のぶんが落ちているかもしれない**"
+                      " (残っている最古は 2026-09-11 00:25:40Z)", md)
+
+    def test_an_old_snapshot_has_no_table(self):
+        self.assertNotIn("`/events` の anomaly", run([A]))
+
+
+class ClientWatch(unittest.TestCase):
+    """接続元の見張り (T17.0c)。**IP と名前はそのまま出す** (要約は手元に置くもの)。"""
+
+    def test_a_client_missing_from_the_older_snapshot_is_new(self):
+        md = run([B, "--prev", A])
+        self.assertIn("「新」は 前回の取得 (2026-09-10 00:26:40Z) より後に初めて見た", md)
+        # 198.51.100.7 は A に居ない。192.0.2.10 は 5,000 − 4,800 = 200 要求
+        self.assertIn("| `198.51.100.7` **新** | 300 | 3 | 0 / — | 0 / — | 2026-09-10 14:20:00Z"
+                      " | 2026-09-11 00:20:00Z | Mozilla/5.0 (fictional) |", md)
+        # B は `/recent` を部ごと落としているので「窓」は `—` (0 本と書かない)。
+        # B の 192.0.2.10 の行には `nonstandard_ports` が無い (古い版の形) ので起動からも `—`
+        self.assertIn("| `192.0.2.10` | 200 | 42 | 0 / — | — / — |", md)
+        self.assertIn("  - `/recent` はこの雪像に入っていない", md)
+        self.assertIn("  - 新しく現れた接続元: 1 件: `198.51.100.7` (300 要求)", md)
+
+    def test_without_prev_new_means_first_seen_after_the_start(self):
+        """起動 (1789043200) より後に初めて見たのは 198.51.100.7 だけ。"""
+        md = run([B])
+        self.assertIn("「新」は 起動 (2026-09-10 12:26:40Z) より後に初めて見た", md)
+        self.assertIn("| `198.51.100.7` **新** | 300 |", md)
+        self.assertIn("| `192.0.2.10` | 5,000 |", md)
+
+    def test_literal_targets_and_odd_ports_are_counted(self):
+        """`/clients` の通算と、`/recent` の窓の中 (IPv6 の `[addr]:port` も IP リテラル)。"""
+        b = read(B)
+        b["clients"]["clients"][0].update(literal_targets=4, nonstandard_ports=2)
+        t = b["taken_at"]
+        rec = [("connect", "203.0.113.5:8443"),     # リテラル + 非標準
+               ("connect", "[2001:db8::1]:443"),    # リテラル
+               ("connect", "gamma.example.jp:22"),  # 非標準
+               ("http", "delta.example.jp:8080"),   # forward は数えない (CONNECT だけ)
+               ("connect", "alpha.example.jp:443")]
+        b["recent"] = {"recent": [
+            {"id": i, "at": t - 100 + i, "secs": 1, "reason": "client_eof", "kind": k,
+             "client": "192.0.2.10", "target": tgt, "up": 0, "down": 0, "ms": {}}
+            for i, (k, tgt) in enumerate(rec)], "count": 5, "shown": 5, "recorded": 5}
+        b["parts"].append("recent")
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("| `192.0.2.10` | 5,000 | 42 | 4 / 2 | 2 / 2 |", md)
+        self.assertIn("IP リテラル宛て 2 本、443・80 以外の CONNECT 2 本", md)
+        self.assertNotIn("**この雪像は切れている**", md)
+
+    def test_new_client_events_and_endpoint_only_readers_are_listed(self):
+        b = read(B)
+        t = b["taken_at"]
+        b["events"]["events"] = [
+            {"at": t - 60, "kind": "new_client",
+             "text": "new_client: 198.51.100.7 first seen (1 req, first target port 443 (name), no agent)"},
+            {"at": t - 90000, "kind": "new_client",
+             "text": "new_client: 203.0.113.9 first seen (1 req, first target port 80 (literal), no agent)"},
+        ] + b["events"]["events"]
+        b["status"]["readers"] = [
+            {"client": "192.0.2.10", "count": 9, "last_at": t - 5, "last_path": "/status"},
+            {"client": "203.0.113.77", "count": 2, "last_at": t - 30, "last_path": "/"}]
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("  - `/events` の `new_client`: リングに 2 件 (うち 起動より後 1 件)。新しい順に:\n"
+                      "    - `2026-09-11 00:25:40Z` new_client: 198.51.100.7 first seen", md)
+        self.assertIn("    - `2026-09-09 23:26:40Z` (窓の外) new_client: 203.0.113.9", md)
+        # プロキシとして使っている 192.0.2.10 は出さない
+        self.assertIn("走査が `GET /` で来るとここにだけ残る): `203.0.113.77` 2 回"
+                      " (最後 `/` 2026-09-11 00:26:10Z)\n", md)
+
+    def test_the_host_and_port_are_split(self):
+        self.assertEqual(ss.target_host_port("alpha.example.jp:443"), ("alpha.example.jp", 443))
+        self.assertEqual(ss.target_host_port("[2001:db8::1]:8443"), ("2001:db8::1", 8443))
+        self.assertEqual(ss.target_host_port("http://192.0.2.1:8080/x"), ("192.0.2.1", 8080))
+        self.assertEqual(ss.target_host_port("noport"), ("noport", None))
+        self.assertTrue(ss.is_ip_literal("2001:db8::1"))
+        self.assertFalse(ss.is_ip_literal("alpha.example.jp"))
+
+    def test_a_snapshot_without_clients_has_no_watch(self):
+        b = read(B)
+        del b["clients"]
+        with written(b=b) as paths:
+            self.assertNotIn("接続元の見張り", run([paths["b"]]))
+
+
 class Bytes(unittest.TestCase):
     def test_the_unit_matches_the_divisor(self):
         """1,024 で割るなら KiB / MiB / GiB (`GB` / `MB` だと 2.4〜7.4% 小さく読める)。"""
