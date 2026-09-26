@@ -5,8 +5,11 @@
 //!
 //! 数える先の `rejected_client_acl` は `/status` に出るが、断られている間はその `/status`
 //! 自体も読めない。そこで `.env` の再読込で `127.0.0.0/8` を足してから読む
-//! (再読込を待つのは**起動ログの行**で。`/status` を叩いて待つと、その空振り 1 本ずつが
-//! 数えたい `rejected_client_acl` を動かしてしまう)。
+//! (再読込を待つのは**まず起動ログの行**で。`/status` を叩いて待つと、その空振り 1 本ずつが
+//! 数えたい `rejected_client_acl` を動かしてしまう)。ログの行が出たあとは接続元が通るので、
+//! **効いている設定まで入れ替わったこと**を `/config` の `settings` と `reload` で確かめてから
+//! 次へ進む (T17.14。ログの行 1 本だけを合図にすると、`.env` の中身と効いている設定が
+//! 食い違う間合いを見分けられず、CONNECT が稀に 403 になった)。
 
 mod common;
 use common::*;
@@ -33,6 +36,44 @@ fn status_request(port: u16) -> String {
         "GET /status HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
         port
     )
+}
+
+/// `/config` の `settings` の 1 項目の `value` (JSON のまま。引用符も付いたまま)。
+fn setting_value<'a>(config: &'a str, key: &str) -> Option<&'a str> {
+    let pat = format!("\"{}\":{{\"value\":", key);
+    let at = config.find(&pat)? + pat.len();
+    let rest = &config[at..];
+    Some(&rest[..rest.find(",\"source\":")?])
+}
+
+/// `.env` の再読込が**効いている設定まで**届いたことを `/config` で待つ (T17.14)。
+///
+/// 見るのは `reload` の欄 (`reloads` が 1 回以上、`error` が `null`) と、この試験が
+/// 書いた 2 つの値 (`PROXY_ALLOW_CLIENTS` に `127.0.0.0/8`、`PROXY_ALLOW_LOCAL` が `true`)。
+/// 回数ではなく**値**で見るので、途中に別の再読込が挟まっても最後の姿で判定できる。
+/// ここへ来るのはログの行を見たあと (= 接続元が通る) なので、この `/config` が
+/// `rejected_client_acl` を動かすことは無い (動けば下の「2 本」の検査で分かる)。
+fn wait_reloaded(port: u16) {
+    let req = format!(
+        "GET /config HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    wait_until(
+        || {
+            let resp = try_request(port, &req);
+            let Some(reload) = resp.split_once("\"reload\":").map(|(_, r)| r) else {
+                return false;
+            };
+            resp.starts_with("HTTP/1.1 200 ")
+                && !reload.starts_with("null")
+                && status_number(reload, "reloads") >= 1
+                && reload.contains("\"error\":null")
+                && setting_value(&resp, "PROXY_ALLOW_LOCAL") == Some("true")
+                && setting_value(&resp, "PROXY_ALLOW_CLIENTS")
+                    .is_some_and(|v| v.contains("127.0.0.0/8"))
+        },
+        "/config が再読込のあとの設定 (PROXY_ALLOW_CLIENTS に 127.0.0.0/8) を返すこと",
+    );
 }
 
 fn connect_request(target_port: u16) -> String {
@@ -74,10 +115,12 @@ fn test_integration_allow_clients_closes_strangers_and_counts_them() {
     let resp = try_request(proxy.port, &status_request(proxy.port));
     assert!(resp.is_empty(), "/status に応答が返った: {:?}", resp);
 
-    // `127.0.0.0/8` を足す (`.env` の再読込。待つのは起動ログの行)
+    // `127.0.0.0/8` を足す (`.env` の再読込。待つのはまず起動ログの行で、そのあと
+    // 効いている設定が入れ替わったことを `/config` で。T17.14)
     write_env("10.0.0.0/8,127.0.0.0/8");
     let line = proxy.wait_for_log("PROXY_ALLOW_CLIENTS");
     assert!(line.contains("settings reloaded"), "{}", line);
+    wait_reloaded(proxy.port);
 
     // 通るようになり、断った 2 本が数えられている
     let resp = try_request(proxy.port, &status_request(proxy.port));
