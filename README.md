@@ -119,7 +119,8 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 ダッシュボードの読み方 (`check-dashboard.js`)・手元から見た待ち (`probe-deployed.sh`) を
 続けて回して **Markdown 1 枚**を標準出力に出します (同じものを雪像の隣の `<時刻>-collect.md` にも残し、
 雪像に入らない `/daily` `/healthz` `/slo` `/config` `/profile?res=60` も `<時刻>-<口>.json` で隣に置きます。
-`/profile?res=60` は 1 枚 (256 KiB) だと 24 時間のうち約 5 時間しか入らないので、`--full` が無くても `next_offset` が `null` になるまで `offset=` で追い、`samples` を 1 つに繋いで `truncated` を `false` にしたものを置きます。枚数の上限は `MAX_PAGES`)。`status-diff.py` は `/snapshot` の JSON を
+`/profile?res=60` は 1 枚 (256 KiB) だと 24 時間のうち約 5 時間しか入らないので、`--full` が無くても `next_offset` が `null` になるまで `offset=` で追い、`samples` を 1 つに繋いで `truncated` を `false` にしたものを置きます。枚数の上限は `MAX_PAGES`。
+さらに、下の `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた**匿名化した写し** `<時刻>-snapshot.anon.json` と、同じ表で通した `<時刻>-daily.anon.json` `<時刻>-profile_res_60.anon.json` も隣に置きます (T17.16。`ANON=0` で置きません)。テストへ持ち込むときはこの写しを `scripts/testdata/` へ移します)。`status-diff.py` は `/snapshot` の JSON を
 そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
 
 ```bash
@@ -220,7 +221,8 @@ scripts/weekly-report.py status/ --out json    # 表の元の辞書をそのま�
 
 **実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T14.35)。雪像には
 個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.g0007.example`)・
-**接続元 IP** (`198.51.100.x`)・**名前解決の答え** (`203.0.113.x`)・**`User-Agent`** (`ua-01`)・
+**接続元 IP** (`198.51.100.x`)・**名前解決の答え** (`203.0.113.x`)・**`User-Agent`** (`ua-01`。`agents` の一覧も、
+いまの版の `agent` (単数) も、`/events` の `new_client:` の説明の終わりの `agent "…"` も同じ表)・
 **`/log` の行と `/events` の説明の中の名前と IP** だけを置き換えれば、本物の分布のまま持ち込めます。
 置き換えは**決定的** (同じ入力からは同じ出力) なので、**匿名化したあとの 2 枚でそのまま差分が取れます**。
 ホスト名の `gNNNN` は**まとめの単位 (eTLD+1) の番号**で、`img.dlsite.jp` と `www.dlsite.jp` は
@@ -236,6 +238,9 @@ scripts/anonymize-snapshot.py status/2026-09-16T0106Z-snapshot.json \
 # `/snapshot` より前の形 (1 本ずつ取ったファイル群) からも組めます (`-metrics` 等は飛ばします)
 scripts/anonymize-snapshot.py status/2026-09-16T0106Z-* -o anon.json
 scripts/snapshot-diff.py old.anon.json new.anon.json      # 匿名化したあとでも差分は取れる
+# 雪像に入らない口 (`/daily` `/profile?res=60`) も雪像と同じ表で (既定の出力は隣の `<名前>.anon.json`。T17.16)
+scripts/anonymize-snapshot.py status/2026-09-26T114602Z-snapshot.json -o new.anon.json \
+    --side status/2026-09-26T114602Z-daily.json --side status/2026-09-26T114602Z-profile_res_60.json=p60.anon.json
 ```
 
 同梱の `scripts/testdata/deployed-2026-09-16.anon.json` (778 KiB) がその出力で、**デプロイ先の
@@ -243,6 +248,11 @@ scripts/snapshot-diff.py old.anon.json new.anon.json      # 匿名化したあ�
 `node scripts/check-dashboard.js` と `python3 -m unittest discover -s scripts` がこれを読み、
 `/history?res=3600` を起動時刻で切った平常時から **T14.0 の表と同じ数字** (名前解決 0.55 回/接続、
 CONNECT 確立 p50 8.3 / p95 80.7 ms、ミス 1 回 11.5 ms) が出ることを見ています。
+2 枚目の `scripts/testdata/deployed-2026-09-26.anon.json` (2.3 MiB。隣に `-daily.anon.json` と `-profile_res_60.anon.json`) は
+**2026-09-26 の雪像** (版 `0.1.0+2e57626`、起動から 47.2 時間) で、2026-09-16 の版に無かった `recent` / `profile` / `events` /
+`hosts_series` と T16.0 の 3 列が入っています。2026-09-16 → 2026-09-26 で `--criteria phase15` / `phase17` の判定表が出て、
+T16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 0、`dns_slow` 0.61 件/時) が出ることを見ています
+(T17.16。名前は番号が前後で合わないので、`discord.com` を見張る行は「判定できず」になります)。
 
 **いまの数字は 2026-09-24、Phase 15 (T15.4 + T15.6) を再デプロイして 126.6 時間の実測**です。出どころは雪像 1 枚
 (`scripts/collect-deployed.sh` が取った `status/2026-09-24T093400Z-snapshot.json` と、同時刻の
