@@ -301,6 +301,30 @@ class Text(unittest.TestCase):
         text = anonymized()["events"]["events"][0]["text"]
         self.assertEqual(text, "blocked host-0005.g0003.example (2)")
 
+    def test_the_agent_of_a_new_client_event_is_replaced(self):
+        """`new_client:` の説明の終わりの UA (T17.16)。一覧と同じ表で、切られた UA も残さない。"""
+        snap = sample()
+        snap["events"]["events"] += [
+            {"at": 1789520704, "kind": "anomaly",
+             "text": 'new_client: 100.64.3.9 first seen (1 req, first target port 443 (name), '
+                     'agent "curl/8.5.0")'},
+            {"at": 1789520705, "kind": "anomaly",
+             "text": 'new_client: 100.64.7.7 first seen (1 req, first target port 80 (name), '
+                     'agent "Mozilla/5.0 (compatible; Scanner/1.0; +http://scan.example.org/…'},
+            {"at": 1789520706, "kind": "anomaly",
+             "text": "new_client: 100.64.7.8 first seen (1 req, no target yet, no agent)"},
+        ]
+        out = anonymized(snap)
+        texts = [e["text"] for e in out["events"]["events"][1:]]
+        self.assertEqual(texts[0], 'new_client: 198.51.100.1 first seen (1 req, '
+                                   'first target port 443 (name), agent "ua-01")')
+        self.assertRegex(texts[1], r'^new_client: 198\.51\.100\.\d+ first seen .*, agent "ua-03$')
+        self.assertTrue(texts[2].endswith("(1 req, no target yet, no agent)"))
+        self.assertNotIn("Scanner", json.dumps(out))
+        self.assertNotIn("scan.example.org", json.dumps(out))
+        # 2 回かけても変わらない
+        self.assertEqual(an.Anonymizer().run(json.loads(json.dumps(out))), out)
+
     def test_a_path_and_a_version_are_not_touched(self):
         self.assertEqual(anonymized()["status"]["settings"]["path"], "/home/container/.env")
         self.assertEqual(anonymized()["version"], "0.1.0+abcdef1")

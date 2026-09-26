@@ -30,6 +30,7 @@
 | 名前解決の答え (`/dns` の `addrs`) | `203.0.113.1` / `2001:db8:1::1` | 宛先が IP リテラルのときも同じ表を使う |
 | `User-Agent` (`agents` と、いまの版の `agent`) | `ua-01` | 同じ UA は同じ番号 |
 | `/log` の行・`/events` の説明の中のホストと IP | 上と同じ表 | 行の他の語はそのまま |
+| `/events` の `new_client:` の `agent "…"` | `ua-01` | 上の UA と同じ表 (T17.16。切られた UA は別の番号) |
 | cgroup の道 (`kernel.cgroup_cpu.path`) | `/sys/fs/cgroup/…/…/cpu.stat` | 深さと最後の名前だけ残す (T15.0 (6)) |
 
 置き換えないもの: **数字** (件数・ms・区間・閉じた理由・時刻)、`version`、部の名前、
@@ -110,6 +111,9 @@ TEXT_V6_BRACKET = re.compile(r"\[([0-9A-Fa-f:.]{2,45})\]")
 TEXT_V6 = re.compile(r"(?<![\w:.\-])([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})(?![\w:.\-])")
 TEXT_V4 = re.compile(r"(?<![\w.\-])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])")
 TEXT_HOST = re.compile(r"(?<![\w.\-])([0-9A-Za-z_\-]+(?:\.[0-9A-Za-z_\-]+)+)(?::(\d{1,5}))?(?![\w.\-])")
+# `/events` の `new_client:` の説明の終わりにある `User-Agent` (`crates/metrics-watch/src/anomaly.rs` の
+# `new_client_text`: `…, agent "<UA>")`)。UA は 128 B で切られることがあり、そのときは閉じの `")` が無い
+TEXT_AGENT = re.compile(r'(, agent ")(.*?)(?="\)$|$)')
 TLD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]{1,23}$")
 # 文の中の `なにか.なにか` のうち、ホスト名ではないもの (拡張子)。**表に無い**ものだけに効く
 # (表にある名前 = どこかの欄でホストとして現れた名前は、拡張子に見えても置き換える)
@@ -309,7 +313,11 @@ class Anonymizer:
 
     def text(self, s):
         """`/log` の行や `/events` の説明。**ホストと IP だけ**を置き換え、他の語と数字は残す。"""
-        if not s or ("." not in s and ":" not in s):
+        if not s:
+            return s
+        # UA は先に置き換える (中の `ForestEngine/1.0` のような語をホスト名と取り違えないように)
+        s = TEXT_AGENT.sub(self._text_agent, s)
+        if "." not in s and ":" not in s:
             return s
         s = TEXT_V6_BRACKET.sub(lambda m: "[" + self._text_ip(m.group(1)) + "]", s)
         s = TEXT_V6.sub(lambda m: self._text_ip(m.group(1)), s)
@@ -318,6 +326,12 @@ class Anonymizer:
         if dotless is not None:
             s = dotless.sub(lambda m: self._text_host(m.group(0)), s)
         return TEXT_HOST.sub(self._text_hostport, s)
+
+    def _text_agent(self, m):
+        got = self.agent(m.group(2))
+        if got != m.group(2):
+            self.text_hits += 1
+        return m.group(1) + got
 
     def _text_ip(self, text):
         try:
@@ -453,6 +467,9 @@ class Anonymizer:
         if not s:
             return s
         self.used.update(ANON_HOST_IN_TEXT.findall(s))
+        if key in TEXT_KEYS:  # 文の中の置き換え済みの UA (`agent "ua-01")`) も押さえる
+            self.used.update(m.group(2) for m in TEXT_AGENT.finditer(s)
+                             if ANON_UA_RE.match(m.group(2)))
         if key in AGENT_KEYS:
             if ANON_UA_RE.match(s):
                 self.used.add(s)
