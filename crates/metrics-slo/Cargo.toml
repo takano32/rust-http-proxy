@@ -1,0 +1,13 @@
+[package]
+name = "proxy-metrics-slo"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+proxy-metrics-core = { path = "../metrics-core" }
+
+[dev-dependencies]
+proxy-cache = { path = "../cache" }

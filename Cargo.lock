@@ -186,6 +186,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxy-metrics-slo"
+version = "0.1.0"
+dependencies = [
+ "proxy-cache",
+ "proxy-metrics-core",
+]
+
+[[package]]
 name = "proxy-metrics-types"
 version = "0.1.0"
 dependencies = [
@@ -199,8 +207,7 @@ dependencies = [
 name = "proxy-metrics-watch"
 version = "0.1.0"
 dependencies = [
- "proxy-cache",
- "proxy-metrics-core",
+ "proxy-metrics-slo",
 ]
 
 [[package]]

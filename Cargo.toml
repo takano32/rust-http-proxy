@@ -24,6 +24,7 @@ members = [
     "crates/metrics-recent",
     "crates/metrics-window",
     "crates/metrics-core",
+    "crates/metrics-slo",
     "crates/metrics-watch",
     "crates/metrics",
     "crates/blocklist",

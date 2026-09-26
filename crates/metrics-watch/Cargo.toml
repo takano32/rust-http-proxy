@@ -7,8 +7,4 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-proxy-metrics-core = { path = "../metrics-core" }
-
-# テストだけが使う (`Cache::new` に渡す設定。リリースのビルドには入らない)。
-[dev-dependencies]
-proxy-cache = { path = "../cache" }
+proxy-metrics-slo = { path = "../metrics-slo" }
