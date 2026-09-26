@@ -47,6 +47,13 @@ jobs:
       - run: ./scripts/check-docs.sh
       # scripts/ の道具の単体テスト (雪像の要約・判定・匿名化と、`scripts/mx` の test_mx.sh。T17.15)
       - run: python3 -m unittest discover -s scripts
+      # scripts/ のシェルの静的検査 (T17.13)。設定 (切った指摘とその理由) は scripts/.shellcheckrc。
+      # runner の像に入っていればそれを使い、無ければ入れる (ubuntu-latest が 2026-10-19 に Ubuntu 26 へ移るため)
+      - name: shellcheck
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q shellcheck; }
+          shellcheck --version
+          shellcheck scripts/*.sh scripts/mx
       # ワークスペースなので --workspace が要る (無いと下の層のテストが走らない)
       # 1 本落ちても残りの test binary を走らせる (落ちた全部を 1 回の CI で見る。2026-09-16)
       - run: cargo test --workspace --no-fail-fast
