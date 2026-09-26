@@ -15,24 +15,26 @@
 # あれば同じ判定ができる (手元の機械はこちら。PID 1 が systemd でなくてもユーザーの
 # インスタンスは動いていて、上限も効く)。どちらも無いときだけ RSS を出すだけにして判定しない。
 #
-# **上限を決めているクレート** (T15.12 段 7 の後の実測 2026-09-24、全クレート `codegen-units = 4`。RssAnon の最大。
-# 手元 aarch64。通る最小は 105 MB 前後: 100 以下は毎回落ち、105 は 2 回中 1 回通る境目):
-#   proxy-metrics-watch 92.3 MB > proxy-metrics-window 82.9 > proxy-endpoints 79.9 > proxy-server 79.6
-#   > proxy-metrics-recent 75.4 > proxy-config 73.9 > proxy-http 72.2 > proxy-metrics-core 70.8
-#   > proxy-net-dns 68.0 > proxy-metrics-types 66.9 > … > proxy-endpoints-core 29.6 > ルートの rust-http-proxy 18.1 (bin)
-#   (段 7 の前 = 要求の経路のクレートが `= 1` だった頃は proxy-metrics-window 107.8 MB がいちばん上で、
-#    通る最小は 120〜125 MB。`codegen-units` は `Cargo.toml` の `[profile.release]` の 1 行)
+# **上限を決めているクレート** (T17.11 = T15.12 段 8 の後の実測 2026-09-26、全クレート `codegen-units = 4`。RssAnon の最大。
+# 手元 aarch64、rustc 1.98.1。通る最小は 90 MB: 85 以下は毎回落ち、90 は 4 回とも通った):
+#   proxy-endpoints 82.5 MB > proxy-server 81.5 > proxy-metrics-recent 76.9 > proxy-http 74.7
+#   > proxy-config 73.0 > proxy-net-dns 72.2 > proxy-metrics-core 71.8 > proxy-metrics-types 71.1
+#   > proxy-metrics-watch 71.0 > … > proxy-metrics-profile 69.2 > proxy-metrics-window 67.7 > proxy-metrics-slo 63.3 > …
+#   (段 8 の前は proxy-metrics-watch 95.4 > proxy-metrics-window 91.1 がいちばん上で、通る最小は 105 MB。
+#    段 8 で watch から SLO・日次・雪像を proxy-metrics-slo へ、window から窓の土台と段階の標本を
+#    proxy-metrics-profile へ割った。段 7 の前 = 要求の経路のクレートが `codegen-units = 1` だった頃は
+#    proxy-metrics-window 107.8 MB がいちばん上で、通る最小は 120〜125 MB)
 # 行数の順ではない。効くのは「自分の行数 + 依存から単相化されてくる量」。
 # 上限を下げたいならこの上位から割ること (T14.55 で `proxy-metrics` 1 つ 272 MB を 6 つに割った)。
 #
 # 使い方:
-#   scripts/build-memory.sh [上限 MB]            上限の中で通るか (既定 180)
-#   scripts/build-memory.sh --find 130 140 150   通る最小の上限を探す (調べるとき用)
+#   scripts/build-memory.sh [上限 MB]            上限の中で通るか (既定 120)
+#   scripts/build-memory.sh --find 85 90 95 100  通る最小の上限を探す (調べるとき用)
 set -u
 MODE=gate
 if [ "${1:-}" = "--find" ]; then MODE="find"; shift; fi
-LIMIT_MB="${1:-180}"
-LADDER="${*:-180}"
+LIMIT_MB="${1:-120}"
+LADDER="${*:-120}"
 
 # どの systemd で scope を作れるかを 1 度だけ調べ、`SCOPE_KIND` に覚える。
 # 判定は「実際に小さい scope を 1 つ作ってみる」で行う。`systemctl is-system-running` は
@@ -141,7 +143,7 @@ case $? in
     ;;
   *)
     echo "NG: ${LIMIT_MB} MB の中でビルドが通りませんでした (rustc が OOM killer に落とされたか、ビルド自体の失敗)"
-    echo "    落ちるのは上限を決めているクレート (2026-09-24 の実測では proxy-metrics-watch か proxy-metrics-window) のところ。"
+    echo "    落ちるのは上限を決めているクレート (2026-09-26 の実測では proxy-endpoints か proxy-server のあたり) のところ。"
     echo "    順位は cgroup を作れない機械で参考値 (RssAnon) を出すと見られます"
     exit 1
     ;;

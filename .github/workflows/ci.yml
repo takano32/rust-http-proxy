@@ -11,7 +11,7 @@ on:
       ladder:
         description: "試す上限 (MB) を空白区切りで小さい順に。最初に通った値が答え"
         required: false
-        default: "100 110 120 130 135 140 150 160 180"
+        default: "80 85 90 95 100 105 110 120"
   # 週 1 回 (月曜 03:17 UTC = 12:17 JST)。放っておくと値が古くなるため。
   # 毎時 0 分は GitHub 側が混んで待たされるので 17 分にずらしてある
   schedule:
@@ -76,13 +76,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # 動作環境 (メモリの小さいコンテナ) でビルドできることを守る (§0 の関門)。
-  # 180 MB の cgroup (systemd-run --scope -p MemoryMax=180M) の中で実際に
+  # 120 MB の cgroup (systemd-run --scope -p MemoryMax=120M) の中で実際に
   # リリースビルドを回し、rustc が OOM killer に落とされたら失敗する。
   # **これは毎回回す** (通るかどうかは push ごとに知りたい)。
   # 余裕がいくつあるか = 通る最小の上限は下の build-memory-find で測る。
   #
   # **`ubuntu-24.04` に固定する** (T17.13): `ubuntu-latest` は 2026-10-19 に Ubuntu 26 へ移る。
-  # 関門の数字 (180 MB) とその余裕は runner の像ごとに測ったものなので、像が変わると出どころが動く。
+  # 関門の数字 (120 MB) とその余裕は runner の像ごとに測ったものなので、像が変わると出どころが動く。
   # 移すときは build-memory-find を新しい像で回してから、ここと下を一緒に変える。
   #
   # check ジョブの中の 1 段だったのを別のジョブにした (像を分けるため)。空の target から
@@ -100,7 +100,7 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
       - name: Build memory
-        run: ./scripts/build-memory.sh 180
+        run: ./scripts/build-memory.sh 120
 
   # デプロイ先に似せた条件で短く回し、`/snapshot` を成果物として残す (T14.30)。
   #
@@ -190,11 +190,11 @@ jobs:
 
   # ビルドが通る最小のメモリを CI の機械で実測する (T11.7)。
   #
-  # **なぜ push ごとに回さないか**: 上の `Build memory` が §0 の条件 (180 MB で通ること) を
+  # **なぜ push ごとに回さないか**: 上の `Build memory` が §0 の条件 (120 MB で通ること) を
   # 毎回確かめており、守りたいことはそれで足りている。ここで測るのは「余裕がいくつあるか」で、
   # コミット単位で追う必要は無い。段ごとに `cargo clean` からのビルドが 1 回要るので
-  # (runner で 1 段 10〜16 秒、既定の 10 段で 2〜3 分)、刻むほど毎回の CI が延びる。
-  # 値は機械の状態で 1 MB 単位にぶれる (境目は薄い。手元では 130 MB が落ちて 135 MB が通る) ので、
+  # (runner で 1 段 10〜16 秒、既定の 8 段で 2〜3 分)、刻むほど毎回の CI が延びる。
+  # 値は機械の状態で 1 MB 単位にぶれる (境目は薄い。手元では 85 MB が落ちて 90 MB が通る。T17.11) ので、
   # これを push の関門にすると偽陽性で止まる。
   #
   # **なぜ手回し (workflow_dispatch) と週 1 (schedule) の両方か**: 手回しは
@@ -245,7 +245,7 @@ jobs:
         env:
           # schedule のときは github.event.inputs が無いので既定の段になる
           # (`inputs` 文脈は手回しでしか無いので `github.event.inputs` の方を使う)
-          LADDER: ${{ github.event.inputs.ladder || '100 110 120 130 135 140 150 160 180' }}
+          LADDER: ${{ github.event.inputs.ladder || '80 85 90 95 100 105 110 120' }}
         run: |
           case "$LADDER" in
             "" | *[!0-9\ ]*)

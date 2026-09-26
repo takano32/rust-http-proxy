@@ -15,7 +15,7 @@ curl -x localhost:8080 http://example.com/        # 動作確認
 プロキシ設定の「自動プロキシ設定 URL」に入れるだけです (このプロキシが落ちていれば DIRECT に落ちます)。
 
 `cargo install --git https://github.com/takano32/rust-http-proxy` でも入ります
-(ビルドはメモリ約 110 MB で通ります。105 MB は境目です。下の「ビルド・テスト」を参照)。
+(ビルドはメモリ約 90 MB で通ります。下の「ビルド・テスト」を参照)。
 
 キャッシュ・ダッシュボード・統計まで使うなら `--lite` を外します。
 
@@ -2150,21 +2150,20 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 
 
 > **メモリの小さい環境向けの設定**: `.cargo/config.toml` で `jobs = 1` にしてあります。
-> このリポジトリは **約 110 MB のメモリでリリースビルドが通ります** (2026-09-24、手元の aarch64 で実測。
-> 100 MB 以下は測った 2 回とも落ちます (95 MB は `proxy-metrics-window`、100 MB は `proxy-metrics-watch` のところ)。
-> **105 MB は境目で、2 回中 1 回だけ通りました** (落ちた回は `proxy-metrics-watch`)。110 MB 以上は測りきれていません。
-> CI が毎回確かめているのは **180 MB の関門を通るかどうかだけ**で、CI で通る最小は測っていません)。
+> このリポジトリは **約 90 MB のメモリでリリースビルドが通ります** (2026-09-26、手元の aarch64・rustc 1.98.1 で実測。
+> 90 MB は測った 4 回とも通り、85 MB 以下は 2 回とも落ちます。
+> CI が毎回確かめているのは **120 MB の関門を通るかどうかだけ**で、CI で通る最小は測っていません)。
 > LTO を既定で切っているのと、全クレートを `codegen-units = 4` にしてあるのもこのためです (下の「プロファイルの設定」)。
-> `rustc` はクレート単位で全部を一度に抱えるため、いちばん大きいクレート (`proxy-metrics-watch`) の 1 プロセスで
-> **RssAnon 92.3 MB** 使い (通る最小はここに 12〜20 MB 足した値になります。`/usr/bin/time -v` の最大 RSS は
+> `rustc` はクレート単位で全部を一度に抱えるため、いちばん大きいクレート (`proxy-endpoints`) の 1 プロセスで
+> **RssAnon 82.5 MB** 使い (通る最小はここに 7〜20 MB 足した値になります。`/usr/bin/time -v` の最大 RSS は
 > 246 MB と出ますが、そのうち 110〜122 MB は `librustc_driver` のファイル由来のページで、ページキャッシュに
 > 載っていれば cgroup には課金されません)、既定の並列数だと
 > その合計がコンテナのメモリ上限を超えて OOM killer に落とされます (実測: 180 MB の cgroup で、
 > 並列だと落ち `-j 1` なら通る)。潤沢な機械で急ぐときは `cargo build --release -j 8` で上書きできます
 > (8 コアで 32.3 秒 → 14.9 秒)。
 >
-> 手元で確かめるなら `cargo clean && scripts/build-memory.sh 180` (通る最小を探すなら
-> `scripts/build-memory.sh --find 95 100 105 110 115 120`)。このスクリプトは **実際にその上限の
+> 手元で確かめるなら `cargo clean && scripts/build-memory.sh 120` (通る最小を探すなら
+> `scripts/build-memory.sh --find 80 85 90 95 100 110 120`)。このスクリプトは **実際にその上限の
 > cgroup の中でビルドします** — RSS を測るだけだと、メモリ圧のかかっていない機械ほど大きく出て
 > 機械をまたいだ判定にならないためです。cgroup は systemd に作らせます (システムの `systemd-run --scope`、
 > 無ければ**ユーザーの** `systemd-run --user --scope`。どちらも無い環境では参考の RSS だけ出して判定しません)。
@@ -2203,7 +2202,7 @@ taskset -c 4-7 cargo run --release --bin bench -- --only syscall-cost --seconds 
 push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` は `cargo fmt --check` →
 `clippy -D warnings` → **文書とコードの整合** (`scripts/check-docs.sh`) → `scripts/` の単体テスト →
 **`shellcheck scripts/*.sh scripts/mx`** (切った指摘とその理由は `scripts/.shellcheckrc`) → `cargo test --workspace` →
-リリースビルド → 短いベンチ、の順です。**180 MB の cgroup でビルドが通るか** (`scripts/build-memory.sh 180`) は
+リリースビルド → 短いベンチ、の順です。**120 MB の cgroup でビルドが通るか** (`scripts/build-memory.sh 120`) は
 別のジョブ `build-memory` で並べて回します。それと並べてもう 1 つ、`deployed-like-snapshot` が
 **デプロイ先に似せた条件** (上の `scripts/deployed-like.sh`) を runner の中に作り、`scripts/ci-snapshot.sh` で
 `--only connect-multi` と forward を 10 秒ずつ回して `/snapshot` を**成果物 (artifact) の `snapshot.json`**
@@ -2347,7 +2346,7 @@ curl -x localhost:8080 http://example.com/
    `TLS: libssl not found` が出ます。`https://` オリジンの取得とキャッシュが無効になります
    (`CONNECT` トンネル = ブラウザの HTTPS は影響なし)
 2. **名前解決が NSS を通らない**: musl は `/etc/resolv.conf` だけを見ます (systemd-resolved / mDNS が効かない)
-3. **ビルドが 180 MB に収まらない**: 静的リンクにしてもビルドが軽くなるわけではありません
+3. **ビルドが 120 MB に収まらない**: 静的リンクにしてもビルドが軽くなるわけではありません
 
 ### プロファイルの設定 (実測で決めたもの)
 
@@ -2356,15 +2355,16 @@ curl -x localhost:8080 http://example.com/
 | `opt-level` | `3` | `"s"` |
 | `lto` | `false` | `true` (fat) |
 | `codegen-units` / `strip` | `4` (全クレート) / あり | `1` / あり |
-| ビルドが通る最小のメモリ | **約 110 MB** (手元。100 は毎回落ち、105 は境目で回ごとに揺れ、110 以上は 2026-09-24 に測りきれていない。CI では未測定) | 350 MB 以上 |
-| バイナリ | 2,694,968 B | **1,842,976 B** (852 KB 小さい) |
+| ビルドが通る最小のメモリ | **約 90 MB** (手元。90 は 4 回とも通り、85 以下は毎回落ちる。2026-09-26。CI では未測定) | 350 MB 以上 |
+| バイナリ | 2,760,504 B | **1,842,976 B** (852 KB 小さい) |
 | CPU/要求 (forward 8 並列) | 41.4 us | **39.6 us** |
 
-(バイナリの大きさと通る最小のメモリは 2026-09-24 (T15.12 段 7) の実測です。2026-09-19 (段 5・段 6') の時点は
+(バイナリの大きさと通る最小のメモリは 2026-09-26 (T17.11 = T15.12 段 8) の実測です。2026-09-24 (段 7) の時点は
+`release` 2,694,968 B・通る最小 105〜110 MB、2026-09-19 (段 5・段 6') の時点は
 `release` 2,563,896 B・通る最小 120〜125 MB、2026-09-08 の時点は `release` 1,381,872 B / `dist` 1,054,184 B (327 KB 小さい) でした。
 CPU/要求 の 2 つは 2026-09-08 の値で、段 5 / 段 7 では測り直していません。速さの測り方は上の「性能」と同じです)
 
-**LTO を既定で切っている理由**: `cargo build --release` を **メモリ 180 MB のコンテナで通す** ためです。
+**LTO を既定で切っている理由**: `cargo build --release` を **メモリ 120 MB のコンテナで通す** ためです。
 LTO の重さは最終リンクの 1 回にかかり、クレートを 26 に割ってもそこは小さくなりません。
 26 クレート・`jobs = 1` で 3 つの選択肢を同じ日に測った結果 (2026-09-07。手元の aarch64 で、その上限の cgroup に
 入れて実際にビルドしたもの。**バイナリと CPU はこのときのコードの値**で、いまの `release` は上の表のとおりです。
@@ -2376,7 +2376,7 @@ CI で通る最小は測っていません):
 | `lto = "thin"` | 170 MB | 55.4 秒 | 1,316,328 B | 50.09 us (-0.2%) |
 | `lto = "fat"` | 350 MB | 48.8 秒 | 1,185,248 B | 47.95 us (-4.5%) |
 
-`fat` は効きますが 180 MB の約 2 倍のメモリが要ります。`thin` は 170 MB 払ってもバイナリが
+`fat` は効きますが 120 MB の約 3 倍のメモリが要ります。`thin` は 170 MB 払ってもバイナリが
 8 バイトしか変わらず、速さもぶれの中です。配布バイナリだけ `dist` (fat LTO) で作ります。
 
 **`codegen-units` は全クレート `4`** (2026-09-24、T15.12 段 7): ビルドの山はコード生成 (LLVM) の段で、
@@ -2384,8 +2384,9 @@ CI で通る最小は測っていません):
 全クレートに当てて測った実測 (手元 aarch64、`jobs = 1`、RssAnon の最大) は
 `proxy-metrics-watch` 121.7 → 92.5 MB (`= 4`) → 84.3 MB (`= 16`)、クリーンビルド 95 → 106 → 133 秒で、
 **4 より上げても減りません** (コード生成の前の段 = 型検査とメタデータの床が約 80 MB)。
-全クレート `4` のいまの上位は `proxy-metrics-watch` 92.3 > `proxy-metrics-window` 82.9 > `proxy-endpoints` 79.9 >
-`proxy-server` 79.6 MB です (段 7 の前は `proxy-metrics-window` 107.8 MB がいちばん上)。
+全クレート `4` のいまの上位は `proxy-endpoints` 82.5 > `proxy-server` 81.5 > `proxy-metrics-recent` 76.9 >
+`proxy-http` 74.7 MB です (2026-09-26、T17.11 で `proxy-metrics-watch` 95.4 MB と `proxy-metrics-window` 91.1 MB を
+2 つずつに割った後。段 7 の前は `proxy-metrics-window` 107.8 MB がいちばん上)。
 `codegen-units` を増やすとクレートの中でのインライン化の範囲が狭まりますが、手元もデプロイ先も共有の機械で
 CPU/要求 が数 % ぶれるので手元の A/B は取らず、**デプロイ先で「桁で悪くなっていないか」だけ**を見ます。
 悪くなっていたら `Cargo.toml` の `[profile.release]` の `codegen-units` を `1` に戻す 1 行で戻ります。
