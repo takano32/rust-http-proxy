@@ -12,6 +12,8 @@
 #     例: scripts/collect-deployed.sh nagoya.sorahost.net:50697
 #         scripts/collect-deployed.sh 127.0.0.1:8080 /tmp/snaps      # 手元のプロキシで試す
 #   保存先の既定はリポジトリの `status/` (`<UTC 時刻>-snapshot.json`、秒まで)。
+#   同じ時刻の名前で、要約 (`-collect.md`)・道具の文句 (`-collect.err`、空なら残さない)・雪像に入らない口
+#   (`-daily.json` `-healthz.json` `-slo.json` `-config.json` `-profile_res_60.json`) も隣に置く。
 #   **`status/` は .gitignore 済みでコミットしない** (個票には接続元 IP と宛先ホストが並ぶため)。
 #   `$HOME` には書かない (2026-09-26、利用者の決定。前の既定は ~/rust-http-proxy-status/)。
 #
@@ -48,6 +50,9 @@
 #
 # 出口: 雪像が取れなければ 1 (それ以外は、途中の道具が失敗しても 1 枚は出す)。
 set -u
+# 要約をファイルにも残すため、自分をもう 1 回呼ぶ (下の「1. 取る」の手前)。`cd` の前に絶対パスにしておく
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+ORIG_ARGS=("$@")
 cd "$(dirname "$0")/.."
 FROM_SERVER=0
 FULL=0
@@ -139,7 +144,24 @@ EOF
   exit 0
 fi
 
-STAMP=$(date -u +%Y-%m-%dT%H%M%SZ)
+STAMP=${COLLECT_STAMP:-$(date -u +%Y-%m-%dT%H%M%SZ)}
+# **要約 (標準出力) を `<時刻>-collect.md`、途中の道具の文句 (標準エラー) を `<時刻>-collect.err` に残す**。
+# 前は呼ぶ側がリダイレクトしていて、忘れると要約が端末にしか残らなかった。
+# 自分を `COLLECT_STAMP` 付きでもう 1 回呼び、標準出力は `tee` で端末にも出す
+# (標準エラーはファイルに溜めて、最後に端末へまとめて出す。空なら消す)
+if [ -z "${COLLECT_STAMP:-}" ]; then
+  MD="$DIR/$STAMP-collect.md"
+  ERR="$DIR/$STAMP-collect.err"
+  COLLECT_STAMP=$STAMP "$SELF" "${ORIG_ARGS[@]}" 2>"$ERR" | tee "$MD"
+  rc=${PIPESTATUS[0]}
+  if [ -s "$ERR" ]; then
+    cat "$ERR" >&2
+  else
+    rm -f "$ERR"
+  fi
+  echo "要約: $MD" >&2
+  exit "$rc"
+fi
 OUT="$DIR/$STAMP-snapshot.json"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -165,11 +187,44 @@ if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$OUT" 2>/dev/nu
   exit 1
 fi
 
+# --- 1a. 雪像に入らない口 ---------------------------------------------------------
+# `/daily` `/healthz` `/slo` `/config` `/profile?res=60` は `/snapshot` の部に無いので、
+# T15.99 までは親が手で取っていた。同じ時刻の名前 (`<時刻>-<口>.json`) で隣に置く。
+# `/profile` は重い口 (同時 1 本) なので、JSON が返らなければ 1 秒おいて 3 回まで試す。
+# 取れなくても雪像は出す (要約に「取れなかった」と書く)
+EXTRA_GOT=
+EXTRA_FAILED=
+for spec in daily:/daily healthz:/healthz slo:/slo config:/config 'profile_res_60:/profile?res=60'; do
+  name=${spec%%:*}
+  path=${spec#*:}
+  f="$DIR/$STAMP-$name.json"
+  ok=0
+  for _ in 1 2 3; do
+    if curl -s --max-time "$MAX_TIME" "http://$PROXY$path" -o "$f" &&
+      python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" 2>/dev/null; then
+      ok=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$ok" = 1 ]; then
+    EXTRA_GOT="$EXTRA_GOT $name"
+  else
+    rm -f "$f"
+    EXTRA_FAILED="$EXTRA_FAILED $name"
+    echo "failed to fetch http://$PROXY$path" >&2
+  fi
+done
+DAILY="$DIR/$STAMP-daily.json"
+[ -f "$DAILY" ] || DAILY=
+
 # 前回の雪像 (名前が UTC 時刻なので、名前順の 1 つ前が前回)
 PREV=$(ls -1 "$DIR"/*-snapshot.json 2>/dev/null | grep -vF "$OUT" | tail -1)
 
 printf '# rust-http-proxy — %s (%s)\n\n' "$PROXY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf -- '- 雪像: `%s` (%s B)\n' "$OUT" "$(wc -c <"$OUT" | tr -d ' ')"
+[ -n "$EXTRA_GOT" ] && printf -- '- 雪像に入らない口: `%s-{%s}.json`\n' "$DIR/$STAMP" "$(echo $EXTRA_GOT | tr ' ' ',')"
+[ -n "$EXTRA_FAILED" ] && printf -- '- **取れなかった口**:%s\n' "$EXTRA_FAILED"
 [ -n "$PREV" ] && printf -- '- 前回: `%s`\n' "$PREV"
 
 # --- 1b. 切れた部の続きを取る (--full。T15.0 (11)) -----------------------------
@@ -275,7 +330,9 @@ CRIT=
 if [ "$DIFF" = 1 ] && [ -n "$PREV" ]; then
   DIFFMD=$work/snapshot-diff.md
   # shellcheck disable=SC2086  # $CRIT は 2 語に分けたい
+  # `/daily` は雪像に無いので、取れていれば判定表のミスの行に日ごとの幅を並べる (T15.15 (2))
   python3 scripts/snapshot-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} $CRIT \
+    ${CRIT:+${DAILY:+--daily "$DAILY"}} \
     >"$DIFFMD" 2>&1 || echo '(snapshot-diff.py が失敗した)' >>"$DIFFMD"
 fi
 printf '## 2. 前回との差分 (snapshot-diff.py)\n\n'
