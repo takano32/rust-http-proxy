@@ -1423,6 +1423,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_LISTEN_BACKLOG` | `0` (= `min(1024, somaxconn)`) | 待ち受けの受け入れ待ち行列の長さ (`listen(2)`) |
 | `PROXY_TIMEOUT_SECS` | `30` | 接続とデータ転送の締め切り (秒)。`0` で無期限 |
 | `PROXY_CONNECT_TIMEOUT_SECS` | `10` | `CONNECT` のオリジン接続だけの締め切り (秒) |
+| `PROXY_HE_STAGGER_MS` | `250` | Happy Eyeballs で次の候補を試し始めるまでの間隔 (ms、10〜2000) |
 | `PROXY_KEEPALIVE_SECS` | `15` | クライアント接続を次の要求まで待つ時間 (秒) |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り (秒) |
 | `PROXY_MAX_CONNS` | `auto` | 同時に受ける接続数の上限 |
@@ -1563,6 +1564,12 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   Happy Eyeballs の締め切りも同じ値なので、締め切りで抜けた接続は `/errors` に `cause: "timeout"` で残ります。
   **名前解決の時間は含みません** (名前を引いたあとの `connect` に効きます)。
   `.env` で即時反映
+- **`PROXY_HE_STAGGER_MS`** (既定 `250`)
+  Happy Eyeballs (RFC 8305) で、名前が複数のアドレスを返したときに**先頭の候補が返らなければ次の候補を試し始めるまでの間隔** (ms)。
+  受けるのは **10〜2000** (RFC 8305 の範囲) で、外れた値と数でない値は起動ログに `WARN` を 1 行出して既定の 250 に戻します (`/config` の出どころも `default` のまま)。
+  **起動時に 1 回だけ読みます** (`.env` を書き換えても効かず、`/status` の `settings.restart_required` に出ます)。
+  IPv6 が黙って落ちる網ではホストごとに勝った族を覚えるので (上の「250 ms が消えたのは」)、この間隔を払うのは初めて見るホストと 600 秒に 1 回の IPv6 の探りだけです。
+  縮めると SYN が遅いだけの相手にも 2 本目を同時に張る回数が増えるので、既定から動かす理由が無ければそのままにしてください
 - **`PROXY_KEEPALIVE_SECS`** (既定 `15`)
   クライアント接続を次の要求まで待つアイドル時間 (秒)。`0` で 1 接続 1 要求。
   **待つ長さとは別に、1 本の接続で 1,000 要求を捌いたらその接続は閉じます** (下記)

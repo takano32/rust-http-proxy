@@ -226,6 +226,8 @@ pub fn main() {
         println!("profile: lite (no cache, no statistics, no blocklist, warn log level)");
     }
     net::set_ipv6_enabled(config.ipv6);
+    // Happy Eyeballs の間隔 (T17.6)。起動時に 1 回だけ (要求の経路は atomic を 1 回読むだけ)
+    net::set_stagger(config.he_stagger);
     proxy_server::dns::set_ttl(config.dns_ttl);
     proxy_server::dns::set_negative_ttl(config.dns_negative);
     proxy_server::dns::set_warm_window(config.dns_warm);
