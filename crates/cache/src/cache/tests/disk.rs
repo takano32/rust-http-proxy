@@ -77,7 +77,9 @@ fn stale_entry_with_validators_survives_and_can_be_refreshed() {
         );
         assert!(out.memory && out.disk);
         let (resp, _) = cache.get(key, 1).expect("stale entry is still returned");
-        assert!(!resp.is_fresh(now));
+        // TTL 0 の `expires_at` は `put` した秒。上の `now` と秒の境目をまたぐと
+        // `now + 1` になって新鮮に見えるので、古さはいまの時刻で見る
+        assert!(!resp.is_fresh(crate::cache::now_epoch()));
         assert!(resp.meta.validators);
         assert!(
             cache
