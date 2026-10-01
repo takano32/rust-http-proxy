@@ -11,10 +11,12 @@
 #      持っているのはこのスクリプトだけ (命令には fd を渡さないので、命令の子が残っても口は空く)。
 #   2. **他人のベンチ**が走っている間は待つ。探すのは**命令の先頭が** `target/release/rust-http-proxy` の
 #      プロセスだけ (`pgrep -f` を行全体に当てると、その文字列を含む別のシェル行にも当たって
-#      3 分待ちを踏んだ。2026-09-17、T14.57)。自分の命令の子孫は数えない。
+#      3 分待ちを踏んだ。2026-09-17、T14.57)。数えるのは命令を起動する前なので、自分の命令の
+#      子孫はまだ居ない (除く仕掛けは要らない。T18.3)。
 #      `MX_WAIT` 秒 (既定 180) 待っても居なくならなければ **75 で抜ける** (EX_TEMPFAIL)。
 #   3. 命令を**自分のプロセスグループ**で走らせ、終わったら (Ctrl-C でも) **グループごと止める**
 #      (ベンチのプロキシや `timeout` の子が残って次の計測を汚したことがある)。
+#      INT / TERM の trap は**命令を起動する前**に張る (起動の直後に TERM が来ても子を残さない。T18.3)。
 #   出口: 命令の終了コード (待ちきれなければ 75)。
 #
 # 環境変数:
@@ -85,12 +87,10 @@ exec {LOCK0}>&-
 
 # --- 2. 他人のベンチを待つ ------------------------------------------------------
 others() {
-  # 命令の先頭 (argv[0]) が target/release/rust-http-proxy のものだけ。自分の命令の子孫は除く
-  local p
-  for p in $(pgrep -f '^[^ ]*target/release/rust-http-proxy( |$)' 2>/dev/null); do
-    [ -n "${CHILD:-}" ] && [ "$(ps -o sid= -p "$p" 2>/dev/null | tr -d ' ')" = "$CHILD" ] && continue
-    echo "$p"
-  done
+  # 命令の先頭 (argv[0]) が target/release/rust-http-proxy のものだけ。
+  # 「自分の命令の子孫は除く」(セッションが `$CHILD` のものを飛ばす) は外した (T18.3): ここを呼ぶのは
+  # 命令を起動する前だけで、`CHILD` はまだ無く、一度も効いていなかった。起動前に自分の子孫は居ない
+  pgrep -f '^[^ ]*target/release/rust-http-proxy( |$)' 2>/dev/null
 }
 start=$SECONDS
 if [ -n "$(others)" ]; then
@@ -109,15 +109,25 @@ fi
 # `setsid` は fork せず、`$!` がそのままグループの番号になる。口の fd は命令に渡さない
 close=()
 for fd in "${held[@]}"; do close+=("$fd>&-"); done
-eval "setsid \"\$@\" ${close[*]} &"
-CHILD=$!
+CHILD=
 cleanup() {
-  kill -TERM -- "-$CHILD" 2>/dev/null
+  # 起動の直後は `CHILD` に入れる前に trap が走ることがあるので、そのときは `$!` を使う。
+  # どちらも無ければ命令はまだ起動していない (何もせずに抜ける)
+  local g=${CHILD:-${!:-}}
+  [ -n "$g" ] || return 0
+  # 子が `setsid` を呼ぶ前はグループがまだ無い (kill が失敗する) ので、そのときは PID に送る
+  kill -TERM -- "-$g" 2>/dev/null || kill -TERM "$g" 2>/dev/null
   sleep 0.2
-  kill -KILL -- "-$CHILD" 2>/dev/null
+  kill -KILL -- "-$g" 2>/dev/null || kill -KILL "$g" 2>/dev/null
 }
+# trap は**起動の前**に張る (T18.3)。後で張ると、起動から trap までの隙間に届いた TERM で mx だけが
+# 死に、命令が残る。手順 1・2 の間は張らない (既定の動きで mx が止まり、命令は起動しない。
+# 張ると `sleep` が終わるまで trap が走らず、止まるのが遅れる)。
+# `CHILD=$!` の行は `scripts/test_mx.sh` の 7 が目印にしている (文面を変えたらテストも直す)
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
+eval "setsid \"\$@\" ${close[*]} &"
+CHILD=$!
 wait "$CHILD"
 rc=$?
 # 命令の本体が終わっても、グループの中に残った子 (ベンチのプロキシなど) は止める
