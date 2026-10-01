@@ -8,7 +8,7 @@
 //! になる。
 //!
 //! **費用は 0**: 判定するのは履歴スレッドの周期だけ ([`observe`] を
-//! [`crate::history::spawn_every`] から 1 行呼ぶ。T14.23 の [`crate::anomaly::check`] の隣)
+//! `proxy_metrics::history::spawn_every` から 1 行呼ぶ。T14.23 の `proxy_metrics_watch::anomaly::check` の隣)
 //! で、要求ごとの経路には 1 命令も無い。5 秒に 1 回、標本 1 本から分位点を 2 回引いて
 //! 割り算を 2 回するだけで、リングの走査もシステムコールも無い。
 //!
