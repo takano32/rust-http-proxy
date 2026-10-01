@@ -168,6 +168,14 @@ scripts/snapshot-diff.py a.json b.json --criteria phase15 --daily b-daily.json
 # `/profile?res=60` も雪像に入らないので渡す (無ければ雪像の `/profile` の部で「参考」)
 scripts/snapshot-diff.py a.json b.json --criteria phase17 --daily b-daily.json \
                          --profile b-profile_res_60.json   # 前も比べるなら --profile-before FILE
+# phase18 の 10 行 (phase17 の 8 行 + `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・
+# `ipv6.request_probes` が 0)。0 時間の雪像 (再デプロイの直後の 1 枚) は `--zero` で渡す (無ければ「判定できず」)。
+# `--daily-snapshots DIR` は、DIR の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち b と同じ版のものを
+# 撮った時刻の順に並べた表 (起動からの時間・`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・
+# `ipv6.attempts`) を判定表の下に付ける
+scripts/snapshot-diff.py a.json b.json --criteria phase18 --daily b-daily.json \
+                         --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
+                         --zero zero.json --daily-snapshots status
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
 scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
                          --from-files status/2026-09-16T0106Z
@@ -192,7 +200,7 @@ scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
 - IP リテラル宛て・`localhost`・表からあふれた `other` は**まとめずにそのまま**出ます
 
 `collect-deployed.sh` は前回の雪像を見つけるとこれを呼び、**要約のいちばん最後に判定表**を置きます
-(`CRITERIA=off` で止められます)。道具の単体テストは `python3 -m unittest discover -s scripts`
+(`CRITERIA=off` で止められます。判定表の相手は `BEFORE=<雪像>` で、0 時間の雪像は `ZERO=<雪像>` で渡せます。下の「運用」の 4)。道具の単体テストは `python3 -m unittest discover -s scripts`
 (架空の雪像 `scripts/testdata/snapshot-a.json` / `snapshot-b.json` と、下の匿名化した実データで回ります)。
 
 **1 週間ぶんをまとめて読むのは `scripts/weekly-report.py`** (T14.40)。`snapshot-diff.py` が
@@ -2949,6 +2957,8 @@ forward が `queue` / `client_read` / `origin` / `send` / `ttfb` / `body` で、
 ```bash
 # 雪像を 1 枚取り、前回との差分と判定表つきの Markdown を 1 枚にする
 scripts/collect-deployed.sh <host>:<port>
+# 判定表の相手を再デプロイ直前の雪像にし、0 時間の雪像 (直後の 1 枚) も渡す (上の 1 と 2 で撮った 2 枚)
+BEFORE=status/<前>-snapshot.json ZERO=status/<0 時間>-snapshot.json scripts/collect-deployed.sh <host>:<port>
 curl http://127.0.0.1:8080/snapshots    # プロキシ自身が 1 日 1 回残した雪像 (30 日ぶん)
 curl "http://127.0.0.1:8080/daily?n=365"  # 1 日 1 行の要約 (永久)
 curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たした時間の割合
@@ -2960,8 +2970,9 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 個票には接続元 IP と宛先が並ぶので `.gitignore` に入れてあり、コミットしません。
 **雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
 1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
-意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase17`**
-(phase15 の 4 行 + T17.0a の 4 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、前回の雪像の隣にあればそれを `--profile-before` で渡します) で、`CRITERIA=phase15` (T15.4 / T15.5 / T15.6 の 6 行) と `CRITERIA=phase14` も今までどおり使えます。取り忘れた日は
+意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase18`**
+(phase17 の 8 行 = phase15 の 4 行 + T17.0a の 4 行 に、T18.2 の 2 行 = `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・`ipv6.request_probes` が 0 を足した 10 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、相手の雪像の隣にあればそれを `--profile-before` で渡します) で、`CRITERIA=phase17`・`CRITERIA=phase15` (T15.4 / T15.5 / T15.6 の 6 行)・`CRITERIA=phase14` も今までどおり使えます。
+**判定表の相手は既定では直前の 1 枚**です。再デプロイのあとはそれが 0 時間の雪像になるので、**`BEFORE=<再デプロイ直前の雪像>`** を渡すと判定表だけ相手がそちらになります (隣の同じ時刻の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別の相手は直前の 1 枚のまま)。**`ZERO=<0 時間の雪像>`** は `snapshot-diff.py --zero` に渡り、無ければ `heap_used + mmap` の行は「判定できず」です。phase18 のときは保存先を `--daily-snapshots` にも渡すので、`--from-server` で取り寄せた日次の雪像のうち同じ版のものの表 (`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts`) が判定表の下に付きます。`BEFORE` と `ZERO` の相対パスはリポジトリの根からです (`DIR` と同じ)。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
 `next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0 (11)。
