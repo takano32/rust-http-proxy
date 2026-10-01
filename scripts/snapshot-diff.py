@@ -10,6 +10,7 @@
 #                            [--out md|json] [--top N] [--burst N] [--major-hosts a,b,c]
 #                            [--group domain] [--daily FILE]
 #                            [--profile FILE] [--profile-before FILE]
+#                            [--zero FILE] [--daily-snapshots DIR]
 #     scripts/snapshot-diff.py status/2026-09-1*-snapshot.json
 #     scripts/snapshot-diff.py a.json b.json --criteria phase14 >> TODO.md
 #
@@ -32,9 +33,13 @@
 #   6. その間の出来事 (`/events`。無い版では飛ばす)
 #   7. エラーの原因別の件数 (`/hosts` の `errors_by_cause` の差分と `/errors` の個票)
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
-#   9. `--criteria phase14|phase15|phase17` で **Phase の完了の定義に対する判定表**
+#   9. `--criteria phase14|phase15|phase17|phase18` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
-#      (T15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)
+#      (T15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
+#      phase18 (T18.2) は phase17 の 8 行 + `--zero FILE` (0 時間の雪像) からの
+#      `heap_used + mmap` の増え + `ipv6.request_probes` の 10 行。
+#      `--daily-snapshots DIR` を足すと、`DIR` の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち
+#      後の雪像と同じ版のものを時刻順に並べた `memory` と `ipv6.attempts` の表が判定表の下に付く
 #
 # **応答の形の版 (`schema`。T14.49)**: 新しいプロキシの応答は先頭に `"schema":1` を持ちます。
 # 読む側は版で分岐しますが、**版の無い古い出力 (版 0) も今までどおり読めます**
@@ -776,7 +781,17 @@ PHASE17 = {
     # cgroup の起動からの user / sys (コア数) が前の何倍までなら「同じ桁」か
     "cgroup_factor": 10.0,
 }
-CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17}
+# T18.2: Phase 18 の版を 24 時間走らせたあとに読む 10 行 (TODO.md の T18.0 の「次の完了の定義」)。
+# 前の 8 行は phase17 の関数と閾をそのまま使う。後ろの 2 行は T17.99 の但し書き (d) と (e) の物差し
+PHASE18 = dict(
+    PHASE17,
+    # (g) `heap_used + mmap` の 0 時間の雪像からの増え (MB = 10^6 B)。RSS と `heap_free` は
+    # バーストの大きさで決まるので閾を置かない (T18.0 (1)。T17.99 の版は 18.0 → 19.9 で +1.9)
+    heap_growth_mb=5.0,
+    # (h) `v4_first` の間に利用者の経路で IPv6 を探った回数 (T18.1 の `ipv6.request_probes`)
+    request_probes=0,
+)
+CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18}
 
 MET, MISSED, UNKNOWN = "満たした", "届かず", "判定できず"
 
@@ -1319,6 +1334,87 @@ def _p17_cgroup(c, th):
             MISSED if worse else MET, src + f"、前 {bef['hours']:,.1f} 時間")
 
 
+# --- Phase 18 の 2 行 (T18.2。前の 8 行は phase17 の関数をそのまま使う) ---
+
+def mb(v):
+    """バイト数を MB (10^6 B。TODO.md の RSS の書き方) の小数 1 桁にする。"""
+    return "—" if v is None else f"{v / 1e6:,.1f}"
+
+
+def memory_of(snap):
+    """その雪像の `/status` の `memory` (無ければ空の辞書)。"""
+    m = part(snap, "status").get("memory")
+    return m if isinstance(m, dict) else {}
+
+
+def uptime_text(secs):
+    """起動からの時間。1 時間に満たなければ分で書く (0 時間の雪像は起動の数分後)。"""
+    secs = secs or 0
+    return f"{secs / 60:,.1f} 分" if secs < 3600 else f"{secs / 3600:,.1f} 時間"
+
+
+def _p18_heap(c, th):
+    """T18.0 (g): `heap_used + mmap` が 0 時間の雪像から 5 MB 以上増えていないか。
+
+    材料は `--zero FILE` (0 時間の雪像。`build` が `zero_snapshot` に入れる) と後の雪像の
+    `$.status.memory`。**`heap_free` と `rss` は並べるだけ** (閾を置かない。T17.99 (d) で伸びたのは
+    `heap_free` で、バーストの大きさで決まる)。`--zero` が無いか、後の雪像と同じ起動でなければ
+    「判定できず」。
+    """
+    lim = th["heap_growth_mb"]
+    label = f"`heap_used + mmap` の 0 時間の雪像からの増えが {lim:.0f} MB 未満"
+    limit = f"< {lim:.0f} MB"
+    z = c["b"].get("zero_snapshot")
+    if not z:
+        return (label, limit, "—", UNKNOWN, "`--zero` (0 時間の雪像) が渡されていない")
+    between = restart_info(z, c["b"])
+    if between["restarted"]:
+        return (label, limit, "—", UNKNOWN,
+                "`--zero` の雪像は後の雪像と同じ起動ではない (" + "、".join(between["reasons"]) + ")")
+    mz, ma = memory_of(z), memory_of(c["b"])
+    shown = "、".join(f"`{k}` {mb(mz.get(k))} → {mb(ma.get(k))}"
+                     for k in ("heap_used", "mmap", "heap_free", "rss"))
+    shown += " MB (`heap_free` と `rss` は表示だけ)"
+    src = (f"`--zero` (起動から {uptime_text(z.get('uptime_secs'))}) と後の雪像 "
+           f"(起動から {uptime_text(c['b'].get('uptime_secs'))}) の `/status` の `memory`")
+    missing = [f"{who}の `{k}`" for who, m in (("0 時間", mz), ("後", ma))
+               for k in ("heap_used", "mmap") if m.get(k) is None]
+    if missing:
+        return (label, limit, shown, UNKNOWN, "、".join(missing) + " が無い。" + src)
+    before, after = mz["heap_used"] + mz["mmap"], ma["heap_used"] + ma["mmap"]
+    grown = (after - before) / 1e6
+    return (label, limit, f"**{grown:+.1f}** MB ({mb(before)} → {mb(after)} MB)。" + shown,
+            MET if grown < lim else MISSED, src)
+
+
+def _p18_request_probes(c, th):
+    """T18.0 (h): `v4_first` の間に利用者の経路で IPv6 を探っていないか (T18.1 の計器)。
+
+    材料は後の雪像の `$.status.ipv6.request_probes` (起動からの通算)。欄が無い版は「判定できず」。
+    0 でなければ「届かず」で、理由を読むための `canary.ipv6_runs` / `ipv6_skipped` を並べる。
+    """
+    want = th["request_probes"]
+    label = "`ipv6.request_probes` が 0 (`v4_first` の間に利用者の経路で IPv6 を探っていない)"
+    limit = f"= {want}"
+    st = part(c["b"], "status")
+    ip = st.get("ipv6") if isinstance(st.get("ipv6"), dict) else {}
+    can = st.get("canary") if isinstance(st.get("canary"), dict) else {}
+    v = ip.get("request_probes")
+    if v is None:
+        return (label, limit, "—", UNKNOWN,
+                "後の雪像の `/status` の `ipv6` に `request_probes` が無い (T18.1 より前の版)")
+    shown = f"**{n(v)}** 回"
+    if v and ip.get("request_probe_at"):
+        shown += f" (最後は {stamp(ip['request_probe_at'])})"
+    shown += (f"、`canary.ipv6_runs` {n(can.get('ipv6_runs'))} / "
+              f"`ipv6_skipped` {n(can.get('ipv6_skipped'))}")
+    if ip.get("attempts") is not None:
+        shown += f"、`ipv6.attempts` {n(ip['attempts'])}"
+    src = (f"後の雪像の `/status` の `ipv6.request_probes` (起動からの "
+           f"{uptime_text(c['b'].get('uptime_secs'))} の通算) と `canary`")
+    return (label, limit, shown, MET if v == want else MISSED, src)
+
+
 RULES = {
     "phase14": (_p14_dns_per_connect, _p14_major_hosts, _p14_connect_p50, _p14_overload),
     "phase15": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band,
@@ -1326,6 +1422,43 @@ RULES = {
     "phase17": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band, _p15_timeout,
                 _p17_conn_per_request, _p17_warm_max, _p17_events, _p17_cgroup),
 }
+# phase18 = phase17 の 8 行 + (g) + (h)
+RULES["phase18"] = RULES["phase17"] + (_p18_heap, _p18_request_probes)
+
+# 日次の雪像の名前 (`collect-deployed.sh --from-server` が付ける `<日付>T000000Z-snapshot.json`)
+DAILY_SNAPSHOT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}T000000Z-snapshot\.json$")
+
+
+def daily_snapshots(dirname, b):
+    """`dirname` の日次の雪像のうち、後の雪像 `b` と同じ版のものを時刻順に並べる (T18.2 (2))。
+
+    T17.99 で RSS の伸びの内訳 (`heap_free` だった) と `ipv6.attempts` が止まった時期を見るのに
+    手で作った表。名前の日付は「その 1 日を写したもの」で、撮られたのは翌日 00:00 UTC の直後
+    なので、並べる順は名前ではなく `taken_at`。読めないファイルは飛ばす。
+    """
+    rows, files = [], 0
+    for path in sorted(glob.glob(os.path.join(glob.escape(dirname), "*T000000Z-snapshot.json"))):
+        if not DAILY_SNAPSHOT_NAME.match(os.path.basename(path)):
+            continue
+        files += 1
+        try:
+            s = load_source(path, False)
+        except (OSError, ValueError, SystemExit):
+            continue
+        if not b.get("version") or s.get("version") != b.get("version"):
+            continue
+        st = part(s, "status")
+        m = memory_of(s)
+        used = m.get("rings_used") if isinstance(m.get("rings_used"), dict) else {}
+        ip = st.get("ipv6") if isinstance(st.get("ipv6"), dict) else {}
+        rows.append({"file": os.path.basename(path), "taken_at": s.get("taken_at") or 0,
+                     "uptime_secs": s.get("uptime_secs") or 0,
+                     "rss": m.get("rss"), "heap_used": m.get("heap_used"),
+                     "heap_free": m.get("heap_free"), "mmap": m.get("mmap"),
+                     "rings_used_total": used.get("total"),
+                     "ipv6_attempts": ip.get("attempts")})
+    rows.sort(key=lambda r: (r["taken_at"], r["file"]))
+    return {"dir": dirname, "version": b.get("version"), "files": files, "rows": rows}
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,
@@ -1363,6 +1496,9 @@ def build(a, b, args):
         b["profile_res_60"] = load(args.profile)
     if getattr(args, "profile_before", None):
         a["profile_res_60"] = load(args.profile_before)
+    # 0 時間の雪像 (再起動の直後の 1 枚)。phase18 の `heap_used + mmap` の行の材料 (T18.2)
+    if getattr(args, "zero", None):
+        b["zero_snapshot"] = load_source(args.zero, False)
     info = restart_info(a, b)
     hist = history_split(a, b, info, args.burst)
     mode, table = "dns", {}
@@ -1406,6 +1542,9 @@ def build(a, b, args):
         out["criteria"] = judge(args.criteria, hist, hosts, majors, status_b, overload,
                                 CRITERIA[args.criteria], a=a, b=b, info=info,
                                 dns=out["dns"], errors=out["errors"], burst=args.burst)
+    # 日次の雪像の表 (T18.2 (2))。渡されたときだけ鍵を足す
+    if getattr(args, "daily_snapshots", None):
+        out["daily_snapshots"] = daily_snapshots(args.daily_snapshots, b)
     return out
 
 
@@ -1714,12 +1853,41 @@ def render(d, top):
               "`kernel.cgroup_cpu.since_start` です。**その部が雪像に無い行は「判定できず」**で、"
               "0 とは書きません。")
             p()
+        if c["name"] == "phase18":
+            # T18.2。前の 8 行は phase17 と同じ関数、後ろの 2 行が T17.99 の但し書き (d)(e) の物差し
+            p("前の 8 行は phase17 と同じ物差しで、材料も同じです (`--daily` `--profile` "
+              "`--profile-before`)。後ろの 2 行は T18.0 の (g) と (h) で、材料は `--zero` で渡す "
+              "0 時間の雪像と後の雪像の `/status` の `memory` (`heap_used + mmap` の増え。"
+              "`heap_free` と `rss` は表示だけ) と、後の雪像の `/status` の "
+              "`ipv6.request_probes` (T18.1。0 でなければ `canary.ipv6_runs` / `ipv6_skipped` から"
+              "理由を読む) です。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+            p()
         p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
         p("|---|---|---|---|---|")
         for row in c["rows"]:
             p(f"| {row[0]} | {row[1]} | {row[2]} | **{row[3]}** | {row[4]} |")
         p()
         p("・".join(f"{k} {v} 行" for k, v in c["tally"].items() if v))
+        p()
+
+    # --- 日次の雪像の表 (`--daily-snapshots`。T18.2 (2))。判定表の下に置く
+    if "daily_snapshots" in d:
+        ds = d["daily_snapshots"]
+        p(f"**日次の雪像** (`--daily-snapshots {ds['dir']}` の `<日付>T000000Z-snapshot.json` "
+          f"{ds['files']} 枚のうち、後の雪像と同じ版 `{ds['version']}` の **{len(ds['rows'])} 枚**。"
+          "撮った時刻の順。名前の日付はその 1 日を写したもので、撮ったのは翌日 00:00 UTC の直後。"
+          "MB は 10^6 B)")
+        p()
+        if ds["rows"]:
+            p("| 雪像 | 起動から (時間) | `rss` | `heap_used` | `heap_free` | `mmap` "
+              "| `rings_used.total` | `ipv6.attempts` |")
+            p("|---|---:|---:|---:|---:|---:|---:|---:|")
+            for r in ds["rows"]:
+                p(f"| `{r['file']}` | {r['uptime_secs'] / 3600:,.1f} | {mb(r['rss'])} "
+                  f"| {mb(r['heap_used'])} | {mb(r['heap_free'])} | {mb(r['mmap'])} "
+                  f"| {mb(r['rings_used_total'])} | {n(r['ipv6_attempts'])} |")
+        else:
+            p("(同じ版の日次の雪像が無い。`collect-deployed.sh --from-server` で取り寄せられる)")
         p()
 
 
@@ -1738,7 +1906,8 @@ def parser():
     p.add_argument("--criteria", choices=sorted(CRITERIA), metavar="NAME",
                    help="完了の定義に対する判定表を出す (phase14 = Phase 14 の 4 行、"
                         "phase15 = T15.4 / T15.5 / T15.6 の 6 行。T15.15 で物差しを直した。"
-                        "phase17 = T17.99 の 8 行)")
+                        "phase17 = T17.99 の 8 行、phase18 = phase17 の 8 行 + T18.0 の (g)(h) の "
+                        "10 行)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst", type=int, default=BURST_PER_HOUR, metavar="N",
@@ -1754,6 +1923,12 @@ def parser():
                         "CPU/要求 の行の材料 (T17.0a。無ければ雪像の `/profile` の部で参考)")
     p.add_argument("--profile-before", metavar="FILE",
                    help="同じものを古い雪像に足す (前の CPU/要求 も `/profile?res=60` で比べる)")
+    p.add_argument("--zero", metavar="FILE",
+                   help="0 時間の雪像 (再デプロイの直後に撮った 1 枚)。phase18 の `heap_used + mmap` "
+                        "の増えの行の材料 (T18.2。無ければその行は「判定できず」)")
+    p.add_argument("--daily-snapshots", metavar="DIR",
+                   help="`DIR` の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち新しい雪像と同じ版の"
+                        "ものを時刻順に並べ、`memory` と `ipv6.attempts` の表を判定表の下に出す (T18.2)")
     p.add_argument("--major-hosts", metavar="a,b,c",
                    help="主要ホストを名指しする (既定はその間の要求数の上位 3)")
     p.add_argument("--group", choices=["host", "domain"], default="host", metavar="KEY",

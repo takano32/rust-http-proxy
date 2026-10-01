@@ -824,7 +824,7 @@ class Criteria15(unittest.TestCase):
         self.assertIn("判定できず", md)
 
     def test_both_criteria_can_be_chosen(self):
-        self.assertEqual(sorted(sd.CRITERIA), ["phase14", "phase15", "phase17"])
+        self.assertEqual(sorted(sd.CRITERIA), ["phase14", "phase15", "phase17", "phase18"])
 
 
 def conn_profile(conn_us_per_row):
@@ -1088,6 +1088,285 @@ class Deployed17(unittest.TestCase):
         self.assertIn("`dns_slow` **0.61** 件/時 (29 件、前 0.09)", rows[6][2])
         self.assertIn("後 **0.0022 コア、user 31%**", rows[7][2])
         self.assertEqual(rows[7][3], sd.UNKNOWN)            # 前の版に `usage_usec` が無い
+
+
+def zero_snapshot(heap_used=4_500_000, mmap=8_000_000, version="0.1.0+bbbbbbb", uptime=120):
+    """B と同じ起動の「0 時間の雪像」(起動 2 分後)。B の `memory` は `heap_used` 6.0 + `mmap` 8.0 MB。"""
+    memory = {"rss": 15_000_000, "heap_used": heap_used, "heap_free": 400_000, "mmap": mmap}
+    return {"taken_at": Criteria17.START + uptime, "version": version, "uptime_secs": uptime,
+            "parts": ["status"], "dropped": [],
+            "status": {"version": version, "uptime_secs": uptime, "since_start_secs": uptime,
+                       "memory": {k: v for k, v in memory.items() if v is not None}}}
+
+
+def with_probes(snap, probes, runs=700, skipped=20, at=0):
+    """`/status` に T18.1 の欄 (`ipv6.request_probes` と `canary.ipv6_runs` / `ipv6_skipped`) を足す。"""
+    snap["status"]["ipv6"].update(request_probes=probes, request_probe_at=at)
+    snap["status"]["canary"] = {"mode": "on", "runs": runs + skipped, "failures": 0,
+                                "ipv6_runs": runs, "ipv6_skipped": skipped}
+    return snap
+
+
+class Criteria18(unittest.TestCase):
+    """`--criteria phase18` の 10 行 (T18.2。前の 8 行は phase17 の関数、後ろの 2 行が T18.0 の (g)(h))。
+
+    雪像は `testdata/snapshot-{a,b}.json` に**作り物の欄を足して**使う (T18.1 の欄は名前だけ同じ)。
+    """
+
+    def judge(self, a=None, b=None, extra=()):
+        argv = [a or A, b or B, "--no-dns", "--criteria", "phase18", *extra]
+        return build(argv)["criteria"]
+
+    def row(self, i, a=None, b=None, extra=()):
+        return self.judge(a, b, extra)["rows"][i]
+
+    def test_phase18_gives_ten_rows_with_a_verdict_each(self):
+        with written(z=zero_snapshot(), b=with_probes(read(B), 0)) as p:
+            c = self.judge(b=p["b"], extra=("--zero", p["z"]))
+        self.assertEqual(len(sd.RULES["phase18"]), 10)
+        self.assertEqual(len(c["rows"]), 10)
+        self.assertEqual(sum(c["tally"].values()), 10)
+        self.assertTrue(all(r[3] in (sd.MET, sd.MISSED, sd.UNKNOWN) for r in c["rows"]))
+        self.assertEqual([r[3] for r in c["rows"][8:]], [sd.MET, sd.MET])
+
+    def test_the_first_eight_rows_are_the_phase17_ones(self):
+        self.assertEqual(sd.RULES["phase18"][:8], sd.RULES["phase17"])
+        self.assertEqual({k: sd.PHASE18[k] for k in sd.PHASE17}, sd.PHASE17)
+        rows17 = build([A, B, "--no-dns", "--criteria", "phase17"])["criteria"]["rows"]
+        with written(z=zero_snapshot()) as p:
+            rows18 = self.judge(extra=("--zero", p["z"]))["rows"]
+        self.assertEqual(rows18[:8], rows17)
+
+    def test_both_new_rows_can_come_out_as_met_missed_and_unknown(self):
+        """受け入れ基準: 後ろの 2 行のどちらも 3 つの判定のどれにもなれること (下の各テストの要約)。"""
+        seen = {8: set(), 9: set()}
+        with written(z=zero_snapshot(), small=zero_snapshot(heap_used=1_000_000),
+                     ok=with_probes(read(B), 0), bad=with_probes(read(B), 3)) as p:
+            for i, b, extra in ((8, None, ("--zero", p["z"])), (8, None, ("--zero", p["small"])),
+                                (8, None, ()), (9, p["ok"], ()), (9, p["bad"], ()), (9, None, ())):
+                seen[i].add(self.row(i, b=b, extra=extra)[3])
+        for i, got in seen.items():
+            self.assertEqual(got, {sd.MET, sd.MISSED, sd.UNKNOWN}, f"{i} 行目")
+
+    # --- (g) `heap_used + mmap` の増え (`--zero`)
+
+    def test_the_growth_of_heap_used_plus_mmap_is_judged(self):
+        with written(z=zero_snapshot()) as p:
+            row = self.row(8, extra=("--zero", p["z"]))
+        # 0 時間 4.5 + 8.0 = 12.5 MB、後 6.0 + 8.0 = 14.0 MB
+        self.assertEqual(row[3], sd.MET)
+        self.assertEqual(row[1], "< 5 MB")
+        self.assertIn("**+1.5** MB (12.5 → 14.0 MB)", row[2])
+        self.assertIn("`heap_used` 4.5 → 6.0、`mmap` 8.0 → 8.0", row[2])
+        # `heap_free` と `rss` は並べるだけ (判定に使わない)
+        self.assertIn("`heap_free` 0.4 → 1.2、`rss` 15.0 → 21.0 MB (`heap_free` と `rss` は表示だけ)",
+                      row[2])
+        self.assertIn("`--zero` (起動から 2.0 分) と後の雪像 (起動から 12.0 時間)", row[4])
+
+    def test_five_megabytes_or_more_is_missed(self):
+        with written(z=zero_snapshot(heap_used=1_000_000),
+                     edge=zero_snapshot(heap_used=1_000_001)) as p:
+            row = self.row(8, extra=("--zero", p["z"]))
+            edge = self.row(8, extra=("--zero", p["edge"]))
+        self.assertEqual(row[3], sd.MISSED)                  # ちょうど +5.0 は「未満」ではない
+        self.assertIn("**+5.0** MB (9.0 → 14.0 MB)", row[2])
+        self.assertEqual(edge[3], sd.MET)                    # 1 B でも下なら満たす
+
+    def test_a_shrink_is_met_and_printed_with_its_sign(self):
+        with written(z=zero_snapshot(heap_used=7_000_000)) as p:
+            row = self.row(8, extra=("--zero", p["z"]))
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**-1.0** MB", row[2])
+
+    def test_without_zero_the_growth_cannot_be_judged(self):
+        row = self.row(8)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`--zero` (0 時間の雪像) が渡されていない", row[4])
+
+    def test_a_zero_snapshot_of_another_start_cannot_be_judged(self):
+        """版が違う 1 枚と、同じ版でも後の雪像より後に起動した 1 枚 (`uptime_secs` が減る) は使わない。"""
+        with written(other=zero_snapshot(version="0.1.0+aaaaaaa"),
+                     later=zero_snapshot(uptime=50_000)) as p:
+            other = self.row(8, extra=("--zero", p["other"]))
+            later = self.row(8, extra=("--zero", p["later"]))
+        self.assertEqual(other[3], sd.UNKNOWN)
+        self.assertIn("同じ起動ではない (版が変わった", other[4])
+        self.assertEqual(later[3], sd.UNKNOWN)
+        self.assertIn("`uptime_secs` が減った", later[4])
+
+    def test_a_memory_part_without_the_columns_cannot_be_judged(self):
+        b = read(B)
+        del b["status"]["memory"]
+        with written(z=zero_snapshot(mmap=None), full=zero_snapshot(), b=b) as p:
+            zero = self.row(8, extra=("--zero", p["z"]))
+            after = self.row(8, b=p["b"], extra=("--zero", p["full"]))
+        self.assertEqual(zero[3], sd.UNKNOWN)
+        self.assertIn("0 時間の `mmap` が無い", zero[4])
+        self.assertIn("`mmap` — → 8.0", zero[2])
+        self.assertEqual(after[3], sd.UNKNOWN)
+        self.assertIn("後の `heap_used`、後の `mmap` が無い", after[4])
+
+    def test_zero_is_ignored_by_the_older_criteria(self):
+        with written(z=zero_snapshot()) as p:
+            for name in ("phase14", "phase15", "phase17"):
+                argv = [A, B, "--no-dns", "--criteria", name]
+                self.assertEqual(run(argv + ["--zero", p["z"]]), run(argv), name)
+
+    # --- (h) `ipv6.request_probes`
+
+    def test_no_request_probe_is_met(self):
+        with written(b=with_probes(read(B), 0)) as p:
+            row = self.row(9, b=p["b"])
+        self.assertEqual(row[3], sd.MET)
+        self.assertEqual(row[1], "= 0")
+        self.assertIn("**0** 回、`canary.ipv6_runs` 700 / `ipv6_skipped` 20、`ipv6.attempts` 4", row[2])
+        self.assertIn("起動からの 12.0 時間 の通算", row[4])
+
+    def test_a_request_probe_is_missed_with_the_canary_counts_next_to_it(self):
+        with written(b=with_probes(read(B), 3, runs=690, skipped=30, at=1789050000)) as p:
+            row = self.row(9, b=p["b"])
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**3** 回 (最後は 2026-09-10 14:20:00Z)、"
+                      "`canary.ipv6_runs` 690 / `ipv6_skipped` 30", row[2])
+
+    def test_a_request_probe_without_the_canary_columns_still_prints(self):
+        b = read(B)
+        b["status"]["ipv6"]["request_probes"] = 2
+        with written(b=b) as p:
+            row = self.row(9, b=p["b"])
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**2** 回、`canary.ipv6_runs` — / `ipv6_skipped` —", row[2])
+
+    def test_a_version_without_the_column_cannot_be_judged(self):
+        row = self.row(9)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertEqual(row[2], "—")
+        self.assertIn("`request_probes` が無い (T18.1 より前の版)", row[4])
+
+    def test_the_markdown_names_the_phase18_parts(self):
+        md = run([A, B, "--no-dns", "--criteria", "phase18"])
+        self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase18`)", md)
+        self.assertIn("前の 8 行は phase17 と同じ物差し", md)
+        self.assertNotIn("前の 4 行は phase15 と同じ物差しです", md)
+        self.assertIn("**その部が雪像に無い行は「判定できず」**", md)
+        self.assertNotIn("**日次の雪像**", md)              # `--daily-snapshots` を渡したときだけ
+
+
+class DailySnapshots(unittest.TestCase):
+    """`--daily-snapshots DIR` (T18.2 (2)): 同じ版の日次の雪像を撮った時刻の順に並べる。"""
+
+    @staticmethod
+    def daily(uptime, version="0.1.0+bbbbbbb", **memory):
+        snap = zero_snapshot(version=version, uptime=uptime)
+        snap["status"]["memory"].update(memory)
+        snap["status"]["ipv6"] = {"attempts": uptime // 10_000, "wins": 0, "losses": 0}
+        return snap
+
+    @contextlib.contextmanager
+    def directory(self):
+        with tempfile.TemporaryDirectory(prefix="t182-") as tmp:
+            files = {
+                # 名前の順と撮った順をわざと逆にしてある (並べるのは `taken_at`)
+                "2026-01-01T000000Z-snapshot.json": self.daily(
+                    40_000, rss=20_000_000, heap_free=1_100_000,
+                    rings_used={"history": 1, "total": 4_900_000}),
+                "2026-01-02T000000Z-snapshot.json": self.daily(30_000, rss=18_000_000),
+                "2026-01-03T000000Z-snapshot.json": self.daily(20_000, version="0.1.0+aaaaaaa"),
+                # 日次ではない 1 枚 (同じ版でも並べない) と、匿名化した写し
+                "2026-01-03T101010Z-snapshot.json": self.daily(10_000),
+                "2026-01-04T000000Z-snapshot.anon.json": self.daily(5_000),
+            }
+            for name, body in files.items():
+                with open(os.path.join(tmp, name), "w", encoding="utf-8") as f:
+                    json.dump(body, f)
+            with open(os.path.join(tmp, "2026-01-05T000000Z-snapshot.json"), "w") as f:
+                f.write("{ 途中で切れた")                    # 読めない 1 枚は飛ばす
+            yield tmp
+
+    def test_the_same_version_is_listed_in_the_order_taken(self):
+        with self.directory() as tmp:
+            ds = build([A, B, "--no-dns", "--daily-snapshots", tmp])["daily_snapshots"]
+        self.assertEqual((ds["dir"], ds["version"], ds["files"]), (tmp, "0.1.0+bbbbbbb", 4))
+        self.assertEqual([r["file"] for r in ds["rows"]],
+                         ["2026-01-02T000000Z-snapshot.json", "2026-01-01T000000Z-snapshot.json"])
+        self.assertEqual([r["uptime_secs"] for r in ds["rows"]], [30_000, 40_000])
+        self.assertEqual(ds["rows"][1], {
+            "file": "2026-01-01T000000Z-snapshot.json", "taken_at": Criteria17.START + 40_000,
+            "uptime_secs": 40_000, "rss": 20_000_000, "heap_used": 4_500_000,
+            "heap_free": 1_100_000, "mmap": 8_000_000, "rings_used_total": 4_900_000,
+            "ipv6_attempts": 4})
+        # 欄の無い版 (`rings_used` が無い) は `None` (0 と混ぜない)
+        self.assertIsNone(ds["rows"][0]["rings_used_total"])
+
+    def test_the_table_is_printed_under_the_criteria(self):
+        with self.directory() as tmp:
+            md = run([A, B, "--no-dns", "--criteria", "phase18", "--daily-snapshots", tmp])
+        tail = md[md.index("## 9. 完了の定義に対する判定"):]
+        self.assertLess(tail.index("判定できず 6 行"), tail.index("**日次の雪像**"))
+        self.assertIn("4 枚のうち、後の雪像と同じ版 `0.1.0+bbbbbbb` の **2 枚**", tail)
+        self.assertIn("| 雪像 | 起動から (時間) | `rss` | `heap_used` | `heap_free` | `mmap` "
+                      "| `rings_used.total` | `ipv6.attempts` |", tail)
+        self.assertIn("| `2026-01-02T000000Z-snapshot.json` | 8.3 | 18.0 | 4.5 | 0.4 | 8.0 | — | 3 |",
+                      tail)
+        self.assertIn("| `2026-01-01T000000Z-snapshot.json` | 11.1 | 20.0 | 4.5 | 1.1 | 8.0 | 4.9 | 4 |",
+                      tail)
+        self.assertEqual(tail.count("T000000Z-snapshot.json` |"), 2)
+
+    def test_a_directory_without_the_version_says_so(self):
+        with tempfile.TemporaryDirectory(prefix="t182-") as tmp:
+            md = run([A, B, "--no-dns", "--daily-snapshots", tmp])
+        self.assertIn("0 枚のうち、後の雪像と同じ版 `0.1.0+bbbbbbb` の **0 枚**", md)
+        self.assertIn("(同じ版の日次の雪像が無い。", md)
+
+    def test_without_the_flag_nothing_is_added(self):
+        self.assertNotIn("daily_snapshots", build([A, B, "--no-dns", "--criteria", "phase18"]))
+
+
+@unittest.skipUnless(all(os.path.isfile(os.path.join(DEPLOYED, f)) for f in (
+    "2026-09-26T151308Z-snapshot.json", "2026-09-26T151308Z-profile_res_60.json",
+    "2026-09-26T152424Z-snapshot.json", "2026-10-01T125100Z-snapshot.json",
+    "2026-10-01T125100Z-daily.json", "2026-10-01T125100Z-profile_res_60.json",
+    "2026-09-30T000000Z-snapshot.json")), "デプロイ先の雪像が無い (リポジトリには入れない)")
+class Deployed18(unittest.TestCase):
+    """T18.2 の受け入れ基準: 2026-09-26 → 2026-10-01 + 0 時間の雪像で T17.99 の `結果:` と同じ数字。"""
+
+    def setUp(self):
+        def at(name):
+            return os.path.join(DEPLOYED, name)
+        self.argv = [at("2026-09-26T151308Z-snapshot.json"), at("2026-10-01T125100Z-snapshot.json"),
+                     "--no-dns", "--daily", at("2026-10-01T125100Z-daily.json"),
+                     "--profile", at("2026-10-01T125100Z-profile_res_60.json"),
+                     "--profile-before", at("2026-09-26T151308Z-profile_res_60.json")]
+        self.d = build(self.argv + ["--criteria", "phase18", "--zero",
+                                    at("2026-09-26T152424Z-snapshot.json"),
+                                    "--daily-snapshots", DEPLOYED])
+
+    def test_the_numbers_of_t1799(self):
+        c = self.d["criteria"]
+        rows = c["rows"]
+        self.assertEqual(c["tally"], {sd.MET: 9, sd.MISSED: 0, sd.UNKNOWN: 1})
+        # 前の 8 行は phase17 の表そのもの (T17.99 の「8 行とも満たした」)
+        self.assertEqual(rows[:8], build(self.argv + ["--criteria", "phase17"])["criteria"]["rows"])
+        self.assertIn("**0.01** (8 ミス / 598 要求)", rows[0][2])
+        self.assertIn("**79.9** 回/時", rows[1][2])
+        self.assertIn("**0.04** 回/接続、日ごとの幅 0.02〜0.07", rows[2][2])
+        self.assertIn("**1.10** 倍 (1,237 → 1,357 us/要求)", rows[4][2])
+        self.assertIn("最大 **18** 件、`warm_evicted` **0**", rows[5][2])
+        self.assertIn("`dns_slow` **0.02** 件/時 (2 件、前 0.59)", rows[6][2])
+        self.assertIn("0.0021 コア、user 31% → **0.0014 コア、user 38%**", rows[7][2])
+        # (g) は +1.9 MB で満たし、(h) はこの版に欄が無い
+        self.assertEqual(rows[8][3], sd.MET)
+        self.assertIn("**+1.9** MB (18.0 → 19.9 MB)", rows[8][2])
+        self.assertIn("`heap_free` 4.3 → 11.3、`rss` 31.6 → 40.9 MB", rows[8][2])
+        self.assertEqual(rows[9][3], sd.UNKNOWN)
+
+    def test_the_daily_snapshots_of_this_version(self):
+        rows = self.d["daily_snapshots"]["rows"]
+        self.assertEqual([f"{r['uptime_secs'] / 3600:.1f}" for r in rows],
+                         ["8.6", "32.6", "56.6", "80.6", "104.6"])
+        self.assertEqual([r["ipv6_attempts"] for r in rows], [3, 6, 6, 6, 6])
+        self.assertEqual([f"{r['heap_free'] / 1e6:.1f}" for r in rows],
+                         ["7.5", "8.2", "11.4", "11.3", "11.4"])
 
 
 class Output(unittest.TestCase):
