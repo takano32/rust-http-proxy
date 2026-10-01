@@ -124,8 +124,8 @@ fn test_integration_origin_connections_are_pooled() {
 /// 起動ログにも同じものを出しているが、そちらは実バイナリを起こす `reload_test` で見ている。
 #[test]
 fn test_integration_the_version_is_the_same_in_v_and_in_status() {
-    // `build.rs` が作った文字列。git のある環境では `0.1.0+<短いハッシュ>`、
-    // `.git` の無いところで作ったら `0.1.0+unknown`
+    // `build.rs` が作った文字列。git のある環境では `0.18.0+<短いハッシュ>`、
+    // `.git` の無いところで作ったら `0.18.0+unknown`
     let version = rust_http_proxy::VERSION;
     assert!(
         version.starts_with(&format!("{}+", env!("CARGO_PKG_VERSION"))),

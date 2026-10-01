@@ -47,8 +47,8 @@ use metrics::Metrics;
 
 /// 動いているバイナリの版 (`build.rs` が作る `PROXY_VERSION`)。
 ///
-/// `CARGO_PKG_VERSION` + git の短いハッシュ (`0.1.0+144b992`、作業ツリーが汚れていれば
-/// `-dirty`)。git や `.git` の無い環境でビルドしたときは `0.1.0+unknown`。
+/// `CARGO_PKG_VERSION` + git の短いハッシュ (`0.18.0+144b992`、作業ツリーが汚れていれば
+/// `-dirty`)。git や `.git` の無い環境でビルドしたときは `0.18.0+unknown`。
 /// **デプロイ先でどのコミットが動いているかを知るため**のもので、起動ログ・`-V`・
 /// `/status` の 3 か所に同じ文字列を出す (T12.6)。
 pub const VERSION: &str = env!("PROXY_VERSION");

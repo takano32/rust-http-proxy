@@ -1426,7 +1426,7 @@ Pterodactyl のように触れないコンテナで、**起動前の確認**と*
 
 ```
 $ rust-http-proxy --check
-rust-http-proxy 0.1.0+28f9064 --check
+rust-http-proxy 0.18.0+28f9064 --check
 settings file: /home/container/.env (3 variables)
 
 capabilities (what this environment lets the proxy read):
@@ -1448,9 +1448,9 @@ settings (source, name, effective value):
 check: ok (everything this proxy reads is readable)
 ```
 
-`-V` が出す版は `0.1.0+144b992` のように **`Cargo.toml` の版 + ビルドしたときの git の短いハッシュ**です
-(作業ツリーに未コミットの変更があれば `0.1.0+144b992-dirty`)。`git` や `.git` の無いところでビルドすると
-`0.1.0+unknown` になります (ビルドは通ります)。同じ文字列を**起動ログの `rust-http-proxy ... listening on ...` の行**と
+`-V` が出す版は `0.18.0+144b992` のように **`Cargo.toml` の版 + ビルドしたときの git の短いハッシュ**です
+(作業ツリーに未コミットの変更があれば `0.18.0+144b992-dirty`)。`git` や `.git` の無いところでビルドすると
+`0.18.0+unknown` になります (ビルドは通ります)。同じ文字列を**起動ログの `rust-http-proxy ... listening on ...` の行**と
 **`/status` のトップレベルの `version`** にも出すので、デプロイ先でどのコミットが動いているかが分かります。
 
 ## プロファイル
@@ -2353,7 +2353,7 @@ curl -x localhost:8080 http://example.com/
 イメージに入れるのは `Cargo.toml` / `Cargo.lock` / `.cargo` / `crates` / `src` だけです
 (本体は 26 個のクレートに分かれているので `crates` が要ります)。
 版の文字列を作る `build.rs` は `crates/server/` にあるので `crates` に含まれます (T15.12 段 6')。`.git` は入れないので、
-イメージの中の版は `rust-http-proxy 0.1.0+unknown` になります。
+イメージの中の版は `rust-http-proxy 0.18.0+unknown` になります。
 `.dockerignore` で `target/` と `**/target/` を送らないようにしてあります
 (イメージには元から入りませんが、ビルドコンテキストとして daemon へ送ると
 `cargo build` 済みの作業ツリーでは 1 GB を超えて遅くなるため。除いたコンテキストは約 2 MB)。
@@ -2919,7 +2919,7 @@ CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・IPv6 (`ipv6_route`)・
 
 ```bash
 # 起動ログの 2 行 (待ち受けと統計ファイル)
-#   rust-http-proxy 0.1.0+<commit> listening on [::]:8080 (IPv6 + IPv4) (backlog 1024, log level: INFO)
+#   rust-http-proxy 0.18.0+<commit> listening on [::]:8080 (IPv6 + IPv4) (backlog 1024, log level: INFO)
 #   state file ~/.rust-http-proxy.rrd (8192 KiB, converted from version 2 in 66 ms): history 720/1440/720 samples, 800 hosts, 2 clients restored
 curl -i http://127.0.0.1:8080/healthz     # 200 と "ok":true (503 ならどの検査が偽かが本文に出る)
 curl http://127.0.0.1:8080/               # エンドポイントの案内 (この版で読める口の一覧)

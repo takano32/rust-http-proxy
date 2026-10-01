@@ -76,7 +76,7 @@ fn test_integration_max_threads_changes_when_the_env_file_is_rewritten() {
             }
         }
     });
-    // "rust-http-proxy 0.1.0+144b992 listening on 127.0.0.1:PORT (log level: info)" から
+    // "rust-http-proxy 0.18.0+144b992 listening on 127.0.0.1:PORT (log level: info)" から
     // 待ち受けポートを取る。版もこの行に出る (T12.6)
     let mut port = None;
     let mut banner = String::new();

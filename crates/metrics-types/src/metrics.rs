@@ -770,7 +770,7 @@ pub struct StatusExtras<'a> {
     pub blocklist: &'a str,
     /// 状態ファイルの状態 (`persist::status_json()`)
     pub state_file: &'a str,
-    /// 動いているバイナリの版 (本体クレートの `VERSION`。`0.1.0+144b992` の形)
+    /// 動いているバイナリの版 (本体クレートの `VERSION`。`0.18.0+144b992` の形)
     pub version: &'a str,
     /// 上限といまのスレッドの数 ([`Concurrency`])
     pub concurrency: Concurrency,

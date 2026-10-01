@@ -2,7 +2,7 @@
 name = "proxy-server"
 # ルートの `rust-http-proxy` と同じ版にそろえる (`build.rs` が `CARGO_PKG_VERSION` から
 # `PROXY_VERSION` を作るので、ここがずれると `-V` の文字列がずれる。T15.12 段 6')。
-version = "0.1.0"
+version = "0.18.0"
 edition = "2024"
 
 [lib]
