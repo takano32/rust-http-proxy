@@ -602,8 +602,21 @@ mod tests {
         assert_eq!(ok.error, None, "{:?}", ok);
         assert_eq!(ok.host, format!("127.0.0.1:{}", port));
         assert!(ok.at > 1_700_000_000, "{:?}", ok);
-        // IP リテラルは名前解決が要らない (表も通らない)
-        assert_eq!(ok.dns_ms, 0, "{:?}", ok);
+        // IP リテラルは名前解決が要らない (表も通らない) ので、かかっても数 ms。
+        // **`== 0` では見ない** (T18.1): 測っているのは壁時計で、混んだ機械ではスレッドが
+        // 1 回止められただけで 0.5 ms を超えて 1 に丸め上がり、稀に落ちた。1 回の値は
+        // 止められた時間をそのまま含むので、**3 回測った最小**が 2 ms 以下かで見る
+        let dns_ms = [ok.dns_ms]
+            .into_iter()
+            .chain((0..2).map(|_| probe(&format!("127.0.0.1:{}", port)).dns_ms))
+            .min()
+            .unwrap();
+        assert!(
+            dns_ms <= 2,
+            "IP リテラルの名前解決: {} ms ({:?})",
+            dns_ms,
+            ok
+        );
 
         drop(listener);
         let dead = probe(&format!("127.0.0.1:{}", port));

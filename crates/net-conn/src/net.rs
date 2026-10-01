@@ -831,7 +831,12 @@ mod tests {
     }
 
     /// T12.1 の受け入れ基準 (手元): 黒穴 `[::1]` + 生きている `127.0.0.1` で
-    /// **1 回目 ≥ 250 ms (設計どおり `STAGGER` を待つ)、同じホストの 2 回目 < 50 ms**。
+    /// **1 回目 ≥ 250 ms (設計どおり `STAGGER` を待つ)、同じホストの 2 回目は待たない**。
+    ///
+    /// 2 回目は**時間ではなく試行の順で見る** (T18.1): 覚えた族 (IPv4) が先頭なら IPv6 の
+    /// 候補は起動されないので、`attempts` が 1 回目の 1 のまま動かない。前は「2 回目 < 50 ms」
+    /// で見ていて、混んだ機械 (2 コアで全体テスト) ではスレッドを起こすだけで 50 ms を超えて
+    /// 稀に落ちた。IPv6 が先頭に来ていれば `attempts` は 2 になるので、守っているものは同じ。
     #[cfg(target_os = "linux")]
     #[test]
     fn happy_eyeballs_skips_unreachable_first_candidate() {
@@ -855,19 +860,23 @@ mod tests {
             first
         );
         assert_eq!(crate::dns::preferred_family(host), Some(false));
+        assert_eq!(ipv6_counters(), [1, 0, 1], "{}", ipv6_status_json());
 
+        // 2 回目の間だけ間隔を上限 (2 秒) まで延ばす: IPv4 が先頭なら、loopback の接続が
+        // 2 秒かからない限り IPv6 の候補は起動されない (既定の 250 ms のままだと、
+        // 混んだ機械で IPv4 の 1 本が 250 ms を超えたときに追い掛けの 1 本が出て数が動く)
+        set_stagger(Duration::from_millis(*STAGGER_RANGE_MS.end()));
         let started = Instant::now();
         let stream = connect_resolved(host, addrs, Duration::from_secs(5)).expect("v4 should win");
         let second = started.elapsed();
+        // 後のテストのために既定へ戻す (失敗しても `reset_ipv6_state` が戻す)
+        set_stagger(DEFAULT_STAGGER);
         assert_eq!(stream.peer_addr().unwrap().port(), port);
-        assert!(
-            second < Duration::from_millis(50),
-            "2 回目は覚えた族 (IPv4) を先頭にするので待たないはず: {:?}",
-            second
-        );
-        assert!(
-            ipv6_status_json().contains("\"losses\":1"),
-            "{}",
+        assert_eq!(
+            ipv6_counters(),
+            [1, 0, 1],
+            "2 回目は覚えた族 (IPv4) を先頭にするので IPv6 の候補を起動しないはず ({:?}): {}",
+            second,
             ipv6_status_json()
         );
     }
