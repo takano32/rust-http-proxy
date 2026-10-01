@@ -519,7 +519,7 @@ CONNECT 確立 8,283 /s (T4.3)** も固定なしの値だった。上の表に�
   conn 役は直前の 24 時間の 1.10 倍、絞り 0、RSS の 1 時間後と 24 時間後の差 2.9 MB、IPv6 の探りは canary が引き受けている。
 - **但し書き 2 つは T18.0 へ回した** (2026-10-01、利用者の決定)。(1) RSS は 24 時間のあとも伸びて 60 時間で 40.8 MB に止まった (1 時間後から +5.4 MB。「5 MB 未満」は 24 時間で切った値)。日次の雪像で内訳を並べると、32.6 → 56.6 時間の +2.3 MB は
   `heap_free` 8.2 → 11.4 MB (解放したあとも持っているヒープ。この間に 1,501 本のバーストが 1 本) で、`heap_used` は 9.2 → 9.3 MB、`mmap` は 10.46 MB のまま = リークではない。
-  (2) `ipv6.attempts` は 1 → 6。うち 3 までは起動 5 分後に `v4_first` になるまでの 3 連敗 (作りどおり) で、**残りの 3 回は 8.6〜32.6 時間の間に利用者の経路で探ったぶん** (canary の IPv6 側は `null` のまま。なぜその 3 回だけ canary が見ていない扱いになったかは見ていない)。
+  (2) `ipv6.attempts` は 1 → 6。うち 3 までは起動 5 分後に `v4_first` になるまでの 3 連敗 (作りどおり) で、**訂正 (2026-10-01、T18.1 の読み)**: 残りの 3 回は利用者の経路の探りではなく、**canary 本体の 1 本が遠い宛先で 250 ms を超え、Happy Eyeballs が IPv6 の候補を追い掛けで起動した 3 回** (`canary_connect_ms` 1,172 / 2,201 / 1,192 ms、起動から 14.9〜15.2 時間。日次の雪像の `/history?res=60` で親も確かめた)。`attempts` は「IPv6 の候補を起動した回数」で、探りの数ではない。
 - **この 1 枚は要求が少ない** (0.016 req/s、起動から 6,952 要求。前の版は 47.2 時間でバースト込み 11 万本)。バーストの窓は 2 本、山は 12 で、**混んだときの数字 (CPU の絞り・warm の枠の取り合い・`evicted_idle`) はこの版では試されていない**。
 - **p95 が 160 → 10 ms、ミス 1 回が 106.8 → 22.1 ms に下がったのは、主に行き先の構成**。平常時に遠い相手へ行く本数がさらに減った (100〜250 ms の区間 4.8% → 1.8%、250 ms 以上 2.1% → 0)。
   ミスの率は 0.06 → 0.04 回/接続で同じ帯 (T17.5 の変更は採っていない)。p50 は 7.8 → 7.6 ms で 1 RTT のまま (付録 A の 2026-09-18 の読み)。尾は相手までの距離のせいでコードでは縮まない (§4 の最終行)。
@@ -617,8 +617,7 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 | keep-alive の HTTP 接続が `/connections` でバイト数を出さない (宛先は T14.2 (5) / T14.48 で済。`set_bytes` を呼ぶのはトンネルだけ) | T13.4、T17.20 の気づき | 要求ごとに書かない方針とどう両立させるかを先に決める |
 | `dashboard.html` が上限まで余り 247 B (81,673 / 81,920 B) | T15.0 単位 9 と全体チェック | 次にカードを足す前に、`scripts/check-dashboard.js` の上限を上げるか、古いカードの説明文を削る |
 | `proxy-base` の `log::tests::the_ring_clips_long_lines_and_wraps_at_1000` が稀に落ちる (`crates/base/src/log.rs:725` の `total == MAX_LOG_LINES + 5`。2026-09-18 の全体テストで 1 回、同じ binary の回し直しは 5 / 5 通過) | T15.5 のマージ後の全体チェック | リングとログ水準を触るテスト 4 本は全部 `RING_TEST_LOCK` を取っているので、**鍵を取らずに warn 以上を書く (か水準を変える) 別のテストが同じ binary にいる**はず。落ちたときの `left` / `right` を控えて (多いのか少ないのか)、犯人のテストに同じ鍵を取らせる |
-| `a_probe_measures_a_real_connect_and_a_refused_one` (`proxy-metrics-watch`) が混んだ機械で稀に落ちる (`dns_ms == 0` の判定。IP リテラルの名前解決が 1 ms に丸め上がる。main でも同じ) | T17.7 | 0 ではなく「数 ms 以下」で見るか、IP リテラルでは測らない |
-| `happy_eyeballs_skips_unreachable_first_candidate` (`proxy-net-conn`) の「2 回目 < 50 ms」が混んだ機械で稀に落ちる | T17.6 | 時間ではなく試行の順で見る |
+| `unseen_hosts_try_ipv4_first_after_three_losses` (`proxy-net-conn`) に「< 50 ms」の時間の判定が残っている (T18.1 で直した 2 本と同じ形。落ちた記録は無い) | T18.1 | 落ちたら試行の順で見る形に直す |
 | `tests/proxy_test.rs` の `test_integration_request_body_on_a_reused_connection` が全体テストの負荷の下で 1 回 502 (単独 5 / 5 通過) | T17.11 の全体テスト | 原因を先に見る (再利用した接続の生存確認と本文の送り直し) |
 | `scripts/mx` の TERM の trap を張るのが命令の起動後 (隙間の TERM で子が残る)、`others()` の子孫除外が `CHILD` 未設定の時点で呼ばれて効いていない | T17.15 | trap を起動前に張る。子孫除外は手順 3 の後で数えるか外す (動きが変わるので単独のタスクで) |
 | `warm_promote` が次の予定を「上げた時刻 + 45 秒」に置く (答えを引いた時刻ではない。齢 60〜75 秒が期限切れになりうる。実機の `warm_stale` の一部かも) | T17.5 の模型 | 予定を答えの齢から出す。`scripts/dns-replay.py` で先に数える |
@@ -1217,7 +1216,7 @@ README の環境変数の表は自分の行だけ触る。TODO.md §0 の「守�
     (b) T17.5 は採っていない: 平常時のミス 0.04 回/接続 (114 標本 4,746 本、日ごとの幅 0.02〜0.07。前の 0.06 と同じ帯)、引き直しは名前ごとの最大 **79.9 回/時** (45 秒に 1 回 = 80 の作りどおりで、閾に張り付いている)。`discord.com` のミス率 0.01 (8 / 598)、`dns_warm` の最大 18・`warm_evicted` 0。
     (c) conn 役 **1.10 倍** (1,237 → 1,357 us/要求。前後とも `/profile?res=60` の 24 時間、要求 1,625 本 / 796 本)、cgroup は 0.0021 → 0.0014 コア (user 31% → 38%)、絞り 0 / 761,033 周期。
     (d) RSS は 1 時間後 35.4 MB → 24 時間後 38.3 MB で **差 2.9 MB** (`/history?res=3600` の `rss`)。そのあと 60 時間で 40.8 MB まで増えて、以後 57 時間は 40.8 のまま (1 時間後から +5.4 MB。前の版は 50.6 時間で 54.3 MB)。日次の雪像の `memory` では 32.6 → 56.6 時間の伸びは `heap_free` 8.2 → 11.4 MB で、`heap_used` 9.2 → 9.3 MB・`mmap` 10.46 MB は動かない (リークではない)。
-    (e) `ipv6.probe_by` は `"canary"`。`attempts` は 0 時間 1 → 8.6 時間 3 → 32.6 時間 6 で、以後 85 時間は 6 のまま (日次の雪像 5 枚。前の版は 50.6 時間で 1,591)。**0 ではなく最初の 33 時間に 5 回増えている**: 3 までは起動 5 分後 (`/events` の `IPv4 first … attempts 3`) に `v4_first` になるまでの 3 連敗で作りどおり、残りの 3 回は 8.6〜32.6 時間の間 (canary が 600 秒以内に IPv6 を試していなかった時間があったはずで、理由は見ていない)。
+    (e) `ipv6.probe_by` は `"canary"`。`attempts` は 0 時間 1 → 8.6 時間 3 → 32.6 時間 6 で、以後 85 時間は 6 のまま (日次の雪像 5 枚。前の版は 50.6 時間で 1,591)。**0 ではなく最初の 33 時間に 5 回増えている**: 3 までは起動 5 分後 (`/events` の `IPv4 first … attempts 3`) に `v4_first` になるまでの 3 連敗で作りどおり、残りの 3 回は 8.6〜32.6 時間の間。**訂正 (2026-10-01、T18.1 の読み)**: 残りの 3 回は利用者の経路の探りではなく、**canary 本体の 1 本が遠い宛先で 250 ms を超え、Happy Eyeballs が IPv6 の候補を追い掛けで起動した 3 回** (`canary_connect_ms` 1,172 / 2,201 / 1,192 ms、起動から 14.9〜15.2 時間。日次の雪像の `/history?res=60` で親も確かめた)。`attempts` は「IPv6 の候補を起動した回数」で、探りの数ではない ((e) は満たしている)。
     (f) `--profile-before` を渡さないと conn 役の「前」が雪像の `/profile` の部 (0.6 時間・77 本、参考) になり **1.31 倍で「届かず」と出る**。`collect-deployed.sh` の判定表は直前の 1 枚 (0 時間の雪像) が相手なので、上の命令に `--profile-before` を足した。
     ほか: 平常時の CONNECT 確立 p50 7.6 / p95 10.0 ms (前の列は 2026-09-10 からの通算 8.1 / 105.5 で、版の比較ではない)、エラー 1 件 (`timeout`、0.01 件/時)、`check-dashboard.js` は通過 (0 時間の雪像の「ミス 1 回の平均が合わない: 9.03」は出ない)、`probe-deployed.sh` の app-conn は 0.052〜0.064 秒。
     `--from-server` で日次の雪像 15 枚 (2026-09-16〜09-30) を `status/` に取り寄せた。
@@ -1250,12 +1249,12 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
     **決めたこと (2026-10-01、§0 の 6 「単純な方」)**: 物差しは RSS ではなく **`heap_used + mmap`** にし、**「0 時間の雪像からの増えが 5 MB 未満」** と書く (今回の値は 18.0 → 19.9 MB で +1.9 MB)。
     `heap_free` と RSS は表示だけ (バーストの大きさで決まるので閾を置かない)。`/history` に `heap_used` / `heap_free` の列は**足さない**: 0 時間と「後」の雪像 2 枚で引けて、途中は 1 日 1 枚の日次の雪像 (`--from-server`) で足りる。
     列を足すと `.rrd` の形と T17.8 の起動時に触る量が動く。
-  - (2) **IPv6 の探りの 3 回 (T17.99 (e))**: `attempts` 3 → 6 は 8.6〜32.6 時間の間。`crates/net-conn/src/net.rs` の `ipv6_first_for_new_host` は、`note_canary_ipv6` の印が 600 秒より古いときだけ利用者の経路で探る
-    (`ipv6_probe_by_canary`)。canary は 60 秒おきなので、**canary の IPv6 側の 1 本が 10 回続けて走らなかった時間が 3 回あった**ことになる。`probe_ipv6` (`crates/metrics-watch/src/canary.rs:376`) は
-    宛先の AAAA が渡ってこない回 (`addr` が `None`) は試さず、印も更新しない。`/status` の `canary.ipv6_connect_ms` は負けても `null` で、「試したか」は読めない → 計器は T18.1。
-  - 次の完了の定義 (下書き。`T18.99` に写す): Phase 17 の 8 行 + (g) `heap_used + mmap` の増えが 5 MB 未満 + (h) `ipv6.request_probes` が 24 時間で 0 か、0 でなければ `canary.ipv6_skipped` から理由が言えること。判定表は T18.2 の `--criteria phase18`。
+  - (2) **IPv6 の探りの 3 回 (T17.99 (e))**: `attempts` 3 → 6 は 8.6〜32.6 時間の間。**親の最初の読み (canary の IPv6 側が 10 分走らず、利用者の経路で探った) は誤りだった** (T18.1 の (1))。
+    3 回は canary 本体の 1 本 (`net::connect_resolved`) が遠い宛先で `stagger()` の 250 ms を超え、IPv6 の候補を 2 本目として起動した回 (`canary_connect_ms` が 250 ms 以上の行がちょうど 3 つ、同じ窓で利用者の `connect_ms_max` が 250 ms 以上の分は 0)。
+    canary は 1 周 約 61 秒で切れ目なく回っていて、宛先は AAAA を持つ。**`ipv6.attempts` は探りの数ではない**ので、次からは T18.1 の `ipv6.request_probes` で見る。canary 本体の 1 本が利用者の勝敗の数 (`attempts` / `losses`) に混ざること自体は作りどおりで、直さない (数は 117.5 時間で 3)。
+  - 次の完了の定義 (下書き。`T18.99` に写す): Phase 17 の 8 行 + (g) `heap_used + mmap` の増えが 5 MB 未満 + (h) `ipv6.request_probes` が 0 (0 でなければ `canary.ipv6_skipped` から理由が言えること)。`ipv6.attempts` は表示だけ。判定表は T18.2 の `--criteria phase18`。
 
-- [ ] **T18.1 IPv6 の探りの計器と、同じファイルの揺れるテスト 2 本**
+- [x] **T18.1 IPv6 の探りの計器と、同じファイルの揺れるテスト 2 本**
   - 目的: T18.0 (2)。利用者の経路で IPv6 を探ると、その 1 本は `stagger()` ぶん利用者を待たせる。T17.7 で canary に任せたのに 24 時間で 3 回起きた理由が `/status` から読めない。
   - 変更箇所: `crates/net-conn/src/net.rs` (`ipv6_first_for_new_host` 449〜468 行、`ipv6_status_json` 470 行、`note_canary_ipv6` 424 行)、`crates/metrics-watch/src/canary.rs` (`probe_ipv6` 376 行と呼び出し 360 行、`status_json` 420 行、`Probe` の JSON 133 行)、README の `/status` の `ipv6` と `canary` の説明。
   - やること: (1) **まず読んで理由を言う**: canary の 1 周で `probe_ipv6` に `None` が渡る条件 (宛先の名前解決が AAAA を返さなかった回・名前解決や IPv4 側が失敗して早く抜ける回 316 / 342 行・`PROXY_CANARY_IPV6` / `PROXY_IPV6`) を全部挙げ、
@@ -1266,6 +1265,8 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
     `a_probe_measures_a_real_connect_and_a_refused_one` (`canary.rs:568`。`dns_ms == 0` を「数 ms 以下」にするか IP リテラルでは見ない)。テストの意味 (何を守っているか) は変えない。
   - 受け入れ基準: 新しい欄の単体テスト (canary が試した周は `ipv6_runs` が増え `request_probes` は増えない / canary が見ていないとき `request_probes` が 600 秒に 1 回増える / AAAA の無い周は `ipv6_skipped` が増える)。
     既存の T17.7 のテスト 4 本が通る。直した 2 本は `scripts/mx cargo test -p <crate> <名前>` を 20 回回して全部通る。JSON は足すだけ (鍵の順を変えない)。`--lite` の費用は不変。
+  - 結果 (2026-10-01、`c49bbd6` + `810a15a`、取り込み `18d54b2`): (1) 理由の読み: canary の 1 回で IPv6 側を試さないのは、宛先の無い周 (`off`、`auto` で直近 1 時間に CONNECT が無い。`runs` ごと増えない)・名前が引けない回・`PROXY_IPV6=off` で AAAA しか無い回・答えに AAAA が無い回・`PROXY_CANARY_IPV6=off` / `PROXY_IPV6=off`・canary スレッドが居ないとき (`--lite`、`PROXY_STATS_PERSIST=off`)。デプロイ先の日次の雪像 (8.6〜32.6 時間の窓) ではどれも起きた跡が無い: canary は 1 周 約 61 秒で切れ目なく回り (130 秒を超える隙間 0、失敗 0)、窓に出る宛先 2 つはどちらも AAAA を持つ。**`attempts` 3 → 6 は利用者の経路の探りではなく、canary 本体の 1 本 (`connect_resolved` = Happy Eyeballs) が遠い宛先で 250 ms を超え、IPv6 の候補を追い掛けで起動した 3 回**と読める (`canary_connect_ms` が 1,172 / 2,201 / 1,192 ms の行がちょうど 3 つ、起動から 14.9〜15.2 時間。同じ窓で利用者の `connect_ms_max` が 250 ms 以上の分は 0)。`attempts` は「IPv6 の候補を起動した回数」で探りの数ではない。リゾルバがその回だけ AAAA を返さなかった可能性は雪像からは否定できず、直しは入れていない。(2) 計器 (足すだけ、鍵の順はそのまま): `/status` の `ipv6` の末尾に `request_probes` (`v4_first` の間に `ipv6_first_for_new_host` が `true` を返した回数) と `request_probe_at` (epoch 秒、無ければ 0)、`canary` の末尾に `ipv6_runs` (IPv6 側を実際に試した回数) と `ipv6_skipped` (試さなかった回数。`probe` の 1 回につきどちらかが 1 増える)。要求の経路に増えるのは `v4_first` のときの探りの 1 回に `fetch_add` 1 つと `store` 1 つだけ。`CANARY_STATUS_UNSET` (`metrics-core`) も同じ末尾に揃えた。T17.7 のテスト 3 本は JSON の末尾を `ends_with` で見ていたので `contains` に直した。(3) 揺れるテスト 2 本: `happy_eyeballs_skips_unreachable_first_candidate` は 2 回目を時間ではなく試行の順で見る (`ipv6_counters()` が `[1, 0, 1]` のまま。2 回目の間だけ間隔を 2 秒に延ばす)、`a_probe_measures_a_real_connect_and_a_refused_one` は `dns_ms == 0` を「3 回測った最小が 2 ms 以下」に。20 回ずつ回して前 20 / 20・後 20 / 20 (何も走っていない状態では直す前も落ちず、落ち方は再現していない)。新しいテスト 3 本: `ipv6_request_probes_count_only_the_probes_on_the_request_path`、`a_round_that_tries_ipv6_counts_ipv6_runs_and_no_request_probe`、`a_round_without_aaaa_counts_ipv6_skipped`。既存の T17.7 の 4 本と `canary_test` は通過。`--lite` の費用は測っていない (探りの回以外に足した命令は無い)。デプロイ後の確かめ: `ipv6.request_probes` が 0 のままで、`canary.ipv6_skipped` が 0 (または `runs − ipv6_runs`) であること。
+    親の注記: 表の外で `crates/metrics-core/src/metrics.rs` (`CANARY_STATUS_UNSET`) を触っている。`request_probes` は AAAA の無い宛先 (A が 2 つ) や canary 本体の接続でも数える (予約を使うのは前からの挙動)。同じ形の「< 50 ms」が `unseen_hosts_try_ipv4_first_after_three_losses` に残っている (既知の小物の表へ)。
 
 - [ ] **T18.2 `snapshot-diff.py --criteria phase18` (T18.0 の (g)(h) の行) と、`collect-deployed.sh` の相手**
   - 目的: T17.99 (f): `collect-deployed.sh` の判定表は「直前の 1 枚」(今回は 0 時間の雪像) が相手で、再デプロイ直前の「前」との判定は手で `snapshot-diff.py` を回した。RSS の伸びの内訳も日次の雪像を手で並べた。
