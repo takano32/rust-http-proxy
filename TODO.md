@@ -1308,7 +1308,9 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
     `target/release/rust-http-proxy -V` は `rust-http-proxy 0.18.0+ddb7450-dirty` (コミット前に作ったので `-dirty`)。**次のタグは `v0.18.0`。打つのは利用者の許可のあと**。
 - **波 19 の全体チェック (2026-10-01、親)**: T18.1・T18.2・T18.4 を取り込み、T18.5 を入れた作業ツリーで `cargo fmt --all -- --check` 通過、`cargo clippy --workspace --all-targets -- -D warnings` 警告 0、
   `cargo test --workspace --no-fail-fast` は **137 バイナリ 817 通過 / 0 失敗 / 1 ignored** (Phase 17 の波の最後は 133 / 814。回し直しは無し)、`cargo build --release` 通過。T18.3 を取り込んだあと `python3 -m unittest discover -s scripts` 327 本 OK、`check-docs.sh` 差分 0。
-  手元で回していないもの: `shellcheck` (無い。T18.2 の `collect-deployed.sh` と T18.3 の `mx` / `test_mx.sh` は CI が初めて掛ける)、`--lite` のシステムコール数と確保数、`--only connect` の CPU/本 (要求の経路に足したのは `v4_first` の探りの回の原子 2 つだけ)。
+  `MX_SLOTS=1 scripts/mx bash -c 'cargo clean --release && scripts/build-memory.sh 120'` は T18.3 まで入れた main (`bdfd8d3`) で通過 (1 回)。
+  **CI (2026-10-01、run 36868607677、`c1e5b47`)**: `check` (fmt・clippy・`check-docs`・scripts の unittest・`shellcheck`・全体テスト・release ビルド・ベンチ) 4 分 41 秒、`build-memory` 43 秒、`deployed-like-snapshot` 1 分 9 秒、3 つとも通過。前の push (`c4c606d`、2026-09-26) の `check` の失敗は T18.4 (1) で直した `the_ring_clips_long_lines_and_wraps_at_1000` だった。
+  手元で回していないもの: `shellcheck` (無い。CI で通った)、`--lite` のシステムコール数と確保数、`--only connect` の CPU/本 (要求の経路に足したのは `v4_first` の探りの回の原子 2 つだけ)。
 
 - [ ] **T18.99 締める (Phase 18 の版を 24 時間走らせたあとに見る・決める・書く)**
   - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): 版 —、起動時刻 —、「前」の雪像 —、「0 時間」の雪像 —。
