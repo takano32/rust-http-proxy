@@ -1306,6 +1306,7 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
   - 結果 (2026-10-01、`a4928a4`): 本体 (`Cargo.toml`) と `proxy-server` (`build.rs` が `CARGO_PKG_VERSION` から `PROXY_VERSION` を作るクレート) の版を `0.18.0` にした (`Cargo.lock` の 2 行も)。ほかのクレートは `0.1.0` のまま。
     本文の「17 ファイル」は全部作り物の文字列 (`0.1.0+test` `0.1.0+deadbee` など) で、実際の版を見ている所は無かった (`tests/proxy_test.rs` は `env!("CARGO_PKG_VERSION")` と突き合わせる) ので、テストと道具は 1 つも直していない。直したのはコメント 5 か所と README の例 6 か所 (雪像の版 `0.1.0+45b85a9` などの記録はそのまま)。
     `target/release/rust-http-proxy -V` は `rust-http-proxy 0.18.0+ddb7450-dirty` (コミット前に作ったので `-dirty`)。**次のタグは `v0.18.0`。打つのは利用者の許可のあと**。
+    タグ (2026-10-01、run 36869373378): 利用者が `v0.18.0` を CI の通った `c1e5b47` に打って push した (親の `git tag` は権限の仕組みに止められた)。`release.yml` は 2 つとも通り、Release に `rust-http-proxy-x86_64-unknown-linux-gnu` (2,004,424 B) と `rust-http-proxy-aarch64-unknown-linux-gnu` (1,818,424 B) が付いた (https://github.com/takano32/rust-http-proxy/releases/tag/v0.18.0)。このバイナリの版は `0.18.0+c1e5b47`。
 - **波 19 の全体チェック (2026-10-01、親)**: T18.1・T18.2・T18.4 を取り込み、T18.5 を入れた作業ツリーで `cargo fmt --all -- --check` 通過、`cargo clippy --workspace --all-targets -- -D warnings` 警告 0、
   `cargo test --workspace --no-fail-fast` は **137 バイナリ 817 通過 / 0 失敗 / 1 ignored** (Phase 17 の波の最後は 133 / 814。回し直しは無し)、`cargo build --release` 通過。T18.3 を取り込んだあと `python3 -m unittest discover -s scripts` 327 本 OK、`check-docs.sh` 差分 0。
   `MX_SLOTS=1 scripts/mx bash -c 'cargo clean --release && scripts/build-memory.sh 120'` は T18.3 まで入れた main (`bdfd8d3`) で通過 (1 回)。
@@ -1313,7 +1314,7 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
   手元で回していないもの: `shellcheck` (無い。CI で通った)、`--lite` のシステムコール数と確保数、`--only connect` の CPU/本 (要求の経路に足したのは `v4_first` の探りの回の原子 2 つだけ)。
 
 - [ ] **T18.99 締める (Phase 18 の版を 24 時間走らせたあとに見る・決める・書く)**
-  - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): 版 —、起動時刻 —、「前」の雪像 —、「0 時間」の雪像 —。
+  - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): 版 — (`v0.18.0` のバイナリなら `0.18.0+c1e5b47`)、起動時刻 —、「前」の雪像 — (再デプロイの直前に撮る。撮れなければ `status/2026-10-01T125100Z-snapshot.json`)、「0 時間」の雪像 —。
   - 判定: `BEFORE=<前> ZERO=<0 時間> scripts/collect-deployed.sh nagoya.sorahost.net:50697` (T18.2) の `--criteria phase18` の 10 行。完了の定義は T18.0 の下書き。
 
 ## 付録 A. 計測の記録 (時系列)
