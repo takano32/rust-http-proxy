@@ -79,6 +79,15 @@ static IPV6_CANARY_AT: AtomicU64 = AtomicU64::new(0);
 /// canary の IPv6 側の 1 本が 1 度でも繋がったか (T17.7)。立ったら `v4_first` を解く
 /// (利用者の要求で IPv6 が 1 度勝ったときと同じ扱い)。
 static IPV6_CANARY_OK: AtomicBool = AtomicBool::new(false);
+/// `v4_first` の間に**利用者の経路で** IPv6 を探った回数 (T18.1)。
+///
+/// 数えるのは [`ipv6_first_for_new_host`] が `v4_first` のときに `true` を返した回
+/// (= 600 秒に 1 回の探りを予約から取り出した回) だけ。[`IPV6_ATTEMPTS`] とは別物で、
+/// あちらは「IPv6 の候補を起動した回数」なので、IPv4 を先頭に置いた接続が `stagger()` を
+/// 過ぎて IPv6 の候補を追い掛けで起動した回 (探りではない) でも増える。
+static IPV6_REQUEST_PROBES: AtomicU64 = AtomicU64::new(0);
+/// 最後に利用者の経路で探った時刻 (epoch 秒。0 = 1 度も探っていない。T18.1)。
+static IPV6_REQUEST_PROBE_AT: AtomicU64 = AtomicU64::new(0);
 
 pub fn set_ipv6_enabled(on: bool) {
     IPV6_ENABLED.store(on, Ordering::Relaxed);
@@ -455,7 +464,7 @@ fn ipv6_first_for_new_host() -> bool {
         return false;
     }
     let at = IPV6_PROBE_AT.load(Ordering::Relaxed);
-    now >= at
+    let probe = now >= at
         && IPV6_PROBE_AT
             .compare_exchange(
                 at,
@@ -463,13 +472,21 @@ fn ipv6_first_for_new_host() -> bool {
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             )
-            .is_ok()
+            .is_ok();
+    if probe {
+        // 計器 (T18.1): 要求の経路に増えるのは**探りの 1 回 (600 秒に 1 回) に**この
+        // `fetch_add` 1 つと `store` 1 つだけ。探らない回 (`v4_first` でない、
+        // canary が探っている、予約の時刻が来ていない) は原子の操作を 1 つも足さない
+        IPV6_REQUEST_PROBES.fetch_add(1, Ordering::Relaxed);
+        IPV6_REQUEST_PROBE_AT.store(now, Ordering::Relaxed);
+    }
+    probe
 }
 
 /// `/status` の `"ipv6"` 要素 (組み立ては `/status` のときだけ)。
 pub fn ipv6_status_json() -> String {
     format!(
-        "{{\"attempts\":{},\"wins\":{},\"losses\":{},\"v4_first\":{},\"probe_by\":\"{}\"}}",
+        "{{\"attempts\":{},\"wins\":{},\"losses\":{},\"v4_first\":{},\"probe_by\":\"{}\",\"request_probes\":{},\"request_probe_at\":{}}}",
         IPV6_ATTEMPTS.load(Ordering::Relaxed),
         IPV6_WINS.load(Ordering::Relaxed),
         IPV6_LOSSES.load(Ordering::Relaxed),
@@ -480,6 +497,10 @@ pub fn ipv6_status_json() -> String {
         } else {
             "request"
         },
+        // `v4_first` の間に利用者の経路で探った回数と、最後の時刻 (epoch 秒。無ければ 0。T18.1)。
+        // `probe_by` は「いま」だけなので、canary が見ていなかった時間があったかはここで読む
+        IPV6_REQUEST_PROBES.load(Ordering::Relaxed),
+        IPV6_REQUEST_PROBE_AT.load(Ordering::Relaxed),
     )
 }
 
@@ -717,6 +738,8 @@ mod tests {
         IPV6_WARNED.store(false, Ordering::Relaxed);
         IPV6_CANARY_AT.store(0, Ordering::Relaxed);
         IPV6_CANARY_OK.store(false, Ordering::Relaxed);
+        IPV6_REQUEST_PROBES.store(0, Ordering::Relaxed);
+        IPV6_REQUEST_PROBE_AT.store(0, Ordering::Relaxed);
         set_stagger(DEFAULT_STAGGER);
     }
 
@@ -808,7 +831,12 @@ mod tests {
     }
 
     /// T12.1 の受け入れ基準 (手元): 黒穴 `[::1]` + 生きている `127.0.0.1` で
-    /// **1 回目 ≥ 250 ms (設計どおり `STAGGER` を待つ)、同じホストの 2 回目 < 50 ms**。
+    /// **1 回目 ≥ 250 ms (設計どおり `STAGGER` を待つ)、同じホストの 2 回目は待たない**。
+    ///
+    /// 2 回目は**時間ではなく試行の順で見る** (T18.1): 覚えた族 (IPv4) が先頭なら IPv6 の
+    /// 候補は起動されないので、`attempts` が 1 回目の 1 のまま動かない。前は「2 回目 < 50 ms」
+    /// で見ていて、混んだ機械 (2 コアで全体テスト) ではスレッドを起こすだけで 50 ms を超えて
+    /// 稀に落ちた。IPv6 が先頭に来ていれば `attempts` は 2 になるので、守っているものは同じ。
     #[cfg(target_os = "linux")]
     #[test]
     fn happy_eyeballs_skips_unreachable_first_candidate() {
@@ -832,19 +860,23 @@ mod tests {
             first
         );
         assert_eq!(crate::dns::preferred_family(host), Some(false));
+        assert_eq!(ipv6_counters(), [1, 0, 1], "{}", ipv6_status_json());
 
+        // 2 回目の間だけ間隔を上限 (2 秒) まで延ばす: IPv4 が先頭なら、loopback の接続が
+        // 2 秒かからない限り IPv6 の候補は起動されない (既定の 250 ms のままだと、
+        // 混んだ機械で IPv4 の 1 本が 250 ms を超えたときに追い掛けの 1 本が出て数が動く)
+        set_stagger(Duration::from_millis(*STAGGER_RANGE_MS.end()));
         let started = Instant::now();
         let stream = connect_resolved(host, addrs, Duration::from_secs(5)).expect("v4 should win");
         let second = started.elapsed();
+        // 後のテストのために既定へ戻す (失敗しても `reset_ipv6_state` が戻す)
+        set_stagger(DEFAULT_STAGGER);
         assert_eq!(stream.peer_addr().unwrap().port(), port);
-        assert!(
-            second < Duration::from_millis(50),
-            "2 回目は覚えた族 (IPv4) を先頭にするので待たないはず: {:?}",
-            second
-        );
-        assert!(
-            ipv6_status_json().contains("\"losses\":1"),
-            "{}",
+        assert_eq!(
+            ipv6_counters(),
+            [1, 0, 1],
+            "2 回目は覚えた族 (IPv4) を先頭にするので IPv6 の候補を起動しないはず ({:?}): {}",
+            second,
             ipv6_status_json()
         );
     }
@@ -947,7 +979,7 @@ mod tests {
         reset_ipv6_state();
         force_v4_first();
         assert!(
-            ipv6_status_json().ends_with(",\"probe_by\":\"request\"}"),
+            ipv6_status_json().contains(",\"probe_by\":\"request\","),
             "{}",
             ipv6_status_json()
         );
@@ -955,7 +987,7 @@ mod tests {
         note_canary_ipv6(false);
         assert!(ipv6_v4_first(), "繋がらなければ解かない");
         assert!(
-            ipv6_status_json().ends_with(",\"v4_first\":true,\"probe_by\":\"canary\"}"),
+            ipv6_status_json().contains(",\"v4_first\":true,\"probe_by\":\"canary\","),
             "{}",
             ipv6_status_json()
         );
@@ -1000,7 +1032,7 @@ mod tests {
         assert!(ipv6_first_for_new_host(), "解けたら IPv6 が先頭");
         assert_eq!(ipv6_counters(), [0, 0, 0]);
         assert!(
-            ipv6_status_json().ends_with(",\"v4_first\":false,\"probe_by\":\"canary\"}"),
+            ipv6_status_json().contains(",\"v4_first\":false,\"probe_by\":\"canary\","),
             "{}",
             ipv6_status_json()
         );
@@ -1027,16 +1059,90 @@ mod tests {
             at,
             now
         );
-        assert!(ipv6_status_json().ends_with(",\"probe_by\":\"request\"}"));
+        assert!(ipv6_status_json().contains(",\"probe_by\":\"request\","));
 
         // canary が最後に試したのが 600 秒より前 (止まった): 利用者の経路に戻る
         IPV6_PROBE_AT.store(0, Ordering::Relaxed);
         IPV6_CANARY_AT.store(now - IPV6_PROBE_SECS, Ordering::Relaxed);
-        assert!(ipv6_status_json().ends_with(",\"probe_by\":\"request\"}"));
+        assert!(ipv6_status_json().contains(",\"probe_by\":\"request\","));
         assert!(
             ipv6_first_for_new_host(),
             "古い canary の印では探りを止めない"
         );
+    }
+
+    /// T18.1: `request_probes` は **`v4_first` の間に利用者の経路で探った回だけ**を数える。
+    ///
+    /// - `v4_first` でないとき (IPv6 が先頭なのは探りではない) は増えない
+    /// - canary が見ていないときは 600 秒に 1 回だけ増え、`request_probe_at` に時刻が残る
+    /// - canary が探っている間は増えない
+    #[test]
+    fn ipv6_request_probes_count_only_the_probes_on_the_request_path() {
+        let _guard = IPV6_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_ipv6_state();
+        let tail = |probes: u64, at: u64| {
+            format!(
+                ",\"request_probes\":{},\"request_probe_at\":{}}}",
+                probes, at
+            )
+        };
+        // 起動直後 (`v4_first` でない): IPv6 が先頭だが探りではない。欄は末尾に 0 で出る
+        assert!(ipv6_first_for_new_host());
+        assert_eq!(
+            ipv6_status_json(),
+            "{\"attempts\":0,\"wins\":0,\"losses\":0,\"v4_first\":false,\"probe_by\":\"request\",\"request_probes\":0,\"request_probe_at\":0}",
+            "鍵の順は今までのまま、新しい 2 つは末尾"
+        );
+
+        // `v4_first` で canary が見ていない: 探りの時刻が来た 1 回だけ数える
+        force_v4_first();
+        let before = crate::clock::now_epoch();
+        assert!(ipv6_first_for_new_host(), "1 回目は探る");
+        let at = IPV6_REQUEST_PROBE_AT.load(Ordering::Relaxed);
+        assert!(
+            at >= before && at <= crate::clock::now_epoch(),
+            "最後に探った時刻 (epoch 秒): {}",
+            at
+        );
+        assert!(
+            ipv6_status_json().ends_with(&tail(1, at)),
+            "{}",
+            ipv6_status_json()
+        );
+        for _ in 0..3 {
+            assert!(!ipv6_first_for_new_host(), "600 秒が来るまで探らない");
+        }
+        assert_eq!(
+            IPV6_REQUEST_PROBES.load(Ordering::Relaxed),
+            1,
+            "探らない回は数えない"
+        );
+        // 600 秒たった (時刻は進められないので予約を今に戻す): もう 1 回だけ
+        IPV6_PROBE_AT.store(0, Ordering::Relaxed);
+        assert!(ipv6_first_for_new_host());
+        assert!(!ipv6_first_for_new_host());
+        assert_eq!(
+            IPV6_REQUEST_PROBES.load(Ordering::Relaxed),
+            2,
+            "600 秒に 1 回"
+        );
+
+        // canary が IPv6 を試した: 予約の時刻が来ていても利用者の経路では探らず、数も動かない
+        IPV6_PROBE_AT.store(0, Ordering::Relaxed);
+        note_canary_ipv6(false);
+        for _ in 0..3 {
+            assert!(!ipv6_first_for_new_host());
+        }
+        let at = IPV6_REQUEST_PROBE_AT.load(Ordering::Relaxed);
+        assert_eq!(
+            ipv6_status_json(),
+            format!(
+                "{{\"attempts\":0,\"wins\":0,\"losses\":0,\"v4_first\":true,\"probe_by\":\"canary\"{}",
+                tail(2, at)
+            )
+        );
+        // 勝敗の数とは別物 (探りを数えても `attempts` は動かない。あちらは候補を起動した回数)
+        assert_eq!(ipv6_counters(), [0, 0, 0]);
     }
 
     /// IPv6 が生きている条件では今までどおり IPv6 が勝ち、IPv4 優先には落ちない。

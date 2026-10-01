@@ -1312,7 +1312,9 @@ fn push_tables(out: &mut String, hosts_json: &[String], clients_json: &[String])
 /// `crates/run/src/lib.rs` が待ち受けを立てる前に必ず `canary::configure` を呼ぶので `/status` は変わらない)。
 pub const CANARY_STATUS_UNSET: &str = concat!(
     "{\"mode\":\"off\",\"secs\":60,\"runs\":0,\"failures\":0,",
-    "\"at\":0,\"host\":\"\",\"dns_ms\":0,\"connect_ms\":0,\"ipv6_connect_ms\":null,\"error\":null}"
+    "\"at\":0,\"host\":\"\",\"dns_ms\":0,\"connect_ms\":0,\"ipv6_connect_ms\":null,\"error\":null,",
+    // IPv6 側の 1 本を試した回数と試さなかった回数 (T18.1。末尾に足しただけ)
+    "\"ipv6_runs\":0,\"ipv6_skipped\":0}"
 );
 
 /// `/status` の `canary` を組む口 (**上の層 `canary` が 1 回だけ預ける**。T15.12)。

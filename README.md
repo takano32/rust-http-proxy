@@ -463,7 +463,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   canary の宛先に AAAA が無い) は、今までどおり 600 秒に 1 回だけ利用者の要求で IPv6 を先頭に戻して試す (T17.7)。
   試行そのものはやめないので、IPv4 が死んでいるホストは IPv6 で拾える。
   勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。`/status` の `ipv6.probe_by` は
-  いま IPv6 を探っているのが誰か (`"canary"` = canary が直近 600 秒に IPv6 を 1 本試した、`"request"` = 利用者の要求で探る)。**確実に IPv6 を避けたいなら `off`**。
+  いま IPv6 を探っているのが誰か (`"canary"` = canary が直近 600 秒に IPv6 を 1 本試した、`"request"` = 利用者の要求で探る)。
+  `probe_by` は「いま」だけなので、**利用者の要求で実際に探った回数は `ipv6.request_probes`** (IPv4 優先の間に IPv6 を先頭に戻した回数。通算)、
+  最後の時刻は `ipv6.request_probe_at` (epoch 秒、無ければ 0) で読む (T18.1)。`attempts` は「IPv6 の候補を起動した回数」で、
+  IPv4 を先頭に置いた接続が Happy Eyeballs の間隔 (既定 250 ms) を過ぎて IPv6 の候補を追い掛けで出した回でも増えるので、探りの数ではない。**確実に IPv6 を避けたいなら `off`**。
   待ち受けの**受け入れ待ち行列は既定 `min(1024, somaxconn)`** (`PROXY_LISTEN_BACKLOG`)。Rust の既定の 128 だと、
   ブラウザが 1 ページで開く数十本の CONNECT で溢れて SYN が捨てられ、クライアントの再送で 1 秒待たされます
 - **RFC 7230 / RFC 9110 準拠**:
@@ -915,7 +918,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     「遅かったのはプロキシか、回線か、利用者の端末か」が切り分けられませんでした。canary の値が利用者の値と
     合っていれば回線 (またはリゾルバ)、合っていなければ利用者側、と読めます。
     最後の 1 回は `/status` の `canary` (`mode` / `secs` / `runs` / `failures` / `at` / `host` / `dns_ms` /
-    `connect_ms` / **`ipv6_connect_ms`** / `error`)、`/metrics` の
+    `connect_ms` / **`ipv6_connect_ms`** / `error` / `ipv6_runs` / `ipv6_skipped`)、`/metrics` の
     `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最後の値。
     1 回も回っていなければ 1 行も出しません。**失敗した回は届かなかった段階が 0 になる**ので、
     成否は `/status` の `canary.error` と `canary.failures`、`/errors` で見てください)。時系列は **`/history?res=5|60` の `canary`** で、
@@ -939,7 +942,13 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **繋がったら `v4_first` を解きます**。Happy Eyeballs も勝敗の記録 (`ipv6.attempts` / `wins` / `losses`) も
     ホストごとの族の記憶も動かしません。
     失敗は `/errors` にも残しません (黒穴のままだと 1 分に 1 件ずつ個票が埋まってしまうため。
-    生死は `ipv6_connect_ms` が `null` かどうかで読みます)
+    生死は `ipv6_connect_ms` が `null` かどうかで読みます)。
+    `null` は「試して繋がらなかった」と「試さなかった」の両方なので、**試したかどうかは
+    `canary.ipv6_runs` (IPv6 側を実際に試した回数) と `canary.ipv6_skipped` (試さなかった回数) で読みます** (T18.1。通算で、
+    canary の 1 回につきどちらかが 1 増える = `runs` と同じ歩み)。試さないのは、名前が引けなかった回・引けた答えに AAAA が無い回・
+    `PROXY_IPV6=off`・`PROXY_CANARY_IPV6=off` で、試さなかった回は「探っている」印を更新しません
+    (600 秒ぶん続くと探りは利用者の要求に戻り、`ipv6.request_probes` が増えます)。宛先が 1 つも無い周
+    (`PROXY_CANARY=off`、`auto` で直近 1 時間に CONNECT が無い) は `runs` ごと増えません
   - **再起動をまたぐか (`persisted` / `restored`)**: `/recent` `/errors` `/bursts` `/events` `/log` の 5 つは、
     5 秒ごとに `$HOME/.rust-http-proxy.recent` (固定 4 MiB、統計の `.rrd` とは別のファイル) へ新しい分だけ追記され、
     次の起動で読み戻されます。**`"persisted": true|false`** がその可否 (`PROXY_STATS_PERSIST=off` と、
