@@ -616,12 +616,12 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 |---|---|---|
 | keep-alive の HTTP 接続が `/connections` でバイト数を出さない (宛先は T14.2 (5) / T14.48 で済。`set_bytes` を呼ぶのはトンネルだけ) | T13.4、T17.20 の気づき | 要求ごとに書かない方針とどう両立させるかを先に決める |
 | `dashboard.html` が上限まで余り 247 B (81,673 / 81,920 B) | T15.0 単位 9 と全体チェック | 次にカードを足す前に、`scripts/check-dashboard.js` の上限を上げるか、古いカードの説明文を削る |
-| `proxy-base` の `log::tests::the_ring_clips_long_lines_and_wraps_at_1000` が稀に落ちる (`crates/base/src/log.rs:725` の `total == MAX_LOG_LINES + 5`。2026-09-18 の全体テストで 1 回、同じ binary の回し直しは 5 / 5 通過) | T15.5 のマージ後の全体チェック | リングとログ水準を触るテスト 4 本は全部 `RING_TEST_LOCK` を取っているので、**鍵を取らずに warn 以上を書く (か水準を変える) 別のテストが同じ binary にいる**はず。落ちたときの `left` / `right` を控えて (多いのか少ないのか)、犯人のテストに同じ鍵を取らせる |
 | `unseen_hosts_try_ipv4_first_after_three_losses` (`proxy-net-conn`) に「< 50 ms」の時間の判定が残っている (T18.1 で直した 2 本と同じ形。落ちた記録は無い) | T18.1 | 落ちたら試行の順で見る形に直す |
-| `tests/proxy_test.rs` の `test_integration_request_body_on_a_reused_connection` が全体テストの負荷の下で 1 回 502 (単独 5 / 5 通過) | T17.11 の全体テスト | 原因を先に見る (再利用した接続の生存確認と本文の送り直し) |
+| `tests/proxy_test.rs` の `test_integration_self_addressed_origin_form_does_not_loop` が、バイナリ丸ごと 6 本並列の負荷で 31 / 144 回落ちる (`elapsed < 10 ms` 4 回、`active_connections <= 1` が 2 で 27 回)。通常の全体テストで出るかは未確認 | T18.4 の気づき | 時間ではなく「自分宛てに繋ぎに行っていない」ことで見る。接続数は閉じ終わるのを待ってから数える |
+| `tests/proxy_test.rs` の `test_integration_status_sort_brings_the_bad_hosts_to_the_front` が同じ負荷で 1 / 144 回 (200 のはずが 404)。原因は見ていない | T18.4 の気づき | 原因を先に見る |
+| 本文付きの要求 (POST など) がプールのオリジン接続に乗り、相手がちょうど閉じたときは 502 (送り直すのは本文の無い GET / HEAD だけ。`crates/http/src/http/mod.rs` の `retryable`)。決まりどおりで、実機で出た記録は無い | T18.4 | 実機の `/errors` に POST の 502 が出たら、要求の経路の判断として決める |
 | `scripts/mx` の TERM の trap を張るのが命令の起動後 (隙間の TERM で子が残る)、`others()` の子孫除外が `CHILD` 未設定の時点で呼ばれて効いていない | T17.15 | trap を起動前に張る。子孫除外は手順 3 の後で数えるか外す (動きが変わるので単独のタスクで) |
 | `warm_promote` が次の予定を「上げた時刻 + 45 秒」に置く (答えを引いた時刻ではない。齢 60〜75 秒が期限切れになりうる。実機の `warm_stale` の一部かも) | T17.5 の模型 | 予定を答えの齢から出す。`scripts/dns-replay.py` で先に数える |
-| T17.11 で移した `slo.rs` の `[crate::anomaly::check]`・`profile.rs` の `[crate::history…]` の doc リンクが新しいクレートから解決しない (rustdoc の警告だけ) | T17.11 | 次にそのファイルを触るとき、上のクレートの道に直す |
 
 ### Phase 15 (2026-09-18 に組み替えた: まず載せる、それから決める)
 
@@ -1284,13 +1284,15 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
   - やること: trap を命令の起動前に張る (起動前に TERM が来たら命令を起動せずに抜ける)。子孫除外は手順 3 の後で数えるか、効いていないなら外す (どちらにしたかと理由を報告に書く)。出口の値 (130 / 143 / 75) と使い方は変えない。
   - 受け入れ基準: `scripts/test_mx.py` / `test_mx.sh` に 1 本ずつ (起動の直後に TERM を送っても子が残らない)。既存の mx のテスト全通過。`python3 -m unittest discover -s scripts` 全通過。
 
-- [ ] **T18.4 揺れるテスト 2 本の原因と、T17.11 の doc リンク**
+- [x] **T18.4 揺れるテスト 2 本の原因と、T17.11 の doc リンク**
   - 目的: 既知の小物の表。(1) `proxy-base` の `log::tests::the_ring_clips_long_lines_and_wraps_at_1000` (`crates/base/src/log.rs:722`) が稀に落ちる。(2) `tests/proxy_test.rs:781` の `test_integration_request_body_on_a_reused_connection` が全体テストの負荷の下で 1 回 502。
     (3) T17.11 で移した `crates/metrics-slo/src/slo.rs:11` の `[crate::anomaly::check]` と `crates/metrics-profile/src/{profile,window}.rs` の `[crate::history…]` が新しいクレートから解決しない (rustdoc の警告)。
   - やること: (1) 同じ binary で `RING_TEST_LOCK` (741 行) を取らずに warn 以上を書く (か水準を変える) テストを探し、同じ鍵を取らせる。見つからなければ落ちたときの `left` / `right` を出す形にして報告。
     (2) **原因を先に見る** (再利用した接続の生存確認と本文の送り直し)。負荷をかけて再現させ (`scripts/mx` の下でテストを並べて回す)、**テストの側の問題ならテストを直し、本体の問題なら直さずに再現の手順と読んだ場所を報告する** (要求の経路は親が決める)。
     (3) doc リンクを上のクレートの道か素の文字 (バッククォートだけ) に直す。`scripts/mx cargo doc -p proxy-metrics-slo -p proxy-metrics-profile --no-deps` の警告が 0。
   - 受け入れ基準: (1) は `scripts/mx cargo test -p proxy-base log::` を 30 回回して全部通る。(2) は再現の有無と原因の報告 (直したなら単独 20 回 + 負荷の下 5 回通過)。(3) は警告 0。中身のコードは (2) でテストを直す場合を除き変えない。
+  - 結果 (2026-10-01、`c50987a` / `d7c6327` / `8b142c1`、取り込み `b52941f`): **3 つとも原因を特定してテストと doc コメントだけ直した (本体は不変)。** (1) `the_ring_clips_long_lines_and_wraps_at_1000` の犯人は水準でも warn でもなく **`records::tests`**: `log_line` は warn 以上をリングに写す前に `records::recording()` を見るので、別の鍵のまま `Mode::Off` にする一瞬に重なった行が落ちる (`left: 1004` / `1003`、`right: 1005`)。直す前のバイナリで全体 11 / 1,500 回・`the_ring` + `records::tests` だけで 50 / 3,000 回再現し、`log::` だけなら 0 / 3,000。`records::tests` の鍵を `RING_TEST_LOCK` の別名にして 0 / 1,500・0 / 3,000、`scripts/mx cargo test -p proxy-base log::` は 30 / 30。(2) `request_body_on_a_reused_connection` の 502 は**テストの側**: `start_origin` は 1 接続 1 要求で閉じるのに応答に `Connection: close` が無く、プロキシがプールに戻した接続に 2 本目の POST が乗って RST を受ける (`failed to read origin response: Connection reset by peer`。本文付きは送り直さない決まり、`crates/http/src/http/mod.rs` の `retryable`)。バイナリ丸ごと 6 本並列 × 8 回で 3 / 48 回再現、閉じる前に 50 ms の待ちを一時的に入れると 0 / 10 通過。応答に `Connection: close` を足して、単独 20 / 20、丸ごと 6 本並列で 0 / 96、単独 8 本並列で 0 / 800 (待ちを入れた形でも 10 / 10)。守っているもの (クライアント側の同じ接続の 2 本目以降の本文) は同じ。(3) rustdoc の警告は本文の 3 か所だけでなく 16 件 (slo 2 + profile 14) あり、上の層のものはクレートの道の素の文字、同じクレートのものは `crate::window::…`、非公開と `STATES` は素の文字か `state_names` にして 0 件。**気づき**: 同じ負荷で `test_integration_self_addressed_origin_form_does_not_loop` が 31 / 144 回 (`elapsed < 10 ms` 4 回、`active_connections <= 1` 27 回)、`status_sort_brings_the_bad_hosts_to_the_front` が 1 / 144 回落ちた (直していない。既知の小物に足す)。本文付きの要求がプールの接続で相手の close と競合すると 502 になるのは本体の決まりどおり (変えるなら要求の経路の判断)。
+    親の注記: 表の外で `crates/base/src/records.rs` (テストの鍵) を触っている。base / slo / profile の clippy は (3) のコミットの後に回し直していない (波の最後の全体チェックで見る)。
 
 - [ ] **T18.5 `Cargo.toml` の版をタグと揃える (親。波 19 のあと)**
   - 目的: T17.21: タグは `v0.17.21` だが `Cargo.toml` は 0.1.0 のままで、`--version` と `/status` の `version` は `0.1.0+<commit>` と出る。
