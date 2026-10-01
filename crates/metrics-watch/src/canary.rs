@@ -157,6 +157,18 @@ static LAST: Mutex<Option<Probe>> = Mutex::new(None);
 /// 回した回数と、そのうち失敗した回数。
 static RUNS: AtomicU64 = AtomicU64::new(0);
 static FAILURES: AtomicU64 = AtomicU64::new(0);
+/// IPv6 側の 1 本を**実際に試した**回数 (繋がっても繋がらなくても 1。T18.1)。
+///
+/// `ipv6_connect_ms` は負けても試さなくても `null` なので、「試したか」はここで読む。
+/// 試した回だけが [`crate::net::note_canary_ipv6`] の印を更新する (= 利用者の経路の探りを止める)。
+static IPV6_RUNS: AtomicU64 = AtomicU64::new(0);
+/// IPv6 側を**試さなかった**回数 (T18.1)。1 回の試行 ([`probe`]) につきどちらかが 1 増える。
+///
+/// 試さないのは: 名前が引けなかった、引けた答えに AAAA が無い、`PROXY_IPV6=off`、
+/// `PROXY_CANARY_IPV6=off`。これが 10 分 (600 秒) ぶん続くと探りは利用者の経路に戻る。
+/// **宛先が 1 つも無い周** (`off`、`auto` で直近 1 時間に CONNECT が無い) は `runs` ごと
+/// 増えないので、ここにも入らない。
+static IPV6_SKIPPED: AtomicU64 = AtomicU64::new(0);
 /// `canary` スレッドへの送り口。**最初の [`tick`] で 1 本だけ**遅延起動する
 /// (`off` のまま動くプロセスと `--lite` ではスレッドを作らない)。
 static THREAD: OnceLock<Option<Sender<Msg>>> = OnceLock::new();
@@ -312,8 +324,8 @@ fn probe(target: &str) -> Probe {
                 host: target.to_string(),
                 dns_ms: ms(started.elapsed()),
                 connect_ms: 0,
-                // 名前が引けなければ AAAA も無い
-                ipv6_connect_ms: None,
+                // 名前が引けなければ AAAA も無い (試さなかった周に数える。T18.1)
+                ipv6_connect_ms: probe_ipv6(None),
                 error: Some(clip(&e.to_string())),
                 // 名前解決で終わったのだから原因は `dns` (文言から当てない)
                 cause: Some(ErrCause::Dns),
@@ -338,8 +350,9 @@ fn probe(target: &str) -> Probe {
             host: target.to_string(),
             dns_ms,
             connect_ms: 0,
-            // ここに来るのは `PROXY_IPV6=off` で AAAA しか無い名前 (利用者も繋げない)
-            ipv6_connect_ms: None,
+            // ここに来るのは `PROXY_IPV6=off` で AAAA しか無い名前 (利用者も繋げない)。
+            // `probe_ipv6` は `PROXY_IPV6=off` では試さないので、数えるだけで `None` が返る (T18.1)
+            ipv6_connect_ms: probe_ipv6(v6),
             error: Some("no address for this family".to_string()),
             cause: Some(ErrCause::Dns),
         };
@@ -373,9 +386,17 @@ fn probe(target: &str) -> Probe {
 /// **試した結果は [`crate::net::note_canary_ipv6`] で下の層に渡す** (T17.7): 試している間は
 /// 利用者の経路が 600 秒に 1 回の探り (利用者を `stagger()` ぶん待たせる) をやめ、
 /// 繋がったら `v4_first` が解ける。勝敗の数 (`ipv6.attempts` / `wins` / `losses`) には足さない。
+///
+/// **試さなかった回は印を更新しない** (試していないのに「探っている」とは言えない)。
+/// 試したかどうかは `/status` の `canary.ipv6_runs` / `ipv6_skipped` に数える (T18.1):
+/// [`probe`] の 1 回につき、必ずここを 1 回通ってどちらかが 1 増える。
 fn probe_ipv6(addr: Option<SocketAddr>) -> Option<u64> {
     // `PROXY_IPV6=off` のときは利用者も AAAA を使わないので測らない
-    let addr = addr.filter(|_| ipv6_enabled() && crate::net::ipv6_enabled())?;
+    let Some(addr) = addr.filter(|_| ipv6_enabled() && crate::net::ipv6_enabled()) else {
+        IPV6_SKIPPED.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    IPV6_RUNS.fetch_add(1, Ordering::Relaxed);
     let started = Instant::now();
     // 握れたら**その場で捨てる** (`drop` = FIN)。TLS も HTTP も送らない
     let connected = crate::net::connect_addr(&addr, DEADLINE).is_ok();
@@ -418,7 +439,7 @@ fn push_row(probe: &Probe) {
 
 /// `/status` の `"canary"` 要素 (組み立ては `/status` のときだけ)。
 pub fn status_json() -> String {
-    let mut out = String::with_capacity(192);
+    let mut out = String::with_capacity(224);
     let _ = write!(
         out,
         "{{\"mode\":\"{}\",\"secs\":{},\"runs\":{},\"failures\":{},",
@@ -434,7 +455,13 @@ pub fn status_json() -> String {
             "\"at\":0,\"host\":\"\",\"dns_ms\":0,\"connect_ms\":0,\"ipv6_connect_ms\":null,\"error\":null",
         ),
     }
-    out.push('}');
+    // IPv6 側の 1 本を試した回数と試さなかった回数 (通算。末尾に足すだけ。T18.1)
+    let _ = write!(
+        out,
+        ",\"ipv6_runs\":{},\"ipv6_skipped\":{}}}",
+        IPV6_RUNS.load(Ordering::Relaxed),
+        IPV6_SKIPPED.load(Ordering::Relaxed),
+    );
     out
 }
 
@@ -465,6 +492,8 @@ fn reset() {
     crate::canaryhist::clear();
     RUNS.store(0, Ordering::Relaxed);
     FAILURES.store(0, Ordering::Relaxed);
+    IPV6_RUNS.store(0, Ordering::Relaxed);
+    IPV6_SKIPPED.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -573,8 +602,21 @@ mod tests {
         assert_eq!(ok.error, None, "{:?}", ok);
         assert_eq!(ok.host, format!("127.0.0.1:{}", port));
         assert!(ok.at > 1_700_000_000, "{:?}", ok);
-        // IP リテラルは名前解決が要らない (表も通らない)
-        assert_eq!(ok.dns_ms, 0, "{:?}", ok);
+        // IP リテラルは名前解決が要らない (表も通らない) ので、かかっても数 ms。
+        // **`== 0` では見ない** (T18.1): 測っているのは壁時計で、混んだ機械ではスレッドが
+        // 1 回止められただけで 0.5 ms を超えて 1 に丸め上がり、稀に落ちた。1 回の値は
+        // 止められた時間をそのまま含むので、**3 回測った最小**が 2 ms 以下かで見る
+        let dns_ms = [ok.dns_ms]
+            .into_iter()
+            .chain((0..2).map(|_| probe(&format!("127.0.0.1:{}", port)).dns_ms))
+            .min()
+            .unwrap();
+        assert!(
+            dns_ms <= 2,
+            "IP リテラルの名前解決: {} ms ({:?})",
+            dns_ms,
+            ok
+        );
 
         drop(listener);
         let dead = probe(&format!("127.0.0.1:{}", port));
@@ -770,6 +812,106 @@ mod tests {
         let got = probe(&format!("[::1]:{}", v6_port));
         assert!(got.error.is_none(), "{:?}", got);
         assert_eq!(got.ipv6_connect_ms, None, "off: {:?}", got);
+        reset();
+    }
+
+    /// `/status` の `ipv6` から数の欄を 1 つ読む (T18.1 のテスト用)。
+    fn ipv6_field(key: &str) -> u64 {
+        let json = crate::net::ipv6_status_json();
+        let pat = format!("\"{}\":", key);
+        let rest = &json[json
+            .find(&pat)
+            .unwrap_or_else(|| panic!("{}: {}", key, json))
+            + pat.len()..];
+        rest[..rest.find([',', '}']).unwrap()].parse().unwrap()
+    }
+
+    /// T18.1: IPv6 側を**実際に試した**周は `ipv6_runs` が増える (繋がっても繋がらなくても)。
+    /// その周は下の層の印が新しくなるので、利用者の経路の探り (`ipv6.request_probes`) は増えない。
+    #[test]
+    fn a_round_that_tries_ipv6_counts_ipv6_runs_and_no_request_probe() {
+        let _s = SERIAL.locked();
+        let _ipv6 = crate::net::IPV6_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        reset();
+        let probes = ipv6_field("request_probes");
+        // 繋がる 1 本
+        let v6 = TcpListener::bind("[::1]:0").expect("この機械の lo は ::1 を持つ");
+        let v6_port = v6.local_addr().unwrap().port();
+        let got = probe(&format!("[::1]:{}", v6_port));
+        assert!(got.ipv6_connect_ms.is_some(), "{:?}", got);
+        assert!(
+            status_json().ends_with(",\"error\":null,\"ipv6_runs\":1,\"ipv6_skipped\":0}"),
+            "まだ `record` していないので最後の結果は空: {}",
+            status_json()
+        );
+        // 繋がらない 1 本 (閉じたポート = 黒穴と同じ「失敗」) も「試した」に数える。
+        // `ipv6_connect_ms` はどちらの「繋がらない」でも `null` で、ここでしか見分けられない
+        drop(v6);
+        let got = probe(&format!("[::1]:{}", v6_port));
+        assert_eq!(got.ipv6_connect_ms, None, "{:?}", got);
+        assert_eq!(
+            (
+                IPV6_RUNS.load(Ordering::Relaxed),
+                IPV6_SKIPPED.load(Ordering::Relaxed)
+            ),
+            (2, 0)
+        );
+        // 試した周は印が新しい = 探りは canary のもの。利用者の経路の探りは数えられていない
+        let status = crate::net::ipv6_status_json();
+        assert!(status.contains("\"probe_by\":\"canary\""), "{}", status);
+        assert_eq!(ipv6_field("request_probes"), probes, "{}", status);
+        reset();
+    }
+
+    /// T18.1: IPv6 側を**試さなかった**周は `ipv6_skipped` が増え、`ipv6_runs` は増えない
+    /// (AAAA の無い宛先、`PROXY_CANARY_IPV6=off`、名前が引けない)。
+    #[test]
+    fn a_round_without_aaaa_counts_ipv6_skipped() {
+        let _s = SERIAL.locked();
+        reset();
+        // (1) AAAA の無い宛先 (A だけ)
+        let v4 = TcpListener::bind("127.0.0.1:0").unwrap();
+        let v4_port = v4.local_addr().unwrap().port();
+        let got = probe(&format!("127.0.0.1:{}", v4_port));
+        assert!(got.error.is_none(), "{:?}", got);
+        assert_eq!(got.ipv6_connect_ms, None, "{:?}", got);
+        let count = || {
+            (
+                IPV6_RUNS.load(Ordering::Relaxed),
+                IPV6_SKIPPED.load(Ordering::Relaxed),
+            )
+        };
+        assert_eq!(count(), (0, 1), "AAAA の無い周");
+
+        // (2) AAAA があって生きていても `PROXY_CANARY_IPV6=off` なら試さない
+        let v6 = TcpListener::bind("[::1]:0").expect("この機械の lo は ::1 を持つ");
+        let v6_port = v6.local_addr().unwrap().port();
+        configure("auto", Duration::from_secs(SECS), false);
+        let got = probe(&format!("[::1]:{}", v6_port));
+        assert!(got.error.is_none(), "{:?}", got);
+        assert_eq!(count(), (0, 2), "PROXY_CANARY_IPV6=off の周");
+        configure("auto", Duration::from_secs(SECS), true);
+
+        // (3) 名前が引けなかった周 (ホストが空 = リゾルバへ出ずに失敗する) も試さない
+        let got = probe(":443");
+        assert!(got.error.is_some(), "{:?}", got);
+        assert_eq!(count(), (0, 3), "名前が引けない周");
+
+        // `/status` の `canary` の末尾に出る (鍵の順は今までのまま)
+        record(&got, &Metrics::new());
+        let json = status_json();
+        assert!(
+            json.starts_with("{\"mode\":\"auto\",\"secs\":60,\"runs\":1,\"failures\":1,\"at\":"),
+            "{}",
+            json
+        );
+        assert!(
+            json.ends_with(",\"ipv6_runs\":0,\"ipv6_skipped\":3}"),
+            "{}",
+            json
+        );
         reset();
     }
 

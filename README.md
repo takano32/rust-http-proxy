@@ -168,6 +168,14 @@ scripts/snapshot-diff.py a.json b.json --criteria phase15 --daily b-daily.json
 # `/profile?res=60` も雪像に入らないので渡す (無ければ雪像の `/profile` の部で「参考」)
 scripts/snapshot-diff.py a.json b.json --criteria phase17 --daily b-daily.json \
                          --profile b-profile_res_60.json   # 前も比べるなら --profile-before FILE
+# phase18 の 10 行 (phase17 の 8 行 + `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・
+# `ipv6.request_probes` が 0)。0 時間の雪像 (再デプロイの直後の 1 枚) は `--zero` で渡す (無ければ「判定できず」)。
+# `--daily-snapshots DIR` は、DIR の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち b と同じ版のものを
+# 撮った時刻の順に並べた表 (起動からの時間・`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・
+# `ipv6.attempts`) を判定表の下に付ける
+scripts/snapshot-diff.py a.json b.json --criteria phase18 --daily b-daily.json \
+                         --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
+                         --zero zero.json --daily-snapshots status
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
 scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
                          --from-files status/2026-09-16T0106Z
@@ -192,7 +200,7 @@ scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
 - IP リテラル宛て・`localhost`・表からあふれた `other` は**まとめずにそのまま**出ます
 
 `collect-deployed.sh` は前回の雪像を見つけるとこれを呼び、**要約のいちばん最後に判定表**を置きます
-(`CRITERIA=off` で止められます)。道具の単体テストは `python3 -m unittest discover -s scripts`
+(`CRITERIA=off` で止められます。判定表の相手は `BEFORE=<雪像>` で、0 時間の雪像は `ZERO=<雪像>` で渡せます。下の「運用」の 4)。道具の単体テストは `python3 -m unittest discover -s scripts`
 (架空の雪像 `scripts/testdata/snapshot-a.json` / `snapshot-b.json` と、下の匿名化した実データで回ります)。
 
 **1 週間ぶんをまとめて読むのは `scripts/weekly-report.py`** (T14.40)。`snapshot-diff.py` が
@@ -291,7 +299,7 @@ T16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 
   起動直後から天井に近い値で始まります。24 時間のあとに伸びたぶんは `heap_free` (解放したあとも持っているヒープ) で、
   使っているヒープと `mmap` は動いていません = リークではありません
 - **IPv6 の探り** — `$.status.ipv6`。canary が 1 分に 1 回見ている間は利用者の要求で探りません (T17.7)。6 回のうち 3 回は起動直後に
-  IPv4 優先へ切り替わるまでの負け、残りの 3 回は canary が見ていなかった時間に利用者の経路で探ったぶんです (理由は `TODO.md` の T18.0 で調べます)
+  IPv4 優先へ切り替わるまでの負け、残りの 3 回は canary 自身の接続が遠い相手で 250 ms を超え、Happy Eyeballs が IPv6 の候補を追い掛けで出した回です (`attempts` は探りの数ではありません。`TODO.md` の T18.1)
 - **判定表** — `scripts/snapshot-diff.py … --criteria phase17 --profile … --profile-before …` は 8 行とも「満たした」です
 
 **この 1 枚は要求が少ない版です** (0.016 req/s、起動から 6,952 要求、バーストの窓は 2 本)。混んだときの数字 (CPU の絞り・warm の枠の取り合い) は
@@ -463,7 +471,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   canary の宛先に AAAA が無い) は、今までどおり 600 秒に 1 回だけ利用者の要求で IPv6 を先頭に戻して試す (T17.7)。
   試行そのものはやめないので、IPv4 が死んでいるホストは IPv6 で拾える。
   勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。`/status` の `ipv6.probe_by` は
-  いま IPv6 を探っているのが誰か (`"canary"` = canary が直近 600 秒に IPv6 を 1 本試した、`"request"` = 利用者の要求で探る)。**確実に IPv6 を避けたいなら `off`**。
+  いま IPv6 を探っているのが誰か (`"canary"` = canary が直近 600 秒に IPv6 を 1 本試した、`"request"` = 利用者の要求で探る)。
+  `probe_by` は「いま」だけなので、**利用者の要求で実際に探った回数は `ipv6.request_probes`** (IPv4 優先の間に IPv6 を先頭に戻した回数。通算)、
+  最後の時刻は `ipv6.request_probe_at` (epoch 秒、無ければ 0) で読む (T18.1)。`attempts` は「IPv6 の候補を起動した回数」で、
+  IPv4 を先頭に置いた接続が Happy Eyeballs の間隔 (既定 250 ms) を過ぎて IPv6 の候補を追い掛けで出した回でも増えるので、探りの数ではない。**確実に IPv6 を避けたいなら `off`**。
   待ち受けの**受け入れ待ち行列は既定 `min(1024, somaxconn)`** (`PROXY_LISTEN_BACKLOG`)。Rust の既定の 128 だと、
   ブラウザが 1 ページで開く数十本の CONNECT で溢れて SYN が捨てられ、クライアントの再送で 1 秒待たされます
 - **RFC 7230 / RFC 9110 準拠**:
@@ -915,7 +926,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     「遅かったのはプロキシか、回線か、利用者の端末か」が切り分けられませんでした。canary の値が利用者の値と
     合っていれば回線 (またはリゾルバ)、合っていなければ利用者側、と読めます。
     最後の 1 回は `/status` の `canary` (`mode` / `secs` / `runs` / `failures` / `at` / `host` / `dns_ms` /
-    `connect_ms` / **`ipv6_connect_ms`** / `error`)、`/metrics` の
+    `connect_ms` / **`ipv6_connect_ms`** / `error` / `ipv6_runs` / `ipv6_skipped`)、`/metrics` の
     `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最後の値。
     1 回も回っていなければ 1 行も出しません。**失敗した回は届かなかった段階が 0 になる**ので、
     成否は `/status` の `canary.error` と `canary.failures`、`/errors` で見てください)。時系列は **`/history?res=5|60` の `canary`** で、
@@ -939,7 +950,13 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **繋がったら `v4_first` を解きます**。Happy Eyeballs も勝敗の記録 (`ipv6.attempts` / `wins` / `losses`) も
     ホストごとの族の記憶も動かしません。
     失敗は `/errors` にも残しません (黒穴のままだと 1 分に 1 件ずつ個票が埋まってしまうため。
-    生死は `ipv6_connect_ms` が `null` かどうかで読みます)
+    生死は `ipv6_connect_ms` が `null` かどうかで読みます)。
+    `null` は「試して繋がらなかった」と「試さなかった」の両方なので、**試したかどうかは
+    `canary.ipv6_runs` (IPv6 側を実際に試した回数) と `canary.ipv6_skipped` (試さなかった回数) で読みます** (T18.1。通算で、
+    canary の 1 回につきどちらかが 1 増える = `runs` と同じ歩み)。試さないのは、名前が引けなかった回・引けた答えに AAAA が無い回・
+    `PROXY_IPV6=off`・`PROXY_CANARY_IPV6=off` で、試さなかった回は「探っている」印を更新しません
+    (600 秒ぶん続くと探りは利用者の要求に戻り、`ipv6.request_probes` が増えます)。宛先が 1 つも無い周
+    (`PROXY_CANARY=off`、`auto` で直近 1 時間に CONNECT が無い) は `runs` ごと増えません
   - **再起動をまたぐか (`persisted` / `restored`)**: `/recent` `/errors` `/bursts` `/events` `/log` の 5 つは、
     5 秒ごとに `$HOME/.rust-http-proxy.recent` (固定 4 MiB、統計の `.rrd` とは別のファイル) へ新しい分だけ追記され、
     次の起動で読み戻されます。**`"persisted": true|false`** がその可否 (`PROXY_STATS_PERSIST=off` と、
@@ -2949,6 +2966,8 @@ forward が `queue` / `client_read` / `origin` / `send` / `ttfb` / `body` で、
 ```bash
 # 雪像を 1 枚取り、前回との差分と判定表つきの Markdown を 1 枚にする
 scripts/collect-deployed.sh <host>:<port>
+# 判定表の相手を再デプロイ直前の雪像にし、0 時間の雪像 (直後の 1 枚) も渡す (上の 1 と 2 で撮った 2 枚)
+BEFORE=status/<前>-snapshot.json ZERO=status/<0 時間>-snapshot.json scripts/collect-deployed.sh <host>:<port>
 curl http://127.0.0.1:8080/snapshots    # プロキシ自身が 1 日 1 回残した雪像 (30 日ぶん)
 curl "http://127.0.0.1:8080/daily?n=365"  # 1 日 1 行の要約 (永久)
 curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たした時間の割合
@@ -2960,8 +2979,9 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 個票には接続元 IP と宛先が並ぶので `.gitignore` に入れてあり、コミットしません。
 **雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
 1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
-意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase17`**
-(phase15 の 4 行 + T17.0a の 4 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、前回の雪像の隣にあればそれを `--profile-before` で渡します) で、`CRITERIA=phase15` (T15.4 / T15.5 / T15.6 の 6 行) と `CRITERIA=phase14` も今までどおり使えます。取り忘れた日は
+意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase18`**
+(phase17 の 8 行 = phase15 の 4 行 + T17.0a の 4 行 に、T18.2 の 2 行 = `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・`ipv6.request_probes` が 0 を足した 10 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、相手の雪像の隣にあればそれを `--profile-before` で渡します) で、`CRITERIA=phase17`・`CRITERIA=phase15` (T15.4 / T15.5 / T15.6 の 6 行)・`CRITERIA=phase14` も今までどおり使えます。
+**判定表の相手は既定では直前の 1 枚**です。再デプロイのあとはそれが 0 時間の雪像になるので、**`BEFORE=<再デプロイ直前の雪像>`** を渡すと判定表だけ相手がそちらになります (隣の同じ時刻の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別の相手は直前の 1 枚のまま)。**`ZERO=<0 時間の雪像>`** は `snapshot-diff.py --zero` に渡り、無ければ `heap_used + mmap` の行は「判定できず」です。phase18 のときは保存先を `--daily-snapshots` にも渡すので、`--from-server` で取り寄せた日次の雪像のうち同じ版のものの表 (`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts`) が判定表の下に付きます。`BEFORE` と `ZERO` の相対パスはリポジトリの根からです (`DIR` と同じ)。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
 `next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0 (11)。

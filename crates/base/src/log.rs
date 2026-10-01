@@ -497,7 +497,7 @@ macro_rules! log_trace {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -738,7 +738,12 @@ mod tests {
     }
 
     /// リングもログ水準もプロセスに 1 組なので、この束は直列に回す。
-    static RING_TEST_LOCK: Mutex<()> = Mutex::new(());
+    ///
+    /// **`records::tests` の旗を触るテストも同じ鍵を取る** (T18.4)。`log_line` は warn 以上を
+    /// リングに写す前に `records::recording()` を見るので、向こうが別の鍵のまま `Mode::Off` に
+    /// している一瞬に重なると、その行だけリングに入らず通算が 1〜2 行足りなくなる
+    /// (`the_ring_clips_long_lines_and_wraps_at_1000` が `left: 1004, right: 1005` で落ちた)。
+    pub(crate) static RING_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_timestamp_format() {
