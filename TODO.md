@@ -1229,7 +1229,7 @@ README の環境変数の表は自分の行だけ触る。TODO.md §0 の「守�
 T17.99 の「次のターンの準備」(§0 の決まり)。Phase 17 の完了の定義は 8 行とも満たしたので、**次の再デプロイで判定したいことは T17.99 の但し書きの 2 つ** (RSS の物差しと IPv6 の探りの 3 回)。
 **利用者の決定 (2026-10-01): 既知の小物なども含めてよい**。親が 5 つに分け、波 19 (4 本並列) を Opus に渡す。指示文は Phase 17 の型をそのまま使い、読み替えは 3 つ:
 worktree は **`git worktree add -b wave19/<id> ~/.claude/worktrees/<id> main`** (`../rust-http-proxy-wt` ではない。`$HOME` に書かない決まりの例外)、「Phase 17」は「Phase 18」、本文の行番号は 2026-10-01 の main (`7dda415`) のもの。
-**2026-10-01 の進み**: 波 19 の 4 本 (T18.1〜T18.4) と T18.5 は main に入れた (下の「波 19 の全体チェック」)。push・再デプロイはまだ。残りは T18.99 (再デプロイして 24 時間後)。
+**2026-10-01 の進み**: 波 19 の 4 本 (T18.1〜T18.4) と T18.5 は main に入れた (下の「波 19 の全体チェック」)。push し、`v0.18.0` を打ち、**2026-10-01 13:38 UTC に再デプロイした** (版 `0.18.0+2defadb`)。残りは T18.99 (2026-10-02 13:39 UTC 以降)。
 **番号の決まり (2026-10-01、利用者の決定)**: 波は Phase の番号とは別の通し番号だった (Phase 17 が波 15〜18 を使ったので、この Phase は波 19) が、紛らわしいので**次から揃える**。
 **Phase 19 は欠番にし、次の Phase は 20 = 波 20**。1 つの Phase の中で波を分けるときは番号を足さず**枝番**にする (`20a`・`20b`…。枝は `wave20a/<id>`、同じファイルを触るタスクは別の枝番に入れる)。
 この Phase は走り出したあとなので波 19 と `wave19/<id>` のまま。
@@ -1314,8 +1314,10 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
   手元で回していないもの: `shellcheck` (無い。CI で通った)、`--lite` のシステムコール数と確保数、`--only connect` の CPU/本 (要求の経路に足したのは `v4_first` の探りの回の原子 2 つだけ)。
 
 - [ ] **T18.99 締める (Phase 18 の版を 24 時間走らせたあとに見る・決める・書く)**
-  - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): 版 — (`v0.18.0` のバイナリなら `0.18.0+c1e5b47`)、起動時刻 —、「前」の雪像 — (再デプロイの直前に撮る。撮れなければ `status/2026-10-01T125100Z-snapshot.json`)、「0 時間」の雪像 —。
-  - 判定: `BEFORE=<前> ZERO=<0 時間> scripts/collect-deployed.sh nagoya.sorahost.net:50697` (T18.2) の `--criteria phase18` の 10 行。完了の定義は T18.0 の下書き。
+  - 前提 (§0 の 9 の形): 版 `0.18.0+2defadb` (`v0.18.0` の `c1e5b47` + 文書だけ。Release のバイナリ (`0.18.0+c1e5b47`) ではなく main から作った版)、起動時刻 `2026-10-01T13:38:44Z` (`uptime_secs` から、±1 秒。`/events` の `start` は 13:38:43、前の版の `shutdown` は 13:36:26)、
+    「前」の雪像 `status/2026-10-01T133549Z-snapshot.json` (前の版 `0.1.0+45b85a9`、起動から 118.2 時間、起動からの要求 7,009)、「0 時間」の雪像 `status/2026-10-01T133907Z-snapshot.json` (起動 23 秒後。`/healthz` ok、
+    `ipv6` は `attempts` 1・`probe_by` "canary"・**`request_probes` 0**、`canary` は `runs` 1・`ipv6_runs` 1・`ipv6_skipped` 0、`heap_used + mmap` 17.9 MB (7.47 + 10.46)・`heap_free` 2.9 MB・RSS 29.9 MB・`rings_touched` true、`dns.warm_evicted` 0、読み戻し ホスト 633・接続元 4)。「後」は 2026-10-02T13:39Z 以降に撮る。
+  - 判定: `BEFORE=status/2026-10-01T133549Z-snapshot.json ZERO=status/2026-10-01T133907Z-snapshot.json scripts/collect-deployed.sh nagoya.sorahost.net:50697` (T18.2) の `--criteria phase18` の 10 行。完了の定義は T18.0 の下書き。
 
 ## 付録 A. 計測の記録 (時系列)
 
