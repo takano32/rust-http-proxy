@@ -1230,6 +1230,9 @@ README の環境変数の表は自分の行だけ触る。TODO.md §0 の「守�
 T17.99 の「次のターンの準備」(§0 の決まり)。Phase 17 の完了の定義は 8 行とも満たしたので、**次の再デプロイで判定したいことは T17.99 の但し書きの 2 つ** (RSS の物差しと IPv6 の探りの 3 回)。
 **利用者の決定 (2026-10-01): 既知の小物なども含めてよい**。親が 5 つに分け、波 19 (4 本並列) を Opus に渡す。指示文は Phase 17 の型をそのまま使い、読み替えは 3 つ:
 worktree は **`git worktree add -b wave19/<id> ~/.claude/worktrees/<id> main`** (`../rust-http-proxy-wt` ではない。`$HOME` に書かない決まりの例外)、「Phase 17」は「Phase 18」、本文の行番号は 2026-10-01 の main (`7dda415`) のもの。
+**番号の決まり (2026-10-01、利用者の決定)**: 波は Phase の番号とは別の通し番号だった (Phase 17 が波 15〜18 を使ったので、この Phase は波 19) が、紛らわしいので**次から揃える**。
+**Phase 19 は欠番にし、次の Phase は 20 = 波 20**。1 つの Phase の中で波を分けるときは番号を足さず**枝番**にする (`20a`・`20b`…。枝は `wave20a/<id>`、同じファイルを触るタスクは別の枝番に入れる)。
+この Phase は走り出したあとなので波 19 と `wave19/<id>` のまま。
 Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取らない・ダッシュボードに足さない) はそのまま。「前」の雪像は再デプロイの直前に撮る (§0 の 9)。いまの版の最後の 1 枚は `status/2026-10-01T125100Z-snapshot.json`。
 
 | `<ID>` | 波 | `<id>` | 触る所 (同じ波で重ならない) |
@@ -1238,7 +1241,7 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
 | T18.2 | 19 | t182 | `scripts/snapshot-diff.py`、`scripts/test_snapshot_diff.py`、`scripts/collect-deployed.sh`、README の `collect-deployed.sh` の節 |
 | T18.3 | 19 | t183 | `scripts/mx`、`scripts/test_mx.py`、`scripts/test_mx.sh` |
 | T18.4 | 19 | t184 | `crates/base/src/log.rs`、`tests/proxy_test.rs` (原因が本体なら報告だけ)、`crates/metrics-slo/src/slo.rs`、`crates/metrics-profile/src/{profile,window}.rs` の doc コメント |
-| T18.5 | 20 (親) | — | `Cargo.toml` の版と、`0.1.0` を直書きしている 17 ファイル |
+| T18.5 | — (親。波 19 のあと) | — | `Cargo.toml` の版と、`0.1.0` を直書きしている 17 ファイル |
 
 - [ ] **T18.0 次の判定の物差しを決める (親。T17.99 の (d) と (e))**
   - (1) **RSS の物差し (T17.99 (d))**: 「1 時間後と 24 時間後の差 5 MB 未満」は 2.9 MB で満たしたが、60 時間で +5.4 MB になった。日次の雪像の `memory` では、伸びたのは
