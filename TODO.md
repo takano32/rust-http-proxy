@@ -34,7 +34,7 @@
 | §2 | 現在地 (数字の一覧) |
 | §3 | やったこと (Phase 0〜7) |
 | §4 | 測って採らなかったもの |
-| §5 | これから (Phase 8〜18。Phase 12 は完了、Phase 13 は個票まで完了・名前解決は届かず、Phase 14 は T14.0 で T14.1〜T14.3 を決めた、Phase 15 は T15.12 まで済み (関門 120 は T17.11 = 段 8 で届いた。2026-10-01 に `[x]`)、Phase 16 は T16.0 (計器) と T16.99 (判定: 3 つとも満たした、`codegen-units = 4` はそのまま) まで済み。版 `2e57626` は 2026-09-24 12:36 UTC から動いている、Phase 17 は 2026-09-26 に候補 22 を全部タスクにし、2026-10-01 の T17.99 で完了 (判定表 8 行とも満たした。版 `45b85a9` は 2026-09-26 15:22 UTC から動いている)、Phase 18 は T18.0〜T18.5 (T17.99 の持ち越し 2 つと既知の小物。波 19)) |
+| §5 | これから (Phase 8〜18。Phase 12 は完了、Phase 13 は個票まで完了・名前解決は届かず、Phase 14 は T14.0 で T14.1〜T14.3 を決めた、Phase 15 は T15.12 まで済み (関門 120 は T17.11 = 段 8 で届いた。2026-10-01 に `[x]`)、Phase 16 は T16.0 (計器) と T16.99 (判定: 3 つとも満たした、`codegen-units = 4` はそのまま) まで済み。版 `2e57626` は 2026-09-24 12:36 UTC から動いている、Phase 17 は 2026-09-26 に候補 22 を全部タスクにし、2026-10-01 の T17.99 で完了 (判定表 8 行とも満たした。版 `45b85a9` は 2026-09-26 15:22 UTC から動いている)、Phase 18 は T18.0〜T18.5 (T17.99 の持ち越し 2 つと既知の小物。波 19) まで main に入り、残りは再デプロイのあとの T18.99) |
 | 付録 A | 計測の記録 (時系列) |
 
 ## 0. ゴールと前提
@@ -621,7 +621,6 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 | `tests/proxy_test.rs` の `test_integration_self_addressed_origin_form_does_not_loop` が、バイナリ丸ごと 6 本並列の負荷で 31 / 144 回落ちる (`elapsed < 10 ms` 4 回、`active_connections <= 1` が 2 で 27 回)。通常の全体テストで出るかは未確認 | T18.4 の気づき | 時間ではなく「自分宛てに繋ぎに行っていない」ことで見る。接続数は閉じ終わるのを待ってから数える |
 | `tests/proxy_test.rs` の `test_integration_status_sort_brings_the_bad_hosts_to_the_front` が同じ負荷で 1 / 144 回 (200 のはずが 404)。原因は見ていない | T18.4 の気づき | 原因を先に見る |
 | 本文付きの要求 (POST など) がプールのオリジン接続に乗り、相手がちょうど閉じたときは 502 (送り直すのは本文の無い GET / HEAD だけ。`crates/http/src/http/mod.rs` の `retryable`)。決まりどおりで、実機で出た記録は無い | T18.4 | 実機の `/errors` に POST の 502 が出たら、要求の経路の判断として決める |
-| `scripts/mx` の TERM の trap を張るのが命令の起動後 (隙間の TERM で子が残る)、`others()` の子孫除外が `CHILD` 未設定の時点で呼ばれて効いていない | T17.15 | trap を起動前に張る。子孫除外は手順 3 の後で数えるか外す (動きが変わるので単独のタスクで) |
 | `warm_promote` が次の予定を「上げた時刻 + 45 秒」に置く (答えを引いた時刻ではない。齢 60〜75 秒が期限切れになりうる。実機の `warm_stale` の一部かも) | T17.5 の模型 | 予定を答えの齢から出す。`scripts/dns-replay.py` で先に数える |
 
 ### Phase 15 (2026-09-18 に組み替えた: まず載せる、それから決める)
@@ -1230,6 +1229,7 @@ README の環境変数の表は自分の行だけ触る。TODO.md §0 の「守�
 T17.99 の「次のターンの準備」(§0 の決まり)。Phase 17 の完了の定義は 8 行とも満たしたので、**次の再デプロイで判定したいことは T17.99 の但し書きの 2 つ** (RSS の物差しと IPv6 の探りの 3 回)。
 **利用者の決定 (2026-10-01): 既知の小物なども含めてよい**。親が 5 つに分け、波 19 (4 本並列) を Opus に渡す。指示文は Phase 17 の型をそのまま使い、読み替えは 3 つ:
 worktree は **`git worktree add -b wave19/<id> ~/.claude/worktrees/<id> main`** (`../rust-http-proxy-wt` ではない。`$HOME` に書かない決まりの例外)、「Phase 17」は「Phase 18」、本文の行番号は 2026-10-01 の main (`7dda415`) のもの。
+**2026-10-01 の進み**: 波 19 の 4 本 (T18.1〜T18.4) と T18.5 は main に入れた (下の「波 19 の全体チェック」)。push・再デプロイはまだ。残りは T18.99 (再デプロイして 24 時間後)。
 **番号の決まり (2026-10-01、利用者の決定)**: 波は Phase の番号とは別の通し番号だった (Phase 17 が波 15〜18 を使ったので、この Phase は波 19) が、紛らわしいので**次から揃える**。
 **Phase 19 は欠番にし、次の Phase は 20 = 波 20**。1 つの Phase の中で波を分けるときは番号を足さず**枝番**にする (`20a`・`20b`…。枝は `wave20a/<id>`、同じファイルを触るタスクは別の枝番に入れる)。
 この Phase は走り出したあとなので波 19 と `wave19/<id>` のまま。
@@ -1243,7 +1243,7 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
 | T18.4 | 19 | t184 | `crates/base/src/log.rs`、`tests/proxy_test.rs` (原因が本体なら報告だけ)、`crates/metrics-slo/src/slo.rs`、`crates/metrics-profile/src/{profile,window}.rs` の doc コメント |
 | T18.5 | — (親。波 19 のあと) | — | `Cargo.toml` の版と、`0.1.0` を直書きしている 17 ファイル |
 
-- [ ] **T18.0 次の判定の物差しを決める (親。T17.99 の (d) と (e))**
+- [x] **T18.0 次の判定の物差しを決める (親。T17.99 の (d) と (e))**
   - (1) **RSS の物差し (T17.99 (d))**: 「1 時間後と 24 時間後の差 5 MB 未満」は 2.9 MB で満たしたが、60 時間で +5.4 MB になった。日次の雪像の `memory` では、伸びたのは
     `rings_used` (0 時間 2.55 → 8.6 時間 9.28 → 32.6 時間 13.02 MB。件数が増えただけで、置き場は T17.8 で起動時に触ってある) ではなく **`heap_free`** (0 時間 4.3 → 8.6 時間 7.5 → 32.6 時間 8.2 → 56.6 時間 11.4 MB、以後 11.3〜11.4)。
     `heap_used` は 7.6 → 9.5 MB、`mmap` は 10.46 MB のまま。
@@ -1282,10 +1282,12 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
   - 結果 (2026-10-01、`422b54d` / `1a22eac` / `5814e63`、取り込み `53d8a3b`): `snapshot-diff.py --criteria phase18` を足した (phase17 の 8 行 + 2 行。前の 8 行は phase17 の関数と閾のまま)。(g) は `--zero FILE` (0 時間の雪像) と後の雪像の `$.status.memory` から `heap_used + mmap` の増えを出し、5 MB 未満で「満たした」。`heap_free` と `rss` は前後を並べるだけ。`--zero` が無い・後の雪像と同じ起動でない・欄が無いときは「判定できず」。(h) は後の雪像の `ipv6.request_probes` が 0 で「満たした」、欄が無い版は「判定できず」、0 でなければ `canary.ipv6_runs` / `ipv6_skipped` を並べて「届かず」。`--daily-snapshots DIR` は `<日付>T000000Z-snapshot.json` のうち後の雪像と同じ版のものを撮った時刻の順に並べ、起動からの時間・`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts` の表を判定表の下に出す。`collect-deployed.sh` は既定を `CRITERIA=phase18` にし、`BEFORE=<前の雪像>` があれば判定表だけ相手をそれにして (`snapshot-diff.py` をもう 1 回回す。隣の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別は直前の 1 枚のまま)、`ZERO=<0 時間の雪像>` を `--zero` に渡す。phase18 のときは保存先を `--daily-snapshots` にも渡す (本文の外)。中の変数 `BEFORE` (雪像の前の `/status`) は名前が重なるので `STATUS_BEFORE` に付け替えた。実データ `2026-09-26T151308Z` → `2026-10-01T125100Z` + `--zero 2026-09-26T152424Z` で、(g) は **+1.9 MB** (18.0 → 19.9。`heap_free` 4.3 → 11.3、`rss` 31.6 → 40.9) で「満たした」、(h) は欄が無く「判定できず」、前の 8 行は T17.99 と同じ数字 (0.01 / 79.9 / 0.04 / 0.01 件/時 / 1.10 倍 / 18・0 / `dns_slow` 0.02 / 0.0021 → 0.0014 コア)。`--daily-snapshots status` は 5 行 (8.6 / 32.6 / 56.6 / 80.6 / 104.6 時間、`ipv6.attempts` 3 / 6 / 6 / 6 / 6、`heap_free` 7.5 / 8.2 / 11.4 / 11.3 / 11.4 MB)。phase14 / phase15 / phase17 の出力は testdata と実データで前後 `cmp` 同一。テストは `Criteria18` 15 本・`DailySnapshots` 4 本・`Deployed18` 2 本・`CollectBeforeZeroTest` 8 本を足し、scripts の unittest は 297 → 326 本、`check-docs` 差分 0。既存の `test_both_criteria_can_be_chosen` の一覧に `phase18` を足した。デプロイ先には回していない。`shellcheck` は手元に無く掛けていない (CI で見る)。
     親の注記: main で同じ命令を回して 10 行 (満たした 9・判定できず 1) と日次の 5 行が出るのを見た。`snapshot-diff.py` は 1,959 行で、次に足すときは割る (既知の小物の表へ)。
 
-- [ ] **T18.3 `scripts/mx` の TERM の隙間と `others()` の子孫除外**
+- [x] **T18.3 `scripts/mx` の TERM の隙間と `others()` の子孫除外**
   - 目的: 既知の小物の表 (T17.15 の気づき)。TERM の trap を張るのが命令の起動後 (119〜120 行) で、隙間の TERM で子が残る。`others()` (87 行) の子孫除外が `CHILD` 未設定の時点で呼ばれて効いていない。
   - やること: trap を命令の起動前に張る (起動前に TERM が来たら命令を起動せずに抜ける)。子孫除外は手順 3 の後で数えるか、効いていないなら外す (どちらにしたかと理由を報告に書く)。出口の値 (130 / 143 / 75) と使い方は変えない。
   - 受け入れ基準: `scripts/test_mx.py` / `test_mx.sh` に 1 本ずつ (起動の直後に TERM を送っても子が残らない)。既存の mx のテスト全通過。`python3 -m unittest discover -s scripts` 全通過。
+  - 結果 (2026-10-01、`d77b74d` + `b00080b`、取り込み `bdfd8d3`): **trap を命令の起動前 (`setsid … &` の直前) に張り、`others()` の子孫除外は外した。** 手順 1・2 の間は張らない (既定の動きで mx が止まり、命令は起動しない)。trap を移すだけでは足りず、`cleanup` に 2 つ足した: (1) `CHILD` が空なら `$!` を使う (trap は `CHILD=$!` より前に走ることがある。無いと 20/20 残る)、(2) グループへの kill が失敗したら PID に送る (子が `setsid` を呼ぶ前はグループが無い。無くても普段は 0.2 秒後の KILL が拾うが、命令は走ってしまう)。子孫除外は、`others()` を呼ぶのが起動前だけで `CHILD` が必ず未設定、自分の命令の子孫もまだ居ないので外した (印字は同じ)。出口の値・使い方・環境変数は不変。`CHILD=$!` の直前に mx 自身へ TERM を送る仕掛けで 20 回ずつ: 直す前は残った 20/20、直した後は 0/20 で命令は 1 回も走らない。`test_mx.sh` に項目 7 (ok 3 つ: `CHILD=$!` の前の TERM / 0.5 秒寝る偽物の `setsid` で「setsid の前」の TERM / 外から 0〜90 ms ずらした TERM 10 回) を足し、`scripts/test_mx.sh [番号...]` で項目を選べるようにした (7 は偽物のベンチを起動しない)。`test_mx.py` は 1〜6 と 7 の 2 本。直す前の mx では 7 の (a)(b) が NG、`$!` を使わない形でも (a)(b) が NG、PID に送らない形では (b) が NG。`test_mx.sh 7` 20/20、`unittest … -k term` 20/20、`test_mx.sh` 全体 18/18、`python3 -m unittest discover -s scripts` 327 本 OK (skip 8)、`check-docs.sh` 差分 0。本文と違った点: 起動後の隙間は時刻では当たらない (直す前の mx に 0〜30 ms ずらして 120 回、残り 0) ので、テストは `BASH_ENV` の DEBUG trap で mx の `CHILD=$!` の行を目印にした (この行の文面を変えたらテストも直す)。項目 2 の `sleep 0.5` は要らなくなったので外した。`shellcheck` は手元に無く、CI で見ること。
+    親の注記: 本文に無い `cleanup` の 2 つは採った ((1) は無いと直らない、(2) は安全側)。`test_mx.sh` の項目 5・6 は `target/release/rust-http-proxy` という名前の `sleep` を実際に起動するので、回している間はほかの人の `mx` を数秒待たせる (前から)。
 
 - [x] **T18.4 揺れるテスト 2 本の原因と、T17.11 の doc リンク**
   - 目的: 既知の小物の表。(1) `proxy-base` の `log::tests::the_ring_clips_long_lines_and_wraps_at_1000` (`crates/base/src/log.rs:722`) が稀に落ちる。(2) `tests/proxy_test.rs:781` の `test_integration_request_body_on_a_reused_connection` が全体テストの負荷の下で 1 回 502。
@@ -1297,10 +1299,16 @@ Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取�
   - 結果 (2026-10-01、`c50987a` / `d7c6327` / `8b142c1`、取り込み `b52941f`): **3 つとも原因を特定してテストと doc コメントだけ直した (本体は不変)。** (1) `the_ring_clips_long_lines_and_wraps_at_1000` の犯人は水準でも warn でもなく **`records::tests`**: `log_line` は warn 以上をリングに写す前に `records::recording()` を見るので、別の鍵のまま `Mode::Off` にする一瞬に重なった行が落ちる (`left: 1004` / `1003`、`right: 1005`)。直す前のバイナリで全体 11 / 1,500 回・`the_ring` + `records::tests` だけで 50 / 3,000 回再現し、`log::` だけなら 0 / 3,000。`records::tests` の鍵を `RING_TEST_LOCK` の別名にして 0 / 1,500・0 / 3,000、`scripts/mx cargo test -p proxy-base log::` は 30 / 30。(2) `request_body_on_a_reused_connection` の 502 は**テストの側**: `start_origin` は 1 接続 1 要求で閉じるのに応答に `Connection: close` が無く、プロキシがプールに戻した接続に 2 本目の POST が乗って RST を受ける (`failed to read origin response: Connection reset by peer`。本文付きは送り直さない決まり、`crates/http/src/http/mod.rs` の `retryable`)。バイナリ丸ごと 6 本並列 × 8 回で 3 / 48 回再現、閉じる前に 50 ms の待ちを一時的に入れると 0 / 10 通過。応答に `Connection: close` を足して、単独 20 / 20、丸ごと 6 本並列で 0 / 96、単独 8 本並列で 0 / 800 (待ちを入れた形でも 10 / 10)。守っているもの (クライアント側の同じ接続の 2 本目以降の本文) は同じ。(3) rustdoc の警告は本文の 3 か所だけでなく 16 件 (slo 2 + profile 14) あり、上の層のものはクレートの道の素の文字、同じクレートのものは `crate::window::…`、非公開と `STATES` は素の文字か `state_names` にして 0 件。**気づき**: 同じ負荷で `test_integration_self_addressed_origin_form_does_not_loop` が 31 / 144 回 (`elapsed < 10 ms` 4 回、`active_connections <= 1` 27 回)、`status_sort_brings_the_bad_hosts_to_the_front` が 1 / 144 回落ちた (直していない。既知の小物に足す)。本文付きの要求がプールの接続で相手の close と競合すると 502 になるのは本体の決まりどおり (変えるなら要求の経路の判断)。
     親の注記: 表の外で `crates/base/src/records.rs` (テストの鍵) を触っている。base / slo / profile の clippy は (3) のコミットの後に回し直していない (波の最後の全体チェックで見る)。
 
-- [ ] **T18.5 `Cargo.toml` の版をタグと揃える (親。波 19 のあと)**
+- [x] **T18.5 `Cargo.toml` の版をタグと揃える (親。波 19 のあと)**
   - 目的: T17.21: タグは `v0.17.21` だが `Cargo.toml` は 0.1.0 のままで、`--version` と `/status` の `version` は `0.1.0+<commit>` と出る。
   - やること: 本体の版を `0.18.0` にする (次のタグは `v0.18.0`。**タグは利用者の許可なしに打たない**)。`0.1.0` を直書きしているテストと道具 (17 ファイル。`grep -rl '0\.1\.0' tests scripts src crates`) は、版を見ている所だけ直す (作り物の雪像の中の文字列はそのまま)。
   - 受け入れ基準: `rust-http-proxy --version` が `0.18.0+<commit>`。全体テスト全通過、`check-docs.sh` 差分 0。
+  - 結果 (2026-10-01、`a4928a4`): 本体 (`Cargo.toml`) と `proxy-server` (`build.rs` が `CARGO_PKG_VERSION` から `PROXY_VERSION` を作るクレート) の版を `0.18.0` にした (`Cargo.lock` の 2 行も)。ほかのクレートは `0.1.0` のまま。
+    本文の「17 ファイル」は全部作り物の文字列 (`0.1.0+test` `0.1.0+deadbee` など) で、実際の版を見ている所は無かった (`tests/proxy_test.rs` は `env!("CARGO_PKG_VERSION")` と突き合わせる) ので、テストと道具は 1 つも直していない。直したのはコメント 5 か所と README の例 6 か所 (雪像の版 `0.1.0+45b85a9` などの記録はそのまま)。
+    `target/release/rust-http-proxy -V` は `rust-http-proxy 0.18.0+ddb7450-dirty` (コミット前に作ったので `-dirty`)。**次のタグは `v0.18.0`。打つのは利用者の許可のあと**。
+- **波 19 の全体チェック (2026-10-01、親)**: T18.1・T18.2・T18.4 を取り込み、T18.5 を入れた作業ツリーで `cargo fmt --all -- --check` 通過、`cargo clippy --workspace --all-targets -- -D warnings` 警告 0、
+  `cargo test --workspace --no-fail-fast` は **137 バイナリ 817 通過 / 0 失敗 / 1 ignored** (Phase 17 の波の最後は 133 / 814。回し直しは無し)、`cargo build --release` 通過。T18.3 を取り込んだあと `python3 -m unittest discover -s scripts` 327 本 OK、`check-docs.sh` 差分 0。
+  手元で回していないもの: `shellcheck` (無い。T18.2 の `collect-deployed.sh` と T18.3 の `mx` / `test_mx.sh` は CI が初めて掛ける)、`--lite` のシステムコール数と確保数、`--only connect` の CPU/本 (要求の経路に足したのは `v4_first` の探りの回の原子 2 つだけ)。
 
 - [ ] **T18.99 締める (Phase 18 の版を 24 時間走らせたあとに見る・決める・書く)**
   - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): 版 —、起動時刻 —、「前」の雪像 —、「0 時間」の雪像 —。
