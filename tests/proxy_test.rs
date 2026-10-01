@@ -781,13 +781,22 @@ fn test_integration_malformed_requests_do_not_panic() {
 fn test_integration_request_body_on_a_reused_connection() {
     // 同じ接続の 2 本目以降で本文付きの要求を送る。要求行とヘッダーは keep-alive の
     // アイドル時間で待つようにしたので、本文を読む前にタイムアウトが戻ることの確認
+    //
+    // **オリジンは `Connection: close` を付けて返す** (T18.4)。`start_origin` は 1 接続で
+    // 1 要求だけ答えて閉じるので、付けないとプロキシはその接続をプールに戻す。ふだんは
+    // 次の要求の前に FIN が届いて生存確認 (`Pool::get` の peek) が捨てるが、機械が混んで
+    // オリジンのスレッドが「応答を書いた」と「閉じる」の間で止まると、2 本目の POST が
+    // まだ生きて見える接続に乗り、直後の RST で 502 になる (本文付きの要求は送り直さない
+    // 決まり。全体テストの負荷の下で 1 回、6 本並列で 3 / 48 回)。ここで見たいのは
+    // **クライアント側の**接続の 2 本目以降なので、オリジン側は毎回張り直させる
     let counter = Arc::new(AtomicUsize::new(0));
     let (origin_port, _origin) = start_origin(
         Arc::clone(&counter),
         Arc::new(|req, _n| {
             let body = req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
             format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\
+                 Connection: close\r\n\r\n{}",
                 body.len(),
                 body
             )

@@ -1,7 +1,7 @@
 //! 時系列の窓そのもの — 記録の間隔と解像度、1 区間ぶんの応答時間 ([`Window`])。
 //!
 //! **ここに置いてあるのは層の都合**: 段階の窓 ([`crate::profile`]) と転送の窓
-//! ([`crate::transfer`]) が同じものを使い、それらを抱える [`crate::history`] は
+//! (`proxy_metrics_window::transfer`) が同じものを使い、それらを抱える `proxy_metrics_window::history` は
 //! 1 つ上の層に居る (T14.55 でクレートを割ったときに切り出した)。
 //! 元の場所は `history` なので、そちらから今までの名前で引ける。
 
@@ -28,9 +28,9 @@ pub const CAPACITY: usize = 4320;
 ///
 /// メモリ上の 5 秒のリングだけは [`CAPACITY`] (6 時間) まで伸びる (T14.32) ので、
 /// ここの 720 が効くのは **`.rrd` の領域**・**閉じた接続と転送の窓**
-/// (`history::ClosedWindows` / [`crate::transfer::TransferWindows`])・
-/// **`?res=` を書かないときの解像度の自動選択の閾** (1 時間までは 5 秒。[`summary::Params`])
-/// の 3 つ。メモリ上の本数が要るところは [`History::capacity`] を使うこと。
+/// (`history::ClosedWindows` / `proxy_metrics_window::transfer::TransferWindows`)・
+/// **`?res=` を書かないときの解像度の自動選択の閾** (1 時間までは 5 秒。`history::summary::Params`)
+/// の 3 つ。メモリ上の本数が要るところは `history::History::capacity` を使うこと。
 pub const RESOLUTIONS: [(u64, usize); 3] = [(5, 720), (60, 1440), (3600, 720)];
 
 /// `/history?res=5` が `n=` を書かないときに返す本数 (T14.32)。

@@ -153,10 +153,13 @@ pub fn client_key(ip: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     /// 旗はプロセス全体で 1 つなので、触るテストは順番に回す。
-    static LOCK: Mutex<()> = Mutex::new(());
+    ///
+    /// **鍵は `/log` のリングのテストと同じもの** (T18.4)。`log_line` が warn 以上をリングに
+    /// 写すかどうかはこの旗 ([`recording`]) で決まるので、別の鍵だと、ここが `Mode::Off` に
+    /// している一瞬にリングのテストの行が落ちる。
+    use crate::log::tests::RING_TEST_LOCK as LOCK;
 
     #[test]
     fn parses_the_three_spellings_and_rejects_the_rest() {

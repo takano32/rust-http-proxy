@@ -7,10 +7,10 @@
 //!
 //! # 持ち方
 //!
-//! - 窓は **5 秒 × 720 (1 時間) と 60 秒 × 1,440 (1 日)**。[`crate::history`] と同じ形だが、
+//! - 窓は **5 秒 × 720 (1 時間) と 60 秒 × 1,440 (1 日)**。`proxy_metrics_window::history` と同じ形だが、
 //!   **`.rrd` には書かない** (メモリだけ。再起動で消えてよい)。
-//! - 1 つの段階は [`crate::history::Window`] (件数・合計 ms・最大・12 段の区間)。
-//!   区間は [`crate::history::WINDOW_BOUNDS_MS`] と同じ 12 段。
+//! - 1 つの段階は [`crate::window::Window`] (件数・合計 ms・最大・12 段の区間)。
+//!   区間は [`crate::window::WINDOW_BOUNDS_MS`] と同じ 12 段。
 //! - 段階の値を運ぶのは [`crate::metrics::Detail`] の [`crate::metrics::StageMs`] で、
 //!   **書くのは `Metrics::record` が既に取っている鍵の内側**。原子操作は 1 つも増えない。
 //!
@@ -85,7 +85,7 @@ pub const fn capacity_bytes() -> usize {
 /// 細かい方の刻み。
 pub const TICK: Duration = Duration::from_secs(RESOLUTIONS[0].0);
 
-/// CONNECT 1 本の段階 ([`Stages::connect`] の順)。
+/// CONNECT 1 本の段階 (`Stages::connect` の順)。
 ///
 /// `queue` accept してからワーカーが動き出すまで / `client_read` 要求行を読んでから
 /// `Host` まで読み終えるまで / `dns` 名前解決 / `connect` SYN → 確立 /
@@ -101,7 +101,7 @@ pub const CONNECT_STAGES: [&str; 7] = [
     "park",
 ];
 
-/// 転送した 1 要求の段階 ([`Stages::forward`] の順)。
+/// 転送した 1 要求の段階 (`Stages::forward` の順)。
 ///
 /// `origin` はオリジンを掴むまで (プール命中なら 0、それ以外は `dns` + `connect`)、
 /// `send` は要求をオリジンへ送り終えるまで、`ttfb` は応答ヘッダーを読み終えるまで
@@ -124,7 +124,7 @@ pub const ROLES: [&str; 9] = [
     "other",
 ];
 
-/// 番号が分かるシステムコールの名前 ([`SYSCALL_NRS`] と同じ順)。
+/// 番号が分かるシステムコールの名前 (`SYSCALL_NRS` と同じ順)。
 pub const SYSCALL_NAMES: [&str; 19] = [
     "recvfrom",
     "sendto",
@@ -163,7 +163,7 @@ const SYSCALL_NRS: [i64; SYSCALL_NAMES.len()] = [
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 const SYSCALL_NRS: [i64; SYSCALL_NAMES.len()] = [-1; SYSCALL_NAMES.len()];
 
-/// 走行中の枠 ([`STATES`] の先頭)。
+/// 走行中の枠 ([`state_names`] の先頭)。
 const STATE_RUNNING: usize = 0;
 /// 休眠の枠 (`syscall` が読めなかったときの受け皿)。
 const STATE_SLEEPING: usize = 1 + SYSCALL_NAMES.len();
@@ -195,7 +195,7 @@ pub fn role_of(tid: u32, main_tid: u32, comm: &str) -> usize {
         .unwrap_or(ROLES.len() - 1)
 }
 
-/// 標本 1 つを [`STATES`] の枠に落とす。表に無い番号は (`other`, その番号) を返す。
+/// 標本 1 つを [`state_names`] の枠に落とす。表に無い番号は (`other`, その番号) を返す。
 pub fn state_slot(syscall: Option<i64>, state: char) -> (usize, Option<i64>) {
     match syscall {
         Some(nr) if nr >= 0 => match SYSCALL_NRS.iter().position(|n| *n == nr) {
@@ -249,7 +249,7 @@ pub const TOP_THREADS: usize = 8;
 /// **どのスレッドが回っているか**が出ない。空回り (T15.5) や確立の尾を追うときは
 /// tid まで要るので、CPU の多い順に [`TOP_THREADS`] 本だけ残す。
 ///
-/// **`String` は入れない** ([`Sample`] が `Copy` を失うと [`Profile::roll`] の `.copied()` と
+/// **`String` は入れない** ([`Sample`] が `Copy` を失うと `Profile::roll` の `.copied()` と
 /// [`Profile::recent_totals`] が壊れる)。名前は `/proc` の `comm` と同じ**固定長 16 バイト**
 /// (`comm` は 15 文字で切られる)。空の枠は `tid == 0`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -389,7 +389,7 @@ pub fn ms_u32(d: Duration) -> u32 {
 
 /// その区間に観測した段階 (CONNECT 7 段 + forward 6 段)。
 ///
-/// **[`crate::metrics::Metrics::record`] が取っている鍵の内側でだけ書く。**
+/// **`crate::metrics::Metrics::record` が取っている鍵の内側でだけ書く。**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stages {
     /// **0 ms だった観測の数** (CONNECT の 7 段 → forward の 6 段の順)。
@@ -712,7 +712,7 @@ impl Profile {
         *self.stage_totals.locked()
     }
 
-    /// 直前の 1 分の窓がまだ無ければ、5 秒の標本から作る ([`crate::history::History`] と同じ形)。
+    /// 直前の 1 分の窓がまだ無ければ、5 秒の標本から作る (`proxy_metrics_window::history::History` と同じ形)。
     fn roll(&self, now: u64) {
         let step = RESOLUTIONS[1].0;
         let window_start = (now / step) * step;
