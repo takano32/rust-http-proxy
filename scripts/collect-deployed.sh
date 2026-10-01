@@ -6,6 +6,7 @@
 # 続けて回して、**Markdown 1 枚**を標準出力に出す。T14.0 で 17 本の URL を手で叩いていた作業の代わり。
 # **前回の雪像があれば `snapshot-diff.py` (T14.17) を呼ぶ** (再起動で切った平常時の前後・ホスト別・
 # 接続元別・名前解決・エラー・バースト)。**完了の定義に対する判定表は要約のいちばん最後**に置く。
+# 判定表の相手は既定では前回の雪像で、`BEFORE=<再デプロイ直前の雪像>` を渡すとそちらになる (T18.2)。
 #
 # 使い方:
 #   scripts/collect-deployed.sh HOST:PORT [DIR]
@@ -46,8 +47,16 @@
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
-#   CRITERIA (既定 phase17) … 判定表に使う完了の定義 (`phase15` と `phase14` も残してある)。
+#   CRITERIA (既定 phase18) … 判定表に使う完了の定義 (`phase17` `phase15` `phase14` も残してある)。
 #                         `off` で判定表を出さない
+#   BEFORE (無指定)     … **判定表の相手**にする雪像 (再デプロイの直前に撮った「前」。T18.2)。
+#                         無ければ今までどおり直前の 1 枚 (再デプロイのあとは 0 時間の雪像になるので、
+#                         T17.99 では手で `snapshot-diff.py` を回した)。隣に同じ時刻の
+#                         `-profile_res_60.json` があれば `--profile-before` で渡す。
+#                         「2. 前回との差分」とホスト別の相手は変わらない (直前の 1 枚のまま)
+#   ZERO (無指定)       … 0 時間の雪像 (再デプロイの直後に撮った 1 枚)。`snapshot-diff.py --zero` に
+#                         渡す (phase18 の `heap_used + mmap` の増えの行。無ければ「判定できず」)。
+#                         BEFORE も ZERO も、相対パスはリポジトリの根から (`DIR` と同じ)
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
 #   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` を
 #                         繋ぐ枚数の上限 (1 枚目を含む) にも使う
@@ -90,7 +99,10 @@ DIR=${2:-status}
 PROBE=${PROBE:-1}
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
-CRITERIA=${CRITERIA:-phase17}
+CRITERIA=${CRITERIA:-phase18}
+# 判定表の相手 (「前」の雪像) と 0 時間の雪像 (T18.2)。どちらも無指定なら今までどおり
+JUDGE_BEFORE=${BEFORE:-}
+ZERO=${ZERO:-}
 MAX_TIME=${MAX_TIME:-30}
 MAX_PAGES=${MAX_PAGES:-8}
 AAAA=${AAAA:-}
@@ -178,11 +190,12 @@ trap 'rm -rf "$work"' EXIT
 # `/snapshot` は 17 部・最大 4 MiB を 1 つの文字列に組むので、**雪像を配ること自体が
 # RSS を約 1.0 MB 押し上げる**。ほかの通算は 1 秒差で意味が変わらないのでそのまま雪像を使う。
 # 取れなくても続ける (そのときは雪像の中の `/status` の RSS になる)。
-BEFORE="$work/status-before.json"
-if ! curl -s --max-time "$MAX_TIME" "http://$PROXY/status" -o "$BEFORE" ||
-  ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$BEFORE" 2>/dev/null; then
-  rm -f "$BEFORE"
-  BEFORE=
+# (変数の名前は `STATUS_BEFORE`。`BEFORE` は判定表の相手を渡す環境変数。T18.2)
+STATUS_BEFORE="$work/status-before.json"
+if ! curl -s --max-time "$MAX_TIME" "http://$PROXY/status" -o "$STATUS_BEFORE" ||
+  ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$STATUS_BEFORE" 2>/dev/null; then
+  rm -f "$STATUS_BEFORE"
+  STATUS_BEFORE=
 fi
 if ! curl -s --max-time "$MAX_TIME" "http://$PROXY/snapshot" -o "$OUT"; then
   echo "failed to fetch http://$PROXY/snapshot" >&2
@@ -333,6 +346,25 @@ printf -- '- 雪像: `%s` (%s B)\n' "$OUT" "$(wc -c <"$OUT" | tr -d ' ')"
 [ -n "$PROFILE_NOTE" ] && printf -- '- `/profile?res=60` は `offset=` で追って %s\n' "$PROFILE_NOTE"
 [ -n "$ANON_NOTE" ] && printf -- '- 匿名化した写し: %s\n' "$ANON_NOTE"
 [ -n "$PREV" ] && printf -- '- 前回: `%s`\n' "$PREV"
+# 判定表の相手と 0 時間の雪像 (T18.2)。読めないものは 1 行断って、渡されなかったことにする
+if [ -n "$JUDGE_BEFORE" ]; then
+  if [ -f "$JUDGE_BEFORE" ]; then
+    printf -- '- 判定表の相手 (`BEFORE`): `%s`\n' "$JUDGE_BEFORE"
+  else
+    printf -- '- **`BEFORE` の雪像が無い**: `%s` (判定表の相手は前回の雪像のまま)\n' "$JUDGE_BEFORE"
+    echo "BEFORE=$JUDGE_BEFORE is not a file (judging against the previous snapshot)" >&2
+    JUDGE_BEFORE=
+  fi
+fi
+if [ -n "$ZERO" ]; then
+  if [ -f "$ZERO" ]; then
+    printf -- '- 0 時間の雪像 (`ZERO`): `%s`\n' "$ZERO"
+  else
+    printf -- '- **`ZERO` の雪像が無い**: `%s`\n' "$ZERO"
+    echo "ZERO=$ZERO is not a file (the heap row cannot be judged)" >&2
+    ZERO=
+  fi
+fi
 
 # --- 1b. 切れた部の続きを取る (--full。T15.0 (11)) -----------------------------
 # 雪像 1 枚は部ごとに 256 KiB で切れる (`truncated`)。`offset=` を持つ 3 つの部だけ、
@@ -426,7 +458,7 @@ printf '\n'
 # --- 2. 要点 ------------------------------------------------------------------
 printf '## 1. 要点\n\n'
 python3 scripts/snapshot-summary.py "$OUT" ${PREV:+--prev "$PREV"} \
-  ${BEFORE:+--status-before "$BEFORE"} || echo '(要点を組めなかった)'
+  ${STATUS_BEFORE:+--status-before "$STATUS_BEFORE"} || echo '(要点を組めなかった)'
 printf '\n'
 
 # --- 3. 前回との差分 (snapshot-diff.py) ---------------------------------------
@@ -439,18 +471,57 @@ PROFILE_BEFORE=
 [ -n "$PREV" ] && [ -f "${PREV%-snapshot.json}-profile_res_60.json" ] &&
   PROFILE_BEFORE=${PREV%-snapshot.json}-profile_res_60.json
 [ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
+# phase18 の 2 行の材料 (T18.2): `ZERO` があれば `--zero` で、日次の雪像の表は保存先 (`--from-server`
+# が `<日付>T000000Z-snapshot.json` を置く所) を `--daily-snapshots` で渡す。**phase18 のときだけ**
+# (古い定義の判定表は今までと同じ命令で出す)
+P18=()
+if [ "$CRITERIA" = phase18 ]; then
+  [ -n "$ZERO" ] && P18+=(--zero "$ZERO")
+  P18+=(--daily-snapshots "$DIR")
+fi
+# `BEFORE` があるときは判定表だけ相手が違うので、下の差分には判定表を付けず、もう 1 回回す
+DIFF_CRIT=$CRIT
+DIFF_P18=("${P18[@]}")
+if [ -n "$JUDGE_BEFORE" ] || [ -z "$CRIT" ]; then
+  DIFF_CRIT=
+  DIFF_P18=()
+fi
 if [ "$DIFF" = 1 ] && [ -n "$PREV" ]; then
   DIFFMD=$work/snapshot-diff.md
-  # shellcheck disable=SC2086  # $CRIT は 2 語に分けたい
+  # shellcheck disable=SC2086  # $DIFF_CRIT は 2 語に分けたい
   # `/daily` は雪像に無いので、取れていれば判定表のミスの行に日ごとの幅を並べる (T15.15 (2))
   # `/profile?res=60` (上で繋いだ 24 時間ぶん) は phase17 の conn 役の CPU/要求 の材料 (T17.0a)。
   # 前回の雪像の隣に同じ時刻の `-profile_res_60.json` があれば `--profile-before` で前にも渡す
   # (`--from-server` で取り寄せた日の雪像には無いので、そのときは雪像の `/profile` の部で参考になる)
-  python3 scripts/snapshot-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} $CRIT \
-    ${CRIT:+${DAILY:+--daily "$DAILY"}} \
-    ${CRIT:+${PROFILE_AFTER:+--profile "$PROFILE_AFTER"}} \
-    ${CRIT:+${PROFILE_BEFORE:+--profile-before "$PROFILE_BEFORE"}} \
+  python3 scripts/snapshot-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} $DIFF_CRIT \
+    ${DIFF_CRIT:+${DAILY:+--daily "$DAILY"}} \
+    ${DIFF_CRIT:+${PROFILE_AFTER:+--profile "$PROFILE_AFTER"}} \
+    ${DIFF_CRIT:+${PROFILE_BEFORE:+--profile-before "$PROFILE_BEFORE"}} \
+    "${DIFF_P18[@]}" \
     >"$DIFFMD" 2>&1 || echo '(snapshot-diff.py が失敗した)' >>"$DIFFMD"
+fi
+# 判定表の相手が `BEFORE` のとき (T18.2。T17.99 (f) で手で回していた 1 回)。前の `/profile?res=60` は
+# `BEFORE` の隣の同じ時刻のもの。ここで要るのは `## 9.` より後ろだけで、AAAA の有無はホスト別の表
+# (`## 3.`) にしか出ないので、`AAAA` の表が無ければ名前は引かない (`--no-dns`)
+CRITMD=$DIFFMD
+if [ "$DIFF" = 1 ] && [ -n "$JUDGE_BEFORE" ] && [ -n "$CRIT" ]; then
+  CRITMD=$work/snapshot-criteria.md
+  JUDGE_PROFILE=
+  [ -f "${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json" ] &&
+    [ "${JUDGE_BEFORE%-snapshot.json}" != "$JUDGE_BEFORE" ] &&
+    JUDGE_PROFILE=${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json
+  if [ -n "$AAAA" ]; then
+    JUDGE_AAAA=(--aaaa "$AAAA")
+  else
+    JUDGE_AAAA=(--no-dns)
+  fi
+  # shellcheck disable=SC2086  # $CRIT は 2 語に分けたい
+  python3 scripts/snapshot-diff.py "$JUDGE_BEFORE" "$OUT" "${JUDGE_AAAA[@]}" $CRIT \
+    ${DAILY:+--daily "$DAILY"} \
+    ${PROFILE_AFTER:+--profile "$PROFILE_AFTER"} \
+    ${JUDGE_PROFILE:+--profile-before "$JUDGE_PROFILE"} \
+    "${P18[@]}" \
+    >"$CRITMD" 2>&1 || echo '(snapshot-diff.py が失敗した)' >>"$CRITMD"
 fi
 printf '## 2. 前回との差分 (snapshot-diff.py)\n\n'
 if [ -n "$DIFFMD" ]; then
@@ -501,10 +572,17 @@ printf '```\n\n'
 printf '## 6. 完了の定義に対する判定'
 [ "$CRITERIA" = off ] || printf ' (snapshot-diff.py --criteria %s)' "$CRITERIA"
 printf '\n'
-if [ -n "$DIFFMD" ] && grep -q '^## 9\. ' "$DIFFMD"; then
-  sed -n '/^## 9\. /,$p' "$DIFFMD" | sed '1d'   # 見出しは上で出している
+if [ -n "$CRITMD" ] && grep -q '^## 9\. ' "$CRITMD"; then
+  # 相手が `BEFORE` のときは、どの 1 枚と比べた表かを先に書く (上の差分とは相手が違う)
+  [ "$CRITMD" = "$DIFFMD" ] || printf '\n相手は `BEFORE` の雪像 `%s` です (上の差分の相手は前回の雪像)。\n' "$JUDGE_BEFORE"
+  sed -n '/^## 9\. /,$p' "$CRITMD" | sed '1d'   # 見出しは上で出している
 elif [ "$CRITERIA" = off ]; then
   printf '\n(CRITERIA=off なので出していない)\n'
+elif [ -n "$CRITMD" ] && [ "$CRITMD" != "$DIFFMD" ]; then
+  # `BEFORE` との判定が表まで届かなかった (道具の文句をそのまま出す)
+  printf '\n(`BEFORE` の雪像との判定表を組めなかった)\n\n```\n'
+  cat "$CRITMD"
+  printf '```\n'
 else
   printf '\n(前回の雪像が無いか DIFF=0 なので判定できない)\n'
 fi

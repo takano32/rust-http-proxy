@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """`scripts/collect-deployed.sh` が `/profile?res=60` を `offset=` で追って 1 つに繋ぐ試験 (T17.0b) と、
-雪像の隣に匿名化した写しを置く試験 (T17.16)。
+雪像の隣に匿名化した写しを置く試験 (T17.16)、判定表の相手を `BEFORE` / `ZERO` で渡す試験 (T18.2)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "collect-deployed.sh")
 SNAPSHOT = os.path.join(HERE, "testdata", "snapshot-a.json")
+SNAPSHOT_B = os.path.join(HERE, "testdata", "snapshot-b.json")
 
 KEYS = ["t", "requests", "cpu_us", "threads", "pad"]
 
@@ -68,8 +69,8 @@ class FakeProfile:
         }
 
 
-def serve(profile):
-    with open(SNAPSHOT, "rb") as f:
+def serve(profile, snapshot=SNAPSHOT):
+    with open(snapshot, "rb") as f:
         snapshot = f.read()
 
     class H(BaseHTTPRequestHandler):
@@ -196,6 +197,153 @@ class CollectProfileTest(unittest.TestCase):
                                   DIFF="1", CRITERIA="phase17")
         self.assertIn("後: `--profile` 20 標本", out)
         self.assertNotIn("前: `--profile`", out)
+
+
+class CollectBeforeZeroTest(unittest.TestCase):
+    """判定表の相手を `BEFORE`、0 時間の雪像を `ZERO` で渡す (T18.2。既定の `CRITERIA` は phase18)。
+
+    偽のサーバーが返す「いまの雪像」は `testdata/snapshot-b.json` (版 `0.1.0+bbbbbbb`、起動から 12 時間、
+    `memory` は `heap_used` 6.0 + `mmap` 8.0 MB)。保存先には前回の雪像 (直前の 1 枚) を置いておく。
+    """
+
+    PREV = "2025-12-31T120000Z-snapshot.json"
+
+    def setUp(self):
+        with open(SNAPSHOT) as f:
+            self.a = json.load(f)
+        with open(SNAPSHOT_B) as f:
+            self.b = json.load(f)
+
+    def zero(self):
+        """B と同じ起動の 2 分後の 1 枚 (`heap_used` 4.5 + `mmap` 8.0 MB)。"""
+        up = 120
+        return {"taken_at": self.b["taken_at"] - self.b["uptime_secs"] + up,
+                "version": self.b["version"], "uptime_secs": up, "parts": ["status"], "dropped": [],
+                "status": {"version": self.b["version"], "uptime_secs": up, "since_start_secs": up,
+                           "memory": {"rss": 15_000_000, "heap_used": 4_500_000,
+                                      "heap_free": 400_000, "mmap": 8_000_000},
+                           "ipv6": {"attempts": 1}}}
+
+    def run_collect(self, files=None, criteria="phase18", **env):
+        srv = serve(FakeProfile(20), SNAPSHOT_B)
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        d = tempfile.mkdtemp(prefix="t182-")
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", d]))
+        files = dict(files or {})
+        files.setdefault(self.PREV, self.a)
+        for name, body in files.items():
+            with open(os.path.join(d, name), "w") as f:
+                json.dump(body, f)
+        # 時刻は 00:00:00 にしない (いま撮る 1 枚が日次の雪像の名前になって、下の表に並んでしまう)
+        e = dict(os.environ, PROBE="0", DASHBOARD="0", DIFF="1", ANON="0",
+                 COLLECT_STAMP="2026-01-01T120000Z")
+        for name in ("CRITERIA", "BEFORE", "ZERO", "AAAA"):
+            e.pop(name, None)
+        if criteria:
+            e["CRITERIA"] = criteria
+        e.update({k: v.replace("{dir}", d) for k, v in env.items()})
+        r = subprocess.run([SCRIPT, "127.0.0.1:%d" % srv.server_address[1], d],
+                           env=e, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return d, r.stdout, r.stderr
+
+    @staticmethod
+    def judged(out):
+        """要約の末尾の判定の節。"""
+        return out[out.index("## 6. 完了の定義に対する判定"):]
+
+    def test_the_default_criteria_is_phase18_against_the_previous_snapshot(self):
+        d, out, _ = self.run_collect(criteria=None)
+        tail = self.judged(out)
+        self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria phase18)", tail)
+        self.assertIn("前の 8 行は phase17 と同じ物差し", tail)
+        self.assertEqual(tail.count("\n| "), 1 + 10)          # 表の頭 + 10 行
+        # `BEFORE` も `ZERO` も無ければ今までどおり直前の 1 枚が相手で、(g) は判定できない
+        self.assertNotIn("`BEFORE`", out)
+        self.assertIn("`--zero` (0 時間の雪像) が渡されていない", tail)
+        self.assertIn("### snapshot-diff: `%s` →" % os.path.join(d, self.PREV), out)
+
+    def test_before_becomes_the_other_side_of_the_criteria_only(self):
+        before = "2025-12-30T101010Z-snapshot.json"
+        d, out, _ = self.run_collect(files={
+            before: self.a,
+            "2025-12-30T101010Z-profile_res_60.json": FakeProfile(50).page(0),
+            # 直前の 1 枚の隣の `/profile?res=60` は、判定表には使わない
+            "2025-12-31T120000Z-profile_res_60.json": FakeProfile(100).page(0),
+        }, BEFORE="{dir}/" + before)
+        path = os.path.join(d, before)
+        self.assertIn("- 前回: `%s`" % os.path.join(d, self.PREV), out)
+        self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % path, out)
+        # 「2. 前回との差分」の相手は直前の 1 枚のまま。判定表はそこには出ない
+        head = out[:out.index("## 3. ホスト別")]
+        self.assertIn("### snapshot-diff: `%s` →" % os.path.join(d, self.PREV), head)
+        self.assertNotIn("完了の定義に対する判定", head)
+        tail = self.judged(out)
+        self.assertIn("相手は `BEFORE` の雪像 `%s` です" % path, tail)
+        self.assertIn("後: `--profile` 20 標本", tail)
+        self.assertIn("前: `--profile` 50 標本", tail)       # `BEFORE` の隣のもの
+        self.assertNotIn("100 標本", tail)
+        self.assertEqual(tail.count("\n| "), 1 + 10)
+
+    def test_before_without_a_profile_next_to_it(self):
+        before = "2025-12-30T101010Z-snapshot.json"
+        _, out, _ = self.run_collect(files={before: self.a}, BEFORE="{dir}/" + before)
+        tail = self.judged(out)
+        self.assertIn("後: `--profile` 20 標本", tail)
+        self.assertNotIn("前: `--profile`", tail)
+
+    def test_zero_is_passed_to_the_heap_row(self):
+        _, out, _ = self.run_collect(files={"2025-12-31T060000Z-snapshot.json": self.zero()},
+                                     ZERO="{dir}/2025-12-31T060000Z-snapshot.json")
+        tail = self.judged(out)
+        self.assertIn("- 0 時間の雪像 (`ZERO`): ", out)
+        self.assertIn("**+1.5** MB (12.5 → 14.0 MB)", tail)
+        self.assertIn("`--zero` (起動から 2.0 分)", tail)
+
+    def test_before_and_zero_together(self):
+        before = "2025-12-30T101010Z-snapshot.json"
+        _, out, _ = self.run_collect(files={before: self.a,
+                                            "2025-12-31T060000Z-snapshot.json": self.zero()},
+                                     BEFORE="{dir}/" + before,
+                                     ZERO="{dir}/2025-12-31T060000Z-snapshot.json")
+        tail = self.judged(out)
+        self.assertIn("相手は `BEFORE` の雪像", tail)
+        self.assertIn("**+1.5** MB (12.5 → 14.0 MB)", tail)
+
+    def test_the_daily_snapshots_of_the_directory_are_listed_under_phase18(self):
+        daily = self.zero()
+        daily.update(uptime_secs=30_000, taken_at=daily["taken_at"] - 120 + 30_000)
+        files = {"2025-12-30T000000Z-snapshot.json": daily}
+        _, out, _ = self.run_collect(files=files)
+        tail = self.judged(out)
+        self.assertIn("**日次の雪像**", tail)
+        self.assertIn("| `2025-12-30T000000Z-snapshot.json` | 8.3 | 15.0 | 4.5 | 0.4 | 8.0 | — | 1 |",
+                      tail)
+        # 古い定義の判定表には足さない (今までと同じ命令で出す)
+        _, old, _ = self.run_collect(files=files, criteria="phase17")
+        self.assertIn("(snapshot-diff.py --criteria phase17)", old)
+        self.assertNotIn("**日次の雪像**", old)
+        self.assertNotIn("`--zero`", old)
+
+    def test_a_missing_before_or_zero_falls_back_with_a_note(self):
+        d, out, err = self.run_collect(BEFORE="{dir}/nowhere-snapshot.json",
+                                       ZERO="{dir}/nowhere-zero.json")
+        self.assertIn("- **`BEFORE` の雪像が無い**", out)
+        self.assertIn("- **`ZERO` の雪像が無い**", out)
+        self.assertIn("is not a file", err)
+        tail = self.judged(out)
+        self.assertNotIn("相手は `BEFORE` の雪像", tail)
+        self.assertEqual(tail.count("\n| "), 1 + 10)        # 直前の 1 枚との 10 行は出る
+        self.assertIn("`--zero` (0 時間の雪像) が渡されていない", tail)
+
+    def test_criteria_off_and_diff_0_still_suppress_the_table(self):
+        before = "2025-12-30T101010Z-snapshot.json"
+        _, off, _ = self.run_collect(files={before: self.a}, criteria="off",
+                                     BEFORE="{dir}/" + before)
+        self.assertIn("(CRITERIA=off なので出していない)", off)
+        _, nodiff, _ = self.run_collect(files={before: self.a}, BEFORE="{dir}/" + before, DIFF="0")
+        self.assertIn("(前回の雪像が無いか DIFF=0 なので判定できない)", nodiff)
 
 
 
