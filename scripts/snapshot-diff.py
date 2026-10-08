@@ -680,6 +680,15 @@ def events_between(a, b):
 
 # ---------------------------------------------------------------- (7) エラー
 
+def error_repeats(e):
+    """`/errors` の 1 行が何回ぶんか (T20.3。同じ失敗の繰り返しは 1 行にまとまる)。
+
+    `repeats` の無い版 (`0.18.0` まで) と読めない値は 1 として読む。
+    """
+    v = e.get("repeats")
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 1 else 1
+
+
 def errors_info(a, b, hosts, hist):
     causes = [0] * len(CAUSE_NAMES)
     for r in hosts["rows"]:
@@ -690,11 +699,15 @@ def errors_info(a, b, hosts, hist):
     lo, hi = a["taken_at"], b["taken_at"]
     in_window = []
     if isinstance(recorded, list):
+        # まとめた行 (T20.3) は `at` (最初) 〜 `last_at` (最後) の幅を持つので、窓に**掛かって
+        # いれば**入れる (`last_at` の無い版は `at` だけ = 今までと同じ)。回数は行ごとにしか
+        # 無いので、前の雪像より前から続いている行は**窓より前の回も一緒に数える**
         in_window = [e for e in recorded
-                     if not lo or not e.get("at") or lo <= e["at"] <= (hi or e["at"])]
+                     if not lo or not e.get("at")
+                     or (lo <= (e.get("last_at") or e["at"]) and e["at"] <= (hi or e["at"]))]
     by_cause = {}
     for e in in_window:
-        by_cause[e.get("cause")] = by_cause.get(e.get("cause"), 0) + 1
+        by_cause[e.get("cause")] = by_cause.get(e.get("cause"), 0) + error_repeats(e)
     return {
         "hosts_total": sum(r["errors"] for r in hosts["rows"]),
         "hosts_causes": causes,
@@ -1117,13 +1130,21 @@ def render(d, top):
     if er["recorded"] is None:
         p("- `/errors` の個票はこの雪像に入っていない")
     else:
-        p(f"- `/errors` の個票: 窓の中 **{len(er['in_window'])} 件** (雪像には {er['recorded']} 件)"
+        # 件数は `repeats` を足して数える (T20.3)。まとめた行があるときだけ行数を並べる
+        # (無い版の出力は 1 文字も変えない)
+        rows_n = len(er["in_window"])
+        total_n = sum(error_repeats(e) for e in er["in_window"])
+        counted = f"**{rows_n} 件**" if total_n == rows_n else f"**{n(total_n)} 件** ({rows_n} 行)"
+        p(f"- `/errors` の個票: 窓の中 {counted} (雪像には {er['recorded']} "
+          f"{'件' if total_n == rows_n else '行'})"
           + (f" / 原因 {'、'.join(f'{k} {v}' for k, v in er['in_window_causes'].items())}"
              if er["in_window_causes"] else ""))
         for e in er["in_window"][:5]:
             p(f"  - `{stamp(e.get('at'))}` {e.get('kind')} {e.get('target')} → {e.get('status')} "
               f"({e.get('cause')}、dns {e.get('dns_ms')} ms / connect {e.get('connect_ms')} ms、"
-              f"from {e.get('client')})")
+              f"from {e.get('client')})"
+              + ("" if error_repeats(e) == 1 else
+                 f" ×{n(error_repeats(e))} (最後 `{stamp(e.get('last_at') or e.get('at'))}`)"))
     p()
 
     # --- 8

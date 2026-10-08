@@ -53,18 +53,26 @@ fn test_integration_errors_records_a_refused_connect() {
 }
 
 /// forward の 502 も `/errors` に残り、`?n=` が件数を絞ること (新しい順)。
+///
+/// **宛先は 2 つの別のポート** (T20.3)。同じ宛先への同じ失敗は 1 行にまとまるので、
+/// 「2 行ある」を見るには鍵 (`target`) が違う要がある。最後に同じ失敗をもう 1 回送り、
+/// 行が増えずに `repeats` が 2 になることも見る。
 #[test]
 fn test_integration_errors_keeps_the_newest_first_and_honours_n() {
-    let dead_port = TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    // 2 つを同時に束縛してから手放す (順に取ると同じ番号が 2 回配られうる)
+    let (first_port, second_port) = {
+        let a = TcpListener::bind("127.0.0.1:0").unwrap();
+        let b = TcpListener::bind("127.0.0.1:0").unwrap();
+        (
+            a.local_addr().unwrap().port(),
+            b.local_addr().unwrap().port(),
+        )
+    };
     let proxy_port = start_test_proxy(proxy_config());
 
     // 2 つの宛先へ順に失敗させる (2 件目が新しい)
-    for path in ["first", "second"] {
-        let dead = format!("127.0.0.1:{}", dead_port);
+    for (path, port) in [("first", first_port), ("second", second_port)] {
+        let dead = format!("127.0.0.1:{}", port);
         let r = get_via_proxy(proxy_port, &format!("http://{}/{}", dead, path), &dead);
         assert!(r.starts_with("HTTP/1.1 502"), "{}", r);
     }
@@ -73,8 +81,19 @@ fn test_integration_errors_keeps_the_newest_first_and_honours_n() {
     assert!(json.contains("\"kind\":\"forward\""), "{}", json);
     assert!(json.contains("\"cause\":\"refused\""), "{}", json);
     // forward の宛先はホスト別統計と同じ鍵 (`scheme://host:port`)
+    let first = format!("\"target\":\"http://127.0.0.1:{}\"", first_port);
+    let second = format!("\"target\":\"http://127.0.0.1:{}\"", second_port);
+    assert!(json.contains(&first), "{}", json);
+    // 新しい順 (2 件目が先)
     assert!(
-        json.contains(&format!("\"target\":\"http://127.0.0.1:{}\"", dead_port)),
+        json.find(&second).expect("2 件目が無い") < json.find(&first).unwrap(),
+        "{}",
+        json
+    );
+    // まとめていない行は `repeats` 1 で、`last_at` は `at` と同じ (T20.3)
+    assert_eq!(
+        json.matches("\"repeats\":1,\"last_at\":").count(),
+        2,
         "{}",
         json
     );
@@ -87,6 +106,29 @@ fn test_integration_errors_keeps_the_newest_first_and_honours_n() {
     // 知らない / 壊れた問い合わせは既定に倒す
     let bad = endpoint_json(proxy_port, "/errors?n=abc&x=1");
     assert!(bad.contains("\"count\":2"), "{}", bad);
+
+    // 同じ失敗をもう 1 回 (古い方の宛先へ)。行は増えず、その行の `repeats` が 2 になり、
+    // 通算は 3 になる。並びは行ができた順のまま (T20.3)
+    let dead = format!("127.0.0.1:{}", first_port);
+    let r = get_via_proxy(proxy_port, &format!("http://{}/again", dead), &dead);
+    assert!(r.starts_with("HTTP/1.1 502"), "{}", r);
+    let again = endpoint_json(proxy_port, "/errors");
+    assert!(again.contains("\"recorded\":3"), "{}", again);
+    assert!(again.contains("\"kept\":2"), "{}", again);
+    assert!(again.contains("\"count\":2"), "{}", again);
+    assert_eq!(
+        again.matches("\"repeats\":2,\"last_at\":").count(),
+        1,
+        "{}",
+        again
+    );
+    let at_first = again.find(&first).unwrap();
+    assert!(again.find(&second).unwrap() < at_first, "{}", again);
+    assert!(
+        again[at_first..].contains("\"repeats\":2"),
+        "古い方の行に足していない: {}",
+        again
+    );
 }
 
 /// 読むだけで何も返さず、閉じもしないリスナー (`tests/overload_test.rs` と同じ道具)。

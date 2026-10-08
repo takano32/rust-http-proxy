@@ -109,6 +109,103 @@ class Errors(unittest.TestCase):
         self.assertNotIn("`1789050000`", md)
 
 
+def with_repeats(snap, index, repeats, last_at):
+    """`/errors` の 1 行を「まとめた行」(T20.3) にした写しを返す (ほかの行は欄なしのまま)。"""
+    out = json.loads(json.dumps(snap))
+    row = out["errors"]["errors"][index]
+    row["repeats"] = repeats
+    row["last_at"] = last_at
+    return out
+
+
+class Repeats(unittest.TestCase):
+    """同じ失敗を 1 行にまとめた個票 (T20.3。`repeats` と `last_at`) の数え方と表示。"""
+
+    def test_the_count_adds_the_repeats_and_shows_the_rows(self):
+        # 3 行のうち 1 行が 1,000 回ぶん → 1,002 件 (3 行)
+        with written(b=with_repeats(read(B), 0, 1000, 1789080000)) as paths:
+            md = run([paths["b"], "--prev", A])
+        self.assertIn(" / 原因 dns 2 reset 2 tls 1 / 個票 1,002 件 (3 行)\n", md)
+
+    def test_a_merged_row_shows_the_times_and_the_last_time(self):
+        with written(b=with_repeats(read(B), 0, 1000, 1789080000)) as paths:
+            md = run([paths["b"], "--prev", A])
+        self.assertIn("  - `2026-09-10 14:20:00Z` connect beta.example.jp:443 → 502"
+                      " (dns、dns 2000 ms / connect 0 ms、from 192.0.2.10)"
+                      " ×1,000 (最後 `2026-09-10 22:40:00Z`)\n", md)
+        # まとめていない行には何も付かない
+        self.assertIn("from 198.51.100.7)\n", md)
+        self.assertEqual(md.count(") ×"), 1)
+
+    def test_a_snapshot_without_the_field_reads_as_one_each(self):
+        """`repeats` の無い版 (`0.18.0` まで) の出力は 1 文字も変わらない。"""
+        md = run([B, "--prev", A])
+        self.assertIn(" / 個票 3 件\n", md)
+        self.assertNotIn("行)", md)
+        self.assertNotIn(") ×", md)
+
+    def test_one_and_broken_values_are_one(self):
+        for bad in (1, 0, -3, None, "7", 2.5, True):
+            self.assertEqual(ss.repeats({"repeats": bad}), 1, bad)
+        self.assertEqual(ss.repeats({}), 1)
+        self.assertEqual(ss.repeats({"repeats": 2}), 2)
+        b = read(B)
+        for row in b["errors"]["errors"]:
+            row["repeats"], row["last_at"] = 1, row["at"]
+        with written(b=b) as paths:
+            self.assertEqual(run([paths["b"], "--prev", A]), run([B, "--prev", A]))
+
+    def test_the_rebuilt_rrd_line_counts_the_same_way(self):
+        b = with_repeats(read(B), 1, 40, 1789070000)
+        b["hosts"]["hosts"][1]["errors"] = 1          # 前 (3) より小さい
+        with written(b=b) as paths:
+            md = run([paths["b"], "--prev", A])
+        self.assertIn("`scripts/snapshot-diff.py` の §7 を見ること) / 個票 42 件 (3 行)\n", md)
+
+
+class RepeatsInTheDiff(unittest.TestCase):
+    """`snapshot-diff.py` の §7 も同じ数え方をする (T20.3)。
+
+    `test_snapshot_diff.py` は 2,000 行の目安の手前なので、こちらに置いてある。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sd = _load("snapshot_diff_for_repeats", "snapshot-diff.py")
+
+    def diff(self, b):
+        out = io.StringIO()
+        with written(b=b) as paths, contextlib.redirect_stdout(out):
+            self.sd.main([A, paths["b"]])
+            # 見出しに一時ファイルの場所が入るので、比べられるように名前だけにする
+            return out.getvalue().replace(paths["b"], "b.json")
+
+    def test_the_window_count_and_the_causes_add_the_repeats(self):
+        md = self.diff(with_repeats(read(B), 0, 1000, 1789080000))
+        self.assertIn("- `/errors` の個票: 窓の中 **1,001 件** (2 行) (雪像には 3 行)"
+                      " / 原因 dns 1000、reset 1\n", md)
+        self.assertIn("from 192.0.2.10) ×1,000 (最後 `2026-09-10 22:40:00Z`)\n", md)
+
+    def test_a_row_that_started_before_the_window_is_kept_when_it_still_repeats(self):
+        # 3 行目は A を取る前 (1788990000) にできた行。最後の 1 回が窓の中なら入れる
+        md = self.diff(with_repeats(read(B), 2, 50, 1789000100))
+        self.assertIn("窓の中 **52 件** (3 行) (雪像には 3 行) / 原因 dns 51、reset 1\n", md)
+        self.assertIn("`2026-09-09 21:40:00Z` connect beta.example.jp:443", md)
+        # 最後の 1 回も窓より前なら、今までどおり落とす
+        md = self.diff(with_repeats(read(B), 2, 50, 1788999000))
+        self.assertIn("窓の中 **2 件** (雪像には 3 件) / 原因 dns 1、reset 1\n", md)
+
+    def test_a_snapshot_without_the_field_prints_as_before(self):
+        plain = self.diff(read(B))
+        self.assertIn("- `/errors` の個票: 窓の中 **2 件** (雪像には 3 件) / 原因 dns 1、reset 1\n",
+                      plain)
+        self.assertNotIn(") ×", plain)
+        b = read(B)
+        for row in b["errors"]["errors"]:
+            row["repeats"], row["last_at"] = 1, row["at"]
+        self.assertEqual(self.diff(b), plain)
+
+
 class Restart(unittest.TestCase):
     """再起動をまたいだら `/status` の通算は引き算しない (T14.99)。"""
 

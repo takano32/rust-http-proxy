@@ -148,6 +148,27 @@ def tally(rows, key):
     return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
 
+def repeats(e):
+    """`/errors` の 1 行が何回ぶんか (T20.3。同じ失敗の繰り返しは 1 行にまとまる)。
+
+    `repeats` の無い版 (`0.18.0` まで) と読めない値は 1 として読む。
+    """
+    v = e.get("repeats")
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 1 else 1
+
+
+def records_count(rows):
+    """個票の件数の書き方。まとめた行があれば回数の合計と行数を並べる (無ければ今までどおり)。"""
+    total = sum(repeats(e) for e in rows)
+    return f"{len(rows)} 件" if total == len(rows) else f"{num(total)} 件 ({len(rows)} 行)"
+
+
+def repeats_tail(e):
+    """まとめた行の後ろに付ける `×N` と最後の時刻 (まとめていない行は空)。"""
+    k = repeats(e)
+    return "" if k == 1 else f" ×{num(k)} (最後 `{stamp(e.get('last_at') or e.get('at'))}`)"
+
+
 def host_errors(snap):
     """`/hosts` を**ホストの鍵で引ける形**にする (エラー件数と原因別、切れているか)。
 
@@ -777,11 +798,11 @@ def main(argv=None):
     if ed["back"]:
         print(f"- エラー: **引き算できない** ({ed['back']} ホストで `/hosts` の通算が減っている"
               f" — `.rrd` が作り直された疑い。`scripts/snapshot-diff.py` の §7 を見ること)"
-              f" / 個票 {len(errors)} 件")
+              f" / 個票 {records_count(errors)}")
     else:
         shown = " ".join(f"{CAUSE_NAMES[i]} {n}" for i, n in enumerate(ed["causes"]) if n) or "—"
         print(f"- エラー: {num(ed['total'])} 件 ({where}) / 原因 {shown}"
-              f" / 個票 {len(errors)} 件")
+              f" / 個票 {records_count(errors)}")
     if ed["windowed"] and ed["gone"]:
         print(f"  - 後の `/hosts` から消えたホスト {ed['gone']} 件 (通算のエラー"
               f" {ed['gone_errors']} 件) は差分から外した")
@@ -792,7 +813,7 @@ def main(argv=None):
     for e in errors[:5]:
         print(f"  - `{stamp(e.get('at'))}` {e.get('kind')} {e.get('target')} → {e.get('status')}"
               f" ({e.get('cause')}、dns {e.get('dns_ms')} ms / connect {e.get('connect_ms')} ms、"
-              f"from {e.get('client')})")
+              f"from {e.get('client')}){repeats_tail(e)}")
     print()
 
     rec = part(d, "recent")
