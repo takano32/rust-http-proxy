@@ -1166,23 +1166,19 @@ fn test_integration_self_addressed_origin_form_does_not_loop() {
         "GET /x HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
         proxy_port
     );
-    // 自分へ 1 本でもつなぐと loopback でも桁が変わるので、要求 1 本の往復を測る
-    let start = std::time::Instant::now();
     stream.write_all(req.as_bytes()).unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
-    let elapsed = start.elapsed();
 
     assert!(
         response.starts_with("HTTP/1.1 404 Not Found"),
         "{}",
         response
     );
-    assert!(
-        elapsed < Duration::from_millis(10),
-        "自分へ転送していない証拠: {:?}",
-        elapsed
-    );
+    // 自分へ転送していない証拠は**時間ではなく接続の数で見る** (T20.2)。前は「要求 1 本の往復が
+    // 10 ms 未満」で見ていて、混んだ機械ではスレッドを起こすだけで超えた。自分へ 1 本でも
+    // つなげば、それはオリジンへの新しい接続として `new` に数えられる (自分の待ち受けでも同じ。
+    // `test_integration_via_mark_stops_a_loop_between_two_listeners` の 1 段目 → 2 段目が 1)
     let status = status_json(proxy_port);
     assert_eq!(
         status_number(&status, "new"),
@@ -1190,9 +1186,21 @@ fn test_integration_self_addressed_origin_form_does_not_loop() {
         "オリジンへの接続は 1 本も張らない: {}",
         status
     );
-    assert!(
-        status_number(&status, "active_connections") <= 1,
-        "/status を取っているこの 1 本だけ: {}",
+    // 残っている接続が無いこと (ループしていれば自分宛ての接続が積み上がったまま残る)。
+    // **閉じ終わるのを待ってから数える**: プロキシはソケットを閉じたあとで
+    // `active_connections` を引く (`Conn` の欄の順でソケットが先に落ちる) ので、こちらが
+    // EOF を読んだ時点ではまだ引かれていないことがある (上の要求の 1 本も、その前の
+    // `/status` の 1 本も)。混んだ機械ではその隙間に次の `/status` が入って 2 や 3 に見えた
+    wait_until(
+        || status_number(&status_json(proxy_port), "active_connections") <= 1,
+        "/status を取っているこの 1 本だけになる",
+    );
+    // 待っている間にも増えていない
+    let status = status_json(proxy_port);
+    assert_eq!(
+        status_number(&status, "new"),
+        0,
+        "オリジンへの接続は 1 本も張らない: {}",
         status
     );
 }
