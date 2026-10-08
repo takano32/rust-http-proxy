@@ -1439,7 +1439,8 @@ T18.99 の「次のターンの準備」。**利用者の決定 (2026-10-08): Ph
 - **波 20a・20b の全体チェック (2026-10-08、親)**: T20.1〜T20.4 と `/slo` の直し (`dc91661`) を入れた main (`dd49f48`) で `cargo fmt --all -- --check` 通過、`cargo clippy --workspace --all-targets -- -D warnings` 警告 0、
   `cargo test --workspace --no-fail-fast` は **139 バイナリ 831 通過 / 0 失敗 / 1 ignored** (波 19 は 137 / 817。回し直しは無し)、`python3 -m unittest discover -s scripts` 357 本 OK、`check-docs.sh` 差分 0、`check-dashboard.js` 通過、
   `MX_SLOTS=1 scripts/mx bash -c 'cargo clean --release && scripts/build-memory.sh 120'` 通過 (1 回)。そのあと本体と `proxy-server` の版を **`0.20.0`** にした (Phase の番号に合わせる。次のタグは `v0.20.0`。打つのは利用者)。
-  手元で回していないもの: `shellcheck` (無い。CI で見る)、`--lite` のシステムコール数と CPU/要求 (T20.3 はエラーの経路だけ、T20.4 は成功の経路に `outcome` の比較 1 つ)。
+  **CI (2026-10-08、run 37764593930、`6cb20bd`)**: `check` (`shellcheck` を含む)・`build-memory`・`deployed-like-snapshot` の 3 つとも通過。
+  手元で回していないもの: `shellcheck` (無い。CI で通った)、`--lite` のシステムコール数と CPU/要求 (T20.3 はエラーの経路だけ、T20.4 は成功の経路に `outcome` の比較 1 つ)。
 
 - [ ] **T20.99 締める (Phase 20 の版を 24 時間走らせたあとに見る・決める・書く)**
   - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): **デプロイ先は `tokyo.sorahost.net:60357`** (2026-10-08 に切り替え。§2)。版 —、起動時刻 —、「前」の雪像 — (再デプロイの直前に `status/tokyo/` へ撮る。nagoya の雪像は「前」に使わない)、「0 時間」の雪像 —。
