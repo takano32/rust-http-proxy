@@ -126,7 +126,7 @@ impl Thresholds {
 /// 標本 1 本の判定。**`bits` が本文の「4 ビット」** (立っている = その閾を外した)。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Verdict {
-    /// 判定できたか (**確立が 1 本以上あった**)。偽なら分母に入れない
+    /// 判定できたか (**確立かエラーが 1 本以上あった**。T20.4)。偽なら分母に入れない
     pub judged: bool,
     /// 外した閾のビット (`1 << i`、`i` は [`NAMES`] の位置)
     pub bits: u8,
@@ -144,11 +144,15 @@ impl Verdict {
 /// 標本 1 本を 4 つの閾に当てる (**時計もリングも触らない**ので試験しやすい)。
 pub fn judge(th: &Thresholds, s: &Sample) -> Verdict {
     let connects = s.connect.count;
-    if connects == 0 {
-        // 確立が 1 本も無い標本は「判定なし」。分位点が 0 になるだけでなく、
+    if connects == 0 && s.errors == 0 {
+        // 確立もエラーも 1 本も無い標本は「判定なし」。分位点が 0 になるだけでなく、
         // 「誰も使っていない時間」を達成として数えると達成率の意味が変わる
         return Verdict::default();
     }
+    // **エラーだけの標本も判定する** (T20.4)。失敗した 1 件は確立の窓に入らなくなったので、
+    // 確立 0 本を「判定なし」のままにすると、繋がらない CONNECT だけの時間 (宛先が全滅した
+    // 時間帯も) が達成率から消える。確立が無いときは速さとミスの 3 つは 0 のまま
+    // (外したことにしない) で、エラー率だけが効く
     let attempts = connects + s.forward.count + s.errors;
     let values = [
         s.connect.quantile_ms(0.5),
@@ -158,7 +162,11 @@ pub fn judge(th: &Thresholds, s: &Sample) -> Verdict {
         } else {
             s.errors as f64 / attempts as f64
         },
-        s.dns_misses as f64 / connects as f64,
+        if connects == 0 {
+            0.0
+        } else {
+            s.dns_misses as f64 / connects as f64
+        },
     ];
     let limits = th.limits();
     let mut bits = 0u8;
@@ -179,7 +187,7 @@ pub fn judge(th: &Thresholds, s: &Sample) -> Verdict {
 pub struct Hour {
     /// その時間の 0 分 0 秒 (epoch 秒)
     pub t: u64,
-    /// 判定できた標本の数 (確立が 1 本以上あったもの)
+    /// 判定できた標本の数 (確立かエラーが 1 本以上あったもの)
     pub judged: u32,
     /// そのうち 4 つとも満たした数
     pub met: u32,
@@ -607,13 +615,11 @@ mod tests {
     }
 
     #[test]
-    fn a_sample_without_a_connect_is_not_judged() {
+    fn a_sample_without_a_connect_or_an_error_is_not_judged() {
         let th = DEFAULT;
-        let empty = Sample {
-            t: 0,
-            errors: 9,
-            ..Sample::default()
-        };
+        // forward が通っただけの標本も今までどおり判定しない
+        let mut empty = Sample::default();
+        empty.forward.observe(5);
         let v = judge(&th, &empty);
         assert!(!v.judged, "{:?}", v);
         assert!(!v.met());
@@ -621,6 +627,28 @@ mod tests {
         let mut tr = Tracker::new();
         tr.observe(&th, &empty);
         assert_eq!(tr.hours().count(), 0);
+    }
+
+    /// 繋がらない CONNECT だけの標本 (T20.4 のあとは確立 0 本・エラー N 件) は、
+    /// **エラー率だけ外した標本**として数える (速さとミスの 3 つは外さない)。
+    #[test]
+    fn a_sample_with_only_errors_misses_the_error_rate_alone() {
+        let th = DEFAULT;
+        let only_errors = Sample {
+            t: 0,
+            errors: 9,
+            dns_misses: 9,
+            ..Sample::default()
+        };
+        let v = judge(&th, &only_errors);
+        assert!(v.judged, "{:?}", v);
+        assert_eq!(v.bits, 0b0100, "{:?}", v);
+        assert_eq!(v.values, [0.0, 0.0, 1.0, 0.0]);
+        assert!(!v.met());
+        let mut tr = Tracker::new();
+        tr.observe(&th, &only_errors);
+        let h = tr.hours().next().expect("判定した標本が 1 つある");
+        assert_eq!((h.judged, h.met, h.miss), (1, 0, [0, 0, 1, 0]));
     }
 
     #[test]
@@ -669,13 +697,14 @@ mod tests {
         s.forward.observe(4);
         s.forward.observe(4);
         assert_eq!(judge(&th, &s).values[2], 0.25);
-        // 率は 1 を超えない (失敗だけの標本は確立が 0 本なので「判定なし」で、0 で割らない)
+        // 率は 1 を超えない。失敗だけの標本はエラー率 1.0 で判定し、確立が 0 本なので
+        // ミスの率は 0 で割らずに 0 のまま
         let mut only = sample(0, 0, 0);
         only.errors = 3;
         only.dns_misses = 3;
         let v = judge(&th, &only);
-        assert!(!v.judged, "{:?}", v);
-        assert_eq!(v.values, [0.0; 4]);
+        assert!(v.judged, "{:?}", v);
+        assert_eq!(v.values, [0.0, 0.0, 1.0, 0.0]);
     }
 
     /// **受け入れ基準**: 既知の標本列から達成率が手計算と一致し、外れた時間帯が 17〜23 時。
