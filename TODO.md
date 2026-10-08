@@ -640,9 +640,7 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 | keep-alive の HTTP 接続が `/connections` でバイト数を出さない (宛先は T14.2 (5) / T14.48 で済。`set_bytes` を呼ぶのはトンネルだけ) | T13.4、T17.20 の気づき | 要求ごとに書かない方針とどう両立させるかを先に決める |
 | `dashboard.html` が上限まで余り 247 B (81,673 / 81,920 B) | T15.0 単位 9 と全体チェック | 次にカードを足す前に、`scripts/check-dashboard.js` の上限を上げるか、古いカードの説明文を削る |
 | `scripts/snapshot-diff.py` が 1,959 行 (目安の 2,000 行の手前) | T18.2 | 次に判定の行を足す前に、`--criteria` の部 (`RULES` と各 Phase の関数) を別ファイルへ割る |
-| `unseen_hosts_try_ipv4_first_after_three_losses` (`proxy-net-conn`) に「< 50 ms」の時間の判定が残っている (T18.1 で直した 2 本と同じ形。落ちた記録は無い) | T18.1 | 落ちたら試行の順で見る形に直す |
-| `tests/proxy_test.rs` の `test_integration_self_addressed_origin_form_does_not_loop` が、バイナリ丸ごと 6 本並列の負荷で 31 / 144 回落ちる (`elapsed < 10 ms` 4 回、`active_connections <= 1` が 2 で 27 回)。通常の全体テストで出るかは未確認 | T18.4 の気づき | 時間ではなく「自分宛てに繋ぎに行っていない」ことで見る。接続数は閉じ終わるのを待ってから数える |
-| `tests/proxy_test.rs` の `test_integration_status_sort_brings_the_bad_hosts_to_the_front` が同じ負荷で 1 / 144 回 (200 のはずが 404)。原因は見ていない | T18.4 の気づき | 原因を先に見る |
+| 「束縛してすぐ手放したポート」を死んだ宛先に使うテストが `crates/net-conn/src/net.rs` に 2 か所残っている (`a_deadline_reports_timed_out_not_the_first_refusal` の `closed`、`unseen_hosts…` の後半の `dead`。落ちた記録は無い) | T20.2 の気づき | 落ちたら `tests/proxy_test.rs` の `RefusedPort` (束縛したまま `listen` しない) を `tests/common/` か `net.rs` のテストへ持っていく |
 | 本文付きの要求 (POST など) がプールのオリジン接続に乗り、相手がちょうど閉じたときは 502 (送り直すのは本文の無い GET / HEAD だけ。`crates/http/src/http/mod.rs` の `retryable`)。決まりどおりで、実機で出た記録は無い | T18.4 | 実機の `/errors` に POST の 502 が出たら、要求の経路の判断として決める |
 | `warm_promote` が次の予定を「上げた時刻 + 45 秒」に置く (答えを引いた時刻ではない。齢 60〜75 秒が期限切れになりうる。実機の `warm_stale` の一部かも) | T17.5 の模型 | 予定を答えの齢から出す。`scripts/dns-replay.py` で先に数える |
 
@@ -1390,12 +1388,13 @@ T18.99 の「次のターンの準備」。**利用者の決定 (2026-10-08): Ph
   - 受け入れ基準: 割るだけのコミットの前後で、testdata と実データ (`status/2026-10-01T133549Z` → `2026-10-08T092521Z` + `--zero status/2026-10-01T133907Z-snapshot.json`) の phase14 / 15 / 17 / 18 の出力が `cmp` 同一。phase20 は実データで (g) が **+2.2 MB で「満たした」**、表示だけの 3 行に 0.23・32 / 26・0.05 件/時 が出て、「届かず」が 0。
     成功した接続だけの行が 398 本・p50 7・p95 66 ms 前後で出る。どのファイルも 2,000 行未満。`python3 -m unittest discover -s scripts` 全通過 (本数が減らない)、`check-docs.sh` 差分 0。**デプロイ先には触らない**。
 
-- [ ] **T20.2 残りの揺れるテスト 3 本**
+- [x] **T20.2 残りの揺れるテスト 3 本**
   - 目的: 既知の小物の表 (T18.1・T18.4 の気づき)。(1) `tests/proxy_test.rs` の `test_integration_self_addressed_origin_form_does_not_loop` がバイナリ丸ごと 6 本並列で 31 / 144 回落ちる (`elapsed < 10 ms` 4 回、`active_connections <= 1` が 2 で 27 回)。
     (2) 同じファイルの `test_integration_status_sort_brings_the_bad_hosts_to_the_front` が同じ負荷で 1 / 144 回 (200 のはずが 404。原因は見ていない)。(3) `proxy-net-conn` の `unseen_hosts_try_ipv4_first_after_three_losses` に「< 50 ms」の時間の判定が残っている (落ちた記録は無い)。
   - やること: T18.4 と同じやり方 (**原因を先に見る**。再現はバイナリ丸ごと 6 本並列 × 8 回の範囲で、1 回の試みは 10 分まで)。(1) は時間ではなく「自分宛てに繋ぎに行っていない」ことで見る形にし、接続数は閉じ終わるのを待ってから数える (待ちは上限つきの見張りで。固定の `sleep` を足すだけにしない)。
     (2) は原因が言えたらテストを直す。**本体の問題なら直さずに報告**。(3) は T18.1 の `happy_eyeballs_skips_unreachable_first_candidate` と同じく試行の順で見る。テストの意味は変えない。
   - 受け入れ基準: (1)(2) は直した後、丸ごと 6 本並列 × 8 回を 2 巡 (96 回) で 0 回、単独 20 回通過。(3) は 20 回通過。触ったクレートの clippy 警告 0。本体のコードは変えない。
+  - 結果 (2026-10-08、`9e25897` / `c02c097` / `4951b87`、取り込み `2e76134`): **3 本ともテストだけ直した (本体は不変)。(1)(2) は再現して原因を特定、(3) は落ち方を再現しないまま試行の順で見る形にした。** 再現は `proxy_test` のバイナリ丸ごと 6 本並列 × 8 回を 7 巡 (336 回、コピーごとに `HOME` / `XDG_CACHE_HOME` / `TMPDIR` を別にした)。(1) `self_addressed_origin_form_does_not_loop` は 78 / 336 回 (`active_connections <= 1` が 70 回 = 2 が 67・3 が 3、`elapsed < 10 ms` が 8 回 = 10.9〜33.0 ms)。接続数の原因はテストの側: プロキシはソケットを閉じたあとで `active_connections` を引く (`Conn` の欄の順で `client` が先、`ActiveGuard` が最後) ので、EOF を読んだ直後の `/status` にはまだ前の接続が数えられている。時間の判定を外して「自分へ繋いでいない」は `origin_connections.new == 0` で見る (自分の待ち受けへの接続も `new` に数えられる)。接続数は `wait_until` (上限 10 秒) で閉じ終わるのを待ってから数え、待った後も `new` が 0。(2) `status_sort_brings_the_bad_hosts_to_the_front` は 1 / 336 回で、**「200 のはずが 404」ではなく拒まれるホストの行の「502 のはずが 404」** (応答は自分宛ての知らないパスの 404)。原因はテストの側: `dead_port` を束縛してすぐ手放していたので、使うまでの間 (遅いオリジンの 300 ms を含む) に同じ番号がプロキシの待ち受けに配られると、自分宛ての判定はポートだけなので 404 になる (本体は決まりどおり。取ったのが直後の `start_test_proxy` か別のテストバイナリのプロキシかはログからは区別できていない)。束縛したまま `listen` しないソケット (`RefusedPort`。`socket` / `bind` / `getsockname` を直に宣言、Linux 以外は今までどおり) をテストの終わりまで持つ形にした。(3) `unseen_hosts_try_ipv4_first_after_three_losses` は「< 50 ms」を外し、4 本目の間だけ間隔を 2 秒に延ばして `ipv6_counters()` が `(3, 0, 3)` のまま動かないことで見る (T18.1 と同じ形。直す前は回していない)。直した後: 丸ごと 6 本並列 × 8 回を 4 巡 (192 回) で 0 回、(1)(2) は単独 20 / 20 ずつ、(3) は 20 / 20、`rust-http-proxy` と `proxy-net-conn` の clippy 警告 0。同じ負荷でほかに落ちたテストは無い。**気づき**: 同じ「束縛してすぐ手放す」が `crates/net-conn/src/net.rs` のテスト 2 か所 (`a_deadline_reports_timed_out_not_the_first_refusal` の `closed`、`unseen_hosts…` の後半の `dead`) に残っている (落ちた記録は無く、触っていない)。`RefusedPort` は `tests/proxy_test.rs` の中に置いた (ほかのバイナリでも使うなら `tests/common/` へ)。
 
 - [ ] **T20.3 `/errors` の個票で、同じ失敗の繰り返しを 1 行にまとめる**
   - 目的: T18.99。`/errors` のリングは 500 件 (`MAX_ERRORS`、`crates/metrics-recent/src/recent.rs:48`)。IPv6 だけの宛先への同じ 502 が約 140 秒おきに続いて、500 件が全部その 1 種類で埋まった (約 19 時間で一巡)。
