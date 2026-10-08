@@ -253,12 +253,14 @@ fn test_integration_status_sort_brings_the_bad_hosts_to_the_front() {
             .into_bytes()
         }),
     );
-    // 誰も待っていないポート (`?sort=errors` の的。束縛してすぐ手放す)
-    let dead_port = TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    // 誰も待っていないポート (`?sort=errors` の的)。**束縛したまま持つ** (T20.2): 前は束縛して
+    // すぐ手放していたので、使うまでの間 (遅いオリジンの 300 ms を含む) に同じ番号を
+    // ほかの待ち受けが取ることがあった。取ったのがプロキシ (下の `start_test_proxy` か、
+    // 並んで走っている別のテストバイナリのもの) だと、`/dead` は「自分宛ての知らないパス」
+    // になって 502 ではなく 404 が返る
+    // (この値が関数の終わりまで生きている間、番号は押さえられている)
+    let dead_hold = RefusedPort::reserve();
+    let dead_port = dead_hold.port();
     let proxy_port = start_test_proxy(proxy_config());
 
     // (1) 要求数の多い健全なホスト。IP リテラルなので名前解決の表を通らない
@@ -326,6 +328,80 @@ fn test_integration_status_sort_brings_the_bad_hosts_to_the_front() {
     );
     // 監視が 5 秒ごとに引く口なので、太らせない
     assert!(by_errors.len() <= 64 * 1024, "{} バイト", by_errors.len());
+}
+
+/// 誰も待っていない (`connect` が必ず `ECONNREFUSED` になる) ポートの持ち分 (T20.2)。
+///
+/// 「束縛してすぐ手放す」だと、使うまでの間にカーネルが同じ番号をほかの待ち受けに配る
+/// ことがある (テストバイナリを並べて回すと 336 回に 1 回)。ここでは**束縛したまま
+/// `listen` しない**ソケットを持ち続ける: 番号はこの値が落ちるまで誰にも配られず、
+/// 待ち受けていないので接続は拒まれる。`std` には `listen` しない束縛の口が無いので、
+/// `tests/common` の `connect_from` と同じ作法で直に宣言する (外部クレートは足さない)。
+struct RefusedPort {
+    port: u16,
+    /// 番号を押さえているソケット (落とすと番号が空く)
+    #[cfg(target_os = "linux")]
+    _held: std::os::fd::OwnedFd,
+}
+
+impl RefusedPort {
+    #[cfg(target_os = "linux")]
+    fn reserve() -> RefusedPort {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+        #[repr(C)]
+        struct SockAddrIn {
+            family: u16,
+            port: u16,
+            addr: [u8; 4],
+            zero: [u8; 8],
+        }
+        unsafe extern "C" {
+            fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+            fn bind(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
+            fn getsockname(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
+        }
+        const AF_INET: u16 = 2;
+        const SOCK_STREAM: i32 = 1;
+
+        let fd = unsafe { socket(AF_INET as i32, SOCK_STREAM, 0) };
+        assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+        // ここから先は失敗しても `OwnedFd` が閉じる
+        let held = unsafe { OwnedFd::from_raw_fd(fd) };
+        let mut addr = SockAddrIn {
+            family: AF_INET,
+            // 0 = 空いている番号をカーネルに選ばせる
+            port: 0,
+            addr: [127, 0, 0, 1],
+            zero: [0; 8],
+        };
+        let mut len = std::mem::size_of::<SockAddrIn>() as u32;
+        let ok = unsafe {
+            bind(held.as_raw_fd(), &addr, len) == 0
+                && getsockname(held.as_raw_fd(), &mut addr, &mut len) == 0
+        };
+        assert!(ok, "bind: {}", std::io::Error::last_os_error());
+        RefusedPort {
+            // ポートだけはネットワークバイト順
+            port: u16::from_be(addr.port),
+            _held: held,
+        }
+    }
+
+    /// ほかの OS は今までどおり「束縛してすぐ手放す」(番号を押さえない)。
+    #[cfg(not(target_os = "linux"))]
+    fn reserve() -> RefusedPort {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        RefusedPort { port }
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
 }
 
 /// `/status` に問い合わせを付けて引く (T13.3 の `?sort=`)。
@@ -1166,23 +1242,19 @@ fn test_integration_self_addressed_origin_form_does_not_loop() {
         "GET /x HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
         proxy_port
     );
-    // 自分へ 1 本でもつなぐと loopback でも桁が変わるので、要求 1 本の往復を測る
-    let start = std::time::Instant::now();
     stream.write_all(req.as_bytes()).unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
-    let elapsed = start.elapsed();
 
     assert!(
         response.starts_with("HTTP/1.1 404 Not Found"),
         "{}",
         response
     );
-    assert!(
-        elapsed < Duration::from_millis(10),
-        "自分へ転送していない証拠: {:?}",
-        elapsed
-    );
+    // 自分へ転送していない証拠は**時間ではなく接続の数で見る** (T20.2)。前は「要求 1 本の往復が
+    // 10 ms 未満」で見ていて、混んだ機械ではスレッドを起こすだけで超えた。自分へ 1 本でも
+    // つなげば、それはオリジンへの新しい接続として `new` に数えられる (自分の待ち受けでも同じ。
+    // `test_integration_via_mark_stops_a_loop_between_two_listeners` の 1 段目 → 2 段目が 1)
     let status = status_json(proxy_port);
     assert_eq!(
         status_number(&status, "new"),
@@ -1190,9 +1262,21 @@ fn test_integration_self_addressed_origin_form_does_not_loop() {
         "オリジンへの接続は 1 本も張らない: {}",
         status
     );
-    assert!(
-        status_number(&status, "active_connections") <= 1,
-        "/status を取っているこの 1 本だけ: {}",
+    // 残っている接続が無いこと (ループしていれば自分宛ての接続が積み上がったまま残る)。
+    // **閉じ終わるのを待ってから数える**: プロキシはソケットを閉じたあとで
+    // `active_connections` を引く (`Conn` の欄の順でソケットが先に落ちる) ので、こちらが
+    // EOF を読んだ時点ではまだ引かれていないことがある (上の要求の 1 本も、その前の
+    // `/status` の 1 本も)。混んだ機械ではその隙間に次の `/status` が入って 2 や 3 に見えた
+    wait_until(
+        || status_number(&status_json(proxy_port), "active_connections") <= 1,
+        "/status を取っているこの 1 本だけになる",
+    );
+    // 待っている間にも増えていない
+    let status = status_json(proxy_port);
+    assert_eq!(
+        status_number(&status, "new"),
+        0,
+        "オリジンへの接続は 1 本も張らない: {}",
         status
     );
 }
