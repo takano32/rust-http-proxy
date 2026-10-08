@@ -1436,6 +1436,11 @@ T18.99 の「次のターンの準備」。**利用者の決定 (2026-10-08): Ph
     **(B) はそのまま** (オリジンが返した 5xx も初バイトの窓に入れない)。分けると `attempts` がまた 2 重に数える。forward は要求の 100 本に 1 本も無く、README には「5xx にならなかった転送」と書いてある。(C) もそのまま (単位は 回/接続 で、元から 1 を超えうる)。
     `/history?summary=1&since=restart` の件は既知の小物の表へ。
 
+- **波 20a・20b の全体チェック (2026-10-08、親)**: T20.1〜T20.4 と `/slo` の直し (`dc91661`) を入れた main (`dd49f48`) で `cargo fmt --all -- --check` 通過、`cargo clippy --workspace --all-targets -- -D warnings` 警告 0、
+  `cargo test --workspace --no-fail-fast` は **139 バイナリ 831 通過 / 0 失敗 / 1 ignored** (波 19 は 137 / 817。回し直しは無し)、`python3 -m unittest discover -s scripts` 357 本 OK、`check-docs.sh` 差分 0、`check-dashboard.js` 通過、
+  `MX_SLOTS=1 scripts/mx bash -c 'cargo clean --release && scripts/build-memory.sh 120'` 通過 (1 回)。そのあと本体と `proxy-server` の版を **`0.20.0`** にした (Phase の番号に合わせる。次のタグは `v0.20.0`。打つのは利用者)。
+  手元で回していないもの: `shellcheck` (無い。CI で見る)、`--lite` のシステムコール数と CPU/要求 (T20.3 はエラーの経路だけ、T20.4 は成功の経路に `outcome` の比較 1 つ)。
+
 - [ ] **T20.99 締める (Phase 20 の版を 24 時間走らせたあとに見る・決める・書く)**
   - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): **デプロイ先は `tokyo.sorahost.net:60357`** (2026-10-08 に切り替え。§2)。版 —、起動時刻 —、「前」の雪像 — (再デプロイの直前に `status/tokyo/` へ撮る。nagoya の雪像は「前」に使わない)、「0 時間」の雪像 —。
   - 判定: `BEFORE=<前> ZERO=<0 時間> scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo` の `--criteria phase20` (T20.1)。完了の定義 (下書き): phase20 の判定表で「届かず」0、`/errors` の個票が同じ失敗で埋まっていない (`repeats` にまとまっている)、`/status` の `recent_quantiles.connect` と `/history` の確立の区間に失敗の時間が入っていない (T20.4。失敗が続いていても p90 が秒にならない)。
