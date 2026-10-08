@@ -47,7 +47,8 @@
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
-#   CRITERIA (既定 phase18) … 判定表に使う完了の定義 (`phase17` `phase15` `phase14` も残してある)。
+#   CRITERIA (既定 phase20) … 判定表に使う完了の定義 (`phase18` `phase17` `phase15` `phase14` も
+#                         残してある)。phase20 は phase18 の物差しを直したもの (T20.1)。
 #                         `off` で判定表を出さない
 #   BEFORE (無指定)     … **判定表の相手**にする雪像 (再デプロイの直前に撮った「前」。T18.2)。
 #                         無ければ今までどおり直前の 1 枚 (再デプロイのあとは 0 時間の雪像になるので、
@@ -55,7 +56,8 @@
 #                         `-profile_res_60.json` があれば `--profile-before` で渡す。
 #                         「2. 前回との差分」とホスト別の相手は変わらない (直前の 1 枚のまま)
 #   ZERO (無指定)       … 0 時間の雪像 (再デプロイの直後に撮った 1 枚)。`snapshot-diff.py --zero` に
-#                         渡す (phase18 の `heap_used + mmap` の増えの行。無ければ「判定できず」)。
+#                         渡す (phase20 / phase18 の `heap_used + mmap` の増えの行。無ければ
+#                         「判定できず」)。
 #                         BEFORE も ZERO も、相対パスはリポジトリの根から (`DIR` と同じ)
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
 #   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` を
@@ -99,7 +101,7 @@ DIR=${2:-status}
 PROBE=${PROBE:-1}
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
-CRITERIA=${CRITERIA:-phase18}
+CRITERIA=${CRITERIA:-phase20}
 # 判定表の相手 (「前」の雪像) と 0 時間の雪像 (T18.2)。どちらも無指定なら今までどおり
 JUDGE_BEFORE=${BEFORE:-}
 ZERO=${ZERO:-}
@@ -472,10 +474,11 @@ PROFILE_BEFORE=
   PROFILE_BEFORE=${PREV%-snapshot.json}-profile_res_60.json
 [ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
 # phase18 の 2 行の材料 (T18.2): `ZERO` があれば `--zero` で、日次の雪像の表は保存先 (`--from-server`
-# が `<日付>T000000Z-snapshot.json` を置く所) を `--daily-snapshots` で渡す。**phase18 のときだけ**
+# が `<日付>T000000Z-snapshot.json` を置く所) を `--daily-snapshots` で渡す。**phase18 と、同じ材料を
+# 使う phase20 (T20.1) のときだけ**
 # (古い定義の判定表は今までと同じ命令で出す)
 P18=()
-if [ "$CRITERIA" = phase18 ]; then
+if [ "$CRITERIA" = phase18 ] || [ "$CRITERIA" = phase20 ]; then
   [ -n "$ZERO" ] && P18+=(--zero "$ZERO")
   P18+=(--daily-snapshots "$DIR")
 fi

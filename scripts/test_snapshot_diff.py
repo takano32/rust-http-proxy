@@ -824,7 +824,8 @@ class Criteria15(unittest.TestCase):
         self.assertIn("判定できず", md)
 
     def test_both_criteria_can_be_chosen(self):
-        self.assertEqual(sorted(sd.CRITERIA), ["phase14", "phase15", "phase17", "phase18"])
+        self.assertEqual(sorted(sd.CRITERIA),
+                         ["phase14", "phase15", "phase17", "phase18", "phase20"])
 
 
 def conn_profile(conn_us_per_row):
@@ -1367,6 +1368,313 @@ class Deployed18(unittest.TestCase):
         self.assertEqual([r["ipv6_attempts"] for r in rows], [3, 6, 6, 6, 6])
         self.assertEqual([f"{r['heap_free'] / 1e6:.1f}" for r in rows],
                          ["7.5", "8.2", "11.4", "11.3", "11.4"])
+
+
+def cached(snap, cache, heap_used=None, mmap=None):
+    """`/status` の `memory` に `cache_memory` (と、あれば `heap_used` / `mmap`) を置く。"""
+    m = snap["status"]["memory"]
+    if cache is None:
+        m.pop("cache_memory", None)
+    else:
+        m["cache_memory"] = cache
+    if heap_used is not None:
+        m["heap_used"] = heap_used
+    if mmap is not None:
+        m["mmap"] = mmap
+    return snap
+
+
+def with_recent(snap, connects=(), failed=0, others=0, oldest=None, truncated=False):
+    """`/recent` の部を足す: 成功した CONNECT (`ms.connect` を `connects` の値で)、失敗した CONNECT
+    (`error:unreachable`、1,300 ms) を `failed` 本、CONNECT ではない行を `others` 本。"""
+    at = snap["taken_at"] - 60
+    rows = [{"at": at, "kind": "connect", "reason": "client_eof", "status": 0,
+             "ms": {"dns": 0, "connect": v, "first_relay": v + 1}} for v in connects]
+    rows += [{"at": at, "kind": "connect", "reason": "error:unreachable", "status": 502,
+              "ms": {"dns": 0, "connect": 1300, "first_relay": 0}} for _ in range(failed)]
+    rows += [{"at": at, "kind": "http", "reason": "client_eof", "status": 200,
+              "ms": {"dns": 0, "connect": 999, "first_relay": 0}} for _ in range(others)]
+    if oldest is not None and rows:
+        rows[-1]["at"] = oldest
+    snap["recent"] = {"schema": 1, "recent": rows, "count": len(rows), "truncated": truncated}
+    snap["parts"] = list(snap.get("parts") or []) + ["recent"]
+    snap["dropped"] = [x for x in snap.get("dropped") or [] if x != "recent"]
+    return snap
+
+
+class Criteria20(unittest.TestCase):
+    """`--criteria phase20` (T20.1): phase18 の 10 行の物差しを直したもの。
+
+    (g) は `cache_memory` を引いてから比べ、ミス率・`timeout`・`dns_warm` の最大の 3 行は表示だけ。
+    """
+
+    SHOWN_ROWS = (0, 3, 5)
+
+    def judge(self, name="phase20", a=None, b=None, extra=()):
+        return build([a or A, b or B, "--no-dns", "--criteria", name, *extra])["criteria"]
+
+    def row(self, i, a=None, b=None, extra=()):
+        return self.judge(a=a, b=b, extra=extra)["rows"][i]
+
+    def test_phase20_gives_ten_rows_and_three_of_them_are_display_only(self):
+        with written(z=cached(zero_snapshot(), 0), b=with_probes(read(B), 0)) as p:
+            c = self.judge(b=p["b"], extra=("--zero", p["z"]))
+        self.assertEqual(len(sd.RULES["phase20"]), 10)
+        self.assertEqual(len(c["rows"]), 10)
+        self.assertEqual([i for i, r in enumerate(c["rows"]) if r[3] == sd.SHOWN],
+                         list(self.SHOWN_ROWS))
+        # 表示だけの行は集計に数えない (鍵は今までの 3 つのまま、本数は別の鍵)
+        self.assertEqual(sorted(c["tally"]), sorted((sd.MET, sd.MISSED, sd.UNKNOWN)))
+        self.assertEqual(sum(c["tally"].values()), 7)
+        self.assertEqual(c["display_only"], 3)
+        self.assertEqual([r[3] for r in c["rows"][8:]], [sd.MET, sd.MET])
+
+    def test_the_other_six_rows_are_the_phase18_ones(self):
+        self.assertEqual(sd.PHASE20, sd.PHASE18)
+        for i in (1, 2, 4, 6, 7, 9):
+            self.assertIs(sd.RULES["phase20"][i], sd.RULES["phase18"][i], i)
+        rows18, rows20 = self.judge("phase18")["rows"], self.judge()["rows"]
+        for i in (1, 2, 4, 6, 7, 9):
+            self.assertEqual(rows20[i], rows18[i], i)
+
+    def test_a_display_only_row_keeps_the_number_and_drops_the_verdict(self):
+        """phase18 なら「届かず」になる材料でも、phase20 は同じ実測を出して「表示だけ」。"""
+        b = Criteria17.warm(read(B), 32, 26)                 # 枠が埋まり、追い出しが 26
+        host = dict(next(h for h in b["hosts"]["hosts"] if h["host"].startswith("connect://")),
+                    host="connect://discord.com:443", requests=100, dns_misses=23)
+        b["hosts"]["hosts"].append(host)                     # A には居ない = 100 要求ぶんが差分
+        i = b["history"]["3600"]["keys"].index("errors_by_cause")
+        b["history"]["3600"]["samples"][-1][i] = [0, 0, 0, 9, 0, 0, 0, 0]   # timeout 9 件
+        with written(b=b) as p:
+            c18, c20 = self.judge("phase18", b=p["b"]), self.judge(b=p["b"])
+        for i in self.SHOWN_ROWS:
+            old, new = c18["rows"][i], c20["rows"][i]
+            self.assertEqual(old[3], sd.MISSED, i)
+            self.assertEqual(new[3], sd.SHOWN, i)
+            self.assertEqual(new[2], old[2], i)              # 実測の欄は同じ文字
+            self.assertEqual(new[1], f"— (phase18 は {old[1]})", i)
+            self.assertTrue(new[4].startswith(old[4] + "。**閾を置かない**: "), i)
+        self.assertIn("**0.23** (23 ミス / 100 要求)", c20["rows"][0][2])
+        self.assertIn("最大 **32** 件、`warm_evicted` **26**", c20["rows"][5][2])
+        self.assertEqual(c20["rows"][0][0], "`discord.com` のミス率")
+        self.assertEqual(c20["rows"][3][0], "エラーの `timeout` (件/時。前の期間と並べる)")
+        self.assertEqual(c20["rows"][5][0], "`dns_warm` の最大 (枠 32) と `dns.warm_evicted`")
+        self.assertEqual(c18["tally"][sd.MISSED], 3)
+        self.assertEqual(c20["tally"][sd.MISSED], 0)
+        self.assertNotIn("display_only", c18)
+
+    def test_a_display_only_row_without_its_part_still_says_why(self):
+        row = self.row(0)                                    # testdata に `discord.com` は無い
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertEqual(row[2], "—")
+        self.assertIn("`/hosts` の差分に `discord.com` が無い", row[4])
+
+    # --- (g) `heap_used + mmap − cache_memory`
+
+    def test_the_cache_is_taken_out_of_the_growth(self):
+        """T18.99 の形: キャッシュが 13.0 MB 入って `heap_used` と `mmap` が同じだけ増えた。"""
+        b = cached(read(B), 13_000_000, heap_used=10_000_000, mmap=17_000_000)
+        with written(z=cached(zero_snapshot(), 0), b=b) as p:
+            old = self.judge("phase18", b=p["b"], extra=("--zero", p["z"]))["rows"][8]
+            row = self.row(8, b=p["b"], extra=("--zero", p["z"]))
+        self.assertEqual(old[3], sd.MISSED)                  # 12.5 → 27.0 で +14.5
+        self.assertIn("**+14.5** MB (12.5 → 27.0 MB)", old[2])
+        self.assertEqual(row[3], sd.MET)                     # キャッシュを引くと 12.5 → 14.0
+        self.assertEqual(row[0], "`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満")
+        self.assertEqual(row[1], "< 5 MB")
+        self.assertIn("**+1.5** MB (12.5 → 14.0 MB)", row[2])
+        self.assertIn("`heap_used` 4.5 → 10.0、`mmap` 8.0 → 17.0、`cache_memory` 0.0 → 13.0、"
+                      "`heap_free` 0.4 → 1.2、`rss` 15.0 → 21.0 MB (`heap_free` と `rss` は表示だけ)",
+                      row[2])
+        self.assertIn("`--zero` (起動から 2.0 分) と後の雪像 (起動から 12.0 時間)", row[4])
+
+    def test_a_cache_in_the_zero_snapshot_is_taken_out_too(self):
+        with written(z=cached(zero_snapshot(), 2_000_000)) as p:
+            row = self.row(8, extra=("--zero", p["z"]))      # B の `cache_memory` は 0
+        self.assertIn("**+3.5** MB (10.5 → 14.0 MB)", row[2])
+        self.assertEqual(row[3], sd.MET)
+
+    def test_five_megabytes_or_more_without_the_cache_is_missed(self):
+        with written(z=cached(zero_snapshot(heap_used=1_000_000), 0),
+                     edge=cached(zero_snapshot(heap_used=1_000_001), 0)) as p:
+            row = self.row(8, extra=("--zero", p["z"]))
+            edge = self.row(8, extra=("--zero", p["edge"]))
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**+5.0** MB (9.0 → 14.0 MB)", row[2])
+        self.assertEqual(edge[3], sd.MET)
+
+    def test_a_version_without_cache_memory_is_not_read_as_zero(self):
+        with written(z=zero_snapshot(), full=cached(zero_snapshot(), 0),
+                     b=cached(read(B), None)) as p:
+            zero = self.row(8, extra=("--zero", p["z"]))     # 0 時間の雪像に欄が無い
+            after = self.row(8, b=p["b"], extra=("--zero", p["full"]))
+        self.assertEqual(zero[3], sd.UNKNOWN)
+        self.assertIn("0 時間の `cache_memory` が無い", zero[4])
+        self.assertIn("`cache_memory` — → 0.0", zero[2])
+        self.assertEqual(after[3], sd.UNKNOWN)
+        self.assertIn("後の `cache_memory` が無い", after[4])
+
+    def test_without_zero_or_with_another_start_the_growth_cannot_be_judged(self):
+        self.assertEqual(self.row(8)[3], sd.UNKNOWN)
+        self.assertIn("`--zero` (0 時間の雪像) が渡されていない", self.row(8)[4])
+        with written(other=cached(zero_snapshot(version="0.1.0+aaaaaaa"), 0)) as p:
+            other = self.row(8, extra=("--zero", p["other"]))
+        self.assertEqual(other[3], sd.UNKNOWN)
+        self.assertIn("同じ起動ではない (版が変わった", other[4])
+
+    # --- 印字と、古い定義を変えていないこと
+
+    def test_the_markdown_names_the_phase20_parts(self):
+        md = run([A, B, "--no-dns", "--criteria", "phase20"])
+        self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase20`)", md)
+        self.assertIn("phase18 と同じ並びの 10 行", md)
+        self.assertIn("**メモリのキャッシュ (`memory.cache_memory`) を引いてから**", md)
+        self.assertNotIn("前の 8 行は phase17 と同じ物差し", md)
+        self.assertIn("| **表示だけ** |", md)
+        self.assertIn("満たした 3 行・判定できず 4 行 (ほかに表示だけ 3 行。集計に数えない)", md)
+
+    def test_the_older_criteria_do_not_mention_display_only(self):
+        for name in ("phase14", "phase15", "phase17", "phase18"):
+            md = run([A, B, "--no-dns", "--criteria", name])
+            self.assertNotIn("表示だけ 3 行", md, name)
+            self.assertNotIn("| **表示だけ** |", md, name)
+
+
+class RecentConnect(unittest.TestCase):
+    """差分の「2. 平常時の前後」に足した**成功した接続だけ**の確立時間 (T20.1 (3))。
+
+    `/history` の確立の区間と `recent_quantiles.connect` には失敗した接続の時間も入るので、
+    後の雪像の `/recent` から `reason` が `error` で始まらない CONNECT だけを読む。
+    """
+
+    ROW = "| CONNECT 確立 (**成功した接続だけ**) |"
+
+    def test_rank_quantile_returns_one_of_the_values(self):
+        self.assertIsNone(sd.rank_quantile([], 0.5))
+        self.assertEqual(sd.rank_quantile([7], 0.95), 7)
+        vals = list(range(1, 21))                            # 1〜20
+        self.assertEqual(sd.rank_quantile(vals, 0.5), 10)
+        self.assertEqual(sd.rank_quantile(vals, 0.95), 19)
+        self.assertEqual(sd.rank_quantile(vals, 1.0), 20)
+
+    def test_only_the_connects_that_did_not_fail_are_counted(self):
+        b = with_recent(read(B), connects=[9, 5, 7, 6, 8, 66, 7, 7, 7, 7], failed=4, others=2,
+                        oldest=read(B)["taken_at"] - 7200)
+        with written(b=b) as p:
+            d = build([A, p["b"], "--no-dns"])
+            md = run([A, p["b"], "--no-dns"])
+        rc = d["recent_connect"]
+        self.assertEqual((rc["n"], rc["p50"], rc["p95"], rc["failed"], rc["rows"]),
+                         (10, 7, 66, 4, 16))
+        self.assertEqual(rc["taken_at"] - rc["oldest"], 7200)
+        self.assertFalse(rc["truncated"])
+        line = next(x for x in md.splitlines() if x.startswith(self.ROW))
+        self.assertIn("| **p50 7** / p95 66 ms (10 本。ほかに失敗 4 本) |", line)
+        self.assertIn("個票 16 行、2026-09-10 22:26:40Z → 取得までの 2.0 時間)", line)
+        self.assertNotIn("切れている", line)
+        # 表の中の位置は `/history` の「CONNECT 確立」のすぐ下
+        lines = md.splitlines()
+        self.assertTrue(lines[lines.index(line) - 1].startswith("| CONNECT 確立 | avg "))
+
+    def test_a_row_without_the_connect_stage_is_left_out(self):
+        b = with_recent(read(B), connects=[5, 9])
+        b["recent"]["recent"].append({"at": b["taken_at"], "kind": "connect",
+                                      "reason": "idle_timeout", "ms": None})
+        with written(b=b) as p:
+            rc = build([A, p["b"], "--no-dns"])["recent_connect"]
+        self.assertEqual((rc["n"], rc["p50"], rc["p95"], rc["rows"]), (2, 5, 9, 3))
+
+    def test_a_truncated_part_says_so(self):
+        with written(b=with_recent(read(B), connects=[5], truncated=True)) as p:
+            md = run([A, p["b"], "--no-dns", "--criteria", "phase20"])
+        self.assertIn("。**256 KiB で切れている**ので窓は短い) |", md)
+
+    def test_without_the_recent_part_the_row_says_so(self):
+        self.assertIsNone(build([A, B, "--no-dns"])["recent_connect"])
+        md = run([A, B, "--no-dns"])
+        self.assertIn(self.ROW + " — | — | 後の雪像に `/recent` の部が無い |", md)
+
+    def test_all_failed_gives_no_quantile(self):
+        with written(b=with_recent(read(B), failed=3)) as p:
+            md = run([A, p["b"], "--no-dns"])
+        self.assertIn("| **p50 —** / p95 — ms (0 本。ほかに失敗 3 本) |", md)
+
+    def errors(self, per_sample):
+        """後の期間の 1 時間の標本すべてに `unreachable` のエラーを `per_sample` 件ずつ置く。"""
+        b = read(B)
+        causes = [0] * len(pd.CAUSE_NAMES)
+        causes[pd.CAUSE_NAMES.index("unreachable")] = per_sample
+        set_column(b, "3600", "errors", per_sample)
+        set_column(b, "3600", "errors_by_cause", causes)
+        return b
+
+    def test_many_errors_add_a_note_under_the_table(self):
+        """B の後の期間の平常時は 2 標本 400 本。エラー 30 件ずつ = 60 件 = 15.0%。"""
+        with written(b=self.errors(30), few=self.errors(10)) as p:
+            md = run([A, p["b"], "--no-dns"])
+            few = run([A, p["few"], "--no-dns"])
+        self.assertIn("**確立の区間には失敗した接続の時間も入っている**: 後の期間 (平常時) のエラーは "
+                      "60 件で、接続 400 本の 15.0% (> 5%。原因別: unreachable 60)。", md)
+        # ちょうど 5% (20 ÷ 400) は「超える」ではない
+        self.assertNotIn("確立の区間には失敗した接続の時間も入っている", few)
+
+    def test_the_older_criteria_print_exactly_what_they_did(self):
+        """phase14〜phase18 の出力は 1 文字も変えない: `/recent` があっても行も断り書きも鍵も足さない。"""
+        b = with_recent(self.errors(30), connects=[5, 6, 7], failed=2)
+        plain = self.errors(30)
+        plain["dropped"] = []                                # B は `recent` を落とした雪像
+        with written(b=b, plain=plain) as p:
+            for name in sd.FROZEN:
+                argv = ["--no-dns", "--criteria", name]
+                md = run([A, p["b"], *argv])
+                self.assertNotIn("成功した接続だけ", md, name)
+                self.assertNotIn("確立の区間には失敗した", md, name)
+                # `/recent` の部があっても無くても同じ文字 (違うのはファイルの名前だけ)
+                self.assertEqual(md.replace(p["b"], p["plain"]), run([A, p["plain"], *argv]), name)
+                self.assertNotIn("recent_connect", build([A, p["b"], *argv]), name)
+            self.assertIn("成功した接続だけ", run([A, p["b"], "--no-dns", "--criteria", "phase20"]))
+        self.assertEqual(sd.FROZEN, ("phase14", "phase15", "phase17", "phase18"))
+
+
+@unittest.skipUnless(all(os.path.isfile(os.path.join(DEPLOYED, f)) for f in (
+    "2026-10-01T133549Z-snapshot.json", "2026-10-01T133549Z-profile_res_60.json",
+    "2026-10-01T133907Z-snapshot.json", "2026-10-08T092521Z-snapshot.json",
+    "2026-10-08T092521Z-daily.json", "2026-10-08T092521Z-profile_res_60.json")),
+    "デプロイ先の雪像が無い (リポジトリには入れない)")
+class Deployed20(unittest.TestCase):
+    """T20.1 の受け入れ基準: 2026-10-01 → 2026-10-08 + 0 時間の雪像 (T18.99 の 3 枚) の phase20。"""
+
+    def setUp(self):
+        def at(name):
+            return os.path.join(DEPLOYED, name)
+        self.argv = [at("2026-10-01T133549Z-snapshot.json"), at("2026-10-08T092521Z-snapshot.json"),
+                     "--no-dns", "--daily", at("2026-10-08T092521Z-daily.json"),
+                     "--profile", at("2026-10-08T092521Z-profile_res_60.json"),
+                     "--profile-before", at("2026-10-01T133549Z-profile_res_60.json"),
+                     "--zero", at("2026-10-01T133907Z-snapshot.json")]
+
+    def test_phase18_is_what_t1899_wrote(self):
+        c = build(self.argv + ["--criteria", "phase18"])["criteria"]
+        self.assertEqual(c["tally"], {sd.MET: 6, sd.MISSED: 4, sd.UNKNOWN: 0})
+        self.assertIn("**+15.7** MB (17.9 → 33.6 MB)", c["rows"][8][2])
+
+    def test_phase20_has_no_missed_row(self):
+        d = build(self.argv + ["--criteria", "phase20"])
+        c, rows = d["criteria"], d["criteria"]["rows"]
+        self.assertEqual(c["tally"], {sd.MET: 7, sd.MISSED: 0, sd.UNKNOWN: 0})
+        self.assertEqual(c["display_only"], 3)
+        self.assertEqual([r[3] for r in rows].count(sd.SHOWN), 3)
+        self.assertIn("**0.23** (82 ミス / 351 要求)", rows[0][2])
+        self.assertIn("**0.05** 件/時 (前 0.02 件/時)", rows[3][2])
+        self.assertIn("最大 **32** 件、`warm_evicted` **26**", rows[5][2])
+        # (g): キャッシュ 13.5 MB を引いて +2.2 MB
+        self.assertEqual(rows[8][3], sd.MET)
+        self.assertIn("**+2.2** MB (17.9 → 20.2 MB)", rows[8][2])
+        self.assertIn("`cache_memory` 0.0 → 13.5", rows[8][2])
+        # 成功した接続だけ: `/recent` の 398 本 (T18.99 の p50 7 / p95 66 ms)
+        rc = d["recent_connect"]
+        self.assertEqual((rc["n"], rc["p50"], rc["p95"], rc["failed"]), (398, 7, 66, 178))
+        self.assertGreater(d["history"]["after"]["connect_p95"], 2000)
 
 
 class Output(unittest.TestCase):

@@ -2,7 +2,7 @@
 # `scripts/snapshot-diff.py --criteria` の部 (**Phase の完了の定義に対する判定表**。TODO.md T20.1)。
 #
 # `snapshot-diff.py` が 1,959 行になったので、判定の部だけをここへ割った (T18.2 の申し送り)。
-# 持っているのは `PHASE14`〜 の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
+# 持っているのは `PHASE14`〜`PHASE20` の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
 # 判定表の印字 (`render_criteria()`) と、**判定の関数と差分の両方が使う小物**
 # (`part` `stamp` `n` `ms` `ratio` `restart_info` `norm_history` `merged_history` `miss_rate`)。
 # 小物までこちらにあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
@@ -204,9 +204,20 @@ PHASE18 = dict(
     # (h) `v4_first` の間に利用者の経路で IPv6 を探った回数 (T18.1 の `ipv6.request_probes`)
     request_probes=0,
 )
-CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18}
+# T20.1: phase18 の 10 行の**物差しを直したもの** (T18.99 で分かった 2 つ)。閾の値は phase18 と同じ。
+# (g) はメモリのキャッシュ (`memory.cache_memory`) を引いてから比べる (上限まで使ってよい作りなので、
+# 入ったぶんは漏れではない)。`discord.com` のミス率・`dns_warm` の最大と `warm_evicted`・`timeout` の
+# 3 行は**表示だけ** (閾を置くと使われ方の変化で毎回落ちる。TODO.md Phase 20 の「候補 4 つ」)
+PHASE20 = dict(PHASE18)
+CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18,
+            "phase20": PHASE20}
+# **出力を 1 文字も変えない定義** (過去の判定を同じ命令で出し直せるように)。T20.1 で差分の表に
+# 足した行 (成功した接続だけの確立時間) は、`--criteria` がこの 4 つのときは出さない
+FROZEN = ("phase14", "phase15", "phase17", "phase18")
 
 MET, MISSED, UNKNOWN = "満たした", "届かず", "判定できず"
+# 閾を置かない行の判定の欄 (T20.1)。`judge()` の集計 (`tally`) には数えない
+SHOWN = "表示だけ"
 
 
 def per_hour(agg, interval, value):
@@ -828,6 +839,71 @@ def _p18_request_probes(c, th):
     return (label, limit, shown, MET if v == want else MISSED, src)
 
 
+# --- Phase 20 (T20.1。phase18 の 10 行の物差しを直したもの) ---
+
+def _p20_heap(c, th):
+    """T20.1 (g): `heap_used + mmap − cache_memory` が 0 時間の雪像から 5 MB 以上増えていないか。
+
+    phase18 の (g) (`_p18_heap`) から**メモリのキャッシュ** (`memory.cache_memory`) を引いたもの。
+    キャッシュは上限まで使ってよい作りなので、入ったぶんは漏れではない (T18.99 は 13.4 MB 入って
+    +15.7 MB と出た。引くと +2.2 MB)。**`cache_memory` の欄が無い版は 0 として扱わず
+    「判定できず」**。ほかの読み方 (`--zero` が要る・後の雪像と同じ起動であること・`heap_free` と
+    `rss` は並べるだけ) は `_p18_heap` と同じ。
+    """
+    lim = th["heap_growth_mb"]
+    label = f"`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが {lim:.0f} MB 未満"
+    limit = f"< {lim:.0f} MB"
+    z = c["b"].get("zero_snapshot")
+    if not z:
+        return (label, limit, "—", UNKNOWN, "`--zero` (0 時間の雪像) が渡されていない")
+    between = restart_info(z, c["b"])
+    if between["restarted"]:
+        return (label, limit, "—", UNKNOWN,
+                "`--zero` の雪像は後の雪像と同じ起動ではない (" + "、".join(between["reasons"]) + ")")
+    mz, ma = memory_of(z), memory_of(c["b"])
+    shown = "、".join(f"`{k}` {mb(mz.get(k))} → {mb(ma.get(k))}"
+                     for k in ("heap_used", "mmap", "cache_memory", "heap_free", "rss"))
+    shown += " MB (`heap_free` と `rss` は表示だけ)"
+    src = (f"`--zero` (起動から {uptime_text(z.get('uptime_secs'))}) と後の雪像 "
+           f"(起動から {uptime_text(c['b'].get('uptime_secs'))}) の `/status` の `memory`")
+    missing = [f"{who}の `{k}`" for who, m in (("0 時間", mz), ("後", ma))
+               for k in ("heap_used", "mmap", "cache_memory") if m.get(k) is None]
+    if missing:
+        return (label, limit, shown, UNKNOWN, "、".join(missing) + " が無い。" + src)
+    before = mz["heap_used"] + mz["mmap"] - mz["cache_memory"]
+    after = ma["heap_used"] + ma["mmap"] - ma["cache_memory"]
+    grown = (after - before) / 1e6
+    return (label, limit, f"**{grown:+.1f}** MB ({mb(before)} → {mb(after)} MB)。" + shown,
+            MET if grown < lim else MISSED, src)
+
+
+def display_only(rule, label, why):
+    """判定の関数 `rule` を**表示だけ**の行にする (T20.1)。
+
+    実測と出どころは `rule` のまま出し、閾の欄は `—` (phase18 の閾を添える)、判定の欄は
+    「表示だけ」(`SHOWN`) にする。`judge()` の集計は `MET` / `MISSED` / `UNKNOWN` しか数えないので、
+    この行は数に入らない。`label` は `th` を受け取って行の名前を返す (元の名前は「〜未満」と
+    閾を含むので使わない)。`why` は閾を置かない理由で、出どころの欄の末尾に付く。
+    """
+    def row(c, th):
+        _, limit, shown, _, src = rule(c, th)
+        return (label(th), f"— (phase18 は {limit})", shown, SHOWN,
+                f"{src}。**閾を置かない**: {why}")
+    row.__name__ = rule.__name__ + "_shown"
+    return row
+
+
+_p20_watch_host = display_only(
+    _p15_watch_host, lambda th: f"`{th['watch_host']}` のミス率",
+    "間遠に使うと warm の窓から外れて次の 1 本がミスになる (1 回 約 10 ms)。使われ方で動く (T18.99)")
+_p20_timeout = display_only(
+    _p15_timeout, lambda th: "エラーの `timeout` (件/時。前の期間と並べる)",
+    "バーストの中の数件で前の期間を越える (T18.99 は 8 件とも同じ 3 時間)")
+_p20_warm_max = display_only(
+    _p17_warm_max, lambda th: f"`dns_warm` の最大 (枠 {th['warm_max_limit']}) と `dns.warm_evicted`",
+    "枠が埋まるのはバーストの間だけで、追い出された名前が払うのは次のミス 1 回 (T18.99)")
+
+
 RULES = {
     "phase14": (_p14_dns_per_connect, _p14_major_hosts, _p14_connect_p50, _p14_overload),
     "phase15": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band,
@@ -837,6 +913,10 @@ RULES = {
 }
 # phase18 = phase17 の 8 行 + (g) + (h)
 RULES["phase18"] = RULES["phase17"] + (_p18_heap, _p18_request_probes)
+# phase20 = phase18 と同じ並びの 10 行。3 行が表示だけ、(g) がキャッシュを引く版、残りの 6 行はそのまま
+RULES["phase20"] = (_p20_watch_host, _p15_refresh_rate, _p15_miss_band, _p20_timeout,
+                    _p17_conn_per_request, _p20_warm_max, _p17_events, _p17_cgroup,
+                    _p20_heap, _p18_request_probes)
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,
@@ -859,8 +939,13 @@ def judge(name, hist, hosts, majors, status_b, overload, th,
         "hours": (hours or 0) / 3600.0,
     }
     rows = [rule(c, th) for rule in RULES[name]]
-    return {"name": name, "rows": rows,
-            "tally": {v: sum(1 for r in rows if r[3] == v) for v in (MET, MISSED, UNKNOWN)}}
+    out = {"name": name, "rows": rows,
+           "tally": {v: sum(1 for r in rows if r[3] == v) for v in (MET, MISSED, UNKNOWN)}}
+    # 表示だけの行 (T20.1) は集計に数えない。あるときだけ本数を別の鍵で持つ (古い定義の形は変えない)
+    shown = sum(1 for r in rows if r[3] == SHOWN)
+    if shown:
+        out["display_only"] = shown
+    return out
 
 
 # ---------------------------------------------------------------- 判定表の印字
@@ -906,10 +991,21 @@ def render_criteria(d, grouped):
           "`ipv6.request_probes` (T18.1。0 でなければ `canary.ipv6_runs` / `ipv6_skipped` から"
           "理由を読む) です。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
+    if c["name"] == "phase20":
+        # T20.1。phase18 と同じ並びの 10 行で、物差しを 2 つ直してある
+        p("phase18 と同じ並びの 10 行で、材料も同じです (`--daily` `--profile` `--profile-before` "
+          "`--zero`)。直したのは 2 つ (T20.1): `heap_used + mmap` の増えは**メモリのキャッシュ "
+          "(`memory.cache_memory`) を引いてから**比べます (キャッシュは上限まで使ってよい作りなので、"
+          "入ったぶんは漏れではありません。欄が無い版は 0 とせず「判定できず」)。"
+          "ミス率 (`watch_host`)・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行は"
+          "**表示だけ**で、閾を置かず、下の集計にも数えません (使われ方で動く数字なので)。"
+          "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+        p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")
     for row in c["rows"]:
         p(f"| {row[0]} | {row[1]} | {row[2]} | **{row[3]}** | {row[4]} |")
     p()
-    p("・".join(f"{k} {v} 行" for k, v in c["tally"].items() if v))
+    p("・".join(f"{k} {v} 行" for k, v in c["tally"].items() if v)
+      + (f" (ほかに表示だけ {c['display_only']} 行。集計に数えない)" if c.get("display_only") else ""))
     p()
