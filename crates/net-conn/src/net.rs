@@ -930,23 +930,30 @@ mod tests {
         }
         assert!(ipv6_v4_first(), "{}", ipv6_status_json());
 
-        // 初めて見るホスト (記憶なし) でも待たない
+        // 初めて見るホスト (記憶なし) でも待たない。**時間ではなく試行の順で見る** (T20.2。
+        // `happy_eyeballs_skips_unreachable_first_candidate` と同じ形): IPv4 が先頭なら IPv6 の
+        // 候補は起動されないので、`attempts` が 3 連敗の 3 のまま動かない。前は「< 50 ms」で
+        // 見ていて、混んだ機械ではスレッドを起こすだけで超えうる。IPv6 が先頭に来ていれば
+        // `attempts` は 4 になるので、守っているものは同じ。
+        // 4 本目の間だけ間隔を上限 (2 秒) まで延ばす (既定の 250 ms のままだと、混んだ機械で
+        // IPv4 の 1 本が 250 ms を超えたときに追い掛けの 1 本が出て数が動く)
+        set_stagger(Duration::from_millis(*STAGGER_RANGE_MS.end()));
         let started = Instant::now();
         let stream = connect_resolved("t121-fresh.invalid", addrs, Duration::from_secs(5))
             .expect("v4 should win");
         let elapsed = started.elapsed();
+        // 後の部分とほかのテストのために既定へ戻す (失敗しても `reset_ipv6_state` が戻す)
+        set_stagger(DEFAULT_STAGGER);
         assert_eq!(stream.peer_addr().unwrap().port(), port);
-        assert!(
-            elapsed < Duration::from_millis(50),
-            "3 回負けたあとは初めて見るホストも IPv4 が先頭のはず: {:?}",
-            elapsed
-        );
         let [attempts, wins, losses] = ipv6_counters();
         assert_eq!(
             (attempts, wins, losses),
-            (IPV6_LOSS_LIMIT, 0, IPV6_LOSS_LIMIT)
+            (IPV6_LOSS_LIMIT, 0, IPV6_LOSS_LIMIT),
+            "3 回負けたあとは初めて見るホストも IPv4 が先頭で、IPv6 の候補を起動しないはず ({:?}): {}",
+            elapsed,
+            ipv6_status_json()
         );
-        // 4 本目で attempts が増えていないのは、IPv4 が先頭で即勝ったから
+        // 4 本目で attempts が増えていないのは、IPv4 が先頭で勝ったから
         // (IPv6 の候補は残っているが起動されない = 負けた試行のスレッドと fd も残らない。T12.2)
 
         // IPv6 をやめたわけではない: IPv4 が死んでいれば IPv6 で拾い、勝った時点で IPv4 優先は解ける
