@@ -651,6 +651,33 @@ mod tests {
         assert_eq!(judge(&th, &edge).bits, 0);
     }
 
+    /// **T20.4**: `connects` は「繋がった本数」(失敗した CONNECT は確立の窓に入らず、
+    /// `errors` にだけ居る) なので、`attempts = connects + forwards + errors` は
+    /// 失敗 1・成功 1 で 2 になる (`0.18.0` までは失敗が `connects` にも居て 3 だった)。
+    #[test]
+    fn one_failure_and_one_success_are_two_attempts() {
+        let th = DEFAULT;
+        // 本体 (`Metrics::record`) が作る形: 成功の 1 本だけが確立の窓に居て、失敗は `errors`
+        let mut s = sample(0, 1, 3);
+        s.errors = 1;
+        let v = judge(&th, &s);
+        assert!(v.judged);
+        assert_eq!(v.values[2], 0.5, "エラー率 = 1 / (1 + 1): {:?}", v);
+        // 失敗の時間は確立の窓に無いので、p50 / p95 は成功の 1 本 (3 ms) のまま
+        assert_eq!(v.bits, 0b0100, "{:?}", v);
+        // forward の成功も試みに入る: 1 / (1 + 2 + 1) = 0.25
+        s.forward.observe(4);
+        s.forward.observe(4);
+        assert_eq!(judge(&th, &s).values[2], 0.25);
+        // 率は 1 を超えない (失敗だけの標本は確立が 0 本なので「判定なし」で、0 で割らない)
+        let mut only = sample(0, 0, 0);
+        only.errors = 3;
+        only.dns_misses = 3;
+        let v = judge(&th, &only);
+        assert!(!v.judged, "{:?}", v);
+        assert_eq!(v.values, [0.0; 4]);
+    }
+
     /// **受け入れ基準**: 既知の標本列から達成率が手計算と一致し、外れた時間帯が 17〜23 時。
     #[test]
     fn the_burst_day_matches_the_hand_calculation() {
