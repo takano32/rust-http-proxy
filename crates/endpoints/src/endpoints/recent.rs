@@ -847,10 +847,12 @@ mod tests {
     fn the_errors_response_stays_under_256_kib() {
         let m = Metrics::new();
         let long = "x".repeat(300);
-        for _ in 0..(MAX_ERRORS + 20) {
+        for i in 0..(MAX_ERRORS + 20) {
+            // 宛先は 1 件ずつ変える (同じ失敗は 1 行にまとまるので、500 行にならない。T20.3)。
+            // 頭の 3 桁が違うだけで、長さは今までどおり上限いっぱいに切られる
             m.record_error(
                 true,
-                &long,
+                &format!("{:03}{}", i, long),
                 "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6",
                 502,
                 &Detail {
@@ -862,7 +864,11 @@ mod tests {
             );
         }
         let ep_metrics = m;
-        let (entries, total) = ep_metrics.errors.recent(MAX_ERRORS);
+        let (mut entries, total) = ep_metrics.errors.recent(MAX_ERRORS);
+        // `repeats` も最悪の桁数にする (T20.3 で各行の末尾に足した)
+        for e in &mut entries {
+            e.repeats = u32::MAX;
+        }
         assert_eq!(entries.len(), MAX_ERRORS);
         assert_eq!(total, MAX_ERRORS as u64 + 20);
         let mut body = String::from(SCHEMA_HEAD) + "\"errors\":";
