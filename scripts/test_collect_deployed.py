@@ -200,7 +200,10 @@ class CollectProfileTest(unittest.TestCase):
 
 
 class CollectBeforeZeroTest(unittest.TestCase):
-    """判定表の相手を `BEFORE`、0 時間の雪像を `ZERO` で渡す (T18.2。既定の `CRITERIA` は phase18)。
+    """判定表の相手を `BEFORE`、0 時間の雪像を `ZERO` で渡す (T18.2)。
+
+    既定の `CRITERIA` は phase20 (T20.1)。下のテストは `criteria="phase18"` を名指しして回す
+    (`BEFORE` / `ZERO` の受け渡しは定義に依らない)。
 
     偽のサーバーが返す「いまの雪像」は `testdata/snapshot-b.json` (版 `0.1.0+bbbbbbb`、起動から 12 時間、
     `memory` は `heap_used` 6.0 + `mmap` 8.0 MB)。保存先には前回の雪像 (直前の 1 枚) を置いておく。
@@ -253,11 +256,12 @@ class CollectBeforeZeroTest(unittest.TestCase):
         """要約の末尾の判定の節。"""
         return out[out.index("## 6. 完了の定義に対する判定"):]
 
-    def test_the_default_criteria_is_phase18_against_the_previous_snapshot(self):
+    def test_the_default_criteria_is_phase20_against_the_previous_snapshot(self):
         d, out, _ = self.run_collect(criteria=None)
         tail = self.judged(out)
-        self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria phase18)", tail)
-        self.assertIn("前の 8 行は phase17 と同じ物差し", tail)
+        self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria phase20)", tail)
+        self.assertIn("phase18 と同じ並びの 10 行", tail)
+        self.assertIn("(ほかに表示だけ 3 行。集計に数えない)", tail)
         self.assertEqual(tail.count("\n| "), 1 + 10)          # 表の頭 + 10 行
         # `BEFORE` も `ZERO` も無ければ今までどおり直前の 1 枚が相手で、(g) は判定できない
         self.assertNotIn("`BEFORE`", out)
@@ -292,6 +296,23 @@ class CollectBeforeZeroTest(unittest.TestCase):
         tail = self.judged(out)
         self.assertIn("後: `--profile` 20 標本", tail)
         self.assertNotIn("前: `--profile`", tail)
+
+    def test_zero_and_the_daily_snapshots_are_passed_under_phase20_too(self):
+        """既定 (phase20) でも `ZERO` は (g) の行に届き、日次の雪像の表が付く。"""
+        zero = self.zero()
+        zero["status"]["memory"]["cache_memory"] = 0
+        daily = self.zero()
+        daily.update(uptime_secs=30_000, taken_at=daily["taken_at"] - 120 + 30_000)
+        _, out, _ = self.run_collect(files={"2025-12-31T060000Z-snapshot.json": zero,
+                                            "2025-12-30T000000Z-snapshot.json": daily},
+                                     criteria=None, ZERO="{dir}/2025-12-31T060000Z-snapshot.json")
+        tail = self.judged(out)
+        self.assertIn("`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満", tail)
+        self.assertIn("**+1.5** MB (12.5 → 14.0 MB)", tail)
+        self.assertIn("`cache_memory` 0.0 → 0.0", tail)
+        self.assertIn("**日次の雪像**", tail)
+        # 「2. 前回との差分」の表には成功した接続だけの行が出る (この雪像に `/recent` の部は無い)
+        self.assertIn("| CONNECT 確立 (**成功した接続だけ**) |", out[:out.index("## 3. ホスト別")])
 
     def test_zero_is_passed_to_the_heap_row(self):
         _, out, _ = self.run_collect(files={"2025-12-31T060000Z-snapshot.json": self.zero()},

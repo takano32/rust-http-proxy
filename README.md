@@ -156,6 +156,7 @@ CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)�
 名前解決の warm と引き直し・出来事・エラーの原因別・バーストを出し、`--criteria phase14` を
 足すと**完了の定義に対する判定表** (満たした / 届かず / 判定できず) が最後に付きます。
 出力は Markdown なので `TODO.md` にそのまま貼れます。
+**`/history` の確立の区間 (と `/status` の `recent_quantiles.connect`) には、繋がらずに 502 を返した接続の「失敗するまでの時間」も入ります**。黒穴の宛先を繰り返し叩く端末が居ると p95 がその時間になるので (2026-10-08 の雪像は p95 2,066 ms)、「平常時の前後」の表には後の雪像の `/recent` から**成功した接続だけ**の確立時間 (本数・p50・p95。同じ雪像で 398 本・7 / 66 ms) も 1 行並べ、後の期間のエラーが接続の 5% を超えるときは表の下で断ります (T20.1。`--criteria` が phase14 / phase15 / phase17 / phase18 のときは出しません — この 4 つの出力は過去の判定を出し直せるように変えない決まりです)。判定の部は `scripts/snapshot_criteria.py` に割ってあります (入口は `snapshot-diff.py` のまま)。
 
 ```bash
 scripts/snapshot-diff.py status/2026-09-1{2,6}*-snapshot.json --criteria phase14
@@ -174,6 +175,12 @@ scripts/snapshot-diff.py a.json b.json --criteria phase17 --daily b-daily.json \
 # 撮った時刻の順に並べた表 (起動からの時間・`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・
 # `ipv6.attempts`) を判定表の下に付ける
 scripts/snapshot-diff.py a.json b.json --criteria phase18 --daily b-daily.json \
+                         --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
+                         --zero zero.json --daily-snapshots status
+# phase20 (T20.1) は phase18 と同じ並びの 10 行で、材料も同じ。物差しを 2 つ直してある:
+# `heap_used + mmap` の増えは `cache_memory` (メモリのキャッシュ。上限まで使ってよい) を引いてから比べ、
+# `discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行は「表示だけ」(閾を置かず、集計に数えない)
+scripts/snapshot-diff.py a.json b.json --criteria phase20 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
@@ -2984,9 +2991,9 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 個票には接続元 IP と宛先が並ぶので `.gitignore` に入れてあり、コミットしません。
 **雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
 1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
-意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase18`**
-(phase17 の 8 行 = phase15 の 4 行 + T17.0a の 4 行 に、T18.2 の 2 行 = `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・`ipv6.request_probes` が 0 を足した 10 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、相手の雪像の隣にあればそれを `--profile-before` で渡します) で、`CRITERIA=phase17`・`CRITERIA=phase15` (T15.4 / T15.5 / T15.6 の 6 行)・`CRITERIA=phase14` も今までどおり使えます。
-**判定表の相手は既定では直前の 1 枚**です。再デプロイのあとはそれが 0 時間の雪像になるので、**`BEFORE=<再デプロイ直前の雪像>`** を渡すと判定表だけ相手がそちらになります (隣の同じ時刻の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別の相手は直前の 1 枚のまま)。**`ZERO=<0 時間の雪像>`** は `snapshot-diff.py --zero` に渡り、無ければ `heap_used + mmap` の行は「判定できず」です。phase18 のときは保存先を `--daily-snapshots` にも渡すので、`--from-server` で取り寄せた日次の雪像のうち同じ版のものの表 (`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts`) が判定表の下に付きます。`BEFORE` と `ZERO` の相対パスはリポジトリの根からです (`DIR` と同じ)。取り忘れた日は
+意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase20`** (T20.1。下の phase18 と同じ並びの 10 行で、`heap_used + mmap` の増えから `cache_memory` を引き、`discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行を「表示だけ」にしたもの) です。**`CRITERIA=phase18`**
+(phase17 の 8 行 = phase15 の 4 行 + T17.0a の 4 行 に、T18.2 の 2 行 = `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・`ipv6.request_probes` が 0 を足した 10 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、相手の雪像の隣にあればそれを `--profile-before` で渡します)・`CRITERIA=phase17`・`CRITERIA=phase15` (T15.4 / T15.5 / T15.6 の 6 行)・`CRITERIA=phase14` も今までどおり使えます。
+**判定表の相手は既定では直前の 1 枚**です。再デプロイのあとはそれが 0 時間の雪像になるので、**`BEFORE=<再デプロイ直前の雪像>`** を渡すと判定表だけ相手がそちらになります (隣の同じ時刻の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別の相手は直前の 1 枚のまま)。**`ZERO=<0 時間の雪像>`** は `snapshot-diff.py --zero` に渡り、無ければ `heap_used + mmap` の行は「判定できず」です。phase20 と phase18 のときは保存先を `--daily-snapshots` にも渡すので、`--from-server` で取り寄せた日次の雪像のうち同じ版のものの表 (`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts`) が判定表の下に付きます。`BEFORE` と `ZERO` の相対パスはリポジトリの根からです (`DIR` と同じ)。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
 `next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0 (11)。

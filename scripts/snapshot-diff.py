@@ -6,7 +6,7 @@
 # 出力は Markdown なので `TODO.md` にそのまま貼れる。
 #
 # 使い方:
-#   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase14]
+#   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase20]
 #                            [--out md|json] [--top N] [--burst N] [--major-hosts a,b,c]
 #                            [--group domain] [--daily FILE]
 #                            [--profile FILE] [--profile-before FILE]
@@ -24,7 +24,10 @@
 #
 # 出すもの (T14.17 の (1)〜(9)):
 #   1. 再起動をまたいでいるか (`uptime_secs` / `since_start_secs` と `version`)
-#   2. `/history` を**再起動時刻で切った**平常時 (1 時間 300 本未満の標本) の前後 — T14.0 の表の形
+#   2. `/history` を**再起動時刻で切った**平常時 (1 時間 300 本未満の標本) の前後 — T14.0 の表の形。
+#      `/history` の確立の区間には**失敗した接続の時間も入っている**ので、後の雪像の `/recent` から
+#      **成功した接続だけ**の確立時間も 1 行並べる (T20.1。`--criteria` が phase14〜phase18 のときは
+#      出さない — その 4 つの出力は過去の判定を出し直せるように 1 文字も変えない)
 #   3. ホスト別 (`/hosts` 最大 1,000 件) の差分 (`status-diff.py` と同じ読み方)。
 #      **`--group domain` で eTLD+1 にまとめられる** (T14.54。`img.dlsite.jp` と
 #      `www.dlsite.jp` が `dlsite.jp` の 1 行。`www.dlsite.com` は別の単位)
@@ -33,11 +36,14 @@
 #   6. その間の出来事 (`/events`。無い版では飛ばす)
 #   7. エラーの原因別の件数 (`/hosts` の `errors_by_cause` の差分と `/errors` の個票)
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
-#   9. `--criteria phase14|phase15|phase17|phase18` で **Phase の完了の定義に対する判定表**
+#   9. `--criteria phase14|phase15|phase17|phase18|phase20` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
+#      (**判定の部は `scripts/snapshot_criteria.py`**。T20.1 で割った)
 #      (T15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
 #      phase18 (T18.2) は phase17 の 8 行 + `--zero FILE` (0 時間の雪像) からの
 #      `heap_used + mmap` の増え + `ipv6.request_probes` の 10 行。
+#      phase20 (T20.1) は同じ 10 行の物差しを直したもの: `heap_used + mmap` から
+#      `cache_memory` を引き、ミス率・`timeout`・`dns_warm` の最大の 3 行は表示だけ (集計に数えない)。
 #      `--daily-snapshots DIR` を足すと、`DIR` の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち
 #      後の雪像と同じ版のものを時刻順に並べた `memory` と `ipv6.attempts` の表が判定表の下に付く
 #
@@ -60,6 +66,7 @@
 import argparse
 import glob
 import json
+import math
 import os
 import re
 import sys
@@ -80,27 +87,72 @@ from proxydata import (  # noqa: E402
     warn_newer,
 )
 
-# `/history` の標本のうちこの道具が読む欄 (`crates/metrics/src/history.rs` の KEYS)。
-# **版によって欄の数が違う** (デプロイ先の 2026-09-16 は 31、いまの main は 32) ので、
-# 位置ではなく `keys` の名前で引く。無い欄は None にして「出せない」と印字する。
-HFIELDS = (
-    "requests", "bytes", "active", "active_max", "rss",
-    "connects", "connect_ms_sum", "connect_ms_max", "connect_buckets",
-    "forwards", "forward_ms_sum", "forward_ms_max", "forward_buckets",
-    "errors", "errors_by_cause", "dns_misses", "dns_ms_sum", "evicted_idle",
-    # T15.0 (10) で末尾に足した 8 列 (**名前で引くので古い雪像では `None`**)。
-    # `waits` は利用者が待つ時間 (`queue + client_read + dns + connect`)、`dns_warm` は
-    # その瞬間の warm な名前の件数、`*_delta` は区間の増分、`active_peak` は区間の真の山
-    "waits", "wait_ms_sum", "wait_ms_max", "wait_buckets",
-    "dns_warm", "requests_delta", "bytes_delta", "active_peak",
-    # T16.0 で末尾に足した 3 列: `dns_warm` の区間の最大と、平均を出すための合計と標本数
-    # (5 秒の行は `sum = 値, n = 1`。無い版と T16.0 より前の行は下の `aggregate` が今の平均に戻す)
-    "dns_warm_max", "dns_warm_sum", "gauge_n",
+# 判定の部 (`--criteria`) と、差分と判定の両方が使う小物は `scripts/snapshot_criteria.py` に
+# 割ってある (T20.1)。**同じ名前で取り込み直す**ので、この道具の使い方・出力・外から見える名前
+# (`sd.CRITERIA` `sd.RULES` `sd.judge` `sd.part` …。テストと `weekly-report.py` が使う) は変わらない
+from snapshot_criteria import (  # noqa: E402,F401
+    BURST_PER_HOUR,
+    CRITERIA,
+    FROZEN,
+    HFIELDS,
+    MAJOR_HOSTS,
+    MET,
+    MISSED,
+    PHASE14,
+    PHASE15,
+    PHASE17,
+    PHASE18,
+    PHASE20,
+    RULES,
+    SHOWN,
+    UNKNOWN,
+    _p14_connect_p50,
+    _p14_dns_per_connect,
+    _p14_major_hosts,
+    _p14_overload,
+    _p15_closed_shape,
+    _p15_conn_cores,
+    _p15_miss_band,
+    _p15_refresh_rate,
+    _p15_timeout,
+    _p15_watch_host,
+    _p17_cgroup,
+    _p17_conn_per_request,
+    _p17_events,
+    _p17_warm_max,
+    _p18_heap,
+    _p18_request_probes,
+    _p20_heap,
+    _p20_timeout,
+    _p20_warm_max,
+    _p20_watch_host,
+    anomaly_rates,
+    cgroup_since_start,
+    change,
+    daily_band,
+    display_only,
+    dns_name_refreshes,
+    judge,
+    mb,
+    memory_of,
+    merged_history,
+    minute_parts,
+    miss_rate,
+    ms,
+    n,
+    norm_history,
+    part,
+    per_hour,
+    profile_cost,
+    profile_role_cores,
+    profile_source,
+    ratio,
+    render_criteria,
+    restart_info,
+    stamp,
+    tunnel_closes,
+    uptime_text,
 )
-# 平常時の閾 (T14.0: 1 時間 300 本未満の標本だけを「平常時」とする)
-BURST_PER_HOUR = 300
-# Phase 14 の完了の定義で名指しされている主要ホスト以外を選ぶときの数
-MAJOR_HOSTS = 3
 
 
 # ---------------------------------------------------------------- 読み込み
@@ -242,83 +294,10 @@ def load_source(src, from_files):
     raise SystemExit(f"{src}: /snapshot でも /status でもない JSON")
 
 
-def part(snap, name):
-    v = (snap or {}).get(name)
-    return v if isinstance(v, dict) else {}
-
-
-# ---------------------------------------------------------------- 印字の小物
-
-def stamp(t):
-    if not t:
-        return "?"
-    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
-
-
-def n(v, unit=""):
-    if v is None:
-        return "—"
-    if isinstance(v, float):
-        return f"{v:,.1f}{unit}"
-    return f"{v:,}{unit}"
-
-
-def ms(v):
-    return "—" if v is None else f"{v:,.1f}"
-
-
-def ratio(v):
-    return "—" if v is None else f"{v:.2f}"
-
-
-# ---------------------------------------------------------------- (1) 再起動
-
-def restart_info(a, b):
-    ta, tb = a["taken_at"], b["taken_at"]
-    ua, ub = a["uptime_secs"], b["uptime_secs"]
-    wall = (tb - ta) if (ta and tb) else None
-    reasons = []
-    if a["version"] and b["version"] and a["version"] != b["version"]:
-        reasons.append(f"版が変わった (`{a['version']}` → `{b['version']}`)")
-    if ub < ua:
-        reasons.append(f"`uptime_secs` が減った ({ua:,} → {ub:,} 秒)")
-    elif wall is not None and wall > 0:
-        # 時計のずれと取得の間の分を見込んで、窓の 1% (最低 60 秒) は許す
-        slack = max(60, wall // 100)
-        if (ub - ua) + slack < wall:
-            reasons.append(f"`uptime_secs` の伸び {ub - ua:,} 秒が窓 {wall:,} 秒に足りない "
-                           f"(差 {wall - (ub - ua):,} 秒)")
-    restarted = bool(reasons)
-    started = (tb - ub) if tb else None
-    return {
-        "restarted": restarted,
-        "reasons": reasons,
-        "wall_secs": wall,
-        "uptime": [ua, ub],
-        "since_start": [a["since_start_secs"], b["since_start_secs"]],
-        "version": [a["version"], b["version"]],
-        "taken_at": [ta, tb],
-        "started_at": started,
-        # 前後を切る境目: 再起動があればその時刻、無ければ A の取得時刻
-        "boundary": (started if restarted else ta) or 0,
-    }
-
-
 # ---------------------------------------------------------------- (2) 履歴
-
-def norm_history(h):
-    idx = {k: i for i, k in enumerate(h.get("keys") or [])}
-    rows = []
-    for r in h.get("samples") or []:
-        if not r:
-            continue
-        row = {"t": r[0]}
-        for f in HFIELDS:
-            i = idx.get(f)
-            row[f] = r[i] if i is not None and i < len(r) else None
-        rows.append(row)
-    return rows
-
+#
+# (1) の `restart_info` と、ここの `norm_history` / `merged_history` は判定の関数も使うので
+# `snapshot_criteria.py` に置いてある (上で取り込んでいる)。
 
 def pick_res(a, b):
     """使う解像度 (粗いほど長く残っているので 3600 を第一希望)。"""
@@ -328,24 +307,6 @@ def pick_res(a, b):
             if h and h.get("samples"):
                 return res
     return None
-
-
-def merged_history(a, b, res):
-    """2 枚の `/history?res=` を時刻で重ねる (同じ時刻は**新しい雪像の値**を採る)。
-
-    A の最後の窓は取得の途中までしか埋まっていないことがあるので、B が持っていれば B が勝つ。
-    """
-    rows, bounds, causes, interval = {}, [], list(CAUSE_NAMES), None
-    for snap in (a, b):
-        h = (snap.get("history") or {}).get(res) or {}
-        if not h:
-            continue
-        bounds = h.get("bounds_ms") or bounds
-        causes = h.get("causes") or causes
-        interval = h.get("interval_secs") or interval
-        for row in norm_history(h):
-            rows[row["t"]] = row
-    return [rows[t] for t in sorted(rows)], bounds, causes, (interval or 0)
 
 
 def aggregate(rows, bounds, limit):
@@ -439,6 +400,53 @@ def history_split(a, b, info, burst):
         "before_all": aggregate(before, bounds, None),
         "after_all": aggregate(after, bounds, None),
     }
+
+
+# --------------------------------------------- (2a) 成功した接続だけの確立時間 (`/recent`)
+
+# 後の期間のエラーが接続のこの割合を超えたら、確立の区間に失敗が混ざっていると断る (T20.1)
+FAILED_SHARE_NOTE = 0.05
+
+
+def rank_quantile(values, q):
+    """整列済みの実測値の分位点 (下から `ceil(q × n)` 番目。補間しない)。空なら None。
+
+    `/history` の分位点 (`quantile_ms`) は 12 段の区間の補間だが、こちらは 1 本ずつの実測なので
+    その中の 1 本をそのまま返す。
+    """
+    if not values:
+        return None
+    return values[max(0, math.ceil(len(values) * q) - 1)]
+
+
+def recent_connects(snap):
+    """`/recent` の個票から、**成功した CONNECT だけ**の確立時間を出す (部が無ければ None。T20.1)。
+
+    `/history` の `connect_buckets` と `/status` の `recent_quantiles.connect` には、繋がらずに
+    502 を返した接続の「失敗するまでの時間」も入る (本体は成否を見ずに同じ窓に足す)。黒穴の宛先を
+    繰り返し叩く端末が居ると、p95 がその失敗までの時間になる (T18.99 は 1.3 秒 → p95 2,066 ms)。
+    ここでは `kind == "connect"` で `reason` が `error` で始まらない行の `ms.connect` だけを読む。
+    **窓は雪像に入った個票のぶんだけ** (いちばん古い行から取得まで。256 KiB で切れる)。
+    """
+    r = part(snap, "recent")
+    rows = r.get("recent")
+    if not isinstance(rows, list):
+        return None
+    ok, failed = [], 0
+    for e in rows:
+        if e.get("kind") != "connect":
+            continue
+        if str(e.get("reason") or "").startswith("error"):
+            failed += 1
+            continue
+        v = (e.get("ms") or {}).get("connect") if isinstance(e.get("ms"), dict) else None
+        if v is not None:
+            ok.append(v)
+    ok.sort()
+    ats = [e["at"] for e in rows if e.get("at")]
+    return {"n": len(ok), "p50": rank_quantile(ok, 0.5), "p95": rank_quantile(ok, 0.95),
+            "failed": failed, "rows": len(rows), "oldest": min(ats) if ats else None,
+            "taken_at": snap.get("taken_at") or 0, "truncated": bool(r.get("truncated"))}
 
 
 # --------------------------------------------- (2b) サーバー側の要約 (`?summary=1`)
@@ -587,10 +595,6 @@ def major_hosts(rows, names, count=MAJOR_HOSTS):
     return pool[:count]
 
 
-def miss_rate(row):
-    return (row["dns_misses"] / row["requests"]) if row["requests"] else None
-
-
 # ---------------------------------------------------------------- (4) 接続元別
 
 def client_rows(snap):
@@ -731,699 +735,7 @@ def bursts_info(b, hist):
     return out
 
 
-# ---------------------------------------------------------------- (9) 判定表
-#
-# **1 行 = 1 つの関数** (T15.0 (15))。前の版は Phase 14 の 4 行が `judge()` にべた書きで、
-# `CRITERIA` に辞書を足すだけでは「Phase 14 の 4 行が phase15 の閾で出る」誤った表になった。
-# いまは `(名前, 閾の文, 実測の取り方, 判定)` を返す関数を `RULES` に並べるだけで足せる。
-# 関数が受け取る `c` は下の `context()` が作る辞書で、**材料の部が雪像に無ければ
-# `UNKNOWN` (判定できず) を返す**のが規則 (「0 だった」と「読めなかった」を混ぜない)。
-
-# Phase 14 の完了の定義のうち**数字で判定できる 4 行** (TODO.md §5 Phase 14 の末尾と
-# Phase 13 の「状態」の表。T14.1 の「デプロイ先の受け入れ基準」と同じ閾値)。
-PHASE14 = {
-    "dns_per_connect": 0.15,
-    "major_miss_rate": 0.05,
-    "connect_p50_ms": 6.0,
-    "overload": 0,
-}
-
-# T15.0 を載せて 24 時間ぶん溜めたあとに読む 6 行 (TODO.md の T15.4 / T15.5 / T15.6)。
-PHASE15 = {
-    # T15.4: 窓を伸ばすか一律 TTL にするかを決めるための 3 行
-    "watch_host": "discord.com",     # Phase 14 で唯一届かなかった相手
-    "major_miss_rate": 0.05,
-    "refresh_per_warm_hour": 80.0,   # TTL 60 秒 の 3/4 = 45 秒おきに 1 名前 = 80 回/時
-    # 窓 3,600 秒 で落ち着くと見込んだ上限。**下の閾は外した** (T15.15 (2)。T15.99 の 0.05 は
-    # 幅 0.06〜0.09 を良い方に外れて「届かず」と書かれた。低いのは見込み違いではなく良いこと)
-    "miss_max": 0.09,
-    # T15.5: 空回りを直したあとに「別の空回りが無い」ことを見る 2 行
-    "conn_cores": 0.01,
-    "closed_tolerance": 0.10,
-    # T15.6: 締め切りを 10 秒にしたら `timeout` が増えないか
-    "timeout_tolerance": 0.10,
-}
-# T17.0a: Phase 17 の版を 24 時間走らせたあとに読む 8 行 (TODO.md の T17.99 の完了の定義)。
-# 前の 4 行は phase15 の関数をそのまま使う (閾も同じ値)。後ろの 4 行は T16.99 で手で引いた
-# 判定 (i)〜(iii) と、`/events` の種類別 件/時 (`dns_slow` の 7 倍を道具が見つけるため)
-PHASE17 = {
-    "watch_host": PHASE15["watch_host"],
-    "major_miss_rate": PHASE15["major_miss_rate"],
-    "refresh_per_warm_hour": PHASE15["refresh_per_warm_hour"],
-    "miss_max": PHASE15["miss_max"],
-    "timeout_tolerance": PHASE15["timeout_tolerance"],
-    # conn 役の CPU/要求 が前の何倍までなら「桁で悪くなっていない」か (T15.12 段 7 の基準)
-    "conn_per_request_factor": 1.3,
-    # `MAX_WARM` (`crates/net-dns/src/dns.rs`)。最大がこれに届いたら枠の取り合いがある
-    "warm_max_limit": 32,
-    # `/events` の anomaly の種類ごとの閾 (起動からの 件/時)。**ここに無い種類は表示だけ**
-    "events_per_hour": {"dns_slow": 0.1},
-    # cgroup の起動からの user / sys (コア数) が前の何倍までなら「同じ桁」か
-    "cgroup_factor": 10.0,
-}
-# T18.2: Phase 18 の版を 24 時間走らせたあとに読む 10 行 (TODO.md の T18.0 の「次の完了の定義」)。
-# 前の 8 行は phase17 の関数と閾をそのまま使う。後ろの 2 行は T17.99 の但し書き (d) と (e) の物差し
-PHASE18 = dict(
-    PHASE17,
-    # (g) `heap_used + mmap` の 0 時間の雪像からの増え (MB = 10^6 B)。RSS と `heap_free` は
-    # バーストの大きさで決まるので閾を置かない (T18.0 (1)。T17.99 の版は 18.0 → 19.9 で +1.9)
-    heap_growth_mb=5.0,
-    # (h) `v4_first` の間に利用者の経路で IPv6 を探った回数 (T18.1 の `ipv6.request_probes`)
-    request_probes=0,
-)
-CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18}
-
-MET, MISSED, UNKNOWN = "満たした", "届かず", "判定できず"
-
-
-def per_hour(agg, interval, value):
-    """区間の件数を 1 時間あたりに直す (標本の数 × 解像度がその区間の秒)。"""
-    secs = (agg.get("samples") or 0) * (interval or 0)
-    return (value / (secs / 3600.0)) if secs and value is not None else None
-
-
-def change(now, before):
-    """変化率 ((後 − 前) ÷ 前)。前が 0 なら後も 0 のときだけ 0、そうでなければ None。"""
-    if before:
-        return (now - before) / before
-    return 0.0 if not now else None
-
-
-def profile_role_cores(snap, role):
-    """`/profile` の標本から**その役割の CPU** を「何コアぶん」で出す (部が無ければ None)。
-
-    1 標本の `threads` は役割ごとに `0` (標本 0) か `[cpu_us, samples, [states...]]`
-    (`crates/metrics-profile/src/profile.rs` の `push_row`)。位置ではなく `keys` と
-    `roles` の名前で引くので、役割が増えても読み方は変わらない。
-    """
-    p = part(snap, "profile")
-    rows = p.get("samples") or []
-    keys = p.get("keys") or []
-    roles = p.get("roles") or []
-    interval = p.get("interval_secs") or 0
-    if not rows or "threads" not in keys or role not in roles or not interval:
-        return None
-    ti, ri = keys.index("threads"), roles.index(role)
-    cpu_us = 0
-    for r in rows:
-        threads = r[ti] if ti < len(r) else None
-        t = threads[ri] if threads and ri < len(threads) else None
-        if t:
-            cpu_us += t[0] or 0
-    secs = len(rows) * interval
-    return {"cores": cpu_us / 1e6 / secs, "samples": len(rows), "secs": secs}
-
-
-def minute_parts(a, b, name):
-    """2 枚の `/history?res=60` の `name` (`closed` / `transfer`) を時刻で重ねる。
-
-    どちらも `keys` と `samples` を持つ別の配列 (T14.6 / T14.25)。同じ時刻は**新しい雪像の値**。
-    欄が無い版は飛ばす。返すのは `({t: {鍵: 値}}, 最初に見つかった部の頭)` か、どちらにも無ければ None。
-    """
-    rows, head = {}, None
-    for snap in (a, b):
-        part_ = ((snap.get("history") or {}).get("60") or {}).get(name)
-        if not isinstance(part_, dict) or not part_.get("keys"):
-            continue
-        head = head or part_
-        keys = part_["keys"]
-        for r in part_.get("samples") or []:
-            if r:
-                rows[r[0]] = {k: (r[i] if i < len(r) else None) for i, k in enumerate(keys)}
-    return (rows, head) if head else None
-
-
-def tunnel_closes(a, b, boundary, burst):
-    """`/history?res=60` から、**平常時に閉じたトンネル**の `idle_timeout` と半閉じの割合 (T15.15 (3))。
-
-    前の版は `/recent` (雪像では 256 KiB で切れ、窓の長さが毎回違う) から割合を取っていた。
-    こちらは 1 分ごとの**全数**: 母数は `transfer.tunnels` (終わったトンネルの数)、
-    分子は `closed.reasons` の `idle_timeout` (トンネルにしか付かない理由) と `transfer.half_close_n`。
-
-    **平常時だけ**: その分が入る 1 時間の標本 (`/history?res=3600`) が `burst` 本以上なら外す
-    (T14.0 の平常時の定義と同じ物差し)。その時間の標本がまだ無い分 (取得の途中の 1 時間) も外す。
-    """
-    transfer = minute_parts(a, b, "transfer")
-    if transfer is None:
-        return None
-    t_rows, _ = transfer
-    closed = minute_parts(a, b, "closed")
-    c_rows, c_head = closed if closed else ({}, None)
-    reasons = (c_head or {}).get("reasons") or []
-    ri = reasons.index("idle_timeout") if "idle_timeout" in reasons else None
-    hours = {r["t"]: (r["connects"] or 0) for r in merged_history(a, b, "3600")[0]}
-
-    def side():
-        return {"minutes": 0, "tunnels": 0, "idle": 0 if ri is not None else None, "half": 0}
-    out = {"before": side(), "after": side(), "burst_minutes": 0, "unknown_minutes": 0}
-    for t in sorted(t_rows):
-        c = hours.get(t // 3600 * 3600)
-        if c is None:
-            out["unknown_minutes"] += 1
-            continue
-        if c >= burst:
-            out["burst_minutes"] += 1
-            continue
-        acc = out["before"] if t < boundary else out["after"]
-        acc["minutes"] += 1
-        acc["tunnels"] += t_rows[t].get("tunnels") or 0
-        acc["half"] += t_rows[t].get("half_close_n") or 0
-        if ri is not None:
-            rs = (c_rows.get(t) or {}).get("reasons") or []
-            acc["idle"] += rs[ri] if ri < len(rs) else 0
-    for acc in (out["before"], out["after"]):
-        n_ = acc["tunnels"]
-        acc["idle_share"] = (acc["idle"] / n_) if n_ and acc["idle"] is not None else None
-        acc["half_share"] = (acc["half"] / n_) if n_ else None
-    return out
-
-
-def dns_name_refreshes(snap):
-    """`/dns` の名前ごとの引き直しを 1 時間あたりに直した最大 (T15.15 (1))。
-
-    閾 80 回/時は **1 名前あたりの上限** (TTL 60 秒の 3/4 おき) なので、物差しは名前ごとの値。
-    `refreshes` はその名前の起動からの通算なので、`uptime_secs` で割る (T15.99 の 78.2 と同じ読み方)。
-    """
-    entries = part(snap, "dns").get("entries")
-    up = snap.get("uptime_secs") or 0
-    if not isinstance(entries, list) or not entries or not up:
-        return None
-    best = max(entries, key=lambda e: e.get("refreshes") or 0)
-    return {"host": best.get("host"), "refreshes": best.get("refreshes") or 0,
-            "per_hour": (best.get("refreshes") or 0) / (up / 3600.0), "names": len(entries)}
-
-
-def daily_band(snap):
-    """`/daily` の 1 日ごとの `dns_per_connect` の幅 (**その版の日だけ**。T15.15 (2))。"""
-    days = part(snap, "daily").get("days")
-    if not isinstance(days, list):
-        return None
-    ver = snap.get("version")
-    vals = [d["dns_per_connect"] for d in days
-            if d.get("connects") and d.get("dns_per_connect") is not None
-            and (not ver or d.get("version") == ver)]
-    if not vals:
-        return None
-    return {"lo": min(vals), "hi": max(vals), "days": len(vals)}
-
-
-# --- Phase 14 の 4 行 (**出力は 1 文字も変えない**。既存のテストが見張っている) ---
-
-def _p14_dns_per_connect(c, th):
-    after = c["after"]
-    label, limit = "`dns.misses ÷ 要求` が 0.15 未満", f"< {th['dns_per_connect']}"
-    v = after.get("dns_per_connect")
-    if v is None:
-        return (label, limit, "—", UNKNOWN, "`/history` にこの期間の標本が無い")
-    return (label, limit, f"**{ratio(v)}** 回/接続",
-            MET if v < th["dns_per_connect"] else MISSED,
-            f"平常時 {after.get('samples', 0)} 標本 / {n(after.get('connects'))} 本")
-
-
-def _p14_major_hosts(c, th):
-    label = f"主要 {MAJOR_HOSTS} ホストのミス率が 0.05 未満"
-    limit = f"< {th['major_miss_rate']}"
-    if not c["majors"]:
-        return (label, limit, "—", UNKNOWN, "`/hosts` にこの期間の要求が無い")
-    worst, shown = None, []
-    for r in c["majors"]:
-        rate = miss_rate(r)
-        shown.append(f"{r['name']} {ratio(rate)} ({n(r['requests'])} 要求)")
-        if rate is not None:
-            worst = rate if worst is None else max(worst, rate)
-    return (label, limit, "、".join(shown),
-            UNKNOWN if worst is None else (MET if worst < th["major_miss_rate"] else MISSED),
-            "`/hosts` の差分 (要求数の上位)")
-
-
-def _p14_connect_p50(c, th):
-    after = c["after"]
-    label, limit = "平常時の CONNECT 確立 p50 が 6 ms 以下", f"≤ {th['connect_p50_ms']} ms"
-    p50 = after.get("connect_p50")
-    if p50 is None:
-        return (label, limit, "—", UNKNOWN, "`/history` にこの期間の標本が無い")
-    return (label, limit, f"**{ms(p50)} ms**",
-            MET if p50 <= th["connect_p50_ms"] else MISSED,
-            f"平常時 {after.get('samples', 0)} 標本 / {n(after.get('connects'))} 本")
-
-
-def _p14_overload(c, th):
-    over, bursts = c["overload"], c["after"].get("burst_samples")
-    if not bursts:
-        note, verdict = "この期間に**バーストが無かった** (次に来たら埋まる)", UNKNOWN
-    elif over is None:
-        note, verdict = "`/status` に `rejected_overload` が無い", UNKNOWN
-    else:
-        note = f"バーストの窓 {bursts} 本 (山 {n(c['after_all'].get('active_max'))})"
-        verdict = MET if over <= th["overload"] else MISSED
-    return ("バーストがあっても `rejected_overload` 0 で `/status` が取れる", "= 0",
-            f"`rejected_overload` {n(over)}"
-            + ("" if c["status_b"] else "、`/status` が取れない"), verdict, note)
-
-
-# --- Phase 15 の 6 行 (T15.4 が 3 行、T15.5 が 2 行、T15.6 が 1 行) ---
-
-def _p15_watch_host(c, th):
-    """T15.4: 窓を伸ばす相手 (`discord.com`) のミス率。"""
-    host = th["watch_host"]
-    label = f"`{host}` のミス率が {th['major_miss_rate']} 未満"
-    limit = f"< {th['major_miss_rate']}"
-    rows = [r for r in c["hosts"]["rows"]
-            if r["name"] == host or r["name"].endswith("." + host)]
-    if not rows:
-        return (label, limit, "—", UNKNOWN, f"`/hosts` の差分に `{host}` が無い")
-    req = sum(r["requests"] for r in rows)
-    miss = sum(r["dns_misses"] for r in rows)
-    if req <= 0:
-        return (label, limit, f"要求 {n(req)}", UNKNOWN, "この窓にその相手への要求が無い")
-    rate = miss / req
-    return (label, limit, f"**{ratio(rate)}** ({n(miss)} ミス / {n(req)} 要求)",
-            MET if rate < th["major_miss_rate"] else MISSED,
-            f"`/hosts` の差分 ({len(rows)} 行)")
-
-
-def _p15_refresh_rate(c, th):
-    """T15.4: 裏の引き直しが 1 名前あたり何回/時か。
-
-    **判定は `/dns` の名前ごとの最大** (T15.15 (1)。閾は 1 名前あたりの上限なので)。
-    参考に「通算 ÷ 時間 ÷ warm の平均」も並べる。warm の平均は**全時間** (`after_all`) から取り、
-    分子の `dns.refreshes` (起動からの通算、バーストの時間も含む) と窓を揃える。
-    """
-    limit = f"≤ {th['refresh_per_warm_hour']:.0f} 回/時/名前"
-    label = "裏の引き直しが 1 名前あたり 1 時間 80 回以下"
-    warm, hours = c["after_all"].get("dns_warm_avg"), c["hours"]
-    refreshes = (c["dns"] or {}).get("refreshes")
-    avg = (refreshes / hours / warm) if warm and hours and refreshes is not None else None
-    avg_text = (f"通算 {n(refreshes)} 回 ÷ {hours:,.1f} 時間 ÷ warm {ms(warm)} 件 = {avg:,.1f}"
-                if avg is not None else None)
-    top = dns_name_refreshes(c["b"])
-    if top is not None:
-        v = top["per_hour"]
-        return (label, limit,
-                f"**{v:,.1f}** 回/時 (`{top['host']}` {n(top['refreshes'])} 回、名前ごとの最大)"
-                + (f"。参考: {avg_text}" if avg_text else ""),
-                MET if v <= th["refresh_per_warm_hour"] else MISSED,
-                f"`/dns` の名前ごとの `refreshes` ÷ `uptime_secs` ({top['names']} 名前)")
-    if avg is None:
-        return (label, limit, "—", UNKNOWN,
-                "`/dns` の部が無く、`/history` に `dns_warm` が無いか、窓の長さか "
-                "`dns.refreshes` が取れない")
-    return (label, limit, f"**{avg:,.1f}** 回/時/名前 ({avg_text.split(' = ')[0]})",
-            MET if avg <= th["refresh_per_warm_hour"] else MISSED,
-            "`/dns` の部が無いので `/status` の `dns.refreshes` と `/history` の `dns_warm` の"
-            "全時間の平均 (名前ごとの最大より甘い)")
-
-
-def _p15_miss_band(c, th):
-    """T15.4: 平常時のミス率が見込んだ上限以下か (T15.15 (2) で下の閾を外した)。"""
-    hi = th["miss_max"]
-    label = f"平常時の名前解決のミスが {hi} 回/接続 以下"
-    limit = f"≤ {hi}"
-    v = c["after"].get("dns_per_connect")
-    if v is None:
-        return (label, limit, "—", UNKNOWN, "`/history` にこの期間の標本が無い")
-    band = daily_band(c["b"])
-    days = (f"、日ごとの幅 {ratio(band['lo'])}〜{ratio(band['hi'])} ({band['days']} 日)"
-            if band else "")
-    return (label, limit, f"**{ratio(v)}** 回/接続{days}", MET if v <= hi else MISSED,
-            f"平常時 {c['after'].get('samples', 0)} 標本 / {n(c['after'].get('connects'))} 本"
-            + ("、日ごとは `/daily` (その版の日だけ)" if band else ""))
-
-
-def _p15_conn_cores(c, th):
-    """T15.5: 中継の輪が空回りしていないか (`conn` 役の CPU)。"""
-    label = "`/profile` の `conn` 役の CPU が 0.01 コア未満"
-    limit = f"< {th['conn_cores']} コア"
-    v = profile_role_cores(c["b"], "conn")
-    if v is None:
-        return (label, limit, "—", UNKNOWN, "この雪像に `/profile` の部が無い")
-    return (label, limit, f"**{v['cores']:.3f}** コア",
-            MET if v["cores"] < th["conn_cores"] else MISSED,
-            f"`/profile` {v['samples']} 標本 ({v['secs']:,} 秒)")
-
-
-def _p15_closed_shape(c, th):
-    """T15.5: 直しの前後でトンネルの閉じ方が変わっていないか (T15.15 (3))。
-
-    材料は `/history?res=60` の `closed` と `transfer` の**全数** (平常時だけ)。
-    `idle_timeout` と半閉じは**同じ信号の裏表** (半閉じのまま相手が黙ると `idle_timeout` で
-    閉じる) なので 1 行にまとめ、判定は `idle_timeout` の割合、半閉じは参考に並べる。
-    """
-    tol = th["closed_tolerance"]
-    label = "トンネルの `idle_timeout` の割合が前後で変わらない (半閉じは参考)"
-    limit = f"±{tol * 100:.0f}%"
-    t = tunnel_closes(c["a"], c["b"], c["info"].get("boundary") or 0, c["burst"])
-    if t is None:
-        return (label, limit, "—", UNKNOWN,
-                "前後のどちらにも `/history?res=60` の `transfer` が無い")
-    bef, aft = t["before"], t["after"]
-    src = (f"`/history?res=60` の `closed` / `transfer` の平常時 (前 {bef['minutes']} 分 "
-           f"{n(bef['tunnels'])} 本 / 後 {aft['minutes']} 分 {n(aft['tunnels'])} 本。"
-           f"バーストの時間 {t['burst_minutes']} 分・時間の標本が無い {t['unknown_minutes']} 分は外した)")
-    if not bef["tunnels"] or not aft["tunnels"]:
-        side = "前" if not bef["tunnels"] else "後"
-        return (label, limit, "—", UNKNOWN, f"{side}の平常時に閉じたトンネルが無い。" + src)
-    half = f"、半閉じ {ratio(bef['half_share'])} → {ratio(aft['half_share'])}"
-    if bef["idle_share"] is None or aft["idle_share"] is None:
-        return (label, limit, "`idle_timeout` —**`closed` の部が無い**" + half, UNKNOWN, src)
-    d = change(aft["idle_share"], bef["idle_share"])
-    shown = (f"`idle_timeout` {ratio(bef['idle_share'])} → **{ratio(aft['idle_share'])}**"
-             + (f" ({d * 100:+.0f}%)" if d is not None else " (前が 0)") + half)
-    return (label, limit, shown, MISSED if d is None or abs(d) > tol else MET, src)
-
-
-def _p15_timeout(c, th):
-    """T15.6: 締め切りを縮めても `timeout` の出方が増えないか。"""
-    tol = th["timeout_tolerance"]
-    label = "エラーの `timeout` が前の期間より増えない"
-    limit = f"≤ 前の期間 ×{1 + tol:.1f}"
-    i = CAUSE_NAMES.index("timeout")
-    hist = c["hist"] or {}
-    bef, aft, interval = hist.get("before_all"), hist.get("after_all"), hist.get("interval_secs")
-    if not bef or not aft or not bef.get("samples"):
-        return (label, limit, "—", UNKNOWN, "`/history` に前の期間の標本が無い")
-    b_rate = per_hour(bef, interval, (bef.get("causes") or [0] * 8)[i])
-    a_rate = per_hour(aft, interval, (aft.get("causes") or [0] * 8)[i])
-    if b_rate is None or a_rate is None:
-        return (label, limit, "—", UNKNOWN, "`/history` の `errors_by_cause` が読めない")
-    verdict = MET if a_rate <= b_rate * (1 + tol) else MISSED
-    return (label, limit, f"**{a_rate:,.2f}** 件/時 (前 {b_rate:,.2f} 件/時)", verdict,
-            f"`/history` の `errors_by_cause` (前 {bef['samples']} / 後 {aft['samples']} 標本、"
-            "バースト込み)")
-
-
-# --- Phase 17 の 4 行 (T17.0a。前の 4 行は phase15 の関数をそのまま使う) ---
-
-def profile_source(snap):
-    """その雪像の `/profile` の材料と出どころ (無ければ `(None, None)`)。
-
-    `--profile FILE` (`/profile?res=60` の JSON。`build` が `profile_res_60` に入れる) を先に採る。
-    無ければ雪像の `/profile` の部 (5 秒の標本で 1 時間未満しか無い) で、そのときは**参考**。
-    """
-    p = snap.get("profile_res_60")
-    if isinstance(p, dict) and p.get("samples"):
-        return p, "`--profile`"
-    p = part(snap, "profile")
-    if p.get("samples"):
-        return p, "雪像の `/profile` の部 (**参考**)"
-    return None, None
-
-
-def profile_cost(p, role):
-    """`/profile` の JSON 1 つから、`role` の CPU/要求 とプロセス全体のコア数を出す。
-
-    材料は各標本の `requests` と `cpu_us` (プロセス全体) と `threads` の役割ごとの
-    `[cpu_us, samples, [states...]]` (`profile_role_cores` と同じ読み方)。欄が無ければ None。
-    """
-    keys = p.get("keys") or []
-    roles = p.get("roles") or []
-    rows = p.get("samples") or []
-    interval = p.get("interval_secs") or 0
-    if not rows or not interval or role not in roles or not all(
-            k in keys for k in ("threads", "requests", "cpu_us")):
-        return None
-    ti, qi, ci, ri = (keys.index("threads"), keys.index("requests"), keys.index("cpu_us"),
-                      roles.index(role))
-    role_us = cpu_us = requests = 0
-    for r in rows:
-        threads = r[ti] if ti < len(r) else None
-        t = threads[ri] if threads and ri < len(threads) else None
-        if t:
-            role_us += t[0] or 0
-        requests += (r[qi] if qi < len(r) else 0) or 0
-        cpu_us += (r[ci] if ci < len(r) else 0) or 0
-    secs = len(rows) * interval
-    return {"role_us": role_us, "requests": requests,
-            "per_request_us": (role_us / requests) if requests else None,
-            "cores": cpu_us / 1e6 / secs, "samples": len(rows), "secs": secs,
-            "truncated": bool(p.get("truncated"))}
-
-
-def _p17_conn_per_request(c, th):
-    """T17.99 (c): conn 役の CPU/要求 が前の 1.3 倍以下 (T16.99 の (i) を自動で)。
-
-    材料は `--profile` (`/profile?res=60`)。無ければ雪像の `/profile` の部で「参考」と書く。
-    **プロセス全体のコア数も並べる** (要求の中身で conn 役の値が振れるので、桁はこちらで見る)。
-    """
-    k = th["conn_per_request_factor"]
-    label = f"`conn` 役の CPU/要求 が前の {k} 倍以下"
-    limit = f"≤ 前 ×{k}"
-
-    def side(snap, who):
-        p, src = profile_source(snap)
-        v = profile_cost(p, "conn") if p else None
-        if v is None:
-            return None, None
-        cut = "、256 KiB で切れている" if v["truncated"] else ""
-        return v, (f"{who}: {src} {v['samples']} 標本 ({v['secs'] / 3600:,.1f} 時間{cut}、"
-                   f"要求 {n(v['requests'])} 本)")
-    aft, a_src = side(c["b"], "後")
-    bef, b_src = side(c["a"], "前")
-    if aft is None:
-        return (label, limit, "—", UNKNOWN,
-                "後の雪像に `/profile` の部が無く、`--profile` も渡されていない")
-    after_text = f"プロセス全体 {aft['cores']:.4f} コア"
-    if not aft["requests"]:
-        return (label, limit, after_text, UNKNOWN, a_src + "。要求が無いので 1 要求あたりが出ない")
-    if bef is None or not bef["requests"]:
-        why = "前の雪像に `/profile` の部が無い" if bef is None else "前の材料に要求が無い"
-        return (label, limit, f"{aft['per_request_us']:,.0f} us/要求、{after_text}", UNKNOWN,
-                f"{a_src}。{why} (`--profile-before` で渡せる)")
-    ratio_ = aft["per_request_us"] / bef["per_request_us"] if bef["per_request_us"] else None
-    if ratio_ is None:
-        return (label, limit, f"{aft['per_request_us']:,.0f} us/要求、{after_text}", UNKNOWN,
-                f"{a_src}。{b_src}。前の conn 役の CPU が 0")
-    return (label, limit,
-            f"**{ratio_:.2f}** 倍 ({bef['per_request_us']:,.0f} → {aft['per_request_us']:,.0f} "
-            f"us/要求)、プロセス全体 {bef['cores']:.4f} → **{aft['cores']:.4f}** コア",
-            MET if ratio_ <= k else MISSED, f"{a_src}。{b_src}")
-
-
-def _p17_warm_max(c, th):
-    """T17.99 (T16.99 の (ii)): `MAX_WARM` 32 が埋まらず、warm の追い出しが 0。"""
-    lim = th["warm_max_limit"]
-    label = f"`dns_warm` の最大が {lim} 未満かつ `dns.warm_evicted` が 0"
-    limit = f"< {lim} かつ = 0"
-    mx = c["after_all"].get("dns_warm_max")
-    sb = part(c["b"], "status").get("dns") or {}
-    sa = part(c["a"], "status").get("dns") or {}
-    ev = sb.get("warm_evicted")
-    # `warm_evicted` は起動からの通算。再起動していなければ前の雪像を引いてその間の値にする
-    windowed = ev is not None and not (c["info"] or {}).get("restarted") \
-        and sa.get("warm_evicted") is not None
-    if windowed:
-        ev -= sa["warm_evicted"]
-    hist = c["hist"] or {}
-    src = (f"`/history?res={hist.get('res')}` の後の期間 (バースト込み) の `dns_warm_max`、"
-           f"`/status` の `dns.warm_evicted` ({'その間' if windowed else '起動から'})")
-    shown = f"最大 **{n(mx)}** 件、`warm_evicted` **{n(ev)}**"
-    if mx is None or ev is None:
-        miss = "`/history` に `dns_warm_max` が無い" if mx is None else \
-            "`/status` の `dns` に `warm_evicted` が無い"
-        return (label, limit, shown, UNKNOWN, f"{miss} (T16.0 より前の版)。" + src)
-    return (label, limit, shown, MET if mx < lim and ev == 0 else MISSED, src)
-
-
-def anomaly_rates(snap):
-    """`/events` の anomaly を種類別に「起動からの 件/時」にする (部が無ければ None)。
-
-    種類は `text` の先頭の `<kind>:` (`crates/metrics-watch/src/anomaly.rs` の文面)。
-    **`cleared:` (解けた知らせ) は数えない**。前の版から読み継いだ出来事が混ざるので、
-    起動 (`taken_at − uptime_secs`) より前の `at` は外す。
-    """
-    ev = part(snap, "events")
-    rows = ev.get("events")
-    up = snap.get("uptime_secs") or 0
-    if not isinstance(rows, list) or not up:
-        return None
-    started = (snap.get("taken_at") or 0) - up
-    counts = {}
-    for e in rows:
-        text = e.get("text") or ""
-        if e.get("kind") != "anomaly" or text.startswith("cleared:") or ":" not in text:
-            continue
-        if started and (e.get("at") or 0) < started:
-            continue
-        kind = text.split(":", 1)[0].strip()
-        counts[kind] = counts.get(kind, 0) + 1
-    hours = up / 3600.0
-    return {"hours": hours, "truncated": bool(ev.get("truncated")),
-            "kinds": {k: {"count": v, "per_hour": v / hours} for k, v in counts.items()}}
-
-
-def _p17_events(c, th):
-    """T17.99 (a): `/events` の種類別 件/時。閾があるのは `dns_slow` (0.1 件/時) だけ。"""
-    limits = th["events_per_hour"]
-    label = "`/events` の anomaly の種類別 件/時 (" + "、".join(
-        f"`{k}` {v} 以下" for k, v in limits.items()) + "。ほかは表示だけ)"
-    limit = "、".join(f"`{k}` ≤ {v}" for k, v in limits.items())
-    aft, bef = anomaly_rates(c["b"]), anomaly_rates(c["a"])
-    if aft is None:
-        return (label, limit, "—", UNKNOWN, "後の雪像に `/events` の部が無い")
-    kinds = sorted(set(aft["kinds"]) | set(limits),
-                   key=lambda k: (k not in limits, -aft["kinds"].get(k, {}).get("count", 0), k))
-    shown, verdict = [], MET
-    for k in kinds:
-        v = aft["kinds"].get(k, {"count": 0, "per_hour": 0.0})
-        before = (bef or {}).get("kinds", {}).get(k, {"count": 0, "per_hour": 0.0})
-        was = f"、前 {before['per_hour']:.2f}" if bef is not None else ""
-        text = f"`{k}` {v['per_hour']:.2f} 件/時 ({v['count']} 件{was})"
-        if k in limits:
-            text = f"`{k}` **{v['per_hour']:.2f}** 件/時 ({v['count']} 件{was})"
-            if v["per_hour"] > limits[k]:
-                verdict = MISSED
-        shown.append(text)
-    src = (f"`/events` の `kind == \"anomaly\"` を `text` の先頭で分け、`cleared:` を除き、"
-           f"起動からの {aft['hours']:,.1f} 時間で割った")
-    if bef is None:
-        src += "。前の雪像に `/events` が無い"
-    if aft["truncated"]:
-        src += "。**`/events` が切れている** (件数は下限)"
-    return (label, limit, "、".join(shown), verdict, src)
-
-
-def cgroup_since_start(snap):
-    """`/status` の `kernel.cgroup_cpu.since_start` の起動からの CPU (欄が無ければ None)。"""
-    cg = (part(snap, "status").get("kernel") or {}).get("cgroup_cpu") or {}
-    ss = cg.get("since_start") or {}
-    up = snap.get("uptime_secs") or 0
-    usage = ss.get("usage_usec")
-    if usage is None or not up:
-        return None
-    user = ss.get("user_usec")
-    system = ss.get("system_usec")
-    if system is None and user is not None:
-        system = usage - user
-    return {"cores": usage / 1e6 / up,
-            "user_cores": (user / 1e6 / up) if user is not None else None,
-            "sys_cores": (system / 1e6 / up) if system is not None else None,
-            "user_share": (user / usage) if user is not None and usage else None,
-            "throttled": ss.get("nr_throttled"), "periods": ss.get("nr_periods"),
-            "hours": up / 3600.0}
-
-
-def _p17_cgroup(c, th):
-    """T17.99 (c): cgroup の起動からの user / sys が前後で同じ桁 (T16.0 で足した欄)。"""
-    k = th["cgroup_factor"]
-    label = "cgroup の起動からの CPU (user / sys) が前と同じ桁"
-    limit = f"user・sys とも ≤ 前 ×{k:.0f}"
-    aft, bef = cgroup_since_start(c["b"]), cgroup_since_start(c["a"])
-
-    def text(v):
-        share = f"、user {v['user_share'] * 100:.0f}%" if v["user_share"] is not None else ""
-        return f"{v['cores']:.4f} コア{share}"
-    if aft is None:
-        return (label, limit, "—", UNKNOWN,
-                "後の雪像の `kernel.cgroup_cpu.since_start` に `usage_usec` が無い")
-    thr = ""
-    if aft["throttled"] is not None and aft["periods"] is not None:
-        thr = f"、絞り {n(aft['throttled'])} / {n(aft['periods'])} 周期"
-    src = f"`kernel.cgroup_cpu.since_start` ÷ `uptime_secs` (後 {aft['hours']:,.1f} 時間{thr})"
-    if bef is None:
-        return (label, limit, f"後 **{text(aft)}**", UNKNOWN,
-                "前の版に欄が無い (`usage_usec` は T16.0 から)。" + src)
-    worse = []
-    for key, name in (("user_cores", "user"), ("sys_cores", "sys")):
-        if aft[key] is None or bef[key] is None:
-            return (label, limit, f"{text(bef)} → **{text(aft)}**", UNKNOWN,
-                    f"`{name}_usec` がどちらかに無い。" + src)
-        if (bef[key] and aft[key] > bef[key] * k) or (not bef[key] and aft[key]):
-            worse.append(name)
-    return (label, limit, f"{text(bef)} → **{text(aft)}**"
-            + (f" ({'・'.join(worse)} が桁で増えた)" if worse else ""),
-            MISSED if worse else MET, src + f"、前 {bef['hours']:,.1f} 時間")
-
-
-# --- Phase 18 の 2 行 (T18.2。前の 8 行は phase17 の関数をそのまま使う) ---
-
-def mb(v):
-    """バイト数を MB (10^6 B。TODO.md の RSS の書き方) の小数 1 桁にする。"""
-    return "—" if v is None else f"{v / 1e6:,.1f}"
-
-
-def memory_of(snap):
-    """その雪像の `/status` の `memory` (無ければ空の辞書)。"""
-    m = part(snap, "status").get("memory")
-    return m if isinstance(m, dict) else {}
-
-
-def uptime_text(secs):
-    """起動からの時間。1 時間に満たなければ分で書く (0 時間の雪像は起動の数分後)。"""
-    secs = secs or 0
-    return f"{secs / 60:,.1f} 分" if secs < 3600 else f"{secs / 3600:,.1f} 時間"
-
-
-def _p18_heap(c, th):
-    """T18.0 (g): `heap_used + mmap` が 0 時間の雪像から 5 MB 以上増えていないか。
-
-    材料は `--zero FILE` (0 時間の雪像。`build` が `zero_snapshot` に入れる) と後の雪像の
-    `$.status.memory`。**`heap_free` と `rss` は並べるだけ** (閾を置かない。T17.99 (d) で伸びたのは
-    `heap_free` で、バーストの大きさで決まる)。`--zero` が無いか、後の雪像と同じ起動でなければ
-    「判定できず」。
-    """
-    lim = th["heap_growth_mb"]
-    label = f"`heap_used + mmap` の 0 時間の雪像からの増えが {lim:.0f} MB 未満"
-    limit = f"< {lim:.0f} MB"
-    z = c["b"].get("zero_snapshot")
-    if not z:
-        return (label, limit, "—", UNKNOWN, "`--zero` (0 時間の雪像) が渡されていない")
-    between = restart_info(z, c["b"])
-    if between["restarted"]:
-        return (label, limit, "—", UNKNOWN,
-                "`--zero` の雪像は後の雪像と同じ起動ではない (" + "、".join(between["reasons"]) + ")")
-    mz, ma = memory_of(z), memory_of(c["b"])
-    shown = "、".join(f"`{k}` {mb(mz.get(k))} → {mb(ma.get(k))}"
-                     for k in ("heap_used", "mmap", "heap_free", "rss"))
-    shown += " MB (`heap_free` と `rss` は表示だけ)"
-    src = (f"`--zero` (起動から {uptime_text(z.get('uptime_secs'))}) と後の雪像 "
-           f"(起動から {uptime_text(c['b'].get('uptime_secs'))}) の `/status` の `memory`")
-    missing = [f"{who}の `{k}`" for who, m in (("0 時間", mz), ("後", ma))
-               for k in ("heap_used", "mmap") if m.get(k) is None]
-    if missing:
-        return (label, limit, shown, UNKNOWN, "、".join(missing) + " が無い。" + src)
-    before, after = mz["heap_used"] + mz["mmap"], ma["heap_used"] + ma["mmap"]
-    grown = (after - before) / 1e6
-    return (label, limit, f"**{grown:+.1f}** MB ({mb(before)} → {mb(after)} MB)。" + shown,
-            MET if grown < lim else MISSED, src)
-
-
-def _p18_request_probes(c, th):
-    """T18.0 (h): `v4_first` の間に利用者の経路で IPv6 を探っていないか (T18.1 の計器)。
-
-    材料は後の雪像の `$.status.ipv6.request_probes` (起動からの通算)。欄が無い版は「判定できず」。
-    0 でなければ「届かず」で、理由を読むための `canary.ipv6_runs` / `ipv6_skipped` を並べる。
-    """
-    want = th["request_probes"]
-    label = "`ipv6.request_probes` が 0 (`v4_first` の間に利用者の経路で IPv6 を探っていない)"
-    limit = f"= {want}"
-    st = part(c["b"], "status")
-    ip = st.get("ipv6") if isinstance(st.get("ipv6"), dict) else {}
-    can = st.get("canary") if isinstance(st.get("canary"), dict) else {}
-    v = ip.get("request_probes")
-    if v is None:
-        return (label, limit, "—", UNKNOWN,
-                "後の雪像の `/status` の `ipv6` に `request_probes` が無い (T18.1 より前の版)")
-    shown = f"**{n(v)}** 回"
-    if v and ip.get("request_probe_at"):
-        shown += f" (最後は {stamp(ip['request_probe_at'])})"
-    shown += (f"、`canary.ipv6_runs` {n(can.get('ipv6_runs'))} / "
-              f"`ipv6_skipped` {n(can.get('ipv6_skipped'))}")
-    if ip.get("attempts") is not None:
-        shown += f"、`ipv6.attempts` {n(ip['attempts'])}"
-    src = (f"後の雪像の `/status` の `ipv6.request_probes` (起動からの "
-           f"{uptime_text(c['b'].get('uptime_secs'))} の通算) と `canary`")
-    return (label, limit, shown, MET if v == want else MISSED, src)
-
-
-RULES = {
-    "phase14": (_p14_dns_per_connect, _p14_major_hosts, _p14_connect_p50, _p14_overload),
-    "phase15": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band,
-                _p15_conn_cores, _p15_closed_shape, _p15_timeout),
-    "phase17": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band, _p15_timeout,
-                _p17_conn_per_request, _p17_warm_max, _p17_events, _p17_cgroup),
-}
-# phase18 = phase17 の 8 行 + (g) + (h)
-RULES["phase18"] = RULES["phase17"] + (_p18_heap, _p18_request_probes)
+# ---------------------------------------------------------------- 日次の雪像
 
 # 日次の雪像の名前 (`collect-deployed.sh --from-server` が付ける `<日付>T000000Z-snapshot.json`)
 DAILY_SNAPSHOT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}T000000Z-snapshot\.json$")
@@ -1459,30 +771,6 @@ def daily_snapshots(dirname, b):
                      "ipv6_attempts": ip.get("attempts")})
     rows.sort(key=lambda r: (r["taken_at"], r["file"]))
     return {"dir": dirname, "version": b.get("version"), "files": files, "rows": rows}
-
-
-def judge(name, hist, hosts, majors, status_b, overload, th,
-          a=None, b=None, info=None, dns=None, errors=None, burst=BURST_PER_HOUR):
-    """`RULES[name]` の各行を順に呼んで判定表にする。
-
-    `a` / `b` (雪像そのもの) と `info` / `dns` / `errors` は **phase15 / phase17 の行だけが使う**
-    (phase14 の 4 行は今までどおりの 7 つの引数だけで足りる)。
-    """
-    info = info or {}
-    hours = (info.get("uptime") or [0, 0])[1] if info.get("restarted") else info.get("wall_secs")
-    c = {
-        "hist": hist or {}, "after": (hist or {}).get("after") or {},
-        "after_all": (hist or {}).get("after_all") or {},
-        "hosts": hosts, "majors": majors, "status_b": status_b, "overload": overload,
-        "a": a or {}, "b": b or {}, "info": info, "dns": dns, "errors": errors,
-        # 平常時の閾 (1 時間の本数)。閉じ方の行が分ごとの標本をこれで切る
-        "burst": burst,
-        # `dns.refreshes` は再起動をまたぐと「起動から」の値なので、割る時間もそちらに合わせる
-        "hours": (hours or 0) / 3600.0,
-    }
-    rows = [rule(c, th) for rule in RULES[name]]
-    return {"name": name, "rows": rows,
-            "tally": {v: sum(1 for r in rows if r[3] == v) for v in (MET, MISSED, UNKNOWN)}}
 
 
 # ---------------------------------------------------------------- 組み立て
@@ -1531,6 +819,9 @@ def build(a, b, args):
         "bursts": bursts_info(b, hist),
     }
     out["errors"] = errors_info(a, b, hosts, hist)
+    # 成功した接続だけの確立時間 (T20.1)。**phase14〜phase18 の出力は変えない**ので、そのときは鍵ごと足さない
+    if args.criteria not in FROZEN:
+        out["recent_connect"] = recent_connects(b)
     # サーバー側の要約 (T14.24)。`--summary` があれば読んで手元の集計と並べる
     if hist:
         out["summary_url"] = summary_url(info["boundary"], b["taken_at"],
@@ -1613,6 +904,22 @@ def render(d, top):
           f"/ p95 {ms(bef['connect_p95'])} ms ({n(bef['connects'])} 本) "
           f"| avg {ms(aft['connect_avg'])} / **p50 {ms(aft['connect_p50'])}** "
           f"/ p95 {ms(aft['connect_p95'])} ms ({n(aft['connects'])} 本) | 同上 |")
+        if "recent_connect" in d:
+            # T20.1。上の行 (`/history` の区間) には失敗した接続の時間も入っている
+            rc = d["recent_connect"]
+            if rc is None:
+                p("| CONNECT 確立 (**成功した接続だけ**) | — | — | 後の雪像に `/recent` の部が無い |")
+            else:
+                window = ""
+                if rc["oldest"] and rc["taken_at"]:
+                    window = (f"、{stamp(rc['oldest'])} → 取得までの "
+                              f"{(rc['taken_at'] - rc['oldest']) / 3600:.1f} 時間")
+                p(f"| CONNECT 確立 (**成功した接続だけ**) | — (前の雪像の個票は見ない) "
+                  f"| **p50 {n(rc['p50'])}** / p95 {n(rc['p95'])} ms ({n(rc['n'])} 本。"
+                  f"ほかに失敗 {n(rc['failed'])} 本) "
+                  f"| 後の雪像の `/recent` の `kind == \"connect\"` で `reason` が `error` で"
+                  f"始まらない行の `ms.connect` (個票 {n(rc['rows'])} 行{window}"
+                  + ("。**256 KiB で切れている**ので窓は短い" if rc["truncated"] else "") + ") |")
         p(f"| 名前解決のミス | **{ratio(bef['dns_per_connect'])} 回/接続**、"
           f"ミス 1 回 {ms(bef['ms_per_miss'])} ms、接続 1 本あたり {ms(bef['dns_ms_per_connect'])} ms "
           f"| **{ratio(aft['dns_per_connect'])} 回/接続**、"
@@ -1633,6 +940,18 @@ def render(d, top):
         p(f"| 山 (`active_max`) / エラー | {n(bef_all['active_max'])} / {n(bef_all['errors'])} 件 "
           f"| {n(aft_all['active_max'])} / {n(aft_all['errors'])} 件 | 同上 |")
         p()
+        if "recent_connect" in d and aft["connects"] \
+                and aft["errors"] / aft["connects"] > FAILED_SHARE_NOTE:
+            # T20.1。本体は失敗した接続も同じ区間に足すので、失敗が多い期間は p95 がその時間になる
+            by = "、".join(f"{CAUSE_NAMES[i]} {n(v)}"
+                          for i, v in enumerate(aft["causes"]) if v) or "—"
+            p(f"**確立の区間には失敗した接続の時間も入っている**: 後の期間 (平常時) のエラーは "
+              f"{n(aft['errors'])} 件で、接続 {n(aft['connects'])} 本の "
+              f"{100.0 * aft['errors'] / aft['connects']:.1f}% "
+              f"(> {FAILED_SHARE_NOTE * 100:.0f}%。原因別: {by})。上の「CONNECT 確立」の avg / p50 / p95 は"
+              "繋がらなかった接続の「失敗するまでの時間」を含むので、繋がった接続の速さは"
+              "「成功した接続だけ」の行で読むこと。")
+            p()
         if d.get("summary_url"):
             p(f"「後」の列と同じ数字は**サーバー側で 1 要求**でも取れる (T14.24): "
               f"`curl \"http://PROXY{d['summary_url']}\"` "
@@ -1825,50 +1144,9 @@ def render(d, top):
           f"、同時接続の山 {n(bu['active_max'][0])} → {n(bu['active_max'][1])}")
     p()
 
-    # --- 9
+    # --- 9 (判定表。中身は `snapshot_criteria.py`)
     if "criteria" in d:
-        c = d["criteria"]
-        p(f"## 9. 完了の定義に対する判定 (`--criteria {c['name']}`)")
-        p()
-        if grouped:
-            # 「主要 3 ホスト」は §3 の上位から採るので、まとめると**単位**になる
-            p("**`--group domain` を付けているので、「主要 3 ホスト」の行はまとめの単位 "
-              "(eTLD+1) で判定している**。ホスト 1 件ずつで判定するには `--group` を外すこと。")
-            p()
-        if c["name"] == "phase15":
-            # T15.0 (15)。材料が雪像に無い行は「0 だった」ではなく「判定できず」にする
-            p("材料は `/hosts` `/status` の `dns` `/dns` (名前ごとの引き直し)・"
-              "`/history` (`dns_warm` と `errors_by_cause`、`res=60` の `closed` / `transfer`)・"
-              "`/profile` (`conn` 役の CPU)・`--daily` (日ごとのミス) です。"
-              "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。"
-              "閉じ方の行は**平常時の 1 分ごとの全数**で比べます (`/recent` は 256 KiB で切れて"
-              "窓の長さが毎回違うので使いません。T15.15)。")
-            p()
-        if c["name"] == "phase17":
-            # T17.0a。前の 4 行は phase15 と同じ関数、後ろの 4 行が T16.99 で手で引いていた判定
-            p("前の 4 行は phase15 と同じ物差しです。後ろの 4 行の材料は `--profile` "
-              "(`/profile?res=60`。無ければ雪像の `/profile` の部で**参考**)・`/history` の "
-              "`dns_warm_max` と `/status` の `dns.warm_evicted`・`/events` の anomaly "
-              "(起動からの 件/時、`cleared:` は数えない)・`/status` の "
-              "`kernel.cgroup_cpu.since_start` です。**その部が雪像に無い行は「判定できず」**で、"
-              "0 とは書きません。")
-            p()
-        if c["name"] == "phase18":
-            # T18.2。前の 8 行は phase17 と同じ関数、後ろの 2 行が T17.99 の但し書き (d)(e) の物差し
-            p("前の 8 行は phase17 と同じ物差しで、材料も同じです (`--daily` `--profile` "
-              "`--profile-before`)。後ろの 2 行は T18.0 の (g) と (h) で、材料は `--zero` で渡す "
-              "0 時間の雪像と後の雪像の `/status` の `memory` (`heap_used + mmap` の増え。"
-              "`heap_free` と `rss` は表示だけ) と、後の雪像の `/status` の "
-              "`ipv6.request_probes` (T18.1。0 でなければ `canary.ipv6_runs` / `ipv6_skipped` から"
-              "理由を読む) です。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
-            p()
-        p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
-        p("|---|---|---|---|---|")
-        for row in c["rows"]:
-            p(f"| {row[0]} | {row[1]} | {row[2]} | **{row[3]}** | {row[4]} |")
-        p()
-        p("・".join(f"{k} {v} 行" for k, v in c["tally"].items() if v))
-        p()
+        render_criteria(d, grouped)
 
     # --- 日次の雪像の表 (`--daily-snapshots`。T18.2 (2))。判定表の下に置く
     if "daily_snapshots" in d:
@@ -1907,7 +1185,8 @@ def parser():
                    help="完了の定義に対する判定表を出す (phase14 = Phase 14 の 4 行、"
                         "phase15 = T15.4 / T15.5 / T15.6 の 6 行。T15.15 で物差しを直した。"
                         "phase17 = T17.99 の 8 行、phase18 = phase17 の 8 行 + T18.0 の (g)(h) の "
-                        "10 行)")
+                        "10 行、phase20 = phase18 の物差しを直した 10 行。`cache_memory` を引き、"
+                        "3 行は表示だけ。T20.1)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst", type=int, default=BURST_PER_HOUR, metavar="N",
@@ -1924,8 +1203,8 @@ def parser():
     p.add_argument("--profile-before", metavar="FILE",
                    help="同じものを古い雪像に足す (前の CPU/要求 も `/profile?res=60` で比べる)")
     p.add_argument("--zero", metavar="FILE",
-                   help="0 時間の雪像 (再デプロイの直後に撮った 1 枚)。phase18 の `heap_used + mmap` "
-                        "の増えの行の材料 (T18.2。無ければその行は「判定できず」)")
+                   help="0 時間の雪像 (再デプロイの直後に撮った 1 枚)。phase18 / phase20 の "
+                        "`heap_used + mmap` の増えの行の材料 (T18.2。無ければその行は「判定できず」)")
     p.add_argument("--daily-snapshots", metavar="DIR",
                    help="`DIR` の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち新しい雪像と同じ版の"
                         "ものを時刻順に並べ、`memory` と `ipv6.attempts` の表を判定表の下に出す (T18.2)")
