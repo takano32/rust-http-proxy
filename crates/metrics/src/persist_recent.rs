@@ -620,6 +620,9 @@ fn decode_error(p: &[u8]) -> Option<ErrorEntry> {
         connect_ms,
         status,
         client,
+        // ファイルの形は変えない (T20.3)。読み戻した行は 1 回ぶんで、最後の時刻は `at`
+        repeats: 1,
+        last_at: at,
     })
 }
 
