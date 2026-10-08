@@ -158,7 +158,7 @@ CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)�
 名前解決の warm と引き直し・出来事・エラーの原因別・バーストを出し、`--criteria phase14` を
 足すと**完了の定義に対する判定表** (満たした / 届かず / 判定できず) が最後に付きます。
 出力は Markdown なので `TODO.md` にそのまま貼れます。
-**`/history` の確立の区間 (と `/status` の `recent_quantiles.connect`) には、繋がらずに 502 を返した接続の「失敗するまでの時間」も入ります**。黒穴の宛先を繰り返し叩く端末が居ると p95 がその時間になるので (2026-10-08 の雪像は p95 2,066 ms)、「平常時の前後」の表には後の雪像の `/recent` から**成功した接続だけ**の確立時間 (本数・p50・p95。同じ雪像で 398 本・7 / 66 ms) も 1 行並べ、後の期間のエラーが接続の 5% を超えるときは表の下で断ります (T20.1。`--criteria` が phase14 / phase15 / phase17 / phase18 のときは出しません — この 4 つの出力は過去の判定を出し直せるように変えない決まりです)。判定の部は `scripts/snapshot_criteria.py` に割ってあります (入口は `snapshot-diff.py` のまま)。
+**`0.18.0` までの版は、`/history` の確立の区間 (と `/status` の `recent_quantiles.connect`) に、繋がらずに 502 を返した接続の「失敗するまでの時間」も入っています**。黒穴の宛先を繰り返し叩く端末が居ると p95 がその時間になります (2026-10-08 の雪像は p95 2,066 ms)。**T20.4 からは、エラーで終わった 1 件は確立 / 初バイト / `wait` の区間にも直近の標本にも入りません** (`connects` は繋がった本数。失敗は `errors` / `errors_by_cause` / `/errors` / ホスト別の行に残ります。「API」の `/history` の説明)。前後の雪像が T20.4 をまたぐと `connects` と確立の分位点の数え方が違うので、その 1 回は下の「成功した接続だけ」の行で比べてください。「平常時の前後」の表には後の雪像の `/recent` から**成功した接続だけ**の確立時間 (本数・p50・p95。同じ雪像で 398 本・7 / 66 ms) も 1 行並べ、後の期間のエラーが接続の 5% を超えるときは表の下で断ります (T20.1。`--criteria` が phase14 / phase15 / phase17 / phase18 のときは出しません — この 4 つの出力は過去の判定を出し直せるように変えない決まりです)。判定の部は `scripts/snapshot_criteria.py` に割ってあります (入口は `snapshot-diff.py` のまま)。
 
 ```bash
 scripts/snapshot-diff.py status/2026-09-1{2,6}*-snapshot.json --criteria phase14
@@ -1211,7 +1211,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - `n` は環に残っている本数 (最大 1,024)、`window_secs` は**いちばん古い標本からの経過秒**
       (= この `n` 本が何秒ぶんか)。忙しければ数秒、暇なら数時間になります。
     - `connect` は CONNECT の**確立まで** (`connect://` の鍵のもの)、`forward` は forward の**初バイトまで**。
-      どちらも失敗した 1 本 (502 など) も入ります (`/history` の分布と同じ数え方)。
+      **エラーで終わった 1 本 (繋がらなかった 502 など) は入りません** (T20.4。`/history` の分布と同じ数え方。
+      `0.18.0` までの版は「失敗するまでの時間」も入っていて、繋がらない宛先への再試行が続くと p90 が秒になりました)。
+      `wait` も同じで、`n` は「繋がった本数」です
     - **`wait` は利用者が待つ時間** (`queue + client_read + dns + connect` の和。**CONNECT だけ**。T15.0 (2))。
       `connect` は要求行を読んだ**後**から測るので、accept してワーカーが動き出すまでの待ち (`queue`)
       も `Host` を読み終えるまで (`client_read`) も名前解決も入っていません。**次の「完了の定義」の
@@ -1263,6 +1265,25 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (ファイルの形も大きさ (8 MiB) も変わらず、再起動後に読み戻した 720 本はリングの末尾に入ります)。
     `?summary=1` (下) は 5 秒のリングが 6 時間ぶんあるので `?res=5` を**明示すれば** 6 時間前まで 5 秒で畳めますが、
     **`res=` を書かないときの解像度の自動選択の閾は変えていません** (1 時間までが 5 秒、1 日までが 60 秒)。
+  - **確立 / 初バイト / 待ちの 12 列に入るのは、エラーにならなかった要求だけ**です (T20.4):
+    `connects` / `connect_ms_sum` / `connect_ms_max` / `connect_buckets` は**繋がった CONNECT**、
+    `forwards` / `forward_ms_sum` / `forward_ms_max` / `forward_buckets` は **5xx にならなかった転送**
+    (キャッシュ HIT も入ります。403 で断った要求は今までどおりどちらにも入りません)、
+    `waits` / `wait_ms_sum` / `wait_ms_max` / `wait_buckets` は繋がった CONNECT の待ち。
+    **エラーで終わった 1 件** (繋がらなかった 502・オリジンが返した 5xx) は `errors` と
+    `errors_by_cause` (原因が分かるものだけ)、`/errors` の個票 (`connect_ms` つき)、**ホスト別の行**
+    (`hosts[]` の `requests` / `errors` / `avg_ms` / `p95_ms`。「その相手に掛かった時間」なので失敗も入れたまま)
+    に残ります。`dns_misses` / `dns_ms_sum` は成否を問わず数えます。
+    **`0.18.0` までの版は失敗も「失敗するまでの時間」で 12 列に入っていました** (`connects` は試みた本数で、
+    失敗は `connects` と `errors` の両方に居ました)。IPv6 だけの宛先への再試行 (1 本 約 1.3 秒) が接続の 17% を
+    占めた週は、確立の p95 が 2,066 ms と出て速さの物差しになりませんでした (成功だけなら 66 ms)。
+    **列の名前も並びも `.rrd` の形も変えていない**ので、再デプロイをまたぐ `/history` には両方の数え方の標本が並びます
+    (`t` が再起動より前の標本は古い数え方)。同じ窓から出る数字も一緒に変わります:
+    `?summary=1` の `connects` / `p50_ms` / `p95_ms` / `forwards` / `dns_miss_per_connect`、`/status` の `recent_quantiles`、
+    `/profile` の段階 (エラーで終わった要求の段は入りません)、`/slo`、`/daily` の `connects` / `connect_p50_ms` /
+    `connect_p95_ms` / `dns_per_connect`、ダッシュボードの KPI、異常の `connect_p95` と `dns_miss_rate`
+    (分母の接続が「繋がった本数」になります。分子のミスは失敗した接続のぶんも入ったまま)、
+    `/metrics` の `sorahost_connect_seconds` と段階のヒストグラム
   - **`keys` の隣に `key_kinds`** が並びます (T15.0 (10))。`keys` と**同じ長さ・同じ並び**で、
     その列の読み方を 1 つずつ書いたものです。**列の名前からは読み方が分かりません**
     (`requests` は起動からの通算、`connects` はその区間だけ) — 同じ表に 2 種類が混ざっているのは
@@ -1853,6 +1874,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 - **`PROXY_SLO`** (既定 `connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2`)
   **SLO の 4 つの閾** (T14.50)。履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、**4 つとも満たした標本の割合**を `/slo` で返します (`connect_p50_ms` / `connect_p95_ms` = その 5 秒に確立した CONNECT の p50 / p95 (ms)、`error_rate` = エラー ÷ 試み (確立 + 転送 + エラー)、`dns_miss_per_connect` = 名前解決のミス ÷ 確立。**満たす = 閾以下**)。
   **確立が 1 本も無い 5 秒は「判定なし」**で分母に入れません (誰も使っていない夜中を「達成」と数えると、達成率が「動いていた割合」に化けるため)。
+  **「確立」は繋がった CONNECT の本数**です (T20.4。`0.18.0` までは失敗した CONNECT も確立に数えていて、失敗 1 件が「確立」と「エラー」の両方に居ました)。試み = 確立 + 転送 + エラー は失敗 1・成功 1 で 2 になり、失敗の「失敗するまでの時間」は `connect_p50_ms` / `connect_p95_ms` に入りません。**繋がらなかった CONNECT しか無い 5 秒は、確立が 0 本なので「判定なし」です** (`0.18.0` までは `error_rate` と `connect_p95_ms` を外した 5 秒に数えていました。失敗そのものは `/history` の `errors` と `/errors` で読んでください)。
   書いた閾だけが効き、書いていない閾・知らない綴り・数として読めない値・負の値は既定のままです (例: `PROXY_SLO=connect_p50_ms=6` だけ書けば p50 の閾だけ 6 ms になる)。
   効いている値は `/config` の `PROXY_SLO` と `/slo` の `thresholds`。
   判定するのは履歴スレッドなので**要求の経路の費用は 0** で、`PROXY_STATS_PERSIST=off` と `--lite` では 1 本も判定しません。
@@ -2793,7 +2815,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 **接続スレッドの 2 つはラベル付きの 1 系列にそろえました**。旧名 `sorahost_live_threads` /
 `sorahost_idle_threads` はこの版だけ両方出るので、監視側は次の版までに移してください。
 `/metrics` にはこのほか `sorahost_connect_seconds`(`_bucket{le=}` / `_sum` / `_count`。CONNECT 確立の
-ヒストグラム。区間は `/history` と同じ 12 段)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
+ヒストグラム。区間は `/history` と同じ 12 段。**繋がった CONNECT だけ**を数えます — T20.4。`0.18.0` までは失敗した 1 本も入っていました)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
 かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
 **`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing"}`**
 (読めずに 400 / 414 / 431 で断った要求。6 本で固定。T14.28)、
