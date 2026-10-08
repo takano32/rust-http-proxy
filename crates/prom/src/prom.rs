@@ -1182,6 +1182,8 @@ mod tests {
             0,
             Duration::from_millis(257),
         );
+        // 繋がらなかった 1 本 (30 秒で `timeout`)。**確立のヒストグラムには入らない**
+        // (T20.4。`errors_total` には残る)
         m.record_host_detail(
             "connect://b:443",
             HostOutcome::Error,
@@ -1210,17 +1212,17 @@ mod tests {
             text
         );
         assert!(
-            text.contains("sorahost_connect_seconds_bucket{le=\"+Inf\"} 2\n"),
+            text.contains("sorahost_connect_seconds_bucket{le=\"+Inf\"} 1\n"),
             "{}",
             text
         );
         assert!(
-            text.contains("sorahost_connect_seconds_count 2\n"),
+            text.contains("sorahost_connect_seconds_count 1\n"),
             "{}",
             text
         );
         assert!(
-            text.contains("sorahost_connect_seconds_sum 30.257\n"),
+            text.contains("sorahost_connect_seconds_sum 0.257\n"),
             "{}",
             text
         );

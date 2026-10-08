@@ -424,17 +424,28 @@ impl Metrics {
                 .first_byte_ms
                 .unwrap_or_else(|| d.as_millis().min(u64::MAX as u128) as u64)
         });
+        // **エラーで終わった 1 件は、全体の確立 / 初バイトの窓・直近の標本・`wait`・段階の窓に
+        // 入れない** (T20.4)。失敗した CONNECT が渡してくるのは「失敗するまでの時間」で、
+        // 繋がらない宛先への再試行が続くと (2026-10-08 の実測: 接続の 17.2% が 1 本 約 1.3 秒)
+        // `recent_quantiles.connect` の p90 も `/history` の確立の p95 も秒になって、
+        // 速さの物差しにならなかった。これで `connects` / `forwards` は「エラーにならなかった
+        // 本数」になり、`/slo` の `attempts = connects + forwards + errors` が 2 重に数えない。
+        // 失敗は `errors` / `errors_by_cause` / `/errors` の個票 / **ホスト別の行**
+        // (下の `stats.count`。「その相手に掛かった時間」なので失敗も入れたまま) に残る。
+        // 比較はここで 1 回だけ (下の `errors` の分岐が元から見ていたものを使い回す)
+        let failed = outcome == HostOutcome::Error;
         // 全体の合計も同じ鍵の内側で足す (原子操作を増やさない)
         for iv in [&mut hosts.total, &mut hosts.interval] {
             iv.dns_misses += detail.dns_misses;
             iv.dns_ms_sum += detail.dns_ms;
-            if outcome == HostOutcome::Error {
-                iv.errors += 1;
-            }
             if let Some(c) = detail.cause {
                 iv.errors_by_cause[c as usize] += 1;
             }
-            if let Some(ms) = ms {
+            // 成功の経路の分岐は今までと同じ数 (`errors` を足すかどうかの 1 回を、
+            // 窓に入れるかどうかと兼ねている)
+            if failed {
+                iv.errors += 1;
+            } else if let Some(ms) = ms {
                 if connect {
                     iv.connect.observe(ms);
                 } else if counted {
@@ -445,10 +456,12 @@ impl Metrics {
         // 段階の窓 (T14.3 (1)) と、直近 1,024 本の標本そのもの (T14.31)。どちらも
         // `--lite` では時計を読んでいないので触らない。**旗も分岐も 1 つにまとめてある**
         // ので、`--lite` の経路には 1 命令も足していない。同じ鍵の内側なので、
-        // 原子操作も鍵の取り直しも増えない
+        // 原子操作も鍵の取り直しも増えない。**`failed` は最後に見る** (`--lite` は
+        // `profile::on()` で抜けるので、そこまでの命令は今までと同じ。T20.4)
         if let Some(d) = took
             && counted
             && crate::profile::on()
+            && !failed
         {
             // 直近の標本は **us のまま**入れる (12 段の区間では 1 ms 単位で読めない)。
             // forward の初バイトは元が ms 刻みなので ×1,000 するだけ、CONNECT の確立は
@@ -501,12 +514,9 @@ impl Metrics {
             stats.count(now, outcome, bytes, took, detail);
             // 上位 16 ホストなら時系列にも 1 標本ぶん (T14.22)。旗が無ければ分岐 1 回で終わり
             if let Some(slot) = stats.series_slot {
-                hosts.series.add(
-                    slot,
-                    ms.unwrap_or(0),
-                    detail.dns_ms,
-                    outcome == HostOutcome::Error,
-                );
+                hosts
+                    .series
+                    .add(slot, ms.unwrap_or(0), detail.dns_ms, failed);
             }
             return;
         }
@@ -2088,7 +2098,9 @@ mod latency_tests {
     /// **既存の `connect` の系列は 1 バイトも触らない** (新しい系列として足す)。
     #[test]
     fn the_wait_series_is_the_sum_of_four_stages() {
-        // 段階の窓と同じ旗 (`--lite` では書かない)。この binary の他のテストは見ていない
+        // 段階の窓と同じ旗 (`--lite` では書かない)。旗は処理系で 1 つなので、
+        // 旗を見るテスト (T20.4 の 3 本) とは鍵を取って順に回す
+        let _flag = PROFILE_FLAG.lock().unwrap_or_else(|e| e.into_inner());
         crate::profile::set_enabled(true);
         let m = Metrics::new();
         m.record_host_detail(
@@ -2146,6 +2158,173 @@ mod latency_tests {
         );
     }
 
+    /// `profile` の旗 (`--lite`) を切り替えるテストどうしを順に回す鍵。
+    static PROFILE_FLAG: Mutex<()> = Mutex::new(());
+
+    /// 失敗した CONNECT 1 件の形 (1.3 秒かけて `unreachable`。名前解決のミス 1 回つき)。
+    fn failed_connect(m: &Metrics, host: &str) {
+        m.record_host_detail(
+            host,
+            HostOutcome::Error,
+            0,
+            Some(Duration::from_millis(1300)),
+            Detail {
+                dns_ms: 4,
+                dns_misses: 1,
+                connect_ms: 1296,
+                cause: Some(ErrCause::Unreachable),
+                stages: StageMs {
+                    queue: 1,
+                    client_read: 2,
+                    ..StageMs::default()
+                },
+                ..Detail::default()
+            },
+        );
+    }
+
+    /// **受け入れ基準 (T20.4)**: 失敗した CONNECT は `errors`・`errors_by_cause`・ホスト別の
+    /// 行には増え、確立の窓 (`connects` / `connect_buckets`)・直近の標本・`wait`・段階の
+    /// 窓には増えない。
+    #[test]
+    fn a_failed_connect_stays_out_of_the_windows_and_the_recent_samples() {
+        let _flag = PROFILE_FLAG.lock().unwrap_or_else(|e| e.into_inner());
+        crate::profile::set_enabled(true);
+        let m = Metrics::new();
+        failed_connect(&m, "connect://v6only:443");
+
+        // 残る方: 全体のエラーと原因別、名前解決のミス (どちらも今までどおり)
+        let iv = m.totals();
+        assert_eq!(iv.errors, 1);
+        assert_eq!(iv.errors_by_cause[ErrCause::Unreachable as usize], 1);
+        assert_eq!((iv.dns_misses, iv.dns_ms_sum), (1, 4));
+        // 残る方: ホスト別の行 (「その相手に掛かった時間」なので失敗の 1.3 秒も入れたまま)
+        let (host, s) = &m.hosts_sorted()[0];
+        assert_eq!(host, "connect://v6only:443");
+        assert_eq!((s.requests, s.errors, s.timed), (1, 1, 1));
+        assert_eq!((s.duration_ms_sum, s.duration_ms_max), (1300, 1300));
+        assert_eq!(s.errors_by_cause[ErrCause::Unreachable as usize], 1);
+        assert_eq!((s.dns_misses, s.dns_ms_sum, s.connect_ms_sum), (1, 4, 1296));
+
+        // 入らない方: 確立の窓 (`/history` の `connects` / `connect_ms_*` / `connect_buckets`)
+        assert_eq!(iv.connect, Default::default(), "累計");
+        assert_eq!(iv.forward.count, 0);
+        // 入らない方: 直近の標本 (`recent_quantiles`) と `wait`
+        let (c, f, w) = m.recent_quantiles();
+        assert_eq!((c.n, c.total, f.n, w.n, w.total), (0, 0, 0, 0, 0));
+        assert_eq!(iv.wait.count, 0, "累計の `wait`");
+        let taken = m.take_interval();
+        assert_eq!(taken.connect.count, 0, "区間");
+        assert_eq!(taken.connect.buckets.iter().sum::<u64>(), 0, "区間の区切り");
+        assert_eq!(taken.wait.count, 0, "区間の `wait`");
+        assert_eq!(taken.errors, 1, "区間のエラーは増える");
+        // 入らない方: 段階の窓 (`/profile`)
+        assert!(m.take_stages().is_empty(), "段階の窓に入った");
+    }
+
+    /// **受け入れ基準 (T20.4)**: forward も同じ。エラーで終わった 1 件 (繋がらなかった 502 も、
+    /// オリジンが 5xx を返した 1 件も `HostOutcome::Error`) は初バイトの窓と標本に入らない。
+    #[test]
+    fn a_failed_forward_stays_out_of_the_windows_and_the_recent_samples() {
+        let _flag = PROFILE_FLAG.lock().unwrap_or_else(|e| e.into_inner());
+        crate::profile::set_enabled(true);
+        let m = Metrics::new();
+        // 繋がらなかった 502 (初バイトは無い)
+        m.record_host_detail(
+            "http://dead:80",
+            HostOutcome::from_access("BYPASS", 502),
+            0,
+            Some(Duration::from_millis(1300)),
+            Detail {
+                connect_ms: 1300,
+                cause: Some(ErrCause::Refused),
+                ..Detail::default()
+            },
+        );
+        // オリジンが返した 503 (繋がって初バイトも来ているが、分類は `Error`)
+        m.record_host_detail(
+            "http://dead:80",
+            HostOutcome::from_access("MISS", 503),
+            120,
+            Some(Duration::from_millis(40)),
+            Detail {
+                first_byte_ms: Some(35),
+                ..Detail::default()
+            },
+        );
+        let iv = m.totals();
+        assert_eq!(iv.errors, 2);
+        assert_eq!(iv.errors_by_cause[ErrCause::Refused as usize], 1);
+        assert_eq!(iv.forward, Default::default());
+        assert_eq!(iv.connect.count, 0);
+        let (c, f, w) = m.recent_quantiles();
+        assert_eq!((c.n, f.n, f.total, w.n), (0, 0, 0, 0));
+        assert!(m.take_stages().is_empty(), "段階の窓に入った");
+        // ホスト別の行には 2 件とも残る
+        let (_, s) = &m.hosts_sorted()[0];
+        assert_eq!((s.requests, s.errors, s.timed), (2, 2, 2));
+        assert_eq!((s.duration_ms_sum, s.duration_ms_max), (1340, 1300));
+    }
+
+    /// **受け入れ基準 (T20.4)**: 成功は今までどおり増える (失敗 3 本のあとの成功 1 本で、
+    /// 窓と標本に居るのはその 1 本だけ)。403 とキャッシュ HIT の扱いも今までどおり。
+    #[test]
+    fn successes_are_counted_as_before_next_to_failures() {
+        let _flag = PROFILE_FLAG.lock().unwrap_or_else(|e| e.into_inner());
+        crate::profile::set_enabled(true);
+        let m = Metrics::new();
+        for _ in 0..3 {
+            failed_connect(&m, "connect://v6only:443");
+        }
+        m.record_host_detail(
+            "connect://ok:443",
+            HostOutcome::Bypass,
+            10,
+            Some(Duration::from_millis(7)),
+            Detail {
+                connect_ms: 7,
+                ..Detail::default()
+            },
+        );
+        let iv = m.totals();
+        assert_eq!((iv.connect.count, iv.connect.ms_sum), (1, 7));
+        assert_eq!(iv.connect.ms_max, 7, "失敗の 1.3 秒が最大に出ていない");
+        assert_eq!(iv.connect.buckets.iter().sum::<u64>(), 1);
+        assert_eq!((iv.wait.count, iv.wait.ms_max), (1, 7));
+        assert_eq!(iv.errors, 3);
+        assert_eq!(iv.errors_by_cause[ErrCause::Unreachable as usize], 3);
+        assert_eq!(iv.dns_misses, 3, "失敗が払った名前解決のミスは残る");
+        let (c, _, w) = m.recent_quantiles();
+        assert_eq!((c.n, c.max_us, w.n), (1, 7_000, 1));
+        // 段階の窓も成功の 1 本だけ (`queue` は 0 ms の 1 本)
+        assert_eq!(m.take_stages().folded_connect()[0].count, 1);
+
+        // forward: 成功 (オリジンの 404 も「繋がった」ので入る)・キャッシュ HIT は入り、
+        // 403 で断った 1 件 (`blocked://`、時間なし) は今までどおりどの窓にも入らない
+        m.record_host_detail(
+            "http://b:80",
+            HostOutcome::from_access("MISS", 404),
+            0,
+            Some(Duration::from_millis(900)),
+            Detail {
+                first_byte_ms: Some(9),
+                ..Detail::default()
+            },
+        );
+        m.record_host_timed(
+            "http://b:80",
+            HostOutcome::from_access("HIT(memory) age=1s", 200),
+            5,
+            Duration::from_millis(2),
+        );
+        m.record_host("blocked://ads.example", HostOutcome::Blocked, 0);
+        let iv = m.totals();
+        assert_eq!((iv.forward.count, iv.forward.ms_max), (2, 9));
+        assert_eq!(iv.connect.count, 1);
+        assert_eq!(iv.errors, 3, "403 はエラーに数えない");
+        assert_eq!(m.recent_quantiles().1.n, 2);
+    }
+
     /// 内訳はホスト別の行と区間の合計の両方に乗る (T12.4 (2) / (3))。
     #[test]
     fn the_breakdown_lands_on_the_host_row_and_the_interval() {
@@ -2181,17 +2360,18 @@ mod latency_tests {
         assert_eq!((s.dns_ms_sum, s.dns_misses, s.connect_ms_sum), (12, 1, 245));
         assert_eq!((s.v4_wins, s.v6_wins), (1, 1));
         assert_eq!(s.errors_by_cause[ErrCause::Refused as usize], 1);
-        // `connect://` の鍵は CONNECT の窓へ入る
+        // `connect://` の鍵は CONNECT の窓へ入る (**繋がった 1 本だけ**。失敗した 1 本は
+        // `errors` とホスト別の行に残り、確立の窓には入らない。T20.4)
         let iv = m.totals();
-        assert_eq!(iv.connect.count, 2);
+        assert_eq!(iv.connect.count, 1);
         assert_eq!(iv.forward.count, 0);
         assert_eq!(iv.errors, 1);
         assert_eq!(iv.errors_by_cause[ErrCause::Refused as usize], 1);
         assert_eq!((iv.dns_misses, iv.dns_ms_sum), (1, 12));
         // 区間は読むと 0 に戻る
-        assert_eq!(m.take_interval().connect.count, 2);
+        assert_eq!(m.take_interval().connect.count, 1);
         assert_eq!(m.take_interval().connect.count, 0);
-        assert_eq!(m.totals().connect.count, 2, "累計は残る");
+        assert_eq!(m.totals().connect.count, 1, "累計は残る");
         // forward は初バイトの値が窓に入る (応答全体の時間ではない)
         m.record_host_detail(
             "http://b:80",
