@@ -10,7 +10,7 @@
 #
 # 使い方:
 #   scripts/probe-deployed.sh HOST:PORT
-#     例: scripts/probe-deployed.sh nagoya.sorahost.net:50697
+#     例: scripts/probe-deployed.sh tokyo.sorahost.net:60357
 #
 # 環境変数:
 #   REPEAT (既定 3)          … 1 経路あたりの回数
@@ -37,7 +37,7 @@
 set -u
 PROXY=${1:-}
 if [ -z "$PROXY" ]; then
-  echo "usage: $0 HOST:PORT   (例: $0 nagoya.sorahost.net:50697)" >&2
+  echo "usage: $0 HOST:PORT   (例: $0 tokyo.sorahost.net:60357)" >&2
   exit 2
 fi
 REPEAT=${REPEAT:-3}

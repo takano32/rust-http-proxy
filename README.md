@@ -109,6 +109,8 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 
 上の表は loopback = 「同じ機械の中でどこまで速いか」です。**利用者が実際に待つ時間**は
 別に測っています (Pterodactyl のコンテナに置いた 1 台。要求の 99% が CONNECT、平常時は 0.01〜0.07 req/s)。
+**2026-10-08 に本番を `nagoya.sorahost.net:50697` から `tokyo.sorahost.net:60357` へ切り替えました。この節の数字は全部、切り替え前の nagoya のものです**
+(tokyo の数字は 24 時間以上たまってから書き換えます。`TODO.md` の §2「デプロイ先の切り替え」)。
 道具は `/status` `/history?res=3600` `/metrics` と `scripts/status-diff.py` / `scripts/probe-deployed.sh` で、
 **ホスト別の平均は 2 枚の差分で読みます** (`/status` の `hosts[]` は状態ファイルに残って再起動をまたいで
 通算されるので、そのまま読むと直す前の値が何日も混ざります)。
@@ -124,10 +126,10 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
 
 ```bash
-scripts/collect-deployed.sh nagoya.sorahost.net:50697 > today.md   # 1 日 1 回
-PROBE=0 scripts/collect-deployed.sh nagoya.sorahost.net:50697      # 本物の要求を送らずに取る
-scripts/collect-deployed.sh --from-server nagoya.sorahost.net:50697  # 回し忘れた日を取り寄せる
-scripts/collect-deployed.sh --full nagoya.sorahost.net:50697       # 切れた部の続きも `offset=` で追う
+scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo > today.md   # 1 日 1 回 (保存先はホストごとに分ける)
+PROBE=0 scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo      # 本物の要求を送らずに取る
+scripts/collect-deployed.sh --from-server tokyo.sorahost.net:60357 status/tokyo  # 回し忘れた日を取り寄せる
+scripts/collect-deployed.sh --full tokyo.sorahost.net:60357 status/tokyo       # 切れた部の続きも `offset=` で追う
 scripts/status-diff.py status/*-snapshot.json    # 最初と最後で差分
 scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまとめる
 ```

@@ -10,7 +10,7 @@
 #
 # 使い方:
 #   scripts/collect-deployed.sh HOST:PORT [DIR]
-#     例: scripts/collect-deployed.sh nagoya.sorahost.net:50697
+#     例: scripts/collect-deployed.sh tokyo.sorahost.net:60357
 #         scripts/collect-deployed.sh 127.0.0.1:8080 /tmp/snaps      # 手元のプロキシで試す
 #   保存先の既定はリポジトリの `status/` (`<UTC 時刻>-snapshot.json`、秒まで)。
 #   同じ時刻の名前で、要約 (`-collect.md`)・道具の文句 (`-collect.err`、空なら残さない)・雪像に入らない口
@@ -89,7 +89,7 @@ done
 PROXY=${1:-}
 if [ -z "$PROXY" ]; then
   # **2 つの旗は排他** (`--from-server` は保存済みの雪像を取り寄せるだけで、続きを引く相手が居ない)
-  echo "usage: $0 [--full] HOST:PORT [DIR]   (例: $0 nagoya.sorahost.net:50697)" >&2
+  echo "usage: $0 [--full] HOST:PORT [DIR]   (例: $0 tokyo.sorahost.net:60357)" >&2
   echo "       $0 --from-server HOST:PORT [DIR]   (回し忘れた日を取り寄せる。--full は効きません)" >&2
   exit 2
 fi

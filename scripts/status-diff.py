@@ -21,7 +21,7 @@
 #
 # **`/snapshot` の JSON もそのまま読める** (T14.4)。中の `/hosts` の部分 (最大 1,000 ホスト) を
 # 使うので、`scripts/collect-deployed.sh` が保存したファイルをそのまま 1 枚でも 2 枚でも渡せる:
-#     scripts/collect-deployed.sh nagoya.sorahost.net:50697        # 1 日 1 回取る
+#     scripts/collect-deployed.sh tokyo.sorahost.net:60357        # 1 日 1 回取る
 #     scripts/status-diff.py status/*-snapshot.json   # 最初と最後で差分
 #
 # **`/hosts` の JSON もそのまま読める** (T13.4)。`/status` の `hosts[]` は要求数の上位 50 だけ

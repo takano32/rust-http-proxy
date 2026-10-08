@@ -639,8 +639,8 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 |---|---|---|
 | keep-alive の HTTP 接続が `/connections` でバイト数を出さない (宛先は T14.2 (5) / T14.48 で済。`set_bytes` を呼ぶのはトンネルだけ) | T13.4、T17.20 の気づき | 要求ごとに書かない方針とどう両立させるかを先に決める |
 | `dashboard.html` が上限まで余り 247 B (81,673 / 81,920 B) | T15.0 単位 9 と全体チェック | 次にカードを足す前に、`scripts/check-dashboard.js` の上限を上げるか、古いカードの説明文を削る |
-| `scripts/snapshot-diff.py` が 1,959 行 (目安の 2,000 行の手前) | T18.2 | 次に判定の行を足す前に、`--criteria` の部 (`RULES` と各 Phase の関数) を別ファイルへ割る |
 | 「束縛してすぐ手放したポート」を死んだ宛先に使うテストが `crates/net-conn/src/net.rs` に 2 か所残っている (`a_deadline_reports_timed_out_not_the_first_refusal` の `closed`、`unseen_hosts…` の後半の `dead`。落ちた記録は無い) | T20.2 の気づき | 落ちたら `tests/proxy_test.rs` の `RefusedPort` (束縛したまま `listen` しない) を `tests/common/` か `net.rs` のテストへ持っていく |
+| `scripts/test_snapshot_diff.py` が 1,964 行 (目安の 2,000 行の手前) | T20.1 | 次にテストを足す前に、`Criteria*` のクラスを別ファイル (`test_snapshot_criteria.py`) へ割る |
 | 本文付きの要求 (POST など) がプールのオリジン接続に乗り、相手がちょうど閉じたときは 502 (送り直すのは本文の無い GET / HEAD だけ。`crates/http/src/http/mod.rs` の `retryable`)。決まりどおりで、実機で出た記録は無い | T18.4 | 実機の `/errors` に POST の 502 が出たら、要求の経路の判断として決める |
 | `warm_promote` が次の予定を「上げた時刻 + 45 秒」に置く (答えを引いた時刻ではない。齢 60〜75 秒が期限切れになりうる。実機の `warm_stale` の一部かも) | T17.5 の模型 | 予定を答えの齢から出す。`scripts/dns-replay.py` で先に数える |
 
@@ -1372,9 +1372,9 @@ T18.99 の「次のターンの準備」。**利用者の決定 (2026-10-08): Ph
 | T20.1 | 20a | t201 | `scripts/snapshot-diff.py` と新しい `scripts/` のファイル、`scripts/test_snapshot_diff.py`、`scripts/collect-deployed.sh` の `CRITERIA` の既定、README の該当の節 |
 | T20.2 | 20a | t202 | `tests/proxy_test.rs`、`crates/net-conn/src/net.rs` のテスト 1 本 |
 | T20.3 | 20b | t203 | `crates/metrics-recent/src/recent.rs` (`ErrorRing`)、`/errors` を組み立てる所、`scripts/snapshot-summary.py` / `snapshot-diff.py` の個票を数える所 (T20.1 が main に入ってから触る)、README の `/errors` の説明 |
-| T20.4 | 20b | (T20.1 の「まず読む」の報告を見てから親が本文を書く) | 確立時間の統計から失敗した接続を分ける |
+| T20.4 | 20b | t204 | `crates/metrics-core/src/metrics.rs` の `record()`、`crates/metrics-slo/src/slo.rs` (読んで確かめるだけのはず)、`tests/` の該当のテスト、README の `/history`・`recent_quantiles`・`/slo` の説明と T20.1 が足した段落 |
 
-- [ ] **T20.1 判定の道具を割り、`--criteria phase20` で物差しを直す**
+- [x] **T20.1 判定の道具を割り、`--criteria phase20` で物差しを直す**
   - 目的: T18.99。(g) `heap_used + mmap` の増えは、メモリのキャッシュ (`cache_memory`。上限まで使ってよい) が 13.4 MB 入って +15.7 MB と出た (引くと +2.2 MB)。平常時の確立は失敗した接続の 1.3 秒が区間に入って p95 2,066 ms と出た (成功した接続だけなら `/recent` の 398 本で p50 7 / p95 66 ms)。
     `scripts/snapshot-diff.py` は 1,959 行で、足す前に割る (既知の小物の表)。
   - やること: (1) **割る**: `--criteria` の部 (`PHASE14`〜`PHASE18`、`CRITERIA`、`RULES`、各 Phase の判定の関数、判定表の `render`) を新しいファイル (`scripts/snapshot_criteria.py` など、import できる名前) へ移す。`snapshot-diff.py` の使い方・出力・テストから見える名前 (`sd.CRITERIA` など) は変えない。
@@ -1387,6 +1387,9 @@ T18.99 の「次のターンの準備」。**利用者の決定 (2026-10-08): Ph
     (4) `collect-deployed.sh` の `CRITERIA` の既定を `phase20` にする。
   - 受け入れ基準: 割るだけのコミットの前後で、testdata と実データ (`status/2026-10-01T133549Z` → `2026-10-08T092521Z` + `--zero status/2026-10-01T133907Z-snapshot.json`) の phase14 / 15 / 17 / 18 の出力が `cmp` 同一。phase20 は実データで (g) が **+2.2 MB で「満たした」**、表示だけの 3 行に 0.23・32 / 26・0.05 件/時 が出て、「届かず」が 0。
     成功した接続だけの行が 398 本・p50 7・p95 66 ms 前後で出る。どのファイルも 2,000 行未満。`python3 -m unittest discover -s scripts` 全通過 (本数が減らない)、`check-docs.sh` 差分 0。**デプロイ先には触らない**。
+  - 結果 (2026-10-08、`be12457` / `7f38e0e` / `b85531c`、取り込み `860195e`): (1) `--criteria` の部 (`PHASE14`〜・`CRITERIA`・`RULES`・判定の関数・`judge()`・判定表の印字 `render_criteria()`) を `scripts/snapshot_criteria.py` へ割った。`snapshot-diff.py` は名前に `-` があって import できないので、判定と差分の両方が使う小物 (`part` `stamp` `n` `ms` `ratio` `restart_info` `norm_history` `merged_history` `miss_rate`) もそちらに置き、同じ名前で取り込み直す (使い方・出力・`sd.*` の名前は不変)。割るだけのコミットの前後で、testdata と実データの `--criteria` なし / phase14 / 15 / 17 / 18 (md と json、30 ファイル) が `cmp` 同一。`snapshot-diff.py` 1,959 → 1,238 行、`snapshot_criteria.py` 1,011 行、`test_snapshot_diff.py` 1,964 行 (次に足す前に割る)。`check-docs.sh` と CI はファイル名を直に見ていない。(2) `--criteria phase20` = phase18 と同じ並びの 10 行。(g) は `heap_used + mmap − cache_memory` の増えが 5 MB 未満 (`cache_memory` の前後も並べ、欄が無い版は「判定できず」)、`discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` は「表示だけ」(実測は phase18 の関数のまま、閾の欄は `— (phase18 は …)`、`tally` に数えず本数は `display_only`)、残り 6 行は phase18 の関数。実データ `2026-10-01T133549Z` → `2026-10-08T092521Z` + `--zero 2026-10-01T133907Z` で **満たした 7・届かず 0・判定できず 0 (ほかに表示だけ 3)**: (g) **+2.2 MB** (17.9 → 20.2、`cache_memory` 0.0 → 13.5)、表示だけの 3 行は 0.23 (82 / 351)・0.05 件/時 (前 0.02)・32 / 26、ほかは 79.9 回/時・0.07 回/接続・0.94 倍・`dns_slow` 0.03 件/時・cgroup 0.0014 → 0.0014 コア・`request_probes` 0。同じ命令の phase18 は満たした 6・届かず 4 のまま。(3) 差分の「2. 平常時の前後」に「CONNECT 確立 (成功した接続だけ)」の行 (後の雪像の `/recent` の `kind == "connect"` で `reason` が `error` で始まらない行の `ms.connect`): **398 本・p50 7 / p95 66 ms** (ほかに失敗 178 本、個票 579 行、窓 11.2 時間)。エラーが接続の 5% を超えると表の下で断る (今回は 1,257 ÷ 7,297 = 17.2%、unreachable 1,254・timeout 2・dns 1)。**phase14〜phase18 の出力は変えない決まりと両立させるため、この行と断り書きと `--out json` の鍵 `recent_connect` は `--criteria` がその 4 つのときは足さない** (`FROZEN`。`--criteria` なしと phase20 で出る)。まず読んだ結果: 失敗した CONNECT は `tunnel.rs:94-116` が `Some(started.elapsed())` を渡し、`metrics-core` の `record()` が成否を見ずに `iv.connect.observe` (439 行。`/history` の `connect_buckets`) と `quantiles.connect.observe` (462 行。`recent_quantiles.connect`) と `wait` の両方に足す。T12.4 より前のホスト別統計から引き継いだ形で、意図して決めた跡は無い (`slo.rs:152` の `attempts = connects + forwards + errors` は失敗を 2 回数えている)。本体は変えていない。(4) `collect-deployed.sh` の既定を `CRITERIA=phase20` にし、`--zero` / `--daily-snapshots` を渡す条件に phase20 を足した (本文の外。足さないと (g) が必ず「判定できず」)。テストは `Criteria20` 11・`RecentConnect` 8・`Deployed20` 2・`CollectBeforeZeroTest` +1 で scripts の unittest 327 → 349 本、`check-docs` 差分 0。表の外で `scripts/test_collect_deployed.py` を触った (既定を見るテスト)。デプロイ先には回していない。`shellcheck` は手元に無く掛けていない (CI で見る)。
+    親の注記: main で同じ命令を回して、満たした 7・表示だけ 3、成功だけの行 398 本・p50 7 / p95 66 ms が出るのを見た。本文と割れた 3 つ (成功だけの行は `--criteria` なしと phase20 で出す / `collect-deployed.sh` の条件に phase20 / `test_collect_deployed.py`) はどれも採る。
+    README と `scripts/` の使い方の例のホスト名は親が tokyo に直した (README は保存先 `status/tokyo` つき、「デプロイ先の数字」の節の頭に切り替えの断り)。
 
 - [x] **T20.2 残りの揺れるテスト 3 本**
   - 目的: 既知の小物の表 (T18.1・T18.4 の気づき)。(1) `tests/proxy_test.rs` の `test_integration_self_addressed_origin_form_does_not_loop` がバイナリ丸ごと 6 本並列で 31 / 144 回落ちる (`elapsed < 10 ms` 4 回、`active_connections <= 1` が 2 で 27 回)。
@@ -1409,9 +1412,25 @@ T18.99 の「次のターンの準備」。**利用者の決定 (2026-10-08): Ph
   - 受け入れ基準: 単体テスト (同じ失敗 1,000 回で 1 行・`repeats` 1,000・`total` 1,000 / 間に別の失敗が 1 件入っても 8 件の中なら同じ行に足す / 9 件前の同じ失敗は別の行 / `client` か `cause` が違えば別の行 / `PROXY_RECORDS=off` は今までどおり何もしない)。
     `tests/` の `/errors` を見ている既存のテストが通る。JSON は足すだけ (schema 1 のまま、鍵の順を変えない)。`.recent` の読み書きのテストが無変更で通る。要求が成功する経路の費用は不変 (`--lite` は不変)。scripts の unittest 全通過、`check-docs.sh` 差分 0。
 
+- [ ] **T20.4 繋がらなかった接続を、確立時間の窓と直近の標本に入れない**
+  - 目的: T18.99 と T20.1 の「まず読む」。失敗した CONNECT は `crates/tunnel/src/tunnel.rs:94-116` が「失敗するまでの時間」を渡し、`crates/metrics-core/src/metrics.rs` の `record()` が**成否を見ずに**確立の窓 (`iv.connect.observe`、439 行 = `/history` の `connect_buckets` / `connects` / `connect_ms_sum`)・
+    直近 1,024 本の標本 (`quantiles.connect.observe`、462 行 = `/status` の `recent_quantiles.connect`)・`wait` の環と窓・段階の窓 (`stages.observe_connect`) に足している。forward も同じ形 (`crates/http/src/http/mod.rs:325` → `iv.forward` / `quantiles.forward` / `stages.observe_forward`)。
+    2026-10-08 の nagoya では IPv6 だけの宛先への失敗 (1 本 約 1.3 秒) が接続の 17.2% を占め、`recent_quantiles.connect` が p50 16 / p90 1,295 ms、平常時の p95 が 2,066 ms になった。ダッシュボードの KPI・`/slo` の `connect_p95_ms`・anomaly の `connect_p95` も同じ数字を見ている。
+    **意図して決めた跡は無く、成功だけを前提に書かれた所が 2 つある**: `tunnel.rs:210` のコメント (「`connect_took` = `/history` の connect の窓」。`connect_took` は成功の経路にしか無い) と、`slo.rs:152` の `attempts = connects + forward.count + errors` (失敗が `connects` と `errors` の両方に居て 2 回数えている)。
+  - **決めたこと (親、2026-10-08)**: 新しい欄を足して分けるのではなく、**`outcome` が `HostOutcome::Error` の 1 件は、全体の確立 / 初バイトの窓・直近の標本・`wait`・段階の窓に入れない**ようにする (バグの直しとして扱う。欄を足すと `/history` の列と `.rrd` の形が動く)。
+    これで `connects` は「繋がった本数」になり、`slo.rs:152` の `attempts` は式のまま正しくなる。失敗は今までどおり `errors` / `errors_by_cause` / `/errors` の個票 (`connect_ms` つき) / **ホスト別の統計** (`hosts[]` の `avg_ms` は「その相手に掛かった時間」なので失敗も入れたまま) に残る。
+    JSON の欄は足さない・消さない。**意味が変わる欄があるので README に書く**: `/history` の `connects` / `connect_ms_sum` / `connect_ms_max` / `connect_buckets` / `forwards`・`forward_*` / `waits`・`wait_*`、`/status` の `recent_quantiles.*`、`/profile` の段階の窓、それらから出る `/slo`・`/daily`・ダッシュボードの KPI・anomaly の `connect_p95` と `dns_miss_rate` (分母の接続が繋がった本数になる)。
+  - やること: (1) `record()` の全体と呼び出し元 (`record_host_detail` を呼ぶ所全部)、`HostOutcome` の種類 (Error 以外に何があるか。403 で断った要求・キャッシュ HIT は今どう数えているか) を読み、**上の決めたことで困る所があれば直す前に報告する**。
+    (2) `record()` の中で、全体の窓 (`hosts.total` / `hosts.interval` の `connect` / `forward`) と段階・標本・`wait` の `observe` を `outcome != Error` のときだけにする。ホスト別の 1 行 (`hosts[]`) と `dns_misses` / `dns_ms_sum` / `errors` / `errors_by_cause` は変えない。**成功の経路に足すのは `outcome` の比較 1 つまで** (同じ鍵の内側。原子操作も鍵も増やさない)。
+    (3) `slo.rs:152` と、`connects` を分母にしている所 (anomaly の `dns_miss_rate`、`/daily` の `dns_per_connect`、`errors` の率) を読み、失敗が分母から抜けて**率が 1 を超える・0 で割る**ことが無いかを確かめる (あれば直して報告)。
+    (4) `tunnel.rs:210` のコメントはそのまま正しくなる。`record()` の該当箇所に「失敗は入れない (T20.4)。理由」を 2〜3 行。README は上の欄の説明と、T20.1 が `snapshot-diff.py` の節に足した段落 (「失敗するまでの時間も入る」) を「`0.18.0` までの版は…、T20.4 からは…」に直す。
+  - 受け入れ基準: 単体テスト (失敗した CONNECT 1 件で `errors` と `errors_by_cause` とホスト別の行は増え、`connects`・`connect_buckets`・`recent_quantiles.connect.n`・`waits` は増えない / forward も同じ / 成功は今までどおり増える)。
+    `tests/` に、繋がらない宛先への CONNECT を 3 本送ったあとの `/status` と `/history` で同じことを見る結合テスト 1 本。既存の全テストが通る (失敗が窓に入る前提のテストがあれば、その前提を直して報告に書く)。`/slo` の `attempts` のテスト 1 本 (失敗 1・成功 1 で 2)。
+    `--lite` のシステムコール数は不変 (読んで言えればよい)。JSON の鍵は 1 つも足さない・消さない。触ったクレートの clippy 警告 0。
+
 - [ ] **T20.99 締める (Phase 20 の版を 24 時間走らせたあとに見る・決める・書く)**
   - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): **デプロイ先は `tokyo.sorahost.net:60357`** (2026-10-08 に切り替え。§2)。版 —、起動時刻 —、「前」の雪像 — (再デプロイの直前に `status/tokyo/` へ撮る。nagoya の雪像は「前」に使わない)、「0 時間」の雪像 —。
-  - 判定: `BEFORE=<前> ZERO=<0 時間> scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo` の `--criteria phase20` (T20.1)。完了の定義 (下書き): phase20 の判定表で「届かず」0、`/errors` の個票が同じ失敗で埋まっていない (`repeats` にまとまっている)、T20.4 の成功だけの確立時間が `/status` から読める。
+  - 判定: `BEFORE=<前> ZERO=<0 時間> scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo` の `--criteria phase20` (T20.1)。完了の定義 (下書き): phase20 の判定表で「届かず」0、`/errors` の個票が同じ失敗で埋まっていない (`repeats` にまとまっている)、`/status` の `recent_quantiles.connect` と `/history` の確立の区間に失敗の時間が入っていない (T20.4。失敗が続いていても p90 が秒にならない)。
 
 ## 付録 A. 計測の記録 (時系列)
 
