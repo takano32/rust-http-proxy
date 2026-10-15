@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""`scripts/crate-versions.py` (クレートの版の決まり) の単体テスト (T21.1)。
+"""`scripts/crate-versions.py` (クレートの版の決まり) の単体テスト (T21.1、T21.6 で決まりを置き換えた)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
-一時の git リポジトリに本体と クレート 3 つ (`alpha` `beta` `gamma`) と `proxy-server` を作り、
-タグを 2 つ (`v0.1.0` → `v0.2.0`) 打って、次の各場合を見る:
-中身が変わった (`alpha`) / 変わらない (`gamma`) / `Cargo.toml` の版の行だけ変わった (`beta`。変わったに数えない) /
-本体と `proxy-server` がずれた / タグの上で本体の版がタグと違う / 前のタグから変わって `--bump` する前とあと。
+一時の git リポジトリに本体 (`src/`) とクレート 3 つ (`alpha` `beta` `gamma`) と `proxy-server` を作り、
+`main` に 2 つのタスク (T1.1 で全部、T2.3 で `alpha`) を積んでから、次の各場合を見る:
+タスクの中で上げた (`--task`) / 上げ忘れ / 版の行だけ変わった / 本体と `proxy-server` のずれ /
+本体が最大より小さい / タグの上 / 形が `0.P.T` でない / 枝のマージ (上げ忘れの枝、両側で上げて衝突を解いた)。
 git の設定は利用者のものを読まない (`GIT_CONFIG_GLOBAL` を空に向ける) ので、署名やフックに左右されない。
 """
 
@@ -50,9 +50,10 @@ class Repo:
     def __init__(self, path):
         self.path = path
 
-    def git(self, *args):
-        subprocess.run(["git", "-C", self.path] + list(args), env=ENV, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def git(self, *args, check=True):
+        return subprocess.run(["git", "-C", self.path] + list(args), env=ENV, check=check,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              universal_newlines=True).stdout
 
     def write(self, rel, text):
         full = os.path.join(self.path, rel)
@@ -65,7 +66,7 @@ class Repo:
             return f.read()
 
     def set_versions(self, root, **crates):
-        """本体と各クレートの版を書く (Cargo.lock も同じ値で作り直す)。"""
+        """本体と各クレートの版を書く (渡さなかったクレートは今の版のまま。Cargo.lock も同じ値で作り直す)。"""
         members = "".join('    "crates/%s",\n' % c for c in CRATES)
         self.write("Cargo.toml", "[workspace]\nmembers = [\n%s]\n\n[package]\nname = \"rust-http-proxy\"\n"
                                  "version = \"%s\"\nedition = \"2024\"\n" % (members, root))
@@ -73,11 +74,15 @@ class Repo:
         names = {"rust-http-proxy": root}
         for c in CRATES:
             name = "proxy-" + c
-            names[name] = crates[c]
-            self.write("crates/%s/Cargo.toml" % c, crate_toml(name, crates[c], comment=(c == "server")))
+            if c in crates:
+                self.write("crates/%s/Cargo.toml" % c, crate_toml(name, crates[c], comment=(c == "server")))
+            names[name] = self.version(c)
         for name in sorted(names):
             lock += ["[[package]]", 'name = "%s"' % name, 'version = "%s"' % names[name], ""]
         self.write("Cargo.lock", "\n".join(lock))
+
+    def version(self, c):
+        return cv.package_fields(self.read("crates/%s/Cargo.toml" % c))[1]
 
     def commit(self, msg, tag=None):
         self.git("add", "-A")
@@ -96,130 +101,203 @@ class CrateVersionsTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="test-crate-versions-")
         self.r = Repo(self.tmp.name)
         self.r.git("init", "-q", "-b", "main")
-        # v0.1.0: 全部 0.1.0
-        self.r.set_versions("0.1.0", alpha="0.1.0", beta="0.1.0", gamma="0.1.0", server="0.1.0")
+        # T1.1: 全部を作る (全部 0.1.1)
+        self.r.set_versions("0.1.1", alpha="0.1.1", beta="0.1.1", gamma="0.1.1", server="0.1.1")
         for c in CRATES:
             self.r.write("crates/%s/src/lib.rs" % c, "// %s\n" % c)
-        self.r.commit("v0.1.0", tag="v0.1.0")
-        # v0.2.0: alpha は中身が変わる、beta は版の行だけ (0.9.9 にして戻さない)、gamma は変わらない
+        self.r.write("src/main.rs", "// main\n")
+        self.r.commit("T1.1")
+        # T2.3: alpha の中身を変えて、alpha と本体・proxy-server を 0.2.3 に
         self.r.write("crates/alpha/src/lib.rs", "// alpha 2\n")
-        self.r.set_versions("0.2.0", alpha="0.2.0", beta="0.9.9", gamma="0.1.0", server="0.2.0")
-        self.r.commit("v0.2.0", tag="v0.2.0")
-        # タグのあとの文書だけのコミット (HEAD がタグの上でなくなる)
-        self.r.write("README.md", "docs\n")
-        self.r.commit("docs")
+        self.r.set_versions("0.2.3", alpha="0.2.3", server="0.2.3")
+        self.r.commit("T2.3")
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def rows(self):
-        repo = cv.Repo(self.r.path)
-        return {r[1]: r for r in cv.analyse(repo, "v0.2.0")}
-
-    def test_last_changed_tag(self):
-        rows = self.rows()
-        self.assertEqual(rows["proxy-alpha"][3], "v0.2.0")  # 中身が変わった
-        self.assertEqual(rows["proxy-gamma"][3], "v0.1.0")  # 変わらない
-        self.assertEqual(rows["proxy-beta"][3], "v0.1.0")   # 版の行だけ = 変わったに数えない
-        self.assertEqual(rows["proxy-beta"][4], "0.1.0")
-        self.assertFalse(any(r[5] for r in rows.values()))  # タグから変わったものは無い
-
-    def test_check_fails_on_version_only_change(self):
-        # beta は 0.9.9 のまま = 決まり (0.1.0) と違う
+    def check(self, code_want):
         code, out = self.r.run("--check")
-        self.assertEqual(code, 1, out)
-        self.assertIn("NG proxy-beta: 版が 0.9.9", out)
-        self.assertNotIn("proxy-alpha", out)
-        self.assertNotIn("proxy-gamma", out)
+        self.assertEqual(code, code_want, out)
+        return out
 
-    def test_check_passes_when_assigned(self):
-        self.r.set_versions("0.2.0", alpha="0.2.0", beta="0.1.0", gamma="0.1.0", server="0.2.0")
-        self.r.commit("assign")
-        code, out = self.r.run("--check")
-        self.assertEqual(code, 0, out)
+    def test_assigned_passes(self):
+        out = self.check(0)
+        self.assertIn("決まりに合う: 4 クレート + 本体 (本体 0.2.3)", out)
         code, out = self.r.run("--list")
         self.assertEqual(code, 0, out)
         self.assertIn("合わない: 0", out)
 
-    def test_server_must_follow_root(self):
-        self.r.set_versions("0.2.0", alpha="0.2.0", beta="0.1.0", gamma="0.1.0", server="0.1.0")
-        self.r.commit("server drifts")
-        code, out = self.r.run("--check")
-        self.assertEqual(code, 1, out)
-        self.assertIn("NG proxy-server: 本体 rust-http-proxy 0.2.0 と版が違う: 0.1.0", out)
-
-    def test_root_must_match_tag_on_tag(self):
-        self.r.set_versions("0.2.1", alpha="0.2.0", beta="0.1.0", gamma="0.1.0", server="0.2.1")
-        self.r.commit("root drifts", tag="v0.2.2")
-        code, out = self.r.run("--check")
-        self.assertEqual(code, 1, out)
-        self.assertIn("タグ v0.2.2 の上なのに本体の版が 0.2.1", out)
-
-    def test_bump_after_change(self):
-        self.r.set_versions("0.2.0", alpha="0.2.0", beta="0.1.0", gamma="0.1.0", server="0.2.0")
-        self.r.commit("assign")
-        # gamma の中身を変える (作業ツリーのまま。上げる前でも --check は落ちない)
-        self.r.write("crates/gamma/src/lib.rs", "// gamma 3\n")
-        code, out = self.r.run("--check")
-        self.assertEqual(code, 0, out)
+    def test_task_in_branch(self):
+        # 枝で gamma の中身を変える。上げる前は上げ忘れで落ち、--task (基準は main との分かれ目) のあと通る
+        self.r.git("checkout", "-q", "-b", "t25")
+        self.r.write("crates/gamma/src/lib.rs", "// gamma 2\n")
+        out = self.check(1)
+        self.assertIn("NG proxy-gamma: 版 0.1.1 の行を書いた", out)
+        self.assertIn("決まり c", out)
         lock_before = self.r.read("Cargo.lock")
-        code, out = self.r.run("--bump", "0.3.0")
+        code, out = self.r.run("--task", "T2.5")
         self.assertEqual(code, 0, out)
-        rows = self.rows()
-        self.assertEqual(rows["proxy-gamma"][2], "0.3.0")
-        self.assertEqual(rows["proxy-server"][2], "0.3.0")
-        self.assertEqual(rows["proxy-alpha"][2], "0.2.0")  # 据え置き
-        self.assertEqual(rows["proxy-beta"][2], "0.1.0")
-        self.assertIn('version = "0.3.0"', self.r.read("Cargo.toml"))
+        self.assertIn("上げた: 3", out)
+        self.assertEqual(self.r.version("gamma"), "0.2.5")
+        self.assertEqual(self.r.version("server"), "0.2.5")
+        self.assertEqual(self.r.version("alpha"), "0.2.3")  # 据え置き
+        self.assertEqual(self.r.version("beta"), "0.1.1")
+        self.assertIn('version = "0.2.5"', self.r.read("Cargo.toml"))
         # Cargo.lock は 3 行 (本体・server・gamma) の版だけが変わる
         before, after = lock_before.splitlines(), self.r.read("Cargo.lock").splitlines()
         self.assertEqual(len(before), len(after))
-        diff = [(a, b) for a, b in zip(before, after) if a != b]
-        self.assertEqual(len(diff), 3, diff)
-        self.assertTrue(all(b == 'version = "0.3.0"' for _, b in diff))
-        code, out = self.r.run("--check")
-        self.assertEqual(code, 0, out)
-        # タグを打つと、タグの上で同じ割り当てが決まりに合う
-        self.r.commit("bump", tag="v0.3.0")
-        code, out = self.r.run("--check")
-        self.assertEqual(code, 0, out)
-        self.assertEqual(self.rows_since("v0.3.0")["proxy-gamma"][3], "v0.3.0")
+        diff = [b for a, b in zip(before, after) if a != b]
+        self.assertEqual(diff, ['version = "0.2.5"'] * 3)
+        self.check(0)  # コミット前 (作業ツリー) でも通る
+        self.r.commit("T2.5")
+        self.check(0)
+        # もう一度回しても何も変わらない
+        code, out = self.r.run("--task", "T2.5")
+        self.assertIn("上げた: 0", out)
 
-    def rows_since(self, tag):
-        repo = cv.Repo(self.r.path)
-        return {r[1]: r for r in cv.analyse(repo, tag)}
+    def test_forgotten_bump(self):
+        self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
+        self.r.commit("beta を変えたが上げ忘れた")
+        out = self.check(1)
+        self.assertIn("NG proxy-beta", out)
+        self.assertNotIn("proxy-alpha", out)
+        # 版の行を上げたコミットのあとなら通る
+        code, out = self.r.run("--task", "T3.1", "--since", "HEAD~1")
+        self.assertEqual(code, 0, out)
+        self.r.commit("T3.1 の版")
+        self.check(0)
 
-    def test_bump_without_change_moves_only_root_and_server(self):
-        self.r.set_versions("0.2.0", alpha="0.2.0", beta="0.1.0", gamma="0.1.0", server="0.2.0")
-        self.r.commit("assign")
-        code, out = self.r.run("--bump", "0.3.0")
+    def test_version_line_only(self):
+        # beta の版の行だけを変える: 中身は変わっていないので --task は上げない、--check も通る
+        base = self.r.git("rev-parse", "HEAD").strip()
+        self.r.set_versions("0.2.3", beta="0.1.9")
+        self.r.commit("beta の版の行だけ")
+        self.check(0)
+        code, out = self.r.run("--task", "T3.2", "--since", base)
+        self.assertEqual(code, 0, out)
+        self.assertIn("上げた: 0", out)
+        self.assertEqual(self.r.version("beta"), "0.1.9")
+        # 版の行の外の Cargo.toml の変更は中身に数える
+        self.r.write("crates/beta/Cargo.toml", self.r.read("crates/beta/Cargo.toml") + "# メモ\n")
+        self.check(1)
+
+    def test_server_must_follow_root(self):
+        self.r.set_versions("0.2.3", server="0.2.2")
+        self.r.commit("server drifts")
+        out = self.check(1)
+        self.assertIn("NG proxy-server: 本体 rust-http-proxy 0.2.3 と版が違う: 0.2.2", out)
+
+    def test_root_below_max(self):
+        self.r.set_versions("0.2.3", beta="0.3.0")
+        self.r.commit("beta だけ上げた")
+        out = self.check(1)
+        self.assertIn("NG rust-http-proxy: 本体の版 0.2.3 が proxy-beta の 0.3.0 より小さい", out)
+
+    def test_root_content(self):
+        # 本体 (src/) だけを変えると、本体と proxy-server だけが上がる
+        self.r.git("checkout", "-q", "-b", "t31")
+        self.r.write("src/main.rs", "// main 2\n")
+        out = self.check(1)
+        self.assertIn("NG rust-http-proxy", out)
+        code, out = self.r.run("--task", "T3.1")
         self.assertEqual(code, 0, out)
         self.assertIn("上げた: 2", out)
-        rows = self.rows()
-        self.assertEqual([n for n, r in rows.items() if r[2] == "0.3.0"], ["proxy-server"])
+        self.assertEqual(self.r.version("server"), "0.3.1")
+        self.check(0)
 
-    def test_check_fails_on_changed_crate_with_other_version(self):
-        # 変わったクレートを本体と違う版に手で上げたら落ちる
-        self.r.set_versions("0.2.0", alpha="0.2.0", beta="0.1.0", gamma="0.1.0", server="0.2.0")
-        self.r.commit("assign")
-        self.r.write("crates/gamma/src/lib.rs", "// gamma 3\n")
-        self.r.set_versions("0.3.0", alpha="0.2.0", beta="0.1.0", gamma="0.2.5", server="0.3.0")
-        code, out = self.r.run("--check")
-        self.assertEqual(code, 1, out)
-        self.assertIn("NG proxy-gamma: v0.2.0 から中身が変わったのに版が 0.2.5", out)
+    def test_root_never_goes_down(self):
+        # 古いタスクの番号で上げても、本体は全部の最大のまま
+        self.r.git("checkout", "-q", "-b", "t17")
+        self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
+        code, out = self.r.run("--task", "T1.7")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.r.version("beta"), "0.1.7")
+        self.assertIn('version = "0.2.3"', self.r.read("Cargo.toml"))
+        self.check(0)
 
-    def test_bump_refuses_old_version(self):
-        code, out = self.r.run("--bump", "0.2.0")
+    def test_tag(self):
+        self.r.git("tag", "v0.2.3")
+        self.check(0)
+        self.r.git("tag", "v0.2.4")
+        self.r.git("tag", "-d", "v0.2.3")
+        out = self.check(1)
+        self.assertIn("タグ v0.2.4 の上なのに本体の版が 0.2.3 (決まり d)", out)
+        # タグの上でなければ見ない
+        self.r.write("README.md", "docs\n")
+        self.r.commit("docs")
+        self.check(0)
+
+    def test_form(self):
+        self.r.set_versions("1.0.0", server="1.0.0")
+        self.r.commit("形が違う")
+        out = self.check(1)
+        self.assertIn("NG rust-http-proxy: 版 1.0.0 が 0.<Phase>.<番号> の形でない", out)
+
+    def test_merge_forgotten_branch(self):
+        # 枝が上げずに中身を変え、main は分かれたあとに同じクレートの版の行を変えていた → マージのあと落ちる
+        self.r.git("checkout", "-q", "-b", "t31")
+        self.r.write("crates/gamma/src/lib.rs", "// gamma 2\n")
+        self.r.commit("gamma を変えた (上げ忘れ)")
+        self.r.git("checkout", "-q", "main")
+        self.r.set_versions("0.2.3", gamma="0.1.2")
+        self.r.commit("main で gamma の版の行だけ")
+        self.r.git("merge", "-q", "--no-edit", "--no-gpg-sign", "t31")
+        out = self.check(1)
+        self.assertIn("NG proxy-gamma", out)
+        # 親がそのタスクの番号で上げる (基準はマージ前の main)
+        code, out = self.r.run("--task", "T3.1", "--since", "HEAD^1")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.r.version("gamma"), "0.3.1")
+        self.r.commit("T3.1 の版")
+        self.check(0)
+
+    def test_merge_both_bumped(self):
+        # 2 つの枝が同じクレートを変えてそれぞれ上げた → マージで衝突を解いた版はそのマージが書いた
+        self.r.git("checkout", "-q", "-b", "t31")
+        self.r.write("crates/gamma/src/a.rs", "// a\n")
+        self.r.run("--task", "T3.1")
+        self.r.commit("T3.1")
+        self.r.git("checkout", "-q", "-b", "t32", "main")
+        self.r.write("crates/gamma/src/b.rs", "// b\n")
+        self.r.run("--task", "T3.2")
+        self.r.commit("T3.2")
+        self.r.git("checkout", "-q", "main")
+        self.r.git("merge", "-q", "--no-edit", "--no-gpg-sign", "t31")
+        self.check(0)
+        self.r.git("merge", "-q", "--no-edit", "--no-gpg-sign", "t32", check=False)  # 版の行で衝突する
+        self.r.set_versions("0.3.2", gamma="0.3.2", server="0.3.2")
+        self.r.commit("Merge t32")
+        self.check(0)
+        # 片側だけが上げたマージ (main 側は触っていない) も通る
+        self.r.git("checkout", "-q", "-b", "t33")
+        self.r.write("crates/beta/src/lib.rs", "// beta 3\n")
+        self.r.run("--task", "T3.3")
+        self.r.commit("T3.3")
+        self.r.git("checkout", "-q", "main")
+        self.r.write("README.md", "docs\n")
+        self.r.commit("docs")
+        self.r.git("merge", "-q", "--no-edit", "--no-gpg-sign", "t33")
+        self.check(0)
+
+    def test_untracked_file_counts(self):
+        self.r.write("crates/beta/src/new.rs", "// new\n")
+        out = self.check(1)
+        self.assertIn("NG proxy-beta", out)
+
+    def test_usage_errors(self):
+        code, out = self.r.run("--task", "21.3")
         self.assertEqual(code, 2, out)
-        code, out = self.r.run("--bump", "x")
+        code, out = self.r.run("--check", "--since", "HEAD")
+        self.assertEqual(code, 2, out)
+        code, out = self.r.run("--task", "T3.1", "--since", "nope")
         self.assertEqual(code, 2, out)
 
-    def test_since_older_tag(self):
-        # --since v0.1.0: v0.2.0 は見ないので alpha は「v0.1.0 から変わった」側
-        rows = {r[1]: r for r in cv.analyse(cv.Repo(self.r.path), "v0.1.0")}
-        self.assertEqual(rows["proxy-alpha"][3], "v0.1.0")
-        self.assertTrue(rows["proxy-alpha"][5])
-        self.assertFalse(rows["proxy-gamma"][5])
+    def test_task_version(self):
+        self.assertEqual(cv.task_version("T21.3"), "0.21.3")
+        self.assertEqual(cv.task_version("T17.11"), "0.17.11")
+        self.assertEqual(cv.task_version("T17.0a"), "0.17.0")
+        self.assertIsNone(cv.task_version("T21"))
+        self.assertIsNone(cv.task_version("21.3"))
 
     def test_without_version_line(self):
         a = crate_toml("x", "0.1.0", comment=True)

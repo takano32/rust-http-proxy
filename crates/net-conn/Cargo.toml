@@ -1,6 +1,6 @@
 [package]
 name = "proxy-net-conn"
-version = "0.20.0"
+version = "0.21.3"
 edition = "2024"
 
 [lib]

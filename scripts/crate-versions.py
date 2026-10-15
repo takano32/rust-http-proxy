@@ -1,34 +1,41 @@
 #!/usr/bin/env python3
-"""クレートの版の決まりを数える・確かめる・上げる道具 (T21.1)。
+"""クレートの版の決まりを数える・確かめる・上げる道具 (T21.1 で作り、T21.6 で決まりを置き換えた)。
 
-決まり (2026-10-15、利用者の決定。README の「クレート構成」):
+決まり (2026-10-15、利用者の提案を親が細部まで決めた。README の「クレート構成」):
 
-  (1) 各クレートの `version` は、**そのクレートの中身が最後に変わったリリース (`v*` のタグ) の版**。
-  (2) リリースの直前に、前のタグから中身が変わったクレートだけを本体と同じ版に上げる (変わらないものは据え置く)。
-  (3) 本体 (`rust-http-proxy`) と `proxy-server` は常に同じ版 (`crates/server/build.rs` が
-      `CARGO_PKG_VERSION` から `-V` の版を作るため)。
-  (4) 本体の版はタグの名前と同じ (`v0.20.0` ↔ `0.20.0`)。
+  (1) 各クレートの `version` は、**そのクレートの中身を最後に変えたタスクの番号** `0.<Phase>.<番号>`
+      (T21.3 → `0.21.3`、T17.11 → `0.17.11`。英字の付くタスク (T17.0a) は英字を落とす)。
+  (2) タスクの中で上げる: 取り込む前に `--task T21.3` を回すと、基準 (`--since REF`。既定は `main` との
+      分かれ目 = `git merge-base HEAD main`) から中身が変わったクレートの版を `0.21.3` にする。
+  (3) 本体 (`rust-http-proxy`) と `proxy-server` は、そのビルドに入っている最後のタスク = 全クレートの版と、
+      本体 (`src/`) を最後に変えたタスクの番号のうち最大。`proxy-server` は本体と同じ
+      (`crates/server/build.rs` が `CARGO_PKG_VERSION` から `-V` の版を作るため)。
+  (4) タグは本体の版 (`v0.21.4` など)。
 
 「中身が変わった」= メンバーのディレクトリ (`crates/<名前>/`) の下の差分のうち、`Cargo.toml` の
-`[package]` の `version = …` の 1 行を除いたもの。最初のタグより前の歴史は見ない (最初のタグにあった
-クレートは、それより後に変わっていなければ最初のタグの版)。
+`[package]` の `version = …` の 1 行を除いたもの。本体の中身は `src/` の下。
+
+`--check` の決まり (**コミットの文面には頼らない**。文面にタスク番号が無いコミットも、複数の番号が並ぶものもあるため):
+  (a) 版の形が `0.P.T`。
+  (b) `proxy-server` = 本体 = 全クレートの版の最大以上。
+  (c) 上げ忘れ: 各クレート (と本体) について、いまの `version` の行を書いたコミットより後に中身が変わっていたら落とす。
+      「いまの行を書いたコミット」は blame と同じく、同じ値を持つ親へ辿って探す。ただしマージで両側とも
+      分かれ目から版の行を変えていた (= 衝突を解いた) ときは、そのマージが書いたとみなす。
+      作業ツリーの版の行が HEAD と違えば作業ツリーが書いた (コミット前の `--task` を確かめられるように)。
+      「後に中身が変わった」= そのコミットの中身と作業ツリーの中身 (版の行を除く) が違う。
+  (d) タグの上 (HEAD を指す `v*` のタグがある) なら、本体の版 = タグ。
 
 使い方 (リポジトリの根から。`-C DIR` で別のリポジトリ):
-  scripts/crate-versions.py --list  [--since TAG]   クレートごとに 今の版・最後に変わったタグ・決まりから出る版
-  scripts/crate-versions.py --check [--since TAG]   決まりに合わないクレートの名前と理由を出して 1 で抜ける
-  scripts/crate-versions.py --bump VERSION [--since TAG]
-                                                    前のタグから変わったクレートと本体・proxy-server の
-                                                    `version` を VERSION にし、`Cargo.lock` の該当の行も直す
-
-`--since` の既定は HEAD から辿れるいちばん新しい `v*` のタグ (`git describe --tags --match 'v*'`)。
-タグの上 (HEAD がそのタグ) で回すと、本体の版がタグと同じかも見る (`release.yml` はここで回す)。
-「前のタグから変わった」は**作業ツリー**と比べる (コミット前の `--bump` の結果も確かめられるように)。
-前のタグから変わったのにまだ上げていないクレートは、リリースの前の普通の状態なので `--check` を落とさない
-(「次の --bump で上がる」と出す)。上げたあとは本体と同じ版であること。
+  scripts/crate-versions.py --list                 クレートごとに 今の版・中身を最後に変えたコミット・
+                                                   その版の行を書いたコミット・合うか
+  scripts/crate-versions.py --check                決まりに合わないものの名前と理由を出して 1 で抜ける
+  scripts/crate-versions.py --task TID [--since REF]
+                                                   REF から中身が変わったクレートの版を TID の番号にし、
+                                                   本体と proxy-server を全部の最大にする (`Cargo.lock` の該当の行も直す)
 
 外部のパッケージは使わない (標準ライブラリだけ)。`release.yml` の ubuntu-22.04 の python3 (3.10) で動くこと
 (`tomllib` は 3.11 からなので使わず、`Cargo.toml` は行で読む)。
-終了コード: 0 = 合う / 1 = 合わない (`--check`) / 2 = 使い方の誤り・タグが無い等。
+終了コード: 0 = 合う / 1 = 合わない (`--check`) / 2 = 使い方の誤り・リポジトリの形が想定と違う等。
 """
 
 import argparse
@@ -37,11 +44,15 @@ import re
 import subprocess
 import sys
 
-TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
-VER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)$")
+# 決まり (a): `0.<Phase>.<番号>`
+VER_RE = re.compile(r"^0\.(\d+)\.(\d+)$")
+# タスクの番号 (`T21.3`、`T17.0a`。英字は落とす)
+TASK_RE = re.compile(r"^T(\d+)\.(\d+)[a-z]?$")
 # `[package]` の版の行 (`version = "0.20.0"`)。行の頭から書いてあるものだけを見る
 VERSION_LINE_RE = re.compile(r'^version\s*=\s*"([^"]*)"\s*$')
 SERVER = "proxy-server"
+ROOT_CONTENT = "src"  # 本体の「中身」
 
 
 class Error(Exception):
@@ -57,8 +68,14 @@ def git(repo, *args, check=True):
 
 
 def ver_key(text):
-    m = VER_RE.match(text)
+    m = VER_RE.match(text or "")
     return tuple(int(x) for x in m.groups()) if m else None
+
+
+def task_version(tid):
+    """`T21.3` → `0.21.3` (英字は落とす)。形が違えば None。"""
+    m = TASK_RE.match(tid)
+    return "0.%d.%d" % (int(m.group(1)), int(m.group(2))) if m else None
 
 
 # --- Cargo.toml を行で読む ---------------------------------------------------
@@ -104,40 +121,67 @@ def members(root_toml):
 
 # --- リポジトリを読む ---------------------------------------------------------
 
+class Unit:
+    """版を持つ 1 つ (本体かクレート)。toml = 版の行のあるファイル、content = 中身のディレクトリ。"""
+
+    def __init__(self, name, version, toml, content):
+        self.name, self.version, self.toml, self.content = name, version, toml, content
+
+
 class Repo:
     def __init__(self, path):
         top = git(path, "rev-parse", "--show-toplevel")
         self.path = top.strip()
         with open(os.path.join(self.path, "Cargo.toml"), encoding="utf-8") as f:
             root_text = f.read()
-        self.root_name, self.root_version, _ = package_fields(root_text)
-        if not self.root_name:
+        name, version, _ = package_fields(root_text)
+        if not name:
             raise Error("ルートの Cargo.toml に [package] の name が無い")
-        self.crates = []  # (メンバーのパス, 名前, 今の版)
-        for path in members(root_text):
-            with open(os.path.join(self.path, path, "Cargo.toml"), encoding="utf-8") as f:
-                name, version, _ = package_fields(f.read())
-            self.crates.append((path.rstrip("/"), name, version))
-        self.tags = self._tags()
+        self.root = Unit(name, version, "Cargo.toml", ROOT_CONTENT)
+        self.crates = []
+        for member in members(root_text):
+            member = member.rstrip("/")
+            with open(os.path.join(self.path, member, "Cargo.toml"), encoding="utf-8") as f:
+                cname, cversion, _ = package_fields(f.read())
+            self.crates.append(Unit(cname, cversion, member + "/Cargo.toml", member))
+        self.head = self.rev_of("HEAD")
+        self._parents = None
+        self._blob_ver = {}
+        self._procs = {}
 
-    def _tags(self):
-        """`vX.Y.Z` のタグを版の順に (古い順)。"""
-        found = []
-        for t in (git(self.path, "tag", "--list", "v*") or "").split():
-            m = TAG_RE.match(t)
-            if m:
-                found.append((tuple(int(x) for x in m.groups()), t))
-        return [t for _, t in sorted(found)]
-
-    def default_since(self):
-        out = git(self.path, "describe", "--tags", "--abbrev=0", "--match", "v*", "HEAD", check=False)
-        if not out or not TAG_RE.match(out.strip()):
-            raise Error("HEAD から辿れる v* のタグが無い (--since TAG で渡す)")
-        return out.strip()
+    def units(self):
+        return [self.root] + self.crates
 
     def rev_of(self, rev):
         out = git(self.path, "rev-parse", "--verify", "-q", rev + "^{commit}", check=False)
         return out.strip() if out else None
+
+    def close(self):
+        for p in self._procs.values():
+            p.stdin.close()
+            p.wait()
+        self._procs = {}
+
+    # -- コミットのファイルを速く読む (`git cat-file` を 1 本ずつ開けたまま流す) --
+
+    def _cat(self, mode, line):
+        p = self._procs.get(mode)
+        if p is None:
+            p = self._procs[mode] = subprocess.Popen(["git", "-C", self.path, "cat-file", mode],
+                                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        p.stdin.write((line + "\n").encode())
+        p.stdin.flush()
+        return p.stdout.readline().decode().split(), p
+
+    def blob_of(self, rev, path):
+        """rev の path の blob の名前 (無ければ None)。"""
+        head, _ = self._cat("--batch-check", "%s:%s" % (rev, path))
+        return head[0] if len(head) == 3 and head[1] == "blob" else None
+
+    def read_blob(self, blob):
+        head, p = self._cat("--batch", blob)
+        data = p.stdout.read(int(head[2]) + 1)[:-1]
+        return data.decode("utf-8", "replace")
 
     def show(self, rev, path):
         """rev のファイルの中身 (無ければ None)。rev が None なら作業ツリー。"""
@@ -147,96 +191,125 @@ class Repo:
                 return None
             with open(full, encoding="utf-8", errors="replace") as f:
                 return f.read()
-        return git(self.path, "show", "%s:%s" % (rev, path), check=False)
+        blob = self.blob_of(rev, path)
+        return self.read_blob(blob) if blob else None
 
-    def exists_at(self, rev, member):
-        out = git(self.path, "ls-tree", "-d", "--name-only", rev, member, check=False)
-        return bool(out and out.strip())
+    def version_at(self, rev, path):
+        """rev (None = 作業ツリー) の Cargo.toml の `[package]` の版 (ファイルが無ければ None、行が無ければ "")。"""
+        if rev is None:
+            text = self.show(None, path)
+            return None if text is None else (package_fields(text)[1] or "")
+        blob = self.blob_of(rev, path)
+        if blob is None:
+            return None
+        if blob not in self._blob_ver:
+            self._blob_ver[blob] = package_fields(self.read_blob(blob))[1] or ""
+        return self._blob_ver[blob]
 
-    def owner(self, path):
-        """ファイルのパスが属するメンバー (いちばん長く一致するもの)。"""
-        best = None
-        for member, _, _ in self.crates:
-            if path.startswith(member + "/") and (best is None or len(member) > len(best)):
-                best = member
-        return best
+    # -- 歴史 --
 
-    def changed(self, a, b):
-        """a と b (None = 作業ツリー) の間で中身が変わったメンバーの集合。"""
-        dirs = [m for m, _, _ in self.crates]
+    def parents(self, commit):
+        if self._parents is None:
+            self._parents = {}
+            if self.head:
+                for line in git(self.path, "rev-list", "--parents", "HEAD").splitlines():
+                    ids = line.split()
+                    self._parents[ids[0]] = ids[1:]
+        return self._parents.get(commit, [])
+
+    def version_origin(self, unit):
+        """いまの版の行を書いたコミット (作業ツリーなら None)。決まり (c) の「書いたコミット」。
+
+        blame と同じく、同じ値を持つ親へ進む。値が親のどれとも違えばそのコミットが書いた。
+        マージで両側とも分かれ目から値を変えていたら (衝突を解いた)、そのマージが書いたとみなす
+        (片側だけが変えていたなら、変えた側へ進む = 変えていない側の中身の変更は「後」になる)。
+        """
+        if self.head is None or self.version_at(None, unit.toml) != self.version_at(self.head, unit.toml):
+            return None
+        c = self.head
+        while True:
+            val = self.version_at(c, unit.toml)
+            ps = self.parents(c)
+            if not ps:
+                return c
+            pvals = [self.version_at(p, unit.toml) for p in ps]
+            same = [p for p, v in zip(ps, pvals) if v == val]
+            if not same:
+                return c
+            if len(same) < len(ps):
+                base = git(self.path, "merge-base", *ps, check=False)
+                bval = self.version_at(base.strip(), unit.toml) if base else None
+                if all(v != bval for v in pvals):
+                    return c
+            c = same[0]
+
+    def content_changed(self, unit, a, b=None):
+        """a と b (None = 作業ツリー) の間で unit の中身 (版の行を除く) が変わったか。"""
         if b is None:
-            names = git(self.path, "diff", "--name-only", "--no-renames", a, "--", *dirs).split()
+            names = git(self.path, "diff", "--name-only", "--no-renames", a, "--", unit.content).split()
             # まだ追跡していないファイルも作業ツリーの中身に数える (.gitignore のものは除く)
-            names += git(self.path, "ls-files", "--others", "--exclude-standard", "--", *dirs).split()
+            names += git(self.path, "ls-files", "--others", "--exclude-standard", "--", unit.content).split()
         else:
-            names = git(self.path, "diff", "--name-only", "--no-renames", a, b, "--", *dirs).split()
-        out = set()
+            names = git(self.path, "diff", "--name-only", "--no-renames", a, b, "--", unit.content).split()
         for name in names:
-            member = self.owner(name)
-            if member is None or member in out:
-                continue
-            if name == member + "/Cargo.toml":
+            if name == unit.toml:
                 old, new = self.show(a, name), self.show(b, name)
                 if old is not None and new is not None and \
                         without_version_line(old) == without_version_line(new):
                     continue  # 版の行だけの差分は「変わった」に数えない
-            out.add(member)
-        return out
+            return True
+        return False
+
+    def last_content_commit(self, unit):
+        """中身を最後に変えたコミット (表示用。マージは見ない)。作業ツリーで変わっていれば None、見つからなければ ""。"""
+        if self.head is None or self.content_changed(unit, self.head):
+            return None
+        out = git(self.path, "log", "--format=%H", "--no-merges", "--", unit.content)
+        for h in out.split():
+            ps = self.parents(h)
+            if not ps or self.content_changed(unit, ps[0], h):
+                return h
+        return ""
+
+    def tags_at_head(self):
+        if self.head is None:
+            return []
+        out = git(self.path, "tag", "--points-at", "HEAD", "--list", "v*") or ""
+        return [t for t in out.split() if TAG_RE.match(t)]
 
 
-def analyse(repo, since):
-    """クレートごとの (パス, 名前, 今の版, 最後に変わったタグ, 決まりから出る版, 前のタグから変わったか)。"""
-    if since not in repo.tags:
-        raise Error("タグ %s が無い (v*.*.* の形のタグを渡す)" % since)
-    tags = repo.tags[:repo.tags.index(since) + 1]
-    last = {}
-    for i, tag in enumerate(tags):
-        if i == 0:
-            for member, _, _ in repo.crates:
-                if repo.exists_at(tag, member):
-                    last[member] = tag
-            continue
-        for member in repo.changed(tags[i - 1], tag):
-            last[member] = tag
-    pending = repo.changed(since, None)
-    rows = []
-    for member, name, version in repo.crates:
-        tag = last.get(member)
-        rows.append((member, name, version, tag, tag[1:] if tag else None, member in pending))
-    return rows
-
-
-def judge(repo, since):
-    """(rows, 合わない理由の並び [(名前, 理由)])。"""
-    rows = analyse(repo, since)
+def judge(repo):
+    """({名前: 版の行を書いたコミット (None = 作業ツリー)}, 合わない理由の並び [(名前, 理由)])。"""
     bad = []
-    root_v = repo.root_version
-    since_v = since[1:]
-    bumped = root_v != since_v  # 本体だけ先に上げてある = --bump のあと、タグを打つ前
-    server = [r for r in rows if r[1] == SERVER]
-    if server and server[0][2] != root_v:
-        bad.append((SERVER, "本体 %s %s と版が違う: %s (決まり 3)" % (repo.root_name, root_v, server[0][2])))
-    head = repo.rev_of("HEAD")
-    if head and head == repo.rev_of(since) and root_v != since_v:
-        bad.append((repo.root_name, "タグ %s の上なのに本体の版が %s (決まり 4)" % (since, root_v)))
-    for member, name, version, tag, want, pending in rows:
-        if name == SERVER:
-            continue
-        if pending:
-            # 前のタグから変わった: 上げる前 (決まりから出る版のまま) か、上げたあと (本体と同じ版) なら合う。
-            # まだどのタグにも無いクレートは、上げる前は何の版でもよい
-            if version == root_v and bumped:
-                continue
-            if want is None or version == want:
-                continue
-            bad.append((name, "%s から中身が変わったのに版が %s (上げる前は %s、--bump のあとは本体と同じ %s)"
-                        % (since, version, want, root_v)))
-            continue
-        if want is None:
-            bad.append((name, "%s までのどのタグにも無い" % since))
-        elif version != want:
-            bad.append((name, "版が %s (中身が最後に変わったのは %s なので %s)" % (version, tag, want)))
-    return rows, bad
+    origins = {}
+    server = [u for u in repo.crates if u.name == SERVER]
+    # (a) 形
+    for u in repo.units():
+        if ver_key(u.version) is None:
+            bad.append((u.name, "版 %s が 0.<Phase>.<番号> の形でない (決まり a)" % u.version))
+    # (b) proxy-server = 本体 = 全クレートの最大以上
+    if server and server[0].version != repo.root.version:
+        bad.append((SERVER, "本体 %s %s と版が違う: %s (決まり b)"
+                    % (repo.root.name, repo.root.version, server[0].version)))
+    root_k = ver_key(repo.root.version)
+    keyed = [(ver_key(u.version), u) for u in repo.crates if ver_key(u.version)]
+    if root_k and keyed:
+        top_k, top = max(keyed, key=lambda x: x[0])
+        if top_k > root_k:
+            bad.append((repo.root.name, "本体の版 %s が %s の %s より小さい (決まり b。--task で上げる)"
+                        % (repo.root.version, top.name, top.version)))
+    # (c) 上げ忘れ
+    for u in repo.units():
+        origin = repo.version_origin(u)
+        origins[u.name] = origin
+        if origin is not None and repo.content_changed(u, origin):
+            bad.append((u.name, "版 %s の行を書いた %s より後に中身 (%s/) が変わった (決まり c。--task で上げる)"
+                        % (u.version, origin[:7], u.content)))
+    # (d) タグの上
+    tags = repo.tags_at_head()
+    if tags and "v%s" % repo.root.version not in tags:
+        bad.append((repo.root.name, "タグ %s の上なのに本体の版が %s (決まり d)" % (" ".join(tags), repo.root.version)))
+    return origins, bad
 
 
 # --- 書き換え ------------------------------------------------------------------
@@ -273,9 +346,8 @@ def set_lock_versions(path, versions):
 
 
 def apply_versions(repo, versions):
-    """{名前: 版} を Cargo.toml と Cargo.lock に書く。本体はルートの Cargo.toml。"""
-    paths = {name: os.path.join(repo.path, member, "Cargo.toml") for member, name, _ in repo.crates}
-    paths[repo.root_name] = os.path.join(repo.path, "Cargo.toml")
+    """{名前: 版} を Cargo.toml と Cargo.lock に書く。"""
+    paths = {u.name: os.path.join(repo.path, u.toml) for u in repo.units()}
     for name, version in versions.items():
         set_toml_version(paths[name], version)
     lock = os.path.join(repo.path, "Cargo.lock")
@@ -283,74 +355,102 @@ def apply_versions(repo, versions):
         set_lock_versions(lock, versions)
 
 
+def bump_task(repo, tid, since):
+    """--task: since から中身が変わったクレートを tid の版にし、本体と proxy-server を全部の最大にする。
+
+    (基準, 版, 書き換えた {名前: 版}) を返す。本体の版は下げない (いまの本体の版も最大の候補に入れる)。
+    """
+    new = task_version(tid)
+    if new is None:
+        raise Error("タスクの番号は T<Phase>.<番号> の形で渡す (例: T21.3、T17.0a): %s" % tid)
+    if since is None:
+        base = git(repo.path, "merge-base", "HEAD", "main", check=False)
+        if not base:
+            raise Error("main との分かれ目が無い (--since REF で基準を渡す)")
+        since = base.strip()
+    elif repo.rev_of(since) is None:
+        raise Error("基準 %s が無い" % since)
+    current = {u.name: u.version for u in repo.units()}
+    versions = {u.name: new for u in repo.crates if repo.content_changed(u, since)}
+    keys = [ver_key(versions.get(name, v)) for name, v in current.items()]
+    if repo.content_changed(repo.root, since):
+        keys.append(ver_key(new))
+    keys = [k for k in keys if k]
+    top = "0.%d.%d" % max(keys)
+    versions[repo.root.name] = top
+    if SERVER in current:
+        versions[SERVER] = top
+    versions = {k: v for k, v in versions.items() if v != current[k]}
+    if versions:
+        apply_versions(repo, versions)
+    return since, new, versions
+
+
 # --- 出力 ----------------------------------------------------------------------
 
-def print_list(repo, since, rows, bad):
-    print("クレートの版 (前のタグ %s、本体 %s %s。決まりは scripts/crate-versions.py の頭)" %
-          (since, repo.root_name, repo.root_version))
-    w = max(len(r[1]) for r in rows + [("", repo.root_name)])
-    print("%-*s  %-9s  %-12s  %-9s  %s" % (w, "クレート", "今の版", "最後に変わった", "決まりの版", "メモ"))
+def short(c):
+    return "作業ツリー" if c is None else (c[:7] if c else "-")
+
+
+def print_list(repo, origins, bad):
+    print("クレートの版 (本体 %s %s。決まりは scripts/crate-versions.py の頭)" % (repo.root.name, repo.root.version))
+    w = max(len(u.name) for u in repo.units())
+    fmt = "%-*s  %-8s  %-7s  %-7s  %-2s  %s"
+    print(fmt % (w, "名前", "今の版", "中身", "版の行", "合", "中身を最後に変えたコミット"))
     reasons = dict(bad)
-    print("%-*s  %-9s  %-12s  %-9s  %s" % (w, repo.root_name, repo.root_version, "-", "-",
-                                         "本体 (決まり 3・4)" + ("  NG" if repo.root_name in reasons else "")))
-    for member, name, version, tag, want, pending in rows:
-        note = []
-        if name == SERVER:
-            note.append("本体と同じ版 (決まり 3)")
-            want = repo.root_version
-        elif pending:
-            note.append("%s から変わった (次の --bump で上がる)" % since)
-        if name in reasons:
-            note.append("NG")
-        print("%-*s  %-9s  %-12s  %-9s  %s" % (w, name, version, tag or "-", want or "-", " ".join(note)))
+    for u in repo.units():
+        c = repo.last_content_commit(u)
+        subject = ""
+        if c:
+            subject = git(repo.path, "log", "-1", "--format=%ad %s", "--date=short", c).strip()
+            if len(subject) > 70:
+                subject = subject[:69] + "…"
+        print(fmt % (w, u.name, u.version, short(c), short(origins.get(u.name, "")),
+                     "NG" if u.name in reasons else "ok", subject))
     print("合わない: %d" % len(bad))
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="クレートの版の決まり (T21.1)")
+    ap = argparse.ArgumentParser(description="クレートの版の決まり (T21.6: 版 = 中身を最後に変えたタスクの番号)")
     ap.add_argument("-C", dest="repo", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
                     help="リポジトリ (既定はこのスクリプトの 1 つ上)")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--list", action="store_true")
     g.add_argument("--check", action="store_true")
-    g.add_argument("--bump", metavar="VERSION")
-    ap.add_argument("--since", metavar="TAG")
+    g.add_argument("--task", metavar="TID", help="タスクの番号 (T21.3 など)")
+    ap.add_argument("--since", metavar="REF", help="--task の基準 (既定は git merge-base HEAD main)")
     a = ap.parse_args(argv)
+    repo = None
     try:
+        if a.since and not a.task:
+            raise Error("--since は --task と一緒に使う")
         repo = Repo(a.repo)
-        since = a.since or repo.default_since()
         if a.list:
-            rows, bad = judge(repo, since)
-            print_list(repo, since, rows, bad)
+            origins, bad = judge(repo)
+            print_list(repo, origins, bad)
             return 0
         if a.check:
-            rows, bad = judge(repo, since)
+            _, bad = judge(repo)
             for name, why in bad:
                 print("NG %s: %s" % (name, why))
             if bad:
-                print("決まりに合わないクレート: %d (前のタグ %s)" % (len(bad), since))
+                print("決まりに合わない: %d" % len(bad))
                 return 1
-            print("決まりに合う: %d クレート + 本体 (前のタグ %s、本体 %s)" % (len(rows), since, repo.root_version))
+            print("決まりに合う: %d クレート + 本体 (本体 %s)" % (len(repo.crates), repo.root.version))
             return 0
-        new = a.bump
-        if ver_key(new) is None:
-            raise Error("版は X.Y.Z の形で渡す: %s" % new)
-        if ver_key(new) <= ver_key(since[1:]):
-            raise Error("版 %s が前のタグ %s より新しくない" % (new, since))
-        rows = analyse(repo, since)
-        versions = {repo.root_name: new}
-        for member, name, version, tag, want, pending in rows:
-            if pending or name == SERVER:
-                versions[name] = new
-        apply_versions(repo, versions)
-        for name in [repo.root_name] + [r[1] for r in rows if r[1] in versions]:
-            print("%s -> %s" % (name, new))
-        print("上げた: %d (本体と %s を含む。%s から中身が変わったクレート %d)" %
-              (len(versions), SERVER, since, len(versions) - 2 if SERVER in versions else len(versions) - 1))
+        since, new, versions = bump_task(repo, a.task, a.since)
+        for u in repo.units():
+            if u.name in versions:
+                print("%s %s -> %s" % (u.name, u.version, versions[u.name]))
+        print("上げた: %d (%s から中身が変わったものを %s に。本体と %s は全部の最大)"
+              % (len(versions), since[:12], new, SERVER))
         return 0
     except Error as e:
         print("crate-versions: %s" % e, file=sys.stderr)
         return 2
+    finally:
+        if repo is not None:
+            repo.close()
 
 
 if __name__ == "__main__":
