@@ -23,7 +23,12 @@
 #   - 裏の引き直しは**一瞬で終わり、失敗しない**とする (実機の `refresh_failures` は 0、1 回 約 18 ms)
 #   - IP リテラルは表を通らない
 #
-# 使い方: scripts/dns-replay.py SNAP.json [--rule current|no_idle|all] [--no-prime] [--json]
+# **serve-stale (T21.3)**: `--serve-stale SECS` を渡すと、いまの規則に「表の答えが TTL を過ぎていても
+# 齢 (答えを引いてからの秒) が `SECS` 未満なら古い答えで当たりとし、裏で 1 回引き直す」を足した規則
+# (`stale_<SECS>`) も回す (RFC 8767)。古い答えの当たりはミスに数えず (`stale_hits`)、裏の引き直しは
+# `refreshes` (うち `refresh_stale`) に数える。複数回渡せる。
+#
+# 使い方: scripts/dns-replay.py SNAP.json [--rule current|no_idle|all] [--serve-stale SECS]... [--no-prime] [--json]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
 import argparse
@@ -44,6 +49,9 @@ TOLERANCE = 0.30
 # `hosts_series` の窓の長さの既定 (応答に `window_secs` が無いとき)
 SERIES_WINDOW = 300
 MISS_KINDS = ("cold", "expired", "warm_stale")
+# serve-stale を採る目安 (T21.3): `expired` のミスが半分以下、かつ裏の引き直しの増えが +10% 以内
+STALE_EXPIRED_MAX = 0.5
+STALE_REFRESH_MAX = 0.10
 
 
 def refresh_after(ttl):
@@ -85,8 +93,10 @@ def is_ip(name):
 class Table:
     """`dns.rs` の表と warm の待ち行列の写し。時刻は epoch 秒 (float)。"""
 
-    def __init__(self, rule, ttl=TTL, window=WARM, max_warm=MAX_WARM):
+    def __init__(self, rule, ttl=TTL, window=WARM, max_warm=MAX_WARM, serve_stale=0):
         self.rule = rule
+        # 古い答えを返してよい齢の上限 (秒。0 = いまの規則 = 期限切れは同期で引く。T21.3)
+        self.serve_stale = serve_stale
         self.ttl = ttl
         self.window = window
         self.max_warm = max_warm
@@ -104,6 +114,7 @@ class Table:
         return {"lookups": 0, "hits": 0, "misses": 0,
                 "misses_by_kind": {k: 0 for k in MISS_KINDS},
                 "refreshes": 0, "refresh_warm": 0, "refresh_ask": 0,
+                "stale_hits": 0, "refresh_stale": 0,
                 "promotes": 0, "warm_evicted": 0, "warm_max": 0,
                 "warm_secs": 0.0}
 
@@ -188,6 +199,12 @@ class Table:
             if hot and age >= refresh_after(self.ttl):
                 # 当たりのまま裏で 1 回引き直す (T13.1)。一瞬で終わるとする
                 self._refresh(e, now, "refresh_ask")
+        elif e["has_addrs"] and age < self.serve_stale:
+            # serve-stale (T21.3): 期限切れでも齢が窓の中なら古い答えで繋ぎに行き (ミスではない)、
+            # 裏で 1 回だけ引き直す。引き直しは一瞬で終わるとする (同じ名前を二重に頼む間が無い)
+            if self.counting:
+                self.c["stale_hits"] += 1
+            self._refresh(e, now, "refresh_stale")
         else:
             self._miss("warm_stale" if was_warm else ("expired" if e["has_addrs"] else "cold"))
             e["resolved_at"] = now
@@ -276,9 +293,9 @@ def actual(snap, c0, taken):
 
 
 def replay(warmup, inside, c0, taken, rule, seen_before=(), ttl=TTL, window=WARM,
-           max_warm=MAX_WARM):
+           max_warm=MAX_WARM, serve_stale=0):
     """助走を数えずに回し、区間 `[c0, taken]` の中だけを数える。"""
-    tb = Table(rule, ttl, window, max_warm)
+    tb = Table(rule, ttl, window, max_warm, serve_stale)
     tb.counting = False
     for t, h in warmup:
         tb.lookup(h, t)
@@ -305,7 +322,18 @@ def within(v, target, tol=TOLERANCE):
     return v is not None and abs(v - target) <= tol * target
 
 
-def run(snap, rules, prime=True):
+def stale_verdict(cur, new):
+    """serve-stale の規則がいまの規則に対して目安 (T21.3) を満たすか。"""
+    e0, e1 = cur["misses_by_kind"]["expired"], new["misses_by_kind"]["expired"]
+    r0, r1 = cur["refreshes"], new["refreshes"]
+    expired = (e1 / e0) if e0 else None
+    refreshes = ((r1 - r0) / r0) if r0 else None
+    ok = (e1 <= STALE_EXPIRED_MAX * e0) and refreshes is not None \
+        and refreshes <= STALE_REFRESH_MAX
+    return {"expired_ratio": expired, "refreshes": refreshes, "ok": ok}
+
+
+def run(snap, rules, prime=True, stale=()):
     warmup, inside, c0, taken, seen_before = build(snap)
     out = {"window": {"from": c0, "to": taken, "hours": (taken - c0) / 3600.0,
                       "lookups": len(inside), "warmup_lookups": len(warmup),
@@ -314,6 +342,10 @@ def run(snap, rules, prime=True):
     for name in rules:
         out["rules"][name] = replay(warmup, inside, c0, taken, RULES[name],
                                     seen_before if prime else ())
+    # serve-stale (T21.3) はいまの `promote` の上に足す (比べる相手は `current`)
+    for secs in stale:
+        out["rules"][f"stale_{secs}"] = replay(warmup, inside, c0, taken, promote_current,
+                                               seen_before if prime else (), serve_stale=secs)
     cur = out["rules"].get("current")
     if cur:
         out["fit"] = {
@@ -327,6 +359,12 @@ def run(snap, rules, prime=True):
             "refreshes": ((new["refreshes"] - cur["refreshes"]) / cur["refreshes"])
             if cur["refreshes"] else None,
         }
+    if cur and stale:
+        out["stale"] = {str(secs): stale_verdict(cur, out["rules"][f"stale_{secs}"])
+                        for secs in stale}
+        ok = [secs for secs in stale if out["stale"][str(secs)]["ok"]]
+        # 既定は目安を満たすいちばん短い窓 (長いほど古い番地に繋ぎに行く見込みが増える)
+        out["stale_pick"] = min(ok) if ok else None
     return out
 
 
@@ -346,15 +384,16 @@ def render(out):
     lines.append(f"物差し (T16.99): ミス {TARGET_MISS_PER_CONNECT} 回/接続、引き直し "
                  f"{TARGET_REFRESH_PER_HOUR:.0f} 回/時 (±{TOLERANCE * 100:.0f}%)")
     lines.append("")
-    lines.append("| 規則 | 到着 | ミス | ミス/到着 | cold / expired / warm_stale | 引き直し | 回/時 "
-                 "| うち warm / 先回り | 上げた | warm 平均 / 最大 |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("| 規則 | 到着 | ミス | ミス/到着 | cold / expired / warm_stale | 古い答え | 引き直し | 回/時 "
+                 "| うち warm / 先回り / 古い答え | 上げた | warm 平均 / 最大 |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
     for name, c in out["rules"].items():
         k = c["misses_by_kind"]
         lines.append(
             f"| {name} | {c['lookups']} | {c['misses']} | {c['miss_per_lookup']:.3f} "
-            f"| {k['cold']} / {k['expired']} / {k['warm_stale']} | {c['refreshes']} "
-            f"| {c['refresh_per_hour']:.1f} | {c['refresh_warm']} / {c['refresh_ask']} "
+            f"| {k['cold']} / {k['expired']} / {k['warm_stale']} | {c['stale_hits']} "
+            f"| {c['refreshes']} | {c['refresh_per_hour']:.1f} "
+            f"| {c['refresh_warm']} / {c['refresh_ask']} / {c['refresh_stale']} "
             f"| {c['promotes']} | {c['warm_avg']:.2f} / {c['warm_max']} |")
     fit = out.get("fit")
     if fit:
@@ -367,6 +406,14 @@ def render(out):
     if d:
         lines.append(f"`idle < window` を外すと: ミス {pct(d['misses'])}、引き直し {pct(d['refreshes'])} "
                      "(採る目安: ミス −15% 以上かつ引き直し +10% 以内)")
+    for secs, v in (out.get("stale") or {}).items():
+        ratio = "—" if v["expired_ratio"] is None else f"{v['expired_ratio'] * 100:.0f}%"
+        lines.append(f"serve-stale {secs} 秒: expired はいまの {ratio}、引き直し {pct(v['refreshes'])} → "
+                     + ("目安を満たす" if v["ok"] else "目安に届かない")
+                     + " (目安: expired が半分以下かつ引き直し +10% 以内)")
+    if "stale_pick" in out:
+        pick = out["stale_pick"]
+        lines.append("目安を満たすいちばん短い窓: " + ("無し" if pick is None else f"{pick} 秒"))
     return "\n".join(lines)
 
 
@@ -374,6 +421,9 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="replay the DNS table rules over a snapshot")
     p.add_argument("snapshot")
     p.add_argument("--rule", choices=["current", "no_idle", "all"], default="all")
+    p.add_argument("--serve-stale", type=int, action="append", default=[], metavar="SECS",
+                   help="also replay serve-stale: answer from an expired entry younger than SECS "
+                        "and refresh it in the background (repeatable)")
     p.add_argument("--no-prime", action="store_true",
                    help="do not seed names that were in the table before the window")
     p.add_argument("--json", action="store_true")
@@ -381,8 +431,13 @@ def main(argv=None):
     with open(a.snapshot, encoding="utf-8") as f:
         snap = json.load(f)
     rules = list(RULES) if a.rule == "all" else [a.rule]
+    if a.serve_stale and "current" not in rules:
+        rules.insert(0, "current")  # serve-stale は `current` と比べる
+    if any(s <= 0 for s in a.serve_stale):
+        print("dns-replay: --serve-stale must be positive", file=sys.stderr)
+        return 2
     try:
-        out = run(snap, rules, prime=not a.no_prime)
+        out = run(snap, rules, prime=not a.no_prime, stale=a.serve_stale)
     except ValueError as e:
         print(f"dns-replay: {e}", file=sys.stderr)
         return 2
