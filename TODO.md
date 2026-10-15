@@ -607,10 +607,9 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 | 既知の小物 | 出どころ | 何をするか |
 |---|---|---|
 | keep-alive の HTTP 接続が `/connections` でバイト数を出さない (宛先は T14.2 (5) / T14.48 で済。`set_bytes` を呼ぶのはトンネルだけ) | T13.4、T17.20 の気づき | 要求ごとに書かない方針とどう両立させるかを先に決める |
-| `dashboard.html` が上限まで余り 247 B (81,673 / 81,920 B) | T15.0 単位 9 と全体チェック | 次にカードを足す前に、`scripts/check-dashboard.js` の上限を上げるか、古いカードの説明文を削る |
 | 「束縛してすぐ手放したポート」を死んだ宛先に使うテストが `crates/net-conn/src/net.rs` に 2 か所残っている (`a_deadline_reports_timed_out_not_the_first_refusal` の `closed`、`unseen_hosts…` の後半の `dead`。落ちた記録は無い) | T20.2 の気づき | 落ちたら `tests/proxy_test.rs` の `RefusedPort` (束縛したまま `listen` しない) を `tests/common/` か `net.rs` のテストへ持っていく |
-| ダッシュボードの「最近のエラー」は `/errors` の `at` (最初の 1 回) だけを出すので、まとめた行 (`repeats` > 1) が古い時刻の 1 行に見え、回数も出ない | T20.3 の気づき | `dashboard.html` の残り 247 B を先に空けてから、`last_at` と `×N` を出す |
-| `/history?summary=1&since=restart` が起動直後に 8 回に 1 回、`connects` を返さなかった (結合テスト `tests/failed_connect_test.rs` を書く途中で。標本の行には同じ数字がある) | T20.4 の気づき | 原因を先に見る (起動直後の `since=restart` の境目と標本の時刻)。`collect-deployed.sh` の「0 時間」の雪像で踏みうる |
+| `crates/metrics-window/src/history.rs` の `summary::of` のコメント「窓は始まりの時刻 (t) で切る」は、5 秒の標本では区間の終わり (取った時刻) | T21.4 の気づき | 次にそのファイルを触るときにコメントを直す |
+| 手でプロキシを起動するとき `HOME` を一時ディレクトリへ向けると、同じシェルの `scripts/mx cargo` が rustup の既定を見失って何も回らない (出力が空) | T21.4 の気づき | 指示文の「$HOME に書かない」の所に「`RUSTUP_HOME` と `CARGO_HOME` は本物のまま」を足す |
 | 本文付きの要求 (POST など) がプールのオリジン接続に乗り、相手がちょうど閉じたときは 502 (送り直すのは本文の無い GET / HEAD だけ。`crates/http/src/http/mod.rs` の `retryable`)。決まりどおりで、実機で出た記録は無い | T18.4 | 実機の `/errors` に POST の 502 が出たら、要求の経路の判断として決める |
 | `warm_promote` が次の予定を「上げた時刻 + 45 秒」に置く (答えを引いた時刻ではない。齢 60〜75 秒が期限切れになりうる。実機の `warm_stale` の一部かも) | T17.5 の模型 | 予定を答えの齢から出す。`scripts/dns-replay.py` で先に数える |
 
@@ -1509,21 +1508,31 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
     (2) 最初の割り当てを入れる (`Cargo.toml` の version の行と `Cargo.lock` の該当の行だけ)。(3) README の「クレート構成」の決まりの 4 行と「運用」の「0. リリース」を書き直す。テスト (`scripts/test_crate_versions.py`) を新しい決まりに直す (一時の git リポジトリで: タスクの中で上げた / 上げ忘れ / 版の行だけ変わった / 本体と `proxy-server` のずれ / 本体が最大より小さい / タグの上)。
   - 受け入れ基準: 割り当てのあとの main で `--check` が 0、割り当ての前 (T21.1 の決まりの版) で 1。一時のコピーで 1 つのクレートの中身を変えて `--check` が 1、`--task T21.9` のあと 0 (そのクレートと本体・`proxy-server` が `0.21.9`)。`cargo build --release` が通り `-V` が `0.21.3+<commit>` (か T21.4 のあとなら `0.21.4`)。`python3 -m unittest discover -s scripts` 全通過、`check-docs.sh` 差分 0。
 
-- [ ] **T21.7 `crates/net-dns/src/dns.rs` を割る (割るだけ)**
+- [x] **T21.7 `crates/net-dns/src/dns.rs` を割る (割るだけ)**
   - 目的: T21.3 で 2,292 行になり、§0 の「1 ファイルは 2,000 行を目安」を超えた (着手前から 2,105 行)。
   - やること: 責務で 2 つ以上のファイルに割る (たとえば keep-warm と裏の引き直し、serve-stale、表と数え方、`/status` の JSON)。**中身は 1 バイトも変えない** (関数の本体はそのまま移す。公開の名前と道は今までどおり)。
   - 受け入れ基準: どのファイルも 2,000 行未満。`-p proxy-net-dns` のテストの本数が前後で同じで全部通る。clippy 警告 0。ビルドメモリの関門 (`scripts/build-memory.sh 120`) が通る。版は T21.6 の決まりで `0.21.7`。
+  - 結果 (2026-10-15、`a9d651e`、取り込み `0b6a772`): `crates/net-dns/src/dns.rs` 2,292 行を、同じクレートの中の子モジュール 3 つに割った (`#[path]` で `src/` の直下。前からある `dns_stale_tests.rs` に合わせた)。`dns.rs` 870 行 (表・カウンタ・設定・解決の経路と serve-stale・族の記憶)、新しい `dns_warm.rs` 300 行 (keep-warm の待ち行列と `dns-refresh` スレッド)、`dns_view.rs` 250 行 (`/dns` の行と並べ替え、`/status` の `"dns"` 要素、Prometheus のカウンタ)、`dns_tests.rs` 924 行 (`mod tests` をそのまま移した)。
+    中身は 1 バイトも変えていない (前後の全行を行頭の空白を除いて突き合わせた。差は見出し・`use`・`mod` の宣言・`pub(super)` 6 つと、rustfmt の折り返し 1 行、テストの字下げ、テストだけが使う import の `#[cfg(test)]`)。公開の名前は `pub use` で出し直したので `proxy_net_dns::dns::…` は不変。`-p proxy-net-dns` のテストは前後とも 28 本で全部通り、`proxy-net-conn` 18 本、`proxy-net` 11 本、`dns_test` 6 本も通過。clippy 警告 0。`build-memory.sh 120` は通過。`proxy-net-dns` の RssAnon は割る前 73.4 / 74.4 MB、割った後 72.9 / 71.8 MB で変わらない (ファイルを割ってもメモリは下がらない、のとおり)。
+    親: `tests/stages_test.rs:10` のコメントが移ったテストを `dns.rs` にあると書いていたので `dns_tests.rs` に直した。
 
-- [ ] **T21.4 `/history?summary=1&since=restart` が起動直後に `connects` を返さないことがある**
+- [x] **T21.4 `/history?summary=1&since=restart` が起動直後に `connects` を返さないことがある**
   - 目的: 既知の小物の表 (T20.4 の気づき)。結合テストを書く途中で 8 回に 1 回、起動直後の `?summary=1&since=restart` に `"connects":1,` が出なかった (標本の行には同じ数字がある)。`collect-deployed.sh` の「0 時間」の雪像で踏みうる。
   - やること: **原因を先に見る** (起動直後の `since=restart` の境目と標本の時刻、まだ閉じていない 5 秒の窓を `summary` が数えるか)。テストの側なら直し、本体の側なら直して、同じ形の境目が `?since=` の別の使い方 (`/daily`、`/slo`) に無いかも見る。
   - 受け入れ基準: 再現の手順と原因。直した後、起動直後に繋いで `?summary=1&since=restart` を引く結合テストを 50 回回して全部通る。JSON の鍵は変えない。
+  - 結果 (2026-10-15、`76de7e3` / `d4cc9f0`、取り込み `bc8c63d`): 原因は本体の側。`/history?summary=1&since=restart` の切り口を `now_epoch() − elapsed().as_secs()` (切り捨て同士の引き算) で出していたので、今の秒の端数が起動の端数より小さいと起動時刻が 1 秒遅く出て、起動と同じ秒に取った 5 秒の標本 (`t` は取った時刻の切り捨て) が外れ、`"connects":0` になっていた。T20.4 の「8 回に 1 回」は、標本 2 本ぶん待ってから引く形だったので踏みやすかった。
+    `crates/endpoints` の `now_and_start` で、今と起動時刻を 1 回の時計の読みから端数を残して引いてから切り捨てるようにした (`/status` の `since_start_secs` との差は ±1 秒のまま。JSON の鍵・要求の経路・`.rrd` は不変)。再現は結合テスト `test_integration_history_summary_since_restart_counts_a_connect_right_after_start` (周期 100 ms で起動してすぐ CONNECT 1 本、標本の秒を時計が越えた直後に引く) で、**直す前は 45 / 50 回落ち、直したあとは 50 / 50 通過**。
+    単体テスト 1 本を足し、既存の 1 本は引数を直した。`proxy-endpoints` 33 本、`history_summary_test` 3 本・`quantiles_test` 2 本・`schema_test` 3 本・`failed_connect_test` 1 本が通過し、clippy 警告 0。`/daily` と `/slo` は `?since=` を持たず、同じ境目は無い (`now − uptime` の形は `summary_params` の 1 か所だけだった)。
+    気づき: (1) `history.rs` の `summary::of` のコメント「窓は始まりの時刻 (t) で切る」は 5 秒の標本では区間の終わり (取った時刻)。(2) プロキシ用に `HOME` を一時ディレクトリへ向けると `scripts/mx cargo` が rustup の既定を見失う (`RUSTUP_HOME` と `CARGO_HOME` を本物に向けて回した)。
 
-- [ ] **T21.5 ダッシュボードの「最近のエラー」に回数と最後の時刻を出す**
+- [x] **T21.5 ダッシュボードの「最近のエラー」に回数と最後の時刻を出す**
   - 目的: 既知の小物の表 (T20.3 の気づき)。「最近のエラー」は `/errors` の `at` (最初の 1 回) だけを出すので、まとめた行 (`repeats` > 1) が古い時刻の 1 行に見え、回数も出ない。`dashboard.html` は上限まで 247 B (81,673 / 81,920 B)。
   - やること: (1) 先に**空きを作る**: 説明の文の重複・長いコメントを削って 1 KiB 以上空ける (見た目と動きは変えない。`scripts/check-dashboard.js` の検査が全部通ること)。(2) 「最近のエラー」の行に、`repeats` > 1 のとき `×N` と `last_at` (最後の時刻) を出す。`repeats` の無い版は今までどおり。
     (3) `check-dashboard.js` に、`repeats` のある作り物の `/errors` で `×N` が出ることの検査を 1 つ足す。上限 (81,920 B) は変えない。
   - 受け入れ基準: `node scripts/check-dashboard.js` が通り、`dashboard.html` が上限より 768 B 以上小さい。`python3 -m unittest discover -s scripts` と `check-docs.sh` が通る。
+  - 結果 (2026-10-15、`0e332c1` / `1aed0b5` / `65daf59`、取り込み `a0983e1`): 先に、コードや画面の文言と重なっていたコメントだけを 11 か所削って空きを作り、`dashboard.html` は 81,673 → 80,142 B (-1,531 B) になった。表示される文言と title は変えていない。次に、「最近のエラー」で `/errors` の `repeats` が 1 より大きい行は、時刻の欄を「最初〜最後」(`at`〜`last_at`) にして `×N` の札を添えるようにした (title は日付つき)。`repeats` の無い版と 1 の行は前と同じ HTML のままで、**80,515 B (上限 81,920 B まで 1,405 B)**。行の組み立ては DOM に触らない `errorRowHtml` に出した。
+    `check-dashboard.js` には、repeats 115 の作り物の `/errors` で `×115`・最初の時刻・「〜最後の時刻」が出ること、`repeats` の無い版と 1 の行には出ないこと、どの行も 8 列であることを見る検査を足した (本体を壊すと落ちることを確かめた)。`check-dashboard.js` は OK 6、scripts の unittest は 394 本 OK、`check-docs.sh` は差分 0、`cargo build --release` は通り、`proxy_test` の dashboard の 1 本も通った。README は大きさの記述と「最近のエラー」の説明を直した。
+    気づき: 欄の時刻に日付は出ないので、何日も続いた行は title で読む。`check-dashboard.js` の冒頭のコメントは「見るのは 3 つだけ」と書きながら 17 項目を並べている。
 
 ## 付録 A. 計測の記録 (時系列)
 

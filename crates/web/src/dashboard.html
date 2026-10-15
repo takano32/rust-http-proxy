@@ -209,8 +209,8 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
 (function(){
 'use strict';
 var $=function(id){return document.getElementById(id)};
-var hist=[];       // 正規化した標本 (`/history` の keys でキー名を戻したもの)
-var kern=[];       // `/history` の `kernel` の窓 (T14.12 の別の配列。T15.0 (14))
+var hist=[];
+var kern=[];
 var interval=5;    // いま見ている解像度 (秒)。`/history` の interval_secs
 var bounds=[];     // 窓のヒストグラムの区間 (ms)。`/history` の bounds_ms
 var causes=[];     // エラーの原因の名前。`/history` の causes
@@ -290,8 +290,6 @@ function dnsMissKinds(s){
   return {rows:rows,total:rows.reduce(function(a,r){return a+r.avg},0)};
 }
 // 「悪いホスト」: `/status?sort=errors` と `?sort=dns` の 2 枚を混ぜて上位 n 件。
-// エラーの多い順 → 名前解決に費やした順で、エラーも名前解決も無いホストは出さない
-// (要求数の上位 50 には出てこないホストを見るための表なので、健全なホストは要らない)
 function badHosts(lists,names,n){
   var seen={},rows=[];
   (lists||[]).forEach(function(hs){(hs||[]).forEach(function(h){
@@ -315,8 +313,19 @@ function errorRows(j,n){
   return ((j&&j.errors)||[]).slice(0,n||20).map(function(e){
     return {at:+e.at||0,kind:e.kind||'',target:e.target||'',cause:e.cause||'',
       dns_ms:e.dns_ms==null?null:+e.dns_ms,connect_ms:e.connect_ms==null?null:+e.connect_ms,
-      status:+e.status||0,client:e.client||''};
+      status:+e.status||0,client:e.client||'',
+      repeats:+e.repeats||1,last_at:e.last_at==null?null:+e.last_at};
   });
+}
+// 1 行の HTML。まとめた行 (`repeats` > 1。T20.3) は最初〜最後の時刻と ×N を出す
+function errorRowHtml(e){
+  var a=new Date(e.at*1000),r=e.repeats>1,z=r&&e.last_at?new Date(e.last_at*1000):null;
+  return'<tr><td title="'+a.toLocaleString()+(z?' 〜 '+z.toLocaleString():'')+'">'+a.toLocaleTimeString()
+    +(z?'〜'+z.toLocaleTimeString():'')+(r?'<span class="tag">×'+fmtNum(e.repeats)+'</span>':'')+'</td>'
+    +'<td>'+esc(e.kind)+'</td><td title="'+esc(e.target)+'">'+esc(e.target)+'</td>'
+    +'<td style="color:var(--bad)">'+esc(e.cause)+'</td>'
+    +'<td>'+fmtMs(e.dns_ms)+'</td><td>'+fmtMs(e.connect_ms)+'</td>'
+    +'<td>'+fmtNum(e.status)+'</td><td>'+esc(e.client)+'</td></tr>';
 }
 // 「いまの接続」: `/connections` の応答を**長く居る順**に n 件と、状態・種類の内訳。
 // バーストのときに何が席を占めているかを見るための並びなので、経過の長い順にする
@@ -349,7 +358,7 @@ function idleTunnels(j,secs,n){
     spins:spins,half_closed:half,quiet:quiet,lite:!!(j&&j.lite)};
 }
 // `/history` の `kernel` (T14.12 の**標本とは別の配列**) を列名で引ける形に戻す。
-// 画面はここまで 1 行も読んでいなかった。読めない源は `null` で来る (T15.0 (14))
+// 読めない源は `null` で来る (T15.0 (14))
 function toKernel(h){
   var k=(h&&h.kernel)||null;
   if(!k||!Array.isArray(k.samples))return [];
@@ -628,7 +637,6 @@ var STAGE_COLORS=['#5aa9ff','#3ecf8e','#f5b342','#c084fc','#ff6b6b','#6ee7f9','#
 var ROLE_COLORS={accept:'#5aa9ff',conn:'#3ecf8e','idle-watch':'#c084fc','dns-refresh':'#f5b342',
   history:'#ff6b6b',persist:'#6ee7f9','cache-probe':'#fca5a5','profile-sample':'#a3e635',other:'#8b91a5'};
 // 100% の横棒 1 本。`fmt` を渡さなければ ms として整形する
-// (T15.0 (14) で件数を積む使い方ができたので `fmtNum` を渡せるようにした)
 function stackHtml(rows,total,fmt){
   if(!(total>0))return '';
   var f=fmt||fmtMsFine;
@@ -763,8 +771,6 @@ function redraw(){
     $('c-err').textContent=lastR.dnsps.toFixed(2)+' / '+lastR.errps.toFixed(2);
     $('c-fd').textContent=lastR.threads+' / '+lastR.fds+(lastR.maxfds?' (上限 '+lastR.maxfds+')':'');
     $('rps').textContent=lastR.rps.toFixed(1);$('bps').textContent=fmtBytes(lastR.bps*1048576)+'/s'}
-  // KPI: CONNECT 確立 p50。`/status` の `recent_quantiles` (直近 1,024 本の実測。T14.31) が
-  // あればそれ、無ければ直近 5 分 (5 秒 × 60 標本) の区間の補間に落ちる
   var span=Math.max(1,Math.round(300/(interval||5))),w=mergeWindows(hist,span,'connect');
   var k=connectKpi(last,w,bounds);
   $('connp50tag').textContent=k?k.label:'直近 5 分';
@@ -831,9 +837,7 @@ function connectKpi(s,w,bounds){
   return{exact:false,label:'直近 5 分',p50:p50,p90:null,p99:null,max:w.max,n:w.count,window:null,
     detail:w.count+' 本 · p95 '+fmtMs(p95)+' · 平均 '+fmtMs(w.sum/w.count)+' (区間の補間)'};
 }
-// KPI「利用者が待つ時間 p50」(T15.0 (2))。`connectKpi` と同じ作りで、読むのは
-// `recent_quantiles.wait` = **queue + client_read + dns + connect の和**。無い版では
-// `/history` の `wait_*` の補間に落ち、それも無ければ null。**DOM には触らない**
+// KPI「利用者が待つ時間 p50」(T15.0 (2))。`connectKpi` と同じ作りで `wait` を読む。**DOM には触らない**
 function waitKpi(s,w,bounds){
   var q=s&&s.recent_quantiles&&s.recent_quantiles.wait;
   if(q&&q.n>0){
@@ -879,7 +883,6 @@ function renderStatus(s){
   last=s;var c=s.cache||{};
   $('version').textContent=s.version||'';
   $('uptime').textContent='稼働 '+fmtDur(s.uptime_secs)+' · ログ '+(s.log_level||'');
-  // 上の数え物は「起動から」、下のホスト別 / 接続元別の表は「通算」(状態ファイルに残る)
   $('window').textContent='窓: 起動から '+fmtDur(s.since_start_secs==null?s.uptime_secs:s.since_start_secs)
     +' / 表は通算'+(s.restored_since?' ('+new Date(s.restored_since*1000).toLocaleDateString()+' から)':'');
   $('window').title='total_requests などは起動から、hosts[] と clients[] は状態ファイルに残る通算です';
@@ -916,7 +919,6 @@ function renderStatus(s){
     :'ミスの種類 (dns.misses_by_kind) を記録していません';
   renderCpu(s);
   // 接続の上限と山 (T13.3): 503 に届く前に「あと何本か」が読めるように。
-  // 山は `/history` の直近 5 分の `active_max` の最大 (平均に畳むと山が消える)
   var span5=Math.max(1,Math.round(300/(interval||5))),pk=peak(hist,span5,'active_max','active');
   var cparts=['上限 '+lim(s.max_conns),'山 '+(pk==null?'–':fmtNum(pk))+' (直近 5 分)','503 '+fmtNum(s.rejected_overload)];
   if(s.evicted_idle!=null)cparts.push('追い出し '+fmtNum(s.evicted_idle));
@@ -963,7 +965,6 @@ function renderStatus(s){
   $('blocklist').title=bl.error||'';
   var ov=bl.overrides||[];$('boverrides').innerHTML=ov.length?'上書き: '+ov.map(function(o){return'<code>'+esc(o.host)+'</code> '+(o.action==='block'?'拒否':'許可')+(o.expires?' (~'+new Date(o.expires*1000).toLocaleString()+')':' (無期限)')}).join(' · '):'';
 }
-// 「悪いホスト」の表 (30 秒ごとに取った `?sort=errors` と `?sort=dns` の 2 枚から)
 function renderBad(){
   var rows=badHosts(badLists,causes.length?causes:CAUSES,10);
   $('bad').tBodies[0].innerHTML=rows.map(function(r){
@@ -974,16 +975,9 @@ function renderBad(){
   }).join('')||'<tr><td colspan="7" style="text-align:center;color:var(--muted)">'
     +(badLists[0]||badLists[1]?'エラーも遅い名前解決もありません':'読み込み中…')+'</td></tr>';
 }
-// 個票の表 (T13.4)。どちらも 5 秒ごとに取り直す
 function renderErrors(j){
   var rows=errorRows(j,20);
-  $('errors').tBodies[0].innerHTML=rows.map(function(e){
-    return'<tr><td title="'+new Date(e.at*1000).toLocaleString()+'">'+new Date(e.at*1000).toLocaleTimeString()+'</td>'
-      +'<td>'+esc(e.kind)+'</td><td title="'+esc(e.target)+'">'+esc(e.target)+'</td>'
-      +'<td style="color:var(--bad)">'+esc(e.cause)+'</td>'
-      +'<td>'+fmtMs(e.dns_ms)+'</td><td>'+fmtMs(e.connect_ms)+'</td>'
-      +'<td>'+fmtNum(e.status)+'</td><td>'+esc(e.client)+'</td></tr>'
-  }).join('')||'<tr><td colspan="8" style="text-align:center;color:var(--muted)">エラーはまだありません</td></tr>';
+  $('errors').tBodies[0].innerHTML=rows.map(errorRowHtml).join('')||'<tr><td colspan="8" style="text-align:center;color:var(--muted)">エラーはまだありません</td></tr>';
   $('errhint').textContent='覚えているのは '+fmtNum(j&&j.kept)+' 件 / 上限 '+fmtNum(j&&j.capacity)
     +' · 起動からの通算 '+fmtNum(j&&j.recorded)+' 件 (プロセスのメモリだけ。再起動で消えます)';
 }
@@ -1047,12 +1041,10 @@ function renderSettings(st){
 }
 function fetchJson(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
 function pollStatus(){if($('pause').checked)return;fetchJson('/status').then(function(s){renderStatus(s);ok(true,'更新 '+new Date().toLocaleTimeString())}).catch(function(e){ok(false,'取得失敗: '+e.message)})}
-// 「悪いホスト」の 2 枚だけは **30 秒に 1 回** (2 秒ごとの `/status` に 2 本足すと
-// プロキシ側の仕事が 2 倍になる。並べ替えるだけの応答でも 50 ホストぶんを組み立てる)
+// 「悪いホスト」の 2 枚だけは **30 秒に 1 回** (2 秒ごとに足すとプロキシ側の仕事が 2 倍になる)
 function pollBad(){if($('pause').checked)return;
   ['errors','dns'].forEach(function(k,i){fetchJson('/status?sort='+k).then(function(s){badLists[i]=s.hosts||[];renderBad()}).catch(function(){})})}
 // SLO の達成率は **30 秒に 1 回** (1 日の達成率は 5 秒では動かない。T14.50)。
-// `/slo` を持たない版では 404 になるので、カードを隠したままにする
 function pollSlo(){if($('pause').checked)return;
   fetchJson('/slo?days=7').then(renderSlo).catch(function(){$('slocard').hidden=true})}
 // 個票は 5 秒ごとに 2 本 (`/errors` は 20 件、`/connections` は今の一覧。T13.4)
