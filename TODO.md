@@ -1508,10 +1508,13 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
     (2) 最初の割り当てを入れる (`Cargo.toml` の version の行と `Cargo.lock` の該当の行だけ)。(3) README の「クレート構成」の決まりの 4 行と「運用」の「0. リリース」を書き直す。テスト (`scripts/test_crate_versions.py`) を新しい決まりに直す (一時の git リポジトリで: タスクの中で上げた / 上げ忘れ / 版の行だけ変わった / 本体と `proxy-server` のずれ / 本体が最大より小さい / タグの上)。
   - 受け入れ基準: 割り当てのあとの main で `--check` が 0、割り当ての前 (T21.1 の決まりの版) で 1。一時のコピーで 1 つのクレートの中身を変えて `--check` が 1、`--task T21.9` のあと 0 (そのクレートと本体・`proxy-server` が `0.21.9`)。`cargo build --release` が通り `-V` が `0.21.3+<commit>` (か T21.4 のあとなら `0.21.4`)。`python3 -m unittest discover -s scripts` 全通過、`check-docs.sh` 差分 0。
 
-- [ ] **T21.7 `crates/net-dns/src/dns.rs` を割る (割るだけ)**
+- [x] **T21.7 `crates/net-dns/src/dns.rs` を割る (割るだけ)**
   - 目的: T21.3 で 2,292 行になり、§0 の「1 ファイルは 2,000 行を目安」を超えた (着手前から 2,105 行)。
   - やること: 責務で 2 つ以上のファイルに割る (たとえば keep-warm と裏の引き直し、serve-stale、表と数え方、`/status` の JSON)。**中身は 1 バイトも変えない** (関数の本体はそのまま移す。公開の名前と道は今までどおり)。
   - 受け入れ基準: どのファイルも 2,000 行未満。`-p proxy-net-dns` のテストの本数が前後で同じで全部通る。clippy 警告 0。ビルドメモリの関門 (`scripts/build-memory.sh 120`) が通る。版は T21.6 の決まりで `0.21.7`。
+  - 結果 (2026-10-15、`a9d651e`、取り込み `0b6a772`): `crates/net-dns/src/dns.rs` 2,292 行を、同じクレートの中の子モジュール 3 つに割った (`#[path]` で `src/` の直下。前からある `dns_stale_tests.rs` に合わせた)。`dns.rs` 870 行 (表・カウンタ・設定・解決の経路と serve-stale・族の記憶)、新しい `dns_warm.rs` 300 行 (keep-warm の待ち行列と `dns-refresh` スレッド)、`dns_view.rs` 250 行 (`/dns` の行と並べ替え、`/status` の `"dns"` 要素、Prometheus のカウンタ)、`dns_tests.rs` 924 行 (`mod tests` をそのまま移した)。
+    中身は 1 バイトも変えていない (前後の全行を行頭の空白を除いて突き合わせた。差は見出し・`use`・`mod` の宣言・`pub(super)` 6 つと、rustfmt の折り返し 1 行、テストの字下げ、テストだけが使う import の `#[cfg(test)]`)。公開の名前は `pub use` で出し直したので `proxy_net_dns::dns::…` は不変。`-p proxy-net-dns` のテストは前後とも 28 本で全部通り、`proxy-net-conn` 18 本、`proxy-net` 11 本、`dns_test` 6 本も通過。clippy 警告 0。`build-memory.sh 120` は通過。`proxy-net-dns` の RssAnon は割る前 73.4 / 74.4 MB、割った後 72.9 / 71.8 MB で変わらない (ファイルを割ってもメモリは下がらない、のとおり)。
+    親: `tests/stages_test.rs:10` のコメントが移ったテストを `dns.rs` にあると書いていたので `dns_tests.rs` に直した。
 
 - [x] **T21.4 `/history?summary=1&since=restart` が起動直後に `connects` を返さないことがある**
   - 目的: 既知の小物の表 (T20.4 の気づき)。結合テストを書く途中で 8 回に 1 回、起動直後の `?summary=1&since=restart` に `"connects":1,` が出なかった (標本の行には同じ数字がある)。`collect-deployed.sh` の「0 時間」の雪像で踏みうる。
