@@ -496,9 +496,18 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   使われていなくても 45 秒 (3/4 TTL) ごとに裏で引き直し続ける**ので、TTL より長い間隔で来る
   ホスト (数分おきの push 通知など) もミスになりません。同時に warm でいられるのは 32 件まで
   (最後の使用が古いものから外れ、最後の使用から 3,600 秒過ぎたら止まります)。
+  さらに **serve-stale** (RFC 8767。T21.3): **期限が切れていても、引いてから 21,600 秒
+  (`PROXY_DNS_STALE_SECS`、0 で止める) 未満の答えは待たずにそのまま使い、裏で 1 回だけ引き直します**。
+  間遠な名前 (1 時間以上あけて使う名前) の期限切れのミスを利用者に待たせないためです。
+  **古い答えで繋げなかったとき** (`refused` / `unreachable` / `timeout`) は、その場で 1 回だけ引き直し、
+  番地が変わっていれば 1 回だけ繋ぎ直します (CONNECT と forward の両方。番地が同じなら繋ぎ直さず元のエラー)。
+  `/status` の `dns.stale_hits` が古い答えで繋ぎに行った回数 (**ミスには数えません**)、`dns.stale_retries` が
+  古い答えで繋げずに引き直した回数です (そのとき同期で引いた回は `misses_by_kind.expired` にも入ります)。
+  `stale_served` は別物で、引き直しが**失敗**したときに古い答え (1 時間以内) で凌いだ回数です。
   この規則を変えたらミスと引き直しがどう動くかは、**`scripts/dns-replay.py SNAP.json`** が雪像 1 枚
   (`/recent` の到着列と `/hosts_series` の助走) で見積もります (T17.5。いまの規則の値を同じ区間の
   `/history` と並べ、`promote` の条件を差し替えた案と比べる。`--json` で機械で読む形)。
+  `--serve-stale SECS` (何度でも) で serve-stale の窓ごとの `expired` と引き直しの数も並べます (T21.3)。
   **名前解決は 1 要求 1 回**: ローカル宛て (SSRF) の判定で引いた答えをそのまま接続に使うので、
   キャッシュを切っていても判定と接続が別の答えを見ることはない。
   **答えが変わった回数 (`changes`)**: 引き直し (keep-warm と期限切れの再解決) は元々
@@ -1502,6 +1511,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_DNS_TTL_SECS` | `60` | 名前解決の結果を保持する秒数 |
 | `PROXY_DNS_NEGATIVE_SECS` | `60` | 名前解決の失敗を覚えておく秒数 (`0` で覚えない) |
 | `PROXY_DNS_WARM_SECS` | `3600` | keep-warm: よく使う名前を裏で引き直し続ける窓 (秒) |
+| `PROXY_DNS_STALE_SECS` | `21600` | serve-stale: 期限切れでもこの秒数未満の答えは待たずに使い、裏で引き直す (`0` で止める) |
 | `PROXY_CANARY` | `auto` | canary: 要求が無い時間帯も待ちを測る宛先 |
 | `PROXY_CANARY_SECS` | `60` | canary の周期 (秒、最小 1) |
 | `PROXY_CANARY_IPV6` | `on` | canary の IPv6 側 (AAAA へ 1 本だけ繋いでみる) |
