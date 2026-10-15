@@ -610,6 +610,7 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 | 「束縛してすぐ手放したポート」を死んだ宛先に使うテストが `crates/net-conn/src/net.rs` に 2 か所残っている (`a_deadline_reports_timed_out_not_the_first_refusal` の `closed`、`unseen_hosts…` の後半の `dead`。落ちた記録は無い) | T20.2 の気づき | 落ちたら `tests/proxy_test.rs` の `RefusedPort` (束縛したまま `listen` しない) を `tests/common/` か `net.rs` のテストへ持っていく |
 | `crates/metrics-window/src/history.rs` の `summary::of` のコメント「窓は始まりの時刻 (t) で切る」は、5 秒の標本では区間の終わり (取った時刻) | T21.4 の気づき | 次にそのファイルを触るときにコメントを直す |
 | 手でプロキシを起動するとき `HOME` を一時ディレクトリへ向けると、同じシェルの `scripts/mx cargo` が rustup の既定を見失って何も回らない (出力が空) | T21.4 の気づき | 指示文の「$HOME に書かない」の所に「`RUSTUP_HOME` と `CARGO_HOME` は本物のまま」を足す |
+| `tests/heavy_test.rs` の `test_integration_only_one_snapshot_is_built_at_a_time` が全体テストの負荷の下で 1 回落ちた (`/snapshot` 4 本を 20 回投げて、1 回も 4 本が同時にならなかった。単独 5 / 5 通過) | Phase 21 の全体チェック | 「同時」を時間に頼らず作る (1 本目の組み立ての中で止める口をテストに足す) か、回数を増やす前に原因を見る |
 | 本文付きの要求 (POST など) がプールのオリジン接続に乗り、相手がちょうど閉じたときは 502 (送り直すのは本文の無い GET / HEAD だけ。`crates/http/src/http/mod.rs` の `retryable`)。決まりどおりで、実機で出た記録は無い | T18.4 | 実機の `/errors` に POST の 502 が出たら、要求の経路の判断として決める |
 | `warm_promote` が次の予定を「上げた時刻 + 45 秒」に置く (答えを引いた時刻ではない。齢 60〜75 秒が期限切れになりうる。実機の `warm_stale` の一部かも) | T17.5 の模型 | 予定を答えの齢から出す。`scripts/dns-replay.py` で先に数える |
 
@@ -1539,6 +1540,16 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
   - 結果 (2026-10-15、`0e332c1` / `1aed0b5` / `65daf59`、取り込み `a0983e1`): 先に、コードや画面の文言と重なっていたコメントだけを 11 か所削って空きを作り、`dashboard.html` は 81,673 → 80,142 B (-1,531 B) になった。表示される文言と title は変えていない。次に、「最近のエラー」で `/errors` の `repeats` が 1 より大きい行は、時刻の欄を「最初〜最後」(`at`〜`last_at`) にして `×N` の札を添えるようにした (title は日付つき)。`repeats` の無い版と 1 の行は前と同じ HTML のままで、**80,515 B (上限 81,920 B まで 1,405 B)**。行の組み立ては DOM に触らない `errorRowHtml` に出した。
     `check-dashboard.js` には、repeats 115 の作り物の `/errors` で `×115`・最初の時刻・「〜最後の時刻」が出ること、`repeats` の無い版と 1 の行には出ないこと、どの行も 8 列であることを見る検査を足した (本体を壊すと落ちることを確かめた)。`check-dashboard.js` は OK 6、scripts の unittest は 394 本 OK、`check-docs.sh` は差分 0、`cargo build --release` は通り、`proxy_test` の dashboard の 1 本も通った。README は大きさの記述と「最近のエラー」の説明を直した。
     気づき: 欄の時刻に日付は出ないので、何日も続いた行は title で読む。`check-dashboard.js` の冒頭のコメントは「見るのは 3 つだけ」と書きながら 17 項目を並べている。
+
+- **Phase 21 の全体チェック (2026-10-15、親)**: T21.1〜T21.7 を入れた main (`09b024f`) で `cargo fmt --all -- --check` 通過、`cargo clippy --workspace --all-targets -- -D warnings` 警告 0、
+  `cargo test --workspace --no-fail-fast` は **138 バイナリ 844 通過 / 1 失敗 / 1 ignored**。落ちたのは `tests/heavy_test.rs` の `test_integration_only_one_snapshot_is_built_at_a_time` (「20 回とも 4 本が同時にならなかった (最後の回: [200, 200, 200, 503])」。全体テストの負荷の下で `/snapshot` 4 本が同時に届かなかった) で、
+  **同じバイナリを 5 回回して 5 / 5 通過** = 揺れ (Phase 21 は重い口に触っていない。既知の小物の表へ)。`python3 -m unittest discover -s scripts` 399 本 OK、`check-docs.sh` 差分 0、`check-dashboard.js` 通過、`crate-versions.py --check` 0 (本体 `0.21.7`)、
+  `cargo clean --release` からの `build-memory.sh 120` 通過、`-V` は `0.21.7+09b024f`。
+
+- [ ] **T21.99 締める (Phase 21 の版を 24 時間走らせたあとに見る・決める・書く)**
+  - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): デプロイ先は `tokyo.sorahost.net:60357`。版 —、起動時刻 —、「前」の雪像 — (再デプロイの直前に `status/tokyo/` へ撮る)、「0 時間」の雪像 —。
+  - 判定: `BEFORE=<前> ZERO=<0 時間> scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo` の `--criteria phase21` (T21.2)。完了の定義 (下書き): phase21 の「届かず」0。**T21.3 の効き目**: `misses_by_kind` の `expired` が前の版の 631 回 / 176 時間より大きく減り (模型では 0 近く)、
+    `dns.stale_hits` が増え、`stale_retries` は `stale_hits` の 1% 未満。`refresh_late` が 0 のまま。T21.4: 「0 時間」の雪像の `?summary=1&since=restart` に起動直後の標本が入る。T21.5: ダッシュボードの「最近のエラー」に `×N` が出る (まとめた行があれば)。
 
 ## 付録 A. 計測の記録 (時系列)
 
