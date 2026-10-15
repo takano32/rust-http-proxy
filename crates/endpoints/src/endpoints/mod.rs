@@ -589,28 +589,41 @@ pub(super) fn history_summary(
     params: &[(String, String)],
     res: Option<u64>,
 ) -> String {
-    let now = crate::cache::now_epoch();
-    // `since=restart` は `/status` の `since_start_secs` と同じ起動時刻から
-    let uptime = ep.metrics.start_time.elapsed().as_secs();
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let (now, started) = now_and_start(wall, ep.metrics.start_time.elapsed());
     crate::history::summary::of(
         &ep.metrics.history,
-        &summary_params(params, res, now, uptime),
+        &summary_params(params, res, now, started),
     )
     // 直近 1,024 本の正確な分位点を**別の鍵で**添える (T14.31)。`p50_ms` は期間を畳んだ
     // 区間の補間、`recent_quantiles` は期間に関わらず直近 1,024 本の実測なので別物
     .to_json_with(Some(&ep.metrics.recent_quantiles_json()))
 }
 
+/// 今と起動時刻 (どちらも epoch 秒の切り捨て) を、**同じ 1 回の時計の読み** `wall` と
+/// 稼働時間 `elapsed` から出す (T21.4)。
+///
+/// 端数を残したまま引いてから切り捨てる。前は `now_epoch() − elapsed().as_secs()`
+/// (切り捨て同士の引き算) で、今の秒の端数が起動の端数より小さいと起動時刻が 1 秒
+/// 遅く出て、起動と同じ秒に取った標本 (`t` は取った時刻の切り捨て) が
+/// `since=restart` から外れていた (起動直後の要約が `"connects":0` になった)。
+fn now_and_start(wall: std::time::Duration, elapsed: std::time::Duration) -> (u64, u64) {
+    (wall.as_secs(), wall.saturating_sub(elapsed).as_secs())
+}
+
 /// `?since=&until=&res=&normal_hours_only=` を読む (**時計を持たない**ので試験できる)。
 ///
-/// `since=restart` は `now - uptime` (= `/status` の `since_start_secs` で切るのと同じ)。
+/// `since=restart` は起動時刻 `started` (epoch 秒の切り捨て。`/status` の `since_start_secs`
+/// と同じ起動から)。起動のあとに取った標本の `t` は必ず `started` 以上になる (T21.4)。
 /// 数として読めない値と書いていない `since` は 0 (残っているいちばん古い標本から)、
 /// `until` は今。`normal_hours_only=1` で 1 時間 300 本以上の標本を外す (T14.0 の「平常時」)。
 fn summary_params(
     params: &[(String, String)],
     res: Option<u64>,
     now: u64,
-    uptime: u64,
+    started: u64,
 ) -> crate::history::summary::Params {
     let val = |key: &str| {
         params
@@ -620,7 +633,7 @@ fn summary_params(
     };
     crate::history::summary::Params {
         since: match val("since") {
-            Some("restart") => now.saturating_sub(uptime),
+            Some("restart") => started,
             Some(v) => v.parse::<u64>().unwrap_or(0),
             None => 0,
         },
@@ -740,7 +753,7 @@ mod tests {
 
 #[cfg(test)]
 mod local_path_tests {
-    use super::{endpoint_list, local_path, parse_query, summary_params};
+    use super::{endpoint_list, local_path, now_and_start, parse_query, summary_params};
 
     #[test]
     fn origin_form_is_local_only_when_the_host_port_is_ours() {
@@ -1029,8 +1042,8 @@ mod local_path_tests {
     fn the_summary_params_read_since_restart_and_the_period() {
         let now = 1_757_000_000u64;
         let q = |s: &str| parse_query(s);
-        // `since=restart` = いまから稼働秒数を引いた時刻 (= `/status` の窓の始まり)
-        let p = summary_params(&q("summary=1&since=restart"), None, now, 7_200);
+        // `since=restart` = 起動時刻 (= `/status` の窓の始まり)
+        let p = summary_params(&q("summary=1&since=restart"), None, now, now - 7_200);
         assert_eq!((p.since, p.until), (now - 7_200, now));
         assert!(!p.normal_hours_only);
         // 期間 2 時間なら 60 秒の窓が自動で選ばれる (1 時間を越えるので 5 秒では足りない)
@@ -1040,19 +1053,40 @@ mod local_path_tests {
             &q("since=1756000000&until=1756100000&normal_hours_only=1"),
             Some(3600),
             now,
-            10,
+            now - 10,
         );
         assert_eq!((p.since, p.until), (1_756_000_000, 1_756_100_000));
         assert!(p.normal_hours_only);
         assert_eq!(p.res_index(), 2);
         // 書いていなければ「残っている全部」から「今」まで、数として読めない値も同じ
-        let p = summary_params(&q("summary=1&since=yesterday"), None, now, 10);
+        let p = summary_params(&q("summary=1&since=yesterday"), None, now, now - 10);
         assert_eq!((p.since, p.until), (0, now));
         assert_eq!(p.res_index(), 2);
         // `normal_hours_only=0` は切らない
-        assert!(!summary_params(&q("normal_hours_only=0"), None, now, 10).normal_hours_only);
+        assert!(!summary_params(&q("normal_hours_only=0"), None, now, now - 10).normal_hours_only);
         // 案内にも載っている
         assert!(endpoint_list(false).contains("/history?since=&until=&summary=1"));
+    }
+
+    /// `since=restart` の起動時刻は端数を残して引いてから切り捨てる (T21.4)。
+    /// 起動 1,000.7 秒・今 1,001.2 秒 (稼働 0.5 秒) のとき、起動と同じ秒の 1,000.9 秒に
+    /// 取った標本 (`t` = 1,000) が入るには起動時刻が 1,000 でなければならない。
+    /// 切り捨て同士の引き算 (1,001 − 0) だと 1,001 になって外れていた。
+    #[test]
+    fn since_restart_does_not_skip_the_second_the_proxy_started_in() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        let (now, started) = now_and_start(ms(1_001_200), ms(500));
+        assert_eq!((now, started), (1_001, 1_000));
+        // 前の求め方では起動の次の秒になっていた (この差が「8 回に 1 回」の正体)
+        assert_eq!(ms(1_001_200).as_secs() - ms(500).as_secs(), 1_001);
+        let p = summary_params(&parse_query("summary=1&since=restart"), None, now, started);
+        let sample_t = ms(1_000_900).as_secs();
+        assert!(p.since <= sample_t && sample_t <= p.until, "{:?}", p);
+        // 端数が逆向きでも、稼働が長くても同じ (起動 1,000.2 秒・稼働 2 時間と 0.9 秒)
+        assert_eq!(now_and_start(ms(8_201_100), ms(7_200_900)), (8_201, 1_000));
+        // 時計が稼働時間より小さい (壊れた時計) ときは 0 から
+        assert_eq!(now_and_start(ms(300), ms(500)), (0, 0));
     }
 
     #[test]

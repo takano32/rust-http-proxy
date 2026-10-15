@@ -199,3 +199,72 @@ fn test_integration_history_summary_since_restart_matches_since_start_secs() {
         list
     );
 }
+
+/// **起動直後に繋いだ 1 本が `since=restart` の要約に入る** (T21.4)。
+///
+/// T20.4 の結合テストを書く途中で、起動直後の `?summary=1&since=restart` が 8 回に 1 回
+/// `"connects":1` を返さなかった (同じ標本は `/history` の行にある)。原因は切り口の丸め:
+/// `since` を `now_epoch() − elapsed().as_secs()` (切り捨て同士の引き算) で出していたので、
+/// 起動の秒の端数より今の秒の端数が小さいと、切り口が起動の**次の秒**になり、
+/// 起動と同じ秒に取った標本 (`t` は取った時刻の切り捨て) が外れていた。
+///
+/// 周期 100 ms の history スレッドで、起動してすぐ CONNECT を 1 本通し、その区間が
+/// 標本に移ったのを (期間を切らない要約で) 確かめてから `since=restart` を引く。
+/// 外れるのは「標本が起動と同じ秒に取られ、次の秒に、起動の端数より小さい端数で引いた」
+/// ときなので、標本の秒を時計が越えた直後に引いて境目に当てる (受け入れ基準はこのテストを 50 回)。
+#[test]
+fn test_integration_history_summary_since_restart_counts_a_connect_right_after_start() {
+    use std::io::Write;
+    use std::time::Duration;
+
+    let echo_port = start_echo_server();
+    let (port, metrics) = start_test_proxy_with_history(proxy_config(), Duration::from_millis(100));
+
+    // 起動してすぐ 1 本繋いで閉じる (統計を書くのはトンネルの終わり)
+    {
+        let mut t = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        t.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        t.write_all(
+            format!(
+                "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                echo_port, echo_port
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let head = read_connect_response(&mut t);
+        assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
+    }
+    let key = format!("connect://127.0.0.1:{}", echo_port);
+    wait_until(
+        || {
+            metrics
+                .hosts_sorted()
+                .iter()
+                .any(|(h, s)| *h == key && s.requests == 1)
+        },
+        "the connect to be counted",
+    );
+    // 区間が 5 秒の標本に移るまで待つ (期間を切らない要約 = 標本の行と同じ数字)
+    let taken = std::cell::Cell::new(0u64);
+    wait_until(
+        || {
+            let all = endpoint_json(port, "/history?summary=1&res=5");
+            taken.set(number(&all, "last_t") as u64);
+            number(&all, "connects") == 1.0
+        },
+        "the history thread to take the interval",
+    );
+    // 時計がその標本の秒を越えるまで待ってから引く。外れるのは「標本の秒の次の秒に、
+    // 起動の端数より小さい端数で引いた」ときなので、越えた直後に引けば (起動と同じ秒に
+    // 取った標本なら) ほぼ必ず境目に当たる。待つのは長くて 1 秒
+    wait_until(
+        || now_epoch() > taken.get(),
+        "the clock to pass the second of the sample",
+    );
+
+    let body = endpoint_json(port, "/history?summary=1&since=restart");
+    println!("t214: since=restart -> {}", body);
+    // **受け入れ基準 (T21.4)**: 起動したあとに取った標本は全部 `since=restart` に入る
+    assert_eq!(number(&body, "connects"), 1.0, "{}", body);
+}
