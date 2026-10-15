@@ -2,7 +2,7 @@
 # `scripts/snapshot-diff.py --criteria` の部 (**Phase の完了の定義に対する判定表**。TODO.md T20.1)。
 #
 # `snapshot-diff.py` が 1,959 行になったので、判定の部だけをここへ割った (T18.2 の申し送り)。
-# 持っているのは `PHASE14`〜`PHASE20` の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
+# 持っているのは `PHASE14`〜`PHASE21` の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
 # 判定表の印字 (`render_criteria()`) と、**判定の関数と差分の両方が使う小物**
 # (`part` `stamp` `n` `ms` `ratio` `restart_info` `norm_history` `merged_history` `miss_rate`)。
 # 小物までこちらにあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
@@ -209,8 +209,18 @@ PHASE18 = dict(
 # 入ったぶんは漏れではない)。`discord.com` のミス率・`dns_warm` の最大と `warm_evicted`・`timeout` の
 # 3 行は**表示だけ** (閾を置くと使われ方の変化で毎回落ちる。TODO.md Phase 20 の「候補 4 つ」)
 PHASE20 = dict(PHASE18)
+# T21.2: phase20 の 10 行のうち、T20.99 で「届かず」になった 3 行の読み方を直したもの。閾の値は phase20 と同じ。
+# 平常時のミスの行は**表示だけ** (宛先の数で動く使われ方の数字)。conn 役の CPU/要求 は、前か後の
+# `/profile` が下の時間に満たなければ「参考」(集計に数えない)。`ipv6.request_probes` は、最後に探った
+# 時刻が 0 時間の雪像の取得から下の時間以内なら「満たした」(起動直後は canary が IPv6 をまだ見ていない)
+PHASE21 = dict(
+    PHASE20,
+    # `/profile?res=60` で 720 標本。5 秒の雪像の部はいつも 1 時間に満たないので「参考」になる
+    profile_min_hours=12.0,
+    request_probe_grace_hours=3.0,
+)
 CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18,
-            "phase20": PHASE20}
+            "phase20": PHASE20, "phase21": PHASE21}
 # **出力を 1 文字も変えない定義** (過去の判定を同じ命令で出し直せるように)。T20.1 で差分の表に
 # 足した行 (成功した接続だけの確立時間) は、`--criteria` がこの 4 つのときは出さない
 FROZEN = ("phase14", "phase15", "phase17", "phase18")
@@ -218,6 +228,8 @@ FROZEN = ("phase14", "phase15", "phase17", "phase18")
 MET, MISSED, UNKNOWN = "満たした", "届かず", "判定できず"
 # 閾を置かない行の判定の欄 (T20.1)。`judge()` の集計 (`tally`) には数えない
 SHOWN = "表示だけ"
+# 材料が短くて判定に使わない行の判定の欄 (T21.2)。`SHOWN` と同じく集計 (`tally`) には数えない
+REFERENCE = "参考"
 
 
 def per_hour(agg, interval, value):
@@ -877,17 +889,18 @@ def _p20_heap(c, th):
             MET if grown < lim else MISSED, src)
 
 
-def display_only(rule, label, why):
+def display_only(rule, label, why, was="phase18"):
     """判定の関数 `rule` を**表示だけ**の行にする (T20.1)。
 
     実測と出どころは `rule` のまま出し、閾の欄は `—` (phase18 の閾を添える)、判定の欄は
     「表示だけ」(`SHOWN`) にする。`judge()` の集計は `MET` / `MISSED` / `UNKNOWN` しか数えないので、
     この行は数に入らない。`label` は `th` を受け取って行の名前を返す (元の名前は「〜未満」と
     閾を含むので使わない)。`why` は閾を置かない理由で、出どころの欄の末尾に付く。
+    `was` は閾の欄に添える「前の定義」の名前 (T21.2 で足した。phase20 の 3 行は既定の phase18 のまま)。
     """
     def row(c, th):
         _, limit, shown, _, src = rule(c, th)
-        return (label(th), f"— (phase18 は {limit})", shown, SHOWN,
+        return (label(th), f"— ({was} は {limit})", shown, SHOWN,
                 f"{src}。**閾を置かない**: {why}")
     row.__name__ = rule.__name__ + "_shown"
     return row
@@ -904,6 +917,119 @@ _p20_warm_max = display_only(
     "枠が埋まるのはバーストの間だけで、追い出された名前が払うのは次のミス 1 回 (T18.99)")
 
 
+# --- Phase 21 (T21.2。phase20 の 10 行のうち、T20.99 で届かなかった 3 行の読み方を直したもの) ---
+
+# `/status` の `dns.misses_by_kind` を並べる順 (ほかの種類はこの後ろに名前の順)
+MISS_KINDS = ("cold", "expired", "warm_stale", "negative")
+
+
+def miss_kinds(c):
+    """`/status` の `dns.misses_by_kind` (ミスの種類別の回数)。再起動していなければその間の差にする。
+
+    返すのは `({種類: 回数}, その間か)` か、欄が無ければ `(None, False)`。
+    """
+    kb = (part(c["b"], "status").get("dns") or {}).get("misses_by_kind")
+    if not isinstance(kb, dict):
+        return None, False
+    ka = (part(c["a"], "status").get("dns") or {}).get("misses_by_kind")
+    windowed = isinstance(ka, dict) and not (c["info"] or {}).get("restarted")
+    out = {k: (v or 0) - ((ka.get(k) or 0) if windowed else 0) for k, v in kb.items()}
+    return out, windowed
+
+
+def _p21_miss_band_measured(c, th):
+    """平常時のミス (phase15 の行) に、ミスの種類別の内訳 (`cold` / `expired` …) を並べたもの。"""
+    label, limit, shown, verdict, src = _p15_miss_band(c, th)
+    kinds, windowed = miss_kinds(c)
+    if kinds is None:
+        return (label, limit, shown, verdict,
+                src + "。`/status` の `dns` に `misses_by_kind` が無い (内訳は出せない)")
+    order = [k for k in MISS_KINDS if k in kinds] + sorted(k for k in kinds if k not in MISS_KINDS)
+    text = "、".join(f"`{k}` {n(kinds[k])}" for k in order)
+    return (label, limit, f"{shown}。ミスの内訳 ({'その間' if windowed else '起動から'}、バースト込み): {text}",
+            verdict, src + "、内訳は `/status` の `dns.misses_by_kind`")
+
+
+_p21_miss_band = display_only(
+    _p21_miss_band_measured, lambda th: "平常時の名前解決のミス (回/接続。日ごとの幅と種類別の内訳)",
+    "宛先の数で動く使われ方の数字 (T20.99 は宛先 395 名前で 0.12、`cold` 408 回)", was="phase20")
+
+
+def profile_span(snap):
+    """その雪像の `/profile` の材料の長さ (`(秒, 標本, 出どころ)`。無ければ None)。"""
+    p, src = profile_source(snap)
+    if not p:
+        return None
+    rows = p.get("samples") or []
+    return len(rows) * (p.get("interval_secs") or 0), len(rows), src
+
+
+def _p21_conn_per_request(c, th):
+    """conn 役の CPU/要求 (phase17 の行)。**前か後の材料が短いときは「参考」** (T21.2)。
+
+    T20.99 は「前」が起動 1.3 時間・78 標本 (要求 256 本) しか無く、2.72 倍と出て「届かず」に
+    数えられた。前か後の `/profile` が `profile_min_hours` (`/profile?res=60` で 720 標本) に
+    満たなければ、倍率は出したまま判定の欄を「参考」にし、集計に数えない (理由は出どころの欄)。
+    倍率が出ない (材料が無い・要求が無い) ときは phase17 の行のまま「判定できず」。
+    """
+    label, limit, shown, verdict, src = _p17_conn_per_request(c, th)
+    if verdict not in (MET, MISSED):
+        return (label, limit, shown, verdict, src)
+    hours = th["profile_min_hours"]
+    short = []
+    for snap, who in ((c["a"], "前"), (c["b"], "後")):
+        span = profile_span(snap)
+        if span and span[0] < hours * 3600:
+            short.append(f"{who}は {span[0] / 3600:,.1f} 時間 ({n(span[1])} 標本)")
+    if not short:
+        return (label, limit, shown, verdict, src)
+    return (label, limit, shown, REFERENCE,
+            src + f"。**参考**: {'、'.join(short)} で、{hours:.0f} 時間 (`/profile?res=60` で "
+            f"{int(hours * 60):,} 標本) に満たない (短い材料の 1 要求あたりは使われ方で大きく振れるので、"
+            f"倍率だけなら「{verdict}」でも集計に数えない)")
+
+
+def _p21_request_probes(c, th):
+    """`ipv6.request_probes` (phase18 の行)。**起動直後だけ探ったのなら「満たした」** (T21.2)。
+
+    0 回なら phase18 と同じ。0 でなければ、最後に探った時刻 (`ipv6.request_probe_at`) が
+    `--zero` (0 時間の雪像) の取得から `request_probe_grace_hours` 以内なら「満たした」
+    (起動直後は canary がまだ IPv6 を見ていない。T20.99 は 3 回とも起動から 2.4 時間のうち)、
+    それより後に探っていれば「届かず」。`--zero` が無い・後の雪像と同じ起動でない・時刻が無いときは
+    「判定できず」。
+    """
+    _, _, shown, verdict, src = _p18_request_probes(c, th)
+    grace = th["request_probe_grace_hours"]
+    label = (f"`ipv6.request_probes` が 0、または探ったのが 0 時間の雪像から {grace:.0f} 時間以内だけ "
+             "(起動直後は canary が IPv6 をまだ見ていない)")
+    limit = f"= 0 か、最後が 0 時間 + {grace:.0f} 時間以内"
+    ip = part(c["b"], "status").get("ipv6")
+    ip = ip if isinstance(ip, dict) else {}
+    v = ip.get("request_probes")
+    if v is None or v == 0:
+        return (label, limit, shown, verdict, src)
+    z = c["b"].get("zero_snapshot")
+    if not z:
+        return (label, limit, shown, UNKNOWN,
+                "`--zero` (0 時間の雪像) が渡されていないので、探った時刻を起動直後と比べられない。" + src)
+    between = restart_info(z, c["b"])
+    if between["restarted"]:
+        return (label, limit, shown, UNKNOWN,
+                "`--zero` の雪像は後の雪像と同じ起動ではない (" + "、".join(between["reasons"]) + ")。" + src)
+    at, zt = ip.get("request_probe_at") or 0, z.get("taken_at") or 0
+    if not at or not zt:
+        return (label, limit, shown, UNKNOWN,
+                "最後に探った時刻 (`request_probe_at`) か 0 時間の雪像の取得時刻が無い。" + src)
+    after = (at - zt) / 3600.0
+    src += f"、`--zero` の取得 {stamp(zt)}"
+    if at <= zt + grace * 3600:
+        return (label, limit,
+                f"{shown}。最後は 0 時間の雪像から {after:,.1f} 時間後 = **起動直後の {n(v)} 回は canary が "
+                "IPv6 を見ていなかったぶん**", MET, src)
+    return (label, limit, f"{shown}。最後は 0 時間の雪像から **{after:,.1f} 時間後** ({grace:.0f} 時間より後にも探った)",
+            MISSED, src)
+
+
 RULES = {
     "phase14": (_p14_dns_per_connect, _p14_major_hosts, _p14_connect_p50, _p14_overload),
     "phase15": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band,
@@ -917,6 +1043,10 @@ RULES["phase18"] = RULES["phase17"] + (_p18_heap, _p18_request_probes)
 RULES["phase20"] = (_p20_watch_host, _p15_refresh_rate, _p15_miss_band, _p20_timeout,
                     _p17_conn_per_request, _p20_warm_max, _p17_events, _p17_cgroup,
                     _p20_heap, _p18_request_probes)
+# phase21 = phase20 と同じ並びの 10 行。ミスの行が表示だけ、conn 役の行が短い材料で参考、IPv6 の行が起動直後を許す
+RULES["phase21"] = (_p20_watch_host, _p15_refresh_rate, _p21_miss_band, _p20_timeout,
+                    _p21_conn_per_request, _p20_warm_max, _p17_events, _p17_cgroup,
+                    _p20_heap, _p21_request_probes)
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,
@@ -945,6 +1075,10 @@ def judge(name, hist, hosts, majors, status_b, overload, th,
     shown = sum(1 for r in rows if r[3] == SHOWN)
     if shown:
         out["display_only"] = shown
+    # 参考の行 (T21.2) も同じく集計に数えず、あるときだけ本数を別の鍵で持つ
+    reference = sum(1 for r in rows if r[3] == REFERENCE)
+    if reference:
+        out["reference"] = reference
     return out
 
 
@@ -1001,11 +1135,25 @@ def render_criteria(d, grouped):
           "**表示だけ**で、閾を置かず、下の集計にも数えません (使われ方で動く数字なので)。"
           "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
+    if c["name"] == "phase21":
+        # T21.2。phase20 と同じ並びの 10 行で、T20.99 で届かなかった 3 行の読み方を直してある
+        p("phase20 と同じ並びの 10 行で、材料も同じです (`--daily` `--profile` `--profile-before` "
+          "`--zero`)。直したのは 3 行 (T21.2): 平常時の名前解決のミスは**表示だけ**で、日ごとの幅と"
+          "ミスの種類別の内訳 (`cold` / `expired` …) を並べます (宛先の数で動く使われ方の数字なので)。"
+          "`conn` 役の CPU/要求 は、前か後の `/profile` が 12 時間 (`/profile?res=60` で 720 標本) に"
+          "満たなければ**参考**で、倍率は出しますが集計に数えません。`ipv6.request_probes` は、"
+          "最後に探った時刻が 0 時間の雪像の取得から 3 時間以内なら「満たした」(起動直後は canary が "
+          "IPv6 をまだ見ていない) で、それより後にも探っていれば「届かず」です。表示だけの行は"
+          "ほかに 3 つ (phase20 と同じ) です。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+        p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")
     for row in c["rows"]:
         p(f"| {row[0]} | {row[1]} | {row[2]} | **{row[3]}** | {row[4]} |")
     p()
+    # 集計に数えない行 (表示だけ・参考) はあるときだけ添える。phase20 の文字は変わらない
+    others = [f"{name} {c[key]} 行" for key, name in (("display_only", SHOWN), ("reference", REFERENCE))
+              if c.get(key)]
     p("・".join(f"{k} {v} 行" for k, v in c["tally"].items() if v)
-      + (f" (ほかに表示だけ {c['display_only']} 行。集計に数えない)" if c.get("display_only") else ""))
+      + (f" (ほかに{'・'.join(others)}。集計に数えない)" if others else ""))
     p()

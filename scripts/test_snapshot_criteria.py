@@ -309,7 +309,7 @@ class Criteria15(unittest.TestCase):
 
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
-                         ["phase14", "phase15", "phase17", "phase18", "phase20"])
+                         ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21"])
 
 
 def conn_profile(conn_us_per_row):
@@ -1045,6 +1045,264 @@ class Deployed20(unittest.TestCase):
         rc = d["recent_connect"]
         self.assertEqual((rc["n"], rc["p50"], rc["p95"], rc["failed"]), (398, 7, 66, 178))
         self.assertGreater(d["history"]["after"]["connect_p95"], 2000)
+
+    def test_phase21_comes_out_too(self):
+        """T21.2: nagoya の同じ 3 枚でも phase21 が出る (前の `/profile` が 12 時間あるので参考の行は無い)。"""
+        c = build(self.argv + ["--criteria", "phase21"])["criteria"]
+        self.assertEqual(c["tally"], {sd.MET: 6, sd.MISSED: 0, sd.UNKNOWN: 0})
+        self.assertEqual(c["display_only"], 4)
+        self.assertNotIn("reference", c)
+        self.assertIn("`cold` 174、`expired` 505", c["rows"][2][2])
+
+
+def long_profile(conn_us_per_row, rows):
+    """`conn_profile` の 3 標本を `rows` 本に伸ばした写し (60 秒おき。要求と CPU は 3 本ずつの繰り返し)。"""
+    p = conn_profile(conn_us_per_row)
+    base = p["samples"]
+    t0 = base[0][0]
+    p["samples"] = [[t0 + 60 * i] + json.loads(json.dumps(base[i % len(base)][1:])) for i in range(rows)]
+    p["count"] = p["shown"] = rows
+    return p
+
+
+class Criteria21(unittest.TestCase):
+    """`--criteria phase21` (T21.2): phase20 の 10 行のうち、T20.99 で届かなかった 3 行の読み方を直したもの。
+
+    平常時のミスは表示だけ (日ごとの幅と `misses_by_kind` の内訳)、conn 役の CPU/要求 は前か後の
+    `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` は 0 時間の雪像から 3 時間以内なら
+    「満たした」。B の起動は `Criteria17.START`、`zero_snapshot()` はその 2 分後に撮った 1 枚。
+    """
+
+    SHOWN_ROWS = (0, 2, 3, 5)
+    ZERO_AT = Criteria17.START + 120
+
+    def judge(self, name="phase21", a=None, b=None, extra=()):
+        return build([a or A, b or B, "--no-dns", "--criteria", name, *extra])["criteria"]
+
+    def row(self, i, a=None, b=None, extra=()):
+        return self.judge(a=a, b=b, extra=extra)["rows"][i]
+
+    def test_phase21_gives_ten_rows_and_four_of_them_are_display_only(self):
+        with written(z=cached(zero_snapshot(), 0), b=with_probes(read(B), 0)) as p:
+            c = self.judge(b=p["b"], extra=("--zero", p["z"]))
+        self.assertEqual(len(sd.RULES["phase21"]), 10)
+        self.assertEqual(len(c["rows"]), 10)
+        self.assertEqual([i for i, r in enumerate(c["rows"]) if r[3] == sd.SHOWN],
+                         list(self.SHOWN_ROWS))
+        self.assertEqual(sorted(c["tally"]), sorted((sd.MET, sd.MISSED, sd.UNKNOWN)))
+        self.assertEqual(sum(c["tally"].values()), 6)
+        self.assertEqual(c["display_only"], 4)
+        self.assertNotIn("reference", c)                     # 参考の行が無ければ鍵も無い
+        self.assertEqual([r[3] for r in c["rows"][8:]], [sd.MET, sd.MET])
+
+    def test_the_other_rows_are_the_phase20_ones(self):
+        self.assertEqual(sd.PHASE21, dict(sd.PHASE20, profile_min_hours=12.0,
+                                          request_probe_grace_hours=3.0))
+        for i in (0, 1, 3, 5, 6, 7, 8):
+            self.assertIs(sd.RULES["phase21"][i], sd.RULES["phase20"][i], i)
+        with written(z=cached(zero_snapshot(), 0)) as p:
+            rows20 = self.judge("phase20", extra=("--zero", p["z"]))["rows"]
+            rows21 = self.judge(extra=("--zero", p["z"]))["rows"]
+        for i in (0, 1, 3, 5, 6, 7, 8):
+            self.assertEqual(rows21[i], rows20[i], i)
+
+    # --- 平常時のミス (表示だけ)
+
+    def test_the_miss_row_is_display_only_with_the_kinds(self):
+        row = self.row(2)
+        old = self.judge("phase20")["rows"][2]
+        self.assertEqual(old[3], sd.MET)
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertEqual(row[0], "平常時の名前解決のミス (回/接続。日ごとの幅と種類別の内訳)")
+        self.assertEqual(row[1], "— (phase20 は ≤ 0.09)")
+        # A → B は再起動をまたぐので、内訳は B の起動からの値
+        self.assertEqual(row[2], old[2] + "。ミスの内訳 (起動から、バースト込み): "
+                                          "`cold` 12、`expired` 24、`warm_stale` 3、`negative` 1")
+        self.assertIn("内訳は `/status` の `dns.misses_by_kind`。**閾を置かない**: ", row[4])
+
+    def test_a_high_miss_rate_is_only_shown(self):
+        b = read(B)
+        set_column(b, "3600", "dns_misses", 40)              # 0.20 (phase20 なら届かず)
+        with written(b=b) as p:
+            old = self.judge("phase20", b=p["b"])["rows"][2]
+            row = self.row(2, b=p["b"])
+        self.assertEqual(old[3], sd.MISSED)
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertIn("**0.20** 回/接続", row[2])
+
+    def test_the_daily_band_comes_before_the_kinds(self):
+        days = {"days": [{"day": "2026-09-20", "connects": 100, "version": "0.1.0+bbbbbbb",
+                          "dns_per_connect": 0.05},
+                         {"day": "2026-09-21", "connects": 100, "version": "0.1.0+bbbbbbb",
+                          "dns_per_connect": 0.24}]}
+        with written(d=days) as p:
+            row = self.row(2, extra=("--daily", p["d"]))
+        self.assertIn("、日ごとの幅 0.05〜0.24 (2 日)。ミスの内訳 (起動から", row[2])
+
+    def test_the_kinds_are_a_difference_without_a_restart(self):
+        a, b = read(B), read(B)
+        a["status"]["dns"]["misses_by_kind"] = {"cold": 2, "expired": 4, "warm_stale": 3, "negative": 1}
+        b["status"]["dns"]["misses_by_kind"]["refused"] = 5        # 知らない種類は名前の順で後ろ
+        c = {"a": a, "b": b, "info": {"restarted": False}}
+        self.assertEqual(sd.miss_kinds(c), ({"cold": 10, "expired": 20, "warm_stale": 0,
+                                             "negative": 0, "refused": 5}, True))
+        self.assertEqual(sd.miss_kinds(dict(c, info={"restarted": True}))[0]["cold"], 12)
+
+    def test_a_version_without_the_kinds_says_so(self):
+        b = read(B)
+        del b["status"]["dns"]["misses_by_kind"]
+        with written(b=b) as p:
+            row = self.row(2, b=p["b"])
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertNotIn("ミスの内訳", row[2])
+        self.assertIn("`misses_by_kind` が無い (内訳は出せない)", row[4])
+
+    # --- conn 役の CPU/要求 (短い材料は参考)
+
+    def test_a_short_profile_is_only_a_reference(self):
+        """testdata の `/profile` は 3 標本 (3 分) なので、倍率が出ても「参考」で集計に数えない。"""
+        with written(fast=conn_profile(200_000), slow=conn_profile(150_000)) as p:
+            met20 = self.judge("phase20", extra=("--profile-before", p["fast"]))["rows"][4]
+            c = self.judge(extra=("--profile-before", p["slow"]))
+        row = c["rows"][4]
+        self.assertEqual(met20[3], sd.MET)
+        self.assertEqual(row[3], sd.REFERENCE)
+        self.assertIn("**1.60** 倍", row[2])
+        self.assertIn("。**参考**: 前は 0.1 時間 (3 標本)、後は 0.1 時間 (3 標本) で、12 時間 "
+                      "(`/profile?res=60` で 720 標本) に満たない", row[4])
+        self.assertIn("倍率だけなら「届かず」でも集計に数えない", row[4])
+        self.assertEqual(c["reference"], 1)
+        self.assertEqual(sum(c["tally"].values()), 5)
+
+    def test_twelve_hours_on_both_sides_is_judged(self):
+        with written(after=long_profile(240_000, 720), before=long_profile(200_000, 720),
+                     slow=long_profile(150_000, 720), short=long_profile(200_000, 719)) as p:
+            met = self.row(4, extra=("--profile", p["after"], "--profile-before", p["before"]))
+            missed = self.row(4, extra=("--profile", p["after"], "--profile-before", p["slow"]))
+            short = self.row(4, extra=("--profile", p["after"], "--profile-before", p["short"]))
+        self.assertEqual(met[3], sd.MET)                     # 1.20 倍
+        self.assertNotIn("**参考**", met[4])
+        self.assertEqual(missed[3], sd.MISSED)               # 1.60 倍
+        self.assertEqual(short[3], sd.REFERENCE)             # 719 標本 = 12 時間に 1 分足りない
+        self.assertIn("前は 12.0 時間 (719 標本) で", short[4])
+        self.assertNotIn("後は", short[4].split("**参考**")[1])
+
+    def test_without_a_profile_before_it_stays_unknown(self):
+        row = self.row(4)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertEqual(row, self.judge("phase20")["rows"][4])
+
+    # --- `ipv6.request_probes` (起動直後だけなら満たす)
+
+    def probes_row(self, at, probes=3, zero=True):
+        b = with_probes(read(B), probes, runs=690, skipped=30, at=at)
+        with written(z=zero_snapshot(), b=b) as p:
+            return self.row(9, b=p["b"], extra=("--zero", p["z"]) if zero else ())
+
+    def test_probes_right_after_the_start_are_met(self):
+        row = self.probes_row(self.ZERO_AT + 2 * 3600 + 1440)
+        self.assertEqual(row[3], sd.MET)
+        self.assertEqual(row[1], "= 0 か、最後が 0 時間 + 3 時間以内")
+        self.assertIn("**3** 回 (最後は ", row[2])
+        self.assertIn("。最後は 0 時間の雪像から 2.4 時間後 = **起動直後の 3 回は canary が IPv6 を"
+                      "見ていなかったぶん**", row[2])
+        self.assertIn("、`--zero` の取得 ", row[4])
+        # ちょうど 3 時間は「以内」
+        self.assertEqual(self.probes_row(self.ZERO_AT + 3 * 3600)[3], sd.MET)
+
+    def test_a_probe_later_than_three_hours_is_missed(self):
+        row = self.probes_row(self.ZERO_AT + 3 * 3600 + 1)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("。最後は 0 時間の雪像から **3.0 時間後** (3 時間より後にも探った)", row[2])
+        self.assertEqual(self.probes_row(self.ZERO_AT + 10 * 3600)[3], sd.MISSED)
+
+    def test_no_probe_is_met_as_before(self):
+        row = self.probes_row(0, probes=0)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**0** 回、`canary.ipv6_runs` 690", row[2])
+        self.assertEqual(self.row(9)[3], sd.UNKNOWN)         # 欄の無い版は今までどおり
+
+    def test_probes_without_zero_or_from_another_start_cannot_be_judged(self):
+        row = self.probes_row(self.ZERO_AT + 600, zero=False)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`--zero` (0 時間の雪像) が渡されていないので", row[4])
+        b = with_probes(read(B), 3, at=self.ZERO_AT + 600)
+        with written(other=zero_snapshot(version="0.1.0+aaaaaaa"), b=b) as p:
+            other = self.row(9, b=p["b"], extra=("--zero", p["other"]))
+        self.assertEqual(other[3], sd.UNKNOWN)
+        self.assertIn("同じ起動ではない (版が変わった", other[4])
+        self.assertEqual(self.probes_row(0)[3], sd.UNKNOWN)  # 回数はあるのに時刻が無い
+        self.assertIn("`request_probe_at`", self.probes_row(0)[4])
+
+    # --- 印字と、古い定義を変えていないこと
+
+    def test_the_markdown_names_the_phase21_parts(self):
+        with written(slow=conn_profile(150_000)) as p:
+            md = run([A, B, "--no-dns", "--criteria", "phase21", "--profile-before", p["slow"]])
+            js = json.loads(run([A, B, "--no-dns", "--criteria", "phase21", "--profile-before",
+                                 p["slow"], "--out", "json"]))
+        self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase21`)", md)
+        self.assertIn("phase20 と同じ並びの 10 行", md)
+        self.assertNotIn("**メモリのキャッシュ (`memory.cache_memory`) を引いてから**", md)
+        self.assertIn("| **参考** |", md)
+        self.assertIn("(ほかに表示だけ 4 行・参考 1 行。集計に数えない)", md)
+        self.assertEqual((js["criteria"]["display_only"], js["criteria"]["reference"]), (4, 1))
+        # 成功した接続だけの行は phase20 と同じく出る (`FROZEN` ではない)
+        self.assertIn("成功した接続だけ", md)
+        self.assertNotIn("phase21", sd.FROZEN)
+
+    def test_the_older_criteria_do_not_mention_reference(self):
+        with written(slow=conn_profile(150_000)) as p:
+            for name in ("phase14", "phase15", "phase17", "phase18", "phase20"):
+                md = run([A, B, "--no-dns", "--criteria", name, "--profile-before", p["slow"]])
+                self.assertNotIn("参考 1 行", md, name)
+                self.assertNotIn("| **参考** |", md, name)
+                self.assertNotIn("reference", build([A, B, "--no-dns", "--criteria", name,
+                                                     "--profile-before", p["slow"]])["criteria"], name)
+
+    def test_zero_is_used_by_phase21_too(self):
+        with written(z=cached(zero_snapshot(), 0)) as p:
+            with_zero = run([A, B, "--no-dns", "--criteria", "phase21", "--zero", p["z"]])
+        self.assertNotEqual(with_zero, run([A, B, "--no-dns", "--criteria", "phase21"]))
+
+
+TOKYO = os.path.join(DEPLOYED, "tokyo")
+
+
+@unittest.skipUnless(all(os.path.isfile(os.path.join(TOKYO, f)) for f in (
+    "2026-10-08T104352Z-snapshot.json", "2026-10-08T104352Z-profile_res_60.json",
+    "2026-10-08T104507Z-snapshot.json", "2026-10-15T185514Z-snapshot.json",
+    "2026-10-15T185514Z-daily.json", "2026-10-15T185514Z-profile_res_60.json")),
+    "デプロイ先の雪像が無い (リポジトリには入れない)")
+class Deployed21(unittest.TestCase):
+    """T21.2 の受け入れ基準: tokyo の 2026-10-08 → 2026-10-15 + 0 時間の雪像 (T20.99 の 3 枚) の phase21。"""
+
+    def setUp(self):
+        def at(name):
+            return os.path.join(TOKYO, name)
+        self.argv = [at("2026-10-08T104352Z-snapshot.json"), at("2026-10-15T185514Z-snapshot.json"),
+                     "--no-dns", "--daily", at("2026-10-15T185514Z-daily.json"),
+                     "--profile", at("2026-10-15T185514Z-profile_res_60.json"),
+                     "--profile-before", at("2026-10-08T104352Z-profile_res_60.json"),
+                     "--zero", at("2026-10-08T104507Z-snapshot.json")]
+
+    def test_phase20_is_what_t2099_wrote(self):
+        c = build(self.argv + ["--criteria", "phase20"])["criteria"]
+        self.assertEqual(c["tally"], {sd.MET: 4, sd.MISSED: 3, sd.UNKNOWN: 0})
+
+    def test_phase21_has_no_missed_row(self):
+        c = build(self.argv + ["--criteria", "phase21"])["criteria"]
+        rows = c["rows"]
+        self.assertEqual(c["tally"], {sd.MET: 5, sd.MISSED: 0, sd.UNKNOWN: 0})
+        self.assertEqual((c["display_only"], c["reference"]), (4, 1))
+        self.assertIn("**0.12** 回/接続、日ごとの幅 0.05〜0.24", rows[2][2])
+        self.assertIn("`cold` 408、`expired` 631", rows[2][2])
+        self.assertEqual(rows[4][3], sd.REFERENCE)
+        self.assertIn("**2.72** 倍 (234 → 638 us/要求)", rows[4][2])
+        self.assertIn("前は 1.3 時間 (78 標本) で", rows[4][4])
+        self.assertEqual(rows[9][3], sd.MET)
+        self.assertIn("0 時間の雪像から 2.4 時間後 = **起動直後の 3 回は", rows[9][2])
+        self.assertIn("**+3.1** MB", rows[8][2])
 
 
 if __name__ == "__main__":
