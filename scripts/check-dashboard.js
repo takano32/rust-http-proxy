@@ -8,7 +8,8 @@
 //   3. **`/status` を読む関数が実出力で例外なく描けること** (名前解決の KPI、
 //      「悪いホスト」の表、直近の山。T13.3)
 //   4. **個票 (`/errors` `/connections`) を読む関数**が、形の違う入力でも落ちないこと
-//      (作り置きは架空のホスト名。T13.4)
+//      (作り置きは架空のホスト名。T13.4)。`/errors` のまとめた行 (`repeats` > 1。T20.3) は
+//      「最近のエラー」の行に `×N` と最後の時刻が出ること (T21.5)
 //   5. **`/history` の `closed` (閉じた接続の分布) と `/bursts` の写真**が読めること
 //      (区間の数・合計と件数の一致・並び。T14.6)
 //   6. **カーネルと cgroup の窓** (`/history` の `kernel`、`/status` の `kernel`) が読めること (T14.12)
@@ -71,6 +72,8 @@ const names = [
   'badHosts',
   'peak',
   'errorRows',
+  // 「最近のエラー」の 1 行の HTML (T21.5。まとめた行の ×N と最後の時刻)
+  'errorRowHtml',
   'connRows',
   // `/profile` を読む側 (T14.3)
   'toProfile',
@@ -332,6 +335,28 @@ if (api.errorRows({}, 20).length !== 0) fail('空でも例外なく 0 件のは�
 if (api.errorRows(null, 20).length !== 0) fail('null でも例外なく 0 件のはず');
 // 古い出力 (キーが無い) でも落ちない
 if (api.errorRows({ errors: [{}] }, 20)[0].cause !== '') fail('無いキーは空文字のはず');
+// まとめた行 (T20.3 の `repeats` / `last_at`) は「最近のエラー」の行に ×N と最後の時刻を出す (T21.5)。
+// `repeats` の無い版と `repeats` 1 の行は今までどおり (×N も「〜」も出さない)
+const repJson = {
+  errors: [
+    { at: 1789251400, kind: 'connect', target: 'c.example.net:443', cause: 'refused', dns_ms: 0, connect_ms: 1, status: 502, client: '198.51.100.7', repeats: 115, last_at: 1789597000 },
+    { at: 1789251300, kind: 'connect', target: 'd.example.net:443', cause: 'timeout', dns_ms: 0, connect_ms: 10000, status: 504, client: '198.51.100.7', repeats: 1, last_at: 1789251300 },
+  ],
+};
+const [rep, one] = api.errorRows(repJson, 20);
+if (rep.repeats !== 115 || rep.last_at !== 1789597000) fail('repeats / last_at が読めていない: ' + JSON.stringify(rep));
+if (errRows[0].repeats !== 1 || errRows[0].last_at !== null) fail('repeats の無い版は 1 回 / last_at null のはず');
+const repHtml = api.errorRowHtml(rep);
+if (repHtml.indexOf('×115') < 0) fail('まとめた行に ×N が出ていない: ' + repHtml);
+const lastShown = new Date(1789597000 * 1000).toLocaleTimeString();
+if (repHtml.indexOf('〜' + lastShown) < 0) fail('まとめた行に最後の時刻が出ていない: ' + repHtml);
+if (repHtml.indexOf(new Date(1789251400 * 1000).toLocaleTimeString()) < 0) fail('最初の時刻が消えた');
+for (const [what, row] of [['repeats の無い版', errRows[0]], ['repeats 1 の行', one]]) {
+  const h = api.errorRowHtml(row);
+  if (h.indexOf('×') >= 0 || h.indexOf('〜') >= 0) fail(what + 'に ×N か「〜」が出た: ' + h);
+  if ((h.match(/<td/g) || []).length !== 8) fail(what + 'の列が 8 つでない');
+}
+if ((repHtml.match(/<td/g) || []).length !== 8) fail('まとめた行の列が 8 つでない');
 
 const connJson = {
   connections: [
@@ -1380,7 +1405,9 @@ console.log(
     bad.length +
     ' 件。個票 (/errors ' +
     errRows.length +
-    ' 件、/connections ' +
+    ' 件。まとめた行は ×' +
+    rep.repeats +
+    ' と最後の時刻を出す (T21.5)、/connections ' +
     conn.rows.length +
     ' 本) も読めた。閉じた接続の分布 ' +
     closedWindows +
