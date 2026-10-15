@@ -2140,6 +2140,11 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 責務ごとの層に分けてあります (41 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
 全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
 
+**クレートの版の決まり** (2026-10-15、T21.1): 各クレートの `version` は**そのクレートの中身が最後に変わったリリース (`v*` のタグ) の版**です
+(例: `proxy-sys` は `v0.17.21` から変わっていないので `0.17.21`)。リリースの直前に、前のタグから中身が変わったクレートだけを本体と同じ版に上げます。
+本体 (`rust-http-proxy`) と `proxy-server` は常に同じ版 (`-V` の版は `proxy-server` の `build.rs` が作る) で、本体の版はタグの名前と同じです (`v0.20.0` ↔ `0.20.0`)。
+「中身が変わった」は `crates/<名前>/` の差分から `Cargo.toml` の `version` の 1 行を除いたもので、`scripts/crate-versions.py --list` が数えます (下の「運用」の 0)。
+
 | クレート | 責務 |
 |---|---|
 | `proxy-sys` | Linux のシステムコールを直接叩く薄い層 (`poll`/`epoll`/`splice`/`pipe2`/`recv`) とシグナル |
@@ -2902,6 +2907,16 @@ TTL を過ぎた / `warm_stale` = **warm なのにミスした** = 裏の引き�
 
 新しい版を置いたあと**いつ何を見ればよいか**を 1 か所にまとめたものです。
 数字の出どころと期待値は `TODO.md` の「再デプロイの手引き」にあります。
+
+### 0. リリース (`v*` のタグを打つ前)
+
+```bash
+scripts/crate-versions.py --list            # 前のタグから中身が変わったクレート (「次の --bump で上がる」)
+scripts/crate-versions.py --bump 0.21.0     # それと本体・proxy-server の version を上げ、Cargo.lock の該当の行も直す
+scripts/crate-versions.py --check; echo "exit=$?"   # 0 なら決まりに合う。コミットしてから v0.21.0 を打つ
+```
+
+`release.yml` もビルドの前に同じ `--check` を回し、合わなければ名前と理由を出して落ちます (タグの上なので、本体の版がタグと同じかも見ます)。
 
 ### 1. 置く前 (`--check`)
 
