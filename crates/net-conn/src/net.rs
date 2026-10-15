@@ -341,14 +341,35 @@ pub fn connect_with(
     timeout: Duration,
 ) -> io::Result<TcpStream> {
     let (host, port) = split_host_port_ref(addr_str);
-    // 解決と一緒に「最後に勝った族」も受け取る (表を引くのは 1 回だけ。T12.1)
-    let (addrs, preferred) = match resolved
-        .zip(port)
-        .and_then(|(r, p)| r.socket_addrs_for(host, p).map(|a| (a, r.preferred())))
-    {
-        Some(pair) => pair,
-        None => crate::dns::resolve_with_pref(addr_str)?,
+    // 解決と一緒に「最後に勝った族」と「serve-stale の古い答えか」(T21.3) も受け取る
+    // (表を引くのは 1 回だけ。T12.1)
+    let (addrs, preferred, stale) = match resolved.zip(port).and_then(|(r, p)| {
+        r.socket_addrs_for(host, p)
+            .map(|a| (a, r.preferred(), r.is_stale()))
+    }) {
+        Some(triple) => triple,
+        None => crate::dns::resolve_with_pref_marked(addr_str)?,
     };
+    // 古い答えのときだけ、繋げなかったときに比べる元の番地を控える (T21.3。普通の回は
+    // 確保もしない)
+    let old: Option<Vec<IpAddr>> = stale.then(|| addrs.iter().map(|a| a.ip()).collect());
+    let result = connect_addrs(host, addrs, preferred, timeout);
+    match (old, port) {
+        (Some(old), Some(port)) => match result {
+            Err(e) if stale_retryable(&e) => retry_after_stale(host, port, &old, e, timeout),
+            r => r,
+        },
+        _ => result,
+    }
+}
+
+/// IPv6 を切っていれば IPv4 だけにして、候補列に繋ぐ ([`connect_with`] の本体)。
+fn connect_addrs(
+    host: &str,
+    addrs: Vec<SocketAddr>,
+    preferred: Option<bool>,
+    timeout: Duration,
+) -> io::Result<TcpStream> {
     let ipv6 = ipv6_enabled();
     let addrs: Vec<SocketAddr> = if ipv6 {
         addrs
@@ -366,6 +387,43 @@ pub fn connect_with(
         ));
     }
     connect_candidates(host, addrs, preferred, timeout)
+}
+
+/// 古い答え (serve-stale) で繋げなかったとき、引き直す価値のある失敗か (T21.3)。
+///
+/// `refused` / `unreachable` / `timeout` (`ErrCause::from_io` と同じ分け方) は「その番地にもう
+/// 相手が居ない」ことがありうる。`reset` や TLS などは繋がったあとの話なので引き直さない。
+fn stale_retryable(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::NetworkUnreachable
+            | io::ErrorKind::HostUnreachable
+            | io::ErrorKind::AddrNotAvailable
+            | io::ErrorKind::TimedOut
+    )
+}
+
+/// 古い答えで繋げなかったので、1 回だけ引き直して、**番地が変わっていれば** 1 回だけ繋ぎ直す (T21.3)。
+/// 番地が同じ・引けなかったときは元のエラー `first` を返す。繋ぎ直しの締め切りは元と同じ `timeout`。
+fn retry_after_stale(
+    host: &str,
+    port: u16,
+    old: &[IpAddr],
+    first: io::Error,
+    timeout: Duration,
+) -> io::Result<TcpStream> {
+    let Some((ips, preferred)) = crate::dns::relookup_after_stale(host, port, old) else {
+        return Err(first);
+    };
+    log_debug!(
+        None,
+        "stale DNS answer for {} failed ({}); retrying with the new answer",
+        host,
+        first
+    );
+    let addrs = ips.iter().map(|&ip| SocketAddr::new(ip, port)).collect();
+    connect_addrs(host, addrs, preferred, timeout)
 }
 
 /// 解決済みのアドレス列に Happy Eyeballs で接続する (`host` はホストごとの記憶の鍵。空なら覚えない)。

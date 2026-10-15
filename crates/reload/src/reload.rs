@@ -6,7 +6,7 @@
 //!
 //! 即時反映できるのは接続単位で参照する値だけ: ACL (`PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS`)、
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
-//! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、`PROXY_CANARY`、`PROXY_CANARY_SECS`、
+//! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、`PROXY_DNS_STALE_SECS`、`PROXY_CANARY`、`PROXY_CANARY_SECS`、
 //! `PROXY_CANARY_IPV6`、`PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
 //! `PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`、`PROXY_TRACE_CLIENT`、`PROXY_TCP_KEEPALIVE`、
 //! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
@@ -222,6 +222,13 @@ impl Live {
             next.sources.adopt(&fresh.sources, "PROXY_DNS_WARM_SECS");
             crate::dns::set_warm_window(fresh.dns_warm);
             applied.push("PROXY_DNS_WARM_SECS");
+        }
+        // serve-stale の窓も長さを変えるだけ (表は捨てない。次の参照から効く。T21.3)
+        if fresh.dns_stale != old.dns_stale {
+            next.dns_stale = fresh.dns_stale;
+            next.sources.adopt(&fresh.sources, "PROXY_DNS_STALE_SECS");
+            crate::dns::set_serve_stale(fresh.dns_stale);
+            applied.push("PROXY_DNS_STALE_SECS");
         }
         // canary の宛先と周期 (T14.10) と IPv6 側 (T14.37)。`canary` スレッドは
         // 次の周期から新しい宛先を使う

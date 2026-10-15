@@ -241,10 +241,14 @@ pub fn resolve_target(host_or_addr: &str) -> (bool, Option<Resolved<'_>>) {
         // 自己ベンチ (T14.43) の相手役だけは `PROXY_ALLOW_LOCAL=off` でも通す (3 秒だけ)
         return (is_local_ip(ip) && !is_self_bench_target(ip, port), None);
     }
-    match crate::dns::resolve_host(host, port.unwrap_or(80)) {
-        Ok((addrs, preferred)) => {
+    match crate::dns::resolve_host_marked(host, port.unwrap_or(80)) {
+        Ok((addrs, preferred, stale)) => {
             let local = addrs.iter().any(|&ip| is_local_ip(ip));
-            (local, Some(Resolved::new(host, addrs, preferred)))
+            // serve-stale の古い答えなら印を運ぶ (接続側が繋げなかったときに引き直す。T21.3)
+            (
+                local,
+                Some(Resolved::new(host, addrs, preferred).with_stale(stale)),
+            )
         }
         // 解決できないときだけ名前で見る (リゾルバが壊れていても localhost は止める)
         Err(_) => (host.eq_ignore_ascii_case("localhost"), None),
