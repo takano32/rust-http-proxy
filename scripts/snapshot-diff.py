@@ -6,7 +6,7 @@
 # 出力は Markdown なので `TODO.md` にそのまま貼れる。
 #
 # 使い方:
-#   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase20]
+#   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase21]
 #                            [--out md|json] [--top N] [--burst N] [--major-hosts a,b,c]
 #                            [--group domain] [--daily FILE]
 #                            [--profile FILE] [--profile-before FILE]
@@ -36,7 +36,7 @@
 #   6. その間の出来事 (`/events`。無い版では飛ばす)
 #   7. エラーの原因別の件数 (`/hosts` の `errors_by_cause` の差分と `/errors` の個票)
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
-#   9. `--criteria phase14|phase15|phase17|phase18|phase20` で **Phase の完了の定義に対する判定表**
+#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
 #      (**判定の部は `scripts/snapshot_criteria.py`**。T20.1 で割った)
 #      (T15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
@@ -44,6 +44,9 @@
 #      `heap_used + mmap` の増え + `ipv6.request_probes` の 10 行。
 #      phase20 (T20.1) は同じ 10 行の物差しを直したもの: `heap_used + mmap` から
 #      `cache_memory` を引き、ミス率・`timeout`・`dns_warm` の最大の 3 行は表示だけ (集計に数えない)。
+#      phase21 (T21.2) は phase20 の 10 行のうち 3 行の読み方を直したもの: 平常時のミスは表示だけ
+#      (日ごとの幅と `cold` / `expired` の内訳)、conn 役の CPU/要求 は前か後の `/profile` が 12 時間に
+#      満たなければ「参考」(集計に数えない)、`ipv6.request_probes` は 0 時間の雪像から 3 時間以内なら満たす。
 #      `--daily-snapshots DIR` を足すと、`DIR` の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち
 #      後の雪像と同じ版のものを時刻順に並べた `memory` と `ipv6.attempts` の表が判定表の下に付く
 #
@@ -103,6 +106,8 @@ from snapshot_criteria import (  # noqa: E402,F401
     PHASE17,
     PHASE18,
     PHASE20,
+    PHASE21,
+    REFERENCE,
     RULES,
     SHOWN,
     UNKNOWN,
@@ -126,6 +131,9 @@ from snapshot_criteria import (  # noqa: E402,F401
     _p20_timeout,
     _p20_warm_max,
     _p20_watch_host,
+    _p21_conn_per_request,
+    _p21_miss_band,
+    _p21_request_probes,
     anomaly_rates,
     cgroup_since_start,
     change,
@@ -137,6 +145,7 @@ from snapshot_criteria import (  # noqa: E402,F401
     memory_of,
     merged_history,
     minute_parts,
+    miss_kinds,
     miss_rate,
     ms,
     n,
@@ -146,6 +155,7 @@ from snapshot_criteria import (  # noqa: E402,F401
     profile_cost,
     profile_role_cores,
     profile_source,
+    profile_span,
     ratio,
     render_criteria,
     restart_info,
@@ -1207,7 +1217,8 @@ def parser():
                         "phase15 = T15.4 / T15.5 / T15.6 の 6 行。T15.15 で物差しを直した。"
                         "phase17 = T17.99 の 8 行、phase18 = phase17 の 8 行 + T18.0 の (g)(h) の "
                         "10 行、phase20 = phase18 の物差しを直した 10 行。`cache_memory` を引き、"
-                        "3 行は表示だけ。T20.1)")
+                        "3 行は表示だけ。T20.1。phase21 = phase20 のミスの行を表示だけ、conn 役の行を短い "
+                        "材料で参考、IPv6 の探りを起動直後なら満たすにした 10 行。T21.2)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst", type=int, default=BURST_PER_HOUR, metavar="N",
@@ -1224,8 +1235,8 @@ def parser():
     p.add_argument("--profile-before", metavar="FILE",
                    help="同じものを古い雪像に足す (前の CPU/要求 も `/profile?res=60` で比べる)")
     p.add_argument("--zero", metavar="FILE",
-                   help="0 時間の雪像 (再デプロイの直後に撮った 1 枚)。phase18 / phase20 の "
-                        "`heap_used + mmap` の増えの行の材料 (T18.2。無ければその行は「判定できず」)")
+                   help="0 時間の雪像 (再デプロイの直後に撮った 1 枚)。phase18 / phase20 / phase21 の "
+                        "`heap_used + mmap` の増えの行 (phase21 は IPv6 の探りの行も) の材料 (T18.2。無ければその行は「判定できず」)")
     p.add_argument("--daily-snapshots", metavar="DIR",
                    help="`DIR` の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち新しい雪像と同じ版の"
                         "ものを時刻順に並べ、`memory` と `ipv6.attempts` の表を判定表の下に出す (T18.2)")

@@ -609,7 +609,6 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 | keep-alive の HTTP 接続が `/connections` でバイト数を出さない (宛先は T14.2 (5) / T14.48 で済。`set_bytes` を呼ぶのはトンネルだけ) | T13.4、T17.20 の気づき | 要求ごとに書かない方針とどう両立させるかを先に決める |
 | `dashboard.html` が上限まで余り 247 B (81,673 / 81,920 B) | T15.0 単位 9 と全体チェック | 次にカードを足す前に、`scripts/check-dashboard.js` の上限を上げるか、古いカードの説明文を削る |
 | 「束縛してすぐ手放したポート」を死んだ宛先に使うテストが `crates/net-conn/src/net.rs` に 2 か所残っている (`a_deadline_reports_timed_out_not_the_first_refusal` の `closed`、`unseen_hosts…` の後半の `dead`。落ちた記録は無い) | T20.2 の気づき | 落ちたら `tests/proxy_test.rs` の `RefusedPort` (束縛したまま `listen` しない) を `tests/common/` か `net.rs` のテストへ持っていく |
-| `scripts/test_snapshot_diff.py` が 1,964 行 (目安の 2,000 行の手前) | T20.1 | 次にテストを足す前に、`Criteria*` のクラスを別ファイル (`test_snapshot_criteria.py`) へ割る |
 | ダッシュボードの「最近のエラー」は `/errors` の `at` (最初の 1 回) だけを出すので、まとめた行 (`repeats` > 1) が古い時刻の 1 行に見え、回数も出ない | T20.3 の気づき | `dashboard.html` の残り 247 B を先に空けてから、`last_at` と `×N` を出す |
 | `/history?summary=1&since=restart` が起動直後に 8 回に 1 回、`connects` を返さなかった (結合テスト `tests/failed_connect_test.rs` を書く途中で。標本の行には同じ数字がある) | T20.4 の気づき | 原因を先に見る (起動直後の `since=restart` の境目と標本の時刻)。`collect-deployed.sh` の「0 時間」の雪像で踏みうる |
 | 本文付きの要求 (POST など) がプールのオリジン接続に乗り、相手がちょうど閉じたときは 502 (送り直すのは本文の無い GET / HEAD だけ。`crates/http/src/http/mod.rs` の `retryable`)。決まりどおりで、実機で出た記録は無い | T18.4 | 実機の `/errors` に POST の 502 が出たら、要求の経路の判断として決める |
@@ -1443,6 +1442,8 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
 | T21.3 | 21b (21a と並べて先に出す。触る所が別) | t213 | `crates/net-dns/src/dns.rs`、名前解決の結果で繋ぐ所 (`net-conn` の `connect_resolved` の呼び出し元。読んで決める)、`scripts/dns-replay.py`、README の名前解決の節と環境変数の表 |
 | T21.4 | 21b | t214 | `/history?summary=1` を組み立てる所 (`crates/metrics-window` か `crates/endpoints`。読んで決める)、`tests/` |
 | T21.5 | 21b | t215 | `crates/web/src/dashboard.html`、`scripts/check-dashboard.js` |
+| T21.6 | 21b | t216 | `scripts/crate-versions.py` とそのテスト、全クレートの `Cargo.toml` の version の行と `Cargo.lock`、README の「クレート構成」と「運用」の 0 |
+| T21.7 | 21c (T21.4 のあと) | t217 | `crates/net-dns/src/dns.rs` を割る (割るだけ) |
 
 - [x] **T21.1 クレートの版の決まり (各クレートの版 = 中身が最後に変わったリリースの版)**
   - 目的: 本体と `proxy-server` 以外の 39 クレートが全部 `0.1.0` のままで、版から何も読めない。利用者の提案 (2026-10-15): クレートごとにユニークになる決まりを付ける。
@@ -1460,7 +1461,7 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
   - 結果 (2026-10-15、`cdf51af` / `ee231bd` / `af101c7` / `007c97c`、取り込み `18a8f8b`): `scripts/crate-versions.py` (標準ライブラリだけ。`--list` / `--check [--since TAG]` / `--bump VERSION [--since TAG]`、`-C DIR`) を足し、`--list` で数えた値で最初の割り当てを入れた。v0.20.0 は 7 個 (`endpoints` `metrics` `metrics-core` `metrics-recent` `metrics-slo` `net-conn` `prom`)、v0.18.0 は 4 個 (`base` `metrics-profile` `metrics-types` `metrics-watch`)、v0.17.21 は 29 個。本体と `proxy-server` は 0.20.0 のまま。本文の 8 個との違いは `proxy-server` だけで、v0.18.0 → v0.20.0 の差分が版の行だけなので「最後に変わった」のは v0.18.0。ただし決まり 3 で 0.20.0 になり、入れた値は本文と同じ。`Cargo.lock` は該当の 40 行だけを書き換えた (`cargo build --release` の前後で同じ)。`--check` は割り当ての前が 1 (落ちるのは本文の 41 ではなく 40 クレート。`proxy-server` は前から合っている。「39 クレート」も実際は 40)、あとが 0。一時のコピーで回した `--bump 0.21.0` は本体と `proxy-server` だけを上げた。`release.yml` は `fetch-depth: 0` にして、ビルドの前に `--check` を回す。README は「クレート構成」に決まりを 4 行、「運用」に「0. リリース」を足した。テストは `scripts/test_crate_versions.py` の 11 本で、`unittest discover` は 368 本 OK (skipped 10)。`check-docs.sh` は差分 0。`-V` は `rust-http-proxy 0.20.0+007c97c`。版の文字列を見る `proxy_test` の 1 本と `reload_test` の 2 本は通過。本体のコードは変えていない。前のタグから変わったのにまだ上げていないクレートは `--check` を落とさない (上げたあとは本体と同じ版であること)。「前のタグから変わった」は作業ツリーと比べる (コミット前の `--bump` を `--check` で確かめられるように)。
     親の注記: `ci.yml` の `check` ジョブにも `--check` を足した (`fetch-depth: 0`)。タグの上でない push では上げ忘れは落とさず、本体と `proxy-server` のずれ・上げた版の食い違いだけを落とす。release.yml だけだと、外れに気づくのがタグを打ったときになるため。
 
-- [ ] **T21.2 判定表の手直し (`--criteria phase21`) と、テストのファイルを割る**
+- [x] **T21.2 判定表の手直し (`--criteria phase21`) と、テストのファイルを割る**
   - 目的: T20.99 の届かずの 3 行。(1) 平常時の名前解決のミス (0.12、閾 0.09) は宛先の数 (395 名前) で動く使われ方の数字。(2) conn 役の CPU/要求の「前」が起動 1.3 時間・要求 256 本しか無く、2.72 倍と出た (前提に「参考」と書いた行が「届かず」に数えられた)。
     (3) `ipv6.request_probes` 3 回は、canary が IPv6 を見ていなかった起動直後 2.4 時間のぶん。`scripts/test_snapshot_diff.py` は 1,964 行で、足す前に割る (既知の小物の表)。
   - やること: (0) **割る**: `test_snapshot_diff.py` から `Criteria*` / `Deployed*` の判定表のクラスを新しい `scripts/test_snapshot_criteria.py` へ移す (割るだけのコミットを先に。本数は前後で同じ)。
@@ -1469,8 +1470,12 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
     (2) `collect-deployed.sh` の `CRITERIA` の既定を `phase21` にする (`--zero` / `--daily-snapshots` を渡す条件にも足す)。
   - 受け入れ基準: 割るだけのコミットの前後で `python3 -m unittest discover -s scripts` の本数が同じ。実データ `status/tokyo/2026-10-08T104352Z` → `2026-10-15T185514Z` + `--zero status/tokyo/2026-10-08T104507Z-snapshot.json` (`--daily` `--profile` `--profile-before` つき) の phase21 で「届かず」0
     (満たした 5 行前後、表示だけ 4、参考 1)。nagoya の `status/2026-10-01T133549Z` → `2026-10-08T092521Z` でも phase21 が出る。phase14〜20 の出力は testdata と実データで前後 `cmp` 同一。どのファイルも 2,000 行未満。`check-docs.sh` 差分 0。**デプロイ先には触らない**。
+  - 結果 (2026-10-15、`c7b66fd` / `c48d5c8` / `b4a34dd`、取り込み `9866f3e`): (0) `test_snapshot_diff.py` の判定表のクラス (`Criteria` / `Criteria15` / `Criteria17` / `Deployed17` / `Criteria18` / `Deployed18` / `Criteria20` / `Deployed20`) と `DailySnapshots`、それだけが使う小物を `scripts/test_snapshot_criteria.py` へ割った (割るだけのコミット。T14.17 の `Deployed` は差分のテストなので残した)。`test_snapshot_diff.py` 1,964 → 954 行、本数は前後とも 357。
+    (1) `--criteria phase21` = phase20 と同じ並びの 10 行: 平常時のミスは**表示だけ** (日ごとの幅と `misses_by_kind` の内訳を並べる)。conn 役の CPU/要求 は前か後の `/profile` が 12 時間 (標本 × 間隔) に満たなければ新しい判定**「参考」** (倍率は出し、集計に数えない)。`ipv6.request_probes` は 0 でなければ `request_probe_at` が `--zero` の取得から 3 時間以内なら「満たした」、後なら「届かず」。
+    (2) `collect-deployed.sh` の既定を `CRITERIA=phase21` にした。実データ tokyo (`2026-10-08T104352Z` → `2026-10-15T185514Z` + `--zero 104507Z`) で **満たした 5・届かず 0・判定できず 0 (表示だけ 4・参考 1)**、nagoya (`2026-10-01T133549Z` → `2026-10-08T092521Z`) で満たした 6・届かず 0 (表示だけ 4)。phase14〜phase20 と `--criteria` なしの出力は testdata・nagoya・tokyo (md と json、36 本) で前後 `cmp` 同一。
+    テストは `Criteria21` 17・`Deployed21` 2・`Deployed20` +1、scripts の unittest は取り込み後 388 本 OK、`check-docs.sh` 差分 0。`test_snapshot_criteria.py` 1,309 行、`snapshot_criteria.py` 1,159 行。`shellcheck` は CI で見る。
 
-- [ ] **T21.3 期限切れの名前解決の答えをすぐ使い、裏で引き直す (serve-stale)**
+- [x] **T21.3 期限切れの名前解決の答えをすぐ使い、裏で引き直す (serve-stale)**
   - 目的: tokyo の 176.2 時間 (§2 の 2026-10-15) で名前解決のミスは 1,052 回、うち **`expired` 631 回 (6 割)** = 前に引いた答えの TTL (60 秒) が切れていて、利用者が同期の引き直し (1 回 約 35 ms) を待った。接続 1 本あたり 4.2 ms で、平均の `wait` 22.7 ms の 2 割弱。
     いまの `STALE_MAX` (3,600 秒、`crates/net-dns/src/dns.rs:32`) は**引き直しが失敗したときだけ**古い答えを使う。RFC 8767 (serve-stale) のように、**期限切れでも一定の齢までは古い答えを返して繋ぎに行き、引き直しは裏で 1 回だけ**行えば、この待ちが消える。§4 に「測って採らなかった」記録は無い。
   - **段 1 (模型。先にやる)**: `scripts/dns-replay.py` に規則を 1 つ足す (`--serve-stale SECS`): 表の答えが TTL を過ぎていても齢が `SECS` 以内なら当たりとし、裏で 1 回引き直す。tokyo の雪像 (`status/tokyo/2026-10-15T185514Z-snapshot.json`) と nagoya の 2 枚 (`status/2026-10-08T092521Z`、`status/2026-10-01T133549Z`) で、
@@ -1482,6 +1487,32 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
     (4) README の名前解決の節と環境変数の表に 1 行ずつ。IP リテラル・負のキャッシュ・`PROXY_DNS_TTL_SECS=0` (キャッシュ無し) は今までどおり。
   - 受け入れ基準: 段 1 の表 (3 つの雪像 × 3 つの `SECS` + いまの規則)。段 2 に進んだら: 単体テスト (TTL 切れで齢が窓の中なら同期で引かずに返り、裏の引き直しが 1 回だけ頼まれる / 窓の外なら今までどおり同期で引く / 古い答えで `refused` のとき引き直して繋ぎ直す / 番地が同じなら繋ぎ直さない / `PROXY_DNS_STALE_SECS=0` で今までどおり)、
     結合テスト 1 本 (名前を引く関数を差し替えられるなら、答えを変えた名前へ古い答えで繋いで失敗→引き直しで成功)。`--lite` の費用は不変 (名前解決のキャッシュを使わない経路なら)。JSON は足すだけ。触ったクレートの clippy 警告 0。
+  - 結果 (2026-10-15、`ff1534f` / `8b2e4a9` / `bdb7a6b` / `c219a1d`、取り込み `06c2668`): **採った (既定 21,600 秒)**。`scripts/dns-replay.py` に `--serve-stale SECS` を足し、雪像 3 枚で、いまの規則と 3,600 / 21,600 / 86,400 秒を比べた。expired のミスは tokyo 10-15 (2.85 時間、到着 572 件) で 29 → 18 / 0 / 0、nagoya 10-08 で 47 → 22 / 4 / 0、10-01 で 24 → 19 / 7 / 0。引き直しの増えはどれも +1.0% 以内。3,600 秒は tokyo (62%) と 10-01 (79%) で目安に届かず、21,600 秒が 3 枚とも満たすいちばん短い窓だった (前から居た名前を置かない側でも満たす)。模型と実機のミス/到着は tokyo 0.110 対 0.101、10-08 0.083 対 0.074、10-01 0.047 対 0.038。
+    本体: `resolve_host` は TTL を過ぎて齢が `PROXY_DNS_STALE_SECS` (既定 21,600、0 で今までどおり) 未満の答えを同期で引かずに返し、裏の引き直しを 1 回だけ頼む (10 本同時でも 1 回)。覚えている失敗があれば今までどおり負のキャッシュの枝が先。古い答えには印を付けて `net::connect_with` (CONNECT と forward の共通の入口。**本文の `connect_resolved` は canary 専用で要求の経路に無かった**) まで運び、`refused` / `unreachable` / `timeout` のときは `relookup_after_stale` で 1 回だけ引き直す。番地が変わっていれば 1 回だけ繋ぎ直す (裏の引き直しが済んでいれば表の答えを使い、まだなら同期で引いて `expired` に数える)。当たりの経路で増えたのは bool 1 つと分岐だけ。canary は表を通らないので効かない。
+    `/status` の `dns` の末尾に `stale_hits` / `stale_retries` を足した (`stale_served` は変えない)。`PROXY_DNS_STALE_SECS` は `/config`・`--check`・`.env` の再読込で効く (config / reload / run / acl を表の外で触った)。テストは net-dns +7 (28 本。新しいファイル `dns_stale_tests.rs`)、net-conn +3 (18 本)、net +1、config の既定、`dns_test` +1 (localhost に古い答え 127.0.0.2 を置き、forward と CONNECT が refused → 引き直しで 200)、`test_dns_replay.py` +6 (19 本)。既存のテスト 7 本 (「期限切れはミス」を見る 6 本は serve-stale を 0 にして回す、`ends_with(warm_evicted)` → `contains`) の前提を直した。clippy 警告 0、`check-docs.sh` 差分 0。
+    **気づき**: (1) 引けなくなった名前は裏の失敗で `failed_at` を書かないので、要求のたびに裏の引き直しを頼む (同時に 1 本まで。約 2 秒の失敗が `dns-refresh` を占めて warm の引き直しを遅らせうる)。(2) `timeout` で繋ぎ直すと待ちは最悪で 2 倍 (既定 10 秒 × 2)。(3) **`dns.rs` は 2,292 行で 2,000 行の目安を超えた** (着手前から 2,105 行)。
+    親の判断: (1)(2) は T21.99 で `/status` の `stale_hits` / `stale_retries` と `refresh_late` を見てから決める。(3) は T21.7 で割る。
+
+- [ ] **T21.6 クレートの版を「最後に中身を変えたタスクの番号」にする (T21.1 の決まりを置き換える)**
+  - 目的: **利用者の提案 (2026-10-15)**: 「版は `Txx.y` の `xx` だけでなく `y` も使う」。T21.1 の決まり (中身が最後に変わったリリースの版) では、同じ Phase で変わったクレートが同じ版になり、どのタスクで変わったかは読めない。最初のタグ `v0.17.21` も T17.21 の番号だった。
+  - **決まり (親が細部を決めた。2026-10-15)**: (1) 各クレートの `version` は、**そのクレートの中身を最後に変えたタスクの番号** `0.<Phase>.<番号>` (T21.3 → `0.21.3`、T17.11 → `0.17.11`。英字の付くタスク (T17.0a) は英字を落とす)。
+    (2) **タスクの中で上げる**: 取り込む前に `scripts/crate-versions.py --task T21.3` を回すと、基準 (`--since REF`。既定は `main` との分かれ目 = `git merge-base HEAD main`) から中身が変わったクレートの版を `0.21.3` にする。親が取り込むときに上げ忘れを見つけたら、親がそのタスクの番号で上げる。
+    (3) **本体と `proxy-server` は、そのビルドに入っている最後のタスク** = 全クレートの版と、本体 (`src/`) を最後に変えたタスクの番号のうち最大。`proxy-server` は本体と同じ (`-V` の版の元)。(4) タグは本体の版 (`v0.21.4` など)。
+    「中身が変わった」は T21.1 と同じ (`crates/<名前>/` の下の差分のうち、`Cargo.toml` の `version = …` の 1 行を除いたもの)。
+  - **`--check` の決まり** (コミットの文面には頼らない。文面にタスク番号が無いコミットが多く、複数の番号が並ぶものもあるため): (a) 版の形が `0.P.T`。(b) `proxy-server` = 本体 = 全クレートの版の最大以上。
+    (c) **上げ忘れ**: 各クレートについて、`version` の行を最後に書き換えたコミットより後に中身が変わっていたら落とす (`git log` で `Cargo.toml` の version の行の最後の変更と、中身の最後の変更を比べる)。(d) タグの上なら本体の版 = タグ。
+    `ci.yml` と `release.yml` の `--check` はそのまま使う (中身が変わった)。
+  - **最初の割り当て** (親が `git log --no-merges` で各クレートの中身を最後に変えたコミットを見た案。**道具で数え直し、コミットの文面に番号が無いもの・複数あるものは TODO.md の「結果」のハッシュと突き合わせて決め、違ったら報告**):
+    T21.3 = `net-dns` `net-conn` `net` `config` `reload` `run` (T21.3 の差分で `crates/` の下が変わったもの。道具で確かめる)、T20.4 = `metrics-core` `prom` `metrics-slo`、T20.3 = `endpoints` `metrics` `metrics-recent`、T18.5 = `metrics-types`、T18.4 = `base` `metrics-profile`、T18.1 = `metrics-watch`、
+    T17.11 = 残りのうち 2026-09-26 の関門の書き換え (`chore: ビルドメモリの関門を 180 → 120 MB に下げる`) が最後のもの (20 前後)、T15.14 = `bench`、T15.12 = `selfbench`。本体と `proxy-server` は全部の最大 = `0.21.3` (この時点。T21.4 が本体を変えたら `0.21.4`)。
+  - やること: (1) `scripts/crate-versions.py` を上の決まりに書き換える (`--list` は今の版・中身を最後に変えたコミット・その版の行を最後に変えたコミット・合うか、を並べる。`--bump VERSION` は `--task TID` に置き換える。`-C DIR` は残す)。
+    (2) 最初の割り当てを入れる (`Cargo.toml` の version の行と `Cargo.lock` の該当の行だけ)。(3) README の「クレート構成」の決まりの 4 行と「運用」の「0. リリース」を書き直す。テスト (`scripts/test_crate_versions.py`) を新しい決まりに直す (一時の git リポジトリで: タスクの中で上げた / 上げ忘れ / 版の行だけ変わった / 本体と `proxy-server` のずれ / 本体が最大より小さい / タグの上)。
+  - 受け入れ基準: 割り当てのあとの main で `--check` が 0、割り当ての前 (T21.1 の決まりの版) で 1。一時のコピーで 1 つのクレートの中身を変えて `--check` が 1、`--task T21.9` のあと 0 (そのクレートと本体・`proxy-server` が `0.21.9`)。`cargo build --release` が通り `-V` が `0.21.3+<commit>` (か T21.4 のあとなら `0.21.4`)。`python3 -m unittest discover -s scripts` 全通過、`check-docs.sh` 差分 0。
+
+- [ ] **T21.7 `crates/net-dns/src/dns.rs` を割る (割るだけ)**
+  - 目的: T21.3 で 2,292 行になり、§0 の「1 ファイルは 2,000 行を目安」を超えた (着手前から 2,105 行)。
+  - やること: 責務で 2 つ以上のファイルに割る (たとえば keep-warm と裏の引き直し、serve-stale、表と数え方、`/status` の JSON)。**中身は 1 バイトも変えない** (関数の本体はそのまま移す。公開の名前と道は今までどおり)。
+  - 受け入れ基準: どのファイルも 2,000 行未満。`-p proxy-net-dns` のテストの本数が前後で同じで全部通る。clippy 警告 0。ビルドメモリの関門 (`scripts/build-memory.sh 120`) が通る。版は T21.6 の決まりで `0.21.7`。
 
 - [ ] **T21.4 `/history?summary=1&since=restart` が起動直後に `connects` を返さないことがある**
   - 目的: 既知の小物の表 (T20.4 の気づき)。結合テストを書く途中で 8 回に 1 回、起動直後の `?summary=1&since=restart` に `"connects":1,` が出なかった (標本の行には同じ数字がある)。`collect-deployed.sh` の「0 時間」の雪像で踏みうる。

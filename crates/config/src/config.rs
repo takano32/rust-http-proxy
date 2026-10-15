@@ -466,6 +466,11 @@ pub struct Config {
     /// TTL (60 秒) を熱さの物差しにすると、間隔が 2〜10 分のデプロイ先の主要ホストを
     /// 1 つも救えなかった (T14.1)
     pub dns_warm: Duration,
+    /// 期限切れの答えを同期で引かずに返してよい齢 (`PROXY_DNS_STALE_SECS`、0 で止める。T21.3)。
+    ///
+    /// この齢までは古い答えで繋ぎに行き、裏で 1 回引き直す (serve-stale、RFC 8767)。
+    /// 既定 21,600 秒は `scripts/dns-replay.py --serve-stale` の再生で決めた
+    pub dns_stale: Duration,
     /// canary (`PROXY_CANARY`、`auto` | `off` | `host1,host2`、既定 `auto`)。
     ///
     /// 利用者の要求が無い時間帯も名前解決と TCP 接続の時間を測るための宛先 (T14.10)。
@@ -883,6 +888,12 @@ impl Config {
             cfg.dns_warm = Duration::from_secs(secs);
             src.mark("PROXY_DNS_WARM_SECS");
         }
+        if let Some(secs) =
+            envfile::var("PROXY_DNS_STALE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.dns_stale = Duration::from_secs(secs);
+            src.mark("PROXY_DNS_STALE_SECS");
+        }
         if let Some(v) = envfile::var("PROXY_CANARY") {
             cfg.canary = v.trim().to_ascii_lowercase();
             src.mark("PROXY_CANARY");
@@ -1048,6 +1059,7 @@ impl Config {
         add("PROXY_DNS_TTL_SECS", secs(self.dns_ttl));
         add("PROXY_DNS_NEGATIVE_SECS", secs(self.dns_negative));
         add("PROXY_DNS_WARM_SECS", secs(self.dns_warm));
+        add("PROXY_DNS_STALE_SECS", secs(self.dns_stale));
         // canary (T14.10 / T14.37)。宛先の解釈は `proxy-metrics` の仕事だが、
         // `/config` と `--check` は「効いている設定を全部見る」ための口なので、
         // 文字列のまま 3 つとも出す (T14.57 の再デプロイの手引きで穴が見つかった)
@@ -1224,6 +1236,7 @@ impl Config {
             dns_ttl: Duration::from_secs(60),
             dns_negative: crate::dns::NEGATIVE,
             dns_warm: crate::dns::WARM,
+            dns_stale: crate::dns::SERVE_STALE,
             // 既定は `auto` = 直近 1 時間で最も使われた CONNECT の宛先を 60 秒に 1 回
             // (値の意味は `proxy-metrics` の `canary`。この層は文字列を運ぶだけ)
             canary: "auto".to_string(),
@@ -1672,6 +1685,8 @@ mod tests {
         assert_eq!(find("SERVER_PORT"), "9090");
         assert_eq!(find("PROXY_TIMEOUT_SECS"), "5");
         assert_eq!(find("PROXY_DNS_WARM_SECS"), "0");
+        // serve-stale の窓の既定 (T21.3)
+        assert_eq!(find("PROXY_DNS_STALE_SECS"), "21600");
         assert_eq!(find("PROXY_ALLOW_HOSTS"), "[\"*.example.com\"]");
         assert_eq!(find("PROXY_CONNECT_PORTS"), "\"443,8080-8099\"");
         assert_eq!(find("PROXY_PROFILE"), "\"lite\"");

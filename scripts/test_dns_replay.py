@@ -34,8 +34,8 @@ def read(path):
         return json.load(f)
 
 
-def run_table(rule, arrivals, end):
-    tb = dr.Table(dr.RULES[rule])
+def run_table(rule, arrivals, end, serve_stale=0):
+    tb = dr.Table(dr.RULES[rule], serve_stale=serve_stale)
     tb._warm_t = 0
     for t, h in arrivals:
         tb.lookup(h, t)
@@ -103,6 +103,31 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(len(tb.queue), dr.MAX_WARM)
         self.assertNotIn("n0", tb.queue)
 
+    def test_serve_stale_answers_an_expired_entry_inside_the_window(self):
+        # T21.3: 2 回目は齢 5,000 秒 (窓 3,600 秒の外なので warm にもならない)
+        arr = [(0, "a"), (5000, "a")]
+        cur = run_table("current", arr, 5000)
+        self.assertEqual(cur["misses_by_kind"]["expired"], 1)
+        self.assertEqual((cur["stale_hits"], cur["refresh_stale"]), (0, 0))
+        # 齢が窓の外なら今までどおり同期で引く (expired のミス)
+        short = run_table("current", arr, 5000, serve_stale=3600)
+        self.assertEqual(short["misses_by_kind"]["expired"], 1)
+        self.assertEqual(short["stale_hits"], 0)
+        # 窓の中なら古い答えで当たり、裏で 1 回だけ引き直す (ミスには数えない)
+        long = run_table("current", arr, 5000, serve_stale=21600)
+        self.assertEqual(long["misses"], 1)
+        self.assertEqual(long["misses_by_kind"]["expired"], 0)
+        self.assertEqual((long["stale_hits"], long["refresh_stale"], long["refreshes"]), (1, 1, 1))
+
+    def test_serve_stale_does_not_touch_answers_inside_the_ttl(self):
+        c = run_table("current", [(0, "a"), (30, "a")], 30, serve_stale=21600)
+        self.assertEqual((c["hits"], c["stale_hits"], c["refresh_stale"]), (1, 0, 0))
+
+    def test_serve_stale_refreshes_so_the_next_use_is_a_plain_hit(self):
+        # 5,000 秒で古い答え → 裏で引き直したので 5,030 秒は TTL 内の当たり
+        c = run_table("current", [(0, "a"), (5000, "a"), (5030, "a")], 5030, serve_stale=21600)
+        self.assertEqual((c["stale_hits"], c["hits"], c["misses"]), (1, 1, 1))
+
     def test_host_of(self):
         self.assertEqual(dr.host_of("connect://Chat.Example.Invalid:443"), "chat.example.invalid")
         self.assertEqual(dr.host_of("chat.example.invalid:443"), "chat.example.invalid")
@@ -154,6 +179,42 @@ class SnapshotTest(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             self.assertEqual(dr.main([SNAP, "--json", "--rule", "current"]), 0)
         self.assertEqual(list(json.loads(buf.getvalue())["rules"]), ["current"])
+
+    def test_serve_stale_on_the_fixture(self):
+        out = dr.run(read(SNAP), ["current"], stale=[3600, 86400])
+        cur = out["rules"]["current"]
+        s1, s2 = out["rules"]["stale_3600"], out["rules"]["stale_86400"]
+        self.assertEqual(cur["misses_by_kind"]["expired"], 3)
+        self.assertEqual((s1["misses_by_kind"]["expired"], s1["stale_hits"]), (1, 2))
+        self.assertEqual((s2["misses_by_kind"]["expired"], s2["stale_hits"]), (0, 3))
+        # 古い答えの数だけ裏の引き直しが増え、ミスは同じ数だけ減る
+        self.assertEqual(s2["refreshes"] - cur["refreshes"], 3)
+        self.assertEqual(cur["misses"] - s2["misses"], 3)
+        self.assertTrue(out["stale"]["3600"]["ok"])
+        self.assertAlmostEqual(out["stale"]["3600"]["expired_ratio"], 1 / 3)
+        self.assertEqual(out["stale_pick"], 3600)
+
+    def test_stale_verdict_needs_both_axes(self):
+        base = {"misses_by_kind": {"expired": 10}, "refreshes": 100}
+        self.assertTrue(dr.stale_verdict(base, {"misses_by_kind": {"expired": 5},
+                                                "refreshes": 110})["ok"])
+        self.assertFalse(dr.stale_verdict(base, {"misses_by_kind": {"expired": 6},
+                                                 "refreshes": 100})["ok"])
+        self.assertFalse(dr.stale_verdict(base, {"misses_by_kind": {"expired": 0},
+                                                 "refreshes": 111})["ok"])
+
+    def test_cli_serve_stale(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(dr.main([SNAP, "--rule", "no_idle", "--serve-stale", "3600"]), 0)
+        text = buf.getvalue()
+        # serve-stale は `current` と比べるので、`--rule` に無くても足す
+        self.assertIn("| current |", text)
+        self.assertIn("| stale_3600 |", text)
+        self.assertIn("目安を満たすいちばん短い窓: 3600 秒", text)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(dr.main([SNAP, "--serve-stale", "0"]), 2)
 
     def test_no_recent_is_an_error(self):
         with self.assertRaises(ValueError):

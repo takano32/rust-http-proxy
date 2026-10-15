@@ -241,10 +241,14 @@ pub fn resolve_target(host_or_addr: &str) -> (bool, Option<Resolved<'_>>) {
         // 自己ベンチ (T14.43) の相手役だけは `PROXY_ALLOW_LOCAL=off` でも通す (3 秒だけ)
         return (is_local_ip(ip) && !is_self_bench_target(ip, port), None);
     }
-    match crate::dns::resolve_host(host, port.unwrap_or(80)) {
-        Ok((addrs, preferred)) => {
+    match crate::dns::resolve_host_marked(host, port.unwrap_or(80)) {
+        Ok((addrs, preferred, stale)) => {
             let local = addrs.iter().any(|&ip| is_local_ip(ip));
-            (local, Some(Resolved::new(host, addrs, preferred)))
+            // serve-stale の古い答えなら印を運ぶ (接続側が繋げなかったときに引き直す。T21.3)
+            (
+                local,
+                Some(Resolved::new(host, addrs, preferred).with_stale(stale)),
+            )
         }
         // 解決できないときだけ名前で見る (リゾルバが壊れていても localhost は止める)
         Err(_) => (host.eq_ignore_ascii_case("localhost"), None),
@@ -496,6 +500,34 @@ mod local_tests {
             assert_eq!(lookups() - before, 2, "渡さないと 2 回 (ttl={:?})", ttl);
         }
         crate::dns::set_ttl(std::time::Duration::from_secs(60));
+        crate::dns::clear();
+    }
+
+    /// T21.3: 判定が serve-stale の古い答えを引いたら、接続へ渡す答えに印が付く
+    /// (接続側が繋げなかったときに引き直すため)。期限内の答えには付かない。
+    #[test]
+    fn the_resolved_answer_carries_the_stale_mark() {
+        let _resolve = crate::dns::RESOLVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let ttl = std::time::Duration::from_secs(60);
+        crate::dns::set_ttl(ttl);
+        crate::dns::set_serve_stale(crate::dns::SERVE_STALE);
+        crate::dns::clear();
+        let addr = std::net::IpAddr::from([192, 0, 2, 1]);
+        // 期限内 (齢 0) → 印なし。期限切れ (齢 120 秒) → 印あり
+        for (age, want) in [(0, false), (120, true)] {
+            crate::dns::put_answer_for_test(
+                "t213-acl.example",
+                &[addr],
+                std::time::Duration::from_secs(age),
+            );
+            let (local, resolved) = crate::acl::resolve_target("t213-acl.example:443");
+            assert!(!local);
+            let resolved = resolved.expect("答えが返る");
+            assert_eq!(resolved.addrs(), &[addr]);
+            assert_eq!(resolved.is_stale(), want, "齢 {} 秒", age);
+        }
         crate::dns::clear();
     }
 }
