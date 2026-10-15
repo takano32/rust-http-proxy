@@ -607,9 +607,7 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 | 既知の小物 | 出どころ | 何をするか |
 |---|---|---|
 | keep-alive の HTTP 接続が `/connections` でバイト数を出さない (宛先は T14.2 (5) / T14.48 で済。`set_bytes` を呼ぶのはトンネルだけ) | T13.4、T17.20 の気づき | 要求ごとに書かない方針とどう両立させるかを先に決める |
-| `dashboard.html` が上限まで余り 247 B (81,673 / 81,920 B) | T15.0 単位 9 と全体チェック | 次にカードを足す前に、`scripts/check-dashboard.js` の上限を上げるか、古いカードの説明文を削る |
 | 「束縛してすぐ手放したポート」を死んだ宛先に使うテストが `crates/net-conn/src/net.rs` に 2 か所残っている (`a_deadline_reports_timed_out_not_the_first_refusal` の `closed`、`unseen_hosts…` の後半の `dead`。落ちた記録は無い) | T20.2 の気づき | 落ちたら `tests/proxy_test.rs` の `RefusedPort` (束縛したまま `listen` しない) を `tests/common/` か `net.rs` のテストへ持っていく |
-| ダッシュボードの「最近のエラー」は `/errors` の `at` (最初の 1 回) だけを出すので、まとめた行 (`repeats` > 1) が古い時刻の 1 行に見え、回数も出ない | T20.3 の気づき | `dashboard.html` の残り 247 B を先に空けてから、`last_at` と `×N` を出す |
 | `crates/metrics-window/src/history.rs` の `summary::of` のコメント「窓は始まりの時刻 (t) で切る」は、5 秒の標本では区間の終わり (取った時刻) | T21.4 の気づき | 次にそのファイルを触るときにコメントを直す |
 | 手でプロキシを起動するとき `HOME` を一時ディレクトリへ向けると、同じシェルの `scripts/mx cargo` が rustup の既定を見失って何も回らない (出力が空) | T21.4 の気づき | 指示文の「$HOME に書かない」の所に「`RUSTUP_HOME` と `CARGO_HOME` は本物のまま」を足す |
 | 本文付きの要求 (POST など) がプールのオリジン接続に乗り、相手がちょうど閉じたときは 502 (送り直すのは本文の無い GET / HEAD だけ。`crates/http/src/http/mod.rs` の `retryable`)。決まりどおりで、実機で出た記録は無い | T18.4 | 実機の `/errors` に POST の 502 が出たら、要求の経路の判断として決める |
@@ -1524,11 +1522,14 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
     単体テスト 1 本を足し、既存の 1 本は引数を直した。`proxy-endpoints` 33 本、`history_summary_test` 3 本・`quantiles_test` 2 本・`schema_test` 3 本・`failed_connect_test` 1 本が通過し、clippy 警告 0。`/daily` と `/slo` は `?since=` を持たず、同じ境目は無い (`now − uptime` の形は `summary_params` の 1 か所だけだった)。
     気づき: (1) `history.rs` の `summary::of` のコメント「窓は始まりの時刻 (t) で切る」は 5 秒の標本では区間の終わり (取った時刻)。(2) プロキシ用に `HOME` を一時ディレクトリへ向けると `scripts/mx cargo` が rustup の既定を見失う (`RUSTUP_HOME` と `CARGO_HOME` を本物に向けて回した)。
 
-- [ ] **T21.5 ダッシュボードの「最近のエラー」に回数と最後の時刻を出す**
+- [x] **T21.5 ダッシュボードの「最近のエラー」に回数と最後の時刻を出す**
   - 目的: 既知の小物の表 (T20.3 の気づき)。「最近のエラー」は `/errors` の `at` (最初の 1 回) だけを出すので、まとめた行 (`repeats` > 1) が古い時刻の 1 行に見え、回数も出ない。`dashboard.html` は上限まで 247 B (81,673 / 81,920 B)。
   - やること: (1) 先に**空きを作る**: 説明の文の重複・長いコメントを削って 1 KiB 以上空ける (見た目と動きは変えない。`scripts/check-dashboard.js` の検査が全部通ること)。(2) 「最近のエラー」の行に、`repeats` > 1 のとき `×N` と `last_at` (最後の時刻) を出す。`repeats` の無い版は今までどおり。
     (3) `check-dashboard.js` に、`repeats` のある作り物の `/errors` で `×N` が出ることの検査を 1 つ足す。上限 (81,920 B) は変えない。
   - 受け入れ基準: `node scripts/check-dashboard.js` が通り、`dashboard.html` が上限より 768 B 以上小さい。`python3 -m unittest discover -s scripts` と `check-docs.sh` が通る。
+  - 結果 (2026-10-15、`0e332c1` / `1aed0b5` / `65daf59`、取り込み `a0983e1`): 先に、コードや画面の文言と重なっていたコメントだけを 11 か所削って空きを作り、`dashboard.html` は 81,673 → 80,142 B (-1,531 B) になった。表示される文言と title は変えていない。次に、「最近のエラー」で `/errors` の `repeats` が 1 より大きい行は、時刻の欄を「最初〜最後」(`at`〜`last_at`) にして `×N` の札を添えるようにした (title は日付つき)。`repeats` の無い版と 1 の行は前と同じ HTML のままで、**80,515 B (上限 81,920 B まで 1,405 B)**。行の組み立ては DOM に触らない `errorRowHtml` に出した。
+    `check-dashboard.js` には、repeats 115 の作り物の `/errors` で `×115`・最初の時刻・「〜最後の時刻」が出ること、`repeats` の無い版と 1 の行には出ないこと、どの行も 8 列であることを見る検査を足した (本体を壊すと落ちることを確かめた)。`check-dashboard.js` は OK 6、scripts の unittest は 394 本 OK、`check-docs.sh` は差分 0、`cargo build --release` は通り、`proxy_test` の dashboard の 1 本も通った。README は大きさの記述と「最近のエラー」の説明を直した。
+    気づき: 欄の時刻に日付は出ないので、何日も続いた行は title で読む。`check-dashboard.js` の冒頭のコメントは「見るのは 3 つだけ」と書きながら 17 項目を並べている。
 
 ## 付録 A. 計測の記録 (時系列)
 
