@@ -1547,7 +1547,10 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
   `cargo clean --release` からの `build-memory.sh 120` 通過、`-V` は `0.21.7+09b024f`。
 
 - [ ] **T21.99 締める (Phase 21 の版を 24 時間走らせたあとに見る・決める・書く)**
-  - 前提 (§0 の 9 の形。再デプロイしたら親が埋める): デプロイ先は `tokyo.sorahost.net:60357`。版 —、起動時刻 —、「前」の雪像 — (再デプロイの直前に `status/tokyo/` へ撮る)、「0 時間」の雪像 —。
+  - 前提 (§0 の 9 の形): デプロイ先は `tokyo.sorahost.net:60357`。版 **`0.21.7+1aca8e7`** (= タグ `v0.21.7` そのもの。利用者が打ち、`release.yml` は版の検査とビルド 2 つとも通過、x86_64 2,011,152 B / aarch64 1,822,528 B)、起動時刻 `2026-10-15T20:18:24Z` (`/events` の `start`。前の版の `shutdown` は 20:17:31)、
+    「前」の雪像 `status/tokyo/2026-10-15T201451Z-snapshot.json` (前の版 `0.20.0+d71bbdc`、起動から 177.5 時間、要求 11,116、**名前解決のミス 1,064 回 = `cold` 413・`expired` 638・`warm_stale` 12・`negative` 1**)、
+    「0 時間」の雪像 `status/tokyo/2026-10-15T201908Z-snapshot.json` (起動 44 秒後。`/healthz` ok、読み戻し ホスト 410、`/errors` 13 行 (読み戻し)、`dns` は `misses` 4 (`cold` 4)・`stale_hits` 0・`stale_retries` 0、`heap_used + mmap − cache_memory` 16.8 MB・RSS 29.3 MB・`rings_touched` true、
+    IPv6 は起動 20 秒で `v4_first` (3 連敗)・`probe_by` "canary")。**T21.4 の確かめ**: 起動 51 秒後の `/history?summary=1&since=restart&res=5` は `from` = 起動時刻 (20:18:24)・標本 11・`connects` 9 で、起動直後の標本が入っていた。「後」は 2026-10-16T20:19Z 以降に撮る。
   - 判定: `BEFORE=<前> ZERO=<0 時間> scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo` の `--criteria phase21` (T21.2)。完了の定義 (下書き): phase21 の「届かず」0。**T21.3 の効き目**: `misses_by_kind` の `expired` が前の版の 631 回 / 176 時間より大きく減り (模型では 0 近く)、
     `dns.stale_hits` が増え、`stale_retries` は `stale_hits` の 1% 未満。`refresh_late` が 0 のまま。T21.4: 「0 時間」の雪像の `?summary=1&since=restart` に起動直後の標本が入る。T21.5: ダッシュボードの「最近のエラー」に `×N` が出る (まとめた行があれば)。
 
