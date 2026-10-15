@@ -231,6 +231,7 @@ pub fn main() {
     proxy_server::dns::set_ttl(config.dns_ttl);
     proxy_server::dns::set_negative_ttl(config.dns_negative);
     proxy_server::dns::set_warm_window(config.dns_warm);
+    proxy_server::dns::set_serve_stale(config.dns_stale);
     // canary の宛先と周期 (T14.10)。実際に回すのは履歴スレッドの周期から (`--lite` と
     // `PROXY_STATS_PERSIST=off` では履歴スレッドが無いので canary も回らない)
     proxy_server::canary::configure(&config.canary, config.canary_secs, config.canary_ipv6);

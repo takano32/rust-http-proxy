@@ -354,3 +354,68 @@ fn the_miss_breakdown_shows_up_in_status_and_dns() {
     rust_http_proxy::dns::clear();
     rust_http_proxy::dns::set_warm_window(rust_http_proxy::dns::WARM);
 }
+
+/// serve-stale (T21.3): 答えが変わった名前へ**古い答え**で繋ぎに行って `refused` になっても、
+/// 引き直した答えで 1 回だけ繋ぎ直して成功する (forward と CONNECT の両方)。
+///
+/// 名前は `localhost` (本当の答えは 127.0.0.1 / ::1)。表には齢 120 秒の古い答え 127.0.0.2 を置く
+/// (オリジンは 127.0.0.1 だけで待ち受けるので、127.0.0.2 の同じポートは `refused`)。
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stale_answer_to_a_moved_name_is_retried_with_the_new_answer() {
+    use rust_http_proxy::dns;
+    let _guard = DNS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    dns::set_ttl(Duration::from_secs(60));
+    dns::set_serve_stale(dns::SERVE_STALE);
+    dns::clear();
+    let (origin, _origin) = start_mock_origin();
+    let proxy = start_test_proxy(proxy_config());
+    let gone = std::net::IpAddr::from([127, 0, 0, 2]);
+    let plant = || dns::put_answer_for_test("localhost", &[gone], Duration::from_secs(120));
+
+    // forward
+    plant();
+    let before = dns_status(proxy);
+    let res = get_via_proxy(
+        proxy,
+        &format!("http://localhost:{}/", origin),
+        &format!("localhost:{}", origin),
+    );
+    assert!(
+        res.starts_with("HTTP/1.1 200"),
+        "引き直した答えで繋がる: {}",
+        &res[..res.len().min(120)]
+    );
+    let after = dns_status(proxy);
+    assert_eq!(
+        status_number(&after, "stale_hits") - status_number(&before, "stale_hits"),
+        1,
+        "古い答えで 1 回繋ぎに行った"
+    );
+    assert_eq!(
+        status_number(&after, "stale_retries") - status_number(&before, "stale_retries"),
+        1,
+        "古い答えで失敗して 1 回引き直した"
+    );
+
+    // CONNECT (トンネル)
+    plant();
+    let before = dns_status(proxy);
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy)).unwrap();
+    stream
+        .write_all(format!("CONNECT localhost:{} HTTP/1.1\r\n\r\n", origin).as_bytes())
+        .unwrap();
+    let head = read_connect_response(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
+    drop(stream);
+    let after = dns_status(proxy);
+    assert_eq!(
+        status_number(&after, "stale_hits") - status_number(&before, "stale_hits"),
+        1
+    );
+    assert_eq!(
+        status_number(&after, "stale_retries") - status_number(&before, "stale_retries"),
+        1
+    );
+    dns::clear();
+}
