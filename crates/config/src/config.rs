@@ -1685,6 +1685,8 @@ mod tests {
         assert_eq!(find("SERVER_PORT"), "9090");
         assert_eq!(find("PROXY_TIMEOUT_SECS"), "5");
         assert_eq!(find("PROXY_DNS_WARM_SECS"), "0");
+        // serve-stale の窓の既定 (T21.3)
+        assert_eq!(find("PROXY_DNS_STALE_SECS"), "21600");
         assert_eq!(find("PROXY_ALLOW_HOSTS"), "[\"*.example.com\"]");
         assert_eq!(find("PROXY_CONNECT_PORTS"), "\"443,8080-8099\"");
         assert_eq!(find("PROXY_PROFILE"), "\"lite\"");

@@ -1361,6 +1361,11 @@ pub fn counters() -> [u64; 5] {
     ]
 }
 
+/// serve-stale (T21.3) の単体テスト。dns.rs が 2,000 行を超えているので別のファイルに置く。
+#[cfg(test)]
+#[path = "dns_stale_tests.rs"]
+mod stale_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

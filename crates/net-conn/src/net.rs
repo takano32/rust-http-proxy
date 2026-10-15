@@ -1497,4 +1497,118 @@ mod tests {
             io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
         ));
     }
+
+    /// `/status` の `dns.stale_retries` (T21.3)。
+    fn stale_retries() -> u64 {
+        let json = crate::dns::status_json();
+        let pat = "\"stale_retries\":";
+        let at = json.find(pat).expect("stale_retries") + pat.len();
+        json[at..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap()
+    }
+
+    /// 127.0.0.1 だけで待ち受け、受けた本数を数える相手。127.0.0.2 の同じポートへは
+    /// `ECONNREFUSED` が返る (Linux のループバックは 127/8 を全部受けるが、待ち受けは 127.0.0.1 だけ)。
+    #[cfg(target_os = "linux")]
+    fn counting_listener() -> (u16, std::sync::Arc<AtomicU64>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepted = std::sync::Arc::new(AtomicU64::new(0));
+        let seen = accepted.clone();
+        thread::spawn(move || {
+            for s in listener.incoming() {
+                if s.is_ok() {
+                    seen.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+        (port, accepted)
+    }
+
+    /// T21.3: serve-stale の古い答え (127.0.0.2) で `refused` になったら、引き直した答え
+    /// (表の新しい 127.0.0.1) で 1 回だけ繋ぎ直して成功する。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stale_answer_that_is_refused_is_relooked_up_and_retried() {
+        let _dns = crate::dns::RESOLVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _guard = IPV6_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dns::set_ttl(Duration::from_secs(60));
+        let (port, accepted) = counting_listener();
+        let host = "t213-moved.invalid";
+        // 裏の引き直しが済んだ姿 = 表には新しい答え
+        crate::dns::put_answer_for_test(host, &[IpAddr::from([127, 0, 0, 1])], Duration::ZERO);
+        let r = crate::dns::Resolved::new(host, vec![IpAddr::from([127, 0, 0, 2])], None)
+            .with_stale(true);
+        let t0 = stale_retries();
+        let stream = connect_with(&format!("{host}:{port}"), Some(&r), Duration::from_secs(5))
+            .expect("引き直した答えで繋がる");
+        assert_eq!(
+            stream.peer_addr().unwrap().ip(),
+            IpAddr::from([127, 0, 0, 1])
+        );
+        assert_eq!(stale_retries() - t0, 1, "引き直しは 1 回");
+        wait_until_accepted(&accepted, 1);
+        crate::dns::clear();
+    }
+
+    /// T21.3: 引き直しても番地が同じなら繋ぎ直さず、元の `refused` を返す。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stale_answer_is_not_retried_when_the_address_did_not_change() {
+        let _dns = crate::dns::RESOLVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dns::set_ttl(Duration::from_secs(60));
+        let (port, accepted) = counting_listener();
+        let host = "t213-same.invalid";
+        let gone = IpAddr::from([127, 0, 0, 2]);
+        crate::dns::put_answer_for_test(host, &[gone], Duration::ZERO);
+        let r = crate::dns::Resolved::new(host, vec![gone], None).with_stale(true);
+        let t0 = stale_retries();
+        let err =
+            connect_with(&format!("{host}:{port}"), Some(&r), Duration::from_secs(5)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused);
+        assert_eq!(stale_retries() - t0, 1, "引き直しはした");
+        assert_eq!(accepted.load(Ordering::Relaxed), 0);
+        crate::dns::clear();
+    }
+
+    /// T21.3: 古い答えでない (印が立っていない) 失敗は引き直さない (今までどおり)。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fresh_answer_that_is_refused_is_not_relooked_up() {
+        let _dns = crate::dns::RESOLVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dns::set_ttl(Duration::from_secs(60));
+        let (port, _accepted) = counting_listener();
+        let host = "t213-fresh.invalid";
+        crate::dns::put_answer_for_test(host, &[IpAddr::from([127, 0, 0, 1])], Duration::ZERO);
+        let r = crate::dns::Resolved::new(host, vec![IpAddr::from([127, 0, 0, 2])], None);
+        let t0 = stale_retries();
+        let err =
+            connect_with(&format!("{host}:{port}"), Some(&r), Duration::from_secs(5)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused);
+        assert_eq!(stale_retries(), t0, "引き直さない");
+        crate::dns::clear();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_until_accepted(accepted: &AtomicU64, want: u64) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while accepted.load(Ordering::Relaxed) < want {
+            assert!(
+                Instant::now() < deadline,
+                "accepted = {}",
+                accepted.load(Ordering::Relaxed)
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
