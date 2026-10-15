@@ -610,7 +610,8 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 | `dashboard.html` が上限まで余り 247 B (81,673 / 81,920 B) | T15.0 単位 9 と全体チェック | 次にカードを足す前に、`scripts/check-dashboard.js` の上限を上げるか、古いカードの説明文を削る |
 | 「束縛してすぐ手放したポート」を死んだ宛先に使うテストが `crates/net-conn/src/net.rs` に 2 か所残っている (`a_deadline_reports_timed_out_not_the_first_refusal` の `closed`、`unseen_hosts…` の後半の `dead`。落ちた記録は無い) | T20.2 の気づき | 落ちたら `tests/proxy_test.rs` の `RefusedPort` (束縛したまま `listen` しない) を `tests/common/` か `net.rs` のテストへ持っていく |
 | ダッシュボードの「最近のエラー」は `/errors` の `at` (最初の 1 回) だけを出すので、まとめた行 (`repeats` > 1) が古い時刻の 1 行に見え、回数も出ない | T20.3 の気づき | `dashboard.html` の残り 247 B を先に空けてから、`last_at` と `×N` を出す |
-| `/history?summary=1&since=restart` が起動直後に 8 回に 1 回、`connects` を返さなかった (結合テスト `tests/failed_connect_test.rs` を書く途中で。標本の行には同じ数字がある) | T20.4 の気づき | 原因を先に見る (起動直後の `since=restart` の境目と標本の時刻)。`collect-deployed.sh` の「0 時間」の雪像で踏みうる |
+| `crates/metrics-window/src/history.rs` の `summary::of` のコメント「窓は始まりの時刻 (t) で切る」は、5 秒の標本では区間の終わり (取った時刻) | T21.4 の気づき | 次にそのファイルを触るときにコメントを直す |
+| 手でプロキシを起動するとき `HOME` を一時ディレクトリへ向けると、同じシェルの `scripts/mx cargo` が rustup の既定を見失って何も回らない (出力が空) | T21.4 の気づき | 指示文の「$HOME に書かない」の所に「`RUSTUP_HOME` と `CARGO_HOME` は本物のまま」を足す |
 | 本文付きの要求 (POST など) がプールのオリジン接続に乗り、相手がちょうど閉じたときは 502 (送り直すのは本文の無い GET / HEAD だけ。`crates/http/src/http/mod.rs` の `retryable`)。決まりどおりで、実機で出た記録は無い | T18.4 | 実機の `/errors` に POST の 502 が出たら、要求の経路の判断として決める |
 | `warm_promote` が次の予定を「上げた時刻 + 45 秒」に置く (答えを引いた時刻ではない。齢 60〜75 秒が期限切れになりうる。実機の `warm_stale` の一部かも) | T17.5 の模型 | 予定を答えの齢から出す。`scripts/dns-replay.py` で先に数える |
 
@@ -1514,10 +1515,14 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
   - やること: 責務で 2 つ以上のファイルに割る (たとえば keep-warm と裏の引き直し、serve-stale、表と数え方、`/status` の JSON)。**中身は 1 バイトも変えない** (関数の本体はそのまま移す。公開の名前と道は今までどおり)。
   - 受け入れ基準: どのファイルも 2,000 行未満。`-p proxy-net-dns` のテストの本数が前後で同じで全部通る。clippy 警告 0。ビルドメモリの関門 (`scripts/build-memory.sh 120`) が通る。版は T21.6 の決まりで `0.21.7`。
 
-- [ ] **T21.4 `/history?summary=1&since=restart` が起動直後に `connects` を返さないことがある**
+- [x] **T21.4 `/history?summary=1&since=restart` が起動直後に `connects` を返さないことがある**
   - 目的: 既知の小物の表 (T20.4 の気づき)。結合テストを書く途中で 8 回に 1 回、起動直後の `?summary=1&since=restart` に `"connects":1,` が出なかった (標本の行には同じ数字がある)。`collect-deployed.sh` の「0 時間」の雪像で踏みうる。
   - やること: **原因を先に見る** (起動直後の `since=restart` の境目と標本の時刻、まだ閉じていない 5 秒の窓を `summary` が数えるか)。テストの側なら直し、本体の側なら直して、同じ形の境目が `?since=` の別の使い方 (`/daily`、`/slo`) に無いかも見る。
   - 受け入れ基準: 再現の手順と原因。直した後、起動直後に繋いで `?summary=1&since=restart` を引く結合テストを 50 回回して全部通る。JSON の鍵は変えない。
+  - 結果 (2026-10-15、`76de7e3` / `d4cc9f0`、取り込み `bc8c63d`): 原因は本体の側。`/history?summary=1&since=restart` の切り口を `now_epoch() − elapsed().as_secs()` (切り捨て同士の引き算) で出していたので、今の秒の端数が起動の端数より小さいと起動時刻が 1 秒遅く出て、起動と同じ秒に取った 5 秒の標本 (`t` は取った時刻の切り捨て) が外れ、`"connects":0` になっていた。T20.4 の「8 回に 1 回」は、標本 2 本ぶん待ってから引く形だったので踏みやすかった。
+    `crates/endpoints` の `now_and_start` で、今と起動時刻を 1 回の時計の読みから端数を残して引いてから切り捨てるようにした (`/status` の `since_start_secs` との差は ±1 秒のまま。JSON の鍵・要求の経路・`.rrd` は不変)。再現は結合テスト `test_integration_history_summary_since_restart_counts_a_connect_right_after_start` (周期 100 ms で起動してすぐ CONNECT 1 本、標本の秒を時計が越えた直後に引く) で、**直す前は 45 / 50 回落ち、直したあとは 50 / 50 通過**。
+    単体テスト 1 本を足し、既存の 1 本は引数を直した。`proxy-endpoints` 33 本、`history_summary_test` 3 本・`quantiles_test` 2 本・`schema_test` 3 本・`failed_connect_test` 1 本が通過し、clippy 警告 0。`/daily` と `/slo` は `?since=` を持たず、同じ境目は無い (`now − uptime` の形は `summary_params` の 1 か所だけだった)。
+    気づき: (1) `history.rs` の `summary::of` のコメント「窓は始まりの時刻 (t) で切る」は 5 秒の標本では区間の終わり (取った時刻)。(2) プロキシ用に `HOME` を一時ディレクトリへ向けると `scripts/mx cargo` が rustup の既定を見失う (`RUSTUP_HOME` と `CARGO_HOME` を本物に向けて回した)。
 
 - [ ] **T21.5 ダッシュボードの「最近のエラー」に回数と最後の時刻を出す**
   - 目的: 既知の小物の表 (T20.3 の気づき)。「最近のエラー」は `/errors` の `at` (最初の 1 回) だけを出すので、まとめた行 (`repeats` > 1) が古い時刻の 1 行に見え、回数も出ない。`dashboard.html` は上限まで 247 B (81,673 / 81,920 B)。
