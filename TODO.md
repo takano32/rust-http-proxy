@@ -609,7 +609,6 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
 | keep-alive の HTTP 接続が `/connections` でバイト数を出さない (宛先は T14.2 (5) / T14.48 で済。`set_bytes` を呼ぶのはトンネルだけ) | T13.4、T17.20 の気づき | 要求ごとに書かない方針とどう両立させるかを先に決める |
 | `dashboard.html` が上限まで余り 247 B (81,673 / 81,920 B) | T15.0 単位 9 と全体チェック | 次にカードを足す前に、`scripts/check-dashboard.js` の上限を上げるか、古いカードの説明文を削る |
 | 「束縛してすぐ手放したポート」を死んだ宛先に使うテストが `crates/net-conn/src/net.rs` に 2 か所残っている (`a_deadline_reports_timed_out_not_the_first_refusal` の `closed`、`unseen_hosts…` の後半の `dead`。落ちた記録は無い) | T20.2 の気づき | 落ちたら `tests/proxy_test.rs` の `RefusedPort` (束縛したまま `listen` しない) を `tests/common/` か `net.rs` のテストへ持っていく |
-| `scripts/test_snapshot_diff.py` が 1,964 行 (目安の 2,000 行の手前) | T20.1 | 次にテストを足す前に、`Criteria*` のクラスを別ファイル (`test_snapshot_criteria.py`) へ割る |
 | ダッシュボードの「最近のエラー」は `/errors` の `at` (最初の 1 回) だけを出すので、まとめた行 (`repeats` > 1) が古い時刻の 1 行に見え、回数も出ない | T20.3 の気づき | `dashboard.html` の残り 247 B を先に空けてから、`last_at` と `×N` を出す |
 | `/history?summary=1&since=restart` が起動直後に 8 回に 1 回、`connects` を返さなかった (結合テスト `tests/failed_connect_test.rs` を書く途中で。標本の行には同じ数字がある) | T20.4 の気づき | 原因を先に見る (起動直後の `since=restart` の境目と標本の時刻)。`collect-deployed.sh` の「0 時間」の雪像で踏みうる |
 | 本文付きの要求 (POST など) がプールのオリジン接続に乗り、相手がちょうど閉じたときは 502 (送り直すのは本文の無い GET / HEAD だけ。`crates/http/src/http/mod.rs` の `retryable`)。決まりどおりで、実機で出た記録は無い | T18.4 | 実機の `/errors` に POST の 502 が出たら、要求の経路の判断として決める |
@@ -1462,7 +1461,7 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
   - 結果 (2026-10-15、`cdf51af` / `ee231bd` / `af101c7` / `007c97c`、取り込み `18a8f8b`): `scripts/crate-versions.py` (標準ライブラリだけ。`--list` / `--check [--since TAG]` / `--bump VERSION [--since TAG]`、`-C DIR`) を足し、`--list` で数えた値で最初の割り当てを入れた。v0.20.0 は 7 個 (`endpoints` `metrics` `metrics-core` `metrics-recent` `metrics-slo` `net-conn` `prom`)、v0.18.0 は 4 個 (`base` `metrics-profile` `metrics-types` `metrics-watch`)、v0.17.21 は 29 個。本体と `proxy-server` は 0.20.0 のまま。本文の 8 個との違いは `proxy-server` だけで、v0.18.0 → v0.20.0 の差分が版の行だけなので「最後に変わった」のは v0.18.0。ただし決まり 3 で 0.20.0 になり、入れた値は本文と同じ。`Cargo.lock` は該当の 40 行だけを書き換えた (`cargo build --release` の前後で同じ)。`--check` は割り当ての前が 1 (落ちるのは本文の 41 ではなく 40 クレート。`proxy-server` は前から合っている。「39 クレート」も実際は 40)、あとが 0。一時のコピーで回した `--bump 0.21.0` は本体と `proxy-server` だけを上げた。`release.yml` は `fetch-depth: 0` にして、ビルドの前に `--check` を回す。README は「クレート構成」に決まりを 4 行、「運用」に「0. リリース」を足した。テストは `scripts/test_crate_versions.py` の 11 本で、`unittest discover` は 368 本 OK (skipped 10)。`check-docs.sh` は差分 0。`-V` は `rust-http-proxy 0.20.0+007c97c`。版の文字列を見る `proxy_test` の 1 本と `reload_test` の 2 本は通過。本体のコードは変えていない。前のタグから変わったのにまだ上げていないクレートは `--check` を落とさない (上げたあとは本体と同じ版であること)。「前のタグから変わった」は作業ツリーと比べる (コミット前の `--bump` を `--check` で確かめられるように)。
     親の注記: `ci.yml` の `check` ジョブにも `--check` を足した (`fetch-depth: 0`)。タグの上でない push では上げ忘れは落とさず、本体と `proxy-server` のずれ・上げた版の食い違いだけを落とす。release.yml だけだと、外れに気づくのがタグを打ったときになるため。
 
-- [ ] **T21.2 判定表の手直し (`--criteria phase21`) と、テストのファイルを割る**
+- [x] **T21.2 判定表の手直し (`--criteria phase21`) と、テストのファイルを割る**
   - 目的: T20.99 の届かずの 3 行。(1) 平常時の名前解決のミス (0.12、閾 0.09) は宛先の数 (395 名前) で動く使われ方の数字。(2) conn 役の CPU/要求の「前」が起動 1.3 時間・要求 256 本しか無く、2.72 倍と出た (前提に「参考」と書いた行が「届かず」に数えられた)。
     (3) `ipv6.request_probes` 3 回は、canary が IPv6 を見ていなかった起動直後 2.4 時間のぶん。`scripts/test_snapshot_diff.py` は 1,964 行で、足す前に割る (既知の小物の表)。
   - やること: (0) **割る**: `test_snapshot_diff.py` から `Criteria*` / `Deployed*` の判定表のクラスを新しい `scripts/test_snapshot_criteria.py` へ移す (割るだけのコミットを先に。本数は前後で同じ)。
@@ -1471,6 +1470,10 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
     (2) `collect-deployed.sh` の `CRITERIA` の既定を `phase21` にする (`--zero` / `--daily-snapshots` を渡す条件にも足す)。
   - 受け入れ基準: 割るだけのコミットの前後で `python3 -m unittest discover -s scripts` の本数が同じ。実データ `status/tokyo/2026-10-08T104352Z` → `2026-10-15T185514Z` + `--zero status/tokyo/2026-10-08T104507Z-snapshot.json` (`--daily` `--profile` `--profile-before` つき) の phase21 で「届かず」0
     (満たした 5 行前後、表示だけ 4、参考 1)。nagoya の `status/2026-10-01T133549Z` → `2026-10-08T092521Z` でも phase21 が出る。phase14〜20 の出力は testdata と実データで前後 `cmp` 同一。どのファイルも 2,000 行未満。`check-docs.sh` 差分 0。**デプロイ先には触らない**。
+  - 結果 (2026-10-15、`c7b66fd` / `c48d5c8` / `b4a34dd`、取り込み `9866f3e`): (0) `test_snapshot_diff.py` の判定表のクラス (`Criteria` / `Criteria15` / `Criteria17` / `Deployed17` / `Criteria18` / `Deployed18` / `Criteria20` / `Deployed20`) と `DailySnapshots`、それだけが使う小物を `scripts/test_snapshot_criteria.py` へ割った (割るだけのコミット。T14.17 の `Deployed` は差分のテストなので残した)。`test_snapshot_diff.py` 1,964 → 954 行、本数は前後とも 357。
+    (1) `--criteria phase21` = phase20 と同じ並びの 10 行: 平常時のミスは**表示だけ** (日ごとの幅と `misses_by_kind` の内訳を並べる)。conn 役の CPU/要求 は前か後の `/profile` が 12 時間 (標本 × 間隔) に満たなければ新しい判定**「参考」** (倍率は出し、集計に数えない)。`ipv6.request_probes` は 0 でなければ `request_probe_at` が `--zero` の取得から 3 時間以内なら「満たした」、後なら「届かず」。
+    (2) `collect-deployed.sh` の既定を `CRITERIA=phase21` にした。実データ tokyo (`2026-10-08T104352Z` → `2026-10-15T185514Z` + `--zero 104507Z`) で **満たした 5・届かず 0・判定できず 0 (表示だけ 4・参考 1)**、nagoya (`2026-10-01T133549Z` → `2026-10-08T092521Z`) で満たした 6・届かず 0 (表示だけ 4)。phase14〜phase20 と `--criteria` なしの出力は testdata・nagoya・tokyo (md と json、36 本) で前後 `cmp` 同一。
+    テストは `Criteria21` 17・`Deployed21` 2・`Deployed20` +1、scripts の unittest は取り込み後 388 本 OK、`check-docs.sh` 差分 0。`test_snapshot_criteria.py` 1,309 行、`snapshot_criteria.py` 1,159 行。`shellcheck` は CI で見る。
 
 - [x] **T21.3 期限切れの名前解決の答えをすぐ使い、裏で引き直す (serve-stale)**
   - 目的: tokyo の 176.2 時間 (§2 の 2026-10-15) で名前解決のミスは 1,052 回、うち **`expired` 631 回 (6 割)** = 前に引いた答えの TTL (60 秒) が切れていて、利用者が同期の引き直し (1 回 約 35 ms) を待った。接続 1 本あたり 4.2 ms で、平均の `wait` 22.7 ms の 2 割弱。
