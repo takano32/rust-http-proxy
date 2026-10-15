@@ -313,8 +313,19 @@ function errorRows(j,n){
   return ((j&&j.errors)||[]).slice(0,n||20).map(function(e){
     return {at:+e.at||0,kind:e.kind||'',target:e.target||'',cause:e.cause||'',
       dns_ms:e.dns_ms==null?null:+e.dns_ms,connect_ms:e.connect_ms==null?null:+e.connect_ms,
-      status:+e.status||0,client:e.client||''};
+      status:+e.status||0,client:e.client||'',
+      repeats:+e.repeats||1,last_at:e.last_at==null?null:+e.last_at};
   });
+}
+// 1 行の HTML。まとめた行 (`repeats` > 1。T20.3) は最初〜最後の時刻と ×N を出す
+function errorRowHtml(e){
+  var a=new Date(e.at*1000),r=e.repeats>1,z=r&&e.last_at?new Date(e.last_at*1000):null;
+  return'<tr><td title="'+a.toLocaleString()+(z?' 〜 '+z.toLocaleString():'')+'">'+a.toLocaleTimeString()
+    +(z?'〜'+z.toLocaleTimeString():'')+(r?'<span class="tag">×'+fmtNum(e.repeats)+'</span>':'')+'</td>'
+    +'<td>'+esc(e.kind)+'</td><td title="'+esc(e.target)+'">'+esc(e.target)+'</td>'
+    +'<td style="color:var(--bad)">'+esc(e.cause)+'</td>'
+    +'<td>'+fmtMs(e.dns_ms)+'</td><td>'+fmtMs(e.connect_ms)+'</td>'
+    +'<td>'+fmtNum(e.status)+'</td><td>'+esc(e.client)+'</td></tr>';
 }
 // 「いまの接続」: `/connections` の応答を**長く居る順**に n 件と、状態・種類の内訳。
 // バーストのときに何が席を占めているかを見るための並びなので、経過の長い順にする
@@ -966,13 +977,7 @@ function renderBad(){
 }
 function renderErrors(j){
   var rows=errorRows(j,20);
-  $('errors').tBodies[0].innerHTML=rows.map(function(e){
-    return'<tr><td title="'+new Date(e.at*1000).toLocaleString()+'">'+new Date(e.at*1000).toLocaleTimeString()+'</td>'
-      +'<td>'+esc(e.kind)+'</td><td title="'+esc(e.target)+'">'+esc(e.target)+'</td>'
-      +'<td style="color:var(--bad)">'+esc(e.cause)+'</td>'
-      +'<td>'+fmtMs(e.dns_ms)+'</td><td>'+fmtMs(e.connect_ms)+'</td>'
-      +'<td>'+fmtNum(e.status)+'</td><td>'+esc(e.client)+'</td></tr>'
-  }).join('')||'<tr><td colspan="8" style="text-align:center;color:var(--muted)">エラーはまだありません</td></tr>';
+  $('errors').tBodies[0].innerHTML=rows.map(errorRowHtml).join('')||'<tr><td colspan="8" style="text-align:center;color:var(--muted)">エラーはまだありません</td></tr>';
   $('errhint').textContent='覚えているのは '+fmtNum(j&&j.kept)+' 件 / 上限 '+fmtNum(j&&j.capacity)
     +' · 起動からの通算 '+fmtNum(j&&j.recorded)+' 件 (プロセスのメモリだけ。再起動で消えます)';
 }
