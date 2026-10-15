@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # クレートの版の決まり (T21.1) を確かめるのに `v*` のタグが要る
+          # クレートの版の決まり (T21.6) を確かめるのに歴史とタグが要る
           fetch-depth: 0
       - name: Install Rust (stable)
         run: |
@@ -50,8 +50,8 @@ jobs:
       - run: ./scripts/check-docs.sh
       # scripts/ の道具の単体テスト (雪像の要約・判定・匿名化と、`scripts/mx` の test_mx.sh。T17.15)
       - run: python3 -m unittest discover -s scripts
-      # クレートの版の決まり (T21.1)。タグの上でない push では「上げ忘れ」は落とさず、
-      # 本体と `proxy-server` のずれ・上げた版の食い違いだけを落とす (リリースでの最終確認は release.yml)
+      # クレートの版の決まり (T21.6)。版の行を書いたコミットより後に中身が変わったクレート (上げ忘れ)・
+      # 本体と `proxy-server` のずれ・本体が最大より小さいときに落とす (タグの上では release.yml が版 = タグも見る)
       - run: python3 scripts/crate-versions.py --check
       # scripts/ のシェルの静的検査 (T17.13)。設定 (切った指摘とその理由) は scripts/.shellcheckrc。
       # runner の像に入っていればそれを使い、無ければ入れる (ubuntu-latest が 2026-10-19 に Ubuntu 26 へ移るため)

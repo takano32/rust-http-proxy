@@ -21,10 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # クレートの版の決まりは前のタグとの差分で数えるので、歴史とタグを全部取る (T21.1)
+          # クレートの版の決まりは版の行と中身の最後の変更を履歴で比べるので、歴史とタグを全部取る (T21.6)
           fetch-depth: 0
-      # 各クレートの版が決まり (中身が最後に変わったリリースの版、本体 = proxy-server = タグ) に
-      # 合っているか。合わなければ名前と理由を出して落ちる (リリースの前に --bump を忘れた等)
+      # 各クレートの版が決まり (中身を最後に変えたタスクの番号 0.P.T、本体 = proxy-server = 全部の最大 = タグ) に
+      # 合っているか。合わなければ名前と理由を出して落ちる (タスクの中で --task を忘れた等。T21.6)
       - name: Check the crate versions
         run: python3 scripts/crate-versions.py --check
       - name: Install the Rust target
