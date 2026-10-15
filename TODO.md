@@ -1444,7 +1444,7 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
 | T21.4 | 21b | t214 | `/history?summary=1` を組み立てる所 (`crates/metrics-window` か `crates/endpoints`。読んで決める)、`tests/` |
 | T21.5 | 21b | t215 | `crates/web/src/dashboard.html`、`scripts/check-dashboard.js` |
 
-- [ ] **T21.1 クレートの版の決まり (各クレートの版 = 中身が最後に変わったリリースの版)**
+- [x] **T21.1 クレートの版の決まり (各クレートの版 = 中身が最後に変わったリリースの版)**
   - 目的: 本体と `proxy-server` 以外の 39 クレートが全部 `0.1.0` のままで、版から何も読めない。利用者の提案 (2026-10-15): クレートごとにユニークになる決まりを付ける。
   - **決まり (利用者が親の勧めに決めた)**: (1) 各クレートの `version` は、**そのクレートの中身が最後に変わったリリース (`v*` のタグ) の版**。(2) リリースの直前に、前のタグから中身が変わったクレートだけを本体と同じ版に上げる。変わっていないクレートは据え置く。
     (3) **本体 (`rust-http-proxy`) と `proxy-server` は常に同じ版** (`proxy-server` の `build.rs` が `CARGO_PKG_VERSION` から `-V` の版を作るため)。(4) 本体の版はタグの名前と同じ (`v0.20.0` ↔ `0.20.0`)。
@@ -1457,6 +1457,8 @@ T20.99 の「次のターンの準備」。**利用者の決定 (2026-10-15)**: 
     (4) README の「クレート構成」に決まりを 3〜4 行、「運用」のリリースの手順に `--bump` と `--check` を足す。
   - 受け入れ基準: `scripts/crate-versions.py --check` が今の main (割り当てのあと) で 0、割り当ての前の main で 1 (落ちる理由に 41 クレートが出る)。`--bump 0.21.0` を一時のコピーで回すと、`v0.20.0` から変わったクレートが無い今は本体と `proxy-server` だけが上がる。
     テスト (`scripts/test_crate_versions.py`): 一時の git リポジトリにクレート 3 つとタグ 2 つを作り、変わった / 変わらない / 版の行だけ変わった / 本体と `proxy-server` がずれた、の各場合。`cargo build --release` と全体テストは変わらず通る (版の文字列を見ているテストは本体のものだけ)。`python3 -m unittest discover -s scripts` 全通過、`check-docs.sh` 差分 0。
+  - 結果 (2026-10-15、`cdf51af` / `ee231bd` / `af101c7` / `007c97c`、取り込み `18a8f8b`): `scripts/crate-versions.py` (標準ライブラリだけ。`--list` / `--check [--since TAG]` / `--bump VERSION [--since TAG]`、`-C DIR`) を足し、`--list` で数えた値で最初の割り当てを入れた。v0.20.0 は 7 個 (`endpoints` `metrics` `metrics-core` `metrics-recent` `metrics-slo` `net-conn` `prom`)、v0.18.0 は 4 個 (`base` `metrics-profile` `metrics-types` `metrics-watch`)、v0.17.21 は 29 個。本体と `proxy-server` は 0.20.0 のまま。本文の 8 個との違いは `proxy-server` だけで、v0.18.0 → v0.20.0 の差分が版の行だけなので「最後に変わった」のは v0.18.0。ただし決まり 3 で 0.20.0 になり、入れた値は本文と同じ。`Cargo.lock` は該当の 40 行だけを書き換えた (`cargo build --release` の前後で同じ)。`--check` は割り当ての前が 1 (落ちるのは本文の 41 ではなく 40 クレート。`proxy-server` は前から合っている。「39 クレート」も実際は 40)、あとが 0。一時のコピーで回した `--bump 0.21.0` は本体と `proxy-server` だけを上げた。`release.yml` は `fetch-depth: 0` にして、ビルドの前に `--check` を回す。README は「クレート構成」に決まりを 4 行、「運用」に「0. リリース」を足した。テストは `scripts/test_crate_versions.py` の 11 本で、`unittest discover` は 368 本 OK (skipped 10)。`check-docs.sh` は差分 0。`-V` は `rust-http-proxy 0.20.0+007c97c`。版の文字列を見る `proxy_test` の 1 本と `reload_test` の 2 本は通過。本体のコードは変えていない。前のタグから変わったのにまだ上げていないクレートは `--check` を落とさない (上げたあとは本体と同じ版であること)。「前のタグから変わった」は作業ツリーと比べる (コミット前の `--bump` を `--check` で確かめられるように)。
+    親の注記: `ci.yml` の `check` ジョブにも `--check` を足した (`fetch-depth: 0`)。タグの上でない push では上げ忘れは落とさず、本体と `proxy-server` のずれ・上げた版の食い違いだけを落とす。release.yml だけだと、外れに気づくのがタグを打ったときになるため。
 
 - [ ] **T21.2 判定表の手直し (`--criteria phase21`) と、テストのファイルを割る**
   - 目的: T20.99 の届かずの 3 行。(1) 平常時の名前解決のミス (0.12、閾 0.09) は宛先の数 (395 名前) で動く使われ方の数字。(2) conn 役の CPU/要求の「前」が起動 1.3 時間・要求 256 本しか無く、2.72 倍と出た (前提に「参考」と書いた行が「届かず」に数えられた)。
