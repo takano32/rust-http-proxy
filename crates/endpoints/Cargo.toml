@@ -1,10 +1,15 @@
 [package]
 name = "proxy-endpoints"
-version = "0.21.4"
+version = "0.22.6"
 edition = "2024"
 
 [lib]
 path = "src/lib.rs"
+
+[features]
+# 試験のときだけ効く口 (T22.6)。立てるのはルートの `[dev-dependencies]` だけで、
+# 既定のビルド (`cargo build --release`) には入らない
+test-hooks = []
 
 [dependencies]
 proxy-base = { path = "../base" }
