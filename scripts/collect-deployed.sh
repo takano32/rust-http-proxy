@@ -289,7 +289,7 @@ PLANPY
       continue
     fi
     page=2
-    why=done
+    why="done"
     files=()
     while [ "${off:-null}" != null ]; do
       if [ "$page" -gt "$MAX_PAGES" ]; then
@@ -297,7 +297,7 @@ PLANPY
         break
       fi
       if [ $(($(now_ms) - FOLLOW_START)) -ge $((FOLLOW_SECS * 1000)) ]; then
-        why=time
+        why="time"
         break
       fi
       f="$work/follow-$part-page$page.json"
