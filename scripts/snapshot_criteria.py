@@ -13,6 +13,7 @@
 
 import math
 import os
+import re
 import statistics
 import sys
 from datetime import datetime, timezone
@@ -233,6 +234,16 @@ PHASE22 = dict(
     # k ≤ 2 だと量の揃った日のいちばん多い 1 時間を切る。量の少ない 3 期間 (nagoya 10-08 は中央値 44、
     # tokyo 10-15 は 22〜23) は k ≤ 6 なら 300 本の切り方と同じ標本が残る。その間でいちばん小さい 3
     burst_median_k=3,
+    # T22.2: `dns_slow` が立つのは窓のミスの合計がこれ以上のときだけ (`anomaly.rs` の `DNS_MIN_SUM_MS`)
+    dns_slow_min_sum_ms=1000,
+    # T22.4 の「既定を 3,600 に戻す」2 つの条件 (TODO.md T22.4 の結果、親の判断 2026-10-17):
+    # `stale_retries` が `stale_hits` のこの割合以上、または下の原因の件/時が前の期間のこの倍以上なら戻す
+    stale_retry_share=0.01,
+    connect_error_factor=1.5,
+    connect_error_causes=("refused", "unreachable", "timeout"),
+    # T22.4 の段 1 の目安: 引き直しの回/時が前の期間のこの倍以下、`expired` + `warm_stale` の増えが 1 日これ以内
+    refresh_factor=0.5,
+    stale_miss_growth_per_day=10,
 )
 CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18,
             "phase20": PHASE20, "phase21": PHASE21, "phase22": PHASE22}
@@ -1056,6 +1067,205 @@ def _p21_request_probes(c, th):
             MISSED, src)
 
 
+# --- Phase 22 (T22.1。phase21 の 10 行 + 22a で段 2 まで行った T22.2・T22.4 の行) ---
+
+def _p22_refresh_rate(c, th):
+    """裏の引き直し (phase15 の行)。**keep-warm を止めた版 (T22.4) でも読めるようにしたもの**。
+
+    phase15 の参考の値「通算 ÷ 時間 ÷ warm の平均」は warm 0 (`PROXY_DNS_WARM_SECS=0` が既定) だと
+    割れずに出ない (T22.4 の申し送り)。そのときは「warm 0 なので名前あたりの平均は出ない」と書き、
+    通算の 1 時間あたりを並べる。判定は今までどおり `/dns` の名前ごとの最大 (warm でない名前も
+    serve-stale の裏で引き直すので、閾 80 回/時/名前はそのまま効く)。`/dns` の部が無ければ「判定できず」。
+    warm が 0 でなければ phase15 の行そのもの。
+    """
+    label, limit, shown, verdict, src = _p15_refresh_rate(c, th)
+    warm = c["after_all"].get("dns_warm_avg")
+    secs = (c["dns"] or {}).get("warm_secs")
+    if warm or (warm is None and secs != 0):
+        return (label, limit, shown, verdict, src)
+    refreshes, hours = (c["dns"] or {}).get("refreshes"), c["hours"]
+    total = (f"通算 {n(refreshes)} 回 ÷ {hours:,.1f} 時間 = {refreshes / hours:,.1f} 回/時 (全部の名前)"
+             if refreshes is not None and hours else "通算の 1 時間あたりも出せない")
+    why = (f"keep-warm は止めてある (`warm_secs` {n(secs)}、warm の平均 {ms(warm)} 件) ので、"
+           "warm の平均で割る名前あたりの値は出ない (T22.4)")
+    if verdict == UNKNOWN:
+        return (label, limit, total, UNKNOWN, f"`/dns` の部が無い。{why}")
+    return (label, limit, f"{shown}。参考: {total}", verdict, f"{src}。{why}")
+
+
+def dns_slow_events(snap, min_sum):
+    """`/events` の `dns_slow` (起動から) を、窓のミスの合計 (`N ms total`) で 2 つに分けて数える (T22.2)。
+
+    文面は `anomaly.rs` の `dns_slow: dns miss X ms avg over 5m (threshold T ms; N misses, S ms total)`。
+    返すのは `{"big": 合計 min_sum 以上, "small": 未満, "unparsed": 合計が読めない, "hours", "truncated"}`
+    か、部が無ければ None。`cleared:` と起動より前の出来事は数えない (`anomaly_rates` と同じ)。
+    """
+    ev = part(snap, "events")
+    rows = ev.get("events")
+    up = snap.get("uptime_secs") or 0
+    if not isinstance(rows, list) or not up:
+        return None
+    started = (snap.get("taken_at") or 0) - up
+    out = {"big": 0, "small": 0, "unparsed": 0, "hours": up / 3600.0,
+           "truncated": bool(ev.get("truncated"))}
+    for e in rows:
+        text = e.get("text") or ""
+        if e.get("kind") != "anomaly" or not text.startswith("dns_slow:"):
+            continue
+        if started and (e.get("at") or 0) < started:
+            continue
+        m = re.search(r"([0-9][0-9.]*) ms total", text)
+        if not m:
+            out["unparsed"] += 1
+        elif float(m.group(1)) >= min_sum:
+            out["big"] += 1
+        else:
+            out["small"] += 1
+    return out
+
+
+def _p22_dns_slow(c, th):
+    """T22.2: `dns_slow` を新しい閾 (窓のミスの合計 1,000 ms 以上) で数えた件/時と、それより小さい窓で立った件数。
+
+    判定は「合計が閾に満たない窓で立った `dns_slow` が 0」(T22.2 の目安を親が読み替えたもの: ミスの少ない窓
+    で鳴らない)。T22.2 より前の版の雪像では、新しい閾なら立たなかった件数がここに出る。件/時は表示だけ
+    (T22.2 の模型で tokyo の後の期間は 0.167 件/時、4 件とも本当に遅い一続き)。
+    """
+    lim = th["dns_slow_min_sum_ms"]
+    label = f"`dns_slow` を新しい閾 (窓のミスの合計 {lim:,} ms 以上) で数えた件/時と、それより小さい窓で立った件数"
+    limit = f"合計 < {lim:,} ms の窓で 0 件"
+    aft, bef = dns_slow_events(c["b"], lim), dns_slow_events(c["a"], lim)
+    if aft is None:
+        return (label, limit, "—", UNKNOWN, "後の雪像に `/events` の部が無い")
+
+    def text(v, bold):
+        rate = v["big"] / v["hours"]
+        star = "**" if bold else ""
+        t = (f"新しい閾で {star}{rate:.2f}{star} 件/時 ({v['big']} 件)、"
+             f"合計 {lim:,} ms 未満 {star}{v['small']}{star} 件")
+        return t + (f"、合計が読めない {v['unparsed']} 件" if v["unparsed"] else "")
+    shown = text(aft, True) + (f" (前: {text(bef, False)})" if bef is not None else "")
+    src = (f"`/events` の `dns_slow:` の文面の `ms total` (起動からの {aft['hours']:,.1f} 時間、"
+           "`cleared:` は数えない)")
+    if bef is None:
+        src += "。前の雪像に `/events` が無い"
+    if aft["truncated"]:
+        src += "。**`/events` が切れている** (件数は下限)"
+    if aft["small"]:
+        verdict = MISSED
+    elif aft["unparsed"]:
+        verdict = UNKNOWN
+        src += "。文面に `ms total` の無い `dns_slow` がある (T17.1 より前の形)"
+    else:
+        verdict = MET
+    return (label, limit, shown, verdict, src)
+
+
+def dns_counter(c, key, sub=None):
+    """`/status` の `dns.<key>` (`sub` があれば `dns.<key>.<sub>`) の前と後。
+
+    返すのは `(前の値, 後の値, その間か)`。後は再起動していなければ前を引いた差 (その間)、していれば
+    起動からの通算。前は前の雪像の起動からの通算。どちらかに欄が無ければその側は None。
+    """
+    def get(snap):
+        v = (part(snap, "status").get("dns") or {}).get(key)
+        if sub is not None:
+            # 内訳の辞書があってその種類が無いのは 0 回 (`misses_by_kind` は出た種類だけのことがある)
+            v = (v.get(sub) or 0) if isinstance(v, dict) else None
+        return v
+    va, vb = get(c["a"]), get(c["b"])
+    windowed = va is not None and vb is not None and not (c["info"] or {}).get("restarted")
+    return va, ((vb - va) if windowed else vb), windowed
+
+
+def _p22_stale_retries(c, th):
+    """T22.4 の戻す条件 (1): `stale_retries` が `stale_hits` の 1% 未満 (以上なら keep-warm の既定を戻す)。"""
+    share = th["stale_retry_share"]
+    label = (f"`dns.stale_retries` が `stale_hits` の {share * 100:.0f}% 未満 "
+             "(古い答えで繋いで失敗し、引き直して繋ぎ直した回。T22.4 の戻す条件)")
+    limit = f"< {share * 100:.0f}%"
+    _, hits, windowed = dns_counter(c, "stale_hits")
+    _, retries, _ = dns_counter(c, "stale_retries")
+    secs = (c["dns"] or {}).get("warm_secs")
+    if hits is None or retries is None:
+        return (label, limit, "—", UNKNOWN,
+                "後の雪像の `/status` の `dns` に `stale_hits` / `stale_retries` が無い (T21.3 より前の版)")
+    src = (f"`/status` の `dns.stale_hits` / `stale_retries` ({'その間' if windowed else '起動から'})、"
+           f"keep-warm の窓 `warm_secs` {n(secs)}")
+    if not hits:
+        return (label, limit, f"`stale_hits` 0、`stale_retries` {n(retries)}",
+                MET if not retries else MISSED, src + "。古い答えを 1 度も使っていない")
+    v = retries / hits
+    return (label, limit, f"**{v * 100:.2f}%** ({n(retries)} / {n(hits)})",
+            MET if v < share else MISSED, src)
+
+
+def _p22_connect_errors(c, th):
+    """T22.4 の戻す条件 (2): 接続のエラー (`refused`・`unreachable`・`timeout`) の件/時が前の期間の 1.5 倍未満。"""
+    k, causes = th["connect_error_factor"], th["connect_error_causes"]
+    names = "・".join(f"`{x}`" for x in causes)
+    label = f"接続のエラー ({names}) の件/時が前の期間の {k} 倍未満 (T22.4 の戻す条件)"
+    limit = f"< 前 ×{k}"
+    hist = c["hist"] or {}
+    bef, aft, interval = hist.get("before_all"), hist.get("after_all"), hist.get("interval_secs")
+    if not bef or not aft or not bef.get("samples") or not aft.get("samples"):
+        return (label, limit, "—", UNKNOWN, "`/history` に前か後の期間の標本が無い")
+    idx = [CAUSE_NAMES.index(x) for x in causes]
+
+    def counts(agg):
+        cs = agg.get("causes") or [0] * len(CAUSE_NAMES)
+        return [cs[i] if i < len(cs) else 0 for i in idx]
+    cb, ca = counts(bef), counts(aft)
+    b_rate, a_rate = per_hour(bef, interval, sum(cb)), per_hour(aft, interval, sum(ca))
+    if b_rate is None or a_rate is None:
+        return (label, limit, "—", UNKNOWN, "`/history` の `errors_by_cause` が読めない")
+    by = "、".join(f"`{x}` {n(v)}" for x, v in zip(causes, ca))
+    per_conn = (f"、接続 1 本あたり {sum(ca) / aft['connects']:.4f} (前 "
+                + (f"{sum(cb) / bef['connects']:.4f}" if bef.get("connects") else "—") + ")"
+                if aft.get("connects") else "")
+    shown = (f"**{a_rate:,.2f}** 件/時 ({n(sum(ca))} 件: {by}。前 {b_rate:,.2f} 件/時 = {n(sum(cb))} 件)"
+             + per_conn)
+    ok = a_rate < b_rate * k if b_rate else a_rate == 0
+    return (label, limit, shown, MET if ok else MISSED,
+            f"`/history?res={hist.get('res')}` の `errors_by_cause` (前 {bef['samples']} / 後 "
+            f"{aft['samples']} 標本、バースト込み)。接続 1 本あたりは表示だけ")
+
+
+def counter_rates(c, key, sub=None):
+    """`dns_counter` の前と後を 1 時間あたりにする (前は前の雪像の起動から、後はその間か起動から)。
+
+    返すのは `(前 回/時, 後 回/時)`。時間か欄が無ければその側は None。
+    """
+    va, vb, windowed = dns_counter(c, key, sub)
+    ua = (c["a"].get("uptime_secs") or 0) / 3600.0
+    ub = ((c["info"] or {}).get("wall_secs") if windowed else c["b"].get("uptime_secs")) or 0
+    ub /= 3600.0
+    return ((va / ua) if va is not None and ua else None,
+            (vb / ub) if vb is not None and ub else None)
+
+
+def _p22_refresh_and_stale_misses(c, th):
+    """T22.4 の段 1 の目安: 引き直しの回/時が前の半分以下、かつ `expired` + `warm_stale` の増えが 1 日 10 回以内。"""
+    k, grow = th["refresh_factor"], th["stale_miss_growth_per_day"]
+    label = (f"裏の引き直しの回/時が前の期間の {k} 倍以下、かつ `expired` + `warm_stale` のミスの増えが "
+             f"1 日 {grow} 回以内 (T22.4 の目安)")
+    limit = f"≤ 前 ×{k} かつ 増え ≤ {grow} 回/日"
+    rb, ra = counter_rates(c, "refreshes")
+    rates = [counter_rates(c, "misses_by_kind", kind) for kind in ("expired", "warm_stale")]
+    src = ("`/status` の `dns.refreshes` と `dns.misses_by_kind` (前は前の雪像の起動から、後は"
+           + ("その間" if dns_counter(c, "refreshes")[2] else "後の雪像の起動から") + "の 1 時間あたり)")
+    if rb is None or ra is None:
+        return (label, limit, "—", UNKNOWN, "前か後の `/status` に `dns.refreshes` か `uptime_secs` が無い")
+    shown = f"引き直し **{ra:,.1f}** 回/時 (前 {rb:,.1f}" + (f"、{ra / rb:.2f} 倍)" if rb else ")")
+    if any(b is None or a is None for b, a in rates):
+        return (label, limit, shown, UNKNOWN,
+                "前か後の `/status` の `dns` に `misses_by_kind` が無い。" + src)
+    mb_, ma_ = sum(b for b, _ in rates) * 24, sum(a for _, a in rates) * 24
+    shown += f"、`expired` + `warm_stale` **{ma_:,.1f}** 回/日 (前 {mb_:,.1f}、増え {ma_ - mb_:+,.1f})"
+    ok = (ra <= rb * k if rb else ra == 0) and ma_ - mb_ <= grow
+    return (label, limit, shown, MET if ok else MISSED, src)
+
+
 RULES = {
     "phase14": (_p14_dns_per_connect, _p14_major_hosts, _p14_connect_p50, _p14_overload),
     "phase15": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band,
@@ -1073,8 +1283,11 @@ RULES["phase20"] = (_p20_watch_host, _p15_refresh_rate, _p15_miss_band, _p20_tim
 RULES["phase21"] = (_p20_watch_host, _p15_refresh_rate, _p21_miss_band, _p20_timeout,
                     _p21_conn_per_request, _p20_warm_max, _p17_events, _p17_cgroup,
                     _p20_heap, _p21_request_probes)
-# phase22 = phase21 の 10 行 (平常時の切り方だけ違う。T22.1)
-RULES["phase22"] = RULES["phase21"]
+# phase22 = phase21 の 10 行 (引き直しの行は warm 0 でも読める版) + T22.2 の 1 行 + T22.4 の 3 行。
+# 平常時の切り方も違う (`PHASE22` の `burst_median_k`)。T22.3 は段 1 で止めたので行を作らない
+RULES["phase22"] = ((RULES["phase21"][0], _p22_refresh_rate) + RULES["phase21"][2:]
+                    + (_p22_dns_slow, _p22_stale_retries, _p22_connect_errors,
+                       _p22_refresh_and_stale_misses))
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,
@@ -1173,6 +1386,19 @@ def render_criteria(d, grouped):
           "最後に探った時刻が 0 時間の雪像の取得から 3 時間以内なら「満たした」(起動直後は canary が "
           "IPv6 をまだ見ていない) で、それより後にも探っていれば「届かず」です。表示だけの行は"
           "ほかに 3 つ (phase20 と同じ) です。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+        p()
+    if c["name"] == "phase22":
+        # T22.1。phase21 の 10 行 + 22a の 4 行で、平常時の切り方も違う
+        p("前の 10 行は phase21 と同じ物差しで、材料も同じです (`--daily` `--profile` `--profile-before` "
+          "`--zero`)。裏の引き直しの行だけ、keep-warm を止めた版 (T22.4。warm 0) では warm の平均で割る"
+          "参考の値の代わりに通算の 1 時間あたりを並べます。後ろの 4 行は 22a で段 2 まで行ったもの: "
+          "`dns_slow` を新しい閾 (窓のミスの合計 1,000 ms 以上。T22.2) で数えた件/時と、それより小さい窓で"
+          "立った件数 (0 なら満たした)、T22.4 で keep-warm の既定を戻す 2 つの条件 (`stale_retries` が "
+          "`stale_hits` の 1% 以上、接続のエラー `refused`・`unreachable`・`timeout` の件/時が前の 1.5 倍以上。"
+          "当たれば「届かず」)、T22.4 の目安 (引き直しの回/時が前の半分以下、`expired` + `warm_stale` の"
+          "増えが 1 日 10 回以内) です。**平常時は「300 本と、その期間の 1 時間の本数の中央値の 3 倍の"
+          "大きい方」未満の標本**です (§2。T22.1)。T22.3 は段 1 で止めたので行がありません。"
+          "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")

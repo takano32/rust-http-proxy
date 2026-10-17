@@ -1342,7 +1342,8 @@ class Cut22(unittest.TestCase):
                 self.assertNotIn(key, h, (name, key))
             self.assertEqual(h["after"]["burst_samples"], 1, name)
         self.assertNotIn("burst_median_k", sd.PHASE21)
-        self.assertEqual(sd.PHASE22, dict(sd.PHASE21, burst_median_k=3))
+        self.assertEqual(sd.PHASE22["burst_median_k"], 3)
+        self.assertEqual({k: v for k, v in sd.PHASE22.items() if k in sd.PHASE21}, sd.PHASE21)
 
     def test_the_markdown_says_how_it_cut(self):
         md = run([A, B, "--no-dns", "--criteria", "phase22"])
@@ -1371,6 +1372,324 @@ class Cut22(unittest.TestCase):
         self.assertIn("&normal_hours_only=1", d["summary_url"])
         self.assertIn("後の閾が 300 本より上なので、下の「サーバー側で 1 要求」の URL "
                       "(`normal_hours_only=1` は 300 本で切る) とは平常時の窓が違う。", md)
+
+
+def with_dns_slow(snap, *totals, at=None, cleared=0, text=None):
+    """`/events` を `dns_slow` の出来事だけにする (`totals` は窓のミスの合計 ms。文面は `anomaly.rs` の形)。"""
+    at = at if at is not None else snap["taken_at"] - 600
+    rows = [{"at": at, "kind": "anomaly",
+             "text": f"dns_slow: dns miss {t // 3} ms avg over 5m (threshold 100 ms; 3 misses, {t} ms total)"}
+            for t in totals]
+    rows += [{"at": at, "kind": "anomaly", "text": "cleared: dns_slow after 6m (dns miss 1 ms avg over 5m, "
+              "1 misses)"}] * cleared
+    if text:
+        rows.append({"at": at, "kind": "anomaly", "text": text})
+    snap["events"] = {"events": rows}
+    return snap
+
+
+def with_causes(snap, boundary, before, after):
+    """`/history?res=3600` の `errors_by_cause` を、`boundary` より前の行は `before`、後の行は `after` にする。"""
+    h = snap["history"]["3600"]
+    i = h["keys"].index("errors_by_cause")
+    for row in h["samples"]:
+        row[i] = list(before if row[0] < boundary else after)
+    return snap
+
+
+class Criteria22(unittest.TestCase):
+    """`--criteria phase22` (T22.1): phase21 の 10 行 + T22.2 の 1 行 + T22.4 の 3 行。
+
+    A → B は再起動をまたぐ (A は `0.1.0+aaaaaaa` で起動から 200,000 秒、B は `0.1.0+bbbbbbb` で 43,200 秒)。
+    """
+
+    def judge(self, a=None, b=None, extra=(), name="phase22"):
+        return build([a or A, b or B, "--no-dns", "--criteria", name, *extra])["criteria"]
+
+    def row(self, i, a=None, b=None, extra=()):
+        return self.judge(a, b, extra)["rows"][i]
+
+    def boundary(self):
+        return build([A, B, "--no-dns"])["history"]["boundary"]
+
+    def test_phase22_gives_fourteen_rows(self):
+        rules = sd.RULES["phase22"]
+        self.assertEqual(len(rules), 14)
+        self.assertIs(rules[1], sd._p22_refresh_rate)
+        for i in (0, *range(2, 10)):
+            self.assertIs(rules[i], sd.RULES["phase21"][i], i)
+        self.assertEqual(rules[10:], (sd._p22_dns_slow, sd._p22_stale_retries, sd._p22_connect_errors,
+                                      sd._p22_refresh_and_stale_misses))
+        c = self.judge()
+        self.assertEqual(len(c["rows"]), 14)
+        self.assertEqual(c["display_only"], 4)
+        self.assertNotIn("phase22", sd.FROZEN)
+
+    def test_the_phase21_rows_come_out_the_same_except_the_cut(self):
+        with written(z=cached(zero_snapshot(), 0)) as p:
+            rows21 = self.judge(name="phase21", extra=("--zero", p["z"]))["rows"]
+            rows22 = self.judge(extra=("--zero", p["z"]))["rows"]
+        for i in (0, 1, *range(3, 10)):
+            self.assertEqual(rows22[i], rows21[i], i)
+        # 平常時のミス (表示だけ) は切り方が違うので標本の数が違う (後の 350 本の時間が平常時に入る)
+        self.assertIn("平常時 2 標本", rows21[2][4])
+        self.assertIn("平常時 3 標本", rows22[2][4])
+
+    # --- 裏の引き直し (warm 0 でも読める)
+
+    def test_the_refresh_row_says_why_there_is_no_average_without_warm(self):
+        b = read(B)
+        b["status"]["dns"].update(warm_secs=0, warm=0)
+        set_column(b, "3600", "dns_warm", 0)
+        with written(b=b) as p:
+            row = self.row(1, b=p["b"])
+            old = self.judge(b=p["b"], name="phase21")["rows"][1]
+        self.assertEqual(row[3], old[3])
+        self.assertTrue(row[2].startswith(old[2] + "。参考: 通算 24 回 ÷ 12.0 時間 = 2.0 回/時 (全部の名前)"), row[2])
+        self.assertIn("keep-warm は止めてある (`warm_secs` 0、warm の平均 0.0 件) ので、warm の平均で割る"
+                      "名前あたりの値は出ない (T22.4)", row[4])
+        del b["dns"]
+        with written(b=b) as p:
+            row = self.row(1, b=p["b"])
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertEqual(row[2], "通算 24 回 ÷ 12.0 時間 = 2.0 回/時 (全部の名前)")
+        self.assertTrue(row[4].startswith("`/dns` の部が無い。keep-warm は止めてある"))
+
+    def test_with_warm_the_refresh_row_is_the_phase15_one(self):
+        self.assertEqual(self.row(1), self.judge(name="phase21")["rows"][1])
+
+    # --- T22.2: `dns_slow` の新しい閾
+
+    def test_small_windows_are_counted_apart_from_the_new_threshold(self):
+        with written(b=with_dns_slow(read(B), 495, 1204, 2949, cleared=2)) as p:
+            row = self.row(10, b=p["b"])
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertEqual(row[1], "合計 < 1,000 ms の窓で 0 件")
+        self.assertIn("新しい閾で **0.17** 件/時 (2 件)、合計 1,000 ms 未満 **1** 件", row[2])
+        self.assertNotIn("前:", row[2])
+        self.assertIn("。前の雪像に `/events` が無い", row[4])
+        a = with_dns_slow(read(A), 300, 400, 5000)
+        a["taken_at"] = read(A)["taken_at"]
+        with written(a=a, b=with_dns_slow(read(B), 1204)) as p:
+            row = self.row(10, a=p["a"], b=p["b"])
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn(" (前: 新しい閾で 0.02 件/時 (1 件)、合計 1,000 ms 未満 2 件)", row[2])
+
+    def test_only_big_windows_are_met(self):
+        with written(b=with_dns_slow(read(B), 1000, 2541)) as p:
+            row = self.row(10, b=p["b"])
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("新しい閾で **0.17** 件/時 (2 件)、合計 1,000 ms 未満 **0** 件", row[2])
+        with written(b=with_dns_slow(read(B))) as p:
+            self.assertEqual(self.row(10, b=p["b"])[3], sd.MET)        # 1 件も無い
+
+    def test_events_before_the_start_are_not_counted(self):
+        b = read(B)
+        with written(b=with_dns_slow(b, 300, at=b["taken_at"] - b["uptime_secs"] - 1)) as p:
+            row = self.row(10, b=p["b"])
+        self.assertEqual(row[3], sd.MET)
+
+    def test_a_text_without_the_total_cannot_be_judged(self):
+        old = "dns_slow: dns miss 150 ms avg over 5m (threshold 100 ms; 3 misses)"
+        with written(b=with_dns_slow(read(B), 2000, text=old)) as p:
+            row = self.row(10, b=p["b"])
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("、合計が読めない 1 件", row[2])
+        self.assertIn("文面に `ms total` の無い `dns_slow` がある", row[4])
+        b = read(B)
+        del b["events"]
+        with written(b=b) as p:
+            self.assertEqual(self.row(10, b=p["b"])[3], sd.UNKNOWN)
+
+    # --- T22.4 の戻す条件 (1): `stale_retries` / `stale_hits`
+
+    def stale_row(self, hits, retries, a_hits=None, a_retries=None, same_start=False):
+        a, b = read(A), read(B)
+        b["status"]["dns"].update(stale_hits=hits, stale_retries=retries)
+        if a_hits is not None:
+            a["status"]["dns"].update(stale_hits=a_hits, stale_retries=a_retries)
+        if same_start:
+            a = read(B)
+            a["status"]["dns"].update(stale_hits=a_hits, stale_retries=a_retries)
+            a["taken_at"] -= 3600
+            a["uptime_secs"] -= 3600
+            a["status"]["uptime_secs"] = a["uptime_secs"]
+        with written(a=a, b=b) as p:
+            return self.row(11, a=p["a"], b=p["b"])
+
+    def test_retries_under_one_percent_are_met(self):
+        row = self.stale_row(1000, 9)
+        self.assertEqual(row[3], sd.MET)
+        self.assertEqual(row[2], "**0.90%** (9 / 1,000)")
+        self.assertIn("(起動から)、keep-warm の窓 `warm_secs` 900", row[4])
+        self.assertEqual(self.stale_row(1000, 10)[3], sd.MISSED)          # ちょうど 1% は戻す条件に当たる
+
+    def test_no_stale_hit_is_met(self):
+        row = self.stale_row(0, 0)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("古い答えを 1 度も使っていない", row[4])
+
+    def test_without_a_restart_the_stale_counts_are_a_difference(self):
+        row = self.stale_row(1200, 12, a_hits=200, a_retries=11, same_start=True)
+        self.assertEqual(row[2], "**0.10%** (1 / 1,000)")
+        self.assertIn("(その間)", row[4])
+
+    def test_a_version_without_stale_counts_cannot_be_judged(self):
+        row = self.row(11)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("T21.3 より前の版", row[4])
+
+    # --- T22.4 の戻す条件 (2): 接続のエラーの件/時
+
+    def errors_row(self, before, after):
+        edge = self.boundary()
+        a = with_causes(read(A), edge, before, after)
+        b = with_causes(read(B), edge, before, after)
+        with written(a=a, b=b) as p:
+            return self.row(12, a=p["a"], b=p["b"])
+
+    def test_errors_at_the_same_rate_are_met(self):
+        # 前 4 標本・後 3 標本に、1 標本あたり refused 1・timeout 1 (同じ件/時)
+        row = self.errors_row([0, 1, 0, 1, 0, 0, 0, 0], [0, 1, 0, 1, 0, 0, 0, 0])
+        self.assertEqual(row[3], sd.MET)
+        self.assertEqual(row[1], "< 前 ×1.5")
+        self.assertIn("**2.00** 件/時 (6 件: `refused` 3、`unreachable` 0、`timeout` 3。前 2.00 件/時 = 8 件)",
+                      row[2])
+        self.assertIn("、接続 1 本あたり ", row[2])
+
+    def test_one_and_a_half_times_the_rate_is_missed(self):
+        self.assertEqual(self.errors_row([0, 2, 0, 0, 0, 0, 0, 0], [0, 2, 1, 0, 0, 0, 0, 0])[3], sd.MISSED)
+        self.assertEqual(self.errors_row([0, 2, 0, 0, 0, 0, 0, 0], [0, 2, 0, 0, 0, 0, 0, 0])[3], sd.MET)
+        # dns や reset は数えない
+        self.assertEqual(self.errors_row([0, 1, 0, 0, 0, 0, 0, 0], [9, 1, 0, 0, 9, 0, 0, 0])[3], sd.MET)
+
+    def test_errors_after_none_before_are_missed(self):
+        self.assertEqual(self.errors_row([0] * 8, [0, 0, 1, 0, 0, 0, 0, 0])[3], sd.MISSED)
+        self.assertEqual(self.errors_row([0] * 8, [0] * 8)[3], sd.MET)
+
+    # --- T22.4 の目安: 引き直しの回/時と `expired` + `warm_stale`
+
+    def refresh_row(self, a_refreshes, b_refreshes, a_kinds, b_kinds):
+        a, b = read(A), read(B)
+        a["status"]["dns"].update(refreshes=a_refreshes, misses_by_kind=a_kinds)
+        b["status"]["dns"].update(refreshes=b_refreshes, misses_by_kind=b_kinds)
+        with written(a=a, b=b) as p:
+            return self.row(13, a=p["a"], b=p["b"])
+
+    def test_half_the_refreshes_and_few_stale_misses_are_met(self):
+        # 前は 200,000 秒で 100,000 回 (1,800 回/時)、後は 43,200 秒で 10,800 回 (900 回/時 = 0.5 倍)
+        row = self.refresh_row(100_000, 10_800, {"expired": 0, "warm_stale": 0},
+                               {"expired": 5, "warm_stale": 0})
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("引き直し **900.0** 回/時 (前 1,800.0、0.50 倍)、`expired` + `warm_stale` **10.0** 回/日 "
+                      "(前 0.0、増え +10.0)", row[2])
+        self.assertEqual(row[1], "≤ 前 ×0.5 かつ 増え ≤ 10 回/日")
+
+    def test_too_many_refreshes_or_stale_misses_are_missed(self):
+        self.assertEqual(self.refresh_row(100_000, 10_801, {"expired": 0}, {"expired": 0})[3], sd.MISSED)
+        self.assertEqual(self.refresh_row(100_000, 100, {"expired": 0, "warm_stale": 0},
+                                          {"expired": 5, "warm_stale": 1})[3], sd.MISSED)
+
+    def test_without_misses_by_kind_before_it_cannot_be_judged(self):
+        row = self.row(13)                                              # A の `dns` に `misses_by_kind` が無い
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("引き直し **2.0** 回/時 (前 0.2、11.11 倍)", row[2])
+        self.assertIn("`misses_by_kind` が無い", row[4])
+
+    # --- 印字
+
+    def test_the_markdown_names_the_phase22_parts(self):
+        md = run([A, B, "--no-dns", "--criteria", "phase22"])
+        self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase22`)", md)
+        self.assertIn("前の 10 行は phase21 と同じ物差しで", md)
+        self.assertIn("T22.3 は段 1 で止めたので行がありません", md)
+        self.assertIn("| `dns_slow` を新しい閾 (窓のミスの合計 1,000 ms 以上) で数えた件/時と、"
+                      "それより小さい窓で立った件数 | 合計 < 1,000 ms の窓で 0 件 |", md)
+        self.assertNotIn("前の 10 行は phase21 と同じ物差しで", run([A, B, "--no-dns", "--criteria", "phase21"]))
+
+
+class PastOutputs22(unittest.TestCase):
+    """phase22 を足しても phase14〜phase21 の出力 (§2 の平常時の表と §9 の判定表、json の `history` と
+    `criteria`) が 1 文字も変わらないこと (T22.1)。値は phase22 を足す前の main (`1c19f9a`) で取った sha256 の頭 16 桁。
+    **ここが落ちたら過去の判定を変えている** (過去の判定を同じ命令で出し直せなくなる)。"""
+
+    DIGESTS = {
+        "phase14": ("a1276a7505c3bee8", "4d192151d9ac75fa"),
+        "phase15": ("df7bf774ea9fec51", "9e156ba611dc8241"),
+        "phase17": ("f7ec2a16f67c387d", "62e6c08ce78552a6"),
+        "phase18": ("91d2e653088a51b0", "12ac626a2b58fb3a"),
+        "phase20": ("e7a15a65fcb5d79d", "6d68fd96aa1c923d"),
+        "phase21": ("fe89711b73a976e4", "cff8f5505a659290"),
+    }
+
+    def test_the_past_criteria_print_the_same(self):
+        import hashlib
+        for name, (md_digest, js_digest) in self.DIGESTS.items():
+            md = run([A, B, "--no-dns", "--criteria", name])
+            js = json.loads(run([A, B, "--no-dns", "--criteria", name, "--out", "json"]))
+            part = md[md.index("## 2."):md.index("## 3.")] + md[md.index("## 9."):]
+            body = json.dumps({"history": js["history"], "criteria": js["criteria"]},
+                              ensure_ascii=False, sort_keys=True)
+            self.assertEqual(hashlib.sha256(part.encode()).hexdigest()[:16], md_digest, name)
+            self.assertEqual(hashlib.sha256(body.encode()).hexdigest()[:16], js_digest, name)
+
+
+def deployed_argv(d, a, b, zero):
+    def at(name):
+        return os.path.join(d, name)
+    return [at(a + "-snapshot.json"), at(b + "-snapshot.json"), "--no-dns",
+            "--daily", at(b + "-daily.json"), "--profile", at(b + "-profile_res_60.json"),
+            "--profile-before", at(a + "-profile_res_60.json"), "--zero", at(zero + "-snapshot.json")]
+
+
+# T18.99・T20.99・T21.99 の 3 組 (前・後・0 時間) と、そのとき使った定義
+PAST_PAIRS = (
+    (DEPLOYED, "2026-10-01T133549Z", "2026-10-08T092521Z", "2026-10-01T133907Z", ("phase18", "phase20", "phase21")),
+    (TOKYO, "2026-10-08T104352Z", "2026-10-15T185514Z", "2026-10-08T104507Z", ("phase20", "phase21")),
+    (TOKYO, "2026-10-15T201451Z", "2026-10-17T020206Z", "2026-10-15T201908Z", ("phase21",)),
+)
+
+
+@unittest.skipUnless(all(os.path.isfile(os.path.join(d, f"{x}-{kind}.json"))
+                         for d, a, b, z, _ in PAST_PAIRS for x, kind in (
+                             (a, "snapshot"), (a, "profile_res_60"), (b, "snapshot"), (b, "daily"),
+                             (b, "profile_res_60"), (z, "snapshot"))),
+                     "デプロイ先の雪像が無い (リポジトリには入れない)")
+class Deployed22(unittest.TestCase):
+    """T22.1 の受け入れ基準: 過去の 3 組に phase22 の切り方を当てても判定が変わらないことと、
+    tokyo の 10-15 → 10-17 (T21.99 の 3 枚) の phase22。"""
+
+    def test_the_phase22_cut_does_not_change_the_past_verdicts(self):
+        for d, a, b, z, names in PAST_PAIRS:
+            for name in names:
+                args = sd.parser().parse_args(deployed_argv(d, a, b, z) + ["--criteria", name])
+                A_, B_ = (sd.load_source(f, False) for f in args.files)
+                out = sd.build(A_, B_, args)
+                cut = sd.history_split(A_, B_, out["restart"], args.burst, sd.PHASE22["burst_median_k"])
+                again = sd.judge(name, cut, out["hosts"],
+                                 sd.major_hosts(out["hosts"]["rows"], None), sd.part(B_, "status"),
+                                 None, sd.CRITERIA[name], a=A_, b=B_, info=out["restart"],
+                                 dns=out["dns"], errors=out["errors"])
+                self.assertEqual([r[3] for r in again["rows"]], [r[3] for r in out["criteria"]["rows"]],
+                                 (b, name))
+
+    def test_phase22_on_the_t2199_pair(self):
+        d, a, b, z, _ = PAST_PAIRS[2]
+        out = build(deployed_argv(d, a, b, z) + ["--criteria", "phase22"])
+        h, c = out["history"], out["criteria"]
+        # 後の期間は中央値 780 本/時 → 閾 2,340 本で、29 標本とも平常時 (300 本なら 6 標本)
+        self.assertEqual(h["limits"], {"before": 300, "after": 2340})
+        self.assertEqual((h["after"]["samples"], h["after"]["burst_samples"]), (29, 0))
+        self.assertEqual(h["after"]["connects"], 21_920)
+        self.assertEqual(c["tally"], {sd.MET: 6, sd.MISSED: 4, sd.UNKNOWN: 0})
+        self.assertEqual(c["display_only"], 4)
+        verdicts = [r[3] for r in c["rows"]]
+        self.assertEqual(verdicts[6], sd.MISSED)                         # `dns_slow` 0.47 件/時 (phase21 と同じ)
+        self.assertEqual(verdicts[10:], [sd.MISSED, sd.MET, sd.MISSED, sd.MISSED])
+        self.assertIn("新しい閾で **0.17** 件/時 (5 件)、合計 1,000 ms 未満 **9** 件", c["rows"][10][2])
+        self.assertIn("**0.00%** (0 / 1,252)", c["rows"][11][2])
+        self.assertIn("**3.86** 件/時 (112 件: `refused` 3、`unreachable` 1、`timeout` 108。", c["rows"][12][2])
+        self.assertIn("引き直し **1,990.8** 回/時 (前 309.7、6.43 倍)", c["rows"][13][2])
 
 
 if __name__ == "__main__":
