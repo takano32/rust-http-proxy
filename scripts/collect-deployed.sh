@@ -17,6 +17,9 @@
 #   (`-daily.json` `-healthz.json` `-slo.json` `-config.json` `-profile_res_60.json`) も隣に置く。
 #   `-profile_res_60.json` は 1 枚 (256 KiB) で切れるので、`--full` が無くても `offset=` で追って
 #   24 時間ぶんを 1 つに繋ぐ (T17.0b。`samples` を連結して `truncated` は `false`)。
+#   **雪像の `recent` と `hosts` も、切れていれば既定で `offset=` で追って雪像の同じ部に繋ぐ** (T22.5。
+#   形は `/snapshot` のまま。上限は部ごとに `MAX_PAGES` 枚、続きを引く時間の合計 `FOLLOW_SECS` 秒で、
+#   越えたら止めて要約に書く)。`FULL=0` か `--no-follow` で T22.5 より前のとおり追わない。
 #   **`status/` は .gitignore 済みでコミットしない** (個票には接続元 IP と宛先ホストが並ぶため)。
 #   テストへ持ち込めるように、**匿名化した写し** (`-snapshot.anon.json`、`-daily.anon.json`、
 #   `-profile_res_60.anon.json`) も隣に置く (T17.16。`anonymize-snapshot.py --side` で同じ表を使う)。
@@ -33,8 +36,9 @@
 #     雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
 #     追って `<UTC 時刻>-page<何枚目>-<部>.json` に落とす (T15.0 (11))。雪像 1 枚には `/recent` は
 #     2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 (T15.0 の実測) しか
-#     入らないので、全部を残したい日だけ付ける。**既定では追わない**: 続きはどれも重い口で、
-#     重い口は同時 1 本 (T14.51) なので順に引くしかなく、収集にかかる時間が数倍になる。
+#     入らないので、全部を残したい日だけ付ける。`recent` と `hosts` は T22.5 から既定で雪像に繋ぐので、
+#     別ファイルに落ちるのはそのあとも切れている部だけ (`profile` と、上限で止めた残り)。
+#     `--full --no-follow` で T22.5 より前の `--full` (3 つとも別ファイル) になる。
 #     `snapshot-summary.py` に渡す雪像の形は変わらない (落とすのは別ファイル)。
 #     **名前が `page<N>-<部>` の順なのはわざと**: `<部>-<N>` にすると
 #     `snapshot-diff.py --from-files` と `anonymize-snapshot.py` の `classify()` が
@@ -61,8 +65,12 @@
 #                         phase21 の IPv6 の探りの行。無ければ「判定できず」)。
 #                         BEFORE も ZERO も、相対パスはリポジトリの根から (`DIR` と同じ)
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
-#   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` を
-#                         繋ぐ枚数の上限 (1 枚目を含む) にも使う
+#   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` と
+#                         既定で追う `recent`・`hosts` を繋ぐ枚数の上限 (1 枚目を含む) にも使う
+#                         (2,000 件の `recent` は 1 枚 576 件の今の tokyo で 4 枚)
+#   FOLLOW_SECS (既定 60) … 既定で追う `recent`・`hosts` の続きを引く時間の合計の上限 (秒)。
+#                         越えたら次の 1 枚を引かずに止める (T22.5)
+#   FULL (無指定)       … `0` で `--no-follow` と同じ (切れた部をどれも追わない)、`1` で `--full` と同じ
 #   AAAA (無指定)       … `status-diff.py --aaaa FILE` に渡す表 (数字を残すときは固定する。§1)
 #   ANON (既定 1)       … 0 で匿名化した写し (`<時刻>-snapshot.anon.json` ほか) を置かない
 #
@@ -73,7 +81,16 @@ SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 ORIG_ARGS=("$@")
 cd "$(dirname "$0")/.." || exit 1
 FROM_SERVER=0
+# 切れた部の追い方は 3 段 (T22.5): `FOLLOW=1` (既定) は `recent`・`hosts` を追って雪像に繋ぐ、
+# `FULL=1` (`--full`) はそのうえで残りの部 (`profile` ほか) も別ファイルに落とす、
+# `FULL=0` (`--no-follow`) は T22.5 より前の既定 (どれも追わない) に戻す
+FOLLOW=1
+FULL_ENV=${FULL:-}
 FULL=0
+case "$FULL_ENV" in
+  0) FOLLOW=0 ;;
+  1) FULL=1 ;;
+esac
 while :; do
   case "${1:-}" in
     --from-server)
@@ -84,13 +101,17 @@ while :; do
       FULL=1
       shift
       ;;
+    --no-follow)
+      FOLLOW=0
+      shift
+      ;;
     *) break ;;
   esac
 done
 PROXY=${1:-}
 if [ -z "$PROXY" ]; then
   # **2 つの旗は排他** (`--from-server` は保存済みの雪像を取り寄せるだけで、続きを引く相手が居ない)
-  echo "usage: $0 [--full] HOST:PORT [DIR]   (例: $0 tokyo.sorahost.net:60357)" >&2
+  echo "usage: $0 [--full] [--no-follow] HOST:PORT [DIR]   (例: $0 tokyo.sorahost.net:60357)" >&2
   echo "       $0 --from-server HOST:PORT [DIR]   (回し忘れた日を取り寄せる。--full は効きません)" >&2
   exit 2
 fi
@@ -108,10 +129,23 @@ JUDGE_BEFORE=${BEFORE:-}
 ZERO=${ZERO:-}
 MAX_TIME=${MAX_TIME:-30}
 MAX_PAGES=${MAX_PAGES:-8}
+FOLLOW_SECS=${FOLLOW_SECS:-60}
 AAAA=${AAAA:-}
 ANON=${ANON:-1}
 
 mkdir -p "$DIR" || exit 1
+
+# いまの時刻 (ミリ秒)。取得にかかった時間を要約に書く (T22.5)。bash 5 の `EPOCHREALTIME` が
+# 無ければ `date` (小数点が `,` の地域設定でも読めるように、区切りは数字以外を全部落とす)
+now_ms() {
+  local t=${EPOCHREALTIME:-}
+  if [ -n "$t" ]; then
+    t=${t//[!0-9]/}
+    echo $((10#$t / 1000))
+  else
+    echo $(($(date +%s%N) / 1000000))
+  fi
+}
 
 # --- 0. 保存済みの日次 snapshot を取り寄せる (--from-server。T14.34) ----------
 # プロキシが `$HOME/.rust-http-proxy/snapshots/` に 1 日 1 ファイル書いているので、
@@ -200,6 +234,7 @@ if ! curl -s --max-time "$MAX_TIME" "http://$PROXY/status" -o "$STATUS_BEFORE" |
   rm -f "$STATUS_BEFORE"
   STATUS_BEFORE=
 fi
+SNAP_START=$(now_ms)
 if ! curl -s --max-time "$MAX_TIME" "http://$PROXY/snapshot" -o "$OUT"; then
   echo "failed to fetch http://$PROXY/snapshot" >&2
   rm -f "$OUT"
@@ -208,6 +243,158 @@ fi
 if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$OUT" 2>/dev/null; then
   echo "http://$PROXY/snapshot did not return JSON (kept at $OUT for inspection)" >&2
   exit 1
+fi
+SNAP_MS=$(($(now_ms) - SNAP_START))
+
+# --- 1-follow. 切れた `recent` と `hosts` の続きを既定で追って雪像に繋ぐ (T22.5) ------------
+# 量が 12 倍になった tokyo (T21.99) では、雪像の `recent` は 2,000 件中 576 件 (33 分ぶん)、
+# `hosts` は 1,001 件中 574 件で 256 KiB に切れる。**`--full` を付けなくても**、この 2 つの部だけは
+# `next_offset` が `null` になるまで `offset=` で追い、**雪像の同じ部に行を足して** `/snapshot` の形の
+# まま置き直す (`/profile?res=60` を繋ぐ T17.0b と同じ流儀。鍵は足さない・消さない)。
+# 読む道具 (`snapshot-summary.py`・`snapshot-diff.py`・`status-diff.py`・`anonymize-snapshot.py`) は
+# 隣のファイルを知らないので、繋いでおけばそのまま全部を読む。
+# **`/recent?since=<前の雪像の取得時刻>` にしないのはわざと**: `since` は「**開いた**時刻がこれ以降」で
+# 絞るので、前の雪像より前に開いて後に閉じた長生きのトンネルが前の雪像にも今回にも入らない。
+# それにリングは 2,000 件 (`MAX_RECENT`) しか持たないので、`since` を付けても取れる窓は広がらない。
+# 頁の間に新しく閉じた接続があると並びがずれて同じ行が 2 枚に出る (欠けはしない) ので `id` で、
+# `hosts` は `host` で重ねを落とす (`hosts` は要求数の順なので、頁の間に順位が入れ替わった
+# ホストは出ないことがある。`--full` の別ファイルでも同じ)。
+# 上限は部ごとの枚数 `MAX_PAGES` (1 枚目を含む) と、続きを引く時間の合計 `FOLLOW_SECS`。
+# 越えたら止めて、繋いだぶんの `truncated` と `next_offset` は残りを指したままにし、要約に書く
+FOLLOW_NOTE=
+if [ "$FOLLOW" = 1 ]; then
+  FOLLOW_START=$(now_ms)
+  # 1 行は `+ <部> <URL の形> <次の offset> <1 枚目の件数>` か `- <部> <引けない理由>`
+  FOLLOW_PLAN=$(python3 - "$OUT" <<'PLANPY'
+import json, sys
+
+# 雪像がその部を組むときの引数 + `offset=` (`crates/endpoints/src/endpoints/recent.rs` の `snapshot`)
+URL = {"recent": "/recent?n=2000&offset=", "hosts": "/hosts?limit=1000&offset="}
+d = json.load(open(sys.argv[1]))
+for name, tmpl in URL.items():
+    p = d.get(name)
+    if not isinstance(p, dict) or not p.get("truncated"):
+        continue
+    if p.get("next_offset") is None:
+        print("-", name, "この版のプロキシに offset= がありません")
+        continue
+    print("+", name, tmpl, p["next_offset"], len(p.get(name) or []))
+PLANPY
+) || FOLLOW_PLAN=
+  JOIN_ARGS=()
+  while read -r kind part tmpl off _; do
+    [ -n "${kind:-}" ] || continue
+    if [ "$kind" = - ]; then
+      JOIN_ARGS+=("@$part:old")
+      continue
+    fi
+    page=2
+    why=done
+    files=()
+    while [ "${off:-null}" != null ]; do
+      if [ "$page" -gt "$MAX_PAGES" ]; then
+        why=max_pages
+        break
+      fi
+      if [ $(($(now_ms) - FOLLOW_START)) -ge $((FOLLOW_SECS * 1000)) ]; then
+        why=time
+        break
+      fi
+      f="$work/follow-$part-page$page.json"
+      ok=0
+      for _ in 1 2 3; do
+        # 重い口が塞がっていると `{"error":"busy"}` (503) も JSON で返るので、それは取れていない扱い
+        if curl -s --max-time "$MAX_TIME" "http://$PROXY$tmpl$off" -o "$f" &&
+          python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" 2>/dev/null &&
+          ! grep -q '"error":"busy"' "$f"; then
+          ok=1
+          break
+        fi
+        sleep 1 # 重い口は同時 1 本 (T14.51)。`Retry-After: 1` に従う
+      done
+      if [ "$ok" != 1 ]; then
+        echo "failed to fetch http://$PROXY$tmpl$off" >&2
+        why=failed
+        break
+      fi
+      files+=("$f")
+      off=$(python3 -c 'import json, sys
+v = json.load(open(sys.argv[1])).get("next_offset")
+print("null" if v is None else v)' "$f" 2>/dev/null) || off=null
+      page=$((page + 1))
+    done
+    JOIN_ARGS+=("@$part:$why" "${files[@]}")
+  done <<EOF
+$FOLLOW_PLAN
+EOF
+  FOLLOW_MS=$(($(now_ms) - FOLLOW_START))
+  if [ "${#JOIN_ARGS[@]}" -gt 0 ]; then
+    FOLLOW_NOTE=$(python3 - "$OUT" "$FOLLOW_MS" "$SNAP_MS" "$MAX_PAGES" "$FOLLOW_SECS" "${JOIN_ARGS[@]}" <<'JOINPY'
+import json, os, sys
+
+out, follow_ms, snap_ms, max_pages, follow_secs = sys.argv[1:6]
+# `@<部>:<止めた理由>` のあとに、その部の続きの頁のファイルが並ぶ
+plan, cur = [], None
+for a in sys.argv[6:]:
+    if a.startswith("@"):
+        name, why = a[1:].split(":", 1)
+        cur = (name, why, [])
+        plan.append(cur)
+    else:
+        cur[2].append(a)
+d = json.load(open(out))
+KEY = {"recent": "id", "hosts": "host"}
+notes = []
+for name, why, files in plan:
+    p = d.get(name)
+    if why == "old":
+        notes.append(f"`{name}` は切れていますが、この版のプロキシに `offset=` がありません (1 枚ぶんだけ)")
+        continue
+    rows = p.get(name) or []
+    first = len(rows)
+    seen = {r.get(KEY[name]) for r in rows if isinstance(r, dict)}
+    rest = p.get("next_offset")
+    dup = 0
+    for f in files:
+        page = json.load(open(f))
+        for r in page.get(name) or []:
+            k = r.get(KEY[name]) if isinstance(r, dict) else None
+            if k is not None and k in seen:
+                dup += 1
+                continue
+            seen.add(k)
+            rows.append(r)
+        rest = page.get("next_offset")
+    # 形は `/snapshot` の部のまま (鍵の順も変えない)。件数の欄だけ繋いだあとの値にする。
+    # `recent` の `count` は「返した件数」(`shown` と同じ値) で、`hosts` の `count` は全ホスト数
+    p[name] = rows
+    p["shown"] = len(rows)
+    if name == "recent":
+        p["count"] = len(rows)
+    # 最後の頁に続きが無ければ切れていない。止めたときは残りを指したまま
+    p["truncated"] = rest is not None
+    p["next_offset"] = rest
+    total = p.get("matched") if name == "recent" else p.get("count")
+    line = (f"`{name}` {len(files) + 1} 枚で {first:,} → {len(rows):,} 件"
+            + (f" (全 {total:,} 件)" if isinstance(total, int) else "")
+            + (f"、頁の重なり {dup} 件を落とした" if dup else ""))
+    if why == "max_pages":
+        line += f"。**打ち切った**: `MAX_PAGES={max_pages}` で止めた (残りは offset={rest} から)"
+    elif why == "time":
+        line += (f"。**打ち切った**: 続きを引く時間が `FOLLOW_SECS={follow_secs}` 秒を越えた"
+                 f" (残りは offset={rest} から)")
+    elif why == "failed":
+        line += f"。**打ち切った**: 続きが取れなかった (残りは offset={rest} から)"
+    notes.append(line)
+tmp = out + ".part"
+with open(tmp, "w") as f:
+    json.dump(d, f, ensure_ascii=False, separators=(",", ":"))
+os.replace(tmp, out)
+print("、".join(notes)
+      + f" (続き {int(follow_ms) / 1000:.1f} 秒。`/snapshot` 自体は {int(snap_ms) / 1000:.1f} 秒)")
+JOINPY
+) || FOLLOW_NOTE='**繋げなかった** (雪像は 1 枚目のまま)'
+  fi
 fi
 
 # --- 1a. 雪像に入らない口 ---------------------------------------------------------
@@ -346,6 +533,8 @@ printf -- '- 雪像: `%s` (%s B)\n' "$OUT" "$(wc -c <"$OUT" | tr -d ' ')"
 # shellcheck disable=SC2086  # 先頭の空白を落とすため、わざと語に割る
 [ -n "$EXTRA_GOT" ] && printf -- '- 雪像に入らない口: `%s-{%s}.json`\n' "$DIR/$STAMP" "$(echo $EXTRA_GOT | tr ' ' ',')"
 [ -n "$EXTRA_FAILED" ] && printf -- '- **取れなかった口**:%s\n' "$EXTRA_FAILED"
+[ -n "$FOLLOW_NOTE" ] && printf -- '- 切れた部の続き (既定で追う。T22.5): %s\n' "$FOLLOW_NOTE"
+[ "$FOLLOW" = 1 ] || printf -- '- 切れた部の続き: 追っていない (`FULL=0` か `--no-follow`)\n'
 [ -n "$PROFILE_NOTE" ] && printf -- '- `/profile?res=60` は `offset=` で追って %s\n' "$PROFILE_NOTE"
 [ -n "$ANON_NOTE" ] && printf -- '- 匿名化した写し: %s\n' "$ANON_NOTE"
 [ -n "$PREV" ] && printf -- '- 前回: `%s`\n' "$PREV"
@@ -372,6 +561,8 @@ fi
 # --- 1b. 切れた部の続きを取る (--full。T15.0 (11)) -----------------------------
 # 雪像 1 枚は部ごとに 256 KiB で切れる (`truncated`)。`offset=` を持つ 3 つの部だけ、
 # `next_offset` が `null` になるまで**追加の URL で**引いて別ファイルに落とす。
+# `recent` と `hosts` は上の 1-follow (T22.5) で繋いだあとなので、ここに来るのはまだ切れている
+# ときだけ (続きは繋いだ部の `next_offset` から引く)
 # 続きはどれも重い口 (同時 1 本) なので順に引き、断られたら `Retry-After: 1` に従う。
 if [ "$FULL" = 1 ]; then
   printf -- '- `--full`: 切れた部の続きを `offset=` で追います (重い口は同時 1 本なので順に引きます)\n'
