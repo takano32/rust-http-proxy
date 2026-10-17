@@ -500,7 +500,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   最初の引き直しで起きる) が順にやり、要求の経路は待ちません。そのぶん**古い答えで繋ぐ窓が
   最長 TTL の 1/4 (15 秒)** できますが、その間に IP が変わっていても次の候補へ行くだけです
   (Happy Eyeballs)。解決に失敗した名前は 60 秒覚えて引き直しません。
-  さらに **keep-warm**: **直近 3,600 秒 (`PROXY_DNS_WARM_SECS`) に 2 回以上使われた名前 (warm) は、
+  さらに **keep-warm** (**既定は止めてある**。T22.4。`PROXY_DNS_WARM_SECS=3600` で動く):
+  **直近 3,600 秒 (`PROXY_DNS_WARM_SECS`) に 2 回以上使われた名前 (warm) は、
   使われていなくても 45 秒 (3/4 TTL) ごとに裏で引き直し続ける**ので、TTL より長い間隔で来る
   ホスト (数分おきの push 通知など) もミスになりません。同時に warm でいられるのは 32 件まで
   (最後の使用が古いものから外れ、最後の使用から 3,600 秒過ぎたら止まります)。
@@ -516,6 +517,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   (`/recent` の到着列と `/hosts_series` の助走) で見積もります (T17.5。いまの規則の値を同じ区間の
   `/history` と並べ、`promote` の条件を差し替えた案と比べる。`--json` で機械で読む形)。
   `--serve-stale SECS` (何度でも) で serve-stale の窓ごとの `expired` と引き直しの数も並べます (T21.3)。
+  `--grid` は serve-stale 21,600 秒を基準に、warm の枠 16 / 64・窓 900 秒・warm をやめる・`warm_promote` の予定を答えの齢から出す、
+  を並べ、`expired` + `warm_stale` のミスの 1 日あたりの増え・引き直しの回/時・名前ごとの最大を出します (T22.4。区間の前から居た名前を
+  warm でない / warm の 2 通りで置く)。`--grid --series` は `/hosts_series` (上位 16 名前) だけで回す参考です。
   **名前解決は 1 要求 1 回**: ローカル宛て (SSRF) の判定で引いた答えをそのまま接続に使うので、
   キャッシュを切っていても判定と接続が別の答えを見ることはない。
   **答えが変わった回数 (`changes`)**: 引き直し (keep-warm と期限切れの再解決) は元々
@@ -1518,7 +1522,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_MALLOC_ARENAS` | `8` | malloc のアリーナ数の上限 |
 | `PROXY_DNS_TTL_SECS` | `60` | 名前解決の結果を保持する秒数 |
 | `PROXY_DNS_NEGATIVE_SECS` | `60` | 名前解決の失敗を覚えておく秒数 (`0` で覚えない) |
-| `PROXY_DNS_WARM_SECS` | `3600` | keep-warm: よく使う名前を裏で引き直し続ける窓 (秒) |
+| `PROXY_DNS_WARM_SECS` | `0` | keep-warm: よく使う名前を裏で引き直し続ける窓 (秒。`0` で止める = 既定。T21.3 までの既定は `3600`) |
 | `PROXY_DNS_STALE_SECS` | `21600` | serve-stale: 期限切れでもこの秒数未満の答えは待たずに使い、裏で引き直す (`0` で止める) |
 | `PROXY_CANARY` | `auto` | canary: 要求が無い時間帯も待ちを測る宛先 |
 | `PROXY_CANARY_SECS` | `60` | canary の周期 (秒、最小 1) |
@@ -1719,8 +1723,11 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   覚えている間は OS に問い合わせずに同じエラーを返します (`/status` の `dns.negative_hits`)。
   引けない名前 1 つで 2 秒待たされることがあるための蓋で、古い答えが 1 時間以内にあるときはエラーより古い答えを優先します。
   `.env` で即時反映
-- **`PROXY_DNS_WARM_SECS`** (既定 `3600`)
+- **`PROXY_DNS_WARM_SECS`** (既定 `0` = 止める。T22.4 で `3600` から変えた)
   **keep-warm**: 直近この秒数に **2 回以上**使われた名前 (warm) は、使われていなくても `PROXY_DNS_TTL_SECS` の 3/4 ごとに裏で引き直し続けます (`0` で無効 = 直近 TTL 内に使われた名前だけ 1 回先回りする動きに戻る)。
+  **既定で止めている理由 (T22.4)**: serve-stale (`PROXY_DNS_STALE_SECS`) のもとでは、warm が救っていた期限切れのミスは待たない古い答えの当たりになるので、warm の引き直し (1 名前 80 回/時、tokyo では 32 件で約 2,000 回/時) はミスをほとんど減らしません。
+  `scripts/dns-replay.py --grid` の再生 (雪像 3 枚) で、止めると引き直しは今の 5〜27%、`expired` + `warm_stale` のミスは増えませんでした。代わりに古い答えで繋ぎに行く回 (`dns.stale_hits`) が増えます。
+  T21.3 までの動きに戻すときは `PROXY_DNS_WARM_SECS=3600`。
   TTL (60 秒) を熱さの物差しにすると、間隔が TTL より長いホストは 1 つも救えません (デプロイ先の主要 3 件は 2〜10 分間隔で、ミス率は 0.31 / 0.76 / 1.00 でした)。
   1 回だけ使われた名前は warm にしません (引き直しても二度と来ない)。
   答えを持っている名前だけが warm になります (引けない名前は負のキャッシュの担当)。
@@ -2986,7 +2993,7 @@ curl "http://127.0.0.1:8080/profile?res=5"                         # 待ちの�
 curl "http://127.0.0.1:8080/connections"                           # いま開いている接続 (tid と spins)
 ```
 
-見るのは `dns.warm` (keep-warm が掴んでいる名前の数。`0` なら効いていません) と
+見るのは `dns.warm` (keep-warm が掴んでいる名前の数。既定 (`PROXY_DNS_WARM_SECS=0`、T22.4) では常に `0`。窓を設定して `0` なら効いていません) と
 `dns.misses ÷ CONNECT の本数`、`ipv6` の `v4_first` (`true` なら IPv6 が落ちている環境と判断済み)、
 `evicted_idle` と `rejected_overload` (山が無い時間帯は `0`)、`recent_quantiles`
 (直近 1,024 本の**実測**の分位点。区間の補間ではありません)。

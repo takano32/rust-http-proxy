@@ -10,6 +10,9 @@
 //! 秒 (`PROXY_DNS_WARM_SECS`、既定 3,600 秒、0 で無効) に 2 回以上使われた名前 (= warm) は、
 //! 使われていなくても 3/4 TTL ごとに裏で引き直し続ける** (keep-warm。T14.1)。warm でいられるのは
 //! 同時に [`MAX_WARM`] 件までで、最後の使用から窓を過ぎた名前は待ち行列から外れる。
+//! **T22.4 から既定は止めてある** ([`WARM_DEFAULT`] = 0): serve-stale (下) のもとでは、warm が
+//! 救っていた期限切れのミスは古い答えの当たりになり、warm の引き直し (1 名前 80 回/時) はミスを
+//! ほとんど減らさない。`PROXY_DNS_WARM_SECS=3600` で T21.3 までの動きに戻る。
 //!
 //! 解決に失敗したときは [`STALE_MAX`] 以内の古い結果を使い (オリジンの
 //! DNS 障害でトンネルが全滅しないように)、失敗そのものも [`negative_ttl`]
@@ -53,13 +56,25 @@ pub const STALE_MAX: Duration = Duration::from_secs(3600);
 /// 5 秒から 60 秒にした (T13.1)。デプロイ先の 58.6 時間で解決の失敗は 80 件・**1 回 約 2 秒**
 /// あり、5 秒では「直後の再試行」(負のキャッシュの当たり 81 件) しか捉えられていなかった。
 pub const NEGATIVE: Duration = Duration::from_secs(60);
-/// warm と見なす窓の既定 (`PROXY_DNS_WARM_SECS` で変える。0 で keep-warm を止める)。
+/// keep-warm を使うときの窓 (`PROXY_DNS_WARM_SECS=3600`。0 で keep-warm を止める)。T21.3 までの既定で、
+/// T22.4 から既定は [`WARM_DEFAULT`] (0)。
 ///
 /// デプロイ先の主要ホストのアクセス間隔は 2〜10 分 (`/dns` の 90 件のうち 60 秒以内に
 /// 使われたものは 2 件しか無かった。T14.1)。900 秒から **3,600 秒**に広げた (T15.4):
 /// `discord.com` は 2〜4 本の塊が約 1,800 秒おきに来るので 900 秒では毎回外れ、
 /// T15.0 の版の 9 時間ではミス 26 回のうち 25 回が窓の外だった。
 pub const WARM: Duration = Duration::from_secs(3600);
+/// `PROXY_DNS_WARM_SECS` の既定 (T22.4)。**0 = keep-warm を止める** (裏の引き直しは、TTL の 3/4 を
+/// 過ぎた熱い名前の先回り (T13.1) と、serve-stale で古い答えを返したときの 1 回だけになる)。
+///
+/// `scripts/dns-replay.py --grid` の再生で決めた (serve-stale 21,600 秒のもとで、雪像 3 枚 =
+/// tokyo 2026-10-15・2026-10-17、nagoya 2026-10-08)。warm を止めると引き直しは今の 5〜27% になり、
+/// `expired` + `warm_stale` のミスは 3 枚とも増えなかった (目安「引き直し半分以下・ミスの増え 1 日
+/// 10 回以内」を満たしたのはこれだけ。枠 16 / 64 と窓 900 秒は届かない)。serve-stale では warm が
+/// 期限切れのミスを救えるのは、間隔が「serve-stale の窓 〜 その窓 + warm の窓」の名前だけになる。
+/// 代わりに古い答えで繋ぎに行く回が増える (再生で 4.6〜16 倍。`/status` の `dns.stale_hits`)。
+/// T21.3 までの値 ([`WARM`] = 3,600 秒) に戻すときは `PROXY_DNS_WARM_SECS=3600`。
+pub const WARM_DEFAULT: Duration = Duration::ZERO;
 /// 期限切れの答えを同期で引かずに返してよい齢の既定 (`PROXY_DNS_STALE_SECS` で変える。0 で止める。T21.3)。
 ///
 /// `scripts/dns-replay.py --serve-stale` の再生で決めた (雪像 3 枚 × 3,600 / 21,600 / 86,400 秒)。
@@ -77,7 +92,7 @@ const MAX_WARM: usize = 32;
 
 static TTL_SECS: AtomicU64 = AtomicU64::new(60);
 static NEGATIVE_SECS: AtomicU64 = AtomicU64::new(NEGATIVE.as_secs());
-static WARM_SECS: AtomicU64 = AtomicU64::new(WARM.as_secs());
+static WARM_SECS: AtomicU64 = AtomicU64::new(WARM_DEFAULT.as_secs());
 static SERVE_STALE_SECS: AtomicU64 = AtomicU64::new(SERVE_STALE.as_secs());
 static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);

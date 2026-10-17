@@ -465,6 +465,9 @@ pub struct Config {
     /// この秒数に **2 回以上**使われた名前は、使われなくても 3/4 TTL ごとに裏で引き直す。
     /// TTL (60 秒) を熱さの物差しにすると、間隔が 2〜10 分のデプロイ先の主要ホストを
     /// 1 つも救えなかった (T14.1)
+    ///
+    /// 既定は 0 (止める。T22.4): serve-stale (`dns_stale`) のもとでは warm の引き直しがミスを
+    /// ほとんど減らさない。3,600 で T21.3 までの動き (`proxy_net_dns::dns::WARM_DEFAULT` の doc)
     pub dns_warm: Duration,
     /// 期限切れの答えを同期で引かずに返してよい齢 (`PROXY_DNS_STALE_SECS`、0 で止める。T21.3)。
     ///
@@ -1235,7 +1238,7 @@ impl Config {
             tls_ca_file: None,
             dns_ttl: Duration::from_secs(60),
             dns_negative: crate::dns::NEGATIVE,
-            dns_warm: crate::dns::WARM,
+            dns_warm: crate::dns::WARM_DEFAULT,
             dns_stale: crate::dns::SERVE_STALE,
             // 既定は `auto` = 直近 1 時間で最も使われた CONNECT の宛先を 60 秒に 1 回
             // (値の意味は `proxy-metrics` の `canary`。この層は文字列を運ぶだけ)
@@ -1664,6 +1667,20 @@ mod tests {
             .find(|s| s.key == "PROXY_HE_STAGGER_MS")
             .expect("PROXY_HE_STAGGER_MS が無い");
         assert_eq!(s.value, "250");
+    }
+
+    /// keep-warm の既定は止める (T22.4)。`/config` と `--check` にも 0 と出る。
+    #[test]
+    fn dns_warm_defaults_to_off() {
+        let cfg = Config::new("9090", None, None, Duration::from_secs(30)).expect("port");
+        assert_eq!(cfg.dns_warm, Duration::ZERO, "既定は keep-warm を止める");
+        assert_eq!(cfg.dns_warm, crate::dns::WARM_DEFAULT);
+        let s = cfg
+            .settings()
+            .into_iter()
+            .find(|s| s.key == "PROXY_DNS_WARM_SECS")
+            .expect("PROXY_DNS_WARM_SECS が無い");
+        assert_eq!(s.value, "0");
     }
 
     #[test]
