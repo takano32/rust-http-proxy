@@ -148,9 +148,11 @@ fn a_slow_dns_miss_fires_once_and_clears() {
     }
     assert_eq!(fired.len(), 1, "{:?}", fired);
     assert_eq!(fired[0].kind, Kind::DnsSlow);
+    // 1 本目 (3 回・420 ms) と 2 本目 (6 回・840 ms) は合計が [`DNS_MIN_SUM_MS`] に届かず、
+    // 3 本目で立つ (T22.2)
     assert_eq!(
         fired[0].text,
-        "dns_slow: dns miss 140 ms avg over 5m (threshold 100 ms; 3 misses, 420 ms total)"
+        "dns_slow: dns miss 140 ms avg over 5m (threshold 100 ms; 9 misses, 1260 ms total)"
     );
     let (_, back) = calm(&h, &mut d, t, 900);
     assert_eq!(back.len(), 1, "{:?}", back);
@@ -210,6 +212,95 @@ fn three_slow_dns_misses_fire() {
     );
     // 2 回目までは立たない (3 回目の標本で立つ)
     assert_eq!(dns_misses_once_a_minute(2, 400, None), Vec::new());
+}
+
+/// T22.2: ミスが少なく合計の小さい窓では立たない (平均が閾を越えていても)。
+///
+/// tokyo の 24 時間で立った 9 件のうち 5 件がこれ (3〜5 回で合計 311〜632 ms)。
+#[test]
+fn few_misses_with_a_small_sum_do_not_fire() {
+    assert_eq!(DNS_MIN_SUM_MS, 1_000);
+    let out = dns_misses_once_a_minute(3, 140, None);
+    assert!(out.is_empty(), "3 回・合計 420 ms は立たない: {:?}", out);
+    let out = dns_misses_once_a_minute(4, 240, None);
+    assert!(out.is_empty(), "4 回・合計 960 ms は立たない: {:?}", out);
+}
+
+/// T22.2: 3 回でも合計が [`DNS_MIN_SUM_MS`] を越えれば立つ (1 回 334 ms 以上)。
+#[test]
+fn three_misses_with_a_large_sum_fire() {
+    let out = dns_misses_once_a_minute(3, 340, None);
+    assert_eq!(out.len(), 1, "{:?}", out);
+    assert_eq!(
+        out[0].text,
+        "dns_slow: dns miss 340 ms avg over 5m (threshold 100 ms; 3 misses, 1020 ms total)"
+    );
+    // 4 回目で合計が届くときは 4 回目の標本で立つ
+    let out = dns_misses_once_a_minute(4, 260, None);
+    assert_eq!(out.len(), 1, "{:?}", out);
+    assert!(
+        out[0].text.contains("4 misses, 1040 ms total"),
+        "{}",
+        out[0].text
+    );
+}
+
+/// 平常時の 1 時間のあと、5 秒ごとに 1 回 `each_ms` のミスを `secs` 秒流し、続けて
+/// 静かな `calm_secs` 秒を流して、出た変わり目を全部返す (T22.2)。
+fn dns_miss_every_sample(each_ms: u64, secs: u64, calm_secs: u64) -> Vec<Fired> {
+    let h = History::default();
+    let mut d = Detector::new();
+    let (mut t, quiet) = calm(&h, &mut d, 0, BASE_SECS);
+    assert!(quiet.is_empty(), "{:?}", quiet);
+    let mut out = Vec::new();
+    let end = t + secs;
+    while t < end {
+        let mut p = connects(t, 2, 10);
+        p.dns_misses = 1;
+        p.dns_ms_sum = each_ms;
+        out.extend(feed(&h, &mut d, p));
+        t += 5;
+    }
+    out.extend(calm(&h, &mut d, t, calm_secs).1);
+    out
+}
+
+/// T22.2: 多いミスで遅い窓 (本当に遅い名前解決) は今までどおり立ち、収まれば解除する。
+#[test]
+fn many_slow_misses_fire_and_clear() {
+    // 5 秒ごとに 110 ms を 2 分 = 24 回。10 回目 (合計 1,100 ms) の標本で立つ
+    let out = dns_miss_every_sample(110, 120, 900);
+    assert_eq!(out.len(), 2, "{:?}", out);
+    assert_eq!(out[0].kind, Kind::DnsSlow);
+    assert_eq!(
+        out[0].text,
+        "dns_slow: dns miss 110 ms avg over 5m (threshold 100 ms; 10 misses, 1100 ms total)"
+    );
+    // 解除の条件は今までどおり (外れたまま 5 分)
+    assert!(out[1].cleared);
+    assert!(
+        out[1].text.starts_with("cleared: dns_slow after "),
+        "{}",
+        out[1].text
+    );
+    // 多くても速いミス (50 ms) は立たない
+    assert!(dns_miss_every_sample(50, 120, 0).is_empty());
+}
+
+/// T22.2: 立っている間に合計が [`DNS_MIN_SUM_MS`] を割っても、すぐには解除しない
+/// (外れたまま [`CLEAR_SECS`] 続いたときだけ)。
+#[test]
+fn dns_slow_clears_only_after_five_calm_minutes() {
+    // 2 分ぶん立てたあと、ミスが止まって約 4 分で窓のミスが 10 回を割り、合計が 1,000 ms を
+    // 下回る (回数 3 以上・平均 110 ms のままでも外れる)。そこから 5 分は解除しないので、
+    // 静けさ 400 秒ではまだ立っている
+    let out = dns_miss_every_sample(110, 120, 400);
+    assert_eq!(out.len(), 1, "{:?}", out);
+    assert!(!out[0].cleared);
+    // 静けさ 900 秒なら解除の 1 件が出る
+    let out = dns_miss_every_sample(110, 120, 900);
+    assert_eq!(out.len(), 2, "{:?}", out);
+    assert!(out[1].cleared);
 }
 
 /// T17.1: canary の名前解決が 200 ms の網では閾は 3 倍の 600 ms。500 ms は立たない。

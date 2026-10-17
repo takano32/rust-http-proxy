@@ -106,6 +106,16 @@ class Real(unittest.TestCase):
         a = ds.analyze(s)
         self.assertEqual(a["real_events"], 1, "解除と別の種類は数えない")
         self.assertEqual(a["proposals"]["current"]["matched_real"], 1)
+        self.assertEqual(a["proposals"]["sum1000"]["events"], 0, "今の条件 (合計 1,000 ms) では立たない")
+        self.assertEqual(a["proposals"]["sum1000"]["matched_real"], 0)
+
+    def test_sum1000_is_the_current_rule_of_anomaly_rs(self):
+        # `anomaly.rs` の `DNS_MIN_SUM_MS` と同じ値 (変えたら両方を直す)
+        self.assertEqual(ds.DNS_MIN_SUM_MS, 1000)
+        cond = ds.PROPOSALS["sum1000"][1]
+        self.assertFalse(cond({"misses": 4, "ms_sum": 960, "worst": 240.0, "limit": 100.0}))
+        self.assertTrue(cond({"misses": 3, "ms_sum": 1020, "worst": 340.0, "limit": 100.0}))
+        self.assertFalse(cond({"misses": 12, "ms_sum": 1000, "worst": 90.0, "limit": 100.0}), "平均 83 ms")
 
     def test_main_prints_a_table_and_json(self):
         with tempfile.TemporaryDirectory(prefix="t222-") as d:

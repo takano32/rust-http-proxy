@@ -15,7 +15,7 @@
 //! | 種類 | 立つ条件 |
 //! |---|---|
 //! | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が直近 1 時間の p95 の [`CONNECT_RATIO`] 倍以上、かつ [`CONNECT_MIN_MS`] 以上、かつ [`CONNECT_MIN_SAMPLES`] 本以上 |
-//! | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が [`DNS_MISS_MS`] と canary の基準線の [`DNS_CANARY_RATIO`] 倍の大きい方以上、かつ [`DNS_MIN_MISSES`] 回以上 (T17.1) |
+//! | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が [`DNS_MISS_MS`] と canary の基準線の [`DNS_CANARY_RATIO`] 倍の大きい方以上、かつ [`DNS_MIN_MISSES`] 回以上 (T17.1)、かつ窓のミスの合計が [`DNS_MIN_SUM_MS`] 以上 (T22.2) |
 //! | `errors` | エラーが 5 分で [`ERRORS_MIN`] 件以上 |
 //! | `active_high` | 同時接続の山が `max_conns` の [`ACTIVE_PERCENT`]% 以上 (T14.6 の写真と同じ閾。写真があればその番号) |
 //! | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が増えた |
@@ -75,6 +75,15 @@ pub const DNS_MISS_MS: f64 = 100.0;
 /// 残ったのは**たまにしか引かない名前の高いミス** (平均 98 ms) なので、5 分に 1 回の
 /// ミスが 240〜470 ms だとそれだけで平均が閾を越えた (T16.99: 47 時間で 29 件)。
 pub const DNS_MIN_MISSES: u64 = 3;
+/// (2) かつ、5 分の窓のミスの**合計**がこの ms 以上のときだけ (T22.2)。
+///
+/// T21.3 (serve-stale) で `expired` のミスが減り、窓に残るのは初めて引く名前 (`cold`) の
+/// 3〜5 回だけになった。その中の遅い 1 回で平均が 100 ms を越え、tokyo では 24 時間で
+/// 9 件立った (`scripts/dns-slow-replay.py`)。合計 1,000 ms を足すと、ミス 10 回未満で合計の
+/// 小さい窓は立たず、本当に遅い一続き (ミス 10 回以上で平均 100 ms 超え) は 4 件とも残る。
+/// ミスの回数の下限を上げる案 (10 回) は採らない — 量の少ない網では 5 分で 10 回に届かず、
+/// ほぼ鳴らなくなる。合計なら 3 回でも平均 334 ms 以上なら立つ。
+pub const DNS_MIN_SUM_MS: u64 = 1_000;
 /// (2) canary の名前解決の中央値 (直近 1 時間) のこの倍を閾にする (T17.1)。
 ///
 /// リゾルバそのものが遅い網では 100 ms を常に越えるので、「いつもより遅い」を
@@ -507,7 +516,9 @@ impl Detector {
                 && p95_ref > 0.0
                 && p95 >= CONNECT_RATIO * p95_ref
                 && w5.connect.count >= CONNECT_MIN_SAMPLES,
-            w5.dns_misses >= DNS_MIN_MISSES && w5.dns_miss_avg_ms() >= dns_limit,
+            w5.dns_misses >= DNS_MIN_MISSES
+                && w5.dns_miss_avg_ms() >= dns_limit
+                && w5.dns_ms_sum >= DNS_MIN_SUM_MS,
             w5.errors >= ERRORS_MIN,
             (self.threshold > 0 && peak >= self.threshold as u64) || shot.is_some(),
             delta.iter().any(|&d| d > 0),

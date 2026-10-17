@@ -16,7 +16,8 @@
 # 本当の最大は 1 分の平均以上なので、これは除いたあとの平均の**上限** (立つ側に寄る)。実機に入れるなら
 # 標本にミスの最大を足す要がある (`/history` の列が増える)。
 #
-# 実機の `/events` の `dns_slow` (履歴の範囲の中で立ったもの) と、今の条件 (`current`) の件数・時刻を突き合わせる。
+# 実機の `/events` の `dns_slow` (履歴の範囲の中で立ったもの) と、T22.2 の前の条件 (`current`) と今の条件 (`sum1000`)
+# の件数・時刻を突き合わせる (雪像の版がどちらの条件で走っていたかで、組める方が変わる)。
 #
 # 使い方: scripts/dns-slow-replay.py SNAP.json [SNAP.json ...] [--json]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
@@ -26,9 +27,10 @@ import json
 import statistics
 import sys
 
-# `anomaly.rs` の既定 (`DNS_MISS_MS` / `DNS_MIN_MISSES` / `DNS_CANARY_RATIO` / `WINDOW_SECS` / `BASE_SECS`)
+# `anomaly.rs` の既定 (`DNS_MISS_MS` / `DNS_MIN_MISSES` / `DNS_MIN_SUM_MS` / `DNS_CANARY_RATIO` / `WINDOW_SECS` / `BASE_SECS`)
 DNS_MISS_MS = 100.0
 DNS_MIN_MISSES = 3
+DNS_MIN_SUM_MS = 1000
 DNS_CANARY_RATIO = 3.0
 WINDOW_SECS = 300
 BASE_SECS = 3600
@@ -110,9 +112,11 @@ def trim1(w):
     return max(0.0, w["ms_sum"] - w["worst"]) / (w["misses"] - 1)
 
 
-# 案: 名前 -> (説明, 立つ条件)。`current` が今の `anomaly.rs`
+# 案: 名前 -> (説明, 立つ条件)。`current` は T22.2 より前の `anomaly.rs` (比べる基準として名前を残す)。
+# **`sum1000` が T22.2 で入れた今の条件** (`DNS_MIN_MISSES` 3 回以上・平均が閾以上・`DNS_MIN_SUM_MS`
+# 1,000 ms 以上) と同じものを数える。T22.2 のあとの雪像では、実機の `/events` と組めるのは `sum1000` の方
 PROPOSALS = {
-    "current": ("min 3, avg >= limit (今)",
+    "current": ("min 3, avg >= limit (T22.2 の前)",
                 lambda w: w["misses"] >= DNS_MIN_MISSES and avg(w) >= w["limit"]),
     "min5": ("min 5, avg >= limit",
              lambda w: w["misses"] >= 5 and avg(w) >= w["limit"]),
@@ -120,9 +124,9 @@ PROPOSALS = {
              lambda w: w["misses"] >= 8 and avg(w) >= w["limit"]),
     "min10": ("min 10, avg >= limit",
               lambda w: w["misses"] >= 10 and avg(w) >= w["limit"]),
-    "sum1000": ("min 3, avg >= limit, 合計 >= 1,000 ms",
+    "sum1000": ("min 3, avg >= limit, 合計 >= 1,000 ms (今。T22.2)",
                 lambda w: w["misses"] >= DNS_MIN_MISSES and avg(w) >= w["limit"]
-                and w["ms_sum"] >= 1000),
+                and w["ms_sum"] >= DNS_MIN_SUM_MS),
     "sum2000": ("min 3, avg >= limit, 合計 >= 2,000 ms",
                 lambda w: w["misses"] >= DNS_MIN_MISSES and avg(w) >= w["limit"]
                 and w["ms_sum"] >= 2000),
@@ -208,7 +212,7 @@ def analyze(snap):
         fires = [s for s, _ in eps]
         row = {"events": len(fires), "per_hour": round(len(fires) / hours, 3),
                "dropped_slow": sum(1 for ep in slow_eps if not overlaps(ep, eps))}
-        if name == "current":
+        if name in ("current", "sum1000"):
             row["matched_real"] = matched(real, fires)
         out["proposals"][name] = row
     return out
