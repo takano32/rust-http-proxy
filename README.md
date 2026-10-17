@@ -154,7 +154,8 @@ CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)�
 **2 枚の雪像から「何が変わったか」を全部読むのは `scripts/snapshot-diff.py A B`** (T14.17)。
 再起動をまたいでいるかを `uptime_secs` と `version` で見て、**`/history` をその再起動時刻で切り**、
 **バーストの無い時間帯 (1 時間 300 本未満の標本) どうし**で CONNECT 確立の p50 / p95 と
-名前解決のミス率を並べます (`/status` の通算は再起動で 0 に戻るので、そのまま引き算すると
+名前解決のミス率を並べます (**`--criteria phase22` のときだけ**、前と後で別々に「300 本と、その期間の
+1 時間の本数の中央値の 3 倍の大きい方」以上をバーストとします。T22.1) (`/status` の通算は再起動で 0 に戻るので、そのまま引き算すると
 「いつからの値か」が混ざります)。続けてホスト別・接続元別 (**新しく現れた接続元**)・
 名前解決の warm と引き直し・出来事・エラーの原因別・バーストを出し、`--criteria phase14` を
 足すと**完了の定義に対する判定表** (満たした / 届かず / 判定できず) が最後に付きます。
@@ -191,6 +192,17 @@ scripts/snapshot-diff.py a.json b.json --criteria phase20 --daily b-daily.json \
 # conn 役の CPU/要求 は前か後の `/profile` が 12 時間 (`res=60` で 720 標本) に満たなければ「参考」(集計に数えない)、
 # `ipv6.request_probes` は最後に探ったのが `--zero` の取得から 3 時間以内なら「満たした」(起動直後は canary が IPv6 をまだ見ていない)
 scripts/snapshot-diff.py a.json b.json --criteria phase21 --daily b-daily.json \
+                         --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
+                         --zero zero.json --daily-snapshots status
+# phase22 (T22.1) は phase21 の 10 行 + 22a の 4 行で、材料も同じ。足した 4 行は
+# `dns_slow` を新しい閾 (窓のミスの合計 1,000 ms 以上。T22.2) で数えた件/時と、それより小さい窓で立った件数 (0 で満たした)、
+# keep-warm の既定を戻す 2 つの条件 (`stale_retries` が `stale_hits` の 1% 以上・`refused`/`unreachable`/`timeout` の件/時が
+# 前の 1.5 倍以上で「届かず」。T22.4)、T22.4 の目安 (引き直しの回/時が前の半分以下・`expired` + `warm_stale` の増えが 1 日 10 回以内)。
+# 裏の引き直しの行は warm 0 (keep-warm を止めた既定) だと warm の平均で割れないので、理由と通算の 1 時間あたりを並べる。
+# **平常時の切り方もこの定義だけ違う**: 1 時間の本数が 300 本と、その期間の中央値の 3 倍の大きい方以上をバーストとする
+# (量の多い tokyo で 300 本だと 29 標本のうち 23 がバーストになった。量の少ない期間は 300 本の切り方のまま)。
+# §2 の表の頭に前と後の閾を書き、`--out json` の `history` に `median_k` `medians` `limits` が足される
+scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
@@ -3037,9 +3049,9 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 個票には接続元 IP と宛先が並ぶので `.gitignore` に入れてあり、コミットしません。
 **雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
 1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
-意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase21`** (T21.2。phase20 と同じ並びの 10 行で、平常時のミスを「表示だけ」(日ごとの幅と `cold` / `expired` の内訳)、`conn` 役の CPU/要求 を前か後の `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` を 0 時間の雪像から 3 時間以内の探りなら「満たした」にしたもの) です。**`CRITERIA=phase20`** (T20.1。下の phase18 と同じ並びの 10 行で、`heap_used + mmap` の増えから `cache_memory` を引き、`discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行を「表示だけ」にしたもの)・**`CRITERIA=phase18`**
+意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase22`** (T22.1。phase21 の 10 行に、`dns_slow` の新しい閾 (T22.2) と keep-warm の既定を戻す条件 2 つと T22.4 の目安の 4 行を足し、平常時を「300 本と、その期間の 1 時間の本数の中央値の 3 倍の大きい方」未満で切るもの) です。**`CRITERIA=phase21`** (T21.2。phase20 と同じ並びの 10 行で、平常時のミスを「表示だけ」(日ごとの幅と `cold` / `expired` の内訳)、`conn` 役の CPU/要求 を前か後の `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` を 0 時間の雪像から 3 時間以内の探りなら「満たした」にしたもの)・**`CRITERIA=phase20`** (T20.1。下の phase18 と同じ並びの 10 行で、`heap_used + mmap` の増えから `cache_memory` を引き、`discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行を「表示だけ」にしたもの)・**`CRITERIA=phase18`**
 (phase17 の 8 行 = phase15 の 4 行 + T17.0a の 4 行 に、T18.2 の 2 行 = `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・`ipv6.request_probes` が 0 を足した 10 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、相手の雪像の隣にあればそれを `--profile-before` で渡します)・`CRITERIA=phase17`・`CRITERIA=phase15` (T15.4 / T15.5 / T15.6 の 6 行)・`CRITERIA=phase14` も今までどおり使えます。
-**判定表の相手は既定では直前の 1 枚**です。再デプロイのあとはそれが 0 時間の雪像になるので、**`BEFORE=<再デプロイ直前の雪像>`** を渡すと判定表だけ相手がそちらになります (隣の同じ時刻の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別の相手は直前の 1 枚のまま)。**`ZERO=<0 時間の雪像>`** は `snapshot-diff.py --zero` に渡り、無ければ `heap_used + mmap` の行 (phase21 では 0 回でない `ipv6.request_probes` の行も) は「判定できず」です。phase21・phase20・phase18 のときは保存先を `--daily-snapshots` にも渡すので、`--from-server` で取り寄せた日次の雪像のうち同じ版のものの表 (`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts`) が判定表の下に付きます。`BEFORE` と `ZERO` の相対パスはリポジトリの根からです (`DIR` と同じ)。取り忘れた日は
+**判定表の相手は既定では直前の 1 枚**です。再デプロイのあとはそれが 0 時間の雪像になるので、**`BEFORE=<再デプロイ直前の雪像>`** を渡すと判定表だけ相手がそちらになります (隣の同じ時刻の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別の相手は直前の 1 枚のまま)。**`ZERO=<0 時間の雪像>`** は `snapshot-diff.py --zero` に渡り、無ければ `heap_used + mmap` の行 (phase22 と phase21 では 0 回でない `ipv6.request_probes` の行も) は「判定できず」です。phase22・phase21・phase20・phase18 のときは保存先を `--daily-snapshots` にも渡すので、`--from-server` で取り寄せた日次の雪像のうち同じ版のものの表 (`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts`) が判定表の下に付きます。`BEFORE` と `ZERO` の相対パスはリポジトリの根からです (`DIR` と同じ)。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
 `next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0 (11)。
