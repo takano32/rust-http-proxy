@@ -94,45 +94,48 @@ fn assert_busy(resp: &str) {
 /// 受け入れ基準の本体: `/snapshot` を**同時に 4 本**引くと 1 本だけ 200 で残りは 503、
 /// 順に引けば全部 200、`/status` の `heavy_rejected` が 3。
 ///
-/// 「同時」は timing なので、**同時にならなかった回は数え直す**: 1 本目が組み終わって
-/// から 2 本目が届けば、旗が正しくても 2 本とも 200 になる (spin で狙って 20 回に 1 回)。
-/// 旗が壊れているのと取り違えないよう、**数え直す回も**「200 + 503 = 4 本」と
-/// 「503 の本数 = `heavy_rejected`」は必ず見る。
+/// 「同時」は **timing に頼らずに作る** (T22.6): 試験の口 (`test_hooks`。試験のビルドにだけ入る)
+/// で 1 本目を**旗を握ったまま組み立ての手前で止め**、止まったことを確かめてから残り 3 本を
+/// 投げる。前は 4 本を同じ時刻に投げて同時にならなかった回を 20 回まで数え直していたが、
+/// 全体テストの負荷の下では 20 回とも 1 本目が先に組み終わって落ちた (Phase 21 の全体チェック。
+/// 手元で CPU を回し続けると 20 回中 10 回落ちた)。
 #[test]
 fn test_integration_only_one_snapshot_is_built_at_a_time() {
-    let _one_at_a_time = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
+    use proxy_endpoints::endpoints::test_hooks;
 
-    let mut port = 0;
-    let mut resps = Vec::new();
-    for round in 1..=20 {
-        // `heavy_rejected` を「3」で見たいので、回ごとに数えていないプロキシから始める
-        port = start_test_proxy(proxy_config());
-        assert_eq!(
-            status_number(&endpoint_json(port, "/status"), "heavy_rejected"),
-            0,
-            "まだ誰も断っていない"
-        );
-        resps = race(port, "/snapshot", 4);
-        let ok = resps.iter().filter(|r| status_code(r) == 200).count();
-        let busy = resps.iter().filter(|r| status_code(r) == 503).count();
-        let codes = || resps.iter().map(|r| status_code(r)).collect::<Vec<_>>();
-        assert_eq!(ok + busy, 4, "200 か 503 のどちらか: {:?}", codes());
-        // 断った数は `/status` の末尾に出る (組んだ 1 本は数えない)
-        assert_eq!(
-            status_number(&endpoint_json(port, "/status"), "heavy_rejected"),
-            busy as u64,
-            "断った本数がそのまま `heavy_rejected`: {:?}",
-            codes()
-        );
-        if (ok, busy) == (1, 3) {
-            break;
-        }
+    let _one_at_a_time = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
+    let port = start_test_proxy(proxy_config());
+    assert_eq!(
+        status_number(&endpoint_json(port, "/status"), "heavy_rejected"),
+        0,
+        "まだ誰も断っていない"
+    );
+
+    // 1 本目: 旗を取ったところで止まる
+    let hold = test_hooks::hold_snapshots();
+    let first = std::thread::spawn(move || get(port, "/snapshot"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while test_hooks::paused_snapshots() == 0 {
         assert!(
-            round < 20,
-            "20 回とも 4 本が同時にならなかった (最後の回: {:?})",
-            codes()
+            Instant::now() < deadline,
+            "1 本目が組み立ての手前まで来ない"
         );
+        std::thread::sleep(Duration::from_millis(1));
     }
+    // 残り 3 本: 1 本目が旗を握っている間に届くので、どれも組まずに断られる
+    let mut resps = race(port, "/snapshot", 3);
+    drop(hold);
+    resps.insert(0, first.join().unwrap());
+
+    let codes = resps.iter().map(|r| status_code(r)).collect::<Vec<_>>();
+    assert_eq!(codes, [200, 503, 503, 503], "1 本目だけ組む");
+    // 断った数は `/status` の末尾に出る (組んだ 1 本は数えない)
+    assert_eq!(
+        status_number(&endpoint_json(port, "/status"), "heavy_rejected"),
+        3,
+        "断った本数がそのまま `heavy_rejected`: {:?}",
+        codes
+    );
 
     for r in resps.iter().filter(|r| status_code(r) == 503) {
         assert_busy(r);

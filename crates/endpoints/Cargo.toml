@@ -6,6 +6,11 @@ edition = "2024"
 [lib]
 path = "src/lib.rs"
 
+[features]
+# 試験のときだけ効く口 (T22.6)。立てるのはルートの `[dev-dependencies]` だけで、
+# 既定のビルド (`cargo build --release`) には入らない
+test-hooks = []
+
 [dependencies]
 proxy-base = { path = "../base" }
 proxy-net = { path = "../net" }

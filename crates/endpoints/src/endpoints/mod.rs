@@ -44,6 +44,9 @@ mod health;
 mod pac;
 mod profile;
 mod recent;
+// 試験のときだけ効く口 (T22.6)。既定のビルドには入らない
+#[cfg(feature = "test-hooks")]
+pub mod test_hooks;
 
 // HTML 3 本の実体は葉クレート `proxy-web` (`crates/web/src/*.html`) に置いてある
 // (T15.12 段 1: 163 KB の文字列定数を このクレートの rustc から外に出すため)。
@@ -395,7 +398,10 @@ pub fn handle(
         // バラスト・状態ファイル・追い出し・accept の失敗・停止シグナルを 1 本に
         recent::events(ep, query)
     } else if is_get && path == "/snapshot" {
-        // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する
+        // 17 本の URL を 1 要求で (T14.4)。`scripts/collect-deployed.sh` が保存する。
+        // 試験のビルドだけ、旗を握ったまま組み立ての手前で止まれる (T22.6。既定のビルドには無い)
+        #[cfg(feature = "test-hooks")]
+        test_hooks::pause_snapshot();
         recent::snapshot(ep)
     } else if is_get && (path == "/snapshots" || path == "/snapshots/") {
         // 日次で残した `/snapshot` の一覧 (T14.34)

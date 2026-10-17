@@ -60,6 +60,11 @@ edition = "2024"
 proxy-server = { path = "crates/server" }
 proxy-run = { path = "crates/run" }
 
+[dev-dependencies]
+# 結合テストだけが使う試験の口 (T22.6。`/snapshot` を組み立ての中で止める)。
+# dev-dependencies の機能は試験のビルドにしか効かないので、`cargo build --release` の本体には入らない
+proxy-endpoints = { path = "crates/endpoints", features = ["test-hooks"] }
+
 # メモリの小さい環境 (Pterodactyl コンテナ) でも通ることを優先した既定のプロファイル。
 # LTO を切っているのは、まとめて最適化する**最終リンクの 1 回**が大きいため。
 # クレートを 26 に割っても最終リンクは全部を抱えるので、そこは小さくならなかった。

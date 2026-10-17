@@ -370,6 +370,7 @@ dependencies = [
 name = "rust-http-proxy"
 version = "0.21.7"
 dependencies = [
+ "proxy-endpoints",
  "proxy-run",
  "proxy-server",
 ]
