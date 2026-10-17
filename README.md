@@ -121,6 +121,7 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 続けて回して **Markdown 1 枚**を標準出力に出します (同じものを雪像の隣の `<時刻>-collect.md` にも残し、
 雪像に入らない `/daily` `/healthz` `/slo` `/config` `/profile?res=60` も `<時刻>-<口>.json` で隣に置きます。
 `/profile?res=60` は 1 枚 (256 KiB) だと 24 時間のうち約 5 時間しか入らないので、`--full` が無くても `next_offset` が `null` になるまで `offset=` で追い、`samples` を 1 つに繋いで `truncated` を `false` にしたものを置きます。枚数の上限は `MAX_PAGES`。
+**雪像の `recent` と `hosts` も、256 KiB で切れていれば既定で `offset=` で追い、雪像の同じ部に行を足して置き直します** (T22.5。形は `/snapshot` のままなので、下の道具はどれもそのまま全部を読みます。2026-10-17 の tokyo では 1 枚に `recent` 2,000 件中 576 件 (33 分ぶん)・`hosts` 1,001 件中 574 件しか入りませんでした)。上限は部ごとに `MAX_PAGES` 枚と、続きを引く時間の合計 `FOLLOW_SECS` (既定 60 秒) で、越えたら止めて要約にそう書きます (`truncated` と `next_offset` は残りを指したまま)。`FULL=0` か `--no-follow` で前のとおり追いません。
 さらに、下の `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた**匿名化した写し** `<時刻>-snapshot.anon.json` と、同じ表で通した `<時刻>-daily.anon.json` `<時刻>-profile_res_60.anon.json` も隣に置きます (T17.16。`ANON=0` で置きません)。テストへ持ち込むときはこの写しを `scripts/testdata/` へ移します)。`status-diff.py` は `/snapshot` の JSON を
 そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
 
@@ -129,6 +130,7 @@ scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo > today.md   #
 PROBE=0 scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server tokyo.sorahost.net:60357 status/tokyo  # 回し忘れた日を取り寄せる
 scripts/collect-deployed.sh --full tokyo.sorahost.net:60357 status/tokyo       # 切れた部の続きも `offset=` で追う
+scripts/collect-deployed.sh --no-follow tokyo.sorahost.net:60357 status/tokyo  # 切れた `recent`・`hosts` を追わない (T22.5 より前の既定)
 scripts/status-diff.py status/*-snapshot.json    # 最初と最後で差分
 scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまとめる
 ```
@@ -886,7 +888,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     | 種類 (説明の頭に出ます) | 立つ条件 |
     |---|---|
     | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が**直近 1 時間の p95 の 3 倍以上**、かつ 50 ms 以上、かつ**その窓に 20 本以上**あるとき (T15.0 (9)) |
-    | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が **100 ms と canary の名前解決の中央値 (直近 1 時間) の 3 倍の大きい方以上**、かつ**その窓にミスが 3 回以上**あるとき (canary が `off` なら 100 ms だけ。5 分に 1 回の重いミスだけでは立ちません。T17.1) |
+    | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が **100 ms と canary の名前解決の中央値 (直近 1 時間) の 3 倍の大きい方以上**、かつ**その窓にミスが 3 回以上**、かつ**その窓のミスの合計が 1,000 ms 以上**あるとき (canary が `off` なら 100 ms だけ。5 分に 1 回の重いミスだけでも、3〜5 回で合計の小さい初めての名前の引きだけでも立ちません。3 回でも 1 回 334 ms 以上なら立ちます。T17.1 / T22.2) |
     | `errors` | エラーが **5 分で 5 件以上** (原因の内訳も説明に入ります) |
     | `active_high` | 同時接続の山が **`PROXY_MAX_CONNS` の 50% 以上** (`/bursts` の写真と同じ閾。同じ周期で写真が撮れていればその `seq`) |
     | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が**増えた** |
@@ -894,6 +896,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     | `tunnel_spin` | 「起こされたのに 1 バイトも進まない」が **1 周期 1,000 回以上のトンネルが 1 分続いた** (説明に接続の `id` と宛先と齢と `half_closed`。T15.0 (6)) |
     | `dns_miss_rate` | 名前解決のミスが**直近 1 時間で 0.20 回/接続 以上** (解除は 0.10 未満。**起動から 6 時間は判定しません** — 再起動の直後はどの名前も warm でないため。1 時間に 30 本以上の確立があるときだけ。T15.0 (9)) |
     | `new_client` (規則 6) | `/clients` の `first_seen` が**この 5 秒の窓の中**にある接続元 (T14.54) |
+
+    `dns_slow` の閾を変えたら件数がどう動くかは、**`scripts/dns-slow-replay.py SNAP.json …`** が雪像の
+    `/history?res=60` から 5 分の窓を作り直して案ごとに並べます (T22.2。1 分の行で数えるので、5 秒の境目に
+    またがる窓は見えず、実機より少なめに出ます)。表の `sum1000` が今の条件 (T22.2) で、`current` はその前の条件です。
 
     **同じ種類は収まるまで 1 回だけ**書きます。条件を外れたまま 5 分続いたら
     `cleared: <種類>` で始まる解除の 1 件を書き、また立てるようになります。説明には必ず数字
@@ -3038,8 +3044,11 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
 `next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0 (11)。
 1 枚には `/recent` は 2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 しか
-入りません。T15.0 の行の形での実測で、T16.0 の欄のぶん少し減ります)。**既定では追いません** — 続きはどれも重い口で、重い口は同時 1 本 (上の「重い口は同時に 1 本だけ」) なので
-順に引くしかなく、収集にかかる時間が数倍になるためです。1 つの部で追う枚数の上限は `MAX_PAGES` (既定 8)。
+入りません。T15.0 の行の形での実測で、T16.0 の欄のぶん少し減ります)。**`recent` と `hosts` は T22.5 から `--full` が無くても追って雪像に繋ぐ**ので
+(上の段落)、`--full` で別ファイルに落ちるのは `profile` と、`MAX_PAGES` か `FOLLOW_SECS` で止めた残りだけです (続きは繋いだ部の `next_offset` から)。
+`--full --no-follow` で前の `--full` (3 つとも別ファイル) になります。続きはどれも重い口で、重い口は同時 1 本 (上の「重い口は同時に 1 本だけ」) なので
+順に引きます。1 つの部で追う枚数の上限は `MAX_PAGES` (既定 8)。
+`/recent?since=<前の雪像の取得時刻>` で取らないのはわざとです: `since` は**開いた**時刻で絞るので、前の雪像より前に開いて後に閉じた長いトンネルがどちらの雪像にも入りません (それにリングは 2,000 件しか持たないので、`since` で窓は広がりません)。頁の間に閉じた接続で並びがずれて 2 枚に出た行は `id` (`hosts` は `host`) で落とします。`hosts` は要求数の順なので、頁の間に順位が入れ替わったホストが 1 つ出ないことはあります。
 `snapshot-summary.py` に渡す雪像の形は変わりません (落とすのは別ファイルです)。
 **名前が `page<何枚目>-<部>` の順なのはわざと**です: `<部>-<何枚目>` にすると
 `snapshot-diff.py --from-files` と `anonymize-snapshot.py` が「`<UTC 時刻>-` の後ろが部の名前で始まれば

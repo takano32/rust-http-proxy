@@ -2058,8 +2058,10 @@ pub mod summary {
 
     /// 期間を切って畳む (**`/history` の標本を読むのはここだけ**)。
     ///
-    /// 窓は始まりの時刻 (`t`) で切る: `since <= t <= until` の標本が入る
-    /// (`scripts/snapshot-diff.py` が再起動時刻で切るのと同じ)。
+    /// 窓は標本の時刻 (`t`) で切る: `since <= t <= until` の標本が入る
+    /// (`scripts/snapshot-diff.py` が再起動時刻で切るのと同じ)。`t` の意味は解像度で違う:
+    /// **5 秒の標本は取った時刻 (区間の終わり。秒の切り捨て)**、60 秒と 3,600 秒の標本は
+    /// 窓の始まり ([`History::push`] が閉じた窓の頭の時刻で作る)。
     pub fn of(h: &History, p: &Params) -> Summary {
         let res = p.res_index();
         let interval = RESOLUTIONS[res].0;
@@ -2275,7 +2277,7 @@ mod summary_tests {
         assert_eq!(burst_limit(5), 1);
     }
 
-    /// 窓は始まりの時刻で切る (`since` / `until` はそのまま返す = `since=restart` の確認に使う)。
+    /// 窓は標本の時刻 (`t`) で切る (`since` / `until` はそのまま返す = `since=restart` の確認に使う)。
     #[test]
     fn the_period_is_cut_at_since_and_until() {
         let h = History::default();
