@@ -1631,7 +1631,9 @@ T21.99 の「次のターンの準備」。**利用者の決定 (2026-10-17)**: 
 - **波 22a の全体チェック (2026-10-17、親)**: T22.2〜T22.6 を入れた main (`1c19f9a`) で `cargo fmt --all -- --check` 通過、`cargo clippy --workspace --all-targets -- -D warnings` 警告 0、`cargo test --workspace --no-fail-fast` は **139 バイナリ 851 通過 / 0 失敗 / 1 ignored** (T22.6 で直した `heavy_test` も通過)。`python3 -m unittest discover -s scripts` 448 本 OK、`check-docs.sh` 差分 0、`check-dashboard.js` 通過、`crate-versions.py --check` 0 (本体 `0.22.6`)、`cargo clean --release` からの `build-memory.sh 120` 通過、`-V` は `0.22.6+1c19f9a`。本体が変わったのは T22.2 (`dns_slow` の閾) と T22.4 (keep-warm の既定を止める) で、**再デプロイして T22.99 で見る**。
 
 - [ ] **T22.99 締める (Phase 22 の版を 24 時間走らせたあとに見る・決める・書く)**
-  - 22a で本体が変わったら再デプロイし、前と 0 時間の雪像を撮って前提に書く。判定は `--criteria phase22` (T22.1)。
+  - 前提 (§0 の 9 の形): デプロイ先は `tokyo.sorahost.net:60357`。版 **`0.22.6+000681e`** (タグ `v0.22.6` = `571bd97` + T22.5 の shellcheck の直し `000681e`。差は scripts だけで本体は同じ。利用者がデプロイ)、起動時刻 `2026-10-17T03:02:22Z` (`/events` の `start`。前の版の `shutdown` は 03:01:44、止まっていたのは 38 秒)、`/config` の `PROXY_DNS_WARM_SECS` は **0** (T22.4 の既定)。
+    「前」の雪像 `status/tokyo/2026-10-17T030107Z-snapshot.json` (前の版 `0.21.7+1aca8e7`、起動から 30.7 時間、名前解決のミス 615 = `cold` 541・`expired` 68・`negative` 6、`stale_hits` 1,311・`stale_retries` 0、引き直し 61,736、`recent` 2,000 件 (T22.5 で繋いだ))、「0 時間」の雪像 `status/tokyo/2026-10-17T030257Z-snapshot.json` (起動 34 秒後。`/healthz` ok、`/hosts` 1,000 件・`/errors` 87 行 (読み戻し)、`dns` は `misses` 7 (`cold` 7)・`warm` 0・`stale_hits` 0、`heap_used + mmap − cache_memory` 18.0 MB・RSS 31.0 MB・`rings_touched` true、IPv6 は `v4_first`・`probe_by` "canary"・`request_probes` 0)。「後」は 2026-10-18T03:03Z 以降に撮る。
+  - 判定: `BEFORE=<前> ZERO=<0 時間> scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo` の `--criteria phase22` (T22.1)。見ること: `dns_slow` が合計 1,000 ms 未満の窓で立っていない (T22.2)。**T22.4 を戻す条件**: `stale_retries` が `stale_hits` の 1% 以上、または `refused`+`unreachable`+`timeout` が接続 1 本あたりで前の 1.5 倍以上なら `PROXY_DNS_WARM_SECS` の既定を 3,600 に戻す。引き直しの回/時が前 (約 2,000) の半分以下、`expired` + `warm_stale` の増えが 1 日 10 回以内。T22.3 の持ち越し (`timeout` だけを覚える形) を、`recent` を繋いだ雪像で数え直す。
 
 ## 付録 A. 計測の記録 (時系列)
 
