@@ -17,8 +17,9 @@ fn reset(window: Duration) {
 }
 
 /// 終わったら既定に戻す (ほかのテストが既定を前提にしていても困らないように)。
+/// keep-warm の既定は T22.4 から止めてある ([`WARM_DEFAULT`])。
 fn restore() {
-    set_warm_window(WARM);
+    set_warm_window(WARM_DEFAULT);
     set_serve_stale(SERVE_STALE);
     clear();
 }
@@ -205,5 +206,50 @@ fn a_remembered_failure_is_not_turned_into_a_background_refresh() {
         "引き直しが失敗して凌いだ古い答え (stale_served) の方"
     );
     assert_eq!((n(&STALE_HITS), n(&STALE) - st0), (s0, 1));
+    restore();
+}
+
+/// T22.4: keep-warm の既定は止めてある。窓の中で 2 回目に使われた名前も warm に上げず、
+/// 期限切れの答えは serve-stale が受ける (ミスではなく古い答え + 裏の引き直し 1 回)。
+/// `PROXY_DNS_WARM_SECS=3600` (T21.3 までの既定) なら同じ使い方で warm に上がる。
+#[test]
+fn the_default_does_not_keep_names_warm_and_serve_stale_takes_the_expired_use() {
+    let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(WARM_DEFAULT.is_zero(), "既定は keep-warm を止める");
+    assert_eq!(
+        WARM,
+        Duration::from_secs(3600),
+        "戻すときの値は T21.3 までの既定"
+    );
+    let host = "localhost";
+    let old = IpAddr::from(OLD);
+
+    // 既定: 120 秒前に引いた名前の 2 回目の使用 (窓 3,600 秒なら warm に上がる間隔)
+    set_ttl(Duration::from_secs(60));
+    set_serve_stale(SERVE_STALE);
+    set_warm_window(WARM_DEFAULT);
+    clear();
+    put_answer_for_test(host, &[old], Duration::from_secs(120));
+    let (m0, s0, r0) = (n(&MISSES), n(&STALE_HITS), n(&REFRESHES));
+    let (addrs, _, stale) = resolve_host_marked(host, 80).unwrap();
+    assert_eq!((addrs, stale), (vec![old], true), "古い答えをそのまま返す");
+    assert_eq!(n(&MISSES), m0, "ミスではない");
+    assert_eq!(n(&STALE_HITS), s0 + 1);
+    assert_eq!(warm_count(), 0, "既定では warm に上げない");
+    wait_refreshes(r0 + 1);
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        n(&REFRESHES),
+        r0 + 1,
+        "裏の引き直しは serve-stale の 1 回だけ"
+    );
+    assert_eq!(warm_count(), 0);
+
+    // `PROXY_DNS_WARM_SECS=3600` に戻すと、同じ使い方で warm に上がる
+    clear();
+    set_warm_window(WARM);
+    put_answer_for_test(host, &[old], Duration::from_secs(120));
+    resolve_host_marked(host, 80).unwrap();
+    assert_eq!(warm_count(), 1, "3,600 秒の窓なら 2 回目で warm");
     restore();
 }
