@@ -6,7 +6,7 @@
 # 出力は Markdown なので `TODO.md` にそのまま貼れる。
 #
 # 使い方:
-#   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase21]
+#   scripts/snapshot-diff.py A.json B.json [--aaaa FILE | --no-dns] [--criteria phase22]
 #                            [--out md|json] [--top N] [--burst N] [--major-hosts a,b,c]
 #                            [--group domain] [--daily FILE]
 #                            [--profile FILE] [--profile-before FILE]
@@ -36,7 +36,7 @@
 #   6. その間の出来事 (`/events`。無い版では飛ばす)
 #   7. エラーの原因別の件数 (`/hosts` の `errors_by_cause` の差分と `/errors` の個票)
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
-#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21` で **Phase の完了の定義に対する判定表**
+#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
 #      (**判定の部は `scripts/snapshot_criteria.py`**。T20.1 で割った)
 #      (T15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
@@ -47,6 +47,9 @@
 #      phase21 (T21.2) は phase20 の 10 行のうち 3 行の読み方を直したもの: 平常時のミスは表示だけ
 #      (日ごとの幅と `cold` / `expired` の内訳)、conn 役の CPU/要求 は前か後の `/profile` が 12 時間に
 #      満たなければ「参考」(集計に数えない)、`ipv6.request_probes` は 0 時間の雪像から 3 時間以内なら満たす。
+#      phase22 (T22.1) は phase21 の 10 行 + 22a の 4 行 (`dns_slow` の新しい閾・T22.4 の戻す条件 2 つと目安)。
+#      **平常時の切り方もこの定義だけ違う**: 300 本と、その期間の 1 標本の本数の中央値の 3 倍の大きい方
+#      以上をバーストとする (`snapshot_criteria.normal_limit`)
 #      `--daily-snapshots DIR` を足すと、`DIR` の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち
 #      後の雪像と同じ版のものを時刻順に並べた `memory` と `ipv6.attempts` の表が判定表の下に付く
 #
@@ -107,6 +110,7 @@ from snapshot_criteria import (  # noqa: E402,F401
     PHASE18,
     PHASE20,
     PHASE21,
+    PHASE22,
     REFERENCE,
     RULES,
     SHOWN,
@@ -134,12 +138,21 @@ from snapshot_criteria import (  # noqa: E402,F401
     _p21_conn_per_request,
     _p21_miss_band,
     _p21_request_probes,
+    _p22_connect_errors,
+    _p22_dns_slow,
+    _p22_events,
+    _p22_refresh_and_stale_misses,
+    _p22_refresh_rate,
+    _p22_stale_retries,
     anomaly_rates,
     cgroup_since_start,
     change,
+    counter_rates,
     daily_band,
     display_only,
+    dns_counter,
     dns_name_refreshes,
+    dns_slow_events,
     judge,
     mb,
     memory_of,
@@ -150,6 +163,7 @@ from snapshot_criteria import (  # noqa: E402,F401
     ms,
     n,
     norm_history,
+    normal_limit,
     part,
     per_hour,
     profile_cost,
@@ -392,7 +406,13 @@ def aggregate(rows, bounds, limit):
     return out
 
 
-def history_split(a, b, info, burst):
+def history_split(a, b, info, burst, median_k=None):
+    """`/history` を前後の境目で切り、平常時 (バーストを外した標本) とバースト込みを畳む。
+
+    `median_k` (phase22 の `burst_median_k`。T22.1) があれば、前と後で別々に平常時の閾を
+    「`burst` と、その期間の 1 標本の本数の中央値 × `median_k` の大きい方」にする (`normal_limit`)。
+    そのときだけ `median_k` `medians` `limits` の 3 つの鍵を足す (無いときの形は今までと同じ)。
+    """
     res = pick_res(a, b)
     if res is None:
         return None
@@ -402,14 +422,24 @@ def history_split(a, b, info, burst):
     edge = info["boundary"]
     before = [r for r in rows if r["t"] < edge]
     after = [r for r in rows if r["t"] >= edge]
-    return {
+    limits = {"before": limit, "after": limit}
+    if median_k:
+        for side, rs in (("before", before), ("after", after)):
+            limits[side] = normal_limit(limit, [r["connects"] or 0 for r in rs], median_k)
+    out = {
         "res": res, "interval_secs": interval, "limit": limit, "bounds": bounds,
         "causes": causes, "boundary": edge, "samples": len(rows),
-        "before": aggregate(before, bounds, limit),
-        "after": aggregate(after, bounds, limit),
+        "before": aggregate(before, bounds, limits["before"]),
+        "after": aggregate(after, bounds, limits["after"]),
         "before_all": aggregate(before, bounds, None),
         "after_all": aggregate(after, bounds, None),
     }
+    if median_k:
+        out["median_k"] = median_k
+        out["medians"] = {side: median([r["connects"] or 0 for r in rs])
+                          for side, rs in (("before", before), ("after", after))}
+        out["limits"] = limits
+    return out
 
 
 # --------------------------------------------- (2a) 成功した接続だけの確立時間 (`/recent`)
@@ -811,7 +841,9 @@ def build(a, b, args):
     if getattr(args, "zero", None):
         b["zero_snapshot"] = load_source(args.zero, False)
     info = restart_info(a, b)
-    hist = history_split(a, b, info, args.burst)
+    # 平常時の切り方は定義が `burst_median_k` を持つときだけ変わる (phase22。T22.1)
+    median_k = CRITERIA[args.criteria].get("burst_median_k") if args.criteria else None
+    hist = history_split(a, b, info, args.burst, median_k)
     mode, table = "dns", {}
     if args.no_dns:
         mode = "none"
@@ -847,8 +879,12 @@ def build(a, b, args):
         out["recent_connect"] = recent_connects(b)
     # サーバー側の要約 (T14.24)。`--summary` があれば読んで手元の集計と並べる
     if hist:
+        # サーバーの `normal_hours_only=1` は 300 本で切る。phase22 で後の閾が上がって後の期間に
+        # バーストが残らないなら、全部の標本 (`normal_hours_only` なし) が同じ窓になる (T22.1)
+        normal = not (hist.get("limits") and hist["limits"]["after"] > hist["limit"]
+                      and not hist["after"]["burst_samples"])
         out["summary_url"] = summary_url(info["boundary"], b["taken_at"],
-                                         int(hist["res"]), True)
+                                         int(hist["res"]), normal)
         server = load_summary(getattr(args, "summary", None))
         out["summary"] = server
         out["summary_check"] = summary_check(server, hist["after"])
@@ -913,8 +949,21 @@ def render(d, top):
     else:
         bef, aft = h["before"], h["after"]
         bef_all, aft_all = h["before_all"], h["after_all"]
-        p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
-          f"**1 標本 {h['limit']} 本以上の窓 (バースト) を外した**もの同士で並べる (T14.0 と同じ切り方)。")
+        if "limits" in h:
+            # phase22 (T22.1)。前と後で閾が違う
+            lb, la = h["limits"]["before"], h["limits"]["after"]
+            md = h["medians"]
+            p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
+              f"**前は 1 標本 {lb:,} 本以上・後は {la:,} 本以上の窓 (バースト) を外した**もの同士で並べる "
+              f"(phase22 の切り方。T22.1: {h['limit']:,} 本 (T14.0) と、その期間の 1 標本の本数の中央値 "
+              f"(前 {n(md['before'])}・後 {n(md['after'])} 本) の {h['median_k']} 倍の大きい方)。")
+            if la > h["limit"] and h["after"]["burst_samples"]:
+                p()
+                p(f"後の閾が {h['limit']:,} 本より上なので、下の「サーバー側で 1 要求」の URL "
+                  "(`normal_hours_only=1` は 300 本で切る) とは平常時の窓が違う。")
+        else:
+            p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
+              f"**1 標本 {h['limit']} 本以上の窓 (バースト) を外した**もの同士で並べる (T14.0 と同じ切り方)。")
         p()
         p("| 項目 | 前 | 後 | 出どころ |")
         p("|---|---|---|---|")
@@ -1218,11 +1267,14 @@ def parser():
                         "phase17 = T17.99 の 8 行、phase18 = phase17 の 8 行 + T18.0 の (g)(h) の "
                         "10 行、phase20 = phase18 の物差しを直した 10 行。`cache_memory` を引き、"
                         "3 行は表示だけ。T20.1。phase21 = phase20 のミスの行を表示だけ、conn 役の行を短い "
-                        "材料で参考、IPv6 の探りを起動直後なら満たすにした 10 行。T21.2)")
+                        "材料で参考、IPv6 の探りを起動直後なら満たすにした 10 行。T21.2。"
+                        "phase22 = phase21 の 10 行 + `dns_slow` の新しい閾と keep-warm を戻す条件の 4 行で、"
+                        "平常時を「300 本と期間の中央値の 3 倍の大きい方」未満で切る。T22.1)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst", type=int, default=BURST_PER_HOUR, metavar="N",
-                   help=f"平常時の閾 (1 時間の本数。既定 {BURST_PER_HOUR})")
+                   help=f"平常時の閾 (1 時間の本数。既定 {BURST_PER_HOUR}。phase22 はこれと"
+                        "期間の中央値の 3 倍の大きい方)")
     p.add_argument("--summary", metavar="SRC",
                    help="`/history?...&summary=1` の応答 (ファイルか http:// の URL) を読んで "
                         "手元の集計と並べる (T14.24。手元の集計はそのまま残る)")
@@ -1235,8 +1287,8 @@ def parser():
     p.add_argument("--profile-before", metavar="FILE",
                    help="同じものを古い雪像に足す (前の CPU/要求 も `/profile?res=60` で比べる)")
     p.add_argument("--zero", metavar="FILE",
-                   help="0 時間の雪像 (再デプロイの直後に撮った 1 枚)。phase18 / phase20 / phase21 の "
-                        "`heap_used + mmap` の増えの行 (phase21 は IPv6 の探りの行も) の材料 (T18.2。無ければその行は「判定できず」)")
+                   help="0 時間の雪像 (再デプロイの直後に撮った 1 枚)。phase18 / phase20 / phase21 / phase22 の "
+                        "`heap_used + mmap` の増えの行 (phase21 と phase22 は IPv6 の探りの行も) の材料 (T18.2。無ければその行は「判定できず」)")
     p.add_argument("--daily-snapshots", metavar="DIR",
                    help="`DIR` の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち新しい雪像と同じ版の"
                         "ものを時刻順に並べ、`memory` と `ipv6.attempts` の表を判定表の下に出す (T18.2)")
