@@ -34,8 +34,8 @@ def read(path):
         return json.load(f)
 
 
-def run_table(rule, arrivals, end, serve_stale=0):
-    tb = dr.Table(dr.RULES[rule], serve_stale=serve_stale)
+def run_table(rule, arrivals, end, serve_stale=0, **kw):
+    tb = dr.Table(dr.RULES[rule], serve_stale=serve_stale, **kw)
     tb._warm_t = 0
     for t, h in arrivals:
         tb.lookup(h, t)
@@ -135,6 +135,79 @@ class RulesTest(unittest.TestCase):
         self.assertTrue(dr.is_ip("2001:db8::1"))
 
 
+class WarmGridTest(unittest.TestCase):
+    """T22.4: warm の枠と窓、`warm_promote` の予定、名前ごとの引き直し。"""
+
+    def test_no_warm_refreshes_only_on_lookups(self):
+        # 窓 0 = warm をやめる。5 分おきの 5 回は、2 回目から古い答え + 裏の引き直し 1 回ずつ
+        arr = [(i * 300, "a") for i in range(5)]
+        c = run_table("current", arr, 3600, serve_stale=21600, window=0)
+        self.assertEqual((c["promotes"], c["refresh_warm"]), (0, 0))
+        self.assertEqual((c["stale_hits"], c["refresh_stale"], c["refreshes"]), (4, 4, 4))
+        self.assertEqual(c["misses"], 1)
+        # 古い答えの齢はどれも 300 秒 (裏の引き直しで 1 つ前の使用の時刻に引き直している)
+        self.assertEqual(c["stale_age_sum"], 4 * 300)
+        self.assertEqual(c["stale_age_max"], 300)
+        # warm なら 2 回目 (300 秒) で上がり、そこから 45 秒ごとに引き直す
+        w = run_table("current", arr, 3600, serve_stale=21600)
+        self.assertEqual(w["stale_hits"], 1)
+        self.assertGreater(w["refresh_warm"], 50)
+
+    def test_promote_at_answer_closes_the_stale_gap(self):
+        # 30 秒の当たりで上がる。いまの予定は 75 秒 (齢 75) で、70 秒は期限切れ
+        arr = [(0, "a"), (30, "a"), (70, "a")]
+        now = run_table("current", arr, 70)
+        ans = run_table("current", arr, 70, promote_at="answer")
+        self.assertEqual(now["misses_by_kind"]["warm_stale"], 1)
+        # 答えの齢から出すと予定は 45 秒 = 70 秒の時点で齢 25 の当たり
+        self.assertEqual(ans["misses_by_kind"]["warm_stale"], 0)
+        self.assertEqual(ans["refresh_warm"], 1)
+
+    def test_serve_stale_hides_the_gap_as_a_warm_stale_hit(self):
+        # serve-stale のもとでは同じすき間はミスにならず、warm の古い答えに出る
+        c = run_table("current", [(0, "a"), (30, "a"), (70, "a")], 70, serve_stale=21600)
+        self.assertEqual(c["misses_by_kind"]["warm_stale"], 0)
+        self.assertEqual((c["stale_hits"], c["stale_hits_warm"]), (1, 1))
+
+    def test_per_name_refreshes_are_counted(self):
+        tb = dr.Table(dr.RULES["current"])
+        tb._warm_t = 0
+        for t, h in [(0, "a"), (10, "a"), (0, "b")]:
+            tb.lookup(h, t)
+        tb.advance(3600)
+        # a は 10 秒で上がって 55 秒から 45 秒ごと (窓 3,600 秒の中)、b は 1 回だけで引かない
+        self.assertEqual(tb.per_name.get("b", 0), 0)
+        self.assertEqual(tb.per_name["a"], tb.c["refreshes"])
+        self.assertEqual(tb.per_name["a"], 79)
+
+    def test_prime_warm_puts_the_name_on_the_queue(self):
+        tb = dr.Table(dr.RULES["current"])
+        tb.counting = False
+        tb.prime("a", 100, warm=True)
+        self.assertIn("a", tb.queue)
+        self.assertEqual(tb.queue["a"], 145)
+        off = dr.Table(dr.RULES["current"], window=0)
+        off.prime("a", 100, warm=True)
+        self.assertEqual(off.queue, {})
+
+    def test_grid_verdict_needs_both_axes(self):
+        def c(expired, warm_stale, refreshes):
+            return {"misses_by_kind": {"cold": 0, "expired": expired, "warm_stale": warm_stale},
+                    "refreshes": refreshes, "hours": 24.0}
+        base = c(2, 0, 1000)
+        self.assertTrue(dr.grid_verdict(base, c(12, 0, 500))["ok"])
+        # 引き直しが半分を越える
+        self.assertFalse(dr.grid_verdict(base, c(2, 0, 501))["ok"])
+        # ミスの増えが 1 日 10 回を越える (24 時間で +11)
+        v = dr.grid_verdict(base, c(12, 1, 100))
+        self.assertFalse(v["ok"])
+        self.assertEqual(v["misses_more"], 11)
+        self.assertAlmostEqual(v["misses_more_per_day"], 11.0)
+        # 区間が 1 時間なら +1 は 1 日 24 回
+        short = dict(base, hours=1.0)
+        self.assertAlmostEqual(dr.grid_verdict(short, c(3, 0, 10))["misses_more_per_day"], 24.0)
+
+
 class SnapshotTest(unittest.TestCase):
     def test_build_splits_warmup_and_window(self):
         snap = read(SNAP)
@@ -215,6 +288,66 @@ class SnapshotTest(unittest.TestCase):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.assertEqual(dr.main([SNAP, "--serve-stale", "0"]), 2)
+
+    def test_grid_on_the_fixture(self):
+        out = dr.run_grid(read(SNAP))
+        self.assertEqual(list(out["sides"]), ["lower", "upper"])
+        names = [n for n, _ in dr.GRID]
+        for side in out["sides"].values():
+            self.assertEqual(list(side["rules"]), names)
+            self.assertEqual(list(side["verdict"]), names[1:])
+            base, off = side["rules"]["base"], side["rules"]["no_warm"]
+            # warm をやめると warm の引き直しは 0、ミスは同じ (古い答えが受ける)
+            self.assertEqual(off["refresh_warm"], 0)
+            self.assertEqual(off["misses"], base["misses"])
+            self.assertLess(off["refreshes"], base["refreshes"])
+        lower, upper = out["sides"]["lower"]["rules"], out["sides"]["upper"]["rules"]
+        # 上限側は前から居た名前 (old) を区間の始まりで warm に置く = warm の引き直しが増える
+        self.assertGreater(upper["base"]["refresh_warm"], lower["base"]["refresh_warm"])
+        self.assertEqual(lower["base"]["refreshes"], 206)
+        self.assertEqual(upper["base"]["refreshes"], 284)
+        self.assertEqual(out["pass"], ["window900", "no_warm"])
+        # 基準は serve-stale 21,600 秒 (T21.3 の既定) の上
+        self.assertEqual(lower["base"]["misses_by_kind"]["expired"], 0)
+
+    def test_grid_series_on_the_fixture(self):
+        arrivals, t0, end = dr.build_series(read(SNAP))
+        self.assertEqual(t0, 1788996400)
+        self.assertEqual(end, 1789003600)
+        self.assertEqual(len(arrivals), 24)
+        self.assertTrue(all(t0 <= t < end for t, _ in arrivals))
+        out = dr.run_grid(read(SNAP), series=True)
+        self.assertEqual(list(out["sides"]), ["series"])
+        self.assertIsNone(out["actual"])
+        self.assertEqual(out["pass"], ["no_warm"])
+
+    def test_actual_grid_reads_the_warm_gauge_and_the_bound(self):
+        snap = read(SNAP)
+        snap = dict(snap, status={"dns": {"hits": 70, "misses": 10, "stale_hits": 20,
+                                          "refreshes": 400,
+                                          "misses_by_kind": {"cold": 6, "expired": 4,
+                                                             "warm_stale": 0}}})
+        _, _, c0, taken, _ = dr.build(snap)
+        a = dr.actual_grid(snap, c0, taken)
+        # warm をやめたときの引き直しは名前を引いた回 (70 + 10 + 20) より多くならない
+        self.assertAlmostEqual(a["no_warm_refresh_bound"], 100 / 400)
+        self.assertAlmostEqual(a["refresh_per_hour_since_start"], 400 / 25.0)
+
+    def test_cli_grid(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(dr.main([SNAP, "--grid"]), 0)
+        text = buf.getvalue()
+        self.assertIn("[lower]", text)
+        self.assertIn("| no_warm |", text)
+        self.assertIn("満たす案: window900, no_warm", text)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(dr.main([SNAP, "--grid", "--series", "--json"]), 0)
+        self.assertEqual(list(json.loads(buf.getvalue())["sides"]), ["series"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(dr.main([SNAP, "--series"]), 2)
 
     def test_no_recent_is_an_error(self):
         with self.assertRaises(ValueError):
