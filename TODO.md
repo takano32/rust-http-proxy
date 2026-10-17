@@ -1628,6 +1628,8 @@ T21.99 の「次のターンの準備」。**利用者の決定 (2026-10-17)**: 
   - 受け入れ基準: (1) の 20 / 20。(2)(3) は文言だけ。触ったクレートの clippy 警告 0。
 
   - 結果 (2026-10-17、`a69e8f8` / `82fc0df` / `3b1929d` / `0a92f0f`、取り込み `2e9e13a`): (1) テストの側だけでは「1 本目が組み立て中」を作れなかった (番人は組み終わりで落ち、テストが握れるロックも無い) ので、`proxy-endpoints` に試験のときだけ効く口 (機能 `test-hooks`、`endpoints::test_hooks`。このワークスペースで初めての features) を足した。機能を立てるのはルートの `[dev-dependencies]` だけで、既定のビルドの要求の経路には入らない (`cargo tree -e normal,features` で `"default"` だけ)。テストは 1 本目を止め、止まったのを確かめてから残り 3 本を投げる形 (`[200, 503, 503, 503]`)。2 コアで CPU のループ 6 本 (またはループ 4 本 + 同じ束のテストを別プロセスで) の下で、**直す前 10 / 20 落ち、直した後 0 / 20 落ち (2 通りとも)**。(2) `summary::of` のコメントを「5 秒の標本の `t` は取った時刻 (区間の終わり)、60 秒と 3,600 秒は窓の始まり」に直し、同じ言い方の単体テストの説明 1 行も合わせた。(3) `check-dashboard.js` の冒頭を「次の 17 項目」に直した (本文の番号が 2 か所重なっている)。気づき: `history.rs` は 2,375 行で目安を超えている。
+- **波 22a の全体チェック (2026-10-17、親)**: T22.2〜T22.6 を入れた main (`1c19f9a`) で `cargo fmt --all -- --check` 通過、`cargo clippy --workspace --all-targets -- -D warnings` 警告 0、`cargo test --workspace --no-fail-fast` は **139 バイナリ 851 通過 / 0 失敗 / 1 ignored** (T22.6 で直した `heavy_test` も通過)。`python3 -m unittest discover -s scripts` 448 本 OK、`check-docs.sh` 差分 0、`check-dashboard.js` 通過、`crate-versions.py --check` 0 (本体 `0.22.6`)、`cargo clean --release` からの `build-memory.sh 120` 通過、`-V` は `0.22.6+1c19f9a`。本体が変わったのは T22.2 (`dns_slow` の閾) と T22.4 (keep-warm の既定を止める) で、**再デプロイして T22.99 で見る**。
+
 - [ ] **T22.99 締める (Phase 22 の版を 24 時間走らせたあとに見る・決める・書く)**
   - 22a で本体が変わったら再デプロイし、前と 0 時間の雪像を撮って前提に書く。判定は `--criteria phase22` (T22.1)。
 
