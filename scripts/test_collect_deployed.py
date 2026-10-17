@@ -263,7 +263,8 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria phase22)", tail)
         self.assertIn("前の 10 行は phase21 と同じ物差しで", tail)
         # 前回の雪像に `/profile` が無いので conn 役の行は「判定できず」で、参考の行は無い
-        self.assertIn("(ほかに表示だけ 4 行。集計に数えない)", tail)
+        # (表示だけは phase21 の 4 行 + `/events` の行)
+        self.assertIn("(ほかに表示だけ 5 行。集計に数えない)", tail)
         self.assertEqual(tail.count("\n| "), 1 + 14)          # 表の頭 + 14 行
         # `BEFORE` も `ZERO` も無ければ今までどおり直前の 1 枚が相手で、(g) は判定できない
         self.assertNotIn("`BEFORE`", out)

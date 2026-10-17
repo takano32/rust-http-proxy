@@ -1416,20 +1416,22 @@ class Criteria22(unittest.TestCase):
         rules = sd.RULES["phase22"]
         self.assertEqual(len(rules), 14)
         self.assertIs(rules[1], sd._p22_refresh_rate)
-        for i in (0, *range(2, 10)):
+        for i in (0, *range(2, 6), *range(7, 10)):
             self.assertIs(rules[i], sd.RULES["phase21"][i], i)
+        self.assertIs(rules[6], sd._p22_events)                          # `/events` の行は表示だけ
         self.assertEqual(rules[10:], (sd._p22_dns_slow, sd._p22_stale_retries, sd._p22_connect_errors,
                                       sd._p22_refresh_and_stale_misses))
         c = self.judge()
         self.assertEqual(len(c["rows"]), 14)
-        self.assertEqual(c["display_only"], 4)
+        self.assertEqual(c["display_only"], 5)
+        self.assertEqual([i for i, r in enumerate(c["rows"]) if r[3] == sd.SHOWN], [0, 2, 3, 5, 6])
         self.assertNotIn("phase22", sd.FROZEN)
 
     def test_the_phase21_rows_come_out_the_same_except_the_cut(self):
         with written(z=cached(zero_snapshot(), 0)) as p:
             rows21 = self.judge(name="phase21", extra=("--zero", p["z"]))["rows"]
             rows22 = self.judge(extra=("--zero", p["z"]))["rows"]
-        for i in (0, 1, *range(3, 10)):
+        for i in (0, 1, 3, 4, 5, 7, 8, 9):
             self.assertEqual(rows22[i], rows21[i], i)
         # 平常時のミス (表示だけ) は切り方が違うので標本の数が違う (後の 350 本の時間が平常時に入る)
         self.assertIn("平常時 2 標本", rows21[2][4])
@@ -1548,18 +1550,23 @@ class Criteria22(unittest.TestCase):
         with written(a=a, b=b) as p:
             return self.row(12, a=p["a"], b=p["b"])
 
-    def test_errors_at_the_same_rate_are_met(self):
-        # 前 4 標本・後 3 標本に、1 標本あたり refused 1・timeout 1 (同じ件/時)
+    def test_errors_per_connect_are_compared(self):
+        # 前 4 標本 (700 本)・後 3 標本 (750 本) に、1 標本あたり refused 1・timeout 1
         row = self.errors_row([0, 1, 0, 1, 0, 0, 0, 0], [0, 1, 0, 1, 0, 0, 0, 0])
         self.assertEqual(row[3], sd.MET)
-        self.assertEqual(row[1], "< 前 ×1.5")
-        self.assertIn("**2.00** 件/時 (6 件: `refused` 3、`unreachable` 0、`timeout` 3。前 2.00 件/時 = 8 件)",
-                      row[2])
-        self.assertIn("、接続 1 本あたり ", row[2])
+        self.assertEqual(row[1], "< 前 ×1.5 (接続 1 本あたり)")
+        self.assertEqual(row[2], "**0.0080** / 接続 (6 件 / 750 本: `refused` 3、`unreachable` 0、`timeout` 3。"
+                                 "前 0.0114 = 8 件 / 700 本、0.70 倍)、件/時 2.00 (前 2.00)")
+        self.assertIn("`errors_by_cause` ÷ `connects`", row[4])
+        self.assertIn("件/時は表示だけ", row[4])
 
-    def test_one_and_a_half_times_the_rate_is_missed(self):
-        self.assertEqual(self.errors_row([0, 2, 0, 0, 0, 0, 0, 0], [0, 2, 1, 0, 0, 0, 0, 0])[3], sd.MISSED)
-        self.assertEqual(self.errors_row([0, 2, 0, 0, 0, 0, 0, 0], [0, 2, 0, 0, 0, 0, 0, 0])[3], sd.MET)
+    def test_one_and_a_half_times_per_connect_is_missed(self):
+        # 前 4 件 / 700 本 = 0.0057、後 9 件 / 750 本 = 0.012 (2.1 倍)
+        self.assertEqual(self.errors_row([0, 1, 0, 0, 0, 0, 0, 0], [0, 2, 1, 0, 0, 0, 0, 0])[3], sd.MISSED)
+        # 件/時は 2 倍でも、接続 1 本あたりは 1.4 倍なので満たした (量が増えた期間で当たらない)
+        row = self.errors_row([0, 1, 0, 0, 0, 0, 0, 0], [0, 2, 0, 0, 0, 0, 0, 0])
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("、1.40 倍)、件/時 2.00 (前 1.00)", row[2])
         # dns や reset は数えない
         self.assertEqual(self.errors_row([0, 1, 0, 0, 0, 0, 0, 0], [9, 1, 0, 0, 9, 0, 0, 0])[3], sd.MET)
 
@@ -1603,8 +1610,26 @@ class Criteria22(unittest.TestCase):
         self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase22`)", md)
         self.assertIn("前の 10 行は phase21 と同じ物差しで", md)
         self.assertIn("T22.3 は段 1 で止めたので行がありません", md)
-        self.assertIn("| `dns_slow` を新しい閾 (窓のミスの合計 1,000 ms 以上) で数えた件/時と、"
-                      "それより小さい窓で立った件数 | 合計 < 1,000 ms の窓で 0 件 |", md)
+        self.assertIn("| `dns_slow` が窓のミスの合計 1,000 ms 未満の窓で立っていない (新しい閾 = 合計 1,000 ms "
+                      "以上での件/時は表示だけ) | 合計 < 1,000 ms の窓で 0 件 |", md)
+        self.assertIn("(ほかに表示だけ 5 行。集計に数えない)", md)
+
+    def test_the_events_row_is_only_shown(self):
+        """phase21 の `/events` の行 (`dns_slow` ≤ 0.1 件/時) は phase22 では表示だけ (親の判断 2026-10-17)。"""
+        b = with_dns_slow(read(B), 2000, 3000, 4000)                     # 0.25 件/時。どれも合計 1,000 ms 以上
+        with written(b=b) as p:
+            old = self.judge(b=p["b"], name="phase21")["rows"][6]
+            row = self.row(6, b=p["b"])
+            new = self.row(10, b=p["b"])
+        self.assertEqual(old[3], sd.MISSED)
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertEqual(row[0], "`/events` の anomaly の種類別 件/時 (`dns_slow` を含めて表示だけ)")
+        self.assertEqual(row[1], "— (phase21 は `dns_slow` ≤ 0.1)")
+        self.assertEqual(row[2], old[2])
+        self.assertIn("**閾を置かない**: `dns_slow` の判定は新しい閾の行", row[4])
+        # 件/時が高くても、小さい窓で立っていなければ新しい閾の行は満たした (件/時は表示だけ)
+        self.assertEqual(new[3], sd.MET)
+        self.assertIn("新しい閾で **0.25** 件/時 (3 件)", new[2])
         self.assertNotIn("前の 10 行は phase21 と同じ物差しで", run([A, B, "--no-dns", "--criteria", "phase21"]))
 
 
@@ -1681,14 +1706,17 @@ class Deployed22(unittest.TestCase):
         self.assertEqual(h["limits"], {"before": 300, "after": 2340})
         self.assertEqual((h["after"]["samples"], h["after"]["burst_samples"]), (29, 0))
         self.assertEqual(h["after"]["connects"], 21_920)
-        self.assertEqual(c["tally"], {sd.MET: 6, sd.MISSED: 4, sd.UNKNOWN: 0})
-        self.assertEqual(c["display_only"], 4)
+        self.assertEqual(c["tally"], {sd.MET: 7, sd.MISSED: 2, sd.UNKNOWN: 0})
+        self.assertEqual(c["display_only"], 5)
         verdicts = [r[3] for r in c["rows"]]
-        self.assertEqual(verdicts[6], sd.MISSED)                         # `dns_slow` 0.47 件/時 (phase21 と同じ)
-        self.assertEqual(verdicts[10:], [sd.MISSED, sd.MET, sd.MISSED, sd.MISSED])
+        self.assertEqual(verdicts[6], sd.SHOWN)                          # `dns_slow` 0.47 件/時 は表示だけ
+        self.assertIn("`dns_slow` **0.47** 件/時 (14 件、前 0.09)", c["rows"][6][2])
+        self.assertEqual(verdicts[10:], [sd.MISSED, sd.MET, sd.MET, sd.MISSED])
         self.assertIn("新しい閾で **0.17** 件/時 (5 件)、合計 1,000 ms 未満 **9** 件", c["rows"][10][2])
         self.assertIn("**0.00%** (0 / 1,252)", c["rows"][11][2])
-        self.assertIn("**3.86** 件/時 (112 件: `refused` 3、`unreachable` 1、`timeout` 108。", c["rows"][12][2])
+        # 件/時は 5.6 倍 (0.69 → 3.86) でも、接続 1 本あたりは 0.46 倍
+        self.assertIn("**0.0051** / 接続 (112 件 / 21,920 本: `refused` 3、`unreachable` 1、`timeout` 108。"
+                      "前 0.0112 = 125 件 / 11,137 本、0.46 倍)、件/時 3.86 (前 0.69)", c["rows"][12][2])
         self.assertIn("引き直し **1,990.8** 回/時 (前 309.7、6.43 倍)", c["rows"][13][2])
 
 

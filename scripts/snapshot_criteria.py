@@ -237,7 +237,8 @@ PHASE22 = dict(
     # T22.2: `dns_slow` が立つのは窓のミスの合計がこれ以上のときだけ (`anomaly.rs` の `DNS_MIN_SUM_MS`)
     dns_slow_min_sum_ms=1000,
     # T22.4 の「既定を 3,600 に戻す」2 つの条件 (TODO.md T22.4 の結果、親の判断 2026-10-17):
-    # `stale_retries` が `stale_hits` のこの割合以上、または下の原因の件/時が前の期間のこの倍以上なら戻す
+    # `stale_retries` が `stale_hits` のこの割合以上、または下の原因の**接続 1 本あたり**が前の期間のこの倍以上
+    # なら戻す (件/時ではない。量が 12 倍になる tokyo では件/時は悪化でなくても当たる。親の判断 2026-10-17)
     stale_retry_share=0.01,
     connect_error_factor=1.5,
     connect_error_causes=("refused", "unreachable", "timeout"),
@@ -1127,12 +1128,14 @@ def dns_slow_events(snap, min_sum):
 def _p22_dns_slow(c, th):
     """T22.2: `dns_slow` を新しい閾 (窓のミスの合計 1,000 ms 以上) で数えた件/時と、それより小さい窓で立った件数。
 
-    判定は「合計が閾に満たない窓で立った `dns_slow` が 0」(T22.2 の目安を親が読み替えたもの: ミスの少ない窓
-    で鳴らない)。T22.2 より前の版の雪像では、新しい閾なら立たなかった件数がここに出る。件/時は表示だけ
-    (T22.2 の模型で tokyo の後の期間は 0.167 件/時、4 件とも本当に遅い一続き)。
+    判定は「合計が閾に満たない窓で立った `dns_slow` が 0」だけで決める (T22.2 の目安を親が読み替えたもの: ミスの
+    少ない窓で鳴らない)。T22.2 より前の版の雪像では、新しい閾なら立たなかった件数がここに出る。新しい閾での
+    件/時は**表示だけで閾を置かない** (T22.2 の模型で tokyo の後の期間は本当に遅い窓だけで 0.17 件/時あり、
+    件/時の閾は使われ方で落ちる。親の判断 2026-10-17)。phase21 の `dns_slow` ≤ 0.1 件/時の行は phase22 では表示だけ。
     """
     lim = th["dns_slow_min_sum_ms"]
-    label = f"`dns_slow` を新しい閾 (窓のミスの合計 {lim:,} ms 以上) で数えた件/時と、それより小さい窓で立った件数"
+    label = (f"`dns_slow` が窓のミスの合計 {lim:,} ms 未満の窓で立っていない "
+             f"(新しい閾 = 合計 {lim:,} ms 以上での件/時は表示だけ)")
     limit = f"合計 < {lim:,} ms の窓で 0 件"
     aft, bef = dns_slow_events(c["b"], lim), dns_slow_events(c["a"], lim)
     if aft is None:
@@ -1201,11 +1204,16 @@ def _p22_stale_retries(c, th):
 
 
 def _p22_connect_errors(c, th):
-    """T22.4 の戻す条件 (2): 接続のエラー (`refused`・`unreachable`・`timeout`) の件/時が前の期間の 1.5 倍未満。"""
+    """T22.4 の戻す条件 (2): 接続のエラー (`refused`・`unreachable`・`timeout`) の**接続 1 本あたり**が前の期間の 1.5 倍未満。
+
+    件/時ではなく接続 1 本あたりで比べる (親の判断 2026-10-17。量が 12 倍になる tokyo では件/時は悪化で
+    なくても当たる)。母数は `/history` の `connects` (バースト込み)。件/時は表示だけ。前の期間に接続が
+    無ければ「判定できず」、前が 0 なら後も 0 のときだけ満たした。
+    """
     k, causes = th["connect_error_factor"], th["connect_error_causes"]
     names = "・".join(f"`{x}`" for x in causes)
-    label = f"接続のエラー ({names}) の件/時が前の期間の {k} 倍未満 (T22.4 の戻す条件)"
-    limit = f"< 前 ×{k}"
+    label = f"接続のエラー ({names}) の接続 1 本あたりが前の期間の {k} 倍未満 (T22.4 の戻す条件)"
+    limit = f"< 前 ×{k} (接続 1 本あたり)"
     hist = c["hist"] or {}
     bef, aft, interval = hist.get("before_all"), hist.get("after_all"), hist.get("interval_secs")
     if not bef or not aft or not bef.get("samples") or not aft.get("samples"):
@@ -1217,18 +1225,22 @@ def _p22_connect_errors(c, th):
         return [cs[i] if i < len(cs) else 0 for i in idx]
     cb, ca = counts(bef), counts(aft)
     b_rate, a_rate = per_hour(bef, interval, sum(cb)), per_hour(aft, interval, sum(ca))
+    src = (f"`/history?res={hist.get('res')}` の `errors_by_cause` ÷ `connects` (前 {bef['samples']} / 後 "
+           f"{aft['samples']} 標本、バースト込み)。件/時は表示だけ")
     if b_rate is None or a_rate is None:
         return (label, limit, "—", UNKNOWN, "`/history` の `errors_by_cause` が読めない")
     by = "、".join(f"`{x}` {n(v)}" for x, v in zip(causes, ca))
-    per_conn = (f"、接続 1 本あたり {sum(ca) / aft['connects']:.4f} (前 "
-                + (f"{sum(cb) / bef['connects']:.4f}" if bef.get("connects") else "—") + ")"
-                if aft.get("connects") else "")
-    shown = (f"**{a_rate:,.2f}** 件/時 ({n(sum(ca))} 件: {by}。前 {b_rate:,.2f} 件/時 = {n(sum(cb))} 件)"
-             + per_conn)
-    ok = a_rate < b_rate * k if b_rate else a_rate == 0
-    return (label, limit, shown, MET if ok else MISSED,
-            f"`/history?res={hist.get('res')}` の `errors_by_cause` (前 {bef['samples']} / 後 "
-            f"{aft['samples']} 標本、バースト込み)。接続 1 本あたりは表示だけ")
+    hourly = f"件/時 {a_rate:,.2f} (前 {b_rate:,.2f})"
+    if not bef.get("connects") or not aft.get("connects"):
+        side = "前" if not bef.get("connects") else "後"
+        return (label, limit, f"{n(sum(ca))} 件 ({by})、{hourly}", UNKNOWN,
+                f"{side}の期間に接続が無いので 1 本あたりが出ない。" + src)
+    pb, pa = sum(cb) / bef["connects"], sum(ca) / aft["connects"]
+    shown = (f"**{pa:.4f}** / 接続 ({n(sum(ca))} 件 / {n(aft['connects'])} 本: {by}。"
+             f"前 {pb:.4f} = {n(sum(cb))} 件 / {n(bef['connects'])} 本"
+             + (f"、{pa / pb:.2f} 倍" if pb else "") + f")、{hourly}")
+    ok = pa < pb * k if pb else pa == 0
+    return (label, limit, shown, MET if ok else MISSED, src)
 
 
 def counter_rates(c, key, sub=None):
@@ -1283,9 +1295,14 @@ RULES["phase20"] = (_p20_watch_host, _p15_refresh_rate, _p15_miss_band, _p20_tim
 RULES["phase21"] = (_p20_watch_host, _p15_refresh_rate, _p21_miss_band, _p20_timeout,
                     _p21_conn_per_request, _p20_warm_max, _p17_events, _p17_cgroup,
                     _p20_heap, _p21_request_probes)
-# phase22 = phase21 の 10 行 (引き直しの行は warm 0 でも読める版) + T22.2 の 1 行 + T22.4 の 3 行。
+_p22_events = display_only(
+    _p17_events, lambda th: "`/events` の anomaly の種類別 件/時 (`dns_slow` を含めて表示だけ)",
+    "`dns_slow` の判定は新しい閾の行 (合計 1,000 ms 未満の窓で立った件数) に任せる。T22.2 の模型で tokyo の後は"
+    "本当に遅い窓だけで 0.17 件/時あり、件/時の閾は使われ方で落ちる (親の判断 2026-10-17)", was="phase21")
+# phase22 = phase21 の 10 行 (引き直しの行は warm 0 でも読める版、`/events` の行は表示だけ) + T22.2 の 1 行 + T22.4 の 3 行。
 # 平常時の切り方も違う (`PHASE22` の `burst_median_k`)。T22.3 は段 1 で止めたので行を作らない
-RULES["phase22"] = ((RULES["phase21"][0], _p22_refresh_rate) + RULES["phase21"][2:]
+RULES["phase22"] = ((RULES["phase21"][0], _p22_refresh_rate) + RULES["phase21"][2:6] + (_p22_events,)
+                    + RULES["phase21"][7:]
                     + (_p22_dns_slow, _p22_stale_retries, _p22_connect_errors,
                        _p22_refresh_and_stale_misses))
 
@@ -1391,10 +1408,12 @@ def render_criteria(d, grouped):
         # T22.1。phase21 の 10 行 + 22a の 4 行で、平常時の切り方も違う
         p("前の 10 行は phase21 と同じ物差しで、材料も同じです (`--daily` `--profile` `--profile-before` "
           "`--zero`)。裏の引き直しの行だけ、keep-warm を止めた版 (T22.4。warm 0) では warm の平均で割る"
-          "参考の値の代わりに通算の 1 時間あたりを並べます。後ろの 4 行は 22a で段 2 まで行ったもの: "
-          "`dns_slow` を新しい閾 (窓のミスの合計 1,000 ms 以上。T22.2) で数えた件/時と、それより小さい窓で"
-          "立った件数 (0 なら満たした)、T22.4 で keep-warm の既定を戻す 2 つの条件 (`stale_retries` が "
-          "`stale_hits` の 1% 以上、接続のエラー `refused`・`unreachable`・`timeout` の件/時が前の 1.5 倍以上。"
+          "参考の値の代わりに通算の 1 時間あたりを並べます。`/events` の行は `dns_slow` を含めて**表示だけ**です "
+          "(`dns_slow` の判定は下の新しい閾の行に任せる)。後ろの 4 行は 22a で段 2 まで行ったもの: "
+          "`dns_slow` が窓のミスの合計 1,000 ms 未満の窓で立った件数 (0 なら満たした。新しい閾 (T22.2) での件/時は"
+          "表示だけ)、T22.4 で keep-warm の既定を戻す 2 つの条件 (`stale_retries` が "
+          "`stale_hits` の 1% 以上、接続のエラー `refused`・`unreachable`・`timeout` の**接続 1 本あたり**が前の "
+          "1.5 倍以上。"
           "当たれば「届かず」)、T22.4 の目安 (引き直しの回/時が前の半分以下、`expired` + `warm_stale` の"
           "増えが 1 日 10 回以内) です。**平常時は「300 本と、その期間の 1 時間の本数の中央値の 3 倍の"
           "大きい方」未満の標本**です (§2。T22.1)。T22.3 は段 1 で止めたので行がありません。"

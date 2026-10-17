@@ -140,6 +140,7 @@ from snapshot_criteria import (  # noqa: E402,F401
     _p21_request_probes,
     _p22_connect_errors,
     _p22_dns_slow,
+    _p22_events,
     _p22_refresh_and_stale_misses,
     _p22_refresh_rate,
     _p22_stale_retries,
