@@ -1579,11 +1579,13 @@ T21.99 の「次のターンの準備」。**利用者の決定 (2026-10-17)**: 
 | T22.5 | 22a | t225 | `scripts/collect-deployed.sh`、その試験、README の `collect-deployed.sh` の節 |
 | T22.6 | 22a | t226 | `tests/heavy_test.rs` (と `/snapshot` を組み立てる所に試験用の口が要れば最小限)、`crates/metrics-window/src/history.rs` のコメント 1 か所、`scripts/check-dashboard.js` の冒頭のコメント |
 
-- [ ] **T22.1 `--criteria phase22` (量が増えた tokyo での平常時の切り方と、22a の計器の行)**
+- [x] **T22.1 `--criteria phase22` (量が増えた tokyo での平常時の切り方と、22a の計器の行)**
   - 目的: T14.0 の「1 時間 300 本未満の標本が平常時」は tokyo の今の量 (500〜1,500 本/時が続く) では 29 標本のうち 6 しか残らず、判定表の確立・`wait`・ミス率がほぼ全部「バースト」扱いになる。量で切るのをやめるか、量に合わせて切る。
   - やること: (1) 平常時の切り方を決める。候補は「その期間の 1 時間の本数の中央値の k 倍を超えた標本をバーストとする」(k は 3 枚以上の雪像で決める) か「全期間で数え、バーストの窓は表示だけ」。tokyo の 3 枚 (10-15T201451Z・10-17T020206Z と、その間の日次) と nagoya の 10-08 の 1 枚で、どちらの切り方でも T18.99〜T21.99 の判定が変わらないことを先に確かめる (過去の phase14〜21 の出力は変えない決まり)。
     (2) `--criteria phase22` = phase21 の 10 行 + 22a で入ったものの行 (T22.2 の `dns_slow` は新しい閾の件/時、T22.3 が段 2 まで行けば「覚えた失敗で早く断った回数」と「誤って断ったと見られる回数」、T22.4 が段 2 まで行けば引き直しの回/時と `expired` のミス)。22a で段 2 まで行かなかったものの行は作らない。`collect-deployed.sh` の既定を phase22 にする。
   - 受け入れ基準: テスト (切り方の単体、phase22 の行ごと、過去の phase の出力が変わらないこと)。`python3 -m unittest discover -s scripts` 通過、`check-docs.sh` 差分 0。
+
+  - 結果 (2026-10-17、`d5838cb` / `d95435b` / `a2a2e33` / `b2b56ef` / `b8d106a`、取り込み `2715ae0`): **phase22 の平常時は、前と後で別々に「300 本と、その期間の 1 時間の本数の中央値の 3 倍 (切り上げ) の大きい方」未満の標本**にした (phase22 のときだけ。`snapshot_criteria.normal_limit`、`--out json` の `history` に `median_k` `medians` `limits` を足す)。k は 4 組 5 期間で決めた (本文の「その間の日次」は status/tokyo に無かった)。tokyo 10-15→10-17 の後の期間は中央値 780 本/時で最大 / 中央値が 2.0 なので k ≤ 2 だと量の揃った日の 1 時間を切り、量の少ない期間 (中央値 22〜44) は k ≤ 6 なら 300 本と同じ標本が残る。その範囲でいちばん小さい 3。tokyo の後の期間の平常時は 6 → 29 標本。どの切り方を T18.99・T20.99・T21.99 に当てても判定は変わらない。`--criteria phase22` = phase21 の 10 行 (`/events` の行は表示だけ。親の判断) + 4 行: `dns_slow` が合計 1,000 ms 未満の窓で立っていない (新しい閾での件/時は表示だけ)、T22.4 を戻す条件 2 つ (`stale_retries` の割合、`refused`/`unreachable`/`timeout` の**接続 1 本あたり**が前の 1.5 倍以上で届かず。件/時は表示だけ。親の判断)、T22.4 の目安 (引き直し ≤ 前 ×0.5、`expired` + `warm_stale` の増え ≤ 10 回/日)。tokyo 10-15→10-17 (22a より前の版どうし) の phase22 は満たした 7・届かず 2 (小さい窓の `dns_slow` 9 件、引き直し 6.43 倍。どちらもその版の動きどおり)・表示だけ 5。`collect-deployed.sh` の既定を `CRITERIA=phase22` にした。phase14〜21 の出力は 56 本とも前後 cmp 同一。テストは `test_snapshot_criteria.py` に 28 本、unittest 476 本 OK、`check-docs.sh` 差分 0。サーバー側の `?summary=1` は 300 本で固定のまま。
 
 - [x] **T22.2 `dns_slow` の閾を、ミスの数が少ない窓で鳴らないようにする**
   - 目的: T21.99 で `dns_slow` は 0.47 件/時 (14 件)。14 件とも 5 分窓のミスは 3〜5 回で、中身は初めて引く名前 (`cold`)。T21.3 で `expired` が減ったので、窓の中のミスが少なく、遅い 1 回で平均が 100 ms を越える。いまの条件は `crates/metrics-watch/src/anomaly.rs` の `DNS_MIN_MISSES` (3) と `dns_miss_limit` (100 ms と canary の基準線の倍の大きい方)。
