@@ -2,7 +2,7 @@
 # `scripts/snapshot-diff.py --criteria` の部 (**Phase の完了の定義に対する判定表**。TODO.md T20.1)。
 #
 # `snapshot-diff.py` が 1,959 行になったので、判定の部だけをここへ割った (T18.2 の申し送り)。
-# 持っているのは `PHASE14`〜`PHASE21` の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
+# 持っているのは `PHASE14`〜`PHASE22` の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
 # 判定表の印字 (`render_criteria()`) と、**判定の関数と差分の両方が使う小物**
 # (`part` `stamp` `n` `ms` `ratio` `restart_info` `norm_history` `merged_history` `miss_rate`)。
 # 小物までこちらにあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
@@ -11,7 +11,9 @@
 #
 # 単体では動かさない (入口は `snapshot-diff.py`)。依存は Python 3 の標準ライブラリだけ。
 
+import math
 import os
+import statistics
 import sys
 from datetime import datetime, timezone
 
@@ -36,7 +38,8 @@ HFIELDS = (
     # (5 秒の行は `sum = 値, n = 1`。無い版と T16.0 より前の行は下の `aggregate` が今の平均に戻す)
     "dns_warm_max", "dns_warm_sum", "gauge_n",
 )
-# 平常時の閾 (T14.0: 1 時間 300 本未満の標本だけを「平常時」とする)
+# 平常時の閾 (T14.0: 1 時間 300 本未満の標本だけを「平常時」とする)。phase22 はこれと
+# 「期間の中央値の k 倍」の大きい方 (下の `PHASE22` と `normal_limit`。T22.1)
 BURST_PER_HOUR = 300
 # Phase 14 の完了の定義で名指しされている主要ホスト以外を選ぶときの数
 MAJOR_HOSTS = 3
@@ -219,8 +222,20 @@ PHASE21 = dict(
     profile_min_hours=12.0,
     request_probe_grace_hours=3.0,
 )
+# T22.1: phase21 の 10 行に 22a (T22.2・T22.4) の行を足したもの。**平常時の切り方もこの定義だけ違う**:
+# 1 時間の本数が「`BURST_PER_HOUR` (T14.0 の 300 本) と、**その期間の 1 時間の本数の中央値の
+# `burst_median_k` 倍**の大きい方」以上の標本をバーストとする (`normal_limit`)。tokyo の 10-15 → 10-17 は
+# 量が 12 倍 (中央値 780 本/時) で、300 本で切ると 29 標本のうち 23 が「バースト」になった。量の少ない期間
+# (中央値 × k が 300 に届かない) では T14.0 の切り方そのもの
+PHASE22 = dict(
+    PHASE21,
+    # k は雪像 4 組で決めた (TODO.md T22.1): 量の多い tokyo の後の期間は最大 / 中央値が 2.0 (1,564 / 780) で、
+    # k ≤ 2 だと量の揃った日のいちばん多い 1 時間を切る。量の少ない 3 期間 (nagoya 10-08 は中央値 44、
+    # tokyo 10-15 は 22〜23) は k ≤ 6 なら 300 本の切り方と同じ標本が残る。その間でいちばん小さい 3
+    burst_median_k=3,
+)
 CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18,
-            "phase20": PHASE20, "phase21": PHASE21}
+            "phase20": PHASE20, "phase21": PHASE21, "phase22": PHASE22}
 # **出力を 1 文字も変えない定義** (過去の判定を同じ命令で出し直せるように)。T20.1 で差分の表に
 # 足した行 (成功した接続だけの確立時間) は、`--criteria` がこの 4 つのときは出さない
 FROZEN = ("phase14", "phase15", "phase17", "phase18")
@@ -230,6 +245,17 @@ MET, MISSED, UNKNOWN = "満たした", "届かず", "判定できず"
 SHOWN = "表示だけ"
 # 材料が短くて判定に使わない行の判定の欄 (T21.2)。`SHOWN` と同じく集計 (`tally`) には数えない
 REFERENCE = "参考"
+
+
+def normal_limit(base, counts, k):
+    """平常時の閾 (1 標本の本数。これ以上はバースト) を、その期間の標本の本数 `counts` から出す (T22.1)。
+
+    `base` は `BURST_PER_HOUR` を解像度に合わせた値 (T14.0 の切り方)。返すのは `base` と
+    「本数の中央値 × `k`」(切り上げ) の大きい方で、`k` が無ければ `base` のまま。標本が無ければ `base`。
+    """
+    if not k or not counts:
+        return base
+    return max(base, math.ceil(statistics.median(counts) * k))
 
 
 def per_hour(agg, interval, value):
@@ -1047,6 +1073,8 @@ RULES["phase20"] = (_p20_watch_host, _p15_refresh_rate, _p15_miss_band, _p20_tim
 RULES["phase21"] = (_p20_watch_host, _p15_refresh_rate, _p21_miss_band, _p20_timeout,
                     _p21_conn_per_request, _p20_warm_max, _p17_events, _p17_cgroup,
                     _p20_heap, _p21_request_probes)
+# phase22 = phase21 の 10 行 (平常時の切り方だけ違う。T22.1)
+RULES["phase22"] = RULES["phase21"]
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,

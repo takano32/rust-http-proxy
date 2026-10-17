@@ -107,6 +107,7 @@ from snapshot_criteria import (  # noqa: E402,F401
     PHASE18,
     PHASE20,
     PHASE21,
+    PHASE22,
     REFERENCE,
     RULES,
     SHOWN,
@@ -150,6 +151,7 @@ from snapshot_criteria import (  # noqa: E402,F401
     ms,
     n,
     norm_history,
+    normal_limit,
     part,
     per_hour,
     profile_cost,
@@ -392,7 +394,13 @@ def aggregate(rows, bounds, limit):
     return out
 
 
-def history_split(a, b, info, burst):
+def history_split(a, b, info, burst, median_k=None):
+    """`/history` を前後の境目で切り、平常時 (バーストを外した標本) とバースト込みを畳む。
+
+    `median_k` (phase22 の `burst_median_k`。T22.1) があれば、前と後で別々に平常時の閾を
+    「`burst` と、その期間の 1 標本の本数の中央値 × `median_k` の大きい方」にする (`normal_limit`)。
+    そのときだけ `median_k` `medians` `limits` の 3 つの鍵を足す (無いときの形は今までと同じ)。
+    """
     res = pick_res(a, b)
     if res is None:
         return None
@@ -402,14 +410,24 @@ def history_split(a, b, info, burst):
     edge = info["boundary"]
     before = [r for r in rows if r["t"] < edge]
     after = [r for r in rows if r["t"] >= edge]
-    return {
+    limits = {"before": limit, "after": limit}
+    if median_k:
+        for side, rs in (("before", before), ("after", after)):
+            limits[side] = normal_limit(limit, [r["connects"] or 0 for r in rs], median_k)
+    out = {
         "res": res, "interval_secs": interval, "limit": limit, "bounds": bounds,
         "causes": causes, "boundary": edge, "samples": len(rows),
-        "before": aggregate(before, bounds, limit),
-        "after": aggregate(after, bounds, limit),
+        "before": aggregate(before, bounds, limits["before"]),
+        "after": aggregate(after, bounds, limits["after"]),
         "before_all": aggregate(before, bounds, None),
         "after_all": aggregate(after, bounds, None),
     }
+    if median_k:
+        out["median_k"] = median_k
+        out["medians"] = {side: median([r["connects"] or 0 for r in rs])
+                          for side, rs in (("before", before), ("after", after))}
+        out["limits"] = limits
+    return out
 
 
 # --------------------------------------------- (2a) 成功した接続だけの確立時間 (`/recent`)
@@ -811,7 +829,9 @@ def build(a, b, args):
     if getattr(args, "zero", None):
         b["zero_snapshot"] = load_source(args.zero, False)
     info = restart_info(a, b)
-    hist = history_split(a, b, info, args.burst)
+    # 平常時の切り方は定義が `burst_median_k` を持つときだけ変わる (phase22。T22.1)
+    median_k = CRITERIA[args.criteria].get("burst_median_k") if args.criteria else None
+    hist = history_split(a, b, info, args.burst, median_k)
     mode, table = "dns", {}
     if args.no_dns:
         mode = "none"
@@ -847,8 +867,12 @@ def build(a, b, args):
         out["recent_connect"] = recent_connects(b)
     # サーバー側の要約 (T14.24)。`--summary` があれば読んで手元の集計と並べる
     if hist:
+        # サーバーの `normal_hours_only=1` は 300 本で切る。phase22 で後の閾が上がって後の期間に
+        # バーストが残らないなら、全部の標本 (`normal_hours_only` なし) が同じ窓になる (T22.1)
+        normal = not (hist.get("limits") and hist["limits"]["after"] > hist["limit"]
+                      and not hist["after"]["burst_samples"])
         out["summary_url"] = summary_url(info["boundary"], b["taken_at"],
-                                         int(hist["res"]), True)
+                                         int(hist["res"]), normal)
         server = load_summary(getattr(args, "summary", None))
         out["summary"] = server
         out["summary_check"] = summary_check(server, hist["after"])
@@ -913,8 +937,21 @@ def render(d, top):
     else:
         bef, aft = h["before"], h["after"]
         bef_all, aft_all = h["before_all"], h["after_all"]
-        p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
-          f"**1 標本 {h['limit']} 本以上の窓 (バースト) を外した**もの同士で並べる (T14.0 と同じ切り方)。")
+        if "limits" in h:
+            # phase22 (T22.1)。前と後で閾が違う
+            lb, la = h["limits"]["before"], h["limits"]["after"]
+            md = h["medians"]
+            p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
+              f"**前は 1 標本 {lb:,} 本以上・後は {la:,} 本以上の窓 (バースト) を外した**もの同士で並べる "
+              f"(phase22 の切り方。T22.1: {h['limit']:,} 本 (T14.0) と、その期間の 1 標本の本数の中央値 "
+              f"(前 {n(md['before'])}・後 {n(md['after'])} 本) の {h['median_k']} 倍の大きい方)。")
+            if la > h["limit"] and h["after"]["burst_samples"]:
+                p()
+                p(f"後の閾が {h['limit']:,} 本より上なので、下の「サーバー側で 1 要求」の URL "
+                  "(`normal_hours_only=1` は 300 本で切る) とは平常時の窓が違う。")
+        else:
+            p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
+              f"**1 標本 {h['limit']} 本以上の窓 (バースト) を外した**もの同士で並べる (T14.0 と同じ切り方)。")
         p()
         p("| 項目 | 前 | 後 | 出どころ |")
         p("|---|---|---|---|")

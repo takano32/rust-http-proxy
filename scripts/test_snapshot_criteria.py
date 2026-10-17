@@ -309,7 +309,8 @@ class Criteria15(unittest.TestCase):
 
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
-                         ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21"])
+                         ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
+                          "phase22"])
 
 
 def conn_profile(conn_us_per_row):
@@ -1303,6 +1304,73 @@ class Deployed21(unittest.TestCase):
         self.assertEqual(rows[9][3], sd.MET)
         self.assertIn("0 時間の雪像から 2.4 時間後 = **起動直後の 3 回は", rows[9][2])
         self.assertIn("**+3.1** MB", rows[8][2])
+
+
+class Cut22(unittest.TestCase):
+    """phase22 の平常時の切り方 (T22.1): 300 本と、その期間の 1 標本の本数の中央値 × 3 の大きい方。
+
+    testdata の前は 100・100・100・400 本 (中央値 100 → 閾 300 のまま、400 はバースト)、
+    後は 200・200・350 本 (中央値 200 → 閾 600、350 は平常時)。
+    """
+
+    def test_normal_limit_is_the_larger_of_the_base_and_k_times_the_median(self):
+        self.assertEqual(sd.normal_limit(300, [100, 100, 100, 400], 3), 300)
+        self.assertEqual(sd.normal_limit(300, [200, 200, 350], 3), 600)
+        self.assertEqual(sd.normal_limit(300, [780, 781], 3), 2342)       # 780.5 × 3 は切り上げ
+        self.assertEqual(sd.normal_limit(300, [1000, 2000], None), 300)    # k が無ければ T14.0 のまま
+        self.assertEqual(sd.normal_limit(300, [], 3), 300)
+        self.assertEqual(sd.normal_limit(25, [10, 10, 10], 3), 30)         # 解像度に合わせた閾でも同じ
+
+    def test_phase22_raises_only_the_busy_side(self):
+        h = build([A, B, "--no-dns", "--criteria", "phase22"])["history"]
+        self.assertEqual(h["limit"], 300)
+        self.assertEqual(h["median_k"], 3)
+        self.assertEqual(h["medians"], {"before": 100.0, "after": 200})
+        self.assertEqual(h["limits"], {"before": 300, "after": 600})
+        self.assertEqual((h["before"]["samples"], h["before"]["burst_samples"]), (3, 1))
+        self.assertEqual((h["after"]["samples"], h["after"]["burst_samples"]), (3, 0))
+        old = build([A, B, "--no-dns", "--criteria", "phase21"])["history"]
+        self.assertEqual((old["after"]["samples"], old["after"]["burst_samples"]), (2, 1))
+        self.assertEqual(h["before"], old["before"])                       # 量の少ない側は T14.0 と同じ
+        self.assertEqual(h["after_all"], old["after_all"])                 # バースト込みは切り方に依らない
+
+    def test_the_other_definitions_keep_the_old_shape(self):
+        for name in (None, "phase14", "phase15", "phase17", "phase18", "phase20", "phase21"):
+            argv = [A, B, "--no-dns"] + (["--criteria", name] if name else [])
+            h = build(argv)["history"]
+            for key in ("median_k", "medians", "limits"):
+                self.assertNotIn(key, h, (name, key))
+            self.assertEqual(h["after"]["burst_samples"], 1, name)
+        self.assertNotIn("burst_median_k", sd.PHASE21)
+        self.assertEqual(sd.PHASE22, dict(sd.PHASE21, burst_median_k=3))
+
+    def test_the_markdown_says_how_it_cut(self):
+        md = run([A, B, "--no-dns", "--criteria", "phase22"])
+        self.assertIn("**前は 1 標本 300 本以上・後は 600 本以上の窓 (バースト) を外した**もの同士で並べる "
+                      "(phase22 の切り方。T22.1: 300 本 (T14.0) と、その期間の 1 標本の本数の中央値 "
+                      "(前 100.0・後 200 本) の 3 倍の大きい方)", md)
+        self.assertIn("(平常時 3 / 3 標本)", md)
+        self.assertNotIn("T14.0 と同じ切り方", md)
+        self.assertIn("**1 標本 300 本以上の窓 (バースト) を外した**もの同士で並べる (T14.0 と同じ切り方)",
+                      run([A, B, "--no-dns", "--criteria", "phase21"]))
+
+    def test_the_summary_url_drops_normal_hours_when_nothing_is_cut_after(self):
+        """後の閾が上がって後にバーストが残らなければ、サーバーの全標本が同じ窓 (`normal_hours_only` なし)。"""
+        url22 = build([A, B, "--no-dns", "--criteria", "phase22"])["summary_url"]
+        self.assertNotIn("normal_hours_only", url22)
+        self.assertIn("&normal_hours_only=1", build([A, B, "--no-dns", "--criteria", "phase21"])["summary_url"])
+        # 後にバーストが残るなら URL は 300 本のまま (サーバーは k を知らない) で、窓が違うと断る
+        b = read(B)
+        h = b["history"]["3600"]
+        i = h["keys"].index("connects")
+        h["samples"][-1][i] = 5000                                          # 200・200・5,000 → 閾 600
+        with written(b=b) as p:
+            d = build([A, p["b"], "--no-dns", "--criteria", "phase22"])
+            md = run([A, p["b"], "--no-dns", "--criteria", "phase22"])
+        self.assertEqual(d["history"]["after"]["burst_samples"], 1)
+        self.assertIn("&normal_hours_only=1", d["summary_url"])
+        self.assertIn("後の閾が 300 本より上なので、下の「サーバー側で 1 要求」の URL "
+                      "(`normal_hours_only=1` は 300 本で切る) とは平常時の窓が違う。", md)
 
 
 if __name__ == "__main__":
