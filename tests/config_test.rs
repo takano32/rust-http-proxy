@@ -240,12 +240,12 @@ fn test_integration_config_shows_effective_values_and_their_source() {
         "書いていない行: {}",
         json
     );
-    // CONNECT 専用の締め切りも書いていないので、既定の 10 秒が出どころ `default` で出る
-    // (`PROXY_TIMEOUT_SECS` は 30 のまま。T15.6 (2))
+    // CONNECT 専用の締め切りも書いていないので、既定の 5 秒が出どころ `default` で出る
+    // (`PROXY_TIMEOUT_SECS` は 30 のまま。T15.6 (2)、既定を 5 秒にした T23.3)
     assert_eq!(
         setting(&json, "PROXY_CONNECT_TIMEOUT_SECS"),
-        ("10".to_string(), "default".to_string()),
-        "書いていない行 (既定は 10 秒): {}",
+        ("5".to_string(), "default".to_string()),
+        "書いていない行 (既定は 5 秒): {}",
         json
     );
     // Happy Eyeballs の間隔も書いていないので、既定の 250 ms が出どころ `default` で出る (T17.6)
@@ -371,7 +371,7 @@ fn test_integration_check_prints_capabilities_and_settings() {
     assert!(text.contains("env       PROXY_KEEPALIVE_SECS"), "{}", text);
     assert!(text.contains("cli       SERVER_PORT"), "{}", text);
     assert!(text.contains("default   PROXY_TIMEOUT_SECS"), "{}", text);
-    // CONNECT 専用の締め切りも `--check` に出る (書いていないので既定の 10 秒。T15.6 (2))
+    // CONNECT 専用の締め切りも `--check` に出る (書いていないので既定の 5 秒。T15.6 (2)、T23.3)
     assert!(
         text.contains("default   PROXY_CONNECT_TIMEOUT_SECS"),
         "{}",
