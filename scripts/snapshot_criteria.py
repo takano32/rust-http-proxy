@@ -1278,6 +1278,167 @@ def _p22_refresh_and_stale_misses(c, th):
     return (label, limit, shown, MET if ok else MISSED, src)
 
 
+# ---------------------------------------------------------------- (23) 無言の再起動
+
+# `start` の文面 (`crates/metrics-recent/src/events.rs` の "version {} on port {} …") から版を抜く
+START_VERSION = re.compile(r"^version\s+(\S+)")
+
+
+def start_version(e):
+    """`start` の 1 行から版を抜く (文面に無ければ空文字。`snapshot-anonymize` の `9****28` もそのまま)。"""
+    m = START_VERSION.match((e or {}).get("text") or "")
+    return m.group(1) if m else ""
+
+
+def silent_restarts(snap):
+    """`/events` の `start` のうち、直前に `shutdown` が無い起動 (= 無言の再起動) を返す (T23.2)。
+
+    2026-10-17 22:14:52Z の再起動は `shutdown` の行を残しておらず、heap の行が黙って
+    「判定できず」になった (T22.99)。`/events` は 24 時間より長く残るので、`start` の直前が
+    `shutdown` かどうかで見分けられる。**気づけないまま 24 時間を捨てるのを防ぐ計器**。
+
+    見方 (ここが本体。要点と判定表の両方がこの 1 つを使う):
+      - **起動の行は文面が `version …` で始まる `start` だけ**。`start` の種類は自己ベンチの要約にも
+        使われていて (`PROXY_SELF_BENCH=on` で起動の 3 秒後に 1 件)、それを起動と数えると
+        「直前に `shutdown` が無い」と誤って言う。数えなかった件数は `other_starts` に残す。
+      - `at` が**その `start` より前**の最後の出来事が `shutdown` なら、普通の再起動
+        (同じ秒の出来事は「直前」と見ない。起動の瞬間に `anomaly` が同じ `at` で載る)。
+      - 直前の出来事が `shutdown` でなければ**無言の再起動**。前の `start` からの時間
+        (`prev_hours`) を添える。前の起動の後に `shutdown` が残っていれば `downtime` (止まっていた秒数)、
+        残っていなければ None (落とされたので分からない)。
+      - **状態ファイルから読み戻した古い `start` (`restored`) も、同じ規則で見る**。読み戻した
+        `shutdown` があるので、版を上げただけの再起動は無言にならない。逆に、窓の**先頭**の `start`
+        (それより前の出来事が 1 つも無い) や、窓が起動の途中から始まっている `start` は
+        「無言だった」とは言えないので `edge` に分ける (数えない)。
+        2026-10-20 の雪像では、10-08 09:24:20Z の `start` (読み戻しの先頭) がここに入る。
+
+    返すのは次の辞書。`/events` の部が無ければ None (呼ぶ側が「判定できず」と書く)。
+      `starts` は起動の `start` の行の数 (自己ベンチの `start` は `other_starts`)、
+      `silent` / `graceful` / `edge` はそれぞれの内訳、
+      `hours` は起動からの時間、`kept` / `count` / `capacity` / `restored` / `truncated` は `/events` の欄。
+    """
+    ev = part(snap, "events")
+    rows = ev.get("events")
+    if not isinstance(rows, list):
+        return None
+    marks = sorted((e for e in rows if isinstance(e, dict) and e.get("at")), key=lambda e: e["at"])
+    up = snap.get("uptime_secs") or 0
+    out = {
+        "starts": 0, "silent": [], "graceful": [], "edge": [], "other_starts": 0,
+        "hours": (up / 3600.0) if up else None,
+        "count": ev.get("count"), "kept": ev.get("kept", len(rows)),
+        "capacity": ev.get("capacity"), "restored": ev.get("restored"),
+        "truncated": bool(ev.get("truncated")),
+        "oldest": marks[0]["at"] if marks else None,
+        "started_at": ((snap.get("taken_at") or 0) - up) if (snap.get("taken_at") and up) else None,
+    }
+    prev = None            # 直前に見た起動の `start` (無言かどうかを言うには、これが要る)
+    for e in marks:
+        if e.get("kind") != "start":
+            continue
+        # **起動の `start` は文面が `version …` で始まる行だけ**。`start` の種類は自己ベンチの
+        # 要約にも使われており (`PROXY_SELF_BENCH=on` で起動の 3 秒後に 1 件)、それを起動と
+        # 数えると「直前に `shutdown` が無い」と誤って言う
+        if not START_VERSION.match(e.get("text") or ""):
+            out["other_starts"] += 1
+            continue
+        out["starts"] += 1
+        at = e["at"]
+        item = {"at": at, "version": start_version(e)}
+        # **同じ秒の出来事は「直前」と見ない** (`at` が strictly 小さいものだけ)
+        earlier = [m for m in marks if m["at"] < at]
+        if not earlier:
+            out["edge"].append(dict(item, why="窓の先頭"))
+        elif earlier[-1].get("kind") == "shutdown":
+            out["graceful"].append(dict(item, downtime=at - earlier[-1]["at"]))
+        elif prev is None:
+            # 窓が起動の途中から始まっている (`start` が読み戻しの先頭より前にある)
+            out["edge"].append(dict(item, why="窓が起動の途中から始まっている"))
+        else:
+            shut = [m for m in earlier if m.get("kind") == "shutdown"]
+            shut = shut[-1] if shut else None
+            out["silent"].append(dict(
+                item, prev_at=prev["at"], prev_version=start_version(prev),
+                prev_hours=(at - prev["at"]) / 3600.0,
+                shutdown_at=(shut["at"] if shut else None),
+                # 前の起動より**後**に `shutdown` が残っているときだけ「止まっていた秒数」が言える
+                downtime=((at - shut["at"]) if (shut and shut["at"] > prev["at"]) else None),
+            ))
+        prev = e
+    return out
+
+
+def silent_restart_text(r, bold=True):
+    """`silent_restarts()` の結果を 1 文にする (要点の 1 行と判定表の「実測」で同じ文を使う)。"""
+    if r is None:
+        return "判定できず (`/events` の部が無い)"
+    if not r["starts"]:
+        return "判定できず (`/events` に `start` の行が無い)"
+    star = "**" if bold else ""
+
+    def one(s):
+        t = f"{star}{stamp(s['at'])}{star}"
+        if s.get("version"):
+            t += f" 版 `{s['version']}`"
+        t += f"、前の起動は {s['prev_hours']:,.1f} 時間"
+        if s.get("downtime") is not None:
+            t += f" (止まっていた {s['downtime']:,} 秒)"
+        return t
+
+    if r["silent"]:
+        text = f"{len(r['silent'])} 回 (" + "、".join(one(s) for s in r["silent"]) + ")"
+        # 無言の再起動があるときは、窓の先頭の `start` が別に残っていることだけ添える
+        if r["edge"]:
+            text += f"。ほかに窓の先頭などの `start` {len(r['edge'])} 件は判定できない"
+        return text
+    if not r["graceful"]:
+        # 直前を見られる `start` が 1 つも無い。**0 件とは書かない** (見ていないだけ)
+        return f"判定できず (`start` {r['starts']} 件とも窓の先頭で、直前に出来事が無い)"
+    # 何を見て 0 と言っているかを添える (窓の先頭の `start` は判定できない)
+    basis = [f"直前が `shutdown` の起動 {len(r['graceful'])} 件"]
+    if r["edge"]:
+        basis.append(f"窓の先頭など {len(r['edge'])} 件は判定できない")
+    return "0 件 (" + "、".join(basis) + ")"
+
+
+def _p23_silent_restarts(c, th):
+    """T23.2: 無言の再起動 (`/events` の `start` の直前に `shutdown` が無い起動) が 0 回。
+
+    **判定表の行** (phase23 の `RULES` には T23.1 が入れる。ここでは行を作るだけで `RULES` は触らない)。
+    """
+    label = "`/events` の `start` の直前に `shutdown` が無い起動 (無言の再起動) が 0 回"
+    limit = "0 回"
+    r = silent_restarts(c["b"])
+    shown = silent_restart_text(r)
+    if r is None:
+        return (label, limit, shown, UNKNOWN, "後の雪像に `/events` の部が無い")
+    src = (f"`/events` の `start` と `shutdown` を時刻順に並べ、その `start` より前の最後の出来事が "
+           f"`shutdown` でないものを数えた (覚えている {n(r['kept'])} 件"
+           + (f" / 全 {n(r['count'])} 件" if r["count"] not in (None, r["kept"]) else "")
+           + (f"、うち読み戻し {n(r['restored'])} 件" if r["restored"] is not None else "")
+           + f"、起動からの "
+           + (f"{r['hours']:,.1f} 時間)" if r["hours"] else "時間は不明)"))
+    if r["silent"]:
+        src += "。**`shutdown` を残さずに起動し直している** (落とされたか、止め方が違う)"
+        if all(s["downtime"] is None for s in r["silent"]):
+            src += "。前の起動より後の `shutdown` が無いので、止まっていた秒数は分からない"
+    elif not r["graceful"]:
+        src += "。判定できる `start` が無い (窓の先頭の `start` は直前に何も無いので言えない)"
+    if r["edge"]:
+        src += ("。判定できない `start` "
+                + "、".join(f"`{stamp(e['at'])}` ({e['why']})" for e in r["edge"][:3])
+                + (f" ほか {len(r['edge']) - 3} 件" if len(r["edge"]) > 3 else ""))
+    if r["truncated"]:
+        src += "。**`/events` が切れている** (件数は下限)"
+    if r["silent"]:
+        verdict = MISSED
+    elif r["graceful"]:
+        verdict = MET
+    else:
+        verdict = UNKNOWN
+    return (label, limit, shown, verdict, src)
+
+
 RULES = {
     "phase14": (_p14_dns_per_connect, _p14_major_hosts, _p14_connect_p50, _p14_overload),
     "phase15": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band,

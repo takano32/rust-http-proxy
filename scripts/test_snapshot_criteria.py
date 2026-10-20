@@ -20,6 +20,8 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 無言の再起動の行 (T23.2) は `sd` (snapshot_diff) が名前で取り込んでいないので、置き場から直接読む
+import snapshot_criteria as sc  # noqa: E402
 # **TestCase のクラスは取り込まない** (取り込むと同じテストがこのファイルでも 2 回走る)
 from test_snapshot_diff import (  # noqa: E402
     A,
@@ -1659,6 +1661,88 @@ class PastOutputs22(unittest.TestCase):
             self.assertEqual(hashlib.sha256(body.encode()).hexdigest()[:16], js_digest, name)
 
 
+class Criteria23(unittest.TestCase):
+    """無言の再起動 (T23.2)。`/events` の `start` の直前に `shutdown` が無い起動を数える行。
+
+    実データでの数字は `Deployed23` (デプロイ先の雪像があるときだけ)。ここは `events` をその場で
+    作って、同じ秒の出来事・窓の先頭・読み戻し (`restored`)・自己ベンチの `start` の扱いを見る。
+    """
+
+    T0 = 1790000000          # 窓の先頭の `start` の時刻 (2026-09-21 14:13:20Z)
+    BOOT = ("version 0.22.6+000681e on port 60357 (profile default, cache on, timeout 30s, "
+            "max conns 240)")
+    STOP = "stop signal received; saving statistics"
+
+    def snap(self, events, restored=0):
+        """`testdata/snapshot-a.json` を土台に、`/events` だけを載せ替えた雪像を作る。"""
+        d = read(A)
+        d["events"] = {"events": events, "count": len(events), "kept": len(events),
+                       "capacity": 512, "restored": restored, "truncated": False}
+        return d
+
+    def boot(self, at, text=None):
+        return {"at": at, "kind": "start", "text": text or self.BOOT}
+
+    def stop(self, at):
+        return {"at": at, "kind": "shutdown", "text": self.STOP}
+
+    def row(self, events, restored=0):
+        return sc._p23_silent_restarts({"b": self.snap(events, restored)}, sd.PHASE22)
+
+    def test_a_start_without_a_shutdown_before_it_carries_the_previous_run(self):
+        """2026-10-17 22:14:52Z の形: `shutdown` が無い `start` と、前の起動の長さ。"""
+        t = self.T0
+        events = [self.boot(t), self.stop(t + 616), self.boot(t + 658),
+                  # **同じ秒の `anomaly`** は「直前」と見ない (起動の瞬間に載る)
+                  {"at": t + 658, "kind": "anomaly",
+                   "text": "connect_p95: connect p95 109 ms over 5m (threshold 100 ms)"},
+                  self.boot(t + 658 + 69150)]
+        row = self.row(events)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn(f"1 回 (**{sd.stamp(t + 658 + 69150)}** 版 `0.22.6+000681e`", row[2])
+        self.assertIn("前の起動は 19.2 時間", row[2])
+        self.assertIn("窓の先頭などの `start` 1 件は判定できない", row[2])
+        # 前の起動より後に `shutdown` が無いので、止まっていた秒数は言えない
+        self.assertIn("止まっていた秒数は分からない", row[4])
+        self.assertIn("読み戻し 0 件", row[4])
+
+    def test_every_start_after_a_shutdown_is_zero(self):
+        t = self.T0
+        row = self.row([self.boot(t), self.stop(t + 616), self.boot(t + 658),
+                        self.stop(t + 4000), self.boot(t + 4013)])
+        self.assertEqual(row[3], sd.MET)
+        self.assertEqual(row[2], "0 件 (直前が `shutdown` の起動 2 件、"
+                                 "窓の先頭など 1 件は判定できない)")
+
+    def test_a_window_that_begins_in_the_middle_of_a_run_cannot_be_judged(self):
+        """**読み戻した `start` を無言の再起動と数えない**。
+
+        窓が起動の途中から始まっている (先頭が `anomaly`) と、そのあとの `start` は直前に
+        `shutdown` が無くても「落とされた」とは言えない (古い行がリングから流れただけかもしれない)。
+        """
+        t = self.T0
+        row = self.row([{"at": t, "kind": "anomaly",
+                         "text": "errors: 5 errors in 5m (threshold 5): dns 4, timeout 1"},
+                        self.boot(t + 600)], restored=1)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("判定できず", row[2])
+
+    def test_the_self_bench_line_is_not_a_start_of_the_process(self):
+        """`start` の種類は自己ベンチの要約にも使われる (`PROXY_SELF_BENCH=on` で起動の 3 秒後)。"""
+        t = self.T0
+        events = [self.boot(t), self.stop(t + 60), self.boot(t + 98),
+                  self.boot(t + 101, text="self bench: forward 8 並列 12,345 req/s, "
+                                          "connect 8 並列 3,210 本/s")]
+        self.assertEqual(self.row(events)[3], sd.MET)
+        r = sc.silent_restarts(self.snap(events))
+        self.assertEqual((r["starts"], r["other_starts"]), (2, 1))
+
+    def test_a_snapshot_without_events_cannot_be_judged(self):
+        row = sc._p23_silent_restarts({"b": read(A)}, sd.PHASE22)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("判定できず (`/events` の部が無い)", row[2])
+
+
 def deployed_argv(d, a, b, zero):
     def at(name):
         return os.path.join(d, name)
@@ -1718,6 +1802,36 @@ class Deployed22(unittest.TestCase):
         self.assertIn("**0.0051** / 接続 (112 件 / 21,920 本: `refused` 3、`unreachable` 1、`timeout` 108。"
                       "前 0.0112 = 125 件 / 11,137 本、0.46 倍)、件/時 3.86 (前 0.69)", c["rows"][12][2])
         self.assertIn("引き直し **1,990.8** 回/時 (前 309.7、6.43 倍)", c["rows"][13][2])
+
+
+@unittest.skipUnless(all(os.path.isfile(os.path.join(d, f)) for d, f in (
+    (TOKYO, "2026-10-20T143453Z-snapshot.json"),
+    (TOKYO, "2026-10-15T185514Z-snapshot.json"),
+    (DEPLOYED, "2026-10-08T092521Z-snapshot.json"))),
+    "デプロイ先の雪像が無い (リポジトリには入れない)")
+class Deployed23(unittest.TestCase):
+    """T23.2 の受け入れ基準 (実データ): tokyo の 10-20 で 1 回 (前の起動は 19.2 時間)、10-15 と
+    nagoya の 10-08 で 0 件。**10-20 の 241 件は状態ファイルから読み戻した行** (その中の
+    `start` も直前に `shutdown` があるので数えない)。"""
+
+    def load(self, d, name):
+        with open(os.path.join(d, name), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_the_silent_restart_of_2026_10_17_is_found_once(self):
+        row = sc._p23_silent_restarts(
+            {"b": self.load(TOKYO, "2026-10-20T143453Z-snapshot.json")}, sd.PHASE22)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("1 回 (**2026-10-17 22:14:52Z** 版 `0.22.6+000681e`、前の起動は 19.2 時間)",
+                      row[2])
+        self.assertIn("読み戻し 241 件", row[4])
+
+    def test_every_other_restart_has_a_shutdown_before_it(self):
+        for d, name in ((TOKYO, "2026-10-15T185514Z-snapshot.json"),
+                        (DEPLOYED, "2026-10-08T092521Z-snapshot.json")):
+            row = sc._p23_silent_restarts({"b": self.load(d, name)}, sd.PHASE22)
+            self.assertEqual(row[3], sd.MET, name)
+            self.assertTrue(row[2].startswith("0 件 ("), (name, row[2]))
 
 
 if __name__ == "__main__":

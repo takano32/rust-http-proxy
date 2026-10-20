@@ -142,6 +142,9 @@ scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまと
 (中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` も
 `weekly-report.py` もそのまま読めます)。
 
+要点 (`snapshot-summary.py`) の**頭には「無言の再起動」の 1 行**が付きます (T23.2): `/events` の `start` の直前が `shutdown` でない起動 (落とされたか、止め方が違う) を時刻・前の起動の長さ・版つきで数え、0 件なら「0 件 (直前が `shutdown` の起動 N 件)」、`/events` の部が無い雪像では「判定できず」と書きます
+(2026-10-20 の tokyo は 2026-10-17 22:14:52Z の 1 回で、前の起動は 19.2 時間。10-15 の雪像は 0 件)。同じ判定は `--criteria phase23` の判定表にも 1 行で入ります (行を足すのは T23.1。判定の関数は要点と同じ `scripts/snapshot_criteria.py` の `silent_restarts()`)。
+
 要点 (`snapshot-summary.py`) の最後には 2 つの表が付きます (T17.0c): **`/events` の anomaly を種類別に「起動からの件/時」**
 (`cleared:` は数えず、状態ファイルから読み戻した起動より前の出来事は外します) と、**接続元の見張り** — 新しく現れた接続元
 (`--prev` があれば前の `/clients` に居ないもの、無ければ `first_seen` が起動より後)・IP リテラル宛ての要求・443 / 80 以外への
