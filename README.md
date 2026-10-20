@@ -218,6 +218,19 @@ scripts/snapshot-diff.py a.json b.json --criteria phase21 --daily b-daily.json \
 scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
+# phase23 (T23.1) は phase22 の 14 行を土台に、エラーの行の**分母**と heap の行の書き方だけを直した 16 行。
+# 接続のエラー (`refused`・`unreachable`・`timeout`) は `/recent` の connect の 1 行を 1 試行とし、
+# **名前解決に失敗した行 (`error:dns`) を分母から外した**「名前解決に成功した試行あたり」で見る
+# (前の期間の 1.5 倍以上なら「届かず」。件/時と、分母が `connects` だった phase22 の行は表示だけ)。
+# `/recent` は 2,000 件の環状なので、**窓と試行の本数が実測の欄に出る** (前と後で長さが違う)。
+# 平常時のミスの行は、同じ雪像の `/recent` から「試行あたり」と「名前解決に成功した試行あたり」も並べる
+# (死んだ名前の総当たりという使われ方の数字なので表示だけ)。heap の行は、`--zero` の雪像と起動が
+# 違うときに `/events` の `start` の時刻を添える (黙って「判定できず」にしない。2026-10-17 22:14:52Z の
+# 無言の再起動がこれで読める)。最後の行は無言の再起動 (`/events` の `start` の直前に `shutdown` が無い起動)
+# が 0 回 (T23.2)。`collect-deployed.sh` の既定は phase23
+scripts/snapshot-diff.py a.json b.json --criteria phase23 --daily b-daily.json \
+                         --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
+                         --zero zero.json --daily-snapshots status
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
 scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
                          --from-files status/2026-09-16T0106Z

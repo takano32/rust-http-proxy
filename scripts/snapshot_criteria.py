@@ -2,7 +2,7 @@
 # `scripts/snapshot-diff.py --criteria` の部 (**Phase の完了の定義に対する判定表**。TODO.md T20.1)。
 #
 # `snapshot-diff.py` が 1,959 行になったので、判定の部だけをここへ割った (T18.2 の申し送り)。
-# 持っているのは `PHASE14`〜`PHASE22` の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
+# 持っているのは `PHASE14`〜`PHASE23` の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
 # 判定表の印字 (`render_criteria()`) と、**判定の関数と差分の両方が使う小物**
 # (`part` `stamp` `n` `ms` `ratio` `restart_info` `norm_history` `merged_history` `miss_rate`)。
 # 小物までこちらにあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
@@ -246,8 +246,17 @@ PHASE22 = dict(
     refresh_factor=0.5,
     stale_miss_growth_per_day=10,
 )
+# T23.1: phase22 の 14 行を土台にしたもの。閾の値は phase22 と同じで、**エラーの行の分母**と
+# **heap の行の「判定できず」の書き方**だけが違う (TODO.md Phase 23 の (1)〜(3))。
+# (a) 接続のエラーは `refused` + `unreachable` + `timeout` の**名前解決に成功した試行あたり**
+#     (分母 = `/recent` の connect の行から `dns` の失敗を外した本数)。phase22 の「接続 1 本あたり」は
+#     使われ方で振れる (T22.99 の 7.80 倍) ので、表示だけの行として残す。
+# (b) dns のミスの率は、同じ分母 (`/recent`) でも並べる (表示だけ)。
+# (c) heap の行は、0 時間の雪像と起動が違うときに `/events` の `start` の時刻を添える。
+# (d) 無言の再起動 (T23.2) の行を最後に足す。
+PHASE23 = dict(PHASE22)
 CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18,
-            "phase20": PHASE20, "phase21": PHASE21, "phase22": PHASE22}
+            "phase20": PHASE20, "phase21": PHASE21, "phase22": PHASE22, "phase23": PHASE23}
 # **出力を 1 文字も変えない定義** (過去の判定を同じ命令で出し直せるように)。T20.1 で差分の表に
 # 足した行 (成功した接続だけの確立時間) は、`--criteria` がこの 4 つのときは出さない
 FROZEN = ("phase14", "phase15", "phase17", "phase18")
@@ -1439,6 +1448,195 @@ def _p23_silent_restarts(c, th):
     return (label, limit, shown, verdict, src)
 
 
+# --- Phase 23 (T23.1。phase22 の 14 行のうち、エラーの行の分母と heap の「判定できず」の書き方を直したもの) ---
+
+def recent_attempts(snap, causes):
+    """`/recent` の connect の 1 行を 1 試行として、試行・`dns` の失敗・接続の失敗を数える (T23.0 の (2))。
+
+    phase22 の「接続 1 本あたり」の分母は `/history` の `connects` で、宛先の生きた割合 (使われ方) が
+    変わると振れる (T22.99 の 7.80 倍は 1 本の接続元が死んだメールサーバーを総当たりしただけ)。
+    ここは**名前解決に失敗した行 (`reason == "error:dns"`) を分母から外した**「名前解決に成功した
+    試行あたり」を出す。`recent` の行は接続の個票なので、試行 = 接続の試行。
+
+    返すのは `{"attempts", "dns", "denom", "conn", "by", "from", "until", "rows"}`。`conn` は `causes` の
+    失敗の数で、`by` は原因ごとの内訳。**`/recent` の部が無ければ None** (「0 だった」と読まない)。
+    """
+    rows = part(snap, "recent").get("recent")
+    if not isinstance(rows, list):
+        return None
+    attempts = dns = conn = 0
+    ats, by = [], {}
+    for r in rows:
+        if not isinstance(r, dict) or (r.get("kind") or "connect") != "connect":
+            continue
+        attempts += 1
+        if r.get("at"):
+            ats.append(r["at"])
+        reason = r.get("reason") or ""
+        cause = reason[len("error:"):] if reason.startswith("error:") else None
+        if cause == "dns":
+            dns += 1
+        elif cause in causes:
+            conn += 1
+            by[cause] = by.get(cause, 0) + 1
+    return {"attempts": attempts, "dns": dns, "denom": attempts - dns, "conn": conn,
+            "by": by, "from": min(ats) if ats else None,
+            "until": max(ats) if ats else None, "rows": len(rows)}
+
+
+def _p23_connect_errors(c, th):
+    """T23.1 (T23.0 の (2)): 接続のエラー (`refused`・`unreachable`・`timeout`) の
+    **名前解決に成功した試行あたり**が前の期間の 1.5 倍未満 (T22.4 の戻す条件)。
+
+    phase22 の行 (`_p22_connect_errors`) は分母が `connects` なので、死んだ名前の総当たりのような
+    使われ方の変化で 7.80 倍に振れた (T22.99)。ここは `/recent` の窓の 1 行を 1 試行とし、`dns` の
+    失敗を分母から外す。**`/recent` は 2,000 件の環状なので、窓を必ず書く** (前と後で長さが違う)。
+    """
+    k, causes = th["connect_error_factor"], th["connect_error_causes"]
+    names = "・".join(f"`{x}`" for x in causes)
+    label = (f"接続のエラー ({names}) の**名前解決に成功した試行あたり**が前の期間の {k} 倍未満 "
+             "(T22.4 の戻す条件を、使われ方から切り離した分母で見る)")
+    limit = f"< 前 ×{k} (名前解決に成功した試行あたり)"
+    bef, aft = recent_attempts(c["a"], causes), recent_attempts(c["b"], causes)
+    if bef is None or aft is None:
+        side = "前" if bef is None else "後"
+        return (label, limit, "—", UNKNOWN, f"{side}の雪像に `/recent` の部が無い")
+    if not bef["attempts"] or not aft["attempts"]:
+        side = "前" if not bef["attempts"] else "後"
+        return (label, limit, f"試行 0 本 (`/recent` {n(aft['rows'])} 行)",
+                UNKNOWN, f"{side}の `/recent` に connect の行が無い (0 と書かない)")
+
+    def window(v):
+        return (f"{stamp(v['from'])}〜{stamp(v['until'])} の {n(v['attempts'])} 試行"
+                if v["from"] else f"{n(v['attempts'])} 試行 (時刻なし)")
+    src = (f"`/recent` の connect の行を 1 試行とし、`reason == \"error:dns\"` を分母から外した "
+           f"(後: {window(aft)}、前: {window(bef)})")
+    if not aft["denom"] or not bef["denom"]:
+        side = "前" if not bef["denom"] else "後"
+        return (label, limit, f"試行 {n(aft['attempts'])} の全部が dns の失敗", UNKNOWN,
+                f"{side}の期間に名前解決へ成功した試行が無いので率が出ない。" + src)
+    by = "、".join(f"`{x}` {n(aft['by'].get(x, 0))}" for x in causes)
+    pa, pb = aft["conn"] / aft["denom"], bef["conn"] / bef["denom"]
+    shown = (f"**{pa:.4f}** / 名前解決に成功した試行 ({n(aft['conn'])} 件 / {n(aft['denom'])} 本: {by}。"
+             f"試行 {n(aft['attempts'])} から dns の失敗 {n(aft['dns'])} を外した分母。"
+             f"前 {pb:.4f} = {n(bef['conn'])} 件 / {n(bef['denom'])} 本"
+             + (f"、{pa / pb:.2f} 倍)" if pb else ")"))
+    ok = pa < pb * k if pb else pa == 0
+    return (label, limit, shown, MET if ok else MISSED, src)
+
+
+_p22_connect_errors_shown = display_only(
+    _p22_connect_errors, lambda th: "接続のエラー (`refused`・`unreachable`・`timeout`) の接続 1 本あたり",
+    "分母が `/history` の `connects` なので、宛先の生きた割合 (使われ方) で振れる (T22.99 は 7.80 倍。"
+    "1 本の接続元が死んだメールサーバーを総当たりしただけ)。**判定は上の「名前解決に成功した試行あたり」"
+    "の行に任せる**", was="phase22")
+
+
+def _p23_miss_band_measured(c, th):
+    """phase21 のミスの行に、`/recent` の「試行あたり」と「名前解決に成功した試行あたり」を並べる (T23.1)。
+
+    平常時のミス (回/接続) は `/history` の要求あたりで、これも使われ方で動く (表示だけ)。
+    同じ雪像の `/recent` から、dns のミスを**試行あたり**と**名前解決に成功した試行あたり**でも出す。
+    2026-10-20 の雪像では 0.0850 (170 / 2,000) と 0.0929 (170 / 1,830) で、これは死んだ名前の
+    総当たりという使われ方の数字。**閾は置かない** (表示だけ)。
+    """
+    label, limit, shown, verdict, src = _p21_miss_band_measured(c, th)
+    causes = th["connect_error_causes"]
+    aft, bef = recent_attempts(c["b"], causes), recent_attempts(c["a"], causes)
+    if not aft or not aft["attempts"]:
+        return (label, limit, f"{shown}。`/recent` が無い (か connect の行が 0) ので試行あたりは出せない",
+                verdict, src)
+
+    def one(v, bold):
+        star = "**" if bold else ""
+        t = f"試行あたり {star}{v['dns'] / v['attempts']:.4f}{star} ({n(v['dns'])} / {n(v['attempts'])})"
+        if v["denom"]:
+            t += (f"、名前解決に成功した試行あたり {star}{v['dns'] / v['denom']:.4f}{star} "
+                  f"({n(v['dns'])} / {n(v['denom'])})")
+        return t
+    text = one(aft, True) + (f" (前: {one(bef, False)})" if bef and bef["attempts"] else "")
+    window = (f"{stamp(aft['from'])}〜{stamp(aft['until'])}" if aft["from"] else "時刻なし")
+    return (label, limit, f"{shown}。dns のミスの率 (`/recent` の {window}): {text}",
+            verdict, src + "、`/recent` の connect の行 (dns の失敗 ÷ 試行 と ÷ 名前解決に成功した試行)")
+
+
+_p23_miss_band = display_only(
+    _p23_miss_band_measured,
+    lambda th: "平常時の名前解決のミス (回/接続。`/recent` の試行あたり・名前解決に成功した試行あたりも並べる)",
+    "宛先の数で動く使われ方の数字 (T20.99 は宛先 395 名前で 0.12、`cold` 408 回。10-20 は死んだ名前の"
+    "総当たりで 0.0850)", was="phase20")
+
+
+def run_start(snap):
+    """その雪像の「いまの起動」の始まり (T23.1。heap の行の理由に書く)。
+
+    `/events` の `start` (文面が `version …` で始まる行 = 本物の起動。T23.2) のうち、
+    `taken_at − uptime_secs` にいちばん近いもの (120 秒以内) を採る。返すのは
+    `{"at", "version", "from_events"}`。`/events` に無ければ `taken_at − uptime_secs` を使い、
+    `from_events` を False にする (推測を `/events` の事実と混ぜない)。どちらも出せなければ None。
+    """
+    taken, up = snap.get("taken_at"), snap.get("uptime_secs")
+    guess = (taken - up) if (taken and up) else None
+    r = silent_restarts(snap)
+    best = None
+    if r:
+        for s in r["silent"] + r["graceful"] + r["edge"]:
+            if guess is None or abs(s["at"] - guess) <= 120:
+                best = s
+    if best:
+        return {"at": best["at"], "version": best.get("version") or None, "from_events": True}
+    if guess is None:
+        return None
+    return {"at": guess, "version": snap.get("version"), "from_events": False}
+
+
+def two_starts(x, y):
+    """2 つの起動の時刻を「2026-10-17T03:02:22Z と 22:14:52Z」の形にする (同じ日なら 2 つ目は時刻だけ)。"""
+    def iso(t):
+        return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if x is None or y is None:
+        return None
+    return f"{iso(x)} と {iso(y)[11:]}" if iso(x)[:10] == iso(y)[:10] else f"{iso(x)} と {iso(y)}"
+
+
+def _p23_heap(c, th):
+    """T23.1: phase20 の (g) に、**0 時間の雪像と起動が違う理由** (`/events` の `start` の時刻) を足す。
+
+    T22.99 は 2026-10-17T22:14:52Z の無言の再起動 (T23.2) で 0 時間の雪像と起動が食い違い、
+    heap の行が黙って「判定できず」になった。同じ「判定できず」でも、**2 つの起動がいつ始まったか**が
+    読めれば、次の再デプロイで同じことを繰り返さない。読み方 (`cache_memory` を引く・`--zero` が
+    要る・`heap_free` と `rss` は表示だけ) は phase20 のまま。
+    """
+    label, limit, shown, verdict, src = _p20_heap(c, th)
+    z = c["b"].get("zero_snapshot")
+    if verdict != UNKNOWN or not z:
+        return (label, limit, shown, verdict, src)
+    between = restart_info(z, c["b"])
+    if not between["restarted"]:
+        return (label, limit, shown, verdict, src)
+    said = "、".join(between["reasons"])
+    zs, bs = run_start(z), run_start(c["b"])
+    pair = two_starts(zs["at"] if zs else None, bs["at"] if bs else None)
+    if not zs or not bs or not pair:
+        return (label, limit, f"—。**0 時間の雪像と起動が違う** ({said})。`/events` の `start` の時刻は出せない",
+                UNKNOWN, f"{src}。{said}")
+    # 版が同じなら「同じ版で起動し直している」= 落とされたか、止め方が違う (T23.2 の無言の再起動)
+    same = zs["version"] and bs["version"] and zs["version"] == bs["version"]
+    if same:
+        how = f"同じ版 `{zs['version']}` で起動し直している"
+    elif zs["version"] and bs["version"]:
+        how = f"版が違う (`{zs['version']}` → `{bs['version']}`)"
+    else:
+        how = "版は片方しか読めない"
+    src2 = (f"{src}。" + ("起動の時刻はどちらも `/events` の `start` から"
+                         if zs["from_events"] and bs["from_events"]
+                         else "片方は `/events` に `start` が残っていないので、起動の時刻は取得時刻 − 起動からの値")
+            + "。この行は 0 時間の雪像と後の雪像が同じ起動でないと読めない")
+    return (label, limit,
+            f"—。**0 時間の雪像と起動が違う** (`/events` の `start` が {pair}、{how})",
+            UNKNOWN, src2)
+
+
 RULES = {
     "phase14": (_p14_dns_per_connect, _p14_major_hosts, _p14_connect_p50, _p14_overload),
     "phase15": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band,
@@ -1466,6 +1664,13 @@ RULES["phase22"] = ((RULES["phase21"][0], _p22_refresh_rate) + RULES["phase21"][
                     + RULES["phase21"][7:]
                     + (_p22_dns_slow, _p22_stale_retries, _p22_connect_errors,
                        _p22_refresh_and_stale_misses))
+# phase23 = phase22 の 14 行を土台に、4 か所だけ違う (T23.1)。並びは phase22 と同じで、
+# ミスの行 (2 番目)・heap の行 (9 番目)・接続のエラーの行 (13 番目) を差し替え、
+# phase22 の接続のエラーの行をそのすぐ後ろに**表示だけ**で残し、最後に無言の再起動の行 (T23.2) を足す
+RULES["phase23"] = ((RULES["phase22"][:2] + (_p23_miss_band,) + RULES["phase22"][3:8]
+                     + (_p23_heap,) + RULES["phase22"][9:12]
+                     + (_p23_connect_errors, _p22_connect_errors_shown)
+                     + RULES["phase22"][13:] + (_p23_silent_restarts,)))
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,
@@ -1578,6 +1783,21 @@ def render_criteria(d, grouped):
           "当たれば「届かず」)、T22.4 の目安 (引き直しの回/時が前の半分以下、`expired` + `warm_stale` の"
           "増えが 1 日 10 回以内) です。**平常時は「300 本と、その期間の 1 時間の本数の中央値の 3 倍の"
           "大きい方」未満の標本**です (§2。T22.1)。T22.3 は段 1 で止めたので行がありません。"
+          "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+        p()
+    if c["name"] == "phase23":
+        # T23.1。phase22 の 14 行を土台に、エラーの行の分母と heap の「判定できず」の書き方を直した
+        p("前の 14 行は phase22 と同じ物差しで、材料も同じです (`--daily` `--profile` `--profile-before` "
+          "`--zero`)。直したのは 4 か所 (T23.1): (1) 接続のエラー `refused`・`unreachable`・`timeout` の行は、"
+          "**`/recent` の connect の 1 行を 1 試行とし、名前解決に失敗した行 (`error:dns`) を分母から外した**"
+          "「名前解決に成功した試行あたり」で見ます (前の期間の 1.5 倍以上なら「届かず」)。"
+          "分母が `/history` の `connects` だった phase22 の行は、そのすぐ後ろに**表示だけ**で残しました "
+          "(使われ方で振れるため。T22.99 の 7.80 倍)。(2) 平常時の名前解決のミスの行は表示だけのままで、"
+          "同じ雪像の `/recent` から**試行あたり**と**名前解決に成功した試行あたり**の率も並べます "
+          "(死んだ名前の総当たりという使われ方の数字なので閾は置きません)。(3) heap の行は、`--zero` の雪像と"
+          "後の雪像の起動が違うときに `/events` の `start` の時刻を添えます (黙って「判定できず」にしない)。"
+          "(4) 最後の行は**無言の再起動** (`/events` の `start` の直前に `shutdown` が無い起動) が 0 回 (T23.2)。"
+          "**`/recent` は 2,000 件の環状なので、窓と試行の本数を必ず書きます** (前と後で長さが違います)。"
           "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
