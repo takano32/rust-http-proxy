@@ -18,6 +18,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # 無言の再起動の行 (T23.2) は `sd` (snapshot_diff) が名前で取り込んでいないので、置き場から直接読む
@@ -312,7 +313,7 @@ class Criteria15(unittest.TestCase):
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
                          ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
-                          "phase22"])
+                          "phase22", "phase23"])
 
 
 def conn_profile(conn_us_per_row):
@@ -1743,6 +1744,203 @@ class Criteria23(unittest.TestCase):
         self.assertIn("判定できず (`/events` の部が無い)", row[2])
 
 
+class Criteria23Rows(unittest.TestCase):
+    """`--criteria phase23` (T23.1) の行: エラーの分母を「名前解決に成功した試行あたり」にした 2 行と、
+    heap の「判定できず」の理由、無言の再起動の行。
+
+    `testdata/snapshot-{a,b}.json` には `/recent` の部が無いので、その場で作って載せる。
+    数字は 2026-10-17 → 10-20 の tokyo の雪像から採った (前 24 件 / 1,991 試行、後 30 件 /
+    2,000 試行のうち dns 170) — **親が T23.0 の道具で出した値と同じ**であることを見る。
+    """
+
+    # 表示だけの行 (phase22 の 3 + `/events` + phase22 の接続のエラーの行)
+    SHOWN_ROWS = (0, 2, 3, 5, 6, 13)
+    BOOT = ("version 0.1.0+bbbbbbb on port 8080 (profile default, cache on, "
+            "timeout 30s, max conns 240)")
+
+    def judge(self, a=None, b=None, extra=()):
+        return build([a or A, b or B, "--no-dns", "--criteria", "phase23", *extra])["criteria"]
+
+    def row(self, i, a=None, b=None, extra=()):
+        return self.judge(a=a, b=b, extra=extra)["rows"][i]
+
+    @staticmethod
+    def recent(attempts, dns=0, fails=(), at=1789043200, step=60):
+        """`/recent` の部を作る。先頭 `dns` 行が `error:dns`、次の `len(fails)` 行が `fails` の失敗。"""
+        rows = []
+        for i in range(attempts):
+            reason = "ok"
+            if i < dns:
+                reason = "error:dns"
+            elif i - dns < len(fails):
+                reason = "error:" + fails[i - dns]
+            rows.append({"at": at + i * step, "kind": "connect", "target": "example.com:443",
+                         "client": "192.0.2.1", "reason": reason})
+        return {"recent": rows, "count": len(rows), "kept": len(rows), "capacity": 2000,
+                "truncated": False}
+
+    @staticmethod
+    def with_recent(snap, part):
+        d = dict(snap)
+        d["recent"] = part
+        return d
+
+    def pair(self):
+        """tokyo の 10-17 → 10-20 の `/recent` (24 / 1,991 と 30 / 1,830)。"""
+        a = self.with_recent(read(A), self.recent(1991, fails=("timeout",) * 24))
+        b = self.with_recent(read(B), self.recent(
+            2000, dns=170, fails=("timeout",) * 25 + ("refused",) * 3 + ("unreachable",) * 2))
+        return a, b
+
+    # --- 表の形
+
+    def test_phase23_gives_sixteen_rows_and_six_of_them_are_display_only(self):
+        c = self.judge()
+        self.assertEqual(len(sd.RULES["phase23"]), 16)
+        self.assertEqual(len(c["rows"]), 16)
+        self.assertEqual([i for i, r in enumerate(c["rows"]) if r[3] == sd.SHOWN],
+                         list(self.SHOWN_ROWS))
+        self.assertEqual(c["display_only"], 6)
+        self.assertEqual(sum(c["tally"].values()), 10)
+        self.assertIs(sd.RULES["phase23"][15], sc._p23_silent_restarts)
+
+    def test_the_rows_that_did_not_change_are_the_phase22_ones(self):
+        self.assertEqual(sd.PHASE23, sd.PHASE22)
+        for new, old in ((0, 0), (1, 1), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7),
+                         (9, 9), (10, 10), (11, 11), (14, 13)):
+            self.assertIs(sd.RULES["phase23"][new], sd.RULES["phase22"][old], new)
+        rows22, rows23 = self.judge(), self.judge()
+        self.assertEqual([r[3] for r in rows23["rows"]], [r[3] for r in rows22["rows"]])
+
+    # --- (1) 接続のエラーを「名前解決に成功した試行あたり」で
+
+    def test_the_connect_error_row_uses_the_resolved_attempts_as_its_denominator(self):
+        a, b = self.pair()
+        with written(a=a, b=b) as p:
+            row = self.row(12, a=p["a"], b=p["b"])
+        self.assertEqual(row[3], sd.MET)                     # 0.0121 → 0.0164 = 1.36 倍 < 1.5
+        self.assertIn("**0.0164** / 名前解決に成功した試行 (30 件 / 1,830 本: `refused` 3、"
+                      "`unreachable` 2、`timeout` 25。", row[2])
+        self.assertIn("試行 2,000 から dns の失敗 170 を外した分母。前 0.0121 = 24 件 / 1,991 本、"
+                      "1.36 倍)", row[2])
+        self.assertEqual(row[1], "< 前 ×1.5 (名前解決に成功した試行あたり)")
+        self.assertIn("1,991 試行", row[4])
+        self.assertIn("2,000 試行", row[4])
+
+    def test_one_and_a_half_times_is_missed(self):
+        a, b = self.pair()
+        b["recent"] = self.recent(2000, dns=170, fails=("timeout",) * 40)
+        with written(a=a, b=b) as p:
+            row = self.row(12, a=p["a"], b=p["b"])
+        self.assertEqual(row[3], sd.MISSED)                  # 0.0219 / 0.0121 = 1.81 倍
+        self.assertIn("1.81 倍", row[2])
+
+    def test_without_recent_the_row_is_unknown_and_not_zero(self):
+        row = self.row(12)                                   # testdata に `/recent` は無い
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertEqual(row[2], "—")
+        self.assertIn("`/recent` の部が無い", row[4])
+
+    def test_a_window_with_no_resolved_attempt_cannot_be_judged(self):
+        a = self.with_recent(read(A), self.recent(5, dns=5))   # 全部 dns の失敗
+        b = self.with_recent(read(B), self.recent(5, fails=("timeout",)))
+        with written(a=a, b=b) as p:
+            row = self.row(12, a=p["a"], b=p["b"])
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("名前解決へ成功した試行が無い", row[4])
+
+    def test_the_phase22_row_is_kept_next_to_it_as_display_only(self):
+        a, b = self.pair()
+        with written(a=a, b=b) as p:
+            old = build([p["a"], p["b"], "--no-dns", "--criteria", "phase22"])["criteria"]["rows"][12]
+            row = self.row(13, a=p["a"], b=p["b"])
+        self.assertEqual(old[3], sd.MET)                      # phase22 は `/history` の connects で見る
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertEqual(row[2], old[2])
+        self.assertEqual(row[1], f"— (phase22 は {old[1]})")
+        self.assertEqual(row[0], "接続のエラー (`refused`・`unreachable`・`timeout`) の接続 1 本あたり")
+        self.assertIn("**判定は上の「名前解決に成功した試行あたり」の行に任せる**", row[4])
+
+    # --- (2) dns のミスの率を同じ分母でも並べる
+
+    def test_the_dns_row_shows_the_rate_per_attempt_and_per_resolved_attempt(self):
+        a, b = self.pair()
+        with written(a=a, b=b) as p:
+            row = self.row(2, a=p["a"], b=p["b"])
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertIn("試行あたり **0.0850** (170 / 2,000)、名前解決に成功した試行あたり "
+                      "**0.0929** (170 / 1,830) (前: 試行あたり 0.0000 (0 / 1,991)、"
+                      "名前解決に成功した試行あたり 0.0000 (0 / 1,991))", row[2])
+        self.assertEqual(row[0], "平常時の名前解決のミス (回/接続。`/recent` の試行あたり・"
+                                 "名前解決に成功した試行あたりも並べる)")
+        self.assertIn("`/recent` の connect の行 (dns の失敗 ÷ 試行 と ÷ 名前解決に成功した試行)",
+                      row[4])
+
+    def test_the_dns_row_without_recent_still_shows_the_old_number(self):
+        row = self.row(2)
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertIn("試行あたりは出せない", row[2])
+
+    # --- (3) heap の「判定できず」に起動の時刻を書く
+
+    def starts(self, at):
+        """`/events` に `start` 1 行だけを載せる。"""
+        return {"events": [{"at": at, "kind": "start", "text": self.BOOT}], "count": 1, "kept": 1,
+                "capacity": 512, "restored": 0, "truncated": False}
+
+    def heap(self, z, b):
+        with written(z=z, b=b) as p:
+            return self.row(8, b=p["b"], extra=("--zero", p["z"]))
+
+    def test_the_heap_row_says_when_each_start_began(self):
+        """0 時間の雪像と後の雪像が同じ版で起動し直している (2026-10-17 22:14:52Z の形)。"""
+        b = cached(read(B), 0)
+        b["events"] = self.starts(Criteria17.START)
+        z = cached(zero_snapshot(), 0)
+        # 0 時間の雪像は 2 時間前の起動 (取得の 2 分後が起動なので、起動は taken_at − 120)。
+        # 同じ UTC の日なので、2 つ目の時刻は日付を省いて出る
+        z["taken_at"] = Criteria17.START - 2 * 3600 + 120
+        z["events"] = self.starts(z["taken_at"] - 120)
+        row = self.heap(z, b)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        want = f"`/events` の `start` が {self.iso(Criteria17.START - 2 * 3600)} と " \
+               f"{self.iso(Criteria17.START)[11:]}、同じ版 `0.1.0+bbbbbbb` で起動し直している"
+        self.assertIn(want, row[2])
+        self.assertIn("起動の時刻はどちらも `/events` の `start` から", row[4])
+
+    @staticmethod
+    def iso(t):
+        return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_without_events_the_heap_row_falls_back_to_taken_at_minus_uptime(self):
+        b = cached(read(B), 0)
+        z = cached(zero_snapshot(), 0)
+        z["taken_at"] = Criteria17.START - 2 * 3600 + 120
+        row = self.heap(z, b)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("0 時間の雪像と起動が違う", row[2])
+        self.assertIn("片方は `/events` に `start` が残っていないので", row[4])
+
+    def test_the_heap_row_without_zero_reads_as_phase20(self):
+        row = self.row(8)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertEqual(row[2], "—")
+        self.assertIn("`--zero` (0 時間の雪像) が渡されていない", row[4])
+
+    # --- 印字
+
+    def test_the_markdown_names_the_phase23_parts(self):
+        md = run([A, B, "--no-dns", "--criteria", "phase23"])
+        self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase23`)", md)
+        self.assertIn("前の 14 行は phase22 と同じ物差しで", md)
+        self.assertIn("名前解決に失敗した行 (`error:dns`) を分母から外した", md)
+        self.assertIn("無言の再起動", md)
+        self.assertIn("満たした 2 行・判定できず 8 行 (ほかに表示だけ 6 行。集計に数えない)", md)
+        # 過去の定義の文は変えない
+        self.assertNotIn("前の 14 行は phase22 と同じ物差しで",
+                         run([A, B, "--no-dns", "--criteria", "phase22"]))
+
+
 def deployed_argv(d, a, b, zero):
     def at(name):
         return os.path.join(d, name)
@@ -1832,6 +2030,39 @@ class Deployed23(unittest.TestCase):
             row = sc._p23_silent_restarts({"b": self.load(d, name)}, sd.PHASE22)
             self.assertEqual(row[3], sd.MET, name)
             self.assertTrue(row[2].startswith("0 件 ("), (name, row[2]))
+
+    def test_the_phase23_rows_on_the_tokyo_pair(self):
+        """T23.1 の受け入れ基準 (実データ): 10-17 → 10-20 の phase23 の 16 行。
+
+        親が T23.0 の道具 (`scripts/error-mix.py`) で出した数字と同じになること。
+        0 時間の雪像は 10-17T030257Z (10-17T03:02:22Z の起動、2 分後)。
+        """
+        a = os.path.join(TOKYO, "2026-10-17T030107Z-snapshot.json")
+        b = os.path.join(TOKYO, "2026-10-20T143453Z-snapshot.json")
+        z = os.path.join(TOKYO, "2026-10-17T030257Z-snapshot.json")
+        rows = build([a, b, "--no-dns", "--criteria", "phase23", "--zero", z])["criteria"]["rows"]
+        self.assertEqual(len(rows), 16)
+        # (2) dns のミスは試行あたり 0.0850 (170 / 2,000)、名前解決に成功した試行あたり 0.0929
+        self.assertEqual(rows[2][3], sd.SHOWN)
+        self.assertIn("試行あたり **0.0850** (170 / 2,000)、名前解決に成功した試行あたり "
+                      "**0.0929** (170 / 1,830)", rows[2][2])
+        self.assertIn("(前: 試行あたり 0.0000 (0 / 1,991)", rows[2][2])
+        # (3) heap は「0 時間の雪像と起動が違う」に `/events` の `start` の時刻が付く
+        self.assertEqual(rows[8][3], sd.UNKNOWN)
+        self.assertIn("**0 時間の雪像と起動が違う** (`/events` の `start` が "
+                      "2026-10-17T03:02:22Z と 22:14:52Z、同じ版 `0.22.6+000681e` で起動し直している)",
+                      rows[8][2])
+        # (1) 接続のエラーは名前解決に成功した試行あたり 0.0164 (30 / 1,830) で、前の 1.36 倍 → 満たした
+        self.assertEqual(rows[12][3], sd.MET)
+        self.assertIn("**0.0164** / 名前解決に成功した試行 (30 件 / 1,830 本: `refused` 3、"
+                      "`unreachable` 2、`timeout` 25。", rows[12][2])
+        self.assertIn("前 0.0121 = 24 件 / 1,991 本、1.36 倍)", rows[12][2])
+        # phase22 の物差しは同じ雪像で 7.80 倍 → 表示だけとして隣に残る
+        self.assertEqual(rows[13][3], sd.SHOWN)
+        self.assertIn("7.80 倍", rows[13][2])
+        # (4) 無言の再起動は 1 回
+        self.assertEqual(rows[15][3], sd.MISSED)
+        self.assertIn("1 回 (**2026-10-17 22:14:52Z**", rows[15][2])
 
 
 if __name__ == "__main__":
