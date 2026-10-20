@@ -17,15 +17,26 @@
 #   - 接続元の見張り … 新しく現れた接続元・IP リテラル宛て・443 / 80 以外の CONNECT・
 #     `/events` の `new_client`・内部の口だけを引いた接続元 (`readers`)
 #
+# **T23.2 で足した行** (要点の**頭に 1 行**):
+#   - 無言の再起動 … `/events` の `start` の直前に `shutdown` が無い起動。2026-10-17 22:14:52Z の
+#     ように `shutdown` を残さずに起動し直すと、heap の行が黙って「判定できず」になる (T22.99)。
+#     判定は `scripts/snapshot_criteria.py` の `silent_restarts()` (判定表の phase23 の行と同じ関数)
+#
 # 使い方: scripts/snapshot-summary.py SNAP.json [--prev PREV.json] [--status-before STATUS.json]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
 import argparse
 import ipaddress
 import json
+import os
 import statistics
 import sys
 from datetime import datetime, timezone
+
+# 無言の再起動の判定は**判定表と同じ関数**を使う (`--criteria` の行と要点の 1 行が食い違わないように)。
+# 置き場は import できる側の `scripts/snapshot_criteria.py` (T20.1 の決まり。T23.2)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from snapshot_criteria import silent_restart_text, silent_restarts  # noqa: E402
 
 # `/status` の `errors_by_cause` の並び (`crates/metrics/src/metrics.rs` の ERR_CAUSE_NAMES)
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
@@ -665,6 +676,9 @@ def main(argv=None):
 
     print(f"- 版 `{d.get('version')}` / 起動から {(st.get('uptime_secs') or 0) / 3600:.1f} 時間"
           f" / 取得 {stamp(d.get('taken_at'))} (`{d.get('taken_at')}`){window}")
+    # 無言の再起動 (T23.2) を**頭に 1 行**。`/events` は 24 時間より長く残るので、`start` の
+    # 直前に `shutdown` があるかで見分けられる (判定は判定表の phase23 の行と同じ関数)
+    print("- 無言の再起動: " + silent_restart_text(silent_restarts(d)))
     if d.get("dropped"):
         print(f"- **4 MiB を越えたので落とした部分**: {', '.join(d['dropped'])}")
     cut = truncated_parts(d)

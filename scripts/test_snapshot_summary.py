@@ -647,6 +647,55 @@ class Bytes(unittest.TestCase):
         self.assertIn("| 転送 | 42.0 MiB |", run([B, "--prev", A]))
 
 
+class SilentRestarts(unittest.TestCase):
+    """無言の再起動 (T23.2): **要点の頭に 1 行**。判定は `snapshot_criteria.silent_restarts()` と共通。
+
+    2026-10-17 22:14:52Z のように `shutdown` を残さずに起動し直すと、heap の行が黙って
+    「判定できず」になる (T22.99)。その 1 行が要点の頭に出ることを見る。
+    """
+
+    BOOT = ("version 0.22.6+000681e on port 60357 (profile default, cache on, timeout 30s, "
+            "max conns 240)")
+    STOP = "stop signal received; saving statistics"
+
+    def snap(self, events, restored=0):
+        """`testdata/snapshot-a.json` (events の部が無い) に、作った `/events` を載せる。"""
+        a = read(A)
+        a["events"] = {"events": events, "count": len(events), "kept": len(events),
+                       "capacity": 512, "restored": restored, "truncated": False}
+        return a
+
+    def test_the_silent_restart_is_the_line_after_the_version(self):
+        a = read(A)
+        t = a["taken_at"] - a["uptime_secs"]        # いまの起動の時刻
+        prev = t - 3 * 86400
+        a = self.snap([{"at": prev, "kind": "start", "text": self.BOOT},
+                       # 前の起動は `shutdown` を残さずに終わっている (落とされた)
+                       {"at": prev + 600, "kind": "anomaly",
+                        "text": "errors: 5 errors in 5m (threshold 5): dns 4, timeout 1"},
+                       {"at": t - 60, "kind": "start", "text": self.BOOT}], restored=1)
+        with written(a=a) as paths:
+            lines = run([paths["a"]]).splitlines()
+        self.assertTrue(lines[0].startswith("- 版 `0.1.0+aaaaaaa`"), lines[0])
+        self.assertTrue(lines[1].startswith("- 無言の再起動: 1 回 ("), lines[1])
+        self.assertIn(f"**{ss.stamp(t - 60)}** 版 `0.22.6+000681e`", lines[1])
+        self.assertIn(f"前の起動は {(3 * 86400 - 60) / 3600:,.1f} 時間", lines[1])
+
+    def test_zero_silent_restarts_is_one_line_with_what_was_checked(self):
+        a = read(A)
+        t = a["taken_at"] - a["uptime_secs"]
+        a = self.snap([{"at": t - 3600, "kind": "start", "text": self.BOOT},
+                       {"at": t - 3000, "kind": "shutdown", "text": self.STOP},
+                       {"at": t - 2900, "kind": "start", "text": self.BOOT}])
+        with written(a=a) as paths:
+            lines = run([paths["a"]]).splitlines()
+        self.assertEqual(lines[1], "- 無言の再起動: 0 件 (直前が `shutdown` の起動 1 件、"
+                                   "窓の先頭など 1 件は判定できない)")
+
+    def test_a_snapshot_without_events_says_it_cannot_be_judged(self):
+        self.assertIn("- 無言の再起動: 判定できず (`/events` の部が無い)", run([A]))
+
+
 ANON_0926 = os.path.join(DATA, "deployed-2026-09-26.anon.json")
 ANON_0916 = os.path.join(DATA, "deployed-2026-09-16.anon.json")
 
