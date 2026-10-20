@@ -173,6 +173,19 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(part["history"]["samples"], 3)
         self.assertEqual(part["history"]["window_secs"], 3 * 3600)
 
+    def test_from_is_the_deadline_the_snapshot_was_taken_under(self):
+        # T23.3 以降の雪像は 5 秒で撮っているので `--from 5`。3 秒にすると 1 件あたり 2 秒縮む
+        h = history(empty_buckets(), timeouts=50, samples=2)
+        old = ct.analyze(snap(hist=h), (3, 5), ref=10)
+        new = ct.analyze(snap(hist=h), (3, 5), ref=5)
+        self.assertAlmostEqual(by(old, 3)["saved_min_per_day"], 140.0)   # 100 本/2 時間 → 1,200/日 × 7 秒
+        self.assertAlmostEqual(by(new, 3)["saved_min_per_day"], 40.0)    # 同じ × 2 秒
+        # いまの締め切り (5 秒) 以上は何も変わらない
+        self.assertEqual(by(new, 5)["saved_min_per_day"], 0.0)
+        self.assertEqual((by(new, 5)["history_dropped_lo"], by(new, 5)["history_dropped_hi"]), (0, 0))
+        # まとめでも、いまの既定と同じ T は比べる対象にしない
+        self.assertIsNone(ct.summary({"/a": new}, (3, 5), ref=5)[1]["ok"])
+
     def test_no_history_at_all_is_not_zero(self):
         res = ct.analyze(snap(recent=[rec_entry(1, START, 100)]), (5,))
         self.assertIsNone(res["history"])

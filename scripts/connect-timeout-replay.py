@@ -14,18 +14,19 @@
 # **`/history` の `connect_buckets` は成功だけとは限らない**: T20.4 より前の版は、繋がらなかった
 # 接続の「失敗するまでの時間」も同じ窓に入れていた (0.18.0 の nagoya の雪像がそう)。
 # 10 秒で切った `timeout` は一番上の区間 (5,000 ms 以上) に入るので、そこだけ `timeout` の本数を
-# 引いた値を「下限」に、引かない値を「上限」にする (`--` で区間に T がまたがるときは、その区間を
+# 引いた値を「下限」に、引かない値を「上限」にする (T が区間の途中に落ちるときは、その区間を
 # 丸ごと上限にだけ足す。区間の中は分からないため)。
 #
-# 数えるもの (T = 3 / 5 / 10 秒):
+# 数えるもの (T = 3 / 5 / 10 秒。`--from` は雪像を撮ったときの既定 = 10 秒):
 #   - **落とす成功** … 確立に T 秒より掛かった成功の本数。T 秒で切ると 502 になるはずのもの。
 #     `/recent` では 1 本ずつ分かるので**ちょうど**、`/history` では区間の幅だけ**下限〜上限**。
-#   - **縮む待ち (分/日)** … `timeout` 1 件は既定の締め切り (10 秒) を丸ごと待っているので、
-#     T 秒にすれば 1 件あたり (10 − T) 秒短くなる。`timeout` の本数/日 × (10 − T) / 60。
+#   - **縮む待ち (分/日)** … `timeout` 1 件はそのときの既定の締め切り (`--from`、既定 10 秒) を
+#     丸ごと待っているので、T 秒にすれば 1 件あたり (from − T) 秒短くなる。
+#     `timeout` の本数/日 × (from − T) / 60。
 #     **落とす成功は待ちを縮めない** (成功していたものが失敗に変わるだけ) ので、ここには入れない。
 #   - **timeout の件数** … いまの本数と、T を当てたあとの本数 (いま + 落とす成功)。
 #
-# 使い方: scripts/connect-timeout-replay.py SNAP.json... [--secs N]... [--hours H] [--json]
+# 使い方: scripts/connect-timeout-replay.py SNAP.json... [--secs N]... [--hours H] [--from S] [--json]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
 import argparse
@@ -35,9 +36,10 @@ import sys
 
 # 段 1 で比べる締め切り (TODO.md の T23.3)
 DEFAULT_SECS = (3, 5, 10)
-# いまの既定の締め切り (秒)。`crates/config/src/config.rs` の `DEFAULT_CONNECT_TIMEOUT`。
-# **この道具は「いまの既定から T に下げたら」を数える**ので、既定を変えたらここも直す。
-CURRENT_SECS = 10.0
+# **雪像を撮ったときの**既定の締め切り (秒)。この道具は「その締め切りから T に下げたら」を数える。
+# T23.3 (2026-10-20) に 5 秒へ下げたので、それ以降の雪像は `--from 5` で数える
+# (ここを書き換えない。古い雪像を数え直したときに意味が変わらないようにするため)。
+DEFAULT_FROM_SECS = 10.0
 # T20.4 で、繋がらなかった接続は connect の窓 (`connects` / `connect_buckets`) に入らなくなった。
 # これより前の Phase の版の雪像は、失敗するまでの時間も区間に入っている (下限を出すときに timeout を引く)。
 # クレートの版は `0.<Phase>.<番号>` なので、Phase の番号だけで見る (0.20.0 は T20.4 を含む)。
@@ -179,7 +181,7 @@ def dropped_from_buckets(buckets, bounds, secs, timeouts, subtract):
     return lo, hi
 
 
-def analyze(snap, secs_list=DEFAULT_SECS, hours=None):
+def analyze(snap, secs_list=DEFAULT_SECS, hours=None, ref=DEFAULT_FROM_SECS):
     rec = recent_window(snap)
     hist = history_window(snap, hours)
     res = {
@@ -193,7 +195,7 @@ def analyze(snap, secs_list=DEFAULT_SECS, hours=None):
     for secs in secs_list:
         # いまの締め切り以上に緩めても何も変わらない (成功した接続は締め切りを超えられない)。
         # 区間から数えると一番上の区間 (5,000 ms 以上) を丸ごと数えてしまうので、ここで 0 と決める。
-        noop = secs >= CURRENT_SECS
+        noop = secs >= ref
         row = {"secs": secs, "recent_dropped": None, "recent_dropped_per_day": None,
                "history_dropped_lo": None, "history_dropped_hi": None,
                "history_dropped_lo_per_day": None, "history_dropped_hi_per_day": None,
@@ -205,7 +207,7 @@ def analyze(snap, secs_list=DEFAULT_SECS, hours=None):
             row["recent_dropped_per_day"] = n * DAY / rec["window_secs"]
             if rec["timeouts"]:
                 row["saved_min_per_day_recent"] = (
-                    rec["timeouts"] * (CURRENT_SECS - secs) * DAY / rec["window_secs"] / 60.0)
+                    rec["timeouts"] * (ref - secs) * DAY / rec["window_secs"] / 60.0)
         if hist:
             if noop:
                 lo = hi = 0
@@ -218,7 +220,7 @@ def analyze(snap, secs_list=DEFAULT_SECS, hours=None):
                 "history_dropped_lo": lo, "history_dropped_hi": hi,
                 "history_dropped_lo_per_day": lo * per_day,
                 "history_dropped_hi_per_day": hi * per_day,
-                "saved_min_per_day": hist["timeouts"] * (CURRENT_SECS - secs) * per_day / 60.0,
+                "saved_min_per_day": hist["timeouts"] * (ref - secs) * per_day / 60.0,
                 "timeouts": hist["timeouts"],
                 "timeouts_after_lo": hist["timeouts"] + lo,
                 "timeouts_after_hi": hist["timeouts"] + hi,
@@ -227,11 +229,11 @@ def analyze(snap, secs_list=DEFAULT_SECS, hours=None):
     return res
 
 
-def summary(allres, secs_list=DEFAULT_SECS):
+def summary(allres, secs_list=DEFAULT_SECS, ref=DEFAULT_FROM_SECS):
     """雪像をまたいだ「最悪の 1 日」— 段 2 に進むかどうかはここで決める。"""
     out = []
     for secs in secs_list:
-        if secs >= CURRENT_SECS:
+        if secs >= ref:
             # いまの既定以上なので何も変わらない (比べる対象ではない)
             out.append({"secs": secs, "worst_dropped_hi_per_day": 0.0,
                         "saved_min_per_day_max": 0.0, "ok": None})
@@ -325,6 +327,9 @@ def main(argv=None):
                    help="deadline to try, in seconds (repeatable; default 3, 5, 10)")
     p.add_argument("--hours", type=int, default=None, metavar="H",
                    help="use only the last H hours of /history (default: the whole window)")
+    p.add_argument("--from", dest="ref", type=float, default=DEFAULT_FROM_SECS, metavar="S",
+                   help="the deadline in force when the snapshot was taken, in seconds "
+                        "(default 10; use 5 for snapshots from T23.3 on)")
     p.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
     secs = tuple(a.secs) or DEFAULT_SECS
@@ -332,11 +337,11 @@ def main(argv=None):
     for path in a.snapshot:
         with open(path, encoding="utf-8") as f:
             snap = json.load(f)
-        res = analyze(snap, secs, a.hours)
+        res = analyze(snap, secs, a.hours, a.ref)
         allres[path] = res
         if not a.json:
             render(res, path)
-    summ = summary(allres, secs)
+    summ = summary(allres, secs, a.ref)
     if a.json:
         json.dump({"snapshots": allres, "summary": summ}, sys.stdout, ensure_ascii=False, indent=1)
         print()
