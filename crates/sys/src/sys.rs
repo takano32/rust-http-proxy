@@ -497,6 +497,17 @@ pub fn set_max_open_files(_soft: u64) -> io::Result<()> {
     ))
 }
 
+/// カーネルの起動ごとに変わる識別子 (`/proc/sys/kernel/random/boot_id`、36 文字の UUID。T24.0)。
+///
+/// **ホストの再起動と、プロセスだけの再起動を切り分ける**ための口。ホスト (カーネル) が
+/// 起動し直すと値が変わり、プロセスを起動し直しただけなら変わらない。読めない環境
+/// (procfs が無い・権限が無い) は `None` を返し、呼ぶ側は `null` を出す (**落とさない**)。
+pub fn boot_id() -> Option<String> {
+    let text = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let id = text.trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
 /// `struct epoll_event`。
 ///
 /// **x86_64 (と x32) だけ `__attribute__((packed))` が付く** ため 12 バイト、
@@ -1220,5 +1231,21 @@ mod tests {
         let f = std::fs::File::open("/proc/self/stat").unwrap();
         assert!(set_keepalive(f.as_raw_fd(), 60, 10, 3).is_err());
         assert!(keepalive_of(f.as_raw_fd()).is_err());
+    }
+
+    /// `boot_id` は 36 文字の UUID で、同じ起動の間は何度読んでも同じ (T24.0)。
+    ///
+    /// 値そのものは機械ごとに違うので、形と「変わらないこと」だけを見る
+    /// (**ホストの再起動とプロセスだけの再起動を切り分ける物差しになる**)。
+    #[test]
+    fn boot_id_is_a_stable_uuid() {
+        let id = boot_id().expect("/proc/sys/kernel/random/boot_id should be readable");
+        assert_eq!(id.len(), 36, "{id}");
+        assert_eq!(id.matches('-').count(), 4, "{id}");
+        assert!(
+            id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()),
+            "{id}"
+        );
+        assert_eq!(boot_id().as_deref(), Some(id.as_str()));
     }
 }

@@ -39,6 +39,21 @@ fn nofile_limit() -> Option<u64> {
     }
 }
 
+/// ホスト (カーネル) の起動ごとに変わる識別子 (`/proc/sys/kernel/random/boot_id`。T24.0)。
+///
+/// **ホストの再起動とプロセスだけの再起動を切り分ける**ために、起動の出来事の文面と
+/// `/status` の `boot.id` に載せる。読めない環境は `None` (どちらも `null` / 文面から省く)。
+fn server_boot_id() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        proxy_server::sys::boot_id()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 /// `--check`: 起動前に**この環境で何が読めるか**と**効く設定**を印字する (T14.15)。
 ///
 /// Pterodactyl のような触れないコンテナで、`/status` を引く前に「統計の `null` は
@@ -433,13 +448,21 @@ pub fn main() {
         log::current_level().as_str().trim()
     );
     // 出来事の時系列の 1 件目 (`/events`。T14.11)。再デプロイの時刻を
-    // `since_start_secs` から逆算しなくて済むように、版と設定の要約をここで残す
+    // `since_start_secs` から逆算しなくて済むように、版と設定の要約をここで残す。
+    // **ホストの起動ごとに変わる `boot_id` の先頭 12 文字も載せる** (T24.0): 1 件の枠は 128 B で
+    // 全体 (36 文字) は入らず末尾の設定が切れてしまうので、同じ起動かどうかが分かる先頭だけにする
+    // (全体と、ホストの再起動の切り分けは `/status` の `boot.id`)。
+    let boot = match server_boot_id() {
+        Some(id) => format!(" boot {}", id.chars().take(12).collect::<String>()),
+        None => String::new(),
+    };
     proxy_server::events::push(
         proxy_server::events::EventKind::Start,
         &format!(
-            "version {} on port {} (profile {}, cache {}, timeout {}s, max conns {})",
+            "version {} on port {}{} (profile {}, cache {}, timeout {}s, max conns {})",
             proxy_server::VERSION,
             config.port,
+            boot,
             if config.lite { "lite" } else { "default" },
             if config.cache.enabled { "on" } else { "off" },
             config.timeout.as_secs(),

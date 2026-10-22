@@ -2864,6 +2864,11 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 `threads` (`/proc/self/status` の `Threads`。接続スレッドだけを数える `live_threads` とは別で、
 監視・履歴・接続試行のスレッドも入ります) と `fds` / `max_fds` (`/proc/self/fd` の数と `RLIMIT_NOFILE`) も出ます。
 `/proc` を読むのは **`/status` と `/metrics` に来たときと 5 秒ごとの履歴の標本のときだけ**です。
+ただし **`boot`** (`id` = `/proc/sys/kernel/random/boot_id`、`pid` = このプロセスの PID) は
+**起動に 1 回だけ**読みます (値はプロセスの生存中に変わりません。読めない環境では `id` が `null` で、
+`/status` は落ちません)。**`id` が前の起動と変わっていればホストの再起動、同じならプロセスだけの再起動**
+なので、`/events` の `start` の直前に `shutdown` が無い起動 (無言の再起動) をこの 2 つに切り分けられます
+(T24.0。`/events` の `start` の文面にも `boot` の先頭 12 文字が入ります。1 件 128 B の枠のため)。
 
 `/status` には上限といまの混み具合も出ます: `max_conns` / `max_threads` (`auto` で決まった値。`0` は無制限)、
 `live_threads` (生きている接続スレッド) / `idle_threads` (そのうち仕事待ち) / `queued_jobs` (上限に当たって
@@ -3062,6 +3067,7 @@ forward が `queue` / `client_read` / `origin` / `send` / `ttfb` / `body` で、
 | `/status` | `recent_quantiles.wait` | **利用者が待つ時間** (`queue + client_read + dns + connect`)。`connect` は要求行を読んだ後からなので、**基準線はこちら** |
 | `/status` | `dns.misses_by_kind` | `expired` が主なら窓 (`PROXY_DNS_WARM_SECS`) が短い、`warm_stale` が出ていれば裏の引き直しが間に合っていない。隣の `refresh_failures` / `refresh_late` / `refresh_ms_max` を先に見ます |
 | `/status` | `kernel.cgroup_cpu` | **割合で読む** (`nr_throttled ÷ nr_periods`)。`since_start` はこのプロセスが始まってからの増分、`path` は読んでいる階層 |
+| `/status` | `boot` | `id` (`/proc/sys/kernel/random/boot_id`) と `pid`。**前の起動と `id` が変わっていればホストの再起動、同じならプロセスだけの再起動** (T24.0。読めない環境では `id` が `null`) |
 | `/status` | `memory.rings_used` | `rings` と同じ鍵で「いま埋まっているぶん」。`rings` は 0 時間でも 36.6 時間でも変わりません |
 | `/profile` | `threads_top` / `run_delay_us` | どの tid が回っているか (`/connections` の `tid` と同じ番号) と、**走れるのに CPU に乗れなかった**時間 |
 | `/connections` | `idle_secs` / `spins` / `revents` / `half_closed` | 「回っているのか・待っているのか」。**既定のままの欄は出さない**ので「無ければ既定値」と読みます |

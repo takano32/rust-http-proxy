@@ -340,3 +340,36 @@ fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
     drop(proxy);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `/status` の `boot` は**この機械の `boot_id`** と**このプロセスの `pid`** を出す (T24.0)。
+///
+/// 2026-10-21 の 2 回の無言の再起動は、`/events` の `start` に `shutdown` が無いという
+/// 事実だけでは「外からの再起動」と「自分の落ち」を区別できなかった。`boot_id` が
+/// 変わっていればホストの再起動、同じならプロセスだけの再起動と分かる。
+///
+/// ここは**同じプロセスで立てた**プロキシ (結合テストの `start_test_proxy`) なので、
+/// `pid` はこのテストの `pid` と一致する。**読めない環境では `null`** (この機械では読める)。
+#[test]
+fn test_integration_status_reports_the_boot_id_and_the_pid() {
+    let port = start_test_proxy(proxy_config());
+    let body = endpoint_json(port, "/status");
+    let host = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .expect("/proc/sys/kernel/random/boot_id should be readable");
+    let want = format!(
+        "\"boot\":{{\"id\":\"{}\",\"pid\":{}}}",
+        host.trim(),
+        std::process::id()
+    );
+    assert!(
+        body.contains(&want),
+        "`/status` の `boot` が {} でない: {}",
+        want,
+        &body[..600.min(body.len())]
+    );
+    // **`kernel` の直後**にあり、既存の鍵の順は動いていない (`memory` がその次)
+    assert!(
+        body.contains("\"boot\":{") && body.contains("},\"memory\":{"),
+        "{}",
+        &body[..600.min(body.len())]
+    );
+}
