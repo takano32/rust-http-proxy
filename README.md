@@ -2387,16 +2387,23 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 
 **文書とコードが同じ集合かを見るのは `scripts/check-docs.sh`** (T14.56)。エンドポイントも環境変数も
 別々の作業で増えていくので、「**コードにあるのに文書に無い / 文書にあるのにコードに無い**」を機械で見ます。
-突き合わせるのは 6 つで、(a) `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"` と
+突き合わせるのは 7 つで、(a) `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"` と
 上の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`)、(b) コードの `"PROXY_…"` / `"SERVER_…"` の
 文字列と上の「環境変数」の表の鍵の欄、(c) `/snapshot` の `parts` と個票のエンドポイント、
 (d) `scripts/check-dashboard.js` が画面の HTML から切り出す関数名と、そこで実際に呼んでいる名前、
 (e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(41 + 本体)」の数も見ます)、
 **(f) この README が `scripts/<名前>.py` と書いている道具に実行ビットがあるか** (そのまま叩ける道具か。
 README にあるのにファイルが無いものも NG。共通部品の `proxydata.py`、判定の部の `snapshot_criteria.py`、
-unittest が名前で読む `test_*.py` は、叩かないものとして除外表に理由つきで入れてあります。T24.7)。
+unittest が名前で読む `test_*.py` は、叩かないものとして除外表に理由つきで入れてあります。T24.7)、
+**(g) 台帳** (`TODO.md` の §5 と `tasks/phaseNN.md` の 1 対 1。済んだ Phase の本文は `tasks/` へ
+移してあるので、**移し忘れ** (§5 にタスクの行が残っていないこと。`- [x]` が全部付いた Phase は
+`tasks/` へ移します)、**リンク** (`tasks/phaseNN.md` と §5 の `### Phase NN (…)` の見出しが両方向で
+1 対 1)、**番号** (`T24.10` が台帳全体で 1 回だけ。番号の Phase が置き場所と合うこと)、
+**1 行目** (`# Phase NN — …`) を見ます。中身は `scripts/check-ledger.py` で、台帳だけを回すなら
+これ 1 本です。T24.10)。
 **意図的に外してあるものはスクリプトの中の除外表に理由つきで持ちます** (`/snapshot` に入れない 18 の口、
-ビルド時にしか無い `PROXY_VERSION` など)。差分が 1 件でもあればその名前を印字して終了コード 1 です。
+ビルド時にしか無い `PROXY_VERSION`、`tasks/README.md` = `tasks/` の索引 など)。差分が 1 件でもあれば
+その名前を印字して終了コード 1 です。
 bash と grep / sed / awk / python3 の標準ライブラリだけで動くので、`cargo` も Node も要りません
 (`scripts/check-docs.sh` を引数なしで回すだけ。CI の `check` が毎回回します)。
 
