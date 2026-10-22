@@ -261,11 +261,11 @@ class CollectBeforeZeroTest(unittest.TestCase):
         d, out, _ = self.run_collect(criteria=None)
         tail = self.judged(out)
         self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria phase24)", tail)
-        self.assertIn("16 行は phase23 と同じ物差しで", tail)
+        self.assertIn("前の 16 行は phase23 と同じ物差しで", tail)
         # 前回の雪像に `/profile` も `/recent` も無いので conn 役と接続のエラーの行は「判定できず」で、
         # 参考の行は無い (表示だけは phase21 の 4 行 + `/events` の行 + phase22 の接続のエラーの行)
         self.assertIn("(ほかに表示だけ 6 行。集計に数えない)", tail)
-        self.assertEqual(tail.count("\n| "), 1 + 16)          # 表の頭 + 16 行
+        self.assertEqual(tail.count("\n| "), 1 + 17)          # 表の頭 + 17 行 (T24.3 で 1 行増えた)
         # `baseline` も `boot` も無い雪像なので、heap の行は phase23 の読み方に戻る
         self.assertIn("`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満", tail)
         self.assertIn("こちらが原因の無言の再起動", tail)

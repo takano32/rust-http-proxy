@@ -260,8 +260,12 @@ PHASE23 = dict(PHASE22)
 #     **それとの差**で読み、無ければ phase23 と同じ 0 時間の雪像との差にする (`_p24_heap`)。
 # (b) 無言の再起動の行 (16 番目) は、`start` の `boot` が変わった回 (ホストの再起動) を**理由つきで数から外し**、
 #     同じ `boot` のまま起動し直した回 (こちらが原因) だけを 0 回の判定に使う (`_p24_silent_restarts`)。
-# 閾の値は phase23 と同じなので、辞書は写しで足りる。
+# 閾の値は phase23 と同じなので、辞書は写しで足りる (T24.3 で 1 つだけ足した。下)。
 PHASE24 = dict(PHASE23)
+# T24.3: phase24 の**17 番目**に、確立の尾を「そのときのホストの RTT + N ms」で読む行を足した
+# (`_p24_connect_tail`)。N は T14.99 の決まりの 5 ms で、**固定の 6 ms ではない**。
+# RTT の測れない雪像 (`rtt_ms.origin` が `null`) では判定しない。
+PHASE24["connect_tail_ms"] = 5.0
 CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18,
             "phase20": PHASE20, "phase21": PHASE21, "phase22": PHASE22, "phase23": PHASE23,
             "phase24": PHASE24}
@@ -470,6 +474,136 @@ def _p14_overload(c, th):
     return ("バーストがあっても `rejected_overload` 0 で `/status` が取れる", "= 0",
             f"`rejected_overload` {n(over)}"
             + ("" if c["status_b"] else "、`/status` が取れない"), verdict, note)
+
+
+# --- T24.3: 確立の尾を「そのときのホストの RTT + N ms」で読む (phase24 の 17 番目の行) ---
+#
+# T14.99 は「6 ms のような固定値ではなく、そのときのホストの RTT + N ms で書く」と決めたが、
+# 判定表はまだ数値 (`connect_p50`) を並べるだけだった (2026-10-22 の確立 p95 は 318.5 ms で、
+# 中身は遠い相手の connect)。**phase14 の 4 行は 1 文字も変えない**ので、行はここに足し、
+# `RULES["phase24"]` の末尾にだけ並べる (`RULES["phase14"]` には入れない)。
+
+def weighted_quantile(pairs, q):
+    """`(値, 重み)` の重み付き分位点 (T24.3)。重みは**その行が運んだ要求の数**。
+
+    重みの合計を 1 本の列と見て、累積が `q × 合計` に届いた所の値を返す (最近接)。
+    重みが 0 以下の組は数えない (`/recent` の connect の行は `reqs` が 0 = CONNECT は
+    HTTP の要求ではないので、呼ぶ側が 1 に置き換える)。組が無ければ None。
+    """
+    pairs = [(v, w) for v, w in pairs if v is not None and w > 0]
+    if not pairs:
+        return None
+    pairs.sort()
+    total = sum(w for _, w in pairs)
+    seen = 0
+    for v, w in pairs:
+        seen += w
+        if seen >= q * total:
+            return v
+    return pairs[-1][0]
+
+
+def recent_connect_rtt(snap):
+    """`/recent` の connect の行から、**確立した接続だけ**の `(確立 ms, RTT ms, 重み)` を集める (T24.3)。
+
+    `rtt_ms.origin` はカーネルが測ったオリジン側の RTT (`/recent` の 1 行 = 1 接続) なので、
+    **同じ行の `ms.connect` と対にする**と母集団を混ぜずに「確立 − RTT」が出せる。
+
+    外す行: `reason` が `error:` で始まる行 (確立していない。`error:dns` は
+    `connect_ms = total_ms − dns_ms` なので 0 に落ちる。T15.0 (1)) と、`rtt_ms.origin` が
+    `null` の行 (Linux 以外・`--lite`・閉じるのが早すぎた)。外した数も返す。
+
+    返すのは `{"pairs", "rows", "connect", "failed", "no_rtt", "no_ms", "from", "until", "ats"}`。
+    **`/recent` の部が無ければ None** (「0 だった」と読まない)。
+    """
+    part_ = snap.get("recent")
+    rows = part_.get("recent") if isinstance(part_, dict) else None
+    if not isinstance(rows, list):
+        return None
+    out = {"pairs": [], "rows": len(rows), "connect": 0, "failed": 0, "no_rtt": 0,
+           "no_ms": 0, "ats": []}
+    for r in rows:
+        if not isinstance(r, dict) or (r.get("kind") or "connect") != "connect":
+            continue
+        out["connect"] += 1
+        if (r.get("reason") or "").startswith("error:"):
+            out["failed"] += 1
+            continue
+        ms_ = (r.get("ms") or {}).get("connect")
+        rtt = (r.get("rtt_ms") or {}).get("origin")
+        if ms_ is None:
+            out["no_ms"] += 1
+            continue
+        if rtt is None:
+            out["no_rtt"] += 1
+            continue
+        # 重みは**その行が運んだ要求の数** (「要求で重み付け」)。connect の行は `reqs` が 0 なので 1
+        out["pairs"].append((float(ms_), float(rtt), max(int(r.get("reqs") or 0), 1)))
+        if r.get("at"):
+            out["ats"].append(r["at"])
+    out["from"] = min(out["ats"]) if out["ats"] else None
+    out["until"] = max(out["ats"]) if out["ats"] else None
+    return out
+
+
+def _p24_connect_tail(c, th):
+    """T24.3: 確立の**尾**が「そのときのホストの RTT + N ms」に収まるかで読む (T14.99 の決まり)。
+
+    `/recent` の connect の行で `ms.connect` と `rtt_ms.origin` を**同じ行で対にし**、その差の
+    分位点を見る。差の中央値が「プロキシの取り分」(phase14 は −0.21 ms)、差の p95 が「尾」で、
+    `N` (5 ms) 未満なら尾は**距離** (相手までの RTT) で説明できる。
+
+    **2 つの分位点の差では見ない**。`p50(確立) − p50(RTT)` は母数の違う行を混ぜる (同じ行の差の
+    中央値とは一致しない) ので、取り分も尾も差の分位点で書く。`/recent` は 2,000 件の環状なので、
+    **窓と本数を必ず書く**。
+    """
+    need = th["connect_tail_ms"]
+    label = (f"CONNECT 確立の尾 (`p95`) が、同じ窓のカーネル RTT の `p95` + {need:.0f} ms 未満 "
+             "(尾は距離)")
+    limit = f"< RTT p95 + {need:.0f} ms"
+    w = recent_connect_rtt(c["b"])
+    if w is None:
+        return (label, limit, "—", UNKNOWN, "後の雪像に `/recent` の部が無い")
+    if not w["connect"]:
+        return (label, limit, f"connect の行 0 本 (`/recent` {n(w['rows'])} 行)", UNKNOWN,
+                "後の雪像の `/recent` に connect の行が無い (0 と書かない)")
+    if not w["pairs"]:
+        return (label, limit, f"対にできる行 0 本 (connect {n(w['connect'])} 本)", UNKNOWN,
+                f"確立と RTT がそろった行が無い (失敗 {n(w['failed'])} 本、`rtt_ms.origin` が "
+                f"`null` {n(w['no_rtt'])} 本)")
+    pairs = [(m - r, wt) for m, r, wt in w["pairs"]]
+    share = weighted_quantile(pairs, 0.5)
+    tail = weighted_quantile(pairs, 0.95)
+    p50c = weighted_quantile([(m, wt) for m, _, wt in w["pairs"]], 0.5)
+    p95c = weighted_quantile([(m, wt) for m, _, wt in w["pairs"]], 0.95)
+    p50r = weighted_quantile([(r, wt) for _, r, wt in w["pairs"]], 0.5)
+    p95r = weighted_quantile([(r, wt) for _, r, wt in w["pairs"]], 0.95)
+    distance = tail < need
+    dropped = []
+    if w["failed"]:
+        dropped.append(f"失敗 {n(w['failed'])} 本")
+    if w["no_rtt"]:
+        dropped.append(f"`rtt_ms.origin` が `null` の {n(w['no_rtt'])} 本")
+    if w["no_ms"]:
+        dropped.append(f"`ms.connect` の無い {n(w['no_ms'])} 本")
+    shown = (f"**{tail:+.1f}** ms (同じ {n(len(pairs))} 本の `ms.connect − rtt_ms.origin` の p95。"
+             f"確立 p50 {ms(p50c)} / p95 {ms(p95c)} ms、RTT p50 {ms(p50r)} / p95 {ms(p95r)} ms)"
+             f"。プロキシの取り分 (中央値) **{share:+.1f}** ms"
+             f" = **{'距離' if distance else '距離では説明できない'}**"
+             f"。`/recent` の {stamp(w['from'])}〜{stamp(w['until'])} の connect {n(w['connect'])} 本"
+             f" (確立と RTT がそろったのは {n(len(pairs))} 本"
+             + (f"。外した: {'、'.join(dropped)}" if dropped else "")
+             + ")")
+    src = ("`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を**同じ行で対にした**差 "
+           "(T14.99 の「そのときのホストの RTT + N ms」)。取り分は差の中央値、尾は差の p95 で、"
+           "**2 つの分位点の差ではない** (母数の違う行を混ぜない)。重みは行ごとの `reqs` "
+           "(connect の行は 0 = CONNECT は HTTP の要求ではないので 1)。"
+           "**`/recent` は 2,000 件の環状なので、窓と本数を書く**")
+    hist = c["after"].get("connect_p95")
+    if hist is not None:
+        src += (f"。`/history` の平常時の確立 p95 ({ms(hist)} ms) とは母集団が違う "
+                "(バーストを外した 1 時間の標本) ので、この行では見比べない")
+    return (label, limit, shown, MET if distance else MISSED, src)
 
 
 # --- Phase 15 の 6 行 (T15.4 が 3 行、T15.5 が 2 行、T15.6 が 1 行) ---
@@ -1843,8 +1977,10 @@ RULES["phase23"] = ((RULES["phase22"][:2] + (_p23_miss_band,) + RULES["phase22"]
 # T24.4 の heap の行 (`_p24_heap`) は、起動から 60 秒の基準 `memory.baseline` があればそれとの差、無ければ
 # `_p23_heap` をそのまま返す (基準を混ぜない)。T24.2: phase24 = phase23 の 16 行の**9 番目と 16 番目だけ**を
 # 差し替えたもの。並びは phase23 と同じ (`RULES["phase23"][9:15]` は確立・安定性などの 6 行)。
+# T24.3: 17 番目 (末尾) に、確立の尾を「そのときのホストの RTT + N ms」で読む行を足した
+# (`_p24_connect_tail`)。**phase23 以前の並びは 1 つも動かない**。
 RULES["phase24"] = (RULES["phase23"][:8] + (_p24_heap,) + RULES["phase23"][9:15]
-                    + (_p24_silent_restarts,))
+                    + (_p24_silent_restarts, _p24_connect_tail))
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,
@@ -1976,7 +2112,7 @@ def render_criteria(d, grouped):
         p()
     if c["name"] == "phase24":
         # T24.2。phase23 の 16 行を持ち越し、heap と無言の再起動の 2 行だけ読み方を変えた
-        p("16 行は phase23 と同じ物差しで、材料も同じです (`--daily` `--profile` `--profile-before` "
+        p("前の 16 行は phase23 と同じ物差しで、材料も同じです (`--daily` `--profile` `--profile-before` "
           "`--zero`)。直したのは 2 行 (T24.2): (1) heap の行は、`/status` の `memory.baseline` "
           "(状態ファイルに**起動から 60 秒で 1 回だけ**書く `heap_used + mmap − cache_memory`。T24.4) が"
           "あれば**それとの差**で読みます (`--zero` の 0 時間の雪像は要りません。ホストの管理者に起動し直されても、"
@@ -1987,7 +2123,12 @@ def render_criteria(d, grouped):
           "(ホストのカーネルごとの再起動。2026-10-21 の 2 回) は時刻つきで理由を書き、**数から外します** "
           "(こちらでは防げない)。`boot` の無い `start` はどちらにも数えません。この行を読み違えると T24.99 の"
           "「こちらが原因の無言の再起動 0 回」が崩れるので、**その部が雪像に無い行は「判定できず」**で、"
-          "0 とは書きません。")
+          "0 とは書きません。"
+          "(3) 17 番目 (T24.3) は、確立の**尾**を固定の 6 ms ではなく**そのときのホストの RTT + 5 ms**で"
+          "読みます (T14.99 の決まり)。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を"
+          "**同じ行で対にした**差の中央値 (プロキシの取り分) と p95 (尾) を出し、尾が 5 ms 未満なら"
+          "「距離」(相手までの RTT で説明できる) です。**`/recent` は 2,000 件の環状なので、窓と本数を"
+          "この行にも書きます**。`rtt_ms.origin` の無い雪像 (Linux 以外・`--lite`) は「判定できず」です。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")

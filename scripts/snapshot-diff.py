@@ -1277,7 +1277,9 @@ def parser():
                         "`/events` の `start` の時刻を添え、無言の再起動の行を足した 16 行。T23.1。"
                         "phase24 = phase23 の 16 行を持ち越し、heap の行を「起動から 60 秒の基準 "
                         "(`/status` の `memory.baseline`) からの増え」に、無言の再起動の行を "
-                        "「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に読み替えたもの。T24.2)")
+                        "「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に読み替え、"
+                        "17 番目に確立の尾を「同じ窓のカーネル RTT + 5 ms」で読む行を足したもの。"
+                        "T24.2・T24.3)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst", type=int, default=BURST_PER_HOUR, metavar="N",
