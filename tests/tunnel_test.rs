@@ -367,7 +367,35 @@ fn test_integration_failed_connects_land_in_errors_by_cause() {
         assert!(head.starts_with("HTTP/1.1 502"), "{} -> {}", target, head);
     }
 
-    let status = status_json(proxy_port);
+    let status = {
+        // **値が出るまで待つ** (T24.6 と同じ型)。502 を返したあとにホスト別の行と
+        // 接続元の行を書くので、負荷の下では `/status` を引いた瞬間にまだ 1 往復ぶん
+        // 遅れていることがある (2026-10-22 の実測: 負荷の下で 40 回に 1 回
+        // `no row for 192.0.2.1:443`。単独では 3/3 通る)。sleep で伸ばさず、
+        // 2 つの行がそろうまで 5 ms ずつ引き直す (上限 3 秒。それでも出なければ
+        // 最後に引いた本文を見せて落とす)
+        let want = [
+            format!("connect://127.0.0.1:{}", closed_port),
+            "connect://192.0.2.1:443".to_string(),
+        ];
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let s = status_json(proxy_port);
+            if want
+                .iter()
+                .all(|h| s.contains(&format!("\"host\":\"{}\"", h)))
+            {
+                break s;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "3 秒待っても 2 つの行がそろわない ({}): {}",
+                want.join(", "),
+                s
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    };
     // `errors_by_cause` は [dns, refused, unreachable, timeout, reset, tls, loop, other]
     let causes_of = |host: &str| -> Vec<u64> {
         let at = status
