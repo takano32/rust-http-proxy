@@ -113,6 +113,10 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 道具は `/status` `/history?res=3600` `/metrics` と `scripts/status-diff.py` / `scripts/probe-deployed.sh` で、
 **ホスト別の平均は 2 枚の差分で読みます** (`/status` の `hosts[]` は状態ファイルに残って再起動をまたいで
 通算されるので、そのまま読むと直す前の値が何日も混ざります)。
+**道具はどれも `scripts/` に置いてあり、この README が `scripts/<名前>.py` と書いているものは実行ビット付き**
+なので、そのまま `scripts/snapshot-diff.py a.json b.json` と打てます (`proxydata.py` は共通部品、
+`snapshot_criteria.py` は `snapshot-diff.py` の判定の部、`test_*.py` は unittest が名前で読むものなので
+実行ビットは付けません)。**この区別は `scripts/check-docs.sh` の (f) が毎回見ます** (T24.7)。
 
 **1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T14.4)。`/snapshot` を
 `DIR/<UTC 時刻>-snapshot.json` (既定はリポジトリの `status/`。`.gitignore` 済み) に保存し、要点
@@ -2376,13 +2380,21 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 手元で同じものを回すなら `cargo build --release && cargo build --release -p proxy-bench` のあとに
 `scripts/ci-snapshot.sh` (手元で 26 秒。閾は `CI_SNAPSHOT_P50_MAX_MS`、秒数は `--seconds` で変えられます)。
 
+**shellcheck を手元で回すのも同じ 1 行です**: `shellcheck scripts/*.sh scripts/mx`
+(切った指摘とその理由は `scripts/.shellcheckrc` にあり、shellcheck が自動で読みます。入っていなければ
+`apt-get install shellcheck` / `brew install shellcheck`。CI の `check` ジョブも同じ命令を回すので、
+引数は CI と揃えてください)。
+
 **文書とコードが同じ集合かを見るのは `scripts/check-docs.sh`** (T14.56)。エンドポイントも環境変数も
 別々の作業で増えていくので、「**コードにあるのに文書に無い / 文書にあるのにコードに無い**」を機械で見ます。
-突き合わせるのは 5 つで、(a) `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"` と
+突き合わせるのは 6 つで、(a) `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"` と
 上の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`)、(b) コードの `"PROXY_…"` / `"SERVER_…"` の
 文字列と上の「環境変数」の表の鍵の欄、(c) `/snapshot` の `parts` と個票のエンドポイント、
 (d) `scripts/check-dashboard.js` が画面の HTML から切り出す関数名と、そこで実際に呼んでいる名前、
-(e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(41 + 本体)」の数も見ます)。
+(e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(41 + 本体)」の数も見ます)、
+**(f) この README が `scripts/<名前>.py` と書いている道具に実行ビットがあるか** (そのまま叩ける道具か。
+README にあるのにファイルが無いものも NG。共通部品の `proxydata.py`、判定の部の `snapshot_criteria.py`、
+unittest が名前で読む `test_*.py` は、叩かないものとして除外表に理由つきで入れてあります。T24.7)。
 **意図的に外してあるものはスクリプトの中の除外表に理由つきで持ちます** (`/snapshot` に入れない 18 の口、
 ビルド時にしか無い `PROXY_VERSION` など)。差分が 1 件でもあればその名前を印字して終了コード 1 です。
 bash と grep / sed / awk / python3 の標準ライブラリだけで動くので、`cargo` も Node も要りません

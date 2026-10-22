@@ -464,10 +464,13 @@ def rank_quantile(values, q):
 def recent_connects(snap):
     """`/recent` の個票から、**成功した CONNECT だけ**の確立時間を出す (部が無ければ None。T20.1)。
 
-    `/history` の `connect_buckets` と `/status` の `recent_quantiles.connect` には、繋がらずに
-    502 を返した接続の「失敗するまでの時間」も入る (本体は成否を見ずに同じ窓に足す)。黒穴の宛先を
-    繰り返し叩く端末が居ると、p95 がその失敗までの時間になる (T18.99 は 1.3 秒 → p95 2,066 ms)。
-    ここでは `kind == "connect"` で `reason` が `error` で始まらない行の `ms.connect` だけを読む。
+    **`0.18.0` など T20.4 より前の版だけ**、`/history` の `connect_buckets` と `/status` の
+    `recent_quantiles.connect` に、繋がらずに 502 を返した接続の「失敗するまでの時間」も入っていた
+    (本体が成否を見ずに同じ窓へ足していた。いまは成功だけが入る。版ごとの判定は
+    `connect-timeout-replay.py` の `failures_in_buckets()`)。**その古い版の雪像だけ**、黒穴の宛先を
+    繰り返し叩く端末が居ると p95 がその失敗までの時間になる (T18.99 は 1.3 秒 → p95 2,066 ms)。
+    ここでは `kind == "connect"` で `reason` が `error` で始まらない行の `ms.connect` だけを読むので、
+    版に関わらず成功した接続だけになる。
     **窓は雪像に入った個票のぶんだけ** (いちばん古い行から取得まで。256 KiB で切れる)。
     """
     r = part(snap, "recent")
