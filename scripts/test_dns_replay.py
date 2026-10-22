@@ -190,6 +190,28 @@ class WarmGridTest(unittest.TestCase):
         off.prime("a", 100, warm=True)
         self.assertEqual(off.queue, {})
 
+    def test_the_refresh_age_can_be_moved_to_the_ttl(self):
+        # T24.1: 「k (3/4 TTL) と TTL のどちらが引き直しの間隔を決めているか」を分けて見る口。
+        # 12 秒ごとに使う名前は、k=45 なら 48 秒ごと、k=60 (= TTL) なら 60 秒ごとに引き直す
+        arrivals = [(t, "a") for t in range(0, 3600, 12)]
+        k45 = run_table("current", arrivals, 3600, window=0, serve_stale=21600, refresh_at=45)
+        ttl = run_table("current", arrivals, 3600, window=0, serve_stale=21600, refresh_at=60)
+        self.assertEqual(k45["refreshes"], 74)   # 48 秒ごと
+        self.assertEqual(ttl["refreshes"], 59)   # 60 秒ごと
+        # 既定 (None) は TTL の 3/4 = 45 秒のまま
+        same = run_table("current", arrivals, 3600, window=0, serve_stale=21600)
+        self.assertEqual(same["refreshes"], k45["refreshes"])
+
+    def test_replay_reports_the_refreshes_per_name(self):
+        snap = {"taken_at": 600, "recent": {"recent": [
+            {"at": t, "secs": 0, "target": "a.example.invalid:443"} for t in range(0, 600, 12)]},
+            "dns": {"entries": []}, "connections": {"connections": []}}
+        warmup, inside, c0, taken, seen = dr.build(snap)
+        c = dr.replay(warmup, inside, c0, taken, dr.promote_current, seen,
+                      window=0, serve_stale=21600, refresh_at=45)
+        self.assertEqual(c["per_name"], {"a.example.invalid": c["refreshes"]})
+        self.assertEqual(c["per_name"]["a.example.invalid"], c["refresh_name_max"])
+
     def test_grid_verdict_needs_both_axes(self):
         def c(expired, warm_stale, refreshes):
             return {"misses_by_kind": {"cold": 0, "expired": expired, "warm_stale": warm_stale},

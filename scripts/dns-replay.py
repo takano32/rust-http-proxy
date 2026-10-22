@@ -118,11 +118,14 @@ class Table:
     """`dns.rs` の表と warm の待ち行列の写し。時刻は epoch 秒 (float)。"""
 
     def __init__(self, rule, ttl=TTL, window=WARM, max_warm=MAX_WARM, serve_stale=0,
-                 promote_at="now"):
+                 promote_at="now", refresh_at=None):
         self.rule = rule
         # `warm_promote` の最初の予定: "now" = 上げた時刻 + 3/4 TTL (いまの `dns_warm.rs`)、
         # "answer" = 答えを引いた時刻 + 3/4 TTL (既知の小物の直しの案。T22.4)
         self.promote_at = promote_at
+        # 先回りを始める齢 (秒)。`None` = TTL の 3/4 (いまの `refresh_after`)。
+        # **k と TTL のどちらが引き直しの間隔を決めているか**を分けて見るための口 (T24.1)
+        self.k = refresh_at if refresh_at else refresh_after(ttl)
         # 古い答えを返してよい齢の上限 (秒。0 = いまの規則 = 期限切れは同期で引く。T21.3)
         self.serve_stale = serve_stale
         self.ttl = ttl
@@ -183,7 +186,7 @@ class Table:
                 # 窓の外に出た = 誰も使っていない。ここで止める
                 e["warm"] = False
                 continue
-            self._schedule(name, due + refresh_after(self.ttl))
+            self._schedule(name, due + self.k)
             self._refresh(e, due, "refresh_warm", name)
         self._tick_warm(now)
 
@@ -207,10 +210,10 @@ class Table:
             self.table[victim]["warm"] = False
             if self.counting:
                 self.c["warm_evicted"] += 1
-        at = now + refresh_after(self.ttl)
+        at = now + self.k
         if self.promote_at == "answer":
             # 答えの齢から出す: 引いた時刻 + 3/4 TTL (過ぎていればすぐ)
-            at = max(now, self.table[name]["resolved_at"] + refresh_after(self.ttl))
+            at = max(now, self.table[name]["resolved_at"] + self.k)
         self._schedule(name, at)
         self.table[name]["warm"] = True
         if self.counting:
@@ -238,7 +241,7 @@ class Table:
         if e["has_addrs"] and age < self.ttl:
             if self.counting:
                 self.c["hits"] += 1
-            if hot and age >= refresh_after(self.ttl):
+            if hot and age >= self.k:
                 # 当たりのまま裏で 1 回引き直す (T13.1)。一瞬で終わるとする
                 self._refresh(e, now, "refresh_ask", name)
         elif e["has_addrs"] and age < self.serve_stale:
@@ -341,9 +344,14 @@ def actual(snap, c0, taken):
 
 
 def replay(warmup, inside, c0, taken, rule, seen_before=(), ttl=TTL, window=WARM,
-           max_warm=MAX_WARM, serve_stale=0, promote_at="now", prime_warm=False):
-    """助走を数えずに回し、区間 `[c0, taken]` の中だけを数える。"""
-    tb = Table(rule, ttl, window, max_warm, serve_stale, promote_at)
+           max_warm=MAX_WARM, serve_stale=0, promote_at="now", prime_warm=False,
+           refresh_at=None):
+    """助走を数えずに回し、区間 `[c0, taken]` の中だけを数える。
+
+    `refresh_at` は先回りの齢 (秒)。`None` = TTL の 3/4 (`refresh_after`)。T24.1 で
+    「k と TTL のどちらが引き直しの間隔を決めているか」を分けて見るために足した。
+    """
+    tb = Table(rule, ttl, window, max_warm, serve_stale, promote_at, refresh_at)
     tb.counting = False
     for t, h in warmup:
         tb.lookup(h, t)
@@ -373,6 +381,9 @@ def replay(warmup, inside, c0, taken, rule, seen_before=(), ttl=TTL, window=WARM
     top = max(tb.per_name.values(), default=0)
     c["refresh_name_max"] = top
     c["refresh_name_max_per_hour"] = (top / hours) if hours > 0 else None
+    # 名前ごとの引き直しの回数 (区間の中だけ)。T24.1 で 1 つの名前 (短い TTL の名前) を
+    # 観測と突き合わせるために出す
+    c["per_name"] = dict(tb.per_name)
     return c
 
 

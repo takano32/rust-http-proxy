@@ -1,0 +1,238 @@
+{
+ "schema": 1,
+ "taken_at": 1792000000,
+ "version": "0.1.0+test",
+ "uptime_secs": 3600,
+ "limit_bytes": 4194304,
+ "parts": [
+  "status",
+  "dns",
+  "hosts"
+ ],
+ "dropped": [],
+ "status": {
+  "schema": 1,
+  "dns": {
+   "ttl_secs": 60,
+   "negative_ttl_secs": 60,
+   "warm_secs": 0,
+   "entries": 3,
+   "warm": 0,
+   "hits": 0,
+   "misses": 0,
+   "refreshes": 300
+  }
+ },
+ "dns": {
+  "schema": 1,
+  "entries": [
+   {
+    "host": "used.example.invalid",
+    "addrs": [
+     "192.0.2.1"
+    ],
+    "addr_count": 1,
+    "age_secs": 10,
+    "ttl_left": 50,
+    "idle_secs": 10,
+    "win_v6": null,
+    "failed": null,
+    "refreshing": false,
+    "warm": false,
+    "next_refresh_secs": null,
+    "misses": 1,
+    "refreshes": 100,
+    "changes": 0,
+    "warm_requests": 0,
+    "misses_by_kind": {
+     "cold": 1,
+     "expired": 0,
+     "warm_stale": 0,
+     "negative": 0
+    }
+   },
+   {
+    "host": "sparse.example.invalid",
+    "addrs": [
+     "192.0.2.1"
+    ],
+    "addr_count": 1,
+    "age_secs": 5000,
+    "ttl_left": 0,
+    "idle_secs": 5000,
+    "win_v6": null,
+    "failed": null,
+    "refreshing": false,
+    "warm": false,
+    "next_refresh_secs": null,
+    "misses": 1,
+    "refreshes": 100,
+    "changes": 0,
+    "warm_requests": 0,
+    "misses_by_kind": {
+     "cold": 1,
+     "expired": 0,
+     "warm_stale": 0,
+     "negative": 0
+    }
+   },
+   {
+    "host": "idle.example.invalid",
+    "addrs": [
+     "192.0.2.1"
+    ],
+    "addr_count": 1,
+    "age_secs": 7200,
+    "ttl_left": 0,
+    "idle_secs": 7200,
+    "win_v6": null,
+    "failed": null,
+    "refreshing": false,
+    "warm": false,
+    "next_refresh_secs": null,
+    "misses": 1,
+    "refreshes": 100,
+    "changes": 0,
+    "warm_requests": 0,
+    "misses_by_kind": {
+     "cold": 1,
+     "expired": 0,
+     "warm_stale": 0,
+     "negative": 0
+    }
+   }
+  ],
+  "count": 3,
+  "shown": 3,
+  "sort": "age",
+  "ttl_secs": 60,
+  "negative_ttl_secs": 60,
+  "truncated": false
+ },
+ "hosts": {
+  "schema": 1,
+  "hosts": [
+   {
+    "host": "connect://used.example.invalid:443",
+    "requests": 50,
+    "hits": 0,
+    "misses": 0,
+    "bypass": 50,
+    "errors": 0,
+    "blocked": 0,
+    "bytes": 0,
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "timed": 50,
+    "avg_ms": 1.0,
+    "p50_ms": 1.0,
+    "p95_ms": 1.0,
+    "max_ms": 2,
+    "last_seen": 1791999990,
+    "rtt_ms": null,
+    "retrans": 0,
+    "dns_ms_sum": 0,
+    "dns_misses": 0,
+    "connect_ms_sum": 0,
+    "v4_wins": 50,
+    "v6_wins": 0,
+    "errors_by_cause": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "sni_mismatch": 0,
+    "syn_retrans": 0
+   },
+   {
+    "host": "connect://sparse.example.invalid:443",
+    "requests": 20,
+    "hits": 0,
+    "misses": 0,
+    "bypass": 20,
+    "errors": 0,
+    "blocked": 0,
+    "bytes": 0,
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "timed": 20,
+    "avg_ms": 1.0,
+    "p50_ms": 1.0,
+    "p95_ms": 1.0,
+    "max_ms": 2,
+    "last_seen": 1791995000,
+    "rtt_ms": null,
+    "retrans": 0,
+    "dns_ms_sum": 0,
+    "dns_misses": 0,
+    "connect_ms_sum": 0,
+    "v4_wins": 20,
+    "v6_wins": 0,
+    "errors_by_cause": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "sni_mismatch": 0,
+    "syn_retrans": 0
+   },
+   {
+    "host": "connect://idle.example.invalid:443",
+    "requests": 3,
+    "hits": 0,
+    "misses": 0,
+    "bypass": 3,
+    "errors": 0,
+    "blocked": 0,
+    "bytes": 0,
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "timed": 3,
+    "avg_ms": 1.0,
+    "p50_ms": 1.0,
+    "p95_ms": 1.0,
+    "max_ms": 2,
+    "last_seen": 1791992800,
+    "rtt_ms": null,
+    "retrans": 0,
+    "dns_ms_sum": 0,
+    "dns_misses": 0,
+    "connect_ms_sum": 0,
+    "v4_wins": 3,
+    "v6_wins": 0,
+    "errors_by_cause": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "sni_mismatch": 0,
+    "syn_retrans": 0
+   }
+  ],
+  "count": 3,
+  "shown": 3,
+  "sort": "requests",
+  "limit": 1000,
+  "truncated": false,
+  "uptime_secs": 3600,
+  "total_requests": 0,
+  "restored_since": 1791996400,
+  "offset": 0,
+  "next_offset": null
+ }
+}
