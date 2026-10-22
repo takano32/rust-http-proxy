@@ -83,8 +83,18 @@ fn test_integration_hitting_the_limit_closes_the_oldest_idle_tunnel() {
     let echo_port = start_echo_server();
     let (proxy_port, metrics) = proxy_with_limit(8);
 
-    // 上限ちょうどまで暇なトンネルを張り、全部が預かり所に入るまで待つ
-    let mut tunnels: Vec<TcpStream> = (0..8).map(|_| open_tunnel(proxy_port, echo_port)).collect();
+    // 上限ちょうどまで暇なトンネルを張り、全部が預かり所に入るまで待つ。
+    // **1 本ずつ、預けられるのを待ってから次を張る** (T24.12)。まとめて張ると負荷の下では
+    // 預かる順番が張った順と変わり、「最古」が `tunnels[0]` でなくなることがある
+    // (2026-10-22 の実測: 負荷の下で `tunnels[0].read` が 10 秒の受信待ちで `WouldBlock`)。
+    let mut tunnels: Vec<TcpStream> = Vec::new();
+    for i in 0..8u64 {
+        tunnels.push(open_tunnel(proxy_port, echo_port));
+        wait_until(
+            || metrics.parked_tunnels.load(Ordering::Relaxed) as u64 == i + 1,
+            "each idle tunnel should be parked before the next one is opened",
+        );
+    }
     wait_until(
         || metrics.parked_tunnels.load(Ordering::Relaxed) == 8,
         "every idle tunnel should be parked",
