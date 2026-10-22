@@ -5,6 +5,7 @@
 # 持っているのは `PHASE14`〜`PHASE23` の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
 # 判定表の印字 (`render_criteria()`) と、**判定の関数と差分の両方が使う小物**
 # (`part` `stamp` `n` `ms` `ratio` `restart_info` `norm_history` `merged_history` `miss_rate`)。
+# **phase24 の heap の行 (`_p24_heap`) だけ先にここにある** が、`RULES["phase24"]` への配線は T24.2。
 # 小物までこちらにあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
 # (共有するものは import できる側に置く)。`snapshot-diff.py` は全部を同じ名前で取り込み直すので、
 # 使い方・出力・`sd.CRITERIA` のようなテストから見える名前は割る前と変わらない。
@@ -1637,6 +1638,56 @@ def _p23_heap(c, th):
             UNKNOWN, src2)
 
 
+def _p24_heap(c, th):
+    """T24.4: (g) を、**起動から 60 秒たった時点の基準** (`/status` の `memory.baseline`) との差で読む。
+
+    **判定表の行** (phase24 の `RULES` には T24.2 が入れる。ここでは行を作るだけで `RULES` は触らない)。
+
+    状態ファイル (`.rrd`) に、起動から 60 秒たった時点の `heap_used + mmap − cache_memory` が
+    1 本だけ残るようになった (`memory.baseline` = `{at, bytes}`。T24.4)。これがある雪像は
+    **0 時間の雪像 (`--zero`) が無くても**「この起動でどれだけ増えたか」が読める
+    (ホストの管理者に起動し直されても、起動ごとの基準なので判定できる)。
+
+    `baseline` が無い雪像 (T24.4 より前の版・起動から 60 秒以内・`mallinfo2` が読めない環境) は
+    **phase23 の行をそのまま返す** (0 時間の雪像との差、無ければ「判定できず」と理由)。
+    基準は 2 つ混ぜない — どちらで判定したかが読めなくなる。
+    """
+    b = c["b"]
+    mem = memory_of(b)
+    base = mem.get("baseline")
+    if not isinstance(base, dict) or base.get("bytes") is None:
+        return _p23_heap(c, th)
+    lim = th["heap_growth_mb"]
+    label = (f"`heap_used + mmap − cache_memory` の起動から 60 秒の基準からの増えが "
+             f"{lim:.0f} MB 未満")
+    limit = f"< {lim:.0f} MB"
+    at = base.get("at")
+    taken, up = b.get("taken_at"), b.get("uptime_secs")
+    start = (taken - up) if (taken and up is not None) else None
+    # 雪像の `taken_at` と `uptime_secs` はどちらも整数秒だが、念のため切り捨ててから書く
+    when = (f"{stamp(at)}" + (f" (起動から {n(int(at - start))} 秒)" if (at and start) else ""))
+    shown = "、".join(f"`{k}` {mb(mem.get(k))}"
+                     for k in ("heap_used", "mmap", "cache_memory", "heap_free", "rss"))
+    shown += f" MB (`heap_free` と `rss` は表示だけ)。基準は {mb(base['bytes'])} MB ({when})"
+    missing = [f"`{k}`" for k in ("heap_used", "mmap", "cache_memory") if mem.get(k) is None]
+    if missing:
+        return (label, limit, shown, UNKNOWN,
+                "、".join(missing) + " が無い (`memory.baseline` はある)")
+    # 基準がこの起動のものか。`at` が起動の始まりより前なら前の起動が残した値
+    # (状態ファイルは起動をまたいで残る)。時計の切り捨てのぶんだけ許す
+    if at is not None and start is not None and at < start - 5:
+        return (label, limit, shown, UNKNOWN,
+                f"`memory.baseline` の `at` ({stamp(at)}) がこの起動の始まり "
+                f"({stamp(start)}) より前 = 前の起動が残した基準")
+    now = mem["heap_used"] + mem["mmap"] - mem["cache_memory"]
+    grown = (now - base["bytes"]) / 1e6
+    src = (f"後の雪像 (起動から {uptime_text(up)}) の `/status` の `memory.baseline` "
+           f"= 状態ファイルに起動 60 秒で 1 回だけ書いた `heap_used + mmap − cache_memory`。"
+           f"**0 時間の雪像 (`--zero`) は要らない**")
+    return (label, limit, f"**{grown:+.1f}** MB ({mb(base['bytes'])} → {mb(now)} MB)。" + shown,
+            MET if grown < lim else MISSED, src)
+
+
 RULES = {
     "phase14": (_p14_dns_per_connect, _p14_major_hosts, _p14_connect_p50, _p14_overload),
     "phase15": (_p15_watch_host, _p15_refresh_rate, _p15_miss_band,
@@ -1671,6 +1722,9 @@ RULES["phase23"] = ((RULES["phase22"][:2] + (_p23_miss_band,) + RULES["phase22"]
                      + (_p23_heap,) + RULES["phase22"][9:12]
                      + (_p23_connect_errors, _p22_connect_errors_shown)
                      + RULES["phase22"][13:] + (_p23_silent_restarts,)))
+# T24.4: phase24 の heap の行は `_p24_heap` (起動から 60 秒の基準 `memory.baseline` があればそれとの差、
+# 無ければ `_p23_heap` をそのまま返す)。**`RULES["phase24"]` は T24.2 が組む** ので、ここでは触らない
+# (`_p23_silent_restarts` を T23.2 が作って T23.1 が入れたのと同じ形)。差し替えるのは 9 番目。
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,
