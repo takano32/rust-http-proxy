@@ -2369,17 +2369,21 @@ class Criteria24Rows(unittest.TestCase):
 
     # --- 表の形
 
-    def test_phase24_gives_sixteen_rows_and_the_same_display_only_rows(self):
+    def test_phase24_gives_seventeen_rows_and_the_same_display_only_rows(self):
         c = self.judge()
-        self.assertEqual(len(sd.RULES["phase24"]), 16)
-        self.assertEqual(len(c["rows"]), 16)
+        self.assertEqual(len(sd.RULES["phase24"]), 17)
+        self.assertEqual(len(c["rows"]), 17)
         self.assertEqual([i for i, r in enumerate(c["rows"]) if r[3] == sd.SHOWN],
                          list(self.SHOWN_ROWS))
         self.assertEqual(c["display_only"], 6)
-        self.assertEqual(sd.PHASE24, sd.PHASE23)          # 閾の値は phase23 と同じ
+        # 閾の値は phase23 と同じ (**T24.3 で足した `connect_tail_ms` だけが違う**)
+        self.assertEqual({k: v for k, v in sd.PHASE24.items() if k != "connect_tail_ms"},
+                         sd.PHASE23)
+        self.assertEqual(sd.PHASE24["connect_tail_ms"], 5.0)
         self.assertEqual(c["name"], "phase24")
         self.assertIs(sd.RULES["phase24"][8], sc._p24_heap)
         self.assertIs(sd.RULES["phase24"][15], sc._p24_silent_restarts)
+        self.assertIs(sd.RULES["phase24"][16], sc._p24_connect_tail)
 
     def test_the_other_fourteen_rows_are_the_phase23_ones(self):
         for i in list(range(8)) + list(range(9, 15)):
@@ -2389,9 +2393,12 @@ class Criteria24Rows(unittest.TestCase):
         """`memory.baseline` も `boot` も無い雪像 (T24.4・T24.0 より前の版) では 2 行とも phase23 と同じ。"""
         c24 = self.judge()
         c23 = build([A, B, "--no-dns", "--criteria", "phase23"])["criteria"]
-        self.assertEqual([r[3] for r in c24["rows"]], [r[3] for r in c23["rows"]])
+        self.assertEqual([r[3] for r in c24["rows"][:16]], [r[3] for r in c23["rows"]])
         self.assertEqual(c24["rows"][8][3], sd.UNKNOWN)
         self.assertIn("`--zero` (0 時間の雪像) が渡されていない", c24["rows"][8][4])
+        # 17 番目は `testdata` に `/recent` が無いので「判定できず」(0 とは書かない)
+        self.assertEqual(c24["rows"][16][3], sd.UNKNOWN)
+        self.assertIn("後の雪像に `/recent` の部が無い", c24["rows"][16][4])
 
     # --- 9 番目: heap の行 (T24.4 の `memory.baseline`)
 
@@ -2467,10 +2474,112 @@ class Criteria24Rows(unittest.TestCase):
     def test_the_markdown_names_the_phase24_parts(self):
         md = run([A, B, "--no-dns", "--criteria", "phase24"])
         self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase24`)", md)
-        self.assertIn("16 行は phase23 と同じ物差しで", md)
+        self.assertIn("前の 16 行は phase23 と同じ物差しで", md)
         self.assertIn("**起動から 60 秒で 1 回だけ**", md)
         self.assertIn("**数から外します**", md)
+        self.assertIn("(3) 17 番目 (T24.3) は", md)
+        self.assertIn("**そのときのホストの RTT + 5 ms**", md)
         self.assertIn("**その部が雪像に無い行は「判定できず」**", md)
+
+    # --- 17 番目: 確立の尾を「そのときのホストの RTT + 5 ms」で読む (T24.3)
+
+    @staticmethod
+    def recent(rows):
+        """`/recent` の部を作る。`rows` は `(ms.connect, rtt_ms.origin, reason[, reqs])` の並び。
+
+        `at` は 60 秒ずつ進める (窓の両端が実測の欄に出る)。
+        """
+        out = []
+        for i, row in enumerate(rows):
+            cms, rtt, reason = row[:3]
+            reqs = row[3] if len(row) > 3 else 0
+            out.append({"at": 1789043200 + i * 60, "kind": "connect", "reqs": reqs,
+                        "target": "example.com:443", "client": "192.0.2.1", "reason": reason,
+                        "ms": {"dns": 0, "connect": cms},
+                        "rtt_ms": {"client": None, "origin": rtt}})
+        return {"recent": out, "count": len(out), "kept": len(out), "capacity": 2000,
+                "truncated": False}
+
+    def tail_row(self, rows, a=None):
+        b = read(B)
+        b["recent"] = self.recent(rows)
+        if a:
+            with written(a=a, b=b) as p:
+                return self.judge(a=p["a"], b=p["b"])["rows"][16]
+        with written(b=b) as p:
+            return self.judge(b=p["b"])["rows"][16]
+
+    def test_the_tail_is_distance_when_the_excess_is_under_five_ms(self):
+        """確立 − RTT が 1 ms だけの 100 本。尾は「距離」で、取り分は中央値で +1.0 ms。"""
+        row = self.tail_row([(100 + rtt + 1, 100 + rtt, "ok") for rtt in range(100)])
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("CONNECT 確立の尾 (`p95`) が、同じ窓のカーネル RTT の `p95` + 5 ms 未満", row[0])
+        self.assertEqual(row[1], "< RTT p95 + 5 ms")
+        self.assertIn("**+1.0** ms", row[2])
+        self.assertIn("プロキシの取り分 (中央値) **+1.0** ms", row[2])
+        self.assertIn("= **距離**", row[2])
+        # `/recent` の窓と本数を必ず書く (2,000 件の環状)。`at` は 60 秒ずつ
+        self.assertIn("の connect 100 本 (確立と RTT がそろったのは 100 本)", row[2])
+        self.assertIn("〜", row[2])
+        self.assertIn("Z", row[2])
+        self.assertIn("同じ 100 本の `ms.connect − rtt_ms.origin` の p95", row[2])
+        self.assertIn("**同じ行で対にした**差", row[4])
+        self.assertIn("**2 つの分位点の差ではない**", row[4])
+
+    def test_an_excess_of_five_ms_or_more_is_not_distance(self):
+        """5 ms ちょうどから「距離では説明できない」(N = 5 は「未満」)。"""
+        row = self.tail_row([(100 + rtt + 5, 100 + rtt, "ok") for rtt in range(100)])
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**+5.0** ms", row[2])
+        self.assertIn("= **距離では説明できない**", row[2])
+
+    def test_the_boundary_of_the_tail_is_strictly_under_five(self):
+        row = self.tail_row([(100 + rtt + 4.9, 100 + rtt, "ok") for rtt in range(100)])
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**+4.9** ms", row[2])
+
+    def test_failed_rows_and_unread_rtt_are_left_out_and_counted(self):
+        """確立していない行 (`error:`) と `rtt_ms.origin` が `null` の行は対にしない。"""
+        rows = [(101 + rtt, 100 + rtt, "ok") for rtt in range(50)]
+        rows += [(0, None, "error:dns")] * 3 + [(0, None, "error:timeout")] * 2
+        rows += [(999, None, "ok")] * 2
+        row = self.tail_row(rows)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("の connect 57 本 (確立と RTT がそろったのは 50 本。外した: 失敗 5 本、"
+                      "`rtt_ms.origin` が `null` の 2 本)", row[2])
+        # 外した行の 999 ms は尾に入らない (入っていれば +899 ms で「届かず」)
+        self.assertIn("**+1.0** ms", row[2])
+
+    def test_without_any_pairable_row_the_verdict_is_unknown(self):
+        row = self.tail_row([(12, None, "ok")] * 4)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("対にできる行 0 本 (connect 4 本)", row[2])
+        self.assertIn("`rtt_ms.origin` が `null` 4 本", row[4])
+
+    def test_a_recent_part_without_connect_rows_is_unknown_not_zero(self):
+        b = read(B)
+        b["recent"] = self.recent([(5, 5, "ok")])
+        b["recent"]["recent"][0]["kind"] = "http"
+        with written(b=b) as p:
+            row = self.judge(b=p["b"])["rows"][16]
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("connect の行 0 本 (`/recent` 1 行)", row[2])
+
+    def test_the_weight_is_the_request_count_of_the_row(self):
+        """重みは行ごとの `reqs` (「要求で重み付け」)。中央値が重い行に寄る。"""
+        self.assertEqual(sc.weighted_quantile([(10.0, 1), (20.0, 9)], 0.5), 20.0)
+        self.assertEqual(sc.weighted_quantile([(10.0, 9), (20.0, 1)], 0.5), 10.0)
+        self.assertEqual(sc.weighted_quantile([(10.0, 1), (20.0, 1)], 0.95), 20.0)
+        self.assertIsNone(sc.weighted_quantile([], 0.5))
+        self.assertIsNone(sc.weighted_quantile([(10.0, 0)], 0.5))
+
+    def test_a_row_that_carried_many_requests_pulls_the_median(self):
+        """`reqs` の重い 1 本が中央値を決める (connect の行は `reqs` 0 なので 1 として数える)。"""
+        rows: list = [(100 + rtt, 100 + rtt, "ok") for rtt in range(9)]   # 差 0 ms × 9 本
+        rows.append((200, 100, "ok", 100))                                 # 差 +100 ms を 100 要求ぶん
+        row = self.tail_row(rows)
+        self.assertIn("プロキシの取り分 (中央値) **+100.0** ms", row[2])
+        self.assertEqual(row[3], sd.MISSED)
 
 
 @unittest.skipUnless(all(os.path.isfile(os.path.join(d, f)) for d, f in (
@@ -2479,7 +2588,7 @@ class Criteria24Rows(unittest.TestCase):
     (TOKYO, "2026-10-17T030257Z-snapshot.json"))),
     "デプロイ先の雪像が無い (リポジトリには入れない)")
 class Deployed24Rows(unittest.TestCase):
-    """T24.2 の受け入れ基準 (実データ): tokyo の 10-17 → 10-20 で `--criteria phase24` の 16 行が出て、
+    """T24.2 の受け入れ基準 (実データ): tokyo の 10-17 → 10-20 で `--criteria phase24` の 17 行が出て、
 
     heap の行と無言の再起動の行が**その雪像で読める形**になっていること。この 2 枚は T24.0 と T24.4 より
     前の版が撮ったので `start` に `boot` が無く `memory.baseline` も無い — つまり**どちらも phase23 の
@@ -2495,7 +2604,7 @@ class Deployed24Rows(unittest.TestCase):
 
     def test_the_phase24_rows_on_the_tokyo_pair(self):
         c = self.rows()["criteria"]
-        self.assertEqual(len(c["rows"]), 16)
+        self.assertEqual(len(c["rows"]), 17)
         self.assertEqual(c["display_only"], 6)
         # heap は `memory.baseline` が無いので、phase23 と同じく 0 時間の雪像との差で「起動が違う」と出る
         self.assertEqual(c["rows"][8][3], sd.UNKNOWN)
@@ -2508,4 +2617,57 @@ class Deployed24Rows(unittest.TestCase):
                          ["criteria"]["rows"][15][3], sd.MISSED)
         self.assertIn("1 回 (**2026-10-17 22:14:52Z**", c["rows"][15][2])
         self.assertIn("`boot` の無い `start` が 1 件ある", c["rows"][15][4])
+
+    def test_the_tail_row_on_the_tokyo_pair(self):
+        """T24.3: 10-20 の `/recent` (2,000 本) で、尾は**距離** (+0.4 ms)。
+
+        確立は個票の 1,800 本の**同じ行の差**で見る (失敗 200 本は確立していないので外す)。
+        """
+        row = self.rows()["criteria"]["rows"][16]
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**+0.4** ms (同じ 1,800 本の `ms.connect − rtt_ms.origin` の p95。"
+                      "確立 p50 13.0 / p95 262.0 ms、RTT p50 16.4 / p95 271.6 ms)", row[2])
+        self.assertIn("プロキシの取り分 (中央値) **-1.3** ms = **距離**", row[2])
+        self.assertIn("`/recent` の 2026-10-20 06:42:56Z〜2026-10-20 14:34:47Z の connect 2,000 本 "
+                      "(確立と RTT がそろったのは 1,800 本。外した: 失敗 200 本)", row[2])
+
+
+@unittest.skipUnless(all(os.path.isfile(os.path.join(TOKYO, f)) for f in (
+    "2026-10-20T155229Z-snapshot.json",
+    "2026-10-22T210213Z-snapshot.json")),
+    "デプロイ先の雪像が無い (リポジトリには入れない)")
+class Deployed243Rows(unittest.TestCase):
+    """T24.3 の受け入れ基準 (実データ): **2026-10-22 と 2026-10-20 の 2 枚**で行が出る (数値と窓)。
+
+    この 2 枚は T24.3 より前の版 (`0.23.3`) の雪像で、`/recent` の connect は 1,999 / 1,994 本。
+    尾は**同じ行の差**で読む (`/history` の平常時の p95 318.5 ms とは母集団が違う)。
+    """
+
+    A = os.path.join(TOKYO, "2026-10-20T155229Z-snapshot.json")
+    B = os.path.join(TOKYO, "2026-10-22T210213Z-snapshot.json")
+
+    def rows(self):
+        return build([self.A, self.B, "--no-dns", "--criteria", "phase24"])["criteria"]["rows"]
+
+    def test_the_tail_row_on_the_2026_10_22_pair(self):
+        row = self.rows()[16]
+        self.assertEqual(len(self.rows()), 17)
+        self.assertEqual(row[0], "CONNECT 確立の尾 (`p95`) が、同じ窓のカーネル RTT の `p95` + 5 ms 未満 "
+                                 "(尾は距離)")
+        self.assertEqual(row[3], sd.MET)
+        # 1,959 本の同じ行の差の p95 は +0.1 ms = 距離。取り分 (中央値) は -1.2 ms (phase14 は -0.21)
+        self.assertIn("**+0.1** ms (同じ 1,959 本の `ms.connect − rtt_ms.origin` の p95。"
+                      "確立 p50 13.0 / p95 259.0 ms、RTT p50 19.0 / p95 263.5 ms)", row[2])
+        self.assertIn("プロキシの取り分 (中央値) **-1.2** ms = **距離**", row[2])
+        # `/recent` は 2,000 件の環状なので窓と本数が実測の欄に出る
+        self.assertIn("`/recent` の 2026-10-22 17:31:23Z〜2026-10-22 21:02:09Z の connect 1,999 本 "
+                      "(確立と RTT がそろったのは 1,959 本。外した: 失敗 40 本)", row[2])
+        # `/history` の p95 とは母集団が違うと注記する (混ぜない)
+        self.assertIn("`/history` の平常時の確立 p95 (318.5 ms) とは母集団が違う", row[4])
+
+    def test_the_markdown_shows_the_row_with_its_window(self):
+        md = run([self.A, self.B, "--no-dns", "--criteria", "phase24"])
+        self.assertIn("| CONNECT 確立の尾 (`p95`) が、同じ窓のカーネル RTT の `p95` + 5 ms 未満 "
+                      "(尾は距離) | < RTT p95 + 5 ms |", md)
+        self.assertIn("の connect 1,999 本", md)
 
