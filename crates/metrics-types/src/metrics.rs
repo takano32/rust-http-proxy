@@ -770,6 +770,9 @@ pub struct StatusExtras<'a> {
     pub blocklist: &'a str,
     /// 状態ファイルの状態 (`persist::status_json()`)
     pub state_file: &'a str,
+    /// `memory.baseline` に出す「この起動の heap の基準」(`persist::baseline_json()`。
+    /// `null` なら欄は `null`。T24.4)
+    pub baseline: &'a str,
     /// 動いているバイナリの版 (本体クレートの `VERSION`。`0.18.0+144b992` の形)
     pub version: &'a str,
     /// 上限といまのスレッドの数 ([`Concurrency`])
@@ -784,6 +787,7 @@ impl Default for StatusExtras<'_> {
             settings: "null",
             blocklist: "null",
             state_file: "null",
+            baseline: "null",
             version: "unknown",
             concurrency: Concurrency::default(),
             sort: HostSort::Requests,

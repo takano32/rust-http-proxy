@@ -2231,3 +2231,96 @@ class Deployed24(unittest.TestCase):
         self.assertIn("**ホストの再起動** (boot が変わった) `2026-10-21T14:31:31Z`、"
                       "`2026-10-21T15:11:20Z` は数から外した", row[4])
         self.assertIn("`boot` の無い `start` が 1 件ある (T24.0 より前の版が書いた行)", row[4])
+
+
+class Criteria24(unittest.TestCase):
+    """`_p24_heap` (T24.4): heap の行を**起動から 60 秒の基準** (`memory.baseline`) との差で読む。
+
+    行そのものはここで確かめ、`RULES["phase24"]` への配線は T24.2。材料は後の雪像の
+    `/status` の `memory` だけで、**0 時間の雪像 (`--zero`) は要らない**。数字は T23.99 の実測
+    (0 時間 17.3 MB、29.8 時間後 19.5 MB) に合わせてある。
+    """
+
+    T0 = 1790000000
+
+    def snap(self, uptime, memory, taken=None):
+        """`testdata/snapshot-b.json` を土台に、起動からの時間と `/status` の `memory` だけ載せ替える。"""
+        d = read(B)
+        d["uptime_secs"] = uptime
+        d["taken_at"] = taken if taken is not None else self.T0 + uptime
+        d["status"] = dict(d.get("status") or {})
+        d["status"]["memory"] = memory
+        return d
+
+    def row(self, uptime, memory, th=None):
+        # 閾の値は phase23 と同じ (`heap_growth_mb` 5.0。T24.2 の PHASE24 も同じ値)
+        return sc._p24_heap({"b": self.snap(uptime, memory)}, th or sd.PHASE23)
+
+    @staticmethod
+    def mem(baseline, heap=19_500_000, mmap=0, cache=0, **extra):
+        """`/status` の `memory` (heap の行が読む欄だけ)。"""
+        m = {"heap_used": heap, "mmap": mmap, "cache_memory": cache,
+             "heap_free": 1_000_000, "rss": 30_100_000, "baseline": baseline}
+        m.update(extra)
+        return m
+
+    @staticmethod
+    def base(at, bytes_):
+        return {"at": at, "bytes": bytes_}
+
+    def test_the_baseline_alone_makes_the_row_readable(self):
+        """受け入れ基準: `baseline` のある雪像では、0 時間の雪像が無くても差が出る。"""
+        uptime = 29.8 * 3600
+        row = self.row(uptime, self.mem(self.base(self.T0 + 60, 17_300_000)))
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**+2.2** MB (17.3 → 19.5 MB)", row[2])
+        # 基準がいつ取られたかが読める (起動から 60 秒)
+        self.assertIn("基準は 17.3 MB", row[2])
+        self.assertIn("起動から 60 秒", row[2])
+        self.assertIn("**0 時間の雪像 (`--zero`) は要らない**", row[4])
+        # 行の名前は「起動から 60 秒の基準からの増え」
+        self.assertIn("起動から 60 秒の基準からの増えが 5 MB 未満", row[0])
+        self.assertEqual(row[1], "< 5 MB")
+
+    def test_five_megabytes_or_more_is_missed(self):
+        uptime = 30 * 3600
+        start = self.T0
+        # ちょうど 5 MB は「届かず」(閾は「5 MB 未満」)
+        for heap, verdict in ((22_299_999, sd.MET), (22_300_000, sd.MISSED)):
+            row = self.row(uptime, self.mem(self.base(start + 60, 17_300_000), heap=heap))
+            self.assertEqual(row[3], verdict, f"{heap}")
+
+    def test_without_a_baseline_the_row_is_the_phase23_one(self):
+        """`baseline` が無い雪像 (T24.4 より前の版・起動から 60 秒以内) は今までどおり。"""
+        mem = self.mem(None)
+        d = {"b": self.snap(3600, mem)}
+        self.assertEqual(sc._p24_heap(d, sd.PHASE23), sc._p23_heap(d, sd.PHASE23))
+        row = self.row(3600, mem)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`--zero` (0 時間の雪像) が渡されていない", row[4])
+
+    def test_a_baseline_from_a_previous_run_cannot_be_used(self):
+        """状態ファイルは起動をまたいで残る。前の起動が残した値では判定しない。"""
+        uptime = 2 * 3600
+        start = self.T0
+        row = self.row(uptime, self.mem(self.base(start - 3600, 17_300_000)))
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("前の起動が残した基準", row[4])
+
+    def test_a_missing_column_is_unknown_not_zero(self):
+        """`cache_memory` の欄が無い版を 0 として扱わない (phase20 の決まりと同じ)。"""
+        row = self.row(3600, self.mem(self.base(self.T0 + 60, 17_300_000), cache=None))
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`cache_memory` が無い", row[4])
+        self.assertIn("`memory.baseline` はある", row[4])
+
+    def test_the_baseline_is_not_mixed_with_the_zero_snapshot(self):
+        """`--zero` が渡されていても、`baseline` があれば**そちらだけ**で読む (基準を混ぜない)。"""
+        uptime = 29.8 * 3600
+        b = self.snap(uptime, self.mem(self.base(self.T0 + 60, 17_300_000)))
+        z = self.snap(120, {"heap_used": 16_000_000, "mmap": 0, "cache_memory": 0})
+        row = sc._p24_heap({"b": b, "zero_snapshot": z}, sd.PHASE23)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("17.3 → 19.5 MB", row[2])
+        self.assertNotIn("16.0", row[2])
+

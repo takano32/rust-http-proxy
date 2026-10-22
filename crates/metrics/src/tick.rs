@@ -79,6 +79,9 @@ pub fn spawn_every(
         if let Some(st) = &store {
             st.write_samples(&pushed);
             st.write_recent(metrics);
+            // 起動から 60 秒たった時点の heap を 1 回だけ状態ファイルに残す (T24.4)。
+            // **キャッシュを知っているのはこのスレッド**なので、ここで読んで渡す
+            st.write_baseline_if_due(cache, metrics.start_time.elapsed());
         }
         // 利用者の要求が無い時間帯も待ちを測る (T14.10)。**ここでは測らない**
         // (名前解決と接続は `canary` スレッド 1 本の仕事で、この周期は止めない)

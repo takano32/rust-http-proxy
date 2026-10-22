@@ -207,10 +207,11 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     assert_eq!(num(&mem, "arenas"), Some(0), "{}", mem);
 
     // (6) リングを起動時に触るのは `main` だけ (T17.8)。テスト用プロキシは触らないので `false`。
-    // 鍵は `memory` の末尾に足した (`rings_used` までの並びは動かさない)
+    // 鍵は `memory` の末尾に足した (`rings_used` までの並びは動かさない)。
+    // **その後ろに `baseline` が付く** (状態ファイルを持たないテスト用プロキシなので `null`。T24.4)
     assert!(
-        mem.ends_with("},\"rings_touched\":false}"),
-        "rings_touched が末尾に無い: {}",
+        mem.ends_with("},\"rings_touched\":false,\"baseline\":null}"),
+        "rings_touched と baseline が末尾に無い: {}",
         mem
     );
 }
@@ -251,7 +252,7 @@ fn test_integration_memory_rss_matches_the_probe_in_the_real_binary() {
     assert!(num(&mem, "stacks_estimate").unwrap_or(0) > 0, "{}", mem);
     // 既定のプロファイルの Linux では起動時にリングを触っている (T17.8)
     assert_eq!(
-        mem.ends_with(",\"rings_touched\":true}"),
+        mem.ends_with(",\"rings_touched\":true,\"baseline\":null}"),
         cfg!(target_os = "linux"),
         "{}",
         mem

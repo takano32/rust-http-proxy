@@ -3,6 +3,10 @@
 //! - 履歴: 5 秒 / 1 分 / 1 時間の各リングへ、標本ができるたびに 1 レコード書く
 //! - ホスト別・接続元別: [`FLUSH_INTERVAL`] ごとに上位 1000 を固定スロットへ書き直す
 //! - ブロックリストの上書き: 変更のたびにそのスロットだけ書く ([`crate::blocklist`] から)
+//! - **heap の基準**: 起動から [`BASELINE_AFTER_SECS`] 秒たった時点の
+//!   `heap_used + mmap − cache_memory` を**1 回だけ**書く (T24.4)。`/status` の
+//!   `memory.baseline` に出るので、後の雪像 1 枚で「この起動でどれだけ増えたか」が読める
+//!   (0 時間の雪像が要らない = ホストの管理者に再起動されても heap を判定できる)
 //!
 //! 置き場所は `$HOME/.rust-http-proxy.rrd` (Pterodactyl で永続するのはそこだけ)。
 //! `PROXY_STATS_PERSIST=off` で無効。大きさは **8 MiB 固定** (版 3。T14.14) で、
@@ -22,15 +26,46 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::cache::Cache;
 use crate::history::{Pushed, Sample};
 use crate::metrics::{HostStats, Metrics};
 use crate::persist_recent::{RecentFile, Restored};
 use crate::rrd::ring::Ring;
-use crate::rrd::{Opened, Region, Rrd};
+use crate::rrd::{Enc, Opened, Region, Rrd};
 use crate::{log_info, log_warn};
 
 /// 統計表を書き直す間隔。
 pub const FLUSH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// 起動からこの秒数たった時点の heap を「基準」として 1 回だけ残す (T24.4)。
+///
+/// 60 秒にしたのは、起動の山 (状態ファイルの読み戻し・リングの確保・canary の 1 巡目・
+/// 名前解決の warm) が済んだあとの値で、**その起動のあいだ動かない基準**になるから。
+/// 短すぎると起動の途中の値を拾い、長すぎるとその間の増えが基準に混ざる。
+pub const BASELINE_AFTER_SECS: u64 = 60;
+
+/// 実際に使う秒数 (**試験が短い周期で確かめられるように差し替えられる**)。
+static BASELINE_AFTER: AtomicU64 = AtomicU64::new(BASELINE_AFTER_SECS);
+
+/// 基準を取るまでの秒数を差し替える (T24.4 の試験。既定は [`BASELINE_AFTER_SECS`])。
+pub fn set_baseline_after_secs(secs: u64) {
+    BASELINE_AFTER.store(secs, Ordering::Relaxed);
+}
+
+/// いまの「基準を取るまで」の秒数。
+pub fn baseline_after_secs() -> u64 {
+    BASELINE_AFTER.load(Ordering::Relaxed)
+}
+
+/// `heap_used + mmap − cache_memory` (heap の行が比べる値。T20.1 / T24.4)。
+///
+/// `mallinfo2(3)` が読めない環境 (musl / glibc 2.32 以下 / Linux 以外) では `None`。
+/// **`/status` の `memory` と同じ引き算**であること (片方だけ直すと行が読めなくなる)。
+pub fn heap_bytes(cache: &Cache) -> Option<u64> {
+    let h = crate::sysinfo::malloc_info()?;
+    let cache_memory = cache.mem_usage().0.saturating_add(cache.mem_reserved());
+    Some(h.used.saturating_add(h.mmap).saturating_sub(cache_memory))
+}
 
 pub struct Store {
     rrd: Rrd,
@@ -43,6 +78,9 @@ pub struct Store {
     opened: Opened,
     /// 個票のファイル (`$HOME/.rust-http-proxy.recent`。T14.9)。開けなければ `None`
     recent: Option<RecentFile>,
+    /// **この起動で取った** heap の基準 (`at` = 取った時刻 (epoch 秒), `bytes`)。T24.4。
+    /// 前の起動が状態ファイルに残した値は読み戻さない (別の起動の値なので使えない)
+    baseline: Mutex<Option<(u64, u64)>>,
 }
 
 impl Store {
@@ -106,6 +144,8 @@ impl Store {
             size: l.total,
             recent: recent_loaded,
         };
+        // 基準は**この起動のぶんだけ** (T24.4)。状態ファイルに前の起動が残した値は
+        // 読み戻さない (別の起動の値なので、増えの基準にはできない)
         let store = Arc::new(Store {
             rrd,
             path,
@@ -114,6 +154,7 @@ impl Store {
             flushes: AtomicU64::new(0),
             opened,
             recent,
+            baseline: Mutex::new(None),
         });
         Ok((store, loaded))
     }
@@ -165,6 +206,42 @@ impl Store {
             }
             self.note("stats clear", self.rrd.clear(region, i));
         }
+    }
+
+    /// 起動から [`baseline_after_secs`] 秒たったら、heap の基準を**1 回だけ**書く (T24.4)。
+    ///
+    /// `uptime` は起動からの経過 (呼ぶ側 = 5 秒の記録スレッドが持っている)。戻り値は
+    /// 「今回書いたか」。**この起動で 1 回だけ**で、2 回目からは何もしない。前の起動が
+    /// 状態ファイルに残した値は読み戻さないので、起動し直すと (管理者の再起動でも) 60 秒後に
+    /// 取り直した値がその起動の基準になる。`mallinfo2(3)` が読めない環境 (musl / glibc 2.32 以下 /
+    /// Linux 以外) では書かない = `/status` は `baseline: null` のまま。
+    pub fn write_baseline_if_due(&self, cache: &Cache, uptime: Duration) -> bool {
+        if uptime.as_secs() < baseline_after_secs() || self.baseline.locked().is_some() {
+            return false;
+        }
+        let Some(bytes) = heap_bytes(cache) else {
+            return false;
+        };
+        let at = crate::cache::now_epoch();
+        let mut enc = Enc::new();
+        enc.u64(at).u64(bytes);
+        self.note(
+            "baseline write",
+            self.rrd.write(self.rrd.layout.baseline, 0, &enc.0),
+        );
+        *self.baseline.locked() = Some((at, bytes));
+        log_info!(
+            None,
+            "heap baseline at {} s after start: {} bytes",
+            uptime.as_secs(),
+            bytes
+        );
+        true
+    }
+
+    /// この起動の heap の基準 (`at`, `bytes`)。まだ取っていなければ `None` (T24.4)。
+    pub fn baseline(&self) -> Option<(u64, u64)> {
+        *self.baseline.locked()
     }
 
     /// ブロックリストの上書き領域。
@@ -228,6 +305,18 @@ pub fn status_json() -> String {
 /// 書込エラーの累計 (`/healthz` の検査。永続化していなければ `None` = 検査しない。T14.12)。
 pub fn write_errors() -> Option<u64> {
     GLOBAL.get().map(|s| s.write_errors.load(Ordering::Relaxed))
+}
+
+/// `/status` の `memory.baseline` (`{"at":…,"bytes":…}`。T24.4)。
+///
+/// **この起動の基準だけ**を出す。まだ 60 秒たっていない (起動したばかり)・`mallinfo2` が読めない・
+/// 永続化していない (`PROXY_STATS_PERSIST=off` / `--lite`)、のどれかなら `null`。
+pub fn baseline_json() -> String {
+    GLOBAL
+        .get()
+        .and_then(|s| s.baseline())
+        .map(|(at, bytes)| format!("{{\"at\":{},\"bytes\":{}}}", at, bytes))
+        .unwrap_or_else(|| "null".to_string())
 }
 
 /// 起動時に読み戻した内容。
@@ -311,4 +400,76 @@ pub fn start(path: PathBuf, metrics: &Arc<Metrics>) -> Option<(Arc<Store>, JoinH
         })
         .ok()?;
     Some((store, handle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 試験用の状態ファイル (プロセスごとに別の名前)。
+    fn tmp(name: &str) -> PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("shp-baseline-{}-{}.rrd", name, std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(crate::persist_recent::path_next_to(&p));
+        p
+    }
+
+    fn cache() -> Cache {
+        Cache::new(crate::cache::CacheConfig::disabled())
+    }
+
+    /// 起動から 60 秒の基準が **1 回だけ**書かれ、次の起動では取り直されること (T24.4)。
+    ///
+    /// 状態ファイルの版は上げていないので、記録は「余白に 1 本」置かれるだけ。
+    #[test]
+    fn the_baseline_is_written_once_and_taken_again_after_a_restart() {
+        let path = tmp("once");
+        let cache = cache();
+        if heap_bytes(&cache).is_none() {
+            // `mallinfo2` が読めない環境 (musl / glibc 2.32 以下 / Linux 以外) では書かない
+            let (store, _) = Store::open(path.clone()).unwrap();
+            assert!(!store.write_baseline_if_due(&cache, Duration::from_secs(3600)));
+            assert_eq!(store.baseline(), None);
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        let (store, _) = Store::open(path.clone()).unwrap();
+        assert_eq!(store.baseline(), None, "まだ取っていない");
+        assert!(
+            !store.write_baseline_if_due(&cache, Duration::from_secs(BASELINE_AFTER_SECS - 1)),
+            "60 秒の手前では取らない"
+        );
+        assert_eq!(store.baseline(), None);
+        assert!(
+            store.write_baseline_if_due(&cache, Duration::from_secs(BASELINE_AFTER_SECS)),
+            "60 秒で 1 回だけ取る"
+        );
+        let (at, bytes) = store.baseline().expect("この起動の基準");
+        assert!(bytes > 0, "基準のバイト数が 0");
+        assert!(at > 0);
+        // 2 回目以降は書かない (値も動かない)
+        assert!(!store.write_baseline_if_due(&cache, Duration::from_secs(3_600)));
+        assert_eq!(store.baseline(), Some((at, bytes)), "1 回だけ");
+        drop(store);
+
+        // 次の起動: 状態ファイルには前の起動の値が残っているが、**この起動の基準は出さない**
+        // (別の起動の値なので、増えの基準にはできない)。60 秒たったら取り直す
+        let (store, _) = Store::open(path.clone()).unwrap();
+        assert_eq!(store.baseline(), None, "まだ取っていない");
+        let recs = store.rrd.read_all(store.rrd.layout.baseline).unwrap();
+        assert_eq!(
+            recs.len(),
+            1,
+            "記録そのものは状態ファイルに残っている (版は 3 のまま)"
+        );
+        let mut d = crate::rrd::Dec(&recs[0].1);
+        assert_eq!((d.u64(), d.u64()), (at, bytes), "前の起動の値が残っている");
+        std::thread::sleep(Duration::from_millis(1_100));
+        assert!(store.write_baseline_if_due(&cache, Duration::from_secs(BASELINE_AFTER_SECS)));
+        let (again, _) = store.baseline().expect("取り直した基準");
+        assert!(again > at, "取り直した時刻は前より後 ({} > {})", again, at);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(crate::persist_recent::path_next_to(&path));
+    }
 }

@@ -25,6 +25,10 @@ pub use crc::crc32;
 /// - 版 3 (T14.14): 標本のレコードを 512 → 1,024 B、統計のスロットを 576 → 640 B、
 ///   ファイルを 4 → 8 MiB にして**予備を持たせた**。
 ///
+/// **版 3 のまま領域を 1 つ足した** (`baseline`。T24.4)。足したのは領域の並びの**末尾**で、
+/// 8 MiB の余白の中に収まるので前の領域のオフセットは 1 バイトも動かない。古い版 3 の
+/// ファイルではその場所がゼロ = [`Layout::baseline`] は空として読める (版を上げない)。
+///
 /// **版 2 のファイルは読み戻して版 3 の形に詰め直す** ([`Rrd::open`]) ので、
 /// 通算の統計は消えない。版 1 以前・短いファイル・先頭が壊れたファイルは
 /// 今までどおり読み捨てて作り直す (そこまで面倒を見ると変換の道が増えるだけで、
@@ -92,6 +96,8 @@ pub struct Layout {
     pub hosts: Region,
     pub clients: Region,
     pub overrides: Region,
+    /// 起動から 60 秒の heap の基準 1 本 (`{at, bytes}`。T24.4)。**足したのは末尾**
+    pub baseline: Region,
     /// 領域が実際に使っている大きさ (末尾は余白)
     pub used: u64,
     /// ファイルの大きさ ([`FILE_SIZE`] 固定)
@@ -110,9 +116,12 @@ pub const STATS_RECORD: usize = 640;
 pub const OVERRIDE_RECORD: usize = 160;
 pub const STATS_SLOTS: usize = 1000;
 pub const OVERRIDE_SLOTS: usize = 256;
+/// heap の基準 1 本のレコード長 (`at` = epoch 秒 + `bytes` = バイト + CRC。T24.4)。
+/// 中身は 2 × u64 = 16 B で、残りは予備 (あとで欄を足しても版を上げない)。
+pub const BASELINE_RECORD: usize = 32;
 
 /// 領域の数 ([`Layout::regions`] の並び。版をまたいで突き合わせるのに使う)。
-pub const REGIONS: usize = 6;
+pub const REGIONS: usize = 7;
 
 impl Layout {
     pub const fn current() -> Layout {
@@ -164,6 +173,14 @@ impl Layout {
             count: OVERRIDE_SLOTS,
         };
         off += overrides.bytes();
+        // heap の基準 (T24.4)。**並びの末尾に足した**ので、前の 6 領域のオフセットは
+        // 版 3 のまま (古いファイルではここが余白のゼロ = 空として読める)
+        let baseline = Region {
+            offset: off,
+            record_size: BASELINE_RECORD,
+            count: 1,
+        };
+        off += baseline.bytes();
         // 領域の合計 (`off`) はファイルに収まっていること。収まらない版を書いたら
         // ここで組み立てが止まる (実行時に気付くより早い)
         assert!(off <= total);
@@ -174,6 +191,7 @@ impl Layout {
             hosts,
             clients,
             overrides,
+            baseline,
             used: off,
             total,
         }
@@ -188,6 +206,7 @@ impl Layout {
             self.hosts,
             self.clients,
             self.overrides,
+            self.baseline,
         ]
     }
 }
@@ -494,6 +513,43 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// 版 3 のファイルを**そのまま** (余白のゼロのまま) 開くと、足した `baseline` は空で、
+    /// 前の 6 領域のオフセットは 1 バイトも動いていない (T24.4)。
+    #[test]
+    fn the_baseline_region_sits_in_the_spare_space_of_version_three() {
+        let path = tmp("baseline");
+        let (rrd, opened) = Rrd::open(&path).unwrap();
+        assert!(opened.created);
+        let l = rrd.layout;
+        assert_eq!(
+            l.baseline.offset,
+            l.overrides.offset + l.overrides.bytes(),
+            "足したのは領域の並びの末尾 (前の 6 領域は動かない)"
+        );
+        assert_eq!(l.baseline.count, 1);
+        assert!(l.used <= l.total, "8 MiB の余白に収まる");
+        assert_eq!(
+            rrd.read_all(l.baseline).unwrap().len(),
+            0,
+            "まだ書いていない = 古い版 3 のファイルと同じ (ゼロ)"
+        );
+        let mut e = Enc::new();
+        e.u64(1_790_000_000).u64(17_300_000);
+        rrd.write(l.baseline, 0, &e.0).unwrap();
+        let all = rrd.read_all(l.baseline).unwrap();
+        assert_eq!(all.len(), 1);
+        let mut d = Dec(&all[0].1);
+        assert_eq!(d.u64(), 1_790_000_000);
+        assert_eq!(d.u64(), 17_300_000);
+        // 再オープンでも読める (版は 3 のまま)
+        drop(rrd);
+        let (rrd, _) = Rrd::open(&path).unwrap();
+        assert_eq!(VERSION, 3, "足しただけなので版は上げない");
+        let all = rrd.read_all(rrd.layout.baseline).unwrap();
+        assert_eq!(Dec(&all[0].1).u64(), 1_790_000_000);
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// 版 2 のファイルを 1 本作る (領域の `idx` 番目に `payload` を置く)。
     fn write_v2(path: &std::path::Path, recs: &[(usize, usize, Vec<u8>)]) {
         let v2 = Layout::v2();
@@ -603,7 +659,7 @@ mod tests {
         assert!(opened.created);
         assert_eq!(opened.converted_from, None);
         assert_eq!(std::fs::metadata(&path).unwrap().len(), FILE_SIZE);
-        assert_eq!(rrd.layout.used, 4_274_176, "領域の合計 (余白は 4 MiB 強)");
+        assert_eq!(rrd.layout.used, 4_274_208, "領域の合計 (余白は 4 MiB 弱)");
         let _ = std::fs::remove_file(&path);
     }
 
