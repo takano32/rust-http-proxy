@@ -729,14 +729,21 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
   - やること: JSON は**足すだけ** (`status` の `kernel` の隣に `boot: {"id": "…", "pid": N}` を足す。鍵の順は変えない)。読めない環境 (boot_id が無い) は `null` で、`/status` は落とさない。要約の行は「無言の再起動: N 回 (時刻・版・前の起動の長さ。**うちホストの再起動 M 回**)」にし、`boot_id` が変わった回を数える。判定表の行は「こちらが原因の無言の再起動が 0 回」に読み替えられる形にする (外からの回は理由つきで別に書く)。
   - 受け入れ基準: 2026-10-22 の雪像 (10-21 の 2 回が入っている) を手で組み立てた JSON で、`boot_id` が変わった回 = 2、プロセスだけの回 = 0 と出る試験。`boot_id` の無い雪像は「判定できず」。過去の phase の出力は変えない。`python3 -m unittest discover -s scripts`、`check-docs.sh` 差分 0、触ったクレートの clippy 警告 0。
 
-- [ ] **T24.1 短い TTL の名前の引き直し (`api.ipinfo.io` の 57.9 回/時の正体。段 1 で決める)**
+
+- [x] **T24.1 `api.ipinfo.io` 1,728 回 = 57.9 回/時 の正体 (段 1)**
+  - 結果 (2026-10-22、`f9ddd01`): `scripts/dns-idle.py` を足した (雪像から名前ごとに引き直しと使用を並べ、同じプロセスの 2 枚の差で「使われていない引き直し」を数える。1 枚のときは `/hosts` の通算をそのまま出し、この起動内の使用は `/dns` の `idle_secs` で読む)。**2026-10-22 の tokyo では引き直し 7,890 回 = 264.3 回/時、うち `api.ipinfo.io` が 1,728 回 = 57.9 回/時 (21.9%)。この名前はこの起動で 115.6 回/時使われていて (撮った瞬間の `idle_secs` 4 秒)、引き直し/使用 = 0.50**。模型 (`dns-replay.py`) は k=45 で 57.9 回/時と実機を再現し (ttl=60 なら 52.1)、**引き直しのうちタイマーは 0 回** — 60 秒ではなく 45 秒 (3/4 TTL) の先回りが間隔を決めていて、使われていない引き直しではない。同じプロセスの 2 枚の差は 10-15 が 266/804 = 33.1%、10-17 が 10/2,317 = 0.4%、10-20 は `/dns` が切れて判定できず。keep-warm 3,600 秒の 0.21.7 では模型のタイマーが 97〜99% で、疑いはその版では当たっていた (T22.4 で既定を止めた)。**目安 (8 割) を満たさないので段 2 には進まない**。気づき: 台帳の「0.144 req/s」は `/hosts` の**通算** 13,793 (14 日前から復元した分を含む) を起動の長さで割った値だった。unittest 573 本 OK、`check-docs` 差分 0。
+
+- [x] **T24.1 短い TTL の名前の引き直し (`api.ipinfo.io` の 57.9 回/時の正体。段 1 で決める)**
   - 目的: 引き直しは 264.3 回/時で、うち `api.ipinfo.io` が 1,728 回 = 名前ごと **57.9 回/時** (閾 80 の 7 割)。要求は 0.144 req/s しかないので、**使われていないのに毎分引き直している**疑いがある (TTL 60 秒の名前を warm で持たない設定にしたため。T22.4)。
   - 変更箇所: `scripts/` に模型の道具 1 本 (`dns-replay.py` を広げるか新しく 1 本)、その試験。段 2 まで行くなら `crates/net-dns` と README。
   - 段 1: 雪像の `/dns` (名前ごとの `refreshes`・`age_secs`・`ttl_left`・`idle_secs`) と `/hosts` (名前ごとの `requests`・`last_seen`) から、**引き直しの回数と実際の使用回数**を名前ごとに並べる。「1 時間に 1 回も使われていないのに引き直した回」を数え、`ttl_secs` (60) と `k` (45 秒) のどちらが効いているかを `dns-replay.py` の模型で確かめる。目安: **使われていない名前の引き直しが全体の 8 割以上**なら段 2 に進む。
   - 段 2 (目安を満たしたら): 引き直しの予定を「最後に使われた時刻 + 窓」から出し、使われていない名前は引き直さない (serve-stale があるので、次に使われたときに 1 回引けばよい)。`PROXY_DNS_REFRESH_IDLE_SECS` のような口を足すなら README の環境変数の表へ。**`stale_retries` が増えないこと**を試験で縛る。
   - 受け入れ基準: 段 1 の表 (名前ごとの引き直し・使用・「使われていない引き直し」の割合、雪像 2 枚以上)。段 2 なら clippy 0、`test_dns_replay.py` と `crates/net-dns` の試験、`crate-versions.py --check`。
 
-- [ ] **T24.2 `--criteria phase24` (phase23 の行を持ち越し、無言の再起動の行を「こちらが原因」に読み替える)**
+
+  - 結果 (2026-10-22、`081c417` / `e7312d7`): `--criteria phase24` を足した。`RULES["phase24"]` は phase23 の 16 行を持ち越し、**9 番目 (heap) を `_p24_heap`、16 番目 (無言の再起動) を `_p24_silent_restarts` に差し替えただけ**で、閾値 (`PHASE24`) も並びも phase23 と同じ (差し替えない 14 行が同じ関数を指すことを試験で縛った)。`collect-deployed.sh` の `CRITERIA` の既定を phase24 にし、`--zero`・`--daily-snapshots` の phase 一覧にも足した。**phase14〜23 の出力は 1 バイトも変えない** (8 定義 × md/json を main と `cmp` して全部一致。`PastOutputs24` が phase22・23 の sha256 を縛る)。実データ (10-17 → 10-20) では 満たした 6・届かず 1・判定できず 2 (heap は `memory.baseline` が無く「0 時間の雪像と起動が違う」、無言の再起動は `boot` の無い `start` 1 件で切り分け不能)・表示だけ 6・参考 1。気づき: **T24.0 の `Deployed24` は `status/` のある機械では main の時点で落ちていた** (`stamp()` を `2026-10-21T14:31:31Z` と書いていたが実際の綴りは空白区切り。`status/` の無い worktree では skip されて見えなかった) — 1 行直した。unittest 555 本 OK、`check-docs` 差分 0、shellcheck 警告 0。
+
+- [x] **T24.2 `--criteria phase24` (phase23 の行を持ち越し、無言の再起動の行を「こちらが原因」に読み替える)**
   - 目的: phase23 の 16 行はそのまま使える。足すのは T24.0 の切り分けと、T24.4 の heap の読み方 (起動ごとの基準)。過去の phase の出力は変えない。
   - 変更箇所: `scripts/snapshot_criteria.py`、`scripts/test_snapshot_criteria.py`、`scripts/collect-deployed.sh` (`CRITERIA` の既定)、README の `snapshot-diff.py` の節。
   - やること: `RULES["phase24"]` = phase23 の 16 行 + **「こちらが原因の無言の再起動が 0 回」**(外からの再起動は理由つきで別に書き、数から外す) + **heap の行を「起動ごとの基準からの増え」に**(T24.4 の口があればそれを使い、無ければ phase23 のまま「判定できず」と理由)。`collect-deployed.sh` の既定を `phase24` に。
@@ -778,7 +785,10 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
   - やること: (1) 注記を「0.18.0 など失敗も区間に入れた古い版だけ」に直す。(2) `check-docs.sh` に (f) を足す (README の `scripts/…` の参照と実ファイルの実行ビットを突き合わせる。除外表つき)。(3) README に `shellcheck scripts/*.sh scripts/mx` を手元で回す 1 行。
   - 受け入れ基準: `check-docs.sh` が新しい項目を出し、差分 0。わざと実行ビットを外すと NG になることを手で確かめる。unittest。
 
-- [ ] **T24.8 大きいファイルの点検 (段 1 だけ: `recent.rs` 3,585 行の割り方)**
+
+  - 結果 (2026-10-22、`d10764b`): `docs/recent-split.md` に 206 行で見積もりを書いた (コードは 1 行も動かしていない)。`recent.rs` 3,585 行の中身は 5 つの塊 (ERRORS 423・CONNS 894・RECORDS 496・BURSTS 384・CLOSED 175) と 3 つの試験モジュール (1,165 行・35 本) で、`pub` は 48 個。台帳の 4 つの境目 (ConnSlot 609・snapshot 292・persist 116・tests 1,165) は重なりを除いて 2,112 行 = **58.9% しか覆わず、この 4 つでは割れない** (`snapshot` は 5 つの `impl` に散り、`persist` の本体は `crates/metrics/src/persist_recent.rs` 1,135 行にある)。依存は ERRORS と RECORDS が葉、CONNS が両方を呼び (30 / 10)、BURSTS が CONNS を 1、CLOSED が RECORDS を 1 で輪が無い。ビルドのメモリは proxy-server 74.9 MB > proxy-metrics-recent 74.5 MB > proxy-endpoints 74.2 MB、床 63.6 MB なので recent.rs の寄与は約 11 MB で、関門 120 MB に対して余裕 30 MB — **割っても関門は動かない**。結論は**案 A (層で 3 ファイル: `recent/errors.rs` 795・`recent/conns.rs` 1,399・`recent/mod.rs` 1,391、外の 28 ファイルの経路は `pub use` で不変)、クレートは割らない**。実装は次の Phase の候補。
+
+- [x] **T24.8 大きいファイルの点検 (段 1 だけ: `recent.rs` 3,585 行の割り方)**
   - 目的: `crates/metrics-recent/src/recent.rs` が 3,585 行、`crates/metrics-core/src/metrics.rs` が 2,834 行、`crates/metrics-window/src/history.rs` が 2,375 行 (T22.6 の気づき)。リポジトリの目安は「2,000 行ちょうどで割る」(anomaly.rs は 1,003 行に割った)。**今回は数えるだけで実装しない**。
   - 変更箇所: なし (報告だけ)。必要なら `docs/HISTORY.md` ではなく TODO.md の「既知の小物」に 1 行足すのは親。
   - やること: `recent.rs` の中で、`ConnSlot` (リングの 1 枠)、`snapshot` (JSON の組み立て)、`persist` (状態ファイル)、`tests` の 4 つに分けたときの行数と、**クレートを割るか (build memory が下がるか) モジュールを割るか**の見積もり。`cargo build --release` のメモリで一番重いクレート (`proxy-endpoints` 82.5 MB 前後) との関係も書く。
