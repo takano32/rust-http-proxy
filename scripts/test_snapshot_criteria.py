@@ -2228,8 +2228,8 @@ class Deployed24(unittest.TestCase):
         # 「boot の無い 1 件」が残るので 0 回とは書かない (判定できず。数から外した 2 回は理由つき)
         self.assertEqual(row[3], sd.UNKNOWN)
         self.assertIn("こちらが原因の無言の再起動", row[0])
-        self.assertIn("**ホストの再起動** (boot が変わった) `2026-10-21T14:31:31Z`、"
-                      "`2026-10-21T15:11:20Z` は数から外した", row[4])
+        self.assertIn("**ホストの再起動** (boot が変わった) `2026-10-21 14:31:31Z`、"
+                      "`2026-10-21 15:11:20Z` は数から外した", row[4])
         self.assertIn("`boot` の無い `start` が 1 件ある (T24.0 より前の版が書いた行)", row[4])
 
 
@@ -2501,8 +2501,11 @@ class Deployed24Rows(unittest.TestCase):
         self.assertEqual(c["rows"][8][3], sd.UNKNOWN)
         self.assertIn("**0 時間の雪像と起動が違う** (`/events` の `start` が "
                       "2026-10-17T03:02:22Z と 22:14:52Z", c["rows"][8][2])
-        # 無言の再起動は 1 回 (10-17 22:14:52Z)。`boot` が無いので切り分けはできない
-        self.assertEqual(c["rows"][15][3], sd.MISSED)
+        # 無言の再起動は 1 回 (10-17 22:14:52Z)。ただしこの 2 枚の `start` には `boot` が無いので
+        # 「ホストか、プロセスだけか」を言えず、**0 回とは書かない** (phase23 は同じ 1 回を「届かず」と書く)
+        self.assertEqual(c["rows"][15][3], sd.UNKNOWN)
+        self.assertEqual(build([self.A, self.B, "--no-dns", "--criteria", "phase23", "--zero", self.Z])
+                         ["criteria"]["rows"][15][3], sd.MISSED)
         self.assertIn("1 回 (**2026-10-17 22:14:52Z**", c["rows"][15][2])
         self.assertIn("`boot` の無い `start` が 1 件ある", c["rows"][15][4])
 
