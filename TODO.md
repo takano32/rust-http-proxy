@@ -749,7 +749,10 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
   - やること: `RULES["phase24"]` = phase23 の 16 行 + **「こちらが原因の無言の再起動が 0 回」**(外からの再起動は理由つきで別に書き、数から外す) + **heap の行を「起動ごとの基準からの増え」に**(T24.4 の口があればそれを使い、無ければ phase23 のまま「判定できず」と理由)。`collect-deployed.sh` の既定を `phase24` に。
   - 受け入れ基準: phase14〜23 の出力が 1 バイトも変わらない (`--out json` の md/json を前後 `cmp`)、phase24 の行ごとの試験、`CRITERIA=phase24`/`off` で `collect-deployed.sh` が動くこと、unittest、`check-docs.sh` 差分 0。
 
-- [ ] **T24.3 確立の尾を「そのときの RTT + N ms」で書く**
+
+  - 結果 (2026-10-22、`c37e7fe`): 判定表の **17 番目**に、確立の尾を固定の値ではなく「そのときのホストの RTT + N ms」で読む行を足した (`PHASE24["connect_tail_ms"] = 5.0`。`RULES["phase24"]` の**末尾**に配線し、phase23 以前の 16 行と phase14 の 4 行の並びは不変)。`/recent` の connect 行の `ms.connect` と `rtt_ms.origin` を**同じ行で対にし**、差の中央値をプロキシの取り分、差の p95 を尾として出し、尾が 5 ms 未満なら「距離」(相手までの RTT で説明できる) と書く。`/recent` は 2,000 件の環状なので**窓 (開始〜終了) と本数、外した本数を実測の欄に必ず書く**。実測: **10-22 の雪像は connect 1,999 本 (窓 17:31:23Z〜21:02:09Z)、対にできた 1,959 本で尾 +0.1 ms = 距離**、取り分 −1.2 ms (確立 p50 13.0 / p95 259.0、RTT p50 19.0 / p95 263.5)。**10-20 の雪像は 2,000 本 (06:42:56Z〜14:34:47Z)、1,800 本で尾 +0.4 ms = 距離**、取り分 −1.3 ms。つまり `/history` の 318.5 ms という尾は**距離**で、プロキシの取り分は中央値で 0 (phase14 の −0.21 ms と同じ読み)。**本文と違う点**: 分位点同士の差ではなく同じ行の差の分位点で出した — 混ぜると 10-20 の 2 枚で +55 ms と出て「距離では説明できない」と誤読する (p50 同士 −3.4 対 差の中央値 −1.3、p95 同士 −9.6 対 差の p95 +0.4)。`reason` が `error:` の行は確立していないので外した。過去の phase の出力は 14/15/17/22/23 の md/json が main と同一、unittest 594 本 OK、`check-docs` 差分 0。
+
+- [x] **T24.3 確立の尾を「そのときの RTT + N ms」で書く**
   - 目的: 確立 p95 は 318.5 ms で、中身は遠い相手の connect (区間の 17.5% が 100〜250 ms)。T14.99 で「6 ms のような固定値ではなく、そのときのホストの RTT + N ms で書く」と決めたのに、判定表はまだ数値を並べるだけ。
   - 変更箇所: `scripts/snapshot_criteria.py` の確立の行 (`_p14_connect_p50` の隣に新しい行)、その試験、README の `snapshot-diff.py` の節。
   - やること: `/recent` の `rtt_ms.origin` の中央値 (要求で重み付け) を基準にし、`connect p50 − rtt p50` を「プロキシの取り分」として出す行を足す (phase14 のときは −0.21 ms だった)。尾は `p95` と `rtt p95` の差で書き、**差が N = 5 ms 未満なら「距離」**と書く。`/recent` の窓と件数を必ず添える。
@@ -764,7 +767,10 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
   - やること: 起動から 60 秒たった時点の `heap_used + mmap − cache_memory` を 1 回だけ状態ファイルに書き、`/status` の `memory` に `baseline` (`{at, bytes}`) として出す (JSON は足すだけ)。`.rrd` の版は上げない (足すだけなら読めなくならない)。判定表の heap の行は、`baseline` があれば**それとの差**で読み、無ければ今までどおり 0 時間の雪像との差 (で、無ければ「判定できず」)。
   - 受け入れ基準: 起動 60 秒後に `baseline` が出る試験 (短い周期の口で)、`baseline` の無い雪像は今までどおり、`baseline` のある雪像で差が出る試験。clippy 0、`crate-versions.py --check`。
 
-- [ ] **T24.5 keep-alive の HTTP 接続が `/connections` でバイト数を出さない (既知の小物、T13.4)**
+
+  - 結果 (2026-10-22、`77add0e`): 方針 (a) を採った。`serve_one` の「応答を書き終えて次の要求を待つ」枝の 1 か所だけで `ConnSlot::set_bytes(tally.up + tally.down)` を呼ぶので、**要求ごと・バイトごとには書かない**という T13.4 の方針はそのまま (`--lite` は分岐 1 回で素通り)。値は「この接続で終わった要求の上り + 下り」なので**いま処理中の 1 要求はまだ入らない**。`/connections` の JSON は形も鍵の順も変えず (`id, client, target, kind, state, age_secs, bytes, fds, rate_bps`)、動くのは `bytes` の値だけ。`idle_secs` は CONNECT の行だけに出す決定を維持し、理由をコメントと README に書いた。実測 (debug、手で起動): 1 本の接続で 3 要求を送ると `bytes` が **0 → 249 → 498 → 749** (+249/+249/+251)、parked の行でも 224 を保ち、閉じたあとの `/recent` は `up` 200 + `down` 549 = **749** で開いている間の最終値と一致。CPU/要求 (forward 8 並列・前後交互 3 組の中央値、debug): 既定 **134.07 → 136.06 us (+1.5%、組ごと −1.5% / +1.5% / −0.2%)**、`--lite` 112.49 → 108.65 us (−3.4%、ぶれ)。**本文と違う点**: 表の「触る所」は `crates/tunnel` だったが、トンネルは既に `set_bytes` を呼んでいて、HTTP 側の「待ちに入る所」は `crates/server` の `serve_one` にあった (tunnel は触っていない)。bench は release 禁止なので debug、本機は 2 コアなので `PROXY_CPUS=0 BENCH_CPUS=1`。試験は `proxy-server` 5・`proxy-metrics-recent` 51・`recent_test` 20 (新規の結合テストは sleep ではなく値で待つ)、unittest 583 本 OK、clippy 0、版は 0.24.5。
+
+- [x] **T24.5 keep-alive の HTTP 接続が `/connections` でバイト数を出さない (既知の小物、T13.4)**
   - 目的: `/connections` はトンネルの `set_bytes` だけを呼んでいて、keep-alive の HTTP 接続は 0 B のまま。**「要求ごとに書かない」方針との両立**を先に決める (T13.4)。
   - 変更箇所: `crates/tunnel` の `set_bytes` を呼ぶ所、`crates/metrics-recent` の `ConnSlot`、`/connections` の JSON、試験、README。
   - やること: 方針を 1 つ選んで実装する — (a) 応答を書き終えたとき (keep-alive で次の要求を待つ直前) に 1 回だけ `set_bytes` する、(b) `/connections` の `bytes` を「閉じたときの値」だけにする (開いている間は `null`)。**(a) を推す** (待ちに入る所は既に 1 か所ある)。`/connections` の JSON は足すだけで、0 と `null` の意味を変えない。
@@ -779,7 +785,10 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
   - やること: `stages_test` は「要求行を送ったこと」を相手 (echo) が観測してから `Host` を送る形にする (時間ではなく出来事で待つ)。`newclient_test` は `new_client` の行に最初の宛先が入るまで `wait_until` で待つ (「0 req, no target yet」の行を読んだら待ち直す)。どちらも**テストの側だけ**で直し、本体の要求の経路は変えない。
   - 受け入れ基準: 負荷の下 (CPU のループ 4 本 + 同じ束を別プロセス) で 20 / 20 通過、単独 5 / 5。`cargo test --test stages_test --test newclient_test`。
 
-- [ ] **T24.7 道具の置き方の点検 (古い注記・実行ビット・shellcheck の手順)**
+
+  - 結果 (2026-10-22、`cb9f1d8`): 3 つとも直した。(1) `snapshot-diff.py` の `recent_connects` の注記は「失敗までの時間も入る」と現在形で書いてあったが T20.4 以降は成功だけなので「**`0.18.0` など T20.4 より前の版だけ**」に直し、版ごとの判定は `connect-timeout-replay.py` の `failures_in_buckets()` を使うと書き添えた。(2) `check-docs.sh` に **(f)** を足した: README が `scripts/<名前>.py` と書いている道具 (14 種類に畳んだ) のうち**直接叩く 11 件に実行ビットとファイルの存在**を要求し、叩かない 3 種 (`proxydata.py` = 共通部品、`snapshot_criteria.py` = 入口は `snapshot-diff.py`、`test_*.py` = unittest が名前で読む) は除外表に理由つきで持つ。出力は「5 つ」→「**6 つ**」(README の説明も合わせた)。(3) README の道具の段落に実行ビットの決まりと (f) の説明、CI の節に手元で回す 1 行 `shellcheck scripts/*.sh scripts/mx` を足した。**手で壊して確かめた**: `chmod -x scripts/error-mix.py` → `NG (f): … 実行ビットが無い` で exit 1、README に `scripts/no-such-tool.py` を書く → `NG (f): README にあるが … が無い` で exit 1 (どちらも戻して差分 0)。モードの反転は 1 つも入れていない (`git show --raw` で確認)。unittest 583 本 OK、`shellcheck` exit 0、`check-docs` は「6 つを突き合わせて 差分 0 件」。
+
+- [x] **T24.7 道具の置き方の点検 (古い注記・実行ビット・shellcheck の手順)**
   - 目的: 3 つ小さな穴が残っている。(1) `snapshot-diff.py` の `recent_connects` の注記は「`connect_buckets` に失敗も入る」と今も書いているが、T20.4 以降は成功だけ (T23.3 の気づき)。(2) README が直接叩く `scripts/*.py` に実行ビットが無いものがあった (T23.3 で 1 本直した)。(3) CI は shellcheck を回すが、**手元で回す手順が README に無い** (T22.5 の気づき)。
   - 変更箇所: `scripts/snapshot-diff.py` (注記)、`scripts/check-docs.sh` (「README が `scripts/<名前>.py` と書いている道具に実行ビットがあるか」を 1 項目足す)、`scripts/*.py` のモード、README の「道具」の節。
   - やること: (1) 注記を「0.18.0 など失敗も区間に入れた古い版だけ」に直す。(2) `check-docs.sh` に (f) を足す (README の `scripts/…` の参照と実ファイルの実行ビットを突き合わせる。除外表つき)。(3) README に `shellcheck scripts/*.sh scripts/mx` を手元で回す 1 行。
