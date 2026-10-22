@@ -1824,6 +1824,15 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             recent::CloseReason::ClientEof
         }))
     } else {
+        // 応答を書き終えて**次の要求を待つ直前**に、この接続の累計バイトを
+        // `/connections` の枠へ 1 回だけ写す (T24.5。T13.4 の「要求ごとに書かない」は
+        // そのまま — 書くのは待ちに入るこの 1 か所だけ)。値は「この接続で終わった
+        // 要求のバイトの和」なので、**いま処理中の 1 要求は入らない** (要求 1 本ぶん
+        // 遅れる)。`tally` は要求ごとに箱の中で足しているだけで、原子に移すのはここ
+        if let Some(slot) = slot.as_ref() {
+            let t = tally.get();
+            slot.set_bytes(t.up.saturating_add(t.down));
+        }
         Ok(Step::Next)
     }
 }

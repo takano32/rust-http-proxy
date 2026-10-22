@@ -524,7 +524,9 @@ pub struct ConnSlot {
     target: Mutex<String>,
     /// CONNECT トンネルか (`false` = keep-alive の HTTP)
     connect: AtomicBool,
-    /// 運んだ合計バイト数 (トンネルが暇になるたびに書く)
+    /// 運んだ合計バイト数 (トンネルは中継が暇になるたび、keep-alive の HTTP は
+    /// **応答を書き終えて次の要求を待つ直前に 1 回だけ**書く。T13.4 / T24.5)。
+    /// どちらも**要求ごと・バイトごとには書かない**
     bytes: AtomicU64,
     /// 閉じた理由の符号 (0 = まだ決まっていない)。**先に書いた方が勝つ**
     /// (T13.2 の追い出しや監視スレッドの停止は、接続自身が理由を決める前に書くため)
@@ -592,7 +594,8 @@ pub struct ConnSlot {
     half_closed: AtomicU64,
     /// 同じ `bytes` のまま経った ms (T15.0 (4))。**書くのは history スレッドだけ**
     /// ([`ConnSlot::sweep_rate`]) で、接続の経路は 1 命令も触らない。
-    /// `bytes` を置くのはトンネルだけなので、http の行では意味を持たない。
+    /// `bytes` を置くのはトンネル (待ちに入る回) と keep-alive の HTTP (要求を
+    /// 書き終えた回。T24.5) なので、http の行では**要求と要求のあいだ**だけ伸びる。
     /// **`bytes` を書くのは中継が待ちに入る回だけ**なので、`EAGAIN` に落ちずに進み
     /// 続ける飽和したトンネルは、全速で流れていてもここが伸びる (`rate_bps` も同じ
     /// 性質。`spins` と併せて読む)
@@ -747,6 +750,10 @@ impl ConnSlot {
     }
 
     /// 運んだ合計バイト数を書く (中継が止まるところで 1 回。バイトごとには書かない)。
+    ///
+    /// keep-alive の HTTP 接続は、**応答を書き終えて次の要求を待つ直前**に 1 回だけ
+    /// 呼ぶ (T24.5)。値は「この接続で終わった要求の上り + 下り」なので、いま処理中の
+    /// 1 要求はまだ入らない (`/connections` の `bytes` は要求 1 本ぶん遅れる)。
     pub fn set_bytes(&self, bytes: u64) {
         self.bytes.store(bytes, Ordering::Relaxed);
     }
@@ -1057,8 +1064,10 @@ impl ConnSlot {
                 age.as_secs().saturating_sub(at / 1000),
             );
         }
-        // 1 バイトも動いていない秒 (T15.0 (4))。`bytes` を置くのはトンネルだけなので
-        // http の行には出さない (無い = `null` と読む)
+        // 1 バイトも動いていない秒 (T15.0 (4))。keep-alive の HTTP の `bytes` も
+        // 要求を書き終えた回にしか動かない (T24.5) が、**この欄は CONNECT の行だけ**に
+        // 出す — トンネルの「止まっている」とは意味が違う (要求が来ないだけの
+        // keep-alive を「止まっている」と読ませたくない) ので、出さない = `null` と読む
         if connect {
             let idle_ms = self.idle_ms.load(Ordering::Relaxed);
             if idle_ms != 0 {

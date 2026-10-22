@@ -542,6 +542,78 @@ fn test_integration_connections_shows_the_first_target_of_a_keepalive_http_conne
     );
 }
 
+/// keep-alive の HTTP 接続も `/connections` の `bytes` に運んだバイトが出ること (T24.5)。
+///
+/// `set_bytes` を呼ぶのは**応答を書き終えて次の要求を待つ直前**の 1 か所だけなので、
+/// `bytes` は「この接続で終わった要求の和」になる (要求ごと・バイトごとには書かない。
+/// T13.4 の方針はそのまま)。3 要求を送って、0 でないこと・要求ごとに増えること・
+/// 増えた分がその要求のバイトに見合うことを見る。
+#[test]
+fn test_integration_connections_shows_the_bytes_of_a_keepalive_http_connection() {
+    let (origin_port, _origin) = start_mock_origin();
+    let proxy_port = start_test_proxy(park_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+
+    // モックの本文は `hello from mock origin` の 22 B
+    const BODY: u64 = 22;
+    let mut seen = 0u64;
+    for (i, path) in ["/one", "/two", "/three"].into_iter().enumerate() {
+        let (head, body) = one_keepalive_request(&mut stream, &host, path);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+        assert_eq!(body.len() as u64, BODY, "{}", head);
+        // 応答を読み終えた直後は、プロキシがまだ `set_bytes` を書いていないことがある
+        // (書くのは応答を書き終えてから)。**時間ではなく値で待つ** (T17.14 の型)
+        let want = seen + BODY;
+        wait_until(
+            || {
+                row_number(&endpoint_json(proxy_port, "/connections"), &host, "bytes")
+                    .is_some_and(|b| b >= want)
+            },
+            "keep-alive の接続の bytes が増える",
+        );
+        let got = row_number(&endpoint_json(proxy_port, "/connections"), &host, "bytes")
+            .unwrap_or_else(|| panic!("{} 要求目のあとに bytes が無い", i + 1));
+        assert!(
+            got > seen,
+            "{} 要求目のあとも bytes が {} のまま",
+            i + 1,
+            seen
+        );
+        seen = got;
+    }
+    // 3 要求ぶんの本文は必ず数えている (ヘッダーも足されるので、下限だけ見る)
+    assert!(seen >= 3 * BODY, "運んだバイトが少なすぎる: {}", seen);
+    // 行は http のままで、宛先も最初の要求のもの (T14.2 (5) の性質は変えない)
+    let json = endpoint_json(proxy_port, "/connections");
+    assert!(
+        json.contains(&format!("\"target\":\"{}\",\"kind\":\"http\"", host)),
+        "{}",
+        json
+    );
+}
+
+/// `/connections` の行のうち、宛先が `target` のものから `key` の数値を読む。
+///
+/// 1 行は `{"id":…,"client":"…","target":"…",…}` の形で、`target` は接続あたり 1 回しか
+/// 書かないので、そこから次の `}` までをその行として読めば足りる (入れ子の無い平らな行)。
+fn row_number(json: &str, target: &str, key: &str) -> Option<u64> {
+    let at = json.find(&format!("\"target\":\"{}\"", target))?;
+    let row = &json[at..];
+    let row = &row[..row.find('}')?];
+    let key = format!("\"{}\":", key);
+    let start = row.find(&key)? + key.len();
+    row[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
 /// http の宛先も CONNECT と同じ `host:port` の形で出ること (T14.48)。
 ///
 /// ポートを書かない要求 (`http://127.0.0.1/`) の宛先には、ホスト別統計の鍵
