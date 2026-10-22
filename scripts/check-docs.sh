@@ -1,10 +1,11 @@
 #!/bin/bash
 # README・`/` の案内・`/snapshot`・画面の関数名が**コードと同じ集合**か、README が叩く道具に
-# 実行ビットがあるかを機械で見る (T14.56・T24.7)。
+# 実行ビットがあるかを機械で見る (T14.56・T24.7)。台帳 (`TODO.md` の §5 と `tasks/phaseNN.md`) の
+# 1 対 1 も一緒に見る (T24.10)。
 #
 # 今日の版はエンドポイントが 10 本以上増え、環境変数も増えた。増やしたのは別々のエージェントで、
 # **コードにあるのに文書に無い / 文書にあるのにコードに無い**が目で見つからなくなっている。
-# 突き合わせるのは 6 つ:
+# 突き合わせるのは 7 つ:
 #
 #   (a) エンドポイント … `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"`
 #                        vs README の「動作確認 (curl)」の一覧 vs `/` の案内 (`endpoint_list`)
@@ -14,6 +15,8 @@
 #   (e) クレート     … README の「クレート構成」の表 vs `crates/*/Cargo.toml` の `[package] name`
 #   (f) 道具の置き方 … README が `scripts/<名前>.py` と書いている道具 vs 実ファイルの実行ビット
 #                        (直接叩かないもの = 共通部品・割った部・unittest が読むものは除外表)
+#   (g) 台帳        … `TODO.md` の §5 と `tasks/phaseNN.md` の 1 対 1 (移し忘れ・リンク・番号・1 行目)。
+#                     中身は `scripts/check-ledger.py` (試験は `scripts/test_check_ledger.py`)
 #
 # **意図的に外してあるものは下の除外表に理由つきで持つ** (黙って無視しない)。
 # 差分が 1 件でもあれば理由を印字して exit 1。
@@ -245,10 +248,16 @@ while read -r name; do
   fi
 done <"$W/py-want"
 
+# --- (g) 台帳 (`TODO.md` の §5 と `tasks/phaseNN.md`) ---------------------------
+# 済んだ Phase の本文を `tasks/phaseNN.md` へ移したので (T24.9)、**移し忘れ・リンク切れ・番号の重複**を
+# 見る (T24.10)。4 つの規則と足場 1 つは `scripts/check-ledger.py` の頭に書いてある (試験は
+# `scripts/test_check_ledger.py`)。**`TODO.md` と `tasks/*.md` は読むだけで、1 文字も変えない。**
+python3 scripts/check-ledger.py || NG=1
+
 echo
 if [ "$NG" = 0 ]; then
-  echo "6 つを突き合わせて 差分 0 件。"
+  echo "7 つを突き合わせて 差分 0 件。"
   exit 0
 fi
-echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 を直すか、理由を除外表に書くこと。"
+echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 / 台帳 (\`TODO.md\` の §5 と \`tasks/\`) を直すか、理由を除外表に書くこと。"
 exit 1
