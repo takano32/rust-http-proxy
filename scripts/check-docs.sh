@@ -15,7 +15,7 @@
 #   (e) クレート     … README の「クレート構成」の表 vs `crates/*/Cargo.toml` の `[package] name`
 #   (f) 道具の置き方 … README が `scripts/<名前>.py` と書いている道具 vs 実ファイルの実行ビット
 #                        (直接叩かないもの = 共通部品・割った部・unittest が読むものは除外表)
-#   (g) 台帳        … `TODO.md` の §5 と `tasks/phaseNN.md` の 1 対 1 (移し忘れ・リンク・番号・1 行目)。
+#   (g) 台帳        … `TASKS.md` (未着手)・`TODO.md` の §5 (索引)・`tasks/phaseNN.md` の 1 対 1 (移し忘れ・リンク・番号・1 行目)。
 #                     中身は `scripts/check-ledger.py` (試験は `scripts/test_check_ledger.py`)
 #
 # **意図的に外してあるものは下の除外表に理由つきで持つ** (黙って無視しない)。
@@ -248,7 +248,7 @@ while read -r name; do
   fi
 done <"$W/py-want"
 
-# --- (g) 台帳 (`TODO.md` の §5 と `tasks/phaseNN.md`) ---------------------------
+# --- (g) 台帳 (TASKS.md の未着手・TODO.md の §5 の索引・tasks/phaseNN.md) ---------
 # 済んだ Phase の本文を `tasks/phaseNN.md` へ移したので (T24.9)、**移し忘れ・リンク切れ・番号の重複**を
 # 見る (T24.10)。4 つの規則と足場 1 つは `scripts/check-ledger.py` の頭に書いてある (試験は
 # `scripts/test_check_ledger.py`)。**`TODO.md` と `tasks/*.md` は読むだけで、1 文字も変えない。**

@@ -1,0 +1,130 @@
+# Phase 24 — (2026-10-22 に決めた: 起動の切り分けと heap の基準、短い TTL の引き直し、物差しの手入れ、既知の小物)
+
+> `TODO.md` の §5 から 2026-10-22 に移した (T24.13)。**本文は 1 文字も変えていない**。
+> 番号 (T24.0 〜 T24.12) はそのまま。未着手の T24.99 は `TASKS.md` にある。
+
+**利用者の決定 (2026-10-22)**: Phase 23 は完了 (T23.3 は維持)。Phase 24 をタスクに起こす。**「ほかにもタスクがないか徹底的に追加」**。
+材料は §2 の「デプロイ先の現在地 (2026-10-22)」と T23.99 の「結果」、§4、§5 の「既知の小物」。要点:
+**(1)** 無言の再起動の 2 回はホストの管理者によるもので、`/events` の並びだけでは**外からの再起動と自分の落ちを区別できない** (今回は利用者に聞いて分かった)。
+**(2)** heap の行は、起動が変わると (管理者の再起動でも) 判定できなくなる。0 時間の雪像を撮る運用に頼っている。
+**(3)** 引き直し 264.3 回/時のうち `api.ipinfo.io` だけで 1,728 回 (名前ごと 57.9 回/時)。TTL が短い名前を毎分引き直している疑い。
+**(4)** 確立 p95 318.5 ms の尾は「遠い相手の connect」で、判定表ではまだ「距離」と並べるだけ (T14.99 の決まりでは「そのときの RTT + N ms」で書く)。
+**(5)** 既知の小物に、keep-alive のバイト数・揺れるテスト 2 本・POST の 502 の扱いが残っている。
+
+波は `24a` (T24.0・T24.1・T24.4・T24.6・T24.7・T24.8 の 6 本並列。触る所が別)・`24b` (T24.2。24a の計器が入ってから)・`24c` (T24.3 と T24.5。どちらも 24b のあと)・`24d` (T24.99。再デプロイのあと)。
+枝は `wave24a/<id>` など、worktree は `~/.claude/worktrees/<id>`。**デプロイ先には触らない**。クレートの版はタスクの中で上げる (T21.6)。
+
+| `<ID>` | 波 | `<id>` | 触る所 | 先に main に入っていること |
+|---|---|---|---|---|
+| T24.0 | 24a | t240 | `/status` の組み立て (`crates/endpoints/src/endpoints/mod.rs` と `kernel` の部)、`crates/sys` (`/proc/sys/kernel/random/boot_id` を読む口)、`scripts/snapshot-summary.py`、`scripts/snapshot_criteria.py`、その試験、README の `/status` の表 | — |
+| T24.1 | 24a | t241 | `scripts/` に模型の道具 1 本 (+試験)、段 2 なら `crates/net-dns` | — |
+| T24.2 | 24b | t242 | `scripts/snapshot_criteria.py`、`scripts/test_snapshot_criteria.py`、`scripts/collect-deployed.sh`、README | 24a |
+| T24.3 | 24c | t243 | `scripts/snapshot_criteria.py` の確立の行、その試験、README | T24.2 |
+| T24.4 | 24a | t244 | 状態ファイルを書く所 (`crates/metrics/src/persist*.rs`)、`/status` の `memory` の部、`scripts/snapshot_criteria.py` の heap の行、README | — |
+| T24.5 | 24c | t245 | `crates/tunnel` / `crates/metrics-recent` (`set_bytes` を呼ぶ所)、`/connections`、README | T24.2 |
+| T24.6 | 24a | t246 | `tests/stages_test.rs`、`tests/newclient_test.rs` | — |
+| T24.7 | 24a | t247 | `scripts/snapshot-diff.py` の注記、`scripts/check-docs.sh` (道具の実行ビットを見る)、README の「道具」の節 | — |
+| T24.8 | 24a | t248 | 段 1 だけ: `crates/metrics-recent/src/recent.rs` (3,585 行) をどの境目で割れるかを数える (実装しない) | — |
+| T24.99 | 24d | — | 親 (TODO.md と README だけ) | 24a〜24c と再デプロイ |
+
+  - 結果 (2026-10-22、`577793c` / `c69c89a`): `/status` の `kernel` の直後に `boot:{"id":…,"pid":N}` を足した (起動に 1 回だけ読む `OnceLock`、読めない環境は `"id":null` で `/status` を落とさない、既存の鍵の順は不変)。`/events` の `start` の文面にも `boot` の先頭 12 文字を載せた (122 B で 1 件 128 B の枠に収まる)。`silent_restarts()` は `host` / `process` / `boot_unknown` を返し、要点の行は「…うちホストの再起動 (boot が変わった回) M 回、プロセスだけの再起動 N 回、`boot` の無い `start` K 件は判定できない」、判定表の行 `_p24_silent_restarts` は「こちらが原因の無言の再起動 (同じ `boot` のまま起動し直した回) が 0 回」と読める形にした (`RULES["phase24"]` への配線は T24.2)。実データ (2026-10-22 の雪像の `start` 3 行に、分かっている事実どおりの `boot` を手で入れた JSON) で **ホストの再起動 2 回 = `2026-10-21T14:31:31Z` と `15:11:20Z`、プロセスだけの再起動 0 回**、`boot` の無い 10-17 の行 1 件だけが「判定できない」。同じ HOME で起動 → `kill -9` → 起動の実例では `boot` は同じ id のまま pid 762480 → 762549 で「プロセスだけ 1 回」。`boot` を持たない雪像では文が 1 文字も変わらないので phase14〜23 の出力は不変。
+
+- [x] **T24.0 起動を切り分ける計器 (`boot_id` を `/status` に出し、無言の再起動の行に「ホストが変わったか」を書く)**
+  - 目的: 2026-10-21 の 2 回の無言の再起動は**ホストの管理者**によるものだったが、`/events` の `start` に `shutdown` が無いという事実だけでは、外からの再起動と自分の落ちを区別できない (2026-10-22、利用者に聞いて分かった)。`/proc/sys/kernel/random/boot_id` はカーネルの起動ごとに変わるので、**`boot_id` が変わっていればホストの再起動、同じならプロセスだけの再起動**と分かる。
+  - 変更箇所: `/status` の組み立て (`crates/endpoints/src/endpoints/mod.rs`)、`crates/sys` に `boot_id` を読む口 (1 行の `procfs` 読み)、`scripts/snapshot-summary.py` (要点の「無言の再起動」の行)、`scripts/snapshot_criteria.py` (`silent_restarts()` を広げて `boot_id` を持たせる)、試験、README の `/status` の表。
+  - やること: JSON は**足すだけ** (`status` の `kernel` の隣に `boot: {"id": "…", "pid": N}` を足す。鍵の順は変えない)。読めない環境 (boot_id が無い) は `null` で、`/status` は落とさない。要約の行は「無言の再起動: N 回 (時刻・版・前の起動の長さ。**うちホストの再起動 M 回**)」にし、`boot_id` が変わった回を数える。判定表の行は「こちらが原因の無言の再起動が 0 回」に読み替えられる形にする (外からの回は理由つきで別に書く)。
+  - 受け入れ基準: 2026-10-22 の雪像 (10-21 の 2 回が入っている) を手で組み立てた JSON で、`boot_id` が変わった回 = 2、プロセスだけの回 = 0 と出る試験。`boot_id` の無い雪像は「判定できず」。過去の phase の出力は変えない。`python3 -m unittest discover -s scripts`、`check-docs.sh` 差分 0、触ったクレートの clippy 警告 0。
+
+
+- [x] **T24.1 短い TTL の名前の引き直し (`api.ipinfo.io` の 57.9 回/時の正体。段 1 で決める)**
+  - 目的: 引き直しは 264.3 回/時で、うち `api.ipinfo.io` が 1,728 回 = 名前ごと **57.9 回/時** (閾 80 の 7 割)。要求は 0.144 req/s しかないので、**使われていないのに毎分引き直している**疑いがある (TTL 60 秒の名前を warm で持たない設定にしたため。T22.4)。
+  - 変更箇所: `scripts/` に模型の道具 1 本 (`dns-replay.py` を広げるか新しく 1 本)、その試験。段 2 まで行くなら `crates/net-dns` と README。
+  - 段 1: 雪像の `/dns` (名前ごとの `refreshes`・`age_secs`・`ttl_left`・`idle_secs`) と `/hosts` (名前ごとの `requests`・`last_seen`) から、**引き直しの回数と実際の使用回数**を名前ごとに並べる。「1 時間に 1 回も使われていないのに引き直した回」を数え、`ttl_secs` (60) と `k` (45 秒) のどちらが効いているかを `dns-replay.py` の模型で確かめる。目安: **使われていない名前の引き直しが全体の 8 割以上**なら段 2 に進む。
+  - 段 2 (目安を満たしたら): 引き直しの予定を「最後に使われた時刻 + 窓」から出し、使われていない名前は引き直さない (serve-stale があるので、次に使われたときに 1 回引けばよい)。`PROXY_DNS_REFRESH_IDLE_SECS` のような口を足すなら README の環境変数の表へ。**`stale_retries` が増えないこと**を試験で縛る。
+  - 受け入れ基準: 段 1 の表 (名前ごとの引き直し・使用・「使われていない引き直し」の割合、雪像 2 枚以上)。段 2 なら clippy 0、`test_dns_replay.py` と `crates/net-dns` の試験、`crate-versions.py --check`。
+
+  - 結果 (2026-10-22、`081c417` / `e7312d7`): `--criteria phase24` を足した。`RULES["phase24"]` は phase23 の 16 行を持ち越し、**9 番目 (heap) を `_p24_heap`、16 番目 (無言の再起動) を `_p24_silent_restarts` に差し替えただけ**で、閾値 (`PHASE24`) も並びも phase23 と同じ (差し替えない 14 行が同じ関数を指すことを試験で縛った)。`collect-deployed.sh` の `CRITERIA` の既定を phase24 にし、`--zero`・`--daily-snapshots` の phase 一覧にも足した。**phase14〜23 の出力は 1 バイトも変えない** (8 定義 × md/json を main と `cmp` して全部一致。`PastOutputs24` が phase22・23 の sha256 を縛る)。実データ (10-17 → 10-20) では 満たした 6・届かず 1・判定できず 2 (heap は `memory.baseline` が無く「0 時間の雪像と起動が違う」、無言の再起動は `boot` の無い `start` 1 件で切り分け不能)・表示だけ 6・参考 1。気づき: **T24.0 の `Deployed24` は `status/` のある機械では main の時点で落ちていた** (`stamp()` を `2026-10-21T14:31:31Z` と書いていたが実際の綴りは空白区切り。`status/` の無い worktree では skip されて見えなかった) — 1 行直した。unittest 555 本 OK、`check-docs` 差分 0、shellcheck 警告 0。
+  - 結果 (2026-10-22、`f9ddd01`): `scripts/dns-idle.py` を足した (雪像から名前ごとに引き直しと使用を並べ、同じプロセスの 2 枚の差で「使われていない引き直し」を数える。1 枚のときは `/hosts` の通算をそのまま出し、この起動内の使用は `/dns` の `idle_secs` で読む)。**2026-10-22 の tokyo では引き直し 7,890 回 = 264.3 回/時、うち `api.ipinfo.io` が 1,728 回 = 57.9 回/時 (21.9%)。この名前はこの起動で 115.6 回/時使われていて (撮った瞬間の `idle_secs` 4 秒)、引き直し/使用 = 0.50**。模型 (`dns-replay.py`) は k=45 で 57.9 回/時と実機を再現し (ttl=60 なら 52.1)、**引き直しのうちタイマーは 0 回** — 60 秒ではなく 45 秒 (3/4 TTL) の先回りが間隔を決めていて、使われていない引き直しではない。同じプロセスの 2 枚の差は 10-15 が 266/804 = 33.1%、10-17 が 10/2,317 = 0.4%、10-20 は `/dns` が切れて判定できず。keep-warm 3,600 秒の 0.21.7 では模型のタイマーが 97〜99% で、疑いはその版では当たっていた (T22.4 で既定を止めた)。**目安 (8 割) を満たさないので段 2 には進まない**。気づき: 台帳の「0.144 req/s」は `/hosts` の**通算** 13,793 (14 日前から復元した分を含む) を起動の長さで割った値だった。unittest 573 本 OK、`check-docs` 差分 0。
+
+- [x] **T24.2 `--criteria phase24` (phase23 の行を持ち越し、無言の再起動の行を「こちらが原因」に読み替える)**
+  - 目的: phase23 の 16 行はそのまま使える。足すのは T24.0 の切り分けと、T24.4 の heap の読み方 (起動ごとの基準)。過去の phase の出力は変えない。
+  - 変更箇所: `scripts/snapshot_criteria.py`、`scripts/test_snapshot_criteria.py`、`scripts/collect-deployed.sh` (`CRITERIA` の既定)、README の `snapshot-diff.py` の節。
+  - やること: `RULES["phase24"]` = phase23 の 16 行 + **「こちらが原因の無言の再起動が 0 回」**(外からの再起動は理由つきで別に書き、数から外す) + **heap の行を「起動ごとの基準からの増え」に**(T24.4 の口があればそれを使い、無ければ phase23 のまま「判定できず」と理由)。`collect-deployed.sh` の既定を `phase24` に。
+  - 受け入れ基準: phase14〜23 の出力が 1 バイトも変わらない (`--out json` の md/json を前後 `cmp`)、phase24 の行ごとの試験、`CRITERIA=phase24`/`off` で `collect-deployed.sh` が動くこと、unittest、`check-docs.sh` 差分 0。
+
+  - 結果 (2026-10-22、`c37e7fe`): 判定表の **17 番目**に、確立の尾を固定の値ではなく「そのときのホストの RTT + N ms」で読む行を足した (`PHASE24["connect_tail_ms"] = 5.0`。`RULES["phase24"]` の**末尾**に配線し、phase23 以前の 16 行と phase14 の 4 行の並びは不変)。`/recent` の connect 行の `ms.connect` と `rtt_ms.origin` を**同じ行で対にし**、差の中央値をプロキシの取り分、差の p95 を尾として出し、尾が 5 ms 未満なら「距離」(相手までの RTT で説明できる) と書く。`/recent` は 2,000 件の環状なので**窓 (開始〜終了) と本数、外した本数を実測の欄に必ず書く**。実測: **10-22 の雪像は connect 1,999 本 (窓 17:31:23Z〜21:02:09Z)、対にできた 1,959 本で尾 +0.1 ms = 距離**、取り分 −1.2 ms (確立 p50 13.0 / p95 259.0、RTT p50 19.0 / p95 263.5)。**10-20 の雪像は 2,000 本 (06:42:56Z〜14:34:47Z)、1,800 本で尾 +0.4 ms = 距離**、取り分 −1.3 ms。つまり `/history` の 318.5 ms という尾は**距離**で、プロキシの取り分は中央値で 0 (phase14 の −0.21 ms と同じ読み)。**本文と違う点**: 分位点同士の差ではなく同じ行の差の分位点で出した — 混ぜると 10-20 の 2 枚で +55 ms と出て「距離では説明できない」と誤読する (p50 同士 −3.4 対 差の中央値 −1.3、p95 同士 −9.6 対 差の p95 +0.4)。`reason` が `error:` の行は確立していないので外した。過去の phase の出力は 14/15/17/22/23 の md/json が main と同一、unittest 594 本 OK、`check-docs` 差分 0。
+
+- [x] **T24.3 確立の尾を「そのときの RTT + N ms」で書く**
+  - 目的: 確立 p95 は 318.5 ms で、中身は遠い相手の connect (区間の 17.5% が 100〜250 ms)。T14.99 で「6 ms のような固定値ではなく、そのときのホストの RTT + N ms で書く」と決めたのに、判定表はまだ数値を並べるだけ。
+  - 変更箇所: `scripts/snapshot_criteria.py` の確立の行 (`_p14_connect_p50` の隣に新しい行)、その試験、README の `snapshot-diff.py` の節。
+  - やること: `/recent` の `rtt_ms.origin` の中央値 (要求で重み付け) を基準にし、`connect p50 − rtt p50` を「プロキシの取り分」として出す行を足す (phase14 のときは −0.21 ms だった)。尾は `p95` と `rtt p95` の差で書き、**差が N = 5 ms 未満なら「距離」**と書く。`/recent` の窓と件数を必ず添える。
+  - 受け入れ基準: 2026-10-22 と 2026-10-20 の 2 枚で行が出る (数値と窓)。過去の phase の出力は不変。unittest、`check-docs.sh` 差分 0。
+
+  - 結果 (2026-10-22、`5dca0c1` / `4ce6288`): 起動から 60 秒の `heap_used + mmap − cache_memory` を、5 秒の記録スレッドが状態ファイルの**末尾に足した 32 B の枠**へ 1 回だけ書き、`/status` の `memory` の末尾に `baseline: {at, bytes}` として出す (`.rrd` の版は 3 のまま、前の 6 領域のオフセットは動かない)。前の起動が残した値は読み戻さないので、起動し直すと (管理者の再起動でも) 60 秒たつまで `null`。実測 (debug、`HOME` は一時ディレクトリ): 1 回目の起動でログに `heap baseline at 60 s after start: 15572256 bytes` (15.6 MB)、同じ状態ファイルで起動し直すと起動 4 秒で `null`・64 秒で `{"at":…,"bytes":15595616}`・68 秒でも同じ値 (あいだに 15,619,984 → 15,623,968 = +28,352 B)。判定表は `_p24_heap` (基準があれば**それとの差**、無ければ `_p23_heap` をそのまま返すので T24.4 より前の雪像は今までどおり)。`state_file.version` は 3、`bytes` は 8,388,608 のまま。気づき: 状態ファイルには前の起動の基準が残るが読まないので「前の起動でどれだけ増えたか」は `/status` から見えない。
+
+- [x] **T24.4 heap の基準を起動ごとに残す (管理者の再起動でも heap を判定できるようにする)**
+  - 目的: heap の行は「0 時間の雪像」との比較で、起動が変わると (管理者の再起動でも) 判定できない (T22.99・T23.99 で 2 回続けて判定できず)。起動直後の `heap_used + mmap − cache_memory` を状態ファイルに残せば、後の雪像 1 枚だけで「この起動でどれだけ増えたか」が読める。
+  - 変更箇所: 状態ファイルを書く所 (`crates/metrics/src/persist*.rs`)、`/status` の `memory` の部 (足すだけ)、`scripts/snapshot_criteria.py` の heap の行、README。
+  - やること: 起動から 60 秒たった時点の `heap_used + mmap − cache_memory` を 1 回だけ状態ファイルに書き、`/status` の `memory` に `baseline` (`{at, bytes}`) として出す (JSON は足すだけ)。`.rrd` の版は上げない (足すだけなら読めなくならない)。判定表の heap の行は、`baseline` があれば**それとの差**で読み、無ければ今までどおり 0 時間の雪像との差 (で、無ければ「判定できず」)。
+  - 受け入れ基準: 起動 60 秒後に `baseline` が出る試験 (短い周期の口で)、`baseline` の無い雪像は今までどおり、`baseline` のある雪像で差が出る試験。clippy 0、`crate-versions.py --check`。
+
+  - 結果 (2026-10-22、`77add0e`): 方針 (a) を採った。`serve_one` の「応答を書き終えて次の要求を待つ」枝の 1 か所だけで `ConnSlot::set_bytes(tally.up + tally.down)` を呼ぶので、**要求ごと・バイトごとには書かない**という T13.4 の方針はそのまま (`--lite` は分岐 1 回で素通り)。値は「この接続で終わった要求の上り + 下り」なので**いま処理中の 1 要求はまだ入らない**。`/connections` の JSON は形も鍵の順も変えず (`id, client, target, kind, state, age_secs, bytes, fds, rate_bps`)、動くのは `bytes` の値だけ。`idle_secs` は CONNECT の行だけに出す決定を維持し、理由をコメントと README に書いた。実測 (debug、手で起動): 1 本の接続で 3 要求を送ると `bytes` が **0 → 249 → 498 → 749** (+249/+249/+251)、parked の行でも 224 を保ち、閉じたあとの `/recent` は `up` 200 + `down` 549 = **749** で開いている間の最終値と一致。CPU/要求 (forward 8 並列・前後交互 3 組の中央値、debug): 既定 **134.07 → 136.06 us (+1.5%、組ごと −1.5% / +1.5% / −0.2%)**、`--lite` 112.49 → 108.65 us (−3.4%、ぶれ)。**本文と違う点**: 表の「触る所」は `crates/tunnel` だったが、トンネルは既に `set_bytes` を呼んでいて、HTTP 側の「待ちに入る所」は `crates/server` の `serve_one` にあった (tunnel は触っていない)。bench は release 禁止なので debug、本機は 2 コアなので `PROXY_CPUS=0 BENCH_CPUS=1`。試験は `proxy-server` 5・`proxy-metrics-recent` 51・`recent_test` 20 (新規の結合テストは sleep ではなく値で待つ)、unittest 583 本 OK、clippy 0、版は 0.24.5。
+
+- [x] **T24.5 keep-alive の HTTP 接続が `/connections` でバイト数を出さない (既知の小物、T13.4)**
+  - 目的: `/connections` はトンネルの `set_bytes` だけを呼んでいて、keep-alive の HTTP 接続は 0 B のまま。**「要求ごとに書かない」方針との両立**を先に決める (T13.4)。
+  - 変更箇所: `crates/tunnel` の `set_bytes` を呼ぶ所、`crates/metrics-recent` の `ConnSlot`、`/connections` の JSON、試験、README。
+  - やること: 方針を 1 つ選んで実装する — (a) 応答を書き終えたとき (keep-alive で次の要求を待つ直前) に 1 回だけ `set_bytes` する、(b) `/connections` の `bytes` を「閉じたときの値」だけにする (開いている間は `null`)。**(a) を推す** (待ちに入る所は既に 1 か所ある)。`/connections` の JSON は足すだけで、0 と `null` の意味を変えない。
+  - 受け入れ基準: keep-alive の 3 要求のあと `/connections` の `bytes` が 0 でないことを見る結合テスト。1 要求あたりの CPU が動かないこと (`bench` の forward 8 並列で前後、±2% 以内)。clippy 0。
+
+  - 結果 (2026-10-22、`56be1e7`): 負荷の下で落ちていた 2 本を、時間ではなく値で待つ形に直した (sleep は 1 ms も伸ばしていない)。`tests/stages_test.rs` は 40 ms の空きをそのまま送り、**個票の `client_read` に空き (≥30 ms) が出るまで同じ形の 1 本を送り直す** (上限 10 回。`id` が増えた行だけを読み、1 回も出なければ見た値を全部並べて落ちるので、`client_read` が常に 0 に潰れる退行は必ず落ちる)。`tests/newclient_test.rs` は `/clients` の行に要求と最初の宛先が入るまで待ってから、判定の周期を `anomaly::check` でテストが前後 1 回ずつ回す。負荷 (CPU のループ 4 本 + 同じ束を別プロセスで 20 回) の下で 1 本ずつ 20 回: `stages_test` 12/20 → **20/20**、`newclient_test` 19/20 → **20/20**。静かな機械で単独 `stages_test` 20/20・`newclient_test` 30/30。**本文の 2 つの指示は成立しなかった**: CONNECT では echo が要求行を観測できない (CONNECT 確立後にしか何も見えない)、`0 req, no target yet` の行は接続元 1 つにつき 1 回しか書かれず後で書き換わらない (`Detector` の `seen`)。
+
+- [x] **T24.6 揺れるテスト 2 本を T17.14 の型で直す (`stages_test` / `newclient_test`)**
+  - 目的: 負荷の下で 1 回ずつ落ちた (2026-10-20 の波 23a・23b の全体チェック)。`client_read` は 40 ms の窓に、`new_client` は「最初の宛先が入る前の行」に頼っていて、**sleep を伸ばすのは T17.14 で禁じた**やり方。
+  - 変更箇所: `tests/stages_test.rs`、`tests/newclient_test.rs` (と、値で待つための口が要れば `crates/endpoints` の試験用の口 1 つ)。
+  - やること: `stages_test` は「要求行を送ったこと」を相手 (echo) が観測してから `Host` を送る形にする (時間ではなく出来事で待つ)。`newclient_test` は `new_client` の行に最初の宛先が入るまで `wait_until` で待つ (「0 req, no target yet」の行を読んだら待ち直す)。どちらも**テストの側だけ**で直し、本体の要求の経路は変えない。
+  - 受け入れ基準: 負荷の下 (CPU のループ 4 本 + 同じ束を別プロセス) で 20 / 20 通過、単独 5 / 5。`cargo test --test stages_test --test newclient_test`。
+
+  - 結果 (2026-10-22、`cb9f1d8`): 3 つとも直した。(1) `snapshot-diff.py` の `recent_connects` の注記は「失敗までの時間も入る」と現在形で書いてあったが T20.4 以降は成功だけなので「**`0.18.0` など T20.4 より前の版だけ**」に直し、版ごとの判定は `connect-timeout-replay.py` の `failures_in_buckets()` を使うと書き添えた。(2) `check-docs.sh` に **(f)** を足した: README が `scripts/<名前>.py` と書いている道具 (14 種類に畳んだ) のうち**直接叩く 11 件に実行ビットとファイルの存在**を要求し、叩かない 3 種 (`proxydata.py` = 共通部品、`snapshot_criteria.py` = 入口は `snapshot-diff.py`、`test_*.py` = unittest が名前で読む) は除外表に理由つきで持つ。出力は「5 つ」→「**6 つ**」(README の説明も合わせた)。(3) README の道具の段落に実行ビットの決まりと (f) の説明、CI の節に手元で回す 1 行 `shellcheck scripts/*.sh scripts/mx` を足した。**手で壊して確かめた**: `chmod -x scripts/error-mix.py` → `NG (f): … 実行ビットが無い` で exit 1、README に `scripts/no-such-tool.py` を書く → `NG (f): README にあるが … が無い` で exit 1 (どちらも戻して差分 0)。モードの反転は 1 つも入れていない (`git show --raw` で確認)。unittest 583 本 OK、`shellcheck` exit 0、`check-docs` は「6 つを突き合わせて 差分 0 件」。
+
+- [x] **T24.7 道具の置き方の点検 (古い注記・実行ビット・shellcheck の手順)**
+  - 目的: 3 つ小さな穴が残っている。(1) `snapshot-diff.py` の `recent_connects` の注記は「`connect_buckets` に失敗も入る」と今も書いているが、T20.4 以降は成功だけ (T23.3 の気づき)。(2) README が直接叩く `scripts/*.py` に実行ビットが無いものがあった (T23.3 で 1 本直した)。(3) CI は shellcheck を回すが、**手元で回す手順が README に無い** (T22.5 の気づき)。
+  - 変更箇所: `scripts/snapshot-diff.py` (注記)、`scripts/check-docs.sh` (「README が `scripts/<名前>.py` と書いている道具に実行ビットがあるか」を 1 項目足す)、`scripts/*.py` のモード、README の「道具」の節。
+  - やること: (1) 注記を「0.18.0 など失敗も区間に入れた古い版だけ」に直す。(2) `check-docs.sh` に (f) を足す (README の `scripts/…` の参照と実ファイルの実行ビットを突き合わせる。除外表つき)。(3) README に `shellcheck scripts/*.sh scripts/mx` を手元で回す 1 行。
+  - 受け入れ基準: `check-docs.sh` が新しい項目を出し、差分 0。わざと実行ビットを外すと NG になることを手で確かめる。unittest。
+
+  - 結果 (2026-10-22、`d10764b`): `docs/recent-split.md` に 206 行で見積もりを書いた (コードは 1 行も動かしていない)。`recent.rs` 3,585 行の中身は 5 つの塊 (ERRORS 423・CONNS 894・RECORDS 496・BURSTS 384・CLOSED 175) と 3 つの試験モジュール (1,165 行・35 本) で、`pub` は 48 個。台帳の 4 つの境目 (ConnSlot 609・snapshot 292・persist 116・tests 1,165) は重なりを除いて 2,112 行 = **58.9% しか覆わず、この 4 つでは割れない** (`snapshot` は 5 つの `impl` に散り、`persist` の本体は `crates/metrics/src/persist_recent.rs` 1,135 行にある)。依存は ERRORS と RECORDS が葉、CONNS が両方を呼び (30 / 10)、BURSTS が CONNS を 1、CLOSED が RECORDS を 1 で輪が無い。ビルドのメモリは proxy-server 74.9 MB > proxy-metrics-recent 74.5 MB > proxy-endpoints 74.2 MB、床 63.6 MB なので recent.rs の寄与は約 11 MB で、関門 120 MB に対して余裕 30 MB — **割っても関門は動かない**。結論は**案 A (層で 3 ファイル: `recent/errors.rs` 795・`recent/conns.rs` 1,399・`recent/mod.rs` 1,391、外の 28 ファイルの経路は `pub use` で不変)、クレートは割らない**。実装は次の Phase の候補。
+
+- [x] **T24.8 大きいファイルの点検 (段 1 だけ: `recent.rs` 3,585 行の割り方)**
+  - 目的: `crates/metrics-recent/src/recent.rs` が 3,585 行、`crates/metrics-core/src/metrics.rs` が 2,834 行、`crates/metrics-window/src/history.rs` が 2,375 行 (T22.6 の気づき)。リポジトリの目安は「2,000 行ちょうどで割る」(anomaly.rs は 1,003 行に割った)。**今回は数えるだけで実装しない**。
+  - 変更箇所: なし (報告だけ)。必要なら `docs/HISTORY.md` ではなく TODO.md の「既知の小物」に 1 行足すのは親。
+  - やること: `recent.rs` の中で、`ConnSlot` (リングの 1 枠)、`snapshot` (JSON の組み立て)、`persist` (状態ファイル)、`tests` の 4 つに分けたときの行数と、**クレートを割るか (build memory が下がるか) モジュールを割るか**の見積もり。`cargo build --release` のメモリで一番重いクレート (`proxy-endpoints` 82.5 MB 前後) との関係も書く。
+  - 受け入れ基準: 表 (境目ごとの行数・公開している型の数・割ったときに動くテスト) と、割るべきかの結論 1 行。**実装はしない** (次の Phase の候補にする)。
+
+- [x] **T24.10 台帳の検査 (`tasks/` と `TODO.md` の 1 対 1 を機械で見る)**
+  - 目的: 2026-10-22 に済んだ Phase を `phaseNN.md` へ移した (T24.9)。**移し忘れ・番号の重複・リンク切れ**は目で見つからないので、`check-docs.sh` と同じ形で機械で見る。
+  - 変更箇所: `scripts/check-docs.sh` (項目を 1 つ足す) か、新しい `scripts/check-ledger.py` (と試験)、README の `check-docs.sh` の節。
+  - やること: (1) `TODO.md` の §5 に `- [x]` のタスクが残っていないこと、(2) `phaseNN.md` が `TODO.md` の §5 の見出しからリンクされていること (逆も)、(3) タスクの番号が全体で重複しないこと、(4) 各ファイルの 1 行目が `# Phase NN — …` であること。
+  - 受け入れ基準: わざと壊すと NG になること (4 通り)、`check-docs.sh` の出力の項目数と README の説明を合わせる、`python3 -m unittest discover -s scripts`、差分 0。
+
+- [x] **T24.11 揺れるテスト 3 本目 (`tunnel_test` の失敗した CONNECT の行が `/status` に出るまで待つ)**
+  - 目的: 波 24a の全体チェック (`cargo test --workspace`) で `tests/tunnel_test.rs` の `test_integration_failed_connects_land_in_errors_by_cause` が 1 回だけ落ちた。`no row for 192.0.2.1:443` で、`/status` は `total_requests` 3 なのにホスト別の行も接続元の行も 1 本ぶんしか無かった。
+  - 変更箇所: `tests/tunnel_test.rs`。
+  - やること: 502 を返したあとにホスト別の行と接続元の行を書くので、負荷の下では `/status` を引いた瞬間にまだ 1 往復ぶん遅れている。sleep を伸ばさず、2 つの行がそろうまで 5 ms ずつ引き直す (上限 3 秒。それでも出なければ最後に引いた本文を見せて落とす)。
+  - 受け入れ基準: 負荷の下で落ちないこと。
+  - 結果 (2026-10-22、`8f7ef06`): 直す前は**負荷 (CPU のループ 4 本) の下で 40 回に 1 回**落ち、単独では 3/3 通った。直したあとは負荷の下で **60 回 0 回**、`tunnel_test` 9 本 OK、fmt 差分 0。log の並びでも裏が取れた (`/status` を組み立てた行が、その CONNECT の `ACCESS` 行より 1 ms 先に出ていた = 応答を書いたあとに集計している)。
+
+  - 結果 (2026-10-22、`2d6efcd`): `check-docs.sh` に **(g)** を足した (項目数 6 → 7、README の「突き合わせるのは 7 つ」も同じ)。中身は新しい `scripts/check-ledger.py` 1 本にした (bash の heredoc にしなかったのは、見出し・リンク・番号を行で読む規則が 4 つあり、`python3 -m unittest discover -s scripts` で試験を付けられる形にするため。既存の (d) = `check-dashboard.js` と同じ型)。見るのは (1) **移し忘れ** = 移した Phase の節にタスクの行が 1 本でも残っていないこと (まだ移していない Phase でも全部 `- [x]` になったら NG。進中の Phase 24 は `- [ ]` が残るあいだ許す)、(2) `phaseNN.md` と §5 の `### Phase NN (…)` の見出しが**両方向で 1 対 1**、(3) 番号が台帳全体で 1 回だけ + 番号の Phase が置き場所と合う、(4) `phaseNN.md` の 1 行目が `# Phase NN — …`。足場として見出しの「済んだ N 本」とファイルの本数も突き合わせる。`tasks/README.md` は索引として除外表に理由つき。**`TODO.md` と `tasks/*.md` は読むだけで 1 文字も変えない。** いまの木では Phase 見出し 9 節 / `phaseNN.md` 8 本 (57 本) / §5 に残るタスク 14 本 (うち `[x]` 12 本 = Phase 24) で差分 0。**本文と違う点**: (1) の「§5 に `- [x]` が無い」は文字どおりだと進行中の Phase 24 で即 NG になるので Phase ごとに読み替えた (隠さず `[x]` の残数は毎回印字する)。番号の重複は「本文 (`結果` 以外の箇条書き) を持つ行どうし」で見るので、`T24.1` が 2 度出る件 (1 行は `結果` だけの追記) は NG にせず注記で印字する。わざと壊して 5 通りを確かめた: 移した Phase 23 の節にタスクの行を 1 本戻す / Phase 22 のリンクを `phase99.md` に / `T24.8` を本文つきで 2 本に / `phase23.md` の 1 行目から `—` を落とす / 「済んだ 6 本」を 5 本のファイルに当てる (すべて NG、戻して差分 0)。unittest 620 本 OK (新しい `test_check_ledger.py` 26 本)、`check-docs` は「**7 つ**を突き合わせて 差分 0 件」、shellcheck 警告 0。
+
+- [x] **T24.12 揺れるテスト 4 本目 (`overload_test` の「最古の 1 本を閉じる」)**
+  - 目的: 波 24c の全体チェック (`cargo test --workspace`) で `tests/overload_test.rs` の `test_integration_hitting_the_limit_closes_the_oldest_idle_tunnel` が落ちた。`tunnels[0].read(&mut buf).unwrap()` が `WouldBlock` (`Resource temporarily unavailable`) で、受信待ちの 10 秒を使い切っていた (バイナリの所要 10.38 秒。他の 5 本は通過、`evicted_idle == 1` の判定は通っていた)。
+  - 変更箇所: `tests/overload_test.rs`。
+  - やること: 8 本をまとめて張ってから「8 本そろう」の 1 回だけ待つのをやめ、**1 本ずつ、預けられるのを待ってから次を張る** (預かる順 = 張った順にして「最古」を一意にする)。
+  - 受け入れ基準: 負荷の下で落ちないこと。
+  - 結果 (2026-10-22): 直す前は負荷の下で落ち、`tunnels[0]` の受信待ちが 10 秒で切れていた。1 本ずつ預けられるのを待つ形にしたら、負荷 (CPU のループ 4 本) の下で **30 回 0 回**、`overload_test` 6 本 OK、所要は 10.38 秒 → **0.98 秒**。**まだ言い切れていないこと**: `evicted_idle == 1` は通っていたので追い出されたのは別の 1 本だったと見ているが、close 自体が 10 秒遅れた可能性は否定していない。預かり所の「最古」は `deadlines` の `(期限, key)` 順で、key は預かった順に振る (`next_key`) ので、**同時刻に預かると key 順 = 預かった順**になる — 張った順と預かった順がずれると `tunnels[0]` は最古でなくなる。到着順で選ぶべきかは T24.99 で決める。
+
+- [x] **T24.13 台帳の入り口を仕上げる (`TASKS.md` = 未着手、`tasks/` = 済み、`TODO.md` = 入り口)**
+  - 目的: T24.9 / T24.10 で済みを `tasks/` へ移し、`TODO.md` の §5 を機械で見るようにしたが、**未着手のタスクはまだ `TODO.md` の §5 にあった**。入り口として読む文書と、これからの作業を並べる台帳が同じファイルに混ざっているので、未着手だけを持つ `TASKS.md` を作って役割を分ける (はかせの指示 2026-10-22「TODO は TASKS.md でタスクを管理することを明記して、基本的な入り口として仕上げたい」)。
+  - 変更箇所: `TASKS.md` (新規)、`TODO.md` (冒頭の入り口の表と §5)、`tasks/phase24.md` (新規。Phase 24 の済み 12 本)、`scripts/check-ledger.py` と `scripts/test_check_ledger.py`、`scripts/check-docs.sh` の (g) の説明、README の (g) の段落。
+  - やること: (1) 未着手 (T24.99) を `TASKS.md` へ、Phase 24 の済み 12 本を `tasks/phase24.md` へ**1 文字も変えずに**移す。(2) `TODO.md` の冒頭に「タスクは `TASKS.md` で管理する」と、どこに何があるかの表を置く。(3) §5 は Phase の見出しと索引・渡し方・決まり・既知の小物だけにする。(4) (g) に「`TASKS.md` に `- [x]` が無い」「同じ番号が `TASKS.md` と `tasks/` の両方に無い」を足す。
+  - 受け入れ基準: 移した本文が元と 1 文字も変わらないこと (突き合わせで確認)、`check-docs.sh` が 7 項目で差分 0、unittest OK、わざと壊すと NG。
+  - 結果 (2026-10-22): `TASKS.md` (未着手 1 本 = T24.99) と `tasks/phase24.md` (済み 12 本) に分けた。移した本文は元の `TODO.md` と突き合わせて一致 (済み 12 本・T24.99 の前提とも)。`TODO.md` は 191 KB の入り口になり、冒頭に「タスクは `TASKS.md` で管理する」と 4 つの置き場の表を置いた。`check-ledger.py` は `TASKS.md` を読んで「未着手に `[x]` が無い」「番号が Phase と合う」「同じ番号が両方に無い」を見るようにし、`Tasks.md` が無い木 (古い形) は今までどおり §5 の行を未着手として見る (後方互換。試験 30 本)。気づき: **T24.1 の見出しが 2 つあった** (2026-10-22 に結果を足したとき、番号だけの見出しを新しく作ってしまっていた)。移すときに 1 つに畳んだ (タスクは 12 本のまま)。

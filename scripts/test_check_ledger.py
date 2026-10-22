@@ -108,7 +108,7 @@ class Pass(LedgerCase):
         self.assertEqual(code, 0, out)
         self.assertNotIn("NG", out)
         self.assertIn("tasks/phaseNN.md 1 本 (タスク 2 本)", out)
-        self.assertIn("§5 に残るタスク 2 本 (うち [x] 1 本)", out)
+        self.assertIn("§5 に残るタスク 2 本", out)
 
     def test_instruction_heading_is_not_a_phase(self):
         """`### Phase 15 の渡し方 (…)` のような指示文の節は台帳の節として数えない。"""
@@ -254,6 +254,49 @@ class Shape(LedgerCase):
             {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
         self.assert_ng(out, "「済んだ N 本の本文は …」の行が無い")
+
+
+class OpenTasks(LedgerCase):
+    """`TASKS.md` (未着手) の見方 (T24.13)。`build` に `open_tasks` を渡すと `TASKS.md` を置く。"""
+
+    def build_open(self, tasks_md, sections, files):
+        self.write("TASKS.md", tasks_md)
+        return self.build(sections, files)
+
+    def moved(self):
+        return {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0") + task("T23.1")}
+
+    def test_open_task_with_result_block_passes(self):
+        """済みが `tasks/` に、未着手が `TASKS.md` にある形は通る (注記だけ)。"""
+        md = (["# TASKS.md — 未着手のタスク", "", "### Phase 23 (2026-10-22 に決めた: 見本)", ""]
+              + task("T23.99", status=" ", body=("目的", "受け入れ基準")))
+        code, out = self.build_open(md, [phase(23, [], link=True, count=2)], self.moved())
+        self.assertEqual(code, 0, out)
+        self.assertIn("TASKS.md の未着手 1 本 (うち [x] 0 本)", out)
+        self.assertIn("Phase 23 は tasks/phase23.md (済み 2 本) と TASKS.md (未着手 1 本)", out)
+
+    def test_done_task_left_in_tasks_md(self):
+        """未着手のファイルに `- [x]` が残っていたら NG (移し忘れ)。"""
+        md = (["# TASKS.md — 未着手のタスク", "", "### Phase 24 (2026-10-22 に決めた: 見本)", ""]
+              + task("T24.99", status="x"))
+        code, out = self.build_open(md, [], {})
+        self.assertEqual(code, 1)
+        self.assert_ng(out, "TASKS.md の Phase 24 に [x] が 1 本ある")
+
+    def test_number_in_wrong_phase(self):
+        md = (["# TASKS.md — 未着手のタスク", "", "### Phase 24 (2026-10-22 に決めた: 見本)", ""]
+              + task("T23.99", status=" "))
+        code, out = self.build_open(md, [], {})
+        self.assertEqual(code, 1)
+        self.assert_ng(out, "番号 T23.99 が Phase 24 の節にある")
+
+    def test_same_number_in_both_places(self):
+        """同じ番号が `TASKS.md` と `tasks/phaseNN.md` に本文つきで出たら NG。"""
+        md = (["# TASKS.md — 未着手のタスク", "", "### Phase 23 (2026-10-22 に決めた: 見本)", ""]
+              + task("T23.0", status=" "))
+        code, out = self.build_open(md, [phase(23, [], link=True, count=2)], self.moved())
+        self.assertEqual(code, 1)
+        self.assert_ng(out, "番号 T23.0 が本文つきで 2 回出る")
 
 
 class Parse(unittest.TestCase):
