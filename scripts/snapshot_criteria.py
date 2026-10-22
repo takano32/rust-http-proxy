@@ -2,10 +2,9 @@
 # `scripts/snapshot-diff.py --criteria` の部 (**Phase の完了の定義に対する判定表**。TODO.md T20.1)。
 #
 # `snapshot-diff.py` が 1,959 行になったので、判定の部だけをここへ割った (T18.2 の申し送り)。
-# 持っているのは `PHASE14`〜`PHASE23` の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
+# 持っているのは `PHASE14`〜`PHASE24` の閾・`CRITERIA`・`RULES`・判定の 1 行 = 1 つの関数・`judge()`・
 # 判定表の印字 (`render_criteria()`) と、**判定の関数と差分の両方が使う小物**
 # (`part` `stamp` `n` `ms` `ratio` `restart_info` `norm_history` `merged_history` `miss_rate`)。
-# **phase24 の heap の行 (`_p24_heap`) だけ先にここにある** が、`RULES["phase24"]` への配線は T24.2。
 # 小物までこちらにあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
 # (共有するものは import できる側に置く)。`snapshot-diff.py` は全部を同じ名前で取り込み直すので、
 # 使い方・出力・`sd.CRITERIA` のようなテストから見える名前は割る前と変わらない。
@@ -256,8 +255,16 @@ PHASE22 = dict(
 # (c) heap の行は、0 時間の雪像と起動が違うときに `/events` の `start` の時刻を添える。
 # (d) 無言の再起動 (T23.2) の行を最後に足す。
 PHASE23 = dict(PHASE22)
+# T24.2: phase24 は phase23 の 16 行を**そのまま持ち越し**、2 行だけ読み方を変える (TODO.md Phase 24 の (1)(2))。
+# (a) heap の行 (9 番目) は、`/status` の `memory.baseline` (起動から 60 秒の基準。T24.4) があれば
+#     **それとの差**で読み、無ければ phase23 と同じ 0 時間の雪像との差にする (`_p24_heap`)。
+# (b) 無言の再起動の行 (16 番目) は、`start` の `boot` が変わった回 (ホストの再起動) を**理由つきで数から外し**、
+#     同じ `boot` のまま起動し直した回 (こちらが原因) だけを 0 回の判定に使う (`_p24_silent_restarts`)。
+# 閾の値は phase23 と同じなので、辞書は写しで足りる。
+PHASE24 = dict(PHASE23)
 CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18,
-            "phase20": PHASE20, "phase21": PHASE21, "phase22": PHASE22, "phase23": PHASE23}
+            "phase20": PHASE20, "phase21": PHASE21, "phase22": PHASE22, "phase23": PHASE23,
+            "phase24": PHASE24}
 # **出力を 1 文字も変えない定義** (過去の判定を同じ命令で出し直せるように)。T20.1 で差分の表に
 # 足した行 (成功した接続だけの確立時間) は、`--criteria` がこの 4 つのときは出さない
 FROZEN = ("phase14", "phase15", "phase17", "phase18")
@@ -1833,9 +1840,11 @@ RULES["phase23"] = ((RULES["phase22"][:2] + (_p23_miss_band,) + RULES["phase22"]
                      + (_p23_heap,) + RULES["phase22"][9:12]
                      + (_p23_connect_errors, _p22_connect_errors_shown)
                      + RULES["phase22"][13:] + (_p23_silent_restarts,)))
-# T24.4: phase24 の heap の行は `_p24_heap` (起動から 60 秒の基準 `memory.baseline` があればそれとの差、
-# 無ければ `_p23_heap` をそのまま返す)。**`RULES["phase24"]` は T24.2 が組む** ので、ここでは触らない
-# (`_p23_silent_restarts` を T23.2 が作って T23.1 が入れたのと同じ形)。差し替えるのは 9 番目。
+# T24.4 の heap の行 (`_p24_heap`) は、起動から 60 秒の基準 `memory.baseline` があればそれとの差、無ければ
+# `_p23_heap` をそのまま返す (基準を混ぜない)。T24.2: phase24 = phase23 の 16 行の**9 番目と 16 番目だけ**を
+# 差し替えたもの。並びは phase23 と同じ (`RULES["phase23"][9:15]` は確立・安定性などの 6 行)。
+RULES["phase24"] = (RULES["phase23"][:8] + (_p24_heap,) + RULES["phase23"][9:15]
+                    + (_p24_silent_restarts,))
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,
@@ -1964,6 +1973,21 @@ def render_criteria(d, grouped):
           "(4) 最後の行は**無言の再起動** (`/events` の `start` の直前に `shutdown` が無い起動) が 0 回 (T23.2)。"
           "**`/recent` は 2,000 件の環状なので、窓と試行の本数を必ず書きます** (前と後で長さが違います)。"
           "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+        p()
+    if c["name"] == "phase24":
+        # T24.2。phase23 の 16 行を持ち越し、heap と無言の再起動の 2 行だけ読み方を変えた
+        p("16 行は phase23 と同じ物差しで、材料も同じです (`--daily` `--profile` `--profile-before` "
+          "`--zero`)。直したのは 2 行 (T24.2): (1) heap の行は、`/status` の `memory.baseline` "
+          "(状態ファイルに**起動から 60 秒で 1 回だけ**書く `heap_used + mmap − cache_memory`。T24.4) が"
+          "あれば**それとの差**で読みます (`--zero` の 0 時間の雪像は要りません。ホストの管理者に起動し直されても、"
+          "起動ごとの基準なので判定できます)。`baseline` が無い雪像 (T24.4 より前の版・起動から 60 秒以内) は "
+          "phase23 と同じ 0 時間の雪像との差で、どちらも無ければ「判定できず」です。"
+          "(2) 最後の行は、`/events` の `start` の `boot` (`/proc/sys/kernel/random/boot_id`) を 1 つ前の起動と"
+          "比べた**こちらが原因の**無言の再起動 (同じ `boot` のまま起動し直した回) が 0 回です。`boot` が変わった回 "
+          "(ホストのカーネルごとの再起動。2026-10-21 の 2 回) は時刻つきで理由を書き、**数から外します** "
+          "(こちらでは防げない)。`boot` の無い `start` はどちらにも数えません。この行を読み違えると T24.99 の"
+          "「こちらが原因の無言の再起動 0 回」が崩れるので、**その部が雪像に無い行は「判定できず」**で、"
+          "0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")

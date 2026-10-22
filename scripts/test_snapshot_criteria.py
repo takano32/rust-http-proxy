@@ -313,7 +313,7 @@ class Criteria15(unittest.TestCase):
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
                          ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
-                          "phase22", "phase23"])
+                          "phase22", "phase23", "phase24"])
 
 
 def conn_profile(conn_us_per_row):
@@ -2228,8 +2228,8 @@ class Deployed24(unittest.TestCase):
         # 「boot の無い 1 件」が残るので 0 回とは書かない (判定できず。数から外した 2 回は理由つき)
         self.assertEqual(row[3], sd.UNKNOWN)
         self.assertIn("こちらが原因の無言の再起動", row[0])
-        self.assertIn("**ホストの再起動** (boot が変わった) `2026-10-21T14:31:31Z`、"
-                      "`2026-10-21T15:11:20Z` は数から外した", row[4])
+        self.assertIn("**ホストの再起動** (boot が変わった) `2026-10-21 14:31:31Z`、"
+                      "`2026-10-21 15:11:20Z` は数から外した", row[4])
         self.assertIn("`boot` の無い `start` が 1 件ある (T24.0 より前の版が書いた行)", row[4])
 
 
@@ -2323,4 +2323,189 @@ class Criteria24(unittest.TestCase):
         self.assertEqual(row[3], sd.MET)
         self.assertIn("17.3 → 19.5 MB", row[2])
         self.assertNotIn("16.0", row[2])
+
+
+class PastOutputs24(unittest.TestCase):
+    """T24.2: phase24 を足しても **phase22 と phase23 の出力** (§2 の平常時の表と §9 の判定表、json の
+    `history` と `criteria`) が 1 文字も変わらないこと。値は phase24 を足す前の main (`081de1c`) で取った
+    sha256 の頭 16 桁 (`PastOutputs22` が見ている phase14〜phase21 と同じ形)。
+    **ここが落ちたら過去の判定を変えている** (過去の判定を同じ命令で出し直せなくなる)。"""
+
+    DIGESTS = {
+        "phase22": ("ac056aabf3998242", "5ba06e278cad255c"),
+        "phase23": ("69f1f25858088a4f", "0d2bad06e37c10f4"),
+    }
+
+    def test_the_past_criteria_print_the_same(self):
+        import hashlib
+        for name, (md_digest, js_digest) in self.DIGESTS.items():
+            md = run([A, B, "--no-dns", "--criteria", name])
+            js = json.loads(run([A, B, "--no-dns", "--criteria", name, "--out", "json"]))
+            part = md[md.index("## 2."):md.index("## 3.")] + md[md.index("## 9."):]
+            body = json.dumps({"history": js["history"], "criteria": js["criteria"]},
+                              ensure_ascii=False, sort_keys=True)
+            self.assertEqual(hashlib.sha256(part.encode()).hexdigest()[:16], md_digest, name)
+            self.assertEqual(hashlib.sha256(body.encode()).hexdigest()[:16], js_digest, name)
+
+
+class Criteria24Rows(unittest.TestCase):
+    """`--criteria phase24` (T24.2): phase23 の 16 行をそのまま持ち越し、**9 番目 (heap) と 16 番目
+    (無言の再起動) の 2 行だけ**を差し替えたもの。閾の値は phase23 と同じ (`PHASE24 == PHASE23`)。
+
+    ほかの 14 行は `RULES["phase23"]` と同じ関数なので、物差しも材料も変わらない。行 1 つずつの読み方は
+    `Criteria24` (`_p24_heap`) と `Criteria24BootSplit` (`_p24_silent_restarts`) が見ているので、
+    ここは**配線**と、phase24 の表として読めることを見る。実データは `Deployed24Rows`。
+    """
+
+    # 表示だけの行 (phase21 の 4 行 + `/events` の行 + phase22 の接続のエラーの行)
+    SHOWN_ROWS = (0, 2, 3, 5, 6, 13)
+    T0 = 1790000000
+    B1 = "aaaaaaaaaaaa"           # ホストの起動 1 (`boot` は先頭 12 文字で比べる)
+    B2 = "bbbbbbbbbbbb"           # ホストの起動 2 (機械ごと起動し直した)
+    EV0 = 1789043200              # `testdata/snapshot-b.json` の起動の時刻 (taken_at − uptime)
+
+    def judge(self, a=None, b=None, extra=()):
+        return build([a or A, b or B, "--no-dns", "--criteria", "phase24", *extra])["criteria"]
+
+    # --- 表の形
+
+    def test_phase24_gives_sixteen_rows_and_the_same_display_only_rows(self):
+        c = self.judge()
+        self.assertEqual(len(sd.RULES["phase24"]), 16)
+        self.assertEqual(len(c["rows"]), 16)
+        self.assertEqual([i for i, r in enumerate(c["rows"]) if r[3] == sd.SHOWN],
+                         list(self.SHOWN_ROWS))
+        self.assertEqual(c["display_only"], 6)
+        self.assertEqual(sd.PHASE24, sd.PHASE23)          # 閾の値は phase23 と同じ
+        self.assertEqual(c["name"], "phase24")
+        self.assertIs(sd.RULES["phase24"][8], sc._p24_heap)
+        self.assertIs(sd.RULES["phase24"][15], sc._p24_silent_restarts)
+
+    def test_the_other_fourteen_rows_are_the_phase23_ones(self):
+        for i in list(range(8)) + list(range(9, 15)):
+            self.assertIs(sd.RULES["phase24"][i], sd.RULES["phase23"][i], i)
+
+    def test_a_snapshot_without_baseline_or_boot_reads_as_phase23(self):
+        """`memory.baseline` も `boot` も無い雪像 (T24.4・T24.0 より前の版) では 2 行とも phase23 と同じ。"""
+        c24 = self.judge()
+        c23 = build([A, B, "--no-dns", "--criteria", "phase23"])["criteria"]
+        self.assertEqual([r[3] for r in c24["rows"]], [r[3] for r in c23["rows"]])
+        self.assertEqual(c24["rows"][8][3], sd.UNKNOWN)
+        self.assertIn("`--zero` (0 時間の雪像) が渡されていない", c24["rows"][8][4])
+
+    # --- 9 番目: heap の行 (T24.4 の `memory.baseline`)
+
+    def snap(self, uptime, **memory):
+        """`testdata/snapshot-b.json` に、起動からの時間と `/status` の `memory` だけ載せ替える。"""
+        b = read(B)
+        b["uptime_secs"] = uptime
+        b["taken_at"] = self.T0 + uptime
+        b["status"] = dict(b.get("status") or {})
+        b["status"]["memory"] = dict({"heap_used": 19_500_000, "mmap": 0, "cache_memory": 0,
+                                      "heap_free": 1_000_000, "rss": 30_100_000}, **memory)
+        return b
+
+    def test_the_baseline_alone_makes_the_heap_row_readable(self):
+        """`--zero` が無くても、起動から 60 秒の基準だけで「この起動でどれだけ増えたか」が読める。"""
+        b = self.snap(29.8 * 3600, baseline={"at": self.T0 + 60, "bytes": 17_300_000})
+        with written(b=b) as p:
+            row = self.judge(b=p["b"])["rows"][8]
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**+2.2** MB (17.3 → 19.5 MB)", row[2])
+        self.assertIn("`heap_used + mmap − cache_memory` の起動から 60 秒の基準からの増えが 5 MB 未満",
+                      row[0])
+        self.assertIn("**0 時間の雪像 (`--zero`) は要らない**", row[4])
+
+    def test_a_baseline_left_by_a_previous_run_is_not_used(self):
+        """状態ファイルは起動をまたいで残る。前の起動が残した基準では判定しない (T24.4)。"""
+        b = self.snap(2 * 3600, baseline={"at": self.T0 - 3600, "bytes": 17_300_000})
+        with written(b=b) as p:
+            row = self.judge(b=p["b"])["rows"][8]
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("前の起動が残した基準", row[4])
+
+    # --- 16 番目: 無言の再起動を「こちらが原因」に読み替える (T24.0)
+
+    def start(self, at, boot=None):
+        text = ("version 0.1.0+bbbbbbb on port 8080"
+                + (f" boot {boot}" if boot else "")
+                + " (profile default, cache on, timeout 30s, max conns 240)")
+        return {"at": at, "kind": "start", "text": text}
+
+    @staticmethod
+    def stop(at):
+        return {"at": at, "kind": "shutdown", "text": "stop signal received; saving statistics"}
+
+    def silent_row(self, last_boot):
+        """普通の再起動のあと、`shutdown` を残さずにもう一度起動し直した雪像の 16 番目の行。"""
+        t = self.EV0
+        b = read(B)
+        events = [self.start(t, self.B1), self.stop(t + 616), self.start(t + 658, self.B1),
+                  self.start(t + 658 + 69150, last_boot)]
+        b["events"] = {"events": events, "count": len(events), "kept": len(events),
+                       "capacity": 512, "restored": 0, "truncated": False}
+        with written(b=b) as p:
+            return self.judge(b=p["b"])["rows"][15]
+
+    def test_a_host_restart_is_written_with_its_time_and_left_out_of_the_count(self):
+        """`boot` が変わった回 (ホストのカーネルごとの再起動) は時刻つきで書き、**数から外す**。"""
+        row = self.silent_row(self.B2)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("こちらが原因の無言の再起動", row[0])
+        self.assertIn("うちホストの再起動 (boot が変わった回) 1 回、プロセスだけの再起動 0 回", row[2])
+        self.assertIn("**ホストの再起動** (boot が変わった) `2026-09-11 07:50:08Z` は数から外した", row[4])
+        self.assertIn("ホストの管理者によるもの。こちらでは防げない", row[4])
+
+    def test_the_same_boot_is_our_own_restart_and_is_missed(self):
+        """`boot` が同じ = プロセスだけの起動し直し (落ちたか、外から止められた) は 0 回でない。"""
+        row = self.silent_row(self.B1)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**同じ `boot` のまま起動し直している** `2026-09-11 07:50:08Z` (前の起動は",
+                      row[4])
+        self.assertIn("落ちたか、外から止められた", row[4])
+
+    def test_the_markdown_names_the_phase24_parts(self):
+        md = run([A, B, "--no-dns", "--criteria", "phase24"])
+        self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase24`)", md)
+        self.assertIn("16 行は phase23 と同じ物差しで", md)
+        self.assertIn("**起動から 60 秒で 1 回だけ**", md)
+        self.assertIn("**数から外します**", md)
+        self.assertIn("**その部が雪像に無い行は「判定できず」**", md)
+
+
+@unittest.skipUnless(all(os.path.isfile(os.path.join(d, f)) for d, f in (
+    (TOKYO, "2026-10-17T030107Z-snapshot.json"),
+    (TOKYO, "2026-10-20T143453Z-snapshot.json"),
+    (TOKYO, "2026-10-17T030257Z-snapshot.json"))),
+    "デプロイ先の雪像が無い (リポジトリには入れない)")
+class Deployed24Rows(unittest.TestCase):
+    """T24.2 の受け入れ基準 (実データ): tokyo の 10-17 → 10-20 で `--criteria phase24` の 16 行が出て、
+
+    heap の行と無言の再起動の行が**その雪像で読める形**になっていること。この 2 枚は T24.0 と T24.4 より
+    前の版が撮ったので `start` に `boot` が無く `memory.baseline` も無い — つまり**どちらも phase23 の
+    読み方に戻る** (過去の判定を同じ命令で出し直せることの、実データでの確認)。
+    """
+
+    A = os.path.join(TOKYO, "2026-10-17T030107Z-snapshot.json")
+    B = os.path.join(TOKYO, "2026-10-20T143453Z-snapshot.json")
+    Z = os.path.join(TOKYO, "2026-10-17T030257Z-snapshot.json")
+
+    def rows(self):
+        return build([self.A, self.B, "--no-dns", "--criteria", "phase24", "--zero", self.Z])
+
+    def test_the_phase24_rows_on_the_tokyo_pair(self):
+        c = self.rows()["criteria"]
+        self.assertEqual(len(c["rows"]), 16)
+        self.assertEqual(c["display_only"], 6)
+        # heap は `memory.baseline` が無いので、phase23 と同じく 0 時間の雪像との差で「起動が違う」と出る
+        self.assertEqual(c["rows"][8][3], sd.UNKNOWN)
+        self.assertIn("**0 時間の雪像と起動が違う** (`/events` の `start` が "
+                      "2026-10-17T03:02:22Z と 22:14:52Z", c["rows"][8][2])
+        # 無言の再起動は 1 回 (10-17 22:14:52Z)。ただしこの 2 枚の `start` には `boot` が無いので
+        # 「ホストか、プロセスだけか」を言えず、**0 回とは書かない** (phase23 は同じ 1 回を「届かず」と書く)
+        self.assertEqual(c["rows"][15][3], sd.UNKNOWN)
+        self.assertEqual(build([self.A, self.B, "--no-dns", "--criteria", "phase23", "--zero", self.Z])
+                         ["criteria"]["rows"][15][3], sd.MISSED)
+        self.assertIn("1 回 (**2026-10-17 22:14:52Z**", c["rows"][15][2])
+        self.assertIn("`boot` の無い `start` が 1 件ある", c["rows"][15][4])
 

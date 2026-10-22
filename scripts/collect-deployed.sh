@@ -51,14 +51,17 @@
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
-#   CRITERIA (既定 phase23) … 判定表に使う完了の定義 (`phase22` `phase21` `phase20` `phase18` `phase17`
+#   CRITERIA (既定 phase24) … 判定表に使う完了の定義 (`phase23` `phase22` `phase21` `phase20` `phase18` `phase17`
 #                         `phase15` `phase14` も残してある)。phase20 は phase18 の物差しを直したもの (T20.1)、
 #                         phase21 は phase20 のミス・conn 役・IPv6 の探りの 3 行の読み方を直したもの (T21.2)、
 #                         phase22 は phase21 の 10 行 + 22a の 4 行で、平常時を「300 本と期間の中央値の
 #                         3 倍の大きい方」未満で切るもの (T22.1)、phase23 は phase22 の 14 行のうち接続の
 #                         エラーの行を「名前解決に成功した試行あたり」(`/recent` から `dns` の失敗を外した
 #                         分母) に差し替え、heap の行に `/events` の `start` の時刻を添え、無言の再起動の
-#                         行を足した 16 行 (T23.1)。
+#                         行を足した 16 行 (T23.1)、phase24 は phase23 の 16 行を持ち越し、heap の行を
+#                         「起動から 60 秒の基準 (`/status` の `memory.baseline`) からの増え」に、無言の
+#                         再起動の行を「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に
+#                         読み替えたもの (T24.2)。
 #                         `off` で判定表を出さない
 #   BEFORE (無指定)     … **判定表の相手**にする雪像 (再デプロイの直前に撮った「前」。T18.2)。
 #                         無ければ今までどおり直前の 1 枚 (再デプロイのあとは 0 時間の雪像になるので、
@@ -66,8 +69,9 @@
 #                         `-profile_res_60.json` があれば `--profile-before` で渡す。
 #                         「2. 前回との差分」とホスト別の相手は変わらない (直前の 1 枚のまま)
 #   ZERO (無指定)       … 0 時間の雪像 (再デプロイの直後に撮った 1 枚)。`snapshot-diff.py --zero` に
-#                         渡す (phase22 / phase21 / phase20 / phase18 の `heap_used + mmap` の増えの行と、
-#                         phase22 / phase21 の IPv6 の探りの行。無ければ「判定できず」)。
+#                         渡す (phase24 / phase22 / phase21 / phase20 / phase18 の `heap_used + mmap` の増えの行と、
+#                         phase22 / phase21 の IPv6 の探りの行。phase24 は `memory.baseline` が無い雪像のときだけ
+#                         こちらで読む。無ければ「判定できず」)。
 #                         BEFORE も ZERO も、相対パスはリポジトリの根から (`DIR` と同じ)
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
 #   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` と
@@ -128,7 +132,7 @@ DIR=${2:-status}
 PROBE=${PROBE:-1}
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
-CRITERIA=${CRITERIA:-phase23}
+CRITERIA=${CRITERIA:-phase24}
 # 判定表の相手 (「前」の雪像) と 0 時間の雪像 (T18.2)。どちらも無指定なら今までどおり
 JUDGE_BEFORE=${BEFORE:-}
 ZERO=${ZERO:-}
@@ -672,11 +676,12 @@ PROFILE_BEFORE=
 [ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
 # phase18 の 2 行の材料 (T18.2): `ZERO` があれば `--zero` で、日次の雪像の表は保存先 (`--from-server`
 # が `<日付>T000000Z-snapshot.json` を置く所) を `--daily-snapshots` で渡す。**phase18 と、同じ材料を
-# 使う phase20 (T20.1)・phase21 (T21.2)・phase22 (T22.1)・phase23 (T23.1) のときだけ**
+# 使う phase20 (T20.1)・phase21 (T21.2)・phase22 (T22.1)・phase23 (T23.1)・phase24 (T24.2) のときだけ**
+# (phase24 は `memory.baseline` が無い雪像のときだけ 0 時間の雪像で読むので、渡しておく)
 # (古い定義の判定表は今までと同じ命令で出す)
 P18=()
 if [ "$CRITERIA" = phase18 ] || [ "$CRITERIA" = phase20 ] || [ "$CRITERIA" = phase21 ] ||
-  [ "$CRITERIA" = phase22 ] || [ "$CRITERIA" = phase23 ]; then
+  [ "$CRITERIA" = phase22 ] || [ "$CRITERIA" = phase23 ] || [ "$CRITERIA" = phase24 ]; then
   [ -n "$ZERO" ] && P18+=(--zero "$ZERO")
   P18+=(--daily-snapshots "$DIR")
 fi
