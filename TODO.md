@@ -803,7 +803,7 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
   - やること: `recent.rs` の中で、`ConnSlot` (リングの 1 枠)、`snapshot` (JSON の組み立て)、`persist` (状態ファイル)、`tests` の 4 つに分けたときの行数と、**クレートを割るか (build memory が下がるか) モジュールを割るか**の見積もり。`cargo build --release` のメモリで一番重いクレート (`proxy-endpoints` 82.5 MB 前後) との関係も書く。
   - 受け入れ基準: 表 (境目ごとの行数・公開している型の数・割ったときに動くテスト) と、割るべきかの結論 1 行。**実装はしない** (次の Phase の候補にする)。
 
-- [ ] **T24.10 台帳の検査 (`tasks/` と `TODO.md` の 1 対 1 を機械で見る)**
+- [x] **T24.10 台帳の検査 (`tasks/` と `TODO.md` の 1 対 1 を機械で見る)**
   - 目的: 2026-10-22 に済んだ Phase を `tasks/phaseNN.md` へ移した (T24.9)。**移し忘れ・番号の重複・リンク切れ**は目で見つからないので、`check-docs.sh` と同じ形で機械で見る。
   - 変更箇所: `scripts/check-docs.sh` (項目を 1 つ足す) か、新しい `scripts/check-ledger.py` (と試験)、README の `check-docs.sh` の節。
   - やること: (1) `TODO.md` の §5 に `- [x]` のタスクが残っていないこと、(2) `tasks/phaseNN.md` が `TODO.md` の §5 の見出しからリンクされていること (逆も)、(3) タスクの番号が全体で重複しないこと、(4) 各ファイルの 1 行目が `# Phase NN — …` であること。
@@ -815,6 +815,9 @@ CPU/要求 は 5 秒の計測で ±8% ぶれる。ビルドの通る最小メモ
   - やること: 502 を返したあとにホスト別の行と接続元の行を書くので、負荷の下では `/status` を引いた瞬間にまだ 1 往復ぶん遅れている。sleep を伸ばさず、2 つの行がそろうまで 5 ms ずつ引き直す (上限 3 秒。それでも出なければ最後に引いた本文を見せて落とす)。
   - 受け入れ基準: 負荷の下で落ちないこと。
   - 結果 (2026-10-22、`8f7ef06`): 直す前は**負荷 (CPU のループ 4 本) の下で 40 回に 1 回**落ち、単独では 3/3 通った。直したあとは負荷の下で **60 回 0 回**、`tunnel_test` 9 本 OK、fmt 差分 0。log の並びでも裏が取れた (`/status` を組み立てた行が、その CONNECT の `ACCESS` 行より 1 ms 先に出ていた = 応答を書いたあとに集計している)。
+
+  - 結果 (2026-10-22、`2d6efcd`): `check-docs.sh` に **(g)** を足した (項目数 6 → 7、README の「突き合わせるのは 7 つ」も同じ)。中身は新しい `scripts/check-ledger.py` 1 本にした (bash の heredoc にしなかったのは、見出し・リンク・番号を行で読む規則が 4 つあり、`python3 -m unittest discover -s scripts` で試験を付けられる形にするため。既存の (d) = `check-dashboard.js` と同じ型)。見るのは (1) **移し忘れ** = 移した Phase の節にタスクの行が 1 本でも残っていないこと (まだ移していない Phase でも全部 `- [x]` になったら NG。進中の Phase 24 は `- [ ]` が残るあいだ許す)、(2) `tasks/phaseNN.md` と §5 の `### Phase NN (…)` の見出しが**両方向で 1 対 1**、(3) 番号が台帳全体で 1 回だけ + 番号の Phase が置き場所と合う、(4) `tasks/phaseNN.md` の 1 行目が `# Phase NN — …`。足場として見出しの「済んだ N 本」とファイルの本数も突き合わせる。`tasks/README.md` は索引として除外表に理由つき。**`TODO.md` と `tasks/*.md` は読むだけで 1 文字も変えない。** いまの木では Phase 見出し 9 節 / `tasks/phaseNN.md` 8 本 (57 本) / §5 に残るタスク 14 本 (うち `[x]` 12 本 = Phase 24) で差分 0。**本文と違う点**: (1) の「§5 に `- [x]` が無い」は文字どおりだと進行中の Phase 24 で即 NG になるので Phase ごとに読み替えた (隠さず `[x]` の残数は毎回印字する)。番号の重複は「本文 (`結果` 以外の箇条書き) を持つ行どうし」で見るので、`T24.1` が 2 度出る件 (1 行は `結果` だけの追記) は NG にせず注記で印字する。わざと壊して 5 通りを確かめた: 移した Phase 23 の節にタスクの行を 1 本戻す / Phase 22 のリンクを `tasks/phase99.md` に / `T24.8` を本文つきで 2 本に / `tasks/phase23.md` の 1 行目から `—` を落とす / 「済んだ 6 本」を 5 本のファイルに当てる (すべて NG、戻して差分 0)。unittest 620 本 OK (新しい `test_check_ledger.py` 26 本)、`check-docs` は「**7 つ**を突き合わせて 差分 0 件」、shellcheck 警告 0。
+
 - [x] **T24.12 揺れるテスト 4 本目 (`overload_test` の「最古の 1 本を閉じる」)**
   - 目的: 波 24c の全体チェック (`cargo test --workspace`) で `tests/overload_test.rs` の `test_integration_hitting_the_limit_closes_the_oldest_idle_tunnel` が落ちた。`tunnels[0].read(&mut buf).unwrap()` が `WouldBlock` (`Resource temporarily unavailable`) で、受信待ちの 10 秒を使い切っていた (バイナリの所要 10.38 秒。他の 5 本は通過、`evicted_idle == 1` の判定は通っていた)。
   - 変更箇所: `tests/overload_test.rs`。
