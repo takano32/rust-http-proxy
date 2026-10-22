@@ -12,6 +12,11 @@
 //!
 //! `client_read` は 0 のとき JSON に出さない決まり (`STAGE_NAMES`) なので、要求行を
 //! 送ってから `Host` を送るまでを空けて、0 でない値を作ってから読む。
+//!
+//! **空きが個票に出るまで送り直す** (T24.6)。負荷の下では proxy の最初の `read` が
+//! 2 つの write をまとめて受け取ることがあり、その回は空きが「測る対象に存在しない」
+//! (`client_read` は 0 = 欄が出ない)。空きを伸ばすと機械の速さを前提にした試験に
+//! なるので、**同じ形の 1 本を、値が出るまで送り直す** (`gap_in_the_record`)。
 
 use std::io::Write;
 use std::net::TcpStream;
@@ -53,14 +58,6 @@ fn rows(body: &str, key: &str) -> Vec<String> {
     out
 }
 
-/// `needle` を含む 1 件 (無ければ落ちる)。
-fn row_with(body: &str, key: &str, needle: &str) -> String {
-    rows(body, key)
-        .into_iter()
-        .find(|r| r.contains(needle))
-        .unwrap_or_else(|| panic!("{} が無い: {}", needle, body))
-}
-
 /// `"key":<数>` を読む (整数だけ)。
 fn num(obj: &str, key: &str) -> u64 {
     let pat = format!("\"{}\":", key);
@@ -76,14 +73,85 @@ fn num(obj: &str, key: &str) -> u64 {
         .unwrap_or_else(|_| panic!("{} が数でない: {}", key, obj))
 }
 
+/// 要求行と `Host` の間を空ける幅 (測る対象の「空き」)。
+const GAP: Duration = Duration::from_millis(40);
+/// 個票の `client_read` がこれ以上なら「空きが測れた」と見る (丸めのぶんだけ下に置く)。
+const GAP_MS: u64 = 30;
+/// 同じ形の 1 本を送り直す上限 (負荷の下で 1 回も測れないことは無い幅)。
+const TRIES: usize = 10;
+
+/// `/recent` の行のうち `needle` を含むものの**いちばん新しい 1 件** (`id` が最大)。
+fn newest_row(body: &str, needle: &str) -> Option<String> {
+    rows(body, "recent")
+        .into_iter()
+        .filter(|r| r.contains(needle))
+        .max_by_key(|r| num(r, "id"))
+}
+
+/// `/recent?n=50` を引いて、`needle` を含む行の最大の `id` (無ければ `None`)。
+fn newest_id(proxy_port: u16, needle: &str) -> Option<u64> {
+    newest_row(&endpoint_json(proxy_port, "/recent?n=50"), needle).map(|r| num(&r, "id"))
+}
+
+/// 個票の `client_read` (0 のときは欄そのものが出ないので `None`)。
+fn client_read_ms(entry: &str) -> Option<u64> {
+    entry
+        .contains("\"client_read\":")
+        .then(|| num(entry, "client_read"))
+}
+
+/// 空けた間が個票の `client_read` に出るまで、同じ形の 1 本を送り直して、その個票を返す。
+///
+/// **時間で待たない**: 負荷の下では proxy の最初の `read` が 2 つの write をまとめて
+/// 受け取るので、その回の空きは測る対象に存在しない (`client_read` は 0 = 欄が出ない)。
+/// 空きを伸ばす代わりに、値が出るまで**同じ形で送り直す** (何回で出るかは機械の
+/// 混み具合が決める)。1 回も出なければ、見た値を全部並べて落ちる — `client_read` が
+/// 常に 0 に潰れる退行は、上限まで送っても値が出ないので必ず落ちる。
+fn gap_in_the_record(
+    proxy_port: u16,
+    needle: &str,
+    what: &str,
+    mut one_request: impl FnMut(),
+) -> String {
+    // 前の回の行と取り違えないよう、いまの最大の `id` から始める
+    let mut last = newest_id(proxy_port, needle).unwrap_or(0);
+    let mut seen = Vec::new();
+    for _ in 1..=TRIES {
+        one_request();
+        // 個票は接続が閉じたあとに積まれるので、**id が増えた行**が出るまで待つ
+        wait_until(
+            || newest_id(proxy_port, needle).is_some_and(|id| id > last),
+            what,
+        );
+        let body = endpoint_json(proxy_port, "/recent?n=50");
+        let entry = newest_row(&body, needle).unwrap_or_else(|| panic!("{}: {}", what, body));
+        last = num(&entry, "id");
+        match client_read_ms(&entry) {
+            Some(ms) if ms >= GAP_MS => return entry,
+            other => seen.push(match other {
+                Some(ms) => format!("{} ms", ms),
+                None => "欄なし".to_string(),
+            }),
+        }
+    }
+    panic!(
+        "{}: {} 回送っても {} ms の空きが `client_read` に出なかった (閾 {} ms。見た値: {})",
+        what,
+        TRIES,
+        GAP.as_millis(),
+        GAP_MS,
+        seen.join(", ")
+    );
+}
+
 /// 要求行と `Host` の間を空けて CONNECT を 1 本張る (`client_read` を 0 でなくする)。
-fn slow_tunnel(proxy_port: u16, target: &str, gap: Duration) {
+fn slow_tunnel(proxy_port: u16, target: &str) {
     let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     s.write_all(format!("CONNECT {} HTTP/1.1\r\n", target).as_bytes())
         .unwrap();
     s.flush().unwrap();
-    thread::sleep(gap);
+    thread::sleep(GAP);
     s.write_all(format!("Host: {}\r\n\r\n", target).as_bytes())
         .unwrap();
     let head = read_connect_response(&mut s);
@@ -102,14 +170,13 @@ fn a_tunnel_records_both_the_connect_and_the_client_read_stage() {
     let proxy_port = start_test_proxy(proxy_config());
     let target = format!("127.0.0.1:{}", echo_port);
 
-    slow_tunnel(proxy_port, &target, Duration::from_millis(40));
-
-    wait_until(
-        || endpoint_json(proxy_port, "/recent?n=50").contains("\"kind\":\"connect\""),
-        "/recent に CONNECT が 1 本",
+    // 空けた 40 ms が個票に出るまで送り直す (`client_read` は 0 なら欄が出ない)
+    let entry = gap_in_the_record(
+        proxy_port,
+        &format!("\"target\":\"{}\"", target),
+        "/recent に空きの入った CONNECT",
+        || slow_tunnel(proxy_port, &target),
     );
-    let body = endpoint_json(proxy_port, "/recent?n=50");
-    let entry = row_with(&body, "recent", &format!("\"target\":\"{}\"", target));
 
     // `dns` と `connect` は 0 でも必ず出る欄 (`STAGE_NAMES`)
     assert!(entry.contains("\"dns\":"), "`dns` の欄が無い: {}", entry);
@@ -118,15 +185,16 @@ fn a_tunnel_records_both_the_connect_and_the_client_read_stage() {
         "`connect` の欄が無い: {}",
         entry
     );
-    // 要求行と `Host` の間を 40 ms 空けたので、この段は 0 でない = JSON に出る
+    // 要求行と `Host` の間を空けたので、この段は 0 でない = JSON に出る
     assert!(
         entry.contains("\"client_read\":"),
         "`client_read` の欄が無い: {}",
         entry
     );
     assert!(
-        num(&entry, "client_read") >= 30,
-        "空けた 40 ms が入っていない: {}",
+        num(&entry, "client_read") >= GAP_MS,
+        "空けた {} ms が入っていない: {}",
+        GAP.as_millis(),
         entry
     );
     // loopback は名前を引かないので、引き算に使う値そのものが 0
@@ -157,24 +225,25 @@ fn a_failed_forward_keeps_its_client_read_stage() {
     let proxy_port = start_test_proxy(proxy_config());
     let host = format!("127.0.0.1:{}", dead_port);
 
-    let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    s.write_all(format!("GET http://{}/t174 HTTP/1.1\r\n", host).as_bytes())
-        .unwrap();
-    s.flush().unwrap();
-    thread::sleep(Duration::from_millis(40));
-    s.write_all(format!("Host: {}\r\nConnection: close\r\n\r\n", host).as_bytes())
-        .unwrap();
-    let (head, _) = read_response(&mut s);
-    assert!(head.starts_with("HTTP/1.1 502"), "{}", head);
-    drop(s);
-
-    wait_until(
-        || endpoint_json(proxy_port, "/recent?n=50").contains("\"kind\":\"http\""),
-        "/recent に閉じた http 接続が 1 本",
+    // 要求行と `Host` の間を空けた forward。空きが個票に出るまで送り直す (T24.6)
+    let entry = gap_in_the_record(
+        proxy_port,
+        "\"kind\":\"http\"",
+        "/recent に 502 の 1 本",
+        || {
+            let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            s.write_all(format!("GET http://{}/t174 HTTP/1.1\r\n", host).as_bytes())
+                .unwrap();
+            s.flush().unwrap();
+            thread::sleep(GAP);
+            s.write_all(format!("Host: {}\r\nConnection: close\r\n\r\n", host).as_bytes())
+                .unwrap();
+            let (head, _) = read_response(&mut s);
+            assert!(head.starts_with("HTTP/1.1 502"), "{}", head);
+            drop(s);
+        },
     );
-    let body = endpoint_json(proxy_port, "/recent?n=50");
-    let entry = row_with(&body, "recent", "\"kind\":\"http\"");
     // 0 の段は JSON に出ない決まりなので、欄があること自体が「0 でない」印
     assert!(
         entry.contains("\"client_read\":"),
@@ -182,8 +251,9 @@ fn a_failed_forward_keeps_its_client_read_stage() {
         entry
     );
     assert!(
-        num(&entry, "client_read") >= 30,
-        "空けた 40 ms が入っていない: {}",
+        num(&entry, "client_read") >= GAP_MS,
+        "空けた {} ms が入っていない: {}",
+        GAP.as_millis(),
         entry
     );
 }
