@@ -10,6 +10,7 @@ use crate::sync::LockExt;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -1226,6 +1227,7 @@ impl Metrics {
     /// `rate_bps_total` は T14.39、`rejected_requests` は T14.28、`sni_mismatches` は
     /// T14.38、`self_bench` は T14.43、`readers` は T14.53、`syn_retrans_total` は
     /// T14.46、`records` は T14.41、`heavy_rejected` は T14.51 で末尾に足したもの。
+    /// `boot` は T24.0 で `kernel` の隣 (直後) に足した (**既存の鍵の順は動かさない**)。
     fn push_tail(
         &self,
         out: &mut String,
@@ -1237,7 +1239,7 @@ impl Metrics {
         let _ = write!(
             out,
             concat!(
-                "\"kernel\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
+                "\"kernel\":{},\"boot\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
                 "\"rejected_requests\":{},\"sni_mismatches\":{},\"self_bench\":{},",
                 "\"readers\":{},\"syn_retrans_total\":{},\"records\":\"{}\",",
                 "\"heavy_rejected\":{}}}"
@@ -1246,6 +1248,8 @@ impl Metrics {
             // ここから直に呼べるのは `dns` / `ipv6` と同じ**下の層**だから
             // (`settings` のような上の層の部品は `extra` で受け取る)
             crate::kernel::status_json(),
+            // ホストの起動ごとに変わる `boot_id` と、このプロセスの `pid` (T24.0)
+            boot_json(),
             // RSS の内訳 (T14.21)。`mallinfo2` を読むのはこの経路だけ
             memory_json(self, rss, threads, conn_threads, cache),
             // 直近 1,024 本の正確な分位点 (T14.31)。区間の補間ではない実測の並び
@@ -1271,6 +1275,36 @@ impl Metrics {
             self.heavy_rejected.load(Ordering::Relaxed)
         );
     }
+}
+
+/// `/status` の `boot` (T24.0)。**ホストの起動ごとに変わる `id`** と、このプロセスの `pid`。
+///
+/// `id` (`/proc/sys/kernel/random/boot_id`) が**前の起動と変わっていればホストの再起動**、
+/// 同じならプロセスだけの再起動。2026-10-21 の 2 回の無言の再起動は、`/events` の `start` に
+/// `shutdown` が無いという事実だけでは外からの再起動と自分の落ちを区別できなかった
+/// (利用者に聞いてホストの管理者によるものと分かった)。
+///
+/// **値はプロセスの生存中に変わらない**ので起動に 1 回だけ読み ([`OnceLock`])、読めない環境
+/// (procfs が無い) は `id` を `null` にする (**`/status` は落とさない**)。`/events` の `start` の
+/// 文面にも先頭 12 文字を載せる (`crates/run/src/lib.rs`。1 件 128 B の枠に収めるため)。
+fn boot_json() -> String {
+    static BOOT: OnceLock<Option<String>> = OnceLock::new();
+    let pid = std::process::id();
+    match BOOT.get_or_init(boot_id) {
+        Some(id) => format!("{{\"id\":\"{}\",\"pid\":{}}}", crate::json::escape(id), pid),
+        None => format!("{{\"id\":null,\"pid\":{pid}}}"),
+    }
+}
+
+/// `boot_id` を読む口 (Linux 以外は `None`。`crates/sys` の実装をそのまま使う)。
+#[cfg(target_os = "linux")]
+fn boot_id() -> Option<String> {
+    crate::sys::boot_id()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn boot_id() -> Option<String> {
+    None
 }
 
 /// `/status` の先頭 (版と、起動からの窓の目印)。
