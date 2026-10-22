@@ -1292,11 +1292,27 @@ def _p22_refresh_and_stale_misses(c, th):
 # `start` の文面 (`crates/metrics-recent/src/events.rs` の "version {} on port {} …") から版を抜く
 START_VERSION = re.compile(r"^version\s+(\S+)")
 
+# `start` の文面に載っている `boot` の印 (T24.0)。`crates/run/src/lib.rs` が
+# `/proc/sys/kernel/random/boot_id` の**先頭 12 文字**を "… on port 60357 boot 7aa666f1-264 (profile …)" と書く
+# (1 件 128 B の枠に収めるため。全体は `/status` の `boot.id`)。
+# 手で組んだ雪像や将来の版が全体 (36 文字) を書いても読めるように、6〜36 文字を受ける。
+START_BOOT = re.compile(r"\bboot\s+([0-9a-fA-F]{6,36})\b")
+
 
 def start_version(e):
     """`start` の 1 行から版を抜く (文面に無ければ空文字。`snapshot-anonymize` の `9****28` もそのまま)。"""
     m = START_VERSION.match((e or {}).get("text") or "")
     return m.group(1) if m else ""
+
+
+def start_boot(e):
+    """`start` の 1 行から `boot` (ホストの起動ごとに変わる印) を抜く。
+
+    T24.0 より前の版が書いた行には無いので `None` (その行は「同じホストか」を判定できない)。
+    先頭 12 文字だけでも**同じ起動かどうか**は分かる (36 文字の UUID の先頭が 32 ビット以上ある)。
+    """
+    m = START_BOOT.search((e or {}).get("text") or "")
+    return m.group(1) if m else None
 
 
 def silent_restarts(snap):
@@ -1323,8 +1339,18 @@ def silent_restarts(snap):
 
     返すのは次の辞書。`/events` の部が無ければ None (呼ぶ側が「判定できず」と書く)。
       `starts` は起動の `start` の行の数 (自己ベンチの `start` は `other_starts`)、
-      `silent` / `graceful` / `edge` はそれぞれの内訳、
+      `silent` / `graceful` / `edge` はそれぞれの内訳、`host` / `process` / `boot_unknown` は
+      **無言の再起動の切り分け** (T24.0。下の 3 つ)、
       `hours` は起動からの時間、`kept` / `count` / `capacity` / `restored` / `truncated` は `/events` の欄。
+
+    **ホストの再起動か、プロセスだけの再起動か** (T24.0): 無言の再起動の 1 件ずつについて、
+    その `start` の文面の `boot` (T24.0 から載る) と**1 つ前の起動の `boot`** を比べる。
+      - `host` … `boot` が変わっている = **ホスト (カーネル) が起動し直した** (2026-10-21 の 2 回。
+        利用者に聞いてホストの管理者によるものと分かった)。**こちらでは防げない**。
+      - `process` … `boot` が同じ = **プロセスだけが起動し直した** (落ちた・外から止められた)。
+        これが「こちらが原因の無言の再起動」で、0 回であるべきもの。
+      - `boot_unknown` … どちらかの行に `boot` が無い (T24.0 より前の版が書いた行)。
+        判定できないので `host` / `process` のどちらにも数えない。
     """
     ev = part(snap, "events")
     rows = ev.get("events")
@@ -1340,8 +1366,11 @@ def silent_restarts(snap):
         "truncated": bool(ev.get("truncated")),
         "oldest": marks[0]["at"] if marks else None,
         "started_at": ((snap.get("taken_at") or 0) - up) if (snap.get("taken_at") and up) else None,
+        # 無言の再起動の切り分け (T24.0。上を参照)
+        "host": [], "process": [], "boot_unknown": 0,
     }
     prev = None            # 直前に見た起動の `start` (無言かどうかを言うには、これが要る)
+    prev_boot = None       # その `start` の `boot` (1 つ前の起動のホスト)
     for e in marks:
         if e.get("kind") != "start":
             continue
@@ -1353,7 +1382,8 @@ def silent_restarts(snap):
             continue
         out["starts"] += 1
         at = e["at"]
-        item = {"at": at, "version": start_version(e)}
+        boot = start_boot(e)
+        item = {"at": at, "version": start_version(e), "boot": boot}
         # **同じ秒の出来事は「直前」と見ない** (`at` が strictly 小さいものだけ)
         earlier = [m for m in marks if m["at"] < at]
         if not earlier:
@@ -1366,15 +1396,42 @@ def silent_restarts(snap):
         else:
             shut = [m for m in earlier if m.get("kind") == "shutdown"]
             shut = shut[-1] if shut else None
-            out["silent"].append(dict(
+            item = dict(
                 item, prev_at=prev["at"], prev_version=start_version(prev),
                 prev_hours=(at - prev["at"]) / 3600.0,
                 shutdown_at=(shut["at"] if shut else None),
                 # 前の起動より**後**に `shutdown` が残っているときだけ「止まっていた秒数」が言える
                 downtime=((at - shut["at"]) if (shut and shut["at"] > prev["at"]) else None),
-            ))
+                # 1 つ前の起動の `boot` (T24.0)。無ければ「同じホストか」を言えない
+                prev_boot=prev_boot,
+            )
+            if boot and prev_boot:
+                (out["process"] if boot == prev_boot else out["host"]).append(item)
+            else:
+                out["boot_unknown"] += 1
+            out["silent"].append(item)
         prev = e
+        prev_boot = boot
     return out
+
+
+def boot_split_text(r):
+    """無言の再起動のうち、**ホストの再起動**と**プロセスだけの再起動**の内訳を 1 文にする (T24.0)。
+
+    **`boot` を持つ行が 1 つも無ければ何も足さない** (T24.0 より前の版が書いた `start` だけの
+    雪像)。過去の phase の出力を 1 文字も変えないための線で、`boot_unknown` だけの雪像
+    (切り分けられる回が 1 つも無い) でも文は変えず、判定表の「根拠」に件数を書く。
+    """
+    host = len(r.get("host") or [])
+    proc = len(r.get("process") or [])
+    unknown = r.get("boot_unknown") or 0
+    if not (host or proc):
+        return ""
+    text = f"。うちホストの再起動 (boot が変わった回) {host} 回"
+    text += f"、プロセスだけの再起動 {proc} 回"
+    if unknown:
+        text += f"、`boot` の無い `start` {unknown} 件は判定できない"
+    return text
 
 
 def silent_restart_text(r, bold=True):
@@ -1399,6 +1456,8 @@ def silent_restart_text(r, bold=True):
         # 無言の再起動があるときは、窓の先頭の `start` が別に残っていることだけ添える
         if r["edge"]:
             text += f"。ほかに窓の先頭などの `start` {len(r['edge'])} 件は判定できない"
+        # ホストの再起動かプロセスだけの再起動か (T24.0。`boot` の無い雪像では何も足さない)
+        text += boot_split_text(r)
         return text
     if not r["graceful"]:
         # 直前を見られる `start` が 1 つも無い。**0 件とは書かない** (見ていないだけ)
@@ -1445,6 +1504,58 @@ def _p23_silent_restarts(c, th):
         verdict = MET
     else:
         verdict = UNKNOWN
+    return (label, limit, shown, verdict, src)
+
+
+# --- Phase 24 (T24.0 の 1 行。phase23 の 16 行 + この行が phase24 の形になる = T24.2) ---
+
+def _p24_silent_restarts(c, th):
+    """T24.0: **こちらが原因の**無言の再起動 (同じ `boot` のまま起動し直した回) が 0 回。
+
+    phase23 の行 (`_p23_silent_restarts`) は「`shutdown` を残さずに起動し直した」を数えるだけで、
+    ホストの管理者が機械ごと起動し直した回 (2026-10-21 の 2 回) も同じ 1 回に数えていた。
+    ここは `start` の文面の `boot` を 1 つ前の起動と比べ、**変わっていればホストの再起動**
+    (こちらでは防げない。理由つきで別に書く)、**同じならプロセスだけの再起動** (落ちた・
+    外から止められた = こちらが原因) として、後者だけを 0 回の判定に使う。
+
+    `RULES` には T24.2 が入れる (このタスクでは行を作るところまで)。
+    """
+    label = "こちらが原因の無言の再起動 (同じ `boot` のまま起動し直した回) が 0 回"
+    limit = "0 回"
+    r = silent_restarts(c["b"])
+    shown = silent_restart_text(r)
+    if r is None:
+        return (label, limit, shown, UNKNOWN, "後の雪像に `/events` の部が無い")
+    src = (f"`/events` の `start` の文面の `boot` (`/proc/sys/kernel/random/boot_id` の先頭) を"
+           f" 1 つ前の起動と比べた (覚えている {n(r['kept'])} 件"
+           + (f" / 全 {n(r['count'])} 件" if r["count"] not in (None, r["kept"]) else "")
+           + (f"、うち読み戻し {n(r['restored'])} 件" if r["restored"] is not None else "")
+           + "、起動からの "
+           + (f"{r['hours']:,.1f} 時間)" if r["hours"] else "時間は不明)"))
+    host, proc, unknown = r["host"], r["process"], r["boot_unknown"]
+    if host:
+        src += ("。**ホストの再起動** (boot が変わった) "
+                + "、".join(f"`{stamp(s['at'])}`" for s in host[:4])
+                + (f" ほか {len(host) - 4} 件" if len(host) > 4 else "")
+                + " は数から外した (ホストの管理者によるもの。こちらでは防げない)")
+    if proc:
+        src += ("。**同じ `boot` のまま起動し直している** "
+                + "、".join(f"`{stamp(s['at'])}` (前の起動は {s['prev_hours']:,.1f} 時間)" for s in proc[:4])
+                + " — 落ちたか、外から止められた")
+    if unknown:
+        src += (f"。`boot` の無い `start` が {unknown} 件ある (T24.0 より前の版が書いた行)。"
+                "その回は同じホストかを言えない")
+    if not (host or proc or unknown) and not r["silent"]:
+        src += ("。無言の再起動は 0 回 (直前に `shutdown` がある起動 "
+                f"{len(r['graceful'])} 件、判定できる `start` が無ければ「判定できず」)")
+    if r["truncated"]:
+        src += "。**`/events` が切れている** (件数は下限)"
+    if proc:
+        verdict = MISSED
+    elif unknown or (r["silent"] and not host) or not (r["graceful"] or r["silent"]):
+        verdict = UNKNOWN
+    else:
+        verdict = MET
     return (label, limit, shown, verdict, src)
 
 

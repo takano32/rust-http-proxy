@@ -2002,6 +2002,122 @@ class Deployed22(unittest.TestCase):
         self.assertIn("引き直し **1,990.8** 回/時 (前 309.7、6.43 倍)", c["rows"][13][2])
 
 
+class Criteria24BootSplit(unittest.TestCase):
+    """T24.0: 無言の再起動を**ホストの再起動**と**プロセスだけの再起動**に切り分ける。
+
+    `start` の文面に載る `boot` (`/proc/sys/kernel/random/boot_id` の先頭 12 文字) を
+    1 つ前の起動と比べる。変わっていればホスト (カーネル) の再起動 = こちらでは防げない、
+    同じならプロセスだけの再起動 = 落ちたか外から止められた (こちらが原因)。
+
+    `testdata/snapshot-a.json` の `/events` をその場で作って見る (形は 2026-10-21 のもの)。
+    """
+
+    T0 = 1790000000          # 窓の先頭の `start` の時刻 (2026-09-21 14:13:20Z)
+    B1 = "aaaaaaaa-111"      # ホストの起動 1
+    B2 = "bbbbbbbb-222"      # ホストの起動 2
+    B3 = "cccccccc-333"      # ホストの起動 3
+
+    def snap(self, events, restored=0):
+        d = read(A)
+        d["events"] = {"events": events, "count": len(events), "kept": len(events),
+                       "capacity": 512, "restored": restored, "truncated": False}
+        return d
+
+    def boot(self, at, boot=None, version="0.23.3+ae7c190"):
+        """`crates/run/src/lib.rs` が書くのと同じ形の `start` (T24.0 から `boot` が入る)。"""
+        text = f"version {version} on port 60357"
+        if boot:
+            text += f" boot {boot}"
+        text += " (profile default, cache on, timeout 30s, max conns 240)"
+        return {"at": at, "kind": "start", "text": text}
+
+    def stop(self, at):
+        return {"at": at, "kind": "shutdown", "text": "stop signal received; saving statistics"}
+
+    def row(self, events, restored=0):
+        return sc._p24_silent_restarts({"b": self.snap(events, restored)}, sd.PHASE22)
+
+    def test_two_host_restarts_and_no_process_restart(self):
+        """2026-10-21 の形: `boot` が 2 回変わる = ホストの再起動 2 回、プロセスだけは 0 回。"""
+        t = self.T0
+        events = [self.boot(t, self.B1), self.stop(t + 616), self.boot(t + 658, self.B1),
+                  # ホストが起動し直した (boot が B1 → B2)
+                  self.boot(t + 658 + 69150, self.B2),
+                  # さらにホストが起動し直した (B2 → B3)
+                  self.boot(t + 658 + 69150 + 2390, self.B3)]
+        r = sc.silent_restarts(self.snap(events))
+        self.assertEqual(len(r["silent"]), 2)
+        self.assertEqual([s["at"] for s in r["host"]],
+                         [t + 658 + 69150, t + 658 + 69150 + 2390])
+        self.assertEqual(r["process"], [])
+        self.assertEqual(r["boot_unknown"], 0)
+        text = sc.silent_restart_text(r)
+        self.assertIn("2 回 (", text)
+        self.assertIn("うちホストの再起動 (boot が変わった回) 2 回、プロセスだけの再起動 0 回", text)
+        # 判定表の行は「こちらが原因の無言の再起動 0 回」を満たす (外からの 2 回は数から外す)
+        row = self.row(events)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("こちらが原因の無言の再起動", row[0])
+        self.assertIn("は数から外した", row[4])
+
+    def test_the_same_boot_is_a_process_restart(self):
+        """`boot` が同じ = **プロセスだけ**の起動し直し (落ちたか、外から止められた)。"""
+        t = self.T0
+        events = [self.boot(t, self.B1), self.stop(t + 616), self.boot(t + 658, self.B1),
+                  self.boot(t + 658 + 69150, self.B1)]
+        r = sc.silent_restarts(self.snap(events))
+        self.assertEqual([s["at"] for s in r["process"]], [t + 658 + 69150])
+        self.assertEqual(r["host"], [])
+        self.assertIn("うちホストの再起動 (boot が変わった回) 0 回、プロセスだけの再起動 1 回",
+                      sc.silent_restart_text(r))
+        row = self.row(events)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("同じ `boot` のまま起動し直している", row[4])
+
+    def test_a_start_without_boot_is_not_counted_either_way(self):
+        """T24.0 より前の版が書いた `start` (boot が無い) は**どちらにも数えない**。"""
+        t = self.T0
+        old = ("version 0.23.3+ae7c190 on port 60357 "
+               "(profile default, cache on, timeout 30s, max conns 240)")
+        events = [self.boot(t, self.B1), self.stop(t + 616), self.boot(t + 658, self.B1),
+                  # 旧版の行 (boot が無い)。前の起動 (B1) と同じホストかは言えない
+                  {"at": t + 658 + 69150, "kind": "start", "text": old},
+                  # その次も旧版の行を挟むので、こちらも「同じホストか」を言えない
+                  self.boot(t + 658 + 69200, self.B2),
+                  self.boot(t + 658 + 69250, self.B2)]
+        r = sc.silent_restarts(self.snap(events))
+        self.assertEqual(len(r["silent"]), 3)
+        self.assertEqual(r["host"], [])
+        self.assertEqual(r["boot_unknown"], 2)   # 前が同じホストかを言えない回が 2 つ
+        self.assertEqual([s["at"] for s in r["process"]], [t + 658 + 69250])
+        text = sc.silent_restart_text(r)
+        self.assertIn("うちホストの再起動 (boot が変わった回) 0 回、プロセスだけの再起動 1 回", text)
+        self.assertIn("`boot` の無い `start` 2 件は判定できない", text)
+        self.assertEqual(self.row(events)[3], sd.MISSED)
+
+    def test_the_phase23_text_is_unchanged_without_boot(self):
+        """`boot` の無い雪像では要点の文を 1 文字も変えない (過去の phase の出力を変えない)。"""
+        t = self.T0
+        old = ("version 0.22.6+000681e on port 60357 "
+               "(profile default, cache on, timeout 30s, max conns 240)")
+        events = [{"at": t, "kind": "start", "text": old}, self.stop(t + 616),
+                  {"at": t + 658, "kind": "start", "text": old},
+                  {"at": t + 658 + 69150, "kind": "start", "text": old}]
+        r = sc.silent_restarts(self.snap(events))
+        # どの行にも `boot` が無いので切り分けは 1 件もできない (`boot_unknown` だけが増える)
+        self.assertEqual((r["host"], r["process"], r["boot_unknown"]), ([], [], 1))
+        self.assertEqual(sc.boot_split_text(r), "")
+        row23 = sc._p23_silent_restarts({"b": self.snap(events)}, sd.PHASE22)
+        self.assertEqual(row23[3], sd.MISSED)
+        self.assertIn("1 回 (**", row23[2])
+        self.assertNotIn("ホストの再起動", row23[2])
+
+    def test_the_row_cannot_be_judged_without_any_start(self):
+        row = sc._p24_silent_restarts({"b": read(A)}, sd.PHASE22)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("判定できず", row[2])
+
+
 @unittest.skipUnless(all(os.path.isfile(os.path.join(d, f)) for d, f in (
     (TOKYO, "2026-10-20T143453Z-snapshot.json"),
     (TOKYO, "2026-10-15T185514Z-snapshot.json"),
@@ -2067,3 +2183,51 @@ class Deployed23(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+@unittest.skipUnless(os.path.isfile(os.path.join(TOKYO, "2026-10-22T210213Z-snapshot.json")),
+                     "デプロイ先の雪像が無い (リポジトリには入れない)")
+class Deployed24(unittest.TestCase):
+    """T24.0 の受け入れ基準 (実データ): 2026-10-22 の tokyo の雪像を**手で組み立て直した** JSON で、
+
+    10-21 の 2 回の無言の再起動が**ホストの再起動** (boot が変わった) と分かること。
+
+    あの雪像は T24.0 より前の版が撮ったので `start` の文面に `boot` が無い。そこで
+    `/events` の `start` の 3 行 (10-17 22:14:52Z・10-21 14:31:31Z・10-21 15:11:20Z) に、
+    **分かっている事実**のとおりの `boot` を手で入れる: 10-21 の 2 回はホストの管理者が
+    機械ごと起動し直したので、その 2 回で値が変わる (10-17 の行は旧版なので、その前の
+    起動と同じホストかは言えない = 「判定できず」に残る)。
+    """
+
+    NAME = "2026-10-22T210213Z-snapshot.json"
+    # 10-21 03:25:28Z の起動 (`shutdown` のあとの普通の再起動) / 10-21 14:31:31Z / 10-21 15:11:20Z。
+    # **10-21 の 2 回でホストが起動し直した**ので、そこだけ値が変わる (10-17 22:14:52Z の行は旧版なので
+    # そのまま = 1 つ前の起動と比べられない)
+    BOOTS = {1792511528: "11111111-111", 1792593091: "22222222-222", 1792595480: "33333333-333"}
+
+    def snap(self):
+        import re
+        with open(os.path.join(TOKYO, self.NAME), encoding="utf-8") as f:
+            d = json.load(f)
+        rows = d["events"]["events"]
+        for e in rows:
+            boot = self.BOOTS.get(e.get("at")) if e.get("kind") == "start" else None
+            if boot:
+                e["text"] = re.sub(r"( on port \d+)", r"\1 boot " + boot, e["text"], count=1)
+        return d
+
+    def test_the_two_restarts_of_2026_10_21_are_host_restarts(self):
+        r = sc.silent_restarts(self.snap())
+        self.assertEqual([s["at"] for s in r["host"]], [1792593091, 1792595480])
+        self.assertEqual(r["process"], [])          # プロセスだけの再起動は 0 回
+        self.assertEqual(r["boot_unknown"], 1)      # 10-17 の行は前の起動の boot が無い
+        text = sc.silent_restart_text(r)
+        self.assertIn("3 回 (", text)
+        self.assertIn("うちホストの再起動 (boot が変わった回) 2 回、プロセスだけの再起動 0 回", text)
+        self.assertIn("`boot` の無い `start` 1 件は判定できない", text)
+        row = sc._p24_silent_restarts({"b": self.snap()}, sd.PHASE22)
+        # 「boot の無い 1 件」が残るので 0 回とは書かない (判定できず。数から外した 2 回は理由つき)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("こちらが原因の無言の再起動", row[0])
+        self.assertIn("**ホストの再起動** (boot が変わった) `2026-10-21T14:31:31Z`、"
+                      "`2026-10-21T15:11:20Z` は数から外した", row[4])
+        self.assertIn("`boot` の無い `start` が 1 件ある (T24.0 より前の版が書いた行)", row[4])

@@ -22,6 +22,12 @@
 #     ように `shutdown` を残さずに起動し直すと、heap の行が黙って「判定できず」になる (T22.99)。
 #     判定は `scripts/snapshot_criteria.py` の `silent_restarts()` (判定表の phase23 の行と同じ関数)
 #
+# **T24.0 で足した欄** (同じ行の後ろ):
+#   - その無言の再起動のうち **ホストの再起動が M 回・プロセスだけの再起動が N 回**。
+#     `start` の文面の `boot` (`/proc/sys/kernel/random/boot_id`) を 1 つ前の起動と比べて
+#     切り分ける (変わっていればホストの再起動 = こちらでは防げない。同じならプロセスだけ =
+#     落ちたか外から止められた)。`boot` の無い行 (T24.0 より前の版) は「判定できない」と添える
+#
 # 使い方: scripts/snapshot-summary.py SNAP.json [--prev PREV.json] [--status-before STATUS.json]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
