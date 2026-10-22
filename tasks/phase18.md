@@ -1,0 +1,111 @@
+# Phase 18 — (2026-10-01 に決めた: T17.99 の持ち越し 2 つと、既知の小物)
+
+> `TODO.md` の §5 から 2026-10-22 に移した (T24.9)。**本文は 1 文字も変えていない**。
+> 番号 (`T18.0` 〜 `T18.99`) はそのまま。コードのコメントの `TODO.md Tn` は、T15 以降はこのディレクトリ、T15 より前は `docs/HISTORY.md` を指す。
+
+T17.99 の「次のターンの準備」(§0 の決まり)。Phase 17 の完了の定義は 8 行とも満たしたので、**次の再デプロイで判定したいことは T17.99 の但し書きの 2 つ** (RSS の物差しと IPv6 の探りの 3 回)。
+**利用者の決定 (2026-10-01): 既知の小物なども含めてよい**。親が 5 つに分け、波 19 (4 本並列) を Opus に渡す。指示文は Phase 17 の型をそのまま使い、読み替えは 3 つ:
+worktree は **`git worktree add -b wave19/<id> ~/.claude/worktrees/<id> main`** (`../rust-http-proxy-wt` ではない。`$HOME` に書かない決まりの例外)、「Phase 17」は「Phase 18」、本文の行番号は 2026-10-01 の main (`7dda415`) のもの。
+**2026-10-01 の進み**: 波 19 の 4 本 (T18.1〜T18.4) と T18.5 は main に入れた (下の「波 19 の全体チェック」)。push し、`v0.18.0` を打ち、**2026-10-01 13:38 UTC に再デプロイした** (版 `0.18.0+2defadb`)。T18.99 は 2026-10-08 に締めた (163.8 時間の 1 枚)。
+**番号の決まり (2026-10-01、利用者の決定)**: 波は Phase の番号とは別の通し番号だった (Phase 17 が波 15〜18 を使ったので、この Phase は波 19) が、紛らわしいので**次から揃える**。
+**Phase 19 は欠番にし、次の Phase は 20 = 波 20**。1 つの Phase の中で波を分けるときは番号を足さず**枝番**にする (`20a`・`20b`…。枝は `wave20a/<id>`、同じファイルを触るタスクは別の枝番に入れる)。
+この Phase は走り出したあとなので波 19 と `wave19/<id>` のまま。
+Phase 17 の制約 (2 コア・`unshare` 不可・手元で CPU の A/B は取らない・ダッシュボードに足さない) はそのまま。「前」の雪像は再デプロイの直前に撮る (§0 の 9)。いまの版の最後の 1 枚は `status/2026-10-01T125100Z-snapshot.json`。
+
+| `<ID>` | 波 | `<id>` | 触る所 (同じ波で重ならない) |
+|---|---|---|---|
+| T18.1 | 19 | t181 | `crates/net-conn/src/net.rs`、`crates/metrics-watch/src/canary.rs`、README の `/status` の `ipv6` / `canary` の説明 |
+| T18.2 | 19 | t182 | `scripts/snapshot-diff.py`、`scripts/test_snapshot_diff.py`、`scripts/collect-deployed.sh`、README の `collect-deployed.sh` の節 |
+| T18.3 | 19 | t183 | `scripts/mx`、`scripts/test_mx.py`、`scripts/test_mx.sh` |
+| T18.4 | 19 | t184 | `crates/base/src/log.rs`、`tests/proxy_test.rs` (原因が本体なら報告だけ)、`crates/metrics-slo/src/slo.rs`、`crates/metrics-profile/src/{profile,window}.rs` の doc コメント |
+| T18.5 | — (親。波 19 のあと) | — | `Cargo.toml` の版と、`0.1.0` を直書きしている 17 ファイル |
+
+- [x] **T18.0 次の判定の物差しを決める (親。T17.99 の (d) と (e))**
+  - (1) **RSS の物差し (T17.99 (d))**: 「1 時間後と 24 時間後の差 5 MB 未満」は 2.9 MB で満たしたが、60 時間で +5.4 MB になった。日次の雪像の `memory` では、伸びたのは
+    `rings_used` (0 時間 2.55 → 8.6 時間 9.28 → 32.6 時間 13.02 MB。件数が増えただけで、置き場は T17.8 で起動時に触ってある) ではなく **`heap_free`** (0 時間 4.3 → 8.6 時間 7.5 → 32.6 時間 8.2 → 56.6 時間 11.4 MB、以後 11.3〜11.4)。
+    `heap_used` は 7.6 → 9.5 MB、`mmap` は 10.46 MB のまま。
+    **決めたこと (2026-10-01、§0 の 6 「単純な方」)**: 物差しは RSS ではなく **`heap_used + mmap`** にし、**「0 時間の雪像からの増えが 5 MB 未満」** と書く (今回の値は 18.0 → 19.9 MB で +1.9 MB)。
+    `heap_free` と RSS は表示だけ (バーストの大きさで決まるので閾を置かない)。`/history` に `heap_used` / `heap_free` の列は**足さない**: 0 時間と「後」の雪像 2 枚で引けて、途中は 1 日 1 枚の日次の雪像 (`--from-server`) で足りる。
+    列を足すと `.rrd` の形と T17.8 の起動時に触る量が動く。
+  - (2) **IPv6 の探りの 3 回 (T17.99 (e))**: `attempts` 3 → 6 は 8.6〜32.6 時間の間。**親の最初の読み (canary の IPv6 側が 10 分走らず、利用者の経路で探った) は誤りだった** (T18.1 の (1))。
+    3 回は canary 本体の 1 本 (`net::connect_resolved`) が遠い宛先で `stagger()` の 250 ms を超え、IPv6 の候補を 2 本目として起動した回 (`canary_connect_ms` が 250 ms 以上の行がちょうど 3 つ、同じ窓で利用者の `connect_ms_max` が 250 ms 以上の分は 0)。
+    canary は 1 周 約 61 秒で切れ目なく回っていて、宛先は AAAA を持つ。**`ipv6.attempts` は探りの数ではない**ので、次からは T18.1 の `ipv6.request_probes` で見る。canary 本体の 1 本が利用者の勝敗の数 (`attempts` / `losses`) に混ざること自体は作りどおりで、直さない (数は 117.5 時間で 3)。
+  - 次の完了の定義 (下書き。`T18.99` に写す): Phase 17 の 8 行 + (g) `heap_used + mmap` の増えが 5 MB 未満 + (h) `ipv6.request_probes` が 0 (0 でなければ `canary.ipv6_skipped` から理由が言えること)。`ipv6.attempts` は表示だけ。判定表は T18.2 の `--criteria phase18`。
+
+- [x] **T18.1 IPv6 の探りの計器と、同じファイルの揺れるテスト 2 本**
+  - 目的: T18.0 (2)。利用者の経路で IPv6 を探ると、その 1 本は `stagger()` ぶん利用者を待たせる。T17.7 で canary に任せたのに 24 時間で 3 回起きた理由が `/status` から読めない。
+  - 変更箇所: `crates/net-conn/src/net.rs` (`ipv6_first_for_new_host` 449〜468 行、`ipv6_status_json` 470 行、`note_canary_ipv6` 424 行)、`crates/metrics-watch/src/canary.rs` (`probe_ipv6` 376 行と呼び出し 360 行、`status_json` 420 行、`Probe` の JSON 133 行)、README の `/status` の `ipv6` と `canary` の説明。
+  - やること: (1) **まず読んで理由を言う**: canary の 1 周で `probe_ipv6` に `None` が渡る条件 (宛先の名前解決が AAAA を返さなかった回・名前解決や IPv4 側が失敗して早く抜ける回 316 / 342 行・`PROXY_CANARY_IPV6` / `PROXY_IPV6`) を全部挙げ、
+    デプロイ先 (canary の宛先に AAAA がある、IPv6 は黒穴、canary の失敗 0 / 6,927 回) でどれが起こりうるかを報告に書く。**理由が「AAAA が引けなかった回は印を更新しない」なら、直すかどうかは決めずに報告する** (試していないのに「探っている」とは書けないので、いまの作りが正しいかもしれない)。
+    (2) 計器を足す (足すだけ): `/status` の `ipv6` の末尾に `request_probes` (`v4_first` の間に利用者の経路で探った回数。`ipv6_first_for_new_host` が `v4_first` のときに `true` を返した回数) と `request_probe_at` (最後の時刻、epoch 秒。無ければ 0)、
+    `canary` の末尾に `ipv6_runs` (IPv6 側を実際に試した回数) と `ipv6_skipped` (試さなかった周の数)。原子のカウンタで、**要求の経路に増えるのは `v4_first` のときの探りの 1 回に `fetch_add` 1 つと `store` 1 つだけ**。
+    (3) 同じファイルの揺れるテスト 2 本を直す (既知の小物の表): `happy_eyeballs_skips_unreachable_first_candidate` (`net.rs:814` と `1300`。「2 回目 < 50 ms」を時間ではなく試行の順で見る)、
+    `a_probe_measures_a_real_connect_and_a_refused_one` (`canary.rs:568`。`dns_ms == 0` を「数 ms 以下」にするか IP リテラルでは見ない)。テストの意味 (何を守っているか) は変えない。
+  - 受け入れ基準: 新しい欄の単体テスト (canary が試した周は `ipv6_runs` が増え `request_probes` は増えない / canary が見ていないとき `request_probes` が 600 秒に 1 回増える / AAAA の無い周は `ipv6_skipped` が増える)。
+    既存の T17.7 のテスト 4 本が通る。直した 2 本は `scripts/mx cargo test -p <crate> <名前>` を 20 回回して全部通る。JSON は足すだけ (鍵の順を変えない)。`--lite` の費用は不変。
+  - 結果 (2026-10-01、`c49bbd6` + `810a15a`、取り込み `18d54b2`): (1) 理由の読み: canary の 1 回で IPv6 側を試さないのは、宛先の無い周 (`off`、`auto` で直近 1 時間に CONNECT が無い。`runs` ごと増えない)・名前が引けない回・`PROXY_IPV6=off` で AAAA しか無い回・答えに AAAA が無い回・`PROXY_CANARY_IPV6=off` / `PROXY_IPV6=off`・canary スレッドが居ないとき (`--lite`、`PROXY_STATS_PERSIST=off`)。デプロイ先の日次の雪像 (8.6〜32.6 時間の窓) ではどれも起きた跡が無い: canary は 1 周 約 61 秒で切れ目なく回り (130 秒を超える隙間 0、失敗 0)、窓に出る宛先 2 つはどちらも AAAA を持つ。**`attempts` 3 → 6 は利用者の経路の探りではなく、canary 本体の 1 本 (`connect_resolved` = Happy Eyeballs) が遠い宛先で 250 ms を超え、IPv6 の候補を追い掛けで起動した 3 回**と読める (`canary_connect_ms` が 1,172 / 2,201 / 1,192 ms の行がちょうど 3 つ、起動から 14.9〜15.2 時間。同じ窓で利用者の `connect_ms_max` が 250 ms 以上の分は 0)。`attempts` は「IPv6 の候補を起動した回数」で探りの数ではない。リゾルバがその回だけ AAAA を返さなかった可能性は雪像からは否定できず、直しは入れていない。(2) 計器 (足すだけ、鍵の順はそのまま): `/status` の `ipv6` の末尾に `request_probes` (`v4_first` の間に `ipv6_first_for_new_host` が `true` を返した回数) と `request_probe_at` (epoch 秒、無ければ 0)、`canary` の末尾に `ipv6_runs` (IPv6 側を実際に試した回数) と `ipv6_skipped` (試さなかった回数。`probe` の 1 回につきどちらかが 1 増える)。要求の経路に増えるのは `v4_first` のときの探りの 1 回に `fetch_add` 1 つと `store` 1 つだけ。`CANARY_STATUS_UNSET` (`metrics-core`) も同じ末尾に揃えた。T17.7 のテスト 3 本は JSON の末尾を `ends_with` で見ていたので `contains` に直した。(3) 揺れるテスト 2 本: `happy_eyeballs_skips_unreachable_first_candidate` は 2 回目を時間ではなく試行の順で見る (`ipv6_counters()` が `[1, 0, 1]` のまま。2 回目の間だけ間隔を 2 秒に延ばす)、`a_probe_measures_a_real_connect_and_a_refused_one` は `dns_ms == 0` を「3 回測った最小が 2 ms 以下」に。20 回ずつ回して前 20 / 20・後 20 / 20 (何も走っていない状態では直す前も落ちず、落ち方は再現していない)。新しいテスト 3 本: `ipv6_request_probes_count_only_the_probes_on_the_request_path`、`a_round_that_tries_ipv6_counts_ipv6_runs_and_no_request_probe`、`a_round_without_aaaa_counts_ipv6_skipped`。既存の T17.7 の 4 本と `canary_test` は通過。`--lite` の費用は測っていない (探りの回以外に足した命令は無い)。デプロイ後の確かめ: `ipv6.request_probes` が 0 のままで、`canary.ipv6_skipped` が 0 (または `runs − ipv6_runs`) であること。
+    親の注記: 表の外で `crates/metrics-core/src/metrics.rs` (`CANARY_STATUS_UNSET`) を触っている。`request_probes` は AAAA の無い宛先 (A が 2 つ) や canary 本体の接続でも数える (予約を使うのは前からの挙動)。同じ形の「< 50 ms」が `unseen_hosts_try_ipv4_first_after_three_losses` に残っている (既知の小物の表へ)。
+
+- [x] **T18.2 `snapshot-diff.py --criteria phase18` (T18.0 の (g)(h) の行) と、`collect-deployed.sh` の相手**
+  - 目的: T17.99 (f): `collect-deployed.sh` の判定表は「直前の 1 枚」(今回は 0 時間の雪像) が相手で、再デプロイ直前の「前」との判定は手で `snapshot-diff.py` を回した。RSS の伸びの内訳も日次の雪像を手で並べた。
+  - 変更箇所: `scripts/snapshot-diff.py` (`PHASE17` 764 行、`CRITERIA` 779 行、`RULES` の `"phase17"` 1326 行、`render` の 1708 行)、`scripts/test_snapshot_diff.py`、`scripts/collect-deployed.sh` (`CRITERIA` の既定 93 行、判定表を出す 446 行の周り)、README の `collect-deployed.sh` の節。
+  - やること: (1) `--criteria phase18` = phase17 の 8 行 + 2 行。**(g) `heap_used + mmap` の増えが 5 MB 未満** (材料は `--zero FILE` で渡す 0 時間の雪像の `$.status.memory` と、後の雪像。`--zero` が無ければ「判定できず」。
+    実測の欄に `heap_used` / `heap_free` / `mmap` / `rss` の前後を並べ、`heap_free` と `rss` は表示だけ)。**(h) `ipv6.request_probes` が 0** (後の雪像の `$.status.ipv6.request_probes`。欄が無い版は「判定できず」。0 でなければ `canary.ipv6_runs` / `ipv6_skipped` を並べて「届かず」)。
+    欄の名前は T18.1 と同じ (`ipv6.request_probes`、`canary.ipv6_runs`、`canary.ipv6_skipped`)。T18.1 を待たず、作り物の雪像でテストを書く。
+    (2) `--daily-snapshots DIR` (任意): `DIR` の `<日付>T000000Z-snapshot.json` のうち後の雪像と同じ版のものを時刻順に並べ、`uptime`・`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts` の表を判定表の下に出す (T17.99 で手で作った表)。
+    (3) `collect-deployed.sh`: 既定の `CRITERIA` を `phase18` にし、環境変数 `BEFORE=<前の雪像>` と `ZERO=<0 時間の雪像>` を足す。`BEFORE` があれば判定表の相手をそれにして、隣の `-profile_res_60.json` を `--profile-before` で渡す (無ければ今までどおり直前の 1 枚)。
+  - 受け入れ基準: 作り物の雪像のテストで 10 行とも `MET` / `MISSED` / `UNKNOWN` が出る。`status/2026-09-26T151308Z` → `2026-10-01T125100Z` + `--zero status/2026-09-26T152424Z-snapshot.json` で (g) が +1.9 MB で「満たした」、(h) が「判定できず」、
+    phase17 の 8 行が T17.99 の結果と同じ数字。`--daily-snapshots status` で 5 行 (8.6 / 32.6 / 56.6 / 80.6 / 104.6 時間) が出る。`python3 -m unittest discover -s scripts` 全通過、`check-docs.sh` 差分 0。**デプロイ先には触らない** (`status/` の雪像を読むだけ)。
+  - 結果 (2026-10-01、`422b54d` / `1a22eac` / `5814e63`、取り込み `53d8a3b`): `snapshot-diff.py --criteria phase18` を足した (phase17 の 8 行 + 2 行。前の 8 行は phase17 の関数と閾のまま)。(g) は `--zero FILE` (0 時間の雪像) と後の雪像の `$.status.memory` から `heap_used + mmap` の増えを出し、5 MB 未満で「満たした」。`heap_free` と `rss` は前後を並べるだけ。`--zero` が無い・後の雪像と同じ起動でない・欄が無いときは「判定できず」。(h) は後の雪像の `ipv6.request_probes` が 0 で「満たした」、欄が無い版は「判定できず」、0 でなければ `canary.ipv6_runs` / `ipv6_skipped` を並べて「届かず」。`--daily-snapshots DIR` は `<日付>T000000Z-snapshot.json` のうち後の雪像と同じ版のものを撮った時刻の順に並べ、起動からの時間・`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts` の表を判定表の下に出す。`collect-deployed.sh` は既定を `CRITERIA=phase18` にし、`BEFORE=<前の雪像>` があれば判定表だけ相手をそれにして (`snapshot-diff.py` をもう 1 回回す。隣の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別は直前の 1 枚のまま)、`ZERO=<0 時間の雪像>` を `--zero` に渡す。phase18 のときは保存先を `--daily-snapshots` にも渡す (本文の外)。中の変数 `BEFORE` (雪像の前の `/status`) は名前が重なるので `STATUS_BEFORE` に付け替えた。実データ `2026-09-26T151308Z` → `2026-10-01T125100Z` + `--zero 2026-09-26T152424Z` で、(g) は **+1.9 MB** (18.0 → 19.9。`heap_free` 4.3 → 11.3、`rss` 31.6 → 40.9) で「満たした」、(h) は欄が無く「判定できず」、前の 8 行は T17.99 と同じ数字 (0.01 / 79.9 / 0.04 / 0.01 件/時 / 1.10 倍 / 18・0 / `dns_slow` 0.02 / 0.0021 → 0.0014 コア)。`--daily-snapshots status` は 5 行 (8.6 / 32.6 / 56.6 / 80.6 / 104.6 時間、`ipv6.attempts` 3 / 6 / 6 / 6 / 6、`heap_free` 7.5 / 8.2 / 11.4 / 11.3 / 11.4 MB)。phase14 / phase15 / phase17 の出力は testdata と実データで前後 `cmp` 同一。テストは `Criteria18` 15 本・`DailySnapshots` 4 本・`Deployed18` 2 本・`CollectBeforeZeroTest` 8 本を足し、scripts の unittest は 297 → 326 本、`check-docs` 差分 0。既存の `test_both_criteria_can_be_chosen` の一覧に `phase18` を足した。デプロイ先には回していない。`shellcheck` は手元に無く掛けていない (CI で見る)。
+    親の注記: main で同じ命令を回して 10 行 (満たした 9・判定できず 1) と日次の 5 行が出るのを見た。`snapshot-diff.py` は 1,959 行で、次に足すときは割る (既知の小物の表へ)。
+
+- [x] **T18.3 `scripts/mx` の TERM の隙間と `others()` の子孫除外**
+  - 目的: 既知の小物の表 (T17.15 の気づき)。TERM の trap を張るのが命令の起動後 (119〜120 行) で、隙間の TERM で子が残る。`others()` (87 行) の子孫除外が `CHILD` 未設定の時点で呼ばれて効いていない。
+  - やること: trap を命令の起動前に張る (起動前に TERM が来たら命令を起動せずに抜ける)。子孫除外は手順 3 の後で数えるか、効いていないなら外す (どちらにしたかと理由を報告に書く)。出口の値 (130 / 143 / 75) と使い方は変えない。
+  - 受け入れ基準: `scripts/test_mx.py` / `test_mx.sh` に 1 本ずつ (起動の直後に TERM を送っても子が残らない)。既存の mx のテスト全通過。`python3 -m unittest discover -s scripts` 全通過。
+  - 結果 (2026-10-01、`d77b74d` + `b00080b`、取り込み `bdfd8d3`): **trap を命令の起動前 (`setsid … &` の直前) に張り、`others()` の子孫除外は外した。** 手順 1・2 の間は張らない (既定の動きで mx が止まり、命令は起動しない)。trap を移すだけでは足りず、`cleanup` に 2 つ足した: (1) `CHILD` が空なら `$!` を使う (trap は `CHILD=$!` より前に走ることがある。無いと 20/20 残る)、(2) グループへの kill が失敗したら PID に送る (子が `setsid` を呼ぶ前はグループが無い。無くても普段は 0.2 秒後の KILL が拾うが、命令は走ってしまう)。子孫除外は、`others()` を呼ぶのが起動前だけで `CHILD` が必ず未設定、自分の命令の子孫もまだ居ないので外した (印字は同じ)。出口の値・使い方・環境変数は不変。`CHILD=$!` の直前に mx 自身へ TERM を送る仕掛けで 20 回ずつ: 直す前は残った 20/20、直した後は 0/20 で命令は 1 回も走らない。`test_mx.sh` に項目 7 (ok 3 つ: `CHILD=$!` の前の TERM / 0.5 秒寝る偽物の `setsid` で「setsid の前」の TERM / 外から 0〜90 ms ずらした TERM 10 回) を足し、`scripts/test_mx.sh [番号...]` で項目を選べるようにした (7 は偽物のベンチを起動しない)。`test_mx.py` は 1〜6 と 7 の 2 本。直す前の mx では 7 の (a)(b) が NG、`$!` を使わない形でも (a)(b) が NG、PID に送らない形では (b) が NG。`test_mx.sh 7` 20/20、`unittest … -k term` 20/20、`test_mx.sh` 全体 18/18、`python3 -m unittest discover -s scripts` 327 本 OK (skip 8)、`check-docs.sh` 差分 0。本文と違った点: 起動後の隙間は時刻では当たらない (直す前の mx に 0〜30 ms ずらして 120 回、残り 0) ので、テストは `BASH_ENV` の DEBUG trap で mx の `CHILD=$!` の行を目印にした (この行の文面を変えたらテストも直す)。項目 2 の `sleep 0.5` は要らなくなったので外した。`shellcheck` は手元に無く、CI で見ること。
+    親の注記: 本文に無い `cleanup` の 2 つは採った ((1) は無いと直らない、(2) は安全側)。`test_mx.sh` の項目 5・6 は `target/release/rust-http-proxy` という名前の `sleep` を実際に起動するので、回している間はほかの人の `mx` を数秒待たせる (前から)。
+
+- [x] **T18.4 揺れるテスト 2 本の原因と、T17.11 の doc リンク**
+  - 目的: 既知の小物の表。(1) `proxy-base` の `log::tests::the_ring_clips_long_lines_and_wraps_at_1000` (`crates/base/src/log.rs:722`) が稀に落ちる。(2) `tests/proxy_test.rs:781` の `test_integration_request_body_on_a_reused_connection` が全体テストの負荷の下で 1 回 502。
+    (3) T17.11 で移した `crates/metrics-slo/src/slo.rs:11` の `[crate::anomaly::check]` と `crates/metrics-profile/src/{profile,window}.rs` の `[crate::history…]` が新しいクレートから解決しない (rustdoc の警告)。
+  - やること: (1) 同じ binary で `RING_TEST_LOCK` (741 行) を取らずに warn 以上を書く (か水準を変える) テストを探し、同じ鍵を取らせる。見つからなければ落ちたときの `left` / `right` を出す形にして報告。
+    (2) **原因を先に見る** (再利用した接続の生存確認と本文の送り直し)。負荷をかけて再現させ (`scripts/mx` の下でテストを並べて回す)、**テストの側の問題ならテストを直し、本体の問題なら直さずに再現の手順と読んだ場所を報告する** (要求の経路は親が決める)。
+    (3) doc リンクを上のクレートの道か素の文字 (バッククォートだけ) に直す。`scripts/mx cargo doc -p proxy-metrics-slo -p proxy-metrics-profile --no-deps` の警告が 0。
+  - 受け入れ基準: (1) は `scripts/mx cargo test -p proxy-base log::` を 30 回回して全部通る。(2) は再現の有無と原因の報告 (直したなら単独 20 回 + 負荷の下 5 回通過)。(3) は警告 0。中身のコードは (2) でテストを直す場合を除き変えない。
+  - 結果 (2026-10-01、`c50987a` / `d7c6327` / `8b142c1`、取り込み `b52941f`): **3 つとも原因を特定してテストと doc コメントだけ直した (本体は不変)。** (1) `the_ring_clips_long_lines_and_wraps_at_1000` の犯人は水準でも warn でもなく **`records::tests`**: `log_line` は warn 以上をリングに写す前に `records::recording()` を見るので、別の鍵のまま `Mode::Off` にする一瞬に重なった行が落ちる (`left: 1004` / `1003`、`right: 1005`)。直す前のバイナリで全体 11 / 1,500 回・`the_ring` + `records::tests` だけで 50 / 3,000 回再現し、`log::` だけなら 0 / 3,000。`records::tests` の鍵を `RING_TEST_LOCK` の別名にして 0 / 1,500・0 / 3,000、`scripts/mx cargo test -p proxy-base log::` は 30 / 30。(2) `request_body_on_a_reused_connection` の 502 は**テストの側**: `start_origin` は 1 接続 1 要求で閉じるのに応答に `Connection: close` が無く、プロキシがプールに戻した接続に 2 本目の POST が乗って RST を受ける (`failed to read origin response: Connection reset by peer`。本文付きは送り直さない決まり、`crates/http/src/http/mod.rs` の `retryable`)。バイナリ丸ごと 6 本並列 × 8 回で 3 / 48 回再現、閉じる前に 50 ms の待ちを一時的に入れると 0 / 10 通過。応答に `Connection: close` を足して、単独 20 / 20、丸ごと 6 本並列で 0 / 96、単独 8 本並列で 0 / 800 (待ちを入れた形でも 10 / 10)。守っているもの (クライアント側の同じ接続の 2 本目以降の本文) は同じ。(3) rustdoc の警告は本文の 3 か所だけでなく 16 件 (slo 2 + profile 14) あり、上の層のものはクレートの道の素の文字、同じクレートのものは `crate::window::…`、非公開と `STATES` は素の文字か `state_names` にして 0 件。**気づき**: 同じ負荷で `test_integration_self_addressed_origin_form_does_not_loop` が 31 / 144 回 (`elapsed < 10 ms` 4 回、`active_connections <= 1` 27 回)、`status_sort_brings_the_bad_hosts_to_the_front` が 1 / 144 回落ちた (直していない。既知の小物に足す)。本文付きの要求がプールの接続で相手の close と競合すると 502 になるのは本体の決まりどおり (変えるなら要求の経路の判断)。
+    親の注記: 表の外で `crates/base/src/records.rs` (テストの鍵) を触っている。base / slo / profile の clippy は (3) のコミットの後に回し直していない (波の最後の全体チェックで見る)。
+
+- [x] **T18.5 `Cargo.toml` の版をタグと揃える (親。波 19 のあと)**
+  - 目的: T17.21: タグは `v0.17.21` だが `Cargo.toml` は 0.1.0 のままで、`--version` と `/status` の `version` は `0.1.0+<commit>` と出る。
+  - やること: 本体の版を `0.18.0` にする (次のタグは `v0.18.0`。**タグは利用者の許可なしに打たない**)。`0.1.0` を直書きしているテストと道具 (17 ファイル。`grep -rl '0\.1\.0' tests scripts src crates`) は、版を見ている所だけ直す (作り物の雪像の中の文字列はそのまま)。
+  - 受け入れ基準: `rust-http-proxy --version` が `0.18.0+<commit>`。全体テスト全通過、`check-docs.sh` 差分 0。
+  - 結果 (2026-10-01、`a4928a4`): 本体 (`Cargo.toml`) と `proxy-server` (`build.rs` が `CARGO_PKG_VERSION` から `PROXY_VERSION` を作るクレート) の版を `0.18.0` にした (`Cargo.lock` の 2 行も)。ほかのクレートは `0.1.0` のまま。
+    本文の「17 ファイル」は全部作り物の文字列 (`0.1.0+test` `0.1.0+deadbee` など) で、実際の版を見ている所は無かった (`tests/proxy_test.rs` は `env!("CARGO_PKG_VERSION")` と突き合わせる) ので、テストと道具は 1 つも直していない。直したのはコメント 5 か所と README の例 6 か所 (雪像の版 `0.1.0+45b85a9` などの記録はそのまま)。
+    `target/release/rust-http-proxy -V` は `rust-http-proxy 0.18.0+ddb7450-dirty` (コミット前に作ったので `-dirty`)。**次のタグは `v0.18.0`。打つのは利用者の許可のあと**。
+    タグ (2026-10-01、run 36869373378): 利用者が `v0.18.0` を CI の通った `c1e5b47` に打って push した (親の `git tag` は権限の仕組みに止められた)。`release.yml` は 2 つとも通り、Release に `rust-http-proxy-x86_64-unknown-linux-gnu` (2,004,424 B) と `rust-http-proxy-aarch64-unknown-linux-gnu` (1,818,424 B) が付いた (https://github.com/takano32/rust-http-proxy/releases/tag/v0.18.0)。このバイナリの版は `0.18.0+c1e5b47`。
+- **波 19 の全体チェック (2026-10-01、親)**: T18.1・T18.2・T18.4 を取り込み、T18.5 を入れた作業ツリーで `cargo fmt --all -- --check` 通過、`cargo clippy --workspace --all-targets -- -D warnings` 警告 0、
+  `cargo test --workspace --no-fail-fast` は **137 バイナリ 817 通過 / 0 失敗 / 1 ignored** (Phase 17 の波の最後は 133 / 814。回し直しは無し)、`cargo build --release` 通過。T18.3 を取り込んだあと `python3 -m unittest discover -s scripts` 327 本 OK、`check-docs.sh` 差分 0。
+  `MX_SLOTS=1 scripts/mx bash -c 'cargo clean --release && scripts/build-memory.sh 120'` は T18.3 まで入れた main (`bdfd8d3`) で通過 (1 回)。
+  **CI (2026-10-01、run 36868607677、`c1e5b47`)**: `check` (fmt・clippy・`check-docs`・scripts の unittest・`shellcheck`・全体テスト・release ビルド・ベンチ) 4 分 41 秒、`build-memory` 43 秒、`deployed-like-snapshot` 1 分 9 秒、3 つとも通過。前の push (`c4c606d`、2026-09-26) の `check` の失敗は T18.4 (1) で直した `the_ring_clips_long_lines_and_wraps_at_1000` だった。
+  手元で回していないもの: `shellcheck` (無い。CI で通った)、`--lite` のシステムコール数と確保数、`--only connect` の CPU/本 (要求の経路に足したのは `v4_first` の探りの回の原子 2 つだけ)。
+
+- [x] **T18.99 締める (Phase 18 の版を 24 時間走らせたあとに見る・決める・書く)**
+  - 前提 (§0 の 9 の形): 版 `0.18.0+2defadb` (`v0.18.0` の `c1e5b47` + 文書だけ。Release のバイナリ (`0.18.0+c1e5b47`) ではなく main から作った版)、起動時刻 `2026-10-01T13:38:44Z` (`uptime_secs` から、±1 秒。`/events` の `start` は 13:38:43、前の版の `shutdown` は 13:36:26)、
+    「前」の雪像 `status/2026-10-01T133549Z-snapshot.json` (前の版 `0.1.0+45b85a9`、起動から 118.2 時間、起動からの要求 7,009)、「0 時間」の雪像 `status/2026-10-01T133907Z-snapshot.json` (起動 23 秒後。`/healthz` ok、
+    `ipv6` は `attempts` 1・`probe_by` "canary"・**`request_probes` 0**、`canary` は `runs` 1・`ipv6_runs` 1・`ipv6_skipped` 0、`heap_used + mmap` 17.9 MB (7.47 + 10.46)・`heap_free` 2.9 MB・RSS 29.9 MB・`rings_touched` true、`dns.warm_evicted` 0、読み戻し ホスト 633・接続元 4)。「後」は 2026-10-02T13:39Z 以降に撮る。
+  - 判定: `BEFORE=status/2026-10-01T133549Z-snapshot.json ZERO=status/2026-10-01T133907Z-snapshot.json scripts/collect-deployed.sh nagoya.sorahost.net:50697` (T18.2) の `--criteria phase18` の 10 行。完了の定義は T18.0 の下書き。
+  - 結果 (2026-10-08): 「後」は `status/2026-10-08T092521Z-snapshot.json` (版 `0.18.0+2defadb` のまま、起動から 163.8 時間、再起動なし)。上の命令 (T18.2 の `BEFORE` / `ZERO`) で判定表が 1 回で出た。**満たした 6 行・届かず 4 行**。
+    **この版の期間には、前の版に無かった出来事が 2 つある** (届かずの 4 行はどれもこのどちらかで説明できる):
+    (A) **2026-10-05 05〜08 時 UTC のバースト** (1 時間 342 本と 373 本、山 44)。新しい名前を一度に引き、`dns_warm_max` が初めて上限の **32** に届いて `warm_evicted` **26**。`timeout` 8 件のうち 8 件がこの 3 時間 (05 時 2・07 時 6)。表の名前は 76 → 160。
+    (B) **IPv6 しか持たない宛先 `brunhild.challenges.cloudflare.com`** (AAAA 2 つ、A なし。手元の `getaddrinfo` も同じ) へ、利用者の端末が 10-05 06 時から**約 140 秒おきに CONNECT を繰り返している**。コンテナの IPv6 は黒穴なので毎回 約 1.3 秒で `unreachable` の 502 (**1,309 件**。エラーのほぼ全部)。
+    1 本ごとに IPv6 の候補を 2 つ起動するので **`ipv6.attempts` が 4 → 1,318** (負けは 4 のまま。勝ち負けは片方の族が繋がったときだけ数える)。`/history` の確立の区間にも失敗の 1.3 秒が入るので、平常時の確立は p50 8.7 / **p95 2,066 ms** と出る (成功した接続だけなら `/recent` の窓の 398 本で p50 7 / p95 66 ms)。
+    行ごと: (1) `discord.com` のミス率 **0.23** (82 / 351、届かず): 82 のうち 81 が `expired` = 1 時間より長く使わない間に warm から外れた。要求は前の版の 598 → 351 で、使い方が間遠になった。
+    (2) 引き直し 79.9 回/時 (満たした)。(3) 平常時のミス 0.07 回/接続 (満たした。日ごと 0.07〜0.12)。(4) `timeout` **0.05 件/時** (前 0.02、届かず): 8 件とも (A) の中。
+    (5) conn 役 **0.94 倍** (満たした)。(6) `dns_warm_max` **32**・`warm_evicted` **26** (届かず): (A)。(7) `dns_slow` 0.03 件/時 (満たした。ほかに `dns_miss_rate` 6 件・`errors` 1 件)。(8) cgroup 0.0014 → 0.0014 コア、絞り 0 / 1,069,478 周期 (満たした)。
+    (g) `heap_used + mmap` **+15.7 MB** (17.9 → 33.6、届かず): 日次の雪像では 10-04 → 10-05 の 1 日で `heap_used` +4.5・`mmap` +9.1 MB で、同じ日に**メモリのキャッシュ** (`cache_memory`) が 0 → 13.43 MB (22 件) になっている。キャッシュは上限 (いまは 204.7 MB) まで使ってよい作りなので、**物差しにキャッシュが混ざっていた** (T18.0 の親の見落とし)。`cache_memory` を引くと 17.9 → 20.2 MB で **+2.2 MB**。
+    (h) `ipv6.request_probes` **0** (満たした。`canary.ipv6_runs` 9,657 / `ipv6_skipped` 0)。T18.1 の読み (`attempts` は探りの数ではない) は (B) でも合う。
+    日次の雪像 7 枚 (`--from-server` で取り寄せ、`--daily-snapshots` で表が出た): RSS は 10.4 時間 35.3 → 82.4 時間 40.5 MB で止まり、106.4 時間に 52.9 MB (キャッシュ) のあと 53.2 MB で止まっている。
+  - **決めたこと (2026-10-08、利用者の決定)**: **Phase 18 は完了**。届かずの 4 行は (A)・(B) と物差しの誤りで説明がつき、プロキシの悪化を示す行は無い。次に入れるものは親が決める → Phase 20 (物差しの直し T20.1、揺れるテスト T20.2。IPv6 だけの宛先をすぐ断る・warm の枠・warm の窓は採らない。理由は Phase 20 の冒頭)。
+    §2 の「デプロイ先の現在地」は 2026-10-08 の 1 枚に書き換え、2026-10-01 の 1 枚は付録 A へ 1 文字も変えずに移した (`old in new` で同一)。§0 の「到達」と README の「デプロイ先の数字」も同じ雪像に向け直した。
+
