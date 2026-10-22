@@ -1,0 +1,2632 @@
+{
+ "schema": 1,
+ "taken_at": 1792103600,
+ "version": "0.3.0+test",
+ "uptime_secs": 4000,
+ "limit_bytes": 4194304,
+ "parts": [
+  "status",
+  "dns",
+  "hosts",
+  "recent"
+ ],
+ "dropped": [],
+ "status": {
+  "schema": 1,
+  "dns": {
+   "ttl_secs": 60,
+   "negative_ttl_secs": 60,
+   "warm_secs": 0,
+   "entries": 2,
+   "warm": 0,
+   "hits": 0,
+   "misses": 0,
+   "refreshes": 89
+  }
+ },
+ "dns": {
+  "schema": 1,
+  "entries": [
+   {
+    "host": "dense.example.invalid",
+    "addrs": [
+     "192.0.2.1"
+    ],
+    "addr_count": 1,
+    "age_secs": 20,
+    "ttl_left": 40,
+    "idle_secs": 20,
+    "win_v6": null,
+    "failed": null,
+    "refreshing": false,
+    "warm": false,
+    "next_refresh_secs": null,
+    "misses": 1,
+    "refreshes": 83,
+    "changes": 0,
+    "warm_requests": 0,
+    "misses_by_kind": {
+     "cold": 1,
+     "expired": 0,
+     "warm_stale": 0,
+     "negative": 0
+    }
+   },
+   {
+    "host": "sparse.example.invalid",
+    "addrs": [
+     "192.0.2.1"
+    ],
+    "addr_count": 1,
+    "age_secs": 300,
+    "ttl_left": 0,
+    "idle_secs": 300,
+    "win_v6": null,
+    "failed": null,
+    "refreshing": false,
+    "warm": false,
+    "next_refresh_secs": null,
+    "misses": 1,
+    "refreshes": 6,
+    "changes": 0,
+    "warm_requests": 0,
+    "misses_by_kind": {
+     "cold": 1,
+     "expired": 0,
+     "warm_stale": 0,
+     "negative": 0
+    }
+   }
+  ],
+  "count": 2,
+  "shown": 2,
+  "sort": "age",
+  "ttl_secs": 60,
+  "negative_ttl_secs": 60,
+  "truncated": false
+ },
+ "hosts": {
+  "schema": 1,
+  "hosts": [
+   {
+    "host": "connect://dense.example.invalid:443",
+    "requests": 300,
+    "hits": 0,
+    "misses": 0,
+    "bypass": 120,
+    "errors": 0,
+    "blocked": 0,
+    "bytes": 0,
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "timed": 120,
+    "avg_ms": 1.0,
+    "p50_ms": 1.0,
+    "p95_ms": 1.0,
+    "max_ms": 2,
+    "last_seen": 1792103580,
+    "rtt_ms": null,
+    "retrans": 0,
+    "dns_ms_sum": 0,
+    "dns_misses": 0,
+    "connect_ms_sum": 0,
+    "v4_wins": 120,
+    "v6_wins": 0,
+    "errors_by_cause": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "sni_mismatch": 0,
+    "syn_retrans": 0
+   },
+   {
+    "host": "connect://sparse.example.invalid:443",
+    "requests": 6,
+    "hits": 0,
+    "misses": 0,
+    "bypass": 6,
+    "errors": 0,
+    "blocked": 0,
+    "bytes": 0,
+    "bytes_in": 0,
+    "bytes_out": 0,
+    "timed": 6,
+    "avg_ms": 1.0,
+    "p50_ms": 1.0,
+    "p95_ms": 1.0,
+    "max_ms": 2,
+    "last_seen": 1792103300,
+    "rtt_ms": null,
+    "retrans": 0,
+    "dns_ms_sum": 0,
+    "dns_misses": 0,
+    "connect_ms_sum": 0,
+    "v4_wins": 6,
+    "v6_wins": 0,
+    "errors_by_cause": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "sni_mismatch": 0,
+    "syn_retrans": 0
+   }
+  ],
+  "count": 2,
+  "shown": 2,
+  "sort": "requests",
+  "limit": 1000,
+  "truncated": false,
+  "uptime_secs": 4000,
+  "total_requests": 0,
+  "restored_since": 1792099600,
+  "offset": 0,
+  "next_offset": null
+ },
+ "recent": {
+  "schema": 1,
+  "recent": [
+   {
+    "at": 1792100000,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100007,
+    "secs": 0,
+    "target": "sparse.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100012,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100024,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100036,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100048,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100060,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100072,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100084,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100096,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100108,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100120,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100132,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100144,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100156,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100168,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100180,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100192,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100204,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100216,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100228,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100240,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100252,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100264,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100276,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100288,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100300,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100312,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100324,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100336,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100348,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100360,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100372,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100384,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100396,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100408,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100420,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100432,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100444,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100456,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100468,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100480,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100492,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100504,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100516,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100528,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100540,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100552,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100564,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100576,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100588,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100600,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100607,
+    "secs": 0,
+    "target": "sparse.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100612,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100624,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100636,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100648,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100660,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100672,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100684,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100696,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100708,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100720,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100732,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100744,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100756,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100768,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100780,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100792,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100804,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100816,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100828,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100840,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100852,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100864,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100876,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100888,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100900,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100912,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100924,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100936,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100948,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100960,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100972,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100984,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792100996,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101008,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101020,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101032,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101044,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101056,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101068,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101080,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101092,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101104,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101116,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101128,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101140,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101152,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101164,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101176,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101188,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101200,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101207,
+    "secs": 0,
+    "target": "sparse.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101212,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101224,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101236,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101248,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101260,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101272,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101284,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101296,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101308,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101320,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101332,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101344,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101356,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101368,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101380,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101392,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101404,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101416,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101428,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101440,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101452,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101464,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101476,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101488,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101500,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101512,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101524,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101536,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101548,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101560,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101572,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101584,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101596,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101608,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101620,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101632,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101644,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101656,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101668,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101680,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101692,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101704,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101716,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101728,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101740,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101752,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101764,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101776,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101788,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101800,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101807,
+    "secs": 0,
+    "target": "sparse.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101812,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101824,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101836,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101848,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101860,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101872,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101884,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101896,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101908,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101920,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101932,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101944,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101956,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101968,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101980,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792101992,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102004,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102016,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102028,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102040,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102052,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102064,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102076,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102088,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102100,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102112,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102124,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102136,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102148,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102160,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102172,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102184,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102196,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102208,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102220,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102232,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102244,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102256,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102268,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102280,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102292,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102304,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102316,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102328,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102340,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102352,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102364,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102376,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102388,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102400,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102407,
+    "secs": 0,
+    "target": "sparse.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102412,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102424,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102436,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102448,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102460,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102472,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102484,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102496,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102508,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102520,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102532,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102544,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102556,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102568,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102580,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102592,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102604,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102616,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102628,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102640,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102652,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102664,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102676,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102688,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102700,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102712,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102724,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102736,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102748,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102760,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102772,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102784,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102796,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102808,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102820,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102832,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102844,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102856,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102868,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102880,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102892,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102904,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102916,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102928,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102940,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102952,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102964,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102976,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792102988,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103000,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103007,
+    "secs": 0,
+    "target": "sparse.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103012,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103024,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103036,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103048,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103060,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103072,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103084,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103096,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103108,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103120,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103132,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103144,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103156,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103168,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103180,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103192,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103204,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103216,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103228,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103240,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103252,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103264,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103276,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103288,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103300,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103312,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103324,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103336,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103348,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103360,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103372,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103384,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103396,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103408,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103420,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103432,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103444,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103456,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103468,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103480,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103492,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103504,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103516,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103528,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103540,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103552,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103564,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103576,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   },
+   {
+    "at": 1792103588,
+    "secs": 0,
+    "target": "dense.example.invalid:443",
+    "ms": {
+     "dns": 0
+    }
+   }
+  ],
+  "count": 306,
+  "truncated": false
+ }
+}
