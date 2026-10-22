@@ -562,6 +562,8 @@ pub(super) fn status_body(ep: &Endpoint<'_>, sort: metrics::HostSort) -> String 
             settings: &reload::status_json(),
             blocklist: &crate::blocklist::status_json(),
             state_file: &persist::status_json(),
+            // 状態ファイルが持っている「起動 60 秒の heap」(`/status` の `memory.baseline`。T24.4)
+            baseline: &persist::baseline_json(),
             version: ep.version,
             concurrency: (ep.concurrency)(),
             sort,

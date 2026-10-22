@@ -1158,6 +1158,8 @@ impl Metrics {
             threads,
             extra.concurrency.live_threads as u64,
             cache,
+            // 状態ファイルの「起動 60 秒の heap」(T24.4)。上の層が組んだ JSON をそのまま入れる
+            extra.baseline,
         );
         out
     }
@@ -1233,6 +1235,7 @@ impl Metrics {
         threads: u64,
         conn_threads: u64,
         cache: Option<&Cache>,
+        baseline: &str,
     ) {
         let _ = write!(
             out,
@@ -1246,8 +1249,9 @@ impl Metrics {
             // ここから直に呼べるのは `dns` / `ipv6` と同じ**下の層**だから
             // (`settings` のような上の層の部品は `extra` で受け取る)
             crate::kernel::status_json(),
-            // RSS の内訳 (T14.21)。`mallinfo2` を読むのはこの経路だけ
-            memory_json(self, rss, threads, conn_threads, cache),
+            // RSS の内訳 (T14.21)。`mallinfo2` を読むのはこの経路だけ。
+            // `baseline` は状態ファイルが持っている「起動 60 秒の heap」(T24.4)
+            memory_json(self, rss, threads, conn_threads, cache, baseline),
             // 直近 1,024 本の正確な分位点 (T14.31)。区間の補間ではない実測の並び
             self.recent_quantiles_json(),
             // いま流れているバイト/秒の合計 (T14.39)。history スレッドが 5 秒ごとに
@@ -1404,6 +1408,7 @@ fn memory_json(
     threads: u64,
     conn_threads: u64,
     cache: Option<&Cache>,
+    baseline: &str,
 ) -> String {
     use crate::events::{Event, MAX_EVENTS, MAX_TEXT};
     use crate::history::{History, RESOLUTIONS, Sample};
@@ -1502,7 +1507,7 @@ fn memory_json(
             "\"readers\":{},\"profile\":{},\"total\":{}}},\"arenas\":{},",
             "\"rings_used\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
             "\"events\":{},\"trace\":{},\"history\":{},\"hostseries\":{},\"quantiles\":{},",
-            "\"readers\":{},\"profile\":{},\"total\":{}}},\"rings_touched\":{}}}"
+            "\"readers\":{},\"profile\":{},\"total\":{}}},\"rings_touched\":{},\"baseline\":{}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -1561,6 +1566,9 @@ fn memory_json(
             + profile_used,
         // 起動時にリングを触ったか (T17.8)。**`memory` の鍵の末尾に足した**
         me.rings_touched(),
+        // 起動 60 秒の heap の基準 (T24.4)。**この起動のぶんだけ**。これも末尾に足した
+        // (無ければ `null`。古い版の雪像と同じ形)
+        baseline,
     )
 }
 
