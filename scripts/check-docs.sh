@@ -1,9 +1,10 @@
 #!/bin/bash
-# README・`/` の案内・`/snapshot`・画面の関数名が、**コードと同じ集合**かどうかを機械で見る (T14.56)。
+# README・`/` の案内・`/snapshot`・画面の関数名が**コードと同じ集合**か、README が叩く道具に
+# 実行ビットがあるかを機械で見る (T14.56・T24.7)。
 #
 # 今日の版はエンドポイントが 10 本以上増え、環境変数も増えた。増やしたのは別々のエージェントで、
 # **コードにあるのに文書に無い / 文書にあるのにコードに無い**が目で見つからなくなっている。
-# 突き合わせるのは 5 つ:
+# 突き合わせるのは 6 つ:
 #
 #   (a) エンドポイント … `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"`
 #                        vs README の「動作確認 (curl)」の一覧 vs `/` の案内 (`endpoint_list`)
@@ -11,6 +12,8 @@
 #   (c) `/snapshot`  … `recent::snapshot` の `parts` vs 個票のエンドポイント
 #   (d) 画面の関数   … `check-dashboard.js` が `pick()` で切り出す名前 vs HTML の `function` と、呼び出し
 #   (e) クレート     … README の「クレート構成」の表 vs `crates/*/Cargo.toml` の `[package] name`
+#   (f) 道具の置き方 … README が `scripts/<名前>.py` と書いている道具 vs 実ファイルの実行ビット
+#                        (直接叩かないもの = 共通部品・割った部・unittest が読むものは除外表)
 #
 # **意図的に外してあるものは下の除外表に理由つきで持つ** (黙って無視しない)。
 # 差分が 1 件でもあれば理由を印字して exit 1。
@@ -204,9 +207,47 @@ if [ "$SAID" != "$HAVE" ]; then
   echo "  NG (e): README の「($SAID + 本体)」が表の $HAVE 個と合わない"
 fi
 
+# --- (f) 道具の置き方 (実行ビット) ----------------------------------------------
+# README が `scripts/<名前>.py` と書いているものは、**そのまま叩ける道具**であること
+# (`scripts/snapshot-diff.py a.json b.json` のように打つ。T24.7)。README にあるのにファイルが
+# 無いものも NG (名前を変えたのに文書を直し忘れた、がここで出る)。
+# **叩かないものは下の除外表に理由つきで持つ** (書かずに外すと、次に足した道具が素通りする)。
+cat >"$W/py-skip" <<'EOF'
+proxydata.py	共通部品。他の道具が import する (単体では動かさない)
+snapshot_criteria.py	判定の部。入口は `snapshot-diff.py` (単体では動かさない)
+test_*.py	unittest が名前で読む (`python3 -m unittest discover -s scripts`)
+EOF
+# 同じ名前は説明の節と例の節の両方に出るので 1 つに畳む。
+grep -oE 'scripts/[A-Za-z0-9_.-]+\.py' README.md | sed 's|^scripts/||' | LC_ALL=C sort -u >"$W/py-readme"
+WANT=0
+: >"$W/py-want"
+while read -r name; do
+  skip=0
+  while IFS=$'\t' read -r pat _why; do
+    # shellcheck disable=SC2254  # 除外表は名前の型 (`test_*.py`) のまま当てたい
+    case "$name" in $pat) skip=1 ;; esac
+  done <"$W/py-skip"
+  if [ "$skip" = 0 ]; then
+    echo "$name" >>"$W/py-want"
+    WANT=$((WANT + 1))
+  fi
+done <"$W/py-readme"
+printf '(f) 道具の実行ビット: README の `scripts/*.py` の参照 %s 種類 / 直接叩く %s 件 (除外 %s)\n' \
+  "$(wc -l <"$W/py-readme")" "$WANT" "$(wc -l <"$W/py-skip")"
+sed 's/^/    除外: /;s/\t/ — /' "$W/py-skip"
+while read -r name; do
+  if [ ! -f "scripts/$name" ]; then
+    NG=1
+    echo "  NG (f): README にあるが scripts/$name が無い"
+  elif [ ! -x "scripts/$name" ]; then
+    NG=1
+    echo "  NG (f): README の scripts/$name に実行ビットが無い (chmod +x scripts/$name)"
+  fi
+done <"$W/py-want"
+
 echo
 if [ "$NG" = 0 ]; then
-  echo "5 つを突き合わせて 差分 0 件。"
+  echo "6 つを突き合わせて 差分 0 件。"
   exit 0
 fi
 echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 を直すか、理由を除外表に書くこと。"
