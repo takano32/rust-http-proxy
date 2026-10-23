@@ -720,10 +720,15 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
 
     // 個票はどれも 256 KiB 以下、`/status` は 64 KiB 以下、履歴は 3 本で最大 2 MiB。
     // 先に全部組んでから、合計が 4 MiB を越えていたら順に落とす
+    // `status` の 3 通りは**今までどおり `hosts[]` も入れる** (軽い形は `/status?hosts=0`
+    // だけの話で、`/snapshot` の `parts` は変えない。T25.1 段 2)
     let mut part: Vec<(&'static str, String)> = vec![
-        ("status", super::status_body(ep, HostSort::Requests)),
-        ("status_errors", super::status_body(ep, HostSort::Errors)),
-        ("status_dns", super::status_body(ep, HostSort::Dns)),
+        ("status", super::status_body(ep, HostSort::Requests, true)),
+        (
+            "status_errors",
+            super::status_body(ep, HostSort::Errors, true),
+        ),
+        ("status_dns", super::status_body(ep, HostSort::Dns, true)),
         // `/history` と同じ組み立て (カーネルと cgroup の窓も一緒に入る。T14.12)
         (
             "history.5",

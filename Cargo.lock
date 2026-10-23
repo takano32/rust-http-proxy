@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-endpoints"
-version = "0.24.4"
+version = "0.25.1"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-core"
-version = "0.24.4"
+version = "0.25.1"
 dependencies = [
  "proxy-metrics-window",
 ]
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-types"
-version = "0.24.4"
+version = "0.25.1"
 dependencies = [
  "proxy-base",
  "proxy-net",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-server"
-version = "0.24.5"
+version = "0.25.1"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "rust-http-proxy"
-version = "0.24.5"
+version = "0.25.1"
 dependencies = [
  "proxy-endpoints",
  "proxy-run",
