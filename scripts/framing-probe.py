@@ -47,6 +47,18 @@ def cases(origin_port):
     ]
 
 
+def connect_cases(echo_port):
+    """CONNECT の入口 (T27.0)。`http` の経路を通らないので、同じ検査が効いているかを見る。"""
+    authority = b"127.0.0.1:%d" % echo_port
+    head = b"CONNECT " + authority + b" HTTP/1.1\r\n"
+    return [
+        ("CONNECT 正常", head + b"Host: " + authority + b"\r\n\r\n", 200, True),
+        ("CONNECT + Host 2 本", head + b"Host: " + authority + b"\r\nHost: evil.example\r\n\r\n", 400, False),
+        ("CONNECT + obs-fold", head + b"Host: " + authority + b"\r\nX-A: 1\r\n 2\r\n\r\n", 400, False),
+        ("CONNECT + CL (本文 5 B)", head + b"Host: " + authority + b"\r\nContent-Length: 5\r\n\r\nhello", 400, False),
+    ]
+
+
 class _Origin(socketserver.StreamRequestHandler):
     """受け取ったヘッダーと本文を覚えておくだけのオリジン。"""
 
@@ -68,6 +80,21 @@ class _Origin(socketserver.StreamRequestHandler):
                 b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(payload) + payload
             )
         except Exception:  # noqa: BLE001 オリジンは落ちても判定を止めない
+            return
+
+
+class _Echo(socketserver.StreamRequestHandler):
+    """トンネルの相手。受け取ったバイトをそのまま返し、回数と中身を覚える。"""
+
+    def handle(self):
+        try:
+            while True:
+                chunk = self.rfile.read1(65536)
+                if not chunk:
+                    break
+                self.server.seen.append(chunk)
+                self.wfile.write(b"[" + chunk + b"]")
+        except Exception:  # noqa: BLE001
             return
 
 
@@ -114,6 +141,11 @@ def main(argv=None):
     origin.seen = []  # type: ignore[attr-defined]
     threading.Thread(target=origin.serve_forever, daemon=True).start()
 
+    # CONNECT のトンネル先 (受け取ったバイトをそのまま返す)
+    echo = _Threaded(("127.0.0.1", args.port + 2), _Echo)
+    echo.seen = []  # type: ignore[attr-defined]
+    threading.Thread(target=echo.serve_forever, daemon=True).start()
+
     env = dict(os.environ, PROXY_ALLOW_LOCAL="1", PROXY_LOG_LEVEL="warn")
     proxy = subprocess.Popen(
         [args.binary, "-p", str(args.port)],
@@ -139,13 +171,28 @@ def main(argv=None):
             got = _status(_send(args.port, raw, args.timeout))
             reached = len(origin.seen) > before
             headers = origin.seen[-1]["headers"] if reached else []
-            ok = got == want and reached <= True and (may_reach or not reached)
+            ok = got == want and (may_reach or not reached)
             if not ok:
                 failed += 1
             shown = ", ".join(h for h in headers if h.lower().startswith(("host:", "content-length:", "x-a")))
             print(
                 "%-28s %-8s %-8s %s%s"
                 % (name, got if got is not None else "(無応答)", want, shown or "-", "" if ok else "   ← ちがう")
+            )
+
+        # CONNECT は `http` の経路を通らないので別に見る (T27.0)
+        print("")
+        print("%-28s %-8s %-8s %s" % ("CONNECT", "状態", "期待", "トンネル先が受け取ったバイト"))
+        for name, raw, want, may_reach in connect_cases(args.port + 2):
+            before = len(echo.seen)
+            got = _status(_send(args.port, raw, args.timeout))
+            seen_bytes = b"".join(echo.seen[before:])
+            ok = got == want and (may_reach or not seen_bytes)
+            if not ok:
+                failed += 1
+            print(
+                "%-28s %-8s %-8s %s%s"
+                % (name, got if got is not None else "(無応答)", want, seen_bytes[:40] or "-", "" if ok else "   ← ちがう")
             )
     finally:
         proxy.terminate()
@@ -155,6 +202,8 @@ def main(argv=None):
             proxy.kill()
         origin.shutdown()
         origin.server_close()
+        echo.shutdown()
+        echo.server_close()
 
     print("")
     if failed:
