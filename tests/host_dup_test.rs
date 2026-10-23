@@ -116,7 +116,8 @@ fn test_integration_duplicate_host_is_rejected() {
     assert!(
         status.contains(
             "\"rejected_requests\":{\"request_line\":0,\"header_too_large\":0,\"method\":0,\
-             \"no_host\":0,\"bad_uri\":0,\"body_framing\":0,\"dup_host\":1,\"total\":1}"
+             \"no_host\":0,\"bad_uri\":0,\"body_framing\":0,\"obs_fold\":0,\"dup_host\":1,\
+             \"total\":1}"
         ),
         "{}",
         status
