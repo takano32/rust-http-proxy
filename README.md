@@ -2322,7 +2322,7 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 > **メモリの小さい環境向けの設定**: `.cargo/config.toml` で `jobs = 1` にしてあります。
 > このリポジトリは **約 90 MB のメモリでリリースビルドが通ります** (2026-09-26、手元の aarch64・rustc 1.98.1 で実測。
 > 90 MB は測った 4 回とも通り、85 MB 以下は 2 回とも落ちます。
-> CI が毎回確かめているのは **120 MB の関門を通るかどうかだけ**で、CI で通る最小は測っていません)。
+> CI が毎回確かめているのは **120 MB の関門を通るかどうかだけ**で、CI で通る最小は週 1 回だけ測っています)。
 > LTO を既定で切っているのと、全クレートを `codegen-units = 4` にしてあるのもこのためです (下の「プロファイルの設定」)。
 > `rustc` はクレート単位で全部を一度に抱えるため、いちばん大きいクレート (`proxy-endpoints`) の 1 プロセスで
 > **RssAnon 82.5 MB** 使い (通る最小はここに 7〜20 MB 足した値になります。`/usr/bin/time -v` の最大 RSS は
@@ -2384,6 +2384,11 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 落ちたときこそ中身が要るので、`snapshot.json` は成功しても失敗しても成果物に付きます (14 日保存)。
 手元で同じものを回すなら `cargo build --release && cargo build --release -p proxy-bench` のあとに
 `scripts/ci-snapshot.sh` (手元で 26 秒。閾は `CI_SNAPSHOT_P50_MAX_MS`、秒数は `--seconds` で変えられます)。
+
+**関門 (120 MB) の余裕は週 1 回だけ測ります** (`build-memory-find`。月曜 03:17 UTC に上限を小さい順へ上げながら
+リリースビルドを試し、**通った最小 = N MB** と関門までの余裕をジョブの step summary に数字で残します。push では
+回しません — 段ごとに `cargo clean` からのビルドが要り、runner を長く占有するためです)。いま知りたいときは
+`gh workflow run ci.yml` (`-f ladder="95 100 105 110"` で段も指定できます)。
 
 **shellcheck を手元で回すのも同じ 1 行です**: `shellcheck scripts/*.sh scripts/mx`
 (切った指摘とその理由は `scripts/.shellcheckrc` にあり、shellcheck が自動で読みます。入っていなければ

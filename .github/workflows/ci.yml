@@ -252,6 +252,8 @@ jobs:
           # schedule のときは github.event.inputs が無いので既定の段になる
           # (`inputs` 文脈は手回しでしか無いので `github.event.inputs` の方を使う)
           LADDER: ${{ github.event.inputs.ladder || '80 85 90 95 100 105 110 120' }}
+          # 関門の値 (上の build-memory と同じ 120)。余裕を出すのに使う
+          GATE_MB: "120"
         run: |
           case "$LADDER" in
             "" | *[!0-9\ ]*)
@@ -263,10 +265,26 @@ jobs:
           ./scripts/build-memory.sh --find $LADDER 2>&1 | tee find.txt
           rc=${PIPESTATUS[0]}
           set -e
+          # **数字を 1 行で残す** (T26.2)。ログを貼るだけだと「通った最小」と関門までの余裕を
+          # 毎回目で探すことになる。答えはスクリプトの印字 (`通る最小の上限: N MB`) から取り、
+          # 取れなければ「測れず」と理由を書く (0 や空でごまかさない)
+          min=$(sed -n 's/^通る最小の上限: \([0-9][0-9]*\) MB$/\1/p' find.txt | head -n 1)
+          # 1 段ごとの「  N MB では通らなかった」から、落ちた上限を並びで拾う
+          failed=$(sed -n 's/^  \([0-9][0-9]*\) MB では通らなかった.*/\1/p' find.txt | tr '\n' ' ' | sed 's/ $//')
           {
-            echo '### ビルドが通る最小のメモリ (CI)'
+            echo '### 関門 (120 MB) までの余裕'
             echo ''
-            echo "試した上限: \`$LADDER\` MB"
+            echo "- 回した理由: \`$GITHUB_EVENT_NAME\`"
+            echo "- 試した上限 (小さい順): \`$LADDER\` MB"
+            if [ -n "$min" ]; then
+              echo "- **通った最小 = $min MB** (関門 ${GATE_MB} MB までの余裕 = $((GATE_MB - min)) MB)"
+            elif grep -q '^cgroup を作れない' find.txt; then
+              echo '- **通った最小 = 測れず** (この runner では cgroup を作れない。上の「cgroup の経路」を見る)'
+            else
+              echo '- **通った最小 = 測れず** (どの上限でも通らなかった。下のログを見る)'
+            fi
+            echo "- 落ちた上限: \`${failed:-なし}\`"
+            echo ''
             echo '```'
             grep -E '^(=== |  [0-9]+ MB では|通る最小の上限|どの上限でも|cgroup を作れない)' find.txt || true
             echo '```'
