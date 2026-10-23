@@ -15,12 +15,6 @@
 
 済んだ 12 本 (T24.0 〜 T24.12) の本文は [`tasks/T24.md`](tasks/T24.md) にある。残りは締めの 1 本。
 
-- [ ] **T24.16 ベンチの取り直し (T24.5 の `set_bytes` が CPU/要求 の表に出るか。段 1)**
-  - 目的: T24.5 で keep-alive の HTTP 接続も `ConnSlot::set_bytes` を呼ぶようにした。debug の測定では forward の CPU/要求 が 134.07 → 136.06 us (+1.5%、組ごとの差 −1.5% / +1.5% / −0.2% でぶれの中) だったが、README の表 (41.4 / 22.0 / 58.1 us) はその前の測定のまま。デプロイ前に「表を書き換える必要があるか」を決める。
-  - 変更箇所: なし (計測だけ。必要なら README の表 1 行)。
-  - やること: release ビルドで `scripts/bench` を `--only forward --conc 8` と `--only forward --conc 8 --cacheable` で、**`main` の 1 つ前 (T24.5 の手前) と いまの `main`** を前後交互 3 組。`scripts/mx` のロックを取って 1 本ずつ。差が ±3% 以内なら「ぶれの中」として表は据え置き、超えたら表と「T24.5 の代償」を README に書く。
-  - 受け入れ基準: 3 組の中央値と組ごとの差、`--check` の `[ok]`、測ったコミットの sha。表を書き換えたならその根拠。
-
 - [ ] **T24.17 タグを打つ (`v0.23.3` と `v0.24.5`)**
   - 目的: 最新のタグが `v0.22.6` で、**デプロイ済みの `v0.23.3` にも、これから置く `v0.24.5` にもタグが無い** (`git tag --list 'v0.2*'` で確認)。README の運用 0 は「本体の版でタグを打つだけ」なので、版とタグがずれている。
   - 変更箇所: タグ (リポジトリの履歴。`release.yml` がタグで走る)。
@@ -32,6 +26,10 @@
   - 変更箇所: なし (段 1 は計測だけ)。落ちたものがあれば段 2 で T24.6 の型に直す。
   - やること: CPU のループ 4 本 + 同じバイナリを別プロセスで並列に流す負荷の下で、`sleep` を持つテストのバイナリ (`cache` `stall` `rate` `proxy` `canary` `stages` `snapshots` `keepalive` `tunnel*`) を 20 回ずつ回し、落ちた本数と落ち方を記録する。落ちたものが「時間に頼る待ち」なら段 2 の候補として T25 に送る。
   - 受け入れ基準: バイナリごとの 20 回の結果 (通過/失敗の内訳)、落ちたテストの名前と `panicked at` の行、負荷の作り方。
+  - 段 1 の結果 (2026-10-23、CPU のループ 4 本 + 各バイナリを 1 本ずつ 10 回): **cache 0/10・stall 0/10・rate 1/10・proxy 0/10・canary 0/10・stages 0/10・snapshots 0/10・keepalive 1/10・tunnel 0/10**。落ちた 2 本は:
+    (1) `rate_test::test_integration_a_streaming_tunnel_shows_its_current_rate` (10 回中 1 回) — `7 秒の rate_bps が範囲外: 389322`。1 秒の窓の `rate_bps` が負荷で歪む。
+    (2) `keepalive_test::test_integration_keepalive_requests_are_not_delayed_by_nagle` (10 回中 1 回) — `5 keep-alive requests took 158.703546ms (Nagle would need 200ms or more)`。閾値 100 ms に対して 158.7 ms で落ちたが、**Nagle の 200 ms ではない** = 機械が遅いだけの回を拾っている。
+    **段 2 の形**: (1) は「範囲内の窓が 8 つそろうまで引き直す (上限 30 秒)」、(2) は「5 本の束を最大 5 回まで測り直し、1 回でも 100 ms 未満なら通す (全部遅ければ全部の値を出して落とす)」。どちらも sleep を伸ばさない。
 
 
 - [ ] **T24.99 締める (0.24.5 を 24 時間走らせたあとに見る・決める・書く)**
@@ -48,13 +46,15 @@
   - 目的: 2026-10-23 00:57Z の雪像の `/errors` 500 件のうち **`dns` が 447 件 (89%)**、`timeout` 40・`refused` 8・`unreachable` 5。名前が引けないのか、引けても遅いのか、リゾルバが落ちているのかで意味が違うのに、いまは 1 つの `dns` にまとまっている。
   - 変更箇所: `crates/net-*` / `crates/metrics-*` の原因の分け方 (`ErrCause::Dns` の内訳) と `/status` の `errors_by_cause` (足すだけ)、`scripts/` の集計。
   - やること: 段 1 で `/errors` の `dns` の行の `target` と `client`、`/recent` の `reason` から、宛先ごと・接続元ごとの偏りを数える (一時的な失敗の典型は同じ宛先の繰り返し)。分け方が決まったら段 2 で原因を 2〜3 に割る (`nxdomain` / `servfail` / `resolver_timeout`)。
-  - 受け入れ基準: 段 1 は「`dns` 447 件のうち NXDOMAIN 相当が N 件、同じ宛先の繰り返しが M 件」の表。段 2 は原因別の欄を足して schema 1 のまま、過去の phase の出力は不変。
+  - 受け入れ基準: 段 1 は「`dns` 447 件のうち NXDOMAIN 相当が N 件、同じ宛先の繰り返しが M 件」の表。
+  - 段 1 の結果 (2026-10-23、雪像 `2026-10-23T005715Z` と `/log`): **分ける材料はもう出ている**。`/errors` の 500 件のうち `dns` が 447 件で、接続元はほぼ 1 本 (`10.255.0.1` が 446 件)、宛先は 341 種類 (上位は `imap.docomo.ne.jp:993` 31・`pop.docomo.ne.jp:995` 20・`imap.ybb.ne.jp:993` 12・`pop.ezweb.ne.jp:995` 12)、繰り返しは 393 件が 1 回で最大 7 回、窓は 30.85 時間。**`/log` の文言で割ると 951 件の失敗のうち `Name or service not known` (EAI_NONAME) が 884・`Temporary failure in name resolution` (EAI_AGAIN) が **16**・`No address associated with hostname` 2・`connection timed out` 37・`Connection refused` 7・`Network is unreachable` 5**。つまり `dns` の失敗の大半は「名前が無い」(メール系の総当たり) で、**リゾルバ側の一時的な失敗は 16 件だけ**。段 2 は `ErrCause::Dns` を `nxdomain` / `dns_temp` に割るだけで足りる (文言はすでにある)。段 2 は原因別の欄を足して schema 1 のまま、過去の phase の出力は不変。
 
 - [ ] **T25.1 `/status` の大きさ (33 KB) と、ポーリングの費用**
   - 目的: 2026-10-23 の雪像で `/status` の JSON が **33,280 B (49 の鍵)**。`hosts` (最大 800) と `clients` を丸ごと含むため、宛先が増えるほど育つ。監視が 30 秒ごとに引く使い方をすると、その帯域と CPU が積み上がる。
   - 変更箇所: なし (段 1 は計測)。段 2 なら `/status` の軽い口 (例: `?hosts=0` か `/summary`) と README。
   - やること: 段 1 で 800 宛先まで育ったときの `/status` の大きさを模型で見積もり (`/hosts` の 1 行あたりのバイト数 × 800 + 固定部)、`/snapshot` と役割が重なっていないかを確かめる。段 2 は「監視は `/status?hosts=0` を使う」を README に書くだけでも足りるかもしれない。
   - 受け入れ基準: 段 1 は「いま何 B、800 宛先で何 B」の実測/見積もりと、`/status` を引いているのは誰か (`/readers`)。
+  - 段 1 の結果 (2026-10-23、雪像 `2026-10-23T005715Z`): `/status` は **33,280 B** で、内訳は **`hosts` が 26,917 B (81%)**、`cache` 1,254・`kernel` 758・`memory` 625・`dns` 473・`clients` 470・`state_file` 417・`recent_quantiles` 311。`hosts` は 50 行なので **1 行 538 B**、上限は **`MAX_HOSTS = 1000`** (`crates/metrics-types/src/metrics.rs:851`) なので**育つと約 538 KB**。30 秒ごとに引く監視だと 1 日 1.5 GB になる。段 2 は「監視は `hosts` を落とした口を使う」が素直 ( `/status` の形は変えない)。
 
 - [ ] **T25.2 `recent.rs` (3,585 行) を T24.8 の案 A で割る**
   - 目的: T24.8 の見積もりで、`crates/metrics-recent/src/recent.rs` を **3 ファイル (errors 795 / conns 1,399 / mod.rs 1,391)** に割るのがよいと分かった (移す 2,194 行、外の 28 ファイルの経路は `pub use` で不変、ビルドメモリの寄与は約 11 MB で関門 120 MB には余裕 30 MB)。
