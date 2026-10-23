@@ -11,7 +11,7 @@ use crate::dns;
 use crate::log::{Access, access};
 #[cfg(not(target_os = "linux"))]
 use crate::log_trace;
-use crate::metrics::{Detail, ErrCause, HostOutcome, Metrics, StageMs};
+use crate::metrics::{Detail, Failure, HostOutcome, Metrics, StageMs};
 use crate::net;
 use crate::recent::{
     CLIENT_SIDE, CloseReason, ConnSlot, ConnTally, ORIGIN_SIDE, SIDES, STAGE_CLIENT_READ,
@@ -103,7 +103,7 @@ fn open(
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
             let detail = detail_of(
                 started.elapsed(),
-                Some(ErrCause::from_io(&e)),
+                Some(Failure::from_io(&e)),
                 stages,
                 dns_before,
             );
@@ -123,7 +123,7 @@ fn open(
                 stage_ms[STAGE_DNS] = detail.dns_ms;
                 stage_ms[STAGE_CONNECT] = detail.connect_ms;
                 s.finish(
-                    CloseReason::Error(ErrCause::from_io(&e)),
+                    CloseReason::error_from_io(&e),
                     ConnTally {
                         up: 0,
                         down: 0,
@@ -209,7 +209,7 @@ fn open(
 /// 入っているので、こちらは引く。**時計 (`started`) は動かしていない**ので、
 /// `connect_took` = `/history` の `connect` の窓・`recent_quantiles.connect`・`/slo` は
 /// 1 ms も動かない (Phase 12〜14 の p50 と比べられる値のまま)。
-fn detail_of(total: Duration, cause: Option<ErrCause>, stages: StageMs, dns_before: u64) -> Detail {
+fn detail_of(total: Duration, cause: Option<Failure>, stages: StageMs, dns_before: u64) -> Detail {
     let (dns_ms, dns_misses) = crate::dns::take_resolve_cost();
     let total_ms = total.as_millis().min(u64::MAX as u128) as u64;
     // `total` の窓の**内側**で払った名前解決だけを引く
@@ -222,7 +222,9 @@ fn detail_of(total: Duration, cause: Option<ErrCause>, stages: StageMs, dns_befo
         // 確立までに SYN を送り直した回数 (T14.46)。読んだのは `net` の確立点の
         // `getsockopt` 1 回で、ここは thread-local を読んで 0 に戻すだけ
         syn_retrans: crate::dns::take_syn_retrans(),
-        cause,
+        // 失敗のときは 8 つの原因と DNS の内訳を 1 回で受け取る (T25.0)
+        cause: cause.map(|f| f.cause),
+        dns_cause: cause.and_then(|f| f.dns),
         // CONNECT は「確立まで」がそのまま窓に入る値なので指定しない
         first_byte_ms: None,
         // `queue` と `client_read` は本体クレートが測った値 (T14.3 (1))。
@@ -1215,7 +1217,7 @@ mod relay {
                         *close = Some(if went_away(&e) {
                             CloseReason::ClientDead
                         } else {
-                            CloseReason::Error(crate::metrics::ErrCause::from_io(&e))
+                            CloseReason::error_from_io(&e)
                         });
                         break;
                     }

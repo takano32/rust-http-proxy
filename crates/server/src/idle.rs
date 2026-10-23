@@ -542,7 +542,7 @@ mod linux {
                             conn.finish(if err.kind() == io::ErrorKind::TimedOut {
                                 CloseReason::ClientDead
                             } else {
-                                CloseReason::Error(crate::metrics::ErrCause::from_io(&err))
+                                CloseReason::error_from_io(&err)
                             });
                             drop(conn);
                             continue;

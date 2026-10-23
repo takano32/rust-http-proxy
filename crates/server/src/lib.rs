@@ -1063,7 +1063,7 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
             Ok(step) => step,
             Err(e) => {
                 // 入出力で落ちた接続も個票に残す (原因つき。T14.4)
-                conn.finish(recent::CloseReason::Error(metrics::ErrCause::from_io(&e)));
+                conn.finish(recent::CloseReason::error_from_io(&e));
                 return Err(e);
             }
         };

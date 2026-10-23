@@ -143,6 +143,37 @@ class Group(unittest.TestCase):
         self.assertEqual(con["requests"], 400, "CONNECT 側は forward を含まない")
 
 
+class DnsCauseColumns(unittest.TestCase):
+    """`errors_by_cause` の 8 要素と 10 要素の両方を読む (T25.0)。
+
+    過去の雪像 (T25.0 より前) の `errors_by_cause` は 8 要素で、`dns` … `other` の
+    並びは今も同じ。T25.0 からは**うしろに** 2 つ (`nxdomain` / `dns_temp` = `dns` の
+    内訳) が付く。8 要素を読んでも落ちず、10 要素では内訳を出すこと。
+    """
+
+    def test_an_old_eight_column_row_still_reads(self):
+        # `dns 5` と `timeout 1`。内訳が無いので合計のまま出す
+        self.assertEqual(pd.causes_text([5, 0, 0, 1, 0, 0, 0, 0]), "dns 5 timeout 1")
+
+    def test_the_split_replaces_the_total_when_it_is_there(self):
+        # 9・10 番目が入っていれば `dns 5` の代わりに内訳を出す (二重に数えない)
+        self.assertEqual(
+            pd.causes_text([5, 0, 0, 1, 0, 0, 0, 0, 4, 1]), "nxdomain 4 dns_temp 1 timeout 1"
+        )
+        # 内訳が 0 のまま (T25.0 より前の `.rrd` を読み戻した行) なら合計のまま
+        self.assertEqual(pd.causes_text([5, 0, 0, 0, 0, 0, 0, 0, 0, 0]), "dns 5")
+
+    def test_the_delta_pads_a_missing_split_with_zero(self):
+        old = host("connect://imap.docomo.ne.jp:993", 10, errors_by_cause=[2, 0, 0, 0, 0, 0, 0, 0])
+        new = host("connect://imap.docomo.ne.jp:993", 12,
+                   errors_by_cause=[4, 0, 0, 0, 0, 0, 0, 0, 2, 0])
+        row = pd.row_of("connect://imap.docomo.ne.jp:993", old, new)
+        self.assertEqual(len(row["errors_by_cause"]), 10, "8 要素と 10 要素を突き合わせる")
+        self.assertEqual(row["errors_by_cause"][0], 2, "`dns` の差分は今までどおり")
+        self.assertEqual(row["errors_by_cause"][8], 2, "内訳は後の雪像にだけある")
+        self.assertEqual(pd.causes_text(row["errors_by_cause"]), "nxdomain 2")
+
+
 class Cli(unittest.TestCase):
     """`status-diff.py --group domain` の表。"""
 

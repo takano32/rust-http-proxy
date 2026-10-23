@@ -34,7 +34,9 @@ import json
 import sys
 from datetime import datetime, timezone
 
-# `crates/metrics/src/metrics.rs` の ERR_CAUSE_NAMES (errors_by_cause の並び)
+# `crates/metrics-types` の ERR_CAUSE_NAMES (errors_by_cause の並び)。T25.0 で後ろに
+# 2 つ (`dns` の内訳) が足されたが、ここは**8 つだけ**を読む: `total = sum(causes)` を
+# 使っているので、内訳まで足すと同じ失敗を 2 回数えることになる
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
 # 「接続の失敗」としてまとめる原因 (T23.1 が phase22 の行から差し替える 3 つ)
 CONNECT_CAUSES = ("refused", "unreachable", "timeout")

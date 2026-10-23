@@ -138,6 +138,95 @@ pub const ERR_CAUSE_NAMES: [&str; ERR_CAUSES] = [
     "other",
 ];
 
+/// `errors_by_cause` の**うしろに足す** DNS の内訳の数 (T25.0)。
+///
+/// 先頭 8 つ ([`ERR_CAUSE_NAMES`]) の意味と並びは**変えない**: 過去の雪像 (`schema` 1) の
+/// `errors_by_cause` は 8 要素で、読む側は先頭 8 つをそのまま読む。`dns` (添字 0) は
+/// 今までどおり**名前解決の失敗の合計**で、9・10 番目がその内訳
+/// (`errors_by_cause[0] == 9 番目 + 10 番目`)。
+pub const DNS_CAUSES: usize = 2;
+
+/// `errors_by_cause` の 9・10 番目に入る名前 ([`DNS_CAUSES`] と同じ順)。
+pub const DNS_CAUSE_NAMES: [&str; DNS_CAUSES] = ["nxdomain", "dns_temp"];
+
+/// 名前解決の失敗の内訳 (T25.0)。**引き直せば変わるか**で 2 つに割る。
+///
+/// 2026-10-23 の雪像では `/errors` の 500 件のうち 447 件が `dns` で、`/log` の文言で
+/// 割ると `Name or service not known` (`EAI_NONAME`) が大半、`Temporary failure in
+/// name resolution` (`EAI_AGAIN`) が 16 件だった。メール系の総当たりのように
+/// **名前が無い**のか、リゾルバが落ちているのかで次にやることが違うので分ける。
+///
+/// [`ErrCause`] に足さないのは、`CloseReason` の符号 (`8 + cause`) と `errors_by_cause`
+/// の先頭 8 列を動かさないため。[`ErrCause::Dns`] は合計として今までどおり残る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum DnsCause {
+    /// 名前 (または住所) が無いと言われた = **引き直しても変わらない**
+    /// (`EAI_NONAME` / `EAI_NODATA` 相当)
+    Nxdomain = 0,
+    /// 一時的な失敗 = 引き直せば変わりうる (`EAI_AGAIN` 相当)。文言を読めないものも
+    /// 「変わらない」と言い切れないのでこちらに入れる
+    DnsTemp = 1,
+}
+
+impl DnsCause {
+    /// `errors_by_cause` の 9・10 番目の名前 (`/explain` と `/recent` も同じ綴り)。
+    pub fn name(self) -> &'static str {
+        DNS_CAUSE_NAMES[self as usize]
+    }
+
+    /// `io::Error` の文言から内訳を決める。**呼ぶのは [`ErrCause::from_io`] が
+    /// [`ErrCause::Dns`] を返したときだけ** ([`Failure::from_io`] が 1 か所で面倒を見る)。
+    ///
+    /// `getaddrinfo` の失敗は Rust では `io::ErrorKind` が `NotFound` にも
+    /// `Uncategorized` にもなり (`ToSocketAddrs` の実装依存)、**EAI の符号は文言にしか
+    /// 残らない**ので文字列で見る。エラーの経路からしか通らないので熱い道には乗らない。
+    pub fn from_io(e: &std::io::Error) -> DnsCause {
+        DnsCause::of_text(&e.to_string())
+    }
+
+    /// 文言から内訳を決める ([`DnsCause::from_io`] の本体。試験から直接叩ける)。
+    pub fn of_text(msg: &str) -> DnsCause {
+        // 「名前が無い / 住所が無い」と言い切れる文言だけ `nxdomain`。
+        // ここに無いもの (一時的な失敗、読めない文言) は `dns_temp` に寄せる
+        const NO_NAME: [&str; 6] = [
+            "Name or service not known",                  // EAI_NONAME (glibc)
+            "No address associated with hostname",        // EAI_NODATA (glibc)
+            "nodename nor servname provided",             // EAI_NONAME (macOS)
+            "Non-recoverable failure in name resolution", // EAI_FAIL (glibc)
+            "Could not resolve host",                     // 引けたが住所が 0 本 (net::connect_addrs)
+            "host has no IPv4 address",                   // IPv6 を切っていて使える住所が無い
+        ];
+        if NO_NAME.iter().any(|p| msg.contains(p)) {
+            DnsCause::Nxdomain
+        } else {
+            DnsCause::DnsTemp
+        }
+    }
+}
+
+/// 失敗 1 件の分け方 (T25.0)。[`ErrCause`] と、DNS のときだけ入る内訳。
+///
+/// **1 つの `io::Error` から 2 つを一度に決める**ための小さな型。呼ぶ側が
+/// [`ErrCause::from_io`] と [`DnsCause::from_io`] を別々に呼ぶと、`dns` が `Some` なのに
+/// `cause` が [`ErrCause::Dns`] でない組み合わせを作れてしまう。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Failure {
+    pub cause: ErrCause,
+    /// `cause` が [`ErrCause::Dns`] のときだけ `Some`
+    pub dns: Option<DnsCause>,
+}
+
+impl Failure {
+    pub fn from_io(e: &std::io::Error) -> Failure {
+        let cause = ErrCause::from_io(e);
+        Failure {
+            cause,
+            dns: (cause == ErrCause::Dns).then(|| DnsCause::from_io(e)),
+        }
+    }
+}
+
 /// 要求を読めずに断った理由 (T14.28)。**6 種で固定**。
 ///
 /// 公開ポートには走査 (scanner) の要求が来る。今までは 400 / 414 / 431 で閉じるだけで
@@ -337,6 +426,9 @@ pub struct Detail {
     pub family_v6: Option<bool>,
     /// エラーの原因 (エラーでなければ `None`)
     pub cause: Option<ErrCause>,
+    /// 名前解決の失敗の内訳 (T25.0)。[`Detail::cause`] が [`ErrCause::Dns`] のときだけ
+    /// `Some` ([`Failure::from_io`] が作る)。`errors_by_cause` の 9・10 番目に足す
+    pub dns_cause: Option<DnsCause>,
     /// 履歴の窓に入れる値 (ms)。forward は「初バイトまで」で、応答全体の時間
     /// (`took`) とは別。`None` なら `took` をそのまま使う (CONNECT の確立時間)
     pub first_byte_ms: Option<u64>,
@@ -424,6 +516,10 @@ pub struct HostStats {
     pub v6_wins: u64,
     /// エラーの原因別の件数 ([`ErrCause`] の順)
     pub errors_by_cause: [u64; ERR_CAUSES],
+    /// 名前解決の失敗の内訳 ([`DnsCause`] の順。T25.0)。`errors_by_cause` の
+    /// **うしろに足す 2 列**で、先頭 8 列の意味は動かさない。`.rrd` には
+    /// [`HostStats::encode`] の**末尾**に書く (前の欄の位置を動かさない)
+    pub dns_by_cause: [u64; DNS_CAUSES],
     /// カーネルの平滑化 RTT (`TCP_INFO`) の標本 (T14.5)。**要求ごとではなく接続の
     /// 終わりに 1 本 1 回**なので `timed` とは数が合わない。ホスト別はオリジン側、
     /// 接続元別 ([`ClientStats`]) はクライアント側の値が入る
@@ -502,6 +598,12 @@ impl HostStats {
         if let Some(c) = d.cause {
             self.errors_by_cause[c as usize] += 1;
         }
+        // 名前解決の失敗の内訳 (T25.0)。鍵の内側の足し算 1 回で、`dns` の合計
+        // (`errors_by_cause[ErrCause::Dns as usize]`) は今までどおり別に数える
+        // (`dns == nxdomain + dns_temp` が保たれる)
+        if let Some(c) = d.dns_cause {
+            self.dns_by_cause[c as usize] += 1;
+        }
         // 向き別のバイト (T14.26)。既に数えてあるものを 2 つに分けて運んできただけなので、
         // ここで増えるのは足し算 2 回だけ (鍵も原子操作もシステムコールも増えない)
         self.bytes_in += d.bytes_in;
@@ -548,9 +650,16 @@ impl HostStats {
             .u64(self.rtt_samples)
             .u64(self.retrans);
         // T14.26 の 2 欄も同じ作法で末尾へ (552 → 568 B)。版 3 の 1 スロットは 640 B =
-        // ペイロード 636 B なので**ここから下が予備の 68 B** (T14.14。8 項目ぶん)。
+        // ペイロード 636 B なので**ここから下が予備の 68 B** (T14.14。8 項目ぶん。
+        // T25.0 の 2 欄を足したので今は 52 B = 6 項目ぶん)。
         // 足しても版は上がらない (古いファイルはその位置がゼロ埋めなので 0 で読み戻る)
         e.u64(self.bytes_in).u64(self.bytes_out);
+        // T25.0 の 2 欄 (DNS の失敗の内訳) も**末尾**へ (568 → 584 B)。スロットの
+        // ペイロードは 636 B なので余白に収まり、**版は上がらない** (古いファイルは
+        // この位置がゼロ埋めなので 0 で読み戻る)
+        for c in self.dns_by_cause {
+            e.u64(c);
+        }
         e.0
     }
 
@@ -596,6 +705,11 @@ impl HostStats {
         // ならこの位置から (T14.14)
         s.bytes_in = d.u64();
         s.bytes_out = d.u64();
+        // ここから T25.0 の 2 欄 (DNS の失敗の内訳)。T25.0 より前に書かれた行は
+        // ここで尽きて 0 が返る (= `nxdomain` / `dns_temp` は「分からない」)
+        for c in s.dns_by_cause.iter_mut() {
+            *c = d.u64();
+        }
         Some((name, s))
     }
 
@@ -901,6 +1015,14 @@ pub fn stats_json(s: &HostStats, detail: bool) -> String {
             if i > 0 {
                 out.push(',');
             }
+            let _ = write!(out, "{}", c);
+        }
+        // **後ろに足すだけ** (T25.0)。DNS の失敗の内訳 (`nxdomain` / `dns_temp`) を
+        // 9・10 番目に置く。先頭 8 つの意味と並びは 1 つも変えていないので、過去の
+        // 雪像 (8 要素) を読む側はそのままでよい (名前は `/status` の README と
+        // `DNS_CAUSE_NAMES`、`/explain` は名前つきで出す)
+        for c in s.dns_by_cause {
+            out.push(',');
             let _ = write!(out, "{}", c);
         }
         out.push(']');

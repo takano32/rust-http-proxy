@@ -44,7 +44,10 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from snapshot_criteria import silent_restart_text, silent_restarts  # noqa: E402
 
-# `/status` の `errors_by_cause` の並び (`crates/metrics/src/metrics.rs` の ERR_CAUSE_NAMES)
+# `/status` の `errors_by_cause` の並び (`crates/metrics-types` の ERR_CAUSE_NAMES)。
+# T25.0 で後ろに 2 つ (`nxdomain` / `dns_temp` = `dns` の内訳) が足されたが、ここは
+# **8 つだけ**を読む (要約では `dns` の合計で足りる。内訳は `/status` か
+# `scripts/status-diff.py` で読む。足すと合計と内訳が二重に並ぶ)
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
 # 名前解決のミスの種類 (`crates/net-dns/src/dns.rs` の `misses_by_kind_json`。この順で和が `misses`)
 MISS_KINDS = ["cold", "expired", "warm_stale", "negative"]

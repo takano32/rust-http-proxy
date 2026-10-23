@@ -691,6 +691,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   - **個票 (集計では読めない「誰が・いつ・なぜ」。T13.4)**: `/errors?n=100` で直近のエラー
     (時刻・`connect` / `forward` / `canary`・宛先・原因・名前解決 ms・接続 ms・返した状態コード・接続元。
     500 件の環状、プロセスのメモリだけ)。
+    **名前解決の失敗の `cause` は T25.0 から `nxdomain` / `dns_temp`** (前者 = 名前か住所が無い =
+    引き直しても変わらない、後者 = 一時的な失敗 = 引き直せば変わりうる。合わせて今までの `dns`)。
+    状態ファイルに残る符号も別 (20・21) なので、再起動をまたいでも内訳のまま読み戻ります
+    (T25.0 より前に書かれた行は `dns` のまま出ます — 内訳が無いので推測しない)。
     **同じ失敗の繰り返しは 1 行にまとめます** (T20.3): 新しい方から 8 行の中に `kind`・`target`・`cause`・`status`・`client` が全部同じ行があれば、行を足さずにその行の `repeats` (回数。初めは 1) を増やし、`last_at` (最後の 1 回の時刻) と `dns_ms` / `connect_ms` (最後の 1 回の値) を書き換えます。`at` は最初の 1 回の時刻のままで、並びも行ができた順 (新しい順) のままです。`repeats` と `last_at` は各行の末尾にあり、まとめていない行は `repeats` 1・`last_at` は `at` と同じです (`0.18.0` までの版にはこの 2 つが無いので、1 回として読んでください)。
     `recorded` (起動からの通算) はまとめた回も 1 ずつ増え、`kept` と `count` は行の数です。同じ宛先への同じ失敗が何千回続いても 1 行で済むので、その間に起きた別の失敗が環から押し出されません (`0.18.0` までは 500 行が 1 種類で埋まりました)。
     **`repeats` は状態ファイルに残しません**: `.recent` に書くのは行ができたときの 1 回だけなので、再起動のあとは `repeats` 1・`last_at` は `at` (最初の 1 回の時刻) に戻ります (原因別の通算は `/history` の `errors_by_cause`)。`/explain` のエラーの個票と `/snapshot` の `errors` も同じ行です。
@@ -804,7 +808,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     理由は `client_eof` (クライアントが先に EOF) / `server_eof` (宛先が先に EOF) / `idle_timeout` (トンネルの無通信打ち切り) /
     `keepalive_timeout` (次の要求を待ちきれなかった) / `evicted` (上限に当たって席を作るために閉じた。`PROXY_MAX_CONNS`) /
     `limit` (1 接続あたりの要求数の上限) / **`client_dead`** (クライアントが黙って消えた。TCP keepalive が尽きて `ETIMEDOUT`。
-    `PROXY_TCP_KEEPALIVE`。T14.52) / `error:<原因>` (原因は `/status` の `errors_by_cause` と同じ 8 つ) /
+    `PROXY_TCP_KEEPALIVE`。T14.52) / `error:<原因>` (原因は `/status` の `errors_by_cause` と同じ 8 つ。
+    名前解決の失敗だけは内訳の綴りで `error:nxdomain` / `error:dns_temp` になる。T25.0) /
     `shutdown` (その他のプロキシ側の都合) の 9 種類。
     **`client_dead` の読み方**: 端末がスリープしたり回線が切れたりすると FIN も RST も来ないので、そのトンネルは
     `PROXY_TUNNEL_IDLE_SECS` (300 秒) の期限切れまで残り、keepalive が無ければ `idle_timeout` として数えられます。
@@ -2995,7 +3000,11 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 1 つも上位 50 に居ませんでした**。`curl "http://127.0.0.1:8080/status?sort=errors"` で見られます。
 ホスト別の行にはさらに**待ちの内訳**が入ります: `dns_ms_sum` / `dns_misses` (名前解決を OS に聞いた合計時間と回数)、
 `connect_ms_sum` (接続にかかった合計時間。名前解決のぶんは含みません)、`v4_wins` / `v6_wins` (確立した族)、
-`errors_by_cause` (`[dns, refused, unreachable, timeout, reset, tls, loop, other]` の順の件数。
+`errors_by_cause` (`[dns, refused, unreachable, timeout, reset, tls, loop, other, nxdomain, dns_temp]` の順の件数。
+**先頭 8 つは今までどおり**で、9・10 番目が `dns` の内訳 (`nxdomain` = 名前か住所が無い =
+引き直しても変わらない / `dns_temp` = 一時的な失敗 = 引き直せば変わりうる。`dns` は合計のまま
+残るので `dns == nxdomain + dns_temp`)。T25.0 より前の雪像は 8 要素なので、9・10 番目が
+無ければ `dns` の合計だけを読んでください。
 `loop` は自分の `Via` が付いて `508` で閉じたもの。**複数の候補を並行に試して (Happy Eyeballs)
 締め切りまで 1 本も確立できなかったときは `timeout`** です — 2026-09-18 より前は、その間に 1 本だけ先に
 返ってきた `ECONNREFUSED` などが最後のエラーとして残り、締め切りいっぱい待った接続が `refused` に
