@@ -86,13 +86,14 @@ fn test_integration_bad_requests_are_counted_by_reason() {
     assert_eq!(count(BadRequestReason::Method), 0);
     assert_eq!(count(BadRequestReason::BadUri), 0);
     assert_eq!(count(BadRequestReason::BodyFraming), 0);
+    assert_eq!(count(BadRequestReason::ObsFold), 0);
 
     // `/status` の欄 (理由別と合計)
     let status = status_json(proxy_port);
     assert!(
         status.contains(
             "\"rejected_requests\":{\"request_line\":1,\"header_too_large\":1,\"method\":0,\
-             \"no_host\":1,\"bad_uri\":0,\"body_framing\":0,\"total\":3}"
+             \"no_host\":1,\"bad_uri\":0,\"body_framing\":0,\"obs_fold\":0,\"total\":3}"
         ),
         "{}",
         status
@@ -117,7 +118,7 @@ fn test_integration_bad_requests_are_counted_by_reason() {
     assert!(!errors.contains("somewhere"), "{}", errors);
     assert!(!errors.contains("example.invalid"), "{}", errors);
 
-    // `/metrics` の 6 本 (立った 3 本が 1、残りは 0)
+    // `/metrics` の 7 本 (立った 3 本が 1、残りは 0)
     let prom = endpoint_json(proxy_port, "/metrics");
     assert!(
         prom.contains("# TYPE sorahost_rejected_requests_total counter\n"),
@@ -215,7 +216,7 @@ fn test_integration_successful_requests_do_not_count() {
     assert!(
         status.contains(
             "\"rejected_requests\":{\"request_line\":0,\"header_too_large\":0,\"method\":0,\
-             \"no_host\":0,\"bad_uri\":0,\"body_framing\":0,\"total\":0}"
+             \"no_host\":0,\"bad_uri\":0,\"body_framing\":0,\"obs_fold\":0,\"total\":0}"
         ),
         "`/status` の合計も 0: {}",
         status

@@ -424,6 +424,18 @@ pub fn handle_http_with_headers(
     let cache: &Cache = &shared.cache;
     let metrics: &Metrics = &shared.metrics;
     let req = parse_request_headers(raw_headers, conn_id);
+    // RFC 9112 §5.2: 折り返した (obs-fold) ヘッダーは、中継する側が 400 で断るか
+    // SP 1 個に置き換えるかを選べる。置き換えると値が黙って変わるので**断る** (T27.2)。
+    // 継続行を捨てていた今までは、オリジンに `X-A: 1` だけが届いていた
+    if req.obs_fold {
+        log_warn!(
+            Some(conn_id),
+            "400 Bad Request: obsolete line folding in request headers"
+        );
+        metrics.record_bad_request(BadRequestReason::ObsFold, client_ip.unwrap_or("-"), 400);
+        let _ = write_error(client, 400, "Bad Request");
+        return Ok(false);
+    }
 
     let mut parts = request_line.split_whitespace();
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {

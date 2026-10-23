@@ -31,11 +31,22 @@ pub struct RequestHeaders {
     pub accept_encoding: Option<String>,
     pub connection_close: bool,
     pub connection_keep_alive: bool,
+    /// 折り返し (obs-fold) の継続行が混ざっていた (RFC 9112 §5.2)。
+    /// 中継する側は 400 で断るか SP 1 個に置き換えるかを選べるが、置き換えると値が
+    /// 黙って変わるので**断る**方を採る (T27.2)。断るかどうかは `http` 側が決める
+    pub obs_fold: bool,
 }
 
 pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
     let mut h = RequestHeaders::default();
     for line in raw_headers {
+        // 行の先頭が SP / HTAB なら直前の行の続き (obs-fold。RFC 9112 §5.2)。
+        // 単独のヘッダーとして読むと継続行の値が黙って消える (オリジンには前の行だけが届く)
+        // ので、ここでは旗を立てるだけにして呼び出し側に 400 を返させる
+        if matches!(line.as_bytes().first(), Some(b' ' | b'\t')) {
+            h.obs_fold = true;
+            continue;
+        }
         let Some((k, v)) = ascii::split_once(line, b':') else {
             continue;
         };
