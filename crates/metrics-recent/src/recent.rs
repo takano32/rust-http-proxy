@@ -38,7 +38,7 @@ use std::sync::atomic::{
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::metrics::{BadRequestReason, BlockCause, ErrCause};
+use crate::metrics::{BadRequestReason, BlockCause, DnsCause, ErrCause, Failure};
 use crate::sync::LockExt;
 
 /// エラーの個票を何件覚えておくか (固定)。
@@ -80,6 +80,10 @@ const MAX_SECS: u64 = 99_999_999;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryCause {
     Error(ErrCause),
+    /// 名前解決の失敗の内訳 (T25.0)。`/errors` の `cause` は `nxdomain` / `dns_temp` に
+    /// なり (`dns` の内訳なので、`dns` で数えたい読む側は 2 つを足す)、
+    /// 集計の `errors_by_cause` では 9・10 番目に同じ数が入る
+    ErrorDns(DnsCause),
     Blocked(BlockCause),
     /// 読めずに 400 / 414 / 431 で断った要求 (T14.28)。`cause` は `bad_request:<reason>`
     BadRequest(BadRequestReason),
@@ -90,6 +94,7 @@ impl EntryCause {
     pub fn name(self) -> &'static str {
         match self {
             EntryCause::Error(c) => c.name(),
+            EntryCause::ErrorDns(c) => c.name(),
             EntryCause::Blocked(c) => c.name(),
             EntryCause::BadRequest(r) => r.cause_name(),
         }
@@ -100,6 +105,9 @@ impl EntryCause {
     pub fn code(self) -> u64 {
         match self {
             EntryCause::Error(c) => c as u64,
+            // 名前解決の 2 つは 8 つの原因のすぐ後ろ (20・21)。**末尾に足す**ので
+            // 0〜7 (5xx)・100〜103 (403)・200〜205 (400 番台) の符号は動かない
+            EntryCause::ErrorDns(c) => 20 + c as u64,
             EntryCause::Blocked(c) => 100 + c as u64,
             EntryCause::BadRequest(r) => 200 + r as u64,
         }
@@ -115,6 +123,8 @@ impl EntryCause {
             4 => EntryCause::Error(ErrCause::Reset),
             5 => EntryCause::Error(ErrCause::Tls),
             6 => EntryCause::Error(ErrCause::Loop),
+            20 => EntryCause::ErrorDns(DnsCause::Nxdomain),
+            21 => EntryCause::ErrorDns(DnsCause::DnsTemp),
             100 => EntryCause::Blocked(BlockCause::Acl),
             101 => EntryCause::Blocked(BlockCause::Blocklist),
             102 => EntryCause::Blocked(BlockCause::ConnectPort),
@@ -1469,6 +1479,11 @@ pub enum CloseReason {
     ClientDead,
     /// 入出力が失敗した (原因は [`ErrCause`] と同じ 8 つ)
     Error(ErrCause),
+    /// 名前解決の失敗の内訳 (T25.0)。`/recent` の `reason` は `error:nxdomain` /
+    /// `error:dns_temp` になり、`/history` の分布では `error:*` の 1 列に畳む
+    /// ([`CloseReason::index`] は 7)。**符号は 17・18** で [`CloseReason::ClientDead`]
+    /// (16) の後ろに足す (既存の符号は動かさない)
+    ErrorDns(DnsCause),
 }
 
 impl CloseReason {
@@ -1487,6 +1502,23 @@ impl CloseReason {
             // `Error` の 8 種 (8〜15) の次。**末尾に足す**ので既存の符号は動かない
             // (個票ファイル (T14.9) の大きさも変わらない。T14.52)
             CloseReason::ClientDead => 16,
+            // DNS の内訳 (T25.0) は `ClientDead` の後ろ (17・18)。`Error(c)` の
+            // `8 + c` の続きに置くと 16 が `ClientDead` とぶつかる
+            CloseReason::ErrorDns(DnsCause::Nxdomain) => 17,
+            CloseReason::ErrorDns(DnsCause::DnsTemp) => 18,
+        }
+    }
+
+    /// `io::Error` から閉じた理由を決める (T25.0)。
+    ///
+    /// **エラーの経路からだけ呼ぶ。** DNS の失敗だけ [`Failure`] が内訳
+    /// ([`DnsCause`]) を持つので、`/recent` の `reason` が `error:nxdomain` /
+    /// `error:dns_temp` になる。それ以外は今までどおり `error:<原因>`。
+    pub fn error_from_io(e: &std::io::Error) -> CloseReason {
+        let f = Failure::from_io(e);
+        match f.dns {
+            Some(d) => CloseReason::ErrorDns(d),
+            None => CloseReason::Error(f.cause),
         }
     }
 
@@ -1508,6 +1540,8 @@ impl CloseReason {
             14 => CloseReason::Error(ErrCause::Loop),
             15 => CloseReason::Error(ErrCause::Other),
             16 => CloseReason::ClientDead,
+            17 => CloseReason::ErrorDns(DnsCause::Nxdomain),
+            18 => CloseReason::ErrorDns(DnsCause::DnsTemp),
             _ => CloseReason::Shutdown,
         }
     }
@@ -1527,7 +1561,7 @@ impl CloseReason {
             CloseReason::Evicted => 4,
             CloseReason::Limit => 5,
             CloseReason::Shutdown | CloseReason::ClientDead => 6,
-            CloseReason::Error(_) => 7,
+            CloseReason::Error(_) | CloseReason::ErrorDns(_) => 7,
         }
     }
 
@@ -1544,6 +1578,7 @@ impl CloseReason {
             CloseReason::Shutdown => Cow::Borrowed("shutdown"),
             CloseReason::ClientDead => Cow::Borrowed("client_dead"),
             CloseReason::Error(c) => Cow::Owned(format!("error:{}", c.name())),
+            CloseReason::ErrorDns(c) => Cow::Owned(format!("error:{}", c.name())),
         }
     }
 }
@@ -2756,6 +2791,53 @@ mod tests {
         assert_eq!(unwritten[0].target, "h1.example.net:443");
     }
 
+    /// `io::Error` から閉じた理由を決める (T25.0)。DNS だけ内訳を持つ。
+    #[test]
+    fn errors_closing_a_connection_carry_the_dns_split() {
+        use std::io::{Error, ErrorKind};
+        let nx = Error::other("failed to lookup address information: Name or service not known");
+        let temp = Error::other(
+            "failed to lookup address information: Temporary failure in name resolution",
+        );
+        assert_eq!(
+            CloseReason::error_from_io(&nx),
+            CloseReason::ErrorDns(DnsCause::Nxdomain)
+        );
+        assert_eq!(
+            CloseReason::error_from_io(&temp),
+            CloseReason::ErrorDns(DnsCause::DnsTemp)
+        );
+        // DNS 以外は今までどおり 8 つの原因の綴り
+        assert_eq!(
+            CloseReason::error_from_io(&Error::new(ErrorKind::ConnectionRefused, "x")),
+            CloseReason::Error(ErrCause::Refused)
+        );
+        // `/errors` の `cause` も同じ 2 つ (符号 20・21 で往復する)
+        for (cause, name) in [
+            (EntryCause::ErrorDns(DnsCause::Nxdomain), "nxdomain"),
+            (EntryCause::ErrorDns(DnsCause::DnsTemp), "dns_temp"),
+        ] {
+            assert_eq!(cause.name(), name);
+            assert_eq!(EntryCause::from_code(cause.code()), cause);
+            let e = ErrorEntry::new(
+                EntryKind::Connect,
+                "imap.example.jp:993",
+                "198.51.100.7",
+                502,
+                cause,
+                2,
+                0,
+            );
+            let json = e.to_json();
+            assert!(
+                json.contains(&format!("\"cause\":\"{}\"", name)),
+                "{}",
+                json
+            );
+            assert!(json.len() <= 256, "1 件が {} B", json.len());
+        }
+    }
+
     /// 403 の個票は `/errors` に `acl` / `blocklist` の名前で出る (T14.2 (4))。
     ///
     /// 集計 (`errors_by_cause`) には乗らないので、[`ErrCause`] とは別の型で持つ。
@@ -3017,11 +3099,23 @@ mod conn_tests {
             (CloseReason::Error(ErrCause::Refused), "error:refused"),
             (CloseReason::Error(ErrCause::Dns), "error:dns"),
             (CloseReason::Error(ErrCause::Other), "error:other"),
+            // T25.0。DNS の失敗は内訳の綴りで出る
+            (CloseReason::ErrorDns(DnsCause::Nxdomain), "error:nxdomain"),
+            (CloseReason::ErrorDns(DnsCause::DnsTemp), "error:dns_temp"),
         ];
         for (reason, name) in all {
             assert_eq!(reason.text(), name);
             assert_eq!(CloseReason::from_code(reason.code()), reason, "{}", name);
         }
+        // **既存の符号は動かさない** (T25.0 の 2 つは `ClientDead` の後ろ)
+        assert_eq!(CloseReason::ClientDead.code(), 16);
+        assert_eq!(CloseReason::ErrorDns(DnsCause::Nxdomain).code(), 17);
+        assert_eq!(CloseReason::ErrorDns(DnsCause::DnsTemp).code(), 18);
+        // 分布は `error:*` の 1 列に畳む (列は 8 つのまま)
+        assert_eq!(
+            CloseReason::ErrorDns(DnsCause::Nxdomain).index(),
+            CloseReason::Error(ErrCause::Dns).index()
+        );
         // `/history` の分布は 8 列のままで、`client_dead` は `shutdown` に畳む (T14.52)
         assert_eq!(
             CloseReason::ClientDead.index(),

@@ -33,7 +33,7 @@ use crate::dns;
 use crate::freshness;
 use crate::headers;
 use crate::log::{Access, access};
-use crate::metrics::{BadRequestReason, Detail, ErrCause, HostOutcome, Metrics, StageMs};
+use crate::metrics::{BadRequestReason, Detail, Failure, HostOutcome, Metrics, StageMs};
 use crate::origin::{self, OriginStream};
 use crate::recent::{
     ConnTally, STAGE_CLIENT_READ, STAGE_CONNECT, STAGE_DNS, STAGE_FIRST_BYTE, STAGE_QUEUE, STAGES,
@@ -699,7 +699,7 @@ pub fn handle_http_with_headers(
                 // `shared.stages` ではなくこちらを引き継ぐ (T17.4)
                 ctx.detail = origin_detail(
                     acquire_started,
-                    Some(ErrCause::from_io(&e)),
+                    Some(Failure::from_io(&e)),
                     ctx.detail.stages,
                     dns_before,
                 );
@@ -771,7 +771,11 @@ pub fn handle_http_with_headers(
             }
             Err(e) => {
                 log_warn!(Some(conn_id), "failed to read origin response: {}", e);
-                ctx.detail.cause = Some(ErrCause::from_io(&e));
+                // 応答を読む途中の失敗も同じ分け方 (T25.0)。DNS はここまで来ないが、
+                // `cause` と `dns_cause` を 1 か所で決めておくと組み合わせがずれない
+                let failure = Failure::from_io(&e);
+                ctx.detail.cause = Some(failure.cause);
+                ctx.detail.dns_cause = failure.dns;
                 if let Some((entry, source)) = stale.take()
                     && !force_revalidate
                     && can_serve_stale(&entry)
@@ -1188,7 +1192,7 @@ fn write_error(client: &mut impl Write, status: u16, reason: &str) -> io::Result
 /// `client_read` には ACL の名前解決が入ったままになる (要求の 1%。README に 1 行)。
 fn origin_detail(
     acquire_started: Instant,
-    cause: Option<ErrCause>,
+    cause: Option<Failure>,
     stages: StageMs,
     dns_before: u64,
 ) -> Detail {
@@ -1204,7 +1208,9 @@ fn origin_detail(
         // 確立までに SYN を送り直した回数 (T14.46)。**プールが接続を張った要求だけ**
         // 0 でない (使い回せた要求は `net` の確立点を通らないので 0)
         syn_retrans: crate::dns::take_syn_retrans(),
-        cause,
+        // 失敗のときは 8 つの原因と DNS の内訳を 1 回で受け取る (T25.0)
+        cause: cause.map(|f| f.cause),
+        dns_cause: cause.and_then(|f| f.dns),
         first_byte_ms: None,
         // ここまでに測った段階 (`queue` / `client_read`) は引き継ぐ (T14.3 (1))。
         // `client_read` には時計より前の名前解決が丸ごと入っているので除く (T15.0 (1))

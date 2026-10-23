@@ -485,10 +485,11 @@ fn test_integration_errors_records_a_403_with_its_reason() {
     assert!(json.contains("\"client\":\"127.0.0.1\""), "{}", json);
 
     // 集計の方は今までどおり: 403 は `blocked` に数え、`errors_by_cause` は全部 0 のまま
+    // (10 列 = 8 つの原因 + T25.0 の `dns` の内訳 2 つ)
     let status = endpoint_json(proxy_port, "/status");
     assert!(status.contains("\"blocked\":1"), "{}", status);
     assert!(
-        status.contains("\"errors_by_cause\":[0,0,0,0,0,0,0,0]"),
+        status.contains("\"errors_by_cause\":[0,0,0,0,0,0,0,0,0,0]"),
         "403 が集計の原因別に混ざっている: {}",
         status
     );

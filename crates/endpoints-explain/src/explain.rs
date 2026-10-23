@@ -18,7 +18,7 @@
 
 use std::fmt::Write as _;
 
-use crate::metrics::{ERR_CAUSE_NAMES, HostStats, SCHEMA_HEAD};
+use crate::metrics::{DNS_CAUSE_NAMES, ERR_CAUSE_NAMES, HostStats, SCHEMA_HEAD};
 use crate::recent::{MAX_ERRORS, RecentEntry};
 use crate::{Endpoint, parse_query};
 
@@ -137,6 +137,11 @@ fn merge_into(acc: &mut HostStats, s: &HostStats) {
     for (a, b) in acc.errors_by_cause.iter_mut().zip(s.errors_by_cause) {
         *a = a.saturating_add(b);
     }
+    // DNS の失敗の内訳 (T25.0) も足す。**足さないと** `/explain` の `errors_by_cause` が
+    // `dns` だけを出して内訳が 0 になる (`/status` の行と食い違う)
+    for (a, b) in acc.dns_by_cause.iter_mut().zip(s.dns_by_cause) {
+        *a = a.saturating_add(b);
+    }
     acc.rtt_us_sum = acc.rtt_us_sum.saturating_add(s.rtt_us_sum);
     acc.rtt_samples = acc.rtt_samples.saturating_add(s.rtt_samples);
     acc.retrans = acc.retrans.saturating_add(s.retrans);
@@ -248,9 +253,12 @@ fn host_body(ep: &Endpoint<'_>, query: &str) -> String {
         keys_total,
         crate::metrics::stats_json(&stats, true)
     );
+    // T25.0 の 2 列 (DNS の失敗の内訳) も**うしろに**並べる。先頭 8 つの名前と
+    // 並びは変えないので、読む側は今までどおり `dns` … `other` で引ける
     for (i, (name, n)) in ERR_CAUSE_NAMES
         .iter()
         .zip(stats.errors_by_cause)
+        .chain(DNS_CAUSE_NAMES.iter().zip(stats.dns_by_cause))
         .enumerate()
     {
         let _ = write!(out, "{}\"{}\":{}", if i == 0 { "" } else { "," }, name, n);

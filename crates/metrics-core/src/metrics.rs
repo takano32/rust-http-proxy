@@ -35,6 +35,11 @@ pub struct Interval {
     /// 転送した要求の初バイトまでの時間
     pub forward: crate::history::Window,
     pub errors: u64,
+    /// 8 つの原因の件数。**DNS の内訳 (`nxdomain` / `dns_temp`) は持たない** (T25.0):
+    /// この構造体は 5 秒の標本 ([`crate::history::Sample`]) と `/metrics` の元で、
+    /// 列を増やすと `.rrd` の標本の並びが変わる (過去の標本が別の意味で読み戻る)。
+    /// 内訳は**ホスト別の行** ([`HostStats::dns_by_cause`]) だけが持ち、`/status` の
+    /// `errors_by_cause` の 9・10 番目に出る
     pub errors_by_cause: [u64; ERR_CAUSES],
     pub dns_misses: u64,
     pub dns_ms_sum: u64,
@@ -262,15 +267,20 @@ impl Metrics {
         status: u16,
         detail: &Detail,
     ) {
-        let Some(cause) = detail.cause else {
-            return;
+        // 名前解決の失敗は内訳 (`nxdomain` / `dns_temp`) で個票に出す (T25.0)。
+        // `detail.cause` が `Dns` でも `dns_cause` が無い (古い経路・canary) ときは
+        // 今までどおり `dns` のまま
+        let cause = match (detail.cause, detail.dns_cause) {
+            (Some(ErrCause::Dns), Some(d)) => crate::recent::EntryCause::ErrorDns(d),
+            (Some(c), _) => crate::recent::EntryCause::Error(c),
+            (None, _) => return,
         };
         self.errors.push(crate::recent::ErrorEntry::new(
             crate::recent::EntryKind::from_connect(connect),
             target,
             client,
             status,
-            crate::recent::EntryCause::Error(cause),
+            cause,
             detail.dns_ms,
             detail.connect_ms,
         ));
@@ -1856,22 +1866,22 @@ mod tests {
         assert_eq!(totals[crate::recent::CLIENT_SIDE], (48_300, 1));
         assert_eq!(totals[crate::recent::ORIGIN_SIDE], (50_100, 2));
 
-        // `.rrd` の 1 スロット: 名前 128 B + 55 項目 × 8 B = 568 B (T14.26 の 2 欄まで)。
-        // 版 3 (T14.14) でペイロードが 636 B になったので**余白は 68 B**
-        // (版 2 では 4 B しか残っていなかった)。欄を足すとここが減る: 64 B を割ったら
+        // `.rrd` の 1 スロット: 名前 128 B + 57 項目 × 8 B = 584 B (T25.0 の 2 欄まで)。
+        // 版 3 (T14.14) でペイロードが 636 B になったので**余白は 52 B**
+        // (T14.26 の時点では 68 B)。欄を足すとここが減る: 48 B を割ったら
         // 「予備を使い切りかけている」ので、版を上げる算段をすること
         let enc = s.encode("connect://a:443");
-        assert_eq!(enc.len(), 128 + 55 * 8);
+        assert_eq!(enc.len(), 128 + 57 * 8);
         let spare = crate::rrd::STATS_RECORD - 4 - enc.len();
         assert!(
-            (32..=68).contains(&spare),
+            (16..=52).contains(&spare),
             "スロットの余白が {} B (版 3 で足した 64 B を使い切りかけている)",
             spare
         );
         assert_eq!(HostStats::decode(&enc).unwrap().1, s);
 
-        // T14.5 より前に書かれたレコード (末尾 6 欄が無い) は 0 で読み戻る
-        let old = &enc[..enc.len() - 48];
+        // T14.5 より前に書かれたレコード (末尾 8 欄が無い) は 0 で読み戻る
+        let old = &enc[..enc.len() - 64];
         let (name, back) = HostStats::decode(old).unwrap();
         assert_eq!(name, "connect://a:443");
         assert_eq!(
@@ -1949,18 +1959,20 @@ mod tests {
             c.to_json("10.0.0.1")
         );
 
-        // `.rrd` の 1 スロット: 名前 128 B + 55 項目 × 8 B = 568 B。版 2 では余白 4 B だったが、
-        // T14.14 の版 3 (640 B) で予備 68 B = 8 項目になった (T14.26 の時点の値は 4 B)
+        // `.rrd` の 1 スロット: 名前 128 B + 57 項目 × 8 B = 584 B。T14.14 の版 3 (640 B) で
+        // 予備 68 B になり、T25.0 の 2 欄 (DNS の内訳) で 52 B になった
         let enc = s.encode("connect://a:443");
-        assert_eq!(enc.len(), 128 + 55 * 8);
-        assert_eq!(crate::rrd::STATS_RECORD - 4 - enc.len(), 68, "残りの余白");
+        assert_eq!(enc.len(), 128 + 57 * 8);
+        assert_eq!(crate::rrd::STATS_RECORD - 4 - enc.len(), 52, "残りの余白");
         assert_eq!(HostStats::decode(&enc).unwrap().1, s);
 
-        // T14.26 より前に書かれたレコード (末尾 2 欄が無い) は 0 で読み戻り、
-        // それより前の欄 (T14.5 の RTT も含めて) はそのまま読める
-        let (name, back) = HostStats::decode(&enc[..enc.len() - 16]).unwrap();
+        // T14.26 より前に書かれたレコード (末尾 4 欄 = 向き別のバイトと T25.0 の
+        // DNS の内訳が無い) は 0 で読み戻り、それより前の欄 (T14.5 の RTT も含めて)
+        // はそのまま読める
+        let (name, back) = HostStats::decode(&enc[..enc.len() - 32]).unwrap();
         assert_eq!(name, "connect://a:443");
         assert_eq!((back.bytes_in, back.bytes_out), (0, 0));
+        assert_eq!(back.dns_by_cause, [0, 0], "古い行は内訳が分からない");
         assert_eq!(back.bytes, s.bytes, "合計は昔のファイルにも入っている");
         assert_eq!(back.requests, s.requests);
     }
@@ -2132,6 +2144,86 @@ mod latency_tests {
         );
         assert_eq!(ErrCause::Loop.name(), "loop");
         assert_eq!(ERR_CAUSE_NAMES.len(), ERR_CAUSES);
+    }
+
+    /// 名前解決の失敗を `nxdomain` / `dns_temp` に割り、`errors_by_cause` の**うしろ**に
+    /// 足すこと (T25.0)。**先頭 8 つの意味と並びは動かさない** (過去の雪像は 8 要素)。
+    #[test]
+    fn dns_failures_are_split_after_the_eight_causes() {
+        use std::io::{Error, ErrorKind};
+        let nx = Error::other("failed to lookup address information: Name or service not known");
+        let temp = Error::other(
+            "failed to lookup address information: Temporary failure in name resolution",
+        );
+        // 8 つの原因は今までどおりで、その内側にだけ内訳が付く
+        for (e, want) in [(&nx, DnsCause::Nxdomain), (&temp, DnsCause::DnsTemp)] {
+            let f = Failure::from_io(e);
+            assert_eq!(f.cause, ErrCause::Dns, "8 つの原因は今までどおり");
+            assert_eq!(f.dns, Some(want));
+            assert_eq!(f.dns.unwrap().name(), want.name());
+        }
+        // DNS 以外の失敗は内訳を持たない (組み合わせがずれない)
+        assert_eq!(
+            Failure::from_io(&Error::new(ErrorKind::ConnectionRefused, "x")).dns,
+            None
+        );
+        // 名前が無い / 住所が無いと言われたときだけ `nxdomain`、読めないものは `dns_temp`
+        assert_eq!(DnsCause::of_text("No address associated with hostname"), DnsCause::Nxdomain);
+        assert_eq!(DnsCause::of_text("nodename nor servname provided"), DnsCause::Nxdomain);
+        assert_eq!(DnsCause::of_text("Could not resolve host"), DnsCause::Nxdomain);
+        assert_eq!(DnsCause::of_text("Temporary failure in name resolution"), DnsCause::DnsTemp);
+        assert_eq!(DnsCause::of_text("something new"), DnsCause::DnsTemp);
+
+        let m = Metrics::new();
+        let detail = |f: Failure, ms: u64| Detail {
+            cause: Some(f.cause),
+            dns_cause: f.dns,
+            dns_ms: ms,
+            dns_misses: 1,
+            ..Detail::default()
+        };
+        let d1 = detail(Failure::from_io(&nx), 2);
+        let d2 = detail(Failure::from_io(&temp), 30);
+        m.record_host_detail("connect://mail.example.jp:993", HostOutcome::Error, 0, None, d1);
+        m.record_host_detail("connect://mail.example.jp:993", HostOutcome::Error, 0, None, d2);
+        m.record_error(true, "mail.example.jp:993", "198.51.100.7", 502, &d1);
+        m.record_error(true, "mail.example.jp:993", "198.51.100.7", 502, &d2);
+
+        let s = m.hosts_sorted()[0].1.clone();
+        assert_eq!(s.errors, 2);
+        assert_eq!(s.errors_by_cause[ErrCause::Dns as usize], 2, "`dns` は合計のまま");
+        assert_eq!(s.dns_by_cause, [1, 1]);
+        // 合計と内訳が一致する (`dns == nxdomain + dns_temp`)
+        assert_eq!(
+            s.errors_by_cause[ErrCause::Dns as usize],
+            s.dns_by_cause.iter().sum::<u64>()
+        );
+        // JSON は 10 要素で、**先頭 8 つは今までと同じ位置**
+        let json = stats_json(&s, true);
+        assert!(
+            json.contains("\"errors_by_cause\":[2,0,0,0,0,0,0,0,1,1]"),
+            "{}",
+            json
+        );
+        // `/status` にも同じ並びで出る (`hosts[]` の行)
+        let status = m.to_json();
+        assert!(
+            status.contains("\"errors_by_cause\":[2,0,0,0,0,0,0,0,1,1]"),
+            "{}",
+            status
+        );
+
+        // `/errors` の個票は内訳の名前で出る (合計の `dns` ではない)
+        let (rows, total) = m.errors.recent(crate::recent::MAX_ERRORS);
+        assert_eq!(total, 2);
+        let cause = |kv: &crate::recent::ErrorEntry| kv.cause.name();
+        assert_eq!(rows[0].cause, crate::recent::EntryCause::ErrorDns(DnsCause::DnsTemp));
+        assert_eq!(cause(&rows[0]), "dns_temp");
+        assert_eq!(cause(&rows[1]), "nxdomain");
+        // 状態ファイルの符号 (20・21) でも往復する
+        for e in &rows {
+            assert_eq!(crate::recent::EntryCause::from_code(e.cause.code()), e.cause);
+        }
     }
 
     /// 利用者が待つ時間の系列 `wait` (T15.0 (2))。
