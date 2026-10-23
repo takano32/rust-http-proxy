@@ -1,6 +1,6 @@
 [package]
 name = "proxy-base"
-version = "0.24.0"
+version = "0.18.4"
 edition = "2024"
 
 [lib]

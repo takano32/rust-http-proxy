@@ -1,6 +1,6 @@
 [package]
 name = "proxy-metrics"
-version = "0.24.0"
+version = "0.25.3"
 edition = "2024"
 
 [lib]
