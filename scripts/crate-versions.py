@@ -18,14 +18,16 @@ README の「クレート構成」):
 `--check` の決まり (**コミットの文面には頼らない**。文面にタスク番号が無いコミットもあるため):
   (a) 版の形が `X.Y.Z` で、**全クレート (と `proxy-server`) の版 = 本体の版**。
   (b) タグの上 (HEAD を指す `v*` のタグがある) なら、本体の版 = タグ。
-  (c) 中身の変化は NG にしない。前回のデプロイ (= いまの版を書いたコミット。作業ツリーが版を
+  (c) **版は下げない**。`git log -p` で `Cargo.toml` の `version = …` の履歴を 1 回だけ拾い、
+      履歴で一度でも使った版より低い版を書いていたら NG (浅い履歴では数えられないので判定しない)。
+  (d) 中身の変化は NG にしない。前回のデプロイ (= いまの版を書いたコミット。作業ツリーが版を
       書いたなら HEAD の版を書いたコミット) から中身が変わったクレートを数えて印字するだけ。
 
 使い方 (リポジトリの根から。`-C DIR` で別のリポジトリ):
   scripts/crate-versions.py --list                 クレートごとに 今の版・中身を最後に変えたコミット・
                                                    その版の行を書いたコミット・合うか
   scripts/crate-versions.py --check                決まりに合わないものの名前と理由を出して 1 で抜ける
-  scripts/crate-versions.py --deploy 0.26.0        全クレート + 本体 + proxy-server を同じ版にそろえる
+  scripts/crate-versions.py --deploy 0.26.1        全クレート + 本体 + proxy-server を同じ版にそろえる
                                                    (`Cargo.lock` の該当の行も直す)。デプロイの直前に 1 回
 
 `--task` は廃止した (T26.3)。渡されたら `--deploy` を案内するエラー (終了コード 2) にする。
@@ -265,6 +267,33 @@ class Repo:
                 return h
         return ""
 
+    def high_water_marks(self):
+        """{toml のパス: 履歴で一度でも使った最大の版}。
+
+        決まり (c)「版は下げない」の材料。`git log -p` を 1 回だけ流して、
+        `+++ b/<path>` の次の `+version = "X.Y.Z"` を拾う。浅い履歴 (CI の
+        fetch-depth が 1 など) では数えられないので {} を返し、判定を飛ばす。
+        """
+        if self.head is None:
+            return {}
+        shallow = git(self.path, "rev-parse", "--is-shallow-repository", check=False).strip()
+        if shallow == "true":
+            return {}
+        out = git(self.path, "log", "--format=", "-p", "-U0", "--", "Cargo.toml", "*/Cargo.toml")
+        highs = {}
+        path = None
+        for line in out.splitlines():
+            if line.startswith("+++ b/"):
+                path = line[6:].strip()
+            elif path and line.startswith("+version = "):
+                v = line[len("+version = "):].strip().strip('"')
+                key = ver_key(v)
+                if key is None:
+                    continue
+                if path not in highs or key > ver_key(highs[path]):
+                    highs[path] = v
+        return highs
+
     def tags_at_head(self):
         if self.head is None:
             return []
@@ -320,6 +349,13 @@ def judge(repo):
             if u.version != repo.root.version:
                 bad.append((u.name, "版 %s が本体 %s %s と違う (決まり a。デプロイの直前に --deploy でそろえる)"
                             % (u.version, repo.root.name, repo.root.version)))
+    # (c) 版は下げない: 履歴で一度でも使った版より低い版を書いていないこと
+    highs = repo.high_water_marks()
+    for u in repo.units():
+        hi = highs.get(u.toml)
+        if hi and ver_key(u.version) and ver_key(u.version) < ver_key(hi):
+            bad.append((u.name, "版 %s が履歴で一度使った %s より低い (決まり c。版は下げない)"
+                        % (u.version, hi)))
     # (b) タグの上
     tags = repo.tags_at_head()
     if tags and "v%s" % repo.root.version not in tags:

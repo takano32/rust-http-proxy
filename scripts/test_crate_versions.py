@@ -277,6 +277,26 @@ class CrateVersionsTest(unittest.TestCase):
         self.r.commit("deploy 0.4.0")
         self.check(0)
 
+    def test_a_lowered_version_is_ng(self):
+        # 決まり (c): 版は下げない。履歴で一度使った 0.2.3 より低い版を書いたら NG
+        self.r.write("crates/gamma/Cargo.toml", crate_toml("gamma", "0.2.2"))
+        out = self.check(1)
+        self.assertIn("NG gamma: 版 0.2.2 が履歴で一度使った 0.2.3 より低い (決まり c。版は下げない)", out)
+        # 元に戻せば通る (下げたままだけが NG)
+        self.r.write("crates/gamma/Cargo.toml", crate_toml("gamma", "0.2.3"))
+        self.check(0)
+
+    def test_history_is_skipped_when_shallow(self):
+        # 浅い履歴では数えられないので、決まり (c) は判定しない (取りこぼしても誤 NG にしない)
+        shallow = self.tmp.name + "-shallow"
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + self.tmp.name, shallow],
+                       env=ENV, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        repo = cv.Repo(shallow)
+        try:
+            self.assertEqual(repo.high_water_marks(), {})
+        finally:
+            repo.close()
+
     def test_without_version_line(self):
         a = crate_toml("x", "0.1.0", comment=True)
         b = crate_toml("x", "0.2.0", comment=True)
