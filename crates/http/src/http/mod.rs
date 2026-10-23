@@ -445,6 +445,15 @@ pub fn handle_http_with_headers(
     };
     let version = parts.next().unwrap_or("HTTP/1.0");
     let http11 = version.eq_ignore_ascii_case("HTTP/1.1");
+    // `Host` が 2 本以上ある要求は RFC 9110 §7.2 が 400 を求めている (T19.2)。
+    // どの `Host` を信じるかで前段と後段が食い違うと、宛先の付け替え (要求の密輸) になる。
+    // **通る要求には 1 命令も足さない**: 印は 2 本目を見たときしか立たない
+    if req.dup_host {
+        log_warn!(Some(conn_id), "400 Bad Request: duplicate Host header");
+        metrics.record_bad_request(BadRequestReason::DupHost, client_ip.unwrap_or("-"), 400);
+        let _ = write_error(client, 400, "Bad Request");
+        return Ok(false);
+    }
     let keep_client = !shared.last
         && !shared.keepalive.is_zero()
         && if http11 {
