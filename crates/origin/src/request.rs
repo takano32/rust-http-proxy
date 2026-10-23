@@ -12,6 +12,9 @@ use crate::origin::Scheme;
 #[derive(Default)]
 pub struct RequestHeaders {
     pub host: Option<String>,
+    /// `Host` が 2 本以上あった (T19.2)。RFC 9110 §7.2 は 400 を要求するので、
+    /// これを立てて断る。**値は最初の 1 本**を残す (2 本目以降は確保しない)
+    pub dup_host: bool,
     /// `Content-Length` の値 (重複が同値なら畳んだ 1 本。数でなければ `None`)
     pub content_length: Option<u64>,
     /// `Content-Length` の形が不正 (数字でない・`u64` に収まらない・重複で不一致)。
@@ -56,7 +59,13 @@ pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestH
         log_trace!(Some(conn_id), "req header  {}: {}", name, v_trim);
         let is = |want: &str| name.eq_ignore_ascii_case(want);
         if is("host") {
-            h.host = Some(v_trim.to_string());
+            // 2 本目を見た時点で「重複」の印を立てる (要求の密輸と、どの Host を信じるかの
+            // 食い違いを避ける)。RFC 9110 §7.2 は中継する側に 400 を求めている
+            if h.host.is_some() {
+                h.dup_host = true;
+            } else {
+                h.host = Some(v_trim.to_string());
+            }
         } else if is("authorization") {
             h.authorization = true;
         } else if is("cache-control") || is("pragma") {
