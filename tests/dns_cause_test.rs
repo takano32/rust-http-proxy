@@ -34,10 +34,8 @@ const HOST: &str = "t250b.invalid";
 fn connect_name(proxy_port: u16, host: &str) -> String {
     let mut t = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
     t.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
-    t.write_all(
-        format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes(),
-    )
-    .unwrap();
+    t.write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes())
+        .unwrap();
     read_connect_response(&mut t)
 }
 
@@ -72,7 +70,10 @@ fn test_integration_dns_failures_show_their_split_cause() {
         Ok(_) => {
             // ワイルドカードで何でも引ける環境。ここで見たいのは DNS の失敗なので、
             // 解決できてしまうなら何も確かめられない (黙って通さず、理由を出す)
-            println!("t250b: {} が引けてしまうので DNS の内訳は確かめられない", HOST);
+            println!(
+                "t250b: {} が引けてしまうので DNS の内訳は確かめられない",
+                HOST
+            );
             return;
         }
     };
@@ -87,7 +88,12 @@ fn test_integration_dns_failures_show_their_split_cause() {
     let status = status_json(proxy_port);
     let causes = host_causes(&status, &key);
     // **先頭 8 つは今までどおり**、後ろに 2 つ (T25.0)
-    assert_eq!(causes.len(), 10, "errors_by_cause が 10 要素でない: {:?}", causes);
+    assert_eq!(
+        causes.len(),
+        10,
+        "errors_by_cause が 10 要素でない: {:?}",
+        causes
+    );
     assert_eq!(causes[0], 1, "`dns` は合計のまま: {:?}", causes);
     assert_eq!(
         causes[8] + causes[9],

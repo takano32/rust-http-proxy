@@ -2187,10 +2187,22 @@ mod latency_tests {
             None
         );
         // 名前が無い / 住所が無いと言われたときだけ `nxdomain`、読めないものは `dns_temp`
-        assert_eq!(DnsCause::of_text("No address associated with hostname"), DnsCause::Nxdomain);
-        assert_eq!(DnsCause::of_text("nodename nor servname provided"), DnsCause::Nxdomain);
-        assert_eq!(DnsCause::of_text("Could not resolve host"), DnsCause::Nxdomain);
-        assert_eq!(DnsCause::of_text("Temporary failure in name resolution"), DnsCause::DnsTemp);
+        assert_eq!(
+            DnsCause::of_text("No address associated with hostname"),
+            DnsCause::Nxdomain
+        );
+        assert_eq!(
+            DnsCause::of_text("nodename nor servname provided"),
+            DnsCause::Nxdomain
+        );
+        assert_eq!(
+            DnsCause::of_text("Could not resolve host"),
+            DnsCause::Nxdomain
+        );
+        assert_eq!(
+            DnsCause::of_text("Temporary failure in name resolution"),
+            DnsCause::DnsTemp
+        );
         assert_eq!(DnsCause::of_text("something new"), DnsCause::DnsTemp);
 
         let m = Metrics::new();
@@ -2203,14 +2215,30 @@ mod latency_tests {
         };
         let d1 = detail(Failure::from_io(&nx), 2);
         let d2 = detail(Failure::from_io(&temp), 30);
-        m.record_host_detail("connect://mail.example.jp:993", HostOutcome::Error, 0, None, d1);
-        m.record_host_detail("connect://mail.example.jp:993", HostOutcome::Error, 0, None, d2);
+        m.record_host_detail(
+            "connect://mail.example.jp:993",
+            HostOutcome::Error,
+            0,
+            None,
+            d1,
+        );
+        m.record_host_detail(
+            "connect://mail.example.jp:993",
+            HostOutcome::Error,
+            0,
+            None,
+            d2,
+        );
         m.record_error(true, "mail.example.jp:993", "198.51.100.7", 502, &d1);
         m.record_error(true, "mail.example.jp:993", "198.51.100.7", 502, &d2);
 
         let s = m.hosts_sorted()[0].1.clone();
         assert_eq!(s.errors, 2);
-        assert_eq!(s.errors_by_cause[ErrCause::Dns as usize], 2, "`dns` は合計のまま");
+        assert_eq!(
+            s.errors_by_cause[ErrCause::Dns as usize],
+            2,
+            "`dns` は合計のまま"
+        );
         assert_eq!(s.dns_by_cause, [1, 1]);
         // 合計と内訳が一致する (`dns == nxdomain + dns_temp`)
         assert_eq!(
@@ -2236,12 +2264,18 @@ mod latency_tests {
         let (rows, total) = m.errors.recent(crate::recent::MAX_ERRORS);
         assert_eq!(total, 2);
         let cause = |kv: &crate::recent::ErrorEntry| kv.cause.name();
-        assert_eq!(rows[0].cause, crate::recent::EntryCause::ErrorDns(DnsCause::DnsTemp));
+        assert_eq!(
+            rows[0].cause,
+            crate::recent::EntryCause::ErrorDns(DnsCause::DnsTemp)
+        );
         assert_eq!(cause(&rows[0]), "dns_temp");
         assert_eq!(cause(&rows[1]), "nxdomain");
         // 状態ファイルの符号 (20・21) でも往復する
         for e in &rows {
-            assert_eq!(crate::recent::EntryCause::from_code(e.cause.code()), e.cause);
+            assert_eq!(
+                crate::recent::EntryCause::from_code(e.cause.code()),
+                e.cause
+            );
         }
     }
 

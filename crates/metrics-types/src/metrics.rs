@@ -194,8 +194,8 @@ impl DnsCause {
             "No address associated with hostname",        // EAI_NODATA (glibc)
             "nodename nor servname provided",             // EAI_NONAME (macOS)
             "Non-recoverable failure in name resolution", // EAI_FAIL (glibc)
-            "Could not resolve host",                     // 引けたが住所が 0 本 (net::connect_addrs)
-            "host has no IPv4 address",                   // IPv6 を切っていて使える住所が無い
+            "Could not resolve host", // 引けたが住所が 0 本 (net::connect_addrs)
+            "host has no IPv4 address", // IPv6 を切っていて使える住所が無い
         ];
         if NO_NAME.iter().any(|p| msg.contains(p)) {
             DnsCause::Nxdomain
