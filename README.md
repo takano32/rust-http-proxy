@@ -3083,7 +3083,7 @@ CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・IPv6 (`ipv6_route`)・
 
 ### 2. 起動直後 (0〜5 分)
 
-起動したら**すぐ `scripts/collect-deployed.sh` でもう 1 枚** (0 時間の雪像) 撮り、`/status` の `version` と起動時刻 (UTC) を `TODO.md` のその Phase の `Tn.99` の前提に書きます (T17.19)。
+起動から **60 秒たってから** `scripts/collect-deployed.sh` で 1 枚 (0 時間の雪像) 撮り、`/status` の `version` と起動時刻 (UTC)、`boot.id` を `TASKS.md` のその Phase の `Tn.99` の前提に書きます (T17.19)。**すぐ撮ると `memory.baseline` が `null` のまま**なので、heap の判定が「判定できず」になります (T24.4。baseline は起動 60 秒で 1 回だけ書かれる)。
 
 ```bash
 # 起動ログの 2 行 (待ち受けと統計ファイル)
