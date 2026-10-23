@@ -247,8 +247,24 @@ pub fn write_response_head<S: AsRef<str>>(
             })
     };
 
+    // 折り返し (obs-fold) を畳む先。直前の行を残したときだけ、値の終わりを覚える (T19.7)
+    let mut fold_at: Option<usize> = None;
     for line in raw() {
+        // RFC 9112 §5.2: 中継する側は obs-fold を SP 1 個に置き換えてよい (値を捨てない)
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(pos) = fold_at {
+                let cont = line.trim_ascii();
+                if !cont.is_empty() {
+                    let mut piece = Vec::with_capacity(cont.len() + 1);
+                    piece.push(b' ');
+                    piece.extend_from_slice(cont.as_bytes());
+                    out.splice(pos..pos, piece);
+                }
+            }
+            continue;
+        }
         let Some((k, v)) = ascii::split_once(line, b':') else {
+            fold_at = None;
             continue;
         };
         let name = k.trim_ascii();
@@ -257,11 +273,13 @@ pub fn write_response_head<S: AsRef<str>>(
             || drop_names.iter().any(|d| name.eq_ignore_ascii_case(d))
             || FRAMING_HEADERS.iter().any(|f| name.eq_ignore_ascii_case(f))
         {
+            fold_at = None;
             continue;
         }
         out.extend_from_slice(name.as_bytes());
         out.extend_from_slice(b": ");
         out.extend_from_slice(v.trim_ascii().as_bytes());
+        fold_at = Some(out.len());
         out.extend_from_slice(b"\r\n");
     }
     for line in extra {
@@ -331,8 +349,23 @@ pub fn sanitize_response_head(head: &[u8]) -> ResponseHead {
             custom_hop.extend(v.split(',').map(|t| t.trim_ascii().to_ascii_lowercase()));
         }
     }
+    // 折り返し (obs-fold) の行を、直前の「残した」行に畳むかどうか
+    let mut fold_target: Option<usize> = None;
     for line in raw {
+        // RFC 9112 §5.2: 中継する側は obs-fold を SP 1 個に置き換えてよい (値を捨てない)。
+        // 直前の行を落としていた (hop-by-hop など) ときは、その続きも一緒に落とす
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(i) = fold_target {
+                let cont = line.trim_ascii();
+                if !cont.is_empty() {
+                    out.lines[i].push(' ');
+                    out.lines[i].push_str(cont);
+                }
+            }
+            continue;
+        }
         let Some((k, v)) = ascii::split_once(line, b':') else {
+            fold_target = None;
             continue;
         };
         let lower = k.trim_ascii().to_ascii_lowercase();
@@ -340,10 +373,12 @@ pub fn sanitize_response_head(head: &[u8]) -> ResponseHead {
             || custom_hop.contains(&lower)
             || FRAMING_HEADERS.contains(&lower.as_str())
         {
+            fold_target = None;
             continue;
         }
         out.lines
             .push(format!("{}: {}", k.trim_ascii(), v.trim_ascii()));
+        fold_target = Some(out.lines.len() - 1);
     }
     out
 }
@@ -421,6 +456,36 @@ pub fn sanitize_and_inject_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_response_head_unfolds_obs_fold_too() {
+        // 素通しの速い経路 (write_response_head) でも値を捨てない (T19.7)
+        let head = b"HTTP/1.1 200 OK\r\nX-A: 1\r\n 2\r\nContent-Length: 2\r\n\r\n";
+        let mut out = Vec::new();
+        write_response_head::<&str>(&mut out, head, None, &[], &[]);
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            "HTTP/1.1 200 OK\r\nX-A: 1 2\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn obs_fold_in_a_response_is_unfolded_with_one_space() {
+        // RFC 9112 §5.2: 中継する側は obs-fold を SP 1 個に置き換えてよい。
+        // 値を捨てないこと (T19.7)
+        let head = b"HTTP/1.1 200 OK\r\nX-A: 1\r\n 2\r\n\t3\r\nContent-Length: 2\r\n\r\n";
+        let h = sanitize_response_head(head);
+        assert_eq!(h.lines, vec!["X-A: 1 2 3".to_string()]);
+    }
+
+    #[test]
+    fn obs_fold_after_a_dropped_header_is_dropped_too() {
+        // 直前の行を落とした (hop-by-hop など) ときは、その続きも一緒に落とす。
+        // 別の行に混ざると値が変わる
+        let head = b"HTTP/1.1 200 OK\r\nKeep-Alive: timeout=5\r\n  nasty\r\nX-B: y\r\n\r\n";
+        let h = sanitize_response_head(head);
+        assert_eq!(h.lines, vec!["X-B: y".to_string()]);
+    }
 
     #[test]
     fn response_head_is_sanitized_and_reassembled() {
