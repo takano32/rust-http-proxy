@@ -18,8 +18,8 @@ README の「クレート構成」):
 `--check` の決まり (**コミットの文面には頼らない**。文面にタスク番号が無いコミットもあるため):
   (a) 版の形が `X.Y.Z` で、**全クレート (と `proxy-server`) の版 = 本体の版**。
   (b) タグの上 (HEAD を指す `v*` のタグがある) なら、本体の版 = タグ。
-  (c) **版は下げない**。`git log -p` で `Cargo.toml` の `version = …` の履歴を 1 回だけ拾い、
-      履歴で一度でも使った版より低い版を書いていたら NG (浅い履歴では数えられないので判定しない)。
+  (c) **版は下げない**。基準は**出したタグ (`vX.Y.Z`) の最大の版**で、それより低い版を書いていたら NG。
+      タグを付けていない番号 (デプロイしなかった版) は数えないので、捨ててよい (2026-10-23)。
   (d) 中身の変化は NG にしない。前回のデプロイ (= いまの版を書いたコミット。作業ツリーが版を
       書いたなら HEAD の版を書いたコミット) から中身が変わったクレートを数えて印字するだけ。
 
@@ -267,32 +267,23 @@ class Repo:
                 return h
         return ""
 
-    def high_water_marks(self):
-        """{toml のパス: 履歴で一度でも使った最大の版}。
+    def released_max(self):
+        """出したタグ (`vX.Y.Z`) のうち最大の版。無ければ None。
 
-        決まり (c)「版は下げない」の材料。`git log -p` を 1 回だけ流して、
-        `+++ b/<path>` の次の `+version = "X.Y.Z"` を拾う。浅い履歴 (CI の
-        fetch-depth が 1 など) では数えられないので {} を返し、判定を飛ばす。
+        「版は下げない」の基準は**タグを付けた版**にする (2026-10-23、はかせの決定)。
+        タグを付けていない番号 (デプロイしなかった 0.25.4 など) は捨ててよいので、
+        それより低い版へは下げられる。
         """
-        if self.head is None:
-            return {}
-        shallow = git(self.path, "rev-parse", "--is-shallow-repository", check=False).strip()
-        if shallow == "true":
-            return {}
-        out = git(self.path, "log", "--format=", "-p", "-U0", "--", "Cargo.toml", "*/Cargo.toml")
-        highs = {}
-        path = None
-        for line in out.splitlines():
-            if line.startswith("+++ b/"):
-                path = line[6:].strip()
-            elif path and line.startswith("+version = "):
-                v = line[len("+version = "):].strip().strip('"')
-                key = ver_key(v)
-                if key is None:
-                    continue
-                if path not in highs or key > ver_key(highs[path]):
-                    highs[path] = v
-        return highs
+        out = git(self.path, "tag", "--list", "v*")
+        best = None
+        for name in out.split():
+            m = TAG_RE.match(name)
+            if not m:
+                continue
+            key = ver_key(m.group(1))
+            if key is not None and (best is None or key > best):
+                best = key
+        return best
 
     def tags_at_head(self):
         if self.head is None:
@@ -349,13 +340,12 @@ def judge(repo):
             if u.version != repo.root.version:
                 bad.append((u.name, "版 %s が本体 %s %s と違う (決まり a。デプロイの直前に --deploy でそろえる)"
                             % (u.version, repo.root.name, repo.root.version)))
-    # (c) 版は下げない: 履歴で一度でも使った版より低い版を書いていないこと
-    highs = repo.high_water_marks()
-    for u in repo.units():
-        hi = highs.get(u.toml)
-        if hi and ver_key(u.version) and ver_key(u.version) < ver_key(hi):
-            bad.append((u.name, "版 %s が履歴で一度使った %s より低い (決まり c。版は下げない)"
-                        % (u.version, hi)))
+    # (c) 版は下げない: 出したタグの最大の版より低い版を書いていないこと。
+    #     タグを付けていない番号 (デプロイしなかった版) は数えない
+    floor = repo.released_max()
+    if floor is not None and ver_key(repo.root.version) and ver_key(repo.root.version) < floor:
+        bad.append((repo.root.name, "版 %s が出したタグの最大 %s より低い (決まり c。版は下げない)"
+                    % (repo.root.version, ".".join(map(str, floor)))))
     # (b) タグの上
     tags = repo.tags_at_head()
     if tags and "v%s" % repo.root.version not in tags:
@@ -419,10 +409,10 @@ def do_deploy(repo, version):
     if key is None:
         raise Error("デプロイの版は X.Y.Z の形で渡す (例: 0.26.0): %s" % version)
     current = {u.name: u.version for u in repo.units()}
-    now = ver_key(repo.root.version)
-    if now and key < now:
-        raise Error("版は下げない (いまの本体 %s より前のデプロイは指定できない): %s"
-                    % (repo.root.version, version))
+    floor = repo.released_max()
+    if floor is not None and key <= floor:
+        raise Error("版は下げない (出したタグの最大 %s と同じか前のデプロイは指定できない): %s"
+                    % (".".join(map(str, floor)), version))
     versions = {name: version for name, v in current.items() if v != version}
     if versions:
         apply_versions(repo, versions)

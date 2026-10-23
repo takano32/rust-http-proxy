@@ -188,9 +188,12 @@ class CrateVersionsTest(unittest.TestCase):
         self.assertIn("NG proxy-server: 版 0.2.2 が本体 rust-http-proxy 0.2.3 と違う", out)
 
     def test_deploy_refuses_lower_and_bad_form(self):
+        # 基準は「出したタグ」。v0.2.3 を出したあとの 0.2.2 は断る
+        self.r.git("tag", "-a", "-m", "deploy 0.2.3", "v0.2.3")
         code, out = self.r.run("--deploy", "0.2.2")
         self.assertEqual(code, 2, out)
         self.assertIn("版は下げない", out)
+        self.r.git("tag", "-d", "v0.2.3")
         code, out = self.r.run("--deploy", "0.3")
         self.assertEqual(code, 2, out)
         self.assertIn("X.Y.Z の形で渡す", out)
@@ -219,7 +222,8 @@ class CrateVersionsTest(unittest.TestCase):
         out = self.check(1)
         self.assertIn("タグ v0.2.4", out)
         self.assertIn("の上なのに本体の版が 0.2.3 (決まり b)", out)
-        # タグの上でなければ見ない
+        # タグの上でなければ見ない (v0.2.4 は消しておく。残すと決まり (c) が効く)
+        self.r.git("tag", "-d", "v0.2.4")
         self.r.write("README.md", "docs\n")
         self.r.commit("docs")
         self.check(0)
@@ -277,25 +281,30 @@ class CrateVersionsTest(unittest.TestCase):
         self.r.commit("deploy 0.4.0")
         self.check(0)
 
-    def test_a_lowered_version_is_ng(self):
-        # 決まり (c): 版は下げない。履歴で一度使った 0.2.3 より低い版を書いたら NG
-        self.r.write("crates/gamma/Cargo.toml", crate_toml("gamma", "0.2.2"))
+    def test_a_version_below_the_last_tag_is_ng(self):
+        # 決まり (c): 基準は「出したタグ」の最大。0.2.3 にタグを打ったあと 0.2.2 に下げたら NG
+        self.r.git("tag", "-a", "-m", "deploy 0.2.3", "v0.2.3")
+        self.r.set_versions("0.2.2")  # 本体もクレートも全部まとめて下げる
         out = self.check(1)
-        self.assertIn("NG gamma: 版 0.2.2 が履歴で一度使った 0.2.3 より低い (決まり c。版は下げない)", out)
-        # 元に戻せば通る (下げたままだけが NG)
-        self.r.write("crates/gamma/Cargo.toml", crate_toml("gamma", "0.2.3"))
+        self.assertIn("NG rust-http-proxy: 版 0.2.2 が出したタグの最大 0.2.3 より低い (決まり c。版は下げない)", out)
+        # 元に戻せば通る
+        self.r.set_versions("0.2.3")
         self.check(0)
 
-    def test_history_is_skipped_when_shallow(self):
-        # 浅い履歴では数えられないので、決まり (c) は判定しない (取りこぼしても誤 NG にしない)
-        shallow = self.tmp.name + "-shallow"
-        subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + self.tmp.name, shallow],
-                       env=ENV, check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        repo = cv.Repo(shallow)
-        try:
-            self.assertEqual(repo.high_water_marks(), {})
-        finally:
-            repo.close()
+    def test_a_number_without_a_tag_can_be_reused(self):
+        # タグを付けていない番号は捨ててよい: 履歴に 0.2.3 があっても、
+        # タグが v0.1.1 だけなら 0.2.0 へ「下げる」--deploy は通る (2026-10-23 の決定)
+        self.r.git("tag", "-a", "-m", "deploy 0.1.1", "v0.1.1")
+        code, out = self.r.run("--deploy", "0.2.0")
+        self.assertEqual(code, 0, out)
+        self.r.git("add", "-A")
+        self.r.git("commit", "-q", "-m", "deploy 0.2.0")
+        self.check(0)
+        # 同じ版をもう一度は指定できない (出したタグと同じか前)
+        self.r.git("tag", "-a", "-m", "deploy 0.2.0", "v0.2.0")
+        code, out = self.r.run("--deploy", "0.2.0")
+        self.assertEqual(code, 2, out)
+        self.assertIn("出したタグの最大 0.2.0 と同じか前", out)
 
     def test_without_version_line(self):
         a = crate_toml("x", "0.1.0", comment=True)
