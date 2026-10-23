@@ -82,6 +82,23 @@ impl Pool {
     /// 使えるアイドル接続があれば取り出す。`want` は使いたいタイムアウトで、
     /// 前回と同じなら `setsockopt` を呼ばない (要求ごとの 2 回を消す)。
     pub fn get(&self, host: &str, want: Duration) -> Option<BufReader<OriginStream>> {
+        self.get_with(host, want, true)
+    }
+
+    /// [`Pool::get`] の生存確認を選べる形 (T26.0)。
+    ///
+    /// `verify` が偽なら `recv(MSG_PEEK|MSG_DONTWAIT)` を省く。**取り出す接続は
+    /// 前の応答を読み切ったものだけ** (`put` が読み残しのある接続を捨てている) なので、
+    /// 省いて失うのは「相手が閉じたことに書く前に気づく」ことだけ。呼び出し側が
+    /// **読み書きの失敗で気づいて 1 回やり直せる要求** (GET / HEAD で本文なし) なら、
+    /// その 1 回 (実測 0.28 us) を毎要求から消せる。再試行できない要求 (本文あり) は
+    /// 今までどおり `verify` を立てること。
+    pub fn get_with(
+        &self,
+        host: &str,
+        want: Duration,
+        verify: bool,
+    ) -> Option<BufReader<OriginStream>> {
         if !self.enabled() {
             return None;
         }
@@ -108,7 +125,7 @@ impl Pool {
                 c?
             };
             if candidate.since.elapsed() < self.idle_timeout
-                && is_alive(candidate.stream.get_ref().tcp())
+                && (!verify || is_alive(candidate.stream.get_ref().tcp()))
             {
                 if candidate.timeout != want {
                     candidate.stream.get_ref().set_timeouts(want).ok()?;
@@ -277,6 +294,39 @@ mod tests {
         s.write_all(b"junk").unwrap();
         std::thread::sleep(Duration::from_millis(50));
         assert!(pool.get("h", Duration::from_secs(5)).is_none());
+    }
+
+    /// `get_with(.., verify=false)` は生存確認の `recv(MSG_PEEK)` を呼ばない (T26.0)。
+    /// 相手が閉じた接続でもそのまま返し、閉じたことは読み書きの側で気づく
+    /// (呼び出し側が 1 回やり直せる要求でだけ使う)。
+    #[test]
+    fn get_without_verify_skips_the_peek() {
+        let pool = Pool::with_total(2, 4, Duration::from_secs(5));
+        let (c1, s1) = pair();
+        pool.put(
+            "h",
+            BufReader::new(OriginStream::Plain(c1)),
+            Duration::from_secs(5),
+        );
+        drop(s1); // 相手が閉じた
+        std::thread::sleep(Duration::from_millis(50));
+        // 生存確認を立てれば捨てる
+        assert!(pool.get("h", Duration::from_secs(5)).is_none());
+
+        let (c2, s2) = pair();
+        pool.put(
+            "h",
+            BufReader::new(OriginStream::Plain(c2)),
+            Duration::from_secs(5),
+        );
+        drop(s2);
+        std::thread::sleep(Duration::from_millis(50));
+        // 省けばそのまま返る (閉じたかどうかは次の読み書きで分かる)
+        assert!(
+            pool.get_with("h", Duration::from_secs(5), false).is_some(),
+            "verify=false keeps the connection without a syscall"
+        );
+        assert_eq!(pool.idle_count(), 0);
     }
 
     #[test]

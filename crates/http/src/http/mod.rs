@@ -686,6 +686,10 @@ pub fn handle_http_with_headers(
             &origin,
             pool_key,
             shared.resolved,
+            // 再試行できる要求 (GET / HEAD で本文なし) は、相手が閉じた接続を掴んでも
+            // 送る/読むの失敗で気づいて新しい接続で 1 回やり直せる。そのぶん
+            // プールの生存確認 (`recv(MSG_PEEK)`) を毎要求から省く (T26.0)
+            !retryable,
         ) {
             Ok(v) => v,
             Err(e) => {
@@ -1106,6 +1110,9 @@ pub(super) fn request_head(
 
 /// プールにあれば再利用し、無ければ接続する (HTTPS なら TLS まで)。戻り値の bool は再利用したか。
 /// `timeout` は接続と最初の応答を待つ時間 (stale があるときは短くする)。
+/// `verify` はプールから取り出すときの生存確認 (`recv(MSG_PEEK)` 1 回)。呼び出し側が
+/// 読み書きの失敗で気づいて 1 回やり直せる要求なら偽にしてよく、そのぶんの
+/// システムコールが毎要求から消える (T26.0)。
 pub(super) fn acquire_origin(
     upstream: &Upstream,
     timeout: Duration,
@@ -1113,8 +1120,9 @@ pub(super) fn acquire_origin(
     origin: &Origin,
     pool_key: &str,
     resolved: Option<&dns::Resolved<'_>>,
+    verify: bool,
 ) -> io::Result<(OriginConn, bool)> {
-    if let Some(server) = upstream.pool.get(pool_key, timeout) {
+    if let Some(server) = upstream.pool.get_with(pool_key, timeout, verify) {
         log_debug!(Some(conn_id), "reusing pooled connection to {}", pool_key);
         return Ok((server, true));
     }
