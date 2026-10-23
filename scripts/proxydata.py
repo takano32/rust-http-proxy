@@ -20,8 +20,13 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
 CONNECT = "connect://"
-# `/status` の `errors_by_cause` の並び (`crates/metrics/src/metrics.rs` の ERR_CAUSE_NAMES)
+# `/status` の `errors_by_cause` の並び (`crates/metrics-types` の ERR_CAUSE_NAMES)。
+# **先頭 8 つは過去の雪像 (8 要素) と同じ意味と並び**で、動かしてはいけない。
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
+# T25.0 で `errors_by_cause` の**うしろに**足された 2 つ (9・10 番目)。
+# `dns` の内訳で、`dns == nxdomain + dns_temp` になる。8 要素の雪像 (T25.0 より前) は
+# この 2 つが無いので 0 として読む。
+DNS_CAUSE_NAMES = ["nxdomain", "dns_temp"]
 
 # この道具が知っている応答の形の版 (`crates/metrics/src/metrics.rs` の `SCHEMA`。T14.49)。
 # **版 0 = `schema` の無い古い出力** (2026-09-16 以前に取った雪像) で、そちらは今までどおり
@@ -252,8 +257,7 @@ def row_of(key, a, b):
     # 待ちの内訳 (T12.4 (2) より前の古い雪像には無いので、無ければ 0)
     def d(name):
         return cur.get(name, 0) - old.get(name, 0)
-    causes = [x - y for x, y in zip(cur.get("errors_by_cause", [0] * len(CAUSE_NAMES)),
-                                    old.get("errors_by_cause", [0] * len(CAUSE_NAMES)))]
+    causes = [x - y for x, y in zip(pad_causes(cur), pad_causes(old))]
     return {
         "key": key,
         "name": host_name(key),
@@ -274,9 +278,30 @@ def row_of(key, a, b):
     }
 
 
+def pad_causes(row):
+    """`errors_by_cause` を 10 列 (8 つの原因 + `dns` の内訳 2 つ) にそろえる。
+
+    T25.0 より前の雪像は 8 要素なので、足りない 2 つは 0 (内訳が分からない) として読む。
+    """
+    v = list(row.get("errors_by_cause") or [])
+    n = len(CAUSE_NAMES) + len(DNS_CAUSE_NAMES)
+    return (v + [0] * n)[:n]
+
+
 def causes_text(counts):
-    """`[80, 0, ...]` -> `dns 80`。全部 0 なら `—`。"""
-    shown = [f"{CAUSE_NAMES[i]} {n}" for i, n in enumerate(counts) if n]
+    """`[80, 0, ...]` -> `dns 80`。全部 0 なら `—`。
+
+    9・10 番目 (`dns` の内訳) が入っている雪像では、合計の `dns` の代わりに内訳を出す
+    (両方並べると同じ失敗を 2 回数えたように見える)。8 要素の雪像は今までどおり
+    `dns N` だけ。
+    """
+    names = CAUSE_NAMES + DNS_CAUSE_NAMES
+    counts = (list(counts) + [0] * len(names))[:len(names)]
+    split = any(counts[len(CAUSE_NAMES):])
+    # `dns` (添字 0) の場所に内訳を差し込む。並びは `nxdomain` / `dns_temp` / 残り 7 つ
+    order = ([len(CAUSE_NAMES), len(CAUSE_NAMES) + 1] + list(range(1, len(CAUSE_NAMES)))
+             if split else list(range(len(CAUSE_NAMES))))
+    shown = [f"{names[i]} {counts[i]}" for i in order if counts[i]]
     return " ".join(shown) if shown else "—"
 
 
