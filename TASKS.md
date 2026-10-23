@@ -30,24 +30,6 @@
 
 タスク 25 で計器と台帳を片付けたので、次は**性能と監視の実利**に戻る。数字は 0.25.4 の実測 (forward 8 並列 20,652〜20,816 op/s、CPU/要求 40.4 us、1 要求あたりのシステムコール 5.02 = `recvfrom` 3 + `sendto` 2)。
 
-- [ ] **T26.0 forward の 1 要求あたりのシステムコールを 1 回減らせるか (段 1 → 段 2)**
-  - 目的: 「認証なし・手軽・**最速**」が目標なのに、forward 1 要求で `recvfrom` を 3 回呼んでいる (README の 5.02)。3 回のうち 1 回は要求ヘッダーを読み切る前の空振りか、本文の読み残しかを**まず数える**。減らせれば CPU/要求 40.4 us のうちカーネル時間 (30.2 us) がそのぶん下がる。
-  - 変更箇所: 段 1 は計測だけ (`strace -c -f` と `scripts/cpu-per-request.sh`)。段 2 は `crates/http` / `crates/net-conn` の読み取りの形。
-  - やること: 段 1 で `strace -f -e trace=recvfrom,sendto,read,write -c` を forward 8 並列 5 秒で取り、**1 要求あたりの回数とバイト数の分布**を出す (3 回のうち何回が 0 バイトか、ヘッダーの 1 回で本文まで読めているか)。段 2 は「最初の `recvfrom` を大きめのバッファで 1 回にし、ヘッダーと本文をまとめて読む」等を試し、**CPU/要求と p50 を前後交互 3 組**で比べる。
-  - 受け入れ基準: 段 1 は内訳の表 (0 バイトの回数・平均バイト数・回数の分布)。段 2 は CPU/要求 −5% (38.4 us 以下) か、下がらないなら「なぜ下がらないか」の数字。**どちらでも、`cargo test --workspace` と bench の数字を出す**。
-
-- [ ] **T26.1 `/metrics` に dns の内訳 (`nxdomain` / `dns_temp`) を出す**
-  - 目的: T25.0 で `/status` の `errors_by_cause` は 10 要素になり、T25.3 で `/metrics` に `boot` と heap を足した。しかし **`/metrics` の接続エラーの系列は `ERR_CAUSES` (8) を回しているだけ** (`crates/prom/src/prom.rs:654`) なので、`nxdomain` と `dns_temp` が監視から見えない。実データでは `dns` 447 件のうち `dns_temp` は 8 件だが、**これが増えたときに気づける計器が無い**。
-  - 変更箇所: `crates/prom/src/prom.rs`、README の `/metrics` の節、`crates/prom` の試験。
-  - やること: 既存の `sorahost_connect_errors_total{cause="…"}` の**後ろに 2 つのラベル値を足す** (系列の名前・HELP・既存ラベルの並びは変えない)。`/status` の 9・10 番目と同じ値になることを実測で確かめる。
-  - 受け入れ基準: `/metrics` の出力に `cause="nxdomain"` と `cause="dns_temp"` が出る (0 のときは出さない、既存と同じ約束)。既存の系列の行が 1 行も変わらないこと (`diff` で確認)。`cargo test -p proxy-prom`。
-
-- [ ] **T26.2 CI の `build-memory-find` を回して関門 (120 MB) の余裕を数字で持つ**
-  - 目的: 120 MB の関門は毎回通しているが、**余裕がどれだけあるかは測っていない** (`.github/workflows/ci.yml` の `build-memory-find` は `if:` で普段 skip)。T24.8/T25.2 で `metrics-recent` の寄与が約 11 MB と分かったので、関門までの余裕を CI で定期的に数字として残したい。
-  - 変更箇所: `.github/workflows/ci.yml` (skip の条件)、README の CI の節。
-  - やること: `build-memory-find` を **週 1 回 (cron) か、`workflow_dispatch` で回せる**ようにし、結果 (通った最小の上限) を step summary に出す。毎 push では回さない (runner を長く占有するため)。
-  - 受け入れ基準: 手で `gh workflow run` して job が走り、step summary に「通った最小 = N MB」が出る。普段の push では skip のまま。
-
 - [ ] **T26.3 版の決まりを「デプロイ番号」に組み替える (`--deploy` を足し、`--check` を新しい決まりに)**
   - 目的: いまの決まり (T21.6) は「版 = 中身を最後に変えたタスクの番号」で、クレートごとに 0.17.11 / 0.21.3 / 0.25.0〜0.25.4 とばらついている。**デプロイを複数のタスクにまとめる**運用 (2026-10-23、はかせの決定) では、タスクごとの bump が邪魔になる — 実際に 2026-10-23、`cargo fmt` だけのコミットで 2 クレートの中身が変わったために版を 0.25.4 にそろえる羽目になり、CI が一度落ちた。**版はデプロイの番号**にして、デプロイ直前に 1 回だけ上げる。
   - 変更箇所: `scripts/crate-versions.py`、`scripts/test_crate_versions.py`、README (「クレート構成」の版の説明と運用 0)、`.github/workflows/ci.yml` と `release.yml` (呼び方)。
