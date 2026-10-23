@@ -707,12 +707,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **403 で拒否した要求もここに入ります** (原因は `acl` / `blocklist` / `connect_port` / `local`、状態コード 403)。
     403 は 5xx ではないので `/status` の `errors_by_cause` (8 つの原因) には乗らず、
     集計では `hosts[]` の `blocked` に数えるだけです。**誰が何を拒否されたか**はこの個票でだけ読めます。
-    **読めずに断った要求もここに入ります** (T14.28。原因は `bad_request:<reason>` の 6 種
+    **読めずに断った要求もここに入ります** (T14.28。原因は `bad_request:<reason>` の 7 種
     = `bad_request:request_line` (要求行が空白で 2 つに割れない / 長すぎて 414) /
     `bad_request:header_too_large` (ヘッダーが長すぎて 431) / `bad_request:method` (メソッドが
     HTTP の token として読めない) / `bad_request:no_host` (オリジン形式なのに `Host` が無い) /
     `bad_request:bad_uri` (絶対 URI やマッピング形式にホストが無い) / `bad_request:body_framing`
-    (`Content-Length` と `Transfer-Encoding: chunked` が両方ある = 要求の密輸)。
+    (`Content-Length` と `Transfer-Encoding: chunked` が両方ある = 要求の密輸) /
+    `bad_request:obs_fold` (折り返したヘッダー = 次の行が SP / HTAB で始まる。RFC 9112 §5.2 の
+    「400 で断る」を採り、値を黙って変えない。T27.2)。
     状態コードは**実際に返したもの**なので `400` / `414` / `431` のどれかで、
     **宛先 (`target`) は空**です — 要求行そのものは個票に入れません (壊れた要求行にも URL や
     ヘッダーが載っているため。入るのは接続元 IP と時刻と理由だけ)。数だけなら `/status` の
@@ -2955,8 +2957,8 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 `/metrics` にはこのほか `sorahost_connect_seconds`(`_bucket{le=}` / `_sum` / `_count`。CONNECT 確立の
 ヒストグラム。区間は `/history` と同じ 12 段。**繋がった CONNECT だけ**を数えます — T20.4。`0.18.0` までは失敗した 1 本も入っていました)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
 かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
-**`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing"}`**
-(読めずに 400 / 414 / 431 で断った要求。6 本で固定。T14.28)、
+**`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing|obs_fold"}`**
+(読めずに 400 / 414 / 431 で断った要求。7 本で固定。T14.28)、
 `sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads`、
 **`sorahost_rtt_seconds_sum` / `_count`** (`{side="client"|"origin"}`。カーネルの平滑化 RTT。
 標本は接続 1 本の終わりに 1 つで、ホスト別は出しません) が出ます。
@@ -3010,8 +3012,8 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 段階の 13 本で `/metrics` は **約 14 KB 増えます** (ホスト表と接続元表が満杯のときで 243 → 257 KB。上限は 400 KiB)。
 
 `/status` の **`rejected_requests`** は、**要求を読めずに断った数**を理由別に並べた欄です (T14.28)。
-`{"request_line":0,"header_too_large":0,"method":0,"no_host":0,"bad_uri":0,"body_framing":0,"total":0}` の形で、
-理由は上の `/errors` の `bad_request:<reason>` と同じ 6 種、`total` はその合計です。公開ポートには走査 (scanner) の
+`{"request_line":0,"header_too_large":0,"method":0,"no_host":0,"bad_uri":0,"body_framing":0,"obs_fold":0,"total":0}` の形で、
+理由は上の `/errors` の `bad_request:<reason>` と同じ 7 種、`total` はその合計です。公開ポートには走査 (scanner) の
 要求が来るので、**何が来たか**をこの 1 行で読むためのものです。エラー (5xx) ではないので `errors` /
 `errors_by_cause` には混ぜていません。**数えるのは断る経路だけ**で、通した要求は原子を 1 つも触りません。
 誰がいつ送ってきたかは `/errors` の個票 (`cause` が `bad_request:<reason>`) で読めます。

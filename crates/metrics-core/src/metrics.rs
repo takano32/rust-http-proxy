@@ -1309,7 +1309,7 @@ impl Metrics {
             // いま流れているバイト/秒の合計 (T14.39)。history スレッドが 5 秒ごとに
             // 書いた値を原子 1 回読むだけ (`/connections` の `rate_bps` の和)
             self.conns.rate_bps_total(),
-            // 読めずに断った要求の理由別 (T14.28)。原子 6 本を読むだけ
+            // 読めずに断った要求の理由別 (T14.28)。原子 7 本を読むだけ
             self.rejected_requests_json(),
             // CONNECT のホストと SNI が食い違った本数 (T14.38)
             self.sni_mismatches.load(Ordering::Relaxed),
