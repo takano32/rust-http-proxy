@@ -1,6 +1,6 @@
 [package]
 name = "proxy-diskprobe"
-version = "0.17.11"
+version = "0.26.0"
 edition = "2024"
 
 [lib]

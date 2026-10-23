@@ -50,8 +50,8 @@ jobs:
       - run: ./scripts/check-docs.sh
       # scripts/ の道具の単体テスト (雪像の要約・判定・匿名化と、`scripts/mx` の test_mx.sh。T17.15)
       - run: python3 -m unittest discover -s scripts
-      # クレートの版の決まり (T21.6)。版の行を書いたコミットより後に中身が変わったクレート (上げ忘れ)・
-      # 本体と `proxy-server` のずれ・本体が最大より小さいときに落とす (タグの上では release.yml が版 = タグも見る)
+      # クレートの版の決まり (T26.3: 版 = デプロイの番号。全クレート = 本体 = proxy-server)。ずれていたら落とす
+      # (中身が変わっただけでは落とさず、前回のデプロイから変えた数を印字する。タグの上では release.yml が版 = タグも見る)
       - run: python3 scripts/crate-versions.py --check
       # scripts/ のシェルの静的検査 (T17.13)。設定 (切った指摘とその理由) は scripts/.shellcheckrc。
       # runner の像に入っていればそれを使い、無ければ入れる (ubuntu-latest が 2026-10-19 に Ubuntu 26 へ移るため)
