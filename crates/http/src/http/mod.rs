@@ -33,7 +33,7 @@ use crate::dns;
 use crate::freshness;
 use crate::headers;
 use crate::log::{Access, access};
-use crate::metrics::{BadRequestReason, Detail, Failure, HostOutcome, Metrics, StageMs};
+use crate::metrics::{BadRequestReason, Detail, ErrCause, Failure, HostOutcome, Metrics, StageMs};
 use crate::origin::{self, OriginStream};
 use crate::recent::{
     ConnTally, STAGE_CLIENT_READ, STAGE_CONNECT, STAGE_DNS, STAGE_FIRST_BYTE, STAGE_QUEUE, STAGES,
@@ -837,8 +837,27 @@ pub fn handle_http_with_headers(
         log_trace!(Some(conn_id), "res header  {}: {}", k, v);
     }
 
-    // 枠組みも `Connection: close` も生の先頭から直接見る (組を作らない)
-    let framing = Framing::of_response_head(status, head_only, &head);
+    // 枠組みも `Connection: close` も生の先頭から直接見る (組を作らない)。
+    // ついでに `Content-Length` を検査する (T19.5)。重複して不一致・数字でない・負・
+    // u64 に収まらない桁数は、そのまま通すと「名乗った長さと実際に送るバイトが食い違う」
+    // 応答になるので、オリジンの応答として扱わず 502 に差し替える (この接続は再利用しない)
+    let framing = match Framing::of_response_head_checked(status, head_only, &head) {
+        Ok(framing) => framing,
+        Err(bad) => {
+            log_warn!(
+                Some(conn_id),
+                "502 Bad Gateway: bad Content-Length {:?} from {}",
+                bad.0,
+                pool_key
+            );
+            // 失敗の数え方 (`/status` の `errors`・`errors_by_cause`) に乗せる。
+            // 原因は既存の 8 つのうち「上のどれでもない」を使う (配列は伸ばさない)
+            ctx.detail.cause = Some(ErrCause::Other);
+            write_error(client, 502, "Bad Gateway")?;
+            ctx.log_failure(502);
+            return Ok(false);
+        }
+    };
     let origin_reusable = head.starts_with(b"HTTP/1.1")
         && framing != Framing::Close
         && !headers::response_names(&head, "connection", "close");
@@ -974,14 +993,79 @@ pub fn handle_http_with_headers(
         s.write(h);
     }
 
+    // ---- 小さな本文は、ヘッダーを出す前に読み切る (T19.5) ----
+    // オリジンが名乗った `Content-Length` より短い本文で閉じたとき、**ヘッダーをまだ
+    // 出していなければ 502 に差し替えられる**。出したあとでは差し替えられない (接続を
+    // 閉じるだけ) ので、手元のバッファ ([`CopyBuf`]、32 KiB) に収まる本文だけ先に読む。
+    //
+    // 読む量も書く量も今までと同じで、変わるのはヘッダーを出す順番だけ
+    // (正常な応答のバイト列は 1 バイトも変わらない)。**代償は初バイト**: この大きさの
+    // 本文では、ヘッダーがクライアントに届くのが本文を読み終えた後ろになる。上限を
+    // 中継バッファと同じ 32 KiB にしてあるのは、この待ちを「ふつうの小さな応答が
+    // 1 パケットで届く範囲」に収めるため (それを超える本文は今までどおり流しながら運ぶ)
+    let mut pre_buf: Option<CopyBuf> = None;
+    let mut early = 0usize;
+    if !head_only
+        && client_framing == framing
+        && let Framing::Length(total) = framing
+        && total as usize <= COPY_BUF_SIZE
+    {
+        let buf = pre_buf.get_or_insert_with(CopyBuf::take);
+        let mut body = BodyReader::new(&mut server, framing);
+        while early < total as usize {
+            match body.read(&mut buf[early..total as usize]) {
+                Ok(0) => break,
+                Ok(n) => early += n,
+                Err(ref e) if is_eof_like(e) => {
+                    log_debug!(Some(conn_id), "origin body ended early: {}", e);
+                    break;
+                }
+                Err(e) => {
+                    if let Some(s) = sink.take() {
+                        s.abort();
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        if early < total as usize {
+            // 名乗った長さに足りないままオリジンが閉じた。**まだ 1 バイトも出していない**ので、
+            // 中途半端な `Content-Length` を残さず 502 に差し替える (この接続は再利用しない)
+            if let Some(s) = sink.take() {
+                s.abort();
+            }
+            // 原因は既存の 8 つ (EOF で切られた = `reset`)
+            ctx.detail.cause = Some(ErrCause::Reset);
+            log_warn!(
+                Some(conn_id),
+                "502 Bad Gateway: origin body ended at {}B of {}B",
+                early,
+                total
+            );
+            write_error(client, 502, "Bad Gateway")?;
+            ctx.log_failure(502);
+            return Ok(false);
+        }
+        if let Some(s) = sink.as_mut() {
+            s.write(&buf[..early]);
+        }
+    }
+
     client.write_all(&client_head)?;
-    let mut body_bytes = 0u64;
+    let mut body_bytes = early as u64;
     let mut clean = true;
+    if let Some(buf) = pre_buf.as_ref()
+        && early > 0
+    {
+        // 先に読み切った本文 (ヘッダーのすぐ後ろに置く)
+        client.write_all(&buf[..early])?;
+    }
 
     // ---- 書き換えも保存もしない本文は splice(2) でカーネル内を運ぶ ----
     let mut spliced = false;
     #[cfg(target_os = "linux")]
-    if sink.is_none()
+    if early == 0
+        && sink.is_none()
         && !head_only
         && client_framing == framing
         && let Framing::Length(total) = framing
@@ -992,26 +1076,26 @@ pub fn handle_http_with_headers(
         let (origin_fd, client_fd) = (origin_tcp.as_raw_fd(), client.get_ref().as_raw_fd());
         // 応答ヘッダーを読むときに一緒に読んでしまった本文の先頭は自分で書く
         // (ヘッダーと同じ 1 回の sendto に載る)
-        let pre = server.buffer().len().min(total as usize);
-        if pre > 0 {
-            let prefix = server.buffer()[..pre].to_vec();
+        let buffered = server.buffer().len().min(total as usize);
+        if buffered > 0 {
+            let prefix = server.buffer()[..buffered].to_vec();
             client.write_all(&prefix)?;
-            server.consume(pre);
-            body_bytes += pre as u64;
+            server.consume(buffered);
+            body_bytes += buffered as u64;
         }
         client.flush()?;
-        let (moved, ok) = passthrough::relay(origin_fd, client_fd, total - pre as u64)?;
+        let (moved, ok) = passthrough::relay(origin_fd, client_fd, total - buffered as u64)?;
         body_bytes += moved;
         clean = ok;
         spliced = true;
         log_trace!(Some(conn_id), "spliced {}B of body to the client", moved);
     }
 
-    if !spliced {
-        let mut buf = CopyBuf::take();
+    if !spliced && early == 0 {
+        let buf: &mut [u8] = pre_buf.get_or_insert_with(CopyBuf::take);
         let mut body = BodyReader::new(&mut server, framing);
         loop {
-            let n = match body.read(&mut buf) {
+            let n = match body.read(&mut *buf) {
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(ref e) if is_eof_like(e) => {

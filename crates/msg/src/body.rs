@@ -16,6 +16,22 @@ pub enum Framing {
     Close,
 }
 
+/// 応答の `Content-Length` が壊れていた (T19.5)。中身は問題の値 (ログに出すため)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BadLength<'a>(pub &'a str);
+
+/// `Content-Length` の値として受け付ける形か (RFC 9110 §8.6 の `1*DIGIT`、`u64` に収まること)。
+///
+/// 要求側 (`proxy-origin` の `request::content_length_value`) と同じ決まり:
+/// `-1`・`+5`・`5, 5`・空・`0x5`・21 桁はどれも受け付けない。先頭の `0` は文法どおり許す。
+fn content_length_value(v: &str) -> Option<u64> {
+    // `str::parse::<u64>` は先頭の `+` を受け付けるので、数字だけであることを先に見る
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    v.parse::<u64>().ok()
+}
+
 impl Framing {
     /// レスポンスの枠組み。`head_only` は HEAD への応答など本文が来ないケース。
     pub fn of_response(status: u16, head_only: bool, headers: &[(String, String)]) -> Framing {
@@ -45,6 +61,48 @@ impl Framing {
             }
         }
         length.map(Framing::Length).unwrap_or(Framing::Close)
+    }
+
+    /// [`Framing::of_response_head`] に `Content-Length` の検査を足した版 (T19.5)。
+    ///
+    /// 重複した `Content-Length` の値が食い違う / 数字でない / 負 / `u64` に収まらない桁数なら
+    /// `Err`。そのまま通すと「名乗った長さと実際に送るバイトが食い違う」応答になるので、
+    /// 呼ぶ側は 502 に差し替える。値が全部同じなら 1 本に畳む (転送する先頭は
+    /// [`crate::headers::write_response_head`] が元の CL を落として組み直す)。
+    ///
+    /// **本文を持たない応答 (1xx / 204 / 304 / HEAD) でも CL は検査する**: 枠組みは
+    /// 今までどおり [`Framing::None`] だが、HEAD はオリジンの `Content-Length` をそのまま
+    /// 転送するので、壊れた値を素通ししない。
+    pub fn of_response_head_checked(
+        status: u16,
+        head_only: bool,
+        head: &[u8],
+    ) -> Result<Framing, BadLength<'_>> {
+        // chunked が来ていれば CL は見ない (RFC 9112 §6.3。今までの優先順位のまま)
+        let chunked = crate::headers::response_lines(head).any(|(k, v)| {
+            k.eq_ignore_ascii_case("transfer-encoding")
+                && v.split(',')
+                    .next_back()
+                    .is_some_and(|t| t.trim_ascii().eq_ignore_ascii_case("chunked"))
+        });
+        if chunked {
+            return Ok(Framing::Chunked);
+        }
+        let mut length: Option<u64> = None;
+        for (k, v) in crate::headers::response_lines(head) {
+            if !k.eq_ignore_ascii_case("content-length") {
+                continue;
+            }
+            let n = content_length_value(v).ok_or(BadLength(v))?;
+            match length {
+                Some(prev) if prev != n => return Err(BadLength(v)),
+                _ => length = Some(n),
+            }
+        }
+        if head_only || (100..200).contains(&status) || status == 204 || status == 304 {
+            return Ok(Framing::None);
+        }
+        Ok(length.map(Framing::Length).unwrap_or(Framing::Close))
     }
 
     /// リクエストの枠組み (枠が無ければ本文なし)。
@@ -425,6 +483,98 @@ mod tests {
 #[cfg(test)]
 mod of_response_head_tests {
     use super::*;
+
+    /// 検査つきの版 (T19.5) が、壊れた `Content-Length` を 1 つも通さないこと。
+    #[test]
+    fn checked_rejects_every_broken_content_length() {
+        let none = Framing::None;
+        let len = |n| Ok(Framing::Length(n));
+        // 正常な形は今までどおり (重複が同値なら 1 本に畳む)
+        for (head, want) in [
+            (&b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"[..], len(5)),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\n",
+                len(5),
+            ),
+            (b"HTTP/1.1 200 OK\r\nContent-Length: 0007\r\n\r\n", len(7)),
+            (b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", len(0)),
+            (b"HTTP/1.1 200 OK\r\n\r\n", Ok(Framing::Close)),
+            // chunked が来ていれば CL は見ない (RFC 9112 §6.3)
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n",
+                Ok(Framing::Chunked),
+            ),
+        ] {
+            assert_eq!(
+                Framing::of_response_head_checked(200, false, head),
+                want,
+                "{:?}",
+                String::from_utf8_lossy(head)
+            );
+        }
+        // 壊れた形はすべて弾く (重複不一致・数字でない・負・桁あふれ・カンマ)
+        for head in [
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n"[..],
+            b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nContent-Length: 5\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: +5\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5, 5\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0x5\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: \r\n\r\n",
+            // 20 桁でも u64 に収まらなければ弾く / 21 桁も弾く
+            b"HTTP/1.1 200 OK\r\nContent-Length: 99999999999999999999\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 999999999999999999999\r\n\r\n",
+        ] {
+            assert!(
+                Framing::of_response_head_checked(200, false, head).is_err(),
+                "{:?} を通した",
+                String::from_utf8_lossy(head)
+            );
+        }
+        // 本文を持たない応答でも CL は検査する (HEAD はオリジンの CL をそのまま転送する)。
+        // 値が正常なら枠組みは今までどおり `None`
+        for status in [101u16, 204, 304] {
+            assert_eq!(
+                Framing::of_response_head_checked(
+                    status,
+                    false,
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"
+                ),
+                Ok(none),
+                "status={}",
+                status
+            );
+            assert!(
+                Framing::of_response_head_checked(
+                    status,
+                    false,
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: -1\r\n\r\n"
+                )
+                .is_err(),
+                "status={} で壊れた CL を通した",
+                status
+            );
+        }
+        assert_eq!(
+            Framing::of_response_head_checked(
+                200,
+                true,
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+            ),
+            Ok(none),
+            "HEAD"
+        );
+        assert!(
+            Framing::of_response_head_checked(
+                200,
+                true,
+                b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\n"
+            )
+            .is_err(),
+            "HEAD で壊れた CL を通した"
+        );
+    }
 
     /// 生の先頭から決める版が、組を作ってから決める版と同じ結果になること。
     #[test]
