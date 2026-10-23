@@ -25,7 +25,7 @@ jobs:
           # 歴史とタグを全部取る (T26.3)
           fetch-depth: 0
       # 各クレートの版が決まり (デプロイの番号 X.Y.Z、全クレート = 本体 = proxy-server = タグ) に合っているか。
-      # 合わなければ名前と理由を出して落ちる (デプロイの直前の --deploy 忘れ等。T26.3)
+      # 合わなければ名前と理由を出して落ちる (タスクの中での --task 忘れ等)
       - name: Check the crate versions
         run: python3 scripts/crate-versions.py --check
       - name: Install the Rust target

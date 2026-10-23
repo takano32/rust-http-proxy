@@ -707,14 +707,15 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **403 で拒否した要求もここに入ります** (原因は `acl` / `blocklist` / `connect_port` / `local`、状態コード 403)。
     403 は 5xx ではないので `/status` の `errors_by_cause` (8 つの原因) には乗らず、
     集計では `hosts[]` の `blocked` に数えるだけです。**誰が何を拒否されたか**はこの個票でだけ読めます。
-    **読めずに断った要求もここに入ります** (T14.28。原因は `bad_request:<reason>` の 7 種
+    **読めずに断った要求もここに入ります** (T14.28。原因は `bad_request:<reason>` の 8 種
     = `bad_request:request_line` (要求行が空白で 2 つに割れない / 長すぎて 414) /
     `bad_request:header_too_large` (ヘッダーが長すぎて 431) / `bad_request:method` (メソッドが
     HTTP の token として読めない) / `bad_request:no_host` (オリジン形式なのに `Host` が無い) /
     `bad_request:bad_uri` (絶対 URI やマッピング形式にホストが無い) / `bad_request:body_framing`
     (`Content-Length` と `Transfer-Encoding: chunked` が両方ある = 要求の密輸) /
     `bad_request:obs_fold` (折り返したヘッダー = 次の行が SP / HTAB で始まる。RFC 9112 §5.2 の
-    「400 で断る」を採り、値を黙って変えない。T27.2)。
+    「400 で断る」を採り、値を黙って変えない) /
+    `bad_request:dup_host` (`Host` が 2 本以上ある。T19.2)。
     状態コードは**実際に返したもの**なので `400` / `414` / `431` のどれかで、
     **宛先 (`target`) は空**です — 要求行そのものは個票に入れません (壊れた要求行にも URL や
     ヘッダーが載っているため。入るのは接続元 IP と時刻と理由だけ)。数だけなら `/status` の
@@ -2273,15 +2274,13 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 責務ごとの層に分けてあります (41 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
 全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
 
-**クレートの版の決まり** (2026-10-23、T26.3。T21.6 の「版 = 中身を最後に変えたタスクの番号」を置き換えました): 版は**デプロイの番号** `X.Y.Z` で、
-**クレート (`crates/*`) も本体 (`rust-http-proxy`) も `proxy-server` も同じ版**です (`-V` の版は `proxy-server` の `build.rs` が `CARGO_PKG_VERSION` から作ります)。
-デプロイは複数のタスクをまとめてよいので、**上げるのはデプロイの直前に 1 回だけ**: `scripts/crate-versions.py --deploy 0.26.1` で全クレート + 本体 + `proxy-server` を
-そろえます (タスクの作業中は版を触りません)。タグは本体の版です (`v0.26.0` ↔ `0.26.0`)。
-`--check` は (a) 全クレートの版 = 本体の版、(b) タグの上では本体の版 = タグ、を見ます。**中身が変わったこと自体は NG にしません** (デプロイ前は普通の状態)。
-代わりに「前回のデプロイから中身が変わったクレート: N 個。次のデプロイで `--deploy` する」を印字します (下の「運用」の 0)。
+**クレートの版の決まり** (2026-10-23 に T26.3 の「デプロイの番号」を撤回して、T21.6 の形に戻しました): 各クレートの版は
+**そのクレートの中身を最後に変えたタスクの番号** `0.<タスク>.<番号>` です (T19.1 → `0.19.1`、T25.3 → `0.25.3`)。
+本体 (`rust-http-proxy`) と `proxy-server` は**そのビルドに入っている最後のタスク** = 全クレートの版と `src/` を最後に変えたタスクのうち最大です
+(`-V` の版は `proxy-server` の `build.rs` が `CARGO_PKG_VERSION` から作ります)。**タグは本体の版**です (`v0.25.3` ↔ `0.25.3`)。
+デプロイは複数のタスクをまとめてよく、そのときのタグは**まとめた中で一番大きいタスクの番号**になります (番号はタスクの番号なので、前に出したタグより小さくなることもあります)。
+タスクの中で上げるときは `scripts/crate-versions.py --task T19.1` (分かれ目から中身が変わったクレートを `0.19.1` にし、本体と `proxy-server` を最大にします)。
 「中身が変わった」は `crates/<名前>/` の差分から `Cargo.toml` の `version` の 1 行を除いたもの、本体は `src/` の下です。
-
-**版は下げない。** `--check` は (a) 全クレート = 本体、(b) タグの上なら本体 = タグ、(c) **履歴で一度でも使った版より低い版を書いていないか** (`git log -p` の `version = …` を 1 回だけ拾う。浅い履歴では判定しない) を見ます。merge で版が衝突したときは**高い方**を採ってください (`--deploy` も下げる指定を断ります)。
 
 | クレート | 責務 |
 |---|---|
@@ -2959,8 +2958,8 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 `/metrics` にはこのほか `sorahost_connect_seconds`(`_bucket{le=}` / `_sum` / `_count`。CONNECT 確立の
 ヒストグラム。区間は `/history` と同じ 12 段。**繋がった CONNECT だけ**を数えます — T20.4。`0.18.0` までは失敗した 1 本も入っていました)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
 かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
-**`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing|obs_fold"}`**
-(読めずに 400 / 414 / 431 で断った要求。7 本で固定。T14.28)、
+**`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing|obs_fold|dup_host"}`**
+(読めずに 400 / 414 / 431 で断った要求。8 本で固定。T14.28)、
 `sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads`、
 **`sorahost_rtt_seconds_sum` / `_count`** (`{side="client"|"origin"}`。カーネルの平滑化 RTT。
 標本は接続 1 本の終わりに 1 つで、ホスト別は出しません) が出ます。
@@ -3014,8 +3013,8 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 段階の 13 本で `/metrics` は **約 14 KB 増えます** (ホスト表と接続元表が満杯のときで 243 → 257 KB。上限は 400 KiB)。
 
 `/status` の **`rejected_requests`** は、**要求を読めずに断った数**を理由別に並べた欄です (T14.28)。
-`{"request_line":0,"header_too_large":0,"method":0,"no_host":0,"bad_uri":0,"body_framing":0,"obs_fold":0,"total":0}` の形で、
-理由は上の `/errors` の `bad_request:<reason>` と同じ 7 種、`total` はその合計です。公開ポートには走査 (scanner) の
+`{"request_line":0,"header_too_large":0,"method":0,"no_host":0,"bad_uri":0,"body_framing":0,"obs_fold":0,"dup_host":0,"total":0}` の形で、
+理由は上の `/errors` の `bad_request:<reason>` と同じ 8 種、`total` はその合計です。公開ポートには走査 (scanner) の
 要求が来るので、**何が来たか**をこの 1 行で読むためのものです。エラー (5xx) ではないので `errors` /
 `errors_by_cause` には混ぜていません。**数えるのは断る経路だけ**で、通した要求は原子を 1 つも触りません。
 誰がいつ送ってきたかは `/errors` の個票 (`cause` が `bad_request:<reason>`) で読めます。
@@ -3024,6 +3023,9 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 **`Content-Length` と `Transfer-Encoding: chunked` が両方ある要求**は今までは chunked として中継していましたが
 `400` で断ります (RFC 9112 §6.1 は中継してはならないと書いています。前段と後段で本文の切れ目が食い違う
 「要求の密輸」を通さないため)。判定はどちらも既にある分岐の中なので、通る要求の費用は変わりません。
+**`Host` が 2 本以上ある要求**も `400` で断ります (T19.2。RFC 9110 §7.2。今までは**最後の 1 本を黙って採って**
+200 で通し、オリジンには要求先から作り直した `Host` を 1 本だけ送っていました = 前段と後段で「どの `Host` を
+信じるか」が食い違う形)。印は 2 本目を見たときだけ立つので、通る要求の費用はこちらも変わりません。
 
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
@@ -3115,7 +3117,7 @@ TTL を過ぎた / `warm_stale` = **warm なのにミスした** = 裏の引き�
 
 ```bash
 scripts/crate-versions.py --check           # 0 なら決まりに合う (中身が変わったクレートの数も印字する)
-scripts/crate-versions.py --deploy 0.26.1   # 全クレート + 本体 + proxy-server を 0.26.1 にそろえる (Cargo.lock も)
+scripts/crate-versions.py --task T19.1      # 分かれ目から中身が変わったクレートを 0.19.1 にし、本体を最大に (Cargo.lock も)
 scripts/crate-versions.py --check           # 「中身が変わったクレート: 0 個」になったら、それをコミットしてタグを打つ
 scripts/crate-versions.py --list            # クレートごとに 今の版・中身を最後に変えたコミット・版の行を書いたコミット
 git tag v0.26.0                             # タグは本体の版

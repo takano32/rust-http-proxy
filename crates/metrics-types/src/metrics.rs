@@ -227,7 +227,7 @@ impl Failure {
     }
 }
 
-/// 要求を読めずに断った理由 (T14.28)。**7 種で固定**。
+/// 要求を読めずに断った理由 (T14.28 / T19.2)。**8 種で固定**。
 ///
 /// 公開ポートには走査 (scanner) の要求が来る。今までは 400 / 414 / 431 で閉じるだけで
 /// **何が来たか**の数が無かったので、`/status` の `rejected_requests` (理由別) と
@@ -253,10 +253,12 @@ pub enum BadRequestReason {
     BodyFraming = 5,
     /// 折り返した (obs-fold) ヘッダーがある (次の行が SP / HTAB で始まる。RFC 9112 §5.2)
     ObsFold = 6,
+    /// `Host` が 2 本以上ある (RFC 9110 §7.2。どの `Host` を信じるかで前段と後段が食い違う。T19.2)
+    DupHost = 7,
 }
 
 /// [`BadRequestReason`] の数 (`rejected_requests` の配列の長さ)。
-pub const BAD_REQUEST_REASONS: usize = 7;
+pub const BAD_REQUEST_REASONS: usize = 8;
 
 /// `/status` の鍵と `/metrics` のラベルに使う名前 ([`BadRequestReason`] と同じ順)。
 pub const BAD_REQUEST_REASON_NAMES: [&str; BAD_REQUEST_REASONS] = [
@@ -267,6 +269,7 @@ pub const BAD_REQUEST_REASON_NAMES: [&str; BAD_REQUEST_REASONS] = [
     "bad_uri",
     "body_framing",
     "obs_fold",
+    "dup_host",
 ];
 
 impl BadRequestReason {
@@ -285,10 +288,11 @@ impl BadRequestReason {
             BadRequestReason::BadUri => "bad_request:bad_uri",
             BadRequestReason::BodyFraming => "bad_request:body_framing",
             BadRequestReason::ObsFold => "bad_request:obs_fold",
+            BadRequestReason::DupHost => "bad_request:dup_host",
         }
     }
 
-    /// 符号 (0〜6) から戻す。知らない値は [`BadRequestReason::RequestLine`]。
+    /// 符号 (0〜7) から戻す。知らない値は [`BadRequestReason::RequestLine`]。
     pub fn from_index(v: usize) -> BadRequestReason {
         match v {
             1 => BadRequestReason::HeaderTooLarge,
@@ -297,6 +301,7 @@ impl BadRequestReason {
             4 => BadRequestReason::BadUri,
             5 => BadRequestReason::BodyFraming,
             6 => BadRequestReason::ObsFold,
+            7 => BadRequestReason::DupHost,
             _ => BadRequestReason::RequestLine,
         }
     }
