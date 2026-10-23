@@ -24,15 +24,3 @@
 ### Phase 25 (2026-10-23 に起こした候補。デプロイを待たずに段 1 だけ進められるものもある)
 
 番号は仮。**Phase 25 の見出しを決めるのは T24.99 の「次のターンの準備」**で、そこで採るかどうかを決める。
-
-- [ ] **T25.2 `recent.rs` (3,585 行) を T24.8 の案 A で割る**
-  - 目的: T24.8 の見積もりで、`crates/metrics-recent/src/recent.rs` を **3 ファイル (errors 795 / conns 1,399 / mod.rs 1,391)** に割るのがよいと分かった (移す 2,194 行、外の 28 ファイルの経路は `pub use` で不変、ビルドメモリの寄与は約 11 MB で関門 120 MB には余裕 30 MB)。
-  - 変更箇所: `crates/metrics-recent/src/recent/` の 3 ファイル、`docs/recent-split.md` の結論どおり。
-  - やること: コードを動かすだけで意味は変えない。1 ファイルずつ動かしては `cargo test -p proxy-metrics-recent` を回す。移す行は `git mv` 相当 (差分が「動いた」だけに見えるように)。
-  - 受け入れ基準: 公開している 48 個の名前が `pub use` で同じに見える、`cargo test --workspace` 全通過、`build-memory.sh 120` 通過、clippy 0。
-
-- [ ] **T25.3 Prometheus に `boot` と `memory.baseline` を出すか決める**
-  - 目的: T24.0 で `/status` に `boot` (`boot_id` と `pid`)、T24.4 で `memory.baseline` を足したが、`/metrics` (Prometheus) には出していない (`crates/prom/src/prom.rs` に `boot`/`baseline` の文字が 1 つも無い)。監視側で「ホストの再起動」と「heap の増え」を見たいなら要る。
-  - 変更箇所: `crates/prom/src/prom.rs`、README の `/metrics` の節。
-  - やること: 出すなら `proxy_boot_id_info{id="…"} 1` と `proxy_heap_baseline_bytes`、`proxy_heap_baseline_at_seconds`。**cardinality が増えない形** (id は info 型で 1 本) にする。出さないなら README に「出さない理由」を書く。
-  - 受け入れ基準: 出す場合は `/metrics` の行と README の表、`test_prom` の 1 本。出さない場合は README の 1 段落。
