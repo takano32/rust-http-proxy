@@ -703,6 +703,9 @@ pub fn handle_http_with_headers(
 
     // 本文の無い冪等な要求だけ、再利用した接続が死んでいたときに 1 回やり直す
     let retryable = req_framing == Framing::None && (is_get || head_only);
+    // 1xx を中継したか。中継したらクライアントはもう応答の先頭を受け取っているので、
+    // プールの接続を掴み直して同じ 1xx をもう一度出さない (やり直さない)
+    let mut interim_sent = false;
     let mut attempt = 0;
     let (mut server, head, status, request_body_bytes) = loop {
         attempt += 1;
@@ -765,12 +768,23 @@ pub fn handle_http_with_headers(
             .and_then(|n| server.get_mut().flush().map(|_| n));
         // 要求をオリジンへ送り終えた境目 (T14.3 (1))。ここが forward に足す唯一の時計
         let sent_at = crate::profile::mark();
-        let result = sent.and_then(|n| crate::response::read_head(&mut server).map(|h| (h, n)));
+        // 1xx (100 と 101 を除く) はヘッダーだけクライアントへ中継し、最終応答を読み続ける (T19.6)
+        let result = sent.and_then(|n| {
+            crate::response::read_head_forwarding(&mut server, |head, status| {
+                interim_sent = true;
+                forward_interim(client, head, status, conn_id)
+            })
+            .map(|h| (h, n))
+        });
         match result {
             // 408 (Request Timeout) と 421 (Misdirected Request) は、再利用した接続に
             // 積まれていた応答か、この接続では処理できない印。冪等ならやり直す (RFC 9110 §15.5.20)
             Ok(((_, status), _))
-                if reused && retryable && attempt == 1 && (status == 408 || status == 421) =>
+                if reused
+                    && retryable
+                    && !interim_sent
+                    && attempt == 1
+                    && (status == 408 || status == 421) =>
             {
                 log_debug!(
                     Some(conn_id),
@@ -797,7 +811,13 @@ pub fn handle_http_with_headers(
                 }
                 break (server, head, status, n);
             }
-            Err(e) if reused && retryable && attempt == 1 && is_stale_conn_error(&e) => {
+            Err(e)
+                if reused
+                    && retryable
+                    && !interim_sent
+                    && attempt == 1
+                    && is_stale_conn_error(&e) =>
+            {
                 log_debug!(
                     Some(conn_id),
                     "pooled connection to {} was stale ({}), retrying",
@@ -1295,6 +1315,35 @@ fn forward_request_body(
             Ok(total)
         }
     }
+}
+
+/// 中間応答 (1xx) をクライアントへ中継する。**ヘッダー部だけで、本文は持たない** (T19.6)。
+///
+/// RFC 9110 §15.2 は、自分が起こした要求でない限り 1xx を中継することを求めている。
+/// 整形は最終応答と同じ [`headers::write_response_head`] を通す — hop-by-hop
+/// (`Connection` が名指ししたものを含む) と枠組みのヘッダーを落とし、obs-fold は SP 1 個に
+/// 畳む。足す行は無い (`Content-Length` / `Connection` は 1xx に付けない)。
+///
+/// **キャッシュには載せない**し、`/recent` とホスト別の統計にも数えない (数えるのは
+/// 最終応答の 1 本だけ)。
+fn forward_interim(
+    client: &mut impl Write,
+    head: &[u8],
+    status: u16,
+    conn_id: usize,
+) -> io::Result<()> {
+    let mut out = Vec::with_capacity(head.len() + 16);
+    headers::write_response_head(&mut out, head, None, &[], &[] as &[&str]);
+    client.write_all(&out)?;
+    // 最終応答を読み終えるまで抱えない: クライアントは 103 を見てから先の資源を取りに行く
+    client.flush()?;
+    log_trace!(
+        Some(conn_id),
+        "forwarded interim {} response ({}B)",
+        status,
+        out.len()
+    );
+    Ok(())
 }
 
 fn write_error(client: &mut impl Write, status: u16, reason: &str) -> io::Result<()> {
