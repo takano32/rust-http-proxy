@@ -4,6 +4,7 @@ use std::io;
 
 use crate::ascii;
 use crate::log_trace;
+use crate::log_warn;
 use crate::net;
 use crate::origin::Scheme;
 
@@ -11,8 +12,17 @@ use crate::origin::Scheme;
 #[derive(Default)]
 pub struct RequestHeaders {
     pub host: Option<String>,
-    /// `Content-Length` の値 (最後に出てきたもの。数でなければ `None`)
+    /// `Host` が 2 本以上あった (T19.2)。RFC 9110 §7.2 は 400 を要求するので、
+    /// これを立てて断る。**値は最初の 1 本**を残す (2 本目以降は確保しない)
+    pub dup_host: bool,
+    /// `Content-Length` の値 (重複が同値なら畳んだ 1 本。数でなければ `None`)
     pub content_length: Option<u64>,
+    /// `Content-Length` の形が不正 (数字でない・`u64` に収まらない・重複で不一致)。
+    ///
+    /// 本文の切れ目が決まらないので、要求そのものを 400 で断る (T19.1)。
+    /// **判定 (ここ) と転送 (生の行) が食い違わないようにする**ための持ち場で、
+    /// 真なら [`RequestHeaders::content_length`] の値は使ってはいけない。
+    pub content_length_invalid: bool,
     /// `Transfer-Encoding` の最後の指定が `chunked` か
     pub chunked: bool,
     pub authorization: bool,
@@ -49,7 +59,13 @@ pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestH
         log_trace!(Some(conn_id), "req header  {}: {}", name, v_trim);
         let is = |want: &str| name.eq_ignore_ascii_case(want);
         if is("host") {
-            h.host = Some(v_trim.to_string());
+            // 2 本目を見た時点で「重複」の印を立てる (要求の密輸と、どの Host を信じるかの
+            // 食い違いを避ける)。RFC 9110 §7.2 は中継する側に 400 を求めている
+            if h.host.is_some() {
+                h.dup_host = true;
+            } else {
+                h.host = Some(v_trim.to_string());
+            }
         } else if is("authorization") {
             h.authorization = true;
         } else if is("cache-control") || is("pragma") {
@@ -77,7 +93,26 @@ pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestH
                 }
             }
         } else if is("content-length") {
-            h.content_length = v_trim.parse::<u64>().ok();
+            // RFC 9110 §8.6: `Content-Length = 1*DIGIT`。数字だけの 10 進で `u64` に収まること。
+            // 重複は全部同じ値なら 1 本に畳んでよく、1 つでも違えば本文の切れ目が決まらないので
+            // 要求を断る (T19.1)
+            match (h.content_length, content_length_value(v_trim)) {
+                (_, None) => {
+                    log_warn!(Some(conn_id), "invalid Content-Length: {:?}", v_trim);
+                    h.content_length_invalid = true;
+                }
+                (None, Some(n)) => h.content_length = Some(n),
+                (Some(prev), Some(n)) if prev == n => {}
+                (Some(prev), Some(n)) => {
+                    log_warn!(
+                        Some(conn_id),
+                        "conflicting Content-Length: {} and {}",
+                        prev,
+                        n
+                    );
+                    h.content_length_invalid = true;
+                }
+            }
         } else if is("transfer-encoding") {
             // 最後の符号化が chunked なら本文は chunked (RFC 9112 §6.1)
             h.chunked = h.chunked
@@ -88,6 +123,18 @@ pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestH
         }
     }
     h
+}
+
+/// `Content-Length` の値として受け付ける形か (RFC 9110 §8.6 の `1*DIGIT`、`u64` に収まること)。
+///
+/// `-1`・`+5`・`5, 5`・空・`0x5`・21 桁 (u64 に収まらない) はどれも受け付けない。
+/// 先頭の `0` は文法どおり許す (`0007` は 7)。**確保しない**ので要求ごとの費用は数字の判定 1 回。
+fn content_length_value(v: &str) -> Option<u64> {
+    // `str::parse::<u64>` は先頭の `+` を受け付けるので、数字だけであることを先に見る
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    v.parse::<u64>().ok()
 }
 
 /// ポート番号を確保せずに 10 進の文字列にする (`u16::to_string` は `String` を 1 本作る)。
@@ -330,6 +377,87 @@ pub fn map_locations(lines: &mut [String]) {
         if let Some(m) = mapped {
             *line = format!("{}: {}", name.trim(), m);
         }
+    }
+}
+
+#[cfg(test)]
+mod content_length_tests {
+    use super::*;
+
+    fn parse(lines: &[&str]) -> RequestHeaders {
+        let raw: Vec<String> = lines.iter().map(|l| format!("{}\r\n", l)).collect();
+        parse_request_headers(&raw, 0)
+    }
+
+    /// 受け付ける形 (数字だけ・u64 に収まる・重複は同値なら畳む)。
+    #[test]
+    fn accepts_plain_decimal_and_collapses_equal_duplicates() {
+        for (value, want) in [
+            ("0", 0u64),
+            ("5", 5),
+            ("0007", 7),
+            ("18446744073709551615", u64::MAX),
+        ] {
+            let h = parse(&[&format!("Content-Length: {}", value)]);
+            assert!(!h.content_length_invalid, "value={:?}", value);
+            assert_eq!(h.content_length, Some(want), "value={:?}", value);
+        }
+        let h = parse(&["Content-Length: 5", "Content-Length: 5"]);
+        assert!(!h.content_length_invalid);
+        assert_eq!(h.content_length, Some(5));
+        // 大小の違う綴りでも同じ値なら同じ (名前も値も大小は問わない)
+        let h = parse(&["content-length: 5", "CONTENT-LENGTH: 05"]);
+        assert!(!h.content_length_invalid);
+        assert_eq!(h.content_length, Some(5));
+    }
+
+    /// 断る形 (数字でない・負・記号つき・カンマ・空・u64 に収まらない桁数・重複で不一致)。
+    #[test]
+    fn rejects_everything_that_is_not_one_plain_decimal() {
+        for value in [
+            "-1",
+            "+5",
+            "5, 5",
+            "",
+            "0x5",
+            "5.",
+            "1e3",
+            "٥",                    // 非 ASCII の数字
+            "99999999999999999999", // 21 桁
+            "18446744073709551616", // u64::MAX + 1
+        ] {
+            let h = parse(&[&format!("Content-Length: {}", value)]);
+            assert!(h.content_length_invalid, "value={:?} を通した", value);
+        }
+        // 前後の OWS は値の側で落とすので `5 ` / ` 5` は 5 として通る (今までどおり)
+        let h = parse(&["Content-Length:  5 "]);
+        assert!(!h.content_length_invalid);
+        assert_eq!(h.content_length, Some(5));
+        // 空の値 (`Content-Length:`) も断る
+        let h = parse(&["Content-Length:"]);
+        assert!(h.content_length_invalid);
+
+        // 重複で不一致
+        let h = parse(&["Content-Length: 5", "Content-Length: 6"]);
+        assert!(h.content_length_invalid);
+        // 1 本でも壊れていれば断る (後ろに正しい値があっても通さない)
+        let h = parse(&["Content-Length: x", "Content-Length: 6"]);
+        assert!(h.content_length_invalid);
+        let h = parse(&["Content-Length: 6", "Content-Length: x"]);
+        assert!(h.content_length_invalid);
+    }
+
+    /// CL の無い要求・他のヘッダーだけの要求は今までどおり (誤検出しない)。
+    #[test]
+    fn leaves_requests_without_content_length_alone() {
+        let h = parse(&["Host: example.com", "Accept: */*"]);
+        assert!(!h.content_length_invalid);
+        assert_eq!(h.content_length, None);
+        // `Transfer-Encoding: chunked` 単独もここでは断らない (400 は http 側の判定)
+        let h = parse(&["Transfer-Encoding: chunked"]);
+        assert!(!h.content_length_invalid);
+        assert!(h.chunked);
+        assert_eq!(h.content_length, None);
     }
 }
 

@@ -455,8 +455,29 @@ pub fn handle_http_with_headers(
         let _ = write_error(client, 400, "Bad Request");
         return Ok(false);
     };
+    // `Content-Length` の形が壊れている要求は、本文の切れ目が決まらないので 400 で断る (T19.1)。
+    // ここで断らないと、判定 (数字でない → 本文なし) と転送 (生の行をそのまま) が食い違い、
+    // オリジンが本文を待ち続けるか、後段が別の長さで読む (要求の密輸)。**無言で閉じない**
+    if req.content_length_invalid {
+        log_warn!(
+            Some(conn_id),
+            "400 Bad Request: invalid or conflicting Content-Length"
+        );
+        metrics.record_bad_request(BadRequestReason::BodyFraming, client_ip.unwrap_or("-"), 400);
+        let _ = write_error(client, 400, "Bad Request");
+        return Ok(false);
+    }
     let version = parts.next().unwrap_or("HTTP/1.0");
     let http11 = version.eq_ignore_ascii_case("HTTP/1.1");
+    // `Host` が 2 本以上ある要求は RFC 9110 §7.2 が 400 を求めている (T19.2)。
+    // どの `Host` を信じるかで前段と後段が食い違うと、宛先の付け替え (要求の密輸) になる。
+    // **通る要求には 1 命令も足さない**: 印は 2 本目を見たときしか立たない
+    if req.dup_host {
+        log_warn!(Some(conn_id), "400 Bad Request: duplicate Host header");
+        metrics.record_bad_request(BadRequestReason::DupHost, client_ip.unwrap_or("-"), 400);
+        let _ = write_error(client, 400, "Bad Request");
+        return Ok(false);
+    }
     let keep_client = !shared.last
         && !shared.keepalive.is_zero()
         && if http11 {
