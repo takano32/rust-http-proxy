@@ -2395,9 +2395,9 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 **(f) この README が `scripts/<名前>.py` と書いている道具に実行ビットがあるか** (そのまま叩ける道具か。
 README にあるのにファイルが無いものも NG。共通部品の `proxydata.py`、判定の部の `snapshot_criteria.py`、
 unittest が名前で読む `test_*.py` は、叩かないものとして除外表に理由つきで入れてあります。T24.7)、
-**(g) 台帳** (`TASKS.md` の**未着手**、`TODO.md` の §5 (Phase の見出しと索引だけ)、`tasks/phaseNN.md` の
+**(g) 台帳** (`TASKS.md` の**未着手**、`TODO.md` の §5 (Phase の見出しと索引だけ)、`tasks/TNN.md` の
 3 つ。**移し忘れ** (`TASKS.md` に `- [x]` が無いこと。済んだタスクは `tasks/` へ移します)、
-**リンク** (`tasks/phaseNN.md` と §5 の `### Phase NN (…)` の見出しが両方向で
+**リンク** (`tasks/TNN.md` と §5 の `### Phase NN (…)` の見出しが両方向で
 1 対 1)、**番号** (`T24.10` が台帳全体で 1 回だけ。番号の Phase が置き場所と合うこと)、
 **1 行目** (`# Phase NN — …`) を見ます。中身は `scripts/check-ledger.py` で、台帳だけを回すなら
 これ 1 本です。T24.10 / T24.13)。

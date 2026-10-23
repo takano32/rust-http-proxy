@@ -3,7 +3,7 @@
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
-一時のディレクトリに `TODO.md` と `tasks/phaseNN.md` の見本を置き、`check-ledger.py` の
+一時のディレクトリに `TODO.md` と `tasks/TNN.md` の見本を置き、`check-ledger.py` の
 `collect()` / `main()` をそのまま呼ぶ。**本物の台帳は読まない** (中身が進んでもテストが揺れない)。
 見るのは、通る形 1 つと、規則ごとにわざと壊した形:
 
@@ -52,7 +52,7 @@ def phase(num, blocks, link=False, count=None, moved_line=None):
     if link or moved_line:
         n = len(blocks) if count is None else count
         if moved_line is None:
-            moved_line = ("**済んだ %d 本の本文は [`tasks/phase%d.md`](tasks/phase%d.md) に移した**"
+            moved_line = ("**済んだ %d 本の本文は [`tasks/T%d.md`](tasks/T%d.md) に移した**"
                           " (2026-10-22、T24.9)。" % (n, num, num))
         lines += [moved_line, ""]
     for block in blocks:
@@ -104,10 +104,10 @@ class Pass(LedgerCase):
         code, out = self.build(
             [phase(23, [], link=True, count=2),
              phase(24, [task("T24.0"), task("T24.1", status=" ", body=())])],
-            {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0") + task("T23.1")})
+            {"T23.md": ["# Phase 23 — 見本", ""] + task("T23.0") + task("T23.1")})
         self.assertEqual(code, 0, out)
         self.assertNotIn("NG", out)
-        self.assertIn("tasks/phaseNN.md 1 本 (タスク 2 本)", out)
+        self.assertIn("tasks/TNN.md 1 本 (タスク 2 本)", out)
         self.assertIn("§5 に残るタスク 2 本", out)
 
     def test_instruction_heading_is_not_a_phase(self):
@@ -145,44 +145,44 @@ class Move(LedgerCase):
     def test_moved_phase_must_not_keep_rows(self):
         code, out = self.build(
             [phase(23, [task("T23.0")], link=True)],
-            {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
+            {"T23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
         self.assert_ng(out, "移したのに §5 にタスクの行が 1 本")
 
 
 class Link(LedgerCase):
     def test_missing_link(self):
-        code, out = self.build([], {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
+        code, out = self.build([], {"T23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "tasks/phase23.md を指す `### Phase 23 (…)` の見出しが §5 に無い")
+        self.assert_ng(out, "tasks/T23.md を指す `### Phase 23 (…)` の見出しが §5 に無い")
 
     def test_phase_file_not_linked_from_its_heading(self):
         code, out = self.build(
             [phase(23, [], link=False)],
-            {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
+            {"T23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
         self.assert_ng(out, "が §5 の Phase 23 の見出しからリンクされていない")
 
     def test_link_to_missing_file(self):
         code, out = self.build([phase(21, [], link=True)], {})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "見出しが指す tasks/phase21.md が無い")
+        self.assert_ng(out, "見出しが指す tasks/T21.md が無い")
 
     def test_link_number_mismatch(self):
-        moved = "**済んだ 1 本の本文は [`tasks/phase22.md`](tasks/phase22.md) に移した** (2026-10-22、T24.9)。"
+        moved = "**済んだ 1 本の本文は [`tasks/T22.md`](tasks/T22.md) に移した** (2026-10-22、T24.9)。"
         code, out = self.build(
             [phase(23, [], moved_line=moved)],
-            {"phase22.md": ["# Phase 22 — 見本", ""] + task("T22.0"),
-             "phase23.md": ["# Phase 23 — 見本", ""]})
+            {"T22.md": ["# Phase 22 — 見本", ""] + task("T22.0"),
+             "T23.md": ["# Phase 23 — 見本", ""]})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "§5 の Phase 23 の見出しが tasks/phase22.md を指している")
+        self.assert_ng(out, "§5 の Phase 23 の見出しが tasks/T22.md を指している")
 
     def test_unknown_file_in_tasks(self):
         code, out = self.build(
             [phase(24, [task("T24.0", status=" ", body=())])],
             {"notes.md": ["# 覚え書き", ""]})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "tasks/notes.md が台帳の型 `phaseNN.md` に合わない")
+        self.assert_ng(out, "tasks/notes.md が台帳の型 `TNN.md` に合わない")
 
 
 class Numbers(LedgerCase):
@@ -212,7 +212,7 @@ class Numbers(LedgerCase):
     def test_number_in_wrong_file(self):
         code, out = self.build(
             [phase(23, [], link=True, count=2)],
-            {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0") + task("T22.1")})
+            {"T23.md": ["# Phase 23 — 見本", ""] + task("T23.0") + task("T22.1")})
         self.assertEqual(code, 1)
         self.assert_ng(out, "番号 T22.1 が Phase 23 のファイルにある")
 
@@ -221,7 +221,7 @@ class Numbers(LedgerCase):
         code, out = self.build(
             [phase(23, [], link=True),
              phase(24, [task("T23.0"), task("T24.0", status=" ", body=())])],
-            {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
+            {"T23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
         self.assert_ng(out, "番号 T23.0 が本文つきで 2 回出る")
 
@@ -230,28 +230,28 @@ class Shape(LedgerCase):
     def test_first_line_without_dash(self):
         code, out = self.build(
             [phase(23, [], link=True)],
-            {"phase23.md": ["# Phase 23 見本", ""] + task("T23.0")})
+            {"T23.md": ["# Phase 23 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "tasks/phase23.md の 1 行目が `# Phase NN — …` でない")
+        self.assert_ng(out, "tasks/T23.md の 1 行目が `# Phase NN — …` でない")
 
     def test_first_line_wrong_number(self):
         code, out = self.build(
             [phase(23, [], link=True)],
-            {"phase23.md": ["# Phase 22 — 見本", ""] + task("T23.0")})
+            {"T23.md": ["# Phase 22 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
         self.assert_ng(out, "1 行目が Phase 22 になっている")
 
     def test_count_mismatch(self):
         code, out = self.build(
             [phase(23, [], link=True, count=5)],
-            {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
+            {"T23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
-        self.assert_ng(out, "「済んだ 5 本」が tasks/phase23.md の 1 本と合わない")
+        self.assert_ng(out, "「済んだ 5 本」が tasks/T23.md の 1 本と合わない")
 
     def test_count_line_missing(self):
         code, out = self.build(
             [phase(23, [], moved_line="(移した)")],
-            {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
+            {"T23.md": ["# Phase 23 — 見本", ""] + task("T23.0")})
         self.assertEqual(code, 1)
         self.assert_ng(out, "「済んだ N 本の本文は …」の行が無い")
 
@@ -264,7 +264,7 @@ class OpenTasks(LedgerCase):
         return self.build(sections, files)
 
     def moved(self):
-        return {"phase23.md": ["# Phase 23 — 見本", ""] + task("T23.0") + task("T23.1")}
+        return {"T23.md": ["# Phase 23 — 見本", ""] + task("T23.0") + task("T23.1")}
 
     def test_open_task_with_result_block_passes(self):
         """済みが `tasks/` に、未着手が `TASKS.md` にある形は通る (注記だけ)。"""
@@ -273,7 +273,7 @@ class OpenTasks(LedgerCase):
         code, out = self.build_open(md, [phase(23, [], link=True, count=2)], self.moved())
         self.assertEqual(code, 0, out)
         self.assertIn("TASKS.md の未着手 1 本 (うち [x] 0 本)", out)
-        self.assertIn("Phase 23 は tasks/phase23.md (済み 2 本) と TASKS.md (未着手 1 本)", out)
+        self.assertIn("Phase 23 は tasks/T23.md (済み 2 本) と TASKS.md (未着手 1 本)", out)
 
     def test_done_task_left_in_tasks_md(self):
         """未着手のファイルに `- [x]` が残っていたら NG (移し忘れ)。"""
@@ -291,7 +291,7 @@ class OpenTasks(LedgerCase):
         self.assert_ng(out, "番号 T23.99 が Phase 24 の節にある")
 
     def test_same_number_in_both_places(self):
-        """同じ番号が `TASKS.md` と `tasks/phaseNN.md` に本文つきで出たら NG。"""
+        """同じ番号が `TASKS.md` と `tasks/TNN.md` に本文つきで出たら NG。"""
         md = (["# TASKS.md — 未着手のタスク", "", "### Phase 23 (2026-10-22 に決めた: 見本)", ""]
               + task("T23.0", status=" "))
         code, out = self.build_open(md, [phase(23, [], link=True, count=2)], self.moved())
@@ -337,7 +337,7 @@ class RealLedger(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             code = cl.main(["check-ledger.py"])
         self.assertEqual(code, 0, buf.getvalue())
-        self.assertTrue(re.search(r"tasks/phaseNN\.md \d+ 本", buf.getvalue()))
+        self.assertTrue(re.search(r"tasks/TNN\.md \d+ 本", buf.getvalue()))
 
 
 if __name__ == "__main__":
