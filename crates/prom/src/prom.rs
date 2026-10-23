@@ -491,7 +491,7 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
         "",
         m.rejected_per_client.load(Ordering::Relaxed),
     );
-    // 読めずに断った要求の理由別 (T14.28)。6 種で固定なので系列は 6 本きり
+    // 読めずに断った要求の理由別 (T14.28)。7 種で固定なので系列は 7 本きり
     header(
         &mut out,
         "rejected_requests_total",
