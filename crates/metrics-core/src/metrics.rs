@@ -1014,6 +1014,23 @@ impl Metrics {
         v
     }
 
+    /// `hosts[]` の通算の始まり = いちばん古い `last_seen` (`/status` の `restored_since`)。
+    /// `0` は「表が空」。
+    ///
+    /// **[`Self::hosts_sorted_by`] を通さない**のが大事: `?hosts=0` の軽い口は 50 行を
+    /// 組まないので、ここも写しも並べ替えも作らずに表を 1 回舐めるだけにする
+    /// (値は同じ。T25.1 段 2)。
+    fn restored_since(&self) -> u64 {
+        let hosts = self.hosts.locked();
+        hosts
+            .map
+            .values()
+            .map(|s| s.last_seen)
+            .filter(|&t| t > 0)
+            .min()
+            .unwrap_or(0)
+    }
+
     pub fn inc_requests(&self) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
     }
@@ -1106,16 +1123,28 @@ impl Metrics {
             None => "null".to_string(),
         };
 
-        // 上位 50 を切り出す鍵だけが `?sort=` で変わる (JSON の形は変わらない。T13.3)
-        let all_hosts = self.hosts_sorted_by(extra.sort);
+        // 上位 50 を切り出す鍵だけが `?sort=` で変わる (JSON の形は変わらない。T13.3)。
+        // `?hosts=0` のときは**並べ替えも写しも作らない** (T25.1 段 2): 50 行を組む費用と
+        // 応答の 8 割を落とすのがこの口の目的なので、ここで `hosts_sorted_by` を呼ばない
+        let hosts_json: Vec<String> = if extra.hosts {
+            self.hosts_sorted_by(extra.sort)
+                .into_iter()
+                .take(50)
+                .map(|(h, s)| {
+                    format!(
+                        "{{\"host\":\"{}\",{}}}",
+                        crate::json::escape(&h),
+                        stats_json(&s, true)
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         // ホスト別統計は `.rrd` で再起動をまたいで通算されるので、**いつからの通算か**を出す
-        // (`total_requests` は起動から、`hosts[]` は通算という窓の混在が読めなかった)
-        let restored_since = all_hosts
-            .iter()
-            .map(|(_, s)| s.last_seen)
-            .filter(|&t| t > 0)
-            .min()
-            .unwrap_or(0);
+        // (`total_requests` は起動から、`hosts[]` は通算という窓の混在が読めなかった)。
+        // `hosts[]` を省いても値は同じ (表を 1 回舐めるだけ。T25.1 段 2)
+        let restored_since = self.restored_since();
         // `/proc` を読むのはこのパスに来たときだけ (要求ごとには読まない)
         let threads = crate::sysinfo::process_threads().unwrap_or(0);
         let (fds, max_fds) = crate::sysinfo::process_fds().unwrap_or((0, 0));
@@ -1128,17 +1157,6 @@ impl Metrics {
             .filter(|c| !c.config().probe_interval.is_zero())
             .and_then(|c| c.snapshot().rss)
             .or_else(crate::sysinfo::process_rss);
-        let hosts_json: Vec<String> = all_hosts
-            .into_iter()
-            .take(50)
-            .map(|(h, s)| {
-                format!(
-                    "{{\"host\":\"{}\",{}}}",
-                    crate::json::escape(&h),
-                    stats_json(&s, true)
-                )
-            })
-            .collect();
         let clients_json: Vec<String> = self
             .clients_sorted_by(ClientSort::Requests)
             .into_iter()
@@ -1161,7 +1179,7 @@ impl Metrics {
         push_head(&mut out, &extra, uptime, requests, restored_since);
         self.push_capacity(&mut out, &extra, threads, fds, max_fds, active);
         self.push_io(&mut out, bytes);
-        push_tables(&mut out, &hosts_json, &clients_json);
+        push_tables(&mut out, extra.hosts, &hosts_json, &clients_json);
         push_env(&mut out, &extra, &cache_json);
         self.push_tail(
             &mut out,
@@ -1349,13 +1367,14 @@ fn push_head(
 }
 
 /// `/status` の `hosts[]` と `clients[]` (どちらも上位 50 を組み終えたもの)。
-fn push_tables(out: &mut String, hosts_json: &[String], clients_json: &[String]) {
-    let _ = write!(
-        out,
-        "\"hosts\":[{}],\"clients\":[{}],",
-        hosts_json.join(","),
-        clients_json.join(",")
-    );
+///
+/// `hosts` が偽 (`/status?hosts=0`。T25.1 段 2) のときは **`hosts` の鍵ごと省く**:
+/// `"clients":[…]` だけを書く。既定 (真) の応答は 1 バイトも変わらない。
+fn push_tables(out: &mut String, hosts: bool, hosts_json: &[String], clients_json: &[String]) {
+    if hosts {
+        let _ = write!(out, "\"hosts\":[{}],", hosts_json.join(","));
+    }
+    let _ = write!(out, "\"clients\":[{}],", clients_json.join(","));
 }
 
 /// 預かっていないときに `/status` の `canary` に出す文字列 (T15.12)。
@@ -2690,6 +2709,114 @@ mod latency_tests {
             );
             assert!(json.len() <= 64 * 1024, "{} バイト", json.len());
         }
+    }
+
+    /// `?hosts=0` の軽い口 (T25.1 段 2): **`hosts` の鍵だけ**が消え、ほかの欄は変わらないこと。
+    ///
+    /// 既定 (`hosts: true`) は今までどおり `hosts[]` を出すので、その側も一緒に見る。
+    /// **2 回の組み立てをバイトで比べない**: `uptime_secs` や `/proc` の値は呼ぶたびに動く
+    /// (この repo の他の試験と同じ作法で、動かない欄だけを見る)。
+    #[test]
+    fn the_light_status_drops_only_the_hosts_table() {
+        let m = Metrics::new();
+        m.record_host_detail(
+            "connect://light.example.net:443",
+            HostOutcome::Hit,
+            100,
+            Some(Duration::from_millis(12)),
+            Detail::default(),
+        );
+        m.record_client(
+            "10.0.0.1",
+            HostOutcome::Hit,
+            100,
+            (40, 60),
+            None,
+            Some("connect://light.example.net:443"),
+        );
+
+        let full = m.to_json_with_cache(None, StatusExtras::default());
+        let light = m.to_json_with_cache(
+            None,
+            StatusExtras {
+                hosts: false,
+                ..StatusExtras::default()
+            },
+        );
+
+        // 既定は今までどおり `hosts[]` を出す
+        assert!(
+            full.contains("\"hosts\":[{\"host\":\"connect://light.example.net:443\""),
+            "{}",
+            full
+        );
+        // 軽い方には `hosts` の鍵が無い (`clients[]` の `host` の欄は別物なので残る)
+        assert!(!light.contains("\"hosts\":"), "{}", light);
+        // 表の外は同じ: 接続元の行と、通算の始まり (restored_since) が一致する
+        assert!(
+            light.contains("\"clients\":[{\"client\":\"10.0.0.1\""),
+            "{}",
+            light
+        );
+        let at = number_of(&full, "\"restored_since\":");
+        assert_ne!(at, 0, "表に 1 行あるので 0 ではない: {}", full);
+        assert_eq!(at, number_of(&light, "\"restored_since\":"), "{}", light);
+        // 軽い方が小さい
+        assert!(
+            light.len() < full.len(),
+            "light {} B / full {} B",
+            light.len(),
+            full.len()
+        );
+        // どの `?sort=` でも軽い方の形は同じ (並べ替える行が無いので鍵だけが違う)
+        for sort in [HostSort::Errors, HostSort::Dns, HostSort::Slow] {
+            let light_sorted = m.to_json_with_cache(
+                None,
+                StatusExtras {
+                    hosts: false,
+                    sort,
+                    ..StatusExtras::default()
+                },
+            );
+            assert!(!light_sorted.contains("\"hosts\":"), "{}", light_sorted);
+            assert!(
+                light_sorted.contains("\"clients\":[{\"client\":\"10.0.0.1\""),
+                "{}",
+                light_sorted
+            );
+        }
+    }
+
+    /// `restored_since` の値が無いときは 0 で、`clients[]` の行だけが「表が空ではない」を
+    /// 語る — **表が空 (`hosts[]` も `clients[]` も空) の軽い口**も壊れないこと。
+    #[test]
+    fn the_light_status_of_an_empty_table_is_still_valid() {
+        let m = Metrics::new();
+        let light = m.to_json_with_cache(
+            None,
+            StatusExtras {
+                hosts: false,
+                ..StatusExtras::default()
+            },
+        );
+        assert!(!light.contains("\"hosts\":"), "{}", light);
+        assert_eq!(number_of(&light, "\"restored_since\":"), 0, "{}", light);
+        // 鍵は `clients` で途切れず、次の鍵へ続く (`,` の付け忘れ・二重をここで見る)
+        assert!(light.contains("\"clients\":[],"), "{}", light);
+    }
+
+    /// `"key":` の直後の整数を読む (試験の中だけ。status の JSON は 1 行)。
+    fn number_of(json: &str, key: &str) -> u64 {
+        let at = json
+            .find(key)
+            .unwrap_or_else(|| panic!("{} が無い: {}", key, json))
+            + key.len();
+        json[at..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap()
     }
 
     /// 接続元の個票 (T14.7): `User-Agent`・宛先の種類・ポート・IP リテラル宛て。

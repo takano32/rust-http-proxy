@@ -55,6 +55,8 @@ const NOT_JSON: &[(&str, &str)] = &[
 const QUERIES: &[(&str, &str)] = &[
     ("/status", "/status"),
     ("/status", "/status?sort=errors"),
+    // `hosts[]` を落とした軽い形 (T25.1 段 2)
+    ("/status", "/status?hosts=0"),
     ("/errors", "/errors?n=100"),
     ("/connections", "/connections"),
     ("/recent", "/recent?n=200"),

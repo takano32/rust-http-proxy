@@ -893,6 +893,12 @@ pub struct StatusExtras<'a> {
     pub concurrency: Concurrency,
     /// `hosts[]` の上位 50 をどの鍵で切り出すか (`/status?sort=`。T13.3)
     pub sort: HostSort,
+    /// `hosts[]` を出すか (`/status?hosts=0` で偽。T25.1 段 2)。
+    ///
+    /// 既定は**真** = 今までどおり `hosts[]` を出す。偽のときは `hosts` の鍵ごと省く
+    /// (他の鍵は 1 バイトも変えない)。`/status` は `hosts[]` が応答の 8 割を占めるので、
+    /// 監視が 30 秒ごとに引く口としてはここを落とした軽い形を使う。
+    pub hosts: bool,
 }
 
 impl Default for StatusExtras<'_> {
@@ -905,6 +911,7 @@ impl Default for StatusExtras<'_> {
             version: "unknown",
             concurrency: Concurrency::default(),
             sort: HostSort::Requests,
+            hosts: true,
         }
     }
 }
