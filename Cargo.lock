@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-http"
-version = "0.19.1"
+version = "0.19.5"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-msg"
-version = "0.19.7"
+version = "0.19.5"
 dependencies = [
  "proxy-base",
 ]
