@@ -2947,6 +2947,22 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 `sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads`、
 **`sorahost_rtt_seconds_sum` / `_count`** (`{side="client"|"origin"}`。カーネルの平滑化 RTT。
 標本は接続 1 本の終わりに 1 つで、ホスト別は出しません) が出ます。
+
+**起動の切り分けと heap の基準も `/metrics` に出します** (T25.3)。`sorahost_boot_id_info{id="…"}` は
+`/status` の `boot.id` と同じ値 (`/proc/sys/kernel/random/boot_id`) を **info 型** (値は常に `1`) で出したもので、
+「ホストが起動し直すと変わる・プロセスだけの起動し直しでは変わらない」はここでも同じに読めます。
+**ラベルは `id` の 1 つだけなので系列は 1 本**で、増えるのはホストを再起動したときだけです
+(読めない環境では行ごと出しません — 0 や空の `id` を出すと「起動が変わっていない」と読めてしまうため。
+`sorahost_kernel_*` と同じ判断)。
+heap は `sorahost_heap_bytes` (いまの値。`/status` の `memory` と同じ `heap_used + mmap − cache_memory`)、
+`sorahost_heap_baseline_bytes` / `sorahost_heap_baseline_at_seconds` (起動 60 秒の基準と、それを取った epoch 秒で、
+`/status` の `memory.baseline` と同じ値) の 3 本で、**増えは `sorahost_heap_bytes − sorahost_heap_baseline_bytes`** です。
+基準の 2 本は、まだ 60 秒たっていない起動・`mallinfo2` が読めない環境・状態ファイルを開いていない
+(`PROXY_STATS_PERSIST=off` / `--lite`) では出しません (`/status` が `baseline: null` になるのと同じ判断)。
+**Prometheus に出すのは、起動ごとの 60 秒の値が時系列として残るから**です: `/status` は「いまの起動」の
+基準しか持たず (前の起動の値は状態ファイルに残っても読まない — T24.4)、版を上げたときに起動直後の heap が
+増えたかを比べられるのは監視側だけです。基準の 2 本だけでは**増え**が読めない (いまの heap が `/metrics` に
+無い) ので、`sorahost_heap_bytes` も出しています。
 ホスト別の応答時間ヒストグラム (`sorahost_host_request_duration_seconds`) は区間が 24 段になったので
 **上位 50 ホストまで**です (数え上げの系列はこれまでどおり上位 100 ホスト)。ダッシュボードの「接続中」にも
 `スレッド 7 / 256 (空き 3) · 接続上限 1008` の 1 行が出ます。数えるには接続スレッドで共有している鍵が要るので、

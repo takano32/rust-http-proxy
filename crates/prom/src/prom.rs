@@ -1,6 +1,7 @@
 //! `/metrics` 用の Prometheus テキスト形式 (text/plain; version=0.0.4) の生成。
 
 use std::fmt::Write as _;
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 
 use crate::cache::Cache;
@@ -1074,7 +1075,94 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
         );
         line(&mut out, "process_rss_bytes", "", rss);
     }
+    // 起動の切り分けと heap の基準 (T25.3)。既にある行の後ろに足すだけで、上の並びは動かさない。
+    boot_metrics(&mut out);
+    if let Some(c) = cache {
+        heap_metrics(&mut out, c);
+    }
     out
+}
+
+/// ホストの起動ごとに変わる `boot_id` を **info 型** (値は常に `1`) で出す (T25.3)。
+///
+/// `/status` の `boot.id` と同じ値 (`/proc/sys/kernel/random/boot_id`) で、意味は「ホストが
+/// 起動し直すと変わり、プロセスを起動し直しただけなら変わらない」。**ラベルは `id` の 1 つだけ**
+/// なので系列は 1 本ままで、増えるのはホストを再起動したときだけ (`id` が変わった古い系列は
+/// 止まる)。読めない環境 (procfs が無い) では**行ごと出さない** — `sorahost_kernel_*` と同じ判断で、
+/// 空の `id` や 0 を出すと「起動が変わっていない」と読めてしまう。
+fn boot_id_info(out: &mut String, id: Option<&str>) {
+    let Some(id) = id else {
+        return;
+    };
+    header(
+        out,
+        "boot_id_info",
+        "gauge",
+        "Kernel boot id: a new value means the host rebooted (always 1)",
+    );
+    line(out, "boot_id_info", &format!("id=\"{}\"", escape(id)), 1);
+}
+
+/// [`boot_id_info`] に渡す `boot_id` を起動に 1 回だけ読む (`/status` の `boot` と同じ理由。
+/// 値はプロセスの生存中に変わらないので、収集のたびに `/proc` を読み直さない)。
+fn boot_metrics(out: &mut String) {
+    static BOOT: OnceLock<Option<String>> = OnceLock::new();
+    boot_id_info(out, BOOT.get_or_init(boot_id).as_deref());
+}
+
+/// `boot_id` を読む口 (Linux 以外は `None`。`crates/sys` の実装をそのまま使う)。
+#[cfg(target_os = "linux")]
+fn boot_id() -> Option<String> {
+    crate::sys::boot_id()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn boot_id() -> Option<String> {
+    None
+}
+
+/// いまの heap と、起動 60 秒の基準を出す (T25.3)。
+///
+/// **基準だけでは「増え」が読めない** (RSS は別の数) ので、増えを
+/// `sorahost_heap_bytes − sorahost_heap_baseline_bytes` で引けるようにいまの値も出す。
+/// 引き算は `/status` の `memory` と同じ [`crate::persist::heap_bytes`] を使う
+/// (片方だけ直すと 2 つの口が食い違う)。
+fn heap_metrics(out: &mut String, cache: &Cache) {
+    if let Some(bytes) = crate::persist::heap_bytes(cache) {
+        header(
+            out,
+            "heap_bytes",
+            "gauge",
+            "Heap in use: malloc used + mmap minus the cache's own memory",
+        );
+        line(out, "heap_bytes", "", bytes);
+    }
+    heap_baseline(out, crate::persist::baseline());
+}
+
+/// 起動 60 秒の heap の基準 (`/status` の `memory.baseline`) を 2 本で出す (T25.3)。
+///
+/// まだ 60 秒たっていない・`mallinfo2` が読めない・永続化していない
+/// (`PROXY_STATS_PERSIST=off` / `--lite`) のどれかなら**行ごと出さない**
+/// (`/status` が `baseline: null` になるのと同じ判断)。
+fn heap_baseline(out: &mut String, base: Option<(u64, u64)>) {
+    let Some((at, bytes)) = base else {
+        return;
+    };
+    header(
+        out,
+        "heap_baseline_bytes",
+        "gauge",
+        "Heap 60 s after start, taken once per boot",
+    );
+    line(out, "heap_baseline_bytes", "", bytes);
+    header(
+        out,
+        "heap_baseline_at_seconds",
+        "gauge",
+        "Unix time when the baseline was taken",
+    );
+    line(out, "heap_baseline_at_seconds", "", at);
 }
 
 #[cfg(test)]
@@ -1427,5 +1515,58 @@ mod tests {
             "{}",
             text
         );
+    }
+
+    /// 起動の id と heap の基準が `/metrics` に出ること (T25.3)。
+    ///
+    /// **出せないときは行ごと出さない** (`sorahost_kernel_*` と同じ判断)。0 や空の `id` を
+    /// 出すと「起動が変わっていない」「増えが 0」と読めてしまう。
+    #[test]
+    fn renders_the_boot_id_and_the_heap_baseline() {
+        // info 型: 値は常に 1、ラベルは `id` の 1 つだけ (系列は増えない)
+        let mut out = String::new();
+        boot_id_info(&mut out, Some("0f1e2d3c-aaaa-bbbb-cccc-1234567890ab"));
+        assert!(
+            out.contains("# TYPE sorahost_boot_id_info gauge\n"),
+            "{}",
+            out
+        );
+        assert!(
+            out.contains("sorahost_boot_id_info{id=\"0f1e2d3c-aaaa-bbbb-cccc-1234567890ab\"} 1\n"),
+            "{}",
+            out
+        );
+        // ラベルは `escape` を通す (id に `"` が混ざっても形が壊れない)
+        let mut quoted = String::new();
+        boot_id_info(&mut quoted, Some("a\"b"));
+        assert!(
+            quoted.contains("sorahost_boot_id_info{id=\"a\\\"b\"} 1\n"),
+            "{}",
+            quoted
+        );
+        let mut none = String::new();
+        boot_id_info(&mut none, None);
+        assert_eq!(none, "", "読めない環境では系列ごと出さない");
+
+        // 基準: バイトと、それを取った epoch 秒
+        let mut heap = String::new();
+        heap_baseline(&mut heap, Some((1_767_225_600, 15_572_256)));
+        assert!(
+            heap.contains(
+                "# TYPE sorahost_heap_baseline_bytes gauge\nsorahost_heap_baseline_bytes 15572256\n"
+            ),
+            "{}",
+            heap
+        );
+        assert!(
+            heap.contains(
+                "# TYPE sorahost_heap_baseline_at_seconds gauge\nsorahost_heap_baseline_at_seconds 1767225600\n"
+            ),
+            "{}",
+            heap
+        );
+        let mut no_base = String::new();
+        heap_baseline(&mut no_base, None);
+        assert_eq!(no_base, "", "まだ 60 秒たっていない起動では出さない");
     }
 }

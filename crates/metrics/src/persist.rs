@@ -307,14 +307,22 @@ pub fn write_errors() -> Option<u64> {
     GLOBAL.get().map(|s| s.write_errors.load(Ordering::Relaxed))
 }
 
+/// この起動の heap の基準 (`at` = 取った epoch 秒、`bytes` = そのときの heap)。T24.4。
+///
+/// **この起動の基準だけ**を返す。まだ 60 秒たっていない (起動したばかり)・`mallinfo2` が読めない・
+/// 永続化していない (`PROXY_STATS_PERSIST=off` / `--lite`)、のどれかなら `None`。
+/// `/status` の `memory.baseline` (下の [`baseline_json`]) と `/metrics` の
+/// `sorahost_heap_baseline_*` (T25.3) が**同じ値**を読むための口。
+pub fn baseline() -> Option<(u64, u64)> {
+    GLOBAL.get().and_then(|s| s.baseline())
+}
+
 /// `/status` の `memory.baseline` (`{"at":…,"bytes":…}`。T24.4)。
 ///
 /// **この起動の基準だけ**を出す。まだ 60 秒たっていない (起動したばかり)・`mallinfo2` が読めない・
 /// 永続化していない (`PROXY_STATS_PERSIST=off` / `--lite`)、のどれかなら `null`。
 pub fn baseline_json() -> String {
-    GLOBAL
-        .get()
-        .and_then(|s| s.baseline())
+    baseline()
         .map(|(at, bytes)| format!("{{\"at\":{},\"bytes\":{}}}", at, bytes))
         .unwrap_or_else(|| "null".to_string())
 }
