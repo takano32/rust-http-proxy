@@ -29,6 +29,11 @@
 //! 通すのは [`ErrorEntry::new`] と [`ConnTable::register`] の 2 か所だけで、
 //! `/recent` (枠から作る) も `/bursts` (表から作る) もそこから流れてくる。
 //!
+//! **T25.2 で 3 ファイルに割った** (T24.8 の案 A)。エラーの個票とリングは
+//! `recent/errors.rs`、接続の表とリングの 1 枠は `recent/conns.rs` にあり、ここには
+//! 閉じた接続の個票・バースト・閉じた分布と、その 3 つの試験を置く。行を動かしただけで
+//! 中身は変えていない。`pub use` で出し直すので、外からの `recent::…` の経路は変わらない。
+//!
 //! [`Metrics::record_error`]: crate::metrics::Metrics::record_error
 
 use std::collections::HashMap;
