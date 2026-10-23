@@ -118,6 +118,12 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 `snapshot_criteria.py` は `snapshot-diff.py` の判定の部、`test_*.py` は unittest が名前で読むものなので
 実行ビットは付けません)。**この区別は `scripts/check-docs.sh` の (f) が毎回見ます** (T24.7)。
 
+**要求の枠組み (`Content-Length` / `Host` / 折り返し) を実機で流すなら `scripts/framing-probe.py`** (T27.3)。
+`python3 scripts/framing-probe.py ./target/release/rust-http-proxy` で、オリジンとプロキシを自分で起こして
+10 通り (正常・CL の重複同値/不一致・21 桁・カンマ・負・数字でない・`Host` 2 本・obs-fold の空白/タブ) を流し、
+状態コードと**オリジンが受け取ったヘッダー**を並べます。1 つでも期待と違えば exit 1 なので、直したことの
+確かめと、次の退行の見張りに使えます。
+
 **1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T14.4)。`/snapshot` を
 `DIR/<UTC 時刻>-snapshot.json` (既定はリポジトリの `status/`。`.gitignore` 済み) に保存し、要点
 (`scripts/snapshot-summary.py`)・ホスト別 (`status-diff.py`。**前回の雪像があれば差分**)・
