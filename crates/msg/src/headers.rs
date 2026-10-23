@@ -77,6 +77,10 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
 
     let mut x_forwarded_for: Option<&str> = None;
     let mut has_via = false;
+    // `Content-Length` は 1 本だけ転送する。重複が**同値**であることは入口
+    // (`parse_request_headers`) が見ていて、違えば 400 で断っているので、ここでは
+    // 2 本目以降を落とすだけでよい。両方書くとオリジンによっては 400 になる (T19.1)
+    let mut cl_written = false;
     for line in headers {
         let Some((k, v)) = ascii::split_once(line, b':') else {
             continue;
@@ -97,6 +101,12 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
         if name.eq_ignore_ascii_case("x-forwarded-for") {
             x_forwarded_for = Some(v.trim_ascii());
             continue;
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if cl_written {
+                continue;
+            }
+            cl_written = true;
         }
         if name.eq_ignore_ascii_case("via") {
             has_via = true;
@@ -557,6 +567,42 @@ mod write_request_tests {
                 );
             }
         }
+    }
+
+    /// 同値の `Content-Length` は 1 本に畳んで転送する (T19.1)。
+    /// 2 本書くとオリジンによっては 400 になり、判定 (1 本ぶんの本文) と食い違う。
+    #[test]
+    fn forwards_only_one_content_length() {
+        let headers = lines(&[
+            "Host: example.com",
+            "Content-Length: 5",
+            "Accept: */*",
+            "Content-Length: 5",
+        ]);
+        let mut got = Vec::new();
+        write_request_headers(&mut got, &headers, None);
+        let text = String::from_utf8_lossy(&got);
+        assert_eq!(
+            text.matches("Content-Length:").count(),
+            1,
+            "CL が 1 本でない: {:?}",
+            text
+        );
+        assert_eq!(
+            text.matches("content-length:").count(),
+            0,
+            "小文字の綴りが残っている: {:?}",
+            text
+        );
+        // 残すのは最初の 1 本 (値は書き換えない)
+        assert!(text.contains("Content-Length: 5\r\n"), "{:?}", text);
+        // 他のヘッダーは落とさない
+        assert!(text.contains("Accept: */*"), "{:?}", text);
+        // 1 本だけの要求は今までどおり
+        let headers = lines(&["Content-Length: 5"]);
+        let mut got = Vec::new();
+        write_request_headers(&mut got, &headers, None);
+        assert!(String::from_utf8_lossy(&got).contains("Content-Length: 5"));
     }
 
     #[test]
