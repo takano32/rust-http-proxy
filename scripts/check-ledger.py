@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """台帳 (`TASKS.md` の未着手 + `TODO.md` の §5 の索引 + `tasks/TNN.md`) を機械で見る (T24.10 / T24.13).
 
-2026-10-22 に済んだ Phase 15〜23 の本文を `tasks/TNN.md` へ移し (T24.9)、同じ日に
+2026-10-22 に済んだタスク 15〜23 の本文を `tasks/TNN.md` へ移し (T24.9)、同じ日に
 **未着手のタスクを `TASKS.md` に集めた** (T24.13)。**移し忘れ・番号の重複・リンク切れ**は
 目で見つからないので、`scripts/check-docs.sh` の (g) として毎回見る。見るのは 4 つと、
 そこから出る足場 1 つ:
 
   (1) 移し忘れ … `TASKS.md` に `- [x]` が 1 本も無いこと (済んだら `tasks/TNN.md` へ移す)。
-      移した Phase (`tasks/TNN.md` がある番号) のタスクが `TASKS.md` に残っていたら NG。
+      移したタスク (`tasks/TNN.md` がある番号) のタスクが `TASKS.md` に残っていたら NG。
       `TODO.md` の §5 は索引だけなので、§5 にタスクの行が 1 本でもあったら NG。
-  (2) リンク … `tasks/TNN.md` と §5 の `### Phase NN (…)` の見出しが 1 対 1 (両方向)。
+  (2) リンク … `tasks/TNN.md` と §5 の `### タスク NN (…)` の見出しが 1 対 1 (両方向)。
       リンクの番号が見出しの番号と違う・指す先が無い・どの見出しからも指されていない、が NG。
   (3) 番号 … タスクの番号 (`T24.10`) が台帳全体 (`TASKS.md` + `tasks/`) で 1 回だけ。**同じ番号が
-      2 度出るのは、片方が `結果` だけの追記** (本文を持たない行) のときだけ許す。番号の Phase が
-      置き場所と合うこと (`TASKS.md` の Phase 24 の節なら `T24.x`、`tasks/T17.md` なら `T17.x`)。
-  (4) 1 行目 … `tasks/TNN.md` の 1 行目が `# Phase NN — …`。
+      2 度出るのは、片方が `結果` だけの追記** (本文を持たない行) のときだけ許す。番号のタスクが
+      置き場所と合うこと (`TASKS.md` のタスク 24 の節なら `T24.x`、`tasks/T17.md` なら `T17.x`)。
+  (4) 1 行目 … `tasks/TNN.md` の 1 行目が `# タスク NN — …`。
   (足) 見出しの「済んだ N 本の本文は …」の N が、`tasks/TNN.md` のタスクの本数と合うこと
       (T24.9 が番号ごとに書いたので、片方だけ足したときにここで出る)。
 
@@ -36,24 +36,24 @@ TODO = "TODO.md"
 TASKS_MD = "TASKS.md"
 TASKS = "tasks"
 
-# 除外表: `tasks/` の中で Phase の本文ではないもの (黙って無視しない)
+# 除外表: `tasks/` の中でタスクの本文ではないもの (黙って無視しない)
 SKIP_FILES = {
-    "README.md": "索引 (`tasks/` の引き方と、どの番号がどのファイルかの表)。Phase の本文ではない",
+    "README.md": "索引 (`tasks/` の引き方と、どの番号がどのファイルかの表)。タスクの本文ではない",
 }
 
-# §5 の Phase の見出しは `### Phase NN (日付…` の形だけを台帳の節として扱う
-# (`### Phase 15 の渡し方 (…)` のような指示文の節と分けるため、`(` までを形で縛る)。
-PHASE_SECTION = re.compile(r"^### Phase (\d+) \(")
+# §5 のタスクの見出しは `### タスク NN (日付…` の形だけを台帳の節として扱う
+# (`### タスク 15 の渡し方 (…)` のような指示文の節と分けるため、`(` までを形で縛る)。
+PHASE_SECTION = re.compile(r"^### タスク (\d+) \(")
 LINK = re.compile(r"tasks/T(\d+)\.md")
 LINK_COUNT = re.compile(r"済んだ (\d+) 本の本文は")
 TASK_LINE = re.compile(r"^- \[([ x])\] \*\*(T(\d+)\.(\d+)[A-Za-z]?)\b(.*)$")
-FILE_HEAD = re.compile(r"^# Phase (\d+) — ")
+FILE_HEAD = re.compile(r"^# タスク (\d+) — ")
 FILE_NAME = re.compile(r"^T(\d+)\.md$")
 # 本文の箇条書きの名前 (`  - 結果 (2026-10-22、`abc1234`): …` の `結果`)。括弧やコロンは付けない。
 BULLET = re.compile(r"^\s+- ([^\s(:：]{1,12})")
 # `結果` だけの行は「あとから足した追記」で、タスクの本文ではない (番号の重複で数えない)
 NOTE_ONLY = {"結果"}
-MISSING_HEAD = "`# Phase NN — …`"
+MISSING_HEAD = "`# タスク NN — …`"
 
 
 class Task:
@@ -87,7 +87,7 @@ class Ledger:
     """数えた結果 (印字する側が使う)。"""
 
     def __init__(self):
-        self.sections = 0     # §5 の `### Phase NN (…)` の数
+        self.sections = 0     # §5 の `### タスク NN (…)` の数
         self.files = 0        # tasks/TNN.md の数
         self.filed = 0        # tasks/ 側のタスクの本数
         self.inline = 0       # §5 に残るタスクの本数
@@ -122,7 +122,7 @@ def section5(lines):
 
 
 def phase_sections(block):
-    """§5 を `### Phase NN (…)` の見出しごとに割る。[(番号, 見出しの行番号, 節の行)]"""
+    """§5 を `### タスク NN (…)` の見出しごとに割る。[(番号, 見出しの行番号, 節の行)]"""
     sections = []
     cur = None
     for i, line in block:
@@ -192,27 +192,27 @@ def collect(root):
         if not m:
             led.ngs.append("tasks/%s の 1 行目が %s でない: %s" % (name, MISSING_HEAD, head or "(空)"))
         elif int(m.group(1)) != num:
-            led.ngs.append("tasks/%s の 1 行目が Phase %s になっている (ファイル名は %d)"
+            led.ngs.append("tasks/%s の 1 行目がタスク %s になっている (ファイル名は %d)"
                            % (name, m.group(1), num))
         filed[num] = tasks_in(list(enumerate(lines)), "tasks/" + name)
         led.filed += len(filed[num])
         for task in filed[num]:
             if task.phase != num:
-                led.ngs.append("%s の番号 %s が Phase %d のファイルにある"
+                led.ngs.append("%s の番号 %s がタスク %d のファイルにある"
                                % (task.at(), task.ident, num))
 
     # --- §5 の節 -------------------------------------------------------------
     inline = {}
     links = {}
     for num, _, body in sections:
-        inline[num] = tasks_in(body, "%s §5 Phase %d" % (TODO, num))
+        inline[num] = tasks_in(body, "%s §5 タスク %d" % (TODO, num))
         led.inline += len(inline[num])
         led.inline_done += sum(1 for task in inline[num] if task.done)
         # 同じ行に `[`tasks/TNN.md`](tasks/TNN.md)` と 2 度出るので畳む
         links[num] = sorted({int(x) for x in LINK.findall("\n".join(text for _, text in body))})
         for task in inline[num]:
             if task.phase != num:
-                led.ngs.append("%s の番号 %s が Phase %d の節にある"
+                led.ngs.append("%s の番号 %s がタスク %d の節にある"
                                % (task.at(), task.ident, num))
 
     # --- (1) 移し忘れ ---------------------------------------------------------
@@ -221,22 +221,22 @@ def collect(root):
     open_tasks = {}
     if os.path.isfile(tpath):
         for num, _, body in phase_sections(list(enumerate(read_lines(tpath)))):
-            open_tasks[num] = tasks_in(body, "%s Phase %d" % (TASKS_MD, num))
+            open_tasks[num] = tasks_in(body, "%s タスク %d" % (TASKS_MD, num))
             led.open += len(open_tasks[num])
             led.open_done += sum(1 for task in open_tasks[num] if task.done)
             for task in open_tasks[num]:
                 if task.phase != num:
-                    led.ngs.append("%s の番号 %s が Phase %d の節にある"
+                    led.ngs.append("%s の番号 %s がタスク %d の節にある"
                                    % (task.at(), task.ident, num))
         for num in sorted(open_tasks):
             done = [task for task in open_tasks[num] if task.done]
             if done:
-                led.ngs.append("%s の Phase %d に [x] が %d 本ある (済んだタスクは tasks/T%d.md へ移す)"
+                led.ngs.append("%s のタスク %d に [x] が %d 本ある (済んだタスクは tasks/T%d.md へ移す)"
                                % (TASKS_MD, num, len(done), num))
             if num in names:
-                # 同じ Phase に「済み (tasks/TNN.md)」と「未着手 (TASKS.md)」が並ぶのは
-                # 正しい形 (Phase の途中で締めの 1 本だけ残る)。印字だけする。
-                led.notes.append("Phase %d は tasks/%s (済み %d 本) と %s (未着手 %d 本) に分かれている"
+                # 同じタスクに「済み (tasks/TNN.md)」と「未着手 (TASKS.md)」が並ぶのは
+                # 正しい形 (タスクの途中で締めの 1 本だけ残る)。印字だけする。
+                led.notes.append("タスク %d は tasks/%s (済み %d 本) と %s (未着手 %d 本) に分かれている"
                                  % (num, names[num], len(filed.get(num, [])), TASKS_MD,
                                     len(open_tasks[num])))
     else:
@@ -247,30 +247,30 @@ def collect(root):
             continue
         done = sum(1 for task in inline[num] if task.done)
         if num in names:
-            led.ngs.append("Phase %d は tasks/%s へ移したのに §5 にタスクの行が %d 本 (うち [x] %d 本) 残っている"
+            led.ngs.append("タスク %d は tasks/%s へ移したのに §5 にタスクの行が %d 本 (うち [x] %d 本) 残っている"
                            % (num, names[num], len(inline[num]), done))
         elif done == len(inline[num]):
-            led.ngs.append("Phase %d のタスク %d 本が全部 [x] なのに §5 に残っている (tasks/T%d.md へ移す)"
+            led.ngs.append("タスク %d のタスク %d 本が全部 [x] なのに §5 に残っている (tasks/T%d.md へ移す)"
                            % (num, len(inline[num]), num))
     rest = sorted(num for num in inline if inline[num] and num not in names)
     if rest:
-        led.notes.append("まだ tasks/ へ移していない Phase: " + " / ".join(
-            "Phase %d (タスク %d 本、[x] %d 本)"
+        led.notes.append("まだ tasks/ へ移していないタスク: " + " / ".join(
+            "タスク %d (タスク %d 本、[x] %d 本)"
             % (num, len(inline[num]), sum(1 for task in inline[num] if task.done)) for num in rest))
 
     # --- (2) リンク (両方向) --------------------------------------------------
     for num in sorted(links):
         for linked in links[num]:
             if linked != num:
-                led.ngs.append("§5 の Phase %d の見出しが tasks/T%d.md を指している" % (num, linked))
+                led.ngs.append("§5 のタスク %d の見出しが tasks/T%d.md を指している" % (num, linked))
             if linked not in names:
-                led.ngs.append("§5 の Phase %d の見出しが指す tasks/T%d.md が無い" % (num, linked))
+                led.ngs.append("§5 のタスク %d の見出しが指す tasks/T%d.md が無い" % (num, linked))
         if num in names and num not in links[num]:
-            led.ngs.append("tasks/%s が §5 の Phase %d の見出しからリンクされていない"
+            led.ngs.append("tasks/%s が §5 のタスク %d の見出しからリンクされていない"
                            % (names[num], num))
     for num in sorted(names):
         if num not in links:
-            led.ngs.append("tasks/%s を指す `### Phase %d (…)` の見出しが §5 に無い"
+            led.ngs.append("tasks/%s を指す `### タスク %d (…)` の見出しが §5 に無い"
                            % (names[num], num))
 
     # --- (3) 番号の重複 -------------------------------------------------------
@@ -298,9 +298,9 @@ def collect(root):
         text = "\n".join(line for _, line in bodies.get(num, []))
         m = LINK_COUNT.search(text)
         if not m:
-            led.ngs.append("§5 の Phase %d の見出しに「済んだ N 本の本文は …」の行が無い" % num)
+            led.ngs.append("§5 のタスク %d の見出しに「済んだ N 本の本文は …」の行が無い" % num)
         elif int(m.group(1)) != len(filed.get(num, [])):
-            led.ngs.append("§5 の Phase %d の「済んだ %s 本」が tasks/%s の %d 本と合わない"
+            led.ngs.append("§5 のタスク %d の「済んだ %s 本」が tasks/%s の %d 本と合わない"
                            % (num, m.group(1), names[num], len(filed.get(num, []))))
 
     return led
@@ -313,7 +313,7 @@ def main(argv):
     except OSError as exc:
         print("  NG (g): 台帳が読めない: %s" % exc)
         return 1
-    print("(g) 台帳: %s の未着手 %d 本 (うち [x] %d 本) / TODO.md §5 の Phase 見出し %d 節 / "
+    print("(g) 台帳: %s の未着手 %d 本 (うち [x] %d 本) / TODO.md §5 のタスク見出し %d 節 / "
           "tasks/TNN.md %d 本 (タスク %d 本) / §5 に残るタスク %d 本"
           % (TASKS_MD, led.open, led.open_done, led.sections, led.files, led.filed, led.inline))
     for message in led.ngs:
