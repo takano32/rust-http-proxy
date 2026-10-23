@@ -83,15 +83,25 @@ pub fn start_origin(
                 // 本文も `Content-Length` ぶん読み切ってからハンドラに渡す。ここで止めると、
                 // ヘッダーと本文が別のセグメントで届いたとき (機械が混むと起きる) に
                 // 全文から本文が落ちて、エコーするハンドラが空を返す (T8.7)。
-                // このリポジトリのテストは chunked の要求本文を送らないので扱わない
                 if let Some(head_end) = req.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
                 {
-                    let want =
-                        head_end + content_length(&String::from_utf8_lossy(&req[..head_end]));
-                    while req.len() < want {
-                        match stream.read(&mut buf) {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => req.extend_from_slice(&buf[..n]),
+                    let head = String::from_utf8_lossy(&req[..head_end]).to_ascii_lowercase();
+                    if head.contains("transfer-encoding:") && head.contains("chunked") {
+                        // chunked の本文は終端 (0 サイズのチャンク + 空行) まで読み切る。
+                        // 読み残すと close のときに RST が飛び、プロキシ側で 502 になる (T19.1)
+                        while !req.windows(5).any(|w| w == b"0\r\n\r\n") {
+                            match stream.read(&mut buf) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => req.extend_from_slice(&buf[..n]),
+                            }
+                        }
+                    } else {
+                        let want = head_end + content_length(&head);
+                        while req.len() < want {
+                            match stream.read(&mut buf) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => req.extend_from_slice(&buf[..n]),
+                            }
                         }
                     }
                 }
