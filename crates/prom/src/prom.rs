@@ -654,6 +654,20 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
             totals.errors_by_cause[i],
         );
     }
+    // DNS の失敗の内訳 (T26.1)。**先頭 8 つの後ろ**に足すだけで、系列の名前・HELP・
+    // 既存のラベルの並びは 1 つも変えていない (式を書いている監視側はそのまま動く)。
+    // 値は `/status` の `errors_by_cause` の 9・10 番目と同じで、`dns` (合計) が
+    // 動いていても「引き直せば直るのか、名前が無いのか」を監視側から切り分けられる。
+    // **0 のときは行ごと出さない**: まだ 1 件も無い内訳に 0 を出すと「見えている」と
+    // 読めてしまう (ホスト別の `host_blocked_total` と同じ約束で、`absent` で気づける)
+    for (name, n) in crate::metrics::DNS_CAUSE_NAMES
+        .iter()
+        .zip(m.dns_cause_totals())
+    {
+        if n > 0 {
+            line(&mut out, "errors_total", &format!("cause=\"{}\"", name), n);
+        }
+    }
     header(
         &mut out,
         "host_requests_total",
@@ -1325,6 +1339,92 @@ mod tests {
             "{}",
             text
         );
+    }
+
+    /// DNS の失敗の内訳が `errors_total` の**うしろ**に出ること (T26.1)。
+    ///
+    /// - 先頭 8 つの並びは今までどおりで、内訳は `cause="other"` の後ろ
+    /// - 値はホスト別の内訳の**合計** (2 ホストに 1 件ずつ入れて 2 になる)
+    /// - **0 のときは行ごと出さない** (既存の `host_blocked_total` と同じ約束)
+    #[test]
+    fn renders_the_dns_breakdown_after_the_eight_causes() {
+        use crate::metrics::{Detail, DnsCause, ErrCause};
+        let m = Metrics::new();
+        for (host, dns) in [
+            ("connect://a:443", DnsCause::Nxdomain),
+            ("connect://b:443", DnsCause::Nxdomain),
+        ] {
+            m.record_host_detail(
+                host,
+                HostOutcome::Error,
+                0,
+                Some(std::time::Duration::from_millis(1)),
+                Detail {
+                    cause: Some(ErrCause::Dns),
+                    dns_cause: Some(dns),
+                    ..Detail::default()
+                },
+            );
+        }
+        let text = render(&m, None, Concurrency::default());
+        // `dns` は合計のまま 2、内訳がその後ろに 2
+        assert!(
+            text.contains("sorahost_errors_total{cause=\"dns\"} 2\n"),
+            "{}",
+            text
+        );
+        assert!(
+            text.contains("sorahost_errors_total{cause=\"nxdomain\"} 2\n"),
+            "{}",
+            text
+        );
+        assert!(
+            !text.contains("cause=\"dns_temp\""),
+            "0 の内訳は行ごと出さない: {}",
+            text
+        );
+        // 並び: 8 つの最後 (`other`) → `nxdomain` → `dns_temp` (出るとき)
+        let other = text
+            .lines()
+            .position(|l| l == "sorahost_errors_total{cause=\"other\"} 0")
+            .expect("`other` が無い");
+        let nx = text
+            .lines()
+            .position(|l| l == "sorahost_errors_total{cause=\"nxdomain\"} 2")
+            .expect("`nxdomain` が無い");
+        assert_eq!(nx, other + 1, "内訳は 8 つの**すぐ後ろ**:\n{}", text);
+        // `/status` の側 (ホスト別の `errors_by_cause` の 9 番目) と同じ値
+        let hosts = m.hosts_sorted();
+        assert_eq!(hosts.len(), 2);
+        let per_host: u64 = hosts.iter().map(|(_, s)| s.dns_by_cause[0]).sum();
+        assert_eq!(per_host, 2, "ホスト別は 1 件ずつ:\n{}", text);
+        assert_eq!(m.dns_cause_totals(), [2, 0]);
+
+        // 続けて `dns_temp` も 1 件 → 2 本そろって 8 つの後ろに並ぶ
+        m.record_host_detail(
+            "connect://c:443",
+            HostOutcome::Error,
+            0,
+            Some(std::time::Duration::from_millis(1)),
+            Detail {
+                cause: Some(ErrCause::Dns),
+                dns_cause: Some(DnsCause::DnsTemp),
+                ..Detail::default()
+            },
+        );
+        let text = render(&m, None, Concurrency::default());
+        let nx = text
+            .lines()
+            .position(|l| l == "sorahost_errors_total{cause=\"nxdomain\"} 2")
+            .expect("`nxdomain` が無い");
+        assert!(
+            text.lines()
+                .nth(nx + 1)
+                .is_some_and(|l| l == "sorahost_errors_total{cause=\"dns_temp\"} 1"),
+            "`nxdomain` の次が `dns_temp` でない:\n{}",
+            text
+        );
+        assert_eq!(m.dns_cause_totals(), [2, 1]);
     }
 
     /// 上限まで埋めても `/status` 64 KiB / `/metrics` 400 KiB に収まること (T12.4 (3))。

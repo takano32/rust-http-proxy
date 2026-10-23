@@ -143,4 +143,37 @@ fn test_integration_dns_failures_show_their_split_cause() {
     assert!(recent.contains(&reason), "{}", recent);
     assert!(recent.contains(&target), "{}", recent);
     println!("t250b: /recent に {} が出た", reason);
+
+    // `/metrics` の `errors_total` にも同じ名前・同じ値で出る (T26.1)。8 つの既存の
+    // ラベルの**うしろ**に足しただけで、系列の名前と HELP は変えていない
+    let metrics = endpoint_json(proxy_port, "/metrics");
+    assert!(
+        metrics.contains("sorahost_errors_total{cause=\"dns\"} 1"),
+        "合計は今までどおり 1: {}",
+        metrics
+    );
+    for (i, name) in ["nxdomain", "dns_temp"].iter().enumerate() {
+        let want = format!(
+            "sorahost_errors_total{{cause=\"{}\"}} {}",
+            name,
+            causes[8 + i]
+        );
+        if causes[8 + i] > 0 {
+            assert!(
+                metrics.contains(&want),
+                "`{}` が無い (`/status` の 9・10 番目と同じ値になるはず): {}",
+                want,
+                metrics
+            );
+        } else {
+            // 0 の内訳は行ごと出さない (既存の `host_blocked_total` と同じ約束)
+            assert!(
+                !metrics.contains(&format!("cause=\"{}\"", name)),
+                "0 の `{}` を出している: {}",
+                name,
+                metrics
+            );
+        }
+    }
+    println!("t250b: /metrics の内訳も causes={:?} と一致", &causes[8..]);
 }
