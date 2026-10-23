@@ -19,13 +19,16 @@ use common::*;
 
 use rust_http_proxy::metrics::BadRequestReason;
 
-/// 受け取った要求の全文を覚えておくオリジン (何が届いたかを見るため)。
-fn recording_origin() -> (
+/// `recording_origin` の戻り値 (port, 受け取った要求, 本数, 番人の handle)。
+type Recording = (
     u16,
     Arc<Mutex<Vec<String>>>,
     Arc<AtomicUsize>,
     thread::JoinHandle<()>,
-) {
+);
+
+/// 受け取った要求の全文を覚えておくオリジン (何が届いたかを見るため)。
+fn recording_origin() -> Recording {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let hits = Arc::new(AtomicUsize::new(0));
     let sink = Arc::clone(&seen);

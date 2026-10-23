@@ -96,7 +96,11 @@ fn test_integration_duplicate_host_is_rejected() {
     // オリジンには 1 バイトも届いていない
     std::thread::sleep(Duration::from_millis(200));
     let before = seen.lock().unwrap().clone();
-    assert!(before.is_empty(), "400 にしたのにオリジンへ届いた: {:?}", before);
+    assert!(
+        before.is_empty(),
+        "400 にしたのにオリジンへ届いた: {:?}",
+        before
+    );
 
     // (2) `Host` が 1 本の要求は今までどおり通る
     let single = format!(
@@ -109,7 +113,12 @@ fn test_integration_duplicate_host_is_rejected() {
     let got = seen.lock().unwrap().clone();
     assert_eq!(got.len(), 1, "オリジンに届いた要求: {:?}", got);
     let hosts = host_lines(&got[0]);
-    assert_eq!(hosts, vec![host.clone()], "オリジンが受け取った Host: {:?}", hosts);
+    assert_eq!(
+        hosts,
+        vec![host.clone()],
+        "オリジンが受け取った Host: {:?}",
+        hosts
+    );
 
     // (3) `/status` の理由別 (`dup_host` だけ 1、ほかは 0)
     let status = status_json(proxy_port);
