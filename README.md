@@ -2948,6 +2948,13 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 **`sorahost_rtt_seconds_sum` / `_count`** (`{side="client"|"origin"}`。カーネルの平滑化 RTT。
 標本は接続 1 本の終わりに 1 つで、ホスト別は出しません) が出ます。
 
+**`sorahost_errors_total` には DNS の失敗の内訳も出します** (T26.1)。`cause="other"` の**うしろ**に
+`cause="nxdomain"` (`EAI_NONAME` など = 引き直しても変わらない) と `cause="dns_temp"` (`EAI_AGAIN` = 引き直せば
+変わりうる) が並び、値は `/status` の `errors_by_cause` の 9・10 番目と同じです (系列の名前・HELP・先頭 8 つの
+並びは変えていないので、既にある式はそのまま使えます)。`dns` (合計) が動いていても**リゾルバの一時的な失敗なのか、
+名前が無いのか**を監視側から切り分けられるようにするためで、まだ 1 件も無い内訳は行ごと出しません
+(0 を出すと「見えている」と読めてしまうため。`host_blocked_total` と同じ約束です)。
+
 **起動の切り分けと heap の基準も `/metrics` に出します** (T25.3)。`sorahost_boot_id_info{id="…"}` は
 `/status` の `boot.id` と同じ値 (`/proc/sys/kernel/random/boot_id`) を **info 型** (値は常に `1`) で出したもので、
 「ホストが起動し直すと変わる・プロセスだけの起動し直しでは変わらない」はここでも同じに読めます。

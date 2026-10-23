@@ -607,6 +607,26 @@ impl Metrics {
         self.hosts.locked().total
     }
 
+    /// DNS の失敗の内訳 (`nxdomain` / `dns_temp`) の通算 (T26.1)。
+    ///
+    /// `/metrics` の `errors_total{cause="nxdomain"|"dns_temp"}` と、`/status` の
+    /// `errors_by_cause` の 9・10 番目が**同じ値**になるように、ホスト別の表を 1 回
+    /// 舐めて足す。区間の合計 ([`Interval`]) に内訳を**持たせていない**ので
+    /// (標本 (`.rrd`) の列を増やさない。T25.0 の判断はそのまま)、ここで数え直す。
+    ///
+    /// **足し切れる**のは、表が [`MAX_HOSTS`] で溢れた回も `other` の行に入るため
+    /// (`errors_total{cause="dns"}` と 9・10 番目の合計が食い違わない)。
+    pub fn dns_cause_totals(&self) -> [u64; DNS_CAUSES] {
+        let hosts = self.hosts.locked();
+        let mut acc = [0u64; DNS_CAUSES];
+        for s in hosts.map.values() {
+            for (a, b) in acc.iter_mut().zip(s.dns_by_cause) {
+                *a = a.saturating_add(b);
+            }
+        }
+        acc
+    }
+
     /// 接続元 IP ごとに 1 要求を数える。
     ///
     /// `target` はこの要求の宛先 (`scheme://host:port` / `host:port`。分からなければ
