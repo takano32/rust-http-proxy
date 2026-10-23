@@ -1665,6 +1665,39 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
 
     // ACL / Host Check
     let is_connect = method.eq_ignore_ascii_case("CONNECT");
+    // CONNECT は `http::handle_http_with_headers` を通らずトンネルの経路に入るので、
+    // T19 で入れた要求の枠組みの検査がここへ来ない。**同じ判定をこの入口にも置く** (T27.0)。
+    // CONNECT に本文は無く (RFC 9110 §9.3.6)、`Host` の重複 (RFC 9110 §7.2)・obs-fold
+    // (RFC 9112 §5.2)・本文の枠組みをそのままにしてトンネルを張ると、ヘッダーの後ろに
+    // 付けたバイトが**トンネルの最初のデータとして宛先へ流れる** (前段がいる構成では要求の密輸)。
+    // ここで断れば宛先へは接続もしない (`Step::Connect` に進まない) ので、1 バイトも届かない。
+    if is_connect {
+        let h = request::parse_request_headers(raw_headers, conn_id);
+        let reason = if h.dup_host {
+            Some(metrics::BadRequestReason::DupHost)
+        } else if h.obs_fold {
+            Some(metrics::BadRequestReason::ObsFold)
+        } else if has_body || h.content_length_invalid {
+            // `has_body` はヘッダーを読むループが `Content-Length` / `Transfer-Encoding` を
+            // 見たときに立つ旗 (本文を読むため)。値が数字でない `Content-Length` も
+            // ここに含まれる (T19.1 と同じ扱い = `body_framing`)
+            Some(metrics::BadRequestReason::BodyFraming)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: {} in CONNECT {}",
+                reason.name(),
+                target
+            );
+            metrics.record_bad_request(reason, peer_ip, 400);
+            // ステータスを返してから閉じる (無言で切ると客からは「落ちた」と見える)
+            reject(client, 400, "Bad Request")?;
+            return Ok(Step::Close(recent::CloseReason::Shutdown));
+        }
+    }
     // 判定に要るのはホストだけなので、要求行から借りる (String を 2 本作らない)
     let target_host: &str = if is_connect {
         target
