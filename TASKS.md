@@ -34,12 +34,6 @@
 
 T.25.99 は満たした 7・届かず 2・判定できず 1 で、届かず・判定できずの 3 行はどれも**物差しの側**の穴だった (前の窓が 581 本、`boot` の無い古い `start`、当てはまらない 0.5 倍の目安)。締めをクラウドのセッションから回したので、道具の足りないところも見えた。利用者の決定 (2026-10-24): 5 本とも進める。27c・27d は段 1 (測るだけ) から。
 
-- [ ] **T.27.1 雪像の `dns` と `profile` の部を `offset=` で追って繋ぐ**
-  - 目的: T.25.99 の雪像は `dns` が 678 / 811 件、`profile` が 348 / 720 件で 256 KiB に切れていた。T.22.5 で `recent` と `hosts` は追うようにしたが、この 2 つは残っていた (`/dns` には `offset=` が無い)。
-  - 変更箇所: `crates/endpoints/src/endpoints/recent.rs` の `dns` (`/hosts` と同じ `offset=` / `next_offset` を**末尾に**足す)、README の `/dns` の行、`scripts/collect-deployed.sh` の追いかけ (`URL` の表)、`scripts/test_collect_deployed.py`。
-  - やること: `/dns?sort=age&limit=4096&offset=N` を足す (欄は足すだけ)。`collect-deployed.sh` は `dns` と `profile` も T.22.5 と同じ規則 (`MAX_PAGES`・`FOLLOW_SECS`) で追う。`next_offset` の無い版 (0.25.4 の `/dns`) では今までどおり「この版のプロキシに offset= がありません」と書く。
-  - 受け入れ基準: `/dns` の試験 (offset で 2 枚に分けた行の合計が 1 枚の全件と同じ)、`collect-deployed.sh` の試験 (`dns` と `profile` が繋がる・`next_offset` が無い版で止まる)。
-
 - [ ] **T.27.2 クラウドのセッションから `collect-deployed.sh` を回せるようにする**
   - 目的: T.25.99 は、エージェントのプロキシが平文の HTTP を通さず (CONNECT だけ)、手元の「前」と「0 時間」の雪像も無かったので、手で curl を包んでサーバーの日次で代用した。手順を道具と決まりにする。
   - 変更箇所: `scripts/collect-deployed.sh` (環境変数 `VIA` を足す)、`scripts/probe-deployed.sh` (同じ環境変数で止める)、`scripts/test_collect_deployed.py`、`TODO.md` の §1 か「渡し方」の締めの手順。
