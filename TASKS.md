@@ -35,12 +35,6 @@
 
 T.25.99 は満たした 7・届かず 2・判定できず 1 で、届かず・判定できずの 3 行はどれも**物差しの側**の穴だった (前の窓が 581 本、`boot` の無い古い `start`、当てはまらない 0.5 倍の目安)。締めをクラウドのセッションから回したので、道具の足りないところも見えた。利用者の決定 (2026-10-24): 5 本とも進める。27c・27d は段 1 (測るだけ) から。
 
-- [ ] **T.27.6 `Transfer-Encoding` を検査する (最後が `chunked` でない・`chunked` が 2 回・HTTP/1.0 → 400)**
-  - 目的: `Transfer-Encoding: xchunked` / `gzip` / `chunked, identity` は、こちらは本文なしとして**ヘッダーだけ転送**し、本文はクライアントの次の要求として読まれた (応答が 2 つ返る)。`xchunked` と `Content-Length: 5` が両方ある要求は CL で読み、**TE も CL も転送**した。`chunked` を緩く読むオリジンとは切れ目が食い違う。RFC 9112 §6.3 は「要求の TE の最後が chunked でなければ 400 で断って閉じる」、§6.1 は「HTTP/1.0 の TE は枠組みが壊れているとして扱う」、chunked は 2 回かけてはいけない。
-  - 変更箇所: `crates/origin/src/request.rs` (`Transfer-Encoding` の読み方。複数の行は 1 つの並びとして読む)、`crates/http/src/http/mod.rs` と CONNECT の入口 (CONNECT は今も TE があれば 400)。
-  - やること: TE があって最後の符号化が `chunked` でない、`chunked` が 2 回以上ある、HTTP/1.0 の要求に TE がある、のどれかなら 400 (`body_framing`)。`gzip, chunked` (最後が chunked) は今までどおり chunked として中継する。
-  - 受け入れ基準: 結合テストで上の形が 400・オリジンに届かない、`gzip, chunked` と大文字の `Chunked` は通る。
-
 - [ ] **T.27.7 応答のヘッダー値の CR / LF / NUL を SP に置き換える**
   - 目的: オリジンが `X-A: a\rSet-Cookie: evil=1` や `X-A: a\x00b` を返すと、**そのまま**クライアントへ届いた (CR を改行と読むクライアントには別のヘッダーに見える)。名前とコロンの間の空白は今も直して返している。
   - 変更箇所: `crates/msg/src/headers.rs` の応答ヘッダーの書き出し (obs-fold を畳む所と同じ)。
