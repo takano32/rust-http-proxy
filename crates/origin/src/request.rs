@@ -23,8 +23,16 @@ pub struct RequestHeaders {
     /// **判定 (ここ) と転送 (生の行) が食い違わないようにする**ための持ち場で、
     /// 真なら [`RequestHeaders::content_length`] の値は使ってはいけない。
     pub content_length_invalid: bool,
-    /// `Transfer-Encoding` の最後の指定が `chunked` か
+    /// `Transfer-Encoding` の最後の指定が `chunked` で、`chunked` が 1 回だけか
+    /// (このときだけ本文を chunked として読む。T27.6 で [`RequestHeaders::te_invalid`] と分けた)
     pub chunked: bool,
+    /// `Transfer-Encoding` の行が 1 本でもあった (HTTP/1.0 の要求で立っていれば断る。T27.6)
+    pub te_present: bool,
+    /// `Transfer-Encoding` があるのに本文の切れ目が決まらない (T27.6): 最後の符号化が `chunked`
+    /// でない (`xchunked`・`gzip`・`chunked, identity`) か、`chunked` が 2 回以上ある。
+    /// RFC 9112 §6.3 は「要求の TE の最後が chunked でなければ 400 で断って閉じる」を求める。
+    /// 今までは本文なしとしてヘッダーだけを転送し、本文はクライアントの次の要求として読まれた
+    pub te_invalid: bool,
     pub authorization: bool,
     pub cache_control: String,
     pub if_none_match: Option<String>,
@@ -47,6 +55,10 @@ pub struct RequestHeaders {
 
 pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
     let mut h = RequestHeaders::default();
+    // `Transfer-Encoding` は複数の行でも 1 つの並びとして読む (RFC 9110 §5.3)。
+    // 最後の符号化が `chunked` か、`chunked` を何回見たか (T27.6)
+    let mut te_last_chunked = false;
+    let mut te_chunked_count = 0u32;
     for line in raw_headers {
         // 行の先頭が SP / HTAB なら直前の行の続き (obs-fold。RFC 9112 §5.2)。
         // 単独のヘッダーとして読むと継続行の値が黙って消える (オリジンには前の行だけが届く)
@@ -128,12 +140,26 @@ pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestH
                 }
             }
         } else if is("transfer-encoding") {
-            // 最後の符号化が chunked なら本文は chunked (RFC 9112 §6.1)
-            h.chunked = h.chunked
-                || v_trim
-                    .split(',')
-                    .next_back()
-                    .is_some_and(|t| t.trim_ascii().eq_ignore_ascii_case("chunked"));
+            // 最後の符号化が chunked なら本文は chunked (RFC 9112 §6.1)。並びの空の要素は読み飛ばす
+            h.te_present = true;
+            for t in v_trim
+                .split(',')
+                .map(str::trim_ascii)
+                .filter(|t| !t.is_empty())
+            {
+                te_last_chunked = t.eq_ignore_ascii_case("chunked");
+                te_chunked_count += u32::from(te_last_chunked);
+            }
+        }
+    }
+    if h.te_present {
+        h.chunked = te_last_chunked && te_chunked_count == 1;
+        h.te_invalid = !h.chunked;
+        if h.te_invalid {
+            log_warn!(
+                Some(conn_id),
+                "Transfer-Encoding does not end in a single chunked coding"
+            );
         }
     }
     h
@@ -462,6 +488,41 @@ mod content_length_tests {
     }
 
     /// CL の無い要求・他のヘッダーだけの要求は今までどおり (誤検出しない)。
+    /// T27.6: `Transfer-Encoding` は最後がちょうど 1 回の `chunked` のときだけ chunked。ほかは `te_invalid`。
+    #[test]
+    fn transfer_encoding_must_end_in_one_chunked() {
+        for lines in [
+            &["Transfer-Encoding: chunked\r\n"][..],
+            &["Transfer-Encoding: Chunked\r\n"],
+            &["Transfer-Encoding: gzip, chunked\r\n"],
+            &[
+                "Transfer-Encoding: gzip\r\n",
+                "Transfer-Encoding: chunked\r\n",
+            ],
+            &["Transfer-Encoding: chunked,\r\n"],
+        ] {
+            let h = parse(lines);
+            assert!(h.te_present && h.chunked && !h.te_invalid, "{:?}", lines);
+        }
+        for lines in [
+            &["Transfer-Encoding: xchunked\r\n"][..],
+            &["Transfer-Encoding: gzip\r\n"],
+            &["Transfer-Encoding: chunked, identity\r\n"],
+            &["Transfer-Encoding: chunked, chunked\r\n"],
+            &[
+                "Transfer-Encoding: chunked\r\n",
+                "Transfer-Encoding: chunked\r\n",
+            ],
+            &["Transfer-Encoding: chunked;x=1\r\n"],
+            &["Transfer-Encoding: \r\n"],
+        ] {
+            let h = parse(lines);
+            assert!(h.te_present && !h.chunked && h.te_invalid, "{:?}", lines);
+        }
+        let h = parse(&["Content-Length: 5\r\n"]);
+        assert!(!h.te_present && !h.chunked && !h.te_invalid);
+    }
+
     /// T27.5: 名前とコロンの間の空白と、値の途中の CR / LF / NUL に印が立つ。行末の CRLF と値の HTAB には立たない。
     #[test]
     fn flags_whitespace_before_colon_and_cr_lf_nul_in_values() {

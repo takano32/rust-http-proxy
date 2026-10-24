@@ -482,6 +482,25 @@ pub fn handle_http_with_headers(
     }
     let version = parts.next().unwrap_or("HTTP/1.0");
     let http11 = version.eq_ignore_ascii_case("HTTP/1.1");
+    // `Transfer-Encoding` の最後がちょうど 1 回の `chunked` でない要求 (RFC 9112 §6.3) と、
+    // HTTP/1.0 の要求の `Transfer-Encoding` (§6.1 は「枠組みが壊れているとして扱う」) は 400 (T27.6)。
+    // 今までは `xchunked`・`gzip` を本文なしとしてヘッダーだけ転送し、本文はクライアントの
+    // 次の要求として読まれていた (`xchunked` と `Content-Length` が両方あると CL で読んで両方を転送した)
+    if req.te_invalid || (req.te_present && !http11) {
+        log_warn!(
+            Some(conn_id),
+            "400 Bad Request: Transfer-Encoding {} ({})",
+            if req.te_invalid {
+                "does not end in a single chunked"
+            } else {
+                "in an HTTP/1.0 request"
+            },
+            version
+        );
+        metrics.record_bad_request(BadRequestReason::BodyFraming, client_ip.unwrap_or("-"), 400);
+        let _ = write_error(client, 400, "Bad Request");
+        return Ok(false);
+    }
     // `Host` が 2 本以上ある要求は RFC 9110 §7.2 が 400 を求めている (T19.2)。
     // どの `Host` を信じるかで前段と後段が食い違うと、宛先の付け替え (要求の密輸) になる。
     // **通る要求には 1 命令も足さない**: 印は 2 本目を見たときしか立たない
