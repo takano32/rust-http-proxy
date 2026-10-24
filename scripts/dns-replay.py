@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 名前解決の表 (`crates/net-dns/src/dns.rs`) を**再生の模型**で回し、規則を変えたときの
-# ミスと引き直しの数を見積もる (T17.5)。
+# ミスと引き直しの数を見積もる (T.17.5)。
 #
 # 材料は雪像 (`/snapshot`) 1 枚:
 #   - `/recent` の `at` (開いた時刻) と `target` … **全部そろっている区間** (下の「測る区間」) の到着列
@@ -23,12 +23,12 @@
 #   - 裏の引き直しは**一瞬で終わり、失敗しない**とする (実機の `refresh_failures` は 0、1 回 約 18 ms)
 #   - IP リテラルは表を通らない
 #
-# **serve-stale (T21.3)**: `--serve-stale SECS` を渡すと、いまの規則に「表の答えが TTL を過ぎていても
+# **serve-stale (T.21.3)**: `--serve-stale SECS` を渡すと、いまの規則に「表の答えが TTL を過ぎていても
 # 齢 (答えを引いてからの秒) が `SECS` 未満なら古い答えで当たりとし、裏で 1 回引き直す」を足した規則
 # (`stale_<SECS>`) も回す (RFC 8767)。古い答えの当たりはミスに数えず (`stale_hits`)、裏の引き直しは
 # `refreshes` (うち `refresh_stale`) に数える。複数回渡せる。
 #
-# **warm の枠と窓 (T22.4)**: `--grid` で、serve-stale 21,600 秒 (T21.3 の既定) を基準にして
+# **warm の枠と窓 (T.22.4)**: `--grid` で、serve-stale 21,600 秒 (T.21.3 の既定) を基準にして
 # 「warm の枠 16 / 32 / 64」「warm の窓 900 秒」「warm をやめる (窓 0 = 引き直しは serve-stale と先回りだけ)」
 # 「`warm_promote` の予定を答えの齢から出す」を並べ、`expired` + `warm_stale` のミス (1 日あたりの増え)、
 # 引き直しの回/時、名前ごとの引き直しの最大 (回/時) を出す。区間の前から居た名前は、下限側 (表にあるが
@@ -49,7 +49,7 @@ import sys
 TTL = 60
 WARM = 3600
 MAX_WARM = 32
-# 実機の値 (T16.99: 平常時のミス 0.06 回/接続、裏の引き直し 436 回/時)。模型が合っているかの物差し
+# 実機の値 (T.16.99: 平常時のミス 0.06 回/接続、裏の引き直し 436 回/時)。模型が合っているかの物差し
 TARGET_MISS_PER_CONNECT = 0.06
 TARGET_REFRESH_PER_HOUR = 436.0
 # 「合う」と見なす幅 (±30%)
@@ -57,17 +57,17 @@ TOLERANCE = 0.30
 # `hosts_series` の窓の長さの既定 (応答に `window_secs` が無いとき)
 SERIES_WINDOW = 300
 MISS_KINDS = ("cold", "expired", "warm_stale")
-# serve-stale を採る目安 (T21.3): `expired` のミスが半分以下、かつ裏の引き直しの増えが +10% 以内
+# serve-stale を採る目安 (T.21.3): `expired` のミスが半分以下、かつ裏の引き直しの増えが +10% 以内
 STALE_EXPIRED_MAX = 0.5
 STALE_REFRESH_MAX = 0.10
-# T22.4 の基準 (`dns.rs` の `SERVE_STALE`) と目安: 引き直しを基準の半分以下にして、
+# T.22.4 の基準 (`dns.rs` の `SERVE_STALE`) と目安: 引き直しを基準の半分以下にして、
 # `expired` + `warm_stale` のミスの増えが 1 日 10 回以内
 SERVE_STALE = 21600
 GRID_REFRESH_MAX = 0.5
 GRID_MISSES_PER_DAY = 10.0
-# 区間の前から居た名前を置く時刻 (区間の始まりの何秒前に最後に使ったとするか)。窓の外 (T17.5 の下限側)
+# 区間の前から居た名前を置く時刻 (区間の始まりの何秒前に最後に使ったとするか)。窓の外 (T.17.5 の下限側)
 PRIME_BEFORE = 2 * WARM
-# T22.4 の案 (名前, 基準からの差分)。最初の行が基準 (いまの既定)
+# T.22.4 の案 (名前, 基準からの差分)。最初の行が基準 (いまの既定)
 GRID = (
     ("base", {}),
     ("warm16", {"max_warm": 16}),
@@ -89,7 +89,7 @@ def promote_current(e, idle, window):
 
 
 def promote_no_idle(e, idle, window):
-    """T17.5 の案: `idle < window` を外す (前に 1 回でも使って答えを持っていれば上げる)。"""
+    """T.17.5 の案: `idle < window` を外す (前に 1 回でも使って答えを持っていれば上げる)。"""
     return not e["warm"] and window > 0 and e["has_addrs"]
 
 
@@ -121,12 +121,12 @@ class Table:
                  promote_at="now", refresh_at=None):
         self.rule = rule
         # `warm_promote` の最初の予定: "now" = 上げた時刻 + 3/4 TTL (いまの `dns_warm.rs`)、
-        # "answer" = 答えを引いた時刻 + 3/4 TTL (既知の小物の直しの案。T22.4)
+        # "answer" = 答えを引いた時刻 + 3/4 TTL (既知の小物の直しの案。T.22.4)
         self.promote_at = promote_at
         # 先回りを始める齢 (秒)。`None` = TTL の 3/4 (いまの `refresh_after`)。
-        # **k と TTL のどちらが引き直しの間隔を決めているか**を分けて見るための口 (T24.1)
+        # **k と TTL のどちらが引き直しの間隔を決めているか**を分けて見るための口 (T.24.1)
         self.k = refresh_at if refresh_at else refresh_after(ttl)
-        # 古い答えを返してよい齢の上限 (秒。0 = いまの規則 = 期限切れは同期で引く。T21.3)
+        # 古い答えを返してよい齢の上限 (秒。0 = いまの規則 = 期限切れは同期で引く。T.21.3)
         self.serve_stale = serve_stale
         self.ttl = ttl
         self.window = window
@@ -138,7 +138,7 @@ class Table:
         self.counting = True
         # warm の件数 × 時間を積む時計 (最後に積んだ時刻。`None` = まだ積まない)
         self._warm_t = None
-        # 名前ごとの引き直しの回数 (区間の中だけ。名前ごとの最大を出すため。T22.4)
+        # 名前ごとの引き直しの回数 (区間の中だけ。名前ごとの最大を出すため。T.22.4)
         self.per_name = {}
         self.c = self.zero()
 
@@ -155,7 +155,7 @@ class Table:
     def prime(self, name, last_used, warm=False):
         """表に「前から居た」名前を置く (答えは持っているが期限は切れている)。
 
-        `warm` なら、その時刻に warm に上げた名前として置く (上限側。T22.4)。数えない間に呼ぶ。
+        `warm` なら、その時刻に warm に上げた名前として置く (上限側。T.22.4)。数えない間に呼ぶ。
         """
         if name not in self.table:
             self.table[name] = {"has_addrs": True, "resolved_at": last_used,
@@ -242,17 +242,17 @@ class Table:
             if self.counting:
                 self.c["hits"] += 1
             if hot and age >= self.k:
-                # 当たりのまま裏で 1 回引き直す (T13.1)。一瞬で終わるとする
+                # 当たりのまま裏で 1 回引き直す (T.13.1)。一瞬で終わるとする
                 self._refresh(e, now, "refresh_ask", name)
         elif e["has_addrs"] and age < self.serve_stale:
-            # serve-stale (T21.3): 期限切れでも齢が窓の中なら古い答えで繋ぎに行き (ミスではない)、
+            # serve-stale (T.21.3): 期限切れでも齢が窓の中なら古い答えで繋ぎに行き (ミスではない)、
             # 裏で 1 回だけ引き直す。引き直しは一瞬で終わるとする (同じ名前を二重に頼む間が無い)
             if self.counting:
                 self.c["stale_hits"] += 1
                 # warm なのに期限が切れていた (`warm_promote` の予定のすき間など。serve-stale の
-                # もとでは `warm_stale` のミスにならず、ここに出る。T22.4)
+                # もとでは `warm_stale` のミスにならず、ここに出る。T.22.4)
                 self.c["stale_hits_warm"] += int(was_warm)
-                # 古い答えの齢 (warm をやめる案で、どれだけ古い番地に繋ぎに行くかを読む。T22.4)
+                # 古い答えの齢 (warm をやめる案で、どれだけ古い番地に繋ぎに行くかを読む。T.22.4)
                 self.c["stale_age_sum"] += age
                 self.c["stale_age_max"] = max(self.c["stale_age_max"], age)
             self._refresh(e, now, "refresh_stale", name)
@@ -348,7 +348,7 @@ def replay(warmup, inside, c0, taken, rule, seen_before=(), ttl=TTL, window=WARM
            refresh_at=None):
     """助走を数えずに回し、区間 `[c0, taken]` の中だけを数える。
 
-    `refresh_at` は先回りの齢 (秒)。`None` = TTL の 3/4 (`refresh_after`)。T24.1 で
+    `refresh_at` は先回りの齢 (秒)。`None` = TTL の 3/4 (`refresh_after`)。T.24.1 で
     「k と TTL のどちらが引き直しの間隔を決めているか」を分けて見るために足した。
     """
     tb = Table(rule, ttl, window, max_warm, serve_stale, promote_at, refresh_at)
@@ -358,8 +358,8 @@ def replay(warmup, inside, c0, taken, rule, seen_before=(), ttl=TTL, window=WARM
     tb.advance(c0)
     # 助走に出てこなかったが前から表に居た名前: 最後の使用は分からないので窓の外に置く
     # (いまの規則では上がらず、`idle < window` を外した規則でだけ上がる = 案の効きの上限側)。
-    # 置く時刻は窓に依らない (窓を変える案 (T22.4) で答えの齢が変わらないように)。
-    # `prime_warm` なら区間の始まりで warm だったとして置く (T22.4 の上限側)
+    # 置く時刻は窓に依らない (窓を変える案 (T.22.4) で答えの齢が変わらないように)。
+    # `prime_warm` なら区間の始まりで warm だったとして置く (T.22.4 の上限側)
     for h in sorted(seen_before):
         if prime_warm:
             tb.prime(h, c0, warm=True)
@@ -381,7 +381,7 @@ def replay(warmup, inside, c0, taken, rule, seen_before=(), ttl=TTL, window=WARM
     top = max(tb.per_name.values(), default=0)
     c["refresh_name_max"] = top
     c["refresh_name_max_per_hour"] = (top / hours) if hours > 0 else None
-    # 名前ごとの引き直しの回数 (区間の中だけ)。T24.1 で 1 つの名前 (短い TTL の名前) を
+    # 名前ごとの引き直しの回数 (区間の中だけ)。T.24.1 で 1 つの名前 (短い TTL の名前) を
     # 観測と突き合わせるために出す
     c["per_name"] = dict(tb.per_name)
     return c
@@ -392,7 +392,7 @@ def within(v, target, tol=TOLERANCE):
 
 
 def stale_verdict(cur, new):
-    """serve-stale の規則がいまの規則に対して目安 (T21.3) を満たすか。"""
+    """serve-stale の規則がいまの規則に対して目安 (T.21.3) を満たすか。"""
     e0, e1 = cur["misses_by_kind"]["expired"], new["misses_by_kind"]["expired"]
     r0, r1 = cur["refreshes"], new["refreshes"]
     expired = (e1 / e0) if e0 else None
@@ -411,7 +411,7 @@ def run(snap, rules, prime=True, stale=()):
     for name in rules:
         out["rules"][name] = replay(warmup, inside, c0, taken, RULES[name],
                                     seen_before if prime else ())
-    # serve-stale (T21.3) はいまの `promote` の上に足す (比べる相手は `current`)
+    # serve-stale (T.21.3) はいまの `promote` の上に足す (比べる相手は `current`)
     for secs in stale:
         out["rules"][f"stale_{secs}"] = replay(warmup, inside, c0, taken, promote_current,
                                                seen_before if prime else (), serve_stale=secs)
@@ -438,7 +438,7 @@ def run(snap, rules, prime=True, stale=()):
 
 
 def build_series(snap):
-    """`/hosts_series` だけから到着列を作る (上位 16 名前 × 24 時間。T22.4 の `--series`)。
+    """`/hosts_series` だけから到着列を作る (上位 16 名前 × 24 時間。T.22.4 の `--series`)。
 
     5 分の窓の中の到着は等間隔に置く (`build` の助走と同じ)。返すのは (到着列, 始まり, 終わり)。
     """
@@ -474,7 +474,7 @@ def grid_case(base, delta):
 
 
 def grid_verdict(base, new):
-    """案が基準に対して目安 (T22.4) を満たすか。ミスの増えは 1 日あたりに直す。"""
+    """案が基準に対して目安 (T.22.4) を満たすか。ミスの増えは 1 日あたりに直す。"""
     def bad(c):
         k = c["misses_by_kind"]
         return k["expired"] + k["warm_stale"]
@@ -488,7 +488,7 @@ def grid_verdict(base, new):
 
 
 def run_grid(snap, series=False, base=None):
-    """T22.4 の案を並べる。`series` なら `/hosts_series` だけ、そうでなければ `build` の区間で。
+    """T.22.4 の案を並べる。`series` なら `/hosts_series` だけ、そうでなければ `build` の区間で。
 
     区間で回すときは、前から居た名前の置き方を下限側 (`lower` = warm でない) と上限側
     (`upper` = 区間の始まりで warm) の 2 通り回す。目安は両方で満たして「満たす」とする。
@@ -522,7 +522,7 @@ def run_grid(snap, series=False, base=None):
 
 
 def actual_grid(snap, c0, taken):
-    """同じ区間の実機の値 (T22.4 の突き合わせ): ミスの回数と、warm の件数の平均・最大 (`/history?res=60`)。
+    """同じ区間の実機の値 (T.22.4 の突き合わせ): ミスの回数と、warm の件数の平均・最大 (`/history?res=60`)。
 
     実機の引き直しの回数は区間では取れないので、warm の件数の平均 × 3,600 / (3/4 TTL) を
     「warm の引き直しの回/時」の見積もりとして並べる (warm の名前は 3/4 TTL ごとに 1 回引く)。
@@ -593,7 +593,7 @@ def render_grid(out):
                 f"| {c['refresh_name_max_per_hour']:.1f} | {c['warm_avg']:.2f} / {c['warm_max']} "
                 f"| {c['warm_evicted']} {tail}")
     lines.append("")
-    lines.append(f"目安 (T22.4): 引き直しが基準の {GRID_REFRESH_MAX * 100:.0f}% 以下、かつ "
+    lines.append(f"目安 (T.22.4): 引き直しが基準の {GRID_REFRESH_MAX * 100:.0f}% 以下、かつ "
                  f"expired + warm_stale の増えが 1 日 {GRID_MISSES_PER_DAY:.0f} 回以内 (どの置き方でも)")
     note = (" (参考: `/hosts_series` は上位 16 名前を入れ替えながら持つだけで、5 分の中は等間隔に置く)"
             if "series" in out["sides"] else "")
@@ -614,7 +614,7 @@ def render(out):
         mp = a["miss_per_connect"]
         lines.append(f"実機 (同じ区間の `/history?res=60`): 確立 {a['connects']} 本、ミス {a['dns_misses']} 回"
                      + (f" = {mp:.3f} 回/接続" if mp is not None else ""))
-    lines.append(f"物差し (T16.99): ミス {TARGET_MISS_PER_CONNECT} 回/接続、引き直し "
+    lines.append(f"物差し (T.16.99): ミス {TARGET_MISS_PER_CONNECT} 回/接続、引き直し "
                  f"{TARGET_REFRESH_PER_HOUR:.0f} 回/時 (±{TOLERANCE * 100:.0f}%)")
     lines.append("")
     lines.append("| 規則 | 到着 | ミス | ミス/到着 | cold / expired / warm_stale | 古い答え | 引き直し | 回/時 "
@@ -660,7 +660,7 @@ def main(argv=None):
     p.add_argument("--no-prime", action="store_true",
                    help="do not seed names that were in the table before the window")
     p.add_argument("--grid", action="store_true",
-                   help="compare the warm limit / window variants under serve-stale (T22.4)")
+                   help="compare the warm limit / window variants under serve-stale (T.22.4)")
     p.add_argument("--series", action="store_true",
                    help="with --grid, replay only /hosts_series (top hosts over 24 hours)")
     p.add_argument("--json", action="store_true")

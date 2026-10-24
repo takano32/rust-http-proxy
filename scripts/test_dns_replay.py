@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/dns-replay.py` (T17.5) の単体テスト。
+"""`scripts/dns-replay.py` (T.17.5) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
@@ -104,7 +104,7 @@ class RulesTest(unittest.TestCase):
         self.assertNotIn("n0", tb.queue)
 
     def test_serve_stale_answers_an_expired_entry_inside_the_window(self):
-        # T21.3: 2 回目は齢 5,000 秒 (窓 3,600 秒の外なので warm にもならない)
+        # T.21.3: 2 回目は齢 5,000 秒 (窓 3,600 秒の外なので warm にもならない)
         arr = [(0, "a"), (5000, "a")]
         cur = run_table("current", arr, 5000)
         self.assertEqual(cur["misses_by_kind"]["expired"], 1)
@@ -136,7 +136,7 @@ class RulesTest(unittest.TestCase):
 
 
 class WarmGridTest(unittest.TestCase):
-    """T22.4: warm の枠と窓、`warm_promote` の予定、名前ごとの引き直し。"""
+    """T.22.4: warm の枠と窓、`warm_promote` の予定、名前ごとの引き直し。"""
 
     def test_no_warm_refreshes_only_on_lookups(self):
         # 窓 0 = warm をやめる。5 分おきの 5 回は、2 回目から古い答え + 裏の引き直し 1 回ずつ
@@ -191,7 +191,7 @@ class WarmGridTest(unittest.TestCase):
         self.assertEqual(off.queue, {})
 
     def test_the_refresh_age_can_be_moved_to_the_ttl(self):
-        # T24.1: 「k (3/4 TTL) と TTL のどちらが引き直しの間隔を決めているか」を分けて見る口。
+        # T.24.1: 「k (3/4 TTL) と TTL のどちらが引き直しの間隔を決めているか」を分けて見る口。
         # 12 秒ごとに使う名前は、k=45 なら 48 秒ごと、k=60 (= TTL) なら 60 秒ごとに引き直す
         arrivals = [(t, "a") for t in range(0, 3600, 12)]
         k45 = run_table("current", arrivals, 3600, window=0, serve_stale=21600, refresh_at=45)
@@ -329,7 +329,7 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(lower["base"]["refreshes"], 206)
         self.assertEqual(upper["base"]["refreshes"], 284)
         self.assertEqual(out["pass"], ["window900", "no_warm"])
-        # 基準は serve-stale 21,600 秒 (T21.3 の既定) の上
+        # 基準は serve-stale 21,600 秒 (T.21.3 の既定) の上
         self.assertEqual(lower["base"]["misses_by_kind"]["expired"], 0)
 
     def test_grid_series_on_the_fixture(self):

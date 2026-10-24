@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# 1 週間ぶんの雪像から「週次の要約」を **Markdown 1 枚**にする (TODO.md T14.40)。
+# 1 週間ぶんの雪像から「週次の要約」を **Markdown 1 枚**にする (TODO.md T.14.40)。
 #
 # 入力は `status/` に溜まった雪像 (`*-snapshot.json`)。プロキシ自身が
-# 1 日 1 回 (UTC 0 時) 書いている日次の `/snapshot` (T14.34) を
+# 1 日 1 回 (UTC 0 時) 書いている日次の `/snapshot` (T.14.34) を
 # `scripts/collect-deployed.sh --from-server` で取り寄せた `<日付>T000000Z-snapshot.json` も
-# 同じ形なので、そのまま混ぜてよい。`/daily` (T14.20) の JSON だけでも出る。
+# 同じ形なので、そのまま混ぜてよい。`/daily` (T.14.20) の JSON だけでも出る。
 # **7 日ぶん無ければあるぶんで**出す (何枚・何日ぶんあったかは頭に書く)。
 #
 # 使い方:
@@ -19,12 +19,12 @@
 #   3. 名前解決のミス率           7. 遅かったホスト上位 N (`avg_ms` × 要求数)
 #   4. エラー (原因別)            8. 新しく見たホスト (前の雪像に無かった名前)
 #
-# **数字の求め方は `scripts/snapshot-diff.py` (T14.17) と同じ**: `/history?res=3600` を
+# **数字の求め方は `scripts/snapshot-diff.py` (T.14.17) と同じ**: `/history?res=3600` を
 # **UTC の日で切って**同じ `aggregate()` に通すので、同じ期間を切れば同じ値が出る
 # (分位点の補間は `crates/metrics/src/history.rs` の `Window::quantile_ms` と同じ)。
 # 平常時 (1 時間 300 本未満の標本) とバースト込みを分けるのも同じ切り方。
 #
-# 出力は T14.99 (締めの文書) と、次の Phase の T15.0 の入力になる。
+# 出力は T.14.99 (締めの文書) と、次の Phase の T.15.0 の入力になる。
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
 import argparse
@@ -48,7 +48,7 @@ def _load(name, filename):
     return mod
 
 
-# 読み方 (窓の切り方・`aggregate()`・`/hosts` `/clients` の取り出し) は T14.17 と共有する。
+# 読み方 (窓の切り方・`aggregate()`・`/hosts` `/clients` の取り出し) は T.14.17 と共有する。
 # **ここからは読むだけで、snapshot-diff.py は変えない。**
 sd = _load("snapshot_diff", "snapshot-diff.py")
 
@@ -206,7 +206,7 @@ def from_daily(line):
 def day_stats(rows, bounds, limit, days, daily):
     """1 日ぶんの標本を `snapshot-diff.py` と同じ `aggregate()` に通す。
 
-    `normal` は**バーストの窓を外した**もの (T14.0 の切り方)、`all` は全部。
+    `normal` は**バーストの窓を外した**もの (T.14.0 の切り方)、`all` は全部。
     `/history` に無い日は `/daily` の 1 行で埋める (出どころを `src` に残す)。
     """
     out = {}
@@ -249,7 +249,7 @@ def burst_shots(snaps):
 def client_window(snaps):
     """接続元ごとに「いつ初めて / 最後に見たか」と週の増分を作る。
 
-    `/clients` (T14.7) には `first_seen` / `last_seen` があるが、`/status` の `clients[]`
+    `/clients` (T.14.7) には `first_seen` / `last_seen` があるが、`/status` の `clients[]`
     (古い版) には `last_seen` しか無い。そのときは**初めて出た雪像の日**で代える。
     """
     out = {}
@@ -341,7 +341,7 @@ def slow_hosts(rows, top):
 def new_hosts(snaps, days):
     """前の雪像に無かった名前を、**その雪像が写した日**に付ける。
 
-    日は `taken_at` の **1 秒前**の日で見る。T14.34 の日次の雪像は「終わった日」を
+    日は `taken_at` の **1 秒前**の日で見る。T.14.34 の日次の雪像は「終わった日」を
     翌日 00:00 UTC の直後に写すので、そのままでは 1 日ずれる。窓より後の雪像
     (窓の最後の日より新しいもの) は最後の日にまとめる。
     いちばん古い雪像は比べる相手が無いので数えない (`.rrd` の通算なので全部が初めてに見える)。
@@ -468,13 +468,13 @@ def render(d, top):
     if d["res"]:
         p(f"- 日別の数字は `/history?res={d['res']}` を UTC の日で切ったもの "
           f"(**1 標本 {d['limit']} 本以上の窓 = バーストを外した**値を「平常時」と呼ぶ。"
-          "`snapshot-diff.py` (T14.17) と同じ切り方・同じ `aggregate()`)")
+          "`snapshot-diff.py` (T.14.17) と同じ切り方・同じ `aggregate()`)")
         if d["limit"] <= 1:
             p("- **注意**: 解像度が細かいので平常時の閾が 1 標本 1 本になっている "
               "(1 本でも通れば「バースト」として外れる)。`res=3600` のある雪像を渡すか "
               "`--burst` を上げる")
     else:
-        p("- `/history` がどの入力にも無いので、日別は `/daily` (T14.20) の 1 行から出している")
+        p("- `/history` がどの入力にも無いので、日別は `/daily` (T.14.20) の 1 行から出している")
     if d["daily_days"]:
         p(f"- `/daily` の行 {len(d['daily_days'])} 日ぶん ({d['daily_days'][0]} 〜 "
           f"{d['daily_days'][-1]}) も読んだ (`/history` に無い日を埋める)")
@@ -573,7 +573,7 @@ def render(d, top):
     p("## 5. 山 (バースト)")
     p("")
     if d["has_bursts"]:
-        p(f"`/bursts` の写真 (T14.6) がこの週に **{len(d['shots'])} 枚**。")
+        p(f"`/bursts` の写真 (T.14.6) がこの週に **{len(d['shots'])} 枚**。")
         p("")
         p("| 日 | 写真 | 最大同時 | いちばん多かった時刻 | 接続元 |")
         p("|---|---:|---:|---|---|")
@@ -589,7 +589,7 @@ def render(d, top):
             p(f"| {day} | {n(len(shots))} | {n(worst.get('active'))} "
               f"| {sd.stamp(worst.get('at'))} | {who} |")
     else:
-        p("`/bursts` (T14.6) の写真がどの入力にも無いので、その日の**同時接続の最大** "
+        p("`/bursts` (T.14.6) の写真がどの入力にも無いので、その日の**同時接続の最大** "
           "(`active_max`) と「山」で代える。山は `/history` なら**外したバーストの窓の数** "
           f"(1 標本 {d['limit']} 本以上)、`/daily` なら**その日に撮れた写真の枚数** "
           "(`bursts`)。")
@@ -612,10 +612,10 @@ def render(d, top):
     p("## 6. 接続元の出入り")
     p("")
     if not d["clients"]:
-        p("`/clients` (T14.7) も `/status` の `clients[]` もこの入力に無い。")
+        p("`/clients` (T.14.7) も `/status` の `clients[]` もこの入力に無い。")
     else:
         if not d["has_clients_part"]:
-            p("`/clients` (T14.7) がこの雪像に無いので `/status` の `clients[]` で代える "
+            p("`/clients` (T.14.7) がこの雪像に無いので `/status` の `clients[]` で代える "
               "(**`first_seen` が無い版**なので「新しく来た」は初めて出た雪像の日で見る)。")
             p("")
         p("| 日 | 新しく来た | 来なくなった | 接続元 |")
@@ -704,7 +704,7 @@ def render(d, top):
 
 def parser():
     p = argparse.ArgumentParser(
-        description="1 週間ぶんの雪像から週次の要約を Markdown 1 枚にする (T14.40)")
+        description="1 週間ぶんの雪像から週次の要約を Markdown 1 枚にする (T.14.40)")
     p.add_argument("inputs", nargs="+", metavar="DIR|FILE",
                    help="雪像の置き場 (`status/`)、`*-snapshot.json`、"
                         "`/daily` の JSON のどれでも。混ぜてよい")

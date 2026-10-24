@@ -1,6 +1,6 @@
 #!/bin/bash
 # 小さい cgroup の中でプロキシを走らせ、cgroup のメモリと `/status` を 1 秒ごとに記録する
-# (T12.5。デプロイ先 = Pterodactyl コンテナ 256 MiB と同じ形を手元で作るための道具)。
+# (T.12.5。デプロイ先 = Pterodactyl コンテナ 256 MiB と同じ形を手元で作るための道具)。
 #
 # `scripts/build-memory.sh` の `run_in_cgroup` と同じく `systemd-run --user --scope` で
 # `MemoryMax` / `MemorySwapMax=0` の scope を作る。ただしこの機械では scope の cgroup

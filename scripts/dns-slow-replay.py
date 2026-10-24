@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# `/events` の `dns_slow` (T14.23 / T17.1) を雪像の `/history?res=60` から作り直し、閾の案を並べる (T22.2)。
+# `/events` の `dns_slow` (T.14.23 / T.17.1) を雪像の `/history?res=60` から作り直し、閾の案を並べる (T.22.2)。
 #
 # 材料は雪像 (`/snapshot`) 1 枚の `history["60"]` (1 分 × 1,440 行 = 24 時間) と、その `canary`
 # (canary の名前解決の ms)。判定の規則は `crates/metrics-watch/src/anomaly.rs` の `Detector::observe` を写した:
@@ -8,7 +8,7 @@
 #   - 立つ条件は案ごと (下の `PROPOSALS`)。閾は 100 ms と canary の中央値 (直近 1 時間) の 3 倍の大きい方
 #   - 立ったら収まるまで 1 回。条件を外れたまま 5 分 (`CLEAR_SECS`) 続いたら解除
 #
-# **本当に遅い窓** (T22.2 の目安): ミス 10 回以上で平均 100 ms 超え。これが続いた一続き (同じ解除の規則で
+# **本当に遅い窓** (T.22.2 の目安): ミス 10 回以上で平均 100 ms 超え。これが続いた一続き (同じ解除の規則で
 # まとめる) を 1 件と数え、案がその一続きの間に 1 度も立っていなければ「落とした」とする。
 #
 # **「遅い 1 回を除いた平均」(`trim1`) は近似**: 履歴は 1 分ごとの合計 (`dns_ms_sum`) と回数しか持たず、
@@ -16,7 +16,7 @@
 # 本当の最大は 1 分の平均以上なので、これは除いたあとの平均の**上限** (立つ側に寄る)。実機に入れるなら
 # 標本にミスの最大を足す要がある (`/history` の列が増える)。
 #
-# 実機の `/events` の `dns_slow` (履歴の範囲の中で立ったもの) と、T22.2 の前の条件 (`current`) と今の条件 (`sum1000`)
+# 実機の `/events` の `dns_slow` (履歴の範囲の中で立ったもの) と、T.22.2 の前の条件 (`current`) と今の条件 (`sum1000`)
 # の件数・時刻を突き合わせる (雪像の版がどちらの条件で走っていたかで、組める方が変わる)。
 #
 # 使い方: scripts/dns-slow-replay.py SNAP.json [SNAP.json ...] [--json]
@@ -36,7 +36,7 @@ WINDOW_SECS = 300
 BASE_SECS = 3600
 CLEAR_SECS = WINDOW_SECS
 ROW_SECS = 60
-# 本当に遅い窓 (T22.2 の目安)
+# 本当に遅い窓 (T.22.2 の目安)
 SLOW_MIN_MISSES = 10
 SLOW_AVG_MS = 100.0
 # 採る目安: tokyo の後の期間で 0.1 件/時以下、かつ本当に遅い一続きを 1 つも落とさない
@@ -112,11 +112,11 @@ def trim1(w):
     return max(0.0, w["ms_sum"] - w["worst"]) / (w["misses"] - 1)
 
 
-# 案: 名前 -> (説明, 立つ条件)。`current` は T22.2 より前の `anomaly.rs` (比べる基準として名前を残す)。
-# **`sum1000` が T22.2 で入れた今の条件** (`DNS_MIN_MISSES` 3 回以上・平均が閾以上・`DNS_MIN_SUM_MS`
-# 1,000 ms 以上) と同じものを数える。T22.2 のあとの雪像では、実機の `/events` と組めるのは `sum1000` の方
+# 案: 名前 -> (説明, 立つ条件)。`current` は T.22.2 より前の `anomaly.rs` (比べる基準として名前を残す)。
+# **`sum1000` が T.22.2 で入れた今の条件** (`DNS_MIN_MISSES` 3 回以上・平均が閾以上・`DNS_MIN_SUM_MS`
+# 1,000 ms 以上) と同じものを数える。T.22.2 のあとの雪像では、実機の `/events` と組めるのは `sum1000` の方
 PROPOSALS = {
-    "current": ("min 3, avg >= limit (T22.2 の前)",
+    "current": ("min 3, avg >= limit (T.22.2 の前)",
                 lambda w: w["misses"] >= DNS_MIN_MISSES and avg(w) >= w["limit"]),
     "min5": ("min 5, avg >= limit",
              lambda w: w["misses"] >= 5 and avg(w) >= w["limit"]),
@@ -124,7 +124,7 @@ PROPOSALS = {
              lambda w: w["misses"] >= 8 and avg(w) >= w["limit"]),
     "min10": ("min 10, avg >= limit",
               lambda w: w["misses"] >= 10 and avg(w) >= w["limit"]),
-    "sum1000": ("min 3, avg >= limit, 合計 >= 1,000 ms (今。T22.2)",
+    "sum1000": ("min 3, avg >= limit, 合計 >= 1,000 ms (今。T.22.2)",
                 lambda w: w["misses"] >= DNS_MIN_MISSES and avg(w) >= w["limit"]
                 and w["ms_sum"] >= DNS_MIN_SUM_MS),
     "sum2000": ("min 3, avg >= limit, 合計 >= 2,000 ms",
@@ -239,7 +239,7 @@ def render(path, a):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="dns_slow を /history?res=60 から作り直し、閾の案を並べる (T22.2)")
+    p = argparse.ArgumentParser(description="dns_slow を /history?res=60 から作り直し、閾の案を並べる (T.22.2)")
     p.add_argument("snapshots", nargs="+")
     p.add_argument("--json", action="store_true", help="結果を JSON で出す")
     args = p.parse_args(argv)

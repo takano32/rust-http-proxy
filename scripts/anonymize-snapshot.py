@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""デプロイ先の実データ (`/snapshot`) を匿名化してテストへ持ち込む (TODO.md T14.35)。
+"""デプロイ先の実データ (`/snapshot`) を匿名化してテストへ持ち込む (TODO.md T.14.35)。
 
 `/snapshot` には**個人の閲覧先** (ホスト名)・接続元 IP・`User-Agent` が並ぶのでリポジトリに
-入れられず、道具のテストは毎回架空の fixture を作っている (T13.3 / T14.4 / T14.7)。
+入れられず、道具のテストは毎回架空の fixture を作っている (T.13.3 / T.14.4 / T.14.7)。
 **名前と IP と UA だけを決定的に置き換え、数字は 1 つも変えない**ことで、本物の分布
 (件数・時間・区間・閉じた理由) を持ったまま fixture にできる。
 
@@ -15,7 +15,7 @@
                                   -o scripts/testdata/deployed-2026-09-16.anon.json
     scripts/anonymize-snapshot.py a-snapshot.json -o -        # 標準出力へ
     # 雪像に入らない口 (`collect-deployed.sh` が隣に置く `-daily.json` `-profile_res_60.json` など) も
-    # **同じ表で**置き換える (T17.16)。既定の出力は隣の `<名前>.anon.json`、`IN=OUT` で置き場を指せる
+    # **同じ表で**置き換える (T.17.16)。既定の出力は隣の `<名前>.anon.json`、`IN=OUT` で置き場を指せる
     scripts/anonymize-snapshot.py status/2026-09-26T114602Z-snapshot.json \
         -o status/2026-09-26T114602Z-snapshot.anon.json \
         --side status/2026-09-26T114602Z-daily.json \
@@ -30,14 +30,14 @@
 | 名前解決の答え (`/dns` の `addrs`) | `203.0.113.1` / `2001:db8:1::1` | 宛先が IP リテラルのときも同じ表を使う |
 | `User-Agent` (`agents` と、いまの版の `agent`) | `ua-01` | 同じ UA は同じ番号 |
 | `/log` の行・`/events` の説明の中のホストと IP | 上と同じ表 | 行の他の語はそのまま |
-| `/events` の `new_client:` の `agent "…"` | `ua-01` | 上の UA と同じ表 (T17.16。切られた UA は別の番号) |
-| cgroup の道 (`kernel.cgroup_cpu.path`) | `/sys/fs/cgroup/…/…/cpu.stat` | 深さと最後の名前だけ残す (T15.0 (6)) |
+| `/events` の `new_client:` の `agent "…"` | `ua-01` | 上の UA と同じ表 (T.17.16。切られた UA は別の番号) |
+| cgroup の道 (`kernel.cgroup_cpu.path`) | `/sys/fs/cgroup/…/…/cpu.stat` | 深さと最後の名前だけ残す (T.15.0 (6)) |
 
 置き換えないもの: **数字** (件数・ms・区間・閉じた理由・時刻)、`version`、部の名前、
 この機械の設定 (`settings.path` のような個人の閲覧先ではないもの)。
 **例外は cgroup の道だけ** — `pterodactyl-<uuid>.scope` はコンテナを 1 つに特定できる。
 
-**まとめの粒度を残す** (T14.54): ホスト名の `gNNNN` は**まとめの単位 (eTLD+1)** の番号で、
+**まとめの粒度を残す** (T.14.54): ホスト名の `gNNNN` は**まとめの単位 (eTLD+1)** の番号で、
 `img.dlsite.jp` と `www.dlsite.jp` は同じ `gNNNN` (= 匿名化後も同じ eTLD+1) に落ちる。
 `www.dlsite.com` は別の単位なので別の番号になる。これで匿名化したあとの fixture でも
 `scripts/status-diff.py --group domain` / `snapshot-diff.py --group domain` の粒度が読める。
@@ -56,26 +56,26 @@ import re
 import sys
 from datetime import datetime, timezone
 
-# まとめの単位 (eTLD+1 の近似) は `scripts/proxydata.py` と同じ 1 関数を使う (T14.54)
+# まとめの単位 (eTLD+1 の近似) は `scripts/proxydata.py` と同じ 1 関数を使う (T.14.54)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from proxydata import etld1  # noqa: E402
 
 # ---------------------------------------------------------------- 置き換えの対象
 
 # 値が `[scheme://]名前[:port]` の欄 (`/hosts` `/status` `/dns` `/errors` `/connections`
-# `/recent` `/bursts` `/clients` の宛先、T14.10 の canary、T14.22 の `hosts_series`)
+# `/recent` `/bursts` `/clients` の宛先、T.14.10 の canary、T.14.22 の `hosts_series`)
 HOST_KEYS = frozenset(("host", "target", "canary_host", "sni"))
 # 値が接続元 IP (`ip` か `ip:port`) の欄
 CLIENT_KEYS = frozenset(("client",))
 # 値が名前解決の答えの一覧 (`/dns` の `addrs`)
 ADDR_KEYS = frozenset(("addrs",))
-# 値が `User-Agent` の一覧 (T14.7 の接続元の個票)。**`agent` (単数) も**: いまの `/status` と
-# `/clients` の接続元の行は、一覧ではなく最後に見た 1 つを `agent` に出す (T17.16 で気づいた。
+# 値が `User-Agent` の一覧 (T.14.7 の接続元の個票)。**`agent` (単数) も**: いまの `/status` と
+# `/clients` の接続元の行は、一覧ではなく最後に見た 1 つを `agent` に出す (T.17.16 で気づいた。
 # 2026-09-16 の版は `agents` だけだったので、前の fixture には出てこない)
 AGENT_KEYS = frozenset(("agents", "agent"))
 # 値が文 (中にホストや IP が混ざる。行の他の語は変えない)
 TEXT_KEYS = frozenset(("msg", "text", "error", "url", "file"))
-# この鍵の下の `path` だけは潰す (`/status` の `kernel.cgroup_cpu.path` = T15.0 (6))。
+# この鍵の下の `path` だけは潰す (`/status` の `kernel.cgroup_cpu.path` = T.15.0 (6))。
 # 道は `/sys/fs/cgroup/system.slice/pterodactyl-<uuid>.scope/cpu.stat` のような形で、
 # **コンテナを 1 つに特定できる**。この機械の設定の `path` (`~/.rust-http-proxy.state` の
 # ような、個人の閲覧先ではないもの) は今までどおりそのまま通す
@@ -87,9 +87,9 @@ CGROUP_ROOT = "/sys/fs/cgroup"
 RESERVED_NAMES = frozenset(("other",))
 
 # 置き換え先の形。`gNNNN` は**まとめの単位 (eTLD+1) の番号**で、同じ単位のホストは
-# 同じ番号に落ちる (T14.54)。`host-0001.g0007.example` の eTLD+1 は `g0007.example` なので、
+# 同じ番号に落ちる (T.14.54)。`host-0001.g0007.example` の eTLD+1 は `g0007.example` なので、
 # 匿名化した fixture でも `--group domain` が元と同じ粒度でまとまる。
-# **古い形 (`host-0001.example`、T14.35 の最初の版) も匿名化済みとして通す** ので、
+# **古い形 (`host-0001.example`、T.14.35 の最初の版) も匿名化済みとして通す** ので、
 # すでにある fixture を通しても名前は変わらない。
 HOST_FMT = "host-{:04d}.g{:04d}.example"
 UA_FMT = "ua-{:02d}"
@@ -171,7 +171,7 @@ class Anonymizer:
         return got
 
     def group(self, name):
-        """**まとめの単位 (eTLD+1) の番号** (T14.54)。同じ単位なら同じ番号。"""
+        """**まとめの単位 (eTLD+1) の番号** (T.14.54)。同じ単位なら同じ番号。"""
         unit = etld1(name)
         got = self.groups.get(unit)
         if got is None:
@@ -284,7 +284,7 @@ class Anonymizer:
             return self.ip(head, "client") + ":" + port
         return self.ip(value, "client")
 
-    # ------------------------------------------------- cgroup の道 (T15.0 (6))
+    # ------------------------------------------------- cgroup の道 (T.15.0 (6))
 
     def cgroup_path(self, s):
         """`kernel.cgroup_cpu.path` を `/sys/fs/cgroup/…/…/cpu.stat` に潰す。
@@ -413,7 +413,7 @@ class Anonymizer:
         return node
 
     def _table(self, node, mode):
-        """`{"keys":[…],"samples":[[…]]}` の表 (T14.10 の canary や T14.22 の時系列)。
+        """`{"keys":[…],"samples":[[…]]}` の表 (T.14.10 の canary や T.14.22 の時系列)。
 
         列の名前で見分ける (`canary_host` のように**位置でしか名前の分からない**欄がある)。
         """
@@ -578,7 +578,7 @@ def load_inputs(paths):
     found, bodies = {}, {}
     if len(paths) > 1:
         # `status/<時刻>-*` で束を渡されたとき、`collect-deployed.sh` が隣に置いた
-        # 匿名化済みの出力 (`-snapshot.anon.json` ほか。T17.16) は入力ではないので外す
+        # 匿名化済みの出力 (`-snapshot.anon.json` ほか。T.17.16) は入力ではないので外す
         paths = [p for p in paths if not p.endswith(ANON_SUFFIX)]
     for path in paths:
         body = read_json(path)
@@ -614,7 +614,7 @@ def load_inputs(paths):
     return snap
 
 
-# 匿名化した出力の名前の終わり (`collect-deployed.sh` が雪像の隣に置く形。T17.16)
+# 匿名化した出力の名前の終わり (`collect-deployed.sh` が雪像の隣に置く形。T.17.16)
 ANON_SUFFIX = ".anon.json"
 
 
@@ -640,7 +640,7 @@ def write_json(path, body):
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        description="デプロイ先の `/snapshot` を、数字を 1 つも変えずに匿名化する (T14.35)")
+        description="デプロイ先の `/snapshot` を、数字を 1 つも変えずに匿名化する (T.14.35)")
     p.add_argument("inputs", nargs="+", metavar="IN",
                    help="`/snapshot` の JSON 1 枚、または `-status` `-history_res_5` … のファイル群")
     p.add_argument("-o", "--out", required=True, metavar="OUT",

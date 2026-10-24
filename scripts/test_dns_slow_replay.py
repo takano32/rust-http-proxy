@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/dns-slow-replay.py` (T22.2) の単体テスト。
+"""`scripts/dns-slow-replay.py` (T.22.2) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 

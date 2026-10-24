@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """`scripts/collect-deployed.sh` が `/profile?res=60` を `offset=` で追って 1 つに繋ぐ試験 (T17.0b) と、
-雪像の隣に匿名化した写しを置く試験 (T17.16)、判定表の相手を `BEFORE` / `ZERO` で渡す試験 (T18.2)、
-雪像の切れた `recent`・`hosts` を既定で追って雪像に繋ぐ試験 (T22.5)。
+雪像の隣に匿名化した写しを置く試験 (T.17.16)、判定表の相手を `BEFORE` / `ZERO` で渡す試験 (T.18.2)、
+雪像の切れた `recent`・`hosts` を既定で追って雪像に繋ぐ試験 (T.22.5)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
@@ -35,7 +35,7 @@ class FakeProfile:
     """`/profile?res=60` の頁の切り方だけを写したもの。"""
 
     def __init__(self, count, pad=800):
-        # 1 標本 ≈ 850 B (T16.99 の実測: 256 KiB に 308 標本)
+        # 1 標本 ≈ 850 B (T.16.99 の実測: 256 KiB に 308 標本)
         # 並びは `keys` のとおり: 時刻・要求・プロセスの CPU (us)・役割ごとの `[cpu_us, 標本, 状態]`・詰め物
         self.samples = [[1_000_000 + 60 * i, 10, 2000, [0, [500, 60, 0]], "x" * pad]
                         for i in range(count)]
@@ -201,9 +201,9 @@ class CollectProfileTest(unittest.TestCase):
 
 
 class CollectBeforeZeroTest(unittest.TestCase):
-    """判定表の相手を `BEFORE`、0 時間の雪像を `ZERO` で渡す (T18.2)。
+    """判定表の相手を `BEFORE`、0 時間の雪像を `ZERO` で渡す (T.18.2)。
 
-    既定の `CRITERIA` は phase24 (T24.2)。下のテストは `criteria="phase18"` を名指しして回す
+    既定の `CRITERIA` は phase24 (T.24.2)。下のテストは `criteria="phase18"` を名指しして回す
     (`BEFORE` / `ZERO` の受け渡しは定義に依らない)。
 
     偽のサーバーが返す「いまの雪像」は `testdata/snapshot-b.json` (版 `0.1.0+bbbbbbb`、起動から 12 時間、
@@ -265,7 +265,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
         # 前回の雪像に `/profile` も `/recent` も無いので conn 役と接続のエラーの行は「判定できず」で、
         # 参考の行は無い (表示だけは phase21 の 4 行 + `/events` の行 + phase22 の接続のエラーの行)
         self.assertIn("(ほかに表示だけ 6 行。集計に数えない)", tail)
-        self.assertEqual(tail.count("\n| "), 1 + 17)          # 表の頭 + 17 行 (T24.3 で 1 行増えた)
+        self.assertEqual(tail.count("\n| "), 1 + 17)          # 表の頭 + 17 行 (T.24.3 で 1 行増えた)
         # `baseline` も `boot` も無い雪像なので、heap の行は phase23 の読み方に戻る
         self.assertIn("`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満", tail)
         self.assertIn("こちらが原因の無言の再起動", tail)
@@ -381,7 +381,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
 
 
 class CollectAnonTest(unittest.TestCase):
-    """雪像の隣に匿名化した写し (`-snapshot.anon.json` と隣の口の `.anon.json`) を置く (T17.16)。"""
+    """雪像の隣に匿名化した写し (`-snapshot.anon.json` と隣の口の `.anon.json`) を置く (T.17.16)。"""
 
     def run_collect(self, **env):
         srv = serve(FakeProfile(10))
@@ -439,7 +439,7 @@ class CollectAnonTest(unittest.TestCase):
 
 
 class FakeRows:
-    """`/recent?n=2000&offset=` と `/hosts?limit=1000&offset=` の頁の切り方だけを写したもの (T22.5)。
+    """`/recent?n=2000&offset=` と `/hosts?limit=1000&offset=` の頁の切り方だけを写したもの (T.22.5)。
 
     `rows` は**応答の並び** (`recent` は閉じた新しい順、`hosts` は要求数の順)。頁は
     `array_within` と同じく 1 行ずつ足して予算を越える手前で切り、`next_offset` は
@@ -547,7 +547,7 @@ def serve_follow(recent, hosts):
 
 
 class CollectFollowTest(unittest.TestCase):
-    """切れた `recent`・`hosts` を既定で `offset=` で追い、雪像の同じ部に繋ぐ (T22.5)。
+    """切れた `recent`・`hosts` を既定で `offset=` で追い、雪像の同じ部に繋ぐ (T.22.5)。
 
     偽の `recent` は 2,000 件 (リングの `MAX_RECENT`) で 1 枚に約 530 件、`hosts` は
     1,001 件 (`limit=1000` でも `offset=` で全部届く) で 1 枚に約 380 件。
@@ -598,7 +598,7 @@ class CollectFollowTest(unittest.TestCase):
         self.assertEqual(list(hs), list(self.hosts.page(0, 1000)))
         self.assertIn("recent", snap["parts"])
         pages = -(-2000 // self.first[0])
-        self.assertIn("- 切れた部の続き (既定で追う。T22.5): `recent` %d 枚で %s → 2,000 件 (全 2,000 件)"
+        self.assertIn("- 切れた部の続き (既定で追う。T.22.5): `recent` %d 枚で %s → 2,000 件 (全 2,000 件)"
                       % (pages, format(self.first[0], ",")), out)
         self.assertIn("`hosts` 3 枚で %d → 1,001 件 (全 1,001 件)" % self.first[1], out)
         self.assertRegex(out, r"\(続き \d+\.\d 秒。`/snapshot` 自体は \d+\.\d 秒\)")
@@ -683,7 +683,7 @@ class CollectFollowTest(unittest.TestCase):
         # 上限を越えなければ `--full` で別ファイルに落ちる `recent`・`hosts` は無い
         d, _, _ = self.run_collect(args=("--full",))
         self.assertFalse([n for n in os.listdir(d) if "-page" in n])
-        # `--full --no-follow` は T22.5 より前の `--full` (2 つとも別ファイル)
+        # `--full --no-follow` は T.22.5 より前の `--full` (2 つとも別ファイル)
         d, _, snap = self.run_collect(args=("--full", "--no-follow"))
         names = os.listdir(d)
         self.assertIn(self.STAMP + "-page2-recent.json", names)

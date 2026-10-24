@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # クレートの版の決まり (T21.6) を確かめるのに歴史とタグが要る
+          # クレートの版の決まり (T.21.6) を確かめるのに歴史とタグが要る
           fetch-depth: 0
       - name: Install Rust (stable)
         run: |
@@ -46,14 +46,14 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ env.RUSTC_VERSION }}-${{ hashFiles('**/Cargo.toml') }}
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # 文書とコードが同じ集合か (エンドポイント・環境変数・`/snapshot` の部・画面の関数・クレートの表。T14.56)
+      # 文書とコードが同じ集合か (エンドポイント・環境変数・`/snapshot` の部・画面の関数・クレートの表。T.14.56)
       - run: ./scripts/check-docs.sh
-      # scripts/ の道具の単体テスト (雪像の要約・判定・匿名化と、`scripts/mx` の test_mx.sh。T17.15)
+      # scripts/ の道具の単体テスト (雪像の要約・判定・匿名化と、`scripts/mx` の test_mx.sh。T.17.15)
       - run: python3 -m unittest discover -s scripts
-      # クレートの版の決まり (T26.3: 版 = デプロイの番号。全クレート = 本体 = proxy-server)。ずれていたら落とす
+      # クレートの版の決まり (T.26.3: 版 = デプロイの番号。全クレート = 本体 = proxy-server)。ずれていたら落とす
       # (中身が変わっただけでは落とさず、前回のデプロイから変えた数を印字する。タグの上では release.yml が版 = タグも見る)
       - run: python3 scripts/crate-versions.py --check
-      # scripts/ のシェルの静的検査 (T17.13)。設定 (切った指摘とその理由) は scripts/.shellcheckrc。
+      # scripts/ のシェルの静的検査 (T.17.13)。設定 (切った指摘とその理由) は scripts/.shellcheckrc。
       # runner の像に入っていればそれを使い、無ければ入れる (ubuntu-latest が 2026-10-19 に Ubuntu 26 へ移るため)
       - name: shellcheck
         run: |
@@ -87,7 +87,7 @@ jobs:
   # **これは毎回回す** (通るかどうかは push ごとに知りたい)。
   # 余裕がいくつあるか = 通る最小の上限は下の build-memory-find で測る。
   #
-  # **`ubuntu-24.04` に固定する** (T17.13): `ubuntu-latest` は 2026-10-19 に Ubuntu 26 へ移る。
+  # **`ubuntu-24.04` に固定する** (T.17.13): `ubuntu-latest` は 2026-10-19 に Ubuntu 26 へ移る。
   # 関門の数字 (120 MB) とその余裕は runner の像ごとに測ったものなので、像が変わると出どころが動く。
   # 移すときは build-memory-find を新しい像で回してから、ここと下を一緒に変える。
   #
@@ -108,13 +108,13 @@ jobs:
       - name: Build memory
         run: ./scripts/build-memory.sh 120
 
-  # デプロイ先に似せた条件で短く回し、`/snapshot` を成果物として残す (T14.30)。
+  # デプロイ先に似せた条件で短く回し、`/snapshot` を成果物として残す (T.14.30)。
   #
   # **見張るのは「形の退行」だけで、数字の絶対値は比べない** (CI の runner は世代も負荷も毎回違う。
   # §1 のレシピの数字は手元の機械でしか取れない)。落とすのは 3 つだけ:
-  #   1. `--only connect-multi` の p50 が 50 ms 以上 (= Happy Eyeballs の 250 ms が戻ってきた。T12.1)
-  #   2. `/snapshot` が 1 要求で取れない・JSON として読めない (T14.4)
-  #   3. `/status` の `ipv6.v4_first` か `/profile` の段階 (T14.3) が入っていない・全部 0
+  #   1. `--only connect-multi` の p50 が 50 ms 以上 (= Happy Eyeballs の 250 ms が戻ってきた。T.12.1)
+  #   2. `/snapshot` が 1 要求で取れない・JSON として読めない (T.14.4)
+  #   3. `/status` の `ipv6.v4_first` か `/profile` の段階 (T.14.3) が入っていない・全部 0
   #
   # **`check` とは並べて回す** (`needs:` を付けない) ので、CI の総時間はほとんど伸びない
   # (このジョブ自身は release ビルド + ベンチ 2 本 × 10 秒 + `/snapshot` で、手元では
@@ -159,7 +159,7 @@ jobs:
           fi
           echo "$ns"
           {
-            echo '### デプロイ先に似せた条件 (T14.30)'
+            echo '### デプロイ先に似せた条件 (T.14.30)'
             echo ''
             echo "- 名前空間: $ns"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -194,23 +194,23 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # ビルドが通る最小のメモリを CI の機械で実測する (T11.7)。
+  # ビルドが通る最小のメモリを CI の機械で実測する (T.11.7)。
   #
   # **なぜ push ごとに回さないか**: 上の `Build memory` が §0 の条件 (120 MB で通ること) を
   # 毎回確かめており、守りたいことはそれで足りている。ここで測るのは「余裕がいくつあるか」で、
   # コミット単位で追う必要は無い。段ごとに `cargo clean` からのビルドが 1 回要るので
   # (runner で 1 段 10〜16 秒、既定の 8 段で 2〜3 分)、刻むほど毎回の CI が延びる。
-  # 値は機械の状態で 1 MB 単位にぶれる (境目は薄い。手元では 85 MB が落ちて 90 MB が通る。T17.11) ので、
+  # 値は機械の状態で 1 MB 単位にぶれる (境目は薄い。手元では 85 MB が落ちて 90 MB が通る。T.17.11) ので、
   # これを push の関門にすると偽陽性で止まる。
   #
   # **なぜ手回し (workflow_dispatch) と週 1 (schedule) の両方か**: 手回しは
   # クレートを割った直後など「いま知りたい」ときのため (ladder も指定できる)。
-  # 週 1 は放っておくと値が古くなるため — 実際 T7.4 の 110 MB が Phase 8〜10 の間ずっと
-  # §1 に載ったままになり、T10.9 で取り下げる羽目になった。
+  # 週 1 は放っておくと値が古くなるため — 実際 T.7.4 の 110 MB が Phase 8〜10 の間ずっと
+  # §1 に載ったままになり、T.10.9 で取り下げる羽目になった。
   # なお schedule は既定ブランチでしか走らず、リポジトリが 60 日動かないと GitHub に止められる。
   build-memory-find:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    # 上の build-memory と同じ像に固定する (測った最小と関門が同じ機械の数字になるように。T17.13)
+    # 上の build-memory と同じ像に固定する (測った最小と関門が同じ機械の数字になるように。T.17.13)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -265,7 +265,7 @@ jobs:
           ./scripts/build-memory.sh --find $LADDER 2>&1 | tee find.txt
           rc=${PIPESTATUS[0]}
           set -e
-          # **数字を 1 行で残す** (T26.2)。ログを貼るだけだと「通った最小」と関門までの余裕を
+          # **数字を 1 行で残す** (T.26.2)。ログを貼るだけだと「通った最小」と関門までの余裕を
           # 毎回目で探すことになる。答えはスクリプトの印字 (`通る最小の上限: N MB`) から取り、
           # 取れなければ「測れず」と理由を書く (0 や空でごまかさない)
           min=$(sed -n 's/^通る最小の上限: \([0-9][0-9]*\) MB$/\1/p' find.txt | head -n 1)

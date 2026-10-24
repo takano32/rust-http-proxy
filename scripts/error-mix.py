@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# エラーを「使われ方」から切り離して数え直す (T23.0)。
+# エラーを「使われ方」から切り離して数え直す (T.23.0)。
 #
 # いまの判定表の「接続 1 本あたりのエラー」は分母が `connects` なので、宛先の生きた割合が
-# 変わると簡単に振れる (T22.99 の 7.80 倍は、接続元 1 本が死んだメールサーバーを総当たりした
+# 変わると簡単に振れる (T.22.99 の 7.80 倍は、接続元 1 本が死んだメールサーバーを総当たりした
 # だけで動いた)。雪像 1 枚から次の 4 つを並べる:
 #
 #   (1) いまの物差し = `history["3600"]` の `errors_by_cause` の合計 ÷ `connects` の合計。
@@ -10,7 +10,7 @@
 #   (2) 名前解決に成功した試行を分母にした率。`recent` の 1 行を 1 試行とし、
 #       `reason == "error:dns"` を分母から外す (`recent` は接続の個票なので、ここでの
 #       試行 = 接続の試行)。dns のミスは「試行あたり」と「名前解決に成功した試行あたり」の
-#       両方を出す (T23.1 は後者を dns の行に使う)。
+#       両方を出す (T.23.1 は後者を dns の行に使う)。
 #   (3) 接続元×宛先の連続した失敗を 1 件にまとめた率。間隔の閾は N = 60 / 300 秒の 2 通り。
 #       **間で成功したら別の一続き**にする (「連続した失敗」の意味のまま)。分母は (2) と同じ。
 #       接続の失敗 (refused + unreachable + timeout) と、dns を含む全失敗の 2 通りを出す。
@@ -34,11 +34,11 @@ import json
 import sys
 from datetime import datetime, timezone
 
-# `crates/metrics-types` の ERR_CAUSE_NAMES (errors_by_cause の並び)。T25.0 で後ろに
+# `crates/metrics-types` の ERR_CAUSE_NAMES (errors_by_cause の並び)。T.25.0 で後ろに
 # 2 つ (`dns` の内訳) が足されたが、ここは**8 つだけ**を読む: `total = sum(causes)` を
 # 使っているので、内訳まで足すと同じ失敗を 2 回数えることになる
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
-# 「接続の失敗」としてまとめる原因 (T23.1 が phase22 の行から差し替える 3 つ)
+# 「接続の失敗」としてまとめる原因 (T.23.1 が phase22 の行から差し替える 3 つ)
 CONNECT_CAUSES = ("refused", "unreachable", "timeout")
 # 連続した失敗を 1 件にまとめる間隔の閾 (秒)。2 通りを並べる
 MERGE_SECS = (60, 300)
@@ -334,7 +334,7 @@ def render(path, a, connects):
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        description="エラーを「使われ方」から切り離して数える (T23.0)")
+        description="エラーを「使われ方」から切り離して数える (T.23.0)")
     p.add_argument("snapshots", nargs="+")
     p.add_argument("--json", action="store_true", help="結果を JSON で出す")
     args = p.parse_args(argv)

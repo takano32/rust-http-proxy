@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/error-mix.py` (T23.0) の単体テスト。
+"""`scripts/error-mix.py` (T.23.0) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 

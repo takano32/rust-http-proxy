@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""クレートの版の決まりを数える・確かめる・上げる道具 (T21.1 で作り、T21.6 で決まりを置き換えた)。
+"""クレートの版の決まりを数える・確かめる・上げる道具 (T.21.1 で作り、T.21.6 で決まりを置き換えた)。
 
 決まり (2026-10-15、利用者の提案を親が細部まで決めた。README の「クレート構成」):
 
   (1) 各クレートの `version` は、**そのクレートの中身を最後に変えたタスクの番号** `0.<Phase>.<番号>`
-      (T21.3 → `0.21.3`、T17.11 → `0.17.11`。英字の付くタスク (T17.0a) は英字を落とす)。
-  (2) タスクの中で上げる: 取り込む前に `--task T21.3` を回すと、基準 (`--since REF`。既定は `main` との
+      (T.21.3 → `0.21.3`、T.17.11 → `0.17.11`。英字の付くタスク (T17.0a) は英字を落とす)。
+  (2) タスクの中で上げる: 取り込む前に `--task T.21.3` を回すと、基準 (`--since REF`。既定は `main` との
       分かれ目 = `git merge-base HEAD main`) から中身が変わったクレートの版を `0.21.3` にする。
   (3) 本体 (`rust-http-proxy`) と `proxy-server` は、そのビルドに入っている最後のタスク = 全クレートの版と、
       本体 (`src/`) を最後に変えたタスクの番号のうち最大。`proxy-server` は本体と同じ
@@ -47,8 +47,8 @@ import sys
 TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)$")
 # 決まり (a): `0.<Phase>.<番号>`
 VER_RE = re.compile(r"^0\.(\d+)\.(\d+)$")
-# タスクの番号 (`T21.3`、`T17.0a`。英字は落とす)
-TASK_RE = re.compile(r"^T(\d+)\.(\d+)[a-z]?$")
+# タスクの番号 (`T.21.3`、`T17.0a`。英字は落とす)
+TASK_RE = re.compile(r"^T\.(\d+)\.(\d+)[a-z]?$")
 # `[package]` の版の行 (`version = "0.20.0"`)。行の頭から書いてあるものだけを見る
 VERSION_LINE_RE = re.compile(r'^version\s*=\s*"([^"]*)"\s*$')
 SERVER = "proxy-server"
@@ -73,7 +73,7 @@ def ver_key(text):
 
 
 def task_version(tid):
-    """`T21.3` → `0.21.3` (英字は落とす)。形が違えば None。"""
+    """`T.21.3` → `0.21.3` (英字は落とす)。形が違えば None。"""
     m = TASK_RE.match(tid)
     return "0.%d.%d" % (int(m.group(1)), int(m.group(2))) if m else None
 
@@ -362,7 +362,7 @@ def bump_task(repo, tid, since):
     """
     new = task_version(tid)
     if new is None:
-        raise Error("タスクの番号は T<Phase>.<番号> の形で渡す (例: T21.3、T17.0a): %s" % tid)
+        raise Error("タスクの番号は T<Phase>.<番号> の形で渡す (例: T.21.3、T17.0a): %s" % tid)
     if since is None:
         base = git(repo.path, "merge-base", "HEAD", "main", check=False)
         if not base:
@@ -411,13 +411,13 @@ def print_list(repo, origins, bad):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="クレートの版の決まり (T21.6: 版 = 中身を最後に変えたタスクの番号)")
+    ap = argparse.ArgumentParser(description="クレートの版の決まり (T.21.6: 版 = 中身を最後に変えたタスクの番号)")
     ap.add_argument("-C", dest="repo", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
                     help="リポジトリ (既定はこのスクリプトの 1 つ上)")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--list", action="store_true")
     g.add_argument("--check", action="store_true")
-    g.add_argument("--task", metavar="TID", help="タスクの番号 (T21.3 など)")
+    g.add_argument("--task", metavar="TID", help="タスクの番号 (T.21.3 など)")
     ap.add_argument("--since", metavar="REF", help="--task の基準 (既定は git merge-base HEAD main)")
     a = ap.parse_args(argv)
     repo = None

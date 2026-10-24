@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/snapshot-diff.py` (T14.17) の単体テスト。
+"""`scripts/snapshot-diff.py` (T.14.17) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
     cd scripts && python3 -m unittest              # scripts の中から
@@ -7,8 +7,8 @@
 架空の雪像 2 枚 (`testdata/snapshot-a.json` / `snapshot-b.json`) は **手で計算できる値**で
 組んである (標本はバケツ 1 つに固め、`avg_ms` は差分が割り切れる数にしてある)。
 デプロイ先の実出力 (リポジトリの `status/`) があるときだけ回るテストが最後に 1 本あり、
-**T14.0 の表と同じ数字が出ること**を見る (実データはリポジトリに入れないので、無ければ飛ばす)。
-**判定表 (`--criteria`) のテストは `test_snapshot_criteria.py`** に割ってある (T21.2。この
+**T.14.0 の表と同じ数字が出ること**を見る (実データはリポジトリに入れないので、無ければ飛ばす)。
+**判定表 (`--criteria`) のテストは `test_snapshot_criteria.py`** に割ってある (T.21.2。この
 ファイルの小物 `sd` `build` `run` `written` … をそちらが取り込む)。
 """
 
@@ -141,7 +141,7 @@ class History(unittest.TestCase):
         self.assertAlmostEqual(aft["dns_ms_per_connect"], 0.55)
 
     def test_bursts_change_the_answer_so_they_are_kept_separate(self):
-        # T14.0 の「(参考) バースト込み」の行: ミス 1 回が 12.0 -> 31.2 ms に化ける
+        # T.14.0 の「(参考) バースト込み」の行: ミス 1 回が 12.0 -> 31.2 ms に化ける
         all_before = self.h["before_all"]
         self.assertEqual(all_before["connects"], 700)
         self.assertAlmostEqual(all_before["ms_per_miss"], 31.2)
@@ -167,7 +167,7 @@ class History(unittest.TestCase):
 
 
 class ServerSummary(unittest.TestCase):
-    """サーバー側の要約 (`/history?...&summary=1`。T14.24) を読む口。"""
+    """サーバー側の要約 (`/history?...&summary=1`。T.14.24) を読む口。"""
 
     def setUp(self):
         self.d = build()
@@ -264,7 +264,7 @@ class Hosts(unittest.TestCase):
         self.assertAlmostEqual(groups["AAAA 不明"]["avg_median"], 20.0)  # zeta (表に無い)
 
     def test_group_domain_folds_the_hosts_into_etld1(self):
-        """`--group domain` (T14.54)。`alpha` と `beta` と `zeta` が `example.jp` の 1 行。"""
+        """`--group domain` (T.14.54)。`alpha` と `beta` と `zeta` が `example.jp` の 1 行。"""
         d = build([A, B, "--aaaa", AAAA, "--group", "domain"])
         rows = {(r["name"], r["connect"]): r for r in d["hosts"]["rows"]}
         jp = rows[("example.jp", True)]
@@ -335,7 +335,7 @@ class Clients(unittest.TestCase):
         self.assertEqual(len(sd.client_diff(a, b)["new"]), 2)
 
     def test_the_since_start_columns_are_blank_for_a_client_last_seen_before_the_restart(self):
-        """T14.99: `distinct_targets` / `agent` は `.rrd` に残らない**起動からの**欄。
+        """T.14.99: `distinct_targets` / `agent` は `.rrd` に残らない**起動からの**欄。
 
         窓が再起動をまたぐと、再起動より前にしか居ない接続元は「Δ要求 200 なのに
         宛先の種類 0・User-Agent は前の起動のもの」になり、同じ行で時間軸が食い違う。
@@ -396,7 +396,7 @@ class EventsErrorsBursts(unittest.TestCase):
         self.assertIsNone(sd.events_between(a, a))
 
     def test_the_text_of_an_event_is_printed(self):
-        """T14.99: サーバーが出す鍵は `text` (`events.rs` の `Event::to_json`)。
+        """T.14.99: サーバーが出す鍵は `text` (`events.rs` の `Event::to_json`)。
 
         `what` / `msg` だけを読んでいたので §6 の「中身」が全行 `—` になっていた。
         """
@@ -434,7 +434,7 @@ class EventsErrorsBursts(unittest.TestCase):
         self.assertEqual(bu["active_max"], [210, 120])
 
     def test_the_shot_prints_the_active_at_the_moment_it_crossed(self):
-        """T14.99: 写真に `peak` という欄は無い (`active` / `threshold` / `max_conns`)。
+        """T.14.99: 写真に `peak` という欄は無い (`active` / `threshold` / `max_conns`)。
 
         `s.get('peak')` を読んでいたので §8 が「(山 —)」になっていた。写真は
         **閾を越えた瞬間**の 1 枚なので、山 (`active_max`) と混ぜない。
@@ -445,7 +445,7 @@ class EventsErrorsBursts(unittest.TestCase):
         self.assertIn("その時間帯の山は下の `active_max`", md)
 
     def test_the_byte_unit_matches_the_divisor(self):
-        """T14.99: 1,024 で割るなら KiB / MiB / GiB (画面の `fmtBytes` と同じ)。
+        """T.14.99: 1,024 で割るなら KiB / MiB / GiB (画面の `fmtBytes` と同じ)。
 
         `GB` / `MB` / `kB` と書いていたので、報告のバイト数が 2.4〜7.4% 小さい
         十進の量に読めていた (§4 の Δバイト は README / §2 に写す数字)。
@@ -482,7 +482,7 @@ def set_column(snap, res, name, value):
 
 
 class NewColumns(unittest.TestCase):
-    """T15.0 (10) で末尾に足した 8 列 (`HFIELDS` は名前で引く)。"""
+    """T.15.0 (10) で末尾に足した 8 列 (`HFIELDS` は名前で引く)。"""
 
     def test_the_wait_columns_are_aggregated_like_connect(self):
         h = build([A, B, "--no-dns"])["history"]
@@ -510,9 +510,9 @@ class NewColumns(unittest.TestCase):
 
 
 def with_warm_columns(snap, per_row):
-    """`/history?res=3600` の末尾に T16.0 の 3 列を足す (`per_row` は `t` → (max, sum, n))。
+    """`/history?res=3600` の末尾に T.16.0 の 3 列を足す (`per_row` は `t` → (max, sum, n))。
 
-    無い `t` の行は 0 (T16.0 より前に書かれた行と同じ形)。
+    無い `t` の行は 0 (T.16.0 より前に書かれた行と同じ形)。
     """
     h = snap["history"]["3600"]
     h["keys"] = h["keys"] + ["dns_warm_max", "dns_warm_sum", "gauge_n"]
@@ -524,7 +524,7 @@ def with_warm_columns(snap, per_row):
 
 
 class WarmMaxAndSums(unittest.TestCase):
-    """T16.0: `dns_warm` の最大と、平均を Σsum / Σn で出すこと (無い版は今の平均)。"""
+    """T.16.0: `dns_warm` の最大と、平均を Σsum / Σn で出すこと (無い版は今の平均)。"""
 
     def agg(self, per_row):
         b = with_warm_columns(read(B), per_row)
@@ -541,7 +541,7 @@ class WarmMaxAndSums(unittest.TestCase):
         self.assertEqual(after["dns_warm_max"], 31)
 
     def test_rows_without_the_sums_count_as_one_sample(self):
-        """T16.0 より前の行 (3 列が 0) は 1 行 = 1 本、最大は `dns_warm` を下限にする。"""
+        """T.16.0 より前の行 (3 列が 0) は 1 行 = 1 本、最大は `dns_warm` を下限にする。"""
         after = self.agg({1789048800: (27, 18864, 720)})
         self.assertAlmostEqual(after["dns_warm_avg"], (24 + 18864) / 721)
         self.assertEqual(after["dns_warm_max"], 27)
@@ -572,7 +572,7 @@ def with_recent(snap, connects=(), failed=0, others=0, oldest=None, truncated=Fa
 
 
 class RecentConnect(unittest.TestCase):
-    """差分の「2. 平常時の前後」に足した**成功した接続だけ**の確立時間 (T20.1 (3))。
+    """差分の「2. 平常時の前後」に足した**成功した接続だけ**の確立時間 (T.20.1 (3))。
 
     `/history` の確立の区間と `recent_quantiles.connect` には失敗した接続の時間も入るので、
     後の雪像の `/recent` から `reason` が `error` で始まらない CONNECT だけを読む。
@@ -730,7 +730,7 @@ class FromFiles(unittest.TestCase):
 
 
 class Schema(unittest.TestCase):
-    """応答の形の版 (`schema`。T14.49)。
+    """応答の形の版 (`schema`。T.14.49)。
 
     **版の無い古い出力 (版 0) が今までどおり読める**ことと、版 1 の出力を推測抜きで
     読めることの両方を見る (`testdata/snapshot-{a,b}.json` は版の無い形のまま置いてある)。
@@ -813,7 +813,7 @@ class Schema(unittest.TestCase):
                      os.path.isfile(os.path.join(DEPLOYED, "2026-09-16T0106Z-status")),
                      "デプロイ先の実出力が無い (リポジトリには入れない)")
 class Deployed(unittest.TestCase):
-    """T14.17 の受け入れ基準: 実出力から **T14.0 の表と同じ数字**が出ること。"""
+    """T.14.17 の受け入れ基準: 実出力から **T.14.0 の表と同じ数字**が出ること。"""
 
     def setUp(self):
         self.d = build(["--from-files", os.path.join(DEPLOYED, "2026-09-12T2018Z"),
@@ -840,7 +840,7 @@ class Deployed(unittest.TestCase):
 
     def test_the_major_three_hosts_and_their_miss_rates(self):
         # **宛先の名前と接続元の IP はここに書かない** (個人の閲覧先なのでリポジトリに入れない)。
-        # 数字だけで T14.0 の「主要 3 ホストのミス率」の行を守る
+        # 数字だけで T.14.0 の「主要 3 ホストのミス率」の行を守る
         majors = self.d["majors"]
         self.assertEqual(len(majors), 3)
         self.assertEqual(sorted(m["requests"] for m in majors), [489, 920, 2301])
@@ -867,7 +867,7 @@ class Deployed(unittest.TestCase):
 @unittest.skipUnless(os.path.isfile(os.path.join(DATA, "deployed-2026-09-16.anon.json")),
                      "匿名化した実データが無い")
 class Anonymized(unittest.TestCase):
-    """T14.35 の匿名化した実データ (`testdata/deployed-2026-09-16.anon.json`) で回る。
+    """T.14.35 の匿名化した実データ (`testdata/deployed-2026-09-16.anon.json`) で回る。
 
     上の `Deployed` は リポジトリの `status/` があるときだけ回るが、これは
     **リポジトリの中の実データ** (ホスト名と IP と UA だけを置き換えた雪像) なのでいつでも回る。
@@ -884,7 +884,7 @@ class Anonymized(unittest.TestCase):
         top = max(rows, key=lambda r: r["requests"])
         self.assertEqual((top["requests"], top["connect"]), (4427, True))
         self.assertRegex(top["name"], r"^host-\d{4}\.example$")
-        # `/history?res=3600` を起動時刻で切った平常時 = T14.0 の表の「あと」の列
+        # `/history?res=3600` を起動時刻で切った平常時 = T.14.0 の表の「あと」の列
         started = snap["taken_at"] - snap["uptime_secs"]
         hrows, bounds, _causes, interval = sd.merged_history(snap, snap, "3600")
         limit = max(1, round(sd.BURST_PER_HOUR * interval / 3600.0))
@@ -905,12 +905,12 @@ ANON_0926_PROFILE = os.path.join(DATA, "deployed-2026-09-26-profile_res_60.anon.
 @unittest.skipUnless(all(os.path.isfile(p) for p in (ANON_0926, ANON_0926_DAILY, ANON_0926_PROFILE)),
                      "匿名化した実データ (2026-09-26) が無い")
 class Anonymized0926(unittest.TestCase):
-    """T17.16 の匿名化した実データ (`testdata/deployed-2026-09-26.anon.json` と隣の 2 つ) で回る。
+    """T.17.16 の匿名化した実データ (`testdata/deployed-2026-09-26.anon.json` と隣の 2 つ) で回る。
 
-    `recent` / `profile` / `events` / `hosts_series` / T16.0 の 3 列のある版 (`0.1.0+2e57626`、起動から
+    `recent` / `profile` / `events` / `hosts_series` / T.16.0 の 3 列のある版 (`0.1.0+2e57626`、起動から
     47.2 時間)。「前」は 2026-09-16 の fixture (別に匿名化したので名前の番号は前後で合わない。判定表の
     行はどれも名前に依らない数か、名前で引くものは「判定できず」になる)。
-    **数字は T16.99 の `結果:` と同じ** (`Deployed17` が `status/` の生の雪像で見ているものを、匿名化の
+    **数字は T.16.99 の `結果:` と同じ** (`Deployed17` が `status/` の生の雪像で見ているものを、匿名化の
     あとでもリポジトリの中だけで見る)。
     """
 
@@ -925,7 +925,7 @@ class Anonymized0926(unittest.TestCase):
         for name in ("recent", "profile", "events", "hosts_series"):
             self.assertIn(name, snap["parts"])
             self.assertTrue(snap[name], name)
-        # T16.0 の 3 列 (履歴の `dns_warm` の和と最大)
+        # T.16.0 の 3 列 (履歴の `dns_warm` の和と最大)
         keys = snap["history"]["3600"]["keys"]
         self.assertEqual(keys[-3:], ["dns_warm_max", "dns_warm_sum", "gauge_n"])
 

@@ -1,11 +1,11 @@
 #!/bin/bash
-# デプロイ先 (Pterodactyl コンテナ) に似せた条件で <コマンド> を回す (T14.16)。
+# デプロイ先 (Pterodactyl コンテナ) に似せた条件で <コマンド> を回す (T.14.16)。
 #
 # 手元の loopback とデプロイ先の一番の違いは **IPv6 が黙って落ちること**で、
 # Phase 12 で見つけた 250 ms (Happy Eyeballs の Connection Attempt Delay = `STAGGER`) は
 # その条件でしか出ない。ベンチの `--only connect` は宛先が IP リテラルなので候補が 1 つ
 # (`crates/net-conn/src/net.rs` の `addrs.len() == 1` の短絡) になり、**Happy Eyeballs 本体を
-# 一度も通っていなかった** (T10.1 が「無罪」と結論した理由)。この 2 つを同時に埋めるのが
+# 一度も通っていなかった** (T.10.1 が「無罪」と結論した理由)。この 2 つを同時に埋めるのが
 # このスクリプトと `--only connect-multi` で、中で回せば手元で 250 ms が再現できる。
 #
 # 作るもの (root は要らない。ユーザー名前空間 = `unshare -r`):
@@ -39,7 +39,7 @@
 #   --memory SIZE   cgroup の MemoryMax (既定 256M。`off` / `0` で付けない)
 #   --nofile N      名前空間の中の `ulimit -n` (既定 1024)
 #   --hosts-from F  **個票 (`/recent` / `/snapshot` / `/connections` の JSON) に出てくる宛先の
-#                   ホスト名を全部 `127.0.0.1` に向ける** (T14.29 の `bench --only replay` 用。
+#                   ホスト名を全部 `127.0.0.1` に向ける** (T.14.29 の `bench --only replay` 用。
 #                   何度でも渡せる)。`"target":"host:port"` を拾い、名前 (IP リテラルでない
 #                   もの) だけを **A レコードとして**足す。**AAAA は足さない** — IPv6 の黒穴を
 #                   見るのは `multi.test` の役目で、再生に混ぜるとバーストの形ではなく
@@ -92,7 +92,7 @@ trap 'rm -rf "$work"' EXIT
 # (元の行を消さないので、localhost も自分のホスト名も今までどおり引ける)
 { cat /etc/hosts; printf '2001:db8::1 %s\n127.0.0.1 %s\n' "$MULTI_HOST" "$MULTI_HOST"; } >"$work/hosts"
 
-# --hosts-from: 個票に出てくる宛先の名前を全部 127.0.0.1 へ (T14.29 の再生用)。
+# --hosts-from: 個票に出てくる宛先の名前を全部 127.0.0.1 へ (T.14.29 の再生用)。
 # **A だけ**足す (AAAA を足すと再生が Happy Eyeballs の測定になってしまう)。
 REPLAY_NAMES=0
 for f in ${HOSTS_FROM[@]+"${HOSTS_FROM[@]}"}; do

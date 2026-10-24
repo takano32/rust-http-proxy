@@ -19,12 +19,12 @@
 #     curl -s http://host:port/status > b.json; scripts/status-diff.py a.json b.json
 #     scripts/status-diff.py <(curl -s 'http://host:port/status?sort=errors') --sort errors
 #
-# **`/snapshot` の JSON もそのまま読める** (T14.4)。中の `/hosts` の部分 (最大 1,000 ホスト) を
+# **`/snapshot` の JSON もそのまま読める** (T.14.4)。中の `/hosts` の部分 (最大 1,000 ホスト) を
 # 使うので、`scripts/collect-deployed.sh` が保存したファイルをそのまま 1 枚でも 2 枚でも渡せる:
 #     scripts/collect-deployed.sh tokyo.sorahost.net:60357        # 1 日 1 回取る
 #     scripts/status-diff.py status/*-snapshot.json   # 最初と最後で差分
 #
-# **`/hosts` の JSON もそのまま読める** (T13.4)。`/status` の `hosts[]` は要求数の上位 50 だけ
+# **`/hosts` の JSON もそのまま読める** (T.13.4)。`/status` の `hosts[]` は要求数の上位 50 だけ
 # なので、`.rrd` にある全ホスト (最大 1,000) を見たいときはこちら:
 #     scripts/status-diff.py <(curl -s 'http://host:port/hosts?limit=1000')
 #     curl -s 'http://host:port/hosts?limit=1000' > a.json; sleep 86400
@@ -33,7 +33,7 @@
 # 256 KiB に入りきらないと `"truncated": true` を付けて途中で切る (そのときは `--sort` か
 # `?limit=` で絞る)。切れていたらこのスクリプトが 1 行警告を出す。
 #
-# **`--group domain` は eTLD+1 でまとめる** (T14.54)。`/hosts` は `img.dlsite.jp` と
+# **`--group domain` は eTLD+1 でまとめる** (T.14.54)。`/hosts` は `img.dlsite.jp` と
 # `www.dlsite.jp` が別の行なので「dlsite 全体で何件か」が読めない。`--group domain` は
 # **同じ eTLD+1 のホストを 1 行にまとめる** (`img.dlsite.jp` + `www.dlsite.jp` -> `dlsite.jp`。
 # `www.dlsite.com` は eTLD+1 が違うので別の行)。3 ラベルの `co.jp` / `ne.jp` … は
@@ -42,7 +42,7 @@
 # **p50 / p95 は 2 つ以上まとまった行では出ない** (ホスト別の分位点は足せない)。
 #
 # **`--sort` は 1 枚のときだけ** (`/status?sort=errors|dns|slow` を取った JSON をそのまま読んで、
-# 同じ鍵で並べ、名前解決 / 確立の 1 回あたりとエラーの原因の列を足す。T13.3)。
+# 同じ鍵で並べ、名前解決 / 確立の 1 回あたりとエラーの原因の列を足す。T.13.3)。
 # **差分は要求数順の 2 枚でだけ取る**: `?sort=` が変えるのは「上位 50 をどの鍵で切り出すか」なので、
 # 鍵の違う 2 枚を引き算すると、入れ替わったホストの差が「新しく現れた」ように見えてしまう。
 #
@@ -60,7 +60,7 @@
 # `Δavg_ms` の右にこの誤差の上限を `±` で出すので、**桁で読める幅になるまで間隔をあける**こと
 # (デプロイ先は 0.012 req/s = 80 秒に 1 件なので、1 ホストで数十件貯めるには数時間から 1 日かかる)。
 #
-# **応答の形の版 (`schema`。T14.49)**: 新しいプロキシの応答は先頭に `"schema":1` を持ちます。
+# **応答の形の版 (`schema`。T.14.49)**: 新しいプロキシの応答は先頭に `"schema":1` を持ちます。
 # この道具は版で分岐しますが、**版の無い古い出力 (版 0) も今までどおり読めます**
 # (手元に残っている雪像はどれも版の無い形なので、読めなくなると過去の分析をやり直せない)。
 # 読んだ版は出力の先頭に `# <ファイル> の形の版 schema=N` として出ます。
@@ -71,7 +71,7 @@ import argparse
 import os
 import sys
 
-# 読む部分は `scripts/proxydata.py` に置いてある (`snapshot-diff.py` (T14.17) と共有。
+# 読む部分は `scripts/proxydata.py` に置いてある (`snapshot-diff.py` (T.14.17) と共有。
 # このファイルの隣なので、どこから呼んでも見つかるように 1 行だけ足す)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from proxydata import (  # noqa: E402
@@ -110,7 +110,7 @@ def print_table(title, rows, diff, aaaa_shown, detail=False, group=False):
         head += f" {'±':>7}"
     head += f" {'p50':>7} {'p95':>7} {'max':>7} {'bytes':>9} {'err':>4}"
     if detail:
-        # `--sort` のときだけ足す列 (待ちの内訳とエラーの原因。T13.3)
+        # `--sort` のときだけ足す列 (待ちの内訳とエラーの原因。T.13.3)
         head += f" {cell('dns/回', 7)} {cell('dns計', 8)} {cell('接続/回', 8)}  原因"
     print(head)
     for r in rows:
@@ -171,7 +171,7 @@ def main(argv=None):
     p.add_argument("--top", type=int, default=0, metavar="N", help="表に出すホスト数 (既定は全部)")
     p.add_argument("--group", choices=["host", "domain"], default="host", metavar="KEY",
                    help="行のまとめ方 (既定 host)。domain は eTLD+1 でまとめる "
-                        "(img.dlsite.jp と www.dlsite.jp が dlsite.jp の 1 行。T14.54)")
+                        "(img.dlsite.jp と www.dlsite.jp が dlsite.jp の 1 行。T.14.54)")
     p.add_argument("--sort", choices=["errors", "dns", "slow"], metavar="KEY",
                    help="1 枚のときの並びを errors|dns|slow にし、内訳の列を足す "
                         "(/status?sort= を取った JSON をそのまま読むため。差分は要求数順の 2 枚で取る)")
@@ -209,7 +209,7 @@ def main(argv=None):
 
     src = {"dns": "getaddrinfo", "file": args.aaaa, "none": "引かない"}[mode]
     print(f"# status-diff: {' -> '.join(args.files)}")
-    # 応答の形の版 (T14.49)。**版の無い古い出力は「版 0」** として今までどおり読む
+    # 応答の形の版 (T.14.49)。**版の無い古い出力は「版 0」** として今までどおり読む
     for name, snap in zip(args.files, snaps):
         v = schema_of(snap)
         print(f"# {name} の形の版 schema={v}"
@@ -217,7 +217,7 @@ def main(argv=None):
         warn_newer(snap, name, out=sys.stdout)
     for name, snap in zip(args.files, snaps):
         if snap.get("snapshot_taken_at"):
-            print(f"# {name} は /snapshot (T14.4) の中の /hosts を読んだ "
+            print(f"# {name} は /snapshot (T.14.4) の中の /hosts を読んだ "
                   f"(取得 {snap['snapshot_taken_at']}、ホスト {len(snap.get('hosts', []))} 件)")
     if diff:
         d_up = up(b) - up(a)
@@ -227,7 +227,7 @@ def main(argv=None):
     else:
         print(f"# {'通算':<4} uptime {up(a):,} 秒、total_requests {reqs(a):,} "
               f"(起動からの窓。hosts[] は .rrd の通算なので窓が違う)")
-    # `/hosts` は 256 KiB でバイト数打ち切りをするので、切れていたら言う (T13.4)
+    # `/hosts` は 256 KiB でバイト数打ち切りをするので、切れていたら言う (T.13.4)
     for name, snap in zip(args.files, snaps):
         if snap.get("truncated"):
             print(f"# **注意** {name} は途中で切れている "
@@ -236,7 +236,7 @@ def main(argv=None):
     print(f"# AAAA の判定: {src} / ホスト {len(names)}")
 
     shown = [r for r in rows if r["timed"] >= args.min_timed]
-    # 並べ替えの鍵は `/status?sort=` と同じ (同点は要求数 → 名前で崩す。T13.3)
+    # 並べ替えの鍵は `/status?sort=` と同じ (同点は要求数 → 名前で崩す。T.13.3)
     order = {
         "errors": lambda r: (-r["errors"], -r["dns_ms_sum"], -r["requests"], r["name"]),
         "dns": lambda r: (-r["dns_ms_sum"], -r["dns_misses"], -r["requests"], r["name"]),

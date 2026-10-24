@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # CONNECT のオリジン接続の締め切りを T 秒にしたら、**落とす成功が何本**・**待ちが何分/日 縮む**かを
-# 雪像の上で数える (T23.3 段 1)。
+# 雪像の上で数える (T.23.3 段 1)。
 #
 # 材料は雪像 1 枚の中の 2 つ:
 #   - `/recent` (閉じた接続の個票のリング。2,000 件で切れる) … **成功した CONNECT 1 本ずつの
@@ -11,7 +11,7 @@
 #     `errors_by_cause` の `timeout`。**状態ファイルから読み戻すので起動をまたいで残る** (10 日ほど)。
 #     窓は標本の数 × `interval_secs`。
 #
-# **`/history` の `connect_buckets` は成功だけとは限らない**: T20.4 より前の版は、繋がらなかった
+# **`/history` の `connect_buckets` は成功だけとは限らない**: T.20.4 より前の版は、繋がらなかった
 # 接続の「失敗するまでの時間」も同じ窓に入れていた (0.18.0 の nagoya の雪像がそう)。
 # 10 秒で切った `timeout` は一番上の区間 (5,000 ms 以上) に入るので、そこだけ `timeout` の本数を
 # 引いた値を「下限」に、引かない値を「上限」にする (T が区間の途中に落ちるときは、その区間を
@@ -34,19 +34,19 @@ import json
 import re
 import sys
 
-# 段 1 で比べる締め切り (TODO.md の T23.3)
+# 段 1 で比べる締め切り (TODO.md の T.23.3)
 DEFAULT_SECS = (3, 5, 10)
 # **雪像を撮ったときの**既定の締め切り (秒)。この道具は「その締め切りから T に下げたら」を数える。
-# T23.3 (2026-10-20) に 5 秒へ下げたので、それ以降の雪像は `--from 5` で数える
+# T.23.3 (2026-10-20) に 5 秒へ下げたので、それ以降の雪像は `--from 5` で数える
 # (ここを書き換えない。古い雪像を数え直したときに意味が変わらないようにするため)。
 DEFAULT_FROM_SECS = 10.0
-# T20.4 で、繋がらなかった接続は connect の窓 (`connects` / `connect_buckets`) に入らなくなった。
+# T.20.4 で、繋がらなかった接続は connect の窓 (`connects` / `connect_buckets`) に入らなくなった。
 # これより前の Phase の版の雪像は、失敗するまでの時間も区間に入っている (下限を出すときに timeout を引く)。
-# クレートの版は T21.6 まで `0.<Phase>.<番号>` で、T26.3 からはデプロイの番号 `0.<波>.<番>`。
-# どちらも 2 番目の数が「T20.4 より後か」を表す (0.20.0 以降は T20.4 を含む。デプロイの番号は前にしか進まない) ので、
+# クレートの版は T.21.6 まで `0.<Phase>.<番号>` で、T.26.3 からはデプロイの番号 `0.<波>.<番>`。
+# どちらも 2 番目の数が「T.20.4 より後か」を表す (0.20.0 以降は T.20.4 を含む。デプロイの番号は前にしか進まない) ので、
 # 2 番目の数だけで見る。古い雪像は撮ったときの版のまま残っている。
 FIRST_PHASE_WITHOUT_FAILURES = 20
-# 目安 (T23.3 の段 2 に進む条件): 落とす成功が 1 日 1 本未満
+# 目安 (T.23.3 の段 2 に進む条件): 落とす成功が 1 日 1 本未満
 MAX_DROPPED_PER_DAY = 1.0
 DAY = 86400.0
 
@@ -64,7 +64,7 @@ def part(snap, name, key):
 def failures_in_buckets(version):
     """この版の `connect_buckets` に、繋がらなかった接続も入っているか。
 
-    `True` = 入っている (T20.4 より前)、`False` = 成功だけ、`None` = 版が読めない。
+    `True` = 入っている (T.20.4 より前)、`False` = 成功だけ、`None` = 版が読めない。
     """
     m = VERSION_RE.match(version or "")
     if not m:
@@ -164,7 +164,7 @@ def bounds_of(bounds, j):
 def dropped_from_buckets(buckets, bounds, secs, timeouts, subtract):
     """確立に `secs` 秒より掛かった成功の本数を、区間から (下限, 上限) で出す。
 
-    `subtract` = 一番上の区間から `timeout` の本数を引く (T20.4 より前の版。10 秒で切った失敗が
+    `subtract` = 一番上の区間から `timeout` の本数を引く (T.20.4 より前の版。10 秒で切った失敗が
     そこに入っているため)。引いた方を下限、引かない方を上限にする。
     `secs` が区間の途中に落ちる (例: 2,500〜5,000 ms に 3,000 ms) ときは、その区間を丸ごと上限に足す。
     """
@@ -331,7 +331,7 @@ def main(argv=None):
                    help="use only the last H hours of /history (default: the whole window)")
     p.add_argument("--from", dest="ref", type=float, default=DEFAULT_FROM_SECS, metavar="S",
                    help="the deadline in force when the snapshot was taken, in seconds "
-                        "(default 10; use 5 for snapshots from T23.3 on)")
+                        "(default 10; use 5 for snapshots from T.23.3 on)")
     p.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
     secs = tuple(a.secs) or DEFAULT_SECS

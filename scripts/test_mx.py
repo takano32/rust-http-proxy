@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/mx` (機械のロック) のテストを unittest から回す (T17.15)。
+"""`scripts/mx` (機械のロック) のテストを unittest から回す (T.17.15)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
     cd scripts && python3 -m unittest              # scripts の中から
@@ -7,7 +7,7 @@
 本体は `scripts/test_mx.sh` (bash)。mx は `flock` / `setsid` / `pgrep` とプロセスグループで
 できているので、試験も bash で書き、ここでは `subprocess` で呼んで終了コードだけを見る。
 落ちたときは test_mx.sh の出力 (どの項目が NG か) をそのまま失敗の文面に載せる。
-項目 7 (起動の直後の TERM。T18.3) は別の 1 本にしてある (偽物のベンチを起動しないので、
+項目 7 (起動の直後の TERM。T.18.3) は別の 1 本にしてある (偽物のベンチを起動しないので、
 これだけを繰り返し回せる: `python3 -m unittest scripts/test_mx.py -k term`)。
 """
 

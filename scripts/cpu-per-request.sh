@@ -5,24 +5,24 @@
 # `/proc/<pid>/stat` の utime + stime の差をベンチの操作数で割る。
 # 主指標は **CPU/要求** で、スループットは律速がベンチ側に移るので補助でしかない。
 #
-# **どの経路も同じ条件で測る** (T10.11)。プロファイルは `--lite`、ログ水準は `warn`、
+# **どの経路も同じ条件で測る** (T.10.11)。プロファイルは `--lite`、ログ水準は `warn`、
 # キャッシュの ballast は off で揃える。§2 は「経路どうしを比べる表」なので、
 # 1 行だけ条件が違うと比べられない数字が並ぶ。以前は `--cacheable` (キャッシュ HIT) だけ
 # 「`PROXY_ARGS=""` = 既定プロファイル = ログ **info**」で回す手順になっていて、
-# HIT の行にだけアクセスログ 1 行 (T10.10 の実測で 7.1 us/要求) が乗っていた。
+# HIT の行にだけアクセスログ 1 行 (T.10.10 の実測で 7.1 us/要求) が乗っていた。
 # **キャッシュは `--cacheable` を渡せばこのスクリプトが自分で入れる** (`--lite` のまま
 # `PROXY_CACHE_ENABLED=on`)。条件は毎回 1 行目に印字するので、出力を見れば再現できる。
 #
-# **`--deployed-like` はデプロイ先に似せた条件で測る** (T14.16)。`scripts/deployed-like.sh` の中で
+# **`--deployed-like` はデプロイ先に似せた条件で測る** (T.14.16)。`scripts/deployed-like.sh` の中で
 # 自分自身をもう一度回すだけで、中身は上と同じ (`taskset` は名前空間の中でも効く)。
 # 違うのは **IPv6 が黙って落ちること**・`ulimit -n` 1024・cgroup 256 MiB・`/etc/hosts` に
 # `multi.test` (黒穴の AAAA + 生きている A) があることで、`--only connect-multi` はこの名前宛てに
 # CONNECT する。**この条件でしか Happy Eyeballs の 250 ms は出ない** (`--only connect` は宛先が
 # IP リテラルなので候補が 1 つになり、`crates/net-conn/src/net.rs` の短絡に入る)。
-# 終わる前に `/status` の `"ipv6"` を 1 回引いて印字する (T12.1 の記憶が効いたかはここで見る)。
+# 終わる前に `/status` の `"ipv6"` を 1 回引いて印字する (T.12.1 の記憶が効いたかはここで見る)。
 # §2 の表 (経路どうしを比べる表) はこの条件では測らない — 条件が 1 行だけ違う数字になる。
 #
-# **`--only tunnel` だけは既定の配置が違う** (プロキシ cpu4-5 / ベンチ cpu6-7。T10.8 で実測して決めた)。
+# **`--only tunnel` だけは既定の配置が違う** (プロキシ cpu4-5 / ベンチ cpu6-7。T.10.8 で実測して決めた)。
 # この経路のベンチは blaster (送る) と reader (受ける) の 2 スレッドがどちらも本気で回るので、
 # LITTLE に置くと**ベンチが先に頭打ちになってプロキシの実力が見えない** (実測 1.20 → 2.42 GiB/s)。
 # それでも律速はベンチ側のまま (プロキシは `splice` でコピー 0 回、ベンチは送り+受けでコピー 2 回)。
@@ -49,22 +49,22 @@
 #
 # **`--only idle-tunnels` / `--only idle-conns` で見るのはスレッド数と RSS** (CPU/op ではない)。
 # どちらも「確立 + 保持 + 終わりの一斉 close」の合計を本数で割った値になるので CPU は弱い指標
-# (T8.1)。読むのは `threads ... (max N, median M)` と `proxy peak RSS` と `parked max`。
+# (T.8.1)。読むのは `threads ... (max N, median M)` と `proxy peak RSS` と `parked max`。
 # `--only idle-conns` の握る秒数は **プロキシの `PROXY_KEEPALIVE_SECS` (既定 15 秒) より短く**
 # すること (越えると預かり所が期限切れで閉じる)。ベンチが最後に「まだ生きている本数」を出す。
 # 「預けない場合」(預ける前の姿) を測るには `PROXY_PARK_IDLE=off PROXY_MAX_THREADS=0` を足す。
-# **上限 (T10.5 の auto = 256) を外さないと止まる**: 預けないと 1 接続が 1 スレッドを握ったままなので、
+# **上限 (T.10.5 の auto = 256) を外さないと止まる**: 預けないと 1 接続が 1 スレッドを握ったままなので、
 # 257 本目からは待ち行列に入って応答が返らない。
 #
 # **変更の前後を比べるときの組数** (TODO.md §1 の「ぶれの扱い」):
 # 変更前と変更後のバイナリを `BIN=` で切り替えて**交互に**回し、中央値で比べる
 # (片方を続けて測ると、機械の状態の変化が差に化ける)。**ビルドとベンチの間には
-# 捨て走りを 1 本**入れる (ビルド直後の 1〜2 本は 15〜20% 重く出る。T10.11)。
-# 組数は **前後交互 3 組**。**ただし `--only connect` だけは 6 組**にすること (T13.4)。
+# 捨て走りを 1 本**入れる (ビルド直後の 1〜2 本は 15〜20% 重く出る。T.10.11)。
+# 組数は **前後交互 3 組**。**ただし `--only connect` だけは 6 組**にすること (T.13.4)。
 # この経路は カーネルの TIME_WAIT が律速で ops が ±25% 暴れるので、3 組では足りない
-# ことがある (T13.4 の実測: 同じ変更が **3 組で +5.6%、6 組に増やしたら +1.4%**)。
+# ことがある (T.13.4 の実測: 同じ変更が **3 組で +5.6%、6 組に増やしたら +1.4%**)。
 # 退避するバイナリは `rust-http-proxy` という名前のまま別ディレクトリに置くこと
-# (`mx` の待ちループも `strace` の停止も `pgrep -x rust-http-proxy` で見るため。T11.1)。
+# (`mx` の待ちループも `strace` の停止も `pgrep -x rust-http-proxy` で見るため。T.11.1)。
 #
 # 環境変数 (どれも「明示されたら上書き」。既定のままなら上の「同じ条件」で回る):
 #   PROXY_CPUS (既定 4-7、tunnel だけ 4-5) / BENCH_CPUS (既定 0-3、tunnel だけ 6-7) / PORT (既定 18080)
@@ -74,7 +74,7 @@
 #   PROXY_CACHE_ENABLED (--cacheable のときだけ既定 on) / PROXY_MEM_CACHE_MB / PROXY_DISK_CACHE_MB (既定 64)
 #   PROXY_CACHE_RESERVE (既定 off) / PROXY_CACHE_DIR (既定は使い捨ての作業ディレクトリの下)
 #     ← reserve を on のまま既定プロファイルを測ると、HOME (= mktemp -d = tmpfs) に GB 単位の
-#       ballast ができて RSS が跳ね、CPU/要求 が 62〜103 us の間で暴れる (T10.10 の落とし穴)
+#       ballast ができて RSS が跳ね、CPU/要求 が 62〜103 us の間で暴れる (T.10.10 の落とし穴)
 #   BIN / BENCH (既定 target/release/{rust-http-proxy,bench})
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -102,7 +102,7 @@ done
 [ $CONC_GIVEN -eq 1 ] || ARGS+=(--conc 8)
 [ $SECS_GIVEN -eq 1 ] || ARGS+=(--seconds 10)
 
-# `--deployed-like`: デプロイ先に似せた条件の中で自分自身をもう一度回す (T14.16)。
+# `--deployed-like`: デプロイ先に似せた条件の中で自分自身をもう一度回す (T.14.16)。
 # 中では RHP_DEPLOYED_LIKE=1 が立つので、入れ子にはならない。
 # 名前空間が作れない機械では `scripts/deployed-like.sh` が終了コード 2 で終わる。
 if [ $DEPLOYED_LIKE -eq 1 ] && [ "${RHP_DEPLOYED_LIKE:-0}" != 1 ]; then
@@ -119,7 +119,7 @@ else
   BENCH_CPUS=${BENCH_CPUS:-0-3}
 fi
 
-# 経路をまたいで揃える条件 (T10.11)。明示されていればそちらが勝つ。
+# 経路をまたいで揃える条件 (T.10.11)。明示されていればそちらが勝つ。
 export PROXY_LOG_LEVEL=${PROXY_LOG_LEVEL:-warn}
 export PROXY_CACHE_RESERVE=${PROXY_CACHE_RESERVE:-off}
 if [ $CACHEABLE -eq 1 ]; then
@@ -196,7 +196,7 @@ out=$(cat "$work/bench.out")
 read -r real buser bsys <"$work/bench.time"
 read -r u1 s1 < <(awk '{print $14, $15}' "/proc/$pid/stat")
 # Happy Eyeballs の記憶が効いたかは `/status` の "ipv6" でしか見えないので、
-# デプロイ先に似せた条件と名前宛ての CONNECT では終わる前に 1 回だけ引く (T14.16)。
+# デプロイ先に似せた条件と名前宛ての CONNECT では終わる前に 1 回だけ引く (T.14.16)。
 ipv6=""
 if [ "$ONLY" = connect-multi ] || [ "${RHP_DEPLOYED_LIKE:-0}" = 1 ]; then
   ipv6=$( { exec 3<>"/dev/tcp/127.0.0.1/$PORT" &&

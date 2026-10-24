@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # 「繋がらなかった宛先を N 秒覚えて、その間の同じ宛先への要求は繋ぎに行かずに 502 を返す」
-# 規則を雪像 1 枚の上で回し、**早く断れた件数と縮む待ち**、**誤って断ったはずの件数**を数える (T22.3 段 1)。
+# 規則を雪像 1 枚の上で回し、**早く断れた件数と縮む待ち**、**誤って断ったはずの件数**を数える (T.22.3 段 1)。
 #
 # 材料は雪像 (`/snapshot`) 1 枚:
 #   - `/log` の `502 Bad Gateway: connect <host:port> failed: <理由>` の行 … 失敗 1 回ずつの時刻
-#     (`/errors` の 1 行は同じ失敗をまとめたもの (T20.3) で間の時刻が無いので、時刻はこちらから取る。
+#     (`/errors` の 1 行は同じ失敗をまとめたもの (T.20.3) で間の時刻が無いので、時刻はこちらから取る。
 #     CONNECT (`crates/tunnel`) も forward (`crates/http`) も同じ文面で書く)
 #   - `/errors` の `cause`・`dns_ms`・`connect_ms`・`repeats` … 1 回の失敗で待たせた時間と、行の数の突き合わせ
 #   - `/recent` (閉じた接続の個票) … 成功の時刻 (秒まで)。256 KiB で切れているので窓は短い
@@ -41,11 +41,11 @@ import json
 import re
 import sys
 
-# 段 1 の N の既定 (TODO.md の T22.3)
+# 段 1 の N の既定 (TODO.md の T.22.3)
 DEFAULT_SECS = (30, 60, 300)
 # 覚える原因 (`crates/metrics-types` の `ERR_CAUSE_NAMES` の綴り)
 CAUSES = ("timeout", "refused", "unreachable")
-# 目安 (T22.3): (b) が 0、かつ (a) で縮む待ちが 1 日 5 分以上
+# 目安 (T.22.3): (b) が 0、かつ (a) で縮む待ちが 1 日 5 分以上
 TARGET_SAVED_SECS_PER_DAY = 300.0
 
 LOG_RE = re.compile(r"^502 Bad Gateway: connect (\S+) failed: (.*)$")

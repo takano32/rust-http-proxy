@@ -1,21 +1,21 @@
 #!/bin/bash
-# CI で「デプロイ先に似せた条件」を短く回し、`/snapshot` を成果物として残す (TODO.md T14.30)。
+# CI で「デプロイ先に似せた条件」を短く回し、`/snapshot` を成果物として残す (TODO.md T.14.30)。
 #
 # §1 のレシピの数字は手元の機械でしか取れない (CI の runner は世代も負荷も毎回違う) ので、
 # **ここで見張るのは「形の退行」だけ**で、数字の絶対値は比べない:
 #
 #   1. `--only connect-multi` の **p50 が `CI_SNAPSHOT_P50_MAX_MS` (既定 50) ms 以上なら落とす**。
 #      Happy Eyeballs の Connection Attempt Delay (250 ms) をまた毎回払い始めていないか、の 1 点だけを見る
-#      (T12.1 の学習が効いていれば p50 は 1 ms 台。効かなくなると 250 ms 台に跳ねる)
-#   2. `/snapshot` (T14.4) が 1 要求で取れて JSON として読めること
-#   3. その中に `/status` の `ipv6.v4_first` (T12.1) と `/profile` の段階 (T14.3) が入っていること
+#      (T.12.1 の学習が効いていれば p50 は 1 ms 台。効かなくなると 250 ms 台に跳ねる)
+#   2. `/snapshot` (T.14.4) が 1 要求で取れて JSON として読めること
+#   3. その中に `/status` の `ipv6.v4_first` (T.12.1) と `/profile` の段階 (T.14.3) が入っていること
 #      (段階は「名前が並んでいる」だけでなく、CONNECT と forward の窓に**数字が入っている**ことまで見る)
 #
 # 取れた `/snapshot` はそのまま CI の成果物 (artifact) にする。**落ちたときこそ中身が要る**ので、
 # ワークフロー側の upload は `if: always()` にしてある (`.github/workflows/ci.yml`)。
 #
 # **回す場所**: `scripts/deployed-like.sh` の中 (= lo だけのネット名前空間 + IPv6 の既定経路が `dev lo`
-# + `/etc/hosts` に `multi.test` + `ulimit -n 1024` + cgroup 256 MiB。T14.16)。**名前空間が作れない機械では
+# + `/etc/hosts` に `multi.test` + `ulimit -n 1024` + cgroup 256 MiB。T.14.16)。**名前空間が作れない機械では
 # IPv6 の黒穴だけ諦めて残りを回す** (`ipv6_blackhole: false` と印字し、`--only connect-multi` の代わりに
 # IP リテラル宛ての `--only connect` を回す。名前が引けないと `connect-multi` は終了コード 2 で終わるため)。
 #
@@ -31,7 +31,7 @@
 # 環境変数:
 #   CI_SNAPSHOT_P50_MAX_MS (既定 50)  … これ以上なら**落ちる**。0.001 などに下げると閾の判定を確かめられる
 #   CI_SNAPSHOT_SECONDS    (既定 10)  … ベンチ 1 本の秒数 (connect-multi と forward の 2 本を回す)
-#   CI_SNAPSHOT_CONC       (既定 8)   … ベンチの並列数。**3 以上**にすること (`v4_first` が立つ条件。T14.16)
+#   CI_SNAPSHOT_CONC       (既定 8)   … ベンチの並列数。**3 以上**にすること (`v4_first` が立つ条件。T.14.16)
 #   CI_SNAPSHOT_NO_NS      (既定 0)   … 1 で名前空間を使わない (上の分岐を手元で試すため)
 #   OUT (既定 snapshot.json) / PORT (既定 18080) / BIN / BENCH / PROXY_ARGS (既定 空 = 既定プロファイル)
 #     ← **`--lite` では回さないこと**。`--lite` は個票も履歴もプロファイルも取らないので `/snapshot` が空になる
@@ -101,7 +101,7 @@ else
   ONLY=connect
   LABEL=connect
 fi
-[ "$CONC" -ge 3 ] || echo "ci-snapshot: --conc は 3 以上にしてください (v4_first が立ちません。T14.16)"
+[ "$CONC" -ge 3 ] || echo "ci-snapshot: --conc は 3 以上にしてください (v4_first が立ちません。T.14.16)"
 
 work=$(mktemp -d)
 pid=
@@ -128,7 +128,7 @@ fi
 # **`PROXY_STATS_PERSIST` は既定 (on) のまま**にすること: off にすると `crates/run/src/lib.rs` が
 # **履歴スレッドごと起動しない**ので `/history` も `/bursts` も空になり、雪像の値打ちが半分になる
 # (実測: off で `history.5` の標本が 0 本、`/history?summary=1` が全部 0)。状態ファイル
-# (`.rust-http-proxy.rrd` 4 MiB と `.rust-http-proxy.recent` 4 MiB。T14.9) は `HOME` を
+# (`.rust-http-proxy.rrd` 4 MiB と `.rust-http-proxy.recent` 4 MiB。T.14.9) は `HOME` を
 # 使い捨てのディレクトリにしてあるのでそこに作られ、終わりに消える
 limit=$((SECS * 2 + 120))
 echo "ci-snapshot: proxy ${PROXY_ARGS:-(default profile)} port $PORT | bench --only $ONLY / forward" \
@@ -157,7 +157,7 @@ run_bench forward "$work/forward.txt" || { echo "ci-snapshot: bench --only forwa
 # --- `/snapshot` を取る (成果物になるのはこれ) ----------------------------------------------------
 code=$(curl -sS --max-time 60 -o "$OUT" -w '%{http_code}' "http://127.0.0.1:$PORT/snapshot" 2>/dev/null)
 [ "$code" = 200 ] || { echo "ci-snapshot: /snapshot が $code で返りました"; exit 1; }
-# **プロキシ自身から見た**同じ 20 秒 (T14.24 の 1 行の要約)。ベンチ (利用者側) の p50 と突き合わせるためで、
+# **プロキシ自身から見た**同じ 20 秒 (T.14.24 の 1 行の要約)。ベンチ (利用者側) の p50 と突き合わせるためで、
 # 判定には使わない (入っていない版もあるので、取れなければ黙って飛ばす)
 curl -sS --max-time 30 -o "$work/summary.json" \
   "http://127.0.0.1:$PORT/history?since=restart&summary=1" >/dev/null 2>&1 || :
@@ -173,7 +173,7 @@ echo "ci-snapshot: ipv6_blackhole: $BLACKHOLE"
 printf 'ci-snapshot: %s p50 %s ms (閾 %s ms) / forward p50 %s ms\n' "$ONLY" "$p50" "$P50_MAX" "${fp50:-?}"
 if awk -v v="$p50" -v m="$P50_MAX" 'BEGIN { exit !(v + 0 >= m + 0) }'; then
   echo "ci-snapshot: **退行**: $ONLY の p50 が $p50 ms (閾 $P50_MAX ms 以上)。Happy Eyeballs の 250 ms" \
-    "(TODO.md T12.1) をまた払っていないか、snapshot.json の /status の ipv6 と /profile の dns / connect を見てください"
+    "(TODO.md T.12.1) をまた払っていないか、snapshot.json の /status の ipv6 と /profile の dns / connect を見てください"
   fail=1
 fi
 
@@ -206,7 +206,7 @@ print(
     )
 )
 
-# (1) `/status` の `ipv6.v4_first` (T12.1 の学習が効いたか)
+# (1) `/status` の `ipv6.v4_first` (T.12.1 の学習が効いたか)
 status = snap.get("status")
 if not isinstance(status, dict):
     bad.append("/status が入っていない")
@@ -221,10 +221,10 @@ else:
         if isinstance(v, (int, float, str)):
             print("ci-snapshot: /status %s: %s" % (key, v))
 
-# (2) `/profile` の段階 (T14.3)。窓に数字が入っているところまで見る
+# (2) `/profile` の段階 (T.14.3)。窓に数字が入っているところまで見る
 prof = snap.get("profile")
 if prof is None:
-    bad.append("/profile が /snapshot に入っていない (T14.4 の parts に profile が要る)")
+    bad.append("/profile が /snapshot に入っていない (T.14.4 の parts に profile が要る)")
 elif prof.get("profile") == "off":
     print("ci-snapshot: /profile は off (--lite。段階の確認は飛ばします)")
 else:
@@ -266,7 +266,7 @@ else:
                     % (kind, len(samples))
                 )
 
-# (3) プロキシ自身から見た同じ 20 秒 (T14.24)。判定はしない — ベンチの p50 と桁が合っているかを
+# (3) プロキシ自身から見た同じ 20 秒 (T.14.24)。判定はしない — ベンチの p50 と桁が合っているかを
 #     人が見比べるための 1 行 (見ている場所が違う: ベンチは利用者側、こちらはプロキシ側)
 try:
     with open(sys.argv[2], encoding="utf-8") as f:
@@ -299,7 +299,7 @@ for line in bad:
     print("ci-snapshot: **退行**: %s" % line)
 sys.exit(1 if bad else 0)
 PY
-# `HOME` に作られた状態ファイル (`.rrd` 4 MiB と T14.9 の `.recent` 4 MiB) を 1 行で残す。
+# `HOME` に作られた状態ファイル (`.rrd` 4 MiB と T.14.9 の `.recent` 4 MiB) を 1 行で残す。
 # 使い捨てのディレクトリなので、このあとの後片づけで消える (CI の runner に何も残さない)
 state=$(cd "$work" && du -h .rust-http-proxy* 2>/dev/null | tr '\n\t' '  ')
 [ -z "$state" ] || echo "ci-snapshot: HOME の状態ファイル (終わりに消します): $state"

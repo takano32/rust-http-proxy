@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/connect-fail-replay.py` (T22.3 段 1) の単体テスト。
+"""`scripts/connect-fail-replay.py` (T.22.3 段 1) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 

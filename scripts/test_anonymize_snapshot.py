@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""`scripts/anonymize-snapshot.py` (T14.35) の単体テスト。
+"""`scripts/anonymize-snapshot.py` (T.14.35) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
     cd scripts && python3 -m unittest              # scripts の中から
 
 架空の雪像 (下の `sample()`) で「**名前と IP と UA だけが変わり、数字は 1 つも変わらない**」
 「同じ入力からは同じ出力」を見る。あわせて、**コミットしてある匿名化済みの実データ**
-(`testdata/deployed-2026-09-16.anon.json` と T17.16 の `deployed-2026-09-26.anon.json`) に元の名前が残っていないことも見る
+(`testdata/deployed-2026-09-16.anon.json` と T.17.16 の `deployed-2026-09-26.anon.json`) に元の名前が残っていないことも見る
 (実データそのものはリポジトリに入れないので、突き合わせは作った人が 1 回やる。ここでは
 「匿名化済みの形になっているか」だけを見る)。
 """
@@ -24,7 +24,7 @@ from contextlib import redirect_stderr
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "testdata")
 FIXTURE = os.path.join(DATA, "deployed-2026-09-16.anon.json")
-# T17.16 の 2 枚目 (`recent` / `profile` / `events` / `hosts_series` のある版) と、隣の口 2 つ
+# T.17.16 の 2 枚目 (`recent` / `profile` / `events` / `hosts_series` のある版) と、隣の口 2 つ
 FIXTURE_0926 = os.path.join(DATA, "deployed-2026-09-26.anon.json")
 FIXTURE_0926_SIDES = tuple(os.path.join(DATA, "deployed-2026-09-26-{}.anon.json".format(n))
                            for n in ("daily", "profile_res_60"))
@@ -91,7 +91,7 @@ def sample():
                 "at": 1789520760,
                 "cgroup_cpu": {
                     "nr_throttled": 41282, "nr_periods": 41905, "quota_cores": 1.0,
-                    # コンテナを 1 つに特定できる道 (T15.0 (6))
+                    # コンテナを 1 つに特定できる道 (T.15.0 (6))
                     "path": "/sys/fs/cgroup/system.slice/pterodactyl-6f2c.scope/cpu.stat",
                 },
             },
@@ -200,7 +200,7 @@ class Hosts(unittest.TestCase):
         out = anonymized()
         got = [h["host"] for h in out["status"]["hosts"]]
         # `gNNNN` は**まとめの単位 (eTLD+1)** の番号。この 2 つはどちらも
-        # `example.net` なので同じ単位に落ちる (T14.54)
+        # `example.net` なので同じ単位に落ちる (T.14.54)
         self.assertEqual(got[0], "connect://host-0001.g0001.example:443")
         self.assertEqual(got[1], "http://host-0002.g0001.example:80")
 
@@ -255,7 +255,7 @@ class Addresses(unittest.TestCase):
         self.assertEqual(anonymized()["clients"]["clients"][0]["agents"], ["ua-01", "ua-02"])
 
     def test_the_single_agent_of_the_current_version_is_replaced_too(self):
-        """いまの版の接続元の行は `agent` (単数、最後に見た 1 つ) も出す (T17.16)。"""
+        """いまの版の接続元の行は `agent` (単数、最後に見た 1 つ) も出す (T.17.16)。"""
         snap = sample()
         row = snap["clients"]["clients"][0]
         row["agent"] = row["agents"][1]
@@ -267,7 +267,7 @@ class Addresses(unittest.TestCase):
 
 
 class Grouping(unittest.TestCase):
-    """**まとめの粒度が残る** (T14.54)。匿名化しても `--group domain` が同じ形にまとまる。"""
+    """**まとめの粒度が残る** (T.14.54)。匿名化しても `--group domain` が同じ形にまとまる。"""
 
     def test_the_same_etld1_lands_in_the_same_unit(self):
         snap = {"parts": ["hosts"], "hosts": {"hosts": [
@@ -312,7 +312,7 @@ class Text(unittest.TestCase):
         self.assertEqual(text, "blocked host-0005.g0003.example (2)")
 
     def test_the_agent_of_a_new_client_event_is_replaced(self):
-        """`new_client:` の説明の終わりの UA (T17.16)。一覧と同じ表で、切られた UA も残さない。"""
+        """`new_client:` の説明の終わりの UA (T.17.16)。一覧と同じ表で、切られた UA も残さない。"""
         snap = sample()
         snap["events"]["events"] += [
             {"at": 1789520704, "kind": "anomaly",
@@ -340,7 +340,7 @@ class Text(unittest.TestCase):
         self.assertEqual(anonymized()["version"], "0.1.0+abcdef1")
 
     def test_the_cgroup_path_is_flattened(self):
-        """`kernel.cgroup_cpu.path` はコンテナを特定できるので深さだけ残す (T15.0 (6))。"""
+        """`kernel.cgroup_cpu.path` はコンテナを特定できるので深さだけ残す (T.15.0 (6))。"""
         cpu = anonymized()["status"]["kernel"]["cgroup_cpu"]
         self.assertEqual(cpu["path"], "/sys/fs/cgroup/…/…/cpu.stat")
         self.assertNotIn("pterodactyl", json.dumps(anonymized(), ensure_ascii=False))
@@ -379,7 +379,7 @@ class Numbers(unittest.TestCase):
         changed = [a for (ka, a), (kb, b) in pairs if a != b]
         kept = [a for (ka, a), (kb, b) in pairs if a == b]
         # 置き換わるのは 25 か所 (宛先 7・接続元 6・答えの IP 3・UA 2・canary 1・文 3 ほか、
-        # それに cgroup の道 1 = T15.0 (6))
+        # それに cgroup の道 1 = T.15.0 (6))
         self.assertEqual(len(changed), 25)
         self.assertIn("ok", kept)          # `/status` の `status`
         self.assertIn("connect", kept)     # 種類
@@ -405,7 +405,7 @@ class Deterministic(unittest.TestCase):
         self.assertNotEqual(got[0], got[1])
 
     def test_the_old_names_without_a_group_are_left_alone(self):
-        # T14.35 の最初の版が作った fixture (`host-0001.example`) を通しても変わらない
+        # T.14.35 の最初の版が作った fixture (`host-0001.example`) を通しても変わらない
         snap = sample()
         snap["status"]["hosts"][1]["host"] = "connect://host-0009.example:443"
         got = an.Anonymizer().run(snap)["status"]["hosts"][1]["host"]
@@ -465,7 +465,7 @@ class Bundle(unittest.TestCase):
         self.assertEqual(snap["taken_at"], 1789018620)
 
     def test_the_anonymized_outputs_next_to_the_bundle_are_not_inputs(self):
-        """`collect-deployed.sh` が隣に置いた `.anon.json` は束の入力に混ぜない (T17.16)。"""
+        """`collect-deployed.sh` が隣に置いた `.anon.json` は束の入力に混ぜない (T.17.16)。"""
         with tempfile.TemporaryDirectory() as tmp:
             files = self.files(tmp)
             anon = os.path.join(tmp, "2026-09-16T0106Z-snapshot.anon.json")
@@ -477,7 +477,7 @@ class Bundle(unittest.TestCase):
 
 
 class Side(unittest.TestCase):
-    """`--side`: 雪像に入らない口を**雪像と同じ表で**置き換える (T17.16)。"""
+    """`--side`: 雪像に入らない口を**雪像と同じ表で**置き換える (T.17.16)。"""
 
     def run_main(self, tmp, sides, side_bodies):
         snap_path = os.path.join(tmp, "2026-09-26T114602Z-snapshot.json")
@@ -578,10 +578,10 @@ class FixtureNames:
 
 @unittest.skipUnless(os.path.isfile(FIXTURE), "匿名化した実データが無い")
 class Fixture(FixtureNames, unittest.TestCase):
-    """T14.35 の 1 枚目 (2026-09-16)。"""
+    """T.14.35 の 1 枚目 (2026-09-16)。"""
 
     def test_the_numbers_of_2026_09_16_are_still_there(self):
-        # T14.0 / T14.17 が読んだ数字 (匿名化で 1 つも変えていないこと)
+        # T.14.0 / T.14.17 が読んだ数字 (匿名化で 1 つも変えていないこと)
         st = self.snap["status"]
         self.assertEqual(self.snap["taken_at"], 1789520760)
         self.assertEqual(st["uptime_secs"], 261833)
@@ -599,7 +599,7 @@ class Fixture(FixtureNames, unittest.TestCase):
 @unittest.skipUnless(all(os.path.isfile(p) for p in (FIXTURE_0926,) + FIXTURE_0926_SIDES),
                      "匿名化した実データ (2026-09-26) が無い")
 class Fixture0926(FixtureNames, unittest.TestCase):
-    """T17.16 の 2 枚目。上の 2 つ (宛先・接続元・答え・UA の欄) に加えて、**欄の外**も見る。
+    """T.17.16 の 2 枚目。上の 2 つ (宛先・接続元・答え・UA の欄) に加えて、**欄の外**も見る。
 
     生の雪像はリポジトリに無いので「元の値が 0 件」の突き合わせは作った人が 1 回やった
     (報告に手順を書いた)。ここでは、置き換え忘れがあれば必ず残る形 (文書用でない IP、
@@ -658,7 +658,7 @@ class Fixture0926(FixtureNames, unittest.TestCase):
         self.assertLess(total, 4 << 20)
 
     def test_the_numbers_of_2026_09_26_are_still_there(self):
-        # T16.99 が読んだ数字 (匿名化で 1 つも変えていないこと)
+        # T.16.99 が読んだ数字 (匿名化で 1 つも変えていないこと)
         self.assertEqual((self.snap["version"], self.snap["uptime_secs"]),
                          ("0.1.0+2e57626", 169783))
         self.assertEqual(len(self.snap["parts"]), 17)
@@ -669,7 +669,7 @@ class Fixture0926(FixtureNames, unittest.TestCase):
 @unittest.skipUnless(os.path.isfile(os.path.join(DATA, "snapshot-local.json")),
                      "手元の `/snapshot` の作り置きが無い")
 class WholeSnapshot(unittest.TestCase):
-    """**いまの `/snapshot` の全部の部**を通す (T14.8 の `snapshot-local.json`)。
+    """**いまの `/snapshot` の全部の部**を通す (T.14.8 の `snapshot-local.json`)。
 
     部が増えたときに「置き換え忘れた欄」があればここで気づく (新しい欄にホスト名が入ったら、
     `HOST_KEYS` に足す)。中身は手元のベンチのものなので、値そのものは見ない。

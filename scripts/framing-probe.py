@@ -9,7 +9,7 @@
 終わったら自分が起こした PID だけを止める。判定は「期待する状態コード」との
 突き合わせで、1 つでも外れたら exit 1。
 
-この表は 2026-10-23 に 0.26.0 で見つけた穴 (T27.0 〜 T27.2) を固定するためのもの。
+この表は 2026-10-23 に 0.26.0 で見つけた穴 (T.27.0 〜 T.27.2) を固定するためのもの。
 `Content-Length` の重複不一致・21 桁・カンマ・負、`Host` 2 本、obs-fold は
 どれも「オリジンへ素通し」だった。直ったあとは全部 400 になる。
 """
@@ -48,7 +48,7 @@ def cases(origin_port):
 
 
 def connect_cases(echo_port):
-    """CONNECT の入口 (T27.0)。`http` の経路を通らないので、同じ検査が効いているかを見る。"""
+    """CONNECT の入口 (T.27.0)。`http` の経路を通らないので、同じ検査が効いているかを見る。"""
     authority = b"127.0.0.1:%d" % echo_port
     head = b"CONNECT " + authority + b" HTTP/1.1\r\n"
     return [
@@ -180,7 +180,7 @@ def main(argv=None):
                 % (name, got if got is not None else "(無応答)", want, shown or "-", "" if ok else "   ← ちがう")
             )
 
-        # CONNECT は `http` の経路を通らないので別に見る (T27.0)
+        # CONNECT は `http` の経路を通らないので別に見る (T.27.0)
         print("")
         print("%-28s %-8s %-8s %s" % ("CONNECT", "状態", "期待", "トンネル先が受け取ったバイト"))
         for name, raw, want, may_reach in connect_cases(args.port + 2):

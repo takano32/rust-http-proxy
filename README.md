@@ -33,7 +33,7 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 `taskset` で固定し、`--lite` + `PROXY_LOG_LEVEL=warn`、応答本文 1 KiB、10 秒 × 3 回以上の中央値
 (「CONNECT トンネル 1 本」だけプロキシ cpu4-5 / ベンチ cpu6-7)。**この機械は固定の仕方で結果が最大 2 倍動く**ので、
 比べるときは必ず同じ固定の仕方で測ってください。数字は 2026-09-08 の実測で、`TODO.md` の §2 と同じものです
-(出典: T10.11 / T11.4)。括弧の **(NN%)** は**プロキシが使った 1 コアぶんの割合** (割り当ては 4 コア = 400%)。
+(出典: T.10.11 / T.11.4)。括弧の **(NN%)** は**プロキシが使った 1 コアぶんの割合** (割り当ては 4 コア = 400%)。
 これが 100% に遠い行は**プロキシが律速していない** = その req/s はプロキシの上限ではありません。
 
 | 項目 | `release` (`cargo build --release`) | `dist` (配布用) |
@@ -116,23 +116,23 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 **道具はどれも `scripts/` に置いてあり、この README が `scripts/<名前>.py` と書いているものは実行ビット付き**
 なので、そのまま `scripts/snapshot-diff.py a.json b.json` と打てます (`proxydata.py` は共通部品、
 `snapshot_criteria.py` は `snapshot-diff.py` の判定の部、`test_*.py` は unittest が名前で読むものなので
-実行ビットは付けません)。**この区別は `scripts/check-docs.sh` の (f) が毎回見ます** (T24.7)。
+実行ビットは付けません)。**この区別は `scripts/check-docs.sh` の (f) が毎回見ます** (T.24.7)。
 
-**要求の枠組み (`Content-Length` / `Host` / 折り返し) を実機で流すなら `scripts/framing-probe.py`** (T27.3)。
+**要求の枠組み (`Content-Length` / `Host` / 折り返し) を実機で流すなら `scripts/framing-probe.py`** (T.27.3)。
 `python3 scripts/framing-probe.py ./target/release/rust-http-proxy` で、オリジンとプロキシを自分で起こして
 10 通り (正常・CL の重複同値/不一致・21 桁・カンマ・負・数字でない・`Host` 2 本・obs-fold の空白/タブ) を流し、
 状態コードと**オリジンが受け取ったヘッダー**を並べます。1 つでも期待と違えば exit 1 なので、直したことの
 確かめと、次の退行の見張りに使えます。
 
-**1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T14.4)。`/snapshot` を
+**1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T.14.4)。`/snapshot` を
 `DIR/<UTC 時刻>-snapshot.json` (既定はリポジトリの `status/`。`.gitignore` 済み) に保存し、要点
 (`scripts/snapshot-summary.py`)・ホスト別 (`status-diff.py`。**前回の雪像があれば差分**)・
 ダッシュボードの読み方 (`check-dashboard.js`)・手元から見た待ち (`probe-deployed.sh`) を
 続けて回して **Markdown 1 枚**を標準出力に出します (同じものを雪像の隣の `<時刻>-collect.md` にも残し、
 雪像に入らない `/daily` `/healthz` `/slo` `/config` `/profile?res=60` も `<時刻>-<口>.json` で隣に置きます。
 `/profile?res=60` は 1 枚 (256 KiB) だと 24 時間のうち約 5 時間しか入らないので、`--full` が無くても `next_offset` が `null` になるまで `offset=` で追い、`samples` を 1 つに繋いで `truncated` を `false` にしたものを置きます。枚数の上限は `MAX_PAGES`。
-**雪像の `recent` と `hosts` も、256 KiB で切れていれば既定で `offset=` で追い、雪像の同じ部に行を足して置き直します** (T22.5。形は `/snapshot` のままなので、下の道具はどれもそのまま全部を読みます。2026-10-17 の tokyo では 1 枚に `recent` 2,000 件中 576 件 (33 分ぶん)・`hosts` 1,001 件中 574 件しか入りませんでした)。上限は部ごとに `MAX_PAGES` 枚と、続きを引く時間の合計 `FOLLOW_SECS` (既定 60 秒) で、越えたら止めて要約にそう書きます (`truncated` と `next_offset` は残りを指したまま)。`FULL=0` か `--no-follow` で前のとおり追いません。
-さらに、下の `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた**匿名化した写し** `<時刻>-snapshot.anon.json` と、同じ表で通した `<時刻>-daily.anon.json` `<時刻>-profile_res_60.anon.json` も隣に置きます (T17.16。`ANON=0` で置きません)。テストへ持ち込むときはこの写しを `scripts/testdata/` へ移します)。`status-diff.py` は `/snapshot` の JSON を
+**雪像の `recent` と `hosts` も、256 KiB で切れていれば既定で `offset=` で追い、雪像の同じ部に行を足して置き直します** (T.22.5。形は `/snapshot` のままなので、下の道具はどれもそのまま全部を読みます。2026-10-17 の tokyo では 1 枚に `recent` 2,000 件中 576 件 (33 分ぶん)・`hosts` 1,001 件中 574 件しか入りませんでした)。上限は部ごとに `MAX_PAGES` 枚と、続きを引く時間の合計 `FOLLOW_SECS` (既定 60 秒) で、越えたら止めて要約にそう書きます (`truncated` と `next_offset` は残りを指したまま)。`FULL=0` か `--no-follow` で前のとおり追いません。
+さらに、下の `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた**匿名化した写し** `<時刻>-snapshot.anon.json` と、同じ表で通した `<時刻>-daily.anon.json` `<時刻>-profile_res_60.anon.json` も隣に置きます (T.17.16。`ANON=0` で置きません)。テストへ持ち込むときはこの写しを `scripts/testdata/` へ移します)。`status-diff.py` は `/snapshot` の JSON を
 そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
 
 ```bash
@@ -140,7 +140,7 @@ scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo > today.md   #
 PROBE=0 scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server tokyo.sorahost.net:60357 status/tokyo  # 回し忘れた日を取り寄せる
 scripts/collect-deployed.sh --full tokyo.sorahost.net:60357 status/tokyo       # 切れた部の続きも `offset=` で追う
-scripts/collect-deployed.sh --no-follow tokyo.sorahost.net:60357 status/tokyo  # 切れた `recent`・`hosts` を追わない (T22.5 より前の既定)
+scripts/collect-deployed.sh --no-follow tokyo.sorahost.net:60357 status/tokyo  # 切れた `recent`・`hosts` を追わない (T.22.5 より前の既定)
 scripts/status-diff.py status/*-snapshot.json    # 最初と最後で差分
 scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまとめる
 ```
@@ -152,10 +152,10 @@ scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまと
 (中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` も
 `weekly-report.py` もそのまま読めます)。
 
-要点 (`snapshot-summary.py`) の**頭には「無言の再起動」の 1 行**が付きます (T23.2): `/events` の `start` の直前が `shutdown` でない起動 (落とされたか、止め方が違う) を時刻・前の起動の長さ・版つきで数え、0 件なら「0 件 (直前が `shutdown` の起動 N 件)」、`/events` の部が無い雪像では「判定できず」と書きます
-(2026-10-20 の tokyo は 2026-10-17 22:14:52Z の 1 回で、前の起動は 19.2 時間。10-15 の雪像は 0 件)。同じ判定は `--criteria phase23` の判定表にも 1 行で入ります (行を足すのは T23.1。判定の関数は要点と同じ `scripts/snapshot_criteria.py` の `silent_restarts()`)。
+要点 (`snapshot-summary.py`) の**頭には「無言の再起動」の 1 行**が付きます (T.23.2): `/events` の `start` の直前が `shutdown` でない起動 (落とされたか、止め方が違う) を時刻・前の起動の長さ・版つきで数え、0 件なら「0 件 (直前が `shutdown` の起動 N 件)」、`/events` の部が無い雪像では「判定できず」と書きます
+(2026-10-20 の tokyo は 2026-10-17 22:14:52Z の 1 回で、前の起動は 19.2 時間。10-15 の雪像は 0 件)。同じ判定は `--criteria phase23` の判定表にも 1 行で入ります (行を足すのは T.23.1。判定の関数は要点と同じ `scripts/snapshot_criteria.py` の `silent_restarts()`)。
 
-要点 (`snapshot-summary.py`) の最後には 2 つの表が付きます (T17.0c): **`/events` の anomaly を種類別に「起動からの件/時」**
+要点 (`snapshot-summary.py`) の最後には 2 つの表が付きます (T.17.0c): **`/events` の anomaly を種類別に「起動からの件/時」**
 (`cleared:` は数えず、状態ファイルから読み戻した起動より前の出来事は外します) と、**接続元の見張り** — 新しく現れた接続元
 (`--prev` があれば前の `/clients` に居ないもの、無ければ `first_seen` が起動より後)・IP リテラル宛ての要求・443 / 80 以外への
 CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)・`/events` の `new_client`・**`/readers` に居て `/clients` に居ない
@@ -164,7 +164,7 @@ CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)�
 
 保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
 
-**エラーを「使われ方」から切り離して数え直すには `scripts/error-mix.py SNAP.json …`** (T23.0)。
+**エラーを「使われ方」から切り離して数え直すには `scripts/error-mix.py SNAP.json …`** (T.23.0)。
 雪像の `recent` を 1 行 = 1 試行として、(1) いまの物差し (`history["3600"]` の `errors_by_cause` の合計 ÷ `connects`)、
 (2) 名前解決に成功した試行を分母にした率 (`reason == "error:dns"` を分母から外す)、(3) 接続元×宛先の
 連続した失敗を 1 件にまとめた率 (間隔の閾 N = 60 / 300 秒。間で成功したら別の一続き)、(4) 宛先ごとの
@@ -172,16 +172,16 @@ CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)�
 件数、`errors` の `count`/`kept`) を添えます。`recent` は 2,000 件の環状なので窓は 1 日より短いことがあり
 (2026-10-20 の雪像では 7.9 時間)、部が無い雪像は「判定できず」と書いて 0 とは書きません。
 
-**2 枚の雪像から「何が変わったか」を全部読むのは `scripts/snapshot-diff.py A B`** (T14.17)。
+**2 枚の雪像から「何が変わったか」を全部読むのは `scripts/snapshot-diff.py A B`** (T.14.17)。
 再起動をまたいでいるかを `uptime_secs` と `version` で見て、**`/history` をその再起動時刻で切り**、
 **バーストの無い時間帯 (1 時間 300 本未満の標本) どうし**で CONNECT 確立の p50 / p95 と
 名前解決のミス率を並べます (**`--criteria phase22` のときだけ**、前と後で別々に「300 本と、その期間の
-1 時間の本数の中央値の 3 倍の大きい方」以上をバーストとします。T22.1) (`/status` の通算は再起動で 0 に戻るので、そのまま引き算すると
+1 時間の本数の中央値の 3 倍の大きい方」以上をバーストとします。T.22.1) (`/status` の通算は再起動で 0 に戻るので、そのまま引き算すると
 「いつからの値か」が混ざります)。続けてホスト別・接続元別 (**新しく現れた接続元**)・
 名前解決の warm と引き直し・出来事・エラーの原因別・バーストを出し、`--criteria phase14` を
 足すと**完了の定義に対する判定表** (満たした / 届かず / 判定できず) が最後に付きます。
 出力は Markdown なので `TODO.md` にそのまま貼れます。
-**`0.18.0` までの版は、`/history` の確立の区間 (と `/status` の `recent_quantiles.connect`) に、繋がらずに 502 を返した接続の「失敗するまでの時間」も入っています**。黒穴の宛先を繰り返し叩く端末が居ると p95 がその時間になります (2026-10-08 の雪像は p95 2,066 ms)。**T20.4 からは、エラーで終わった 1 件は確立 / 初バイト / `wait` の区間にも直近の標本にも入りません** (`connects` は繋がった本数。失敗は `errors` / `errors_by_cause` / `/errors` / ホスト別の行に残ります。「API」の `/history` の説明)。前後の雪像が T20.4 をまたぐと `connects` と確立の分位点の数え方が違うので、その 1 回は下の「成功した接続だけ」の行で比べてください。「平常時の前後」の表には後の雪像の `/recent` から**成功した接続だけ**の確立時間 (本数・p50・p95。同じ雪像で 398 本・7 / 66 ms) も 1 行並べ、後の期間のエラーが接続の 5% を超えるときは表の下で断ります (T20.1。`--criteria` が phase14 / phase15 / phase17 / phase18 のときは出しません — この 4 つの出力は過去の判定を出し直せるように変えない決まりです)。判定の部は `scripts/snapshot_criteria.py` に割ってあります (入口は `snapshot-diff.py` のまま。そのテストは `scripts/test_snapshot_criteria.py`)。
+**`0.18.0` までの版は、`/history` の確立の区間 (と `/status` の `recent_quantiles.connect`) に、繋がらずに 502 を返した接続の「失敗するまでの時間」も入っています**。黒穴の宛先を繰り返し叩く端末が居ると p95 がその時間になります (2026-10-08 の雪像は p95 2,066 ms)。**T.20.4 からは、エラーで終わった 1 件は確立 / 初バイト / `wait` の区間にも直近の標本にも入りません** (`connects` は繋がった本数。失敗は `errors` / `errors_by_cause` / `/errors` / ホスト別の行に残ります。「API」の `/history` の説明)。前後の雪像が T.20.4 をまたぐと `connects` と確立の分位点の数え方が違うので、その 1 回は下の「成功した接続だけ」の行で比べてください。「平常時の前後」の表には後の雪像の `/recent` から**成功した接続だけ**の確立時間 (本数・p50・p95。同じ雪像で 398 本・7 / 66 ms) も 1 行並べ、後の期間のエラーが接続の 5% を超えるときは表の下で断ります (T.20.1。`--criteria` が phase14 / phase15 / phase17 / phase18 のときは出しません — この 4 つの出力は過去の判定を出し直せるように変えない決まりです)。判定の部は `scripts/snapshot_criteria.py` に割ってあります (入口は `snapshot-diff.py` のまま。そのテストは `scripts/test_snapshot_criteria.py`)。
 
 ```bash
 scripts/snapshot-diff.py status/2026-09-1{2,6}*-snapshot.json --criteria phase14
@@ -202,23 +202,23 @@ scripts/snapshot-diff.py a.json b.json --criteria phase17 --daily b-daily.json \
 scripts/snapshot-diff.py a.json b.json --criteria phase18 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase20 (T20.1) は phase18 と同じ並びの 10 行で、材料も同じ。物差しを 2 つ直してある:
+# phase20 (T.20.1) は phase18 と同じ並びの 10 行で、材料も同じ。物差しを 2 つ直してある:
 # `heap_used + mmap` の増えは `cache_memory` (メモリのキャッシュ。上限まで使ってよい) を引いてから比べ、
 # `discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行は「表示だけ」(閾を置かず、集計に数えない)
 scripts/snapshot-diff.py a.json b.json --criteria phase20 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase21 (T21.2) は phase20 と同じ並びの 10 行で、材料も同じ。T20.99 で届かなかった 3 行の読み方を直してある:
+# phase21 (T.21.2) は phase20 と同じ並びの 10 行で、材料も同じ。T.20.99 で届かなかった 3 行の読み方を直してある:
 # 平常時のミスは「表示だけ」(日ごとの幅と `misses_by_kind` の `cold` / `expired` … の内訳を並べる)、
 # conn 役の CPU/要求 は前か後の `/profile` が 12 時間 (`res=60` で 720 標本) に満たなければ「参考」(集計に数えない)、
 # `ipv6.request_probes` は最後に探ったのが `--zero` の取得から 3 時間以内なら「満たした」(起動直後は canary が IPv6 をまだ見ていない)
 scripts/snapshot-diff.py a.json b.json --criteria phase21 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase22 (T22.1) は phase21 の 10 行 + 22a の 4 行で、材料も同じ。足した 4 行は
-# `dns_slow` が窓のミスの合計 1,000 ms 未満の窓で立った件数 (0 で満たした。新しい閾 = 合計 1,000 ms 以上 (T22.2) での件/時は表示だけ)、
+# phase22 (T.22.1) は phase21 の 10 行 + 22a の 4 行で、材料も同じ。足した 4 行は
+# `dns_slow` が窓のミスの合計 1,000 ms 未満の窓で立った件数 (0 で満たした。新しい閾 = 合計 1,000 ms 以上 (T.22.2) での件/時は表示だけ)、
 # keep-warm の既定を戻す 2 つの条件 (`stale_retries` が `stale_hits` の 1% 以上・`refused`/`unreachable`/`timeout` の
-# **接続 1 本あたり**が前の 1.5 倍以上で「届かず」。件/時は表示だけ。T22.4)、T22.4 の目安 (引き直しの回/時が前の半分以下・
+# **接続 1 本あたり**が前の 1.5 倍以上で「届かず」。件/時は表示だけ。T.22.4)、T.22.4 の目安 (引き直しの回/時が前の半分以下・
 # `expired` + `warm_stale` の増えが 1 日 10 回以内)。phase21 の `/events` の行 (`dns_slow` ≤ 0.1 件/時) は phase22 では表示だけ
 # (件/時の閾は使われ方で落ちるので、`dns_slow` の判定は上の行に任せる)。
 # 裏の引き直しの行は warm 0 (keep-warm を止めた既定) だと warm の平均で割れないので、理由と通算の 1 時間あたりを並べる。
@@ -228,7 +228,7 @@ scripts/snapshot-diff.py a.json b.json --criteria phase21 --daily b-daily.json \
 scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase23 (T23.1) は phase22 の 14 行を土台に、エラーの行の**分母**と heap の行の書き方だけを直した 16 行。
+# phase23 (T.23.1) は phase22 の 14 行を土台に、エラーの行の**分母**と heap の行の書き方だけを直した 16 行。
 # 接続のエラー (`refused`・`unreachable`・`timeout`) は `/recent` の connect の 1 行を 1 試行とし、
 # **名前解決に失敗した行 (`error:dns`) を分母から外した**「名前解決に成功した試行あたり」で見る
 # (前の期間の 1.5 倍以上なら「届かず」。件/時と、分母が `connects` だった phase22 の行は表示だけ)。
@@ -237,19 +237,19 @@ scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
 # (死んだ名前の総当たりという使われ方の数字なので表示だけ)。heap の行は、`--zero` の雪像と起動が
 # 違うときに `/events` の `start` の時刻を添える (黙って「判定できず」にしない。2026-10-17 22:14:52Z の
 # 無言の再起動がこれで読める)。最後の行は無言の再起動 (`/events` の `start` の直前に `shutdown` が無い起動)
-# が 0 回 (T23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は phase24)
+# が 0 回 (T.23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は phase24)
 scripts/snapshot-diff.py a.json b.json --criteria phase23 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase24 (T24.2) は phase23 の 16 行をそのまま持ち越し、**2 行だけ読み方を変えた**もの:
+# phase24 (T.24.2) は phase23 の 16 行をそのまま持ち越し、**2 行だけ読み方を変えた**もの:
 # heap の行は、`/status` の `memory.baseline` (状態ファイルに**起動から 60 秒で 1 回だけ**書く
-# `heap_used + mmap − cache_memory`。T24.4) があれば**それとの差**で読む (`--zero` の 0 時間の雪像は要らない。
+# `heap_used + mmap − cache_memory`。T.24.4) があれば**それとの差**で読む (`--zero` の 0 時間の雪像は要らない。
 # ホストの管理者に起動し直されても、起動ごとの基準なので判定できる)。`baseline` が無い雪像は phase23 と同じ
 # 0 時間の雪像との差に戻り、どちらも無ければ「判定できず」。最後の行は**こちらが原因の**無言の再起動
 # (同じ `boot` のまま起動し直した回) が 0 回で、`boot` が変わった回 (ホストのカーネルごとの再起動。
 # 2026-10-21 の 2 回) は時刻つきで理由を書き、**数から外す**。
-# 17 番目 (T24.3) は、確立の**尾**を固定の 6 ms ではなく**そのときのホストの RTT + 5 ms**で読む
-# (T14.99 の決まり)。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を**同じ行で対にした**
+# 17 番目 (T.24.3) は、確立の**尾**を固定の 6 ms ではなく**そのときのホストの RTT + 5 ms**で読む
+# (T.14.99 の決まり)。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を**同じ行で対にした**
 # 差の中央値 (プロキシの取り分) と p95 (尾) を出し、尾が 5 ms 未満なら「距離」(相手までの RTT で
 # 説明できる)。**`/recent` は 2,000 件の環状なので、窓と本数が実測の欄に出る**。`rtt_ms.origin` の
 # 無い雪像 (Linux 以外・`--lite`) は「判定できず」。`collect-deployed.sh` の既定は phase24
@@ -261,7 +261,7 @@ scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
                          --from-files status/2026-09-16T0106Z
 ```
 
-**`--group domain` は「dlsite 全体で何件か」を読むためのまとめ方です** (T14.54)。`/hosts` は
+**`--group domain` は「dlsite 全体で何件か」を読むためのまとめ方です** (T.14.54)。`/hosts` は
 `img.dlsite.jp` と `www.dlsite.jp` を別の行で持つので、相手ごとの合計が読めません。
 `--group domain` は **eTLD+1 が同じホスト同士を 1 行にまとめます** (`img.dlsite.jp` +
 `www.dlsite.jp` → `dlsite.jp`。`www.dlsite.com` は eTLD+1 が違うので**別の行**です)。
@@ -283,10 +283,10 @@ scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
 (`CRITERIA=off` で止められます。判定表の相手は `BEFORE=<雪像>` で、0 時間の雪像は `ZERO=<雪像>` で渡せます。下の「運用」の 4)。道具の単体テストは `python3 -m unittest discover -s scripts`
 (架空の雪像 `scripts/testdata/snapshot-a.json` / `snapshot-b.json` と、下の匿名化した実データで回ります)。
 
-**1 週間ぶんをまとめて読むのは `scripts/weekly-report.py`** (T14.40)。`snapshot-diff.py` が
+**1 週間ぶんをまとめて読むのは `scripts/weekly-report.py`** (T.14.40)。`snapshot-diff.py` が
 「2 枚の間に何が変わったか」を見るのに対して、こちらは**溜まった雪像を日で切って 1 週間を 1 枚**にします。
 入力は雪像の置き場 (`status/`) でも、`*-snapshot.json` を並べても、
-`/daily` (T14.20) の JSON でも、`$HOME/.rust-http-proxy.daily.jsonl` そのものでも構いません
+`/daily` (T.14.20) の JSON でも、`$HOME/.rust-http-proxy.daily.jsonl` そのものでも構いません
 (混ぜてよい。**7 日ぶん無ければあるぶんで**出して、何枚・何日ぶんだったかを頭に書きます)。
 出るのは表 8 つ — **要求数 / CONNECT 確立 p50・p95 / 名前解決のミス率 / エラー (原因別) / 山 /
 接続元の出入り / 遅かったホスト上位 / 新しく見たホスト**:
@@ -304,10 +304,10 @@ scripts/weekly-report.py status/ --out json    # 表の元の辞書をそのま�
 日ごとの表には出どころ (`/history?res=3600` か `/daily`) が入ります。
 `/hosts` と `/clients` は `.rrd` の通算なので**いちばん古い雪像といちばん新しい雪像の差**で読み、
 雪像が 1 枚しか無いときは「引き算できない」と断って通算のまま並べます。
-「山」は `/bursts` (T14.6) があれば写真の枚数と最大、無ければ `/history` の `active_max` で代えます。
+「山」は `/bursts` (T.14.6) があれば写真の枚数と最大、無ければ `/history` の `active_max` で代えます。
 出力は「デプロイ先の現在地」を締める文書と、次のタスクの入力にするためのものです。
 
-**実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T14.35)。雪像には
+**実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T.14.35)。雪像には
 個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.g0007.example`)・
 **接続元 IP** (`198.51.100.x`)・**名前解決の答え** (`203.0.113.x`)・**`User-Agent`** (`ua-01`。`agents` の一覧も、
 いまの版の `agent` (単数) も、`/events` の `new_client:` の説明の終わりの `agent "…"` も同じ表)・
@@ -315,7 +315,7 @@ scripts/weekly-report.py status/ --out json    # 表の元の辞書をそのま�
 置き換えは**決定的** (同じ入力からは同じ出力) なので、**匿名化したあとの 2 枚でそのまま差分が取れます**。
 ホスト名の `gNNNN` は**まとめの単位 (eTLD+1) の番号**で、`img.dlsite.jp` と `www.dlsite.jp` は
 同じ番号 (= 匿名化後も同じ eTLD+1 `gNNNN.example`) に落ちます。**上の `--group domain` の粒度が
-匿名化したあとも読める**ようにするためです (T14.54)。古い形 (`host-0001.example`) の
+匿名化したあとも読める**ようにするためです (T.14.54)。古い形 (`host-0001.example`) の
 匿名化済みファイルはそのまま通ります (2 回かけても名前は変わりません)。
 **数字は 1 つも変わりません** (件数・ms・区間・閉じた理由・時刻・`version`・`path`)。`connect://` の
 scheme と port、表の上限を越えた分の行 (`other`) はそのままです。
@@ -326,7 +326,7 @@ scripts/anonymize-snapshot.py status/2026-09-16T0106Z-snapshot.json \
 # `/snapshot` より前の形 (1 本ずつ取ったファイル群) からも組めます (`-metrics` 等は飛ばします)
 scripts/anonymize-snapshot.py status/2026-09-16T0106Z-* -o anon.json
 scripts/snapshot-diff.py old.anon.json new.anon.json      # 匿名化したあとでも差分は取れる
-# 雪像に入らない口 (`/daily` `/profile?res=60`) も雪像と同じ表で (既定の出力は隣の `<名前>.anon.json`。T17.16)
+# 雪像に入らない口 (`/daily` `/profile?res=60`) も雪像と同じ表で (既定の出力は隣の `<名前>.anon.json`。T.17.16)
 scripts/anonymize-snapshot.py status/2026-09-26T114602Z-snapshot.json -o new.anon.json \
     --side status/2026-09-26T114602Z-daily.json --side status/2026-09-26T114602Z-profile_res_60.json=p60.anon.json
 ```
@@ -334,13 +334,13 @@ scripts/anonymize-snapshot.py status/2026-09-26T114602Z-snapshot.json -o new.ano
 同梱の `scripts/testdata/deployed-2026-09-16.anon.json` (778 KiB) がその出力で、**デプロイ先の
 2026-09-16 の雪像そのまま**です (ホスト 817 件・名前解決 90 件・`res=60` は 1,440 標本)。
 `node scripts/check-dashboard.js` と `python3 -m unittest discover -s scripts` がこれを読み、
-`/history?res=3600` を起動時刻で切った平常時から **T14.0 の表と同じ数字** (名前解決 0.55 回/接続、
+`/history?res=3600` を起動時刻で切った平常時から **T.14.0 の表と同じ数字** (名前解決 0.55 回/接続、
 CONNECT 確立 p50 8.3 / p95 80.7 ms、ミス 1 回 11.5 ms) が出ることを見ています。
 2 枚目の `scripts/testdata/deployed-2026-09-26.anon.json` (2.3 MiB。隣に `-daily.anon.json` と `-profile_res_60.anon.json`) は
 **2026-09-26 の雪像** (版 `0.1.0+2e57626`、起動から 47.2 時間) で、2026-09-16 の版に無かった `recent` / `profile` / `events` /
-`hosts_series` と T16.0 の 3 列が入っています。2026-09-16 → 2026-09-26 で `--criteria phase15` / `phase17` の判定表が出て、
-T16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 0、`dns_slow` 0.61 件/時) が出ることを見ています
-(T17.16。名前は番号が前後で合わないので、`discord.com` を見張る行は「判定できず」になります)。
+`hosts_series` と T.16.0 の 3 列が入っています。2026-09-16 → 2026-09-26 で `--criteria phase15` / `phase17` の判定表が出て、
+T.16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 0、`dns_slow` 0.61 件/時) が出ることを見ています
+(T.17.16。名前は番号が前後で合わないので、`discord.com` を見張る行は「判定できず」になります)。
 
 **いまの数字は 2026-10-22、tokyo (`tokyo.sorahost.net:60357`) にタスク 23 (`v0.23.3`) をデプロイして 29.8 時間の実測**です。出どころは雪像 1 枚
 (`scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo` が取った `status/tokyo/2026-10-22T210213Z-snapshot.json`)。版は `0.23.3+ae7c190` です。
@@ -354,15 +354,15 @@ T16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 
 | CONNECT 確立 (直近 1,024 本) | **p50 13.2 / p90 248.7 / p99 267.3 ms** | p50 13.2 / p90 249.3 / p99 306.0 ms |
 | 利用者が待つ `wait` | **p50 18.8 / p95 320.5 ms** (直近 1 日の 12,398 本) | p50 18.4 / p95 384.2 ms |
 | 名前解決のミス | **0.046 回/接続**、ミス 1 回 74.6 ms、接続 1 本あたり **3.4 ms** (宛先 502 名前) | 0.051 回/接続、ミス 1 回 233.6 ms、1 本あたり 11.9 ms (723 名前) |
-| 期限切れの答え (T21.3) | ミス 25 回、すぐ使った回 **6,712**・失敗して引き直した回 **0** (keep-warm は止めたまま) | ミス 210 回、すぐ使った回 20,606・0 |
+| 期限切れの答え (T.21.3) | ミス 25 回、すぐ使った回 **6,712**・失敗して引き直した回 **0** (keep-warm は止めたまま) | ミス 210 回、すぐ使った回 20,606・0 |
 | 裏の引き直し | 264.3 回/時、名前ごとの最大 57.9 回/時 | 384.8 回/時、最大 8.9 |
 | CPU の絞り (0.5 コアの枠) | **0 / 235,410 周期**、cgroup の通算 0.0015 コア | 0 / 522,598 周期、0.0016 コア |
-| エラー | 1,207 件 (`dns` 1,074、`timeout` 91)。**`timeout` の 1 件あたりの待ちが 10,010 → 5,000 ms** (T23.3) | 6,609 件 (`timeout` 4,212) |
+| エラー | 1,207 件 (`dns` 1,074、`timeout` 91)。**`timeout` の 1 件あたりの待ちが 10,010 → 5,000 ms** (T.23.3) | 6,609 件 (`timeout` 4,212) |
 | メモリ | RSS 39.2 MB、`heap_used + mmap` は 19.5 MB (0 時間の 17.3 から +2.2 だが、起動が違うので判定できない) | RSS 42.2 MB、20.0 MB |
 | IPv6 の探り | `ipv6.request_probes` 0 回 | 0 回 |
 
-- **`timeout` の 1 件あたりの待ちが半分になりました** (T23.3: CONNECT の締め切りを既定 10 → 5 秒)。`timeout` は 13.74 → 1.59 件/時、接続のエラーは「名前解決に成功した試行あたり」で 0.0156 → 0.0010 です。**件数の減りにはメール宛の総当たりが止んだ分も入っている**ので、5 秒の効果は 1 件あたりの待ちのほうで見てください。
-- **エラーの物差しを足しました** (T23.0・T23.1: `--criteria phase23`)。phase22 までの「接続 1 本あたり」は宛先の生きた割合で振れる (2026-10-20 は 7.80 倍) ので、名前解決に成功した試行を分母にした行を並べています。
+- **`timeout` の 1 件あたりの待ちが半分になりました** (T.23.3: CONNECT の締め切りを既定 10 → 5 秒)。`timeout` は 13.74 → 1.59 件/時、接続のエラーは「名前解決に成功した試行あたり」で 0.0156 → 0.0010 です。**件数の減りにはメール宛の総当たりが止んだ分も入っている**ので、5 秒の効果は 1 件あたりの待ちのほうで見てください。
+- **エラーの物差しを足しました** (T.23.0・T.23.1: `--criteria phase23`)。phase22 までの「接続 1 本あたり」は宛先の生きた割合で振れる (2026-10-20 は 7.80 倍) ので、名前解決に成功した試行を分母にした行を並べています。
 - **確立 p50 18.7 ms は相手までの距離**で、前と同じです。p95 318 ms の尾は遠い相手の connect (区間の 17.5% が 100〜250 ms) で、名前解決は 11.9 → 3.4 ms/接続に下がりました。
 - **接続元が全部 `10.255.0.1` に見えます** (手前の NAT の内側の番地)。tokyo では接続元ごとの見張りは効きません。
 - **2026-10-08 に nagoya から tokyo へ切り替えました** (`TODO.md` の付録 A「デプロイ先の切り替え」)。nagoya の数字と tokyo の 1〜3 枚目は付録 A に残してあります。
@@ -382,8 +382,8 @@ canary が IPv6 を見ていないときは 600 秒に 1 回、利用者の要�
 
 **残っている待ちは遠いホストの RTT だけ**です。上のとおり確立の中央値は 1 往復そのもので、プロキシ側では縮みません。
 タスク 14 の頃の 1 枚にあった尾 (p90 53.5 / p95 78.0 ms) は、2026-10-01 の 1 枚では平常時の `wait` で p90 9.9 / p95 18.0 ms でした
-(タスク 15 から CPU の絞りは 0 のまま。`TODO.md` の T15.5。尾の残りは遠い相手への connect で、行き先の構成で上下します)。
-**名前解決は、nagoya では待ちの主役ではありませんでした** (接続 1 本あたり 6.4 → 1.6 ms)。**tokyo では接続 1 本あたり 4.2 ms でしたが、T21.3 で 1.9 ms になりました** (期限切れの答えの引き直しを待たなくなったため。残りは初めて引く名前)。
+(タスク 15 から CPU の絞りは 0 のまま。`TODO.md` の T.15.5。尾の残りは遠い相手への connect で、行き先の構成で上下します)。
+**名前解決は、nagoya では待ちの主役ではありませんでした** (接続 1 本あたり 6.4 → 1.6 ms)。**tokyo では接続 1 本あたり 4.2 ms でしたが、T.21.3 で 1.9 ms になりました** (期限切れの答えの引き直しを待たなくなったため。残りは初めて引く名前)。
 
 ### デプロイ先に似せた条件で手元で測る (`scripts/deployed-like.sh`)
 
@@ -524,12 +524,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   最後に接続できた族を覚え、IPv6 が起動から 1 度も勝たずに 3 回続けて負けたら初めて見るホストも
   IPv4 から試す (RFC 8305 §8)。IPv6 が生き返ったかは **canary の IPv6 側の 1 本** (1 分に 1 回、利用者を待たせない) が見ていて、
   繋がれば自動で戻る。canary が IPv6 を見ていないとき (`PROXY_CANARY=off`、`PROXY_CANARY_IPV6=off`、`--lite` と `PROXY_STATS_PERSIST=off`、
-  canary の宛先に AAAA が無い) は、今までどおり 600 秒に 1 回だけ利用者の要求で IPv6 を先頭に戻して試す (T17.7)。
+  canary の宛先に AAAA が無い) は、今までどおり 600 秒に 1 回だけ利用者の要求で IPv6 を先頭に戻して試す (T.17.7)。
   試行そのものはやめないので、IPv4 が死んでいるホストは IPv6 で拾える。
   勝敗は `/status` の `ipv6` と `/metrics` の `sorahost_ipv6_*` に出る。`/status` の `ipv6.probe_by` は
   いま IPv6 を探っているのが誰か (`"canary"` = canary が直近 600 秒に IPv6 を 1 本試した、`"request"` = 利用者の要求で探る)。
   `probe_by` は「いま」だけなので、**利用者の要求で実際に探った回数は `ipv6.request_probes`** (IPv4 優先の間に IPv6 を先頭に戻した回数。通算)、
-  最後の時刻は `ipv6.request_probe_at` (epoch 秒、無ければ 0) で読む (T18.1)。`attempts` は「IPv6 の候補を起動した回数」で、
+  最後の時刻は `ipv6.request_probe_at` (epoch 秒、無ければ 0) で読む (T.18.1)。`attempts` は「IPv6 の候補を起動した回数」で、
   IPv4 を先頭に置いた接続が Happy Eyeballs の間隔 (既定 250 ms) を過ぎて IPv6 の候補を追い掛けで出した回でも増えるので、探りの数ではない。**確実に IPv6 を避けたいなら `off`**。
   待ち受けの**受け入れ待ち行列は既定 `min(1024, somaxconn)`** (`PROXY_LISTEN_BACKLOG`)。Rust の既定の 128 だと、
   ブラウザが 1 ページで開く数十本の CONNECT で溢れて SYN が捨てられ、クライアントの再送で 1 秒待たされます
@@ -565,12 +565,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   最初の引き直しで起きる) が順にやり、要求の経路は待ちません。そのぶん**古い答えで繋ぐ窓が
   最長 TTL の 1/4 (15 秒)** できますが、その間に IP が変わっていても次の候補へ行くだけです
   (Happy Eyeballs)。解決に失敗した名前は 60 秒覚えて引き直しません。
-  さらに **keep-warm** (**既定は止めてある**。T22.4。`PROXY_DNS_WARM_SECS=3600` で動く):
+  さらに **keep-warm** (**既定は止めてある**。T.22.4。`PROXY_DNS_WARM_SECS=3600` で動く):
   **直近 3,600 秒 (`PROXY_DNS_WARM_SECS`) に 2 回以上使われた名前 (warm) は、
   使われていなくても 45 秒 (3/4 TTL) ごとに裏で引き直し続ける**ので、TTL より長い間隔で来る
   ホスト (数分おきの push 通知など) もミスになりません。同時に warm でいられるのは 32 件まで
   (最後の使用が古いものから外れ、最後の使用から 3,600 秒過ぎたら止まります)。
-  さらに **serve-stale** (RFC 8767。T21.3): **期限が切れていても、引いてから 21,600 秒
+  さらに **serve-stale** (RFC 8767。T.21.3): **期限が切れていても、引いてから 21,600 秒
   (`PROXY_DNS_STALE_SECS`、0 で止める) 未満の答えは待たずにそのまま使い、裏で 1 回だけ引き直します**。
   間遠な名前 (1 時間以上あけて使う名前) の期限切れのミスを利用者に待たせないためです。
   **古い答えで繋げなかったとき** (`refused` / `unreachable` / `timeout`) は、その場で 1 回だけ引き直し、
@@ -579,14 +579,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   古い答えで繋げずに引き直した回数です (そのとき同期で引いた回は `misses_by_kind.expired` にも入ります)。
   `stale_served` は別物で、引き直しが**失敗**したときに古い答え (1 時間以内) で凌いだ回数です。
   この規則を変えたらミスと引き直しがどう動くかは、**`scripts/dns-replay.py SNAP.json`** が雪像 1 枚
-  (`/recent` の到着列と `/hosts_series` の助走) で見積もります (T17.5。いまの規則の値を同じ区間の
+  (`/recent` の到着列と `/hosts_series` の助走) で見積もります (T.17.5。いまの規則の値を同じ区間の
   `/history` と並べ、`promote` の条件を差し替えた案と比べる。`--json` で機械で読む形)。
-  `--serve-stale SECS` (何度でも) で serve-stale の窓ごとの `expired` と引き直しの数も並べます (T21.3)。
+  `--serve-stale SECS` (何度でも) で serve-stale の窓ごとの `expired` と引き直しの数も並べます (T.21.3)。
   `--grid` は serve-stale 21,600 秒を基準に、warm の枠 16 / 64・窓 900 秒・warm をやめる・`warm_promote` の予定を答えの齢から出す、
-  を並べ、`expired` + `warm_stale` のミスの 1 日あたりの増え・引き直しの回/時・名前ごとの最大を出します (T22.4。区間の前から居た名前を
+  を並べ、`expired` + `warm_stale` のミスの 1 日あたりの増え・引き直しの回/時・名前ごとの最大を出します (T.22.4。区間の前から居た名前を
   warm でない / warm の 2 通りで置く)。`--grid --series` は `/hosts_series` (上位 16 名前) だけで回す参考です。
   **引き直しが「使われていない名前」で起きていないか**を名前ごとに並べるのは
-  **`scripts/dns-idle.py SNAP.json …`** です (T24.1。雪像 2 枚以上を渡すと、同じプロセスの 2 枚の差で
+  **`scripts/dns-idle.py SNAP.json …`** です (T.24.1。雪像 2 枚以上を渡すと、同じプロセスの 2 枚の差で
   `Δ引き直し` と `Δ要求` を名前ごとに出し、**1 回も使われていないのに引き直した回**を数えます。
   `/hosts` の `requests` は状態ファイルから復元した分を含む通算なので、雪像 1 枚のときは差を取らずに
   通算のまま出し、この起動の中の使用は `/dns` の `idle_secs` で読みます)。`--model` を付けると
@@ -626,7 +626,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   履歴の標本が 1,024 B (いま使っているのは 504 B)、ホスト別・接続元別が 640 B (同 568 B) で、
   項目は**「固定の順 + 予備」**。**末尾に足す限り版は上がりません** (古いファイルはその位置が
   ゼロ埋めなので 0 として読み戻ります)。`/status` の `state_file` に `version` と `converted_from` が出ます。
-  **領域を 1 つ足したのも版 3 のまま**です (T24.4。並びの末尾に 32 B の `baseline` を 1 本。
+  **領域を 1 つ足したのも版 3 のまま**です (T.24.4。並びの末尾に 32 B の `baseline` を 1 本。
   前の 6 領域のオフセットは 1 バイトも動かないので、それ以前の版 3 のファイルもそのまま読めます)
   - **版 2 (`SHPRRD02`) のファイルは、起動時に 1 回だけ版 3 の形へ詰め直します**
     (領域ごとに読み、レコードの末尾をゼロで伸ばして書き戻すだけ。**通算の統計は 1 件も消えません**)。
@@ -647,30 +647,30 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (読む道具が「この JSON はどの版か」を推測しなくて済むように。版の履歴は下記「動作確認 (curl)」の節)
   - `/config` (**効いている設定とその出どころ**。下記「環境変数」の節)
   - `/dashboard` (ブラウザ用のコントロールパネル: 要求/転送レート・命中率・**CONNECT 確立 p50 (直近 1,024 本の実測)** と p95・
-    **今日の SLO (`PROXY_SLO` の 4 つの閾を満たした 5 秒の割合。T14.50)**・
+    **今日の SLO (`PROXY_SLO` の 4 つの閾を満たした 5 秒の割合。T.14.50)**・
     **名前解決ミス / 秒 とエラー / 秒**・**スレッド / fd**・メモリ/ディスクのグラフ、ホスト別統計、
-    **最近のエラー (直近 20。まとめた行 (T20.3) は最初〜最後の時刻と `×N`。T21.5)** と **いまの接続 (上位 50。列に「速さ」= `rate_bps` = 直近 5 秒のバイト/秒。T14.39)** の表 (どちらも 5 秒ごと)、
+    **最近のエラー (直近 20。まとめた行 (T.20.3) は最初〜最後の時刻と `×N`。T.21.5)** と **いまの接続 (上位 50。列に「速さ」= `rate_bps` = 直近 5 秒のバイト/秒。T.14.39)** の表 (どちらも 5 秒ごと)、
     URL の照会と削除、全消去)、`/status`, `/history` (JSON)、`/metrics` (Prometheus 形式)
-  - **`/inspect` (「調査」ページ: 起きたことを時間軸で読む。T14.8 / T14.44)**: `/dashboard` が「いま」の画面なのに対して、
+  - **`/inspect` (「調査」ページ: 起きたことを時間軸で読む。T.14.8 / T.14.44)**: `/dashboard` が「いま」の画面なのに対して、
     閉じた接続の個票を**時間軸**で読む別のページです (`/dashboard/inspect` も同じもの)。
     **「今日」(`/daily`) と「今週」(`/daily` の 7 行 + `/snapshots`) と「出来事と異常」(`/events`) も
-    このページにあります** — 日次・週次・異常を見に行く場所が 1 つで済むように (T14.44)
-  - **`/probe.html` (「端末から測る」ページ。T14.33)**: プロキシ側の計測は「プロキシに届いてから」しか
+    このページにあります** — 日次・週次・異常を見に行く場所が 1 つで済むように (T.14.44)
+  - **`/probe.html` (「端末から測る」ページ。T.14.33)**: プロキシ側の計測は「プロキシに届いてから」しか
     見えないので、**利用者のブラウザから** `/status` の往復と、プロキシ経由で小さな URL を取る時間を測り、
-    `/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) に並べて読むページです
+    `/clients` の自分の行 (T.14.7) と `rtt_ms` (T.14.5) に並べて読むページです
     (**測った値はサーバーへ送りません**。`--lite` でも開けます)
   - **`/healthz` (本当の健康診断)**: `{"ok":bool,"checks":{...}}` の**軽い JSON** (1 KiB 弱) で、
     **`fatal` な検査**が 1 つでも偽なら **`503 Service Unavailable`** を返します (Pterodactyl やモニタが
     200 / 503 で判断できるように。以前は `/status` の写しで、いつでも 200 でした)。検査は 7 つ:
     `listening` (待ち受けが生きている = この応答が届いている)、`fds` (開いている記述子が `max_fds` の 90% 未満)、
     `connections` (いまの接続数が `PROXY_MAX_CONNS` 未満。**この `/healthz` 自身の 1 本は除きます** —
-    上限に当たっている最中でも T13.2 の「上限 + 4 本」の枠でこの応答は届くため)、
+    上限に当たっている最中でも T.13.2 の「上限 + 4 本」の枠でこの応答は届くため)、
     `state_file` (状態ファイルの書込エラーが直近 5 分で増えていない)、
     `listen_overflows` (受け入れ待ち行列が直近 5 分で溢れていない。**ネットワーク名前空間ごとの数**なので、
     同じ名前空間に他の待ち受けがあるとそちらの溢れも数えます。コンテナなら実質このプロキシのぶんです)、
     `resolver` (名前解決の最後のミスが 2 秒未満 = リゾルバが死んでいない)、
     `cpu` (cgroup の CPU の上限で**直近 5 分に絞られた期間が 50% 未満**。`"throttled_5m"` /
-    `"periods_5m"` / `"percent"` も出ます。T15.0 (6)。**起動から 5 分に満たない間は `null`** —
+    `"periods_5m"` / `"percent"` も出ます。T.15.0 (6)。**起動から 5 分に満たない間は `null`** —
     5 分の窓は「いちばん新しい標本から 300 秒ぶん」を足すだけなので、溜まる前は数秒ぶんの
     割合しか出ません。異常の規則と同じ物差しで黙ります)。
     **`cpu` だけは `fatal` ではありません** (`"fatal":false` が出ます): 偽になると本文の `ok` は
@@ -693,21 +693,21 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **ファイルごと無い**ので、そこでは `false` = `/profile` の `run_delay_us` が `null` になります。
     **判定は起動時 1 回と 1 時間ごと**で (`.env` の監視スレッドのついで。要求の経路では何もしません)、
     `checked_at` がその時刻です。Linux 以外では `/proc` も cgroup も無いので `false` になります
-  - **個票 (集計では読めない「誰が・いつ・なぜ」。T13.4)**: `/errors?n=100` で直近のエラー
+  - **個票 (集計では読めない「誰が・いつ・なぜ」。T.13.4)**: `/errors?n=100` で直近のエラー
     (時刻・`connect` / `forward` / `canary`・宛先・原因・名前解決 ms・接続 ms・返した状態コード・接続元。
     500 件の環状、プロセスのメモリだけ)。
-    **名前解決の失敗の `cause` は T25.0 から `nxdomain` / `dns_temp`** (前者 = 名前か住所が無い =
+    **名前解決の失敗の `cause` は T.25.0 から `nxdomain` / `dns_temp`** (前者 = 名前か住所が無い =
     引き直しても変わらない、後者 = 一時的な失敗 = 引き直せば変わりうる。合わせて今までの `dns`)。
     状態ファイルに残る符号も別 (20・21) なので、再起動をまたいでも内訳のまま読み戻ります
-    (T25.0 より前に書かれた行は `dns` のまま出ます — 内訳が無いので推測しない)。
-    **同じ失敗の繰り返しは 1 行にまとめます** (T20.3): 新しい方から 8 行の中に `kind`・`target`・`cause`・`status`・`client` が全部同じ行があれば、行を足さずにその行の `repeats` (回数。初めは 1) を増やし、`last_at` (最後の 1 回の時刻) と `dns_ms` / `connect_ms` (最後の 1 回の値) を書き換えます。`at` は最初の 1 回の時刻のままで、並びも行ができた順 (新しい順) のままです。`repeats` と `last_at` は各行の末尾にあり、まとめていない行は `repeats` 1・`last_at` は `at` と同じです (`0.18.0` までの版にはこの 2 つが無いので、1 回として読んでください)。
+    (T.25.0 より前に書かれた行は `dns` のまま出ます — 内訳が無いので推測しない)。
+    **同じ失敗の繰り返しは 1 行にまとめます** (T.20.3): 新しい方から 8 行の中に `kind`・`target`・`cause`・`status`・`client` が全部同じ行があれば、行を足さずにその行の `repeats` (回数。初めは 1) を増やし、`last_at` (最後の 1 回の時刻) と `dns_ms` / `connect_ms` (最後の 1 回の値) を書き換えます。`at` は最初の 1 回の時刻のままで、並びも行ができた順 (新しい順) のままです。`repeats` と `last_at` は各行の末尾にあり、まとめていない行は `repeats` 1・`last_at` は `at` と同じです (`0.18.0` までの版にはこの 2 つが無いので、1 回として読んでください)。
     `recorded` (起動からの通算) はまとめた回も 1 ずつ増え、`kept` と `count` は行の数です。同じ宛先への同じ失敗が何千回続いても 1 行で済むので、その間に起きた別の失敗が環から押し出されません (`0.18.0` までは 500 行が 1 種類で埋まりました)。
     **`repeats` は状態ファイルに残しません**: `.recent` に書くのは行ができたときの 1 回だけなので、再起動のあとは `repeats` 1・`last_at` は `at` (最初の 1 回の時刻) に戻ります (原因別の通算は `/history` の `errors_by_cause`)。`/explain` のエラーの個票と `/snapshot` の `errors` も同じ行です。
     `scripts/snapshot-summary.py` と `scripts/snapshot-diff.py` は個票の件数を `repeats` を足して数え (まとめた行があるときは `1,002 件 (3 行)` のように行数を並べます)、まとめた行に `×N (最後 <時刻>)` を付けます。`snapshot-diff.py` は、前の雪像より前にできた行でも `last_at` が窓の中なら数えます (回数は行ごとにしか無いので、その行の窓より前の回も一緒に数えます)。
     **403 で拒否した要求もここに入ります** (原因は `acl` / `blocklist` / `connect_port` / `local`、状態コード 403)。
     403 は 5xx ではないので `/status` の `errors_by_cause` (8 つの原因) には乗らず、
     集計では `hosts[]` の `blocked` に数えるだけです。**誰が何を拒否されたか**はこの個票でだけ読めます。
-    **読めずに断った要求もここに入ります** (T14.28。原因は `bad_request:<reason>` の 8 種
+    **読めずに断った要求もここに入ります** (T.14.28。原因は `bad_request:<reason>` の 8 種
     = `bad_request:request_line` (要求行が空白で 2 つに割れない / 長すぎて 414) /
     `bad_request:header_too_large` (ヘッダーが長すぎて 431) / `bad_request:method` (メソッドが
     HTTP の token として読めない) / `bad_request:no_host` (オリジン形式なのに `Host` が無い) /
@@ -715,7 +715,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (`Content-Length` と `Transfer-Encoding: chunked` が両方ある = 要求の密輸) /
     `bad_request:obs_fold` (折り返したヘッダー = 次の行が SP / HTAB で始まる。RFC 9112 §5.2 の
     「400 で断る」を採り、値を黙って変えない) /
-    `bad_request:dup_host` (`Host` が 2 本以上ある。T19.2)。
+    `bad_request:dup_host` (`Host` が 2 本以上ある。T.19.2)。
     状態コードは**実際に返したもの**なので `400` / `414` / `431` のどれかで、
     **宛先 (`target`) は空**です — 要求行そのものは個票に入れません (壊れた要求行にも URL や
     ヘッダーが載っているため。入るのは接続元 IP と時刻と理由だけ)。数だけなら `/status` の
@@ -727,23 +727,23 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     状態 `relaying` / `parked` / `reading` / `serving` / `queued`・開始からの秒・転送バイト
     (CONNECT は中継が暇になるたび、keep-alive の HTTP は**応答を書き終えて次の要求を待つ直前に 1 回**。
     どちらも要求ごと・バイトごとには書きません。HTTP の値は「終わった要求の上り + 下り」なので
-    **いま処理中の 1 要求はまだ入りません**。T24.5)・記述子の数・
+    **いま処理中の 1 要求はまだ入りません**。T.24.5)・記述子の数・
     **いまの転送速度 `rate_bps`** (直近 5 秒のバイト/秒。下の `rate_bps_total` を参照)。`--lite` では空)。
-    さらに**トンネル 1 本ごとの証拠** (T15.0 (4)。「回っているのか・待っているのか」を 1 行で見分けるための 5 つ):
+    さらに**トンネル 1 本ごとの証拠** (T.15.0 (4)。「回っているのか・待っているのか」を 1 行で見分けるための 5 つ):
     - **`tid`** — いま受け持っているスレッドの番号 (`gettid`)。`/profile` の `threads_top` の `tid` と同じ番号なので、
       **CPU を食っているスレッドと、そのスレッドが抱えている接続**を突き合わせられます。`0` (= 欄が出ない) は
       「預かり所にいる / 分からない」。預かり所から戻ると別のワーカーが受け持つので、そのたびに書き直します
     - **`half_closed`** (`client` / `origin`) と **`half_closed_secs`** — **先に EOF を出した側**と、そこから経った秒。
       閉じた理由 (`client_eof` / `server_eof`) と同じ出どころなので、閉じる前から「どちらが先に手を引いたか」が読めます
     - **`spins`** — 中継の輪が「`poll` に起こされたのに 1 バイトも進まなかった」回数の通算。
-      **寿命に対して桁違いに大きければ空回り**です (T15.5 で直した形は、これが秒あたり数万で増え続けました)。
+      **寿命に対して桁違いに大きければ空回り**です (T.15.5 で直した形は、これが秒あたり数万で増え続けました)。
       直したあとは「`poll` が返した起床は必ず 1 回の読み書きにつながる」ので、ここは伸びません
     - **`revents`** (`{"client":"HUP|ERR","origin":""}`) — **前の周の** `poll` が返した旗 (`IN` / `OUT` / `ERR` / `HUP` / `NVAL`)。
       `HUP` や `ERR` が立ったまま `spins` が伸びていれば、誰も面倒を見ていない記述子があるということです。
       **預かり所から戻った直後の 1 回は旗を持ちません** (旗は中継の輪が持つので、戻るたびに空から始まります)
     - **`idle_secs`** — 1 バイトも動いていない秒 (5 秒ごとに history スレッドが数えます)。CONNECT の行だけで、
       `http` の行には出しません (HTTP の `bytes` も要求を書き終えた回にしか動かないので値は出せますが、
-      要求が来ないだけの keep-alive を「止まっている」と読ませたくないためです。T24.5)。
+      要求が来ないだけの keep-alive を「止まっている」と読ませたくないためです。T.24.5)。
       **累計バイトを書くのは中継が待ちに入る回だけ**なので、`EAGAIN` に落ちずに進み続ける飽和したトンネルでは
       全速で流れていてもここが伸びます (`rate_bps` も同じ性質です)。`spins` と `rate_bps` と併せて読んでください
 
@@ -769,20 +769,20 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `/hosts?sort=requests|errors|dns|slow&limit=200&offset=0` (最大 1,000) で `.rrd` にある**全ホスト**を `/status` の `hosts[]` と同じ形で
     (`/status` の上位 50 は変えません。`scripts/status-diff.py` がこの JSON もそのまま読みます。
     **`offset=` は `sort=` で並べたあとの列を何本飛ばすか**で、応答の `next_offset` が次の頁の `offset` です
-    (続きが無ければ `null`)。1,000 件 × 408 B = 398 KiB は 1 枚 256 KiB に入らず 639 件で切れていました。T15.0 (11))、
-    **`/clients?sort=requests|recent|targets|literal&limit=200`** (最大 1,000) で**全接続元**の個票 (T14.7)。
+    (続きが無ければ `null`)。1,000 件 × 408 B = 398 KiB は 1 枚 256 KiB に入らず 639 件で切れていました。T.15.0 (11))、
+    **`/clients?sort=requests|recent|targets|literal&limit=200`** (最大 1,000) で**全接続元**の個票 (T.14.7)。
     `/status` の `clients[]` と同じ欄に加えて `first_seen` (初めて見た時刻。`0` はこの起動より前から居る)、
     `agents` (見た `User-Agent` 最大 4 種・先頭 128 バイト。**拾うのは接続の最初の要求だけ**) と `agents_dropped`、
     `distinct_targets` (宛先ホストの種類。最大 256 で頭打ちになり、そのときは `distinct_targets_capped` が `true`)、
     `ports` (使ったポートと要求数、最大 8 種) と `ports_other`、`literal_targets` (IP リテラル宛ての要求数 =
     名前を引かずに繋いでいる数)、`nonstandard_ports` (443 / 80 以外への要求数)、
-    `rejected` (`PROXY_MAX_CONNS_PER_CLIENT` に当たって断った本数。T14.13) が出ます。
+    `rejected` (`PROXY_MAX_CONNS_PER_CLIENT` に当たって断った本数。T.14.13) が出ます。
     **`"persisted": false`** は「これらの新しい欄は状態ファイルに残らない (再起動で消える)」の意味です
     (`.rrd` の 1 スロットは名前 128 B + 55 項目 = 568 B を使っていて、`agents` だけで 4 × 128 B 要るため。
     版 3 で余白が 68 B に広がってもここには入りません)。
-    **T14.5 の RTT の 4 欄 (32 B) と T14.26 の向き別のバイト 2 欄 (16 B) はスロットの余白に入ったので残ります**
+    **T.14.5 の RTT の 4 欄 (32 B) と T.14.26 の向き別のバイト 2 欄 (16 B) はスロットの余白に入ったので残ります**
     (552 → 568 B。版 3 (8 MiB 化) で**余白は 4 → 68 B**、数字の欄ならあと 8 つ足せます)
-  - **内部エンドポイントの読み手 `/readers` (T14.53)**: 上の `/clients` が「**プロキシとして通した相手**」なのに対して、
+  - **内部エンドポイントの読み手 `/readers` (T.14.53)**: 上の `/clients` が「**プロキシとして通した相手**」なのに対して、
     こちらは「**この口 (`/status` `/clients` `/recent` …) を読んでいる相手**」です。認証なしの公開ポートでは
     誰でも個票が読めるので、**走査なのか自分の監視なのか**を見分けるために、接続元ごとに
     `count` (引いた回数)・`last_at` (最後に引いた時刻、epoch 秒)・`last_path` (最後に引いたパス) だけを
@@ -791,24 +791,24 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `/readers` は**全部** (256 KiB まで。`count` / `shown` / `truncated` / `max_readers` / `max_path` つき)。
     **`last_path` は先頭 64 バイトで、`?` 以降は落とします** (記録に問い合わせ文字列を入れないタスク 14 の決まり)。
     知らないパス (404) も数えます — 走査を見つけるのがこの表の仕事なので、200 だけ数えても意味がありません。
-    **プロキシとしての要求 (CONNECT / forward) は 1 件も入りません** (T14.7 の `clients[]` はその逆で、
+    **プロキシとしての要求 (CONNECT / forward) は 1 件も入りません** (T.14.7 の `clients[]` はその逆で、
     自分宛てだけの接続を数えません。2 つの表は混ざらないので、`clients[]` に居ない接続元が `readers` に
     居れば「プロキシは使わずに個票だけ読んでいる相手」です)。**表はメモリだけ**で、状態ファイルには残りません
     (`"persisted": false`)。費用は内部エンドポイントの経路の鍵 1 回だけで、**要求の経路には 1 命令も足していません**。
     数えるのは応答を組む**前**なので、**読んだ応答にはその要求自身が入っています** (`/status` を 3 回引いた
     3 回目の応答が `count: 3`。測る行為が状態を変えるので、`/readers` を引けばその 1 回も数に入ります)
-  - **閉じた接続の個票 (T14.4)**: `/recent?n=200&offset=0&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
+  - **閉じた接続の個票 (T.14.4)**: `/recent?n=200&offset=0&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
     `/connections` が「いま」しか見せないのに対し、こちらは「**起きたこと**」です。1 件 = 接続 id・開いた時刻 (`at`、epoch 秒)・
     接続元 (`client`)・宛先 (`target`。CONNECT も http も `host:port`)・種類 (`kind` = `connect` / `http`)・
     寿命 (`secs`)・要求数 (`reqs`、http だけ)・
     **上り / 下り別のバイト** (`up` / `down`)・**閉じた理由** (`reason`)・最後の応答の状態コード (`status`、http だけ)・
     預かり所にいた合計秒と回数 (`parked_secs` / `parks`)・**段階の ms** (`ms` = `dns` / `connect`。`first_byte` は 0 でなければ)・
     **カーネルの RTT と再送** (`rtt_ms` と `retrans`。どちらも `{"client":…,"origin":…}` で
-    `client` = 利用者 → プロキシ、`origin` = プロキシ → 宛先。T14.5)・
-    **SNI** (`sni`。CONNECT の最初のバイトから覗いた名前。覗いていなければ `null`。T14.38)・
-    **中継の詰まりの向き** (`stall_ms` = `{"client":…,"origin":…}`。T14.42)・
+    `client` = 利用者 → プロキシ、`origin` = プロキシ → 宛先。T.14.5)・
+    **SNI** (`sni`。CONNECT の最初のバイトから覗いた名前。覗いていなければ `null`。T.14.38)・
+    **中継の詰まりの向き** (`stall_ms` = `{"client":…,"origin":…}`。T.14.42)・
     **空回りの回数** (`spins`。中継の輪が「起こされたのに 1 バイトも進まなかった」回数の通算。寿命に対して桁違いに
-    大きければ空回りです。T15.0 (4)) と **半閉じ** (`half_closed` = `client` / `origin` / `null`、
+    大きければ空回りです。T.15.0 (4)) と **半閉じ** (`half_closed` = `client` / `origin` / `null`、
     `half_closed_ms` = 半閉じから反対側が閉じる (= この接続が終わる) までの ms。半閉じしていなければどちらも `null`。
     `/connections` の `half_closed` と同じ出どころなので、閉じる前に見た行とそのまま突き合わせられます)。
     **`/connections` と違って、この 3 つは 0 でも `null` でも必ず出します** (件数で切る口なので、
@@ -816,26 +816,26 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     理由は `client_eof` (クライアントが先に EOF) / `server_eof` (宛先が先に EOF) / `idle_timeout` (トンネルの無通信打ち切り) /
     `keepalive_timeout` (次の要求を待ちきれなかった) / `evicted` (上限に当たって席を作るために閉じた。`PROXY_MAX_CONNS`) /
     `limit` (1 接続あたりの要求数の上限) / **`client_dead`** (クライアントが黙って消えた。TCP keepalive が尽きて `ETIMEDOUT`。
-    `PROXY_TCP_KEEPALIVE`。T14.52) / `error:<原因>` (原因は `/status` の `errors_by_cause` と同じ 8 つ。
-    名前解決の失敗だけは内訳の綴りで `error:nxdomain` / `error:dns_temp` になる。T25.0) /
+    `PROXY_TCP_KEEPALIVE`。T.14.52) / `error:<原因>` (原因は `/status` の `errors_by_cause` と同じ 8 つ。
+    名前解決の失敗だけは内訳の綴りで `error:nxdomain` / `error:dns_temp` になる。T.25.0) /
     `shutdown` (その他のプロキシ側の都合) の 9 種類。
     **`client_dead` の読み方**: 端末がスリープしたり回線が切れたりすると FIN も RST も来ないので、そのトンネルは
     `PROXY_TUNNEL_IDLE_SECS` (300 秒) の期限切れまで残り、keepalive が無ければ `idle_timeout` として数えられます。
     つまり **`idle_timeout` のうち「本当に暇だった」ぶんと「相手が消えていた」ぶんを切り分けるのがこの理由**です。
     さらに `stall_ms.client` (上の「中継の詰まりの向き」) と並べると、**消えた相手** (`client_dead`) と
     **遅いだけの相手** (`client_eof` だが `stall_ms.client` が大きい) が区別できます。**書くのは接続の終了で 1 回だけ**で、要求ごとにも中継のバイトごとにも
-    何も書きません。2,000 件の環状 (ありふれた 1 件 414 B。T15.0 (4) の `spins` と半閉じ 2 つで 363 B から +51 B)。`?since=` は「開いた時刻がこれ以降」、`?client=` は接続元の完全一致、
+    何も書きません。2,000 件の環状 (ありふれた 1 件 414 B。T.15.0 (4) の `spins` と半閉じ 2 つで 363 B から +51 B)。`?since=` は「開いた時刻がこれ以降」、`?client=` は接続元の完全一致、
     `?sort=slow` は確立 (`ms.connect`) の遅い順、`?sort=bytes` は転送の多い順。
     **自分宛て (`/status` `/dashboard` …) だけで終わった接続は残しません** — 監視が 5 秒おきに引くとリングがそれで埋まるためです
     (数は `/status` にあります)。
-    **`?offset=` で全部読む (T15.0 (11))**: 2,000 件は 1 件 424 B で応答の上限 256 KiB の 3.2 倍あり、1 枚では
+    **`?offset=` で全部読む (T.15.0 (11))**: 2,000 件は 1 件 424 B で応答の上限 256 KiB の 3.2 倍あり、1 枚では
     **615 件しか返りません** (`"truncated": true`)。`offset=` は**いまの並び** (`sort=` のあと。既定は**閉じた新しい順**) を
     何本飛ばすかで、応答の `next_offset` が次の頁の `offset` です (続きが無ければ `null`)。
     **`id` や `at` は頁を跨ぐ目印には使えません**: `id` は accept 順、`at` は開いた時刻で、どちらも「閉じた順」の並びとは
     一致しないためです (長生きのトンネルは若い `id` で最後に閉じます)。取っている間に新しく接続が閉じると並びが 1 つずれて
     **同じ行が 2 つの頁に出ることはあります** (**欠けることはありません**)。行に `id` があるので読む側で落としてください。
     `?client=` の絞りは頁より先に効くので、1 人ぶんを追うときは今までどおり `?client=` だけで環の最古まで届きます。
-    **`ms.connect` と `ms.client_read` の読み方 (2026-09-18 に直しました。T15.0 (1))**: 接続の段は「確立までの全体 − 名前解決」
+    **`ms.connect` と `ms.client_read` の読み方 (2026-09-18 に直しました。T.15.0 (1))**: 接続の段は「確立までの全体 − 名前解決」
     で出していますが、`PROXY_ALLOW_LOCAL=false` (既定) では**宛先が社内アドレスでないかを確かめる入口の判定が、確立の時計より前に
     名前を引きます**。この日までは時計に入っていないその費用まで引いていたので、**名前解決を払った個票の `connect` が 0 に潰れ**
     (デプロイ先の実測: ミスした 54 本のうち 40 本が 0 ms。そのカーネル RTT の中央値は 11.4 ms)、同じぶんが `client_read` に
@@ -844,7 +844,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (時計そのものは動かしていないため)。なお **forward (http) で既にあるオリジン接続を使い回した要求**だけは、入口の判定が払った
     名前解決がどの段にも出ません (`dns` も `connect` も 0 のまま、`client_read` に乗ったまま)。直っているのは
     **新しくオリジンへ繋いだ要求**です
-  - **カーネルの RTT と再送 (T14.5)**: Linux では接続が閉じるときに `getsockopt(SOL_TCP, TCP_INFO)` を読み、
+  - **カーネルの RTT と再送 (T.14.5)**: Linux では接続が閉じるときに `getsockopt(SOL_TCP, TCP_INFO)` を読み、
     **平滑化 RTT (`tcpi_rtt`) と再送の通算 (`tcpi_total_retrans`)** を残します。「30 ms は RTT か、それとも
     プロキシの待ちか」が初めて切り分けられ、利用者側の回線の質 (再送) も数字になります。
     読むのは**接続の終わりだけ**です: CONNECT トンネルは終わりに両側 (`getsockopt` 2 回)、
@@ -855,14 +855,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `/metrics` の `sorahost_rtt_seconds_sum` / `_count` (`{side="client"|"origin"}` の 2 系列だけ。
     **ホスト別は出しません** — 系列が増えすぎるため)。**Linux 以外と `--lite` では読まないので `null` / 0 です**
     (`/recent` の `rtt_ms` はその側が `null`、`hosts[]` / `clients[]` は `"rtt_ms":null`)。
-    **`clients[]` の `rtt_ms` / `retrans` の母数 (2026-09-18 に直しました。T15.0 (12))**: この行に入れるのは
+    **`clients[]` の `rtt_ms` / `retrans` の母数 (2026-09-18 に直しました。T.15.0 (12))**: この行に入れるのは
     **プロキシとして使われた接続だけ**です。それまでは閉じた接続を無条件に入れていたので、`/status` を
     5 秒おきに引く監視が居るだけで、**プロキシとしても使っている IP** の `samples` だけが `requests` と
     関係なく積み上がっていました (デプロイ先の実測: `requests` 27 に対して `samples` 68。この欄は `.rrd` に
     残るので再起動をまたいで残ります)。いまは同じ行の `requests` と同じ母数 = 「プロキシとして通した接続」で、
     **自分宛て (`/status` `/clients` …) だけで終わった接続は 1 本も入りません** (その相手は `readers` の側です)。
     接続 1 本ごとの RTT が要るときは `/recent` の `rtt_ms` を読んでください (そちらは今までどおり全部の接続に出ます)
-  - **CONNECT の SNI (T14.38)**: CONNECT のあとクライアントが最初に送るのは TLS の
+  - **CONNECT の SNI (T.14.38)**: CONNECT のあとクライアントが最初に送るのは TLS の
     ClientHello で、その中の SNI (`server_name`) に**本当の宛先の名前**があります。
     `200 Connection Established` を書いたあと、**最初の中継の前に 1 回だけ `recv(MSG_PEEK)`**
     (1,024 バイト) で覗き、`/recent` の 1 件に `sni` として残します。**バイトは消費しない**ので
@@ -881,7 +881,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `PROXY_PEEK_SNI=on:<port>` で別のポートも 443 扱いにできます)。`--lite` と
     `PROXY_PEEK_SNI=off` では 1 度も覗きません。ClientHello が壊れていても・1,024 バイトに
     収まらなくても・TLS でなくても `sni` は `null` になるだけで、**中継はそのまま続きます**
-  - **確立時の SYN の再送 (T14.46)**: Linux では**オリジンへ繋がった直後に 1 回だけ**
+  - **確立時の SYN の再送 (T.14.46)**: Linux では**オリジンへ繋がった直後に 1 回だけ**
     `getsockopt(SOL_TCP, TCP_INFO)` を読み、`tcpi_total_retrans` を `/recent` の 1 件に
     `syn_retrans` として残します。確立した直後は**まだデータを 1 バイトも送っていない**ので、
     この値は **SYN (3-way handshake) の再送回数そのもの**です。
@@ -890,7 +890,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       `ms.connect` が 1,000 ms 台・3,000 ms 台に飛んでいる個票はここが 1 以上のはずで、
       「相手が遅い」のではなく **SYN が途中で落ちた** (相手の受け入れ待ち行列が溢れた・
       経路で落ちた) ことが分かります
-    - `kernel.tcp.syn_retrans` (T14.12) との違い: あちらは `/proc/net/netstat` の値で
+    - `kernel.tcp.syn_retrans` (T.14.12) との違い: あちらは `/proc/net/netstat` の値で
       **ネットワーク名前空間まるごとの累計**なので、同じ機械の他のプロセスのぶんも入ります。
       こちらは**接続 1 本ごと**なので、「どの宛先へのどの接続が再送したか」まで分かります
       (溢れているのがこちらの待ち受けか相手の待ち受けかは、この 2 つを突き合わせて切り分けます)
@@ -900,7 +900,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - 費用は **CONNECT 1 本につき `getsockopt` 1 回**だけです。forward は
       **プールが接続を張るときだけ**通るので、使い回した要求では 1 度も読みません
       (要求ごとの増加は 0)。Linux 以外では常に 0 です
-  - **中継の詰まりの向き (T14.42)**: 転送が遅いとき、遅いのは「クライアントの回線 (下り)」か
+  - **中継の詰まりの向き (T.14.42)**: 転送が遅いとき、遅いのは「クライアントの回線 (下り)」か
     「オリジン」か「利用者の上り」か。トンネルの中継は `splice` が `EAGAIN` で止まると
     `poll` で**書けるのを待つ**ので、その待ち時間を**書けなかった側ごと**に足せば切り分けられます。
     `/recent` の 1 件の `stall_ms` が**そのトンネル 1 本の合計 (ms)** です:
@@ -917,7 +917,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `POLLOUT` を立てる枝に 1 度も入らないので、**時計を 1 回も読みません**。
     `--lite` でも同じ数え方ですが、`--lite` は個票の枠を作らないので**出す場所がありません**。
     Linux 以外 (`io::copy` を 2 スレッドで回す従来版) は待ちの向きが分からないので常に 0 です
-  - **山の写真 (T14.6)**: `/bursts?n=50` は、同時接続数が `PROXY_MAX_CONNS × PROXY_BURST_PERCENT`
+  - **山の写真 (T.14.6)**: `/bursts?n=50` は、同時接続数が `PROXY_MAX_CONNS × PROXY_BURST_PERCENT`
     (既定 50%) を**下から上に越えた瞬間**に自動で撮った `/connections` の要約です。
     上限に当たったときの動き (暇なトンネルを 1 本閉じる。`PROXY_MAX_CONNS`) が効いているかは
     「山が来たとき」にしか見えませんが、来たときに `/connections` を見ている人はいないので、
@@ -933,7 +933,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `PROXY_STATS_PERSIST=off` (履歴スレッドを起こさない設定) でも撮りません**。
     山が来るのを待たずに手元で確かめるには、`/recent` の個票を同じ間隔・同じ本数で張り直す
     `bench --only replay` を使います (上の「デプロイ先のパターンを手元で再生する」)
-  - **接続元 1 つの追跡 (T14.27)**: `PROXY_TRACE_CLIENT=<ip>` を設定している間だけ、**その接続元の**
+  - **接続元 1 つの追跡 (T.14.27)**: `PROXY_TRACE_CLIENT=<ip>` を設定している間だけ、**その接続元の**
     要求を `/trace?n=200&since=<epoch>` (新しい順、既定 200 行・最大 1,000、1,000 行の環状) に残します。
     1 行 = 時刻 (`at`、epoch 秒)・接続 id (`conn`)・接続元 (`client`)・**要求行** (`method` / `target` / `version`)・
     応答の状態 (`status`)・所要 ms (`took_ms`)・バイト (`bytes`)・**段階の ms** (`ms`。`/recent` と同じ綴り)・
@@ -947,7 +947,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     リングは**メモリだけ**なので再起動で消えます (`/recent` などと違い個票のファイルには書きません)。
     **`/snapshot` には入れません** (パスが保存したファイルに残らないように)。
     いま誰を追っているかは `/config` の `PROXY_TRACE_CLIENT` で読めます
-  - **起きたことの時系列 (T14.11)**: `/events?n=200&since=<epoch>` は、**プロキシに起きた出来事**を
+  - **起きたことの時系列 (T.14.11)**: `/events?n=200&since=<epoch>` は、**プロキシに起きた出来事**を
     1 本の時系列にしたものです (新しい順、既定 200 件、512 件の環状)。数字が動いたときに
     「**そのとき何を変えたか**」を読むための口で、`/status` の `settings` は最後の 1 回しか残さず、
     `/log` は warn 以上なので info の出来事 (再読込・ブロックリストの取得・バラストの増減) が入りません。
@@ -964,7 +964,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     時刻は最大 5 秒遅れ、`--lite` と `PROXY_STATS_PERSIST=off` (履歴スレッドを起こさない設定) では
     残りません。残りの 7 種は `--lite` でも残ります。**メモリだけ**なので再起動で消えます
     (512 件で 87 KiB、応答は 256 KiB 以下)
-  - **異常の自動検知 (T14.23)**: 24 時間の図を人が全部読むのは手間なので、**「いつから」を機械に
+  - **異常の自動検知 (T.14.23)**: 24 時間の図を人が全部読むのは手間なので、**「いつから」を機械に
     印させます**。履歴スレッドが 5 秒ごとに取る標本を**直近 5 分の窓**に畳み、**直近 1 時間の基準値**と
     比べて外れていたら、上の `/events` に `anomaly` の 1 件を書きます (専用の口は作っていません。
     `/events?n=200` で読みます。畳むのは `/history?summary=1` と同じ関数・同じ切り方です)。
@@ -972,19 +972,19 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 
     | 種類 (説明の頭に出ます) | 立つ条件 |
     |---|---|
-    | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が**直近 1 時間の p95 の 3 倍以上**、かつ 50 ms 以上、かつ**その窓に 20 本以上**あるとき (T15.0 (9)) |
-    | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が **100 ms と canary の名前解決の中央値 (直近 1 時間) の 3 倍の大きい方以上**、かつ**その窓にミスが 3 回以上**、かつ**その窓のミスの合計が 1,000 ms 以上**あるとき (canary が `off` なら 100 ms だけ。5 分に 1 回の重いミスだけでも、3〜5 回で合計の小さい初めての名前の引きだけでも立ちません。3 回でも 1 回 334 ms 以上なら立ちます。T17.1 / T22.2) |
+    | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が**直近 1 時間の p95 の 3 倍以上**、かつ 50 ms 以上、かつ**その窓に 20 本以上**あるとき (T.15.0 (9)) |
+    | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が **100 ms と canary の名前解決の中央値 (直近 1 時間) の 3 倍の大きい方以上**、かつ**その窓にミスが 3 回以上**、かつ**その窓のミスの合計が 1,000 ms 以上**あるとき (canary が `off` なら 100 ms だけ。5 分に 1 回の重いミスだけでも、3〜5 回で合計の小さい初めての名前の引きだけでも立ちません。3 回でも 1 回 334 ms 以上なら立ちます。T.17.1 / T.22.2) |
     | `errors` | エラーが **5 分で 5 件以上** (原因の内訳も説明に入ります) |
     | `active_high` | 同時接続の山が **`PROXY_MAX_CONNS` の 50% 以上** (`/bursts` の写真と同じ閾。同じ周期で写真が撮れていればその `seq`) |
     | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が**増えた** |
-    | `cpu_throttled` | cgroup の CPU の上限で**直近 5 分に絞られた期間が 50% 以上** (解除は 25% 未満。説明に `quota_cores` と使ったコア数と `/profile` の上位スレッドの tid が入ります。T15.0 (6)) |
-    | `tunnel_spin` | 「起こされたのに 1 バイトも進まない」が **1 周期 1,000 回以上のトンネルが 1 分続いた** (説明に接続の `id` と宛先と齢と `half_closed`。T15.0 (6)) |
-    | `dns_miss_rate` | 名前解決のミスが**直近 1 時間で 0.20 回/接続 以上** (解除は 0.10 未満。**起動から 6 時間は判定しません** — 再起動の直後はどの名前も warm でないため。1 時間に 30 本以上の確立があるときだけ。T15.0 (9)) |
-    | `new_client` (規則 6) | `/clients` の `first_seen` が**この 5 秒の窓の中**にある接続元 (T14.54) |
+    | `cpu_throttled` | cgroup の CPU の上限で**直近 5 分に絞られた期間が 50% 以上** (解除は 25% 未満。説明に `quota_cores` と使ったコア数と `/profile` の上位スレッドの tid が入ります。T.15.0 (6)) |
+    | `tunnel_spin` | 「起こされたのに 1 バイトも進まない」が **1 周期 1,000 回以上のトンネルが 1 分続いた** (説明に接続の `id` と宛先と齢と `half_closed`。T.15.0 (6)) |
+    | `dns_miss_rate` | 名前解決のミスが**直近 1 時間で 0.20 回/接続 以上** (解除は 0.10 未満。**起動から 6 時間は判定しません** — 再起動の直後はどの名前も warm でないため。1 時間に 30 本以上の確立があるときだけ。T.15.0 (9)) |
+    | `new_client` (規則 6) | `/clients` の `first_seen` が**この 5 秒の窓の中**にある接続元 (T.14.54) |
 
     `dns_slow` の閾を変えたら件数がどう動くかは、**`scripts/dns-slow-replay.py SNAP.json …`** が雪像の
-    `/history?res=60` から 5 分の窓を作り直して案ごとに並べます (T22.2。1 分の行で数えるので、5 秒の境目に
-    またがる窓は見えず、実機より少なめに出ます)。表の `sum1000` が今の条件 (T22.2) で、`current` はその前の条件です。
+    `/history?res=60` から 5 分の窓を作り直して案ごとに並べます (T.22.2。1 分の行で数えるので、5 秒の境目に
+    またがる窓は見えず、実機より少なめに出ます)。表の `sum1000` が今の条件 (T.22.2) で、`current` はその前の条件です。
 
     **同じ種類は収まるまで 1 回だけ**書きます。条件を外れたまま 5 分続いたら
     `cleared: <種類>` で始まる解除の 1 件を書き、また立てるようになります。説明には必ず数字
@@ -995,7 +995,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     解除を書いてしまう**ため)。**費用は 0** で、判定するのは履歴スレッドだけです
     (要求ごとの経路には 1 命令もありません。`--lite` と `PROXY_STATS_PERSIST=off` では
     履歴スレッドが無いので判定もしません)
-  - **初めて見た接続元 (T14.54。上の規則 6)**: 認証なしの公開プロキシなので、**見知らぬ接続元は
+  - **初めて見た接続元 (T.14.54。上の規則 6)**: 認証なしの公開プロキシなので、**見知らぬ接続元は
     「現れた瞬間」に気づきたい**ものです (2026-09-16 に現れた接続元に気づいたのは 3 日後でした)。
     上の判定と同じ 5 秒の周期で `/clients` を見て、**`first_seen` がその窓の中**にある接続元を
     `/events` に **`new_client`** で 1 件残します (種類が `anomaly` ではなく `new_client` なのは、
@@ -1009,14 +1009,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     5 秒に 1 回、接続元の表の鍵を取って `first_seen` を比べるだけです
     (`/clients` を丸ごと写しません。要求ごとの経路には 1 命令もありません)
 
-  - **1 要求で全部取る (T14.4)**: `/snapshot` は上の口を **1 つの JSON** にまとめて返します
+  - **1 要求で全部取る (T.14.4)**: `/snapshot` は上の口を **1 つの JSON** にまとめて返します
     (`status` / `status_errors` / `status_dns` / `history` (`5` / `60` / `3600`) / `dns` / `errors` /
     `connections` / `recent` / `hosts` / `clients` / `bursts` / `events` / `log`。何が入っているかは `parts` に並びます)。
     デプロイ先の様子を見るのに 17 本の URL を手で叩いていたのを 1 回で済ませるための口で、
     **組み立ては同じプロセス内の関数呼び出し** (自分へ HTTP で繋ぎ直さないので、接続を 17 本増やしませんし、
     上限に当たっている最中でも取れます)。上限は **4 MiB** で、越えたら `recent` → `log` → `history.5` の順に
     `null` へ落として `dropped` に名前を出します。保存して読むのは `scripts/collect-deployed.sh` です
-  - **canary (利用者の要求が無い時間帯も待ちを測る。T14.10)**: プロキシ自身が **60 秒に 1 回**
+  - **canary (利用者の要求が無い時間帯も待ちを測る。T.14.10)**: プロキシ自身が **60 秒に 1 回**
     (`PROXY_CANARY_SECS`)、`PROXY_CANARY` で決めた宛先へ **名前解決 → TCP 接続 → 即 `close`** だけを行い、
     その時間を残します。**TLS も HTTP も送りません** (相手に届くのは 1 分に 1 回の名前解決と SYN / FIN だけです。
     利用者と同じ Happy Eyeballs を通るので、A と AAAA の両方を持つ相手には 250 ms ずらして
@@ -1038,12 +1038,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (Happy Eyeballs と IPv4 優先の学習) を通ります。回すのは **`canary` スレッド 1 本**だけで、
     利用者の要求の経路には 1 命令も足していません。**履歴スレッドが動いているときだけ回ります**
     (`--lite` と `PROXY_STATS_PERSIST=off` では履歴スレッドごと止まるので canary も回りません)
-  - **canary の IPv6 側 (`PROXY_CANARY_IPV6`、既定 on。T14.37)**: 同じ周期に、canary の名前の
+  - **canary の IPv6 側 (`PROXY_CANARY_IPV6`、既定 on。T.14.37)**: 同じ周期に、canary の名前の
     **AAAA へ 1 本だけ**繋いでみて `canary.ipv6_connect_ms` に残します (繋がれば ms、
     **繋がらなければ `null`**: AAAA が無い名前、`PROXY_IPV6=off`、経路が黒穴、`PROXY_CANARY_IPV6=off`)。
     コンテナの IPv6 が黙って落ちる環境では、プロキシは 3 回続けて負けると初めて見るホストを
     IPv4 優先に切り替えます (`/status` の `ipv6.v4_first`)。この 1 本があれば「IPv6 が生き返ったか」を
-    1 分の粒度で (利用者を待たせずに) 読めます。**T17.7 からは元に戻すかどうかもこの 1 本が決めます**:
+    1 分の粒度で (利用者を待たせずに) 読めます。**T.17.7 からは元に戻すかどうかもこの 1 本が決めます**:
     この 1 本が試している間 (直近 600 秒に 1 本、`ipv6.probe_by` が `"canary"`) は利用者の要求で
     600 秒に 1 回 IPv6 を先頭に戻す探りをやめ (探りの 1 本は利用者を Happy Eyeballs の間隔ぶん待たせていた)、
     **繋がったら `v4_first` を解きます**。Happy Eyeballs も勝敗の記録 (`ipv6.attempts` / `wins` / `losses`) も
@@ -1051,7 +1051,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     失敗は `/errors` にも残しません (黒穴のままだと 1 分に 1 件ずつ個票が埋まってしまうため。
     生死は `ipv6_connect_ms` が `null` かどうかで読みます)。
     `null` は「試して繋がらなかった」と「試さなかった」の両方なので、**試したかどうかは
-    `canary.ipv6_runs` (IPv6 側を実際に試した回数) と `canary.ipv6_skipped` (試さなかった回数) で読みます** (T18.1。通算で、
+    `canary.ipv6_runs` (IPv6 側を実際に試した回数) と `canary.ipv6_skipped` (試さなかった回数) で読みます** (T.18.1。通算で、
     canary の 1 回につきどちらかが 1 増える = `runs` と同じ歩み)。試さないのは、名前が引けなかった回・引けた答えに AAAA が無い回・
     `PROXY_IPV6=off`・`PROXY_CANARY_IPV6=off` で、試さなかった回は「探っている」印を更新しません
     (600 秒ぶん続くと探りは利用者の要求に戻り、`ipv6.request_probes` が増えます)。宛先が 1 つも無い周
@@ -1073,17 +1073,17 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     個票に入れるのは**接続元 IP・宛先のホスト:ポート・時刻・数字だけ**です。
     **`/clients` の `User-Agent` (先頭 128 バイト) が入る唯一のヘッダー**で、URL のパスや問い合わせ文字列、
     本文、その他のヘッダーは 1 つも記録しません。
-    **例外は `/trace` だけ**です (T14.27): `PROXY_TRACE_CLIENT` で**追跡している 1 接続元に限り**、
+    **例外は `/trace` だけ**です (T.14.27): `PROXY_TRACE_CLIENT` で**追跡している 1 接続元に限り**、
     要求行の URL を先頭 256 バイトまで残します。これも認証なしで見えるので、**調べ終わったら
     `PROXY_TRACE_CLIENT` を空に戻してください** (空にすれば次の接続から書かなくなり、
     プロセスを再起動すればリングごと消えます。リングはメモリだけでファイルには残りません)
-  - **記録を一括で止める / 接続元を復元できない形にする (`PROXY_RECORDS`。T14.41)**:
+  - **記録を一括で止める / 接続元を復元できない形にする (`PROXY_RECORDS`。T.14.41)**:
     上の個票は**認証なしの公開ポートでも誰でも読めます**。利用者以外の人の情報を残さずに
     動かしたいときのつまみが `PROXY_RECORDS` で、**旗 1 つで全部の個票を止める**か、
     **接続元 IP をハッシュに置き換える**かを選べます。
     - **`on` (既定)**: 今までどおり。
     - **`off`**: `/recent` `/errors` `/connections` `/clients` `/log` `/events` `/trace` `/bursts`
-      **と `/readers` (内部エンドポイントを引いた接続元。T14.53) のどれにも 1 件も書きません**
+      **と `/readers` (内部エンドポイントを引いた接続元。T.14.53) のどれにも 1 件も書きません**
       (どれも `"count": 0`、`/status` の `readers` も `[]`)。個票のファイル
       (`$HOME/.rust-http-proxy.recent`) にも 1 バイトも書かず、読み戻しもしません
       (`"persisted": false`。ファイル自体は消さないので `on` に戻して再起動すれば前の個票が
@@ -1114,7 +1114,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       1 バイトも増えません。
     - **`off` で 1 つだけ欠けるもの**: `/history` の `closed` (閉じた理由・寿命・バイトの分布) は
       接続の枠から作るので埋まりません (`--lite` と同じ)。分布も残したいなら `hashed` を使います
-  - **カーネルと cgroup の窓 (バーストのときカーネル側で何が起きていたか。T14.12)**:
+  - **カーネルと cgroup の窓 (バーストのときカーネル側で何が起きていたか。T.14.12)**:
     プロキシの統計には残らない事象を、**5 秒の標本のときだけ** `/proc` と `/sys/fs/cgroup` を読んで
     メモリ上の窓 (5 秒 × 720 = 1 時間 と 60 秒 × 1,440 = 1 日。1 標本 200 B なので約 420 KiB、
     環状バッファの伸び方しだいで最大 600 KiB) に残します。**要求ごとには 1 回も読みません**。
@@ -1127,12 +1127,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - **cgroup の CPU の絞り** (`cpu_nr_periods` / `cpu_nr_throttled` / `cpu_throttled_usec` と
       `cpu.max` の `quota_cores`)。CPU 上限を持つコンテナで「自分が遅い」のか「絞られて待たされた」のかが
       分かれます。**読むのは割合** (`cpu_nr_throttled` ÷ `cpu_nr_periods`) で、`cpu_nr_periods` がその分母です
-      (T15.0 (6)。「41 回絞られた」だけでは 41/8,123 = 0.5% なのか 41/41 = 100% なのか決まりません)。
+      (T.15.0 (6)。「41 回絞られた」だけでは 41/8,123 = 0.5% なのか 41/41 = 100% なのか決まりません)。
       `/status` の `kernel.cgroup_cpu` には累計のほかに **`path`** (階層のどこの `cpu.stat` を読んでいるか。
       自分の cgroup に cpu コントローラが無いと**親の値**を読みます。`--check` にも同じ道が出ます) と
       **`since_start`** (`nr_periods` / `nr_throttled` / `throttled_usec` の**このプロセスが始まってからの
       増分**。累計はプロセスより長生きなので、起動直後の雪像にも `nr_throttled` が乗ります) が出ます。
-      **`cgroup_cpu` と `since_start` の末尾の `usage_usec` / `user_usec` / `system_usec`** (T16.0) は同じ `cpu.stat` の
+      **`cgroup_cpu` と `since_start` の末尾の `usage_usec` / `user_usec` / `system_usec`** (T.16.0) は同じ `cpu.stat` の
       CPU の使用量 (累計 us / 起動からの増分) で、**ユーザー空間とカーネル側**に分かれます (コンテナ全体。
       プロセスだけなら `/profile` の `cpu_user_us`)。行の無い `cpu.stat` では 3 つとも `null`。`/history` の `kernel` の
       末尾には同じものの増分が `cpu_user_usec` / `cpu_system_usec` で入ります (1 分へは足し合わせ)
@@ -1151,7 +1151,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `.rrd` (状態ファイル) には書かないので**再起動で消えます** (版 3 で標本 1 本の余白は 516 B = 64 項目に
     広がったので、入れるなら 26 列は収まります。移すかどうかは項目ごとに決めます)。
     履歴の収集スレッドが動いていない `--lite` / `PROXY_STATS_PERSIST=off` では窓は空 (`kernel` は `null`) です
-  - **ホスト別の時系列 (T14.22)**: `/hosts/series?top=16` と `/hosts/series?host=<name>` は、
+  - **ホスト別の時系列 (T.14.22)**: `/hosts/series?top=16` と `/hosts/series?host=<name>` は、
     **直近 1 時間の要求数で選んだ上位 16 ホスト**について、**5 分の窓 × 288 標本 (24 時間)** を返します。
     `/hosts` は**通算** (`avg_ms` は 3 日の平均)、`/history` は**全体**しか無いので、その間を埋める口です
     (「datadog が 15 時に遅かった」「mtalk だけ夜に再送が増えた」はどちらでも読めませんでした)。
@@ -1168,10 +1168,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `.rrd` (状態ファイル) には**書かない**ので再起動で消えます。履歴スレッドが動いていない
     `--lite` / `PROXY_STATS_PERSIST=off` では系列を 1 本も持ちません (`series` は空。費用も 0)。
     応答はデプロイ先並みの値なら 16 本で約 96 KiB、他の個票と同じく 256 KiB 以下 (切ったら `truncated`)
-  - **1 相手の説明 (T14.36)**: `/explain?host=<name[:port]>` と `/explain?client=<ip>` は、
+  - **1 相手の説明 (T.14.36)**: `/explain?host=<name[:port]>` と `/explain?client=<ip>` は、
     **1 つの相手について上の口を全部横断して 1 枚に組んだもの**です。「この宛先はなぜ遅いか」を
     調べるには `/hosts` `/dns` `/recent` `/clients` `/errors` を手で突き合わせる必要がありました
-    (T14.0 で実際にやった作業) が、その突き合わせをサーバー側で 1 要求にします。
+    (T.14.0 で実際にやった作業) が、その突き合わせをサーバー側で 1 要求にします。
     `?host=` に入るのは、ホスト別の統計 (`/hosts` と同じ形。**ポートを書かなければ
     `connect://` と `http://`、ポート違いを全部まとめた合計**で、混ぜた鍵は `keys` に並びます。
     ポートを書けばそのポートの鍵だけ)、原因別のエラー件数 (`errors_by_cause`、名前つき)、
@@ -1192,7 +1192,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `?host=` も `?client=` も書かなければ 400。応答は **64 KiB 以下** (個票 10 本・エラー 5 件の上限つき)。
     **新しい記録は 1 つも増やしていません** (この口に来たときだけ既にある表とリングを読んで組み立てるので、
     要求の経路の費用は 0 です)
-  - **日次の要約 (永久に残る。T14.20)**: `/daily?n=365` (既定 1 年、最大 4,096 日) は
+  - **日次の要約 (永久に残る。T.14.20)**: `/daily?n=365` (既定 1 年、最大 4,096 日) は
     `$HOME/.rust-http-proxy.daily.jsonl` の中身を**古い順**にそのまま返します。`/history` は 30 日で消えますが、
     こちらは**「いつから遅くなったか」「デプロイの前後で何が変わったか」を年単位で**追うためのもので、
     1 日 1 行 (ありふれた 1 行 336 B、上限 512 B) なので 1 年で約 120 KB です。
@@ -1208,7 +1208,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `PROXY_STATS_PERSIST=off` では 1 行も書きません (`/daily` の `path` が `null`)。
     応答は他の個票と同じく 256 KiB 以下 (切ったら `truncated`)。
     この応答をそのまま `scripts/weekly-report.py` に渡せば、雪像が無くても週次の表が出ます
-  - **SLO の達成率 (T14.50)**: `/slo?days=7` (既定 7 日、最大 31 日。「今日」は **UTC**) は、
+  - **SLO の達成率 (T.14.50)**: `/slo?days=7` (既定 7 日、最大 31 日。「今日」は **UTC**) は、
     `PROXY_SLO` の 4 つの閾を **5 秒の標本 1 本ごと**に判定した結果を、**日ごと (`daily`)・時間ごと (`hourly`)**
     の達成率と、**外れた時間帯の一覧 (`breaches`)** にして返します。
     **読み方**: `ratio` = `met ÷ judged` = **4 つとも満たした 5 秒の割合**で、`judged` は「確立が 1 本以上あった 5 秒」だけを数えます
@@ -1217,14 +1217,14 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `breaches` は**連続する外れを 1 行に畳んだもの**で、1 行 = 開始・終了 (`from` / `to` と、人が読む `from_hour` / `to_hour`)・
     続いた時間数・その間の `judged` / `met` と、**どの閾を外したか・その最悪の値** (`breached[]` の `name` / `samples` / `worst` / `threshold`)。
     例: 「99.2% の時間で満たした。外れたのは 09-11 17〜23 時 (`connect_p50_ms` 5,040 本、最悪 46.9 ms、閾 10 ms)」。
-    **使い道 (T14.99)**: タスクの完了の定義は「平常時の CONNECT 確立 p50 6 ms 以下」のような閾値ですが、
+    **使い道 (T.14.99)**: タスクの完了の定義は「平常時の CONNECT 確立 p50 6 ms 以下」のような閾値ですが、
     `PROXY_SLO=connect_p50_ms=6` を入れておけば、`/slo` の `ratio` がそのまま
     **「その閾を満たしていた時間の割合」**になり、判定が「満たした / 満たさない」ではなく
     「99.2% の時間で満たした。外れたのはこの時間帯」と数字で書けます。
     集計は**メモリだけ**で 31 日ぶん (1 時間 1 行 × 744 = 約 48 KiB)、**再起動で消えます** (`first_t` / `last_t` でどこから見ているかが分かります)。
     応答は **64 KiB 以下** (越えるぶんは外れた時間帯と時間ごとの行から落として `truncated`)。
     ダッシュボードの KPI「今日の SLO」も同じ口を 30 秒に 1 回読んでいます (`/slo` を持たない版ではカードごと出しません)
-  - **日次の snapshot (30 日ぶん。T14.34)**: `/snapshots` は
+  - **日次の snapshot (30 日ぶん。T.14.34)**: `/snapshots` は
     `$HOME/.rust-http-proxy/snapshots/` に残してある日付と大きさ (`files[]` の `date` / `bytes` /
     `t` (書いた時刻)、**古い順**) と、置き場所 (`dir`)・残す日数 (`days`)・1 ファイルの上限
     (`max_bytes` = 4 MiB) を返します。`/snapshots/<YYYY-MM-DD>` はその日のファイルを
@@ -1236,7 +1236,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `PROXY_STATS_PERSIST=off` (と `--lite`) では 1 ファイルも書きません (`dir` が `null`)。
     ディスクの空きが予算 (`PROXY_DISK_KEEP_FREE_MB` のマージン) を割り込むときは**書かずに**
     `/events` に 1 件 (`state_file`) 残します
-  - **RSS の内訳** (`/status` の `memory`。T14.21): 256 MiB のコンテナで「RSS が何でできているか」
+  - **RSS の内訳** (`/status` の `memory`。T.14.21): 256 MiB のコンテナで「RSS が何でできているか」
     (ヒープの断片・スレッドのスタック・キャッシュ・記録のリング) を 1 枚から読むためのものです。
     **読むのは `/status` に来たときだけ**で、要求の経路には 1 命令も増えません
     (`mallinfo2(3)` はアリーナの鍵を順に取るので数 us かかります)。
@@ -1253,25 +1253,25 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       先行確保の `reserved_bytes`)
     - `rings` は記録のリングが**満杯になったときの見積もり** (バイト): `recent` (2,000 件)、
       `errors` (500 件)、`bursts` (50 枚)、`log` (1,000 行)、`events` (512 件)、
-      `trace` (1,000 行。T14.27)、
+      `trace` (1,000 行。T.14.27)、
       `history` (**5 秒 × 4,320** + 60 秒 × 1,440 + 1 時間 × 720 の標本と、閉じた接続の窓、
-      速さと半閉じの窓。5 秒の標本を 6 時間ぶん持つので 2.95 → 4.77 MB (T14.32)、
-      T15.0 (10) で標本 1 本が 504 → **664 B** になって **5.84 MB**、T16.0 で **688 B** / **6.00 MB**)、
-      `hostseries` (16 ホスト × 288 標本 × 5 項目 × 8 B = 180 KiB。T14.22)、
+      速さと半閉じの窓。5 秒の標本を 6 時間ぶん持つので 2.95 → 4.77 MB (T.14.32)、
+      T.15.0 (10) で標本 1 本が 504 → **664 B** になって **5.84 MB**、T.16.0 で **688 B** / **6.00 MB**)、
+      `hostseries` (16 ホスト × 288 標本 × 5 項目 × 8 B = 180 KiB。T.14.22)、
       `readers` (内部エンドポイントを引いた接続元の表。環状ではありませんが同じ「満杯のとき」の
-      見積もりで並べてあります。最大 256 行。T14.53)、
-      `quantiles` (3 系統 × 1,024 本 × 8 B = 24 KiB。T14.31、T15.0 (2) で `wait` を足して 16 → 24 KiB)、
+      見積もりで並べてあります。最大 256 行。T.14.53)、
+      `quantiles` (3 系統 × 1,024 本 × 8 B = 24 KiB。T.14.31、T.15.0 (2) で `wait` を足して 16 → 24 KiB)、
       `profile` (段階とスレッドの窓 = 5 秒 × 720 + 60 秒 × 1,440 の標本。`.rrd` には書きません。
-      T14.3。**T14.21 はこれを落としていた**ので `total` が RSS の説明に足りていませんでした。
-      T15.0 (13) で足して 6.77 MB、T16.0 で 6.95 MB — `/profile` の標本 1 本は 3,216 B で、`history` より大きい口です) と、
-      その合計 `total` (この機械では **14.3 MiB** = 15,022,620 B。T16.0 の前は 14.0 MiB)
-    - `rings_used` は `rings` と**同じ鍵**で、**いま埋まっているぶんの実バイト** (T15.0 (13))。
+      T.14.3。**T.14.21 はこれを落としていた**ので `total` が RSS の説明に足りていませんでした。
+      T.15.0 (13) で足して 6.77 MB、T.16.0 で 6.95 MB — `/profile` の標本 1 本は 3,216 B で、`history` より大きい口です) と、
+      その合計 `total` (この機械では **14.3 MiB** = 15,022,620 B。T.16.0 の前は 14.0 MiB)
+    - `rings_used` は `rings` と**同じ鍵**で、**いま埋まっているぶんの実バイト** (T.15.0 (13))。
       1 件あたりの見積もりは `rings` と同じものを使うので、必ず `rings_used.<名前> ≤ rings.<名前>` です。
       `rings` は 0 時間でも 36.6 時間でも 1 バイトも変わりませんが、こちらは溜まるにつれて増えます
       (起動直後はほぼ 0)。割合は出しません (`used ÷ capacity` で出せますが、割合からは実バイトを戻せません)。
       件数そのものは `/recent` や `/errors` の `total` を見てください
     - `arenas` は `PROXY_MALLOC_ARENAS` で実際に掛けた `M_ARENA_MAX` (`0` = glibc の既定のまま)
-    - `rings_touched` (bool。T17.8) は、起動時にリングの置き場を満杯のぶん確保して 1 ページに 1 バイトずつ
+    - `rings_touched` (bool。T.17.8) は、起動時にリングの置き場を満杯のぶん確保して 1 ページに 1 バイトずつ
       触ったか。`true` なら **RSS は起動直後から天井の近く**に居るので、そこから増えたらリングが埋まった
       せいではなく、そのまま「増えた」の信号として読めます (この機械で 12.9 MiB を 3〜5 ms。満杯にしても
       RSS は +36 KiB。触らなければ満ちるまでの 1 日で約 12 MiB 増えていました)。触るのは `history`
@@ -1279,17 +1279,17 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       の 1 件の固定部 (`PROXY_RECORDS=off` では触らない) で、文字列は来たときに確保します。`trace`・
       `hostseries`・`quantiles` は使い始めに 1 回だけ確保する作りのまま触りません。触っても件数は
       増えないので `rings_used` は変わりません。**`--lite` と Linux 以外は `false`** (今までどおり満ちるまで伸びる)
-    - `baseline` (T24.4) は、**起動から 60 秒たった時点**の `heap_used + mmap − cache_memory` を
+    - `baseline` (T.24.4) は、**起動から 60 秒たった時点**の `heap_used + mmap − cache_memory` を
       `{"at":…,"bytes":…}` で出す欄です (状態ファイルの末尾の領域に**1 回だけ**書くので、`/status` を
       何度引いても動きません)。**その起動の値だけ**を出すので、起動し直すと (ホストの管理者による
       再起動でも) 60 秒たつまで `null` です。`mallinfo2` が読めない環境と `PROXY_STATS_PERSIST=off`
       (`--lite`) も `null`。**heap が増えたかはこの値との差で読める**ので、0 時間の雪像を撮らなくても
-      起動ごとに判定できます (判定表の phase24 の heap の行は、これがあればこれを使います。T24.2)
+      起動ごとに判定できます (判定表の phase24 の heap の行は、これがあればこれを使います。T.24.2)
 
     **足して RSS になる形ではありません**: `heap_free` は「アロケータが返していない」だけで常駐しているとは
     限らず (`MADV_DONTNEED` 済みのページ)、`mmap` も確保しただけで触っていないページは常駐しません。
     「RSS のうち説明できる部分を上から並べたもの」として読んでください。
-  - **直近の窓の正確な分位点** (`/status` の `recent_quantiles`。T14.31):
+  - **直近の窓の正確な分位点** (`/status` の `recent_quantiles`。T.14.31):
     `{"connect":{"n":1024,"p50":0.712,"p90":1.204,"p99":3.410,"max":9.876,"window_secs":137},"forward":{…},"wait":{…}}`。
     `hosts[]` の `p50_ms` / `p95_ms` や `/history` の分位点は **区間 (ホスト別 24 段・履歴 12 段) の内側を
     線形に補間した値**で、5〜10 ms の区間に入る限り 5.0〜10.0 のどこかを返します。こちらは
@@ -1302,10 +1302,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - `n` は環に残っている本数 (最大 1,024)、`window_secs` は**いちばん古い標本からの経過秒**
       (= この `n` 本が何秒ぶんか)。忙しければ数秒、暇なら数時間になります。
     - `connect` は CONNECT の**確立まで** (`connect://` の鍵のもの)、`forward` は forward の**初バイトまで**。
-      **エラーで終わった 1 本 (繋がらなかった 502 など) は入りません** (T20.4。`/history` の分布と同じ数え方。
+      **エラーで終わった 1 本 (繋がらなかった 502 など) は入りません** (T.20.4。`/history` の分布と同じ数え方。
       `0.18.0` までの版は「失敗するまでの時間」も入っていて、繋がらない宛先への再試行が続くと p90 が秒になりました)。
       `wait` も同じで、`n` は「繋がった本数」です
-    - **`wait` は利用者が待つ時間** (`queue + client_read + dns + connect` の和。**CONNECT だけ**。T15.0 (2))。
+    - **`wait` は利用者が待つ時間** (`queue + client_read + dns + connect` の和。**CONNECT だけ**。T.15.0 (2))。
       `connect` は要求行を読んだ**後**から測るので、accept してワーカーが動き出すまでの待ち (`queue`)
       も `Host` を読み終えるまで (`client_read`) も名前解決も入っていません。**次の「完了の定義」の
       基準線はこの `wait` を見てください**。まだ外にあるのは 2 つだけです: accept から要求行が届くまでと、
@@ -1318,7 +1318,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       原子操作もシステムコールも壁時計の読みも増えません。分位点を出すのは `/status`
       (と `/history?summary=1`) に来たときだけです。**`--lite` では 1 本も書きません**
       (`n` が 0 のまま)。メモリだけで `.rrd` には書かないので、再起動で消えます
-  - **起動直後の自己ベンチ** (`/status` の `self_bench`。T14.43):
+  - **起動直後の自己ベンチ** (`/status` の `self_bench`。T.14.43):
     `{"at":1789558422,"forward_us":42.6,"connect_us":140.0,"cores":4,"requests":20000,"connects":2000,"secs":3,"note":null}`。
     `PROXY_SELF_BENCH=on` で起動したときだけ入り、既定 (`off`) では `null` です。
     **置いた先のコンテナの CPU で 1 要求が何 us か**を、上の「性能」の表と同じ物差しで出すためのもの
@@ -1329,7 +1329,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     本数の上限で早く終わったことが入ります。**この 3 秒ぶんは他のどの口にも数えません**
     (`total_requests` も `/hosts` も `/recent` も素通し)。読めない環境 (Linux 以外) では
     数字が `null` になり `note` に理由が入ります
-  - **いまの転送速度** (`/connections` の各行の `rate_bps` と `/status` の `rate_bps_total`。T14.39):
+  - **いまの転送速度** (`/connections` の各行の `rate_bps` と `/status` の `rate_bps_total`。T.14.39):
     `bytes` は接続を受けてからの**累計**なので「いま誰が帯域を使っているか」が読めません。
     履歴スレッドが**5 秒ごとに全接続の `bytes` を控え**、前に控えた値との差分 ÷ その周期を
     **バイト/秒**で書きます。`rate_bps_total` はその全接続の和です。
@@ -1341,24 +1341,24 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - **上り / 下りの別はありません**: 中継は方向別のバイトを中継スレッドの中でだけ数えていて、
       `/connections` の枠には合計しか置いていないためです (方向別にするには中継の経路に
       原子を 2 つ増やすことになるので採りません)。向き別が要るときは `/hosts` の
-      `bytes_in` / `bytes_out` (T14.26。接続が閉じてからの集計) を見てください
+      `bytes_in` / `bytes_out` (T.14.26。接続が閉じてからの集計) を見てください
     - keep-alive の HTTP 接続も、**応答を書き終えて次の要求を待つ直前**に `bytes` を 1 回置くので
-      (T24.5)、`rate_bps` はその周期に終わった応答のバイト ÷ 周期になります。要求が 5 秒に 1 本
+      (T.24.5)、`rate_bps` はその周期に終わった応答のバイト ÷ 周期になります。要求が 5 秒に 1 本
       より少ないと、応答が終わった周期だけ跳ねて残りは 0 に見えます (値が動くのは要求の終わりだけ)。
       `--lite` では表そのものが空なので `rate_bps_total` は 0 です
-    - ダッシュボード (`/dashboard`) の「いまの接続」には**「速さ」の列**として出ます (T14.44)
+    - ダッシュボード (`/dashboard`) の「いまの接続」には**「速さ」の列**として出ます (T.14.44)
   - `PURGE <url>` / `/purge?url=<url>` / `/purge?all=1` でキャッシュを消す、`/lookup?url=<url>` でエントリの状態を見る
   - `/history?res=5|60|3600[&n=720]` で **6 時間 / 1 日 / 30 日**の履歴。
-    **`res=5` は 5 秒の標本を 6 時間ぶん (4,320 本) メモリに持ちます** (T14.32。バーストは数時間続く
-    (T14.0 の 09-11 は 17〜23 時) のに 5 秒の解像度が 1 時間ぶんしか無く、60 秒に畳むと山の形が鈍っていたためです)。
+    **`res=5` は 5 秒の標本を 6 時間ぶん (4,320 本) メモリに持ちます** (T.14.32。バーストは数時間続く
+    (T.14.0 の 09-11 は 17〜23 時) のに 5 秒の解像度が 1 時間ぶんしか無く、60 秒に畳むと山の形が鈍っていたためです)。
     **`n=` は新しい方から何本返すかで、既定は今までどおり 720 本** (1 時間ぶん。応答の大きさを変えないため)、
     最大 4,320 本 (`?res=5&n=4320`。デプロイ先の値なら 1.7 MB 前後)。`res=60` (1,440 本) と `res=3600` (720 本) は
-    既定で全部返るので `n=` を書く意味はありません。増えたのは**メモリだけ** (標本 1 本 688 B (T16.0。T15.0 では 664 B) × 4,320 = **2.83 MiB**。
+    既定で全部返るので `n=` を書く意味はありません。増えたのは**メモリだけ** (標本 1 本 688 B (T.16.0。T.15.0 では 664 B) × 4,320 = **2.83 MiB**。
     `/status` の `memory.rings.history`) で、**状態ファイル (`.rrd`) に書くのは今までどおり最新 720 本**です
     (ファイルの形も大きさ (8 MiB) も変わらず、再起動後に読み戻した 720 本はリングの末尾に入ります)。
     `?summary=1` (下) は 5 秒のリングが 6 時間ぶんあるので `?res=5` を**明示すれば** 6 時間前まで 5 秒で畳めますが、
     **`res=` を書かないときの解像度の自動選択の閾は変えていません** (1 時間までが 5 秒、1 日までが 60 秒)。
-  - **確立 / 初バイト / 待ちの 12 列に入るのは、エラーにならなかった要求だけ**です (T20.4):
+  - **確立 / 初バイト / 待ちの 12 列に入るのは、エラーにならなかった要求だけ**です (T.20.4):
     `connects` / `connect_ms_sum` / `connect_ms_max` / `connect_buckets` は**繋がった CONNECT**、
     `forwards` / `forward_ms_sum` / `forward_ms_max` / `forward_buckets` は **5xx にならなかった転送**
     (キャッシュ HIT も入ります。403 で断った要求は今までどおりどちらにも入りません)、
@@ -1377,10 +1377,10 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `connect_p95_ms` / `dns_per_connect`、ダッシュボードの KPI、異常の `connect_p95` と `dns_miss_rate`
     (分母の接続が「繋がった本数」になります。分子のミスは失敗した接続のぶんも入ったまま)、
     `/metrics` の `sorahost_connect_seconds` と段階のヒストグラム
-  - **`keys` の隣に `key_kinds`** が並びます (T15.0 (10))。`keys` と**同じ長さ・同じ並び**で、
+  - **`keys` の隣に `key_kinds`** が並びます (T.15.0 (10))。`keys` と**同じ長さ・同じ並び**で、
     その列の読み方を 1 つずつ書いたものです。**列の名前からは読み方が分かりません**
     (`requests` は起動からの通算、`connects` はその区間だけ) — 同じ表に 2 種類が混ざっているのは
-    意図したもの (T12.4 (3)) なので、綴りは変えずに読み方を隣に出しています:
+    意図したもの (T.12.4 (3)) なので、綴りは変えずに読み方を隣に出しています:
     - `time` = 窓の先頭の時刻 (epoch 秒)
     - `cumulative` = **起動からの通算**。レートが欲しければ隣の標本との差を取ってください
       (粗い解像度へは窓の最後の値で畳みます。再起動をまたぐと段差が 1 つ出ます)
@@ -1391,8 +1391,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - `peak` = その区間の最大 (粗い解像度へも最大)
     - `buckets` = **入れ子の配列** (要素ごとに足して畳みます。段の境目は `bounds_ms`、
       `errors_by_cause` の名前は `causes`)
-  - 末尾に足した列 (T15.0。**既存の列は 1 つも消していません・意味も変えていません**):
-    - **T15.0 より前に状態ファイル (`.rrd`) へ書かれた標本は、この 8 列が 0 で読み戻ります**
+  - 末尾に足した列 (T.15.0。**既存の列は 1 つも消していません・意味も変えていません**):
+    - **T.15.0 より前に状態ファイル (`.rrd`) へ書かれた標本は、この 8 列が 0 で読み戻ります**
       (版を上げずにレコードの余白へ足したので、古いレコードはそこがゼロ埋めです)。
       再デプロイ直後の `/history` には、その 0 が `?res=5` で最大 1 時間・`?res=60` で最大 1 日・
       **`?res=3600` で最大 30 日 (720 本)** ぶん並びます。`t` が最後の再起動より前の標本では、
@@ -1411,31 +1411,31 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       裏の引き直しの速さは **引き直し回数/時 ÷ その時間の平均 `dns_warm`** で 1 名前あたりになります
       (通算の平均で割ると実勢を 35〜60% 過小に見せます)。**引き直し回数は `/history` の列にはありません** —
       `/status` の `dns.refreshes` (起動からの通算) を 2 回引いて差を取ってください
-  - 末尾に足した列 (T16.0): **`dns_warm_max`** (`peak`) = その区間の warm な名前の件数の**最大**
+  - 末尾に足した列 (T.16.0): **`dns_warm_max`** (`peak`) = その区間の warm な名前の件数の**最大**
     (`dns_warm` は平均なので、枠 32 件がバーストで埋まったかは 60 秒と 1 時間の行からはこちらで読みます)、
     **`dns_warm_sum`** と **`gauge_n`** (どちらも `delta`) = その行に畳んだ 5 秒の標本の `dns_warm` の合計と標本の数
     (5 秒の行は `dns_warm` と同じ値と 1)。粗い解像度の**ゲージ 9 つ** (`active` / `mem_used` / `mem_limit` /
-    `disk_used` / `disk_limit` / `rss` / `threads` / `fds` / `dns_warm`) の平均は T16.0 から**標本の数で重みを付けて
+    `disk_used` / `disk_limit` / `rss` / `threads` / `fds` / `dns_warm`) の平均は T.16.0 から**標本の数で重みを付けて
     四捨五入**します (前は行の数で割って切り捨てていたので、5 秒 → 60 秒 → 1 時間の 2 段で下に偏っていました)。
     `dns_warm` は合計から出すので真の平均 ±0.5、ほかの 8 つは 60 秒の丸めを重ねるので 1 時間の行で最悪 ±1.0 です。
-    **T16.0 より前に書かれた標本はこの 3 列が 0** で読み戻り、畳むときは 1 本ぶん (`gauge_n` = 1) として扱います
+    **T.16.0 より前に書かれた標本はこの 3 列が 0** で読み戻り、畳むときは 1 本ぶん (`gauge_n` = 1) として扱います
     - **`requests_delta` / `bytes_delta`** = その区間に増えた要求数とバイト数。
       隣の `requests` / `bytes` は**通算のまま**残してあります (ダッシュボードと道具が読んでいます)。
       差は**標本を作るときに**取っているので、再起動の段差や欠けた標本があっても狂いません
     - **`active_peak`** = その区間の同時接続の**真の山**。`active_max` は 5 秒ごとの瞬間値の
       最大なので 5 秒より短い山を取りこぼしますが、こちらは接続を数え上げるたびに見ています
-      (**T15.0 以降に撮った標本では** `active_peak >= active_max`。それより前の標本は
+      (**T.15.0 以降に撮った標本では** `active_peak >= active_max`。それより前の標本は
       上のとおり `active_peak` が 0 で読み戻るので、この不等式は成り立ちません)
-    標本の後ろに **`closed`** が付きます (T14.6):
+    標本の後ろに **`closed`** が付きます (T.14.6):
     その窓に**閉じた接続**の分布で、閉じた理由 8 種の件数 (`reasons`。`/recent` の `reason` と同じ綴り。
     `error:*` は `error` 1 つに、**`client_dead` は `shutdown` にまとめます** — 標本の余白の都合で列は 8 つのままです。
-    1 本ずつ切り分けたいときは `/recent` の `reason` を読んでください。T14.52)・寿命の 12 段 (`life`、境目は `life_bounds_secs`。
+    1 本ずつ切り分けたいときは `/recent` の `reason` を読んでください。T.14.52)・寿命の 12 段 (`life`、境目は `life_bounds_secs`。
     `PROXY_KEEPALIVE_SECS` の 15 秒と `PROXY_TUNNEL_IDLE_SECS` の 300 秒が境目にあります)・
     上り / 下りバイトの 12 段 (`up` / `down`、境目は `byte_bounds` = 1 KiB から 4 倍ずつ)・
     寿命と預かり秒とバイトの合計が並びます。**標本 (`samples`) の形と読み方は変えていません** (別の配列です)。
     5 秒 × 720 と 60 秒 × 1,440 を**メモリだけ**に持ちます (`res=3600` は `null`、状態ファイルには書きません。
     版 3 で標本 1 本の余白は 516 B = 64 項目に広がったので、移すかどうかは項目ごとに決めます)。件数 0 の窓は出しません (行の先頭に窓の始まりの時刻があります)。
-    その隣に **`transfer`** (転送速度と半閉じの分布。T14.25) が付きます:
+    その隣に **`transfer`** (転送速度と半閉じの分布。T.14.25) が付きます:
     その窓に終わった **CONNECT のトンネル**だけを数えたもので、1 行 = `t`・`tunnels` (終わった本数)・
     `speed_n` と `speed` (**速さ = 運んだバイト ÷ 中継の時間**の 12 段。境目は `speed_bounds_bps` =
     **1 KiB/s から 4 倍ずつ 1 GiB/s まで** + 上限なしの 1 段 = 13 列。**1 KiB 以上運んだトンネルだけ**が対象で、
@@ -1445,7 +1445,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **1 ms から 4 倍ずつ** 1 / 4 / 16 / 64 / 256 / 1,024 / 4,096 / 16,384 / 65,536 / 262,144 / 1,048,576 /
     4,194,304 ms + 上限なしの 1 段。`PROXY_TUNNEL_IDLE_SECS` の既定 300 秒は上から 3 段目に入ります。
     **半閉じで終わらなかったトンネルは数えません**)・`bytes_sum` / `relay_ms_sum` / `half_close_ms_sum` (合計)・
-    **`stall_client_ms_sum` / `stall_origin_ms_sum`** (中継が**書けるのを待った** ms の合計。T14.42。
+    **`stall_client_ms_sum` / `stall_origin_ms_sum`** (中継が**書けるのを待った** ms の合計。T.14.42。
     **末尾に足した 2 列**で、既存の並びは 1 つも変えていません。`client` は「クライアントへ書けなかった」=
     利用者の下り回線か端末、`origin` は「オリジンへ書けなかった」= オリジンか利用者の上り。
     `tunnels` で割れば 1 本あたりの平均。1 本ごとの値は `/recent` の `stall_ms`。
@@ -1453,7 +1453,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **中継の時間は「寿命 − 確立まで − 預かり所にいた時間」** (預けは利用者が待っていない時間なので中継ではありません)。
     窓の作りと出し方は `closed` と同じ (5 秒 × 720 と 60 秒 × 1,440、メモリだけ、`res=3600` は `null`、
     本数 0 の窓は出さない)。**書くのはトンネルの終わりの 1 回だけ**で、要求の経路にも中継の往復にも費用はありません。
-  - `/history?since=<epoch>|restart&until=<epoch>&summary=1` は、**その期間を畳んだ 1 行だけ**を返します (T14.24)。
+  - `/history?since=<epoch>|restart&until=<epoch>&summary=1` は、**その期間を畳んだ 1 行だけ**を返します (T.14.24)。
     `{"from","to","interval_secs","first_t","last_t","samples","burst_samples","normal_hours_only","connects",`
     `"p50_ms","p95_ms","avg_ms","max_ms","forwards","forward_p50_ms","forward_p95_ms","forward_avg_ms","forward_max_ms",`
     `"dns_misses","dns_miss_per_connect","dns_miss_avg_ms","errors","errors_by_cause","causes","active_max",`
@@ -1462,12 +1462,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - `since=restart` は `/status` の `since_start_secs` と同じ**起動時刻**から (読み戻した再起動前の標本は入りません)。
       `since` を書かなければ残っているいちばん古い標本から、`until` を書かなければ今までです。
     - `normal_hours_only=1` を付けると **1 時間 300 本以上の標本 (バースト) を外した「平常時」**だけを畳みます
-      (T14.0 の定義。外した本数は `burst_samples`)。**5 秒の窓では閾が 1 本**になり確立のあった標本が全部外れるので、
+      (T.14.0 の定義。外した本数は `burst_samples`)。**5 秒の窓では閾が 1 本**になり確立のあった標本が全部外れるので、
       平常時を見るのは 60 秒か 1 時間の窓で。
     - 解像度は `?res=` が無ければ**期間の長さ**で選びます (1 時間までは 5 秒、1 日までは 60 秒、それ以上は 1 時間の窓)。
     - `p50_ms` / `p95_ms` は**その期間の 12 段のヒストグラムを足し合わせてから**区間内を線形に補間した値
       (`scripts/snapshot-diff.py` が手元で集計するのと同じ求め方なので、同じ期間を切れば同じ数字が出ます)。
-    - 末尾の `recent_quantiles` は `/status` と**同じもの** (直近 1,024 本の正確な分位点。T14.31) を
+    - 末尾の `recent_quantiles` は `/status` と**同じもの** (直近 1,024 本の正確な分位点。T.14.31) を
       そのまま添えたものです。**`p50_ms` とは別物**で、`since` / `until` に**従いません**
       (期間に関わらず直近 1,024 本)。1 ms 単位で読みたいときはこちらを、期間で切りたいときは `p50_ms` を。
     `/blocklist?host=<h>` でブロックリストの判定、
@@ -1493,7 +1493,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       その窓の増分 (us。`/proc/self/task/<tid>/schedstat` の 2 番目)。CPU の絞り (cgroup の quota) と
       隣のプロセスとの取り合いがどちらもここに出るので、**確立の尾がプロキシのせいか機械のせいか**を
       切り分けられます。`CONFIG_SCHEDSTATS` の無いカーネルでは `null` (`capabilities` の `proc_schedstat` が偽)
-    - **`user_us` / `cpu_user_us` (ユーザー空間の CPU。T16.0)** — `keys` の末尾の 2 列。`user_us` は `roles` と同じ長さの配列で
+    - **`user_us` / `cpu_user_us` (ユーザー空間の CPU。T.16.0)** — `keys` の末尾の 2 列。`user_us` は `roles` と同じ長さの配列で
       役割ごとの、`cpu_user_us` はプロセス全体の、その窓の CPU のうち**ユーザー空間** (utime の増分 us) です。
       **カーネル側は `threads` の `cpu_us − user_us` / `cpu_us − cpu_user_us`** で出します (sys は持ちません)。
       中継の CPU は大半がカーネル (`splice` / `poll`) なので、ビルドの設定のようにユーザー空間にしか効かない変更は
@@ -1503,9 +1503,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - **ロック** — 統計の表・名前解決の表・預かり所・ワーカーの 4 つが「待たされた」回数と、待ち行列で待った件数 / 合計 ms / 最大 ms
     - 記録はプロセスのメモリだけ (約 6.9 MB = 1 標本 3,216 B × (720 + 1,440)。状態ファイルには書きません)。応答は 256 KiB 以下で、
       入り切らないときは**新しい標本を残して**古い方から落とし `"truncated": true` を出します。**`--lite` では `{"profile":"off"}`**
-    - **`?n=` と `?offset=` (T15.0 (11))** — 応答の 256 KiB に対して標本 1 本の JSON の行が太いので、
-      デプロイ先の実測 (T15.0 の行の形) で `?res=5` は 720 標本のうち **456 本**、`?res=60` は 1,440 標本のうち **362 本**しか
-      1 枚に入りません (T16.0 で 1 行が 20〜90 B 太ったので少し減るはずですが、まだ測り直していません。
+    - **`?n=` と `?offset=` (T.15.0 (11))** — 応答の 256 KiB に対して標本 1 本の JSON の行が太いので、
+      デプロイ先の実測 (T.15.0 の行の形) で `?res=5` は 720 標本のうち **456 本**、`?res=60` は 1,440 標本のうち **362 本**しか
+      1 枚に入りません (T.16.0 で 1 行が 20〜90 B 太ったので少し減るはずですが、まだ測り直していません。
       上の 3,216 B はメモリの見積もりで、JSON の行の長さとは別の数です)。`n=` が 1 枚に返す標本の数
       (既定はその解像度の全部、上は 720 / 1,440)、`offset=` が**新しい方から何本飛ばすか**です。
       応答の末尾に `n` / `offset` / `next_offset` が出て、`next_offset` が `null` ならそれで終わりです。
@@ -1550,7 +1550,7 @@ Pterodactyl のように触れないコンテナで、**起動前の確認**と*
 終了コードは `capabilities` の 7 項目 (`resolver_ms` と `cgroup_cpu_path` を除く) が全部読めれば **0**、
 1 つでも読めなければ **1** です (名前解決を外すのは、リゾルバが遅い環境でもプロキシとしては動く —
 そしてそれ自体が測りたい数字 — ため。`cgroup_cpu_path` は真偽ではなく「どの階層の `cpu.stat` を読むか」を
-見せるだけの行です。T15.0 (6))。
+見せるだけの行です。T.15.0 (6))。
 
 ```
 $ rust-http-proxy --check
@@ -1621,7 +1621,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_MALLOC_ARENAS` | `8` | malloc のアリーナ数の上限 |
 | `PROXY_DNS_TTL_SECS` | `60` | 名前解決の結果を保持する秒数 |
 | `PROXY_DNS_NEGATIVE_SECS` | `60` | 名前解決の失敗を覚えておく秒数 (`0` で覚えない) |
-| `PROXY_DNS_WARM_SECS` | `0` | keep-warm: よく使う名前を裏で引き直し続ける窓 (秒。`0` で止める = 既定。T21.3 までの既定は `3600`) |
+| `PROXY_DNS_WARM_SECS` | `0` | keep-warm: よく使う名前を裏で引き直し続ける窓 (秒。`0` で止める = 既定。T.21.3 までの既定は `3600`) |
 | `PROXY_DNS_STALE_SECS` | `21600` | serve-stale: 期限切れでもこの秒数未満の答えは待たずに使い、裏で引き直す (`0` で止める) |
 | `PROXY_CANARY` | `auto` | canary: 要求が無い時間帯も待ちを測る宛先 |
 | `PROXY_CANARY_SECS` | `60` | canary の周期 (秒、最小 1) |
@@ -1743,18 +1743,18 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   **`CONNECT` のオリジン接続だけ**の締め切り (秒)。
   **未設定なら 5 秒と `PROXY_TIMEOUT_SECS` の小さい方**です (全体を 3 秒にしていれば 3 秒)。
   **`PROXY_TIMEOUT_SECS=0` (無期限) でも 5 秒**です — 繋がらない相手を無期限に待つ意味が無いためで、**無期限にしたいときは `0` と明示**してください。
-  **既定を 10 → 5 秒にした根拠 (2026-10-20、T23.3)**: 雪像 4 枚 (tokyo 3 枚 + nagoya 1 枚) の
+  **既定を 10 → 5 秒にした根拠 (2026-10-20、T.23.3)**: 雪像 4 枚 (tokyo 3 枚 + nagoya 1 枚) の
   `connect_buckets` を数えると、**5 秒を越えて成功した確立は tokyo の 12 日ぶん 91,258 本で 0 本**、
   nagoya の 28 日ぶん (258,951 本、失敗も区間に入れた古い版) でも 22 本 (= 1 日 0.79 本の上限、
   `timeout` 18 本を引けば 4 本) だけでした。2.5〜5 秒も tokyo の 12 日で 4 本 (= 1 日 0.33 本) です。
   一方 `timeout` は tokyo の 62 時間に 3,869 本あり、1 件 10 秒を丸ごと待っていました
   (**待ち 10.4 分/時 = 4.2 時間/日**)。5 秒にすると待ちが半分 (**2.1 時間/日**) になります。
-  T15.6 (2) が「5 秒は攻めすぎ」と言った根拠は、遠いオリジンで SYN の再送 (1 秒 → 3 秒) が重なると
+  T.15.6 (2) が「5 秒は攻めすぎ」と言った根拠は、遠いオリジンで SYN の再送 (1 秒 → 3 秒) が重なると
   4 秒台まで伸びうることでした。実測では 4 秒台の成功が 12 日で 4 本しかなく、**5 秒なら 4 秒台は切らずに残ります**
   (切るのは 5 秒を越えた分だけ)。数え直す道具は
   **`scripts/connect-timeout-replay.py SNAP.json …`** (`--secs` / `--hours` / `--json`)。
   **戻すには `.env` に `PROXY_CONNECT_TIMEOUT_SECS=10`** の 1 行 (再読込で効きます)。
-  戻す条件は「5 秒で切った接続のうち本当は繋がったはずのものが 1 日 1 本以上」(T23.99 で見ます)。
+  戻す条件は「5 秒で切った接続のうち本当は繋がったはずのものが 1 日 1 本以上」(T.23.99 で見ます)。
   **いまは `CONNECT` にだけ効きます**: forward のオリジン接続・オリジンとの読み書き・クライアントソケットの読み書き・ブロックリストの取得は `PROXY_TIMEOUT_SECS` のままです。
   繋がらない相手を待つ時間 (利用者から見える「固まっている」時間) だけを縮めるための鍵です — `PROXY_TIMEOUT_SECS` を短くすると大きな本文の転送や遅い応答まで切ってしまうためです。
   Happy Eyeballs の締め切りも同じ値なので、締め切りで抜けた接続は `/errors` に `cause: "timeout"` で残ります。
@@ -1794,7 +1794,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 - **`PROXY_MAX_THREADS`** (既定 `auto`)
   同時に生きていてよい接続スレッドの上限。上限に達したら**新しいスレッドを起こさず、その仕事を待たせる** (捨てない。空いたスレッドが順に引き取る)。
   `auto` は `min(PROXY_MAX_CONNS, コア数 × 64 を 128〜512 に収めた値)` で、コア数は `taskset` で絞られていればその数。
-  数値を書けばその値、`0` で無制限 (T10.5 以前の動き)。
+  数値を書けばその値、`0` で無制限 (T.10.5 以前の動き)。
   上限があるのは、預けた接続が一斉に切れたときにスレッドが跳ねないようにするため (暇なトンネル 5,000 本の一斉 close で、上限なしだと一時的に 4,400〜4,700 スレッド・RSS 65 MB、上限 256 なら 260 スレッド・RSS 27 MB)。
   `.env` で即時反映 (次に受ける接続から効く。**下げても走っているスレッドは殺さず**、仕事を終えたスレッドから順に減ります。`auto` のときは `PROXY_MAX_CONNS` を変えるとこちらも決め直します)。
   決まった値は起動ログの `max connection threads:` と `/status` の `max_threads` に出る (いまの本数は `/status` の `live_threads` / `idle_threads`、上限に当たって待たせている仕事は `queued_jobs`。`/metrics` にも `sorahost_max_threads` / `sorahost_live_threads` / `sorahost_idle_threads` / `sorahost_queued_jobs` として出る)。
@@ -1832,18 +1832,18 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   覚えている間は OS に問い合わせずに同じエラーを返します (`/status` の `dns.negative_hits`)。
   引けない名前 1 つで 2 秒待たされることがあるための蓋で、古い答えが 1 時間以内にあるときはエラーより古い答えを優先します。
   `.env` で即時反映
-- **`PROXY_DNS_WARM_SECS`** (既定 `0` = 止める。T22.4 で `3600` から変えた)
+- **`PROXY_DNS_WARM_SECS`** (既定 `0` = 止める。T.22.4 で `3600` から変えた)
   **keep-warm**: 直近この秒数に **2 回以上**使われた名前 (warm) は、使われていなくても `PROXY_DNS_TTL_SECS` の 3/4 ごとに裏で引き直し続けます (`0` で無効 = 直近 TTL 内に使われた名前だけ 1 回先回りする動きに戻る)。
-  **既定で止めている理由 (T22.4)**: serve-stale (`PROXY_DNS_STALE_SECS`) のもとでは、warm が救っていた期限切れのミスは待たない古い答えの当たりになるので、warm の引き直し (1 名前 80 回/時、tokyo では 32 件で約 2,000 回/時) はミスをほとんど減らしません。
+  **既定で止めている理由 (T.22.4)**: serve-stale (`PROXY_DNS_STALE_SECS`) のもとでは、warm が救っていた期限切れのミスは待たない古い答えの当たりになるので、warm の引き直し (1 名前 80 回/時、tokyo では 32 件で約 2,000 回/時) はミスをほとんど減らしません。
   `scripts/dns-replay.py --grid` の再生 (雪像 3 枚) で、止めると引き直しは今の 5〜27%、`expired` + `warm_stale` のミスは増えませんでした。代わりに古い答えで繋ぎに行く回 (`dns.stale_hits`) が増えます。
-  T21.3 までの動きに戻すときは `PROXY_DNS_WARM_SECS=3600`。
+  T.21.3 までの動きに戻すときは `PROXY_DNS_WARM_SECS=3600`。
   TTL (60 秒) を熱さの物差しにすると、間隔が TTL より長いホストは 1 つも救えません (デプロイ先の主要 3 件は 2〜10 分間隔で、ミス率は 0.31 / 0.76 / 1.00 でした)。
   1 回だけ使われた名前は warm にしません (引き直しても二度と来ない)。
   答えを持っている名前だけが warm になります (引けない名前は負のキャッシュの担当)。
   同時に warm でいられるのは **32 件**まで (最後の使用がいちばん古いものから外す) で、最後の使用からこの秒数を過ぎたら引き直しを止めます。
   最悪でも 32 件 ÷ 45 秒 ≈ 0.7 回/秒。いま warm な名前の数は `/status` の `dns.warm`、名前ごとの予定は `/dns` の `warm` / `next_refresh_secs`。
   **逆に、この窓より長い間隔で来る名前は救えません**: デプロイ先の実測 (2026-09-18、36.6 時間) では上の 3 件が 0.02 / 0.15 / 0.01 に下がりましたが、`discord.com` だけ 0.15 が残りました — 2〜4 本の塊が**約 1,800 秒おき**に来るので**(当時の既定) 900 秒**の窓をいつも外れ、塊の 1 本目が必ずミスするためです (`2026-09-18T053213Z-snapshot.json` の `$.hosts.hosts` の差分と `$.hosts_series`)。
-  **そこで T15.4 で既定を 900 → 3,600 秒に広げました** (デプロイ先での効きの判定は T15.99)。
+  **そこで T.15.4 で既定を 900 → 3,600 秒に広げました** (デプロイ先での効きの判定は T.15.99)。
   `.env` で即時反映
 - **`PROXY_CANARY`** (既定 `auto`)
   **canary** (利用者の要求が無い時間帯も待ちを測る): `PROXY_CANARY_SECS` 秒に 1 回、宛先へ**名前解決と TCP 接続だけ** (と `PROXY_CANARY_IPV6=on` なら AAAA へもう 1 本) を行って時間を残します (握ったらすぐ閉じ、TLS も HTTP も送りません。相手に届くのは 1 分に 1 回の SYN と FIN だけ)。
@@ -1859,7 +1859,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 - **`PROXY_CANARY_IPV6`** (既定 `on`)
   canary の **IPv6 側**: 同じ周期に、canary の名前の **AAAA へ 1 本だけ**繋いでみて `/status` の `canary.ipv6_connect_ms` と `/history` の `canary` の 5 列目 (`canary_ipv6_connect_ms`) に残します。
   繋がれば ms、**繋がらなければ `null`** (AAAA が無い名前、`PROXY_IPV6=off`、経路が黒穴、ここが `off`)。
-  コンテナの IPv6 が黙って落ちる環境で「生き返ったか」を 1 分の粒度で読むための観測で、**IPv6 の探りも引き受けます** (T17.7):
+  コンテナの IPv6 が黙って落ちる環境で「生き返ったか」を 1 分の粒度で読むための観測で、**IPv6 の探りも引き受けます** (T.17.7):
   この 1 本が試している間は利用者の要求で 600 秒に 1 回 IPv6 を先頭に戻す探りをやめ (`/status` の `ipv6.probe_by` が `"canary"`)、繋がれば `v4_first` を解きます。
   **Happy Eyeballs も `ipv6` の勝敗 (`attempts` / `wins` / `losses`) もホストごとの族の記憶も動かしません**。`off` にすると、最後の 1 本から 600 秒で探りは利用者の要求に戻ります。
   失敗は `/errors` に残しません (黒穴のままだと 1 分に 1 件ずつ埋まるため)。
@@ -1894,7 +1894,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   **宛先の `PROXY_ALLOW_HOSTS` / `PROXY_ALLOW_LOCAL` とは無関係**で、**認証でもありません** (同じアドレスから来られれば誰でも通ります)。
   `.env` で即時反映 (次に受ける接続から)
 - **`PROXY_TRACE_CLIENT`** (既定 なし (追跡しない))
-  **1 つの接続元だけ**を追いかけて、その要求を `/trace` に残します (T14.27)。
+  **1 つの接続元だけ**を追いかけて、その要求を `/trace` に残します (T.14.27)。
   値は IP を 1 つ (`198.51.100.7` / `2001:db8::1`。v4-mapped IPv6 は IPv4 として照合します)。
   設定すると **accept した直後に接続元がこの IP かどうかを 1 回だけ**見て、一致した接続に旗を立てます。
   旗の立った接続は、要求ごとに**要求行** (メソッド + **URL の先頭 256 バイト** + HTTP の版)・応答の状態・所要 ms・バイト・**段階の ms**を、CONNECT はトンネルの終わりに**宛先と閉じた理由**を、**1,000 行の環状バッファ**に 1 行書きます (`/trace?n=200&since=<epoch>`、既定 200 行・最大 1,000)。
@@ -1905,7 +1905,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   `--lite` は接続の枠を作らないので**追跡しません**。
   `.env` で即時反映 (次に受ける接続から。いま開いている接続の旗は動きません)
 - **`PROXY_PEEK_SNI`** (既定 `on`)
-  CONNECT の最初のバイト (TLS の ClientHello) から **SNI** を読んで個票 (`/recent` の `sni`) に残します (T14.38)。
+  CONNECT の最初のバイト (TLS の ClientHello) から **SNI** を読んで個票 (`/recent` の `sni`) に残します (T.14.38)。
   `200 Connection Established` を書いたあと**最初の中継の前に 1 回だけ** `recv(MSG_PEEK)` で 1,024 バイト覗くだけで、**バイトは消費しません** (そのあとの `splice` は今までどおり)。
   費用は**トンネル 1 本にシステムコール 1 回**で、要求ごとにも中継のバイトごとにも増えません。
   覗くのは **443 宛ての CONNECT だけ** (それ以外は TLS とは限らないため)。
@@ -1913,7 +1913,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   `--lite` は接続の枠を作らないので覗きません。CONNECT の宛先のホストと SNI が食い違った本数は `/status` の `sni_mismatches` と `/hosts` の `sni_mismatch` (どちらもメモリだけ。**IP リテラル宛ては必ず食い違います**)。
   再起動が要ります (`.env` では反映しません)
 - **`PROXY_BURST_PERCENT`** (既定 `50`)
-  同時接続数が `PROXY_MAX_CONNS` のこの割合を**越えた瞬間**に `/connections` の写真を 1 枚撮って `/bursts` に残す (T14.6)。
+  同時接続数が `PROXY_MAX_CONNS` のこの割合を**越えた瞬間**に `/connections` の写真を 1 枚撮って `/bursts` に残す (T.14.6)。
   `0` で撮らない。**同じ山では 1 枚だけ**で、閾の 80% を下回るまで次は撮りません。
   撮るのは履歴スレッド (5 秒周期) なので、接続を受ける経路に増えるのは比較 1 回だけです。
   割合を当てるのは `PROXY_MAX_CONNS` だけで、上限の外の枠 4 本 (自分宛て用) は含めません。
@@ -1945,7 +1945,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 - **`PROXY_TLS_CA_FILE`** (既定 なし (システムの CA))
   追加で信頼する CA 証明書 (PEM)
 - **`PROXY_TCP_KEEPALIVE`** (既定 `on` (= `on:60:10:3`))
-  **消えたクライアントを見つける** TCP keepalive です (T14.52)。
+  **消えたクライアントを見つける** TCP keepalive です (T.14.52)。
   端末のスリープや回線の切断では FIN も RST も来ないので、CONNECT トンネルは `PROXY_TUNNEL_IDLE_SECS` (既定 300 秒) の期限切れまで残り、閉じた理由が `idle_timeout` になって**「本当に暇」と「相手が消えた」が区別できません**。
   `on` にしておくと **accept した直後にクライアント側のソケットへ `SO_KEEPALIVE` / `TCP_KEEPIDLE` 60 秒 / `TCP_KEEPINTVL` 10 秒 / `TCP_KEEPCNT` 3 を当てる**ので、消えた相手は **60 + 10 × 3 = 約 90 秒**で `ETIMEDOUT` になり、`/recent` の `reason` が **`client_dead`** になります (`/history` の `closed` の集計では `shutdown` に畳みます)。
   `on:<idle>:<intvl>:<cnt>` で 3 つとも秒 / 回を指定できます (`on:1:1:2` なら約 3 秒。試験用)。
@@ -1959,7 +1959,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 #### 記録とプロファイル
 
 - **`PROXY_RECORDS`** (既定 `on`)
-  個票 (`/recent` `/errors` `/connections` `/clients` `/log` `/events` `/trace` `/bursts` `/readers`) に**何を残すか**の旗です (T14.41)。
+  個票 (`/recent` `/errors` `/connections` `/clients` `/log` `/events` `/trace` `/bursts` `/readers`) に**何を残すか**の旗です (T.14.41)。
   `on` は今までどおり、**`off` はその 9 つに 1 件も書かず**個票のファイルにも書きません (`"persisted": false`。**ホスト別の統計 `/hosts` と時系列 `/history` `/daily`、`/status` の数字は残ります** — 個人に結びつくのは接続元の側だけなので)、**`hashed` は接続元 IP を 16 桁の 16 進に置き換えて**残します (**起動ごとの乱数つき FNV-1a 64 ビット**。同じ起動の中では同じ接続元が同じ値になり、再起動すると変わります。`/clients` の鍵も同じ値)。
   **認証を入れない方針なので、公開ポートで個票を誰にも見せたくないときのつまみ**です。
   **判定は必ず生の IP**で行うので `PROXY_ALLOW_CLIENTS` / `PROXY_MAX_CONNS_PER_CLIENT` / `PROXY_TRACE_CLIENT` は `off` でも効きます。
@@ -1971,7 +1971,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   **1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。
   `off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`)、**ホスト別の時系列** (`/hosts/series`) は空になり、個票の `"persisted"` は `false`、日次の要約も **日次の snapshot** も書きません)
 - **`PROXY_SNAPSHOT_DAYS`** (既定 `30`)
-  **日次の snapshot** を残す日数 (T14.34)。
+  **日次の snapshot** を残す日数 (T.14.34)。
   履歴スレッドが **UTC の日付をまたいだ瞬間**にその時点の `/snapshot` をまるごと `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` (名前は**終わった日**) に書き、**31 個目を書いたら最古を 1 つ消します**。
   1 ファイルは `/snapshot` と同じ **4 MiB** まで (30 日で最大 120 MiB、静かなプロキシなら 1 日 20 KB 前後)。
   `0` で書きません。読む口は `/snapshots` と `/snapshots/<date>`。
@@ -1979,9 +1979,9 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   ディスクの空きが `PROXY_DISK_KEEP_FREE_MB` のマージンを割り込むときは書かずに `/events` に 1 件 (`state_file`) 残します。
   **再起動で反映**
 - **`PROXY_SLO`** (既定 `connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2`)
-  **SLO の 4 つの閾** (T14.50)。履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、**4 つとも満たした標本の割合**を `/slo` で返します (`connect_p50_ms` / `connect_p95_ms` = その 5 秒に確立した CONNECT の p50 / p95 (ms)、`error_rate` = エラー ÷ 試み (確立 + 転送 + エラー)、`dns_miss_per_connect` = 名前解決のミス ÷ 確立。**満たす = 閾以下**)。
+  **SLO の 4 つの閾** (T.14.50)。履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、**4 つとも満たした標本の割合**を `/slo` で返します (`connect_p50_ms` / `connect_p95_ms` = その 5 秒に確立した CONNECT の p50 / p95 (ms)、`error_rate` = エラー ÷ 試み (確立 + 転送 + エラー)、`dns_miss_per_connect` = 名前解決のミス ÷ 確立。**満たす = 閾以下**)。
   **確立もエラーも 1 本も無い 5 秒は「判定なし」**で分母に入れません (誰も使っていない夜中を「達成」と数えると、達成率が「動いていた割合」に化けるため)。
-  **「確立」は繋がった CONNECT の本数**です (T20.4。`0.18.0` までは失敗した CONNECT も確立に数えていて、失敗 1 件が「確立」と「エラー」の両方に居ました)。試み = 確立 + 転送 + エラー は失敗 1・成功 1 で 2 になり、失敗の「失敗するまでの時間」は `connect_p50_ms` / `connect_p95_ms` に入りません。**繋がらなかった CONNECT しか無い 5 秒 (確立 0 本・エラー 1 件以上) は、`error_rate` だけを外した 5 秒として数えます** (速さとミスの 3 つは 0 として外しません。`0.18.0` までは `error_rate` と `connect_p95_ms` の 2 つを外した 5 秒でした)。宛先が全滅した時間帯も達成率に出ます。
+  **「確立」は繋がった CONNECT の本数**です (T.20.4。`0.18.0` までは失敗した CONNECT も確立に数えていて、失敗 1 件が「確立」と「エラー」の両方に居ました)。試み = 確立 + 転送 + エラー は失敗 1・成功 1 で 2 になり、失敗の「失敗するまでの時間」は `connect_p50_ms` / `connect_p95_ms` に入りません。**繋がらなかった CONNECT しか無い 5 秒 (確立 0 本・エラー 1 件以上) は、`error_rate` だけを外した 5 秒として数えます** (速さとミスの 3 つは 0 として外しません。`0.18.0` までは `error_rate` と `connect_p95_ms` の 2 つを外した 5 秒でした)。宛先が全滅した時間帯も達成率に出ます。
   書いた閾だけが効き、書いていない閾・知らない綴り・数として読めない値・負の値は既定のままです (例: `PROXY_SLO=connect_p50_ms=6` だけ書けば p50 の閾だけ 6 ms になる)。
   効いている値は `/config` の `PROXY_SLO` と `/slo` の `thresholds`。
   判定するのは履歴スレッドなので**要求の経路の費用は 0** で、`PROXY_STATS_PERSIST=off` と `--lite` では 1 本も判定しません。
@@ -1999,7 +1999,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   `schedstat` だけが無いカーネル (`CONFIG_SCHEDSTATS` 無し) では `run_delay_us` が `null` になるだけで、ほかは変わりません。
   **`--lite` では `/profile` ごと off**
 - **`PROXY_SELF_BENCH`** (既定 `off`)
-  **起動直後に loopback だけで 3 秒の自己ベンチ**を回して CPU/要求 と CPU/本 を測ります (T14.43)。
+  **起動直後に loopback だけで 3 秒の自己ベンチ**を回して CPU/要求 と CPU/本 を測ります (T.14.43)。
   待ち受けを開いた直後に、このプロセスの中へ**固定 1 KiB を返すオリジン** (`no-store`) と**すぐ閉じる sink** を `127.0.0.1` の使い捨てポートに立て、**自分の待ち受けへ** forward 8 並列と CONNECT 8 並列を打ちます。
   **外へは 1 バイトも出しません**。結果は `/status` の `self_bench` と、起動ログ・`/events` の 1 行 (`self_bench forward 43 us, connect 140 us …`)。
   **本数に上限があり** (forward **20,000 要求** / CONNECT **2,000 本**)、秒数より先に当たればそこで終わります (上限が無いと CONNECT を 1.5 秒で 22,000 本張り、TIME_WAIT が 44,000 残ります)。
@@ -2274,12 +2274,12 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 責務ごとの層に分けてあります (41 + 本体)。分けている理由は 2 つで、責務を 1 つに保つことと、`rustc` がクレート単位で
 全部を一度に抱えるためビルドのメモリがそのまま行数に比例すること (動作環境の `SERVER_MEMORY` は 256 MiB)。
 
-**クレートの版の決まり** (2026-10-23 に T26.3 の「デプロイの番号」を撤回して、T21.6 の形に戻しました): 各クレートの版は
-**そのクレートの中身を最後に変えたタスクの番号** `0.<タスク>.<番号>` です (T19.1 → `0.19.1`、T25.3 → `0.25.3`)。
+**クレートの版の決まり** (2026-10-23 に T.26.3 の「デプロイの番号」を撤回して、T.21.6 の形に戻しました): 各クレートの版は
+**そのクレートの中身を最後に変えたタスクの番号** `0.<タスク>.<番号>` です (T.19.1 → `0.19.1`、T.25.3 → `0.25.3`)。
 本体 (`rust-http-proxy`) と `proxy-server` は**そのビルドに入っている最後のタスク** = 全クレートの版と `src/` を最後に変えたタスクのうち最大です
 (`-V` の版は `proxy-server` の `build.rs` が `CARGO_PKG_VERSION` から作ります)。**タグは本体の版**です (`v0.25.3` ↔ `0.25.3`)。
 デプロイは複数のタスクをまとめてよく、そのときのタグは**まとめた中で一番大きいタスクの番号**になります (番号はタスクの番号なので、前に出したタグより小さくなることもあります)。
-タスクの中で上げるときは `scripts/crate-versions.py --task T19.1` (分かれ目から中身が変わったクレートを `0.19.1` にし、本体と `proxy-server` を最大にします)。
+タスクの中で上げるときは `scripts/crate-versions.py --task T.19.1` (分かれ目から中身が変わったクレートを `0.19.1` にし、本体と `proxy-server` を最大にします)。
 「中身が変わった」は `crates/<名前>/` の差分から `Cargo.toml` の `version` の 1 行を除いたもの、本体は `src/` の下です。
 
 | クレート | 責務 |
@@ -2406,7 +2406,7 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 `apt-get install shellcheck` / `brew install shellcheck`。CI の `check` ジョブも同じ命令を回すので、
 引数は CI と揃えてください)。
 
-**文書とコードが同じ集合かを見るのは `scripts/check-docs.sh`** (T14.56)。エンドポイントも環境変数も
+**文書とコードが同じ集合かを見るのは `scripts/check-docs.sh`** (T.14.56)。エンドポイントも環境変数も
 別々の作業で増えていくので、「**コードにあるのに文書に無い / 文書にあるのにコードに無い**」を機械で見ます。
 突き合わせるのは 7 つで、(a) `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"` と
 上の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`)、(b) コードの `"PROXY_…"` / `"SERVER_…"` の
@@ -2415,13 +2415,13 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 (e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(41 + 本体)」の数も見ます)、
 **(f) この README が `scripts/<名前>.py` と書いている道具に実行ビットがあるか** (そのまま叩ける道具か。
 README にあるのにファイルが無いものも NG。共通部品の `proxydata.py`、判定の部の `snapshot_criteria.py`、
-unittest が名前で読む `test_*.py` は、叩かないものとして除外表に理由つきで入れてあります。T24.7)、
+unittest が名前で読む `test_*.py` は、叩かないものとして除外表に理由つきで入れてあります。T.24.7)、
 **(g) 台帳** (`TASKS.md` の**未着手**、`TODO.md` の §5 (タスクの見出しと索引だけ)、`tasks/TNN.md` の
 3 つ。**移し忘れ** (`TASKS.md` に `- [x]` が無いこと。済んだタスクは `tasks/` へ移します)、
 **リンク** (`tasks/TNN.md` と §5 の `### タスク NN (…)` の見出しが両方向で
-1 対 1)、**番号** (`T24.10` が台帳全体で 1 回だけ。番号のタスクが置き場所と合うこと)、
+1 対 1)、**番号** (`T.24.10` が台帳全体で 1 回だけ。番号のタスクが置き場所と合うこと)、
 **1 行目** (`# タスク NN — …`) を見ます。中身は `scripts/check-ledger.py` で、台帳だけを回すなら
-これ 1 本です。T24.10 / T24.13)。
+これ 1 本です。T.24.10 / T.24.13)。
 **意図的に外してあるものはスクリプトの中の除外表に理由つきで持ちます** (`/snapshot` に入れない 18 の口、
 ビルド時にしか無い `PROXY_VERSION`、`tasks/README.md` = `tasks/` の索引 など)。差分が 1 件でもあれば
 その名前を印字して終了コード 1 です。
@@ -2523,7 +2523,7 @@ curl -x localhost:8080 http://example.com/
 
 イメージに入れるのは `Cargo.toml` / `Cargo.lock` / `.cargo` / `crates` / `src` だけです
 (本体は 26 個のクレートに分かれているので `crates` が要ります)。
-版の文字列を作る `build.rs` は `crates/server/` にあるので `crates` に含まれます (T15.12 段 6')。`.git` は入れないので、
+版の文字列を作る `build.rs` は `crates/server/` にあるので `crates` に含まれます (T.15.12 段 6')。`.git` は入れないので、
 イメージの中の版は `rust-http-proxy 0.18.0+unknown` になります。
 `.dockerignore` で `target/` と `**/target/` を送らないようにしてあります
 (イメージには元から入りませんが、ビルドコンテキストとして daemon へ送ると
@@ -2560,7 +2560,7 @@ curl -x localhost:8080 http://example.com/
 | バイナリ | 2,760,504 B | **1,842,976 B** (852 KB 小さい) |
 | CPU/要求 (forward 8 並列) | 41.4 us | **39.6 us** |
 
-(バイナリの大きさと通る最小のメモリは 2026-09-26 (T17.11 = T15.12 段 8) の実測です。2026-09-24 (段 7) の時点は
+(バイナリの大きさと通る最小のメモリは 2026-09-26 (T.17.11 = T.15.12 段 8) の実測です。2026-09-24 (段 7) の時点は
 `release` 2,694,968 B・通る最小 105〜110 MB、2026-09-19 (段 5・段 6') の時点は
 `release` 2,563,896 B・通る最小 120〜125 MB、2026-09-08 の時点は `release` 1,381,872 B / `dist` 1,054,184 B (327 KB 小さい) でした。
 CPU/要求 の 2 つは 2026-09-08 の値で、段 5 / 段 7 では測り直していません。速さの測り方は上の「性能」と同じです)
@@ -2580,13 +2580,13 @@ CI で通る最小は測っていません):
 `fat` は効きますが 120 MB の約 3 倍のメモリが要ります。`thin` は 170 MB 払ってもバイナリが
 8 バイトしか変わらず、速さもぶれの中です。配布バイナリだけ `dist` (fat LTO) で作ります。
 
-**`codegen-units` は全クレート `4`** (2026-09-24、T15.12 段 7): ビルドの山はコード生成 (LLVM) の段で、
+**`codegen-units` は全クレート `4`** (2026-09-24、T.15.12 段 7): ビルドの山はコード生成 (LLVM) の段で、
 `codegen-units = 1` はクレート全体の LLVM IR を 1 つのモジュールとして一度に抱えます。
 全クレートに当てて測った実測 (手元 aarch64、`jobs = 1`、RssAnon の最大) は
 `proxy-metrics-watch` 121.7 → 92.5 MB (`= 4`) → 84.3 MB (`= 16`)、クリーンビルド 95 → 106 → 133 秒で、
 **4 より上げても減りません** (コード生成の前の段 = 型検査とメタデータの床が約 80 MB)。
 全クレート `4` のいまの上位は `proxy-endpoints` 82.5 > `proxy-server` 81.5 > `proxy-metrics-recent` 76.9 >
-`proxy-http` 74.7 MB です (2026-09-26、T17.11 で `proxy-metrics-watch` 95.4 MB と `proxy-metrics-window` 91.1 MB を
+`proxy-http` 74.7 MB です (2026-09-26、T.17.11 で `proxy-metrics-watch` 95.4 MB と `proxy-metrics-window` 91.1 MB を
 2 つずつに割った後。段 7 の前は `proxy-metrics-window` 107.8 MB がいちばん上)。
 `codegen-units` を増やすとクレートの中でのインライン化の範囲が狭まりますが、手元もデプロイ先も共有の機械で
 CPU/要求 が数 % ぶれるので手元の A/B は取らず、**デプロイ先で「桁で悪くなっていないか」だけ**を見ます。
@@ -2658,7 +2658,7 @@ curl -i http://127.0.0.1:8080/healthz
 # メトリクス確認 (キャッシュ統計・予算・マージン・先行確保量・システム使用量・カーネルと cgroup の窓を含む)
 curl http://127.0.0.1:8080/status
 curl "http://127.0.0.1:8080/status?sort=errors"         # 上位 50 をエラーの多い順で切り出す (dns / slow も)
-curl "http://127.0.0.1:8080/status?hosts=0"             # hosts[] を省いた軽い形 (監視のポーリング用。T25.1)
+curl "http://127.0.0.1:8080/status?hosts=0"             # hosts[] を省いた軽い形 (監視のポーリング用。T.25.1)
 curl http://127.0.0.1:8080/metrics                      # Prometheus 形式
 curl http://127.0.0.1:8080/config                       # 効いている設定とその出どころ (下記「環境変数」)
 curl "http://127.0.0.1:8080/profile?res=5"              # 待ちの段階・スレッドの CPU と状態・ロックの取り合い
@@ -2680,7 +2680,7 @@ curl "http://127.0.0.1:8080/events?n=200"               # 起動・再読込・�
 curl "http://127.0.0.1:8080/events?since=$(( $(date +%s) - 86400 ))"  # 直近 1 日の出来事だけ
 curl -s "http://127.0.0.1:8080/events?n=512" | grep -o '"kind":"anomaly","text":"[^"]*"'  # 自動検知だけ
 curl "http://127.0.0.1:8080/history?res=5"              # 時系列 (既定 720 標本 = 1 時間) + closed + transfer
-curl "http://127.0.0.1:8080/history?res=5&n=4320"       # 5 秒刻みで 6 時間ぶん (T14.32)
+curl "http://127.0.0.1:8080/history?res=5&n=4320"       # 5 秒刻みで 6 時間ぶん (T.14.32)
 curl "http://127.0.0.1:8080/history?since=restart&summary=1&normal_hours_only=1"  # 起動からの要約 1 行
 curl "http://127.0.0.1:8080/dns?sort=misses"            # 名前解決の表 (age / host / misses で並べ替え)
 curl "http://127.0.0.1:8080/hosts?sort=slow&limit=200"  # 全ホスト (/status の hosts[] は上位 50 だけ)
@@ -2735,12 +2735,12 @@ curl -s http://127.0.0.1:8080/status | head -c 32     # {"schema":1,"status":"ok
 版を上げると「変わっていないのに分岐が増える」ことになります)。
 
 `/history` の応答には、上の標本 (`keys` / `samples`) とは**別に** `canary` の配列が付きます
-(`res=5` と `res=60` のときだけ中身が入ります。T14.10)。
+(`res=5` と `res=60` のときだけ中身が入ります。T.14.10)。
 
 `/dashboard` はブラウザで開くコントロールパネルです (依存なしの 1 ページ。2 秒ごとに `/status`、5 秒ごとに `/history`、
 **30 秒ごとに `/status?sort=errors` と `?sort=dns`** を取って描きます。並べ替えた 2 本だけ間隔を空けているのは、
 2 秒ごとに引くとプロキシ側で 50 ホストぶんの組み立てが 3 倍になるためです)。`/history` は 5 秒間隔の JSON で、既定は直近 1 時間分 (720 標本) です
-(リングは 6 時間ぶん持っていて `?n=4320` で遡れます。T14.32)。**標本は配列の配列**で、列名は先頭の `keys` に
+(リングは 6 時間ぶん持っていて `?n=4320` で遡れます。T.14.32)。**標本は配列の配列**で、列名は先頭の `keys` に
 1 回だけ出ます (項目が 32 に増えたため)。要求数・転送量・命中/ミス・メモリ/ディスク使用量・RSS・
 **上限に当たって暇なトンネルを追い出した回数** (`evicted_idle`) は累計 (ブラウザ側で
 差分を取ってレートにする)、応答時間の分布 (`connect_*` / `forward_*` の件数・合計 ms・最大・12 段の区間) と
@@ -2749,7 +2749,7 @@ curl -s http://127.0.0.1:8080/status | head -c 32     # {"schema":1,"status":"ok
 **最大** (`active_max` / `threads_max` / `fds_max`) の両方を残します (平均に畳むと山が消えるため)。
 `/history` の応答には**別の配列** `"kernel":{"keys":[...],"samples":[[...]]}` が付きます
 (上の「カーネルと cgroup の窓」。`res=3600` は `null` = この解像度の窓は持っていません)。
-`?summary=1` を付けると**標本を返さず、その期間を畳んだ 1 行**になります (上の `/history?...&summary=1`。T14.24)。
+`?summary=1` を付けると**標本を返さず、その期間を畳んだ 1 行**になります (上の `/history?...&summary=1`。T.14.24)。
 ブラウザの HTTP プロキシにこのプロキシを設定した状態で `http://ホスト:ポート/dashboard` を開くと要求は
 絶対形式で届きますが、ポートが自分の待ち受けポートなら自分宛てとして応答します (自分へ転送してループしません)。
 
@@ -2782,7 +2782,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 | 口 | 重いと見なす条件 |
 |---|---|
 | `/snapshot` | いつも (17 部・最大 4 MiB を組む) |
-| `/profile` | `?summary=1` **以外**はいつも (段階・スレッドの CPU と状態・ロックの取り合いの窓。要約は標本を 1 本も組まないので軽い口です。T15.0 (11)) |
+| `/profile` | `?summary=1` **以外**はいつも (段階・スレッドの CPU と状態・ロックの取り合いの窓。要約は標本を 1 本も組まないので軽い口です。T.15.0 (11)) |
 | `/explain` | いつも (上の口を横断して 1 枚に組む) |
 | `/hosts` | `limit` が **200 より大きい**とき (`/hosts?limit=1000` など) |
 | `/recent` | `n` が **500 より大きい**とき (`/recent?n=2000` など) |
@@ -2804,7 +2804,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 ダッシュボードの図は 11 枚で、上段の KPI に「**CONNECT 確立 p50 (直近 1,024 本)**」「**利用者が待つ時間 p50**」
 「**名前解決**」(ミス率 = `misses ÷ (hits + misses)`、ミス 1 回の値段 `miss_avg_ms`、あれば先回りの回数)
 「**CPU の絞り**」が出ます。
-**p50 の KPI は `/status` の `recent_quantiles.connect` (直近 1,024 本の実測。T14.31)** で、
+**p50 の KPI は `/status` の `recent_quantiles.connect` (直近 1,024 本の実測。T.14.31)** で、
 札に本数・下に p90 / p99 / 最大とその窓の秒数が付き、**1 ms 未満も丸めません**。
 `recent_quantiles` を持たない版の `/status` (や `--lite`) では、今までどおり
 **直近 5 分 (60 標本) の区間のヒストグラムを足し合わせて補間した値**に落ち、札が「直近 5 分」に戻ります
@@ -2818,13 +2818,13 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 `node scripts/check-dashboard.js [/history の出力] [/status の出力] [/profile の出力] [/snapshot の出力]` が
 「JS の構文」と「`/history` の配列の配列・`/status` の読み方が実出力と合っていること」を確かめます
 (Node があるときだけの補助的な確認。引数を省くと `scripts/testdata/` の見本を読みます)。
-最後に**匿名化したデプロイ先の実データ** (`scripts/testdata/deployed-2026-09-16.anon.json`。T14.35) でも
+最後に**匿名化したデプロイ先の実データ** (`scripts/testdata/deployed-2026-09-16.anon.json`。T.14.35) でも
 同じ読み方を回すので、本物の分布 (ホスト 817 件・1,440 標本) で壊れたらここで気づきます。
-**`dashboard.html` の大きさの上限は 80 KiB** です (T15.0 (14) で下の 5 枚を足して 81,673 B。T21.5 で重複したコメントを
+**`dashboard.html` の大きさの上限は 80 KiB** です (T.15.0 (14) で下の 5 枚を足して 81,673 B。T.21.5 で重複したコメントを
 削り、「最近のエラー」の回数と最後の時刻を足して 80,515 B。`node scripts/check-dashboard.js` が見張ります。外部ライブラリを
 読み込まない 1 ページという方針を守るための歯止めなので、超えたら中身を削るか上限を上げるかを先に決めてください — **余白は 1,405 B です**)。
 
-**次の判断に要る 5 枚 (T15.0 (14))**。どれも**新しい `fetch` を 1 本も増やしていません** (既にある
+**次の判断に要る 5 枚 (T.15.0 (14))**。どれも**新しい `fetch` を 1 本も増やしていません** (既にある
 2 秒 / 5 秒 / 30 秒の取り直しに相乗り) し、**欄を持たない版の応答では「記録していません」と断って
 空のまま描きます** (`--lite` も同じ)。
 
@@ -2840,7 +2840,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 それぞれの**欄**と、**無い版のふるまい**:
 
 - **CPU の絞り** (KPI + 図) — `nr_throttled` ÷ `nr_periods` を % で (**札のとおり cgroup の通算**で、プロセスが起きる前を含みます)、下に直近 5 分・待たされた合計 (`throttled_usec`)・`quota_cores` (null なら「割り当て なし」)・**`since_start` (起動からの増分)**・`path`。図は `cpu_nr_periods` / `cpu_nr_throttled` を周期 / 秒で 2 系列
-  - 無い版のふるまい: `kernel.cgroup_cpu` か **分母の `nr_periods`** (T15.0 (6) で足した欄) が無い版と、cgroup v2 の読めない環境では KPI が「–」
+  - 無い版のふるまい: `kernel.cgroup_cpu` か **分母の `nr_periods`** (T.15.0 (6) で足した欄) が無い版と、cgroup v2 の読めない環境では KPI が「–」
 - **CPU を使っているスレッド** (プロファイルの節の表) — `tid` (= `/connections` の `tid` と同じ番号)・`comm`・役割・CPU %・走っていた標本数。直近 5 分を **tid で束ねて**上位 8
   - 無い版のふるまい: 列を持たない版では 0 行
 - **動かないトンネル** (「いまの接続」の下の表) — **`idle_secs` が 300 秒以上の CONNECT** だけを、止まっている長い順に 20 本。`target` `age_secs` `idle_secs` `bytes` `half_closed` (+ 秒) `spins` `revents` (client / origin) `tid`。下の行に「空回りの合計」と「1 度も空回りしていない本数」(**0 のままなら待っている・増え続けるなら回っている**)
@@ -2849,12 +2849,12 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
   - 無い版のふるまい: `misses_by_kind` を持たない版では横棒を出さない
 - **受付待ち** — `queue` の段を **12 段の区間**に開いた横棒 1 本 (二峰ならワーカー待ちで待たされています) と、件数・平均・p50 / p95 / 最大。下は `run_delay_us` (全役割の合計) を us / 秒 の折れ線で
   - 無い版のふるまい: `run_delay_us` が `null` (schedstat の読めない環境) の標本では折れ線が切れる
-- **利用者が待つ時間 p50** (KPI + 図) — `queue + client_read + dns + connect` の和 (T15.0 (2))。札に本数・下に p90 / p99 / 最大。**まだ外にあるのは accept から要求行が届くまでと、200 の後の `first_relay`**
+- **利用者が待つ時間 p50** (KPI + 図) — `queue + client_read + dns + connect` の和 (T.15.0 (2))。札に本数・下に p90 / p99 / 最大。**まだ外にあるのは accept から要求行が届くまでと、200 の後の `first_relay`**
   - 無い版のふるまい: `recent_quantiles.wait` が無ければ `/history` の `wait_*` の区間の補間に落ち、それも無ければ「–」
 
-**`/inspect` は「調査」ページ**です (`/dashboard/inspect` も同じもの。T14.8)。`/dashboard` が「いま」を見る画面なのに対して、
+**`/inspect` は「調査」ページ**です (`/dashboard/inspect` も同じもの。T.14.8)。`/dashboard` が「いま」を見る画面なのに対して、
 こちらは**起きたことを時間軸で読む**ための別のページで、外部ライブラリなしの 1 ページのままです。
-**大きさの上限は 96 KiB** です (T14.8 は 64 KiB でしたが、T14.44 で「今日」「今週」「出来事と異常」の
+**大きさの上限は 96 KiB** です (T.14.8 は 64 KiB でしたが、T.14.44 で「今日」「今週」「出来事と異常」の
 3 枚を足して **58,076 B** になり、64 KiB までの余白が 7 KiB しか残らなかったため上げました。
 外部ライブラリを読み込まない 1 枚という方針は変えていません。`node scripts/check-dashboard.js` が見張ります)。
 更新は**個票 (`/status` `/recent` `/events` `/history?summary=1`) が 10 秒ごと、表と散布 (`/bursts` `/clients`
@@ -2866,25 +2866,25 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
   長さ = 寿命・色 = 閉じた理由 (9 種。`error:<原因>` は 1 色に畳みます)・太さ = 運んだバイト。
   範囲は 1 時間 / 6 時間 / 24 時間 (`/recent?since=`)。**`/events` の出来事**は縦の破線の印で重ねます
   (種類が増えても既定の色で描くだけなので壊れません)
-- **出来事と異常** (`/events?n=200`。T14.11 / T14.23): タイムラインに重ねた印と同じ出来事を、
+- **出来事と異常** (`/events?n=200`。T.14.11 / T.14.23): タイムラインに重ねた印と同じ出来事を、
   **新しい順の表**で読みます (印は `eventMarks`、表は `eventRows` で別の関数です)。`anomaly` は色を変え、
   **`cleared: <種類>` は立った出来事と対にして**続いた長さを両方の行に出します
   (対の見つからない異常は「まだ続いています」)。知らない綴りが増えても既定の色で並ぶだけです
-- **起動からの窓**: `/history?since=restart&summary=1` (T14.24) を 1 要求で読み、「起動から」と「通算」を
+- **起動からの窓**: `/history?since=restart&summary=1` (T.14.24) を 1 要求で読み、「起動から」と「通算」を
   切り替えます。`?summary=1` を持たない版や `--lite` では `/history` の標本を `since_start_secs` で切って
   手元で畳みます (どちらでも同じ 1 行になります)
-- **今日** (`/daily?n=14`。T14.20): 日別の要求・転送・CONNECT・p50 / p95・名前解決のミス率・ミス 1 回・
+- **今日** (`/daily?n=14`。T.14.20): 日別の要求・転送・CONNECT・p50 / p95・名前解決のミス率・ミス 1 回・
   エラー・山・RSS・版の表 (新しい順) と、いちばん新しい日の主な数字。`/daily` は**終わった日**しか書かないので、
   今日ぶんは上の「起動からの窓」で読みます。「見ていた」の列は `secs ÷ 24 時間` で、
   再起動した日は 100% に届きません。**この口を持たない版と `--lite` では「記録していません」**と出ます
-- **今週** (`/daily` の 7 行 + `/snapshots`。T14.40 / T14.34): サーバーに `weekly-report.py` は無いので、
+- **今週** (`/daily` の 7 行 + `/snapshots`。T.14.40 / T.14.34): サーバーに `weekly-report.py` は無いので、
   **`/daily` の 7 行をこのページの中で足して**要求・転送・CONNECT・エラー (と率)・名前解決のミス率・
   ミス 1 回 (ミスの数で重みを付けた平均)・最大同時・山・RSS を出します。**p50 / p95 は日をまたいで
   足せない** (区間ヒストグラムが `/daily` に無い) ので、日ごとの値をそのまま並べて幅だけ書きます
-  (`weekly-report.py` と同じ判断)。各日の行には**その日の雪像** (`/snapshots`。T14.34) へのリンクが付きます
-- **遅い接続 (上位 50)** (`/recent?sort=slow`): 段階 (`queue` / `client_read` / `dns` / `connect` / `first_relay`。T14.3) の
-  積み上げ横棒と、**確立 − RTT** の列 (T14.5。RTT では説明できない待ちがどれだけかを 1 列で読むため)。
-  宛先は `/explain?host=` (T14.36) へのリンクです (1 相手ぶんを 1 枚で読む口)
+  (`weekly-report.py` と同じ判断)。各日の行には**その日の雪像** (`/snapshots`。T.14.34) へのリンクが付きます
+- **遅い接続 (上位 50)** (`/recent?sort=slow`): 段階 (`queue` / `client_read` / `dns` / `connect` / `first_relay`。T.14.3) の
+  積み上げ横棒と、**確立 − RTT** の列 (T.14.5。RTT では説明できない待ちがどれだけかを 1 列で読むため)。
+  宛先は `/explain?host=` (T.14.36) へのリンクです (1 相手ぶんを 1 枚で読む口)
 - **山の写真** (`/bursts`): 1 枚ずつ、接続元別・宛先別・状態別・種類別の内訳と、そのときのスレッド / fd
 - **接続元** (`/clients`): `User-Agent`・宛先の種類・IP リテラル宛て・RTT・初回 / 最終
   (RTT は標本が無ければ「–」です)
@@ -2892,7 +2892,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
   (`connect_ms_sum ÷ timed`)。対角線 (y = x) から上に離れた点が「RTT では説明できない待ち」で、
   右の表に差の大きい順で 12 件出ます (`rtt_ms` が `null` = 標本 0 のホストと、接続を 1 度も測っていない
   ホストは描きません。接続の平均が 0 ms = 1 ms 未満のホストは y = 0 に描きます)
-- **ホスト別の折れ線** (`/hosts/series?top=8`。T14.22): この口を持っている版でだけ出る枠です
+- **ホスト別の折れ線** (`/hosts/series?top=8`。T.14.22): この口を持っている版でだけ出る枠です
   (無ければ枠ごと出しません)
 - (ページの先頭に `/snapshot` と `/daily` `/snapshots` へのリンクがあります。個票を 1 要求で持ち帰るときはそちら)
 
@@ -2903,11 +2903,11 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 `scripts/testdata/history-summary.json` (同じく `?summary=1` の実出力)、
 それに渡せばデプロイ先の `/status` `/history` でも回します。
 「今日」「今週」「出来事と異常」の 3 つは、`/daily` と `/snapshots` の作り置き 9 日ぶん・
-`snapshot-local.json` の本物の `/events` (異常入り)・**匿名化した実データ** (T14.35。この版の雪像には
+`snapshot-local.json` の本物の `/events` (異常入り)・**匿名化した実データ** (T.14.35。この版の雪像には
 `/daily` も `/events` も無いので**「無い版」の分岐**を実データで通し、`/history?res=3600` を UTC の日で
-束ねた週の足し算が `weekly-report.py` (T14.40) の週の数字と一致することも見ます) の 3 つで回ります。
+束ねた週の足し算が `weekly-report.py` (T.14.40) の週の数字と一致することも見ます) の 3 つで回ります。
 
-**`/probe.html` は「端末から測る」ページ**です (T14.33)。プロキシ側の計測は「プロキシに届いてから」しか見えないので、
+**`/probe.html` は「端末から測る」ページ**です (T.14.33)。プロキシ側の計測は「プロキシに届いてから」しか見えないので、
 **利用者のブラウザから**測ってプロキシ側の数字と突き合わせるための 1 ページ (外部ライブラリなし、64 KiB 以下) です。
 開くと 3 つを順に測ります (回数は 3 / 5 / 9 回。読むのは**中央値**です — 1 回目は接続の確立を含んで遅く出るため):
 
@@ -2915,7 +2915,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
    「端末 → プロキシの RTT + `/status` を組んで返す時間」です (応答の頭が来るまでの時間と、読んだ文字数も出します)
 2. **プロキシ経由の取得**: `http://` の小さな URL (既定は `http://example.com/`) を n 回
    (`mode: no-cors` なので**中身は読みません**。測るのは時間だけです)
-3. **プロキシ側から見たこの端末**: `/clients` の自分の行 (T14.7) と `rtt_ms` (T14.5) を並べ、
+3. **プロキシ側から見たこの端末**: `/clients` の自分の行 (T.14.7) と `rtt_ms` (T.14.5) を並べ、
    (1) の往復との差 (往復 − カーネルの RTT) を出します
 
 **「このブラウザはこのプロキシを経由しているか」の判定は、プロキシの記録で見ます**:
@@ -2928,7 +2928,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 
 **測った値はサーバーへ送りません** (端末の中だけです。このページがプロキシに出す要求は `/status` と `/clients`、
 それに (2) の URL の取得だけで、結果を書き戻す口はありません)。`rtt_ms` は**接続を閉じたときに 1 本ぶん**読んだ
-カーネルの平滑化 RTT (T14.5) なので、標本が無ければ「–」です (このページを開いている接続はまだ閉じていません)。
+カーネルの平滑化 RTT (T.14.5) なので、標本が無ければ「–」です (このページを開いている接続はまだ閉じていません)。
 `--lite` でも 200 で開けますが、接続元を記録していないので (3) は空、(2) は判定できません。
 関数 (`median` / `pick` / `render`) は DOM に触らないので、`node scripts/check-dashboard.js` の 11 番目の検査が
 作り物の数列と `/snapshot` の中の `/status` の実出力で通します。
@@ -2946,7 +2946,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 **起動に 1 回だけ**読みます (値はプロセスの生存中に変わりません。読めない環境では `id` が `null` で、
 `/status` は落ちません)。**`id` が前の起動と変わっていればホストの再起動、同じならプロセスだけの再起動**
 なので、`/events` の `start` の直前に `shutdown` が無い起動 (無言の再起動) をこの 2 つに切り分けられます
-(T24.0。`/events` の `start` の文面にも `boot` の先頭 12 文字が入ります。1 件 128 B の枠のため)。
+(T.24.0。`/events` の `start` の文面にも `boot` の先頭 12 文字が入ります。1 件 128 B の枠のため)。
 
 `/status` には上限といまの混み具合も出ます: `max_conns` / `max_threads` (`auto` で決まった値。`0` は無制限)、
 `live_threads` (生きている接続スレッド) / `idle_threads` (そのうち仕事待ち) / `queued_jobs` (上限に当たって
@@ -2956,22 +2956,22 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 **接続スレッドの 2 つはラベル付きの 1 系列にそろえました**。旧名 `sorahost_live_threads` /
 `sorahost_idle_threads` はこの版だけ両方出るので、監視側は次の版までに移してください。
 `/metrics` にはこのほか `sorahost_connect_seconds`(`_bucket{le=}` / `_sum` / `_count`。CONNECT 確立の
-ヒストグラム。区間は `/history` と同じ 12 段。**繋がった CONNECT だけ**を数えます — T20.4。`0.18.0` までは失敗した 1 本も入っていました)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
+ヒストグラム。区間は `/history` と同じ 12 段。**繋がった CONNECT だけ**を数えます — T.20.4。`0.18.0` までは失敗した 1 本も入っていました)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
 かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
 **`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing|obs_fold|dup_host"}`**
-(読めずに 400 / 414 / 431 で断った要求。8 本で固定。T14.28)、
+(読めずに 400 / 414 / 431 で断った要求。8 本で固定。T.14.28)、
 `sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads`、
 **`sorahost_rtt_seconds_sum` / `_count`** (`{side="client"|"origin"}`。カーネルの平滑化 RTT。
 標本は接続 1 本の終わりに 1 つで、ホスト別は出しません) が出ます。
 
-**`sorahost_errors_total` には DNS の失敗の内訳も出します** (T26.1)。`cause="other"` の**うしろ**に
+**`sorahost_errors_total` には DNS の失敗の内訳も出します** (T.26.1)。`cause="other"` の**うしろ**に
 `cause="nxdomain"` (`EAI_NONAME` など = 引き直しても変わらない) と `cause="dns_temp"` (`EAI_AGAIN` = 引き直せば
 変わりうる) が並び、値は `/status` の `errors_by_cause` の 9・10 番目と同じです (系列の名前・HELP・先頭 8 つの
 並びは変えていないので、既にある式はそのまま使えます)。`dns` (合計) が動いていても**リゾルバの一時的な失敗なのか、
 名前が無いのか**を監視側から切り分けられるようにするためで、まだ 1 件も無い内訳は行ごと出しません
 (0 を出すと「見えている」と読めてしまうため。`host_blocked_total` と同じ約束です)。
 
-**起動の切り分けと heap の基準も `/metrics` に出します** (T25.3)。`sorahost_boot_id_info{id="…"}` は
+**起動の切り分けと heap の基準も `/metrics` に出します** (T.25.3)。`sorahost_boot_id_info{id="…"}` は
 `/status` の `boot.id` と同じ値 (`/proc/sys/kernel/random/boot_id`) を **info 型** (値は常に `1`) で出したもので、
 「ホストが起動し直すと変わる・プロセスだけの起動し直しでは変わらない」はここでも同じに読めます。
 **ラベルは `id` の 1 つだけなので系列は 1 本**で、増えるのはホストを再起動したときだけです
@@ -2983,7 +2983,7 @@ heap は `sorahost_heap_bytes` (いまの値。`/status` の `memory` と同じ 
 基準の 2 本は、まだ 60 秒たっていない起動・`mallinfo2` が読めない環境・状態ファイルを開いていない
 (`PROXY_STATS_PERSIST=off` / `--lite`) では出しません (`/status` が `baseline: null` になるのと同じ判断)。
 **Prometheus に出すのは、起動ごとの 60 秒の値が時系列として残るから**です: `/status` は「いまの起動」の
-基準しか持たず (前の起動の値は状態ファイルに残っても読まない — T24.4)、版を上げたときに起動直後の heap が
+基準しか持たず (前の起動の値は状態ファイルに残っても読まない — T.24.4)、版を上げたときに起動直後の heap が
 増えたかを比べられるのは監視側だけです。基準の 2 本だけでは**増え**が読めない (いまの heap が `/metrics` に
 無い) ので、`sorahost_heap_bytes` も出しています。
 ホスト別の応答時間ヒストグラム (`sorahost_host_request_duration_seconds`) は区間が 24 段になったので
@@ -3012,7 +3012,7 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 `sorahost_rtt_seconds_sum` / `_count{side=}` は前からあるものです。
 段階の 13 本で `/metrics` は **約 14 KB 増えます** (ホスト表と接続元表が満杯のときで 243 → 257 KB。上限は 400 KiB)。
 
-`/status` の **`rejected_requests`** は、**要求を読めずに断った数**を理由別に並べた欄です (T14.28)。
+`/status` の **`rejected_requests`** は、**要求を読めずに断った数**を理由別に並べた欄です (T.14.28)。
 `{"request_line":0,"header_too_large":0,"method":0,"no_host":0,"bad_uri":0,"body_framing":0,"obs_fold":0,"dup_host":0,"total":0}` の形で、
 理由は上の `/errors` の `bad_request:<reason>` と同じ 8 種、`total` はその合計です。公開ポートには走査 (scanner) の
 要求が来るので、**何が来たか**をこの 1 行で読むためのものです。エラー (5xx) ではないので `errors` /
@@ -3023,13 +3023,13 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 **`Content-Length` と `Transfer-Encoding: chunked` が両方ある要求**は今までは chunked として中継していましたが
 `400` で断ります (RFC 9112 §6.1 は中継してはならないと書いています。前段と後段で本文の切れ目が食い違う
 「要求の密輸」を通さないため)。判定はどちらも既にある分岐の中なので、通る要求の費用は変わりません。
-**`Host` が 2 本以上ある要求**も `400` で断ります (T19.2。RFC 9110 §7.2。今までは**最後の 1 本を黙って採って**
+**`Host` が 2 本以上ある要求**も `400` で断ります (T.19.2。RFC 9110 §7.2。今までは**最後の 1 本を黙って採って**
 200 で通し、オリジンには要求先から作り直した `Host` を 1 本だけ送っていました = 前段と後段で「どの `Host` を
 信じるか」が食い違う形)。印は 2 本目を見たときだけ立つので、通る要求の費用はこちらも変わりません。
 
 `/status` の `hosts` にはホスト (`scheme://host:port`、CONNECT は `connect://host:port`) ごとの要求数・ヒット・ミス・
 バイパス・エラー・バイト数が要求数順に最大 50 件入ります (1000 ホストを超えた分は `other` にまとめます)。
-バイト数は合計 (`bytes`) のほかに**向き別の `bytes_in` / `bytes_out`** が並びます (T14.26。`bytes_in` =
+バイト数は合計 (`bytes`) のほかに**向き別の `bytes_in` / `bytes_out`** が並びます (T.14.26。`bytes_in` =
 クライアント → オリジン = 上り、`bytes_out` = オリジン → クライアント = 下り)。上り主体の相手 (ログ送信) は
 「利用者の回線の上り」が律速で、プロキシでもオリジンでもない — その切り分けに使います。
 **CONNECT は `bytes == bytes_in + bytes_out`** ですが、**forward の `bytes` は今までどおり応答のぶんだけ**なので
@@ -3042,7 +3042,7 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 のが動機で、デプロイ先の実測 (58.6 時間) では**エラー 99 件のうち 80 件 (名前解決の失敗) を抱えたホストが
 1 つも上位 50 に居ませんでした**。`curl "http://127.0.0.1:8080/status?sort=errors"` で見られます。
 
-**`?hosts=0` で `hosts[]` を丸ごと省けます** (T25.1)。既定 (書かない・`1`・知らない値) は今までどおりで、
+**`?hosts=0` で `hosts[]` を丸ごと省けます** (T.25.1)。既定 (書かない・`1`・知らない値) は今までどおりで、
 消えるのは `hosts` の鍵だけで、**ほかの鍵も `schema` も 1 バイトも変わりません**。`/status` の応答は
 `hosts[]` が 8 割を占め (2026-10-23 の実測で 33,280 B のうち 26,917 B。手元の模型 50 宛先でも
 25,182 B のうち 19,351 B)、**行は 50 件で頭打ち**なものの、1 行あたり最大 538 B
@@ -3056,17 +3056,17 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 `errors_by_cause` (`[dns, refused, unreachable, timeout, reset, tls, loop, other, nxdomain, dns_temp]` の順の件数。
 **先頭 8 つは今までどおり**で、9・10 番目が `dns` の内訳 (`nxdomain` = 名前か住所が無い =
 引き直しても変わらない / `dns_temp` = 一時的な失敗 = 引き直せば変わりうる。`dns` は合計のまま
-残るので `dns == nxdomain + dns_temp`)。T25.0 より前の雪像は 8 要素なので、9・10 番目が
+残るので `dns == nxdomain + dns_temp`)。T.25.0 より前の雪像は 8 要素なので、9・10 番目が
 無ければ `dns` の合計だけを読んでください。
 `loop` は自分の `Via` が付いて `508` で閉じたもの。**複数の候補を並行に試して (Happy Eyeballs)
 締め切りまで 1 本も確立できなかったときは `timeout`** です — 2026-09-18 より前は、その間に 1 本だけ先に
 返ってきた `ECONNREFUSED` などが最後のエラーとして残り、締め切りいっぱい待った接続が `refused` に
-数えられていました。T15.0 (3))、**`rtt_ms`** (`{"avg":…,"min":…,"samples":N}`。
+数えられていました。T.15.0 (3))、**`rtt_ms`** (`{"avg":…,"min":…,"samples":N}`。
 カーネルの平滑化 RTT (`TCP_INFO`)。標本は**接続 1 本の終わりに 1 つ**なので `timed` (要求数) とは数が合いません。
 1 本も閉じていなければ `null`) と **`retrans`** (その接続たちが再送したセグメントの通算)、
 **`sni_mismatch`** (そのホスト宛ての CONNECT で、宛先のホストと覗いた SNI が食い違った本数。
-T14.38。**メモリだけ**なので再起動で 0 に戻ります。合計は `/status` の末尾の `sni_mismatches`)、
-**`syn_retrans`** (そのホストへ繋ぐときに **SYN を送り直した回数の合計**。T14.46。確立の直後に
+T.14.38。**メモリだけ**なので再起動で 0 に戻ります。合計は `/status` の末尾の `sni_mismatches`)、
+**`syn_retrans`** (そのホストへ繋ぐときに **SYN を送り直した回数の合計**。T.14.46。確立の直後に
 `TCP_INFO` を 1 回読んだ値で、`retrans` (接続の終わりに読んだ通算) と違って**確立の失敗だけ**を数えます。
 1 回で確立が約 1 秒、2 回で約 3 秒よけいにかかるので、`avg_ms` が飛んでいるホストはここを見てください。
 **メモリだけ**なので再起動で 0 に戻ります。合計は `/status` の末尾の `syn_retrans_total`)。
@@ -3087,7 +3087,7 @@ TTL を過ぎた / `warm_stale` = **warm なのにミスした** = 裏の引き�
 **`refresh_late`** (予定の時刻から **5 秒以上**遅れて始まった引き直しの回数。引き直しは
 `dns-refresh` スレッド 1 本が順にやるので、1 回 約 2 秒かかる名前が続くと後ろが詰まります。
 要求の経路が頼んだ先回りは予定の時刻を持たないので数えません) が出ます。
-末尾の **`warm_evicted`** (T16.0) は warm の枠 (同時に 32 件) が満杯で、新しく warm になる名前のために
+末尾の **`warm_evicted`** (T.16.0) は warm の枠 (同時に 32 件) が満杯で、新しく warm になる名前のために
 **最後の使用がいちばん古い名前を外した**回数の起動からの通算です (`/history` の `dns_warm` は 5 秒ごとの瞬間値なので、
 枠が埋まって押し出しが起きていたかはこれで読みます)。**要求の経路の例外**: 数えるのはその名前が窓の中で 2 回目に
 使われ、かつ枠が満杯のときの枝だけで、既に握っている鍵の内側の原子の加算 1 つです (システムコールも確保も増えません)。
@@ -3113,11 +3113,11 @@ TTL を過ぎた / `warm_stale` = **warm なのにミスした** = 裏の引き�
 
 ### 0. リリース (`v*` のタグを打つ前)
 
-版は**デプロイの番号**です。タスクの作業中は上げず、**デプロイの直前に 1 回だけ**そろえてからタグを打ちます (T26.3)。
+版は**デプロイの番号**です。タスクの作業中は上げず、**デプロイの直前に 1 回だけ**そろえてからタグを打ちます (T.26.3)。
 
 ```bash
 scripts/crate-versions.py --check           # 0 なら決まりに合う (中身が変わったクレートの数も印字する)
-scripts/crate-versions.py --task T19.1      # 分かれ目から中身が変わったクレートを 0.19.1 にし、本体を最大に (Cargo.lock も)
+scripts/crate-versions.py --task T.19.1      # 分かれ目から中身が変わったクレートを 0.19.1 にし、本体を最大に (Cargo.lock も)
 scripts/crate-versions.py --check           # 「中身が変わったクレート: 0 個」になったら、それをコミットしてタグを打つ
 scripts/crate-versions.py --list            # クレートごとに 今の版・中身を最後に変えたコミット・版の行を書いたコミット
 git tag v0.26.0                             # タグは本体の版
@@ -3125,13 +3125,13 @@ git tag v0.26.0                             # タグは本体の版
 
 `--check` は (a) 全クレートの版 = 本体の版、(b) タグの上では本体の版 = タグ、を見ます。**中身が変わったことでは落ちません** —
 デプロイ前は中身が変わっているのが普通だからで、代わりに「前回のデプロイから中身が変わったクレート: N 個」を印字して `--deploy` を案内します。
-`--task` (タスクごとの bump) は T26.3 で廃止しました。
+`--task` (タスクごとの bump) は T.26.3 で廃止しました。
 
 `ci.yml` と `release.yml` も同じ `--check` を回し、合わなければ名前と理由を出して落ちます (タグの上では、本体の版がタグと同じかも見ます)。
 
 ### 1. 置く前 (`--check`)
 
-**止める直前に `scripts/collect-deployed.sh` で雪像を 1 枚**撮っておきます (次の版の判定の「前」になります。T17.19)。
+**止める直前に `scripts/collect-deployed.sh` で雪像を 1 枚**撮っておきます (次の版の判定の「前」になります。T.17.19)。
 
 ```bash
 # 起動せずに「この環境で何が読めるか」と「効いている設定」を印字して終わる
@@ -3150,7 +3150,7 @@ CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・IPv6 (`ipv6_route`)・
 
 ### 2. 起動直後 (0〜5 分)
 
-起動から **60 秒たってから** `scripts/collect-deployed.sh` で 1 枚 (0 時間の雪像) 撮り、`/status` の `version` と起動時刻 (UTC)、`boot.id` を `TASKS.md` のそのタスクの `Tn.99` の前提に書きます (T17.19)。**すぐ撮ると `memory.baseline` が `null` のまま**なので、heap の判定が「判定できず」になります (T24.4。baseline は起動 60 秒で 1 回だけ書かれる)。
+起動から **60 秒たってから** `scripts/collect-deployed.sh` で 1 枚 (0 時間の雪像) 撮り、`/status` の `version` と起動時刻 (UTC)、`boot.id` を `TASKS.md` のそのタスクの `Tn.99` の前提に書きます (T.17.19)。**すぐ撮ると `memory.baseline` が `null` のまま**なので、heap の判定が「判定できず」になります (T.24.4。baseline は起動 60 秒で 1 回だけ書かれる)。
 
 ```bash
 # 起動ログの 2 行 (待ち受けと統計ファイル)
@@ -3165,7 +3165,7 @@ curl http://127.0.0.1:8080/config > config-$(date -u +%Y%m%dT%H%M%SZ).json   # �
 `state file` の括弧が `converted from version 2 in N ms` なら**版 2 の統計を版 3 に詰め直して引き継いだ**ということで、
 `created` と出たら引き継げずに作り直しています (通算の統計は消えています)。
 隣の `recent file ... (4096 KiB, opened): N closed connections, ... restored` が前の版の個票です。
-**起動から 60 秒たつと `/status` の `memory.baseline` に `{"at":…,"bytes":…}` が出ます** (T24.4。
+**起動から 60 秒たつと `/status` の `memory.baseline` に `{"at":…,"bytes":…}` が出ます** (T.24.4。
 `heap_used + mmap − cache_memory`)。これがこの起動の heap の基準で、**後の雪像 1 枚で増えが読めます**
 (0 時間の雪像は要りません。起動し直すと 60 秒たつまで `null` です)。
 
@@ -3179,21 +3179,21 @@ curl "http://127.0.0.1:8080/profile?res=5"                         # 待ちの�
 curl "http://127.0.0.1:8080/connections"                           # いま開いている接続 (tid と spins)
 ```
 
-見るのは `dns.warm` (keep-warm が掴んでいる名前の数。既定 (`PROXY_DNS_WARM_SECS=0`、T22.4) では常に `0`。窓を設定して `0` なら効いていません) と
+見るのは `dns.warm` (keep-warm が掴んでいる名前の数。既定 (`PROXY_DNS_WARM_SECS=0`、T.22.4) では常に `0`。窓を設定して `0` なら効いていません) と
 `dns.misses ÷ CONNECT の本数`、`ipv6` の `v4_first` (`true` なら IPv6 が落ちている環境と判断済み)、
 `evicted_idle` と `rejected_overload` (山が無い時間帯は `0`)、`recent_quantiles`
 (直近 1,024 本の**実測**の分位点。区間の補間ではありません)。
 `/profile` の `stages` は CONNECT が `queue` / `client_read` / `dns` / `connect` / `first_relay` / `relay` / `park`、
 forward が `queue` / `client_read` / `origin` / `send` / `ttfb` / `body` で、**1 本の待ちがどこに消えたか**が読めます。
 
-**T15.0 で足した欄** (次の判断 — 窓を伸ばすか・空回りが直ったか・確立の尾は誰のせいか — に要るもの):
+**T.15.0 で足した欄** (次の判断 — 窓を伸ばすか・空回りが直ったか・確立の尾は誰のせいか — に要るもの):
 
 | 口 | 欄 | 読み方 |
 |---|---|---|
 | `/status` | `recent_quantiles.wait` | **利用者が待つ時間** (`queue + client_read + dns + connect`)。`connect` は要求行を読んだ後からなので、**基準線はこちら** |
 | `/status` | `dns.misses_by_kind` | `expired` が主なら窓 (`PROXY_DNS_WARM_SECS`) が短い、`warm_stale` が出ていれば裏の引き直しが間に合っていない。隣の `refresh_failures` / `refresh_late` / `refresh_ms_max` を先に見ます |
 | `/status` | `kernel.cgroup_cpu` | **割合で読む** (`nr_throttled ÷ nr_periods`)。`since_start` はこのプロセスが始まってからの増分、`path` は読んでいる階層 |
-| `/status` | `boot` | `id` (`/proc/sys/kernel/random/boot_id`) と `pid`。**前の起動と `id` が変わっていればホストの再起動、同じならプロセスだけの再起動** (T24.0。読めない環境では `id` が `null`) |
+| `/status` | `boot` | `id` (`/proc/sys/kernel/random/boot_id`) と `pid`。**前の起動と `id` が変わっていればホストの再起動、同じならプロセスだけの再起動** (T.24.0。読めない環境では `id` が `null`) |
 | `/status` | `memory.rings_used` | `rings` と同じ鍵で「いま埋まっているぶん」。`rings` は 0 時間でも 36.6 時間でも変わりません |
 | `/profile` | `threads_top` / `run_delay_us` | どの tid が回っているか (`/connections` の `tid` と同じ番号) と、**走れるのに CPU に乗れなかった**時間 |
 | `/connections` | `idle_secs` / `spins` / `revents` / `half_closed` | 「回っているのか・待っているのか」。**既定のままの欄は出さない**ので「無ければ既定値」と読みます |
@@ -3218,14 +3218,14 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 個票には接続元 IP と宛先が並ぶので `.gitignore` に入れてあり、コミットしません。
 **雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
 1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
-意味が変わらないので雪像の値のままです。T15.0 (15))。判定表の既定は **`CRITERIA=phase24`** (T24.2。phase23 の 16 行をそのまま持ち越し、heap の行を「起動から 60 秒の基準 (`/status` の `memory.baseline`) からの増え」に、無言の再起動の行を「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に読み替え、T24.3 で 17 番目に**確立の尾を同じ窓のカーネル RTT + 5 ms で読む行**を足したもの (尾が 5 ms 未満なら「距離」。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を同じ行で対にした差の中央値がプロキシの取り分、p95 が尾)。`memory.baseline` の無い雪像は phase23 の読み方に戻り、`rtt_ms.origin` の無い雪像 (Linux 以外・`--lite`) は確立の尾の行が「判定できず」になります) です。**`CRITERIA=phase23`** (T23.1。phase22 の 14 行のうち接続のエラーの行を「名前解決に成功した試行あたり」にし、heap の「判定できず」に `/events` の `start` の時刻を添え、無言の再起動の行を足した 16 行)・**`CRITERIA=phase22`** (T22.1。phase21 の 10 行 (`/events` の行は表示だけ) に、`dns_slow` が合計 1,000 ms 未満の窓で立っていないこと (T22.2) と keep-warm の既定を戻す条件 2 つ (`stale_retries` の割合、接続のエラーの接続 1 本あたり) と T22.4 の目安の 4 行を足し、平常時を「300 本と、その期間の 1 時間の本数の中央値の 3 倍の大きい方」未満で切るもの) です。**`CRITERIA=phase21`** (T21.2。phase20 と同じ並びの 10 行で、平常時のミスを「表示だけ」(日ごとの幅と `cold` / `expired` の内訳)、`conn` 役の CPU/要求 を前か後の `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` を 0 時間の雪像から 3 時間以内の探りなら「満たした」にしたもの)・**`CRITERIA=phase20`** (T20.1。下の phase18 と同じ並びの 10 行で、`heap_used + mmap` の増えから `cache_memory` を引き、`discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行を「表示だけ」にしたもの)・**`CRITERIA=phase18`**
-(phase17 の 8 行 = phase15 の 4 行 + T17.0a の 4 行 に、T18.2 の 2 行 = `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・`ipv6.request_probes` が 0 を足した 10 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、相手の雪像の隣にあればそれを `--profile-before` で渡します)・`CRITERIA=phase17`・`CRITERIA=phase15` (T15.4 / T15.5 / T15.6 の 6 行)・`CRITERIA=phase14` も今までどおり使えます。
+意味が変わらないので雪像の値のままです。T.15.0 (15))。判定表の既定は **`CRITERIA=phase24`** (T.24.2。phase23 の 16 行をそのまま持ち越し、heap の行を「起動から 60 秒の基準 (`/status` の `memory.baseline`) からの増え」に、無言の再起動の行を「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に読み替え、T.24.3 で 17 番目に**確立の尾を同じ窓のカーネル RTT + 5 ms で読む行**を足したもの (尾が 5 ms 未満なら「距離」。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を同じ行で対にした差の中央値がプロキシの取り分、p95 が尾)。`memory.baseline` の無い雪像は phase23 の読み方に戻り、`rtt_ms.origin` の無い雪像 (Linux 以外・`--lite`) は確立の尾の行が「判定できず」になります) です。**`CRITERIA=phase23`** (T.23.1。phase22 の 14 行のうち接続のエラーの行を「名前解決に成功した試行あたり」にし、heap の「判定できず」に `/events` の `start` の時刻を添え、無言の再起動の行を足した 16 行)・**`CRITERIA=phase22`** (T.22.1。phase21 の 10 行 (`/events` の行は表示だけ) に、`dns_slow` が合計 1,000 ms 未満の窓で立っていないこと (T.22.2) と keep-warm の既定を戻す条件 2 つ (`stale_retries` の割合、接続のエラーの接続 1 本あたり) と T.22.4 の目安の 4 行を足し、平常時を「300 本と、その期間の 1 時間の本数の中央値の 3 倍の大きい方」未満で切るもの) です。**`CRITERIA=phase21`** (T.21.2。phase20 と同じ並びの 10 行で、平常時のミスを「表示だけ」(日ごとの幅と `cold` / `expired` の内訳)、`conn` 役の CPU/要求 を前か後の `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` を 0 時間の雪像から 3 時間以内の探りなら「満たした」にしたもの)・**`CRITERIA=phase20`** (T.20.1。下の phase18 と同じ並びの 10 行で、`heap_used + mmap` の増えから `cache_memory` を引き、`discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行を「表示だけ」にしたもの)・**`CRITERIA=phase18`**
+(phase17 の 8 行 = phase15 の 4 行 + T.17.0a の 4 行 に、T.18.2 の 2 行 = `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・`ipv6.request_probes` が 0 を足した 10 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、相手の雪像の隣にあればそれを `--profile-before` で渡します)・`CRITERIA=phase17`・`CRITERIA=phase15` (T.15.4 / T.15.5 / T.15.6 の 6 行)・`CRITERIA=phase14` も今までどおり使えます。
 **判定表の相手は既定では直前の 1 枚**です。再デプロイのあとはそれが 0 時間の雪像になるので、**`BEFORE=<再デプロイ直前の雪像>`** を渡すと判定表だけ相手がそちらになります (隣の同じ時刻の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別の相手は直前の 1 枚のまま)。**`ZERO=<0 時間の雪像>`** は `snapshot-diff.py --zero` に渡り、無ければ `heap_used + mmap` の行 (phase24 は `memory.baseline` の無い雪像のときだけこれで読み、phase23・phase22 と phase21 では 0 回でない `ipv6.request_probes` の行も) は「判定できず」です。phase24・phase23・phase22・phase21・phase20・phase18 のときは保存先を `--daily-snapshots` にも渡すので、`--from-server` で取り寄せた日次の雪像のうち同じ版のものの表 (`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts`) が判定表の下に付きます。`BEFORE` と `ZERO` の相対パスはリポジトリの根からです (`DIR` と同じ)。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
-`next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T15.0 (11)。
+`next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T.15.0 (11)。
 1 枚には `/recent` は 2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 しか
-入りません。T15.0 の行の形での実測で、T16.0 の欄のぶん少し減ります)。**`recent` と `hosts` は T22.5 から `--full` が無くても追って雪像に繋ぐ**ので
+入りません。T.15.0 の行の形での実測で、T.16.0 の欄のぶん少し減ります)。**`recent` と `hosts` は T.22.5 から `--full` が無くても追って雪像に繋ぐ**ので
 (上の段落)、`--full` で別ファイルに落ちるのは `profile` と、`MAX_PAGES` か `FOLLOW_SECS` で止めた残りだけです (続きは繋いだ部の `next_offset` から)。
 `--full --no-follow` で前の `--full` (3 つとも別ファイル) になります。続きはどれも重い口で、重い口は同時 1 本 (上の「重い口は同時に 1 本だけ」) なので
 順に引きます。1 つの部で追う枚数の上限は `MAX_PAGES` (既定 8)。
@@ -3252,7 +3252,7 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
   `/recent` 615/2,000・`/hosts` 639/1,000・`/profile?res=60` 362/1,440 が切れているのに `dropped` は `[]` でした。
 - **`/recent` に残るのは「最後に閉じた N 本」**です。`at` (開始時刻) の最小で窓を切ると手前が抜けるので
   (2026-09-18 の雪像では 2 時間ぶん 85 本)、窓の左端は **`min(at + secs)`** で取ってください。
-- **T15.0 で足した `/history` の 8 列は、再デプロイより前の標本では 0 です**
+- **T.15.0 で足した `/history` の 8 列は、再デプロイより前の標本では 0 です**
   (`waits` / `wait_ms_sum` / `wait_ms_max` / `wait_buckets` / `dns_warm` / `requests_delta` /
   `bytes_delta` / `active_peak`)。版を上げずにレコードの余白へ足したので、前の版が書いた `.rrd` の
   レコードはそこがゼロ埋めで読み戻ります。再デプロイ直後の `/history` にはその 0 が
@@ -3284,4 +3284,4 @@ curl "http://127.0.0.1:8080/explain?host=<name>"      # 1 つの相手を 1 枚�
 
 ### 7. そのあと
 
-再デプロイ後 24 時間の数字で `TODO.md` の §2 と §0 を書き直すのが、そのタスクの `Tn.99` (タスク 14 は `T14.99`、タスク 17 は `T17.99`、タスク 18 は `T18.99`) です。
+再デプロイ後 24 時間の数字で `TODO.md` の §2 と §0 を書き直すのが、そのタスクの `Tn.99` (タスク 14 は `T.14.99`、タスク 17 は `T.17.99`、タスク 18 は `T.18.99`) です。

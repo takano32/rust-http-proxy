@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/dns-idle.py` (T24.1 の段 1) の単体テスト。
+"""`scripts/dns-idle.py` (T.24.1 の段 1) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 

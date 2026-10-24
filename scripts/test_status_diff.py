@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/status-diff.py` の `--group domain` と `proxydata.etld1` の単体テスト (T14.54)。
+"""`scripts/status-diff.py` の `--group domain` と `proxydata.etld1` の単体テスト (T.14.54)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
     cd scripts && python3 -m unittest              # scripts の中から
@@ -144,10 +144,10 @@ class Group(unittest.TestCase):
 
 
 class DnsCauseColumns(unittest.TestCase):
-    """`errors_by_cause` の 8 要素と 10 要素の両方を読む (T25.0)。
+    """`errors_by_cause` の 8 要素と 10 要素の両方を読む (T.25.0)。
 
-    過去の雪像 (T25.0 より前) の `errors_by_cause` は 8 要素で、`dns` … `other` の
-    並びは今も同じ。T25.0 からは**うしろに** 2 つ (`nxdomain` / `dns_temp` = `dns` の
+    過去の雪像 (T.25.0 より前) の `errors_by_cause` は 8 要素で、`dns` … `other` の
+    並びは今も同じ。T.25.0 からは**うしろに** 2 つ (`nxdomain` / `dns_temp` = `dns` の
     内訳) が付く。8 要素を読んでも落ちず、10 要素では内訳を出すこと。
     """
 
@@ -160,7 +160,7 @@ class DnsCauseColumns(unittest.TestCase):
         self.assertEqual(
             pd.causes_text([5, 0, 0, 1, 0, 0, 0, 0, 4, 1]), "nxdomain 4 dns_temp 1 timeout 1"
         )
-        # 内訳が 0 のまま (T25.0 より前の `.rrd` を読み戻した行) なら合計のまま
+        # 内訳が 0 のまま (T.25.0 より前の `.rrd` を読み戻した行) なら合計のまま
         self.assertEqual(pd.causes_text([5, 0, 0, 0, 0, 0, 0, 0, 0, 0]), "dns 5")
 
     def test_the_delta_pads_a_missing_split_with_zero(self):

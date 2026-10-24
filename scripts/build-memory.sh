@@ -15,7 +15,7 @@
 # あれば同じ判定ができる (手元の機械はこちら。PID 1 が systemd でなくてもユーザーの
 # インスタンスは動いていて、上限も効く)。どちらも無いときだけ RSS を出すだけにして判定しない。
 #
-# **上限を決めているクレート** (T17.11 = T15.12 段 8 の後の実測 2026-09-26、全クレート `codegen-units = 4`。RssAnon の最大。
+# **上限を決めているクレート** (T.17.11 = T.15.12 段 8 の後の実測 2026-09-26、全クレート `codegen-units = 4`。RssAnon の最大。
 # 手元 aarch64、rustc 1.98.1。通る最小は 90 MB: 85 以下は毎回落ち、90 は 4 回とも通った):
 #   proxy-endpoints 82.5 MB > proxy-server 81.5 > proxy-metrics-recent 76.9 > proxy-http 74.7
 #   > proxy-config 73.0 > proxy-net-dns 72.2 > proxy-metrics-core 71.8 > proxy-metrics-types 71.1
@@ -25,7 +25,7 @@
 #    proxy-metrics-profile へ割った。段 7 の前 = 要求の経路のクレートが `codegen-units = 1` だった頃は
 #    proxy-metrics-window 107.8 MB がいちばん上で、通る最小は 120〜125 MB)
 # 行数の順ではない。効くのは「自分の行数 + 依存から単相化されてくる量」。
-# 上限を下げたいならこの上位から割ること (T14.55 で `proxy-metrics` 1 つ 272 MB を 6 つに割った)。
+# 上限を下げたいならこの上位から割ること (T.14.55 で `proxy-metrics` 1 つ 272 MB を 6 つに割った)。
 #
 # 使い方:
 #   scripts/build-memory.sh [上限 MB]            上限の中で通るか (既定 120)

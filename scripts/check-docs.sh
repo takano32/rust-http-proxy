@@ -1,7 +1,7 @@
 #!/bin/bash
 # README・`/` の案内・`/snapshot`・画面の関数名が**コードと同じ集合**か、README が叩く道具に
-# 実行ビットがあるかを機械で見る (T14.56・T24.7)。台帳 (`TODO.md` の §5 と `tasks/TNN.md`) の
-# 1 対 1 も一緒に見る (T24.10)。
+# 実行ビットがあるかを機械で見る (T.14.56・T.24.7)。台帳 (`TODO.md` の §5 と `tasks/TNN.md`) の
+# 1 対 1 も一緒に見る (T.24.10)。
 #
 # 今日の版はエンドポイントが 10 本以上増え、環境変数も増えた。増やしたのは別々のエージェントで、
 # **コードにあるのに文書に無い / 文書にあるのにコードに無い**が目で見つからなくなっている。
@@ -126,10 +126,10 @@ cat >"$W/snap-skip" <<'EOF'
 /snapshot	自分自身
 /snapshots	ディスクに残した過去の雪像の一覧 (雪像の中に雪像は入れない)
 /snapshots/<date>	同上 (1 日ぶんの中身)
-/readers	`/status` の末尾の `readers` に上位 20 が入る (T14.53)
-/trace	`PROXY_TRACE_CLIENT` を設定したときだけ中身があり、**URL のパスが入る** (T14.27)。誰でも取れる雪像には入れない
-/slo	`/history` の標本から判定し直せる (T14.50)
-/daily	日ごとの要約はファイル (`~/.rust-http-proxy.daily.jsonl`) に永久に残る。雪像は「そのときの様子」を撮るもの (T14.20 の申し送りは `parts` に足すこと。足すときは `scripts/anonymize-snapshot.py` の PART_ORDER と `snapshot-diff.py` も一緒に直す)
+/readers	`/status` の末尾の `readers` に上位 20 が入る (T.14.53)
+/trace	`PROXY_TRACE_CLIENT` を設定したときだけ中身があり、**URL のパスが入る** (T.14.27)。誰でも取れる雪像には入れない
+/slo	`/history` の標本から判定し直せる (T.14.50)
+/daily	日ごとの要約はファイル (`~/.rust-http-proxy.daily.jsonl`) に永久に残る。雪像は「そのときの様子」を撮るもの (T.14.20 の申し送りは `parts` に足すこと。足すときは `scripts/anonymize-snapshot.py` の PART_ORDER と `snapshot-diff.py` も一緒に直す)
 EOF
 cut -f1 "$W/snap-skip" | LC_ALL=C sort -u >"$W/snap-skip-names"
 LC_ALL=C sort -u "$W/ep-code" | comm -23 - "$W/snap-skip-names" >"$W/snap-want"
@@ -212,7 +212,7 @@ fi
 
 # --- (f) 道具の置き方 (実行ビット) ----------------------------------------------
 # README が `scripts/<名前>.py` と書いているものは、**そのまま叩ける道具**であること
-# (`scripts/snapshot-diff.py a.json b.json` のように打つ。T24.7)。README にあるのにファイルが
+# (`scripts/snapshot-diff.py a.json b.json` のように打つ。T.24.7)。README にあるのにファイルが
 # 無いものも NG (名前を変えたのに文書を直し忘れた、がここで出る)。
 # **叩かないものは下の除外表に理由つきで持つ** (書かずに外すと、次に足した道具が素通りする)。
 cat >"$W/py-skip" <<'EOF'
@@ -249,8 +249,8 @@ while read -r name; do
 done <"$W/py-want"
 
 # --- (g) 台帳 (TASKS.md の未着手・TODO.md の §5 の索引・tasks/TNN.md) ---------
-# 済んだ Phase の本文を `tasks/TNN.md` へ移したので (T24.9)、**移し忘れ・リンク切れ・番号の重複**を
-# 見る (T24.10)。4 つの規則と足場 1 つは `scripts/check-ledger.py` の頭に書いてある (試験は
+# 済んだ Phase の本文を `tasks/TNN.md` へ移したので (T.24.9)、**移し忘れ・リンク切れ・番号の重複**を
+# 見る (T.24.10)。4 つの規則と足場 1 つは `scripts/check-ledger.py` の頭に書いてある (試験は
 # `scripts/test_check_ledger.py`)。**`TODO.md` と `tasks/*.md` は読むだけで、1 文字も変えない。**
 python3 scripts/check-ledger.py || NG=1
 

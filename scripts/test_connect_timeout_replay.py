@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/connect-timeout-replay.py` (T23.3 段 1) の単体テスト。
+"""`scripts/connect-timeout-replay.py` (T.23.3 段 1) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
@@ -130,7 +130,7 @@ class HistoryTest(unittest.TestCase):
         old = ct.analyze(snap(hist=history(b, timeouts=18), version="0.18.0+2defadb"), (5,))
         h = by(old, 5)
         self.assertEqual((h["history_dropped_lo"], h["history_dropped_hi"]), (4, 22))
-        # T20.4 からは成功だけなので、引かない
+        # T.20.4 からは成功だけなので、引かない
         new = ct.analyze(snap(hist=history(b, timeouts=18), version="0.22.6+000681e"), (5,))
         self.assertEqual((by(new, 5)["history_dropped_lo"],
                           by(new, 5)["history_dropped_hi"]), (22, 22))
@@ -174,7 +174,7 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(part["history"]["window_secs"], 3 * 3600)
 
     def test_from_is_the_deadline_the_snapshot_was_taken_under(self):
-        # T23.3 以降の雪像は 5 秒で撮っているので `--from 5`。3 秒にすると 1 件あたり 2 秒縮む
+        # T.23.3 以降の雪像は 5 秒で撮っているので `--from 5`。3 秒にすると 1 件あたり 2 秒縮む
         h = history(empty_buckets(), timeouts=50, samples=2)
         old = ct.analyze(snap(hist=h), (3, 5), ref=10)
         new = ct.analyze(snap(hist=h), (3, 5), ref=5)

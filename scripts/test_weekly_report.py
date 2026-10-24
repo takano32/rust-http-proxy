@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""`scripts/weekly-report.py` (T14.40) の単体テスト。
+"""`scripts/weekly-report.py` (T.14.40) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
     cd scripts && python3 -m unittest              # scripts の中から
 
-受け入れ基準の本体は `SevenDays`: **匿名化した実データ (T14.35) の 1 日ぶんを 7 日に複製**
+受け入れ基準の本体は `SevenDays`: **匿名化した実データ (T.14.35) の 1 日ぶんを 7 日に複製**
 (日付をずらして 7 枚の雪像にする) して回し、表 8 つが出て、**日別の数字が
-`snapshot-diff.py` (T14.17) の `aggregate()` の値と 1 つ残らず一致する**ことを見る。
+`snapshot-diff.py` (T.14.17) の `aggregate()` の値と 1 つ残らず一致する**ことを見る。
 実データそのもの (`testdata/deployed-2026-09-16.anon.json`) は `/history?res=3600` に
 7 日ぶん (2026-09-10 〜 09-16) 入っているので、1 枚でも 7 日の表が出る。
 """
@@ -78,7 +78,7 @@ def grow(row, times):
 def one_day(base, k, drop_host=None, drop_client=None):
     """匿名化した実データの `SRC_DAY` 1 日ぶんを `k` 日ずらした雪像にする。
 
-    T14.34 の日次の雪像と同じ形 (その 1 日を写したものが翌日 00:00 UTC に残る) にしたい
+    T.14.34 の日次の雪像と同じ形 (その 1 日を写したものが翌日 00:00 UTC に残る) にしたい
     ので、`taken_at` は**翌日の 00:00**。`/history?res=3600` はその日の 24 標本だけで、
     `/hosts` と `/status` の `clients[]` は `.rrd` の通算なので `k + 1` 日ぶんに増やす。
     """
@@ -100,7 +100,7 @@ def one_day(base, k, drop_host=None, drop_client=None):
 
 
 def week_of(tmp, count=7, drop_host=None, drop_client=None):
-    """`SRC_DAY` を `count` 日に複製した雪像を `tmp` に書く (名前は T14.34 の流儀)。
+    """`SRC_DAY` を `count` 日に複製した雪像を `tmp` に書く (名前は T.14.34 の流儀)。
 
     `drop_host` は**いちばん古い 1 枚だけ**から外す (2 枚目で「新しく見たホスト」になる)、
     `drop_client` は**2 枚目から**外す (1 日目で「来なくなった」になる)。
@@ -306,7 +306,7 @@ class OneSnapshot(unittest.TestCase):
             self.assertEqual(self.d["stats"][day]["normal"], want, day)
 
     def test_the_two_burst_days_are_the_ones_t140_found(self):
-        # 2026-09-11 と 09-12 だけ「1 標本 300 本以上」の窓がある (T14.0 の山)
+        # 2026-09-11 と 09-12 だけ「1 標本 300 本以上」の窓がある (T.14.0 の山)
         burst = {d: s["normal"]["burst_samples"] for d, s in self.d["stats"].items()}
         self.assertEqual({d: v for d, v in burst.items() if v},
                          {"2026-09-11": 4, "2026-09-12": 2})
@@ -347,7 +347,7 @@ class OneSnapshot(unittest.TestCase):
 
 
 class FromDaily(unittest.TestCase):
-    """`/daily` (T14.20) の JSON だけでも日別の表が出る (ホストと接続元は出ない)。"""
+    """`/daily` (T.14.20) の JSON だけでも日別の表が出る (ホストと接続元は出ない)。"""
 
     @classmethod
     def setUpClass(cls):
@@ -383,7 +383,7 @@ class FromDaily(unittest.TestCase):
         self.assertEqual(self.d["stats"]["2026-09-16"]["requests"], 700)
 
     def test_the_tables_that_need_a_snapshot_say_so(self):
-        self.assertIn("`/clients` (T14.7) も `/status` の `clients[]` もこの入力に無い", self.md)
+        self.assertIn("`/clients` (T.14.7) も `/status` の `clients[]` もこの入力に無い", self.md)
         self.assertIn("`/hosts` がこの入力に無い", self.md)
         self.assertIn("## 8. 新しく見たホスト", self.md)
 
@@ -413,7 +413,7 @@ class FromDaily(unittest.TestCase):
 
 
 class LocalSnapshot(unittest.TestCase):
-    """`/bursts` `/clients` の**ある**雪像 (T14.8 の `snapshot-local.json`) で表 5 と 6 を見る。"""
+    """`/bursts` `/clients` の**ある**雪像 (T.14.8 の `snapshot-local.json`) で表 5 と 6 を見る。"""
 
     @classmethod
     def setUpClass(cls):
@@ -423,7 +423,7 @@ class LocalSnapshot(unittest.TestCase):
     def test_bursts_come_from_the_shots(self):
         self.assertTrue(self.d["has_bursts"])
         self.assertTrue(self.d["shots"])
-        self.assertIn("`/bursts` の写真 (T14.6) がこの週に", self.md)
+        self.assertIn("`/bursts` の写真 (T.14.6) がこの週に", self.md)
         self.assertIn("| 日 | 写真 | 最大同時 | いちばん多かった時刻 | 接続元 |", self.md)
 
     def test_a_fine_resolution_warns_that_the_normal_threshold_is_one(self):
@@ -479,7 +479,7 @@ class Output(unittest.TestCase):
 
 
 class OutJson(unittest.TestCase):
-    """`--out json` は `build()` の辞書をそのまま出す (T14.40 の申し送り → T14.44)。"""
+    """`--out json` は `build()` の辞書をそのまま出す (T.14.40 の申し送り → T.14.44)。"""
 
     @classmethod
     def setUpClass(cls):

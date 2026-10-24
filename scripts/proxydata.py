@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """デプロイ先の JSON (`/status` `/hosts` `/history` `/snapshot`) を読むための共通部品。
 
-`scripts/status-diff.py` (T12.0) と `scripts/snapshot-diff.py` (T14.17) が同じ読み方を
+`scripts/status-diff.py` (T.12.0) と `scripts/snapshot-diff.py` (T.14.17) が同じ読み方を
 するための置き場。**ここには「読む」しか置かない** (印字は呼ぶ側)。
 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
-**応答の形の版 (`schema`。T14.49)**: プロキシの応答は先頭に `"schema":N` を持つ。
+**応答の形の版 (`schema`。T.14.49)**: プロキシの応答は先頭に `"schema":N` を持つ。
 この道具は版で分岐する ([`schema_of`] / [`is_snapshot`]) が、**版の無い古い出力 (版 0) も
 今までどおり読める** — 手元に残っている雪像はどれも版の無い形なので、そちらが読めなく
 なったら過去の分析をやり直せない。
@@ -23,12 +23,12 @@ CONNECT = "connect://"
 # `/status` の `errors_by_cause` の並び (`crates/metrics-types` の ERR_CAUSE_NAMES)。
 # **先頭 8 つは過去の雪像 (8 要素) と同じ意味と並び**で、動かしてはいけない。
 CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
-# T25.0 で `errors_by_cause` の**うしろに**足された 2 つ (9・10 番目)。
-# `dns` の内訳で、`dns == nxdomain + dns_temp` になる。8 要素の雪像 (T25.0 より前) は
+# T.25.0 で `errors_by_cause` の**うしろに**足された 2 つ (9・10 番目)。
+# `dns` の内訳で、`dns == nxdomain + dns_temp` になる。8 要素の雪像 (T.25.0 より前) は
 # この 2 つが無いので 0 として読む。
 DNS_CAUSE_NAMES = ["nxdomain", "dns_temp"]
 
-# この道具が知っている応答の形の版 (`crates/metrics/src/metrics.rs` の `SCHEMA`。T14.49)。
+# この道具が知っている応答の形の版 (`crates/metrics/src/metrics.rs` の `SCHEMA`。T.14.49)。
 # **版 0 = `schema` の無い古い出力** (2026-09-16 以前に取った雪像) で、そちらは今までどおり
 # 鍵の有無から形を推測して読む。版が上がったらここも上げて、下の分岐に 1 本足す。
 SCHEMA = 1
@@ -52,7 +52,7 @@ def warn_newer(obj, label, out=None):
 
 
 def is_snapshot(obj):
-    """`/snapshot` (T14.4) かどうか。
+    """`/snapshot` (T.14.4) かどうか。
 
     **版 1 以降は `parts` を見るだけ** (形が版で決まっているので推測しない)。
     版 0 (`schema` の無い古い出力) は今までどおり「`parts` があって `hosts` が object」で
@@ -73,7 +73,7 @@ def host_name(key):
     return rest.rsplit(":", 1)[0] if ":" in rest else rest
 
 
-# ---------------------------------------------------------------- まとめの単位 (T14.54)
+# ---------------------------------------------------------------- まとめの単位 (T.14.54)
 
 # eTLD+1 を近似するための、**ラベルが 2 つ以上ある公開接尾辞**の短い表。
 #
@@ -100,7 +100,7 @@ co.za com.tr com.ua co.il com.ru org.ru net.ru
 
 
 def etld1(host):
-    """ホスト名を**まとめの単位** (eTLD+1 の近似) にする (`--group domain`。T14.54)。
+    """ホスト名を**まとめの単位** (eTLD+1 の近似) にする (`--group domain`。T.14.54)。
 
         img.dlsite.jp  -> dlsite.jp        www.dlsite.com -> dlsite.com  (別の単位)
         www.dmm.co.jp  -> dmm.co.jp        a.b.example.io -> example.io
@@ -128,7 +128,7 @@ def etld1(host):
 
 
 def group_by_domain(rows):
-    """ホスト別の行 ([`row_of`] が作る形) を **eTLD+1 でまとめる** (T14.54)。
+    """ホスト別の行 ([`row_of`] が作る形) を **eTLD+1 でまとめる** (T.14.54)。
 
     まとめるのは**同じ種類どうし** (CONNECT と forward は混ぜない) で、
     `img.dlsite.jp` と `www.dlsite.jp` は `dlsite.jp` の 1 行になる
@@ -195,7 +195,7 @@ def load(path):
 
 
 def unwrap(snap):
-    """`/snapshot` (T14.4) なら、その中の `/hosts` の部分を `/hosts` と同じ形で返す。
+    """`/snapshot` (T.14.4) なら、その中の `/hosts` の部分を `/hosts` と同じ形で返す。
 
     `/snapshot` は `/status` も `/hosts` も持っているが、**ここで使うのは `/hosts`**
     (`.rrd` にある全ホスト。`/status` の `hosts[]` は要求数の上位 50 だけ)。
@@ -254,7 +254,7 @@ def row_of(key, a, b):
         err = 0.05 * (cur["timed"] + old["timed"]) / d_timed
     else:
         avg, err = None, None
-    # 待ちの内訳 (T12.4 (2) より前の古い雪像には無いので、無ければ 0)
+    # 待ちの内訳 (T.12.4 (2) より前の古い雪像には無いので、無ければ 0)
     def d(name):
         return cur.get(name, 0) - old.get(name, 0)
     causes = [x - y for x, y in zip(pad_causes(cur), pad_causes(old))]
@@ -281,7 +281,7 @@ def row_of(key, a, b):
 def pad_causes(row):
     """`errors_by_cause` を 10 列 (8 つの原因 + `dns` の内訳 2 つ) にそろえる。
 
-    T25.0 より前の雪像は 8 要素なので、足りない 2 つは 0 (内訳が分からない) として読む。
+    T.25.0 より前の雪像は 8 要素なので、足りない 2 つは 0 (内訳が分からない) として読む。
     """
     v = list(row.get("errors_by_cause") or [])
     n = len(CAUSE_NAMES) + len(DNS_CAUSE_NAMES)
@@ -320,7 +320,7 @@ def fmt_bytes(n):
 
     **割るのは 1,024 なので単位は GiB / MiB / KiB** (画面の `fmtBytes` と同じ。
     `crates/web/src/dashboard.html`)。`GB` / `MB` と書いていたので、
-    報告の数字が 2.4〜7.4% 小さい十進の量に読めていた (T14.99)。
+    報告の数字が 2.4〜7.4% 小さい十進の量に読めていた (T.14.99)。
     """
     if n < 0:
         return "-" + fmt_bytes(-n)

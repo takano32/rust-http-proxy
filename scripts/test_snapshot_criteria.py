@@ -1351,11 +1351,11 @@ class Cut22(unittest.TestCase):
     def test_the_markdown_says_how_it_cut(self):
         md = run([A, B, "--no-dns", "--criteria", "phase22"])
         self.assertIn("**前は 1 標本 300 本以上・後は 600 本以上の窓 (バースト) を外した**もの同士で並べる "
-                      "(phase22 の切り方。T22.1: 300 本 (T14.0) と、その期間の 1 標本の本数の中央値 "
+                      "(phase22 の切り方。T.22.1: 300 本 (T.14.0) と、その期間の 1 標本の本数の中央値 "
                       "(前 100.0・後 200 本) の 3 倍の大きい方)", md)
         self.assertIn("(平常時 3 / 3 標本)", md)
-        self.assertNotIn("T14.0 と同じ切り方", md)
-        self.assertIn("**1 標本 300 本以上の窓 (バースト) を外した**もの同士で並べる (T14.0 と同じ切り方)",
+        self.assertNotIn("T.14.0 と同じ切り方", md)
+        self.assertIn("**1 標本 300 本以上の窓 (バースト) を外した**もの同士で並べる (T.14.0 と同じ切り方)",
                       run([A, B, "--no-dns", "--criteria", "phase21"]))
 
     def test_the_summary_url_drops_normal_hours_when_nothing_is_cut_after(self):
@@ -1642,12 +1642,12 @@ class PastOutputs22(unittest.TestCase):
     **ここが落ちたら過去の判定を変えている** (過去の判定を同じ命令で出し直せなくなる)。"""
 
     DIGESTS = {
-        "phase14": ("a1276a7505c3bee8", "4d192151d9ac75fa"),
-        "phase15": ("df7bf774ea9fec51", "9e156ba611dc8241"),
-        "phase17": ("f7ec2a16f67c387d", "62e6c08ce78552a6"),
-        "phase18": ("91d2e653088a51b0", "12ac626a2b58fb3a"),
-        "phase20": ("e7a15a65fcb5d79d", "6d68fd96aa1c923d"),
-        "phase21": ("fe89711b73a976e4", "cff8f5505a659290"),
+        "phase14": ("b681fecffcef4e9f", "4d192151d9ac75fa"),
+        "phase15": ("bb81ecd17d2fb70d", "9e156ba611dc8241"),
+        "phase17": ("36803b66e86cde71", "62e6c08ce78552a6"),
+        "phase18": ("429a196382e2216d", "12ac626a2b58fb3a"),
+        "phase20": ("af8f8d422cf8a838", "6d68fd96aa1c923d"),
+        "phase21": ("2ccfe3e49dbb33a3", "cff8f5505a659290"),
     }
 
     def test_the_past_criteria_print_the_same(self):
@@ -2332,8 +2332,8 @@ class PastOutputs24(unittest.TestCase):
     **ここが落ちたら過去の判定を変えている** (過去の判定を同じ命令で出し直せなくなる)。"""
 
     DIGESTS = {
-        "phase22": ("ac056aabf3998242", "5ba06e278cad255c"),
-        "phase23": ("69f1f25858088a4f", "0d2bad06e37c10f4"),
+        "phase22": ("8cb4871c7c1fc4b5", "5ba06e278cad255c"),
+        "phase23": ("76ff06b300c560f4", "0d2bad06e37c10f4"),
     }
 
     def test_the_past_criteria_print_the_same(self):

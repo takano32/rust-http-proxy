@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/snapshot-summary.py` (T14.4) の単体テスト。
+"""`scripts/snapshot-summary.py` (T.14.4) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
@@ -59,7 +59,7 @@ def written(**snaps):
 
 
 class Errors(unittest.TestCase):
-    """§1 の「エラー」の行 (T14.99 で負の数が出た所)。"""
+    """§1 の「エラー」の行 (T.14.99 で負の数が出た所)。"""
 
     def test_the_difference_is_matched_by_host_key(self):
         # beta 3 → 6、delta 1 → 3 で +5 (原因 dns +2・reset +2・tls +1)
@@ -73,7 +73,7 @@ class Errors(unittest.TestCase):
                       " reset 2 tls 1 / 個票 3 件", md)
 
     def test_a_host_that_dropped_out_of_a_truncated_table_is_not_subtracted(self):
-        """**表ごとの合計を引くと負になる**のが T14.99 で見つかった不具合。
+        """**表ごとの合計を引くと負になる**のが T.14.99 で見つかった不具合。
 
         後の `/hosts` から消えたホストのぶん (ここでは 9 件) が、そのまま合計から
         引かれて「エラー −4 件 / 原因 dns −7」のような数になっていた。
@@ -110,7 +110,7 @@ class Errors(unittest.TestCase):
 
 
 def with_repeats(snap, index, repeats, last_at):
-    """`/errors` の 1 行を「まとめた行」(T20.3) にした写しを返す (ほかの行は欄なしのまま)。"""
+    """`/errors` の 1 行を「まとめた行」(T.20.3) にした写しを返す (ほかの行は欄なしのまま)。"""
     out = json.loads(json.dumps(snap))
     row = out["errors"]["errors"][index]
     row["repeats"] = repeats
@@ -119,7 +119,7 @@ def with_repeats(snap, index, repeats, last_at):
 
 
 class Repeats(unittest.TestCase):
-    """同じ失敗を 1 行にまとめた個票 (T20.3。`repeats` と `last_at`) の数え方と表示。"""
+    """同じ失敗を 1 行にまとめた個票 (T.20.3。`repeats` と `last_at`) の数え方と表示。"""
 
     def test_the_count_adds_the_repeats_and_shows_the_rows(self):
         # 3 行のうち 1 行が 1,000 回ぶん → 1,002 件 (3 行)
@@ -164,7 +164,7 @@ class Repeats(unittest.TestCase):
 
 
 class RepeatsInTheDiff(unittest.TestCase):
-    """`snapshot-diff.py` の §7 も同じ数え方をする (T20.3)。
+    """`snapshot-diff.py` の §7 も同じ数え方をする (T.20.3)。
 
     `test_snapshot_diff.py` は 2,000 行の目安の手前なので、こちらに置いてある。
     """
@@ -207,7 +207,7 @@ class RepeatsInTheDiff(unittest.TestCase):
 
 
 class Restart(unittest.TestCase):
-    """再起動をまたいだら `/status` の通算は引き算しない (T14.99)。"""
+    """再起動をまたいだら `/status` の通算は引き算しない (T.14.99)。"""
 
     def pair(self, same_version):
         """後の雪像 (`/status` の通算 1,200 件) と、その 24 時間前の雪像。"""
@@ -251,12 +251,12 @@ class Restart(unittest.TestCase):
 
 
 class Truncated(unittest.TestCase):
-    """256 KiB で切れた部を先頭で知らせる (T14.99)。"""
+    """256 KiB で切れた部を先頭で知らせる (T.14.99)。"""
 
     def test_the_truncated_parts_are_listed(self):
         b = read(B)
         b["hosts"].update(truncated=True, count=1000, shown=6)
-        # `profile` は T15.0 の fixture で `parts` に入ったので、ここでは切れた形に差し替える
+        # `profile` は T.15.0 の fixture で `parts` に入ったので、ここでは切れた形に差し替える
         b["profile"] = {"samples": [], "count": 720, "shown": 456, "truncated": True}
         with written(b=b) as paths:
             md = run([paths["b"]])
@@ -276,7 +276,7 @@ class Truncated(unittest.TestCase):
 
 
 class Recent(unittest.TestCase):
-    """個票の「そろっている窓」(T14.99)。"""
+    """個票の「そろっている窓」(T.14.99)。"""
 
     def snapshot(self, truncated):
         b = read(B)
@@ -313,7 +313,7 @@ class Recent(unittest.TestCase):
 
 
 class Cpu(unittest.TestCase):
-    """CPU の表 (`/profile` + `kernel.cgroup_cpu`。T15.0 (15))。"""
+    """CPU の表 (`/profile` + `kernel.cgroup_cpu`。T.15.0 (15))。"""
 
     def test_the_cores_are_printed_with_three_digits(self):
         """**1 桁だと 0.006 コアも 0.04 コアも「0.0」に潰れる** (張り付きが読めない)。"""
@@ -322,7 +322,7 @@ class Cpu(unittest.TestCase):
                       " (`/profile` 3 標本 × 60 秒) |", md)
 
     def test_the_throttled_share_is_a_ratio_not_a_count(self):
-        """「41 回絞られた」だけでは 41/8,123 なのか 41/41 なのか決まらない (T15.0 (6))。"""
+        """「41 回絞られた」だけでは 41/8,123 なのか 41/41 なのか決まらない (T.15.0 (6))。"""
         self.assertIn("| 絞られた周期 | **0.5%** (41/8,123)、起動から 0.8% (30/4,000) |",
                       run([B]))
 
@@ -353,7 +353,7 @@ class Cpu(unittest.TestCase):
         self.assertNotIn("run_delay_us", md)
 
     def test_the_user_and_kernel_split_is_one_row(self):
-        """T16.0: コンテナ (cgroup の起動から)・プロセス・役割の上位 3 つを「ユーザー / カーネル」で。"""
+        """T.16.0: コンテナ (cgroup の起動から)・プロセス・役割の上位 3 つを「ユーザー / カーネル」で。"""
         b = read(B)
         p = b["profile"]
         p["keys"] = p["keys"] + ["user_us", "cpu_user_us"]
@@ -370,7 +370,7 @@ class Cpu(unittest.TestCase):
                       "役割の上位 conn 216 / 504 ms、history 8 / 19 ms、accept 1 / 3 ms |", md)
 
     def test_a_snapshot_without_the_split_has_no_user_kernel_row(self):
-        """T16.0 より前の版 (`user_us` も `user_usec` も無い) では行ごと出さない。"""
+        """T.16.0 より前の版 (`user_us` も `user_usec` も無い) では行ごと出さない。"""
         md = run([B])
         self.assertIn("| 使用 |", md)
         self.assertNotIn("| ユーザー / カーネル |", md)
@@ -390,7 +390,7 @@ class Cpu(unittest.TestCase):
 
 
 class MissKinds(unittest.TestCase):
-    """名前解決のミスの種類別と引き直しの様子 (T15.0 (7))。"""
+    """名前解決のミスの種類別と引き直しの様子 (T.15.0 (7))。"""
 
     def test_the_kinds_are_printed_in_the_order_of_the_json(self):
         self.assertIn("| ミスの種類別 (起動から) | cold 12 / expired 24 / warm_stale 3"
@@ -407,7 +407,7 @@ class MissKinds(unittest.TestCase):
 
 
 class Wait(unittest.TestCase):
-    """利用者が待つ時間の行 (`/history` の `waits`。T15.0 (2) + (10))。"""
+    """利用者が待つ時間の行 (`/history` の `waits`。T.15.0 (2) + (10))。"""
 
     def test_the_row_uses_the_waits_column_for_the_count(self):
         # 直近 1 日 (res=60) の 1 標本: 3 本・合計 27 ms・[5,10) ms のバケツ
@@ -433,7 +433,7 @@ class Wait(unittest.TestCase):
         """`history.5` は `/snapshot` の `DROP_ORDER` に入っていて**落ちることがある**。
 
         落ちたときに「その列は無い」と書くと「この版は connect を測っていない」と
-        読まれる (T15.0 (15) のレビュー)。
+        読まれる (T.15.0 (15) のレビュー)。
         """
         b = read(B)
         del b["history"]["5"]
@@ -458,7 +458,7 @@ class Wait(unittest.TestCase):
 
 
 class StuckTunnels(unittest.TestCase):
-    """動かないトンネル (`idle_secs` ≥ 300 秒。T15.0 (4))。"""
+    """動かないトンネル (`idle_secs` ≥ 300 秒。T.15.0 (4))。"""
 
     def test_only_the_tunnels_over_the_threshold_are_listed(self):
         """預かり中の 280 秒の 1 本は閾の下なので入らない。"""
@@ -495,7 +495,7 @@ class StuckTunnels(unittest.TestCase):
 
 
 class StatusBefore(unittest.TestCase):
-    """RSS だけは雪像の**前**に取った `/status` を使う (T15.0 (15))。"""
+    """RSS だけは雪像の**前**に取った `/status` を使う (T.15.0 (15))。"""
 
     def test_the_rss_comes_from_the_status_taken_before_the_snapshot(self):
         # 雪像を配ること自体が RSS を約 1.0 MB 押し上げるので、雪像の中の 20.0 MiB とは違う値
@@ -648,10 +648,10 @@ class Bytes(unittest.TestCase):
 
 
 class SilentRestarts(unittest.TestCase):
-    """無言の再起動 (T23.2): **要点の頭に 1 行**。判定は `snapshot_criteria.silent_restarts()` と共通。
+    """無言の再起動 (T.23.2): **要点の頭に 1 行**。判定は `snapshot_criteria.silent_restarts()` と共通。
 
     2026-10-17 22:14:52Z のように `shutdown` を残さずに起動し直すと、heap の行が黙って
-    「判定できず」になる (T22.99)。その 1 行が要点の頭に出ることを見る。
+    「判定できず」になる (T.22.99)。その 1 行が要点の頭に出ることを見る。
     """
 
     BOOT = ("version 0.22.6+000681e on port 60357 (profile default, cache on, timeout 30s, "
@@ -703,9 +703,9 @@ ANON_0916 = os.path.join(DATA, "deployed-2026-09-16.anon.json")
 @unittest.skipUnless(os.path.isfile(ANON_0926) and os.path.isfile(ANON_0916),
                      "匿名化した実データが無い")
 class Anonymized(unittest.TestCase):
-    """T17.16 の匿名化した実データ (2026-09-26、起動から 47.2 時間) で 1 枚の要約が組めること。
+    """T.17.16 の匿名化した実データ (2026-09-26、起動から 47.2 時間) で 1 枚の要約が組めること。
 
-    **数字は T16.99 の `結果:` と同じ** (`dns_slow` 29 件 = 0.615 件/時)。名前は匿名化のあと
+    **数字は T.16.99 の `結果:` と同じ** (`dns_slow` 29 件 = 0.615 件/時)。名前は匿名化のあと
     (`host-NNNN.gNNNN.example` / `198.51.100.x` / `ua-NN`) しか出ない。
     """
 
