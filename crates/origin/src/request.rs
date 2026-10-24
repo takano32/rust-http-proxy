@@ -293,22 +293,62 @@ impl Located {
 /// 要求行の target と Host ヘッダーからオリジンを決める。
 /// 受け付ける形: `http://h/p`、`https://h/p` (絶対形式)、`/https/h/p`、`/http/h/p` (マッピング)、
 /// `/p` (Host ヘッダー宛て)、`h` (ホストのみ)。
+/// 絶対 URI の `//` の後ろで、authority (`host:port`) が終わる位置 (RFC 3986 §3.2: `/`・`?`・`#` の手前)。
+///
+/// `/` だけで切っていたので、`http://h?q` は `h?q` を名前として引きに行っていた (T27.8)。
+fn authority_end(rest: &str) -> usize {
+    rest.find(['/', '?', '#']).unwrap_or(rest.len())
+}
+
+/// authority を確かめる。空ならホストが無い、`@` があれば userinfo (RFC 9110 §4.2.4。T27.8)。
+///
+/// userinfo は今までは `user:pw@host` を丸ごと名前として引きに行き 502 になっていた。
+/// http(s) の URI では非推奨で、受け取った側は誤りとして扱うべきなので 400 にする
+/// (呼び出し側は [`parse_origin`] の失敗を `bad_uri` で断る)
+fn check_authority(host_port: &str) -> io::Result<()> {
+    if host_port.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Missing host in request target",
+        ));
+    }
+    if host_port.contains('@') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "userinfo in request target",
+        ));
+    }
+    Ok(())
+}
+
+/// 要求の対象から `#fragment` を落とす (RFC 9112 §3.2 の要求の対象に fragment は入らない。T27.8)。
+/// オリジンへは fragment の手前までを送る (今までは `/a#frag` をそのまま送っていた)
+fn without_fragment(path: &str) -> &str {
+    match path.find('#') {
+        Some(0) => "/",
+        Some(i) => &path[..i],
+        None => path,
+    }
+}
+
 pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origin> {
     let split = |scheme: Scheme, rest: &str, mapped: bool| -> io::Result<Origin> {
-        let (host_port, path) = match rest.find('/') {
-            Some(pos) => (&rest[..pos], &rest[pos..]),
-            None => (rest, "/"),
+        let end = authority_end(rest);
+        let host_port = &rest[..end];
+        check_authority(host_port)?;
+        // `http://h?q` の path は `/?q` (RFC 9112 §3.2.2: path が空なら `/` を補う)
+        let path = match &rest[end..] {
+            "" => "/".to_string(),
+            p if p.starts_with('/') => without_fragment(p).to_string(),
+            p => match without_fragment(p) {
+                "/" => "/".to_string(),
+                q => format!("/{}", q),
+            },
         };
-        if host_port.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Missing host in request target",
-            ));
-        }
         Ok(Origin {
             scheme,
             host_port: host_port.to_string(),
-            path: path.to_string(),
+            path,
             mapped,
         })
     };
@@ -329,7 +369,7 @@ pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origi
             Some(h) if !h.is_empty() => Ok(Origin {
                 scheme: Scheme::Http,
                 host_port: h.to_string(),
-                path: target.to_string(),
+                path: without_fragment(target).to_string(),
                 mapped: false,
             }),
             _ => Err(io::Error::new(
@@ -353,16 +393,8 @@ pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origi
 /// 返す文字列は必ず `target` か `host_header` の部分文字列なので確保が要らない。
 pub fn target_host<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Result<&'a str> {
     let host_of = |rest: &'a str| -> io::Result<&'a str> {
-        let host_port = match rest.find('/') {
-            Some(pos) => &rest[..pos],
-            None => rest,
-        };
-        if host_port.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Missing host in request target",
-            ));
-        }
+        let host_port = &rest[..authority_end(rest)];
+        check_authority(host_port)?;
         Ok(host_port)
     };
     for prefix in ["http://", "https://", "/https/", "/http/"] {
@@ -570,6 +602,9 @@ mod target_host_tests {
             ("/", Some("h")),
             ("example.com:443", None),
             ("example.com", None),
+            ("http://example.com?q=1", None),
+            ("http://example.com#frag", None),
+            ("http://user:pw@example.com/", None),
         ];
         for (target, host) in cases {
             let want = parse_origin(target, host).map(|o| o.host_port);
@@ -584,6 +619,25 @@ mod target_host_tests {
         for (target, host) in [("http:///a", None), ("/p", None), ("/p", Some(""))] {
             assert!(parse_origin(target, host).is_err());
             assert!(target_host(target, host).is_err());
+        }
+    }
+
+    /// T27.8: authority は `/`・`?`・`#` の手前まで、userinfo は断る、fragment はオリジンへ送らない。
+    #[test]
+    fn authority_ends_at_slash_query_or_fragment_and_userinfo_is_refused() {
+        let o = |t: &str| {
+            let o = parse_origin(t, Some("h.example")).unwrap();
+            (o.host_port, o.path)
+        };
+        assert_eq!(o("http://h?q=1"), ("h".into(), "/?q=1".into()));
+        assert_eq!(o("http://h/a?q#frag"), ("h".into(), "/a?q".into()));
+        assert_eq!(o("http://h#frag"), ("h".into(), "/".into()));
+        assert_eq!(o("http://h?q#f"), ("h".into(), "/?q".into()));
+        assert_eq!(o("/a#frag"), ("h.example".into(), "/a".into()));
+        assert_eq!(o("/https/h:8443/x#y"), ("h:8443".into(), "/x".into()));
+        for t in ["http://user:pw@h/", "http://user@h", "/https/u@h/x"] {
+            assert!(parse_origin(t, None).is_err(), "{}", t);
+            assert!(target_host(t, None).is_err(), "{}", t);
         }
     }
 

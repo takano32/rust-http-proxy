@@ -1458,6 +1458,24 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         scratch.request_line = request_line;
         return Ok(Step::Close(recent::CloseReason::Shutdown));
     };
+    // 版が `HTTP/1.x` でない要求 (`HTTP/9.9`・HTTP/2 の preface `PRI * HTTP/2.0`) は 505 (T27.8)。
+    // 今までは `HTTP/9.9` を 1.1 として転送し、preface は `*` を宛先として引きに行って 502 だった。
+    // 版の無い要求行 (HTTP/0.9 の形) は今までどおり 1.0 として扱う (`http` 側の既定)
+    if let Some(version) = parts.next()
+        && !version
+            .get(..7)
+            .is_some_and(|v| v.eq_ignore_ascii_case("HTTP/1."))
+    {
+        log_warn!(
+            Some(conn_id),
+            "505 HTTP Version Not Supported: {:?}",
+            version
+        );
+        metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 505);
+        reject(client, 505, "HTTP Version Not Supported")?;
+        scratch.request_line = request_line;
+        return Ok(Step::Close(recent::CloseReason::Shutdown));
+    }
 
     // Host の値は行の添字で覚えておき、読み終わってから借用する (複製しない)
     let mut host_line: Option<usize> = None;
@@ -1724,6 +1742,18 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         }
     };
     let (bare_host, host_port) = net::split_host_port_ref(target_host);
+    // CONNECT の宛先は `host:port` の形でなければならない (RFC 9110 §9.3.6)。ポートが無い・読めない・0 の
+    // ときは今まで 443 とみなすか 0 番へ繋ぎに行って 502 だった。クライアントの誤りなので 400 (T27.8)
+    if is_connect && (bare_host.is_empty() || !host_port.is_some_and(|p| p != 0)) {
+        log_warn!(
+            Some(conn_id),
+            "400 Bad Request: CONNECT target without a port: {}",
+            target
+        );
+        metrics.record_bad_request(metrics::BadRequestReason::BadUri, peer_ip, 400);
+        reject(client, 400, "Bad Request")?;
+        return Ok(Step::Close(recent::CloseReason::Shutdown));
+    }
     // ローカル宛ての判定で引いた答え (接続でもう一度引かないために持ち回す。T12.7)
     let mut resolved: Option<dns::Resolved> = None;
     let denied = if !config.acl.is_allowed(target_host) {

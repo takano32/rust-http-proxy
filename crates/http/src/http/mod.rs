@@ -544,6 +544,37 @@ pub fn handle_http_with_headers(
     };
     let is_get = method.eq_ignore_ascii_case("GET");
     let head_only = method.eq_ignore_ascii_case("HEAD");
+    // `Max-Forwards` (RFC 9110 §7.6.2。TRACE と OPTIONS だけ): 0 なら転送せずに自分で応え、
+    // そうでなければ 1 減らして転送する (T27.8)。今まではどちらもそのまま転送していた。
+    // 値が読めないときは今までどおり触らない。**ほかのメソッドには 1 命令も足さない**
+    let trace = method.eq_ignore_ascii_case("TRACE");
+    let mut decremented: Option<Vec<String>> = None;
+    if trace || method.eq_ignore_ascii_case("OPTIONS") {
+        let found = raw_headers.iter().enumerate().find_map(|(i, l)| {
+            let (k, v) = proxy_base::ascii::split_once(l, b':')?;
+            k.trim_ascii()
+                .eq_ignore_ascii_case("max-forwards")
+                .then(|| (i, v.trim_ascii().parse::<u64>().ok()))
+        });
+        match found {
+            Some((_, Some(0))) => {
+                log_debug!(
+                    Some(conn_id),
+                    "Max-Forwards: 0 on {}, answering here",
+                    method
+                );
+                let _ = write_max_forwards_zero(client, trace, request_line, raw_headers);
+                return Ok(false);
+            }
+            Some((i, Some(n))) => {
+                let mut v = raw_headers.to_vec();
+                v[i] = format!("Max-Forwards: {}\r\n", n - 1);
+                decremented = Some(v);
+            }
+            _ => {}
+        }
+    }
+    let raw_headers: &[String] = decremented.as_deref().unwrap_or(raw_headers);
 
     let origin = match parse_origin(target, req.host.as_deref()) {
         Ok(o) => o,
@@ -857,6 +888,18 @@ pub fn handle_http_with_headers(
                     e
                 );
                 continue;
+            }
+            // クライアントの本文が壊れている (chunk の大きさが読めない など)。オリジンの誤りではない
+            // ので 502 ではなく 400 で返して閉じる (T27.8)。オリジンへの接続はここで捨てる (プールに戻さない)
+            Err(e) if is_client_body_error(&e) => {
+                log_warn!(Some(conn_id), "400 Bad Request: {}", e);
+                metrics.record_bad_request(
+                    BadRequestReason::BodyFraming,
+                    client_ip.unwrap_or("-"),
+                    400,
+                );
+                let _ = write_error(client, 400, "Bad Request");
+                return Ok(false);
             }
             Err(e) => {
                 log_warn!(Some(conn_id), "failed to read origin response: {}", e);
@@ -1322,7 +1365,7 @@ fn forward_request_body(
             let mut buf = CopyBuf::take();
             let mut total = 0u64;
             loop {
-                let n = body.read(&mut buf)?;
+                let n = body.read(&mut buf).map_err(client_body_error)?;
                 if n == 0 {
                     break;
                 }
@@ -1336,7 +1379,7 @@ fn forward_request_body(
             let mut buf = CopyBuf::take();
             let mut total = 0u64;
             loop {
-                let n = body.read(&mut buf)?;
+                let n = body.read(&mut buf).map_err(client_body_error)?;
                 if n == 0 {
                     break;
                 }
@@ -1347,6 +1390,71 @@ fn forward_request_body(
             Ok(total)
         }
     }
+}
+
+/// `Max-Forwards: 0` の TRACE / OPTIONS に自分で応える (RFC 9110 §7.6.2・§9.3.7・§9.3.8。T27.8)。
+///
+/// OPTIONS は `200` で本文なし。TRACE は `200` + `Content-Type: message/http` で、受け取った要求行と
+/// ヘッダーをそのまま返す。ただし `Cookie`・`Authorization`・`Proxy-Authorization` の行は返さない
+/// (§9.3.8 は「機微な値を含む行を除いてよい」。TRACE で認証情報を読み出す手口を塞ぐ)。返したら閉じる
+fn write_max_forwards_zero(
+    client: &mut impl Write,
+    trace: bool,
+    request_line: &str,
+    raw_headers: &[String],
+) -> io::Result<()> {
+    let mut body = Vec::new();
+    if trace {
+        body.extend_from_slice(request_line.trim_end().as_bytes());
+        body.extend_from_slice(b"\r\n");
+        for line in raw_headers {
+            let name =
+                proxy_base::ascii::split_once(line, b':').map_or("", |(k, _)| k.trim_ascii());
+            if ["cookie", "authorization", "proxy-authorization"]
+                .iter()
+                .any(|n| name.eq_ignore_ascii_case(n))
+            {
+                continue;
+            }
+            body.extend_from_slice(line.trim_end().as_bytes());
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(b"\r\n");
+    }
+    let head = format!(
+        "HTTP/1.1 200 OK\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        if trace {
+            "Content-Type: message/http\r\n"
+        } else {
+            ""
+        },
+        body.len()
+    );
+    client.write_all(head.as_bytes())?;
+    client.write_all(&body)?;
+    client.flush()
+}
+
+/// クライアントの本文を読む側で起きた誤り (T27.8)。オリジンとの読み書きの失敗 (502) と分けて、
+/// chunk の大きさが読めない (`0x5`・桁あふれ) などの**クライアントの誤り**を 400 で返すための印。
+#[derive(Debug)]
+struct ClientBodyError(io::Error);
+
+impl std::fmt::Display for ClientBodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "client request body: {}", self.0)
+    }
+}
+
+impl std::error::Error for ClientBodyError {}
+
+fn client_body_error(e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), ClientBodyError(e))
+}
+
+/// `e` がクライアントの本文を読む側の誤りか ([`client_body_error`] で包んだもの)。
+fn is_client_body_error(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|i| i.is::<ClientBodyError>())
 }
 
 /// 中間応答 (1xx) をクライアントへ中継する。**ヘッダー部だけで、本文は持たない** (T19.6)。
