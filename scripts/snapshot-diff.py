@@ -36,7 +36,7 @@
 #   6. その間の出来事 (`/events`。無い版では飛ばす)
 #   7. エラーの原因別の件数 (`/hosts` の `errors_by_cause` の差分と `/errors` の個票)
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
-#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22|phase23|phase24` で **Phase の完了の定義に対する判定表**
+#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22|phase23|phase24|phase25` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
 #      (**判定の部は `scripts/snapshot_criteria.py`**。T.20.1 で割った)
 #      (T.15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
@@ -113,6 +113,7 @@ from snapshot_criteria import (  # noqa: E402,F401
     PHASE22,
     PHASE23,
     PHASE24,
+    PHASE25,
     REFERENCE,
     RULES,
     SHOWN,
@@ -1282,7 +1283,9 @@ def parser():
                         "(`/status` の `memory.baseline`) からの増え」に、無言の再起動の行を "
                         "「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に読み替え、"
                         "17 番目に確立の尾を「同じ窓のカーネル RTT + 5 ms」で読む行を足したもの。"
-                        "T.24.2・T.24.3)")
+                        "T.24.2・T.24.3。phase25 = phase24 の 17 行を持ち越し、接続のエラーの行に試行 1,000 本の"
+                        "下限、引き直しの行を「1 名前あたりが前の 1.5 倍未満」、無言の再起動の行を「前の雪像より"
+                        "後の `start` だけ」に読み替えたもの。T.27.0)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst", type=int, default=BURST_PER_HOUR, metavar="N",

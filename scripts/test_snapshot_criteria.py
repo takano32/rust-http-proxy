@@ -313,7 +313,7 @@ class Criteria15(unittest.TestCase):
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
                          ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
-                          "phase22", "phase23", "phase24"])
+                          "phase22", "phase23", "phase24", "phase25"])
 
 
 def conn_profile(conn_us_per_row):
@@ -2671,3 +2671,169 @@ class Deployed243Rows(unittest.TestCase):
                       "(尾は距離) | < RTT p95 + 5 ms |", md)
         self.assertIn("の connect 1,999 本", md)
 
+
+
+class Criteria25Rows(unittest.TestCase):
+    """`--criteria phase25` (T27.0): phase24 の 17 行のうち、T25.99 で物差しの穴だった 3 行。
+
+    (a) 無言の再起動は前の雪像の取得より後の `start` だけ、(b) 接続のエラーは試行 1,000 本の下限、
+    (c) 引き直しは 1 名前あたり。数字は T25.99 の 2 枚 (`2026-10-22T000000Z` → `2026-10-24T184027Z`) から採った。
+    """
+
+    SINCE = 1792713604       # 前の雪像 (サーバーの日次) の取得 = 2026-10-23 00:00:04Z
+    BOOT = "2c725916-e89"
+
+    @staticmethod
+    def start(at, boot=None, version="0.25.4+8b0fce0"):
+        text = f"version {version} on port 60357"
+        if boot:
+            text += f" boot {boot}"
+        return {"at": at, "kind": "start", "text": text + " (profile default, cache on, timeout 30s, max conns 240)"}
+
+    @staticmethod
+    def stop(at):
+        return {"at": at, "kind": "shutdown", "text": "stop signal received; saving statistics"}
+
+    def ctx(self, events, taken_at=1792867228, uptime=129909, since=SINCE):
+        b = read(B)
+        b["taken_at"], b["uptime_secs"] = taken_at, uptime
+        b["events"] = {"events": events, "count": len(events), "kept": len(events),
+                       "capacity": 512, "restored": 0, "truncated": False}
+        return {"a": {"taken_at": since}, "b": b}
+
+    def t2599_events(self):
+        """T25.99 の形: 10-17 と 10-21 の 2 回は `boot` の無い無言の再起動、0.25.4 は `shutdown` のあとの起動。"""
+        t = 1792200000
+        return [self.start(t, version="0.22.6+000681e"),
+                self.start(t + 60000, version="0.22.6+000681e"),          # 無言 (boot なし)
+                self.start(t + 300000, version="0.23.3+ae7c190"),         # 無言 (boot なし)
+                self.stop(1792737273), self.start(1792737319, self.BOOT)]
+
+    # --- 表の形
+
+    def test_phase25_keeps_the_seventeen_rows_and_swaps_three(self):
+        p24, p25 = sd.RULES["phase24"], sd.RULES["phase25"]
+        self.assertEqual(len(p25), 17)
+        changed = [i for i, (x, y) in enumerate(zip(p24, p25)) if x is not y]
+        self.assertEqual(changed, [12, 14, 15])
+        self.assertIs(p25[12], sc._p25_connect_errors)
+        self.assertIs(p25[14], sc._p25_refresh_per_name)
+        self.assertIs(p25[15], sc._p25_silent_restarts)
+
+    # --- (a) 無言の再起動
+
+    def test_old_bootless_restarts_before_the_window_are_not_counted(self):
+        c = self.ctx(self.t2599_events())
+        # phase24 の行は古い 2 回の `boot` が無いので「判定できず」
+        self.assertEqual(sc._p24_silent_restarts(c, sc.PHASE25)[3], sd.UNKNOWN)
+        row = sc._p25_silent_restarts(c, sc.PHASE25)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("直前が `shutdown` の起動 1 件", row[2])
+        self.assertIn("より後の 1 件を見た", row[4])
+        self.assertIn("それより前の 3 件は前の締めで見た", row[4])
+
+    def test_a_process_restart_inside_the_window_is_missed(self):
+        ev = self.t2599_events() + [self.start(1792800000, self.BOOT)]
+        row = sc._p25_silent_restarts(self.ctx(ev, uptime=67228), sc.PHASE25)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("同じ `boot` のまま起動し直している", row[4])
+
+    def test_a_host_restart_inside_the_window_is_left_out(self):
+        ev = self.t2599_events() + [self.start(1792800000, "ffffffff-999")]
+        row = sc._p25_silent_restarts(self.ctx(ev, uptime=67228), sc.PHASE25)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("ホストの再起動", row[4])
+
+    def test_a_bootless_restart_inside_the_window_is_unknown(self):
+        ev = [self.start(1792700000, version="0.23.3+ae7c190"), self.start(1792750000, version="0.23.3+ae7c190")]
+        row = sc._p25_silent_restarts(self.ctx(ev, uptime=117228), sc.PHASE25)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("`boot` の無い `start` が 1 件", row[4])
+
+    def test_no_start_in_the_window_is_met_only_when_the_process_is_older(self):
+        ev = [self.stop(1792700000), self.start(1792700100, self.BOOT)]
+        # 後の起動 (取得 − uptime) が前の雪像より前 = 2 枚は同じプロセス
+        row = sc._p25_silent_restarts(self.ctx(ev, uptime=167128), sc.PHASE25)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("前の雪像より後に起動なし", row[2])
+        # 後の起動が窓の中なのに `start` が環から落ちている
+        row = sc._p25_silent_restarts(self.ctx(ev, uptime=100000), sc.PHASE25)
+        self.assertEqual(row[3], sd.UNKNOWN)
+
+    def test_without_events_or_taken_at_it_is_unknown(self):
+        c = self.ctx([])
+        del c["b"]["events"]
+        self.assertEqual(sc._p25_silent_restarts(c, sc.PHASE25)[3], sd.UNKNOWN)
+        c = self.ctx(self.t2599_events(), since=None)
+        self.assertEqual(sc._p25_silent_restarts(c, sc.PHASE25)[3], sd.UNKNOWN)
+
+    # --- (b) 接続のエラーの下限
+
+    def errors_ctx(self, before, after):
+        rec = Criteria23Rows.recent
+        return {"a": {"recent": rec(before[0], fails=("timeout",) * before[1])},
+                "b": {"recent": rec(after[0], fails=("timeout",) * after[1])}}
+
+    def test_a_short_before_window_is_unknown_not_missed(self):
+        c = self.errors_ctx((581, 0), (1999, 15))
+        self.assertEqual(sc._p23_connect_errors(c, sc.PHASE25)[3], sd.MISSED)
+        row = sc._p25_connect_errors(c, sc.PHASE25)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("前の試行 581 本", row[4])
+        self.assertIn("1,000 本以上", row[1])
+
+    def test_long_enough_windows_are_judged_as_before(self):
+        self.assertEqual(sc._p25_connect_errors(self.errors_ctx((2000, 10), (2000, 12)), sc.PHASE25)[3], sd.MET)
+        self.assertEqual(sc._p25_connect_errors(self.errors_ctx((2000, 10), (2000, 40)), sc.PHASE25)[3],
+                         sd.MISSED)
+        # 後が短くても同じ
+        self.assertEqual(sc._p25_connect_errors(self.errors_ctx((2000, 10), (999, 1)), sc.PHASE25)[3],
+                         sd.UNKNOWN)
+
+    # --- (c) 1 名前あたりの引き直し
+
+    @staticmethod
+    def dns_ctx(before, after):
+        """`(refreshes, entries, uptime_secs, expired)` の前と後。後は起動し直している (起動からの通算)。"""
+        def snap(v):
+            return {"uptime_secs": v[2], "status": {"dns": {"refreshes": v[0], "entries": v[1],
+                                                            "misses_by_kind": {"expired": v[3], "warm_stale": 0}}}}
+        return {"a": snap(before), "b": snap(after), "info": {"restarted": True}}
+
+    def test_more_names_is_not_more_refreshes_per_name(self):
+        # T25.99: 通算は 268.3 → 284.1 回/時 (1.06 倍) だが、名前は 506 → 811
+        c = self.dns_ctx((8803, 506, 118120, 26), (10251, 811, 129909, 59))
+        self.assertEqual(sc._p22_refresh_and_stale_misses(c, sc.PHASE25)[3], sd.MISSED)
+        row = sc._p25_refresh_per_name(c, sc.PHASE25)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**0.35** 回/時/名前 (前 0.53", row[2])
+        self.assertIn("表示だけ: 通算 284.1 回/時", row[2])
+        self.assertIn("`expired` + `warm_stale`", row[2])
+
+    def test_refreshes_per_name_one_and_a_half_times_is_missed(self):
+        c = self.dns_ctx((3600, 100, 3600, 0), (5400, 100, 3600, 0))
+        self.assertEqual(sc._p25_refresh_per_name(c, sc.PHASE25)[3], sd.MISSED)
+        c = self.dns_ctx((3600, 100, 3600, 0), (5399, 100, 3600, 0))
+        self.assertEqual(sc._p25_refresh_per_name(c, sc.PHASE25)[3], sd.MET)
+
+    def test_missing_entries_is_unknown(self):
+        c = self.dns_ctx((3600, 100, 3600, 0), (3600, 100, 3600, 0))
+        del c["b"]["status"]["dns"]["entries"]
+        self.assertEqual(sc._p25_refresh_per_name(c, sc.PHASE25)[3], sd.UNKNOWN)
+
+
+T2599_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-10-22T000000Z-snapshot.json")
+T2599_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-10-24T184027Z-snapshot.json")
+
+
+@unittest.skipUnless(os.path.exists(T2599_BEFORE) and os.path.exists(T2599_AFTER),
+                     "T25.99 の雪像 (status/tokyo/) が無い")
+class Deployed25(unittest.TestCase):
+    """T25.99 の 2 枚の phase25 (T27.0 の受け入れ基準): 直した 3 行が 判定できず・満たした・満たした。"""
+
+    def test_t2599_pair(self):
+        c = build([T2599_BEFORE, T2599_AFTER, "--no-dns", "--criteria", "phase25"])["criteria"]
+        verdicts = [r[3] for r in c["rows"]]
+        self.assertEqual(verdicts[12], sd.UNKNOWN)
+        self.assertEqual(verdicts[14], sd.MET)
+        self.assertEqual(verdicts[15], sd.MET)

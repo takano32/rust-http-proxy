@@ -266,9 +266,20 @@ PHASE24 = dict(PHASE23)
 # (`_p24_connect_tail`)。N は T14.99 の決まりの 5 ms で、**固定の 6 ms ではない**。
 # RTT の測れない雪像 (`rtt_ms.origin` が `null`) では判定しない。
 PHASE24["connect_tail_ms"] = 5.0
+# T27.0: phase25 は phase24 の 17 行を**そのまま持ち越し**、T25.99 で物差しの穴だった 3 行だけ読み方を変える。
+# (a) 無言の再起動の行 (16 番目) は、**前の雪像の取得より後の `start` だけ**を数える (それより前は前の締めで
+#     見た。`boot` の無い古い `start` が 512 件の環に残る間ずっと「判定できず」になるのを防ぐ)。
+# (b) 接続のエラー (名前解決に成功した試行あたり) の行 (13 番目) は、前か後の試行がこの本数に満たなければ
+#     「判定できず」 (T25.99 の前は日次の雪像の 1 時間 581 本で 0 件 = どんな後でも「届かず」になった)。
+# (c) 引き直しの行 (15 番目) は、keep-warm を止めた版どうしでは 0.5 倍の目安に意味が無い (T24.1 の段 2 は
+#     入れていない) ので、**1 名前あたりの引き直し (回/時) が前のこの倍未満**で読む。通算の回/時と
+#     `expired` + `warm_stale` の回/日は同じ行に表示だけで並べる (名前の数で動く使われ方の数字)。
+PHASE25 = dict(PHASE24)
+PHASE25["min_recent_attempts"] = 1000
+PHASE25["refresh_per_name_factor"] = 1.5
 CRITERIA = {"phase14": PHASE14, "phase15": PHASE15, "phase17": PHASE17, "phase18": PHASE18,
             "phase20": PHASE20, "phase21": PHASE21, "phase22": PHASE22, "phase23": PHASE23,
-            "phase24": PHASE24}
+            "phase24": PHASE24, "phase25": PHASE25}
 # **出力を 1 文字も変えない定義** (過去の判定を同じ命令で出し直せるように)。T20.1 で差分の表に
 # 足した行 (成功した接続だけの確立時間) は、`--criteria` がこの 4 つのときは出さない
 FROZEN = ("phase14", "phase15", "phase17", "phase18")
@@ -1983,6 +1994,145 @@ RULES["phase24"] = (RULES["phase23"][:8] + (_p24_heap,) + RULES["phase23"][9:15]
                     + (_p24_silent_restarts, _p24_connect_tail))
 
 
+# --- Phase 25 (T27.0。phase24 の 17 行のうち、T25.99 で物差しの穴だった 3 行を直したもの) ---
+
+def restarts_since(r, since):
+    """`silent_restarts()` の結果から、**`since` (前の雪像の取得) より後の `start` だけ**を残す (T27.0)。
+
+    それより前の起動は前の締めで見ている。`boot` の無い古い `start` (T24.0 より前の版の行) は
+    `/events` の 512 件の環に何日も残るので、窓を切らないと、その間の締めはずっと「判定できず」になる
+    (T25.99)。切った件数は `before` に残す (出どころに書く)。`since` が無ければ `r` をそのまま返す。
+    """
+    if r is None or not since:
+        return r
+    keep = lambda xs: [x for x in xs if (x.get("at") or 0) > since]
+    out = dict(r)
+    for key in ("silent", "graceful", "edge", "host", "process"):
+        out[key] = keep(r[key])
+    out["boot_unknown"] = len(out["silent"]) - len(out["host"]) - len(out["process"])
+    out["starts"] = len(out["silent"]) + len(out["graceful"]) + len(out["edge"])
+    out["before"] = r["starts"] - out["starts"]
+    out["since"] = since
+    return out
+
+
+def _p25_silent_restarts(c, th):
+    """T27.0 (a): **前の雪像より後の**起動で、こちらが原因の無言の再起動 (同じ `boot` のまま) が 0 回。
+
+    読み方は phase24 の行 (`_p24_silent_restarts`) と同じで、数える `start` を前の雪像の取得より後に
+    切るところだけが違う。その間に起動が 1 つも無い (同じプロセスの 2 枚) なら、後の雪像の起動時刻が
+    前の雪像より前であることを確かめて「満たした」にする。後の起動が窓の中なのに `start` の行が
+    見つからないとき (環から落ちた) は「判定できず」。
+    """
+    label = "前の雪像より後の起動で、こちらが原因の無言の再起動 (同じ `boot` のまま起動し直した回) が 0 回"
+    limit = "0 回"
+    since = c["a"].get("taken_at")
+    full = silent_restarts(c["b"])
+    if full is None:
+        return (label, limit, "判定できず (`/events` の部が無い)", UNKNOWN, "後の雪像に `/events` の部が無い")
+    if not since:
+        return (label, limit, "—", UNKNOWN, "前の雪像に `taken_at` が無いので窓を切れない")
+    r = restarts_since(full, since)
+    src = (f"`/events` の `start` のうち、前の雪像の取得 ({stamp(since)}) より後の {n(r['starts'])} 件を見た "
+           f"(それより前の {n(r['before'])} 件は前の締めで見たので数えない)。`boot` の比べ方は phase24 と同じ")
+    host, proc, unknown = r["host"], r["process"], r["boot_unknown"]
+    if host:
+        src += ("。**ホストの再起動** (boot が変わった) "
+                + "、".join(f"`{stamp(s['at'])}`" for s in host[:4])
+                + (f" ほか {len(host) - 4} 件" if len(host) > 4 else "")
+                + " は数から外した (ホストの管理者によるもの。こちらでは防げない)")
+    if proc:
+        src += ("。**同じ `boot` のまま起動し直している** "
+                + "、".join(f"`{stamp(s['at'])}` (前の起動は {s['prev_hours']:,.1f} 時間)" for s in proc[:4])
+                + " — 落ちたか、外から止められた")
+    if unknown:
+        src += f"。`boot` の無い `start` が {unknown} 件ある (T24.0 より前の版が書いた行)。その回は同じホストかを言えない"
+    if r["truncated"]:
+        src += "。**`/events` が切れている** (件数は下限)"
+    started = full["started_at"]
+    if not r["starts"]:
+        # 窓の中に起動が無い = 2 枚は同じプロセス。後の起動が前の雪像より前なら、それで言い切れる
+        if started and started <= since:
+            return (label, limit, f"0 件 (前の雪像より後に起動なし。後の起動は {stamp(started)})", MET, src)
+        return (label, limit, "判定できず (後の起動が窓の中なのに `start` の行が見つからない)", UNKNOWN,
+                src + (f"。`/events` の最古は {stamp(full['oldest'])}" if full["oldest"] else ""))
+    if r["silent"]:
+        shown = f"{len(r['silent'])} 回 (" + "、".join(
+            f"**{stamp(s['at'])}** 版 `{s.get('version') or '?'}`、前の起動は {s['prev_hours']:,.1f} 時間"
+            for s in r["silent"]) + ")" + boot_split_text(r)
+    else:
+        shown = f"0 件 (直前が `shutdown` の起動 {len(r['graceful'])} 件" + (
+            f"、窓の先頭など {len(r['edge'])} 件は判定できない" if r["edge"] else "") + ")"
+    if proc:
+        verdict = MISSED
+    elif unknown or (r["silent"] and not host) or not (r["graceful"] or r["silent"]):
+        verdict = UNKNOWN
+    else:
+        verdict = MET
+    return (label, limit, shown, verdict, src)
+
+
+def _p25_connect_errors(c, th):
+    """T27.0 (b): phase23 の接続のエラーの行 (`_p23_connect_errors`) に、**試行の本数の下限**を足したもの。
+
+    前か後の `/recent` の connect の試行が `min_recent_attempts` に満たなければ「判定できず」。
+    T25.99 の前はサーバーの日次の雪像 (00:00 UTC に撮る) で、`/recent` は 1 時間 581 本・接続のエラー 0 件
+    だった。前が 0 件だと後が 1 件でも「届かず」になる (後の 15 件はどれもメール宛の総当たり)。
+    """
+    label, limit, shown, verdict, src = _p23_connect_errors(c, th)
+    floor = th["min_recent_attempts"]
+    if verdict not in (MET, MISSED):
+        return (label, limit, shown, verdict, src)
+    short = [(side, v["attempts"]) for side, v in
+             (("前", recent_attempts(c["a"], th["connect_error_causes"])),
+              ("後", recent_attempts(c["b"], th["connect_error_causes"])))
+             if v["attempts"] < floor]
+    if short:
+        why = "、".join(f"{side}の試行 {n(k)} 本" for side, k in short)
+        return (label, limit + f"。前も後も試行 {n(floor)} 本以上", shown, UNKNOWN,
+                f"{why}が {n(floor)} 本に満たないので比べない (T25.99 の前は 1 時間 581 本で 0 件)。" + src)
+    return (label, limit + f"。前も後も試行 {n(floor)} 本以上", shown, verdict, src)
+
+
+def _p25_refresh_per_name(c, th):
+    """T27.0 (c): 1 名前あたりの裏の引き直し (回/時) が前の期間の 1.5 倍未満。
+
+    phase22 の T22.4 の目安 (`_p22_refresh_and_stale_misses`) は「keep-warm を止めたら引き直しが半分以下」で、
+    止めた版どうし (0.22.6 以降) を比べると意味が無い (T25.99 は 1.06 倍で「届かず」)。通算の回/時は
+    名前の数 (宛先の数 = 使われ方) で動くので、`/status` の `dns.entries` (表の名前の数) で割る。
+    通算の回/時と `expired` + `warm_stale` の回/日は表示だけで並べる。
+    """
+    k = th["refresh_per_name_factor"]
+    label = f"1 名前あたりの裏の引き直し (回/時) が前の期間の {k} 倍未満 (通算の回/時と `expired` + `warm_stale` は表示だけ)"
+    limit = f"< 前 ×{k} (1 名前あたり)"
+    rb, ra = counter_rates(c, "refreshes")
+    eb = (part(c["a"], "status").get("dns") or {}).get("entries")
+    ea = (part(c["b"], "status").get("dns") or {}).get("entries")
+    src = ("`/status` の `dns.refreshes` を 1 時間あたりにし (前は前の雪像の起動から、後は"
+           + ("その間" if dns_counter(c, "refreshes")[2] else "後の雪像の起動から")
+           + ")、`dns.entries` (表の名前の数) で割った")
+    if rb is None or ra is None:
+        return (label, limit, "—", UNKNOWN, "前か後の `/status` に `dns.refreshes` か `uptime_secs` が無い")
+    if not eb or not ea:
+        return (label, limit, f"引き直し {ra:,.1f} 回/時 (前 {rb:,.1f})", UNKNOWN,
+                "前か後の `/status` に `dns.entries` が無い (0 と書かない)。" + src)
+    pb, pa = rb / eb, ra / ea
+    shown = (f"**{pa:.2f}** 回/時/名前 (前 {pb:.2f}" + (f"、{pa / pb:.2f} 倍" if pb else "") + ")。"
+             f"表示だけ: 通算 {ra:,.1f} 回/時 (前 {rb:,.1f})、名前 {n(ea)} (前 {n(eb)})")
+    rates = [counter_rates(c, "misses_by_kind", kind) for kind in ("expired", "warm_stale")]
+    if not any(b is None or a is None for b, a in rates):
+        mb_, ma_ = sum(b for b, _ in rates) * 24, sum(a for _, a in rates) * 24
+        shown += f"、`expired` + `warm_stale` {ma_:,.1f} 回/日 (前 {mb_:,.1f})"
+    ok = pa < pb * k if pb else pa == 0
+    return (label, limit, shown, MET if ok else MISSED, src)
+
+
+# phase25 = phase24 の 17 行の **13・15・16 番目だけ**を差し替えたもの (並びは phase24 と同じ。T27.0)。
+# **phase24 以前の並びは 1 つも動かない**
+RULES["phase25"] = (RULES["phase24"][:12] + (_p25_connect_errors,) + RULES["phase24"][13:14]
+                    + (_p25_refresh_per_name, _p25_silent_restarts) + RULES["phase24"][16:])
+
+
 def judge(name, hist, hosts, majors, status_b, overload, th,
           a=None, b=None, info=None, dns=None, errors=None, burst=BURST_PER_HOUR):
     """`RULES[name]` の各行を順に呼んで判定表にする。
@@ -2129,6 +2279,18 @@ def render_criteria(d, grouped):
           "**同じ行で対にした**差の中央値 (プロキシの取り分) と p95 (尾) を出し、尾が 5 ms 未満なら"
           "「距離」(相手までの RTT で説明できる) です。**`/recent` は 2,000 件の環状なので、窓と本数を"
           "この行にも書きます**。`rtt_ms.origin` の無い雪像 (Linux 以外・`--lite`) は「判定できず」です。")
+        p()
+    if c["name"] == "phase25":
+        # T27.0。phase24 の 17 行を持ち越し、T25.99 で物差しの穴だった 3 行だけ読み方を変えた
+        p("17 行の並びと材料は phase24 と同じです。直したのは 3 行 (T27.0): (1) 接続のエラー "
+          "(名前解決に成功した試行あたり) は、前か後の `/recent` の試行が **1,000 本に満たなければ「判定できず」**"
+          "です (サーバーの日次の雪像は 00:00 UTC に撮るので、`/recent` が 1 時間ぶんしか無いことがある。"
+          "T25.99 の前は 581 本で 0 件)。(2) 裏の引き直しは、keep-warm を止めた版どうしでは 0.5 倍の目安に"
+          "意味が無いので、**1 名前あたり (回/時) が前の 1.5 倍未満**で読みます。通算の回/時と "
+          "`expired` + `warm_stale` の回/日は同じ行に表示だけで並べます (名前の数で動く使われ方の数字)。"
+          "(3) 無言の再起動は、**前の雪像の取得より後の `start` だけ**を数えます (それより前の起動は前の締めで"
+          "見ています。`boot` の無い古い `start` が `/events` に残る間、毎回「判定できず」になるのを防ぐ)。"
+          "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")
