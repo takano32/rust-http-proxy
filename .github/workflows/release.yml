@@ -4,12 +4,61 @@ on:
   push:
     tags:
       - "v*"
+  # タグをこの workflow の中で打ってからビルドする口 (T.27.99。2026-10-24)。クラウドのセッションからは
+  # タグの git push も GitHub API の書き込みも通らないので、GitHub のツールでこれを起動して打つ。
+  # GITHUB_TOKEN で push したタグは別の workflow を起動しないので、上の `push: tags` と二重には走らない
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "打つ版 (例 0.27.8。v は付けない)。本体の Cargo.toml の版と同じであること"
+        required: true
+      ref:
+        description: "タグを打つコミット (既定は main の先頭)"
+        required: false
+        default: main
 
 permissions:
   contents: write
 
 jobs:
+  tag:
+    # workflow_dispatch のときだけ: 版を確かめ、注釈付きのタグを打って push する
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Check the version and push the tag
+        id: tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          tag="v$VERSION"
+          have=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ "$have" != "$VERSION" ]; then
+            echo "本体の版 ($have) と入力 ($VERSION) が違う" >&2
+            exit 1
+          fi
+          python3 scripts/crate-versions.py --check
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag は既にある ($(git rev-parse "$tag^{commit}"))。打ち直さない" >&2
+            exit 1
+          fi
+          git -c user.name='TAKANO Mitsuhiro' -c user.email='takano32@gmail.com' \
+            tag -a "$tag" -m "$tag" HEAD
+          git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "打った: $tag = $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
   build:
+    needs: tag
+    # タグの push で走ったとき (`tag` は飛ばされる) と、`tag` が打ち終えたとき
+    if: always() && (github.event_name == 'push' || needs.tag.result == 'success')
     # 古めの glibc でビルドして、新しい環境でも古い環境でも動くようにする
     runs-on: ubuntu-22.04
     strategy:
@@ -21,6 +70,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # workflow_dispatch では、いま打ったタグを取り出す (push のときは既定のタグのまま)
+          ref: ${{ needs.tag.outputs.tag || github.ref }}
           # クレートの版の決まりは「前回のデプロイ (版を書いたコミット) から中身が変わったか」を履歴で見るので、
           # 歴史とタグを全部取る (T.26.3)
           fetch-depth: 0
@@ -46,4 +97,6 @@ jobs:
         run: cp target/${{ matrix.target }}/dist/rust-http-proxy rust-http-proxy-${{ matrix.target }}
       - uses: softprops/action-gh-release@v3
         with:
+          # workflow_dispatch では github.ref がブランチなので、打ったタグを名指しする
+          tag_name: ${{ needs.tag.outputs.tag || github.ref_name }}
           files: rust-http-proxy-${{ matrix.target }}
