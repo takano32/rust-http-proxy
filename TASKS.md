@@ -35,12 +35,6 @@
 
 T.25.99 は満たした 7・届かず 2・判定できず 1 で、届かず・判定できずの 3 行はどれも**物差しの側**の穴だった (前の窓が 581 本、`boot` の無い古い `start`、当てはまらない 0.5 倍の目安)。締めをクラウドのセッションから回したので、道具の足りないところも見えた。利用者の決定 (2026-10-24): 5 本とも進める。27c・27d は段 1 (測るだけ) から。
 
-- [ ] **T.27.8 小さい決まり (`Max-Forwards`・userinfo・fragment・版・CONNECT のポート・壊れた chunk)**
-  - 目的: 同じ日に見つけた、密輸ではないが RFC から外れている振る舞い。(a) `Max-Forwards: 0` の TRACE / OPTIONS をそのまま転送する (RFC 9110 §7.6.2 は 0 なら自分で応え、そうでなければ 1 減らして転送)。(b) URI の userinfo (`http://user:pw@host/`) で `user:pw@host` を名前として引きに行き 502 (RFC 9110 §4.2.4。400 にする)。(c) `#fragment` をオリジンへ送る (要求の対象に入らない。落として転送)。(d) `HTTP/9.9` や HTTP/2 の preface (`PRI * HTTP/2.0`) を 200 / 502 で扱う (505)。(e) CONNECT の宛先にポートが無い・0 で 502 (400)。(f) chunk の大きさが読めない (`0x5`・桁あふれ) と 502 (クライアントの誤りなので 400)。
-  - 変更箇所: `crates/http/src/http/mod.rs`、`crates/origin/src/request.rs`、`crates/server/src/lib.rs` (要求行と CONNECT の入口)、`crates/http` の chunk の読み手。
-  - やること: 上の 6 つを直す。(a) の自分で応える形は、OPTIONS は `200` + `Allow` なし・本文なし、TRACE は `200` + `Content-Type: message/http` で受け取った要求をそのまま返す (`Cookie` と `Authorization` を含む行は返さない)。
-  - 受け入れ基準: どれも結合テスト 1 本ずつ。
-
 - [ ] **T.27.9 `framing-probe.py` に T.27.5〜T.27.8 の形を足す**
   - 目的: 手で叩いた 40 通りを、T.19.4 の探りと同じく道具で再現できるようにする。
   - 変更箇所: `scripts/framing-probe.py`、README の「要求の枠組み」の節。
