@@ -9,9 +9,14 @@
 終わったら自分が起こした PID だけを止める。判定は「期待する状態コード」との
 突き合わせで、1 つでも外れたら exit 1。
 
-この表は 2026-10-23 に 0.26.0 で見つけた穴 (T.27.0 〜 T.27.2) を固定するためのもの。
+この表は 2026-10-23 に 0.26.0 で見つけた穴 (T.19.1 〜 T.19.3、CONNECT は T.19.8) を固定するためのもの。
 `Content-Length` の重複不一致・21 桁・カンマ・負、`Host` 2 本、obs-fold は
 どれも「オリジンへ素通し」だった。直ったあとは全部 400 になる。
+
+2026-10-24 に 0.27.1 で見つけた穴 (T.27.5 〜 T.27.8) も足した (`t27_cases` と `t27_response_cases`):
+名前とコロンの間の空白・値の CR / NUL (400)、`Transfer-Encoding` の最後が chunked でない・2 回・
+HTTP/1.0 (400)、応答の値の CR / NUL (SP に置き換えて返す)、`Max-Forwards`・userinfo・fragment・
+版・CONNECT のポート・壊れた chunk。0.27.1 ではこの節の行が外れる。
 """
 import argparse
 import json
@@ -47,6 +52,65 @@ def cases(origin_port):
     ]
 
 
+def t27_cases(origin_port):
+    """T.27.5 〜 T.27.8 の要求側。5 つ目は「届いたときに満たすべきこと」(届いた要求の辞書を受け取る)。"""
+    base = b"http://127.0.0.1:%d" % origin_port
+    host = b"Host: 127.0.0.1:%d\r\n" % origin_port
+
+    def post(headers, body=b"", version=b"HTTP/1.1"):
+        return b"POST " + base + b"/c " + version + b"\r\n" + host + headers + b"\r\n" + body
+
+    def get(path, headers=b"", method=b"GET", version=b"HTTP/1.1"):
+        return method + b" " + base + path + b" " + version + b"\r\n" + host + headers + b"\r\n"
+
+    chunked = b"5\r\nhello\r\n0\r\n\r\n"
+    return [
+        ("名前とコロンの間の空白 (CL)", post(b"Content-Length : 5\r\n", b"hello"), 400, False, None),
+        ("値の途中の CR", get(b"/a", b"X-A: a\rTransfer-Encoding: chunked\r\n"), 400, False, None),
+        ("値の NUL", get(b"/a", b"X-A: a\x00b\r\n"), 400, False, None),
+        ("値の HTAB (通る)", get(b"/a", b"X-A: a\tb\r\n"), 200, True, None),
+        ("TE: xchunked", post(b"Transfer-Encoding: xchunked\r\n", chunked), 400, False, None),
+        ("TE: gzip だけ", post(b"Transfer-Encoding: gzip\r\n", b"hello"), 400, False, None),
+        ("TE: chunked, identity", post(b"Transfer-Encoding: chunked, identity\r\n", chunked), 400, False, None),
+        ("TE: chunked を 2 行", post(b"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n", chunked),
+         400, False, None),
+        ("TE: xchunked + CL", post(b"Content-Length: 5\r\nTransfer-Encoding: xchunked\r\n", b"hello"), 400, False,
+         None),
+        ("HTTP/1.0 の TE", post(b"Transfer-Encoding: chunked\r\n", chunked, b"HTTP/1.0"), 400, False, None),
+        ("TE: gzip, chunked (通る)", post(b"Transfer-Encoding: gzip, chunked\r\n", chunked), 200, True,
+         lambda seen: seen["body"].startswith("5\r\nhello")),
+        ("Max-Forwards: 0 の OPTIONS", get(b"/a", b"Max-Forwards: 0\r\n", b"OPTIONS"), 200, False, None),
+        ("Max-Forwards: 0 の TRACE", get(b"/a", b"Max-Forwards: 0\r\nCookie: s=1\r\n", b"TRACE"), 200, False, None),
+        ("Max-Forwards: 3 は 2 で届く", get(b"/a", b"Max-Forwards: 3\r\n", b"OPTIONS"), 200, True,
+         lambda seen: "Max-Forwards: 2" in seen["headers"]),
+        ("URI の userinfo", b"GET http://u:p@127.0.0.1:%d/a HTTP/1.1\r\n" % origin_port + host + b"\r\n", 400, False,
+         None),
+        ("URI の #fragment は落とす", get(b"/a?q#frag"), 200, True,
+         lambda seen: seen["request_line"].startswith("GET /a?q ")),
+        ("版 HTTP/9.9", get(b"/a", version=b"HTTP/9.9"), 505, False, None),
+        ("HTTP/2 の preface", b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 505, False, None),
+        ("chunk の大きさ 0x5", post(b"Transfer-Encoding: chunked\r\n", b"0x5\r\nhello\r\n0\r\n\r\n"), 400, True,
+         None),
+    ]
+
+
+def t27_response_cases(origin_port):
+    """T.27.7 の応答側。オリジンが壊れた値を返し、プロキシは SP に置き換えて 200 で返す。"""
+    host = b"127.0.0.1:%d" % origin_port
+
+    def get(path):
+        return b"GET http://" + host + path + b" HTTP/1.1\r\nHost: " + host + b"\r\n\r\n"
+
+    def clean(resp):
+        head = resp.split(b"\r\n\r\n", 1)[0]
+        return b"\x00" not in head and head.count(b"\r") == head.count(b"\r\n")
+
+    return [
+        ("応答の値の CR", get(b"/resp-cr"), 200, clean),
+        ("応答の値の NUL", get(b"/resp-nul"), 200, clean),
+    ]
+
+
 def connect_cases(echo_port):
     """CONNECT の入口 (T.27.0)。`http` の経路を通らないので、同じ検査が効いているかを見る。"""
     authority = b"127.0.0.1:%d" % echo_port
@@ -56,6 +120,11 @@ def connect_cases(echo_port):
         ("CONNECT + Host 2 本", head + b"Host: " + authority + b"\r\nHost: evil.example\r\n\r\n", 400, False),
         ("CONNECT + obs-fold", head + b"Host: " + authority + b"\r\nX-A: 1\r\n 2\r\n\r\n", 400, False),
         ("CONNECT + CL (本文 5 B)", head + b"Host: " + authority + b"\r\nContent-Length: 5\r\n\r\nhello", 400, False),
+        # T.27.5 と T.27.8
+        ("CONNECT + 名前とコロンの間の空白", head + b"Host : " + authority + b"\r\n\r\n", 400, False),
+        ("CONNECT + 値の CR", head + b"Host: " + authority + b"\r\nX-A: a\rb\r\n\r\n", 400, False),
+        ("CONNECT のポートなし", b"CONNECT 127.0.0.1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", 400, False),
+        ("CONNECT のポート 0", b"CONNECT 127.0.0.1:0 HTTP/1.1\r\nHost: 127.0.0.1:0\r\n\r\n", 400, False),
     ]
 
 
@@ -72,6 +141,27 @@ class _Origin(socketserver.StreamRequestHandler):
                 raw += chunk
             head, _, rest = raw.partition(b"\r\n\r\n")
             lines = [l.decode("latin1") for l in head.split(b"\r\n")]
+            # T.27.7: 壊れた値を返すオリジン (プロキシが SP に置き換えるかを見る)
+            if " /resp-cr " in lines[0] or " /resp-nul " in lines[0]:
+                bad = b"X-A: a\rSet-Cookie: evil=1" if "/resp-cr" in lines[0] else b"X-A: a\x00b"
+                self.wfile.write(b"HTTP/1.1 200 OK\r\n" + bad + b"\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                return
+            # 本文がまだ届き切っていなければ少し待つ (`Content-Length` か chunked の終わりまで)
+            lower = head.lower()
+            for _ in range(20):
+                if b"content-length:" in lower:
+                    want = int(lower.split(b"content-length:")[1].split(b"\r\n")[0].strip() or 0)
+                    if len(rest) >= want:
+                        break
+                elif b"transfer-encoding:" in lower:
+                    if rest.endswith(b"0\r\n\r\n"):
+                        break
+                else:
+                    break
+                more = self.rfile.read1(65536)
+                if not more:
+                    break
+                rest += more
             self.server.seen.append(
                 {"request_line": lines[0], "headers": [l for l in lines[1:] if l], "body": rest.decode("latin1")}
             )
@@ -180,7 +270,33 @@ def main(argv=None):
                 % (name, got if got is not None else "(無応答)", want, shown or "-", "" if ok else "   ← ちがう")
             )
 
-        # CONNECT は `http` の経路を通らないので別に見る (T.27.0)
+        # T.27.5 〜 T.27.8 の要求側 (5 つ目は届いた要求が満たすべきこと)
+        print("")
+        print("%-28s %-8s %-8s %s" % ("T.27.5〜T.27.8", "状態", "期待", "オリジンに届いた要求行"))
+        for name, raw, want, may_reach, check in t27_cases(args.port + 1):
+            before = len(origin.seen)
+            got = _status(_send(args.port, raw, args.timeout))
+            reached = len(origin.seen) > before
+            seen = origin.seen[-1] if reached else None
+            ok = got == want and (may_reach or not reached) and (check is None or (seen is not None and check(seen)))
+            if not ok:
+                failed += 1
+            print(
+                "%-28s %-8s %-8s %s%s"
+                % (name, got if got is not None else "(無応答)", want, seen["request_line"] if seen else "-",
+                   "" if ok else "   ← ちがう")
+            )
+        for name, raw, want, check in t27_response_cases(args.port + 1):
+            resp = _send(args.port, raw, args.timeout)
+            got = _status(resp)
+            ok = got == want and check(resp)
+            if not ok:
+                failed += 1
+            print("%-28s %-8s %-8s %s%s" % (name, got if got is not None else "(無応答)", want,
+                                            "値は SP に置き換わった" if ok else repr(resp[:60]),
+                                            "" if ok else "   ← ちがう"))
+
+        # CONNECT は `http` の経路を通らないので別に見る (T.19.8)
         print("")
         print("%-28s %-8s %-8s %s" % ("CONNECT", "状態", "期待", "トンネル先が受け取ったバイト"))
         for name, raw, want, may_reach in connect_cases(args.port + 2):

@@ -118,11 +118,17 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 `snapshot_criteria.py` は `snapshot-diff.py` の判定の部、`test_*.py` は unittest が名前で読むものなので
 実行ビットは付けません)。**この区別は `scripts/check-docs.sh` の (f) が毎回見ます** (T.24.7)。
 
-**要求の枠組み (`Content-Length` / `Host` / 折り返し) を実機で流すなら `scripts/framing-probe.py`** (T.27.3)。
+**要求の枠組み (`Content-Length` / `Host` / 折り返し) を実機で流すなら `scripts/framing-probe.py`** (T.19.4)。
 `python3 scripts/framing-probe.py ./target/release/rust-http-proxy` で、オリジンとプロキシを自分で起こして
 10 通り (正常・CL の重複同値/不一致・21 桁・カンマ・負・数字でない・`Host` 2 本・obs-fold の空白/タブ) を流し、
 状態コードと**オリジンが受け取ったヘッダー**を並べます。1 つでも期待と違えば exit 1 なので、直したことの
 確かめと、次の退行の見張りに使えます。
+T.27.9 で 2026-10-24 に見つけた形も足しました (要求 19 通り・応答 2 通り・CONNECT 4 通り): 名前とコロンの間の空白と
+値の CR / NUL は 400 (T.27.5)、`Transfer-Encoding` の最後がちょうど 1 回の `chunked` でない・HTTP/1.0 の TE は 400
+(`gzip, chunked` は通る。T.27.6)、応答の値の CR / NUL は SP に置き換えて返す (T.27.7)、`Max-Forwards: 0` の
+TRACE / OPTIONS は自分で応え 0 でなければ 1 減らす・URI の userinfo は 400・`#fragment` は落とす・`HTTP/1.x` でない版は 505・
+CONNECT のポートなし / 0 は 400・読めない chunk の大きさは 400 (T.27.8)。0.27.1 ではこのうち 24 行が外れます
+(値の CR で区切りがずれたオリジンの接続がプールに戻り、次の無関係な要求まで無応答になる形も出ます)。
 
 **1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T.14.4)。`/snapshot` を
 `DIR/<UTC 時刻>-snapshot.json` (既定はリポジトリの `status/`。`.gitignore` 済み) に保存し、要点
