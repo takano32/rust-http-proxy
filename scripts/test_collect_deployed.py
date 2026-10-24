@@ -500,8 +500,42 @@ class FakeRows:
                 "restored_since": 1788700000, "offset": offset, "next_offset": nxt}
 
 
-def serve_follow(recent, hosts):
-    """雪像の `recent`・`hosts` を上の偽の 1 枚目にし、`/recent` `/hosts` で続きを返す。"""
+class FakeDns:
+    """`/dns?sort=age&limit=4096&offset=` の頁の切り方だけを写したもの (T.27.1)。
+
+    `old=True` は 0.25.4 までの `/dns` (`offset` も `next_offset` も無い。切れても続きは引けない)。
+    """
+
+    def __init__(self, count, pad=400, old=False):
+        self.rows = [{"host": "name-%04d.example" % i, "addrs": ["192.0.2.%d" % (i % 200 + 1)],
+                      "age_secs": i, "ttl_left": 60, "pad": "x" * pad} for i in range(count)]
+        self.old = old
+        self.asked = []
+
+    def page(self, offset, limit=4096):
+        rows, used, cut = [], 0, False
+        for r in self.rows[offset:offset + limit]:
+            n = len(json.dumps(r, separators=(",", ":"))) + 1
+            if used + n > BUDGET:
+                cut = True
+                break
+            used += n
+            rows.append(r)
+        total = len(self.rows)
+        out = {"schema": 1, "entries": rows, "count": total, "shown": len(rows), "sort": "age",
+               "ttl_secs": 60, "negative_ttl_secs": 60, "truncated": cut}
+        if not self.old:
+            out["offset"] = offset
+            out["next_offset"] = offset + len(rows) if offset + len(rows) < total else None
+        return out
+
+
+def serve_follow(recent, hosts, dns=None, prof5=None):
+    """雪像の `recent`・`hosts` を上の偽の 1 枚目にし、`/recent` `/hosts` で続きを返す。
+
+    `dns` (`FakeDns`) と `prof5` (`FakeProfile` を `/profile?res=5` に見立てる) を渡すと、
+    雪像のその部も偽の 1 枚目にし、`/dns` と `/profile?res=5` で続きを返す (T.27.1)。
+    """
     with open(SNAPSHOT) as f:
         base = json.load(f)
     profile = FakeProfile(10)
@@ -522,6 +556,10 @@ def serve_follow(recent, hosts):
             q = parse_qs(u.query)
             if u.path == "/snapshot":
                 snap = dict(base, recent=recent.page(0), hosts=hosts.page(0, 1000))
+                if dns is not None:
+                    snap["dns"] = dns.page(0)
+                if prof5 is not None:
+                    snap["profile"] = prof5.page(0)
                 snap["parts"] = list(base["parts"]) + ["recent"]
                 for fake in (recent, hosts):
                     if fake.grow_after_first:
@@ -537,6 +575,12 @@ def serve_follow(recent, hosts):
                     return self.reply(503, b'{"schema":1,"error":"busy"}')
                 limit = int(q.get("n", q.get("limit", ["2000"]))[0])
                 return self.reply(200, json.dumps(fake.page(off, limit)).encode())
+            if u.path == "/dns" and dns is not None:
+                off = int(q.get("offset", ["0"])[0])
+                dns.asked.append(off)
+                return self.reply(200, json.dumps(dns.page(off)).encode())
+            if u.path == "/profile" and prof5 is not None and q.get("res") == ["5"]:
+                return self.reply(200, json.dumps(prof5.page(int(q.get("offset", ["0"])[0]))).encode())
             if u.path == "/profile":
                 return self.reply(200, json.dumps(profile.page(0)).encode())
             return self.reply(200, b'{"schema":1}')
@@ -555,12 +599,12 @@ class CollectFollowTest(unittest.TestCase):
 
     STAMP = "2026-01-01T000000Z"
 
-    def run_collect(self, recent=None, hosts=None, args=(), **env):
+    def run_collect(self, recent=None, hosts=None, args=(), dns=None, prof5=None, **env):
         recent = recent or FakeRows("recent", 2000)
         hosts = hosts or FakeRows("hosts", 1001)
         self.recent, self.hosts = recent, hosts
         self.first = (len(recent.page(0)["recent"]), len(hosts.page(0, 1000)["hosts"]))
-        srv = serve_follow(recent, hosts)
+        srv = serve_follow(recent, hosts, dns=dns, prof5=prof5)
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         d = tempfile.mkdtemp(prefix="t225-")
@@ -689,6 +733,31 @@ class CollectFollowTest(unittest.TestCase):
         self.assertIn(self.STAMP + "-page2-recent.json", names)
         self.assertIn(self.STAMP + "-page2-hosts.json", names)
         self.assertTrue(snap["recent"]["truncated"])
+
+
+    def test_dns_and_profile_are_joined_too(self):
+        # T.27.1: T.25.99 の雪像は `dns` 811 件中 678 件、`profile` 720 標本中 348 で切れていた
+        dns, prof5 = FakeDns(1500), FakeProfile(720)
+        first = (len(dns.page(0)["entries"]), len(prof5.page(0)["samples"]))
+        self.assertTrue(dns.page(0)["truncated"] and prof5.page(0)["truncated"])
+        _, out, snap = self.run_collect(dns=dns, prof5=prof5)
+        d = snap["dns"]
+        self.assertEqual([e["host"] for e in d["entries"]], [e["host"] for e in dns.rows])
+        self.assertEqual((d["count"], d["shown"], d["truncated"], d["next_offset"]), (1500, 1500, False, None))
+        p = snap["profile"]
+        # 後の頁ほど古いので前に繋ぐ = 全体は古い順のまま
+        self.assertEqual([x[0] for x in p["samples"]], [x[0] for x in prof5.samples])
+        self.assertEqual((p["count"], p["shown"], p["truncated"]), (720, 720, False))
+        self.assertIn("`dns` %d 枚で %s → 1,500 件 (全 1,500 件)"
+                      % (-(-1500 // first[0]), format(first[0], ",")), out)
+        self.assertIn("`profile` %d 枚で %d → 720 件 (全 720 件)" % (-(-720 // first[1]), first[1]), out)
+
+    def test_an_old_dns_without_offset_is_left_as_one_page(self):
+        dns = FakeDns(1500, old=True)
+        _, out, snap = self.run_collect(dns=dns)
+        self.assertEqual(snap["dns"], dns.page(0))
+        self.assertEqual(dns.asked, [])
+        self.assertIn("`dns` は切れていますが、この版のプロキシに `offset=` がありません (1 枚ぶんだけ)", out)
 
 
 if __name__ == "__main__":

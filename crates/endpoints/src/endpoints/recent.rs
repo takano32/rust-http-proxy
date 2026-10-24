@@ -132,25 +132,36 @@ pub fn connections(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
     (200, "application/json", out)
 }
 
-/// `/dns?sort=age|host|misses&limit=300` — 名前解決の表の中身 (T13.1 の効きを見る口)。
+/// `/dns?sort=age|host|misses&limit=300&offset=0` — 名前解決の表の中身 (T13.1 の効きを見る口)。
+///
+/// **`?offset=` (T27.1)**: 雪像は `limit=4096` で引くが、tokyo の 811 名前は 256 KiB に 678 件しか
+/// 入らなかった (T25.99)。`offset` は `sort=` で並べたあとの列を何本飛ばすかで、`next_offset` が
+/// 次の頁の `offset` (`/hosts` と同じ読み方)。表は [`crate::dns`] の上限 4,096 件まで。
 pub fn dns(query: Option<&str>) -> (u16, &'static str, String) {
     let sort = crate::dns::DnsSort::from_param(&str_param(query, "sort"));
     let limit = num_param(query, "limit", 300, 4096);
+    let offset = offset_param(query, 4096);
     let rows = crate::dns::table(sort);
     let count = rows.len();
     let mut out = String::with_capacity(8192);
     out.push_str(SCHEMA_HEAD);
     out.push_str("\"entries\":");
-    let (shown, cut) = array_within(&mut out, rows.iter().take(limit).map(|r| r.to_json()));
+    let (shown, cut) = array_within(
+        &mut out,
+        rows.iter().skip(offset).take(limit).map(|r| r.to_json()),
+    );
+    // 新しい欄は**末尾**に足す (既存の鍵の順は変えない)
     let _ = write!(
         out,
-        ",\"count\":{},\"shown\":{},\"sort\":\"{}\",\"ttl_secs\":{},\"negative_ttl_secs\":{},\"truncated\":{}}}",
+        ",\"count\":{},\"shown\":{},\"sort\":\"{}\",\"ttl_secs\":{},\"negative_ttl_secs\":{},\"truncated\":{},\"offset\":{},\"next_offset\":{}}}",
         count,
         shown,
         sort.name(),
         crate::dns::ttl().as_secs(),
         crate::dns::negative_ttl().as_secs(),
-        cut
+        cut,
+        offset,
+        next_offset(offset, shown, count)
     );
     (200, "application/json", out)
 }

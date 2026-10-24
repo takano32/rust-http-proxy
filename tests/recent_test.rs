@@ -310,6 +310,25 @@ fn test_integration_dns_shows_the_resolver_table() {
     let one = endpoint_json(proxy_port, "/dns?limit=1");
     assert_eq!(one.matches("{\"host\":\"").count(), 1, "{}", one);
     assert!(one.contains("\"shown\":1"), "{}", one);
+    // `?offset=` (T27.1): `/hosts` と同じ読み方。表には少なくとも 2 名前ある (localhost と負のキャッシュ)
+    let first_host = |json: &str| {
+        json.split("{\"host\":\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or_else(|| panic!("host が無い: {}", json))
+            .to_string()
+    };
+    let p1 = endpoint_json(proxy_port, "/dns?sort=host&limit=1");
+    assert!(p1.contains("\"offset\":0,\"next_offset\":1}"), "{}", p1);
+    let p2 = endpoint_json(proxy_port, "/dns?sort=host&limit=1&offset=1");
+    assert!(p2.contains("\"offset\":1,"), "{}", p2);
+    assert_eq!(p2.matches("{\"host\":\"").count(), 1, "{}", p2);
+    // 2 枚目は 1 枚目の続き (名前順で後ろ。ほかのテストが表に足しても前には戻らない)
+    assert!(first_host(&p2) >= first_host(&p1), "{} / {}", p1, p2);
+    // 表を越えた offset は 0 件で、続きは無い
+    let past = endpoint_json(proxy_port, "/dns?offset=4096");
+    assert!(past.contains("\"entries\":[]"), "{}", past);
+    assert!(past.contains("\"next_offset\":null}"), "{}", past);
 }
 
 /// `log_warn!` の直後に `/log` に同じ行が見え、`info` のアクセスログは見えないこと

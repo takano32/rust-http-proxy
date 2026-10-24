@@ -131,7 +131,7 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 続けて回して **Markdown 1 枚**を標準出力に出します (同じものを雪像の隣の `<時刻>-collect.md` にも残し、
 雪像に入らない `/daily` `/healthz` `/slo` `/config` `/profile?res=60` も `<時刻>-<口>.json` で隣に置きます。
 `/profile?res=60` は 1 枚 (256 KiB) だと 24 時間のうち約 5 時間しか入らないので、`--full` が無くても `next_offset` が `null` になるまで `offset=` で追い、`samples` を 1 つに繋いで `truncated` を `false` にしたものを置きます。枚数の上限は `MAX_PAGES`。
-**雪像の `recent` と `hosts` も、256 KiB で切れていれば既定で `offset=` で追い、雪像の同じ部に行を足して置き直します** (T.22.5。形は `/snapshot` のままなので、下の道具はどれもそのまま全部を読みます。2026-10-17 の tokyo では 1 枚に `recent` 2,000 件中 576 件 (33 分ぶん)・`hosts` 1,001 件中 574 件しか入りませんでした)。上限は部ごとに `MAX_PAGES` 枚と、続きを引く時間の合計 `FOLLOW_SECS` (既定 60 秒) で、越えたら止めて要約にそう書きます (`truncated` と `next_offset` は残りを指したまま)。`FULL=0` か `--no-follow` で前のとおり追いません。
+**雪像の `recent` と `hosts` も、256 KiB で切れていれば既定で `offset=` で追い、雪像の同じ部に行を足して置き直します** (T.22.5。T.27.1 から `dns` と `profile` も。`/dns` の `offset=` は 0.27.1 からで、それより前の版では 1 枚ぶんのまま要約にそう書きます。形は `/snapshot` のままなので、下の道具はどれもそのまま全部を読みます。2026-10-17 の tokyo では 1 枚に `recent` 2,000 件中 576 件 (33 分ぶん)・`hosts` 1,001 件中 574 件しか入りませんでした)。上限は部ごとに `MAX_PAGES` 枚と、続きを引く時間の合計 `FOLLOW_SECS` (既定 60 秒) で、越えたら止めて要約にそう書きます (`truncated` と `next_offset` は残りを指したまま)。`FULL=0` か `--no-follow` で前のとおり追いません。
 さらに、下の `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた**匿名化した写し** `<時刻>-snapshot.anon.json` と、同じ表で通した `<時刻>-daily.anon.json` `<時刻>-profile_res_60.anon.json` も隣に置きます (T.17.16。`ANON=0` で置きません)。テストへ持ち込むときはこの写しを `scripts/testdata/` へ移します)。`status-diff.py` は `/snapshot` の JSON を
 そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
 
@@ -754,7 +754,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (全部がそれなら 860 本)、5 つとも出る行は 442 B (同 588 本) で、そこを越えると `truncated` が `true` になり
     `shown` 本までしか出ません (ページ送り `offset=` が入るまでの既知の穴です)。
 
-    このほか、`/dns?sort=age|host|misses&limit=300` で名前解決の表の中身 (ホスト・アドレス・解決からの秒・残り TTL・
+    このほか、`/dns?sort=age|host|misses&limit=300&offset=0` で名前解決の表の中身 (ホスト・アドレス・解決からの秒・残り TTL・
     最後に使ってからの秒・勝った族・負のキャッシュなら理由・裏で引き直し中か・**warm か (`warm`) と
     次に裏で引き直すまでの秒 (`next_refresh_secs`)**・OS に問い合わせた回数・
     **引き直しで答えが変わった回数 (`changes`)**・**warm の間に引かれた回数 (`warm_requests`。
@@ -2683,6 +2683,7 @@ curl "http://127.0.0.1:8080/history?res=5"              # 時系列 (既定 720 
 curl "http://127.0.0.1:8080/history?res=5&n=4320"       # 5 秒刻みで 6 時間ぶん (T.14.32)
 curl "http://127.0.0.1:8080/history?since=restart&summary=1&normal_hours_only=1"  # 起動からの要約 1 行
 curl "http://127.0.0.1:8080/dns?sort=misses"            # 名前解決の表 (age / host / misses で並べ替え)
+curl "http://127.0.0.1:8080/dns?limit=4096&offset=600"  # 続きの名前 (next_offset が null になるまで。T.27.1)
 curl "http://127.0.0.1:8080/hosts?sort=slow&limit=200"  # 全ホスト (/status の hosts[] は上位 50 だけ)
 curl "http://127.0.0.1:8080/hosts?limit=500&offset=500" # 続きの 500 件 (1,000 件は 1 枚に入らない)
 curl "http://127.0.0.1:8080/clients?sort=requests&limit=200"  # 全接続元 (User-Agent・宛先の種類・ポート)

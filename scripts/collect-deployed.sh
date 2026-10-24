@@ -18,7 +18,7 @@
 #   `-profile_res_60.json` は 1 枚 (256 KiB) で切れるので、`--full` が無くても `offset=` で追って
 #   24 時間ぶんを 1 つに繋ぐ (T17.0b。`samples` を連結して `truncated` は `false`)。
 #   **雪像の `recent` と `hosts` も、切れていれば既定で `offset=` で追って雪像の同じ部に繋ぐ** (T.22.5。
-#   形は `/snapshot` のまま。上限は部ごとに `MAX_PAGES` 枚、続きを引く時間の合計 `FOLLOW_SECS` 秒で、
+#   T.27.1 から `dns` と `profile` も。形は `/snapshot` のまま。上限は部ごとに `MAX_PAGES` 枚、続きを引く時間の合計 `FOLLOW_SECS` 秒で、
 #   越えたら止めて要約に書く)。`FULL=0` か `--no-follow` で T.22.5 より前のとおり追わない。
 #   **`status/` は .gitignore 済みでコミットしない** (個票には接続元 IP と宛先ホストが並ぶため)。
 #   テストへ持ち込めるように、**匿名化した写し** (`-snapshot.anon.json`、`-daily.anon.json`、
@@ -36,8 +36,8 @@
 #     雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
 #     追って `<UTC 時刻>-page<何枚目>-<部>.json` に落とす (T.15.0 (11))。雪像 1 枚には `/recent` は
 #     2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 (T.15.0 の実測) しか
-#     入らないので、全部を残したい日だけ付ける。`recent` と `hosts` は T.22.5 から既定で雪像に繋ぐので、
-#     別ファイルに落ちるのはそのあとも切れている部だけ (`profile` と、上限で止めた残り)。
+#     入らないので、全部を残したい日だけ付ける。`recent` と `hosts` は T.22.5 から、`profile` は T.27.1 から
+#     既定で雪像に繋ぐので、別ファイルに落ちるのはそのあとも切れている部だけ (上限で止めた残り)。
 #     `--full --no-follow` で T.22.5 より前の `--full` (3 つとも別ファイル) になる。
 #     `snapshot-summary.py` に渡す雪像の形は変わらない (落とすのは別ファイル)。
 #     **名前が `page<N>-<部>` の順なのはわざと**: `<部>-<N>` にすると
@@ -77,9 +77,9 @@
 #                         BEFORE も ZERO も、相対パスはリポジトリの根から (`DIR` と同じ)
 #   MAX_TIME (既定 30)  … `/snapshot` を取る上限 (秒)。4 MiB まであるので長めに
 #   MAX_PAGES (既定 8)  … `--full` が 1 つの部について追う続きの枚数の上限。`/profile?res=60` と
-#                         既定で追う `recent`・`hosts` を繋ぐ枚数の上限 (1 枚目を含む) にも使う
+#                         既定で追う `recent`・`hosts`・`dns`・`profile` を繋ぐ枚数の上限 (1 枚目を含む) にも使う
 #                         (2,000 件の `recent` は 1 枚 576 件の今の tokyo で 4 枚)
-#   FOLLOW_SECS (既定 60) … 既定で追う `recent`・`hosts` の続きを引く時間の合計の上限 (秒)。
+#   FOLLOW_SECS (既定 60) … 既定で追う `recent`・`hosts`・`dns`・`profile` の続きを引く時間の合計の上限 (秒)。
 #                         越えたら次の 1 枚を引かずに止める (T.22.5)
 #   FULL (無指定)       … `0` で `--no-follow` と同じ (切れた部をどれも追わない)、`1` で `--full` と同じ
 #   AAAA (無指定)       … `status-diff.py --aaaa FILE` に渡す表 (数字を残すときは固定する。§1)
@@ -92,7 +92,7 @@ SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 ORIG_ARGS=("$@")
 cd "$(dirname "$0")/.." || exit 1
 FROM_SERVER=0
-# 切れた部の追い方は 3 段 (T.22.5): `FOLLOW=1` (既定) は `recent`・`hosts` を追って雪像に繋ぐ、
+# 切れた部の追い方は 3 段 (T.22.5): `FOLLOW=1` (既定) は `recent`・`hosts`・`dns`・`profile` を追って雪像に繋ぐ、
 # `FULL=1` (`--full`) はそのうえで残りの部 (`profile` ほか) も別ファイルに落とす、
 # `FULL=0` (`--no-follow`) は T.22.5 より前の既定 (どれも追わない) に戻す
 FOLLOW=1
@@ -257,9 +257,10 @@ if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$OUT" 2>/dev/nu
 fi
 SNAP_MS=$(($(now_ms) - SNAP_START))
 
-# --- 1-follow. 切れた `recent` と `hosts` の続きを既定で追って雪像に繋ぐ (T.22.5) ------------
+# --- 1-follow. 切れた `recent`・`hosts`・`dns`・`profile` の続きを既定で追って雪像に繋ぐ (T.22.5・T.27.1) ---
 # 量が 12 倍になった tokyo (T.21.99) では、雪像の `recent` は 2,000 件中 576 件 (33 分ぶん)、
-# `hosts` は 1,001 件中 574 件で 256 KiB に切れる。**`--full` を付けなくても**、この 2 つの部だけは
+# `hosts` は 1,001 件中 574 件で 256 KiB に切れる。**`--full` を付けなくても**、この 2 つの部 (T.27.1 からは
+# `dns` (T.25.99 で 811 件中 678 件) と `profile` (720 標本中 348) も) は
 # `next_offset` が `null` になるまで `offset=` で追い、**雪像の同じ部に行を足して** `/snapshot` の形の
 # まま置き直す (`/profile?res=60` を繋ぐ T17.0b と同じ流儀。鍵は足さない・消さない)。
 # 読む道具 (`snapshot-summary.py`・`snapshot-diff.py`・`status-diff.py`・`anonymize-snapshot.py`) は
@@ -280,7 +281,11 @@ if [ "$FOLLOW" = 1 ]; then
 import json, sys
 
 # 雪像がその部を組むときの引数 + `offset=` (`crates/endpoints/src/endpoints/recent.rs` の `snapshot`)
-URL = {"recent": "/recent?n=2000&offset=", "hosts": "/hosts?limit=1000&offset="}
+# `dns` と `profile` は T.27.1 で足した (`/dns` の `offset=` は 0.27 から。0.25.4 には無い)
+URL = {"recent": "/recent?n=2000&offset=", "hosts": "/hosts?limit=1000&offset=",
+       "dns": "/dns?sort=age&limit=4096&offset=", "profile": "/profile?res=5&offset="}
+# 部の中で行の並ぶ鍵 (`/dns` は `entries`、`/profile` は `samples`)
+ITEMS = {"recent": "recent", "hosts": "hosts", "dns": "entries", "profile": "samples"}
 d = json.load(open(sys.argv[1]))
 for name, tmpl in URL.items():
     p = d.get(name)
@@ -289,7 +294,7 @@ for name, tmpl in URL.items():
     if p.get("next_offset") is None:
         print("-", name, "この版のプロキシに offset= がありません")
         continue
-    print("+", name, tmpl, p["next_offset"], len(p.get(name) or []))
+    print("+", name, tmpl, p["next_offset"], len(p.get(ITEMS[name]) or []))
 PLANPY
 ) || FOLLOW_PLAN=
   JOIN_ARGS=()
@@ -354,31 +359,50 @@ for a in sys.argv[6:]:
     else:
         cur[2].append(a)
 d = json.load(open(out))
-KEY = {"recent": "id", "hosts": "host"}
+KEY = {"recent": "id", "hosts": "host", "dns": "host", "profile": 0}
+ITEMS = {"recent": "recent", "hosts": "hosts", "dns": "entries", "profile": "samples"}
+
+
+def key(name, r):
+    # `profile` の標本は配列で、先頭が `t` (`keys` の 0 番目)。ほかは辞書の鍵
+    if name == "profile":
+        return r[0] if isinstance(r, list) and r else None
+    return r.get(KEY[name]) if isinstance(r, dict) else None
+
+
 notes = []
 for name, why, files in plan:
     p = d.get(name)
     if why == "old":
         notes.append(f"`{name}` は切れていますが、この版のプロキシに `offset=` がありません (1 枚ぶんだけ)")
         continue
-    rows = p.get(name) or []
+    rows = p.get(ITEMS[name]) or []
     first = len(rows)
-    seen = {r.get(KEY[name]) for r in rows if isinstance(r, dict)}
+    seen = {key(name, r) for r in rows}
     rest = p.get("next_offset")
     dup = 0
+    pages = []
     for f in files:
         page = json.load(open(f))
-        for r in page.get(name) or []:
-            k = r.get(KEY[name]) if isinstance(r, dict) else None
+        got = []
+        for r in page.get(ITEMS[name]) or []:
+            k = key(name, r)
             if k is not None and k in seen:
                 dup += 1
                 continue
             seen.add(k)
-            rows.append(r)
+            got.append(r)
+        pages.append(got)
         rest = page.get("next_offset")
+    # `profile` の `offset` は新しい順に飛ばす本数で、各頁の中は古い順 = 後の頁ほど古いので**前に**繋ぐ
+    # (`/profile?res=60` を繋ぐ T17.0b と同じ)。ほかは後ろに足す
+    if name == "profile":
+        rows = [r for got in reversed(pages) for r in got] + rows
+    else:
+        rows = rows + [r for got in pages for r in got]
     # 形は `/snapshot` の部のまま (鍵の順も変えない)。件数の欄だけ繋いだあとの値にする。
-    # `recent` の `count` は「返した件数」(`shown` と同じ値) で、`hosts` の `count` は全ホスト数
-    p[name] = rows
+    # `recent` の `count` は「返した件数」(`shown` と同じ値) で、`hosts`・`dns`・`profile` の `count` は全件数
+    p[ITEMS[name]] = rows
     p["shown"] = len(rows)
     if name == "recent":
         p["count"] = len(rows)

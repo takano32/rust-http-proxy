@@ -51,7 +51,7 @@ pub fn has_flag(query: Option<&str>, key: &str) -> bool {
 
 /// `?offset=N` を読む (無い / 読めない値は 0。上は `max` で止める。T15.0 (11))。
 ///
-/// 読むのは `/recent` `/hosts` `/profile` の 3 つで、**読み方はここ 1 か所**に置く。
+/// 読むのは `/recent` `/hosts` `/profile` `/dns` の 4 つで (`/dns` は T27.1)、**読み方はここ 1 か所**に置く。
 /// `recent.rs` の `num_param` と別なのは**下限が 0** だから (あちらは `.clamp(1, max)` なので
 /// 「1 件目から」を表せない)。意味は「いまの並びを何本飛ばすか」で、並びは `/recent` が
 /// 閉じた新しい順、`/hosts` が `sort=` の順、`/profile` が新しい標本の順。

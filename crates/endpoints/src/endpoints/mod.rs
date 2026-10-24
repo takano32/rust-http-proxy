@@ -122,7 +122,7 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /snapshot                                   JSON: everything above in one request\n\
          \x20 /snapshots                                  JSON: the daily snapshots kept on disk\n\
          \x20 /snapshots/<YYYY-MM-DD>                     JSON: one saved day (as taken)\n\
-         \x20 /dns?sort=age|host|misses                   JSON: the resolver cache table\n\
+         \x20 /dns?sort=age|host|misses&offset=          JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200&offset=              JSON: every host (/status keeps 50)\n\
          \x20 /hosts/series?top=16&host=<name>            JSON: per-host series (5 min x 24 h)\n\
