@@ -71,7 +71,7 @@ impl EntryCause {
     }
 
     /// ファイルに書くときの符号 (T14.9)。5xx は 0〜7、403 は 100〜103、
-    /// 読めなかった要求 (400 / 414 / 431) は 200〜207 (T14.28 / T19.2 / T19.3)。
+    /// 読めなかった要求 (400 / 414 / 431) は 200〜208 (T14.28 / T19.2 / T19.3 / T27.5)。
     pub fn code(self) -> u64 {
         match self {
             EntryCause::Error(c) => c as u64,
@@ -99,7 +99,7 @@ impl EntryCause {
             101 => EntryCause::Blocked(BlockCause::Blocklist),
             102 => EntryCause::Blocked(BlockCause::ConnectPort),
             103 => EntryCause::Blocked(BlockCause::Local),
-            200..=207 => EntryCause::BadRequest(BadRequestReason::from_index((v - 200) as usize)),
+            200..=208 => EntryCause::BadRequest(BadRequestReason::from_index((v - 200) as usize)),
             _ => EntryCause::Error(ErrCause::Other),
         }
     }

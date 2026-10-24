@@ -38,6 +38,11 @@ pub struct RequestHeaders {
     /// 中継する側は 400 で断るか SP 1 個に置き換えるかを選べるが、置き換えると値が
     /// 黙って変わるので**断る**方を採る (T27.2)。断るかどうかは `http` 側が決める
     pub obs_fold: bool,
+    /// ヘッダーの形が不正 (T27.5): 名前とコロンの間に空白がある (RFC 9112 §5.1 は 400 を求める)、
+    /// または値に CR / LF / NUL がある (RFC 9110 §5.5。断るか SP に置き換える)。どちらも前段と
+    /// 後段で読み方が割れる (`Content-Length : 5` を無視するオリジン、CR を改行と読むオリジン)。
+    /// 要求は置き換えると値が黙って変わるので**断る**。断るのは `http` 側と CONNECT の入口
+    pub bad_header: bool,
 }
 
 pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
@@ -53,6 +58,15 @@ pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestH
         let Some((k, v)) = ascii::split_once(line, b':') else {
             continue;
         };
+        // 名前の後ろの空白 (`Content-Length : 5`) と、値の CR / LF / NUL (T27.5)。行は行末の
+        // CRLF (か LF) を付けたまま来るので、行末の CR / LF を外した残りの途中にあるものだけを見る
+        if matches!(k.as_bytes().last(), Some(b' ' | b'\t'))
+            || v.trim_end_matches(['\r', '\n'])
+                .bytes()
+                .any(|b| matches!(b, b'\r' | b'\n' | 0))
+        {
+            h.bad_header = true;
+        }
         // 名前は小文字化した `String` を作らずに比べる (要求ごとにヘッダーの本数だけ確保していた)
         let name = k.trim_ascii();
         let v_trim = v.trim_ascii();
@@ -448,6 +462,23 @@ mod content_length_tests {
     }
 
     /// CL の無い要求・他のヘッダーだけの要求は今までどおり (誤検出しない)。
+    /// T27.5: 名前とコロンの間の空白と、値の途中の CR / LF / NUL に印が立つ。行末の CRLF と値の HTAB には立たない。
+    #[test]
+    fn flags_whitespace_before_colon_and_cr_lf_nul_in_values() {
+        for line in [
+            "Content-Length : 5\r\n",
+            "X-A\t: 1\r\n",
+            "X-A: a\rTransfer-Encoding: chunked\r\n",
+            "X-A: a\0b\r\n",
+            "X-A: a\nb\r\n",
+        ] {
+            assert!(parse(&[line]).bad_header, "line={:?} を通した", line);
+        }
+        for line in ["X-A: a\tb\r\n", "X-A: 1\n", "X-A:1", "X-A:  spaced  \r\n"] {
+            assert!(!parse(&[line]).bad_header, "line={:?} を断った", line);
+        }
+    }
+
     #[test]
     fn leaves_requests_without_content_length_alone() {
         let h = parse(&["Host: example.com", "Accept: */*"]);

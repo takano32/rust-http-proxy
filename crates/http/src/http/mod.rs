@@ -437,6 +437,19 @@ pub fn handle_http_with_headers(
         return Ok(false);
     }
 
+    // 名前とコロンの間の空白 (RFC 9112 §5.1) と値の CR / LF / NUL (RFC 9110 §5.5) も断る (T27.5)。
+    // `Content-Length : 5` をこちらは長さとして使い、空白つきのまま転送していた。値の CR は
+    // そのまま届き、CR を改行と読むオリジンには別のヘッダー (`Transfer-Encoding` …) に見えていた
+    if req.bad_header {
+        log_warn!(
+            Some(conn_id),
+            "400 Bad Request: whitespace before colon or CR/LF/NUL in a request header"
+        );
+        metrics.record_bad_request(BadRequestReason::BadHeader, client_ip.unwrap_or("-"), 400);
+        let _ = write_error(client, 400, "Bad Request");
+        return Ok(false);
+    }
+
     let mut parts = request_line.split_whitespace();
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
         log_warn!(

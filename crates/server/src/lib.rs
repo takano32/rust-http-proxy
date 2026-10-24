@@ -1677,6 +1677,9 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             Some(metrics::BadRequestReason::DupHost)
         } else if h.obs_fold {
             Some(metrics::BadRequestReason::ObsFold)
+        } else if h.bad_header {
+            // 名前とコロンの間の空白・値の CR / LF / NUL (T27.5)
+            Some(metrics::BadRequestReason::BadHeader)
         } else if has_body || h.content_length_invalid {
             // `has_body` はヘッダーを読むループが `Content-Length` / `Transfer-Encoding` を
             // 見たときに立つ旗 (本文を読むため)。値が数字でない `Content-Length` も

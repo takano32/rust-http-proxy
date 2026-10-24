@@ -716,7 +716,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (`Content-Length` と `Transfer-Encoding: chunked` が両方ある = 要求の密輸) /
     `bad_request:obs_fold` (折り返したヘッダー = 次の行が SP / HTAB で始まる。RFC 9112 §5.2 の
     「400 で断る」を採り、値を黙って変えない) /
-    `bad_request:dup_host` (`Host` が 2 本以上ある。T.19.2)。
+    `bad_request:dup_host` (`Host` が 2 本以上ある。T.19.2) /
+    `bad_request:bad_header` (名前とコロンの間に空白がある・値に CR / LF / NUL がある。T.27.5)。
     状態コードは**実際に返したもの**なので `400` / `414` / `431` のどれかで、
     **宛先 (`target`) は空**です — 要求行そのものは個票に入れません (壊れた要求行にも URL や
     ヘッダーが載っているため。入るのは接続元 IP と時刻と理由だけ)。数だけなら `/status` の
@@ -2962,7 +2963,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 `/metrics` にはこのほか `sorahost_connect_seconds`(`_bucket{le=}` / `_sum` / `_count`。CONNECT 確立の
 ヒストグラム。区間は `/history` と同じ 12 段。**繋がった CONNECT だけ**を数えます — T.20.4。`0.18.0` までは失敗した 1 本も入っていました)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
 かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
-**`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing|obs_fold|dup_host"}`**
+**`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing|obs_fold|dup_host|bad_header"}`**
 (読めずに 400 / 414 / 431 で断った要求。8 本で固定。T.14.28)、
 `sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads`、
 **`sorahost_rtt_seconds_sum` / `_count`** (`{side="client"|"origin"}`。カーネルの平滑化 RTT。
@@ -3017,7 +3018,7 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 段階の 13 本で `/metrics` は **約 14 KB 増えます** (ホスト表と接続元表が満杯のときで 243 → 257 KB。上限は 400 KiB)。
 
 `/status` の **`rejected_requests`** は、**要求を読めずに断った数**を理由別に並べた欄です (T.14.28)。
-`{"request_line":0,"header_too_large":0,"method":0,"no_host":0,"bad_uri":0,"body_framing":0,"obs_fold":0,"dup_host":0,"total":0}` の形で、
+`{"request_line":0,"header_too_large":0,"method":0,"no_host":0,"bad_uri":0,"body_framing":0,"obs_fold":0,"dup_host":0,"bad_header":0,"total":0}` の形で、
 理由は上の `/errors` の `bad_request:<reason>` と同じ 8 種、`total` はその合計です。公開ポートには走査 (scanner) の
 要求が来るので、**何が来たか**をこの 1 行で読むためのものです。エラー (5xx) ではないので `errors` /
 `errors_by_cause` には混ぜていません。**数えるのは断る経路だけ**で、通した要求は原子を 1 つも触りません。
