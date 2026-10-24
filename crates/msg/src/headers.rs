@@ -288,7 +288,7 @@ pub fn write_response_head<S: AsRef<str>>(
         }
         out.extend_from_slice(name.as_bytes());
         out.extend_from_slice(b": ");
-        out.extend_from_slice(v.trim_ascii().as_bytes());
+        out.extend_from_slice(clean_value(v.trim_ascii()).as_bytes());
         fold_at = Some(out.len());
         out.extend_from_slice(b"\r\n");
     }
@@ -334,6 +334,19 @@ pub fn response_names(head: &[u8], name: &str, token: &str) -> bool {
             && v.split(',')
                 .any(|t| t.trim_ascii().eq_ignore_ascii_case(token))
     })
+}
+
+/// 応答のヘッダー値の CR と NUL を SP に置き換える (T27.7。RFC 9110 §5.5 の「SP に置き換えて転送」の方)。
+///
+/// オリジンが `X-A: a\rSet-Cookie: evil=1` を返すと、CR を改行と読むクライアントには別のヘッダーに見える。
+/// 応答は断る (502) と壊れたオリジンの頁が全部見えなくなるので、置き換えて通す。LF は行の区切りで
+/// 先に割っているので値には残らない。**ふつうの値は確保も写しもしない** (借用のまま返す)。
+fn clean_value(v: &str) -> std::borrow::Cow<'_, str> {
+    if v.bytes().any(|b| b == b'\r' || b == 0) {
+        std::borrow::Cow::Owned(v.replace(['\r', '\0'], " "))
+    } else {
+        std::borrow::Cow::Borrowed(v)
+    }
 }
 
 /// レスポンスヘッダーのうち、プロキシが自分で決め直すもの (枠組み・経過時間)。
@@ -386,8 +399,11 @@ pub fn sanitize_response_head(head: &[u8]) -> ResponseHead {
             fold_target = None;
             continue;
         }
-        out.lines
-            .push(format!("{}: {}", k.trim_ascii(), v.trim_ascii()));
+        out.lines.push(format!(
+            "{}: {}",
+            k.trim_ascii(),
+            clean_value(v.trim_ascii())
+        ));
         fold_target = Some(out.lines.len() - 1);
     }
     out
@@ -466,6 +482,27 @@ pub fn sanitize_and_inject_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T27.7: 応答の値の CR と NUL は SP になる。ふつうの行は 1 バイトも変わらない。
+    #[test]
+    fn cr_and_nul_in_a_response_value_become_spaces() {
+        let head = b"HTTP/1.1 200 OK\r\nX-A: a\rSet-Cookie: evil=1\r\nX-B: a\0b\r\nX-C: plain\tvalue\r\n\r\n";
+        let mut out = Vec::new();
+        write_response_head(&mut out, head, None, &[], &[] as &[&str]);
+        assert_eq!(
+            out,
+            b"HTTP/1.1 200 OK\r\nX-A: a Set-Cookie: evil=1\r\nX-B: a b\r\nX-C: plain\tvalue\r\n\r\n".to_vec()
+        );
+        let h = sanitize_response_head(head);
+        assert_eq!(
+            h.lines,
+            vec!["X-A: a Set-Cookie: evil=1", "X-B: a b", "X-C: plain\tvalue"]
+        );
+        assert!(matches!(
+            clean_value("plain"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
 
     #[test]
     fn write_response_head_unfolds_obs_fold_too() {

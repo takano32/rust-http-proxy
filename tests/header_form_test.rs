@@ -158,3 +158,42 @@ fn test_integration_malformed_header_in_connect_is_rejected() {
         status
     );
 }
+
+/// 応答の値の CR と NUL は SP に置き換えて返す (T27.7)。応答は断ると頁が見えなくなるので通す。
+#[test]
+fn test_integration_cr_and_nul_in_response_values_become_spaces() {
+    let (origin_port, _handle) = start_origin(
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(|_req, _n| {
+            b"HTTP/1.1 200 OK\r\nX-A: a\rSet-Cookie: evil=1\r\nX-B: a\0b\r\nContent-Length: 2\r\n\
+              Connection: close\r\n\r\nok"
+                .to_vec()
+        }),
+    );
+    let proxy_port = start_test_proxy(proxy_config());
+    let host = format!("127.0.0.1:{}", origin_port);
+    let resp = send_raw(
+        proxy_port,
+        format!(
+            "GET http://{h}/r HTTP/1.1\r\nHost: {h}\r\nConnection: close\r\n\r\n",
+            h = host
+        )
+        .as_bytes(),
+    );
+    assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
+    assert!(
+        resp.contains("\r\nX-A: a Set-Cookie: evil=1\r\n"),
+        "{:?}",
+        resp
+    );
+    assert!(resp.contains("\r\nX-B: a b\r\n"), "{:?}", resp);
+    assert!(!resp.contains('\0'), "{:?}", resp);
+    // CR は行の区切りの CRLF にしか残らない
+    assert_eq!(
+        resp.matches('\r').count(),
+        resp.matches("\r\n").count(),
+        "{:?}",
+        resp
+    );
+    assert!(resp.ends_with("\r\n\r\nok"), "{:?}", resp);
+}
