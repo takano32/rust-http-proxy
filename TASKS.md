@@ -35,12 +35,6 @@
 
 T.25.99 は満たした 7・届かず 2・判定できず 1 で、届かず・判定できずの 3 行はどれも**物差しの側**の穴だった (前の窓が 581 本、`boot` の無い古い `start`、当てはまらない 0.5 倍の目安)。締めをクラウドのセッションから回したので、道具の足りないところも見えた。利用者の決定 (2026-10-24): 5 本とも進める。27c・27d は段 1 (測るだけ) から。
 
-- [ ] **T.27.5 要求のヘッダーの形を検査する (名前とコロンの間の空白・値の CR / LF / NUL → 400)**
-  - 目的: 2026-10-24 に 0.27.1 を手元で叩くと、`Content-Length : 5` (名前とコロンの間に空白) はこちらが長さとして使ったうえで**空白つきのまま**転送し、`X-A: a\rTransfer-Encoding: chunked` (値に CR) と `X-A: a\x00b` (値に NUL) は**そのまま**オリジンへ届いた。CR を改行と読むオリジンや、空白つきの名前を無視するオリジンとは本文の切れ目が食い違う (要求の密輸)。RFC 9112 §5.1 は名前とコロンの間の空白に 400 を、RFC 9110 §5.5 は値の CR / LF / NUL に「断るか SP に置き換える」を求めている。
-  - 変更箇所: `crates/origin/src/request.rs` (`parse_request_headers` に旗)、`crates/http/src/http/mod.rs` と `crates/server/src/lib.rs` の CONNECT の入口 (T.19.8 と同じ所)、`crates/metrics-types` の `BadRequestReason` に `bad_header` を**末尾に**足す (`/status` の `rejected_requests` と `/metrics` は鍵が 1 つ増えるだけ)、`crates/metrics-recent` の個票の符号。
-  - やること: 要求ではどちらも **400 で断る** (置き換えると値が黙って変わるので、obs-fold と同じく断る方を採る)。通る要求に足すのは、ヘッダーの各行を 1 回なめる判定だけ。
-  - 受け入れ基準: 結合テストで 3 つの形がどれも 400・オリジンに 1 バイトも届かない・`rejected_requests.bad_header` が増える。CONNECT でも同じ。
-
 - [ ] **T.27.6 `Transfer-Encoding` を検査する (最後が `chunked` でない・`chunked` が 2 回・HTTP/1.0 → 400)**
   - 目的: `Transfer-Encoding: xchunked` / `gzip` / `chunked, identity` は、こちらは本文なしとして**ヘッダーだけ転送**し、本文はクライアントの次の要求として読まれた (応答が 2 つ返る)。`xchunked` と `Content-Length: 5` が両方ある要求は CL で読み、**TE も CL も転送**した。`chunked` を緩く読むオリジンとは切れ目が食い違う。RFC 9112 §6.3 は「要求の TE の最後が chunked でなければ 400 で断って閉じる」、§6.1 は「HTTP/1.0 の TE は枠組みが壊れているとして扱う」、chunked は 2 回かけてはいけない。
   - 変更箇所: `crates/origin/src/request.rs` (`Transfer-Encoding` の読み方。複数の行は 1 つの並びとして読む)、`crates/http/src/http/mod.rs` と CONNECT の入口 (CONNECT は今も TE があれば 400)。
