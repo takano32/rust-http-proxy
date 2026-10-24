@@ -13,6 +13,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -758,6 +759,62 @@ class CollectFollowTest(unittest.TestCase):
         self.assertEqual(snap["dns"], dns.page(0))
         self.assertEqual(dns.asked, [])
         self.assertIn("`dns` は切れていますが、この版のプロキシに `offset=` がありません (1 枚ぶんだけ)", out)
+
+
+class CollectViaTest(unittest.TestCase):
+    """`VIA` (T.27.2): デプロイ先への curl を全部 `-x "$VIA" -p` (CONNECT のトンネル) で通す。
+
+    curl を偽物に差し替え、引数を控えてから `-x VAL -p` を外して本物の curl で偽のサーバーへ行く。
+    """
+
+    def run_collect(self, **env):
+        srv = serve(FakeProfile(10))
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        d = tempfile.mkdtemp(prefix="t272-")
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", d]))
+        log = os.path.join(d, "curl.log")
+        bindir = os.path.join(d, "bin")
+        os.mkdir(bindir)
+        with open(os.path.join(bindir, "curl"), "w") as f:
+            f.write("#!/bin/bash\n"
+                    'printf "%%s\\n" "$*" >> %s\n'
+                    "args=()\n"
+                    'while [ $# -gt 0 ]; do\n'
+                    '  case "$1" in -x) shift ;; -p) ;; *) args+=("$1") ;; esac\n'
+                    "  shift\n"
+                    "done\n"
+                    'exec %s "${args[@]}"\n' % (log, shutil.which("curl")))
+        os.chmod(os.path.join(bindir, "curl"), 0o755)
+        e = dict(os.environ, DASHBOARD="0", DIFF="0", CRITERIA="off",
+                 COLLECT_STAMP="2026-01-01T000000Z", PATH=bindir + os.pathsep + os.environ["PATH"])
+        for name in ("PROBE", "VIA"):
+            e.pop(name, None)
+        e.update(env)
+        r = subprocess.run([SCRIPT, "127.0.0.1:%d" % srv.server_address[1], os.path.join(d, "out")],
+                           env=e, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(log) as f:
+            return f.read().splitlines(), r.stdout
+
+    def test_every_curl_goes_through_the_tunnel(self):
+        calls, out = self.run_collect(VIA="http://127.0.0.1:9")
+        self.assertTrue(calls)
+        self.assertTrue(all(c.startswith("-x http://127.0.0.1:9 -p ") for c in calls), calls)
+        # 探りは既定で飛ばす (トンネルの中ではデプロイ先をプロキシとして使えない)
+        self.assertIn("(飛ばした: PROBE=0)", out)
+
+    def test_probe_deployed_refuses_under_via(self):
+        r = subprocess.run([os.path.join(HERE, "probe-deployed.sh"), "127.0.0.1:9"],
+                           env=dict(os.environ, VIA="http://127.0.0.1:9"),
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("VIA=http://127.0.0.1:9 があるので測らない", r.stdout)
+
+    def test_without_via_curl_is_called_as_before(self):
+        calls, _ = self.run_collect(PROBE="0")
+        self.assertTrue(calls)
+        self.assertFalse([c for c in calls if "-x " in c or c.endswith(" -p") or " -p " in c], calls)
 
 
 if __name__ == "__main__":

@@ -140,7 +140,8 @@ scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo > today.md   #
 PROBE=0 scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server tokyo.sorahost.net:60357 status/tokyo  # 回し忘れた日を取り寄せる
 scripts/collect-deployed.sh --full tokyo.sorahost.net:60357 status/tokyo       # 切れた部の続きも `offset=` で追う
-scripts/collect-deployed.sh --no-follow tokyo.sorahost.net:60357 status/tokyo  # 切れた `recent`・`hosts` を追わない (T.22.5 より前の既定)
+scripts/collect-deployed.sh --no-follow tokyo.sorahost.net:60357 status/tokyo  # 切れた `recent`・`hosts`・`dns`・`profile` を追わない (T.22.5 より前の既定)
+VIA=$HTTPS_PROXY scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo  # CONNECT しか通さないプロキシの内側 (クラウドのセッション) から。探りは飛ばす (T.27.2)
 scripts/status-diff.py status/*-snapshot.json    # 最初と最後で差分
 scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまとめる
 ```

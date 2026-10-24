@@ -19,6 +19,9 @@
 #   MAX_TIME (既定 3)        … 1 本あたりの上限 (秒)
 #   BUDGET (既定 28)         … 全体の予算 (秒)。**30 秒以内に終わること**が受け入れ基準なので、
 #                              予算を使い切った行は測らずに `skip` と出す
+#   VIA (無指定)             … `collect-deployed.sh` と同じ (T.27.2)。あれば**測らずに終わる**: 探りは
+#                              デプロイ先をプロキシとして使う要求で、エージェントのプロキシの CONNECT の
+#                              トンネルの中ではプロキシを入れ子にできない (手元の端末から回すこと)
 #
 # **デプロイ先は利用者の本番**なので、確認に使う要求は必要最小限にする
 # (このスクリプトの 1 回分 = 5 経路 × 3 回 = 15 本。実測 8〜12 秒)。
@@ -39,6 +42,10 @@ PROXY=${1:-}
 if [ -z "$PROXY" ]; then
   echo "usage: $0 HOST:PORT   (例: $0 tokyo.sorahost.net:60357)" >&2
   exit 2
+fi
+if [ -n "${VIA:-}" ]; then
+  echo "# probe-deployed: VIA=$VIA があるので測らない (トンネルの中ではデプロイ先をプロキシとして使えない。T.27.2)"
+  exit 0
 fi
 REPEAT=${REPEAT:-3}
 AAAA_HOST=${AAAA_HOST:-www.dlsite.com}

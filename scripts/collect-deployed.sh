@@ -47,6 +47,10 @@
 #     `--from-server` とは併用できない (あちらは保存済みの雪像を取り寄せるだけ)。
 #
 # 環境変数:
+#   VIA (無指定)        … デプロイ先への curl を全部 `-x "$VIA" -p` (CONNECT のトンネル) で通す (T.27.2)。
+#                         クラウドのセッションのエージェントのプロキシは平文の HTTP を通さず CONNECT だけを
+#                         通すので、`VIA=$HTTPS_PROXY` で回す。**`VIA` があるときの `PROBE` の既定は 0**
+#                         (探りはデプロイ先をプロキシとして使う要求で、トンネルの中では測れない)
 #   PROBE (既定 1)      … 0 で `probe-deployed.sh` を飛ばす (デプロイ先へ本物の要求を
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
@@ -131,7 +135,13 @@ PROXY=${PROXY#http://}
 PROXY=${PROXY%/}
 # 相対パスはリポジトリの根から (上の `cd`)
 DIR=${2:-status}
-PROBE=${PROBE:-1}
+VIA=${VIA:-}
+# `VIA` (T.27.2) のときは探りを既定で飛ばす (トンネルの中ではデプロイ先をプロキシとして使えない)
+if [ -n "$VIA" ]; then
+  PROBE=${PROBE:-0}
+else
+  PROBE=${PROBE:-1}
+fi
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
 CRITERIA=${CRITERIA:-phase25}
@@ -145,6 +155,16 @@ AAAA=${AAAA:-}
 ANON=${ANON:-1}
 
 mkdir -p "$DIR" || exit 1
+
+# デプロイ先への curl は全部ここを通る (T.27.2)。`VIA` があれば CONNECT のトンネル (`-p`) を張る。
+# `-p` が無いと curl は `GET http://…` を絶対形式でプロキシに送り、CONNECT だけを通すプロキシに断られる
+curl() {
+  if [ -n "$VIA" ]; then
+    command curl -x "$VIA" -p "$@"
+  else
+    command curl "$@"
+  fi
+}
 
 # いまの時刻 (ミリ秒)。取得にかかった時間を要約に書く (T.22.5)。bash 5 の `EPOCHREALTIME` が
 # 無ければ `date` (小数点が `,` の地域設定でも読めるように、区切りは数字以外を全部落とす)
