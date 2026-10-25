@@ -51,7 +51,11 @@ pub struct Capabilities {
     pub proc_syscall: bool,
     /// 待ち受けソケットに `getsockopt(SOL_TCP, TCP_INFO)` が通る (T14.5 の RTT と再送)
     pub tcp_info: bool,
-    /// 自分の cgroup に `cpu.stat` がある (T14.12 の CPU の絞り)
+    /// `/status` の `kernel.cgroup_cpu` が読む `cpu.stat` がある (T14.12 の CPU の絞り)。
+    ///
+    /// 読む側は cgroup v2 の階層 (`0::/…`) を根まで遡って、絞りの欄のある `cpu.stat` を
+    /// 探す ([`super::cgroup::cgroup_cpu_path`])。判定もそれと**同じ道**で決める (T.28.11。
+    /// それまでは v1 の `cpu` コントローラの `cpu.stat` でも真になり、[ok] なのに値は `null` だった)
     pub cgroup_cpu: bool,
     /// 自分の cgroup に `cpu.pressure` がある (T14.12 の PSI)
     pub cgroup_pressure: bool,
@@ -181,7 +185,8 @@ fn probe_fast() -> Capabilities {
         proc_syscall: proc_syscall_readable(),
         proc_schedstat: proc_task_file_readable("schedstat"),
         tcp_info: tcp_info_works(),
-        cgroup_cpu: cgroup_file_here("cpu.stat"),
+        // 読む側 (`cgroup::cgroup_cpu`) と同じ道で判定する (T.28.11)
+        cgroup_cpu: cgroup_cpu_here(),
         cgroup_pressure: cgroup_file_here("cpu.pressure"),
         ipv6_route: has_ipv6_default_route(),
         resolver_ms: None,
@@ -253,6 +258,23 @@ fn tcp_info_ok(fd: i32) -> bool {
     let rc = unsafe { getsockopt(fd, SOL_TCP, TCP_INFO, buf.as_mut_ptr(), &mut len) };
     // 先頭 8 バイト (u8 の旗) すら返らないなら、読めても使い物にならない
     rc == 0 && len >= 8
+}
+
+/// `/status` の `kernel.cgroup_cpu` が読める `cpu.stat` があるか (読む側と同じ道。T.28.11)。
+fn cgroup_cpu_here() -> bool {
+    match fs::read_to_string("/proc/self/cgroup") {
+        Ok(text) => cgroup_cpu_in(&text, Path::new("/sys/fs/cgroup")),
+        Err(_) => false,
+    }
+}
+
+/// `/proc/self/cgroup` の中身と cgroup の根を与えて、読む側 ([`super::cgroup::cgroup_cpu`])
+/// が値を得られるかを返す (テストのために分けてある)。v2 の行 (`0::/…`) が無ければ偽
+/// (v1 の `cpu` コントローラの `cpu.stat` は読む側が見ないので数えない)。
+pub fn cgroup_cpu_in(proc_cgroup: &str, sysfs: &Path) -> bool {
+    super::cgroup::v2_dir_from(proc_cgroup, sysfs)
+        .and_then(|dir| super::cgroup::cgroup_cpu_path_in(&dir, sysfs))
+        .is_some()
 }
 
 /// 自分の cgroup (v2 → v1 の順) に `name` のファイルがあるか。
@@ -386,6 +408,42 @@ mod tests {
         assert!(cgroup_file_in("4:cpu,cpuacct:/app\n", &root, "cpu.stat"));
         // 関係のないコントローラの行は見ない
         assert!(!cgroup_file_in("5:memory:/app\n", &root, "cpu.stat"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `cgroup_cpu` は読む側 (`cgroup::cgroup_cpu`) と同じ道で決まる (T.28.11)。
+    /// v1 だけの `/proc/self/cgroup` では、`cpu` コントローラに `cpu.stat` があっても偽
+    /// (読む側は v2 しか見ないので、[ok] なのに値は `null` になっていた)。
+    #[test]
+    fn cgroup_cpu_follows_the_reader() {
+        let root = std::env::temp_dir().join(format!("shp-caps-cpu-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("cpu/app")).unwrap();
+        fs::write(
+            root.join("cpu/app/cpu.stat"),
+            "nr_periods 1\nnr_throttled 0\nthrottled_time 0\n",
+        )
+        .unwrap();
+        // v1 だけ (この箱と同じ形の見本)
+        let v1 = "4:cpu,cpuacct:/app\n5:memory:/app\n";
+        assert!(!cgroup_cpu_in(v1, &root));
+        // 古い判定は v1 にも当たっていた (食い違いの元)
+        assert!(cgroup_file_in(v1, &root, "cpu.stat"));
+        // 混在 (`0::/` があっても、v2 の側に絞りの欄のある `cpu.stat` が無ければ偽)
+        let hybrid = format!("{}0::/\n", v1);
+        assert!(!cgroup_cpu_in(&hybrid, &root));
+        // v2 の側に `cpu.stat` があっても、絞りの欄が無ければ読む側は値を出さないので偽
+        fs::create_dir_all(root.join("svc")).unwrap();
+        fs::write(root.join("svc/cpu.stat"), "usage_usec 10\n").unwrap();
+        assert!(!cgroup_cpu_in("0::/svc\n", &root));
+        // v2 で絞りの欄がある (親の階層でもよい) なら真
+        fs::create_dir_all(root.join("app/inner")).unwrap();
+        fs::write(
+            root.join("app/cpu.stat"),
+            "usage_usec 10\nnr_periods 1\nnr_throttled 0\nthrottled_usec 0\n",
+        )
+        .unwrap();
+        assert!(cgroup_cpu_in("0::/app/inner\n", &root));
         let _ = fs::remove_dir_all(&root);
     }
 
