@@ -151,11 +151,6 @@
 
 **28d 台帳・文書・道具**
 
-- [ ] **T.28.23 古い数字と死んだ参照の束を直し、再発するものを `check-docs.sh` で見る**
-  - 目的: `-h` (`crates/base/src/cli.rs` 41-42) の `PROXY_CONNECT_TIMEOUT_SECS … (10, …)` は既定 5 (T.23.3)。README 9・503「約 1.4 MB」(実 3.1 MB / dist 2.0 MB)、2535 と Dockerfile 15「26 個のクレート」(41)、2371「bin が 2 つで default-run」(どちらも無い)、3232・247・262「既定は phase24」(phase25。README に phase25 の文字が無い)、2967-2968「旧名 `sorahost_live_threads` はこの版だけ」(今も出る)、2751-2753 のダッシュボードの引き方の間隔 (実際は 5 秒ごとの口が多い)。
-  - やること: 1 コミットで直し、`check-docs.sh` に (h) `collect-deployed.sh` の `CRITERIA` の既定 = README の「既定は」、(i) `cli.rs` の括弧の既定 = `config.rs` の定数、を足す。
-  - 受け入れ基準: わざと戻した 2 通りで NG、直した木で差分 0。
-
 - [ ] **T.28.25 ダッシュボードの余白・重い口の引き方・起動のカード**
   - 目的: `dashboard.html` は 80,515 / 81,920 B で余白 1,405 B (次のカードで越える)。`pollProfile` (1055-1057) は 5 秒ごとに重い口 `/profile?res=5|60` を引き、開いたまま `collect-deployed.sh` を回すとどちらかが 503 `busy` になりうる。データはあるのにカードが無いもの: 起動 (`version`・`uptime`・`boot.id`・最後の `start` / `shutdown` = 無言の再起動。画面に `boot` の文字は 0)、`/healthz` の検査、`rejected_requests` / `heavy_rejected`。
   - やること: 上限を inspect と同じ 96 KiB に上げるかコメントを削るかを決め、`/profile` は `summary=1` + 低頻度の標本にするか間隔を 30 秒に、起動のカードを足す。
