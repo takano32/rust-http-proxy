@@ -141,6 +141,11 @@ pub fn serve(
     // 読みは 1 要求目の要求行を待つ長さ (`PROXY_HEADER_TIMEOUT_SECS` との小さい方。T.28.0)、
     // 書きは `PROXY_TIMEOUT_SECS`。持つのは `(書き, 読み)` の組
     let mut inherited = inherit_on_listener(&listener, &config_of());
+    // 当てる前に握手を終えて accept 待ちの列に載っている接続は、待ち受けのオプションを
+    // 継承していない (Linux は握手が済んだ時点で待ち受けを写す)。起動直後に再接続してくる
+    // クライアントがこれを踏むと無期限のまま扱われるので、いま列にある分を先に引き取り、
+    // その接続だけ接続ごとに設定する (T.28.30)。費用は起動時と当て直したときの数回だけ
+    let mut backlog = take_backlog(&listener);
     // 日付の変わり目に `/snapshot` を 1 枚組む閉包を履歴スレッドへ預ける (T14.34)。
     // 組み立ては要求で来たときと同じ関数で、**下の層 (`proxy-metrics`) から上の層を
     // 呼ばない**ためにここで預ける。書くかどうかを決めるのは `snapshots::configure`
@@ -168,7 +173,12 @@ pub fn serve(
     loop {
         // incoming() は accept() の戻り値のアドレスを捨てるので accept() を直接呼ぶ
         // (接続ごとの getpeername が 1 回減る)
-        let (mut stream, peer) = match listener.accept() {
+        let from_backlog = !backlog.is_empty();
+        let accepted = match backlog.pop_front() {
+            Some(v) => Ok(v),
+            None => listener.accept(),
+        };
+        let (mut stream, peer) = match accepted {
             Ok(v) => v,
             // 待ち受けに載せた SO_RCVTIMEO は accept() にも効くので、接続が来ないまま
             // timeout 秒たつと WouldBlock で戻ってくる。これは異常ではないので
@@ -234,11 +244,13 @@ pub fn serve(
         // この接続が継承したのは「今 待ち受けに当たっている値」。.env の再読込で timeout が
         // 変わった直後だけは食い違うので、その接続は従来どおり接続ごとに設定する
         let conn_inherited = inherited
-            .filter(|t| *t == listener_timeouts(&cfg))
+            .filter(|t| !from_backlog && *t == listener_timeouts(&cfg))
             .map(|(_, read)| read);
-        if conn_inherited.is_none() && inherited.is_some() {
-            // 待ち受けに当て直す (次の接続から効く)
+        if conn_inherited.is_none() && inherited.is_some() && !from_backlog {
+            // 待ち受けに当て直す (次の接続から効く)。その前に握手を終えた分は古い値のままなので、
+            // 起動時と同じく先に引き取って接続ごとに設定する
             inherited = inherit_on_listener(&listener, &cfg);
+            backlog.extend(take_backlog(&listener));
         }
         // 生きているスレッドの上限も `.env` の再読込で変わる (T11.6)。当て直すのは
         // 食い違ったときだけで、接続ごとにかかるのは `Relaxed` の読みが 1 回
@@ -428,6 +440,31 @@ fn inherit_on_listener(
     #[cfg(not(target_os = "linux"))]
     let _ = (listener, cfg);
     None
+}
+
+/// いま accept 待ちの列に載っている接続を、待たずに全部引き取る (T.28.30)。
+///
+/// 待ち受けを一時だけ非ブロッキングにして `WouldBlock` まで accept する。accept した接続は
+/// 非ブロッキングを引き継がない (`accept4` に `SOCK_NONBLOCK` を渡していない)。
+/// 非ブロッキングにできなければ何も引き取らない (今までどおり)。
+fn take_backlog(
+    listener: &TcpListener,
+) -> std::collections::VecDeque<(TcpStream, std::net::SocketAddr)> {
+    let mut out = std::collections::VecDeque::new();
+    if listener.set_nonblocking(true).is_err() {
+        return out;
+    }
+    loop {
+        match listener.accept() {
+            Ok(v) => out.push_back(v),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    if let Err(e) = listener.set_nonblocking(false) {
+        log_error!(None, "could not make the listener blocking again: {}", e);
+    }
+    out
 }
 
 /// 待ち受けに継承させる `(書き, 読み)` のタイムアウト (T.28.0)。

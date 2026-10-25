@@ -151,12 +151,36 @@ pub fn start_test_proxy_full(
     start_test_proxy_parts(config, cache_cfg, ca_file).0
 }
 
+/// `serve` を呼ぶ前に `early` 本の接続の握手を済ませておく版 (起動直後の接続のテスト用。T.28.30)。
+///
+/// 握手は待ち受けの accept 待ちの列に載ったまま、受け付けのループが待ち受けに
+/// オプションを当てるより前に終わっている (= 待ち受けの設定を継承していない)。
+#[allow(dead_code)]
+pub fn start_test_proxy_with_early(config: Config, early: usize) -> (u16, Vec<TcpStream>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let conns = (0..early)
+        .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
+        .collect();
+    start_test_proxy_on(listener, config, CacheConfig::disabled(), None);
+    (port, conns)
+}
+
 fn start_test_proxy_parts(
     config: Config,
     cache_cfg: CacheConfig,
     ca_file: Option<std::path::PathBuf>,
 ) -> (u16, Arc<rust_http_proxy::workers::Workers>, Arc<Metrics>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    start_test_proxy_on(listener, config, cache_cfg, ca_file)
+}
+
+fn start_test_proxy_on(
+    listener: TcpListener,
+    config: Config,
+    cache_cfg: CacheConfig,
+    ca_file: Option<std::path::PathBuf>,
+) -> (u16, Arc<rust_http_proxy::workers::Workers>, Arc<Metrics>) {
     let port = listener.local_addr().unwrap().port();
     let cfg = Arc::new(config);
     let metrics = Arc::new(Metrics::new());

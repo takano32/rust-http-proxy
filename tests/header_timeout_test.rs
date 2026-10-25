@@ -23,10 +23,10 @@ fn config_with_deadline(secs: u64, lite: bool) -> rust_http_proxy::config::Confi
     cfg
 }
 
-/// 受け付けのループが待ち受けに読み取りタイムアウトを当て終わるまで待つ。
+/// 受け付けのループが動き出すまで待つ (`/healthz` を 1 本通す)。
 ///
-/// 待ち受けの `SO_RCVTIMEO` は `serve` の頭で当てるので、その前に握手を終えた接続は
-/// 継承できない (無期限のまま)。テストは起動直後に繋ぐので、`/healthz` を 1 本通してから始める
+/// 時間を測る起点を「ループが動いている」にそろえるため。ループより前に握手を終えた接続も
+/// 締め切りで閉じることは `test_integration_connection_made_before_serve_gets_408` が見る (T.28.30)
 fn ready(port: u16) -> u16 {
     let got = raw_get(
         port,
@@ -277,4 +277,34 @@ fn test_integration_large_bodies_are_not_cut_by_the_header_deadline() {
     let text = String::from_utf8_lossy(&all);
     assert!(text.starts_with("HTTP/1.1 200 OK"), "{}", text);
     assert!(text.ends_with(&format!("{}:7:7", len)), "{}", text);
+}
+
+/// 受け付けのループが待ち受けにオプションを当てる前に握手を終えた接続も、締め切りで
+/// 408 になって閉じる (T.28.30)。今までは待ち受けの `SO_RCVTIMEO` を継承できず無期限だった。
+#[test]
+fn test_integration_connection_made_before_serve_gets_408() {
+    let (port, conns) = start_test_proxy_with_early(config_with_deadline(2, false), 2);
+    let started = Instant::now();
+    for (i, mut s) in conns.into_iter().enumerate() {
+        let (got, took) = read_until_closed(&mut s, started);
+        assert!(
+            got.starts_with("HTTP/1.1 408 Request Timeout"),
+            "{}: {:?} after {:?}",
+            i,
+            got,
+            took
+        );
+        assert!(took < Duration::from_secs(4), "{}: {:?}", i, took);
+    }
+    // そのあとの接続は今までどおり待ち受けから継承して動く
+    let started = Instant::now();
+    let mut s = TcpStream::connect(format!("127.0.0.1:{}", ready(port))).unwrap();
+    let (got, took) = read_until_closed(&mut s, started);
+    assert!(
+        got.starts_with("HTTP/1.1 408"),
+        "{:?} after {:?}",
+        got,
+        took
+    );
+    assert!(took < Duration::from_secs(3), "{:?}", took);
 }
