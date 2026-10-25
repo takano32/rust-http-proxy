@@ -342,3 +342,60 @@ class RealLedger(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Ledger28(LedgerCase):
+    """T.28.21 で足した (5)〜(8): 索引と範囲・済んだ節・現在地の版・未着手の参照。"""
+
+    def base(self, readme=None, tasks_md=None, todo_extra=None, t2_lines=None):
+        sections = [phase(1, [], link=True, count=1), phase(2, [], link=True, count=1)]
+        self.write("TODO.md", ["# 台帳の見本", "",
+                               "> | `tasks/TNN.md` | 済んだタスクのタスク本文 (T.15〜T.2。1 文字も変えずに移したもの) |", "",
+                               "## 2. 現在地", "",
+                               "### デプロイ先の現在地 (2026-10-25、tokyo に 0.2.1 をデプロイして 24 時間)", "",
+                               "## 5. これから (未着手)", ""]
+                   + [line for sec in sections for line in sec + [""]] + (todo_extra or []))
+        self.write("tasks/T1.md", ["# タスク 1 — 見本", ""] + task("T.1.1"))
+        self.write("tasks/T2.md", ["# タスク 2 — 見本", ""] + task("T.2.1")
+                   + (t2_lines if t2_lines is not None else ["  - 前提: **デプロイ済み** (2026-10-25)、版 `0.2.1+abcdef0`。", ""]))
+        self.write("tasks/README.md", readme or ["# tasks/ — 済んだタスクの本文 (タスク 0〜2)", "",
+                                                  "| T.1.1 | [T1.md](T1.md) | 見本 |", "| T.2.1 | [T2.md](T2.md) | 見本 |"])
+        if tasks_md is not None:
+            self.write("TASKS.md", tasks_md)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = cl.main(["check-ledger.py", self.root])
+        return code, buf.getvalue()
+
+    def test_clean_tree_passes(self):
+        code, out = self.base(tasks_md=["# TASKS", "", "### タスク 3 (2026-10-25 に起こした: 見本)", ""]
+                              + task("T.3.1", status=" "))
+        self.assertEqual(code, 0, out)
+
+    def test_readme_missing_a_row(self):
+        code, out = self.base(readme=["# tasks/ — 済んだタスクの本文 (タスク 0〜2)", "", "| T.1.1 | [T1.md](T1.md) | 見本 |"])
+        self.assert_ng(out, "tasks/README.md の表に tasks/T2.md の行が無い")
+
+    def test_ranges_must_reach_the_top(self):
+        code, out = self.base(readme=["# tasks/ — 済んだタスクの本文 (タスク 0〜1)", "",
+                                      "| T.1.1 | [T1.md](T1.md) | 見本 |", "| T.2.1 | [T2.md](T2.md) | 見本 |"])
+        self.assert_ng(out, "「タスク 0〜1」(いちばん大きいのは 2)")
+        self.write("tasks/T3.md", ["# タスク 3 — 見本", ""] + task("T.3.1"))
+        code, out = self.base(todo_extra=["### タスク 3 (2026-10-25: 見本)", "",
+                                          "**済んだ 1 本の本文は [`tasks/T3.md`](tasks/T3.md) に移した**", ""])
+        self.assert_ng(out, "TODO.md 冒頭の表が「T.15〜T.2」(いちばん大きいのは 3)")
+
+    def test_finished_section_left_in_tasks_md(self):
+        code, out = self.base(tasks_md=["# TASKS", "", "### タスク 3 (2026-10-25 に起こした: 見本)", "",
+                                        "全部済んだ。", ""])
+        self.assert_ng(out, "TASKS.md のタスク 3 の節に未着手が 0 本")
+
+    def test_current_heading_must_match_the_latest_deploy(self):
+        code, out = self.base(t2_lines=["  - 前提: **デプロイ済み** (2026-10-26)、版 `0.2.5+1234567`。", ""])
+        self.assert_ng(out, "§2 の「デプロイ先の現在地」の版が 0.2.1 (tasks/ のいちばん新しい「デプロイ済み」は 0.2.5)")
+
+    def test_open_reference_must_exist(self):
+        code, out = self.base(todo_extra=["締めの T.2.99 は未着手の T.2.99 は `TASKS.md` にある。", "",
+                                          "引用の「未着手の T.9.9 は TASKS.md」は数えない。"])
+        self.assert_ng(out, "「未着手の T.2.99」が TASKS.md に無い")
+        self.assertNotIn("T.9.9", out)

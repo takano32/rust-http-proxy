@@ -17,6 +17,15 @@
   (4) 1 行目 … `tasks/TNN.md` の 1 行目が `# タスク NN — …`。
   (足) 見出しの「済んだ N 本の本文は …」の N が、`tasks/TNN.md` のタスクの本数と合うこと
       (T.24.9 が番号ごとに書いたので、片方だけ足したときにここで出る)。
+  (5) 索引と範囲 (T.28.21) … `tasks/README.md` の表に全部の `TNN.md` の行がある、その見出しの
+      「タスク 0〜N」と `TODO.md` 冒頭の「T.15〜T.N」の N が `tasks/` のいちばん大きい番号。
+  (6) 済んだ節 (T.28.21) … `TASKS.md` の `### タスク N (…)` の節が未着手を 1 本以上持つ
+      (全部済んだら節ごと消す。2026-10-25 に済んだ節が 5 つ残っていた)。
+  (7) 現在地の版 (T.28.21) … `TODO.md` §2 の `### デプロイ先の現在地 (…)` の見出しの版が、
+      `tasks/*.md` の「デプロイ済み」の行に出るいちばん新しい版 (`X.Y.Z+hash`) と同じ
+      (締めのたびに §2 を書き直すのが 2 回続けて抜けたため)。
+  (8) 参照 (T.28.21) … `TODO.md` と `tasks/*.md` の「未着手の T.n.m は …」が、`TASKS.md` に
+      実在する未着手のタスクを指す (「」で引いた文は数えない)。
 
 **意図的に外してあるものは下の除外表 (`SKIP_FILES`) に理由つきで持つ** (黙って無視しない)。
 差分が 1 件でもあれば理由を印字して exit 1。使うのは標準ライブラリだけ (外部のパッケージは使わない)。
@@ -54,6 +63,13 @@ BULLET = re.compile(r"^\s+- ([^\s(:：]{1,12})")
 # `結果` だけの行は「あとから足した追記」で、タスクの本文ではない (番号の重複で数えない)
 NOTE_ONLY = {"結果"}
 MISSING_HEAD = "`# タスク NN — …`"
+# (5)〜(8) の形 (T.28.21)
+README_HEAD = re.compile(r"^# tasks/ — 済んだタスクの本文 \(タスク 0〜(\d+)\)", re.M)
+TODO_RANGE = re.compile(r"済んだタスクのタスク本文 \(T\.15〜T\.(\d+)。")
+CURRENT_HEAD = re.compile(r"^### デプロイ先の現在地 \((.*)\)\s*$", re.M)
+VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)\+[0-9a-f]{7}")
+HEAD_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+OPEN_REF = re.compile(r"未着手の (T\.\d+\.\d+) は")
 
 
 class Task:
@@ -302,6 +318,58 @@ def collect(root):
         elif int(m.group(1)) != len(filed.get(num, [])):
             led.ngs.append("§5 のタスク %d の「済んだ %s 本」が tasks/%s の %d 本と合わない"
                            % (num, m.group(1), names[num], len(filed.get(num, []))))
+
+    # --- (5) 索引と範囲 (T.28.21) ------------------------------------------------
+    top = max(names) if names else None
+    readme = os.path.join(tdir, "README.md")
+    if top is not None and os.path.isfile(readme):
+        text = "\n".join(read_lines(readme))
+        for num, name in sorted(names.items()):
+            if "](%s)" % name not in text:
+                led.ngs.append("tasks/README.md の表に tasks/%s の行が無い" % name)
+        m = README_HEAD.search(text)
+        if m and int(m.group(1)) != top:
+            led.ngs.append("tasks/README.md の見出しが「タスク 0〜%s」(いちばん大きいのは %d)"
+                           % (m.group(1), top))
+    todo_text = "\n".join(todo)
+    m = TODO_RANGE.search(todo_text)
+    if m and top is not None and int(m.group(1)) != top:
+        led.ngs.append("TODO.md 冒頭の表が「T.15〜T.%s」(いちばん大きいのは %d)" % (m.group(1), top))
+
+    # --- (6) 済んだ節が TASKS.md に残っていない (T.28.21) -------------------------
+    for num in sorted(open_tasks):
+        if not open_tasks[num]:
+            led.ngs.append("%s のタスク %d の節に未着手が 0 本 (全部済んだら節ごと消す)" % (TASKS_MD, num))
+
+    # --- (7) §2 の現在地の版 (T.28.21) ---------------------------------------------
+    deployed = None
+    for name in names.values():
+        for line in read_lines(os.path.join(tdir, name)):
+            if "デプロイ済み" not in line:
+                continue
+            for v in VERSION.findall(line):
+                v = tuple(int(x) for x in v)
+                deployed = v if deployed is None or v > deployed else deployed
+    m = CURRENT_HEAD.search(todo_text)
+    if m and deployed is not None:
+        hv = HEAD_VERSION.findall(m.group(1))
+        have = tuple(int(x) for x in hv[-1]) if hv else None
+        if have != deployed:
+            led.ngs.append("TODO.md §2 の「デプロイ先の現在地」の版が %s (tasks/ のいちばん新しい"
+                           "「デプロイ済み」は %s)"
+                           % (".".join(map(str, have)) if have else "(無い)", ".".join(map(str, deployed))))
+
+    # --- (8) 「未着手の T.n.m は …」の参照先 (T.28.21) -------------------------------
+    open_ids = {task.ident for num in open_tasks for task in open_tasks[num] if not task.done}
+    sources = [(TODO, todo)] + [("tasks/" + name, read_lines(os.path.join(tdir, name)))
+                                for name in names.values()]
+    for where, lines in sources:
+        for i, line in enumerate(lines):
+            for m in OPEN_REF.finditer(line):
+                if m.start() > 0 and line[m.start() - 1] == "「":
+                    continue
+                if m.group(1) not in open_ids:
+                    led.ngs.append("%s:%d の「未着手の %s」が %s に無い" % (where, i + 1, m.group(1), TASKS_MD))
 
     return led
 
