@@ -156,11 +156,6 @@
   - やること: 上限を inspect と同じ 96 KiB に上げるかコメントを削るかを決め、`/profile` は `summary=1` + 低頻度の標本にするか間隔を 30 秒に、起動のカードを足す。
   - 受け入れ基準: `node scripts/check-dashboard.js` が通り、起動のカードが作り物と実データの両方で出る。
 
-- [ ] **T.28.26 デプロイ先の監視の最小構成 (いまは誰も `/healthz` も `/metrics` も読んでいない)**
-  - 目的: tokyo の `/status.readers` は `/snapshot` 27 回 (締めの収集) だけ。異常に気づく経路は締めで人が雪像を読むときだけ (無言の再起動 2 回も利用者に聞いて分かった、T.23.99)。
-  - やること: 外の基盤を足さない形を段 1 で決める: (a) `.github/workflows/watch.yml` で 1 時間ごとに `/healthz` と `/status?hosts=0` の `version`・`uptime_secs` を引き、200 以外か無言の再起動 (uptime が前より短いのに `shutdown` が無い) で job を落とす (雪像や個票は保存しない: リポジトリは public)、(b) README に「監視の最小構成」の節。GitHub の runner から tokyo に届くかを先に確かめる。
-  - 受け入れ基準: 手で `workflow_dispatch` して緑、`/healthz` を 503 にした偽物で赤 (手元の python で)。
-
 - [ ] **T.28.27 2,000 行を超える 3 本を割る**
   - 目的: `crates/metrics-core/src/metrics.rs` 3,149 (T.24.8 の時点の 2,834 から増えた)・`crates/metrics-window/src/history.rs` 2,375・`crates/server/src/lib.rs` 2,066。目安は 1 ファイル 2,000 行 (TODO.md 93)。T.24.8 は `recent.rs` だけを見た。
   - やること: T.24.8 / T.25.2 の型 (段 1 で割り方、段 2 で中身を変えずに割る 1 コミット)。T.28.0・T.28.15 と同じ所を触るので、その後に回す。
