@@ -1022,6 +1022,15 @@ impl ProxyProcess {
         }
         panic!("timed out waiting for a log line containing {:?}", needle);
     }
+
+    /// 標準出力に届いた行を、`quiet` のあいだ何も来なくなるまで全部引き取る (T.28.9)。
+    pub fn drain_log(&self, quiet: Duration) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(line) = self.lines.recv_timeout(quiet) {
+            out.push(line);
+        }
+        out
+    }
 }
 
 impl Drop for ProxyProcess {

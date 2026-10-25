@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::io::Write;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::sync::LockExt;
@@ -450,6 +450,78 @@ fn push_access(buf: &mut Vec<u8>, rec: &Access<'_>) {
     buf.extend_from_slice(rec.cache.as_bytes());
 }
 
+/// 攻撃者が数を決められる警告 (400 系) を絞る間隔 (秒。T.28.9)。
+///
+/// 上限の WARN (`connection limit reached`) と同じ 1 分に 1 回。
+pub const WARN_EVERY_SECS: u64 = 60;
+
+/// 同じ種類の警告を `period` 秒に 1 回へ絞る門 (T.28.9)。
+///
+/// 不正な要求は 1 本につき WARN 1 行で上限が無く、走査 (scanner) が来るとコンソールと
+/// `/log` の環が攻撃の行で埋まる (環が流れて、本当に見たい警告が消える)。種類ごとに 1 つ
+/// 置き、通したときは**前の行から抑えた本数**を返すので、行に添えて出す
+/// ([`Skipped`] の `Display`)。本数の合計は呼ぶ側の計数 (`/status` の `rejected_requests`
+/// など) が持つので、ここは「ログに出さなかった本数」だけを数える。
+///
+/// 通るのは断る経路だけなので、原子の読み 1 回と加算 1 回は通した要求に乗らない。
+pub struct Throttle {
+    /// 前に通した時刻 (epoch 秒) + 1。0 = まだ 1 度も通していない
+    last: AtomicU64,
+    /// 前に通してから抑えた本数
+    skipped: AtomicU64,
+}
+
+impl Default for Throttle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Throttle {
+    pub const fn new() -> Throttle {
+        Throttle {
+            last: AtomicU64::new(0),
+            skipped: AtomicU64::new(0),
+        }
+    }
+
+    /// 今の時刻で [`Throttle::pass_at`] を引く。
+    pub fn pass(&self, period_secs: u64) -> Option<Skipped> {
+        self.pass_at(crate::clock::now_epoch(), period_secs)
+    }
+
+    /// 前に通してから `period_secs` 以上たっていれば通す (`Some` = 1 行出してよい)。
+    /// 同時に来たときは比較交換に勝った 1 本だけが通る。
+    pub fn pass_at(&self, now: u64, period_secs: u64) -> Option<Skipped> {
+        let last = self.last.load(Ordering::Relaxed);
+        if (last == 0 || now.saturating_sub(last - 1) >= period_secs)
+            && self
+                .last
+                .compare_exchange(last, now + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            return Some(Skipped(self.skipped.swap(0, Ordering::Relaxed)));
+        }
+        self.skipped.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+}
+
+/// [`Throttle`] が前の行から抑えた本数。`Display` は 0 なら空、そうでなければ
+/// ` (+N more since the previous line, not logged)` (行の終わりにそのまま付ける)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Skipped(pub u64);
+
+impl std::fmt::Display for Skipped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            Ok(())
+        } else {
+            write!(f, " (+{} more since the previous line, not logged)", self.0)
+        }
+    }
+}
+
 pub fn access(conn_id: usize, rec: &Access<'_>) {
     if !enabled(Level::Info) {
         return;
@@ -511,6 +583,58 @@ pub(crate) mod tests {
     fn test_level_ordering() {
         assert!(Level::Error < Level::Info);
         assert!(Level::Trace > Level::Debug);
+    }
+
+    /// 1 分に 1 回だけ通し、通すときに前の行から抑えた本数を返す (T.28.9)。
+    #[test]
+    fn throttle_passes_once_per_period_and_reports_what_it_held_back() {
+        let t = Throttle::new();
+        let t0 = 1_800_000_000;
+        // 最初の 1 本は通る (抑えた本数は 0 で、行には何も足さない)
+        assert_eq!(t.pass_at(t0, 60), Some(Skipped(0)));
+        assert_eq!(Skipped(0).to_string(), "");
+        // 同じ分のうちは 99 本とも通さない
+        for i in 0..99 {
+            assert_eq!(t.pass_at(t0 + i % 60, 60), None, "{}", i);
+        }
+        // 59 秒たっても通さない
+        assert_eq!(t.pass_at(t0 + 59, 60), None);
+        // 60 秒たった次の 1 本は通り、抑えた 100 本を添える
+        let s = t.pass_at(t0 + 60, 60).expect("1 分たったら通す");
+        assert_eq!(s, Skipped(100));
+        assert_eq!(
+            s.to_string(),
+            " (+100 more since the previous line, not logged)"
+        );
+        // 数え直しは 0 から
+        assert_eq!(t.pass_at(t0 + 61, 60), None);
+        assert_eq!(t.pass_at(t0 + 200, 60), Some(Skipped(1)));
+        // 時計が戻っても (前より小さい時刻) 通さない
+        assert_eq!(t.pass_at(t0, 60), None);
+    }
+
+    /// 同時に叩いても、1 分の間に通るのは 1 本だけ (比較交換)。
+    #[test]
+    fn throttle_lets_exactly_one_of_many_threads_through() {
+        let t = std::sync::Arc::new(Throttle::new());
+        let passed = std::sync::Arc::new(AtomicU64::new(0));
+        let hs: Vec<_> = (0..8)
+            .map(|_| {
+                let (t, passed) = (t.clone(), passed.clone());
+                std::thread::spawn(move || {
+                    for _ in 0..1000 {
+                        if t.pass_at(1_800_000_000, 60).is_some() {
+                            passed.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().unwrap();
+        }
+        assert_eq!(passed.load(Ordering::Relaxed), 1);
+        assert_eq!(t.pass_at(1_800_000_060, 60), Some(Skipped(7_999)));
     }
 
     #[test]

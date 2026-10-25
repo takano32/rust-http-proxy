@@ -453,11 +453,16 @@ pub fn handle_http_parsed(
     // SP 1 個に置き換えるかを選べる。置き換えると値が黙って変わるので**断る** (T27.2)。
     // 継続行を捨てていた今までは、オリジンに `X-A: 1` だけが届いていた
     if req.obs_fold {
-        log_warn!(
-            Some(conn_id),
-            "400 Bad Request: obsolete line folding in request headers"
-        );
-        metrics.record_bad_request(BadRequestReason::ObsFold, client_ip.unwrap_or("-"), 400);
+        // WARN は理由ごとに 1 分に 1 行 (T.28.9。本数は `/status` の `rejected_requests`)
+        if let Some(more) =
+            metrics.record_bad_request(BadRequestReason::ObsFold, client_ip.unwrap_or("-"), 400)
+        {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: obsolete line folding in request headers{}",
+                more
+            );
+        }
         let _ = write_error(client, 400, "Bad Request");
         return Ok(false);
     }
@@ -466,30 +471,36 @@ pub fn handle_http_parsed(
     // `Content-Length : 5` をこちらは長さとして使い、空白つきのまま転送していた。値の CR は
     // そのまま届き、CR を改行と読むオリジンには別のヘッダー (`Transfer-Encoding` …) に見えていた
     if req.bad_header {
-        log_warn!(
-            Some(conn_id),
-            "400 Bad Request: whitespace before colon or CR/LF/NUL in a request header"
-        );
-        metrics.record_bad_request(BadRequestReason::BadHeader, client_ip.unwrap_or("-"), 400);
+        if let Some(more) =
+            metrics.record_bad_request(BadRequestReason::BadHeader, client_ip.unwrap_or("-"), 400)
+        {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: whitespace before colon or CR/LF/NUL in a request header{}",
+                more
+            );
+        }
         let _ = write_error(client, 400, "Bad Request");
         return Ok(false);
     }
 
     let mut parts = request_line.split_ascii_whitespace();
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
-        log_warn!(
-            Some(conn_id),
-            "malformed request line: {:?}",
-            request_line.trim()
-        );
         // 理由別に 1 件数えて個票にも残す (T14.28)。**個票に要求行そのものは入れない**。
         // 本体クレートが同じ判定を先にしているのでここへは普通は来ないが、数える口は
         // 400 を返す場所ごとに置く
-        metrics.record_bad_request(
+        if let Some(more) = metrics.record_bad_request(
             BadRequestReason::of_request_line(request_line),
             client_ip.unwrap_or("-"),
             400,
-        );
+        ) {
+            log_warn!(
+                Some(conn_id),
+                "malformed request line: {:?}{}",
+                request_line.trim(),
+                more
+            );
+        }
         let _ = write_error(client, 400, "Bad Request");
         return Ok(false);
     };
@@ -497,11 +508,15 @@ pub fn handle_http_parsed(
     // ここで断らないと、判定 (数字でない → 本文なし) と転送 (生の行をそのまま) が食い違い、
     // オリジンが本文を待ち続けるか、後段が別の長さで読む (要求の密輸)。**無言で閉じない**
     if req.content_length_invalid {
-        log_warn!(
-            Some(conn_id),
-            "400 Bad Request: invalid or conflicting Content-Length"
-        );
-        metrics.record_bad_request(BadRequestReason::BodyFraming, client_ip.unwrap_or("-"), 400);
+        if let Some(more) =
+            metrics.record_bad_request(BadRequestReason::BodyFraming, client_ip.unwrap_or("-"), 400)
+        {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: invalid or conflicting Content-Length{}",
+                more
+            );
+        }
         let _ = write_error(client, 400, "Bad Request");
         return Ok(false);
     }
@@ -512,17 +527,21 @@ pub fn handle_http_parsed(
     // 今までは `xchunked`・`gzip` を本文なしとしてヘッダーだけ転送し、本文はクライアントの
     // 次の要求として読まれていた (`xchunked` と `Content-Length` が両方あると CL で読んで両方を転送した)
     if req.te_invalid || (req.te_present && !http11) {
-        log_warn!(
-            Some(conn_id),
-            "400 Bad Request: Transfer-Encoding {} ({})",
-            if req.te_invalid {
-                "does not end in a single chunked"
-            } else {
-                "in an HTTP/1.0 request"
-            },
-            version
-        );
-        metrics.record_bad_request(BadRequestReason::BodyFraming, client_ip.unwrap_or("-"), 400);
+        if let Some(more) =
+            metrics.record_bad_request(BadRequestReason::BodyFraming, client_ip.unwrap_or("-"), 400)
+        {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: Transfer-Encoding {} ({}){}",
+                if req.te_invalid {
+                    "does not end in a single chunked"
+                } else {
+                    "in an HTTP/1.0 request"
+                },
+                version,
+                more
+            );
+        }
         let _ = write_error(client, 400, "Bad Request");
         return Ok(false);
     }
@@ -530,18 +549,30 @@ pub fn handle_http_parsed(
     // どの `Host` を信じるかで前段と後段が食い違うと、宛先の付け替え (要求の密輸) になる。
     // **通る要求には 1 命令も足さない**: 印は 2 本目を見たときしか立たない
     if req.dup_host {
-        log_warn!(Some(conn_id), "400 Bad Request: duplicate Host header");
-        metrics.record_bad_request(BadRequestReason::DupHost, client_ip.unwrap_or("-"), 400);
+        if let Some(more) =
+            metrics.record_bad_request(BadRequestReason::DupHost, client_ip.unwrap_or("-"), 400)
+        {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: duplicate Host header{}",
+                more
+            );
+        }
         let _ = write_error(client, 400, "Bad Request");
         return Ok(false);
     }
     // `100-continue` 以外の `Expect` は満たせないので 417 (RFC 9110 §10.1.1。T.28.3)。
     // 本文が続くかもしれないので閉じる。印は `Expect` の行があるときしか立たない
     if req.expect_unknown {
-        log_warn!(
-            Some(conn_id),
-            "417 Expectation Failed: unsupported Expect in the request"
-        );
+        // `rejected_requests` の理由には無いが、これも本数は相手が決めるので 1 分に 1 行 (T.28.9)
+        static EXPECT_WARN: crate::log::Throttle = crate::log::Throttle::new();
+        if let Some(more) = EXPECT_WARN.pass(crate::log::WARN_EVERY_SECS) {
+            log_warn!(
+                Some(conn_id),
+                "417 Expectation Failed: unsupported Expect in the request{}",
+                more
+            );
+        }
         let _ = write_error(client, 417, "Expectation Failed");
         return Ok(false);
     }
@@ -559,15 +590,17 @@ pub fn handle_http_parsed(
         // だけ**なので、本文の無い要求と `Content-Length` だけの要求 (= 成功の経路) には
         // 分岐も比較も 1 つも増えない
         if req.content_length.is_some() {
-            log_warn!(
-                Some(conn_id),
-                "400 Bad Request: both Content-Length and Transfer-Encoding: chunked"
-            );
-            metrics.record_bad_request(
+            if let Some(more) = metrics.record_bad_request(
                 BadRequestReason::BodyFraming,
                 client_ip.unwrap_or("-"),
                 400,
-            );
+            ) {
+                log_warn!(
+                    Some(conn_id),
+                    "400 Bad Request: both Content-Length and Transfer-Encoding: chunked{}",
+                    more
+                );
+            }
             let _ = write_error(client, 400, "Bad Request");
             return Ok(false);
         }
@@ -621,13 +654,14 @@ pub fn handle_http_parsed(
     let origin = match parse_origin(target, req.host.as_deref()) {
         Ok(o) => o,
         Err(e) => {
-            log_warn!(Some(conn_id), "400 Bad Request: {}", e);
             // `Host` が無い (`no_host`) のか絶対 URI が壊れている (`bad_uri`) のか (T14.28)
-            metrics.record_bad_request(
+            if let Some(more) = metrics.record_bad_request(
                 BadRequestReason::of_target(method, target),
                 client_ip.unwrap_or("-"),
                 400,
-            );
+            ) {
+                log_warn!(Some(conn_id), "400 Bad Request: {}{}", e, more);
+            }
             let _ = write_error(client, 400, "Bad Request");
             return Ok(false);
         }
@@ -972,12 +1006,13 @@ pub fn handle_http_parsed(
             // クライアントの本文が壊れている (chunk の大きさが読めない など)。オリジンの誤りではない
             // ので 502 ではなく 400 で返して閉じる (T27.8)。オリジンへの接続はここで捨てる (プールに戻さない)
             Err(e) if is_client_body_error(&e) => {
-                log_warn!(Some(conn_id), "400 Bad Request: {}", e);
-                metrics.record_bad_request(
+                if let Some(more) = metrics.record_bad_request(
                     BadRequestReason::BodyFraming,
                     client_ip.unwrap_or("-"),
                     400,
-                );
+                ) {
+                    log_warn!(Some(conn_id), "400 Bad Request: {}{}", e, more);
+                }
                 let _ = write_error(client, 400, "Bad Request");
                 return Ok(false);
             }

@@ -108,6 +108,9 @@ pub struct Metrics {
     /// 要求を読めずに断った数 (理由別。`/status` の `rejected_requests`。T14.28)。
     /// **書くのは断る経路だけ**なので、通した要求はこの配列を 1 度も触らない
     pub rejected_requests: [AtomicU64; BAD_REQUEST_REASONS],
+    /// 断った要求の WARN を理由ごとに 1 分に 1 回へ絞る門 (T.28.9)。本数は上の
+    /// `rejected_requests` が持つので、ログには 1 分に 1 行と抑えた本数だけを出す
+    pub rejected_warn: [crate::log::Throttle; BAD_REQUEST_REASONS],
     pub bytes_forwarded: AtomicU64,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
@@ -171,6 +174,7 @@ impl Metrics {
             rejected_client_acl: AtomicU64::new(0),
             rejected_per_client: AtomicU64::new(0),
             rejected_requests: [const { AtomicU64::new(0) }; BAD_REQUEST_REASONS],
+            rejected_warn: [const { crate::log::Throttle::new() }; BAD_REQUEST_REASONS],
             bytes_forwarded: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
@@ -373,7 +377,18 @@ impl Metrics {
     /// 宛先 `host:port`・時刻・数字だけ。壊れた要求行には URL もヘッダーも載っている)。
     /// 宛先はまだ解けていないので空のままにする。集計 (`errors_by_cause`) にも
     /// 足さない: 4xx はエラー (5xx) ではないので、混ぜると `/status` が読めなくなる。
-    pub fn record_bad_request(&self, reason: BadRequestReason, client: &str, status: u16) {
+    ///
+    /// **戻り値は WARN を 1 行出してよいか** (T.28.9)。不正な要求の本数は攻撃者が決めるので、
+    /// 理由ごとに 1 分に 1 回 (`log::WARN_EVERY_SECS`) だけ `Some` を返し、中身は前の行から
+    /// 抑えた本数 (行の終わりにそのまま `{}` で付ける)。呼ぶ側は
+    /// `if let Some(more) = metrics.record_bad_request(..) { log_warn!(.., "…{}", more) }` の形で出す
+    #[must_use = "WARN を出すかどうかを返す (T.28.9)"]
+    pub fn record_bad_request(
+        &self,
+        reason: BadRequestReason,
+        client: &str,
+        status: u16,
+    ) -> Option<crate::log::Skipped> {
         self.rejected_requests[reason as usize].fetch_add(1, Ordering::Relaxed);
         self.errors.push(crate::recent::ErrorEntry::new(
             // まだメソッドを解いていない (CONNECT か転送か分からない) 段階なので
@@ -386,6 +401,7 @@ impl Metrics {
             0,
             0,
         ));
+        self.rejected_warn[reason as usize].pass(crate::log::WARN_EVERY_SECS)
     }
 
     /// `/status` の `rejected_requests` (理由別と合計)。

@@ -1582,14 +1582,18 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     ) {
         Ok(Line::Idle) => return Ok(Step::Park),
         Ok(Line::Read(None)) => {
-            log_warn!(
-                Some(conn_id),
-                "414 URI Too Long (request line over {} bytes)",
-                MAX_LINE
-            );
             // 理由別に 1 件数えて個票にも残す (`/errors`。T14.28)。**断る経路だけ**を通るので
-            // 通した要求には 1 命令も足していない
-            metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 414);
+            // 通した要求には 1 命令も足していない。WARN は理由ごとに 1 分に 1 行 (T.28.9)
+            if let Some(more) =
+                metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 414)
+            {
+                log_warn!(
+                    Some(conn_id),
+                    "414 URI Too Long (request line over {} bytes){}",
+                    MAX_LINE,
+                    more
+                );
+            }
             reject(client, 414, "URI Too Long")?;
             return Ok(Step::Close(recent::CloseReason::Shutdown));
         }
@@ -1660,18 +1664,21 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     let request_line = std::mem::take(&mut scratch.request_line);
     let mut parts = request_line.split_ascii_whitespace();
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
-        log_warn!(
-            Some(conn_id),
-            "malformed request line: {:?}",
-            request_line.trim()
-        );
         // メソッドが token として読めなければ `method`、読めるなら `request_line` (T14.28)。
-        // **個票に要求行そのものは入れない** (壊れた行にも URL が載っているため)
-        metrics.record_bad_request(
+        // **個票に要求行そのものは入れない** (壊れた行にも URL が載っているため)。
+        // WARN は理由ごとに 1 分に 1 行 (T.28.9)
+        if let Some(more) = metrics.record_bad_request(
             metrics::BadRequestReason::of_request_line(&request_line),
             peer_ip,
             400,
-        );
+        ) {
+            log_warn!(
+                Some(conn_id),
+                "malformed request line: {:?}{}",
+                request_line.trim(),
+                more
+            );
+        }
         // 今までは応答を返さずに閉じていた。理由を数えるからには**返した状態コードを
         // 個票に正しく書く**必要があるので、414 / 431 と同じ形で 400 を返してから閉じる
         reject(client, 400, "Bad Request")?;
@@ -1686,12 +1693,16 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             .get(..7)
             .is_some_and(|v| v.eq_ignore_ascii_case("HTTP/1."))
     {
-        log_warn!(
-            Some(conn_id),
-            "505 HTTP Version Not Supported: {:?}",
-            version
-        );
-        metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 505);
+        if let Some(more) =
+            metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 505)
+        {
+            log_warn!(
+                Some(conn_id),
+                "505 HTTP Version Not Supported: {:?}{}",
+                version,
+                more
+            );
+        }
         reject(client, 505, "HTTP Version Not Supported")?;
         scratch.request_line = request_line;
         return Ok(Step::Close(recent::CloseReason::Shutdown));
@@ -1721,8 +1732,13 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         };
         match line {
             None => {
-                log_warn!(Some(conn_id), "431 Request Header Fields Too Large");
-                metrics.record_bad_request(metrics::BadRequestReason::HeaderTooLarge, peer_ip, 431);
+                if let Some(more) = metrics.record_bad_request(
+                    metrics::BadRequestReason::HeaderTooLarge,
+                    peer_ip,
+                    431,
+                ) {
+                    log_warn!(Some(conn_id), "431 Request Header Fields Too Large{}", more);
+                }
                 reject(client, 431, "Request Header Fields Too Large")?;
                 return Ok(Step::Close(recent::CloseReason::Shutdown));
             }
@@ -1730,16 +1746,18 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             Some(n) => {
                 header_bytes += n;
                 if header_bytes > MAX_HEADER_BYTES {
-                    log_warn!(
-                        Some(conn_id),
-                        "431 Request Header Fields Too Large (headers over {} bytes)",
-                        MAX_HEADER_BYTES
-                    );
-                    metrics.record_bad_request(
+                    if let Some(more) = metrics.record_bad_request(
                         metrics::BadRequestReason::HeaderTooLarge,
                         peer_ip,
                         431,
-                    );
+                    ) {
+                        log_warn!(
+                            Some(conn_id),
+                            "431 Request Header Fields Too Large (headers over {} bytes){}",
+                            MAX_HEADER_BYTES,
+                            more
+                        );
+                    }
                     reject(client, 431, "Request Header Fields Too Large")?;
                     return Ok(Step::Close(recent::CloseReason::Shutdown));
                 }
@@ -1749,11 +1767,15 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             break;
         }
         if index >= MAX_HEADER_LINES {
-            log_warn!(
-                Some(conn_id),
-                "431 Request Header Fields Too Large (too many lines)"
-            );
-            metrics.record_bad_request(metrics::BadRequestReason::HeaderTooLarge, peer_ip, 431);
+            if let Some(more) =
+                metrics.record_bad_request(metrics::BadRequestReason::HeaderTooLarge, peer_ip, 431)
+            {
+                log_warn!(
+                    Some(conn_id),
+                    "431 Request Header Fields Too Large (too many lines){}",
+                    more
+                );
+            }
             reject(client, 431, "Request Header Fields Too Large")?;
             return Ok(Step::Close(recent::CloseReason::Shutdown));
         }
@@ -1801,11 +1823,16 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // 印は起動ごとの乱数なので、rust-http-proxy を 2 段に並べた正当な構成 (別プロセス) は
     // 誤検出しない。同じプロセスの別の待ち受けへ回した形はここで 1 段目で止まる
     if via_loop {
-        log_warn!(
-            Some(conn_id),
-            "508 Loop Detected (request carries our own Via: {})",
-            via::token()
-        );
+        // 自分の印は外から付けられる (誰かが印を写して送ってくる) ので、これも 1 分に 1 行 (T.28.9)
+        static LOOP_WARN: log::Throttle = log::Throttle::new();
+        if let Some(more) = LOOP_WARN.pass(log::WARN_EVERY_SECS) {
+            log_warn!(
+                Some(conn_id),
+                "508 Loop Detected (request carries our own Via: {}){}",
+                via::token(),
+                more
+            );
+        }
         reject(client, 508, "Loop Detected")?;
         // 原因つきで 1 件数える (T12.4 (2))。ここは要求ターゲットをまだ解いていないので、
         // 鍵は `Host` (無ければ要求ターゲット) から作る。この経路は 1 要求に 1 回しか
@@ -1929,13 +1956,15 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             None
         };
         if let Some(reason) = reason {
-            log_warn!(
-                Some(conn_id),
-                "400 Bad Request: {} in CONNECT {}",
-                reason.name(),
-                target
-            );
-            metrics.record_bad_request(reason, peer_ip, 400);
+            if let Some(more) = metrics.record_bad_request(reason, peer_ip, 400) {
+                log_warn!(
+                    Some(conn_id),
+                    "400 Bad Request: {} in CONNECT {}{}",
+                    reason.name(),
+                    target,
+                    more
+                );
+            }
             // ステータスを返してから閉じる (無言で切ると客からは「落ちた」と見える)
             reject(client, 400, "Bad Request")?;
             return Ok(Step::Close(recent::CloseReason::Shutdown));
@@ -1948,14 +1977,15 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         match request::target_host(target, host_header) {
             Ok(h) => h,
             Err(e) => {
-                log_warn!(Some(conn_id), "400 Bad Request: {}", e);
                 // `Host` が無い (`no_host`) のか絶対 URI が壊れている (`bad_uri`) のかを
                 // 分けて数える (T14.28)。判定は**断る経路だけ**を通る
-                metrics.record_bad_request(
+                if let Some(more) = metrics.record_bad_request(
                     metrics::BadRequestReason::of_target(method, target),
                     peer_ip,
                     400,
-                );
+                ) {
+                    log_warn!(Some(conn_id), "400 Bad Request: {}{}", e, more);
+                }
                 let _ = (&*client).write_all(
                     b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 );
@@ -1967,12 +1997,16 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // CONNECT の宛先は `host:port` の形でなければならない (RFC 9110 §9.3.6)。ポートが無い・読めない・0 の
     // ときは今まで 443 とみなすか 0 番へ繋ぎに行って 502 だった。クライアントの誤りなので 400 (T27.8)
     if is_connect && (bare_host.is_empty() || !host_port.is_some_and(|p| p != 0)) {
-        log_warn!(
-            Some(conn_id),
-            "400 Bad Request: CONNECT target without a port: {}",
-            target
-        );
-        metrics.record_bad_request(metrics::BadRequestReason::BadUri, peer_ip, 400);
+        if let Some(more) =
+            metrics.record_bad_request(metrics::BadRequestReason::BadUri, peer_ip, 400)
+        {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: CONNECT target without a port: {}{}",
+                target,
+                more
+            );
+        }
         reject(client, 400, "Bad Request")?;
         return Ok(Step::Close(recent::CloseReason::Shutdown));
     }
@@ -1999,12 +2033,24 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         None
     };
     if let Some(why) = denied {
-        log_warn!(
-            Some(conn_id),
-            "403 Forbidden ({} blocked host: {})",
-            why.label(),
-            target_host
-        );
+        // 403 も宛先を選ぶのは相手なので、理由ごとに 1 分に 1 行 (T.28.9)。本数は
+        // `/status` の宛先・接続元ごとの `blocked` と `/errors` の個票が持つ
+        static BLOCK_WARN: [log::Throttle; 4] = [const { log::Throttle::new() }; 4];
+        let gate = match why {
+            metrics::BlockCause::Acl => 0,
+            metrics::BlockCause::Blocklist => 1,
+            metrics::BlockCause::ConnectPort => 2,
+            metrics::BlockCause::Local => 3,
+        };
+        if let Some(more) = BLOCK_WARN[gate].pass(log::WARN_EVERY_SECS) {
+            log_warn!(
+                Some(conn_id),
+                "403 Forbidden ({} blocked host: {}){}",
+                why.label(),
+                target_host,
+                more
+            );
+        }
         metrics.record_host(
             &format!("blocked://{}", bare_host),
             metrics::HostOutcome::Blocked,

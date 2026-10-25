@@ -3,8 +3,8 @@
 use std::io;
 
 use crate::ascii;
+use crate::log_debug;
 use crate::log_trace;
-use crate::log_warn;
 use crate::net;
 use crate::origin::Scheme;
 
@@ -143,14 +143,16 @@ pub fn parse_request_headers_visit(
             // 重複は全部同じ値なら 1 本に畳んでよく、1 つでも違えば本文の切れ目が決まらないので
             // 要求を断る (T19.1)
             match (h.content_length, content_length_value(v_trim)) {
+                // ここの行は debug (T.28.9)。印が立った要求は呼ぶ側が必ず 400 で断り、そちらが
+                // 理由ごとに 1 分に 1 行の WARN を出す (1 本ごとに WARN だと数を相手が決められる)
                 (_, None) => {
-                    log_warn!(Some(conn_id), "invalid Content-Length: {:?}", v_trim);
+                    log_debug!(Some(conn_id), "invalid Content-Length: {:?}", v_trim);
                     h.content_length_invalid = true;
                 }
                 (None, Some(n)) => h.content_length = Some(n),
                 (Some(prev), Some(n)) if prev == n => {}
                 (Some(prev), Some(n)) => {
-                    log_warn!(
+                    log_debug!(
                         Some(conn_id),
                         "conflicting Content-Length: {} and {}",
                         prev,
@@ -189,7 +191,8 @@ pub fn parse_request_headers_visit(
         h.chunked = te_last_chunked && te_chunked_count == 1;
         h.te_invalid = !h.chunked;
         if h.te_invalid {
-            log_warn!(
+            // debug: 呼ぶ側が 400 で断って WARN を絞って出す (T.28.9)
+            log_debug!(
                 Some(conn_id),
                 "Transfer-Encoding does not end in a single chunked coding"
             );

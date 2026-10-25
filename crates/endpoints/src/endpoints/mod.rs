@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cache::{Cache, cache_key};
 use crate::http::parse_origin;
-use crate::log_info;
+use crate::log_debug;
 use crate::metrics::{self, Metrics};
 use crate::persist;
 use crate::prom;
@@ -583,7 +583,9 @@ pub fn handle(
     );
     client.write_all(response.as_bytes())?;
     client.flush()?;
-    log_info!(
+    // 自分宛ての要求の行は debug (T.28.9)。ダッシュボードを開いたままにすると約 1.2 行/秒で
+    // コンソールを埋めていた (`PROXY_LOG_LEVEL=debug` にすれば今までどおり見える)
+    log_debug!(
         Some(ep.conn_id),
         "{} {} -> {} (internal endpoint)",
         method,
