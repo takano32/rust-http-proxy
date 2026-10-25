@@ -131,6 +131,15 @@ impl Live {
                 .adopt(&fresh.sources, "PROXY_CONNECT_TIMEOUT_SECS");
             applied.push("PROXY_CONNECT_TIMEOUT_SECS");
         }
+        // 要求行とヘッダーの締め切り (T.28.0)。`connect_timeout` と同じく実効値で比べる
+        // (未設定のまま `PROXY_TIMEOUT_SECS` が 10 秒を跨いで動いたときもここに入る)。
+        // 待ち受けに継承させた読み取りタイムアウトは、次の accept で食い違いを見て当て直す
+        if fresh.header_timeout != old.header_timeout {
+            next.header_timeout = fresh.header_timeout;
+            next.sources
+                .adopt(&fresh.sources, "PROXY_HEADER_TIMEOUT_SECS");
+            applied.push("PROXY_HEADER_TIMEOUT_SECS");
+        }
         if fresh.keepalive != old.keepalive {
             next.keepalive = fresh.keepalive;
             next.sources.adopt(&fresh.sources, "PROXY_KEEPALIVE_SECS");

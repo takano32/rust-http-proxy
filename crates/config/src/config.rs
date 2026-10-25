@@ -275,6 +275,46 @@ pub const DEFAULT_MAX_REQUESTS_PER_CONN: usize = 1000;
 /// 戻す条件は「5 秒で切った接続のうち本当は繋がったはずのものが 1 日 1 本以上」(T23.99)。
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// 要求行とヘッダーを読み終えるまでの締め切りの既定 (`PROXY_HEADER_TIMEOUT_SECS`。T.28.0)。
+///
+/// **10 秒**。tokyo の雪像 (`2026-10-25T203134Z`、1 時間ぶん) の `/profile` では、要求行から
+/// `Host` まで (`client_read`) は CONNECT 1,105 本で**最大 0 ms** (ヘッダーは 1 つの塊で届く)。
+/// accept から要求行が届くまでは計器に無い (`wait` の外) が、正規のクライアントは握手の直後に
+/// 要求を送るので 1 RTT (tokyo の接続元は約 248 ms) で届く。10 秒は その 40 倍で、
+/// 落ちた塊の再送 (RTO 0.2〜1 秒から倍々) が 3〜4 回重なっても間に合う。一方、沈黙と
+/// 1 バイトずつの trickle (slowloris) が 1 本でワーカーと接続枠を握れる時間は 30 秒
+/// (`PROXY_TIMEOUT_SECS`) から 10 秒に縮む。
+pub const DEFAULT_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 要求行とヘッダーの締め切りの**実効値を決める唯一の場所** (T.28.0。[`connect_timeout_for`] と同じ形)。
+///
+/// - `explicit` = `PROXY_HEADER_TIMEOUT_SECS` に書かれた値。書いてあれば**そのまま**
+///   (`0` と明示すれば締め切り無し = 今までどおり `PROXY_TIMEOUT_SECS` の無通信の締め切りだけ)。
+/// - 未設定なら [`DEFAULT_HEADER_TIMEOUT`] (10 秒)。`PROXY_TIMEOUT_SECS` が `0` でなく
+///   10 秒より短ければ、その値に合わせる (= `min(10, timeout)`)。
+/// - `timeout` が `0` (無期限。T10.6) でも、未設定なら **10 秒** (黙った接続を無期限に
+///   置いておく理由は無い。置いておきたければ `0` と明示する)。
+pub fn header_timeout_for(timeout: Duration, explicit: Option<Duration>) -> Duration {
+    match explicit {
+        Some(d) => d,
+        None if timeout.is_zero() => DEFAULT_HEADER_TIMEOUT,
+        None => timeout.min(DEFAULT_HEADER_TIMEOUT),
+    }
+}
+
+/// 1 要求目の要求行の 1 バイト目を待つ読み取りタイムアウト (T.28.0)。
+///
+/// 1 要求目は accept からこの長さで黙った接続を切る。`timeout` と `header` の小さい方で、
+/// どちらかが `0` (無期限 / 締め切り無し) ならもう片方、両方 `0` なら `0` (無期限)。
+/// 2 要求目以降の待ち (keep-alive のアイドル `PROXY_KEEPALIVE_SECS`) には使わない。
+pub fn first_read_timeout(timeout: Duration, header: Duration) -> Duration {
+    match (timeout.is_zero(), header.is_zero()) {
+        (_, true) => timeout,
+        (true, false) => header,
+        (false, false) => timeout.min(header),
+    }
+}
+
 /// `PROXY_HE_STAGGER_MS` の値を読む (T17.6)。数でないか範囲 ([`crate::net::STAGGER_RANGE_MS`]) の
 /// 外なら `None` (呼ぶ側が既定に戻して warn する)。
 pub fn parse_stagger_ms(v: &str) -> Option<Duration> {
@@ -427,6 +467,14 @@ pub struct Config {
     /// 効くのは `crates/server/src/lib.rs` の CONNECT から `start_tunnel` へ渡す 1 か所だけで、
     /// forward のオリジン接続 (`origin::connect`) と blocklist の取得は `timeout` のまま。
     pub connect_timeout: Duration,
+    /// 要求行とヘッダーを読み終えるまでの締め切り (`PROXY_HEADER_TIMEOUT_SECS`、既定 10 秒、`0` で無し。T.28.0)。
+    ///
+    /// **1 バイト目が来てから最後のヘッダーまでの総時間**を縛る (`SO_RCVTIMEO` は読めるたびに
+    /// 待ち直すので、1 バイトずつ送られると `PROXY_TIMEOUT_SECS` では切れない)。1 要求目は
+    /// accept から 1 バイト目までもこの長さで切る ([`first_read_timeout`])。2 要求目以降の
+    /// 1 バイト目までは keep-alive のアイドル (`keepalive`) のまま。越えたら `408` で閉じる。
+    /// 実効値は [`header_timeout_for`] が 1 か所で決める (未設定なら 10 秒と `timeout` の小さい方)
+    pub header_timeout: Duration,
     /// Happy Eyeballs で次の候補を試し始めるまでの間隔 (`PROXY_HE_STAGGER_MS`、既定 250 ms。T17.6)。
     ///
     /// 範囲は [`crate::net::STAGGER_RANGE_MS`] (10〜2,000 ms)。外れた値と読めない値は warn を 1 行出して
@@ -667,6 +715,13 @@ impl Config {
         {
             cfg.connect_timeout = connect_timeout_for(cfg.timeout, Some(Duration::from_secs(secs)));
             src.mark("PROXY_CONNECT_TIMEOUT_SECS");
+        }
+        // 要求行とヘッダーの締め切り (T.28.0)。書かなければ `Config::new` の既定のまま
+        if let Some(secs) =
+            envfile::var("PROXY_HEADER_TIMEOUT_SECS").and_then(|s| s.trim().parse::<u64>().ok())
+        {
+            cfg.header_timeout = header_timeout_for(cfg.timeout, Some(Duration::from_secs(secs)));
+            src.mark("PROXY_HEADER_TIMEOUT_SECS");
         }
         // Happy Eyeballs の間隔 (T17.6)。範囲外は既定のまま (出どころも `default`) にして 1 行知らせる
         if let Some(v) = envfile::var("PROXY_HE_STAGGER_MS") {
@@ -1045,6 +1100,8 @@ impl Config {
         add("PROXY_TIMEOUT_SECS", secs(self.timeout));
         // 実効値 (未設定なら既定の 5 秒と `PROXY_TIMEOUT_SECS` の小さい方が出る。T15.6)
         add("PROXY_CONNECT_TIMEOUT_SECS", secs(self.connect_timeout));
+        // 実効値 (未設定なら既定の 10 秒と `PROXY_TIMEOUT_SECS` の小さい方。T.28.0)
+        add("PROXY_HEADER_TIMEOUT_SECS", secs(self.header_timeout));
         add(
             "PROXY_HE_STAGGER_MS",
             self.he_stagger.as_millis().to_string(),
@@ -1233,6 +1290,8 @@ impl Config {
             // `timeout` が 5 秒より短ければそちらに合わせる。T15.6 (2))。ここで入れておくと
             // `Config::new` を呼ぶ既存の所 (テストと `/config` の組み立て) が自動で追随する
             connect_timeout: connect_timeout_for(timeout, None),
+            // 未設定のときの実効値は `header_timeout_for` (既定 10 秒と `timeout` の小さい方。T.28.0)
+            header_timeout: header_timeout_for(timeout, None),
             he_stagger: crate::net::DEFAULT_STAGGER,
             keepalive: Duration::from_secs(15),
             pool_per_host: 64,
@@ -1695,6 +1754,62 @@ mod tests {
         cfg.connect_timeout = connect_timeout_for(cfg.timeout, Some(Duration::from_secs(30)));
         assert_eq!(find(&cfg, "PROXY_CONNECT_TIMEOUT_SECS"), "30");
         assert_eq!(find(&cfg, "PROXY_TIMEOUT_SECS"), "30", "共通の側は動かない");
+    }
+
+    /// 要求行とヘッダーの締め切りの規則 (T.28.0。`connect_timeout_for` と同じ形)。
+    #[test]
+    fn header_timeout_defaults_to_ten_seconds() {
+        let d = Duration::from_secs;
+        // (timeout, 明示の値, 期待する実効値)
+        for (timeout, explicit, want) in [
+            (30, None, 10),
+            (3, None, 3),
+            (0, None, 10),
+            (30, Some(0), 0),
+            (30, Some(20), 20),
+            (3, Some(20), 20),
+        ] {
+            assert_eq!(
+                header_timeout_for(d(timeout), explicit.map(d)),
+                d(want),
+                "PROXY_TIMEOUT_SECS={} / PROXY_HEADER_TIMEOUT_SECS={:?}",
+                timeout,
+                explicit
+            );
+            if explicit.is_none() {
+                let cfg = Config::new("9090", None, None, d(timeout)).expect("port");
+                assert_eq!(cfg.header_timeout, d(want));
+            }
+        }
+        assert_eq!(DEFAULT_HEADER_TIMEOUT, d(10));
+        let cfg = Config::new("9090", None, None, d(30)).expect("port");
+        let shown = cfg
+            .settings()
+            .iter()
+            .find(|s| s.key == "PROXY_HEADER_TIMEOUT_SECS")
+            .map(|s| s.value.clone());
+        assert_eq!(shown.as_deref(), Some("10"));
+    }
+
+    /// 1 要求目の 1 バイト目を待つ長さは小さい方。`0` は「無し」なのでもう片方 (T.28.0)。
+    #[test]
+    fn first_read_timeout_is_the_shorter_one() {
+        let d = Duration::from_secs;
+        for (timeout, header, want) in [
+            (30, 10, 10),
+            (3, 10, 3),
+            (0, 10, 10),
+            (30, 0, 30),
+            (0, 0, 0),
+        ] {
+            assert_eq!(
+                first_read_timeout(d(timeout), d(header)),
+                d(want),
+                "timeout={} header={}",
+                timeout,
+                header
+            );
+        }
     }
 
     /// `PROXY_HE_STAGGER_MS` (T17.6): 範囲 10〜2,000 ms の中だけ受け、外れた値と読めない値は

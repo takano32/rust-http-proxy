@@ -137,8 +137,10 @@ pub fn serve(
     // Linux では accept したソケットが待ち受けの TCP_NODELAY / SO_RCVTIMEO / SO_SNDTIMEO を
     // 引き継ぐ。待ち受けに 1 回当てておけば、接続ごとの setsockopt 3 回が要らない (T9.3)。
     // 当たらなかった環境では None のままで、従来どおり接続ごとに設定する。
-    // timeout 0 (= 無期限、T10.6) も `timeval {0, 0}` としてそのまま継承させる
-    let mut inherited = inherit_on_listener(&listener, config_of().timeout);
+    // timeout 0 (= 無期限、T10.6) も `timeval {0, 0}` としてそのまま継承させる。
+    // 読みは 1 要求目の要求行を待つ長さ (`PROXY_HEADER_TIMEOUT_SECS` との小さい方。T.28.0)、
+    // 書きは `PROXY_TIMEOUT_SECS`。持つのは `(書き, 読み)` の組
+    let mut inherited = inherit_on_listener(&listener, &config_of());
     // 日付の変わり目に `/snapshot` を 1 枚組む閉包を履歴スレッドへ預ける (T14.34)。
     // 組み立ては要求で来たときと同じ関数で、**下の層 (`proxy-metrics`) から上の層を
     // 呼ばない**ためにここで預ける。書くかどうかを決めるのは `snapshots::configure`
@@ -231,10 +233,12 @@ pub fn serve(
         }
         // この接続が継承したのは「今 待ち受けに当たっている値」。.env の再読込で timeout が
         // 変わった直後だけは食い違うので、その接続は従来どおり接続ごとに設定する
-        let conn_inherited = inherited.filter(|t| *t == cfg.timeout);
+        let conn_inherited = inherited
+            .filter(|t| *t == listener_timeouts(&cfg))
+            .map(|(_, read)| read);
         if conn_inherited.is_none() && inherited.is_some() {
             // 待ち受けに当て直す (次の接続から効く)
-            inherited = inherit_on_listener(&listener, cfg.timeout);
+            inherited = inherit_on_listener(&listener, &cfg);
         }
         // 生きているスレッドの上限も `.env` の再読込で変わる (T11.6)。当て直すのは
         // 食い違ったときだけで、接続ごとにかかるのは `Relaxed` の読みが 1 回
@@ -357,7 +361,12 @@ pub fn serve(
         // `/status` が上限とスレッド数を出すために、接続にワーカー置き場も持たせる
         // (数を引くのは `/status` に来たときだけ。要求ごとには引かない)
         let wk = Arc::clone(&workers);
-        let started = workers.run(Box::new(move || {
+        // 上限の外で受けた接続は、ワーカーが全部塞がっていても待ち行列に積まずに
+        // 上限の外のスレッドで動かす (T.28.0)。上限ぶんの接続が黙ってワーカーを握って
+        // いると、積んだ `/status` はそれが放されるまで動けない (T13.2 の狙いが崩れる)。
+        // 本数は `OVERFLOW_SLOTS` (4 本) で縛られている
+        let outside = overflow.is_some();
+        let job: Box<dyn FnOnce() + Send> = Box::new(move || {
             // 同時接続数と active_connections の持ち分は Conn が持つ (接続の寿命と一致させる)
             let accepted = Accepted { peer, local_port };
             match Conn::new(
@@ -379,7 +388,12 @@ pub fn serve(
                 Ok(conn) => run_conn(Box::new(conn)),
                 Err(e) => log_error!(Some(conn_id), "{}", e),
             }
-        }));
+        });
+        let started = if outside {
+            workers.run_outside(job)
+        } else {
+            workers.run(job)
+        };
         if started.is_err() {
             // 渡せなかった仕事はここで落ちる。持ち分はその中の `OpenGuard` が返す (T9.6)
             log_error!(Some(conn_id), "failed to get a thread for the connection");
@@ -396,13 +410,14 @@ pub fn serve(
 /// の 3 回を払う。実測: 1 接続 1 要求 で setsockopt 3.00 → 0.00 回/接続)。
 fn inherit_on_listener(
     listener: &TcpListener,
-    timeout: std::time::Duration,
-) -> Option<std::time::Duration> {
+    cfg: &Config,
+) -> Option<(std::time::Duration, std::time::Duration)> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;
-        match sys::inherit_socket_options(listener.as_raw_fd(), timeout) {
-            Ok(()) => return Some(timeout),
+        let (write, read) = listener_timeouts(cfg);
+        match sys::inherit_socket_options(listener.as_raw_fd(), read, write) {
+            Ok(()) => return Some((write, read)),
             Err(e) => log_debug!(
                 None,
                 "listener socket options not inherited ({}); setting them per connection",
@@ -411,8 +426,20 @@ fn inherit_on_listener(
         }
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = (listener, timeout);
+    let _ = (listener, cfg);
     None
+}
+
+/// 待ち受けに継承させる `(書き, 読み)` のタイムアウト (T.28.0)。
+///
+/// 書きは `PROXY_TIMEOUT_SECS`、読みは 1 要求目の要求行の 1 バイト目を待つ長さ
+/// ([`config::first_read_timeout`])。読みを継承させておけば、黙った接続を
+/// `PROXY_HEADER_TIMEOUT_SECS` で切るのに接続ごとの `setsockopt` が要らない。
+fn listener_timeouts(cfg: &Config) -> (std::time::Duration, std::time::Duration) {
+    (
+        cfg.timeout,
+        config::first_read_timeout(cfg.timeout, cfg.header_timeout),
+    )
 }
 
 /// accept したクライアント側のソケットに TCP keepalive を当てる (T14.52)。
@@ -558,30 +585,27 @@ enum Line {
 fn read_line_or_idle(
     reader: &mut clientio::ClientReader<'_>,
     line: &mut String,
-    extend: Option<(&TcpStream, std::time::Duration)>,
+    extend: Option<std::time::Duration>,
     allow_idle: bool,
     extended: &mut bool,
+    clock: &mut HeaderClock<'_>,
 ) -> io::Result<Line> {
     loop {
-        match read_limited_line(reader, line) {
+        match read_limited_line(reader, line, clock) {
             Ok(v) => return Ok(Line::Read(v)),
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                let Some((stream, full)) = extend else {
+            Err(e) if is_timeout(&e) => {
+                let Some(full) = extend else {
                     return Err(e);
                 };
-                if *extended {
+                if *extended || clock.expired() {
                     return Err(e);
                 }
                 if allow_idle && line.is_empty() {
                     return Ok(Line::Idle);
                 }
                 // 要求の途中: 猶予ではなく本来のアイドル時間で待ち直す
-                stream.set_read_timeout(timeout::for_socket(full))?;
+                // (ヘッダーの期限が先に来るなら、次の読みの前に `HeaderClock` が縮める)
+                clock.set_timeout(full)?;
                 *extended = true;
             }
             Err(e) => return Err(e),
@@ -589,12 +613,127 @@ fn read_line_or_idle(
     }
 }
 
+/// 要求行とヘッダーを読み終える期限 (`PROXY_HEADER_TIMEOUT_SECS`。T.28.0)。
+///
+/// `SO_RCVTIMEO` は読めるたびに待ち直す「無通信の締め切り」なので、1 バイトずつ送られると
+/// 何秒たっても切れない (slowloris)。ここでは **1 バイト目を受け取ってから**の総時間を
+/// `Instant` で持ち、ソケットから読む前に残りを読み取りタイムアウトに当てる。
+///
+/// **先読みバッファに残っているぶんを読むときは何もしない** ([`Timed`] はバッファが空の
+/// ときだけ呼ぶ)。要求行とヘッダーが 1 つの塊で届く普通の要求では、時計も `setsockopt` も
+/// 1 回も増えない。期限が立つのは「1 バイト目が来たのに、まだ続きをソケットから読む」とき
+/// だけで、その時刻を 1 バイト目の時刻の代わりにする (直前の読みが返った直後なので差は小さい)。
+///
+/// 1 バイト目を待つ読み (1 要求目は accept から、2 要求目以降は keep-alive のアイドル) は
+/// ここでは縛らない。1 要求目のその待ちは [`config::first_read_timeout`] を読み取り
+/// タイムアウトにして縛る (待ち受けから継承させるので接続ごとの `setsockopt` は増えない)。
+struct HeaderClock<'s> {
+    stream: &'s TcpStream,
+    /// いまソケットに当たっている読み取りタイムアウト (`Conn::read_timeout` そのもの。
+    /// 当て直したらここも書き換えて、次の要求の `wait` の比べ合わせを正しく保つ)
+    current: &'s mut Option<std::time::Duration>,
+    /// `PROXY_HEADER_TIMEOUT_SECS` の実効値。`0` なら何もしない
+    limit: std::time::Duration,
+    /// この要求の 1 バイト目を受け取ったか
+    started: bool,
+    deadline: Option<Instant>,
+}
+
+impl HeaderClock<'_> {
+    /// ソケットから読む直前に呼ぶ。期限を越えていたら `TimedOut`。
+    fn before_recv(&mut self) -> io::Result<()> {
+        if self.limit.is_zero() || !self.started {
+            return Ok(());
+        }
+        let now = Instant::now();
+        let deadline = *self.deadline.get_or_insert(now + self.limit);
+        let left = deadline.saturating_duration_since(now);
+        if left.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "request header timeout",
+            ));
+        }
+        // 当たっている待ちが残りより長い (か無期限) ときだけ縮める。keep-alive の待ちの方が
+        // 短ければそちらが先に切れる (今までどおりの「途中で黙った」)
+        if self.current.is_none_or(|c| c.is_zero() || c > left) {
+            self.stream.set_read_timeout(Some(left))?;
+            *self.current = Some(left);
+        }
+        Ok(())
+    }
+
+    /// 読み取りタイムアウトを当て直す (猶予から keep-alive の待ちへ延ばすとき)。
+    fn set_timeout(&mut self, t: std::time::Duration) -> io::Result<()> {
+        self.stream.set_read_timeout(timeout::for_socket(t))?;
+        *self.current = Some(t);
+        Ok(())
+    }
+
+    /// 期限を越えたか (読みが時間切れで返ったときだけ見る)。
+    fn expired(&self) -> bool {
+        self.deadline.is_some_and(|d| Instant::now() >= d)
+    }
+
+    /// 時間切れで返った読みを `408` にするか。1 要求目は締め切りが効いていれば何でも
+    /// (黙ったまま・途中で黙った・期限切れ)、2 要求目以降は期限を越えたときだけ
+    /// (1 バイト目を待つ keep-alive のアイドルは今までどおり静かに閉じる)。
+    fn is_header_timeout(&self, e: &io::Error, served: usize) -> bool {
+        is_timeout(e) && !self.limit.is_zero() && (served == 0 || self.expired())
+    }
+}
+
+fn is_timeout(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
+}
+
+/// [`HeaderClock`] を通して読む [`clientio::ClientReader`]。バッファが空のとき
+/// (= 次の `fill_buf` がソケットを読む) だけ時計を見る。
+struct Timed<'c, 'a, 's> {
+    reader: &'c mut clientio::ClientReader<'a>,
+    clock: &'c mut HeaderClock<'s>,
+}
+
+impl Read for Timed<'_, '_, '_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let available = self.fill_buf()?;
+        let n = available.len().min(out.len());
+        out[..n].copy_from_slice(&available[..n]);
+        self.consume(n);
+        Ok(n)
+    }
+}
+
+impl BufRead for Timed<'_, '_, '_> {
+    #[inline]
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        if self.reader.buffer().is_empty() {
+            self.clock.before_recv()?;
+        }
+        self.reader.fill_buf()
+    }
+
+    #[inline]
+    fn consume(&mut self, amount: usize) {
+        if amount > 0 {
+            self.clock.started = true;
+        }
+        self.reader.consume(amount);
+    }
+}
+
 /// 長さ制限付きで 1 行読む。制限を超えたら `Ok(None)`。
 fn read_limited_line(
     reader: &mut clientio::ClientReader<'_>,
     line: &mut String,
+    clock: &mut HeaderClock<'_>,
 ) -> io::Result<Option<usize>> {
-    let n = reader.by_ref().take(MAX_LINE as u64).read_line(line)?;
+    let n = Timed { reader, clock }
+        .take(MAX_LINE as u64)
+        .read_line(line)?;
     if n == MAX_LINE && !line.ends_with('\n') {
         return Ok(None);
     }
@@ -627,6 +766,27 @@ fn linger(client: &TcpStream) {
             Ok(n) => drained += n,
         }
     }
+}
+
+/// 要求行とヘッダーが期限 (`PROXY_HEADER_TIMEOUT_SECS`) までに揃わなかった接続に
+/// `408 Request Timeout` を返して閉じる (T.28.0)。
+///
+/// 黙ったまま・1 バイトずつ送る接続 (slowloris) が来るたびに出るので、ログは debug に留める
+/// (1 本ごとに WARN を出すと、ログの環が攻撃の行で埋まる)。
+fn header_timeout(
+    client: &TcpStream,
+    conn_id: usize,
+    limit: std::time::Duration,
+) -> io::Result<Step> {
+    log_debug!(
+        Some(conn_id),
+        "408 Request Timeout (request line and headers not received within {} s)",
+        limit.as_secs_f64()
+    );
+    reject(client, 408, "Request Timeout")?;
+    Ok(Step::Close(recent::CloseReason::Error(
+        metrics::ErrCause::Timeout,
+    )))
 }
 
 /// 上限の外で受けた接続 (T13.2) に 503 を返して閉じる。
@@ -1337,18 +1497,20 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         && !config.park_grace.is_zero()
         && !config.keepalive.is_zero())
     .then_some(config.park_grace);
-    // 最初の要求は通常のタイムアウト、2 回目以降は keep-alive のアイドル時間で待つ。
-    // `config.timeout` が 0 なら 1 要求目は無期限に待つ (= 何も送ってこない接続を
-    // 閉じない。`PROXY_TIMEOUT_SECS=0` が意味するのはこれ。T10.6)
+    // 最初の要求は `PROXY_HEADER_TIMEOUT_SECS` と通常のタイムアウトの小さい方
+    // (accept から 1 バイト目までを縛る。T.28.0)、2 回目以降は keep-alive のアイドル時間で待つ。
+    // 両方 0 なら 1 要求目は無期限に待つ (= 何も送ってこない接続を閉じない。T10.6。
+    // `PROXY_TIMEOUT_SECS=0` だけでは、未設定のヘッダーの締め切り (10 秒) が残る)
+    let first = config::first_read_timeout(config.timeout, config.header_timeout);
     let wait = match (grace, *served) {
         (Some(g), _) => g,
         // 上限の外で受けた接続は、要求行を待つ時間を切る (T13.2)。枠は `OVERFLOW_SLOTS` 本
         // しかないので、黙ったままの接続に占領させると `/status` が取れなくなる
-        (None, 0) if overflow => match config.timeout {
+        (None, 0) if overflow => match first {
             t if t.is_zero() => OVERFLOW_READ_TIMEOUT,
             t => t.min(OVERFLOW_READ_TIMEOUT),
         },
-        (None, 0) => config.timeout,
+        (None, 0) => first,
         (None, _) => config.keepalive,
     };
     // タイムアウトの再設定は値が変わるときだけ (setsockopt は要求ごとに効いてくる)。
@@ -1358,8 +1520,16 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         *read_timeout = Some(wait);
     }
     // 猶予で待っている間に要求が届き始めたら、本来のアイドル時間まで待ち直す
-    let extend = grace.map(|_| (&*client, config.keepalive));
+    let extend = grace.map(|_| config.keepalive);
     let mut extended = false;
+    // 要求行とヘッダーを読み終える期限 (T.28.0)。普通の要求では時計を 1 回も読まない
+    let mut clock = HeaderClock {
+        stream: client,
+        current: read_timeout,
+        limit: config.header_timeout,
+        started: false,
+        deadline: None,
+    };
     let mut reader = buf.reader(client);
     match read_line_or_idle(
         &mut reader,
@@ -1367,6 +1537,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         extend,
         true,
         &mut extended,
+        &mut clock,
     ) {
         Ok(Line::Idle) => return Ok(Step::Park),
         Ok(Line::Read(None)) => {
@@ -1386,6 +1557,10 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             return Ok(Step::Close(recent::CloseReason::ClientEof));
         }
         Ok(Line::Read(Some(_))) => {}
+        // 1 バイト目から期限を越えた (1 バイトずつの trickle。2 要求目以降も)
+        Err(e) if is_timeout(&e) && clock.expired() => {
+            return header_timeout(client, conn_id, config.header_timeout);
+        }
         Err(e)
             if *served > 0
                 && matches!(
@@ -1415,6 +1590,10 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 false,
                 over_client.then_some(peer_ip),
             ));
+        }
+        // 1 要求目が黙ったまま (accept から `first_read_timeout`) か、途中で黙った (T.28.0)
+        Err(e) if clock.is_header_timeout(&e, *served) => {
+            return header_timeout(client, conn_id, config.header_timeout);
         }
         Err(e) => return Err(e),
     }
@@ -1493,11 +1672,22 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     loop {
         let index = scratch.used;
         // 要求の途中なので、空振りしても預けない (待ち直す)
-        let line =
-            match read_line_or_idle(&mut reader, scratch.next(), extend, false, &mut extended)? {
-                Line::Read(v) => v,
-                Line::Idle => unreachable!("allow_idle is false"),
-            };
+        let line = match read_line_or_idle(
+            &mut reader,
+            scratch.next(),
+            extend,
+            false,
+            &mut extended,
+            &mut clock,
+        ) {
+            Ok(Line::Read(v)) => v,
+            Ok(Line::Idle) => unreachable!("allow_idle is false"),
+            // ヘッダーの途中で期限を越えた・黙った (T.28.0)
+            Err(e) if clock.is_header_timeout(&e, *served) => {
+                return header_timeout(client, conn_id, config.header_timeout);
+            }
+            Err(e) => return Err(e),
+        };
         match line {
             None => {
                 log_warn!(Some(conn_id), "431 Request Header Fields Too Large");

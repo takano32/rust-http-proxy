@@ -520,18 +520,24 @@ fn test_integration_zero_timeout_never_closes_a_silent_connection() {
 
     let mut forever = proxy_config();
     forever.timeout = Duration::ZERO;
+    // 要求行とヘッダーの締め切り (T.28.0) は未設定なら `PROXY_TIMEOUT_SECS=0` でも 10 秒残る。
+    // 黙った接続を無期限に置くのは両方 0 のとき
+    forever.header_timeout = Duration::ZERO;
     let forever_port = start_test_proxy(forever);
 
     let mut buf = [0u8; 1];
-    // 200 ms のタイムアウト: 黙っていると閉じられる
+    // 200 ms のタイムアウト: 黙っていると閉じられる (T.28.0 から 408 を返してから閉じる)
     let mut closed = TcpStream::connect(format!("127.0.0.1:{}", quick_port)).unwrap();
     closed
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
-    assert_eq!(
-        closed.read(&mut buf).unwrap(),
-        0,
-        "PROXY_TIMEOUT_SECS が有限なら黙っている接続は閉じられる"
+    let mut got = Vec::new();
+    closed.read_to_end(&mut got).unwrap();
+    let got = String::from_utf8_lossy(&got);
+    assert!(
+        got.is_empty() || got.starts_with("HTTP/1.1 408 Request Timeout"),
+        "PROXY_TIMEOUT_SECS が有限なら黙っている接続は閉じられる: {:?}",
+        got
     );
 
     // 無期限: 何倍の時間待っても閉じられない。

@@ -111,6 +111,35 @@ impl Workers {
         self.submit(job, false)
     }
 
+    /// [`Workers::try_run`] と同じだが、**上限に達していたら上限の外のスレッドを 1 本起こして**
+    /// `job` を実行する (待ち行列には積まない。T.28.0)。
+    ///
+    /// 上限の外で受けた接続 (`OVERFLOW_SLOTS` の 4 本。T13.2) 用。上限ぶんのワーカーが
+    /// 黙った接続に握られていると、待ち行列に積んだ `/status` はそれが放されるまで動けない。
+    /// 本数は呼び出し元の枠 (4 本) で縛られているので、ここでは数えない
+    /// (`live` にも入れない = 上限の計算を変えない)。スレッドは仕事が終われば終わる。
+    /// スレッドを起こせなかったときだけ `Err(job)` を返す (`run` と同じ性質)。
+    pub fn run_outside(self: &Arc<Self>, job: Job) -> Result<(), Job> {
+        let job = match self.try_run(job) {
+            Ok(()) => return Ok(()),
+            Err(job) => job,
+        };
+        // 仕事は起こしたあとで渡す (`spawn` と同じ形。起こせなければ手元に残る)
+        let (tx, rx) = channel::<Job>();
+        let spawned = thread::Builder::new()
+            .name("conn".into())
+            .stack_size(STACK_SIZE)
+            .spawn(move || {
+                if let Ok(job) = rx.recv() {
+                    job();
+                }
+            });
+        match spawned {
+            Ok(_) => tx.send(job).map_err(|e| e.0),
+            Err(_) => Err(job),
+        }
+    }
+
     /// `queue_when_full` が偽なら、上限に達したときに待ち行列へ積まず仕事を返す。
     fn submit(self: &Arc<Self>, job: Job, queue_when_full: bool) -> Result<(), Job> {
         let mut job = job;
@@ -407,6 +436,28 @@ mod tests {
         );
         assert_eq!(w.idle_count(), 1);
         assert_eq!(w.live_count(), 1, "生きているスレッドも 1 本");
+    }
+
+    #[test]
+    fn run_outside_runs_beside_a_full_pool() {
+        // 上限 1 本のスレッドが塞がっていても、`run_outside` の仕事は待ち行列に積まれずに走る (T.28.0)
+        let w = Arc::new(Workers::new(1));
+        let (block_tx, block_rx) = mpsc::channel::<()>();
+        w.run(Box::new(move || {
+            let _ = block_rx.recv();
+        }))
+        .unwrap_or_else(|_| panic!("could not get a thread"));
+        wait_until(|| w.live_count() == 1);
+        let (tx, rx) = mpsc::channel();
+        w.run_outside(Box::new(move || {
+            let _ = tx.send(());
+        }))
+        .unwrap_or_else(|_| panic!("could not get a spare thread"));
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("上限の外のスレッドで走る");
+        assert_eq!(w.queued(), 0, "待ち行列には積まない");
+        assert_eq!(w.live_count(), 1, "上限の数え方は変えない");
+        let _ = block_tx.send(());
     }
 
     #[test]

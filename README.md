@@ -1528,6 +1528,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
   - `PROXY_CONNECT_TIMEOUT_SECS` で **`CONNECT` のオリジン接続だけ**に短い締め切りを置いています
     (**既定 5 秒**。未設定なら 5 秒と `PROXY_TIMEOUT_SECS` の小さい方)
+  - `PROXY_HEADER_TIMEOUT_SECS` で**要求行とヘッダーを読み終えるまでの総時間**に締め切りを置いています
+    (**既定 10 秒**。越えたら `408 Request Timeout` で閉じる。黙ったまま・1 バイトずつ送る接続 (slowloris) 対策)
 
 ## コマンドライン引数
 
@@ -1611,6 +1613,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_LISTEN_BACKLOG` | `0` (= `min(1024, somaxconn)`) | 待ち受けの受け入れ待ち行列の長さ (`listen(2)`) |
 | `PROXY_TIMEOUT_SECS` | `30` | 接続とデータ転送の締め切り (秒)。`0` で無期限 |
 | `PROXY_CONNECT_TIMEOUT_SECS` | `5` | `CONNECT` のオリジン接続だけの締め切り (秒) |
+| `PROXY_HEADER_TIMEOUT_SECS` | `10` | 要求行とヘッダーを読み終えるまでの総時間の締め切り (秒)。越えたら `408`。`0` で無し |
 | `PROXY_HE_STAGGER_MS` | `250` | Happy Eyeballs で次の候補を試し始めるまでの間隔 (ms、10〜2000) |
 | `PROXY_KEEPALIVE_SECS` | `15` | クライアント接続を次の要求まで待つ時間 (秒) |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り (秒) |
@@ -1687,7 +1690,7 @@ check: ok (everything this proxy reads is readable)
 
 `.env` は起動後も監視していて、保存すると再起動なしで読み直します (`$HOME` を inotify で監視、使えないファイルシステムでは
 30 秒ごとの mtime 確認)。即時に反映されるのは `PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS` / `PROXY_TIMEOUT_SECS` /
-`PROXY_CONNECT_TIMEOUT_SECS` /
+`PROXY_CONNECT_TIMEOUT_SECS` / `PROXY_HEADER_TIMEOUT_SECS` /
 `PROXY_KEEPALIVE_SECS` / `PROXY_LOG_LEVEL` / `PROXY_MAX_CONNS` / `PROXY_MAX_THREADS` /
 `PROXY_ALLOW_CLIENTS` / `PROXY_ENDPOINTS_READONLY` / `PROXY_MAX_CONNS_PER_CLIENT` などで、
 既存の keep-alive 接続には次の接続から効きます (どの値を当てたかは `/status` の `settings.applied` に出ます)。ポート・bind・
@@ -1741,6 +1744,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 
 - **`PROXY_TIMEOUT_SECS`** (既定 `30`)
   接続およびデータ転送タイムアウト（秒）。`0` で**無期限** (`PROXY_TUNNEL_IDLE_SECS` と同じ意味): 何も送ってこないクライアント接続を閉じず、オリジンへの接続と読み書きにも締め切りを置かない (OS 既定に任せる)。
+  **ただし何も送ってこない接続は `PROXY_HEADER_TIMEOUT_SECS` (未設定でも 10 秒) で閉じます** (T.28.0)。黙った接続を無期限に置くには両方 `0` にしてください。
   `PROXY_KEEPALIVE_SECS` (要求と要求の間) と `PROXY_TUNNEL_IDLE_SECS` は別に効く
 - **`PROXY_CONNECT_TIMEOUT_SECS`** (既定 `5`)
   **`CONNECT` のオリジン接続だけ**の締め切り (秒)。
@@ -1763,6 +1767,27 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   Happy Eyeballs の締め切りも同じ値なので、締め切りで抜けた接続は `/errors` に `cause: "timeout"` で残ります。
   **名前解決の時間は含みません** (名前を引いたあとの `connect` に効きます)。
   `.env` で即時反映
+- **`PROXY_HEADER_TIMEOUT_SECS`** (既定 `10`)
+  **要求行とヘッダーを読み終えるまでの総時間**の締め切り (秒)。越えたら `408 Request Timeout` を返して閉じます。
+  `PROXY_TIMEOUT_SECS` の読み取りタイムアウトは「無通信の締め切り」で、**読めるたびに待ち直す**ので、
+  1 バイトずつ送り続ける接続 (slowloris) は何秒たっても切れず、1 本でワーカー 1 本と接続枠 1 つを握れました
+  (実測 0.27.8: `PROXY_TIMEOUT_SECS=3` で 1 バイト / 2 秒を送ると 20 秒たっても切れない。黙った接続も 30 秒放されない)。
+  縛り方は 2 つに分かれます:
+  - **1 バイト目が来てから最後のヘッダーまで**: 1 要求目も 2 要求目以降も、この長さの総時間で切ります
+    (時計を見るのは、ヘッダーが 1 つの塊で届かずに続きをソケットから読むときだけ。普通の要求では 1 回も読みません)
+  - **accept から 1 バイト目まで (1 要求目)**: 読み取りタイムアウトをこの値と `PROXY_TIMEOUT_SECS` の小さい方にして切ります
+    (待ち受けから継承させるので接続ごとの `setsockopt` は増えません)。
+    **2 要求目以降の 1 バイト目までは `PROXY_KEEPALIVE_SECS` のまま**で、この締め切りには入れません (静かに閉じ、408 は返しません)
+  本文 (`Content-Length` / chunked) の転送は締め切りの外で、今までどおり `PROXY_TIMEOUT_SECS` です。
+  **未設定なら 10 秒と `PROXY_TIMEOUT_SECS` の小さい方** (`PROXY_TIMEOUT_SECS=0` でも 10 秒)。`0` と明示すれば締め切り無し (今までの動き)。
+  **既定を 10 秒にした根拠 (2026-10-25、T.28.0)**: tokyo の雪像 (`2026-10-25T203134Z`、1 時間ぶん) の `/profile` で、要求行から
+  `Host` まで (`client_read`) は CONNECT 1,105 本で**最大 0 ms** (ヘッダーは 1 つの塊で届く)。accept から要求行までは計器に無い
+  (`wait` の外) が、正規のクライアントは握手の直後に要求を送るので 1 RTT (tokyo の接続元は約 248 ms) で届きます。10 秒はその 40 倍で、
+  落ちた塊の再送が 3〜4 回重なっても間に合います。
+  **上限に当たっているときの `/status`**: 上限の外の 4 枠 (T.13.2) で受けた接続は、ワーカーが全部塞がっていても
+  待ち行列に積まずに上限の外のスレッドで動かします (T.28.0。`PROXY_MAX_CONNS` ぶんの沈黙を張られても `/status` は待たずに返る)。
+  `408` で閉じた接続は `/recent` の `reason` が `error:timeout` になります (ログは debug)。
+  `.env` で即時反映 (次の接続から)
 - **`PROXY_HE_STAGGER_MS`** (既定 `250`)
   Happy Eyeballs (RFC 8305) で、名前が複数のアドレスを返したときに**先頭の候補が返らなければ次の候補を試し始めるまでの間隔** (ms)。
   受けるのは **10〜2000** (RFC 8305 の範囲) で、外れた値と数でない値は起動ログに `WARN` を 1 行出して既定の 250 に戻します (`/config` の出どころも `default` のまま)。

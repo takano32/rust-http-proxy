@@ -274,17 +274,37 @@ mod sockopt {
 /// `TCP_NODELAY` / `SO_RCVTIMEO` / `SO_SNDTIMEO` は待ち受けから接続へそのまま引き継がれる。
 /// 待ち受けに 1 回当てておけば接続ごとの `setsockopt` 3 回を払わなくて済む。
 ///
-/// **`SO_RCVTIMEO` は `accept()` 自体にも効く** (`timeout` ごとに `EAGAIN` で戻る) ので、
+/// **`SO_RCVTIMEO` は `accept()` 自体にも効く** (`read` ごとに `EAGAIN` で戻る) ので、
 /// 呼び出し側の accept ループは `WouldBlock` を「まだ来ていない」として読み飛ばすこと。
-/// `timeout` が 0 (= 無期限) のときは `accept()` も無期限に待つ。
+/// `read` が 0 (= 無期限) のときは `accept()` も無期限に待つ。
+///
+/// 読み (`SO_RCVTIMEO`) と書き (`SO_SNDTIMEO`) は別の値にできる (T.28.0)。読みは 1 要求目の
+/// 要求行を待つ長さ (`PROXY_HEADER_TIMEOUT_SECS` と `PROXY_TIMEOUT_SECS` の小さい方)、
+/// 書きは `PROXY_TIMEOUT_SECS` のまま。
 ///
 /// 失敗したら `Err` を返す。呼び出し側は**従来どおり接続ごとに設定する**こと
 /// (カーネルが引き継がない環境でも動きが変わらないように)。
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-pub fn inherit_socket_options(listener_fd: RawFd, timeout: Duration) -> io::Result<()> {
+pub fn inherit_socket_options(
+    listener_fd: RawFd,
+    read: Duration,
+    write: Duration,
+) -> io::Result<()> {
     use sockopt::*;
 
-    let mut tv = TimeVal {
+    let one: c_int = 1;
+    // Nagle を切る。応答ヘッダーと本文を別々に write すると delayed ACK と噛み合って
+    // 1 要求あたり 40 ms 止まるため
+    set(listener_fd, IPPROTO_TCP, TCP_NODELAY, &one)?;
+    set(listener_fd, SOL_SOCKET, SO_RCVTIMEO, &timeval(read))?;
+    set(listener_fd, SOL_SOCKET, SO_SNDTIMEO, &timeval(write))?;
+    Ok(())
+}
+
+/// `Duration` を `SO_RCVTIMEO` / `SO_SNDTIMEO` の `timeval` に直す。
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+fn timeval(timeout: Duration) -> sockopt::TimeVal {
+    let mut tv = sockopt::TimeVal {
         tv_sec: timeout.as_secs().min(i64::MAX as u64) as i64,
         tv_usec: timeout.subsec_micros() as i64,
     };
@@ -298,17 +318,15 @@ pub fn inherit_socket_options(listener_fd: RawFd, timeout: Duration) -> io::Resu
     if !timeout.is_zero() && tv.tv_sec == 0 && tv.tv_usec == 0 {
         tv.tv_usec = 1;
     }
-    let one: c_int = 1;
-    // Nagle を切る。応答ヘッダーと本文を別々に write すると delayed ACK と噛み合って
-    // 1 要求あたり 40 ms 止まるため
-    set(listener_fd, IPPROTO_TCP, TCP_NODELAY, &one)?;
-    set(listener_fd, SOL_SOCKET, SO_RCVTIMEO, &tv)?;
-    set(listener_fd, SOL_SOCKET, SO_SNDTIMEO, &tv)?;
-    Ok(())
+    tv
 }
 
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-pub fn inherit_socket_options(_listener_fd: RawFd, _timeout: Duration) -> io::Result<()> {
+pub fn inherit_socket_options(
+    _listener_fd: RawFd,
+    _read: Duration,
+    _write: Duration,
+) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "socket option constants are only known for aarch64 and x86_64",
@@ -973,7 +991,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let timeout = std::time::Duration::from_secs(7);
-        inherit_socket_options(listener.as_raw_fd(), timeout).unwrap();
+        inherit_socket_options(listener.as_raw_fd(), timeout, timeout).unwrap();
 
         let _client = TcpStream::connect(addr).unwrap();
         let (accepted, _) = listener.accept().unwrap();
@@ -983,11 +1001,27 @@ mod tests {
     }
 
     #[test]
+    fn accepted_sockets_inherit_separate_read_and_write_timeouts() {
+        // 読み (1 要求目の要求行を待つ長さ) と書き (`PROXY_TIMEOUT_SECS`) は別の値で継承する (T.28.0)
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let read = std::time::Duration::from_secs(3);
+        let write = std::time::Duration::from_secs(9);
+        inherit_socket_options(listener.as_raw_fd(), read, write).unwrap();
+
+        let _client = TcpStream::connect(addr).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        assert_eq!(accepted.read_timeout().unwrap(), Some(read));
+        assert_eq!(accepted.write_timeout().unwrap(), Some(write));
+    }
+
+    #[test]
     fn accept_times_out_with_the_receive_timeout() {
         // SO_RCVTIMEO は accept() にも効く。serve の accept ループはこれを
         // 「まだ来ていない」として読み飛ばす (ログも sleep も無しに continue)
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        inherit_socket_options(listener.as_raw_fd(), std::time::Duration::from_millis(50)).unwrap();
+        let t = std::time::Duration::from_millis(50);
+        inherit_socket_options(listener.as_raw_fd(), t, t).unwrap();
         let started = std::time::Instant::now();
         let err = listener.accept().unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
@@ -1005,7 +1039,8 @@ mod tests {
         // カーネルがこの意味を変えたらここが落ちる
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        inherit_socket_options(listener.as_raw_fd(), std::time::Duration::ZERO).unwrap();
+        let zero = std::time::Duration::ZERO;
+        inherit_socket_options(listener.as_raw_fd(), zero, zero).unwrap();
 
         let _client = TcpStream::connect(addr).unwrap();
         let (accepted, _) = listener.accept().unwrap();
