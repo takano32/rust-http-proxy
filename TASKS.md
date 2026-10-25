@@ -114,10 +114,6 @@
   - やること: 偽のサーバーを使い回す・`sleep` を条件待ちにする。判定は弱めない。
   - 受け入れ基準: 手元で 60 秒以下、本数は同じ。
 
-- [ ] **T.28.31 `.env` の真偽の鍵・`PROXY_PROFILE`・`PROXY_SLO` の読めない値も警告する (T.28.6 で残った)**
-  - 目的: T.28.6 で数の鍵は WARN するようになったが、真偽の鍵は読めない値を on として黙って扱い (`PROXY_ALLOW_LOCAL=maybe` は on)、`PROXY_PROFILE` の lite 以外と `PROXY_SLO` の一部の読めない値も黙る。
-  - やること: 真偽の鍵は on / off / true / false / 1 / 0 / yes / no 以外を WARN 1 行 (扱いは今のまま)、`PROXY_PROFILE` と `PROXY_SLO` も `EnvProblems` に寄せる。
-  - 受け入れ基準: 3 種を書いた `.env` で WARN が 1 行ずつ、`settings.invalid` と `--check` に並ぶ。正しい `.env` で 0 行。
 
 
 **利用者の判断が要るもの (番号は決まってから振る)**
