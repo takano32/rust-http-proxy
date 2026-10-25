@@ -129,7 +129,7 @@ cat >"$W/snap-skip" <<'EOF'
 /readers	`/status` の末尾の `readers` に上位 20 が入る (T.14.53)
 /trace	`PROXY_TRACE_CLIENT` を設定したときだけ中身があり、**URL のパスが入る** (T.14.27)。誰でも取れる雪像には入れない
 /slo	`/history` の標本から判定し直せる (T.14.50)
-/daily	日ごとの要約はファイル (`~/.rust-http-proxy.daily.jsonl`) に永久に残る。雪像は「そのときの様子」を撮るもの (T.14.20 の申し送りは `parts` に足すこと。足すときは `scripts/anonymize-snapshot.py` の PART_ORDER と `snapshot-diff.py` も一緒に直す)
+/daily	日ごとの要約はファイル (`~/.rust-http-proxy.daily.jsonl`) に永久に残る。雪像は「そのときの様子」を撮るもの (T.14.20 の申し送り「`parts` に足す」は T.28.28 で足さないと決めた: `collect-deployed.sh` が `-daily.json` を別に取り、雪像の 4 MiB の枠を食わないため。足すなら `scripts/anonymize-snapshot.py` の PART_ORDER と `snapshot-diff.py` も一緒に直す)
 EOF
 cut -f1 "$W/snap-skip" | LC_ALL=C sort -u >"$W/snap-skip-names"
 LC_ALL=C sort -u "$W/ep-code" | comm -23 - "$W/snap-skip-names" >"$W/snap-want"
