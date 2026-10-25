@@ -151,11 +151,6 @@
 
 **28d 台帳・文書・道具**
 
-- [ ] **T.28.22 README の「運用 0 (リリース)」を今の決まりに書き直し、release のバイナリを置く手順を足す**
-  - 目的: README 3127・3139 は T.26.3 の「デプロイの番号」(撤回済み) のまま、3131 は `--task` を使い、3134 と 2542 はタグを手で `git push` する形 (今は `release.yml` の `workflow_dispatch`)。3123 は存在しない節「再デプロイの手引き」を指す。Pterodactyl に release のバイナリを置く手順 (URL の形・`chmod +x`・起動コマンド・`-V` で確かめる) がどこにも無い。release に `SHA256SUMS` が無い。
-  - やること: 運用 0 を TASKS.md の決まり (版 = 中身を最後に変えたタスク、`--task`、タグは Claude が `workflow_dispatch` で) に合わせ、「置く」の手順を足す。`release.yml` に `sha256sum` の 1 ファイル (任意)。
-  - 受け入れ基準: 運用 0 の命令を上から打って通る、`check-docs.sh` 差分 0。
-
 - [ ] **T.28.23 古い数字と死んだ参照の束を直し、再発するものを `check-docs.sh` で見る**
   - 目的: `-h` (`crates/base/src/cli.rs` 41-42) の `PROXY_CONNECT_TIMEOUT_SECS … (10, …)` は既定 5 (T.23.3)。README 9・503「約 1.4 MB」(実 3.1 MB / dist 2.0 MB)、2535 と Dockerfile 15「26 個のクレート」(41)、2371「bin が 2 つで default-run」(どちらも無い)、3232・247・262「既定は phase24」(phase25。README に phase25 の文字が無い)、2967-2968「旧名 `sorahost_live_threads` はこの版だけ」(今も出る)、2751-2753 のダッシュボードの引き方の間隔 (実際は 5 秒ごとの口が多い)。
   - やること: 1 コミットで直し、`check-docs.sh` に (h) `collect-deployed.sh` の `CRITERIA` の既定 = README の「既定は」、(i) `cli.rs` の括弧の既定 = `config.rs` の定数、を足す。
