@@ -53,18 +53,6 @@
   - やること: `from_io` に `WouldBlock => Timeout` (終端のエラーでしか通らない)。ログは「origin response timed out after N s」に言い換える。
   - 受け入れ基準: 単体で `WouldBlock` が `Timeout` になる、結合で 2 秒の締め切りに対し 3 秒黙るオリジンが `errors_by_cause` の `timeout` に入り、ログに "timed out" が出る。
 
-- [ ] **T.28.6 `.env` の打ち間違いと読めない値を警告し、`--check` と `/config` に出す**
-  - 目的: `PROXY_TIMOUT_SECS=20` (綴り違い)・`PROXY_KEEPALIVE_SECS=abc`・`PROXY_TIMEOUT_SECS=xyz`・`PROXY_FOO_BAR=1` を書いても WARN は 0 行 (範囲外の `PROXY_HE_STAGGER_MS` だけ出る)、再読込でも `settings.error` は `null`、`--check` は「9 variables」と言いつつ読めなかった 5 行を出さない。`crates/config/src/config.rs` は `parse().ok()` で黙って既定へ落とす所が 21 か所。**README 1701-1702「解釈できない値は前の設定を維持し `settings.error` に入る」は実装と違う**。「手軽」の入口で、Pterodactyl のファイルマネージャで `.env` を書く人が気づけない。
-  - 変更箇所: `crates/config/src/config.rs`、`crates/reload/src/reload.rs` 95-106、`crates/base/src/envfile.rs`、README。
-  - やること: (a) `PROXY_*` / `SERVER_*` の知らない鍵を WARN 1 行 (編集距離 2 以内の候補を添える)、(b) 21 か所を「読めなければ WARN + 既定」の 1 つの関数に寄せる、(c) `--check` に「読めなかった・知らない」の行、`/config` と `/status.settings` に `invalid` / `unknown` の欄 (足すだけ)、(d) README の文を実装に合わせる。
-  - 受け入れ基準: 上の 4 種で起動ログに WARN 4 行、`--check` と再読込後の `/status.settings` に名前が出る。正しい `.env` では 1 行も増えない。通る要求の経路は触らない。
-
-- [ ] **T.28.7 内部エンドポイントに HEAD を通し、GET / HEAD 以外は 405 にする (今は 404 + 2,864 B の案内)**
-  - 目的: `curl -I` で `/healthz` `/status` `/metrics` `/proxy.pac` `/dashboard` が全部 404 で、本文は案内文 2,864 B。外の生死監視 (既定は HEAD のものが多い) やロードバランサが「死んでいる」と読む。RFC 9110 §9.3.2 は HEAD に GET と同じヘッダーを求める。`/favicon.ico` も 404 で 2.8 KB (ダッシュボードを開くたび)。
-  - 変更箇所: `crates/endpoints/src/endpoints/mod.rs` 290 (`is_get`)・354 以下。
-  - やること: HEAD は GET として組んで本文を書かない、GET / HEAD 以外の自分宛ては `405` + `Allow: GET, HEAD` (PURGE と `PROXY_ENDPOINTS_READONLY` の 405 は今のまま)、`/favicon.ico` は 204。
-  - 受け入れ基準: 結合テストで `HEAD /healthz` が 200 で GET と同じ `Content-Length`・本文 0 B、`POST /status` が 405、`check-docs.sh` の (a) は変わらない。
-
 - [ ] **T.28.8 forward のオリジン接続にも短い接続の締め切りを当てる (今は `PROXY_TIMEOUT_SECS` の 30 秒)**
   - 目的: CONNECT の確立は T.23.3 で 5 秒にしたが、forward のオリジン接続は 30 秒のまま (`crates/http/src/http/mod.rs` 761-765)。繋がらない宛先への forward 1 本がワーカーを 30 秒握る (T.28.0 と同じ枯渇の増幅)。**見直し**: README の「forward は `PROXY_TIMEOUT_SECS` のまま」の判断。
   - やること: forward の接続の確立にも `PROXY_CONNECT_TIMEOUT_SECS` を当てる (応答の読みは 30 秒のまま)。段 1 で tokyo の forward の確立の分布を見て、落とす成功が 0 であることを確かめる。
@@ -80,9 +68,6 @@
   - 変更箇所: `crates/cachekey/src/key.rs`、`crates/msg/src/headers.rs`、`crates/http/src/http/mod.rs` 630-641、`crates/freshness/src/freshness.rs` 194。
   - 受け入れ基準: 4 つそれぞれに結合テスト 1 本。(b) は HIT の応答にも付く。
 
-- [ ] **T.28.11 `--check` の `cgroup_cpu` を読む側とそろえる (cgroup v1 で [ok] なのに値は `null`)**
-  - 目的: 判定 (`crates/sysinfo/src/sysinfo/capabilities.rs` 184) は全階層で `cpu.stat` を探すので v1 にも当たるが、読む側 (`cgroup.rs` 149-151) は v2 前提。README 1556「`null` の理由の切り分けに使える」が v1 では果たせない (tokyo は v2 で今は無害)。
-  - 受け入れ基準: v1 だけの `/proc/self/cgroup` の見本で `cgroup_cpu` が false になる単体テスト。
 
 **28b 性能 (forward の user 時間と、既定プロファイルの上乗せ)**
 
@@ -112,26 +97,6 @@
 
 **28c 計器と物差し**
 
-- [ ] **T.28.16 `/slo` の閾を距離で外れない形にする (25 時間の達成率 0.15。段 1 から)**
-  - 目的: `2026-10-25T203134Z-slo.json` は 25 時間で判定 11,482 標本・満たした 1,718 = **達成率 0.15**。外した内訳は `connect_p50_ms` 9,002 (78%)・`connect_p95_ms` 4,182・`error_rate` 840・`dns_miss_per_connect` 808。既定 `PROXY_SLO=connect_p50_ms=10,…` は T.14.50 の nagoya (p50 8 ms) 前提で、tokyo の確立 p50 18 ms は 1 RTT = 距離 (T.14.99 で「物理だから追わない」とした種類)。判定表は T.24.3 で「RTT + 5 ms」に直したが `/slo` とダッシュボードの「今日の SLO」は固定値のまま。`error_rate` はメール宛の NXDOMAIN を数える。`collect-deployed.sh` は毎回 `-slo.json` を撮るが、要約も判定表も読まない。`PROXY_SLO` は再起動でしか反映されない。
-  - やること: 段 1 で `history["5"]` を再生する模型を作り、(1) 確立を「そのときの RTT (個票の `rtt_ms.origin`・canary) + N ms」で判定、(2) 既定の閾を tokyo 向きに変える、(3) `error_rate` を「名前解決に成功した試行あたり」(T.23.0) にする、を並べる。段 2 は採った形を本体へ (既存の鍵は足すだけ)。`collect-deployed.sh` の要約に達成率と内訳を 1 行。
-  - 受け入れ基準: 10-25 の雪像で新しい判定の達成率が 0.9 以上、10-17〜10-20 の総当たりの時間帯で `error_rate` 以外が外れない。既定値を変えるなら利用者に確かめる (T.15.6 の「特殊な設定は入れたくないので既定を変える」の先例あり)。
-
-- [ ] **T.28.17 異常検知 (`errors`・`dns_slow`) をメール宛の総当たりで鳴らさない (`/events` の環が 5 日で回る)**
-  - 目的: 起動から 23.7 時間で `errors` 42・`dns_slow` 13・`cleared` 53 = 109.5 件/日。環 512 件は約 4.7 日で回る (推定) ので、T.23.2 の「`/events` は 10 日以上残る」(無言の再起動の計器の前提) が崩れる。中身は全部総当たり: 名前解決 ≥500 ms の 25 本は 25 本ともメール系のポート、443 宛ての名前解決は 2.81 時間で 8 回・最大 256 ms。`/errors` 649 件のうちメール系 615 件 (95%)。
-  - やること: `errors` から `nxdomain` (客が無い名前を頼んだ = `blocked` と同じ客の都合) を外す、`dns_slow` は解決に成功したミスか `cold` 以外で判定 (`dns_temp` は残す)。T.23.2 の前提を数字で書き直す。
-  - 受け入れ基準: `scripts/dns-slow-replay.py` を 10-25・tokyo 10-17・nagoya 10-08 に当て、総当たりだけの窓での発火 0、T.22.2 の「本当に遅い一続き」4 件を落とさない (総当たりかを先に確かめる)。`errors` も同じ 3 枚で件/時を前後で。
-
-- [ ] **T.28.18 `/recent` の窓の不足を数える (段 1。2,000 件で 2.8 時間、量の多い日は 1 時間)**
-  - 目的: 10-25 の個票の窓は 2.81 時間、日次 10-19 は 1.0 時間。phase25 の接続のエラーの行は前後とも試行 1,000 本以上を求める (T.27.0) ので、量が増えると判定できなくなる。1 回の GET は 256 KiB で約 860〜1,000 本で切れる (道具は `offset=` で繋ぐが、ダッシュボードや素の curl は切れた窓しか見ない)。T.22.5 の気づき「広げるなら本体の話」が宙に浮いている。
-  - やること: 段 1 で日次 16 枚と 10-24〜25 の雪像から「窓が 1,000 本を割った日」を数え、環を 2,000 → 8,000 にしたときのメモリ (1 件 ≤256 B で +1.5 MB) と、状態ファイル・`/snapshot` 4 MiB の上限との兼ね合いを見積もる。判定表の行を「同じ時刻帯の窓」で比べる案 (道具だけ) と並べる。
-  - 受け入れ基準: 表と、段 2 に進むかの判断。
-
-- [ ] **T.28.19 `/hosts` の `other` 行を分位点の比べから外す (3 つの別物を混ぜた通算)**
-  - 目的: `other` (表の 1,000 行から溢れたホストの畳み先、`crates/metrics-core/src/metrics.rs` 534) は生きた CONNECT の溢れ・forward の溢れ・死んだメール宛の総当たりを 1 行に混ぜ、しかも 10-08 からの通算 (版をまたぐ)。p95 10,006 ms・max 10,012 ms は T.23.3 (10 → 5 秒) より前の timeout の残り。`status-diff.py` が forward の行として p95 10 秒を並べる。
-  - やること: 道具 (`snapshot-summary.py`・`status-diff.py`・`snapshot-diff.py`) で `other` を分位点の比べから外し「混在・通算」の印を付ける。本体に `folded_hosts` を足すかは段 2。
-  - 受け入れ基準: 10-25 の雪像で `other` が比べの表に出ない、印が付く。過去の `--criteria` の出力は変えない。
-
 - [ ] **T.28.20 判定の雪像 (「前」と「0 時間」) をプロキシ自身にも残させる**
   - 目的: 締めの「前」と「0 時間」は撮った機械にしか残らない (T.25.99 は「前」が無く日次で代用、T.27.99 はコンテナに置いた)。`§0` の 9 は人の手で撮る決まりで、撮り忘れは T.16 で既に起きた。いまのサーバー側は日次だけ (`crates/endpoints/src/endpoints/recent.rs` 250-253、名前は `YYYY-MM-DD` 固定 `crates/metrics-slo/src/snapshots.rs` 61-70)。
   - やること: SIGTERM で状態ファイルを書く前に `/snapshot` 1 枚を `snapshots/<時刻>-shutdown.json`、起動 60 秒 (`memory.baseline` を書く所) で `-start.json` を残し、`/snapshots` の一覧と取り寄せの口を広げて、`collect-deployed.sh --from-server` が `BEFORE`/`ZERO` に使えるようにする。保持は `PROXY_SNAPSHOT_DAYS` と同じ。サーバー側の雪像は部ごと 256 KiB で切れる (`recent` 約 590 件) ので、shutdown の 1 枚だけは `recent` を全件書くかを先に決める。
@@ -150,6 +115,16 @@
   - 受け入れ基準: 手元で 60 秒以下、本数は同じ。
 
 
+- [ ] **T.28.31 `.env` の真偽の鍵・`PROXY_PROFILE`・`PROXY_SLO` の読めない値も警告する (T.28.6 で残った)**
+  - 目的: T.28.6 で数の鍵は WARN するようになったが、真偽の鍵は読めない値を on として黙って扱い (`PROXY_ALLOW_LOCAL=maybe` は on)、`PROXY_PROFILE` の lite 以外と `PROXY_SLO` の一部の読めない値も黙る。
+  - やること: 真偽の鍵は on / off / true / false / 1 / 0 / yes / no 以外を WARN 1 行 (扱いは今のまま)、`PROXY_PROFILE` と `PROXY_SLO` も `EnvProblems` に寄せる。
+  - 受け入れ基準: 3 種を書いた `.env` で WARN が 1 行ずつ、`settings.invalid` と `--check` に並ぶ。正しい `.env` で 0 行。
+
+- [ ] **T.28.32 `--check` の `cgroup_pressure` を読む側とそろえる (T.28.11 で見つけた)**
+  - 目的: `cgroup_pressure` の判定は `/proc/pressure` への落とし込みを見ないので、読む側 (落とし込みで値を出す) と食い違いうる。T.28.11 の `cgroup_cpu` と同じ形の食い違い。
+  - やること: 判定を読む側と同じ道にする (T.28.11 の `cgroup_cpu_in` の型)。
+  - 受け入れ基準: cgroup に `cpu.pressure` が無く `/proc/pressure/cpu` がある見本で、判定と読む側が一致する単体テスト。
+
 **利用者の判断が要るもの (番号は決まってから振る)**
 
 | 何を | 材料 (2026-10-25) | 選択肢 |
@@ -162,6 +137,8 @@
 | CONNECT の締め切り 5 → 3 秒 | 縮む待ち 4.6〜9.0 分/日、落とす成功 0〜0.23 本/日 (T.23.3 の「1 日 1 本未満」を満たす数字になった)。ただし縮むのは全部メール系と `pravda.me:443` の総当たりの待ちで、利用者の待ちは縮まない | 5 秒のまま (調査員の推奨) / 3 秒 (`.env` 1 行、本体の変更なし) |
 | `--lite` でも統計を積むのをやめる | lite の user 27.4k Ir/要求のうち `record`・`record_host_detail`・`record_client`・`Ctx::log` が 3.5k (13%)。`--lite` の説明は「no statistics」だが `/hosts` は lite でも出る | lite の `/hosts`・`/clients` を空にする (振る舞いの変更) / 今のまま |
 | info のアクセスログを溜めて書く | 既定 info vs warn で +5.2 us/要求、`futex` 2.6/要求 (stdout の鍵の取り合い)。tokyo (0.14 req/s) には無関係 | 溜めて書く (順序と即時性が変わる) / 今のまま |
+| `/slo` の `dns_miss_per_connect` の既定か定義 (T.28.16 段 1) | 確立を「接続ごとの (確立 − RTT)」+ error_rate を名前解決に成功した試行あたりにしても 10-25 は 0.813 で 0.9 に届かない。届かない分は `dns_miss_per_connect` が 96 / 573 標本で外れるため (外すと 0.953) | 既定を緩める / 定義を変える (例: 名前解決の失敗を除く) / 今のまま (`/slo` は目安として読む) |
+| 日次の `/snapshot` の `/recent` を多く持たせる (T.28.18 段 1) | 日次は部ごとに 256 KiB で切り、`/recent` は約 580 行 (1,000 本を割る)。締めで日次を「前」にすると接続のエラーが「判定できず」になる | 1 MiB (約 2,300 行。日次 2.9 → 約 3.6 MB) / 今のまま (締めは collect の雪像を「前」にする) |
 
 **見直したが元の判断のままでよいもの** (2026-10-25、理由と数字は見直しの調査): 繋がらない宛先を覚える (T.22.3。今 1.18 分/日)、負のキャッシュの延長 (T.27.3。今 0.50 分/日、総当たりは毎回違う名前)、keep-warm 停止 (T.22.4。`stale_retries` 0)、serve-stale 21,600 秒 (T.21.3)、T.24.1 段 2 (構造上 0%)、warm の枠・窓の格子 (T.17.5・T.20・T.22.4。keep-warm 0 で前提が消えた)、IPv6 だけの宛先をすぐ断る (T.18.99)、先張り (T.14.1。今の数字で約 1.5 分/日)、一律 TTL・名前ごとの TTL (T.15.4)、§4 の loopback の micro-opt 一式と システムコールの床 4 回 (T.27.4。今も 4.03 回/要求)、LTO を `release` で (120 MB の関門の中では無理。見直すなら配布物の側)、musl、HTTP/2、ws の `Upgrade`、`/connections` の `offset=` (240 本でも 54 KB)、`PROXY_MAX_CONNS` auto 240 (山 49)、T.27.5〜T.27.8 の 400 / 505 (23.7 時間で断った要求 0 件)。
 
