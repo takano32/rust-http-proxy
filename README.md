@@ -2532,7 +2532,7 @@ curl -x localhost:8080 http://example.com/
 (イメージには元から入りませんが、ビルドコンテキストとして daemon へ送ると
 `cargo build` 済みの作業ツリーでは 1 GB を超えて遅くなるため。除いたコンテキストは約 2 MB)。
 
-タグ `v*` を push すると `.github/workflows/release.yml` が x86_64 / aarch64 の
+タグ `v*` を push すると (か `release` を `workflow_dispatch` で起動してタグを打たせると。「運用」の 0) `.github/workflows/release.yml` が x86_64 / aarch64 の
 バイナリ (glibc 2.35 以上) を作って Release に添付します。
 
 ### musl 静的リンクを採らない理由 (実測)
@@ -3113,25 +3113,45 @@ TTL を過ぎた / `warm_stale` = **warm なのにミスした** = 裏の引き�
 ## 運用 (置いた先での手順と、そのあと見るもの)
 
 新しい版を置いたあと**いつ何を見ればよいか**を 1 か所にまとめたものです。
-数字の出どころと期待値は `TODO.md` の「再デプロイの手引き」にあります。
+手順の決まりは `TODO.md` の §0 の 9 (再デプロイの直前と直後に雪像を撮る) と `TASKS.md` の「決まり」(版・タグ・締め)、数字の出どころと期待値は締め (`tasks/TNN.md` の `Tn.99`) の結果にあります。
 
-### 0. リリース (`v*` のタグを打つ前)
+### 0. リリース (版をそろえてタグを打つ)
 
-版は**デプロイの番号**です。タスクの作業中は上げず、**デプロイの直前に 1 回だけ**そろえてからタグを打ちます (T.26.3)。
+版は**そのクレートの中身を最後に変えたタスクの番号** `0.<タスク>.<番号>` です (T.21.6。2026-10-23 に T.26.3 の「デプロイの番号」を撤回して戻しました)。
+小タスクを済ませるたびに、そのタスクの番号で中身が変わったクレートだけを上げ、本体と `proxy-server` は全クレートの最大にそろえます。
+**デプロイの版 (= タグ) はデプロイに入れた中でいちばん大きいタスクの番号**です。
 
 ```bash
-scripts/crate-versions.py --check           # 0 なら決まりに合う (中身が変わったクレートの数も印字する)
-scripts/crate-versions.py --task T.19.1      # 分かれ目から中身が変わったクレートを 0.19.1 にし、本体を最大に (Cargo.lock も)
-scripts/crate-versions.py --check           # 「中身が変わったクレート: 0 個」になったら、それをコミットしてタグを打つ
-scripts/crate-versions.py --list            # クレートごとに 今の版・中身を最後に変えたコミット・版の行を書いたコミット
-git tag v0.26.0                             # タグは本体の版
+scripts/crate-versions.py --check            # 0 なら決まりに合う (本体 = 全クレートの最大、タグの上では本体 = タグ)
+scripts/crate-versions.py --task T.27.8      # 分かれ目から中身が変わったクレートを 0.27.8 にし、本体を最大に (Cargo.lock も)
+scripts/crate-versions.py --list             # クレートごとに 今の版・中身を最後に変えたコミット・版の行を書いたコミット
 ```
 
-`--check` は (a) 全クレートの版 = 本体の版、(b) タグの上では本体の版 = タグ、を見ます。**中身が変わったことでは落ちません** —
-デプロイ前は中身が変わっているのが普通だからで、代わりに「前回のデプロイから中身が変わったクレート: N 個」を印字して `--deploy` を案内します。
-`--task` (タスクごとの bump) は T.26.3 で廃止しました。
+**タグは `release.yml` の `workflow_dispatch` で打ちます** (2026-10-24 から)。GitHub の Actions の画面 (か GitHub の API・ツール) で
+`release` を **入力 `version` = 本体の版 (`0.27.8` のように `v` は付けない)** で起動すると、workflow の中で本体の版と
+`crate-versions.py --check` を確かめ、注釈付きのタグ `v<版>` を `main` の先頭に打って push し、そのタグで x86_64 と aarch64 を
+`dist` プロファイル (fat LTO) でビルドして release に載せます。すでに同じタグがあれば打ち直さずに落ちます。
+手元から `git tag -a vX.Y.Z && git push origin vX.Y.Z` しても同じ release が走ります (`push: tags` の口)。
+タグは**デプロイの合図の直前**に打ちます (前に打って取り消したことがあるため)。
 
-`ci.yml` と `release.yml` も同じ `--check` を回し、合わなければ名前と理由を出して落ちます (タグの上では、本体の版がタグと同じかも見ます)。
+`ci.yml` と `release.yml` は同じ `--check` を回し、合わなければ名前と理由を出して落ちます。
+
+### 0.5 置く (release のバイナリを使うとき)
+
+```bash
+V=0.27.8; T=x86_64-unknown-linux-gnu         # aarch64 なら aarch64-unknown-linux-gnu
+curl -fLo rust-http-proxy "https://github.com/takano32/rust-http-proxy/releases/download/v$V/rust-http-proxy-$T"
+curl -fLo rust-http-proxy.sha256 "https://github.com/takano32/rust-http-proxy/releases/download/v$V/rust-http-proxy-$T.sha256"
+sed "s/ .*/  rust-http-proxy/" rust-http-proxy.sha256 | sha256sum -c   # v0.27.8 までの release には .sha256 がありません
+chmod +x rust-http-proxy
+./rust-http-proxy -V                         # rust-http-proxy 0.27.8+<コミット> と出ることを確かめる
+./rust-http-proxy --check; echo "exit=$?"    # 下の 1 へ
+./rust-http-proxy -p "$SERVER_PORT"          # Pterodactyl では SERVER_PORT が割り当てのポート
+```
+
+release のバイナリは ubuntu-22.04 (glibc 2.35) でビルドしているので、それより新しい glibc の環境で動きます。
+ソースからビルドするときは `cargo build --release` (`release` プロファイル。fat LTO の `dist` よりビルドのメモリが少なくて済み、
+速さは数 % 劣ります。「ビルド・テスト」の節)。
 
 ### 1. 置く前 (`--check`)
 

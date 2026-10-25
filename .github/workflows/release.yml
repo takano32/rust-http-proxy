@@ -94,9 +94,14 @@ jobs:
         # 配布用は LTO ありの dist プロファイル (速さとバイナリの小ささを優先)
         run: cargo build --profile dist --target ${{ matrix.target }}
       - name: Rename
-        run: cp target/${{ matrix.target }}/dist/rust-http-proxy rust-http-proxy-${{ matrix.target }}
+        run: |
+          cp target/${{ matrix.target }}/dist/rust-http-proxy rust-http-proxy-${{ matrix.target }}
+          # 取り寄せた側が確かめられるように、ターゲットごとに SHA-256 を 1 行のファイルで添える (T.28.22)
+          sha256sum rust-http-proxy-${{ matrix.target }} > rust-http-proxy-${{ matrix.target }}.sha256
       - uses: softprops/action-gh-release@v3
         with:
           # workflow_dispatch では github.ref がブランチなので、打ったタグを名指しする
           tag_name: ${{ needs.tag.outputs.tag || github.ref_name }}
-          files: rust-http-proxy-${{ matrix.target }}
+          files: |
+            rust-http-proxy-${{ matrix.target }}
+            rust-http-proxy-${{ matrix.target }}.sha256
