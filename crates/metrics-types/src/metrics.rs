@@ -402,7 +402,11 @@ impl ErrCause {
             K::NetworkUnreachable | K::HostUnreachable | K::AddrNotAvailable => {
                 ErrCause::Unreachable
             }
-            K::TimedOut => ErrCause::Timeout,
+            // ブロッキングの読み書きに `SO_RCVTIMEO` / `SO_SNDTIMEO` を当てていると、Linux では
+            // 締め切りが切れたときに `WouldBlock` (EAGAIN = os error 11) が返る (T.28.5。
+            // 今までは `other` に数えていた)。ここを通るのは終端のエラーだけなので、
+            // 非ブロッキングの「まだ読めない」が紛れ込むことはない
+            K::TimedOut | K::WouldBlock => ErrCause::Timeout,
             K::ConnectionReset | K::ConnectionAborted | K::BrokenPipe | K::UnexpectedEof => {
                 ErrCause::Reset
             }

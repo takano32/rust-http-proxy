@@ -3132,7 +3132,10 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 `loop` は自分の `Via` が付いて `508` で閉じたもの。**複数の候補を並行に試して (Happy Eyeballs)
 締め切りまで 1 本も確立できなかったときは `timeout`** です — 2026-09-18 より前は、その間に 1 本だけ先に
 返ってきた `ECONNREFUSED` などが最後のエラーとして残り、締め切りいっぱい待った接続が `refused` に
-数えられていました。T.15.0 (3))、**`rtt_ms`** (`{"avg":…,"min":…,"samples":N}`。
+数えられていました。T.15.0 (3)。**オリジンの応答を `PROXY_TIMEOUT_SECS` 待っても先頭が届かなかったときも
+`timeout`** で、ログは `origin response timed out after N s` です — 0.27.8 までは Linux の締め切りが返す
+`EAGAIN` を `other` に数え、`failed to read origin response: Resource temporarily unavailable (os error 11)`
+と出していました。T.28.5)、**`rtt_ms`** (`{"avg":…,"min":…,"samples":N}`。
 カーネルの平滑化 RTT (`TCP_INFO`)。標本は**接続 1 本の終わりに 1 つ**なので `timed` (要求数) とは数が合いません。
 1 本も閉じていなければ `null`) と **`retrans`** (その接続たちが再送したセグメントの通算)、
 **`sni_mismatch`** (そのホスト宛ての CONNECT で、宛先のホストと覗いた SNI が食い違った本数。

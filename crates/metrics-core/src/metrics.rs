@@ -2168,6 +2168,13 @@ mod latency_tests {
         assert_eq!(c(ErrorKind::NetworkUnreachable), ErrCause::Unreachable);
         assert_eq!(c(ErrorKind::HostUnreachable), ErrCause::Unreachable);
         assert_eq!(c(ErrorKind::TimedOut), ErrCause::Timeout);
+        // `SO_RCVTIMEO` の締め切りは Linux では EAGAIN で返る (T.28.5)
+        assert_eq!(c(ErrorKind::WouldBlock), ErrCause::Timeout);
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            ErrCause::from_io(&Error::from_raw_os_error(11)),
+            ErrCause::Timeout
+        );
         assert_eq!(c(ErrorKind::ConnectionReset), ErrCause::Reset);
         assert_eq!(c(ErrorKind::BrokenPipe), ErrCause::Reset);
         assert_eq!(c(ErrorKind::NotFound), ErrCause::Dns);

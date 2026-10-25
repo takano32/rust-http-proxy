@@ -902,7 +902,22 @@ pub fn handle_http_with_headers(
                 return Ok(false);
             }
             Err(e) => {
-                log_warn!(Some(conn_id), "failed to read origin response: {}", e);
+                // オリジンの読み書きはブロッキング + `SO_RCVTIMEO` / `SO_SNDTIMEO` なので、
+                // Linux では締め切りが切れると `WouldBlock` (EAGAIN) が返る。そのまま出すと
+                // "Resource temporarily unavailable (os error 11)" になって締め切りと読めないので、
+                // 言い換える (原因の数え方は `ErrCause::from_io` が `timeout` に寄せる。T.28.5)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) {
+                    log_warn!(
+                        Some(conn_id),
+                        "origin response timed out after {} s",
+                        origin_timeout.as_secs_f64()
+                    );
+                } else {
+                    log_warn!(Some(conn_id), "failed to read origin response: {}", e);
+                }
                 // 応答を読む途中の失敗も同じ分け方 (T25.0)。DNS はここまで来ないが、
                 // `cause` と `dns_cause` を 1 か所で決めておくと組み合わせがずれない
                 let failure = Failure::from_io(&e);
