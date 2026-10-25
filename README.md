@@ -3227,6 +3227,15 @@ forward が `queue` / `client_read` / `origin` / `send` / `ttfb` / `body` で、
 | `/history` | `key_kinds` | `keys` と同じ長さで、列ごとの読み方 (`cumulative` = 通算 / `delta` = 区間 / `gauge` / `peak` / `buckets`) |
 | `/healthz` | `checks.cpu` | 直近 5 分に絞られた期間の割合。**起動から 5 分に満たない間は `null`** |
 
+### 3.5 ふだんの見張り (`watch.yml`)
+
+`.github/workflows/watch.yml` が **1 時間に 1 回** (毎時 17 分) `scripts/watch-deployed.py tokyo.sorahost.net:60357` を回し、
+`/healthz` が ok でない・直近 75 分に**無言の再起動** (直前に `shutdown` の無い `start`) がある・口が読めない、のどれかで
+job を落とします (GitHub が失敗を知らせます。T.28.26)。読むのは `/healthz`・`/events?n=200`・`/status?hosts=0` の 3 つだけで、
+**実行ログには結論・版・起動からの時間・落ちた検査の名前しか出しません** (リポジトリは public で、Actions のログは誰でも読めるため)。
+別の置き先を見るときは Actions の画面から `workflow_dispatch` の `target` に `host:port` を渡します。手元からは
+`scripts/watch-deployed.py HOST:PORT` (CONNECT しか通さないプロキシの内側からは届きません)。
+
 ### 4. 24 時間後
 
 ```bash

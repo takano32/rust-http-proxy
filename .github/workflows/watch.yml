@@ -1,0 +1,33 @@
+name: watch
+
+# デプロイ先の最小の見張り (T.28.26。2026-10-25)。いままで tokyo の `/healthz` も `/metrics` も誰も読んでおらず、
+# 異常に気づく経路は締めで人が雪像を読むときだけだった (無言の再起動 2 回も利用者に聞いて分かった、T.23.99)。
+# 1 時間に 1 回、読む口だけを引いて、`/healthz` が ok でない・直近 75 分に無言の再起動 (直前に `shutdown` の
+# 無い `start`) がある、のどちらかで job を落とす (GitHub が失敗を知らせる)。
+# **このリポジトリは public なので、実行ログに雪像・個票・接続元・宛先を一切出さない** (結論と版と uptime だけ)。
+# 書き換える口 (`/purge` など) と探り (プロキシとしての要求) は送らない。
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "見る先 (host:port)。既定はデプロイ先"
+        required: false
+        default: tokyo.sorahost.net:60357
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+      - name: Look at /healthz and /events
+        env:
+          TARGET: ${{ inputs.target || 'tokyo.sorahost.net:60357' }}
+        run: python3 scripts/watch-deployed.py "$TARGET"
