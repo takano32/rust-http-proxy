@@ -186,6 +186,10 @@ fn revalidate(
         // オリジン側の問題: 古い表現は残す
         return Ok("origin error, stale kept");
     }
+    // 最後が chunked でない TE (T.28.1): 区切りがオリジンと食い違いうるので保存し直さない
+    if framing == Framing::Close && Framing::response_has_transfer_encoding(&rhead) {
+        return Ok("unframed Transfer-Encoding, stale kept");
+    }
     let Some(p) = freshness::response_policy(status, &rheaders, cfg, now) else {
         cache.remove(key);
         return Ok("not cacheable any more, removed");

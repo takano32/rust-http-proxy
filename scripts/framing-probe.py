@@ -17,6 +17,9 @@
 名前とコロンの間の空白・値の CR / NUL (400)、`Transfer-Encoding` の最後が chunked でない・2 回・
 HTTP/1.0 (400)、応答の値の CR / NUL (SP に置き換えて返す)、`Max-Forwards`・userinfo・fragment・
 版・CONNECT のポート・壊れた chunk。0.27.1 ではこの節の行が外れる。
+
+2026-10-25 に応答の `Transfer-Encoding` (最後が chunked でない) + `Content-Length` を足した (T.28.1):
+CL を捨てて閉じるまでを本文にする。chunked + CL は今までどおり chunked。0.27.8 では前の行が外れる。
 """
 import argparse
 import json
@@ -105,9 +108,21 @@ def t27_response_cases(origin_port):
         head = resp.split(b"\r\n\r\n", 1)[0]
         return b"\x00" not in head and head.count(b"\r") == head.count(b"\r\n")
 
+    def until_close(resp):
+        # T.28.1: CL を捨てて閉じるまでを本文にする (再 chunk なので CL は付かない)
+        head, _, body = resp.partition(b"\r\n\r\n")
+        return b"content-length" not in head.lower() and b"helloEXTRA" in body
+
+    def chunked_wins(resp):
+        # chunked と CL が両方なら今までどおり chunked (余分な "EXTRA" は本文に入らない)
+        head, _, body = resp.partition(b"\r\n\r\n")
+        return b"content-length" not in head.lower() and body == b"5\r\nhello\r\n0\r\n\r\n"
+
     return [
         ("応答の値の CR", get(b"/resp-cr"), 200, clean),
         ("応答の値の NUL", get(b"/resp-nul"), 200, clean),
+        ("応答の TE: gzip + CL", get(b"/resp-te-cl"), 200, until_close),
+        ("応答の chunked + CL", get(b"/resp-chunked-cl"), 200, chunked_wins),
     ]
 
 
@@ -145,6 +160,14 @@ class _Origin(socketserver.StreamRequestHandler):
             if " /resp-cr " in lines[0] or " /resp-nul " in lines[0]:
                 bad = b"X-A: a\rSet-Cookie: evil=1" if "/resp-cr" in lines[0] else b"X-A: a\x00b"
                 self.wfile.write(b"HTTP/1.1 200 OK\r\n" + bad + b"\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                return
+            # T.28.1: 最後が chunked でない TE と CL を一緒に返し、CL の後ろにも続ける
+            if " /resp-te-cl " in lines[0]:
+                self.wfile.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\nhelloEXTRA")
+                return
+            if " /resp-chunked-cl " in lines[0]:
+                self.wfile.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n"
+                                 b"Connection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\nEXTRA")
                 return
             # 本文がまだ届き切っていなければ少し待つ (`Content-Length` か chunked の終わりまで)
             lower = head.lower()
@@ -293,7 +316,7 @@ def main(argv=None):
             if not ok:
                 failed += 1
             print("%-28s %-8s %-8s %s%s" % (name, got if got is not None else "(無応答)", want,
-                                            "値は SP に置き換わった" if ok else repr(resp[:60]),
+                                            "期待どおり" if ok else repr(resp[:60]),
                                             "" if ok else "   ← ちがう"))
 
         # CONNECT は `http` の経路を通らないので別に見る (T.19.8)

@@ -129,6 +129,10 @@ T.27.9 で 2026-10-24 に見つけた形も足しました (要求 19 通り・�
 TRACE / OPTIONS は自分で応え 0 でなければ 1 減らす・URI の userinfo は 400・`#fragment` は落とす・`HTTP/1.x` でない版は 505・
 CONNECT のポートなし / 0 は 400・読めない chunk の大きさは 400 (T.27.8)。0.27.1 ではこのうち 24 行が外れます
 (値の CR で区切りがずれたオリジンの接続がプールに戻り、次の無関係な要求まで無応答になる形も出ます)。
+応答の 2 形も足しました (T.28.1): オリジンが**最後が `chunked` でない `Transfer-Encoding`** (`gzip`・`xchunked` など) と
+`Content-Length` を一緒に返したら、CL を捨てて**接続が閉じるまでを本文**にし (RFC 9112 §6.3)、オリジンの接続は
+使い回さず、キャッシュにも保存しません (0.27.8 までは CL で区切って TE を落とし、接続を使い回して保存もしていました)。
+`chunked` と CL が両方なら今までどおり `chunked` です。
 
 **1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T.14.4)。`/snapshot` を
 `DIR/<UTC 時刻>-snapshot.json` (既定はリポジトリの `status/`。`.gitignore` 済み) に保存し、要点

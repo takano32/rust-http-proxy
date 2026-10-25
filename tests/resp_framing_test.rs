@@ -13,6 +13,8 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -64,6 +66,11 @@ fn start_scripted_origin() -> u16 {
                           \r\n5\r\nhello\r\n0\r\n\r\n"
                             .to_vec()
                     }
+                    // 正常: chunked と CL が両方 (chunked で読む。T.28.1 で変えない形)
+                    "/chunked-cl" => b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\
+                          Content-Length: 3\r\nConnection: close\r\n\
+                          \r\n5\r\nhello\r\n0\r\n\r\n"
+                        .to_vec(),
                     // 壊れている: 重複した CL が不一致 (5 と 6)
                     "/dup" => b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\
                           Connection: close\r\n\r\nhello"
@@ -316,4 +323,110 @@ fn test_integration_truncated_large_body_closes_the_connection() {
     // クライアントは「閉じたのに足りない」で切れたと分かる
     assert_eq!(cl, Some(40000), "{:?}", head);
     assert_eq!(body.len(), 1000, "届いた本文: {}", body.len());
+}
+
+/// 最後が chunked でない `Transfer-Encoding` と `Content-Length` を一緒に返し、
+/// 本文の後ろに余分なバイトを続けるオリジン (T.28.1)。
+///
+/// 応答を書いたあと 300 ms は同じ接続で次の要求を待ち、来れば同じ接続で答える
+/// (= プロキシが接続を使い回すと 1 本で済む)。来なければ閉じる。
+/// 返すのは (port, 接続の本数, 要求の本数)。
+fn start_te_cl_origin(te: &'static str) -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let conns = Arc::new(AtomicUsize::new(0));
+    let reqs = Arc::new(AtomicUsize::new(0));
+    let (c, r) = (Arc::clone(&conns), Arc::clone(&reqs));
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            c.fetch_add(1, Ordering::SeqCst);
+            let r = Arc::clone(&r);
+            thread::spawn(move || {
+                let mut wait = 2000;
+                loop {
+                    stream
+                        .set_read_timeout(Some(Duration::from_millis(wait)))
+                        .unwrap();
+                    wait = 300;
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match stream.read(&mut chunk) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    r.fetch_add(1, Ordering::SeqCst);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nTransfer-Encoding: {}\r\nContent-Length: 5\r\n\
+                         Cache-Control: max-age=60\r\n\r\nhelloEXTRA",
+                        te
+                    );
+                    if stream.write_all(resp.as_bytes()).is_err() {
+                        return;
+                    }
+                    let _ = stream.flush();
+                }
+            });
+        }
+    });
+    (port, conns, reqs)
+}
+
+/// **受け入れ基準 (T.28.1)**: TE (最後が chunked でない) + CL の応答は、CL を捨てて閉じるまでを
+/// 本文として返す。オリジンへの接続は使い回さず (3 要求で 3 本)、キャッシュにも入らない。
+#[test]
+fn test_integration_unchunked_transfer_encoding_reads_until_close() {
+    for te in ["gzip", "xchunked", "cheese", "chunked, gzip"] {
+        let (origin_port, conns, reqs) = start_te_cl_origin(te);
+        let dir = format!("shp-it-te-cl-{}", te.replace([',', ' '], "-"));
+        let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg(&dir));
+        for round in 0..3 {
+            let resp = get(proxy_port, origin_port, "/te");
+            let (head, _, body) = split_response(&resp);
+            assert!(
+                head.starts_with("HTTP/1.1 200 "),
+                "{} {}: {:?}",
+                te,
+                round,
+                resp
+            );
+            assert!(
+                !head.contains("X-Cache"),
+                "{} {}: 保存された: {:?}",
+                te,
+                round,
+                head
+            );
+            // HTTP/1.1 のクライアントへは再 chunk で、本文は閉じるまで (CL の 5 B で切らない)
+            assert!(
+                head.contains("\r\nTransfer-Encoding: chunked"),
+                "{} {}: {:?}",
+                te,
+                round,
+                head
+            );
+            assert!(
+                !head.contains("Content-Length"),
+                "{} {}: {:?}",
+                te,
+                round,
+                head
+            );
+            assert_eq!(body, "a\r\nhelloEXTRA\r\n0\r\n\r\n", "{} {}", te, round);
+        }
+        assert_eq!(reqs.load(Ordering::SeqCst), 3, "{}", te);
+        assert_eq!(conns.load(Ordering::SeqCst), 3, "{}: 接続を使い回した", te);
+    }
+}
+
+/// chunked と CL が両方なら今までどおり chunked (1 バイトも変わらない)。
+#[test]
+fn test_integration_chunked_with_content_length_is_unchanged() {
+    let origin_port = start_scripted_origin();
+    let proxy_port = start_test_proxy(proxy_config());
+    assert_eq!(
+        get(proxy_port, origin_port, "/chunked-cl"),
+        get(proxy_port, origin_port, "/chunked"),
+    );
 }

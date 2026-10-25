@@ -956,6 +956,16 @@ pub fn handle_http_with_headers(
     let origin_reusable = head.starts_with(b"HTTP/1.1")
         && framing != Framing::Close
         && !headers::response_names(&head, "connection", "close");
+    // 最後が chunked でない `Transfer-Encoding` の応答 (T.28.1)。閉じるまでを本文にして返すが、
+    // 区切りがオリジンと食い違っているかもしれないので保存しない (接続は上で使い回さない)。
+    // 見分けるのは閉じるまでの応答のときだけ (CL / chunked の熱い経路では先頭をなめ直さない)
+    let unframed_te = framing == Framing::Close && Framing::response_has_transfer_encoding(&head);
+    if unframed_te {
+        log_debug!(
+            Some(conn_id),
+            "response Transfer-Encoding does not end in chunked: reading until close, not caching"
+        );
+    }
 
     // 304: 保存済みの表現がまだ有効。延命して配信する
     if status == 304
@@ -990,7 +1000,7 @@ pub fn handle_http_with_headers(
     }
 
     // ---- 配信しつつ保存 ----
-    let policy = if store_allowed {
+    let policy = if store_allowed && !unframed_te {
         freshness::response_policy(status, &headers::response_pairs(&head), cfg, now)
     } else {
         None

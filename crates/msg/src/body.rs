@@ -32,6 +32,33 @@ fn content_length_value(v: &str) -> Option<u64> {
     v.parse::<u64>().ok()
 }
 
+/// `Transfer-Encoding` の並びを読んだ結果 (T.28.1)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Te {
+    /// `Transfer-Encoding` が無い (空の値の行しか無い場合も含む)
+    Absent,
+    /// 最後の符号化が `chunked`
+    Chunked,
+    /// あるが、最後の符号化が `chunked` でない (`gzip`・`xchunked`・`chunked, gzip` など)
+    Unchunked,
+}
+
+impl Te {
+    /// 1 行ぶんの値を足す。複数の行は 1 つの並びとして読み、空の要素は読み飛ばす
+    /// (要求側の T.27.6 と同じ読み方)。決めるのは「並び全体の最後の符号化」。
+    fn add(self, value: &str) -> Te {
+        match value
+            .rsplit(',')
+            .map(str::trim_ascii)
+            .find(|t| !t.is_empty())
+        {
+            Some(t) if t.eq_ignore_ascii_case("chunked") => Te::Chunked,
+            Some(_) => Te::Unchunked,
+            None => self,
+        }
+    }
+}
+
 impl Framing {
     /// レスポンスの枠組み。`head_only` は HEAD への応答など本文が来ないケース。
     pub fn of_response(status: u16, head_only: bool, headers: &[(String, String)]) -> Framing {
@@ -47,20 +74,32 @@ impl Framing {
         if head_only || (100..200).contains(&status) || status == 204 || status == 304 {
             return Framing::None;
         }
+        let mut te = Te::Absent;
         let mut length = None;
         for (k, v) in crate::headers::response_lines(head) {
             if k.eq_ignore_ascii_case("transfer-encoding") {
-                if v.split(',')
-                    .next_back()
-                    .is_some_and(|t| t.trim_ascii().eq_ignore_ascii_case("chunked"))
-                {
-                    return Framing::Chunked;
-                }
+                te = te.add(v);
             } else if k.eq_ignore_ascii_case("content-length") {
                 length = v.trim_ascii().parse::<u64>().ok();
             }
         }
-        length.map(Framing::Length).unwrap_or(Framing::Close)
+        match te {
+            Te::Chunked => Framing::Chunked,
+            // 最後が chunked でない TE は、CL があっても閉じるまでが本文 (RFC 9112 §6.3。T.28.1)
+            Te::Unchunked => Framing::Close,
+            Te::Absent => length.map(Framing::Length).unwrap_or(Framing::Close),
+        }
+    }
+
+    /// 応答の先頭に (空でない値の) `Transfer-Encoding` の行があるか (T.28.1)。
+    ///
+    /// [`Framing::of_response_head_checked`] が [`Framing::Close`] を返したときだけ呼ぶ
+    /// (「CL も TE も無い」のか「最後が chunked でない TE」なのかを見分ける。後者は
+    /// 区切りがオリジンと食い違いうるので保存しない)。熱い経路 (CL / chunked) では呼ばれない。
+    pub fn response_has_transfer_encoding(head: &[u8]) -> bool {
+        crate::headers::response_lines(head).any(|(k, v)| {
+            k.eq_ignore_ascii_case("transfer-encoding") && Te::Absent.add(v) != Te::Absent
+        })
     }
 
     /// [`Framing::of_response_head`] に `Content-Length` の検査を足した版 (T19.5)。
@@ -73,20 +112,28 @@ impl Framing {
     /// **本文を持たない応答 (1xx / 204 / 304 / HEAD) でも CL は検査する**: 枠組みは
     /// 今までどおり [`Framing::None`] だが、HEAD はオリジンの `Content-Length` をそのまま
     /// 転送するので、壊れた値を素通ししない。
+    ///
+    /// **最後の符号化が chunked でない `Transfer-Encoding`** (`gzip`・`xchunked` など) は、
+    /// 本文を持つ応答なら CL を見ずに [`Framing::Close`] (RFC 9112 §6.3。T.28.1)。
+    /// 以前は CL で区切って TE を落とし、オリジンの接続を使い回して保存もしていた
+    /// (CL の後ろに続けたバイトが次の応答として読まれうる)。
     pub fn of_response_head_checked(
         status: u16,
         head_only: bool,
         head: &[u8],
     ) -> Result<Framing, BadLength<'_>> {
-        // chunked が来ていれば CL は見ない (RFC 9112 §6.3。今までの優先順位のまま)
-        let chunked = crate::headers::response_lines(head).any(|(k, v)| {
-            k.eq_ignore_ascii_case("transfer-encoding")
-                && v.split(',')
-                    .next_back()
-                    .is_some_and(|t| t.trim_ascii().eq_ignore_ascii_case("chunked"))
-        });
-        if chunked {
-            return Ok(Framing::Chunked);
+        let no_body = head_only || (100..200).contains(&status) || status == 204 || status == 304;
+        let mut te = Te::Absent;
+        for (k, v) in crate::headers::response_lines(head) {
+            if k.eq_ignore_ascii_case("transfer-encoding") {
+                te = te.add(v);
+            }
+        }
+        match te {
+            // chunked が来ていれば CL は見ない (RFC 9112 §6.3。今までの優先順位のまま)
+            Te::Chunked => return Ok(Framing::Chunked),
+            Te::Unchunked if !no_body => return Ok(Framing::Close),
+            _ => {}
         }
         let mut length: Option<u64> = None;
         for (k, v) in crate::headers::response_lines(head) {
@@ -99,34 +146,35 @@ impl Framing {
                 _ => length = Some(n),
             }
         }
-        if head_only || (100..200).contains(&status) || status == 204 || status == 304 {
+        if no_body {
             return Ok(Framing::None);
         }
         Ok(length.map(Framing::Length).unwrap_or(Framing::Close))
     }
 
     /// リクエストの枠組み (枠が無ければ本文なし)。
+    ///
+    /// 最後が chunked でない TE の要求は、ここへ来る前に 400 で断っている (T.27.6)。
     pub fn of_request(headers: &[(String, String)]) -> Framing {
         Self::of_headers(headers).unwrap_or(Framing::None)
     }
 
     fn of_headers(headers: &[(String, String)]) -> Option<Framing> {
+        let mut te = Te::Absent;
         let mut length = None;
         for (k, v) in headers {
             match k.as_str() {
-                "transfer-encoding" => {
-                    if v.split(',')
-                        .next_back()
-                        .is_some_and(|t| t.trim().eq_ignore_ascii_case("chunked"))
-                    {
-                        return Some(Framing::Chunked);
-                    }
-                }
+                "transfer-encoding" => te = te.add(v),
                 "content-length" => length = v.trim().parse::<u64>().ok(),
                 _ => {}
             }
         }
-        length.map(Framing::Length)
+        match te {
+            Te::Chunked => Some(Framing::Chunked),
+            // 最後が chunked でない TE は CL を無視して閉じるまで (T.28.1)
+            Te::Unchunked => Some(Framing::Close),
+            Te::Absent => length.map(Framing::Length),
+        }
     }
 
     pub fn has_body(self) -> bool {
@@ -504,6 +552,37 @@ mod of_response_head_tests {
                 b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n",
                 Ok(Framing::Chunked),
             ),
+            // 最後が chunked でない TE は CL を捨てて閉じるまで (T.28.1)。CL が壊れていても見ない
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\n",
+                Ok(Framing::Close),
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nTransfer-Encoding: xchunked\r\n\r\n",
+                Ok(Framing::Close),
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\nContent-Length: 5\r\n\r\n",
+                Ok(Framing::Close),
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: cheese\r\nContent-Length: 5\r\n\r\n",
+                Ok(Framing::Close),
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: abc\r\n\r\n",
+                Ok(Framing::Close),
+            ),
+            // 複数の行は 1 つの並び: 最後の行が chunked なら chunked
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n",
+                Ok(Framing::Chunked),
+            ),
+            // 空の値の TE は無いのと同じ (今までどおり CL で区切る)
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: \r\nContent-Length: 5\r\n\r\n",
+                len(5),
+            ),
         ] {
             assert_eq!(
                 Framing::of_response_head_checked(200, false, head),
@@ -574,6 +653,26 @@ mod of_response_head_tests {
             .is_err(),
             "HEAD で壊れた CL を通した"
         );
+        // 本文を持たない応答は TE があっても `None` (CL の検査も今までどおり)
+        assert_eq!(
+            Framing::of_response_head_checked(
+                200,
+                true,
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\n"
+            ),
+            Ok(none),
+            "HEAD + TE"
+        );
+        // 見分けの口: CL だけ・TE なしの Close では偽、最後が chunked でない TE では真
+        assert!(!Framing::response_has_transfer_encoding(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"
+        ));
+        assert!(!Framing::response_has_transfer_encoding(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: \r\n\r\n"
+        ));
+        assert!(Framing::response_has_transfer_encoding(
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: cheese\r\n\r\n"
+        ));
     }
 
     /// 生の先頭から決める版が、組を作ってから決める版と同じ結果になること。
@@ -587,6 +686,10 @@ mod of_response_head_tests {
             b"HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n",
             b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
             b"HTTP/1.1 200 OK\r\n\r\n",
+            // T.28.1: 最後が chunked でない TE と CL
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n",
         ];
         for head in heads {
             let pairs = crate::headers::response_pairs(head);
