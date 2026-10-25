@@ -1441,7 +1441,11 @@ pub fn run_conn(mut conn: Box<Conn>) {
     // そちらは `tunnel::resume` が書く
     conn.set_tid();
     if let Err(e) = pump(conn) {
-        if e.kind() != io::ErrorKind::UnexpectedEof
+        if tunnel::is_reported(&e) {
+            // 繋がらなかった CONNECT: tunnel が 502 を書き、WARN 1 行と `/errors` の個票まで
+            // 出してある。同じ失敗を ERROR で出し直さない (T.28.4)
+            log_debug!(Some(conn_id), "connection ended: {}", e);
+        } else if e.kind() != io::ErrorKind::UnexpectedEof
             && e.kind() != io::ErrorKind::ConnectionReset
             && e.kind() != io::ErrorKind::BrokenPipe
         {

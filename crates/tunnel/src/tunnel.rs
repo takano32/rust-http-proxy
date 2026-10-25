@@ -22,6 +22,32 @@ use crate::{log_debug, log_warn};
 #[cfg(target_os = "linux")]
 pub use relay::{Idle, Park, expire, resume};
 
+/// 「502 を書いて WARN と統計まで出し終えた」失敗の印 (T.28.4)。
+///
+/// [`open`] が繋げなかったときの `io::Error` をこれで包んで返す (種類 (`kind`) と文面は
+/// 元のまま)。呼び元 (`run_conn`) は [`is_reported`] で見分け、ERROR で出し直さない。
+/// 今までは同じ失敗が WARN (宛先つき) と ERROR (宛先無し) の 2 行になり、
+/// tokyo の `/log` 1,000 行の半分がその ERROR だった。
+#[derive(Debug)]
+struct Reported(io::Error);
+
+impl std::fmt::Display for Reported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for Reported {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// tunnel がもう報告した失敗か (502 を書き、WARN と `/errors` の個票まで出してある。T.28.4)。
+pub fn is_reported(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<Reported>())
+}
+
 /// 宛先へつないで `200 Connection Established` と先読みぶんを送ったところ。
 struct Opened {
     client: TcpStream,
@@ -62,7 +88,7 @@ struct Info {
 }
 
 /// 宛先へつなぎ、`200` と先読みぶん (`prefix`) を送る。
-/// つなげなければ 502 を書き、ログと統計を出して `Err`。
+/// つなげなければ 502 を書き、ログと統計を出して `Err` ([`Reported`] で包む = 呼び元は出し直さない)。
 #[allow(clippy::too_many_arguments)]
 fn open(
     mut client: TcpStream,
@@ -157,7 +183,8 @@ fn open(
                     cache: "BYPASS",
                 },
             );
-            return Err(e);
+            // WARN と統計はここで出し終えた。呼び元が ERROR で出し直さないように印を付ける
+            return Err(io::Error::new(e.kind(), Reported(e)));
         }
     };
 
@@ -1337,6 +1364,18 @@ mod relay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reported_keeps_the_kind_and_the_message() {
+        // 呼び元は種類で EOF 系を見分け、文面は debug に出す (T.28.4)。包んでも変わらないこと
+        let inner = io::Error::new(io::ErrorKind::ConnectionRefused, "refused");
+        let e = io::Error::new(inner.kind(), Reported(inner));
+        assert!(is_reported(&e));
+        assert_eq!(e.kind(), io::ErrorKind::ConnectionRefused);
+        assert_eq!(e.to_string(), "refused");
+        assert!(!is_reported(&io::Error::other("plain")));
+        assert!(!is_reported(&io::Error::from(io::ErrorKind::TimedOut)));
+    }
 
     /// 時計より前に払った名前解決 (入口の ACL) を作る。
     fn acl_paid(ms: u64) -> u64 {
