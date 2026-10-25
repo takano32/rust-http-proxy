@@ -263,6 +263,9 @@ fn num_over(query: Option<&str>, key: &str, limit: u64) -> bool {
         .any(|(k, v)| k == key && v.parse::<u64>().is_ok_and(|n| n > limit))
 }
 
+/// ブラウザが勝手に取りに来るアイコンのパス (204 で返す。T.28.7)。口の一覧には入れない。
+const FAVICON: &str = "/favicon.ico";
+
 /// 内部エンドポイントなら応答して `Ok(true)` を返す。そうでなければ何もせず `Ok(false)`。
 pub fn handle(
     client: &mut impl Write,
@@ -286,7 +289,10 @@ pub fn handle(
         Some((p, q)) => (p, Some(q)),
         None => (local, None),
     };
-    let is_get = method.eq_ignore_ascii_case("GET");
+    // **HEAD は GET として組み、本文だけ書かない** (RFC 9110 §9.3.2: GET と同じヘッダー。T.28.7)。
+    // 外の生死監視やロードバランサは既定で HEAD を投げるものが多く、今までは全部 404 だった
+    let is_head = method.eq_ignore_ascii_case("HEAD");
+    let is_get = is_head || method.eq_ignore_ascii_case("GET");
     // **内部エンドポイントを引いた接続元を 1 行残す** (`/status` の `readers` と
     // `/readers`。T14.53)。ここまで来た要求は自分宛てと決まっているので、
     // プロキシとして通す要求 (CONNECT / forward) はこの行を 1 度も通らない
@@ -303,6 +309,9 @@ pub fn handle(
     // **読み手の記録 (T14.53) の直後**に置くので、断った要求も読み手としては数える
     // (走査が来ていることが `/readers` から読める)
     let mut heavy_busy = false;
+    // 405 に添える使えるメソッド (RFC 9110 §15.5.6。T.28.7 の 2 つの枝だけが入れる。
+    // 読み取り専用で断った書き換え (T14.18) の 405 は今までどおり何も足さない)
+    let mut allow = "";
     let heavy_guard = if is_heavy(is_get, path, query) {
         let guard = begin_heavy();
         if guard.is_none() {
@@ -333,6 +342,31 @@ pub fn handle(
         )
     } else if is_purge {
         purge_url(ep, target)
+    } else if is_head && is_write(false, path, query) {
+        // 書き換える口 (`/purge` と `/blocklist?action=`) は HEAD では**何もしない**
+        // (HEAD は安全なメソッド。GET として組むと消してしまう)
+        allow = "Allow: GET\r\n";
+        (
+            405,
+            "application/json",
+            format!(
+                "{}\"error\":\"use GET for this endpoint\"}}",
+                metrics::SCHEMA_HEAD
+            ),
+        )
+    } else if !is_get {
+        // GET / HEAD / PURGE 以外 (POST など) は 405 + `Allow: GET, HEAD` (T.28.7)。
+        // 今までは 404 と案内 2.8 KB で、「無い口」と「メソッドが違う」の区別が付かなかった
+        allow = "Allow: GET, HEAD\r\n";
+        (
+            405,
+            "application/json",
+            format!("{}\"error\":\"method not allowed\"}}", metrics::SCHEMA_HEAD),
+        )
+    } else if path == FAVICON {
+        // ダッシュボードを開くたびにブラウザが取りに来る (今までは 404 と案内 2.8 KB)。
+        // 口ではないので `/` の案内にも README にも載せない
+        (204, "", String::new())
     } else if is_get && (path == "/inspect" || path == "/inspect/" || path == "/dashboard/inspect")
     {
         // 「調査」ページ (T14.8)。`--lite` でも 200 — 個票が空でもページは開ける
@@ -514,6 +548,7 @@ pub fn handle(
     drop(heavy_guard);
     let reason = match status {
         200 => "OK",
+        204 => "No Content",
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
@@ -522,16 +557,27 @@ pub fn handle(
         503 => "Service Unavailable",
         _ => "OK",
     };
+    // 204 は `Content-Type` も `Content-Length` も送らない (RFC 9110 §8.6・§15.3.5)
+    let framing = if status == 204 {
+        String::new()
+    } else {
+        format!(
+            "Content-Type: {}\r\nContent-Length: {}\r\n",
+            content_type,
+            body.len()
+        )
+    };
     let response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Cache-Control: no-store\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {} {}\r\n{}{}{}Cache-Control: no-store\r\nConnection: close\r\n\r\n{}",
         status,
         reason,
-        content_type,
-        body.len(),
+        framing,
+        allow,
         // 重い口を断ったときだけ「1 秒後に」 (T14.51)。`/healthz` の 503 には付けない
         // (あちらは「治るまで待て」ではなく「この検査が偽」なので、目安の秒が出せない)
         if heavy_busy { "Retry-After: 1\r\n" } else { "" },
-        body
+        // HEAD は GET と同じヘッダー (`Content-Length` も GET の本文の長さ) で本文だけ書かない
+        if is_head { "" } else { body.as_str() }
     );
     client.write_all(response.as_bytes())?;
     client.flush()?;
