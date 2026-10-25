@@ -62,43 +62,43 @@ pub fn read_response_head<R: BufRead>(reader: &mut R) -> io::Result<ResponseHead
 
 /// 応答を 1 つだけ読む (1xx の読み飛ばしは呼び出し側)。
 fn read_one_response_head<R: BufRead>(reader: &mut R) -> io::Result<(Vec<u8>, u16)> {
+    // 行ごとの `String` (確保 2 回 + UTF-8 の検証 + 写し) を経由せず、`head` へ直接
+    // `read_until` で積む。読んだバイト列は今までと 1 バイトも変わらない (T.28.12)
     let mut head = Vec::with_capacity(1024);
-    let mut status_line = String::new();
-    if reader.read_line(&mut status_line)? == 0 {
+    let n = reader.read_until(b'\n', &mut head)?;
+    if n == 0 {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "origin closed before sending a status line",
         ));
     }
-    head.extend_from_slice(status_line.as_bytes());
 
     // 状態行の形を確かめる。再利用した接続に前のやり取りの読み残しがあると、それを応答として
     // 中継してしまうので、ここで弾いて再試行に落とす
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
+    let status_line = &head[..n];
+    let status = std::str::from_utf8(status_line)
+        .ok()
+        .filter(|s| s.starts_with("HTTP/1."))
+        .and_then(|s| s.split_ascii_whitespace().nth(1))
         .filter(|s| s.len() == 3)
         .and_then(|s| s.parse::<u16>().ok())
         .filter(|s| (100..600).contains(s));
-    let Some(status) = status.filter(|_| status_line.starts_with("HTTP/1.")) else {
+    let Some(status) = status else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "origin sent a malformed status line: {:?}",
-                status_line.trim_ascii()
+                String::from_utf8_lossy(status_line).trim_ascii()
             ),
         ));
     };
 
-    // 行の読み取りバッファは 1 本を使い回す (ヘッダーの数だけ String を作らない)
-    let mut line = String::new();
     loop {
-        line.clear();
-        if reader.read_line(&mut line)? == 0 {
+        let start = head.len();
+        if reader.read_until(b'\n', &mut head)? == 0 {
             break;
         }
-        head.extend_from_slice(line.as_bytes());
-        if line.trim_ascii().is_empty() {
+        if head[start..].trim_ascii().is_empty() {
             break;
         }
     }

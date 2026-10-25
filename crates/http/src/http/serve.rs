@@ -240,7 +240,7 @@ fn status_of(head: &[u8]) -> u16 {
     head.split(|b| *b == b'\n')
         .next()
         .and_then(|l| std::str::from_utf8(l).ok())
-        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|l| l.split_ascii_whitespace().nth(1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(200)
 }

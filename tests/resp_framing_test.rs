@@ -71,6 +71,10 @@ fn start_scripted_origin() -> u16 {
                           Content-Length: 3\r\nConnection: close\r\n\
                           \r\n5\r\nhello\r\n0\r\n\r\n"
                         .to_vec(),
+                    // 値に UTF-8 として読めないバイト (obs-text) がある (T.28.12 で 502 → 通す)
+                    "/obs-text" => b"HTTP/1.1 200 OK\r\nX-Name: caf\xe9\r\nContent-Length: 5\r\n\
+                          Connection: close\r\n\r\nhello"
+                        .to_vec(),
                     // 壊れている: 重複した CL が不一致 (5 と 6)
                     "/dup" => b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\
                           Connection: close\r\n\r\nhello"
@@ -440,4 +444,17 @@ fn test_integration_chunked_with_content_length_is_unchanged() {
         get(proxy_port, origin_port, "/chunked-cl"),
         get(proxy_port, origin_port, "/chunked"),
     );
+}
+
+/// 値に UTF-8 として読めないバイト (obs-text、RFC 9110 5.5) がある応答は 502 にせず、
+/// 読めないバイトを U+FFFD に置き換えて返す (T.28.12。以前は行ごとの `String` で読んでいて 502)。
+#[test]
+fn test_integration_obs_text_in_a_response_header_is_relayed() {
+    let origin = start_scripted_origin();
+    let proxy = start_test_proxy(proxy_config());
+    let resp = get(proxy, origin, "/obs-text");
+    assert!(resp.starts_with("HTTP/1.1 200 OK\r\n"), "{:?}", resp);
+    let (head, cl, body) = split_response(&resp);
+    assert!(head.contains("\r\nX-Name: caf\u{FFFD}\r\n"), "{:?}", head);
+    assert_eq!((cl, body), (Some(5), "hello"));
 }

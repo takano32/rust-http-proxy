@@ -122,34 +122,52 @@ impl Framing {
         head_only: bool,
         head: &[u8],
     ) -> Result<Framing, BadLength<'_>> {
+        Self::of_response_head_checked_with_close(status, head_only, head).0
+    }
+
+    /// [`Framing::of_response_head_checked`] と「`Connection` が `close` を挙げているか」を
+    /// **1 回の走査**で返す (T.28.12。forward の経路は枠組み・CL の検査・`Connection` で 3 回なめていた)。
+    pub fn of_response_head_checked_with_close(
+        status: u16,
+        head_only: bool,
+        head: &[u8],
+    ) -> (Result<Framing, BadLength<'_>>, bool) {
         let no_body = head_only || (100..200).contains(&status) || status == 204 || status == 304;
         let mut te = Te::Absent;
+        let mut length: Option<u64> = None;
+        let mut bad: Option<BadLength<'_>> = None;
+        let mut close = false;
         for (k, v) in crate::headers::response_lines(head) {
             if k.eq_ignore_ascii_case("transfer-encoding") {
                 te = te.add(v);
+            } else if k.eq_ignore_ascii_case("content-length") {
+                // 最初の不正な値で止める (重複して不一致・数字でない・負・桁あふれ)
+                if bad.is_none() {
+                    match (length, content_length_value(v)) {
+                        (_, None) => bad = Some(BadLength(v)),
+                        (Some(prev), Some(n)) if prev != n => bad = Some(BadLength(v)),
+                        (_, Some(n)) => length = Some(n),
+                    }
+                }
+            } else if k.eq_ignore_ascii_case("connection")
+                && v.split(',')
+                    .any(|t| t.trim_ascii().eq_ignore_ascii_case("close"))
+            {
+                close = true;
             }
         }
-        match te {
+        let framing = match te {
             // chunked が来ていれば CL は見ない (RFC 9112 §6.3。今までの優先順位のまま)
-            Te::Chunked => return Ok(Framing::Chunked),
-            Te::Unchunked if !no_body => return Ok(Framing::Close),
-            _ => {}
-        }
-        let mut length: Option<u64> = None;
-        for (k, v) in crate::headers::response_lines(head) {
-            if !k.eq_ignore_ascii_case("content-length") {
-                continue;
-            }
-            let n = content_length_value(v).ok_or(BadLength(v))?;
-            match length {
-                Some(prev) if prev != n => return Err(BadLength(v)),
-                _ => length = Some(n),
-            }
-        }
-        if no_body {
-            return Ok(Framing::None);
-        }
-        Ok(length.map(Framing::Length).unwrap_or(Framing::Close))
+            Te::Chunked => Ok(Framing::Chunked),
+            // 最後が chunked でない TE は CL を見ずに閉じるまで (T.28.1)
+            Te::Unchunked if !no_body => Ok(Framing::Close),
+            _ => match bad {
+                Some(b) => Err(b),
+                None if no_body => Ok(Framing::None),
+                None => Ok(length.map(Framing::Length).unwrap_or(Framing::Close)),
+            },
+        };
+        (framing, close)
     }
 
     /// リクエストの枠組み (枠が無ければ本文なし)。
@@ -318,6 +336,10 @@ impl<R: BufRead> Read for BodyReader<'_, R> {
 
 /// 本文を読み捨てる (転送しないリクエスト本文など)。
 pub fn drain<R: BufRead>(inner: &mut R, framing: Framing) -> io::Result<u64> {
+    // 本文が無いなら読まない (`io::copy` は 8 KiB の置き場を毎回ゼロ埋めする。T.28.12)
+    if framing == Framing::None {
+        return Ok(0);
+    }
     let mut reader = BodyReader::new(inner, framing);
     io::copy(&mut reader, &mut io::sink())
 }

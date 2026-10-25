@@ -125,7 +125,7 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 確かめと、次の退行の見張りに使えます。
 T.27.9 で 2026-10-24 に見つけた形も足しました (要求 19 通り・応答 2 通り・CONNECT 4 通り): 名前とコロンの間の空白と
 値の CR / NUL は 400 (T.27.5)、`Transfer-Encoding` の最後がちょうど 1 回の `chunked` でない・HTTP/1.0 の TE は 400
-(`gzip, chunked` は通る。T.27.6)、応答の値の CR / NUL は SP に置き換えて返す (T.27.7)、`Max-Forwards: 0` の
+(`gzip, chunked` は通る。T.27.6)、応答の値の CR / NUL は SP に置き換えて返す (T.27.7。値に UTF-8 として読めないバイト (obs-text) のある応答も、0.28.12 からは 502 にせずそのバイトを U+FFFD にして返す。T.28.12)、`Max-Forwards: 0` の
 TRACE / OPTIONS は自分で応え 0 でなければ 1 減らす・URI の userinfo は 400・`#fragment` は落とす・`HTTP/1.x` でない版は 505・
 CONNECT のポートなし / 0 は 400・読めない chunk の大きさは 400 (T.27.8)。0.27.1 ではこのうち 24 行が外れます
 (値の CR で区切りがずれたオリジンの接続がプールに戻り、次の無関係な要求まで無応答になる形も出ます)。

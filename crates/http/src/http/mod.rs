@@ -453,7 +453,7 @@ pub fn handle_http_with_headers(
         return Ok(false);
     }
 
-    let mut parts = request_line.split_whitespace();
+    let mut parts = request_line.split_ascii_whitespace();
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
         log_warn!(
             Some(conn_id),
@@ -997,15 +997,21 @@ pub fn handle_http_with_headers(
             request_body_bytes
         );
     }
-    for (k, v) in headers::response_lines(&head) {
-        log_trace!(Some(conn_id), "res header  {}: {}", k, v);
+    // trace が切れていれば応答の先頭をもう 1 回なめない (T.28.12)
+    if crate::log::enabled(crate::log::Level::Trace) {
+        for (k, v) in headers::response_lines(&head) {
+            log_trace!(Some(conn_id), "res header  {}: {}", k, v);
+        }
     }
 
     // 枠組みも `Connection: close` も生の先頭から直接見る (組を作らない)。
     // ついでに `Content-Length` を検査する (T19.5)。重複して不一致・数字でない・負・
     // u64 に収まらない桁数は、そのまま通すと「名乗った長さと実際に送るバイトが食い違う」
     // 応答になるので、オリジンの応答として扱わず 502 に差し替える (この接続は再利用しない)
-    let framing = match Framing::of_response_head_checked(status, head_only, &head) {
+    // 枠組みと `Connection: close` を 1 回の走査で (T.28.12)
+    let (framing, conn_close) =
+        Framing::of_response_head_checked_with_close(status, head_only, &head);
+    let framing = match framing {
         Ok(framing) => framing,
         Err(bad) => {
             log_warn!(
@@ -1022,9 +1028,7 @@ pub fn handle_http_with_headers(
             return Ok(false);
         }
     };
-    let origin_reusable = head.starts_with(b"HTTP/1.1")
-        && framing != Framing::Close
-        && !headers::response_names(&head, "connection", "close");
+    let origin_reusable = head.starts_with(b"HTTP/1.1") && framing != Framing::Close && !conn_close;
     // 最後が chunked でない `Transfer-Encoding` の応答 (T.28.1)。閉じるまでを本文にして返すが、
     // 区切りがオリジンと食い違っているかもしれないので保存しない (接続は上で使い回さない)。
     // 見分けるのは閉じるまでの応答のときだけ (CL / chunked の熱い経路では先頭をなめ直さない)

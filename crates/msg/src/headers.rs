@@ -199,8 +199,22 @@ pub fn write_response_head<S: AsRef<str>>(
     drop_names: &[&str],
     extra: &[S],
 ) {
-    let text = String::from_utf8_lossy(head);
-    let first = text.split('\n').next().unwrap_or("").trim_ascii();
+    // 1 回の走査で行の範囲を控え、名前の判定と書き出しはその範囲に対して行う
+    // (`split('\n')` の反復子を 2 回回していた。T.28.12)。不正な UTF-8 のときだけ写しを作る
+    let lossy;
+    let text: &str = match std::str::from_utf8(head) {
+        Ok(s) => s,
+        Err(_) => {
+            lossy = String::from_utf8_lossy(head);
+            &lossy
+        }
+    };
+    let bytes = text.as_bytes();
+    let first_end = bytes
+        .iter()
+        .position(|b| *b == b'\n')
+        .unwrap_or(bytes.len());
+    let first = text[..first_end].trim_ascii();
     match status_line {
         Some(sl) => out.extend_from_slice(sl.as_bytes()),
         None => {
@@ -214,18 +228,46 @@ pub fn write_response_head<S: AsRef<str>>(
     }
     out.extend_from_slice(b"\r\n");
 
-    // ヘッダー行は 2 回なめるが、`Vec<&str>` に集めない (要求ごとの確保を 1 つ減らす)
-    let raw = || {
-        text.split('\n')
-            .skip(1)
-            // 行末の空白 (CR を含む) は値の側で必ず落とすので、ここで落としても結果は変わらない
-            .map(|l| l.trim_ascii_end())
-            .filter(|l| !l.is_empty())
+    // 空でない行の範囲 (行末の空白は落とした形)。ふつうの応答はこの配列に収まる
+    const INLINE: usize = 48;
+    let mut inline: [(u32, u32); INLINE] = [(0, 0); INLINE];
+    let mut spill: Vec<(u32, u32)> = Vec::new();
+    let mut n_lines = 0usize;
+    let mut pos = first_end.saturating_add(1).min(bytes.len());
+    while pos < bytes.len() {
+        let end = bytes[pos..]
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(bytes.len(), |i| pos + i);
+        let mut e = end;
+        while e > pos && bytes[e - 1].is_ascii_whitespace() {
+            e -= 1;
+        }
+        if e > pos {
+            if n_lines < INLINE {
+                inline[n_lines] = (pos as u32, e as u32);
+            } else {
+                spill.push((pos as u32, e as u32));
+            }
+            n_lines += 1;
+        }
+        pos = end + 1;
+    }
+    let line_at = |i: usize| -> &str {
+        let (s, e) = if i < INLINE {
+            inline[i]
+        } else {
+            spill[i - INLINE]
+        };
+        &text[s as usize..e as usize]
     };
+
+    // `Connection:` で指名された名前 (借用のまま。溢れたら元の行を読み直す)
     let mut custom: [&str; MAX_CUSTOM_HOP] = [""; MAX_CUSTOM_HOP];
     let mut n_custom = 0usize;
     let mut overflow = false;
-    for line in raw() {
+    for i in 0..n_lines {
+        let line = line_at(i);
         if let Some((k, v)) = ascii::split_once(line, b':')
             && k.trim_ascii().eq_ignore_ascii_case("connection")
         {
@@ -251,8 +293,8 @@ pub fn write_response_head<S: AsRef<str>>(
             return true;
         }
         overflow
-            && raw().any(|line| {
-                ascii::split_once(line, b':').is_some_and(|(k, v)| {
+            && (0..n_lines).any(|i| {
+                ascii::split_once(line_at(i), b':').is_some_and(|(k, v)| {
                     k.trim_ascii().eq_ignore_ascii_case("connection")
                         && v.split(',')
                             .any(|t| t.trim_ascii().eq_ignore_ascii_case(name))
@@ -262,7 +304,8 @@ pub fn write_response_head<S: AsRef<str>>(
 
     // 折り返し (obs-fold) を畳む先。直前の行を残したときだけ、値の終わりを覚える (T19.7)
     let mut fold_at: Option<usize> = None;
-    for line in raw() {
+    for i in 0..n_lines {
+        let line = line_at(i);
         // RFC 9112 §5.2: 中継する側は obs-fold を SP 1 個に置き換えてよい (値を捨てない)
         if line.starts_with(' ') || line.starts_with('\t') {
             if let Some(pos) = fold_at {
@@ -276,10 +319,11 @@ pub fn write_response_head<S: AsRef<str>>(
             }
             continue;
         }
-        let Some((k, v)) = ascii::split_once(line, b':') else {
+        let Some(colon) = line.as_bytes().iter().position(|b| *b == b':') else {
             fold_at = None;
             continue;
         };
+        let (k, v) = (&line[..colon], &line[colon + 1..]);
         let name = k.trim_ascii();
         if is_hop_by_hop_name(name)
             || named_in_connection(name)
@@ -289,9 +333,20 @@ pub fn write_response_head<S: AsRef<str>>(
             fold_at = None;
             continue;
         }
-        out.extend_from_slice(name.as_bytes());
-        out.extend_from_slice(b": ");
-        out.extend_from_slice(clean_value(v.trim_ascii()).as_bytes());
+        let value = v.trim_ascii();
+        // 元の行がちょうど `Name: value` の形 (名前の後ろに空白なし・コロンの後ろが SP 1 個・
+        // 値に CR / NUL なし) なら、その行をそのまま 1 回で写す (結果のバイト列は同じ)
+        let plain = name.len() == colon
+            && v.as_bytes().first() == Some(&b' ')
+            && value.len() == v.len() - 1
+            && !value.bytes().any(|b| b == b'\r' || b == 0);
+        if plain {
+            out.extend_from_slice(line.as_bytes());
+        } else {
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(clean_value(value).as_bytes());
+        }
         fold_at = Some(out.len());
         out.extend_from_slice(b"\r\n");
     }
@@ -306,13 +361,23 @@ pub fn write_response_head<S: AsRef<str>>(
 ///
 /// 状態行は飛ばし、最初の空行で終わる。`Vec` も `String` も作らないので、
 /// 素通しの経路 (枠組みと `Connection` しか見ない) はこれだけで足りる。
+///
+/// 値に UTF-8 として読めないバイト (obs-text) がある行は、名前だけ読んで値を `"\u{FFFD}"` 1 字にする
+/// (T.28.12)。以前は読めない行を空行と取り違えてそこで終わり、後ろの `Content-Length` などを
+/// 見落としていた (応答の先頭を行ごとの `String` で読んでいた頃は、その前に 502 で落ちていた)。
+/// 値を読めないものとして渡すので、`Content-Length` なら 502、`Transfer-Encoding` なら閉じるまでになる。
 pub fn response_lines(head: &[u8]) -> impl Iterator<Item = (&str, &str)> {
     head.split(|b| *b == b'\n')
         .skip(1)
-        .map(|line| std::str::from_utf8(line).unwrap_or("").trim_ascii())
+        .map(|line| line.trim_ascii())
         .take_while(|line| !line.is_empty())
-        .filter_map(|line| ascii::split_once(line, b':'))
-        .map(|(k, v)| (k.trim_ascii(), v.trim_ascii()))
+        .filter_map(|line| match std::str::from_utf8(line) {
+            Ok(s) => ascii::split_once(s, b':').map(|(k, v)| (k.trim_ascii(), v.trim_ascii())),
+            Err(e) => {
+                let valid = std::str::from_utf8(&line[..e.valid_up_to()]).unwrap_or("");
+                ascii::split_once(valid, b':').map(|(k, _)| (k.trim_ascii(), "\u{FFFD}"))
+            }
+        })
 }
 
 /// 応答の先頭を「小文字の名前, 値」の組にする ([`response_lines`] を複製した形)。
@@ -537,6 +602,22 @@ pub fn sanitize_and_inject_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T.28.12: 値に UTF-8 として読めないバイトがある行で終わらず、後ろの行も読む。
+    /// 読めない値は U+FFFD 1 字 (CL なら壊れた値として扱われる)。
+    #[test]
+    fn response_lines_read_past_obs_text() {
+        let head = b"HTTP/1.1 200 OK\r\nX-Name: caf\xe9\r\nContent-Length: 5\r\n\xff\r\nContent-Length: 5\xe9\r\n\r\n";
+        let lines: Vec<(&str, &str)> = response_lines(head).collect();
+        assert_eq!(
+            lines,
+            vec![
+                ("X-Name", "\u{FFFD}"),
+                ("Content-Length", "5"),
+                ("Content-Length", "\u{FFFD}"),
+            ]
+        );
+    }
 
     /// T27.7: 応答の値の CR と NUL は SP になる。ふつうの行は 1 バイトも変わらない。
     #[test]

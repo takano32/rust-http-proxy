@@ -1658,7 +1658,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     );
 
     let request_line = std::mem::take(&mut scratch.request_line);
-    let mut parts = request_line.split_whitespace();
+    let mut parts = request_line.split_ascii_whitespace();
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
         log_warn!(
             Some(conn_id),
