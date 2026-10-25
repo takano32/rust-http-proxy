@@ -96,7 +96,24 @@ pub fn connect(
     tls: Option<&TlsClient>,
     resolved: Option<&dns::Resolved<'_>>,
 ) -> io::Result<OriginStream> {
-    let tcp = net::connect_with(server_addr, resolved, timeout)?;
+    connect_within(scheme, server_addr, host, timeout, timeout, tls, resolved)
+}
+
+/// [`connect`] の、TCP の確立だけに別の締め切り (`connect_timeout`) を当てる版 (T.28.8)。
+///
+/// forward のオリジン接続はこちらを使い、確立は `PROXY_CONNECT_TIMEOUT_SECS` (既定 5 秒)、
+/// TLS のハンドシェイクと読み書きは `timeout` (`PROXY_TIMEOUT_SECS`) のまま。繋がらない宛先への
+/// forward 1 本がワーカーを 30 秒握っていた (CONNECT は T.23.3 で 5 秒にしてあった)。
+pub fn connect_within(
+    scheme: Scheme,
+    server_addr: &str,
+    host: &str,
+    connect_timeout: Duration,
+    timeout: Duration,
+    tls: Option<&TlsClient>,
+    resolved: Option<&dns::Resolved<'_>>,
+) -> io::Result<OriginStream> {
+    let tcp = net::connect_with(server_addr, resolved, connect_timeout)?;
     // net::connect が立てているはずだが、プールを経ない経路でも確実にするため念のため
     let _ = tcp.set_nodelay(true);
     // `timeout` が 0 なら無期限 (T10.6)

@@ -2083,6 +2083,8 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     let last = *served + 1 >= config.max_requests_per_conn;
     let shared = http::Shared {
         timeout: config.timeout,
+        // forward のオリジン接続の確立も CONNECT と同じ締め切り (T.28.8)
+        connect_timeout: config.connect_timeout,
         keepalive: config.keepalive,
         conn_id,
         metrics: Arc::clone(metrics),

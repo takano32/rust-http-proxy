@@ -204,6 +204,9 @@ const STALE_ON_STATUS: &[u16] = &[500, 502, 503, 504];
 /// 接続をまたいで共有する状態。
 pub struct Shared<'a> {
     pub timeout: Duration,
+    /// オリジンへの TCP の確立だけに当てる締め切り (`PROXY_CONNECT_TIMEOUT_SECS` の実効値。T.28.8)。
+    /// 応答の読み書きは今までどおり [`Shared::timeout`]
+    pub connect_timeout: Duration,
     pub keepalive: Duration,
     pub conn_id: usize,
     pub metrics: Arc<Metrics>,
@@ -798,6 +801,7 @@ pub fn handle_http_with_headers(
         let (mut server, reused) = match acquire_origin(
             &shared.upstream,
             origin_timeout,
+            shared.connect_timeout,
             conn_id,
             &origin,
             pool_key,
@@ -1375,9 +1379,11 @@ pub(super) fn request_head(
 /// `verify` はプールから取り出すときの生存確認 (`recv(MSG_PEEK)` 1 回)。呼び出し側が
 /// 読み書きの失敗で気づいて 1 回やり直せる要求なら偽にしてよく、そのぶんの
 /// システムコールが毎要求から消える (T26.0)。
+#[allow(clippy::too_many_arguments)]
 pub(super) fn acquire_origin(
     upstream: &Upstream,
     timeout: Duration,
+    connect_timeout: Duration,
     conn_id: usize,
     origin: &Origin,
     pool_key: &str,
@@ -1389,10 +1395,13 @@ pub(super) fn acquire_origin(
         return Ok((server, true));
     }
     log_debug!(Some(conn_id), "connecting to origin {}", pool_key);
-    let stream = origin::connect(
+    // TCP の確立だけは短い締め切り (`PROXY_CONNECT_TIMEOUT_SECS`)。`timeout` の方が短ければ
+    // (stale を持っていて待たない回) そちらに合わせる。0 (無期限) は必ず負ける (T.28.8)
+    let stream = origin::connect_within(
         origin.scheme,
         &origin.server_addr(),
         &origin.host(),
+        proxy_base::timeout::shorter(connect_timeout, timeout),
         timeout,
         upstream.tls.as_ref(),
         resolved,

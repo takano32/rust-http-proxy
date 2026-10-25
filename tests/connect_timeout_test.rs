@@ -126,3 +126,68 @@ fn test_integration_connect_still_works_with_the_default_timeout() {
     let head = read_connect_response(&mut stream);
     assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
 }
+
+/// **T.28.8**: forward のオリジン接続の確立にも `connect_timeout` が効く。
+///
+/// 0.27.8 までは forward は `config.timeout` (`PROXY_TIMEOUT_SECS`、ここでは 5 秒) のままで、
+/// 繋がらない宛先への forward 1 本がワーカーを締め切りいっぱい握っていた (tokyo の `/errors` に
+/// `http://10.255.255.1:80` の `timeout` で `connect_ms` 30,005 の 1 件)。
+#[cfg(target_os = "linux")]
+#[test]
+fn test_integration_forward_connect_uses_the_connect_timeout() {
+    let Some((_hole, _filler, hole_addr)) = blackhole_v4() else {
+        eprintln!("cannot build a v4 blackhole; skipping");
+        return;
+    };
+    let mut cfg = proxy_config();
+    cfg.connect_timeout = Duration::from_secs(1);
+    assert_eq!(cfg.timeout, Duration::from_secs(5), "前提: 共通の締め切り");
+    let proxy_port = start_test_proxy(cfg);
+
+    let target = hole_addr.to_string();
+    let started = Instant::now();
+    let out = get_via_proxy(proxy_port, &format!("http://{}/x", target), &target);
+    let elapsed = started.elapsed();
+    assert!(out.starts_with("HTTP/1.1 502"), "{}", out);
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "forward の確立に `connect_timeout` が効いていれば 1 秒あまりで諦める ({:?})",
+        elapsed
+    );
+    assert!(
+        elapsed >= Duration::from_millis(500),
+        "黒穴なのに即座に返った ({:?})",
+        elapsed
+    );
+    let json = endpoint_json(proxy_port, "/errors");
+    assert!(json.contains("\"kind\":\"forward\""), "{}", json);
+    assert!(json.contains("\"cause\":\"timeout\""), "{}", json);
+}
+
+/// 応答の読みは `config.timeout` のまま: 確立の締め切り (1 秒) より長く黙る (2 秒) オリジンも 200 で通る。
+#[cfg(target_os = "linux")]
+#[test]
+fn test_integration_forward_read_keeps_the_longer_timeout() {
+    use std::io::{Read, Write};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                std::thread::sleep(Duration::from_secs(2));
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nslow",
+                );
+            });
+        }
+    });
+    let mut cfg = proxy_config();
+    cfg.connect_timeout = Duration::from_secs(1);
+    let proxy_port = start_test_proxy(cfg);
+    let host = format!("127.0.0.1:{}", port);
+    let out = get_via_proxy(proxy_port, &format!("http://{}/slow", host), &host);
+    assert!(out.starts_with("HTTP/1.1 200"), "{}", out);
+    assert!(out.ends_with("slow"), "{}", out);
+}

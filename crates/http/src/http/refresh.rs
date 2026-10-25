@@ -77,6 +77,7 @@ pub fn spawn(
     let upstream = Arc::clone(&shared.upstream);
     let metrics = Arc::clone(&shared.metrics);
     let timeout = shared.timeout;
+    let connect_timeout = shared.connect_timeout;
     let origin = origin.clone();
     let url = url.to_string();
     let conn_id = shared.conn_id;
@@ -87,6 +88,7 @@ pub fn spawn(
             &upstream,
             &metrics,
             timeout,
+            connect_timeout,
             &origin,
             key,
             &url,
@@ -134,6 +136,7 @@ fn revalidate(
     upstream: &Upstream,
     metrics: &Metrics,
     timeout: Duration,
+    connect_timeout: Duration,
     origin: &Origin,
     key: CacheKey,
     url: &str,
@@ -144,8 +147,16 @@ fn revalidate(
     let cached = freshness::parse_cached_head(cached_head);
     let pool_key = origin.pool_key();
     // 裏側の再検証は別スレッドで走る (要求の判定とは別の解決になる)。ここで引き直す
-    let (mut server, reused) =
-        acquire_origin(upstream, timeout, conn_id, origin, &pool_key, None, true)?;
+    let (mut server, reused) = acquire_origin(
+        upstream,
+        timeout,
+        connect_timeout,
+        conn_id,
+        origin,
+        &pool_key,
+        None,
+        true,
+    )?;
     metrics.inc_origin_conn(reused);
 
     let mut extra: Vec<String> = vec![crate::via::line().to_string()];
