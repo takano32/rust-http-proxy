@@ -391,7 +391,7 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
     );
     line(&mut out, "max_threads", "", conc.max_threads);
     // 接続スレッドの数はラベル付きの 1 系列にそろえた (T11.5 の候補 → T12.4 (4))。
-    // **旧名 (`sorahost_live_threads` / `sorahost_idle_threads`) は 1 版だけ両方出す**
+    // **旧名 (`sorahost_live_threads` / `sorahost_idle_threads`) も出し続ける** (はじめは 1 版だけのつもりだった。T.28.23 で残すと決めた)
     // ので、監視側は次の版までに `sorahost_threads{state=...}` へ移せる
     header(
         &mut out,

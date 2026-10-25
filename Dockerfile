@@ -12,7 +12,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 # `jobs = 1` (メモリの小さい環境でも通す設定)。手元・CI・Docker で同じ条件にする
 COPY .cargo ./.cargo
-# 本体は 26 個のクレートに分かれている (`Cargo.toml` の workspace members)。
+# 本体は 41 個のクレートに分かれている (`Cargo.toml` の workspace members)。
 # path 依存なので、これが無いとワークスペースの読み込みごと失敗する
 COPY crates ./crates
 COPY src ./src

@@ -17,6 +17,8 @@
 #                        (直接叩かないもの = 共通部品・割った部・unittest が読むものは除外表)
 #   (g) 台帳        … `TASKS.md` (未着手)・`TODO.md` の §5 (索引)・`tasks/TNN.md` の 1 対 1 (移し忘れ・リンク・番号・1 行目)。
 #                     中身は `scripts/check-ledger.py` (試験は `scripts/test_check_ledger.py`)
+#   (h) 判定表の既定 … `collect-deployed.sh` の `CRITERIA` の既定 vs README の「既定は phaseNN」(T.28.23)
+#   (i) `-h` の既定 … `crates/base/src/cli.rs` の `-h` の括弧の数 vs README の環境変数の表の既定 (T.28.23)
 #
 # **意図的に外してあるものは下の除外表に理由つきで持つ** (黙って無視しない)。
 # 差分が 1 件でもあれば理由を印字して exit 1。
@@ -254,10 +256,50 @@ done <"$W/py-want"
 # `scripts/test_check_ledger.py`)。**`TODO.md` と `tasks/*.md` は読むだけで、1 文字も変えない。**
 python3 scripts/check-ledger.py || NG=1
 
+# --- (h) 判定表の既定 (T.28.23) -------------------------------------------------
+# `collect-deployed.sh` の `CRITERIA` の既定と、README の「既定は phaseNN」の書き方がそろっているか。
+# T.27.0 で phase25 にしたのに README は 3 か所 phase24 のままだった (2026-10-25 の洗い出しで見つかった)
+python3 - <<'CRITPY' || NG=1
+import re, sys
+src = open('scripts/collect-deployed.sh', encoding='utf-8').read()
+m = re.search(r'^CRITERIA=\$\{CRITERIA:-(phase\d+)\}', src, re.M)
+if not m:
+    print("  NG (h): scripts/collect-deployed.sh に CRITERIA の既定が見つからない")
+    sys.exit(1)
+want = m.group(1)
+readme = open('README.md', encoding='utf-8').read()
+bad = sorted(set(x for x in re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)(phase\d+)', readme)
+                 if x != want))
+print("(h) 判定表の既定: collect-deployed.sh は %s / README の「既定は」の書き方 %d か所"
+      % (want, len(re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)phase\d+', readme))))
+for x in bad:
+    print("  NG (h): README に「既定は %s」と書いた所がある (collect-deployed.sh の既定は %s)" % (x, want))
+sys.exit(1 if bad else 0)
+CRITPY
+
+# --- (i) `-h` の既定 (T.28.23) ----------------------------------------------------
+# `crates/base/src/cli.rs` の `-h` が括弧で書く既定 (`(5, 0 = unlimited)` の 5) と、README の環境変数の表の
+# 既定の欄がそろっているか。T.23.3 で CONNECT の締め切りを 5 秒にしたのに `-h` は 10 のままだった
+python3 - <<'HELPPY' || NG=1
+import re, sys
+cli = open('crates/base/src/cli.rs', encoding='utf-8').read()
+readme = open('README.md', encoding='utf-8').read()
+table = dict(re.findall(r'^\| `((?:PROXY|SERVER)_[A-Z0-9_]+)` \| `([^`]*)` \|', readme, re.M))
+pairs = re.findall(r'^\s+((?:PROXY|SERVER)_[A-Z0-9_]+)\s*\n?\s+[^\n(]*\((\d+)[,)]', cli, re.M)
+ng = 0
+for name, num in pairs:
+    have = table.get(name)
+    if have is not None and have.isdigit() and have != num:
+        print("  NG (i): `-h` の %s の既定が %s、README の表は %s" % (name, num, have))
+        ng = 1
+print("(i) `-h` の既定: 数で書いた %d 個を README の表と比べた" % len(pairs))
+sys.exit(ng)
+HELPPY
+
 echo
 if [ "$NG" = 0 ]; then
-  echo "7 つを突き合わせて 差分 0 件。"
+  echo "9 つを突き合わせて 差分 0 件。"
   exit 0
 fi
-echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 / 台帳 (\`TODO.md\` の §5 と \`tasks/\`) を直すか、理由を除外表に書くこと。"
+echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 / 台帳 (\`TODO.md\` の §5 と \`tasks/\`) / 判定表の既定 / \`-h\` の既定 を直すか、理由を除外表に書くこと。"
 exit 1
