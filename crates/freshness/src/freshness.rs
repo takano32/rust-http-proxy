@@ -70,8 +70,15 @@ pub fn response_policy(
     let must_revalidate = has_directive(&cache_control, "must-revalidate")
         || has_directive(&cache_control, "proxy-revalidate");
 
-    let explicit = directive_value(&cache_control, "s-maxage")
-        .or_else(|| directive_value(&cache_control, "max-age"))
+    // 指示はあるのに値が読めない (`max-age=abc`・`max-age=-1`・値なし) ときは「既に古い」= 0
+    // (RFC 9111 §4.2.1 は無効な鮮度情報を古いとみなすよう勧める。T.28.10 (d))。今までは
+    // 無いのと同じに扱って Expires / 経験則 / 既定 TTL (300 秒) で新鮮にしていた
+    let directive = |name: &str| {
+        directive_value(&cache_control, name)
+            .or_else(|| has_directive(&cache_control, name).then_some(0))
+    };
+    let explicit = directive("s-maxage")
+        .or_else(|| directive("max-age"))
         .or_else(|| {
             expires.map(|e| {
                 // 解析できない Expires (例: "0") は「既に古い」の意味
@@ -382,6 +389,49 @@ mod tests {
         assert_eq!(p.unwrap().ttl, Duration::from_secs(3600));
         // 解析できない Expires は「既に古い」→ バリデータが無ければ保存しない
         assert!(response_policy(200, &hdrs(&[("expires", "0")]), &c, NOW).is_none());
+    }
+
+    /// 読めない `max-age` / `s-maxage` は「既に古い」(T.28.10 (d))。バリデータが無ければ保存しない、
+    /// あれば毎回再検証 (TTL 0) で保存する。読める値は今までどおり。
+    #[test]
+    fn unreadable_max_age_is_stale() {
+        let c = cfg();
+        for cc in [
+            "max-age=abc",
+            "max-age=-1",
+            "max-age",
+            "s-maxage=x, max-age=60",
+        ] {
+            assert_eq!(
+                response_policy(200, &hdrs(&[("cache-control", cc)]), &c, NOW),
+                None,
+                "{}",
+                cc
+            );
+            let p = response_policy(
+                200,
+                &hdrs(&[("cache-control", cc), ("etag", "\"v\"")]),
+                &c,
+                NOW,
+            )
+            .unwrap();
+            assert_eq!(p.ttl, Duration::ZERO, "{}", cc);
+        }
+        let p = response_policy(200, &hdrs(&[("cache-control", "max-age=60")]), &c, NOW).unwrap();
+        assert_eq!(p.ttl, Duration::from_secs(60));
+        // `Expires` より先に見る (読めない max-age があれば Expires で延ばさない)
+        assert_eq!(
+            response_policy(
+                200,
+                &hdrs(&[
+                    ("cache-control", "max-age=abc"),
+                    ("expires", "Thu, 01 Jan 2099 00:00:00 GMT")
+                ]),
+                &c,
+                NOW
+            ),
+            None
+        );
     }
 
     #[test]

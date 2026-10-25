@@ -45,6 +45,18 @@ pub fn line() -> &'static str {
     LINE.get_or_init(|| format!("Via: {}\r\n", token()))
 }
 
+/// クライアントへ返す応答に足す 1 行 (`Via: 1.1 rust-http-proxy/xxxxxxxx`。CRLF なし。T.28.10 (b))。
+///
+/// RFC 9110 §7.6.3 は要求と応答の両方で `Via` を求める。応答は書き出す口が `extra` の行
+/// (CRLF を付けずに並べる) を取るので、そちらの形にしてある。オリジンの `Via` の行は
+/// 残したまま**別の行として後ろに足す** (リストのヘッダーは行を分けても同じ意味。§5.3)。
+/// **保存する先頭には入れない** (配るたびに足す。起動ごとに印が変わるので、保存すると
+/// 再起動のあとに古い印が残る)。
+pub fn field() -> &'static str {
+    let line = line();
+    &line[..line.len() - 2]
+}
+
 /// `Via` の値に自分の印があるか (ループの検出)。値は `,` 区切りで複数の中継が並ぶ。
 #[inline]
 pub fn is_self(value: &str) -> bool {

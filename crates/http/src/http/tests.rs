@@ -118,7 +118,12 @@ fn test_write_cached_response_injects_framing_and_headers() {
         write_cached_response(&mut out, entry, &serve(RangeSpec::Ignore, false)).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert_eq!(status, 200);
-    assert!(text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Cache: HIT from rust-http-proxy (disk)\r\nAge: 42\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nhi"), "{}", text);
+    // T.28.10 (b) から、キャッシュから返す応答にも自分の `Via` が 1 行付く
+    let want = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Cache: HIT from rust-http-proxy (disk)\r\nAge: 42\r\nContent-Length: 2\r\nVia: {}\r\nConnection: keep-alive\r\n\r\nhi",
+        crate::via::token()
+    );
+    assert!(text.starts_with(&want), "{}", text);
     assert!(!text.contains("Connection: close"));
     assert_eq!(n, text.len() as u64);
 }

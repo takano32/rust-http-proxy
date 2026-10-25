@@ -647,17 +647,19 @@ pub fn handle_http_with_headers(
     let cfg = cache.config();
     // キャッシュ無効時は鍵の生成も鮮度判定もしない (素通しの経路を最短にする)
     let cache_on = cache.enabled();
-    let (key, client_no_store, force_revalidate, now) = if cache_on {
+    let (key, client_no_store, mut force_revalidate, only_if_cached, now) = if cache_on {
         let variant = freshness::accept_encoding_variant(req.accept_encoding.as_deref());
         (
             cache_key_variant("GET", url, &variant),
             freshness::has_directive(&req.cache_control, "no-store"),
             freshness::has_directive(&req.cache_control, "no-cache")
                 || freshness::directive_value(&req.cache_control, "max-age") == Some(0),
+            // `only-if-cached` (RFC 9111 §5.2.1.7。T.28.10 (c)): 保存から返せなければ 504
+            freshness::has_directive(&req.cache_control, "only-if-cached"),
             now_epoch(),
         )
     } else {
-        (CacheKey(0), false, false, 0)
+        (CacheKey(0), false, false, false, 0)
     };
     // 本文付きの GET は本文でも意味が変わりうるのでキャッシュしない
     let lookup_allowed = cache_on
@@ -672,6 +674,16 @@ pub fn handle_http_with_headers(
     if lookup_allowed {
         if let Some((entry, source)) = cache.get(key, conn_id) {
             cache.remember_variant(url, key);
+            // 要求の `max-age=N` (N > 0) と `min-fresh=N` (RFC 9111 §5.2.1.1・§5.2.1.3。T.28.10 (c)):
+            // 保存から N 秒より古い・期限まで N 秒ない表現は、そのままでは返さず再検証する
+            // (`max-age=0` と同じ扱い)。今までは見ずに HIT にしていた。`Cache-Control` の無い要求は
+            // 空文字の判定 1 回だけ
+            if !force_revalidate
+                && !req.cache_control.is_empty()
+                && client_wants_fresher(&req.cache_control, &entry, now)
+            {
+                force_revalidate = true;
+            }
             if entry.is_fresh(now) && !force_revalidate {
                 body::drain(reader, req_framing)?;
                 let ttl_left = entry.ttl_left(now);
@@ -724,6 +736,19 @@ pub fn handle_http_with_headers(
             req.authorization,
             req.cache_control
         );
+    }
+
+    // `only-if-cached` で保存から返せなかった (無い・古い・保存できない要求): オリジンへは行かずに 504
+    // (RFC 9111 §5.2.1.7。T.28.10 (c))。今まではオリジンへ行っていた
+    if only_if_cached {
+        body::drain(reader, req_framing)?;
+        log_debug!(
+            Some(conn_id),
+            "only-if-cached and no usable stored response: 504"
+        );
+        write_error(client, 504, "Gateway Timeout")?;
+        ctx.log(504, 0, "MISS");
+        return Ok(false);
     }
 
     // ---- 入場制御: 層が埋まっているとき、初めて見た URL は保存しない (2 回目から) ----
@@ -1110,7 +1135,7 @@ pub fn handle_http_with_headers(
     let mut cl_buf = [0u8; 40];
     // HEAD のときだけ確保する (それ以外は 1 バイトも作らない)
     let cl_owned;
-    let mut extra: [&str; 2] = [""; 2];
+    let mut extra: [&str; 3] = [""; 3];
     let mut n_extra = 0usize;
     match client_framing {
         Framing::Length(len) => {
@@ -1131,6 +1156,9 @@ pub fn handle_http_with_headers(
         }
         _ => {}
     }
+    // 応答にも自分の `Via` を足す (RFC 9110 §7.6.3。T.28.10 (b))。保存する先頭 (`cached_head`) には入れない
+    extra[n_extra] = crate::via::field();
+    n_extra += 1;
     extra[n_extra] = ctx.connection_line();
     n_extra += 1;
     let extra = &extra[..n_extra];
@@ -1419,6 +1447,17 @@ pub(super) fn acquire_origin(
         resolved,
     )?;
     Ok((BufReader::with_capacity(ORIGIN_READ_BUF, stream), false))
+}
+
+/// 要求の `max-age=N` / `min-fresh=N` を、保存済みの表現がそのままでは満たさないか (T.28.10 (c))。
+///
+/// `max-age`: 保存からの経過 (`now - stored_at`) が N 秒を越える。`min-fresh`: 期限までが N 秒に足りない。
+/// 値の読めない指示は見ない (今までどおり)。`max-age=0` は呼ぶ側が先に `no-cache` と同じに扱っている。
+fn client_wants_fresher(cache_control: &str, entry: &CachedResponse, now: u64) -> bool {
+    let age = now.saturating_sub(entry.meta.stored_at);
+    freshness::directive_value(cache_control, "max-age").is_some_and(|n| age > n)
+        || freshness::directive_value(cache_control, "min-fresh")
+            .is_some_and(|n| entry.ttl_left(now) < n)
 }
 
 /// クライアントのリクエスト本文をオリジンへ同じ枠組みで転送する。戻り値は本文のバイト数。

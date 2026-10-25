@@ -555,7 +555,11 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   - Hop-by-hop ヘッダーの自動除去
   - `Via` ヘッダーおよび `X-Forwarded-For` ヘッダーの付与・伝搬。`Via` の印は
     `1.1 rust-http-proxy/<起動ごとの 8 桁 16 進>` で、**自分の印が付いた要求を受けたら `508 Loop Detected`**
-    (印が起動ごとなので、rust-http-proxy を 2 段に並べた正当な構成は誤検出しません)
+    (印が起動ごとなので、rust-http-proxy を 2 段に並べた正当な構成は誤検出しません)。
+    **クライアントへ返す応答にも同じ印の `Via` を 1 行足します** (RFC 9110 §7.6.3 は要求と応答の両方で求める。T.28.10 (b))。
+    オリジンの `Via` の行は残し、その後ろに別の行として足します。キャッシュから返す応答 (HIT・REVALIDATED・STALE・304) にも付き、
+    保存する先頭には入れません (配るたびに足すので、再起動で印が変わっても古い印は残りません)。1xx の中間応答と、
+    プロキシ自身が作るエラー応答・内部エンドポイントには付けません。0.27.8 までは応答に付けていませんでした
 - **ACL / ホストフィルタリング**:
   - `PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS` による許可・拒否リスト（ワイルドカード対応）と 403 Forbidden 制御
   - `PROXY_ALLOW_CLIENTS` による**接続元**の許可リスト (`10.0.0.0/8` のような CIDR 可)。
@@ -2222,12 +2226,16 @@ curl http://127.0.0.1:8080/https/example.com/file.zip -o file.zip
 - 証明書は既定で検証します (システムの CA ストア、`SSL_CERT_FILE` / `SSL_CERT_DIR`、または `PROXY_TLS_CA_FILE`)
 - 応答の `Location` / `Content-Location` が絶対 URL なら `/https/host/path` 形式に書き換えるので、リダイレクトを追っても
   プロキシから外れません
-- キャッシュキーには `https://host:443/path` の形で保存されるので、`/https/...` 形式と絶対 URL 形式は同じエントリに当たります
+- キャッシュキーには `https://host:443/path` の形で保存されるので、`/https/...` 形式と絶対 URL 形式は同じエントリに当たります。
+  **スキームとホストの大小は区別しません** (T.28.10 (a)。`http://LOCALHOST:8080/x` は `http://localhost:8080/x` と同じエントリ。
+  パスと問い合わせの大小は区別します)。もともと小文字の URL のキーは変わらないので、ディスクに残った項目はそのまま使えます
 
 ### 鮮度と再検証 (RFC 9111)
 
 TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経験則 (経過時間の 10%、下限 `PROXY_CACHE_TTL_SECS`、
-上限 7 日) → 既定 TTL の順で決めます。
+上限 7 日) → 既定 TTL の順で決めます。**`max-age=abc` のように指示があって値が読めないときは「既に古い」(TTL 0)** として扱います
+(RFC 9111 §4.2.1。T.28.10 (d)。バリデータが無ければ保存せず、あれば毎回再検証。0.27.8 までは指示が無いのと同じに扱い、
+既定 TTL の 300 秒で新鮮にしていました)。
 
 - ETag か Last-Modified を持つレスポンスは、期限切れでも `PROXY_CACHE_MAX_STALE_SECS` (既定 30 日) の間は残します。
   次の要求では `If-None-Match` / `If-Modified-Since` を付けてオリジンに問い合わせ、304 なら本文を転送せずに
@@ -2252,6 +2260,10 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 - オリジンに繋がらない・5xx を返す場合は、`must-revalidate` でない限り期限切れの表現を配信します (`cache=STALE`)
 - クライアントが `If-None-Match` / `If-Modified-Since` を付けてきて保存済みの表現と一致すれば、キャッシュから 304 を返します
 - `no-cache` / `s-maxage` / `must-revalidate` 付きの表現と、クライアントが `no-cache` を付けた要求では stale を配信しません
+- **要求の `Cache-Control` も見ます** (RFC 9111 §5.2.1。T.28.10 (c)): `max-age=N` (N > 0) は保存から N 秒より古い表現を、
+  `min-fresh=N` は期限まで N 秒ない表現を、そのままでは返さずに再検証します (`no-cache` と同じく stale も配信しません)。
+  `only-if-cached` で保存から返せないとき (無い・古い) はオリジンへ行かずに `504 Gateway Timeout` を返します
+  (キャッシュが無効のときは今までどおり素通しです)。0.27.8 までは `max-age=0` と `no-cache` しか見ていませんでした
 - 上流のキャッシュを経てきた応答は `Age` と `Date` から経過時間を差し引いて保存し、配信時の `Age` はプロキシが付け直します
 - POST / PUT / DELETE などへの成功応答 (2xx/3xx) を受けたら、その URL (と同じサーバーへの `Location` / `Content-Location`)
   のキャッシュを無効化します (RFC 9111 §4.4)。本文付きの GET と `Range` 要求の応答は保存しません

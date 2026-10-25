@@ -40,19 +40,47 @@ pub fn cache_key(method: &str, url: &str) -> CacheKey {
     cache_key_variant(method, url, "")
 }
 
+/// URL のうち大小を区別しない先頭 (スキームと authority = `scheme://host:port`) の長さ (T.28.10 (a))。
+///
+/// RFC 3986 §6.2.2.1 はスキームとホストの大小を区別しない。`://` が無ければ 0 (何も畳まない)。
+/// authority は最初の `/`・`?`・`#` の手前まで (`parse_origin` と同じ切り方)。
+fn case_insensitive_prefix(url: &[u8]) -> usize {
+    let Some(sep) = url.windows(3).position(|w| w == b"://") else {
+        return 0;
+    };
+    let start = sep + 3;
+    start
+        + url[start..]
+            .iter()
+            .position(|&b| matches!(b, b'/' | b'?' | b'#'))
+            .unwrap_or(url.len() - start)
+}
+
 /// `variant` (正規化した Accept-Encoding など) で表現を分けたキー。空文字なら `cache_key` と同じ。
+///
+/// URL のスキームとホストは**小文字に畳んで**から混ぜる (T.28.10 (a))。`http://LOCALHOST:P/x` が
+/// `http://localhost:P/x` の項目に当たるように。もともと小文字の URL はバイト列が変わらないので、
+/// 今までのキー (ディスクに残った項目) はそのまま使える。パスの大小は区別する (RFC 3986 のとおり)。
 pub fn cache_key_variant(method: &str, url: &str, variant: &str) -> CacheKey {
     let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
     let mut h2: u64 = 0x9e37_79b9_7f4a_7c15;
     let separator: &[u8] = if variant.is_empty() { b"" } else { b"\x00" };
+    let fold = case_insensitive_prefix(url.as_bytes());
+    let url_bytes = url
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| if i < fold { b.to_ascii_lowercase() } else { b });
     for b in method
         .as_bytes()
         .iter()
-        .chain(b"|".iter())
-        .chain(url.as_bytes())
-        .chain(separator.iter())
-        .chain(variant.as_bytes())
+        .copied()
+        .chain(b"|".iter().copied())
+        .chain(url_bytes)
+        .chain(separator.iter().copied())
+        .chain(variant.as_bytes().iter().copied())
     {
+        let b = &b;
         h1 ^= *b as u64;
         h1 = h1.wrapping_mul(0x0000_0100_0000_01b3);
         h2 = h2.rotate_left(7) ^ (*b as u64);
@@ -101,6 +129,36 @@ mod tests {
         assert_eq!(a.shard() as u128, a.0 >> 120);
         assert!(CacheKey::from_hex("abc").is_none());
         assert!(CacheKey::from_hex("zz000000000000000000000000000000").is_none());
+    }
+
+    /// スキームとホストの大小は畳み、パスの大小は区別する (T.28.10 (a))。
+    #[test]
+    fn scheme_and_host_are_case_insensitive() {
+        let a = cache_key("GET", "http://localhost:8080/x");
+        assert_eq!(cache_key("GET", "http://LOCALHOST:8080/x"), a);
+        assert_eq!(cache_key("GET", "HTTP://LocalHost:8080/x"), a);
+        assert_ne!(cache_key("GET", "http://localhost:8080/X"), a);
+        // `?` と `#` も authority の終わり
+        assert_eq!(
+            cache_key("GET", "http://EXAMPLE.com?Q"),
+            cache_key("GET", "http://example.com?Q")
+        );
+        assert_ne!(
+            cache_key("GET", "http://example.com?Q"),
+            cache_key("GET", "http://example.com?q")
+        );
+        // 小文字の URL のキーは今までと同じ値 (ディスクに残った項目が引ける)
+        assert_eq!(cache_key("GET", "http://example.com/a").to_string(), {
+            let mut h1: u64 = 0xcbf2_9ce4_8422_2325;
+            let mut h2: u64 = 0x9e37_79b9_7f4a_7c15;
+            for b in b"GET|http://example.com/a" {
+                h1 ^= *b as u64;
+                h1 = h1.wrapping_mul(0x0000_0100_0000_01b3);
+                h2 = h2.rotate_left(7) ^ (*b as u64);
+                h2 = h2.wrapping_mul(0x8864_3f65_e5a2_9d2b);
+            }
+            CacheKey(((h1 as u128) << 64) | h2 as u128).to_string()
+        });
     }
 
     #[test]

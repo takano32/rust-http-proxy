@@ -253,21 +253,32 @@ fn test_integration_good_responses_are_unchanged() {
     let origin_port = start_scripted_origin();
     let proxy_port = start_test_proxy(proxy_config());
 
+    // T.28.10 (b) から、どの応答にも自分の `Via` が 1 行付く (それ以外は今までどおり)
+    let via = rust_http_proxy::via::token();
     // CL 1 本の応答: 状態行・ヘッダー・本文まで含めて今までどおりのバイト列
     assert_eq!(
         get(proxy_port, origin_port, "/ok"),
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nVia: {}\r\nConnection: close\r\n\r\nhello",
+            via
+        )
     );
     // 重複した CL が同値なら 1 本に畳んで、同じバイト列になる
     assert_eq!(
         get(proxy_port, origin_port, "/dup-same"),
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nVia: {}\r\nConnection: close\r\n\r\nhello",
+            via
+        )
     );
     // chunked は今までどおり再 chunk (CL は付けない)
     assert_eq!(
         get(proxy_port, origin_port, "/chunked"),
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
-         5\r\nhello\r\n0\r\n\r\n"
+        format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nVia: {}\r\nConnection: close\r\n\r\n\
+             5\r\nhello\r\n0\r\n\r\n",
+            via
+        )
     );
 
     // クライアントが keep-alive を求めたら、今までどおりそのまま使い回せる

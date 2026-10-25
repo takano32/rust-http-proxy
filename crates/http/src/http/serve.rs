@@ -284,7 +284,7 @@ pub(super) fn write_cached_response(
     let mut age_buf = [0u8; 32];
     let mut cr_buf = [0u8; 64];
     let mut cl_buf = [0u8; 40];
-    let mut extra: [&str; 5] = [""; 5];
+    let mut extra: [&str; 6] = [""; 6];
     extra[0] = x_cache_line(&mut xc_buf, serve.label, serve.source);
     extra[1] = age_line(&mut age_buf, serve.age);
     let mut n_extra = 2usize;
@@ -321,6 +321,9 @@ pub(super) fn write_cached_response(
         }
     };
     extra[n_extra] = super::content_length_line(&mut cl_buf, len);
+    n_extra += 1;
+    // キャッシュから返す応答にも自分の `Via` を足す (T.28.10 (b))。保存した先頭には入っていない
+    extra[n_extra] = crate::via::field();
     n_extra += 1;
     extra[n_extra] = if serve.keep_alive {
         "Connection: keep-alive"
@@ -386,6 +389,8 @@ pub(super) fn write_not_modified(
         out.push_str(&line);
         out.push_str("\r\n");
     }
+    // キャッシュが返す 304 にも `Via` (T.28.10 (b))
+    out.push_str(crate::via::line());
     out.push_str(if keep_alive {
         "Connection: keep-alive\r\n\r\n"
     } else {
