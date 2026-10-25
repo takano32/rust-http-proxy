@@ -696,7 +696,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `proc_syscall` は `/proc/self/task/<tid>/syscall` (スレッドの状態)、`tcp_info` は待ち受けソケットへの
     `getsockopt(SOL_TCP, TCP_INFO)` (カーネルの RTT と再送)、`cgroup_cpu` / `cgroup_pressure` は自分の cgroup の
     `cpu.stat` / `cpu.pressure` (CPU の絞りと PSI。**`cgroup_cpu` は `kernel.cgroup_cpu` を読む側と同じ道** =
-    cgroup v2 の階層を根まで遡って絞りの欄のある `cpu.stat` が見つかるときだけ真で、cgroup v1 だけの環境では偽。T.28.11)、`ipv6_route` は `/proc/net/ipv6_route` の既定経路、
+    cgroup v2 の階層を根まで遡って絞りの欄のある `cpu.stat` が見つかるときだけ真で、cgroup v1 だけの環境では偽。T.28.11。`cgroup_pressure` も読む側と同じで、v2 の階層に `cpu.pressure` が無ければ機械全体の `/proc/pressure/cpu` が読めるときに真。T.28.32)、`ipv6_route` は `/proc/net/ipv6_route` の既定経路、
     `resolver_ms` は `example.com` を 1 回引くのにかかった ms (締め切り 2 秒、失敗は `null`)、
     `home_writable` は `$HOME` に書けるか (状態ファイルの置き場)、
     `proc_schedstat` は `/proc/self/task/<tid>/schedstat` (走れるのに走れなかった時間。`/profile` の

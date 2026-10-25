@@ -187,7 +187,8 @@ fn probe_fast() -> Capabilities {
         tcp_info: tcp_info_works(),
         // 読む側 (`cgroup::cgroup_cpu`) と同じ道で判定する (T.28.11)
         cgroup_cpu: cgroup_cpu_here(),
-        cgroup_pressure: cgroup_file_here("cpu.pressure"),
+        // 読む側 (`cgroup::cgroup_pressure`) と同じく `/proc/pressure/cpu` への落とし込みも見る (T.28.32)
+        cgroup_pressure: cgroup_pressure_here(),
         ipv6_route: has_ipv6_default_route(),
         resolver_ms: None,
         home_writable: home_writable(),
@@ -277,12 +278,29 @@ pub fn cgroup_cpu_in(proc_cgroup: &str, sysfs: &Path) -> bool {
         .is_some()
 }
 
-/// 自分の cgroup (v2 → v1 の順) に `name` のファイルがあるか。
-fn cgroup_file_here(name: &str) -> bool {
-    match fs::read_to_string("/proc/self/cgroup") {
-        Ok(text) => cgroup_file_in(&text, Path::new("/sys/fs/cgroup"), name),
-        Err(_) => false,
-    }
+/// `/status` の `kernel.cgroup_pressure.cpu` が値を持つか (読む側と同じ道。T.28.32)。
+fn cgroup_pressure_here() -> bool {
+    let text = fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+    cgroup_pressure_in(
+        &text,
+        Path::new("/sys/fs/cgroup"),
+        Path::new("/proc/pressure/cpu"),
+    )
+}
+
+/// `/proc/self/cgroup` の中身・cgroup の根・機械全体の PSI のファイルを与えて、読む側
+/// ([`super::cgroup::cgroup_pressure`] の `cpu`) が値を得られるかを返す (テストのために分けてある)。
+/// v2 の階層を根まで遡って読める `cpu.pressure` があるか、無ければ `fallback` が読めるか
+/// (v1 の階層の `cpu.pressure` は読む側が見ないので数えない)。
+pub fn cgroup_pressure_in(proc_cgroup: &str, sysfs: &Path, fallback: &Path) -> bool {
+    super::cgroup::v2_dir_from(proc_cgroup, sysfs)
+        .and_then(|dir| super::cgroup::cgroup_pressure_in(&dir, sysfs).cpu)
+        .is_some()
+        || fs::read_to_string(fallback)
+            .ok()
+            .as_deref()
+            .and_then(super::mem::parse_pressure)
+            .is_some()
 }
 
 /// `/proc/self/cgroup` の中身と cgroup の根を与えて、`name` が見つかるかを返す
@@ -444,6 +462,30 @@ mod tests {
         )
         .unwrap();
         assert!(cgroup_cpu_in("0::/app/inner\n", &root));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cgroup_pressure_follows_the_reader() {
+        let root = std::env::temp_dir().join(format!("shp-caps-psi-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let sysfs = root.join("cg");
+        fs::create_dir_all(sysfs.join("app/inner")).unwrap();
+        let none = root.join("no-such-pressure");
+        let machine = root.join("pressure-cpu");
+        let psi = "some avg10=1.00 avg60=0.50 avg300=0.10 total=123\n";
+        fs::write(&machine, psi).unwrap();
+        // cgroup に `cpu.pressure` が無くても、機械全体の PSI に落ちて読む側は値を出すので真
+        assert!(cgroup_pressure_in("0::/app/inner\n", &sysfs, &machine));
+        // 古い判定はここで偽だった (食い違いの元)
+        assert!(!cgroup_file_in("0::/app/inner\n", &sysfs, "cpu.pressure"));
+        // どちらも無ければ偽
+        assert!(!cgroup_pressure_in("0::/app/inner\n", &sysfs, &none));
+        // v2 の親の階層にあれば真 (落とし込み無しでも)
+        fs::write(sysfs.join("app/cpu.pressure"), psi).unwrap();
+        assert!(cgroup_pressure_in("0::/app/inner\n", &sysfs, &none));
+        // v1 だけなら読む側は cgroup を見ない (落とし込みが無ければ偽)
+        assert!(!cgroup_pressure_in("4:cpu,cpuacct:/app\n", &sysfs, &none));
         let _ = fs::remove_dir_all(&root);
     }
 
