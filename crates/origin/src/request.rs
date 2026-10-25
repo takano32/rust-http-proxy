@@ -51,6 +51,11 @@ pub struct RequestHeaders {
     /// 後段で読み方が割れる (`Content-Length : 5` を無視するオリジン、CR を改行と読むオリジン)。
     /// 要求は置き換えると値が黙って変わるので**断る**。断るのは `http` 側と CONNECT の入口
     pub bad_header: bool,
+    /// `Expect: 100-continue` (大小無視) があった (T.28.3)。本文のある HTTP/1.1 の要求なら、
+    /// `http` 側が本文を読む前に `100 Continue` を返す (`Expect` の行はオリジンへ転送しない)
+    pub expect_continue: bool,
+    /// `Expect` に `100-continue` 以外の期待があった (RFC 9110 §10.1.1。`http` 側が 417 で断る)
+    pub expect_unknown: bool,
 }
 
 pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
@@ -137,6 +142,19 @@ pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestH
                         n
                     );
                     h.content_length_invalid = true;
+                }
+            }
+        } else if is("expect") {
+            // 並びの空の要素は読み飛ばす。`100-continue` 以外が 1 つでもあれば 417 (T.28.3)
+            for t in v_trim
+                .split(',')
+                .map(str::trim_ascii)
+                .filter(|t| !t.is_empty())
+            {
+                if t.eq_ignore_ascii_case("100-continue") {
+                    h.expect_continue = true;
+                } else {
+                    h.expect_unknown = true;
                 }
             }
         } else if is("transfer-encoding") {
@@ -459,6 +477,24 @@ mod content_length_tests {
     fn parse(lines: &[&str]) -> RequestHeaders {
         let raw: Vec<String> = lines.iter().map(|l| format!("{}\r\n", l)).collect();
         parse_request_headers(&raw, 0)
+    }
+
+    /// `Expect` の読み方 (T.28.3): `100-continue` は大小無視、それ以外が 1 つでもあれば `expect_unknown`。
+    #[test]
+    fn expect_continue_and_unknown_expectations() {
+        let h = parse(&["Expect: 100-continue"]);
+        assert!(h.expect_continue && !h.expect_unknown);
+        let h = parse(&["expect: 100-Continue"]);
+        assert!(h.expect_continue && !h.expect_unknown);
+        let h = parse(&["Expect: 100-continue, foo"]);
+        assert!(h.expect_continue && h.expect_unknown);
+        let h = parse(&["Expect: fancy"]);
+        assert!(!h.expect_continue && h.expect_unknown);
+        // 空の値と `Expect` なしはどちらも立たない
+        for lines in [&["Expect: "][..], &["Accept: */*"][..]] {
+            let h = parse(lines);
+            assert!(!h.expect_continue && !h.expect_unknown, "{:?}", lines);
+        }
     }
 
     /// 受け付ける形 (数字だけ・u64 に収まる・重複は同値なら畳む)。

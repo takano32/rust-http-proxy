@@ -925,6 +925,10 @@ fn test_integration_interim_100_continue_is_not_forwarded() {
         payload
     );
     stream.write_all(req.as_bytes()).unwrap();
+    // T.28.3 から、本文つきの `Expect: 100-continue` にはプロキシが自分で 100 を 1 回返す。
+    // オリジンの 100 は今までどおり中継しないので、100 は 1 回だけで、次が本物の応答
+    let (interim, _) = read_response(&mut stream);
+    assert_eq!(interim, "HTTP/1.1 100 Continue\r\n\r\n");
     let (head, body) = read_response(&mut stream);
     assert!(head.starts_with("HTTP/1.1 201 Created"), "{}", head);
     assert_eq!(String::from_utf8_lossy(&body), "created");

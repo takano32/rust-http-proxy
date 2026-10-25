@@ -94,6 +94,11 @@ def t27_cases(origin_port):
         ("HTTP/2 の preface", b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 505, False, None),
         ("chunk の大きさ 0x5", post(b"Transfer-Encoding: chunked\r\n", b"0x5\r\nhello\r\n0\r\n\r\n"), 400, True,
          None),
+        # T.28.3: 本文つきの 100-continue には先に 100 (最初の状態行)、Expect は転送しない。ほかの期待は 417
+        ("Expect: 100-continue", post(b"Expect: 100-continue\r\nContent-Length: 5\r\n", b"hello"), 100, True,
+         lambda seen: not any(h.lower().startswith("expect:") for h in seen["headers"])
+         and seen["body"] == "hello"),
+        ("Expect: fancy は 417", post(b"Expect: fancy\r\nContent-Length: 5\r\n", b"hello"), 417, False, None),
     ]
 
 

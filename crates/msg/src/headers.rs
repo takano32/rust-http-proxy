@@ -92,8 +92,11 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
         // 本文を送るかどうかは Framing::of_request が生のヘッダーから決めるので、
         // ここだけで落とすと両者が食い違う
         let framing_header = FRAMING_HEADERS.iter().any(|f| name.eq_ignore_ascii_case(f));
+        // `Expect` はこちらが受け持つ (100-continue は自分で 100 を返し、それ以外は 417 で
+        // 断っている。T.28.3) ので、オリジンへは転送しない
         if name.eq_ignore_ascii_case("host")
             || is_hop_by_hop_name(name)
+            || name.eq_ignore_ascii_case("expect")
             || (!framing_header && named_in_connection(name))
         {
             continue;
@@ -438,7 +441,9 @@ pub fn sanitize_and_inject_headers(
             // 枠組みのヘッダーは Connection: で指名されても落とさない
             // (要求スマグリング対策。write_request_headers 側と同じ規則)
             let framing_header = FRAMING_HEADERS.contains(&k_lower.as_str());
-            if is_hop_by_hop(&k_lower) || (!framing_header && custom_hop_by_hop.contains(&k_lower))
+            if is_hop_by_hop(&k_lower)
+                || k_lower == "expect"
+                || (!framing_header && custom_hop_by_hop.contains(&k_lower))
             {
                 continue;
             }
@@ -653,6 +658,8 @@ mod write_request_tests {
             ]),
             // 区切りの無い行 (無視される)
             vec!["NoColon\r\n".to_string(), "A: b\r\n".to_string()],
+            // `Expect` は転送しない (T.28.3。どちらの実装も落とす)
+            lines(&["eXpEcT: 100-continue", "Content-Length: 5", "A: b"]),
             Vec::new(),
         ];
         for headers in &cases {

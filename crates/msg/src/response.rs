@@ -27,8 +27,9 @@ pub fn read_head<R: BufRead>(reader: &mut R) -> io::Result<(Vec<u8>, u16)> {
 /// (中継の本体はこれに当たる)。**101 Switching Protocols は除く** — これは接続の
 /// 切り替えの応答で、プロトコルを切り替えない中継では最終応答として扱う。
 ///
-/// `100 Continue` も中継しない (`Expect: 100-continue` をオリジンまで素通ししていて、
-/// 要求の本文は待たずに送っているので、これをクライアントへ出す意味がない)。
+/// `100 Continue` も中継しない (`Expect: 100-continue` には中継の本体が本文を読む前に自分で
+/// 100 を返し、`Expect` の行はオリジンへ転送しない (T.28.3)。オリジンが勝手に返した 100 を
+/// 出すと、クライアントには 100 が 2 回届く)。
 /// 1xx は何本でもよく、`on_interim` は届いた順に呼ばれ、その後で最終応答を返す。
 pub fn read_head_forwarding<R: BufRead, F>(
     reader: &mut R,

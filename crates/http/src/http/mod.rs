@@ -510,6 +510,16 @@ pub fn handle_http_with_headers(
         let _ = write_error(client, 400, "Bad Request");
         return Ok(false);
     }
+    // `100-continue` 以外の `Expect` は満たせないので 417 (RFC 9110 §10.1.1。T.28.3)。
+    // 本文が続くかもしれないので閉じる。印は `Expect` の行があるときしか立たない
+    if req.expect_unknown {
+        log_warn!(
+            Some(conn_id),
+            "417 Expectation Failed: unsupported Expect in the request"
+        );
+        let _ = write_error(client, 417, "Expectation Failed");
+        return Ok(false);
+    }
     let keep_client = !shared.last
         && !shared.keepalive.is_zero()
         && if http11 {
@@ -542,6 +552,13 @@ pub fn handle_http_with_headers(
             .map(Framing::Length)
             .unwrap_or(Framing::None)
     };
+    // `Expect: 100-continue` の本文つきの要求には、本文を読む前に `100 Continue` を 1 回返す
+    // (RFC 9110 §10.1.1。T.28.3)。今までは自分でも返さず、オリジンの 100 も中継しないので、
+    // 100 を厳密に待つクライアントは締め切りまで本文を送らず、こちらは本文を待って止まっていた。
+    // HTTP/1.0 の要求の 100-continue は無視する (§10.1.1)
+    let mut send_continue = req.expect_continue
+        && http11
+        && matches!(req_framing, Framing::Chunked | Framing::Length(1..));
     let is_get = method.eq_ignore_ascii_case("GET");
     let head_only = method.eq_ignore_ascii_case("HEAD");
     // `Max-Forwards` (RFC 9110 §7.6.2。TRACE と OPTIONS だけ): 0 なら転送せずに自分で応え、
@@ -827,7 +844,15 @@ pub fn handle_http_with_headers(
         let sent = server
             .get_mut()
             .write_all(&request_head)
-            .and_then(|_| forward_request_body(reader, server.get_mut(), req_framing))
+            .and_then(|_| {
+                // 本文のある要求はやり直さない (`retryable` が偽) ので、100 は高々 1 回
+                if send_continue {
+                    send_continue = false;
+                    client.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+                    client.flush()?;
+                }
+                forward_request_body(reader, server.get_mut(), req_framing)
+            })
             .and_then(|n| server.get_mut().flush().map(|_| n));
         // 要求をオリジンへ送り終えた境目 (T14.3 (1))。ここが forward に足す唯一の時計
         let sent_at = crate::profile::mark();
