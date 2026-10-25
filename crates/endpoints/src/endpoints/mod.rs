@@ -990,17 +990,31 @@ mod local_path_tests {
             "{}",
             "個票が 5 秒ごとになっていない"
         );
-        // プロファイルは 5 秒ごとに `/profile?res=` を 1 本 (T14.3)
+        // プロファイルは 30 秒ごとに `/profile?res=` を 1 本 (T14.3。重い口なので T28.25 で 5 → 30 秒)
         assert!(
             html.contains("fetchJson('/profile?res='+res)"),
             "{}",
             "/profile を取っていない"
         );
         assert!(
-            html.contains("setInterval(pollProfile,5000)"),
+            html.contains("setInterval(pollProfile,30000)"),
             "{}",
-            "プロファイルが 5 秒ごとになっていない"
+            "プロファイルが 30 秒ごとになっていない"
         );
+        // 起動のカード (T28.25): 30 秒ごとに `/events` を引いて「普通の再起動 / 無言の再起動」を出す
+        assert!(
+            html.contains("fetchJson('/events?n=200')")
+                && html.contains("setInterval(pollEvents,30000)"),
+            "{}",
+            "/events を 30 秒ごとに取っていない"
+        );
+        for id in ["bootkpi", "bootdetail", "rejdetail"] {
+            assert!(
+                html.contains(&format!("id=\"{}\"", id)),
+                "起動のカードの {} が無い",
+                id
+            );
+        }
         // ヘッダーから個票へ行けること (T13.4)
         for link in [
             "/dns",

@@ -103,6 +103,7 @@ const names = [
   'fmtMsFine',
   'fmtNum',
   'fmtDur',
+  'bootKind',
 ];
 // 名前で関数を切り出して 1 つの object にする (DOM に触らない関数だけ渡すこと)
 function pick(source, wanted, where, prelude) {
@@ -1820,7 +1821,25 @@ if (api.connectKpi(waitStatus, kpiWin, hist.bounds_ms).p50 !== 8.4) fail('connec
 // 17. `dashboard.html` の大きさ。inspect は Rust 側で 64 KiB を見張っているのに
 // dashboard には上限が無かった (T15.0 (14) で足した)。外部ライブラリを読み込まない
 // 1 ページという方針を守るための歯止めで、超えたら**中身を削るか上限を上げるか**を先に決める
-const DASH_MAX = 80 * 1024;
+// T.28.25 (2026-10-25) で 80 → 96 KiB に上げた (余白が 1,405 B しか無く、起動のカードを足すと越えた)。
+// inspect.html と同じ上限。コメントを削って入れる案は、読み手のための注をなくすので採らなかった
+const DASH_MAX = 96 * 1024;
+
+// 18. 起動のカード (T.28.25): `/events` から「普通の再起動 / 無言の再起動」を決める `bootKind`
+const bootStart = (at, boot) => ({ at, kind: 'start', text: 'version 0.28.0+abc on port 60357 boot ' + boot + ' (profile default)' });
+let bk = api.bootKind([bootStart(100, 'aaaa'), { at: 200, kind: 'shutdown', text: 'stop' }, bootStart(230, 'aaaa'),
+  { at: 230, kind: 'anomaly', text: '同じ秒の出来事は直前と見ない' }]);
+if (bk.kind !== 'graceful' || bk.down !== 30 || bk.version !== '0.28.0+abc' || bk.boot !== 'aaaa') fail('bootKind が普通の再起動を読めない: ' + JSON.stringify(bk));
+bk = api.bootKind([bootStart(100, 'aaaa'), { at: 150, kind: 'anomaly', text: 'x' }, bootStart(300, 'bbbb'),
+  { at: 310, kind: 'start', text: 'self bench: 自己ベンチの start は起動ではない' }]);
+if (bk.kind !== 'silent' || bk.at !== 300) fail('bootKind が無言の再起動を読めない: ' + JSON.stringify(bk));
+if (api.bootKind([bootStart(100, 'aaaa')]).kind !== 'edge') fail('bootKind: 窓の先頭の start は edge');
+if (api.bootKind([]).kind !== 'none' || api.bootKind(undefined).kind !== 'none') fail('bootKind: 出来事が無いときは none');
+// 実データ (匿名化した雪像に /events があれば) でも落ちない
+const realEvents = statusFile && fs.existsSync(statusFile) ? (JSON.parse(fs.readFileSync(statusFile, 'utf8')).events || null) : null;
+const realKind = realEvents ? api.bootKind(realEvents.events || realEvents).kind : 'none';
+console.log('OK: 起動のカード (T.28.25) の bootKind: 普通の再起動・無言の再起動・窓の先頭・記録なしを読み分けた (' +
+  (realEvents ? '実データ ' + realKind : '実データに /events なし') + ')');
 const dashBytes = Buffer.byteLength(html);
 if (dashBytes > DASH_MAX) {
   fail('dashboard.html が ' + DASH_MAX + ' B を超えた: ' + dashBytes + ' B');

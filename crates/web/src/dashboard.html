@@ -81,6 +81,7 @@ pre{background:#0b0d13;border:1px solid var(--line);border-radius:8px;padding:10
     <div class="card"><h2>CPU の絞り <span class="tag" id="cputag">通算</span></h2><div class="kpi" id="cpukpi">–</div><div class="bar"><i id="cpubar"></i></div><div class="hint" id="cpudetail"></div></div>
     <div class="card" id="slocard" hidden><h2>今日の SLO <span class="tag" id="slotag">UTC</span></h2><div class="kpi" id="slokpi">–</div><div class="hint" id="slodetail"></div></div>
     <div class="card"><h2>接続中</h2><div class="kpi" id="active">–</div><div class="hint" id="connlimit"></div><div class="hint" id="threads"></div><div class="hint" id="origins"></div></div>
+    <div class="card"><h2>起動 <span class="tag" id="boottag">–</span></h2><div class="kpi" id="bootkpi">–</div><div class="hint" id="bootdetail"></div><div class="hint" id="rejdetail"></div></div>
     <div class="card"><h2>キャッシュ命中率</h2><div class="kpi" id="hitratio">–</div><div class="hint" id="hitdetail"></div></div>
     <div class="card"><h2>メモリキャッシュ</h2><div class="kpi" id="memkpi">–</div><div class="bar"><i id="membar"></i></div><div class="hint" id="memhint"></div></div>
     <div class="card"><h2>ディスクキャッシュ</h2><div class="kpi" id="diskkpi">–</div><div class="bar"><i id="diskbar"></i></div><div class="hint" id="diskhint"></div></div>
@@ -879,8 +880,33 @@ function renderSlo(j){
   $('slokpi').title='PROXY_SLO の 4 つの閾を 5 秒の標本ごとに判定し、4 つとも満たした標本の割合です (UTC の今日)';
   $('slodetail').textContent=k.detail;
 }
+// T.28.25: 最後の起動が「直前に shutdown がある普通の再起動」か「無言の再起動」かを /events から決める。
+// 見方は scripts/snapshot_criteria.py の silent_restarts と同じ (起動の start は文面が "version " で始まる行だけ、
+// 同じ秒の出来事は「直前」と見ない)。DOM に触らない (check-dashboard.js が切り出して確かめる)
+function bootKind(events){
+  var ms=(events||[]).filter(function(e){return e&&e.at}).sort(function(a,b){return a.at-b.at});
+  var st=null,i;for(i=ms.length-1;i>=0;i--){if(ms[i].kind==='start'&&/^version /.test(ms[i].text||'')){st=ms[i];break}}
+  if(!st)return{kind:'none'};
+  var prev=null;for(var j=i-1;j>=0;j--){if(ms[j].at<st.at){prev=ms[j];break}}
+  var v=(/^version (\S+)/.exec(st.text)||[])[1]||'',b=(/\bboot ([0-9a-f-]+)/.exec(st.text)||[])[1]||'';
+  return{kind:!prev?'edge':prev.kind==='shutdown'?'graceful':'silent',at:st.at,version:v,boot:b,down:prev&&prev.kind==='shutdown'?st.at-prev.at:null};
+}
+function renderEvents(ev){
+  var k=bootKind(ev&&ev.events);
+  if(k.kind==='none'){$('bootkpi').textContent='記録なし';$('boottag').textContent='–';return}
+  $('bootkpi').textContent=k.kind==='graceful'?'普通の再起動':k.kind==='silent'?'無言の再起動':'起動 (前の記録なし)';
+  $('bootkpi').style.color=k.kind==='silent'?'var(--bad)':'';
+  $('boottag').textContent=new Date(k.at*1000).toLocaleString();
+  if(k.down!=null)$('bootkpi').title='止まっていた '+k.down+' 秒';
+}
+function renderBoot(s){
+  var b=s.boot||{},r=s.rejected_requests||{};
+  $('bootdetail').textContent=b.id?'boot '+String(b.id).slice(0,8)+' · pid '+b.pid:'boot は無い版';
+  $('rejdetail').textContent='断った要求 '+fmtNum(r.total||0)+' · 重い口の断り '+fmtNum(s.heavy_rejected||0)+' · 上限 '+fmtNum(s.rejected_overload||0);
+}
 function renderStatus(s){
   last=s;var c=s.cache||{};
+  renderBoot(s);
   $('version').textContent=s.version||'';
   $('uptime').textContent='稼働 '+fmtDur(s.uptime_secs)+' · ログ '+(s.log_level||'');
   $('window').textContent='窓: 起動から '+fmtDur(s.since_start_secs==null?s.uptime_secs:s.since_start_secs)
@@ -1052,6 +1078,7 @@ function pollRecent(){if($('pause').checked)return;
   fetchJson('/errors?n=20').then(renderErrors).catch(function(){});
   fetchJson('/connections').then(renderConns).catch(function(){});}
 // プロファイルは 5 秒ごと (`/history` と同じ範囲の選択に合わせる。T14.3)
+function pollEvents(){if($('pause').checked)return;fetchJson('/events?n=200').then(renderEvents).catch(function(){});}
 function pollProfile(){if($('pause').checked)return;
   var res=$('range').value==='5'?5:60;
   fetchJson('/profile?res='+res).then(renderProfile).catch(function(){});}
@@ -1069,7 +1096,7 @@ $('btn-purge').addEventListener('click',function(){var u=$('url').value.trim();i
 $('btn-purge-all').addEventListener('click',function(){if(!confirm('キャッシュを全部消します。よろしいですか？'))return;
   fetchJson('/purge?all=1').then(function(j){$('out').textContent=JSON.stringify(j,null,2);pollStatus()}).catch(function(e){$('out').textContent=e.message})});
 window.addEventListener('resize',redraw);
-pollStatus();pollHistory();pollBad();pollRecent();pollProfile();pollSlo();setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);setInterval(pollRecent,5000);setInterval(pollProfile,5000);setInterval(pollSlo,30000);
+pollStatus();pollHistory();pollBad();pollRecent();pollProfile();pollSlo();pollEvents();setInterval(pollEvents,30000);setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);setInterval(pollRecent,5000);setInterval(pollProfile,30000);setInterval(pollSlo,30000);
 })();
 </script>
 </body>
