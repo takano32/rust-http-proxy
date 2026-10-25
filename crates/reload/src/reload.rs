@@ -284,6 +284,9 @@ impl Live {
             next.sources.adopt(&fresh.sources, "PROXY_LOG_LEVEL");
             applied.push("PROXY_LOG_LEVEL");
         }
+        // 読めなかった値と知らない名前は**いまの `.env` のもの**に差し替える (T.28.6。
+        // 直した行は消え、新しく書き損じた行が出る)。値そのものは上で当てた既定のまま
+        next.problems = fresh.problems.clone();
         *self.current.write_locked() = Arc::new(next);
 
         let boot = &self.boot;
@@ -352,9 +355,10 @@ impl Live {
 
     /// `/status` の `"settings"` 要素。
     pub fn json(&self) -> String {
+        let problems = self.config().problems.clone();
         let st = self.state.locked();
         format!(
-            "{{\"path\":{},\"watch\":\"{}\",\"reloads\":{},\"last_reload\":{},\"applied\":{},\"restart_required\":{},\"error\":{}}}",
+            "{{\"path\":{},\"watch\":\"{}\",\"reloads\":{},\"last_reload\":{},\"applied\":{},\"restart_required\":{},\"error\":{},\"invalid\":{},\"unknown\":{}}}",
             crate::json::quote_opt(
                 envfile::loaded_path()
                     .or_else(envfile::env_path)
@@ -367,6 +371,9 @@ impl Live {
             crate::json::list(&st.applied),
             crate::json::list(&st.restart_required),
             crate::json::quote_opt(st.error.as_deref()),
+            // 読めなかった値と知らない名前 (T.28.6。足しただけ。正しい `.env` では `[]`)
+            problems.invalid_json(),
+            problems.unknown_json(),
         )
     }
 }

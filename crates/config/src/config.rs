@@ -8,6 +8,9 @@ use crate::cache::{CacheConfig, DiskQuota, Limit, MIB};
 use crate::envfile;
 use crate::records;
 
+mod problems;
+pub use problems::{EnvProblems, INVALID_VALUE_CAP, InvalidVar, SUGGEST_DISTANCE, UnknownVar};
+
 /// 1 接続が最悪で使う記述子の数: クライアント 1 + オリジン 1 + 素通し中のパイプ 2 (`splice`)。
 pub const FDS_PER_CONN: u64 = 4;
 
@@ -664,6 +667,8 @@ pub struct Config {
     pub tcp_keepalive: Option<TcpKeepalive>,
     /// 各値の出どころ (`/config` の `source`。T14.15)。効いた値にだけ印が付く
     pub sources: Sources,
+    /// 読めなかった値と知らない名前 (`--check` と `settings.invalid` / `settings.unknown`。T.28.6)
+    pub problems: EnvProblems,
 }
 
 impl Config {
@@ -671,13 +676,15 @@ impl Config {
         // **効いた値にだけ**出どころの印を付ける (`/config` の `source`。T14.15)。
         // 読めない書き方は既定に落ちるので、その行は `default` のままになる
         let mut src = Sources::default();
+        // 読めない値と知らない名前 (T.28.6)。読めない値は WARN を 1 行出して既定のまま
+        let mut bad = EnvProblems::default();
         let port_str = envfile::var("SERVER_PORT").unwrap_or_else(|| "8080".to_string());
         let allow_hosts = envfile::var("PROXY_ALLOW_HOSTS");
         let deny_hosts = envfile::var("PROXY_DENY_HOSTS");
         // `0` は無期限。1 秒に切り上げないのは、切り上げると**無期限を表す手段が
         // 設定から無くなる**ため (`PROXY_TUNNEL_IDLE_SECS` と意味を揃えた。T10.6)
-        let timeout_secs = envfile::var("PROXY_TIMEOUT_SECS")
-            .and_then(|s| s.parse::<u64>().ok())
+        let timeout_secs = bad
+            .num::<u64>("PROXY_TIMEOUT_SECS")
             .inspect(|_| src.mark("PROXY_TIMEOUT_SECS"))
             .unwrap_or(30);
 
@@ -710,9 +717,7 @@ impl Config {
         // CONNECT のオリジン接続だけの締め切り (T15.6)。書かなければ `Config::new` が入れた
         // 既定 (5 秒と `PROXY_TIMEOUT_SECS` の小さい方) のまま = 出どころも `default` のまま。
         // 書いてあればその値をそのまま使う (`0` と明示すれば無期限。T10.6)
-        if let Some(secs) =
-            envfile::var("PROXY_CONNECT_TIMEOUT_SECS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(secs) = bad.num::<u64>("PROXY_CONNECT_TIMEOUT_SECS") {
             cfg.connect_timeout = connect_timeout_for(cfg.timeout, Some(Duration::from_secs(secs)));
             src.mark("PROXY_CONNECT_TIMEOUT_SECS");
         }
@@ -730,43 +735,36 @@ impl Config {
                     cfg.he_stagger = d;
                     src.mark("PROXY_HE_STAGGER_MS");
                 }
-                None => crate::log_warn!(
-                    None,
-                    "PROXY_HE_STAGGER_MS={:?} is not a number in {}..={} ms; using the default {} ms",
-                    v.trim(),
-                    crate::net::STAGGER_RANGE_MS.start(),
-                    crate::net::STAGGER_RANGE_MS.end(),
-                    crate::net::DEFAULT_STAGGER.as_millis()
-                ),
+                None => {
+                    crate::log_warn!(
+                        None,
+                        "PROXY_HE_STAGGER_MS={:?} is not a number in {}..={} ms; using the default {} ms",
+                        v.trim(),
+                        crate::net::STAGGER_RANGE_MS.start(),
+                        crate::net::STAGGER_RANGE_MS.end(),
+                        crate::net::DEFAULT_STAGGER.as_millis()
+                    );
+                    bad.note("PROXY_HE_STAGGER_MS", &v, "a number in 10..=2000 ms");
+                }
             }
         }
-        if let Some(secs) =
-            envfile::var("PROXY_KEEPALIVE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(secs) = bad.num::<u64>("PROXY_KEEPALIVE_SECS") {
             cfg.keepalive = Duration::from_secs(secs);
             src.mark("PROXY_KEEPALIVE_SECS");
         }
-        if let Some(n) =
-            envfile::var("PROXY_ORIGIN_POOL").and_then(|s| s.trim().parse::<usize>().ok())
-        {
+        if let Some(n) = bad.num::<usize>("PROXY_ORIGIN_POOL") {
             cfg.pool_per_host = n;
             src.mark("PROXY_ORIGIN_POOL");
         }
-        if let Some(n) =
-            envfile::var("PROXY_ORIGIN_POOL_TOTAL").and_then(|s| s.trim().parse::<usize>().ok())
-        {
+        if let Some(n) = bad.num::<usize>("PROXY_ORIGIN_POOL_TOTAL") {
             cfg.pool_total = n;
             src.mark("PROXY_ORIGIN_POOL_TOTAL");
         }
-        if let Some(n) =
-            envfile::var("PROXY_MALLOC_ARENAS").and_then(|s| s.trim().parse::<usize>().ok())
-        {
+        if let Some(n) = bad.num::<usize>("PROXY_MALLOC_ARENAS") {
             cfg.malloc_arenas = n;
             src.mark("PROXY_MALLOC_ARENAS");
         }
-        if let Some(ms) =
-            envfile::var("PROXY_PARK_GRACE_MS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(ms) = bad.num::<u64>("PROXY_PARK_GRACE_MS") {
             cfg.park_grace = Duration::from_millis(ms);
             src.mark("PROXY_PARK_GRACE_MS");
         }
@@ -799,6 +797,8 @@ impl Config {
                     n
                 };
                 src.mark("PROXY_LISTEN_BACKLOG");
+            } else if !v.is_empty() {
+                bad.reject("PROXY_LISTEN_BACKLOG", v, "a whole number or auto");
             }
         }
         if let Some(v) = envfile::var("PROXY_TLS") {
@@ -819,6 +819,8 @@ impl Config {
             } else if let Ok(n) = v.parse::<usize>() {
                 cfg.max_conns = n;
                 src.mark("PROXY_MAX_CONNS");
+            } else if !v.is_empty() {
+                bad.reject("PROXY_MAX_CONNS", v, "a whole number or auto");
             }
         }
         // スレッドの上限は接続数の上限にも従うので、**PROXY_MAX_CONNS の後に**決める
@@ -828,21 +830,19 @@ impl Config {
             if let Ok(n) = v.parse::<usize>() {
                 cfg.max_threads = n;
                 src.mark("PROXY_MAX_THREADS");
+            } else if !v.is_empty() && !v.eq_ignore_ascii_case("auto") {
+                bad.reject("PROXY_MAX_THREADS", v, "a whole number or auto");
             }
             // `auto` と読めない書き方は既定のまま
         }
         // 山の写真の閾 (T14.6)。**`PROXY_MAX_CONNS` の後に**決める (割合を当てる相手が上限)。
         // `--lite` では個票を 1 つも記録しないので、写真も撮らない (T1.4 の方針)
-        if let Some(n) =
-            envfile::var("PROXY_BURST_PERCENT").and_then(|s| s.trim().parse::<usize>().ok())
-        {
+        if let Some(n) = bad.num::<usize>("PROXY_BURST_PERCENT") {
             cfg.burst_percent = n.min(100);
             src.mark("PROXY_BURST_PERCENT");
         }
         cfg.refresh_burst_at();
-        if let Some(secs) =
-            envfile::var("PROXY_TUNNEL_IDLE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(secs) = bad.num::<u64>("PROXY_TUNNEL_IDLE_SECS") {
             cfg.tunnel_idle = Duration::from_secs(secs);
             src.mark("PROXY_TUNNEL_IDLE_SECS");
         }
@@ -862,21 +862,21 @@ impl Config {
             cfg.allow_clients = ClientAcl::parse(&v);
             src.mark("PROXY_ALLOW_CLIENTS");
         }
-        if let Some(n) =
-            envfile::var("PROXY_MAX_CONNS_PER_CLIENT").and_then(|s| s.trim().parse::<usize>().ok())
-        {
+        if let Some(n) = bad.num::<usize>("PROXY_MAX_CONNS_PER_CLIENT") {
             cfg.max_conns_per_client = n;
             src.mark("PROXY_MAX_CONNS_PER_CLIENT");
         }
         // 追跡する接続元 (T14.27)。空 (と読めない書き方) は「追跡しない」= 既定のまま。
         // 覚えるのは `net::canonical_ip` を通した形なので、`::ffff:1.2.3.4` と書いても
         // `1.2.3.4` から来た接続に当たる
-        if let Some(ip) = envfile::var("PROXY_TRACE_CLIENT")
-            .and_then(|s| s.trim().parse::<IpAddr>().ok())
-            .map(crate::net::canonical_ip)
-        {
-            cfg.trace_client = Some(ip);
-            src.mark("PROXY_TRACE_CLIENT");
+        if let Some(v) = EnvProblems::present("PROXY_TRACE_CLIENT") {
+            match v.parse::<IpAddr>() {
+                Ok(ip) => {
+                    cfg.trace_client = Some(crate::net::canonical_ip(ip));
+                    src.mark("PROXY_TRACE_CLIENT");
+                }
+                Err(_) => bad.reject("PROXY_TRACE_CLIENT", &v, "an IP address"),
+            }
         }
         // CONNECT の最初のバイトから SNI を覗くか (T14.38)。`off` / `on` / `on:<port>` で、
         // 読めない書き方は既定 (`on` = 443 だけ) のまま
@@ -886,30 +886,44 @@ impl Config {
                 Some((head, port)) => (head, port.trim().parse::<u16>().ok()),
                 None => (v.as_str(), None),
             };
+            let has_port = v.contains(':');
             if off(head.to_string()) {
                 cfg.peek_sni = None;
                 src.mark("PROXY_PEEK_SNI");
             } else if port.is_some_and(|p| p > 0) {
                 cfg.peek_sni = port;
                 src.mark("PROXY_PEEK_SNI");
+            } else if !v.is_empty()
+                && (has_port || !matches!(head.trim(), "1" | "true" | "on" | "yes"))
+            {
+                // `on` (既定と同じ) はここに来ない。読めないのは綴りと `on:<0 か数でないもの>`
+                bad.reject("PROXY_PEEK_SNI", &v, "off, on or on:<port>");
             }
         }
         // 記録の一括 off とハッシュ化 (T14.41)。読めない書き方は既定 (`on`) のまま
-        if let Some(m) = envfile::var("PROXY_RECORDS")
-            .as_deref()
-            .and_then(records::parse)
-        {
-            cfg.records = m;
-            src.mark("PROXY_RECORDS");
+        if let Some(v) = EnvProblems::present("PROXY_RECORDS") {
+            match records::parse(&v) {
+                Some(m) => {
+                    cfg.records = m;
+                    src.mark("PROXY_RECORDS");
+                }
+                None => bad.reject("PROXY_RECORDS", &v, "on, off or hashed"),
+            }
         }
         // 消えたクライアントの検知 (T14.52)。`off` / `on` / `on:<idle>:<intvl>:<cnt>` で、
         // 読めない書き方は既定 (`on` = 60:10:3) のまま
-        if let Some(k) = envfile::var("PROXY_TCP_KEEPALIVE")
-            .as_deref()
-            .and_then(TcpKeepalive::parse)
-        {
-            cfg.tcp_keepalive = k;
-            src.mark("PROXY_TCP_KEEPALIVE");
+        if let Some(v) = EnvProblems::present("PROXY_TCP_KEEPALIVE") {
+            match TcpKeepalive::parse(&v) {
+                Some(k) => {
+                    cfg.tcp_keepalive = k;
+                    src.mark("PROXY_TCP_KEEPALIVE");
+                }
+                None => bad.reject(
+                    "PROXY_TCP_KEEPALIVE",
+                    &v,
+                    "off, on or on:<idle>:<intvl>:<count>",
+                ),
+            }
         }
         if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
             cfg.stats_persist = !off(v);
@@ -921,9 +935,7 @@ impl Config {
             cfg.self_bench = !off(v);
             src.mark("PROXY_SELF_BENCH");
         }
-        if let Some(n) =
-            envfile::var("PROXY_SNAPSHOT_DAYS").and_then(|s| s.trim().parse::<usize>().ok())
-        {
+        if let Some(n) = bad.num::<usize>("PROXY_SNAPSHOT_DAYS") {
             cfg.snapshot_days = n.min(MAX_SNAPSHOT_DAYS);
             src.mark("PROXY_SNAPSHOT_DAYS");
         }
@@ -935,27 +947,19 @@ impl Config {
             cfg.tls_ca_file = Some(PathBuf::from(path.trim()));
             src.mark("PROXY_TLS_CA_FILE");
         }
-        if let Some(secs) =
-            envfile::var("PROXY_DNS_TTL_SECS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(secs) = bad.num::<u64>("PROXY_DNS_TTL_SECS") {
             cfg.dns_ttl = Duration::from_secs(secs);
             src.mark("PROXY_DNS_TTL_SECS");
         }
-        if let Some(secs) =
-            envfile::var("PROXY_DNS_NEGATIVE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(secs) = bad.num::<u64>("PROXY_DNS_NEGATIVE_SECS") {
             cfg.dns_negative = Duration::from_secs(secs);
             src.mark("PROXY_DNS_NEGATIVE_SECS");
         }
-        if let Some(secs) =
-            envfile::var("PROXY_DNS_WARM_SECS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(secs) = bad.num::<u64>("PROXY_DNS_WARM_SECS") {
             cfg.dns_warm = Duration::from_secs(secs);
             src.mark("PROXY_DNS_WARM_SECS");
         }
-        if let Some(secs) =
-            envfile::var("PROXY_DNS_STALE_SECS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(secs) = bad.num::<u64>("PROXY_DNS_STALE_SECS") {
             cfg.dns_stale = Duration::from_secs(secs);
             src.mark("PROXY_DNS_STALE_SECS");
         }
@@ -963,9 +967,7 @@ impl Config {
             cfg.canary = v.trim().to_ascii_lowercase();
             src.mark("PROXY_CANARY");
         }
-        if let Some(secs) =
-            envfile::var("PROXY_CANARY_SECS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(secs) = bad.num::<u64>("PROXY_CANARY_SECS") {
             cfg.canary_secs = Duration::from_secs(secs.max(1));
             src.mark("PROXY_CANARY_SECS");
         }
@@ -973,9 +975,7 @@ impl Config {
             cfg.canary_ipv6 = !off(v);
             src.mark("PROXY_CANARY_IPV6");
         }
-        if let Some(ms) =
-            envfile::var("PROXY_PROFILE_SAMPLE_MS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(ms) = bad.num::<u64>("PROXY_PROFILE_SAMPLE_MS") {
             cfg.profile_sample_ms = ms;
             src.mark("PROXY_PROFILE_SAMPLE_MS");
         }
@@ -994,13 +994,16 @@ impl Config {
             .filter(|p| !p.is_empty())
             .map(PathBuf::from)
             .inspect(|_| src.mark("PROXY_BLOCKLIST_FILE"));
-        cfg.blocklist_url = envfile::var("PROXY_BLOCKLIST_URL")
-            .map(|u| u.trim().to_string())
-            .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        cfg.blocklist_url = EnvProblems::present("PROXY_BLOCKLIST_URL")
+            .filter(|u| {
+                let ok = u.starts_with("http://") || u.starts_with("https://");
+                if !ok {
+                    bad.reject("PROXY_BLOCKLIST_URL", u, "an http:// or https:// URL");
+                }
+                ok
+            })
             .inspect(|_| src.mark("PROXY_BLOCKLIST_URL"));
-        if let Some(secs) =
-            envfile::var("PROXY_BLOCKLIST_REFRESH_SECS").and_then(|s| s.trim().parse::<u64>().ok())
-        {
+        if let Some(secs) = bad.num::<u64>("PROXY_BLOCKLIST_REFRESH_SECS") {
             cfg.blocklist_refresh = Duration::from_secs(secs.max(60));
             src.mark("PROXY_BLOCKLIST_REFRESH_SECS");
         }
@@ -1010,8 +1013,13 @@ impl Config {
         }
         // ログの高さは `Config` に持たないが (`crate::log` の全体の状態)、
         // `/config` には効いている値と出どころを並べる
-        if envfile::var("PROXY_LOG_LEVEL").is_some_and(|v| crate::log::Level::parse(&v).is_some()) {
-            src.mark("PROXY_LOG_LEVEL");
+        // 読めない高さの知らせは `log::init_from_env` が起動時に 1 行出しているので、ここは覚えるだけ
+        if let Some(v) = EnvProblems::present("PROXY_LOG_LEVEL") {
+            if crate::log::Level::parse(&v).is_some() {
+                src.mark("PROXY_LOG_LEVEL");
+            } else {
+                bad.note("PROXY_LOG_LEVEL", &v, "error, warn, info or debug");
+            }
         }
         let mut cache = CacheConfig::from_env();
         if cfg.lite {
@@ -1022,9 +1030,14 @@ impl Config {
                 cache.enabled = false;
             }
         }
-        mark_cache_sources(&mut src);
+        mark_cache_sources(&mut src, &mut bad);
         cfg.sources = src;
-        Ok(cfg.with_cache(cache))
+        let mut cfg = cfg.with_cache(cache);
+        // 知らない名前は、知っている名前 (`/config` に並ぶ全部) と比べる
+        let known: Vec<&'static str> = cfg.settings().iter().map(|s| s.key).collect();
+        bad.find_unknown(&known);
+        cfg.problems = bad;
+        Ok(cfg)
     }
 
     /// `max_conns` か `burst_percent` を手で書き換えたあとに山の写真の閾を計算し直す (T14.6)。
@@ -1341,6 +1354,7 @@ impl Config {
             records: crate::records::Mode::On,
             tcp_keepalive: Some(DEFAULT_TCP_KEEPALIVE),
             sources: Sources::default(),
+            problems: EnvProblems::default(),
         })
     }
 }
@@ -1398,7 +1412,7 @@ fn quota_value(quota: DiskQuota) -> String {
 /// キャッシュの設定は [`CacheConfig::from_env`] が読むので、ここでは**書いてあって読めた**
 /// キーにだけ印を付ける (読み方は `crates/cachecfg` と同じ: 前後の空白を落として空でないこと、
 /// 数値のものは `u64` として読めること、範囲のあるものはその中であること)。
-fn mark_cache_sources(src: &mut Sources) {
+fn mark_cache_sources(src: &mut Sources, bad: &mut EnvProblems) {
     let raw = |k: &str| {
         envfile::var(k)
             .map(|v| v.trim().to_string())
@@ -1418,6 +1432,12 @@ fn mark_cache_sources(src: &mut Sources) {
             src.mark(key);
         }
     }
+    // 読めたら印、書いてあって読めなければ WARN と `invalid` (T.28.6)
+    let mut check = |key: &'static str, ok: bool, expected: &'static str| match raw(key) {
+        Some(_) if ok => src.mark(key),
+        Some(v) => bad.reject(key, &v, expected),
+        None => {}
+    };
     // 数値として読めたときだけ効くもの
     for key in [
         "PROXY_CACHE_PROBE_SECS",
@@ -1432,30 +1452,30 @@ fn mark_cache_sources(src: &mut Sources) {
         "PROXY_MEM_CACHE_MAX_OBJECT_MB",
         "PROXY_NEGATIVE_TTL_SECS",
     ] {
-        if num(key).is_some() {
-            src.mark(key);
-        }
+        check(key, num(key).is_some(), "a whole number");
     }
     // 範囲のあるもの
     for key in ["PROXY_MEM_TARGET_PERCENT", "PROXY_DISK_TARGET_PERCENT"] {
-        if num(key).is_some_and(|p| (1..=100).contains(&p)) {
-            src.mark(key);
-        }
+        check(
+            key,
+            num(key).is_some_and(|p| (1..=100).contains(&p)),
+            "a number in 1..=100",
+        );
     }
-    if num("PROXY_CACHE_HEURISTIC_PERCENT").is_some_and(|p| p <= 100) {
-        src.mark("PROXY_CACHE_HEURISTIC_PERCENT");
-    }
-    if num("PROXY_DISK_MAX_ENTRIES").is_some_and(|v| v > 0) {
-        src.mark("PROXY_DISK_MAX_ENTRIES");
-    }
-    if num("SERVER_MEMORY").is_some_and(|v| v > 0) {
-        src.mark("SERVER_MEMORY");
-    }
+    check(
+        "PROXY_CACHE_HEURISTIC_PERCENT",
+        num("PROXY_CACHE_HEURISTIC_PERCENT").is_some_and(|p| p <= 100),
+        "a number in 0..=100",
+    );
+    check(
+        "PROXY_DISK_MAX_ENTRIES",
+        num("PROXY_DISK_MAX_ENTRIES").is_some_and(|v| v > 0),
+        "a whole number above 0",
+    );
     // 上限は `auto` / `auto:85` / `85%` / MiB 数
     for key in ["PROXY_MEM_CACHE_MB", "PROXY_DISK_CACHE_MB"] {
-        if raw(key).is_some_and(|v| Limit::parse(&v, DEFAULT_TARGET_PERCENT).is_some()) {
-            src.mark(key);
-        }
+        let ok = raw(key).is_some_and(|v| Limit::parse(&v, DEFAULT_TARGET_PERCENT).is_some());
+        check(key, ok, "auto, auto:<percent>, <percent>% or MiB");
     }
     // ディスク割当は `PROXY_DISK_QUOTA_MB` が先で、**空でなければ**別名の `SERVER_DISK` は見ない
     let quota_key = if raw("PROXY_DISK_QUOTA_MB").is_some() {
@@ -1463,8 +1483,17 @@ fn mark_cache_sources(src: &mut Sources) {
     } else {
         "SERVER_DISK"
     };
-    if raw(quota_key).is_some_and(|v| DiskQuota::parse(&v).is_some()) {
-        src.mark(quota_key);
+    let ok = raw(quota_key).is_some_and(|v| DiskQuota::parse(&v).is_some());
+    check(quota_key, ok, "auto or MiB");
+    // `SERVER_MEMORY=0` はパネルの「無制限」なので読めない値ではない (印は付けない)
+    match num("SERVER_MEMORY") {
+        Some(v) if v > 0 => src.mark("SERVER_MEMORY"),
+        Some(_) => {}
+        None => {
+            if let Some(v) = raw("SERVER_MEMORY") {
+                bad.reject("SERVER_MEMORY", &v, "a whole number of MiB");
+            }
+        }
     }
 }
 

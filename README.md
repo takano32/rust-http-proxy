@@ -1556,6 +1556,8 @@ Pterodactyl のように触れないコンテナで、**起動前の確認**と*
 1 つでも読めなければ **1** です (名前解決を外すのは、リゾルバが遅い環境でもプロキシとしては動く —
 そしてそれ自体が測りたい数字 — ため。`cgroup_cpu_path` は真偽ではなく「どの階層の `cpu.stat` を読むか」を
 見せるだけの行です。T.15.0 (6))。
+`.env` に読めない値や知らない名前があれば、設定の一覧の後ろに `not readable` と `unknown names` の段が出ます
+(正しい設定では出ません。終了コードには入れません。T.28.6)。
 
 ```
 $ rust-http-proxy --check
@@ -1577,6 +1579,12 @@ settings (source, name, effective value):
   default   SERVER_PORT                    8080
   env_file  PROXY_DNS_TTL_SECS             30
   ...
+
+not readable (ignored; the default is in effect):
+  PROXY_KEEPALIVE_SECS           "abc" (expected a whole number)
+
+unknown names in the settings file (not read by this proxy):
+  PROXY_TIMOUT_SECS              did you mean PROXY_TIMEOUT_SECS?
 
 check: ok (everything this proxy reads is readable)
 ```
@@ -1696,8 +1704,17 @@ check: ok (everything this proxy reads is readable)
 既存の keep-alive 接続には次の接続から効きます (どの値を当てたかは `/status` の `settings.applied` に出ます)。ポート・bind・
 待ち受けの backlog (`PROXY_LISTEN_BACKLOG`)・TLS・
 オリジンプール・キャッシュ予算 (`SERVER_MEMORY` / `SERVER_DISK` / `PROXY_CACHE_*`) は起動時に固定なので、変更を検知すると
-`/status` の `settings.restart_required` と `/dashboard` の帯に「再起動が必要」と出ます。解釈できない値を書いた場合は
-前の設定を維持し、`settings.error` にメッセージが入ります。
+`/status` の `settings.restart_required` と `/dashboard` の帯に「再起動が必要」と出ます。
+**読めない値** (`PROXY_KEEPALIVE_SECS=abc` のように数の欄に数でないもの、範囲の外の値) は、起動時も再読込でも
+WARN を 1 行出して**その項目だけ既定値**で動きます (前の値を維持するのではありません)。書いた名前と値は
+`/status` の `settings.invalid` (`[{"key":"PROXY_KEEPALIVE_SECS","value":"abc"}]`) に出ます。
+**`.env` に書いてあるが、このプロキシが読まない `PROXY_*` / `SERVER_*` の名前** (`PROXY_TIMOUT_SECS` のような打ち間違い) も
+WARN を 1 行出し (綴りの近い名前があれば `did you mean PROXY_TIMEOUT_SECS?` を添える)、`settings.unknown`
+(`[{"key":"PROXY_TIMOUT_SECS","suggest":"PROXY_TIMEOUT_SECS"}]`。近い名前が無ければ `suggest` は `null`) に出ます。
+どちらも**いまの `.env` のもの**で、直して保存すれば再読込で `[]` に戻ります (`/config` の `reload` にも同じものが出ます。
+知らない名前は `.env` だけを見ます — 実際の環境変数はパネルが別の `SERVER_*` を渡すため)。T.28.6。
+`settings.error` に入るのは、`SERVER_PORT` や `PROXY_BIND` のように**設定全体が組めない**値を書いたときだけで、
+そのときは前の設定を維持します。
 
 **いま何が効いているかは `/config` で 1 枚に出ます** (JSON)。全 `PROXY_*` / `SERVER_*` について
 `{"PROXY_DNS_TTL_SECS":{"value":30,"source":"env_file"}, ...}` の形で、`value` は**いま効いている値**、

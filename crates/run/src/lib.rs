@@ -140,6 +140,23 @@ fn check_environment() -> i32 {
         };
         println!("  {:<9} {:<30} {}", s.source.as_str(), s.key, value);
     }
+    // 書いたのに効いていない行 (T.28.6)。正しい設定では 1 行も出ない
+    let problems = &config.problems;
+    if !problems.invalid.is_empty() {
+        println!("\nnot readable (ignored; the default is in effect):");
+        for v in &problems.invalid {
+            println!("  {:<30} {:?} (expected {})", v.key, v.value, v.expected);
+        }
+    }
+    if !problems.unknown.is_empty() {
+        println!("\nunknown names in the settings file (not read by this proxy):");
+        for u in &problems.unknown {
+            match u.suggest {
+                Some(s) => println!("  {:<30} did you mean {}?", u.key, s),
+                None => println!("  {}", u.key),
+            }
+        }
+    }
 
     let missing = caps.missing();
     if missing.is_empty() {

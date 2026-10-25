@@ -144,6 +144,13 @@ pub fn loaded_path() -> Option<PathBuf> {
     loaded().path.clone()
 }
 
+/// `.env` に書いてあるキーの名前 (名前順。知らない名前の WARN 用。T.28.6)。
+pub fn file_keys() -> Vec<String> {
+    let mut keys: Vec<String> = loaded().vars.keys().cloned().collect();
+    keys.sort();
+    keys
+}
+
 /// `.env` で与えられたキーの数 (ログ用)。
 pub fn loaded_count() -> usize {
     loaded().vars.len()

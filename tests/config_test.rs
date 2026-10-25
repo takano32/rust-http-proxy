@@ -33,6 +33,16 @@ fn start_proxy(
     env_file: &str,
     vars: &[(&str, &str)],
 ) -> (KillOnDrop, u16, std::path::PathBuf) {
+    let (child, port, dir, _) = start_proxy_logged(tag, env_file, vars);
+    (child, port, dir)
+}
+
+/// [`start_proxy`] と同じだが、待ち受けの行までに出た起動ログの行も返す (T.28.6)。
+fn start_proxy_logged(
+    tag: &str,
+    env_file: &str,
+    vars: &[(&str, &str)],
+) -> (KillOnDrop, u16, std::path::PathBuf, Vec<String>) {
     let dir = std::env::temp_dir().join(format!("rhp-t1415-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -60,6 +70,7 @@ fn start_proxy(
         }
     });
     let mut port = None;
+    let mut log = Vec::new();
     while let Ok(line) = rx.recv_timeout(Duration::from_secs(20)) {
         if let Some((_, rest)) = line.split_once("listening on ") {
             port = rest
@@ -69,9 +80,10 @@ fn start_proxy(
                 .and_then(|p| p.parse::<u16>().ok());
             break;
         }
+        log.push(line);
     }
     let port = port.expect("the proxy did not log its listening port");
-    (child, port, dir)
+    (child, port, dir, log)
 }
 
 /// `"key":` の後ろを 1 語だけ取る (数値・`true` / `false` ・`null`)。
@@ -456,5 +468,115 @@ fn test_integration_he_stagger_is_read_once_and_falls_back_when_out_of_range() {
         );
     }
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `.env` の打ち間違い (知らない名前) と読めない値 (T.28.6): 起動ログに WARN を 1 行ずつ、
+/// `/status` の `settings.invalid` / `settings.unknown` に名前が出る。再読込で直せば消え、
+/// 書き損じれば出る。**正しい `.env` では WARN が 1 行も増えない**。
+#[test]
+fn test_integration_env_typos_and_unreadable_values_are_reported() {
+    let base = "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\n";
+    let bad = format!(
+        "{}PROXY_TIMOUT_SECS=20\nPROXY_KEEPALIVE_SECS=abc\nPROXY_TIMEOUT_SECS=xyz\nPROXY_FOO_BAR=1\n",
+        base
+    );
+    let (child, port, dir, log) = start_proxy_logged("t2806", &bad, &[]);
+    let warns: Vec<&String> = log
+        .iter()
+        .filter(|l| l.contains("WARN") && (l.contains("is not a") || l.contains("unknown setting")))
+        .collect();
+    assert_eq!(warns.len(), 4, "WARN は 4 行: {:#?}", log);
+    assert!(
+        warns
+            .iter()
+            .any(|l| l.contains("PROXY_TIMOUT_SECS")
+                && l.contains("did you mean PROXY_TIMEOUT_SECS")),
+        "{:#?}",
+        warns
+    );
+    let settings = || {
+        let json = status_json(port);
+        let at = json.find("\"settings\":").expect("settings");
+        json[at..].to_string()
+    };
+    let s = settings();
+    for key in [
+        "{\"key\":\"PROXY_KEEPALIVE_SECS\",\"value\":\"abc\"}",
+        "{\"key\":\"PROXY_TIMEOUT_SECS\",\"value\":\"xyz\"}",
+        "{\"key\":\"PROXY_TIMOUT_SECS\",\"suggest\":\"PROXY_TIMEOUT_SECS\"}",
+        "{\"key\":\"PROXY_FOO_BAR\",\"suggest\":null}",
+    ] {
+        assert!(s.contains(key), "{} が無い: {}", key, s);
+    }
+    // 読めない値は既定のまま (出どころも `default`)
+    let config = endpoint_json(port, "/config");
+    assert_eq!(
+        setting(&config, "PROXY_KEEPALIVE_SECS"),
+        ("15".to_string(), "default".to_string())
+    );
+
+    // 直すと消える
+    std::fs::write(
+        dir.join(".env"),
+        format!("{}PROXY_KEEPALIVE_SECS=7\n", base),
+    )
+    .unwrap();
+    wait_until(
+        || settings().contains("\"invalid\":[],\"unknown\":[]"),
+        "直した .env で invalid / unknown が空になる",
+    );
+    // 再読込で書き損じると出る
+    std::fs::write(dir.join(".env"), format!("{}PROXY_DNS_TTL_SECS=1m\n", base)).unwrap();
+    wait_until(
+        || settings().contains("{\"key\":\"PROXY_DNS_TTL_SECS\",\"value\":\"1m\"}"),
+        "再読込の読めない値が settings.invalid に出る",
+    );
+    drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // 正しい `.env` では 1 行も出ない
+    let (child, port, dir, log) = start_proxy_logged(
+        "t2806-ok",
+        &format!("{}PROXY_KEEPALIVE_SECS=7\n", base),
+        &[],
+    );
+    assert!(
+        !log.iter()
+            .any(|l| l.contains("is not a") || l.contains("unknown setting")),
+        "{:#?}",
+        log
+    );
+    assert!(
+        status_json(port).contains("\"invalid\":[],\"unknown\":[]"),
+        "正しい .env では空"
+    );
+    drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // `--check` にも名前が出る
+    let dir = std::env::temp_dir().join(format!("rhp-t2806-check-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(".env"), &bad).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
+        .arg("--check")
+        .env("HOME", &dir)
+        .env("XDG_CACHE_HOME", &dir)
+        .output()
+        .expect("--check が動かない");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let at = text
+        .find("not readable (ignored")
+        .unwrap_or_else(|| panic!("読めなかった行の見出しが無い:\n{}", text));
+    let tail = &text[at..];
+    for key in [
+        "PROXY_KEEPALIVE_SECS",
+        "PROXY_TIMEOUT_SECS",
+        "PROXY_FOO_BAR",
+        "did you mean PROXY_TIMEOUT_SECS?",
+    ] {
+        assert!(tail.contains(key), "{} が --check に無い:\n{}", key, text);
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
