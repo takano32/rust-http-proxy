@@ -76,9 +76,11 @@ fn local_path<'a>(target: &'a str, port: u16, host: Option<&str>) -> Option<&'a 
     if target.starts_with('/') {
         return (authority_port(host?)? == port).then_some(target);
     }
+    // スキームは大小を区別しない (`Http://` も。T.28.33)
     let rest = target
-        .strip_prefix("http://")
-        .or_else(|| target.strip_prefix("HTTP://"))?;
+        .get(..7)
+        .filter(|s| s.eq_ignore_ascii_case("http://"))
+        .map(|_| &target[7..])?;
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
@@ -905,6 +907,11 @@ mod local_path_tests {
         );
         assert_eq!(local_path("http://example.com:8080/x", 60624, None), None);
         assert_eq!(local_path("https://example.com:60624/x", 60624, None), None);
+        // スキームは大小を区別しない (T.28.33)
+        for t in ["HTTP://h:60624/status", "Http://h:60624/status"] {
+            assert_eq!(local_path(t, 60624, None), Some("/status"), "{}", t);
+        }
+        assert_eq!(local_path("HTTPS://h:60624/status", 60624, None), None);
     }
 
     /// ダッシュボードに Phase 13 が見る図と KPI が載っていること (T12.4 (5)、T13.3)。

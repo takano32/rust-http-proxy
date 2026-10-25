@@ -349,6 +349,23 @@ fn without_fragment(path: &str) -> &str {
     }
 }
 
+/// 絶対 URI の `http://` / `https://` を**大小を無視して**外し、スキームと `//` の後ろを返す。
+///
+/// スキームは大小を区別しない (RFC 9110 §4.2.3) のに小文字だけを見ていたので、
+/// `HTTP://h/p` はスキームの無い形として丸ごとを authority に読み、`[HTTP://h/p]:80` を
+/// 引きに行って 502 になっていた (T.28.33)。マッピング形式 (`/https/`) はパスなので今までどおり小文字だけ。
+pub fn strip_scheme(target: &str) -> Option<(Scheme, &str)> {
+    let strip = |prefix: &str| -> Option<&str> {
+        let head = target.get(..prefix.len())?;
+        head.eq_ignore_ascii_case(prefix)
+            .then(|| &target[prefix.len()..])
+    };
+    if let Some(rest) = strip("http://") {
+        return Some((Scheme::Http, rest));
+    }
+    strip("https://").map(|rest| (Scheme::Https, rest))
+}
+
 pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origin> {
     let split = |scheme: Scheme, rest: &str, mapped: bool| -> io::Result<Origin> {
         let end = authority_end(rest);
@@ -370,11 +387,8 @@ pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origi
             mapped,
         })
     };
-    if let Some(rest) = target.strip_prefix("http://") {
-        return split(Scheme::Http, rest, false);
-    }
-    if let Some(rest) = target.strip_prefix("https://") {
-        return split(Scheme::Https, rest, false);
+    if let Some((scheme, rest)) = strip_scheme(target) {
+        return split(scheme, rest, false);
     }
     if let Some(rest) = target.strip_prefix("/https/") {
         return split(Scheme::Https, rest, true);
@@ -415,7 +429,10 @@ pub fn target_host<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Res
         check_authority(host_port)?;
         Ok(host_port)
     };
-    for prefix in ["http://", "https://", "/https/", "/http/"] {
+    if let Some((_, rest)) = strip_scheme(target) {
+        return host_of(rest);
+    }
+    for prefix in ["/https/", "/http/"] {
         if let Some(rest) = target.strip_prefix(prefix) {
             return host_of(rest);
         }
@@ -439,7 +456,9 @@ pub fn target_host<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Res
 /// そろえるために使う (T14.48)。既定のポートはスキームで決まる ([`Scheme::default_port`]) ので、
 /// そのためだけに [`parse_origin`] を呼んで `String` を 2 本作らずに済ませる。
 pub fn target_scheme(target: &str) -> Scheme {
-    if target.starts_with("https://") || target.starts_with("/https/") {
+    if let Some((scheme, _)) = strip_scheme(target) {
+        scheme
+    } else if target.starts_with("/https/") {
         Scheme::Https
     } else {
         // `http://` も `/http/` も、オリジン形式 (`/p`) もホストだけの形 (`h`) も http
@@ -641,6 +660,8 @@ mod target_host_tests {
             ("http://example.com?q=1", None),
             ("http://example.com#frag", None),
             ("http://user:pw@example.com/", None),
+            ("HTTP://Example.com:8080/a", None),
+            ("Https://[::1]:8443/x", None),
         ];
         for (target, host) in cases {
             let want = parse_origin(target, host).map(|o| o.host_port);
@@ -691,6 +712,9 @@ mod target_host_tests {
             ("/only/path", Some("host.example")),
             ("example.com:443", None),
             ("example.com", None),
+            ("HTTP://example.com/a", None),
+            ("HTTPS://example.com/a", None),
+            ("hTTpS://example.com/a", None),
         ];
         for (target, host) in cases {
             let want = parse_origin(target, host).unwrap().scheme;
@@ -698,5 +722,37 @@ mod target_host_tests {
         }
         assert_eq!(target_scheme("https://h/x").default_port(), 443);
         assert_eq!(target_scheme("h").default_port(), 80);
+    }
+
+    /// T.28.33: 絶対 URI のスキームは大小を区別せず、小文字と同じ [`Origin`] になる
+    /// (URL・プールキー・接続先も小文字のスキームで組み立てる)。マッピング形式はパスなので小文字だけ。
+    #[test]
+    fn the_scheme_is_case_insensitive() {
+        for (upper, lower) in [
+            ("HTTP://h.example:81/a?q", "http://h.example:81/a?q"),
+            ("Http://h.example", "http://h.example"),
+            ("HTTPS://[::1]:8443/x", "https://[::1]:8443/x"),
+            ("hTtPs://h.example/x#f", "https://h.example/x#f"),
+        ] {
+            let a = parse_origin(upper, None).unwrap();
+            let b = parse_origin(lower, None).unwrap();
+            assert_eq!(
+                (a.scheme, &a.host_port, &a.path, a.mapped),
+                (b.scheme, &b.host_port, &b.path, b.mapped),
+                "{}",
+                upper
+            );
+            assert_eq!(a.locate().url(), b.locate().url(), "{}", upper);
+        }
+        assert_eq!(strip_scheme("HTTP://h/x"), Some((Scheme::Http, "h/x")));
+        assert_eq!(strip_scheme("httpS://h"), Some((Scheme::Https, "h")));
+        assert_eq!(strip_scheme("htt"), None);
+        assert_eq!(strip_scheme("ftp://h/"), None);
+        assert_eq!(strip_scheme("/http/h/x"), None);
+        // 空のホストは大文字でも断る
+        assert!(parse_origin("HTTP:///a", None).is_err());
+        assert!(target_host("HTTPS:///a", None).is_err());
+        // 多バイト文字の途中で切っても落ちない
+        assert_eq!(strip_scheme("日本語://h"), None);
     }
 }

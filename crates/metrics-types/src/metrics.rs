@@ -336,8 +336,13 @@ impl BadRequestReason {
         if !is_method_token(method) {
             return BadRequestReason::Method;
         }
-        const WITH_HOST: [&str; 4] = ["http://", "https://", "/http/", "/https/"];
-        if WITH_HOST.iter().any(|p| target.starts_with(p)) {
+        // 絶対 URI のスキームは大小を区別しない (`HTTP://` も。T.28.33)、マッピング形式はパスなので小文字だけ
+        let absolute = ["http://", "https://"].iter().any(|p| {
+            target
+                .get(..p.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(p))
+        });
+        if absolute || target.starts_with("/http/") || target.starts_with("/https/") {
             BadRequestReason::BadUri
         } else {
             BadRequestReason::NoHost
@@ -1062,4 +1067,40 @@ pub fn stats_json(s: &HostStats, detail: bool) -> String {
         let _ = write!(out, ",\"syn_retrans\":{}", s.syn_retrans);
     }
     out
+}
+
+#[cfg(test)]
+mod bad_request_reason_tests {
+    use super::BadRequestReason;
+
+    /// 絶対 URI のスキームの大小を問わず、ホストが無いのは `bad_uri` (T.28.33)。
+    #[test]
+    fn of_target_reads_the_scheme_case_insensitively() {
+        for t in [
+            "http:///a",
+            "HTTP:///a",
+            "Https:///a",
+            "/http//a",
+            "/https//a",
+        ] {
+            assert_eq!(
+                BadRequestReason::of_target("GET", t),
+                BadRequestReason::BadUri,
+                "{}",
+                t
+            );
+        }
+        for t in ["/a", "/HTTP//a"] {
+            assert_eq!(
+                BadRequestReason::of_target("GET", t),
+                BadRequestReason::NoHost,
+                "{}",
+                t
+            );
+        }
+        assert_eq!(
+            BadRequestReason::of_target("G ET", "HTTP:///a"),
+            BadRequestReason::Method
+        );
+    }
 }
