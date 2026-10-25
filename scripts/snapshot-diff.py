@@ -82,8 +82,10 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from proxydata import (  # noqa: E402
     CAUSE_NAMES,
+    FOLDED_MARK,
     fmt_bytes,
     group_by_domain,
+    is_folded,
     load,
     median,
     quantile_ms,
@@ -880,6 +882,11 @@ def build(a, b, args):
         "bursts": bursts_info(b, hist),
     }
     out["errors"] = errors_info(a, b, hosts, hist)
+    # `other` (表からあふれたホストの畳み先) は §3 の比べの表から外して印を付ける (T.28.19)。
+    # **`--criteria` のときは足さない** (過去の判定表の出力を 1 バイトも変えない決まり。
+    # 行そのものは `hosts.rows` に残すので、エラーの合計 (§7) は変わらない)
+    if not args.criteria:
+        hosts["folded"] = [r for r in hosts["rows"] if is_folded(r)]
     # 成功した接続だけの確立時間 (T.20.1)。**phase14〜phase18 の出力は変えない**ので、そのときは鍵ごと足さない
     if args.criteria not in FROZEN:
         out["recent_connect"] = recent_connects(b)
@@ -1084,7 +1091,9 @@ def render(d, top):
     p(("| まとめの単位 (ホスト数)" if grouped else "| ホスト")
       + " | Δ要求 | Δ計測 | Δavg (±) | Δ名前解決 | ミス率 | Δ確立/本 | Δエラー |")
     p("|---|---|---|---|---|---|---|---|")
-    shown = [r for r in hs["rows"] if r["requests"] or r["errors"]][:top]
+    folded = hs.get("folded")
+    rows3 = [r for r in hs["rows"] if not (folded is not None and is_folded(r))]
+    shown = [r for r in rows3 if r["requests"] or r["errors"]][:top]
     for r in shown:
         per_m = (r["dns_ms_sum"] / r["dns_misses"]) if r["dns_misses"] else None
         per_c = (r["connect_ms_sum"] / r["timed"]) if r["timed"] else None
@@ -1101,8 +1110,15 @@ def render(d, top):
     if not shown:
         p("| (この間に動いたホストは無い) | | | | | | | |")
     p()
+    for r in folded or []:
+        p(f"- `other` (**{FOLDED_MARK}**。表の 1,000 行からあふれたホストの畳み先で、CONNECT・forward・"
+          "死んだ宛先が混ざった版をまたぐ通算なので、上の表と AAAA 別の中央値には入れない): "
+          f"Δ要求 {n(r['requests'])}、Δ計測 {n(r['timed'])}、Δavg {ms(r['avg_ms'])} ms、"
+          f"Δ名前解決のミス {n(r['dns_misses'])} 回、Δエラー {n(r['errors'])}")
+    if folded:
+        p()
     if hs["aaaa"]:
-        for g in aaaa_groups([r for r in hs["rows"] if r["connect"]]):
+        for g in aaaa_groups([r for r in rows3 if r["connect"]]):
             share = (100.0 * g["requests"] / g["total"]) if g["total"] else 0.0
             p(f"- CONNECT / {g['label']}: {g['hosts']} ホスト、要求 {n(g['requests'])} "
               f"({share:.1f}%)、その間の avg の中央値 **{ms(g['avg_median'])} ms**")

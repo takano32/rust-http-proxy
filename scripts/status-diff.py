@@ -78,8 +78,10 @@ from proxydata import (  # noqa: E402
     causes_text,
     cell,
     fmt_bytes,
+    FOLDED_MARK,
     fmt_ms,
     group_by_domain,
+    is_folded,
     load,
     median,
     per_conn,
@@ -130,6 +132,17 @@ def print_table(title, rows, diff, aaaa_shown, detail=False, group=False):
             line += (f" {cell(fmt_ms(per_miss(r)), 7)} {fmt_ms(r['dns_ms_sum']):>8} "
                      f"{cell(fmt_ms(per_conn(r)), 8)}  {causes_text(r['errors_by_cause'])}")
         print(line)
+
+
+def print_folded(rows, diff):
+    """`other` の 1 行 (印つき。分位点は出さない。T.28.19)。"""
+    for r in rows:
+        print()
+        print(f"-- `other` ({FOLDED_MARK}): 表の 1,000 行からあふれたホストの畳み先。"
+              "CONNECT・forward・死んだ宛先が混ざり、版をまたいだ通算なので、上の表と中央値には入れない --")
+        avg = "—" if r["avg_ms"] is None else f"{r['avg_ms']:.1f}"
+        print(f"  要求 {r['requests']:,}、計測 {r['timed']:,}、{'その間の' if diff else '通算の'} avg {avg} ms、"
+              f"エラー {r['errors']:,} ({causes_text(r['errors_by_cause'])})、名前解決のミス {r['dns_misses']:,} 回")
 
 
 def print_groups(title, rows, diff):
@@ -203,6 +216,11 @@ def main(argv=None):
     for r in rows:
         r["aaaa"] = aaaa.get(r["name"])
 
+    # `other` (表からあふれたホストの畳み先) は分位点を比べる表に入れない (T.28.19)。
+    # 混在・通算なので、表の下に印を付けて 1 行だけ出す
+    folded = [r for r in rows if is_folded(r)]
+    rows = [r for r in rows if not is_folded(r)]
+
     # eTLD+1 でまとめる (AAAA を引いたあと。群ごとに「全部あり / 全部なし」を見るため)
     if args.group == "domain":
         rows = group_by_domain(rows)
@@ -257,6 +275,7 @@ def main(argv=None):
               "avg_ms は timed で重みづけ、p50 / p95 は 2 つ以上では出ない)")
     print_table("CONNECT", con, diff, aaaa_shown, bool(args.sort), group)
     print_table("forward", fwd, diff, aaaa_shown, bool(args.sort), group)
+    print_folded(folded, diff)
     if aaaa_shown:
         print_groups("CONNECT", con, diff)
         print_groups("forward", fwd, diff)

@@ -28,6 +28,17 @@ CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop
 # この 2 つが無いので 0 として読む。
 DNS_CAUSE_NAMES = ["nxdomain", "dns_temp"]
 
+# `/hosts` の表 (1,000 行) からあふれたホストの畳み先 (`crates/metrics-core/src/metrics.rs` の `MAX_HOSTS`)。
+# 生きた CONNECT の溢れ・forward の溢れ・死んだ宛先への総当たりを **1 行に混ぜた通算** (版をまたぐ) なので、
+# 分位点 (p50 / p95 / max) を他のホストと比べる表には入れず、「混在・通算」の印を付けて別に 1 行で出す (T.28.19)
+FOLDED_HOST = "other"
+FOLDED_MARK = "混在・通算"
+
+
+def is_folded(row):
+    """[`row_of`] の行が `other` (あふれたホストの畳み先) か。"""
+    return row.get("key") == FOLDED_HOST
+
 # この道具が知っている応答の形の版 (`crates/metrics/src/metrics.rs` の `SCHEMA`。T.14.49)。
 # **版 0 = `schema` の無い古い出力** (2026-09-16 以前に取った雪像) で、そちらは今までどおり
 # 鍵の有無から形を推測して読む。版が上がったらここも上げて、下の分岐に 1 本足す。

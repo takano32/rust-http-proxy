@@ -288,6 +288,14 @@ scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
   `AAAA` は全部同じときだけその値です
 - IP リテラル宛て・`localhost`・表からあふれた `other` は**まとめずにそのまま**出ます
 
+**表からあふれた `other` の行は、ホストどうしを比べる表に入れません** (T.28.19)。`other` は `/hosts` の 1,000 行から
+あふれたホストの畳み先で、生きた CONNECT・forward・死んだ宛先への総当たりを 1 行に混ぜた**版をまたぐ通算**です
+(10-25 の tokyo では p95 10,006 ms・max 10,012 ms で、これは T.23.3 で 10 → 5 秒にする前の timeout の残り)。
+`status-diff.py` は CONNECT / forward の表と AAAA 別の中央値から外し、表の下に「`other` (混在・通算)」の 1 行
+(要求・計測・avg・エラーの原因・名前解決のミス。分位点は出さない) を出します。`snapshot-diff.py` も §3 の表と
+AAAA 別の中央値から外して同じ印の 1 行を出します (`--out json` では `hosts.folded`)。**`--criteria` を付けたときは
+今までどおり** (過去の判定表の出力を 1 バイトも変えないため。§7 のエラーの合計にはどちらでも入っています)。
+
 `collect-deployed.sh` は前回の雪像を見つけるとこれを呼び、**要約のいちばん最後に判定表**を置きます
 (`CRITERIA=off` で止められます。判定表の相手は `BEFORE=<雪像>` で、0 時間の雪像は `ZERO=<雪像>` で渡せます。下の「運用」の 4)。道具の単体テストは `python3 -m unittest discover -s scripts`
 (架空の雪像 `scripts/testdata/snapshot-a.json` / `snapshot-b.json` と、下の匿名化した実データで回ります)。
