@@ -137,3 +137,85 @@ fn test_integration_background_304_rewrites_the_stored_head() {
     assert!(third.contains("X-Ver: 2"), "{}", third);
     assert_eq!(body_of(&third), BODY);
 }
+
+/// 応答の `Age` の値 (無ければ `None`)。
+fn age_of(resp: &str) -> Option<u64> {
+    resp.split("\r\n")
+        .find_map(|l| l.strip_prefix("Age: "))
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// 保存 (`max-age=0`) から 3 秒たってから再検証し、REVALIDATED の応答の `Age` が 0〜1 であること
+/// (T.28.34)。直す前は古い `stored_at` から数えて 3 だった。`bare_304` なら 304 に写す
+/// ヘッダーが無い (先頭を書き直さず期限だけ延ばす経路)。
+fn check_age_after_revalidation(cache: CacheConfig, source: &str, bare_304: bool) {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_origin(
+        Arc::clone(&counter),
+        Arc::new(move |req, _| {
+            if req.contains("If-None-Match: \"v1\"") {
+                let extra = if bare_304 {
+                    ""
+                } else {
+                    "Cache-Control: max-age=600\r\nETag: \"v1\"\r\n"
+                };
+                return format!(
+                    "HTTP/1.1 304 Not Modified\r\n{}Connection: close\r\n\r\n",
+                    extra
+                )
+                .into_bytes();
+            }
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: max-age=0\r\n\
+                 ETag: \"v1\"\r\nConnection: close\r\n\r\n{}",
+                BODY.len(),
+                BODY
+            )
+            .into_bytes()
+        }),
+    );
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache);
+    let url = format!("http://127.0.0.1:{}/age", origin_port);
+    let host = format!("127.0.0.1:{}", origin_port);
+
+    let first = get_via_proxy(proxy_port, &url, &host);
+    assert_eq!(body_of(&first), BODY, "{}", first);
+    std::thread::sleep(Duration::from_secs(3));
+    let second = get_via_proxy(proxy_port, &url, &host);
+    assert!(
+        second.contains(&format!(
+            "X-Cache: REVALIDATED from rust-http-proxy ({})",
+            source
+        )),
+        "{}",
+        second
+    );
+    let age = age_of(&second).unwrap_or_else(|| panic!("Age が無い: {}", second));
+    assert!(age <= 1, "再検証した直後の Age が {}: {}", age, second);
+    assert_eq!(body_of(&second), BODY, "本文が変わった");
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
+}
+
+/// **受け入れ基準 (T.28.34)**: メモリ (L1) の項目、304 のヘッダーで先頭を書き直す経路。
+#[test]
+fn test_integration_revalidated_age_counts_from_the_refresh_in_memory() {
+    check_age_after_revalidation(cache_cfg("shp-it-304-age-mem"), "memory", false);
+}
+
+/// ディスク (L2) だけの項目 (メモリの上限 0)。
+#[test]
+fn test_integration_revalidated_age_counts_from_the_refresh_on_disk() {
+    let dir = std::env::temp_dir().join("shp-it-304-age-disk");
+    let _ = std::fs::remove_dir_all(&dir);
+    let cache = CacheConfig {
+        default_ttl: Duration::from_secs(60),
+        ..CacheConfig::fixed(0, 2048 * MIB, dir)
+    };
+    check_age_after_revalidation(cache, "disk", false);
+}
+
+/// 304 に写すヘッダーが無い (期限だけ延ばす) 経路でも同じ。
+#[test]
+fn test_integration_revalidated_age_counts_from_the_refresh_without_new_headers() {
+    check_age_after_revalidation(cache_cfg("shp-it-304-age-bare"), "memory", true);
+}

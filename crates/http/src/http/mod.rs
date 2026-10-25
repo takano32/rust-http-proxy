@@ -1050,16 +1050,21 @@ pub fn handle_http_with_headers(
         // 304 のヘッダーで保存済みの先頭を書き直して置き直し、配るのも新しい先頭にする
         // (RFC 9111 §3.2・§4.3.4。T.28.2)。今までは期限だけ延ばし、配る先頭は古いままだった
         let mut entry = entry;
-        match headers::merge_not_modified(&entry.head, &head) {
+        let expires_at = match headers::merge_not_modified(&entry.head, &head) {
             Some(new_head) => {
-                cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
+                let expires_at =
+                    cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
                 entry.size = entry.body_len().saturating_add(new_head.len() as u64);
                 entry.head = new_head;
+                expires_at
             }
-            None => {
-                cache.refresh(key, p.ttl, p.age, conn_id);
-            }
-        }
+            None => cache.refresh(key, p.ttl, p.age, conn_id),
+        };
+        // 配る `Age` も置き直した時刻から数える (`refresh` と同じく `now - 304 の Age`。T.28.34)。
+        // 今までは手元の写しの古い `stored_at` のままで、保存から N 秒たって再検証した直後の応答が
+        // `Age: N` になっていた (次の HIT からは新しい値)
+        entry.meta.stored_at = now_epoch().saturating_sub(p.age);
+        entry.meta.expires_at = expires_at;
         if origin_reusable {
             shared.upstream.pool.put(pool_key, server, shared.timeout);
         }

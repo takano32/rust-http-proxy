@@ -2251,7 +2251,10 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
   (`Content-Length`・`Transfer-Encoding`)・hop-by-hop と `Connection` で指名された名前・`Age`・
   `Content-Encoding`・`Content-Range` です。メモリとディスクの両方を置き直し (ディスクは本文を写した
   新しいファイルに置き換えます)、裏側の再検証 (`REFRESHING`) でも同じです。0.27.8 までは期限だけを延ばし、
-  配る先頭は古いまま (`max-age=0` のまま、など) でした
+  配る先頭は古いまま (`max-age=0` のまま、など) でした。
+  **再検証した応答 (`REVALIDATED`) の `Age` は置き直した時刻から数えます** (304 に `Age` があればその分を足します。T.28.34)。
+  0.27.8 までは最初に保存した時刻から数えていたので、保存から N 秒たって再検証した直後の応答が `Age: N` になっていました
+  (置き直した項目の次の HIT からは正しい値でした)
 - 期限切れから `PROXY_CACHE_GRACE_SECS` (既定 60 秒) 以内なら、保存済みの表現をすぐ返して裏で再検証します
   (`cache=REFRESHING`、RFC 5861 の stale-while-revalidate)。オリジンが `stale-while-revalidate=N` を付けていれば
   その値も使います。`max-age=0` (毎回再検証) の表現は、オリジンが明示したときだけ対象です。同じ URL の裏側の
