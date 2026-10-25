@@ -358,6 +358,89 @@ fn errors_in_five_minutes_fire_once_and_clear() {
     );
 }
 
+/// `nxdomain` の通算を渡して 1 本流す (T.28.17)。
+fn feed_nx(h: &History, d: &mut Detector, s: Sample, nxdomain: u64) -> Vec<Fired> {
+    feed_with(
+        h,
+        d,
+        s,
+        Counters {
+            nxdomain,
+            ..Counters::default()
+        },
+    )
+}
+
+/// (3) `nxdomain` (客が無い名前を頼んだ) だけのエラーは何件あっても立たない (T.28.17)。
+/// メール宛の総当たりで 5 分に 6〜20 件の `nxdomain` が続き、`/events` の環が 5 日で回っていた。
+#[test]
+fn nxdomain_errors_alone_do_not_fire() {
+    let h = History::default();
+    let mut d = Detector::new();
+    let (mut t, _) = calm(&h, &mut d, 0, 60);
+    let mut nx = 100; // 通算は起動前から動いている (増分だけを見る)
+    let mut fired = Vec::new();
+    for _ in 0..120 {
+        let mut p = point(t);
+        p.errors = 4;
+        p.errors_by_cause[0] = 4;
+        nx += 4;
+        fired.extend(feed_nx(&h, &mut d, p, nx));
+        t += 5;
+    }
+    assert!(
+        fired.iter().all(|f| f.kind != Kind::Errors),
+        "nxdomain だけでは立たない: {:?}",
+        fired
+    );
+}
+
+/// (3) `nxdomain` を外した残りが 5 件以上なら立ち、文面に外した数が入る (T.28.17)。
+#[test]
+fn errors_other_than_nxdomain_still_fire_and_say_what_was_left_out() {
+    let h = History::default();
+    let mut d = Detector::new();
+    let (mut t, _) = calm(&h, &mut d, 0, 60);
+    let mut nx = 0;
+    let mut fired = Vec::new();
+    // 1 標本に timeout 2 件 + nxdomain 3 件 を 3 回 = 数えるのは 6 件 (3 回目で越える)
+    for _ in 0..3 {
+        let mut p = point(t);
+        p.errors = 5;
+        p.errors_by_cause[0] = 3;
+        p.errors_by_cause[3] = 2;
+        nx += 3;
+        fired.extend(feed_nx(&h, &mut d, p, nx));
+        t += 5;
+    }
+    let errs: Vec<_> = fired.iter().filter(|f| f.kind == Kind::Errors).collect();
+    assert_eq!(errs.len(), 1, "{:?}", fired);
+    assert_eq!(
+        errs[0].text,
+        "errors: 6 errors in 5m (threshold 5; 9 nxdomain not counted): dns 9, timeout 6"
+    );
+    // 2 回目の時点では 4 件 (立たない) だったこと = 外した数が効いている
+    assert!(t >= 75);
+}
+
+/// `nxdomain` の窓は 5 分 + 1 周期で、古い増分は外す数から抜ける (T.28.17)。
+#[test]
+fn the_nxdomain_window_forgets_old_increments() {
+    let mut d = Detector::new();
+    let c = |t, nxdomain| Counters {
+        t,
+        nxdomain,
+        ..Counters::default()
+    };
+    assert_eq!(d.nxdomain_window(c(1000, 50)), 0, "1 点目は増分 0");
+    assert_eq!(d.nxdomain_window(c(1005, 60)), 10);
+    // 5 分 + 5 秒たつと 1000 の点は窓の起点より古い (1005 が起点)
+    assert_eq!(d.nxdomain_window(c(1310, 60)), 0);
+    assert_eq!(d.nxdomain_window(c(1315, 70)), 10);
+    // 通算が減った (`.rrd` の作り直し) ら 0
+    assert_eq!(d.nxdomain_window(c(1320, 5)), 0);
+}
+
 /// (4) 同時接続の山が `max_conns` の 50% 以上。
 #[test]
 fn a_high_active_peak_fires_once_and_clears() {
