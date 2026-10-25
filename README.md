@@ -2232,7 +2232,14 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 - ETag か Last-Modified を持つレスポンスは、期限切れでも `PROXY_CACHE_MAX_STALE_SECS` (既定 30 日) の間は残します。
   次の要求では `If-None-Match` / `If-Modified-Since` を付けてオリジンに問い合わせ、304 なら本文を転送せずに
   保存済みの表現を延命して配信します (`cache=REVALIDATED`)。`no-cache` や `max-age=0` のレスポンスも
-  バリデータがあれば「毎回再検証」として保存します
+  バリデータがあれば「毎回再検証」として保存します。
+  **304 が返したヘッダーで保存済みの先頭を書き直します** (RFC 9111 §3.2・§4.3.4。T.28.2): 304 にある名前
+  (`Cache-Control`・`Expires`・`Date`・`ETag`・`Last-Modified`・`Vary`・独自のヘッダーも) は同じ名前の行を
+  置き換え、無い名前の行と状態行はそのまま、本文は 1 バイトも変えません。写さないのは枠組み
+  (`Content-Length`・`Transfer-Encoding`)・hop-by-hop と `Connection` で指名された名前・`Age`・
+  `Content-Encoding`・`Content-Range` です。メモリとディスクの両方を置き直し (ディスクは本文を写した
+  新しいファイルに置き換えます)、裏側の再検証 (`REFRESHING`) でも同じです。0.27.8 までは期限だけを延ばし、
+  配る先頭は古いまま (`max-age=0` のまま、など) でした
 - 期限切れから `PROXY_CACHE_GRACE_SECS` (既定 60 秒) 以内なら、保存済みの表現をすぐ返して裏で再検証します
   (`cache=REFRESHING`、RFC 5861 の stale-while-revalidate)。オリジンが `stale-while-revalidate=N` を付けていれば
   その値も使います。`max-age=0` (毎回再検証) の表現は、オリジンが明示したときだけ対象です。同じ URL の裏側の

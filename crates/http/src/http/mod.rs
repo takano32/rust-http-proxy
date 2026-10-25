@@ -1018,7 +1018,19 @@ pub fn handle_http_with_headers(
         let cached_head = freshness::parse_cached_head(&entry.head);
         let p =
             freshness::revalidated_policy(&headers::response_pairs(&head), &cached_head, cfg, now);
-        cache.refresh(key, p.ttl, p.age, conn_id);
+        // 304 のヘッダーで保存済みの先頭を書き直して置き直し、配るのも新しい先頭にする
+        // (RFC 9111 §3.2・§4.3.4。T.28.2)。今までは期限だけ延ばし、配る先頭は古いままだった
+        let mut entry = entry;
+        match headers::merge_not_modified(&entry.head, &head) {
+            Some(new_head) => {
+                cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
+                entry.size = entry.body_len().saturating_add(new_head.len() as u64);
+                entry.head = new_head;
+            }
+            None => {
+                cache.refresh(key, p.ttl, p.age, conn_id);
+            }
+        }
         if origin_reusable {
             shared.upstream.pool.put(pool_key, server, shared.timeout);
         }

@@ -184,7 +184,15 @@ fn revalidate(
 
     if status == 304 {
         let p = freshness::revalidated_policy(&rheaders, &cached, cfg, now);
-        cache.refresh(key, p.ttl, p.age, conn_id);
+        // 304 のヘッダーで保存済みの先頭も書き直す (T.28.2。同期の再検証と同じ)
+        match headers::merge_not_modified(cached_head, &rhead) {
+            Some(new_head) => {
+                cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
+            }
+            None => {
+                cache.refresh(key, p.ttl, p.age, conn_id);
+            }
+        }
         cache
             .background_revalidations
             .fetch_add(1, Ordering::Relaxed);

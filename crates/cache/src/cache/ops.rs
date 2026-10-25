@@ -331,6 +331,143 @@ impl Cache {
         );
         expires_at
     }
+    /// 再検証 (304) で届いたヘッダーで書き直した先頭 `head` に差し替えて置き直し、延命する
+    /// (RFC 9111 §3.2・§4.3.4。T.28.2)。戻り値は新しい期限 ([`Cache::refresh`] と同じ)。
+    ///
+    /// [`Cache::refresh`] は期限 (メタ) だけを延ばしていたので、304 が `Cache-Control: max-age=600`
+    /// を返しても、配る先頭は古いまま (`max-age=1`) で、下流のキャッシュとクライアントの鮮度の
+    /// 計算を誤らせていた。**本文は 1 バイトも変えない** (先頭の後ろをそのまま写す)。
+    ///
+    /// メモリ (L1) にあれば `head + 本文` を組み直して入れ替え、ディスク (L2) にあれば本文を
+    /// 写した新しいファイルに置き換える (書き込みは今までの保存と同じく一時ファイル → rename)。
+    /// どちらの層にも、無い層へは足さない。ディスクの書き直しに失敗したら期限だけ延ばす。
+    /// **命中・保存の数は動かさない** (数えるのは `revalidations` だけ。[`Cache::refresh`] と同じ)。
+    #[allow(clippy::too_many_arguments)]
+    pub fn refresh_with_head(
+        &self,
+        key: CacheKey,
+        url: &str,
+        head: &[u8],
+        ttl: Duration,
+        age: u64,
+        conn_id: usize,
+    ) -> u64 {
+        let now = now_epoch();
+        let stored_at = now.saturating_sub(age);
+        let expires_at = now.saturating_add(ttl.as_secs().saturating_sub(age));
+        let mut in_mem = false;
+        if let Some(hit) = self.mem.get(key, now, self.tick()) {
+            let offset = head_len(&hit.data);
+            let mut wire = Vec::with_capacity(head.len() + hit.data.len() - offset);
+            wire.extend_from_slice(head);
+            wire.extend_from_slice(&hit.data[offset..]);
+            let meta = Meta {
+                stored_at,
+                expires_at,
+                validators: hit.meta.validators,
+            };
+            let evicted = self.mem.insert(key, Arc::new(wire), meta, self.tick());
+            self.count_evictions(evicted);
+            in_mem = true;
+        }
+        let on_disk = self.rewrite_disk_head(key, url, head, stored_at, expires_at, conn_id);
+        if in_mem || on_disk {
+            self.revalidations.fetch_add(1, Ordering::Relaxed);
+        }
+        log_debug!(
+            Some(conn_id),
+            "cache REFRESH key={} ttl={}s with updated headers (L1={} L2={})",
+            key,
+            ttl.as_secs(),
+            in_mem,
+            on_disk
+        );
+        expires_at
+    }
+
+    /// L2 のエントリを、先頭だけ `head` に替えたファイルで置き換える ([`Cache::refresh_with_head`])。
+    /// 置き換えられなければ期限だけ延ばす。戻り値は L2 にエントリがあったか。
+    fn rewrite_disk_head(
+        &self,
+        key: CacheKey,
+        url: &str,
+        head: &[u8],
+        stored_at: u64,
+        expires_at: u64,
+        conn_id: usize,
+    ) -> bool {
+        let only_expiry = || self.disk.refresh(key, stored_at, expires_at, self.tick());
+        if !self.disk.is_ready() {
+            return false;
+        }
+        let hit = match self.disk.open(key) {
+            Ok(Some(hit)) => hit,
+            _ => return only_expiry(),
+        };
+        let meta = Meta {
+            stored_at,
+            expires_at,
+            validators: hit.meta.validators,
+        };
+        let mut reader = BufReader::with_capacity(64 * 1024, hit.file);
+        let Ok(old_head) = read_head(&mut reader) else {
+            return only_expiry();
+        };
+        let body_len = hit.size.saturating_sub(old_head.len() as u64);
+        let expected = (head.len() as u64).saturating_add(body_len);
+        let mut writer = match self.disk.begin(
+            key,
+            url,
+            meta,
+            self.tick(),
+            Some(expected),
+            self.cfg.max_object_size,
+        ) {
+            Ok(Some(w)) => w,
+            _ => return only_expiry(),
+        };
+        let copied = writer.write(head).and_then(|_| {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let n = reader.read(&mut buf)?;
+                if n == 0 {
+                    return Ok(());
+                }
+                writer.write(&buf[..n])?;
+            }
+        });
+        sysinfo::drop_page_cache(reader.get_ref());
+        if let Err(e) = copied {
+            log_warn!(
+                Some(conn_id),
+                "cache L2 header rewrite failed key={}: {}",
+                key,
+                e
+            );
+            writer.abort();
+            return only_expiry();
+        }
+        match writer.finish(self.tick()) {
+            Ok(r) if r.stored => {
+                self.count_evictions(r.evicted);
+                true
+            }
+            Ok(r) => {
+                self.count_evictions(r.evicted);
+                only_expiry()
+            }
+            Err(e) => {
+                log_warn!(
+                    Some(conn_id),
+                    "cache L2 header rewrite failed key={}: {}",
+                    key,
+                    e
+                );
+                only_expiry()
+            }
+        }
+    }
+
     pub fn remove(&self, key: CacheKey) {
         self.mem.remove(key);
         self.disk.remove(key);

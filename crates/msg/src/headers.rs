@@ -355,6 +355,56 @@ fn clean_value(v: &str) -> std::borrow::Cow<'_, str> {
 /// レスポンスヘッダーのうち、プロキシが自分で決め直すもの (枠組み・経過時間)。
 const FRAMING_HEADERS: &[&str] = &["transfer-encoding", "content-length", "age"];
 
+/// 304 から保存済みの先頭へ写さない名前 (T.28.2)。枠組み・hop-by-hop・`Connection` で指名された
+/// 名前・`Age` ([`write_response_head`] が落とすもの) に加えて、保存した本文の形を決めている
+/// `Content-Encoding` と `Content-Range` (304 が違う値を返しても本文は変わらないので、写すと食い違う)。
+const NOT_UPDATED_BY_304: &[&str] = &["content-encoding", "content-range"];
+
+/// 再検証の 304 で届いたヘッダーで、保存済みの応答の先頭を書き直す (RFC 9111 §3.2・§4.3.4。T.28.2)。
+///
+/// `stored` は保存済みの先頭 (状態行 + ヘッダー + 空行)、`not_modified` はオリジンの 304 の先頭。
+/// 304 にある名前 (写さない名前を除く) は、保存済みの同じ名前の行を**全部**落として 304 の行に
+/// 置き換える (`Cache-Control`・`Expires`・`Date`・`ETag`・`Last-Modified`・`Vary`・独自の名前も)。
+/// 状態行と、304 に無い名前の行はそのまま。304 の値は [`write_response_head`] と同じく
+/// 整える (obs-fold を畳む・CR / NUL を SP に)。写すものが 1 つも無ければ `None`。
+pub fn merge_not_modified(stored: &[u8], not_modified: &[u8]) -> Option<Vec<u8>> {
+    // 304 を応答の書き出しと同じ規則で整える (hop-by-hop・`Connection` の指名・枠組み・`Age` が落ちる)
+    let mut fresh = Vec::with_capacity(not_modified.len());
+    write_response_head(
+        &mut fresh,
+        not_modified,
+        None,
+        NOT_UPDATED_BY_304,
+        &[] as &[&str],
+    );
+    let updated = |name: &str| response_lines(&fresh).any(|(k, _)| k.eq_ignore_ascii_case(name));
+    response_lines(&fresh).next()?;
+    let mut out = Vec::with_capacity(stored.len() + fresh.len());
+    // 状態行は保存済みのもの (304 の状態行は写さない)
+    let status_end = stored
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(stored.len(), |i| i + 1);
+    out.extend_from_slice(&stored[..status_end]);
+    for (k, v) in response_lines(stored) {
+        if updated(k) {
+            continue;
+        }
+        out.extend_from_slice(k.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    for (k, v) in response_lines(&fresh) {
+        out.extend_from_slice(k.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"\r\n");
+    Some(out)
+}
+
 pub fn sanitize_response_head(head: &[u8]) -> ResponseHead {
     let text = String::from_utf8_lossy(head);
     let mut lines = text.split('\n').map(|l| l.trim_ascii_end());
@@ -847,5 +897,42 @@ mod response_view_tests {
         assert_eq!(response_value(head, "missing"), None);
         assert!(response_names(head, "connection", "x-odd"));
         assert!(!response_names(head, "connection", "close"));
+    }
+}
+
+#[cfg(test)]
+mod merge_not_modified_tests {
+    use super::*;
+
+    /// 304 の名前は全部差し替え、無い名前と状態行は残す。枠組み・hop-by-hop・`Age`・
+    /// `Content-Encoding` は写さない (T.28.2)。
+    #[test]
+    fn replaces_named_fields_and_keeps_the_rest() {
+        let stored = b"HTTP/1.1 200 OK\r\nCache-Control: max-age=1\r\nX-Ver: 1\r\nX-Ver: 1b\r\n\
+                       Content-Type: text/plain\r\nContent-Encoding: gzip\r\nETag: \"v1\"\r\n\r\n";
+        let not_modified = b"HTTP/1.1 304 Not Modified\r\ncache-control: max-age=600\r\nX-Ver: 2\r\n\
+                             ETag: \"v1\"\r\nContent-Length: 99\r\nTransfer-Encoding: chunked\r\n\
+                             Connection: close, X-Hop\r\nX-Hop: 1\r\nKeep-Alive: timeout=5\r\nAge: 7\r\n\
+                             Content-Encoding: br\r\nX-Bad: a\rb\r\n\r\n";
+        let merged = merge_not_modified(stored, not_modified).expect("写すものがある");
+        let text = String::from_utf8(merged).unwrap();
+        assert_eq!(
+            text,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\n\
+             cache-control: max-age=600\r\nX-Ver: 2\r\nETag: \"v1\"\r\nX-Bad: a b\r\n\r\n"
+        );
+    }
+
+    /// 写すものが無い 304 (枠組みと hop-by-hop だけ) は `None` (呼ぶ側は期限だけ延ばす)。
+    #[test]
+    fn nothing_to_update_is_none() {
+        let stored = b"HTTP/1.1 200 OK\r\nX-A: 1\r\n\r\n";
+        assert!(
+            merge_not_modified(
+                stored,
+                b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+            )
+            .is_none()
+        );
     }
 }
