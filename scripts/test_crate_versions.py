@@ -215,6 +215,24 @@ class CrateVersionsTest(unittest.TestCase):
         self.assertIn('version = "0.2.3"', self.r.read("Cargo.toml"))
         self.check(0)
 
+    def test_lower_task_lands_after_higher(self):
+        # 番号の小さいタスクが後から入ると、本体と proxy-server の版は変わらない。
+        # --task を回したコミット (どれかのクレートの版の行が変わる) のあとなら通り、そのあとの変更は落とす (T.28.0)
+        self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
+        self.r.write("crates/server/src/lib.rs", "// server 2\n")
+        self.r.commit("T.1.7 の中身")
+        out = self.check(1)
+        self.assertIn("NG proxy-server", out)
+        code, out = self.r.run("--task", "T.1.7", "--since", "HEAD~1")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.r.version("server"), "0.2.3")
+        self.r.commit("T.1.7 の版")
+        self.check(0)
+        self.r.write("crates/server/src/lib.rs", "// server 3\n")
+        self.r.commit("server を変えたが上げ忘れた")
+        out = self.check(1)
+        self.assertIn("NG proxy-server", out)
+
     def test_tag(self):
         self.r.git("tag", "v0.2.3")
         self.check(0)

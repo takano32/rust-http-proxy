@@ -23,6 +23,8 @@
       分かれ目から版の行を変えていた (= 衝突を解いた) ときは、そのマージが書いたとみなす。
       作業ツリーの版の行が HEAD と違えば作業ツリーが書いた (コミット前の `--task` を確かめられるように)。
       「後に中身が変わった」= そのコミットの中身と作業ツリーの中身 (版の行を除く) が違う。
+      本体と proxy-server は全部の最大なので、番号の小さいタスクが後から入っても版が変わらない。この 2 つは
+      どれかのクレートの版の行を書いたコミット (= `--task` を回した) より後に中身が変わっていなければよい (T.28.0)。
   (d) タグの上 (HEAD を指す `v*` のタグがある) なら、本体の版 = タグ。
 
 使い方 (リポジトリの根から。`-C DIR` で別のリポジトリ):
@@ -300,8 +302,14 @@ def judge(repo):
                         % (repo.root.version, top.name, top.version)))
     # (c) 上げ忘れ
     for u in repo.units():
-        origin = repo.version_origin(u)
-        origins[u.name] = origin
+        origins[u.name] = repo.version_origin(u)
+    for u in repo.units():
+        origin = origins[u.name]
+        if origin is not None and repo.content_changed(u, origin) and u.name in (repo.root.name, SERVER):
+            # 本体と proxy-server は全部の最大なので、番号の小さいタスクが後から入ると版が変わらない。
+            # どれかのクレートの版の行を書いた (= `--task` を回した) コミットより後に中身が変わっていなければよい
+            origin = next((o for o in origins.values()
+                           if o is None or not repo.content_changed(u, o)), origin)
         if origin is not None and repo.content_changed(u, origin):
             bad.append((u.name, "版 %s の行を書いた %s より後に中身 (%s/) が変わった (決まり c。--task で上げる)"
                         % (u.version, origin[:7], u.content)))
