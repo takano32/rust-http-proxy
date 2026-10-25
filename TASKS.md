@@ -151,11 +151,6 @@
 
 **28d 台帳・文書・道具**
 
-- [ ] **T.28.25 ダッシュボードの余白・重い口の引き方・起動のカード**
-  - 目的: `dashboard.html` は 80,515 / 81,920 B で余白 1,405 B (次のカードで越える)。`pollProfile` (1055-1057) は 5 秒ごとに重い口 `/profile?res=5|60` を引き、開いたまま `collect-deployed.sh` を回すとどちらかが 503 `busy` になりうる。データはあるのにカードが無いもの: 起動 (`version`・`uptime`・`boot.id`・最後の `start` / `shutdown` = 無言の再起動。画面に `boot` の文字は 0)、`/healthz` の検査、`rejected_requests` / `heavy_rejected`。
-  - やること: 上限を inspect と同じ 96 KiB に上げるかコメントを削るかを決め、`/profile` は `summary=1` + 低頻度の標本にするか間隔を 30 秒に、起動のカードを足す。
-  - 受け入れ基準: `node scripts/check-dashboard.js` が通り、起動のカードが作り物と実データの両方で出る。
-
 - [ ] **T.28.27 2,000 行を超える 3 本を割る**
   - 目的: `crates/metrics-core/src/metrics.rs` 3,149 (T.24.8 の時点の 2,834 から増えた)・`crates/metrics-window/src/history.rs` 2,375・`crates/server/src/lib.rs` 2,066。目安は 1 ファイル 2,000 行 (TODO.md 93)。T.24.8 は `recent.rs` だけを見た。
   - やること: T.24.8 / T.25.2 の型 (段 1 で割り方、段 2 で中身を変えずに割る 1 コミット)。T.28.0・T.28.15 と同じ所を触るので、その後に回す。
