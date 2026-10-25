@@ -30,43 +30,11 @@
 
 **28a 頑丈さと HTTP の残り (本体を変える)**
 
-- [ ] **T.28.1 応答の `Transfer-Encoding` が chunked で終わらないときは `Content-Length` を捨てて閉じるまでを本文にする (RFC 9112 §6.3)**
-  - 目的: T.27.6 で直した要求側の裏返し。オリジンが `Transfer-Encoding: gzip` (や `xchunked`・`cheese`) と `Content-Length: 5` を一緒に返すと、CL で区切り、TE の行は黙って落とし、**オリジンの接続をプールに戻して使い回し、キャッシュにも保存**した (keep-alive で 3 要求がオリジンへの接続 1 本、3 回目は `X-Cache: HIT`)。CL の後ろに続けたバイトが次の要求の応答として読まれうる (応答の密輸・キャッシュ汚染。`pool.put` は読み残しを捨てるので、続きが put の後に届く競合のときだけ成立)。
-  - 変更箇所: `crates/msg/src/body.rs` (`of_response_head_checked` 76-106、`of_response_head` 46-64、`of_headers` 113-130)、使い場所 `crates/http/src/http/mod.rs` 939・956-958。
-  - やること: 応答に TE があって最後の符号化が chunked でなければ `Framing::Close` (CL は無視、接続は使い回さない、保存もしない)。chunked と CL が両方なら今までどおり chunked。
-  - 受け入れ基準: 結合テストで、TE + CL の応答が閉じるまでの本文で返り、オリジンへの接続が 3 要求で 3 本、キャッシュに入らない。chunked + CL は変わらない。`scripts/framing-probe.py` に応答の 2 形。
-
-- [ ] **T.28.2 304 で届いた新しいヘッダーで保存済みの応答を書き直す (RFC 9111 §3.2・§4.3.4)**
-  - 目的: 再検証の 304 が `Cache-Control: max-age=600` と `X-Ver: 2` を返しても、内部の期限 (TTL) だけ延ばし、配る先頭は**古いまま** (`max-age=1`・`X-Ver: 1`)。下流のキャッシュとクライアントの鮮度の計算を誤らせる。
-  - 変更箇所: `crates/http/src/http/mod.rs` 961-972 (304 の経路)、`crates/http/src/http/refresh.rs` 174-184 (裏の再検証)、`crates/cache/src/cache/ops.rs` 315-333 (`refresh`)、`crates/freshness/src/freshness.rs` 121。
-  - やること: 304 を受けたら、保存済みの先頭の行を 304 の `Cache-Control`・`Expires`・`Date`・`ETag`・`Last-Modified`・`Vary` などで差し替えて置き直す (メモリと disk の両方)。枠組みのヘッダー (CL・TE) と hop-by-hop は差し替えない。
-  - 受け入れ基準: 結合テストで、304 の後の HIT が新しい `Cache-Control` と `X-Ver: 2` を返す。本文は 1 バイトも変わらない。
-
-- [ ] **T.28.3 `Expect: 100-continue` の要求に、本文を読む前に `100 Continue` を返す (RFC 9110 §10.1.1)**
-  - 目的: いまは 100 を自分でも返さず、オリジンの 100 も中継しない (`crates/msg/src/response.rs` 42-50) ので、100 を厳密に待つクライアントは締め切りまで本文を送らず、こちらは本文を待って止まる。
-  - 変更箇所: `crates/http/src/http/mod.rs` (`forward_request_body` の前)。
-  - やること: `Expect: 100-continue` (大小無視) があり本文がある要求では、本文を読む前に `HTTP/1.1 100 Continue\r\n\r\n` を 1 回書く。`Expect` の行はオリジンへ転送しない (オリジンの 100 は今までどおり読み飛ばす)。100-continue 以外の `Expect` は 417。
-  - 受け入れ基準: 結合テストで、ヘッダーだけ送った時点で `100 Continue` が届き、本文を送ると 200。`Expect` の無い要求は 1 バイトも変わらない。
-
-- [ ] **T.28.5 オリジンの応答の読みの締め切りを `timeout` に数え、文面も直す (今は EAGAIN で `other`)**
-  - 目的: オリジンの読みはブロッキング + `SO_RCVTIMEO` (`crates/origin/src/origin.rs` 56) で、Linux では締め切りが切れると `WouldBlock` (EAGAIN = os error 11) が返る。`crates/http/src/http/mod.rs` 905 はそれを `failed to read origin response: Resource temporarily unavailable (os error 11)` と出し、`ErrCause::from_io` (`crates/metrics-types/src/metrics.rs` 398) は `TimedOut` しか見ないので **`other` に数える**。日次 10-10〜10-16 に 21 行 (いまの量は小さい)。
-  - やること: `from_io` に `WouldBlock => Timeout` (終端のエラーでしか通らない)。ログは「origin response timed out after N s」に言い換える。
-  - 受け入れ基準: 単体で `WouldBlock` が `Timeout` になる、結合で 2 秒の締め切りに対し 3 秒黙るオリジンが `errors_by_cause` の `timeout` に入り、ログに "timed out" が出る。
-
-- [ ] **T.28.8 forward のオリジン接続にも短い接続の締め切りを当てる (今は `PROXY_TIMEOUT_SECS` の 30 秒)**
-  - 目的: CONNECT の確立は T.23.3 で 5 秒にしたが、forward のオリジン接続は 30 秒のまま (`crates/http/src/http/mod.rs` 761-765)。繋がらない宛先への forward 1 本がワーカーを 30 秒握る (T.28.0 と同じ枯渇の増幅)。**見直し**: README の「forward は `PROXY_TIMEOUT_SECS` のまま」の判断。
-  - やること: forward の接続の確立にも `PROXY_CONNECT_TIMEOUT_SECS` を当てる (応答の読みは 30 秒のまま)。段 1 で tokyo の forward の確立の分布を見て、落とす成功が 0 であることを確かめる。
-  - 受け入れ基準: 繋がらない宛先への forward が 5 秒で 502、forward の確立の最大 (実データ) が締め切りより十分小さい。
-
 - [ ] **T.28.9 ログの量を攻撃者が決められないようにする (400 系の WARN と自分宛ての INFO)**
   - 目的: 不正な要求は 1 本につき WARN 1 行 (実測 20 本 → 20 行) で上限が無い。正常な要求も既定 INFO で ACCESS 1 行。ダッシュボードを開いたままにすると自分宛ての INFO が約 1.2 行/秒で Pterodactyl のコンソールを埋める (`crates/endpoints/src/endpoints/mod.rs` 540)。accept のエラー (1 時間に 1 回) と上限の WARN (1 分に 1 回) は既に絞っている。
   - やること: 400 系の WARN を理由ごとに 1 分 1 回 + 件数 (数は `rejected_requests` が持つ)、自分宛ての INFO は debug へ。
   - 受け入れ基準: 不正な要求 100 本で WARN が理由ごとに 1〜2 行、件数は `/status` で読める。自分宛ての要求は info で 0 行。
 
-- [ ] **T.28.10 キャッシュの小物 (ホスト名の大小・応答の `Via`・要求の `Cache-Control`・壊れた `max-age`)**
-  - 目的: (a) `http://LOCALHOST:P/x` は `localhost` のエントリに当たらない (キーが URL そのまま、`crates/cachekey/src/key.rs` 44)。(b) 応答に `Via` を付けていない (RFC 9110 §7.6.3 は要求と応答の両方で MUST。`crates/msg/src/headers.rs` の `write_response_head`・`sanitize_response_head`)。(c) 要求の `max-age=5` (>0)・`min-fresh` で再検証せず HIT、`only-if-cached` で無いときはオリジンへ行って 404 (RFC 9111 §5.2.1.7 は 504)。(d) 応答の `max-age=abc` を既定 300 秒で新鮮扱い。
-  - 変更箇所: `crates/cachekey/src/key.rs`、`crates/msg/src/headers.rs`、`crates/http/src/http/mod.rs` 630-641、`crates/freshness/src/freshness.rs` 194。
-  - 受け入れ基準: 4 つそれぞれに結合テスト 1 本。(b) は HIT の応答にも付く。
 
 
 **28b 性能 (forward の user 時間と、既定プロファイルの上乗せ)**
@@ -115,6 +83,21 @@
   - 受け入れ基準: 手元で 60 秒以下、本数は同じ。
 
 
+
+- [ ] **T.28.33 絶対 URI のスキームが大文字 (`HTTP://…`) の要求を読む (T.28.10 で見つけた)**
+  - 目的: スキームは大小を区別しない (RFC 9110 4.2.3) のに、`GET HTTP://LOCALHOST:P/x` は `parse_origin` が authority として読めず、`[HTTP://LOCALHOST:P/x]:80` を引きに行って 502 になる。
+  - やること: 要求行の絶対 URI のスキームを大小無視で読む (`http` / `https` に畳む)。
+  - 受け入れ基準: `HTTP://` と `Http://` の要求が小文字と同じ応答・同じキャッシュのキーになる結合テスト。小文字の要求のバイト列は変わらない。
+
+- [ ] **T.28.34 REVALIDATED の応答の `Age` を再検証の時刻から数える (T.28.2 で見つけた)**
+  - 目的: 304 で書き直した REVALIDATED の応答の `Age` は、古い `stored_at` から出している (次の HIT からは新しい値)。再検証した直後の応答は鮮度が新しいので、`Age` は 0 に近いはず。
+  - やること: REVALIDATED の応答は `refresh_with_head` で新しくした時刻から `Age` を出す。
+  - 受け入れ基準: 保存から N 秒たって再検証した応答の `Age` が 0〜1 になる結合テスト。
+
+- [ ] **T.28.35 閉じるまでを本文にした TE つきの応答で、符号化を残したまま TE の行を落とさない (T.28.1 で見つけた)**
+  - 目的: T.28.1 で、最後が chunked でない TE (`gzip` など) の応答は閉じるまでを本文にしたが、TE の行は今までどおり落とすので、クライアントには TE なしの生の符号化済みのバイトに見える。
+  - やること: 最後の chunked でない符号化を残すなら TE の行をそのまま伝える (HTTP/1.1 のクライアント)、HTTP/1.0 のクライアントには 502 にするなど、RFC 9112 6.1 に沿う形を決めて入れる。
+  - 受け入れ基準: `Transfer-Encoding: gzip` の応答が、HTTP/1.1 のクライアントへ TE の行つきで閉じるまで届く結合テスト。chunked の応答のバイト列は変わらない。
 
 **利用者の判断が要るもの (番号は決まってから振る)**
 
