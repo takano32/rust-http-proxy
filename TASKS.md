@@ -30,12 +30,6 @@
 
 **28a 頑丈さと HTTP の残り (本体を変える)**
 
-- [ ] **T.28.0 ヘッダー受信に総時間の締め切りを入れる (沈黙・slowloris でワーカーと接続枠が尽き、`/status` も応答しなくなる)**
-  - 目的: 接続を開けて何も送らない、またはヘッダーを 1 バイトずつ送るだけで、1 本につきワーカー 1 本と接続枠 1 つを握れる。既定 `PROXY_MAX_CONNS_PER_CLIENT=0` なので 1 つの接続元が 240 本全部を握れる (tokyo は接続元が NAT の 1 つなので、接続元ごとの上限は効かない)。実測 (`PROXY_MAX_CONNS=8`): 沈黙 8 本で `/status` は **25 秒待って応答なし**、代理の GET は 4.8 秒後に 503 (オリジンに 1 本も届かない)。沈黙は `PROXY_TIMEOUT_SECS` (30 秒) で初めて放される。`PROXY_TIMEOUT_SECS=3` で 1 バイト / 2 秒を送ると **12 秒 (締め切りの 4 倍) たっても切れない** (`SO_RCVTIMEO` は「無通信の締め切り」で、読めるたびに待ち直す)。T.13.2 の「上限に当たっても監視は取れる」も崩れている (上限の外の 4 枠は accept だけで、走るのは同じワーカーの待ち行列)。
-  - 変更箇所: `crates/server/src/lib.rs` (`serve_one` の 1 要求目の待ち 1343-1359、`read_line_or_idle` / `read_limited_line` 558-602、上限の外の枠 `OVERFLOW_SLOTS` 111・360)、`crates/workers/src/workers.rs` (122-139)、`crates/config`、README の環境変数の表。
-  - やること: accept (か 1 バイト目) からの絶対の期限を `Instant` で持ち、ヘッダーを読む輪に通して、越えたら `408 Request Timeout` で閉じる (`PROXY_HEADER_TIMEOUT_SECS`。既定は 10 秒前後を段 1 で決める。`PROXY_CONNECT_TIMEOUT_SECS` を分けた T.15.6 と同じ型)。`PROXY_TIMEOUT_SECS` (本文の転送) は変えない。上限の外で受けた接続の `/status` を確実に返す予備 (ワーカーの外の少数) も段 2 で考える。
-  - 受け入れ基準: 結合テストで (a) 沈黙の接続が期限 + 1 秒以内に 408 で閉じる、(b) 1 バイト / 1 秒の trickle も同じ、(c) `PROXY_MAX_CONNS` ぶんの沈黙を張っても `/status` が 3 秒以内に 200、(d) 10 MiB の本文の転送は今までどおり通る。`--lite` でも効く。
-
 - [ ] **T.28.1 応答の `Transfer-Encoding` が chunked で終わらないときは `Content-Length` を捨てて閉じるまでを本文にする (RFC 9112 §6.3)**
   - 目的: T.27.6 で直した要求側の裏返し。オリジンが `Transfer-Encoding: gzip` (や `xchunked`・`cheese`) と `Content-Length: 5` を一緒に返すと、CL で区切り、TE の行は黙って落とし、**オリジンの接続をプールに戻して使い回し、キャッシュにも保存**した (keep-alive で 3 要求がオリジンへの接続 1 本、3 回目は `X-Cache: HIT`)。CL の後ろに続けたバイトが次の要求の応答として読まれうる (応答の密輸・キャッシュ汚染。`pool.put` は読み残しを捨てるので、続きが put の後に届く競合のときだけ成立)。
   - 変更箇所: `crates/msg/src/body.rs` (`of_response_head_checked` 76-106、`of_response_head` 46-64、`of_headers` 113-130)、使い場所 `crates/http/src/http/mod.rs` 939・956-958。
@@ -53,12 +47,6 @@
   - 変更箇所: `crates/http/src/http/mod.rs` (`forward_request_body` の前)。
   - やること: `Expect: 100-continue` (大小無視) があり本文がある要求では、本文を読む前に `HTTP/1.1 100 Continue\r\n\r\n` を 1 回書く。`Expect` の行はオリジンへ転送しない (オリジンの 100 は今までどおり読み飛ばす)。100-continue 以外の `Expect` は 417。
   - 受け入れ基準: 結合テストで、ヘッダーだけ送った時点で `100 Continue` が届き、本文を送ると 200。`Expect` の無い要求は 1 バイトも変わらない。
-
-- [ ] **T.28.4 失敗した CONNECT を WARN 1 行だけにする (今は WARN と ERROR の 2 行)**
-  - 目的: tokyo の `/log` 1,000 行は error 500・warn 500 で、**500 接続のうち 499 が同じ失敗の 2 行** (`warn: 502 Bad Gateway: connect imap.…:993 failed: …` と、宛先の無い `error: failed to lookup address information …`)。環の実際の窓が約 8.7 時間に半減し、ERROR で警報を組むと総当たりで毎時数十回鳴る。forward の失敗は WARN 1 行。
-  - 変更箇所: `crates/tunnel/src/tunnel.rs` 65-103 (502 を書いて WARN を出して `Err`)、`crates/server/src/lib.rs` 1284-1290 (`pump` の呼び元が EOF 系以外を `log_error!` で出し直す)。
-  - やること: tunnel が 502 を書いたあとは「報告済み」と分かる戻り値にし、呼び元は出し直さない。
-  - 受け入れ基準: 結合テストで、繋がらない宛先への CONNECT 1 本で `/log` に warn 1 行・error 0 行、`/errors` の個票は今までどおり。次の締めの雪像で `/log` の error が 0〜数件。
 
 - [ ] **T.28.5 オリジンの応答の読みの締め切りを `timeout` に数え、文面も直す (今は EAGAIN で `other`)**
   - 目的: オリジンの読みはブロッキング + `SO_RCVTIMEO` (`crates/origin/src/origin.rs` 56) で、Linux では締め切りが切れると `WouldBlock` (EAGAIN = os error 11) が返る。`crates/http/src/http/mod.rs` 905 はそれを `failed to read origin response: Resource temporarily unavailable (os error 11)` と出し、`ErrCause::from_io` (`crates/metrics-types/src/metrics.rs` 398) は `TimedOut` しか見ないので **`other` に数える**。日次 10-10〜10-16 に 21 行 (いまの量は小さい)。
@@ -160,6 +148,11 @@
   - 目的: 手元の `python3 -m unittest discover -s scripts` は 178 秒 (CI では 65 秒)、うち `test_collect_deployed.py` 57 秒 (`collect-deployed.sh` を偽のサーバーで 14 回起こす) と `test_mx.py` 32 秒 (`sleep`)。
   - やること: 偽のサーバーを使い回す・`sleep` を条件待ちにする。判定は弱めない。
   - 受け入れ基準: 手元で 60 秒以下、本数は同じ。
+
+- [ ] **T.28.30 待ち受けに読み取りタイムアウトを当てる前に握手を終えた接続も縛る (T.28.0 で見つけた)**
+  - 目的: 待ち受けの `SO_RCVTIMEO` は `serve()` の頭で当てるので、それより前に握手を終えた接続 (起動直後に再接続してくるクライアント) は継承できず無期限のまま扱われ、T.28.0 の締め切りも `PROXY_TIMEOUT_SECS` も効かない。`header_timeout_test` は `/healthz` を 1 本通してから始めて避けている。
+  - やること: 待ち受けを作った直後 (listen の前) に当てる、または accept した接続の継承を確かめて当たっていなければ当てる。
+  - 受け入れ基準: 起動直後に握手した沈黙の接続が締め切り + 1 秒以内に 408 で閉じる結合テスト。普通の要求で接続ごとの setsockopt が増えない。
 
 **利用者の判断が要るもの (番号は決まってから振る)**
 
