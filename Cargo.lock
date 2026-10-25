@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "proxy-base"
-version = "0.28.0"
+version = "0.28.6"
 
 [[package]]
 name = "proxy-bench"
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-config"
-version = "0.28.0"
+version = "0.28.6"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-endpoints"
-version = "0.28.25"
+version = "0.28.7"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-watch"
-version = "0.18.1"
+version = "0.28.17"
 dependencies = [
  "proxy-metrics-slo",
 ]
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-reload"
-version = "0.28.0"
+version = "0.28.6"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -292,7 +292,7 @@ version = "0.24.4"
 
 [[package]]
 name = "proxy-run"
-version = "0.17.8"
+version = "0.28.6"
 dependencies = [
  "proxy-server",
 ]
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-sysinfo"
-version = "0.17.11"
+version = "0.28.11"
 dependencies = [
  "proxy-sys",
 ]
