@@ -580,3 +580,53 @@ fn test_integration_env_typos_and_unreadable_values_are_reported() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 真偽の鍵・`PROXY_PROFILE`・`PROXY_SLO` の読めない値も WARN 1 行ずつ (T.28.31)。
+/// 扱いは今までどおり (真偽の鍵は on、`PROXY_PROFILE` は既定、`PROXY_SLO` は読めた項目だけ当てる)。
+#[test]
+fn test_integration_unreadable_flags_profile_and_slo_are_reported() {
+    let base = "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\n";
+    let bad = format!(
+        "{}PROXY_ALLOW_LOCAL=maybe\nPROXY_PROFILE=fast\nPROXY_SLO=connect_p50_ms=20,error_rate=abc,foo=1\n",
+        base
+    );
+    let (child, port, dir, log) = start_proxy_logged("t2831", &bad, &[]);
+    let warns: Vec<&String> = log
+        .iter()
+        .filter(|l| l.contains("WARN") && l.contains(" is not "))
+        .collect();
+    assert_eq!(warns.len(), 3, "WARN は 3 行: {:#?}", log);
+    let json = status_json(port);
+    let s = &json[json.find("\"settings\":").expect("settings")..];
+    for key in [
+        "{\"key\":\"PROXY_ALLOW_LOCAL\",\"value\":\"maybe\"}",
+        "{\"key\":\"PROXY_PROFILE\",\"value\":\"fast\"}",
+        "{\"key\":\"PROXY_SLO\",\"value\":\"error_rate=abc,foo=1\"}",
+    ] {
+        assert!(s.contains(key), "{} が無い: {}", key, s);
+    }
+    let config = endpoint_json(port, "/config");
+    assert_eq!(setting(&config, "PROXY_ALLOW_LOCAL").0, "true");
+    let slo = setting(&config, "PROXY_SLO").0;
+    assert!(
+        slo.contains("connect_p50_ms=20") && slo.contains("error_rate=0.005"),
+        "読めた項目だけ当たる: {}",
+        slo
+    );
+    drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // 正しい書き方では 1 行も出ない
+    let (child, port, dir, log) = start_proxy_logged(
+        "t2831-ok",
+        &format!(
+            "{}PROXY_ALLOW_LOCAL=off\nPROXY_IPV6=yes\nPROXY_SLO=connect_p50_ms=20,\n",
+            base
+        ),
+        &[],
+    );
+    assert!(!log.iter().any(|l| l.contains(" is not ")), "{:#?}", log);
+    assert!(status_json(port).contains("\"invalid\":[],\"unknown\":[]"));
+    drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+}

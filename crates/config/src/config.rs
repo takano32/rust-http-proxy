@@ -173,26 +173,38 @@ impl Slo {
     /// `connect_p50_ms=10,error_rate=0.01` のように**書いたものだけ**を当てる
     /// (書いていない閾と、数として読めない値・負の値・知らない綴りは既定のまま)。
     pub fn parse(spec: &str) -> Slo {
-        let mut out = DEFAULT_SLO;
-        for item in spec.split(',') {
+        Self::parse_skipping(spec).0
+    }
+
+    /// [`Slo::parse`] と同じで、飛ばした項目 (空の項目は除く) も返す (WARN に使う。T.28.31)。
+    pub fn parse_skipping(spec: &str) -> (Slo, Vec<&str>) {
+        let (mut out, mut skipped) = (DEFAULT_SLO, Vec::new());
+        for item in spec.split(',').filter(|i| !i.trim().is_empty()) {
             let Some((k, v)) = item.split_once('=') else {
+                skipped.push(item.trim());
                 continue;
             };
-            let Ok(n) = v.trim().parse::<f64>() else {
-                continue;
+            let n = v
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|n| n.is_finite() && *n >= 0.0);
+            let slot = match k.trim().to_ascii_lowercase().as_str() {
+                "connect_p50_ms" => &mut out.connect_p50_ms,
+                "connect_p95_ms" => &mut out.connect_p95_ms,
+                "error_rate" => &mut out.error_rate,
+                "dns_miss_per_connect" => &mut out.dns_miss_per_connect,
+                _ => {
+                    skipped.push(item.trim());
+                    continue;
+                }
             };
-            if !n.is_finite() || n < 0.0 {
-                continue;
-            }
-            match k.trim().to_ascii_lowercase().as_str() {
-                "connect_p50_ms" => out.connect_p50_ms = n,
-                "connect_p95_ms" => out.connect_p95_ms = n,
-                "error_rate" => out.error_rate = n,
-                "dns_miss_per_connect" => out.dns_miss_per_connect = n,
-                _ => {}
+            match n {
+                Some(n) => *slot = n,
+                None => skipped.push(item.trim()),
             }
         }
-        out
+        (out, skipped)
     }
 
     /// `.env` にそのまま書き戻せる形 (`/config` と `--check` に出るのもこれ)。
@@ -704,8 +716,7 @@ impl Config {
             src.mark("PROXY_DENY_HOSTS");
         }
         // lite は「既定をまとめて off にする」だけなので、後続の環境変数が上書きできる
-        cfg.lite =
-            envfile::var("PROXY_PROFILE").is_some_and(|v| v.trim().eq_ignore_ascii_case("lite"));
+        cfg.lite = bad.profile_is_lite();
         if cfg.lite {
             cfg.stats_persist = false;
             src.mark("PROXY_PROFILE");
@@ -768,18 +779,12 @@ impl Config {
             cfg.park_grace = Duration::from_millis(ms);
             src.mark("PROXY_PARK_GRACE_MS");
         }
-        let off = |v: String| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "0" | "false" | "off" | "no"
-            )
-        };
-        if let Some(v) = envfile::var("PROXY_PARK_IDLE") {
-            cfg.park_idle = !off(v);
+        if let Some(on) = bad.flag("PROXY_PARK_IDLE") {
+            cfg.park_idle = on;
             src.mark("PROXY_PARK_IDLE");
         }
-        if let Some(v) = envfile::var("PROXY_IPV6") {
-            cfg.ipv6 = !off(v);
+        if let Some(on) = bad.flag("PROXY_IPV6") {
+            cfg.ipv6 = on;
             src.mark("PROXY_IPV6");
         }
         // 待ち受けの backlog (T14.47)。`0` と `auto` は既定 (= min(1024, somaxconn)) に戻す。
@@ -801,12 +806,12 @@ impl Config {
                 bad.reject("PROXY_LISTEN_BACKLOG", v, "a whole number or auto");
             }
         }
-        if let Some(v) = envfile::var("PROXY_TLS") {
-            cfg.tls_enabled = !off(v);
+        if let Some(on) = bad.flag("PROXY_TLS") {
+            cfg.tls_enabled = on;
             src.mark("PROXY_TLS");
         }
-        if let Some(v) = envfile::var("PROXY_TLS_VERIFY") {
-            cfg.tls_verify = !off(v);
+        if let Some(on) = bad.flag("PROXY_TLS_VERIFY") {
+            cfg.tls_verify = on;
             src.mark("PROXY_TLS_VERIFY");
         }
         // `auto` (既定) は記述子の上限から決める。数値ならその値、`0` は無制限。
@@ -850,12 +855,12 @@ impl Config {
             cfg.connect_ports = PortSet::parse(&v);
             src.mark("PROXY_CONNECT_PORTS");
         }
-        if let Some(v) = envfile::var("PROXY_ALLOW_LOCAL") {
-            cfg.allow_local = !off(v);
+        if let Some(on) = bad.flag("PROXY_ALLOW_LOCAL") {
+            cfg.allow_local = on;
             src.mark("PROXY_ALLOW_LOCAL");
         }
-        if let Some(v) = envfile::var("PROXY_ENDPOINTS_READONLY") {
-            cfg.endpoints_readonly = !off(v);
+        if let Some(on) = bad.flag("PROXY_ENDPOINTS_READONLY") {
+            cfg.endpoints_readonly = on;
             src.mark("PROXY_ENDPOINTS_READONLY");
         }
         if let Some(v) = envfile::var("PROXY_ALLOW_CLIENTS") {
@@ -887,7 +892,7 @@ impl Config {
                 None => (v.as_str(), None),
             };
             let has_port = v.contains(':');
-            if off(head.to_string()) {
+            if matches!(head.trim(), "0" | "false" | "off" | "no") {
                 cfg.peek_sni = None;
                 src.mark("PROXY_PEEK_SNI");
             } else if port.is_some_and(|p| p > 0) {
@@ -925,14 +930,14 @@ impl Config {
                 ),
             }
         }
-        if let Some(v) = envfile::var("PROXY_STATS_PERSIST") {
-            cfg.stats_persist = !off(v);
+        if let Some(on) = bad.flag("PROXY_STATS_PERSIST") {
+            cfg.stats_persist = on;
             src.mark("PROXY_STATS_PERSIST");
         }
         // 起動直後の自己ベンチ (T14.43)。**`--lite` でも明示されればそちらが勝つ**
         // (測るためだけの旗で、既定は off)
-        if let Some(v) = envfile::var("PROXY_SELF_BENCH") {
-            cfg.self_bench = !off(v);
+        if let Some(on) = bad.flag("PROXY_SELF_BENCH") {
+            cfg.self_bench = on;
             src.mark("PROXY_SELF_BENCH");
         }
         if let Some(n) = bad.num::<usize>("PROXY_SNAPSHOT_DAYS") {
@@ -940,7 +945,9 @@ impl Config {
             src.mark("PROXY_SNAPSHOT_DAYS");
         }
         if let Some(v) = envfile::var("PROXY_SLO").filter(|v| !v.trim().is_empty()) {
-            cfg.slo = Slo::parse(&v);
+            let (slo, skipped) = Slo::parse_skipping(&v);
+            bad.slo_items(&skipped);
+            cfg.slo = slo;
             src.mark("PROXY_SLO");
         }
         if let Some(path) = envfile::var("PROXY_TLS_CA_FILE").filter(|p| !p.trim().is_empty()) {
@@ -971,8 +978,8 @@ impl Config {
             cfg.canary_secs = Duration::from_secs(secs.max(1));
             src.mark("PROXY_CANARY_SECS");
         }
-        if let Some(v) = envfile::var("PROXY_CANARY_IPV6") {
-            cfg.canary_ipv6 = !off(v);
+        if let Some(on) = bad.flag("PROXY_CANARY_IPV6") {
+            cfg.canary_ipv6 = on;
             src.mark("PROXY_CANARY_IPV6");
         }
         if let Some(ms) = bad.num::<u64>("PROXY_PROFILE_SAMPLE_MS") {

@@ -61,6 +61,52 @@ impl EnvProblems {
         }
     }
 
+    /// 真偽の鍵。`0` / `false` / `off` / `no` が偽で、それ以外は**今までどおり真** (T.28.31)。
+    ///
+    /// 真として読む書き方 (`1` / `true` / `on` / `yes` と空) の外は WARN を 1 行出して覚える
+    /// (扱いは真のまま。`PROXY_ALLOW_LOCAL=maybe` が黙って on になっていた)。
+    pub(super) fn flag(&mut self, key: &'static str) -> Option<bool> {
+        let v = envfile::var(key)?;
+        let t = v.trim().to_ascii_lowercase();
+        match t.as_str() {
+            "0" | "false" | "off" | "no" => Some(false),
+            "" | "1" | "true" | "on" | "yes" => Some(true),
+            _ => {
+                crate::log_warn!(
+                    None,
+                    "{}={:?} is not on or off; treating it as on",
+                    key,
+                    v.trim()
+                );
+                self.note(key, &v, "on or off");
+                Some(true)
+            }
+        }
+    }
+
+    /// `PROXY_PROFILE` が `lite` か。空でも `lite` でもない値は WARN 1 行 (既定のまま。T.28.31)。
+    pub(super) fn profile_is_lite(&mut self) -> bool {
+        let Some(v) = Self::present("PROXY_PROFILE") else {
+            return false;
+        };
+        let lite = v.eq_ignore_ascii_case("lite");
+        if !lite {
+            self.reject("PROXY_PROFILE", &v, "lite");
+        }
+        lite
+    }
+
+    /// `PROXY_SLO` の読めなかった項目 (`Slo::parse` が飛ばしたもの) を 1 行にまとめて WARN (T.28.31)。
+    pub(super) fn slo_items(&mut self, skipped: &[&str]) {
+        if !skipped.is_empty() {
+            self.reject(
+                "PROXY_SLO",
+                &skipped.join(","),
+                "name=number items (connect_p50_ms, connect_p95_ms, error_rate, dns_miss_per_connect)",
+            );
+        }
+    }
+
     /// 読めなかった値を WARN 1 行と一緒に覚える。
     pub(super) fn reject(&mut self, key: &'static str, raw: &str, expected: &'static str) {
         crate::log_warn!(
@@ -197,6 +243,20 @@ mod tests {
         assert_eq!(suggest("TIMOUT_SECS", KNOWN), Some("TIMEOUT_SECS"));
         assert_eq!(suggest("KEEPALIVE_SEC", KNOWN), Some("KEEPALIVE_SECS"));
         assert_eq!(suggest("FOO_BAR", KNOWN), None);
+    }
+
+    #[test]
+    fn slo_parse_reports_the_items_it_skipped() {
+        let (slo, skipped) =
+            super::super::Slo::parse_skipping("connect_p50_ms=20, error_rate=-1,foo=1,,bare");
+        assert_eq!(slo.connect_p50_ms, 20.0);
+        assert_eq!(slo.error_rate, super::super::DEFAULT_SLO.error_rate);
+        assert_eq!(skipped, vec!["error_rate=-1", "foo=1", "bare"]);
+        assert!(
+            super::super::Slo::parse_skipping("error_rate=0.01,")
+                .1
+                .is_empty()
+        );
     }
 
     #[test]

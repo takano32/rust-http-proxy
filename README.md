@@ -1717,6 +1717,9 @@ check: ok (everything this proxy reads is readable)
 **読めない値** (`PROXY_KEEPALIVE_SECS=abc` のように数の欄に数でないもの、範囲の外の値) は、起動時も再読込でも
 WARN を 1 行出して**その項目だけ既定値**で動きます (前の値を維持するのではありません)。書いた名前と値は
 `/status` の `settings.invalid` (`[{"key":"PROXY_KEEPALIVE_SECS","value":"abc"}]`) に出ます。
+真偽の鍵 (`PROXY_ALLOW_LOCAL` など) は `0` / `false` / `off` / `no` が off で、それ以外は**今までどおり on** ですが、
+`1` / `true` / `on` / `yes` と空の外 (`maybe` など) は WARN 1 行と `settings.invalid` に出ます。`PROXY_PROFILE` の `lite` 以外と、
+`PROXY_SLO` の読めない項目 (読めた項目だけ当てる) も同じです (T.28.31)。
 **`.env` に書いてあるが、このプロキシが読まない `PROXY_*` / `SERVER_*` の名前** (`PROXY_TIMOUT_SECS` のような打ち間違い) も
 WARN を 1 行出し (綴りの近い名前があれば `did you mean PROXY_TIMEOUT_SECS?` を添える)、`settings.unknown`
 (`[{"key":"PROXY_TIMOUT_SECS","suggest":"PROXY_TIMEOUT_SECS"}]`。近い名前が無ければ `suggest` は `null`) に出ます。
