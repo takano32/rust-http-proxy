@@ -1,6 +1,6 @@
 [package]
 name = "proxy-freshness"
-version = "0.17.11"
+version = "0.28.10"
 edition = "2024"
 
 [lib]
