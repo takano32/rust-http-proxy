@@ -1,6 +1,6 @@
 [package]
 name = "proxy-endpoints-core"
-version = "0.27.1"
+version = "0.28.42"
 edition = "2024"
 
 [lib]
