@@ -64,9 +64,74 @@ fn today() -> String {
     snapshots::day_name(now / 86_400)
 }
 
+/// 書き手の大域 (`snapshots::configure` / `shift_days_for_test`) を触るテストを 1 本ずつにする。
+static WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 雪像の `recent` の部の `"key":<数>` (部の中で最初に出るもの)。
+fn recent_number(body: &str, key: &str) -> u64 {
+    let at = body
+        .find(",\"recent\":{\"schema\":")
+        .expect("recent の部が無い");
+    common::status_number(&body[at..], key)
+}
+
+/// **T.28.46**: 日次の 1 枚は `recent` を 1 MiB まで持ち、環 (2,000 件) が全部入る。
+///
+/// 実際に CONNECT を 2,100 本通して閉じ、環を満杯にしてから日付をまたがせる (組み立てから
+/// ファイルまでは本物の経路)。同じ瞬間のいつもの `/snapshot` (部ごと 256 KiB で切る) と
+/// 大きさを並べて出す (手元の lo の行なので、デプロイ先の行より短い)。
+#[test]
+fn test_integration_the_daily_snapshot_keeps_the_whole_recent_ring() {
+    use std::io::Write as _;
+    let _serial = WRITER.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = home("daily-recent");
+    let snaps = dir.join("snapshots");
+    snapshots::configure(Some(snaps.clone()), snapshots::DEFAULT_DAYS);
+    let echo = common::start_echo_server();
+    let (port, metrics) = start_test_proxy_with_history(proxy_config(), Duration::from_millis(50));
+    for _ in 0..2_100 {
+        let mut t = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        t.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        t.write_all(
+            format!(
+                "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                echo, echo
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let head = common::read_connect_response(&mut t);
+        assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
+    }
+    common::wait_until(|| metrics.closed.len() >= 2_000, "環が満杯になる");
+
+    let usual = endpoint_json(port, "/snapshot");
+    let date = today();
+    let path = snaps.join(format!("{}.json", date));
+    snapshots::shift_days_for_test(1);
+    common::wait_until(|| path.exists(), "日次の snapshot が書かれる");
+    let daily = std::fs::read_to_string(&path).unwrap();
+    println!(
+        "T.28.46 手元の 2,100 本: いつもの /snapshot {} B (recent {} 行) / 日次 {} B (recent {} 行)",
+        usual.len(),
+        recent_number(&usual, "shown"),
+        daily.len(),
+        recent_number(&daily, "shown")
+    );
+    assert!(recent_number(&usual, "shown") < 2_000, "いつもの雪像は切る");
+    assert_eq!(recent_number(&daily, "shown"), 2_000, "日次は環を全部");
+    assert!(daily.len() <= MAX_SNAPSHOT, "{} B", daily.len());
+    assert!(daily.contains("\"dropped\":[]"), "{}", &daily[..300]);
+
+    snapshots::shift_days_for_test(0);
+    snapshots::configure(None, snapshots::DEFAULT_DAYS);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 履歴スレッドが日付をまたいだら 1 ファイル書く (中身は `/snapshot` そのもの)。
 #[test]
 fn test_integration_snapshots_writes_a_file_when_the_day_changes() {
+    let _serial = WRITER.lock().unwrap_or_else(|e| e.into_inner());
     let dir = home("rollover");
     let snaps = dir.join("snapshots");
     // 書き先と日数を決めてから履歴スレッドを起こす (本番の main.rs と同じ順)

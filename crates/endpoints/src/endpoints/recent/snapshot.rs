@@ -104,18 +104,23 @@ const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
 /// **T14.3 の `/profile` は、入ったらここに 1 行足す** (`parts` に名前が出るので、
 /// 読む側は「この版に何が入っていたか」を JSON だけで判別できる)。
 pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
-    snapshot_with(ep, false)
+    snapshot_with(ep, None)
 }
 
-/// [`snapshot`] の本体。`full_recent` が真なら **`recent` を部の 256 KiB ([`MAX_BODY`]) で切らずに
-/// 2,000 件まで全部入れる** (停止の雪像だけ。T.28.20)。
+/// [`snapshot`] の本体。`recent_max` が `Some(上限)` なら **`recent` を部の 256 KiB ([`MAX_BODY`]) で
+/// 切らずに、その上限まで入れる** (停止の雪像は [`MAX_SNAPSHOT`] = 2,000 件を全部。T.28.20。
+/// 日次の雪像は `snapshots::DAILY_RECENT_MAX` = 1 MiB。T.28.46)。`None` はいつもの `/snapshot`。
+///
+/// 日次は部ごと 256 KiB で切っていたので `/recent` が約 580 行しか入らず、締めの「前」に日次を
+/// 使うと接続のエラーの行が「判定できず」になった (T.28.18)。1 MiB なら 1 件 400〜500 B の
+/// 行で環の 2,000 件が入る。
 ///
 /// 締めの「前」は `/recent` の窓が判定の分母 (phase25 の接続のエラーは試行 1,000 本が下限) になるのに、
 /// `collect-deployed.sh` が `offset=` で続きを追って繋ぐ形 (T.22.5) は、`--from-server` で取り寄せた
 /// 1 枚にはできない (取り寄せたときにはもうプロセスが居ない)。全部入れても 2,000 件 × 1 件 500 B
 /// 前後 = 1 MB 前後で、合計が 4 MiB を越えるときは**切った `recent` に戻してから**いつもの順に落とす
 /// (全部入れたせいで `recent` ごと `null` にはしない)。
-pub fn snapshot_with(ep: &Endpoint<'_>, full_recent: bool) -> (u16, &'static str, String) {
+pub fn snapshot_with(ep: &Endpoint<'_>, recent_max: Option<usize>) -> (u16, &'static str, String) {
     use crate::history::History;
     use crate::metrics::HostSort;
 
@@ -139,10 +144,9 @@ pub fn snapshot_with(ep: &Endpoint<'_>, full_recent: bool) -> (u16, &'static str
         ("connections", connections(ep).2),
         (
             "recent",
-            if full_recent {
-                recent_within(ep, Some("n=2000"), MAX_SNAPSHOT).2
-            } else {
-                recent(ep, Some("n=2000")).2
+            match recent_max {
+                Some(max) => recent_within(ep, Some("n=2000"), max.min(MAX_SNAPSHOT)).2,
+                None => recent(ep, Some("n=2000")).2,
             },
         ),
         ("hosts", hosts(ep, Some("limit=1000")).2),
@@ -157,7 +161,7 @@ pub fn snapshot_with(ep: &Endpoint<'_>, full_recent: bool) -> (u16, &'static str
         ("log", log(ep, Some("n=1000")).2),
     ];
     let names: Vec<&'static str> = part.iter().map(|(k, _)| *k).collect();
-    if full_recent {
+    if recent_max.is_some() {
         fit_full_recent(&mut part, MAX_SNAPSHOT, || recent(ep, Some("n=2000")).2);
     }
     let dropped = drop_to_fit(&mut part, MAX_SNAPSHOT);
@@ -258,23 +262,26 @@ mod tests {
     use super::*;
     use crate::metrics::Metrics;
 
-    /// 停止の雪像 (`snapshot_with(.., true)`) は `recent` の 2,000 件を切らずに全部入れ、
-    /// いつもの `/snapshot` は今までどおり 256 KiB で切る (T.28.20)。行は最悪の値で埋める。
-    #[test]
-    fn the_shutdown_snapshot_keeps_every_recent_row() {
-        use crate::recent::{CloseReason, ConnTally, MAX_RECENT, SIDES, STAGES};
+    use crate::recent::{CloseReason, ConnTally, MAX_RECENT, SIDES, STAGES};
 
-        let m = Metrics::new();
+    /// 環 (`MAX_RECENT` = 2,000 件) を `worst` なら最悪の値、そうでなければデプロイ先に
+    /// ありがちな 1 件 (tokyo 10-25 の `/recent` の 1 行の形: IPv4 の接続元・IP の宛先・
+    /// 数 KB の上り下り・RTT 250 ms) で埋める。
+    fn fill(m: &Metrics, worst: bool) {
         let now = Instant::now();
         let long_host = format!("{}.example.net:65535", "sub.".repeat(30));
         for i in 0..(MAX_RECENT as u64) {
-            let slot = m
-                .conns
-                .register(i, "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6", now)
-                .expect("登録できる");
-            slot.begin_tunnel(&long_host);
-            slot.finish(
-                CloseReason::Error(crate::metrics::ErrCause::Unreachable),
+            let (client, host) = if worst {
+                (
+                    "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6",
+                    long_host.as_str(),
+                )
+            } else {
+                ("10.255.0.1", "40.126.31.0:443")
+            };
+            let slot = m.conns.register(i, client, now).expect("登録できる");
+            slot.begin_tunnel(host);
+            let tally = if worst {
                 ConnTally {
                     up: u64::MAX,
                     down: u64::MAX,
@@ -284,11 +291,30 @@ mod tests {
                     retrans: [u32::MAX; SIDES],
                     syn_retrans: u8::MAX,
                     stall_ms: [u32::MAX; SIDES],
-                },
-                u32::MAX,
-            );
+                }
+            } else {
+                ConnTally {
+                    up: 4_497,
+                    down: 5_176,
+                    status: 0,
+                    stage_ms: [249; STAGES],
+                    rtt_us: [248_790, 248_313],
+                    retrans: [0; SIDES],
+                    syn_retrans: 0,
+                    stall_ms: [0; SIDES],
+                }
+            };
+            let reason = if worst {
+                CloseReason::Error(crate::metrics::ErrCause::Unreachable)
+            } else {
+                CloseReason::ClientEof
+            };
+            slot.finish(reason, tally, if worst { u32::MAX } else { 0 });
             m.record_closed(i);
         }
+    }
+
+    fn with_ep<R>(m: &Metrics, f: impl FnOnce(&Endpoint<'_>) -> R) -> R {
         let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
         let concurrency = || crate::metrics::Concurrency {
             max_conns: 0,
@@ -298,7 +324,7 @@ mod tests {
             queued_jobs: 0,
         };
         let ep = Endpoint {
-            metrics: &m,
+            metrics: m,
             cache: &cache,
             conn_id: 1,
             port: 8080,
@@ -313,21 +339,75 @@ mod tests {
             own_ip: &|_| false,
             self_names: &[],
         };
-        let part_of = |body: &str| -> String {
-            let at = body
-                .find(",\"recent\":{\"schema\":")
-                .expect("recent の部が無い");
-            body[at..].to_string()
-        };
-        let usual = snapshot(&ep).2;
-        let full = snapshot_with(&ep, true).2;
-        let t = Instant::now();
-        let _ = snapshot_with(&ep, true);
+        f(&ep)
+    }
+
+    /// 雪像の `recent` の部 (その部の閉じ括弧までではなく、部の始まりから最後まで)。
+    fn part_of(body: &str) -> &str {
+        let at = body
+            .find(",\"recent\":{\"schema\":")
+            .expect("recent の部が無い");
+        &body[at..]
+    }
+
+    /// 雪像の `recent` の部の大きさ (`"hosts"` の部の手前まで)。
+    fn recent_bytes(body: &str) -> usize {
+        let p = part_of(body);
+        p.find(",\"hosts\":").expect("hosts の部が無い")
+    }
+
+    /// **T.28.46 の受け入れ基準**: 日次の 1 枚 (`snapshot_with(.., Some(DAILY_RECENT_MAX))`) は
+    /// `recent` を 1 MiB まで持ち、ありがちな行なら**環の 2,000 件が全部入る**
+    /// (いつもの `/snapshot` は 256 KiB で切って 2,000 件を割る)。最悪の値の行は 1 MiB で切る。
+    #[test]
+    fn the_daily_snapshot_keeps_the_whole_ring_within_one_mib() {
+        let daily = Some(crate::snapshots::DAILY_RECENT_MAX);
+        assert_eq!(crate::snapshots::DAILY_RECENT_MAX, 1024 * 1024);
+        let m = Metrics::new();
+        fill(&m, false);
+        let (usual, day) = with_ep(&m, |ep| (snapshot(ep).2, snapshot_with(ep, daily).2));
+        println!(
+            "T.28.46 recent 2,000 件 (ありがちな行): いつもの雪像 {} B (recent {} B) / 日次 {} B (recent {} B)",
+            usual.len(),
+            recent_bytes(&usual),
+            day.len(),
+            recent_bytes(&day)
+        );
+        assert!(part_of(&usual).contains("\"truncated\":true"));
+        let p = part_of(&day);
+        assert!(p.contains("\"truncated\":false"), "{}", &p[..300]);
+        assert!(p.contains(&format!("\"shown\":{}", MAX_RECENT)));
+        assert!(recent_bytes(&day) <= crate::snapshots::DAILY_RECENT_MAX);
+        assert!(day.contains("\"dropped\":[]"));
+
+        // 最悪の値の行は 1 MiB で切る (停止の 1 枚のように 4 MiB までは持たない)
+        let m = Metrics::new();
+        fill(&m, true);
+        let day = with_ep(&m, |ep| snapshot_with(ep, daily).2);
+        let p = part_of(&day);
+        assert!(p.contains("\"truncated\":true"), "{}", &p[..300]);
+        assert!(recent_bytes(&day) <= crate::snapshots::DAILY_RECENT_MAX);
+        assert!(recent_bytes(&day) > MAX_BODY, "256 KiB より多く持つ");
+    }
+
+    /// 停止の雪像 (`snapshot_with(.., Some(MAX_SNAPSHOT))`) は `recent` の 2,000 件を切らずに全部入れ、
+    /// いつもの `/snapshot` は今までどおり 256 KiB で切る (T.28.20)。行は最悪の値で埋める。
+    #[test]
+    fn the_shutdown_snapshot_keeps_every_recent_row() {
+        let m = Metrics::new();
+        fill(&m, true);
+        let (usual, full, took) = with_ep(&m, |ep| {
+            let usual = snapshot(ep).2;
+            let full = snapshot_with(ep, Some(MAX_SNAPSHOT)).2;
+            let t = Instant::now();
+            let _ = snapshot_with(ep, Some(MAX_SNAPSHOT));
+            (usual, full, t.elapsed())
+        });
         println!(
             "T.28.20 recent 2,000 件 (最悪の値): いつもの雪像 {} B / 停止の雪像 {} B、停止の 1 枚を組むのに {:.1} ms (debug ビルド)",
             usual.len(),
             full.len(),
-            t.elapsed().as_secs_f64() * 1000.0
+            took.as_secs_f64() * 1000.0
         );
         assert!(part_of(&usual).contains("\"truncated\":true"));
         let p = part_of(&full);

@@ -226,8 +226,9 @@ pub struct SnapshotSource {
 /// この層より**下**にあるため (下から上を呼ぶと依存が輪になる。T14.11 の `events::poll`
 /// と同じ判断で、**向きは上から預ける**)。
 pub fn register_snapshot(src: SnapshotSource) {
-    // 引数は「`recent` を全部入れるか」(停止の 1 枚だけ真。T.28.20)
-    crate::snapshots::set_builder(Box::new(move |full_recent| {
+    // 引数は「`recent` の部の上限」(`None` = 256 KiB で切る。停止の 1 枚は 4 MiB = 全部 (T.28.20)、
+    // 日次は 1 MiB (T.28.46))
+    crate::snapshots::set_builder(Box::new(move |recent_max| {
         let ep = Endpoint {
             metrics: &src.metrics,
             cache: &src.cache,
@@ -247,7 +248,7 @@ pub fn register_snapshot(src: SnapshotSource) {
             own_ip: &|_| false,
             self_names: &[],
         };
-        recent::snapshot_with(&ep, full_recent).2
+        recent::snapshot_with(&ep, recent_max).2
     }));
 }
 

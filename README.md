@@ -1283,6 +1283,11 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `PROXY_STATS_PERSIST=off` (と `--lite`) では 1 ファイルも書きません (`dir` が `null`)。
     ディスクの空きが予算 (`PROXY_DISK_KEEP_FREE_MB` のマージン) を割り込むときは**書かずに**
     `/events` に 1 件 (`state_file`) 残します。
+    **日次の 1 枚だけは `recent` を部の 256 KiB ではなく 1 MiB まで持ちます** (T.28.46。いつもの `/snapshot` と起動の 1 枚は
+    256 KiB のまま)。256 KiB では `/recent` が約 580 行しか入らず (tokyo の日次 16 枚は 552〜598 行)、締めの「前」に日次を
+    使うと接続のエラーの行 (試行 1,000 本が下限) が「判定できず」になっていたためです。1 行 437〜474 B なので環の 2,000 件が
+    全部入り、合計が 4 MiB を越えるときは停止の 1 枚と同じく切った `recent` に戻します。tokyo の日次 16 枚の実バイトで
+    引き直すと 1.44〜2.89 MB → 1.64〜3.51 MB です (`recent` の部を 2,000 行に伸ばした値。どれも 4 MiB の内)
     **起動と停止の 1 枚** (T.28.20) は同じ置き場所の `<YYYY-MM-DDTHHMMSSZ>-shutdown.json` (**停止シグナルで状態ファイルを書く前**) と
     `-start.json` (**起動から 60 秒**、`memory.baseline` を書くのと同じ時) で、`/snapshots` の **`moments[]`**
     (`name` / `kind` = `start`・`shutdown` / `bytes` / `t` (撮った時刻)、古い順。数は `moments_count`・`moments_bytes`) に並び、

@@ -23,8 +23,8 @@
 //! 名前の時刻は撮った時刻 (UTC)。日次の 1 枚とは数え方を分け (`/snapshots` の `moments`)、
 //! 残すのは [`Moment`] の種類ごとに `PROXY_SNAPSHOT_DAYS` 日以内かつ新しい方から
 //! `PROXY_SNAPSHOT_DAYS` 枚まで (再起動を繰り返しても置き場所を埋めない)。
-//! **停止の 1 枚だけは `recent` を 256 KiB で切らずに全部入れる** (組み方は上の層。
-//! 呼ぶときに `full_recent` を渡す)。
+//! **停止の 1 枚は `recent` を 256 KiB で切らずに全部入れ、日次の 1 枚は 1 MiB まで持つ**
+//! (T.28.20・T.28.46。組み方は上の層。呼ぶときに `recent` の部の上限を渡す)。
 //!
 //! **`/snapshot` を組むのは `proxy-endpoints` の仕事**なので、ここは
 //! [`set_builder`] で預かった閉包を日付の変わり目に 1 回呼ぶだけにしてある
@@ -43,6 +43,14 @@ use crate::{log_debug, log_info, log_warn};
 
 /// 1 ファイルの上限 (4 MiB。`/snapshot` の上限 `endpoints::recent::MAX_SNAPSHOT` と同じ値)。
 pub const MAX_FILE: u64 = 4 * 1024 * 1024;
+
+/// **日次の 1 枚だけ**の `recent` の部の上限 (1 MiB。T.28.46、利用者の決定 10)。
+///
+/// いつもの `/snapshot` は部ごと 256 KiB で切るので、日次の `recent` は約 580 行で環の
+/// 2,000 件を割り、締めの「前」に日次を使うと接続のエラーの行 (試行 1,000 本が下限) が
+/// 「判定できず」になった (T.28.18)。1 MiB なら 1 件 400〜500 B の行で環が全部入る。
+/// 全体が 4 MiB ([`MAX_FILE`]) を越えるなら、停止の 1 枚 (T.28.20) と同じく**切った `recent` に戻す**
+pub const DAILY_RECENT_MAX: usize = 1024 * 1024;
 /// 残す日数の既定 (`PROXY_SNAPSHOT_DAYS`)。
 pub const DEFAULT_DAYS: usize = 30;
 /// 残す日数の上限 (書き間違いで `$HOME` を埋めないための歯止め。4 MiB × 365 = 1.4 GiB)。
@@ -104,9 +112,10 @@ fn day_of(name: &str) -> Option<u64> {
 
 /// `/snapshot` を組む閉包 (預けるのは `proxy-endpoints`。[`set_builder`])。
 ///
-/// 引数は **`recent` を全部入れるか** (T.28.20。停止の 1 枚だけ `true`。日次と起動の 1 枚は
-/// `/snapshot` と同じく部ごと 256 KiB で切る)。
-pub type Builder = Box<dyn Fn(bool) -> String + Send + Sync>;
+/// 引数は **`recent` の部の上限** (`None` = `/snapshot` と同じく部ごと 256 KiB で切る。起動の 1 枚)。
+/// 停止の 1 枚は [`MAX_FILE`] (= 2,000 件を全部。T.28.20)、日次は [`DAILY_RECENT_MAX`] (T.28.46)。
+/// `Some` のときは、全体が 4 MiB を越えるなら切った `recent` に戻す。
+pub type Builder = Box<dyn Fn(Option<usize>) -> String + Send + Sync>;
 
 static BUILDER: OnceLock<Mutex<Option<Builder>>> = OnceLock::new();
 
@@ -122,8 +131,8 @@ pub fn set_builder(f: Builder) {
 }
 
 /// 預かった閉包で `/snapshot` を 1 枚組む (**日付の変わり目と起動・停止のときだけ**呼ぶ)。
-fn build(full_recent: bool) -> Option<String> {
-    builder().locked().as_ref().map(|f| f(full_recent))
+fn build(recent_max: Option<usize>) -> Option<String> {
+    builder().locked().as_ref().map(|f| f(recent_max))
 }
 
 /// 起動と停止の 1 枚の種類 (T.28.20)。名前は `<YYYY-MM-DDTHHMMSSZ>-<種類>.json`。
@@ -584,7 +593,8 @@ pub fn tick(cache: &Cache, s: &Sample) {
     let t = s.t.saturating_add(SHIFT.load(Ordering::Relaxed));
     writer().locked().add(
         t,
-        || build(false),
+        // 日次だけ `recent` を 1 MiB まで持つ (T.28.46)
+        || build(Some(DAILY_RECENT_MAX)),
         |dir| {
             // T12.5 のディスクのマージン (プローブが決めた「空けておく量」)。
             // キャッシュを切っている設定では 0 = 空きがある限り書く
@@ -604,7 +614,7 @@ pub fn take_start_if_due(cache: &Cache, due: bool) -> Option<PathBuf> {
     if !due || !ENABLED.load(Ordering::Relaxed) || START_TAKEN.swap(true, Ordering::Relaxed) {
         return None;
     }
-    take(cache, Moment::Start, false)
+    take(cache, Moment::Start, None)
 }
 
 /// **停止シグナルの後始末から 1 回だけ呼ぶ** (状態ファイルを書く前。T.28.20)。
@@ -616,15 +626,15 @@ pub fn take_shutdown(cache: &Cache) -> Option<PathBuf> {
     if !ENABLED.load(Ordering::Relaxed) {
         return None;
     }
-    take(cache, Moment::Shutdown, true)
+    take(cache, Moment::Shutdown, Some(MAX_FILE as usize))
 }
 
-fn take(cache: &Cache, m: Moment, full_recent: bool) -> Option<PathBuf> {
+fn take(cache: &Cache, m: Moment, recent_max: Option<usize>) -> Option<PathBuf> {
     let t = crate::cache::now_epoch();
     writer().locked().write_moment(
         t,
         m,
-        || build(full_recent),
+        || build(recent_max),
         |dir| (free_bytes(dir), cache.snapshot().disk_keep_free),
     )
 }
@@ -1032,11 +1042,11 @@ mod tests {
             t,
             ..Sample::default()
         };
-        // 組み方に渡った「`recent` を全部入れるか」を中身に写す (T.28.20)
-        set_builder(Box::new(|full| {
+        // 組み方に渡った「`recent` の部の上限」を中身に写す (T.28.20・T.28.46。`null` = 256 KiB で切る)
+        set_builder(Box::new(|max| {
             format!(
-                "{{\"taken_at\":1,\"parts\":[\"status\"],\"full\":{}}}",
-                full
+                "{{\"taken_at\":1,\"parts\":[\"status\"],\"recent_max\":{}}}",
+                max.map_or("null".to_string(), |n| n.to_string())
             )
         }));
         // 書かない設定のうちは起動・停止の 1 枚も書かない (組みもしない)
@@ -1051,11 +1061,15 @@ mod tests {
         assert!(
             fs::read_to_string(&start)
                 .unwrap()
-                .contains("\"full\":false")
+                .contains("\"recent_max\":null")
         );
-        // 停止の 1 枚は `recent` を全部入れる方で組む
+        // 停止の 1 枚は `recent` を全部 (4 MiB まで) 入れる方で組む
         let stop = take_shutdown(&cache).expect("停止の 1 枚");
-        assert!(fs::read_to_string(&stop).unwrap().contains("\"full\":true"));
+        assert!(
+            fs::read_to_string(&stop)
+                .unwrap()
+                .contains("\"recent_max\":4194304")
+        );
         let l = list();
         assert!(l.files.is_empty(), "日次の一覧には混ぜない");
         let kinds: Vec<Moment> = l.moments.iter().map(|m| m.kind).collect();
@@ -1079,6 +1093,12 @@ mod tests {
         assert_eq!(l.files[0].date, day_name(20_600));
         assert!(l.files[0].bytes > 0 && l.bytes == l.files[0].bytes);
         assert!(read(&day_name(20_600)).unwrap().contains("\"taken_at\""));
+        // 日次の 1 枚は `recent` を 1 MiB まで持つ方で組む (T.28.46)
+        assert!(
+            read(&day_name(20_600))
+                .unwrap()
+                .contains("\"recent_max\":1048576")
+        );
         assert!(read(&day_name(20_599)).is_none(), "置いていない日");
         assert!(read("../../etc/passwd").is_none());
         // 書かない設定に戻すと `tick` は原子の読み 1 回で戻り、`list` は空
