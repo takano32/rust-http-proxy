@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::acl::{AclConfig, ClientAcl, PortSet};
+use crate::acl::{AclConfig, AllowLocal, ClientAcl, PortSet};
 use crate::cache::config::DEFAULT_TARGET_PERCENT;
 use crate::cache::{CacheConfig, DiskQuota, Limit, MIB};
 use crate::envfile;
@@ -597,9 +597,11 @@ pub struct Config {
     pub self_bench: bool,
     /// CONNECT を許すあて先ポート (`PROXY_CONNECT_PORTS`、既定は制限なし)
     pub connect_ports: PortSet,
-    /// ループバック・リンクローカル宛てのオリジンを許すか (`PROXY_ALLOW_LOCAL`、既定 off)。
-    /// 既定ではクラウドのメタデータ (`169.254.169.254`) 経由の SSRF を 403 で止める
-    pub allow_local: bool,
+    /// ループバック・リンクローカル・私設アドレス宛てのオリジンを許すか (`PROXY_ALLOW_LOCAL`、既定 off)。
+    /// 既定ではクラウドのメタデータ (`169.254.169.254`) 経由の SSRF と、私設アドレス
+    /// (`10/8`・`172.16/12`・`192.168/16`・`100.64/10`・`fc00::/7`) 宛てを 403 で止める (T.28.41)。
+    /// `private` は私設アドレスだけ通す ([`AllowLocal`])
+    pub allow_local: AllowLocal,
     /// CONNECT トンネルのアイドル打ち切り時間 (`PROXY_TUNNEL_IDLE_SECS`、既定 300 秒、`0` で無期限)
     pub tunnel_idle: Duration,
     /// 同時に受ける接続数の上限 (`PROXY_MAX_CONNS`、既定 `auto`、`0` で無制限)。
@@ -856,8 +858,8 @@ impl Config {
             cfg.connect_ports = PortSet::parse(&v);
             src.mark("PROXY_CONNECT_PORTS");
         }
-        if let Some(on) = bad.flag("PROXY_ALLOW_LOCAL") {
-            cfg.allow_local = on;
+        if let Some(allow) = bad.allow_local("PROXY_ALLOW_LOCAL") {
+            cfg.allow_local = allow;
             src.mark("PROXY_ALLOW_LOCAL");
         }
         if let Some(on) = bad.flag("PROXY_ENDPOINTS_READONLY") {
@@ -1161,7 +1163,8 @@ impl Config {
             "PROXY_CONNECT_PORTS",
             crate::json::quote(&self.connect_ports.spec()),
         );
-        add("PROXY_ALLOW_LOCAL", self.allow_local.to_string());
+        // `on` / `off` は真偽、`private` だけ文字列 (T.28.41)
+        add("PROXY_ALLOW_LOCAL", self.allow_local.json().to_string());
         // 公開プロキシの止め方 (T14.18) と山の写真の閾 (T14.6)。マージのときに親が足した
         add(
             "PROXY_ENDPOINTS_READONLY",
@@ -1346,7 +1349,7 @@ impl Config {
             profile_sample_ms: 1000,
             self_bench: false,
             connect_ports: PortSet::default(),
-            allow_local: false,
+            allow_local: AllowLocal::Off,
             tunnel_idle: Duration::from_secs(300),
             max_conns,
             max_requests_per_conn: DEFAULT_MAX_REQUESTS_PER_CONN,
@@ -1536,7 +1539,7 @@ mod tests {
         assert_eq!(cfg.malloc_arenas, 8);
         assert_eq!(cfg.max_conns, default_max_conns());
         assert_eq!(cfg.tunnel_idle, Duration::from_secs(300));
-        assert!(cfg.connect_ports.is_empty() && !cfg.allow_local);
+        assert!(cfg.connect_ports.is_empty() && cfg.allow_local == AllowLocal::Off);
         // 接続元ごとの同時接続の上限は既定で無効 (T14.13)
         assert_eq!(cfg.max_conns_per_client, 0);
     }

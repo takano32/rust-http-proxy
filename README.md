@@ -1687,7 +1687,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_ALLOW_HOSTS` | なし (全許可) | 接続を許すあて先ホストのカンマ区切り |
 | `PROXY_DENY_HOSTS` | なし | 接続を拒むあて先ホストのカンマ区切り |
 | `PROXY_CONNECT_PORTS` | なし (制限なし) | `CONNECT` を許すあて先ポート |
-| `PROXY_ALLOW_LOCAL` | `off` | ループバック・リンクローカル宛てを許すか |
+| `PROXY_ALLOW_LOCAL` | `off` | ループバック・リンクローカル・私設アドレス宛てを許すか (`private` で私設アドレスだけ) |
 | `PROXY_ENDPOINTS_READONLY` | `off` | 内部エンドポイントの書き換える口だけを断る |
 | `PROXY_ALLOW_CLIENTS` | なし (全許可) | 受ける接続元のカンマ区切り (CIDR 可) |
 | `PROXY_TRACE_CLIENT` | なし (追跡しない) | 1 つの接続元だけを追って `/trace` に残す |
@@ -1753,7 +1753,8 @@ check: ok (everything this proxy reads is readable)
 WARN を 1 行出して**その項目だけ既定値**で動きます (前の値を維持するのではありません)。書いた名前と値は
 `/status` の `settings.invalid` (`[{"key":"PROXY_KEEPALIVE_SECS","value":"abc"}]`) に出ます。
 真偽の鍵 (`PROXY_ALLOW_LOCAL` など) は `0` / `false` / `off` / `no` が off で、それ以外は**今までどおり on** ですが、
-`1` / `true` / `on` / `yes` と空の外 (`maybe` など) は WARN 1 行と `settings.invalid` に出ます。`PROXY_PROFILE` の `lite` 以外と、
+`1` / `true` / `on` / `yes` と空の外 (`maybe` など) は WARN 1 行と `settings.invalid` に出ます (`PROXY_ALLOW_LOCAL` は
+`private` も読める値です。T.28.41)。`PROXY_PROFILE` の `lite` 以外と、
 `PROXY_SLO` の読めない項目 (読めた項目だけ当てる) も同じです (T.28.31)。
 **`.env` に書いてあるが、このプロキシが読まない `PROXY_*` / `SERVER_*` の名前** (`PROXY_TIMOUT_SECS` のような打ち間違い) も
 WARN を 1 行出し (綴りの近い名前があれば `did you mean PROXY_TIMEOUT_SECS?` を添える)、`settings.unknown`
@@ -1976,9 +1977,27 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   `CONNECT` を許すあて先ポート。`443,80,8080-8099` のようにカンマ区切り (範囲可)。
   ここに無いポートは 403。`.env` で即時反映
 - **`PROXY_ALLOW_LOCAL`** (既定 `off`)
-  ループバック (`127.0.0.0/8`, `::1`) とリンクローカル (`169.254.0.0/16`, `fe80::/10`) 宛てのオリジンを許すか。
-  既定では 403 にしてクラウドのメタデータ (`169.254.169.254`) 経由の SSRF を防ぐ。
-  ローカルのサービスへプロキシしたいときだけ `on`。`.env` で即時反映
+  ループバック (`127.0.0.0/8`, `::1`)・リンクローカル (`169.254.0.0/16`, `fe80::/10`)・未指定 (`0.0.0.0`, `::`) と、
+  **私設アドレス** (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, CGNAT の `100.64.0.0/10`, `fc00::/7`) 宛てのオリジンを許すか。
+  既定では 403 にしてクラウドのメタデータ (`169.254.169.254`) 経由の SSRF と、プロキシの置き場所の内側の網
+  (同じ私設網の機械・NAT の網) へ外から入られるのを防ぐ。値は 3 つ:
+
+  | 値 | ループバック・リンクローカル・未指定 | 私設アドレス |
+  |---|---|---|
+  | `off` (既定) | 403 | 403 |
+  | `private` | 403 | 通す |
+  | `on` | 通す | 通す |
+
+  判定は**名前解決のあとの IP** で、CONNECT と forward の両方、IP リテラル (`http://10.0.0.1/`) も同じです。
+  名前の答えに 1 つでも当たる IP があれば 403。v4-mapped IPv6 (`[::ffff:10.0.0.1]`) は IPv4 として見ます。
+  断った数は今までどおり `/status` の `blocked` と `/errors` の個票 (理由 `local`) に出ます。
+  `/config` と `--check` には `on` / `off` は今までどおり `true` / `false`、`private` は `"private"` と出ます。
+  ローカルのサービスへプロキシしたいときは `on`、同じ私設網の機械にだけ届けばよいときは `private`。`.env` で即時反映。
+  **私設アドレスを既定で断るのは T.28.41 から** (2026-10-26 の利用者の決定)。それまでは T.15.10 の
+  「既定で宛先を制限しない」に従って私設アドレスは通していましたが、デプロイ先の記録に `192.168.x.x:27042/27043`
+  (Frida の既定ポート)・`10.10.34.35/36`・`10.255.255.1:80` (プロキシ自身の NAT 網) 宛てがあったので、
+  **私設アドレスについてだけ**見直しました (それ以外の宛先は今も既定で制限しません)。
+  前と同じに動かしたいときは `PROXY_ALLOW_LOCAL=private` です
 - **`PROXY_ENDPOINTS_READONLY`** (既定 `off`)
   `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。
   読む口 (`/status` `/healthz` `/history` `/daily` `/slo` `/snapshots` `/metrics` `/hosts` `/hosts/series` `/clients` `/readers` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/trace` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。

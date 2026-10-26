@@ -68,7 +68,7 @@ fn test_integration_individual_records_survive_a_restart() {
     // 403 で断る宛先を 1 つ用意しておく (403 は `/errors` に乗るが `/recent` には
     // 残らない断り方なので、閉じた接続をちょうど 3 件に保てる)
     let mut cfg = Config::new("0", None, Some("blocked.example"), Duration::from_secs(5)).unwrap();
-    cfg.allow_local = true;
+    cfg.allow_local = rust_http_proxy::acl::AllowLocal::On;
     cfg.keepalive = Duration::from_secs(2);
     let (port, metrics, store) = start_test_proxy_with_store(cfg, TICK, rrd.clone());
     let store = store.expect("the state file should open");

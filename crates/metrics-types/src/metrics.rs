@@ -371,7 +371,8 @@ pub enum BlockCause {
     Blocklist,
     /// `PROXY_CONNECT_PORTS` の外のポートへの CONNECT だった
     ConnectPort,
-    /// ループバック・リンクローカル宛て (`PROXY_ALLOW_LOCAL=off` の SSRF 除け)
+    /// ループバック・リンクローカル・私設アドレス宛て (`PROXY_ALLOW_LOCAL=off` の SSRF 除け。
+    /// 私設アドレスは T.28.41 から。`private` ではループバック・リンクローカルだけ)
     Local,
 }
 

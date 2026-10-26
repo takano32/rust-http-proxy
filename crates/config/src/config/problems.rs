@@ -84,6 +84,30 @@ impl EnvProblems {
         }
     }
 
+    /// `PROXY_ALLOW_LOCAL` (T.28.41)。真偽の書き方 ([`Self::flag`]) に `private` を足したもの。
+    /// `private` は私設アドレス宛てだけ通す (ループバック・リンクローカル・未指定は断ったまま)。
+    /// 読めない値は [`Self::flag`] と同じく WARN を 1 行出して覚え、扱いは `on` のまま。
+    pub(super) fn allow_local(&mut self, key: &'static str) -> Option<crate::acl::AllowLocal> {
+        use crate::acl::AllowLocal;
+        let v = envfile::var(key)?;
+        let t = v.trim().to_ascii_lowercase();
+        match t.as_str() {
+            "private" => Some(AllowLocal::Private),
+            "0" | "false" | "off" | "no" => Some(AllowLocal::Off),
+            "" | "1" | "true" | "on" | "yes" => Some(AllowLocal::On),
+            _ => {
+                crate::log_warn!(
+                    None,
+                    "{}={:?} is not on, off or private; treating it as on",
+                    key,
+                    v.trim()
+                );
+                self.note(key, &v, "on, off or private");
+                Some(AllowLocal::On)
+            }
+        }
+    }
+
     /// `PROXY_PROFILE` が `lite` か。空でも `lite` でもない値は WARN 1 行 (既定のまま。T.28.31)。
     pub(super) fn profile_is_lite(&mut self) -> bool {
         let Some(v) = Self::present("PROXY_PROFILE") else {

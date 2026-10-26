@@ -532,7 +532,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         Some(metrics::BlockCause::Blocklist)
     } else if is_connect && !config.connect_ports.allows(host_port.unwrap_or(443)) {
         Some(metrics::BlockCause::ConnectPort)
-    } else if !config.allow_local {
+    } else if config.allow_local != acl::AllowLocal::On {
         // クラウドのメタデータ (169.254.169.254) 経由の SSRF を止める。
         // **判定に使った答えはそのまま接続へ渡す** (名前解決は 1 要求 1 回。T12.7)。
         // 名前解決の費用はここで払うので、前の要求がこのスレッドに残した分は
@@ -540,7 +540,8 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         let _ = dns::take_resolve_cost();
         let _ = dns::take_family();
         let _ = dns::take_syn_retrans();
-        let (local, r) = acl::resolve_target(target_host);
+        // `private` なら私設アドレスは通す (ループバック・リンクローカル・未指定は断る。T.28.41)
+        let (local, r) = acl::resolve_target(target_host, config.allow_local.allows_private());
         resolved = r;
         local.then_some(metrics::BlockCause::Local)
     } else {

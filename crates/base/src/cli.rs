@@ -44,7 +44,8 @@ Every setting can also be given as an environment variable or in $HOME/.env
                            request line + headers deadline (10, 0 = none)
   PROXY_KEEPALIVE_SECS     client keep-alive idle time (15)
   PROXY_TUNNEL_IDLE_SECS   CONNECT tunnel idle timeout (300, 0 = never)
-  PROXY_ALLOW_LOCAL        allow loopback/link-local origins (off)
+  PROXY_ALLOW_LOCAL        allow loopback/link-local/private origins (off,
+                           private = private addresses only)
   PROXY_CONNECT_PORTS      ports CONNECT may reach (unrestricted)
   PROXY_ALLOW_HOSTS        host allow list, wildcards allowed
   PROXY_DENY_HOSTS         host deny list, wildcards allowed

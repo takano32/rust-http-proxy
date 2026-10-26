@@ -630,3 +630,40 @@ fn test_integration_unreadable_flags_profile_and_slo_are_reported() {
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// T.28.41: `PROXY_ALLOW_LOCAL=private` は読める値 (WARN を出さない)。`/config` には文字列で、
+/// `--check` には `private` と出る。`on` / `off` は今までどおり真偽で出る。
+#[test]
+fn test_integration_allow_local_private_is_a_readable_value() {
+    let env =
+        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_ALLOW_LOCAL=Private\n";
+    let (child, port, dir, log) = start_proxy_logged("t2841", env, &[]);
+    assert!(!log.iter().any(|l| l.contains(" is not ")), "{:#?}", log);
+    assert!(status_json(port).contains("\"invalid\":[],\"unknown\":[]"));
+    let config = endpoint_json(port, "/config");
+    assert_eq!(
+        setting(&config, "PROXY_ALLOW_LOCAL"),
+        ("\"private\"".to_string(), "env_file".to_string())
+    );
+    drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let dir = std::env::temp_dir().join(format!("rhp-t2841-check-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(".env"), env).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
+        .arg("--check")
+        .env("HOME", &dir)
+        .env("XDG_CACHE_HOME", &dir)
+        .output()
+        .expect("--check が動かない");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let line = text
+        .lines()
+        .find(|l| l.contains("PROXY_ALLOW_LOCAL"))
+        .unwrap_or_else(|| panic!("PROXY_ALLOW_LOCAL の行が無い:\n{}", text));
+    assert!(line.trim_end().ends_with(" private"), "{}", line);
+    assert!(!text.contains("not readable (ignored"), "{}", text);
+    let _ = std::fs::remove_dir_all(&dir);
+}

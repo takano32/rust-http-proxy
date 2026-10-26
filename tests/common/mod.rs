@@ -302,8 +302,8 @@ pub fn start_test_proxy_with_live_config(
 pub fn proxy_config() -> Config {
     let mut cfg = Config::new("0", None, None, Duration::from_secs(5)).unwrap();
     cfg.keepalive = Duration::from_secs(2);
-    // テストのオリジンは 127.0.0.1 なので、ローカル宛ての既定の拒否を外す
-    cfg.allow_local = true;
+    // テストのオリジンは 127.0.0.1 なので、ローカル宛て (と私設アドレス宛て。T.28.41) の既定の拒否を外す
+    cfg.allow_local = rust_http_proxy::acl::AllowLocal::On;
     cfg
 }
 

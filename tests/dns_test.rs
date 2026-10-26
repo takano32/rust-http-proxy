@@ -57,14 +57,17 @@ fn non_local_hostname() -> Option<String> {
     None
 }
 
-/// 判定を通す設定 (`PROXY_ALLOW_LOCAL` は既定の off)。宛先には届かなくてよいので
+/// 判定を通す設定 (`PROXY_ALLOW_LOCAL=private`)。宛先には届かなくてよいので
 /// 締め切りは短くする (届かない相手への CONNECT がテストを待たせないように)。
+///
+/// 既定の `off` は私設アドレス宛ても断る (T.28.41) が、`/etc/hosts` の自分の名前は
+/// たいてい私設アドレスなので、判定は走るが私設アドレスは通す `private` にする。
 ///
 /// 欄に直に代入するので `Config::new` の写し (T15.6) は効かない。CONNECT の
 /// オリジン接続が見るのは `connect_timeout` なので、**両方**を短くする。
 fn checking_config() -> rust_http_proxy::config::Config {
     let mut cfg = proxy_config();
-    cfg.allow_local = false;
+    cfg.allow_local = acl::AllowLocal::Private;
     cfg.timeout = Duration::from_secs(1);
     cfg.connect_timeout = Duration::from_secs(1);
     cfg
@@ -72,7 +75,7 @@ fn checking_config() -> rust_http_proxy::config::Config {
 
 /// CONNECT 1 本と forward 1 本で、名前解決はそれぞれ 1 回だけ (T12.7)。
 ///
-/// `PROXY_ALLOW_LOCAL` は既定 (off) なので、要求ごとにローカル宛ての判定が走る。
+/// `PROXY_ALLOW_LOCAL` は `private` (判定は既定の off と同じく走る) なので、要求ごとにローカル宛ての判定が走る。
 /// T12.7 の前はここで 1 回引き、接続でもう 1 回引いていた (1 要求 2 回)。
 #[test]
 fn a_request_resolves_the_name_once() {

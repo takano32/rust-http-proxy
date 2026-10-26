@@ -109,6 +109,7 @@ impl PortSet {
 
 /// ループバック・リンクローカル (`169.254.0.0/16`, `fe80::/10`) と、未指定アドレス。
 /// クラウドのメタデータ (`169.254.169.254`) 経由の SSRF を防ぐために使う。
+/// `PROXY_ALLOW_LOCAL=private` でも断るのはこちら (私設アドレスは [`is_private_ip`])。
 pub fn is_local_ip(ip: IpAddr) -> bool {
     match crate::net::canonical_ip(ip) {
         IpAddr::V4(v4) => v4.is_loopback() || v4.is_link_local() || v4.is_unspecified(),
@@ -116,6 +117,54 @@ pub fn is_local_ip(ip: IpAddr) -> bool {
             v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xffc0) == 0xfe80
         }
     }
+}
+
+/// 私設アドレス (T.28.41): `10.0.0.0/8`・`172.16.0.0/12`・`192.168.0.0/16`・
+/// `100.64.0.0/10` (CGNAT の共有アドレス、RFC 6598)・`fc00::/7` (ULA)。
+/// v4-mapped IPv6 (`::ffff:10.0.0.1`) は [`crate::net::canonical_ip`] で IPv4 に直してから見る。
+pub fn is_private_ip(ip: IpAddr) -> bool {
+    match crate::net::canonical_ip(ip) {
+        // `Ipv4Addr::is_shared` (100.64/10) はまだ安定版に無いので前置で見る
+        IpAddr::V4(v4) => v4.is_private() || (u32::from(v4) >> 22) == (0x6440_0000 >> 22),
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00,
+    }
+}
+
+/// `PROXY_ALLOW_LOCAL` の 3 つの書き方 (T.28.41)。どこ宛てを 403 で断るか。
+///
+/// | 値 | ループバック・リンクローカル・未指定 | 私設アドレス |
+/// |---|---|---|
+/// | `off` (既定) | 断る | 断る |
+/// | `private` | 断る | 通す |
+/// | `on` | 通す | 通す (判定そのものを飛ばす) |
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AllowLocal {
+    #[default]
+    Off,
+    Private,
+    On,
+}
+
+impl AllowLocal {
+    /// 私設アドレス宛てを通すか (`private` と `on`)。
+    pub fn allows_private(self) -> bool {
+        self != AllowLocal::Off
+    }
+
+    /// `/config` と `--check` に出す値 (JSON)。`on` / `off` は今までどおり真偽で出し
+    /// (`true` / `false`)、`private` だけ文字列で出す。
+    pub fn json(self) -> &'static str {
+        match self {
+            AllowLocal::Off => "false",
+            AllowLocal::Private => "\"private\"",
+            AllowLocal::On => "true",
+        }
+    }
+}
+
+/// 宛て先の IP を断るか (`allow_private` は `PROXY_ALLOW_LOCAL=private`)。
+fn is_refused_ip(ip: IpAddr, allow_private: bool) -> bool {
+    is_local_ip(ip) || (!allow_private && is_private_ip(ip))
 }
 
 /// 接続元 IP の許可リスト (`PROXY_ALLOW_CLIENTS`)。空なら全許可 (既定)。
@@ -235,15 +284,21 @@ impl std::fmt::Display for ClientAcl {
 ///
 /// IP リテラルは解決するものが無いので `None` (接続側もその場で使う)。
 /// 解決できないものはローカル扱いにしない (先で 502 になる)。
-pub fn resolve_target(host_or_addr: &str) -> (bool, Option<Resolved<'_>>) {
+///
+/// 断るのはループバック・リンクローカル・未指定と、`allow_private` が偽 (`PROXY_ALLOW_LOCAL`
+/// が既定の `off`) なら私設アドレスも (T.28.41)。名前は答えの**どれか 1 つ**が当たれば断る。
+pub fn resolve_target(host_or_addr: &str, allow_private: bool) -> (bool, Option<Resolved<'_>>) {
     let (host, port) = crate::net::split_host_port_ref(host_or_addr);
     if let Ok(ip) = host.parse::<IpAddr>() {
         // 自己ベンチ (T14.43) の相手役だけは `PROXY_ALLOW_LOCAL=off` でも通す (3 秒だけ)
-        return (is_local_ip(ip) && !is_self_bench_target(ip, port), None);
+        return (
+            is_refused_ip(ip, allow_private) && !is_self_bench_target(ip, port),
+            None,
+        );
     }
     match crate::dns::resolve_host_marked(host, port.unwrap_or(80)) {
         Ok((addrs, preferred, stale)) => {
-            let local = addrs.iter().any(|&ip| is_local_ip(ip));
+            let local = addrs.iter().any(|&ip| is_refused_ip(ip, allow_private));
             // serve-stale の古い答えなら印を運ぶ (接続側が繋げなかったときに引き直す。T21.3)
             (
                 local,
@@ -287,9 +342,9 @@ fn is_self_bench_target(ip: IpAddr, port: Option<u16>) -> bool {
             .any(|slot| slot.load(Ordering::Relaxed) == u32::from(port))
 }
 
-/// [`resolve_target`] の、答えが要らない呼び出し側のための版。
+/// [`resolve_target`] の、答えが要らない呼び出し側のための版 (既定の `off` = 私設アドレスも断る)。
 pub fn is_local_target(host_or_addr: &str) -> bool {
-    resolve_target(host_or_addr).0
+    resolve_target(host_or_addr, false).0
 }
 
 fn extract_host(host_or_addr: &str) -> &str {
@@ -447,7 +502,36 @@ mod local_tests {
         assert!(is_local_target("[fe80::1]"));
         assert!(is_local_target("[::ffff:127.0.0.1]"), "v4-mapped");
         assert!(!is_local_target("93.184.216.34"));
-        assert!(!is_local_target("10.0.0.1"), "私有アドレスは対象外");
+        assert!(!is_local_target("93.184.216.34"), "外向きの IP は通す");
+        // T.28.41: 私設アドレス (と v4-mapped の書き方) も既定では断る
+        for t in [
+            "10.0.0.1",
+            "10.255.255.1:80",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1:27042",
+            "100.64.0.1",
+            "100.127.255.255",
+            "[fd00::1]",
+            "[fc00::1]:443",
+            "[::ffff:10.0.0.1]",
+            "[::ffff:192.168.0.1]:80",
+        ] {
+            assert!(is_local_target(t), "{}", t);
+        }
+        // 境の外は通す
+        for t in [
+            "172.15.255.255",
+            "172.32.0.1",
+            "100.63.255.255",
+            "100.128.0.1",
+            "11.0.0.1",
+            "192.169.0.1",
+            "[fe00::1]",
+            "[2001:db8::1]",
+        ] {
+            assert!(!is_local_target(t), "{}", t);
+        }
     }
 
     /// T12.7: **判定 (ACL) と接続で名前解決を 2 回しない。**
@@ -480,7 +564,7 @@ mod local_tests {
             let before = lookups();
 
             // 1. ローカル宛ての判定: ここで 1 回だけ引き、答えを持って帰る
-            let (local, resolved) = crate::acl::resolve_target(&addr);
+            let (local, resolved) = crate::acl::resolve_target(&addr, false);
             assert!(local, "localhost はローカル宛て");
             let resolved = resolved.expect("判定に使った答えが返る");
             assert_eq!(lookups() - before, 1, "判定で 1 回 (ttl={:?})", ttl);
@@ -503,6 +587,55 @@ mod local_tests {
         crate::dns::clear();
     }
 
+    /// T.28.41: 名前を引いた答えが私設アドレスなら、既定 (`allow_private` が偽) では断り、
+    /// `private` では通す。ループバックはどちらでも断る。
+    #[test]
+    fn names_answering_private_addresses_are_refused_by_default() {
+        let _resolve = crate::dns::RESOLVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dns::set_ttl(std::time::Duration::from_secs(60));
+        crate::dns::clear();
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        for (host, addr, private_ok) in [
+            ("t2841-a.example", "10.255.255.1", true),
+            ("t2841-b.example", "fd00::1", true),
+            ("t2841-c.example", "100.64.0.1", true),
+            ("t2841-d.example", "127.0.0.1", false),
+            ("t2841-e.example", "169.254.169.254", false),
+        ] {
+            crate::dns::put_answer_for_test(host, &[ip(addr)], std::time::Duration::ZERO);
+            let target = format!("{}:443", host);
+            assert!(resolve_target(&target, false).0, "off: {} ({})", host, addr);
+            assert_eq!(
+                !resolve_target(&target, true).0,
+                private_ok,
+                "private: {} ({})",
+                host,
+                addr
+            );
+        }
+        // 答えのどれか 1 つでも私設アドレスなら断る (外向きの答えと混ざっていても)
+        crate::dns::put_answer_for_test(
+            "t2841-mixed.example",
+            &[ip("93.184.216.34"), ip("192.168.0.10")],
+            std::time::Duration::ZERO,
+        );
+        assert!(resolve_target("t2841-mixed.example:80", false).0);
+        assert!(!resolve_target("t2841-mixed.example:80", true).0);
+        crate::dns::clear();
+    }
+
+    #[test]
+    fn allow_local_reads_three_ways() {
+        assert_eq!(AllowLocal::default(), AllowLocal::Off);
+        assert!(!AllowLocal::Off.allows_private());
+        assert!(AllowLocal::Private.allows_private() && AllowLocal::On.allows_private());
+        assert_eq!(AllowLocal::Off.json(), "false");
+        assert_eq!(AllowLocal::On.json(), "true");
+        assert_eq!(AllowLocal::Private.json(), "\"private\"");
+    }
+
     /// T21.3: 判定が serve-stale の古い答えを引いたら、接続へ渡す答えに印が付く
     /// (接続側が繋げなかったときに引き直すため)。期限内の答えには付かない。
     #[test]
@@ -522,7 +655,7 @@ mod local_tests {
                 &[addr],
                 std::time::Duration::from_secs(age),
             );
-            let (local, resolved) = crate::acl::resolve_target("t213-acl.example:443");
+            let (local, resolved) = crate::acl::resolve_target("t213-acl.example:443", false);
             assert!(!local);
             let resolved = resolved.expect("答えが返る");
             assert_eq!(resolved.addrs(), &[addr]);
