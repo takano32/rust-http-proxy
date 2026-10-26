@@ -308,6 +308,7 @@ mod tests {
             lite: false,
             readonly: false,
             version: "test",
+            build: "test",
             concurrency: &concurrency,
             own_ip: &|_| false,
         };

@@ -202,6 +202,8 @@ pub struct SnapshotSource {
     /// 待ち受けポート (`Endpoint` の自分宛て判定と同じ値。中身には出ない)
     pub port: u16,
     pub version: &'static str,
+    /// ビルドの種類 (`/status` の `build`。T.28.42)
+    pub build: &'static str,
     pub lite: bool,
     pub readonly: bool,
     /// 上限といまのスレッド数を引く口 (`/status` を組むときだけ呼ぶ。要求ごとの
@@ -231,6 +233,7 @@ pub fn register_snapshot(src: SnapshotSource) {
             lite: src.lite,
             readonly: src.readonly,
             version: src.version,
+            build: src.build,
             concurrency: &*src.concurrency,
             // 書き換える口は組まないので使わない (T.28.40)
             own_ip: &|_| false,
@@ -688,7 +691,7 @@ fn include_hosts(params: &[(String, String)]) -> bool {
 /// `/status` の組み立てはこの層の仕事 (指標は部品を並べるだけにしてある。
 /// 下の層が上の層を呼ぶと依存が輪になるため)。
 pub(super) fn status_body(ep: &Endpoint<'_>, sort: metrics::HostSort, hosts: bool) -> String {
-    ep.metrics.to_json_with_cache(
+    let mut out = ep.metrics.to_json_with_cache(
         Some(ep.cache),
         metrics::StatusExtras {
             settings: &reload::status_json(),
@@ -701,7 +704,16 @@ pub(super) fn status_body(ep: &Endpoint<'_>, sort: metrics::HostSort, hosts: boo
             sort,
             hosts,
         },
-    )
+    );
+    // ビルドの種類は**末尾に足す** (T.28.42。既存の鍵の順は 1 バイトも変えない)。
+    // 値は cargo のプロファイル名なので英数字と `-` `_` だけ (逃がす文字は無いが、念のため通す)
+    if out.ends_with('}') {
+        out.pop();
+        out.push_str(",\"build\":\"");
+        out.push_str(&crate::json::escape(ep.build));
+        out.push_str("\"}");
+    }
+    out
 }
 
 /// `/history` の JSON に、カーネルと cgroup の窓を**別の配列**として足す (T14.12)。

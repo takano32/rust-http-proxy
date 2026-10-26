@@ -139,9 +139,10 @@ fn test_integration_the_version_is_the_same_in_v_and_in_status() {
         .output()
         .expect("could not run the proxy binary");
     assert!(out.status.success());
+    // 版のあとにビルドの種類が付く (T.28.42。`config_test` が 3 か所の一致を見ている)
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
-        format!("rust-http-proxy {}", version)
+        format!("rust-http-proxy {} ({})", version, rust_http_proxy::BUILD)
     );
 
     let proxy_port = start_test_proxy(proxy_config());

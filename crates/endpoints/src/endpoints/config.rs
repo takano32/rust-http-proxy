@@ -118,6 +118,7 @@ mod tests {
             // 読み取り専用かどうかでは変わらない
             readonly: false,
             version: "0.1.0+test",
+            build: "test",
             concurrency: &concurrency,
             own_ip: &|_| false,
         };

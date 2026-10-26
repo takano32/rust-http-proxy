@@ -33,6 +33,9 @@ pub struct Endpoint<'a> {
     pub readonly: bool,
     /// 動いているバイナリの版 (`/status` に出す。本体クレートの `VERSION`)
     pub version: &'a str,
+    /// ビルドの種類 = cargo のプロファイル名 (`release` / `dist` / `debug`。`/status` の
+    /// 末尾の `build` に出す。本体クレートの `BUILD`。T.28.42)
+    pub build: &'a str,
     /// 上限といまのスレッド数を引く口 (`/status` と `/metrics` を組み立てるときだけ呼ぶ)。
     ///
     /// 値そのものではなく関数で受け取るのは、生きているスレッド数と待ち行列を数えるのに

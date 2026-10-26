@@ -9,9 +9,16 @@
 //! 作り直しの条件は HEAD と参照だけにしてある (ソースを触るたびに `git status` を
 //! 走らせない)。そのため、**コミットせずにソースだけ直したときは `-dirty` が遅れて付く**
 //! ことがある。配るバイナリは常にきれいな作業ツリーから作るので実害はない。
+//!
+//! もう 1 つ、**ビルドの種類** (`PROXY_BUILD`。cargo のプロファイル名 `release` / `dist` / `debug`)
+//! も作る (T.28.42)。cargo の `PROFILE` は `dist` でも `release` なので、`OUT_DIR` の道のりから
+//! 読む (`build_profile.rs`)。
 
 use std::path::Path;
 use std::process::Command;
+
+#[path = "build_profile.rs"]
+mod build_profile;
 
 /// `git` を呼んで標準出力を返す (`git` が無い・失敗したら `None`)。
 fn git(args: &[&str]) -> Option<String> {
@@ -45,4 +52,12 @@ fn main() {
         _ => format!("{}+unknown", pkg),
     };
     println!("cargo:rustc-env=PROXY_VERSION={}", version);
+
+    // ビルドの種類 (T.28.42)。`OUT_DIR` はプロファイルごとに別の置き場なので、
+    // プロファイルを変えればこのスクリプトも走り直す (作り直しの条件を足さなくてよい)
+    let build = build_profile::profile_from_out_dir(
+        &std::env::var("OUT_DIR").unwrap_or_default(),
+        &std::env::var("PROFILE").unwrap_or_default(),
+    );
+    println!("cargo:rustc-env=PROXY_BUILD={}", build);
 }

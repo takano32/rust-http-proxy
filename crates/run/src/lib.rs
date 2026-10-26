@@ -63,6 +63,8 @@ fn server_boot_id() -> Option<String> {
 /// プロキシとしては動く (そしてそれ自体が測りたい数字) ため。
 fn check_environment() -> i32 {
     println!("rust-http-proxy {} --check", proxy_server::VERSION);
+    // どの最適化で作ったバイナリか (cargo のプロファイル名。T.28.42)
+    println!("build profile: {}", proxy_server::BUILD);
     match proxy_server::envfile::loaded_path() {
         Some(p) => println!(
             "settings file: {} ({} variables)",
@@ -215,7 +217,9 @@ fn run_self_bench(addr: SocketAddr) {
 
 /// 起動の全部 (ルートの `src/main.rs` から呼ばれる)。
 pub fn main() {
-    match proxy_server::cli::parse(std::env::args().skip(1), proxy_server::VERSION) {
+    // `-V` は版のあとにビルドの種類 (`release` / `dist`) を添える (T.28.42)
+    let version = format!("{} ({})", proxy_server::VERSION, proxy_server::BUILD);
+    match proxy_server::cli::parse(std::env::args().skip(1), &version) {
         proxy_server::cli::Cli::Print(msg, 0) => {
             println!("{}", msg);
             process::exit(0);

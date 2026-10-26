@@ -667,3 +667,60 @@ fn test_integration_allow_local_private_is_a_readable_value() {
     assert!(!text.contains("not readable (ignored"), "{}", text);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// ビルドの種類 (cargo のプロファイル名) が `-V`・`--check`・`/status` に出る (T.28.42)。
+///
+/// 値は `build.rs` が `OUT_DIR` から読む (`release` と `dist` を分けるのは
+/// `crates/server/build_profile.rs` の単体の試験)。この試験のバイナリは `cargo test` の
+/// プロファイルで作られるので、`debug` (`--release` を付ければ `release`) と同じ値が
+/// 3 か所にそろうことを見る。
+#[test]
+fn test_integration_build_profile_is_shown_in_version_check_and_status() {
+    let build = rust_http_proxy::BUILD;
+    let expected = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    assert_eq!(build, expected, "テストのビルドのプロファイル");
+
+    let dir = std::env::temp_dir().join(format!("rhp-t2842-build-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
+        .arg("-V")
+        .env("HOME", &dir)
+        .output()
+        .expect("-V が動かない");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        text.trim(),
+        format!("rust-http-proxy {} ({})", rust_http_proxy::VERSION, build),
+        "{}",
+        text
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
+        .arg("--check")
+        .env("HOME", &dir)
+        .env("XDG_CACHE_HOME", &dir)
+        .output()
+        .expect("--check が動かない");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        text.lines().nth(1),
+        Some(format!("build profile: {}", build).as_str()),
+        "2 行目にビルドの種類:\n{}",
+        text
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // `/status` は末尾に足した `build` (既存の鍵の順は変えない)
+    let port = common::start_test_proxy(common::proxy_config());
+    let status = status_json(port);
+    assert!(
+        status.ends_with(&format!(",\"build\":\"{}\"}}", build)),
+        "{}",
+        &status[status.len().saturating_sub(200)..]
+    );
+}

@@ -56,6 +56,18 @@ use metrics::Metrics;
 /// `/status` の 3 か所に同じ文字列を出す (T12.6)。
 pub const VERSION: &str = env!("PROXY_VERSION");
 
+/// ビルドの種類 = cargo のプロファイル名 (`build.rs` が作る `PROXY_BUILD`。T.28.42)。
+///
+/// `cargo build --release` なら `release`、`--profile dist` なら `dist`、`cargo build` /
+/// `cargo test` なら `debug`。どの最適化で作ったバイナリかを外から見るためのもので、
+/// `-V`・`--check`・`/status` の `build` に出す。
+pub const BUILD: &str = env!("PROXY_BUILD");
+
+// `build.rs` の読み方の単体の試験 (ビルドスクリプトは自分の試験を持てない)
+#[cfg(test)]
+#[path = "../build_profile.rs"]
+mod build_profile;
+
 const FORBIDDEN_RESPONSE: &[u8] = b"HTTP/1.1 403 Forbidden\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 Content-Length: 13\r\n\
@@ -162,6 +174,7 @@ pub fn serve(
             cache: Arc::clone(&cache),
             port: local_port,
             version: VERSION,
+            build: BUILD,
             lite: cfg.lite,
             readonly: cfg.endpoints_readonly,
             concurrency: Box::new(move || crate::metrics::Concurrency {

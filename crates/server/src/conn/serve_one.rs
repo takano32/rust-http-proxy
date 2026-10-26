@@ -426,6 +426,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         lite: config.lite,
         readonly: config.endpoints_readonly,
         version: VERSION,
+        build: BUILD,
         concurrency: &concurrency,
         own_ip: &own_ip,
     };

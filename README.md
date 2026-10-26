@@ -1606,6 +1606,7 @@ Pterodactyl のように触れないコンテナで、**起動前の確認**と*
 ```
 $ rust-http-proxy --check
 rust-http-proxy 0.18.0+28f9064 --check
+build profile: release
 settings file: /home/container/.env (3 variables)
 
 capabilities (what this environment lets the proxy read):
@@ -1637,6 +1638,14 @@ check: ok (everything this proxy reads is readable)
 (作業ツリーに未コミットの変更があれば `0.18.0+144b992-dirty`)。`git` や `.git` の無いところでビルドすると
 `0.18.0+unknown` になります (ビルドは通ります)。同じ文字列を**起動ログの `rust-http-proxy ... listening on ...` の行**と
 **`/status` のトップレベルの `version`** にも出すので、デプロイ先でどのコミットが動いているかが分かります。
+
+**ビルドの種類** (cargo のプロファイル名) も出します (T.28.42): `-V` は版のあとに `(release)` のように添え
+(`rust-http-proxy 0.18.0+144b992 (release)`)、`--check` は 2 行目に `build profile: release`、`/status` は
+**末尾の `build`** (`"build":"release"`。既存の鍵の順は変えていません) です。値は `cargo build --release` なら `release`、
+`cargo build --profile dist` (GitHub の release の配布物) なら `dist`、`cargo build` / `cargo test` なら `debug` で、
+どの最適化で作ったバイナリかが外から見えます。cargo がビルドスクリプトに渡す `PROFILE` は `dist` でも `release` なので、
+`crates/server/build.rs` は `OUT_DIR` の道のり (`target/[<三つ組>/]<プロファイル>/build/…/out`) から読みます
+(読めない形なら `PROFILE`、それも無ければ `unknown`)。
 
 ## プロファイル
 
@@ -3111,6 +3120,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 作り物の数列と `/snapshot` の中の `/status` の実出力で通します。
 
 `/status` のトップレベルの `version` には動いているバイナリの版が出ます (`-V` と起動ログと同じ文字列)。
+末尾の `build` はビルドの種類 (`release` / `dist` / `debug`。T.28.42) です。
 
 **`/status` は 2 つの窓が混ざっている**ので、どちらの窓かが分かるように目印を出します:
 `since_start_secs` から下 (`total_requests` / `bytes_forwarded` / `cache_hits` …) は**この起動から**、
@@ -3321,7 +3331,7 @@ curl -fLo rust-http-proxy "https://github.com/takano32/rust-http-proxy/releases/
 curl -fLo rust-http-proxy.sha256 "https://github.com/takano32/rust-http-proxy/releases/download/v$V/rust-http-proxy-$T.sha256"
 sed "s/ .*/  rust-http-proxy/" rust-http-proxy.sha256 | sha256sum -c   # v0.27.8 までの release には .sha256 がありません
 chmod +x rust-http-proxy
-./rust-http-proxy -V                         # rust-http-proxy 0.27.8+<コミット> と出ることを確かめる
+./rust-http-proxy -V                         # rust-http-proxy <版>+<コミット> (dist) と出ることを確かめる
 ./rust-http-proxy --check; echo "exit=$?"    # 下の 1 へ
 ./rust-http-proxy -p "$SERVER_PORT"          # Pterodactyl では SERVER_PORT が割り当てのポート
 ```

@@ -265,6 +265,7 @@ fn the_recent_response_stays_under_256_kib() {
         lite: false,
         readonly: false,
         version: "test",
+        build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
     };
@@ -318,6 +319,7 @@ fn the_events_endpoint_filters_by_n_and_since() {
         lite: false,
         readonly: false,
         version: "test",
+        build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
     };
@@ -433,6 +435,7 @@ fn recent_sorts_and_filters() {
         lite: false,
         readonly: false,
         version: "test",
+        build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
     };
@@ -769,6 +772,7 @@ fn the_bursts_response_stays_under_256_kib() {
         lite: false,
         readonly: false,
         version: "test",
+        build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
     };
@@ -930,6 +934,7 @@ fn the_recent_endpoint_pages_through_the_whole_ring_with_offset() {
         lite: false,
         readonly: false,
         version: "test",
+        build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
     };
@@ -1023,6 +1028,7 @@ fn the_hosts_endpoint_pages_through_every_host_with_offset() {
         lite: false,
         readonly: false,
         version: "test",
+        build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
     };
