@@ -253,3 +253,24 @@ fn the_default_does_not_keep_names_warm_and_serve_stale_takes_the_expired_use() 
     assert_eq!(warm_count(), 1, "3,600 秒の窓なら 2 回目で warm");
     restore();
 }
+
+/// 頼んだあとで `clear()` された名前に同じ名前の新しい項目ができても、前の頼みでは引き直さない
+/// (T.28.39)。以前は待ち行列に残った前のテストの頼みが新しい項目を引き直して数え、
+/// `an_expired_answer_inside_the_window_is_served_and_refreshed_once` がたまに 1 回多く数えていた。
+#[test]
+fn a_refresh_requested_before_clear_does_not_touch_the_new_entry() {
+    let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset(SERVE_STALE);
+    let old = IpAddr::from(OLD);
+    // `clear()` のあとに置いた新しい項目 (旗は倒れている)
+    put_answer_for_test("localhost", &[old], Duration::from_secs(120));
+    let r0 = n(&REFRESHES);
+    // 前の項目のために頼んであった 1 回が、いま届いた
+    warm::refresh_one("localhost", true);
+    assert_eq!(n(&REFRESHES), r0, "旗の倒れた項目は引き直さない");
+    assert_eq!(entry_addrs("localhost"), vec![old], "答えも替えない");
+    // keep-warm の待ち行列から来る分 (旗を使わない) は今までどおり引き直す
+    warm::refresh_one("localhost", false);
+    assert_eq!(n(&REFRESHES), r0 + 1);
+    restore();
+}

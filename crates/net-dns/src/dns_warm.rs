@@ -178,7 +178,7 @@ fn refresher_loop(rx: mpsc::Receiver<Msg>) {
                 if late >= REFRESH_LATE_AFTER {
                     REFRESH_LATE.fetch_add(1, Ordering::Relaxed);
                 }
-                refresh_one(&key);
+                refresh_one(&key, false);
                 // 期限の来た名前が他にもあるかもしれないので、すぐ次を見る
                 continue;
             }
@@ -193,7 +193,7 @@ fn refresher_loop(rx: mpsc::Receiver<Msg>) {
             },
         };
         if let Some(Msg::Refresh(host)) = got {
-            refresh_one(&host);
+            refresh_one(&host, true);
         }
     }
 }
@@ -226,7 +226,12 @@ pub(super) fn wake_refresher() {
 ///
 /// **ミスとしては数えない**: 利用者はこの時間を待っていないので、`misses` と
 /// `miss_avg_ms` (`sorahost_dns_seconds_*`) に混ぜると「ミス 1 回の値段」が読めなくなる。
-fn refresh_one(key: &str) {
+///
+/// `requested` は要求の経路が頼んだ 1 回 ([`request_refresh`]。頼む前に表の `refreshing` を立てる)。
+/// そのときは**旗が立っていない項目には触らない**: 頼んだあとで `clear()` された名前に同じ名前の
+/// 新しい項目ができていても、前の頼みで引き直して数えない (T.28.39。旗は新しい項目が自分で頼む
+/// ときにしか立たない)。keep-warm の待ち行列から来る分 (`false`) は旗を使わないので今までどおり。
+pub(super) fn refresh_one(key: &str, requested: bool) {
     // 引き直しにかかった時間 (T15.0 (7))。下の `now` と引き算するので時計は 1 回増えるだけ
     let t0 = Instant::now();
     // `getaddrinfo` にポート (サービス) は渡らない。std は service を NULL で引いて、
@@ -247,6 +252,10 @@ fn refresh_one(key: &str) {
             // 途中で `clear()` された。引き直した答えを蘇らせない
             return;
         };
+        if requested && !entry.refreshing {
+            // 頼んだあとで `clear()` され、同じ名前の新しい項目ができた (T.28.39)
+            return;
+        }
         entry.refreshing = false;
         entry.refreshes += 1;
         if let Ok(addrs) = result {
