@@ -30,10 +30,6 @@
 
 **28a 頑丈さと HTTP の残り (本体を変える)**
 
-- [ ] **T.28.9 ログの量を攻撃者が決められないようにする (400 系の WARN と自分宛ての INFO)**
-  - 目的: 不正な要求は 1 本につき WARN 1 行 (実測 20 本 → 20 行) で上限が無い。正常な要求も既定 INFO で ACCESS 1 行。ダッシュボードを開いたままにすると自分宛ての INFO が約 1.2 行/秒で Pterodactyl のコンソールを埋める (`crates/endpoints/src/endpoints/mod.rs` 540)。accept のエラー (1 時間に 1 回) と上限の WARN (1 分に 1 回) は既に絞っている。
-  - やること: 400 系の WARN を理由ごとに 1 分 1 回 + 件数 (数は `rejected_requests` が持つ)、自分宛ての INFO は debug へ。
-  - 受け入れ基準: 不正な要求 100 本で WARN が理由ごとに 1〜2 行、件数は `/status` で読める。自分宛ての要求は info で 0 行。
 
 
 
@@ -65,10 +61,6 @@
 
 **28c 計器と物差し**
 
-- [ ] **T.28.20 判定の雪像 (「前」と「0 時間」) をプロキシ自身にも残させる**
-  - 目的: 締めの「前」と「0 時間」は撮った機械にしか残らない (T.25.99 は「前」が無く日次で代用、T.27.99 はコンテナに置いた)。`§0` の 9 は人の手で撮る決まりで、撮り忘れは T.16 で既に起きた。いまのサーバー側は日次だけ (`crates/endpoints/src/endpoints/recent.rs` 250-253、名前は `YYYY-MM-DD` 固定 `crates/metrics-slo/src/snapshots.rs` 61-70)。
-  - やること: SIGTERM で状態ファイルを書く前に `/snapshot` 1 枚を `snapshots/<時刻>-shutdown.json`、起動 60 秒 (`memory.baseline` を書く所) で `-start.json` を残し、`/snapshots` の一覧と取り寄せの口を広げて、`collect-deployed.sh --from-server` が `BEFORE`/`ZERO` に使えるようにする。保持は `PROXY_SNAPSHOT_DAYS` と同じ。サーバー側の雪像は部ごと 256 KiB で切れる (`recent` 約 590 件) ので、shutdown の 1 枚だけは `recent` を全件書くかを先に決める。
-  - 受け入れ基準: 起動 → 60 秒 → SIGTERM で 2 枚が `/snapshots` に並び、取り寄せた 2 枚で `snapshot-diff.py --criteria phase25` が読める。shutdown の所要が延びすぎない (Pterodactyl の停止の猶予の中)。
 
 **28d 台帳・文書・道具**
 
@@ -77,12 +69,18 @@
   - やること: T.24.8 / T.25.2 の型 (段 1 で割り方、段 2 で中身を変えずに割る 1 コミット)。T.28.0・T.28.15 と同じ所を触るので、その後に回す。
   - 受け入れ基準: 3 本とも 2,000 行以下、`cargo test --workspace` の本数が前後で同じ。
 
-- [ ] **T.28.29 道具のテストの所要を縮める (unittest 652 本 178 秒の半分が 2 本)**
-  - 目的: 手元の `python3 -m unittest discover -s scripts` は 178 秒 (CI では 65 秒)、うち `test_collect_deployed.py` 57 秒 (`collect-deployed.sh` を偽のサーバーで 14 回起こす) と `test_mx.py` 32 秒 (`sleep`)。
-  - やること: 偽のサーバーを使い回す・`sleep` を条件待ちにする。判定は弱めない。
-  - 受け入れ基準: 手元で 60 秒以下、本数は同じ。
 
 
+
+- [ ] **T.28.37 揺れる試験 2 本を直す (T.28.9・T.28.20 で見つけた)**
+  - 目的: `proxy-selfbench` の `cpu_of_the_process_and_of_this_thread_is_readable` はプロセスの CPU を先に、スレッドの CPU を後に読むので `111 < 113` で落ちることがある。`expect_continue_test::test_integration_expect_100_continue_gets_100_before_the_body` は全体を回して負荷が高いときに 1 回落ちた (エコーするオリジンが本文の途中で返す)。
+  - やること: 読む順を入れ替えるか比べ方を直す。オリジンが本文を読み切ってから返すようにする。判定は弱めない。
+  - 受け入れ基準: 2 本を 4 並列の負荷の下で 20 回ずつ回して 0 回落ちる。
+
+- [ ] **T.28.39 不正な要求行の WARN に載せる要求行を短く切る (T.28.9 で見つけた)**
+  - 目的: `malformed request line: {:?}` は要求行を最大 64 KiB までそのまま出す。T.28.9 で 1 分 1 行になったが、1 行の長さは攻撃者が決められる。
+  - やること: ログに載せるのは先頭 N バイト (例 256) と全体の長さにする (ほかの WARN で要求の一部を載せる所も同じ)。
+  - 受け入れ基準: 60 KiB の壊れた要求行で WARN 1 行が 512 B 以下、長さが分かる。
 
 **利用者の判断が要るもの (番号は決まってから振る)**
 
