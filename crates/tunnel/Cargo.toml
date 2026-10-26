@@ -1,6 +1,6 @@
 [package]
 name = "proxy-tunnel"
-version = "0.28.4"
+version = "0.28.45"
 edition = "2024"
 
 [lib]

@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-config"
-version = "0.28.47"
+version = "0.28.45"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-endpoints"
-version = "0.28.47"
+version = "0.28.46"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics"
-version = "0.28.20"
+version = "0.28.45"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-core"
-version = "0.28.27"
+version = "0.28.45"
 dependencies = [
  "proxy-metrics-window",
 ]
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-slo"
-version = "0.28.20"
+version = "0.28.46"
 dependencies = [
  "proxy-cache",
  "proxy-metrics-core",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-types"
-version = "0.28.41"
+version = "0.28.45"
 dependencies = [
  "proxy-base",
  "proxy-net",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-window"
-version = "0.28.27"
+version = "0.28.45"
 dependencies = [
  "proxy-metrics-profile",
 ]
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-rrd"
-version = "0.24.4"
+version = "0.28.45"
 
 [[package]]
 name = "proxy-run"
@@ -347,7 +347,7 @@ version = "0.17.11"
 
 [[package]]
 name = "proxy-tunnel"
-version = "0.28.4"
+version = "0.28.45"
 dependencies = [
  "proxy-base",
  "proxy-metrics",
