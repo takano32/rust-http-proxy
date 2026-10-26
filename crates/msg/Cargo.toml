@@ -1,6 +1,6 @@
 [package]
 name = "proxy-msg"
-version = "0.28.2"
+version = "0.28.35"
 edition = "2024"
 
 [lib]
