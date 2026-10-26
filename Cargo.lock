@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-config"
-version = "0.28.8"
+version = "0.28.27"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-endpoints"
-version = "0.28.20"
+version = "0.28.27"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-net-dns"
-version = "0.22.4"
+version = "0.28.27"
 dependencies = [
  "proxy-base",
 ]
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-web"
-version = "0.28.25"
+version = "0.28.27"
 
 [[package]]
 name = "proxy-workers"
