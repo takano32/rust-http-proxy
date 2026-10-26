@@ -37,27 +37,6 @@
 
 調査の機械 (4 コア KVM、T.27.4 より遅い) の forward 8 並列は CPU/要求 53.3 us (user 10.2 / kernel 43.1)、システムコール 4.03 回/要求 (床)、確保 10 回/要求。callgrind で user 27,379 Ir/要求の **78% がオリジン応答の先頭 (92 B・3 行) の扱い**だった。
 
-- [ ] **T.28.12 オリジンの応答の先頭を 1 回の走査で扱う (段 1 は済み: −5.6%)**
-  - 目的: `write_response_head` 6,280 Ir、`response_lines` の反復子 4,046 (`of_response_head_checked` の 2 走査 + `response_names` + **trace が切れていても回る `for … in response_lines(&head) { log_trace! }`**)、`of_response_head_checked` 4,025、`read_one_response_head` + `read_head_forwarding` 5,688 (行ごとの `String`・UTF-8 検証・写し)、`response_names` 1,500。HIT でも `write_response_head` 5,051 と `body::drain` が本文なしでも 8 KiB を 2 回ゼロ埋め (16.5k Ir)。
-  - 段 1 (2026-10-25、写しで試作・A/B): p1 = trace の輪を `log::enabled(Trace)` で囲む + 要求行と状態行の `split_whitespace` → `split_ascii_whitespace` + `drain` を `Framing::None` で即 0。p2 = p1 + 枠組み・CL 検査・`Connection: close` を 1 走査 (`of_response_head_checked_with_close`)、`read_one_response_head` を `read_until(b'\n')` で `Vec<u8>` へ直接、`write_response_head` を 1 走査 (行の範囲を固定配列 48 本に控え、元の行がちょうど `Name: value` なら 1 回で写す)。+142/−40 行・6 ファイル。**p1 → p2 (forward 8 並列 10 秒・3 組の中央値): CPU/要求 55.38 → 52.30 us (−5.6%)、user 10.30 → 8.75 (−15.0%)、op/s +4.6%、p50 0.220 → 0.210 ms** (3 組とも B が下)。HIT の base → p1: user −8.4%・合計 −0.5%。写しで `proxy-msg`・`proxy-http` の試験と結合 12 本が通った。
-  - 変わる振る舞い 1 つ: 不正な UTF-8 を含む応答のヘッダー行が、今は 502 なのが lossy 変換 (U+FFFD) で通る (obs-text としてはこちらが RFC に近い。採るなら README に書く)。
-  - 変更箇所: `crates/msg/src/headers.rs` 192-337、`crates/msg/src/body.rs` 76-104・272-275、`crates/msg/src/response.rs` 63-106、`crates/http/src/http/mod.rs` 931-958、`crates/server/src/lib.rs` と `crates/http` の要求行の `split_whitespace`。
-  - 受け入れ基準: forward 8 並列の CPU/要求 −5% 以上 (前後交互 3 組)、HIT と既定プロファイルの A/B も出す、応答のバイト列は 1 バイトも変わらない (既存の byte-for-byte の試験と `framing-probe.py`)、`cargo test --workspace` 全通過、lite のシステムコール 4.03・確保 ≤10 回/要求が増えない。
-
-- [ ] **T.28.13 既定プロファイルのキャッシュの機構が no-store の経路で乗せている user 3.6 us (段 1)**
-  - 目的: 既定 vs `PROXY_CACHE_ENABLED=off` で **58.53 → 54.03 us (−7.7%、user 14.06 → 10.43)** (3 組)。`PROXY_RECORDS=off` は −2.4% で、上乗せの主役は接続元の表ではなくキャッシュ。callgrind: `response_pairs` 3,189 + `response_policy` 1,129、`cache_key_variant` 735、`accept_encoding_variant` (`Vec<String>` + join)、`admit`/`may_coalesce`/`begin_fetch`/`remember_not_stored`、確保 19 vs 10 回/要求。**見直し**: T.11.2 (保存の判定に `response_pairs` を渡さない) は −0.4% で採らなかったが、今の数字では機構全体が 7.7%。
-  - やること: 段 1 で (a) `response_policy` を借用の `response_lines` で判断、(b) `accept_encoding_variant` を Accept-Encoding なし / 1 トークンで確保なし、(c) `remember_not_stored` に居る鍵は参照の前に見て入場と合流を飛ばす、をそれぞれ A/B。
-  - 受け入れ基準: 既定プロファイルの forward 8 並列 CPU/要求 −3% 以上 (3 組)、キャッシュの判定と保存の結果が変わらない (freshness / cache の試験)、確保 19 → 13 回/要求以下。
-
-- [ ] **T.28.14 測るだけ: T.19.5 の代償と `codegen-units` 1 対 4**
-  - 目的: (1) T.19.5 (応答の CL 検査。32 KiB 以下の本文はヘッダーを出す前に読み切る) は「初バイトが本文の後ろになる」と書いたまま前後の数字が無い。入れたコミットは `0e576a3`、親は `058afa9`。(2) `codegen-units = 4` は「桁で悪くなっていないか」しか見ていない (Cargo.toml 93-118、A/B なし)。1 にするとバイナリ −6.4% (2,897,240 B)。ビルドのメモリは今 80 MiB でも通る (cgroup v1、関門 120 に 40 MB 以上の余裕。2026-10-25 の調査)。
-  - やること: どちらも forward 8 並列 10 秒・前後交互 3 組・中央値 (±4% はぶれの中)。(2) は 1 のときの通る最小も。
-  - 受け入れ基準: 表 2 つ。(2) は差が ±4% の中なら 4 のまま、外なら段 2 を起こす。
-
-- [ ] **T.28.15 要求ヘッダーの 2 回の走査を 1 回にする (`serve_one` と `parse_request_headers`)**
-  - 目的: forward は `serve_one` が host / CL / TE / Via / User-Agent を手で走査し (`crates/server/src/lib.rs` 1539-1552)、続いて `http::handle_http_with_headers` が `parse_request_headers` で全ヘッダーを走査し直す (`crates/http/src/http/mod.rs` 426 → `crates/origin/src/request.rs`)。CONNECT は `serve_one` で別に `parse_request_headers` を呼ぶ (1693)。host / CL / TE の判定が 2 か所にあり、T.27.5〜T.27.6 でもずれないよう両方に手を入れた。
-  - やること: ヘッダーを読んだ後に `parse_request_headers` を 1 回だけ呼び、host / agent / via もそこから取る。
-  - 受け入れ基準: forward 8 並列の CPU/要求が下がるか同じ (3 組)、`framing-probe.py` と `cargo test --workspace` 全通過。
 
 **28c 計器と物差し**
 
@@ -68,9 +47,6 @@
   - 目的: `crates/metrics-core/src/metrics.rs` 3,149 (T.24.8 の時点の 2,834 から増えた)・`crates/metrics-window/src/history.rs` 2,375・`crates/server/src/lib.rs` 2,066。目安は 1 ファイル 2,000 行 (TODO.md 93)。T.24.8 は `recent.rs` だけを見た。
   - やること: T.24.8 / T.25.2 の型 (段 1 で割り方、段 2 で中身を変えずに割る 1 コミット)。T.28.0・T.28.15 と同じ所を触るので、その後に回す。
   - 受け入れ基準: 3 本とも 2,000 行以下、`cargo test --workspace` の本数が前後で同じ。
-
-
-
 
 - [ ] **T.28.37 揺れる試験 2 本を直す (T.28.9・T.28.20 で見つけた)**
   - 目的: `proxy-selfbench` の `cpu_of_the_process_and_of_this_thread_is_readable` はプロセスの CPU を先に、スレッドの CPU を後に読むので `111 < 113` で落ちることがある。`expect_continue_test::test_integration_expect_100_continue_gets_100_before_the_body` は全体を回して負荷が高いときに 1 回落ちた (エコーするオリジンが本文の途中で返す)。
