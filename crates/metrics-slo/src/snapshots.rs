@@ -16,6 +16,16 @@
 //!   (`state_file` の種類。T14.11)。
 //! - 読む口は `/snapshots` (一覧) と `/snapshots/<date>` (そのままの JSON)。
 //!
+//! **起動と停止の 1 枚** (T.28.20): 締めの判定の「前」(再デプロイの直前) と「0 時間」(直後) は
+//! 撮った機械にしか残らなかったので、同じ置き場所に **`<YYYY-MM-DDTHHMMSSZ>-shutdown.json`**
+//! (停止シグナルで状態ファイルを書く前。[`take_shutdown`]) と **`-start.json`** (起動から
+//! `memory.baseline` を書くのと同じ 60 秒。[`take_start_if_due`]) も残す ([`Moment`])。
+//! 名前の時刻は撮った時刻 (UTC)。日次の 1 枚とは数え方を分け (`/snapshots` の `moments`)、
+//! 残すのは [`Moment`] の種類ごとに `PROXY_SNAPSHOT_DAYS` 日以内かつ新しい方から
+//! `PROXY_SNAPSHOT_DAYS` 枚まで (再起動を繰り返しても置き場所を埋めない)。
+//! **停止の 1 枚だけは `recent` を 256 KiB で切らずに全部入れる** (組み方は上の層。
+//! 呼ぶときに `full_recent` を渡す)。
+//!
 //! **`/snapshot` を組むのは `proxy-endpoints` の仕事**なので、ここは
 //! [`set_builder`] で預かった閉包を日付の変わり目に 1 回呼ぶだけにしてある
 //! (下の層 `proxy-metrics` から上の層を呼ぶと依存が輪になる。T14.11 の
@@ -93,7 +103,10 @@ fn day_of(name: &str) -> Option<u64> {
 }
 
 /// `/snapshot` を組む閉包 (預けるのは `proxy-endpoints`。[`set_builder`])。
-type Builder = Box<dyn Fn() -> String + Send + Sync>;
+///
+/// 引数は **`recent` を全部入れるか** (T.28.20。停止の 1 枚だけ `true`。日次と起動の 1 枚は
+/// `/snapshot` と同じく部ごと 256 KiB で切る)。
+pub type Builder = Box<dyn Fn(bool) -> String + Send + Sync>;
 
 static BUILDER: OnceLock<Mutex<Option<Builder>>> = OnceLock::new();
 
@@ -108,9 +121,70 @@ pub fn set_builder(f: Builder) {
     *builder().locked() = Some(f);
 }
 
-/// 預かった閉包で `/snapshot` を 1 枚組む (**日付の変わり目のときだけ**呼ぶ)。
-fn build() -> Option<String> {
-    builder().locked().as_ref().map(|f| f())
+/// 預かった閉包で `/snapshot` を 1 枚組む (**日付の変わり目と起動・停止のときだけ**呼ぶ)。
+fn build(full_recent: bool) -> Option<String> {
+    builder().locked().as_ref().map(|f| f(full_recent))
+}
+
+/// 起動と停止の 1 枚の種類 (T.28.20)。名前は `<YYYY-MM-DDTHHMMSSZ>-<種類>.json`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moment {
+    /// 起動から `memory.baseline` と同じ 60 秒 (締めの「0 時間」)
+    Start,
+    /// 停止シグナルで状態ファイルを書く前 (締めの「前」)
+    Shutdown,
+}
+
+impl Moment {
+    pub const ALL: [Moment; 2] = [Moment::Start, Moment::Shutdown];
+
+    /// 名前の終わりと `/snapshots` の `kind` に出す綴り。
+    pub fn name(self) -> &'static str {
+        match self {
+            Moment::Start => "start",
+            Moment::Shutdown => "shutdown",
+        }
+    }
+}
+
+/// 撮った時刻と種類から名前 (拡張子なし) を作る: `2026-10-25T203134Z-shutdown`。
+///
+/// 時刻の書き方は `collect-deployed.sh` の雪像 (`<UTC 時刻>-snapshot.json`) と同じ。
+pub fn moment_name(t: u64, m: Moment) -> String {
+    let (y, mo, d, h, mi, s) = crate::log::civil_from_epoch(t);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}{:02}{:02}Z-{}",
+        y,
+        mo,
+        d,
+        h,
+        mi,
+        s,
+        m.name()
+    )
+}
+
+/// `<YYYY-MM-DDTHHMMSSZ>-start|shutdown` として読めれば (撮った時刻, 種類)。
+///
+/// `/snapshots/<名前>` はこれ (か [`is_date`]) を通った文字列しかファイル名に使わない
+/// (`..` や `/` を書かれても置き場所の外へ出ない)。
+pub fn parse_moment(name: &str) -> Option<(u64, Moment)> {
+    let (stamp, kind) = name.split_once("Z-")?;
+    let m = Moment::ALL.into_iter().find(|m| m.name() == kind)?;
+    let (date, time) = stamp.split_once('T')?;
+    let day = day_of(date)?;
+    if time.len() != 6 || !time.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (h, mi, s): (u64, u64, u64) = (
+        time[0..2].parse().ok()?,
+        time[2..4].parse().ok()?,
+        time[4..6].parse().ok()?,
+    );
+    if h > 23 || mi > 59 || s > 59 {
+        return None;
+    }
+    Some((day * SECS_PER_DAY + h * 3600 + mi * 60 + s, m))
 }
 
 /// 日次の `/snapshot` を書くもの。
@@ -129,6 +203,8 @@ pub struct Writer {
     errors: u64,
     /// ディスクの予算で書かなかった回数
     skipped: u64,
+    /// 起動と停止の 1 枚を書いた数 (T.28.20)
+    moments: u64,
 }
 
 impl Writer {
@@ -146,6 +222,7 @@ impl Writer {
             written: 0,
             errors: 0,
             skipped: 0,
+            moments: 0,
         }
     }
 
@@ -193,19 +270,86 @@ impl Writer {
             return None;
         };
         let path = dir.join(format!("{}{}", name, EXT));
+        if !self.put(&dir, &path, &body, space) {
+            return None;
+        }
+        self.last_written = finished;
+        self.written += 1;
+        let dropped = prune(&dir, self.days);
+        log_info!(
+            None,
+            "daily snapshot {} ({} B, keeping {} days{})",
+            path.display(),
+            body.len(),
+            self.days,
+            if dropped > 0 {
+                format!(", dropped {} older", dropped)
+            } else {
+                String::new()
+            }
+        );
+        Some(path)
+    }
+
+    /// 起動と停止の 1 枚 (T.28.20) を `t` (撮った時刻) の名前で書く。戻り値は書いたファイル。
+    ///
+    /// 書いたら同じ種類の古いもの ([`prune_moments`]) を消す。書き先が無い設定
+    /// (`PROXY_SNAPSHOT_DAYS=0` / `PROXY_STATS_PERSIST=off`) では `build` を呼ばない。
+    pub fn write_moment(
+        &mut self,
+        t: u64,
+        m: Moment,
+        build: impl FnOnce() -> Option<String>,
+        space: impl FnOnce(&Path) -> (Option<u64>, u64),
+    ) -> Option<PathBuf> {
+        let dir = self.dir.clone()?;
+        let Some(body) = build() else {
+            log_debug!(None, "{} snapshot: no snapshot builder", m.name());
+            return None;
+        };
+        let path = dir.join(format!("{}{}", moment_name(t, m), EXT));
+        if !self.put(&dir, &path, &body, space) {
+            return None;
+        }
+        self.moments += 1;
+        let dropped = prune_moments(&dir, self.days, m, t);
+        log_info!(
+            None,
+            "{} snapshot {} ({} B, keeping {} days{})",
+            m.name(),
+            path.display(),
+            body.len(),
+            self.days,
+            if dropped > 0 {
+                format!(", dropped {} older", dropped)
+            } else {
+                String::new()
+            }
+        );
+        Some(path)
+    }
+
+    /// 大きさとディスクの予算を確かめてから 1 ファイル書く (日次と起動・停止で共通)。
+    fn put(
+        &mut self,
+        dir: &Path,
+        path: &Path,
+        body: &str,
+        space: impl FnOnce(&Path) -> (Option<u64>, u64),
+    ) -> bool {
         let need = body.len() as u64;
         if need > MAX_FILE {
             // `/snapshot` 側が 4 MiB で切っているので本来ここへは来ない (念のための歯止め)
             self.note_skip(
-                &path,
+                path,
                 &format!("{} B is over the {} B limit", need, MAX_FILE),
             );
-            return None;
+            return false;
         }
-        let (free, keep_free) = space(&dir);
+        let (free, keep_free) = space(dir);
         if !fits(free, keep_free, need) {
             self.note_skip(
-                &path,
+                path,
                 &format!(
                     "only {} free and {} must stay free (needs {} B)",
                     free.map(mib).unwrap_or_else(|| "?".into()),
@@ -213,40 +357,18 @@ impl Writer {
                     need
                 ),
             );
-            return None;
+            return false;
         }
-        match write_file(&path, &body) {
-            Ok(()) => {
-                self.last_written = finished;
-                self.written += 1;
-                let dropped = prune(&dir, self.days);
-                log_info!(
-                    None,
-                    "daily snapshot {} ({} B, keeping {} days{})",
-                    path.display(),
-                    need,
-                    self.days,
-                    if dropped > 0 {
-                        format!(", dropped {} older", dropped)
-                    } else {
-                        String::new()
-                    }
-                );
-                Some(path)
-            }
+        match write_file(path, body) {
+            Ok(()) => true,
             Err(e) => {
                 self.errors += 1;
                 if self.errors == 1 {
-                    log_warn!(
-                        None,
-                        "daily snapshot {}: write failed: {}",
-                        path.display(),
-                        e
-                    );
+                    log_warn!(None, "snapshot {}: write failed: {}", path.display(), e);
                     // 出来事の時系列に 1 件 (**最初の 1 回だけ**。T14.11 と同じ口)
-                    crate::events::note_state_file(&path, "write", &e);
+                    crate::events::note_state_file(path, "write", &e);
                 }
-                None
+                false
             }
         }
     }
@@ -269,6 +391,11 @@ impl Writer {
     /// 書いた数・書けなかった数・予算で見送った数。
     pub fn counts(&self) -> (u64, u64, u64) {
         (self.written, self.errors, self.skipped)
+    }
+
+    /// 起動と停止の 1 枚を書いた数 (T.28.20)。
+    pub fn moments_written(&self) -> u64 {
+        self.moments
     }
 
     /// 書き先 (`PROXY_SNAPSHOT_DAYS=0` と `PROXY_STATS_PERSIST=off` では `None`)。
@@ -348,6 +475,48 @@ fn prune(dir: &Path, days: usize) -> usize {
     dropped
 }
 
+/// 置いてある起動と停止の 1 枚 (名前の時刻の古い順)。`(名前, 撮った時刻, 種類)`。
+fn existing_moments(dir: &Path) -> Vec<(String, u64, Moment)> {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut v: Vec<(String, u64, Moment)> = rd
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let stem = name.strip_suffix(EXT)?;
+            let (t, m) = parse_moment(stem)?;
+            Some((stem.to_string(), t, m))
+        })
+        .collect();
+    v.sort_unstable_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+    v
+}
+
+/// `m` の種類のうち、`now` から `days` 日より古いものと、新しい方から `days` 枚を越えたものを消す
+/// (T.28.20)。消した数を返す。**別の種類と日次の 1 枚には触らない**。
+fn prune_moments(dir: &Path, days: usize, m: Moment, now: u64) -> usize {
+    let oldest = now.saturating_sub(days as u64 * SECS_PER_DAY);
+    let mine: Vec<(String, u64)> = existing_moments(dir)
+        .into_iter()
+        .filter(|(_, _, k)| *k == m)
+        .map(|(name, t, _)| (name, t))
+        .collect();
+    let over = mine.len().saturating_sub(days);
+    let mut dropped = 0;
+    for (i, (name, t)) in mine.into_iter().enumerate() {
+        if i >= over && t >= oldest {
+            continue;
+        }
+        let path = dir.join(format!("{}{}", name, EXT));
+        match fs::remove_file(&path) {
+            Ok(()) => dropped += 1,
+            Err(e) => log_warn!(None, "snapshot {}: cannot drop: {}", path.display(), e),
+        }
+    }
+    dropped
+}
+
 /// `/snapshots` に返す一覧の 1 行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Saved {
@@ -355,6 +524,17 @@ pub struct Saved {
     pub date: String,
     pub bytes: u64,
     /// 書いた時刻 (mtime。epoch 秒。読めなければ 0)
+    pub t: u64,
+}
+
+/// `/snapshots` の `moments` の 1 行 (起動と停止の 1 枚。T.28.20)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedMoment {
+    /// `<YYYY-MM-DDTHHMMSSZ>-<種類>` (`/snapshots/<名前>` で読める)
+    pub name: String,
+    pub kind: Moment,
+    pub bytes: u64,
+    /// 撮った時刻 (名前の時刻。epoch 秒)
     pub t: u64,
 }
 
@@ -368,6 +548,10 @@ pub struct Listing {
     pub files: Vec<Saved>,
     /// 合計のバイト数
     pub bytes: u64,
+    /// 起動と停止の 1 枚 (**古い順**。T.28.20)
+    pub moments: Vec<SavedMoment>,
+    /// その合計のバイト数
+    pub moments_bytes: u64,
 }
 
 static WRITER: OnceLock<Mutex<Writer>> = OnceLock::new();
@@ -398,11 +582,51 @@ pub fn tick(cache: &Cache, s: &Sample) {
         return;
     }
     let t = s.t.saturating_add(SHIFT.load(Ordering::Relaxed));
-    writer().locked().add(t, build, |dir| {
-        // T12.5 のディスクのマージン (プローブが決めた「空けておく量」)。
-        // キャッシュを切っている設定では 0 = 空きがある限り書く
-        (free_bytes(dir), cache.snapshot().disk_keep_free)
-    });
+    writer().locked().add(
+        t,
+        || build(false),
+        |dir| {
+            // T12.5 のディスクのマージン (プローブが決めた「空けておく量」)。
+            // キャッシュを切っている設定では 0 = 空きがある限り書く
+            (free_bytes(dir), cache.snapshot().disk_keep_free)
+        },
+    );
+}
+
+/// 起動の 1 枚を撮ったか (**起動ごとに 1 回**。T.28.20)。
+static START_TAKEN: AtomicBool = AtomicBool::new(false);
+
+/// **history スレッドの周期から呼ぶ** (`memory.baseline` を書くのと同じ所。T.28.20)。
+///
+/// `due` は「起動から `persist::baseline_after_secs` 秒たったか」(数えるのは呼ぶ側)。
+/// たっていて、まだ撮っていなければ `-start` を 1 枚書く。ふだんは原子の読み 1〜2 回で戻る。
+pub fn take_start_if_due(cache: &Cache, due: bool) -> Option<PathBuf> {
+    if !due || !ENABLED.load(Ordering::Relaxed) || START_TAKEN.swap(true, Ordering::Relaxed) {
+        return None;
+    }
+    take(cache, Moment::Start, false)
+}
+
+/// **停止シグナルの後始末から 1 回だけ呼ぶ** (状態ファイルを書く前。T.28.20)。
+///
+/// `-shutdown` を 1 枚書く。**`recent` は部の 256 KiB で切らずに全部入れる** (締めの「前」は
+/// 個票の窓が判定の分母になるのに、`--from-server` で取り寄せた 1 枚は `offset=` で続きを
+/// 追えないため)。書かない設定なら原子の読み 1 回で戻る。
+pub fn take_shutdown(cache: &Cache) -> Option<PathBuf> {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return None;
+    }
+    take(cache, Moment::Shutdown, true)
+}
+
+fn take(cache: &Cache, m: Moment, full_recent: bool) -> Option<PathBuf> {
+    let t = crate::cache::now_epoch();
+    writer().locked().write_moment(
+        t,
+        m,
+        || build(full_recent),
+        |dir| (free_bytes(dir), cache.snapshot().disk_keep_free),
+    )
 }
 
 /// 書き先の空き (バイト)。まだディレクトリが無ければその親で測る。
@@ -423,6 +647,8 @@ pub fn list() -> Listing {
             days,
             files: Vec::new(),
             bytes: 0,
+            moments: Vec::new(),
+            moments_bytes: 0,
         };
     };
     let files: Vec<Saved> = existing(&dir)
@@ -441,20 +667,34 @@ pub fn list() -> Listing {
         })
         .collect();
     let bytes = files.iter().map(|f| f.bytes).sum();
+    let moments: Vec<SavedMoment> = existing_moments(&dir)
+        .into_iter()
+        .map(|(name, t, kind)| SavedMoment {
+            bytes: fs::metadata(dir.join(format!("{}{}", name, EXT)))
+                .map(|m| m.len())
+                .unwrap_or(0),
+            name,
+            kind,
+            t,
+        })
+        .collect();
+    let moments_bytes = moments.iter().map(|f| f.bytes).sum();
     Listing {
         dir: Some(dir),
         days,
         files,
         bytes,
+        moments,
+        moments_bytes,
     }
 }
 
-/// `/snapshots/<date>` の中身 (そのままの JSON)。無ければ `None`。
+/// `/snapshots/<date>` と `/snapshots/<起動・停止の名前>` の中身 (そのままの JSON)。無ければ `None`。
 ///
-/// 読むのは `<YYYY-MM-DD>.json` だけで、[`MAX_FILE`] を超えるファイル (手で置かれたもの) は
-/// 読まない。
+/// 読むのは `<YYYY-MM-DD>.json` と `<YYYY-MM-DDTHHMMSSZ>-start|shutdown.json` (T.28.20) だけで、
+/// [`MAX_FILE`] を超えるファイル (手で置かれたもの) は読まない。
 pub fn read(date: &str) -> Option<String> {
-    if !is_date(date) {
+    if !is_date(date) && parse_moment(date).is_none() {
         return None;
     }
     let dir = writer().locked().dir.clone()?;
@@ -676,6 +916,112 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// 起動と停止の名前は往復でき、読めない名前は入れない (T.28.20)。
+    #[test]
+    fn moment_names_round_trip_and_bad_names_are_refused() {
+        // 2026-10-25T20:31:34Z (tokyo の T.28 の雪像の時刻)
+        let t = 20_751 * DAY + 20 * 3600 + 31 * 60 + 34;
+        assert_eq!(
+            moment_name(t, Moment::Shutdown),
+            "2026-10-25T203134Z-shutdown"
+        );
+        assert_eq!(moment_name(t, Moment::Start), "2026-10-25T203134Z-start");
+        for m in Moment::ALL {
+            assert_eq!(parse_moment(&moment_name(t, m)), Some((t, m)));
+        }
+        for bad in [
+            "",
+            "2026-10-25",
+            "2026-10-25T203134Z",
+            "2026-10-25T203134Z-reboot",
+            "2026-10-25T2031Z-shutdown",
+            "2026-10-25T243134Z-shutdown",
+            "2026-10-25T206034Z-start",
+            "2026-13-25T203134Z-start",
+            "../2026-10-25T203134Z-start",
+            "2026-10-25T203134Z-start/../../x",
+            "2026-10-25T20313xZ-start",
+        ] {
+            assert!(parse_moment(bad).is_none(), "{}", bad);
+        }
+        // 一覧に入るのは形の合う名前だけ (日次の 1 枚とは混ざらない)
+        let dir = tmp("moment-names");
+        fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "2026-10-25T203134Z-shutdown.json",
+            "2026-10-24T010203Z-start.json",
+            "2026-10-25.json",
+            "2026-10-25T203134Z-shutdown.json.tmp",
+            "2026-10-25T203134Z-snapshot.json",
+        ] {
+            fs::write(dir.join(name), "{}").unwrap();
+        }
+        let names: Vec<String> = existing_moments(&dir).into_iter().map(|m| m.0).collect();
+        assert_eq!(
+            names,
+            ["2026-10-24T010203Z-start", "2026-10-25T203134Z-shutdown"]
+        );
+        assert_eq!(dates(&dir), vec!["2026-10-25"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 起動・停止の 1 枚を書き、種類ごとに日数と枚数で古いものを消す。日次の 1 枚には触らない。
+    #[test]
+    fn moments_are_written_and_pruned_by_kind() {
+        let dir = tmp("moments");
+        let mut w = Writer::new(Some(dir.clone()), 3);
+        let base = 20_700 * DAY;
+        // 日次の 1 枚を置いておく (消されないこと)
+        w.add(base, body, roomy);
+        w.add(base + DAY, body, roomy).expect("日次");
+        // 停止を 1 日おきに 5 回 (3 日より古いものと、新しい方から 3 枚を越えたものが消える)
+        let mut written = Vec::new();
+        for i in 0..5 {
+            let t = base + i * DAY + 100;
+            let p = w
+                .write_moment(t, Moment::Shutdown, body, roomy)
+                .expect("停止の 1 枚");
+            assert_eq!(
+                p.file_name().unwrap().to_string_lossy(),
+                format!("{}.json", moment_name(t, Moment::Shutdown))
+            );
+            written.push(moment_name(t, Moment::Shutdown));
+        }
+        // 起動を同じ時刻に 4 回 (日数では消えず、枚数の 3 で 1 枚消える)
+        for i in 0..4 {
+            w.write_moment(base + 4 * DAY + 200 + i, Moment::Start, body, roomy)
+                .expect("起動の 1 枚");
+        }
+        let left: Vec<(String, Moment)> = existing_moments(&dir)
+            .into_iter()
+            .map(|(n, _, m)| (n, m))
+            .collect();
+        let shutdowns: Vec<&String> = left
+            .iter()
+            .filter(|(_, m)| *m == Moment::Shutdown)
+            .map(|(n, _)| n)
+            .collect();
+        // 最後に書いた時刻 (base + 4 日) から 3 日以内 = 1・2・3・4 日目のうち新しい 3 枚
+        assert_eq!(shutdowns, [&written[2], &written[3], &written[4]]);
+        assert_eq!(left.iter().filter(|(_, m)| *m == Moment::Start).count(), 3);
+        assert_eq!(dates(&dir), vec![day_name(20_700)], "日次の 1 枚はそのまま");
+        assert_eq!(w.moments_written(), 9);
+        // 予算を越えるなら書かない (日次と同じ判定)
+        let _g = crate::events::TEST_LOCK.locked();
+        let tight = |_: &Path| (Some(1024 * 1024), 1024 * 1024);
+        assert_eq!(
+            w.write_moment(base + 5 * DAY, Moment::Shutdown, body, tight),
+            None
+        );
+        // 書き先が無い設定では組みもしない
+        let mut none = Writer::new(None, 3);
+        assert_eq!(
+            none.write_moment(base, Moment::Start, || panic!("組まない"), roomy),
+            None
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// 大域の口 ([`configure`] / [`tick`] / [`list`] / [`read`]) も 1 度通しておく
     /// (**この単体テストだけが大域に触る**)。
     #[test]
@@ -686,10 +1032,42 @@ mod tests {
             t,
             ..Sample::default()
         };
-        set_builder(Box::new(|| {
-            "{\"taken_at\":1,\"parts\":[\"status\"]}".to_string()
+        // 組み方に渡った「`recent` を全部入れるか」を中身に写す (T.28.20)
+        set_builder(Box::new(|full| {
+            format!(
+                "{{\"taken_at\":1,\"parts\":[\"status\"],\"full\":{}}}",
+                full
+            )
         }));
+        // 書かない設定のうちは起動・停止の 1 枚も書かない (組みもしない)
+        configure(None, DEFAULT_DAYS);
+        assert_eq!(take_shutdown(&cache), None);
+        assert_eq!(take_start_if_due(&cache, true), None);
         configure(Some(dir.clone()), DEFAULT_DAYS);
+        // 起動の 1 枚: 待ち時間の前は書かず、たったら 1 回だけ (`recent` は切る方)
+        assert_eq!(take_start_if_due(&cache, false), None);
+        let start = take_start_if_due(&cache, true).expect("起動の 1 枚");
+        assert_eq!(take_start_if_due(&cache, true), None, "起動ごとに 1 回");
+        assert!(
+            fs::read_to_string(&start)
+                .unwrap()
+                .contains("\"full\":false")
+        );
+        // 停止の 1 枚は `recent` を全部入れる方で組む
+        let stop = take_shutdown(&cache).expect("停止の 1 枚");
+        assert!(fs::read_to_string(&stop).unwrap().contains("\"full\":true"));
+        let l = list();
+        assert!(l.files.is_empty(), "日次の一覧には混ぜない");
+        let kinds: Vec<Moment> = l.moments.iter().map(|m| m.kind).collect();
+        assert!(kinds.contains(&Moment::Start) && kinds.contains(&Moment::Shutdown));
+        assert_eq!(l.moments_bytes, l.moments.iter().map(|m| m.bytes).sum());
+        for m in &l.moments {
+            assert!(parse_moment(&m.name).is_some(), "{}", m.name);
+            assert!(read(&m.name).unwrap().contains("\"taken_at\""));
+        }
+        for p in [&start, &stop] {
+            fs::remove_file(p).unwrap();
+        }
         let base = 20_600 * DAY;
         tick(&cache, &sample(base + 10));
         assert!(list().files.is_empty(), "日が変わるまでは空");

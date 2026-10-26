@@ -31,6 +31,10 @@
 #     `/snapshot` そのもの)。名前は今の流儀に合わせて `<日付>T000000Z-snapshot.json`
 #     (日付は**その 1 日を写したもの**。実際に撮られたのは翌日 00:00 UTC の直後)。
 #     回し忘れた日の個票がこれで埋まる。
+#     **起動と停止の 1 枚** (T.28.20。プロキシが停止シグナルで状態ファイルを書く前と、起動から 60 秒で
+#     残す `<UTC 時刻>-shutdown` / `-start`。一覧の `moments`) も手元に無いものだけ取り寄せて
+#     `<UTC 時刻>-shutdown-snapshot.json` / `-start-snapshot.json` に置き、**最後の停止とその後の
+#     最初の起動**を `BEFORE=… ZERO=…` の形で 1 行出す (締めの「前」と「0 時間」にそのまま渡せる)。
 #
 #   scripts/collect-deployed.sh --full HOST:PORT [DIR]
 #     雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
@@ -192,23 +196,32 @@ if [ "$FROM_SERVER" = 1 ]; then
     echo "failed to fetch http://$PROXY/snapshots" >&2
     exit 1
   fi
+  # 1 行 1 枚 (`<日付> <バイト数> <置く名前>`)。日次は `<日付>T000000Z-snapshot.json`、起動と停止の
+  # 1 枚 (T.28.20。`moments` が無い古い版のプロキシでは 0 枚) は `<名前>-snapshot.json`。
+  # **名前は形を確かめてから使う** (一覧に何が書かれていても `$DIR` の外へは置かない)
   DAYS=$(printf '%s' "$LIST" | python3 -c '
-import json, sys
+import json, re, sys
 try:
     d = json.load(sys.stdin)
 except ValueError:
     sys.exit("not JSON")
 for f in d.get("files") or []:
-    print(f.get("date"), f.get("bytes", 0))
+    day = str(f.get("date"))
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        print(day, f.get("bytes", 0), day + "T000000Z-snapshot.json")
+for m in d.get("moments") or []:
+    name = str(m.get("name"))
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z-(start|shutdown)", name):
+        print(name, m.get("bytes", 0), name + "-snapshot.json")
 ') || exit 1
-  printf '# rust-http-proxy — 日次の snapshot を取り寄せる (%s)\n\n' "$PROXY"
+  printf '# rust-http-proxy — 日次と起動・停止の snapshot を取り寄せる (%s)\n\n' "$PROXY"
   printf -- '- 保存先: `%s`\n' "$DIR"
   got=0
   skipped=0
   failed=0
-  while read -r day bytes; do
+  while read -r day bytes file; do
     [ -n "$day" ] || continue
-    out="$DIR/${day}T000000Z-snapshot.json"
+    out="$DIR/$file"
     if [ -f "$out" ]; then
       skipped=$((skipped + 1))
       continue
@@ -227,6 +240,31 @@ for f in d.get("files") or []:
 $DAYS
 EOF
   printf -- '- 取り寄せ %d 件、手元にあった %d 件、失敗 %d 件\n' "$got" "$skipped" "$failed"
+  # 締めの「前」と「0 時間」(T.28.20): 手元にある最後の停止の 1 枚と、その後の最初の起動の 1 枚。
+  # 名前の先頭 18 文字 (`YYYY-MM-DDTHHMMSSZ`) は時刻なので、文字列の並びがそのまま時刻の並び
+  last_stop=
+  for f in "$DIR"/*T??????Z-shutdown-snapshot.json; do
+    [ -f "$f" ] && last_stop=$f
+  done
+  if [ -n "$last_stop" ]; then
+    stop_at=$(basename "$last_stop")
+    stop_at=${stop_at:0:18}
+    zero=
+    for f in "$DIR"/*T??????Z-start-snapshot.json; do
+      [ -f "$f" ] || continue
+      start_at=$(basename "$f")
+      start_at=${start_at:0:18}
+      if [[ "$start_at" > "$stop_at" ]]; then
+        zero=$f
+        break
+      fi
+    done
+    if [ -n "$zero" ]; then
+      printf -- '- 締めの判定に渡せる 2 枚 (最後の停止と、その後の最初の起動): `BEFORE=%s ZERO=%s`\n' "$last_stop" "$zero"
+    else
+      printf -- '- 締めの判定に渡せる「前」(最後の停止。その後の起動の 1 枚はまだ無い): `BEFORE=%s`\n' "$last_stop"
+    fi
+  fi
   [ "$failed" = 0 ] || exit 1
   exit 0
 fi

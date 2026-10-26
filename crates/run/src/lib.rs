@@ -425,6 +425,7 @@ pub fn main() {
             (config.cache.enabled && config.cache.reserve.is_on()).then(|| cache.ballast_path());
         let store = store.clone();
         let m = Arc::clone(&metrics);
+        let c = Arc::clone(&cache);
         signal::install(
             ballast.as_deref(),
             Box::new(move || {
@@ -433,6 +434,18 @@ pub fn main() {
                     proxy_server::events::EventKind::Shutdown,
                     "stop signal received; saving statistics",
                 );
+                // 状態ファイルを書く前に `/snapshot` を 1 枚 (T.28.20。締めの「前」)。
+                // `recent` は切らずに全部入れる。後始末の上限 (`signal::GRACE` = 3 秒) の中に
+                // 収まるよう、組んで書くまでにかかった時間をログに出す
+                let t = std::time::Instant::now();
+                if let Some(path) = proxy_server::snapshots::take_shutdown(&c) {
+                    log_info!(
+                        None,
+                        "shutdown snapshot {} built and written in {:.1} ms",
+                        path.display(),
+                        t.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
                 if let Some(st) = store {
                     st.flush_stats(&m);
                     // 最後の 5 秒ぶんの個票も書いてから終わる (T14.9)

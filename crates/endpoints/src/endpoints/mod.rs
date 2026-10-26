@@ -122,8 +122,9 @@ fn endpoint_list(lite: bool) -> String {
          \x20 /trace?n=200&since=                         JSON: one client's requests (PROXY_TRACE_CLIENT)\n\
          \x20 /events?n=200&since=                        JSON: starts, reloads, and other events\n\
          \x20 /snapshot                                   JSON: everything above in one request\n\
-         \x20 /snapshots                                  JSON: the daily snapshots kept on disk\n\
+         \x20 /snapshots                                  JSON: the daily, start and shutdown snapshots kept on disk\n\
          \x20 /snapshots/<YYYY-MM-DD>                     JSON: one saved day (as taken)\n\
+         \x20 /snapshots/<time>-start|shutdown            JSON: one start or shutdown snapshot (as taken)\n\
          \x20 /dns?sort=age|host|misses&offset=          JSON: the resolver cache table\n\
          \x20 /log?n=200                                  JSON: the last warnings and errors\n\
          \x20 /hosts?sort=&limit=200&offset=              JSON: every host (/status keeps 50)\n\
@@ -168,7 +169,8 @@ pub struct SnapshotSource {
 /// この層より**下**にあるため (下から上を呼ぶと依存が輪になる。T14.11 の `events::poll`
 /// と同じ判断で、**向きは上から預ける**)。
 pub fn register_snapshot(src: SnapshotSource) {
-    crate::snapshots::set_builder(Box::new(move || {
+    // 引数は「`recent` を全部入れるか」(停止の 1 枚だけ真。T.28.20)
+    crate::snapshots::set_builder(Box::new(move |full_recent| {
         let ep = Endpoint {
             metrics: &src.metrics,
             cache: &src.cache,
@@ -184,7 +186,7 @@ pub fn register_snapshot(src: SnapshotSource) {
             version: src.version,
             concurrency: &*src.concurrency,
         };
-        recent::snapshot(&ep).2
+        recent::snapshot_with(&ep, full_recent).2
     }));
 }
 
@@ -443,7 +445,8 @@ pub fn handle(
         // 日次で残した `/snapshot` の一覧 (T14.34)
         recent::snapshots()
     } else if is_get && let Some(date) = path.strip_prefix("/snapshots/") {
-        // 残してある 1 日ぶんをそのまま (T14.34)。日付として読めない名前は 404
+        // 残してある 1 日ぶんをそのまま (T14.34)。起動と停止の 1 枚 (`<時刻>-start|shutdown`。
+        // T.28.20) も同じ口。どちらとしても読めない名前は 404
         recent::snapshot_file(date)
     } else if is_get && path == "/dns" {
         recent::dns(query)

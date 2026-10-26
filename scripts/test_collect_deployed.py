@@ -817,5 +817,104 @@ class CollectViaTest(unittest.TestCase):
         self.assertFalse([c for c in calls if "-x " in c or c.endswith(" -p") or " -p " in c], calls)
 
 
+class CollectFromServerTest(unittest.TestCase):
+    """`--from-server` が日次の雪像に加えて起動と停止の 1 枚 (`moments`) も取り寄せ、
+    `BEFORE` / `ZERO` に渡せる名前で置く試験 (T.28.20)。偽のサーバーは `/snapshots` の形だけを写す。"""
+
+    DAY = "2026-10-24"
+    SHUTDOWN = "2026-10-25T203134Z-shutdown"
+    START = "2026-10-25T203301Z-start"
+    OLD_START = "2026-10-20T010203Z-start"
+
+    def serve(self, listing):
+        bodies = {}
+        for name in [f["date"] for f in listing.get("files", [])] + \
+                [m["name"] for m in listing.get("moments", [])]:
+            bodies[name] = json.dumps({"schema": 1, "taken_at": 1, "parts": ["status"],
+                                       "status": {"requests": len(name)}}).encode()
+        self.fetched = []
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def reply(h, code, body):
+                h.send_response(code)
+                h.send_header("Content-Type", "application/json")
+                h.send_header("Content-Length", str(len(body)))
+                h.end_headers()
+                h.wfile.write(body)
+
+            def do_GET(h):
+                if h.path == "/snapshots":
+                    return h.reply(200, json.dumps(listing).encode())
+                name = h.path[len("/snapshots/"):] if h.path.startswith("/snapshots/") else None
+                if name in bodies:
+                    self.fetched.append(name)
+                    return h.reply(200, bodies[name])
+                return h.reply(404, b'{"schema":1,"error":"no snapshot for that day"}')
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return srv
+
+    def run_from_server(self, listing, d=None):
+        srv = self.serve(listing)
+        if d is None:
+            d = tempfile.mkdtemp(prefix="t2820-")
+            self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        r = subprocess.run([SCRIPT, "--from-server", "127.0.0.1:%d" % srv.server_address[1], d],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return d, r.stdout
+
+    def listing(self):
+        return {
+            "schema": 1,
+            "files": [{"date": self.DAY, "bytes": 10, "t": 1}],
+            "moments": [
+                {"name": self.OLD_START, "kind": "start", "bytes": 10, "t": 1},
+                {"name": self.SHUTDOWN, "kind": "shutdown", "bytes": 10, "t": 2},
+                {"name": self.START, "kind": "start", "bytes": 10, "t": 3},
+            ],
+        }
+
+    def test_moments_are_fetched_next_to_the_daily_ones(self):
+        d, out = self.run_from_server(self.listing())
+        names = sorted(os.listdir(d))
+        self.assertIn(self.DAY + "T000000Z-snapshot.json", names)
+        for m in (self.OLD_START, self.SHUTDOWN, self.START):
+            self.assertIn(m + "-snapshot.json", names)
+            with open(os.path.join(d, m + "-snapshot.json")) as f:
+                self.assertEqual(json.load(f)["status"]["requests"], len(m))
+        self.assertFalse([n for n in names if n.endswith(".part")], names)
+        # 最後の停止と、その後の最初の起動を `BEFORE` / `ZERO` に渡せる形で 1 行出す
+        self.assertIn("BEFORE=%s/%s-snapshot.json ZERO=%s/%s-snapshot.json" % (
+            d, self.SHUTDOWN, d, self.START), out)
+        self.assertIn("取り寄せ 4 件", out)
+        # 2 回目は手元にあるものを取りに行かない
+        self.fetched.clear()
+        _, out = self.run_from_server(self.listing(), d)
+        self.assertEqual(self.fetched, [])
+        self.assertIn("手元にあった 4 件", out)
+
+    def test_an_old_server_without_moments_still_works(self):
+        listing = self.listing()
+        del listing["moments"]
+        d, out = self.run_from_server(listing)
+        self.assertEqual(sorted(os.listdir(d)), [self.DAY + "T000000Z-snapshot.json"])
+        self.assertIn("取り寄せ 1 件", out)
+        self.assertNotIn("BEFORE=", out)
+
+    def test_without_a_start_after_the_last_shutdown_only_before_is_offered(self):
+        listing = self.listing()
+        listing["moments"] = [m for m in listing["moments"] if m["name"] != self.START]
+        d, out = self.run_from_server(listing)
+        self.assertIn("BEFORE=%s/%s-snapshot.json" % (d, self.SHUTDOWN), out)
+        self.assertNotIn("ZERO=", out)
+
+
 if __name__ == "__main__":
     unittest.main()

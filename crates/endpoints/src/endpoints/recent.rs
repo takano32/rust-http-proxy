@@ -36,7 +36,16 @@ const TRAILER: usize = 512;
 /// 要素を上限のバイト数まで `[...]` に並べる。入り切らなかったらそこで止める。
 /// 返すのは (書けた件数, 打ち切ったか)。
 fn array_within(out: &mut String, items: impl IntoIterator<Item = String>) -> (usize, bool) {
-    let budget = MAX_BODY - TRAILER;
+    array_within_budget(out, items, MAX_BODY)
+}
+
+/// [`array_within`] の上限を `limit` にした版 (停止の雪像の `recent` だけが使う。T.28.20)。
+fn array_within_budget(
+    out: &mut String,
+    items: impl IntoIterator<Item = String>,
+    limit: usize,
+) -> (usize, bool) {
+    let budget = limit - TRAILER;
     out.push('[');
     let (mut n, mut cut) = (0usize, false);
     for item in items {
@@ -268,21 +277,41 @@ pub fn snapshots() -> (u16, &'static str, String) {
             )
         }),
     );
+    // 起動と停止の 1 枚 (T.28.20) は別の並びにする (日次の `files` を読む道具が、日付で
+    // 取りに行く口に名前を渡して 404 にならないように)。**新しい欄は末尾に足す**
+    out.push_str(",\"moments\":");
+    let (moments_shown, moments_cut) = array_within(
+        &mut out,
+        l.moments.iter().map(|m| {
+            format!(
+                "{{\"name\":\"{}\",\"kind\":\"{}\",\"bytes\":{},\"t\":{}}}",
+                m.name,
+                m.kind.name(),
+                m.bytes,
+                m.t
+            )
+        }),
+    );
     let _ = write!(
         out,
-        ",\"count\":{},\"shown\":{},\"bytes\":{},\"days\":{},\"max_bytes\":{},\"dir\":{},\"truncated\":{}}}",
+        ",\"count\":{},\"shown\":{},\"bytes\":{},\"days\":{},\"max_bytes\":{},\"dir\":{},\"truncated\":{},\"moments_count\":{},\"moments_shown\":{},\"moments_bytes\":{},\"moments_truncated\":{}}}",
         l.files.len(),
         shown,
         l.bytes,
         l.days,
         crate::snapshots::MAX_FILE,
         crate::json::quote_opt(l.dir.as_ref().map(|p| p.display().to_string()).as_deref()),
-        cut
+        cut,
+        l.moments.len(),
+        moments_shown,
+        l.moments_bytes,
+        moments_cut
     );
     (200, "application/json", out)
 }
 
 /// `/snapshots/<YYYY-MM-DD>` — 残してある 1 日ぶんを**そのまま**返す (T14.34)。
+/// `/snapshots/<YYYY-MM-DDTHHMMSSZ>-start|shutdown` (起動と停止の 1 枚。T.28.20) も同じ口。
 ///
 /// 中身は `/snapshot` の応答そのもの (組み直さない) なので、`scripts/snapshot-diff.py` や
 /// `scripts/collect-deployed.sh --from-server` がそのまま読める。**版 (`schema`) も
@@ -295,7 +324,7 @@ pub fn snapshot_file(date: &str) -> (u16, &'static str, String) {
             404,
             "application/json",
             format!(
-                "{}\"error\":\"no snapshot for that day\",\"date\":{},\"see\":\"/snapshots\"}}",
+                "{}\"error\":\"no snapshot for that day (or name)\",\"date\":{},\"see\":\"/snapshots\"}}",
                 SCHEMA_HEAD,
                 crate::json::quote(date)
             ),
@@ -534,6 +563,16 @@ impl RecentSort {
 /// 取っている間に新しく閉じた接続があると並びがずれて**同じ行が 2 つの頁に出る**ことは
 /// あるが (**欠けることは無い**)、行に `id` があるので読む側で落とせる。
 pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+    recent_within(ep, query, MAX_BODY)
+}
+
+/// [`recent`] の本体。`limit` は応答の上限 (ふだんは [`MAX_BODY`]、停止の雪像だけ
+/// [`MAX_SNAPSHOT`]。T.28.20)。
+fn recent_within(
+    ep: &Endpoint<'_>,
+    query: Option<&str>,
+    limit: usize,
+) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, MAX_RECENT);
     let offset = offset_param(query, MAX_RECENT);
     let since = parse_query(query.unwrap_or(""))
@@ -556,9 +595,10 @@ pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
     let mut out = String::with_capacity(8192);
     out.push_str(SCHEMA_HEAD);
     out.push_str("\"recent\":");
-    let (shown, cut) = array_within(
+    let (shown, cut) = array_within_budget(
         &mut out,
         rows.iter().skip(offset).take(n).map(RecentEntry::to_json),
+        limit,
     );
     // 新しい欄は**末尾**に足す (既存の鍵の順は変えない)
     let _ = write!(
@@ -726,6 +766,18 @@ const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
 /// **T14.3 の `/profile` は、入ったらここに 1 行足す** (`parts` に名前が出るので、
 /// 読む側は「この版に何が入っていたか」を JSON だけで判別できる)。
 pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
+    snapshot_with(ep, false)
+}
+
+/// [`snapshot`] の本体。`full_recent` が真なら **`recent` を部の 256 KiB ([`MAX_BODY`]) で切らずに
+/// 2,000 件まで全部入れる** (停止の雪像だけ。T.28.20)。
+///
+/// 締めの「前」は `/recent` の窓が判定の分母 (phase25 の接続のエラーは試行 1,000 本が下限) になるのに、
+/// `collect-deployed.sh` が `offset=` で続きを追って繋ぐ形 (T.22.5) は、`--from-server` で取り寄せた
+/// 1 枚にはできない (取り寄せたときにはもうプロセスが居ない)。全部入れても 2,000 件 × 1 件 500 B
+/// 前後 = 1 MB 前後で、合計が 4 MiB を越えるときは**切った `recent` に戻してから**いつもの順に落とす
+/// (全部入れたせいで `recent` ごと `null` にはしない)。
+pub fn snapshot_with(ep: &Endpoint<'_>, full_recent: bool) -> (u16, &'static str, String) {
     use crate::history::History;
     use crate::metrics::HostSort;
 
@@ -756,7 +808,14 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ("dns", dns(Some("sort=age&limit=4096")).2),
         ("errors", errors(ep, Some("n=500")).2),
         ("connections", connections(ep).2),
-        ("recent", recent(ep, Some("n=2000")).2),
+        (
+            "recent",
+            if full_recent {
+                recent_within(ep, Some("n=2000"), MAX_SNAPSHOT).2
+            } else {
+                recent(ep, Some("n=2000")).2
+            },
+        ),
         ("hosts", hosts(ep, Some("limit=1000")).2),
         // ホスト別の時系列 (上位 16 × 5 分 × 24 時間。T14.22)
         ("hosts_series", host_series(ep, Some("top=16")).2),
@@ -769,6 +828,9 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
         ("log", log(ep, Some("n=1000")).2),
     ];
     let names: Vec<&'static str> = part.iter().map(|(k, _)| *k).collect();
+    if full_recent {
+        fit_full_recent(&mut part, MAX_SNAPSHOT, || recent(ep, Some("n=2000")).2);
+    }
     let dropped = drop_to_fit(&mut part, MAX_SNAPSHOT);
     let total: usize = overhead_of(&part) + part.iter().map(|(_, v)| v.len()).sum::<usize>();
 
@@ -815,6 +877,26 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
     }
     out.push('}');
     (200, "application/json", out)
+}
+
+/// 全部入れた `recent` で合計が `limit` を越えるなら、`cut` (いつもの 256 KiB で切った `recent`) に
+/// 置き換える (T.28.20)。置き換えたかを返す。
+fn fit_full_recent(
+    part: &mut [(&'static str, String)],
+    limit: usize,
+    cut: impl FnOnce() -> String,
+) -> bool {
+    let total: usize = overhead_of(part) + part.iter().map(|(_, v)| v.len()).sum::<usize>();
+    if total <= limit {
+        return false;
+    }
+    match part.iter_mut().find(|(k, _)| *k == "recent") {
+        Some((_, body)) => {
+            *body = cut();
+            true
+        }
+        None => false,
+    }
 }
 
 /// 頭 (`taken_at` など) と鍵の飾りぶんの余白。
@@ -1238,6 +1320,92 @@ mod tests {
             MAX_BODY
         );
         crate::events::clear();
+    }
+
+    /// 停止の雪像 (`snapshot_with(.., true)`) は `recent` の 2,000 件を切らずに全部入れ、
+    /// いつもの `/snapshot` は今までどおり 256 KiB で切る (T.28.20)。行は最悪の値で埋める。
+    #[test]
+    fn the_shutdown_snapshot_keeps_every_recent_row() {
+        use crate::recent::{CloseReason, ConnTally, MAX_RECENT, SIDES, STAGES};
+
+        let m = Metrics::new();
+        let now = Instant::now();
+        let long_host = format!("{}.example.net:65535", "sub.".repeat(30));
+        for i in 0..(MAX_RECENT as u64) {
+            let slot = m
+                .conns
+                .register(i, "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6", now)
+                .expect("登録できる");
+            slot.begin_tunnel(&long_host);
+            slot.finish(
+                CloseReason::Error(crate::metrics::ErrCause::Unreachable),
+                ConnTally {
+                    up: u64::MAX,
+                    down: u64::MAX,
+                    status: 599,
+                    stage_ms: [u64::MAX; STAGES],
+                    rtt_us: [u32::MAX; SIDES],
+                    retrans: [u32::MAX; SIDES],
+                    syn_retrans: u8::MAX,
+                    stall_ms: [u32::MAX; SIDES],
+                },
+                u32::MAX,
+            );
+            m.record_closed(i);
+        }
+        let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
+        let concurrency = || crate::metrics::Concurrency {
+            max_conns: 0,
+            max_threads: 0,
+            live_threads: 0,
+            idle_threads: 0,
+            queued_jobs: 0,
+        };
+        let ep = Endpoint {
+            metrics: &m,
+            cache: &cache,
+            conn_id: 1,
+            port: 8080,
+            host: None,
+            client: None,
+            pac_direct: &[],
+            lite: false,
+            readonly: false,
+            version: "test",
+            concurrency: &concurrency,
+        };
+        let part_of = |body: &str| -> String {
+            let at = body
+                .find(",\"recent\":{\"schema\":")
+                .expect("recent の部が無い");
+            body[at..].to_string()
+        };
+        let usual = snapshot(&ep).2;
+        let full = snapshot_with(&ep, true).2;
+        let t = Instant::now();
+        let _ = snapshot_with(&ep, true);
+        println!(
+            "T.28.20 recent 2,000 件 (最悪の値): いつもの雪像 {} B / 停止の雪像 {} B、停止の 1 枚を組むのに {:.1} ms (debug ビルド)",
+            usual.len(),
+            full.len(),
+            t.elapsed().as_secs_f64() * 1000.0
+        );
+        assert!(part_of(&usual).contains("\"truncated\":true"));
+        let p = part_of(&full);
+        assert!(p.contains("\"truncated\":false"), "{}", &p[..300]);
+        assert!(p.contains(&format!("\"shown\":{}", MAX_RECENT)));
+        assert!(full.len() <= MAX_SNAPSHOT, "{} B", full.len());
+        assert!(
+            full.contains("\"dropped\":[]"),
+            "全部入れても何も落とさない"
+        );
+
+        // 全部入れて 4 MiB を越えるなら、切った `recent` に戻す (部ごと `null` にはしない)
+        let mut part = vec![("status", "s".repeat(100)), ("recent", "r".repeat(1000))];
+        assert!(!fit_full_recent(&mut part, 4096, || "cut".to_string()));
+        assert_eq!(part[1].1.len(), 1000, "収まるなら全部のまま");
+        assert!(fit_full_recent(&mut part, 1000, || "cut".to_string()));
+        assert_eq!(part[1], ("recent", "cut".to_string()));
     }
 
     /// 4 MiB を越えたら `/recent` → `/log` → `/history?res=5` の順に落とすこと (T14.4)。

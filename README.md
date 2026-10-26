@@ -173,6 +173,9 @@ scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまと
 手元に無い日付だけ**を取り寄せて `DIR/<日付>T000000Z-snapshot.json` に置きます
 (中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` も
 `weekly-report.py` もそのまま読めます)。
+**起動と停止の 1 枚** (T.28.20。下記 `/snapshots` の `moments`) も手元に無いものだけ取り寄せて
+`DIR/<UTC 時刻>-shutdown-snapshot.json` / `-start-snapshot.json` に置き、**最後の停止とその後の最初の起動**を
+`BEFORE=… ZERO=…` の形で 1 行出します (締めの「前」と「0 時間」を撮り忘れても、再デプロイのあとにこれで埋まります)。
 
 要点 (`snapshot-summary.py`) の**頭には「無言の再起動」の 1 行**が付きます (T.23.2): `/events` の `start` の直前が `shutdown` でない起動 (落とされたか、止め方が違う) を時刻・前の起動の長さ・版つきで数え、0 件なら「0 件 (直前が `shutdown` の起動 N 件)」、`/events` の部が無い雪像では「判定できず」と書きます
 (2026-10-20 の tokyo は 2026-10-17 22:14:52Z の 1 回で、前の起動は 19.2 時間。10-15 の雪像は 0 件)。同じ判定は `--criteria phase23` の判定表にも 1 行で入ります (行を足すのは T.23.1。判定の関数は要点と同じ `scripts/snapshot_criteria.py` の `silent_restarts()`)。
@@ -644,7 +647,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 - **日次の snapshot**: **1 日 1 回 (UTC 0 時)**、その時点の `/snapshot` をまるごと
   `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` に残す (既定 30 日ぶん、31 個目で最古を消す。
   1 ファイル 4 MiB まで)。**外から取りに行かなくても、見に行ったときに 30 日ぶんの個票がある**。
-  読む口は `/snapshots` (一覧) と `/snapshots/<date>` (下記 `PROXY_SNAPSHOT_DAYS`)
+  **停止シグナルで状態ファイルを書く前と起動から 60 秒にも 1 枚ずつ** (`<UTC 時刻>-shutdown.json` / `-start.json`。
+  締めの「前」と「0 時間」。T.28.20) 残す。
+  読む口は `/snapshots` (一覧) と `/snapshots/<date>` / `/snapshots/<名前>` (下記 `PROXY_SNAPSHOT_DAYS`)
 - **個票の永続化**: 上の状態ファイルの隣にもう 1 つ、**固定サイズ (4 MiB) の個票のファイル**
   (`$HOME/.rust-http-proxy.recent`) を置き、`/recent` (閉じた接続) ・`/errors` ・`/bursts` (山の写真) ・
   `/events` (出来事) ・`/log` を再起動をまたいで残す。書くのは**履歴スレッドの 5 秒の周期だけ** (接続を受ける経路は今までどおりメモリのリングに
@@ -1266,7 +1271,18 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     名前は**終わった日** (前日) の日付です。`PROXY_SNAPSHOT_DAYS` で日数を変えられ、`0` で止まります。
     `PROXY_STATS_PERSIST=off` (と `--lite`) では 1 ファイルも書きません (`dir` が `null`)。
     ディスクの空きが予算 (`PROXY_DISK_KEEP_FREE_MB` のマージン) を割り込むときは**書かずに**
-    `/events` に 1 件 (`state_file`) 残します
+    `/events` に 1 件 (`state_file`) 残します。
+    **起動と停止の 1 枚** (T.28.20) は同じ置き場所の `<YYYY-MM-DDTHHMMSSZ>-shutdown.json` (**停止シグナルで状態ファイルを書く前**) と
+    `-start.json` (**起動から 60 秒**、`memory.baseline` を書くのと同じ時) で、`/snapshots` の **`moments[]`**
+    (`name` / `kind` = `start`・`shutdown` / `bytes` / `t` (撮った時刻)、古い順。数は `moments_count`・`moments_bytes`) に並び、
+    `/snapshots/<name>` で**そのまま**返ります (日次の `files[]` とは別の並びなので、日付で取りに行く古い道具は今までどおり)。
+    締めの判定の「前」と「0 時間」(`collect-deployed.sh` の `BEFORE` / `ZERO`) をプロキシ自身が残すためのもので、
+    `collect-deployed.sh --from-server` が取り寄せます。**停止の 1 枚だけは `recent` を部の 256 KiB で切らずに 2,000 件
+    全部入れます** (判定の接続のエラーの行は `/recent` の試行が分母で 1,000 本が下限なのに、取り寄せた 1 枚は `offset=` で
+    続きを追えず、個票のファイルも 1 周期 64 KiB までしか書かないので再起動で残らない分があるため。全部入れても 2,000 件で
+    1 MB 前後、合計が 4 MiB を越えるときは切った `recent` に戻します)。組んで書くのは停止の後始末の頭で、手元の 2,000 件で
+    数 ms (後始末の上限は 3 秒)。残すのは種類ごとに `PROXY_SNAPSHOT_DAYS` 日以内かつ新しい方から
+    `PROXY_SNAPSHOT_DAYS` 枚まで (再起動を繰り返しても置き場所を埋めない)
   - **RSS の内訳** (`/status` の `memory`。T.14.21): 256 MiB のコンテナで「RSS が何でできているか」
     (ヒープの断片・スレッドのスタック・キャッシュ・記録のリング) を 1 枚から読むためのものです。
     **読むのは `/status` に来たときだけ**で、要求の経路には 1 命令も増えません
@@ -2060,6 +2076,8 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   履歴スレッドが **UTC の日付をまたいだ瞬間**にその時点の `/snapshot` をまるごと `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` (名前は**終わった日**) に書き、**31 個目を書いたら最古を 1 つ消します**。
   1 ファイルは `/snapshot` と同じ **4 MiB** まで (30 日で最大 120 MiB、静かなプロキシなら 1 日 20 KB 前後)。
   `0` で書きません。読む口は `/snapshots` と `/snapshots/<date>`。
+  **起動と停止の 1 枚** (`<UTC 時刻>-start.json` / `-shutdown.json`。T.28.20) も同じ日数で、種類ごとに
+  `PROXY_SNAPSHOT_DAYS` 日より古いものと新しい方から `PROXY_SNAPSHOT_DAYS` 枚を越えたものを消します (`0` で書きません)。
   `PROXY_STATS_PERSIST=off` と `--lite` では履歴スレッドごと無いので書きません。
   ディスクの空きが `PROXY_DISK_KEEP_FREE_MB` のマージンを割り込むときは書かずに `/events` に 1 件 (`state_file`) 残します。
   **再起動で反映**
@@ -2815,6 +2833,7 @@ curl "http://127.0.0.1:8080/slo?days=7"                 # SLO の達成率 (日�
 curl -s http://127.0.0.1:8080/snapshot > snap.json      # 上の全部を 1 要求で (4 MiB まで)
 curl "http://127.0.0.1:8080/snapshots"                  # 日次で残した snapshot の一覧 (30 日ぶん)
 curl -s "http://127.0.0.1:8080/snapshots/2026-09-15" > day.json   # その日ぶんをそのまま
+curl -s "http://127.0.0.1:8080/snapshots/2026-10-25T203134Z-shutdown" > before.json   # 停止の 1 枚 (`moments[]` の `name`)
 # ブラウザで開くなら http://127.0.0.1:8080/dashboard (「いま」を見るコントロールパネル)
 # ブラウザで読むなら http://127.0.0.1:8080/inspect (上の個票を時間軸で描く「調査」ページ)
 # 端末から測るなら http://127.0.0.1:8080/probe.html (往復とプロキシ経由の取得をブラウザで測る)
@@ -3279,6 +3298,8 @@ release のバイナリは ubuntu-22.04 (glibc 2.35) でビルドしているの
 ### 1. 置く前 (`--check`)
 
 **止める直前に `scripts/collect-deployed.sh` で雪像を 1 枚**撮っておきます (次の版の判定の「前」になります。T.17.19)。
+撮り忘れても、**プロキシ自身が停止シグナルで `<UTC 時刻>-shutdown.json` を 1 枚残します** (T.28.20。`recent` は全部入り)。
+再デプロイのあとに `scripts/collect-deployed.sh --from-server <host>:<port>` で取り寄せると、`BEFORE=…` の 1 行が出ます。
 
 ```bash
 # 起動せずに「この環境で何が読めるか」と「効いている設定」を印字して終わる
@@ -3298,6 +3319,8 @@ CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・IPv6 (`ipv6_route`)・
 ### 2. 起動直後 (0〜5 分)
 
 起動から **60 秒たってから** `scripts/collect-deployed.sh` で 1 枚 (0 時間の雪像) 撮り、`/status` の `version` と起動時刻 (UTC)、`boot.id` を `TASKS.md` のそのタスクの `Tn.99` の前提に書きます (T.17.19)。**すぐ撮ると `memory.baseline` が `null` のまま**なので、heap の判定が「判定できず」になります (T.24.4。baseline は起動 60 秒で 1 回だけ書かれる)。
+同じ 60 秒に**プロキシ自身も `<UTC 時刻>-start.json` を 1 枚残す**ので (T.28.20)、撮り忘れたら `--from-server` で取り寄せて `ZERO` に渡せます
+(`BEFORE=… ZERO=…` の 1 行が出ます)。
 
 ```bash
 # 起動ログの 2 行 (待ち受けと統計ファイル)

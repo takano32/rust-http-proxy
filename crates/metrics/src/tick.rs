@@ -76,6 +76,12 @@ pub fn spawn_every(
         crate::anomaly::check(metrics, &sample);
         // 同じ標本を SLO の 4 つの閾に当て、時間ごとの達成率に 1 本足す (`/slo`。T14.50)
         crate::slo::observe(&sample);
+        // 起動から 60 秒 (下の heap の基準と同じ待ち時間) で `/snapshot` を 1 枚残す (T.28.20。
+        // 締めの「0 時間」)。書かない設定と 2 回目からは原子の読み 1〜2 回で戻る
+        crate::snapshots::take_start_if_due(
+            cache,
+            metrics.start_time.elapsed().as_secs() >= crate::persist::baseline_after_secs(),
+        );
         if let Some(st) = &store {
             st.write_samples(&pushed);
             st.write_recent(metrics);
