@@ -6,7 +6,7 @@
 //! 再試行 (1 本 約 1.3 秒) が接続の 17% を占めた週は、p90 も p95 も秒になって速さの
 //! 物差しにならなかった (TODO.md T18.99)。
 //!
-//! 単体テスト (`crates/metrics-core/src/metrics.rs`) は `record()` の入り口で同じことを
+//! 単体テスト (`crates/metrics-core/src/metrics/latency_tests.rs`) は `record()` の入り口で同じことを
 //! 見ている。ここで見るのは**実際に通した接続が口にどう出るか**: 繋がらない宛先への
 //! CONNECT を 3 本と、繋がる CONNECT を 1 本送ったあとで、
 //!
