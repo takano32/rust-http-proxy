@@ -1254,6 +1254,16 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `breaches` は**連続する外れを 1 行に畳んだもの**で、1 行 = 開始・終了 (`from` / `to` と、人が読む `from_hour` / `to_hour`)・
     続いた時間数・その間の `judged` / `met` と、**どの閾を外したか・その最悪の値** (`breached[]` の `name` / `samples` / `worst` / `threshold`)。
     例: 「99.2% の時間で満たした。外れたのは 09-11 17〜23 時 (`connect_p50_ms` 5,040 本、最悪 46.9 ms、閾 10 ms)」。
+    **T.28.45 で 3 つの読み方を変えました** (綴りと `PROXY_SLO` の鍵は今までのまま。`/slo` の `basis` に読み方が出ます。
+    T.28.45 より前の `/slo` には `basis` がありません):
+    `connect_p50_ms` / `connect_p95_ms` は**確立そのものではなく、CONNECT 1 本ごとの「確立 − オリジン側のカーネルの RTT」**
+    (`/history` の `excess_*` の窓) の p50 / p95 で、既定は **5 / 50 ms** (前は確立の 10 / 100 ms。確立の p50 は 1 RTT = 距離で
+    決まるので、tokyo (18 ms) は距離だけで外れていました)。`error_rate` は**名前解決に成功した試みあたり**
+    (`(エラー − dns) ÷ (確立 + 転送 + エラー − dns)`。メール宛の総当たりの NXDOMAIN を数えません)、
+    `dns_miss_per_connect` は**名前解決に失敗した試みのミスを除いた**ミス ÷ 確立です。名前解決の失敗しか無い 5 秒は「判定なし」です。
+    窓が空の 5 秒 (RTT が読めない Linux 以外の環境) は確立の 2 つを外しません。
+    10-25 の tokyo の雪像の `history["5"]` (1 時間) を新しい判定で再生すると達成率は **0.061 → 0.937** でした
+    (古い標本には窓が無いので `/recent` の個票から作り直した値です)
     **使い道 (T.14.99)**: タスクの完了の定義は「平常時の CONNECT 確立 p50 6 ms 以下」のような閾値ですが、
     `PROXY_SLO=connect_p50_ms=6` を入れておけば、`/slo` の `ratio` がそのまま
     **「その閾を満たしていた時間の割合」**になり、判定が「満たした / 満たさない」ではなく
@@ -1743,7 +1753,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_RECORDS` | `on` | 個票に何を残すかの旗 |
 | `PROXY_STATS_PERSIST` | `on` | 統計・履歴・個票をファイルに残して読み直すか |
 | `PROXY_SNAPSHOT_DAYS` | `30` | 日次の snapshot を残す日数 |
-| `PROXY_SLO` | `connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2` | SLO の 4 つの閾 |
+| `PROXY_SLO` | `connect_p50_ms=5,connect_p95_ms=50,error_rate=0.005,dns_miss_per_connect=0.2` | SLO の 4 つの閾 |
 | `PROXY_PROFILE` | なし | `lite` で最速の素通しプロファイル |
 | `PROXY_PROFILE_SAMPLE_MS` | `1000` | `/profile` のスレッドの標本を取る間隔 (ms) |
 | `PROXY_SELF_BENCH` | `off` | 起動直後に loopback だけで 3 秒の自己ベンチを回す |
@@ -2142,9 +2152,10 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   `PROXY_STATS_PERSIST=off` と `--lite` では履歴スレッドごと無いので書きません。
   ディスクの空きが `PROXY_DISK_KEEP_FREE_MB` のマージンを割り込むときは書かずに `/events` に 1 件 (`state_file`) 残します。
   **再起動で反映**
-- **`PROXY_SLO`** (既定 `connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2`)
-  **SLO の 4 つの閾** (T.14.50)。履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、**4 つとも満たした標本の割合**を `/slo` で返します (`connect_p50_ms` / `connect_p95_ms` = その 5 秒に確立した CONNECT の p50 / p95 (ms)、`error_rate` = エラー ÷ 試み (確立 + 転送 + エラー)、`dns_miss_per_connect` = 名前解決のミス ÷ 確立。**満たす = 閾以下**)。
-  **確立もエラーも 1 本も無い 5 秒は「判定なし」**で分母に入れません (誰も使っていない夜中を「達成」と数えると、達成率が「動いていた割合」に化けるため)。
+- **`PROXY_SLO`** (既定 `connect_p50_ms=5,connect_p95_ms=50,error_rate=0.005,dns_miss_per_connect=0.2`)
+  **SLO の 4 つの閾** (T.14.50)。履歴スレッドが 5 秒の標本 1 本ごとにこの 4 つを判定し、**4 つとも満たした標本の割合**を `/slo` で返します (`connect_p50_ms` / `connect_p95_ms` = その 5 秒に閉じた CONNECT 1 本ごとの **「確立 − オリジン側のカーネルの RTT」** の p50 / p95 (ms)、`error_rate` = **名前解決に成功した試みあたり**のエラー ((エラー − `dns`) ÷ (確立 + 転送 + エラー − `dns`))、`dns_miss_per_connect` = 名前解決のミス (**失敗した試みのぶんを除く**) ÷ 確立。**満たす = 閾以下**)。
+  **T.28.45 で 3 つの読み方と確立の既定 (10 / 100 → 5 / 50 ms) を変えました** (利用者の決定。鍵の綴りは今までのままなので、前に書いた `PROXY_SLO` はそのまま読めますが、確立の 2 つの値は「確立 − RTT」の閾として効きます)。
+  **確立も (名前が引けたうえでの) エラーも 1 本も無い 5 秒は「判定なし」**で分母に入れません (名前解決の失敗だけの 5 秒もここです。T.28.45) (誰も使っていない夜中を「達成」と数えると、達成率が「動いていた割合」に化けるため)。
   **「確立」は繋がった CONNECT の本数**です (T.20.4。`0.18.0` までは失敗した CONNECT も確立に数えていて、失敗 1 件が「確立」と「エラー」の両方に居ました)。試み = 確立 + 転送 + エラー は失敗 1・成功 1 で 2 になり、失敗の「失敗するまでの時間」は `connect_p50_ms` / `connect_p95_ms` に入りません。**繋がらなかった CONNECT しか無い 5 秒 (確立 0 本・エラー 1 件以上) は、`error_rate` だけを外した 5 秒として数えます** (速さとミスの 3 つは 0 として外しません。`0.18.0` までは `error_rate` と `connect_p95_ms` の 2 つを外した 5 秒でした)。宛先が全滅した時間帯も達成率に出ます。
   書いた閾だけが効き、書いていない閾・知らない綴り・数として読めない値・負の値は既定のままです (例: `PROXY_SLO=connect_p50_ms=6` だけ書けば p50 の閾だけ 6 ms になる)。
   効いている値は `/config` の `PROXY_SLO` と `/slo` の `thresholds`。

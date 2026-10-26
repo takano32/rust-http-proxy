@@ -33,17 +33,22 @@ fn burst_day(t0: u64) -> Vec<Sample> {
                 t,
                 ..Sample::default()
             };
+            // 確立の判定は「確立 − RTT」の窓 (T.28.45) なので、同じ値を両方に入れる
+            let mut put = |ms: u64| {
+                s.connect.observe(ms);
+                s.excess.observe(ms);
+            };
             if (17..24).contains(&(i / 720)) {
                 for _ in 0..4 {
-                    s.connect.observe(30);
+                    put(30);
                 }
                 for _ in 0..3 {
-                    s.connect.observe(300);
+                    put(300);
                 }
                 s.errors = 1;
             } else {
                 for _ in 0..2 {
-                    s.connect.observe(3);
+                    put(3);
                 }
             }
             s
@@ -83,13 +88,17 @@ fn test_integration_slo_reports_the_share_of_time_the_thresholds_were_met() {
 
     // **閾は `PROXY_SLO` の既定** (`crates/config` の `DEFAULT_SLO` と同じ値であること
     // — 層が違うので数値を 2 か所に持っている。食い違ったらここで落ちる)
-    let defaults = "\"thresholds\":{\"connect_p50_ms\":10,\"connect_p95_ms\":100,\
-                    \"error_rate\":0.005,\"dns_miss_per_connect\":0.2}";
+    // T.28.45 で既定を 5 / 50 ms (確立 − RTT) にし、3 つの読み方を `basis` に出した
+    let defaults = "\"thresholds\":{\"connect_p50_ms\":5,\"connect_p95_ms\":50,\
+                    \"error_rate\":0.005,\"dns_miss_per_connect\":0.2},\
+                    \"basis\":{\"connect\":\"establish_minus_rtt\",\
+                    \"error_rate\":\"resolved_attempts\",\
+                    \"dns_miss_per_connect\":\"excluding_failed_lookups\"}";
     assert!(empty.contains(defaults), "{}", empty);
     let cfg = endpoint_json(port, "/config");
     assert!(
         cfg.contains(
-            "\"PROXY_SLO\":{\"value\":\"connect_p50_ms=10,connect_p95_ms=100,\
+            "\"PROXY_SLO\":{\"value\":\"connect_p50_ms=5,connect_p95_ms=50,\
              error_rate=0.005,dns_miss_per_connect=0.2\",\"source\":\"default\"}"
         ),
         "{}",

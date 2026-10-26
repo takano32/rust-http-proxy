@@ -16,14 +16,27 @@
 //!
 //! | ビット | 名前 | 標本から取る値 | 満たす |
 //! |---|---|---|---|
-//! | 0 | `connect_p50_ms` | `connect` の窓の p50 | 閾以下 |
-//! | 1 | `connect_p95_ms` | `connect` の窓の p95 | 閾以下 |
-//! | 2 | `error_rate` | `errors ÷ (確立 + 転送 + errors)` | 閾以下 |
-//! | 3 | `dns_miss_per_connect` | `dns_misses ÷ 確立` | 閾以下 |
+//! | 0 | `connect_p50_ms` | `excess` (確立 − カーネルの RTT) の窓の p50 | 閾以下 |
+//! | 1 | `connect_p95_ms` | `excess` の窓の p95 | 閾以下 |
+//! | 2 | `error_rate` | `(errors − dns) ÷ (確立 + 転送 + errors − dns)` | 閾以下 |
+//! | 3 | `dns_miss_per_connect` | `(dns_misses − dns_fail_misses) ÷ 確立` | 閾以下 |
 //!
-//! **達成 = 4 つとも満たす** (ビットが 1 つも立たない)。**確立が 1 本も無い標本は
-//! 「判定なし」**で分母に入れない (誰も使っていない夜中を「達成」と数えると、
-//! 達成率が「動いていた割合」に化ける)。
+//! **達成 = 4 つとも満たす** (ビットが 1 つも立たない)。**確立も (名前が引けたうえでの)
+//! エラーも 1 本も無い標本は「判定なし」**で分母に入れない (誰も使っていない夜中を
+//! 「達成」と数えると、達成率が「動いていた割合」に化ける)。
+//!
+//! **T.28.45 で 3 つの読み方を変えた** (利用者の決定 9。T.28.16 段 1 の模型。綴りと
+//! `PROXY_SLO` の鍵はそのまま、`/slo` の `basis` に読み方が出る):
+//! - 確立の 2 つは `connect` (確立そのもの) ではなく**接続ごとの「確立 − RTT」**。
+//!   確立の p50 は 1 RTT = 距離で決まる (tokyo 18 ms、nagoya 8 ms) ので、固定の閾では
+//!   遠いデプロイ先ほど外れた。窓が空の標本 (T.28.45 より前のレコード・RTT が読めない
+//!   Linux 以外) では 2 つとも 0 = 外さない
+//! - `error_rate` は**名前解決に成功した試みあたり** (E1。メール宛の総当たりの NXDOMAIN は
+//!   客が無い名前を頼んだもの)。名前解決の失敗だけの標本は「判定なし」
+//! - `dns_miss_per_connect` は**名前解決に失敗した試みのミスを除く**
+//!
+//! 10-25 の tokyo の雪像の `history["5"]` (1 時間) を新しい判定で再生すると 0.061 → 0.937
+//! (標本に窓が無いので `/recent` の個票から窓を作り直した。T.28.45 の結果)。
 //!
 //! **持ち方**: 判定した 4 ビットは [`Sample`] にも `.rrd` にも書かない
 //! (判定は [`Sample`] から何度でも作り直せる)。積むのは**時間ごとの集計**
@@ -73,20 +86,31 @@ const DAY: u64 = 86_400;
 /// (層が下なのであちらからこの型は見えない。食い違ったら `tests/slo_test.rs` が落ちる)。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thresholds {
-    /// CONNECT 確立の p50 (ms)
+    /// CONNECT 1 本ごとの「確立 − カーネルの RTT」の p50 (ms。T.28.45 から。綴りは今までのまま)
     pub connect_p50_ms: f64,
-    /// CONNECT 確立の p95 (ms)
+    /// 同じ窓の p95 (ms)
     pub connect_p95_ms: f64,
-    /// エラー ÷ 試み (確立 + 転送 + エラー)
+    /// 名前解決に成功した試みあたりのエラー (`(errors − dns) ÷ (確立 + 転送 + errors − dns)`。T.28.45)
     pub error_rate: f64,
-    /// 名前解決のミス ÷ 確立
+    /// 名前解決のミス (失敗した試みのぶんを除く。T.28.45) ÷ 確立
     pub dns_miss_per_connect: f64,
 }
 
-/// 既定の閾 (`PROXY_SLO=connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2`)。
+/// `/slo` の `basis` (T.28.45)。**閾の綴りは変えずに読み方を変えた**ので、読む側
+/// (雪像を並べる道具) が前後を取り違えないように、何を判定したかを隣に出す
+/// (T.28.45 より前の `/slo` にはこの鍵が無い = 確立そのもの・全試み・全ミス)。
+pub const BASIS_JSON: &str = "{\"connect\":\"establish_minus_rtt\",\
+                              \"error_rate\":\"resolved_attempts\",\
+                              \"dns_miss_per_connect\":\"excluding_failed_lookups\"}";
+
+/// 既定の閾 (`PROXY_SLO=connect_p50_ms=5,connect_p95_ms=50,error_rate=0.005,dns_miss_per_connect=0.2`)。
+///
+/// 確立の 2 つは T.28.45 から **「確立 − カーネルの RTT」** の p50 / p95 で、既定は
+/// T.28.16 段 1 の模型の値 (5 / 50 ms。前は確立そのものの 10 / 100 ms で、tokyo の
+/// 1 RTT 18 ms では距離だけで外れた)。
 pub const DEFAULT: Thresholds = Thresholds {
-    connect_p50_ms: 10.0,
-    connect_p95_ms: 100.0,
+    connect_p50_ms: 5.0,
+    connect_p95_ms: 50.0,
     error_rate: 0.005,
     dns_miss_per_connect: 0.2,
 };
@@ -144,28 +168,37 @@ impl Verdict {
 /// 標本 1 本を 4 つの閾に当てる (**時計もリングも触らない**ので試験しやすい)。
 pub fn judge(th: &Thresholds, s: &Sample) -> Verdict {
     let connects = s.connect.count;
-    if connects == 0 && s.errors == 0 {
-        // 確立もエラーも 1 本も無い標本は「判定なし」。分位点が 0 になるだけでなく、
-        // 「誰も使っていない時間」を達成として数えると達成率の意味が変わる
+    // 名前解決に失敗した試み (T.28.45 の E1)。メール宛の総当たりの NXDOMAIN は
+    // 「客が無い名前を頼んだ」もので、プロキシの速さとも失敗とも関係が無い
+    let dns_failed = s.errors_by_cause[crate::metrics::ErrCause::Dns as usize].min(s.errors);
+    let resolved_errors = s.errors - dns_failed;
+    if connects == 0 && resolved_errors == 0 {
+        // 確立も (名前が引けたうえでの) エラーも 1 本も無い標本は「判定なし」。分位点が
+        // 0 になるだけでなく、「誰も使っていない時間」を達成として数えると達成率の意味が
+        // 変わる。**名前解決の失敗だけの標本もここ** (T.28.45。E1 では分母が 0 になる)
         return Verdict::default();
     }
     // **エラーだけの標本も判定する** (T20.4)。失敗した 1 件は確立の窓に入らなくなったので、
     // 確立 0 本を「判定なし」のままにすると、繋がらない CONNECT だけの時間 (宛先が全滅した
     // 時間帯も) が達成率から消える。確立が無いときは速さとミスの 3 つは 0 のまま
     // (外したことにしない) で、エラー率だけが効く
-    let attempts = connects + s.forward.count + s.errors;
+    let attempts = (connects + s.forward.count + s.errors) - dns_failed;
+    // 名前解決のミスは失敗した試みのぶんを除く (T.28.45)
+    let misses = s.dns_misses.saturating_sub(s.dns_fail_misses);
     let values = [
-        s.connect.quantile_ms(0.5),
-        s.connect.quantile_ms(0.95),
+        // 確立の 2 つは「確立 − カーネルの RTT」の窓 (T.28.45)。**窓が空なら 0** (= 外さない):
+        // T.28.45 より前の標本と、RTT が 1 本も読めなかった標本 (Linux 以外) はここ
+        s.excess.quantile_ms(0.5),
+        s.excess.quantile_ms(0.95),
         if attempts == 0 {
             0.0
         } else {
-            s.errors as f64 / attempts as f64
+            resolved_errors as f64 / attempts as f64
         },
         if connects == 0 {
             0.0
         } else {
-            s.dns_misses as f64 / connects as f64
+            misses as f64 / connects as f64
         },
     ];
     let limits = th.limits();
@@ -374,13 +407,14 @@ impl Report {
         let _ = write!(
             out,
             "\"now\":{},\"days\":{},\"from\":{},\"to\":{},\"sample_secs\":{},\
-             \"thresholds\":{},\"names\":[",
+             \"thresholds\":{},\"basis\":{},\"names\":[",
             self.now,
             self.days,
             self.from,
             self.to,
             crate::history::INTERVAL.as_secs(),
             self.thresholds.to_json(),
+            BASIS_JSON,
         );
         for (i, n) in NAMES.iter().enumerate() {
             if i > 0 {
@@ -571,7 +605,8 @@ pub fn reset() {
 mod tests {
     use super::*;
 
-    /// 5 秒の標本 1 本。`connects` 本の確立を `ms` で置く。
+    /// 5 秒の標本 1 本。`connects` 本の確立を `ms` で置く (「確立 − RTT」の窓にも同じ `ms`。
+    /// 確立の 2 つの閾はそちらで判定する。T.28.45)。
     fn sample(t: u64, connects: u64, ms: u64) -> Sample {
         let mut s = Sample {
             t,
@@ -579,8 +614,92 @@ mod tests {
         };
         for _ in 0..connects {
             s.connect.observe(ms);
+            s.excess.observe(ms);
         }
         s
+    }
+
+    /// **T.28.45**: 確立の 2 つの閾は「確立 − RTT」の窓で判定する (距離で外れない)。
+    /// 確立 40 ms (tokyo の 1 RTT 18 ms の 2 往復ぶん) でも、RTT を引いた残りが 2 ms なら満たす。
+    #[test]
+    fn the_connect_thresholds_judge_the_excess_over_rtt() {
+        let th = DEFAULT;
+        assert_eq!((th.connect_p50_ms, th.connect_p95_ms), (5.0, 50.0));
+        let mut far = Sample::default();
+        for _ in 0..10 {
+            far.connect.observe(40);
+            far.excess.observe(2);
+        }
+        let v = judge(&th, &far);
+        assert!(v.met(), "{:?}", v);
+        // 段 (1, 2] の中を補間した値 (確立の 40 ms ではない)
+        assert!(v.values[0] <= 2.0 && v.values[1] <= 2.0, "{:?}", v);
+        // RTT を引いても遅い (p50 が (5, 10] の段) なら外す
+        let mut slow = far;
+        slow.excess = crate::history::Window::default();
+        for _ in 0..10 {
+            slow.excess.observe(8);
+        }
+        assert_eq!(judge(&th, &slow).bits, 0b0001, "{:?}", judge(&th, &slow));
+        // 残りが 70 ms (p95 の閾 50 を越える) なら 2 つとも外す
+        slow.excess = crate::history::Window::default();
+        slow.excess.observe(70);
+        assert_eq!(judge(&th, &slow).bits, 0b0011, "{:?}", judge(&th, &slow));
+        // 窓が空 (T.28.45 より前の標本・RTT が読めなかった本だけ) は確立の 2 つを外さない
+        let mut old = Sample::default();
+        old.connect.observe(300);
+        let v = judge(&th, &old);
+        assert!(v.judged && v.met(), "{:?}", v);
+    }
+
+    /// **T.28.45 (E1)**: `error_rate` は名前解決に成功した試みあたり
+    /// (`(errors − dns) ÷ (試み − dns)`)。名前解決の失敗だけの標本は「判定なし」。
+    #[test]
+    fn the_error_rate_counts_only_attempts_whose_name_resolved() {
+        let th = DEFAULT;
+        // 確立 100 本 + メール宛の NXDOMAIN 3 件 = 0 / 100 → 満たす (前は 3 / 103 で外した)
+        let mut s = sample(0, 100, 3);
+        s.errors = 3;
+        s.errors_by_cause[crate::metrics::ErrCause::Dns as usize] = 3;
+        let v = judge(&th, &s);
+        assert!(v.met(), "{:?}", v);
+        assert_eq!(v.values[2], 0.0);
+        // 引けたあとの拒否が 1 件増えると 1 / (100 + 4 − 3) = 1 / 101
+        s.errors = 4;
+        s.errors_by_cause[crate::metrics::ErrCause::Refused as usize] = 1;
+        let v = judge(&th, &s);
+        assert_eq!(v.bits, 0b0100, "{:?}", v);
+        assert!((v.values[2] - 1.0 / 101.0).abs() < 1e-12, "{:?}", v);
+        // 名前解決の失敗だけ (確立 0 本) の標本は判定しない (分母に入れない)
+        let mut only = Sample {
+            errors: 5,
+            dns_misses: 5,
+            dns_fail_misses: 5,
+            ..Sample::default()
+        };
+        only.errors_by_cause[crate::metrics::ErrCause::Dns as usize] = 5;
+        assert!(!judge(&th, &only).judged, "{:?}", judge(&th, &only));
+        let mut tr = Tracker::new();
+        tr.observe(&th, &only);
+        assert_eq!(tr.hours().count(), 0);
+    }
+
+    /// **T.28.45**: `dns_miss_per_connect` は名前解決に失敗した試みのミスを除く
+    /// (`(dns_misses − dns_fail_misses) ÷ 確立`)。
+    #[test]
+    fn the_miss_rate_leaves_out_the_misses_of_failed_lookups() {
+        let th = DEFAULT;
+        let mut s = sample(0, 10, 3);
+        s.dns_misses = 5;
+        s.dns_fail_misses = 3;
+        let v = judge(&th, &s);
+        assert!(v.met(), "閾ちょうど 2 / 10: {:?}", v);
+        assert!((v.values[3] - 0.2).abs() < 1e-12, "{:?}", v);
+        s.dns_fail_misses = 2;
+        assert_eq!(judge(&th, &s).bits, 0b1000, "3 / 10");
+        // 食い違った標本 (失敗のミスがミス全体より多い) でも負にならない
+        s.dns_fail_misses = 9;
+        assert_eq!(judge(&th, &s).values[3], 0.0);
     }
 
     /// T14.0 の 2026-09-11 のバーストを模した 1 日 (UTC)。
@@ -600,9 +719,11 @@ mod tests {
                     let mut s = sample(t, 0, 0);
                     for _ in 0..4 {
                         s.connect.observe(30);
+                        s.excess.observe(30);
                     }
                     for _ in 0..3 {
                         s.connect.observe(300);
+                        s.excess.observe(300);
                     }
                     s.errors = 1;
                     s
@@ -871,8 +992,10 @@ mod tests {
         assert!(json.len() <= MAX_BODY, "{} B", json.len());
         assert!(
             json.contains(
-                "\"thresholds\":{\"connect_p50_ms\":10,\"connect_p95_ms\":100,\
-                 \"error_rate\":0.005,\"dns_miss_per_connect\":0.2}"
+                "\"thresholds\":{\"connect_p50_ms\":5,\"connect_p95_ms\":50,\
+                 \"error_rate\":0.005,\"dns_miss_per_connect\":0.2},\"basis\":{\
+                 \"connect\":\"establish_minus_rtt\",\"error_rate\":\"resolved_attempts\",\
+                 \"dns_miss_per_connect\":\"excluding_failed_lookups\"},\"names\":["
             ),
             "{}",
             json
@@ -885,7 +1008,7 @@ mod tests {
         );
         assert!(
             json.contains(
-                "{\"name\":\"connect_p50_ms\",\"samples\":5040,\"worst\":46.875,\"threshold\":10}"
+                "{\"name\":\"connect_p50_ms\",\"samples\":5040,\"worst\":46.875,\"threshold\":5}"
             ),
             "{}",
             json

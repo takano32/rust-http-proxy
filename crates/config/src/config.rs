@@ -142,23 +142,23 @@ impl TcpKeepalive {
 /// **既定は [`DEFAULT_SLO`] = `proxy_metrics::slo::DEFAULT` と同じ値**)。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Slo {
-    /// CONNECT 確立の p50 (ms)
+    /// CONNECT 1 本ごとの「確立 − カーネルの RTT」の p50 (ms。T.28.45 から。鍵の綴りは今までのまま)
     pub connect_p50_ms: f64,
-    /// CONNECT 確立の p95 (ms)
+    /// 同じ窓の p95 (ms)
     pub connect_p95_ms: f64,
-    /// エラー ÷ 試み (確立 + 転送 + エラー)
+    /// 名前解決に成功した試みあたりのエラー (T.28.45)
     pub error_rate: f64,
-    /// 名前解決のミス ÷ 確立
+    /// 名前解決のミス (失敗した試みのぶんを除く。T.28.45) ÷ 確立
     pub dns_miss_per_connect: f64,
 }
 
-/// `PROXY_SLO` の既定 (`connect_p50_ms=10,connect_p95_ms=100,error_rate=0.005,dns_miss_per_connect=0.2`)。
+/// `PROXY_SLO` の既定 (`connect_p50_ms=5,connect_p95_ms=50,error_rate=0.005,dns_miss_per_connect=0.2`)。
 ///
-/// `proxy-metrics` の `slo::DEFAULT` と同じ値 (この層は計測クレートに依存しないので
-/// 数値で持つ。食い違ったら `tests/slo_test.rs` が落ちる)。
+/// `proxy-metrics` の `slo::DEFAULT` と同じ値 (この層は計測クレートに依存しないので数値で持つ。
+/// 食い違ったら `tests/slo_test.rs` が落ちる)。確立の 2 つは T.28.45 で 10 / 100 → 5 / 50。
 pub const DEFAULT_SLO: Slo = Slo {
-    connect_p50_ms: 10.0,
-    connect_p95_ms: 100.0,
+    connect_p50_ms: 5.0,
+    connect_p95_ms: 50.0,
     error_rate: 0.005,
     dns_miss_per_connect: 0.2,
 };
