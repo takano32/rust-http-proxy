@@ -101,7 +101,7 @@ pub fn connect(
 
 /// [`connect`] の、TCP の確立だけに別の締め切り (`connect_timeout`) を当てる版 (T.28.8)。
 ///
-/// forward のオリジン接続はこちらを使い、確立は `PROXY_CONNECT_TIMEOUT_SECS` (既定 5 秒)、
+/// forward のオリジン接続はこちらを使い、確立は `PROXY_CONNECT_TIMEOUT_SECS` (既定 3 秒。T.28.43)、
 /// TLS のハンドシェイクと読み書きは `timeout` (`PROXY_TIMEOUT_SECS`) のまま。繋がらない宛先への
 /// forward 1 本がワーカーを 30 秒握っていた (CONNECT は T.23.3 で 5 秒にしてあった)。
 pub fn connect_within(

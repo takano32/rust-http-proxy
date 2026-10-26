@@ -39,7 +39,8 @@ Every setting can also be given as an environment variable or in $HOME/.env
   PROXY_MAX_CONNS          maximum concurrent connections (auto, 0 = unlimited)
   PROXY_TIMEOUT_SECS       origin timeout (30)
   PROXY_CONNECT_TIMEOUT_SECS
-                           CONNECT origin connect timeout (5, 0 = unlimited)
+                           origin connect timeout, CONNECT and forward (3,
+                           0 = unlimited)
   PROXY_HEADER_TIMEOUT_SECS
                            request line + headers deadline (10, 0 = none)
   PROXY_KEEPALIVE_SECS     client keep-alive idle time (15)

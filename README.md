@@ -1571,7 +1571,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
 - **タイムアウト制御**:
   - `PROXY_TIMEOUT_SECS` による接続および読み書きタイムアウト制御
   - `PROXY_CONNECT_TIMEOUT_SECS` で **オリジンへの TCP の確立だけ** (`CONNECT` と、T.28.8 から forward も) に短い締め切りを置いています
-    (**既定 5 秒**。未設定なら 5 秒と `PROXY_TIMEOUT_SECS` の小さい方)
+    (**既定 3 秒**。未設定なら 3 秒と `PROXY_TIMEOUT_SECS` の小さい方)
   - `PROXY_HEADER_TIMEOUT_SECS` で**要求行とヘッダーを読み終えるまでの総時間**に締め切りを置いています
     (**既定 10 秒**。越えたら `408 Request Timeout` で閉じる。黙ったまま・1 バイトずつ送る接続 (slowloris) 対策)
 
@@ -1664,7 +1664,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_IPV6` | `on` | IPv6 を使うか (待ち受けと AAAA での接続) |
 | `PROXY_LISTEN_BACKLOG` | `0` (= `min(1024, somaxconn)`) | 待ち受けの受け入れ待ち行列の長さ (`listen(2)`) |
 | `PROXY_TIMEOUT_SECS` | `30` | 接続とデータ転送の締め切り (秒)。`0` で無期限 |
-| `PROXY_CONNECT_TIMEOUT_SECS` | `5` | オリジンへの TCP の確立だけの締め切り (秒。`CONNECT` と forward) |
+| `PROXY_CONNECT_TIMEOUT_SECS` | `3` | オリジンへの TCP の確立だけの締め切り (秒。`CONNECT` と forward) |
 | `PROXY_HEADER_TIMEOUT_SECS` | `10` | 要求行とヘッダーを読み終えるまでの総時間の締め切り (秒)。越えたら `408`。`0` で無し |
 | `PROXY_HE_STAGGER_MS` | `250` | Happy Eyeballs で次の候補を試し始めるまでの間隔 (ms、10〜2000) |
 | `PROXY_KEEPALIVE_SECS` | `15` | クライアント接続を次の要求まで待つ時間 (秒) |
@@ -1811,10 +1811,13 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   接続およびデータ転送タイムアウト（秒）。`0` で**無期限** (`PROXY_TUNNEL_IDLE_SECS` と同じ意味): 何も送ってこないクライアント接続を閉じず、オリジンへの接続と読み書きにも締め切りを置かない (OS 既定に任せる)。
   **ただし何も送ってこない接続は `PROXY_HEADER_TIMEOUT_SECS` (未設定でも 10 秒) で閉じます** (T.28.0)。黙った接続を無期限に置くには両方 `0` にしてください。
   `PROXY_KEEPALIVE_SECS` (要求と要求の間) と `PROXY_TUNNEL_IDLE_SECS` は別に効く
-- **`PROXY_CONNECT_TIMEOUT_SECS`** (既定 `5`)
+- **`PROXY_CONNECT_TIMEOUT_SECS`** (既定 `3`)
   **オリジンへの TCP の確立だけ**の締め切り (秒)。`CONNECT` と、**T.28.8 (2026-10-25) から forward のオリジン接続にも**効きます。
-  **未設定なら 5 秒と `PROXY_TIMEOUT_SECS` の小さい方**です (全体を 3 秒にしていれば 3 秒)。
-  **`PROXY_TIMEOUT_SECS=0` (無期限) でも 5 秒**です — 繋がらない相手を無期限に待つ意味が無いためで、**無期限にしたいときは `0` と明示**してください。
+  **未設定なら 3 秒と `PROXY_TIMEOUT_SECS` の小さい方**です (全体を 2 秒にしていれば 2 秒)。
+  **`PROXY_TIMEOUT_SECS=0` (無期限) でも 3 秒**です — 繋がらない相手を無期限に待つ意味が無いためで、**無期限にしたいときは `0` と明示**してください。
+  **既定を 5 → 3 秒にした根拠 (2026-10-26、T.28.43。利用者の決定 6)**: タスク 28 の洗い出し (2026-10-25) の見積もりで、
+  **縮む待ちは 4.6〜9.0 分/日**、**落とす成功は 0〜0.23 本/日**でした。下の T.23.3 の戻す条件「切った成功が 1 日 1 本以上」に届かないので 3 秒にしました。
+  forward の確立も同じ値です (T.28.8)。**5 秒に戻すには `.env` に `PROXY_CONNECT_TIMEOUT_SECS=5`** の 1 行 (再読込で効きます)。
   **既定を 10 → 5 秒にした根拠 (2026-10-20、T.23.3)**: 雪像 4 枚 (tokyo 3 枚 + nagoya 1 枚) の
   `connect_buckets` を数えると、**5 秒を越えて成功した確立は tokyo の 12 日ぶん 91,258 本で 0 本**、
   nagoya の 28 日ぶん (258,951 本、失敗も区間に入れた古い版) でも 22 本 (= 1 日 0.79 本の上限、
@@ -1825,13 +1828,13 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   4 秒台まで伸びうることでした。実測では 4 秒台の成功が 12 日で 4 本しかなく、**5 秒なら 4 秒台は切らずに残ります**
   (切るのは 5 秒を越えた分だけ)。数え直す道具は
   **`scripts/connect-timeout-replay.py SNAP.json …`** (`--secs` / `--hours` / `--json`)。
-  **戻すには `.env` に `PROXY_CONNECT_TIMEOUT_SECS=10`** の 1 行 (再読込で効きます)。
-  戻す条件は「5 秒で切った接続のうち本当は繋がったはずのものが 1 日 1 本以上」(T.23.99 で見ます)。
+  (T.23.3 のときの戻し方は `.env` に `PROXY_CONNECT_TIMEOUT_SECS=10` の 1 行。)
+  戻す条件は「切った接続のうち本当は繋がったはずのものが 1 日 1 本以上」(T.23.99 で見ました。3 秒でも同じ条件で見ます)。
   **効くのは確立だけです**: オリジンとの読み書き (forward の応答待ちも)・TLS のハンドシェイク・クライアントソケットの読み書き・ブロックリストの取得は `PROXY_TIMEOUT_SECS` のままです。
   **forward も T.28.8 で確立をこちらにしました** (0.27.8 までは「forward は `PROXY_TIMEOUT_SECS` のまま」で、繋がらない宛先への
   forward 1 本がワーカーを 30 秒握っていました。tokyo の `/errors` に `http://10.255.255.1:80` の `timeout`・`connect_ms` 30,005 の 1 件)。
   見直しの根拠は tokyo の雪像 20 枚の `/recent` の forward の行 (重複を除いて 52 本) で、**確立の最大は 244 ms** (p50 86 ms) でした。
-  forward の確立は CONNECT と同じ宛先の距離なので、CONNECT の 5 秒の根拠 (上) もそのまま当てはまります。
+  forward の確立は CONNECT と同じ宛先の距離なので、CONNECT の 3 秒の根拠 (上) もそのまま当てはまります。
   期限切れの表現を持っていてオリジンを長く待たない回 (`PROXY_STALE_WAIT_SECS`) は、確立もその短い方に合わせます。
   `PROXY_CONNECT_TIMEOUT_SECS=0` (明示の無期限) のとき、forward の確立は `PROXY_TIMEOUT_SECS` に戻ります。
   繋がらない相手を待つ時間 (利用者から見える「固まっている」時間) だけを縮めるための鍵です — `PROXY_TIMEOUT_SECS` を短くすると大きな本文の転送や遅い応答まで切ってしまうためです。

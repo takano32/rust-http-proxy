@@ -288,7 +288,11 @@ pub const DEFAULT_MAX_REQUESTS_PER_CONN: usize = 1000;
 /// 遠いオリジンで SYN の再送 (1 秒 → 3 秒) が重なる 4 秒台は残るので、T15.6 (2) が
 /// 「5 秒は攻めすぎ」と言った根拠 (再送の重なり) は 5 秒では踏まない。
 /// 戻す条件は「5 秒で切った接続のうち本当は繋がったはずのものが 1 日 1 本以上」(T23.99)。
-pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// **5 秒 → 3 秒 (2026-10-26、T.28.43。利用者の決定 6)**。タスク 28 の洗い出しの見積もりで、
+/// 縮む待ちは 4.6〜9.0 分/日、落とす成功は 0〜0.23 本/日 (T23.3 の「1 日 1 本未満」を満たす)。
+/// forward の確立も T.28.8 からこの値を使う。戻す条件は T23.3 と同じ (切った成功が 1 日 1 本以上)。
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// 要求行とヘッダーを読み終えるまでの締め切りの既定 (`PROXY_HEADER_TIMEOUT_SECS`。T.28.0)。
 ///
@@ -346,15 +350,15 @@ pub fn parse_stagger_ms(v: &str) -> Option<Duration> {
 ///
 /// - `explicit` = `PROXY_CONNECT_TIMEOUT_SECS` に書かれた値。書いてあれば**そのまま**
 ///   (`0` と明示すれば無期限)。
-/// - 未設定なら [`DEFAULT_CONNECT_TIMEOUT`] (5 秒)。ただし `PROXY_TIMEOUT_SECS`
-///   (`timeout`) が `0` でなく 5 秒より短ければ、その値に合わせる (= `min(5, timeout)`。
-///   全体の締め切りを 3 秒にした人の connect が 5 秒になるのはおかしい)。
-/// - `timeout` が `0` (無期限。T10.6) でも、未設定の connect は **5 秒**
+/// - 未設定なら [`DEFAULT_CONNECT_TIMEOUT`] (3 秒。T.28.43)。ただし `PROXY_TIMEOUT_SECS`
+///   (`timeout`) が `0` でなく 3 秒より短ければ、その値に合わせる (= `min(3, timeout)`。
+///   全体の締め切りを 2 秒にした人の connect が 3 秒になるのはおかしい)。
+/// - `timeout` が `0` (無期限。T10.6) でも、未設定の connect は **3 秒**
 ///   (つながらない相手を無期限に待つ意味は無い。無期限にしたければ `0` と明示する)。
 pub fn connect_timeout_for(timeout: Duration, explicit: Option<Duration>) -> Duration {
     match explicit {
         Some(d) => d,
-        // `0` = 無期限は「5 秒より短い」ではないので、既定の 5 秒に落とす
+        // `0` = 無期限は「3 秒より短い」ではないので、既定の 3 秒に落とす
         None if timeout.is_zero() => DEFAULT_CONNECT_TIMEOUT,
         None => timeout.min(DEFAULT_CONNECT_TIMEOUT),
     }
@@ -472,9 +476,9 @@ pub struct Config {
     pub timeout: Duration,
     /// **オリジンへの TCP の確立だけ** (CONNECT と、T.28.8 から forward) に効く締め切り (`PROXY_CONNECT_TIMEOUT_SECS`、`0` で無期限)。
     ///
-    /// **既定は 5 秒** ([`DEFAULT_CONNECT_TIMEOUT`]。T15.6 (2)、T23.3)。実効値は
-    /// [`connect_timeout_for`] が 1 か所で決める (未設定なら 5 秒と [`Config::timeout`] の
-    /// 小さい方。`PROXY_TIMEOUT_SECS=0` でも 5 秒)。`PROXY_TIMEOUT_SECS` は CONNECT の
+    /// **既定は 3 秒** ([`DEFAULT_CONNECT_TIMEOUT`]。T15.6 (2)、T23.3、T.28.43)。実効値は
+    /// [`connect_timeout_for`] が 1 か所で決める (未設定なら 3 秒と [`Config::timeout`] の
+    /// 小さい方。`PROXY_TIMEOUT_SECS=0` でも 3 秒)。`PROXY_TIMEOUT_SECS` は CONNECT の
     /// オリジン接続だけでなく forward の読み書き・クライアントソケット・キャッシュの
     /// 合流待ちにも効くので、「繋がらない相手を待つ時間」だけを縮めるにはこちらを使う。
     ///
@@ -1121,7 +1125,7 @@ impl Config {
         add("PROXY_LISTEN_BACKLOG", self.listen_backlog.to_string());
         // 接続と上限
         add("PROXY_TIMEOUT_SECS", secs(self.timeout));
-        // 実効値 (未設定なら既定の 5 秒と `PROXY_TIMEOUT_SECS` の小さい方が出る。T15.6)
+        // 実効値 (未設定なら既定の 3 秒と `PROXY_TIMEOUT_SECS` の小さい方が出る。T15.6、T.28.43)
         add("PROXY_CONNECT_TIMEOUT_SECS", secs(self.connect_timeout));
         // 実効値 (未設定なら既定の 10 秒と `PROXY_TIMEOUT_SECS` の小さい方。T.28.0)
         add("PROXY_HEADER_TIMEOUT_SECS", secs(self.header_timeout));
@@ -1310,8 +1314,8 @@ impl Config {
             listen_backlog: crate::net::default_backlog(),
             acl,
             timeout,
-            // 未設定のときの実効値は `connect_timeout_for` が決める (既定 5 秒。
-            // `timeout` が 5 秒より短ければそちらに合わせる。T15.6 (2))。ここで入れておくと
+            // 未設定のときの実効値は `connect_timeout_for` が決める (既定 3 秒。T.28.43。
+            // `timeout` が 3 秒より短ければそちらに合わせる。T15.6 (2))。ここで入れておくと
             // `Config::new` を呼ぶ既存の所 (テストと `/config` の組み立て) が自動で追随する
             connect_timeout: connect_timeout_for(timeout, None),
             // 未設定のときの実効値は `header_timeout_for` (既定 10 秒と `timeout` の小さい方。T.28.0)
@@ -1674,34 +1678,30 @@ mod tests {
         assert_eq!(TcpKeepalive::parse("off"), Some(None));
     }
 
-    /// CONNECT の締め切りの規則を 1 本で縛る (T15.6 (2)、既定を 5 秒にした T23.3)。
+    /// CONNECT の締め切りの規則を 1 本で縛る (T15.6 (2)、既定を 5 秒にした T23.3、3 秒にした T.28.43)。
     ///
-    /// `(PROXY_TIMEOUT_SECS, PROXY_CONNECT_TIMEOUT_SECS) → 実効値` の 5 通り。
-    /// `Config::new` も同じ関数を通ることを、未設定の 3 通りで一緒に見る。
+    /// `(PROXY_TIMEOUT_SECS, PROXY_CONNECT_TIMEOUT_SECS) → 実効値` の 6 通り。
+    /// `Config::new` も同じ関数を通ることを、未設定の 4 通りで一緒に見る。
     #[test]
-    fn connect_timeout_defaults_to_five_seconds() {
+    fn connect_timeout_defaults_to_three_seconds() {
         let d = Duration::from_secs;
         // (timeout, 明示の値, 期待する実効値, 何を縛っているか)
-        let cases: [(u64, Option<u64>, u64, &str); 5] = [
-            (
-                30,
-                None,
-                5,
-                "既定の 30 秒なら 5 秒に縮む (このタスクの本体)",
-            ),
-            (4, None, 4, "5 秒より短い共通の締め切りには合わせる"),
+        let cases: [(u64, Option<u64>, u64, &str); 6] = [
+            (30, None, 3, "既定の 30 秒なら 3 秒に縮む (T.28.43 の本体)"),
+            (5, None, 3, "5 秒 (T23.3 の既定) の共通の締め切りでも 3 秒"),
+            (2, None, 2, "3 秒より短い共通の締め切りには合わせる"),
             (
                 0,
                 None,
-                5,
-                "PROXY_TIMEOUT_SECS=0 (無期限) でも未設定なら 5 秒",
+                3,
+                "PROXY_TIMEOUT_SECS=0 (無期限) でも未設定なら 3 秒",
             ),
             (30, Some(0), 0, "0 と明示すれば無期限"),
             (
                 30,
                 Some(20),
                 20,
-                "書いてあればその値 (5 秒より長くてもよい)",
+                "書いてあればその値 (3 秒より長くてもよい)",
             ),
         ];
         for (timeout, explicit, want, why) in cases {
@@ -1721,18 +1721,18 @@ mod tests {
                 assert_eq!(cfg.connect_timeout, d(want), "Config::new: {}", why);
             }
         }
-        assert_eq!(DEFAULT_CONNECT_TIMEOUT, d(5));
+        assert_eq!(DEFAULT_CONNECT_TIMEOUT, d(3));
     }
 
     /// `PROXY_CONNECT_TIMEOUT_SECS` を書いたら、**その値がそのまま**効く (T23.3)。
     ///
-    /// 既定を 5 秒にしても、10 秒 (元の既定) や 1 秒を書いた人の値は書き換えない
-    /// (T23.99 で 10 秒に戻すのも `.env` の 1 行でできる)。
+    /// 既定を 3 秒にしても、10 秒 (T23.3 の前の既定)・5 秒 (T.28.43 の前の既定) や 1 秒を
+    /// 書いた人の値は書き換えない (戻すのも `.env` の 1 行でできる)。
     #[test]
     fn connect_timeout_uses_the_explicit_value_as_is() {
         let d = Duration::from_secs;
-        // 共通の締め切りが既定 (30 秒) でも、書いてあれば `min(5, timeout)` にしない
-        for explicit in [1, 5, 10, 30, 0] {
+        // 共通の締め切りが既定 (30 秒) でも、書いてあれば `min(3, timeout)` にしない
+        for explicit in [1, 3, 5, 10, 30, 0] {
             let want = d(explicit);
             assert_eq!(
                 connect_timeout_for(d(30), Some(want)),
@@ -1756,12 +1756,12 @@ mod tests {
 
     /// `PROXY_TIMEOUT_SECS` との `min` の関係は既定を変えても動かない (T23.3)。
     ///
-    /// 未設定の connect は `min(5, PROXY_TIMEOUT_SECS)`。共通の側 (`cfg.timeout`) は
+    /// 未設定の connect は `min(3, PROXY_TIMEOUT_SECS)`。共通の側 (`cfg.timeout`) は
     /// どの通りでも書いた値のままで、connect を短くしても連動しない (効くのは CONNECT だけ)。
     #[test]
     fn connect_timeout_is_still_the_min_of_the_common_timeout() {
         let d = Duration::from_secs;
-        for (timeout, want) in [(30, 5), (6, 5), (5, 5), (3, 3), (1, 1)] {
+        for (timeout, want) in [(30, 3), (6, 3), (5, 3), (4, 3), (3, 3), (2, 2), (1, 1)] {
             let cfg = Config::new("9090", None, None, d(timeout)).expect("port");
             assert_eq!(cfg.connect_timeout, d(want), "timeout={}", timeout);
             assert_eq!(cfg.timeout, d(timeout), "共通の側は書いた値のまま");
@@ -1787,8 +1787,8 @@ mod tests {
                 .value
                 .clone()
         };
-        // 既定は 5 秒 (T15.6 (2)、T23.3)。共通の締め切りは 30 秒のまま
-        assert_eq!(find(&cfg, "PROXY_CONNECT_TIMEOUT_SECS"), "5");
+        // 既定は 3 秒 (T15.6 (2)、T23.3、T.28.43)。共通の締め切りは 30 秒のまま
+        assert_eq!(find(&cfg, "PROXY_CONNECT_TIMEOUT_SECS"), "3");
         assert_eq!(find(&cfg, "PROXY_TIMEOUT_SECS"), "30");
         // 戻し方 (`.env` に `PROXY_CONNECT_TIMEOUT_SECS=30`) も実効値で出る
         cfg.connect_timeout = connect_timeout_for(cfg.timeout, Some(Duration::from_secs(30)));

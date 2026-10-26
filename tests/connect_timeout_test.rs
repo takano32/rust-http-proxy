@@ -89,17 +89,15 @@ fn test_integration_connect_timeout_cuts_the_connect_short() {
 
 /// 既定の締め切り (規則どおりの実効値) のままでも普通の CONNECT は 200 で通る。
 ///
-/// `proxy_config()` の `timeout` は 5 秒なので `connect_timeout` も 5 秒
-/// (`min(5, PROXY_TIMEOUT_SECS)`。T15.6 (2))。**T23.3 で既定も 5 秒になった**ので、
-/// この 1 本は「規則の当てはめ」と「その値で 200 が通る煙試験」だけを見る
-/// (既定と `min` のどちらで 5 秒になったかは区別できない)。
+/// `proxy_config()` の `timeout` は 5 秒で、`connect_timeout` は**既定の 3 秒** (T.28.43)
+/// (`min(3, PROXY_TIMEOUT_SECS)`。T15.6 (2))。T23.3 の既定 5 秒のときは既定と `min` の
+/// どちらで 5 秒になったかを区別できなかったが、3 秒になって既定の側が勝つと分かる。
 /// 見張っているのは `Config::new` が規則を通ること (下の `assert_eq!`) と、
 /// **その値で普通の CONNECT が今までどおり 200 で通ること**。`crates/server/src/conn.rs` の 1 行
 /// (`config.timeout` → `config.connect_timeout`) の見張りは 1 本目
-/// (`…cuts_the_connect_short`) の方で、この 1 本はその 1 行を戻しても通る
-/// (どちらも 5 秒なので区別できない)。規則の 5 通りは `crates/config` の単体テスト
-/// (`connect_timeout_defaults_to_five_seconds`)、`/config` の既定 5 秒は
-/// `tests/config_test.rs` が実バイナリで見ている
+/// (`…cuts_the_connect_short`) の方 (この 1 本はループバックなので、その 1 行を戻しても通る)。
+/// 規則の 6 通りは `crates/config` の単体テスト (`connect_timeout_defaults_to_three_seconds`)、
+/// `/config` の既定 3 秒は `tests/config_test.rs` が実バイナリで見ている
 /// (ここの `/config` は `Live` が無いと環境から組み直すため)。
 #[test]
 fn test_integration_connect_still_works_with_the_default_timeout() {
@@ -107,8 +105,8 @@ fn test_integration_connect_still_works_with_the_default_timeout() {
     let cfg = proxy_config();
     assert_eq!(
         cfg.connect_timeout,
-        std::time::Duration::from_secs(5),
-        "`PROXY_TIMEOUT_SECS` が 5 秒なので、どちらの理由でも 5 秒になる"
+        std::time::Duration::from_secs(3),
+        "`PROXY_TIMEOUT_SECS` は 5 秒だが、既定の 3 秒の方が短い (T.28.43)"
     );
     assert_eq!(cfg.timeout, std::time::Duration::from_secs(5));
     let proxy_port = start_test_proxy(cfg);
