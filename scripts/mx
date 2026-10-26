@@ -24,6 +24,8 @@
 #   MX_WAIT  (既定 180) 他人のベンチを待つ秒数
 #   MX_DIR   (既定 ${XDG_RUNTIME_DIR:-/tmp}/rust-http-proxy-mx) 口のファイルを置く場所
 #   MX_QUIET (既定 0)   1 で「待っています」を出さない
+#   MX_POLL  (無指定)   口と他人のベンチを見直す間隔 (秒、小数も可)。無指定なら今までどおり口は 1 秒・
+#                       ベンチは 2 秒ごと。`scripts/test_mx.sh` が待ちを縮めるためのもの (T.28.29)
 set -u
 if [ $# -eq 0 ]; then
   echo "usage: $0 COMMAND [ARGS...]   (MX_SLOTS=1 で占有)" >&2
@@ -33,6 +35,7 @@ SLOTS=${MX_SLOTS:-2}
 WAIT=${MX_WAIT:-180}
 DIR=${MX_DIR:-${XDG_RUNTIME_DIR:-/tmp}/rust-http-proxy-mx}
 QUIET=${MX_QUIET:-0}
+POLL=${MX_POLL:-}
 mkdir -p "$DIR" || exit 1
 
 say() { [ "$QUIET" = 1 ] || echo "mx: $*" >&2; }
@@ -61,7 +64,7 @@ if [ "$SLOTS" -le 1 ]; then
     held=()
     [ $n -eq 0 ] && say "機械の占有を待っています (ほかの mx が走っている)"
     n=$((n + 1))
-    sleep 1
+    sleep "${POLL:-1}"
   done
 else
   n=0
@@ -79,7 +82,7 @@ else
     if [ -z "$got" ]; then
       [ $n -eq 0 ] && say "空いている口を待っています (MX_SLOTS=$SLOTS)"
       n=$((n + 1))
-      sleep 1
+      sleep "${POLL:-1}"
     fi
   done
 fi
@@ -100,7 +103,7 @@ if [ -n "$(others)" ]; then
       say "${WAIT} 秒待っても終わらなかった: $(others | tr '\n' ' ')"
       exit 75
     fi
-    sleep 2
+    sleep "${POLL:-2}"
   done
 fi
 

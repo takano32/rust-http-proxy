@@ -45,6 +45,8 @@ want() {
 W=$(mktemp -d -t mx-test.XXXXXX) || exit 1
 # 呼び出し元の設定を持ち込まない (既定の値を見るテストがある)
 unset MX_SLOTS MX_WAIT MX_QUIET
+# 口と他人のベンチは 0.1 秒ごとに見直させる (既定の 1 秒・2 秒の間隔を待つだけの時間を省く。T.28.29)
+export MX_POLL=0.1
 export MX_DIR="$W/mx"
 FAKE="$W/target/release/rust-http-proxy"
 
@@ -213,7 +215,16 @@ if want 4; then
     MX_SLOTS=2 "$MX" touch "$W/p4c" 2>"$W/err4c" &
     p4c=$!
     PIDS+=("$p4c")
-    sleep 1.5
+    # 3 本目が口を全部試して「待っています」と言ってから、さらに数回 (0.1 秒ごと) 見直す間も走らない
+    # (前は決め打ちで 1.5 秒寝ていた。T.28.29)
+    for ((i = 0; i < 100; i++)); do
+      grep -q '空いている口を待っています' "$W/err4c" 2>/dev/null && break
+      sleep 0.1
+    done
+    sleep 0.5
+    if ! grep -q '空いている口を待っています' "$W/err4c" 2>/dev/null; then
+      ng "3 本目が「空いている口を待っています」と言わない: $(cat "$W/err4c")"
+    fi
     if [ -e "$W/p4c" ]; then
       ng "口が 2 つとも埋まっているのに 3 本目が走った"
     else
@@ -277,7 +288,9 @@ if want 6; then
   f=$!
   PIDS+=("$f")
   if wait_fake_visible 5; then
-    MX_WAIT=1 "$MX" touch "$W/ran6" 2>"$W/err6"
+    # 見直しの間隔は既定 (2 秒) のまま。`MX_WAIT` は `$SECONDS` (整数秒) で数えるので、0.1 秒ごとに
+    # 見ると 1 秒に満たないうちに抜けることがある
+    MX_POLL='' MX_WAIT=1 "$MX" touch "$W/ran6" 2>"$W/err6"
     rc=$?
     # 偽物はすぐ止める (同じ機械の他人の mx も待たせているので)
     kill -KILL "$f" 2>/dev/null

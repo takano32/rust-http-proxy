@@ -30,7 +30,7 @@ class MxTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout)
 
     def test_mx(self):
-        # 6 項目で 15 秒ほど。他人のベンチが走っている機械では mx の待ちが入るので余裕を持つ
+        # 6 項目で 10 秒ほど (T.28.29 で `MX_POLL=0.1` にして縮めた)。他人のベンチが走っている機械では mx の待ちが入るので余裕を持つ
         self.run_items("1", "2", "3", "4", "5", "6")
 
     def test_term_right_after_launch_leaves_no_child(self):
