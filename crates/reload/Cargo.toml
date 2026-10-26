@@ -1,6 +1,6 @@
 [package]
 name = "proxy-reload"
-version = "0.28.6"
+version = "0.28.47"
 edition = "2024"
 
 [lib]
