@@ -259,7 +259,10 @@ pub fn main() {
     }
     if config.lite {
         // ログレベルに依らず必ず出す起動バナー
-        println!("profile: lite (no cache, no statistics, no blocklist, warn log level)");
+        // 「統計を取らない」ではない (`/hosts` などはメモリに積む)。止めるものだけを並べる (T.28.44)
+        println!(
+            "profile: lite (no cache, no blocklist, no saved statistics, no per-connection records, warn log level)"
+        );
     }
     net::set_ipv6_enabled(config.ipv6);
     // Happy Eyeballs の間隔 (T17.6)。起動時に 1 回だけ (要求の経路は atomic を 1 回読むだけ)

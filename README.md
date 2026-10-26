@@ -17,7 +17,8 @@ curl -x localhost:8080 http://example.com/        # 動作確認
 `cargo install --git https://github.com/takano32/rust-http-proxy` でも入ります
 (ビルドはメモリ約 90 MB で通ります。下の「ビルド・テスト」を参照)。
 
-キャッシュ・ダッシュボード・統計まで使うなら `--lite` を外します。
+キャッシュ・ダッシュボード・統計の保存と時系列・接続ごとの個票まで使うなら `--lite` を外します
+(`--lite` でも `/status` `/hosts` `/clients` `/errors` の集計はメモリに積みます。下の「プロファイル」)。
 
 ```bash
 SERVER_PORT=8080 ./target/release/rust-http-proxy
@@ -1584,7 +1585,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
       --bind <ADDRS>   待ち受けアドレス      (PROXY_BIND、カンマ区切り)
       --no-cache       キャッシュを止める    (PROXY_CACHE_ENABLED=off)
       --quiet          警告以上だけ出す      (PROXY_LOG_LEVEL=warn)
-      --lite           最速の素通しプロファイル (PROXY_PROFILE=lite)
+      --lite           最速の素通しプロファイル (PROXY_PROFILE=lite。止めるものと残るものは下の「プロファイル」)
       --check          起動せずに環境と効く設定を出して終了 (下記)
   -h, --help           使い方を出して終了 (終了コード 0)
   -V, --version        版を出して終了
@@ -1649,8 +1650,24 @@ check: ok (everything this proxy reads is readable)
 
 ## プロファイル
 
-`--lite` (= `PROXY_PROFILE=lite`) は「認証なし・手軽・最速」の素通し設定です。キャッシュ・統計の永続化・
-ブロックリストの取得を止め、ログを `warn` にします (個別の環境変数を明示すればそちらが勝ちます)。
+`--lite` (= `PROXY_PROFILE=lite`) は「認証なし・手軽・最速」の素通し設定です。**「統計を取らない」設定ではありません**
+(T.28.44): 要求ごとに数えるメモリの中の集計は既定と同じに積み、止めるのは次のものです。
+
+| `--lite` で止めるもの | 明示すれば戻るか | 口の見え方 |
+|---|---|---|
+| キャッシュ | `PROXY_CACHE_ENABLED=on` で戻る | `/status` の `cache` は無効の形、`/lookup` は見つからない |
+| ブロックリストの取得 (ファイルも URL も) | **戻らない** (`PROXY_BLOCKLIST_FILE` / `PROXY_BLOCKLIST_URL` を書いても読まない) | `/blocklist` は 0 件 (手動の上書きは効く) |
+| 統計の保存と履歴スレッド (`PROXY_STATS_PERSIST` が既定で `off`) | `PROXY_STATS_PERSIST=on` で戻る | `/history` `/slo` `/daily` `/snapshots` は空、canary・状態ファイル・日次の雪像も無し |
+| 接続ごとの個票 (接続の枠を作らない) | 戻らない | `/connections` `/recent` `/trace` `/bursts` は空 (`"lite":true`)、`/clients` の `agent` / `agents` も空、SNI も覗かない |
+| 段階の時計と `/profile` のスレッド | 戻らない | `/profile` は `{"profile":"off"}` |
+| `/dashboard` | 戻らない | 1 行の `lite mode: ...` |
+| 記録のリングの先触り (T.17.8) | 戻らない | `/status` の `memory.rings_touched` が `false` |
+| ログの高さ (`info` → `warn`) | `PROXY_LOG_LEVEL` で戻る | `/log` に残るのも `warn` 以上 |
+
+**`--lite` でも残るもの**: `/status` の数 (`total_requests`・`errors`・`errors_by_cause`・転送量・断った数…)、
+**ホスト別の `/hosts` と接続元別の `/clients`** (要求数・バイト数・エラー・応答時間の分布)、`/errors` の個票、
+`/events` (履歴スレッドが拾う種類を除く)、`/readers`、`/metrics`、`/dns`、`/healthz`、`/config`。どれもメモリだけで、
+再起動で消えます (保存は `PROXY_STATS_PERSIST=on` のときだけ)。
 `/dashboard` は 1 行の `lite mode: ...` を返し、起動ログの 1 行目に `profile: lite` が出ます
 (**「調査」ページ `/inspect` と「端末から測る」ページ `/probe.html` は `--lite` でも 200 で開けます** —
 中の表と図は「記録していません」と出ます)。
@@ -2124,7 +2141,8 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   **再起動で反映**
 - **`PROXY_PROFILE`** (既定 なし)
   `lite` で最速の素通しプロファイル (`--lite` と同じ)。
-  キャッシュ・統計の永続化・ブロックリストを止め、ログを `warn` にする
+  キャッシュ・ブロックリスト・統計の保存と履歴スレッド・接続ごとの個票・`/profile`・`/dashboard` を止め、ログを `warn` にする。
+  `/status` `/hosts` `/clients` `/errors` の集計はメモリに積む (止めるものと残るものの表は「プロファイル」。T.28.44)
 - **`PROXY_PROFILE_SAMPLE_MS`** (既定 `1000`)
   `/profile` のスレッドの標本を取る間隔 (ms)。
   `profile-sample` スレッド 1 本が この間隔で `/proc/self/task/*/stat` と `/proc/self/task/*/syscall` と `/proc/self/task/*/schedstat` を読み、**役割ごと** (`accept` / `conn` / `idle-watch` / `dns-refresh` / `history` / `persist` / `cache-probe` / `profile-sample` / `other`) に「CPU」と「いま走っているか・どのシステムコールで待っているか・休眠か」と「走れずに待った時間」を数え、**CPU を多く使ったスレッド上位 8 本** (`threads_top`) を残します。

@@ -23,8 +23,13 @@ usage: rust-http-proxy [OPTIONS]
       --bind <ADDRS>   listen addresses      (PROXY_BIND, comma separated)
       --no-cache       disable the cache     (PROXY_CACHE_ENABLED=off)
       --quiet          only warnings/errors  (PROXY_LOG_LEVEL=warn)
-      --lite           fastest pass-through profile (PROXY_PROFILE=lite:
-                       no cache, no statistics, no blocklist, warn level)
+      --lite           fastest pass-through profile (PROXY_PROFILE=lite).
+                       Turns off: the cache, the blocklist, saved statistics
+                       and the history thread (/history, /daily, /snapshots,
+                       /slo), per-connection records (/connections, /recent,
+                       /trace, /bursts, user agents), /profile, /dashboard;
+                       logs at warn. Still counted in memory: /status, /hosts,
+                       /clients, /errors, /events, /metrics
       --check          do not start: print what this environment lets the proxy
                        read and the settings that would take effect, then exit
                        (exit code 0 when everything is readable, 1 otherwise)
@@ -165,6 +170,32 @@ mod tests {
         match parse_str(&["-V"]) {
             Cli::Print(msg, 0) => assert_eq!(msg, "rust-http-proxy 0.1.0+deadbee"),
             other => panic!("{:?}", other),
+        }
+    }
+
+    /// `--lite` の説明は「止めるもの」と「残るもの」の両方を書く (T.28.44)。
+    /// `/hosts` などの統計は lite でもメモリに積むので、「no statistics」とは書かない
+    #[test]
+    fn help_says_what_lite_turns_off_and_what_it_keeps() {
+        let at = USAGE.find("--lite").expect("--lite の行");
+        let end = USAGE[at..].find("--check").expect("次の --check") + at;
+        let lite = &USAGE[at..end];
+        assert!(!lite.contains("no statistics"), "{}", lite);
+        for word in [
+            "cache",
+            "blocklist",
+            "/history",
+            "/connections",
+            "/recent",
+            "/profile",
+            "/dashboard",
+            "warn",
+            "Still counted",
+            "/hosts",
+            "/clients",
+            "/errors",
+        ] {
+            assert!(lite.contains(word), "{} が無い:\n{}", word, lite);
         }
     }
 
