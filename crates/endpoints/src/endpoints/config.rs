@@ -119,6 +119,7 @@ mod tests {
             readonly: false,
             version: "0.1.0+test",
             concurrency: &concurrency,
+            own_ip: &|_| false,
         };
         let (status, kind, body) = render(&ep);
         assert_eq!((status, kind), (200, "application/json"));

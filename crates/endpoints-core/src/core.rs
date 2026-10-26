@@ -39,6 +39,13 @@ pub struct Endpoint<'a> {
     /// **全接続スレッドで共有している鍵**を取るため。`Endpoint` は要求ごとに組むので、
     /// ここで数えると熱い経路に乗ってしまう (この 2 つのパスに来たときだけ引く)
     pub concurrency: &'a dyn Fn() -> metrics::Concurrency,
+    /// IP が**自分の**ものか (この接続を受けたローカルの IP・`PROXY_BIND`・`SERVER_IP`)。
+    ///
+    /// 書き換える口 (`/purge`・`/blocklist?action=`) を宛先の名前で絞るときだけ呼ぶ
+    /// (T.28.40)。ループバックと `localhost` は呼ぶ前に決めるので、ここに来るのは
+    /// 外の IP リテラルを名指しした要求だけ。関数で受け取るのはローカルの IP を引くのに
+    /// `getsockname` が要るため (要求ごとには引かない)
+    pub own_ip: &'a dyn Fn(std::net::IpAddr) -> bool,
 }
 
 /// 問い合わせに `key=` が**立っている**か (`/history?summary=1` と同じ読み方。`0` は偽)。

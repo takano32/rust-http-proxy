@@ -1660,6 +1660,7 @@ check: ok (everything this proxy reads is readable)
 | 環境変数名 | デフォルト値 | ひとこと |
 |---|---|---|
 | `SERVER_PORT` | `8080` | 待ち受けポート (Pterodactyl が自動設定) |
+| `SERVER_IP` | なし | 割り当ての IP (Pterodactyl が自動設定)。書き換える口 (`/purge` など) を自分宛てとして受ける名前に足すだけ (T.28.40)。**実際の環境変数だけ**を読み、`.env` には書けない |
 | `PROXY_BIND` | 自動 (`::` + `0.0.0.0`) | 待ち受けアドレスのカンマ区切り。未設定でデュアルスタック |
 | `PROXY_IPV6` | `on` | IPv6 を使うか (待ち受けと AAAA での接続) |
 | `PROXY_LISTEN_BACKLOG` | `0` (= `min(1024, somaxconn)`) | 待ち受けの受け入れ待ち行列の長さ (`listen(2)`) |
@@ -2005,6 +2006,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   `on` にすると内部エンドポイントの**書き換える口だけ**を `405 Method Not Allowed` で断ります (`/purge?url=` / `/purge?all=1` / `PURGE <url>` / `/blocklist?...&action=block|allow|clear`)。
   読む口 (`/status` `/healthz` `/history` `/daily` `/slo` `/snapshots` `/metrics` `/hosts` `/hosts/series` `/clients` `/readers` `/explain` `/errors` `/connections` `/recent` `/bursts` `/events` `/trace` `/dns` `/log` `/lookup` `/proxy.pac` `/dashboard` `/inspect` `/probe.html` と、判定だけの `/blocklist?host=`) は今までどおりです。
   **認証ではありません** (読める人は読めます)。公開ポートに出していて「誰でもキャッシュを消せる」のだけを止めたいときのつまみです。
+  `off` でも、書き換える口は宛先の名前が `localhost`・ループバック・自分の IP のときだけ受けます (それ以外は転送。T.28.40)。
   `.env` で即時反映
 - **`PROXY_ALLOW_CLIENTS`** (既定 なし (全許可))
   **受ける接続元**のカンマ区切りリスト (`1.2.3.4,10.0.0.0/8,2001:db8::/32`。1 つの IP は `/32` `/128` と同じ)。
@@ -2927,6 +2929,17 @@ curl -s http://127.0.0.1:8080/status | head -c 32     # {"schema":1,"status":"ok
 **`Host` が自分自身だと自分へ `max_conns` 本つないでループしていました** (手元の再現: 1 要求で 33 本)。
 保険として、転送する要求には `Via: 1.1 rust-http-proxy/<起動ごとの 8 桁 16 進>` を付け、
 自分の印が付いた要求を受けたら `508 Loop Detected` で閉じます。
+
+**書き換える口 (`/purge?url=` / `/purge?all=1` / `/blocklist?...&action=`) だけは、ポートに加えて宛先の名前も見ます**
+(T.28.40): `Host` (絶対形式なら URL のホスト) が **`localhost`・ループバックの IP (`127.0.0.0/8`・`::1`)・
+自分の IP** (その接続を受けたローカルの IP・`PROXY_BIND` に書いた IP・環境変数 `SERVER_IP`) のときだけ自分宛てで、
+**それ以外の名前は普通の転送に回します** (例: `Host: example.com:8080` の `/purge?all=1` は `example.com:8080` へ
+転送され、キャッシュは消えません)。ポートだけで決めていると、ポート 80 で動かしたときに外のサイトが
+`http://任意の名前/purge?all=1` を踏ませるだけで全消去やブロックリストの改変ができたためです。名前は引きません
+(外の名前が自分を指していても自分宛てにしません)。**読む口は今までどおりポートだけ**で、`PURGE <url>` メソッド
+(要求ターゲットは消す URL) と `PROXY_ENDPOINTS_READONLY` の働きも変わりません。そのため**ダッシュボードの「消す」と
+ブロックリストの上書きのボタンは、`http://127.0.0.1:ポート/dashboard` や待ち受けの IP で開いたときだけ効きます**
+(公開の名前で開いたダッシュボードからは、その名前への転送になります。自分へ戻ってくれば `508`、届かなければ転送のエラーです)。
 
 これらのパスはプロキシ自身が応答し、同じポート宛てのオリジン形式の要求より優先します。認証は無いので、
 到達できる人は誰でも purge できます (公開ポートで動かすなら到達制御を)。

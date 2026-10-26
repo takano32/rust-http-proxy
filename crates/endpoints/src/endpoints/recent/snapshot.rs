@@ -309,6 +309,7 @@ mod tests {
             readonly: false,
             version: "test",
             concurrency: &concurrency,
+            own_ip: &|_| false,
         };
         let part_of = |body: &str| -> String {
             let at = body

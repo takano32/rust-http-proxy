@@ -95,6 +95,7 @@ mod tests {
             version: "0.1.0+test",
             pac_direct: d,
             concurrency: &concurrency,
+            own_ip: &|_| false,
         };
         let script = render(&e, "/proxy.pac", false);
         assert!(script.contains("function FindProxyForURL(url, host)"));
@@ -121,6 +122,7 @@ mod tests {
             version: "0.1.0+test",
             pac_direct: d,
             concurrency: &concurrency,
+            own_ip: &|_| false,
         };
         let script = render(&e, "http://proxy.local:8080/proxy.pac", true);
         assert!(script.contains("PROXY proxy.local:8080; DIRECT"));
