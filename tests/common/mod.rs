@@ -88,8 +88,11 @@ pub fn start_origin(
                     let head = String::from_utf8_lossy(&req[..head_end]).to_ascii_lowercase();
                     if head.contains("transfer-encoding:") && head.contains("chunked") {
                         // chunked の本文は終端 (0 サイズのチャンク + 空行) まで読み切る。
-                        // 読み残すと close のときに RST が飛び、プロキシ側で 502 になる (T19.1)
-                        while !req.windows(5).any(|w| w == b"0\r\n\r\n") {
+                        // 読み残すと close のときに RST が飛び、プロキシ側で 502 になる (T19.1)。
+                        // 終端は**本文の中だけ**で探す: ヘッダーの最後の行が `0` で終わると
+                        // (プロキシの `Via` の印は 16 進なので 16 回に 1 回)、ヘッダーの終わりの
+                        // 空行を終端と取り違えて本文の途中で返していた (T.28.37)
+                        while !req[head_end..].windows(5).any(|w| w == b"0\r\n\r\n") {
                             match stream.read(&mut buf) {
                                 Ok(0) | Err(_) => break,
                                 Ok(n) => req.extend_from_slice(&buf[..n]),

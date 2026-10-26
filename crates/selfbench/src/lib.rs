@@ -870,8 +870,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn cpu_of_the_process_and_of_this_thread_is_readable() {
-        let p = process_cpu_us().expect("プロセスの CPU");
+        // スレッドを先に読む: 後で読んだプロセスの値は、先に読んだこのスレッドの値を必ず含む
+        // (逆の順だと、2 回の読みの間にこのスレッドが走った分だけ `p < t` になりうる。T.28.37)
         let t = thread_cpu_us().expect("このスレッドの CPU");
+        let p = process_cpu_us().expect("プロセスの CPU");
         assert!(
             p >= t,
             "プロセスの CPU は 1 本のスレッドより多い ({} < {})",
