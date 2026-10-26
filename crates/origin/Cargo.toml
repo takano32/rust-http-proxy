@@ -1,6 +1,6 @@
 [package]
 name = "proxy-origin"
-version = "0.28.33"
+version = "0.28.9"
 edition = "2024"
 
 [lib]
