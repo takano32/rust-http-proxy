@@ -49,6 +49,8 @@ pub struct Endpoint<'a> {
     /// 外の IP リテラルを名指しした要求だけ。関数で受け取るのはローカルの IP を引くのに
     /// `getsockname` が要るため (要求ごとには引かない)
     pub own_ip: &'a dyn Fn(std::net::IpAddr) -> bool,
+    /// 自分の名前として足したホスト名 (`PROXY_SELF_NAMES`。小文字・末尾の点なし。T.28.47)
+    pub self_names: &'a [String],
 }
 
 /// 問い合わせに `key=` が**立っている**か (`/history?summary=1` と同じ読み方。`0` は偽)。

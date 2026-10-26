@@ -232,3 +232,36 @@ fn test_integration_write_endpoints_need_an_own_host_name() {
     let gone = lookup("127.0.0.1");
     assert!(gone.contains("\"found\":false"), "{}", gone);
 }
+
+/// `PROXY_SELF_NAMES` に書いた名前なら、書き換える口も効く (公開の名前で開いたダッシュボード。T.28.47)。
+/// 書いていない名前は T.28.40 のまま転送に回る。
+#[test]
+fn test_integration_self_names_make_write_endpoints_work_by_public_name() {
+    use std::time::Duration;
+
+    let mut cfg = rust_http_proxy::config::Config::new(
+        "0",
+        None,
+        Some("example.com,other.example"),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    cfg.keepalive = Duration::from_secs(2);
+    cfg.self_names = vec!["example.com".to_string()];
+    let port = start_test_proxy_with_cache(cfg, cache_cfg("rhp-t2847-self-names"));
+    let purge = |name: &str| {
+        raw_get(
+            port,
+            &format!(
+                "GET /purge?all=1 HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
+                name, port
+            ),
+        )
+    };
+    let resp = purge("Example.COM");
+    assert!(resp.contains("\"all\":true"), "{}", resp);
+    // 書いていない名前は転送 (ここでは ACL の 403)
+    let resp = purge("other.example");
+    assert!(resp.starts_with("HTTP/1.1 403"), "{}", resp);
+    assert!(!resp.contains("\"purged\""), "{}", resp);
+}

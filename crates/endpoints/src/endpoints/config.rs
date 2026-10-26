@@ -121,6 +121,7 @@ mod tests {
             build: "test",
             concurrency: &concurrency,
             own_ip: &|_| false,
+            self_names: &[],
         };
         let (status, kind, body) = render(&ep);
         assert_eq!((status, kind), (200, "application/json"));

@@ -268,6 +268,7 @@ fn the_recent_response_stays_under_256_kib() {
         build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
+        self_names: &[],
     };
     // **エンドポイントそのものを通す** (既定の 200 件は最悪の値でも入り、2,000 件は切れる)
     for (q, want_cut) in [("n=200", false), ("n=2000", true)] {
@@ -322,6 +323,7 @@ fn the_events_endpoint_filters_by_n_and_since() {
         build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
+        self_names: &[],
     };
     crate::events::clear();
     crate::events::push(EventKind::Start, "version 0.0.0 on port 8080");
@@ -438,6 +440,7 @@ fn recent_sorts_and_filters() {
         build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
+        self_names: &[],
     };
     // 既定は閉じた新しい順
     let body = recent(&ep, None).2;
@@ -775,6 +778,7 @@ fn the_bursts_response_stays_under_256_kib() {
         build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
+        self_names: &[],
     };
     let body = bursts(&ep, None).2;
     assert!(body.len() <= MAX_BODY, "{} B", body.len());
@@ -937,6 +941,7 @@ fn the_recent_endpoint_pages_through_the_whole_ring_with_offset() {
         build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
+        self_names: &[],
     };
 
     let page = 500;
@@ -1031,6 +1036,7 @@ fn the_hosts_endpoint_pages_through_every_host_with_offset() {
         build: "test",
         concurrency: &concurrency,
         own_ip: &|_| false,
+        self_names: &[],
     };
 
     let page = 500;

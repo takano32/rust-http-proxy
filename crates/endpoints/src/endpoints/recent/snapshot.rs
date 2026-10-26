@@ -311,6 +311,7 @@ mod tests {
             build: "test",
             concurrency: &concurrency,
             own_ip: &|_| false,
+            self_names: &[],
         };
         let part_of = |body: &str| -> String {
             let at = body

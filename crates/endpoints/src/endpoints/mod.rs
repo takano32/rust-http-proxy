@@ -132,12 +132,20 @@ fn own_target(target: &str, ep: &Endpoint<'_>) -> bool {
         let rest = target.get(7..).unwrap_or("");
         rest.split('/').next().unwrap_or("")
     };
-    own_host(authority_host(authority.trim()), ep.own_ip)
+    own_host(authority_host(authority.trim()), ep.own_ip, ep.self_names)
 }
 
 /// ホスト名が自分の名前か ([`own_target`] の中身。試験のために `Endpoint` から外してある)。
-fn own_host(host: &str, own_ip: &dyn Fn(std::net::IpAddr) -> bool) -> bool {
+///
+/// `self_names` (`PROXY_SELF_NAMES`) に書いた名前も自分の名前 (大小と末尾の点は問わない。T.28.47)。
+/// 公開の名前 (`tokyo.sorahost.net` など) で開いたダッシュボードの「消す」「上書き」を効かせる
+/// ための口で、書かなければ T.28.40 のまま
+fn own_host(host: &str, own_ip: &dyn Fn(std::net::IpAddr) -> bool, self_names: &[String]) -> bool {
     if host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case("localhost.") {
+        return true;
+    }
+    let bare = host.trim_end_matches('.');
+    if self_names.iter().any(|n| n.eq_ignore_ascii_case(bare)) {
         return true;
     }
     match host.parse::<std::net::IpAddr>() {
@@ -237,6 +245,7 @@ pub fn register_snapshot(src: SnapshotSource) {
             concurrency: &*src.concurrency,
             // 書き換える口は組まないので使わない (T.28.40)
             own_ip: &|_| false,
+            self_names: &[],
         };
         recent::snapshot_with(&ep, full_recent).2
     }));
@@ -969,7 +978,7 @@ mod local_path_tests {
             "203.0.113.7",
             "::ffff:203.0.113.7",
         ] {
-            assert!(own_host(name, own), "{}", name);
+            assert!(own_host(name, own, &[]), "{}", name);
         }
         for name in [
             "example.com",
@@ -980,8 +989,14 @@ mod local_path_tests {
             "",
             "tokyo.example.net",
         ] {
-            assert!(!own_host(name, own), "{}", name);
+            assert!(!own_host(name, own, &[]), "{}", name);
         }
+        // `PROXY_SELF_NAMES` に書いた名前は自分の名前 (大小と末尾の点は問わない。T.28.47)
+        let names = ["tokyo.example.net".to_string()];
+        assert!(own_host("tokyo.example.net", own, &names));
+        assert!(own_host("TOKYO.example.net.", own, &names));
+        assert!(!own_host("evil.tokyo.example.net", own, &names));
+        assert!(!own_host("example.com", own, &names));
     }
 
     #[test]

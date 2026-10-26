@@ -429,6 +429,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         build: BUILD,
         concurrency: &concurrency,
         own_ip: &own_ip,
+        self_names: &config.self_names,
     };
     if endpoints::handle(&mut &*client, method, target, &ep)? {
         return Ok(Step::Close(recent::CloseReason::Shutdown));
