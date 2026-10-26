@@ -233,6 +233,33 @@ class CrateVersionsTest(unittest.TestCase):
         out = self.check(1)
         self.assertIn("NG proxy-server", out)
 
+    def test_second_task_run_in_the_same_task(self):
+        # 同じタスクで 2 回 --task を回す: 1 回目で 0.3.1 になった beta が 2 回目の前にまた変わっても、
+        # 2 回目が (gamma の) 0.3.1 の行を書いたなら合う。2 回目を回し忘れれば落ちる (T.28.27)
+        self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
+        self.r.run("--task", "T.3.1", "--since", "HEAD")
+        self.r.commit("T.3.1 その 1")
+        base = self.r.git("rev-parse", "HEAD").strip()
+        self.r.write("crates/beta/src/lib.rs", "// beta 3\n")
+        self.r.write("crates/gamma/src/lib.rs", "// gamma 2\n")
+        self.r.commit("T.3.1 その 2")
+        out = self.check(1)
+        self.assertIn("NG proxy-beta", out)
+        code, out = self.r.run("--task", "T.3.1", "--since", base)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.r.version("gamma"), "0.3.1")
+        self.r.commit("T.3.1 その 2 の版")
+        self.check(0)
+        # 違う版の行を書いたコミットでは許さない
+        self.r.write("crates/beta/src/lib.rs", "// beta 4\n")
+        self.r.write("crates/alpha/src/lib.rs", "// alpha 3\n")
+        self.r.commit("T.3.2")
+        self.r.run("--task", "T.3.2", "--since", "HEAD~1")
+        self.r.set_versions("0.3.2", beta="0.3.1", alpha="0.3.2", server="0.3.2")
+        self.r.commit("T.3.2 の版 (beta を上げ忘れた)")
+        out = self.check(1)
+        self.assertIn("NG proxy-beta", out)
+
     def test_tag(self):
         self.r.git("tag", "v0.2.3")
         self.check(0)
