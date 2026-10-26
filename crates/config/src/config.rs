@@ -479,7 +479,7 @@ pub struct Config {
     /// 合流待ちにも効くので、「繋がらない相手を待つ時間」だけを縮めるにはこちらを使う。
     ///
     /// **持っているのは実効値** (`Option` にしない。明示の `0` = 無期限はそのまま写す。T10.6)。
-    /// 効くのは `crates/server/src/lib.rs` の CONNECT から `start_tunnel` へ渡す所と、forward の
+    /// 効くのは `crates/server/src/conn.rs` の CONNECT から `start_tunnel` へ渡す所と、forward の
     /// `http::Shared::connect_timeout` (TCP の確立だけ。T.28.8) の 2 か所で、forward の読み書きと
     /// blocklist の取得は `timeout` のまま。
     pub connect_timeout: Duration,

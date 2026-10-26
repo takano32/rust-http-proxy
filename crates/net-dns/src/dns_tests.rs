@@ -900,7 +900,7 @@ fn a_failed_refresh_is_counted_with_its_time() {
 
 /// `peek` は読むだけ、`take` は読んで 0 に戻す (T15.0 (1))。
 ///
-/// 入口の ACL (`crates/server/src/lib.rs`) が時計より前に払ったぶんを、トンネルと forward が
+/// 入口の ACL (`crates/server/src/conn/serve_one.rs`) が時計より前に払ったぶんを、トンネルと forward が
 /// **消さずに**控えるための口なので、2 回読んでも同じ値が出ることが要点。
 #[test]
 fn peeking_the_resolve_cost_does_not_take_it() {

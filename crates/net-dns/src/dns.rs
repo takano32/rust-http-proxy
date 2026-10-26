@@ -183,7 +183,7 @@ pub fn take_resolve_cost() -> (u64, u64) {
 /// [`take_resolve_cost`] と同じなので、同じ箱を読んでいる限り値は一致する。
 ///
 /// 使い道は 1 つで、**自分の時計を始める前に「もう払われているぶん」を控える**こと。
-/// `PROXY_ALLOW_LOCAL=false` (既定) では入口の ACL (`crates/server/src/lib.rs` の `acl::resolve_target`)
+/// `PROXY_ALLOW_LOCAL=false` (既定) では入口の ACL (`crates/server/src/conn/serve_one.rs` の `acl::resolve_target`)
 /// がトンネルの時計より前に名前を引くので、あとで `take` した費用には**自分の窓の外**の
 /// ぶんが混ざっている。それを引かずに「全体 − 名前解決」をすると、接続の段が 0 に潰れる。
 pub fn peek_resolve_cost() -> (u64, u64) {
