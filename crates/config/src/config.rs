@@ -1047,7 +1047,8 @@ impl Config {
         }
         let mut cache = CacheConfig::from_env();
         if cfg.lite {
-            // lite ではブロックリストの取得もキャッシュもしない (明示指定があればそちらが勝つ)
+            // lite ではブロックリストの取得もキャッシュもしない。**ブロックリストは明示指定 (`PROXY_BLOCKLIST_FILE` /
+            // `_URL`) より lite が勝つ** (読まない)。キャッシュだけは `PROXY_CACHE_ENABLED` の明示指定が勝つ (T.28.48)
             cfg.blocklist_file = None;
             cfg.blocklist_url = None;
             if envfile::var("PROXY_CACHE_ENABLED").is_none() {

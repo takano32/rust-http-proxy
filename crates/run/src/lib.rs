@@ -62,6 +62,8 @@ fn server_boot_id() -> Option<String> {
 /// 1 つでも読めなければ 1。**名前解決を外す**のは、リゾルバが遅い環境でも
 /// プロキシとしては動く (そしてそれ自体が測りたい数字) ため。
 fn check_environment() -> i32 {
+    // `--check | head` のように読み手が先に閉じても、パニックせずに黙って終わる (T.28.48)
+    signal::quiet_on_closed_pipe();
     println!("rust-http-proxy {} --check", proxy_server::VERSION);
     // どの最適化で作ったバイナリか (cargo のプロファイル名。T.28.42)
     println!("build profile: {}", proxy_server::BUILD);

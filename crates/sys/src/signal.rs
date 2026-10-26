@@ -35,7 +35,23 @@ mod imp {
     }
 
     pub const SIGINT: c_int = 2;
+    pub const SIGPIPE: c_int = 13;
     pub const SIGTERM: c_int = 15;
+    /// `signal(2)` の既定の扱い (`SIG_DFL`)
+    pub const SIG_DFL: usize = 0;
+}
+
+/// 読み手が先に閉じたパイプへ書いたら、ふつうの CLI と同じく**黙って終わる**ようにする
+/// (`SIGPIPE` を既定の扱いに戻す。T.28.48)。Rust は起動時に `SIGPIPE` を無視にするので、
+/// `rust-http-proxy --check | head` は `println!` が `EPIPE` でパニックしていた。
+/// **印字して終わる口 (`--check`) だけで呼ぶ** (プロキシとして動くときはソケットの `EPIPE` を
+/// エラーとして受け取りたいので、無視のままにする)。
+pub fn quiet_on_closed_pipe() {
+    #[cfg(unix)]
+    // SAFETY: シグナルの扱いを既定に戻すだけで、ハンドラは登録しない
+    unsafe {
+        imp::signal(imp::SIGPIPE, imp::SIG_DFL);
+    }
 }
 
 /// バラストを切り詰めて即座に終了する (async-signal-safe)。

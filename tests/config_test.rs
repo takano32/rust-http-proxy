@@ -724,3 +724,34 @@ fn test_integration_build_profile_is_shown_in_version_check_and_status() {
         &status[status.len().saturating_sub(200)..]
     );
 }
+
+/// `--check` の読み手が先に閉じても (`--check | head -1`)、パニックせずに黙って終わる (T.28.48)。
+/// 以前は `println!` が `EPIPE` で `failed printing to stdout` のパニックを出していた。
+#[test]
+fn test_integration_check_is_quiet_when_the_reader_closes_early() {
+    use std::io::Read;
+    use std::process::Stdio;
+    let dir = std::env::temp_dir().join(format!("rhp-t2848-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
+        .arg("--check")
+        .env("HOME", &dir)
+        .env("XDG_CACHE_HOME", &dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("--check が動かない");
+    // 1 行目の分だけ読んで閉じる (`head -1` と同じ)
+    let mut out = child.stdout.take().unwrap();
+    let mut first = [0u8; 16];
+    let _ = out.read(&mut first);
+    drop(out);
+    let mut err = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    let status = child.wait().unwrap();
+    assert!(!err.contains("panicked"), "{}", err);
+    // 終わり方は「書けたので 0」か「SIGPIPE で黙って終わる」のどちらか (パニックの 101 ではない)
+    assert_ne!(status.code(), Some(101), "{:?}: {}", status, err);
+    let _ = std::fs::remove_dir_all(&dir);
+}
