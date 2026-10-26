@@ -163,7 +163,7 @@ fn test_integration_write_endpoints_need_an_own_host_name() {
     )
     .unwrap();
     cfg.keepalive = Duration::from_secs(2);
-    cfg.allow_local = true;
+    cfg.allow_local = rust_http_proxy::acl::AllowLocal::On;
     let port = start_test_proxy_with_cache(cfg, cache_cfg("rhp-t2840-own-name"));
     let host = format!("127.0.0.1:{}", origin_port);
     let url = format!("http://{}/asset", host);
