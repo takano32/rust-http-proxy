@@ -117,3 +117,25 @@ fn test_integration_bad_requests_warn_once_per_reason_and_self_requests_stay_qui
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 壊れた要求行の WARN に載るのは先頭 256 バイトと全体の長さだけ (T.28.38)。
+/// 行の数は T.28.9 で 1 分 1 行にしたが、1 行の長さは要求行 (最大 64 KiB) のままだった。
+#[test]
+fn test_integration_a_long_malformed_request_line_is_clipped_in_the_log() {
+    let dir = home("clip");
+    let proxy = ProxyProcess::start(&dir);
+    let _ = proxy.drain_log(Duration::from_millis(300));
+    // 空白の無い 60 KiB の 1 語 (`request_line`)
+    let mut req = vec![b'A'; 60 * 1024];
+    req.extend_from_slice(b"\r\n\r\n");
+    assert!(send_raw(proxy.port, &req).starts_with("HTTP/1.1 400 "));
+    let lines = proxy.drain_log(Duration::from_millis(500));
+    let warn: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("malformed request line"))
+        .collect();
+    assert_eq!(warn.len(), 1, "{:#?}", lines);
+    assert!(warn[0].len() <= 512, "WARN が {} B", warn[0].len());
+    assert!(warn[0].contains("(61440 bytes)"), "{}", warn[0]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

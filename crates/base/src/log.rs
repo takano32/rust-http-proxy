@@ -522,6 +522,29 @@ impl std::fmt::Display for Skipped {
     }
 }
 
+/// ログに載せる、相手が長さを決められる文字列 (壊れた要求行など)。`Display` は先頭
+/// [`CLIP_BYTES`] バイトまでを `{:?}` の形で書き、それより長ければ全体の長さを添える (T.28.38)。
+/// 1 行の長さを相手に決めさせない (T.28.9 で行の数は 1 分 1 行にしたが、長さは 64 KiB まで出ていた)。
+#[derive(Debug, Clone, Copy)]
+pub struct Clip<'a>(pub &'a str);
+
+/// [`Clip`] が載せる長さの上限 (バイト)。
+pub const CLIP_BYTES: usize = 256;
+
+impl std::fmt::Display for Clip<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = self.0;
+        if s.len() <= CLIP_BYTES {
+            return write!(f, "{:?}", s);
+        }
+        let mut cut = CLIP_BYTES;
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        write!(f, "{:?}... ({} bytes)", &s[..cut], s.len())
+    }
+}
+
 pub fn access(conn_id: usize, rec: &Access<'_>) {
     if !enabled(Level::Info) {
         return;
@@ -570,6 +593,24 @@ macro_rules! log_trace {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// T.28.38: 長い文字列は先頭 256 バイトと全体の長さだけ (短いものは `{:?}` のまま)。
+    #[test]
+    fn clip_cuts_long_values_and_keeps_short_ones() {
+        assert_eq!(Clip("GET / HTTP/1.1").to_string(), "\"GET / HTTP/1.1\"");
+        let long = "x".repeat(60 * 1024);
+        let shown = Clip(&long).to_string();
+        assert!(shown.len() < 300, "{}", shown.len());
+        assert!(
+            shown.ends_with("... (61440 bytes)"),
+            "{}",
+            &shown[shown.len() - 30..]
+        );
+        // 文字の途中で切らない
+        let wide = "あ".repeat(200);
+        assert!(Clip(&wide).to_string().ends_with("... (600 bytes)"));
+    }
+
     use super::*;
 
     #[test]

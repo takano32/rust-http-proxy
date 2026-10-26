@@ -496,8 +496,8 @@ pub fn handle_http_parsed(
         ) {
             log_warn!(
                 Some(conn_id),
-                "malformed request line: {:?}{}",
-                request_line.trim(),
+                "malformed request line: {}{}",
+                crate::log::Clip(request_line.trim()),
                 more
             );
         }
