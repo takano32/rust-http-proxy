@@ -524,3 +524,46 @@ fn test_integration_obs_text_in_a_response_header_is_relayed() {
     assert!(head.contains("\r\nX-Name: caf\u{FFFD}\r\n"), "{:?}", head);
     assert_eq!((cl, body), (Some(5), "hello"));
 }
+
+/// **T.28.36**: HEAD の応答も GET と同じ TE の行を返す。最後が chunked でない並びはそのまま、
+/// chunked で終わる並びは `Transfer-Encoding: chunked` (GET はほどいて包み直す)。HTTP/1.0 へは落とす。
+#[test]
+fn test_integration_head_keeps_the_transfer_encoding_line() {
+    let proxy = start_test_proxy(proxy_config());
+    for (te, want) in [
+        ("gzip", "Transfer-Encoding: gzip"),
+        ("gzip, chunked", "Transfer-Encoding: chunked"),
+    ] {
+        let (origin, _, _) = start_te_cl_origin(te);
+        let head = |method: &str, version: &str| {
+            let resp = raw_get(
+                proxy,
+                &format!(
+                    "{} http://127.0.0.1:{}/te HTTP/{}\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                    method, origin, version, origin
+                ),
+            );
+            resp.split("\r\n\r\n").next().unwrap_or("").to_string()
+        };
+        let got = head("HEAD", "1.1");
+        assert!(got.starts_with("HTTP/1.1 200"), "{}: {:?}", te, got);
+        assert!(
+            got.contains(&format!("\r\n{}\r\n", want)),
+            "{}: {:?}",
+            te,
+            got
+        );
+        assert!(!got.contains("Content-Length"), "{}: {:?}", te, got);
+        // GET と同じ TE の行
+        let get = head("GET", "1.1");
+        assert!(
+            get.contains(&format!("\r\n{}\r\n", want)),
+            "{}: GET {:?}",
+            te,
+            get
+        );
+        // HTTP/1.0 へは TE を送らない
+        let old = head("HEAD", "1.0");
+        assert!(!old.contains("Transfer-Encoding"), "{}: {:?}", te, old);
+    }
+}

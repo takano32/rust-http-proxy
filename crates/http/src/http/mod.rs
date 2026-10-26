@@ -1183,8 +1183,27 @@ pub fn handle_http_with_headers(
             n_extra = 1;
         }
         Framing::None if head_only => {
-            // HEAD: GET と同じヘッダーを返す (本文は無い)
-            if let Some(v) = headers::response_value(&head, "content-length") {
+            // HEAD: GET と同じヘッダーを返す (本文は無い)。TE があれば GET と同じく、最後が chunked なら
+            // `Transfer-Encoding: chunked`、そうでなければオリジンの並びを 1 行で (HTTP/1.1 のクライアントだけ。
+            // T.28.36)。TE が無ければ `Content-Length`
+            let te = if http11 {
+                Framing::response_transfer_encoding_line(&head)
+            } else {
+                None
+            };
+            if let Some(te) = te {
+                let chunked = te
+                    .rsplit(',')
+                    .next()
+                    .is_some_and(|t| t.trim_ascii().eq_ignore_ascii_case("chunked"));
+                cl_owned = if chunked {
+                    "Transfer-Encoding: chunked".to_string()
+                } else {
+                    te
+                };
+                extra[0] = &cl_owned;
+                n_extra = 1;
+            } else if let Some(v) = headers::response_value(&head, "content-length") {
                 cl_owned = format!("Content-Length: {}", v);
                 extra[0] = &cl_owned;
                 n_extra = 1;

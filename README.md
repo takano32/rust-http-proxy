@@ -139,6 +139,7 @@ CONNECT のポートなし / 0 は 400・読めない chunk の大きさは 400 
 符号化もほどけないので **`502 Bad Gateway`** にします (`/errors` の原因は `other`)。T.28.1 の時点では TE の行を落として
 `chunked` で包み直していた (HTTP/1.0 へは TE なしで閉じて区切っていた) ので、クライアントには符号化済みのバイトが
 TE なしの本文に見えていました。framing-probe にこの 2 形を足してあります。
+HEAD の応答も GET と同じ TE の行を返します (T.28.36。最後が `chunked` の並びは `Transfer-Encoding: chunked`、そうでない並びはそのまま。HTTP/1.0 へは落とす)。
 要求の `Expect` も 2 形 (T.28.3): 本文つきの HTTP/1.1 の要求の **`Expect: 100-continue` (大小無視) には、本文を読む前に
 `HTTP/1.1 100 Continue` を 1 回返し**、`Expect` の行はオリジンへ転送しません (オリジンの 100 は今までどおり読み飛ばします)。
 `100-continue` 以外の期待は `417 Expectation Failed` で閉じます。本文の無い要求と HTTP/1.0 の要求には 100 を返しません。
