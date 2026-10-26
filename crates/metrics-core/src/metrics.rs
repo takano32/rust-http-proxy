@@ -56,6 +56,11 @@ pub struct Interval {
     /// 名乗れない)。`/history` に列として出すのは T15.0 (10) の仕事で、ここは値を
     /// 用意するところまで。**欄は末尾に足す** (既存の並びを動かさない)
     pub wait: crate::history::Window,
+    /// CONNECT 1 本ごとの「確立 (`dns + connect`) − オリジン側のカーネルの RTT」(ms。T.28.45)。
+    /// 成功してカーネルの RTT が読めた本数だけ (`crate::history::Sample::excess` の元)
+    pub excess: crate::history::Window,
+    /// `dns_misses` のうち、名前解決に失敗した試み (原因 `dns`) が払ったぶん (T.28.45)
+    pub dns_fail_misses: u64,
 }
 
 /// ホスト別統計の表と、区間の合計。1 つの鍵で守る。
@@ -467,10 +472,27 @@ impl Metrics {
         // (下の `stats.count`。「その相手に掛かった時間」なので失敗も入れたまま) に残る。
         // 比較はここで 1 回だけ (下の `errors` の分岐が元から見ていたものを使い回す)
         let failed = outcome == HostOutcome::Error;
+        // 「確立 − カーネルの RTT」(T.28.45)。RTT が読めた CONNECT だけ (forward は 0 で来る)。
+        // 確立は `dns + connect` (入口の ACL が先に引いた名前解決も入る = `/recent` の
+        // `ms.dns + ms.connect`)。us で引いて ms に**切り上げ** (5.2 ms を 5 に丸めて閾を
+        // 通さない)、負は 0。引き算 1 回で、時計もシステムコールも増えない
+        let excess = (detail.origin_rtt_us > 0).then(|| {
+            let est_us = detail
+                .dns_ms
+                .saturating_add(detail.connect_ms)
+                .saturating_mul(1_000);
+            est_us
+                .saturating_sub(detail.origin_rtt_us as u64)
+                .div_ceil(1_000)
+        });
+        let dns_failed = detail.cause == Some(ErrCause::Dns);
         // 全体の合計も同じ鍵の内側で足す (原子操作を増やさない)
         for iv in [&mut hosts.total, &mut hosts.interval] {
             iv.dns_misses += detail.dns_misses;
             iv.dns_ms_sum += detail.dns_ms;
+            if dns_failed {
+                iv.dns_fail_misses += detail.dns_misses;
+            }
             if let Some(c) = detail.cause {
                 iv.errors_by_cause[c as usize] += 1;
             }
@@ -481,6 +503,9 @@ impl Metrics {
             } else if let Some(ms) = ms {
                 if connect {
                     iv.connect.observe(ms);
+                    if let Some(x) = excess {
+                        iv.excess.observe(x);
+                    }
                 } else if counted {
                     iv.forward.observe(ms);
                 }

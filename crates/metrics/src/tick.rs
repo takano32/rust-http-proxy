@@ -164,6 +164,9 @@ pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
         dns_warm_max: dns_warm,
         dns_warm_sum: dns_warm,
         gauge_n: 1,
+        // 「確立 − カーネルの RTT」と名前解決に失敗した試みのミス (T.28.45。`/slo` が読む)
+        excess: iv.excess,
+        dns_fail_misses: iv.dns_fail_misses,
     }
 }
 

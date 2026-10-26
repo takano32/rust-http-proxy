@@ -1082,3 +1082,87 @@ fn error_rate_counts_all_requests() {
     assert!((s.error_rate() - 0.25).abs() < 1e-9);
     assert_eq!(s.timed, 0);
 }
+
+/// T.28.45: 区間に「確立 (`dns + connect`) − オリジン側のカーネルの RTT」の窓と、
+/// 名前解決に失敗した試みのミスを積む (`/slo` の判定の元)。
+///
+/// 見るのは: (a) 確立 6 + 20 = 26 ms・RTT 18.3 ms の CONNECT は 7.7 → **8 ms** (切り上げ)、
+/// (b) RTT が RTT より短い確立 (負) は 0、(c) RTT が読めなかった (0) 本と forward と
+/// 失敗した本は窓に入らない (`excess.count <= connect.count`)、(d) 原因 `dns` の失敗の
+/// ミスだけが `dns_fail_misses` に入り、ほかの原因の失敗のミスは入らない。
+#[test]
+fn the_interval_keeps_the_rtt_excess_and_the_misses_of_failed_lookups() {
+    let m = Metrics::new();
+    let ok = |dns_ms, connect_ms, rtt_us| Detail {
+        dns_ms,
+        dns_misses: 1,
+        connect_ms,
+        origin_rtt_us: rtt_us,
+        ..Detail::default()
+    };
+    let took = Some(Duration::from_millis(26));
+    // (a)
+    m.record_host_detail(
+        "connect://a:443",
+        HostOutcome::Bypass,
+        0,
+        took,
+        ok(6, 20, 18_300),
+    );
+    // (b)
+    m.record_host_detail(
+        "connect://a:443",
+        HostOutcome::Bypass,
+        0,
+        took,
+        ok(0, 3, 9_000),
+    );
+    // (c) RTT が読めなかった / forward / 失敗
+    m.record_host_detail(
+        "connect://a:443",
+        HostOutcome::Bypass,
+        0,
+        took,
+        ok(0, 26, 0),
+    );
+    m.record_host_detail(
+        "http://b:80",
+        HostOutcome::Miss,
+        0,
+        took,
+        Detail {
+            first_byte_ms: Some(7),
+            ..ok(0, 26, 18_000)
+        },
+    );
+    // (d) 名前解決の失敗 (ミス 2 回) と、引けたあとの拒否 (ミス 1 回)
+    m.record_host_detail(
+        "connect://nx:25",
+        HostOutcome::Error,
+        0,
+        Some(Duration::from_millis(40)),
+        Detail {
+            dns_ms: 40,
+            dns_misses: 2,
+            cause: Some(ErrCause::Dns),
+            ..Detail::default()
+        },
+    );
+    m.record_host_detail(
+        "connect://rst:25",
+        HostOutcome::Error,
+        0,
+        Some(Duration::from_millis(40)),
+        Detail {
+            cause: Some(ErrCause::Refused),
+            ..ok(5, 35, 30_000)
+        },
+    );
+    let iv = m.take_interval();
+    assert_eq!(iv.connect.count, 3, "確立は今までどおり 3 本");
+    assert_eq!(iv.excess.count, 2, "RTT が読めた成功の CONNECT だけ");
+    assert_eq!((iv.excess.ms_sum, iv.excess.ms_max), (8, 8), "8 + 0");
+    assert_eq!(iv.dns_misses, 1 + 1 + 1 + 1 + 2 + 1);
+    assert_eq!(iv.dns_fail_misses, 2, "原因 `dns` の失敗のミスだけ");
+    assert_eq!(m.totals().dns_fail_misses, 2, "通算にも入る");
+}

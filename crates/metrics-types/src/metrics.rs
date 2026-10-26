@@ -483,6 +483,11 @@ pub struct Detail {
     /// **`connect_ms` が 1,000 ms 台の接続はここが 1 以上**になる。
     /// forward は**プールが接続を張ったときだけ**値が入る (使い回した要求は 0)
     pub syn_retrans: u8,
+    /// オリジン側のカーネルの RTT (us。T.28.45)。**CONNECT のトンネルの終わり**に
+    /// `tunnel::report` が読んだ `tcpi_rtt` (`/recent` の `rtt_ms.origin` と同じ値) を運ぶだけで、
+    /// 新しいシステムコールは無い。`0` は「読めなかった / forward」。
+    /// [`Metrics::record`] が `dns_ms + connect_ms − これ` を 5 秒の標本の `excess` の窓に入れる
+    pub origin_rtt_us: u32,
 }
 
 /// 1 要求 (1 本) の段階ごとの待ち時間 (ms。T14.3 (1))。

@@ -90,7 +90,7 @@ fn history_json(port: u16) -> String {
     endpoint_json(port, "/history?res=5")
 }
 
-/// `keys` は 43 個で T15.0 の 8 列と T16.0 の 3 列が末尾、`key_kinds` は同じ長さで 6 種類しか出ない。
+/// `keys` は 48 個で T15.0 の 8 列・T16.0 の 3 列・T.28.45 の 5 列が末尾、`key_kinds` は同じ長さで 6 種類しか出ない。
 #[test]
 fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     let (port, _metrics) = start_test_proxy_with_history(proxy_config(), TICK);
@@ -98,7 +98,7 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     let keys = str_array(&json, "keys");
     let kinds = str_array(&json, "key_kinds");
 
-    assert_eq!(keys.len(), 43, "{:?}", keys);
+    assert_eq!(keys.len(), 48, "{:?}", keys);
     assert_eq!(kinds.len(), keys.len(), "keys {:?} kinds {:?}", keys, kinds);
     assert_eq!(
         &keys[32..40],
@@ -116,9 +116,21 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     );
     // T16.0 で足した 3 列 (`dns_warm` の最大と、平均を出すための合計と標本数)
     assert_eq!(
-        &keys[40..],
+        &keys[40..43],
         &["dns_warm_max", "dns_warm_sum", "gauge_n"],
         "T16.0 も末尾に足す"
+    );
+    // T.28.45 で足した 5 列 (「確立 − カーネルの RTT」の窓と、名前解決に失敗した試みのミス)
+    assert_eq!(
+        &keys[43..],
+        &[
+            "excesses",
+            "excess_ms_sum",
+            "excess_ms_max",
+            "excess_buckets",
+            "dns_fail_misses"
+        ],
+        "T.28.45 も末尾に足す"
     );
     // 既存の綴りが 1 つも変わっていないこと (読む側は名前で引く)
     assert_eq!(keys[0], "t");
@@ -265,6 +277,52 @@ fn test_integration_request_deltas_count_only_their_own_interval() {
         "bytes_delta の合計 {} が通算を越えた",
         bytes
     );
+}
+
+/// **T.28.45**: 閉じた CONNECT 1 本が `excesses` (「確立 − カーネルの RTT」の窓) に入る。
+///
+/// 手元の lo は RTT が数十 us で確立も 0〜1 ms なので値そのものは 0〜1 ms。見るのは配線:
+/// トンネルの終わりに読んだオリジン側の RTT が区間の窓まで届き、`excesses` が
+/// `connects` を越えないこと (RTT が読めた成功の本だけ)。
+#[test]
+fn test_integration_a_closed_tunnel_lands_in_the_rtt_excess_window() {
+    use std::io::Write as _;
+    let echo_port = start_echo_server();
+    let (port, _metrics) = start_test_proxy_with_history(proxy_config(), TICK);
+    wait_until(|| !rows(&history_json(port)).is_empty(), "最初の標本");
+    {
+        let mut t = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        t.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        t.write_all(
+            format!(
+                "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                echo_port, echo_port
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let head = read_connect_response(&mut t);
+        assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
+    }
+    let keys = str_array(&history_json(port), "keys");
+    wait_until(
+        || {
+            rows(&history_json(port))
+                .iter()
+                .any(|r| col(&keys, r, "excesses") >= 1)
+        },
+        "閉じたトンネルが excesses に入る",
+    );
+    let json = history_json(port);
+    let (mut excesses, mut connects) = (0, 0);
+    for row in rows(&json) {
+        let (x, c) = (col(&keys, &row, "excesses"), col(&keys, &row, "connects"));
+        assert!(x <= c, "excesses {} > connects {}: {:?}", x, c, row);
+        assert_eq!(col(&keys, &row, "dns_fail_misses"), 0, "{:?}", row);
+        excesses += x;
+        connects += c;
+    }
+    assert_eq!((excesses, connects), (1, 1));
 }
 
 /// `/status` の `dns` の中の `warm` (同じ綴りの鍵が他にもあるので切り出してから引く)。

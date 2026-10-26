@@ -390,6 +390,9 @@ fn report(
     // CONNECT のホストと SNI の食い違い (T14.38)。旗は中継の入口で 1 回だけ立ててあり、
     // ここはホスト別統計が既に取る鍵の内側へ運ぶだけ (原子もシステムコールも増えない)
     detail.sni_mismatch = o.sni_mismatch;
+    // オリジン側のカーネルの RTT を区間の「確立 − RTT」の窓へ運ぶ (T.28.45)。上で個票に
+    // 渡したのと同じ値で、読み直さない
+    detail.origin_rtt_us = rtt_us[ORIGIN_SIDE];
     // 自己ベンチ (T14.43) のトンネルは合計にも足さない (`/hosts` と同じ理由)
     if !crate::selfbench::is_target(&o.addr_str) {
         o.metrics.add_bytes(transferred);

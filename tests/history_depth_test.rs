@@ -15,13 +15,15 @@ mod common;
 use common::*;
 use rust_http_proxy::history::{CAPACITY, DEFAULT_N, History, RESOLUTIONS, Sample};
 
-/// 受け入れ基準のメモリ上限 (**3.25 MiB**)。
+/// 受け入れ基準のメモリ上限 (**3.81 MiB**)。
 ///
 /// T14.32 の受け入れ基準は 2.5 MiB で、標本 1 本が 504 B のときの数字だった。
 /// T15.0 (10) で `wait` の窓 16 項目 + 4 列 = **1 本 +160 B** (664 B) になったので、
 /// 5 秒のリングのぶん (160 B × 4,320 = 0.66 MiB) を足して引き直してある
-/// (余裕は T14.32 のときと同じ 0.4 MiB 強)。
-const MAX_GROWTH: usize = 3_407_872;
+/// (余裕は T14.32 のときと同じ 0.4 MiB 強)。T16.0 の 3 列で 688 B、
+/// T.28.45 の「確立 − RTT」の窓 16 項目 + `dns_fail_misses` で **1 本 +136 B** (824 B) に
+/// なったので、136 B × 4,320 = 587,520 B を同じ作法で足した (余裕は 0.42 MiB のまま)。
+const MAX_GROWTH: usize = 3_995_392;
 
 /// `.rrd` の固定の大きさ (版 3。T14.14)。
 const RRD_SIZE: u64 = 8 * 1024 * 1024;

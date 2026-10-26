@@ -51,15 +51,19 @@ fn keeps_the_newest_samples_in_order() {
     // 標本の配列の閉じ方は変えず、その**後ろ**に閉じた接続の分布が付く (T14.6)。
     // 末尾は T15.0 (10) で足した `wait_buckets` と 4 列 (`dns_warm` /
     // `requests_delta` / `bytes_delta` / `active_peak`)、そのうしろが T16.0 の 3 列
-    // (`dns_warm_max` / `dns_warm_sum` / `gauge_n`)
+    // (`dns_warm_max` / `dns_warm_sum` / `gauge_n`)、さらにうしろが T.28.45 の
+    // `excess` の窓 4 列と `dns_fail_misses`
     assert!(
-        json.contains(",0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0,0,0,0,0]],\"closed\":{"),
+        json.contains(
+            ",0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0,0,0,0,0,\
+             0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0]],\"closed\":{"
+        ),
         "{}",
         &json[json.len() - 600..]
     );
     // `keys` の隣に同じ長さの `key_kinds` が並ぶ (T15.0 (10))
     assert!(
-        json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\",\"dns_warm_max\",\"dns_warm_sum\",\"gauge_n\"],\"key_kinds\":[\"time\",\"cumulative\","),
+        json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\",\"dns_warm_max\",\"dns_warm_sum\",\"gauge_n\",\"excesses\",\"excess_ms_sum\",\"excess_ms_max\",\"excess_buckets\",\"dns_fail_misses\"],\"key_kinds\":[\"time\",\"cumulative\","),
         "{}",
         &json[..900]
     );
@@ -270,6 +274,12 @@ fn sample_encoding_round_trips() {
     wait.observe(1);
     wait.observe(40);
     wait.observe(4000);
+    // T.28.45 の「確立 − RTT」の窓も、ほかの 3 つと全部違える
+    let mut excess = Window::default();
+    excess.observe(2);
+    excess.observe(60);
+    excess.observe(61);
+    excess.observe(700);
     let s = Sample {
         t: 5,
         requests: 6,
@@ -305,6 +315,8 @@ fn sample_encoding_round_trips() {
         dns_warm_max: 32,
         dns_warm_sum: 33,
         gauge_n: 34,
+        excess,
+        dns_fail_misses: 35,
     };
     let enc = s.encode();
     assert!(
@@ -335,6 +347,9 @@ fn sample_encoding_round_trips() {
         [32, 33, 34],
         "`dns_warm_max` `dns_warm_sum` `gauge_n` の順"
     );
+    // T.28.45 の 17 項目はさらにそのうしろ
+    assert_eq!(Window::decode(&mut d), excess, "`excess` の窓 16 項目");
+    assert_eq!(d.u64(), 35, "`dns_fail_misses`");
 }
 
 /// 版 3 の予備は **60 項目ぶんで始まり、まだ残っている** (T14.14 の受け入れ基準)。
@@ -671,8 +686,9 @@ fn the_new_columns_fit_in_the_record_slack_and_version3_records_still_decode() {
     let enc = s.encode();
     // (a)
     assert_eq!(
-        SAMPLE_ITEMS, 86,
-        "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列"
+        SAMPLE_ITEMS - 17,
+        86,
+        "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列 (+ T.28.45 の 17)"
     );
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
     assert!(
@@ -710,5 +726,87 @@ fn the_new_columns_fit_in_the_record_slack_and_version3_records_still_decode() {
         },
         back,
         "手前の項目は 1 つもずれない"
+    );
+}
+
+/// T.28.45 の 2 つ (`excess` = 接続ごとの「確立 − カーネルの RTT」の窓と
+/// `dns_fail_misses` = 名前解決に失敗した試みのミス) も**レコードの余白に足した**ので
+/// `.rrd` の版は上がらない。
+///
+/// 見るのは 4 つ: (a) 103 項目が 1 レコードに収まり予備が残る、(b) T.28.45 より前の
+/// 86 項目のレコード (末尾はゼロ埋め) を読むと 2 つが 0 (= 空の窓) で、手前は 1 つもずれない、
+/// (c) 値を入れた標本も往復する、(d) 粗い解像度へは `connect` と同じく足し合わせ、
+/// `/history` の列は**末尾**に 5 つ (`excesses` `excess_ms_sum` `excess_ms_max`
+/// `excess_buckets` `dns_fail_misses`)。
+#[test]
+fn the_rtt_excess_window_fits_in_the_slack_and_older_records_read_it_as_empty() {
+    let mut s = sample(1_700_000_000);
+    s.connect.observe(30);
+    s.excess.observe(3);
+    s.excess.observe(70);
+    s.dns_misses = 4;
+    s.dns_fail_misses = 3;
+    s.gauge_n = 1;
+    let enc = s.encode();
+    // (a)
+    assert_eq!(
+        SAMPLE_ITEMS, 103,
+        "86 + `excess` の窓 16 + `dns_fail_misses` 1"
+    );
+    assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
+    assert!(
+        enc.len() <= crate::rrd::SAMPLE_RECORD - 4 && SAMPLE_SPARE_ITEMS >= 1,
+        "{} B、予備 {} 項目",
+        enc.len(),
+        SAMPLE_SPARE_ITEMS
+    );
+    // (c)
+    assert_eq!(Sample::decode(&enc), Some(s));
+    // (b) T.28.45 より前の 86 項目
+    let mut old = enc[..86 * 8].to_vec();
+    old.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
+    let back = Sample::decode(&old).expect("T.28.45 より前のレコードも読める");
+    assert_eq!((back.excess, back.dns_fail_misses), (Window::default(), 0));
+    assert_eq!(
+        Sample {
+            excess: Window::default(),
+            dns_fail_misses: 0,
+            ..s
+        },
+        back,
+        "手前の項目は 1 つもずれない"
+    );
+    // (d) 畳むと足し合わせ
+    let mut t = sample(1_700_000_005);
+    t.excess.observe(1);
+    t.dns_fail_misses = 2;
+    let agg = Sample::downsample(&[s, t], 1_700_000_000);
+    assert_eq!(agg.excess.count, 3);
+    assert_eq!(agg.excess.ms_max, 70);
+    assert_eq!(agg.excess.ms_sum, 74);
+    assert_eq!(agg.dns_fail_misses, 5);
+    let n = KEYS.len();
+    assert_eq!(
+        &KEYS[n - 5..],
+        &[
+            "excesses",
+            "excess_ms_sum",
+            "excess_ms_max",
+            "excess_buckets",
+            "dns_fail_misses"
+        ]
+    );
+    assert_eq!(
+        &KEY_KINDS[n - 5..],
+        &["delta", "delta", "peak", "buckets", "delta"]
+    );
+    // 行の末尾にその 5 列が並ぶ
+    let h = History::default();
+    h.push(s);
+    let json = h.to_json();
+    assert!(
+        json.contains(",2,73,70,[0,0,1,0,0,0,1,0,0,0,0,0,0],3]"),
+        "{}",
+        json
     );
 }

@@ -42,7 +42,7 @@ pub use crate::window::{CAPACITY, DEFAULT_N, INTERVAL, RESOLUTIONS, WINDOW_BOUND
 /// 2. [`Sample::encode`] の末尾に `u64` を 1 つ足す (= 予備の先頭を 1 つ使う)
 /// 3. [`Sample::decode`] の末尾で読む (古いレコードはそこがゼロ埋めなので 0 になる)
 /// 4. この数を増やす ([`Sample::encode`] の `debug_assert` と下の `const` が見張る)
-pub const SAMPLE_ITEMS: usize = 86;
+pub const SAMPLE_ITEMS: usize = 103;
 
 /// **版 3 を始めた時点の**固定の欄の数 (T14.14 のときの [`SAMPLE_ITEMS`])。
 ///
@@ -148,11 +148,26 @@ pub struct Sample {
     /// `(値, 1)` として読む ([`Sample::gauge_weight`])
     pub dns_warm_sum: u64,
     pub gauge_n: u64,
+    /// その区間に閉じた CONNECT 1 本ごとの **「確立 − オリジン側のカーネルの RTT」** (ms。T.28.45)。
+    ///
+    /// 確立は `dns + connect` の段 (入口の ACL が先に引いた名前解決も含む = `/recent` の
+    /// `ms.dns + ms.connect`)、RTT はトンネルの終わりに読む `tcpi_rtt` (`/recent` の
+    /// `rtt_ms.origin`)。差を ms に**切り上げ**、負なら 0。**RTT が読めなかった接続と
+    /// 失敗した接続は入れない**ので `excess.count <= connect.count`。
+    /// [`Self::connect`] の p50 は 1 RTT = 距離で決まる (tokyo は 18 ms) ので、`/slo` の
+    /// `connect_p50_ms` / `connect_p95_ms` はこちらで判定する (T.28.16 段 1 の模型)。
+    /// **T.28.45 より前のレコードはゼロ埋め** = 空の窓で読み戻る
+    pub excess: Window,
+    /// その区間の [`Self::dns_misses`] のうち、**名前解決に失敗した試み** (`errors_by_cause`
+    /// の `dns`) が払ったミス (T.28.45)。`/slo` の `dns_miss_per_connect` は
+    /// `(dns_misses − dns_fail_misses) ÷ 確立` (メール宛の総当たりの NXDOMAIN を数えない)。
+    /// T.28.45 より前のレコードは 0
+    pub dns_fail_misses: u64,
 }
 
 /// `/history` の 1 標本の列名 (この順で [`Sample::push_row`] が値を並べる)。
 /// **キーを標本ごとに繰り返さない**ため、JSON は配列の配列にしてある (T12.4 (3))。
-pub const KEYS: [&str; 43] = [
+pub const KEYS: [&str; 48] = [
     "t",
     "requests",
     "bytes",
@@ -197,6 +212,12 @@ pub const KEYS: [&str; 43] = [
     "dns_warm_max",
     "dns_warm_sum",
     "gauge_n",
+    // T.28.45 で末尾に足したもの (`connect` と同じ 4 列の形 + 1 列)
+    "excesses",
+    "excess_ms_sum",
+    "excess_ms_max",
+    "excess_buckets",
+    "dns_fail_misses",
 ];
 
 /// [`KEYS`] と**同じ長さ・同じ並び**の「その列の読み方」(`/history` の `key_kinds`。T15.0 (10))。
@@ -259,6 +280,11 @@ pub const KEY_KINDS: [&str; KEYS.len()] = [
     "peak",       // dns_warm_max
     "delta",      // dns_warm_sum
     "delta",      // gauge_n
+    "delta",      // excesses
+    "delta",      // excess_ms_sum
+    "peak",       // excess_ms_max
+    "buckets",    // excess_buckets
+    "delta",      // dns_fail_misses
 ];
 
 impl Sample {
@@ -307,7 +333,7 @@ impl Sample {
         self.wait.push_json(out);
         let _ = write!(
             out,
-            ",{},{},{},{},{},{},{}]",
+            ",{},{},{},{},{},{},{}",
             self.dns_warm,
             self.requests_delta,
             self.bytes_delta,
@@ -317,6 +343,9 @@ impl Sample {
             self.dns_warm_sum,
             self.gauge_n
         );
+        // T.28.45 で末尾に足したもの (`connect` と同じ 4 列の形 + 1 列)
+        self.excess.push_json(out);
+        let _ = write!(out, ",{}]", self.dns_fail_misses);
     }
 
     /// ゲージを畳むときの重み (= その行に畳んだ 5 秒の標本の数。T16.0)。
@@ -379,6 +408,9 @@ impl Sample {
             .u64(self.dns_warm_max)
             .u64(self.dns_warm_sum)
             .u64(self.gauge_n);
+        // T.28.45 で足した 17 項目 (`decode` と同じ順)
+        self.excess.encode(&mut e);
+        e.u64(self.dns_fail_misses);
         debug_assert_eq!(e.0.len(), SAMPLE_ITEMS * 8, "固定の欄の数と食い違っている");
         e.0
     }
@@ -434,6 +466,9 @@ impl Sample {
         s.dns_warm_max = d.u64();
         s.dns_warm_sum = d.u64();
         s.gauge_n = d.u64();
+        // T.28.45。それより前のレコードはここがゼロ埋めなので空の窓と 0 で読み戻る
+        s.excess = Window::decode(&mut d);
+        s.dns_fail_misses = d.u64();
         Some(s)
     }
 
@@ -466,11 +501,14 @@ impl Sample {
         let mut forward = Window::default();
         // 利用者が待つ時間も区間の値なので `connect` と同じ畳み方 (T15.0 (10))
         let mut wait = Window::default();
+        // 「確立 − RTT」も区間の値 (T.28.45)
+        let mut excess = Window::default();
         let mut errors_by_cause = [0u64; crate::metrics::ERR_CAUSES];
         for s in window {
             connect.merge(&s.connect);
             forward.merge(&s.forward);
             wait.merge(&s.wait);
+            excess.merge(&s.excess);
             for (a, b) in errors_by_cause.iter_mut().zip(s.errors_by_cause.iter()) {
                 *a += *b;
             }
@@ -519,6 +557,8 @@ impl Sample {
             dns_warm_max: max(|s| s.dns_warm_max.max(s.dns_warm)),
             dns_warm_sum,
             gauge_n,
+            excess,
+            dns_fail_misses: sum(|s| s.dns_fail_misses),
         }
     }
 }
