@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-http"
-version = "0.28.35"
+version = "0.28.36"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-server"
-version = "0.28.35"
+version = "0.28.36"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "rust-http-proxy"
-version = "0.28.35"
+version = "0.28.36"
 dependencies = [
  "proxy-endpoints",
  "proxy-run",
