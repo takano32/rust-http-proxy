@@ -9,6 +9,12 @@
 1 枚 (256 KiB) に収まってしまい、続きを追う枝を通らない。そこで**プロキシの頁の切り方
 (`Profile::rows_within_page` と `next_offset`) を写した偽のサーバー**を 127.0.0.1 に立てて回す。
 標本の中身は架空 (時刻と詰め物だけ)。デプロイ先には行かない。
+
+**この 1 本の試験は並べて回す** (T.28.29。下の `load_tests`)。時間のほとんどは `collect-deployed.sh` を
+起こす 41 回 (1 回 0.6〜2 秒。中で `python3` と `curl` を合わせて 20 本ほど起こす) で、偽のサーバーを立てる
+のは数 ms なので、使い回しても縮まない。試験どうしは偽のサーバー・一時ディレクトリ・環境変数の
+写しをそれぞれ持ち、何も分け合わないので、`CPU の数` 本 (`COLLECT_TEST_JOBS` で変えられる。
+`1` で今までどおり 1 本ずつ) を同時に回し、結果は元の順に流し直す (`-v` の並びも同じ)。
 """
 
 import json
@@ -18,6 +24,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -914,6 +921,101 @@ class CollectFromServerTest(unittest.TestCase):
         d, out = self.run_from_server(listing)
         self.assertIn("BEFORE=%s/%s-snapshot.json" % (d, self.SHUTDOWN), out)
         self.assertNotIn("ZERO=", out)
+
+
+# --- 並べて回す (T.28.29) ---------------------------------------------------------
+
+class _Recorder(unittest.TestResult):
+    """1 本の試験の結果 (成功・失敗・飛ばし・subTest) を控え、あとで本物の結果へ同じ順に流し直す。"""
+
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    def _keep(name):  # noqa: N805 (クラスの中で使う小さな作り手)
+        def keep(self, *args):
+            self.events.append((name, args))
+        return keep
+
+    addSuccess = _keep("addSuccess")
+    addError = _keep("addError")
+    addFailure = _keep("addFailure")
+    addSkip = _keep("addSkip")
+    addExpectedFailure = _keep("addExpectedFailure")
+    addUnexpectedSuccess = _keep("addUnexpectedSuccess")
+    addSubTest = _keep("addSubTest")
+    addDuration = _keep("addDuration")  # 3.12 から (それより前は呼ばれない)
+    del _keep
+
+
+def _record(test):
+    rec = _Recorder()
+    test.run(rec)
+    return rec.events
+
+
+class _ParallelSuite(unittest.TestSuite):
+    """中の試験を `jobs` 本ずつ同時に回し、結果は元の順に `result` へ流す。
+
+    クラスの準備 (`setUpClass` など) は持たない試験だけを入れる (`load_tests` で確かめる)。
+    `result.startTest` から `stopTest` までは元の順に 1 本ずつ呼ぶので、数・`-v` の並び・失敗の文面は
+    1 本ずつ回したときと同じ。`-f` (failfast) や Ctrl-C で `shouldStop` が立てば、まだ始まっていない
+    ぶんは回さない。
+    """
+
+    def __init__(self, tests, jobs):
+        super().__init__(tests)
+        self.jobs = jobs
+
+    def run(self, result, debug=False):
+        tests = list(self)
+        if not tests:
+            return result
+        # 前のモジュール・クラスの後片付け (親の `TestSuite.run` が 1 本ずつのときにやること)
+        self._tearDownPreviousClass(tests[0], result)
+        self._handleModuleFixture(tests[0], result)
+        result._previousTestClass = tests[-1].__class__
+        with ThreadPoolExecutor(max_workers=self.jobs) as pool:
+            futures = [pool.submit(_record, t) for t in tests]
+            for test, fut in zip(tests, futures):
+                if result.shouldStop:
+                    for f in futures:
+                        f.cancel()
+                    break
+                events = fut.result()
+                result.startTest(test)
+                for name, args in events:
+                    method = getattr(result, name, None)
+                    if method is not None:
+                        method(*args)
+                result.stopTest(test)
+        return result
+
+
+def _own_fixture(cls):
+    return any(getattr(cls, n).__func__ is not getattr(unittest.TestCase, n).__func__
+               for n in ("setUpClass", "tearDownClass"))
+
+
+def load_tests(loader, tests, pattern):
+    flat = []
+
+    def walk(s):
+        for t in s:
+            if isinstance(t, unittest.TestSuite):
+                walk(t)
+            else:
+                flat.append(t)
+
+    walk(tests)
+    try:
+        jobs = int(os.environ.get("COLLECT_TEST_JOBS") or os.cpu_count() or 1)
+    except ValueError:
+        jobs = 1
+    if jobs <= 1 or len(flat) <= 1 or any(_own_fixture(type(t)) for t in flat) \
+            or not all(isinstance(t, unittest.TestCase) for t in flat):
+        return tests
+    return _ParallelSuite(flat, jobs)
 
 
 if __name__ == "__main__":
