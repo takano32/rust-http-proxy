@@ -146,7 +146,7 @@ def latency_line(label, history, prefix, last=None):
         # **「0 本」と「その列が無い」と「部ごと入っていない」は 3 つとも別**。
         # `wait` は T.15.0 より前の雪像に無く、0 本と書くと「誰も待っていない」と
         # 読まれる。`history.5` は `/snapshot` が大きいときに落とす 3 つのうちの 1 つ
-        # (`crates/endpoints/src/endpoints/recent.rs` の `DROP_ORDER`) なので、
+        # (`crates/endpoints/src/endpoints/recent/snapshot.rs` の `DROP_ORDER`) なので、
         # 落ちたときに「その列は無い」と書くと「この版は測っていない」と読まれる (T.15.0 (15))
         keys = history.get("keys") or []
         if not keys:
@@ -394,7 +394,7 @@ def truncated_parts(snap):
     """**応答が 256 KiB で切れている部**を (名前, 出た件数, 全件) で並べる。
 
     雪像の top-level の `dropped` は「4 MiB を越えたので**部ごと**落とした」の意味で
-    (`crates/endpoints/src/endpoints/recent.rs`)、部の中の打ち切りは載らない。
+    (`crates/endpoints/src/endpoints/recent/snapshot.rs`)、部の中の打ち切りは載らない。
     2026-09-18 の雪像は `dropped` が空のまま `recent` / `hosts` / `profile` の 3 つが
     切れていて、要約からは「CPU は 1 日ぶんでなく 456 標本ぶん」が読めなかった。
     """

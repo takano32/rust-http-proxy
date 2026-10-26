@@ -499,7 +499,7 @@ class Anonymizer:
 
 # ---------------------------------------------------------------- 入力を 1 枚にする
 
-# `/snapshot` の部の並び (`crates/endpoints/src/endpoints/recent.rs` の `snapshot()` と同じ)
+# `/snapshot` の部の並び (`crates/endpoints/src/endpoints/recent/snapshot.rs` の `snapshot()` と同じ)
 PART_ORDER = ("status", "status_errors", "status_dns", "history.5", "history.60", "history.3600",
               "dns", "errors", "connections", "recent", "hosts", "hosts_series", "clients",
               "bursts", "profile", "events", "log")

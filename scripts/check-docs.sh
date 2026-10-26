@@ -32,7 +32,7 @@ W=$(mktemp -d) || exit 1
 trap 'rm -rf "$W"' EXIT
 NG=0
 MOD=crates/endpoints/src/endpoints/mod.rs
-REC=crates/endpoints/src/endpoints/recent.rs
+REC=crates/endpoints/src/endpoints/recent/snapshot.rs
 
 # 2 つの一覧 (整列済み) を突き合わせ、片側にしか無いものを印字する。
 #   diffset <見出し> <左の名前> <左のファイル> <右の名前> <右のファイル>

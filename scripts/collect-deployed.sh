@@ -338,7 +338,7 @@ if [ "$FOLLOW" = 1 ]; then
   FOLLOW_PLAN=$(python3 - "$OUT" <<'PLANPY'
 import json, sys
 
-# 雪像がその部を組むときの引数 + `offset=` (`crates/endpoints/src/endpoints/recent.rs` の `snapshot`)
+# 雪像がその部を組むときの引数 + `offset=` (`crates/endpoints/src/endpoints/recent/snapshot.rs` の `snapshot`)
 # `dns` と `profile` は T.27.1 で足した (`/dns` の `offset=` は 0.27 から。0.25.4 には無い)
 URL = {"recent": "/recent?n=2000&offset=", "hosts": "/hosts?limit=1000&offset=",
        "dns": "/dns?sort=age&limit=4096&offset=", "profile": "/profile?res=5&offset="}
