@@ -748,7 +748,12 @@ fn test_integration_check_is_quiet_when_the_reader_closes_early() {
     let _ = out.read(&mut first);
     drop(out);
     let mut err = String::new();
-    child.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut err)
+        .unwrap();
     let status = child.wait().unwrap();
     assert!(!err.contains("panicked"), "{}", err);
     // 終わり方は「書けたので 0」か「SIGPIPE で黙って終わる」のどちらか (パニックの 101 ではない)
