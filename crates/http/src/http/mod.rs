@@ -419,6 +419,29 @@ pub fn handle_http_with_headers(
     reader: &mut crate::clientio::ClientReader<'_>,
     shared: &Shared<'_>,
 ) -> io::Result<bool> {
+    let req = parse_request_headers(raw_headers, shared.conn_id);
+    handle_http_parsed(
+        client,
+        client_ip,
+        request_line,
+        raw_headers,
+        &req,
+        reader,
+        shared,
+    )
+}
+
+/// [`handle_http_with_headers`] の、ヘッダーを読み終えた (`parse_request_headers` 済みの) 版。
+/// 受け付けの層はヘッダーを 1 回だけなめてここへ渡す (T.28.15)。
+pub fn handle_http_parsed(
+    client: &TcpStream,
+    client_ip: Option<&str>,
+    request_line: &str,
+    raw_headers: &[String],
+    req: &RequestHeaders,
+    reader: &mut crate::clientio::ClientReader<'_>,
+    shared: &Shared<'_>,
+) -> io::Result<bool> {
     let started = Instant::now();
     // 応答ヘッダーと本文の先頭を 1 回の write でまとめて出す (別々に出すと 1 セグメント増える)。
     // どの経路でも最後に flush するので、次の要求の前にバッファは空になる
@@ -426,7 +449,6 @@ pub fn handle_http_with_headers(
     let conn_id = shared.conn_id;
     let cache: &Cache = &shared.cache;
     let metrics: &Metrics = &shared.metrics;
-    let req = parse_request_headers(raw_headers, conn_id);
     // RFC 9112 §5.2: 折り返した (obs-fold) ヘッダーは、中継する側が 400 で断るか
     // SP 1 個に置き換えるかを選べる。置き換えると値が黙って変わるので**断る** (T27.2)。
     // 継続行を捨てていた今までは、オリジンに `X-A: 1` だけが届いていた
@@ -622,7 +644,7 @@ pub fn handle_http_with_headers(
         started,
         conn_id,
         metrics,
-        req: &req,
+        req,
         keep_client,
         head_only,
         mapped: origin.mapped,

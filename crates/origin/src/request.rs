@@ -59,12 +59,26 @@ pub struct RequestHeaders {
 }
 
 pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
+    parse_request_headers_visit(raw_headers, conn_id, |_, _, _| {})
+}
+
+/// [`parse_request_headers`] と同じで、ふつうの行 (obs-fold の継続行を除く) を 1 本ずつ
+/// `visit(行の添字, 名前, 値)` にも渡す (名前と値は前後の空白を落としたもの)。
+///
+/// 受け付けの層 (`serve_one`) が `Via` と `User-Agent` だけを別に見るためのもので、
+/// ヘッダーをなめるのは**この 1 回だけ**になる (今までは `serve_one` が host / CL / TE / Via /
+/// User-Agent を手でなめ、続いてここが全部をなめ直していた。T.28.15)。
+pub fn parse_request_headers_visit(
+    raw_headers: &[String],
+    conn_id: usize,
+    mut visit: impl FnMut(usize, &str, &str),
+) -> RequestHeaders {
     let mut h = RequestHeaders::default();
     // `Transfer-Encoding` は複数の行でも 1 つの並びとして読む (RFC 9110 §5.3)。
     // 最後の符号化が `chunked` か、`chunked` を何回見たか (T27.6)
     let mut te_last_chunked = false;
     let mut te_chunked_count = 0u32;
-    for line in raw_headers {
+    for (index, line) in raw_headers.iter().enumerate() {
         // 行の先頭が SP / HTAB なら直前の行の続き (obs-fold。RFC 9112 §5.2)。
         // 単独のヘッダーとして読むと継続行の値が黙って消える (オリジンには前の行だけが届く)
         // ので、ここでは旗を立てるだけにして呼び出し側に 400 を返させる
@@ -88,6 +102,7 @@ pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestH
         let name = k.trim_ascii();
         let v_trim = v.trim_ascii();
         log_trace!(Some(conn_id), "req header  {}: {}", name, v_trim);
+        visit(index, name, v_trim);
         let is = |want: &str| name.eq_ignore_ascii_case(want);
         if is("host") {
             // 2 本目を見た時点で「重複」の印を立てる (要求の密輸と、どの Host を信じるかの

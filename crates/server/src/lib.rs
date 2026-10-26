@@ -1697,19 +1697,9 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         return Ok(Step::Close(recent::CloseReason::Shutdown));
     }
 
-    // Host の値は行の添字で覚えておき、読み終わってから借用する (複製しない)
-    let mut host_line: Option<usize> = None;
-    // `User-Agent` も行の添字で覚える (`/clients`。T14.7)。**拾うのは接続の最初の要求だけ**で、
-    // 2 要求目からはこの旗が倒れているので、ヘッダー 1 行につき比較 1 回で飛ばせる
-    // (`--lite` では記録しないので端から見ない。Phase 14 の共通の決まり)
-    let want_agent = *served == 0 && !config.lite;
-    let mut agent_line: Option<usize> = None;
-    // 受けた Via に自分の印 (起動ごとの 8 桁 16 進) があるか = 自分を通った要求が戻ってきた
-    let mut via_loop = false;
     // ヘッダー全体の大きさ (要求行を含む)
     let mut header_bytes = request_line.len();
-    // 本文付きの要求だけ、読み取りタイムアウトを本来の値に戻す
-    let mut has_body = false;
+    // ヘッダーは読むだけで、なめるのは読み終えてからの 1 回 (`parse_request_headers_visit`。T.28.15)
     loop {
         let index = scratch.used;
         // 要求の途中なので、空振りしても預けない (待ち直す)
@@ -1767,22 +1757,26 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             reject(client, 431, "Request Header Fields Too Large")?;
             return Ok(Step::Close(recent::CloseReason::Shutdown));
         }
-        if let Some((k, v)) = scratch.lines[index].split_once(':') {
-            let k = k.trim();
-            if host_line.is_none() && k.eq_ignore_ascii_case("host") {
-                host_line = Some(index);
-            } else if k.eq_ignore_ascii_case("content-length")
-                || k.eq_ignore_ascii_case("transfer-encoding")
-            {
-                has_body = true;
-            } else if !via_loop && k.eq_ignore_ascii_case("via") {
-                via_loop = via::is_self(v);
-            } else if want_agent && agent_line.is_none() && k.eq_ignore_ascii_case("user-agent") {
-                agent_line = Some(index);
-            }
-        }
         scratch.commit();
     }
+    let raw_headers = scratch.headers();
+    // `User-Agent` は行の添字で覚える (`/clients`。T14.7)。**拾うのは接続の最初の要求だけ**で、
+    // 2 要求目からはこの旗が倒れているので、ヘッダー 1 行につき比較 1 回で飛ばせる
+    // (`--lite` では記録しないので端から見ない。Phase 14 の共通の決まり)
+    let want_agent = *served == 0 && !config.lite;
+    let mut agent_line: Option<usize> = None;
+    // 受けた Via に自分の印 (起動ごとの 8 桁 16 進) があるか = 自分を通った要求が戻ってきた
+    let mut via_loop = false;
+    let req = request::parse_request_headers_visit(raw_headers, conn_id, |i, k, v| {
+        if !via_loop && k.eq_ignore_ascii_case("via") {
+            via_loop = via::is_self(v);
+        } else if want_agent && agent_line.is_none() && k.eq_ignore_ascii_case("user-agent") {
+            agent_line = Some(i);
+        }
+    });
+    // 本文付きの要求だけ、読み取りタイムアウトを本来の値に戻す (`Content-Length` か
+    // `Transfer-Encoding` の行があった。値が読めない `Content-Length` も含む)
+    let has_body = req.content_length.is_some() || req.content_length_invalid || req.te_present;
     // 要求行とヘッダーは keep-alive のアイドル時間で待っている。本文を読むならここで戻す
     if has_body && *read_timeout != Some(config.timeout) {
         client.set_read_timeout(timeout::for_socket(config.timeout))?;
@@ -1793,10 +1787,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     let mut t = tally.get();
     t.up = t.up.saturating_add(header_bytes as u64);
     tally.set(t);
-    let host_header: Option<&str> = host_line
-        .and_then(|i| scratch.lines[i].split_once(':'))
-        .map(|(_, v)| v.trim());
-    let raw_headers = scratch.headers();
+    let host_header: Option<&str> = req.host.as_deref();
     // この 1 要求ぶんの `queue` は使ったら 0 に戻す (T14.3 (1))。`client_read` の
     // **終わりの時計は読まない**: 下の層 (`http::handle_http_with_headers` と
     // `tunnel::open`) が入口で既に `Instant::now()` を読んでいるので、起点だけ渡して
@@ -1921,7 +1912,7 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // 付けたバイトが**トンネルの最初のデータとして宛先へ流れる** (前段がいる構成では要求の密輸)。
     // ここで断れば宛先へは接続もしない (`Step::Connect` に進まない) ので、1 バイトも届かない。
     if is_connect {
-        let h = request::parse_request_headers(raw_headers, conn_id);
+        let h = &req;
         let reason = if h.dup_host {
             Some(metrics::BadRequestReason::DupHost)
         } else if h.obs_fold {
@@ -2103,11 +2094,12 @@ fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         // 旗 1 つだけで、立っていない要求は `Ctx::log` の分岐 1 回で飛ばす
         traced: slot.as_ref().is_some_and(|s| s.traced()),
     };
-    let keep = http::handle_http_with_headers(
+    let keep = http::handle_http_parsed(
         client,
         Some(peer_ip),
         &request_line,
         raw_headers,
+        &req,
         &mut reader,
         &shared,
     )?;
