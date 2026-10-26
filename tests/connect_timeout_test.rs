@@ -94,7 +94,7 @@ fn test_integration_connect_timeout_cuts_the_connect_short() {
 /// この 1 本は「規則の当てはめ」と「その値で 200 が通る煙試験」だけを見る
 /// (既定と `min` のどちらで 5 秒になったかは区別できない)。
 /// 見張っているのは `Config::new` が規則を通ること (下の `assert_eq!`) と、
-/// **その値で普通の CONNECT が今までどおり 200 で通ること**。`crates/server/src/lib.rs` の 1 行
+/// **その値で普通の CONNECT が今までどおり 200 で通ること**。`crates/server/src/conn.rs` の 1 行
 /// (`config.timeout` → `config.connect_timeout`) の見張りは 1 本目
 /// (`…cuts_the_connect_short`) の方で、この 1 本はその 1 行を戻しても通る
 /// (どちらも 5 秒なので区別できない)。規則の 5 通りは `crates/config` の単体テスト
