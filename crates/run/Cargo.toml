@@ -1,6 +1,6 @@
 [package]
 name = "proxy-run"
-version = "0.28.44"
+version = "0.28.48"
 edition = "2024"
 
 [lib]
