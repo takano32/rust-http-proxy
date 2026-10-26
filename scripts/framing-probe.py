@@ -20,6 +20,8 @@ HTTP/1.0 (400)、応答の値の CR / NUL (SP に置き換えて返す)、`Max-F
 
 2026-10-25 に応答の `Transfer-Encoding` (最後が chunked でない) + `Content-Length` を足した (T.28.1):
 CL を捨てて閉じるまでを本文にする。chunked + CL は今までどおり chunked。0.27.8 では前の行が外れる。
+同じ日に TE の行の扱いを足した (T.28.35): HTTP/1.1 へは TE の行を残して閉じて区切り、HTTP/1.0 へは 502。
+T.28.1 の時点ではどちらも TE の行を落としていた (この 2 行が外れる)。
 """
 import argparse
 import json
@@ -113,10 +115,21 @@ def t27_response_cases(origin_port):
         head = resp.split(b"\r\n\r\n", 1)[0]
         return b"\x00" not in head and head.count(b"\r") == head.count(b"\r\n")
 
+    def get10(path):
+        return b"GET http://" + host + path + b" HTTP/1.0\r\nHost: " + host + b"\r\n\r\n"
+
     def until_close(resp):
-        # T.28.1: CL を捨てて閉じるまでを本文にする (再 chunk なので CL は付かない)
+        # T.28.1: CL を捨てて閉じるまでを本文にする (CL は付かない)。
+        # T.28.35: TE の行はオリジンのまま残し、包み直さずに閉じて区切る
         head, _, body = resp.partition(b"\r\n\r\n")
-        return b"content-length" not in head.lower() and b"helloEXTRA" in body
+        lines = head.lower().split(b"\r\n")
+        return (b"content-length" not in head.lower() and b"transfer-encoding: gzip" in lines
+                and b"connection: close" in lines and body == b"helloEXTRA")
+
+    def no_te(resp):
+        # T.28.35: HTTP/1.0 へは TE を送れないので 502 (符号化済みのバイトを本文として渡さない)
+        head, _, body = resp.partition(b"\r\n\r\n")
+        return b"transfer-encoding" not in head.lower() and body == b""
 
     def chunked_wins(resp):
         # chunked と CL が両方なら今までどおり chunked (余分な "EXTRA" は本文に入らない)
@@ -127,6 +140,7 @@ def t27_response_cases(origin_port):
         ("応答の値の CR", get(b"/resp-cr"), 200, clean),
         ("応答の値の NUL", get(b"/resp-nul"), 200, clean),
         ("応答の TE: gzip + CL", get(b"/resp-te-cl"), 200, until_close),
+        ("応答の TE: gzip を HTTP/1.0 へ", get10(b"/resp-te-cl"), 502, no_te),
         ("応答の chunked + CL", get(b"/resp-chunked-cl"), 200, chunked_wins),
     ]
 

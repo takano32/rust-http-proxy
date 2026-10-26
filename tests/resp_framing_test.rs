@@ -390,49 +390,115 @@ fn start_te_cl_origin(te: &'static str) -> (u16, Arc<AtomicUsize>, Arc<AtomicUsi
 
 /// **受け入れ基準 (T.28.1)**: TE (最後が chunked でない) + CL の応答は、CL を捨てて閉じるまでを
 /// 本文として返す。オリジンへの接続は使い回さず (3 要求で 3 本)、キャッシュにも入らない。
+///
+/// **T.28.35**: HTTP/1.1 のクライアントへは TE の行を残し (符号化はほどかずそのまま)、閉じるまでを
+/// 本文にして返す (RFC 9112 §6.1: chunked で終わらない TE の応答は閉じて区切る)。T.28.1 の時点では
+/// TE の行を落として `Transfer-Encoding: chunked` で包み直していたので、クライアントには符号化済みの
+/// バイトが TE なしに見えていた。複数の行は 1 行の並びに畳む。
 #[test]
 fn test_integration_unchunked_transfer_encoding_reads_until_close() {
-    for te in ["gzip", "xchunked", "cheese", "chunked, gzip"] {
+    for (te, want) in [
+        ("gzip", "gzip"),
+        ("xchunked", "xchunked"),
+        ("cheese", "cheese"),
+        ("chunked, gzip", "chunked, gzip"),
+        // 2 行に割った TE (`gzip` の後ろに `br`) は 1 行の並びとして伝える
+        ("gzip\r\nTransfer-Encoding: br", "gzip, br"),
+    ] {
         let (origin_port, conns, reqs) = start_te_cl_origin(te);
-        let dir = format!("shp-it-te-cl-{}", te.replace([',', ' '], "-"));
+        let dir = format!("shp-it-te-cl-{}", want.replace([',', ' '], "-"));
         let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg(&dir));
         for round in 0..3 {
-            let resp = get(proxy_port, origin_port, "/te");
+            // 3 本目はマッピング形式 (先頭を組み立て直す別の経路)
+            let resp = if round == 2 {
+                get_via_proxy(
+                    proxy_port,
+                    &format!("/http/127.0.0.1:{}/te", origin_port),
+                    "proxy.local",
+                )
+            } else {
+                get(proxy_port, origin_port, "/te")
+            };
             let (head, _, body) = split_response(&resp);
             assert!(
                 head.starts_with("HTTP/1.1 200 "),
                 "{} {}: {:?}",
-                te,
+                want,
                 round,
                 resp
             );
             assert!(
                 !head.contains("X-Cache"),
                 "{} {}: 保存された: {:?}",
-                te,
+                want,
                 round,
                 head
             );
-            // HTTP/1.1 のクライアントへは再 chunk で、本文は閉じるまで (CL の 5 B で切らない)
+            // TE はオリジンの並びのまま 1 行、本文は閉じるまで (CL の 5 B で切らず、包み直さない)
+            let te_line = format!("\r\nTransfer-Encoding: {}\r\n", want);
             assert!(
-                head.contains("\r\nTransfer-Encoding: chunked"),
+                format!("{}\r\n", head).contains(&te_line),
                 "{} {}: {:?}",
-                te,
+                want,
+                round,
+                head
+            );
+            assert_eq!(
+                head.matches("Transfer-Encoding").count(),
+                1,
+                "{} {}: {:?}",
+                want,
                 round,
                 head
             );
             assert!(
                 !head.contains("Content-Length"),
                 "{} {}: {:?}",
-                te,
+                want,
                 round,
                 head
             );
-            assert_eq!(body, "a\r\nhelloEXTRA\r\n0\r\n\r\n", "{} {}", te, round);
+            assert!(
+                head.contains("\r\nConnection: close"),
+                "{} {}: {:?}",
+                want,
+                round,
+                head
+            );
+            assert_eq!(body, "helloEXTRA", "{} {}", want, round);
         }
-        assert_eq!(reqs.load(Ordering::SeqCst), 3, "{}", te);
-        assert_eq!(conns.load(Ordering::SeqCst), 3, "{}: 接続を使い回した", te);
+        assert_eq!(reqs.load(Ordering::SeqCst), 3, "{}", want);
+        assert_eq!(
+            conns.load(Ordering::SeqCst),
+            3,
+            "{}: 接続を使い回した",
+            want
+        );
     }
+}
+
+/// **T.28.35**: HTTP/1.0 のクライアントへは TE を送れず (RFC 9112 §6.1)、符号化もほどけないので 502
+/// (TE を落として符号化済みのバイトを本文として渡さない)。オリジンの接続は使い回さず、保存もしない。
+#[test]
+fn test_integration_unchunked_transfer_encoding_is_502_for_http10() {
+    let (origin_port, conns, reqs) = start_te_cl_origin("gzip");
+    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-te-cl-http10"));
+    for round in 0..2 {
+        let resp = raw_get(
+            proxy_port,
+            &format!(
+                "GET http://127.0.0.1:{}/te HTTP/1.0\r\nHost: 127.0.0.1:{}\r\n\r\n",
+                origin_port, origin_port
+            ),
+        );
+        let (head, cl, body) = split_response(&resp);
+        assert!(head.starts_with("HTTP/1.1 502 "), "{}: {:?}", round, resp);
+        assert!(!head.contains("Transfer-Encoding"), "{}: {:?}", round, head);
+        assert_eq!(cl, Some(0), "{}: {:?}", round, head);
+        assert_eq!(body, "", "{}: 符号化済みのバイトが届いた", round);
+    }
+    assert_eq!(reqs.load(Ordering::SeqCst), 2);
+    assert_eq!(conns.load(Ordering::SeqCst), 2, "接続を使い回した");
 }
 
 /// chunked と CL が両方なら今までどおり chunked (1 バイトも変わらない)。

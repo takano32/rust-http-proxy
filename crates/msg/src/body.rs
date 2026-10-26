@@ -102,6 +102,35 @@ impl Framing {
         })
     }
 
+    /// 応答の `Transfer-Encoding` の並びを、クライアントへそのまま伝える 1 行
+    /// (`Transfer-Encoding: gzip, br`。CRLF なし) にする (T.28.35)。並びが空なら `None`。
+    ///
+    /// 最後が chunked でない TE の応答は閉じるまでを本文にして、符号化はほどかずに渡すので、
+    /// TE の行も残さないとクライアントには符号化済みのバイトが TE なしに見える (RFC 9112 §6.1)。
+    /// 複数の行は 1 つの並びとして 1 行に畳み、空の要素は読み飛ばす ([`Te`] と同じ読み方)。
+    /// 値の CR / NUL は SP に置き換える (T27.7 の応答の値と同じ)。
+    /// [`Framing::Close`] のときだけ呼ぶ (熱い経路では先頭をなめ直さない)。
+    pub fn response_transfer_encoding_line(head: &[u8]) -> Option<String> {
+        let mut line = String::new();
+        for (k, v) in crate::headers::response_lines(head) {
+            if !k.eq_ignore_ascii_case("transfer-encoding") {
+                continue;
+            }
+            for t in v.split(',').map(str::trim_ascii).filter(|t| !t.is_empty()) {
+                line.push_str(if line.is_empty() {
+                    "Transfer-Encoding: "
+                } else {
+                    ", "
+                });
+                line.extend(
+                    t.chars()
+                        .map(|c| if c == '\r' || c == '\0' { ' ' } else { c }),
+                );
+            }
+        }
+        (!line.is_empty()).then_some(line)
+    }
+
     /// [`Framing::of_response_head`] に `Content-Length` の検査を足した版 (T19.5)。
     ///
     /// 重複した `Content-Length` の値が食い違う / 数字でない / 負 / `u64` に収まらない桁数なら
@@ -695,6 +724,31 @@ mod of_response_head_tests {
         assert!(Framing::response_has_transfer_encoding(
             b"HTTP/1.1 200 OK\r\ntransfer-encoding: cheese\r\n\r\n"
         ));
+    }
+
+    /// T.28.35: クライアントへ伝える TE の行は、複数の行を 1 つの並びに畳み、空の要素を読み飛ばす。
+    #[test]
+    fn transfer_encoding_line_joins_the_list() {
+        let line = |h: &[u8]| Framing::response_transfer_encoding_line(h);
+        assert_eq!(
+            line(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\n")
+                .as_deref(),
+            Some("Transfer-Encoding: gzip")
+        );
+        assert_eq!(
+            line(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked , gzip\r\nX-A: 1\r\nTransfer-Encoding: ,br,\r\n\r\n")
+                .as_deref(),
+            Some("Transfer-Encoding: chunked, gzip, br")
+        );
+        assert_eq!(
+            line(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: x\0y\r\n\r\n").as_deref(),
+            Some("Transfer-Encoding: x y")
+        );
+        assert_eq!(
+            line(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: , \r\n\r\n"),
+            None
+        );
+        assert_eq!(line(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"), None);
     }
 
     /// 生の先頭から決める版が、組を作ってから決める版と同じ結果になること。

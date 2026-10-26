@@ -1032,8 +1032,12 @@ pub fn handle_http_with_headers(
     // 最後が chunked でない `Transfer-Encoding` の応答 (T.28.1)。閉じるまでを本文にして返すが、
     // 区切りがオリジンと食い違っているかもしれないので保存しない (接続は上で使い回さない)。
     // 見分けるのは閉じるまでの応答のときだけ (CL / chunked の熱い経路では先頭をなめ直さない)
-    let unframed_te = framing == Framing::Close && Framing::response_has_transfer_encoding(&head);
-    if unframed_te {
+    //
+    // 符号化はほどかずに渡すので、TE の行もクライアントへ伝える (T.28.35。下の `client_framing`)
+    let unframed_te = (framing == Framing::Close)
+        .then(|| Framing::response_transfer_encoding_line(&head))
+        .flatten();
+    if unframed_te.is_some() {
         log_debug!(
             Some(conn_id),
             "response Transfer-Encoding does not end in chunked: reading until close, not caching"
@@ -1089,8 +1093,24 @@ pub fn handle_http_with_headers(
         metrics.inc_cache_miss();
     }
 
+    // 最後が chunked でない TE を HTTP/1.0 のクライアントへは送れない (RFC 9112 §6.1: TE を送ってよいのは
+    // HTTP/1.1 以上を名乗った要求への応答だけ)。符号化をほどけないので、TE を落として符号化済みの
+    // バイトを本文として渡す (T.28.35 より前の振る舞い) 代わりに 502 にする (この接続は再利用しない)
+    if !http11 && let Some(te) = unframed_te.as_deref() {
+        log_warn!(
+            Some(conn_id),
+            "502 Bad Gateway: {:?} from {} cannot be relayed to an HTTP/1.0 client",
+            te,
+            pool_key
+        );
+        ctx.detail.cause = Some(ErrCause::Other);
+        write_error(client, 502, "Bad Gateway")?;
+        ctx.log_failure(502);
+        return Ok(false);
+    }
+
     // ---- 配信しつつ保存 ----
-    let policy = if store_allowed && !unframed_te {
+    let policy = if store_allowed && unframed_te.is_none() {
         freshness::response_policy(status, &headers::response_pairs(&head), cfg, now)
     } else {
         None
@@ -1126,9 +1146,12 @@ pub fn handle_http_with_headers(
         map_locations(&mut h.lines);
         h
     });
-    // クライアント向けの枠組み: 長さが分かればそのまま、分からなければ HTTP/1.1 には再 chunk
+    // クライアント向けの枠組み: 長さが分かればそのまま、分からなければ HTTP/1.1 には再 chunk。
+    // 最後が chunked でない TE の応答は、オリジンの TE の行を残して閉じるまでを本文にする (T.28.35。
+    // `gzip, chunked` に包み直してもよいが、バイト列をオリジンのまま渡す方を選んだ)
     let client_framing = match framing {
         Framing::None | Framing::Length(_) => framing,
+        Framing::Close if unframed_te.is_some() => Framing::Close,
         Framing::Chunked | Framing::Close => {
             if http11 {
                 Framing::Chunked
@@ -1153,6 +1176,10 @@ pub fn handle_http_with_headers(
         }
         Framing::Chunked => {
             extra[0] = "Transfer-Encoding: chunked";
+            n_extra = 1;
+        }
+        Framing::Close if let Some(te) = unframed_te.as_deref() => {
+            extra[0] = te;
             n_extra = 1;
         }
         Framing::None if head_only => {
