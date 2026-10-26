@@ -30,6 +30,7 @@ import socket
 import socketserver
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -278,7 +279,16 @@ def main(argv=None):
     echo.seen = []  # type: ignore[attr-defined]
     threading.Thread(target=echo.serve_forever, daemon=True).start()
 
-    env = dict(os.environ, PROXY_ALLOW_LOCAL="1", PROXY_LOG_LEVEL="warn")
+    # キャッシュと状態ファイルはこの回だけの置き場に書く。既定の置き場 (root なら
+    # `/var/cache/rust-http-proxy`) を使うと、2 回目の実行が前の回の項目に HIT して外れる
+    work = tempfile.TemporaryDirectory(prefix="framing-probe-")
+    env = dict(
+        os.environ,
+        PROXY_ALLOW_LOCAL="1",
+        PROXY_LOG_LEVEL="warn",
+        PROXY_CACHE_DIR=os.path.join(work.name, "cache"),
+        PROXY_STATS_PERSIST="off",
+    )
     proxy = subprocess.Popen(
         [args.binary, "-p", str(args.port)],
         env=env,
@@ -362,6 +372,7 @@ def main(argv=None):
         origin.server_close()
         echo.shutdown()
         echo.server_close()
+        work.cleanup()
 
     print("")
     if failed:
