@@ -34,6 +34,25 @@ pub fn response_policy(
     cfg: &CacheConfig,
     now: u64,
 ) -> Option<Policy> {
+    response_policy_lines(
+        status,
+        headers.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+        cfg,
+        now,
+    )
+}
+
+/// [`response_policy`] を借用の「名前, 値」の並びで (名前の大小は問わない)。
+///
+/// forward の経路は応答の先頭を `response_lines` のまま渡す (小文字の `String` の組を
+/// 要求ごとに作らない。T.28.13 (a))。保存しない応答 (`no-store` など) でも毎回通る判定なので、
+/// 確保を減らした分がそのまま効く。
+pub fn response_policy_lines<'a>(
+    status: u16,
+    headers: impl IntoIterator<Item = (&'a str, &'a str)>,
+    cfg: &CacheConfig,
+    now: u64,
+) -> Option<Policy> {
     if !CACHEABLE_STATUS.contains(&status) {
         return None;
     }
@@ -44,23 +63,31 @@ pub fn response_policy(
     let mut etag = false;
     let mut age_header = 0u64;
     for (k, v) in headers {
-        match k.as_str() {
-            "set-cookie" => return None,
-            "vary" if !vary_is_supported(v) => return None,
-            "cache-control" | "pragma" => {
-                if !cache_control.is_empty() {
-                    cache_control.push(',');
-                }
-                cache_control.push_str(&v.to_ascii_lowercase());
+        let is = |name: &str| k.eq_ignore_ascii_case(name);
+        if is("set-cookie") {
+            return None;
+        } else if is("vary") {
+            if !vary_is_supported(v) {
+                return None;
             }
-            "expires" => expires = Some(v.as_str()),
-            "date" => date = httpdate::parse(v),
-            "last-modified" => last_modified = httpdate::parse(v),
-            "etag" => etag = true,
-            "age" => age_header = v.trim().parse().unwrap_or(0),
-            _ => {}
+        } else if is("cache-control") || is("pragma") {
+            if !cache_control.is_empty() {
+                cache_control.push(',');
+            }
+            cache_control.push_str(v);
+        } else if is("expires") {
+            expires = Some(v);
+        } else if is("date") {
+            date = httpdate::parse(v);
+        } else if is("last-modified") {
+            last_modified = httpdate::parse(v);
+        } else if is("etag") {
+            etag = true;
+        } else if is("age") {
+            age_header = v.trim().parse().unwrap_or(0);
         }
     }
+    cache_control.make_ascii_lowercase();
     // 上流のキャッシュを経てきた分の経過時間 (RFC 9111 §4.2.3 の簡易版)
     let age = age_header.max(date.map_or(0, |d| now.saturating_sub(d)));
     if has_directive(&cache_control, "no-store") || has_directive(&cache_control, "private") {
@@ -165,6 +192,17 @@ pub fn vary_is_supported(v: &str) -> bool {
 
 /// キャッシュキーに含める `Accept-Encoding` の正規形 (小文字・q=0 除外・ソート・重複除去)。
 pub fn accept_encoding_variant(value: Option<&str>) -> String {
+    // 無い・空と、小文字のトークン 1 つ (`gzip` など) は並べ替えるものが無いので、そのまま返す
+    // (`Vec` とトークンごとの `String` と `join` を作らない。T.28.13 (b))
+    let v = value.unwrap_or("").trim();
+    if v.is_empty() {
+        return String::new();
+    }
+    if v.bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+    {
+        return v.to_string();
+    }
     let mut tokens: Vec<String> = value
         .unwrap_or("")
         .split(',')
@@ -528,6 +566,59 @@ mod tests {
             "br,gzip"
         );
         assert_eq!(accept_encoding_variant(Some("gzip, gzip")), "gzip");
+    }
+
+    /// T.28.13 (b): 速い道 (無い・空・小文字のトークン 1 つ) も遅い道と同じ正規形。
+    #[test]
+    fn accept_encoding_fast_path_matches_the_slow_one() {
+        for (v, want) in [
+            ("", ""),
+            ("  ", ""),
+            ("gzip", "gzip"),
+            (" br ", "br"),
+            ("x-gzip", "x-gzip"),
+            ("GZIP", "gzip"),
+            ("gzip;q=0", ""),
+            (",", ""),
+        ] {
+            assert_eq!(accept_encoding_variant(Some(v)), want, "{:?}", v);
+        }
+    }
+
+    /// T.28.13 (a): 借用の並び (名前の大小を問わない) で読んでも、小文字の組と同じ方針。
+    #[test]
+    fn policy_from_borrowed_lines_matches_the_pairs() {
+        let cases: &[&[(&str, &str)]] = &[
+            &[("Cache-Control", "Max-Age=60"), ("ETag", "\"a\"")],
+            &[("cache-control", "no-store")],
+            &[
+                ("Pragma", "no-cache"),
+                ("Last-Modified", "Sun, 06 Nov 1994 08:49:37 GMT"),
+            ],
+            &[("Set-Cookie", "a=1"), ("Cache-Control", "max-age=60")],
+            &[("Vary", "User-Agent")],
+            &[
+                ("Expires", "0"),
+                ("Date", "Sun, 06 Nov 1994 08:49:37 GMT"),
+                ("Age", "5"),
+            ],
+            &[("Content-Type", "text/html")],
+        ];
+        for case in cases {
+            let lower: Vec<(String, String)> = case
+                .iter()
+                .map(|(k, v)| (k.to_ascii_lowercase(), v.to_string()))
+                .collect();
+            for status in [200, 404, 500] {
+                assert_eq!(
+                    response_policy_lines(status, case.iter().copied(), &cfg(), NOW),
+                    response_policy(status, &lower, &cfg(), NOW),
+                    "{:?} {}",
+                    case,
+                    status
+                );
+            }
+        }
     }
 
     #[test]

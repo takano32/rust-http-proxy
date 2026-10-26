@@ -751,15 +751,19 @@ pub fn handle_http_with_headers(
         return Ok(false);
     }
 
+    // 保存されないと分かっている鍵 (T11.9) は 1 回だけ見て、入場制御と合流の両方に使う (T.28.13 (c))。
+    // その鍵は前に見ているので、入場制御に通しても「2 回目」で通る (門番の表を引かずに済ませる)
+    let known_unstored = store_allowed && stale.is_none() && !cache.may_coalesce(key, now);
+
     // ---- 入場制御: 層が埋まっているとき、初めて見た URL は保存しない (2 回目から) ----
-    let store_allowed = store_allowed && (stale.is_some() || cache.admit(key));
+    let store_allowed = store_allowed && (stale.is_some() || known_unstored || cache.admit(key));
 
     // ---- 同時ミスの合流: 同じキーを誰かが取得中なら、その保存完了を待ってキャッシュから返す ----
     // **保存されないと分かっている URL では合流しない** (T11.9)。待っても保存されないので、
     // 起きてから結局自分でオリジンへ行くことになり、待ち損 (`futex` 1.76 回/要求) だけが残る。
     // 初めて見る URL では今までどおり合流する
     let mut leader = None;
-    if store_allowed && stale.is_none() && cache.may_coalesce(key, now) {
+    if store_allowed && stale.is_none() && !known_unstored {
         match cache.begin_fetch(key) {
             FetchTicket::Leader(guard) => leader = Some(guard),
             FetchTicket::Follower(inflight) => {
@@ -1111,7 +1115,7 @@ pub fn handle_http_with_headers(
 
     // ---- 配信しつつ保存 ----
     let policy = if store_allowed && unframed_te.is_none() {
-        freshness::response_policy(status, &headers::response_pairs(&head), cfg, now)
+        freshness::response_policy_lines(status, headers::response_lines(&head), cfg, now)
     } else {
         None
     };
