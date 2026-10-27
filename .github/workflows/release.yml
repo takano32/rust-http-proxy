@@ -13,7 +13,7 @@ on:
         description: "打つ版 (例 0.27.8。v は付けない)。本体の Cargo.toml の版と同じであること"
         required: true
       ref:
-        description: "タグを打つコミット (既定は main の先頭)"
+        description: "タグを打つコミット (既定は main の先頭)。main の上のコミットであること。短いハッシュ (ab12cd3)・完全な SHA・ブランチ名・main~1 の形が使える"
         required: false
         default: main
 
@@ -28,10 +28,43 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
+      # 取り出すのは main (歴史とタグを全部)。入力の `ref` は下で git に解かせる (T.29.30): `actions/checkout` の
+      # `ref` はブランチ・タグ・完全な SHA しか取れず、T.28.99 の 1 回目 (run 40254718138) は短いハッシュで落ちた
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref }}
+          ref: main
           fetch-depth: 0
+      - name: Resolve the ref (main の上のコミットか)
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -eu
+          REF=${REF:-main}
+          main=$(git rev-parse --verify -q "origin/main^{commit}") || { echo "origin/main が無い" >&2; exit 1; }
+          # 短いハッシュ・完全な SHA・ブランチ名 (手元の枝が無ければ origin/ の枝)・main~1 などを 1 つのコミットに解く
+          commit=$(git rev-parse --verify -q --end-of-options "$REF^{commit}" ||
+            git rev-parse --verify -q --end-of-options "origin/$REF^{commit}") || {
+            echo "ref '$REF' をコミットに解けない (短いハッシュが曖昧か、無いコミット)" >&2
+            exit 1
+          }
+          # tokyo はタグではなく main の先頭でビルドしているので、main の上に無いコミットには打たない
+          if ! git merge-base --is-ancestor "$commit" "$main"; then
+            echo "ref '$REF' ($commit) は main ($main) の上に無い。main に入ったコミットを渡す" >&2
+            exit 1
+          fi
+          git checkout -q --detach "$commit"
+          behind=$(git rev-list --count "$commit..$main")
+          # 件名の | は表を割るので逃がす
+          one() { git log -1 --format='%h %s' "$1" | sed 's/|/\\|/g'; }
+          {
+            echo "| | コミット |"
+            echo "|---|---|"
+            echo "| 打つコミット (ref = $REF) | $(one "$commit") |"
+            echo "| main の先頭 | $(one "$main") |"
+            echo "| 差 | main の先頭より $behind コミット前 |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "打つコミット: $commit (main の先頭 $main より $behind コミット前)"
       - name: Check the version and push the tag
         id: tag
         env:
