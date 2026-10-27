@@ -169,3 +169,56 @@ fn test_integration_versions_connect_ports_and_bad_chunks() {
         assert!(resp.starts_with("HTTP/1.1 400 "), "{}: {:?}", size, resp);
     }
 }
+
+/// T.29.8: 要求行はちょうど 3 要素・対象は VCHAR・版は `HTTP/d.d`、ヘッダー名は空でない token。
+/// 外れたら 400 で、オリジンへは 1 本も届かない (今までは 505 か、そのまま転送していた)。
+/// 正しい形 (区切りの空白が 2 個・`HTTP/1.0`・token の記号を使った名前) は今までどおり通る。
+#[test]
+fn test_integration_request_line_and_header_name_grammar() {
+    let (origin_port, seen) = capture_origin();
+    let (proxy_port, metrics) = start_test_proxy_with_metrics(proxy_config());
+    let h = format!("127.0.0.1:{}", origin_port);
+    let get = |line_tail: &str, headers: &str| {
+        format!("GET http://{h}/a{line_tail}\r\nHost: {h}\r\n{headers}\r\n").into_bytes()
+    };
+
+    let bad: Vec<(&str, Vec<u8>)> = vec![
+        ("4 要素", get(" b HTTP/1.1", "")),
+        ("後ろに junk", get(" HTTP/1.1 junk", "")),
+        ("版が無い", get("", "")),
+        ("版の後ろに字", get(" HTTP/1.1x", "")),
+        ("対象に DEL", get("\x7f HTTP/1.1", "")),
+        ("対象に NUL", get("\x00b HTTP/1.1", "")),
+        ("対象に制御文字", get("\x01 HTTP/1.1", "")),
+        ("名前の中の空白", get(" HTTP/1.1", "X A: 1\r\n")),
+        ("名前の \"", get(" HTTP/1.1", "X\"A: 1\r\n")),
+        ("名前の制御文字", get(" HTTP/1.1", "X\x01A: 1\r\n")),
+        ("空の名前", get(" HTTP/1.1", ": v\r\n")),
+        ("コロンの無い行", get(" HTTP/1.1", "Junk\r\n")),
+    ];
+    for (name, req) in &bad {
+        let resp = send_raw(proxy_port, req);
+        assert!(resp.starts_with("HTTP/1.1 400 "), "{}: {:?}", name, resp);
+    }
+    assert!(
+        settle_and_take(&seen).is_empty(),
+        "断った要求がオリジンへ届いた"
+    );
+    // 断った理由に乗る (要求行は `request_line`、ヘッダーは `bad_header`)
+    use rust_http_proxy::metrics::BadRequestReason;
+    use std::sync::atomic::Ordering;
+    let count = |r: BadRequestReason| metrics.rejected_requests[r as usize].load(Ordering::Relaxed);
+    assert_eq!(count(BadRequestReason::RequestLine), 7);
+    assert_eq!(count(BadRequestReason::BadHeader), 5);
+
+    // 正しい形は通る
+    for req in [
+        format!("GET  http://{h}/a  HTTP/1.1\r\nHost: {h}\r\n\r\n"),
+        format!("GET http://{h}/a HTTP/1.0\r\nHost: {h}\r\n\r\n"),
+        format!("GET http://{h}/a?q=%7F~ HTTP/1.1\r\nHost: {h}\r\nX-A.b_c!#$%&'*+^`|~: 1\r\n\r\n"),
+    ] {
+        let resp = send_raw(proxy_port, req.as_bytes());
+        assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}: {:?}", req, resp);
+    }
+    assert_eq!(settle_and_take(&seen).len(), 3);
+}

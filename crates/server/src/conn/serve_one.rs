@@ -199,10 +199,32 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         scratch.request_line = request_line;
         return Ok(Step::Close(recent::CloseReason::Shutdown));
     };
+    // 要求行の文法 (RFC 9112 §3。T.29.8): **ちょうど 3 要素** (メソッド・対象・版) で、対象は VCHAR だけ、
+    // 版は `HTTP/d.d` の形。外れたら 400。今までは `GET http://h/a b HTTP/1.1` の `b` を版と読んで 505、
+    // `… HTTP/1.1 junk` と版の無い行 (HTTP/0.9 の形) を 1.0 として受け付け、対象の DEL / NUL / 制御文字を
+    // そのまま転送していた。区切りの空白の数は今までどおり問わない
+    let version = parts.next();
+    if parts.next().is_some()
+        || !version.is_some_and(version_syntax_ok)
+        || !target.bytes().all(|b| b.is_ascii_graphic())
+    {
+        if let Some(more) =
+            metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 400)
+        {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: request line is not `method target HTTP/x.y`: {}{}",
+                crate::log::Clip(request_line.trim()),
+                more
+            );
+        }
+        reject(client, 400, "Bad Request")?;
+        scratch.request_line = request_line;
+        return Ok(Step::Close(recent::CloseReason::Shutdown));
+    }
     // 版が `HTTP/1.x` でない要求 (`HTTP/9.9`・HTTP/2 の preface `PRI * HTTP/2.0`) は 505 (T27.8)。
-    // 今までは `HTTP/9.9` を 1.1 として転送し、preface は `*` を宛先として引きに行って 502 だった。
-    // 版の無い要求行 (HTTP/0.9 の形) は今までどおり 1.0 として扱う (`http` 側の既定)
-    if let Some(version) = parts.next()
+    // 今までは `HTTP/9.9` を 1.1 として転送し、preface は `*` を宛先として引きに行って 502 だった
+    if let Some(version) = version
         && !version
             .get(..7)
             .is_some_and(|v| v.eq_ignore_ascii_case("HTTP/1."))
@@ -687,5 +709,39 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             slot.set_bytes(t.up.saturating_add(t.down));
         }
         Ok(Step::Next)
+    }
+}
+
+/// 版が `HTTP/d.d` の形か (RFC 9112 §2.3。`HTTP` の大小は今までどおり問わない。T.29.8)。
+/// 形が合っていて `1.x` でないもの (`HTTP/2.0`・`HTTP/9.9`) は呼ぶ側が 505 にする。
+fn version_syntax_ok(v: &str) -> bool {
+    let b = v.as_bytes();
+    b.len() == 8
+        && b[..5].eq_ignore_ascii_case(b"HTTP/")
+        && b[5].is_ascii_digit()
+        && b[6] == b'.'
+        && b[7].is_ascii_digit()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_syntax_ok;
+
+    #[test]
+    fn version_syntax() {
+        for ok in ["HTTP/1.1", "HTTP/1.0", "http/1.1", "HTTP/9.9", "HTTP/2.0"] {
+            assert!(version_syntax_ok(ok), "{}", ok);
+        }
+        for bad in [
+            "HTTP/1.1junk",
+            "HTTP/1",
+            "HTTP/11.1",
+            "b",
+            "",
+            "HTTP/1.x",
+            "XTTP/1.1",
+        ] {
+            assert!(!version_syntax_ok(bad), "{}", bad);
+        }
     }
 }

@@ -476,7 +476,7 @@ pub fn handle_http_parsed(
         {
             log_warn!(
                 Some(conn_id),
-                "400 Bad Request: whitespace before colon or CR/LF/NUL in a request header{}",
+                "400 Bad Request: malformed request header (name not a token, no colon, or CR/LF/NUL in the value){}",
                 more
             );
         }

@@ -49,13 +49,49 @@ pub struct RequestHeaders {
     /// ヘッダーの形が不正 (T27.5): 名前とコロンの間に空白がある (RFC 9112 §5.1 は 400 を求める)、
     /// または値に CR / LF / NUL がある (RFC 9110 §5.5。断るか SP に置き換える)。どちらも前段と
     /// 後段で読み方が割れる (`Content-Length : 5` を無視するオリジン、CR を改行と読むオリジン)。
-    /// 要求は置き換えると値が黙って変わるので**断る**。断るのは `http` 側と CONNECT の入口
+    /// 要求は置き換えると値が黙って変わるので**断る**。断るのは `http` 側と CONNECT の入口。
+    /// T.29.8 から、名前が token でない (空・空白・制御文字・`"` など) 行とコロンの無い行もここに入る
     pub bad_header: bool,
     /// `Expect: 100-continue` (大小無視) があった (T.28.3)。本文のある HTTP/1.1 の要求なら、
     /// `http` 側が本文を読む前に `100 Continue` を返す (`Expect` の行はオリジンへ転送しない)
     pub expect_continue: bool,
     /// `Expect` に `100-continue` 以外の期待があった (RFC 9110 §10.1.1。`http` 側が 417 で断る)
     pub expect_unknown: bool,
+}
+
+/// token に使える字 (RFC 9110 §5.6.2 の tchar) の表。ヘッダー 1 行ごとに名前の全部の字を見るので、
+/// 1 字 1 回の表引きにしてある (T.29.8)。
+const TCHAR: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        let b = i as u8;
+        t[i] = b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'!' | b'#'
+                    | b'$'
+                    | b'%'
+                    | b'&'
+                    | b'\''
+                    | b'*'
+                    | b'+'
+                    | b'-'
+                    | b'.'
+                    | b'^'
+                    | b'_'
+                    | b'`'
+                    | b'|'
+                    | b'~'
+            );
+        i += 1;
+    }
+    t
+};
+
+/// 空でない token か (ヘッダーの名前。T.29.8)。
+fn is_token(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| TCHAR[b as usize])
 }
 
 pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
@@ -86,12 +122,15 @@ pub fn parse_request_headers_visit(
             h.obs_fold = true;
             continue;
         }
+        // コロンの無い行は不正 (T.29.8。今までは黙って捨て、オリジンへは転送していた)
         let Some((k, v)) = ascii::split_once(line, b':') else {
+            h.bad_header = true;
             continue;
         };
-        // 名前の後ろの空白 (`Content-Length : 5`) と、値の CR / LF / NUL (T27.5)。行は行末の
-        // CRLF (か LF) を付けたまま来るので、行末の CR / LF を外した残りの途中にあるものだけを見る
-        if matches!(k.as_bytes().last(), Some(b' ' | b'\t'))
+        // 名前は空でない token だけ (RFC 9110 §5.1。T.29.8): 名前の後ろの空白 (`Content-Length : 5`。T27.5)、
+        // 名前の中の空白・制御文字・`"`・`(` など、空の名前 (`: v`) はどれも不正。値の CR / LF / NUL (T27.5) も。
+        // 行は行末の CRLF (か LF) を付けたまま来るので、行末の CR / LF を外した残りの途中にあるものだけを見る
+        if !is_token(k)
             || v.trim_end_matches(['\r', '\n'])
                 .bytes()
                 .any(|b| matches!(b, b'\r' | b'\n' | 0))

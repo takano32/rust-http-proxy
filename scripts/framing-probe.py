@@ -25,6 +25,8 @@ T.28.1 の時点ではどちらも TE の行を落としていた (この 2 行�
 
 2026-10-27 に 1xx の中間応答を足した (T.29.3): HTTP/1.0 のクライアントへは 103 を送らず 200 だけ、
 HTTP/1.1 へは今までどおり 103 → 200。0.29.35 では HTTP/1.0 の行が外れる。
+同じ日に要求行とヘッダー名の文法を足した (T.29.8): 要求行が 4 要素・後ろに junk・対象の DEL / NUL、
+ヘッダー名の空白・`"`・制御文字・空の名前・コロンの無い行はどれも 400。0.29.35 ではこの 8 行が外れる。
 """
 import argparse
 import json
@@ -105,6 +107,15 @@ def t27_cases(origin_port):
          lambda seen: not any(h.lower().startswith("expect:") for h in seen["headers"])
          and seen["body"] == "hello"),
         ("Expect: fancy は 417", post(b"Expect: fancy\r\nContent-Length: 5\r\n", b"hello"), 417, False, None),
+        # T.29.8: 要求行はちょうど 3 要素・対象は VCHAR・版は HTTP/d.d、ヘッダー名は token
+        ("要求行が 4 要素 (a b)", b"GET " + base + b"/a b HTTP/1.1\r\n" + host + b"\r\n", 400, False, None),
+        ("要求行の後ろに junk", get(b"/a", version=b"HTTP/1.1 junk"), 400, False, None),
+        ("対象に DEL", get(b"/a\x7f"), 400, False, None),
+        ("対象に NUL", get(b"/a\x00b"), 400, False, None),
+        ("名前の中の空白", get(b"/a", b"X A: 1\r\n"), 400, False, None),
+        ("名前の \" と制御文字", get(b"/a", b"X\"\x01A: 1\r\n"), 400, False, None),
+        ("空の名前", get(b"/a", b": v\r\n"), 400, False, None),
+        ("コロンの無い行", get(b"/a", b"Junk\r\n"), 400, False, None),
     ]
 
 
