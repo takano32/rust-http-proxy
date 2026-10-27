@@ -13,7 +13,9 @@
   (4) タグは本体の版 (`v0.21.4` など)。
 
 「中身が変わった」= メンバーのディレクトリ (`crates/<名前>/`) の下の差分のうち、`Cargo.toml` の
-`[package]` の `version = …` の 1 行を除いたもの。本体の中身は `src/` の下。
+`[package]` の `version = …` の 1 行を除いたもの。本体の中身は `src/` の下と、**ルートの `Cargo.toml`**
+(`[package]` の版の行と `[workspace]` の `members = [...]` を除く。`[profile.*]` の `codegen-units` を
+変えてもビルドは変わるのに、前は数えずに「決まりに合う」と出た。T.29.28)。
 
 `--check` の決まり (**コミットの文面には頼らない**。文面にタスク番号が無いコミットも、複数の番号が並ぶものもあるため):
   (a) 版の形が `0.P.T`。
@@ -28,6 +30,9 @@
       同じタスクの中で 2 回目の `--task` を回したとき、もうその番号のクレートも同じで、同じ版の行を
       書いたコミットより後に中身が変わっていなければよい (T.28.27)。
   (d) タグの上 (HEAD を指す `v*` のタグがある) なら、本体の版 = タグ。
+  (e) `Cargo.lock` の各メンバー (本体と全クレート) の版が、その `Cargo.toml` の版と同じ。`Cargo.toml` を
+      手で上げて `Cargo.lock` をそのままにしても、CI は `--locked` なしでビルドするので気づかない (T.29.28)。
+      `Cargo.lock` が無いリポジトリでは見ない。
 
 使い方 (リポジトリの根から。`-C DIR` で別のリポジトリ):
   scripts/crate-versions.py --list                 クレートごとに 今の版・中身を最後に変えたコミット・
@@ -56,7 +61,7 @@ TASK_RE = re.compile(r"^T\.(\d+)\.(\d+)[a-z]?$")
 # `[package]` の版の行 (`version = "0.20.0"`)。行の頭から書いてあるものだけを見る
 VERSION_LINE_RE = re.compile(r'^version\s*=\s*"([^"]*)"\s*$')
 SERVER = "proxy-server"
-ROOT_CONTENT = "src"  # 本体の「中身」
+ROOT_CONTENT = ("src", "Cargo.toml")  # 本体の「中身」(ルートの Cargo.toml は T.29.28 から)
 
 
 class Error(Exception):
@@ -114,6 +119,37 @@ def without_version_line(text):
     return "".join(lines[:line_no] + lines[line_no + 1:])
 
 
+def without_members(text):
+    """`[workspace]` の `members = [...]` (複数行も) を除いた中身 (本体の中身を比べるときに使う。T.29.28)。"""
+    out = []
+    section = None
+    skipping = False
+    for line in text.splitlines(True):
+        s = line.strip()
+        if skipping:
+            if "]" in s.split("#", 1)[0]:
+                skipping = False
+            continue
+        if s.startswith("["):
+            section = s
+        elif section == "[workspace]" and re.match(r"^members\s*=\s*\[", s):
+            skipping = "]" not in s.split("#", 1)[0].split("[", 1)[1]
+            continue
+        out.append(line)
+    return "".join(out)
+
+
+def lock_versions(text):
+    """`Cargo.lock` の `[[package]]` のうち `source` の無いもの (= このワークスペースのメンバー) の {名前: 版}。"""
+    found = {}
+    for block in re.split(r"^\[\[package\]\]\s*$", text, flags=re.M)[1:]:
+        name = re.search(r'^name = "([^"]+)"', block, re.M)
+        version = re.search(r'^version = "([^"]+)"', block, re.M)
+        if name and version and not re.search(r"^source = ", block, re.M):
+            found[name.group(1)] = version.group(1)
+    return found
+
+
 def members(root_toml):
     """ルートの `Cargo.toml` の `[workspace]` の `members` (並びのまま)。"""
     m = re.search(r"^\[workspace\][\s\S]*?^members\s*=\s*\[([\s\S]*?)\]", root_toml, re.M)
@@ -126,10 +162,22 @@ def members(root_toml):
 # --- リポジトリを読む ---------------------------------------------------------
 
 class Unit:
-    """版を持つ 1 つ (本体かクレート)。toml = 版の行のあるファイル、content = 中身のディレクトリ。"""
+    """版を持つ 1 つ (本体かクレート)。toml = 版の行のあるファイル、content = 中身のパスの並び
+    (クレートはディレクトリ 1 つ、本体は `src` とルートの `Cargo.toml`)。root = 本体か。"""
 
-    def __init__(self, name, version, toml, content):
-        self.name, self.version, self.toml, self.content = name, version, toml, content
+    def __init__(self, name, version, toml, content, root=False):
+        self.name, self.version, self.toml = name, version, toml
+        self.content = (content,) if isinstance(content, str) else tuple(content)
+        self.root = root
+
+    def label(self):
+        """理由の文面に出す中身の名前 (`crates/alpha/`、`src/・Cargo.toml`)。"""
+        return "・".join(c if c.endswith(".toml") else c + "/" for c in self.content)
+
+    def normalize(self, text):
+        """版を持つファイルの中身から「中身が変わった」に数えない行を除く。"""
+        text = without_version_line(text)
+        return without_members(text) if self.root else text
 
 
 class Repo:
@@ -141,7 +189,7 @@ class Repo:
         name, version, _ = package_fields(root_text)
         if not name:
             raise Error("ルートの Cargo.toml に [package] の name が無い")
-        self.root = Unit(name, version, "Cargo.toml", ROOT_CONTENT)
+        self.root = Unit(name, version, "Cargo.toml", ROOT_CONTENT, root=True)
         self.crates = []
         for member in members(root_text):
             member = member.rstrip("/")
@@ -250,17 +298,16 @@ class Repo:
     def content_changed(self, unit, a, b=None):
         """a と b (None = 作業ツリー) の間で unit の中身 (版の行を除く) が変わったか。"""
         if b is None:
-            names = git(self.path, "diff", "--name-only", "--no-renames", a, "--", unit.content).split()
+            names = git(self.path, "diff", "--name-only", "--no-renames", a, "--", *unit.content).split()
             # まだ追跡していないファイルも作業ツリーの中身に数える (.gitignore のものは除く)
-            names += git(self.path, "ls-files", "--others", "--exclude-standard", "--", unit.content).split()
+            names += git(self.path, "ls-files", "--others", "--exclude-standard", "--", *unit.content).split()
         else:
-            names = git(self.path, "diff", "--name-only", "--no-renames", a, b, "--", unit.content).split()
+            names = git(self.path, "diff", "--name-only", "--no-renames", a, b, "--", *unit.content).split()
         for name in names:
             if name == unit.toml:
                 old, new = self.show(a, name), self.show(b, name)
-                if old is not None and new is not None and \
-                        without_version_line(old) == without_version_line(new):
-                    continue  # 版の行だけの差分は「変わった」に数えない
+                if old is not None and new is not None and unit.normalize(old) == unit.normalize(new):
+                    continue  # 版の行 (本体は members も) だけの差分は「変わった」に数えない
             return True
         return False
 
@@ -268,7 +315,7 @@ class Repo:
         """中身を最後に変えたコミット (表示用。マージは見ない)。作業ツリーで変わっていれば None、見つからなければ ""。"""
         if self.head is None or self.content_changed(unit, self.head):
             return None
-        out = git(self.path, "log", "--format=%H", "--no-merges", "--", unit.content)
+        out = git(self.path, "log", "--format=%H", "--no-merges", "--", *unit.content)
         for h in out.split():
             ps = self.parents(h)
             if not ps or self.content_changed(unit, ps[0], h):
@@ -319,12 +366,22 @@ def judge(repo):
                            and (origins[v.name] is None or not repo.content_changed(u, origins[v.name]))),
                           origin)
         if origin is not None and repo.content_changed(u, origin):
-            bad.append((u.name, "版 %s の行を書いた %s より後に中身 (%s/) が変わった (決まり c。--task で上げる)"
-                        % (u.version, origin[:7], u.content)))
+            bad.append((u.name, "版 %s の行を書いた %s より後に中身 (%s) が変わった (決まり c。--task で上げる)"
+                        % (u.version, origin[:7], u.label())))
     # (d) タグの上
     tags = repo.tags_at_head()
     if tags and "v%s" % repo.root.version not in tags:
         bad.append((repo.root.name, "タグ %s の上なのに本体の版が %s (決まり d)" % (" ".join(tags), repo.root.version)))
+    # (e) Cargo.lock の版が Cargo.toml と同じ (T.29.28)
+    lock = repo.show(None, "Cargo.lock")
+    if lock is not None:
+        locked = lock_versions(lock)
+        for u in repo.units():
+            if u.name not in locked:
+                bad.append((u.name, "Cargo.lock に無い (決まり e。cargo build か --task で作り直す)"))
+            elif locked[u.name] != u.version:
+                bad.append((u.name, "Cargo.toml の版 %s と Cargo.lock の版 %s が違う (決まり e。"
+                                    "cargo build か --task で揃える)" % (u.version, locked[u.name])))
     return origins, bad
 
 

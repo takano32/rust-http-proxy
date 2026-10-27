@@ -6,7 +6,8 @@
 一時の git リポジトリに本体 (`src/`) とクレート 3 つ (`alpha` `beta` `gamma`) と `proxy-server` を作り、
 `main` に 2 つのタスク (T.1.1 で全部、T.2.3 で `alpha`) を積んでから、次の各場合を見る:
 タスクの中で上げた (`--task`) / 上げ忘れ / 版の行だけ変わった / 本体と `proxy-server` のずれ /
-本体が最大より小さい / タグの上 / 形が `0.P.T` でない / 枝のマージ (上げ忘れの枝、両側で上げて衝突を解いた)。
+本体が最大より小さい / タグの上 / 形が `0.P.T` でない / 枝のマージ (上げ忘れの枝、両側で上げて衝突を解いた) /
+ルートの `Cargo.toml` の `[profile.*]` を変えた / `Cargo.toml` を手で上げて `Cargo.lock` をそのままにした (T.29.28)。
 git の設定は利用者のものを読まない (`GIT_CONFIG_GLOBAL` を空に向ける) ので、署名やフックに左右されない。
 """
 
@@ -323,6 +324,71 @@ class CrateVersionsTest(unittest.TestCase):
         self.r.commit("docs")
         self.r.git("merge", "-q", "--no-edit", "--no-gpg-sign", "t33")
         self.check(0)
+
+    def test_root_cargo_toml_profile_counts(self):
+        # ルートの Cargo.toml の [profile.*] (codegen-units など) を変えたら本体の中身が変わった (T.29.28)。
+        # 前は本体の中身を src/ だけと見ていて「決まりに合う」と出た
+        self.r.git("checkout", "-q", "-b", "t40")
+        root = self.r.read("Cargo.toml")
+        self.r.write("Cargo.toml", root + "\n[profile.release]\ncodegen-units = 1\n")
+        self.r.commit("codegen-units を 1 に (上げ忘れ)")
+        out = self.check(1)
+        self.assertIn("NG rust-http-proxy: 版 0.2.3 の行を書いた", out)
+        self.assertIn("中身 (src/・Cargo.toml) が変わった", out)
+        self.assertNotIn("proxy-alpha", out)
+        code, out = self.r.run("--task", "T.4.0")
+        self.assertEqual(code, 0, out)
+        self.assertIn("上げた: 2", out)  # 本体と proxy-server
+        self.assertEqual(self.r.version("server"), "0.4.0")
+        self.assertIn("codegen-units = 1", self.r.read("Cargo.toml"))  # 版の行のほかは触らない
+        self.r.commit("T.4.0 の版")
+        self.check(0)
+        # [workspace] の members だけの変更 (並べ替え) は中身に数えない
+        text = self.r.read("Cargo.toml")
+        self.r.write("Cargo.toml", text.replace('    "crates/alpha",\n    "crates/beta",\n',
+                                                '    "crates/beta",\n    "crates/alpha",\n'))
+        self.assertNotEqual(self.r.read("Cargo.toml"), text)
+        self.r.commit("members の並べ替え")
+        self.check(0)
+
+    def test_lock_must_match_toml(self):
+        # 3 つの Cargo.toml を手で上げて Cargo.lock をそのままにした (T.29.28)。CI は --locked なしなので
+        # ビルドは通ってしまう。(e) として Cargo.lock の版との食い違いを名前つきで落とす
+        self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
+        for rel, old, new in (("crates/beta/Cargo.toml", "0.1.1", "0.4.1"),
+                              ("crates/server/Cargo.toml", "0.2.3", "0.4.1"),
+                              ("Cargo.toml", "0.2.3", "0.4.1")):
+            text = self.r.read(rel)
+            self.r.write(rel, text.replace('version = "%s"' % old, 'version = "%s"' % new, 1))
+        lock = self.r.read("Cargo.lock")
+        self.r.commit("T.4.1 (Cargo.lock を直し忘れた)")
+        self.assertEqual(self.r.read("Cargo.lock"), lock)
+        out = self.check(1)
+        self.assertIn("NG proxy-beta: Cargo.toml の版 0.4.1 と Cargo.lock の版 0.1.1 が違う (決まり e", out)
+        self.assertIn("NG proxy-server: Cargo.toml の版 0.4.1 と Cargo.lock の版 0.2.3 が違う", out)
+        self.assertIn("NG rust-http-proxy: Cargo.toml の版 0.4.1 と Cargo.lock の版 0.2.3 が違う", out)
+        self.assertIn("決まりに合わない: 3", out)
+        self.assertNotIn("proxy-alpha", out)
+        # Cargo.lock を揃えれば通る
+        self.r.set_versions("0.4.1")
+        self.r.commit("Cargo.lock を揃える")
+        self.check(0)
+        # Cargo.lock からメンバーが抜けていても落とす
+        self.r.write("Cargo.lock", self.r.read("Cargo.lock").replace('name = "proxy-gamma"', 'name = "proxy-delta"'))
+        out = self.check(1)
+        self.assertIn("NG proxy-gamma: Cargo.lock に無い (決まり e", out)
+
+    def test_lock_versions(self):
+        text = ("version = 4\n\n[[package]]\nname = \"a\"\nversion = \"0.1.0\"\n\n"
+                "[[package]]\nname = \"ext\"\nversion = \"1.0.0\"\nsource = \"registry+x\"\n\n"
+                "[[package]]\nname = \"b\"\nversion = \"0.2.0\"\ndependencies = [\n \"a\",\n]\n")
+        self.assertEqual(cv.lock_versions(text), {"a": "0.1.0", "b": "0.2.0"})
+
+    def test_without_members(self):
+        a = '[workspace]\nmembers = [\n    "x",\n    "y", # 注\n]\nresolver = "2"\n\n[package]\nname = "r"\n'
+        b = '[workspace]\nmembers = ["y", "x"]\nresolver = "2"\n\n[package]\nname = "r"\n'
+        self.assertEqual(cv.without_members(a), cv.without_members(b))
+        self.assertEqual(cv.without_members(a), '[workspace]\nresolver = "2"\n\n[package]\nname = "r"\n')
 
     def test_untracked_file_counts(self):
         self.r.write("crates/beta/src/new.rs", "// new\n")

@@ -2497,7 +2497,8 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 (`-V` の版は `proxy-server` の `build.rs` が `CARGO_PKG_VERSION` から作ります)。**タグは本体の版**です (`v0.25.3` ↔ `0.25.3`)。
 デプロイは複数のタスクをまとめてよく、そのときのタグは**まとめた中で一番大きいタスクの番号**になります (番号はタスクの番号なので、前に出したタグより小さくなることもあります)。
 タスクの中で上げるときは `scripts/crate-versions.py --task T.19.1` (分かれ目から中身が変わったクレートを `0.19.1` にし、本体と `proxy-server` を最大にします)。
-「中身が変わった」は `crates/<名前>/` の差分から `Cargo.toml` の `version` の 1 行を除いたもの、本体は `src/` の下です。
+「中身が変わった」は `crates/<名前>/` の差分から `Cargo.toml` の `version` の 1 行を除いたもの、本体は `src/` の下と**ルートの `Cargo.toml`** (`[profile.*]` など。版の行と `members` は除く。T.29.28) です。
+`--check` は `Cargo.lock` の各メンバーの版が `Cargo.toml` と同じことも見ます (手で上げて `Cargo.lock` を直し忘れても、CI は `--locked` なしでビルドが通るため。T.29.28)。
 
 | クレート | 責務 |
 |---|---|
@@ -3355,7 +3356,7 @@ TTL を過ぎた / `warm_stale` = **warm なのにミスした** = 裏の引き�
 **デプロイの版 (= タグ) はデプロイに入れた中でいちばん大きいタスクの番号**です。
 
 ```bash
-scripts/crate-versions.py --check            # 0 なら決まりに合う (本体 = 全クレートの最大、タグの上では本体 = タグ)
+scripts/crate-versions.py --check            # 0 なら決まりに合う (本体 = 全クレートの最大、タグの上では本体 = タグ、Cargo.lock = Cargo.toml)
 scripts/crate-versions.py --task T.27.8      # 分かれ目から中身が変わったクレートを 0.27.8 にし、本体を最大に (Cargo.lock も)
 scripts/crate-versions.py --list             # クレートごとに 今の版・中身を最後に変えたコミット・版の行を書いたコミット
 ```
