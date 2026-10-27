@@ -104,6 +104,8 @@ const names = [
   'waitKpi',
   // T.29.18: 近い接続元 (RTT < 100 ms) の待ち
   'nearWaitKpi',
+  // T.29.19: キャッシュ命中率に母数
+  'hitKpi',
   // 100% の横棒 1 本を組み立てる側 (T15.0 (14) で tooltip の整形を呼ぶ側に渡せるようにした)
   'stackHtml',
   'esc',
@@ -1872,6 +1874,14 @@ if (near.label.indexOf('近い接続元 3 本') < 0) fail('札が違う: ' + nea
 if (api.nearWaitKpi({ recent: nearRows }) !== null) fail('rtt_client を知らない版で null になっていない');
 if (api.nearWaitKpi({ recent: [], rtt_client: 'lt100' }) !== null) fail('0 本は null のはず');
 if (api.nearWaitKpi(null) !== null) fail('null でも例外なく null のはず');
+// T.29.19: キャッシュ命中率は母数 (n=) を添え、1 日あたり 100 本未満なら率を出さない (tokyo の 24 時間は 43 / 80)
+const fewHits = api.hitKpi({ uptime_secs: 86798, cache: { hits: 43, misses: 37, hits_memory: 24, hits_disk: 19 } });
+if (fewHits.pct !== null) fail('1 日 80 本で率を出した: ' + fewHits.pct);
+if (fewHits.detail.indexOf('(n=80。1 日 100 本未満なので率は出さない)') < 0) fail('母数が無い: ' + fewHits.detail);
+const manyHits = api.hitKpi({ uptime_secs: 86400, cache: { hits: 300, misses: 100 } });
+if (Math.abs(manyHits.pct - 75) > 1e-9) fail('1 日 400 本の率が違う: ' + manyHits.pct);
+if (manyHits.detail.indexOf('(n=400)') < 0) fail('母数が無い: ' + manyHits.detail);
+if (api.hitKpi({}).pct !== null) fail('空の /status で率を出した');
 
 // 17. `dashboard.html` の大きさ。inspect は Rust 側で 64 KiB を見張っているのに
 // dashboard には上限が無かった (T15.0 (14) で足した)。外部ライブラリを読み込まない

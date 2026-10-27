@@ -1117,6 +1117,31 @@ fn boot_id_info(out: &mut String, id: Option<&str>) {
     line(out, "boot_id_info", &format!("id=\"{}\"", escape(id)), 1);
 }
 
+/// 版とビルドの種類を **info 型** (値は常に `1`) で出す (T.29.19)。
+///
+/// `sorahost_boot_id_info` はあるのに版の系列が無く、監視からは「いつ版が変わったか」が読めなかった。
+/// ラベルは `/status` の `version` (`0.29.35+b2b26c1` の形) と `build` (`release` / `dist` / `debug`。T.28.42) の
+/// 2 つで、系列は 1 本 (版を入れ替えると古い系列は止まる)。`/metrics` の口が末尾に足す
+/// ([`render`] は版を知らない層なので、引数で受ける)。
+pub fn build_info(out: &mut String, version: &str, build: &str) {
+    header(
+        out,
+        "build_info",
+        "gauge",
+        "Version and build profile of this binary (always 1)",
+    );
+    line(
+        out,
+        "build_info",
+        &format!(
+            "version=\"{}\",build=\"{}\"",
+            escape(version),
+            escape(build)
+        ),
+        1,
+    );
+}
+
 /// [`boot_id_info`] に渡す `boot_id` を起動に 1 回だけ読む (`/status` の `boot` と同じ理由。
 /// 値はプロセスの生存中に変わらないので、収集のたびに `/proc` を読み直さない)。
 fn boot_metrics(out: &mut String) {
@@ -1615,6 +1640,26 @@ mod tests {
             "{}",
             text
         );
+    }
+
+    /// 版とビルドの種類が `sorahost_build_info{version,build} 1` の 1 行で出ること (T.29.19)。
+    #[test]
+    fn renders_the_build_info_with_two_labels() {
+        let mut out = String::new();
+        build_info(&mut out, "0.29.35+b2b26c1", "release");
+        assert!(
+            out.contains("# TYPE sorahost_build_info gauge\n"),
+            "{}",
+            out
+        );
+        assert!(
+            out.contains("sorahost_build_info{version=\"0.29.35+b2b26c1\",build=\"release\"} 1\n"),
+            "{}",
+            out
+        );
+        let mut quoted = String::new();
+        build_info(&mut quoted, "a\"b", "c");
+        assert!(quoted.contains("version=\"a\\\"b\""), "{}", quoted);
     }
 
     /// 起動の id と heap の基準が `/metrics` に出ること (T25.3)。

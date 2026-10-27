@@ -3198,6 +3198,7 @@ T.29.27 (設定の帯の読めない値と知らない鍵・版の隣のビル�
 | **動かないトンネル** (「いまの接続」の下の表) | `/connections` |
 | **名前解決の内訳** | `/status` の `dns`、`/history` の `dns_warm` |
 | **受付待ち** | `/profile` の `stages.connect` の `queue` と `run_delay_us` |
+| **キャッシュ命中率** (KPI) | `/status` の `cache.hits` / `cache.misses`。**母数 (`n=`) を添え、1 日あたり 100 本未満なら率は「–」** (T.29.19。要約 (`snapshot-summary.py`) の「キャッシュ」の行も同じ) |
 | **利用者が待つ時間 p50** (KPI + 図) | KPI は `/recent?rtt_client=lt100&n=500` (近い接続元。T.29.18。30 秒ごと)、無い版は `/status` の `recent_quantiles.wait`。図は `/history` の `wait_*` |
 
 それぞれの**欄**と、**無い版のふるまい**:
@@ -3343,6 +3344,8 @@ T.29.27 (設定の帯の読めない値と知らない鍵・版の隣のビル�
 **ラベルは `id` の 1 つだけなので系列は 1 本**で、増えるのはホストを再起動したときだけです
 (読めない環境では行ごと出しません — 0 や空の `id` を出すと「起動が変わっていない」と読めてしまうため。
 `sorahost_kernel_*` と同じ判断)。
+**版とビルドの種類も 1 行**: `sorahost_build_info{version="0.29.35+b2b26c1",build="release"} 1` (T.29.19。`/status` の
+`version` と `build` (T.28.42) と同じ値の **info 型**。版を入れ替えると古い系列は止まるので、監視から「いつ版が変わったか」が読めます)。
 heap は `sorahost_heap_bytes` (いまの値。`/status` の `memory` と同じ `heap_used + mmap − cache_memory`)、
 `sorahost_heap_baseline_bytes` / `sorahost_heap_baseline_at_seconds` (起動 60 秒の基準と、それを取った epoch 秒で、
 `/status` の `memory.baseline` と同じ値) の 3 本で、**増えは `sorahost_heap_bytes − sorahost_heap_baseline_bytes`** です。

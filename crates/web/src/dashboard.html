@@ -855,6 +855,15 @@ function waitKpi(s,w,bounds){
   return{exact:false,label:'直近 5 分',p50:p50,p90:null,p99:null,max:w.max,n:w.count,window:null,
     detail:w.count+' 本 · p95 '+fmtMs(p95)+' · 平均 '+fmtMs(w.sum/w.count)+' (区間の補間)'};
 }
+// KPI「キャッシュ命中率」(T.29.19)。母数 (命中 + ミス) を添え、**1 日あたり 100 本未満なら率を出さない**
+// (tokyo の 24 時間は 43 / 80 で、転送の 5.2% しか無い母数の「命中率 0.5」は読めない)。**DOM には触らない**
+function hitKpi(s){
+  var c=(s&&s.cache)||{},hits=c.hits||0,miss=c.misses||0,n=hits+miss,up=(s&&s.uptime_secs)||0;
+  var perDay=up>0?n*86400/up:null,few=perDay!=null&&perDay<100;
+  var detail='命中 '+fmtNum(hits)+' (メモリ '+fmtNum(c.hits_memory)+' / ディスク '+fmtNum(c.hits_disk)+') · ミス '+fmtNum(miss)
+    +' (n='+fmtNum(n)+(few?'。1 日 100 本未満なので率は出さない':'')+')';
+  return{pct:n>0&&!few?hits/n*100:null,n:n,few:few,detail:detail};
+}
 // T.29.18: 近い接続元 (接続元の RTT < 100 ms) の待ち。`/recent?rtt_client=lt100` の成功した CONNECT の
 // queue + client_read + dns + connect を 1 本ずつ足した実測の分位点。**DOM には触らない**。
 // `rtt_client` を知らない版 (応答に `rtt_client` が無い) では絞られていないので `null`
@@ -999,8 +1008,8 @@ function renderStatus(s){
   $('threads').textContent='スレッド '+fmtNum(s.live_threads)+' / '+lim(s.max_threads)+' (空き '+fmtNum(s.idle_threads)+(s.queued_jobs?' · 待ち '+fmtNum(s.queued_jobs):'')+') · 接続上限 '+lim(s.max_conns)
     +(s.fds?' · fd '+fmtNum(s.fds)+' / '+fmtNum(s.max_fds)+' · プロセス全体 '+fmtNum(s.threads)+' スレッド':'');
   var o=s.origin_connections||{};$('origins').textContent='オリジン接続 新規 '+fmtNum(o.new)+' / 再利用 '+fmtNum(o.reused);
-  var hits=c.hits||0,miss=c.misses||0;$('hitratio').textContent=(hits+miss)>0?(hits/(hits+miss)*100).toFixed(1)+'%':'–';
-  $('hitdetail').textContent='命中 '+fmtNum(hits)+' (メモリ '+fmtNum(c.hits_memory)+' / ディスク '+fmtNum(c.hits_disk)+') · ミス '+fmtNum(miss);
+  var hk=hitKpi(s);$('hitratio').textContent=hk.pct==null?'–':hk.pct.toFixed(1)+'%';
+  $('hitdetail').textContent=hk.detail;
   var m=c.memory||{},d=c.disk||{};
   var mp=pct(m.used_bytes,m.limit_bytes);$('memkpi').innerHTML=fmtBytes(m.used_bytes)+'<small>/ '+fmtBytes(m.limit_bytes)+'</small>';$('membar').style.width=mp+'%';$('membar').className=barClass(mp);
   $('memhint').textContent=fmtNum(m.entries)+' 件 · 予約 '+fmtBytes(m.reserved_bytes)+' · 余白 '+fmtBytes(m.keep_free_bytes);

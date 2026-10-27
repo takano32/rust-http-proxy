@@ -61,6 +61,8 @@ MISS_KINDS = ["cold", "expired", "warm_stale", "negative"]
 IDLE_TUNNEL_SECS = 300
 # 雪像の大きさの警告の割合 (T.29.16)。上限は雪像の `limit_bytes` (無い古い版は 4 MiB)
 SIZE_WARN = 0.90
+# キャッシュの命中率を出す母数の下限 (1 日あたりの命中 + ミス。T.29.19)
+HIT_RATIO_MIN_PER_DAY = 100
 DEFAULT_LIMIT_BYTES = 4 * 1024 * 1024
 
 
@@ -434,6 +436,24 @@ def size_report(path, snap):
     return text, warn
 
 
+def hit_ratio_text(cache, uptime):
+    """キャッシュの命中率に母数を添える (T.29.19)。1 日あたり 100 本未満なら率は「—」。
+
+    0.28.48 の 24 時間は命中 43 / ミス 37 の母数 80 (転送の 5.2%) で、要約の「命中率 0.5」は読めなかった。
+    母数は `/status` の `cache.hits + cache.misses` (起動から)。
+    """
+    hits, misses = cache.get("hits"), cache.get("misses")
+    if hits is None or misses is None:
+        return num(cache.get("hit_ratio"))
+    total = hits + misses
+    per_day = total * 86400 / uptime if uptime else None
+    if total == 0 or (per_day is not None and per_day < HIT_RATIO_MIN_PER_DAY):
+        return f"— (n={num(total)}。1 日 {HIT_RATIO_MIN_PER_DAY} 本未満は率を出さない)"
+    ratio = cache.get("hit_ratio")
+    shown = f"{ratio:.2f}" if isinstance(ratio, (int, float)) else num(ratio)
+    return f"{shown} (n={num(total)})"
+
+
 def started_at(snap):
     """起動の時刻 (epoch 秒) = 取得の時刻 − `uptime_secs`。どちらかが無ければ None。"""
     up = part(snap, "status").get("uptime_secs") or snap.get("uptime_secs")
@@ -762,7 +782,7 @@ def main(argv=None):
           f" / {num(delta(['evicted_idle']))} |")
     cache = st.get("cache") or {}
     sysinfo = cache.get("system") or {}
-    print(f"| キャッシュ | 命中率 {num(cache.get('hit_ratio'))} "
+    print(f"| キャッシュ | 命中率 {hit_ratio_text(cache, st.get('uptime_secs'))} "
           f"(使用 {fmt_bytes((cache.get('memory') or {}).get('used_bytes'))}) |")
     rss, rss_note = sysinfo.get("process_rss_bytes"), ""
     if before:

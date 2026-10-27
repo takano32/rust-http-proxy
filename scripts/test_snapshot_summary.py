@@ -773,5 +773,27 @@ class SnapshotSize(unittest.TestCase):
         self.assertFalse(warn, text)
         self.assertIn("上限 6,291,456 B の **67.", text)
 
+
+class HitRatio(unittest.TestCase):
+    """T.29.19: キャッシュの命中率に母数 (n=) を添え、1 日あたり 100 本未満なら率は「—」。"""
+
+    def test_a_small_denominator_hides_the_ratio(self):
+        # 0.28.48 の 24 時間: 命中 43 / ミス 37 = 母数 80
+        text = ss.hit_ratio_text({"hits": 43, "misses": 37, "hit_ratio": 0.5375}, 86798)
+        self.assertEqual(text, "— (n=80。1 日 100 本未満は率を出さない)")
+
+    def test_a_large_denominator_shows_the_ratio_and_n(self):
+        text = ss.hit_ratio_text({"hits": 300, "misses": 100, "hit_ratio": 0.75}, 86400)
+        self.assertEqual(text, "0.75 (n=400)")
+
+    def test_the_summary_line_carries_n(self):
+        b = read(B)
+        st = b["status"]
+        st["uptime_secs"] = 86400
+        st.setdefault("cache", {}).update({"hits": 43, "misses": 37, "hit_ratio": 0.5375})
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("| キャッシュ | 命中率 — (n=80。1 日 100 本未満は率を出さない)", md)
+
 if __name__ == "__main__":
     unittest.main()

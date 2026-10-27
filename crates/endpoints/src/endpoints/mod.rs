@@ -507,8 +507,13 @@ pub fn handle(
         (
             200,
             "text/plain; version=0.0.4; charset=utf-8",
-            // 上限といまのスレッド数はここで 1 回だけ引く (`/status` と同じ形)
-            prom::render(ep.metrics, Some(ep.cache), (ep.concurrency)()),
+            // 上限といまのスレッド数はここで 1 回だけ引く (`/status` と同じ形)。
+            // 版とビルドの種類は末尾に 1 行 (T.29.19。描く側はこの層の `Endpoint` しか持たない)
+            {
+                let mut body = prom::render(ep.metrics, Some(ep.cache), (ep.concurrency)());
+                prom::build_info(&mut body, ep.version, ep.build);
+                body
+            },
         )
     } else if is_get && path == "/purge" {
         let params = parse_query(query.unwrap_or(""));

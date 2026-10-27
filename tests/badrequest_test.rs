@@ -123,6 +123,8 @@ fn test_integration_bad_requests_are_counted_by_reason() {
 
     // `/metrics` の 7 本 (立った 3 本が 1、残りは 0)
     let prom = endpoint_json(proxy_port, "/metrics");
+    // 版とビルドの種類の 1 行 (T.29.19)
+    assert!(prom.contains("sorahost_build_info{version=\""), "{}", prom);
     assert!(
         prom.contains("# TYPE sorahost_rejected_requests_total counter\n"),
         "{}",
