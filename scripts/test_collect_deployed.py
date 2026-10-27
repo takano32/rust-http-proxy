@@ -865,15 +865,18 @@ class CollectFromServerTest(unittest.TestCase):
     def t2899_versions(self):
         return {n: (v, b, p) for n, v, b, p in self.T2899}
 
-    def serve(self, listing, versions=None, live=None):
+    def serve(self, listing, versions=None, live=None, pad=None):
         bodies = {}
         for name in [f["date"] for f in listing.get("files", [])] + \
                 [m["name"] for m in listing.get("moments", [])]:
             if versions and name in versions:
                 bodies[name] = json.dumps(self.moment_body(name, *versions[name])).encode()
             else:
-                bodies[name] = json.dumps({"schema": 1, "taken_at": 1, "parts": ["status"],
-                                           "status": {"requests": len(name)}}).encode()
+                body = {"schema": 1, "taken_at": 1, "parts": ["status"], "status": {"requests": len(name)}}
+                # 大きさの警告 (T.29.16) を試す 1 枚だけ膨らませる
+                if pad and name in pad:
+                    body["pad"] = "x" * pad[name]
+                bodies[name] = json.dumps(body).encode()
         with open(SNAPSHOT_B, "rb") as f:
             snapshot = f.read()
         self.fetched = []
@@ -911,8 +914,8 @@ class CollectFromServerTest(unittest.TestCase):
         self.addCleanup(srv.shutdown)
         return srv
 
-    def run_from_server(self, listing, d=None, versions=None):
-        srv = self.serve(listing, versions)
+    def run_from_server(self, listing, d=None, versions=None, pad=None):
+        srv = self.serve(listing, versions, pad=pad)
         if d is None:
             d = tempfile.mkdtemp(prefix="t2820-")
             self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
@@ -931,6 +934,19 @@ class CollectFromServerTest(unittest.TestCase):
                 {"name": self.START, "kind": "start", "bytes": 10, "t": 3},
             ],
         }
+
+    def test_a_daily_snapshot_over_the_limit_is_warned(self):
+        """T.29.16 (a): 取り寄せた雪像の大きさと上限 (`limit_bytes`、無ければ 4 MiB) の割合を 1 行ずつ出し、
+        90% 以上なら警告する (日次が上限を越えると `recent` が 256 KiB に戻る)。"""
+        _, out = self.run_from_server(self.listing(), pad={self.DAY: 4 * 1024 * 1024 + 10})
+        line = [x for x in out.splitlines() if self.DAY + "T000000Z-snapshot.json`: " in x]
+        self.assertEqual(len(line), 1, out)
+        self.assertIn("**警告**: ", line[0])
+        self.assertIn("上限 4,194,304 B の **100.", line[0])
+        # 小さい 1 枚は警告しない
+        small = [x for x in out.splitlines() if self.START + "-snapshot.json`: " in x]
+        self.assertEqual(len(small), 1, out)
+        self.assertNotIn("警告", small[0])
 
     def test_moments_are_fetched_next_to_the_daily_ones(self):
         d, out = self.run_from_server(self.listing())

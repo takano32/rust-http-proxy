@@ -28,7 +28,13 @@
 #     切り分ける (変わっていればホストの再起動 = こちらでは防げない。同じならプロセスだけ =
 #     落ちたか外から止められた)。`boot` の無い行 (T.24.0 より前の版) は「判定できない」と添える
 #
+# **T.29.16 で足した行** (要点の頭): 雪像の**大きさと上限 (`limit_bytes`) に対する割合**・部の `truncated`。
+#   90% 以上なら警告する (日次の 1 枚が上限を越えると、プロキシは `recent` を 256 KiB に戻して黙って
+#   T.28.18 の形に戻る。0.28.48 の日次 `2026-10-26` は 4 MiB の 88% だった)。`--size-check FILE...` は
+#   この 1 行だけを並べる (`collect-deployed.sh --from-server` が取り寄せた雪像に使う)
+#
 # 使い方: scripts/snapshot-summary.py SNAP.json [--prev PREV.json] [--status-before STATUS.json]
+#         scripts/snapshot-summary.py --size-check FILE [FILE ...]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
 import argparse
@@ -53,6 +59,9 @@ CAUSE_NAMES = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop
 MISS_KINDS = ["cold", "expired", "warm_stale", "negative"]
 # 「動かないトンネル」と見なす秒 (T.15.0 (14) の画面と同じ固定の閾。見出しに書く)
 IDLE_TUNNEL_SECS = 300
+# 雪像の大きさの警告の割合 (T.29.16)。上限は雪像の `limit_bytes` (無い古い版は 4 MiB)
+SIZE_WARN = 0.90
+DEFAULT_LIMIT_BYTES = 4 * 1024 * 1024
 
 
 def load(path):
@@ -406,6 +415,25 @@ def truncated_parts(snap):
     return out
 
 
+def size_report(path, snap):
+    """雪像の大きさと上限 (`limit_bytes`) に対する割合・部の `truncated`・`dropped` の 1 行と、警告するかを返す (T.29.16)。"""
+    nbytes = os.path.getsize(path)
+    limit = snap.get("limit_bytes") or DEFAULT_LIMIT_BYTES
+    share = nbytes / limit if limit else 0.0
+    text = f"{nbytes:,} B = 上限 {limit:,} B の **{share * 100:.1f}%**"
+    cut = truncated_parts(snap)
+    if cut:
+        text += "、部の `truncated`: " + "・".join(f"`{name}`" for name, _, _ in cut)
+    dropped = snap.get("dropped") or []
+    if dropped:
+        text += "、落とした部: " + "・".join(f"`{x}`" for x in dropped)
+    warn = share >= SIZE_WARN or bool(dropped)
+    if warn:
+        text = ("**警告**: " + text + f" (上限の {SIZE_WARN * 100:.0f}% 以上か部を落としている。日次の 1 枚は上限を"
+                "越えると `recent` を 256 KiB に戻す。T.29.16)")
+    return text, warn
+
+
 def started_at(snap):
     """起動の時刻 (epoch 秒) = 取得の時刻 − `uptime_secs`。どちらかが無ければ None。"""
     up = part(snap, "status").get("uptime_secs") or snap.get("uptime_secs")
@@ -641,13 +669,26 @@ def print_anomalies(a):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="/snapshot を 1 枚の要点に畳む")
-    p.add_argument("snapshot")
+    p.add_argument("snapshot", nargs="?")
+    p.add_argument("--size-check", nargs="+", metavar="FILE",
+                   help="雪像の大きさと上限に対する割合・部の truncated だけを 1 枚 1 行で並べる (T.29.16)")
     p.add_argument("--prev", metavar="PREV.json", help="前回の雪像 (通算の指標を差分にする)")
     # 雪像を配ること自体が RSS を約 1.0 MB 押し上げるので、RSS だけは雪像の**前**に
     # 取った `/status` を使う (T.15.0 (15)。ほかの通算は 1 秒差で意味が変わらない)
     p.add_argument("--status-before", metavar="STATUS.json",
                    help="雪像の前に取った /status (**RSS だけ**こちらの値を使う)")
     args = p.parse_args(argv)
+    if args.size_check:
+        for path in args.size_check:
+            try:
+                snap = load(path)
+            except (OSError, ValueError) as e:
+                print(f"- `{path}`: 読めない ({e})")
+                continue
+            print(f"- `{path}`: " + size_report(path, snap)[0])
+        return 0
+    if not args.snapshot:
+        p.error("雪像 (SNAP.json) か --size-check が要る")
     d = load(args.snapshot)
     prev = load(args.prev) if args.prev else None
     before = load(args.status_before) if args.status_before else None
@@ -688,6 +729,7 @@ def main(argv=None):
     # 無言の再起動 (T.23.2) を**頭に 1 行**。`/events` は 24 時間より長く残るので、`start` の
     # 直前に `shutdown` があるかで見分けられる (判定は判定表の phase23 の行と同じ関数)
     print("- 無言の再起動: " + silent_restart_text(silent_restarts(d)))
+    print("- 大きさ: " + size_report(args.snapshot, d)[0])
     if d.get("dropped"):
         print(f"- **4 MiB を越えたので落とした部分**: {', '.join(d['dropped'])}")
     cut = truncated_parts(d)

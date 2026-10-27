@@ -153,7 +153,10 @@ class Repeats(unittest.TestCase):
         for row in b["errors"]["errors"]:
             row["repeats"], row["last_at"] = 1, row["at"]
         with written(b=b) as paths:
-            self.assertEqual(run([paths["b"], "--prev", A]), run([B, "--prev", A]))
+            # 大きさの行 (T.29.16) は書き直したファイルのバイト数なので外して比べる
+            def body(md):
+                return "".join(line for line in md.splitlines(True) if not line.startswith("- 大きさ: "))
+            self.assertEqual(body(run([paths["b"], "--prev", A])), body(run([B, "--prev", A])))
 
     def test_the_rebuilt_rrd_line_counts_the_same_way(self):
         b = with_repeats(read(B), 1, 40, 1789070000)
@@ -726,6 +729,49 @@ class Anonymized(unittest.TestCase):
         self.assertIn("| ua-01 |", self.md)
         self.assertRegex(self.md, r"host-\d{4}\.g\d{4}\.example:443")
 
+
+
+class SnapshotSize(unittest.TestCase):
+    """T.29.16: 雪像の大きさと上限 (`limit_bytes`) に対する割合・部の `truncated` を頭に 1 行。90% 以上は警告。"""
+
+    @staticmethod
+    def snap(pad, limit=4 * 1024 * 1024, truncated=False):
+        s = read(B)
+        s["dropped"] = []
+        s["limit_bytes"] = limit
+        s["recent"] = {"recent": [], "count": 2000, "shown": 580, "truncated": truncated}
+        s["pad"] = "x" * pad
+        if "recent" not in (s.get("parts") or []):
+            s["parts"] = (s.get("parts") or []) + ["recent"]
+        return s
+
+    def test_over_four_mib_is_warned(self):
+        with written(b=self.snap(4 * 1024 * 1024 + 10)) as paths:
+            md = run(["--size-check", paths["b"]])
+        self.assertIn("**警告**: ", md)
+        self.assertIn("上限 4,194,304 B の **100.", md)
+
+    def test_the_daily_of_2026_10_26_is_just_under_the_warning(self):
+        # 0.28.48 の日次 `2026-10-26` は 3,692,328 B = 4 MiB の 88%。`recent` は 256 KiB で切れていない
+        with written(b=self.snap(3_692_328 - 20_000)) as paths:
+            text, warn = ss.size_report(paths["b"], ss.load(paths["b"]))
+        self.assertFalse(warn, text)
+        self.assertIn("上限 4,194,304 B の **8", text)
+
+    def test_ninety_percent_and_truncated_parts(self):
+        with written(b=self.snap(int(4 * 1024 * 1024 * 0.91), truncated=True)) as paths:
+            md = run([paths["b"]])
+        line = [x for x in md.splitlines() if x.startswith("- 大きさ: ")]
+        self.assertEqual(len(line), 1, md)
+        self.assertIn("**警告**", line[0])
+        self.assertIn("部の `truncated`: `recent`", line[0])
+
+    def test_the_daily_limit_of_six_mib_is_read_from_the_snapshot(self):
+        # T.29.16 からの日次は `limit_bytes` が 6 MiB。同じ 4.2 MB でも 67% で警告しない
+        with written(b=self.snap(4 * 1024 * 1024 + 10, limit=6 * 1024 * 1024)) as paths:
+            text, warn = ss.size_report(paths["b"], ss.load(paths["b"]))
+        self.assertFalse(warn, text)
+        self.assertIn("上限 6,291,456 B の **67.", text)
 
 if __name__ == "__main__":
     unittest.main()

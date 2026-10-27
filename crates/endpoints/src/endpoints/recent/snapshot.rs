@@ -41,7 +41,7 @@ pub fn snapshots() -> (u16, &'static str, String) {
     );
     let _ = write!(
         out,
-        ",\"count\":{},\"shown\":{},\"bytes\":{},\"days\":{},\"max_bytes\":{},\"dir\":{},\"truncated\":{},\"moments_count\":{},\"moments_shown\":{},\"moments_bytes\":{},\"moments_truncated\":{}}}",
+        ",\"count\":{},\"shown\":{},\"bytes\":{},\"days\":{},\"max_bytes\":{},\"dir\":{},\"truncated\":{},\"moments_count\":{},\"moments_shown\":{},\"moments_bytes\":{},\"moments_truncated\":{},\"daily_max_bytes\":{}}}",
         l.files.len(),
         shown,
         l.bytes,
@@ -52,7 +52,9 @@ pub fn snapshots() -> (u16, &'static str, String) {
         l.moments.len(),
         moments_shown,
         l.moments_bytes,
-        moments_cut
+        moments_cut,
+        // 日次の 1 枚だけの上限 (T.29.16。`max_bytes` は起動・停止の 1 枚と `/snapshot` の 4 MiB)
+        crate::snapshots::DAILY_MAX_FILE
     );
     (200, "application/json", out)
 }
@@ -104,7 +106,7 @@ const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
 /// **T14.3 の `/profile` は、入ったらここに 1 行足す** (`parts` に名前が出るので、
 /// 読む側は「この版に何が入っていたか」を JSON だけで判別できる)。
 pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
-    snapshot_with(ep, None)
+    snapshot_with(ep, None, MAX_SNAPSHOT)
 }
 
 /// [`snapshot`] の本体。`recent_max` が `Some(上限)` なら **`recent` を部の 256 KiB ([`MAX_BODY`]) で
@@ -120,7 +122,14 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
 /// 1 枚にはできない (取り寄せたときにはもうプロセスが居ない)。全部入れても 2,000 件 × 1 件 500 B
 /// 前後 = 1 MB 前後で、合計が 4 MiB を越えるときは**切った `recent` に戻してから**いつもの順に落とす
 /// (全部入れたせいで `recent` ごと `null` にはしない)。
-pub fn snapshot_with(ep: &Endpoint<'_>, recent_max: Option<usize>) -> (u16, &'static str, String) {
+///
+/// `limit` は全体の上限 (いつもの `/snapshot` と起動・停止の 1 枚は [`MAX_SNAPSHOT`] = 4 MiB、
+/// 日次の 1 枚は `snapshots::DAILY_MAX_FILE` = 6 MiB。T.29.16)。`limit_bytes` に出る。
+pub fn snapshot_with(
+    ep: &Endpoint<'_>,
+    recent_max: Option<usize>,
+    limit: usize,
+) -> (u16, &'static str, String) {
     use crate::history::History;
     use crate::metrics::HostSort;
 
@@ -145,7 +154,7 @@ pub fn snapshot_with(ep: &Endpoint<'_>, recent_max: Option<usize>) -> (u16, &'st
         (
             "recent",
             match recent_max {
-                Some(max) => recent_within(ep, Some("n=2000"), max.min(MAX_SNAPSHOT)).2,
+                Some(max) => recent_within(ep, Some("n=2000"), max.min(limit)).2,
                 None => recent(ep, Some("n=2000")).2,
             },
         ),
@@ -162,9 +171,9 @@ pub fn snapshot_with(ep: &Endpoint<'_>, recent_max: Option<usize>) -> (u16, &'st
     ];
     let names: Vec<&'static str> = part.iter().map(|(k, _)| *k).collect();
     if recent_max.is_some() {
-        fit_full_recent(&mut part, MAX_SNAPSHOT, || recent(ep, Some("n=2000")).2);
+        fit_full_recent(&mut part, limit, || recent(ep, Some("n=2000")).2);
     }
-    let dropped = drop_to_fit(&mut part, MAX_SNAPSHOT);
+    let dropped = drop_to_fit(&mut part, limit);
     let total: usize = overhead_of(&part) + part.iter().map(|(_, v)| v.len()).sum::<usize>();
 
     let mut out = String::with_capacity(total + 1024);
@@ -177,7 +186,7 @@ pub fn snapshot_with(ep: &Endpoint<'_>, recent_max: Option<usize>) -> (u16, &'st
         crate::cache::now_epoch(),
         crate::json::escape(ep.version),
         ep.metrics.start_time.elapsed().as_secs(),
-        MAX_SNAPSHOT,
+        limit,
     );
     for (i, name) in names.iter().enumerate() {
         let _ = write!(out, "{}\"{}\"", if i == 0 { "" } else { "," }, name);
@@ -363,7 +372,12 @@ mod tests {
         assert_eq!(crate::snapshots::DAILY_RECENT_MAX, 1024 * 1024);
         let m = Metrics::new();
         fill(&m, false);
-        let (usual, day) = with_ep(&m, |ep| (snapshot(ep).2, snapshot_with(ep, daily).2));
+        let (usual, day) = with_ep(&m, |ep| {
+            (
+                snapshot(ep).2,
+                snapshot_with(ep, daily, crate::snapshots::DAILY_MAX_FILE as usize).2,
+            )
+        });
         println!(
             "T.28.46 recent 2,000 件 (ありがちな行): いつもの雪像 {} B (recent {} B) / 日次 {} B (recent {} B)",
             usual.len(),
@@ -381,7 +395,9 @@ mod tests {
         // 最悪の値の行は 1 MiB で切る (停止の 1 枚のように 4 MiB までは持たない)
         let m = Metrics::new();
         fill(&m, true);
-        let day = with_ep(&m, |ep| snapshot_with(ep, daily).2);
+        let day = with_ep(&m, |ep| {
+            snapshot_with(ep, daily, crate::snapshots::DAILY_MAX_FILE as usize).2
+        });
         let p = part_of(&day);
         assert!(p.contains("\"truncated\":true"), "{}", &p[..300]);
         assert!(recent_bytes(&day) <= crate::snapshots::DAILY_RECENT_MAX);
@@ -396,9 +412,9 @@ mod tests {
         fill(&m, true);
         let (usual, full, took) = with_ep(&m, |ep| {
             let usual = snapshot(ep).2;
-            let full = snapshot_with(ep, Some(MAX_SNAPSHOT)).2;
+            let full = snapshot_with(ep, Some(MAX_SNAPSHOT), MAX_SNAPSHOT).2;
             let t = Instant::now();
-            let _ = snapshot_with(ep, Some(MAX_SNAPSHOT));
+            let _ = snapshot_with(ep, Some(MAX_SNAPSHOT), MAX_SNAPSHOT);
             (usual, full, t.elapsed())
         });
         println!(
@@ -423,6 +439,32 @@ mod tests {
         assert_eq!(part[1].1.len(), 1000, "収まるなら全部のまま");
         assert!(fit_full_recent(&mut part, 1000, || "cut".to_string()));
         assert_eq!(part[1], ("recent", "cut".to_string()));
+    }
+
+    /// **T.29.16**: 日次の 1 枚だけ上限は 6 MiB。0.28.48 の日次 `2026-10-26` の大きさ (全体 3,692,328 B、
+    /// `history` 1,550,971 B・`recent` 896,914 B) に `history` が 60 万 B 増えて 4 MiB を越えても、日次なら
+    /// `recent` の 2,000 行を切らずに持つ (4 MiB の上限では 256 KiB の `recent` に黙って戻っていた)。
+    #[test]
+    fn the_daily_snapshot_has_room_above_four_mib() {
+        let daily = crate::snapshots::DAILY_MAX_FILE as usize;
+        assert_eq!(daily, 6 * 1024 * 1024);
+        let parts = || {
+            vec![
+                ("history.60", "h".repeat(1_550_971 + 600_000)),
+                ("hosts", "o".repeat(3_692_328 - 1_550_971 - 896_914)),
+                ("recent", "r".repeat(896_914)),
+            ]
+        };
+        let mut four = parts();
+        assert!(fit_full_recent(&mut four, MAX_SNAPSHOT, || "cut".to_string()));
+        let mut six = parts();
+        assert!(!fit_full_recent(&mut six, daily, || "cut".to_string()));
+        assert_eq!(six[2].1.len(), 896_914, "recent は全部のまま");
+        assert!(drop_to_fit(&mut six, daily).is_empty());
+        let total: usize = overhead_of(&six) + six.iter().map(|(_, v)| v.len()).sum::<usize>();
+        // 実際の 3,692,328 B は 6 MiB の 58.7% (受け入れ基準の 70% 以下)、60 万 B 増えても 68.2%
+        assert!(total * 100 <= daily * 70, "{} B", total);
+        assert!(3_692_328 * 100 <= daily * 70);
     }
 
     /// 4 MiB を越えたら `/recent` → `/log` → `/history?res=5` の順に落とすこと (T14.4)。

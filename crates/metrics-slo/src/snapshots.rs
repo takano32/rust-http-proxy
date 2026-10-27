@@ -42,7 +42,16 @@ use crate::sync::LockExt;
 use crate::{log_debug, log_info, log_warn};
 
 /// 1 ファイルの上限 (4 MiB。`/snapshot` の上限 `endpoints::recent::MAX_SNAPSHOT` と同じ値)。
+/// 起動と停止の 1 枚 (T.28.20) はこれ。**日次の 1 枚だけ** [`DAILY_MAX_FILE`] (T.29.16)。
 pub const MAX_FILE: u64 = 4 * 1024 * 1024;
+
+/// **日次の 1 枚だけ**の上限 (6 MiB。T.29.16)。
+///
+/// 0.28.48 が書いた日次 `2026-10-26` は 3,692,328 B (4 MiB の 88%。`history` 1,550,971 B は T.28.45 の 17 項目で
+/// 増え、`recent` 896,914 B は T.28.46 の 2,000 行)。4 MiB を越えると `recent` を 256 KiB (約 580 行) に戻し、
+/// T.28.18 の問題 (締めの「前」の接続のエラーの行が「判定できず」) に黙って戻るので、日次だけ上限を上げて
+/// 余白を作る (3.7 MB は 6 MiB の 59%)。`/snapshot` (要求で組む 1 枚) と起動・停止の 1 枚は 4 MiB のまま
+pub const DAILY_MAX_FILE: u64 = 6 * 1024 * 1024;
 
 /// **日次の 1 枚だけ**の `recent` の部の上限 (1 MiB。T.28.46、利用者の決定 10)。
 ///
@@ -112,10 +121,11 @@ fn day_of(name: &str) -> Option<u64> {
 
 /// `/snapshot` を組む閉包 (預けるのは `proxy-endpoints`。[`set_builder`])。
 ///
-/// 引数は **`recent` の部の上限** (`None` = `/snapshot` と同じく部ごと 256 KiB で切る。起動の 1 枚)。
+/// 1 つ目の引数は **`recent` の部の上限** (`None` = `/snapshot` と同じく部ごと 256 KiB で切る。起動の 1 枚)。
 /// 停止の 1 枚は [`MAX_FILE`] (= 2,000 件を全部。T.28.20)、日次は [`DAILY_RECENT_MAX`] (T.28.46)。
-/// `Some` のときは、全体が 4 MiB を越えるなら切った `recent` に戻す。
-pub type Builder = Box<dyn Fn(Option<usize>) -> String + Send + Sync>;
+/// 2 つ目は**全体の上限** (日次は [`DAILY_MAX_FILE`]、ほかは [`MAX_FILE`]。T.29.16)。
+/// `Some` のときは、全体が上限を越えるなら切った `recent` に戻す。
+pub type Builder = Box<dyn Fn(Option<usize>, usize) -> String + Send + Sync>;
 
 static BUILDER: OnceLock<Mutex<Option<Builder>>> = OnceLock::new();
 
@@ -131,8 +141,11 @@ pub fn set_builder(f: Builder) {
 }
 
 /// 預かった閉包で `/snapshot` を 1 枚組む (**日付の変わり目と起動・停止のときだけ**呼ぶ)。
-fn build(recent_max: Option<usize>) -> Option<String> {
-    builder().locked().as_ref().map(|f| f(recent_max))
+fn build(recent_max: Option<usize>, limit: u64) -> Option<String> {
+    builder()
+        .locked()
+        .as_ref()
+        .map(|f| f(recent_max, limit as usize))
 }
 
 /// 起動と停止の 1 枚の種類 (T.28.20)。名前は `<YYYY-MM-DDTHHMMSSZ>-<種類>.json`。
@@ -279,7 +292,7 @@ impl Writer {
             return None;
         };
         let path = dir.join(format!("{}{}", name, EXT));
-        if !self.put(&dir, &path, &body, space) {
+        if !self.put(&dir, &path, &body, DAILY_MAX_FILE, space) {
             return None;
         }
         self.last_written = finished;
@@ -317,7 +330,7 @@ impl Writer {
             return None;
         };
         let path = dir.join(format!("{}{}", moment_name(t, m), EXT));
-        if !self.put(&dir, &path, &body, space) {
+        if !self.put(&dir, &path, &body, MAX_FILE, space) {
             return None;
         }
         self.moments += 1;
@@ -344,15 +357,13 @@ impl Writer {
         dir: &Path,
         path: &Path,
         body: &str,
+        limit: u64,
         space: impl FnOnce(&Path) -> (Option<u64>, u64),
     ) -> bool {
         let need = body.len() as u64;
-        if need > MAX_FILE {
-            // `/snapshot` 側が 4 MiB で切っているので本来ここへは来ない (念のための歯止め)
-            self.note_skip(
-                path,
-                &format!("{} B is over the {} B limit", need, MAX_FILE),
-            );
+        if need > limit {
+            // `/snapshot` 側が同じ上限で切っているので本来ここへは来ない (念のための歯止め)
+            self.note_skip(path, &format!("{} B is over the {} B limit", need, limit));
             return false;
         }
         let (free, keep_free) = space(dir);
@@ -593,8 +604,8 @@ pub fn tick(cache: &Cache, s: &Sample) {
     let t = s.t.saturating_add(SHIFT.load(Ordering::Relaxed));
     writer().locked().add(
         t,
-        // 日次だけ `recent` を 1 MiB まで持つ (T.28.46)
-        || build(Some(DAILY_RECENT_MAX)),
+        // 日次だけ `recent` を 1 MiB まで持ち (T.28.46)、全体は 6 MiB まで (T.29.16)
+        || build(Some(DAILY_RECENT_MAX), DAILY_MAX_FILE),
         |dir| {
             // T12.5 のディスクのマージン (プローブが決めた「空けておく量」)。
             // キャッシュを切っている設定では 0 = 空きがある限り書く
@@ -634,7 +645,7 @@ fn take(cache: &Cache, m: Moment, recent_max: Option<usize>) -> Option<PathBuf> 
     writer().locked().write_moment(
         t,
         m,
-        || build(recent_max),
+        || build(recent_max, MAX_FILE),
         |dir| (free_bytes(dir), cache.snapshot().disk_keep_free),
     )
 }
@@ -702,7 +713,7 @@ pub fn list() -> Listing {
 /// `/snapshots/<date>` と `/snapshots/<起動・停止の名前>` の中身 (そのままの JSON)。無ければ `None`。
 ///
 /// 読むのは `<YYYY-MM-DD>.json` と `<YYYY-MM-DDTHHMMSSZ>-start|shutdown.json` (T.28.20) だけで、
-/// [`MAX_FILE`] を超えるファイル (手で置かれたもの) は読まない。
+/// 上限 (日次は [`DAILY_MAX_FILE`]、起動・停止は [`MAX_FILE`]) を超えるファイル (手で置かれたもの) は読まない。
 pub fn read(date: &str) -> Option<String> {
     if !is_date(date) && parse_moment(date).is_none() {
         return None;
@@ -710,7 +721,12 @@ pub fn read(date: &str) -> Option<String> {
     let dir = writer().locked().dir.clone()?;
     let path = dir.join(format!("{}{}", date, EXT));
     let len = fs::metadata(&path).ok()?.len();
-    if len > MAX_FILE {
+    let limit = if is_date(date) {
+        DAILY_MAX_FILE
+    } else {
+        MAX_FILE
+    };
+    if len > limit {
         log_warn!(
             None,
             "snapshot {}: {} B is too big to serve",
@@ -1043,7 +1059,7 @@ mod tests {
             ..Sample::default()
         };
         // 組み方に渡った「`recent` の部の上限」を中身に写す (T.28.20・T.28.46。`null` = 256 KiB で切る)
-        set_builder(Box::new(|max| {
+        set_builder(Box::new(|max, _limit| {
             format!(
                 "{{\"taken_at\":1,\"parts\":[\"status\"],\"recent_max\":{}}}",
                 max.map_or("null".to_string(), |n| n.to_string())

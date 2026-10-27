@@ -222,6 +222,8 @@ fn test_integration_snapshots_lists_and_serves_saved_days() {
     // `PROXY_SNAPSHOT_DAYS` がそのまま出る (設定の配線)
     assert!(list.contains("\"days\":7"), "{}", list);
     assert!(list.contains("\"max_bytes\":4194304"), "{}", list);
+    // 日次の 1 枚だけの上限 (T.29.16)
+    assert!(list.contains("\"daily_max_bytes\":6291456}"), "{}", list);
     assert!(list.contains(&snaps.display().to_string()), "{}", list);
     // 並びは**古い順**
     let first = list.find(days[0]).expect("最初の日が無い");

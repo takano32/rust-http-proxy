@@ -1351,7 +1351,8 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   - **日次の snapshot (30 日ぶん。T.14.34)**: `/snapshots` は
     `$HOME/.rust-http-proxy/snapshots/` に残してある日付と大きさ (`files[]` の `date` / `bytes` /
     `t` (書いた時刻)、**古い順**) と、置き場所 (`dir`)・残す日数 (`days`)・1 ファイルの上限
-    (`max_bytes` = 4 MiB) を返します。`/snapshots/<YYYY-MM-DD>` はその日のファイルを
+    (`max_bytes` = 4 MiB。起動と停止の 1 枚と `/snapshot` の上限。**日次の 1 枚だけは末尾の `daily_max_bytes` = 6 MiB**。T.29.16)
+    を返します。`/snapshots/<YYYY-MM-DD>` はその日のファイルを
     **そのまま** (`/snapshot` の応答そのもの) 返すので、`scripts/snapshot-diff.py` や
     `scripts/status-diff.py`、1 週間ぶんを 1 枚にする `scripts/weekly-report.py` に
     そのまま渡せます (置いていない日と日付として読めない名前は 404)。
@@ -1364,7 +1365,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     256 KiB のまま)。256 KiB では `/recent` が約 580 行しか入らず (tokyo の日次 16 枚は 552〜598 行)、締めの「前」に日次を
     使うと接続のエラーの行 (試行 1,000 本が下限) が「判定できず」になっていたためです。1 行 437〜474 B なので環の 2,000 件が
     全部入り、合計が 4 MiB を越えるときは停止の 1 枚と同じく切った `recent` に戻します。tokyo の日次 16 枚の実バイトで
-    引き直すと 1.44〜2.89 MB → 1.64〜3.51 MB です (`recent` の部を 2,000 行に伸ばした値。どれも 4 MiB の内)
+    引き直すと 1.44〜2.89 MB → 1.64〜3.51 MB です (`recent` の部を 2,000 行に伸ばした値。どれも 4 MiB の内)。
+    **T.29.16 で日次の 1 枚だけ全体の上限を 4 → 6 MiB にしました**: 0.28.48 が書いた日次 `2026-10-26` は 3,692,328 B
+    (4 MiB の 88%。`history` 1,550,971 B は T.28.45 の 17 項目で増え、`recent` は 896,914 B で 2,000 行) で、越えると黙って
+    256 KiB の `recent` (約 580 行) に戻るためです (6 MiB なら 59%。雪像の `limit_bytes` に効いた上限が出ます)。
+    `collect-deployed.sh --from-server` は取り寄せた 1 枚ごとに大きさ・上限に対する割合・部の `truncated` を並べ、
+    **90% 以上なら警告**します (`scripts/snapshot-summary.py --size-check FILE…` と同じ 1 行。要約の頭にも同じ行が出ます)
     **起動と停止の 1 枚** (T.28.20) は同じ置き場所の `<YYYY-MM-DDTHHMMSSZ>-shutdown.json` (**停止シグナルで状態ファイルを書く前**) と
     `-start.json` (**起動から 60 秒**、`memory.baseline` を書くのと同じ時) で、`/snapshots` の **`moments[]`**
     (`name` / `kind` = `start`・`shutdown` / `bytes` / `t` (撮った時刻)、古い順。数は `moments_count`・`moments_bytes`) に並び、

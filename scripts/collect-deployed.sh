@@ -277,6 +277,7 @@ for m in d.get("moments") or []:
   got=0
   skipped=0
   failed=0
+  fetched=()
   while read -r day bytes file; do
     [ -n "$day" ] || continue
     out="$DIR/$file"
@@ -288,6 +289,7 @@ for m in d.get("moments") or []:
       python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$out.part" 2>/dev/null; then
       mv "$out.part" "$out"
       got=$((got + 1))
+      fetched+=("$out")
       printf -- '- 取り寄せた: `%s` (%s B、サーバー側 %s B)\n' "$out" "$(wc -c <"$out" | tr -d ' ')" "$bytes"
     else
       rm -f "$out.part"
@@ -298,6 +300,12 @@ for m in d.get("moments") or []:
 $DAYS
 EOF
   printf -- '- 取り寄せ %d 件、手元にあった %d 件、失敗 %d 件\n' "$got" "$skipped" "$failed"
+  # 取り寄せた雪像の大きさと上限 (`limit_bytes`) の割合・部の `truncated`。90% 以上は警告 (T.29.16。
+  # 日次の 1 枚が上限を越えると、プロキシは `recent` を 256 KiB に戻して黙って T.28.18 の形に戻る)
+  if [ "${#fetched[@]}" -gt 0 ]; then
+    printf -- '- 大きさ (上限の 90%% 以上は警告。T.29.16):\n'
+    python3 scripts/snapshot-summary.py --size-check "${fetched[@]}" | sed 's/^/  /'
+  fi
   # 締めの「前」と「0 時間」を**版で**選ぶ (T.28.20 は時刻だけで「最後の停止」と「その後の最初の起動」を
   # 選んでいて、T.28.99 では 0.28.39 を 53 分挟んだので「前」が 0.28.39 の停止になり、手で差し替えた。T.29.26)。
   # 各 1 枚の `status.version` (と `build`・`boot.id`) を読み、

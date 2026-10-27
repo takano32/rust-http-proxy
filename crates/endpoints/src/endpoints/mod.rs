@@ -176,7 +176,7 @@ pub struct SnapshotSource {
 pub fn register_snapshot(src: SnapshotSource) {
     // 引数は「`recent` の部の上限」(`None` = 256 KiB で切る。停止の 1 枚は 4 MiB = 全部 (T.28.20)、
     // 日次は 1 MiB (T.28.46))
-    crate::snapshots::set_builder(Box::new(move |recent_max| {
+    crate::snapshots::set_builder(Box::new(move |recent_max, limit| {
         let ep = Endpoint {
             metrics: &src.metrics,
             cache: &src.cache,
@@ -193,7 +193,7 @@ pub fn register_snapshot(src: SnapshotSource) {
             build: src.build,
             concurrency: &*src.concurrency,
         };
-        recent::snapshot_with(&ep, recent_max).2
+        recent::snapshot_with(&ep, recent_max, limit).2
     }));
 }
 
