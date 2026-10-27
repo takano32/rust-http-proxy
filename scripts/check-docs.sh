@@ -224,7 +224,8 @@ snapshot_criteria.py	判定の部。入口は `snapshot-diff.py` (単体では�
 test_*.py	unittest が名前で読む (`python3 -m unittest discover -s scripts`)
 EOF
 # 同じ名前は説明の節と例の節の両方に出るので 1 つに畳む。
-grep -oE 'scripts/[A-Za-z0-9_.-]+\.py' README.md | sed 's|^scripts/||' | LC_ALL=C sort -u >"$W/py-readme"
+# README から分けた本文 (`docs/*.md`。T.29.32) も同じ文書として読む
+grep -ohE 'scripts/[A-Za-z0-9_.-]+\.py' README.md docs/*.md | sed 's|^scripts/||' | LC_ALL=C sort -u >"$W/py-readme"
 WANT=0
 : >"$W/py-want"
 while read -r name; do
@@ -261,14 +262,15 @@ python3 scripts/check-ledger.py || NG=1
 # `collect-deployed.sh` の `CRITERIA` の既定と、README の「既定は phaseNN」の書き方がそろっているか。
 # T.27.0 で phase25 にしたのに README は 3 か所 phase24 のままだった (2026-10-25 の洗い出しで見つかった)
 python3 - <<'CRITPY' || NG=1
-import re, sys
+import glob, re, sys
 src = open('scripts/collect-deployed.sh', encoding='utf-8').read()
 m = re.search(r'^CRITERIA=\$\{CRITERIA:-(phase\d+)\}', src, re.M)
 if not m:
     print("  NG (h): scripts/collect-deployed.sh に CRITERIA の既定が見つからない")
     sys.exit(1)
 want = m.group(1)
-readme = open('README.md', encoding='utf-8').read()
+# README から分けた本文 (`docs/*.md`。T.29.32) も同じ文書として読む
+readme = ''.join(open(f, encoding='utf-8').read() for f in ['README.md'] + sorted(glob.glob('docs/*.md')))
 bad = sorted(set(x for x in re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)(phase\d+)', readme)
                  if x != want))
 print("(h) 判定表の既定: collect-deployed.sh は %s / README の「既定は」の書き方 %d か所"
