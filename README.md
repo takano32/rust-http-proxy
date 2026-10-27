@@ -885,7 +885,11 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     (`"persisted": false`)。費用は内部エンドポイントの経路の鍵 1 回だけで、**要求の経路には 1 命令も足していません**。
     数えるのは応答を組む**前**なので、**読んだ応答にはその要求自身が入っています** (`/status` を 3 回引いた
     3 回目の応答が `count: 3`。測る行為が状態を変えるので、`/readers` を引けばその 1 回も数に入ります)
-  - **閉じた接続の個票 (T.14.4)**: `/recent?n=200&offset=0&since=<epoch>&client=<ip>&sort=time|slow|bytes` (既定 200、最大 2,000)。
+  - **閉じた接続の個票 (T.14.4)**: `/recent?n=200&offset=0&since=<epoch>&client=<ip>&sort=time|slow|bytes&rtt_client=lt100|ge100` (既定 200、最大 2,000)。
+    **`rtt_client=lt100` / `ge100`** (T.29.18) は接続元のカーネルの RTT (`rtt_ms.client`) が 100 ms 未満 / 以上の行だけに絞ります
+    (RTT の読めない行はどちらにも入りません。応答の末尾の `rtt_client` に効いた絞りが出ます)。NAT の向こうの利用者は接続元 IP では
+    1 つに見えますが、tokyo では RTT で 2 集団に割れていました (近い 429 行は first_relay p50 20 ms、遠い 1,492 行は 4,058 ms)。
+    `scripts/snapshot-diff.py` の §4 の末尾に、この 2 集団の確立・first_relay・閉じた理由・宛先の種類の表が出ます (匿名化しても RTT は残ります)。
     `/connections` が「いま」しか見せないのに対し、こちらは「**起きたこと**」です。1 件 = 接続 id・開いた時刻 (`at`、epoch 秒)・
     接続元 (`client`)・宛先 (`target`。CONNECT も http も `host:port`)・種類 (`kind` = `connect` / `http`)・
     寿命 (`secs`)・要求数 (`reqs`、http だけ)・
@@ -3194,7 +3198,7 @@ T.29.27 (設定の帯の読めない値と知らない鍵・版の隣のビル�
 | **動かないトンネル** (「いまの接続」の下の表) | `/connections` |
 | **名前解決の内訳** | `/status` の `dns`、`/history` の `dns_warm` |
 | **受付待ち** | `/profile` の `stages.connect` の `queue` と `run_delay_us` |
-| **利用者が待つ時間 p50** (KPI + 図) | `/status` の `recent_quantiles.wait`、`/history` の `wait_*` |
+| **利用者が待つ時間 p50** (KPI + 図) | KPI は `/recent?rtt_client=lt100&n=500` (近い接続元。T.29.18。30 秒ごと)、無い版は `/status` の `recent_quantiles.wait`。図は `/history` の `wait_*` |
 
 それぞれの**欄**と、**無い版のふるまい**:
 
@@ -3208,7 +3212,9 @@ T.29.27 (設定の帯の読めない値と知らない鍵・版の隣のビル�
   - 無い版のふるまい: `misses_by_kind` を持たない版では横棒を出さない
 - **受付待ち** — `queue` の段を **12 段の区間**に開いた横棒 1 本 (二峰ならワーカー待ちで待たされています) と、件数・平均・p50 / p95 / 最大。下は `run_delay_us` (全役割の合計) を us / 秒 の折れ線で
   - 無い版のふるまい: `run_delay_us` が `null` (schedstat の読めない環境) の標本では折れ線が切れる
-- **利用者が待つ時間 p50** (KPI + 図) — `queue + client_read + dns + connect` の和 (T.15.0 (2))。札に本数・下に p90 / p99 / 最大。**まだ外にあるのは accept から要求行が届くまでと、200 の後の `first_relay`**
+- **利用者が待つ時間 p50** (KPI + 図) — `queue + client_read + dns + connect` の和 (T.15.0 (2))。**T.29.18 から KPI の数字は
+  近い接続元 (接続元の RTT < 100 ms) の成功した CONNECT だけ**で出し (`/recent?rtt_client=lt100` の個票の実測の分位点)、下に全体
+  (遠い接続元を含む) の p50 を添えます (NAT の向こうの 2 集団を混ぜた値は、近い利用者の待ちとして読めないため。`rtt_client` を知らない版では今までどおり)。札に本数・下に p90 / p99 / 最大。**まだ外にあるのは accept から要求行が届くまでと、200 の後の `first_relay`**
   - 無い版のふるまい: `recent_quantiles.wait` が無ければ `/history` の `wait_*` の区間の補間に落ち、それも無ければ「–」
 
 **`/inspect` は「調査」ページ**です (`/dashboard/inspect` も同じもの。T.14.8)。`/dashboard` が「いま」を見る画面なのに対して、

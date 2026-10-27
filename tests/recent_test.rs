@@ -793,6 +793,41 @@ fn test_integration_recent_records_a_closed_tunnel() {
     assert!(!json.contains("\"truncated\":true"), "{}", json);
 }
 
+/// **T.29.18**: `/recent?rtt_client=lt100|ge100` で接続元のカーネルの RTT (100 ms) で個票を 2 つに割る。
+/// 手元の lo の RTT は数十 us なので、閉じたトンネルは `lt100` にだけ出て `ge100` には出ない。
+#[test]
+#[cfg(target_os = "linux")]
+fn test_integration_recent_splits_by_the_client_rtt() {
+    use std::io::{Read, Write};
+
+    let origin_port = start_echo_origin();
+    let proxy_port = start_test_proxy(park_config());
+    let mut tunnel = open_tunnel(proxy_port, origin_port);
+    tunnel.write_all(b"near").unwrap();
+    let mut back = [0u8; 4];
+    tunnel.read_exact(&mut back).unwrap();
+    tunnel.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut rest = Vec::new();
+    let _ = tunnel.read_to_end(&mut rest);
+    drop(tunnel);
+    wait_until(
+        || endpoint_json(proxy_port, "/recent").contains("\"kind\":\"connect\""),
+        "閉じたトンネルが /recent に出る",
+    );
+    let all = endpoint_json(proxy_port, "/recent");
+    assert!(all.contains("\"rtt_client\":\"\"}"), "{}", all);
+    let near = endpoint_json(proxy_port, "/recent?rtt_client=lt100");
+    assert!(near.contains("\"kind\":\"connect\""), "{}", near);
+    assert!(near.contains("\"rtt_client\":\"lt100\"}"), "{}", near);
+    let far = endpoint_json(proxy_port, "/recent?rtt_client=ge100");
+    assert!(far.contains("\"recent\":[]"), "{}", far);
+    assert!(far.contains("\"matched\":0,"), "{}", far);
+    assert!(far.contains("\"rtt_client\":\"ge100\"}"), "{}", far);
+    // 知らない値は絞らない
+    let other = endpoint_json(proxy_port, "/recent?rtt_client=nope");
+    assert!(other.contains("\"kind\":\"connect\""), "{}", other);
+}
+
 /// (b-1) 1 接続あたりの要求数の上限で閉じた http 接続が `limit` として見えること。
 ///
 /// 上限は設定で渡せる (`Config::max_requests_per_conn`。T14.2) ので 3 に下げて見る。

@@ -448,6 +448,64 @@ def history_split(a, b, info, burst, median_k=None):
     return out
 
 
+# --------------------------------------------- (4a) 接続元の RTT 別 (`/recent`。T.29.18)
+
+# 接続元のカーネルの RTT で個票を 2 つに割る閾 (ms。`/recent?rtt_client=lt100|ge100` と同じ 100 ms)
+RTT_CLIENT_SPLIT_MS = 100.0
+
+
+def port_of(target):
+    """`host:port` の port (無ければ `?`)。"""
+    t = str(target or "")
+    return t.rsplit(":", 1)[1] if ":" in t and t.rsplit(":", 1)[1].isdigit() else "?"
+
+
+def rtt_split(snap):
+    """`/recent` を接続元の RTT (100 ms) で 2 集団に割り、確立・first_relay・理由・宛先の種類を出す (T.29.18)。
+
+    tokyo の接続元は NAT の 1 つに見えるが、RTT で 2 集団に割れる (近い 21% = first_relay p50 20 ms、
+    遠い 79% = 4.1 秒。ダッシュボードの「利用者が待つ時間」はこの 2 つを混ぜていた)。RTT の読めない行
+    (`rtt_ms.client` が `null`) は「RTT なし」に入れる。部が無ければ None。
+    """
+    r = part(snap, "recent")
+    rows = r.get("recent")
+    if not isinstance(rows, list):
+        return None
+    groups = {"lt100": [], "ge100": [], "none": []}
+    for e in rows:
+        if not isinstance(e, dict):
+            continue
+        rtt = (e.get("rtt_ms") or {}).get("client") if isinstance(e.get("rtt_ms"), dict) else None
+        key = "none" if not rtt else ("lt100" if rtt < RTT_CLIENT_SPLIT_MS else "ge100")
+        groups[key].append(e)
+    out = {}
+    for key, es in groups.items():
+        conn = sorted((e.get("ms") or {}).get("connect") for e in es
+                      if e.get("kind") == "connect" and not str(e.get("reason") or "").startswith("error")
+                      and isinstance(e.get("ms"), dict) and (e.get("ms") or {}).get("connect") is not None)
+        relay = sorted((e.get("ms") or {}).get("first_relay") for e in es
+                       if isinstance(e.get("ms"), dict) and (e.get("ms") or {}).get("first_relay") is not None)
+        rtts = sorted((e.get("rtt_ms") or {}).get("client") for e in es
+                      if isinstance(e.get("rtt_ms"), dict) and (e.get("rtt_ms") or {}).get("client"))
+        reasons, ports = {}, {}
+        for e in es:
+            reasons[e.get("reason") or "?"] = reasons.get(e.get("reason") or "?", 0) + 1
+            p = port_of(e.get("target"))
+            ports[p] = ports.get(p, 0) + 1
+        out[key] = {"rows": len(es), "rtt_p50": rank_quantile(rtts, 0.5),
+                    "connect_n": len(conn), "connect_p50": rank_quantile(conn, 0.5),
+                    "connect_p95": rank_quantile(conn, 0.95),
+                    "relay_n": len(relay), "relay_p50": rank_quantile(relay, 0.5),
+                    "relay_p95": rank_quantile(relay, 0.95),
+                    "reasons": sorted(reasons.items(), key=lambda kv: -kv[1]),
+                    "ports": sorted(ports.items(), key=lambda kv: -kv[1]),
+                    "targets": len({e.get("target") for e in es})}
+    ats = [e["at"] for e in rows if isinstance(e, dict) and e.get("at")]
+    out["window"] = {"rows": len(rows), "oldest": min(ats) if ats else None,
+                     "taken_at": snap.get("taken_at") or 0, "truncated": bool(r.get("truncated"))}
+    return out
+
+
 # --------------------------------------------- (2a) 成功した接続だけの確立時間 (`/recent`)
 
 # 後の期間のエラーが接続のこの割合を超えたら、確立の区間に失敗が混ざっていると断る (T.20.1)
@@ -896,6 +954,8 @@ def build(a, b, args):
     # 成功した接続だけの確立時間 (T.20.1)。**phase14〜phase18 の出力は変えない**ので、そのときは鍵ごと足さない
     if args.criteria not in FROZEN:
         out["recent_connect"] = recent_connects(b)
+        # 接続元の RTT 別の表 (T.29.18)。古い定義 (FROZEN) の出力は変えない
+        out["rtt_split"] = rtt_split(b)
     # サーバー側の要約 (T.14.24)。`--summary` があれば読んで手元の集計と並べる
     if hist:
         # T.29.13 より前の版のサーバーの `normal_hours_only=1` は 300 本で切る。後の閾が上がって後の期間に
@@ -1167,6 +1227,31 @@ def render(d, top):
         p(f"前の雪像に居て今は居ない接続元 {len(cl['gone'])} 件: "
           + "、".join(f"`{c['client']}`" for c in cl["gone"][:10]))
     p()
+    rs = d.get("rtt_split")
+    if rs:
+        w = rs["window"]
+        p(f"### 接続元の RTT 別 (後の雪像の `/recent`。{RTT_CLIENT_SPLIT_MS:.0f} ms で 2 つに割る。T.29.18)")
+        p()
+        p(f"NAT の向こうの利用者は接続元 IP では 1 つに見えるが、カーネルの client RTT で集団が分かれる。"
+          f"窓は `/recent` の {stamp(w['oldest'])}〜{stamp(w['taken_at'])} の {n(w['rows'])} 行"
+          + ("(**切れている**)" if w["truncated"] else "") + "。確立は成功した CONNECT の `ms.connect`、"
+          "first_relay は `ms.first_relay` (要求を受けてから最初の中継まで = 利用者が待った時間の近似) の実測の分位点。")
+        p()
+        p("| 接続元の RTT | 行 | RTT p50 | 確立 p50 / p95 (本) | first_relay p50 / p95 (本) | 閉じた理由 (上位) | 宛先の種類 (ポート上位・宛先の数) |")
+        p("|---|---|---|---|---|---|---|")
+        for key, label in (("lt100", f"< {RTT_CLIENT_SPLIT_MS:.0f} ms (近い)"),
+                           ("ge100", f"≥ {RTT_CLIENT_SPLIT_MS:.0f} ms (遠い)"), ("none", "RTT なし")):
+            g = rs[key]
+            if key == "none" and not g["rows"]:
+                continue
+            reasons = "、".join(f"`{k}` {n(v)}" for k, v in g["reasons"][:3]) or "—"
+            ports = "、".join(f"`{k}` {n(v)}" for k, v in g["ports"][:3])
+            rtt = f"{ms(g['rtt_p50'])} ms" if g['rtt_p50'] is not None else "—"
+            p(f"| {label} | {n(g['rows'])} | {rtt} "
+              f"| {ms(g['connect_p50'])} / {ms(g['connect_p95'])} ms ({n(g['connect_n'])}) "
+              f"| {ms(g['relay_p50'])} / {ms(g['relay_p95'])} ms ({n(g['relay_n'])}) "
+              f"| {reasons} | {ports or '—'}・{n(g['targets'])} 宛先 |")
+        p()
 
     # --- 5
     dn = d["dns"]

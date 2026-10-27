@@ -781,11 +781,14 @@ function redraw(){
   $('conndetail').textContent=k?k.detail:'この窓に CONNECT がありません';
   // (e) 利用者が待つ時間 (T15.0 (2))
   var wk=waitKpi(last,mergeWindows(hist,span,'wait'),bounds);
-  $('waitp50tag').textContent=wk?wk.label:'直近 5 分';
-  $('waitp50').textContent=wk?fmtMsFine(wk.p50):'–';
+  // T.29.18: 近い接続元 (RTT < 100 ms) の値があればそちらを見出しに (NAT の向こうの遠い集団と混ぜない)
+  var nw=nearWait;
+  $('waitp50tag').textContent=nw?nw.label:wk?wk.label:'直近 5 分';
+  $('waitp50').textContent=nw?fmtMsFine(nw.p50):wk?fmtMsFine(wk.p50):'–';
   $('waitp50').title='queue + client_read + dns + connect の和。まだ外にあるのは '
-    +'accept から要求行が届くまでと、200 の後の first_relay';
-  $('waitdetail').textContent=wk?wk.detail
+    +'accept から要求行が届くまでと、200 の後の first_relay'
+    +(nw?'。見出しは接続元の RTT が 100 ms 未満の CONNECT だけ (/recent?rtt_client=lt100)':'');
+  $('waitdetail').textContent=nw?nw.detail+(wk?' · 全体 (遠い接続元を含む) p50 '+fmtMsFine(wk.p50):''):wk?wk.detail
     :'利用者が待つ時間を記録していません (wait を持たない版、--lite、またはこの窓に CONNECT なし)';
   $('c-wait').textContent=lastR&&lastR.wp50!=null?fmtMs(lastR.wp50)+' / '+fmtMs(lastR.wp95):'–';
   // (a) CPU の絞りの図 (`/history` の `kernel`。T15.0 (6))。周期 / 秒
@@ -852,6 +855,24 @@ function waitKpi(s,w,bounds){
   return{exact:false,label:'直近 5 分',p50:p50,p90:null,p99:null,max:w.max,n:w.count,window:null,
     detail:w.count+' 本 · p95 '+fmtMs(p95)+' · 平均 '+fmtMs(w.sum/w.count)+' (区間の補間)'};
 }
+// T.29.18: 近い接続元 (接続元の RTT < 100 ms) の待ち。`/recent?rtt_client=lt100` の成功した CONNECT の
+// queue + client_read + dns + connect を 1 本ずつ足した実測の分位点。**DOM には触らない**。
+// `rtt_client` を知らない版 (応答に `rtt_client` が無い) では絞られていないので `null`
+function nearWaitKpi(j){
+  if(!j||j.rtt_client!=='lt100')return null;
+  var rows=j.recent||[],v=[];
+  for(var i=0;i<rows.length;i++){var r=rows[i],m=r.ms||{};
+    if(r.kind!=='connect'||String(r.reason||'').indexOf('error')===0)continue;
+    v.push((m.queue||0)+(m.client_read||0)+(m.dns||0)+(m.connect||0))}
+  if(!v.length)return null;
+  v.sort(function(a,b){return a-b});
+  var q=function(p){return v[Math.max(0,Math.ceil(v.length*p)-1)]};
+  return{p50:q(0.5),p95:q(0.95),n:v.length,label:'近い接続元 '+fmtNum(v.length)+' 本',
+    detail:'RTT < 100 ms の CONNECT '+fmtNum(v.length)+' 本 · p95 '+fmtMsFine(q(0.95))};
+}
+var nearWait=null;
+function pollNear(){if($('pause').checked)return;
+  fetchJson('/recent?rtt_client=lt100&n=500').then(function(j){nearWait=nearWaitKpi(j)}).catch(function(){nearWait=null})}
 // KPI「今日の SLO」に出す値を選ぶ (T14.50)。`j` は `/slo` の応答。**DOM には触らない**
 // (check-dashboard.js が動かす)。`/slo` を持たない版では `null` を返し、カードごと出さない。
 function sloKpi(j){
@@ -1130,7 +1151,7 @@ $('btn-purge').addEventListener('click',function(){var u=$('url').value.trim();i
 $('btn-purge-all').addEventListener('click',function(){if(!confirm('キャッシュを全部消します。よろしいですか？'))return;
   fetchJson('/purge?all=1').then(function(j){$('out').textContent=JSON.stringify(j,null,2);pollStatus()}).catch(function(e){$('out').textContent=e.message})});
 window.addEventListener('resize',redraw);
-pollStatus();pollHistory();pollBad();pollRecent();pollProfile();pollSlo();pollEvents();setInterval(pollEvents,30000);setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);setInterval(pollRecent,5000);setInterval(pollProfile,30000);setInterval(pollSlo,30000);
+pollStatus();pollHistory();pollBad();pollRecent();pollProfile();pollSlo();pollEvents();pollNear();setInterval(pollNear,30000);setInterval(pollEvents,30000);setInterval(pollStatus,2000);setInterval(pollHistory,5000);setInterval(pollBad,30000);setInterval(pollRecent,5000);setInterval(pollProfile,30000);setInterval(pollSlo,30000);
 })();
 </script>
 </body>

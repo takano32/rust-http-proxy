@@ -102,6 +102,8 @@ const names = [
   'idleTunnels',
   'dnsMissKinds',
   'waitKpi',
+  // T.29.18: 近い接続元 (RTT < 100 ms) の待ち
+  'nearWaitKpi',
   // 100% の横棒 1 本を組み立てる側 (T15.0 (14) で tooltip の整形を呼ぶ側に渡せるようにした)
   'stackHtml',
   'esc',
@@ -1854,6 +1856,22 @@ if (api.waitKpi({ recent_quantiles: { wait: { n: 0 } } }, null, hist.bounds_ms) 
 }
 // 既存の KPI (`connectKpi`) は 1 つも変わらない
 if (api.connectKpi(waitStatus, kpiWin, hist.bounds_ms).p50 !== 8.4) fail('connectKpi が変わった');
+// T.29.18: 近い接続元 (RTT < 100 ms) の待ちは `/recent?rtt_client=lt100` の成功した CONNECT の
+// queue + client_read + dns + connect の実測の分位点。`rtt_client` を知らない版 (絞られていない) は null
+const nearRows = [
+  { kind: 'connect', reason: 'server_eof', ms: { queue: 1, client_read: 0, dns: 0, connect: 11 } },
+  { kind: 'connect', reason: 'server_eof', ms: { dns: 4, connect: 12 } },
+  { kind: 'connect', reason: 'client_eof', ms: { dns: 0, connect: 30 } },
+  { kind: 'connect', reason: 'error:timeout', ms: { dns: 0, connect: 3000 } },
+  { kind: 'http', reason: 'client_eof', ms: { dns: 0, connect: 900 } },
+];
+const near = api.nearWaitKpi({ recent: nearRows, rtt_client: 'lt100' });
+if (!near || near.n !== 3) fail('近い接続元の成功した CONNECT 3 本を数えていない: ' + JSON.stringify(near));
+if (near.p50 !== 16 || near.p95 !== 30) fail('近い接続元の分位点が違う: ' + JSON.stringify(near));
+if (near.label.indexOf('近い接続元 3 本') < 0) fail('札が違う: ' + near.label);
+if (api.nearWaitKpi({ recent: nearRows }) !== null) fail('rtt_client を知らない版で null になっていない');
+if (api.nearWaitKpi({ recent: [], rtt_client: 'lt100' }) !== null) fail('0 本は null のはず');
+if (api.nearWaitKpi(null) !== null) fail('null でも例外なく null のはず');
 
 // 17. `dashboard.html` の大きさ。inspect は Rust 側で 64 KiB を見張っているのに
 // dashboard には上限が無かった (T15.0 (14) で足した)。外部ライブラリを読み込まない

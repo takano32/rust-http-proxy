@@ -478,7 +478,52 @@ impl RecentSort {
     }
 }
 
-/// `/recent?n=200&offset=0&since=<epoch>&client=<ip>&sort=time|slow|bytes` — **閉じた接続**の個票
+/// 接続元のカーネルの RTT で個票を 2 つに割る閾 (us。`/recent?rtt_client=lt100|ge100`。T.29.18)。
+///
+/// tokyo の接続元は NAT の 1 つに見えるが、RTT で 2 集団に割れる (近い 21% = RTT p50 約 20 ms、
+/// 遠い 79% = 約 245 ms。first_relay p50 は 20 ms と 4.1 秒)。100 ms は 2 つの山の間。
+pub const RTT_CLIENT_SPLIT_US: u32 = 100_000;
+
+/// `/recent?rtt_client=` の値 (T.29.18)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RttClient {
+    /// 絞らない (既定)
+    Any,
+    /// 接続元の RTT が 100 ms 未満 (RTT が読めなかった行は入れない)
+    Lt100,
+    /// 100 ms 以上
+    Ge100,
+}
+
+impl RttClient {
+    fn from_param(v: &str) -> RttClient {
+        match v {
+            "lt100" => RttClient::Lt100,
+            "ge100" => RttClient::Ge100,
+            _ => RttClient::Any,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            RttClient::Any => "",
+            RttClient::Lt100 => "lt100",
+            RttClient::Ge100 => "ge100",
+        }
+    }
+
+    /// その行を残すか (`rtt_us` が 0 = 読めなかった行は、絞るときはどちらにも入れない)。
+    pub fn keeps(self, e: &RecentEntry) -> bool {
+        let rtt = e.rtt_us[crate::recent::CLIENT_SIDE];
+        match self {
+            RttClient::Any => true,
+            RttClient::Lt100 => rtt > 0 && rtt < RTT_CLIENT_SPLIT_US,
+            RttClient::Ge100 => rtt >= RTT_CLIENT_SPLIT_US,
+        }
+    }
+}
+
+/// `/recent?n=200&offset=0&since=<epoch>&client=<ip>&sort=time|slow|bytes&rtt_client=lt100|ge100` — **閉じた接続**の個票
 /// (既定 200 件・最大 [`MAX_RECENT`]。T14.4)。
 ///
 /// `/connections` は「いま」しか見えず、`/errors` は失敗だけ。ここは閉じた接続 1 本ごとの
@@ -512,8 +557,13 @@ fn recent_within(
         .unwrap_or(0);
     let client = str_param(query, "client");
     let sort = RecentSort::from_param(&str_param(query, "sort"));
+    // 接続元の RTT で 2 集団に割る (T.29.18。NAT の向こうの近い利用者と遠い利用者)
+    let rtt_client = RttClient::from_param(&str_param(query, "rtt_client"));
     // 絞りはリングの鍵の内側で済ませる (2,000 件を複製してから捨てない)
     let (mut rows, total) = ep.metrics.closed.select(since, &client);
+    if rtt_client != RttClient::Any {
+        rows.retain(|e| rtt_client.keeps(e));
+    }
     let matched = rows.len();
     match sort {
         // `select` が既に新しい順で返している
@@ -533,7 +583,7 @@ fn recent_within(
     // 新しい欄は**末尾**に足す (既存の鍵の順は変えない)
     let _ = write!(
         out,
-        ",\"count\":{},\"matched\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"sort\":\"{}\",\"since\":{},\"client\":\"{}\",\"persisted\":{},\"restored\":{},\"truncated\":{},\"lite\":{},\"offset\":{},\"next_offset\":{}}}",
+        ",\"count\":{},\"matched\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"sort\":\"{}\",\"since\":{},\"client\":\"{}\",\"persisted\":{},\"restored\":{},\"truncated\":{},\"lite\":{},\"offset\":{},\"next_offset\":{},\"rtt_client\":\"{}\"}}",
         shown,
         matched,
         shown,
@@ -548,7 +598,8 @@ fn recent_within(
         cut,
         !ep.metrics.conns.enabled(),
         offset,
-        next_offset(offset, shown, matched)
+        next_offset(offset, shown, matched),
+        rtt_client.name()
     );
     (200, "application/json", out)
 }

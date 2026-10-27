@@ -950,6 +950,59 @@ class Anonymized0926(unittest.TestCase):
         self.assertIn("後 **0.0022 コア、user 31%**", rows[7][2])
 
 
+class RttSplit(unittest.TestCase):
+    """T.29.18: `/recent` を接続元の RTT (100 ms) で 2 集団に割った表 (確立・first_relay・理由・宛先の種類)。"""
+
+    @staticmethod
+    def row(i, rtt, connect, relay, target="a.example:443", reason="server_eof"):
+        return {"id": i, "at": 1789080000 + i, "client": "192.0.2.1", "target": target, "kind": "connect",
+                "reason": reason, "ms": {"dns": 0, "connect": connect, "first_relay": relay},
+                "rtt_ms": {"client": rtt, "origin": 10.0}}
+
+    def snap(self):
+        b = read(B)
+        rows = ([self.row(i, 20.0, 11, 20) for i in range(4)]
+                + [self.row(10 + i, 248.0, 12, 4100, target="imap.example:993") for i in range(6)]
+                + [{"id": 99, "at": 1789080100, "client": "192.0.2.1", "target": "nx.example:993",
+                    "kind": "connect", "reason": "error:nxdomain", "ms": {"dns": 20, "connect": 0},
+                    "rtt_ms": {"client": None, "origin": None}}])
+        b["recent"] = {"recent": rows, "count": len(rows), "truncated": False}
+        return b
+
+    def test_the_two_groups_are_shown(self):
+        with written(b=self.snap()) as paths:
+            d = build([A, paths["b"], "--no-dns"])
+            md = run([A, paths["b"], "--no-dns"])
+        rs = d["rtt_split"]
+        self.assertEqual((rs["lt100"]["rows"], rs["ge100"]["rows"], rs["none"]["rows"]), (4, 6, 1))
+        self.assertEqual((rs["lt100"]["relay_p50"], rs["ge100"]["relay_p50"]), (20, 4100))
+        self.assertEqual(rs["ge100"]["ports"], [("993", 6)])
+        self.assertIn("### 接続元の RTT 別", md)
+        self.assertIn("| < 100 ms (近い) | 4 | 20.0 ms | 11.0 / 11.0 ms (4) | 20.0 / 20.0 ms (4) |", md)
+        self.assertIn("| ≥ 100 ms (遠い) | 6 | 248.0 ms |", md)
+        self.assertIn("| RTT なし | 1 | — |", md)
+
+    def test_the_frozen_definitions_do_not_get_the_table(self):
+        with written(b=self.snap()) as paths:
+            d = build([A, paths["b"], "--no-dns", "--criteria", "phase14"])
+        self.assertNotIn("rtt_split", d)
+
+
+TOKYO_ANON = os.path.join(DEPLOYED, "tokyo", "2026-10-27T024200Z-snapshot.anon.json")
+
+
+@unittest.skipUnless(os.path.exists(TOKYO_ANON), "tokyo の雪像 (status/tokyo/) が無い")
+class DeployedRttSplit(unittest.TestCase):
+    """T.29.18 の受け入れ基準: tokyo の (匿名化した) 雪像で 2 行の表が出る (匿名化で RTT が残る)。"""
+
+    def test_the_tokyo_snapshot_splits_into_two_groups(self):
+        d = build([A, TOKYO_ANON, "--no-dns"])
+        rs = d["rtt_split"]
+        self.assertEqual((rs["lt100"]["rows"], rs["ge100"]["rows"]), (429, 1492))
+        self.assertLess(rs["lt100"]["relay_p50"], 100)
+        self.assertGreater(rs["ge100"]["relay_p50"], 1000)
+
+
 class BusyHours(unittest.TestCase):
     """T.29.13: 毎時 500 本 (300 本の閾を全部の時間が越える) でも、`--burst-median-k 3` なら平常時が空にならない。
 
