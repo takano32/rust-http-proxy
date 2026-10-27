@@ -8,8 +8,47 @@
 //! 分けておくと、アイドルの接続を別のスレッドへ預けるときに箱ごと動かせる
 //! (先読みしたバイトを取りこぼさない)。
 
+use std::cell::RefCell;
 use std::io::{self, BufRead, Read};
 use std::net::TcpStream;
+
+// 先読みバッファの**スレッドごとの**置き場 (T.29.24)。
+//
+// 接続ごとに `resize(8 KiB, 0)` していたぶんの**ゼロ埋め (8,210 命令/接続) と malloc/free** を
+// 無くす。`release()` / `take_buffered()` / `Drop` で返し、`fill_buf` が借りる。中身は前の接続の
+// バイト列のままだが、**外へ見せるのは `read` が書いた `[..n]` だけ** (`buffered()` は
+// `[pos..cap]`、`cap` は直前の `read` の戻り値) なので前の接続の内容は漏れない。
+//
+// プロセスで 1 つの置き場 (`Mutex`) にすると、接続のたびに全ワーカーが同じ鍵を 2 回取り合う。
+// ワーカーは使い回されるスレッドなので、スレッドごとに少しだけ持てば足りる (預けた接続は
+// 別のワーカーで終わることがあるが、返した先のスレッドで次に使われるだけ)。
+// 1 スレッドに置くのは最大 `BUF_POOL_MAX` 本 (32 KiB)。スレッドが終われば一緒に返る。
+thread_local! {
+    static BUF_POOL: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+}
+/// 1 スレッドの置き場の上限 (これを超えたぶんは返さずに解放する)。
+const BUF_POOL_MAX: usize = 4;
+
+fn take_buf() -> Vec<u8> {
+    BUF_POOL
+        .try_with(|p| p.borrow_mut().pop())
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| vec![0u8; CLIENT_READ_BUF])
+}
+
+fn give_buf(b: Vec<u8>) {
+    if b.len() != CLIENT_READ_BUF {
+        return;
+    }
+    // スレッドの後始末の途中 (置き場がもう無い) なら、そのまま解放する
+    let _ = BUF_POOL.try_with(|p| {
+        let mut p = p.borrow_mut();
+        if p.len() < BUF_POOL_MAX {
+            p.push(b);
+        }
+    });
+}
 
 /// 読み取りバッファの大きさ (`std` の `BufReader` の既定と同じ)。
 pub const CLIENT_READ_BUF: usize = 8 * 1024;
@@ -45,7 +84,7 @@ impl ClientBuf {
     #[inline]
     pub fn release(&mut self) {
         if !self.has_buffered() {
-            self.buf = Vec::new();
+            give_buf(std::mem::take(&mut self.buf));
             self.pos = 0;
             self.cap = 0;
         }
@@ -55,6 +94,12 @@ impl ClientBuf {
     #[inline]
     pub fn reader<'a>(&'a mut self, stream: &'a TcpStream) -> ClientReader<'a> {
         ClientReader { buf: self, stream }
+    }
+}
+
+impl Drop for ClientBuf {
+    fn drop(&mut self) {
+        give_buf(std::mem::take(&mut self.buf));
     }
 }
 
@@ -77,7 +122,7 @@ impl ClientReader<'_> {
         let out = self.buf.buffered().to_vec();
         self.buf.pos = 0;
         self.buf.cap = 0;
-        self.buf.buf = Vec::new();
+        give_buf(std::mem::take(&mut self.buf.buf));
         out
     }
 }
@@ -102,7 +147,13 @@ impl BufRead for ClientReader<'_> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         if !self.buf.has_buffered() {
             if self.buf.buf.len() < CLIENT_READ_BUF {
-                self.buf.buf.resize(CLIENT_READ_BUF, 0);
+                self.buf.buf = if self.buf.buf.is_empty() {
+                    take_buf()
+                } else {
+                    let mut b = std::mem::take(&mut self.buf.buf);
+                    b.resize(CLIENT_READ_BUF, 0);
+                    b
+                };
             }
             let n = (&*self.stream).read(&mut self.buf.buf)?;
             self.buf.pos = 0;
@@ -128,6 +179,43 @@ mod tests {
         let c = TcpStream::connect(l.local_addr().unwrap()).unwrap();
         let (s, _) = l.accept().unwrap();
         (c, s)
+    }
+
+    /// 使い回した器でも、見えるのは今回 `read` が書いたぶんだけ (前の接続の中身が漏れない。T.29.24)。
+    #[test]
+    fn a_pooled_buffer_shows_only_what_this_read_wrote() {
+        let (client, mut peer) = pair();
+        peer.write_all(&[b'S'; 4000]).unwrap();
+        let mut first = ClientBuf::new();
+        {
+            let mut r = first.reader(&client);
+            let got = r.fill_buf().unwrap().len();
+            r.consume(got);
+        }
+        // 読み残しが無いので器はプールへ戻る
+        first.release();
+        drop(first);
+        let (client2, mut peer2) = pair();
+        peer2.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        let mut second = ClientBuf::new();
+        let mut r = second.reader(&client2);
+        let got = r.fill_buf().unwrap().to_vec();
+        assert_eq!(got, b"GET / HTTP/1.1\r\n\r\n");
+        assert!(!r.buffer().contains(&b'S'));
+    }
+
+    /// プールは上限で止まり、大きさの違う器は受け取らない。
+    #[test]
+    fn the_pool_is_bounded() {
+        for _ in 0..(BUF_POOL_MAX + 10) {
+            give_buf(vec![0u8; CLIENT_READ_BUF]);
+        }
+        give_buf(vec![0u8; 16]);
+        BUF_POOL.with(|p| {
+            let pool = p.borrow();
+            assert_eq!(pool.len(), BUF_POOL_MAX);
+            assert!(pool.iter().all(|b| b.len() == CLIENT_READ_BUF));
+        });
     }
 
     #[test]
