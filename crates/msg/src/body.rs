@@ -16,6 +16,16 @@ pub enum Framing {
     Close,
 }
 
+/// 応答の先頭を 1 回なめて分かること ([`Framing::scan_response_head`])。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponseScan<'a> {
+    pub framing: Result<Framing, BadLength<'a>>,
+    /// `Connection` が `close` を挙げているか
+    pub close: bool,
+    /// 最後の `Age` の行の値 (無ければ `None`。T.29.4)
+    pub age: Option<&'a str>,
+}
+
 /// 応答の `Content-Length` が壊れていた (T19.5)。中身は問題の値 (ログに出すため)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BadLength<'a>(pub &'a str);
@@ -161,12 +171,25 @@ impl Framing {
         head_only: bool,
         head: &[u8],
     ) -> (Result<Framing, BadLength<'_>>, bool) {
+        let scan = Self::scan_response_head(status, head_only, head);
+        (scan.framing, scan.close)
+    }
+
+    /// [`Framing::of_response_head_checked_with_close`] に `Age` の値も足したもの (T.29.4)。
+    /// forward の経路は応答の先頭をこの 1 回だけなめる。
+    pub fn scan_response_head(status: u16, head_only: bool, head: &[u8]) -> ResponseScan<'_> {
         let no_body = head_only || (100..200).contains(&status) || status == 204 || status == 304;
         let mut te = Te::Absent;
         let mut length: Option<u64> = None;
         let mut bad: Option<BadLength<'_>> = None;
         let mut close = false;
+        let mut age = None;
         for (k, v) in crate::headers::response_lines(head) {
+            // `Age` は名前が 3 字なので、長さで外れる行は比べずに済む
+            if k.len() == 3 && k.eq_ignore_ascii_case("age") {
+                age = Some(v);
+                continue;
+            }
             if k.eq_ignore_ascii_case("transfer-encoding") {
                 te = te.add(v);
             } else if k.eq_ignore_ascii_case("content-length") {
@@ -196,7 +219,11 @@ impl Framing {
                 None => Ok(length.map(Framing::Length).unwrap_or(Framing::Close)),
             },
         };
-        (framing, close)
+        ResponseScan {
+            framing,
+            close,
+            age,
+        }
     }
 
     /// リクエストの枠組み (枠が無ければ本文なし)。
@@ -817,6 +844,18 @@ mod of_response_head_tests {
         assert!(Framing::response_has_transfer_encoding(
             b"HTTP/1.1 200 OK\r\ntransfer-encoding: cheese\r\n\r\n"
         ));
+    }
+
+    /// T.29.4: 1 回の走査で `Age` の値も拾う (枠組みと `Connection` の判定は今までと同じ)。
+    #[test]
+    fn scan_picks_up_the_age() {
+        let head = b"HTTP/1.1 200 OK\r\nAGE: 500\r\nContent-Length: 2\r\nConnection: close\r\n\r\n";
+        let scan = Framing::scan_response_head(200, false, head);
+        assert_eq!(scan.framing, Ok(Framing::Length(2)));
+        assert!(scan.close);
+        assert_eq!(scan.age, Some("500"));
+        let head = b"HTTP/1.1 200 OK\r\nX-Age: 1\r\nAges: 2\r\n\r\n";
+        assert_eq!(Framing::scan_response_head(200, false, head).age, None);
     }
 
     /// T.28.35: クライアントへ伝える TE の行は、複数の行を 1 つの並びに畳み、空の要素を読み飛ばす。

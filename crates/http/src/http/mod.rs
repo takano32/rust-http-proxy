@@ -1110,8 +1110,23 @@ pub fn handle_http_parsed(
     // u64 に収まらない桁数は、そのまま通すと「名乗った長さと実際に送るバイトが食い違う」
     // 応答になるので、オリジンの応答として扱わず 502 に差し替える (この接続は再利用しない)
     // 枠組みと `Connection: close` を 1 回の走査で (T.28.12)
-    let (framing, conn_close) =
-        Framing::of_response_head_checked_with_close(status, head_only, &head);
+    // `Age` もこの 1 回で拾う (T.29.4。下の `age_secs`)
+    let scan = Framing::scan_response_head(status, head_only, &head);
+    let (framing, conn_close) = (scan.framing, scan.close);
+    // 素通しの応答に付け直す `Age` (T.29.4)。`Age` は end-to-end (RFC 9110 §7.6・9111 §4.2.3) なのに、
+    // 枠組みの名前と一緒に [`headers::write_response_head`] が無条件に落としていた (HIT にだけ付いた)。
+    // 値は保存するときの `policy.age` と同じ `max(受けた Age, now − Date)`。**オリジンが `Age` を
+    // 付けてきた応答だけ**に付ける (`Date` だけの応答に足すと、時計のずれがそのまま `Age` に出る)。
+    // 読めない値は今までどおり落とす。`Date` を読むのは `Age` のある応答だけ
+    // 304 (クライアントの条件付き要求の中継) と 101 は対象外
+    let age_secs = scan
+        .age
+        .filter(|_| status >= 200 && status != 304)
+        .and_then(|v| v.trim_ascii().parse::<u64>().ok())
+        .map(|age| {
+            let date = headers::response_value(&head, "date").and_then(crate::httpdate::parse);
+            age.max(date.map_or(0, |d| now_epoch().saturating_sub(d)))
+        });
     let framing = match framing {
         Ok(framing) => framing,
         Err(bad) => {
@@ -1289,7 +1304,8 @@ pub fn handle_http_parsed(
     let mut cl_buf = [0u8; 40];
     // HEAD のときだけ確保する (それ以外は 1 バイトも作らない)
     let cl_owned;
-    let mut extra: [&str; 3] = [""; 3];
+    let mut age_buf = [0u8; 32];
+    let mut extra: [&str; 4] = [""; 4];
     let mut n_extra = 0usize;
     match client_framing {
         Framing::Length(len) => {
@@ -1334,6 +1350,10 @@ pub fn handle_http_parsed(
         _ => {}
     }
     // 応答にも自分の `Via` を足す (RFC 9110 §7.6.3。T.28.10 (b))。保存する先頭 (`cached_head`) には入れない
+    if let Some(age) = age_secs {
+        extra[n_extra] = serve::age_line(&mut age_buf, age);
+        n_extra += 1;
+    }
     extra[n_extra] = crate::via::field();
     n_extra += 1;
     extra[n_extra] = ctx.connection_line();

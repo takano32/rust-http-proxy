@@ -213,7 +213,7 @@ fn x_cache_line<'a>(buf: &'a mut [u8; 96], label: &str, source: CacheSource) -> 
 }
 
 /// `Age: <n>` を確保せずに組み立てる。
-fn age_line(buf: &mut [u8; 32], age: u64) -> &str {
+pub(super) fn age_line(buf: &mut [u8; 32], age: u64) -> &str {
     let mut i = put_str(buf, 0, "Age: ");
     i = put_u64(buf, i, age);
     std::str::from_utf8(&buf[..i]).unwrap_or("Age: 0")
