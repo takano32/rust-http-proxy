@@ -163,36 +163,6 @@ tokyo の `/profile?res=60` 4.05 時間 (要求 0.25 本/秒、0.0015 コア): `
 
 **29d 道具と文書**
 
-- [ ] **T.29.26 締めを 1 コマンドにする: `--from-server` の「前」と 0 時間を版で選び、前提の 1 行まで出す**
-  - 目的: `scripts/collect-deployed.sh` 243-266 は時刻だけで「最後の停止」と「その後の最初の起動」を選ぶ。T.28.99 で 0.28.39 を 53 分挟んだので「前」が 0.28.39 の停止になり、手で差し替えた。手元で再現すると道具はそろっていて (取り寄せ 0.137 秒、phase25 の本番 0.594 秒)、残る手作業は 2 枚の選択・前提の 1 行の手打ち・24 時間後の予約。
-  - やること: 各 moment の `status.version` と `boot.id` を読み、**前 = いまの版と違う版の最後の `shutdown`**、**0 時間 = いまの版の最初の `start`** (候補を全部並べて理由も出す)。`--closeout HOST:PORT [DIR]` で取り寄せ → 選択 → 本番 → 要約の頭に「前提 (版・ビルド・起動時刻・`boot.id`・前の版の停止時刻)」。
-  - 受け入れ基準: `CollectFromServerTest` に T.28.99 と同じ 4 枚 (0.27.8 の停止 / 0.28.39 の起動・停止 / 0.28.48 の起動) で 0.27.8 の停止と 0.28.48 の起動が選ばれる試験、`--closeout` が 1 回で要約と前提を出す試験。README の運用 1・2・4。
-
-- [ ] **T.29.27 ダッシュボードの足りない所 (`.env` の読めない値・ビルド・`/slo` の読み方)**
-  - 目的: (1) `.env` の読めない値・知らない鍵は `/status.settings.invalid` / `unknown` にあるが、`crates/web/src/dashboard.html` 1058-1067 の `renderSettings` は見ない。(2) 公開の名前で開いた画面の「消す」は `HTTP 502` と出るだけ (1068・1094-1097) → T.29.35 で書き換える口を名前を問わず受けるので、ここでは要らない。(3) `/status.build` (T.28.42) が版の隣に出ない (910)。(4) `/slo` の tooltip (880) は旧い説明のまま (`basis` があるのに確立 5 ms と読める)。`scripts/check-dashboard.js` 38 行のコメント「80 KiB」と実装の 96 KiB が食い違う。
-  - やること: (1) 帯に 1 行ずつ (知らない鍵は綴りの近い候補つき)。(3) `(release)` を版の隣に。(4) `basis` があれば文面を変える。
-  - 受け入れ基準: `check-dashboard.js` に (1)・(3)・(4) のあり / なしの試験、`dashboard.html` ≤ 96 KiB (いま 82,762 B)。
-
-- [ ] **T.29.28 `crate-versions.py --check` の穴 2 つを塞ぐ**
-  - 目的: クローンで再現: (a) ルート `Cargo.toml` の `[profile.*]` (`codegen-units` など) を変えても「決まりに合う」(本体の中身は `src/` だけ)、(b) 3 つの `Cargo.toml` を手で上げて `Cargo.lock` をそのままにしても合う (CI は `--locked` なし)。
-  - やること: 本体の中身にルート `Cargo.toml` (版の行と `members` を除く) を含める。`Cargo.lock` の各メンバーの版が `Cargo.toml` と同じことを (e) として見る。
-  - 受け入れ基準: `test_crate_versions.py` に 2 本。
-
-- [ ] **T.29.29 短絡しない一括確認 `scripts/check-all.sh`**
-  - 目的: T.28.48 で `cargo fmt --check && cargo clippy …` が fmt で止まったまま次の手順に進み、fmt に落ちるコミットを push した (直後に `b56160a` で直した)。確認の手順は `&&` でつなぐと 1 つ落ちた所で止まり残りが見えない。
-  - やること: fmt・clippy・`check-docs.sh`・`check-dashboard.js`・unittest・`crate-versions.py --check`・shellcheck を**全部走らせて**失敗を集め、最後に一覧と exit 1。`.git/hooks/pre-commit` に張る `scripts/install-hooks.sh` は任意。
-  - 受け入れ基準: 2 つ同時に壊した作業ツリーで 2 つとも名前が出る試験。
-
-- [ ] **T.29.30 `release.yml` の `ref` に短いハッシュを渡しても打てるようにし、main の上のコミットか確かめる**
-  - 目的: T.28.99 の 1 回目 (run `40254718138`) は短いハッシュで `tag` が落ちた (`.github/workflows/release.yml` 30-33 の `actions/checkout` は完全な SHA しか取れない)。tokyo はタグではなく main の先頭でビルドしている (0.28.39 は `+a84923a`、タグは `a01dd0c`)。
-  - やること: `git rev-parse --verify "$REF^{commit}"` で解決し、`git merge-base --is-ancestor` で main の上でなければ落とす。step summary に「打ったコミット / main の先頭 / 差」。README の運用 0 に `ref` の書き方と「ソースから作るなら `git checkout vX.Y.Z`」。
-  - 受け入れ基準: 次のリリースで短いハッシュで打てる。
-
-- [ ] **T.29.31 道具のテストが、別のプロキシが 1 本動いているだけで止まる (`test_mx.sh`)**
-  - 目的: `scripts/mx` 92-107 の `others()` が他人の `target/release/rust-http-proxy` を `MX_WAIT` (既定 180 秒) まで待つので、プロキシが 1 本動いている間の `unittest discover` は 7 分 30 秒たっても終わらなかった (`test_mx.py` を除けば 675 本 22.1 秒)。
-  - やること: `mx` に `MX_IGNORE_OTHERS` (か待つ相手の型) を足し、試験はそれを使う。`test_mx.py` に短い `MX_WAIT`。
-  - 受け入れ基準: プロキシを 1 本動かしたまま discover が 60 秒以内に終わる。
-
 - [ ] **T.29.32 README を今の事実に直し、目次を置き、性能の節を分ける**
   - 目的: README は 3,557 行・398 KB・目次なし。食い違い: 既定のスレッド数「7」→ 実測 9 (`canary`・`profile-sample`)、CI の手順に `crate-versions.py --check` が抜け、check-docs は「7 つ」→ 9 つ、バイナリの大きさが 2 か所で食い違う (実測 release 3,215,568 B・dist 2,103,696 B)、システムコール「5.02」→ 4.03 (T.28.24 で §4 は直した)、`-V` の例 `0.18.0+unknown` (14 か所)、タグの `ref` 入力、`--from-server` の「前」は最後の停止、`/snapshots` の説明に `moments` が無い。
   - やること: 上を直し、冒頭に目次 (H2 と運用 0〜7)、性能の loopback の表と測った節を `docs/perf.md` へ (check-docs が節の名前で切る所に掛からないか確かめる)。
