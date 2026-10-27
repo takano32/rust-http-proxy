@@ -891,10 +891,6 @@ pub fn handle_http_parsed(
             &origin,
             pool_key,
             shared.resolved,
-            // 再試行できる要求 (GET / HEAD で本文なし) は、相手が閉じた接続を掴んでも
-            // 送る/読むの失敗で気づいて新しい接続で 1 回やり直せる。そのぶん
-            // プールの生存確認 (`recv(MSG_PEEK)`) を毎要求から省く (T26.0)
-            !retryable,
         ) {
             Ok(v) => v,
             Err(e) => {
@@ -1568,10 +1564,12 @@ pub(super) fn request_head(
 
 /// プールにあれば再利用し、無ければ接続する (HTTPS なら TLS まで)。戻り値の bool は再利用したか。
 /// `timeout` は接続と最初の応答を待つ時間 (stale があるときは短くする)。
-/// `verify` はプールから取り出すときの生存確認 (`recv(MSG_PEEK)` 1 回)。呼び出し側が
-/// 読み書きの失敗で気づいて 1 回やり直せる要求なら偽にしてよく、そのぶんの
-/// システムコールが毎要求から消える (T26.0)。
-#[allow(clippy::too_many_arguments)]
+///
+/// プールから取り出すときは**どの要求でも**生存確認 (`recv(MSG_PEEK|MSG_DONTWAIT)` 1 回) をする
+/// (T.29.2)。T26.0 で GET / HEAD (やり直せる要求) だけ省いていたが、省くと「前の応答を読み切った
+/// あとにオリジンが遅れて送ったバイト」を次の要求の応答として読んでしまう (手元で: `GET /a` の
+/// `CL: 2` の 0.3 秒後に届いた `HTTP/1.1 200 … X-Injected: yes … EVIL` が次の `GET /b` の応答になり、
+/// その次は `HIT`)。覗けば読み残しがある接続は捨てる。覗いてから読むまでの窓は塞げない (README)。
 pub(super) fn acquire_origin(
     upstream: &Upstream,
     timeout: Duration,
@@ -1580,9 +1578,8 @@ pub(super) fn acquire_origin(
     origin: &Origin,
     pool_key: &str,
     resolved: Option<&dns::Resolved<'_>>,
-    verify: bool,
 ) -> io::Result<(OriginConn, bool)> {
-    if let Some(server) = upstream.pool.get_with(pool_key, timeout, verify) {
+    if let Some(server) = upstream.pool.get(pool_key, timeout) {
         log_debug!(Some(conn_id), "reusing pooled connection to {}", pool_key);
         return Ok((server, true));
     }

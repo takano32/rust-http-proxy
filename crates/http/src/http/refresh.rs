@@ -155,7 +155,6 @@ fn revalidate(
         origin,
         &pool_key,
         None,
-        true,
     )?;
     metrics.inc_origin_conn(reused);
 
