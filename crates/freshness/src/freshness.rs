@@ -158,7 +158,15 @@ pub fn revalidated_policy(
     cfg: &CacheConfig,
     now: u64,
 ) -> Policy {
-    let mut hs: Vec<(String, String)> = headers_304.to_vec();
+    // 304 の `Set-Cookie` は保存する先頭へ写さない (T.29.0) ので、保存の可否と TTL にも数えない
+    // (数えると `response_policy` が `None` になり、延ばすはずの TTL が 0 になる)
+    let mut hs: Vec<(String, String)> = headers_304
+        .iter()
+        .filter(|(k, _)| {
+            !k.eq_ignore_ascii_case("set-cookie") && !k.eq_ignore_ascii_case("set-cookie2")
+        })
+        .cloned()
+        .collect();
     let has = |hs: &[(String, String)], name: &str| hs.iter().any(|(k, _)| k == name);
     let fill = |hs: &mut Vec<(String, String)>, name: &str, value: Option<&String>| {
         if !has(hs, name)
@@ -180,6 +188,24 @@ pub fn revalidated_policy(
         validators: cached.etag.is_some() || cached.last_modified.is_some(),
         must_revalidate: cached.must_revalidate,
         age: 0,
+    })
+}
+
+/// 再検証の 304 が「この表現を保存するな」と言っているか (T.29.0)。`Cache-Control` / `Pragma` の
+/// `no-store`・`private`、対応できない `Vary` (`Vary: Cookie` など)。`Set-Cookie` は見ない
+/// (保存する先頭へは写さないので、保存を止める理由にならない)。真なら延命せず項目を消す。
+/// 0.28.48 までは写したまま `REVALIDATED` / `HIT` で配り続けていた (TTL が 0 になるだけ)。
+pub fn not_modified_forbids_storing(headers_304: &[(String, String)]) -> bool {
+    headers_304.iter().any(|(k, v)| {
+        let is = |name: &str| k.eq_ignore_ascii_case(name);
+        if is("vary") {
+            !vary_is_supported(v)
+        } else if is("cache-control") || is("pragma") {
+            let v = v.to_ascii_lowercase();
+            has_directive(&v, "no-store") || has_directive(&v, "private")
+        } else {
+            false
+        }
     })
 }
 
@@ -377,6 +403,23 @@ pub fn conditional_headers(head: &CachedHead) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 304 の `no-store`・`private`・`Vary: Cookie` は保存を禁じる。`Set-Cookie` と
+    /// `Vary: Accept-Encoding` は禁じない (T.29.0)。
+    #[test]
+    fn not_modified_forbidding_storage() {
+        let f = |hs: &[(&str, &str)]| not_modified_forbids_storing(&hdrs(hs));
+        assert!(f(&[("cache-control", "max-age=60, No-Store")]));
+        assert!(f(&[("cache-control", "private")]));
+        assert!(f(&[("Pragma", "no-store")]));
+        assert!(f(&[("vary", "Cookie")]));
+        assert!(!f(&[("set-cookie", "a=b"), ("etag", "\"v1\"")]));
+        assert!(!f(&[
+            ("vary", "Accept-Encoding"),
+            ("cache-control", "max-age=60")
+        ]));
+        assert!(!f(&[]));
+    }
 
     fn cfg() -> CacheConfig {
         CacheConfig::disabled()

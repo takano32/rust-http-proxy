@@ -52,6 +52,12 @@ impl CachedResponse {
         self.size.saturating_sub(self.head.len() as u64)
     }
 
+    /// 先頭を差し替える (本文の長さはそのまま、`size` を合わせる)。T.28.2・T.29.0。
+    pub fn replace_head(&mut self, head: Vec<u8>) {
+        self.size = self.body_len().saturating_add(head.len() as u64);
+        self.head = head;
+    }
+
     /// メモリ層のエントリなら、本文の `start` から `len` バイトを (データ, 開始, 終了) で返す。
     /// そのまま書き出せるので、リーダーを作って中間バッファ越しに写す必要がない。
     /// ディスク層なら `None` ([`into_body_range`](Self::into_body_range) を使う)。

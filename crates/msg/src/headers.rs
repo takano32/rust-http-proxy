@@ -422,8 +422,37 @@ const FRAMING_HEADERS: &[&str] = &["transfer-encoding", "content-length", "age"]
 
 /// 304 から保存済みの先頭へ写さない名前 (T.28.2)。枠組み・hop-by-hop・`Connection` で指名された
 /// 名前・`Age` ([`write_response_head`] が落とすもの) に加えて、保存した本文の形を決めている
-/// `Content-Encoding` と `Content-Range` (304 が違う値を返しても本文は変わらないので、写すと食い違う)。
-const NOT_UPDATED_BY_304: &[&str] = &["content-encoding", "content-range"];
+/// `Content-Encoding` と `Content-Range` (304 が違う値を返しても本文は変わらないので、写すと食い違う)、
+/// それに `Set-Cookie` / `Set-Cookie2` (再検証した 1 人の利用者あての値。写すと次の `REVALIDATED` と
+/// `HIT` で他の利用者へ配ってしまう。T.29.0。その人へは [`with_set_cookies`] で渡す)。
+const NOT_UPDATED_BY_304: &[&str] = &[
+    "content-encoding",
+    "content-range",
+    "set-cookie",
+    "set-cookie2",
+];
+
+/// `head` (状態行 + ヘッダー + 空行) の末尾に、`not_modified` (オリジンの 304 の先頭) の
+/// `Set-Cookie` / `Set-Cookie2` の行を足したもの (T.29.0)。再検証した要求のクライアントへ配る
+/// 写しだけに使い、保存する先頭には入れない。足す行が無ければ `None`。
+pub fn with_set_cookies(head: &[u8], not_modified: &[u8]) -> Option<Vec<u8>> {
+    let is_cookie =
+        |k: &str| k.eq_ignore_ascii_case("set-cookie") || k.eq_ignore_ascii_case("set-cookie2");
+    response_lines(not_modified).find(|(k, _)| is_cookie(k))?;
+    let body_start = head
+        .strip_suffix(b"\r\n\r\n")
+        .map_or(head.len(), |h| h.len() + 2);
+    let mut out = Vec::with_capacity(head.len() + 128);
+    out.extend_from_slice(&head[..body_start]);
+    for (k, v) in response_lines(not_modified).filter(|(k, _)| is_cookie(k)) {
+        out.extend_from_slice(k.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(clean_value(v).as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"\r\n");
+    Some(out)
+}
 
 /// 再検証の 304 で届いたヘッダーで、保存済みの応答の先頭を書き直す (RFC 9111 §3.2・§4.3.4。T.28.2)。
 ///
@@ -452,7 +481,12 @@ pub fn merge_not_modified(stored: &[u8], not_modified: &[u8]) -> Option<Vec<u8>>
         .map_or(stored.len(), |i| i + 1);
     out.extend_from_slice(&stored[..status_end]);
     for (k, v) in response_lines(stored) {
-        if updated(k) {
+        // 0.28.48 までの 304 が写した `Set-Cookie` も、次の再検証で落とす (T.29.0)。保存は
+        // `Set-Cookie` のある応答をもともと取らないので、保存済みの先頭にあるのはその写しだけ
+        if updated(k)
+            || k.eq_ignore_ascii_case("set-cookie")
+            || k.eq_ignore_ascii_case("set-cookie2")
+        {
             continue;
         }
         out.extend_from_slice(k.as_bytes());
@@ -1001,6 +1035,25 @@ mod merge_not_modified_tests {
             text,
             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\n\
              cache-control: max-age=600\r\nX-Ver: 2\r\nETag: \"v1\"\r\nX-Bad: a b\r\n\r\n"
+        );
+    }
+
+    /// 304 の `Set-Cookie` / `Set-Cookie2` は保存する先頭へ写さず、保存済みに残っていた写しも
+    /// 落とす (T.29.0)。配る写しには [`with_set_cookies`] で 304 の分だけを足す。
+    #[test]
+    fn set_cookie_is_not_merged_but_handed_to_the_requester() {
+        let stored = b"HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nSet-Cookie: old=leak\r\n\r\n";
+        let not_modified = b"HTTP/1.1 304 Not Modified\r\nSet-Cookie: s=A\r\nset-cookie2: t=A\r\n\
+                             ETag: \"v1\"\r\n\r\n";
+        let merged = merge_not_modified(stored, not_modified).expect("ETag を写す");
+        assert_eq!(merged, b"HTTP/1.1 200 OK\r\nETag: \"v1\"\r\n\r\n".to_vec());
+        let served = with_set_cookies(&merged, not_modified).expect("Set-Cookie がある");
+        assert_eq!(
+            String::from_utf8(served).unwrap(),
+            "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nSet-Cookie: s=A\r\nset-cookie2: t=A\r\n\r\n"
+        );
+        assert!(
+            with_set_cookies(&merged, b"HTTP/1.1 304 Not Modified\r\nETag: x\r\n\r\n").is_none()
         );
     }
 

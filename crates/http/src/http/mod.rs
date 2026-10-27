@@ -1110,17 +1110,33 @@ pub fn handle_http_parsed(
         && let Some((entry, source)) = stale.take()
     {
         let cached_head = freshness::parse_cached_head(&entry.head);
-        let p =
-            freshness::revalidated_policy(&headers::response_pairs(&head), &cached_head, cfg, now);
+        let pairs_304 = headers::response_pairs(&head);
+        let mut entry = entry;
+        // 304 が保存を禁じた (`no-store`・`private`・`Vary: Cookie` など): 延命せず項目を消し、
+        // この要求にだけ 304 のヘッダーを載せた写しを配る (T.29.0)。次の要求はオリジンへ行く
+        if freshness::not_modified_forbids_storing(&pairs_304) {
+            cache.remove(key);
+            if let Some(new_head) = headers::merge_not_modified(&entry.head, &head) {
+                entry.replace_head(new_head);
+            }
+            if let Some(served) = headers::with_set_cookies(&entry.head, &head) {
+                entry.replace_head(served);
+            }
+            entry.meta.stored_at = now_epoch();
+            entry.meta.expires_at = entry.meta.stored_at;
+            if origin_reusable {
+                shared.upstream.pool.put(pool_key, server, shared.timeout);
+            }
+            return serve_cached(client, entry, source, "REVALIDATED", 0, &ctx);
+        }
+        let p = freshness::revalidated_policy(&pairs_304, &cached_head, cfg, now);
         // 304 のヘッダーで保存済みの先頭を書き直して置き直し、配るのも新しい先頭にする
         // (RFC 9111 §3.2・§4.3.4。T.28.2)。今までは期限だけ延ばし、配る先頭は古いままだった
-        let mut entry = entry;
         let expires_at = match headers::merge_not_modified(&entry.head, &head) {
             Some(new_head) => {
                 let expires_at =
                     cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
-                entry.size = entry.body_len().saturating_add(new_head.len() as u64);
-                entry.head = new_head;
+                entry.replace_head(new_head);
                 expires_at
             }
             None => cache.refresh(key, p.ttl, p.age, conn_id),
@@ -1130,6 +1146,10 @@ pub fn handle_http_parsed(
         // `Age: N` になっていた (次の HIT からは新しい値)
         entry.meta.stored_at = now_epoch().saturating_sub(p.age);
         entry.meta.expires_at = expires_at;
+        // 304 の `Set-Cookie` は保存した先頭へは写さず (T.29.0)、再検証したこの要求にだけ渡す
+        if let Some(served) = headers::with_set_cookies(&entry.head, &head) {
+            entry.replace_head(served);
+        }
         if origin_reusable {
             shared.upstream.pool.put(pool_key, server, shared.timeout);
         }

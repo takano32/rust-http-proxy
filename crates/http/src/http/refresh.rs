@@ -183,6 +183,15 @@ fn revalidate(
     let cfg = cache.config();
 
     if status == 304 {
+        // 304 が保存を禁じた: 延命せず消す (T.29.0)。304 の `Set-Cookie` は誰にも渡さない
+        // (裏の再検証の要求は利用者のものではない)
+        if freshness::not_modified_forbids_storing(&rheaders) {
+            cache.remove(key);
+            if reusable {
+                upstream.pool.put(&pool_key, server, timeout);
+            }
+            return Ok("304 forbids storing, removed");
+        }
         let p = freshness::revalidated_policy(&rheaders, &cached, cfg, now);
         // 304 のヘッダーで保存済みの先頭も書き直す (T.28.2。同期の再検証と同じ)
         match headers::merge_not_modified(cached_head, &rhead) {
