@@ -36,36 +36,6 @@
 
 tokyo の `/profile?res=60` 4.05 時間 (要求 0.25 本/秒、0.0015 コア): `profile-sample` 32.5%・`cache-probe` 23.4%・`conn` (本業) 11.6% (692 us/要求)・`history` 7.6%・`idle-watch` 5.9%。起動からの cgroup は user 38.5 s / system 114.8 s (`/proc` 読みの性質)。手元の暇な既定 634 us/s (profile 254・probe 242・history 90・idle 39)、`--lite` 45。`strace -f -c` 66 秒で約 305 回/秒 (`fs::read_to_string` が `statx` + `lseek` + 倍々の `read`。`/proc/self/status` 1 本で 11 回)。forward の hot path は T.28.12〜15 で callgrind 27,379 → 19,069 Ir/op (−30%)、残りは kernel が床 (この機械の forward 36.8 us のうち kernel 29.7)。
 
-- [ ] **T.29.20 `/proc` の小さなファイルを open・read・read(EOF)・close の 4 回で読む (試作あり)**
-  - 目的: 上の 305 回/秒の大半。試作 (`t29/perf/p1.patch`: `sysinfo` に `read_small_into` / `read_small`、`Sampler.buf` を `Vec<u8>` に。+58 行) で暇な既定 66 秒のシステムコール約 20,100 → 14,200 回 (−29%: `statx` 2,680 → 140、`lseek` 1,762 → 0)、CPU 約 −7% (揺れ大)。
-  - やること: `crates/sysinfo/src/sysinfo/proc.rs` 131-138・`mem.rs`・`cgroup.rs`・`net.rs` 77・`metrics-profile/src/profile.rs` 1054・1068 の読みを置き換える。読む中身は同じ。
-  - 受け入れ基準: 暇な既定 60 秒の `strace -f -c` の合計 −25% 以上、`/profile`・`/status` の数が前後で同じ、`cargo test --workspace`。次の締めで tokyo の cgroup の CPU/時間と役割別 CPU を前の版と比べる。
-
-- [ ] **T.29.21 `profile-sample` は変化の無いスレッドの `syscall`・`schedstat` を読まない**
-  - 目的: 1 秒ごとに 15 スレッド × 3 ファイル (`proc.rs` 98-127、`profile.rs` 967-1010。前の標本は既に `prev` に持つ)。
-  - やること: `stat` を先に読み、状態 `S` で ticks が同じスレッドは前回のシステムコールを使い `schedstat` も読まない (走っていないので run_delay の増えは 0)。10 ms 未満だけ走ったスレッドの状態が 1 標本古く見えるのを README に 1 行。
-  - 受け入れ基準: 暇な既定で `profile-sample` の openat が 1 秒 29 → 12 以下、負荷中の役割別 CPU・状態の分布が前後 ±5%。
-
-- [ ] **T.29.22 `cache-probe` の既定の間隔を 1 → 5 秒にする**
-  - 目的: tokyo の 23.4%。env だけの A/B で暇な既定 634 → 439 us/s (−31%、`PROXY_CACHE_PROBE_SECS=10`)。tokyo のキャッシュは 24 時間で参照 80 回で、1 秒の反応は要らない。
-  - やること: `crates/cachecfg/src/config.rs` 241 の既定。`enforce()` (上限超えの追い出し) もこの周期なので、`put` 側が自分で上限を守ることを先に確かめる。sweep・他人のディスク・backoff の周期は `ticks_per()` で保たれる。
-  - 受け入れ基準: 暇な既定の `cache-probe` 240 → 60 us/s 以下、cache 系の結合 (cache・heavy・persist ほか) 全通過、README の既定。
-
-- [ ] **T.29.23 `idle-watch` は預かりが 0 のとき `epoll_wait` を無期限にする**
-  - 目的: 預かりが 0 でも 1 秒ごとに起きる (`crates/server/src/idle.rs` 54 `MAX_WAIT_MS = 1000`・423-433・510)。tokyo の 5.9%、手元で 39〜51 us/s (`--lite` の暇な費用 45 us/s のほぼ全部)。
-  - やること: 預かり 0 なら無期限で待ち、`park()` で eventfd (か pipe) で起こす。期限つきの預かりがあればその期限で起きる。
-  - 受け入れ基準: 暇な `--lite` の CPU がほぼ 0、預かりの期限切れ・起こしの結合テスト (idle 系) が全部通る。
-
-- [ ] **T.29.24 接続ごとの先読み 8 KiB のゼロ埋めをプールで無くす (試作あり)**
-  - 目的: callgrind で `memset` 8,210 Ir/本 = CONNECT の user 命令の 31%。試作 (`t29/perf/p2.patch`: `BUF_POOL` 上限 256) で Ir CONNECT 26,311 → 17,457 (−33.7%)、1 接続 1 要求 −27%、時間は CONNECT −1.2% (user −4.7%、6 組中 5 組で後が下) で揺れの中。`crates/msg/src/clientio.rs` 103-110・45-52。
-  - やること: 試作を当てる (読むのは `read` が書いた `[..n]` だけ)。
-  - 受け入れ基準: Ir −25% 以上・user −4% 以上・確保 −1 回/本 (時間の −5% は求めない。T.11.1 と同じ型)。
-
-- [ ] **T.29.25 返していない free heap を返す (RSS の増えの正体)**
-  - 目的: 0.28.48 の 24.1 時間で RSS 65.8 MB = heap_used 20.4 + **heap_free 18.3** + mmap 15.7 + cache 14.4 (基準からの増え +3.0 MB は満たしている)。live (04:36Z) は heap_free 30.4。`malloc_trim` を呼んでいない (`crates/sysinfo/src/sysinfo/malloc.rs`)。
-  - やること: history スレッドから 1 時間に 1 回、`heap_free > heap_used` のとき `malloc_trim(0)`。`PROXY_MALLOC_ARENAS` 8 → 2 も測って比べる。
-  - 受け入れ基準: 24 時間で `rss − (heap_used + mmap + cache_memory)` < 10 MB、conn 役の CPU/要求 ≤ 1.1 倍。
-
 **29d 道具と文書**
 
 - [ ] **T.29.32 README を今の事実に直し、目次を置き、性能の節を分ける**
@@ -74,11 +44,6 @@ tokyo の `/profile?res=60` 4.05 時間 (要求 0.25 本/秒、0.0015 コア): `
   - 受け入れ基準: check-docs 差分 0、README 2,500 行以下 (目安)。
 
 **29e 利用者が決めたもの (2026-10-27)**
-
-- [ ] **T.29.34 転送中の最小の速さを決め、下回り続けたら切る (slow-read / slow-POST。利用者の決定: 最小の速さ)**
-  - 目的: 手元で `PROXY_TIMEOUT_SECS=3`・`PROXY_MAX_CONNS=8` のプロキシに 1 B / 2 s でしか読まないクライアント 8 本 → 20 秒たっても閉じず接続枠が全部ふさがり、正常な要求は 503。今の締め切りは「無通信」で 1 バイトごとに待ち直す (T.28.0 がヘッダーで塞いだのと同じ穴)。トンネルの書き側は無期限 (`tunnel.rs` 585-595、反対向きの読みの 300 秒で救われる)。tokyo は接続元が NAT の 1 つなので 1 人で全部の枠を握れる。
-  - やること: forward の応答の中継 (クライアントへの書き)・要求の本文の読み・トンネルの書き側に、「30 秒の窓で 1 KiB/s を下回ったら切る」を置く (既定 1 KiB/s・30 秒、鍵は例 `PROXY_MIN_TRANSFER_BPS` / `PROXY_MIN_TRANSFER_WINDOW_SECS`、`0` で切らない。`--check`・`/config`・環境変数の表に出す)。トンネルの片側が黙っているだけ (half-idle) は今の 300 秒のまま (送るものが無いのは遅さではない)。切ったら原因ごとに数え (`/status` の errors by cause)、ログは T.29.15 の絞りに乗せる。README の「データ転送タイムアウト」を「無通信の締め切り」と書き直し、最小の速さを足す。
-  - 受け入れ基準: 上の 8 本の再現で 30 秒強で全部閉じて正常な要求が通る、1 KiB/s を少し上回るクライアントは最後まで受け取れる、`0` で前と同じ振る舞い、の結合テスト。熱い経路の Ir が増えない。
 
 - [ ] **T.29.99 締める (タスク 29 の版 = 0.29.x を 24 時間走らせたあとに見る・決める・書く)**
   - 前提: デプロイ先は `tokyo.sorahost.net:60357`。版は本体を最後に変えた小タスクの番号。デプロイそのものは利用者が決める。タグはデプロイの合図の直前に、クラウドのセッションから `workflow_dispatch` で打つ (決まり)。「前」は 0.28.48 の最後の停止、0 時間は新しい版の起動 60 秒 (T.28.20 の `moments`。T.29.26 が入っていれば `--closeout` で)。
