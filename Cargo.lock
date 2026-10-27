@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-config"
-version = "0.28.48"
+version = "0.29.35"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-endpoints"
-version = "0.28.46"
+version = "0.29.35"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-endpoints-core"
-version = "0.28.47"
+version = "0.29.35"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-reload"
-version = "0.28.47"
+version = "0.29.35"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-server"
-version = "0.29.0"
+version = "0.29.35"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "rust-http-proxy"
-version = "0.29.0"
+version = "0.29.35"
 dependencies = [
  "proxy-endpoints",
  "proxy-run",
