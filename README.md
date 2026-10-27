@@ -2263,6 +2263,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 3 つ開くぶん (実測 約 84 us。`schedstat` を足す前は同じ測り方で 68 us) で、**140 スレッド・1 秒間隔で 1 コアの 1.2%** (60 秒で 700 ms)。
   スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。
   `/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。
+  x86_64 の `poll` (7) と `epoll_wait` (232) は `ppoll` / `epoll_pwait` の枠に数えます (T.29.14。std の待ちはこちらを使うので、今までは `unknown_syscalls` の `sys_7` / `sys_232` に落ちて idle-watch が `other` 100% に見えていました。状態の数は変えていません)。
   `schedstat` だけが無いカーネル (`CONFIG_SCHEDSTATS` 無し) では `run_delay_us` が `null` になるだけで、ほかは変わりません。
   **`--lite` では `/profile` ごと off**
 - **`PROXY_SELF_BENCH`** (既定 `off`)

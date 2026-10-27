@@ -163,6 +163,17 @@ const SYSCALL_NRS: [i64; SYSCALL_NAMES.len()] = [
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 const SYSCALL_NRS: [i64; SYSCALL_NAMES.len()] = [-1; SYSCALL_NAMES.len()];
 
+/// 同じ枠に数える別の番号 (`(番号, SYSCALL_NAMES の位置)`。T.29.14)。
+///
+/// x86_64 には `ppoll` / `epoll_pwait` の古い形の `poll` (7) / `epoll_wait` (232) があり、std の
+/// 待ちはそちらを使う (aarch64 には無い)。tokyo の `/profile` の `unknown_syscalls` が `sys_7` 129,929・
+/// `sys_232` 86,693 標本/24 時間で、idle-watch が `other` 100% に見えていた。**状態の数は増やさず**
+/// (標本の形と大きさを変えない) 同じ待ちの枠に入れる
+#[cfg(target_arch = "x86_64")]
+const SYSCALL_ALIASES: [(i64, usize); 2] = [(7, 2), (232, 3)];
+#[cfg(not(target_arch = "x86_64"))]
+const SYSCALL_ALIASES: [(i64, usize); 0] = [];
+
 /// 走行中の枠 ([`state_names`] の先頭)。
 const STATE_RUNNING: usize = 0;
 /// 休眠の枠 (`syscall` が読めなかったときの受け皿)。
@@ -198,7 +209,12 @@ pub fn role_of(tid: u32, main_tid: u32, comm: &str) -> usize {
 /// 標本 1 つを [`state_names`] の枠に落とす。表に無い番号は (`other`, その番号) を返す。
 pub fn state_slot(syscall: Option<i64>, state: char) -> (usize, Option<i64>) {
     match syscall {
-        Some(nr) if nr >= 0 => match SYSCALL_NRS.iter().position(|n| *n == nr) {
+        Some(nr) if nr >= 0 => match SYSCALL_NRS.iter().position(|n| *n == nr).or_else(|| {
+            SYSCALL_ALIASES
+                .iter()
+                .find(|(n, _)| *n == nr)
+                .map(|(_, i)| *i)
+        }) {
             Some(i) => (1 + i, None),
             None => (STATE_OTHER, Some(nr)),
         },
@@ -1439,6 +1455,23 @@ mod tests {
         assert_eq!(state_slot(Some(99_999), 'S'), (NSTATES - 1, Some(99_999)));
         assert_eq!(names.len(), NSTATES);
         assert_eq!(names[1], "recvfrom");
+    }
+
+    /// **T.29.14**: x86_64 の `poll` (7) と `epoll_wait` (232) は `ppoll` / `epoll_pwait` の枠に数え、
+    /// `unknown_syscalls` に落ちない (状態の数は変えない)。
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_64_poll_and_epoll_wait_are_named() {
+        let names = state_names();
+        assert_eq!(names[state_slot(Some(7), 'S').0], "ppoll");
+        assert_eq!(state_slot(Some(7), 'S').1, None);
+        assert_eq!(names[state_slot(Some(232), 'S').0], "epoll_pwait");
+        assert_eq!(state_slot(Some(232), 'S').1, None);
+        // 枠の位置は名前の表と合っている
+        for (nr, i) in SYSCALL_ALIASES {
+            assert!(!SYSCALL_NRS.contains(&nr), "{} は表と重なる", nr);
+            assert_eq!(names[1 + i], ["ppoll", "epoll_pwait"][(nr == 232) as usize]);
+        }
     }
 
     /// 番号の表は名前と同じ長さで、同じ番号が 2 つ無いこと。
