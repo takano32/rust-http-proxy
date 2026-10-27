@@ -336,8 +336,6 @@ mod tests {
             version: "test",
             build: "test",
             concurrency: &concurrency,
-            own_ip: &|_| false,
-            self_names: &[],
         };
         f(&ep)
     }

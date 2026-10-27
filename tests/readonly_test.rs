@@ -139,16 +139,13 @@ fn test_integration_readonly_follows_the_env_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **状態を変える口は、宛先の名前が自分のときだけ受ける** (T.28.40、利用者の決定 1)。
+/// **書き換える口も名前を問わずポートだけで自分宛て** (T.29.35、利用者の決定「すべて外から使える」)。
 ///
-/// 自分宛ての判定はポートだけなので、ポート 80 で動かすと外のサイトが
-/// `http://任意:80/purge?all=1` を踏ませるだけでキャッシュを消せた。`Host`
-/// (と絶対形式のホスト) が `localhost`・ループバックの IP・待ち受けの IP でなければ
-/// 書き換える口 (`/purge`・`/blocklist?action=`) は**普通の転送に回す**。
-/// 転送先は `PROXY_DENY_HOSTS` で断らせて (403)、名前解決にも外にも出ない形で確かめる。
-/// 読む口 (`/lookup`・判定だけの `/blocklist?host=`) は名前によらず今までどおり。
+/// T.28.40 で `/purge`・`/blocklist?action=` を宛先の名前が自分のときだけにし、T.28.47 で
+/// `PROXY_SELF_NAMES` を足したのを戻した。外の名前 (公開の名前で開いたダッシュボード) の
+/// オリジン形式・絶対形式とも、転送に回さず自分で受ける。
 #[test]
-fn test_integration_write_endpoints_need_an_own_host_name() {
+fn test_integration_write_endpoints_answer_any_host_name() {
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
@@ -164,10 +161,9 @@ fn test_integration_write_endpoints_need_an_own_host_name() {
     .unwrap();
     cfg.keepalive = Duration::from_secs(2);
     cfg.allow_local = rust_http_proxy::acl::AllowLocal::On;
-    let port = start_test_proxy_with_cache(cfg, cache_cfg("rhp-t2840-own-name"));
+    let port = start_test_proxy_with_cache(cfg, cache_cfg("rhp-t2935-any-name"));
     let host = format!("127.0.0.1:{}", origin_port);
     let url = format!("http://{}/asset", host);
-    get_via_proxy(port, &url, &host);
     let lookup = |name: &str| {
         raw_get(
             port,
@@ -177,91 +173,43 @@ fn test_integration_write_endpoints_need_an_own_host_name() {
             ),
         )
     };
-    let found = lookup("127.0.0.1");
-    assert!(found.contains("\"found\":true"), "{}", found);
 
-    // 外の名前の書き換えは転送に回る (ここでは ACL の 403)。キャッシュは消えない
+    // 外の名前の `action=block` が効く (`PROXY_DENY_HOSTS` の 403 にはならない)
+    let resp = raw_get(
+        port,
+        &format!(
+            "GET /blocklist?host=own1.example.org&action=block HTTP/1.1\r\nHost: example.com:{}\r\nConnection: close\r\n\r\n",
+            port
+        ),
+    );
+    assert!(resp.contains("\"blocked\":true"), "{}", resp);
+    let resp = raw_get(
+        port,
+        &format!(
+            "GET /blocklist?host=own1.example.org&action=clear HTTP/1.1\r\nHost: example.com:{}\r\nConnection: close\r\n\r\n",
+            port
+        ),
+    );
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "{}", resp);
+
+    // 外の名前の `/purge?all=1` (オリジン形式・絶対形式) でキャッシュが消える
     for req in [
         format!(
-            "GET /purge?all=1 HTTP/1.1\r\nHost: example.com:{}\r\nConnection: close\r\n\r\n",
+            "GET /purge?all=1 HTTP/1.1\r\nHost: Example.COM:{}\r\nConnection: close\r\n\r\n",
             port
         ),
         format!(
             "GET http://example.com:{}/purge?all=1 HTTP/1.1\r\nHost: example.com:{}\r\nConnection: close\r\n\r\n",
             port, port
         ),
-        format!(
-            "GET /blocklist?host=own1.example.org&action=block HTTP/1.1\r\nHost: example.com:{}\r\nConnection: close\r\n\r\n",
-            port
-        ),
     ] {
+        get_via_proxy(port, &url, &host);
+        let found = lookup("example.com");
+        assert!(found.contains("\"found\":true"), "{}", found);
         let resp = raw_get(port, &req);
-        assert!(resp.starts_with("HTTP/1.1 403"), "{} -> {}", req, resp);
-        assert!(!resp.contains("\"purged\""), "{}", resp);
+        assert!(resp.starts_with("HTTP/1.1 200 OK"), "{} -> {}", req, resp);
+        assert!(resp.contains("\"all\":true"), "{}", resp);
+        let gone = lookup("example.com");
+        assert!(gone.contains("\"found\":false"), "{}", gone);
     }
-    // 読む口は外の名前でも今までどおり自分宛て (`/lookup` で消えていないことも示す)
-    let found = lookup("example.com");
-    assert!(found.contains("\"found\":true"), "{}", found);
-    let resp = raw_get(
-        port,
-        &format!(
-            "GET /blocklist?host=own1.example.org HTTP/1.1\r\nHost: example.com:{}\r\nConnection: close\r\n\r\n",
-            port
-        ),
-    );
-    assert!(resp.starts_with("HTTP/1.1 200 OK"), "{}", resp);
-    assert!(
-        resp.contains("\"blocked\":false"),
-        "action=block は効いていない: {}",
-        resp
-    );
-
-    // 自分の名前 (`localhost`・ループバックの IP) なら今までどおり効く
-    let resp = raw_get(
-        port,
-        &format!(
-            "GET /blocklist?host=own1.example.org&action=block HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
-            port
-        ),
-    );
-    assert!(resp.contains("\"blocked\":true"), "{}", resp);
-    let _ = get(port, "/blocklist?host=own1.example.org&action=clear");
-    let resp = get(port, "/purge?all=1");
-    assert!(resp.starts_with("HTTP/1.1 200 OK"), "{}", resp);
-    assert!(resp.contains("\"all\":true"), "{}", resp);
-    let gone = lookup("127.0.0.1");
-    assert!(gone.contains("\"found\":false"), "{}", gone);
-}
-
-/// `PROXY_SELF_NAMES` に書いた名前なら、書き換える口も効く (公開の名前で開いたダッシュボード。T.28.47)。
-/// 書いていない名前は T.28.40 のまま転送に回る。
-#[test]
-fn test_integration_self_names_make_write_endpoints_work_by_public_name() {
-    use std::time::Duration;
-
-    let mut cfg = rust_http_proxy::config::Config::new(
-        "0",
-        None,
-        Some("example.com,other.example"),
-        Duration::from_secs(5),
-    )
-    .unwrap();
-    cfg.keepalive = Duration::from_secs(2);
-    cfg.self_names = vec!["example.com".to_string()];
-    let port = start_test_proxy_with_cache(cfg, cache_cfg("rhp-t2847-self-names"));
-    let purge = |name: &str| {
-        raw_get(
-            port,
-            &format!(
-                "GET /purge?all=1 HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
-                name, port
-            ),
-        )
-    };
-    let resp = purge("Example.COM");
-    assert!(resp.contains("\"all\":true"), "{}", resp);
-    // 書いていない名前は転送 (ここでは ACL の 403)
-    let resp = purge("other.example");
-    assert!(resp.starts_with("HTTP/1.1 403"), "{}", resp);
-    assert!(!resp.contains("\"purged\""), "{}", resp);
 }

@@ -15,11 +15,9 @@
 //! 応答は常に `Connection: close`。認証は無いので、到達できる人は誰でも purge できる
 //! (公開ポートなら ACL や到達制御で守ること)。`PROXY_ENDPOINTS_READONLY=on` にすると
 //! **書き換える口だけ** (`/purge` / `PURGE` / `/blocklist?action=`) を 405 で断る (T14.18)。
-//! **書き換える口 (`/purge`・`/blocklist?action=`) はポートに加えて名前も見る**: `Host`
-//! (絶対形式なら authority) のホストが `localhost`・ループバックの IP・自分の IP
-//! (受けたローカルの IP・`PROXY_BIND`・`SERVER_IP`) のときだけ自分宛てで、それ以外は
-//! 普通の転送に回す (T.28.40。ポート 80 で動かすと、外のサイトが `http://任意:80/purge?all=1`
-//! を踏ませるだけで消せたため)。読む口は今までどおりポートだけ。
+//! 書き換える口も読む口と同じくポートだけで決め、名前は見ない (T.29.35、利用者の決定
+//! 「すべて外から使える」。T.28.40 で名前を自分のときだけに絞り、T.28.47 で `PROXY_SELF_NAMES` を
+//! 足したのを戻した。公開の名前で開いたダッシュボードの「消す」「上書き」が転送になっていたため)。
 //! **重い口** (`/snapshot` `/profile` `/explain` と大きく引いた `/hosts` `/recent` `/history`) は
 //! **同時に 1 本だけ**組み、2 本目からは `503` + `Retry-After: 1` で断る (T14.51)。
 
@@ -101,56 +99,6 @@ fn authority_port(authority: &str) -> Option<u16> {
     match authority.rsplit_once(':') {
         Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => p.parse::<u16>().ok(),
         _ => Some(80),
-    }
-}
-
-/// `host[:port]` のホストの部分 (`[::1]:8080` → `::1`、`example.com:80` → `example.com`)。
-fn authority_host(authority: &str) -> &str {
-    if let Some(rest) = authority.strip_prefix('[') {
-        return rest.split_once(']').map_or(rest, |(h, _)| h);
-    }
-    match authority.rsplit_once(':') {
-        // `:` が 2 つ以上 = ブラケットの無い IPv6 リテラル (ポートは付けられない)
-        Some((h, _)) if !h.contains(':') => h,
-        Some(_) => authority,
-        None => authority,
-    }
-}
-
-/// 要求が**自分の名前**を宛先にしているか (書き換える口だけが見る。T.28.40)。
-///
-/// 見るのは絶対形式なら authority、オリジン形式なら `Host` のホスト (ポートは
-/// [`local_path`] が見終えている)。自分の名前は `localhost` (末尾の点も)・ループバックの IP
-/// (`127.0.0.0/8`・`::1`・`::ffff:127.x`)・[`Endpoint::own_ip`] が真の IP。
-/// **名前を引いて IP にはしない** (外の名前が自分を指していても、ブラウザは外のサイトの
-/// 名前で踏まされるので、名前のまま断る)。
-fn own_target(target: &str, ep: &Endpoint<'_>) -> bool {
-    let authority = if target.starts_with('/') {
-        ep.host.unwrap_or("")
-    } else {
-        // `local_path` を通ったので `http://` (大小は問わない) で始まっている
-        let rest = target.get(7..).unwrap_or("");
-        rest.split('/').next().unwrap_or("")
-    };
-    own_host(authority_host(authority.trim()), ep.own_ip, ep.self_names)
-}
-
-/// ホスト名が自分の名前か ([`own_target`] の中身。試験のために `Endpoint` から外してある)。
-///
-/// `self_names` (`PROXY_SELF_NAMES`) に書いた名前も自分の名前 (大小と末尾の点は問わない。T.28.47)。
-/// 公開の名前 (`tokyo.sorahost.net` など) で開いたダッシュボードの「消す」「上書き」を効かせる
-/// ための口で、書かなければ T.28.40 のまま
-fn own_host(host: &str, own_ip: &dyn Fn(std::net::IpAddr) -> bool, self_names: &[String]) -> bool {
-    if host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case("localhost.") {
-        return true;
-    }
-    let bare = host.trim_end_matches('.');
-    if self_names.iter().any(|n| n.eq_ignore_ascii_case(bare)) {
-        return true;
-    }
-    match host.parse::<std::net::IpAddr>() {
-        Ok(ip) => ip.to_canonical().is_loopback() || own_ip(ip.to_canonical()),
-        Err(_) => false,
     }
 }
 
@@ -244,9 +192,6 @@ pub fn register_snapshot(src: SnapshotSource) {
             version: src.version,
             build: src.build,
             concurrency: &*src.concurrency,
-            // 書き換える口は組まないので使わない (T.28.40)
-            own_ip: &|_| false,
-            self_names: &[],
         };
         recent::snapshot_with(&ep, recent_max).2
     }));
@@ -355,12 +300,6 @@ pub fn handle(
         Some((p, q)) => (p, Some(q)),
         None => (local, None),
     };
-    // **書き換える口は名前も自分のときだけ受ける** (T.28.40)。ポートが合っていても名前が
-    // 外なら、自分宛てにせず普通の転送に回す (読み手としても数えない)。`PURGE` メソッドは
-    // 要求ターゲットが「消す URL」なので、ここでは見ない (今までどおり)
-    if !is_purge && is_write(false, path, query) && !own_target(target, ep) {
-        return Ok(false);
-    }
     // **HEAD は GET として組み、本文だけ書かない** (RFC 9110 §9.3.2: GET と同じヘッダー。T.28.7)。
     // 外の生死監視やロードバランサは既定で HEAD を投げるものが多く、今までは全部 404 だった
     let is_head = method.eq_ignore_ascii_case("HEAD");
@@ -952,53 +891,7 @@ mod status_query_tests {
 
 #[cfg(test)]
 mod local_path_tests {
-    use super::{
-        authority_host, endpoint_list, local_path, now_and_start, own_host, parse_query,
-        summary_params,
-    };
-
-    /// 書き換える口の「自分の名前」(T.28.40)。名前は引かず、綴りと IP だけで決める
-    #[test]
-    fn own_host_names_are_localhost_loopback_and_own_ips() {
-        assert_eq!(authority_host("example.com:80"), "example.com");
-        assert_eq!(authority_host("example.com"), "example.com");
-        assert_eq!(authority_host("[::1]:8080"), "::1");
-        assert_eq!(authority_host("[::1]"), "::1");
-        assert_eq!(authority_host("::1"), "::1");
-        assert_eq!(authority_host("127.0.0.1:8080"), "127.0.0.1");
-
-        let own: &dyn Fn(std::net::IpAddr) -> bool = &|ip| ip.to_string() == "203.0.113.7";
-        for name in [
-            "localhost",
-            "LOCALHOST",
-            "localhost.",
-            "127.0.0.1",
-            "127.1.2.3",
-            "::1",
-            "::ffff:127.0.0.1",
-            "203.0.113.7",
-            "::ffff:203.0.113.7",
-        ] {
-            assert!(own_host(name, own, &[]), "{}", name);
-        }
-        for name in [
-            "example.com",
-            "evil.localhost",
-            "localhost.example.com",
-            "203.0.113.8",
-            "0.0.0.0",
-            "",
-            "tokyo.example.net",
-        ] {
-            assert!(!own_host(name, own, &[]), "{}", name);
-        }
-        // `PROXY_SELF_NAMES` に書いた名前は自分の名前 (大小と末尾の点は問わない。T.28.47)
-        let names = ["tokyo.example.net".to_string()];
-        assert!(own_host("tokyo.example.net", own, &names));
-        assert!(own_host("TOKYO.example.net.", own, &names));
-        assert!(!own_host("evil.tokyo.example.net", own, &names));
-        assert!(!own_host("example.com", own, &names));
-    }
+    use super::{endpoint_list, local_path, now_and_start, parse_query, summary_params};
 
     #[test]
     fn origin_form_is_local_only_when_the_host_port_is_ours() {

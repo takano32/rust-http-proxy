@@ -393,22 +393,6 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         idle_threads: workers.idle_count(),
         queued_jobs: workers.queued(),
     };
-    // 書き換える口が外の IP リテラルで名指しされたときだけ呼ばれる (T.28.40)。
-    // 自分の IP = この接続を受けたローカルの IP (`getsockname` はここでだけ引く)・
-    // `PROXY_BIND` に書いた IP・`SERVER_IP` (パネルが実際の環境変数で渡す割り当ての IP。
-    // `.env` の名前ではないので `envfile` ではなく環境変数だけを見る)。未指定 (`0.0.0.0` /
-    // `::`) は自分の名前にしない
-    let own_ip = |ip: std::net::IpAddr| {
-        !ip.is_unspecified()
-            && (client
-                .local_addr()
-                .is_ok_and(|a| a.ip().to_canonical() == ip)
-                || config.bind_addrs.contains(&ip)
-                || std::env::var("SERVER_IP")
-                    .ok()
-                    .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-                    .is_some_and(|s| s.to_canonical() == ip))
-    };
     let ep = endpoints::Endpoint {
         metrics,
         cache,
@@ -428,8 +412,6 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         version: VERSION,
         build: BUILD,
         concurrency: &concurrency,
-        own_ip: &own_ip,
-        self_names: &config.self_names,
     };
     if endpoints::handle(&mut &*client, method, target, &ep)? {
         return Ok(Step::Close(recent::CloseReason::Shutdown));

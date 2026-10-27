@@ -259,11 +259,6 @@ impl Live {
             next.sources.adopt(&fresh.sources, "PROXY_PAC_DIRECT");
             applied.push("PROXY_PAC_DIRECT");
         }
-        if fresh.self_names != old.self_names {
-            next.self_names = fresh.self_names.clone();
-            next.sources.adopt(&fresh.sources, "PROXY_SELF_NAMES");
-            applied.push("PROXY_SELF_NAMES");
-        }
         let bl = crate::blocklist::Sources::from_config(&fresh);
         if bl != crate::blocklist::Sources::from_config(&old) {
             next.blocklist_file = fresh.blocklist_file.clone();

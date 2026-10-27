@@ -566,9 +566,6 @@ pub struct Config {
     pub canary_ipv6: bool,
     /// `/proxy.pac` で DIRECT にするホストの一覧 (`PROXY_PAC_DIRECT`、`*.example.com` 可)
     pub pac_direct: Vec<String>,
-    /// 自分の名前として足すホスト名 (`PROXY_SELF_NAMES`、小文字・末尾の点なし)。書き換える口
-    /// (`/purge`・`/blocklist?action=`) を公開の名前で開いたダッシュボードからも効かせるため (T.28.47)
-    pub self_names: Vec<String>,
     /// ブロックリストのファイル (`PROXY_BLOCKLIST_FILE`、hosts 形式 / 1 行 1 ドメイン)
     pub blocklist_file: Option<PathBuf>,
     /// ブロックリストの URL (`PROXY_BLOCKLIST_URL`)
@@ -1006,13 +1003,6 @@ impl Config {
             cfg.pac_direct = list(v);
             src.mark("PROXY_PAC_DIRECT");
         }
-        if let Some(v) = envfile::var("PROXY_SELF_NAMES") {
-            cfg.self_names = list(v)
-                .into_iter()
-                .map(|n| n.trim_end_matches('.').to_string())
-                .collect();
-            src.mark("PROXY_SELF_NAMES");
-        }
         cfg.blocklist_file = envfile::var("PROXY_BLOCKLIST_FILE")
             .map(|p| p.trim().to_string())
             .filter(|p| !p.is_empty())
@@ -1210,7 +1200,6 @@ impl Config {
         add("PROXY_BLOCKLIST_REFRESH_SECS", secs(self.blocklist_refresh));
         add("PROXY_BLOCKLIST_EXEMPT", list_value(&self.blocklist_exempt));
         add("PROXY_PAC_DIRECT", list_value(&self.pac_direct));
-        add("PROXY_SELF_NAMES", list_value(&self.self_names));
         // TLS (パスだけ。証明書の中身は読まない)
         add("PROXY_TLS", self.tls_enabled.to_string());
         add("PROXY_TLS_VERIFY", self.tls_verify.to_string());
@@ -1352,7 +1341,6 @@ impl Config {
             canary_secs: Duration::from_secs(60),
             canary_ipv6: true,
             pac_direct: Vec::new(),
-            self_names: Vec::new(),
             blocklist_file: None,
             blocklist_url: None,
             blocklist_refresh: Duration::from_secs(86400),
