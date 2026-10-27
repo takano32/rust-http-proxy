@@ -120,12 +120,16 @@ fn open(
     let mut server = match connect_with_timeout(&addr_str, resolved, timeout) {
         Ok(s) => s,
         Err(e) => {
-            log_warn!(
-                Some(conn_id),
-                "502 Bad Gateway: connect {} failed: {}",
-                addr_str,
-                e
-            );
+            // 理由ごとに 1 分に 1 行 (T.29.15。本数は `/errors` と `/hosts` が持つ)
+            if let Some(more) = metrics.origin_warn(Failure::from_io(&e)) {
+                log_warn!(
+                    Some(conn_id),
+                    "502 Bad Gateway: connect {} failed: {}{}",
+                    addr_str,
+                    e,
+                    more
+                );
+            }
             let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
             let detail = detail_of(
                 started.elapsed(),

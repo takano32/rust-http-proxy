@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 
+/// オリジン側の失敗の WARN を絞る理由の数 ([`ErrCause`] の 8 つ + 名前解決の内訳 2 つ。T.29.15)。
+pub const ORIGIN_WARN_REASONS: usize = ERR_CAUSES + DNS_CAUSES;
+
 // 接続元の個票と、内部エンドポイントを引いた接続元は下の層
 // (`proxy-metrics-window`) に置いてある (T14.55)。**今までの名前でここから引ける**
 // (`crate::metrics::ClientStats` / `Reader` …)。
@@ -125,6 +128,10 @@ pub struct Metrics {
     /// 断った要求の WARN を理由ごとに 1 分に 1 回へ絞る門 (T.28.9)。本数は上の
     /// `rejected_requests` が持つので、ログには 1 分に 1 行と抑えた本数だけを出す
     pub rejected_warn: [crate::log::Throttle; BAD_REQUEST_REASONS],
+    /// オリジン側の失敗 (502 / 時間切れ) の WARN を**理由ごとに 1 分に 1 回**へ絞る門 (T.29.15)。
+    /// 並びは [`ErrCause`] の 8 つ + 名前解決の内訳 2 つ ([`Metrics::origin_warn`])。本数は
+    /// `/errors`・`/hosts`・`errors_by_cause` が持つので、ログには 1 分に 1 行と抑えた本数だけを出す
+    pub origin_warn: [crate::log::Throttle; ORIGIN_WARN_REASONS],
     pub bytes_forwarded: AtomicU64,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
@@ -189,6 +196,7 @@ impl Metrics {
             rejected_per_client: AtomicU64::new(0),
             rejected_requests: [const { AtomicU64::new(0) }; BAD_REQUEST_REASONS],
             rejected_warn: [const { crate::log::Throttle::new() }; BAD_REQUEST_REASONS],
+            origin_warn: [const { crate::log::Throttle::new() }; ORIGIN_WARN_REASONS],
             bytes_forwarded: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
@@ -416,6 +424,22 @@ impl Metrics {
             0,
         ));
         self.rejected_warn[reason as usize].pass(crate::log::WARN_EVERY_SECS)
+    }
+
+    /// オリジン側の失敗の WARN を 1 行出してよいか (T.29.15)。**理由ごとに 1 分に 1 回**だけ `Some` を返し、
+    /// 中身は前の行から抑えた本数 (行の終わりにそのまま `{}` で付ける)。
+    ///
+    /// 0.28.48 の tokyo の `/log` は 1,000 行 (19.95 時間) が 100% `502 Bad Gateway: connect <mail>:993/995
+    /// failed: lookup` で、24 時間で 2,228 行あった (本数は相手 = 総当たりする利用者が決める)。理由は
+    /// [`ErrCause`] の 8 つと、名前解決の内訳 (`nxdomain` / `dns_temp`) の 2 つ。呼ぶ側は
+    /// `if let Some(more) = metrics.origin_warn(f) { log_warn!(.., "…{}", more) }` の形で出す
+    #[must_use = "WARN を出すかどうかを返す (T.29.15)"]
+    pub fn origin_warn(&self, f: Failure) -> Option<crate::log::Skipped> {
+        let i = match f.dns {
+            Some(d) => ERR_CAUSES + d as usize,
+            None => f.cause as usize,
+        };
+        self.origin_warn[i].pass(crate::log::WARN_EVERY_SECS)
     }
 
     /// `/status` の `rejected_requests` (理由別と合計)。

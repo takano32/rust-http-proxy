@@ -218,6 +218,11 @@ pub struct Failure {
 }
 
 impl Failure {
+    /// 名前解決ではない原因 1 つ (`dns` は `None`。T.29.15 の WARN の絞りの鍵などに)。
+    pub fn of(cause: ErrCause) -> Failure {
+        Failure { cause, dns: None }
+    }
+
     pub fn from_io(e: &std::io::Error) -> Failure {
         let cause = ErrCause::from_io(e);
         Failure {

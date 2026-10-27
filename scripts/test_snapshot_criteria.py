@@ -2861,7 +2861,7 @@ class Criteria26Rows(unittest.TestCase):
 
     def test_phase26_keeps_the_seventeen_rows_of_phase25_and_adds_eight(self):
         p25, p26 = sd.RULES["phase25"], sd.RULES["phase26"]
-        self.assertEqual(len(p26), 25)
+        self.assertEqual(len(p26), 26)
         self.assertEqual(p26[:17], p25)
         self.assertIs(p26[17], sc._p26_header_timeouts)
         self.assertEqual(sd.CRITERIA["phase26"]["log_error_max"], 5)
@@ -2956,6 +2956,26 @@ class Criteria26Rows(unittest.TestCase):
         self.assertEqual(sc._p26_role_shares(self.ctx(b, a), sc.PHASE26)[3], sd.REFERENCE)
 
 
+    def test_origin_warn_lines_are_counted_per_minute(self):
+        def line(at, msg):
+            return {"at": at, "level": "warn", "msg": msg}
+        # T.29.15 の前の形: 同じ 1 分にメール宛の 502 が 12 行
+        old = [line(1793068500 + i, f"502 Bad Gateway: connect imap.example:993 failed: lookup {i}") for i in range(12)]
+        row = sc._p26_origin_warn_per_minute(self.ctx(self.snap(log=old)), sc.PHASE26)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("1 分の最大 **12** 行", row[2])
+        # T.29.15 の後: 原因ごとに 1 行で、抑えた本数を添える
+        new = [line(1793068500, "502 Bad Gateway: connect imap.example:993 failed: lookup"),
+               line(1793068560, "502 Bad Gateway: connect imap.example:993 failed: lookup"
+                                " (+40 more since the previous line, not logged)"),
+               line(1793068570, "origin response timed out after 30 s"),
+               line(1793068580, "cache write failed")]
+        row = sc._p26_origin_warn_per_minute(self.ctx(self.snap(log=new)), sc.PHASE26)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("3 行 / 4 行、1 分の最大 **2** 行", row[2])
+        self.assertIn("抑えた本数を添えた行 1", row[2])
+
+
 T2899_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-10-26T013119Z-snapshot.json")
 T2899_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-10-27T024200Z-snapshot.json")
 
@@ -2970,7 +2990,7 @@ class Deployed26(unittest.TestCase):
         self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase26`)", md)
         c = build([T2899_BEFORE, T2899_AFTER, "--no-dns", "--criteria", "phase26"])["criteria"]
         rows = c["rows"]
-        self.assertEqual(len(rows), 25)
+        self.assertEqual(len(rows), 26)
         verdicts = [r[3] for r in rows]
         # 0.28.48 には `header_timeout` の欄が無い (0 と書かない)
         self.assertEqual(verdicts[17], sd.UNKNOWN)

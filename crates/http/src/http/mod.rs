@@ -915,12 +915,16 @@ pub fn handle_http_parsed(
         ) {
             Ok(v) => v,
             Err(e) => {
-                log_warn!(
-                    Some(conn_id),
-                    "502 Bad Gateway: connect {} failed: {}",
-                    server_addr,
-                    e
-                );
+                // 理由ごとに 1 分に 1 行 (T.29.15。本数は `/errors` と `/hosts` が持つ)
+                if let Some(more) = shared.metrics.origin_warn(Failure::from_io(&e)) {
+                    log_warn!(
+                        Some(conn_id),
+                        "502 Bad Gateway: connect {} failed: {}{}",
+                        server_addr,
+                        e,
+                        more
+                    );
+                }
                 // 入口で測った `client_read` は `ctx.detail` にしか無いので、
                 // `shared.stages` ではなくこちらを引き継ぐ (T17.4)
                 ctx.detail = origin_detail(
@@ -1074,21 +1078,30 @@ pub fn handle_http_parsed(
                 // Linux では締め切りが切れると `WouldBlock` (EAGAIN) が返る。そのまま出すと
                 // "Resource temporarily unavailable (os error 11)" になって締め切りと読めないので、
                 // 言い換える (原因の数え方は `ErrCause::from_io` が `timeout` に寄せる。T.28.5)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) {
-                    log_warn!(
-                        Some(conn_id),
-                        "origin response timed out after {} s",
-                        origin_timeout.as_secs_f64()
-                    );
-                } else {
-                    log_warn!(Some(conn_id), "failed to read origin response: {}", e);
-                }
                 // 応答を読む途中の失敗も同じ分け方 (T25.0)。DNS はここまで来ないが、
                 // `cause` と `dns_cause` を 1 か所で決めておくと組み合わせがずれない
                 let failure = Failure::from_io(&e);
+                // WARN は理由ごとに 1 分に 1 行 (T.29.15)
+                if let Some(more) = shared.metrics.origin_warn(failure) {
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) {
+                        log_warn!(
+                            Some(conn_id),
+                            "origin response timed out after {} s{}",
+                            origin_timeout.as_secs_f64(),
+                            more
+                        );
+                    } else {
+                        log_warn!(
+                            Some(conn_id),
+                            "failed to read origin response: {}{}",
+                            e,
+                            more
+                        );
+                    }
+                }
                 ctx.detail.cause = Some(failure.cause);
                 ctx.detail.dns_cause = failure.dns;
                 if let Some((entry, source)) = stale.take()
@@ -1148,12 +1161,15 @@ pub fn handle_http_parsed(
     let framing = match framing {
         Ok(framing) => framing,
         Err(bad) => {
-            log_warn!(
-                Some(conn_id),
-                "502 Bad Gateway: bad Content-Length {:?} from {}",
-                bad.0,
-                pool_key
-            );
+            if let Some(more) = ctx.metrics.origin_warn(Failure::of(ErrCause::Other)) {
+                log_warn!(
+                    Some(conn_id),
+                    "502 Bad Gateway: bad Content-Length {:?} from {}{}",
+                    bad.0,
+                    pool_key,
+                    more
+                );
+            }
             // 失敗の数え方 (`/status` の `errors`・`errors_by_cause`) に乗せる。
             // 原因は既存の 8 つのうち「上のどれでもない」を使う (配列は伸ばさない)
             ctx.detail.cause = Some(ErrCause::Other);
@@ -1296,12 +1312,15 @@ pub fn handle_http_parsed(
     // HTTP/1.1 以上を名乗った要求への応答だけ)。符号化をほどけないので、TE を落として符号化済みの
     // バイトを本文として渡す (T.28.35 より前の振る舞い) 代わりに 502 にする (この接続は再利用しない)
     if !http11 && let Some(te) = unframed_te.as_deref() {
-        log_warn!(
-            Some(conn_id),
-            "502 Bad Gateway: {:?} from {} cannot be relayed to an HTTP/1.0 client",
-            te,
-            pool_key
-        );
+        if let Some(more) = ctx.metrics.origin_warn(Failure::of(ErrCause::Other)) {
+            log_warn!(
+                Some(conn_id),
+                "502 Bad Gateway: {:?} from {} cannot be relayed to an HTTP/1.0 client{}",
+                te,
+                pool_key,
+                more
+            );
+        }
         ctx.detail.cause = Some(ErrCause::Other);
         write_error(client, 502, "Bad Gateway")?;
         ctx.log_failure(502);
@@ -1491,12 +1510,15 @@ pub fn handle_http_parsed(
             }
             // 原因は既存の 8 つ (EOF で切られた = `reset`)
             ctx.detail.cause = Some(ErrCause::Reset);
-            log_warn!(
-                Some(conn_id),
-                "502 Bad Gateway: origin body ended at {}B of {}B",
-                early,
-                total
-            );
+            if let Some(more) = ctx.metrics.origin_warn(Failure::of(ErrCause::Reset)) {
+                log_warn!(
+                    Some(conn_id),
+                    "502 Bad Gateway: origin body ended at {}B of {}B{}",
+                    early,
+                    total,
+                    more
+                );
+            }
             write_error(client, 502, "Bad Gateway")?;
             ctx.log_failure(502);
             return Ok(false);

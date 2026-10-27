@@ -313,12 +313,13 @@ scripts/snapshot-diff.py a.json b.json --criteria phase23 --daily b-daily.json \
 scripts/snapshot-diff.py a.json b.json --criteria phase24 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase26 (T.29.10) は phase25 の 17 行を 1 つも動かさず、18 番目から後ろに 8 行を足したもの
+# phase26 (T.29.10) は phase25 の 17 行を 1 つも動かさず、18 番目から後ろに 9 行を足したもの
 # (`collect-deployed.sh` の既定は phase26)。T.28.99 で手で読んでいた 408 の件数 (`rejected_requests.header_timeout`。表示だけ)・
 # `/log` の error の行が 5 行以下・`/errors` の `local` (私設宛ての 403) が 0 件・3 秒で切った確立と成功した確立の最大と
 # `syn_retrans` 1 / 2 の本数 (表示だけ)・`rejected_requests` の合計と理由別 (表示だけ) と、T.29.99 の
 # `rss − (heap_used + mmap + cache_memory)` が 10 MB 未満 (T.29.25)・cgroup の起動からの CPU が前の版より下がる・
-# `profile-sample` と `cache-probe` の CPU の割合が前の版より下がる (前か後の `/profile` が 12 時間未満なら参考)
+# `profile-sample` と `cache-probe` の CPU の割合が前の版より下がる (前か後の `/profile` が 12 時間未満なら参考)・
+# `/log` のオリジン側の失敗 (502・時間切れ) の WARN が 1 分に 10 行以下 (T.29.15。原因ごとに 1 分 1 行)
 scripts/snapshot-diff.py a.json b.json --criteria phase26 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
@@ -2362,7 +2363,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 | レベル | 主な内容 |
 |---|---|
 | `error` | 起動失敗、致命的な接続エラー |
-| `warn` | 400 系 (400 / 403 / 414 / 417 / 431 / 505 / 508。**理由ごとに 1 分に 1 行**、下を参照)、502 (オリジン接続失敗)、キャッシュ I/O 失敗、資源が計測できない環境、設定の警告 |
+| `warn` | 400 系 (400 / 403 / 414 / 417 / 431 / 505 / 508。**理由ごとに 1 分に 1 行**、下を参照)、502 とオリジンの時間切れ (**原因ごとに 1 分に 1 行**。T.29.15)、キャッシュ I/O 失敗、資源が計測できない環境、設定の警告 |
 | `info` | 起動時の設定サマリ、予算の大きな変化、まとまった先行確保、圧迫 / ENOSPC の検知、アクセスログ |
 | `debug` | 接続の受付・切断、自分宛ての要求 (`/status` などの 1 行)、キャッシュ HIT/MISS/STORE/EVICT/REFRESH の詳細、予算の小さな変化 |
 | `trace` | リクエスト / 転送 / レスポンスの全ヘッダー、トンネル転送量、L2 書き込み |
@@ -2377,6 +2378,13 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 (実測: 不正な要求 3 種 × 100 本で WARN 300 行 → 3 行)。**自分宛ての要求** (`/status`・`/healthz`・ダッシュボードが引く口) の
 `GET /status -> 200 (internal endpoint)` の行は `debug` です (ダッシュボードを開いたままにすると約 1.2 行/秒でコンソールを埋めていたため。
 `PROXY_LOG_LEVEL=debug` で今までどおり見えます)。
+**オリジン側の失敗** (CONNECT と転送の `502 Bad Gateway: connect … failed`、`origin response timed out`・
+`failed to read origin response`、壊れた `Content-Length`・本文の途中で切れた応答・HTTP/1.0 へ渡せない符号化) の WARN も
+**原因ごとに 1 分に 1 行**です (T.29.15。原因は `/status` の `errors_by_cause` と同じ `dns`〜`other` の 8 つと名前解決の内訳
+`nxdomain` / `dns_temp`。抑えた本数は同じく次の行の終わりに添えます)。本数は `/errors` (`repeats`)・`/hosts`・`errors_by_cause` が
+全部持っています。0.28.48 の tokyo の `/log` は 1,000 行 (19.95 時間) が全部メール宛の
+`502 Bad Gateway: connect <mail>:993/995 failed: … lookup …` で、24 時間で 2,228 行ありました
+(実測: 繋がらない宛先への CONNECT と転送 100 本ずつ + 本文の途中で切るオリジン 100 本で WARN 300 行 → 2 行)。
 
 アクセスログの `cache=` の値: `HIT(層)` 新鮮なヒット / `HIT(層,304)` クライアントの条件付き要求に 304 で応答 /
 `REVALIDATED(層)` オリジンに再検証して 304 を受け延命 / `REFRESHING(層)` 期限切れ直後の表現を返し裏で再検証 /
@@ -3605,7 +3613,7 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 個票には接続元 IP と宛先が並ぶので `.gitignore` に入れてあり、コミットしません。
 **雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
 1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
-意味が変わらないので雪像の値のままです。T.15.0 (15))。判定表の既定は **`CRITERIA=phase26`** (T.29.10。phase25 の 17 行に、408 の件数・`/log` の error・`/errors` の `local`・3 秒で切った確立・`rejected_requests`・RSS の返していない分・cgroup の CPU・裏の役割の CPU の割合の 8 行を足したもの。phase25 は T.27.0 で phase24 の 17 行のうち 3 行の読み方を直したもの。phase24 は T.24.2:phase23 の 16 行をそのまま持ち越し、heap の行を「起動から 60 秒の基準 (`/status` の `memory.baseline`) からの増え」に、無言の再起動の行を「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に読み替え、T.24.3 で 17 番目に**確立の尾を同じ窓のカーネル RTT + 5 ms で読む行**を足したもの (尾が 5 ms 未満なら「距離」。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を同じ行で対にした差の中央値がプロキシの取り分、p95 が尾)。`memory.baseline` の無い雪像は phase23 の読み方に戻り、`rtt_ms.origin` の無い雪像 (Linux 以外・`--lite`) は確立の尾の行が「判定できず」になります) です。**`CRITERIA=phase23`** (T.23.1。phase22 の 14 行のうち接続のエラーの行を「名前解決に成功した試行あたり」にし、heap の「判定できず」に `/events` の `start` の時刻を添え、無言の再起動の行を足した 16 行)・**`CRITERIA=phase22`** (T.22.1。phase21 の 10 行 (`/events` の行は表示だけ) に、`dns_slow` が合計 1,000 ms 未満の窓で立っていないこと (T.22.2) と keep-warm の既定を戻す条件 2 つ (`stale_retries` の割合、接続のエラーの接続 1 本あたり) と T.22.4 の目安の 4 行を足し、平常時を「300 本と、その期間の 1 時間の本数の中央値の 3 倍の大きい方」未満で切るもの) です。**`CRITERIA=phase21`** (T.21.2。phase20 と同じ並びの 10 行で、平常時のミスを「表示だけ」(日ごとの幅と `cold` / `expired` の内訳)、`conn` 役の CPU/要求 を前か後の `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` を 0 時間の雪像から 3 時間以内の探りなら「満たした」にしたもの)・**`CRITERIA=phase20`** (T.20.1。下の phase18 と同じ並びの 10 行で、`heap_used + mmap` の増えから `cache_memory` を引き、`discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行を「表示だけ」にしたもの)・**`CRITERIA=phase18`**
+意味が変わらないので雪像の値のままです。T.15.0 (15))。判定表の既定は **`CRITERIA=phase26`** (T.29.10。phase25 の 17 行に、408 の件数・`/log` の error・`/errors` の `local`・3 秒で切った確立・`rejected_requests`・RSS の返していない分・cgroup の CPU・裏の役割の CPU の割合・`/log` の 502 の 1 分あたりの行数の 9 行を足したもの。phase25 は T.27.0 で phase24 の 17 行のうち 3 行の読み方を直したもの。phase24 は T.24.2:phase23 の 16 行をそのまま持ち越し、heap の行を「起動から 60 秒の基準 (`/status` の `memory.baseline`) からの増え」に、無言の再起動の行を「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に読み替え、T.24.3 で 17 番目に**確立の尾を同じ窓のカーネル RTT + 5 ms で読む行**を足したもの (尾が 5 ms 未満なら「距離」。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を同じ行で対にした差の中央値がプロキシの取り分、p95 が尾)。`memory.baseline` の無い雪像は phase23 の読み方に戻り、`rtt_ms.origin` の無い雪像 (Linux 以外・`--lite`) は確立の尾の行が「判定できず」になります) です。**`CRITERIA=phase23`** (T.23.1。phase22 の 14 行のうち接続のエラーの行を「名前解決に成功した試行あたり」にし、heap の「判定できず」に `/events` の `start` の時刻を添え、無言の再起動の行を足した 16 行)・**`CRITERIA=phase22`** (T.22.1。phase21 の 10 行 (`/events` の行は表示だけ) に、`dns_slow` が合計 1,000 ms 未満の窓で立っていないこと (T.22.2) と keep-warm の既定を戻す条件 2 つ (`stale_retries` の割合、接続のエラーの接続 1 本あたり) と T.22.4 の目安の 4 行を足し、平常時を「300 本と、その期間の 1 時間の本数の中央値の 3 倍の大きい方」未満で切るもの) です。**`CRITERIA=phase21`** (T.21.2。phase20 と同じ並びの 10 行で、平常時のミスを「表示だけ」(日ごとの幅と `cold` / `expired` の内訳)、`conn` 役の CPU/要求 を前か後の `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` を 0 時間の雪像から 3 時間以内の探りなら「満たした」にしたもの)・**`CRITERIA=phase20`** (T.20.1。下の phase18 と同じ並びの 10 行で、`heap_used + mmap` の増えから `cache_memory` を引き、`discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行を「表示だけ」にしたもの)・**`CRITERIA=phase18`**
 (phase17 の 8 行 = phase15 の 4 行 + T.17.0a の 4 行 に、T.18.2 の 2 行 = `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・`ipv6.request_probes` が 0 を足した 10 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、相手の雪像の隣にあればそれを `--profile-before` で渡します)・`CRITERIA=phase17`・`CRITERIA=phase15` (T.15.4 / T.15.5 / T.15.6 の 6 行)・`CRITERIA=phase14` も今までどおり使えます。
 **判定表の相手は既定では直前の 1 枚**です。再デプロイのあとはそれが 0 時間の雪像になるので、**`BEFORE=<再デプロイ直前の雪像>`** を渡すと判定表だけ相手がそちらになります (隣の同じ時刻の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別の相手は直前の 1 枚のまま)。**`ZERO=<0 時間の雪像>`** は `snapshot-diff.py --zero` に渡り、無ければ `heap_used + mmap` の行 (phase24 は `memory.baseline` の無い雪像のときだけこれで読み、phase23・phase22 と phase21 では 0 回でない `ipv6.request_probes` の行も) は「判定できず」です。phase24・phase23・phase22・phase21・phase20・phase18 のときは保存先を `--daily-snapshots` にも渡すので、`--from-server` で取り寄せた日次の雪像のうち同じ版のものの表 (`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts`) が判定表の下に付きます。`BEFORE` と `ZERO` の相対パスはリポジトリの根からです (`DIR` と同じ)。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。

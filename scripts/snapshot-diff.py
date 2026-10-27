@@ -1311,7 +1311,7 @@ def parser():
                         "下限、引き直しの行を「1 名前あたりが前の 1.5 倍未満」、無言の再起動の行を「前の雪像より"
                         "後の `start` だけ」に読み替えたもの。T.27.0。phase26 = phase25 の 17 行 + 408 の件数・`/log` の error・"
                         "`/errors` の `local`・3 秒で切った確立・`rejected_requests`・RSS の返していない分・cgroup の CPU・"
-                        "裏の役割の CPU の割合の 8 行。T.29.10)")
+                        "裏の役割の CPU の割合・`/log` の 502 の 1 分あたりの行数の 9 行。T.29.10・T.29.15)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst-median-k", type=int, default=None, metavar="K",

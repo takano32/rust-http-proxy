@@ -2363,7 +2363,40 @@ def _p26_role_shares(c, th):
     return (label, limit, shown, verdict, src)
 
 
-# T.29.10: phase26 = phase25 の 17 行 + 18〜25 番目。**phase25 以前の並びは 1 つも動かない**
+# `/log` の行のうち、オリジン側の失敗の WARN (T.29.15 で原因ごとに 1 分 1 行に絞った行) の頭
+ORIGIN_WARN_PREFIXES = ("502 Bad Gateway", "origin response timed out", "failed to read origin response")
+
+
+def _p26_origin_warn_per_minute(c, th):
+    """T.29.15: `/log` のオリジン側の失敗 (502 など) の WARN が 1 分に `origin_warn_per_minute` 行以下 (原因の数)。
+
+    T.29.15 から WARN は原因 (`errors_by_cause` の 8 つ + 名前解決の内訳 2 つ) ごとに 1 分 1 行で、抑えた本数は
+    ` (+N more since the previous line, not logged)` で次の行に添える。0.28.48 は 1,000 行が全部メール宛の 502 だった。
+    """
+    k = th["origin_warn_per_minute"]
+    label = f"`/log` のオリジン側の失敗 (502・時間切れ) の WARN が 1 分に {k} 行以下 (T.29.15。原因ごとに 1 分 1 行)"
+    limit = f"≤ {k} 行/分"
+    lines = part(c["b"], "log").get("lines")
+    if not isinstance(lines, list):
+        return (label, limit, "—", UNKNOWN, "後の雪像に `/log` の部が無い")
+    hit = [x for x in lines if isinstance(x, dict) and x.get("level") == "warn"
+           and str(x.get("msg") or "").startswith(ORIGIN_WARN_PREFIXES)]
+    per_min = {}
+    for x in hit:
+        m = (x.get("at") or 0) // 60
+        per_min[m] = per_min.get(m, 0) + 1
+    worst = max(per_min.items(), key=lambda kv: kv[1]) if per_min else None
+    folded = sum(1 for x in hit if "more since the previous line" in str(x.get("msg") or ""))
+    ats = [x.get("at") for x in lines if isinstance(x, dict) and x.get("at")]
+    win = (f"{stamp(min(ats))}〜{stamp(max(ats))} の {n(len(lines))} 行" if ats else f"{n(len(lines))} 行")
+    shown = (f"{n(len(hit))} 行 / {n(len(lines))} 行"
+             + (f"、1 分の最大 **{worst[1]}** 行 ({stamp(worst[0] * 60)})" if worst else "、1 分の最大 **0** 行")
+             + f"、抑えた本数を添えた行 {n(folded)}")
+    src = f"後の雪像の `/log` ({win}) の warn のうち、頭が " + "・".join(f"`{p}`" for p in ORIGIN_WARN_PREFIXES) + " の行"
+    return (label, limit, shown, MET if not worst or worst[1] <= k else MISSED, src)
+
+
+# T.29.10: phase26 = phase25 の 17 行 + 18〜25 番目 (T.29.15 で 26 番目)。**phase25 以前の並びは 1 つも動かない**
 PHASE26 = dict(PHASE25)
 # `/log` の error の行の上限 (T.28.99 の (3)「0〜数件」。0.29.35 の起動 2 分では 2 行)
 PHASE26["log_error_max"] = 5
@@ -2371,10 +2404,12 @@ PHASE26["log_error_max"] = 5
 PHASE26["rss_gap_mb"] = 10.0
 # T.29.20〜22 で減らす裏の役割 (0.28.48 の tokyo で `profile-sample` 32.5%・`cache-probe` 23.4%)
 PHASE26["idle_roles"] = ("profile-sample", "cache-probe")
+# T.29.15: オリジン側の失敗の WARN を絞る原因の数 (`crates/metrics-core` の `ORIGIN_WARN_REASONS` = 8 + 2)
+PHASE26["origin_warn_per_minute"] = 10
 CRITERIA["phase26"] = PHASE26
 RULES["phase26"] = RULES["phase25"] + (
     _p26_header_timeouts, _p26_log_errors, _p26_local_blocks, _p26_connect_cut, _p26_rejected,
-    _p26_rss_gap, _p26_cgroup_cpu, _p26_role_shares)
+    _p26_rss_gap, _p26_cgroup_cpu, _p26_role_shares, _p26_origin_warn_per_minute)
 
 
 def judge(name, hist, hosts, majors, status_b, overload, th,
@@ -2544,7 +2579,8 @@ def render_criteria(d, grouped):
           "(私設宛ての 403) が 0 件、3 秒で切った確立・成功した確立の最大・`syn_retrans` 1 / 2 の本数 (表示だけ)、"
           "`rejected_requests` の合計と理由別 (表示だけ)、`rss − (heap_used + mmap + cache_memory)` が 10 MB 未満 "
           "(T.29.25)、cgroup の起動からの CPU が前の版より下がる、`profile-sample`・`cache-probe` の CPU の割合が"
-          "前の版より下がる (前か後の `/profile` が 12 時間に満たなければ参考)。他人の `Set-Cookie` (T.29.0) は"
+          "前の版より下がる (前か後の `/profile` が 12 時間に満たなければ参考)、`/log` のオリジン側の失敗 (502・時間切れ) の "
+          "WARN が 1 分に 10 行以下 (T.29.15。原因ごとに 1 分 1 行)。他人の `Set-Cookie` (T.29.0) は"
           "雪像に数が無いので行にしていません。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")

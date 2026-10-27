@@ -276,7 +276,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
         # 前回の雪像に `/profile` も `/recent` も無いので conn 役と接続のエラーの行は「判定できず」で、
         # 参考の行は無い (表示だけは phase21 の 4 行 + `/events` の行 + phase22 の接続のエラーの行)
         self.assertIn("(ほかに表示だけ 6 行。集計に数えない)", tail)
-        self.assertEqual(tail.count("\n| "), 1 + 25)          # 表の頭 + 25 行 (T.29.10 で phase25 の 17 行に 8 行)
+        self.assertEqual(tail.count("\n| "), 1 + 26)          # 表の頭 + 26 行 (T.29.10・T.29.15 で phase25 の 17 行に 9 行)
         # `baseline` も `boot` も無い雪像なので、heap の行は phase23 の読み方に戻る
         self.assertIn("`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満", tail)
         self.assertIn("こちらが原因の無言の再起動", tail)
