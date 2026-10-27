@@ -606,9 +606,13 @@ pub fn handle_http_parsed(
         }
         Framing::Chunked
     } else {
-        req.content_length
-            .map(Framing::Length)
-            .unwrap_or(Framing::None)
+        // `Content-Length: 0` は本文が無いのと同じ (T.29.5)。`Length(0)` のままだと「本文つきの GET」として
+        // キャッシュを素通り (`cache BYPASS`) していた。行そのものは今までどおりオリジンへ転送する
+        // (`raw_headers` から書くので、ここで畳んでも消えない)
+        match req.content_length {
+            None | Some(0) => Framing::None,
+            Some(n) => Framing::Length(n),
+        }
     };
     // `Expect: 100-continue` の本文つきの要求には、本文を読む前に `100 Continue` を 1 回返す
     // (RFC 9110 §10.1.1。T.28.3)。今までは自分でも返さず、オリジンの 100 も中継しないので、

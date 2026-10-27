@@ -2417,6 +2417,8 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
   0.29.35 までは落としていたので、`max-age=600, Age: 500` の表現を下流は残り 600 秒新鮮と読んでいました
 - POST / PUT / DELETE などへの成功応答 (2xx/3xx) を受けたら、その URL (と同じサーバーへの `Location` / `Content-Location`)
   のキャッシュを無効化します (RFC 9111 §4.4)。本文付きの GET と `Range` 要求の応答は保存しません
+  (**`Content-Length: 0` の GET は本文なしと同じに扱い、保存も参照もします**。T.29.5。0.29.35 までは毎回 `BYPASS`
+  でした。オリジンへは `Content-Length: 0` をそのまま転送します)
 
 ### 自動モードの予算と動的マージン
 
