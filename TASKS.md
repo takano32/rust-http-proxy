@@ -32,56 +32,6 @@
 
 **29b 計器と物差し**
 
-- [ ] **T.29.10 408 (ヘッダーの締め切り) を数え、個票で CONNECT の確立の締め切りと分ける。phase26 の判定を作る**
-  - 目的: T.28.0 の 408 は debug ログだけで、`/recent` の理由は確立の締め切りと同じ `error:timeout`、`/status`・`/errors` に数が無い (`crates/server/src/conn/header_read.rs` 314-328)。T.28.99 の (2) は個票の 2.5 時間だけで推測した。tokyo には `Dalvik`・`git`・`Go-http-client` の UA も来ており、先張りの接続が来れば 10 秒で 408 を受ける。
-  - やること: `rejected_requests` (か隣) に `header_timeout` の通算、`/recent` の理由 `error:header_timeout`、`/errors` に 1 行 (status 408)。`snapshot_criteria.py` に **phase26** (phase25 + (a) 408 の件数 (24 時間)、(b) `/log` の error 行、(c) `/errors` の `local` (私設宛ての 403)、(d) 3 秒で切った確立の行数と成功の確立の最大・`syn_retrans` 1 / 2 の本数 (表示だけ)、(e) `rejected_requests.total`)、`collect-deployed.sh` の既定を phase26。
-  - 受け入れ基準: `header_timeout_test` で 408 の後に `/status` が +1・`/recent` の理由が別。phase26 の行の単体と、tokyo の雪像で表が出る試験。
-
-- [ ] **T.29.11 異常検知の `connect_p95` を「確立 − RTT」の窓で読む (メール宛の名前解決の遅れで `dns_slow` と二重に鳴る)**
-  - 目的: 0.28.48 の 24 時間で `connect_p95` が 6 件 (0.27.8 は 0)。再現できた窓は、成功 36 本のうち上位 3 本が全部 `:993` (名前解決 296 / 532 ms と遠い RTT)、`excess` の p95 は −0.1 ms で、同じ分に `dns_slow` も立っていた。遠い宛先の割合が動くだけで鳴る。
-  - やること: 確立の p95 を T.28.45 の `excess_buckets` で読む (閾 50 ms はそのまま)。名前解決の遅れは `dns_slow` に任せる。
-  - 受け入れ基準: この 24 時間の 6 窓を再生して 0 件、人工的に excess 100 ms を 20 本で立つ単体。README の異常検知の表。
-
-- [ ] **T.29.12 `/slo` の確立の窓から名前解決を外す (確立の外れの大半がリゾルバの遅さ)**
-  - 目的: `excess` (= 名前解決 + 確立 − RTT) が 50 ms を越えた成功 36 本 (00〜02Z) の excess の合計 19,789 ms のうち名前解決が 15,159 ms (77%)、34 本がメール宛。
-  - やること: 5 秒の標本に `connect − RTT` (名前解決を除く) の窓を持ち、`connect_p50/p95` はそちらで判定。名前解決は `dns_slow` か別の閾に分ける。`basis` に書く。
-  - 受け入れ基準: 10-26 の再生で確立の 2 つの外れが半分未満。README の `/slo`。
-
-- [ ] **T.29.13 「平常時」の切り方を tokyo でも空にならない形にする**
-  - 目的: 要約の §2「平常時 0 / 23 標本」、`/history?summary=1&normal_hours_only=1` が `samples 0, burst_samples 25`。サーバー側の `BURST_PER_HOUR = 300` 固定 (`crates/metrics-window/src/history/summary.rs` 8) に対し tokyo は毎時 475〜1,760 本で全部「バースト」。phase22 の「300 と中央値 × 3 の大きい方」は判定の部だけ。
-  - やること: サーバーの `normal_hours_only` と要約の表を同じ規則 (中央値 × 3) にする、または表を `excess` の p50 / p95 に置き換える。
-  - 受け入れ基準: tokyo の summary が 23 時間中 20 標本以上を返す、`test_snapshot_diff.py` に毎時 500 本の例。
-
-- [ ] **T.29.14 プロファイラに x86_64 の `poll` / `epoll_wait` の名前を足す**
-  - 目的: tokyo の `/profile` の `unknown_syscalls` が `sys_7` 129,929・`sys_232` 86,693 標本/24 時間、idle-watch が `other` 100%、conn が `other` 16%。表 (`crates/metrics-profile/src/profile.rs` 128-160) に `ppoll` / `epoll_pwait` はあるが `poll` / `epoll_wait` が無い。
-  - やること: x86_64 の 7 / 232 を足す (aarch64 には無い)。
-  - 受け入れ基準: 単体 1 本、tokyo の `unknown_syscalls` が空。
-
-- [ ] **T.29.15 オリジン側の 502 / timeout の WARN も理由ごとに 1 分 1 行にする (`/log` がメール宛の 502 で埋まる)**
-  - 目的: tokyo の `/log` 1,000 行 (19.95 時間) が 100% `502 Bad Gateway: connect <mail>:993/995 failed: lookup`、24 時間で 2,228 行。手元でも繋がらない宛先 30 本 → 30 行。T.28.9 は 400 系と 403 だけ。`mod.rs` 901・1028・1034・1078・1161・1344。
-  - やること: T.28.9 の `log::Throttle` で (理由) ごとに 1 分 1 行 + 件数。件数は `/errors` と `/hosts` が持つ。
-  - 受け入れ基準: 壊れた / 繋がらないオリジンへの 100 本で WARN が理由ごとに 1〜2 行、`/errors` の件数は同じ。
-
-- [ ] **T.29.16 日次の雪像が 4 MiB の上限に近い (88%) — 道具で警告し、余白を作る**
-  - 目的: 0.28.48 が書いた日次 `/snapshots/2026-10-26` は 3,692,328 B (上限 4,194,304)。内訳 `history` 1,550,971 (T.28.45 の 17 項目で増えた)・`recent` 896,914 (2,000 行、T.28.46 は効いた)。越えると `fit_full_recent` が `recent` を 256 KiB (約 580 行) に戻し、T.28.18 の問題に黙って戻る。
-  - やること: (a) `collect-deployed.sh --from-server` と `snapshot-summary.py` が日次の大きさ・部ごとの `truncated` を出し 90% で警告、(b) 日次の `history` から 5 秒の解像度 (1 時間ぶん) を外す (日次は 1 日の写し) か、日次だけ上限を 6 MiB に。
-  - 受け入れ基準: (a) 4 MiB を越えた作り物で警告。(b) 日次 1 枚が上限の 70% 以下で `recent` 2,000 行。
-
-- [ ] **T.29.17 `dns-replay.py` の「今の規則」を keep-warm 停止後の模型にする**
-  - 目的: 新しい雪像に当てると `current` が引き直し 2,311 回/時 (warm 4,882) を出し、道具自身が「模型が実機と合わない」と判定する (実機は `warm_secs` 0、378 回/時)。
-  - やること: `current` を `PROXY_DNS_WARM_SECS=0`・serve-stale 21,600 の規則にし、実機との一致 (±30%) を試験で縛る。
-  - 受け入れ基準: 10-27 の雪像で一致がミス・引き直しとも ±30%。
-
-- [ ] **T.29.18 接続元の RTT で「誰が待つか」を分けて見せる (NAT で 1 本に見える利用者を 2 集団に)**
-  - 目的: 上の見立て。近い集団 429 行は first_relay p50 20 ms、遠い集団 1,571 行は 4,108 ms で、ダッシュボードの「利用者が待つ時間」はこの 2 つを混ぜている (0.27.8 の雪像でも同じ 2 山)。
-  - やること: `/recent?rtt_client=lt100|ge100` の絞り、`snapshot-diff.py` に接続元の RTT 別の表 (確立・first_relay・理由・宛先の種類)、ダッシュボードの待ちの KPI を近い集団で。
-  - 受け入れ基準: tokyo の雪像で 2 行の表が出る。匿名化で RTT が残る。README。
-
-- [ ] **T.29.19 小物の表示: キャッシュの命中率に母数、`/metrics` に版とビルド**
-  - 目的: 要約の「命中率 0.5」は 24 時間で hits 43 / misses 37 の母数 80 (転送の 5.2%)。`/metrics` に `sorahost_boot_id_info` はあるが版・ビルドの系列が無い。
-  - やること: 要約とダッシュボードに `(n=80)` を添え n < 100/日なら率を「—」。`sorahost_build_info{version,build} 1` を 1 行。
-  - 受け入れ基準: 要約の試験、`/metrics` の行と README。
-
 **29c 性能 (暇なときの裏の費用。tokyo の CPU の 7 割)**
 
 tokyo の `/profile?res=60` 4.05 時間 (要求 0.25 本/秒、0.0015 コア): `profile-sample` 32.5%・`cache-probe` 23.4%・`conn` (本業) 11.6% (692 us/要求)・`history` 7.6%・`idle-watch` 5.9%。起動からの cgroup は user 38.5 s / system 114.8 s (`/proc` 読みの性質)。手元の暇な既定 634 us/s (profile 254・probe 242・history 90・idle 39)、`--lite` 45。`strace -f -c` 66 秒で約 305 回/秒 (`fs::read_to_string` が `statx` + `lseek` + 倍々の `read`。`/proc/self/status` 1 本で 11 回)。forward の hot path は T.28.12〜15 で callgrind 27,379 → 19,069 Ir/op (−30%)、残りは kernel が床 (この機械の forward 36.8 us のうち kernel 29.7)。
@@ -124,11 +74,6 @@ tokyo の `/profile?res=60` 4.05 時間 (要求 0.25 本/秒、0.0015 コア): `
   - 受け入れ基準: check-docs 差分 0、README 2,500 行以下 (目安)。
 
 **29e 利用者が決めたもの (2026-10-27)**
-
-- [ ] **T.29.33 `/slo` の `error_rate` と `dns_miss_per_connect` を 1 時間の合計で判定する (利用者の決定: 1 時間の合計)**
-  - 目的: 判定された 5 秒の 96% は確立 1〜4 本で、「新しい名前が 1 つ」「エラーが 1 件」で外れる (0.28.48 の 27 時間で外れ 887 中 `dns_miss` 461 = 52%、外れた 32 標本は全部分母 1〜6 本)。比の閾としては働いていない (60 秒で判定し直しても `error_rate` 0.005 = 200 本に 1 件は満たせない)。
-  - やること: この 2 つの比は 5 秒の標本ごとではなく、直近 1 時間 (と 1 時間ごとの区切り) の分子と分母の合計で判定する。速さ (`connect_p50_ms` / `connect_p95_ms`) は今の 5 秒のまま (T.29.12 の DNS 抜きの窓と合わせる)。`/slo` の JSON・ダッシュボード・README の読み方に「1 時間の合計」と分母を出す。満たした / 外れた時間の数は日次にも残す。
-  - 受け入れ基準: 1 時間に確立 1,000 本・エラー 4 本なら満たす、6 本なら外れる結合テスト (5 秒の標本の分母が 1 本でも結果が変わらない)。速さの判定は前と同じ結果。
 
 - [ ] **T.29.34 転送中の最小の速さを決め、下回り続けたら切る (slow-read / slow-POST。利用者の決定: 最小の速さ)**
   - 目的: 手元で `PROXY_TIMEOUT_SECS=3`・`PROXY_MAX_CONNS=8` のプロキシに 1 B / 2 s でしか読まないクライアント 8 本 → 20 秒たっても閉じず接続枠が全部ふさがり、正常な要求は 503。今の締め切りは「無通信」で 1 バイトごとに待ち直す (T.28.0 がヘッダーで塞いだのと同じ穴)。トンネルの書き側は無期限 (`tunnel.rs` 585-595、反対向きの読みの 300 秒で救われる)。tokyo は接続元が NAT の 1 つなので 1 人で全部の枠を握れる。
