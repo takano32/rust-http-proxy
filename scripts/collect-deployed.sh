@@ -35,6 +35,13 @@
 #     残す `<UTC 時刻>-shutdown` / `-start`。一覧の `moments`) も手元に無いものだけ取り寄せて
 #     `<UTC 時刻>-shutdown-snapshot.json` / `-start-snapshot.json` に置き、**最後の停止とその後の
 #     最初の起動**を `BEFORE=… ZERO=…` の形で 1 行出す (締めの「前」と「0 時間」にそのまま渡せる)。
+#     T.29.26 から**版で選ぶ**: 前 = いまの版と系列 (`0.<Phase>`) の違う版の最後の停止 (同じ系列の途中の
+#     デプロイは飛ばす)、0 時間 = その後のいまの版の最初の起動。候補は全部、選んだ / 外した理由つきで並べる。
+#
+#   scripts/collect-deployed.sh --closeout HOST:PORT [DIR]
+#     締めを 1 コマンドで (T.29.26): `--from-server` で取り寄せ → 上の決まりで「前」と「0 時間」を選ぶ →
+#     それを `BEFORE` / `ZERO` にして普段の 1 回 (本番) → 要約の頭に**前提の 1 行** (版・ビルド・起動時刻・
+#     `boot.id`・前の版の停止時刻) と取り寄せ・選択の箇条。`BEFORE` / `ZERO` を渡せばそちらを使う。
 #
 #   scripts/collect-deployed.sh --full HOST:PORT [DIR]
 #     雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の**続き**を `offset=` で
@@ -100,6 +107,7 @@ SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 ORIG_ARGS=("$@")
 cd "$(dirname "$0")/.." || exit 1
 FROM_SERVER=0
+CLOSEOUT=0
 # 切れた部の追い方は 3 段 (T.22.5): `FOLLOW=1` (既定) は `recent`・`hosts`・`dns`・`profile` を追って雪像に繋ぐ、
 # `FULL=1` (`--full`) はそのうえで残りの部 (`profile` ほか) も別ファイルに落とす、
 # `FULL=0` (`--no-follow`) は T.22.5 より前の既定 (どれも追わない) に戻す
@@ -114,6 +122,10 @@ while :; do
   case "${1:-}" in
     --from-server)
       FROM_SERVER=1
+      shift
+      ;;
+    --closeout)
+      CLOSEOUT=1
       shift
       ;;
     --full)
@@ -132,6 +144,7 @@ if [ -z "$PROXY" ]; then
   # **2 つの旗は排他** (`--from-server` は保存済みの雪像を取り寄せるだけで、続きを引く相手が居ない)
   echo "usage: $0 [--full] [--no-follow] HOST:PORT [DIR]   (例: $0 tokyo.sorahost.net:60357)" >&2
   echo "       $0 --from-server HOST:PORT [DIR]   (回し忘れた日を取り寄せる。--full は効きません)" >&2
+  echo "       $0 --closeout HOST:PORT [DIR]      (締め: 取り寄せ → 前と 0 時間を版で選ぶ → 本番 → 要約の頭に前提)" >&2
   exit 2
 fi
 # `http://host:port` と書かれても `host:port` として扱う (URL でも通るように)
@@ -185,6 +198,49 @@ now_ms() {
 # --- 0. 保存済みの日次 snapshot を取り寄せる (--from-server。T.14.34) ----------
 # プロキシが `$HOME/.rust-http-proxy/snapshots/` に 1 日 1 ファイル書いているので、
 # 手元に無い日付だけを取って `$DIR` に置く (`/snapshots` の一覧 → `/snapshots/<date>`)。
+# --- 締めを 1 コマンドで (--closeout。T.29.26) ----------------------------------
+# 取り寄せ (`--from-server`) → 「前」と「0 時間」を版で選ぶ (下の 0. の終わり) → 本番 (`BEFORE` / `ZERO` を
+# 付けた普段の 1 回) → 要約の頭に**前提の 1 行** (版・ビルド・起動時刻・`boot.id`・前の版の停止時刻) を出す。
+# 前は 2 枚を選び、前提を手で打っていた (T.28.99)。`BEFORE` / `ZERO` を自分で渡したときはそちらを使う。
+# いまの版は `/status` の `version` (読めなければ手元の最後の起動の版)
+if [ "$CLOSEOUT" = 1 ]; then
+  if [ "$FROM_SERVER" = 1 ]; then
+    echo "--closeout は --from-server を含みます (2 つ並べない)" >&2
+    exit 2
+  fi
+  CO=$(mktemp -d) || exit 1
+  # shellcheck disable=SC2064  # いまの $CO で張る
+  trap "rm -rf '$CO'" EXIT
+  CUR=$(curl -s --max-time "$MAX_TIME" "http://$PROXY/status" | python3 -c '
+import json, sys
+try:
+    v = json.load(sys.stdin).get("version")
+except (ValueError, AttributeError):
+    v = None
+print(v if isinstance(v, str) else "")
+' 2>/dev/null) || CUR=
+  CURRENT_VERSION=$CUR CLOSEOUT_PICK="$CO/pick" "$SELF" --from-server "$PROXY" "$DIR" >"$CO/fetch.md"
+  fetch_rc=$?
+  touch "$CO/pick"
+  pick_before=$(sed -n 's/^BEFORE=//p' "$CO/pick")
+  pick_zero=$(sed -n 's/^ZERO=//p' "$CO/pick")
+  premise=$(sed -n 's/^PREMISE=//p' "$CO/pick")
+  {
+    printf '**締めの前提** (`--closeout`): %s\n\n' "${premise:-組めなかった (起動と停止の 1 枚が手元に無い)}"
+    # 取り寄せの要約の見出し (1 行目と空行) は落とし、箇条だけを普段の要約の頭の箇条に並べる
+    tail -n +3 "$CO/fetch.md"
+    [ "$fetch_rc" = 0 ] || printf -- '- **取り寄せが exit %s で終わった** (上の「取れなかった」を見る)\n' "$fetch_rc"
+    [ -n "$JUDGE_BEFORE" ] && printf -- '- `BEFORE` は渡されたもの (`%s`) を使う (選んだのは `%s`)\n' "$JUDGE_BEFORE" "${pick_before:-無し}"
+    [ -n "$ZERO" ] && printf -- '- `ZERO` は渡されたもの (`%s`) を使う (選んだのは `%s`)\n' "$ZERO" "${pick_zero:-無し}"
+  } >"$CO/head.md"
+  args=()
+  [ "$FULL" = 1 ] && args+=(--full)
+  [ "$FOLLOW" = 0 ] && args+=(--no-follow)
+  BEFORE=${JUDGE_BEFORE:-$pick_before} ZERO=${ZERO:-$pick_zero} CLOSEOUT_HEAD="$CO/head.md" \
+    "$SELF" "${args[@]}" "$PROXY" "$DIR"
+  exit $?
+fi
+
 if [ "$FROM_SERVER" = 1 ]; then
   # `--full` はこの枝では効かない (取り寄せるのは保存済みの雪像そのもので、
   # `offset=` で続きを引く相手が居ない)。黙って無視しないで 1 行断る
@@ -240,31 +296,140 @@ for m in d.get("moments") or []:
 $DAYS
 EOF
   printf -- '- 取り寄せ %d 件、手元にあった %d 件、失敗 %d 件\n' "$got" "$skipped" "$failed"
-  # 締めの「前」と「0 時間」(T.28.20): 手元にある最後の停止の 1 枚と、その後の最初の起動の 1 枚。
-  # 名前の先頭 18 文字 (`YYYY-MM-DDTHHMMSSZ`) は時刻なので、文字列の並びがそのまま時刻の並び
-  last_stop=
-  for f in "$DIR"/*T??????Z-shutdown-snapshot.json; do
-    [ -f "$f" ] && last_stop=$f
-  done
-  if [ -n "$last_stop" ]; then
-    stop_at=$(basename "$last_stop")
-    stop_at=${stop_at:0:18}
-    zero=
-    for f in "$DIR"/*T??????Z-start-snapshot.json; do
-      [ -f "$f" ] || continue
-      start_at=$(basename "$f")
-      start_at=${start_at:0:18}
-      if [[ "$start_at" > "$stop_at" ]]; then
-        zero=$f
-        break
-      fi
-    done
-    if [ -n "$zero" ]; then
-      printf -- '- 締めの判定に渡せる 2 枚 (最後の停止と、その後の最初の起動): `BEFORE=%s ZERO=%s`\n' "$last_stop" "$zero"
-    else
-      printf -- '- 締めの判定に渡せる「前」(最後の停止。その後の起動の 1 枚はまだ無い): `BEFORE=%s`\n' "$last_stop"
-    fi
-  fi
+  # 締めの「前」と「0 時間」を**版で**選ぶ (T.28.20 は時刻だけで「最後の停止」と「その後の最初の起動」を
+  # 選んでいて、T.28.99 では 0.28.39 を 53 分挟んだので「前」が 0.28.39 の停止になり、手で差し替えた。T.29.26)。
+  # 各 1 枚の `status.version` (と `build`・`boot.id`) を読み、
+  #   いまの版 = `CURRENT_VERSION` (`--closeout` が `/status` から渡す) か、無ければ手元の最後の起動の版
+  #   前      = **いまの版と系列 (`0.<Phase>`) の違う版**の最後の停止 (同じ系列の途中のデプロイは飛ばす。
+  #             系列の違う停止が無ければ、版の違う最後の停止)
+  #   0 時間  = 前より後の、**いまの版** (`+<コミット>` は見ない) の最初の起動
+  # 候補は全部、選んだ / 外した理由つきで並べる。どの 1 枚にも版が無ければ (T.28.20 より前の形) 今までどおり
+  # 時刻だけで選ぶ。名前の先頭 18 文字 (`YYYY-MM-DDTHHMMSSZ`) は時刻なので、文字列の並びがそのまま時刻の並び。
+  # `CLOSEOUT_PICK` があれば、選んだ 2 枚を `BEFORE=…` / `ZERO=…` の 2 行で、前提の 1 行を `PREMISE=…` で書く
+  CURRENT_VERSION=${CURRENT_VERSION:-} CLOSEOUT_PICK=${CLOSEOUT_PICK:-} python3 - "$DIR" <<'PICK'
+import json, os, re, sys, time
+
+d = sys.argv[1]
+cur = os.environ.get("CURRENT_VERSION") or None
+pick_out = os.environ.get("CLOSEOUT_PICK") or None
+pat = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{6}Z)-(start|shutdown)-snapshot\.json$")
+
+
+def get(doc, *keys):
+    for k in keys:
+        doc = doc.get(k) if isinstance(doc, dict) else None
+    return doc
+
+
+ms = []
+for name in sorted(os.listdir(d)):
+    m = pat.match(name)
+    if not m:
+        continue
+    path = os.path.join(d, name)
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        doc = {}
+    ver = get(doc, "status", "version") or get(doc, "version")
+    ms.append({"path": path, "at": m.group(1), "kind": m.group(2),
+               "ver": ver if isinstance(ver, str) and ver else None,
+               "build": get(doc, "status", "build"), "boot": get(doc, "status", "boot", "id"),
+               "pid": get(doc, "status", "boot", "pid"), "taken": get(doc, "taken_at"),
+               "up": get(doc, "status", "uptime_secs")})
+
+
+def base(v):
+    return v.split("+", 1)[0].split(" ", 1)[0] if v else None
+
+
+def series(v):
+    b = base(v)
+    return ".".join(b.split(".")[:2]) if b else None
+
+
+def when(m):
+    return "%s-%s-%sT%s:%s:%sZ" % (m["at"][:4], m["at"][5:7], m["at"][8:10], m["at"][11:13], m["at"][13:15], m["at"][15:17])
+
+
+def started(m):
+    if isinstance(m["taken"], (int, float)) and isinstance(m["up"], (int, float)):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(m["taken"] - m["up"]))
+    return when(m) + " の 60 秒ほど前"
+
+
+why = {}
+before = zero = None
+if not any(m["ver"] for m in ms):
+    # 版の読めない古い形: 最後の停止と、その後の最初の起動 (T.28.20 のまま)
+    stops = [m for m in ms if m["kind"] == "shutdown"]
+    before = stops[-1] if stops else None
+    zero = next((m for m in ms if m["kind"] == "start" and (before is None or m["at"] > before["at"])), None) \
+        if before else None
+    how = "時刻だけで選んだ (版の読める 1 枚が無い)"
+else:
+    if cur is None:
+        cur = next((m["ver"] for m in reversed(ms) if m["kind"] == "start" and m["ver"]), None)
+        src = "手元の最後の起動の版"
+    else:
+        src = "`/status`"
+    how = "いまの版 `%s` (%s) で選んだ" % (cur, src)
+    stops = [m for m in ms if m["kind"] == "shutdown" and m["ver"]]
+    other = [m for m in stops if series(m["ver"]) != series(cur)]
+    if other:
+        before = other[-1]
+    else:
+        diff = [m for m in stops if base(m["ver"]) != base(cur)]
+        before = diff[-1] if diff else None
+        if before:
+            how += "。系列 %s の違う停止が無いので、版の違う最後の停止" % series(cur)
+    zero = next((m for m in ms if m["kind"] == "start" and base(m["ver"]) == base(cur)
+                 and (before is None or m["at"] > before["at"])), None)
+    for m in ms:
+        if m is before or m is zero:
+            continue
+        if not m["ver"]:
+            why[id(m)] = "版が読めない"
+        elif m["kind"] == "shutdown":
+            if base(m["ver"]) == base(cur):
+                why[id(m)] = "いまの版の停止"
+            elif series(m["ver"]) == series(cur):
+                why[id(m)] = "いまと同じ系列 %s の途中の版" % series(cur)
+            else:
+                why[id(m)] = "前に選んだ停止より古い"
+        elif base(m["ver"]) != base(cur):
+            why[id(m)] = "いまの版でない起動"
+        elif before is not None and m["at"] < before["at"]:
+            why[id(m)] = "前に選んだ停止より古い"
+        else:
+            why[id(m)] = "いまの版の 2 回目以降の起動"
+
+if ms and any(m["ver"] for m in ms):
+    print("- 締めの候補 (起動と停止の 1 枚、古い順。%s):" % how)
+    for m in ms:
+        tag = "**前 (BEFORE)**" if m is before else "**0 時間 (ZERO)**" if m is zero else "外した: " + why.get(id(m), "")
+        print("  - `%s` %s `%s`%s → %s" % (os.path.basename(m["path"]), m["kind"], m["ver"] or "?",
+              " boot.id `%s`" % m["boot"] if m["boot"] else "", tag))
+if before and zero:
+    print("- 締めの判定に渡せる 2 枚 (前と 0 時間): `BEFORE=%s ZERO=%s`" % (before["path"], zero["path"]))
+elif before:
+    print("- 締めの判定に渡せる「前」(その後のいまの版の起動の 1 枚はまだ無い): `BEFORE=%s`" % before["path"])
+elif zero:
+    print("- 締めの判定に渡せる「0 時間」(前の版の停止の 1 枚が無い): `ZERO=%s`" % zero["path"])
+if pick_out:
+    premise = None
+    if zero:
+        premise = "版 `%s`%s・起動 %s%s%s" % (
+            zero["ver"] or "?", " (`%s`)" % zero["build"] if zero["build"] else "", started(zero),
+            " (`boot.id` `%s`" % zero["boot"] if zero["boot"] else "",
+            (", pid %s)" % zero["pid"] if zero["pid"] is not None else ")") if zero["boot"] else "")
+    if before:
+        premise = (premise + "・" if premise else "") + "前の版 `%s` の停止 %s" % (before["ver"] or "?", when(before))
+    with open(pick_out, "w", encoding="utf-8") as f:
+        f.write("BEFORE=%s\nZERO=%s\nPREMISE=%s\n" % (before["path"] if before else "",
+                                                     zero["path"] if zero else "", premise or ""))
+PICK
   [ "$failed" = 0 ] || exit 1
   exit 0
 fi
@@ -622,6 +787,8 @@ fi
 PREV=$(ls -1 "$DIR"/*-snapshot.json 2>/dev/null | grep -vF "$OUT" | tail -1)
 
 printf '# rust-http-proxy — %s (%s)\n\n' "$PROXY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# `--closeout` (T.29.26) から呼ばれたときは、前提の 1 行と取り寄せ・選択の箇条を頭に置く
+[ -n "${CLOSEOUT_HEAD:-}" ] && [ -f "$CLOSEOUT_HEAD" ] && cat "$CLOSEOUT_HEAD"
 printf -- '- 雪像: `%s` (%s B)\n' "$OUT" "$(wc -c <"$OUT" | tr -d ' ')"
 # shellcheck disable=SC2086  # 先頭の空白を落とすため、わざと語に割る
 [ -n "$EXTRA_GOT" ] && printf -- '- 雪像に入らない口: `%s-{%s}.json`\n' "$DIR/$STAMP" "$(echo $EXTRA_GOT | tr ' ' ',')"

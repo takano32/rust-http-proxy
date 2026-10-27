@@ -161,6 +161,7 @@ HEAD の応答も GET と同じ TE の行を返します (T.28.36。最後が `c
 scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo > today.md   # 1 日 1 回 (保存先はホストごとに分ける)
 PROBE=0 scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server tokyo.sorahost.net:60357 status/tokyo  # 回し忘れた日を取り寄せる
+scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo     # 締め: 取り寄せ → 前と 0 時間を版で選ぶ → 本番 → 前提 (T.29.26)
 scripts/collect-deployed.sh --full tokyo.sorahost.net:60357 status/tokyo       # 切れた部の続きも `offset=` で追う
 scripts/collect-deployed.sh --no-follow tokyo.sorahost.net:60357 status/tokyo  # 切れた `recent`・`hosts`・`dns`・`profile` を追わない (T.22.5 より前の既定)
 VIA=$HTTPS_PROXY scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo  # CONNECT しか通さないプロキシの内側 (クラウドのセッション) から。探りは飛ばす (T.27.2)
@@ -3404,6 +3405,8 @@ release のバイナリは ubuntu-22.04 (glibc 2.35) でビルドしているの
 **止める直前に `scripts/collect-deployed.sh` で雪像を 1 枚**撮っておきます (次の版の判定の「前」になります。T.17.19)。
 撮り忘れても、**プロキシ自身が停止シグナルで `<UTC 時刻>-shutdown.json` を 1 枚残します** (T.28.20。`recent` は全部入り)。
 再デプロイのあとに `scripts/collect-deployed.sh --from-server <host>:<port>` で取り寄せると、`BEFORE=…` の 1 行が出ます。
+**「前」は時刻ではなく版で選びます** (T.29.26): いまの版と**系列 (`0.<Phase>`) の違う版の最後の停止**です。同じ系列の
+途中のデプロイ (T.28.99 で 53 分挟んだ 0.28.39 など) の停止は飛ばし、候補を全部、外した理由つきで並べます。
 
 ```bash
 # 起動せずに「この環境で何が読めるか」と「効いている設定」を印字して終わる
@@ -3424,7 +3427,8 @@ CPU の絞りと PSI (`cgroup_cpu` / `cgroup_pressure`)・IPv6 (`ipv6_route`)・
 
 起動から **60 秒たってから** `scripts/collect-deployed.sh` で 1 枚 (0 時間の雪像) 撮り、`/status` の `version` と起動時刻 (UTC)、`boot.id` を `TASKS.md` のそのタスクの `Tn.99` の前提に書きます (T.17.19)。**すぐ撮ると `memory.baseline` が `null` のまま**なので、heap の判定が「判定できず」になります (T.24.4。baseline は起動 60 秒で 1 回だけ書かれる)。
 同じ 60 秒に**プロキシ自身も `<UTC 時刻>-start.json` を 1 枚残す**ので (T.28.20)、撮り忘れたら `--from-server` で取り寄せて `ZERO` に渡せます
-(`BEFORE=… ZERO=…` の 1 行が出ます)。
+(`BEFORE=… ZERO=…` の 1 行が出ます。0 時間は**いまの版の最初の起動**の 1 枚。T.29.26)。
+前提の 1 行 (版・ビルド・起動時刻・`boot.id`・前の版の停止時刻) は、下の 4 の `--closeout` が要約の頭に組んで出します。
 
 ```bash
 # 起動ログの 2 行 (待ち受けと統計ファイル)
@@ -3490,6 +3494,8 @@ job を落とします (GitHub が失敗を知らせます。T.28.26)。読む�
 scripts/collect-deployed.sh <host>:<port>
 # 判定表の相手を再デプロイ直前の雪像にし、0 時間の雪像 (直後の 1 枚) も渡す (上の 1 と 2 で撮った 2 枚)
 BEFORE=status/<前>-snapshot.json ZERO=status/<0 時間>-snapshot.json scripts/collect-deployed.sh <host>:<port>
+# 締めを 1 コマンドで (T.29.26): 取り寄せ → 前と 0 時間を版で選ぶ → 上の 1 回 → 要約の頭に前提の 1 行
+scripts/collect-deployed.sh --closeout <host>:<port> status/tokyo
 curl http://127.0.0.1:8080/snapshots    # プロキシ自身が 1 日 1 回残した雪像 (30 日ぶん)
 curl "http://127.0.0.1:8080/daily?n=365"  # 1 日 1 行の要約 (永久)
 curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たした時間の割合
@@ -3505,6 +3511,10 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 (phase17 の 8 行 = phase15 の 4 行 + T.17.0a の 4 行 に、T.18.2 の 2 行 = `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・`ipv6.request_probes` が 0 を足した 10 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、相手の雪像の隣にあればそれを `--profile-before` で渡します)・`CRITERIA=phase17`・`CRITERIA=phase15` (T.15.4 / T.15.5 / T.15.6 の 6 行)・`CRITERIA=phase14` も今までどおり使えます。
 **判定表の相手は既定では直前の 1 枚**です。再デプロイのあとはそれが 0 時間の雪像になるので、**`BEFORE=<再デプロイ直前の雪像>`** を渡すと判定表だけ相手がそちらになります (隣の同じ時刻の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別の相手は直前の 1 枚のまま)。**`ZERO=<0 時間の雪像>`** は `snapshot-diff.py --zero` に渡り、無ければ `heap_used + mmap` の行 (phase24 は `memory.baseline` の無い雪像のときだけこれで読み、phase23・phase22 と phase21 では 0 回でない `ipv6.request_probes` の行も) は「判定できず」です。phase24・phase23・phase22・phase21・phase20・phase18 のときは保存先を `--daily-snapshots` にも渡すので、`--from-server` で取り寄せた日次の雪像のうち同じ版のものの表 (`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts`) が判定表の下に付きます。`BEFORE` と `ZERO` の相対パスはリポジトリの根からです (`DIR` と同じ)。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。
+**`--closeout` は締めの手作業を 1 回にまとめます** (T.29.26): `--from-server` で取り寄せ、いまの版 (`/status` の `version`) で
+「前」(系列の違う版の最後の停止) と「0 時間」(いまの版の最初の起動) を選んで `BEFORE` / `ZERO` に渡し、普段の 1 回を回して、
+要約の頭に**前提の 1 行** (版・ビルド・起動時刻・`boot.id`・前の版の停止時刻) と候補の一覧を置きます。`BEFORE` / `ZERO` を
+自分で渡せばそちらを使います (選んだ方も並べて出します)。24 時間後の予約は今までどおり別です。
 **`--full` を付けると、雪像で `truncated` が立った部 (`recent` / `hosts` / `profile`) の続きを `offset=` で
 `next_offset` が `null` になるまで追い**、`<UTC 時刻>-page<何枚目>-<部>.json` に落とします (T.15.0 (11)。
 1 枚には `/recent` は 2,000 件中 615 件、`/hosts` は 1,000 件中 639 件、`/profile?res=5` は 720 標本中 456 しか

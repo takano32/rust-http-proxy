@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """`scripts/collect-deployed.sh` が `/profile?res=60` を `offset=` で追って 1 つに繋ぐ試験 (T17.0b) と、
 雪像の隣に匿名化した写しを置く試験 (T.17.16)、判定表の相手を `BEFORE` / `ZERO` で渡す試験 (T.18.2)、
-雪像の切れた `recent`・`hosts` を既定で追って雪像に繋ぐ試験 (T.22.5)。
+雪像の切れた `recent`・`hosts` を既定で追って雪像に繋ぐ試験 (T.22.5)、`--from-server` が締めの「前」と
+「0 時間」を版で選び、`--closeout` が 1 回で取り寄せ・本番・前提まで出す試験 (T.29.26)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
@@ -17,12 +18,14 @@
 `1` で今までどおり 1 本ずつ) を同時に回し、結果は元の順に流し直す (`-v` の並びも同じ)。
 """
 
+import calendar
 import json
 import os
 import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -826,19 +829,53 @@ class CollectViaTest(unittest.TestCase):
 
 class CollectFromServerTest(unittest.TestCase):
     """`--from-server` が日次の雪像に加えて起動と停止の 1 枚 (`moments`) も取り寄せ、
-    `BEFORE` / `ZERO` に渡せる名前で置く試験 (T.28.20)。偽のサーバーは `/snapshots` の形だけを写す。"""
+    `BEFORE` / `ZERO` に渡せる名前で置く試験 (T.28.20)。偽のサーバーは `/snapshots` の形だけを写す。
+    T.29.26 から「前」と「0 時間」を各 1 枚の版で選ぶ (`T2899` の 4 枚)。`--closeout` は `live` を付けた
+    偽のサーバー (`/status` と `/snapshot` も返す) で回す。"""
 
     DAY = "2026-10-24"
     SHUTDOWN = "2026-10-25T203134Z-shutdown"
     START = "2026-10-25T203301Z-start"
     OLD_START = "2026-10-20T010203Z-start"
 
-    def serve(self, listing):
+    # T.28.99 と同じ 4 枚 (+ 古い起動 1 枚): 0.27.8 の停止 → 0.28.39 の起動 → 53 分後に停止 → 0.28.48 の起動。
+    # 時刻だけで選ぶと「前」が 0.28.39 の停止になる (T.28.99 で手で差し替えた)
+    T2899 = [
+        ("2026-10-20T010203Z-start", "0.27.8+a01dd0c", "B0", 101),
+        ("2026-10-25T203134Z-shutdown", "0.27.8+a01dd0c", "B0", 101),
+        ("2026-10-25T203301Z-start", "0.28.39+a84923a", "B0", 102),
+        ("2026-10-25T212612Z-shutdown", "0.28.39+a84923a", "B0", 102),
+        ("2026-10-25T212745Z-start", "0.28.48+c0ffee1", "B1", 7),
+    ]
+
+    @staticmethod
+    def moment_body(name, version, boot, pid):
+        # 起動の 1 枚は起動から 60 秒、停止の 1 枚は停止の直前に撮る (T.28.20)。taken_at は名前の時刻
+        t = calendar.timegm(time.strptime(name[:18], "%Y-%m-%dT%H%M%SZ"))
+        up = 60 if name.endswith("-start") else 3600
+        return {"schema": 1, "taken_at": t, "version": version, "uptime_secs": up, "parts": ["status"],
+                "status": {"version": version, "build": "release", "uptime_secs": up,
+                           "boot": {"id": boot, "pid": pid}}}
+
+    def t2899_listing(self):
+        return {"schema": 1, "files": [{"date": self.DAY, "bytes": 10, "t": 1}],
+                "moments": [{"name": n, "kind": n.rsplit("-", 1)[1], "bytes": 10, "t": i}
+                            for i, (n, _, _, _) in enumerate(self.T2899)]}
+
+    def t2899_versions(self):
+        return {n: (v, b, p) for n, v, b, p in self.T2899}
+
+    def serve(self, listing, versions=None, live=None):
         bodies = {}
         for name in [f["date"] for f in listing.get("files", [])] + \
                 [m["name"] for m in listing.get("moments", [])]:
-            bodies[name] = json.dumps({"schema": 1, "taken_at": 1, "parts": ["status"],
-                                       "status": {"requests": len(name)}}).encode()
+            if versions and name in versions:
+                bodies[name] = json.dumps(self.moment_body(name, *versions[name])).encode()
+            else:
+                bodies[name] = json.dumps({"schema": 1, "taken_at": 1, "parts": ["status"],
+                                           "status": {"requests": len(name)}}).encode()
+        with open(SNAPSHOT_B, "rb") as f:
+            snapshot = f.read()
         self.fetched = []
 
         class H(BaseHTTPRequestHandler):
@@ -859,6 +896,13 @@ class CollectFromServerTest(unittest.TestCase):
                 if name in bodies:
                     self.fetched.append(name)
                     return h.reply(200, bodies[name])
+                if live is not None and name is None:
+                    # `--closeout` の本番の口 (`/status` はいまの版、`/snapshot` は testdata、ほかは空)
+                    if h.path == "/status":
+                        return h.reply(200, json.dumps(live).encode())
+                    if h.path == "/snapshot":
+                        return h.reply(200, snapshot)
+                    return h.reply(200, b'{"schema":1}')
                 return h.reply(404, b'{"schema":1,"error":"no snapshot for that day"}')
 
         srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -867,8 +911,8 @@ class CollectFromServerTest(unittest.TestCase):
         self.addCleanup(srv.shutdown)
         return srv
 
-    def run_from_server(self, listing, d=None):
-        srv = self.serve(listing)
+    def run_from_server(self, listing, d=None, versions=None):
+        srv = self.serve(listing, versions)
         if d is None:
             d = tempfile.mkdtemp(prefix="t2820-")
             self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
@@ -914,6 +958,75 @@ class CollectFromServerTest(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(d)), [self.DAY + "T000000Z-snapshot.json"])
         self.assertIn("取り寄せ 1 件", out)
         self.assertNotIn("BEFORE=", out)
+
+    def test_before_and_zero_are_chosen_by_version_not_by_time(self):
+        # T.28.99 の 4 枚: 前 = 0.27.8 の停止 (系列 0.28 の途中の 0.28.39 は飛ばす)、0 時間 = 0.28.48 の起動
+        d, out = self.run_from_server(self.t2899_listing(), versions=self.t2899_versions())
+        self.assertIn("BEFORE=%s/2026-10-25T203134Z-shutdown-snapshot.json "
+                      "ZERO=%s/2026-10-25T212745Z-start-snapshot.json" % (d, d), out)
+        # 候補は全部、理由つきで並ぶ (いまの版は /status が無いので手元の最後の起動の版)
+        self.assertIn("いまの版 `0.28.48+c0ffee1` (手元の最後の起動の版) で選んだ", out)
+        for name, kind, ver, tag in (
+                ("2026-10-20T010203Z-start", "start", "0.27.8+a01dd0c", "外した: いまの版でない起動"),
+                ("2026-10-25T203134Z-shutdown", "shutdown", "0.27.8+a01dd0c", "**前 (BEFORE)**"),
+                ("2026-10-25T203301Z-start", "start", "0.28.39+a84923a", "外した: いまの版でない起動"),
+                ("2026-10-25T212612Z-shutdown", "shutdown", "0.28.39+a84923a",
+                 "外した: いまと同じ系列 0.28 の途中の版"),
+                ("2026-10-25T212745Z-start", "start", "0.28.48+c0ffee1", "**0 時間 (ZERO)**")):
+            boot = "B1" if ver.startswith("0.28.48") else "B0"
+            self.assertIn("`%s-snapshot.json` %s `%s` boot.id `%s` → %s" % (name, kind, ver, boot, tag), out)
+
+    def run_closeout(self, d, live, **env):
+        srv = self.serve(self.t2899_listing(), self.t2899_versions(), live=live)
+        e = dict(os.environ, PROBE="0", DASHBOARD="0", DIFF="0", ANON="0", CRITERIA="off")
+        for name in ("BEFORE", "ZERO", "COLLECT_STAMP", "VIA", "FULL"):
+            e.pop(name, None)
+        e.update(env)
+        r = subprocess.run([SCRIPT, "--closeout", "127.0.0.1:%d" % srv.server_address[1], d],
+                           env=e, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def test_closeout_fetches_picks_runs_and_prints_the_premise_once(self):
+        d = tempfile.mkdtemp(prefix="t2926-")
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        live = {"schema": 1, "version": "0.28.48+c0ffee1", "build": "release"}
+        out = self.run_closeout(d, live)
+        before = "%s/2026-10-25T203134Z-shutdown-snapshot.json" % d
+        zero = "%s/2026-10-25T212745Z-start-snapshot.json" % d
+        # 要約の頭 (見出しの次) に前提の 1 行
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith("# rust-http-proxy — 127.0.0.1:"), lines[:3])
+        self.assertEqual(lines[2], "**締めの前提** (`--closeout`): 版 `0.28.48+c0ffee1` (`release`)・"
+                                   "起動 2026-10-25T21:26:45Z (`boot.id` `B1`, pid 7)・"
+                                   "前の版 `0.27.8+a01dd0c` の停止 2026-10-25T20:31:34Z")
+        # 取り寄せ (起動と停止 5 枚 + 日次 1 枚) と選択の箇条、選んだ 2 枚が本番の BEFORE / ZERO に渡っている
+        self.assertIn("取り寄せ 6 件", out)
+        self.assertIn("いまの版 `0.28.48+c0ffee1` (`/status`) で選んだ", out)
+        self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % before, out)
+        self.assertIn("- 0 時間の雪像 (`ZERO`): `%s`" % zero, out)
+        self.assertIn("## 1. 要点", out)
+        # 本番の要約はファイルにも残り、そこにも前提が入る
+        mds = [n for n in os.listdir(d) if n.endswith("-collect.md")]
+        self.assertEqual(len(mds), 1, os.listdir(d))
+        with open(os.path.join(d, mds[0])) as f:
+            self.assertIn("**締めの前提** (`--closeout`): 版 `0.28.48+c0ffee1`", f.read())
+        # 2 回目は取り寄せ済みのものを取りに行かず、同じ 2 枚を選ぶ
+        self.fetched.clear()
+        out = self.run_closeout(d, live, COLLECT_STAMP="2026-10-26T120000Z")
+        self.assertEqual(self.fetched, [])
+        self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % before, out)
+
+    def test_closeout_keeps_a_given_before(self):
+        d = tempfile.mkdtemp(prefix="t2926-")
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        mine = os.path.join(d, "2026-10-25T200000Z-snapshot.json")
+        with open(mine, "w") as f:
+            json.dump(self.moment_body("2026-10-25T200000Z-shutdown", "0.27.8+a01dd0c", "B0", 101), f)
+        out = self.run_closeout(d, {"schema": 1, "version": "0.28.48+c0ffee1"}, BEFORE=mine)
+        self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % mine, out)
+        self.assertIn("`BEFORE` は渡されたもの (`%s`) を使う" % mine, out)
+        self.assertIn("- 0 時間の雪像 (`ZERO`): `%s/2026-10-25T212745Z-start-snapshot.json`" % d, out)
 
     def test_without_a_start_after_the_last_shutdown_only_before_is_offered(self):
         listing = self.listing()
