@@ -8,7 +8,6 @@
 //! 読むのは **5 秒の標本のときだけ**。cgroup v1 だけの環境・`/sys/fs/cgroup` が無い環境・
 //! PSI を持たないカーネルではそれぞれ `None` を返す (呼び出し側は `null` を出す)。
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// PSI の 1 資源ぶん (`some` / `full` の `avg10`)。形はメモリ側と同じなので型を共有する。
@@ -61,7 +60,7 @@ pub struct CgroupPressure {
 /// v1 しか無い環境では `None`。コンテナで cgroup 名前空間が切られていると
 /// パスは `/` になるので、そのまま `/sys/fs/cgroup` を指す。
 pub fn cgroup_v2_dir() -> Option<PathBuf> {
-    let text = fs::read_to_string("/proc/self/cgroup").ok()?;
+    let text = super::proc::read_small(Path::new("/proc/self/cgroup"))?;
     v2_dir_from(&text, Path::new("/sys/fs/cgroup"))
 }
 
@@ -95,8 +94,7 @@ pub fn cgroup_pressure() -> CgroupPressure {
         dir.as_deref()
             .and_then(|d| find_up(d, root, name, super::mem::parse_pressure))
             .or_else(|| {
-                fs::read_to_string(fallback)
-                    .ok()
+                super::proc::read_small(Path::new(fallback))
                     .as_deref()
                     .and_then(super::mem::parse_pressure)
             })
@@ -183,7 +181,7 @@ fn find_up_at<T>(
     let mut at = dir.to_path_buf();
     loop {
         let file = at.join(name);
-        if let Ok(text) = fs::read_to_string(&file)
+        if let Some(text) = super::proc::read_small(&file)
             && let Some(v) = parse(&text)
         {
             return Some((file, v));
@@ -203,7 +201,7 @@ fn tightest_quota(dir: &Path, root: &Path) -> Option<f64> {
     let mut at = dir.to_path_buf();
     let mut best: Option<f64> = None;
     loop {
-        if let Ok(text) = fs::read_to_string(at.join("cpu.max"))
+        if let Some(text) = super::proc::read_small(&at.join("cpu.max"))
             && let Some(cores) = parse_cpu_max(&text)
         {
             best = Some(best.map_or(cores, |b: f64| b.min(cores)));
@@ -237,6 +235,7 @@ fn stat_field(text: &str, key: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     /// この機械の `cpu.stat` の実物の形 (**数値は架空**)。
     const CPU_STAT: &str = "\

@@ -942,7 +942,7 @@ pub struct Sampler {
     /// `schedstat` の走れずに待った ns)
     prev: std::collections::HashMap<u32, (u64, u64, u64)>,
     /// 読み取りの使い回し用
-    buf: String,
+    buf: Vec<u8>,
     /// 1 clock tick の us
     tick_us: u64,
     /// 5 秒の窓へ渡す前の溜め
@@ -962,7 +962,7 @@ impl Sampler {
             root,
             main_tid,
             prev: std::collections::HashMap::new(),
-            buf: String::with_capacity(1024),
+            buf: Vec::new(),
             tick_us: 1_000_000 / clock_tick(),
             pending: Threads::default(),
             pending_top: std::collections::HashMap::new(),
@@ -1067,7 +1067,7 @@ impl Sampler {
 
 /// `/proc/self/stat` の utime + stime (us)。読めなければ `None`。
 pub fn process_cpu_us() -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let text = crate::sysinfo::proc::read_small(std::path::Path::new("/proc/self/stat"))?;
     parse_stat_cpu_us(&text)
 }
 
@@ -1081,7 +1081,7 @@ pub fn parse_stat_cpu_us(text: &str) -> Option<u64> {
 
 /// `/proc/self/stat` の (utime + stime, utime) (us)。読めなければ `None` (T16.0)。
 pub fn process_cpu_split_us() -> Option<(u64, u64)> {
-    let text = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let text = crate::sysinfo::proc::read_small(std::path::Path::new("/proc/self/stat"))?;
     parse_stat_cpu_split_us(&text)
 }
 

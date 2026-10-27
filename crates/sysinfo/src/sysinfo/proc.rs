@@ -12,7 +12,44 @@
 /// `/status` の `live_threads` (接続スレッド) とは別物で、こちらは監視スレッド・
 /// 履歴スレッド・Happy Eyeballs の試行スレッドまで含んだ実数。
 pub fn process_threads() -> Option<u64> {
-    parse_status_threads(&std::fs::read_to_string("/proc/self/status").ok()?)
+    parse_status_threads(&read_small(std::path::Path::new("/proc/self/status"))?)
+}
+
+/// 小さな `/proc` / `/sys` のファイルを **open・read・read (EOF)・close の 4 回**で読む。
+///
+/// (T.29.20) `fs::read_to_string` は大きさを当てにするために `statx` と `lseek` を呼び、procfs は大きさ 0 を
+/// 返すので 32 B から倍々に読み直す (`/proc/self/status` で `read` 8 回 = 1 ファイル 11 回の
+/// システムコール)。1 秒ごとに読む所 (`cache-probe`・`profile-sample`・`history`) はこちらを使う。
+/// `buf` は使い回し (毎回確保しない)。読めなければ `None`。
+pub fn read_small_into<'a>(path: &std::path::Path, buf: &'a mut Vec<u8>) -> Option<&'a str> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(path).ok()?;
+    if buf.len() < 4096 {
+        buf.resize(4096, 0);
+    }
+    let mut n = 0usize;
+    loop {
+        if n == buf.len() {
+            let more = buf.len();
+            buf.resize(more * 2, 0);
+        }
+        match f.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
+    std::str::from_utf8(&buf[..n]).ok()
+}
+
+/// [`read_small_into`] の、持ち帰る版 (`fs::read_to_string(path).ok()` の置き換え)。
+pub fn read_small(path: &std::path::Path) -> Option<String> {
+    let mut buf = Vec::new();
+    let n = read_small_into(path, &mut buf)?.len();
+    buf.truncate(n);
+    // 中身は read_small_into が UTF-8 と確かめ済み (写さずに String にする)
+    String::from_utf8(buf).ok()
 }
 
 pub fn parse_status_threads(text: &str) -> Option<u64> {
@@ -93,7 +130,7 @@ pub struct TaskScan {
 /// ディレクトリが読めなければ `None` (呼び出し側は `sampler: "off"`)。
 ///
 /// `buf` は読み取りの使い回し用 (毎回確保しないため)。
-pub fn scan_tasks(root: &std::path::Path, buf: &mut String) -> Option<TaskScan> {
+pub fn scan_tasks(root: &std::path::Path, buf: &mut Vec<u8>) -> Option<TaskScan> {
     let mut out = TaskScan::default();
     for entry in std::fs::read_dir(root).ok()? {
         let Ok(entry) = entry else { continue };
@@ -130,12 +167,8 @@ pub fn scan_tasks(root: &std::path::Path, buf: &mut String) -> Option<TaskScan> 
 }
 
 /// `path` を `buf` に読み込んで借用で返す (毎回 `String` を作らない)。
-fn read_into<'a>(path: &std::path::Path, buf: &'a mut String) -> Option<&'a str> {
-    use std::io::Read as _;
-    buf.clear();
-    let mut f = std::fs::File::open(path).ok()?;
-    f.read_to_string(buf).ok()?;
-    Some(&buf[..])
+fn read_into<'a>(path: &std::path::Path, buf: &'a mut Vec<u8>) -> Option<&'a str> {
+    read_small_into(path, buf)
 }
 
 /// `/proc/<pid>/task/<tid>/stat` から (名前, 状態, utime + stime, utime) を取る。
@@ -178,6 +211,39 @@ pub fn parse_syscall(text: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 読む中身は `fs::read_to_string` と同じであること (4 KiB を越える・空・UTF-8 でない・無い。T.29.20)。
+    #[test]
+    fn read_small_matches_read_to_string() {
+        let dir = std::env::temp_dir().join(format!("read-small-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let big: String = (0..3000).map(|i| format!("line {i}\n")).collect();
+        let cases = [
+            ("big", big.as_bytes()),
+            ("empty", b"".as_slice()),
+            ("bad", b"\xff\xfe"),
+        ];
+        let mut buf = Vec::new();
+        for (name, body) in cases {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            let want = std::fs::read_to_string(&path).ok();
+            assert_eq!(read_small(&path), want, "{name}");
+            assert_eq!(
+                read_small_into(&path, &mut buf).map(str::to_owned),
+                want,
+                "{name}"
+            );
+        }
+        assert_eq!(read_small(&dir.join("none")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+        #[cfg(target_os = "linux")]
+        {
+            let a = read_small(std::path::Path::new("/proc/self/cgroup")).unwrap();
+            assert_eq!(a, std::fs::read_to_string("/proc/self/cgroup").unwrap());
+        }
+    }
 
     #[test]
     fn parses_the_thread_count() {
@@ -267,7 +333,7 @@ mod tests {
     /// `/proc` が無いところを指したら `None` (`/profile` は `sampler: "off"`)。
     #[test]
     fn a_missing_task_directory_gives_none() {
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         assert!(scan_tasks(std::path::Path::new("/nonexistent/task"), &mut buf).is_none());
     }
 
@@ -282,7 +348,7 @@ mod tests {
             "7 (conn) S 1 1 0 0 -1 4194368 0 0 0 0 5 6 0 0 20 0 8 0 100 0\n",
         )
         .expect("書けること");
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         let scan = scan_tasks(&dir, &mut buf).expect("ディレクトリは読める");
         assert_eq!(scan.tasks.len(), 1);
         assert_eq!(scan.tasks[0].comm, "conn");
@@ -305,7 +371,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn scans_this_process_tasks() {
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         let scan = scan_tasks(std::path::Path::new("/proc/self/task"), &mut buf).expect("読める");
         assert!(!scan.tasks.is_empty());
         let me = std::process::id();

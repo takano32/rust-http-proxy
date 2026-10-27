@@ -1,6 +1,6 @@
 //! メモリ関連のシステム情報を `/proc` と cgroup から読む (std のみ)。
 
-use std::fs;
+use super::proc::read_small;
 use std::path::Path;
 
 /// システム全体のメモリ量 (バイト)。
@@ -33,7 +33,7 @@ pub struct MemPressure {
 }
 
 pub fn mem_info() -> Option<MemInfo> {
-    parse_meminfo(&fs::read_to_string("/proc/meminfo").ok()?)
+    parse_meminfo(&read_small(Path::new("/proc/meminfo"))?)
 }
 
 pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
@@ -70,8 +70,7 @@ pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
 
 /// カーネルが常に空けておこうとする量 (`vm.min_free_kbytes`, バイト)。
 pub fn min_free_bytes() -> Option<u64> {
-    fs::read_to_string("/proc/sys/vm/min_free_kbytes")
-        .ok()?
+    read_small(Path::new("/proc/sys/vm/min_free_kbytes"))?
         .trim()
         .parse::<u64>()
         .ok()
@@ -90,7 +89,7 @@ fn sized_field(s: &str) -> Option<u64> {
 
 /// 自プロセスの常駐セットサイズ (バイト)。
 pub fn process_rss() -> Option<u64> {
-    parse_status_rss(&fs::read_to_string("/proc/self/status").ok()?)
+    parse_status_rss(&read_small(Path::new("/proc/self/status"))?)
 }
 
 pub fn parse_status_rss(text: &str) -> Option<u64> {
@@ -100,7 +99,7 @@ pub fn parse_status_rss(text: &str) -> Option<u64> {
 }
 
 pub fn mem_pressure() -> Option<MemPressure> {
-    parse_pressure(&fs::read_to_string("/proc/pressure/memory").ok()?)
+    parse_pressure(&read_small(Path::new("/proc/pressure/memory"))?)
 }
 
 pub fn parse_pressure(text: &str) -> Option<MemPressure> {
@@ -129,9 +128,9 @@ pub fn parse_pressure(text: &str) -> Option<MemPressure> {
 /// 自プロセスが属する cgroup (v2 / v1) を根まで辿り、メモリ制限が掛かっている階層をすべて返す。
 /// コンテナ内で「ホストの 90%」を取りにいって OOM で殺されるのを防ぐための情報。
 pub fn cgroup_mem_limits() -> Vec<CgroupMem> {
-    match fs::read_to_string("/proc/self/cgroup") {
-        Ok(text) => cgroup_limits_from(&text, Path::new("/sys/fs/cgroup")),
-        Err(_) => Vec::new(),
+    match read_small(Path::new("/proc/self/cgroup")) {
+        Some(text) => cgroup_limits_from(&text, Path::new("/sys/fs/cgroup")),
+        None => Vec::new(),
     }
 }
 
@@ -187,7 +186,7 @@ fn walk_limits(root: &Path, cg_path: &str, files: &CgroupFiles, out: &mut Vec<Cg
             let inactive = read_stat(&dir.join(files.stat), files.inactive_key).unwrap_or(0);
             let pressure = files
                 .pressure
-                .and_then(|f| fs::read_to_string(dir.join(f)).ok())
+                .and_then(|f| read_small(&dir.join(f)))
                 .and_then(|t| parse_pressure(&t));
             out.push(CgroupMem {
                 limit,
@@ -206,11 +205,11 @@ fn walk_limits(root: &Path, cg_path: &str, files: &CgroupFiles, out: &mut Vec<Cg
 }
 
 fn read_number(path: &Path) -> Option<u64> {
-    fs::read_to_string(path).ok()?.trim().parse().ok()
+    read_small(path)?.trim().parse().ok()
 }
 
 fn read_stat(path: &Path, key: &str) -> Option<u64> {
-    fs::read_to_string(path).ok()?.lines().find_map(|l| {
+    read_small(path)?.lines().find_map(|l| {
         let (k, v) = l.split_once(' ')?;
         (k == key).then(|| v.trim().parse().ok()).flatten()
     })
@@ -219,6 +218,7 @@ fn read_stat(path: &Path, key: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn parses_meminfo() {

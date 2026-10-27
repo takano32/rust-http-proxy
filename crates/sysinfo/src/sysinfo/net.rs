@@ -15,7 +15,6 @@
 //! Linux 以外や `/proc/net` が無い環境 (コンテナ) では該当する組が `None` になり、
 //! 呼び出し側は `null` を出す。
 
-use std::fs;
 use std::path::Path;
 
 /// `/proc/net/netstat` の `TcpExt:` 行から取る値 (どれも**起動からの累計**)。
@@ -74,7 +73,7 @@ pub fn tcp_stats() -> TcpStats {
 
 /// 読む先のディレクトリを差し替えられる版 (テスト用)。
 pub fn tcp_stats_in(dir: &Path) -> TcpStats {
-    let read = |name: &str| fs::read_to_string(dir.join(name)).ok();
+    let read = |name: &str| super::proc::read_small(&dir.join(name));
     TcpStats {
         ext: read("netstat").as_deref().and_then(parse_netstat),
         snmp: read("snmp").as_deref().and_then(parse_snmp),
@@ -153,6 +152,7 @@ pub fn parse_sockstat(text: &str) -> Option<SockStat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     /// この機械の `/proc/net/netstat` の実物の形 (**数値は架空**)。
     const NETSTAT: &str = "\
