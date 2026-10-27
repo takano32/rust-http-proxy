@@ -22,5 +22,202 @@
 
 ## いま開いているタスク
 
-なし (タスク 28 は 2026-10-27 に T.28.99 で締めた。タスク 29 はまだ起こしていない)。
+### タスク 29 (2026-10-27 に起こした: 0.28.48 の後の 6 方向の洗い出し (プロトコルとキャッシュ・性能・実データ・頑丈さ・機能と道具・過去の判断の見直し))
+
+0.28.48 (T.28.99 で満たした 11) のあと、調査員 6 人 (Fable) が手元の release を叩き、tokyo の雪像 (`2026-10-27T024200Z` ほか) と、利用者の許可で tokyo の読むだけの口 (2026-10-27 04:29〜04:36Z) を読み、過去の「採らない」「今のまま」も考え直して挙げた候補を、値打ちの順に並べた (2026-10-27)。**証拠は実機で再現したもの**で、作業ファイルは当日のコンテナの scratchpad (`t29/`。各方向の報告の写しは `t29/reports-*.md`) にある (コンテナと一緒に消えうるので、要る数字は各小タスクの本文に写した)。本体を変えるものは 29a・29c、計器と物差しは 29b、道具と文書は 29d。**利用者の判断が要るもの**は番号を振らず、節の最後の表に置いた。
+
+**全体の見立て (実データ)**: 接続元は NAT の 1 つ (`10.255.0.1`) に見えるが、カーネルの client RTT で 2 つの集団に割れる (近い 21% = RTT p50 約 20 ms、確立 p50 11 / p95 20 ms = 1 RTT / 遠い 79% = RTT p50 約 245 ms、メール宛の総当たり・Microsoft のログイン系など、first_relay p50 4.1 秒は端末側で 0.27.8 も同じ)。**コードで削れる利用者の待ちは無く、0.27.8 からの退行も無い**。値打ちは (1) **キャッシュとメモリの穴** (他人の `Set-Cookie` を配る・応答の先頭と chunk 行に上限が無い・プールのずれ)、(2) **計器と物差しの正しさ** (`/slo` の比が 5 秒の小さな分母で二値化・408 が数えられない・異常検知の二重鳴り)、(3) **暇なときの裏の費用** (tokyo の CPU の 7 割が `profile-sample`・`cache-probe` など)、(4) **締めと確認の手間**。
+
+**29a 正しさと頑丈さ (本体を変える)**
+
+- [ ] **T.29.0 再検証の 304 の `Set-Cookie` を保存済みの先頭に写さない (他の利用者へ配っていた)**
+  - 目的: 手元で再現 (`t29/protocol/probe5.py`): `max-age=1, ETag` で保存 → 利用者 A の再検証にオリジンが `304` + `Set-Cookie: session=SECRET-OF-USER-A` → 次の利用者 B の `REVALIDATED` と C の `HIT` (メモリ) にも同じ `Set-Cookie` が付き、ディスクの項目にも入る。保存時 (`response_policy_lines`) は `Set-Cookie` で保存しないのに、T.28.2 の `merge_not_modified` が写す。304 の `Vary: Cookie`・`private`・`no-store` も写ったまま `REVALIDATED` / `HIT` で配り続ける (`revalidated_policy` が `None` → TTL 0 になるだけで項目は消えない)。
+  - やること: `merge_not_modified` (`crates/msg/src/headers.rs` 426 `NOT_UPDATED_BY_304`・435) で `Set-Cookie` / `Set-Cookie2` を写さない。304 が保存できない形 (`response_policy` が `None`) なら延命せず項目を消して取り直す (`crates/http/src/http/mod.rs` 1109-1137、`refresh.rs` 186-195、`crates/freshness/src/freshness.rs` 155)。304 の `Set-Cookie` を再検証した要求のクライアントにだけ渡すか落とすかを決めて README に書く。
+  - 受け入れ基準: 上の 4 形 (Set-Cookie・Vary: Cookie・private・no-store) の結合テストで、他の利用者の応答と保存した先頭に 1 つも入らない。
+
+- [ ] **T.29.1 応答の先頭・chunk サイズ行・trailer の長さに上限を置く (メモリを無限に食わされる)**
+  - 目的: 要求の先頭は 64 KiB / 128 KiB で 431 にしている (`crates/server/src/conn/header_read.rs` 8-15) のに、**応答の先頭** (`crates/msg/src/response.rs` 64-108 の `read_until` ×2) と **chunk サイズ行・trailer 行** (`crates/msg/src/body.rs` 279-325 の `read_line`) は無制限。手元で: 悪いオリジンが空行なしで 300 MB のヘッダー → RSS 18 → 907 MB、クライアントが chunked の POST で `f` を改行なし 796 MiB → +793 MiB (オリジン不要)、オリジンの chunk 行 400 MiB → +702 MiB。閉じても RSS が戻らない形もある。tokyo の `SERVER_MEMORY` 256 MB では数本で落とせる。フォワードプロキシなので宛先 (= 悪いオリジン) はクライアントが選べる。
+  - やること: 応答の先頭は要求と同じ 128 KiB、chunk サイズ行 (拡張込み) は数 KiB、trailer は行 8 KiB・合計 64 KiB を上限にし、越えたらクライアント側は 400、オリジン側は 502 (本文を出す前) か切断 (出した後)。
+  - 受け入れ基準: 上の 4 形で RSS の増えが数 MiB 以内、状態コードが決まる結合テスト。64 KiB の正当な先頭は通る。熱い経路の Ir が増えない (T.28.12 の測り方)。
+
+- [ ] **T.29.2 プールの接続に遅れて届いたバイトを、次の要求の応答として配らない (応答のずれ → キャッシュの汚染)**
+  - 目的: 手元で再現 (`probe2.py` A): オリジンが `GET /a` に `CL:2` を返した 0.3 秒後に `HTTP/1.1 200 OK … X-Injected: yes … EVIL` を送る → 次の `GET /b` に `EVIL` が返り、その次は `HIT`。`put` は `BufReader` の読み残ししか見ず (`crates/origin/src/pool.rs` 143-146)、T26.0 で GET / HEAD は取り出しの `MSG_PEEK` を省いた (`mod.rs` 873・897、`pool.rs` 96-141・221)。
+  - やること: 取り出しの `MSG_PEEK` を全部の要求で行う (T26.0 の実測で 0.28 us/要求)。peek から読みまでの窓は塞げないので README に書く。
+  - 受け入れ基準: 上の再現で `/b` が本物になり項目に `X-Injected` が入らない。forward の CPU/要求 +1% 以内 (A/B)。
+
+- [ ] **T.29.3 1xx の中間応答を HTTP/1.0 のクライアントへ送らない**
+  - 目的: `GET … HTTP/1.0` にオリジンが `103` → 200 を返すと、クライアントに `HTTP/1.1 103 …` が届く (RFC 9110 §15.2 MUST NOT。1.0 のクライアントは 103 を最終応答と読む)。`mod.rs` 949-955・1695。
+  - やること: `!http11` のときは中間応答を読み捨てる。
+  - 受け入れ基準: `framing-probe.py` に「HTTP/1.0 + 103」、先頭が `HTTP/1.1 200`。1.1 では今までどおり中継。
+
+- [ ] **T.29.4 素通しの応答に `Age` を残す (下流が鮮度を過大に見る)**
+  - 目的: オリジンの `max-age=600, Age: 500` が MISS / BYPASS の応答では落ちる (HIT には付く)。`Age` は end-to-end (RFC 9110 §7.6、9111 §4.2.3)。`FRAMING_HEADERS` に `age` が入っていて `write_response_head` が無条件に落とす (`headers.rs` 421・328-335)。
+  - やること: forward の経路で `Age: max(受けた Age, now − Date)` (保存するときの `policy.age` と同じ) を足す。1xx・304 の中継は対象外。
+  - 受け入れ基準: 上の形で `Age: 500` 以上が付く。HIT の `Age` は変わらない。
+
+- [ ] **T.29.5 `Content-Length: 0` の GET もキャッシュを使う**
+  - 目的: GET に `Content-Length: 0` を付けると毎回オリジンへ行く (`cache BYPASS`)。長さ 0 は本文が無いのと同じ。`mod.rs` 721-725・586-612・873。
+  - やること: `Framing::Length(0)` を判定の後で `None` に畳む (オリジンへは今までどおり CL: 0 を転送)。
+  - 受け入れ基準: 2 回目が HIT。POST + CL: 0 は今までどおり BYPASS。
+
+- [ ] **T.29.6 クライアントの条件付き要求に対するオリジンの 304 でも、保存済みの表現を更新する**
+  - 目的: 期限切れの項目に `If-None-Match` で来た要求の 304 (`max-age=60`) を中継したあと、次の素の GET が古い先頭のまま `REFRESHING` でオリジンへ行く (RFC 9111 §4.3.4)。`mod.rs` 749 (`if !client_conditional`)・1109。
+  - やること: クライアントの条件付きでも `stale` を持ち、304 で ETag が保存済みと一致すれば `merge_not_modified` + `refresh_with_head` してから 304 を返す。
+  - 受け入れ基準: 続く GET が HIT。ETag が違う 304 では更新しない。
+
+- [ ] **T.29.7 本文を送る途中でオリジンが返した応答 (413 など) をクライアントへ渡す (今は 502)**
+  - 目的: 8 MiB の POST に、オリジンが先頭だけ読んで `413` + `Connection: close` を返して閉じると、クライアントには 502 (RFC 9112 §9.5)。`mod.rs` 933-945・1019-1051。
+  - やること: 本文を送るループで origin が読めるなら先に応答の先頭を読む。書きが `EPIPE` / `ECONNRESET` で落ちたら、読み残しの応答を渡す (無ければ今までどおり 502)、`keep_client=false`。
+  - 受け入れ基準: 上の再現で 413 がそのまま届く。普通の POST のシステムコールが増えない (strace)。
+
+- [ ] **T.29.8 要求行とヘッダー名の文法の穴を 400 にする**
+  - 目的: `GET http://h/a b HTTP/1.1` が 505 (`b` を版と読む)、対象に DEL / NUL があるとそのまま転送、`… HTTP/1.1 junk` を受け付ける、ヘッダー名の空白・制御文字・`"`・空・コロンの無い行を転送か黙って捨てる (RFC 9112 §3・9110 §5.1)。`serve_one.rs` 180-220、`crates/origin/src/request.rs` 81-100、`headers.rs` 85-87。
+  - やること: 要求行はちょうど 3 要素・対象は VCHAR だけ、ヘッダー名は token 以外・空・コロン無しを `bad_header` (400)。`rejected_requests` の理由に乗せる。
+  - 受け入れ基準: `framing-probe.py` に 6 行足して全部 400。T.27.5〜8 と同じく締めで「誤って断った要求 0」を見る。
+
+- [ ] **T.29.9 小物: `OPTIONS *`・応答の `Date`・頼んでいない 101**
+  - 目的: (1) `OPTIONS http://h:P` がオリジンに `OPTIONS /` で届く (RFC 9112 §3.2.4 は `OPTIONS *`)、`OPTIONS *` + `Host` は `*` を引いて 502 (`request.rs` 387-437、`mod.rs` 1488-1509)。(2) `Date` の無い応答をそのまま転送し、自前の 400 / 502 にも `Date` が無い (RFC 9110 §6.6.1)。(3) `Upgrade` を頼んでいない要求にオリジンが 101 を返すとそのまま返す (§15.2.2)。
+  - やること: (1) 空パス / `*` の OPTIONS は `*` を送る、`*` は OPTIONS 以外 400。(2) 転送と自前の応答に `Date`。(3) 頼んでいない 101 は 502。
+  - 受け入れ基準: それぞれ結合テスト 1 本。
+
+**29b 計器と物差し**
+
+- [ ] **T.29.10 408 (ヘッダーの締め切り) を数え、個票で CONNECT の確立の締め切りと分ける。phase26 の判定を作る**
+  - 目的: T.28.0 の 408 は debug ログだけで、`/recent` の理由は確立の締め切りと同じ `error:timeout`、`/status`・`/errors` に数が無い (`crates/server/src/conn/header_read.rs` 314-328)。T.28.99 の (2) は個票の 2.5 時間だけで推測した。tokyo には `Dalvik`・`git`・`Go-http-client` の UA も来ており、先張りの接続が来れば 10 秒で 408 を受ける。
+  - やること: `rejected_requests` (か隣) に `header_timeout` の通算、`/recent` の理由 `error:header_timeout`、`/errors` に 1 行 (status 408)。`snapshot_criteria.py` に **phase26** (phase25 + (a) 408 の件数 (24 時間)、(b) `/log` の error 行、(c) `/errors` の `local` (私設宛ての 403)、(d) 3 秒で切った確立の行数と成功の確立の最大・`syn_retrans` 1 / 2 の本数 (表示だけ)、(e) `rejected_requests.total`)、`collect-deployed.sh` の既定を phase26。
+  - 受け入れ基準: `header_timeout_test` で 408 の後に `/status` が +1・`/recent` の理由が別。phase26 の行の単体と、tokyo の雪像で表が出る試験。
+
+- [ ] **T.29.11 異常検知の `connect_p95` を「確立 − RTT」の窓で読む (メール宛の名前解決の遅れで `dns_slow` と二重に鳴る)**
+  - 目的: 0.28.48 の 24 時間で `connect_p95` が 6 件 (0.27.8 は 0)。再現できた窓は、成功 36 本のうち上位 3 本が全部 `:993` (名前解決 296 / 532 ms と遠い RTT)、`excess` の p95 は −0.1 ms で、同じ分に `dns_slow` も立っていた。遠い宛先の割合が動くだけで鳴る。
+  - やること: 確立の p95 を T.28.45 の `excess_buckets` で読む (閾 50 ms はそのまま)。名前解決の遅れは `dns_slow` に任せる。
+  - 受け入れ基準: この 24 時間の 6 窓を再生して 0 件、人工的に excess 100 ms を 20 本で立つ単体。README の異常検知の表。
+
+- [ ] **T.29.12 `/slo` の確立の窓から名前解決を外す (確立の外れの大半がリゾルバの遅さ)**
+  - 目的: `excess` (= 名前解決 + 確立 − RTT) が 50 ms を越えた成功 36 本 (00〜02Z) の excess の合計 19,789 ms のうち名前解決が 15,159 ms (77%)、34 本がメール宛。
+  - やること: 5 秒の標本に `connect − RTT` (名前解決を除く) の窓を持ち、`connect_p50/p95` はそちらで判定。名前解決は `dns_slow` か別の閾に分ける。`basis` に書く。
+  - 受け入れ基準: 10-26 の再生で確立の 2 つの外れが半分未満。README の `/slo`。
+
+- [ ] **T.29.13 「平常時」の切り方を tokyo でも空にならない形にする**
+  - 目的: 要約の §2「平常時 0 / 23 標本」、`/history?summary=1&normal_hours_only=1` が `samples 0, burst_samples 25`。サーバー側の `BURST_PER_HOUR = 300` 固定 (`crates/metrics-window/src/history/summary.rs` 8) に対し tokyo は毎時 475〜1,760 本で全部「バースト」。phase22 の「300 と中央値 × 3 の大きい方」は判定の部だけ。
+  - やること: サーバーの `normal_hours_only` と要約の表を同じ規則 (中央値 × 3) にする、または表を `excess` の p50 / p95 に置き換える。
+  - 受け入れ基準: tokyo の summary が 23 時間中 20 標本以上を返す、`test_snapshot_diff.py` に毎時 500 本の例。
+
+- [ ] **T.29.14 プロファイラに x86_64 の `poll` / `epoll_wait` の名前を足す**
+  - 目的: tokyo の `/profile` の `unknown_syscalls` が `sys_7` 129,929・`sys_232` 86,693 標本/24 時間、idle-watch が `other` 100%、conn が `other` 16%。表 (`crates/metrics-profile/src/profile.rs` 128-160) に `ppoll` / `epoll_pwait` はあるが `poll` / `epoll_wait` が無い。
+  - やること: x86_64 の 7 / 232 を足す (aarch64 には無い)。
+  - 受け入れ基準: 単体 1 本、tokyo の `unknown_syscalls` が空。
+
+- [ ] **T.29.15 オリジン側の 502 / timeout の WARN も理由ごとに 1 分 1 行にする (`/log` がメール宛の 502 で埋まる)**
+  - 目的: tokyo の `/log` 1,000 行 (19.95 時間) が 100% `502 Bad Gateway: connect <mail>:993/995 failed: lookup`、24 時間で 2,228 行。手元でも繋がらない宛先 30 本 → 30 行。T.28.9 は 400 系と 403 だけ。`mod.rs` 901・1028・1034・1078・1161・1344。
+  - やること: T.28.9 の `log::Throttle` で (理由) ごとに 1 分 1 行 + 件数。件数は `/errors` と `/hosts` が持つ。
+  - 受け入れ基準: 壊れた / 繋がらないオリジンへの 100 本で WARN が理由ごとに 1〜2 行、`/errors` の件数は同じ。
+
+- [ ] **T.29.16 日次の雪像が 4 MiB の上限に近い (88%) — 道具で警告し、余白を作る**
+  - 目的: 0.28.48 が書いた日次 `/snapshots/2026-10-26` は 3,692,328 B (上限 4,194,304)。内訳 `history` 1,550,971 (T.28.45 の 17 項目で増えた)・`recent` 896,914 (2,000 行、T.28.46 は効いた)。越えると `fit_full_recent` が `recent` を 256 KiB (約 580 行) に戻し、T.28.18 の問題に黙って戻る。
+  - やること: (a) `collect-deployed.sh --from-server` と `snapshot-summary.py` が日次の大きさ・部ごとの `truncated` を出し 90% で警告、(b) 日次の `history` から 5 秒の解像度 (1 時間ぶん) を外す (日次は 1 日の写し) か、日次だけ上限を 6 MiB に。
+  - 受け入れ基準: (a) 4 MiB を越えた作り物で警告。(b) 日次 1 枚が上限の 70% 以下で `recent` 2,000 行。
+
+- [ ] **T.29.17 `dns-replay.py` の「今の規則」を keep-warm 停止後の模型にする**
+  - 目的: 新しい雪像に当てると `current` が引き直し 2,311 回/時 (warm 4,882) を出し、道具自身が「模型が実機と合わない」と判定する (実機は `warm_secs` 0、378 回/時)。
+  - やること: `current` を `PROXY_DNS_WARM_SECS=0`・serve-stale 21,600 の規則にし、実機との一致 (±30%) を試験で縛る。
+  - 受け入れ基準: 10-27 の雪像で一致がミス・引き直しとも ±30%。
+
+- [ ] **T.29.18 接続元の RTT で「誰が待つか」を分けて見せる (NAT で 1 本に見える利用者を 2 集団に)**
+  - 目的: 上の見立て。近い集団 429 行は first_relay p50 20 ms、遠い集団 1,571 行は 4,108 ms で、ダッシュボードの「利用者が待つ時間」はこの 2 つを混ぜている (0.27.8 の雪像でも同じ 2 山)。
+  - やること: `/recent?rtt_client=lt100|ge100` の絞り、`snapshot-diff.py` に接続元の RTT 別の表 (確立・first_relay・理由・宛先の種類)、ダッシュボードの待ちの KPI を近い集団で。
+  - 受け入れ基準: tokyo の雪像で 2 行の表が出る。匿名化で RTT が残る。README。
+
+- [ ] **T.29.19 小物の表示: キャッシュの命中率に母数、`/metrics` に版とビルド**
+  - 目的: 要約の「命中率 0.5」は 24 時間で hits 43 / misses 37 の母数 80 (転送の 5.2%)。`/metrics` に `sorahost_boot_id_info` はあるが版・ビルドの系列が無い。
+  - やること: 要約とダッシュボードに `(n=80)` を添え n < 100/日なら率を「—」。`sorahost_build_info{version,build} 1` を 1 行。
+  - 受け入れ基準: 要約の試験、`/metrics` の行と README。
+
+**29c 性能 (暇なときの裏の費用。tokyo の CPU の 7 割)**
+
+tokyo の `/profile?res=60` 4.05 時間 (要求 0.25 本/秒、0.0015 コア): `profile-sample` 32.5%・`cache-probe` 23.4%・`conn` (本業) 11.6% (692 us/要求)・`history` 7.6%・`idle-watch` 5.9%。起動からの cgroup は user 38.5 s / system 114.8 s (`/proc` 読みの性質)。手元の暇な既定 634 us/s (profile 254・probe 242・history 90・idle 39)、`--lite` 45。`strace -f -c` 66 秒で約 305 回/秒 (`fs::read_to_string` が `statx` + `lseek` + 倍々の `read`。`/proc/self/status` 1 本で 11 回)。forward の hot path は T.28.12〜15 で callgrind 27,379 → 19,069 Ir/op (−30%)、残りは kernel が床 (この機械の forward 36.8 us のうち kernel 29.7)。
+
+- [ ] **T.29.20 `/proc` の小さなファイルを open・read・read(EOF)・close の 4 回で読む (試作あり)**
+  - 目的: 上の 305 回/秒の大半。試作 (`t29/perf/p1.patch`: `sysinfo` に `read_small_into` / `read_small`、`Sampler.buf` を `Vec<u8>` に。+58 行) で暇な既定 66 秒のシステムコール約 20,100 → 14,200 回 (−29%: `statx` 2,680 → 140、`lseek` 1,762 → 0)、CPU 約 −7% (揺れ大)。
+  - やること: `crates/sysinfo/src/sysinfo/proc.rs` 131-138・`mem.rs`・`cgroup.rs`・`net.rs` 77・`metrics-profile/src/profile.rs` 1054・1068 の読みを置き換える。読む中身は同じ。
+  - 受け入れ基準: 暇な既定 60 秒の `strace -f -c` の合計 −25% 以上、`/profile`・`/status` の数が前後で同じ、`cargo test --workspace`。次の締めで tokyo の cgroup の CPU/時間と役割別 CPU を前の版と比べる。
+
+- [ ] **T.29.21 `profile-sample` は変化の無いスレッドの `syscall`・`schedstat` を読まない**
+  - 目的: 1 秒ごとに 15 スレッド × 3 ファイル (`proc.rs` 98-127、`profile.rs` 967-1010。前の標本は既に `prev` に持つ)。
+  - やること: `stat` を先に読み、状態 `S` で ticks が同じスレッドは前回のシステムコールを使い `schedstat` も読まない (走っていないので run_delay の増えは 0)。10 ms 未満だけ走ったスレッドの状態が 1 標本古く見えるのを README に 1 行。
+  - 受け入れ基準: 暇な既定で `profile-sample` の openat が 1 秒 29 → 12 以下、負荷中の役割別 CPU・状態の分布が前後 ±5%。
+
+- [ ] **T.29.22 `cache-probe` の既定の間隔を 1 → 5 秒にする**
+  - 目的: tokyo の 23.4%。env だけの A/B で暇な既定 634 → 439 us/s (−31%、`PROXY_CACHE_PROBE_SECS=10`)。tokyo のキャッシュは 24 時間で参照 80 回で、1 秒の反応は要らない。
+  - やること: `crates/cachecfg/src/config.rs` 241 の既定。`enforce()` (上限超えの追い出し) もこの周期なので、`put` 側が自分で上限を守ることを先に確かめる。sweep・他人のディスク・backoff の周期は `ticks_per()` で保たれる。
+  - 受け入れ基準: 暇な既定の `cache-probe` 240 → 60 us/s 以下、cache 系の結合 (cache・heavy・persist ほか) 全通過、README の既定。
+
+- [ ] **T.29.23 `idle-watch` は預かりが 0 のとき `epoll_wait` を無期限にする**
+  - 目的: 預かりが 0 でも 1 秒ごとに起きる (`crates/server/src/idle.rs` 54 `MAX_WAIT_MS = 1000`・423-433・510)。tokyo の 5.9%、手元で 39〜51 us/s (`--lite` の暇な費用 45 us/s のほぼ全部)。
+  - やること: 預かり 0 なら無期限で待ち、`park()` で eventfd (か pipe) で起こす。期限つきの預かりがあればその期限で起きる。
+  - 受け入れ基準: 暇な `--lite` の CPU がほぼ 0、預かりの期限切れ・起こしの結合テスト (idle 系) が全部通る。
+
+- [ ] **T.29.24 接続ごとの先読み 8 KiB のゼロ埋めをプールで無くす (試作あり)**
+  - 目的: callgrind で `memset` 8,210 Ir/本 = CONNECT の user 命令の 31%。試作 (`t29/perf/p2.patch`: `BUF_POOL` 上限 256) で Ir CONNECT 26,311 → 17,457 (−33.7%)、1 接続 1 要求 −27%、時間は CONNECT −1.2% (user −4.7%、6 組中 5 組で後が下) で揺れの中。`crates/msg/src/clientio.rs` 103-110・45-52。
+  - やること: 試作を当てる (読むのは `read` が書いた `[..n]` だけ)。
+  - 受け入れ基準: Ir −25% 以上・user −4% 以上・確保 −1 回/本 (時間の −5% は求めない。T.11.1 と同じ型)。
+
+- [ ] **T.29.25 返していない free heap を返す (RSS の増えの正体)**
+  - 目的: 0.28.48 の 24.1 時間で RSS 65.8 MB = heap_used 20.4 + **heap_free 18.3** + mmap 15.7 + cache 14.4 (基準からの増え +3.0 MB は満たしている)。live (04:36Z) は heap_free 30.4。`malloc_trim` を呼んでいない (`crates/sysinfo/src/sysinfo/malloc.rs`)。
+  - やること: history スレッドから 1 時間に 1 回、`heap_free > heap_used` のとき `malloc_trim(0)`。`PROXY_MALLOC_ARENAS` 8 → 2 も測って比べる。
+  - 受け入れ基準: 24 時間で `rss − (heap_used + mmap + cache_memory)` < 10 MB、conn 役の CPU/要求 ≤ 1.1 倍。
+
+**29d 道具と文書**
+
+- [ ] **T.29.26 締めを 1 コマンドにする: `--from-server` の「前」と 0 時間を版で選び、前提の 1 行まで出す**
+  - 目的: `scripts/collect-deployed.sh` 243-266 は時刻だけで「最後の停止」と「その後の最初の起動」を選ぶ。T.28.99 で 0.28.39 を 53 分挟んだので「前」が 0.28.39 の停止になり、手で差し替えた。手元で再現すると道具はそろっていて (取り寄せ 0.137 秒、phase25 の本番 0.594 秒)、残る手作業は 2 枚の選択・前提の 1 行の手打ち・24 時間後の予約。
+  - やること: 各 moment の `status.version` と `boot.id` を読み、**前 = いまの版と違う版の最後の `shutdown`**、**0 時間 = いまの版の最初の `start`** (候補を全部並べて理由も出す)。`--closeout HOST:PORT [DIR]` で取り寄せ → 選択 → 本番 → 要約の頭に「前提 (版・ビルド・起動時刻・`boot.id`・前の版の停止時刻)」。
+  - 受け入れ基準: `CollectFromServerTest` に T.28.99 と同じ 4 枚 (0.27.8 の停止 / 0.28.39 の起動・停止 / 0.28.48 の起動) で 0.27.8 の停止と 0.28.48 の起動が選ばれる試験、`--closeout` が 1 回で要約と前提を出す試験。README の運用 1・2・4。
+
+- [ ] **T.29.27 ダッシュボードの足りない所 (`.env` の読めない値・公開名の「消す」・ビルド・`/slo` の読み方)**
+  - 目的: (1) `.env` の読めない値・知らない鍵は `/status.settings.invalid` / `unknown` にあるが、`crates/web/src/dashboard.html` 1058-1067 の `renderSettings` は見ない。(2) 公開の名前で開いた画面の「消す」は `HTTP 502` と出るだけ (1068・1094-1097)。(3) `/status.build` (T.28.42) が版の隣に出ない (910)。(4) `/slo` の tooltip (880) は旧い説明のまま (`basis` があるのに確立 5 ms と読める)。`scripts/check-dashboard.js` 38 行のコメント「80 KiB」と実装の 96 KiB が食い違う。
+  - やること: (1) 帯に 1 行ずつ (知らない鍵は綴りの近い候補つき)。(2) `location.hostname` が localhost・IP・`/config` の `PROXY_SELF_NAMES` のどれでもなければボタンを無効にして「`.env` に `PROXY_SELF_NAMES=<名前>`」。(3) `(release)` を版の隣に。(4) `basis` があれば文面を変える。
+  - 受け入れ基準: `check-dashboard.js` に (1)〜(4) のあり / なしの試験、`dashboard.html` ≤ 96 KiB (いま 82,762 B)。
+
+- [ ] **T.29.28 `crate-versions.py --check` の穴 2 つを塞ぐ**
+  - 目的: クローンで再現: (a) ルート `Cargo.toml` の `[profile.*]` (`codegen-units` など) を変えても「決まりに合う」(本体の中身は `src/` だけ)、(b) 3 つの `Cargo.toml` を手で上げて `Cargo.lock` をそのままにしても合う (CI は `--locked` なし)。
+  - やること: 本体の中身にルート `Cargo.toml` (版の行と `members` を除く) を含める。`Cargo.lock` の各メンバーの版が `Cargo.toml` と同じことを (e) として見る。
+  - 受け入れ基準: `test_crate_versions.py` に 2 本。
+
+- [ ] **T.29.29 短絡しない一括確認 `scripts/check-all.sh`**
+  - 目的: T.28.48 で `cargo fmt --check && cargo clippy …` が fmt で止まったまま次の手順に進み、fmt に落ちるコミットを push した (直後に `b56160a` で直した)。確認の手順は `&&` でつなぐと 1 つ落ちた所で止まり残りが見えない。
+  - やること: fmt・clippy・`check-docs.sh`・`check-dashboard.js`・unittest・`crate-versions.py --check`・shellcheck を**全部走らせて**失敗を集め、最後に一覧と exit 1。`.git/hooks/pre-commit` に張る `scripts/install-hooks.sh` は任意。
+  - 受け入れ基準: 2 つ同時に壊した作業ツリーで 2 つとも名前が出る試験。
+
+- [ ] **T.29.30 `release.yml` の `ref` に短いハッシュを渡しても打てるようにし、main の上のコミットか確かめる**
+  - 目的: T.28.99 の 1 回目 (run `40254718138`) は短いハッシュで `tag` が落ちた (`.github/workflows/release.yml` 30-33 の `actions/checkout` は完全な SHA しか取れない)。tokyo はタグではなく main の先頭でビルドしている (0.28.39 は `+a84923a`、タグは `a01dd0c`)。
+  - やること: `git rev-parse --verify "$REF^{commit}"` で解決し、`git merge-base --is-ancestor` で main の上でなければ落とす。step summary に「打ったコミット / main の先頭 / 差」。README の運用 0 に `ref` の書き方と「ソースから作るなら `git checkout vX.Y.Z`」。
+  - 受け入れ基準: 次のリリースで短いハッシュで打てる。
+
+- [ ] **T.29.31 道具のテストが、別のプロキシが 1 本動いているだけで止まる (`test_mx.sh`)**
+  - 目的: `scripts/mx` 92-107 の `others()` が他人の `target/release/rust-http-proxy` を `MX_WAIT` (既定 180 秒) まで待つので、プロキシが 1 本動いている間の `unittest discover` は 7 分 30 秒たっても終わらなかった (`test_mx.py` を除けば 675 本 22.1 秒)。
+  - やること: `mx` に `MX_IGNORE_OTHERS` (か待つ相手の型) を足し、試験はそれを使う。`test_mx.py` に短い `MX_WAIT`。
+  - 受け入れ基準: プロキシを 1 本動かしたまま discover が 60 秒以内に終わる。
+
+- [ ] **T.29.32 README を今の事実に直し、目次を置き、性能の節を分ける**
+  - 目的: README は 3,557 行・398 KB・目次なし。食い違い: 既定のスレッド数「7」→ 実測 9 (`canary`・`profile-sample`)、CI の手順に `crate-versions.py --check` が抜け、check-docs は「7 つ」→ 9 つ、バイナリの大きさが 2 か所で食い違う (実測 release 3,215,568 B・dist 2,103,696 B)、システムコール「5.02」→ 4.03 (T.28.24 で §4 は直した)、`-V` の例 `0.18.0+unknown` (14 か所)、タグの `ref` 入力、`--from-server` の「前」は最後の停止、`/snapshots` の説明に `moments` が無い。
+  - やること: 上を直し、冒頭に目次 (H2 と運用 0〜7)、性能の loopback の表と測った節を `docs/perf.md` へ (check-docs が節の名前で切る所に掛からないか確かめる)。
+  - 受け入れ基準: check-docs 差分 0、README 2,500 行以下 (目安)。
+
+- [ ] **T.29.99 締める (タスク 29 の版 = 0.29.x を 24 時間走らせたあとに見る・決める・書く)**
+  - 前提: デプロイ先は `tokyo.sorahost.net:60357`。版は本体を最後に変えた小タスクの番号。デプロイそのものは利用者が決める。タグはデプロイの合図の直前に、クラウドのセッションから `workflow_dispatch` で打つ (決まり)。「前」は 0.28.48 の最後の停止、0 時間は新しい版の起動 60 秒 (T.28.20 の `moments`。T.29.26 が入っていれば `--closeout` で)。
+  - 判定: `--criteria phase26` (T.29.10)。ほかに見ること: 他人の `Set-Cookie` が配られていない (T.29.0)、RSS と `heap_free` (T.29.1・T.29.25)、tokyo の CPU (cgroup) と役割別 CPU が前の版 (0.0015 コア、`profile-sample` 32.5%・`cache-probe` 23.4%) より下がる (T.29.20〜23)、`/log` の 502 が理由ごとに 1 分 1 行 (T.29.15)、`/slo` の読み方 (T.29.12 と下の判断)、誤って断った要求 0 (T.29.8)。
+
+**利用者の判断が要るもの (番号は決まってから振る)**
+
+| 何を | 材料 (2026-10-27) | 選択肢 |
+|---|---|---|
+| `/slo` の `error_rate` と `dns_miss_per_connect` の判定の仕方 | 判定された 5 秒の 96% は確立 1〜4 本で、「新しい名前が 1 つ」「エラーが 1 件」で外れる (0.28.48 の 27 時間で外れ 887 中 `dns_miss` 461 = 52%、外れた 32 標本は全部分母 1〜6 本)。比の閾としては働いていない (60 秒で判定し直しても `error_rate` 0.005 = 200 本に 1 件は満たせない) | (a) 分母が N 本 (例 20) 未満の標本ではこの 2 つを判定しない / (b) 1 時間 (か 1 分) の合計で判定する / (c) `dns_miss` は `expired + warm_stale` (プロキシが制御できるミス) だけを数える / 今のまま |
+| 転送中の総時間の締め切り (slow-read / slow-POST) | 手元で `PROXY_TIMEOUT_SECS=3`・`PROXY_MAX_CONNS=8` のプロキシに 1 B / 2 s でしか読まないクライアント 8 本 → 20 秒たっても閉じず接続枠が全部ふさがり、正常な要求は 503 (`/status` は上限の外の枠で 200)。今の締め切りは「無通信」で、1 バイトごとに待ち直す (T.28.0 がヘッダーで塞いだのと同じ穴)。トンネルの書き側は無期限 (`tunnel.rs` 585-595、反対向きの読みの 300 秒で救われる)。tokyo は接続元が NAT の 1 つなので 1 人で全部の枠を握れる。README の「データ転送タイムアウト」は総時間ではない | 最小の速さ (例 1 KiB/s を 30 秒下回ったら切る) / 総時間の上限 (例 `PROXY_TRANSFER_TIMEOUT_SECS`) / 今のまま (README を直すだけ)。どれも本当に遅い回線の利用者を切りうる |
+| `PURGE <url>` メソッドも名前を見る | 外の名前の `Host` で `PURGE http://example.com/foo` を送ると 200 `{"purged":N}` で消せ、`N` で「その URL がキャッシュにあったか」も外から分かる。T.28.40 (決定 1) で `/purge?url=` と `/blocklist?action=` だけを対象にし、`PURGE` は範囲の外にした (`crates/endpoints/src/endpoints/mod.rs` 342-343) | `/purge?url=` と同じく自分の名前のときだけ受ける / 今のまま |
+| tokyo の `.env` に `PROXY_SELF_NAMES=tokyo.sorahost.net` | 未設定 (`/config` が `[]`)。公開の名前で開いたダッシュボードの「消す」「上書き」は転送になって、自分へ戻れば 508 で終わる (24 時間で操作 0)。再読込で即反映 | 書く (利用者の作業) / 書かない (README と画面の案内だけ = T.29.27) |
+| tokyo への負荷のベンチをどこから掛けるか | 利用者が許可したが、このクラウドの環境からは (1) 権限の仕組みが負荷を拒んだ (`Interfere With Workloads`)、(2) 外向きの `$HTTPS_PROXY` が CONNECT の中の `Host` が宛先と違うと 403 なので tokyo 経由の forward も通らない。煙試験 (2 接続 10 秒、`/healthz` 44 本) だけ通り、前後の `/status` は平常 | 利用者の機械から `scripts/cpu-per-request.sh` 相当を直接 / 権限の規則を足してこの環境から / 掛けない (実機の上限は測らない) |
+
+**見直したが元の判断のままでよいもの** (2026-10-27、0.28.48 の実データ): CONNECT 3 秒 (T.28.43。落とした成功 0 本、成功の確立の最大 2,267 ms、5 秒より 3.1 分/日縮んだ、切ったのは全部メール宛)、既定で私設アドレスを断る (T.28.41。25.9 時間で `local` の 403 は 0、`/dns` で私設に解ける名前は前から断っていたループバックの 1 つだけ)、ログの絞り (T.28.9。隠れた信号は無い)、`/events` の環 512 (10.4 日 ≥ 10 日)、負のキャッシュ 60 秒 (T.27.3。延ばしても 0.30〜0.76 分/日)、繋がらない宛先を覚える (T.22.3。0.35〜0.75 分/日)、keep-warm 停止 (T.22.4。`stale_retries` 0)、serve-stale 21,600 秒 (T.21.3)、IPv4 first の自動切り替え (T.18.99)、tokyo に dist を置かない (利用者の決定 5。CPU が 1 コアの 0.16% なので −4.5% は意味が無い)、musl / HTTP/2 / ws `Upgrade` (CONNECT が 99.7%)、認証なし・制限なし・接続元ごとの上限 0・info のアクセスログ (利用者の決定。事実は上の見立てと同じ)、`/recent` 2,000 件 (T.28.18、T.28.46 で日次は 2,000 行)。性能で**測って効かない**と分かったもの: forward の `write_response_head` の名前照合 (5,212 Ir、合計 −1〜2% の見込み)、内部エンドポイントの判定 1,070 Ir、既定プロファイルの上乗せ (+5.2k Ir で時間 +1%)、HIT の鍵の 2 回組み (−1%)、CONNECT の kernel 62 us/本 (床)、トンネルの中継 (ユーザー空間の仕事が無い)。
+
+**調べたが問題が無かったもの** (重ねて調べないため): SSRF の別表記 (`127.1`・十進・十六進・八進・v4-mapped・`0.0.0.0`・`[::]`・メタデータ・私設) は既定で全部 403 (解決後の IP で判定。**この環境の curl は `no_proxy` で直結するので生ソケットで試すこと**、また sandbox の網は私設宛てを横取りして `403 x-deny-reason: private_dest_ip` を返す)、DNS rebinding (1 要求 1 回の解決と同じ答えで繋ぐので構造上すり抜けない)、状態ファイルを乱数で壊して再起動 (作り直して正常起動、パニック無し)、chunk サイズの桁あふれ (400)、`Connection: Content-Length` で枠組みヘッダーを落とさない、`Upgrade` は要求から落ちる、要求の CL `+5`・`0x5`・空は 400、chunked の trailer とパイプライン、条件付き要求の比較 (`W/`・INM 優先・`Range` + INM・`If-Range`)、304 は保存しない、`Pragma: no-cache`、HEAD に遅れて本文を付けるオリジン (再試行で助かる)、`.env` の打ち間違い (T.28.6/31) の WARN と `--check`、内部の口の 405 / HEAD、`/snapshot` の 17 部、`watch.yml`、`release.yml` の `.sha256`、Dockerfile、環境変数の表の既定 (数は全部 `--check` と一致)。
 
