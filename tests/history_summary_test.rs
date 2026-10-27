@@ -41,7 +41,8 @@ fn number(json: &str, key: &str) -> f64 {
 /// 4,000 本を \[2,5\] 1,670・\[5,10\] 500・\[25,50\] 1,323・\[50,100\] 500・\[100,250\] 7 本に
 /// 置くと、p50 = 5 + 5 × (2000 − 1670)/500 = **8.3**、
 /// p95 = 50 + 50 × (3800 − 3493)/500 = **80.7**。平常時の閾 (1 時間 300 本) を越えないように
-/// 1 標本 200 本ずつ 20 時間に分け、そのあとにバーストの 2 時間 (1 時間 400 本、500 ms) を足す。
+/// 1 標本 200 本ずつ 20 時間に分け、そのあとにバーストの 2 時間 (1 時間 1,000 本、500 ms) を足す
+/// (T.29.13 から平常時の閾は 300 本と中央値 200 × 3 = 600 本の大きい方なので、バーストは 600 本を越える)。
 fn t14_0_hours(t0: u64) -> Vec<Sample> {
     let mut normal: Vec<Sample> = (0..20)
         .map(|i| {
@@ -76,7 +77,7 @@ fn t14_0_hours(t0: u64) -> Vec<Sample> {
             ..Sample::default()
         };
         s.errors_by_cause[0] = 99;
-        for _ in 0..400 {
+        for _ in 0..1000 {
             s.connect.observe(500);
         }
         normal.push(s);
@@ -115,6 +116,8 @@ fn test_integration_history_summary_folds_the_period_into_one_row() {
     assert_eq!(number(&body, "errors"), 0.0, "{}", body);
     assert_eq!(number(&body, "active_max"), 8.0, "{}", body);
     assert!(body.contains("\"normal_hours_only\":true"), "{}", body);
+    // 切った閾 (T.29.13): 300 本と中央値 200 本 × 3 の大きい方
+    assert_eq!(number(&body, "burst_limit"), 600.0, "{}", body);
 
     // 平常時で切らなければ同じ期間でも数字が化ける (T14.0 の「(参考) バースト込み」)
     let all = endpoint_json(
@@ -122,9 +125,9 @@ fn test_integration_history_summary_folds_the_period_into_one_row() {
         &format!("/history?summary=1&since={}&until={}&res=3600", t0, last),
     );
     assert_eq!(number(&all, "samples"), 22.0, "{}", all);
-    assert_eq!(number(&all, "connects"), 4800.0, "{}", all);
-    // 順位 2,400 が [25,50] の 230 / 1,323 の位置に落ちる: 25 + 25 × 0.1738 = 29.3
-    assert_eq!(number(&all, "p50_ms"), 29.3, "{}", all);
+    assert_eq!(number(&all, "connects"), 6000.0, "{}", all);
+    // 順位 3,000 が [25,50] の 830 / 1,323 の位置に落ちる: 25 + 25 × 0.6274 = 40.7
+    assert_eq!(number(&all, "p50_ms"), 40.7, "{}", all);
     assert_eq!(number(&all, "errors"), 198.0, "{}", all);
     assert_eq!(number(&all, "active_max"), 218.0, "{}", all);
 

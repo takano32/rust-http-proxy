@@ -720,7 +720,8 @@ fn now_and_start(wall: std::time::Duration, elapsed: std::time::Duration) -> (u6
 /// `since=restart` は起動時刻 `started` (epoch 秒の切り捨て。`/status` の `since_start_secs`
 /// と同じ起動から)。起動のあとに取った標本の `t` は必ず `started` 以上になる (T21.4)。
 /// 数として読めない値と書いていない `since` は 0 (残っているいちばん古い標本から)、
-/// `until` は今。`normal_hours_only=1` で 1 時間 300 本以上の標本を外す (T14.0 の「平常時」)。
+/// `until` は今。`normal_hours_only=1` でバーストの標本を外す (T14.0 の「平常時」。閾は 1 時間 300 本と
+/// その期間の中央値 × 3 の大きい方 = `history::summary::normal_limit`。T.29.13)。
 fn summary_params(
     params: &[(String, String)],
     res: Option<u64>,

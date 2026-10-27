@@ -948,12 +948,16 @@ if [ -n "$JUDGE_BEFORE" ] || [ -z "$CRIT" ]; then
 fi
 if [ "$DIFF" = 1 ] && [ -n "$PREV" ]; then
   DIFFMD=$work/snapshot-diff.md
+  # 判定表の無い差分 (`BEFORE` があるとき・`CRITERIA=off`) も、平常時は「300 本と中央値 × 3 の大きい方」で切る
+  # (T.29.13。サーバーの `normal_hours_only=1` と同じ規則。300 本だけだと tokyo の後の 23 時間が全部バーストだった)
+  MEDIAN_K=()
+  [ -n "$DIFF_CRIT" ] || MEDIAN_K=(--burst-median-k 3)
   # shellcheck disable=SC2086  # $DIFF_CRIT は 2 語に分けたい
   # `/daily` は雪像に無いので、取れていれば判定表のミスの行に日ごとの幅を並べる (T.15.15 (2))
   # `/profile?res=60` (上で繋いだ 24 時間ぶん) は phase17 の conn 役の CPU/要求 の材料 (T17.0a)。
   # 前回の雪像の隣に同じ時刻の `-profile_res_60.json` があれば `--profile-before` で前にも渡す
   # (`--from-server` で取り寄せた日の雪像には無いので、そのときは雪像の `/profile` の部で参考になる)
-  python3 scripts/snapshot-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} $DIFF_CRIT \
+  python3 scripts/snapshot-diff.py "$PREV" "$OUT" ${AAAA:+--aaaa "$AAAA"} $DIFF_CRIT "${MEDIAN_K[@]}" \
     ${DIFF_CRIT:+${DAILY:+--daily "$DAILY"}} \
     ${DIFF_CRIT:+${PROFILE_AFTER:+--profile "$PROFILE_AFTER"}} \
     ${DIFF_CRIT:+${PROFILE_BEFORE:+--profile-before "$PROFILE_BEFORE"}} \

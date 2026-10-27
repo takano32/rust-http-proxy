@@ -42,6 +42,10 @@ HFIELDS = (
 # 平常時の閾 (T14.0: 1 時間 300 本未満の標本だけを「平常時」とする)。phase22 はこれと
 # 「期間の中央値の k 倍」の大きい方 (下の `PHASE22` と `normal_limit`。T22.1)
 BURST_PER_HOUR = 300
+# 平常時を「300 本と、その期間の中央値のこの倍の大きい方」で切るときの倍率 (phase22 の `burst_median_k`。T22.1)。
+# T.29.13 からサーバーの `/history?summary=1&normal_hours_only=1` も同じ規則で、`collect-deployed.sh` は
+# `--criteria` を付けない差分 (要約の §2) にも `--burst-median-k` でこの値を渡す
+BURST_MEDIAN_K = 3
 # Phase 14 の完了の定義で名指しされている主要ホスト以外を選ぶときの数
 MAJOR_HOSTS = 3
 

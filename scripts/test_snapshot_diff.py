@@ -950,5 +950,32 @@ class Anonymized0926(unittest.TestCase):
         self.assertIn("後 **0.0022 コア、user 31%**", rows[7][2])
 
 
+class BusyHours(unittest.TestCase):
+    """T.29.13: 毎時 500 本 (300 本の閾を全部の時間が越える) でも、`--burst-median-k 3` なら平常時が空にならない。
+
+    tokyo の 0.28.48 は毎時 475〜1,760 本で、要約の §2 は「平常時 0 / 23 標本」だった。サーバーの
+    `normal_hours_only=1` も T.29.13 から同じ規則 (300 本と中央値 × 3 の大きい方)。
+    """
+
+    def busy(self, *extra):
+        b = read(B)
+        set_column(b, "3600", "connects", 500)
+        with written(b=b) as paths:
+            return build([A, paths["b"], "--no-dns", *extra])["history"], run([A, paths["b"], "--no-dns", *extra])
+
+    def test_three_hundred_alone_leaves_no_normal_hour(self):
+        h, _ = self.busy()
+        self.assertEqual((h["after"]["samples"], h["after"]["burst_samples"]), (0, 3))
+        self.assertNotIn("limits", h)
+
+    def test_the_median_rule_keeps_the_busy_hours(self):
+        h, md = self.busy("--burst-median-k", "3")
+        # 中央値 500 × 3 = 1,500 本 (前の期間も 500 本の時間ばかりなので同じ閾)
+        self.assertEqual(h["limits"], {"before": 1500, "after": 1500})
+        self.assertEqual((h["after"]["samples"], h["after"]["burst_samples"]), (3, 0))
+        self.assertIn("(平常時 3 / 3 標本)", md)
+        self.assertIn("(`--burst-median-k` の切り方。T.22.1: 300 本 (T.14.0) と、", md)
+
+
 if __name__ == "__main__":
     unittest.main()

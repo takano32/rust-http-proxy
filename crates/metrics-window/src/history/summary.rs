@@ -5,7 +5,15 @@ use std::fmt::Write as _;
 
 /// 「平常時」の閾 (T14.0): **1 時間に 300 本以上**確立した標本はバーストとして外す。
 /// `scripts/snapshot-diff.py` の `BURST_PER_HOUR` と同じ値。
+///
+/// T.29.13 からは**下限**で、実際の閾は「これと、その期間の 1 標本の本数の中央値 ×
+/// [`BURST_MEDIAN_K`] の大きい方」([`normal_limit`])。tokyo は毎時 475〜1,760 本で、300 本で切ると
+/// `normal_hours_only=1` が 23 時間の全部をバーストとして外していた (`samples 0, burst_samples 25`)。
 pub const BURST_PER_HOUR: u64 = 300;
+
+/// 平常時の閾の「中央値の何倍」(T.29.13)。`scripts/snapshot_criteria.py` の phase22 の
+/// `burst_median_k` (T22.1) と同じ値で、量の揃った日のいちばん多い 1 時間 (最大 / 中央値 2.0) を切らない。
+pub const BURST_MEDIAN_K: u64 = 3;
 
 /// 応答の上限 (T14.24 の受け入れ基準)。標本を返さないので実際は 1 KiB 前後。
 pub const MAX_BODY: usize = 4 * 1024;
@@ -20,7 +28,7 @@ pub struct Params {
     pub until: u64,
     /// `?res=` (秒)。無ければ**期間の長さ**で選ぶ
     pub res: Option<u64>,
-    /// 1 時間 300 本以上の標本を外す (T14.0 の「平常時」)
+    /// バーストの標本を外す (T14.0 の「平常時」。閾は [`normal_limit`]。T.29.13)
     pub normal_hours_only: bool,
 }
 
@@ -54,6 +62,26 @@ pub fn burst_limit(interval_secs: u64) -> u64 {
     ((BURST_PER_HOUR * interval_secs + 1800) / 3600).max(1)
 }
 
+/// 平常時の閾 (1 標本の本数。これ以上はバースト) を、その期間の標本の本数 `counts` から出す (T.29.13)。
+///
+/// `base` ([`burst_limit`]) と「本数の中央値 × [`BURST_MEDIAN_K`]」(切り上げ) の大きい方。
+/// **`scripts/snapshot_criteria.py` の `normal_limit` と同じ計算** (中央値は本数が偶数なら真ん中 2 つの
+/// 平均)。標本が無ければ `base`。
+pub fn normal_limit(base: u64, counts: &mut [u64]) -> u64 {
+    if counts.is_empty() {
+        return base;
+    }
+    counts.sort_unstable();
+    let n = counts.len();
+    // 中央値 × k を切り上げる (偶数のときは (a + b) / 2 × k = (a + b) × k / 2)
+    let twice = if n % 2 == 1 {
+        2 * counts[n / 2]
+    } else {
+        counts[n / 2 - 1] + counts[n / 2]
+    };
+    base.max((twice * BURST_MEDIAN_K).div_ceil(2))
+}
+
 /// 期間を畳んだ結果 (標本は持たない)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Summary {
@@ -78,6 +106,9 @@ pub struct Summary {
     pub dns_ms_sum: u64,
     /// 同時接続数の山 (ゲージなので最大値で畳む)
     pub active_max: u64,
+    /// `normal_hours_only` で使った閾 (1 標本の本数。これ以上をバーストとして外した。T.29.13)。
+    /// 切っていなければ 0
+    pub burst_limit: u64,
     /// 名前解決を除いた「確立 − オリジン側の RTT」の分布 (T.29.12 の `conn_excess`)。
     /// 異常検知の `connect_p95` はこちらで読む (T.29.11)。`/history?summary=1` の JSON には出さない
     pub conn_excess: Window,
@@ -189,6 +220,8 @@ impl Summary {
         out.push_str("],\"causes\":[");
         super::push_str_array(&mut out, &ERR_CAUSE_NAMES);
         let _ = write!(out, "],\"active_max\":{}", self.active_max);
+        // 末尾に足した鍵 (T.29.13): 平常時を切った閾
+        let _ = write!(out, ",\"burst_limit\":{}", self.burst_limit);
         if let Some(q) = recent {
             let _ = write!(out, ",\"recent_quantiles\":{}", q);
         }
@@ -206,17 +239,27 @@ impl Summary {
 pub fn of(h: &History, p: &Params) -> Summary {
     let res = p.res_index();
     let interval = RESOLUTIONS[res].0;
-    let limit = p.normal_hours_only.then(|| burst_limit(interval));
+    let ring = h.rings[res].locked();
+    let in_window = |s: &&Sample| s.t >= p.since && s.t <= p.until;
+    // 平常時 = 「1 時間 300 本と、その期間の 1 標本の本数の中央値 × 3 の大きい方」未満の標本 (T.29.13)
+    let limit = p.normal_hours_only.then(|| {
+        let mut counts: Vec<u64> = ring
+            .iter()
+            .filter(in_window)
+            .map(|s| s.connect.count)
+            .collect();
+        normal_limit(burst_limit(interval), &mut counts)
+    });
     let mut out = Summary {
         from: p.since,
         to: p.until,
         interval_secs: interval,
         normal_hours_only: p.normal_hours_only,
+        burst_limit: limit.unwrap_or(0),
         ..Summary::default()
     };
-    let ring = h.rings[res].locked();
-    for s in ring.iter().filter(|s| s.t >= p.since && s.t <= p.until) {
-        // 平常時 = 1 時間 300 本未満の標本だけ (T14.0)。外した数も返す
+    for s in ring.iter().filter(in_window) {
+        // 平常時の標本だけ (T14.0 / T.29.13)。外した数も返す
         if limit.is_some_and(|l| s.connect.count >= l) {
             out.burst_samples += 1;
             continue;

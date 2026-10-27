@@ -277,7 +277,8 @@ scripts/snapshot-diff.py a.json b.json --criteria phase21 --daily b-daily.json \
 # `expired` + `warm_stale` の増えが 1 日 10 回以内)。phase21 の `/events` の行 (`dns_slow` ≤ 0.1 件/時) は phase22 では表示だけ
 # (件/時の閾は使われ方で落ちるので、`dns_slow` の判定は上の行に任せる)。
 # 裏の引き直しの行は warm 0 (keep-warm を止めた既定) だと warm の平均で割れないので、理由と通算の 1 時間あたりを並べる。
-# **平常時の切り方もこの定義だけ違う**: 1 時間の本数が 300 本と、その期間の中央値の 3 倍の大きい方以上をバーストとする
+# **平常時の切り方もこの定義だけ違う** (`--criteria` 無しでも `--burst-median-k 3` で同じ切り方になる。collect-deployed.sh の
+# 判定表の無い差分はこれを付ける。T.29.13): 1 時間の本数が 300 本と、その期間の中央値の 3 倍の大きい方以上をバーストとする
 # (量の多い tokyo で 300 本だと 29 標本のうち 23 がバーストになった。量の少ない期間は 300 本の切り方のまま)。
 # §2 の表の頭に前と後の閾を書き、`--out json` の `history` に `median_k` `medians` `limits` が足される
 scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
@@ -1609,13 +1610,16 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `{"from","to","interval_secs","first_t","last_t","samples","burst_samples","normal_hours_only","connects",`
     `"p50_ms","p95_ms","avg_ms","max_ms","forwards","forward_p50_ms","forward_p95_ms","forward_avg_ms","forward_max_ms",`
     `"dns_misses","dns_miss_per_connect","dns_miss_avg_ms","errors","errors_by_cause","causes","active_max",`
-    `"recent_quantiles"}` で、**標本そのものは返しません** (応答は 700 B 前後、必ず 4 KiB 以下)。調査で「起動から」「前のデプロイと比べる」を
+    `"burst_limit","recent_quantiles"}` で、**標本そのものは返しません** (応答は 700 B 前後、必ず 4 KiB 以下)。調査で「起動から」「前のデプロイと比べる」を
     見るのに `/history` を丸ごと (284 KB) 取って手元で集計していたのが 1 要求で済みます。
     - `since=restart` は `/status` の `since_start_secs` と同じ**起動時刻**から (読み戻した再起動前の標本は入りません)。
       `since` を書かなければ残っているいちばん古い標本から、`until` を書かなければ今までです。
-    - `normal_hours_only=1` を付けると **1 時間 300 本以上の標本 (バースト) を外した「平常時」**だけを畳みます
-      (T.14.0 の定義。外した本数は `burst_samples`)。**5 秒の窓では閾が 1 本**になり確立のあった標本が全部外れるので、
-      平常時を見るのは 60 秒か 1 時間の窓で。
+    - `normal_hours_only=1` を付けると **バーストの標本を外した「平常時」**だけを畳みます (外した本数は `burst_samples`)。
+      閾は **1 時間 300 本 (T.14.0) と、その期間の 1 標本の本数の中央値 × 3 の大きい方** (T.29.13。phase22 の判定表と
+      `snapshot-diff.py --burst-median-k 3` と同じ規則)、実際に使った閾 (1 標本の本数) は末尾の **`burst_limit`** です
+      (切っていなければ 0)。tokyo の 0.28.48 は毎時 475〜1,760 本で、300 本だけで切ると 23 時間の全部がバーストに
+      なっていました (`samples 0, burst_samples 23` → 中央値 808 × 3 = 2,424 本で 23 / 23)。**5 秒の窓では 300 本が 1 本**に
+      なり確立のあった標本はほとんど外れるので、平常時を見るのは 60 秒か 1 時間の窓で。
     - 解像度は `?res=` が無ければ**期間の長さ**で選びます (1 時間までは 5 秒、1 日までは 60 秒、それ以上は 1 時間の窓)。
     - `p50_ms` / `p95_ms` は**その期間の 12 段のヒストグラムを足し合わせてから**区間内を線形に補間した値
       (`scripts/snapshot-diff.py` が手元で集計するのと同じ求め方なので、同じ期間を切れば同じ数字が出ます)。

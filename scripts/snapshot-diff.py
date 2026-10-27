@@ -99,6 +99,7 @@ from proxydata import (  # noqa: E402
 # 割ってある (T.20.1)。**同じ名前で取り込み直す**ので、この道具の使い方・出力・外から見える名前
 # (`sd.CRITERIA` `sd.RULES` `sd.judge` `sd.part` …。テストと `weekly-report.py` が使う) は変わらない
 from snapshot_criteria import (  # noqa: E402,F401
+    BURST_MEDIAN_K,
     BURST_PER_HOUR,
     CRITERIA,
     FROZEN,
@@ -849,8 +850,13 @@ def build(a, b, args):
     if getattr(args, "zero", None):
         b["zero_snapshot"] = load_source(args.zero, False)
     info = restart_info(a, b)
-    # 平常時の切り方は定義が `burst_median_k` を持つときだけ変わる (phase22。T.22.1)
-    median_k = CRITERIA[args.criteria].get("burst_median_k") if args.criteria else None
+    # 平常時の切り方は定義が `burst_median_k` を持つときだけ変わる (phase22。T.22.1)。`--criteria` が無ければ
+    # `--burst-median-k` (T.29.13。既定は無し = T.14.0 の 300 本だけ。tokyo は毎時 475〜1,760 本で、300 本で切ると
+    # 後の 23 標本が全部バーストだったので、`collect-deployed.sh` は差分にこれを渡す)
+    if args.criteria:
+        median_k = CRITERIA[args.criteria].get("burst_median_k")
+    else:
+        median_k = getattr(args, "burst_median_k", None) or None
     hist = history_split(a, b, info, args.burst, median_k)
     mode, table = "dns", {}
     if args.no_dns:
@@ -892,7 +898,7 @@ def build(a, b, args):
         out["recent_connect"] = recent_connects(b)
     # サーバー側の要約 (T.14.24)。`--summary` があれば読んで手元の集計と並べる
     if hist:
-        # サーバーの `normal_hours_only=1` は 300 本で切る。phase22 で後の閾が上がって後の期間に
+        # T.29.13 より前の版のサーバーの `normal_hours_only=1` は 300 本で切る。後の閾が上がって後の期間に
         # バーストが残らないなら、全部の標本 (`normal_hours_only` なし) が同じ窓になる (T.22.1)
         normal = not (hist.get("limits") and hist["limits"]["after"] > hist["limit"]
                       and not hist["after"]["burst_samples"])
@@ -968,12 +974,14 @@ def render(d, top):
             md = h["medians"]
             p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
               f"**前は 1 標本 {lb:,} 本以上・後は {la:,} 本以上の窓 (バースト) を外した**もの同士で並べる "
-              f"(phase22 の切り方。T.22.1: {h['limit']:,} 本 (T.14.0) と、その期間の 1 標本の本数の中央値 "
+              f"({'phase22' if d.get('criteria') else '`--burst-median-k`'} の切り方。T.22.1: "
+              f"{h['limit']:,} 本 (T.14.0) と、その期間の 1 標本の本数の中央値 "
               f"(前 {n(md['before'])}・後 {n(md['after'])} 本) の {h['median_k']} 倍の大きい方)。")
             if la > h["limit"] and h["after"]["burst_samples"]:
                 p()
                 p(f"後の閾が {h['limit']:,} 本より上なので、下の「サーバー側で 1 要求」の URL "
-                  "(`normal_hours_only=1` は 300 本で切る) とは平常時の窓が違う。")
+                  "(`normal_hours_only=1` は 300 本で切る) とは平常時の窓が違う。"
+                  "T.29.13 からのサーバーは中央値 × 3 で切るので同じ窓になる。")
         else:
             p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
               f"**1 標本 {h['limit']} 本以上の窓 (バースト) を外した**もの同士で並べる (T.14.0 と同じ切り方)。")
@@ -1306,6 +1314,10 @@ def parser():
                         "裏の役割の CPU の割合の 8 行。T.29.10)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
+    p.add_argument("--burst-median-k", type=int, default=None, metavar="K",
+                   help="`--criteria` が無いときの平常時の切り方 (T.29.13): `--burst` と、その期間の 1 標本の本数の"
+                        f"中央値 × K の大きい方 (phase22 と同じ規則。サーバーの `normal_hours_only=1` は {BURST_MEDIAN_K})。"
+                        "既定は無し (`--burst` だけ)。`--criteria` を付けたときはその定義の切り方")
     p.add_argument("--burst", type=int, default=BURST_PER_HOUR, metavar="N",
                    help=f"平常時の閾 (1 時間の本数。既定 {BURST_PER_HOUR}。phase22 はこれと"
                         "期間の中央値の 3 倍の大きい方)")

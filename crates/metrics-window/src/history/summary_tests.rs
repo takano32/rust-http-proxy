@@ -1,4 +1,4 @@
-use super::summary::{Params, Summary, burst_limit, of};
+use super::summary::{Params, Summary, burst_limit, normal_limit, of};
 use super::*;
 
 /// 1 時間の標本 1 本 (時刻だけ決める)。
@@ -277,4 +277,59 @@ fn the_summary_response_fits_in_4_kib() {
         json.len()
     );
     println!("summary の大きさ: {} B\n{}", json.len(), json);
+}
+
+/// **T.29.13**: 平常時の閾は「1 時間 300 本と、その期間の中央値 × 3 の大きい方」。tokyo (0.28.48 の 23 時間、
+/// 毎時 475〜1,760 本) は 300 本で切ると 23 時間が全部バーストになった (`samples 0, burst_samples 23`)。
+#[test]
+fn the_normal_hours_of_a_busy_day_are_not_empty() {
+    // `history["3600"]` の起動からの 23 時間 (2026-10-27T024200Z の雪像)
+    let per_hour = [
+        1335u64, 1160, 1068, 1101, 1091, 795, 768, 827, 752, 1760, 1006, 751, 655, 808, 1294, 946,
+        725, 558, 518, 475, 545, 569, 992,
+    ];
+    let t0 = 1_792_983_600;
+    let samples: Vec<Sample> = per_hour
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| {
+            let mut s = hour(t0 + i as u64 * 3600);
+            for _ in 0..n {
+                s.connect.observe(12);
+            }
+            s
+        })
+        .collect();
+    let h = History::default();
+    h.restore(2, samples);
+    let p = Params {
+        since: 0,
+        until: t0 + 23 * 3600,
+        res: Some(3600),
+        normal_hours_only: true,
+    };
+    let s = of(&h, &p);
+    // 中央値 808 × 3 = 2,424 本 → 23 時間とも平常時 (受け入れ基準は 20 標本以上)
+    assert_eq!((s.samples, s.burst_samples), (23, 0));
+    assert_eq!(s.burst_limit, 2424);
+    assert!(
+        s.to_json().contains(",\"burst_limit\":2424}"),
+        "{}",
+        s.to_json()
+    );
+    // 量の少ない期間 (中央値 × 3 が 300 に届かない) は T14.0 の 300 本のまま
+    assert_eq!(normal_limit(300, &mut [100, 100, 100, 400]), 300);
+    // `scripts/snapshot_criteria.py` の `normal_limit` と同じ (偶数本は真ん中 2 つの平均、切り上げ)
+    assert_eq!(normal_limit(300, &mut [780, 781]), 2342);
+    assert_eq!(normal_limit(300, &mut [200, 200, 350]), 600);
+    assert_eq!(normal_limit(300, &mut []), 300);
+    // 切らなければ 0
+    let all = of(
+        &h,
+        &Params {
+            normal_hours_only: false,
+            ..p
+        },
+    );
+    assert_eq!(all.burst_limit, 0);
 }
