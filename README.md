@@ -2278,6 +2278,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   `0` で標本を止める (段階の窓は 5 秒ごとに畳み続けます)。
   下限 50 ms・上限 60,000 ms に丸めます。標本の費用は 1 スレッドにつき `/proc` を 3 つ開くぶん (実測 約 84 us。`schedstat` を足す前は同じ測り方で 68 us) で、**140 スレッド・1 秒間隔で 1 コアの 1.2%** (60 秒で 700 ms)。
   スレッド数に比例するので、多いときは間隔を延ばしてください (自分の CPU は `/profile` の `profile-sample` 役に出るので、そこで確かめられます)。
+  **休眠 (`S`) のまま CPU の ticks が前回と同じスレッドは `syscall` と `schedstat` を開かず前回の値を使います** (T.29.21。暇なときの open は 1 本 3 → 1、手元の 9 スレッドで 1 秒 27 → 11 回)。そのため **10 ms (1 tick) 未満だけ走って別のシステムコールで寝直したスレッドは、状態が 1 標本古く見えます** (走れずに待った時間は次に読んだときに累計の差でまとめて入るので消えません)。
   `/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。
   x86_64 の `poll` (7) と `epoll_wait` (232) は `ppoll` / `epoll_pwait` の枠に数えます (T.29.14。std の待ちはこちらを使うので、今までは `unknown_syscalls` の `sys_7` / `sys_232` に落ちて idle-watch が `other` 100% に見えていました。状態の数は変えていません)。
   `schedstat` だけが無いカーネル (`CONFIG_SCHEDSTATS` 無し) では `run_delay_us` が `null` になるだけで、ほかは変わりません。

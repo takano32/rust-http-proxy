@@ -35,4 +35,6 @@ pub use mem::{
     process_rss,
 };
 pub use net::{SockStat, TcpExt, TcpSnmp, TcpStats, tcp_stats};
-pub use proc::{TaskSample, TaskScan, process_fds, process_threads, scan_tasks};
+pub use proc::{
+    Known, TaskSample, TaskScan, process_fds, process_threads, scan_tasks, scan_tasks_reusing,
+};

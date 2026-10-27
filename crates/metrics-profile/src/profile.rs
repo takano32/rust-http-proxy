@@ -147,6 +147,15 @@ pub const SYSCALL_NAMES: [&str; 19] = [
     "fstat",
 ];
 
+/// `read` の番号 (標本を取るスレッドが自分の `syscall` を読んだときに見える値。T.29.21)。
+const READ_NR: i64 = {
+    let mut i = 0;
+    while !matches!(SYSCALL_NAMES[i].as_bytes(), b"read") {
+        i += 1;
+    }
+    SYSCALL_NRS[i]
+};
+
 /// aarch64 (asm-generic) のシステムコール番号 ([`SYSCALL_NAMES`] の順)。
 #[cfg(target_arch = "aarch64")]
 const SYSCALL_NRS: [i64; SYSCALL_NAMES.len()] = [
@@ -927,6 +936,21 @@ impl Tick {
     }
 }
 
+/// [`Sampler`] が覚えておく、スレッド 1 本の前回の標本。
+#[derive(Debug, Clone, Copy)]
+struct PrevTask {
+    /// utime + stime (clock tick)
+    ticks: u64,
+    /// utime (clock tick。T16.0)
+    utime: u64,
+    /// `stat` の状態
+    state: char,
+    /// `syscall` の番号 (読めなければ `None`)
+    syscall: Option<i64>,
+    /// `schedstat` の走れずに待った ns (読めなければ `None`)
+    run_delay_ns: Option<u64>,
+}
+
 /// スレッドの標本を取る側 (`profile-sample` スレッドが 1 つだけ持つ。T14.3 (2))。
 ///
 /// **CPU はスレッドごとの増分**で積む。新しく生まれたスレッドは前回が無いので
@@ -938,11 +962,12 @@ pub struct Sampler {
     root: std::path::PathBuf,
     /// 主スレッド = accept 役の tid (= pid)
     main_tid: u32,
-    /// 前回のスレッド別 (utime + stime (clock tick)、utime (clock tick。T16.0)、
-    /// `schedstat` の走れずに待った ns)
-    prev: std::collections::HashMap<u32, (u64, u64, u64)>,
+    /// 前回のスレッド別の標本 (増分を取るのと、休眠のままのスレッドの読みを省くため)
+    prev: std::collections::HashMap<u32, PrevTask>,
     /// 読み取りの使い回し用
     buf: Vec<u8>,
+    /// 標本を取るスレッド自身の tid ([`Sampler::for_self`] のときだけ。T.29.21)
+    self_tid: Option<u32>,
     /// 1 clock tick の us
     tick_us: u64,
     /// 5 秒の窓へ渡す前の溜め
@@ -963,6 +988,7 @@ impl Sampler {
             main_tid,
             prev: std::collections::HashMap::new(),
             buf: Vec::new(),
+            self_tid: None,
             tick_us: 1_000_000 / clock_tick(),
             pending: Threads::default(),
             pending_top: std::collections::HashMap::new(),
@@ -972,16 +998,43 @@ impl Sampler {
     }
 
     /// 自プロセス用 (`/proc/self/task`)。
+    ///
+    /// **標本を取るスレッドの中で呼ぶこと** (自分の tid を `/proc/thread-self` から覚え、
+    /// 自分の `syscall` は読まずに `read` とする。T.29.21)。
     pub fn for_self() -> Sampler {
-        Sampler::new(
+        let mut s = Sampler::new(
             std::path::PathBuf::from("/proc/self/task"),
             std::process::id(),
-        )
+        );
+        s.self_tid = std::fs::read_link("/proc/thread-self")
+            .ok()
+            .and_then(|p| p.file_name()?.to_str()?.parse().ok());
+        s
     }
 
     /// 1 回ぶん取る。読めなければ [`SamplerState::Off`] を書いて何もしない。
     pub fn sample(&mut self, profile: &Profile) {
-        let Some(scan) = crate::sysinfo::scan_tasks(&self.root, &mut self.buf) else {
+        // **休眠のまま ticks が前回と同じスレッドは `syscall` と `schedstat` を開かない**
+        // (T.29.21)。走っていないので待ちの増えは 0、居るシステムコールも前回のまま
+        // (10 ms 未満だけ走って別の所で寝直したスレッドは 1 標本古く見える。待ちの増えは
+        // 次に読んだときに累計の差で入るので消えない)。暇なときの open は 1 本 3 → 1
+        // **自分 (この標本を取っているスレッド) の `syscall` はいつも `read`** (自分の `syscall` を
+        // 読むときはその `read` の中に居る) なので開かない
+        let (prev, self_tid) = (&self.prev, self.self_tid);
+        let reuse = |tid: u32, state: char, ticks: u64| match prev.get(&tid) {
+            Some(p) if state == 'S' && p.state == 'S' && p.ticks == ticks => {
+                crate::sysinfo::Known {
+                    syscall: Some(p.syscall),
+                    run_delay_ns: Some(p.run_delay_ns),
+                }
+            }
+            _ => crate::sysinfo::Known {
+                syscall: (Some(tid) == self_tid).then_some(Some(READ_NR)),
+                run_delay_ns: None,
+            },
+        };
+        let Some(scan) = crate::sysinfo::scan_tasks_reusing(&self.root, &mut self.buf, reuse)
+        else {
             profile.set_sampler(SamplerState::Off);
             return;
         };
@@ -990,9 +1043,20 @@ impl Sampler {
         for t in &scan.tasks {
             let role = role_of(t.tid, self.main_tid, &t.comm);
             let (prev_ticks, prev_utime, prev_delay) =
-                self.prev.get(&t.tid).copied().unwrap_or((0, 0, 0));
+                self.prev.get(&t.tid).map_or((0, 0, 0), |p| {
+                    (p.ticks, p.utime, p.run_delay_ns.unwrap_or(0))
+                });
             let delay_ns = t.run_delay_ns.unwrap_or(0);
-            next.insert(t.tid, (t.ticks, t.utime, delay_ns));
+            next.insert(
+                t.tid,
+                PrevTask {
+                    ticks: t.ticks,
+                    utime: t.utime,
+                    state: t.state,
+                    syscall: t.syscall,
+                    run_delay_ns: t.run_delay_ns,
+                },
+            );
             let cpu_us = t.ticks.saturating_sub(prev_ticks) * self.tick_us;
             let w = &mut self.pending[role];
             w.cpu_us += cpu_us;
@@ -1565,9 +1629,10 @@ mod tests {
             5_000 + 3_000,
             "待ち時間も増分だけ積む"
         );
-        // `syscall` が無ければ partial
-        write(2, "conn", 25, None, Some(8_000));
-        write(1, "proxy", 10, None, Some(1_000));
+        // `syscall` が無ければ partial (ticks を進める: 休眠のまま ticks が同じスレッドは
+        // 前回の値を使い回して開かないので。T.29.21)
+        write(2, "conn", 26, None, Some(8_000));
+        write(1, "proxy", 11, None, Some(1_000));
         s.sample(&p);
         assert_eq!(p.sampler(), SamplerState::Partial);
         assert!(s.pending[1].states[names.iter().position(|n| *n == "sleeping").unwrap()] >= 1);
@@ -1589,6 +1654,70 @@ mod tests {
         assert_eq!(d[1], 8);
         assert!(s.pending_run_delay.iter().all(|v| *v == 0));
         assert!(s.pending_top.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **休眠のまま ticks が同じスレッドは `syscall`・`schedstat` を読み直さない** (T.29.21)。
+    /// 走ったスレッド (ticks が進んだ / 状態が `S` でない) は毎回読む。
+    #[test]
+    fn the_sampler_skips_unchanged_sleeping_threads() {
+        let dir = std::env::temp_dir().join(format!("t2921-skip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let write = |tid: u32, state: char, ticks: u64, nr: i64, delay_ns: u64| {
+            let d = dir.join(tid.to_string());
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("stat"),
+                format!(
+                    "{tid} (t{tid}) {state} 1 1 0 0 -1 0 0 0 0 0 {ticks} 0 0 0 20 0 8 0 100 0\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(d.join("syscall"), format!("{nr} 0x0\n")).unwrap();
+            std::fs::write(d.join("schedstat"), format!("999 {delay_ns} 3\n")).unwrap();
+        };
+        let slot = |nr: i64| state_slot(Some(nr), 'S').0;
+        let (a, b) = (SYSCALL_NRS[0], SYSCALL_NRS[1]);
+        let o = ROLES.len() - 1; // 名前 t2・t3 は「その他」の役割
+        let p = Profile::default();
+        let mut s = Sampler::new(dir.clone(), 1);
+        // 1 回目は全部読む
+        write(2, 'S', 5, a, 1_000);
+        write(3, 'R', 5, a, 1_000);
+        s.sample(&p);
+        // 2 回目: 中身を書き換えるが、tid 2 は休眠のまま ticks も同じ → 前回の値のまま
+        write(2, 'S', 5, b, 9_000);
+        write(3, 'R', 5, b, 9_000);
+        s.sample(&p);
+        assert_eq!(
+            s.pending[o].states[slot(a)],
+            2 + 1,
+            "tid 2 は読み直していない"
+        );
+        assert_eq!(s.pending[o].states[slot(b)], 1, "tid 3 (R) は読み直した");
+        assert_eq!(
+            s.pending_run_delay[o],
+            1_000 + 9_000,
+            "tid 2 の待ちは前のまま"
+        );
+        // 3 回目: tid 2 の ticks が進んだ → 読み直し、待ちの増えは累計の差でまとめて入る
+        write(2, 'S', 6, b, 9_000);
+        s.sample(&p);
+        assert_eq!(s.pending[o].states[slot(b)], 1 + 1 + 1);
+        assert_eq!(
+            s.pending_run_delay[o],
+            9_000 + 9_000,
+            "待ちの増えが消えない"
+        );
+        assert_eq!(p.sampler(), SamplerState::On);
+        // 自分 (標本を取るスレッド) の `syscall` は開かずに `read` (読めばそう見える)
+        s.self_tid = Some(3);
+        std::fs::remove_file(dir.join("3").join("syscall")).unwrap();
+        write(2, 'S', 7, b, 9_000);
+        let reading = s.pending[o].states[slot(READ_NR)];
+        s.sample(&p);
+        assert_eq!(s.pending[o].states[slot(READ_NR)], reading + 1);
+        assert_eq!(p.sampler(), SamplerState::On);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

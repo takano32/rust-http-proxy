@@ -131,6 +131,30 @@ pub struct TaskScan {
 ///
 /// `buf` は読み取りの使い回し用 (毎回確保しないため)。
 pub fn scan_tasks(root: &std::path::Path, buf: &mut Vec<u8>) -> Option<TaskScan> {
+    scan_tasks_reusing(root, buf, |_, _, _| Known::default())
+}
+
+/// [`scan_tasks_reusing`] の呼び出し側が「もう分かっている」と返す値 (T.29.21)。
+/// `Some` の項目は対応するファイルを開かずにその値を使い、`None` の項目は読む。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Known {
+    /// `syscall` の値 ([`TaskSample::syscall`] と同じ意味)
+    pub syscall: Option<Option<i64>>,
+    /// `schedstat` の値 ([`TaskSample::run_delay_ns`] と同じ意味)
+    pub run_delay_ns: Option<Option<u64>>,
+}
+
+/// [`scan_tasks`] の、前回の値を使い回せる版 (T.29.21)。
+///
+/// `stat` を先に読み、`reuse(tid, 状態, ticks)` が [`Known`] で値を返した項目は `syscall` /
+/// `schedstat` を**開かずに**その値を使う (呼び出し側は「休眠のままで ticks が前回と同じ」=
+/// 走っていないスレッドに前回の値を返す。暇なときはほぼ全部がこれで、1 本 3 ファイルが
+/// 1 ファイルになる)。
+pub fn scan_tasks_reusing(
+    root: &std::path::Path,
+    buf: &mut Vec<u8>,
+    mut reuse: impl FnMut(u32, char, u64) -> Known,
+) -> Option<TaskScan> {
     let mut out = TaskScan::default();
     for entry in std::fs::read_dir(root).ok()? {
         let Ok(entry) = entry else { continue };
@@ -145,11 +169,16 @@ pub fn scan_tasks(root: &std::path::Path, buf: &mut Vec<u8>) -> Option<TaskScan>
         let Some((comm, state, ticks, utime)) = parse_task_stat(text) else {
             continue;
         };
-        let syscall = read_into(&dir.join("syscall"), buf).and_then(parse_syscall);
+        let known = reuse(tid, state, ticks);
+        let syscall = known
+            .syscall
+            .unwrap_or_else(|| read_into(&dir.join("syscall"), buf).and_then(parse_syscall));
+        let run_delay_ns = known
+            .run_delay_ns
+            .unwrap_or_else(|| read_into(&dir.join("schedstat"), buf).and_then(parse_schedstat));
         if syscall.is_some() {
             out.syscalls_readable = true;
         }
-        let run_delay_ns = read_into(&dir.join("schedstat"), buf).and_then(parse_schedstat);
         if run_delay_ns.is_some() {
             out.schedstat_readable = true;
         }
