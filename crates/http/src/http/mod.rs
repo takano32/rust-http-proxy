@@ -656,7 +656,15 @@ pub fn handle_http_parsed(
     let raw_headers: &[String] = decremented.as_deref().unwrap_or(raw_headers);
 
     let origin = match parse_origin(target, req.host.as_deref()) {
-        Ok(o) => o,
+        // 空のパスの `OPTIONS` (`OPTIONS http://h:P`) はサーバー全体への問い合わせなので、オリジンへは
+        // `OPTIONS *` を送る (RFC 9112 §3.2.4。T.29.9)。今までは `/` を補って `OPTIONS /` にしていた。
+        // ほかのメソッドには文字列の比較 1 回だけ
+        Ok(mut o) => {
+            if method.eq_ignore_ascii_case("OPTIONS") && crate::request::has_empty_path(target) {
+                o.path = "*".to_string();
+            }
+            o
+        }
         Err(e) => {
             // `Host` が無い (`no_host`) のか絶対 URI が壊れている (`bad_uri`) のか (T14.28)
             if let Some(more) = metrics.record_bad_request(
@@ -1122,7 +1130,7 @@ pub fn handle_http_parsed(
     // 枠組みと `Connection: close` を 1 回の走査で (T.28.12)
     // `Age` もこの 1 回で拾う (T.29.4。下の `age_secs`)
     let scan = Framing::scan_response_head(status, head_only, &head);
-    let (framing, conn_close) = (scan.framing, scan.close);
+    let (framing, conn_close, scan_date) = (scan.framing, scan.close, scan.date);
     // 素通しの応答に付け直す `Age` (T.29.4)。`Age` は end-to-end (RFC 9110 §7.6・9111 §4.2.3) なのに、
     // 枠組みの名前と一緒に [`headers::write_response_head`] が無条件に落としていた (HIT にだけ付いた)。
     // 値は保存するときの `policy.age` と同じ `max(受けた Age, now − Date)`。**オリジンが `Age` を
@@ -1154,6 +1162,19 @@ pub fn handle_http_parsed(
             return Ok(false);
         }
     };
+    // 頼んでいない 101 (RFC 9110 §15.2.2: クライアントが `Upgrade` で挙げていないプロトコルへ切り替えては
+    // ならない。T.29.9)。今まではそのまま返していた。この接続はもう HTTP ではないので使い回さない
+    if status == 101 && !req.upgrade {
+        log_warn!(
+            Some(conn_id),
+            "502 Bad Gateway: unsolicited 101 Switching Protocols from {}",
+            pool_key
+        );
+        ctx.detail.cause = Some(ErrCause::Other);
+        write_error(client, 502, "Bad Gateway")?;
+        ctx.log_failure(502);
+        return Ok(false);
+    }
     let origin_reusable =
         head.starts_with(b"HTTP/1.1") && framing != Framing::Close && !conn_close && !body_cut;
     // 最後が chunked でない `Transfer-Encoding` の応答 (T.28.1)。閉じるまでを本文にして返すが、
@@ -1346,7 +1367,8 @@ pub fn handle_http_parsed(
     // HEAD のときだけ確保する (それ以外は 1 バイトも作らない)
     let cl_owned;
     let mut age_buf = [0u8; 32];
-    let mut extra: [&str; 4] = [""; 4];
+    let mut date_buf = [0u8; 35];
+    let mut extra: [&str; 5] = [""; 5];
     let mut n_extra = 0usize;
     match client_framing {
         Framing::Length(len) => {
@@ -1391,6 +1413,12 @@ pub fn handle_http_parsed(
         _ => {}
     }
     // 応答にも自分の `Via` を足す (RFC 9110 §7.6.3。T.28.10 (b))。保存する先頭 (`cached_head`) には入れない
+    // `Date` の無い応答には自分で付ける (RFC 9110 §6.6.1: 時計を持つ送り手は付けなければならない。T.29.9)。
+    // 有無は枠組みと同じ 1 回の走査で見ているので、`Date` のある応答 (ほとんど全部) には何も足さない
+    if !scan_date {
+        extra[n_extra] = crate::httpdate::date_line(&mut date_buf);
+        n_extra += 1;
+    }
     if let Some(age) = age_secs {
         extra[n_extra] = serve::age_line(&mut age_buf, age);
         n_extra += 1;
@@ -1807,8 +1835,10 @@ fn write_max_forwards_zero(
         }
         body.extend_from_slice(b"\r\n");
     }
+    let mut date = [0u8; 35];
     let head = format!(
-        "HTTP/1.1 200 OK\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\n{}\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        crate::httpdate::date_line(&mut date),
         if trace {
             "Content-Type: message/http\r\n"
         } else {
@@ -1872,10 +1902,14 @@ fn forward_interim(
     Ok(())
 }
 
+/// 自前の誤りの応答。T.29.9 から `Date` も付ける (RFC 9110 §6.6.1)。
 fn write_error(client: &mut impl Write, status: u16, reason: &str) -> io::Result<()> {
+    let mut date = [0u8; 35];
     let resp = format!(
-        "HTTP/1.1 {} {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        status, reason
+        "HTTP/1.1 {} {}\r\n{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        status,
+        reason,
+        crate::httpdate::date_line(&mut date)
     );
     client.write_all(resp.as_bytes())?;
     client.flush()

@@ -1042,3 +1042,21 @@ impl Drop for ProxyProcess {
         let _ = self.child.wait();
     }
 }
+
+/// 応答からプロキシが付けた `Date: <IMF-fixdate>` の行を 1 本だけ取り除く (T.29.9)。
+///
+/// `Date` の無い応答には転送のときに今の時刻の `Date` が付くので、バイト列で固定する試験は
+/// これを通してから比べる。**ちょうど 1 本あること**もここで確かめる。
+#[allow(dead_code)]
+pub fn without_date(resp: &str) -> String {
+    let n = resp.matches("\r\nDate: ").count();
+    assert_eq!(n, 1, "Date の行がちょうど 1 本でない: {:?}", resp);
+    let at = resp.find("\r\nDate: ").unwrap();
+    let line_end = at + 2 + "Date: ".len() + 29;
+    assert!(
+        rust_http_proxy::httpdate::parse(&resp[at + 8..line_end]).is_some(),
+        "読めない Date: {:?}",
+        resp
+    );
+    format!("{}{}", &resp[..at], &resp[line_end..])
+}

@@ -244,6 +244,23 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         return Ok(Step::Close(recent::CloseReason::Shutdown));
     }
 
+    // `*` (asterisk-form) は `OPTIONS` だけ (RFC 9112 §3.2.4。T.29.9)。今までは `*` を宛先として引いて 502
+    if target == "*" && !method.eq_ignore_ascii_case("OPTIONS") {
+        if let Some(more) =
+            metrics.record_bad_request(metrics::BadRequestReason::BadUri, peer_ip, 400)
+        {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: `*` target with {}{}",
+                crate::log::Clip(method),
+                more
+            );
+        }
+        reject(client, 400, "Bad Request")?;
+        scratch.request_line = request_line;
+        return Ok(Step::Close(recent::CloseReason::Shutdown));
+    }
+
     // ヘッダー全体の大きさ (要求行を含む)
     let mut header_bytes = request_line.len();
     // ヘッダーは読むだけで、なめるのは読み終えてからの 1 回 (`parse_request_headers_visit`。T.28.15)
@@ -523,9 +540,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 ) {
                     log_warn!(Some(conn_id), "400 Bad Request: {}{}", e, more);
                 }
-                let _ = (&*client).write_all(
-                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                );
+                let _ = reject(client, 400, "Bad Request");
                 return Ok(Step::Close(recent::CloseReason::Shutdown));
             }
         }

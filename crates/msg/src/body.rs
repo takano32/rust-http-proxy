@@ -24,6 +24,8 @@ pub struct ResponseScan<'a> {
     pub close: bool,
     /// 最後の `Age` の行の値 (無ければ `None`。T.29.4)
     pub age: Option<&'a str>,
+    /// `Date` の行があるか (無ければ forward が付ける。T.29.9)
+    pub date: bool,
 }
 
 /// 応答の `Content-Length` が壊れていた (T19.5)。中身は問題の値 (ログに出すため)。
@@ -184,10 +186,15 @@ impl Framing {
         let mut bad: Option<BadLength<'_>> = None;
         let mut close = false;
         let mut age = None;
+        let mut date = false;
         for (k, v) in crate::headers::response_lines(head) {
-            // `Age` は名前が 3 字なので、長さで外れる行は比べずに済む
+            // `Age` (3 字) と `Date` (4 字) は、長さで外れる行は比べずに済む
             if k.len() == 3 && k.eq_ignore_ascii_case("age") {
                 age = Some(v);
+                continue;
+            }
+            if k.len() == 4 && k.eq_ignore_ascii_case("date") {
+                date = true;
                 continue;
             }
             if k.eq_ignore_ascii_case("transfer-encoding") {
@@ -223,6 +230,7 @@ impl Framing {
             framing,
             close,
             age,
+            date,
         }
     }
 

@@ -86,6 +86,8 @@ Connection: close\r\n\
 ok",
         rust_http_proxy::via::token()
     );
+    // T.29.9 から最終応答に `Date` が 1 行付く (オリジンが付けていないので。1xx には付けない)
+    let got = without_date(&String::from_utf8_lossy(&got)).into_bytes();
     assert_eq!(
         String::from_utf8_lossy(&got),
         expected,
@@ -161,6 +163,8 @@ fn test_integration_response_without_interim_is_unchanged() {
     let proxy_port = start_test_proxy(proxy_config());
 
     let got = raw_bytes(proxy_port, &get_request(origin_port));
+    // T.29.9 から `Date` の無い応答には `Date` が 1 行付く (外して比べる)
+    let got = without_date(&String::from_utf8_lossy(&got)).into_bytes();
     // T.28.10 (b) から自分の `Via` が 1 行だけ増える (ほかは 1 バイトも変わらない)
     let expected = format!(
         "HTTP/1.1 200 OK\r\nX-Foo: bar\r\nContent-Length: 5\r\nVia: {}\r\nConnection: close\r\n\r\nhello",

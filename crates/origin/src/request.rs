@@ -57,6 +57,8 @@ pub struct RequestHeaders {
     pub expect_continue: bool,
     /// `Expect` に `100-continue` 以外の期待があった (RFC 9110 §10.1.1。`http` 側が 417 で断る)
     pub expect_unknown: bool,
+    /// `Upgrade` の行があった (T.29.9)。無いのにオリジンが 101 を返したら `http` 側が 502 にする
+    pub upgrade: bool,
 }
 
 /// token に使える字 (RFC 9110 §5.6.2 の tchar) の表。ヘッダー 1 行ごとに名前の全部の字を見るので、
@@ -200,6 +202,8 @@ pub fn parse_request_headers_visit(
                     h.content_length_invalid = true;
                 }
             }
+        } else if is("upgrade") {
+            h.upgrade = true;
         } else if is("expect") {
             // 並びの空の要素は読み飛ばす。`100-continue` 以外が 1 つでもあれば 417 (T.28.3)
             for t in v_trim
@@ -453,7 +457,9 @@ pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origi
     if let Some(rest) = target.strip_prefix("/http/") {
         return split(Scheme::Http, rest, true);
     }
-    if target.starts_with('/') {
+    // `*` (asterisk-form。`OPTIONS *` だけ。RFC 9112 §3.2.4) は `Host` のサーバー全体を指す (T.29.9)。
+    // 今までは `*` をホスト名として引きに行って 502 だった。OPTIONS 以外の `*` は受け付けの層が 400 で断る
+    if target.starts_with('/') || target == "*" {
         return match host_header {
             Some(h) if !h.is_empty() => Ok(Origin {
                 scheme: Scheme::Http,
@@ -475,6 +481,17 @@ pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origi
     })
 }
 
+/// 絶対形式 (`http://h:P`) かマッピング形式 (`/http/h:P`) で、authority の後ろが空か (T.29.9)。
+///
+/// `OPTIONS` でこの形なら、オリジンへは `OPTIONS *` を送る (RFC 9112 §3.2.4。今までは `/` を補っていた)。
+pub fn has_empty_path(target: &str) -> bool {
+    let rest = strip_scheme(target)
+        .map(|(_, rest)| rest)
+        .or_else(|| target.strip_prefix("/https/"))
+        .or_else(|| target.strip_prefix("/http/"));
+    rest.is_some_and(|r| r.len() == authority_end(r))
+}
+
 /// 要求先のホスト (`host[:port]`) だけを**借用で**取り出す ([`parse_origin`] と同じ規則)。
 ///
 /// ACL / ブロックリストの判定は `host_port` しか見ないので、そのためだけに
@@ -494,7 +511,7 @@ pub fn target_host<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Res
             return host_of(rest);
         }
     }
-    if target.starts_with('/') {
+    if target.starts_with('/') || target == "*" {
         return match host_header {
             Some(h) if !h.is_empty() => Ok(h),
             _ => Err(io::Error::new(
