@@ -126,6 +126,29 @@ ok",
     );
 }
 
+/// T.29.3: HTTP/1.0 のクライアントへは 1xx を送らない (RFC 9110 §15.2 の MUST NOT。1.0 の
+/// クライアントは 103 を最終応答と読む)。読み捨てて、最初の状態行が最終応答の 200 になる。
+#[test]
+fn test_integration_interim_responses_are_not_sent_to_http10_clients() {
+    let (origin_port, _handle) = start_origin(
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(|_req: &str, _n: usize| HINTS.to_vec()),
+    );
+    let proxy_port = start_test_proxy(proxy_config());
+
+    let got = raw_bytes(
+        proxy_port,
+        &format!(
+            "GET http://127.0.0.1:{}/x HTTP/1.0\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            origin_port, origin_port
+        ),
+    );
+    let text = String::from_utf8_lossy(&got);
+    assert!(text.starts_with("HTTP/1.1 200 OK\r\n"), "{:?}", text);
+    assert!(!text.contains(" 103 "), "1xx が届いた: {:?}", text);
+    assert!(text.ends_with("\r\n\r\nok"), "{:?}", text);
+}
+
 /// 1xx が無い応答は 1 バイトも変わらない (生バイト列で固定)。
 #[test]
 fn test_integration_response_without_interim_is_unchanged() {

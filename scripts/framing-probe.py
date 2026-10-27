@@ -22,6 +22,9 @@ HTTP/1.0 (400)、応答の値の CR / NUL (SP に置き換えて返す)、`Max-F
 CL を捨てて閉じるまでを本文にする。chunked + CL は今までどおり chunked。0.27.8 では前の行が外れる。
 同じ日に TE の行の扱いを足した (T.28.35): HTTP/1.1 へは TE の行を残して閉じて区切り、HTTP/1.0 へは 502。
 T.28.1 の時点ではどちらも TE の行を落としていた (この 2 行が外れる)。
+
+2026-10-27 に 1xx の中間応答を足した (T.29.3): HTTP/1.0 のクライアントへは 103 を送らず 200 だけ、
+HTTP/1.1 へは今までどおり 103 → 200。0.29.35 では HTTP/1.0 の行が外れる。
 """
 import argparse
 import json
@@ -137,8 +140,18 @@ def t27_response_cases(origin_port):
         head, _, body = resp.partition(b"\r\n\r\n")
         return b"content-length" not in head.lower() and body == b"5\r\nhello\r\n0\r\n\r\n"
 
+    def no_interim(resp):
+        # T.29.3: HTTP/1.0 へは 1xx を送らない (最初の状態行が最終応答)
+        return resp.startswith(b"HTTP/1.1 200 ") and b" 103 " not in resp and resp.endswith(b"\r\n\r\nok")
+
+    def interim_first(resp):
+        # HTTP/1.1 へは今までどおり 103 を中継してから 200
+        return resp.startswith(b"HTTP/1.1 103 ") and b"\r\n\r\nHTTP/1.1 200 " in resp
+
     return [
         ("応答の値の CR", get(b"/resp-cr"), 200, clean),
+        ("HTTP/1.0 + 103", get10(b"/resp-103-10"), 200, no_interim),
+        ("HTTP/1.1 + 103 (中継する)", get(b"/resp-103-11"), 103, interim_first),
         ("応答の値の NUL", get(b"/resp-nul"), 200, clean),
         ("応答の TE: gzip + CL", get(b"/resp-te-cl"), 200, until_close),
         ("応答の TE: gzip を HTTP/1.0 へ", get10(b"/resp-te-cl"), 502, no_te),
@@ -180,6 +193,11 @@ class _Origin(socketserver.StreamRequestHandler):
             if " /resp-cr " in lines[0] or " /resp-nul " in lines[0]:
                 bad = b"X-A: a\rSet-Cookie: evil=1" if "/resp-cr" in lines[0] else b"X-A: a\x00b"
                 self.wfile.write(b"HTTP/1.1 200 OK\r\n" + bad + b"\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                return
+            # T.29.3: 103 を返してから 200
+            if " /resp-103-" in lines[0]:
+                self.wfile.write(b"HTTP/1.1 103 Early Hints\r\nLink: </a.css>; rel=preload\r\n\r\n"
+                                 b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
                 return
             # T.28.1: 最後が chunked でない TE と CL を一緒に返し、CL の後ろにも続ける
             if " /resp-te-cl " in lines[0]:

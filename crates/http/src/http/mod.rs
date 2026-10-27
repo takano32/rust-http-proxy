@@ -970,9 +970,19 @@ pub fn handle_http_parsed(
         };
         // 要求をオリジンへ送り終えた境目 (T14.3 (1))。ここが forward に足す唯一の時計
         let sent_at = crate::profile::mark();
-        // 1xx (100 と 101 を除く) はヘッダーだけクライアントへ中継し、最終応答を読み続ける (T19.6)
+        // 1xx (100 と 101 を除く) はヘッダーだけクライアントへ中継し、最終応答を読み続ける (T19.6)。
+        // HTTP/1.0 のクライアントへは送らない (RFC 9110 §15.2 の MUST NOT。1.0 のクライアントは
+        // 103 を最終応答と読む。T.29.3): 読み捨てて最終応答だけを返す
         let result = sent.and_then(|n| {
             crate::response::read_head_forwarding(&mut server, |head, status| {
+                if !http11 {
+                    log_trace!(
+                        Some(conn_id),
+                        "dropping interim {} response for an HTTP/1.0 client",
+                        status
+                    );
+                    return Ok(());
+                }
                 interim_sent = true;
                 forward_interim(client, head, status, conn_id)
             })
