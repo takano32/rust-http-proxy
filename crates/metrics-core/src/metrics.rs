@@ -61,6 +61,9 @@ pub struct Interval {
     pub excess: crate::history::Window,
     /// `dns_misses` のうち、名前解決に失敗した試み (原因 `dns`) が払ったぶん (T.28.45)
     pub dns_fail_misses: u64,
+    /// CONNECT 1 本ごとの「確立 (`connect` だけ。**名前解決を除く**) − オリジン側のカーネルの RTT」
+    /// (ms。T.29.12)。`excess` と同じ本数 (成功して RTT が読めたもの) で、`/slo` の確立の 2 つはこちら
+    pub conn_excess: crate::history::Window,
 }
 
 /// ホスト別統計の表と、区間の合計。1 つの鍵で守る。
@@ -476,14 +479,19 @@ impl Metrics {
         // 確立は `dns + connect` (入口の ACL が先に引いた名前解決も入る = `/recent` の
         // `ms.dns + ms.connect`)。us で引いて ms に**切り上げ** (5.2 ms を 5 に丸めて閾を
         // 通さない)、負は 0。引き算 1 回で、時計もシステムコールも増えない
+        // T.29.12: 名前解決を除いた `connect − RTT` も同じ引き算でもう 1 つ (`/slo` の確立の 2 つが読む。
+        // 確立の外れの大半はリゾルバの遅さだった = 10-26 の 36 本で excess の 77%)
         let excess = (detail.origin_rtt_us > 0).then(|| {
-            let est_us = detail
-                .dns_ms
-                .saturating_add(detail.connect_ms)
-                .saturating_mul(1_000);
-            est_us
-                .saturating_sub(detail.origin_rtt_us as u64)
-                .div_ceil(1_000)
+            let rtt_us = detail.origin_rtt_us as u64;
+            let minus_rtt = |ms: u64| {
+                ms.saturating_mul(1_000)
+                    .saturating_sub(rtt_us)
+                    .div_ceil(1_000)
+            };
+            (
+                minus_rtt(detail.dns_ms.saturating_add(detail.connect_ms)),
+                minus_rtt(detail.connect_ms),
+            )
         });
         let dns_failed = detail.cause == Some(ErrCause::Dns);
         // 全体の合計も同じ鍵の内側で足す (原子操作を増やさない)
@@ -503,8 +511,9 @@ impl Metrics {
             } else if let Some(ms) = ms {
                 if connect {
                     iv.connect.observe(ms);
-                    if let Some(x) = excess {
+                    if let Some((x, c)) = excess {
                         iv.excess.observe(x);
+                        iv.conn_excess.observe(c);
                     }
                 } else if counted {
                     iv.forward.observe(ms);

@@ -42,7 +42,7 @@ pub use crate::window::{CAPACITY, DEFAULT_N, INTERVAL, RESOLUTIONS, WINDOW_BOUND
 /// 2. [`Sample::encode`] の末尾に `u64` を 1 つ足す (= 予備の先頭を 1 つ使う)
 /// 3. [`Sample::decode`] の末尾で読む (古いレコードはそこがゼロ埋めなので 0 になる)
 /// 4. この数を増やす ([`Sample::encode`] の `debug_assert` と下の `const` が見張る)
-pub const SAMPLE_ITEMS: usize = 103;
+pub const SAMPLE_ITEMS: usize = 119;
 
 /// **版 3 を始めた時点の**固定の欄の数 (T14.14 のときの [`SAMPLE_ITEMS`])。
 ///
@@ -163,11 +163,17 @@ pub struct Sample {
     /// `(dns_misses − dns_fail_misses) ÷ 確立` (メール宛の総当たりの NXDOMAIN を数えない)。
     /// T.28.45 より前のレコードは 0
     pub dns_fail_misses: u64,
+    /// その区間に閉じた CONNECT 1 本ごとの **「確立 (`connect` の段だけ) − オリジン側のカーネルの RTT」**
+    /// (ms。T.29.12)。[`Self::excess`] から**名前解決を除いた**もので、本数は同じ。
+    /// 10-26 の tokyo で excess が 50 ms を越えた成功 36 本の excess の合計 19,789 ms のうち 15,159 ms (77%) が
+    /// 名前解決 (34 本がメール宛) だったので、`/slo` の `connect_p50_ms` / `connect_p95_ms` はこちらで判定し、
+    /// 名前解決の遅れは `dns_slow` (異常検知) に任せる。**T.29.12 より前のレコードはゼロ埋め** = 空の窓
+    pub conn_excess: Window,
 }
 
 /// `/history` の 1 標本の列名 (この順で [`Sample::push_row`] が値を並べる)。
 /// **キーを標本ごとに繰り返さない**ため、JSON は配列の配列にしてある (T12.4 (3))。
-pub const KEYS: [&str; 48] = [
+pub const KEYS: [&str; 52] = [
     "t",
     "requests",
     "bytes",
@@ -218,6 +224,11 @@ pub const KEYS: [&str; 48] = [
     "excess_ms_max",
     "excess_buckets",
     "dns_fail_misses",
+    // T.29.12 で末尾に足したもの (名前解決を除いた「確立 − RTT」。`connect` と同じ 4 列の形)
+    "conn_excesses",
+    "conn_excess_ms_sum",
+    "conn_excess_ms_max",
+    "conn_excess_buckets",
 ];
 
 /// [`KEYS`] と**同じ長さ・同じ並び**の「その列の読み方」(`/history` の `key_kinds`。T15.0 (10))。
@@ -285,6 +296,10 @@ pub const KEY_KINDS: [&str; KEYS.len()] = [
     "peak",       // excess_ms_max
     "buckets",    // excess_buckets
     "delta",      // dns_fail_misses
+    "delta",      // conn_excesses
+    "delta",      // conn_excess_ms_sum
+    "peak",       // conn_excess_ms_max
+    "buckets",    // conn_excess_buckets
 ];
 
 impl Sample {
@@ -345,7 +360,10 @@ impl Sample {
         );
         // T.28.45 で末尾に足したもの (`connect` と同じ 4 列の形 + 1 列)
         self.excess.push_json(out);
-        let _ = write!(out, ",{}]", self.dns_fail_misses);
+        let _ = write!(out, ",{}", self.dns_fail_misses);
+        // T.29.12 で末尾に足したもの
+        self.conn_excess.push_json(out);
+        out.push(']');
     }
 
     /// ゲージを畳むときの重み (= その行に畳んだ 5 秒の標本の数。T16.0)。
@@ -411,6 +429,8 @@ impl Sample {
         // T.28.45 で足した 17 項目 (`decode` と同じ順)
         self.excess.encode(&mut e);
         e.u64(self.dns_fail_misses);
+        // T.29.12 で足した 16 項目 (`decode` と同じ順)
+        self.conn_excess.encode(&mut e);
         debug_assert_eq!(e.0.len(), SAMPLE_ITEMS * 8, "固定の欄の数と食い違っている");
         e.0
     }
@@ -469,6 +489,8 @@ impl Sample {
         // T.28.45。それより前のレコードはここがゼロ埋めなので空の窓と 0 で読み戻る
         s.excess = Window::decode(&mut d);
         s.dns_fail_misses = d.u64();
+        // T.29.12。それより前のレコードはここがゼロ埋めなので空の窓で読み戻る
+        s.conn_excess = Window::decode(&mut d);
         Some(s)
     }
 
@@ -503,12 +525,14 @@ impl Sample {
         let mut wait = Window::default();
         // 「確立 − RTT」も区間の値 (T.28.45)
         let mut excess = Window::default();
+        let mut conn_excess = Window::default();
         let mut errors_by_cause = [0u64; crate::metrics::ERR_CAUSES];
         for s in window {
             connect.merge(&s.connect);
             forward.merge(&s.forward);
             wait.merge(&s.wait);
             excess.merge(&s.excess);
+            conn_excess.merge(&s.conn_excess);
             for (a, b) in errors_by_cause.iter_mut().zip(s.errors_by_cause.iter()) {
                 *a += *b;
             }
@@ -559,6 +583,7 @@ impl Sample {
             gauge_n,
             excess,
             dns_fail_misses: sum(|s| s.dns_fail_misses),
+            conn_excess,
         }
     }
 }

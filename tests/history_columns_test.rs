@@ -90,7 +90,7 @@ fn history_json(port: u16) -> String {
     endpoint_json(port, "/history?res=5")
 }
 
-/// `keys` は 48 個で T15.0 の 8 列・T16.0 の 3 列・T.28.45 の 5 列が末尾、`key_kinds` は同じ長さで 6 種類しか出ない。
+/// `keys` は 52 個で T15.0 の 8 列・T16.0 の 3 列・T.28.45 の 5 列・T.29.12 の 4 列が末尾、`key_kinds` は同じ長さで 6 種類しか出ない。
 #[test]
 fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     let (port, _metrics) = start_test_proxy_with_history(proxy_config(), TICK);
@@ -98,7 +98,7 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     let keys = str_array(&json, "keys");
     let kinds = str_array(&json, "key_kinds");
 
-    assert_eq!(keys.len(), 48, "{:?}", keys);
+    assert_eq!(keys.len(), 52, "{:?}", keys);
     assert_eq!(kinds.len(), keys.len(), "keys {:?} kinds {:?}", keys, kinds);
     assert_eq!(
         &keys[32..40],
@@ -122,7 +122,7 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     );
     // T.28.45 で足した 5 列 (「確立 − カーネルの RTT」の窓と、名前解決に失敗した試みのミス)
     assert_eq!(
-        &keys[43..],
+        &keys[43..48],
         &[
             "excesses",
             "excess_ms_sum",
@@ -131,6 +131,17 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
             "dns_fail_misses"
         ],
         "T.28.45 も末尾に足す"
+    );
+    // T.29.12 で足した 4 列 (名前解決を除いた「確立 − カーネルの RTT」の窓。`/slo` の確立の 2 つが読む)
+    assert_eq!(
+        &keys[48..],
+        &[
+            "conn_excesses",
+            "conn_excess_ms_sum",
+            "conn_excess_ms_max",
+            "conn_excess_buckets"
+        ],
+        "T.29.12 も末尾に足す"
     );
     // 既存の綴りが 1 つも変わっていないこと (読む側は名前で引く)
     assert_eq!(keys[0], "t");
@@ -319,6 +330,8 @@ fn test_integration_a_closed_tunnel_lands_in_the_rtt_excess_window() {
         let (x, c) = (col(&keys, &row, "excesses"), col(&keys, &row, "connects"));
         assert!(x <= c, "excesses {} > connects {}: {:?}", x, c, row);
         assert_eq!(col(&keys, &row, "dns_fail_misses"), 0, "{:?}", row);
+        // T.29.12: 名前解決を除いた窓も同じ本数 (成功して RTT が読めた本)
+        assert_eq!(col(&keys, &row, "conn_excesses"), x, "{:?}", row);
         excesses += x;
         connects += c;
     }

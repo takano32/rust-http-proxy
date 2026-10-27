@@ -33,10 +33,12 @@ fn burst_day(t0: u64) -> Vec<Sample> {
                 t,
                 ..Sample::default()
             };
-            // 確立の判定は「確立 − RTT」の窓 (T.28.45) なので、同じ値を両方に入れる
+            // 確立の判定は「確立 − RTT」の窓 (T.28.45。T.29.12 から名前解決を除いた `conn_excess`)
+            // なので、同じ値を 3 つに入れる
             let mut put = |ms: u64| {
                 s.connect.observe(ms);
                 s.excess.observe(ms);
+                s.conn_excess.observe(ms);
             };
             if (17..24).contains(&(i / 720)) {
                 for _ in 0..4 {
@@ -91,7 +93,7 @@ fn test_integration_slo_reports_the_share_of_time_the_thresholds_were_met() {
     // T.28.45 で既定を 5 / 50 ms (確立 − RTT) にし、3 つの読み方を `basis` に出した
     let defaults = "\"thresholds\":{\"connect_p50_ms\":5,\"connect_p95_ms\":50,\
                     \"error_rate\":0.005,\"dns_miss_per_connect\":0.2},\
-                    \"basis\":{\"connect\":\"establish_minus_rtt\",\
+                    \"basis\":{\"connect\":\"connect_minus_rtt\",\
                     \"error_rate\":\"resolved_attempts\",\
                     \"dns_miss_per_connect\":\"excluding_failed_lookups\"}";
     assert!(empty.contains(defaults), "{}", empty);

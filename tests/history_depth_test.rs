@@ -23,7 +23,9 @@ use rust_http_proxy::history::{CAPACITY, DEFAULT_N, History, RESOLUTIONS, Sample
 /// (余裕は T14.32 のときと同じ 0.4 MiB 強)。T16.0 の 3 列で 688 B、
 /// T.28.45 の「確立 − RTT」の窓 16 項目 + `dns_fail_misses` で **1 本 +136 B** (824 B) に
 /// なったので、136 B × 4,320 = 587,520 B を同じ作法で足した (余裕は 0.42 MiB のまま)。
-const MAX_GROWTH: usize = 3_995_392;
+/// T.29.12 の名前解決を除いた「確立 − RTT」の窓 16 項目で **1 本 +128 B** (952 B) になったので、
+/// 128 B × 4,320 = 552,960 B を同じ作法で足した。
+const MAX_GROWTH: usize = 4_548_352;
 
 /// `.rrd` の固定の大きさ (版 3。T14.14)。
 const RRD_SIZE: u64 = 8 * 1024 * 1024;

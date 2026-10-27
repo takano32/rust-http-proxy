@@ -16,8 +16,8 @@
 //!
 //! | ビット | 名前 | 標本から取る値 | 満たす |
 //! |---|---|---|---|
-//! | 0 | `connect_p50_ms` | `excess` (確立 − カーネルの RTT) の窓の p50 | 閾以下 |
-//! | 1 | `connect_p95_ms` | `excess` の窓の p95 | 閾以下 |
+//! | 0 | `connect_p50_ms` | `conn_excess` (確立 − カーネルの RTT。名前解決を除く) の窓の p50 | 閾以下 |
+//! | 1 | `connect_p95_ms` | `conn_excess` の窓の p95 | 閾以下 |
 //! | 2 | `error_rate` | `(errors − dns) ÷ (確立 + 転送 + errors − dns)` | 閾以下 |
 //! | 3 | `dns_miss_per_connect` | `(dns_misses − dns_fail_misses) ÷ 確立` | 閾以下 |
 //!
@@ -34,6 +34,15 @@
 //! - `error_rate` は**名前解決に成功した試みあたり** (E1。メール宛の総当たりの NXDOMAIN は
 //!   客が無い名前を頼んだもの)。名前解決の失敗だけの標本は「判定なし」
 //! - `dns_miss_per_connect` は**名前解決に失敗した試みのミスを除く**
+//!
+//! **T.29.12 で確立の窓から名前解決を外した** (`basis` の `connect` は `connect_minus_rtt`)。
+//! T.28.45 の `excess` は `dns + connect − RTT` で、10-26 の tokyo で 50 ms を越えた成功 36 本の
+//! excess の合計 19,789 ms のうち 15,159 ms (77%) が名前解決 (34 本がメール宛) だった =
+//! 確立の外れの大半がリゾルバの遅さ。5 秒の標本の `conn_excess` (`connect − RTT`) で判定し、
+//! 名前解決の遅れは異常検知の `dns_slow` に任せる (`/slo` に閾を増やさない)。`/recent` から
+//! 作り直した 5 秒の窓で再生すると、10-26〜27 の 1 時間 (`history["5"]` と同じ 698 本) で確立の
+//! 外れが p50 10・p95 12 → 3・4、`/recent` の 3.4 時間で 38・41 → 11・8。T.29.12 より前の標本は
+//! 窓が空なので確立の 2 つを外さない
 //!
 //! 10-25 の tokyo の雪像の `history["5"]` (1 時間) を新しい判定で再生すると 0.061 → 0.937
 //! (標本に窓が無いので `/recent` の個票から窓を作り直した。T.28.45 の結果)。
@@ -86,7 +95,8 @@ const DAY: u64 = 86_400;
 /// (層が下なのであちらからこの型は見えない。食い違ったら `tests/slo_test.rs` が落ちる)。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thresholds {
-    /// CONNECT 1 本ごとの「確立 − カーネルの RTT」の p50 (ms。T.28.45 から。綴りは今までのまま)
+    /// CONNECT 1 本ごとの「確立 − カーネルの RTT」の p50 (ms。T.28.45 から。T.29.12 から名前解決を除く。
+    /// 綴りは今までのまま)
     pub connect_p50_ms: f64,
     /// 同じ窓の p95 (ms)
     pub connect_p95_ms: f64,
@@ -99,7 +109,9 @@ pub struct Thresholds {
 /// `/slo` の `basis` (T.28.45)。**閾の綴りは変えずに読み方を変えた**ので、読む側
 /// (雪像を並べる道具) が前後を取り違えないように、何を判定したかを隣に出す
 /// (T.28.45 より前の `/slo` にはこの鍵が無い = 確立そのもの・全試み・全ミス)。
-pub const BASIS_JSON: &str = "{\"connect\":\"establish_minus_rtt\",\
+/// `connect` は T.28.45 〜 T.29.11 が `establish_minus_rtt` (`dns + connect − RTT`)、
+/// T.29.12 から `connect_minus_rtt` (名前解決を除く)。
+pub const BASIS_JSON: &str = "{\"connect\":\"connect_minus_rtt\",\
                               \"error_rate\":\"resolved_attempts\",\
                               \"dns_miss_per_connect\":\"excluding_failed_lookups\"}";
 
@@ -186,10 +198,11 @@ pub fn judge(th: &Thresholds, s: &Sample) -> Verdict {
     // 名前解決のミスは失敗した試みのぶんを除く (T.28.45)
     let misses = s.dns_misses.saturating_sub(s.dns_fail_misses);
     let values = [
-        // 確立の 2 つは「確立 − カーネルの RTT」の窓 (T.28.45)。**窓が空なら 0** (= 外さない):
-        // T.28.45 より前の標本と、RTT が 1 本も読めなかった標本 (Linux 以外) はここ
-        s.excess.quantile_ms(0.5),
-        s.excess.quantile_ms(0.95),
+        // 確立の 2 つは「確立 − カーネルの RTT」の窓 (T.28.45)。T.29.12 から**名前解決を除いた**
+        // `conn_excess` (名前解決の遅れは `dns_slow` に任せる)。**窓が空なら 0** (= 外さない):
+        // T.29.12 より前の標本と、RTT が 1 本も読めなかった標本 (Linux 以外) はここ
+        s.conn_excess.quantile_ms(0.5),
+        s.conn_excess.quantile_ms(0.95),
         if attempts == 0 {
             0.0
         } else {
@@ -614,7 +627,7 @@ mod tests {
         };
         for _ in 0..connects {
             s.connect.observe(ms);
-            s.excess.observe(ms);
+            s.conn_excess.observe(ms);
         }
         s
     }
@@ -629,6 +642,7 @@ mod tests {
         for _ in 0..10 {
             far.connect.observe(40);
             far.excess.observe(2);
+            far.conn_excess.observe(2);
         }
         let v = judge(&th, &far);
         assert!(v.met(), "{:?}", v);
@@ -636,16 +650,25 @@ mod tests {
         assert!(v.values[0] <= 2.0 && v.values[1] <= 2.0, "{:?}", v);
         // RTT を引いても遅い (p50 が (5, 10] の段) なら外す
         let mut slow = far;
-        slow.excess = crate::history::Window::default();
+        slow.conn_excess = crate::history::Window::default();
         for _ in 0..10 {
-            slow.excess.observe(8);
+            slow.conn_excess.observe(8);
         }
         assert_eq!(judge(&th, &slow).bits, 0b0001, "{:?}", judge(&th, &slow));
         // 残りが 70 ms (p95 の閾 50 を越える) なら 2 つとも外す
-        slow.excess = crate::history::Window::default();
-        slow.excess.observe(70);
+        slow.conn_excess = crate::history::Window::default();
+        slow.conn_excess.observe(70);
         assert_eq!(judge(&th, &slow).bits, 0b0011, "{:?}", judge(&th, &slow));
-        // 窓が空 (T.28.45 より前の標本・RTT が読めなかった本だけ) は確立の 2 つを外さない
+        // **T.29.12**: 名前解決が遅いだけ (`dns + connect − RTT` は 300 ms、`connect − RTT` は 2 ms) なら
+        // 確立の 2 つは外さない (メール宛のリゾルバの遅れは `dns_slow` が見る)
+        let mut slow_dns = Sample::default();
+        for _ in 0..10 {
+            slow_dns.connect.observe(20);
+            slow_dns.excess.observe(300);
+            slow_dns.conn_excess.observe(2);
+        }
+        assert!(judge(&th, &slow_dns).met(), "{:?}", judge(&th, &slow_dns));
+        // 窓が空 (T.29.12 より前の標本・RTT が読めなかった本だけ) は確立の 2 つを外さない
         let mut old = Sample::default();
         old.connect.observe(300);
         let v = judge(&th, &old);
@@ -719,11 +742,11 @@ mod tests {
                     let mut s = sample(t, 0, 0);
                     for _ in 0..4 {
                         s.connect.observe(30);
-                        s.excess.observe(30);
+                        s.conn_excess.observe(30);
                     }
                     for _ in 0..3 {
                         s.connect.observe(300);
-                        s.excess.observe(300);
+                        s.conn_excess.observe(300);
                     }
                     s.errors = 1;
                     s
@@ -994,7 +1017,7 @@ mod tests {
             json.contains(
                 "\"thresholds\":{\"connect_p50_ms\":5,\"connect_p95_ms\":50,\
                  \"error_rate\":0.005,\"dns_miss_per_connect\":0.2},\"basis\":{\
-                 \"connect\":\"establish_minus_rtt\",\"error_rate\":\"resolved_attempts\",\
+                 \"connect\":\"connect_minus_rtt\",\"error_rate\":\"resolved_attempts\",\
                  \"dns_miss_per_connect\":\"excluding_failed_lookups\"},\"names\":["
             ),
             "{}",

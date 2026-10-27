@@ -167,6 +167,8 @@ pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
         // 「確立 − カーネルの RTT」と名前解決に失敗した試みのミス (T.28.45。`/slo` が読む)
         excess: iv.excess,
         dns_fail_misses: iv.dns_fail_misses,
+        // 名前解決を除いた「確立 − RTT」(T.29.12。`/slo` の確立の 2 つが読む)
+        conn_excess: iv.conn_excess,
     }
 }
 

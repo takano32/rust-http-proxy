@@ -52,18 +52,19 @@ fn keeps_the_newest_samples_in_order() {
     // 末尾は T15.0 (10) で足した `wait_buckets` と 4 列 (`dns_warm` /
     // `requests_delta` / `bytes_delta` / `active_peak`)、そのうしろが T16.0 の 3 列
     // (`dns_warm_max` / `dns_warm_sum` / `gauge_n`)、さらにうしろが T.28.45 の
-    // `excess` の窓 4 列と `dns_fail_misses`
+    // `excess` の窓 4 列と `dns_fail_misses`、いちばんうしろが T.29.12 の `conn_excess` の窓 4 列
     assert!(
         json.contains(
             ",0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0,0,0,0,0,\
-             0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0]],\"closed\":{"
+             0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,\
+             0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0]]],\"closed\":{"
         ),
         "{}",
         &json[json.len() - 600..]
     );
     // `keys` の隣に同じ長さの `key_kinds` が並ぶ (T15.0 (10))
     assert!(
-        json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\",\"dns_warm_max\",\"dns_warm_sum\",\"gauge_n\",\"excesses\",\"excess_ms_sum\",\"excess_ms_max\",\"excess_buckets\",\"dns_fail_misses\"],\"key_kinds\":[\"time\",\"cumulative\","),
+        json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\",\"dns_warm_max\",\"dns_warm_sum\",\"gauge_n\",\"excesses\",\"excess_ms_sum\",\"excess_ms_max\",\"excess_buckets\",\"dns_fail_misses\",\"conn_excesses\",\"conn_excess_ms_sum\",\"conn_excess_ms_max\",\"conn_excess_buckets\"],\"key_kinds\":[\"time\",\"cumulative\","),
         "{}",
         &json[..900]
     );
@@ -280,6 +281,10 @@ fn sample_encoding_round_trips() {
     excess.observe(60);
     excess.observe(61);
     excess.observe(700);
+    // T.29.12 の名前解決を除いた窓も、ほかの 4 つと全部違える
+    let mut conn_excess = Window::default();
+    conn_excess.observe(4);
+    conn_excess.observe(30);
     let s = Sample {
         t: 5,
         requests: 6,
@@ -317,6 +322,7 @@ fn sample_encoding_round_trips() {
         gauge_n: 34,
         excess,
         dns_fail_misses: 35,
+        conn_excess,
     };
     let enc = s.encode();
     assert!(
@@ -686,9 +692,9 @@ fn the_new_columns_fit_in_the_record_slack_and_version3_records_still_decode() {
     let enc = s.encode();
     // (a)
     assert_eq!(
-        SAMPLE_ITEMS - 17,
+        SAMPLE_ITEMS - 17 - 16,
         86,
-        "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列 (+ T.28.45 の 17)"
+        "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列 (+ T.28.45 の 17 + T.29.12 の 16)"
     );
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
     assert!(
@@ -749,10 +755,12 @@ fn the_rtt_excess_window_fits_in_the_slack_and_older_records_read_it_as_empty() 
     s.gauge_n = 1;
     let enc = s.encode();
     // (a)
-    assert_eq!(
-        SAMPLE_ITEMS, 103,
-        "86 + `excess` の窓 16 + `dns_fail_misses` 1"
-    );
+    const {
+        assert!(
+            SAMPLE_ITEMS >= 103,
+            "86 + `excess` の窓 16 + `dns_fail_misses` 1 (T.29.12 でさらに 16)"
+        )
+    };
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
     assert!(
         enc.len() <= crate::rrd::SAMPLE_RECORD - 4 && SAMPLE_SPARE_ITEMS >= 1,
@@ -785,9 +793,9 @@ fn the_rtt_excess_window_fits_in_the_slack_and_older_records_read_it_as_empty() 
     assert_eq!(agg.excess.ms_max, 70);
     assert_eq!(agg.excess.ms_sum, 74);
     assert_eq!(agg.dns_fail_misses, 5);
-    let n = KEYS.len();
+    let n = KEYS.iter().position(|k| *k == "excesses").unwrap();
     assert_eq!(
-        &KEYS[n - 5..],
+        &KEYS[n..n + 5],
         &[
             "excesses",
             "excess_ms_sum",
@@ -797,15 +805,78 @@ fn the_rtt_excess_window_fits_in_the_slack_and_older_records_read_it_as_empty() 
         ]
     );
     assert_eq!(
-        &KEY_KINDS[n - 5..],
+        &KEY_KINDS[n..n + 5],
         &["delta", "delta", "peak", "buckets", "delta"]
     );
-    // 行の末尾にその 5 列が並ぶ
+    // 行にその 5 列が並ぶ (後ろは T.29.12 の空の窓)
     let h = History::default();
     h.push(s);
     let json = h.to_json();
     assert!(
-        json.contains(",2,73,70,[0,0,1,0,0,0,1,0,0,0,0,0,0],3]"),
+        json.contains(",2,73,70,[0,0,1,0,0,0,1,0,0,0,0,0,0],3,0,0,0,"),
+        "{}",
+        json
+    );
+}
+
+/// T.29.12 の `conn_excess` (名前解決を除いた「確立 − カーネルの RTT」) も**レコードの余白に足した**ので
+/// `.rrd` の版は上がらない。(a) 119 項目が 1 レコードに収まり予備が残る、(b) T.29.12 より前の 103 項目の
+/// レコードは空の窓で読み戻り手前は 1 つもずれない、(c) 畳むと足し合わせ、(d) `/history` の列は**末尾**に 4 つ。
+#[test]
+fn the_connect_minus_rtt_window_fits_in_the_slack_and_older_records_read_it_as_empty() {
+    let mut s = sample(1_700_000_000);
+    s.connect.observe(30);
+    s.excess.observe(300);
+    s.conn_excess.observe(3);
+    s.conn_excess.observe(70);
+    s.gauge_n = 1;
+    let enc = s.encode();
+    // (a)
+    assert_eq!(SAMPLE_ITEMS, 119, "103 + `conn_excess` の窓 16");
+    assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
+    const { assert!(SAMPLE_SPARE_ITEMS >= 1, "予備が残る") };
+    assert_eq!(Sample::decode(&enc), Some(s));
+    // (b)
+    let mut old = enc[..103 * 8].to_vec();
+    old.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
+    let back = Sample::decode(&old).expect("T.29.12 より前のレコードも読める");
+    assert_eq!(
+        Sample {
+            conn_excess: Window::default(),
+            ..s
+        },
+        back,
+        "手前の項目は 1 つもずれない"
+    );
+    // (c)
+    let mut t = sample(1_700_000_005);
+    t.conn_excess.observe(1);
+    let agg = Sample::downsample(&[s, t], 1_700_000_000);
+    assert_eq!(
+        (
+            agg.conn_excess.count,
+            agg.conn_excess.ms_sum,
+            agg.conn_excess.ms_max
+        ),
+        (3, 74, 70)
+    );
+    // (d)
+    let n = KEYS.len();
+    assert_eq!(
+        &KEYS[n - 4..],
+        &[
+            "conn_excesses",
+            "conn_excess_ms_sum",
+            "conn_excess_ms_max",
+            "conn_excess_buckets"
+        ]
+    );
+    assert_eq!(&KEY_KINDS[n - 4..], &["delta", "delta", "peak", "buckets"]);
+    let h = History::default();
+    h.push(s);
+    let json = h.to_json();
+    assert!(
+        json.contains(",2,73,70,[0,0,1,0,0,0,1,0,0,0,0,0,0]]"),
         "{}",
         json
     );
