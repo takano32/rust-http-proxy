@@ -58,7 +58,7 @@ class RulesTest(unittest.TestCase):
     def test_the_second_use_inside_the_window_makes_it_warm(self):
         # 2 回目 (期限切れのミス) で warm になり、3 回目はずっと後でも当たる
         c = run_table("current", [(0, "a"), (600, "a"), (1800, "a")], 1800)
-        self.assertEqual(c["misses_by_kind"], {"cold": 1, "expired": 1, "warm_stale": 0})
+        self.assertEqual(c["misses_by_kind"], {"cold": 1, "expired": 1, "warm_stale": 0, "negative": 0})
         self.assertEqual(c["hits"], 1)
         self.assertEqual(c["promotes"], 1)
         # 600 → 1800 秒の間 45 秒ごと = 26 回 (1,800 ちょうどの予定は当たりの前に捌く)
@@ -249,16 +249,17 @@ class SnapshotTest(unittest.TestCase):
         self.assertNotIn("api.example.invalid", seen)
 
     def test_run_on_the_fixture(self):
-        out = dr.run(read(SNAP), list(dr.RULES))
-        cur, new = out["rules"]["current"], out["rules"]["no_idle"]
+        # T.17.5 の模型 (keep-warm あり) は T.29.17 から `keep_warm` の名前で残る
+        out = dr.run(read(SNAP), ["keep_warm", "no_idle"])
+        cur, new = out["rules"]["keep_warm"], out["rules"]["no_idle"]
         self.assertEqual(out["actual"], {"connects": 9, "dns_misses": 4,
-                                         "miss_per_connect": 4 / 9})
+                                         "miss_per_connect": 4 / 9, "refresh_per_hour": None})
         self.assertEqual(cur["lookups"], 9)
         # chat は助走で warm → 区間の前半はミスしない (最後の 1 回は窓の外で期限切れ)。
         # old は前から居たので no_idle だけ 1 回目で上がり、2 回目が当たる
         self.assertEqual(cur["misses"], 6)
         self.assertEqual(new["misses"], 5)
-        self.assertEqual(cur["misses_by_kind"], {"cold": 3, "expired": 3, "warm_stale": 0})
+        self.assertEqual(cur["misses_by_kind"], {"cold": 3, "expired": 3, "warm_stale": 0, "negative": 0})
         self.assertEqual((cur["promotes"], new["promotes"]), (1, 2))
         self.assertGreater(new["refreshes"], cur["refreshes"])
         self.assertIn("delta", out)
@@ -269,6 +270,7 @@ class SnapshotTest(unittest.TestCase):
             self.assertEqual(dr.main([SNAP]), 0)
         text = buf.getvalue()
         self.assertIn("| current |", text)
+        self.assertIn("| keep_warm |", text)
         self.assertIn("| no_idle |", text)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -276,8 +278,8 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(list(json.loads(buf.getvalue())["rules"]), ["current"])
 
     def test_serve_stale_on_the_fixture(self):
-        out = dr.run(read(SNAP), ["current"], stale=[3600, 86400])
-        cur = out["rules"]["current"]
+        out = dr.run(read(SNAP), ["keep_warm"], stale=[3600, 86400])
+        cur = out["rules"]["keep_warm"]
         s1, s2 = out["rules"]["stale_3600"], out["rules"]["stale_86400"]
         self.assertEqual(cur["misses_by_kind"]["expired"], 3)
         self.assertEqual((s1["misses_by_kind"]["expired"], s1["stale_hits"]), (1, 2))
@@ -303,8 +305,8 @@ class SnapshotTest(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             self.assertEqual(dr.main([SNAP, "--rule", "no_idle", "--serve-stale", "3600"]), 0)
         text = buf.getvalue()
-        # serve-stale は `current` と比べるので、`--rule` に無くても足す
-        self.assertIn("| current |", text)
+        # serve-stale は keep-warm の模型 (`keep_warm`) と比べるので、`--rule` に無くても足す
+        self.assertIn("| keep_warm |", text)
         self.assertIn("| stale_3600 |", text)
         self.assertIn("目安を満たすいちばん短い窓: 3600 秒", text)
         err = io.StringIO()
@@ -375,6 +377,80 @@ class SnapshotTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             dr.build({"taken_at": 1, "recent": {"recent": []}})
 
+
+
+class CurrentModelTest(unittest.TestCase):
+    """T.29.17: 「今の規則」(`current`) は keep-warm を止めた模型 (warm 0・serve-stale 21,600 秒) で、
+    名前解決に失敗した到着は負のキャッシュ (60 秒) で回す。一致は雪像の実機の値と比べる。"""
+
+    def test_current_never_warms_and_answers_stale(self):
+        tb = dr.Table(dr.RULES["current"], window=0, serve_stale=21600)
+        tb._warm_t = 0
+        for t, h in [(0, "a"), (600, "a"), (1800, "a")]:
+            tb.lookup(h, t)
+        tb.advance(3600)
+        c = tb.c
+        self.assertEqual((c["misses"], c["stale_hits"], c["promotes"]), (1, 2, 0))
+        self.assertEqual((c["refresh_warm"], c["refresh_stale"]), (0, 2))
+
+    def test_failed_lookups_use_the_negative_cache(self):
+        tb = dr.Table(dr.RULES["current"], window=0, serve_stale=21600)
+        tb._warm_t = 0
+        for t in (0, 30, 59, 61, 200):
+            tb.lookup("nx", t, fail=True)
+        c = tb.c
+        # 0 でミス (期限 60)、30・59 は当たり、61 でミス (期限 121)、200 でミス
+        self.assertEqual((c["misses"], c["negative_hits"]), (3, 2))
+        self.assertEqual(c["misses_by_kind"]["negative"], 3)
+        self.assertEqual(c["refreshes"], 0, "失敗した名前は裏で引き直さない")
+
+    def snap_with_real(self, refreshes, uptime):
+        snap = read(SNAP)
+        snap["status"] = {"dns": {"refreshes": refreshes}}
+        snap["uptime_secs"] = uptime
+        return snap
+
+    def test_the_fit_is_against_the_real_values_of_the_snapshot(self):
+        snap = self.snap_with_real(refreshes=10, uptime=3600)
+        out = dr.run(snap, ["current"])
+        self.assertEqual(out["fit"]["target"], {"misses": 4, "refresh_per_hour": 10.0})
+        cur = out["rules"]["current"]
+        self.assertEqual(out["fit"]["miss_per_lookup"], dr.within(cur["misses"], 4))
+        self.assertEqual(out["fit"]["refresh_per_hour"], dr.within(cur["refresh_per_hour"], 10.0))
+        # 雪像に `/status` の `dns.refreshes` が無ければ T.16.99 の物差しのまま
+        out = dr.run(read(SNAP), ["current"])
+        self.assertEqual(out["fit"]["target"]["refresh_per_hour"], dr.TARGET_REFRESH_PER_HOUR)
+
+    def test_the_failed_rows_of_recent_are_found(self):
+        snap = read(SNAP)
+        rows = snap["recent"]["recent"]
+        rows[0]["reason"] = "error:nxdomain"
+        _, _, c0, _, _ = dr.build(snap)
+        fails = dr.failed_lookups(snap, c0)
+        self.assertIn((rows[0]["at"], dr.host_of(rows[0]["target"])), fails)
+        self.assertEqual(len(fails), 1)
+
+
+T2917 = os.path.join(os.path.dirname(HERE), "status", "tokyo", "2026-10-27T024200Z-snapshot.json")
+
+
+@unittest.skipUnless(os.path.exists(T2917), "tokyo の雪像 (status/tokyo/) が無い")
+class Deployed2917(unittest.TestCase):
+    """T.29.17 の受け入れ基準: 10-27 の雪像で、今の規則の模型がミス・引き直しとも実機の ±30%。
+
+    実機は同じ区間 (2.54 時間) のミス 130 回、引き直し 374 回/時 (起動から 24.1 時間。`warm_secs` 0)。
+    T.29.16 までの `current` (keep-warm あり) は引き直し 2,273 回/時で「合わない」だった。
+    """
+
+    def test_the_current_model_matches_the_real_proxy(self):
+        out = dr.run(read(T2917), ["current", "keep_warm"])
+        cur = out["rules"]["current"]
+        self.assertTrue(out["fit"]["miss_per_lookup"], (cur["misses"], out["fit"]))
+        self.assertTrue(out["fit"]["refresh_per_hour"], (cur["refresh_per_hour"], out["fit"]))
+        self.assertTrue(dr.within(cur["misses"], 130), cur["misses"])
+        self.assertTrue(dr.within(cur["refresh_per_hour"], 373.6), cur["refresh_per_hour"])
+        # keep-warm の模型は今の実機と合わない (引き直しが 6 倍)
+        self.assertFalse(dr.within(out["rules"]["keep_warm"]["refresh_per_hour"], 373.6))
 
 if __name__ == "__main__":
     unittest.main()

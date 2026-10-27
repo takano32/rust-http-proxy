@@ -35,7 +35,16 @@
 # warm でない) と上限側 (区間の始まりで warm) の 2 通りで置く (模型の warm の件数が実機より少ないため)。
 # `--series` は `/hosts_series` (上位 16 名前 × 24 時間) だけを到着列にして回す (長い区間での名前ごとの値)。
 #
-# 使い方: scripts/dns-replay.py SNAP.json [--rule current|no_idle|all] [--serve-stale SECS]... [--no-prime]
+# **「今の規則」(`current`) は keep-warm を止めた模型 (T.29.17)**: `PROXY_DNS_WARM_SECS=0` (T.22.4。warm に上げない
+# = 裏の引き直しは先回りと serve-stale だけ) と serve-stale 21,600 秒 (T.21.3) が 0.22.6 からの既定で、tokyo は
+# `warm_secs` 0。T.29.16 までの `current` は warm 3,600 秒・serve-stale なしの模型で、10-27 の雪像に当てると引き直し
+# 2,273 回/時 (実機 374 回/時) を出し、道具自身が「模型が実機と合わない」と判定していた。その模型は `keep_warm`
+# (と `no_idle`) として残す。**名前解決に失敗した接続** (`/recent` の `error:nxdomain` / `error:dns_temp` /
+# `error:dns`) は負のキャッシュ (60 秒。T.27.3) の模型で回す (期限内は当たり、それ以外は `negative` のミス、
+# 裏の引き直しは無し)。一致は**その雪像の実機の値**と比べる: ミスは同じ区間の `/history?res=60` の
+# `dns_misses`、引き直しは `/status` の `dns.refreshes` ÷ 起動からの時間 (どちらも ±30%)
+#
+# 使い方: scripts/dns-replay.py SNAP.json [--rule current|keep_warm|no_idle|all] [--serve-stale SECS]... [--no-prime]
 #         [--grid] [--series] [--json]
 # 依存は Python 3 の標準ライブラリだけ (このリポジトリの方針どおり外部パッケージを使わない)。
 
@@ -49,14 +58,19 @@ import sys
 TTL = 60
 WARM = 3600
 MAX_WARM = 32
-# 実機の値 (T.16.99: 平常時のミス 0.06 回/接続、裏の引き直し 436 回/時)。模型が合っているかの物差し
+# 実機の値 (T.16.99: 平常時のミス 0.06 回/接続、裏の引き直し 436 回/時)。模型が合っているかの物差し。
+# T.29.17 からは雪像に実機の値 (`/history` のミス・`/status` の引き直し) があればそちらと比べ、無いときだけこれ
 TARGET_MISS_PER_CONNECT = 0.06
 TARGET_REFRESH_PER_HOUR = 436.0
+# 負のキャッシュの TTL (`PROXY_DNS_NEGATIVE_TTL_SECS` の既定。T.27.3)
+NEGATIVE_TTL = 60
+# 名前解決に失敗した接続の `/recent` の理由 (T25.0 の内訳と、それより前の綴り)
+DNS_FAIL_REASONS = ("error:nxdomain", "error:dns_temp", "error:dns")
 # 「合う」と見なす幅 (±30%)
 TOLERANCE = 0.30
 # `hosts_series` の窓の長さの既定 (応答に `window_secs` が無いとき)
 SERIES_WINDOW = 300
-MISS_KINDS = ("cold", "expired", "warm_stale")
+MISS_KINDS = ("cold", "expired", "warm_stale", "negative")
 # serve-stale を採る目安 (T.21.3): `expired` のミスが半分以下、かつ裏の引き直しの増えが +10% 以内
 STALE_EXPIRED_MAX = 0.5
 STALE_REFRESH_MAX = 0.10
@@ -94,6 +108,15 @@ def promote_no_idle(e, idle, window):
 
 
 RULES = {"current": promote_current, "no_idle": promote_no_idle}
+
+# `run()` が回す規則 (名前 → (promote の規則, `replay` の設定))。`current` は 0.22.6 からの既定
+# (keep-warm を止め、serve-stale 21,600 秒。T.29.17)、`keep_warm` と `no_idle` は T.17.5 の模型
+# (warm 3,600 秒・serve-stale なし。T.29.16 まで `current` と呼んでいたもの)
+PLANS = {
+    "current": (promote_current, {"window": 0, "serve_stale": 21600}),
+    "keep_warm": (promote_current, {}),
+    "no_idle": (promote_no_idle, {}),
+}
 
 
 def host_of(target):
@@ -140,11 +163,13 @@ class Table:
         self._warm_t = None
         # 名前ごとの引き直しの回数 (区間の中だけ。名前ごとの最大を出すため。T.22.4)
         self.per_name = {}
+        # 負のキャッシュ (名前 → 期限の時刻。T.29.17)
+        self.negative = {}
         self.c = self.zero()
 
     @staticmethod
     def zero():
-        return {"lookups": 0, "hits": 0, "misses": 0,
+        return {"lookups": 0, "hits": 0, "misses": 0, "negative_hits": 0,
                 "misses_by_kind": {k: 0 for k in MISS_KINDS},
                 "refreshes": 0, "refresh_warm": 0, "refresh_ask": 0,
                 "stale_hits": 0, "refresh_stale": 0, "stale_hits_warm": 0,
@@ -222,10 +247,20 @@ class Table:
 
     # -- 要求の経路 (`resolve_host`)
 
-    def lookup(self, name, now):
+    def lookup(self, name, now, fail=False):
         self.advance(now)
         if self.counting:
             self.c["lookups"] += 1
+        if fail:
+            # 名前解決に失敗した接続 (T.29.17): 負のキャッシュの期限内なら当たり、それ以外はミスで
+            # 期限を延ばす。表の答え (正の方) と裏の引き直しには触らない
+            if self.negative.get(name, 0) > now:
+                if self.counting:
+                    self.c["negative_hits"] += 1
+            else:
+                self._miss("negative")
+                self.negative[name] = now + NEGATIVE_TTL
+            return
         e = self.table.get(name)
         if e is None:
             self.table[name] = {"has_addrs": True, "resolved_at": now,
@@ -328,6 +363,22 @@ def build(snap):
     return warmup, inside, c0, taken, seen_before
 
 
+def failed_lookups(snap, c0):
+    """区間の中で名前解決に失敗した接続 (`/recent` の理由が `DNS_FAIL_REASONS`) の `(at, 名前)` の集合 (T.29.17)。"""
+    recent = ((snap.get("recent") or {}).get("recent")) or []
+    return {(r["at"], host_of(r["target"])) for r in recent
+            if r["at"] >= c0 and r.get("reason") in DNS_FAIL_REASONS}
+
+
+def actual_refresh_per_hour(snap):
+    """実機の裏の引き直し (回/時) = `/status` の `dns.refreshes` ÷ 起動からの時間 (無ければ None)。"""
+    d = ((snap.get("status") or {}).get("dns")) or {}
+    up = snap.get("uptime_secs") or 0
+    if "refreshes" not in d or not up:
+        return None
+    return d["refreshes"] / (up / 3600.0)
+
+
 def actual(snap, c0, taken):
     """同じ区間の実機の値 (`/history?res=60`)。"""
     conns = misses = n = 0
@@ -345,8 +396,10 @@ def actual(snap, c0, taken):
 
 def replay(warmup, inside, c0, taken, rule, seen_before=(), ttl=TTL, window=WARM,
            max_warm=MAX_WARM, serve_stale=0, promote_at="now", prime_warm=False,
-           refresh_at=None):
+           refresh_at=None, fails=frozenset()):
     """助走を数えずに回し、区間 `[c0, taken]` の中だけを数える。
+
+    `fails` は名前解決に失敗した到着の `(時刻, 名前)` の集合 (`failed_lookups`。T.29.17)。負のキャッシュで回す。
 
     `refresh_at` は先回りの齢 (秒)。`None` = TTL の 3/4 (`refresh_after`)。T.24.1 で
     「k と TTL のどちらが引き直しの間隔を決めているか」を分けて見るために足した。
@@ -369,7 +422,7 @@ def replay(warmup, inside, c0, taken, rule, seen_before=(), ttl=TTL, window=WARM
     tb.c["warm_max"] = len(tb.queue)
     tb._warm_t = c0
     for t, h in inside:
-        tb.lookup(h, t)
+        tb.lookup(h, t, (t, h) in fails)
     tb.advance(taken)
     c = tb.c
     hours = (taken - c0) / 3600.0
@@ -404,32 +457,53 @@ def stale_verdict(cur, new):
 
 def run(snap, rules, prime=True, stale=()):
     warmup, inside, c0, taken, seen_before = build(snap)
+    fails = failed_lookups(snap, c0)
+    real = actual(snap, c0, taken)
+    real_refresh = actual_refresh_per_hour(snap)
+    if real is not None:
+        real["refresh_per_hour"] = real_refresh
     out = {"window": {"from": c0, "to": taken, "hours": (taken - c0) / 3600.0,
                       "lookups": len(inside), "warmup_lookups": len(warmup),
+                      "failed_lookups": len(fails),
                       "seen_before": sorted(seen_before) if prime else []},
-           "actual": actual(snap, c0, taken), "rules": {}}
+           "actual": real, "rules": {}}
     for name in rules:
-        out["rules"][name] = replay(warmup, inside, c0, taken, RULES[name],
-                                    seen_before if prime else ())
-    # serve-stale (T.21.3) はいまの `promote` の上に足す (比べる相手は `current`)
+        rule, kw = PLANS[name]
+        out["rules"][name] = replay(warmup, inside, c0, taken, rule,
+                                    seen_before if prime else (), fails=fails, **kw)
+    # serve-stale (T.21.3) は keep-warm の模型の `promote` の上に足す (比べる相手は `keep_warm`)
     for secs in stale:
         out["rules"][f"stale_{secs}"] = replay(warmup, inside, c0, taken, promote_current,
-                                               seen_before if prime else (), serve_stale=secs)
+                                               seen_before if prime else (), serve_stale=secs,
+                                               fails=fails)
     cur = out["rules"].get("current")
     if cur:
+        # 実機の値と比べる (T.29.17)。ミスは同じ区間の回数、引き直しは起動からの回/時。
+        # 雪像に無ければ T.16.99 の物差し (ミス/到着と回/時)
+        if real is not None and real.get("dns_misses"):
+            miss_ok = within(cur["misses"], real["dns_misses"])
+            miss_target = {"misses": real["dns_misses"]}
+        else:
+            miss_ok = within(cur["miss_per_lookup"], TARGET_MISS_PER_CONNECT)
+            miss_target = {"miss_per_lookup": TARGET_MISS_PER_CONNECT}
+        refresh_target = real_refresh if real_refresh else TARGET_REFRESH_PER_HOUR
         out["fit"] = {
-            "miss_per_lookup": within(cur["miss_per_lookup"], TARGET_MISS_PER_CONNECT),
-            "refresh_per_hour": within(cur["refresh_per_hour"], TARGET_REFRESH_PER_HOUR),
+            "miss_per_lookup": miss_ok,
+            "refresh_per_hour": within(cur["refresh_per_hour"], refresh_target),
+            "target": dict(miss_target, refresh_per_hour=refresh_target),
         }
-    if cur and "no_idle" in out["rules"]:
+    base = out["rules"].get("keep_warm")
+    if base and "no_idle" in out["rules"]:
+        cur = base
         new = out["rules"]["no_idle"]
         out["delta"] = {
             "misses": ((new["misses"] - cur["misses"]) / cur["misses"]) if cur["misses"] else None,
             "refreshes": ((new["refreshes"] - cur["refreshes"]) / cur["refreshes"])
             if cur["refreshes"] else None,
         }
-    if cur and stale:
-        out["stale"] = {str(secs): stale_verdict(cur, out["rules"][f"stale_{secs}"])
+    base = out["rules"].get("keep_warm")
+    if base and stale:
+        out["stale"] = {str(secs): stale_verdict(base, out["rules"][f"stale_{secs}"])
                         for secs in stale}
         ok = [secs for secs in stale if out["stale"][str(secs)]["ok"]]
         # 既定は目安を満たすいちばん短い窓 (長いほど古い番地に繋ぎに行く見込みが増える)
@@ -614,17 +688,24 @@ def render(out):
         mp = a["miss_per_connect"]
         lines.append(f"実機 (同じ区間の `/history?res=60`): 確立 {a['connects']} 本、ミス {a['dns_misses']} 回"
                      + (f" = {mp:.3f} 回/接続" if mp is not None else ""))
-    lines.append(f"物差し (T.16.99): ミス {TARGET_MISS_PER_CONNECT} 回/接続、引き直し "
-                 f"{TARGET_REFRESH_PER_HOUR:.0f} 回/時 (±{TOLERANCE * 100:.0f}%)")
+    tgt = (out.get("fit") or {}).get("target") or {}
+    if "misses" in tgt:
+        lines.append(f"物差し (T.29.17。この雪像の実機): ミス {tgt['misses']} 回 (同じ区間)、引き直し "
+                     f"{tgt['refresh_per_hour']:.0f} 回/時 (`/status` の起動から) (±{TOLERANCE * 100:.0f}%)")
+    else:
+        lines.append(f"物差し (T.16.99): ミス {TARGET_MISS_PER_CONNECT} 回/接続、引き直し "
+                     f"{TARGET_REFRESH_PER_HOUR:.0f} 回/時 (±{TOLERANCE * 100:.0f}%)")
+    if w.get("failed_lookups"):
+        lines.append(f"名前解決に失敗した到着 {w['failed_lookups']} 件は負のキャッシュ ({NEGATIVE_TTL} 秒) で回す")
     lines.append("")
-    lines.append("| 規則 | 到着 | ミス | ミス/到着 | cold / expired / warm_stale | 古い答え | 引き直し | 回/時 "
+    lines.append("| 規則 | 到着 | ミス | ミス/到着 | cold / expired / warm_stale / negative | 古い答え | 引き直し | 回/時 "
                  "| うち warm / 先回り / 古い答え | 上げた | warm 平均 / 最大 |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
     for name, c in out["rules"].items():
         k = c["misses_by_kind"]
         lines.append(
             f"| {name} | {c['lookups']} | {c['misses']} | {c['miss_per_lookup']:.3f} "
-            f"| {k['cold']} / {k['expired']} / {k['warm_stale']} | {c['stale_hits']} "
+            f"| {k['cold']} / {k['expired']} / {k['warm_stale']} / {k['negative']} | {c['stale_hits']} "
             f"| {c['refreshes']} | {c['refresh_per_hour']:.1f} "
             f"| {c['refresh_warm']} / {c['refresh_ask']} / {c['refresh_stale']} "
             f"| {c['promotes']} | {c['warm_avg']:.2f} / {c['warm_max']} |")
@@ -653,7 +734,7 @@ def render(out):
 def main(argv=None):
     p = argparse.ArgumentParser(description="replay the DNS table rules over a snapshot")
     p.add_argument("snapshot")
-    p.add_argument("--rule", choices=["current", "no_idle", "all"], default="all")
+    p.add_argument("--rule", choices=["current", "keep_warm", "no_idle", "all"], default="all")
     p.add_argument("--serve-stale", type=int, action="append", default=[], metavar="SECS",
                    help="also replay serve-stale: answer from an expired entry younger than SECS "
                         "and refresh it in the background (repeatable)")
@@ -678,9 +759,9 @@ def main(argv=None):
             return 2
         print(json.dumps(out, indent=1) if a.json else render_grid(out))
         return 0
-    rules = list(RULES) if a.rule == "all" else [a.rule]
-    if a.serve_stale and "current" not in rules:
-        rules.insert(0, "current")  # serve-stale は `current` と比べる
+    rules = list(PLANS) if a.rule == "all" else [a.rule]
+    if a.serve_stale and "keep_warm" not in rules:
+        rules.append("keep_warm")  # serve-stale は keep-warm の模型と比べる
     if any(s <= 0 for s in a.serve_stale):
         print("dns-replay: --serve-stale must be positive", file=sys.stderr)
         return 2

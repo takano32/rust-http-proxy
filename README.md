@@ -658,6 +658,12 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
   この規則を変えたらミスと引き直しがどう動くかは、**`scripts/dns-replay.py SNAP.json`** が雪像 1 枚
   (`/recent` の到着列と `/hosts_series` の助走) で見積もります (T.17.5。いまの規則の値を同じ区間の
   `/history` と並べ、`promote` の条件を差し替えた案と比べる。`--json` で機械で読む形)。
+  **「いまの規則」(`current`) は T.29.17 から keep-warm を止めた模型** (`PROXY_DNS_WARM_SECS=0`・serve-stale 21,600 秒 =
+  0.22.6 からの既定) で、名前解決に失敗した到着 (`/recent` の `error:nxdomain` / `error:dns_temp`) は負のキャッシュ (60 秒) で
+  回し、一致は**その雪像の実機の値** (同じ区間の `/history` のミス、`/status` の `dns.refreshes` ÷ 起動からの時間) と ±30% で
+  比べます (10-27 の雪像: 模型のミス 122 回・引き直し 405 回/時、実機 130 回・374 回/時)。T.29.16 までの `current`
+  (warm 3,600 秒・serve-stale なし。引き直し 2,261 回/時で「合わない」と出ていた) は `keep_warm` の名前で残り、
+  `no_idle` と `--serve-stale` はそれと比べます。
   `--serve-stale SECS` (何度でも) で serve-stale の窓ごとの `expired` と引き直しの数も並べます (T.21.3)。
   `--grid` は serve-stale 21,600 秒を基準に、warm の枠 16 / 64・窓 900 秒・warm をやめる・`warm_promote` の予定を答えの齢から出す、
   を並べ、`expired` + `warm_stale` のミスの 1 日あたりの増え・引き直しの回/時・名前ごとの最大を出します (T.22.4。区間の前から居た名前を
