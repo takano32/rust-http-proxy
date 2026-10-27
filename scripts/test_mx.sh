@@ -1,7 +1,7 @@
 #!/bin/bash
-# `scripts/mx` (機械のロック) のテスト (T.17.15。7 は T.18.3)。
+# `scripts/mx` (機械のロック) のテスト (T.17.15。7 は T.18.3、8 は T.29.31)。
 #
-# 見るのは 7 つ:
+# 見るのは 8 つ:
 #   1. 終了コード      … 命令の終了コードをそのまま返す (引数なしは 2)
 #   2. 残った子の片付け … 命令が終わったあと (正常終了) と、mx が TERM を受けたとき (143) に、
 #                         命令が裏に残した子がグループごと止まる
@@ -12,16 +12,21 @@
 #   6. `MX_WAIT` で 75  … 待ちきれなければ命令を走らせずに 75 で抜ける
 #   7. 起動の直後の TERM … 命令を起動した直後 (mx が `CHILD=$!` を実行する前) に TERM が届いても
 #                         143 で抜け、命令もその子も残らない。起動の前後に時刻をずらした TERM でも同じ
+#   8. 待つ相手の型    … `MX_OTHERS` の型に当たらないプロキシは待たず、無指定の型は
+#                         `target/release/rust-http-proxy` を見る。`MX_IGNORE_OTHERS=1` なら型に当たるものも待たない
 #
 # **口のファイルは一時ディレクトリ** (`MX_DIR`) に置く。既定の `MX_DIR` は同じ機械で並列に
 # 走っている本物の mx が使っているので、テストが触ると他人の口を取ってしまう。
-# ただし 5 と 6 の偽物のベンチは機械全体の `pgrep` に見えるので、同じ機械の他人の mx も
+# **待つ相手も自分の偽物だけ** (`MX_OTHERS` を一時ディレクトリの偽物の名前にする)。前は機械全体の
+# `target/release/rust-http-proxy` を待ったので、本物のプロキシが 1 本動いているだけで項目ごとに
+# `MX_WAIT` (180 秒) 待ち、`unittest discover` が 7 分半たっても終わらなかった (T.29.31)。
+# ただし 5・6・8 の偽物のベンチは機械全体の `pgrep` に見えるので、同じ機械の他人の mx も
 # 数秒だけ待つ (偽物は数秒で止める)。
 #
 # 使い方: scripts/test_mx.sh [番号...]   (引数なしは全部。`scripts/test_mx.sh 7` は 7 だけ —
 # 偽物のベンチを起動しないので、繰り返し回しても他人の mx を待たせない。
 # `python3 -m unittest discover -s scripts` からも `scripts/test_mx.py` 経由で回る)。
-# 全部通れば 0、1 つでも落ちれば 1 (番号が 1〜7 でなければ 2)。
+# 全部通れば 0、1 つでも落ちれば 1 (番号が 1〜8 でなければ 2)。
 set -u
 cd "$(dirname "$0")/.." || exit 1
 MX=$PWD/scripts/mx
@@ -29,9 +34,9 @@ MX=$PWD/scripts/mx
 # 回す項目 (引数なしは全部)
 for a in "$@"; do
   case "$a" in
-  [1-7]) ;;
+  [1-8]) ;;
   *)
-    echo "usage: $0 [1-7]..." >&2
+    echo "usage: $0 [1-8]..." >&2
     exit 2
     ;;
   esac
@@ -44,11 +49,15 @@ want() {
 
 W=$(mktemp -d -t mx-test.XXXXXX) || exit 1
 # 呼び出し元の設定を持ち込まない (既定の値を見るテストがある)
-unset MX_SLOTS MX_WAIT MX_QUIET
+unset MX_SLOTS MX_WAIT MX_QUIET MX_IGNORE_OTHERS
+# 待ちきれないときも長くは待たない (5・6 は自分で決める。180 秒の既定を踏まない保険。T.29.31)
+export MX_WAIT=20
 # 口と他人のベンチは 0.1 秒ごとに見直させる (既定の 1 秒・2 秒の間隔を待つだけの時間を省く。T.28.29)
 export MX_POLL=0.1
 export MX_DIR="$W/mx"
 FAKE="$W/target/release/rust-http-proxy"
+# 待つ相手は自分の偽物だけ (機械の本物のプロキシは数えない。T.29.31)
+export MX_OTHERS="^$FAKE( |\$)"
 
 # 自分が起動したものだけを覚えておき、最後に止める
 PIDS=()
@@ -112,7 +121,7 @@ wait_fake_visible() {
 }
 
 if pgrep -f '^[^ ]*target/release/rust-http-proxy( |$)' >/dev/null; then
-  echo "注意: 他人のベンチ (target/release/rust-http-proxy) が走っている。mx の待ちが入る" >&2
+  echo "注意: 他人のベンチ (target/release/rust-http-proxy) が走っている (テストは MX_OTHERS で自分の偽物だけを待つ)" >&2
 fi
 
 # --- 1. 終了コード --------------------------------------------------------------
@@ -393,6 +402,59 @@ if want 7; then
   else
     ng "時刻をずらした TERM で:$bad"
   fi
+fi
+
+# --- 8. 待つ相手の型 -----------------------------------------------------------
+if want 8; then
+  echo "8. 待つ相手の型 (MX_OTHERS / MX_IGNORE_OTHERS)"
+  # 型 (自分の偽物 $FAKE) に当たらない別の場所の「プロキシ」。無指定の型には当たる
+  OTHER="$W/elsewhere/target/release/rust-http-proxy"
+  (exec -a "$OTHER" sleep 10) &
+  f=$!
+  PIDS+=("$f")
+  for ((i = 0; i < 50; i++)); do
+    pgrep -f "^$OTHER( |\$)" >/dev/null && break
+    sleep 0.1
+  done
+  # (a) 型に当たらないので待たない
+  t0=$(date +%s%N)
+  "$MX" touch "$W/ran8a" 2>"$W/err8a"
+  rc=$?
+  ms=$((($(date +%s%N) - t0) / 1000000))
+  if [ "$rc" = 0 ] && [ -e "$W/ran8a" ] && [ "$ms" -lt 1000 ] && ! grep -q '他人のベンチ' "$W/err8a"; then
+    ok "MX_OTHERS の型に当たらないプロキシは待たない (${ms} ms)"
+  else
+    ng "型に当たらないプロキシを待った (rc=$rc、${ms} ms): $(cat "$W/err8a")"
+  fi
+  # (b) 無指定の型 (target/release/rust-http-proxy) には当たる。待ちきれず 75
+  MX_OTHERS='' MX_POLL='' MX_WAIT=1 "$MX" touch "$W/ran8b" 2>"$W/err8b"
+  rc=$?
+  if [ "$rc" = 75 ] && [ ! -e "$W/ran8b" ]; then
+    ok "無指定の型は target/release/rust-http-proxy を待つ (MX_WAIT=1 で 75)"
+  else
+    ng "無指定の型が別の場所のプロキシを見ない (rc=$rc)"
+  fi
+  kill -KILL "$f" 2>/dev/null
+  wait "$f" 2>/dev/null
+  # (c) MX_IGNORE_OTHERS=1 なら型に当たる偽物も待たない
+  (exec -a "$FAKE" sleep 10) &
+  f=$!
+  PIDS+=("$f")
+  if wait_fake_visible 5; then
+    t0=$(date +%s%N)
+    MX_IGNORE_OTHERS=1 "$MX" touch "$W/ran8c" 2>"$W/err8c"
+    rc=$?
+    ms=$((($(date +%s%N) - t0) / 1000000))
+    if [ "$rc" = 0 ] && [ -e "$W/ran8c" ] && [ "$ms" -lt 1000 ]; then
+      ok "MX_IGNORE_OTHERS=1 なら型に当たる偽物も待たない (${ms} ms)"
+    else
+      ng "MX_IGNORE_OTHERS=1 でも待った (rc=$rc、${ms} ms): $(cat "$W/err8c")"
+    fi
+  else
+    ng "偽物のベンチが pgrep に見えない"
+  fi
+  kill -KILL "$f" 2>/dev/null
+  wait "$f" 2>/dev/null
 fi
 
 if [ "$NG" = 0 ]; then

@@ -26,6 +26,11 @@
 #   MX_QUIET (既定 0)   1 で「待っています」を出さない
 #   MX_POLL  (無指定)   口と他人のベンチを見直す間隔 (秒、小数も可)。無指定なら今までどおり口は 1 秒・
 #                       ベンチは 2 秒ごと。`scripts/test_mx.sh` が待ちを縮めるためのもの (T.28.29)
+#   MX_OTHERS (無指定)  「他人のベンチ」とみなすプロセスの命令行に当てる正規表現 (`pgrep -f`)。無指定なら
+#                       `^[^ ]*target/release/rust-http-proxy( |$)`。`scripts/test_mx.sh` が自分の偽物だけを
+#                       待つためのもの (機械に本物のプロキシが 1 本動いているだけでテストが 180 秒ずつ
+#                       待たされ、`unittest discover` が 7 分半たっても終わらなかった。T.29.31)
+#   MX_IGNORE_OTHERS (既定 0) 1 で手順 2 (他人のベンチ待ち) を飛ばす。口 (手順 1) は今までどおり取る
 set -u
 if [ $# -eq 0 ]; then
   echo "usage: $0 COMMAND [ARGS...]   (MX_SLOTS=1 で占有)" >&2
@@ -36,6 +41,8 @@ WAIT=${MX_WAIT:-180}
 DIR=${MX_DIR:-${XDG_RUNTIME_DIR:-/tmp}/rust-http-proxy-mx}
 QUIET=${MX_QUIET:-0}
 POLL=${MX_POLL:-}
+OTHERS=${MX_OTHERS:-'^[^ ]*target/release/rust-http-proxy( |$)'}
+IGNORE_OTHERS=${MX_IGNORE_OTHERS:-0}
 mkdir -p "$DIR" || exit 1
 
 say() { [ "$QUIET" = 1 ] || echo "mx: $*" >&2; }
@@ -93,7 +100,9 @@ others() {
   # 命令の先頭 (argv[0]) が target/release/rust-http-proxy のものだけ。
   # 「自分の命令の子孫は除く」(セッションが `$CHILD` のものを飛ばす) は外した (T.18.3): ここを呼ぶのは
   # 命令を起動する前だけで、`CHILD` はまだ無く、一度も効いていなかった。起動前に自分の子孫は居ない
-  pgrep -f '^[^ ]*target/release/rust-http-proxy( |$)' 2>/dev/null
+  # 当てる型は `MX_OTHERS` で替えられ、`MX_IGNORE_OTHERS=1` なら誰も数えない (T.29.31)
+  [ "$IGNORE_OTHERS" = 1 ] && return 0
+  pgrep -f -- "$OTHERS" 2>/dev/null
 }
 start=$SECONDS
 if [ -n "$(others)" ]; then
