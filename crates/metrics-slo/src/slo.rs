@@ -21,9 +21,19 @@
 //! | 2 | `error_rate` | `(errors − dns) ÷ (確立 + 転送 + errors − dns)` | 閾以下 |
 //! | 3 | `dns_miss_per_connect` | `(dns_misses − dns_fail_misses) ÷ 確立` | 閾以下 |
 //!
-//! **達成 = 4 つとも満たす** (ビットが 1 つも立たない)。**確立も (名前が引けたうえでの)
+//! **達成 = 4 つとも満たす**。**確立も (名前が引けたうえでの)
 //! エラーも 1 本も無い標本は「判定なし」**で分母に入れない (誰も使っていない夜中を
 //! 「達成」と数えると、達成率が「動いていた割合」に化ける)。
+//!
+//! **T.29.33 から比の 2 つ (`error_rate`・`dns_miss_per_connect`) は 1 時間の合計で判定する**
+//! (利用者の決定)。5 秒の標本の 96% は確立 1〜4 本で、「新しい名前が 1 つ」「エラーが 1 件」で外れた
+//! (0.28.48 の 27 時間で外れ 887 中 `dns_miss` 461 = 52%、外れた 32 標本は全部分母 1〜6 本) =
+//! 比の閾として働いていなかった。速さ (確立の 2 つ) は今までどおり 5 秒の標本ごとに判定し、
+//! 比は**その時間 (UTC の 1 時間の区切り) の分子と分母の合計**で判定する。達成した 5 秒 =
+//! 速さの 2 つを満たし、かつ**その時間の**比の 2 つを満たした 5 秒 (比を外した時間は、その時間の
+//! 5 秒を全部「達成していない」と数える)。`/slo` には時間・日ごとの合計 (`rates`・`rate_sums`)、
+//! 比ごとに満たした / 外した時間の数、**直近 1 時間** (いまから 3,600 秒) の合計 (`last_hour`) も出す。
+//! いまの時間 (途中の 1 時間) はそこまでの合計で判定する。
 //!
 //! **T.28.45 で 3 つの読み方を変えた** (利用者の決定 9。T.28.16 段 1 の模型。綴りと
 //! `PROXY_SLO` の鍵はそのまま、`/slo` の `basis` に読み方が出る):
@@ -50,7 +60,8 @@
 //! **持ち方**: 判定した 4 ビットは [`Sample`] にも `.rrd` にも書かない
 //! (判定は [`Sample`] から何度でも作り直せる)。積むのは**時間ごとの集計**
 //! ([`Hour`] = 判定した数・達成した数・閾ごとに外した数と最悪の値) だけで、
-//! メモリ上に [`HOURS`] 時間 (31 日) ぶん = 744 × 64 B ≈ 48 KiB。**再起動で消える**
+//! メモリ上に [`HOURS`] 時間 (31 日) ぶん = 744 × 72 B ≈ 52 KiB (T.29.33 で比の分子・分母を足した。
+//! 直近 1 時間の 5 秒ごとの分子・分母 720 本 ≈ 28 KiB も持つ)。**再起動で消える**
 //! (T14.4〜T14.8 の共通の決まり)。
 //!
 //! 5 秒の標本そのものは 6 時間 (T14.32)、60 秒は 1 日、3,600 秒は 30 日しか残らないので、
@@ -72,7 +83,7 @@ pub const NAMES: [&str; 4] = [
     "dns_miss_per_connect",
 ];
 
-/// 集計を残す時間数 (31 日)。1 時間 = [`Hour`] 64 B なので約 48 KiB。
+/// 集計を残す時間数 (31 日)。1 時間 = 72 B (T.29.33) なので約 52 KiB。
 pub const HOURS: usize = 24 * 31;
 
 /// `/slo?days=` の既定と上限 ([`HOURS`] と揃える)。
@@ -111,9 +122,10 @@ pub struct Thresholds {
 /// (T.28.45 より前の `/slo` にはこの鍵が無い = 確立そのもの・全試み・全ミス)。
 /// `connect` は T.28.45 〜 T.29.11 が `establish_minus_rtt` (`dns + connect − RTT`)、
 /// T.29.12 から `connect_minus_rtt` (名前解決を除く)。
+/// 比の 2 つは T.29.33 から **1 時間の合計**で判定する (`_hourly_sum` が付く。それより前は 5 秒の標本ごと)。
 pub const BASIS_JSON: &str = "{\"connect\":\"connect_minus_rtt\",\
-                              \"error_rate\":\"resolved_attempts\",\
-                              \"dns_miss_per_connect\":\"excluding_failed_lookups\"}";
+                              \"error_rate\":\"resolved_attempts_hourly_sum\",\
+                              \"dns_miss_per_connect\":\"excluding_failed_lookups_hourly_sum\"}";
 
 /// 既定の閾 (`PROXY_SLO=connect_p50_ms=5,connect_p95_ms=50,error_rate=0.005,dns_miss_per_connect=0.2`)。
 ///
@@ -159,7 +171,11 @@ impl Thresholds {
     }
 }
 
-/// 標本 1 本の判定。**`bits` が本文の「4 ビット」** (立っている = その閾を外した)。
+/// 標本 1 本の判定。**`bits` が本文の「4 ビット」を 5 秒の標本だけで見たもの** (立っている = その閾を外した)。
+///
+/// T.29.33 から、達成の判定に使うのは**確立の 2 つ (ビット 0・1) だけ**で、比の 2 つ (ビット 2・3) は
+/// 1 時間の合計 ([`Hour`] の `num` / `den`) で判定する。ここの 2・3 のビットと値は「その 5 秒だけで
+/// 見たら」の参考 (分母が 1〜4 本の 5 秒が 96% なので、二値化した数字になる)。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Verdict {
     /// 判定できたか (**確立かエラーが 1 本以上あった**。T20.4)。偽なら分母に入れない
@@ -168,12 +184,30 @@ pub struct Verdict {
     pub bits: u8,
     /// その標本の 4 つの値 (外れた時間帯の「その値」に使う)
     pub values: [f64; 4],
+    /// 比の 2 つ (`error_rate`・`dns_miss_per_connect`) のこの標本の分子と分母 (T.29.33)。
+    /// 判定できない標本でも、試み (転送だけの 5 秒など) があれば入る
+    pub num: [u64; RATES],
+    pub den: [u64; RATES],
 }
 
+/// 比の閾の数 (`error_rate` と `dns_miss_per_connect`。[`NAMES`] の 2・3 番目)。
+pub const RATES: usize = 2;
+/// 比の閾が [`NAMES`] のどこから始まるか。
+const RATE_AT: usize = 2;
+/// 確立の 2 つ (速さ) のビット。**5 秒の標本ごと**に判定するのはこの 2 つだけ (T.29.33)。
+const SPEED_BITS: u8 = 0b0011;
+/// 比を合計する窓 (秒)。`/slo` の `rate_window_secs`
+pub const RATE_WINDOW_SECS: u64 = HOUR;
+
 impl Verdict {
-    /// 4 つとも満たしたか (判定できていないときは偽)。
+    /// 5 秒の標本だけで見て 4 つとも満たしたか (判定できていないときは偽)。T.29.33 からは参考。
     pub fn met(&self) -> bool {
         self.judged && self.bits == 0
+    }
+
+    /// 確立の 2 つ (速さ) を満たしたか (T.29.33。達成の判定に使うのはこちら)。
+    pub fn fast(&self) -> bool {
+        self.judged && self.bits & SPEED_BITS == 0
     }
 }
 
@@ -184,35 +218,35 @@ pub fn judge(th: &Thresholds, s: &Sample) -> Verdict {
     // 「客が無い名前を頼んだ」もので、プロキシの速さとも失敗とも関係が無い
     let dns_failed = s.errors_by_cause[crate::metrics::ErrCause::Dns as usize].min(s.errors);
     let resolved_errors = s.errors - dns_failed;
+    // 試み = 確立 + 転送 + エラー − 名前解決の失敗 (T20.4・T.28.45)
+    let attempts = (connects + s.forward.count + s.errors) - dns_failed;
+    // 名前解決のミスは失敗した試みのぶんを除く (T.28.45)
+    let misses = s.dns_misses.saturating_sub(s.dns_fail_misses);
+    let num = [resolved_errors, misses];
+    let den = [attempts, connects];
     if connects == 0 && resolved_errors == 0 {
         // 確立も (名前が引けたうえでの) エラーも 1 本も無い標本は「判定なし」。分位点が
         // 0 になるだけでなく、「誰も使っていない時間」を達成として数えると達成率の意味が
-        // 変わる。**名前解決の失敗だけの標本もここ** (T.28.45。E1 では分母が 0 になる)
-        return Verdict::default();
+        // 変わる。**名前解決の失敗だけの標本もここ** (T.28.45。E1 では分母が 0 になる)。
+        // 比の分子と分母は持たせる (転送だけの 5 秒も 1 時間の合計の分母に入る。T.29.33)
+        return Verdict {
+            num,
+            den,
+            ..Verdict::default()
+        };
     }
     // **エラーだけの標本も判定する** (T20.4)。失敗した 1 件は確立の窓に入らなくなったので、
     // 確立 0 本を「判定なし」のままにすると、繋がらない CONNECT だけの時間 (宛先が全滅した
     // 時間帯も) が達成率から消える。確立が無いときは速さとミスの 3 つは 0 のまま
     // (外したことにしない) で、エラー率だけが効く
-    let attempts = (connects + s.forward.count + s.errors) - dns_failed;
-    // 名前解決のミスは失敗した試みのぶんを除く (T.28.45)
-    let misses = s.dns_misses.saturating_sub(s.dns_fail_misses);
     let values = [
         // 確立の 2 つは「確立 − カーネルの RTT」の窓 (T.28.45)。T.29.12 から**名前解決を除いた**
         // `conn_excess` (名前解決の遅れは `dns_slow` に任せる)。**窓が空なら 0** (= 外さない):
         // T.29.12 より前の標本と、RTT が 1 本も読めなかった標本 (Linux 以外) はここ
         s.conn_excess.quantile_ms(0.5),
         s.conn_excess.quantile_ms(0.95),
-        if attempts == 0 {
-            0.0
-        } else {
-            resolved_errors as f64 / attempts as f64
-        },
-        if connects == 0 {
-            0.0
-        } else {
-            misses as f64 / connects as f64
-        },
+        ratio_of(resolved_errors, attempts),
+        ratio_of(misses, connects),
     ];
     let limits = th.limits();
     let mut bits = 0u8;
@@ -225,22 +259,95 @@ pub fn judge(th: &Thresholds, s: &Sample) -> Verdict {
         judged: true,
         bits,
         values,
+        num,
+        den,
     }
 }
 
-/// 1 時間ぶんの集計 (**標本ごとの 4 ビットを畳んだもの**)。
+/// `num ÷ den` (分母が 0 なら 0)。
+fn ratio_of(num: u64, den: u64) -> f64 {
+    if den == 0 {
+        0.0
+    } else {
+        num as f64 / den as f64
+    }
+}
+
+/// 1 時間ぶんの**積み上げ** (リングに持つもの。閾の当て方は [`Slot::tally`] が決める)。
+///
+/// 速さ (確立の 2 つ) は 5 秒の標本ごとの判定を畳み、比の 2 つは**分子と分母の合計**を持つ
+/// (T.29.33。利用者の決定: 比は 1 時間の合計で判定する)。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Slot {
+    t: u64,
+    judged: u32,
+    /// 速さの 2 つを満たした 5 秒の数
+    fast: u32,
+    miss_speed: [u32; 2],
+    worst_speed: [f64; 2],
+    num: [u64; RATES],
+    den: [u64; RATES],
+}
+
+impl Slot {
+    /// 閾を当てて 1 時間の集計にする。
+    ///
+    /// 比の 2 つはこの 1 時間の `Σ分子 ÷ Σ分母` で判定し、**どちらかを外した時間は、その時間の 5 秒を全部
+    /// 「達成していない」**と数える (`met` = 0、外した比の `miss` = 判定した 5 秒の数、`worst` = その時間の比)。
+    /// 満たした時間の `met` は速さの 2 つを満たした 5 秒の数。分母が 0 の比は外さない (判定なし)。
+    fn tally(&self, th: &Thresholds) -> Hour {
+        let limits = th.limits();
+        let mut h = Hour {
+            t: self.t,
+            judged: self.judged,
+            num: self.num,
+            den: self.den,
+            ..Hour::default()
+        };
+        h.miss[..2].copy_from_slice(&self.miss_speed);
+        h.worst[..2].copy_from_slice(&self.worst_speed);
+        let mut rates_ok = true;
+        for i in 0..RATES {
+            if self.den[i] == 0 {
+                continue;
+            }
+            let v = self.num[i] as f64 / self.den[i] as f64;
+            if v > limits[RATE_AT + i] {
+                rates_ok = false;
+                h.miss[RATE_AT + i] = self.judged;
+                h.worst[RATE_AT + i] = v;
+                h.rate_hours[i][1] = 1;
+            } else {
+                h.rate_hours[i][0] = 1;
+            }
+        }
+        h.met = if rates_ok { self.fast } else { 0 };
+        h
+    }
+}
+
+/// 1 時間ぶん (と、それを日・期間で足したもの) の集計。
+///
+/// T.29.33 から `met` は「速さの 2 つを 5 秒ごとに満たし、**その時間の比の 2 つも 1 時間の合計で満たした**」
+/// 5 秒の数。`miss` の 2・3 番目 (比) は、その比を外した時間の判定した 5 秒の数。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Hour {
     /// その時間の 0 分 0 秒 (epoch 秒)
     pub t: u64,
     /// 判定できた標本の数 (確立かエラーが 1 本以上あったもの)
     pub judged: u32,
-    /// そのうち 4 つとも満たした数
+    /// そのうち達成した数 (上の読み方)
     pub met: u32,
     /// 閾ごとに外した標本の数 ([`NAMES`] の順)
     pub miss: [u32; 4],
-    /// 閾ごとの最悪の値 (外した標本の中で。外していなければ 0)
+    /// 閾ごとの最悪の値 (速さは外した 5 秒の中で、比は外した時間の 1 時間の値。外していなければ 0)
     pub worst: [f64; 4],
+    /// 比の 2 つの分子と分母の合計 (T.29.33。`error_rate` = 名前解決に成功した試みのエラー ÷ 試み、
+    /// `dns_miss_per_connect` = 失敗した試みを除いたミス ÷ 確立)
+    pub num: [u64; RATES],
+    pub den: [u64; RATES],
+    /// 比ごとの `[満たした時間, 外した時間]` (分母 0 の時間はどちらにも数えない。T.29.33)
+    pub rate_hours: [[u32; 2]; RATES],
 }
 
 impl Hour {
@@ -254,6 +361,11 @@ impl Hour {
         self.judged > 0 && self.met < self.judged
     }
 
+    /// 比 `i` (0 = `error_rate`、1 = `dns_miss_per_connect`) の合計の値 (分母 0 なら `None`)。
+    pub fn rate(&self, i: usize) -> Option<f64> {
+        (self.den[i] > 0).then(|| self.num[i] as f64 / self.den[i] as f64)
+    }
+
     fn add(&mut self, o: &Hour) {
         self.judged += o.judged;
         self.met += o.met;
@@ -261,13 +373,35 @@ impl Hour {
             self.miss[i] += o.miss[i];
             self.worst[i] = self.worst[i].max(o.worst[i]);
         }
+        for i in 0..RATES {
+            self.num[i] += o.num[i];
+            self.den[i] += o.den[i];
+            self.rate_hours[i][0] += o.rate_hours[i][0];
+            self.rate_hours[i][1] += o.rate_hours[i][1];
+        }
     }
+}
+
+/// 直近 1 時間 (いまから [`RATE_WINDOW_SECS`] 秒) の比の合計 (`/slo` の `last_hour`。T.29.33)。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LastHour {
+    /// 窓の始まり (いま − 1 時間) と終わり (いま)
+    pub from: u64,
+    pub to: u64,
+    /// 窓に入った 5 秒の標本の数
+    pub samples: u32,
+    pub num: [u64; RATES],
+    pub den: [u64; RATES],
 }
 
 /// 時間ごとの集計のリング (**触るのは履歴スレッドと `/slo` だけ**)。
 #[derive(Debug, Default)]
 pub struct Tracker {
-    hours: VecDeque<Hour>,
+    hours: VecDeque<Slot>,
+    /// 直近 1 時間の 5 秒ごとの比の分子と分母 (`last_hour` 用。720 本 × 40 B ≈ 28 KiB。T.29.33)
+    recent: VecDeque<(u64, [u64; RATES], [u64; RATES])>,
+    /// 最後に [`Tracker::observe`] が受けた閾 ([`Tracker::hours`] が当てる)
+    th: Option<Thresholds>,
 }
 
 impl Tracker {
@@ -280,39 +414,96 @@ impl Tracker {
     /// 標本は時刻の順に来る (履歴スレッド) が、順が戻った標本 (状態ファイルの読み戻しや
     /// 時計の巻き戻し) は**まだ残っている時間なら足し、落ちていれば捨てる**。
     pub fn observe(&mut self, th: &Thresholds, s: &Sample) -> Verdict {
+        self.th = Some(*th);
         let v = judge(th, s);
-        if !v.judged {
+        let any = v.den.iter().any(|&d| d > 0);
+        if !v.judged && !any {
             return v;
+        }
+        if any {
+            // 直近 1 時間の窓 (時刻の順に来る前提。戻った標本も入れて、古いものは時刻で落とす)
+            self.recent.push_back((s.t, v.num, v.den));
+            let newest = self.recent.iter().map(|r| r.0).max().unwrap_or(s.t);
+            while self
+                .recent
+                .front()
+                .is_some_and(|r| r.0 + RATE_WINDOW_SECS <= newest)
+            {
+                self.recent.pop_front();
+            }
         }
         let key = s.t - s.t % HOUR;
         if self.hours.back().is_none_or(|h| h.t < key) {
             if self.hours.len() >= HOURS {
                 self.hours.pop_front();
             }
-            self.hours.push_back(Hour {
+            self.hours.push_back(Slot {
                 t: key,
-                ..Hour::default()
+                ..Slot::default()
             });
         }
         let Some(slot) = self.hours.iter_mut().rev().find(|h| h.t == key) else {
             return v;
         };
-        slot.judged += 1;
-        if v.bits == 0 {
-            slot.met += 1;
+        for i in 0..RATES {
+            slot.num[i] += v.num[i];
+            slot.den[i] += v.den[i];
         }
-        for i in 0..4 {
+        if !v.judged {
+            return v;
+        }
+        slot.judged += 1;
+        if v.fast() {
+            slot.fast += 1;
+        }
+        for i in 0..2 {
             if v.bits & (1 << i) != 0 {
-                slot.miss[i] += 1;
-                slot.worst[i] = slot.worst[i].max(v.values[i]);
+                slot.miss_speed[i] += 1;
+                slot.worst_speed[i] = slot.worst_speed[i].max(v.values[i]);
             }
         }
         v
     }
 
-    /// いま持っている時間ごとの集計 (古い順)。
-    pub fn hours(&self) -> impl Iterator<Item = &Hour> {
-        self.hours.iter()
+    /// いま持っている時間ごとの集計 (古い順。最後に受けた閾を当てる)。
+    pub fn hours(&self) -> impl Iterator<Item = Hour> + '_ {
+        let th = self.th.unwrap_or_default();
+        self.hours.iter().map(move |s| s.tally(&th))
+    }
+
+    /// 直近 1 時間 (`now − 1 時間 < t ≤ now`) の比の合計。
+    pub fn last_hour(&self, now: u64) -> LastHour {
+        let from = now.saturating_sub(RATE_WINDOW_SECS);
+        let mut out = LastHour {
+            from,
+            to: now,
+            ..LastHour::default()
+        };
+        for (_, num, den) in self.recent.iter().filter(|r| r.0 > from && r.0 <= now) {
+            out.samples += 1;
+            for i in 0..RATES {
+                out.num[i] += num[i];
+                out.den[i] += den[i];
+            }
+        }
+        out
+    }
+
+    /// その日 (UTC の 0 時 `day_t` から 24 時間) の、比ごとの `[満たした時間, 外した時間]` (日次の 1 行。T.29.33)。
+    pub fn rate_hours_of_day(&self, th: &Thresholds, day_t: u64) -> [[u32; 2]; RATES] {
+        let mut out = [[0u32; 2]; RATES];
+        for h in self
+            .hours
+            .iter()
+            .filter(|h| h.t >= day_t && h.t < day_t + DAY)
+            .map(|s| s.tally(th))
+        {
+            for (o, r) in out.iter_mut().zip(h.rate_hours) {
+                o[0] += r[0];
+                o[1] += r[1];
+            }
+        }
+        out
     }
 
     /// `days` 日ぶん (**今日を含む。「今日」は UTC**) を畳む。
@@ -327,18 +518,24 @@ impl Tracker {
             to: now,
             thresholds: *th,
             today_t: today,
+            last_hour: self.last_hour(now),
             ..Report::default()
         };
-        for h in self.hours.iter().filter(|h| h.t >= from) {
-            out.total.add(h);
+        for h in self
+            .hours
+            .iter()
+            .filter(|h| h.t >= from)
+            .map(|s| s.tally(th))
+        {
+            out.total.add(&h);
             if out.first_t == 0 {
                 out.first_t = h.t;
             }
             out.last_t = h.t;
             let day = h.t - h.t % DAY;
             match out.daily.last_mut() {
-                Some(d) if d.t == day => d.add(h),
-                _ => out.daily.push(Hour { t: day, ..*h }),
+                Some(d) if d.t == day => d.add(&h),
+                _ => out.daily.push(Hour { t: day, ..h }),
             }
             // 外れた時間は**連続していれば 1 行に畳む** (17 時から 23 時まで = 1 件)
             if h.breached() {
@@ -346,17 +543,17 @@ impl Tracker {
                     Some(b) if b.to == h.t => {
                         b.to = h.t + HOUR;
                         b.hours += 1;
-                        b.tally.add(h);
+                        b.tally.add(&h);
                     }
                     _ => out.breaches.push(Breach {
                         from: h.t,
                         to: h.t + HOUR,
                         hours: 1,
-                        tally: *h,
+                        tally: h,
                     }),
                 }
             }
-            out.hourly.push(*h);
+            out.hourly.push(h);
         }
         out
     }
@@ -397,6 +594,8 @@ pub struct Report {
     pub hourly: Vec<Hour>,
     /// 外れた時間帯 (古い順)
     pub breaches: Vec<Breach>,
+    /// 直近 1 時間の比の合計 (T.29.33)
+    pub last_hour: LastHour,
 }
 
 impl Report {
@@ -470,8 +669,11 @@ impl Report {
             }
             push_breach(&mut out, b, &self.thresholds);
         }
-        // 時間ごとは**キーを 1 回だけ**出して配列の配列にする (`/history` と同じ作法。T12.4 (3))
-        out.push_str("],\"hourly_keys\":[\"t\",\"judged\",\"met\",\"misses\"],\"hourly\":[");
+        // 時間ごとは**キーを 1 回だけ**出して配列の配列にする (`/history` と同じ作法。T12.4 (3))。
+        // 末尾の `rate_sums` は比の 2 つの `[分子, 分母]` (T.29.33)
+        out.push_str(
+            "],\"hourly_keys\":[\"t\",\"judged\",\"met\",\"misses\",\"rate_sums\"],\"hourly\":[",
+        );
         for (i, h) in self.hourly.iter().enumerate() {
             if out.len() > MAX_BODY - TRAILER {
                 cut = true;
@@ -482,14 +684,28 @@ impl Report {
             }
             let _ = write!(
                 out,
-                "[{},{},{},{}]",
+                "[{},{},{},{},{}]",
                 h.t,
                 h.judged,
                 h.met,
-                miss_json(&h.miss)
+                miss_json(&h.miss),
+                sums_json(h)
             );
         }
-        let _ = write!(out, "],\"truncated\":{}}}", cut);
+        let _ = write!(out, "],\"truncated\":{},", cut);
+        // **末尾に足した鍵** (T.29.33): 比を合計する窓と、直近 1 時間の合計
+        let _ = write!(
+            out,
+            "\"rate_window_secs\":{},\"last_hour\":{{\"from\":{},\"to\":{},\"samples\":{},\"rates\":",
+            RATE_WINDOW_SECS, self.last_hour.from, self.last_hour.to, self.last_hour.samples,
+        );
+        push_rates(
+            &mut out,
+            &self.last_hour.num,
+            &self.last_hour.den,
+            Tail::Met(&self.thresholds),
+        );
+        out.push_str("}}");
         out
     }
 }
@@ -498,7 +714,7 @@ fn push_day(out: &mut String, d: &Hour) {
     let (y, mo, dd, ..) = crate::log::civil_from_epoch(d.t);
     let _ = write!(
         out,
-        "{{\"date\":\"{:04}-{:02}-{:02}\",\"t\":{},\"judged\":{},\"met\":{},\"ratio\":{},\"misses\":{}}}",
+        "{{\"date\":\"{:04}-{:02}-{:02}\",\"t\":{},\"judged\":{},\"met\":{},\"ratio\":{},\"misses\":{},\"rates\":",
         y,
         mo,
         dd,
@@ -508,6 +724,56 @@ fn push_day(out: &mut String, d: &Hour) {
         ratio_json(d.ratio()),
         miss_json(&d.miss),
     );
+    // 比の 2 つの合計と、満たした / 外した時間の数 (T.29.33。閾は `/slo` の `thresholds`)
+    push_rates(out, &d.num, &d.den, Tail::Hours(&d.rate_hours));
+    out.push('}');
+}
+
+/// 比の 1 つの値のあとに何を付けるか ([`push_rates`])。
+enum Tail<'a> {
+    /// 閾を当てた `met` (直近 1 時間)
+    Met(&'a Thresholds),
+    /// 満たした / 外した時間の数 (日ごと)
+    Hours(&'a [[u32; 2]; RATES]),
+}
+
+/// 比の 2 つを `{"error_rate":{"num":..,"den":..,"value":..,…},...}` で書く (T.29.33)。
+///
+/// `value` (と `met`) は分母が 0 なら `null`。
+fn push_rates(out: &mut String, num: &[u64; RATES], den: &[u64; RATES], tail: Tail<'_>) {
+    out.push('{');
+    for i in 0..RATES {
+        if i > 0 {
+            out.push(',');
+        }
+        let v = (den[i] > 0).then(|| num[i] as f64 / den[i] as f64);
+        let _ = write!(
+            out,
+            "\"{}\":{{\"num\":{},\"den\":{},\"value\":{}",
+            NAMES[RATE_AT + i],
+            num[i],
+            den[i],
+            ratio_json(v),
+        );
+        match tail {
+            Tail::Hours(h) => {
+                let _ = write!(
+                    out,
+                    ",\"hours_met\":{},\"hours_missed\":{}}}",
+                    h[i][0], h[i][1]
+                );
+            }
+            Tail::Met(th) => {
+                let met = v.map(|v| (v <= th.limits()[RATE_AT + i]).to_string());
+                let _ = write!(out, ",\"met\":{}}}", met.as_deref().unwrap_or("null"));
+            }
+        }
+    }
+    out.push('}');
+}
+
+fn sums_json(h: &Hour) -> String {
+    format!("[[{},{}],[{},{}]]", h.num[0], h.den[0], h.num[1], h.den[1])
 }
 
 fn push_breach(out: &mut String, b: &Breach, th: &Thresholds) {
@@ -536,12 +802,22 @@ fn push_breach(out: &mut String, b: &Breach, th: &Thresholds) {
         first = false;
         let _ = write!(
             out,
-            "{{\"name\":\"{}\",\"samples\":{},\"worst\":{},\"threshold\":{}}}",
+            "{{\"name\":\"{}\",\"samples\":{},\"worst\":{},\"threshold\":{}",
             name,
             b.tally.miss[i],
             num(b.tally.worst[i]),
             num(limits[i]),
         );
+        // 比は外した時間の数と、その時間帯の合計の分子・分母も添える (T.29.33)
+        if i >= RATE_AT {
+            let r = i - RATE_AT;
+            let _ = write!(
+                out,
+                ",\"hours\":{},\"num\":{},\"den\":{}",
+                b.tally.rate_hours[r][1], b.tally.num[r], b.tally.den[r]
+            );
+        }
+        out.push('}');
     }
     out.push_str("]}");
 }
@@ -606,6 +882,17 @@ pub fn report(now: u64, days: u64) -> Report {
         Some(t) => t.report(&th, now, days),
         None => Tracker::new().report(&th, now, days),
     }
+}
+
+/// その日 (UTC の 0 時 `day_t`) の比ごとの `[満たした時間, 外した時間]` (日次の 1 行が読む。T.29.33)。
+/// 集計はメモリだけなので、その日の途中で起動し直していれば起動してからの時間だけ。
+pub fn rate_hours_of_day(day_t: u64) -> [[u32; 2]; RATES] {
+    let th = thresholds();
+    let guard = TRACKER.locked();
+    guard
+        .as_ref()
+        .map(|t| t.rate_hours_of_day(&th, day_t))
+        .unwrap_or_default()
 }
 
 /// 覚えている集計を捨てる (テスト用)。
@@ -767,10 +1054,16 @@ mod tests {
         let v = judge(&th, &empty);
         assert!(!v.judged, "{:?}", v);
         assert!(!v.met());
-        // 分母にも入らない
+        // 達成率の分母にも入らない (T.29.33 から、転送の 1 本は比の 1 時間の合計の分母には入る)
         let mut tr = Tracker::new();
         tr.observe(&th, &empty);
-        assert_eq!(tr.hours().count(), 0);
+        let hours: Vec<Hour> = tr.hours().collect();
+        assert!(
+            hours.iter().all(|h| h.judged == 0 && h.ratio().is_none()),
+            "{:?}",
+            hours
+        );
+        assert_eq!(hours.iter().map(|h| h.den[0]).sum::<u64>(), 1);
     }
 
     /// 繋がらない CONNECT だけの標本 (T20.4 のあとは確立 0 本・エラー N 件) は、
@@ -999,7 +1292,7 @@ mod tests {
         let empty = Tracker::new().report(&th, 0, 7).to_json();
         assert!(empty.contains("\"ratio\":null"), "{}", empty);
         assert!(empty.contains("\"truncated\":false"), "{}", empty);
-        assert!(empty.len() < 1024, "{} B", empty.len());
+        assert!(empty.len() < 1536, "{} B", empty.len());
     }
 
     #[test]
@@ -1017,8 +1310,8 @@ mod tests {
             json.contains(
                 "\"thresholds\":{\"connect_p50_ms\":5,\"connect_p95_ms\":50,\
                  \"error_rate\":0.005,\"dns_miss_per_connect\":0.2},\"basis\":{\
-                 \"connect\":\"connect_minus_rtt\",\"error_rate\":\"resolved_attempts\",\
-                 \"dns_miss_per_connect\":\"excluding_failed_lookups\"},\"names\":["
+                 \"connect\":\"connect_minus_rtt\",\"error_rate\":\"resolved_attempts_hourly_sum\",\
+                 \"dns_miss_per_connect\":\"excluding_failed_lookups_hourly_sum\"},\"names\":["
             ),
             "{}",
             json
@@ -1055,8 +1348,152 @@ mod tests {
         assert_eq!(tr.hours().count(), 1);
         // 同じ時間に戻った標本は足す
         tr.observe(&th, &sample(t0 + HOUR + 5, 1, 300));
-        let h: Vec<Hour> = tr.hours().copied().collect();
+        let h: Vec<Hour> = tr.hours().collect();
         assert_eq!((h[0].judged, h[0].met), (2, 1));
+    }
+
+    /// 1 時間に確立 `connects` 本 (720 本の 5 秒に配る) と、名前解決に成功した試みのエラー `errors` 件。
+    ///
+    /// `spread` が真ならエラーは確立の多い 5 秒に、偽なら**確立 1 本だけの 5 秒**に置く
+    /// (5 秒ごとに判定すると後者は 1 / 2 = 0.5 で外れる)。
+    fn hour_of(t0: u64, connects: u64, errors: u64, spread: bool) -> Vec<Sample> {
+        let mut out: Vec<Sample> = (0..720u64).map(|i| sample(t0 + i * 5, 0, 0)).collect();
+        // 確立は先頭の 5 秒から 1 本ずつ配り、余りは最後の 5 秒にまとめる
+        let ones = connects.min(719);
+        for s in out.iter_mut().take(ones as usize) {
+            s.connect.observe(3);
+            s.conn_excess.observe(1);
+        }
+        for _ in ones..connects {
+            out[719].connect.observe(3);
+            out[719].conn_excess.observe(1);
+        }
+        for k in 0..errors as usize {
+            let at = if spread { 719 } else { k };
+            out[at].errors += 1;
+            out[at].errors_by_cause[crate::metrics::ErrCause::Refused as usize] += 1;
+        }
+        out
+    }
+
+    /// **T.29.33 の受け入れ基準 (単体)**: 1 時間に確立 1,000 本・エラー 4 本なら比は満たし
+    /// (4 / 1,004 = 0.0040)、6 本なら外す (6 / 1,006 = 0.0060)。エラーを確立 1 本の 5 秒に置いても
+    /// (5 秒ごとなら 0.5 で外れる) 確立の多い 5 秒に置いても結果は同じ。
+    #[test]
+    fn the_rates_are_judged_on_the_sum_of_the_hour() {
+        let th = DEFAULT;
+        let t0 = 1_789_084_800;
+        for spread in [false, true] {
+            for (errors, ok) in [(4u64, true), (6, false)] {
+                let mut tr = Tracker::new();
+                let per_sample_misses = hour_of(t0, 1000, errors, spread)
+                    .iter()
+                    .map(|s| tr.observe(&th, s))
+                    .filter(|v| v.bits & 0b0100 != 0)
+                    .count();
+                if !spread {
+                    // 5 秒ごとに判定したら、エラーを置いた 5 秒は全部外れていた
+                    assert_eq!(per_sample_misses, errors as usize);
+                }
+                let rep = tr.report(&th, t0 + HOUR - 5, 1);
+                let h = rep.hourly[0];
+                assert_eq!((h.num[0], h.den[0]), (errors, 1000 + errors));
+                assert_eq!(h.judged, 720);
+                if ok {
+                    assert_eq!((h.met, h.miss[2]), (720, 0), "spread={} {:?}", spread, h);
+                    assert_eq!(h.rate_hours[0], [1, 0]);
+                    assert!(rep.breaches.is_empty());
+                } else {
+                    assert_eq!((h.met, h.miss[2]), (0, 720), "spread={} {:?}", spread, h);
+                    assert_eq!(h.rate_hours[0], [0, 1]);
+                    assert!((h.worst[2] - 6.0 / 1006.0).abs() < 1e-12, "{:?}", h);
+                    let json = rep.to_json();
+                    assert!(
+                        json.contains(
+                            "{\"name\":\"error_rate\",\"samples\":720,\"worst\":0.005964,\
+                             \"threshold\":0.005,\"hours\":1,\"num\":6,\"den\":1006}"
+                        ),
+                        "{}",
+                        json
+                    );
+                }
+                // 確立の多い 5 秒に置いても少ない 5 秒に置いても同じ日の数字
+                let d = rep.today();
+                assert_eq!((d.judged, d.met), (h.judged, h.met));
+            }
+        }
+    }
+
+    /// **T.29.33**: 速さ (確立の 2 つ) は今までどおり 5 秒の標本ごと。比を満たした時間の達成は
+    /// 速さを満たした 5 秒の数そのもの。
+    #[test]
+    fn the_speed_is_still_judged_every_five_seconds() {
+        let th = DEFAULT;
+        let t0 = 1_789_084_800;
+        let mut tr = Tracker::new();
+        let mut slow = 0;
+        for i in 0..720u64 {
+            // 6 本に 1 本だけ遅い (確立 − RTT 70 ms)
+            let ms = if i % 6 == 0 { 70 } else { 2 };
+            let mut s = sample(t0 + i * 5, 1, ms);
+            s.conn_excess = crate::history::Window::default();
+            s.conn_excess.observe(ms);
+            let v = tr.observe(&th, &s);
+            if v.bits & SPEED_BITS != 0 {
+                slow += 1;
+            }
+        }
+        let h = tr.report(&th, t0 + HOUR, 1).hourly[0];
+        assert_eq!(slow, 120);
+        assert_eq!(
+            (h.judged, h.met, h.miss[0], h.miss[1]),
+            (720, 600, 120, 120)
+        );
+    }
+
+    /// **T.29.33**: 直近 1 時間 (`last_hour`) は時間の区切りをまたいで、いまから 3,600 秒の合計。
+    /// 時間の区切りの判定とは別に読める (0 時台は 3 / 363 で外し、直近 1 時間は 3 / 723 で満たす)。
+    #[test]
+    fn the_last_hour_is_a_rolling_sum() {
+        let th = DEFAULT;
+        let t0 = 1_789_084_800;
+        let mut tr = Tracker::new();
+        // 0 時台の後半 30 分にエラー 3 件、1 時台の前半 30 分は確立だけ
+        for i in 0..720u64 {
+            let mut s = sample(t0 + 1800 + i * 5, 1, 2);
+            if i < 3 {
+                s.errors = 1;
+            }
+            tr.observe(&th, &s);
+        }
+        let now = t0 + 1800 + 719 * 5;
+        let lh = tr.last_hour(now);
+        assert_eq!(lh.samples, 720);
+        assert_eq!((lh.num[0], lh.den[0]), (3, 723));
+        let json = tr.report(&th, now, 1).to_json();
+        assert!(
+            json.contains("\"rate_window_secs\":3600,\"last_hour\":{"),
+            "{}",
+            json
+        );
+        assert!(
+            json.contains("\"error_rate\":{\"num\":3,\"den\":723,\"value\":0.00415,\"met\":true}"),
+            "{}",
+            json
+        );
+        // 30 分先では前半の 3 件は窓の外
+        let later = tr.last_hour(now + 1800);
+        assert_eq!(later.num[0], 0);
+        // 日ごとの行に、比ごとの合計と満たした / 外した時間の数 (0 時台は 3 / 363 = 0.0083 で外した)
+        assert!(
+            json.contains(
+                "\"rates\":{\"error_rate\":{\"num\":3,\"den\":723,\"value\":0.00415,\
+                           \"hours_met\":1,\"hours_missed\":1}"
+            ),
+            "{}",
+            json
+        );
+        assert_eq!(tr.rate_hours_of_day(&th, t0), [[1, 1], [2, 0]]);
     }
 
     #[test]

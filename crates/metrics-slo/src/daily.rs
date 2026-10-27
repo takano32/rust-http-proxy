@@ -31,8 +31,9 @@ use crate::metrics::Metrics;
 use crate::sync::LockExt;
 use crate::{log_debug, log_info, log_warn};
 
-/// 1 行の上限 (バイト。改行を含まない)。
-pub const MAX_LINE: usize = 512;
+/// 1 行の上限 (バイト。改行を含まない)。T.29.33 で `slo_rate_hours` を足したので 512 → 640
+/// (最悪の行が 491 B で、足す 80 B 弱が入らなかった。上限 2 MiB でも 3,276 日 = 9 年ぶん入る)。
+pub const MAX_LINE: usize = 640;
 /// ファイルの上限 (バイト)。越えたら古い行から捨てる。
 pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// `/daily?n=` の既定 (1 年) と上限。
@@ -129,7 +130,10 @@ impl Acc {
 
     /// 要約の 1 行 (改行は付けない)。**必ず [`MAX_LINE`] バイト以下**になる
     /// (数は 15 桁・小数は 6 桁 + 1 位・版は [`MAX_VERSION`] 文字で頭打ち)。
-    fn line(&self, version: &str) -> String {
+    ///
+    /// `rate_hours` は `/slo` の比の 2 つを 1 時間の合計で判定した `[満たした時間, 外した時間]`
+    /// (T.29.33。その日のうちこのプロセスが動いていた時間だけ)。
+    fn line(&self, version: &str, rate_hours: [[u32; 2]; crate::slo::RATES]) -> String {
         let (y, mo, d, ..) = crate::log::civil_from_epoch(self.day.saturating_mul(SECS_PER_DAY));
         let connects = self.connect.count;
         let dns_per = if connects == 0 {
@@ -151,7 +155,8 @@ impl Acc {
              \"connect_p50_ms\":{:.1},\"connect_p95_ms\":{:.1},\
              \"dns_misses\":{},\"dns_per_connect\":{:.3},\"dns_miss_ms\":{:.1},\
              \"errors\":{},\"bursts\":{},\"active_max\":{},\"evicted_idle\":{},\
-             \"rss_max\":{},\"rss_avg\":{},\"version\":\"{}\"}}",
+             \"rss_max\":{},\"rss_avg\":{},\"version\":\"{}\",\
+             \"slo_rate_hours\":{{\"error_rate\":[{},{}],\"dns_miss_per_connect\":[{},{}]}}}}",
             y,
             mo,
             d,
@@ -176,6 +181,10 @@ impl Acc {
             num(self.rss_max),
             num(rss_avg),
             version,
+            rate_hours[0][0].min(99),
+            rate_hours[0][1].min(99),
+            rate_hours[1][0].min(99),
+            rate_hours[1][1].min(99),
         );
         out
     }
@@ -276,7 +285,9 @@ impl Writer {
             );
             return;
         }
-        let line = done.line(&self.version);
+        // `/slo` の比を 1 時間の合計で判定した時間の数 (T.29.33)。集計はメモリの大域にある
+        let rate_hours = crate::slo::rate_hours_of_day(done.day.saturating_mul(SECS_PER_DAY));
+        let line = done.line(&self.version, rate_hours);
         match append(&path, &line) {
             Ok(()) => {
                 self.last_written = done.day;
@@ -598,7 +609,7 @@ mod tests {
             rss_sum: u64::MAX,
             rss_n: 1,
         };
-        let worst = acc.line(&clean_version(&"9".repeat(200)));
+        let worst = acc.line(&clean_version(&"9".repeat(200)), [[u32::MAX; 2]; 2]);
         println!("daily line: worst {} B (limit {})", worst.len(), MAX_LINE);
         assert!(worst.len() <= MAX_LINE, "{} B: {}", worst.len(), worst);
         assert!(is_line(&worst));
@@ -628,7 +639,7 @@ mod tests {
             rss_sum: 52_428_800,
             rss_n: 1,
         }
-        .line("0.1.0+fffb795");
+        .line("0.1.0+fffb795", [[23, 1], [24, 0]]);
         println!("daily line: typical {} B -> {}", typical.len(), typical);
         assert!(typical.len() <= MAX_LINE);
     }

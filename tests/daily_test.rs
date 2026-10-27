@@ -60,7 +60,7 @@ fn test_integration_daily_serves_the_summary_file_and_honours_n() {
     assert_eq!(status_number(&body, "count"), 3, "{}", body);
     assert_eq!(status_number(&body, "shown"), 3, "{}", body);
     assert!(body.contains("\"truncated\":false"), "{}", body);
-    assert!(body.contains("\"max_line\":512"), "{}", body);
+    assert!(body.contains("\"max_line\":640"), "{}", body);
     assert!(body.contains("\"max_bytes\":2097152"), "{}", body);
     assert!(
         body.contains(".rust-http-proxy.daily.jsonl"),

@@ -1380,6 +1380,33 @@ if (slo.breaches !== 1) fail('外れた時間帯の数が合わない: ' + slo.b
 for (const part of ['判定 17,280 標本', '2026-09-11T17Z〜2026-09-12T00Z', '直近 7 日']) {
   if (slo.detail.indexOf(part) < 0) fail('内訳に ' + part + ' が無い: ' + slo.detail);
 }
+// T.29.33 より前の `/slo` (`rate_window_secs` も `rates` も無い) は今までの説明のまま
+if (api.sloTitle(sloJson).indexOf('4 つの閾を 5 秒の標本ごと') < 0) fail('古い /slo の説明が変わった: ' + api.sloTitle(sloJson));
+if (slo.detail.indexOf('1 時間の合計') >= 0) fail('古い /slo に 1 時間の合計を出した: ' + slo.detail);
+// T.29.33 の `/slo`: 比の 2 つは 1 時間の合計で判定し、今日の分子 / 分母と外した時間の数を出す
+const sloHourly = api.sloKpi(
+  Object.assign({}, sloJson, {
+    rate_window_secs: 3600,
+    today: Object.assign({}, sloJson.today, {
+      rates: {
+        error_rate: { num: 10, den: 2010, value: 0.00498, hours_met: 1, hours_missed: 1 },
+        dns_miss_per_connect: { num: 0, den: 0, value: null, hours_met: 0, hours_missed: 0 },
+      },
+    }),
+  })
+);
+if (sloHourly.detail.indexOf('error_rate 10 / 2,010 (1 時間の合計で外れ 1 時間)') < 0)
+  fail('1 時間の合計と分母が内訳に無い: ' + sloHourly.detail);
+if (sloHourly.detail.indexOf('dns_miss_per_connect') >= 0) fail('分母 0 の比を出した: ' + sloHourly.detail);
+const sloHourlyTitle = api.sloTitle(
+  Object.assign({}, sloJson, {
+    rate_window_secs: 3600,
+    basis: { connect: 'connect_minus_rtt', error_rate: 'resolved_attempts_hourly_sum', dns_miss_per_connect: 'excluding_failed_lookups_hourly_sum' },
+  })
+);
+if (sloHourlyTitle.indexOf('1 時間の合計で判定') < 0) fail('1 時間の合計の説明が無い: ' + sloHourlyTitle);
+if (sloHourlyTitle.indexOf('名前解決に成功した試行あたり (1 時間の合計)') < 0) fail('basis の _hourly_sum が読めていない: ' + sloHourlyTitle);
+if (sloHourlyTitle.indexOf('名前解決を除いた確立') < 0) fail('basis の connect_minus_rtt が読めていない: ' + sloHourlyTitle);
 // 判定できた標本が 0 本の日は `ratio` が null (「達成率 0%」ではない)
 const sloQuiet = api.sloKpi(
   Object.assign({}, sloJson, {
