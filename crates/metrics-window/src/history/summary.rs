@@ -78,6 +78,9 @@ pub struct Summary {
     pub dns_ms_sum: u64,
     /// 同時接続数の山 (ゲージなので最大値で畳む)
     pub active_max: u64,
+    /// 名前解決を除いた「確立 − オリジン側の RTT」の分布 (T.29.12 の `conn_excess`)。
+    /// 異常検知の `connect_p95` はこちらで読む (T.29.11)。`/history?summary=1` の JSON には出さない
+    pub conn_excess: Window,
 }
 
 impl Summary {
@@ -103,6 +106,7 @@ impl Summary {
         self.dns_misses += s.dns_misses;
         self.dns_ms_sum += s.dns_ms_sum;
         self.active_max = self.active_max.max(s.active_max).max(s.active as u64);
+        self.conn_excess.merge(&s.conn_excess);
     }
 
     /// 確立した CONNECT の本数。

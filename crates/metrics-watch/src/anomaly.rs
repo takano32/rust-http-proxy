@@ -14,7 +14,7 @@
 //!
 //! | 種類 | 立つ条件 |
 //! |---|---|
-//! | `connect_p95` | CONNECT 確立の p95 (直近 5 分) が直近 1 時間の p95 の [`CONNECT_RATIO`] 倍以上、かつ [`CONNECT_MIN_MS`] 以上、かつ [`CONNECT_MIN_SAMPLES`] 本以上 |
+//! | `connect_p95` | CONNECT 1 本ごとの「確立 − オリジン側の RTT」(名前解決を除く。T.29.11) の p95 (直近 5 分) が直近 1 時間の p95 の [`CONNECT_RATIO`] 倍以上、かつ [`CONNECT_MIN_MS`] 以上、かつ [`CONNECT_MIN_SAMPLES`] 本以上 |
 //! | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が [`DNS_MISS_MS`] と canary の基準線の [`DNS_CANARY_RATIO`] 倍の大きい方以上、かつ [`DNS_MIN_MISSES`] 回以上 (T17.1)、かつ窓のミスの合計が [`DNS_MIN_SUM_MS`] 以上 (T22.2) |
 //! | `errors` | エラーが 5 分で [`ERRORS_MIN`] 件以上 (**`nxdomain` は数えない**。T.28.17) |
 //! | `active_high` | 同時接続の山が `max_conns` の [`ACTIVE_PERCENT`]% 以上 (T14.6 の写真と同じ閾。写真があればその番号) |
@@ -33,6 +33,15 @@
 //! **同じ種類は収まるまで 1 回だけ**書く。条件を外れたまま [`CLEAR_SECS`] 秒
 //! (5 分) 続いたら `cleared: <種類>` で始まる解除の 1 件を書き、また立てるようになる。
 //! 説明には必ず数字 (何が・いくつ・基準値) を入れる。
+//!
+//! **`connect_p95` は T.29.11 から確立そのものではなく「確立 − RTT」(`conn_excess`) で読む**。
+//! 0.28.48 の 24 時間で 6 件立ち (0.27.8 は 0)、再現できた窓は成功 36 本のうち上位 3 本が全部 `:993`
+//! (名前解決 296 / 532 ms と遠い RTT) で、同じ分に `dns_slow` も立っていた = 遠い宛先の割合が動くだけで
+//! 鳴っていた。確立の p95 は距離 (1 RTT) で決まるので、RTT を引いた残り (プロキシとカーネルの取り分・SYN の
+//! 再送) で読み、名前解決の遅れは `dns_slow` に任せる。T.28.45 の `excess` (名前解決を含む) で読むと、
+//! 同じ 24 時間の `history["60"]` の再生で 8 回立った (名前解決の遅いメール宛) ので、名前解決を除いた
+//! T.29.12 の窓を使う。閾 (50 ms・3 倍・20 本) はそのまま。基準値の p95 は 0〜1 ms のことが多いので、
+//! 「基準値が 0 なら立たない」は「1 時間の窓に 1 本も無ければ立たない」に変えた。
 //!
 //! `connect_p95` だけは**立っている間は「立った瞬間の基準値」と比べる**。基準値の窓
 //! (1 時間) は直近の 5 分を含むので、山が 1 時間続くと基準値そのものが山になって倍率が
@@ -483,8 +492,9 @@ impl Detector {
         let nx = self.nxdomain_window(c);
         let errors = w5.errors.saturating_sub(nx);
 
-        let p95 = w5.connect.quantile_ms(0.95);
-        let p95_base = base.connect.quantile_ms(0.95);
+        // (1) 確立の p95 は「確立 − RTT」(名前解決を除く) の窓で読む (T.29.11)
+        let p95 = w5.conn_excess.quantile_ms(0.95);
+        let p95_base = base.conn_excess.quantile_ms(0.95);
         let peak = w5.active_max;
         // **立っている間は「立った瞬間の基準値」と比べる。** 基準値の窓 (1 時間) は
         // 直近の窓を含むので、山が 1 時間続くと基準値そのものが山になって倍率が 1 に戻り、
@@ -526,9 +536,9 @@ impl Detector {
             // 直近の窓は基準値の中にも入っているので、起動直後 (1 時間ぶんが全部この
             // 5 分) は倍率がちょうど 1 になり、立たない
             p95 >= CONNECT_MIN_MS
-                && p95_ref > 0.0
+                && base.conn_excess.count > 0
                 && p95 >= CONNECT_RATIO * p95_ref
-                && w5.connect.count >= CONNECT_MIN_SAMPLES,
+                && w5.conn_excess.count >= CONNECT_MIN_SAMPLES,
             w5.dns_misses >= DNS_MIN_MISSES
                 && w5.dns_miss_avg_ms() >= dns_limit
                 && w5.dns_ms_sum >= DNS_MIN_SUM_MS,
@@ -788,16 +798,17 @@ fn fired_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>) -> String
     let head = kind.name();
     match kind {
         Kind::ConnectP95 => {
-            let p95 = w5.connect.quantile_ms(0.95);
-            let p95_base = base.connect.quantile_ms(0.95);
+            let p95 = w5.conn_excess.quantile_ms(0.95);
+            let p95_base = base.conn_excess.quantile_ms(0.95);
+            // `connect-rtt` = 名前解決を除いた「確立 − RTT」(T.29.11)。倍率は基準値 1 ms を下限に割る
             format!(
-                "{}: connect p95 {} ms over 5m is {:.1}x the 1h baseline {} ms ({} of {} connects)",
+                "{}: connect-rtt p95 {} ms over 5m is {:.1}x the 1h baseline {} ms ({} of {} connects)",
                 head,
                 ms(p95),
-                p95 / p95_base.max(f64::MIN_POSITIVE),
+                p95 / p95_base.max(1.0),
                 ms(p95_base),
-                w5.connect.count,
-                base.connect.count
+                w5.conn_excess.count,
+                base.conn_excess.count
             )
         }
         Kind::DnsSlow => format!(
@@ -923,10 +934,10 @@ fn cleared_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>, mins: u
     let head = format!("cleared: {} after {}m", kind.name(), mins);
     match kind {
         Kind::ConnectP95 => format!(
-            "{} (connect p95 {} ms over 5m, {} connects)",
+            "{} (connect-rtt p95 {} ms over 5m, {} connects)",
             head,
-            ms(w5.connect.quantile_ms(0.95)),
-            w5.connect.count
+            ms(w5.conn_excess.quantile_ms(0.95)),
+            w5.conn_excess.count
         ),
         Kind::DnsSlow => format!(
             "{} (dns miss {} ms avg over 5m, {} misses)",
