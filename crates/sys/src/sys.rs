@@ -25,6 +25,9 @@ unsafe extern "C" {
     fn c_gettid() -> i32;
     fn recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize;
     fn close(fd: c_int) -> c_int;
+    fn eventfd(initval: c_uint, flags: c_int) -> c_int;
+    fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
+    fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn epoll_create1(flags: c_int) -> c_int;
     fn epoll_ctl(epfd: c_int, op: c_int, fd: c_int, event: *mut EpollEvent) -> c_int;
     fn epoll_wait(epfd: c_int, events: *mut EpollEvent, maxevents: c_int, timeout: c_int) -> c_int;
@@ -627,6 +630,52 @@ impl Epoll {
 }
 
 impl Drop for Epoll {
+    fn drop(&mut self) {
+        // SAFETY: 自分で開いた fd を 1 回だけ閉じる。
+        unsafe { close(self.fd) };
+    }
+}
+
+/// `eventfd(2)` (待たない・`exec` で閉じる)。眠っている `epoll_wait` を起こす呼び鈴 (T.29.23)。
+///
+/// 鳴らした回数はカーネルの中の 8 バイトの数に足されるだけなので、何度鳴らしても溢れず、
+/// 読むまで `EPOLLIN` が立ち続ける (読む前に鳴らせば、次の `epoll_wait` はすぐ戻る)。
+pub struct EventFd {
+    fd: RawFd,
+}
+
+impl EventFd {
+    pub fn new() -> io::Result<EventFd> {
+        // SAFETY: 定数のフラグを渡すだけ。失敗は -1 で返る。
+        // `EFD_CLOEXEC` / `EFD_NONBLOCK` は `O_CLOEXEC` / `O_NONBLOCK` と同じ値
+        let fd = unsafe { eventfd(0, O_CLOEXEC | O_NONBLOCK) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(EventFd { fd })
+    }
+
+    /// epoll に入れる記述子。
+    pub fn fd(&self) -> RawFd {
+        self.fd
+    }
+
+    /// 鳴らす (数に 1 足す)。失敗しても次の周回で拾えるので結果は返さない。
+    pub fn wake(&self) {
+        let one: u64 = 1;
+        // SAFETY: 8 バイトの値を指すポインタと長さ 8 を渡す。
+        unsafe { write(self.fd, (&one as *const u64).cast(), 8) };
+    }
+
+    /// 溜まった呼び出しを読んで 0 に戻す (`EPOLLIN` を下ろす)。
+    pub fn drain(&self) {
+        let mut n: u64 = 0;
+        // SAFETY: 8 バイトの書込先と長さ 8 を渡す。待たないので空なら EAGAIN が返るだけ。
+        unsafe { read(self.fd, (&mut n as *mut u64).cast(), 8) };
+    }
+}
+
+impl Drop for EventFd {
     fn drop(&mut self) {
         // SAFETY: 自分で開いた fd を 1 回だけ閉じる。
         unsafe { close(self.fd) };

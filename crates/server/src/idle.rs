@@ -40,18 +40,21 @@ mod linux {
 
     use crate::recent::{CloseReason, ConnSlot, ConnState};
     use crate::sync::LockExt;
-    use crate::sys::{EPOLLERR, EPOLLIN, EPOLLRDHUP, Epoll, EpollEvent};
+    use crate::sys::{EPOLLERR, EPOLLIN, EPOLLRDHUP, Epoll, EpollEvent, EventFd};
     use crate::tunnel;
     use crate::{log_debug, log_error, log_warn};
 
     /// 1 回の `epoll_wait` で受け取る事象の上限。
     const MAX_EVENTS: usize = 256;
-    /// 期限を待つとき `epoll_wait` を最大どれだけ寝かせるか (ミリ秒)。
+    /// 呼び鈴 (eventfd) の目印。預かりものの鍵は 1 から配るので 0 とは重ならない。
     ///
-    /// 新しく預かる接続の期限はふつう既存のどれより後なので、預けるたびに監視スレッドを
-    /// 起こす仕掛け (eventfd) は要らない。設定を読み直して keepalive が短くなった直後だけ
-    /// 期限が前後しうるので、その取りこぼしをこの間隔で拾う。
-    const MAX_WAIT_MS: i32 = 1000;
+    /// **預かりが 0 のとき `epoll_wait` は無期限に眠る** (T.29.23。以前は 1 秒ごとに起きて
+    /// いて、暇な `--lite` の CPU のほぼ全部がこれだった)。眠っている間に預けられたもの、
+    /// および**いまの先頭より早い期限**で預けられたもの (設定を読み直して keepalive が
+    /// 短くなった直後) は、預ける側が呼び鈴を鳴らして待ち時間を計り直させる。
+    /// 新しく預かる接続の期限はふつう既存のどれより後なので、預かりがあるときに鳴ることは
+    /// まず無い。
+    const WAKE_TOKEN: u64 = 0;
     /// 期限切れを 1 周で何本まで片づけるか。
     ///
     /// 監視スレッドが `epoll_wait` に戻るまでの間、読めるようになった接続は待たされる。
@@ -182,6 +185,8 @@ mod linux {
     /// アイドル接続の預かり所。プロセス全体で 1 つ持つ。
     pub struct IdleWatch {
         epoll: Epoll,
+        /// 眠っている監視スレッドを起こす呼び鈴 ([`WAKE_TOKEN`])
+        waker: EventFd,
         inner: Mutex<Inner>,
         workers: Arc<Workers>,
         metrics: Arc<Metrics>,
@@ -208,8 +213,12 @@ mod linux {
     impl IdleWatch {
         /// 監視スレッドを起こす。epoll が作れなければ `Err` (呼び出し側は旧経路へ)。
         pub fn start(workers: Arc<Workers>, metrics: Arc<Metrics>) -> io::Result<Arc<IdleWatch>> {
+            let epoll = Epoll::new()?;
+            let waker = EventFd::new()?;
+            epoll.add(waker.fd(), EPOLLIN, WAKE_TOKEN)?;
             let watch = Arc::new(IdleWatch {
-                epoll: Epoll::new()?,
+                epoll,
+                waker,
                 inner: Mutex::new(Inner {
                     alive: true,
                     entries: HashMap::new(),
@@ -275,6 +284,8 @@ mod linux {
             if what.is_tunnel() {
                 inner.tunnels += 1;
             }
+            // いまの先頭より早い (預かりが 0 も含む) なら、眠っている監視スレッドを起こす
+            let earliest = inner.deadlines.first().is_none_or(|&(d, _)| deadline < d);
             inner.deadlines.insert((deadline, key));
             // `/connections` に「預かり所にいる」と書く (T13.4)
             what.set_state(ConnState::Parked);
@@ -284,6 +295,12 @@ mod linux {
             what.on_park();
             inner.entries.insert(key, Entry { what, deadline });
             self.publish(&inner);
+            drop(inner);
+            // **鍵の外で鳴らす**。鳴らすのが監視スレッドの `next_timeout` より後でも、呼び鈴は
+            // 読むまで立ったままなので次の `epoll_wait` がすぐ戻る (取りこぼさない)
+            if earliest {
+                self.waker.wake();
+            }
             Ok(())
         }
 
@@ -419,15 +436,18 @@ mod linux {
             due
         }
 
-        /// 次の `epoll_wait` に渡す待ち時間 (ミリ秒)。
+        /// 次の `epoll_wait` に渡す待ち時間 (ミリ秒)。預かりが 0 なら `-1` (無期限。T.29.23)。
+        ///
+        /// 先頭の期限の 1 ms 未満の端数は**切り上げる** (切り捨てると期限の直前に 0 ms で
+        /// 起きて空回りする)。
         fn next_timeout(&self, now: Instant) -> i32 {
             let inner = self.inner.locked();
             match inner.deadlines.first() {
                 Some(&(deadline, _)) => {
-                    let ms = deadline.saturating_duration_since(now).as_millis();
-                    (ms.min(MAX_WAIT_MS as u128)) as i32
+                    let us = deadline.saturating_duration_since(now).as_micros();
+                    (us.div_ceil(1000).min(i32::MAX as u128)) as i32
                 }
-                None => MAX_WAIT_MS,
+                None => -1,
             }
         }
 
@@ -521,6 +541,11 @@ mod linux {
             };
             let mut closed = 0usize;
             for ev in &events[..n] {
+                if ev.token() == WAKE_TOKEN {
+                    // 呼び鈴: 下ろすだけ (待ち時間は次の周回の頭で計り直す)
+                    watch.waker.drain();
+                    continue;
+                }
                 let Some(what) = watch.take(ev.token()) else {
                     continue;
                 };

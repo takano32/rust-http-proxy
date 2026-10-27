@@ -2836,6 +2836,10 @@ epoll に預けられ、ワーカースレッドは解放されます。読め�
 「1 接続 = 1 スレッドが専任する」元の動きに戻ります
 (2026-09-08、`release`、`PROXY_MAX_CONNS=8192 scripts/cpu-per-request.sh --only idle-conns --conc 2000`
 の 3 回の中央値。`off` 側は同じコマンドに `PROXY_PARK_IDLE=off PROXY_MAX_THREADS=0` を足したもの)。
+**預かりが 0 の間、`idle-watch` は眠ったまま起きません** (T.29.23。以前は 1 秒ごとに起きていて、
+暇な `--lite` の CPU 51 us/s のうち 43 us/s がこれだった → 8 us/s)。預かっているものがあれば先頭の期限で起き、
+眠っている所へ預けたとき・先頭より早い期限で預けたとき (`.env` で keepalive を縮めた直後) は、預ける側が
+eventfd の呼び鈴で起こして待ち時間を計り直させます。
 
 **暇な CONNECT トンネルも同じ預かり所に預けます** (同じ `PROXY_PARK_IDLE`、Linux のみ)。
 両方向とも 100 ms 動きが無ければ、クライアント側とサーバー側の記述子 2 本を epoll に預けて
