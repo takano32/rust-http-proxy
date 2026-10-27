@@ -1718,12 +1718,16 @@ def _p24_silent_restarts(c, th):
 
 # --- Phase 23 (T23.1。phase22 の 14 行のうち、エラーの行の分母と heap の「判定できず」の書き方を直したもの) ---
 
+# `/recent` の理由のうち名前解決の失敗 (`error:` の後ろ)。`dns` は T25.0 より前の綴り (T.29.36)
+DNS_FAILURES = ("dns", "nxdomain", "dns_temp")
+
+
 def recent_attempts(snap, causes):
     """`/recent` の connect の 1 行を 1 試行として、試行・`dns` の失敗・接続の失敗を数える (T23.0 の (2))。
 
     phase22 の「接続 1 本あたり」の分母は `/history` の `connects` で、宛先の生きた割合 (使われ方) が
     変わると振れる (T22.99 の 7.80 倍は 1 本の接続元が死んだメールサーバーを総当たりしただけ)。
-    ここは**名前解決に失敗した行 (`reason == "error:dns"`) を分母から外した**「名前解決に成功した
+    ここは**名前解決に失敗した行 (`error:dns`・`error:nxdomain`・`error:dns_temp`) を分母から外した**「名前解決に成功した
     試行あたり」を出す。`recent` の行は接続の個票なので、試行 = 接続の試行。
 
     返すのは `{"attempts", "dns", "denom", "conn", "by", "from", "until", "rows"}`。`conn` は `causes` の
@@ -1742,7 +1746,9 @@ def recent_attempts(snap, causes):
             ats.append(r["at"])
         reason = r.get("reason") or ""
         cause = reason[len("error:"):] if reason.startswith("error:") else None
-        if cause == "dns":
+        # T25.0 からは名前解決の失敗を `error:nxdomain` / `error:dns_temp` と綴る (T.29.36。今まで
+        # `error:dns` だけを外していたので、phase23 以降の分母に名前解決の失敗が混ざっていた)
+        if cause in DNS_FAILURES:
             dns += 1
         elif cause in causes:
             conn += 1

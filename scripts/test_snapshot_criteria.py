@@ -2181,6 +2181,17 @@ class Deployed23(unittest.TestCase):
         self.assertIn("1 回 (**2026-10-17 22:14:52Z**", rows[15][2])
 
 
+
+class RecentAttempts(unittest.TestCase):
+    """名前解決の失敗は今の綴り (`error:nxdomain`・`error:dns_temp`) も分母から外す (T.29.36)。"""
+
+    def test_all_spellings_of_a_failed_lookup_leave_the_denominator(self):
+        rows = [{"kind": "connect", "at": i, "reason": r} for i, r in enumerate(
+            ["ok", "ok", "error:dns", "error:nxdomain", "error:dns_temp", "error:refused", "error:timeout"])]
+        got = sc.recent_attempts({"recent": {"recent": rows}}, ("refused", "unreachable", "timeout"))
+        self.assertEqual((got["attempts"], got["dns"], got["denom"], got["conn"]), (7, 3, 4, 2))
+        self.assertEqual(got["by"], {"refused": 1, "timeout": 1})
+
 if __name__ == "__main__":
     unittest.main()
 
