@@ -731,6 +731,8 @@ pub fn handle_http_parsed(
     let client_conditional = req.if_none_match.is_some() || req.if_modified_since.is_some();
 
     let mut stale: Option<(CachedResponse, CacheSource)> = None;
+    // クライアント自身の条件付き要求のときの、期限切れの保存済みの表現 (T.29.6)
+    let mut client_cond_entry: Option<CachedResponse> = None;
     if lookup_allowed {
         if let Some((entry, source)) = cache.get(key, conn_id) {
             cache.remember_variant(url, key);
@@ -786,6 +788,10 @@ pub fn handle_http_parsed(
                     return serve_cached(client, entry, source, "REFRESHING", 0, &ctx);
                 }
                 stale = Some((entry, source));
+            } else if entry.meta.validators {
+                // オリジンの 304 で保存済みの表現も延ばせるように持っておく (T.29.6)。
+                // `stale` には入れない (条件はクライアントのものをそのまま送り、stale も配らない)
+                client_cond_entry = Some(entry);
             }
         }
     } else if cache_on {
@@ -1163,6 +1169,37 @@ pub fn handle_http_parsed(
             Some(conn_id),
             "response Transfer-Encoding does not end in chunked: reading until close, not caching"
         );
+    }
+
+    // クライアントの条件付き要求に対するオリジンの 304 (T.29.6): 304 はそのまま中継するが、
+    // 304 の validator が保存済みの表現と一致すれば、保存済みの表現も延ばして先頭を書き直す
+    // (RFC 9111 §4.3.4)。今までは延ばさなかったので、続く素の GET が古い先頭のまま
+    // `REFRESHING` でオリジンへ行っていた。validator が違う 304 では触らない
+    if status == 304
+        && let Some(entry) = client_cond_entry.take()
+    {
+        let cached_head = freshness::parse_cached_head(&entry.head);
+        let pairs_304 = headers::response_pairs(&head);
+        if not_modified_selects(&cached_head, &pairs_304) {
+            if freshness::not_modified_forbids_storing(&pairs_304) {
+                cache.remove(key);
+            } else {
+                let p = freshness::revalidated_policy(&pairs_304, &cached_head, cfg, now);
+                match headers::merge_not_modified(&entry.head, &head) {
+                    Some(new_head) => {
+                        cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
+                    }
+                    None => {
+                        cache.refresh(key, p.ttl, p.age, conn_id);
+                    }
+                }
+            }
+            log_debug!(
+                Some(conn_id),
+                "client-conditional 304 from {}: refreshed the stored entry",
+                pool_key
+            );
+        }
     }
 
     // 304: 保存済みの表現がまだ有効。延命して配信する
@@ -1676,6 +1713,26 @@ fn client_wants_fresher(cache_control: &str, entry: &CachedResponse, now: u64) -
     freshness::directive_value(cache_control, "max-age").is_some_and(|n| age > n)
         || freshness::directive_value(cache_control, "min-fresh")
             .is_some_and(|n| entry.ttl_left(now) < n)
+}
+
+/// 304 が保存済みの表現を指しているか (RFC 9111 §4.3.4 の「更新する保存済みの応答を選ぶ」の簡易版。T.29.6)。
+///
+/// 304 に `ETag` があれば保存済みの `ETag` と一致すること (弱い印 `W/` も含めて文字どおり)。
+/// 無ければ `Last-Modified` が一致すること。どちらも無い 304 は選ばない (別の表現かもしれない)。
+fn not_modified_selects(cached: &freshness::CachedHead, pairs_304: &[(String, String)]) -> bool {
+    let value = |name: &str| {
+        pairs_304
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.trim_ascii())
+    };
+    if let Some(etag) = value("etag") {
+        return cached.etag.as_deref().map(str::trim_ascii) == Some(etag);
+    }
+    match value("last-modified") {
+        Some(lm) => cached.last_modified.as_deref().map(str::trim_ascii) == Some(lm),
+        None => false,
+    }
 }
 
 /// クライアントのリクエスト本文をオリジンへ同じ枠組みで転送する。戻り値は本文のバイト数。
