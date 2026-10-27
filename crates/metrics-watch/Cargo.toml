@@ -1,6 +1,6 @@
 [package]
 name = "proxy-metrics-watch"
-version = "0.28.17"
+version = "0.29.11"
 edition = "2024"
 
 [lib]

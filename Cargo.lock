@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-endpoints"
-version = "0.29.35"
+version = "0.29.19"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-http"
-version = "0.29.9"
+version = "0.29.15"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics"
-version = "0.28.45"
+version = "0.29.12"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -171,21 +171,21 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-core"
-version = "0.28.45"
+version = "0.29.15"
 dependencies = [
  "proxy-metrics-window",
 ]
 
 [[package]]
 name = "proxy-metrics-profile"
-version = "0.17.11"
+version = "0.29.14"
 dependencies = [
  "proxy-metrics-recent",
 ]
 
 [[package]]
 name = "proxy-metrics-recent"
-version = "0.27.5"
+version = "0.29.10"
 dependencies = [
  "proxy-cache",
  "proxy-metrics-types",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-slo"
-version = "0.28.46"
+version = "0.29.16"
 dependencies = [
  "proxy-cache",
  "proxy-metrics-core",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-types"
-version = "0.28.45"
+version = "0.29.15"
 dependencies = [
  "proxy-base",
  "proxy-net",
@@ -212,14 +212,14 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-watch"
-version = "0.28.17"
+version = "0.29.11"
 dependencies = [
  "proxy-metrics-slo",
 ]
 
 [[package]]
 name = "proxy-metrics-window"
-version = "0.28.45"
+version = "0.29.13"
 dependencies = [
  "proxy-metrics-profile",
 ]
@@ -266,7 +266,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-prom"
-version = "0.28.23"
+version = "0.29.19"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -347,7 +347,7 @@ version = "0.17.11"
 
 [[package]]
 name = "proxy-tunnel"
-version = "0.28.45"
+version = "0.29.15"
 dependencies = [
  "proxy-base",
  "proxy-metrics",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-web"
-version = "0.29.27"
+version = "0.29.19"
 
 [[package]]
 name = "proxy-workers"
