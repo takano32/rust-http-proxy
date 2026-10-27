@@ -861,13 +861,29 @@ function sloKpi(j){
   var parts=[];
   if(t.judged)parts.push('達成 '+fmtNum(t.met)+' / 判定 '+fmtNum(t.judged)+' 標本 ('+(j.sample_secs||5)+' 秒ごと)');
   else parts.push('今日はまだ判定できた標本がありません');
-  if(worst!==null)parts.push('外れの最多 '+names[worst]+' '+fmtNum(miss[worst])+' 本 (閾 '+th[names[worst]]+')');
+  // 確立の閾は `basis` があれば「確立 − RTT」で読んだ値 (T.28.45)。閾の数字だけだと確立そのものと読める (T.29.27)
+  var rtt=j.basis&&j.basis.connect==='establish_minus_rtt'&&worst!==null&&/^connect/.test(names[worst])?'、確立 − RTT':'';
+  if(worst!==null)parts.push('外れの最多 '+names[worst]+' '+fmtNum(miss[worst])+' 本 (閾 '+th[names[worst]]+rtt+')');
   var bs=j.breaches||[],last=bs.length?bs[bs.length-1]:null;
   if(last)parts.push('直近の外れ '+last.from_hour+'〜'+last.to_hour);
   parts.push('直近 '+j.days+' 日 '+(j.ratio==null?'–':(j.ratio*100).toFixed(2)+'%'));
   return{date:t.date,judged:t.judged,met:t.met,pct:t.ratio==null?null:t.ratio*100,
     overall:j.ratio==null?null:j.ratio*100,days:j.days,worst:worst===null?null:names[worst],
     breaches:bs.length,detail:parts.join(' · ')};
+}
+// KPI「今日の SLO」の tooltip (T.29.27)。`/slo` の `basis` (T.28.45) があれば閾ごとに何を判定したかを書く。
+// 無い版 (T.28.45 より前) は確立そのもの・全試行・全ミスで読んでいた。DOM に触らない (check-dashboard.js が動かす)
+function sloTitle(j){
+  var th=(j&&j.thresholds)||{},b=j&&j.basis;
+  var s='PROXY_SLO の 4 つの閾を '+((j&&j.sample_secs)||5)+' 秒の標本ごとに判定し、4 つとも満たした標本の割合です (UTC の今日)。';
+  if(!b)return s+'この版は確立そのもの・全試行・全ミスで判定しています';
+  var L={establish_minus_rtt:'確立からカーネルの RTT を引いた値 (プロキシの取り分)',resolved_attempts:'名前解決に成功した試行あたり',
+    excluding_failed_lookups:'失敗した問い合わせを除いたミス'},p=[];
+  function f(k){return L[k]||k}
+  if(b.connect)p.push('確立 p50 ≤ '+th.connect_p50_ms+' ms · p95 ≤ '+th.connect_p95_ms+' ms は'+f(b.connect));
+  if(b.error_rate)p.push('エラー率 ≤ '+th.error_rate+' は'+f(b.error_rate));
+  if(b.dns_miss_per_connect)p.push('名前解決のミス ÷ 確立 ≤ '+th.dns_miss_per_connect+' は'+f(b.dns_miss_per_connect));
+  return s+'読み方 (basis): '+p.join('、');
 }
 function renderSlo(j){
   var k=sloKpi(j);
@@ -877,7 +893,7 @@ function renderSlo(j){
   $('slokpi').textContent=k.pct==null?'–':k.pct.toFixed(1)+'%';
   // 100% 未満は黄、95% 未満は赤 (閾を外した時間があることを目で分かるように)
   $('slokpi').style.color=k.pct==null?'':k.pct>=100?'':k.pct>=95?'var(--warn)':'var(--bad)';
-  $('slokpi').title='PROXY_SLO の 4 つの閾を 5 秒の標本ごとに判定し、4 つとも満たした標本の割合です (UTC の今日)';
+  $('slokpi').title=sloTitle(j);
   $('slodetail').textContent=k.detail;
 }
 // T.28.25: 最後の起動が「直前に shutdown がある普通の再起動」か「無言の再起動」かを /events から決める。
@@ -907,7 +923,7 @@ function renderBoot(s){
 function renderStatus(s){
   last=s;var c=s.cache||{};
   renderBoot(s);
-  $('version').textContent=s.version||'';
+  $('version').textContent=versionLabel(s);
   $('uptime').textContent='稼働 '+fmtDur(s.uptime_secs)+' · ログ '+(s.log_level||'');
   $('window').textContent='窓: 起動から '+fmtDur(s.since_start_secs==null?s.uptime_secs:s.since_start_secs)
     +' / 表は通算'+(s.restored_since?' ('+new Date(s.restored_since*1000).toLocaleDateString()+' から)':'');
@@ -1055,11 +1071,22 @@ $('hostsort').addEventListener('change',function(){if(last)renderStatus(last)});
 $('clientsort').addEventListener('change',function(){if(last)renderStatus(last)});
 function esc(s){return String(s).replace(/[&<>"]/g,function(ch){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]})}
 function ok(good,msg){$('dot').className='dot'+(good?'':' bad');$('lastok').textContent=msg}
-function renderSettings(st){
-  var el=$('settings');if(!st){el.hidden=true;return}
-  var parts=[];
+// 版の隣にビルドの種類 (`/status.build`。T.28.42): `0.29.35+b2b26c1 (release)`。無い版は版だけ (T.29.27)
+function versionLabel(s){return(s&&s.version||'')+(s&&s.build?' ('+s.build+')':'')}
+// 設定の帯の行 (HTML)。`.env` の解釈の失敗・再起動が要る変更に加え、**読めない値**と**知らない鍵**
+// (`settings.invalid` / `unknown`。T.28.6) を 1 つ 1 行で出す (知らない鍵は綴りの近い候補つき。T.29.27)。
+// DOM に触らない (check-dashboard.js が動かす)
+function settingsLines(st){
+  var parts=[];if(!st)return parts;
   if(st.error)parts.push('<b>.env の解釈に失敗</b>: '+esc(st.error)+' (前の設定を維持)');
   if(st.restart_required&&st.restart_required.length)parts.push('<b>再起動が必要</b>: '+st.restart_required.map(function(k){return'<code>'+esc(k)+'</code>'}).join(' ')+' が変更されました');
+  (st.invalid||[]).forEach(function(v){parts.push('<b>読めない値</b>: <code>'+esc(v.key)+'='+esc(v.value)+'</code> (既定のまま動いています)')});
+  (st.unknown||[]).forEach(function(u){parts.push('<b>知らない鍵</b>: <code>'+esc(u.key)+'</code>'+(u.suggest?' (もしかして <code>'+esc(u.suggest)+'</code>)':'')+' (読んでいません)')});
+  return parts;
+}
+function renderSettings(st){
+  var el=$('settings');if(!st){el.hidden=true;return}
+  var parts=settingsLines(st);
   if(!parts.length){el.hidden=true;return}
   var when=st.last_reload?new Date(st.last_reload*1000).toLocaleTimeString():'';
   parts.push('<span class="hint">'+esc(st.path||'.env')+' · 再読込 '+st.reloads+' 回'+(when?' · 最終 '+when:'')+' · 検知 '+esc(st.watch)+'</span>');
