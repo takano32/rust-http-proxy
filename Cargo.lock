@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "proxy-base"
-version = "0.29.9"
+version = "0.29.34"
 
 [[package]]
 name = "proxy-bench"
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-cache"
-version = "0.28.2"
+version = "0.29.22"
 dependencies = [
  "proxy-base",
  "proxy-cachecfg",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-cachecfg"
-version = "0.17.11"
+version = "0.29.22"
 dependencies = [
  "proxy-base",
 ]
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-capacity"
-version = "0.17.11"
+version = "0.29.22"
 dependencies = [
  "proxy-base",
  "proxy-cachecfg",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-config"
-version = "0.29.35"
+version = "0.29.34"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-http"
-version = "0.29.15"
+version = "0.29.34"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics"
-version = "0.29.12"
+version = "0.29.25"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -171,21 +171,21 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-core"
-version = "0.29.15"
+version = "0.29.34"
 dependencies = [
  "proxy-metrics-window",
 ]
 
 [[package]]
 name = "proxy-metrics-profile"
-version = "0.29.14"
+version = "0.29.34"
 dependencies = [
  "proxy-metrics-recent",
 ]
 
 [[package]]
 name = "proxy-metrics-recent"
-version = "0.29.10"
+version = "0.29.34"
 dependencies = [
  "proxy-cache",
  "proxy-metrics-types",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-types"
-version = "0.29.15"
+version = "0.29.34"
 dependencies = [
  "proxy-base",
  "proxy-net",
@@ -219,14 +219,14 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-window"
-version = "0.29.13"
+version = "0.29.34"
 dependencies = [
  "proxy-metrics-profile",
 ]
 
 [[package]]
 name = "proxy-msg"
-version = "0.29.9"
+version = "0.29.24"
 dependencies = [
  "proxy-base",
 ]
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-reload"
-version = "0.29.35"
+version = "0.29.34"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -329,14 +329,14 @@ dependencies = [
 
 [[package]]
 name = "proxy-sys"
-version = "0.28.48"
+version = "0.29.23"
 dependencies = [
  "proxy-base",
 ]
 
 [[package]]
 name = "proxy-sysinfo"
-version = "0.28.32"
+version = "0.29.25"
 dependencies = [
  "proxy-sys",
 ]
@@ -347,7 +347,7 @@ version = "0.17.11"
 
 [[package]]
 name = "proxy-tunnel"
-version = "0.29.15"
+version = "0.29.34"
 dependencies = [
  "proxy-base",
  "proxy-metrics",
