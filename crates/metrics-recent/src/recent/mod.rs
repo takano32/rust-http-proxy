@@ -138,6 +138,11 @@ pub enum CloseReason {
     /// ([`CloseReason::index`] は 7)。**符号は 17・18** で [`CloseReason::ClientDead`]
     /// (16) の後ろに足す (既存の符号は動かさない)
     ErrorDns(DnsCause),
+    /// 要求行とヘッダーが期限 (`PROXY_HEADER_TIMEOUT_SECS`) までに揃わず 408 で閉じた
+    /// (T.28.0)。`/recent` の `reason` は `error:header_timeout` (T.29.10。それまでは CONNECT の
+    /// 確立の締め切りと同じ `error:timeout` で分けられなかった)。`/history` の分布では
+    /// 今までどおり `error:*` の 1 列 ([`CloseReason::index`] は 7)。**符号は 19**
+    HeaderTimeout,
 }
 
 impl CloseReason {
@@ -160,6 +165,7 @@ impl CloseReason {
             // `8 + c` の続きに置くと 16 が `ClientDead` とぶつかる
             CloseReason::ErrorDns(DnsCause::Nxdomain) => 17,
             CloseReason::ErrorDns(DnsCause::DnsTemp) => 18,
+            CloseReason::HeaderTimeout => 19,
         }
     }
 
@@ -196,6 +202,7 @@ impl CloseReason {
             16 => CloseReason::ClientDead,
             17 => CloseReason::ErrorDns(DnsCause::Nxdomain),
             18 => CloseReason::ErrorDns(DnsCause::DnsTemp),
+            19 => CloseReason::HeaderTimeout,
             _ => CloseReason::Shutdown,
         }
     }
@@ -215,7 +222,7 @@ impl CloseReason {
             CloseReason::Evicted => 4,
             CloseReason::Limit => 5,
             CloseReason::Shutdown | CloseReason::ClientDead => 6,
-            CloseReason::Error(_) | CloseReason::ErrorDns(_) => 7,
+            CloseReason::Error(_) | CloseReason::ErrorDns(_) | CloseReason::HeaderTimeout => 7,
         }
     }
 
@@ -233,6 +240,7 @@ impl CloseReason {
             CloseReason::ClientDead => Cow::Borrowed("client_dead"),
             CloseReason::Error(c) => Cow::Owned(format!("error:{}", c.name())),
             CloseReason::ErrorDns(c) => Cow::Owned(format!("error:{}", c.name())),
+            CloseReason::HeaderTimeout => Cow::Borrowed("error:header_timeout"),
         }
     }
 }

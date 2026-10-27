@@ -117,7 +117,7 @@ fn test_integration_malformed_header_forms_are_rejected() {
     // `/status` の理由別と個票、`/metrics`
     let status = status_json(proxy_port);
     assert!(
-        status.contains("\"bad_header\":3,\"total\":3}"),
+        status.contains("\"bad_header\":3,\"header_timeout\":0,\"total\":3}"),
         "{}",
         status
     );
@@ -153,7 +153,7 @@ fn test_integration_malformed_header_in_connect_is_rejected() {
     assert!(seen.lock().unwrap().is_empty());
     let status = status_json(proxy_port);
     assert!(
-        status.contains("\"bad_header\":2,\"total\":2}"),
+        status.contains("\"bad_header\":2,\"header_timeout\":0,\"total\":2}"),
         "{}",
         status
     );

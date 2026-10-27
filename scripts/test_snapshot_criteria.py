@@ -313,7 +313,7 @@ class Criteria15(unittest.TestCase):
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
                          ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
-                          "phase22", "phase23", "phase24", "phase25"])
+                          "phase22", "phase23", "phase24", "phase25", "phase26"])
 
 
 def conn_profile(conn_us_per_row):
@@ -2837,3 +2837,146 @@ class Deployed25(unittest.TestCase):
         self.assertEqual(verdicts[12], sd.UNKNOWN)
         self.assertEqual(verdicts[14], sd.MET)
         self.assertEqual(verdicts[15], sd.MET)
+
+
+class Criteria26Rows(unittest.TestCase):
+    """`--criteria phase26` (T.29.10): phase25 の 17 行を動かさず、18〜25 番目に足した 8 行。
+
+    数字は 0.28.48 の 24 時間 (`2026-10-27T024200Z`) の形を小さく写した作り物。
+    """
+
+    @staticmethod
+    def snap(status=None, recent=None, log=None, errors=None, uptime=86400, taken_at=1793068922):
+        s = {"uptime_secs": uptime, "taken_at": taken_at, "status": status or {}}
+        if recent is not None:
+            s["recent"] = {"recent": recent, "count": len(recent)}
+        if log is not None:
+            s["log"] = {"lines": log, "level": "info", "truncated": False}
+        if errors is not None:
+            s["errors"] = {"errors": errors}
+        return s
+
+    def ctx(self, b, a=None):
+        return {"a": a or {}, "b": b, "info": {}}
+
+    def test_phase26_keeps_the_seventeen_rows_of_phase25_and_adds_eight(self):
+        p25, p26 = sd.RULES["phase25"], sd.RULES["phase26"]
+        self.assertEqual(len(p26), 25)
+        self.assertEqual(p26[:17], p25)
+        self.assertIs(p26[17], sc._p26_header_timeouts)
+        self.assertEqual(sd.CRITERIA["phase26"]["log_error_max"], 5)
+
+    def test_the_header_timeouts_are_shown_with_the_recent_rows(self):
+        rows = [{"at": 1793068000, "kind": "http", "reason": "error:header_timeout", "reqs": 1},
+                {"at": 1793068100, "kind": "connect", "reason": "error:timeout", "reqs": 0}]
+        b = self.snap({"rejected_requests": {"header_timeout": 12, "total": 12}}, recent=rows, uptime=43200)
+        row = sc._p26_header_timeouts(self.ctx(b), sc.PHASE26)
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertIn("**12** 件 (起動から 12.0 時間、24.0 件/24 時間)", row[2])
+        self.assertIn("`error:header_timeout` 1 行 (うち 1 要求目を通したあとの 1 行)", row[2])
+        # T.29.10 より前の版には欄が無い = 0 と書かない
+        old = self.snap({"rejected_requests": {"bad_header": 0, "total": 0}})
+        self.assertEqual(sc._p26_header_timeouts(self.ctx(old), sc.PHASE26)[3], sd.UNKNOWN)
+
+    def test_log_errors_up_to_five_lines_are_met(self):
+        def line(lv):
+            return {"at": 1793068000, "level": lv, "msg": "connect imap.example:993 timed out"}
+        ok = self.snap(log=[line("warn")] * 900 + [line("error")] * 5)
+        self.assertEqual(sc._p26_log_errors(self.ctx(ok), sc.PHASE26)[3], sd.MET)
+        bad = self.snap(log=[line("warn")] * 900 + [line("error")] * 6)
+        row = sc._p26_log_errors(self.ctx(bad), sc.PHASE26)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**6** 行", row[2])
+        self.assertEqual(sc._p26_log_errors(self.ctx(self.snap()), sc.PHASE26)[3], sd.UNKNOWN)
+
+    def test_local_blocks_are_counted_with_repeats(self):
+        errs = [{"at": 1, "cause": "nxdomain", "target": "imap.example:993", "repeats": 5},
+                {"at": 2, "cause": "local", "target": "192.168.1.1:80", "repeats": 3}]
+        row = sc._p26_local_blocks(self.ctx(self.snap(errors=errs)), sc.PHASE26)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("**3** 件 (宛先 `192.168.1.1:80`)", row[2])
+        self.assertEqual(sc._p26_local_blocks(self.ctx(self.snap(errors=errs[:1])), sc.PHASE26)[3], sd.MET)
+
+    def test_the_connect_cut_row_counts_timeouts_and_the_slowest_success(self):
+        rows = ([{"at": 10 + i, "kind": "connect", "target": "imap.example:993", "reason": "error:timeout",
+                  "ms": {"connect": 3000}} for i in range(14)]
+                + [{"at": 100, "kind": "connect", "target": "a.example:443", "reason": "server_eof",
+                    "ms": {"connect": 2267}, "syn_retrans": 1},
+                   {"at": 101, "kind": "connect", "target": "b.example:443", "reason": "client_eof",
+                    "ms": {"connect": 11}, "syn_retrans": 2}])
+        row = sc._p26_connect_cut(self.ctx(self.snap(recent=rows)), sc.PHASE26)
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertIn("切った **14** 行 (ポート `993` 14)", row[2])
+        self.assertIn("成功 2 本の確立の最大 **2,267** ms (2 秒以上 1 本)", row[2])
+        self.assertIn("`syn_retrans` 1 が 1 本・2 が 1 本", row[2])
+
+    def test_rejected_requests_are_shown_by_reason(self):
+        b = self.snap({"rejected_requests": {"method": 3, "bad_header": 0, "header_timeout": 2, "total": 5}})
+        row = sc._p26_rejected(self.ctx(b), sc.PHASE26)
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertIn("**5** 本", row[2])
+        self.assertIn("`method` 3、`header_timeout` 2", row[2])
+
+    def test_the_rss_gap_uses_the_t2925_threshold(self):
+        mem = {"rss": 65_794_048, "heap_used": 20_359_248, "mmap": 15_671_296, "cache_memory": 14_382_613,
+               "heap_free": 18_302_896}
+        row = sc._p26_rss_gap(self.ctx(self.snap({"memory": mem})), sc.PHASE26)
+        self.assertEqual(row[3], sd.MISSED)                  # 0.28.48 の 24 時間は 15.4 MB
+        self.assertIn("**15.4** MB", row[2])
+        mem["rss"] = 55_000_000
+        self.assertEqual(sc._p26_rss_gap(self.ctx(self.snap({"memory": mem})), sc.PHASE26)[3], sd.MET)
+
+    def test_the_cgroup_cpu_must_go_down(self):
+        def snap(usage, up=3600):
+            return self.snap({"kernel": {"cgroup_cpu": {"since_start": {
+                "usage_usec": usage, "user_usec": usage // 4, "system_usec": usage - usage // 4}}}}, uptime=up)
+        self.assertEqual(sc._p26_cgroup_cpu(self.ctx(snap(5_000_000), snap(5_400_000)), sc.PHASE26)[3], sd.MET)
+        self.assertEqual(sc._p26_cgroup_cpu(self.ctx(snap(5_400_000), snap(5_400_000)), sc.PHASE26)[3],
+                         sd.MISSED)
+        self.assertEqual(sc._p26_cgroup_cpu(self.ctx(snap(5_400_000), {}), sc.PHASE26)[3], sd.UNKNOWN)
+
+    @staticmethod
+    def profile(shares, rows=720):
+        """`profile-sample` と `cache-probe` の割合が `shares` の `/profile?res=60` を作る。"""
+        roles = ["conn", "cache-probe", "profile-sample", "other"]
+        cpu = 1000
+        threads = [[cpu * (1 - sum(shares)), 60, []], [cpu * shares[1], 60, []], [cpu * shares[0], 60, []], 0]
+        return {"interval_secs": 60, "roles": roles, "keys": ["t", "requests", "cpu_us", "threads"],
+                "samples": [[i, 1, cpu, threads] for i in range(rows)]}
+
+    def test_the_idle_role_shares_must_go_down(self):
+        a, b = {"profile_res_60": self.profile((0.325, 0.234))}, {"profile_res_60": self.profile((0.20, 0.10))}
+        row = sc._p26_role_shares(self.ctx(b, a), sc.PHASE26)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("`profile-sample` 32.5% → **20.0%**", row[2])
+        b = {"profile_res_60": self.profile((0.20, 0.25))}
+        self.assertEqual(sc._p26_role_shares(self.ctx(b, a), sc.PHASE26)[3], sd.MISSED)
+        # 12 時間に満たない材料は参考
+        b = {"profile_res_60": self.profile((0.20, 0.10), rows=60)}
+        self.assertEqual(sc._p26_role_shares(self.ctx(b, a), sc.PHASE26)[3], sd.REFERENCE)
+
+
+T2899_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-10-26T013119Z-snapshot.json")
+T2899_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-10-27T024200Z-snapshot.json")
+
+
+@unittest.skipUnless(os.path.exists(T2899_BEFORE) and os.path.exists(T2899_AFTER),
+                     "T.28.99 の雪像 (status/tokyo/) が無い")
+class Deployed26(unittest.TestCase):
+    """T.28.99 の 2 枚 (0.27.8 → 0.28.48 の 24 時間) で phase26 の表が出る (T.29.10 の受け入れ基準)。"""
+
+    def test_t2899_pair(self):
+        md = run([T2899_BEFORE, T2899_AFTER, "--no-dns", "--criteria", "phase26"])
+        self.assertIn("## 9. 完了の定義に対する判定 (`--criteria phase26`)", md)
+        c = build([T2899_BEFORE, T2899_AFTER, "--no-dns", "--criteria", "phase26"])["criteria"]
+        rows = c["rows"]
+        self.assertEqual(len(rows), 25)
+        verdicts = [r[3] for r in rows]
+        # 0.28.48 には `header_timeout` の欄が無い (0 と書かない)
+        self.assertEqual(verdicts[17], sd.UNKNOWN)
+        self.assertEqual(verdicts[18], sd.MET)                # `/log` の error 0 行
+        self.assertEqual(verdicts[19], sd.MET)                # `local` 0 件
+        self.assertIn("切った **14** 行 (ポート `993` 14)", rows[20][2])
+        self.assertIn("**2,267** ms", rows[20][2])
+        self.assertIn("どの理由も 0", rows[21][2])
+        self.assertIn("**15.4** MB", rows[22][2])

@@ -1167,6 +1167,8 @@ mod conn_tests {
             // T25.0。DNS の失敗は内訳の綴りで出る
             (CloseReason::ErrorDns(DnsCause::Nxdomain), "error:nxdomain"),
             (CloseReason::ErrorDns(DnsCause::DnsTemp), "error:dns_temp"),
+            // T.29.10。408 は確立の締め切り (`error:timeout`) と別の綴り
+            (CloseReason::HeaderTimeout, "error:header_timeout"),
         ];
         for (reason, name) in all {
             assert_eq!(reason.text(), name);
@@ -1176,6 +1178,11 @@ mod conn_tests {
         assert_eq!(CloseReason::ClientDead.code(), 16);
         assert_eq!(CloseReason::ErrorDns(DnsCause::Nxdomain).code(), 17);
         assert_eq!(CloseReason::ErrorDns(DnsCause::DnsTemp).code(), 18);
+        assert_eq!(CloseReason::HeaderTimeout.code(), 19);
+        assert_eq!(
+            CloseReason::HeaderTimeout.index(),
+            CloseReason::Error(ErrCause::Timeout).index()
+        );
         // 分布は `error:*` の 1 列に畳む (列は 8 つのまま)
         assert_eq!(
             CloseReason::ErrorDns(DnsCause::Nxdomain).index(),

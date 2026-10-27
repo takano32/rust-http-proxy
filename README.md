@@ -292,7 +292,7 @@ scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
 # (死んだ名前の総当たりという使われ方の数字なので表示だけ)。heap の行は、`--zero` の雪像と起動が
 # 違うときに `/events` の `start` の時刻を添える (黙って「判定できず」にしない。2026-10-17 22:14:52Z の
 # 無言の再起動がこれで読める)。最後の行は無言の再起動 (`/events` の `start` の直前に `shutdown` が無い起動)
-# が 0 回 (T.23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は phase25)
+# が 0 回 (T.23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は phase26)
 scripts/snapshot-diff.py a.json b.json --criteria phase23 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
@@ -307,10 +307,18 @@ scripts/snapshot-diff.py a.json b.json --criteria phase23 --daily b-daily.json \
 # (T.14.99 の決まり)。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を**同じ行で対にした**
 # 差の中央値 (プロキシの取り分) と p95 (尾) を出し、尾が 5 ms 未満なら「距離」(相手までの RTT で
 # 説明できる)。**`/recent` は 2,000 件の環状なので、窓と本数が実測の欄に出る**。`rtt_ms.origin` の
-# 無い雪像 (Linux 以外・`--lite`) は「判定できず」。`collect-deployed.sh` の既定は phase25
-# (T.27.0: phase24 の 17 行のうち、接続のエラーの行に試行 1,000 本の下限、引き直しの行を 1 名前あたり、
-# 無言の再起動の行を「前の雪像より後の起動だけ」に読み替えたもの)
+# 無い雪像 (Linux 以外・`--lite`) は「判定できず」。phase25 (T.27.0) は phase24 の 17 行のうち、接続のエラーの行に
+# 試行 1,000 本の下限、引き直しの行を 1 名前あたり、無言の再起動の行を「前の雪像より後の起動だけ」に読み替えたもの
 scripts/snapshot-diff.py a.json b.json --criteria phase24 --daily b-daily.json \
+                         --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
+                         --zero zero.json --daily-snapshots status
+# phase26 (T.29.10) は phase25 の 17 行を 1 つも動かさず、18 番目から後ろに 8 行を足したもの
+# (`collect-deployed.sh` の既定は phase26)。T.28.99 で手で読んでいた 408 の件数 (`rejected_requests.header_timeout`。表示だけ)・
+# `/log` の error の行が 5 行以下・`/errors` の `local` (私設宛ての 403) が 0 件・3 秒で切った確立と成功した確立の最大と
+# `syn_retrans` 1 / 2 の本数 (表示だけ)・`rejected_requests` の合計と理由別 (表示だけ) と、T.29.99 の
+# `rss − (heap_used + mmap + cache_memory)` が 10 MB 未満 (T.29.25)・cgroup の起動からの CPU が前の版より下がる・
+# `profile-sample` と `cache-probe` の CPU の割合が前の版より下がる (前か後の `/profile` が 12 時間未満なら参考)
+scripts/snapshot-diff.py a.json b.json --criteria phase26 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
@@ -777,7 +785,7 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     **403 で拒否した要求もここに入ります** (原因は `acl` / `blocklist` / `connect_port` / `local`、状態コード 403)。
     403 は 5xx ではないので `/status` の `errors_by_cause` (8 つの原因) には乗らず、
     集計では `hosts[]` の `blocked` に数えるだけです。**誰が何を拒否されたか**はこの個票でだけ読めます。
-    **読めずに断った要求もここに入ります** (T.14.28。原因は `bad_request:<reason>` の 8 種
+    **読めずに断った要求もここに入ります** (T.14.28。原因は `bad_request:<reason>` の 10 種
     = `bad_request:request_line` (要求行が空白で 2 つに割れない / 長すぎて 414) /
     `bad_request:header_too_large` (ヘッダーが長すぎて 431) / `bad_request:method` (メソッドが
     HTTP の token として読めない) / `bad_request:no_host` (オリジン形式なのに `Host` が無い) /
@@ -786,8 +794,9 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     `bad_request:obs_fold` (折り返したヘッダー = 次の行が SP / HTAB で始まる。RFC 9112 §5.2 の
     「400 で断る」を採り、値を黙って変えない) /
     `bad_request:dup_host` (`Host` が 2 本以上ある。T.19.2) /
-    `bad_request:bad_header` (名前とコロンの間に空白がある・値に CR / LF / NUL がある。T.27.5)。
-    状態コードは**実際に返したもの**なので `400` / `414` / `431` のどれかで、
+    `bad_request:bad_header` (名前とコロンの間に空白がある・値に CR / LF / NUL がある。T.27.5) /
+    `bad_request:header_timeout` (要求行とヘッダーが `PROXY_HEADER_TIMEOUT_SECS` までに揃わず 408。T.29.10)。
+    状態コードは**実際に返したもの**なので `400` / `408` / `414` / `431` のどれかで、
     **宛先 (`target`) は空**です — 要求行そのものは個票に入れません (壊れた要求行にも URL や
     ヘッダーが載っているため。入るのは接続元 IP と時刻と理由だけ)。数だけなら `/status` の
     `rejected_requests` で理由別に読めます)、
@@ -1948,7 +1957,10 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   落ちた塊の再送が 3〜4 回重なっても間に合います。
   **上限に当たっているときの `/status`**: 上限の外の 4 枠 (T.13.2) で受けた接続は、ワーカーが全部塞がっていても
   待ち行列に積まずに上限の外のスレッドで動かします (T.28.0。`PROXY_MAX_CONNS` ぶんの沈黙を張られても `/status` は待たずに返る)。
-  `408` で閉じた接続は `/recent` の `reason` が `error:timeout` になります (ログは debug)。
+  `408` で閉じた接続は `/recent` の `reason` が **`error:header_timeout`** (T.29.10。それまでは CONNECT の確立の締め切りと同じ
+  `error:timeout` で分けられませんでした)、`/status` の `rejected_requests.header_timeout` と `/errors` の 1 行
+  (`bad_request:header_timeout`、状態 408) に数えます。ログは debug のままです (本数は相手が決めるので)。
+  要求行の前から黙ったままの接続は宛先も要求も無いので `/recent` には残らず、数だけが `rejected_requests` に入ります。
   `.env` で即時反映 (次の接続から)
 - **`PROXY_HE_STAGGER_MS`** (既定 `250`)
   Happy Eyeballs (RFC 8305) で、名前が複数のアドレスを返したときに**先頭の候補が返らなければ次の候補を試し始めるまでの間隔** (ms)。
@@ -3245,8 +3257,8 @@ T.29.27 (設定の帯の読めない値と知らない鍵・版の隣のビル�
 `/metrics` にはこのほか `sorahost_connect_seconds`(`_bucket{le=}` / `_sum` / `_count`。CONNECT 確立の
 ヒストグラム。区間は `/history` と同じ 12 段。**繋がった CONNECT だけ**を数えます — T.20.4。`0.18.0` までは失敗した 1 本も入っていました)、`sorahost_dns_seconds_sum` / `_count` (名前解決のミスに
 かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
-**`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing|obs_fold|dup_host|bad_header"}`**
-(読めずに 400 / 414 / 431 で断った要求。8 本で固定。T.14.28)、
+**`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing|obs_fold|dup_host|bad_header|header_timeout"}`**
+(読めずに 400 / 408 / 414 / 431 で断った要求。10 本で固定。T.14.28。`header_timeout` は T.29.10)、
 `sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads`、
 **`sorahost_rtt_seconds_sum` / `_count`** (`{side="client"|"origin"}`。カーネルの平滑化 RTT。
 標本は接続 1 本の終わりに 1 つで、ホスト別は出しません) が出ます。
@@ -3300,8 +3312,8 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 段階の 13 本で `/metrics` は **約 14 KB 増えます** (ホスト表と接続元表が満杯のときで 243 → 257 KB。上限は 400 KiB)。
 
 `/status` の **`rejected_requests`** は、**要求を読めずに断った数**を理由別に並べた欄です (T.14.28)。
-`{"request_line":0,"header_too_large":0,"method":0,"no_host":0,"bad_uri":0,"body_framing":0,"obs_fold":0,"dup_host":0,"bad_header":0,"total":0}` の形で、
-理由は上の `/errors` の `bad_request:<reason>` と同じ 8 種、`total` はその合計です。公開ポートには走査 (scanner) の
+`{"request_line":0,"header_too_large":0,"method":0,"no_host":0,"bad_uri":0,"body_framing":0,"obs_fold":0,"dup_host":0,"bad_header":0,"header_timeout":0,"total":0}` の形で、
+理由は上の `/errors` の `bad_request:<reason>` と同じ 10 種 (`header_timeout` = 408 は T.29.10 から)、`total` はその合計です。公開ポートには走査 (scanner) の
 要求が来るので、**何が来たか**をこの 1 行で読むためのものです。エラー (5xx) ではないので `errors` /
 `errors_by_cause` には混ぜていません。**数えるのは断る経路だけ**で、通した要求は原子を 1 つも触りません。
 誰がいつ送ってきたかは `/errors` の個票 (`cause` が `bad_request:<reason>`) で読めます。
@@ -3553,7 +3565,7 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
 個票には接続元 IP と宛先が並ぶので `.gitignore` に入れてあり、コミットしません。
 **雪像の前に `/status` を 1 本取り、要約の RSS だけそちらの値を使います** (`/snapshot` は 17 部・最大 4 MiB を
 1 つの文字列に組むので、雪像を配ること自体が RSS を約 1.0 MB 押し上げます。ほかの通算は 1 秒差で
-意味が変わらないので雪像の値のままです。T.15.0 (15))。判定表の既定は **`CRITERIA=phase25`** (T.27.0。phase24 の 17 行のうち 3 行の読み方を直したもの。phase24 は T.24.2:phase23 の 16 行をそのまま持ち越し、heap の行を「起動から 60 秒の基準 (`/status` の `memory.baseline`) からの増え」に、無言の再起動の行を「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に読み替え、T.24.3 で 17 番目に**確立の尾を同じ窓のカーネル RTT + 5 ms で読む行**を足したもの (尾が 5 ms 未満なら「距離」。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を同じ行で対にした差の中央値がプロキシの取り分、p95 が尾)。`memory.baseline` の無い雪像は phase23 の読み方に戻り、`rtt_ms.origin` の無い雪像 (Linux 以外・`--lite`) は確立の尾の行が「判定できず」になります) です。**`CRITERIA=phase23`** (T.23.1。phase22 の 14 行のうち接続のエラーの行を「名前解決に成功した試行あたり」にし、heap の「判定できず」に `/events` の `start` の時刻を添え、無言の再起動の行を足した 16 行)・**`CRITERIA=phase22`** (T.22.1。phase21 の 10 行 (`/events` の行は表示だけ) に、`dns_slow` が合計 1,000 ms 未満の窓で立っていないこと (T.22.2) と keep-warm の既定を戻す条件 2 つ (`stale_retries` の割合、接続のエラーの接続 1 本あたり) と T.22.4 の目安の 4 行を足し、平常時を「300 本と、その期間の 1 時間の本数の中央値の 3 倍の大きい方」未満で切るもの) です。**`CRITERIA=phase21`** (T.21.2。phase20 と同じ並びの 10 行で、平常時のミスを「表示だけ」(日ごとの幅と `cold` / `expired` の内訳)、`conn` 役の CPU/要求 を前か後の `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` を 0 時間の雪像から 3 時間以内の探りなら「満たした」にしたもの)・**`CRITERIA=phase20`** (T.20.1。下の phase18 と同じ並びの 10 行で、`heap_used + mmap` の増えから `cache_memory` を引き、`discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行を「表示だけ」にしたもの)・**`CRITERIA=phase18`**
+意味が変わらないので雪像の値のままです。T.15.0 (15))。判定表の既定は **`CRITERIA=phase26`** (T.29.10。phase25 の 17 行に、408 の件数・`/log` の error・`/errors` の `local`・3 秒で切った確立・`rejected_requests`・RSS の返していない分・cgroup の CPU・裏の役割の CPU の割合の 8 行を足したもの。phase25 は T.27.0 で phase24 の 17 行のうち 3 行の読み方を直したもの。phase24 は T.24.2:phase23 の 16 行をそのまま持ち越し、heap の行を「起動から 60 秒の基準 (`/status` の `memory.baseline`) からの増え」に、無言の再起動の行を「こちらが原因 (同じ `boot` のまま起動し直した回) が 0 回」に読み替え、T.24.3 で 17 番目に**確立の尾を同じ窓のカーネル RTT + 5 ms で読む行**を足したもの (尾が 5 ms 未満なら「距離」。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を同じ行で対にした差の中央値がプロキシの取り分、p95 が尾)。`memory.baseline` の無い雪像は phase23 の読み方に戻り、`rtt_ms.origin` の無い雪像 (Linux 以外・`--lite`) は確立の尾の行が「判定できず」になります) です。**`CRITERIA=phase23`** (T.23.1。phase22 の 14 行のうち接続のエラーの行を「名前解決に成功した試行あたり」にし、heap の「判定できず」に `/events` の `start` の時刻を添え、無言の再起動の行を足した 16 行)・**`CRITERIA=phase22`** (T.22.1。phase21 の 10 行 (`/events` の行は表示だけ) に、`dns_slow` が合計 1,000 ms 未満の窓で立っていないこと (T.22.2) と keep-warm の既定を戻す条件 2 つ (`stale_retries` の割合、接続のエラーの接続 1 本あたり) と T.22.4 の目安の 4 行を足し、平常時を「300 本と、その期間の 1 時間の本数の中央値の 3 倍の大きい方」未満で切るもの) です。**`CRITERIA=phase21`** (T.21.2。phase20 と同じ並びの 10 行で、平常時のミスを「表示だけ」(日ごとの幅と `cold` / `expired` の内訳)、`conn` 役の CPU/要求 を前か後の `/profile` が 12 時間に満たなければ「参考」、`ipv6.request_probes` を 0 時間の雪像から 3 時間以内の探りなら「満たした」にしたもの)・**`CRITERIA=phase20`** (T.20.1。下の phase18 と同じ並びの 10 行で、`heap_used + mmap` の増えから `cache_memory` を引き、`discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行を「表示だけ」にしたもの)・**`CRITERIA=phase18`**
 (phase17 の 8 行 = phase15 の 4 行 + T.17.0a の 4 行 に、T.18.2 の 2 行 = `heap_used + mmap` の 0 時間の雪像からの増えが 5 MB 未満・`ipv6.request_probes` が 0 を足した 10 行。`conn` 役の CPU/要求 の行には上で繋いだ `-profile_res_60.json` を `--profile` で、相手の雪像の隣にあればそれを `--profile-before` で渡します)・`CRITERIA=phase17`・`CRITERIA=phase15` (T.15.4 / T.15.5 / T.15.6 の 6 行)・`CRITERIA=phase14` も今までどおり使えます。
 **判定表の相手は既定では直前の 1 枚**です。再デプロイのあとはそれが 0 時間の雪像になるので、**`BEFORE=<再デプロイ直前の雪像>`** を渡すと判定表だけ相手がそちらになります (隣の同じ時刻の `-profile_res_60.json` が `--profile-before`。「前回との差分」とホスト別の相手は直前の 1 枚のまま)。**`ZERO=<0 時間の雪像>`** は `snapshot-diff.py --zero` に渡り、無ければ `heap_used + mmap` の行 (phase24 は `memory.baseline` の無い雪像のときだけこれで読み、phase23・phase22 と phase21 では 0 回でない `ipv6.request_probes` の行も) は「判定できず」です。phase24・phase23・phase22・phase21・phase20・phase18 のときは保存先を `--daily-snapshots` にも渡すので、`--from-server` で取り寄せた日次の雪像のうち同じ版のものの表 (`rss`・`heap_used`・`heap_free`・`mmap`・`rings_used.total`・`ipv6.attempts`) が判定表の下に付きます。`BEFORE` と `ZERO` の相対パスはリポジトリの根からです (`DIR` と同じ)。取り忘れた日は
 `scripts/collect-deployed.sh --from-server <host>:<port>` でプロキシ側の雪像から埋められます。

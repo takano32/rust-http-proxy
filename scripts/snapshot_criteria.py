@@ -2133,6 +2133,246 @@ RULES["phase25"] = (RULES["phase24"][:12] + (_p25_connect_errors,) + RULES["phas
                     + (_p25_refresh_per_name, _p25_silent_restarts) + RULES["phase24"][16:])
 
 
+# --- Phase 26 (T.29.10。phase25 の 17 行 + T.28.99 で手で読んだ「ほかに見ること」と T.29.99 の見ること) ---
+#
+# phase25 の 17 行は 1 つも動かさず、**18 番目から後ろに足す**。T.28.99 の「ほかに見ること (2)〜(8)」は
+# 個票を手で数えていた (408 は数が無かった)。T.29.99 の見ること (RSS・CPU) も、雪像で読めるものはここに置く。
+# 他人の `Set-Cookie` (T.29.0) は雪像に数が無いので行にしない (結合テストで見る)。
+
+def snap_hours(snap):
+    """雪像の起動からの時間 (時。`uptime_secs` が無ければ None)。"""
+    up = snap.get("uptime_secs")
+    return up / 3600.0 if up else None
+
+
+def per_day(count, hours):
+    """起動からの通算 `count` を 24 時間あたりにする (時間が無ければ None)。"""
+    return count * 24.0 / hours if hours else None
+
+
+def recent_window(rows):
+    """`/recent` の行の時刻の窓の文言 (`from〜until の N 行`)。"""
+    ats = [r.get("at") for r in rows if isinstance(r, dict) and r.get("at")]
+    if not ats:
+        return f"{n(len(rows))} 行 (時刻なし)"
+    return f"{stamp(min(ats))}〜{stamp(max(ats))} の {n(len(rows))} 行"
+
+
+def _p26_header_timeouts(c, th):
+    """T.29.10 (a): 408 (ヘッダーの締め切り) の件数。**表示だけ** (本数は相手が決める)。
+
+    材料は後の雪像の `/status` の `rejected_requests.header_timeout` (起動からの通算) と、`/recent` の
+    `error:header_timeout` の行 (うち `reqs` ≥ 1 = 1 要求目を通したあとの keep-alive で止まった接続)。
+    T.29.10 より前の版には欄が無いので「判定できず」(0 と書かない)。
+    """
+    label = "408 (要求行とヘッダーの締め切り。`PROXY_HEADER_TIMEOUT_SECS`) の件数 (24 時間あたり)"
+    limit = "— (表示だけ)"
+    rej = part(c["b"], "status").get("rejected_requests") or {}
+    if "header_timeout" not in rej:
+        return (label, limit, "—", UNKNOWN,
+                "後の雪像の `rejected_requests` に `header_timeout` が無い (T.29.10 より前の版。数は debug ログだけだった)")
+    count, hours = rej["header_timeout"], snap_hours(c["b"])
+    day = per_day(count, hours)
+    shown = f"**{n(count)}** 件 (起動から {n(hours)} 時間" + (f"、{day:,.1f} 件/24 時間" if day is not None else "") + ")"
+    rows = part(c["b"], "recent").get("recent")
+    src = "`/status` の `rejected_requests.header_timeout` (起動からの通算)"
+    if isinstance(rows, list):
+        hit = [r for r in rows if isinstance(r, dict) and r.get("reason") == "error:header_timeout"]
+        kept = sum(1 for r in hit if (r.get("reqs") or 0) >= 1)
+        shown += f"。`/recent` の `error:header_timeout` {n(len(hit))} 行 (うち 1 要求目を通したあとの {n(kept)} 行)"
+        src += (f"と `/recent` ({recent_window(rows)}。宛先も要求も無いまま閉じた接続 = 要求行の前の沈黙は"
+                " 個票に残らないので、`/recent` に出るのは要求の途中で止まった接続だけ)")
+    return (label, limit, shown, SHOWN,
+            src + "。**閾を置かない**: 先張りの接続や走査が来るたびに増え、本数は相手が決める")
+
+
+def _p26_log_errors(c, th):
+    """T.29.10 (b): `/log` の error の行が `log_error_max` 行以下 (T.28.99 の (3)。T.28.4 の効き目)。"""
+    k = th["log_error_max"]
+    label = f"`/log` の error の行が {k} 行以下 (T.28.4。0.27.8 は 1,000 行中 500)"
+    limit = f"≤ {k} 行"
+    lg = part(c["b"], "log")
+    lines = lg.get("lines")
+    if not isinstance(lines, list):
+        return (label, limit, "—", UNKNOWN, "後の雪像に `/log` の部が無い")
+    errs = [x for x in lines if isinstance(x, dict) and x.get("level") == "error"]
+    ats = [x.get("at") for x in lines if isinstance(x, dict) and x.get("at")]
+    win = (f"{stamp(min(ats))}〜{stamp(max(ats))} の {n(len(lines))} 行" if ats else f"{n(len(lines))} 行")
+    src = f"後の雪像の `/log` ({win}、記録の水準 `{lg.get('level') or '?'}`)"
+    if lg.get("truncated"):
+        src += "。**`/log` が切れている** (件数は下限)"
+    shown = f"**{n(len(errs))}** 行"
+    if errs:
+        shown += " (" + "、".join(f"`{stamp(x.get('at'))}` {str(x.get('msg') or '')[:80]}" for x in errs[:3]) + (
+            f" ほか {len(errs) - 3} 行" if len(errs) > 3 else "") + ")"
+    return (label, limit, shown, MET if len(errs) <= k else MISSED, src)
+
+
+def _p26_local_blocks(c, th):
+    """T.29.10 (c): `/errors` の `local` (私設・ループバック宛ての 403。T.28.41) が 0 件 (T.28.99 の (8))。
+
+    0 件でなければ「届かず」にして宛先を並べる (正規の利用を断ったかは人が読む)。
+    """
+    label = "`/errors` の `local` (私設・ループバック宛ての 403。T.28.41 の既定で断った宛先) が 0 件"
+    limit = "0 件"
+    rows = part(c["b"], "errors").get("errors")
+    if not isinstance(rows, list):
+        return (label, limit, "—", UNKNOWN, "後の雪像に `/errors` の部が無い")
+    hit = [r for r in rows if isinstance(r, dict) and r.get("cause") == "local"]
+    count = sum((r.get("repeats") or 1) for r in hit)
+    src = f"後の雪像の `/errors` ({recent_window(rows)}。同じ失敗の繰り返しは `repeats` で足した)"
+    if not hit:
+        return (label, limit, "**0** 件", MET, src)
+    targets = sorted({r.get("target") or "?" for r in hit})
+    return (label, limit, f"**{n(count)}** 件 (宛先 " + "、".join(f"`{t}`" for t in targets[:5])
+            + (f" ほか {len(targets) - 5}" if len(targets) > 5 else "") + ")", MISSED,
+            src + "。正規の利用を断ったかは宛先を見て決める (`PROXY_ALLOW_LOCAL`)")
+
+
+def _p26_connect_cut(c, th):
+    """T.29.10 (d): 3 秒 (`PROXY_CONNECT_TIMEOUT_SECS`) で切った確立と、成功した確立の最大・SYN の再送。**表示だけ**。
+
+    T.28.99 の (7) を `/recent` の connect の行で数える: 確立の締め切りで切った行 (`error:timeout`)、
+    成功した行の `ms.connect` の最大と 2 秒以上の本数、`syn_retrans` が 1・2 の本数。
+    """
+    label = "確立の締め切り (3 秒) で切った CONNECT・成功した確立の最大・`syn_retrans` 1 / 2 の本数"
+    limit = "— (表示だけ)"
+    rows = part(c["b"], "recent").get("recent")
+    if not isinstance(rows, list):
+        return (label, limit, "—", UNKNOWN, "後の雪像に `/recent` の部が無い")
+    conns = [r for r in rows if isinstance(r, dict) and (r.get("kind") or "connect") == "connect"]
+    cut = [r for r in conns if r.get("reason") == "error:timeout"]
+    ok = [r for r in conns if not str(r.get("reason") or "").startswith("error:")]
+    best = [((r.get("ms") or {}).get("connect") or 0) for r in ok]
+    ports = {}
+    for r in cut:
+        port = str(r.get("target") or "").rpartition(":")[2] or "?"
+        ports[port] = ports.get(port, 0) + 1
+    syn = {k: sum(1 for r in conns if (r.get("syn_retrans") or 0) == k) for k in (1, 2)}
+    shown = (f"切った **{n(len(cut))}** 行"
+             + (" (ポート " + "、".join(f"`{p}` {k}" for p, k in sorted(ports.items(), key=lambda x: -x[1])) + ")"
+                if cut else "")
+             + f"、成功 {n(len(ok))} 本の確立の最大 **{n(max(best)) if best else '—'}** ms"
+             + f" (2 秒以上 {n(sum(1 for v in best if v >= 2000))} 本)"
+             + f"、`syn_retrans` 1 が {n(syn[1])} 本・2 が {n(syn[2])} 本")
+    return (label, limit, shown, SHOWN,
+            f"後の雪像の `/recent` の connect の行 ({recent_window(conns)})。**閾を置かない**: "
+            "切った行が困ったか (3 秒より長く待てば繋がったか) は切ったあとでは分からない (T.28.99 の (7))")
+
+
+def _p26_rejected(c, th):
+    """T.29.10 (e): `rejected_requests` (読めずに断った要求) の合計と理由別。**表示だけ**。
+
+    T.29.8 (要求行とヘッダー名の文法) の「誤って断った要求 0」は、0 でない理由の `/errors` の行を人が読む。
+    """
+    label = "`rejected_requests` (読めずに断った要求) の合計と理由別"
+    limit = "— (表示だけ)"
+    rej = part(c["b"], "status").get("rejected_requests")
+    if not isinstance(rej, dict) or "total" not in rej:
+        return (label, limit, "—", UNKNOWN, "後の雪像の `/status` に `rejected_requests` が無い")
+    nz = [(k, v) for k, v in rej.items() if k != "total" and v]
+    hours = snap_hours(c["b"])
+    day = per_day(rej["total"], hours)
+    shown = (f"**{n(rej['total'])}** 本 (起動から {n(hours)} 時間"
+             + (f"、{day:,.1f} 本/24 時間" if day is not None else "") + ")"
+             + ("。" + "、".join(f"`{k}` {n(v)}" for k, v in nz) if nz else "。どの理由も 0"))
+    return (label, limit, shown, SHOWN,
+            "`/status` の `rejected_requests` (起動からの通算。`header_timeout` は T.29.10 から)。**閾を置かない**: "
+            "走査の要求の本数は相手が決める。誤って断った形跡は `/errors` の `bad_request:<理由>` の行を見る")
+
+
+def _p26_rss_gap(c, th):
+    """T.29.25: `rss − (heap_used + mmap + cache_memory)` が `rss_gap_mb` 未満 (返していない free heap)。"""
+    lim = th["rss_gap_mb"]
+    label = f"`rss − (heap_used + mmap + cache_memory)` が {lim:.0f} MB 未満 (T.29.25。`heap_free` は表示だけ)"
+    limit = f"< {lim:.0f} MB"
+    m = memory_of(c["b"])
+    need = ("rss", "heap_used", "mmap", "cache_memory")
+    missing = [k for k in need if m.get(k) is None]
+    if missing:
+        return (label, limit, "—", UNKNOWN, "後の雪像の `/status` の `memory` に " + "、".join(f"`{k}`" for k in missing) + " が無い")
+    gap = (m["rss"] - m["heap_used"] - m["mmap"] - m["cache_memory"]) / 1e6
+    shown = (f"**{gap:,.1f}** MB (`rss` {mb(m['rss'])} − `heap_used` {mb(m['heap_used'])} − `mmap` {mb(m['mmap'])}"
+             f" − `cache_memory` {mb(m['cache_memory'])} MB)")
+    if m.get("heap_free") is not None:
+        shown += f"。表示だけ: `heap_free` {mb(m['heap_free'])} MB"
+    return (label, limit, shown, MET if gap < lim else MISSED,
+            f"後の雪像の `/status` の `memory` (起動から {uptime_text(c['b'].get('uptime_secs'))})")
+
+
+def _p26_cgroup_cpu(c, th):
+    """T.29.20〜23: cgroup の起動からの CPU (コア) が前の版より下がる (`_p17_cgroup` は「同じ桁」だけを見る)。"""
+    label = "cgroup の起動からの CPU (コア) が前の版より下がる (T.29.20〜23。user / sys は表示だけ)"
+    limit = "< 前"
+    aft, bef = cgroup_since_start(c["b"]), cgroup_since_start(c["a"])
+    if aft is None or bef is None:
+        side = "後" if aft is None else "前"
+        return (label, limit, "—", UNKNOWN, f"{side}の雪像の `kernel.cgroup_cpu.since_start` に `usage_usec` が無い")
+
+    def text(v):
+        parts = [f"{v['cores']:.4f} コア"]
+        if v["user_cores"] is not None and v["sys_cores"] is not None:
+            parts.append(f"user {v['user_cores']:.4f}・sys {v['sys_cores']:.4f}")
+        return "、".join(parts)
+    shown = f"{text(bef)} → **{text(aft)}**" + (f" ({aft['cores'] / bef['cores']:.2f} 倍)" if bef["cores"] else "")
+    return (label, limit, shown, MET if aft["cores"] < bef["cores"] else MISSED,
+            f"`kernel.cgroup_cpu.since_start` ÷ `uptime_secs` (前 {bef['hours']:,.1f} 時間、後 {aft['hours']:,.1f} 時間)")
+
+
+def role_share(p, role):
+    """`/profile` の JSON 1 つで、`role` の CPU がプロセス全体の CPU に占める割合 (無ければ None)。"""
+    cost = profile_cost(p, role)
+    if not cost or not cost["cores"]:
+        return None
+    return cost["role_us"] / (cost["cores"] * cost["secs"] * 1e6)
+
+
+def _p26_role_shares(c, th):
+    """T.29.20〜22: 暇なときの裏の費用 (`profile-sample`・`cache-probe`) の CPU の割合が前の版より下がる。
+
+    前か後の `/profile` が `profile_min_hours` に満たなければ「参考」(`_p21_conn_per_request` と同じ扱い)。
+    """
+    roles = th["idle_roles"]
+    label = "暇なときの裏の役割 (" + "・".join(f"`{r}`" for r in roles) + ") の CPU の割合が前の版より下がる (T.29.20〜22)"
+    limit = "どれも < 前"
+    (pb, sb), (pa, sa) = profile_source(c["a"]), profile_source(c["b"])
+    if not pa or not pb:
+        side = "後" if not pa else "前"
+        return (label, limit, "—", UNKNOWN, f"{side}の雪像に `/profile` の材料が無い (`--profile` / `--profile-before`)")
+    got, worse = [], []
+    for role in roles:
+        b, a = role_share(pb, role), role_share(pa, role)
+        if a is None or b is None:
+            return (label, limit, "—", UNKNOWN, f"前か後の `/profile` に `{role}` の役割か `cpu_us` が無い")
+        got.append(f"`{role}` {b * 100:.1f}% → **{a * 100:.1f}%**")
+        if a >= b:
+            worse.append(role)
+    shown = "、".join(got)
+    src = f"`/profile` の役割ごとの `cpu_us` ÷ 全体の `cpu_us` (後: {sa}、前: {sb})"
+    verdict = MISSED if worse else MET
+    hours = th["profile_min_hours"]
+    short = [f"{who}は {s[0] / 3600:,.1f} 時間" for snap, who in ((c["a"], "前"), (c["b"], "後"))
+             for s in [profile_span(snap)] if s and s[0] < hours * 3600]
+    if short:
+        return (label, limit, shown, REFERENCE,
+                src + f"。**参考**: {'、'.join(short)} で {hours:.0f} 時間に満たない (判定は「{verdict}」でも集計に数えない)")
+    return (label, limit, shown, verdict, src)
+
+
+# T.29.10: phase26 = phase25 の 17 行 + 18〜25 番目。**phase25 以前の並びは 1 つも動かない**
+PHASE26 = dict(PHASE25)
+# `/log` の error の行の上限 (T.28.99 の (3)「0〜数件」。0.29.35 の起動 2 分では 2 行)
+PHASE26["log_error_max"] = 5
+# T.29.25 の受け入れ基準 (24 時間で `rss − (heap_used + mmap + cache_memory)` < 10 MB)
+PHASE26["rss_gap_mb"] = 10.0
+# T.29.20〜22 で減らす裏の役割 (0.28.48 の tokyo で `profile-sample` 32.5%・`cache-probe` 23.4%)
+PHASE26["idle_roles"] = ("profile-sample", "cache-probe")
+CRITERIA["phase26"] = PHASE26
+RULES["phase26"] = RULES["phase25"] + (
+    _p26_header_timeouts, _p26_log_errors, _p26_local_blocks, _p26_connect_cut, _p26_rejected,
+    _p26_rss_gap, _p26_cgroup_cpu, _p26_role_shares)
+
+
 def judge(name, hist, hosts, majors, status_b, overload, th,
           a=None, b=None, info=None, dns=None, errors=None, burst=BURST_PER_HOUR):
     """`RULES[name]` の各行を順に呼んで判定表にする。
@@ -2291,6 +2531,17 @@ def render_criteria(d, grouped):
           "(3) 無言の再起動は、**前の雪像の取得より後の `start` だけ**を数えます (それより前の起動は前の締めで"
           "見ています。`boot` の無い古い `start` が `/events` に残る間、毎回「判定できず」になるのを防ぐ)。"
           "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+        p()
+    if c["name"] == "phase26":
+        # T.29.10。phase25 の 17 行を 1 つも動かさず、T.28.99 で手で読んだものと T.29.99 の見ることを後ろに足した
+        p("前の 17 行は phase25 と同じ物差しで、材料も同じです。18 番目から後ろは T.28.99 で手で読んでいた"
+          "「ほかに見ること」と T.29.99 の見ること (T.29.10): 408 (ヘッダーの締め切り) の件数 (`/status` の "
+          "`rejected_requests.header_timeout`。表示だけ)、`/log` の error の行が 5 行以下、`/errors` の `local` "
+          "(私設宛ての 403) が 0 件、3 秒で切った確立・成功した確立の最大・`syn_retrans` 1 / 2 の本数 (表示だけ)、"
+          "`rejected_requests` の合計と理由別 (表示だけ)、`rss − (heap_used + mmap + cache_memory)` が 10 MB 未満 "
+          "(T.29.25)、cgroup の起動からの CPU が前の版より下がる、`profile-sample`・`cache-probe` の CPU の割合が"
+          "前の版より下がる (前か後の `/profile` が 12 時間に満たなければ参考)。他人の `Set-Cookie` (T.29.0) は"
+          "雪像に数が無いので行にしていません。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")

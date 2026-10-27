@@ -118,7 +118,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         Ok(Line::Read(Some(_))) => {}
         // 1 バイト目から期限を越えた (1 バイトずつの trickle。2 要求目以降も)
         Err(e) if is_timeout(&e) && clock.expired() => {
-            return header_timeout(client, conn_id, config.header_timeout);
+            return header_timeout(client, metrics, peer_ip, conn_id, config.header_timeout);
         }
         Err(e)
             if *served > 0
@@ -152,7 +152,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         }
         // 1 要求目が黙ったまま (accept から `first_read_timeout`) か、途中で黙った (T.28.0)
         Err(e) if clock.is_header_timeout(&e, *served) => {
-            return header_timeout(client, conn_id, config.header_timeout);
+            return header_timeout(client, metrics, peer_ip, conn_id, config.header_timeout);
         }
         Err(e) => return Err(e),
     }
@@ -279,7 +279,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             Ok(Line::Idle) => unreachable!("allow_idle is false"),
             // ヘッダーの途中で期限を越えた・黙った (T.28.0)
             Err(e) if clock.is_header_timeout(&e, *served) => {
-                return header_timeout(client, conn_id, config.header_timeout);
+                return header_timeout(client, metrics, peer_ip, conn_id, config.header_timeout);
             }
             Err(e) => return Err(e),
         };

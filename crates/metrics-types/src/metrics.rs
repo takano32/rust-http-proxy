@@ -227,7 +227,7 @@ impl Failure {
     }
 }
 
-/// 要求を読めずに断った理由 (T14.28 / T19.2 / T27.5)。**9 種で固定** (足すときは末尾に)。
+/// 要求を読めずに断った理由 (T14.28 / T19.2 / T27.5 / T.29.10)。**10 種で固定** (足すときは末尾に)。
 ///
 /// 公開ポートには走査 (scanner) の要求が来る。今までは 400 / 414 / 431 で閉じるだけで
 /// **何が来たか**の数が無かったので、`/status` の `rejected_requests` (理由別) と
@@ -258,10 +258,14 @@ pub enum BadRequestReason {
     /// ヘッダーの形が不正 (名前とコロンの間に空白がある = RFC 9112 §5.1、値に CR / LF / NUL がある =
     /// RFC 9110 §5.5)。どちらも前段と後段で読み方が割れる (要求の密輸)。T27.5
     BadHeader = 8,
+    /// 要求行とヘッダーが期限 (`PROXY_HEADER_TIMEOUT_SECS`) までに揃わず 408 で閉じた (T.28.0)。
+    /// T.29.10 までは debug ログだけで数が無く、`/recent` の理由も CONNECT の確立の締め切りと
+    /// 同じ `error:timeout` だった
+    HeaderTimeout = 9,
 }
 
 /// [`BadRequestReason`] の数 (`rejected_requests` の配列の長さ)。
-pub const BAD_REQUEST_REASONS: usize = 9;
+pub const BAD_REQUEST_REASONS: usize = 10;
 
 /// `/status` の鍵と `/metrics` のラベルに使う名前 ([`BadRequestReason`] と同じ順)。
 pub const BAD_REQUEST_REASON_NAMES: [&str; BAD_REQUEST_REASONS] = [
@@ -274,6 +278,7 @@ pub const BAD_REQUEST_REASON_NAMES: [&str; BAD_REQUEST_REASONS] = [
     "obs_fold",
     "dup_host",
     "bad_header",
+    "header_timeout",
 ];
 
 impl BadRequestReason {
@@ -294,10 +299,11 @@ impl BadRequestReason {
             BadRequestReason::ObsFold => "bad_request:obs_fold",
             BadRequestReason::DupHost => "bad_request:dup_host",
             BadRequestReason::BadHeader => "bad_request:bad_header",
+            BadRequestReason::HeaderTimeout => "bad_request:header_timeout",
         }
     }
 
-    /// 符号 (0〜8) から戻す。知らない値は [`BadRequestReason::RequestLine`]。
+    /// 符号 (0〜9) から戻す。知らない値は [`BadRequestReason::RequestLine`]。
     pub fn from_index(v: usize) -> BadRequestReason {
         match v {
             1 => BadRequestReason::HeaderTooLarge,
@@ -308,6 +314,7 @@ impl BadRequestReason {
             6 => BadRequestReason::ObsFold,
             7 => BadRequestReason::DupHost,
             8 => BadRequestReason::BadHeader,
+            9 => BadRequestReason::HeaderTimeout,
             _ => BadRequestReason::RequestLine,
         }
     }

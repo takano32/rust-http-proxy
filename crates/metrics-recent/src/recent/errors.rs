@@ -55,7 +55,7 @@ pub enum EntryCause {
     /// 集計の `errors_by_cause` では 9・10 番目に同じ数が入る
     ErrorDns(DnsCause),
     Blocked(BlockCause),
-    /// 読めずに 400 / 414 / 431 で断った要求 (T14.28)。`cause` は `bad_request:<reason>`
+    /// 読めずに 400 / 408 / 414 / 431 で断った要求 (T14.28。408 は T.29.10)。`cause` は `bad_request:<reason>`
     BadRequest(BadRequestReason),
 }
 
@@ -71,7 +71,7 @@ impl EntryCause {
     }
 
     /// ファイルに書くときの符号 (T14.9)。5xx は 0〜7、403 は 100〜103、
-    /// 読めなかった要求 (400 / 414 / 431) は 200〜208 (T14.28 / T19.2 / T19.3 / T27.5)。
+    /// 読めなかった要求 (400 / 408 / 414 / 431) は 200〜209 (T14.28 / T19.2 / T19.3 / T27.5 / T.29.10)。
     pub fn code(self) -> u64 {
         match self {
             EntryCause::Error(c) => c as u64,
@@ -99,7 +99,7 @@ impl EntryCause {
             101 => EntryCause::Blocked(BlockCause::Blocklist),
             102 => EntryCause::Blocked(BlockCause::ConnectPort),
             103 => EntryCause::Blocked(BlockCause::Local),
-            200..=208 => EntryCause::BadRequest(BadRequestReason::from_index((v - 200) as usize)),
+            200..=209 => EntryCause::BadRequest(BadRequestReason::from_index((v - 200) as usize)),
             _ => EntryCause::Error(ErrCause::Other),
         }
     }

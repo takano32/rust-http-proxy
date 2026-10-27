@@ -308,3 +308,62 @@ fn test_integration_connection_made_before_serve_gets_408() {
     );
     assert!(took < Duration::from_secs(3), "{:?}", took);
 }
+
+/// (f) 408 は数えられ、`/recent` の理由が CONNECT の確立の締め切り (`error:timeout`) と分かれる (T.29.10)。
+///
+/// 今までは debug ログだけで `/status`・`/errors` に数が無く、`/recent` の理由は `error:timeout`
+/// (確立の締め切りと同じ綴り) だった。
+#[test]
+fn test_integration_header_timeout_is_counted_and_has_its_own_reason() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (origin_port, _origin) = start_counting_origin(Arc::clone(&counter), "");
+    let port = ready(start_test_proxy(config_with_deadline(1, false)));
+    let before = status_json(port);
+    assert!(
+        before.contains("\"header_timeout\":0,\"total\":0}"),
+        "数える欄が 0 から: {}",
+        before
+    );
+    // 1 要求目を通して宛先の入った接続にしてから (宛先も要求も無い接続は `/recent` に残らない)、
+    // 2 要求目のヘッダーを途中で止める
+    let host = format!("127.0.0.1:{}", origin_port);
+    let mut s = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let (head, _) = one_keepalive_request(&mut s, &host, "/first");
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    let started = Instant::now();
+    s.write_all(format!("GET http://{}/second HTTP/1.1\r\nHost: {}\r\n", host, host).as_bytes())
+        .unwrap();
+    let (got, _) = read_until_closed(&mut s, started);
+    assert!(got.starts_with("HTTP/1.1 408"), "{:?}", got);
+    // 閉じた接続が個票に入るまで待つ
+    wait_until(
+        || endpoint_json(port, "/recent").contains("\"reason\":\"error:header_timeout\""),
+        "the 408 should land in /recent as error:header_timeout",
+    );
+    let recent = endpoint_json(port, "/recent");
+    assert!(
+        !recent.contains("\"reason\":\"error:timeout\""),
+        "確立の締め切りの綴りに混ぜない: {}",
+        recent
+    );
+    let after = status_json(port);
+    assert!(
+        after.contains("\"header_timeout\":1,\"total\":1}"),
+        "`/status` の `rejected_requests` が +1: {}",
+        after
+    );
+    let errors = endpoint_json(port, "/errors");
+    assert!(
+        errors.contains("\"cause\":\"bad_request:header_timeout\"")
+            && errors.contains("\"status\":408"),
+        "`/errors` に 408 の 1 行: {}",
+        errors
+    );
+    let prom = endpoint_json(port, "/metrics");
+    assert!(
+        prom.contains("sorahost_rejected_requests_total{reason=\"header_timeout\"} 1"),
+        "{}",
+        prom
+    );
+}

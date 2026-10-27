@@ -315,20 +315,25 @@ fn linger(client: &TcpStream) {
 ///
 /// 黙ったまま・1 バイトずつ送る接続 (slowloris) が来るたびに出るので、ログは debug に留める
 /// (1 本ごとに WARN を出すと、ログの環が攻撃の行で埋まる)。
+///
+/// 数は `/status` の `rejected_requests.header_timeout` と `/errors` の 1 行 (`bad_request:header_timeout`、
+/// 状態 408)、`/recent` の理由は `error:header_timeout` (T.29.10。CONNECT の確立の締め切りの
+/// `error:timeout` と分ける)。ログは数えたあとも debug のまま (WARN の絞りの戻り値は捨てる)
 pub(super) fn header_timeout(
     client: &TcpStream,
+    metrics: &Metrics,
+    peer_ip: &str,
     conn_id: usize,
     limit: std::time::Duration,
 ) -> io::Result<Step> {
+    let _ = metrics.record_bad_request(metrics::BadRequestReason::HeaderTimeout, peer_ip, 408);
     log_debug!(
         Some(conn_id),
         "408 Request Timeout (request line and headers not received within {} s)",
         limit.as_secs_f64()
     );
     reject(client, 408, "Request Timeout")?;
-    Ok(Step::Close(recent::CloseReason::Error(
-        metrics::ErrCause::Timeout,
-    )))
+    Ok(Step::Close(recent::CloseReason::HeaderTimeout))
 }
 
 /// 上限の外で受けた接続 (T13.2) に 503 を返して閉じる。
