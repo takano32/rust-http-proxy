@@ -247,7 +247,16 @@ pub struct BodyReader<'a, R: BufRead> {
     chunk: ChunkState,
     done: bool,
     truncated: bool,
+    /// ここまでに読んだ trailer の合計 (T.29.1)
+    trailer_bytes: usize,
 }
+
+/// chunk の大きさの行 (拡張込み) とデータの後ろの CRLF の行の上限 (T.29.1)。
+/// 16 進の大きさは 16 桁で足りるので、拡張に十分な幅を残して 4 KiB。
+pub const MAX_CHUNK_SIZE_LINE: usize = 4 * 1024;
+/// trailer の 1 行と合計の上限 (T.29.1)。
+pub const MAX_TRAILER_LINE: usize = 8 * 1024;
+pub const MAX_TRAILER_BYTES: usize = 64 * 1024;
 
 impl<'a, R: BufRead> BodyReader<'a, R> {
     pub fn new(inner: &'a mut R, framing: Framing) -> Self {
@@ -263,6 +272,7 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
             chunk: ChunkState::Size,
             done,
             truncated: false,
+            trailer_bytes: 0,
         }
     }
 
@@ -276,14 +286,39 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
         io::Error::new(io::ErrorKind::UnexpectedEof, "body ended early")
     }
 
+    /// 枠の行 (chunk の大きさの行・データの後ろの CRLF・trailer の行) を 1 本、`limit` バイトまで読む
+    /// (T.29.1)。行が無いまま閉じたら `Ok(None)`、`limit` までに改行が来なければ `InvalidData`。
+    ///
+    /// 今までは `read_line` で上限が無く、改行を送らずに `f` を流し続けるだけで 1 本の要求が
+    /// 何百 MiB も抱えた (クライアントの chunked の POST で +793 MiB、オリジンの chunk 行で +702 MiB)。
+    fn frame_line(&mut self, limit: usize) -> io::Result<Option<Vec<u8>>> {
+        let mut line = Vec::new();
+        let n = (&mut *self.inner)
+            .take(limit as u64)
+            .read_until(b'\n', &mut line)?;
+        if n == 0 {
+            return Ok(None);
+        }
+        // 改行の前に閉じた行は、今までの `read_line` と同じくここまでを 1 行として読む
+        if n == limit && line.last() != Some(&b'\n') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "chunked framing line too long",
+            ));
+        }
+        Ok(Some(line))
+    }
+
     fn read_chunked(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
             match self.chunk {
                 ChunkState::Size => {
-                    let mut line = String::new();
-                    if self.inner.read_line(&mut line)? == 0 {
+                    let Some(line) = self.frame_line(MAX_CHUNK_SIZE_LINE)? else {
                         return Err(self.truncate());
-                    }
+                    };
+                    let line = std::str::from_utf8(&line).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "bad chunk size")
+                    })?;
                     let size_str = line.trim().split(';').next().unwrap_or("").trim();
                     let size = u64::from_str_radix(size_str, 16).map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidData, "bad chunk size")
@@ -309,18 +344,24 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
                     return Ok(n);
                 }
                 ChunkState::DataCrlf => {
-                    let mut crlf = String::new();
-                    if self.inner.read_line(&mut crlf)? == 0 {
+                    if self.frame_line(MAX_CHUNK_SIZE_LINE)?.is_none() {
                         return Err(self.truncate());
                     }
                     self.chunk = ChunkState::Size;
                 }
                 ChunkState::Trailers => {
-                    let mut line = String::new();
-                    if self.inner.read_line(&mut line)? == 0 {
+                    let Some(line) = self.frame_line(MAX_TRAILER_LINE)? else {
                         return Err(self.truncate());
+                    };
+                    // trailer は読み捨てるが、行の数だけ足していけるので合計にも上限を置く (T.29.1)
+                    self.trailer_bytes += line.len();
+                    if self.trailer_bytes > MAX_TRAILER_BYTES {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "chunked trailer section too large",
+                        ));
                     }
-                    if line.trim().is_empty() {
+                    if line.trim_ascii().is_empty() {
                         self.chunk = ChunkState::Done;
                         self.done = true;
                         return Ok(0);
@@ -503,6 +544,58 @@ mod tests {
         let mut rest = Vec::new();
         r.read_to_end(&mut rest).unwrap();
         assert_eq!(rest, b"NEXT", "bytes after the body stay in the stream");
+    }
+
+    /// T.29.1: chunk の大きさの行・データの後ろの行・trailer の行と合計に上限がある。
+    /// 上限を越えたら、そこまでしか読まずに `InvalidData` で止まる。
+    #[test]
+    fn chunked_framing_lines_are_bounded() {
+        // 改行の無い大きさの行 (`f` の連打): 上限ぶん読んだところで止まる
+        let raw = vec![b'f'; 1024 * 1024];
+        let mut r = BufReader::new(&raw[..]);
+        let (out, _) = read_all(&mut r, Framing::Chunked);
+        assert_eq!(out.unwrap_err().kind(), io::ErrorKind::InvalidData);
+        let mut rest = Vec::new();
+        r.read_to_end(&mut rest).unwrap();
+        assert!(
+            raw.len() - rest.len() <= MAX_CHUNK_SIZE_LINE + 8 * 1024,
+            "読みすぎ: {}",
+            raw.len() - rest.len()
+        );
+        // 拡張が長いだけの大きさの行も同じ
+        let mut raw = b"5;".to_vec();
+        raw.extend(std::iter::repeat_n(b'a', MAX_CHUNK_SIZE_LINE));
+        raw.extend_from_slice(b"\r\nhello\r\n0\r\n\r\n");
+        let (out, _) = read_all(&mut BufReader::new(&raw[..]), Framing::Chunked);
+        assert!(out.is_err());
+        // データの後ろに CRLF の代わりに長い行
+        let mut raw = b"5\r\nhello".to_vec();
+        raw.extend(std::iter::repeat_n(b'x', MAX_CHUNK_SIZE_LINE + 1));
+        let (out, _) = read_all(&mut BufReader::new(&raw[..]), Framing::Chunked);
+        assert!(out.is_err());
+        // trailer の 1 行が長い
+        let mut raw = b"0\r\nX-T: ".to_vec();
+        raw.extend(std::iter::repeat_n(b'x', MAX_TRAILER_LINE));
+        raw.extend_from_slice(b"\r\n\r\n");
+        let (out, _) = read_all(&mut BufReader::new(&raw[..]), Framing::Chunked);
+        assert!(out.is_err());
+        // trailer の 1 行は短いが、本数で合計を越える
+        let mut raw = b"0\r\n".to_vec();
+        while raw.len() < MAX_TRAILER_BYTES + 1024 {
+            raw.extend_from_slice(b"X-T: 0123456789\r\n");
+        }
+        raw.extend_from_slice(b"\r\n");
+        let (out, _) = read_all(&mut BufReader::new(&raw[..]), Framing::Chunked);
+        assert!(out.is_err());
+        // 上限の内側は今までどおり読める (拡張つき・trailer つき)
+        let mut raw = b"5;".to_vec();
+        raw.extend(std::iter::repeat_n(b'a', 1000));
+        raw.extend_from_slice(b"\r\nhello\r\n0\r\nX-T: ");
+        raw.extend(std::iter::repeat_n(b'y', 4000));
+        raw.extend_from_slice(b"\r\n\r\n");
+        let (out, clean) = read_all(&mut BufReader::new(&raw[..]), Framing::Chunked);
+        assert_eq!(out.unwrap(), b"hello");
+        assert!(clean);
     }
 
     #[test]

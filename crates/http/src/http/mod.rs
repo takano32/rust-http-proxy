@@ -1428,6 +1428,22 @@ pub fn handle_http_parsed(
                     clean = false;
                     break;
                 }
+                // chunk の枠が壊れている・行が長すぎる (T.29.1)。先頭はもう出ているので、途中で切れた
+                // 本文と同じに扱う (終端の chunk を出さずに閉じる)。本数はオリジンが決めるので 1 分に 1 行
+                Err(ref e) if e.kind() == io::ErrorKind::InvalidData => {
+                    static FRAMING_WARN: crate::log::Throttle = crate::log::Throttle::new();
+                    if let Some(more) = FRAMING_WARN.pass(crate::log::WARN_EVERY_SECS) {
+                        log_warn!(
+                            Some(conn_id),
+                            "origin body from {} cut: {}{}",
+                            pool_key,
+                            e,
+                            more
+                        );
+                    }
+                    clean = false;
+                    break;
+                }
                 Err(e) => {
                     if let Some(s) = sink.take() {
                         s.abort();
