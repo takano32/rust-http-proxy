@@ -238,7 +238,8 @@ impl Default for CacheConfig {
                 percent: DEFAULT_TARGET_PERCENT,
             },
             reserve: Reserve::Staged,
-            probe_interval: Duration::from_secs(1),
+            // 1 → 5 秒 (T.29.22。暇なときの裏の費用。上限は `put` 側が自分で守る)
+            probe_interval: Duration::from_secs(5),
             dir: env::temp_dir().join("rust-http-proxy-cache"),
             mem_keep_free: 0,
             disk_keep_free: 0,
@@ -466,7 +467,7 @@ mod tests {
         assert_eq!(d.disk_limit, Limit::Auto { percent: 100 });
         assert_eq!(d.reserve, Reserve::Staged);
         assert!(d.enabled);
-        assert_eq!(d.probe_interval, Duration::from_secs(1));
+        assert_eq!(d.probe_interval, Duration::from_secs(5));
         assert_eq!(d.mem_keep_free, 0);
     }
 

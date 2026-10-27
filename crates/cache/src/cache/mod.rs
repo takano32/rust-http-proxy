@@ -146,10 +146,11 @@ impl Cache {
             quota,
             mem: MemTier::new(cfg.reserve.is_on()),
             disk: DiskTier::new(cfg.dir.clone(), cfg.reserve.is_on(), cfg.disk_max_entries),
+            // 窓・減衰はプローブの間隔に合わせて秒で保つ (T.29.22)
             margins: Mutex::new(Margins {
-                host: Margin::new(cfg.mem_keep_free),
-                cgroup: Margin::new(cfg.mem_keep_free),
-                disk: Margin::new(cfg.disk_keep_free),
+                host: Margin::with_interval(cfg.mem_keep_free, cfg.probe_interval.as_secs()),
+                cgroup: Margin::with_interval(cfg.mem_keep_free, cfg.probe_interval.as_secs()),
+                disk: Margin::with_interval(cfg.disk_keep_free, cfg.probe_interval.as_secs()),
             }),
             cfg,
             clock: AtomicU64::new(0),
