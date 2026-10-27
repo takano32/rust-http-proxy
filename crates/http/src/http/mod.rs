@@ -874,6 +874,9 @@ pub fn handle_http_parsed(
     // 1xx を中継したか。中継したらクライアントはもう応答の先頭を受け取っているので、
     // プールの接続を掴み直して同じ 1xx をもう一度出さない (やり直さない)
     let mut interim_sent = false;
+    // オリジンが要求の本文を読み切らずに閉じたか (T.29.7)。立っていれば応答は渡すが、
+    // クライアントの本文の残りが読めていないので、クライアントともオリジンとも続けない
+    let mut body_cut = false;
     let mut attempt = 0;
     let (mut server, head, status, request_body_bytes) = loop {
         attempt += 1;
@@ -926,19 +929,45 @@ pub fn handle_http_parsed(
             ctx.detail = origin_detail(acquire_started, None, ctx.detail.stages, dns_before);
         }
         metrics.inc_origin_conn(reused);
-        let sent = server
-            .get_mut()
-            .write_all(&request_head)
+        let head_sent = server.get_mut().write_all(&request_head);
+        // 本文のある要求はやり直さない (`retryable` が偽) ので、100 は高々 1 回。
+        // クライアントへ書けなければここで終わる (オリジンの誤りと混ぜない)
+        if head_sent.is_ok() && send_continue {
+            send_continue = false;
+            client.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+            client.flush()?;
+        }
+        let mut body_sent = 0u64;
+        let sent = head_sent
             .and_then(|_| {
-                // 本文のある要求はやり直さない (`retryable` が偽) ので、100 は高々 1 回
-                if send_continue {
-                    send_continue = false;
-                    client.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
-                    client.flush()?;
-                }
-                forward_request_body(reader, server.get_mut(), req_framing)
+                forward_request_body(reader, server.get_mut(), req_framing, &mut body_sent)
             })
             .and_then(|n| server.get_mut().flush().map(|_| n));
+        // 本文を送る途中でオリジンが閉じた (`EPIPE` / `ECONNRESET`): 先に応答 (413 など) を返して
+        // 閉じたのかもしれないので、読み残しの応答を読みに行く (RFC 9112 §9.5。T.29.7)。
+        // 読めなければ今までどおり 502。本文の無い要求は対象外 (死んだ接続のやり直しに回す)。
+        // 正常な要求にはシステムコールを 1 つも足さない (失敗したときだけ通る)
+        let sent = match sent {
+            Err(e)
+                if req_framing.has_body()
+                    && !is_client_body_error(&e)
+                    && matches!(
+                        e.kind(),
+                        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                    ) =>
+            {
+                log_debug!(
+                    Some(conn_id),
+                    "origin {} stopped reading the request body after {}B ({}); reading its response",
+                    pool_key,
+                    body_sent,
+                    e
+                );
+                body_cut = true;
+                Ok(body_sent)
+            }
+            other => other,
+        };
         // 要求をオリジンへ送り終えた境目 (T14.3 (1))。ここが forward に足す唯一の時計
         let sent_at = crate::profile::mark();
         // 1xx (100 と 101 を除く) はヘッダーだけクライアントへ中継し、最終応答を読み続ける (T19.6)
@@ -1047,6 +1076,11 @@ pub fn handle_http_parsed(
             }
         }
     };
+    // 本文の途中でオリジンが返した応答 (T.29.7): クライアントの本文の残りは読んでいないので、
+    // 応答に `Connection: close` を付けて閉じる (次の要求の頭に本文の続きが来てしまう)
+    if body_cut {
+        ctx.keep_client = false;
+    }
     if request_body_bytes > 0 {
         log_debug!(
             Some(conn_id),
@@ -1085,7 +1119,8 @@ pub fn handle_http_parsed(
             return Ok(false);
         }
     };
-    let origin_reusable = head.starts_with(b"HTTP/1.1") && framing != Framing::Close && !conn_close;
+    let origin_reusable =
+        head.starts_with(b"HTTP/1.1") && framing != Framing::Close && !conn_close && !body_cut;
     // 最後が chunked でない `Transfer-Encoding` の応答 (T.28.1)。閉じるまでを本文にして返すが、
     // 区切りがオリジンと食い違っているかもしれないので保存しない (接続は上で使い回さない)。
     // 見分けるのは閉じるまでの応答のときだけ (CL / chunked の熱い経路では先頭をなめ直さない)
@@ -1610,10 +1645,13 @@ fn client_wants_fresher(cache_control: &str, entry: &CachedResponse, now: u64) -
 }
 
 /// クライアントのリクエスト本文をオリジンへ同じ枠組みで転送する。戻り値は本文のバイト数。
+///
+/// `total` には送れたぶんを積む (途中で失敗しても、そこまでのバイト数が残る。T.29.7)。
 fn forward_request_body(
     reader: &mut crate::clientio::ClientReader<'_>,
     server: &mut OriginStream,
     framing: Framing,
+    total: &mut u64,
 ) -> io::Result<u64> {
     match framing {
         Framing::None | Framing::Close => Ok(0),
@@ -1622,31 +1660,29 @@ fn forward_request_body(
             // chunked 側と同じ 64 KiB の使い回しバッファで読むと 8 回で済む
             let mut body = BodyReader::new(reader, framing);
             let mut buf = CopyBuf::take();
-            let mut total = 0u64;
             loop {
                 let n = body.read(&mut buf).map_err(client_body_error)?;
                 if n == 0 {
                     break;
                 }
                 server.write_all(&buf[..n])?;
-                total += n as u64;
+                *total += n as u64;
             }
-            Ok(total)
+            Ok(*total)
         }
         Framing::Chunked => {
             let mut body = BodyReader::new(reader, framing);
             let mut buf = CopyBuf::take();
-            let mut total = 0u64;
             loop {
                 let n = body.read(&mut buf).map_err(client_body_error)?;
                 if n == 0 {
                     break;
                 }
                 body::write_chunk(server, &buf[..n])?;
-                total += n as u64;
+                *total += n as u64;
             }
             body::write_last_chunk(server)?;
-            Ok(total)
+            Ok(*total)
         }
     }
 }
