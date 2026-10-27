@@ -2620,6 +2620,12 @@ push と Pull Request で `.github/workflows/ci.yml` が回ります。`check` �
 回しません — 段ごとに `cargo clean` からのビルドが要り、runner を長く占有するためです)。いま知りたいときは
 `gh workflow run ci.yml` (`-f ladder="95 100 105 110"` で段も指定できます)。
 
+**コミットの前に手元で全部を確かめるのは `scripts/check-all.sh`** (T.29.29)。fmt・clippy・`check-docs.sh`・
+`check-dashboard.js`・`scripts/` の unittest・`crate-versions.py --check`・shellcheck を**1 つ落ちても止めずに全部回し**、
+最後に落ちたものの名前を並べて exit 1 にします (`&&` でつなぐと最初に落ちた所で止まって残りが見えず、T.28.48 では
+fmt に落ちるコミットを push しました)。`--only fmt,versions` / `--skip clippy` で絞れ、入っていない命令 (node・shellcheck) は
+「飛ばした」と出します。`cargo test` は入れていないので別に回してください。
+
 **shellcheck を手元で回すのも同じ 1 行です**: `shellcheck scripts/*.sh scripts/mx`
 (切った指摘とその理由は `scripts/.shellcheckrc` にあり、shellcheck が自動で読みます。入っていなければ
 `apt-get install shellcheck` / `brew install shellcheck`。CI の `check` ジョブも同じ命令を回すので、
