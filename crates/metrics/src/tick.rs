@@ -92,6 +92,8 @@ pub fn spawn_every(
         // 利用者の要求が無い時間帯も待ちを測る (T14.10)。**ここでは測らない**
         // (名前解決と接続は `canary` スレッド 1 本の仕事で、この周期は止めない)
         crate::canary::tick(metrics);
+        // 1 時間に 1 回、返していない空きのヒープを OS へ返す (T.29.25。間隔に満たなければ原子 1 回)
+        crate::sysinfo::trim_if_due(now_epoch());
     };
     record(&metrics, &cache);
     thread::Builder::new()

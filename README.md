@@ -1399,6 +1399,13 @@ CPU/MiB と「プロキシが 1 コアの何 % を使ったか」を一緒に出
     - `heap_used` / `heap_free` / `mmap` は glibc の `mallinfo2(3)` の `uordblks` / `fordblks` / `hblkhd`。
       **glibc 2.33 以上でだけ読めます**: リンク時に決め打ちせず `dlsym(RTLD_DEFAULT, "mallinfo2")` で
       実行時に探すので、musl や古い glibc、Linux 以外では落ちずに 3 つとも `null` になります
+    - **返していない空き (`heap_free`) は 1 時間に 1 回 OS へ返します** (T.29.25)。glibc の `free` はヒープの
+      天辺の空きしか返さないので、間に使用中の塊が残るとその下の空きページが RSS に居座ります (0.28.48 の
+      24 時間で RSS 65.8 MB のうち `heap_free` 18.3 MB)。履歴スレッドが `heap_free > heap_used` のときだけ
+      `malloc_trim(0)` を呼び (1 MiB 以上返したら info のログ 1 行。手元の 400 並列のあとで 40 → 33 MiB、
+      1 回 1.2 ms)、返したページは空きの塊のままなので **`heap_free` の数は減らず、減るのは `rss`** です。
+      `malloc_trim` も `mallinfo2` と同じく実行時に探します。履歴スレッドの無い `--lite` /
+      `PROXY_STATS_PERSIST=off` では返しません
     - `rss` はキャッシュのプローブ (既定 5 秒ごと) が読んだ値で、**同じ応答の
       `cache.system.process_rss_bytes` と同じ値**です (1 枚の中に食い違う RSS が 2 つ並ばないように)。
       プローブが止まっている (`PROXY_CACHE_PROBE_SECS=0` / キャッシュ無効 / `--lite`) ときだけ、
@@ -2077,6 +2084,8 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   malloc のアリーナ数の上限。`0` で glibc の既定 (コア数 × 8) のまま。
   接続ごとにスレッドが増えるため、既定のままだとアイドル接続を多く抱えたときに使われないアリーナが RSS に居座る (実測: 2,000 本のアイドル接続で 80.5 → 26.8 kB/接続)。
   代償は高並列でのロック競合 (実測: 64 並列で CPU/要求 +4%、8 並列では差なし)。
+  `2` も測りました (T.29.25、2026-10-27): 400 並列の forward のあとの `heap_free` 12.4 → 10.3 MiB、`malloc_trim` 後の RSS 33.7 → 32.9 MiB と小さく、
+  8 並列の CPU/要求は +1.1% (user +3.0%) なので既定は `8` のままにしています。
   実際に掛かった値は `/status` の `memory.arenas` に出ます
 
 #### 名前解決

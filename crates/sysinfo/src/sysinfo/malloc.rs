@@ -44,6 +44,92 @@ pub fn set_arena_max(max: usize) {
 
 static ARENA_MAX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// 返していない空きを OS へ返す間隔 (秒。T.29.25)。
+pub const TRIM_EVERY_SECS: u64 = 3600;
+
+/// 前に [`trim_if_due`] が見た時刻 (epoch 秒。`0` = まだ見ていない)。
+static LAST_TRIM_CHECK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// **1 時間に 1 回**、解放済みなのにアロケータが抱えている空き (`heap_free`) が使っている量
+/// (`heap_used`) を超えていれば `malloc_trim(0)` で OS へ返す (T.29.25)。`history` スレッドが
+/// 5 秒ごとに呼ぶ (間隔に満たなければ原子の読み 1 回で戻る)。
+///
+/// glibc の `free` は**ヒープの天辺の空きしか返さない**ので、間に使用中の塊が 1 つでも残ると、
+/// その下の空きページは RSS に載ったままになる (0.28.48 の 24 時間で RSS 65.8 MB のうち
+/// heap_free 18.3 MB)。`malloc_trim(0)` は全アリーナの空きの塊の中のページも `madvise` で返す。
+/// 返したページは**空きの塊のまま**なので `heap_free` (`mallinfo2` の `fordblks`) は減らず、
+/// 減るのは RSS。返した量は RSS の差で見る (戻り値。返さなかったら `None`)。
+///
+/// 起動直後は見ない (最初の呼び出しは時刻を覚えるだけ)。`malloc_trim` が無い環境
+/// (musl / Linux 以外) では何もしない。
+pub fn trim_if_due(now_secs: u64) -> Option<Trimmed> {
+    use std::sync::atomic::Ordering;
+    let last = LAST_TRIM_CHECK.load(Ordering::Relaxed);
+    if last == 0 {
+        LAST_TRIM_CHECK.store(now_secs, Ordering::Relaxed);
+        return None;
+    }
+    if now_secs.saturating_sub(last) < TRIM_EVERY_SECS {
+        return None;
+    }
+    LAST_TRIM_CHECK.store(now_secs, Ordering::Relaxed);
+    let m = malloc_info()?;
+    if m.free <= m.used {
+        return None;
+    }
+    let t = trim()?;
+    let msg = format!(
+        "returned free heap to the OS (malloc_trim, {} us): rss {} -> {} MiB, heap used {} MiB / free {} MiB",
+        t.took_us,
+        t.rss_before >> 20,
+        t.rss_after >> 20,
+        m.used >> 20,
+        m.free >> 20
+    );
+    // 1 MiB 以上返したときだけ info (返すものが無い時間は 1 時間に 1 行も出さない)
+    if t.released() >= 1 << 20 {
+        crate::log_info!(None, "{}", msg);
+    } else {
+        crate::log_debug!(None, "{}", msg);
+    }
+    Some(t)
+}
+
+/// [`trim`] の前後の RSS (バイト) と、`malloc_trim` にかかった時間。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Trimmed {
+    pub rss_before: u64,
+    pub rss_after: u64,
+    /// `malloc_trim(0)` の 1 回 (us)
+    pub took_us: u64,
+}
+
+impl Trimmed {
+    /// 返した量 (RSS の減り。増えていれば 0)。
+    pub fn released(&self) -> u64 {
+        self.rss_before.saturating_sub(self.rss_after)
+    }
+}
+
+/// いますぐ `malloc_trim(0)` を呼ぶ (前後の RSS を返す)。`malloc_trim` が無ければ `None`。
+///
+/// 全アリーナの鍵を順に取って空きの塊を歩くので、ヒープが大きいと ms 単位かかる
+/// (要求の経路からは呼ばない)。
+pub fn trim() -> Option<Trimmed> {
+    let rss_before = super::mem::process_rss().unwrap_or(0);
+    let t0 = std::time::Instant::now();
+    if !imp::malloc_trim() {
+        return None;
+    }
+    let took_us = t0.elapsed().as_micros().min(u64::MAX as u128) as u64;
+    let rss_after = super::mem::process_rss().unwrap_or(0);
+    Some(Trimmed {
+        rss_before,
+        rss_after,
+        took_us,
+    })
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use super::MallocInfo;
@@ -93,6 +179,33 @@ mod imp {
         })
     }
 
+    /// glibc の `int malloc_trim(size_t pad)` (T.29.25)。
+    type FnMallocTrim = unsafe extern "C" fn(pad: usize) -> i32;
+
+    /// `malloc_trim` も glibc にしか無い (musl に無い) ので、`mallinfo2` と同じく実行時に探す。
+    fn resolve_trim() -> Option<FnMallocTrim> {
+        static F: OnceLock<Option<FnMallocTrim>> = OnceLock::new();
+        *F.get_or_init(|| {
+            // SAFETY: 有効な C 文字列と `RTLD_DEFAULT` を渡すだけ。無ければ null が返る。
+            let p = unsafe { dlsym(RTLD_DEFAULT, c"malloc_trim".as_ptr()) };
+            if p.is_null() {
+                return None;
+            }
+            // SAFETY: glibc の `int malloc_trim(size_t pad)` と同じ型に変換する。
+            Some(unsafe { std::mem::transmute::<*mut c_void, FnMallocTrim>(p) })
+        })
+    }
+
+    /// `malloc_trim(0)` を呼ぶ。見つからなければ `false`。
+    pub fn malloc_trim() -> bool {
+        let Some(f) = resolve_trim() else {
+            return false;
+        };
+        // SAFETY: 余白 0 を渡すだけ。アロケータの鍵を取り、空きページを OS へ返す。
+        unsafe { f(0) };
+        true
+    }
+
     pub fn malloc_info() -> Option<MallocInfo> {
         let f = resolve()?;
         // SAFETY: 引数を取らず、アロケータの統計を返すだけ (副作用はアリーナの鍵だけ)。
@@ -114,11 +227,56 @@ mod imp {
     pub fn malloc_info() -> Option<MallocInfo> {
         None
     }
+
+    pub fn malloc_trim() -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 天辺に使用中の塊を 1 つ残して下の 64 MiB を解放すると、`free` だけでは RSS が減らず、
+    /// `trim` で減る (T.29.25)。`malloc_trim` が無い環境は `None` が正しい。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trim_returns_free_pages_below_a_live_block() {
+        // mmap の閾値 (既定 128 KiB) より小さい塊で 64 MiB を**触って**確保する
+        let mut blocks: Vec<Vec<u8>> = (0..4096)
+            .map(|i| vec![(i % 251) as u8 + 1; 16 << 10])
+            .collect();
+        let keep = vec![7u8; 16 << 10];
+        let peak = super::super::mem::process_rss().unwrap();
+        blocks.clear();
+        blocks.shrink_to_fit();
+        let Some(t) = trim() else {
+            return;
+        };
+        assert!(
+            t.released() >= 32 << 20,
+            "trim で RSS が減らない: 山 {} MiB、前 {} → 後 {} MiB",
+            peak >> 20,
+            t.rss_before >> 20,
+            t.rss_after >> 20
+        );
+        assert_eq!(keep[0], 7);
+    }
+
+    /// 1 時間に 1 回だけ見る (最初は時刻を覚えるだけ)。
+    #[test]
+    fn trim_if_due_waits_for_the_interval() {
+        LAST_TRIM_CHECK.store(0, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(trim_if_due(1_000), None, "最初は覚えるだけ");
+        assert_eq!(trim_if_due(1_000 + TRIM_EVERY_SECS - 1), None);
+        let _ = trim_if_due(1_000 + TRIM_EVERY_SECS);
+        assert_eq!(
+            LAST_TRIM_CHECK.load(std::sync::atomic::Ordering::Relaxed),
+            1_000 + TRIM_EVERY_SECS,
+            "間隔が来たら見た時刻を進める"
+        );
+        assert_eq!(trim_if_due(1_000 + TRIM_EVERY_SECS + 5), None);
+    }
 
     /// この機械 (glibc) では読めて、辻褄が合っていること。
     ///
