@@ -191,6 +191,14 @@ impl Live {
             next.sources.adopt(&fresh.sources, "PROXY_TRACE_CLIENT");
             applied.push("PROXY_TRACE_CLIENT");
         }
+        // 転送中の最小の速さ (T.29.34)。見張りを作るのは要求・トンネルの頭なので、次に始まる転送から効く
+        if fresh.min_transfer != old.min_transfer {
+            next.min_transfer = fresh.min_transfer;
+            next.sources.adopt(&fresh.sources, "PROXY_MIN_TRANSFER_BPS");
+            next.sources
+                .adopt(&fresh.sources, "PROXY_MIN_TRANSFER_WINDOW_SECS");
+            applied.push("PROXY_MIN_TRANSFER_BPS/PROXY_MIN_TRANSFER_WINDOW_SECS");
+        }
         if fresh.tunnel_idle != old.tunnel_idle {
             next.tunnel_idle = fresh.tunnel_idle;
             next.sources.adopt(&fresh.sources, "PROXY_TUNNEL_IDLE_SECS");

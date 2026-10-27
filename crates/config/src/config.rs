@@ -474,6 +474,12 @@ pub struct Config {
     /// ソケットへ渡すときは [`proxy_base::timeout::for_socket`] で `None` に直す
     /// (`std` は `Duration::ZERO` を `InvalidInput` で断るため)。
     pub timeout: Duration,
+    /// 転送中の最小の速さ (`PROXY_MIN_TRANSFER_BPS` / `PROXY_MIN_TRANSFER_WINDOW_SECS`。T.29.34)。
+    ///
+    /// 相手を待った時間 (書けずに / 本文を読めずに待った時間) が窓に達するたびに、その間に
+    /// 運べたバイトが `bps × 秒` に届かなければ切る。既定 30 秒の窓で 1 KiB/s、`bps = 0` で切らない。
+    /// [`Config::timeout`] は無通信の締め切り (1 バイトでも動けば待ち直す) で、こちらとは別に効く
+    pub min_transfer: proxy_base::minrate::MinRate,
     /// **オリジンへの TCP の確立だけ** (CONNECT と、T.28.8 から forward) に効く締め切り (`PROXY_CONNECT_TIMEOUT_SECS`、`0` で無期限)。
     ///
     /// **既定は 3 秒** ([`DEFAULT_CONNECT_TIMEOUT`]。T15.6 (2)、T23.3、T.28.43)。実効値は
@@ -854,6 +860,15 @@ impl Config {
             src.mark("PROXY_BURST_PERCENT");
         }
         cfg.refresh_burst_at();
+        // 転送中の最小の速さ (T.29.34)。`0` で切らない
+        if let Some(bps) = bad.num::<u64>("PROXY_MIN_TRANSFER_BPS") {
+            cfg.min_transfer.bps = bps;
+            src.mark("PROXY_MIN_TRANSFER_BPS");
+        }
+        if let Some(secs) = bad.num::<u64>("PROXY_MIN_TRANSFER_WINDOW_SECS") {
+            cfg.min_transfer.window = Duration::from_secs(secs);
+            src.mark("PROXY_MIN_TRANSFER_WINDOW_SECS");
+        }
         if let Some(secs) = bad.num::<u64>("PROXY_TUNNEL_IDLE_SECS") {
             cfg.tunnel_idle = Duration::from_secs(secs);
             src.mark("PROXY_TUNNEL_IDLE_SECS");
@@ -1136,6 +1151,11 @@ impl Config {
         );
         add("PROXY_KEEPALIVE_SECS", secs(self.keepalive));
         add("PROXY_TUNNEL_IDLE_SECS", secs(self.tunnel_idle));
+        add("PROXY_MIN_TRANSFER_BPS", self.min_transfer.bps.to_string());
+        add(
+            "PROXY_MIN_TRANSFER_WINDOW_SECS",
+            secs(self.min_transfer.window),
+        );
         add("PROXY_MAX_CONNS", self.max_conns.to_string());
         add(
             "PROXY_MAX_CONNS_PER_CLIENT",
@@ -1315,6 +1335,7 @@ impl Config {
             listen_backlog: crate::net::default_backlog(),
             acl,
             timeout,
+            min_transfer: proxy_base::minrate::MinRate::DEFAULT,
             // 未設定のときの実効値は `connect_timeout_for` が決める (既定 3 秒。T.28.43。
             // `timeout` が 3 秒より短ければそちらに合わせる。T15.6 (2))。ここで入れておくと
             // `Config::new` を呼ぶ既存の所 (テストと `/config` の組み立て) が自動で追随する

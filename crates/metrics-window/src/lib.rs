@@ -21,6 +21,6 @@ pub use proxy_metrics_profile::{profile, window};
 pub use proxy_metrics_profile::sys;
 pub use proxy_metrics_profile::{
     acl, ascii, cache, cli, clock, dns, envfile, events, hostseries, httpdate, json, kernel, log,
-    log_at, log_debug, log_error, log_info, log_trace, log_warn, metrics, net, prefault, quantiles,
-    recent, records, rrd, selfbench, signal, sync, sysinfo, trace,
+    log_at, log_debug, log_error, log_info, log_trace, log_warn, metrics, minrate, net, prefault,
+    quantiles, recent, records, rrd, selfbench, signal, sync, sysinfo, trace,
 };

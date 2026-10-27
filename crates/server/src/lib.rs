@@ -15,7 +15,7 @@ use conn::{OpenGuard, OverflowGuard};
 // 本体でも結合テストでもそのまま通るようにするため)。
 pub use proxy_base::{
     cli, clock, envfile, httpdate, json, log, log_at, log_debug, log_error, log_info, log_trace,
-    log_warn, sync, timeout, via,
+    log_warn, minrate, sync, timeout, via,
 };
 pub use proxy_blocklist::blocklist;
 pub use proxy_cache::cache;

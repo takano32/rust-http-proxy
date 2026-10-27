@@ -675,6 +675,8 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         timeout: config.timeout,
         // forward のオリジン接続の確立も CONNECT と同じ締め切り (T.28.8)
         connect_timeout: config.connect_timeout,
+        // 転送中の最小の速さ (T.29.34)。見張りは `http` が要求ごとに作る
+        min_transfer: &config.min_transfer,
         keepalive: config.keepalive,
         conn_id,
         metrics: Arc::clone(metrics),

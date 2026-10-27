@@ -41,6 +41,7 @@ use crate::recent::{
 use crate::sync::LockExt;
 use crate::workers::Workers;
 use crate::{log_debug, log_trace, log_warn};
+use proxy_base::minrate::{GuardedWrite, Side};
 
 use crate::request::{RequestHeaders, parse_request_headers};
 use serve::{can_serve_stale, serve_cached};
@@ -165,7 +166,20 @@ pub(super) mod passthrough {
     ///
     /// 途中で失敗したらパイプに残ったバイトは失われるので、呼び出し側はこの接続を
     /// プールに戻してはいけない (`Err` を返した場合)。
-    pub fn relay(from: RawFd, to: RawFd, remaining: u64) -> io::Result<(u64, bool)> {
+    ///
+    /// `guard` が切る設定のとき、`to` (クライアント) は**呼ぶ側が待たない形にしてある**
+    /// (T.29.34)。待つソケットへの splice は 1 回の呼び出しの中でページごとに締め切りを
+    /// 待ち直すので、読まない相手には 1 回で 20 秒以上止まり、見張りが判定できない
+    /// (実測 22 秒で 95 KB)。待たない splice が `EAGAIN` なら `poll` で書けるのを待ち、
+    /// 待った時間を見張りに積む。`poll` は窓の残りより長く眠らず、無通信の締め切り
+    /// `timeout` (`0` は無期限) を書けないまま越えたら `WouldBlock` で返す (前と同じ扱い)。
+    pub fn relay(
+        from: RawFd,
+        to: RawFd,
+        remaining: u64,
+        guard: &mut proxy_base::minrate::RateGuard,
+        timeout: std::time::Duration,
+    ) -> io::Result<(u64, bool)> {
         let borrowed = Borrowed::take()?;
         let pipe = borrowed.0.as_ref().expect("just taken");
         let mut left = remaining;
@@ -179,7 +193,11 @@ pub(super) mod passthrough {
             }
             let mut out = n;
             while out > 0 {
-                let w = sys::splice_block(pipe.read_fd, to, out)?;
+                let w = if guard.is_on() {
+                    to_client(pipe.read_fd, to, out, guard, timeout)?
+                } else {
+                    sys::splice_block(pipe.read_fd, to, out)?
+                };
                 if w == 0 {
                     return Ok((moved, false));
                 }
@@ -189,6 +207,43 @@ pub(super) mod passthrough {
             }
         }
         Ok((moved, true))
+    }
+
+    /// 待たないクライアントへ 1 回ぶん運ぶ (書けなければ `poll` で待つ。[`relay`] を見よ)。
+    fn to_client(
+        pipe: RawFd,
+        to: RawFd,
+        len: usize,
+        guard: &mut proxy_base::minrate::RateGuard,
+        timeout: std::time::Duration,
+    ) -> io::Result<usize> {
+        let mut stuck = std::time::Duration::ZERO;
+        loop {
+            match sys::splice_block(pipe, to, len) {
+                Ok(w) => {
+                    guard.note(std::time::Duration::ZERO, w as u64)?;
+                    return Ok(w);
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(e),
+            }
+            if !timeout.is_zero() && stuck >= timeout {
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            let mut wait = guard.left().unwrap_or(timeout);
+            if !timeout.is_zero() {
+                wait = wait.min(timeout - stuck);
+            }
+            let ms = wait.as_millis().clamp(1, i32::MAX as u128) as i32;
+            let mut fds = [sys::PollFd::new(to, sys::POLLOUT)];
+            let t0 = std::time::Instant::now();
+            let ready = sys::poll_fds(&mut fds, ms)?;
+            let waited = t0.elapsed();
+            guard.note(waited, 0)?;
+            if ready == 0 {
+                stuck += waited;
+            }
+        }
     }
 }
 
@@ -207,6 +262,9 @@ pub struct Shared<'a> {
     /// オリジンへの TCP の確立だけに当てる締め切り (`PROXY_CONNECT_TIMEOUT_SECS` の実効値。T.28.8)。
     /// 応答の読み書きは今までどおり [`Shared::timeout`]
     pub connect_timeout: Duration,
+    /// 転送中の最小の速さ (T.29.34)。応答をクライアントへ書くのと要求の本文を読むのに
+    /// 1 つずつ見張り ([`proxy_base::minrate::RateGuard`]) を作る
+    pub min_transfer: &'a proxy_base::minrate::MinRate,
     pub keepalive: Duration,
     pub conn_id: usize,
     pub metrics: Arc<Metrics>,
@@ -445,8 +503,13 @@ pub fn handle_http_parsed(
     let started = Instant::now();
     // 応答ヘッダーと本文の先頭を 1 回の write でまとめて出す (別々に出すと 1 セグメント増える)。
     // どの経路でも最後に flush するので、次の要求の前にバッファは空になる
-    let client = &mut BufWriter::with_capacity(CLIENT_WRITE_BUF, client);
     let conn_id = shared.conn_id;
+    // 読まないクライアントへの書きを見張る (T.29.34)。測るのは大きな書きだけなので
+    // (`GuardedWrite`)、1 回で書き終わる小さな応答には時計を 1 度も足さない
+    let client = &mut BufWriter::with_capacity(
+        CLIENT_WRITE_BUF,
+        GuardedWrite::new(client, shared.min_transfer, conn_id),
+    );
     let cache: &Cache = &shared.cache;
     let metrics: &Metrics = &shared.metrics;
     // RFC 9112 §5.2: 折り返した (obs-fold) ヘッダーは、中継する側が 400 で断るか
@@ -962,7 +1025,15 @@ pub fn handle_http_parsed(
         let mut body_sent = 0u64;
         let sent = head_sent
             .and_then(|_| {
-                forward_request_body(reader, server.get_mut(), req_framing, &mut body_sent)
+                // 本文を送ってこないクライアントを見張る (T.29.34。見張りは本文のある要求だけが作る)
+                forward_request_body(
+                    reader,
+                    server.get_mut(),
+                    req_framing,
+                    &mut body_sent,
+                    shared.min_transfer,
+                    conn_id,
+                )
             })
             .and_then(|n| server.get_mut().flush().map(|_| n));
         // 本文を送る途中でオリジンが閉じた (`EPIPE` / `ECONNRESET`): 先に応答 (413 など) を返して
@@ -1550,7 +1621,10 @@ pub fn handle_http_parsed(
         && total.saturating_sub(server.buffer().len() as u64) >= SPLICE_MIN_BYTES
     {
         use std::os::fd::AsRawFd;
-        let (origin_fd, client_fd) = (origin_tcp.as_raw_fd(), client.get_ref().as_raw_fd());
+        let (origin_fd, client_fd) = (
+            origin_tcp.as_raw_fd(),
+            client.get_ref().get_ref().as_raw_fd(),
+        );
         // 応答ヘッダーを読むときに一緒に読んでしまった本文の先頭は自分で書く
         // (ヘッダーと同じ 1 回の sendto に載る)
         let buffered = server.buffer().len().min(total as usize);
@@ -1561,7 +1635,22 @@ pub fn handle_http_parsed(
             body_bytes += buffered as u64;
         }
         client.flush()?;
-        let (moved, ok) = passthrough::relay(origin_fd, client_fd, total - buffered as u64)?;
+        // 最小の速さを見るときだけ、運ぶ間クライアントを待たない形にする (T.29.34)
+        let nonblocking = client.get_ref().is_on();
+        if nonblocking {
+            client.get_ref().get_ref().set_nonblocking(true)?;
+        }
+        let relayed = passthrough::relay(
+            origin_fd,
+            client_fd,
+            total - buffered as u64,
+            client.get_mut().guard(),
+            shared.timeout,
+        );
+        if nonblocking {
+            client.get_ref().get_ref().set_nonblocking(false)?;
+        }
+        let (moved, ok) = relayed?;
         body_bytes += moved;
         clean = ok;
         spliced = true;
@@ -1788,11 +1877,14 @@ fn not_modified_selects(cached: &freshness::CachedHead, pairs_304: &[(String, St
 /// クライアントのリクエスト本文をオリジンへ同じ枠組みで転送する。戻り値は本文のバイト数。
 ///
 /// `total` には送れたぶんを積む (途中で失敗しても、そこまでのバイト数が残る。T.29.7)。
+/// 読む 1 回ごとに見張り (`rate`) で待ちを測る (本文を送ってこない相手を切る。T.29.34)。
 fn forward_request_body(
     reader: &mut crate::clientio::ClientReader<'_>,
     server: &mut OriginStream,
     framing: Framing,
     total: &mut u64,
+    rate: &proxy_base::minrate::MinRate,
+    conn_id: usize,
 ) -> io::Result<u64> {
     match framing {
         Framing::None | Framing::Close => Ok(0),
@@ -1801,8 +1893,11 @@ fn forward_request_body(
             // chunked 側と同じ 64 KiB の使い回しバッファで読むと 8 回で済む
             let mut body = BodyReader::new(reader, framing);
             let mut buf = CopyBuf::take();
+            let mut guard = rate.guard(Side::RequestBody, conn_id);
             loop {
-                let n = body.read(&mut buf).map_err(client_body_error)?;
+                let n = guard
+                    .time(|| body.read(&mut buf))
+                    .map_err(client_body_error)?;
                 if n == 0 {
                     break;
                 }
@@ -1814,8 +1909,11 @@ fn forward_request_body(
         Framing::Chunked => {
             let mut body = BodyReader::new(reader, framing);
             let mut buf = CopyBuf::take();
+            let mut guard = rate.guard(Side::RequestBody, conn_id);
             loop {
-                let n = body.read(&mut buf).map_err(client_body_error)?;
+                let n = guard
+                    .time(|| body.read(&mut buf))
+                    .map_err(client_body_error)?;
                 if n == 0 {
                     break;
                 }

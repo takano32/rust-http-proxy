@@ -16,7 +16,7 @@ pub mod metrics;
 pub use proxy_metrics_window::sys;
 pub use proxy_metrics_window::{
     acl, ascii, cache, canaryhist, cli, clients, clock, dns, envfile, events, history, hostseries,
-    httpdate, json, kernel, log, log_at, log_debug, log_error, log_info, log_trace, log_warn, net,
-    profile, quantiles, recent, records, rrd, selfbench, signal, sync, sysinfo, trace, transfer,
-    window,
+    httpdate, json, kernel, log, log_at, log_debug, log_error, log_info, log_trace, log_warn,
+    minrate, net, profile, quantiles, recent, records, rrd, selfbench, signal, sync, sysinfo,
+    trace, transfer, window,
 };

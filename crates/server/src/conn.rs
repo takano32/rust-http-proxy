@@ -474,6 +474,8 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                     &prefix,
                     timeout,
                     idle,
+                    // 書き側の最小の速さ (T.29.34)
+                    config.min_transfer,
                     conn_id,
                     metrics,
                     // 接続元 IP は接続ごとに 1 回作ってある。ここで渡さないと

@@ -1821,7 +1821,9 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_BIND` | 自動 (`::` + `0.0.0.0`) | 待ち受けアドレスのカンマ区切り。未設定でデュアルスタック |
 | `PROXY_IPV6` | `on` | IPv6 を使うか (待ち受けと AAAA での接続) |
 | `PROXY_LISTEN_BACKLOG` | `0` (= `min(1024, somaxconn)`) | 待ち受けの受け入れ待ち行列の長さ (`listen(2)`) |
-| `PROXY_TIMEOUT_SECS` | `30` | 接続とデータ転送の締め切り (秒)。`0` で無期限 |
+| `PROXY_TIMEOUT_SECS` | `30` | 接続と無通信の締め切り (秒。1 バイトでも動けば待ち直す)。`0` で無期限 |
+| `PROXY_MIN_TRANSFER_BPS` | `1024` | 転送中の最小の速さ (バイト/秒)。下回り続けたら切る。`0` で切らない |
+| `PROXY_MIN_TRANSFER_WINDOW_SECS` | `30` | 最小の速さを判定する窓 (相手を待った秒) |
 | `PROXY_CONNECT_TIMEOUT_SECS` | `3` | オリジンへの TCP の確立だけの締め切り (秒。`CONNECT` と forward) |
 | `PROXY_HEADER_TIMEOUT_SECS` | `10` | 要求行とヘッダーを読み終えるまでの総時間の締め切り (秒)。越えたら `408`。`0` で無し |
 | `PROXY_HE_STAGGER_MS` | `250` | Happy Eyeballs で次の候補を試し始めるまでの間隔 (ms、10〜2000) |
@@ -1968,7 +1970,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 #### 接続と上限
 
 - **`PROXY_TIMEOUT_SECS`** (既定 `30`)
-  接続およびデータ転送タイムアウト（秒）。`0` で**無期限** (`PROXY_TUNNEL_IDLE_SECS` と同じ意味): 何も送ってこないクライアント接続を閉じず、オリジンへの接続と読み書きにも締め切りを置かない (OS 既定に任せる)。
+  接続と**無通信の締め切り** (秒)。読み書きの 1 回が、これだけ 1 バイトも動かなければ閉じる (**1 バイトでも動けば待ち直す**ので、転送全体の締め切りではない。遅い相手は下の `PROXY_MIN_TRANSFER_BPS` が見る)。`0` で**無期限** (`PROXY_TUNNEL_IDLE_SECS` と同じ意味): 何も送ってこないクライアント接続を閉じず、オリジンへの接続と読み書きにも締め切りを置かない (OS 既定に任せる)。
   **ただし何も送ってこない接続は `PROXY_HEADER_TIMEOUT_SECS` (未設定でも 10 秒) で閉じます** (T.28.0)。黙った接続を無期限に置くには両方 `0` にしてください。
   `PROXY_KEEPALIVE_SECS` (要求と要求の間) と `PROXY_TUNNEL_IDLE_SECS` は別に効く
 - **`PROXY_CONNECT_TIMEOUT_SECS`** (既定 `3`)
@@ -2038,6 +2040,23 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 - **`PROXY_TUNNEL_IDLE_SECS`** (既定 `300`)
   CONNECT トンネルのアイドル打ち切り。双方向とも無通信がこれだけ続いたら両側を閉じる (`PROXY_PARK_IDLE=on` なら、預かり所が期限を見て引き上げる)。
   `0` で無期限。`.env` で即時反映
+- **`PROXY_MIN_TRANSFER_BPS`** (既定 `1024`) / **`PROXY_MIN_TRANSFER_WINDOW_SECS`** (既定 `30`)
+  **転送中の最小の速さ** (T.29.34。利用者の決定 2026-10-27)。1 B ずつしか読まない (slow-read) / 送らない (slow-POST) 相手は、
+  無通信の締め切り (`PROXY_TIMEOUT_SECS`) では切れず (1 バイト動くたびに待ち直す)、それだけで接続の枠を握り続けられる
+  (手元で `PROXY_TIMEOUT_SECS=3 PROXY_MAX_CONNS=8`、10 MiB の応答を 512 B / 0.6 秒で読むクライアント 8 本で、正常な要求が 70 秒間ずっと 503)。
+  見張るのは 3 か所: **forward の応答をクライアントへ書く**・**要求の本文をクライアントから読む**・**トンネルの書き側** (両向き)。
+  数えるのは**相手を待った時間**だけで、待った時間が窓 (`PROXY_MIN_TRANSFER_WINDOW_SECS`) に達するたびに、その間に**相手に届いたバイト**
+  (書いた量から送信キューに残っている分を引く) が `PROXY_MIN_TRANSFER_BPS` × 秒に届いていなければ切る (届いていれば数え直す)。
+  **送るものが無くて待った時間は数えない**: オリジンが遅い応答 (少しずつ流れてくる配信など) と、**片側が黙っているだけのトンネル (half-idle)** は
+  今までどおり `PROXY_TIMEOUT_SECS` / `PROXY_TUNNEL_IDLE_SECS` (300 秒) で閉じる。
+  上の 8 本の再現では 30 秒で 8 本とも切り、そのあと正常な要求が通る。1.7 KB/s で読むクライアントは 75 秒たっても切らない。
+  切った本数は `/status` の `slow_transfer_closed` (`response` / `request_body` / `tunnel`)、WARN は向きごとに 1 分 1 行
+  (`closing a slow response: transfer slower than 1024 B/s (12672 B in 30.0s of waiting)`。続きは `(+N more …)`)。
+  トンネルを切った理由は `/recent` で `error:timeout`。
+  判定できるのは書き / 読みの 1 回が戻ったときなので、forward の応答 (splice でない経路) では最大 `PROXY_TIMEOUT_SECS` 遅れる
+  (splice の経路とトンネルは待たない書きと `poll` で窓どおりに見る)。小さな書き (16 KiB 未満で、まだ待っていない相手) は測らない
+  (1 KiB の応答のような熱い経路に時計を足さないため)。
+  `0` (どちらか) で切らない (前と同じ振る舞い)。トンネルの見張りは Linux だけ。`.env` で次に始まる転送から反映
 - **`PROXY_MAX_CONNS`** (既定 `auto`)
   同時に受ける接続数の上限。上限に当たったら、まず**預かり所の暇な CONNECT トンネルを最古から 1 本閉じて**席を作り、その接続を受ける (閉じた数は `/status` の `evicted_idle` と `/metrics` の `sorahost_evicted_idle_total`。**暇な keep-alive 接続は閉じない** — 次の要求を待っているだけなので、閉じると入れ違いで届いた要求を取りこぼすため)。
   閉じるものが無い (トンネルが全部中継中、または預かり所が空) ときは、スレッドを起こさず `503 Service Unavailable` + `Retry-After: 1` を返して閉じる。

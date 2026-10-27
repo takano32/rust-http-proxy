@@ -18,6 +18,7 @@ use crate::recent::{
     STAGE_CONNECT, STAGE_DNS, STAGE_FIRST_RELAY, STAGE_QUEUE, STAGES,
 };
 use crate::{log_debug, log_warn};
+use proxy_base::minrate::MinRate;
 
 #[cfg(target_os = "linux")]
 pub use relay::{Idle, Park, expire, resume};
@@ -450,6 +451,7 @@ pub fn handle_connect(
     prefix: &[u8],
     timeout: Duration,
     idle: Option<Duration>,
+    min_transfer: MinRate,
     conn_id: usize,
     metrics: Arc<Metrics>,
     client_ip: String,
@@ -466,6 +468,7 @@ pub fn handle_connect(
             prefix,
             timeout,
             idle,
+            min_transfer,
             conn_id,
             metrics,
             client_ip,
@@ -479,6 +482,8 @@ pub fn handle_connect(
     }
     #[cfg(not(target_os = "linux"))]
     {
+        // 最小の速さは Linux の `poll` + `splice` の中継だけが見る (T.29.34)
+        let _ = min_transfer;
         let Opened {
             client,
             server,
@@ -532,6 +537,7 @@ pub fn handle_connect_parked(
     prefix: &[u8],
     timeout: Duration,
     idle: Option<Duration>,
+    min_transfer: MinRate,
     conn_id: usize,
     metrics: Arc<Metrics>,
     client_ip: String,
@@ -557,7 +563,7 @@ pub fn handle_connect_parked(
     )?;
     // トンネルの猶予は HTTP の keep-alive より長く取る (下限 [`relay::MIN_PARK_GRACE`])
     let park = park.map(|(w, grace)| (w, grace.max(relay::MIN_PARK_GRACE)));
-    relay::start(opened, idle, park, hold)
+    relay::start(opened, idle, min_transfer, park, hold)
 }
 
 /// 名前解決して接続する (IPv6 / IPv4 を Happy Eyeballs で並行に試す)。
@@ -634,8 +640,10 @@ mod relay {
 
     use super::{Info, Opened, report};
     use crate::log_trace;
+    use crate::metrics::ErrCause;
     use crate::recent::{CLIENT_SIDE, CloseReason, ConnSlot, ConnState, ORIGIN_SIDE, SIDES};
     use crate::sys::{self, POLLERR, POLLHUP, POLLIN, POLLOUT, Pipe, PollFd};
+    use proxy_base::minrate::{MinRate, RateGuard};
 
     /// 1 回の splice / read で動かす最大バイト数 (パイプ容量と同じ)。
     const CHUNK: usize = 1 << 20;
@@ -884,6 +892,12 @@ mod relay {
         /// (`stall_us` と同じ扱い) で、`/connections` と個票へは
         /// [`ConnSlot::set_relaying`] が待ちに入るたびに 1 回だけ写す
         spins: u64,
+        /// 書き側の最小の速さの見張り (`[クライアントへ, オリジンへ]`。添字は `socks` と同じ。T.29.34)。
+        ///
+        /// 積むのは `stall_us` と同じ「書けなくて `poll` で待った時間」と、その向きへ渡したバイト。
+        /// **送るものが無くて待った時間 (片側が黙っているだけの half-idle) は入らない**ので、
+        /// 暇なトンネルは今までどおり `PROXY_TUNNEL_IDLE_SECS` で閉じる。預けても引き継ぐ
+        rate: [RateGuard; SIDES],
         /// 本体クレートの持ち分 (同時接続数と `active_connections`)。中身は見ない
         _hold: Box<dyn Send>,
     }
@@ -1016,6 +1030,7 @@ mod relay {
             let addr_str = &self.info.addr_str;
             // 書けるのを待った時間 (T14.42)。預けても引き継ぐので `Idle` の欄
             let stall_us = &mut self.stall_us;
+            let rate = &mut self.rate;
             // 空回りの証拠 (T15.0 (4))。`spins` は預けても引き継ぐので `Idle` の欄、
             // 残りの 2 つは**前の周の `poll`** の結果なので輪の外の局所変数
             // (待ちに入る所は `poll` の前なので、そこで置けるのは 1 周前の旗)
@@ -1104,6 +1119,8 @@ mod relay {
                                 d.offset += n;
                                 d.moved += n as u64;
                                 *transferred += n as u64;
+                                // 渡したバイトを見張りに足す (待ちが 0 なので足し算だけ。T.29.34)
+                                let _ = rate[d.dst].note(Duration::ZERO, n as u64);
                                 progressed = true;
                             }
                             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -1205,10 +1222,25 @@ mod relay {
                     s.set_relaying(*transferred, *spins, last_revents);
                 }
                 let parkable = grace_ms.is_some() && dirs.iter().all(Dir::quiet);
-                let wait_ms = match grace_ms {
+                let mut wait_ms = match grace_ms {
                     Some(g) if parkable => g,
                     _ => timeout_ms,
                 };
+                // 書けずに待つ向きは、最小の速さの窓の残りより長く眠らない (T.29.34)。
+                // 読まない相手はめったに `POLLOUT` を返さないので、無通信の締め切り (300 秒) まで
+                // 眠ると判定が遅れる。縮めたときは、`poll` が 0 で戻ってもアイドル打ち切りにしない
+                let mut capped = false;
+                for (side, ev) in events.iter().enumerate() {
+                    if ev & POLLOUT != 0
+                        && let Some(left) = rate[side].left()
+                    {
+                        let ms = left.as_millis().clamp(1, i32::MAX as u128) as i32;
+                        if wait_ms < 0 || ms < wait_ms {
+                            wait_ms = ms;
+                            capped = true;
+                        }
+                    }
+                }
                 // 中継の詰まりの向き (T14.42)。**書けなくて待ちに入る回だけ**時計を
                 // 読む: `events` に `POLLOUT` が立つのは、直前の `drain` (splice) が
                 // `EAGAIN` で止まって `pending` が残っている方向だけなので、
@@ -1221,13 +1253,22 @@ mod relay {
                 let polled = sys::poll_fds(&mut fds, wait_ms);
                 // 待ち終わったのでもう 1 回読み、**書けなかった向きだけ**に積む。
                 // 両方詰まっていれば両方に積む (どちらも「その間書けなかった」ため)
+                let mut too_slow = false;
                 if let Some(t) = stall_from {
-                    let waited = t.elapsed().as_micros().min(u64::MAX as u128) as u64;
+                    let elapsed = t.elapsed();
+                    let waited = elapsed.as_micros().min(u64::MAX as u128) as u64;
                     for (side, ev) in events.iter().enumerate() {
                         if ev & POLLOUT != 0 {
                             stall_us[side] = stall_us[side].saturating_add(waited);
+                            // 同じ待ちを最小の速さの見張りにも積む (T.29.34)
+                            too_slow |= rate[side].note(elapsed, 0).is_err();
                         }
                     }
+                }
+                if too_slow {
+                    log_trace!(Some(conn_id), "tunnel closed: slower than the minimum rate");
+                    *close = Some(CloseReason::Error(ErrCause::Timeout));
+                    break;
                 }
                 // 次に待ちへ入るときに置く証拠 (T15.0 (4))。旗は**この周の `poll` が
                 // 返したもの**で、置くのは次の周の待ちの直前 (待ちに入る所は `poll` の
@@ -1238,7 +1279,7 @@ mod relay {
                 last_revents = crate::recent::pack_revents(fds[0].revents, fds[1].revents);
                 match polled {
                     Ok(0) if parkable => return Outcome::Idle,
-                    Ok(0) if wait_ms >= 0 => {
+                    Ok(0) if wait_ms >= 0 && !capped => {
                         log_trace!(Some(conn_id), "tunnel idle timeout after {}ms", wait_ms);
                         *close = Some(CloseReason::IdleTimeout);
                         break;
@@ -1278,6 +1319,7 @@ mod relay {
     pub(super) fn start(
         opened: Opened,
         idle: Option<Duration>,
+        min_transfer: MinRate,
         park: Option<(Arc<dyn Park>, Duration)>,
         hold: Box<dyn Send>,
     ) -> io::Result<()> {
@@ -1297,6 +1339,12 @@ mod relay {
                     .1
                     .unwrap_or(0),
             );
+        // 書き側の見張りは向きごとに 1 つ (T.29.34)
+        // 判定は相手に届いた量で見る (送信キューに残った分を引く)
+        let guard = min_transfer.guard(proxy_base::minrate::Side::Tunnel, info.conn_id);
+        let mut rate = [guard.clone(), guard];
+        rate[0].watch_queue(client.as_raw_fd());
+        rate[1].watch_queue(server.as_raw_fd());
         drive(Box::new(Idle {
             socks: [client, server],
             dirs: [Dir::new(0, 1), Dir::new(1, 0)],
@@ -1312,6 +1360,7 @@ mod relay {
             peek_sni,
             stall_us: [0; SIDES],
             spins: 0,
+            rate,
             _hold: hold,
         }));
         Ok(())

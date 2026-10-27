@@ -216,6 +216,38 @@ fn setting(json: &str, key: &str) -> (String, String) {
     (value, src)
 }
 
+/// 転送中の最小の速さの 2 つの鍵が `/config` に出て、`.env` と環境変数から読めること (T.29.34)。
+#[test]
+fn test_integration_min_transfer_keys_are_read_and_shown() {
+    let (_child, port, dir) = start_proxy(
+        "mintransfer",
+        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_MIN_TRANSFER_WINDOW_SECS=10\n",
+        &[("PROXY_MIN_TRANSFER_BPS", "0")],
+    );
+    let json = endpoint_json(port, "/config");
+    assert_eq!(
+        setting(&json, "PROXY_MIN_TRANSFER_BPS"),
+        ("0".to_string(), "env".to_string()),
+        "{}",
+        json
+    );
+    assert_eq!(
+        setting(&json, "PROXY_MIN_TRANSFER_WINDOW_SECS"),
+        ("10".to_string(), "env_file".to_string()),
+        "{}",
+        json
+    );
+    // `/status` は切った本数を向きごとに出す (起動直後は全部 0)
+    let status = endpoint_json(port, "/status");
+    assert!(
+        status
+            .contains("\"slow_transfer_closed\":{\"response\":0,\"request_body\":0,\"tunnel\":0}"),
+        "{}",
+        status
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `/config` が**効いている値とその出どころ**を出し、再読込で両方が追随すること (T14.15)。
 #[test]
 fn test_integration_config_shows_effective_values_and_their_source() {
