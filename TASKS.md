@@ -30,11 +30,6 @@
 
 **29a 正しさと頑丈さ (本体を変える)**
 
-- [ ] **T.29.0 再検証の 304 の `Set-Cookie` を保存済みの先頭に写さない (他の利用者へ配っていた)**
-  - 目的: 手元で再現 (`t29/protocol/probe5.py`): `max-age=1, ETag` で保存 → 利用者 A の再検証にオリジンが `304` + `Set-Cookie: session=SECRET-OF-USER-A` → 次の利用者 B の `REVALIDATED` と C の `HIT` (メモリ) にも同じ `Set-Cookie` が付き、ディスクの項目にも入る。保存時 (`response_policy_lines`) は `Set-Cookie` で保存しないのに、T.28.2 の `merge_not_modified` が写す。304 の `Vary: Cookie`・`private`・`no-store` も写ったまま `REVALIDATED` / `HIT` で配り続ける (`revalidated_policy` が `None` → TTL 0 になるだけで項目は消えない)。
-  - やること: `merge_not_modified` (`crates/msg/src/headers.rs` 426 `NOT_UPDATED_BY_304`・435) で `Set-Cookie` / `Set-Cookie2` を写さない。304 が保存できない形 (`response_policy` が `None`) なら延命せず項目を消して取り直す (`crates/http/src/http/mod.rs` 1109-1137、`refresh.rs` 186-195、`crates/freshness/src/freshness.rs` 155)。304 の `Set-Cookie` を再検証した要求のクライアントにだけ渡すか落とすかを決めて README に書く。
-  - 受け入れ基準: 上の 4 形 (Set-Cookie・Vary: Cookie・private・no-store) の結合テストで、他の利用者の応答と保存した先頭に 1 つも入らない。
-
 - [ ] **T.29.1 応答の先頭・chunk サイズ行・trailer の長さに上限を置く (メモリを無限に食わされる)**
   - 目的: 要求の先頭は 64 KiB / 128 KiB で 431 にしている (`crates/server/src/conn/header_read.rs` 8-15) のに、**応答の先頭** (`crates/msg/src/response.rs` 64-108 の `read_until` ×2) と **chunk サイズ行・trailer 行** (`crates/msg/src/body.rs` 279-325 の `read_line`) は無制限。手元で: 悪いオリジンが空行なしで 300 MB のヘッダー → RSS 18 → 907 MB、クライアントが chunked の POST で `f` を改行なし 796 MiB → +793 MiB (オリジン不要)、オリジンの chunk 行 400 MiB → +702 MiB。閉じても RSS が戻らない形もある。tokyo の `SERVER_MEMORY` 256 MB では数本で落とせる。フォワードプロキシなので宛先 (= 悪いオリジン) はクライアントが選べる。
   - やること: 応答の先頭は要求と同じ 128 KiB、chunk サイズ行 (拡張込み) は数 KiB、trailer は行 8 KiB・合計 64 KiB を上限にし、越えたらクライアント側は 400、オリジン側は 502 (本文を出す前) か切断 (出した後)。
