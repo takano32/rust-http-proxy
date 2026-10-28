@@ -421,8 +421,18 @@ def size_report(path, snap):
     """雪像の大きさと上限 (`limit_bytes`) に対する割合・部の `truncated`・`dropped` の 1 行と、警告するかを返す (T.29.16)。"""
     nbytes = os.path.getsize(path)
     limit = snap.get("limit_bytes") or DEFAULT_LIMIT_BYTES
-    share = nbytes / limit if limit else 0.0
-    text = f"{nbytes:,} B = 上限 {limit:,} B の **{share * 100:.1f}%**"
+    # `collect-deployed.sh` が切れた部の続きを繋いだ 1 枚 (`joined`。T.30.2) は、繋いだあとの大きさでは
+    # なく**プロキシが返した 1 枚の大きさ** (`served_bytes`) で判定する。繋いだあとは表示だけ
+    joined = snap.get("joined") if isinstance(snap.get("joined"), dict) else None
+    if joined and isinstance(joined.get("served_bytes"), int):
+        served = joined["served_bytes"]
+        share = served / limit if limit else 0.0
+        text = (f"プロキシが返した 1 枚 {served:,} B = 上限 {limit:,} B の **{share * 100:.1f}%** "
+                f"(道具が " + "・".join(f"`{x}`" for x in joined.get("parts") or []) +
+                f" の続きを繋いだあとは {nbytes:,} B。表示だけ)")
+    else:
+        share = nbytes / limit if limit else 0.0
+        text = f"{nbytes:,} B = 上限 {limit:,} B の **{share * 100:.1f}%**"
     cut = truncated_parts(snap)
     if cut:
         text += "、部の `truncated`: " + "・".join(f"`{name}`" for name, _, _ in cut)

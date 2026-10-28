@@ -690,6 +690,9 @@ class CollectFollowTest(unittest.TestCase):
         self.assertEqual(sorted(ids), list(range(2000)))     # 新しく閉じた 1 本は入らない
         self.assertIn("頁の重なり 1 件を落とした", out)
         self.assertFalse(snap["recent"]["truncated"])
+        # 繋いだ印と、プロキシが返した 1 枚の大きさ (T.30.2。要約の大きさの警告はこちらで判定する)
+        self.assertIn("recent", snap["joined"]["parts"])
+        self.assertGreater(snap["joined"]["served_bytes"], 0)
 
     def test_max_pages_stops_and_says_so(self):
         _, out, snap = self.run_collect(MAX_PAGES="2")

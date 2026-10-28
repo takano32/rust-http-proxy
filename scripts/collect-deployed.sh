@@ -593,6 +593,7 @@ for a in sys.argv[6:]:
         plan.append(cur)
     else:
         cur[2].append(a)
+served_bytes = os.path.getsize(out)
 d = json.load(open(out))
 KEY = {"recent": "id", "hosts": "host", "dns": "host", "profile": 0}
 ITEMS = {"recent": "recent", "hosts": "hosts", "dns": "entries", "profile": "samples"}
@@ -656,6 +657,9 @@ for name, why, files in plan:
     elif why == "failed":
         line += f"。**打ち切った**: 続きが取れなかった (残りは offset={rest} から)"
     notes.append(line)
+# 道具が繋いだ印 (T.30.2): プロキシが返した 1 枚の大きさと、繋いだ部。要約の大きさの警告は
+# 繋いだあとの大きさではなく `served_bytes` で判定する (繋げば上限を越えるのは当たり前)
+d["joined"] = {"parts": [name for name, _, _ in plan], "served_bytes": served_bytes}
 tmp = out + ".part"
 with open(tmp, "w") as f:
     json.dump(d, f, ensure_ascii=False, separators=(",", ":"))

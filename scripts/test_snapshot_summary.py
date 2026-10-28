@@ -751,6 +751,22 @@ class SnapshotSize(unittest.TestCase):
         self.assertIn("**警告**: ", md)
         self.assertIn("上限 4,194,304 B の **100.", md)
 
+    def test_a_snapshot_joined_by_the_tool_is_judged_by_what_the_proxy_served(self):
+        # T.29.99: 道具が `recent`・`hosts`・`dns`・`profile` の続きを繋いで 5,241,162 B になり、上限 4 MiB の
+        # 125% と警告していた (T.30.2)。プロキシが返した 1 枚の大きさで判定し、繋いだあとは表示だけ
+        s = self.snap(5_241_162 - 20_000)
+        s["joined"] = {"parts": ["recent", "hosts"], "served_bytes": 2_100_000}
+        with written(b=s) as paths:
+            text, warn = ss.size_report(paths["b"], ss.load(paths["b"]))
+        self.assertFalse(warn, text)
+        self.assertIn("プロキシが返した 1 枚 2,100,000 B = 上限 4,194,304 B の **50.1%**", text)
+        self.assertIn("`recent`・`hosts` の続きを繋いだあとは", text)
+        # プロキシが返した 1 枚が 90% 以上なら、繋いでいても警告する
+        s["joined"]["served_bytes"] = 3_900_000
+        with written(b=s) as paths:
+            text, warn = ss.size_report(paths["b"], ss.load(paths["b"]))
+        self.assertTrue(warn, text)
+
     def test_the_daily_of_2026_10_26_is_just_under_the_warning(self):
         # 0.28.48 の日次 `2026-10-26` は 3,692,328 B = 4 MiB の 88%。`recent` は 256 KiB で切れていない
         with written(b=self.snap(3_692_328 - 20_000)) as paths:
