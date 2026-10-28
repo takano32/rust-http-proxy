@@ -893,6 +893,12 @@
       再起動でも) 60 秒たつまで `null` です。`mallinfo2` が読めない環境と `PROXY_STATS_PERSIST=off`
       (`--lite`) も `null`。**heap が増えたかはこの値との差で読める**ので、0 時間の雪像を撮らなくても
       起動ごとに判定できます (判定表の phase24 の heap の行は、これがあればこれを使います。T.24.2)
+    - `trim` (T.30.1) は、1 時間に 1 回の `malloc_trim(0)` (T.29.25) の通算です:
+      `{"count":…,"skipped":…,"last_at":…,"last_returned_bytes":…,"total_returned_bytes":…,"last_us":…,"every_secs":3600}`。
+      `count` は呼んだ回数、`skipped` は 1 時間たったが `heap_free ≤ heap_used` で呼ばなかった回数、
+      返した量は前後の RSS の差 (`heap_free` は返しても減りません)、`last_at` は epoch 秒です。
+      呼んだことが無ければ `last_*` は `null`。`PROXY_STATS_PERSIST=off` (`--lite`) では `history` スレッドが
+      動かないので、同じ形のまま 0 と `null` です
 
     **足して RSS になる形ではありません**: `heap_free` は「アロケータが返していない」だけで常駐しているとは
     限らず (`MADV_DONTNEED` 済みのページ)、`mmap` も確保しただけで触っていないページは常駐しません。

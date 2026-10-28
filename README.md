@@ -2034,6 +2034,12 @@ curl http://127.0.0.1:8080/config > config-$(date -u +%Y%m%dT%H%M%SZ).json   # �
 **起動から 60 秒たつと `/status` の `memory.baseline` に `{"at":…,"bytes":…}` が出ます** (T.24.4。
 `heap_used + mmap − cache_memory`)。これがこの起動の heap の基準で、**後の雪像 1 枚で増えが読めます**
 (0 時間の雪像は要りません。起動し直すと 60 秒たつまで `null` です)。
+**1 時間に 1 回の `malloc_trim` が返したかは `/status` の `memory.trim` で読みます** (T.30.1。
+`count` = 呼んだ回数、`skipped` = 1 時間たったが `heap_free ≤ heap_used` で呼ばなかった回数、
+`last_at` (epoch 秒)・`last_returned_bytes` (前後の RSS の差)・`total_returned_bytes`・`last_us`、`every_secs` = 間隔)。
+info の 1 行 (`returned free heap to the OS`) は `/log` の 1,000 行が warn で埋まると流れて見えないので、こちらが正です。
+起動から 1 時間は `count` も `skipped` も 0 で、`--lite` / `PROXY_STATS_PERSIST=off` (`history` スレッドが動かない) では
+ずっと 0 と `null` のまま (欄の形は同じ) です。
 
 ### 3. 1 時間後
 

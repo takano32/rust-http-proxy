@@ -393,6 +393,8 @@ pub(super) fn push_env(out: &mut String, extra: &StatusExtras<'_>, cache_json: &
 ///   `rings` と同じ 1 件あたりの見積もりに、いま入っている件数を掛けたもので、
 ///   必ず `rings_used.<名前> <= rings.<名前>`。割合は出さない (`used ÷ capacity` で
 ///   出せるが、割合からは実バイトを戻せない)
+/// - `trim` は 1 時間に 1 回の `malloc_trim(0)` の通算 (T.30.1)。`count` は呼んだ回数、
+///   `skipped` は間隔は来たが `heap_free <= heap_used` で呼ばなかった回数、返した量は RSS の差
 /// - `rings_touched` は起動時に `rings` の置き場を確保して触ったか (T17.8)。`true` なら
 ///   `rss` は起動直後から天井の近くに居る (`--lite` と Linux 以外は `false`)
 ///
@@ -502,7 +504,8 @@ fn memory_json(
             "\"readers\":{},\"profile\":{},\"total\":{}}},\"arenas\":{},",
             "\"rings_used\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
             "\"events\":{},\"trace\":{},\"history\":{},\"hostseries\":{},\"quantiles\":{},",
-            "\"readers\":{},\"profile\":{},\"total\":{}}},\"rings_touched\":{},\"baseline\":{}}}"
+            "\"readers\":{},\"profile\":{},\"total\":{}}},\"rings_touched\":{},\"baseline\":{},",
+            "\"trim\":{}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -564,5 +567,8 @@ fn memory_json(
         // 起動 60 秒の heap の基準 (T24.4)。**この起動のぶんだけ**。これも末尾に足した
         // (無ければ `null`。古い版の雪像と同じ形)
         baseline,
+        // 1 時間に 1 回の `malloc_trim` の通算 (T.30.1)。これも `memory` の末尾に足した。
+        // `history` スレッドが動かない (`--lite` / `PROXY_STATS_PERSIST=off`) なら 0 / `null`
+        crate::sysinfo::trim_stats().to_json(),
     )
 }

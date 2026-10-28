@@ -61,6 +61,19 @@ fn memory_of(status: &str) -> String {
     panic!("memory の括弧が閉じていない: {}", rest);
 }
 
+/// `memory` の末尾の `,"trim":{…}}` (T.30.1) を外した手前を返す (`trim` が最後の鍵であることも見る)。
+fn without_trim(mem: &str) -> &str {
+    let (head, tail) = mem
+        .rsplit_once(",\"trim\":{")
+        .unwrap_or_else(|| panic!("trim が無い: {}", mem));
+    assert!(
+        tail.starts_with("\"count\":") && tail.ends_with("}}") && !tail.contains('{'),
+        "trim が memory の最後の鍵ではない: {}",
+        mem
+    );
+    head
+}
+
 /// `memory` の `rings` / `rings_used` の 1 つを切り出す (同じ鍵が 2 度出るので必要。T15.0 (13))。
 fn sub_object(mem: &str, key: &str) -> String {
     let pat = format!("\"{}\":{{", key);
@@ -208,9 +221,11 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
 
     // (6) リングを起動時に触るのは `main` だけ (T17.8)。テスト用プロキシは触らないので `false`。
     // 鍵は `memory` の末尾に足した (`rings_used` までの並びは動かさない)。
-    // **その後ろに `baseline` が付く** (状態ファイルを持たないテスト用プロキシなので `null`。T24.4)
+    // **その後ろに `baseline` が付く** (状態ファイルを持たないテスト用プロキシなので `null`。T24.4)。
+    // さらに後ろが `trim` (T.30.1。中身は `tests/trim_test.rs`)
+    let head = without_trim(&mem);
     assert!(
-        mem.ends_with("},\"rings_touched\":false,\"baseline\":null}"),
+        head.ends_with("},\"rings_touched\":false,\"baseline\":null"),
         "rings_touched と baseline が末尾に無い: {}",
         mem
     );
@@ -252,7 +267,7 @@ fn test_integration_memory_rss_matches_the_probe_in_the_real_binary() {
     assert!(num(&mem, "stacks_estimate").unwrap_or(0) > 0, "{}", mem);
     // 既定のプロファイルの Linux では起動時にリングを触っている (T17.8)
     assert_eq!(
-        mem.ends_with(",\"rings_touched\":true,\"baseline\":null}"),
+        without_trim(&mem).ends_with(",\"rings_touched\":true,\"baseline\":null"),
         cfg!(target_os = "linux"),
         "{}",
         mem

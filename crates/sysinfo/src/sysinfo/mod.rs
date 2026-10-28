@@ -29,7 +29,10 @@ pub use fs::{
     FsInfo, dir_size_excluding, drop_page_cache, fs_info, fs_type, is_ram_backed, is_unsupported,
     preallocate,
 };
-pub use malloc::{MallocInfo, arena_max, malloc_info, set_arena_max, trim_if_due};
+pub use malloc::{
+    MallocInfo, TrimStats, arena_max, malloc_info, set_arena_max, set_trim_every_secs, trim_if_due,
+    trim_stats,
+};
 pub use mem::{
     CgroupMem, MemInfo, MemPressure, cgroup_mem_limits, mem_info, mem_pressure, min_free_bytes,
     process_rss,

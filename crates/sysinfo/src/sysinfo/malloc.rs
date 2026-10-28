@@ -50,7 +50,86 @@ pub const TRIM_EVERY_SECS: u64 = 3600;
 /// 前に [`trim_if_due`] が見た時刻 (epoch 秒。`0` = まだ見ていない)。
 static LAST_TRIM_CHECK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// **1 時間に 1 回**、解放済みなのにアロケータが抱えている空き (`heap_free`) が使っている量
+/// 実際に使う間隔 (秒。**試験が短い周期で確かめられるように差し替えられる**。T.30.1)。
+static TRIM_EVERY: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(TRIM_EVERY_SECS);
+
+/// [`trim_if_due`] の間隔を差し替える (T.30.1 の試験。既定は [`TRIM_EVERY_SECS`])。
+pub fn set_trim_every_secs(secs: u64) {
+    TRIM_EVERY.store(secs, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// いまの [`trim_if_due`] の間隔 (秒)。
+pub fn trim_every_secs() -> u64 {
+    TRIM_EVERY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// [`trim_if_due`] の通算 (`/status` の `memory.trim`。T.30.1)。
+///
+/// 返した量は info の 1 行にしか出ていなかったので、`/log` の 1,000 行が warn で埋まると
+/// 返したかどうかが見えなかった (tokyo の 0.29.36)。書くのは `history` スレッドだけ
+/// (1 時間に 1 回)、読むのは `/status` に来たときだけ。
+static TRIM_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TRIM_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TRIM_LAST_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TRIM_LAST_RETURNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TRIM_TOTAL_RETURNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TRIM_LAST_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`trim_if_due`] の通算 (T.30.1)。`last_*` は 1 回も返していなければ `None`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrimStats {
+    /// `malloc_trim(0)` を呼んだ回数
+    pub count: u64,
+    /// 間隔は来たが `heap_free <= heap_used` で呼ばなかった回数
+    pub skipped: u64,
+    /// 最後に呼んだ時刻 (epoch 秒)
+    pub last_at: Option<u64>,
+    /// 最後の 1 回で返した量 (RSS の減り。バイト)
+    pub last_returned_bytes: Option<u64>,
+    /// 返した量の通算 (バイト)
+    pub total_returned_bytes: u64,
+    /// 最後の 1 回の `malloc_trim(0)` にかかった時間 (us)
+    pub last_us: Option<u64>,
+}
+
+/// いまの [`TrimStats`]。`history` スレッドが動かない (`--lite` / `PROXY_STATS_PERSIST=off`)
+/// なら 0 と `None` のまま。
+pub fn trim_stats() -> TrimStats {
+    use std::sync::atomic::Ordering::Relaxed;
+    let count = TRIM_COUNT.load(std::sync::atomic::Ordering::Acquire);
+    let some = |v: u64| (count > 0).then_some(v);
+    TrimStats {
+        count,
+        skipped: TRIM_SKIPPED.load(Relaxed),
+        last_at: some(TRIM_LAST_AT.load(Relaxed)),
+        last_returned_bytes: some(TRIM_LAST_RETURNED.load(Relaxed)),
+        total_returned_bytes: TRIM_TOTAL_RETURNED.load(Relaxed),
+        last_us: some(TRIM_LAST_US.load(Relaxed)),
+    }
+}
+
+impl TrimStats {
+    /// `/status` の `memory.trim` の JSON (鍵の並びは固定)。
+    pub fn to_json(&self) -> String {
+        let opt = |v: Option<u64>| v.map_or_else(|| "null".to_string(), |x| x.to_string());
+        format!(
+            concat!(
+                "{{\"count\":{},\"skipped\":{},\"last_at\":{},\"last_returned_bytes\":{},",
+                "\"total_returned_bytes\":{},\"last_us\":{},\"every_secs\":{}}}"
+            ),
+            self.count,
+            self.skipped,
+            opt(self.last_at),
+            opt(self.last_returned_bytes),
+            self.total_returned_bytes,
+            opt(self.last_us),
+            trim_every_secs()
+        )
+    }
+}
+
+/// **1 時間に 1 回** (試験は [`set_trim_every_secs`] で縮める)、解放済みなのにアロケータが抱えている空き (`heap_free`) が使っている量
 /// (`heap_used`) を超えていれば `malloc_trim(0)` で OS へ返す (T.29.25)。`history` スレッドが
 /// 5 秒ごとに呼ぶ (間隔に満たなければ原子の読み 1 回で戻る)。
 ///
@@ -69,15 +148,24 @@ pub fn trim_if_due(now_secs: u64) -> Option<Trimmed> {
         LAST_TRIM_CHECK.store(now_secs, Ordering::Relaxed);
         return None;
     }
-    if now_secs.saturating_sub(last) < TRIM_EVERY_SECS {
+    if now_secs.saturating_sub(last) < trim_every_secs() {
         return None;
     }
     LAST_TRIM_CHECK.store(now_secs, Ordering::Relaxed);
     let m = malloc_info()?;
     if m.free <= m.used {
+        // 呼ばなかった回も数える (返すものが無かったのか、見ていないのかを分ける。T.30.1)
+        TRIM_SKIPPED.fetch_add(1, Ordering::Relaxed);
         return None;
     }
     let t = trim()?;
+    // 通算は `history` スレッドだけが書く (T.30.1)。`last_at` を最後に書くのは、
+    // `/status` が `count` を読んでから `last_*` を読むとき、0 時刻を拾わないため
+    TRIM_LAST_RETURNED.store(t.released(), Ordering::Relaxed);
+    TRIM_TOTAL_RETURNED.fetch_add(t.released(), Ordering::Relaxed);
+    TRIM_LAST_US.store(t.took_us, Ordering::Relaxed);
+    TRIM_LAST_AT.store(now_secs, Ordering::Relaxed);
+    TRIM_COUNT.fetch_add(1, Ordering::Release);
     let msg = format!(
         "returned free heap to the OS (malloc_trim, {} us): rss {} -> {} MiB, heap used {} MiB / free {} MiB",
         t.took_us,
