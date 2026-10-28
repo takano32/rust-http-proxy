@@ -1,6 +1,6 @@
 [package]
 name = "proxy-rrd"
-version = "0.28.45"
+version = "0.30.3"
 edition = "2024"
 
 [lib]

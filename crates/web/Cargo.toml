@@ -1,6 +1,6 @@
 [package]
 name = "proxy-web"
-version = "0.29.19"
+version = "0.30.3"
 edition = "2024"
 
 [lib]
