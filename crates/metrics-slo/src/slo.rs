@@ -18,7 +18,7 @@
 //! |---|---|---|---|
 //! | 0 | `connect_p50_ms` | `conn_excess` (確立 − カーネルの RTT。名前解決を除く) の窓の p50 | 閾以下 |
 //! | 1 | `connect_p95_ms` | `conn_excess` の窓の p95 | 閾以下 |
-//! | 2 | `error_rate` | `(errors − dns) ÷ (確立 + 転送 + errors − dns)` | 閾以下 |
+//! | 2 | `error_rate` | `(errors − dns) ÷ (確立 + 転送 + errors − dns)` を **443・80 宛てだけ**で (T.30.3) | 閾以下 |
 //! | 3 | `dns_miss_per_connect` | `(dns_misses − dns_fail_misses) ÷ 確立` | 閾以下 |
 //!
 //! **達成 = 4 つとも満たす**。**確立も (名前が引けたうえでの)
@@ -44,6 +44,15 @@
 //! - `error_rate` は**名前解決に成功した試みあたり** (E1。メール宛の総当たりの NXDOMAIN は
 //!   客が無い名前を頼んだもの)。名前解決の失敗だけの標本は「判定なし」
 //! - `dns_miss_per_connect` は**名前解決に失敗した試みのミスを除く**
+//!
+//! **T.30.3 から `error_rate` は宛先のポートが 443・80 の試みだけを数える** (利用者の決定。`basis` の
+//! `error_rate` は `resolved_web_attempts_hourly_sum`)。T.29.33 で 1 時間の合計にしたあとも、10-28 の tokyo は
+//! 15 時間とも `error_rate` で外れて達成 0% (839 / 17,622 = 0.048) で、エラーの大半はメール宛
+//! (`:993`・`:995`・`:143`) の確立の時間切れ (3 秒で切る) と拒否・経路なし = NAT の 1 つの接続元からの
+//! メールサーバーの総当たり (使われ方) だった。5 秒の標本の `other_port_attempts` / `other_port_errors`
+//! (443・80 以外の試みとそのエラー) を今までの分子と分母から引く。**T.30.3 より前の標本はどちらも 0** なので
+//! 旧の数え方 (全部のポート) で読める。443・80 以外のエラーは今までどおり `/errors`・`/history` の
+//! `errors_by_cause` に出る。確立の 2 つと `dns_miss_per_connect` は全部のポートのまま
 //!
 //! **T.29.12 で確立の窓から名前解決を外した** (`basis` の `connect` は `connect_minus_rtt`)。
 //! T.28.45 の `excess` は `dns + connect − RTT` で、10-26 の tokyo で 50 ms を越えた成功 36 本の
@@ -111,7 +120,8 @@ pub struct Thresholds {
     pub connect_p50_ms: f64,
     /// 同じ窓の p95 (ms)
     pub connect_p95_ms: f64,
-    /// 名前解決に成功した試みあたりのエラー (`(errors − dns) ÷ (確立 + 転送 + errors − dns)`。T.28.45)
+    /// 名前解決に成功した試みあたりのエラー (`(errors − dns) ÷ (確立 + 転送 + errors − dns)`。T.28.45)。
+    /// T.30.3 から**宛先のポートが 443・80 の試みだけ** (綴りは今までのまま)
     pub error_rate: f64,
     /// 名前解決のミス (失敗した試みのぶんを除く。T.28.45) ÷ 確立
     pub dns_miss_per_connect: f64,
@@ -123,8 +133,10 @@ pub struct Thresholds {
 /// `connect` は T.28.45 〜 T.29.11 が `establish_minus_rtt` (`dns + connect − RTT`)、
 /// T.29.12 から `connect_minus_rtt` (名前解決を除く)。
 /// 比の 2 つは T.29.33 から **1 時間の合計**で判定する (`_hourly_sum` が付く。それより前は 5 秒の標本ごと)。
+/// `error_rate` は T.29.33 〜 T.30.2 が `resolved_attempts_hourly_sum` (全部のポート)、T.30.3 から
+/// `resolved_web_attempts_hourly_sum` (宛先のポートが 443・80 の試みだけ)。
 pub const BASIS_JSON: &str = "{\"connect\":\"connect_minus_rtt\",\
-                              \"error_rate\":\"resolved_attempts_hourly_sum\",\
+                              \"error_rate\":\"resolved_web_attempts_hourly_sum\",\
                               \"dns_miss_per_connect\":\"excluding_failed_lookups_hourly_sum\"}";
 
 /// 既定の閾 (`PROXY_SLO=connect_p50_ms=5,connect_p95_ms=50,error_rate=0.005,dns_miss_per_connect=0.2`)。
@@ -220,14 +232,19 @@ pub fn judge(th: &Thresholds, s: &Sample) -> Verdict {
     let resolved_errors = s.errors - dns_failed;
     // 試み = 確立 + 転送 + エラー − 名前解決の失敗 (T20.4・T.28.45)
     let attempts = (connects + s.forward.count + s.errors) - dns_failed;
+    // **443・80 宛てだけ** (T.30.3。利用者の決定): 443・80 以外の試みとそのエラーを引く。
+    // T.30.3 より前の標本はどちらも 0 = 全部のポート (旧の数え方) のまま
+    let web_errors = resolved_errors - s.other_port_errors.min(resolved_errors);
+    let web_attempts = attempts - s.other_port_attempts.min(attempts);
     // 名前解決のミスは失敗した試みのぶんを除く (T.28.45)
     let misses = s.dns_misses.saturating_sub(s.dns_fail_misses);
-    let num = [resolved_errors, misses];
-    let den = [attempts, connects];
-    if connects == 0 && resolved_errors == 0 {
+    let num = [web_errors, misses];
+    let den = [web_attempts, connects];
+    if connects == 0 && web_errors == 0 {
         // 確立も (名前が引けたうえでの) エラーも 1 本も無い標本は「判定なし」。分位点が
         // 0 になるだけでなく、「誰も使っていない時間」を達成として数えると達成率の意味が
         // 変わる。**名前解決の失敗だけの標本もここ** (T.28.45。E1 では分母が 0 になる)。
+        // **443・80 以外のエラーだけの標本もここ** (T.30.3。メール宛の総当たりだけの 5 秒)。
         // 比の分子と分母は持たせる (転送だけの 5 秒も 1 時間の合計の分母に入る。T.29.33)
         return Verdict {
             num,
@@ -245,7 +262,7 @@ pub fn judge(th: &Thresholds, s: &Sample) -> Verdict {
         // T.29.12 より前の標本と、RTT が 1 本も読めなかった標本 (Linux 以外) はここ
         s.conn_excess.quantile_ms(0.5),
         s.conn_excess.quantile_ms(0.95),
-        ratio_of(resolved_errors, attempts),
+        ratio_of(web_errors, web_attempts),
         ratio_of(misses, connects),
     ];
     let limits = th.limits();
@@ -342,7 +359,8 @@ pub struct Hour {
     pub miss: [u32; 4],
     /// 閾ごとの最悪の値 (速さは外した 5 秒の中で、比は外した時間の 1 時間の値。外していなければ 0)
     pub worst: [f64; 4],
-    /// 比の 2 つの分子と分母の合計 (T.29.33。`error_rate` = 名前解決に成功した試みのエラー ÷ 試み、
+    /// 比の 2 つの分子と分母の合計 (T.29.33。`error_rate` = 名前解決に成功した試みのエラー ÷ 試み
+    /// (T.30.3 から 443・80 宛てだけ)、
     /// `dns_miss_per_connect` = 失敗した試みを除いたミス ÷ 確立)
     pub num: [u64; RATES],
     pub den: [u64; RATES],
@@ -994,6 +1012,58 @@ mod tests {
         assert_eq!(tr.hours().count(), 0);
     }
 
+    /// **T.30.3**: `error_rate` は宛先のポートが 443・80 の試みだけ (利用者の決定)。5 秒の標本の
+    /// `other_port_attempts` / `other_port_errors` を今までの分子と分母から引く。どちらも 0 の標本
+    /// (T.30.3 より前のレコード) は全部のポートのまま。443・80 以外のエラーだけの標本は「判定なし」。
+    #[test]
+    fn the_error_rate_counts_only_the_attempts_to_ports_443_and_80() {
+        let th = DEFAULT;
+        // `:443` の確立 100 本 + `:993` の時間切れ 10 本 (試み 10 本・エラー 10 本)
+        let mut s = sample(0, 100, 3);
+        s.errors = 10;
+        s.errors_by_cause[crate::metrics::ErrCause::Timeout as usize] = 10;
+        let old = judge(&th, &s);
+        assert_eq!(
+            (old.num[0], old.den[0]),
+            (10, 110),
+            "旧の数え方 (全部のポート)"
+        );
+        assert_eq!(old.bits, 0b0100, "{:?}", old);
+        s.other_port_attempts = 10;
+        s.other_port_errors = 10;
+        let v = judge(&th, &s);
+        assert_eq!((v.num[0], v.den[0]), (0, 100), "{:?}", v);
+        assert!(v.met(), "{:?}", v);
+        // `:443` のエラーは数える (1 / 101)
+        s.errors = 11;
+        s.errors_by_cause[crate::metrics::ErrCause::Refused as usize] = 1;
+        let v = judge(&th, &s);
+        assert_eq!((v.num[0], v.den[0]), (1, 101), "{:?}", v);
+        // 443・80 以外の時間切れだけの 5 秒は判定しない (分子も分母も 0)
+        let mut mail = Sample {
+            errors: 5,
+            other_port_attempts: 5,
+            other_port_errors: 5,
+            ..Sample::default()
+        };
+        mail.errors_by_cause[crate::metrics::ErrCause::Timeout as usize] = 5;
+        let v = judge(&th, &mail);
+        assert!(!v.judged, "{:?}", v);
+        assert_eq!((v.num[0], v.den[0]), (0, 0), "{:?}", v);
+        // 名前解決の失敗は引く前に除いてある (`:993` の NXDOMAIN は other_port に入らない)
+        let mut nx = sample(0, 100, 3);
+        nx.errors = 3;
+        nx.errors_by_cause[crate::metrics::ErrCause::Dns as usize] = 3;
+        nx.errors += 2;
+        nx.errors_by_cause[crate::metrics::ErrCause::Timeout as usize] = 2;
+        nx.other_port_attempts = 2;
+        nx.other_port_errors = 2;
+        let v = judge(&th, &nx);
+        assert_eq!((v.num[0], v.den[0]), (0, 100), "{:?}", v);
+        // 確立の 2 つと `dns_miss_per_connect` は全部のポートのまま
+        assert_eq!(v.den[1], 100);
+    }
+
     /// **T.28.45**: `dns_miss_per_connect` は名前解決に失敗した試みのミスを除く
     /// (`(dns_misses − dns_fail_misses) ÷ 確立`)。
     #[test]
@@ -1310,7 +1380,7 @@ mod tests {
             json.contains(
                 "\"thresholds\":{\"connect_p50_ms\":5,\"connect_p95_ms\":50,\
                  \"error_rate\":0.005,\"dns_miss_per_connect\":0.2},\"basis\":{\
-                 \"connect\":\"connect_minus_rtt\",\"error_rate\":\"resolved_attempts_hourly_sum\",\
+                 \"connect\":\"connect_minus_rtt\",\"error_rate\":\"resolved_web_attempts_hourly_sum\",\
                  \"dns_miss_per_connect\":\"excluding_failed_lookups_hourly_sum\"},\"names\":["
             ),
             "{}",

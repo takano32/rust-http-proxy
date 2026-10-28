@@ -92,11 +92,12 @@ fn test_integration_slo_reports_the_share_of_time_the_thresholds_were_met() {
     // **閾は `PROXY_SLO` の既定** (`crates/config` の `DEFAULT_SLO` と同じ値であること
     // — 層が違うので数値を 2 か所に持っている。食い違ったらここで落ちる)
     // T.28.45 で既定を 5 / 50 ms (確立 − RTT) にし、3 つの読み方を `basis` に出した
-    // (T.29.12 で確立から名前解決を外し、T.29.33 で比の 2 つを 1 時間の合計にした)
+    // (T.29.12 で確立から名前解決を外し、T.29.33 で比の 2 つを 1 時間の合計にし、T.30.3 で
+    // `error_rate` を 443・80 宛てだけにした)
     let defaults = "\"thresholds\":{\"connect_p50_ms\":5,\"connect_p95_ms\":50,\
                     \"error_rate\":0.005,\"dns_miss_per_connect\":0.2},\
                     \"basis\":{\"connect\":\"connect_minus_rtt\",\
-                    \"error_rate\":\"resolved_attempts_hourly_sum\",\
+                    \"error_rate\":\"resolved_web_attempts_hourly_sum\",\
                     \"dns_miss_per_connect\":\"excluding_failed_lookups_hourly_sum\"}";
     assert!(empty.contains(defaults), "{}", empty);
     let cfg = endpoint_json(port, "/config");
@@ -219,7 +220,7 @@ fn test_integration_slo_judges_the_rates_on_the_sum_of_the_hour() {
     assert!(
         body.contains(
             "\"basis\":{\"connect\":\"connect_minus_rtt\",\
-             \"error_rate\":\"resolved_attempts_hourly_sum\",\
+             \"error_rate\":\"resolved_web_attempts_hourly_sum\",\
              \"dns_miss_per_connect\":\"excluding_failed_lookups_hourly_sum\"}"
         ),
         "{}",
@@ -262,5 +263,103 @@ fn test_integration_slo_judges_the_rates_on_the_sum_of_the_hour() {
     slo::reset();
 }
 
-/// 2 本の試験は同じ大域の集計 (`slo::observe`) を使うので直列にする。
+/// **T.30.3 の受け入れ基準**: `error_rate` は宛先のポートが 443・80 の試みだけを数える (利用者の決定)。
+/// ホスト別統計の口 (`record_host_detail`。トンネルと転送が呼ぶのと同じ) に、1 時間ぶんとして
+/// `:993` の確立の時間切れ 100 本・`:443` の確立の成功 1,000 本・`:443` の拒否 4 本を入れ、履歴スレッドと
+/// 同じ `take_sample` で 5 秒の標本を作って `/slo` に流す。443・80 だけなら 4 / 1,004 = 0.00398 で満たし、
+/// 旧の数え方 (全部のポート) なら 104 / 1,104 = 0.0942 で外れる。標本は `.rrd` のレコードを往復しても同じ。
+#[test]
+fn test_integration_slo_error_rate_counts_only_the_attempts_to_ports_443_and_80() {
+    use rust_http_proxy::cache::{Cache, CacheConfig};
+    use rust_http_proxy::metrics::{Detail, ErrCause, HostOutcome, Metrics};
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    slo::reset();
+    let port = start_test_proxy(proxy_config());
+    let m = Metrics::new();
+    let cache = Cache::new(CacheConfig::disabled());
+    let err = |cause, connect_ms| Detail {
+        cause: Some(cause),
+        connect_ms,
+        ..Detail::default()
+    };
+    for _ in 0..100 {
+        m.record_host_detail(
+            "connect://imap.example.net:993",
+            HostOutcome::Error,
+            0,
+            Some(std::time::Duration::from_secs(3)),
+            err(ErrCause::Timeout, 3000),
+        );
+    }
+    for _ in 0..1000 {
+        m.record_host_detail(
+            "connect://www.example.com:443",
+            HostOutcome::Bypass,
+            0,
+            Some(std::time::Duration::from_millis(20)),
+            Detail {
+                connect_ms: 20,
+                origin_rtt_us: 18_000,
+                ..Detail::default()
+            },
+        );
+    }
+    for _ in 0..4 {
+        m.record_host_detail(
+            "connect://www.example.com:443",
+            HostOutcome::Error,
+            0,
+            Some(std::time::Duration::from_millis(20)),
+            err(ErrCause::Refused, 20),
+        );
+    }
+    let mut s = rust_http_proxy::history::take_sample(&m, &cache);
+    s.t = today_utc();
+    assert_eq!(
+        (s.errors, s.other_port_attempts, s.other_port_errors),
+        (104, 100, 100),
+        "{:?}",
+        s
+    );
+    // `.rrd` のレコードを往復しても同じ (予備に足した 2 項目)
+    assert_eq!(Sample::decode(&s.encode()), Some(s));
+    // 旧の数え方 (T.30.3 より前の標本 = 2 項目が 0) なら外れる
+    let old = Sample {
+        other_port_attempts: 0,
+        other_port_errors: 0,
+        ..s
+    };
+    let v = slo::judge(&slo::DEFAULT, &old);
+    assert_eq!((v.num[0], v.den[0]), (104, 1104), "{:?}", v);
+    assert!(v.values[2] > slo::DEFAULT.error_rate, "{:?}", v);
+    slo::observe(&s);
+    let body = endpoint_json(port, "/slo?days=1");
+    println!("/slo?days=1 -> {}", body);
+    assert!(
+        body.contains("\"error_rate\":\"resolved_web_attempts_hourly_sum\""),
+        "{}",
+        body
+    );
+    // 1 本の 5 秒が達成し、その時間の合計は 4 / 1,004
+    assert!(
+        body.contains(&format!(
+            "[{},1,1,[0,0,0,0],[[4,1004],[0,1000]]]",
+            today_utc()
+        )),
+        "{}",
+        body
+    );
+    assert!(
+        body.contains(
+            "\"rates\":{\"error_rate\":{\"num\":4,\"den\":1004,\"value\":0.00398,\
+             \"hours_met\":1,\"hours_missed\":0}"
+        ),
+        "{}",
+        body
+    );
+    assert_eq!(number(&body, "met"), Some(1.0), "{}", body);
+    slo::reset();
+}
+
+/// 3 本の試験は同じ大域の集計 (`slo::observe`) を使うので直列にする。
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());

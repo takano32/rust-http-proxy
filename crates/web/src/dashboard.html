@@ -894,9 +894,10 @@ function sloKpi(j){
   // 確立の閾は `basis` があれば「確立 − RTT」で読んだ値 (T.28.45・T.29.12)。閾の数字だけだと確立そのものと読める (T.29.27)
   var rtt=j.basis&&/_minus_rtt$/.test(j.basis.connect||'')&&worst!==null&&/^connect/.test(names[worst])?'、確立 − RTT':'';
   if(worst!==null)parts.push('外れの最多 '+names[worst]+' '+fmtNum(miss[worst])+' 本 (閾 '+th[names[worst]]+rtt+')');
-  // T.29.33: 比の 2 つは 1 時間の合計で判定する版だけ `rates` (今日の分子 / 分母と外した時間の数) を持つ
-  var rs=t.rates||{};
-  for(var rn in rs){var x=rs[rn];if(x&&x.den)parts.push(rn+' '+fmtNum(x.num)+' / '+fmtNum(x.den)+' (1 時間の合計で外れ '+(x.hours_missed||0)+' 時間)')}
+  // T.29.33: 比の 2 つは 1 時間の合計で判定する版だけ `rates` (今日の分子 / 分母と外した時間の数) を持つ。
+  // T.30.3: `basis.error_rate` が `resolved_web_…` の版は error_rate が 443・80 宛てだけ
+  var rs=t.rates||{},web=j.basis&&/^resolved_web_/.test(j.basis.error_rate||'');
+  for(var rn in rs){var x=rs[rn];if(x&&x.den)parts.push(rn+(web&&rn==='error_rate'?' (443・80 だけ)':'')+' '+fmtNum(x.num)+' / '+fmtNum(x.den)+' (1 時間の合計で外れ '+(x.hours_missed||0)+' 時間)')}
   var bs=j.breaches||[],last=bs.length?bs[bs.length-1]:null;
   if(last)parts.push('直近の外れ '+last.from_hour+'〜'+last.to_hour);
   parts.push('直近 '+j.days+' 日 '+(j.ratio==null?'–':(j.ratio*100).toFixed(2)+'%'));
@@ -915,6 +916,7 @@ function sloTitle(j){
   if(!b)return s+'この版は確立そのもの・全試行・全ミスで判定しています';
   var L={establish_minus_rtt:'確立からカーネルの RTT を引いた値 (プロキシの取り分)',
     connect_minus_rtt:'名前解決を除いた確立からカーネルの RTT を引いた値 (プロキシの取り分)',resolved_attempts:'名前解決に成功した試行あたり',
+    resolved_web_attempts:'名前解決に成功した 443・80 宛ての試行あたり (メール宛など他のポートは /errors で見る)',
     excluding_failed_lookups:'失敗した問い合わせを除いたミス'},p=[];
   function f(k){var h=/_hourly_sum$/.test(k),b=k.replace(/_hourly_sum$/,'');return (L[b]||b)+(h?' (1 時間の合計)':'')}
   if(b.connect)p.push('確立 p50 ≤ '+th.connect_p50_ms+' ms · p95 ≤ '+th.connect_p95_ms+' ms は'+f(b.connect));

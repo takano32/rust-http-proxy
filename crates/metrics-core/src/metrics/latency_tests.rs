@@ -1166,3 +1166,75 @@ fn the_interval_keeps_the_rtt_excess_and_the_misses_of_failed_lookups() {
     assert_eq!(iv.dns_fail_misses, 2, "原因 `dns` の失敗のミスだけ");
     assert_eq!(m.totals().dns_fail_misses, 2, "通算にも入る");
 }
+
+/// T.30.3: 区間に「443・80 以外の宛先への試み」とそのエラーを積む (`/slo` の `error_rate` が引く)。
+///
+/// 見るのは: (a) `:443`・`:80` の成功とエラーは入らない、(b) `:993` の時間切れ・`:8080` の転送の成功
+/// (`:80` で終わらない)・`:5228` の確立の成功は入る、(c) 原因 `dns` の失敗は試みに数えない (`/slo` が
+/// 先に除く)、(d) 窓に入らない成功 (応答時間なし・`blocked://`) は試みに数えない。
+#[test]
+fn the_interval_counts_the_attempts_to_ports_other_than_443_and_80() {
+    let m = Metrics::new();
+    let took = Some(Duration::from_millis(5));
+    let err = |cause| Detail {
+        cause: Some(cause),
+        ..Detail::default()
+    };
+    let ok = Detail::default;
+    // (a)
+    m.record_host_detail("connect://a:443", HostOutcome::Bypass, 0, took, ok());
+    m.record_host_detail("http://b:80", HostOutcome::Miss, 0, took, ok());
+    m.record_host_detail(
+        "connect://a:443",
+        HostOutcome::Error,
+        0,
+        took,
+        err(ErrCause::Refused),
+    );
+    // (b)
+    for _ in 0..3 {
+        m.record_host_detail(
+            "connect://mail:993",
+            HostOutcome::Error,
+            0,
+            took,
+            err(ErrCause::Timeout),
+        );
+    }
+    m.record_host_detail("http://c:8080", HostOutcome::Miss, 0, took, ok());
+    m.record_host_detail("connect://[::1]:5228", HostOutcome::Bypass, 0, took, ok());
+    // (c)
+    m.record_host_detail(
+        "connect://nx:995",
+        HostOutcome::Error,
+        0,
+        took,
+        err(ErrCause::Dns),
+    );
+    // (d)
+    m.record_host("http://d:8080", HostOutcome::Hit, 0);
+    m.record_host("blocked://e", HostOutcome::Blocked, 0);
+    let iv = m.take_interval();
+    assert_eq!((iv.errors, iv.connect.count, iv.forward.count), (5, 2, 2));
+    assert_eq!(
+        iv.other_port_attempts,
+        3 + 1 + 1,
+        "`:993` 3・`:8080` 1・`:5228` 1"
+    );
+    assert_eq!(iv.other_port_errors, 3, "`:993` の時間切れだけ");
+    assert_eq!(m.totals().other_port_attempts, 5, "通算にも入る");
+    // 鍵の末尾の比べ方 (解かない)
+    for (key, web) in [
+        ("connect://a:443", true),
+        ("http://b:80", true),
+        ("connect://[::1]:443", true),
+        ("http://c:8080", false),
+        ("http://c:180", false),
+        ("connect://d:1443", false),
+        ("connect://e:993", false),
+        ("loop://f", false),
+        ("", false),
+    ] {
+        assert_eq!(web_port(key), web, "{}", key);
+    }
+}

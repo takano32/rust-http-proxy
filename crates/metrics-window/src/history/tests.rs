@@ -52,19 +52,20 @@ fn keeps_the_newest_samples_in_order() {
     // 末尾は T15.0 (10) で足した `wait_buckets` と 4 列 (`dns_warm` /
     // `requests_delta` / `bytes_delta` / `active_peak`)、そのうしろが T16.0 の 3 列
     // (`dns_warm_max` / `dns_warm_sum` / `gauge_n`)、さらにうしろが T.28.45 の
-    // `excess` の窓 4 列と `dns_fail_misses`、いちばんうしろが T.29.12 の `conn_excess` の窓 4 列
+    // `excess` の窓 4 列と `dns_fail_misses`、そのうしろが T.29.12 の `conn_excess` の窓 4 列、
+    // いちばんうしろが T.30.3 の 2 列 (`other_port_attempts` / `other_port_errors`)
     assert!(
         json.contains(
             ",0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0,0,0,0,0,\
              0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,\
-             0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0]]],\"closed\":{"
+             0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0]],\"closed\":{"
         ),
         "{}",
         &json[json.len() - 600..]
     );
     // `keys` の隣に同じ長さの `key_kinds` が並ぶ (T15.0 (10))
     assert!(
-        json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\",\"dns_warm_max\",\"dns_warm_sum\",\"gauge_n\",\"excesses\",\"excess_ms_sum\",\"excess_ms_max\",\"excess_buckets\",\"dns_fail_misses\",\"conn_excesses\",\"conn_excess_ms_sum\",\"conn_excess_ms_max\",\"conn_excess_buckets\"],\"key_kinds\":[\"time\",\"cumulative\","),
+        json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\",\"dns_warm_max\",\"dns_warm_sum\",\"gauge_n\",\"excesses\",\"excess_ms_sum\",\"excess_ms_max\",\"excess_buckets\",\"dns_fail_misses\",\"conn_excesses\",\"conn_excess_ms_sum\",\"conn_excess_ms_max\",\"conn_excess_buckets\",\"other_port_attempts\",\"other_port_errors\"],\"key_kinds\":[\"time\",\"cumulative\","),
         "{}",
         &json[..900]
     );
@@ -323,6 +324,8 @@ fn sample_encoding_round_trips() {
         excess,
         dns_fail_misses: 35,
         conn_excess,
+        other_port_attempts: 36,
+        other_port_errors: 37,
     };
     let enc = s.encode();
     assert!(
@@ -356,6 +359,17 @@ fn sample_encoding_round_trips() {
     // T.28.45 の 17 項目はさらにそのうしろ
     assert_eq!(Window::decode(&mut d), excess, "`excess` の窓 16 項目");
     assert_eq!(d.u64(), 35, "`dns_fail_misses`");
+    // T.29.12 の窓 16 項目、T.30.3 の 2 項目はさらにそのうしろ
+    assert_eq!(
+        Window::decode(&mut d),
+        conn_excess,
+        "`conn_excess` の窓 16 項目"
+    );
+    assert_eq!(
+        [d.u64(), d.u64()],
+        [36, 37],
+        "`other_port_attempts` `other_port_errors` の順"
+    );
 }
 
 /// 版 3 の予備は **60 項目ぶんで始まり、まだ残っている** (T14.14 の受け入れ基準)。
@@ -692,9 +706,9 @@ fn the_new_columns_fit_in_the_record_slack_and_version3_records_still_decode() {
     let enc = s.encode();
     // (a)
     assert_eq!(
-        SAMPLE_ITEMS - 17 - 16,
+        SAMPLE_ITEMS - 17 - 16 - 2,
         86,
-        "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列 (+ T.28.45 の 17 + T.29.12 の 16)"
+        "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列 (+ T.28.45 の 17 + T.29.12 の 16 + T.30.3 の 2)"
     );
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
     assert!(
@@ -832,7 +846,12 @@ fn the_connect_minus_rtt_window_fits_in_the_slack_and_older_records_read_it_as_e
     s.gauge_n = 1;
     let enc = s.encode();
     // (a)
-    assert_eq!(SAMPLE_ITEMS, 119, "103 + `conn_excess` の窓 16");
+    const {
+        assert!(
+            SAMPLE_ITEMS >= 119,
+            "103 + `conn_excess` の窓 16 (T.30.3 でさらに 2)"
+        )
+    };
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
     const { assert!(SAMPLE_SPARE_ITEMS >= 1, "予備が残る") };
     assert_eq!(Sample::decode(&enc), Some(s));
@@ -863,7 +882,7 @@ fn the_connect_minus_rtt_window_fits_in_the_slack_and_older_records_read_it_as_e
     // (d)
     let n = KEYS.len();
     assert_eq!(
-        &KEYS[n - 4..],
+        &KEYS[n - 6..n - 2],
         &[
             "conn_excesses",
             "conn_excess_ms_sum",
@@ -871,12 +890,70 @@ fn the_connect_minus_rtt_window_fits_in_the_slack_and_older_records_read_it_as_e
             "conn_excess_buckets"
         ]
     );
-    assert_eq!(&KEY_KINDS[n - 4..], &["delta", "delta", "peak", "buckets"]);
+    assert_eq!(
+        &KEY_KINDS[n - 6..n - 2],
+        &["delta", "delta", "peak", "buckets"]
+    );
     let h = History::default();
     h.push(s);
     let json = h.to_json();
     assert!(
-        json.contains(",2,73,70,[0,0,1,0,0,0,1,0,0,0,0,0,0]]"),
+        json.contains(",2,73,70,[0,0,1,0,0,0,1,0,0,0,0,0,0],0,0]"),
+        "{}",
+        json
+    );
+}
+
+/// T.30.3 の `other_port_attempts` / `other_port_errors` (443・80 以外の宛先への試みとそのエラー。`/slo` の
+/// `error_rate` が引く) も**レコードの余白に足した**ので `.rrd` の版は上がらない。(a) 121 項目が 1 レコードに
+/// 収まり予備が残る、(b) T.30.3 より前の 119 項目のレコードは 0 (= 引くものが無い = 旧の数え方) で読み戻り
+/// 手前は 1 つもずれない、(c) 畳むと足し合わせ、(d) `/history` の列は**末尾**に 2 つ (`delta`)。
+#[test]
+fn the_other_port_counts_fit_in_the_slack_and_older_records_read_them_as_zero() {
+    let mut s = sample(1_700_000_000);
+    s.connect.observe(30);
+    s.conn_excess.observe(3);
+    s.errors = 7;
+    s.other_port_attempts = 9;
+    s.other_port_errors = 6;
+    s.gauge_n = 1;
+    let enc = s.encode();
+    // (a)
+    assert_eq!(SAMPLE_ITEMS, 121, "119 + T.30.3 の 2");
+    assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
+    assert_eq!(SAMPLE_SPARE_ITEMS, 6);
+    assert_eq!(Sample::decode(&enc), Some(s));
+    // (b)
+    let mut old = enc[..119 * 8].to_vec();
+    old.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
+    let back = Sample::decode(&old).expect("T.30.3 より前のレコードも読める");
+    assert_eq!(
+        Sample {
+            other_port_attempts: 0,
+            other_port_errors: 0,
+            ..s
+        },
+        back,
+        "手前の項目は 1 つもずれない"
+    );
+    // (c)
+    let mut t = sample(1_700_000_005);
+    t.other_port_attempts = 1;
+    t.other_port_errors = 1;
+    let agg = Sample::downsample(&[s, t], 1_700_000_000);
+    assert_eq!((agg.other_port_attempts, agg.other_port_errors), (10, 7));
+    // (d)
+    let n = KEYS.len();
+    assert_eq!(
+        &KEYS[n - 2..],
+        &["other_port_attempts", "other_port_errors"]
+    );
+    assert_eq!(&KEY_KINDS[n - 2..], &["delta", "delta"]);
+    let h = History::default();
+    h.push(s);
+    let json = h.to_json();
+    assert!(
+        json.contains(",1,3,3,[0,0,1,0,0,0,0,0,0,0,0,0,0],9,6]"),
         "{}",
         json
     );

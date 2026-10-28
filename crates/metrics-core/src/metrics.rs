@@ -67,6 +67,12 @@ pub struct Interval {
     /// CONNECT 1 本ごとの「確立 (`connect` だけ。**名前解決を除く**) − オリジン側のカーネルの RTT」
     /// (ms。T.29.12)。`excess` と同じ本数 (成功して RTT が読めたもの) で、`/slo` の確立の 2 つはこちら
     pub conn_excess: crate::history::Window,
+    /// 名前解決に成功した試み (確立・転送の窓に入った成功と、原因 `dns` 以外のエラー) のうち、
+    /// **宛先のポートが 443・80 以外**のもの (T.30.3。利用者の決定: `/slo` の `error_rate` は 443・80 だけ)。
+    /// 鍵 (`scheme://host:port`) の末尾が `:443` か `:80` でなければここに数える
+    pub other_port_attempts: u64,
+    /// そのうちエラーで終わったもの (T.30.3。メール宛 `:993` の確立の時間切れなど)
+    pub other_port_errors: u64,
 }
 
 /// ホスト別統計の表と、区間の合計。1 つの鍵で守る。
@@ -518,6 +524,15 @@ impl Metrics {
             )
         });
         let dns_failed = detail.cause == Some(ErrCause::Dns);
+        // 443・80 以外の宛先への試み (T.30.3。`/slo` の `error_rate` の分子と分母から引く)。
+        // 試み = 窓に入る成功か、原因 `dns` 以外のエラー (`/slo` の `attempts` と同じ数え方)。
+        // ポートは鍵の末尾 4 バイトを比べるだけ ([`web_port`]。解かない)。成功の経路では
+        // 比較 2 回で、確保もシステムコールも増えない
+        let other_port = if failed {
+            !dns_failed
+        } else {
+            ms.is_some() && counted
+        } && !web_port(host);
         // 全体の合計も同じ鍵の内側で足す (原子操作を増やさない)
         for iv in [&mut hosts.total, &mut hosts.interval] {
             iv.dns_misses += detail.dns_misses;
@@ -530,6 +545,10 @@ impl Metrics {
             }
             // 成功の経路の分岐は今までと同じ数 (`errors` を足すかどうかの 1 回を、
             // 窓に入れるかどうかと兼ねている)
+            if other_port {
+                iv.other_port_attempts += 1;
+                iv.other_port_errors += failed as u64;
+            }
             if failed {
                 iv.errors += 1;
             } else if let Some(ms) = ms {
@@ -1192,6 +1211,15 @@ impl Metrics {
             self.origin_new.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+/// ホスト別統計の鍵 (`scheme://host:port`) の宛先のポートが 443 か 80 か (T.30.3。`/slo` の `error_rate` が数えるもの)。
+///
+/// 解かずに末尾を比べるだけ (`:8080` は `:80` で終わらず、`:1443` は `:443` で終わらない)。ポートの無い鍵
+/// (`loop://` の `Host` にポートが無いとき) は 443・80 以外として数える。
+#[inline]
+fn web_port(key: &str) -> bool {
+    key.ends_with(":443") || key.ends_with(":80")
 }
 
 impl Default for Metrics {

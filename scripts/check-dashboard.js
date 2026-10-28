@@ -1411,6 +1411,26 @@ const sloHourlyTitle = api.sloTitle(
 if (sloHourlyTitle.indexOf('1 時間の合計で判定') < 0) fail('1 時間の合計の説明が無い: ' + sloHourlyTitle);
 if (sloHourlyTitle.indexOf('名前解決に成功した試行あたり (1 時間の合計)') < 0) fail('basis の _hourly_sum が読めていない: ' + sloHourlyTitle);
 if (sloHourlyTitle.indexOf('名前解決を除いた確立') < 0) fail('basis の connect_minus_rtt が読めていない: ' + sloHourlyTitle);
+if (sloHourly.detail.indexOf('443・80') >= 0) fail('T.30.3 より前の basis で 443・80 と書いた: ' + sloHourly.detail);
+// T.30.3: `error_rate` は 443・80 宛てだけ (`basis.error_rate` が `resolved_web_attempts_hourly_sum`)。tooltip と内訳に書く
+const webBasis = { connect: 'connect_minus_rtt', error_rate: 'resolved_web_attempts_hourly_sum', dns_miss_per_connect: 'excluding_failed_lookups_hourly_sum' };
+const sloWeb = Object.assign({}, sloJson, { rate_window_secs: 3600, basis: webBasis });
+const sloWebTitle = api.sloTitle(sloWeb);
+if (sloWebTitle.indexOf('名前解決に成功した 443・80 宛ての試行あたり') < 0 || sloWebTitle.indexOf('(1 時間の合計)') < 0)
+  fail('basis の resolved_web_attempts_hourly_sum が読めていない: ' + sloWebTitle);
+const sloWebKpi = api.sloKpi(
+  Object.assign({}, sloWeb, {
+    today: Object.assign({}, sloJson.today, {
+      rates: {
+        error_rate: { num: 4, den: 1004, value: 0.00398, hours_met: 1, hours_missed: 0 },
+        dns_miss_per_connect: { num: 3, den: 1000, value: 0.003, hours_met: 1, hours_missed: 0 },
+      },
+    }),
+  })
+);
+if (sloWebKpi.detail.indexOf('error_rate (443・80 だけ) 4 / 1,004 (1 時間の合計で外れ 0 時間)') < 0)
+  fail('443・80 だけの error_rate が内訳に無い: ' + sloWebKpi.detail);
+if (sloWebKpi.detail.indexOf('dns_miss_per_connect 3 / 1,000') < 0) fail('dns_miss_per_connect に印が付いた: ' + sloWebKpi.detail);
 // 判定できた標本が 0 本の日は `ratio` が null (「達成率 0%」ではない)
 const sloQuiet = api.sloKpi(
   Object.assign({}, sloJson, {

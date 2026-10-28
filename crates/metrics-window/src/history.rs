@@ -42,7 +42,7 @@ pub use crate::window::{CAPACITY, DEFAULT_N, INTERVAL, RESOLUTIONS, WINDOW_BOUND
 /// 2. [`Sample::encode`] の末尾に `u64` を 1 つ足す (= 予備の先頭を 1 つ使う)
 /// 3. [`Sample::decode`] の末尾で読む (古いレコードはそこがゼロ埋めなので 0 になる)
 /// 4. この数を増やす ([`Sample::encode`] の `debug_assert` と下の `const` が見張る)
-pub const SAMPLE_ITEMS: usize = 119;
+pub const SAMPLE_ITEMS: usize = 121;
 
 /// **版 3 を始めた時点の**固定の欄の数 (T14.14 のときの [`SAMPLE_ITEMS`])。
 ///
@@ -169,11 +169,18 @@ pub struct Sample {
     /// 名前解決 (34 本がメール宛) だったので、`/slo` の `connect_p50_ms` / `connect_p95_ms` はこちらで判定し、
     /// 名前解決の遅れは `dns_slow` (異常検知) に任せる。**T.29.12 より前のレコードはゼロ埋め** = 空の窓
     pub conn_excess: Window,
+    /// その区間の、名前解決に成功した試み (確立・転送の成功と、原因 `dns` 以外のエラー) のうち
+    /// **宛先のポートが 443・80 以外**の本数と、そのうちエラーで終わった本数 (T.30.3)。
+    /// `/slo` の `error_rate` は今までの分子と分母からこの 2 つを引いた **443・80 宛てだけ**で判定する
+    /// (利用者の決定。10-28 の tokyo で外れの大半はメール宛 `:993`・`:995`・`:143` の確立の時間切れ)。
+    /// **T.30.3 より前のレコードはゼロ埋め** = 引くものが無いので、旧の数え方 (全部のポート) で読み戻る
+    pub other_port_attempts: u64,
+    pub other_port_errors: u64,
 }
 
 /// `/history` の 1 標本の列名 (この順で [`Sample::push_row`] が値を並べる)。
 /// **キーを標本ごとに繰り返さない**ため、JSON は配列の配列にしてある (T12.4 (3))。
-pub const KEYS: [&str; 52] = [
+pub const KEYS: [&str; 54] = [
     "t",
     "requests",
     "bytes",
@@ -229,6 +236,9 @@ pub const KEYS: [&str; 52] = [
     "conn_excess_ms_sum",
     "conn_excess_ms_max",
     "conn_excess_buckets",
+    // T.30.3 で末尾に足したもの (443・80 以外の宛先への試みと、そのエラー。`/slo` の `error_rate` が引く)
+    "other_port_attempts",
+    "other_port_errors",
 ];
 
 /// [`KEYS`] と**同じ長さ・同じ並び**の「その列の読み方」(`/history` の `key_kinds`。T15.0 (10))。
@@ -300,6 +310,8 @@ pub const KEY_KINDS: [&str; KEYS.len()] = [
     "delta",      // conn_excess_ms_sum
     "peak",       // conn_excess_ms_max
     "buckets",    // conn_excess_buckets
+    "delta",      // other_port_attempts
+    "delta",      // other_port_errors
 ];
 
 impl Sample {
@@ -363,7 +375,12 @@ impl Sample {
         let _ = write!(out, ",{}", self.dns_fail_misses);
         // T.29.12 で末尾に足したもの
         self.conn_excess.push_json(out);
-        out.push(']');
+        // T.30.3 で末尾に足したもの
+        let _ = write!(
+            out,
+            ",{},{}]",
+            self.other_port_attempts, self.other_port_errors
+        );
     }
 
     /// ゲージを畳むときの重み (= その行に畳んだ 5 秒の標本の数。T16.0)。
@@ -431,6 +448,8 @@ impl Sample {
         e.u64(self.dns_fail_misses);
         // T.29.12 で足した 16 項目 (`decode` と同じ順)
         self.conn_excess.encode(&mut e);
+        // T.30.3 で足した 2 項目 (`decode` と同じ順)
+        e.u64(self.other_port_attempts).u64(self.other_port_errors);
         debug_assert_eq!(e.0.len(), SAMPLE_ITEMS * 8, "固定の欄の数と食い違っている");
         e.0
     }
@@ -491,6 +510,9 @@ impl Sample {
         s.dns_fail_misses = d.u64();
         // T.29.12。それより前のレコードはここがゼロ埋めなので空の窓で読み戻る
         s.conn_excess = Window::decode(&mut d);
+        // T.30.3。それより前のレコードはここがゼロ埋めなので 0 (= 引くものが無い = 全部のポート) で読み戻る
+        s.other_port_attempts = d.u64();
+        s.other_port_errors = d.u64();
         Some(s)
     }
 
@@ -584,6 +606,8 @@ impl Sample {
             excess,
             dns_fail_misses: sum(|s| s.dns_fail_misses),
             conn_excess,
+            other_port_attempts: sum(|s| s.other_port_attempts),
+            other_port_errors: sum(|s| s.other_port_errors),
         }
     }
 }

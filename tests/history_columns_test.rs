@@ -90,7 +90,7 @@ fn history_json(port: u16) -> String {
     endpoint_json(port, "/history?res=5")
 }
 
-/// `keys` は 52 個で T15.0 の 8 列・T16.0 の 3 列・T.28.45 の 5 列・T.29.12 の 4 列が末尾、`key_kinds` は同じ長さで 6 種類しか出ない。
+/// `keys` は 54 個で T15.0 の 8 列・T16.0 の 3 列・T.28.45 の 5 列・T.29.12 の 4 列・T.30.3 の 2 列が末尾、`key_kinds` は同じ長さで 6 種類しか出ない。
 #[test]
 fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     let (port, _metrics) = start_test_proxy_with_history(proxy_config(), TICK);
@@ -98,7 +98,7 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     let keys = str_array(&json, "keys");
     let kinds = str_array(&json, "key_kinds");
 
-    assert_eq!(keys.len(), 52, "{:?}", keys);
+    assert_eq!(keys.len(), 54, "{:?}", keys);
     assert_eq!(kinds.len(), keys.len(), "keys {:?} kinds {:?}", keys, kinds);
     assert_eq!(
         &keys[32..40],
@@ -134,7 +134,7 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     );
     // T.29.12 で足した 4 列 (名前解決を除いた「確立 − カーネルの RTT」の窓。`/slo` の確立の 2 つが読む)
     assert_eq!(
-        &keys[48..],
+        &keys[48..52],
         &[
             "conn_excesses",
             "conn_excess_ms_sum",
@@ -142,6 +142,12 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
             "conn_excess_buckets"
         ],
         "T.29.12 も末尾に足す"
+    );
+    // T.30.3 で足した 2 列 (443・80 以外の宛先への試みとそのエラー。`/slo` の `error_rate` が引く)
+    assert_eq!(
+        &keys[52..],
+        &["other_port_attempts", "other_port_errors"],
+        "T.30.3 も末尾に足す"
     );
     // 既存の綴りが 1 つも変わっていないこと (読む側は名前で引く)
     assert_eq!(keys[0], "t");
@@ -161,6 +167,8 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     assert_eq!(kind("dns_warm_sum"), "delta");
     assert_eq!(kind("gauge_n"), "delta");
     assert_eq!(kind("wait_buckets"), "buckets");
+    assert_eq!(kind("other_port_attempts"), "delta");
+    assert_eq!(kind("other_port_errors"), "delta");
 
     // 標本の 1 行の列数も同じ (入れ子の配列は 1 列)
     let rows = rows(&json);

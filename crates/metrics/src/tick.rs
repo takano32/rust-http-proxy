@@ -171,6 +171,9 @@ pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
         dns_fail_misses: iv.dns_fail_misses,
         // 名前解決を除いた「確立 − RTT」(T.29.12。`/slo` の確立の 2 つが読む)
         conn_excess: iv.conn_excess,
+        // 443・80 以外の宛先への試みとそのエラー (T.30.3。`/slo` の `error_rate` が引く)
+        other_port_attempts: iv.other_port_attempts,
+        other_port_errors: iv.other_port_errors,
     }
 }
 
