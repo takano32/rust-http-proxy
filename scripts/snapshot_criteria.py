@@ -2418,6 +2418,104 @@ RULES["phase26"] = RULES["phase25"] + (
     _p26_rss_gap, _p26_cgroup_cpu, _p26_role_shares, _p26_origin_warn_per_minute)
 
 
+# --- Phase 27 (T.30.0・T.30.1。phase26 の 26 行のうち 2 行だけ読み方を変えたもの) ---
+#
+# T.29.99 で届かなかった 2 行は、どちらも物差しの穴だった: 接続のエラーの行は「試行 1,000 本以上」の下限が
+# 分母 (名前解決に成功した試行) に掛かっておらず、名前の引けないメール宛の総当たりで分母が 489 本しか
+# 残らなかった。RSS の行は手元から置いた 10 MB の閾で、tokyo では前の版も 31.8 MB だった。
+def recent_dns_ports(snap, top=3):
+    """`/recent` の connect の行のうち、名前解決に失敗した行の宛先のポートの上位 (T.30.0)。"""
+    rows = part(snap, "recent").get("recent")
+    by = {}
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict) or (r.get("kind") or "connect") != "connect":
+            continue
+        reason = r.get("reason") or ""
+        if reason.startswith("error:") and reason[len("error:"):] in DNS_FAILURES:
+            port = str(r.get("target") or "").rsplit(":", 1)[-1] or "?"
+            by[port] = by.get(port, 0) + 1
+    return sorted(by.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
+
+
+def _p27_connect_errors(c, th):
+    """T.30.0: phase23 の接続のエラーの行に、**分母 (名前解決に成功した試行) の本数の下限**を足したもの。
+
+    phase25 (`_p25_connect_errors`) の下限は試行の本数に掛かっていて、T.29.99 は試行 1,985 本のうち
+    1,496 本が名前の引けないメール宛 (T.29.36 で分母から外す) で分母 489 本、0.0107 → 0.1759 (16.40 倍) で
+    「届かず」になった。前か後の分母が `min_resolved_attempts` に満たなければ「判定できず」で、外した
+    名前解決の失敗の本数とポートの上位を書く。出どころの文面も今の 3 つの綴りにした (phase26 以前は変えない)。
+    """
+    label, limit, shown, verdict, src = _p23_connect_errors(c, th)
+    src = src.replace("`reason == \"error:dns\"` を分母から外した",
+                      "名前解決の失敗 (" + "・".join(f"`error:{x}`" for x in DNS_FAILURES) + ") を分母から外した")
+    floor = th["min_resolved_attempts"]
+    limit += f"。前も後も名前解決に成功した試行 {n(floor)} 本以上"
+    if verdict not in (MET, MISSED):
+        return (label, limit, shown, verdict, src)
+    causes = th["connect_error_causes"]
+    short = []
+    for side, snap in (("前", c["a"]), ("後", c["b"])):
+        v = recent_attempts(snap, causes)
+        if v["denom"] < floor:
+            ports = "・".join(f"`:{p}` {n(k)}" for p, k in recent_dns_ports(snap))
+            short.append(f"{side}は名前解決に成功した試行 {n(v['denom'])} 本 (試行 {n(v['attempts'])} から"
+                         f"名前解決の失敗 {n(v['dns'])} 本を外した" + (f"。失敗の宛先 {ports}" if ports else "") + ")")
+    if short:
+        return (label, limit, shown, UNKNOWN,
+                "、".join(short) + f"で、{n(floor)} 本に満たないので比べない (名前の引けない宛先の総当たりで"
+                "分母が小さいと、数件のエラーで倍率が振れる。T.29.99 は分母 489 本で 16.40 倍)。" + src)
+    return (label, limit, shown, verdict, src)
+
+
+def _p27_rss_gap(c, th):
+    """T.30.1: `rss − (heap_used + mmap + cache_memory)` が**前の版の同じ値より下がる**。
+
+    phase26 (`_p26_rss_gap`) の 10 MB は手元 (18.9 → 13.4 MiB) から置いた閾で、tokyo ではスレッドの
+    スタック (`stacks_estimate` 約 22 MB) と `heap_free` で前の版も 31.8 MB、後 28.9 MB だった。
+    内訳 (`heap_free`・`stacks_estimate`・`malloc_trim` の回数と返した量) は表示だけで並べる。
+    """
+    label = ("`rss − (heap_used + mmap + cache_memory)` が前の版より下がる (T.29.25・T.30.1。"
+             "`heap_free`・`stacks_estimate`・`malloc_trim` は表示だけ)")
+    limit = "< 前"
+    need = ("rss", "heap_used", "mmap", "cache_memory")
+
+    def gap(m):
+        return None if any(m.get(k) is None for k in need) else \
+            (m["rss"] - m["heap_used"] - m["mmap"] - m["cache_memory"]) / 1e6
+    ma, mb_ = memory_of(c["a"]), memory_of(c["b"])
+    ga, gb = gap(ma), gap(mb_)
+    if gb is None:
+        return (label, limit, "—", UNKNOWN, "後の雪像の `/status` の `memory` に " +
+                "、".join(f"`{k}`" for k in need if mb_.get(k) is None) + " が無い")
+    shown = (f"**{gb:,.1f}** MB (`rss` {mb(mb_['rss'])} − `heap_used` {mb(mb_['heap_used'])} − `mmap` "
+             f"{mb(mb_['mmap'])} − `cache_memory` {mb(mb_['cache_memory'])} MB)")
+    if ga is not None:
+        shown += f"、前 {ga:,.1f} MB (`rss` {mb(ma['rss'])})"
+    extra = [f"`{k}` {mb(mb_[k])} MB" for k in ("heap_free", "stacks_estimate") if mb_.get(k) is not None]
+    trim = mb_.get("trim")
+    if isinstance(trim, dict):
+        extra.append("`malloc_trim` %s 回 (返した計 %s MB%s)" % (
+            n(trim.get("count") or 0), mb(trim.get("total_returned_bytes") or 0),
+            "、呼ばなかった %s 回" % n(trim["skipped"]) if trim.get("skipped") is not None else ""))
+    else:
+        extra.append("`malloc_trim` の欄が無い版 (T.30.1 より前)")
+    shown += "。表示だけ: " + "、".join(extra)
+    src = (f"前と後の雪像の `/status` の `memory` (後は起動から {uptime_text(c['b'].get('uptime_secs'))})")
+    if ga is None:
+        return (label, limit, shown, UNKNOWN, "前の雪像の `/status` の `memory` が欠けているので比べない。" + src)
+    return (label, limit, shown, MET if gb < ga else MISSED, src)
+
+
+# phase27 = phase26 の 26 行のうち 13 番目 (接続のエラー) と 23 番目 (RSS) だけ差し替えたもの (T.30.0・T.30.1)。
+# **phase26 以前の並びと文面は 1 つも動かない**
+RULES["phase27"] = (RULES["phase26"][:12] + (_p27_connect_errors,) + RULES["phase26"][13:22]
+                    + (_p27_rss_gap,) + RULES["phase26"][23:])
+PHASE27 = dict(PHASE26)
+# 前も後も「名前解決に成功した試行」がこの本数に満たなければ、接続のエラーの行は判定しない (T.30.0)
+PHASE27["min_resolved_attempts"] = 1000
+CRITERIA["phase27"] = PHASE27
+
+
 def judge(name, hist, hosts, majors, status_b, overload, th,
           a=None, b=None, info=None, dns=None, errors=None, burst=BURST_PER_HOUR):
     """`RULES[name]` の各行を順に呼んで判定表にする。
@@ -2588,6 +2686,16 @@ def render_criteria(d, grouped):
           "前の版より下がる (前か後の `/profile` が 12 時間に満たなければ参考)、`/log` のオリジン側の失敗 (502・時間切れ) の "
           "WARN が 1 分に 10 行以下 (T.29.15。原因ごとに 1 分 1 行)。他人の `Set-Cookie` (T.29.0) は"
           "雪像に数が無いので行にしていません。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+        p()
+    if c["name"] == "phase27":
+        # T.30.0・T.30.1。phase26 の 26 行のうち 2 行だけ読み方を変えた
+        p("26 行の並びと材料は phase26 と同じです。直したのは 2 行 (T.30.0・T.30.1): (1) 接続のエラー "
+          "(名前解決に成功した試行あたり) は、前か後の**分母 (名前解決に成功した試行) が 1,000 本に満たなければ"
+          "「判定できず」**です (T.29.99 は試行 1,985 本のうち 1,496 本が名前の引けないメール宛で、分母 489 本で"
+          "16.40 倍になった)。外した名前解決の失敗の本数とポートの上位を書きます。(2) RSS の返していない分 "
+          "(`rss − (heap_used + mmap + cache_memory)`) は固定の 10 MB ではなく**前の版の同じ値より下がる**で読み、"
+          "`heap_free`・`stacks_estimate`・`malloc_trim` の回数と返した量は表示だけで並べます。"
+          "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")

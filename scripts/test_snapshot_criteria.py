@@ -313,7 +313,7 @@ class Criteria15(unittest.TestCase):
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
                          ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
-                          "phase22", "phase23", "phase24", "phase25", "phase26"])
+                          "phase22", "phase23", "phase24", "phase25", "phase26", "phase27"])
 
 
 def conn_profile(conn_us_per_row):
@@ -2191,6 +2191,90 @@ class RecentAttempts(unittest.TestCase):
         got = sc.recent_attempts({"recent": {"recent": rows}}, ("refused", "unreachable", "timeout"))
         self.assertEqual((got["attempts"], got["dns"], got["denom"], got["conn"]), (7, 3, 4, 2))
         self.assertEqual(got["by"], {"refused": 1, "timeout": 1})
+
+
+class Criteria27Rows(unittest.TestCase):
+    """`--criteria phase27` (T.30.0・T.30.1): phase26 の 26 行のうち 13 番目と 23 番目だけ読み方を変えたもの。"""
+
+    @staticmethod
+    def recent(ok, dns, timeout, port="993"):
+        rows = [{"kind": "connect", "at": 1793190000 + i, "reason": "server_eof", "target": "a.example:443"}
+                for i in range(ok)]
+        rows += [{"kind": "connect", "at": 1793191000 + i, "reason": "error:nxdomain", "target": f"pop.example:{port}"}
+                 for i in range(dns)]
+        rows += [{"kind": "connect", "at": 1793192000 + i, "reason": "error:timeout", "target": f"mail.example:{port}"}
+                 for i in range(timeout)]
+        return {"recent": {"recent": rows}}
+
+    def test_phase27_replaces_only_two_rows_of_phase26(self):
+        p26, p27 = sd.RULES["phase26"], sd.RULES["phase27"]
+        self.assertEqual(len(p27), 26)
+        self.assertEqual([i for i in range(26) if p26[i] is not p27[i]], [12, 22])
+        self.assertIs(p27[12], sc._p27_connect_errors)
+        self.assertIs(p27[22], sc._p27_rss_gap)
+
+    def test_a_small_resolved_denominator_is_not_judged(self):
+        # T.29.99 の形: 後は 1,985 本のうち 1,496 本が名前の引けないメール宛で、分母 489 本
+        a, b = self.recent(1937, 39, 21), self.recent(403, 1496, 86, port="995")
+        row = sc._p27_connect_errors({"a": a, "b": b}, sc.PHASE27)
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("後は名前解決に成功した試行 489 本", row[4])
+        self.assertIn("`:995` 1,496", row[4])
+        self.assertIn("`error:nxdomain`", row[4])
+        self.assertNotIn('reason == "error:dns"', row[4])
+        # phase25 (試行の本数の下限) なら判定して「届かず」になる
+        self.assertEqual(sc._p25_connect_errors({"a": a, "b": b}, sc.PHASE25)[3], sd.MISSED)
+
+    def test_enough_resolved_attempts_are_judged_as_before(self):
+        a, b = self.recent(1950, 10, 20), self.recent(1960, 10, 20)
+        self.assertEqual(sc._p27_connect_errors({"a": a, "b": b}, sc.PHASE27)[3], sd.MET)
+        b = self.recent(1900, 10, 80)
+        self.assertEqual(sc._p27_connect_errors({"a": a, "b": b}, sc.PHASE27)[3], sd.MISSED)
+
+    @staticmethod
+    def mem(rss, used, mmap, cache, **kw):
+        m = {"rss": rss * 10**6, "heap_used": used * 10**6, "mmap": mmap * 10**6, "cache_memory": cache * 10**6}
+        m.update(kw)
+        return {"uptime_secs": 86400, "status": {"memory": m}}
+
+    def test_the_rss_gap_is_compared_with_the_previous_version(self):
+        # T.29.99: 前 82.3 − (20.4 + 15.7 + 14.4) = 31.8、後 52.3 − (11.8 + 11.6) = 28.9
+        a = self.mem(82.3, 20.4, 15.7, 14.4)
+        b = self.mem(52.3, 11.8, 11.6, 0, heap_free=23.0e6, stacks_estimate=22.3e6)
+        row = sc._p27_rss_gap({"a": a, "b": b}, sc.PHASE27)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("**28.9** MB", row[2])
+        self.assertIn("前 31.8 MB", row[2])
+        self.assertIn("`stacks_estimate` 22.3 MB", row[2])
+        self.assertIn("`malloc_trim` の欄が無い版", row[2])
+        # phase26 の固定の 10 MB では「届かず」
+        self.assertEqual(sc._p26_rss_gap({"a": a, "b": b}, sc.PHASE26)[3], sd.MISSED)
+        worse = self.mem(70, 11.8, 11.6, 0, trim={"count": 3, "skipped": 21, "total_returned_bytes": 4.2e6})
+        row = sc._p27_rss_gap({"a": a, "b": worse}, sc.PHASE27)
+        self.assertEqual(row[3], sd.MISSED)
+        self.assertIn("`malloc_trim` 3 回 (返した計 4.2 MB、呼ばなかった 21 回)", row[2])
+        self.assertEqual(sc._p27_rss_gap({"a": {}, "b": b}, sc.PHASE27)[3], sd.UNKNOWN)
+
+
+T2999_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-10-27T082245Z-shutdown-snapshot.json")
+T2999_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-10-28T143043Z-snapshot.json")
+
+
+@unittest.skipUnless(os.path.exists(T2999_BEFORE) and os.path.exists(T2999_AFTER),
+                     "T.29.99 の雪像 (status/tokyo/) が無い")
+class Deployed27(unittest.TestCase):
+    """T.29.99 の 2 枚 (0.28.48 の停止 → 0.29.36 の 24 時間) で、phase26 の届かなかった 2 行が直る (T.30.0・T.30.1)。"""
+
+    def test_t2999_pair(self):
+        c = build([T2999_BEFORE, T2999_AFTER, "--no-dns", "--criteria", "phase27"])["criteria"]
+        rows = c["rows"]
+        self.assertEqual(len(rows), 26)
+        self.assertEqual(rows[12][3], sd.UNKNOWN)
+        self.assertIn("後は名前解決に成功した試行 489 本", rows[12][4])
+        self.assertEqual(rows[22][3], sd.MET)
+        self.assertIn("**28.9** MB", rows[22][2])
+        self.assertIn("前 31.8 MB", rows[22][2])
+
 
 if __name__ == "__main__":
     unittest.main()
