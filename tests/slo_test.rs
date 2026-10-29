@@ -97,7 +97,7 @@ fn test_integration_slo_reports_the_share_of_time_the_thresholds_were_met() {
     let defaults = "\"thresholds\":{\"connect_p50_ms\":5,\"connect_p95_ms\":50,\
                     \"error_rate\":0.005,\"dns_miss_per_connect\":0.2},\
                     \"basis\":{\"connect\":\"connect_minus_rtt\",\
-                    \"error_rate\":\"resolved_web_attempts_hourly_sum\",\
+                    \"error_rate\":\"resolved_web_attempts_hourly_sum_excluding_top_destination\",\
                     \"dns_miss_per_connect\":\"excluding_failed_lookups_hourly_sum\"}";
     assert!(empty.contains(defaults), "{}", empty);
     let cfg = endpoint_json(port, "/config");
@@ -153,7 +153,9 @@ fn test_integration_slo_reports_the_share_of_time_the_thresholds_were_met() {
     // 今日 (UTC) の 1 枚がダッシュボードの KPI の元になる
     assert!(body.contains("\"today\":{\"date\":\""), "{}", body);
     assert!(
-        body.contains("\"hourly_keys\":[\"t\",\"judged\",\"met\",\"misses\",\"rate_sums\"]"),
+        body.contains(
+            "\"hourly_keys\":[\"t\",\"judged\",\"met\",\"misses\",\"rate_sums\",\"excluded\"]"
+        ),
         "{}",
         body
     );
@@ -220,7 +222,7 @@ fn test_integration_slo_judges_the_rates_on_the_sum_of_the_hour() {
     assert!(
         body.contains(
             "\"basis\":{\"connect\":\"connect_minus_rtt\",\
-             \"error_rate\":\"resolved_web_attempts_hourly_sum\",\
+             \"error_rate\":\"resolved_web_attempts_hourly_sum_excluding_top_destination\",\
              \"dns_miss_per_connect\":\"excluding_failed_lookups_hourly_sum\"}"
         ),
         "{}",
@@ -228,13 +230,16 @@ fn test_integration_slo_judges_the_rates_on_the_sum_of_the_hour() {
     );
     // 1 時間目は 720 本とも達成、2 時間目は比を外したので 0 本
     assert!(
-        body.contains(&format!("[{},720,720,[0,0,0,0],[[4,1004],[0,1000]]]", t0)),
+        body.contains(&format!(
+            "[{},720,720,[0,0,0,0],[[4,1004],[0,1000]],null]",
+            t0
+        )),
         "{}",
         body
     );
     assert!(
         body.contains(&format!(
-            "[{},720,0,[0,0,720,0],[[6,1006],[0,1000]]]",
+            "[{},720,0,[0,0,720,0],[[6,1006],[0,1000]],null]",
             t0 + 3600
         )),
         "{}",
@@ -245,7 +250,7 @@ fn test_integration_slo_judges_the_rates_on_the_sum_of_the_hour() {
     assert!(
         body.contains(
             "\"rates\":{\"error_rate\":{\"num\":10,\"den\":2010,\"value\":0.00498,\
-             \"hours_met\":1,\"hours_missed\":1}"
+             \"hours_met\":1,\"hours_missed\":1,\"excluded\":{\"hours\":0,\"errors\":0,\"attempts\":0}}"
         ),
         "{}",
         body
@@ -336,14 +341,16 @@ fn test_integration_slo_error_rate_counts_only_the_attempts_to_ports_443_and_80(
     let body = endpoint_json(port, "/slo?days=1");
     println!("/slo?days=1 -> {}", body);
     assert!(
-        body.contains("\"error_rate\":\"resolved_web_attempts_hourly_sum\""),
+        body.contains(
+            "\"error_rate\":\"resolved_web_attempts_hourly_sum_excluding_top_destination\""
+        ),
         "{}",
         body
     );
     // 1 本の 5 秒が達成し、その時間の合計は 4 / 1,004
     assert!(
         body.contains(&format!(
-            "[{},1,1,[0,0,0,0],[[4,1004],[0,1000]]]",
+            "[{},1,1,[0,0,0,0],[[4,1004],[0,1000]],null]",
             today_utc()
         )),
         "{}",
@@ -352,7 +359,7 @@ fn test_integration_slo_error_rate_counts_only_the_attempts_to_ports_443_and_80(
     assert!(
         body.contains(
             "\"rates\":{\"error_rate\":{\"num\":4,\"den\":1004,\"value\":0.00398,\
-             \"hours_met\":1,\"hours_missed\":0}"
+             \"hours_met\":1,\"hours_missed\":0,\"excluded\":{\"hours\":0,\"errors\":0,\"attempts\":0}}"
         ),
         "{}",
         body
@@ -361,5 +368,132 @@ fn test_integration_slo_error_rate_counts_only_the_attempts_to_ports_443_and_80(
     slo::reset();
 }
 
-/// 3 本の試験は同じ大域の集計 (`slo::observe`) を使うので直列にする。
+/// **T.30.4 の受け入れ基準**: 1 時間のエラーの半分以上が 1 つの宛先なら、その宛先を外して `error_rate` を判定する
+/// (利用者の決定)。ホスト別統計の口 (`record_host_detail`) に、その時間のぶんとして `:443` の確立の成功 400 本・
+/// `pravda.example:443` の確立の時間切れ 4 件・別の宛先の拒否 1 件を入れ、履歴スレッドと同じく `take_sample` の
+/// 標本と `web_error_hours` の宛先の表を `/slo` に流す。外せば 1 / 401 = 0.0025 で満たし、旧の数え方 (外さない)
+/// なら 5 / 405 = 0.0123 で外れる。
+#[test]
+fn test_integration_slo_error_rate_leaves_out_one_destination_with_most_of_the_errors() {
+    use rust_http_proxy::cache::{Cache, CacheConfig};
+    use rust_http_proxy::metrics::{Detail, ErrCause, HostOutcome, Metrics};
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    slo::reset();
+    let port = start_test_proxy(proxy_config());
+    // 時間の区切りの直前なら越えるまで待つ (宛先の表はエラーの時刻の時間で数える)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    if now % 3600 >= 3590 {
+        std::thread::sleep(std::time::Duration::from_secs(3600 - now % 3600 + 1));
+    }
+    let m = Metrics::new();
+    let cache = Cache::new(CacheConfig::disabled());
+    let took = Some(std::time::Duration::from_millis(20));
+    let err = |cause| Detail {
+        cause: Some(cause),
+        connect_ms: 20,
+        ..Detail::default()
+    };
+    // 履歴スレッドの最初の 1 回 (区切りの写し)
+    m.web_error_hours(now);
+    for _ in 0..400 {
+        let ok = Detail {
+            connect_ms: 20,
+            origin_rtt_us: 18_000,
+            ..Detail::default()
+        };
+        m.record_host_detail(
+            "connect://www.example.com:443",
+            HostOutcome::Bypass,
+            0,
+            took,
+            ok,
+        );
+    }
+    for _ in 0..4 {
+        m.record_host_detail(
+            "connect://pravda.example:443",
+            HostOutcome::Error,
+            0,
+            Some(std::time::Duration::from_secs(3)),
+            err(ErrCause::Timeout),
+        );
+    }
+    m.record_host_detail(
+        "connect://other.example.net:443",
+        HostOutcome::Error,
+        0,
+        took,
+        err(ErrCause::Refused),
+    );
+    let mut s = rust_http_proxy::history::take_sample(&m, &cache);
+    let (prev, cur) = m.web_error_hours(s.t);
+    // 標本はその時間の 0 分に置く (宛先の表と同じ時間)
+    s.t = cur.hour;
+    assert_eq!(
+        (
+            cur.errors,
+            cur.destination.as_str(),
+            cur.top_errors,
+            cur.top_attempts
+        ),
+        (5, "connect://pravda.example:443", 4, 4),
+        "{:?}",
+        cur
+    );
+    // 旧の数え方 (宛先の表を渡さない) なら外れる
+    slo::observe(&s);
+    let body = endpoint_json(port, "/slo?days=1");
+    assert!(
+        body.contains(&format!(
+            "[{},1,0,[0,0,1,0],[[5,405],[0,400]],null]",
+            cur.hour
+        )),
+        "{}",
+        body
+    );
+    // 宛先の表を渡すと pravda.example:443 を外して 1 / 401 で満たす
+    slo::observe_destinations(prev.as_ref(), &cur);
+    let body = endpoint_json(port, "/slo?days=1");
+    println!("/slo?days=1 -> {}", body);
+    assert!(
+        body.contains(
+            "\"error_rate\":\"resolved_web_attempts_hourly_sum_excluding_top_destination\""
+        ),
+        "{}",
+        body
+    );
+    assert!(
+        body.contains(&format!(
+            "[{},1,1,[0,0,0,0],[[1,401],[0,400]],{{\"destination\":\"connect://pravda.example:443\",\
+             \"errors\":4,\"attempts\":4,\"hour_errors\":5}}]",
+            cur.hour
+        )),
+        "{}",
+        body
+    );
+    assert!(
+        body.contains(
+            "\"rates\":{\"error_rate\":{\"num\":1,\"den\":401,\"value\":0.00249,\
+             \"hours_met\":1,\"hours_missed\":0,\"excluded\":{\"hours\":1,\"errors\":4,\"attempts\":4}}"
+        ),
+        "{}",
+        body
+    );
+    assert!(body.contains("\"breaches\":[]"), "{}", body);
+    // いまから 1 時間の合計もいまの時間の分を外す
+    assert!(
+        body.contains(
+            "\"excluded\":{\"errors\":4,\"attempts\":4,\
+             \"destinations\":[\"connect://pravda.example:443\"]}"
+        ),
+        "{}",
+        body
+    );
+    slo::reset();
+}
+
+/// 4 本の試験は同じ大域の集計 (`slo::observe`) を使うので直列にする。
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());

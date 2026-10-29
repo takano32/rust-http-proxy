@@ -1431,6 +1431,32 @@ const sloWebKpi = api.sloKpi(
 if (sloWebKpi.detail.indexOf('error_rate (443・80 だけ) 4 / 1,004 (1 時間の合計で外れ 0 時間)') < 0)
   fail('443・80 だけの error_rate が内訳に無い: ' + sloWebKpi.detail);
 if (sloWebKpi.detail.indexOf('dns_miss_per_connect 3 / 1,000') < 0) fail('dns_miss_per_connect に印が付いた: ' + sloWebKpi.detail);
+if (sloWebKpi.detail.indexOf('外した') >= 0) fail('excluded の無い版で外した宛先を書いた: ' + sloWebKpi.detail);
+// T.30.4: 1 つの宛先に偏ったエラーを外す (`basis.error_rate` の末尾が `_excluding_top_destination`)。
+// tooltip に外し方、内訳に外した時間の数とエラーの件数 (`today.rates.error_rate.excluded`)
+const topBasis = Object.assign({}, webBasis, { error_rate: 'resolved_web_attempts_hourly_sum_excluding_top_destination' });
+const sloTop = Object.assign({}, sloJson, { rate_window_secs: 3600, basis: topBasis });
+const sloTopTitle = api.sloTitle(sloTop);
+if (
+  sloTopTitle.indexOf('名前解決に成功した 443・80 宛ての試行あたり') < 0 ||
+  sloTopTitle.indexOf('半分以上が 1 つの宛先なら、その宛先を外す') < 0
+)
+  fail('basis の _excluding_top_destination が読めていない: ' + sloTopTitle);
+const sloTopKpi = api.sloKpi(
+  Object.assign({}, sloTop, {
+    today: Object.assign({}, sloJson.today, {
+      rates: {
+        error_rate: {
+          num: 1, den: 401, value: 0.00249, hours_met: 1, hours_missed: 0,
+          excluded: { hours: 1, errors: 4, attempts: 4 },
+        },
+        dns_miss_per_connect: { num: 0, den: 400, value: 0, hours_met: 1, hours_missed: 0 },
+      },
+    }),
+  })
+);
+if (sloTopKpi.detail.indexOf('error_rate (443・80 だけ) 1 / 401 (1 時間の合計で外れ 0 時間、偏った宛先を外した 1 時間・エラー 4 件)') < 0)
+  fail('外した宛先が内訳に無い: ' + sloTopKpi.detail);
 // 判定できた標本が 0 本の日は `ratio` が null (「達成率 0%」ではない)
 const sloQuiet = api.sloKpi(
   Object.assign({}, sloJson, {

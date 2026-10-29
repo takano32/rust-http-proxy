@@ -596,6 +596,28 @@ pub struct HostStats {
     /// [`HostStats::retrans`] (T14.5) は**接続の終わり**に読んだ通算 (データの再送を含む)、
     /// こちらは**確立の直後**なので SYN の再送だけ = 「繋ぐのに何回やり直したか」
     pub syn_retrans: u64,
+    /// `/slo` の `error_rate` が 1 つの宛先に偏ったエラーを外すための、その時間の数 (T.30.4)。
+    /// **`.rrd` には書かない** (メモリだけ。`/slo` の集計も再起動で消えるので揃う)。
+    /// 書くのは `proxy-metrics-core` の `Metrics` の**エラーの経路と時間の区切り**だけ
+    pub web_hour: WebHour,
+}
+
+/// ホスト 1 つの「いまの UTC の 1 時間」の、443・80 宛てのエラーと試行を出すための欄 (T.30.4)。
+///
+/// **成功の経路では 1 つも触らない**: この時間の成功の本数は、時間の区切りで写した
+/// `timed` (応答時間を測った要求の通算) と `timed_errors` (そのうちエラー) からの差で出す
+/// (成功 = Δ`timed` − Δ`timed_errors`)。エラーの経路だけが `timed_errors` と `errors` を足す。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WebHour {
+    /// 応答時間を測ったエラーの通算 (起動から。エラーの経路で足す)
+    pub timed_errors: u64,
+    /// 時間の区切りで写した [`HostStats::timed`] と `timed_errors`
+    pub base_timed: u64,
+    pub base_timed_errors: u64,
+    /// `errors` を数えている時間 (その時間の 0 分。epoch 秒)
+    pub hour: u64,
+    /// その時間の、名前解決に成功した 443・80 宛てのエラー (`/slo` の `error_rate` の分子と同じ数え方)
+    pub errors: u64,
 }
 
 impl HostStats {

@@ -54,6 +54,18 @@
 //! 旧の数え方 (全部のポート) で読める。443・80 以外のエラーは今までどおり `/errors`・`/history` の
 //! `errors_by_cause` に出る。確立の 2 つと `dns_miss_per_connect` は全部のポートのまま
 //!
+//! **T.30.4 から `error_rate` は 1 つの宛先に偏ったエラーを外す** (利用者の決定。`basis` の `error_rate` は
+//! `resolved_web_attempts_hourly_sum_excluding_top_destination`)。T.30.3 のあとも 0.30.3 の 10-29 の最初の 6 時間は
+//! 4 時間で外れ (16 / 2,018 = 0.79%)、443・80 宛てのエラー 16 件は全部 `pravda.me:443` の確立の時間切れ
+//! (1 つのサイトが応答しない) だった。443・80 宛ての試行は 1 時間 300〜400 本なので 2 件で閾を越える。
+//! **その時間のエラーが 2 件以上で、いちばん多い宛先 (ホスト別統計の鍵) がその時間のエラーの半分以上なら、
+//! その宛先の試行とエラーを 1 時間の分子と分母から外す** (外すのは 1 つだけ。[`excludes`])。宛先ごとの数は
+//! 5 秒の標本には無いので、`Metrics` の宛先の表 ([`DestHour`]) を履歴スレッドが 5 秒ごとに
+//! [`observe_destinations`] で渡す (確定した前の時間と、いまの時間の途中の集計)。いまの時間は途中の集計で
+//! 外し、`last_hour` (いまから 3,600 秒) は、いまの時間のぶんはそのまま、前の時間のぶんは窓に掛かる秒の
+//! 割合で按分して外す。どちらもメモリだけなので、**起動し直すと揃って 0 から** (起動した時間は起動してからの
+//! 分で判定する)
+//!
 //! **T.29.12 で確立の窓から名前解決を外した** (`basis` の `connect` は `connect_minus_rtt`)。
 //! T.28.45 の `excess` は `dns + connect − RTT` で、10-26 の tokyo で 50 ms を越えた成功 36 本の
 //! excess の合計 19,789 ms のうち 15,159 ms (77%) が名前解決 (34 本がメール宛) だった =
@@ -70,7 +82,8 @@
 //! (判定は [`Sample`] から何度でも作り直せる)。積むのは**時間ごとの集計**
 //! ([`Hour`] = 判定した数・達成した数・閾ごとに外した数と最悪の値) だけで、
 //! メモリ上に [`HOURS`] 時間 (31 日) ぶん = 744 × 72 B ≈ 52 KiB (T.29.33 で比の分子・分母を足した。
-//! 直近 1 時間の 5 秒ごとの分子・分母 720 本 ≈ 28 KiB も持つ)。**再起動で消える**
+//! 直近 1 時間の 5 秒ごとの分子・分母 720 本 ≈ 28 KiB も持つ。T.30.4 の宛先の表はエラーのあった時間だけ
+//! 1 行 = 宛先の名前 + 32 B)。**再起動で消える**
 //! (T14.4〜T14.8 の共通の決まり)。
 //!
 //! 5 秒の標本そのものは 6 時間 (T14.32)、60 秒は 1 日、3,600 秒は 30 日しか残らないので、
@@ -82,6 +95,7 @@ use std::fmt::Write as _;
 use std::sync::Mutex;
 
 use crate::history::Sample;
+use crate::metrics::DestHour;
 use crate::sync::LockExt;
 
 /// 閾の名前 (`PROXY_SLO` の綴りと `/slo` の `thresholds` のキー。ビットの順)。
@@ -133,10 +147,11 @@ pub struct Thresholds {
 /// `connect` は T.28.45 〜 T.29.11 が `establish_minus_rtt` (`dns + connect − RTT`)、
 /// T.29.12 から `connect_minus_rtt` (名前解決を除く)。
 /// 比の 2 つは T.29.33 から **1 時間の合計**で判定する (`_hourly_sum` が付く。それより前は 5 秒の標本ごと)。
-/// `error_rate` は T.29.33 〜 T.30.2 が `resolved_attempts_hourly_sum` (全部のポート)、T.30.3 から
-/// `resolved_web_attempts_hourly_sum` (宛先のポートが 443・80 の試みだけ)。
+/// `error_rate` は T.29.33 〜 T.30.2 が `resolved_attempts_hourly_sum` (全部のポート)、T.30.3 が
+/// `resolved_web_attempts_hourly_sum` (宛先のポートが 443・80 の試みだけ)、T.30.4 から
+/// `resolved_web_attempts_hourly_sum_excluding_top_destination` (1 つの宛先に偏ったエラーを外す。[`excludes`])。
 pub const BASIS_JSON: &str = "{\"connect\":\"connect_minus_rtt\",\
-                              \"error_rate\":\"resolved_web_attempts_hourly_sum\",\
+                              \"error_rate\":\"resolved_web_attempts_hourly_sum_excluding_top_destination\",\
                               \"dns_miss_per_connect\":\"excluding_failed_lookups_hourly_sum\"}";
 
 /// 既定の閾 (`PROXY_SLO=connect_p50_ms=5,connect_p95_ms=50,error_rate=0.005,dns_miss_per_connect=0.2`)。
@@ -290,6 +305,14 @@ fn ratio_of(num: u64, den: u64) -> f64 {
     }
 }
 
+/// その時間の `error_rate` から、いちばん多くエラーを出した宛先を外すか (T.30.4。利用者の決定)。
+///
+/// **エラーが 2 件以上で、いちばん多い宛先がその時間のエラーの半分以上**なら外す (外すのは 1 つだけ)。
+/// エラー 1 件だけの時間・エラーがばらけた時間 (4 つの宛先に 1 件ずつなど) は今までどおり。
+pub fn excludes(d: &DestHour) -> bool {
+    d.errors >= 2 && !d.destination.is_empty() && d.top_errors * 2 >= d.errors
+}
+
 /// 1 時間ぶんの**積み上げ** (リングに持つもの。閾の当て方は [`Slot::tally`] が決める)。
 ///
 /// 速さ (確立の 2 つ) は 5 秒の標本ごとの判定を畳み、比の 2 つは**分子と分母の合計**を持つ
@@ -312,7 +335,10 @@ impl Slot {
     /// 比の 2 つはこの 1 時間の `Σ分子 ÷ Σ分母` で判定し、**どちらかを外した時間は、その時間の 5 秒を全部
     /// 「達成していない」**と数える (`met` = 0、外した比の `miss` = 判定した 5 秒の数、`worst` = その時間の比)。
     /// 満たした時間の `met` は速さの 2 つを満たした 5 秒の数。分母が 0 の比は外さない (判定なし)。
-    fn tally(&self, th: &Thresholds) -> Hour {
+    ///
+    /// `dest` はその時間の宛先の表 (T.30.4)。[`excludes`] なら、その宛先のエラーと試行を `error_rate` の
+    /// 分子と分母から引いてから当てる (引いた数は `excluded`)。
+    fn tally(&self, th: &Thresholds, dest: Option<&DestHour>) -> Hour {
         let limits = th.limits();
         let mut h = Hour {
             t: self.t,
@@ -321,14 +347,22 @@ impl Slot {
             den: self.den,
             ..Hour::default()
         };
+        if let Some(d) = dest.filter(|d| excludes(d)) {
+            let e = d.top_errors.min(h.num[0]);
+            let a = d.top_attempts.max(e).min(h.den[0]);
+            h.num[0] -= e;
+            h.den[0] -= a;
+            h.excluded = [e, a];
+            h.excluded_hours = 1;
+        }
         h.miss[..2].copy_from_slice(&self.miss_speed);
         h.worst[..2].copy_from_slice(&self.worst_speed);
         let mut rates_ok = true;
         for i in 0..RATES {
-            if self.den[i] == 0 {
+            if h.den[i] == 0 {
                 continue;
             }
-            let v = self.num[i] as f64 / self.den[i] as f64;
+            let v = h.num[i] as f64 / h.den[i] as f64;
             if v > limits[RATE_AT + i] {
                 rates_ok = false;
                 h.miss[RATE_AT + i] = self.judged;
@@ -366,6 +400,9 @@ pub struct Hour {
     pub den: [u64; RATES],
     /// 比ごとの `[満たした時間, 外した時間]` (分母 0 の時間はどちらにも数えない。T.29.33)
     pub rate_hours: [[u32; 2]; RATES],
+    /// `error_rate` から外した宛先の `[エラー, 試行]` と、外した時間の数 (T.30.4。`num` / `den` は外したあと)
+    pub excluded: [u64; 2],
+    pub excluded_hours: u32,
 }
 
 impl Hour {
@@ -396,12 +433,16 @@ impl Hour {
             self.den[i] += o.den[i];
             self.rate_hours[i][0] += o.rate_hours[i][0];
             self.rate_hours[i][1] += o.rate_hours[i][1];
+            self.excluded[i] += o.excluded[i];
         }
+        self.excluded_hours += o.excluded_hours;
     }
 }
 
 /// 直近 1 時間 (いまから [`RATE_WINDOW_SECS`] 秒) の比の合計 (`/slo` の `last_hour`。T.29.33)。
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+///
+/// T.30.4 から `error_rate` の `num` / `den` は、外した宛先のぶんを引いたあと (`excluded`)。
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct LastHour {
     /// 窓の始まり (いま − 1 時間) と終わり (いま)
     pub from: u64,
@@ -410,6 +451,9 @@ pub struct LastHour {
     pub samples: u32,
     pub num: [u64; RATES],
     pub den: [u64; RATES],
+    /// `error_rate` から外した `[エラー, 試行]` と、外した宛先 (いまの時間・前の時間の順。T.30.4)
+    pub excluded: [u64; 2],
+    pub destinations: Vec<String>,
 }
 
 /// 時間ごとの集計のリング (**触るのは履歴スレッドと `/slo` だけ**)。
@@ -420,6 +464,9 @@ pub struct Tracker {
     recent: VecDeque<(u64, [u64; RATES], [u64; RATES])>,
     /// 最後に [`Tracker::observe`] が受けた閾 ([`Tracker::hours`] が当てる)
     th: Option<Thresholds>,
+    /// 時間ごとの「いちばん多くエラーを出した 443・80 の宛先」(T.30.4。時刻の順、エラーのあった時間だけ。
+    /// 多くて [`HOURS`] 行)
+    dests: VecDeque<DestHour>,
 }
 
 impl Tracker {
@@ -483,10 +530,51 @@ impl Tracker {
         v
     }
 
+    /// その時間の宛先の表を受ける (T.30.4。履歴スレッドが 5 秒ごとに、確定した前の時間と
+    /// いまの時間の途中の集計を渡す)。同じ時間の行は差し替える。エラーの無い時間は持たない。
+    pub fn observe_destinations(&mut self, prev: Option<&DestHour>, cur: &DestHour) {
+        for d in prev.into_iter().chain(std::iter::once(cur)) {
+            if d.errors == 0 || d.hour == 0 {
+                continue;
+            }
+            match self.dests.binary_search_by_key(&d.hour, |x| x.hour) {
+                Ok(i) => {
+                    if self.dests[i] != *d {
+                        self.dests[i] = d.clone();
+                    }
+                }
+                Err(i) => {
+                    self.dests.insert(i, d.clone());
+                    while self.dests.len() > HOURS {
+                        self.dests.pop_front();
+                    }
+                }
+            }
+        }
+    }
+
+    /// その時間の宛先の表 (無ければ `None`)。
+    fn dest_of(&self, t: u64) -> Option<&DestHour> {
+        self.dests
+            .binary_search_by_key(&t, |x| x.hour)
+            .ok()
+            .map(|i| &self.dests[i])
+    }
+
+    /// 時間 1 つに閾を当てる (その時間の宛先の表も渡す)。
+    fn tally(&self, s: &Slot, th: &Thresholds) -> Hour {
+        s.tally(th, self.dest_of(s.t))
+    }
+
+    /// その時間に `error_rate` から外した宛先 (外していなければ `None`。T.30.4)。
+    pub fn excluded_destination(&self, t: u64) -> Option<&DestHour> {
+        self.dest_of(t).filter(|d| excludes(d))
+    }
+
     /// いま持っている時間ごとの集計 (古い順。最後に受けた閾を当てる)。
     pub fn hours(&self) -> impl Iterator<Item = Hour> + '_ {
         let th = self.th.unwrap_or_default();
-        self.hours.iter().map(move |s| s.tally(&th))
+        self.hours.iter().map(move |s| self.tally(s, &th))
     }
 
     /// 直近 1 時間 (`now − 1 時間 < t ≤ now`) の比の合計。
@@ -504,6 +592,30 @@ impl Tracker {
                 out.den[i] += den[i];
             }
         }
+        // 外した宛先 (T.30.4): いまの時間 (窓にまるごと入る) はそのまま、前の時間は窓に掛かる秒の割合で按分
+        let cur = now - now % HOUR;
+        let share = HOUR - now % HOUR;
+        for (t, part) in [(cur, HOUR), (cur.saturating_sub(HOUR), share)] {
+            if t == 0 {
+                continue;
+            }
+            let Some(d) = self.excluded_destination(t) else {
+                continue;
+            };
+            let e = (d.top_errors * part / HOUR).min(out.num[0]);
+            if e == 0 {
+                // 窓に掛かるぶんにエラーが無い (前の時間の早いうちのエラー) なら試行も引かない
+                continue;
+            }
+            let a = (d.top_attempts.max(d.top_errors) * part / HOUR)
+                .max(e)
+                .min(out.den[0]);
+            out.num[0] -= e;
+            out.den[0] -= a;
+            out.excluded[0] += e;
+            out.excluded[1] += a;
+            out.destinations.push(d.destination.clone());
+        }
         out
     }
 
@@ -514,7 +626,7 @@ impl Tracker {
             .hours
             .iter()
             .filter(|h| h.t >= day_t && h.t < day_t + DAY)
-            .map(|s| s.tally(th))
+            .map(|s| self.tally(s, th))
         {
             for (o, r) in out.iter_mut().zip(h.rate_hours) {
                 o[0] += r[0];
@@ -543,7 +655,7 @@ impl Tracker {
             .hours
             .iter()
             .filter(|h| h.t >= from)
-            .map(|s| s.tally(th))
+            .map(|s| self.tally(s, th))
         {
             out.total.add(&h);
             if out.first_t == 0 {
@@ -554,6 +666,12 @@ impl Tracker {
             match out.daily.last_mut() {
                 Some(d) if d.t == day => d.add(&h),
                 _ => out.daily.push(Hour { t: day, ..h }),
+            }
+            // 外した宛先の名前 (T.30.4。`hourly` の末尾と `breaches` の `excluded` が読む)
+            if h.excluded_hours > 0
+                && let Some(d) = self.dest_of(h.t)
+            {
+                out.excluded.push(d.clone());
             }
             // 外れた時間は**連続していれば 1 行に畳む** (17 時から 23 時まで = 1 件)
             if h.breached() {
@@ -614,6 +732,8 @@ pub struct Report {
     pub breaches: Vec<Breach>,
     /// 直近 1 時間の比の合計 (T.29.33)
     pub last_hour: LastHour,
+    /// `error_rate` から宛先を外した時間 (古い順。T.30.4)
+    pub excluded: Vec<DestHour>,
 }
 
 impl Report {
@@ -685,13 +805,16 @@ impl Report {
                 cut = true;
                 break;
             }
-            push_breach(&mut out, b, &self.thresholds);
+            push_breach(&mut out, b, &self.thresholds, &self.excluded);
         }
         // 時間ごとは**キーを 1 回だけ**出して配列の配列にする (`/history` と同じ作法。T12.4 (3))。
-        // 末尾の `rate_sums` は比の 2 つの `[分子, 分母]` (T.29.33)
+        // 末尾の `rate_sums` は比の 2 つの `[分子, 分母]` (T.29.33。`error_rate` は宛先を外したあと)、
+        // そのうしろの `excluded` は外した宛先 (T.30.4。外していない時間は `null`)
         out.push_str(
-            "],\"hourly_keys\":[\"t\",\"judged\",\"met\",\"misses\",\"rate_sums\"],\"hourly\":[",
+            "],\"hourly_keys\":[\"t\",\"judged\",\"met\",\"misses\",\"rate_sums\",\"excluded\"],\
+             \"hourly\":[",
         );
+        let mut ex = self.excluded.iter().peekable();
         for (i, h) in self.hourly.iter().enumerate() {
             if out.len() > MAX_BODY - TRAILER {
                 cut = true;
@@ -700,14 +823,17 @@ impl Report {
             if i > 0 {
                 out.push(',');
             }
+            while ex.next_if(|d| d.hour < h.t).is_some() {}
+            let dest = ex.next_if(|d| d.hour == h.t);
             let _ = write!(
                 out,
-                "[{},{},{},{},{}]",
+                "[{},{},{},{},{},{}]",
                 h.t,
                 h.judged,
                 h.met,
                 miss_json(&h.miss),
-                sums_json(h)
+                sums_json(h),
+                dest.map_or_else(|| "null".to_string(), |d| excluded_json(d, h)),
             );
         }
         let _ = write!(out, "],\"truncated\":{},", cut);
@@ -717,15 +843,34 @@ impl Report {
             "\"rate_window_secs\":{},\"last_hour\":{{\"from\":{},\"to\":{},\"samples\":{},\"rates\":",
             RATE_WINDOW_SECS, self.last_hour.from, self.last_hour.to, self.last_hour.samples,
         );
+        let lh = &self.last_hour;
         push_rates(
             &mut out,
-            &self.last_hour.num,
-            &self.last_hour.den,
+            &lh.num,
+            &lh.den,
             Tail::Met(&self.thresholds),
+            &format!(
+                "\"errors\":{},\"attempts\":{},\"destinations\":{}",
+                lh.excluded[0],
+                lh.excluded[1],
+                crate::json::list(&lh.destinations)
+            ),
         );
         out.push_str("}}");
         out
     }
+}
+
+/// `hourly` の末尾の 1 つ (T.30.4): `{"destination":"connect://pravda.example:443","errors":4,"attempts":4,"hour_errors":5}`
+/// (`errors` / `attempts` は実際に引いた数、`hour_errors` はその時間の 443・80 宛てのエラーの合計)。
+fn excluded_json(d: &DestHour, h: &Hour) -> String {
+    format!(
+        "{{\"destination\":{},\"errors\":{},\"attempts\":{},\"hour_errors\":{}}}",
+        crate::json::quote(&d.destination),
+        h.excluded[0],
+        h.excluded[1],
+        d.errors,
+    )
 }
 
 fn push_day(out: &mut String, d: &Hour) {
@@ -742,8 +887,18 @@ fn push_day(out: &mut String, d: &Hour) {
         ratio_json(d.ratio()),
         miss_json(&d.miss),
     );
-    // 比の 2 つの合計と、満たした / 外した時間の数 (T.29.33。閾は `/slo` の `thresholds`)
-    push_rates(out, &d.num, &d.den, Tail::Hours(&d.rate_hours));
+    // 比の 2 つの合計と、満たした / 外した時間の数 (T.29.33。閾は `/slo` の `thresholds`)。
+    // `error_rate` には外した宛先の時間の数とエラー・試行も (T.30.4)
+    push_rates(
+        out,
+        &d.num,
+        &d.den,
+        Tail::Hours(&d.rate_hours),
+        &format!(
+            "\"hours\":{},\"errors\":{},\"attempts\":{}",
+            d.excluded_hours, d.excluded[0], d.excluded[1]
+        ),
+    );
     out.push('}');
 }
 
@@ -757,8 +912,15 @@ enum Tail<'a> {
 
 /// 比の 2 つを `{"error_rate":{"num":..,"den":..,"value":..,…},...}` で書く (T.29.33)。
 ///
-/// `value` (と `met`) は分母が 0 なら `null`。
-fn push_rates(out: &mut String, num: &[u64; RATES], den: &[u64; RATES], tail: Tail<'_>) {
+/// `value` (と `met`) は分母が 0 なら `null`。`error_rate` の末尾には `"excluded":{excluded}` を付ける
+/// (T.30.4。外した宛先のぶん。`num` / `den` は外したあと)。
+fn push_rates(
+    out: &mut String,
+    num: &[u64; RATES],
+    den: &[u64; RATES],
+    tail: Tail<'_>,
+    excluded: &str,
+) {
     out.push('{');
     for i in 0..RATES {
         if i > 0 {
@@ -777,15 +939,19 @@ fn push_rates(out: &mut String, num: &[u64; RATES], den: &[u64; RATES], tail: Ta
             Tail::Hours(h) => {
                 let _ = write!(
                     out,
-                    ",\"hours_met\":{},\"hours_missed\":{}}}",
+                    ",\"hours_met\":{},\"hours_missed\":{}",
                     h[i][0], h[i][1]
                 );
             }
             Tail::Met(th) => {
                 let met = v.map(|v| (v <= th.limits()[RATE_AT + i]).to_string());
-                let _ = write!(out, ",\"met\":{}}}", met.as_deref().unwrap_or("null"));
+                let _ = write!(out, ",\"met\":{}", met.as_deref().unwrap_or("null"));
             }
         }
+        if i == 0 {
+            let _ = write!(out, ",\"excluded\":{{{}}}", excluded);
+        }
+        out.push('}');
     }
     out.push('}');
 }
@@ -794,7 +960,7 @@ fn sums_json(h: &Hour) -> String {
     format!("[[{},{}],[{},{}]]", h.num[0], h.den[0], h.num[1], h.den[1])
 }
 
-fn push_breach(out: &mut String, b: &Breach, th: &Thresholds) {
+fn push_breach(out: &mut String, b: &Breach, th: &Thresholds, excluded: &[DestHour]) {
     let _ = write!(
         out,
         "{{\"from\":{},\"to\":{},\"from_hour\":\"{}\",\"to_hour\":\"{}\",\"hours\":{},\
@@ -837,7 +1003,24 @@ fn push_breach(out: &mut String, b: &Breach, th: &Thresholds) {
         }
         out.push('}');
     }
-    out.push_str("]}");
+    // その時間帯に `error_rate` から外した宛先 (T.30.4。外したあとも外れた時間。名前は重ねない)
+    let mut names: Vec<&str> = Vec::new();
+    for d in excluded
+        .iter()
+        .filter(|d| d.hour >= b.from && d.hour < b.to)
+    {
+        if !names.contains(&d.destination.as_str()) {
+            names.push(&d.destination);
+        }
+    }
+    let _ = write!(
+        out,
+        "],\"excluded\":{{\"hours\":{},\"errors\":{},\"attempts\":{},\"destinations\":{}}}}}",
+        b.tally.excluded_hours,
+        b.tally.excluded[0],
+        b.tally.excluded[1],
+        crate::json::list(names),
+    );
 }
 
 /// `2026-09-11T17Z` (UTC。人が読むための札で、機械は `from` / `to` を読む)。
@@ -890,6 +1073,15 @@ pub fn observe(sample: &Sample) -> Verdict {
     let th = thresholds();
     let mut guard = TRACKER.locked();
     guard.get_or_insert_with(Tracker::new).observe(&th, sample)
+}
+
+/// 443・80 宛てのエラーのいちばん多い宛先を、その時間の集計に渡す (**履歴スレッドから 1 行**。T.30.4)。
+/// `prev` は確定した前の時間、`cur` はいまの時間の途中 (`Metrics::web_error_hours`)。
+pub fn observe_destinations(prev: Option<&DestHour>, cur: &DestHour) {
+    let mut guard = TRACKER.locked();
+    guard
+        .get_or_insert_with(Tracker::new)
+        .observe_destinations(prev, cur);
 }
 
 /// `/slo?days=` の中身を組む (この口に来たときだけ畳む)。
@@ -1380,7 +1572,7 @@ mod tests {
             json.contains(
                 "\"thresholds\":{\"connect_p50_ms\":5,\"connect_p95_ms\":50,\
                  \"error_rate\":0.005,\"dns_miss_per_connect\":0.2},\"basis\":{\
-                 \"connect\":\"connect_minus_rtt\",\"error_rate\":\"resolved_web_attempts_hourly_sum\",\
+                 \"connect\":\"connect_minus_rtt\",\"error_rate\":\"resolved_web_attempts_hourly_sum_excluding_top_destination\",\
                  \"dns_miss_per_connect\":\"excluding_failed_lookups_hourly_sum\"},\"names\":["
             ),
             "{}",
@@ -1547,7 +1739,7 @@ mod tests {
             json
         );
         assert!(
-            json.contains("\"error_rate\":{\"num\":3,\"den\":723,\"value\":0.00415,\"met\":true}"),
+            json.contains("\"error_rate\":{\"num\":3,\"den\":723,\"value\":0.00415,\"met\":true,\"excluded\":{\"errors\":0,\"attempts\":0,\"destinations\":[]}}"),
             "{}",
             json
         );
@@ -1558,12 +1750,122 @@ mod tests {
         assert!(
             json.contains(
                 "\"rates\":{\"error_rate\":{\"num\":3,\"den\":723,\"value\":0.00415,\
-                           \"hours_met\":1,\"hours_missed\":1}"
+                           \"hours_met\":1,\"hours_missed\":1,\"excluded\":{\"hours\":0,\"errors\":0,\"attempts\":0}}"
             ),
             "{}",
             json
         );
         assert_eq!(tr.rate_hours_of_day(&th, t0), [[1, 1], [2, 0]]);
+    }
+
+    /// その時間の宛先の表 (T.30.4)。
+    fn dest(hour: u64, errors: u64, name: &str, top_errors: u64, top_attempts: u64) -> DestHour {
+        DestHour {
+            hour,
+            errors,
+            destination: name.to_string(),
+            top_errors,
+            top_attempts,
+        }
+    }
+
+    /// **T.30.4 の受け入れ基準 (単体)**: エラーが 2 件以上で、いちばん多い宛先がその時間のエラーの半分以上なら
+    /// その宛先の試行とエラーを外す。4 つの宛先に 1 件ずつ・1 件だけの時間は外さない (今までどおり)。
+    #[test]
+    fn the_error_rate_leaves_out_one_destination_with_most_of_the_errors_of_the_hour() {
+        let th = DEFAULT;
+        let t0 = 1_789_084_800;
+        // 規則そのもの
+        assert!(excludes(&dest(t0, 5, "connect://pravda.example:443", 4, 4)));
+        assert!(
+            excludes(&dest(t0, 2, "connect://a:443", 1, 9)),
+            "ちょうど半分"
+        );
+        assert!(
+            !excludes(&dest(t0, 4, "connect://a:443", 1, 9)),
+            "4 つに 1 件ずつ"
+        );
+        assert!(!excludes(&dest(t0, 1, "connect://a:443", 1, 9)), "1 件だけ");
+        assert!(!excludes(&dest(t0, 5, "connect://a:443", 2, 9)), "半分未満");
+        assert!(
+            !excludes(&dest(t0, 5, "", 0, 0)),
+            "宛先が分からない (溢れた行だけ)"
+        );
+        // 1 時間に確立 400 本 + 時間切れ 4 件 (1 つの宛先) + 拒否 1 件 (別の宛先) = 5 / 405 で外れる
+        let samples = hour_of(t0, 400, 5, true);
+        let mut tr = Tracker::new();
+        for s in &samples {
+            tr.observe(&th, s);
+        }
+        let h = tr.hours().next().unwrap();
+        assert_eq!((h.num[0], h.den[0]), (5, 405));
+        assert!(h.breached(), "旧の数え方なら外れる: {:?}", h);
+        // 宛先の表を渡すと 1 / 401 = 0.0025 で満たす
+        tr.observe_destinations(None, &dest(t0, 5, "connect://pravda.example:443", 4, 4));
+        let h = tr.hours().next().unwrap();
+        assert_eq!((h.num[0], h.den[0]), (1, 401), "{:?}", h);
+        assert_eq!((h.excluded, h.excluded_hours), ([4, 4], 1));
+        assert!(!h.breached(), "{:?}", h);
+        assert_eq!(h.met, h.judged);
+        let json = tr.report(&th, t0 + 3599, 1).to_json();
+        assert!(
+            json.contains(&format!(
+                "[{},401,401,[0,0,0,0],[[1,401],[0,400]],{{\"destination\":\
+                 \"connect://pravda.example:443\",\"errors\":4,\"attempts\":4,\"hour_errors\":5}}]",
+                t0
+            )),
+            "{}",
+            json
+        );
+        assert!(
+            json.contains(
+                "\"error_rate\":{\"num\":1,\"den\":401,\"value\":0.00249,\"hours_met\":1,\
+                 \"hours_missed\":0,\"excluded\":{\"hours\":1,\"errors\":4,\"attempts\":4}}"
+            ),
+            "{}",
+            json
+        );
+        // いまの時間 (窓にまるごと入る) はそのまま外す
+        assert!(
+            json.contains(
+                "\"last_hour\":{\"from\":1789084799,\"to\":1789088399,\"samples\":401,\"rates\":\
+                 {\"error_rate\":{\"num\":1,\"den\":401,\"value\":0.00249,\"met\":true,\"excluded\":\
+                 {\"errors\":4,\"attempts\":4,\"destinations\":[\"connect://pravda.example:443\"]}}"
+            ),
+            "{}",
+            json
+        );
+        // 1 時間あと (30 分先) は前の時間のぶんを窓に掛かる秒の割合 (半分) で外す
+        let lh = tr.last_hour(t0 + 3600 + 1800);
+        assert_eq!(lh.excluded, [2, 2], "{:?}", lh);
+        // 4 つの宛先に 1 件ずつなら外さない (5 / 405 で外れたまま)。表の差し替えも効く
+        tr.observe_destinations(None, &dest(t0, 5, "connect://a:443", 1, 101));
+        let h = tr.hours().next().unwrap();
+        assert_eq!((h.num[0], h.den[0], h.excluded_hours), (5, 405, 0));
+        assert!(h.breached());
+        // 1 件だけの時間も外さない (1 / 401 はもともと満たす)
+        let mut one = Tracker::new();
+        for s in &hour_of(t0, 400, 1, false) {
+            one.observe(&th, s);
+        }
+        one.observe_destinations(None, &dest(t0, 1, "connect://pravda.example:443", 1, 1));
+        let h = one.hours().next().unwrap();
+        assert_eq!((h.num[0], h.den[0], h.excluded_hours), (1, 401, 0));
+        // 外したあとも外れた時間は `breaches` に外した宛先が出る
+        let mut bad = Tracker::new();
+        for s in &hour_of(t0, 400, 9, false) {
+            bad.observe(&th, s);
+        }
+        bad.observe_destinations(None, &dest(t0, 9, "connect://pravda.example:443", 5, 5));
+        let json = bad.report(&th, t0 + 3599, 1).to_json();
+        assert!(
+            json.contains(
+                "\"num\":4,\"den\":404}],\"excluded\":{\"hours\":1,\"errors\":5,\"attempts\":5,\
+                 \"destinations\":[\"connect://pravda.example:443\"]}}"
+            ),
+            "{}",
+            json
+        );
     }
 
     #[test]

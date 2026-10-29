@@ -76,6 +76,10 @@ pub fn spawn_every(
         crate::anomaly::check(metrics, &sample);
         // 同じ標本を SLO の 4 つの閾に当て、時間ごとの達成率に 1 本足す (`/slo`。T14.50)
         crate::slo::observe(&sample);
+        // その時間の 443・80 宛てのエラーのいちばん多い宛先も渡す (`error_rate` が外す。T.30.4)。
+        // 時間の区切りを越えていればここで確定させる (エラーの来ない時間も確定する)
+        let (prev, cur) = metrics.web_error_hours(sample.t);
+        crate::slo::observe_destinations(prev.as_ref(), &cur);
         // 起動から 60 秒 (下の heap の基準と同じ待ち時間) で `/snapshot` を 1 枚残す (T.28.20。
         // 締めの「0 時間」)。書かない設定と 2 回目からは原子の読み 1〜2 回で戻る
         crate::snapshots::take_start_if_due(

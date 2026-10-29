@@ -1238,3 +1238,112 @@ fn the_interval_counts_the_attempts_to_ports_other_than_443_and_80() {
         assert_eq!(web_port(key), web, "{}", key);
     }
 }
+
+/// 時間の区切りの直前なら次の時間まで待つ (同じ時間の中で数えたいテスト用。T.30.4)。
+fn away_from_the_hour_boundary() -> u64 {
+    let now = crate::cache::now_epoch();
+    if now % 3600 >= 3590 {
+        std::thread::sleep(Duration::from_secs(3600 - now % 3600 + 1));
+    }
+    crate::cache::now_epoch()
+}
+
+/// **T.30.4**: 443・80 宛てのエラーのいちばん多い宛先を、ホスト別統計の行で時間ごとに数える。
+///
+/// 見るのは: (a) エラーの合計は名前解決に成功した 443・80 宛てだけ (`:993`・原因 `dns` は入らない)、
+/// (b) いちばん多い宛先の試行 = その時間の窓に入った成功 + エラー (成功は区切りで写した `timed` からの差。
+/// 読み戻した行の通算は入らない)、(c) 時間を越えると前の時間が確定し、いまの時間は 0 から。
+#[test]
+fn the_destination_with_the_most_web_errors_is_counted_per_hour() {
+    let m = Metrics::new();
+    let took = Some(Duration::from_millis(5));
+    let err = |cause| Detail {
+        cause: Some(cause),
+        ..Detail::default()
+    };
+    let ok = Detail::default;
+    // 読み戻した行 (前の起動の通算 100 本。この時間の成功には入らない)
+    m.restore(
+        vec![(
+            "connect://pravda.example:443".to_string(),
+            HostStats {
+                requests: 100,
+                timed: 100,
+                ..HostStats::default()
+            },
+        )],
+        Vec::new(),
+    );
+    let now = away_from_the_hour_boundary();
+    let hour = now - now % 3600;
+    // 履歴スレッドの最初の 1 回 (ここで区切りの写しを取る)
+    let (prev, cur) = m.web_error_hours(now);
+    assert_eq!(prev, None);
+    assert_eq!(
+        (cur.hour, cur.errors, cur.destination.as_str()),
+        (hour, 0, "")
+    );
+    let www = "connect://www.example:443";
+    let pravda = "connect://pravda.example:443";
+    for _ in 0..10 {
+        m.record_host_detail(www, HostOutcome::Bypass, 0, took, ok());
+    }
+    for _ in 0..2 {
+        m.record_host_detail(www, HostOutcome::Error, 0, took, err(ErrCause::Refused));
+    }
+    m.record_host_detail(pravda, HostOutcome::Bypass, 0, took, ok());
+    for _ in 0..3 {
+        m.record_host_detail(pravda, HostOutcome::Error, 0, took, err(ErrCause::Timeout));
+    }
+    // (a) 入らないもの
+    m.record_host_detail(pravda, HostOutcome::Error, 0, took, err(ErrCause::Dns));
+    for _ in 0..5 {
+        let mail = "connect://mail.example:993";
+        m.record_host_detail(mail, HostOutcome::Error, 0, took, err(ErrCause::Timeout));
+    }
+    // 応答時間の無い `:80` のエラー (合計に入る)
+    let b = "http://b.example:80";
+    m.record_host_detail(b, HostOutcome::Error, 0, None, err(ErrCause::Reset));
+    let (prev, cur) = m.web_error_hours(now);
+    assert_eq!(prev, None);
+    assert_eq!(
+        cur,
+        DestHour {
+            hour,
+            errors: 2 + 3 + 1,
+            destination: pravda.to_string(),
+            top_errors: 3,
+            // (b) 成功 1 + エラー 3 (名前解決の失敗と、読み戻した 100 本は入らない)
+            top_attempts: 4,
+        }
+    );
+    // (c) 次の時間: 前の時間が確定し、いまの時間は 0 から
+    let (prev, cur) = m.web_error_hours(hour + 3600);
+    assert_eq!(prev.as_ref().map(|d| d.top_attempts), Some(4));
+    assert_eq!(prev.map(|d| d.errors), Some(6));
+    assert_eq!((cur.hour, cur.errors, cur.top_errors), (hour + 3600, 0, 0));
+}
+
+/// **T.30.4**: ホスト別統計が溢れて `other` に畳まれた宛先のエラーは、合計には入るが 1 つの宛先としては数えない。
+#[test]
+fn errors_folded_into_other_are_not_one_destination() {
+    let m = Metrics::new();
+    let now = away_from_the_hour_boundary();
+    m.web_error_hours(now);
+    let took = Some(Duration::from_millis(5));
+    for i in 0..MAX_HOSTS {
+        let key = format!("connect://h{}.example:443", i);
+        m.record_host_detail(&key, HostOutcome::Bypass, 0, took, Detail::default());
+    }
+    for i in 0..3 {
+        let key = format!("connect://late{}.example:443", i);
+        let e = Detail {
+            cause: Some(ErrCause::Timeout),
+            ..Detail::default()
+        };
+        m.record_host_detail(&key, HostOutcome::Error, 0, took, e);
+    }
+    let (_, cur) = m.web_error_hours(now);
+    assert_eq!((cur.errors, cur.top_errors), (3, 0));
+    assert_eq!(cur.destination, "");
+}

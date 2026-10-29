@@ -32,6 +32,11 @@ mod status;
 
 pub use status::{CANARY_STATUS_UNSET, set_canary_status};
 
+// `/slo` の `error_rate` が外す「1 つの宛先に偏ったエラー」の数 (T.30.4)
+mod web_dest;
+
+pub use web_dest::DestHour;
+
 /// 「その区間の」合計 (T12.4 (3))。[`Metrics::take_interval`] が読んで 0 に戻す。
 ///
 /// **ホスト別統計と同じ鍵の内側に置いてある**のがこの構造体の要点で、
@@ -92,6 +97,9 @@ struct HostTable {
     /// 直近 1,024 本の標本そのもの (`/status` の `recent_quantiles`。T14.31)。
     /// ここも**同じ鍵の中**で、書くのは 8 バイト 1 回
     quantiles: crate::quantiles::Quantiles,
+    /// 443・80 宛てのエラーのいちばん多い宛先 (`/slo` の `error_rate` が外す。T.30.4)。
+    /// 同じ鍵の中で、触るのはエラーの経路と履歴スレッドだけ
+    dests: web_dest::DestTable,
 }
 
 pub struct Metrics {
@@ -533,6 +541,13 @@ impl Metrics {
         } else {
             ms.is_some() && counted
         } && !web_port(host);
+        // 名前解決に成功した 443・80 宛てのエラー (T.30.4。いちばん多い宛先を `/slo` が外す)。
+        // **エラーの経路だけ**: 成功は `failed` の比較 1 回で抜ける (`web_port` は T.30.3 の
+        // `other_port` が成功のときだけ読んでいる)
+        let web_error = failed && !dns_failed && web_port(host);
+        if failed {
+            hosts.dests.roll(&mut hosts.map, now);
+        }
         // 全体の合計も同じ鍵の内側で足す (原子操作を増やさない)
         for iv in [&mut hosts.total, &mut hosts.interval] {
             iv.dns_misses += detail.dns_misses;
@@ -622,6 +637,9 @@ impl Metrics {
         // 既にある行はキーを作り直さない (毎要求の String 確保をなくす)
         if let Some(stats) = hosts.map.get_mut(host) {
             stats.count(now, outcome, bytes, took, detail);
+            if failed {
+                hosts.dests.on_error(stats, host, took.is_some(), web_error);
+            }
             // 上位 16 ホストなら時系列にも 1 標本ぶん (T14.22)。旗が無ければ分岐 1 回で終わり
             if let Some(slot) = stats.series_slot {
                 hosts
@@ -635,11 +653,25 @@ impl Metrics {
         } else {
             host.to_string()
         };
-        hosts
-            .map
-            .entry(key)
-            .or_default()
-            .count(now, outcome, bytes, took, detail);
+        let other = key == "other";
+        let stats = hosts.map.entry(key).or_default();
+        stats.count(now, outcome, bytes, took, detail);
+        if failed {
+            let key = if other { "other" } else { host };
+            hosts.dests.on_error(stats, key, took.is_some(), web_error);
+        }
+    }
+
+    /// 443・80 宛てのエラーのいちばん多い宛先の、確定した前の時間といまの時間 (T.30.4)。
+    ///
+    /// **呼ぶのは履歴スレッドだけ** (5 秒ごと。`/slo` に渡す)。`now` の時間に切り替わっていれば
+    /// ここで切り替える (エラーが 1 件も来ない時間も確定させるため)。切り替えない回は鍵 1 回と比較 1 回、
+    /// いちばん多い宛先が居れば名前の写し 1 回。
+    pub fn web_error_hours(&self, now: u64) -> (Option<DestHour>, DestHour) {
+        let mut hosts = self.hosts.locked();
+        let t = &mut *hosts;
+        t.dests.roll(&mut t.map, now);
+        (t.dests.prev(), t.dests.current(&t.map))
     }
 
     /// ホスト別の時系列の窓を進め、上位 16 を入れ替える (T14.22)。
