@@ -2516,6 +2516,99 @@ PHASE27["min_resolved_attempts"] = 1000
 CRITERIA["phase27"] = PHASE27
 
 
+# --- Phase 28 (T.31.0・T.31.1。phase27 の 26 行のうち 2 行だけ、量に左右されない物差しにしたもの) ---
+#
+# T.30.99 で届かなかった 2 行は、どちらも前の版の値と**絶対値**で比べる行で、要求が 1 時間あたり約 1.6 倍・
+# 確立の時間切れ 88 件/時 (前 12) の期間に動いた (`conn` 役の CPU/要求は 0.42 倍、`malloc_trim` は毎時動いていた)。
+def _p28_cgroup_cpu_per_request(c, th):
+    """T.31.0: cgroup の起動からの CPU ÷ 起動からの要求 (`total_requests`) が前の版の `cpu_per_request_factor` 倍未満。
+
+    phase26 (`_p26_cgroup_cpu`) はコアの合計で比べていて、量が 1.6 倍の T.30.99 で 1.09 倍の「届かず」だった。
+    コアの合計・user / sys と、暇なときの裏の役割の CPU の割合は表示だけで並べる。
+    """
+    k = th["cpu_per_request_factor"]
+    label = (f"cgroup の起動からの CPU **÷ 起動からの要求**が前の版の {k} 倍未満 (T.31.0。コアの合計・user / sys・"
+             "裏の役割の割合は表示だけ)")
+    limit = f"< 前 ×{k} (要求 1 本あたり)"
+    aft, bef = cgroup_since_start(c["b"]), cgroup_since_start(c["a"])
+    if aft is None or bef is None:
+        side = "後" if aft is None else "前"
+        return (label, limit, "—", UNKNOWN, f"{side}の雪像の `kernel.cgroup_cpu.since_start` に `usage_usec` が無い")
+    ra, rb = part(c["b"], "status").get("total_requests"), part(c["a"], "status").get("total_requests")
+    if not ra or not rb:
+        side = "後" if not ra else "前"
+        return (label, limit, f"{bef['cores']:.4f} → {aft['cores']:.4f} コア", UNKNOWN,
+                f"{side}の雪像の `/status` に `total_requests` が無い (か 0)。率が出ない")
+    # 起動からの CPU (us) ÷ 起動からの要求。`cores` は ÷ uptime なので、uptime を掛け戻す
+    ua = aft["cores"] * aft["hours"] * 3600e6 / ra
+    ub = bef["cores"] * bef["hours"] * 3600e6 / rb
+    rate_a, rate_b = ra / (aft["hours"] or 1), rb / (bef["hours"] or 1)
+    shown = (f"**{ua:,.0f}** us/要求 (前 {ub:,.0f}、{ua / ub:.2f} 倍)。表示だけ: コア {bef['cores']:.4f} → "
+             f"{aft['cores']:.4f}、要求 {rate_b:,.0f} → {rate_a:,.0f} 本/時 ({rate_a / rate_b:.2f} 倍)")
+    if aft["user_cores"] is not None and bef["user_cores"] is not None:
+        shown += f"、user {bef['user_cores']:.4f} → {aft['user_cores']:.4f}・sys {bef['sys_cores']:.4f} → {aft['sys_cores']:.4f}"
+    shares = []
+    for role in th["idle_roles"]:
+        (pb, _), (pa, _) = profile_source(c["a"]), profile_source(c["b"])
+        sb, sa = (role_share(pb, role) if pb else None), (role_share(pa, role) if pa else None)
+        if sa is not None:
+            shares.append(f"`{role}` " + (f"{sb * 100:.1f}% → " if sb is not None else "") + f"{sa * 100:.1f}%")
+    if shares:
+        shown += "、裏の役割の割合 " + "・".join(shares)
+    src = (f"`kernel.cgroup_cpu.since_start.usage_usec` ÷ `/status` の `total_requests` (どちらも起動から。"
+           f"前 {bef['hours']:,.1f} 時間 {n(rb)} 本、後 {aft['hours']:,.1f} 時間 {n(ra)} 本)")
+    return (label, limit, shown, MET if ua < ub * k else MISSED, src)
+
+
+def _p28_trim_works(c, th):
+    """T.31.1: `malloc_trim` が毎時動いて返している (`memory.trim` の `count` ≥ 起動からの時間 − 1、返した量 > 0)。
+
+    phase27 (`_p27_rss_gap`) は `rss − (heap_used + mmap + cache_memory)` を前の版と比べていて、空きの塊と
+    スタックの山が量で動いた T.30.99 で 19.5 → 24.2 MB の「届かず」だった (`malloc_trim` は 24 回・71.4 MB を返していた)。
+    `rss − (…)` と前の版との差・`heap_free`・`stacks_estimate` は表示だけ。
+    """
+    label = ("`malloc_trim` が毎時動いて返している (`memory.trim` の `count` ≥ 起動からの時間 − 1 で、返した量 > 0。"
+             "T.31.1。`rss − (heap_used + mmap + cache_memory)`・`heap_free`・`stacks_estimate` は表示だけ)")
+    limit = "`count` ≥ 時間 − 1 かつ 返した量 > 0"
+    m = memory_of(c["b"])
+    trim = m.get("trim")
+    hours = (c["b"].get("uptime_secs") or 0) / 3600.0
+    if not isinstance(trim, dict):
+        return (label, limit, "—", UNKNOWN, "後の雪像の `/status` の `memory` に `trim` が無い (T.30.1 より前の版)")
+    count, skipped = trim.get("count") or 0, trim.get("skipped") or 0
+    total = trim.get("total_returned_bytes") or 0
+    need = max(int(hours) - 1, 0)
+    shown = (f"**{n(count)}** 回 (呼ばなかった {n(skipped)} 回、起動から {hours:,.1f} 時間)、返した計 **{mb(total)}** MB")
+    if trim.get("last_us") is not None:
+        shown += f"、最後は {mb(trim.get('last_returned_bytes') or 0)} MB を {n(trim['last_us'])} us"
+
+    def gap(mm):
+        keys = ("rss", "heap_used", "mmap", "cache_memory")
+        return None if any(mm.get(x) is None for x in keys) else \
+            (mm["rss"] - mm["heap_used"] - mm["mmap"] - mm["cache_memory"]) / 1e6
+    ga, gb = gap(memory_of(c["a"])), gap(m)
+    extra = []
+    if gb is not None:
+        extra.append(f"`rss − (…)` {gb:,.1f} MB" + (f" (前 {ga:,.1f})" if ga is not None else ""))
+    extra += [f"`{x}` {mb(m[x])} MB" for x in ("heap_free", "stacks_estimate") if m.get(x) is not None]
+    if extra:
+        shown += "。表示だけ: " + "、".join(extra)
+    # 呼ばなかった回 (`heap_free ≤ heap_used`) は返すものが無かった時間なので、動いた回に数える。
+    # 呼んだのに 1 バイトも返していなければ届かず (呼んだ回が 0 なら返す量 0 でよい)
+    ok = count + skipped >= need and (total > 0 or count == 0)
+    return (label, limit, shown, MET if ok else MISSED,
+            f"後の雪像の `/status` の `memory.trim` (起動から {uptime_text(c['b'].get('uptime_secs'))}、1 時間に 1 回)")
+
+
+# phase28 = phase27 の 26 行のうち 23 番目 (RSS) と 24 番目 (cgroup の CPU) だけ差し替えたもの (T.31.0・T.31.1)。
+# **phase27 以前の並びと文面は 1 つも動かない**
+RULES["phase28"] = (RULES["phase27"][:22] + (_p28_trim_works, _p28_cgroup_cpu_per_request) + RULES["phase27"][24:])
+PHASE28 = dict(PHASE27)
+# cgroup の CPU/要求 が前の版のこの倍率未満なら満たす (T.31.0)
+PHASE28["cpu_per_request_factor"] = 1.1
+CRITERIA["phase28"] = PHASE28
+
+
 def judge(name, hist, hosts, majors, status_b, overload, th,
           a=None, b=None, info=None, dns=None, errors=None, burst=BURST_PER_HOUR):
     """`RULES[name]` の各行を順に呼んで判定表にする。
@@ -2696,6 +2789,15 @@ def render_criteria(d, grouped):
           "(`rss − (heap_used + mmap + cache_memory)`) は固定の 10 MB ではなく**前の版の同じ値より下がる**で読み、"
           "`heap_free`・`stacks_estimate`・`malloc_trim` の回数と返した量は表示だけで並べます。"
           "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+        p()
+    if c["name"] == "phase28":
+        # T.31.0・T.31.1。phase27 の 26 行のうち 2 行を量に左右されない物差しにした
+        p("26 行の並びと材料は phase27 と同じです。直したのは 2 行 (T.31.0・T.31.1): (1) cgroup の CPU は"
+          "コアの合計ではなく**起動からの要求 1 本あたり**で前の版と比べます (1.1 倍未満。T.30.99 は要求が 1.6 倍で、"
+          "コアの合計は 1.09 倍の「届かず」だった)。コアの合計・user / sys・裏の役割の割合は表示だけです。"
+          "(2) RSS の返していない分は、**`malloc_trim` が毎時動いて返しているか** (`memory.trim` の `count` と "
+          "返した量) で読み、`rss − (heap_used + mmap + cache_memory)`・`heap_free`・`stacks_estimate` は表示だけです "
+          "(空きの塊とスタックの山は量と同時の接続数で動く)。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")

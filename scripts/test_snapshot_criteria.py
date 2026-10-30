@@ -313,7 +313,7 @@ class Criteria15(unittest.TestCase):
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
                          ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
-                          "phase22", "phase23", "phase24", "phase25", "phase26", "phase27"])
+                          "phase22", "phase23", "phase24", "phase25", "phase26", "phase27", "phase28"])
 
 
 def conn_profile(conn_us_per_row):
@@ -2274,6 +2274,83 @@ class Deployed27(unittest.TestCase):
         self.assertEqual(rows[22][3], sd.MET)
         self.assertIn("**28.9** MB", rows[22][2])
         self.assertIn("前 31.8 MB", rows[22][2])
+
+
+
+class Criteria28Rows(unittest.TestCase):
+    """`--criteria phase28` (T.31.0・T.31.1): phase27 の 26 行のうち 23・24 番目だけ量に左右されない物差しにしたもの。"""
+
+    @staticmethod
+    def snap(usage_usec, uptime, requests, trim=None, mem=None):
+        m = {"rss": 48.6e6, "heap_used": 12.8e6, "mmap": 11.7e6, "cache_memory": 0}
+        m.update(mem or {})
+        if trim is not None:
+            m["trim"] = trim
+        return {"uptime_secs": uptime, "status": {
+            "total_requests": requests, "memory": m,
+            "kernel": {"cgroup_cpu": {"since_start": {"usage_usec": usage_usec, "user_usec": usage_usec // 4}}}}}
+
+    def test_phase28_replaces_only_two_rows_of_phase27(self):
+        p27, p28 = sd.RULES["phase27"], sd.RULES["phase28"]
+        self.assertEqual(len(p28), 26)
+        self.assertEqual([i for i in range(26) if p27[i] is not p28[i]], [22, 23])
+        self.assertIs(p28[22], sc._p28_trim_works)
+        self.assertIs(p28[23], sc._p28_cgroup_cpu_per_request)
+
+    def test_cpu_is_compared_per_request(self):
+        # T.30.99 の形: コアは 1.09 倍だが要求は 1.56 倍 → 要求 1 本あたりは 0.70 倍で満たす
+        a = self.snap(124_000_000, 29.0 * 3600, 42_672)
+        b = self.snap(113_000_000, 24.2 * 3600, 55_327)
+        row = sc._p28_cgroup_cpu_per_request({"a": a, "b": b}, sc.PHASE28)
+        self.assertEqual(row[3], sd.MET, row)
+        # phase26 のコアの合計では届かず
+        self.assertEqual(sc._p26_cgroup_cpu({"a": a, "b": b}, sc.PHASE26)[3], sd.MISSED)
+        # 量が同じで CPU/要求 が 1.2 倍なら届かず
+        b2 = self.snap(int(124_000_000 * 1.2), 29.0 * 3600, 42_672)
+        self.assertEqual(sc._p28_cgroup_cpu_per_request({"a": a, "b": b2}, sc.PHASE28)[3], sd.MISSED)
+        # 要求の数が無い雪像は判定できず
+        nb = self.snap(113_000_000, 24.2 * 3600, None)
+        self.assertEqual(sc._p28_cgroup_cpu_per_request({"a": a, "b": nb}, sc.PHASE28)[3], sd.UNKNOWN)
+
+    def test_trim_works_every_hour(self):
+        a = self.snap(1, 29.0 * 3600, 1, mem={"rss": 42.8e6})
+        ok = self.snap(1, 24.2 * 3600, 1, trim={"count": 24, "skipped": 0, "total_returned_bytes": 71_400_000,
+                                               "last_returned_bytes": 7_100_000, "last_us": 225},
+                       mem={"heap_free": 19.9e6, "stacks_estimate": 21.5e6})
+        row = sc._p28_trim_works({"a": a, "b": ok}, sc.PHASE28)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("**24** 回", row[2])
+        self.assertIn("返した計 **71.4** MB", row[2])
+        self.assertIn("`rss − (…)` 24.1 MB", row[2])
+        # 呼んだ回が足りない・呼んだのに返していない は届かず
+        few = self.snap(1, 24.2 * 3600, 1, trim={"count": 3, "skipped": 0, "total_returned_bytes": 1_000_000})
+        self.assertEqual(sc._p28_trim_works({"a": a, "b": few}, sc.PHASE28)[3], sd.MISSED)
+        none = self.snap(1, 24.2 * 3600, 1, trim={"count": 24, "skipped": 0, "total_returned_bytes": 0})
+        self.assertEqual(sc._p28_trim_works({"a": a, "b": none}, sc.PHASE28)[3], sd.MISSED)
+        # 返すものが無くて毎回呼ばなかった (skipped) のは満たす
+        idle = self.snap(1, 24.2 * 3600, 1, trim={"count": 0, "skipped": 24, "total_returned_bytes": 0})
+        self.assertEqual(sc._p28_trim_works({"a": a, "b": idle}, sc.PHASE28)[3], sd.MET)
+        # 欄の無い版は判定できず
+        self.assertEqual(sc._p28_trim_works({"a": a, "b": self.snap(1, 3600, 1)}, sc.PHASE28)[3], sd.UNKNOWN)
+
+
+T3099_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-10-28T191810Z-shutdown-snapshot.json")
+T3099_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-10-30T062500Z-snapshot.json")
+
+
+@unittest.skipUnless(os.path.exists(T3099_BEFORE) and os.path.exists(T3099_AFTER),
+                     "T.30.99 の雪像 (status/tokyo/) が無い")
+class Deployed28(unittest.TestCase):
+    """T.30.99 の 2 枚 (0.29.36 の停止 → 0.30.4 の 24.2 時間) で、phase27 の届かなかった 2 行が満たす (T.31.0・T.31.1)。"""
+
+    def test_t3099_pair(self):
+        c = build([T3099_BEFORE, T3099_AFTER, "--no-dns", "--criteria", "phase28"])["criteria"]
+        rows = c["rows"]
+        self.assertEqual(len(rows), 26)
+        self.assertEqual(rows[22][3], sd.MET)
+        self.assertIn("**24** 回", rows[22][2])
+        self.assertEqual(rows[23][3], sd.MET)
+        self.assertIn("0.70 倍", rows[23][2])
 
 
 if __name__ == "__main__":

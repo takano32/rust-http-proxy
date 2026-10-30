@@ -232,7 +232,7 @@ scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
 # (死んだ名前の総当たりという使われ方の数字なので表示だけ)。heap の行は、`--zero` の雪像と起動が
 # 違うときに `/events` の `start` の時刻を添える (黙って「判定できず」にしない。2026-10-17 22:14:52Z の
 # 無言の再起動がこれで読める)。最後の行は無言の再起動 (`/events` の `start` の直前に `shutdown` が無い起動)
-# が 0 回 (T.23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は phase27)
+# が 0 回 (T.23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は phase28)
 scripts/snapshot-diff.py a.json b.json --criteria phase23 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
@@ -261,12 +261,18 @@ scripts/snapshot-diff.py a.json b.json --criteria phase24 --daily b-daily.json \
 scripts/snapshot-diff.py a.json b.json --criteria phase26 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase27 (T.30.0・T.30.1) は phase26 の 26 行のうち 2 行だけ読み方を変えたもの (`collect-deployed.sh` の既定は phase27)。
+# phase27 (T.30.0・T.30.1) は phase26 の 26 行のうち 2 行だけ読み方を変えたもの。
 # 接続のエラーの行は、前も後も**分母 (名前解決に成功した試行) が 1,000 本以上**のときだけ判定する (T.29.99 は名前の
 # 引けないメール宛の総当たりで分母が 489 本、16.40 倍で「届かず」だった)。RSS の返していない分の行は、固定の 10 MB ではなく
 # **前の版の同じ値より下がる**で読み、`heap_free`・`stacks_estimate`・`malloc_trim` の回数と返した量 (`/status` の
 # `memory.trim`。T.30.1) は表示だけで並べる
 scripts/snapshot-diff.py a.json b.json --criteria phase27 --daily b-daily.json \
+                         --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
+                         --zero zero.json --daily-snapshots status
+# phase28 (T.31.0・T.31.1) は phase27 の 26 行のうち 2 行を量に左右されない物差しにしたもの (`collect-deployed.sh` の既定は phase28)。
+# cgroup の CPU はコアの合計ではなく**起動からの要求 1 本あたり**で前の版と比べ (1.1 倍未満。T.30.99 は要求が 1.6 倍でコアの合計が
+# 1.09 倍の「届かず」だった)、RSS の返していない分は **`malloc_trim` が毎時動いて返しているか** (`memory.trim`) で読む
+scripts/snapshot-diff.py a.json b.json --criteria phase28 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
