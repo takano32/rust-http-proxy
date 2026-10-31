@@ -900,6 +900,11 @@ GET リクエストのみを対象に、レスポンスをワイヤ形式その�
   GET の鍵に保存して他の利用者の `GET` に配っていました
 - 次の場合は保存しない: GET 以外 / `Authorization` 付き / `Range` 付き / クライアントの `no-store` /
   レスポンスの `no-store`・`private` / `Set-Cookie` / 非対応の `Vary` / 非キャッシュ対象ステータス / 上限超過
+- **要求に `Cookie` があり、応答に明示の鮮度 (`s-maxage`・`max-age`・`Expires`) も `public` も無ければ保存しません** (T.32.35)。
+  経験則 (`Last-Modified` からの割合・既定 TTL) は RFC 9111 §4.2.2 の「してよい」ですが、共有のキャッシュでは
+  Cookie ごとに違う本文を他の利用者に配る形になるためです。`Cookie` の無い要求の経験則と、明示の鮮度を持つ応答は
+  今までどおり保存します (参照の側は変えていません)。0.30.4 までは `Cookie: user=alice` の `you are alice` を
+  `user=bob` が HIT で受けていました
 - クライアントの `no-cache` / `max-age=0` は「バイパス」ではなく「オリジンで再検証」として扱う
 
 ### HTTPS のオリジン

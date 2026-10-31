@@ -1436,7 +1436,13 @@ pub fn handle_http_parsed(
 
     // ---- 配信しつつ保存 ----
     let policy = if store_allowed && unframed_te.is_none() {
-        freshness::response_policy_lines(status, headers::response_lines(&head), cfg, now)
+        freshness::response_policy_lines(
+            status,
+            headers::response_lines(&head),
+            req.cookie,
+            cfg,
+            now,
+        )
     } else {
         None
     };

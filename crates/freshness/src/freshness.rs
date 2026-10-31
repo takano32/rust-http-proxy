@@ -37,6 +37,7 @@ pub fn response_policy(
     response_policy_lines(
         status,
         headers.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+        false,
         cfg,
         now,
     )
@@ -47,9 +48,14 @@ pub fn response_policy(
 /// forward の経路は応答の先頭を `response_lines` のまま渡す (小文字の `String` の組を
 /// 要求ごとに作らない。T.28.13 (a))。保存しない応答 (`no-store` など) でも毎回通る判定なので、
 /// 確保を減らした分がそのまま効く。
+///
+/// `request_cookie` は要求に `Cookie` があったか (T.32.35)。真なら、応答に明示の鮮度 (`s-maxage`・
+/// `max-age`・`Expires`) も `public` も無いとき保存しない。経験則と既定 TTL は「してよい」(RFC 9111 §4.2.2)
+/// だが、共有のキャッシュでは Cookie ごとに違う本文 (`you are alice`) を他の利用者に配る形になるため
 pub fn response_policy_lines<'a>(
     status: u16,
     headers: impl IntoIterator<Item = (&'a str, &'a str)>,
+    request_cookie: bool,
     cfg: &CacheConfig,
     now: u64,
 ) -> Option<Policy> {
@@ -112,6 +118,9 @@ pub fn response_policy_lines<'a>(
                 httpdate::parse(e).map_or(0, |exp| exp.saturating_sub(date.unwrap_or(now)))
             })
         });
+    if request_cookie && explicit.is_none() && !has_directive(&cache_control, "public") {
+        return None;
+    }
     let ttl = if has_directive(&cache_control, "no-cache") {
         0
     } else if let Some(t) = explicit {
@@ -628,6 +637,45 @@ mod tests {
         }
     }
 
+    /// T.32.35: 要求に `Cookie` があれば、明示の鮮度も `public` も無い応答は保存しない。
+    #[test]
+    fn cookie_request_needs_explicit_freshness_or_public() {
+        let lm = "Sun, 06 Nov 1994 08:49:37 GMT";
+        let with_cookie =
+            |h: &[(&str, &str)]| response_policy_lines(200, h.iter().copied(), true, &cfg(), NOW);
+        // 経験則 (既定 TTL・Last-Modified)・`no-cache` + validator は保存しない
+        assert!(with_cookie(&[("Content-Type", "text/html")]).is_none());
+        assert!(with_cookie(&[("Last-Modified", lm)]).is_none());
+        assert!(with_cookie(&[("Cache-Control", "no-cache"), ("ETag", "\"a\"")]).is_none());
+        // 明示の鮮度か `public` があれば今までどおり
+        assert_eq!(
+            with_cookie(&[("Cache-Control", "max-age=60")])
+                .unwrap()
+                .ttl
+                .as_secs(),
+            60
+        );
+        assert_eq!(
+            with_cookie(&[("Cache-Control", "s-maxage=30")])
+                .unwrap()
+                .ttl
+                .as_secs(),
+            30
+        );
+        assert!(with_cookie(&[("Expires", "Sun, 06 Nov 2094 08:49:37 GMT")]).is_some());
+        assert_eq!(
+            with_cookie(&[("Cache-Control", "Public")]).unwrap().ttl,
+            cfg().default_ttl
+        );
+        // `Cookie` の無い要求の経験則は変わらない
+        assert_eq!(
+            response_policy_lines(200, [("Content-Type", "text/html")], false, &cfg(), NOW)
+                .unwrap()
+                .ttl,
+            cfg().default_ttl
+        );
+    }
+
     /// T.28.13 (a): 借用の並び (名前の大小を問わない) で読んでも、小文字の組と同じ方針。
     #[test]
     fn policy_from_borrowed_lines_matches_the_pairs() {
@@ -654,7 +702,7 @@ mod tests {
                 .collect();
             for status in [200, 404, 500] {
                 assert_eq!(
-                    response_policy_lines(status, case.iter().copied(), &cfg(), NOW),
+                    response_policy_lines(status, case.iter().copied(), false, &cfg(), NOW),
                     response_policy(status, &lower, &cfg(), NOW),
                     "{:?} {}",
                     case,

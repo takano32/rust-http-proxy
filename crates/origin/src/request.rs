@@ -34,6 +34,8 @@ pub struct RequestHeaders {
     /// 今までは本文なしとしてヘッダーだけを転送し、本文はクライアントの次の要求として読まれた
     pub te_invalid: bool,
     pub authorization: bool,
+    /// `Cookie` の行があった (T.32.35)。明示の鮮度も `public` も無い応答は保存しない
+    pub cookie: bool,
     pub cache_control: String,
     pub if_none_match: Option<String>,
     pub if_modified_since: Option<String>,
@@ -155,6 +157,8 @@ pub fn parse_request_headers_visit(
             }
         } else if is("authorization") {
             h.authorization = true;
+        } else if is("cookie") {
+            h.cookie = true;
         } else if is("cache-control") || is("pragma") {
             if !h.cache_control.is_empty() {
                 h.cache_control.push(',');
