@@ -937,7 +937,7 @@ pub fn handle_http_parsed(
         })
         .unwrap_or_default();
     // 転送するヘッダーは Vec<String> を経由せず、そのままバイト列に書く
-    let request_head =
+    let mut request_head =
         build_request_head(method, &origin, raw_headers, client_ip, &conditional_lines);
     log_trace!(
         Some(conn_id),
@@ -947,7 +947,7 @@ pub fn handle_http_parsed(
     // 期限切れの表現が手元にあるなら、オリジンを長く待たずに stale を返す
     // (`shared.timeout` の 0 は「無期限」なので、素の `min` だと 0 秒で諦める方に
     // 化ける。`timeout::shorter` は無期限の側を必ず負けさせる。T10.6)
-    let origin_timeout = if stale.is_some() {
+    let mut origin_timeout = if stale.is_some() {
         proxy_base::timeout::shorter(shared.timeout, cfg.stale_wait)
     } else {
         shared.timeout
@@ -1108,6 +1108,31 @@ pub fn handle_http_parsed(
                     pool_key,
                     status
                 );
+                continue;
+            }
+            // 再検証の 304 の validator が保存済みと「あって違う」(RFC 9111 §4.3.4。T.32.9): その 304 で
+            // 保存済みを延ばすと、古い本文に新しい `ETag` を付けて配り続ける (下流は新しい `ETag` で
+            // 304 をもらい続ける)。項目を消し、条件なしで 1 回だけ取り直す。この接続は使い回さない
+            // (304 の枠組みを読む前なので)。`stale` を外すので 2 回目は起きない。本文の無い GET だけ
+            Ok(((head, 304), _))
+                if stale.as_ref().is_some_and(|(entry, _)| {
+                    not_modified_conflicts(
+                        &freshness::parse_cached_head(&entry.head),
+                        &headers::response_pairs(&head),
+                    )
+                }) =>
+            {
+                log_debug!(
+                    Some(conn_id),
+                    "304 from {} names another representation: dropped the stored entry, refetching",
+                    pool_key
+                );
+                cache.remove(key);
+                stale = None;
+                drop(server);
+                request_head = build_request_head(method, &origin, raw_headers, client_ip, &[]);
+                origin_timeout = shared.timeout;
+                attempt = 0;
                 continue;
             }
             Ok(((head, status), n)) => {
@@ -1882,6 +1907,28 @@ fn not_modified_selects(cached: &freshness::CachedHead, pairs_304: &[(String, St
     match value("last-modified") {
         Some(lm) => cached.last_modified.as_deref().map(str::trim_ascii) == Some(lm),
         None => false,
+    }
+}
+
+/// 再検証の 304 が保存済みとは別の表現を指しているか (RFC 9111 §4.3.4。T.32.9)。
+///
+/// 304 の `ETag` が保存済みの `ETag` と違う (比べるのは弱い印 `W/` を外して)、または `ETag` で比べられず
+/// `Last-Modified` が両方にあって違うときに真。validator の無い 304 と、比べる相手が保存済みに無いときは偽
+/// (今までどおり延ばす)。[`not_modified_selects`] より甘い: こちらは「延ばしてはいけない」の判定
+fn not_modified_conflicts(cached: &freshness::CachedHead, pairs_304: &[(String, String)]) -> bool {
+    let value = |name: &str| {
+        pairs_304
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.trim_ascii())
+    };
+    let weak = |v: &str| v.strip_prefix("W/").unwrap_or(v).to_string();
+    if let (Some(got), Some(have)) = (value("etag"), cached.etag.as_deref()) {
+        return weak(got) != weak(have.trim_ascii());
+    }
+    match (value("last-modified"), cached.last_modified.as_deref()) {
+        (Some(got), Some(have)) => got != have.trim_ascii(),
+        _ => false,
     }
 }
 

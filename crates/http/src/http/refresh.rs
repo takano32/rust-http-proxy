@@ -182,6 +182,14 @@ fn revalidate(
     let cfg = cache.config();
 
     if status == 304 {
+        // 304 の validator が保存済みと違う (T.32.9): 延ばさずに消して終える (次の要求は普通のミス)
+        if super::not_modified_conflicts(&cached, &rheaders) {
+            cache.remove(key);
+            if reusable {
+                upstream.pool.put(&pool_key, server, timeout);
+            }
+            return Ok("304 names another representation, removed");
+        }
         // 304 が保存を禁じた: 延命せず消す (T.29.0)。304 の `Set-Cookie` は誰にも渡さない
         // (裏の再検証の要求は利用者のものではない)
         if freshness::not_modified_forbids_storing(&rheaders) {

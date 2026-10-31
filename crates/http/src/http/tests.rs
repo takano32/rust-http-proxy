@@ -421,3 +421,47 @@ fn test_locate_matches_the_generic_normalisation_on_many_inputs() {
     }
     assert_eq!(checked, hosts.len() * paths.len() * schemes.len());
 }
+
+/// 再検証の 304 が別の表現を指しているか (T.32.9)。validator の無い 304・比べる相手の無いときは偽
+#[test]
+fn not_modified_conflicts_only_when_a_validator_differs() {
+    let cached = freshness::parse_cached_head(
+        b"HTTP/1.1 200 OK\r\nETag: \"e\"\r\nLast-Modified: Mon, 01 Jan 2024 00:00:00 GMT\r\n\r\n",
+    );
+    let pairs = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+        v.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    assert!(!not_modified_conflicts(
+        &cached,
+        &pairs(&[("etag", "\"e\"")])
+    ));
+    assert!(!not_modified_conflicts(
+        &cached,
+        &pairs(&[("etag", "W/\"e\"")])
+    ));
+    assert!(not_modified_conflicts(
+        &cached,
+        &pairs(&[("etag", "\"other\"")])
+    ));
+    assert!(!not_modified_conflicts(&cached, &pairs(&[])));
+    assert!(!not_modified_conflicts(
+        &cached,
+        &pairs(&[("last-modified", "Mon, 01 Jan 2024 00:00:00 GMT")])
+    ));
+    assert!(not_modified_conflicts(
+        &cached,
+        &pairs(&[("last-modified", "Tue, 02 Jan 2024 00:00:00 GMT")])
+    ));
+    // 保存済みに ETag が無ければ Last-Modified で比べる。どちらも無ければ延ばす
+    let lm_only = freshness::parse_cached_head(
+        b"HTTP/1.1 200 OK\r\nLast-Modified: Mon, 01 Jan 2024 00:00:00 GMT\r\n\r\n",
+    );
+    assert!(!not_modified_conflicts(
+        &lm_only,
+        &pairs(&[("etag", "\"x\"")])
+    ));
+    let none = freshness::parse_cached_head(b"HTTP/1.1 200 OK\r\n\r\n");
+    assert!(!not_modified_conflicts(&none, &pairs(&[("etag", "\"x\"")])));
+}
