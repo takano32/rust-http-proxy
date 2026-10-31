@@ -49,7 +49,7 @@ default-members = ["."]
 
 [package]
 name = "rust-http-proxy"
-version = "0.32.37"
+version = "0.32.39"
 edition = "2024"
 
 [dependencies]

@@ -190,6 +190,24 @@ class CrateVersionsTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("上げた: 0", out)
 
+    def test_fix_refuses_the_same_number(self):
+        # T.32.39: その番号の版の行を書いたあとに中身を変えたものは、同じ番号の --fix では直せない (前は「上げた: 0」・0)
+        self.r.write("crates/gamma/src/lib.rs", "// gamma 2\n")
+        self.r.commit("T.2.5")
+        code, out = self.r.run("--task", "T.2.5", "--fix")
+        self.assertEqual(code, 0, out)
+        self.r.commit("T.2.5 の版")
+        self.r.write("crates/gamma/src/lib.rs", "// gamma 3\n")
+        self.r.commit("T.2.5 の直し")
+        self.check(1)
+        code, out = self.r.run("--task", "T.2.5", "--fix")
+        self.assertEqual(code, 2, out)
+        self.assertIn("新しい小タスク", out)
+        code, out = self.r.run("--task", "T.2.6", "--fix")
+        self.assertEqual(code, 0, out)
+        self.r.commit("T.2.6 の版")
+        self.check(0)
+
     def test_fix_only_with_task(self):
         code, out = self.r.run("--check", "--fix")
         self.assertEqual(code, 2, out)

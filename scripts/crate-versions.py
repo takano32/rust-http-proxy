@@ -456,6 +456,12 @@ def bump_task(repo, tid, since, fix=False):
     if fix:
         origins = {u.name: repo.version_origin(u) for u in repo.units()}
         names = {u.name for u, _ in stale(repo, origins)}
+        # 上げ忘れが同じ番号のまま (= そのタスクの版の行をもう書いたあとに中身を変えた) なら、版の行が
+        # 変わらないので決まり (c) は満たせない。黙って「上げた: 0」で抜けずに止める (T.32.39)
+        same = sorted(n for n in names if current.get(n) == new)
+        if same:
+            raise Error("上げ忘れの %s はもう %s で、同じ番号では決まり (c) を満たせない。"
+                        "直しを新しい小タスクにして、その番号で --task --fix を回す" % ("・".join(same), new))
         versions = {u.name: new for u in repo.crates if u.name in names}
         keys = [ver_key(versions.get(name, v)) for name, v in current.items()]
         if names & {repo.root.name, SERVER}:
