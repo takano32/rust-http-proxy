@@ -2590,7 +2590,9 @@ def _p28_trim_works(c, th):
     extra = []
     if gb is not None:
         extra.append(f"`rss − (…)` {gb:,.1f} MB" + (f" (前 {ga:,.1f})" if ga is not None else ""))
-    extra += [f"`{x}` {mb(m[x])} MB" for x in ("heap_free", "stacks_estimate") if m.get(x) is not None]
+    # 常駐の内訳 (T.32.4。欄の無い版は今までどおり 2 つだけ)
+    extra += [f"`{x}` {mb(m[x])} MB" for x in ("heap_free", "stacks_estimate", "stacks_resident", "rss_anon", "rss_file")
+              if m.get(x) is not None]
     if extra:
         shown += "。表示だけ: " + "、".join(extra)
     # 呼ばなかった回 (`heap_free ≤ heap_used`) は返すものが無かった時間なので、動いた回に数える。

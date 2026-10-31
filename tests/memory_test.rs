@@ -2,9 +2,9 @@
 //!
 //! 見るのは 4 つ:
 //!
-//! 1. 実バイナリ (キャッシュのプローブが 1 秒ごとに回る配線) では `memory.rss` が
-//!    **同じ応答の** `cache.system.process_rss_bytes` と一致すること (1 枚の `/status` に
-//!    食い違う RSS が 2 つ並ばない)
+//! 1. `memory.rss` は今読んだ値で、同じ読みの `rss_anon + rss_file + rss_shmem` と 1 頁以内で
+//!    合い、`stacks_resident` は予約より小さいこと (T.32.4。それまでは実バイナリでは
+//!    `cache.system.process_rss_bytes` と同じプローブの値で、起動直後は古かった)
 //! 2. プローブが止まっているとき (テスト用プロキシ) は、その場で読んだ**今の** RSS が出ること
 //! 3. `mallinfo2` が読める環境では `heap_used + heap_free + mmap ≤ rss × 1.1`、
 //!    読めない環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`
@@ -61,17 +61,51 @@ fn memory_of(status: &str) -> String {
     panic!("memory の括弧が閉じていない: {}", rest);
 }
 
-/// `memory` の末尾の `,"trim":{…}}` (T.30.1) を外した手前を返す (`trim` が最後の鍵であることも見る)。
+/// `memory` の `,"trim":{…}` (T.30.1) から後ろを外した手前を返す。`trim` の後ろは常駐の内訳の
+/// 4 つ (T.32.4) で、それが `memory` の最後の鍵であることも見る。
 fn without_trim(mem: &str) -> &str {
     let (head, tail) = mem
         .rsplit_once(",\"trim\":{")
         .unwrap_or_else(|| panic!("trim が無い: {}", mem));
+    let (trim, rest) = tail
+        .split_once('}')
+        .unwrap_or_else(|| panic!("trim が閉じていない: {}", mem));
     assert!(
-        tail.starts_with("\"count\":") && tail.ends_with("}}") && !tail.contains('{'),
-        "trim が memory の最後の鍵ではない: {}",
+        trim.starts_with("\"count\":") && !trim.contains('{'),
+        "trim の形が違う: {}",
+        mem
+    );
+    assert!(
+        rest.starts_with(",\"rss_anon\":")
+            && rest.contains(",\"rss_file\":")
+            && rest.contains(",\"rss_shmem\":")
+            && rest.contains(",\"stacks_resident\":")
+            && rest.ends_with('}')
+            && !rest.contains('{'),
+        "trim の後ろが常駐の内訳の 4 つではない: {}",
         mem
     );
     head
+}
+
+/// 常駐の内訳 (T.32.4): `rss_anon + rss_file + rss_shmem` は同じ読みの `rss` に 1 頁以内で合い、
+/// スタックの常駐は予約 (`stacks_estimate`) より小さい。
+fn check_resident(mem: &str) {
+    let rss = num(mem, "rss").expect("rss");
+    if let (Some(a), Some(f), Some(sh)) = (
+        num(mem, "rss_anon"),
+        num(mem, "rss_file"),
+        num(mem, "rss_shmem"),
+    ) {
+        assert!(
+            (a + f + sh).abs_diff(rss) <= 4096,
+            "rss_anon + rss_file + rss_shmem が rss と合わない: {}",
+            mem
+        );
+    }
+    if let (Some(res), Some(est)) = (num(mem, "stacks_resident"), num(mem, "stacks_estimate")) {
+        assert!(res > 0 && res < est, "{}", mem);
+    }
 }
 
 /// `memory` の `rings` / `rings_used` の 1 つを切り出す (同じ鍵が 2 度出るので必要。T15.0 (13))。
@@ -167,8 +201,9 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
         );
     }
 
-    // (2) ヒープ
+    // (2) ヒープと常駐の内訳 (T.32.4)
     check_heap(&mem, rss);
+    check_resident(&mem);
 
     // (3) スタックの予約は「接続スレッド 256 KiB + それ以外 2 MiB」
     let threads = status_number(&status, "threads");
@@ -231,7 +266,8 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     );
 }
 
-/// 実バイナリでは、`memory.rss` が `cache.system.process_rss_bytes` と一致し、
+/// 実バイナリでは、`memory.rss` が今読んだ値で常駐の内訳と合い (T.32.4。それまでは
+/// `cache.system.process_rss_bytes` と同じ値で、起動直後は古かった)、
 /// `arenas` に `PROXY_MALLOC_ARENAS` が出る。
 ///
 /// どちらも実バイナリでしか見られない: プローブのスレッドを起こすのも、
@@ -253,12 +289,9 @@ fn test_integration_memory_rss_matches_the_probe_in_the_real_binary() {
     let status = endpoint_json(proxy.port, "/status");
     let mem = memory_of(&status);
     let rss = num(&mem, "rss");
-    assert_eq!(
-        rss.map_or_else(|| "null".to_string(), |v| v.to_string()),
-        cache_rss(&status),
-        "memory.rss と process_rss_bytes が違う: {}",
-        mem
-    );
+    // プローブの値も出ている (同じ時刻の読みではないので一致は見ない)
+    assert_ne!(cache_rss(&status), "null", "{}", status);
+    check_resident(&mem);
     assert!(rss.unwrap_or(0) > 0, "{}", mem);
     check_heap(&mem, rss);
     assert_eq!(num(&mem, "arenas"), Some(4), "{}", mem);

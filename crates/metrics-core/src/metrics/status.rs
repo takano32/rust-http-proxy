@@ -63,15 +63,12 @@ impl Metrics {
         // `/proc` を読むのはこのパスに来たときだけ (要求ごとには読まない)
         let threads = crate::sysinfo::process_threads().unwrap_or(0);
         let (fds, max_fds) = crate::sysinfo::process_fds().unwrap_or((0, 0));
-        // RSS は、キャッシュのプローブ (既定 1 秒ごと) が回っているならその値を使う。
-        // **同じ `/status` の `cache.system.process_rss_bytes` と 1 バイトも違わない**ように
-        // するため (1 枚の中に食い違う RSS が 2 つ並ぶと、どちらを信じるかが分からない)。
-        // プローブが止まっている (`PROXY_CACHE_PROBE_SECS=0` / キャッシュ無効 / `--lite`)
-        // ときは古い値しか無いので、その場で `/proc/self/status` を読む
-        let rss = cache
-            .filter(|c| !c.config().probe_interval.is_zero())
-            .and_then(|c| c.snapshot().rss)
-            .or_else(crate::sysinfo::process_rss);
+        // RSS は**今読む** (T.32.4)。内訳 (`RssAnon`・`RssFile`・`RssShmem`) と同じ 1 回の
+        // `/proc/self/status` の読みから出すので、足すと `rss` に合う。T14.21 はキャッシュの
+        // プローブの値 (`cache.system.process_rss_bytes`) を使っていたが、起動直後はプローブが
+        // 起動中に読んだ古い値 (起動 3 秒で 4.76 MB、VmRSS は 25.9 MB) だった。プローブの値は
+        // `cache.system` に `probed_at` 付きで今までどおり出る
+        let rss = crate::sysinfo::process_rss_detail();
         let clients_json: Vec<String> = self
             .clients_sorted_by(ClientSort::Requests)
             .into_iter()
@@ -177,7 +174,7 @@ impl Metrics {
     fn push_tail(
         &self,
         out: &mut String,
-        rss: Option<u64>,
+        rss: Option<crate::sysinfo::ProcessRss>,
         threads: u64,
         conn_threads: u64,
         cache: Option<&Cache>,
@@ -377,13 +374,16 @@ pub(super) fn push_env(out: &mut String, extra: &StatusExtras<'_>, cache_json: &
 ///
 /// **足して RSS になる形ではない** (README の `/status` の節にも同じ注意を書いてある):
 ///
-/// - `rss` は呼び出し側が渡す 1 つの値 (キャッシュのプローブが読んだもの、または今読んだもの)。
-///   同じ `/status` の `cache.system.process_rss_bytes` と食い違わせない
+/// - `rss` は今読んだ `VmRSS` (T.32.4。それまではキャッシュのプローブの値で、起動直後は古かった)。
+///   末尾の `rss_anon` / `rss_file` / `rss_shmem` は**同じ 1 回の読み**の `RssAnon` / `RssFile` /
+///   `RssShmem` で、足すと `rss` になる (file は本体と libc・libcrypto などの共有ライブラリ)
 /// - `heap_used` / `heap_free` / `mmap` は `mallinfo2(3)` の `uordblks` / `fordblks` /
-///   `hblkhd`。`heap_free` は「返していないだけ」で、`MADV_DONTNEED` 済みなら常駐していない。
+///   `hblkhd`。`heap_free` は**`malloc_trim` で返した頁を含む** (返しても空きの塊のまま) ので、
+///   常駐している空きはこれより小さい。
 ///   `mmap` も確保しただけで触っていないページは常駐しない (`calloc` の大きな塊など)
-/// - `stacks_estimate` は**予約**の合計 (実際に触ったページとの差は出せない)。接続スレッド
-///   (`conn`) は 256 KiB、それ以外は Rust の既定 2 MiB
+/// - `stacks_estimate` は**予約**の合計。接続スレッド (`conn`) は 256 KiB、それ以外は Rust の
+///   既定 2 MiB。常駐しているのは末尾の `stacks_resident` (smaps のスタックの写像の `Rss` の和。
+///   T.32.4) で、1 本 8〜28 KiB しか触っていない
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
 ///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
 /// - `rings` は記録のリングが**満杯のときの見積もり** (固定部 + 文字列の上限。T13.4 / T14.4 /
@@ -403,7 +403,7 @@ pub(super) fn push_env(out: &mut String, extra: &StatusExtras<'_>, cache_json: &
 /// `mallinfo2` が無い環境 (musl / glibc 2.32 以下 / Linux 以外) では 3 つとも `null`。
 fn memory_json(
     me: &Metrics,
-    rss: Option<u64>,
+    detail: Option<crate::sysinfo::ProcessRss>,
     threads: u64,
     conn_threads: u64,
     cache: Option<&Cache>,
@@ -494,6 +494,9 @@ fn memory_json(
     let conn = conn_threads.min(threads);
     let other = threads.saturating_sub(conn_threads);
     let stacks = (threads > 0).then(|| conn * CONN_STACK + other * THREAD_STACK);
+    let rss = detail.map(|d| d.rss);
+    // スタックの常駐 (T.32.4)。smaps を 1 回読む (この口に来たときだけ)
+    let stacks_resident = crate::sysinfo::stacks_resident();
     let heap = crate::sysinfo::malloc_info();
     let opt = |v: Option<u64>| v.map_or_else(|| "null".to_string(), |x| x.to_string());
 
@@ -507,7 +510,8 @@ fn memory_json(
             "\"rings_used\":{{\"recent\":{},\"errors\":{},\"bursts\":{},\"log\":{},",
             "\"events\":{},\"trace\":{},\"history\":{},\"hostseries\":{},\"quantiles\":{},",
             "\"readers\":{},\"profile\":{},\"total\":{}}},\"rings_touched\":{},\"baseline\":{},",
-            "\"trim\":{}}}"
+            "\"trim\":{},\"rss_anon\":{},\"rss_file\":{},\"rss_shmem\":{},",
+            "\"stacks_resident\":{}}}"
         ),
         opt(rss),
         opt(heap.map(|h| h.used)),
@@ -572,5 +576,10 @@ fn memory_json(
         // 1 時間に 1 回の `malloc_trim` の通算 (T.30.1)。これも `memory` の末尾に足した。
         // `history` スレッドが動かない (`--lite` / `PROXY_STATS_PERSIST=off`) なら 0 / `null`
         crate::sysinfo::trim_stats().to_json(),
+        // 常駐の内訳 (T.32.4)。`rss` と同じ 1 回の読み。**`memory` の末尾に足した**
+        opt(detail.and_then(|d| d.anon)),
+        opt(detail.and_then(|d| d.file)),
+        opt(detail.and_then(|d| d.shmem)),
+        opt(stacks_resident),
     )
 }

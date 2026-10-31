@@ -34,8 +34,8 @@ pub use malloc::{
     trim_stats,
 };
 pub use mem::{
-    CgroupMem, MemInfo, MemPressure, cgroup_mem_limits, mem_info, mem_pressure, min_free_bytes,
-    process_rss,
+    CgroupMem, MemInfo, MemPressure, ProcessRss, cgroup_mem_limits, mem_info, mem_pressure,
+    min_free_bytes, process_rss, process_rss_detail, stacks_resident,
 };
 pub use net::{SockStat, TcpExt, TcpSnmp, TcpStats, tcp_stats};
 pub use proc::{

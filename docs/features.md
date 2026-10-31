@@ -885,19 +885,25 @@
       天辺の空きしか返さないので、間に使用中の塊が残るとその下の空きページが RSS に居座ります (0.28.48 の
       24 時間で RSS 65.8 MB のうち `heap_free` 18.3 MB)。履歴スレッドが `heap_free > heap_used` のときだけ
       `malloc_trim(0)` を呼び (1 MiB 以上返したら info のログ 1 行。手元の 400 並列のあとで 40 → 33 MiB、
-      1 回 1.2 ms)、返したページは空きの塊のままなので **`heap_free` の数は減らず、減るのは `rss`** です。
+      1 回 1.2 ms)、返したページは空きの塊のままなので **`heap_free` の数は減らず、減るのは `rss`** です
+      (**`heap_free` は返した頁を含みます**。常駐している空きはこれより小さく、手元の trim 後で `heap_free` 11.6 MB に対し約 5.7 MB)。
       `malloc_trim` も `mallinfo2` と同じく実行時に探します。履歴スレッドの無い `--lite` /
       `PROXY_STATS_PERSIST=off` では返しません
     - **256 KiB 以上の確保は `mmap` に出ます** (T.32.3。`PROXY_MALLOC_MMAP_THRESHOLD_KB`)。glibc の閾を起動時に固定するので、
       重い口の `String` やキャッシュの本文はアリーナでなく `mmap` に数えられ、free した時点で OS へ返ります。
       0.30.4 までと比べると `heap_used` が小さく `mmap` が大きく出ますが、**`heap_used + mmap` は同じ**なので、
       締めの heap の行 (`heap_used + mmap − cache_memory` と起動 60 秒の基準の差) は読み方を変えずに比べられます
-    - `rss` はキャッシュのプローブ (既定 5 秒ごと) が読んだ値で、**同じ応答の
-      `cache.system.process_rss_bytes` と同じ値**です (1 枚の中に食い違う RSS が 2 つ並ばないように)。
-      プローブが止まっている (`PROXY_CACHE_PROBE_SECS=0` / キャッシュ無効 / `--lite`) ときだけ、
-      その場で `/proc/self/status` を読みます
+    - `rss` は `/status` を組むときに `/proc/self/status` から**今読んだ** `VmRSS` です (T.32.4)。
+      末尾の `rss_anon` / `rss_file` / `rss_shmem` は**同じ 1 回の読み**の `RssAnon` / `RssFile` / `RssShmem` で、
+      足すと `rss` になります (`rss_file` は本体と libc・libcrypto などの共有ライブラリの頁で、手元で約 5〜9 MB。
+      ほかのどの欄にも出ていなかった分です)。0.30.4 までは `rss` がキャッシュのプローブの値 (= 同じ応答の
+      `cache.system.process_rss_bytes`) で、**起動直後はプローブが起動中に読んだ古い値** (起動 3 秒で 4.76 MB、
+      そのときの VmRSS は 25.9 MB) でした。プローブの値は今までどおり `cache.system` に `probed_at` 付きで出ます
     - `stacks_estimate` は**予約**の合計です (接続スレッド `conn` は 256 KiB、それ以外は Rust の既定 2 MiB)。
-      実際に触ったページとの差は出せないので、RSS のうちスタックのぶんはこれより小さくなります
+      **常駐しているのは末尾の `stacks_resident`** (T.32.4) で、`/proc/self/maps` のスタックの写像 (主スレッドの
+      `[stack]` と、下端に番兵の頁が接した名前の無い `rw-p`) の常駐の頁を `mincore(2)` で数えた合計です
+      (1 本 8〜28 KiB。tokyo の `stacks_estimate` 22.0 MB に対し常駐は 1 MB 未満とみられます)。smaps を読まないので
+      `/status` 1 回の増えは 0.3 ms 未満。Linux 以外は `null`
     - `cache_memory` はキャッシュがヒープに持っている量 (`cache.memory` の `used_bytes` +
       先行確保の `reserved_bytes`)
     - `rings` は記録のリングが**満杯になったときの見積もり** (バイト): `recent` (2,000 件)、
