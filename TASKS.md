@@ -30,40 +30,12 @@ T.31.99 で 0.30.4 の RSS が 24 時間 48.6 MB → 48 時間 73.6 MB、`heap_f
 
 **32a メモリ (本体を変える)**
 
-- [ ] **T.32.0 手元で RSS の段を再生して、どの確保が残るかを測る (調べる向きを 2026-10-31 の洗い出しで正した)**
-  - 目的: 段の候補を確かめてから直す。メモリの調査員の手元の証拠: 起動直後に glibc の `mmap_threshold` がもう 2,101,248 (起動中に 2 MiB の `munmap` 1 回)、メモリのキャッシュの 14 MiB の本文を PURGE すると 14,684,160 に上がる。同じ負荷 (名前の引けない CONNECT 4,000 本) のあと、既定と `MALLOC_MMAP_THRESHOLD_=131072` で: 暇な RSS 37.7 / 32.1 MB、`heap_free` 7.0 / 1.0 MB、`/snapshot` (1.16 MB) ×5 の山 +8.5 / +0.8 MB、そのあと `malloc_trim(0)` で残るのが **+3.5 / +0.15 MB**、閾が上がった後の 14 MiB の GET→PURGE ×3 で 42.5 → 54.0 / 32.9 → 33.0 MB、trim 後 **53.0 (返ったのは 1.0 MB) / 32.7 MB**。tokyo の `history["60"]` では 10-30 16:21〜16:23 に `forwards` 3 → 16 → 2・`stores` 18 → 35・`mem_used` 0 → 13,857,210 で RSS 51.9 → 62.0 MB、10-31 02:34 の `evictions` 20 で `mem_used` 0・RSS −4.6、03:16 の trim で −6.8。総当たりが同じ濃さの時間 (`dns_fail_misses` 1,228〜1,835 本/時) の RSS は 38.6〜44.1 MB で平ら。手元の総当たり 10,000 本は 26.1 → 40.4 MB (表が上限まで埋まる 1 回きり)。10-30 09:02・12:36・16:19 の +6.4〜6.6 MB (保存 0) は次の :16 の trim で戻る形で、6 MB の `/snapshot` を誰かが引いたとみられる (未確認。`watch.yml` は軽い口 3 つだけ)。
-  - やること: 上の再生を手順として残し (`scripts/` か `docs/perf.md`)、(a) 重い口と日次の雪像、(b) 名前解決の総当たり、(c) 両方、(d) メモリのキャッシュに forward GET を計 14 MB 入れて追い出し、閾が上がった状態で重い口、を流して、それぞれの前後と trim 後の `rss`・`heap_used`・`heap_free`・`mmap`・arena の数・`mp_.mmap_threshold` を表にする。T.32.3 の前と後の両方で回す。
-  - 受け入れ基準: (a)〜(d) の山と trim 後の残りの表。tokyo の 16Z の +16.7 MB のうちキャッシュの分 (13.9 MB) とそれ以外が分けて書かれている。
-
-- [ ] **T.32.3 glibc の mmap の閾を起動時に固定する (動く閾のせいで大きな一時の確保が arena に残って返らない)**
-  - 目的: glibc は mmap で取った塊を free すると `mmap_threshold` をその大きさまで上げ、`trim_threshold` をその 2 倍にする。以後は閾より小さい大きな確保 (重い口・日次の雪像の `String`、キャッシュの本文) が arena から取られ、主でない arena の天辺の空きは free でも `malloc_trim(0)` でも返らない (glibc の `mtrim` は `main_arena` しか天辺を詰めない)。証拠は T.32.0 の表 (閾を固定すると残りが +3.5 → +0.15 MB、53.0 → 32.7 MB)。tokyo では 10-31 00:00 の日次の雪像 (主でない arena の `history` スレッドが組む) で 62.2 → 68.6 MB になり、00:16・01:16・02:16 の trim で戻っていない。
-  - やること: `M_ARENA_MAX` を設定している所 (`crates/sys/src/sys.rs:86` 付近、`crates/run/src/lib.rs:259`) で `mallopt(M_MMAP_THRESHOLD, 256 KiB)` と `mallopt(M_TRIM_THRESHOLD, 1 MiB)` を呼ぶ (値を固定すると動く閾が止まる)。`PROXY_MALLOC_MMAP_THRESHOLD_KB` (0 = glibc の既定) で戻せるようにし、`--check` と `/config` に出す。`heap_used` が小さくなり同じ量が `mmap` に移る (和は同じ) ので、README の `memory` の説明と締めの読み方に書く。
-  - 受け入れ基準: T.32.0 の手順で `/snapshot` ×5 のあと trim して残るのが 0.5 MB 未満、14 MiB×3 の GET→PURGE のあと trim した RSS が前 +1 MB 以内、gdb で `mp_.no_dyn_threshold == 1`。`scripts/cpu-per-request.sh` で CONNECT と forward の CPU/要求が 1.05 倍以内。
-
 - [ ] **T.32.1 重い口と日次の雪像を、一度に全部組まずに書き出す (T.32.0・T.32.3 のあとも山が残るなら)**
   - 目的: `/snapshot` は部ごとの JSON を組んでから 1 つにまとめる形で、6 MiB の雪像で一時の確保が 2〜3 倍になる。手元で `/snapshot` (表を埋めて 699 KB) は 1 回 5.9 ms。T.32.3 で返るようになっても、山 (cgroup の上限 256 MB に対する瞬間の使用) は残る。
   - やること: 部ごとに組んではすぐ書き出す (クライアントへの応答・日次のファイル)、器を使い回す、のどちらかで一時の確保の山を下げる。応答の中身は 1 バイトも変えない。
   - 受け入れ基準: 手元の (a) の RSS の山が T.32.3 の後の値の半分以下。`/snapshot` の応答のバイト列が前と同じ (試験)。`check-docs` 差分 0。
+  - 途中の記録 (2026-11-01、メモリの組): T.32.3 の後も一時的な山は残る ((c) で 1.08 MB の `/snapshot` に対して VmHWM +3.0 MB、trim 後に残るのは +0.6 MB)。手軽な案 (部を写したらその場で捨て、64 KiB を超える本文は頭と別に書く。バイト列が変わらないことは試験で確かめた) では山 +3.0 → +2.5 MB (−17%)、(a) は +1.0 → +0.9 MB で基準の半分以下に届かず、コミットしていない (差分は scratchpad/t32a/t321-partial.patch)。残りの山は `status_body` ×3 などの部を組むときの一時の確保で、半分にするには内部の口の応答を流しながら書く作りに変える (server・http の書き出しの口に手が入る)。T.32.3 の後は山はすぐ返るので、tokyo の 4 MB の雪像なら瞬間に十数 MB ほど (cgroup の 256 MB の約 5%) とみられる。**T.32.99 で RSS に段が残るかを見てから続けるかを決める**。
 
-- [ ] **T.32.4 `/status` の `memory` の内訳を常駐の値にする (`stacks_estimate` は予約、`heap_free` は返した頁込み、file の RSS が出ていない)**
-  - 目的: smaps で測ったスタックの常駐は 1 本 8〜28 KiB で合計 **0.30〜0.96 MB** なのに、`stacks_estimate` は **17.0〜25.4 MB** (`crates/metrics-core/src/metrics/status.rs:383`・`:476` 付近の `conn × 256K + other × 2M`)。tokyo の最後の 1 枚は `heap_used` 15.3 + `heap_free` 36.1 + `mmap` 11.7 + `stacks_estimate` 22.0 = 85.1 MB で、`rss` 73.6 MB を超える (T.31.1 の行が「説明」として並べる 2 つを足すと RSS より大きい)。`heap_free` は trim で返した頁も数える (`crates/sysinfo/src/sysinfo/malloc.rs:138`。手元の trim 後で `heap_free` 11.6 MB に対し常駐の空きは約 5.7 MB)。RSS のうち file の頁が約 9 MB (libcrypto 3.9・本体 2.8・libc 1.8 MB) あり、どの欄にも出ていない。起動 3 秒後の `/status` の `rss` が 4.76 MB で、そのときの VmRSS は 25.9 MB (プローブの古い値)。
-  - やること: `/proc/self/status` から VmRSS を読んでいる同じ 1 回で `RssAnon`・`RssFile` も出す。`stacks_estimate` は `stacks_reserved` に名前を変えるか、`/status` のときだけ smaps からスタックの常駐 (`stacks_resident`) を足す (1 回の読みの時間を測る)。`heap_free` の説明に「返した頁を含む」と書く。起動直後の `rss` は今読んだ値にする。判定表の表示の行も新しい欄を並べる (欄の無い版は今のまま)。
-  - 受け入れ基準: 手元で `rss_anon + rss_file == rss` (±1 頁)、`stacks_resident` と smaps の合計の差が 64 KiB 以内、`/status` 1 回の時間の増えが 1 ms 未満。
-
-- [ ] **T.32.5 起動時の libssl の読み込みと CA の束の解析を、最初の https:// オリジンまで遅らせる**
-  - 目的: 起動の callgrind で主スレッド 2.515 億 Ir の **70% (1.77 億) が `SSL_CTX_set_default_verify_paths`** (CA の束の PEM の解析。`crates/run/src/lib.rs:392` → `crates/tls/src/tls.rs:177-215`)。起動して `/healthz` が返るまで、既定 61〜82 ms・RSS 25.9 MB・`heap_used` 5,416 KiB、`PROXY_TLS=off` 43〜61 ms・20.4 MB・4,331 KiB (dlopen が約 +4.4 MB、CA の束が +1.1 MB)。tokyo は CONNECT が 99% 以上で forward は 48 時間で 450 本なので、https:// のオリジンを取りに行く要求が来ない限り、この約 **5.5 MB と 20 ms** は使われていない。
-  - やること: `TlsClient` を OnceLock で最初の https:// オリジンへの取得のときに作る。`--check` と起動のログは「最初の利用で読む」と書き、読めるかどうかは今どおり `--check` で確かめる。**検証は切らない**。
-  - 受け入れ基準: 起動 60 秒の RSS が −4 MB 以上、`/healthz` までが −15 ms。https:// オリジンの結合試験 (キャッシュの HTTPS) が通る。libssl が無い環境で今と同じ WARN と 502。
-
-- [ ] **T.32.6 キャッシュの `variants` の表に上限を置く (保存を始めるたびに 1 行、追い出しても消えない)**
-  - 目的: `crates/cache/src/cache/ops.rs:188` の `remember_variant` は保存を始めるたび (`begin_store`、`ops.rs:244`。保存に至らなかった回も含む) に `KeyMap<Vec<CacheKey>>` へ足し、消すのは `invalidate` (`ops.rs:198`) と `clear_all` (`ops.rs:53`) だけ。メモリやディスクの追い出し・期限切れでは消えない。1 URL あたり約 100〜130 B の見積もりで、100 万 URL なら 100 MB を超える (実測は未。tokyo では 48 時間に保存 36 回で今は効かない。開いたプロキシに撃たれたら伸び続ける)。
-  - やること: 追い出し・期限切れのときに一緒に消すか、上限 (メモリとディスクの件数の合計) を置いて古い順に捨てる。
-  - 受け入れ基準: 名前の違うキャッシュ可能な GET を 50,000 本流し、キャッシュを満たして追い出したあとの `variants.len()` が上限以下。`heap_used − cache_memory` の伸びが 1 MB 未満。
-
-- [ ] **T.32.7 大きな転送の間にメモリのキャッシュが全部追い出された理由を残す (未確認)**
-  - 目的: 10-31 02:34〜02:36 に 32.6・375.5・253.8 MB を転送した間に、`evictions` 20 で `mem_used` が 13.87 MB → 0 になった (`history["60"]`)。動く余白 (`keep_free_bytes` = active file 1.35 GB) か cgroup の余白がページキャッシュで縮んだ可能性がある。
-  - やること: そのときの `cache.memory.limit_bytes` の動きを `history` に足すか、追い出しの理由 (期限・予算) を `/events` に 1 件残す。原因が分かったら直すかを決める。
-  - 受け入れ基準: 次の 48 時間で、追い出しの理由が雪像から読める。
 
 **32b 正しさと頑丈さ (本体を変える)**
 
