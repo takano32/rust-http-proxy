@@ -684,14 +684,17 @@ pub fn handle_http_parsed(
     let mut send_continue = req.expect_continue
         && http11
         && matches!(req_framing, Framing::Chunked | Framing::Length(1..));
-    let is_get = method.eq_ignore_ascii_case("GET");
-    let head_only = method.eq_ignore_ascii_case("HEAD");
+    // メソッドは大小を区別する (RFC 9110 §9.1。T.32.8)。`get` を GET として扱うと、オリジンへは
+    // `get` のまま届いて 501・405 が返り、それが GET の鍵に保存されて他の利用者の `GET` に配られていた
+    // (キャッシュの毒)。小文字は未知のメソッドとして素通しし、保存も参照もしない
+    let is_get = method == "GET";
+    let head_only = method == "HEAD";
     // `Max-Forwards` (RFC 9110 §7.6.2。TRACE と OPTIONS だけ): 0 なら転送せずに自分で応え、
     // そうでなければ 1 減らして転送する (T27.8)。今まではどちらもそのまま転送していた。
     // 値が読めないときは今までどおり触らない。**ほかのメソッドには 1 命令も足さない**
-    let trace = method.eq_ignore_ascii_case("TRACE");
+    let trace = method == "TRACE";
     let mut decremented: Option<Vec<String>> = None;
-    if trace || method.eq_ignore_ascii_case("OPTIONS") {
+    if trace || method == "OPTIONS" {
         let found = raw_headers.iter().enumerate().find_map(|(i, l)| {
             let (k, v) = proxy_base::ascii::split_once(l, b':')?;
             k.trim_ascii()
@@ -723,7 +726,7 @@ pub fn handle_http_parsed(
         // `OPTIONS *` を送る (RFC 9112 §3.2.4。T.29.9)。今までは `/` を補って `OPTIONS /` にしていた。
         // ほかのメソッドには文字列の比較 1 回だけ
         Ok(mut o) => {
-            if method.eq_ignore_ascii_case("OPTIONS") && crate::request::has_empty_path(target) {
+            if method == "OPTIONS" && crate::request::has_empty_path(target) {
                 o.path = "*".to_string();
             }
             o
