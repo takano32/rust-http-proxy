@@ -746,7 +746,10 @@
     `dns_misses` / `dns_per_connect` / `dns_miss_ms`・`errors`・`bursts` (山の写真の枚数)・`active_max`・
     `evicted_idle`・`rss_max` / `rss_avg`・`version` (その日動いていたバイナリの版)・
     **`slo_rate_hours`** (T.29.33。`/slo` の比の 2 つを 1 時間の合計で判定した `{"error_rate":[満たした時間, 外した時間],
-    "dns_miss_per_connect":[…]}`。`/slo` の集計はメモリだけなので、その日のうちこのプロセスが動いていた時間だけ)。
+    "dns_miss_per_connect":[…]}`。`/slo` の集計はメモリだけなので、その日のうちこのプロセスが動いていた時間だけ)・
+    **`dns_fail_misses` / `dns_resolved_per_connect`** (T.32.17。`dns_misses` のうち名前解決に失敗した試みのぶんと、それを除いた
+    `(dns_misses − dns_fail_misses) ÷ connects` = `/slo` の `dns_miss_per_connect` と同じ数え方。`dns_per_connect` は今までどおり
+    失敗も入れた値で、0.30.4 の 10-29 / 10-30 は 1.137 / 1.09 でした)。
     累計 (要求数・バイト・追い出し・山) は**日の境目の値の差**、区間の値 (確立時間の分布・エラー・名前解決) は
     **その日の標本の足し合わせ**、ゲージ (同時接続数・RSS) は**最大と平均**です。
     **書くのは履歴スレッドが UTC の日付をまたいだ瞬間の 1 回だけ** (要求の経路の費用は 0)。
@@ -1124,7 +1127,8 @@
     `{"from","to","interval_secs","first_t","last_t","samples","burst_samples","normal_hours_only","connects",`
     `"p50_ms","p95_ms","avg_ms","max_ms","forwards","forward_p50_ms","forward_p95_ms","forward_avg_ms","forward_max_ms",`
     `"dns_misses","dns_miss_per_connect","dns_miss_avg_ms","errors","errors_by_cause","causes","active_max",`
-    `"burst_limit","recent_quantiles"}` で、**標本そのものは返しません** (応答は 700 B 前後、必ず 4 KiB 以下)。調査で「起動から」「前のデプロイと比べる」を
+    `"burst_limit","dns_fail_misses","recent_quantiles"}` で (`dns_fail_misses` は T.32.17 で足した `dns_misses` のうち
+    名前解決に失敗した試みのぶん。ダッシュボードの KPI「名前解決」が引きます)、**標本そのものは返しません** (応答は 700 B 前後、必ず 4 KiB 以下)。調査で「起動から」「前のデプロイと比べる」を
     見るのに `/history` を丸ごと (284 KB) 取って手元で集計していたのが 1 要求で済みます。
     - `since=restart` は `/status` の `since_start_secs` と同じ**起動時刻**から (読み戻した再起動前の標本は入りません)。
       `since` を書かなければ残っているいちばん古い標本から、`until` を書かなければ今までです。

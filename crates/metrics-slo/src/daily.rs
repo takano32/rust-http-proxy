@@ -93,6 +93,8 @@ struct Acc {
     errors: u64,
     dns_misses: u64,
     dns_ms_sum: u64,
+    /// `dns_misses` のうち名前解決に失敗した試みのぶん (標本の `dns_fail_misses`。T.32.17)
+    dns_fail_misses: u64,
     active_max: u64,
     rss_max: u64,
     rss_sum: u64,
@@ -119,6 +121,7 @@ impl Acc {
         self.errors += s.errors;
         self.dns_misses += s.dns_misses;
         self.dns_ms_sum += s.dns_ms_sum;
+        self.dns_fail_misses += s.dns_fail_misses;
         self.active_max = self.active_max.max(s.active_max).max(s.active as u64);
         // RSS が読めない環境 (`/proc` が無い) では 0 が並ぶので平均に混ぜない
         if s.rss > 0 {
@@ -141,6 +144,13 @@ impl Acc {
         } else {
             self.dns_misses as f64 / connects as f64
         };
+        // 名前解決に成功したミス ÷ 確立 (`/slo` の `dns_miss_per_connect` と同じ数え方。T.32.17)。
+        // `dns_per_connect` は今までどおり失敗した試みのミスも入れた値で、読む側の互換のため残す
+        let resolved_per = if connects == 0 {
+            0.0
+        } else {
+            self.dns_misses.saturating_sub(self.dns_fail_misses) as f64 / connects as f64
+        };
         let dns_ms = if self.dns_misses == 0 {
             0.0
         } else {
@@ -156,7 +166,8 @@ impl Acc {
              \"dns_misses\":{},\"dns_per_connect\":{:.3},\"dns_miss_ms\":{:.1},\
              \"errors\":{},\"bursts\":{},\"active_max\":{},\"evicted_idle\":{},\
              \"rss_max\":{},\"rss_avg\":{},\"version\":\"{}\",\
-             \"slo_rate_hours\":{{\"error_rate\":[{},{}],\"dns_miss_per_connect\":[{},{}]}}}}",
+             \"slo_rate_hours\":{{\"error_rate\":[{},{}],\"dns_miss_per_connect\":[{},{}]}},\
+             \"dns_fail_misses\":{},\"dns_resolved_per_connect\":{:.3}}}",
             y,
             mo,
             d,
@@ -185,6 +196,9 @@ impl Acc {
             rate_hours[0][1].min(99),
             rate_hours[1][0].min(99),
             rate_hours[1][1].min(99),
+            // 末尾に足した欄 (T.32.17)。無い古い行は読む側が `dns_per_connect` に落ちる
+            num(self.dns_fail_misses),
+            flt(resolved_per),
         );
         out
     }
@@ -551,6 +565,29 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    /// T.32.17: 名前解決に失敗した試みのミスを除いた率 (`dns_resolved_per_connect`) を末尾の欄に書く。
+    /// `dns_per_connect` は今までどおり失敗も入れた値 (読む側の互換)。
+    #[test]
+    fn a_line_carries_the_miss_rate_without_failed_lookups() {
+        let path = tmp("resolved");
+        let mut w = Writer::new(Some(path.clone()), "0.1.0+test");
+        let base = 20_400 * DAY;
+        for i in 0..4 {
+            // 1 本に CONNECT 1 本・ミス 2 回 (うち失敗 1 回は 1 本おき)
+            let mut s = sample(base + 100 + i * 5, 10);
+            s.dns_fail_misses = (i % 2 == 0) as u64;
+            w.add(&s, 0);
+        }
+        w.add(&sample(base + DAY + 5, 20), 0);
+        let rows = lines(&path);
+        assert_eq!(rows.len(), 1, "{:?}", rows);
+        // 5 本 (境目の 1 本も終わる日に足す): ミス 10・失敗 2・CONNECT 5
+        assert_eq!(field(&rows[0], "dns_per_connect"), Some("2.000"));
+        assert_eq!(field(&rows[0], "dns_fail_misses"), Some("2"));
+        assert_eq!(field(&rows[0], "dns_resolved_per_connect"), Some("1.600"));
+        let _ = fs::remove_file(&path);
+    }
+
     #[test]
     fn starting_twice_on_the_same_day_keeps_one_line() {
         let path = tmp("twice");
@@ -604,6 +641,7 @@ mod tests {
             errors: u64::MAX,
             dns_misses: u64::MAX,
             dns_ms_sum: u64::MAX,
+            dns_fail_misses: u64::MAX,
             active_max: u64::MAX,
             rss_max: u64::MAX,
             rss_sum: u64::MAX,
@@ -634,6 +672,7 @@ mod tests {
             errors: 5,
             dns_misses: 123,
             dns_ms_sum: 3_988,
+            dns_fail_misses: 100,
             active_max: 42,
             rss_max: 58_720_256,
             rss_sum: 52_428_800,

@@ -114,7 +114,7 @@ pub struct Summary {
     pub conn_excess: Window,
     /// `dns_misses` のうち名前解決に失敗した試みが払ったぶん (標本の `dns_fail_misses`。T.32.36)。
     /// 異常検知の `dns_miss_rate` は `/slo` と同じく `(dns_misses − dns_fail_misses) ÷ 確立` で読む。
-    /// JSON には出さない (`conn_excess` と同じ)
+    /// JSON の末尾にも出す (T.32.17。ダッシュボードの KPI「名前解決」が読む)
     pub dns_fail_misses: u64,
     /// 名前解決に成功した 443・80 以外の宛先へのエラー (標本の `other_port_errors`。T.32.36)。
     /// 異常検知の `errors` は `/slo` と同じく引く。JSON には出さない
@@ -275,6 +275,9 @@ impl Summary {
         let _ = write!(out, "],\"active_max\":{}", self.active_max);
         // 末尾に足した鍵 (T.29.13): 平常時を切った閾
         let _ = write!(out, ",\"burst_limit\":{}", self.burst_limit);
+        // 末尾に足した鍵 (T.32.17): `dns_misses` のうち名前解決に失敗した試みのぶん。ダッシュボードの
+        // KPI「名前解決」が `/status` のミスから失敗の割合を引く (`/slo` と同じく失敗を数えない)
+        let _ = write!(out, ",\"dns_fail_misses\":{}", self.dns_fail_misses);
         if let Some(q) = recent {
             let _ = write!(out, ",\"recent_quantiles\":{}", q);
         }

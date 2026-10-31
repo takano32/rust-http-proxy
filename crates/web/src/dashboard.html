@@ -217,7 +217,8 @@ var bounds=[];     // 窓のヒストグラムの区間 (ms)。`/history` の bo
 var causes=[];     // エラーの原因の名前。`/history` の causes
 var last=null;     // 直近の /status
 var lastSample=null;
-var badLists=[null,null];  // [?sort=errors, ?sort=dns] の hosts[] (30 秒ごと。T13.3)
+var badLists=[null,null];
+var dnsSum=null;  // `/history?summary=1&since=restart` (30 秒ごと。KPI「名前解決」が失敗のミスを引く。T.32.17)  // [?sort=errors, ?sort=dns] の hosts[] (30 秒ごと。T13.3)
 // エラーの原因の既定の名前 (`/history` の causes が来るまで、と来なかったとき)
 var CAUSES=['dns','refused','unreachable','timeout','reset','tls','loop','other'];
 
@@ -266,9 +267,20 @@ function mergeWindows(samples,n,prefix){
 // 名前解決の KPI (`/status` の dns をそのまま読む)。ミス率・ミス 1 回の値段・先回り。
 // `refreshes` と `negative_ttl_secs` は T13.1、`warm` は T14.1、引き直しの様子
 // (`refresh_*`) は T15.0 (7) で足すキーなので、**無ければ null** (「–」で描く)
-function dnsStats(s){
+// **ミス率は名前解決に失敗した試みのミスを除く** (T.32.17。`/slo` の `dns_miss_per_connect` と同じ考え):
+// `sum` は `/history?summary=1&since=restart` で、その `dns_fail_misses ÷ dns_misses` の割合を `/status` の
+// ミスから引き、serve-stale で返した回 (`stale_hits`。ミスに入れていない) を当たりに数える。
+// `sum` が無いか `dns_fail_misses` を持たない版では今までどおり misses ÷ (hits + misses)
+function dnsStats(s,sum){
   var d=(s&&s.dns)||{},hits=+d.hits||0,miss=+d.misses||0,tot=hits+miss;
-  return {rate:tot?miss/tot*100:null,avg:d.miss_avg_ms==null?null:+d.miss_avg_ms,
+  var failed=null,rate=tot?miss/tot*100:null;
+  if(sum&&sum.dns_fail_misses!=null&&+sum.dns_misses>0){
+    failed=Math.round(miss*Math.min(1,+sum.dns_fail_misses/+sum.dns_misses));
+    var ok=miss-failed,den=ok+hits+(+d.stale_hits||0);
+    rate=den?ok/den*100:null;
+  }
+  return {rate:rate,raw_rate:tot?miss/tot*100:null,failed:failed,
+    avg:d.miss_avg_ms==null?null:+d.miss_avg_ms,
     hits:hits,misses:miss,lookups:tot,entries:+d.entries||0,
     negative:+d.negative_hits||0,stale:+d.stale_served||0,
     ttl:d.ttl_secs==null?null:+d.ttl_secs,
@@ -978,10 +990,15 @@ function renderStatus(s){
   $('active').textContent=fmtNum(s.active_connections);
   var lim=function(v){return v?fmtNum(v):'無制限'};
   // 名前解決 (T13.3): ミス率とミス 1 回の値段。T13.1 の「先回り」は**あれば**出す
-  var dn=dnsStats(s);
+  var dn=dnsStats(s,dnsSum);
   $('dnsmiss').textContent=dn.rate==null?'–':dn.rate.toFixed(1)+'%';
-  $('dnsmiss').title='ミス率 = misses ÷ (hits + misses)。ミスの 1 回だけが OS に問い合わせます';
+  $('dnsmiss').title=dn.failed==null
+    ?'ミス率 = misses ÷ (hits + misses)。ミスの 1 回だけが OS に問い合わせます'
+    :'ミス率 = 名前解決に成功したミス ÷ (hits + stale_hits + 成功したミス)。名前解決に失敗した試みのミス '
+      +fmtNum(dn.failed)+' 回 (/history の dns_fail_misses の割合) は数えません。失敗も入れると '
+      +(dn.raw_rate==null?'–':dn.raw_rate.toFixed(1)+'%');
   var dparts=['ミス '+fmtNum(dn.misses)+' / '+fmtNum(dn.lookups),'ミス 1 回 '+fmtMs(dn.avg)];
+  if(dn.failed)dparts.push('うち失敗 '+fmtNum(dn.failed));
   if(dn.refreshes!=null)dparts.push('先回り '+fmtNum(dn.refreshes)+' 回');
   if(dn.warm!=null)dparts.push('warm '+fmtNum(dn.warm)+' 件'+(dn.warmsecs?' ('+dn.warmsecs+' s)':''));
   if(dn.negative)dparts.push('失敗の再利用 '+fmtNum(dn.negative));
@@ -1140,7 +1157,9 @@ function fetchJson(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.
 function pollStatus(){if($('pause').checked)return;fetchJson('/status').then(function(s){renderStatus(s);ok(true,'更新 '+new Date().toLocaleTimeString())}).catch(function(e){ok(false,'取得失敗: '+e.message)})}
 // 「悪いホスト」の 2 枚だけは **30 秒に 1 回** (2 秒ごとに足すとプロキシ側の仕事が 2 倍になる)
 function pollBad(){if($('pause').checked)return;
-  ['errors','dns'].forEach(function(k,i){fetchJson('/status?sort='+k).then(function(s){badLists[i]=s.hosts||[];renderBad()}).catch(function(){})})}
+  ['errors','dns'].forEach(function(k,i){fetchJson('/status?sort='+k).then(function(s){badLists[i]=s.hosts||[];renderBad()}).catch(function(){})});
+  // 起動からの要約 (KPI「名前解決」の失敗の割合。T.32.17)。次の `/status` (2 秒ごと) で描き直す
+  fetchJson('/history?summary=1&since=restart').then(function(j){dnsSum=j}).catch(function(){})}
 // SLO の達成率は **30 秒に 1 回** (1 日の達成率は 5 秒では動かない。T14.50)。
 function pollSlo(){if($('pause').checked)return;
   fetchJson('/slo?days=7').then(renderSlo).catch(function(){$('slocard').hidden=true})}

@@ -87,7 +87,7 @@ select,button{background:#0b0d13;border:1px solid var(--line);color:var(--fg);bo
   <section class="card">
     <h2>今日 <span class="r">/daily?n=14 · 1 日 1 行で永久に残る要約 (T14.20)</span></h2>
     <div class="kv" id="todaykv"></div>
-    <div style="overflow-x:auto"><table id="daily"><thead><tr><th>日</th><th title="その日をどれだけ見ていたか (24 時間 = 100%)">見ていた</th><th>要求</th><th>転送</th><th>CONNECT</th><th>p50</th><th>p95</th><th title="名前解決のミス ÷ CONNECT">ミス率</th><th title="ミス 1 回の平均">ミス 1 回</th><th>エラー</th><th title="その日の同時接続の山">山</th><th title="その日の RSS の最大 (括弧は平均)">RSS</th><th>版</th></tr></thead><tbody></tbody></table></div>
+    <div style="overflow-x:auto"><table id="daily"><thead><tr><th>日</th><th title="その日をどれだけ見ていたか (24 時間 = 100%)">見ていた</th><th>要求</th><th>転送</th><th>CONNECT</th><th>p50</th><th>p95</th><th title="名前解決のミス ÷ CONNECT (T.32.17 から名前解決に失敗した試みのミスを除く)">ミス率</th><th title="ミス 1 回の平均">ミス 1 回</th><th>エラー</th><th title="その日の同時接続の山">山</th><th title="その日の RSS の最大 (括弧は平均)">RSS</th><th>版</th></tr></thead><tbody></tbody></table></div>
     <div class="hint" id="dailyhint"></div>
   </section>
 
@@ -418,6 +418,9 @@ function dailyRows(j,n){
       p50:num(d.connect_p50_ms),p95:num(d.connect_p95_ms),dns_misses:misses,
       // 無い版の行でも読めるように、書いていなければミス ÷ CONNECT を自分で出す
       dns_per_connect:d.dns_per_connect!=null?+d.dns_per_connect:(connects?misses/connects:null),
+      // 名前解決に失敗した試みのミスを除いた率 (T.32.17。`/slo` と同じ数え方)。欄の無い古い行は null
+      dns_resolved_per_connect:d.dns_resolved_per_connect!=null?+d.dns_resolved_per_connect
+        :(d.dns_fail_misses!=null&&connects?Math.max(0,misses-(+d.dns_fail_misses))/connects:null),
       dns_miss_ms:num(d.dns_miss_ms),errors:errs,error_rate:reqs>0?errs/reqs*100:null,
       bursts:+d.bursts||0,active_max:+d.active_max||0,evicted_idle:+d.evicted_idle||0,
       rss_max:+d.rss_max||0,rss_avg:+d.rss_avg||0,version:d.version||'',snapshot:null});
@@ -742,13 +745,23 @@ function renderScatter(j){
   drawScatter();
 }
 
+// `/daily` の 1 行のミス率 (T.32.17): 失敗を除いた欄があればそれ、無い古い行は今までの値
+function dailyMiss(r){
+  var v=r.dns_resolved_per_connect!=null?r.dns_resolved_per_connect:r.dns_per_connect;
+  return v==null?'–':v.toFixed(3);
+}
+function dailyMissTitle(r){
+  return r.dns_resolved_per_connect==null?'名前解決のミス ÷ CONNECT'
+    :'名前解決に成功したミス ÷ CONNECT (失敗も入れると '
+      +(r.dns_per_connect==null?'–':r.dns_per_connect.toFixed(3))+')';
+}
 // 「今日」: 日別の要約の表と、いちばん新しい日 (= ふつう昨日) の主な数字
 function renderDaily(j){
   var d=dailyRows(j,14),last=d.rows[0]||null;
   $('todaykv').innerHTML=last?[['最後の日',last.day],['見ていた',last.coverage.toFixed(0)+' %'],
     ['要求',fmtNum(last.requests)],['転送',fmtBytes(last.bytes)],['CONNECT',fmtNum(last.connects)],
     ['p50',fmtMs(last.p50)],['p95',fmtMs(last.p95)],
-    ['ミス / 接続',last.dns_per_connect==null?'–':last.dns_per_connect.toFixed(3)],
+    ['ミス / 接続',dailyMiss(last)],
     ['エラー',fmtNum(last.errors)],['山 (同時接続)',fmtNum(last.active_max)],
     ['RSS 最大',fmtBytes(last.rss_max)]].map(function(p){
       return '<div><b>'+p[0]+'</b>'+p[1]+'</div>';
@@ -757,7 +770,7 @@ function renderDaily(j){
     return '<tr><td>'+esc(r.day)+'</td><td'+(r.coverage<99?' style="color:var(--warn)"':'')+'>'
       +r.coverage.toFixed(0)+' %</td><td>'+fmtNum(r.requests)+'</td><td>'+fmtBytes(r.bytes)
       +'</td><td>'+fmtNum(r.connects)+'</td><td>'+fmtMs(r.p50)+'</td><td>'+fmtMs(r.p95)
-      +'</td><td>'+(r.dns_per_connect==null?'–':r.dns_per_connect.toFixed(3))
+      +'</td><td title="'+dailyMissTitle(r)+'">'+dailyMiss(r)
       +'</td><td>'+fmtMs(r.dns_miss_ms)+'</td><td'+(r.errors?' style="color:var(--bad)"':'')+'>'
       +fmtNum(r.errors)+'</td><td>'+fmtNum(r.active_max)+'</td><td>'+fmtBytes(r.rss_max)
       +' <span class="hint" style="display:inline">('+fmtBytes(r.rss_avg)+')</span></td><td>'

@@ -232,6 +232,20 @@ if (api.dnsStats({ dns: {} }).warm !== null) fail('warm が無ければ null の
 if (api.dnsStats({ dns: { warm: 5, warm_secs: 900 } }).warm !== 5) {
   fail('warm を読めていない');
 }
+// T.32.17: ミス率は名前解決に失敗した試みのミスを除く (`/history?summary=1&since=restart` の
+// `dns_fail_misses ÷ dns_misses` を `/status` のミスから引き、`stale_hits` を当たりに数える)。
+// 数字は 0.30.4 の 48 時間の雪像 (`2026-10-31T063104Z`): 今までの 64.5% が 5.1% になる
+const realDns = { dns: { hits: 17266, misses: 31358, stale_hits: 12591 } };
+const realSum = { dns_misses: 31348, dns_fail_misses: 29742 };
+const rdn = api.dnsStats(realDns, realSum);
+if (rdn.rate.toFixed(1) !== '5.1') fail('失敗を除いたミス率が 5.1% にならない: ' + rdn.rate);
+if (rdn.raw_rate.toFixed(1) !== '64.5') fail('失敗も入れたミス率が 64.5% にならない: ' + rdn.raw_rate);
+if (rdn.failed !== 29751) fail('失敗のミスの見積もりが合わない: ' + rdn.failed);
+// 要約が無い / `dns_fail_misses` を持たない古い版は今までどおり misses ÷ (hits + misses)
+for (const old of [undefined, null, { dns_misses: 31348 }, { dns_misses: 0, dns_fail_misses: 0 }]) {
+  const o = api.dnsStats(realDns, old);
+  if (o.rate !== o.raw_rate || o.failed !== null) fail('欄の無い版でミス率が変わった: ' + JSON.stringify(old));
+}
 
 const causeNames = hist.causes || [];
 const bad = api.badHosts([st.hosts], causeNames, 10);
@@ -2268,6 +2282,16 @@ if (calc.dns_per_connect !== 0.25) fail('ミス率を自分で出せていない
 if (insNew.dailyRows({ days: [{ day: 'x', t: 1 }] }, 7).rows[0].dns_per_connect !== null) {
   fail('CONNECT 0 の日はミス率を出さない (null) はず');
 }
+// T.32.17: 失敗を除いた率の欄 (`dns_resolved_per_connect`)。無ければ `dns_fail_misses` から出し、
+// どちらも無い古い行は null (表は今までの `dns_per_connect` を出す)
+const res1 = insNew.dailyRows({ days: [{ day: 'a', t: 1, connects: 200, dns_misses: 50,
+  dns_per_connect: 0.25, dns_resolved_per_connect: 0.04 }] }, 7).rows[0];
+if (res1.dns_resolved_per_connect !== 0.04 || res1.dns_per_connect !== 0.25) {
+  fail('/daily の dns_resolved_per_connect を読めていない');
+}
+const res2 = insNew.dailyRows({ days: [{ day: 'b', t: 1, connects: 200, dns_misses: 50, dns_fail_misses: 40 }] }, 7).rows[0];
+if (res2.dns_resolved_per_connect !== 0.05) fail('dns_fail_misses から率を出せていない: ' + res2.dns_resolved_per_connect);
+if (calc.dns_resolved_per_connect !== null) fail('欄の無い古い行は null のはず');
 
 // 「今週」: `/daily` の 7 行を足したもの。**足せるものだけ足す** (分位点は足さない)
 const wk = insNew.weeklyRows(dailyJson, snapsJson, 7);

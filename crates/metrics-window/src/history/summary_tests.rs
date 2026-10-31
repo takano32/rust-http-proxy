@@ -313,7 +313,8 @@ fn the_normal_hours_of_a_busy_day_are_not_empty() {
     assert_eq!((s.samples, s.burst_samples), (23, 0));
     assert_eq!(s.burst_limit, 2424);
     assert!(
-        s.to_json().contains(",\"burst_limit\":2424}"),
+        s.to_json()
+            .contains(",\"burst_limit\":2424,\"dns_fail_misses\":0}"),
         "{}",
         s.to_json()
     );
