@@ -1016,6 +1016,12 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 
 上限を割合で抑えたいときは `PROXY_*_TARGET_PERCENT` (既定 100 = 抑えない) を下げます。
 
+**予算で追い出したときは理由が残ります** (T.32.7): `/status` の `cache` の末尾の `budget_evictions` (プローブが予算で
+メモリの層から追い出した回数) と `last_budget_eviction` (最後の 1 回の時刻・件数・前後の使用量・そのときの上限と、上限を決めた
+材料 = 動的マージン・cgroup の余白・`MemAvailable`・`Active(file)`・cgroup の使用量と制限)。同じ内容を info のログに 1 行出します。
+10-31 の tokyo で、大きな転送の間にメモリのキャッシュが全部 (13.87 MB) 追い出されたのに、1 分ごとの `mem_limit` (189 → 126 → 53 MB)
+からは何が上限を下げたかが読めなかったためです。
+
 計測の分母は次のとおりです。
 
 - **メモリ**: `/proc/meminfo` の `MemTotal` / `MemAvailable` に加え、所属する cgroup (v1/v2) の制限と

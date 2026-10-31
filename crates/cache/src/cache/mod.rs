@@ -128,6 +128,9 @@ pub struct Cache {
     doorkeeper: admission::Doorkeeper,
     pub evictions: AtomicU64,
     pub bytes_served: AtomicU64,
+    /// プローブが予算 (動く上限) で追い出した回数と、最後の 1 回の様子 (T.32.7)
+    budget_evictions: AtomicU64,
+    last_budget_eviction: Mutex<Option<ops::BudgetEviction>>,
 }
 
 /// 同時に走らせる裏側の再検証の上限。
@@ -180,6 +183,8 @@ impl Cache {
             doorkeeper: admission::Doorkeeper::default(),
             evictions: AtomicU64::new(0),
             bytes_served: AtomicU64::new(0),
+            budget_evictions: AtomicU64::new(0),
+            last_budget_eviction: Mutex::new(None),
         };
         if !cache.cfg.enabled {
             return cache;

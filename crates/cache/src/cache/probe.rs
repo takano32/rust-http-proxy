@@ -83,7 +83,8 @@ impl Cache {
         self.mem
             .release_ballast(self.mem.usage().0, self.mem.capacity().min(mem_ceiling));
         self.disk.release_ballast_to(disk_ceiling);
-        let evicted = self.mem.enforce() + self.disk.enforce();
+        // 予算で追い出したら理由を残す (T.32.7。中身は `ops.rs`)
+        let evicted = self.enforce_budget();
         self.count_evictions(evicted);
 
         if tick.is_multiple_of(self.ticks_per(SWEEP_INTERVAL_SECS)) {

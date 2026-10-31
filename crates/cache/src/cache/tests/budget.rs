@@ -36,6 +36,53 @@ fn shrinking_budget_evicts_down_to_new_capacity() {
     assert_eq!(cache.mem_usage().1, 3);
 }
 
+/// プローブの追い出しは、上限を下げられて追い出した回の様子を残し、`/status` に出す (T.32.7)。
+#[test]
+fn budget_eviction_is_recorded_with_its_limit() {
+    let cache = fresh("shp-test-budget-evict", 10 * MIB, 0);
+    assert!(
+        cache
+            .to_json()
+            .ends_with(",\"budget_evictions\":0,\"last_budget_eviction\":null}")
+    );
+    for i in 0..4 {
+        let url = format!("http://example.com/b/{}", i);
+        cache.put(
+            cache_key("GET", &url),
+            &url,
+            vec![b'x'; MIB as usize],
+            Duration::from_secs(60),
+            i,
+        );
+    }
+    let before = cache.mem_usage().0;
+    // 上限が下がっていなければ追い出さず、記録もしない
+    assert_eq!(cache.enforce_budget(), 0);
+    assert_eq!(cache.budget_evictions(), 0);
+    cache.mem.set_capacity(MIB + MIB / 2);
+    assert_eq!(cache.enforce_budget(), 3);
+    let rec = cache.last_budget_eviction().expect("記録がある");
+    assert_eq!(rec.entries, 3);
+    assert_eq!(rec.bytes_before, before);
+    assert_eq!(rec.bytes_after, cache.mem_usage().0);
+    assert_eq!(rec.limit_bytes, MIB + MIB / 2);
+    assert_eq!(cache.budget_evictions(), 1);
+    let json = cache.to_json();
+    assert!(
+        json.contains(",\"budget_evictions\":1,\"last_budget_eviction\":{\"at\":"),
+        "{}",
+        json
+    );
+    assert!(
+        json.contains(&format!(
+            "\"limit_bytes\":{},\"keep_free_bytes\":",
+            MIB + MIB / 2
+        )),
+        "{}",
+        json
+    );
+}
+
 #[test]
 fn sweep_removes_garbage_from_both_tiers() {
     let cache = fresh("shp-test-sweep", MIB, MIB);

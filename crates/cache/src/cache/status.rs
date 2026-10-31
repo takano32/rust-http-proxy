@@ -57,7 +57,8 @@ impl Cache {
                 "\"mem_total_bytes\":{},\"mem_available_bytes\":{},\"mem_used_percent\":{},",
                 "\"mem_active_file_bytes\":{},",
                 "\"cgroup_limit_bytes\":{},\"cgroup_usage_bytes\":{},\"mem_pressure\":{},",
-                "\"disk_total_bytes\":{},\"disk_available_bytes\":{},\"disk_used_percent\":{}}}}}"
+                "\"disk_total_bytes\":{},\"disk_available_bytes\":{},\"disk_used_percent\":{}}},",
+                "\"budget_evictions\":{},\"last_budget_eviction\":{}}}"
             ),
             self.cfg.enabled,
             hits_mem + hits_disk,
@@ -118,6 +119,10 @@ impl Cache {
             opt(fs.map(|f| f.total)),
             opt(fs.map(|f| f.available)),
             opt_f(fs.map(|f| f.used_percent())),
+            // 予算で追い出した回数と最後の 1 回 (T.32.7)。**末尾に足した**
+            self.budget_evictions(),
+            self.last_budget_eviction()
+                .map_or_else(|| "null".to_string(), |e| e.to_json()),
         )
     }
 }
