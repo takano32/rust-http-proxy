@@ -949,6 +949,8 @@ struct PrevTask {
     syscall: Option<i64>,
     /// `schedstat` の走れずに待った ns (読めなければ `None`)
     run_delay_ns: Option<u64>,
+    /// 役割 ([`role_of`])。全スレッドを読まない秒に前回の状態を積むのに使う (T.32.37)
+    role: usize,
 }
 
 /// スレッドの標本を取る側 (`profile-sample` スレッドが 1 つだけ持つ。T14.3 (2))。
@@ -981,6 +983,11 @@ pub struct Sampler {
     pending_run_delay: [u64; ROLES.len()],
     /// `schedstat` が 1 本でも読めたか (読めなければ `run_delay_us` は `null`)
     schedstat_readable: bool,
+    /// 前に全スレッドを読んだときの (スレッド数, プロセスの utime + stime の tick, 要求の累計)。
+    /// 次の秒も同じなら全スレッドを読まない (T.32.37)
+    last_whole: Option<(u64, u64, u64)>,
+    /// 全スレッドを読まずに済ませた回数 (試験用)
+    skipped: u64,
 }
 
 /// スレッドの `stat` を開いたまま持つ本数の上限 (T.32.21)。
@@ -1003,6 +1010,51 @@ impl Sampler {
             pending_top: std::collections::HashMap::new(),
             pending_run_delay: [0; ROLES.len()],
             schedstat_readable: false,
+            last_whole: None,
+            skipped: 0,
+        }
+    }
+
+    /// 1 回ぶん取る。**プロセスの CPU (tick) とスレッド数と要求の数が前回と同じ秒は
+    /// 全スレッドを読まず**、前回の状態をもう 1 標本ぶん積む (T.32.37。利用者の決定 (a))。
+    ///
+    /// どのスレッドも 10 ms (1 tick) 走っていなければ、状態は「前と同じ所で寝ている」と
+    /// みなせる (T.29.21 の「休眠のまま ticks が同じなら前回の値」をプロセス全体に広げた形)。
+    /// 毎秒の仕事は `/proc/self/task` の readdir とスレッドごとの `stat` で、暇な秒に
+    /// これを省くと `profile-sample` の CPU がおよそ半分になる。スレッドが生まれた・消えた秒は
+    /// スレッド数が変わるので必ず読み直す。`/proc/self/stat` を読むのは [`Sampler::for_self`] のときだけ
+    /// (試験が差し替えた `root` はこのプロセスのものではない)。
+    pub fn sample_unless_idle(&mut self, profile: &Profile, requests: u64) {
+        let whole = if self.self_tid.is_some() {
+            crate::sysinfo::proc::read_small_into(
+                std::path::Path::new("/proc/self/stat"),
+                &mut self.buf,
+            )
+            .and_then(parse_stat_threads_ticks)
+            .map(|(threads, ticks)| (threads, ticks, requests))
+        } else {
+            None
+        };
+        if whole.is_some() && whole == self.last_whole && !self.prev.is_empty() {
+            self.repeat_last();
+            return;
+        }
+        self.last_whole = whole;
+        self.sample(profile);
+    }
+
+    /// 前回の状態をもう 1 標本ぶん積む (CPU と待ちの増えは 0。T.32.37)。
+    fn repeat_last(&mut self) {
+        self.skipped += 1;
+        for (tid, p) in &self.prev {
+            let w = &mut self.pending[p.role];
+            w.samples += 1;
+            let (slot, _) = state_slot(p.syscall, p.state);
+            w.states[slot] += 1;
+            let e = self.pending_top.entry(*tid).or_default();
+            e.tid = *tid;
+            e.role = p.role as u8;
+            e.running += u32::from(slot == STATE_RUNNING);
         }
     }
 
@@ -1065,6 +1117,7 @@ impl Sampler {
                     state: t.state,
                     syscall: t.syscall,
                     run_delay_ns: t.run_delay_ns,
+                    role,
                 },
             );
             let cpu_us = t.ticks.saturating_sub(prev_ticks) * self.tick_us;
@@ -1159,6 +1212,17 @@ pub fn process_cpu_split_us() -> Option<(u64, u64)> {
     parse_stat_cpu_split_us(&text)
 }
 
+/// `/proc/<pid>/stat` の (スレッド数 (項目 20), utime + stime (tick)) (T.32.37)。
+pub fn parse_stat_threads_ticks(text: &str) -> Option<(u64, u64)> {
+    let rest = &text[text.rfind(')')? + 1..];
+    let mut it = rest.split_whitespace();
+    // 最後の ')' の次は state (項目 3)。utime は項目 14、stime 15、num_threads 20
+    let utime: u64 = it.nth(11)?.parse().ok()?;
+    let stime: u64 = it.next()?.parse().ok()?;
+    let threads: u64 = it.nth(4)?.parse().ok()?;
+    Some((threads, utime + stime))
+}
+
 /// `/proc/<pid>/stat` の (utime + stime, utime) を us で返す (T16.0)。
 ///
 /// **持つのはユーザー空間だけ** (カーネル側は合計から引けば出る)。
@@ -1216,7 +1280,7 @@ pub fn spawn<M: Source>(metrics: std::sync::Arc<M>, sample_ms: u64) -> JoinHandl
             loop {
                 thread::sleep(step);
                 if let Some(s) = sampler.as_mut() {
-                    s.sample(metrics.profile());
+                    s.sample_unless_idle(metrics.profile(), metrics.total_requests());
                 }
                 waited += step;
                 if waited >= TICK {
@@ -1987,6 +2051,73 @@ mod tests {
             "schedstat の読める / 読めないと `run_delay_us` が食い違う"
         );
         let _ = spinner.join();
+    }
+
+    #[test]
+    fn parses_the_thread_count_and_ticks_of_proc_self_stat() {
+        let line = "42 (a b) c) S 1 42 42 0 -1 4194560 100 0 0 0 7 5 0 0 20 0 13 0 100 0\n";
+        assert_eq!(parse_stat_threads_ticks(line), Some((13, 12)));
+        assert_eq!(parse_stat_threads_ticks("42 (x) S 1"), None);
+    }
+
+    /// 暇な秒は全スレッドを読まず、スレッドが生まれた・消えた秒と要求が来た秒は必ず読み直す (T.32.37)。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_sampler_skips_idle_seconds_but_rereads_when_threads_come_and_go() {
+        let p = Profile::default();
+        let mut s = Sampler::for_self();
+        s.sample_unless_idle(&p, 0);
+        assert_eq!(s.skipped, 0, "初回は必ず読む");
+        // 同じプロセスの別の試験が CPU を使うと tick が進むので、読み飛ばしが起きるまで試す
+        let skipped = (0..200).any(|_| {
+            s.sample_unless_idle(&p, 0);
+            if s.skipped > 0 {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            false
+        });
+        assert!(skipped, "暇な秒が 1 度も読み飛ばされない");
+        // 読み飛ばした秒も 1 標本ぶん積む (状態の分布の分母が減らない)
+        let samples: u64 = s.pending.iter().map(|w| w.samples).sum();
+        assert!(samples > s.prev.len() as u64);
+        // 要求が来た秒は読み直す
+        let before = s.skipped;
+        s.sample_unless_idle(&p, 1);
+        assert_eq!(s.skipped, before, "要求が来た秒を読み飛ばした");
+        // スレッドが生まれた秒は読み直す (新しいスレッドが前回の標本に入る)
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let h = thread::Builder::new()
+            .name("t3237-born".into())
+            .spawn(move || rx.recv().ok())
+            .unwrap();
+        let born = (0..200).find_map(|_| {
+            s.sample_unless_idle(&p, 1);
+            let tid = crate::sysinfo::scan_tasks(
+                std::path::Path::new("/proc/self/task"),
+                &mut Vec::new(),
+            )
+            .and_then(|scan| scan.tasks.into_iter().find(|t| t.comm == "t3237-born"))
+            .map(|t| t.tid);
+            match tid {
+                Some(tid) => {
+                    // 名前が付いたあとの 1 回で、そのスレッドが読まれている
+                    s.sample_unless_idle(&p, 1);
+                    Some(tid)
+                }
+                None => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    None
+                }
+            }
+        });
+        let born = born.expect("生まれたスレッドが見える");
+        assert!(s.prev.contains_key(&born), "生まれたスレッドを読んでいない");
+        tx.send(()).unwrap();
+        h.join().unwrap();
+        // 消えた秒も読み直す (消えたスレッドが前回の標本から落ちる)
+        s.sample_unless_idle(&p, 1);
+        assert!(!s.prev.contains_key(&born), "消えたスレッドが残っている");
     }
 
     /// `/proc` が読めない環境では `off` に落ちる (受け入れ基準)。

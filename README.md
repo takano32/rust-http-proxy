@@ -749,6 +749,9 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   **休眠 (`S`) のまま CPU の ticks が前回と同じスレッドは `syscall` と `schedstat` を開かず前回の値を使います** (T.29.21。暇なときの open は 1 本 3 → 1、手元の 9 スレッドで 1 秒 27 → 11 回)。そのため **10 ms (1 tick) 未満だけ走って別のシステムコールで寝直したスレッドは、状態が 1 標本古く見えます** (走れずに待った時間は次に読んだときに累計の差でまとめて入るので消えません)。
   **スレッドの `stat` と、毎秒・5 秒ごとに読む `/proc`・`/sys` の決まったファイル (`/proc/self/status`・`/proc/meminfo`・`/proc/net/netstat`・cgroup の `memory.*` / `cpu.*` など) は開いたままにして `pread` 1 回で読みます** (T.32.21。読めなくなったら開き直し、初めから無かったパス (cgroup v1 の `*.pressure` など) は次の起動まで開き直しません)。
   その分 `/status` の `fds` が 30 本前後 (+ スレッドの数、上限 128) 増えます。実測 (暇な既定 60 秒の `strace -f`): システムコール 63.8 → 25.4 回/秒、cache-probe 66〜77 → 49 µs/s。
+  **プロセスの CPU (tick) とスレッド数と要求の数が前の標本と同じ秒は、全スレッドを読まずに前の状態をもう 1 標本ぶん積みます** (T.32.37。利用者の決定)。
+  つまり**状態の分布は、プロセスのどこかが 10 ms 以上走ったか、スレッドが生まれた・消えたか、要求が来たときだけ読み直す近似**です (忙しいときは毎秒読み直すので今までと同じ)。
+  実測 (暇な既定 60 秒): profile-sample 184〜208 → 75〜134 µs/s、合計 345〜388 → 230〜282 µs/s。
   `/proc/self/task/*/syscall` が読めない環境 (seccomp や `hidepid` のコンテナ) では状態が `running` / `sleeping` だけになり `/profile` の `sampler` が `partial` に、`/proc` ごと読めなければ `off` になります。
   x86_64 の `poll` (7) と `epoll_wait` (232) は `ppoll` / `epoll_pwait` の枠に数えます (T.29.14。std の待ちはこちらを使うので、今までは `unknown_syscalls` の `sys_7` / `sys_232` に落ちて idle-watch が `other` 100% に見えていました。状態の数は変えていません)。
   `schedstat` だけが無いカーネル (`CONFIG_SCHEDSTATS` 無し) では `run_delay_us` が `null` になるだけで、ほかは変わりません。
