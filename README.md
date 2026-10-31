@@ -2022,8 +2022,14 @@ TTL を過ぎた / `warm_stale` = **warm なのにミスした** = 裏の引き�
 ```bash
 scripts/crate-versions.py --check            # 0 なら決まりに合う (本体 = 全クレートの最大、タグの上では本体 = タグ、Cargo.lock = Cargo.toml)
 scripts/crate-versions.py --task T.27.8      # 分かれ目から中身が変わったクレートを 0.27.8 にし、本体を最大に (Cargo.lock も)
+scripts/crate-versions.py --task T.27.8 --fix  # 取り込んだあとの main の上で: --check の (c) で落ちる (上げ忘れ) ものだけを上げる
 scripts/crate-versions.py --list             # クレートごとに 今の版・中身を最後に変えたコミット・版の行を書いたコミット
 ```
+
+**取り込んだあとの `main` の上で `--task` だけを回さないでください** (T.32.27): 既定の基準 `git merge-base HEAD main` が
+HEAD そのものになり、前は「上げた: 0」・終了コード 0 で抜けて、あとの `--check` が上げ忘れで落としました。いまはその形
+(基準を渡さず、分かれ目 = HEAD で 0 本) を使い方の誤り (終了コード 2) にして止めます。`main` の上では `--fix`
+(`--check` の決まり (c) で落ちるものだけを上げる) か、`--since <取り込む前のコミット>` を渡します。
 
 **タグは `release.yml` の `workflow_dispatch` で打ちます** (2026-10-24 から)。GitHub の Actions の画面 (か GitHub の API・ツール) で
 `release` を **入力 `version` = 本体の版 (`0.27.8` のように `v` は付けない)** で起動すると、workflow の中で本体の版と

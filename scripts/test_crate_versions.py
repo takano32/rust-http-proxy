@@ -156,6 +156,46 @@ class CrateVersionsTest(unittest.TestCase):
         code, out = self.r.run("--task", "T.2.5")
         self.assertIn("上げた: 0", out)
 
+    def test_task_on_main_after_landing(self):
+        # T.32.27: 取り込んだあとの main の上 (分かれ目 = HEAD) で --task を回すと、前は「上げた: 0」・
+        # 終了コード 0 で抜け、--check が後で落とした。いまは使い方の誤りで止まり、--fix なら上げ忘れだけを上げる
+        self.r.write("crates/gamma/src/lib.rs", "// gamma 2\n")
+        self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
+        self.r.commit("T.2.5 を版を上げずに main に取り込んだ")
+        self.r.write("src/main.rs", "// main 2\n")
+        self.r.commit("T.2.5 の 2 本目")
+        self.check(1)
+        code, out = self.r.run("--task", "T.2.5")
+        self.assertEqual(code, 2, out)
+        self.assertIn("--since", out)
+        self.assertIn("--fix", out)
+        self.assertEqual(self.r.version("gamma"), "0.1.1")  # 何も書き換えない
+        code, out = self.r.run("--task", "T.2.5", "--fix")
+        self.assertEqual(code, 0, out)
+        self.assertIn("上げた: 4", out)
+        self.assertEqual(self.r.version("gamma"), "0.2.5")
+        self.assertEqual(self.r.version("beta"), "0.2.5")
+        self.assertEqual(self.r.version("alpha"), "0.2.3")  # 据え置き
+        self.assertEqual(self.r.version("server"), "0.2.5")
+        self.assertIn('version = "0.2.5"', self.r.read("Cargo.toml"))
+        self.check(0)
+        self.r.commit("T.2.5 の版")
+        self.check(0)
+        # 決まりに合っていれば --fix は何も上げない
+        code, out = self.r.run("--task", "T.2.6", "--fix")
+        self.assertEqual(code, 0, out)
+        self.assertIn("上げた: 0", out)
+        # --since を渡せば main の上でも今までどおり (0 本でも止めない)
+        code, out = self.r.run("--task", "T.2.5", "--since", "HEAD")
+        self.assertEqual(code, 0, out)
+        self.assertIn("上げた: 0", out)
+
+    def test_fix_only_with_task(self):
+        code, out = self.r.run("--check", "--fix")
+        self.assertEqual(code, 2, out)
+        code, out = self.r.run("--task", "T.2.5", "--fix", "--since", "HEAD")
+        self.assertEqual(code, 2, out)
+
     def test_forgotten_bump(self):
         self.r.write("crates/beta/src/lib.rs", "// beta 2\n")
         self.r.commit("beta を変えたが上げ忘れた")

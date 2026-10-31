@@ -40,7 +40,10 @@
   scripts/crate-versions.py --check                決まりに合わないものの名前と理由を出して 1 で抜ける
   scripts/crate-versions.py --task TID [--since REF]
                                                    REF から中身が変わったクレートの版を TID の番号にし、
-                                                   本体と proxy-server を全部の最大にする (`Cargo.lock` の該当の行も直す)
+                                                   本体と proxy-server を全部の最大にする (`Cargo.lock` の該当の行も直す)。
+                                                   REF を渡さず main の上 (分かれ目 = HEAD) で 0 本なら 2 で止まる (T.32.27)
+  scripts/crate-versions.py --task TID --fix       基準を使わず、--check の (c) で落ちるもの (上げ忘れ) だけを上げる
+                                                   (取り込んだあとの main の上で回す形。T.32.27)
 
 外部のパッケージは使わない (標準ライブラリだけ)。`release.yml` の ubuntu-22.04 の python3 (3.10) で動くこと
 (`tomllib` は 3.11 からなので使わず、`Cargo.toml` は行で読む)。
@@ -352,22 +355,9 @@ def judge(repo):
     # (c) 上げ忘れ
     for u in repo.units():
         origins[u.name] = repo.version_origin(u)
-    for u in repo.units():
-        origin = origins[u.name]
-        if origin is not None and repo.content_changed(u, origin):
-            # 版の行を書き直せない場合が 2 つある。どちらも、後で `--task` を回したコミット (= ほかの
-            # クレートの版の行を書いた) より後に中身が変わっていなければよい:
-            # - 本体と proxy-server は全部の最大なので、番号の小さいタスクが後から入ると版が変わらない (T.28.0)
-            # - 同じタスクの中で 2 回目の `--task` を回すと、もうその番号になっているクレートは版が
-            #   変わらない (T.28.27)。このときは同じ版の行を書いたコミットだけを見る
-            whole = u.name in (repo.root.name, SERVER)
-            origin = next((origins[v.name] for v in repo.units()
-                           if (whole or v.version == u.version)
-                           and (origins[v.name] is None or not repo.content_changed(u, origins[v.name]))),
-                          origin)
-        if origin is not None and repo.content_changed(u, origin):
-            bad.append((u.name, "版 %s の行を書いた %s より後に中身 (%s) が変わった (決まり c。--task で上げる)"
-                        % (u.version, origin[:7], u.label())))
+    for u, origin in stale(repo, origins):
+        bad.append((u.name, "版 %s の行を書いた %s より後に中身 (%s) が変わった (決まり c。--task で上げる)"
+                    % (u.version, origin[:7], u.label())))
     # (d) タグの上
     tags = repo.tags_at_head()
     if tags and "v%s" % repo.root.version not in tags:
@@ -383,6 +373,27 @@ def judge(repo):
                 bad.append((u.name, "Cargo.toml の版 %s と Cargo.lock の版 %s が違う (決まり e。"
                                     "cargo build か --task で揃える)" % (u.version, locked[u.name])))
     return origins, bad
+
+
+def stale(repo, origins):
+    """決まり (c) の上げ忘れ: [(単位, 版の行を書いたコミット)]。`--task --fix` もこれで上げるものを選ぶ (T.32.27)。"""
+    out = []
+    for u in repo.units():
+        origin = origins[u.name]
+        if origin is not None and repo.content_changed(u, origin):
+            # 版の行を書き直せない場合が 2 つある。どちらも、後で `--task` を回したコミット (= ほかの
+            # クレートの版の行を書いた) より後に中身が変わっていなければよい:
+            # - 本体と proxy-server は全部の最大なので、番号の小さいタスクが後から入ると版が変わらない (T.28.0)
+            # - 同じタスクの中で 2 回目の `--task` を回すと、もうその番号になっているクレートは版が
+            #   変わらない (T.28.27)。このときは同じ版の行を書いたコミットだけを見る
+            whole = u.name in (repo.root.name, SERVER)
+            origin = next((origins[v.name] for v in repo.units()
+                           if (whole or v.version == u.version)
+                           and (origins[v.name] is None or not repo.content_changed(u, origins[v.name]))),
+                          origin)
+        if origin is not None and repo.content_changed(u, origin):
+            out.append((u, origin))
+    return out
 
 
 # --- 書き換え ------------------------------------------------------------------
@@ -428,26 +439,49 @@ def apply_versions(repo, versions):
         set_lock_versions(lock, versions)
 
 
-def bump_task(repo, tid, since):
+def bump_task(repo, tid, since, fix=False):
     """--task: since から中身が変わったクレートを tid の版にし、本体と proxy-server を全部の最大にする。
 
     (基準, 版, 書き換えた {名前: 版}) を返す。本体の版は下げない (いまの本体の版も最大の候補に入れる)。
+    `fix` なら基準を使わず、`--check` の決まり (c) で落ちるもの (上げ忘れ) だけを上げる (T.32.27。
+    取り込んだあとの main の上で回す形)。そのとき基準は "(c)" を返す。
+
+    基準を渡さず、`main` との分かれ目が HEAD そのもの (= main の上や取り込んだ直後) で上げるものが 0 本なら、
+    黙って 0 本で抜けずに使い方の誤りにする (T.32.27。前は「上げた: 0」・終了コード 0 で、`--check` が後で落とした)。
     """
     new = task_version(tid)
     if new is None:
         raise Error("タスクの番号は T<Phase>.<番号> の形で渡す (例: T.21.3、T17.0a): %s" % tid)
+    current = {u.name: u.version for u in repo.units()}
+    if fix:
+        origins = {u.name: repo.version_origin(u) for u in repo.units()}
+        names = {u.name for u, _ in stale(repo, origins)}
+        versions = {u.name: new for u in repo.crates if u.name in names}
+        keys = [ver_key(versions.get(name, v)) for name, v in current.items()]
+        if names & {repo.root.name, SERVER}:
+            keys.append(ver_key(new))
+        return _finish_bump(repo, "(c)", new, current, versions, keys)
+    at_head = False
     if since is None:
         base = git(repo.path, "merge-base", "HEAD", "main", check=False)
         if not base:
             raise Error("main との分かれ目が無い (--since REF で基準を渡す)")
         since = base.strip()
+        at_head = since == repo.rev_of("HEAD")
     elif repo.rev_of(since) is None:
         raise Error("基準 %s が無い" % since)
-    current = {u.name: u.version for u in repo.units()}
     versions = {u.name: new for u in repo.crates if repo.content_changed(u, since)}
+    root_changed = repo.content_changed(repo.root, since)
+    if at_head and not versions and not root_changed:
+        raise Error("main との分かれ目が HEAD そのもの (main の上か取り込んだ直後) で、上げるものが 0 本。"
+                    "基準を --since REF で渡すか、--fix で上げ忘れ (--check の決まり c) だけを上げる")
     keys = [ver_key(versions.get(name, v)) for name, v in current.items()]
-    if repo.content_changed(repo.root, since):
+    if root_changed:
         keys.append(ver_key(new))
+    return _finish_bump(repo, since, new, current, versions, keys)
+
+
+def _finish_bump(repo, since, new, current, versions, keys):
     keys = [k for k in keys if k]
     top = "0.%d.%d" % max(keys)
     versions[repo.root.name] = top
@@ -492,11 +526,17 @@ def main(argv=None):
     g.add_argument("--check", action="store_true")
     g.add_argument("--task", metavar="TID", help="タスクの番号 (T.21.3 など)")
     ap.add_argument("--since", metavar="REF", help="--task の基準 (既定は git merge-base HEAD main)")
+    ap.add_argument("--fix", action="store_true",
+                    help="--task で、基準の代わりに --check の決まり c で落ちるもの (上げ忘れ) だけを上げる (T.32.27)")
     a = ap.parse_args(argv)
     repo = None
     try:
         if a.since and not a.task:
             raise Error("--since は --task と一緒に使う")
+        if a.fix and not a.task:
+            raise Error("--fix は --task と一緒に使う")
+        if a.fix and a.since:
+            raise Error("--fix と --since は一緒に使わない (--fix は基準を使わない)")
         repo = Repo(a.repo)
         if a.list:
             origins, bad = judge(repo)
@@ -511,12 +551,16 @@ def main(argv=None):
                 return 1
             print("決まりに合う: %d クレート + 本体 (本体 %s)" % (len(repo.crates), repo.root.version))
             return 0
-        since, new, versions = bump_task(repo, a.task, a.since)
+        since, new, versions = bump_task(repo, a.task, a.since, fix=a.fix)
         for u in repo.units():
             if u.name in versions:
                 print("%s %s -> %s" % (u.name, u.version, versions[u.name]))
-        print("上げた: %d (%s から中身が変わったものを %s に。本体と %s は全部の最大)"
-              % (len(versions), since[:12], new, SERVER))
+        if a.fix:
+            print("上げた: %d (上げ忘れ (決まり c) のものを %s に。本体と %s は全部の最大)"
+                  % (len(versions), new, SERVER))
+        else:
+            print("上げた: %d (%s から中身が変わったものを %s に。本体と %s は全部の最大)"
+                  % (len(versions), since[:12], new, SERVER))
         return 0
     except Error as e:
         print("crate-versions: %s" % e, file=sys.stderr)
