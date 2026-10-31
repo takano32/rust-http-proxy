@@ -44,6 +44,14 @@ use std::time::{Duration, Instant};
 mod view;
 #[path = "dns_warm.rs"]
 mod warm;
+// 要求の経路の名前解決を上限付きの別のスレッド群に逃がし、締め切りで待つのをやめる (T.32.11)
+#[path = "dns_pool.rs"]
+mod pool;
+pub use pool::{
+    LIMIT_DEFAULT as RESOLVER_LIMIT_DEFAULT, TIMEOUT_DEFAULT, counters as resolver_counters,
+    is_timeout, limit as resolver_limit, limit_for_threads as resolver_limit_for_threads,
+    set_limit as set_resolver_limit, set_timeout, timeout,
+};
 pub use view::{DnsSort, MAX_ROW_ADDRS, TableRow, counters, entries, status_json, table};
 use warm::{
     addrs_changed, refresh_after, request_refresh, wake_refresher, warm_clear, warm_promote,
@@ -575,7 +583,7 @@ pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Op
         MISSES.fetch_add(1, Ordering::Relaxed);
         // 表を触らないので「直前の姿」も無い = いつも `cold` (T15.0 (7))
         MISS_COLD.fetch_add(1, Ordering::Relaxed);
-        return system_resolve(host, port).map(|a| (a, None, false));
+        return pool::resolve(host, port).map(|a| (a, None, false));
     }
     let key = host.to_ascii_lowercase();
     let now = Instant::now();
@@ -699,7 +707,8 @@ pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Op
     miss_kind.counter().fetch_add(1, Ordering::Relaxed);
     // ミスのときだけ `Instant` を 2 回読む (当たりの経路は 1 命令も増えない。T12.4 (2))
     let t0 = Instant::now();
-    let result = system_resolve(host, port);
+    // 締め切りつきで別のスレッドに引かせる (T.32.11。`PROXY_DNS_TIMEOUT_SECS=0` なら自分で引く)
+    let result = pool::resolve(host, port);
     let us = t0.elapsed().as_micros().min(u64::MAX as u128) as u64;
     RESOLVE_US_SUM.fetch_add(us, Ordering::Relaxed);
     RESOLVE_COST.set({
@@ -734,6 +743,8 @@ pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Op
             }
             Ok((addrs, slot.last_win_v6, false))
         }
+        // 上限の本数が走っていて引きもしなかった (T.32.11)。その名前の失敗としては覚えない
+        Err(e) if pool::is_busy(&e) => Err(e),
         Err(e) => {
             // 失敗の経路でも上限を守る (T.32.2)。前はここが無条件の `or_insert_with` で、
             // 相異なる引けない名前の数だけ表が伸びた (tokyo の 48 時間で 7,511 行)
@@ -791,7 +802,7 @@ pub fn relookup_after_stale(
             MISSES.fetch_add(1, Ordering::Relaxed);
             MISS_EXPIRED.fetch_add(1, Ordering::Relaxed);
             let t0 = Instant::now();
-            let result = system_resolve(host, port);
+            let result = pool::resolve(host, port);
             let now = Instant::now();
             let us = now
                 .saturating_duration_since(t0)

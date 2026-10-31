@@ -121,17 +121,24 @@ fn open(
     let mut server = match connect_with_timeout(&addr_str, resolved, timeout) {
         Ok(s) => s,
         Err(e) => {
+            // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T.32.11)
+            let (code, line): (u16, &str) = if dns::is_timeout(&e) {
+                (504, "504 Gateway Timeout")
+            } else {
+                (502, "502 Bad Gateway")
+            };
             // 理由ごとに 1 分に 1 行 (T.29.15。本数は `/errors` と `/hosts` が持つ)
             if let Some(more) = metrics.origin_warn(Failure::from_io(&e)) {
                 log_warn!(
                     Some(conn_id),
-                    "502 Bad Gateway: connect {} failed: {}{}",
+                    "{}: connect {} failed: {}{}",
+                    line,
                     addr_str,
                     e,
                     more
                 );
             }
-            let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
+            let _ = client.write_all(format!("HTTP/1.1 {line}\r\n\r\n").as_bytes());
             let detail = detail_of(
                 started.elapsed(),
                 Some(Failure::from_io(&e)),
@@ -146,7 +153,7 @@ fn open(
                 detail,
             );
             // 個票にも 1 件残す (`/errors`。誰の・いつ・なぜ。T13.4)
-            metrics.record_error(true, &addr_str, &client_ip, 502, &detail);
+            metrics.record_error(true, &addr_str, &client_ip, code, &detail);
             // 閉じた接続の個票にも相手を残す (`/recent`。**エラーの経路だけ**。T14.4)
             if let Some(s) = &slot {
                 s.failed_tunnel(&addr_str);
@@ -158,7 +165,7 @@ fn open(
                     ConnTally {
                         up: 0,
                         down: 0,
-                        status: 502,
+                        status: code,
                         stage_ms,
                         // 繋がらなかったのでカーネルに聞ける相手がいない (T14.5)
                         ..ConnTally::default()
@@ -182,7 +189,7 @@ fn open(
                     method: "CONNECT",
                     target: &addr_str,
                     version: "HTTP/1.1",
-                    status: "502",
+                    status: &code.to_string(),
                     bytes: 0,
                     duration_ms: started.elapsed().as_secs_f64() * 1000.0,
                     cache: "BYPASS",

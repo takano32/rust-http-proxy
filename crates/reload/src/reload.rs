@@ -6,7 +6,7 @@
 //!
 //! 即時反映できるのは接続単位で参照する値だけ: ACL (`PROXY_ALLOW_HOSTS` / `PROXY_DENY_HOSTS`)、
 //! `PROXY_TIMEOUT_SECS`、`PROXY_KEEPALIVE_SECS`、`PROXY_LOG_LEVEL`、`PROXY_DNS_TTL_SECS`、
-//! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、`PROXY_DNS_STALE_SECS`、`PROXY_CANARY`、`PROXY_CANARY_SECS`、
+//! `PROXY_DNS_NEGATIVE_SECS`、`PROXY_DNS_WARM_SECS`、`PROXY_DNS_STALE_SECS`、`PROXY_DNS_TIMEOUT_SECS`、`PROXY_CANARY`、`PROXY_CANARY_SECS`、
 //! `PROXY_CANARY_IPV6`、`PROXY_PAC_DIRECT`、`PROXY_BLOCKLIST_*`、`PROXY_CONNECT_PORTS`、`PROXY_ALLOW_LOCAL`、
 //! `PROXY_ENDPOINTS_READONLY`、`PROXY_ALLOW_CLIENTS`、`PROXY_TRACE_CLIENT`、`PROXY_TCP_KEEPALIVE`、
 //! `PROXY_TUNNEL_IDLE_SECS`、`PROXY_MAX_CONNS`、`PROXY_MAX_THREADS`。それ以外 (ポート、bind、
@@ -214,6 +214,10 @@ impl Live {
         if fresh.max_threads != old.max_threads {
             next.max_threads = fresh.max_threads;
             next.sources.adopt(&fresh.sources, "PROXY_MAX_THREADS");
+            // 名前解決のスレッド群の上限はワーカーの 1/4 (T.32.11)
+            crate::dns::set_resolver_limit(crate::dns::resolver_limit_for_threads(
+                fresh.max_threads,
+            ));
             applied.push("PROXY_MAX_THREADS");
         }
         if fresh.dns_ttl != old.dns_ttl {
@@ -246,6 +250,13 @@ impl Live {
             next.sources.adopt(&fresh.sources, "PROXY_DNS_STALE_SECS");
             crate::dns::set_serve_stale(fresh.dns_stale);
             applied.push("PROXY_DNS_STALE_SECS");
+        }
+        // 名前解決の締め切りも次の問い合わせから効く (走っているものは止めない。T.32.11)
+        if fresh.dns_timeout != old.dns_timeout {
+            next.dns_timeout = fresh.dns_timeout;
+            next.sources.adopt(&fresh.sources, "PROXY_DNS_TIMEOUT_SECS");
+            crate::dns::set_timeout(fresh.dns_timeout);
+            applied.push("PROXY_DNS_TIMEOUT_SECS");
         }
         // canary の宛先と周期 (T14.10) と IPv6 側 (T14.37)。`canary` スレッドは
         // 次の周期から新しい宛先を使う

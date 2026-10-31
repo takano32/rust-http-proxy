@@ -555,6 +555,11 @@ pub struct Config {
     /// この齢までは古い答えで繋ぎに行き、裏で 1 回引き直す (serve-stale、RFC 8767)。
     /// 既定 21,600 秒は `scripts/dns-replay.py --serve-stale` の再生で決めた
     pub dns_stale: Duration,
+    /// 要求の経路が名前解決を待つ締め切り (`PROXY_DNS_TIMEOUT_SECS`、既定 10 秒、0 で締め切りなし。T.32.11)。
+    ///
+    /// `getaddrinfo` はキャンセルできないので、上限付きの別のスレッド群 (`PROXY_MAX_THREADS` の 1/4)
+    /// に引かせ、過ぎたら 504 で接続の枠を手放す。上限の本数がもう走っていれば待たずに 504
+    pub dns_timeout: Duration,
     /// canary (`PROXY_CANARY`、`auto` | `off` | `host1,host2`、既定 `auto`)。
     ///
     /// 利用者の要求が無い時間帯も名前解決と TCP 接続の時間を測るための宛先 (T14.10)。
@@ -992,6 +997,10 @@ impl Config {
             cfg.dns_stale = Duration::from_secs(secs);
             src.mark("PROXY_DNS_STALE_SECS");
         }
+        if let Some(secs) = bad.num::<u64>("PROXY_DNS_TIMEOUT_SECS") {
+            cfg.dns_timeout = Duration::from_secs(secs);
+            src.mark("PROXY_DNS_TIMEOUT_SECS");
+        }
         if let Some(v) = envfile::var("PROXY_CANARY") {
             cfg.canary = v.trim().to_ascii_lowercase();
             src.mark("PROXY_CANARY");
@@ -1175,6 +1184,7 @@ impl Config {
         add("PROXY_DNS_NEGATIVE_SECS", secs(self.dns_negative));
         add("PROXY_DNS_WARM_SECS", secs(self.dns_warm));
         add("PROXY_DNS_STALE_SECS", secs(self.dns_stale));
+        add("PROXY_DNS_TIMEOUT_SECS", secs(self.dns_timeout));
         // canary (T14.10 / T14.37)。宛先の解釈は `proxy-metrics` の仕事だが、
         // `/config` と `--check` は「効いている設定を全部見る」ための口なので、
         // 文字列のまま 3 つとも出す (T14.57 の再デプロイの手引きで穴が見つかった)
@@ -1356,6 +1366,7 @@ impl Config {
             dns_negative: crate::dns::NEGATIVE,
             dns_warm: crate::dns::WARM_DEFAULT,
             dns_stale: crate::dns::SERVE_STALE,
+            dns_timeout: crate::dns::TIMEOUT_DEFAULT,
             // 既定は `auto` = 直近 1 時間で最も使われた CONNECT の宛先を 60 秒に 1 回
             // (値の意味は `proxy-metrics` の `canary`。この層は文字列を運ぶだけ)
             canary: "auto".to_string(),

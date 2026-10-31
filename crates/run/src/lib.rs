@@ -273,6 +273,11 @@ pub fn main() {
     proxy_server::dns::set_negative_ttl(config.dns_negative);
     proxy_server::dns::set_warm_window(config.dns_warm);
     proxy_server::dns::set_serve_stale(config.dns_stale);
+    // 名前解決の締め切りと、引かせるスレッド群の上限 (ワーカーの 1/4。T.32.11)
+    proxy_server::dns::set_timeout(config.dns_timeout);
+    proxy_server::dns::set_resolver_limit(proxy_server::dns::resolver_limit_for_threads(
+        config.max_threads,
+    ));
     // canary の宛先と周期 (T14.10)。実際に回すのは履歴スレッドの周期から (`--lite` と
     // `PROXY_STATS_PERSIST=off` では履歴スレッドが無いので canary も回らない)
     proxy_server::canary::configure(&config.canary, config.canary_secs, config.canary_ipv6);

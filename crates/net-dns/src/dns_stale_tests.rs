@@ -85,12 +85,13 @@ fn an_expired_answer_inside_the_window_is_served_and_refreshed_once() {
     assert!(!stale);
     let status = status_json();
     assert!(
-        status.ends_with(&format!(
-            ",\"stale_hits\":{},\"stale_retries\":{}}}",
+        // T.32.11 で後ろに欄が足されたので、末尾ではなく並びで見る
+        status.contains(&format!(
+            ",\"stale_hits\":{},\"stale_retries\":{},",
             n(&STALE_HITS),
             n(&STALE_RETRIES)
         )),
-        "`/status` の `dns` の末尾に出る: {}",
+        "`/status` の `dns` に出る: {}",
         status
     );
     restore();

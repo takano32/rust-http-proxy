@@ -198,6 +198,8 @@ pub fn entries() -> usize {
 pub fn status_json() -> String {
     let entries = entries();
     let (us, misses) = resolve_cost_total();
+    let timeout = super::timeout();
+    let (timeouts, busy, late, in_flight) = super::resolver_counters();
     // ミスの内訳と引き直しの様子 (T15.0 (7))。`misses_by_kind` の 4 つの和は `misses` と
     // 一致する。`refresh_*` は `dns-refresh` スレッド 1 本ぶん
     let by_kind = [
@@ -207,7 +209,7 @@ pub fn status_json() -> String {
         MISS_NEGATIVE.load(Ordering::Relaxed),
     ];
     format!(
-        "{{\"ttl_secs\":{},\"negative_ttl_secs\":{},\"warm_secs\":{},\"entries\":{},\"warm\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{},\"refreshes\":{},\"changes\":{},\"miss_ms_sum\":{:.1},\"miss_avg_ms\":{:.2},\"misses_by_kind\":{},\"refresh_failures\":{},\"refresh_ms_sum\":{:.1},\"refresh_ms_max\":{:.1},\"refresh_late\":{},\"warm_evicted\":{},\"stale_hits\":{},\"stale_retries\":{}}}",
+        "{{\"ttl_secs\":{},\"negative_ttl_secs\":{},\"warm_secs\":{},\"entries\":{},\"warm\":{},\"hits\":{},\"misses\":{},\"stale_served\":{},\"negative_hits\":{},\"refreshes\":{},\"changes\":{},\"miss_ms_sum\":{:.1},\"miss_avg_ms\":{:.2},\"misses_by_kind\":{},\"refresh_failures\":{},\"refresh_ms_sum\":{:.1},\"refresh_ms_max\":{:.1},\"refresh_late\":{},\"warm_evicted\":{},\"stale_hits\":{},\"stale_retries\":{},\"timeout_secs\":{},\"timeouts\":{},\"resolver_busy\":{},\"late_answers\":{},\"resolvers\":{},\"resolver_limit\":{}}}",
         TTL_SECS.load(Ordering::Relaxed),
         NEGATIVE_SECS.load(Ordering::Relaxed),
         WARM_SECS.load(Ordering::Relaxed),
@@ -235,6 +237,15 @@ pub fn status_json() -> String {
         // T21.3 で末尾に足したもの (起動からの通算)。`stale_served` とは意味が違う
         STALE_HITS.load(Ordering::Relaxed),
         STALE_RETRIES.load(Ordering::Relaxed),
+        // T.32.11 で末尾に足したもの: 締め切り (秒)・締め切りで諦めた回数・上限で待たずに
+        // 断った回数・諦めたあとに答えが出て表に書いた回数 (起動からの通算)、いま走っている
+        // `getaddrinfo` の数とその上限
+        timeout.as_secs(),
+        timeouts,
+        busy,
+        late,
+        in_flight,
+        super::resolver_limit(),
     )
 }
 

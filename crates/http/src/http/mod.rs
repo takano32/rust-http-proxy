@@ -978,11 +978,19 @@ pub fn handle_http_parsed(
         ) {
             Ok(v) => v,
             Err(e) => {
+                // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T.32.11)
+                let (code, reason) = if crate::dns::is_timeout(&e) {
+                    (504, "Gateway Timeout")
+                } else {
+                    (502, "Bad Gateway")
+                };
                 // 理由ごとに 1 分に 1 行 (T.29.15。本数は `/errors` と `/hosts` が持つ)
                 if let Some(more) = shared.metrics.origin_warn(Failure::from_io(&e)) {
                     log_warn!(
                         Some(conn_id),
-                        "502 Bad Gateway: connect {} failed: {}{}",
+                        "{} {}: connect {} failed: {}{}",
+                        code,
+                        reason,
                         server_addr,
                         e,
                         more
@@ -1004,9 +1012,9 @@ pub fn handle_http_parsed(
                     cache.stale_served.fetch_add(1, Ordering::Relaxed);
                     return serve_cached(client, entry, source, "STALE", 0, &ctx);
                 }
-                write_error(client, 502, "Bad Gateway")?;
+                write_error(client, code, reason)?;
                 // 原因つきで 1 件数える (デプロイ先の「エラー 12 件、原因は不明」を無くす)
-                ctx.log_failure(502);
+                ctx.log_failure(code);
                 return Ok(false);
             }
         };
