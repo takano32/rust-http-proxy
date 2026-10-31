@@ -694,6 +694,26 @@ mod relay {
     /// 猶予 3 ms だと CPU/本 175.2 → 190.2 us (+8.6%)、p99 1.709 → 2.263 ms (+32%) で、
     /// 「閉じられる直前に預けて、すぐ起こされる」ぶんを丸ごと払っていた。
     pub(super) const MIN_PARK_GRACE: Duration = Duration::from_millis(100);
+    /// 猶予を伸ばす上限 (T.32.19)。
+    ///
+    /// 預けて **[`SHORT_PARK`] 未満で起こされた**トンネルは、次の猶予を倍にしていく
+    /// (100 → 200 → 400 → 800 → 1,000 ms)。0.5 秒ごとに小さく往復するトンネル
+    /// (tokyo の login.live.com は 220 秒に 407 回預けていた) は数回で預けなくなり、
+    /// 預けて引き上げる 1 往復 (epoll_ctl 4・futex 約 4・スレッドの起床 3、実測 約 115 us)
+    /// を払わなくなる。秒〜分の単位で暇なトンネルは預けたあと長く眠るので、
+    /// 起こされた時点で猶予は下限に戻る (預かりの数とスレッドの数は今のまま)
+    const MAX_PARK_GRACE: Duration = Duration::from_secs(1);
+    /// これより短く預けられていたら「預けたのは損だった」とみなす (T.32.19)。
+    const SHORT_PARK: Duration = Duration::from_secs(1);
+
+    /// 起こされたあとの次の猶予 (T.32.19)。`parked` は預けられていた時間、`base` は下限。
+    fn next_grace(grace: Duration, base: Duration, parked: Duration) -> Duration {
+        if parked < SHORT_PARK {
+            grace.saturating_mul(2).min(MAX_PARK_GRACE.max(base))
+        } else {
+            base
+        }
+    }
 
     /// スレッドごとに使い回す中継パイプの数 (トンネル 1 本が両方向で 2 本使う)。
     const POOLED_PIPES: usize = 2;
@@ -865,8 +885,10 @@ mod relay {
         transferred: u64,
         /// 無通信で打ち切るまでの時間 (`None` で無期限)
         idle: Option<Duration>,
-        /// 預け先と、預ける前に同じスレッドで待ってみる猶予 (`None` なら預けない)
+        /// 預け先と、預ける前に同じスレッドで待ってみる猶予の下限 (`None` なら預けない)
         park: Option<(Arc<dyn Park>, Duration)>,
+        /// いまの猶予 (下限から始め、すぐ起こされるたびに倍にする。[`next_grace`]。T.32.19)
+        grace: Duration,
         /// アクセスログと統計に要る素性
         info: Info,
         /// `200` を書いてから最初の中継バイトまで (ms。T14.3 (1))
@@ -991,9 +1013,16 @@ mod relay {
         /// 預かり所から戻ってきた (預けられていた時間を足す。T14.3 (1))。
         fn unpark(&mut self) {
             if let Some(t) = self.parked_at.take() {
-                self.parked_ms = self
-                    .parked_ms
-                    .saturating_add(crate::profile::ms_u32(t.elapsed()));
+                let parked = t.elapsed();
+                if crate::profile::on() {
+                    self.parked_ms = self
+                        .parked_ms
+                        .saturating_add(crate::profile::ms_u32(parked));
+                }
+                // 次の猶予 (T.32.19)。時計はここで 1 回読んだぶんを使い回す
+                if let Some((_, base)) = &self.park {
+                    self.grace = next_grace(self.grace, *base, parked);
+                }
             }
         }
 
@@ -1011,8 +1040,9 @@ mod relay {
             if let Some(s) = &self.info.slot {
                 s.set_bytes(self.transferred);
             }
-            // 預けた時刻 (T14.3 (1))。預かってもらえなければ `no_park` が消す
-            self.parked_at = crate::profile::mark();
+            // 預けた時刻 (T14.3 (1))。預かってもらえなければ `no_park` が消す。
+            // 猶予を伸ばす判定 (T.32.19) にも使うので `--lite` でも読む (預ける 1 回に 1 回)
+            self.parked_at = Some(Instant::now());
         }
 
         /// 動かせるだけ動かして、終わるか暇になるまで回す。
@@ -1026,10 +1056,11 @@ mod relay {
                 Some(d) => d.as_millis().min(i32::MAX as u128) as i32,
                 None => -1,
             };
+            let grace = self.grace;
             let grace_ms: Option<i32> = self
                 .park
                 .as_ref()
-                .map(|(_, g)| g.as_millis().min(i32::MAX as u128) as i32);
+                .map(|_| grace.as_millis().min(i32::MAX as u128) as i32);
             let socks = &self.socks;
             let slot = self.info.slot.as_ref();
             let established = self.info.established;
@@ -1360,12 +1391,14 @@ mod relay {
         let mut rate = [guard.clone(), guard];
         rate[0].watch_queue(client.as_raw_fd());
         rate[1].watch_queue(server.as_raw_fd());
+        let grace = park.as_ref().map_or(Duration::ZERO, |(_, g)| *g);
         drive(Box::new(Idle {
             socks: [client, server],
             dirs: [Dir::new(0, 1), Dir::new(1, 0)],
             transferred: 0,
             idle,
             park,
+            grace,
             info,
             first_relay_ms: 0,
             parked_at: None,
@@ -1428,6 +1461,32 @@ mod relay {
                     }
                 }
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn grace_doubles_after_short_parks_and_resets_after_a_long_one() {
+            // T.32.19: 0.5 秒ごとに起こされるトンネルは 100 → 200 → 400 → 800 → 1,000 ms で止まる
+            let short = Duration::from_millis(400);
+            let mut g = MIN_PARK_GRACE;
+            let mut seen = Vec::new();
+            for _ in 0..6 {
+                g = next_grace(g, MIN_PARK_GRACE, short);
+                seen.push(g.as_millis());
+            }
+            assert_eq!(seen, [200, 400, 800, 1000, 1000, 1000]);
+            // 長く眠ったあとは下限に戻る (本当に暇なトンネルは今までどおり早く預ける)
+            assert_eq!(
+                next_grace(g, MIN_PARK_GRACE, Duration::from_secs(5)),
+                MIN_PARK_GRACE
+            );
+            // 下限が上限より長い設定 (`PROXY_PARK_GRACE_MS=3000`) では伸ばさず縮めもしない
+            let base = Duration::from_secs(3);
+            assert_eq!(next_grace(base, base, short), base);
         }
     }
 }
