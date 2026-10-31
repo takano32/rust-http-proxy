@@ -38,6 +38,18 @@ from test_snapshot_diff import (  # noqa: E402
 )
 
 
+# **T.32.34 で消した実データの試験 (どの機械でも回らなかった 18 本)**: 次の 9 つの組は `status/` 直下の nagoya の雪像
+# (2026-09-24〜2026-10-08) と、もう手元に無い tokyo の古い雪像 (2026-10-08〜2026-10-22) を待っていて、main の
+# `status/` を繋いでも飛ばされていた (雪像はリポジトリに入れず、tokyo の手元の `status/tokyo/` にも 10-22 より前は残って
+# いない)。確かめていた数字は各タスクの `結果` (`tasks/T17.md`〜`tasks/T24.md`) にあり、判定の関数そのものは同じ番号の
+# `Criteria*` の作り物の試験が見ている。
+#   Deployed17 (T17.0a: 09-24 → 09-26 で T16.99 の数字)、Deployed18 (T18.2: 09-26 → 10-01 と 0 時間)、
+#   Deployed20 (T20.1: 10-01 → 10-08 の phase20)、Deployed21 (T21.2: tokyo 10-08 → 10-15 の phase21)、
+#   Deployed22 (T22.1: 過去の 3 組に phase22 の切り方を当てても判定が変わらない)、Deployed23 (T23.2: 10-20 の無言の再起動)、
+#   Deployed24 (T24.0: 10-22 の起動の切り分け)、Deployed24Rows (T24.2: 10-17 → 10-20 の phase24)、
+#   Deployed243Rows (T24.3: 10-22 と 10-20 の確立の尾)。
+# 残る実データの試験は、いまの `status/tokyo/` にある 1 枚を使うものだけ (飛ばす理由は「tokyo の実データが無い」)。
+
 class Criteria(unittest.TestCase):
     def test_the_overload_counter_is_a_difference_when_there_was_no_restart(self):
         a = sd.load_source(A, False)
@@ -559,26 +571,6 @@ class Criteria17(unittest.TestCase):
         self.assertIn("**その部が雪像に無い行は「判定できず」**", md)
 
 
-@unittest.skipUnless(all(os.path.isfile(os.path.join(DEPLOYED, f)) for f in (
-    "2026-09-24T093400Z-snapshot.json", "2026-09-26T114602Z-snapshot.json",
-    "2026-09-26T114602Z-profile_res_60.json")), "デプロイ先の雪像が無い (リポジトリには入れない)")
-class Deployed17(unittest.TestCase):
-    """T17.0a の受け入れ基準: 2026-09-24 → 2026-09-26 の 2 枚で T16.99 の `結果:` と同じ数字。"""
-
-    def test_the_numbers_of_t1699(self):
-        rows = build([os.path.join(DEPLOYED, "2026-09-24T093400Z-snapshot.json"),
-                      os.path.join(DEPLOYED, "2026-09-26T114602Z-snapshot.json"),
-                      "--no-dns", "--criteria", "phase17", "--profile",
-                      os.path.join(DEPLOYED, "2026-09-26T114602Z-profile_res_60.json")]
-                     )["criteria"]["rows"]
-        self.assertIn("**0.0013** コア", rows[4][2])
-        self.assertIn("最大 **15** 件、`warm_evicted` **0**", rows[5][2])
-        # 29 件 ÷ 起動から 47.16 時間 = 0.615 (T16.99 は 47 時間で割って 0.62 と書いた)
-        self.assertIn("`dns_slow` **0.61** 件/時 (29 件、前 0.09)", rows[6][2])
-        self.assertIn("後 **0.0022 コア、user 31%**", rows[7][2])
-        self.assertEqual(rows[7][3], sd.UNKNOWN)            # 前の版に `usage_usec` が無い
-
-
 def zero_snapshot(heap_used=4_500_000, mmap=8_000_000, version="0.1.0+bbbbbbb", uptime=120):
     """B と同じ起動の「0 時間の雪像」(起動 2 分後)。B の `memory` は `heap_used` 6.0 + `mmap` 8.0 MB。"""
     memory = {"rss": 15_000_000, "heap_used": heap_used, "heap_free": 400_000, "mmap": mmap}
@@ -811,53 +803,6 @@ class DailySnapshots(unittest.TestCase):
         self.assertNotIn("daily_snapshots", build([A, B, "--no-dns", "--criteria", "phase18"]))
 
 
-@unittest.skipUnless(all(os.path.isfile(os.path.join(DEPLOYED, f)) for f in (
-    "2026-09-26T151308Z-snapshot.json", "2026-09-26T151308Z-profile_res_60.json",
-    "2026-09-26T152424Z-snapshot.json", "2026-10-01T125100Z-snapshot.json",
-    "2026-10-01T125100Z-daily.json", "2026-10-01T125100Z-profile_res_60.json",
-    "2026-09-30T000000Z-snapshot.json")), "デプロイ先の雪像が無い (リポジトリには入れない)")
-class Deployed18(unittest.TestCase):
-    """T18.2 の受け入れ基準: 2026-09-26 → 2026-10-01 + 0 時間の雪像で T17.99 の `結果:` と同じ数字。"""
-
-    def setUp(self):
-        def at(name):
-            return os.path.join(DEPLOYED, name)
-        self.argv = [at("2026-09-26T151308Z-snapshot.json"), at("2026-10-01T125100Z-snapshot.json"),
-                     "--no-dns", "--daily", at("2026-10-01T125100Z-daily.json"),
-                     "--profile", at("2026-10-01T125100Z-profile_res_60.json"),
-                     "--profile-before", at("2026-09-26T151308Z-profile_res_60.json")]
-        self.d = build(self.argv + ["--criteria", "phase18", "--zero",
-                                    at("2026-09-26T152424Z-snapshot.json"),
-                                    "--daily-snapshots", DEPLOYED])
-
-    def test_the_numbers_of_t1799(self):
-        c = self.d["criteria"]
-        rows = c["rows"]
-        self.assertEqual(c["tally"], {sd.MET: 9, sd.MISSED: 0, sd.UNKNOWN: 1})
-        # 前の 8 行は phase17 の表そのもの (T17.99 の「8 行とも満たした」)
-        self.assertEqual(rows[:8], build(self.argv + ["--criteria", "phase17"])["criteria"]["rows"])
-        self.assertIn("**0.01** (8 ミス / 598 要求)", rows[0][2])
-        self.assertIn("**79.9** 回/時", rows[1][2])
-        self.assertIn("**0.04** 回/接続、日ごとの幅 0.02〜0.07", rows[2][2])
-        self.assertIn("**1.10** 倍 (1,237 → 1,357 us/要求)", rows[4][2])
-        self.assertIn("最大 **18** 件、`warm_evicted` **0**", rows[5][2])
-        self.assertIn("`dns_slow` **0.02** 件/時 (2 件、前 0.59)", rows[6][2])
-        self.assertIn("0.0021 コア、user 31% → **0.0014 コア、user 38%**", rows[7][2])
-        # (g) は +1.9 MB で満たし、(h) はこの版に欄が無い
-        self.assertEqual(rows[8][3], sd.MET)
-        self.assertIn("**+1.9** MB (18.0 → 19.9 MB)", rows[8][2])
-        self.assertIn("`heap_free` 4.3 → 11.3、`rss` 31.6 → 40.9 MB", rows[8][2])
-        self.assertEqual(rows[9][3], sd.UNKNOWN)
-
-    def test_the_daily_snapshots_of_this_version(self):
-        rows = self.d["daily_snapshots"]["rows"]
-        self.assertEqual([f"{r['uptime_secs'] / 3600:.1f}" for r in rows],
-                         ["8.6", "32.6", "56.6", "80.6", "104.6"])
-        self.assertEqual([r["ipv6_attempts"] for r in rows], [3, 6, 6, 6, 6])
-        self.assertEqual([f"{r['heap_free'] / 1e6:.1f}" for r in rows],
-                         ["7.5", "8.2", "11.4", "11.3", "11.4"])
-
-
 def cached(snap, cache, heap_used=None, mmap=None):
     """`/status` の `memory` に `cache_memory` (と、あれば `heap_used` / `mmap`) を置く。"""
     m = snap["status"]["memory"]
@@ -1008,55 +953,6 @@ class Criteria20(unittest.TestCase):
             md = run([A, B, "--no-dns", "--criteria", name])
             self.assertNotIn("表示だけ 3 行", md, name)
             self.assertNotIn("| **表示だけ** |", md, name)
-
-
-@unittest.skipUnless(all(os.path.isfile(os.path.join(DEPLOYED, f)) for f in (
-    "2026-10-01T133549Z-snapshot.json", "2026-10-01T133549Z-profile_res_60.json",
-    "2026-10-01T133907Z-snapshot.json", "2026-10-08T092521Z-snapshot.json",
-    "2026-10-08T092521Z-daily.json", "2026-10-08T092521Z-profile_res_60.json")),
-    "デプロイ先の雪像が無い (リポジトリには入れない)")
-class Deployed20(unittest.TestCase):
-    """T20.1 の受け入れ基準: 2026-10-01 → 2026-10-08 + 0 時間の雪像 (T18.99 の 3 枚) の phase20。"""
-
-    def setUp(self):
-        def at(name):
-            return os.path.join(DEPLOYED, name)
-        self.argv = [at("2026-10-01T133549Z-snapshot.json"), at("2026-10-08T092521Z-snapshot.json"),
-                     "--no-dns", "--daily", at("2026-10-08T092521Z-daily.json"),
-                     "--profile", at("2026-10-08T092521Z-profile_res_60.json"),
-                     "--profile-before", at("2026-10-01T133549Z-profile_res_60.json"),
-                     "--zero", at("2026-10-01T133907Z-snapshot.json")]
-
-    def test_phase18_is_what_t1899_wrote(self):
-        c = build(self.argv + ["--criteria", "phase18"])["criteria"]
-        self.assertEqual(c["tally"], {sd.MET: 6, sd.MISSED: 4, sd.UNKNOWN: 0})
-        self.assertIn("**+15.7** MB (17.9 → 33.6 MB)", c["rows"][8][2])
-
-    def test_phase20_has_no_missed_row(self):
-        d = build(self.argv + ["--criteria", "phase20"])
-        c, rows = d["criteria"], d["criteria"]["rows"]
-        self.assertEqual(c["tally"], {sd.MET: 7, sd.MISSED: 0, sd.UNKNOWN: 0})
-        self.assertEqual(c["display_only"], 3)
-        self.assertEqual([r[3] for r in rows].count(sd.SHOWN), 3)
-        self.assertIn("**0.23** (82 ミス / 351 要求)", rows[0][2])
-        self.assertIn("**0.05** 件/時 (前 0.02 件/時)", rows[3][2])
-        self.assertIn("最大 **32** 件、`warm_evicted` **26**", rows[5][2])
-        # (g): キャッシュ 13.5 MB を引いて +2.2 MB
-        self.assertEqual(rows[8][3], sd.MET)
-        self.assertIn("**+2.2** MB (17.9 → 20.2 MB)", rows[8][2])
-        self.assertIn("`cache_memory` 0.0 → 13.5", rows[8][2])
-        # 成功した接続だけ: `/recent` の 398 本 (T18.99 の p50 7 / p95 66 ms)
-        rc = d["recent_connect"]
-        self.assertEqual((rc["n"], rc["p50"], rc["p95"], rc["failed"]), (398, 7, 66, 178))
-        self.assertGreater(d["history"]["after"]["connect_p95"], 2000)
-
-    def test_phase21_comes_out_too(self):
-        """T21.2: nagoya の同じ 3 枚でも phase21 が出る (前の `/profile` が 12 時間あるので参考の行は無い)。"""
-        c = build(self.argv + ["--criteria", "phase21"])["criteria"]
-        self.assertEqual(c["tally"], {sd.MET: 6, sd.MISSED: 0, sd.UNKNOWN: 0})
-        self.assertEqual(c["display_only"], 4)
-        self.assertNotIn("reference", c)
-        self.assertIn("`cold` 174、`expired` 505", c["rows"][2][2])
 
 
 def long_profile(conn_us_per_row, rows):
@@ -1271,42 +1167,6 @@ class Criteria21(unittest.TestCase):
 
 
 TOKYO = os.path.join(DEPLOYED, "tokyo")
-
-
-@unittest.skipUnless(all(os.path.isfile(os.path.join(TOKYO, f)) for f in (
-    "2026-10-08T104352Z-snapshot.json", "2026-10-08T104352Z-profile_res_60.json",
-    "2026-10-08T104507Z-snapshot.json", "2026-10-15T185514Z-snapshot.json",
-    "2026-10-15T185514Z-daily.json", "2026-10-15T185514Z-profile_res_60.json")),
-    "デプロイ先の雪像が無い (リポジトリには入れない)")
-class Deployed21(unittest.TestCase):
-    """T21.2 の受け入れ基準: tokyo の 2026-10-08 → 2026-10-15 + 0 時間の雪像 (T20.99 の 3 枚) の phase21。"""
-
-    def setUp(self):
-        def at(name):
-            return os.path.join(TOKYO, name)
-        self.argv = [at("2026-10-08T104352Z-snapshot.json"), at("2026-10-15T185514Z-snapshot.json"),
-                     "--no-dns", "--daily", at("2026-10-15T185514Z-daily.json"),
-                     "--profile", at("2026-10-15T185514Z-profile_res_60.json"),
-                     "--profile-before", at("2026-10-08T104352Z-profile_res_60.json"),
-                     "--zero", at("2026-10-08T104507Z-snapshot.json")]
-
-    def test_phase20_is_what_t2099_wrote(self):
-        c = build(self.argv + ["--criteria", "phase20"])["criteria"]
-        self.assertEqual(c["tally"], {sd.MET: 4, sd.MISSED: 3, sd.UNKNOWN: 0})
-
-    def test_phase21_has_no_missed_row(self):
-        c = build(self.argv + ["--criteria", "phase21"])["criteria"]
-        rows = c["rows"]
-        self.assertEqual(c["tally"], {sd.MET: 5, sd.MISSED: 0, sd.UNKNOWN: 0})
-        self.assertEqual((c["display_only"], c["reference"]), (4, 1))
-        self.assertIn("**0.12** 回/接続、日ごとの幅 0.05〜0.24", rows[2][2])
-        self.assertIn("`cold` 408、`expired` 631", rows[2][2])
-        self.assertEqual(rows[4][3], sd.REFERENCE)
-        self.assertIn("**2.72** 倍 (234 → 638 us/要求)", rows[4][2])
-        self.assertIn("前は 1.3 時間 (78 標本) で", rows[4][4])
-        self.assertEqual(rows[9][3], sd.MET)
-        self.assertIn("0 時間の雪像から 2.4 時間後 = **起動直後の 3 回は", rows[9][2])
-        self.assertIn("**+3.1** MB", rows[8][2])
 
 
 class Cut22(unittest.TestCase):
@@ -1950,58 +1810,6 @@ def deployed_argv(d, a, b, zero):
 
 
 # T18.99・T20.99・T21.99 の 3 組 (前・後・0 時間) と、そのとき使った定義
-PAST_PAIRS = (
-    (DEPLOYED, "2026-10-01T133549Z", "2026-10-08T092521Z", "2026-10-01T133907Z", ("phase18", "phase20", "phase21")),
-    (TOKYO, "2026-10-08T104352Z", "2026-10-15T185514Z", "2026-10-08T104507Z", ("phase20", "phase21")),
-    (TOKYO, "2026-10-15T201451Z", "2026-10-17T020206Z", "2026-10-15T201908Z", ("phase21",)),
-)
-
-
-@unittest.skipUnless(all(os.path.isfile(os.path.join(d, f"{x}-{kind}.json"))
-                         for d, a, b, z, _ in PAST_PAIRS for x, kind in (
-                             (a, "snapshot"), (a, "profile_res_60"), (b, "snapshot"), (b, "daily"),
-                             (b, "profile_res_60"), (z, "snapshot"))),
-                     "デプロイ先の雪像が無い (リポジトリには入れない)")
-class Deployed22(unittest.TestCase):
-    """T22.1 の受け入れ基準: 過去の 3 組に phase22 の切り方を当てても判定が変わらないことと、
-    tokyo の 10-15 → 10-17 (T21.99 の 3 枚) の phase22。"""
-
-    def test_the_phase22_cut_does_not_change_the_past_verdicts(self):
-        for d, a, b, z, names in PAST_PAIRS:
-            for name in names:
-                args = sd.parser().parse_args(deployed_argv(d, a, b, z) + ["--criteria", name])
-                A_, B_ = (sd.load_source(f, False) for f in args.files)
-                out = sd.build(A_, B_, args)
-                cut = sd.history_split(A_, B_, out["restart"], args.burst, sd.PHASE22["burst_median_k"])
-                again = sd.judge(name, cut, out["hosts"],
-                                 sd.major_hosts(out["hosts"]["rows"], None), sd.part(B_, "status"),
-                                 None, sd.CRITERIA[name], a=A_, b=B_, info=out["restart"],
-                                 dns=out["dns"], errors=out["errors"])
-                self.assertEqual([r[3] for r in again["rows"]], [r[3] for r in out["criteria"]["rows"]],
-                                 (b, name))
-
-    def test_phase22_on_the_t2199_pair(self):
-        d, a, b, z, _ = PAST_PAIRS[2]
-        out = build(deployed_argv(d, a, b, z) + ["--criteria", "phase22"])
-        h, c = out["history"], out["criteria"]
-        # 後の期間は中央値 780 本/時 → 閾 2,340 本で、29 標本とも平常時 (300 本なら 6 標本)
-        self.assertEqual(h["limits"], {"before": 300, "after": 2340})
-        self.assertEqual((h["after"]["samples"], h["after"]["burst_samples"]), (29, 0))
-        self.assertEqual(h["after"]["connects"], 21_920)
-        self.assertEqual(c["tally"], {sd.MET: 7, sd.MISSED: 2, sd.UNKNOWN: 0})
-        self.assertEqual(c["display_only"], 5)
-        verdicts = [r[3] for r in c["rows"]]
-        self.assertEqual(verdicts[6], sd.SHOWN)                          # `dns_slow` 0.47 件/時 は表示だけ
-        self.assertIn("`dns_slow` **0.47** 件/時 (14 件、前 0.09)", c["rows"][6][2])
-        self.assertEqual(verdicts[10:], [sd.MISSED, sd.MET, sd.MET, sd.MISSED])
-        self.assertIn("新しい閾で **0.17** 件/時 (5 件)、合計 1,000 ms 未満 **9** 件", c["rows"][10][2])
-        self.assertIn("**0.00%** (0 / 1,252)", c["rows"][11][2])
-        # 件/時は 5.6 倍 (0.69 → 3.86) でも、接続 1 本あたりは 0.46 倍
-        self.assertIn("**0.0051** / 接続 (112 件 / 21,920 本: `refused` 3、`unreachable` 1、`timeout` 108。"
-                      "前 0.0112 = 125 件 / 11,137 本、0.46 倍)、件/時 3.86 (前 0.69)", c["rows"][12][2])
-        self.assertIn("引き直し **1,990.8** 回/時 (前 309.7、6.43 倍)", c["rows"][13][2])
-
-
 class Criteria24BootSplit(unittest.TestCase):
     """T24.0: 無言の再起動を**ホストの再起動**と**プロセスだけの再起動**に切り分ける。
 
@@ -2118,70 +1926,6 @@ class Criteria24BootSplit(unittest.TestCase):
         self.assertIn("判定できず", row[2])
 
 
-@unittest.skipUnless(all(os.path.isfile(os.path.join(d, f)) for d, f in (
-    (TOKYO, "2026-10-20T143453Z-snapshot.json"),
-    (TOKYO, "2026-10-15T185514Z-snapshot.json"),
-    (DEPLOYED, "2026-10-08T092521Z-snapshot.json"))),
-    "デプロイ先の雪像が無い (リポジトリには入れない)")
-class Deployed23(unittest.TestCase):
-    """T23.2 の受け入れ基準 (実データ): tokyo の 10-20 で 1 回 (前の起動は 19.2 時間)、10-15 と
-    nagoya の 10-08 で 0 件。**10-20 の 241 件は状態ファイルから読み戻した行** (その中の
-    `start` も直前に `shutdown` があるので数えない)。"""
-
-    def load(self, d, name):
-        with open(os.path.join(d, name), encoding="utf-8") as f:
-            return json.load(f)
-
-    def test_the_silent_restart_of_2026_10_17_is_found_once(self):
-        row = sc._p23_silent_restarts(
-            {"b": self.load(TOKYO, "2026-10-20T143453Z-snapshot.json")}, sd.PHASE22)
-        self.assertEqual(row[3], sd.MISSED)
-        self.assertIn("1 回 (**2026-10-17 22:14:52Z** 版 `0.22.6+000681e`、前の起動は 19.2 時間)",
-                      row[2])
-        self.assertIn("読み戻し 241 件", row[4])
-
-    def test_every_other_restart_has_a_shutdown_before_it(self):
-        for d, name in ((TOKYO, "2026-10-15T185514Z-snapshot.json"),
-                        (DEPLOYED, "2026-10-08T092521Z-snapshot.json")):
-            row = sc._p23_silent_restarts({"b": self.load(d, name)}, sd.PHASE22)
-            self.assertEqual(row[3], sd.MET, name)
-            self.assertTrue(row[2].startswith("0 件 ("), (name, row[2]))
-
-    def test_the_phase23_rows_on_the_tokyo_pair(self):
-        """T23.1 の受け入れ基準 (実データ): 10-17 → 10-20 の phase23 の 16 行。
-
-        親が T23.0 の道具 (`scripts/error-mix.py`) で出した数字と同じになること。
-        0 時間の雪像は 10-17T030257Z (10-17T03:02:22Z の起動、2 分後)。
-        """
-        a = os.path.join(TOKYO, "2026-10-17T030107Z-snapshot.json")
-        b = os.path.join(TOKYO, "2026-10-20T143453Z-snapshot.json")
-        z = os.path.join(TOKYO, "2026-10-17T030257Z-snapshot.json")
-        rows = build([a, b, "--no-dns", "--criteria", "phase23", "--zero", z])["criteria"]["rows"]
-        self.assertEqual(len(rows), 16)
-        # (2) dns のミスは試行あたり 0.0850 (170 / 2,000)、名前解決に成功した試行あたり 0.0929
-        self.assertEqual(rows[2][3], sd.SHOWN)
-        self.assertIn("試行あたり **0.0850** (170 / 2,000)、名前解決に成功した試行あたり "
-                      "**0.0929** (170 / 1,830)", rows[2][2])
-        self.assertIn("(前: 試行あたり 0.0000 (0 / 1,991)", rows[2][2])
-        # (3) heap は「0 時間の雪像と起動が違う」に `/events` の `start` の時刻が付く
-        self.assertEqual(rows[8][3], sd.UNKNOWN)
-        self.assertIn("**0 時間の雪像と起動が違う** (`/events` の `start` が "
-                      "2026-10-17T03:02:22Z と 22:14:52Z、同じ版 `0.22.6+000681e` で起動し直している)",
-                      rows[8][2])
-        # (1) 接続のエラーは名前解決に成功した試行あたり 0.0164 (30 / 1,830) で、前の 1.36 倍 → 満たした
-        self.assertEqual(rows[12][3], sd.MET)
-        self.assertIn("**0.0164** / 名前解決に成功した試行 (30 件 / 1,830 本: `refused` 3、"
-                      "`unreachable` 2、`timeout` 25。", rows[12][2])
-        self.assertIn("前 0.0121 = 24 件 / 1,991 本、1.36 倍)", rows[12][2])
-        # phase22 の物差しは同じ雪像で 7.80 倍 → 表示だけとして隣に残る
-        self.assertEqual(rows[13][3], sd.SHOWN)
-        self.assertIn("7.80 倍", rows[13][2])
-        # (4) 無言の再起動は 1 回
-        self.assertEqual(rows[15][3], sd.MISSED)
-        self.assertIn("1 回 (**2026-10-17 22:14:52Z**", rows[15][2])
-
-
-
 class RecentAttempts(unittest.TestCase):
     """名前解決の失敗は今の綴り (`error:nxdomain`・`error:dns_temp`) も分母から外す (T.29.36)。"""
 
@@ -2261,7 +2005,7 @@ T2999_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-10-28T143043Z-snapshot.json"
 
 
 @unittest.skipUnless(os.path.exists(T2999_BEFORE) and os.path.exists(T2999_AFTER),
-                     "T.29.99 の雪像 (status/tokyo/) が無い")
+                     "tokyo の実データが無い (status/tokyo/ の T.29.99 の 2 枚)")
 class Deployed27(unittest.TestCase):
     """T.29.99 の 2 枚 (0.28.48 の停止 → 0.29.36 の 24 時間) で、phase26 の届かなかった 2 行が直る (T.30.0・T.30.1)。"""
 
@@ -2274,7 +2018,6 @@ class Deployed27(unittest.TestCase):
         self.assertEqual(rows[22][3], sd.MET)
         self.assertIn("**28.9** MB", rows[22][2])
         self.assertIn("前 31.8 MB", rows[22][2])
-
 
 
 class Criteria28Rows(unittest.TestCase):
@@ -2339,7 +2082,7 @@ T3099_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-10-30T062500Z-snapshot.json"
 
 
 @unittest.skipUnless(os.path.exists(T3099_BEFORE) and os.path.exists(T3099_AFTER),
-                     "T.30.99 の雪像 (status/tokyo/) が無い")
+                     "tokyo の実データが無い (status/tokyo/ の T.30.99 の 2 枚)")
 class Deployed28(unittest.TestCase):
     """T.30.99 の 2 枚 (0.29.36 の停止 → 0.30.4 の 24.2 時間) で、phase27 の届かなかった 2 行が満たす (T.31.0・T.31.1)。"""
 
@@ -2544,55 +2287,6 @@ class Deployed29(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-@unittest.skipUnless(os.path.isfile(os.path.join(TOKYO, "2026-10-22T210213Z-snapshot.json")),
-                     "デプロイ先の雪像が無い (リポジトリには入れない)")
-class Deployed24(unittest.TestCase):
-    """T24.0 の受け入れ基準 (実データ): 2026-10-22 の tokyo の雪像を**手で組み立て直した** JSON で、
-
-    10-21 の 2 回の無言の再起動が**ホストの再起動** (boot が変わった) と分かること。
-
-    あの雪像は T24.0 より前の版が撮ったので `start` の文面に `boot` が無い。そこで
-    `/events` の `start` の 3 行 (10-17 22:14:52Z・10-21 14:31:31Z・10-21 15:11:20Z) に、
-    **分かっている事実**のとおりの `boot` を手で入れる: 10-21 の 2 回はホストの管理者が
-    機械ごと起動し直したので、その 2 回で値が変わる (10-17 の行は旧版なので、その前の
-    起動と同じホストかは言えない = 「判定できず」に残る)。
-    """
-
-    NAME = "2026-10-22T210213Z-snapshot.json"
-    # 10-21 03:25:28Z の起動 (`shutdown` のあとの普通の再起動) / 10-21 14:31:31Z / 10-21 15:11:20Z。
-    # **10-21 の 2 回でホストが起動し直した**ので、そこだけ値が変わる (10-17 22:14:52Z の行は旧版なので
-    # そのまま = 1 つ前の起動と比べられない)
-    BOOTS = {1792511528: "11111111-111", 1792593091: "22222222-222", 1792595480: "33333333-333"}
-
-    def snap(self):
-        import re
-        with open(os.path.join(TOKYO, self.NAME), encoding="utf-8") as f:
-            d = json.load(f)
-        rows = d["events"]["events"]
-        for e in rows:
-            boot = self.BOOTS.get(e.get("at")) if e.get("kind") == "start" else None
-            if boot:
-                e["text"] = re.sub(r"( on port \d+)", r"\1 boot " + boot, e["text"], count=1)
-        return d
-
-    def test_the_two_restarts_of_2026_10_21_are_host_restarts(self):
-        r = sc.silent_restarts(self.snap())
-        self.assertEqual([s["at"] for s in r["host"]], [1792593091, 1792595480])
-        self.assertEqual(r["process"], [])          # プロセスだけの再起動は 0 回
-        self.assertEqual(r["boot_unknown"], 1)      # 10-17 の行は前の起動の boot が無い
-        text = sc.silent_restart_text(r)
-        self.assertIn("3 回 (", text)
-        self.assertIn("うちホストの再起動 (boot が変わった回) 2 回、プロセスだけの再起動 0 回", text)
-        self.assertIn("`boot` の無い `start` 1 件は判定できない", text)
-        row = sc._p24_silent_restarts({"b": self.snap()}, sd.PHASE22)
-        # 「boot の無い 1 件」が残るので 0 回とは書かない (判定できず。数から外した 2 回は理由つき)
-        self.assertEqual(row[3], sd.UNKNOWN)
-        self.assertIn("こちらが原因の無言の再起動", row[0])
-        self.assertIn("**ホストの再起動** (boot が変わった) `2026-10-21 14:31:31Z`、"
-                      "`2026-10-21 15:11:20Z` は数から外した", row[4])
-        self.assertIn("`boot` の無い `start` が 1 件ある (T24.0 より前の版が書いた行)", row[4])
-
 
 class Criteria24(unittest.TestCase):
     """`_p24_heap` (T24.4): heap の行を**起動から 60 秒の基準** (`memory.baseline`) との差で読む。
@@ -2943,97 +2637,6 @@ class Criteria24Rows(unittest.TestCase):
         self.assertEqual(row[3], sd.MISSED)
 
 
-@unittest.skipUnless(all(os.path.isfile(os.path.join(d, f)) for d, f in (
-    (TOKYO, "2026-10-17T030107Z-snapshot.json"),
-    (TOKYO, "2026-10-20T143453Z-snapshot.json"),
-    (TOKYO, "2026-10-17T030257Z-snapshot.json"))),
-    "デプロイ先の雪像が無い (リポジトリには入れない)")
-class Deployed24Rows(unittest.TestCase):
-    """T24.2 の受け入れ基準 (実データ): tokyo の 10-17 → 10-20 で `--criteria phase24` の 17 行が出て、
-
-    heap の行と無言の再起動の行が**その雪像で読める形**になっていること。この 2 枚は T24.0 と T24.4 より
-    前の版が撮ったので `start` に `boot` が無く `memory.baseline` も無い — つまり**どちらも phase23 の
-    読み方に戻る** (過去の判定を同じ命令で出し直せることの、実データでの確認)。
-    """
-
-    A = os.path.join(TOKYO, "2026-10-17T030107Z-snapshot.json")
-    B = os.path.join(TOKYO, "2026-10-20T143453Z-snapshot.json")
-    Z = os.path.join(TOKYO, "2026-10-17T030257Z-snapshot.json")
-
-    def rows(self):
-        return build([self.A, self.B, "--no-dns", "--criteria", "phase24", "--zero", self.Z])
-
-    def test_the_phase24_rows_on_the_tokyo_pair(self):
-        c = self.rows()["criteria"]
-        self.assertEqual(len(c["rows"]), 17)
-        self.assertEqual(c["display_only"], 6)
-        # heap は `memory.baseline` が無いので、phase23 と同じく 0 時間の雪像との差で「起動が違う」と出る
-        self.assertEqual(c["rows"][8][3], sd.UNKNOWN)
-        self.assertIn("**0 時間の雪像と起動が違う** (`/events` の `start` が "
-                      "2026-10-17T03:02:22Z と 22:14:52Z", c["rows"][8][2])
-        # 無言の再起動は 1 回 (10-17 22:14:52Z)。ただしこの 2 枚の `start` には `boot` が無いので
-        # 「ホストか、プロセスだけか」を言えず、**0 回とは書かない** (phase23 は同じ 1 回を「届かず」と書く)
-        self.assertEqual(c["rows"][15][3], sd.UNKNOWN)
-        self.assertEqual(build([self.A, self.B, "--no-dns", "--criteria", "phase23", "--zero", self.Z])
-                         ["criteria"]["rows"][15][3], sd.MISSED)
-        self.assertIn("1 回 (**2026-10-17 22:14:52Z**", c["rows"][15][2])
-        self.assertIn("`boot` の無い `start` が 1 件ある", c["rows"][15][4])
-
-    def test_the_tail_row_on_the_tokyo_pair(self):
-        """T24.3: 10-20 の `/recent` (2,000 本) で、尾は**距離** (+0.4 ms)。
-
-        確立は個票の 1,800 本の**同じ行の差**で見る (失敗 200 本は確立していないので外す)。
-        """
-        row = self.rows()["criteria"]["rows"][16]
-        self.assertEqual(row[3], sd.MET)
-        self.assertIn("**+0.4** ms (同じ 1,800 本の `ms.connect − rtt_ms.origin` の p95。"
-                      "確立 p50 13.0 / p95 262.0 ms、RTT p50 16.4 / p95 271.6 ms)", row[2])
-        self.assertIn("プロキシの取り分 (中央値) **-1.3** ms = **距離**", row[2])
-        self.assertIn("`/recent` の 2026-10-20 06:42:56Z〜2026-10-20 14:34:47Z の connect 2,000 本 "
-                      "(確立と RTT がそろったのは 1,800 本。外した: 失敗 200 本)", row[2])
-
-
-@unittest.skipUnless(all(os.path.isfile(os.path.join(TOKYO, f)) for f in (
-    "2026-10-20T155229Z-snapshot.json",
-    "2026-10-22T210213Z-snapshot.json")),
-    "デプロイ先の雪像が無い (リポジトリには入れない)")
-class Deployed243Rows(unittest.TestCase):
-    """T24.3 の受け入れ基準 (実データ): **2026-10-22 と 2026-10-20 の 2 枚**で行が出る (数値と窓)。
-
-    この 2 枚は T24.3 より前の版 (`0.23.3`) の雪像で、`/recent` の connect は 1,999 / 1,994 本。
-    尾は**同じ行の差**で読む (`/history` の平常時の p95 318.5 ms とは母集団が違う)。
-    """
-
-    A = os.path.join(TOKYO, "2026-10-20T155229Z-snapshot.json")
-    B = os.path.join(TOKYO, "2026-10-22T210213Z-snapshot.json")
-
-    def rows(self):
-        return build([self.A, self.B, "--no-dns", "--criteria", "phase24"])["criteria"]["rows"]
-
-    def test_the_tail_row_on_the_2026_10_22_pair(self):
-        row = self.rows()[16]
-        self.assertEqual(len(self.rows()), 17)
-        self.assertEqual(row[0], "CONNECT 確立の尾 (`p95`) が、同じ窓のカーネル RTT の `p95` + 5 ms 未満 "
-                                 "(尾は距離)")
-        self.assertEqual(row[3], sd.MET)
-        # 1,959 本の同じ行の差の p95 は +0.1 ms = 距離。取り分 (中央値) は -1.2 ms (phase14 は -0.21)
-        self.assertIn("**+0.1** ms (同じ 1,959 本の `ms.connect − rtt_ms.origin` の p95。"
-                      "確立 p50 13.0 / p95 259.0 ms、RTT p50 19.0 / p95 263.5 ms)", row[2])
-        self.assertIn("プロキシの取り分 (中央値) **-1.2** ms = **距離**", row[2])
-        # `/recent` は 2,000 件の環状なので窓と本数が実測の欄に出る
-        self.assertIn("`/recent` の 2026-10-22 17:31:23Z〜2026-10-22 21:02:09Z の connect 1,999 本 "
-                      "(確立と RTT がそろったのは 1,959 本。外した: 失敗 40 本)", row[2])
-        # `/history` の p95 とは母集団が違うと注記する (混ぜない)
-        self.assertIn("`/history` の平常時の確立 p95 (318.5 ms) とは母集団が違う", row[4])
-
-    def test_the_markdown_shows_the_row_with_its_window(self):
-        md = run([self.A, self.B, "--no-dns", "--criteria", "phase24"])
-        self.assertIn("| CONNECT 確立の尾 (`p95`) が、同じ窓のカーネル RTT の `p95` + 5 ms 未満 "
-                      "(尾は距離) | < RTT p95 + 5 ms |", md)
-        self.assertIn("の connect 1,999 本", md)
-
-
-
 class Criteria25Rows(unittest.TestCase):
     """`--criteria phase25` (T27.0): phase24 の 17 行のうち、T25.99 で物差しの穴だった 3 行。
 
@@ -3188,7 +2791,7 @@ T2599_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-10-24T184027Z-snapshot.json"
 
 
 @unittest.skipUnless(os.path.exists(T2599_BEFORE) and os.path.exists(T2599_AFTER),
-                     "T25.99 の雪像 (status/tokyo/) が無い")
+                     "tokyo の実データが無い (status/tokyo/ の T25.99 の 2 枚)")
 class Deployed25(unittest.TestCase):
     """T25.99 の 2 枚の phase25 (T27.0 の受け入れ基準): 直した 3 行が 判定できず・満たした・満たした。"""
 
@@ -3342,7 +2945,7 @@ T2899_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-10-27T024200Z-snapshot.json"
 
 
 @unittest.skipUnless(os.path.exists(T2899_BEFORE) and os.path.exists(T2899_AFTER),
-                     "T.28.99 の雪像 (status/tokyo/) が無い")
+                     "tokyo の実データが無い (status/tokyo/ の T.28.99 の 2 枚)")
 class Deployed26(unittest.TestCase):
     """T.28.99 の 2 枚 (0.27.8 → 0.28.48 の 24 時間) で phase26 の表が出る (T.29.10 の受け入れ基準)。"""
 

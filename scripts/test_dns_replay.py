@@ -434,7 +434,7 @@ class CurrentModelTest(unittest.TestCase):
 T2917 = os.path.join(os.path.dirname(HERE), "status", "tokyo", "2026-10-27T024200Z-snapshot.json")
 
 
-@unittest.skipUnless(os.path.exists(T2917), "tokyo の雪像 (status/tokyo/) が無い")
+@unittest.skipUnless(os.path.exists(T2917), "tokyo の実データが無い (status/tokyo/)")
 class Deployed2917(unittest.TestCase):
     """T.29.17 の受け入れ基準: 10-27 の雪像で、今の規則の模型がミス・引き直しとも実機の ±30%。
 

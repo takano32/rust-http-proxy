@@ -855,61 +855,9 @@ class Schema(unittest.TestCase):
         self.assertEqual(err.getvalue(), "")
 
 
-@unittest.skipUnless(os.path.isdir(DEPLOYED) and
-                     os.path.isfile(os.path.join(DEPLOYED, "2026-09-16T0106Z-status")),
-                     "デプロイ先の実出力が無い (リポジトリには入れない)")
-class Deployed(unittest.TestCase):
-    """T.14.17 の受け入れ基準: 実出力から **T.14.0 の表と同じ数字**が出ること。"""
-
-    def setUp(self):
-        self.d = build(["--from-files", os.path.join(DEPLOYED, "2026-09-12T2018Z"),
-                        "--from-files", os.path.join(DEPLOYED, "2026-09-16T0106Z"),
-                        "--no-dns", "--criteria", "phase14"])
-
-    def test_the_numbers_are_the_ones_in_t140(self):
-        h = self.d["history"]
-        bef, aft = h["before"], h["after"]
-        self.assertEqual((bef["samples"], aft["samples"]), (58, 72))
-        self.assertEqual(f"{bef['dns_per_connect']:.2f}", "0.55")
-        self.assertEqual(f"{aft['dns_per_connect']:.2f}", "0.55")
-        self.assertEqual(f"{bef['connect_p50']:.1f}", "8.1")
-        self.assertEqual(f"{aft['connect_p50']:.1f}", "8.3")
-        self.assertEqual(f"{bef['ms_per_miss']:.1f}", "12.6")
-        self.assertEqual(f"{aft['ms_per_miss']:.1f}", "11.5")
-        self.assertEqual(f"{bef['connect_avg']:.1f}", "20.9")
-        self.assertEqual(f"{aft['connect_avg']:.1f}", "15.3")
-        self.assertEqual(f"{bef['connect_p95']:.1f}", "90.8")
-        self.assertEqual(f"{aft['connect_p95']:.1f}", "80.7")
-        # 「(参考) バースト込み」の行 (§2 の 3 行目)
-        self.assertEqual(f"{h['before_all']['dns_per_connect']:.2f}", "0.42")
-        self.assertEqual(f"{h['before_all']['ms_per_miss']:.1f}", "36.0")
-
-    def test_the_major_three_hosts_and_their_miss_rates(self):
-        # **宛先の名前と接続元の IP はここに書かない** (個人の閲覧先なのでリポジトリに入れない)。
-        # 数字だけで T.14.0 の「主要 3 ホストのミス率」の行を守る
-        majors = self.d["majors"]
-        self.assertEqual(len(majors), 3)
-        self.assertEqual(sorted(m["requests"] for m in majors), [489, 920, 2301])
-        self.assertEqual(sorted(f"{m['miss_rate']:.2f}" for m in majors),
-                         ["0.31", "0.76", "1.00"])
-
-    def test_the_new_client_of_2026_09_16(self):
-        self.assertEqual(len(self.d["clients"]["new"]), 1)
-        self.assertEqual(self.d["clients"]["new"][0]["requests"], 463)
-
-    def test_the_dns_table_and_the_refreshes(self):
-        dn = self.d["dns"]
-        self.assertEqual(dn["refreshes"], 442)
-        self.assertEqual(dn["idle"],
-                         {"60 秒未満": 2, "10 分未満": 1, "1 時間未満": 3, "1 時間以上": 84})
-
-    def test_the_phase14_table_has_four_rows(self):
-        c = self.d["criteria"]
-        self.assertEqual(len(c["rows"]), 4)
-        self.assertEqual([r[3] for r in c["rows"]],
-                         [sd.MISSED, sd.MISSED, sd.MISSED, sd.UNKNOWN])
-
-
+# **T.32.34 で消した `Deployed` (5 本)**: T.14.17 の受け入れ基準 (実出力から T.14.0 の表と同じ数字) を、`status/` 直下の
+# nagoya の生の出力 (`2026-09-12T2018Z`・`2026-09-16T0106Z`) で見ていたが、その出力はどの機械にも残っていない。
+# 同じ 2026-09-16 の実データは匿名化した写し (`testdata/deployed-2026-09-16.anon.json`) で下の `Anonymized` が回す。
 @unittest.skipUnless(os.path.isfile(os.path.join(DATA, "deployed-2026-09-16.anon.json")),
                      "匿名化した実データが無い")
 class Anonymized(unittest.TestCase):
@@ -1037,7 +985,7 @@ class RttSplit(unittest.TestCase):
 TOKYO_ANON = os.path.join(DEPLOYED, "tokyo", "2026-10-27T024200Z-snapshot.anon.json")
 
 
-@unittest.skipUnless(os.path.exists(TOKYO_ANON), "tokyo の雪像 (status/tokyo/) が無い")
+@unittest.skipUnless(os.path.exists(TOKYO_ANON), "tokyo の実データが無い (status/tokyo/)")
 class DeployedRttSplit(unittest.TestCase):
     """T.29.18 の受け入れ基準: tokyo の (匿名化した) 雪像で 2 行の表が出る (匿名化で RTT が残る)。"""
 
