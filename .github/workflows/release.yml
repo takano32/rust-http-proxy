@@ -16,9 +16,15 @@ on:
         description: "タグを打つコミット (既定は main の先頭)。main の上のコミットであること。短いハッシュ (ab12cd3)・完全な SHA・ブランチ名・main~1 の形が使える"
         required: false
         default: main
+      unchecked:
+        description: "CI (ci.yml の check) が通ったかを確かめずに打つ (既定 false。CI の走らないコミットなど、理由があるときだけ true)"
+        required: false
+        default: "false"
 
 permissions:
   contents: write
+  # タグを打つコミットの CI (ci.yml の `check`) の結果を読む (T.32.32)
+  checks: read
 
 jobs:
   tag:
@@ -35,6 +41,7 @@ jobs:
           ref: main
           fetch-depth: 0
       - name: Resolve the ref (main の上のコミットか)
+        id: ref
         env:
           REF: ${{ inputs.ref }}
         run: |
@@ -65,6 +72,36 @@ jobs:
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           echo "打つコミット: $commit (main の先頭 $main より $behind コミット前)"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      # CI が通ったコミットにだけ打つ (T.32.32)。v0.28.48 (b56160a) は同じコミットの CI が終わる前に打っていた
+      # (結果は success、1 つ前のコミットは fmt で落ちていた)。`ci.yml` の `check` の最後の 1 回が
+      # 終わっていて success でなければ、理由と CI の頁を出して落とす
+      - name: Check that CI passed on the commit
+        if: inputs.unchecked != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.ref.outputs.commit }}
+        run: |
+          set -eu
+          last=$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT/check-runs?check_name=check&per_page=100" \
+            -q '[.check_runs[]] | sort_by(.started_at) | last // empty | "\(.status) \(.conclusion) \(.html_url)"')
+          if [ -z "$last" ]; then
+            echo "$COMMIT に CI (ci.yml の check) の結果が無い。CI が走ってから打つ (理由があれば unchecked=true)" >&2
+            exit 1
+          fi
+          read -r status conclusion url <<EOF_RUN
+          $last
+          EOF_RUN
+          if [ "$status" != completed ]; then
+            echo "$COMMIT の CI (check) がまだ終わっていない ($status): $url" >&2
+            exit 1
+          fi
+          if [ "$conclusion" != success ]; then
+            echo "$COMMIT の CI (check) が通っていない ($conclusion): $url" >&2
+            exit 1
+          fi
+          echo "CI (check) は success: $url"
+          echo "CI (ci.yml の check) は success ([頁]($url))" >> "$GITHUB_STEP_SUMMARY"
       - name: Check the version and push the tag
         id: tag
         env:
