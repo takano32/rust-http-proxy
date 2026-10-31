@@ -66,7 +66,7 @@
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
-#   CRITERIA (既定 phase28) … 判定表に使う完了の定義 (`phase27` `phase26` `phase25` `phase24` `phase23` `phase22` `phase21` `phase20` `phase18` `phase17`
+#   CRITERIA (既定 phase29) … 判定表に使う完了の定義 (`phase28` `phase27` `phase26` `phase25` `phase24` `phase23` `phase22` `phase21` `phase20` `phase18` `phase17`
 #                         `phase15` `phase14` も残してある)。phase20 は phase18 の物差しを直したもの (T.20.1)、
 #                         phase21 は phase20 のミス・conn 役・IPv6 の探りの 3 行の読み方を直したもの (T.21.2)、
 #                         phase22 は phase21 の 10 行 + 22a の 4 行で、平常時を「300 本と期間の中央値の
@@ -84,7 +84,10 @@
 #                         phase27 は phase26 の 26 行のうち接続のエラーの行の下限を分母 (名前解決に成功した試行) に
 #                         掛け、RSS の行を「前の版より下がる」に読み替えたもの (T.30.0・T.30.1)、
 #                         phase28 は phase27 の 26 行のうち cgroup の CPU を要求 1 本あたりに、RSS の行を
-#                         「`malloc_trim` が毎時動いて返している」に読み替えたもの (T.31.0・T.31.1)。
+#                         「`malloc_trim` が毎時動いて返している」に読み替えたもの (T.31.0・T.31.1)、
+#                         phase29 は phase28 の 26 行のうち 5 行 (`conn` 役の CPU・裏の役割・cgroup の CPU・
+#                         接続のエラー・`dns_slow`) を名前解決の失敗の割合で動かない形にしたもの (T.32.16・
+#                         T.32.29・T.32.30)。
 #                         `off` で判定表を出さない
 #   BEFORE (無指定)     … **判定表の相手**にする雪像 (再デプロイの直前に撮った「前」。T.18.2)。
 #                         無ければ今までどおり直前の 1 枚 (再デプロイのあとは 0 時間の雪像になるので、
@@ -167,7 +170,7 @@ else
 fi
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
-CRITERIA=${CRITERIA:-phase28}
+CRITERIA=${CRITERIA:-phase29}
 # 判定表の相手 (「前」の雪像) と 0 時間の雪像 (T.18.2)。どちらも無指定なら今までどおり
 JUDGE_BEFORE=${BEFORE:-}
 ZERO=${ZERO:-}
@@ -945,14 +948,14 @@ PROFILE_BEFORE=
 [ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
 # phase18 の 2 行の材料 (T.18.2): `ZERO` があれば `--zero` で、日次の雪像の表は保存先 (`--from-server`
 # が `<日付>T000000Z-snapshot.json` を置く所) を `--daily-snapshots` で渡す。**phase18 と、同じ材料を
-# 使う phase20 (T.20.1)・phase21 (T.21.2)・phase22 (T.22.1)・phase23 (T.23.1)・phase24 (T.24.2)・phase25 (T.27.0)・phase26 (T.29.10)・phase27 (T.30.0)・phase28 (T.31.0) のときだけ**
+# 使う phase20 (T.20.1)・phase21 (T.21.2)・phase22 (T.22.1)・phase23 (T.23.1)・phase24 (T.24.2)・phase25 (T.27.0)・phase26 (T.29.10)・phase27 (T.30.0)・phase28 (T.31.0)・phase29 (T.32.29) のときだけ**
 # (phase24 と phase25 は `memory.baseline` が無い雪像のときだけ 0 時間の雪像で読むので、渡しておく)
 # (古い定義の判定表は今までと同じ命令で出す)
 P18=()
 if [ "$CRITERIA" = phase18 ] || [ "$CRITERIA" = phase20 ] || [ "$CRITERIA" = phase21 ] ||
   [ "$CRITERIA" = phase22 ] || [ "$CRITERIA" = phase23 ] || [ "$CRITERIA" = phase24 ] ||
   [ "$CRITERIA" = phase25 ] || [ "$CRITERIA" = phase26 ] || [ "$CRITERIA" = phase27 ] ||
-  [ "$CRITERIA" = phase28 ]; then
+  [ "$CRITERIA" = phase28 ] || [ "$CRITERIA" = phase29 ]; then
   [ -n "$ZERO" ] && P18+=(--zero "$ZERO")
   P18+=(--daily-snapshots "$DIR")
 fi
@@ -991,6 +994,44 @@ if [ "$DIFF" = 1 ] && [ -n "$JUDGE_BEFORE" ] && [ -n "$CRIT" ]; then
   [ -f "${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json" ] &&
     [ "${JUDGE_BEFORE%-snapshot.json}" != "$JUDGE_BEFORE" ] &&
     JUDGE_PROFILE=${JUDGE_BEFORE%-snapshot.json}-profile_res_60.json
+  # 隣に無ければ (「前」は停止の 1 枚で、`-profile_res_60.json` は普段の 1 回の隣にしか無い)、**前の版の最後の
+  # `-profile_res_60.json` で 12 時間以上あるもの** を前の材料に選ぶ (T.32.29。前は停止の 1 枚の `/profile` の部
+  # (0.5 時間) しか無く、T.29.99 から 3 回続けて CPU の行が「参考」だった)。版は同じ時刻の `-snapshot.json` の
+  # `status.version` (`+<コミット>` は見ない)、長さは標本の数 × `interval_secs`
+  if [ -z "$JUDGE_PROFILE" ]; then
+    JUDGE_PROFILE=$(python3 - "$JUDGE_BEFORE" "$DIR" <<'PROF'
+import json, os, re, sys
+
+before, d = sys.argv[1], sys.argv[2]
+
+
+def version(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    v = (doc.get("status") or {}).get("version") or doc.get("version")
+    return v.split("+", 1)[0] if isinstance(v, str) and v else None
+
+
+want = version(before)
+if want:
+    for name in sorted(os.listdir(d), reverse=True):
+        m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{6}Z)-profile_res_60\.json$", name)
+        if not m or version(os.path.join(d, m.group(1) + "-snapshot.json")) != want:
+            continue
+        try:
+            with open(os.path.join(d, name), encoding="utf-8") as f:
+                p = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if len(p.get("samples") or []) * (p.get("interval_secs") or 0) >= 12 * 3600:
+            print(os.path.join(d, name))
+            break
+PROF
+    ) || JUDGE_PROFILE=
+  fi
   if [ -n "$AAAA" ]; then
     JUDGE_AAAA=(--aaaa "$AAAA")
   else

@@ -214,7 +214,7 @@ class CollectProfileTest(unittest.TestCase):
 class CollectBeforeZeroTest(unittest.TestCase):
     """判定表の相手を `BEFORE`、0 時間の雪像を `ZERO` で渡す (T.18.2)。
 
-    既定の `CRITERIA` は phase28 (T.31.0)。下のテストは `criteria="phase18"` を名指しして回す
+    既定の `CRITERIA` は phase29 (T.32.29)。下のテストは `criteria="phase18"` を名指しして回す
     (`BEFORE` / `ZERO` の受け渡しは定義に依らない)。
 
     偽のサーバーが返す「いまの雪像」は `testdata/snapshot-b.json` (版 `0.1.0+bbbbbbb`、起動から 12 時間、
@@ -268,14 +268,16 @@ class CollectBeforeZeroTest(unittest.TestCase):
         """要約の末尾の判定の節。"""
         return out[out.index("## 6. 完了の定義に対する判定"):]
 
-    def test_the_default_criteria_is_phase28_against_the_previous_snapshot(self):
+    def test_the_default_criteria_is_phase29_against_the_previous_snapshot(self):
         d, out, _ = self.run_collect(criteria=None)
         tail = self.judged(out)
-        self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria phase28)", tail)
-        self.assertIn("26 行の並びと材料は phase27 と同じです", tail)
+        self.assertIn("## 6. 完了の定義に対する判定 (snapshot-diff.py --criteria phase29)", tail)
+        self.assertIn("26 行の並びは phase28 と同じです", tail)
         # 前回の雪像に `/profile` も `/recent` も無いので conn 役と接続のエラーの行は「判定できず」で、
-        # 参考の行は無い (表示だけは phase21 の 4 行 + `/events` の行 + phase22 の接続のエラーの行)
-        self.assertIn("(ほかに表示だけ 6 行。集計に数えない)", tail)
+        # 参考の行は無い (表示だけは phase21 の 4 行 + `/events` の行 + phase22 の接続のエラーの行 +
+        # phase29 で表示だけにした cgroup の CPU の行)
+        self.assertIn("(ほかに表示だけ 7 行。集計に数えない)", tail)
+        self.assertNotIn("参考", tail.split("\n\n")[-2])
         self.assertEqual(tail.count("\n| "), 1 + 26)          # 表の頭 + 26 行 (T.29.10・T.29.15 で phase25 の 17 行に 9 行)
         # `baseline` も `boot` も無い雪像なので、heap の行は phase23 の読み方に戻る
         self.assertIn("`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満", tail)
@@ -307,6 +309,24 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertNotIn("100 標本", tail)
         self.assertEqual(tail.count("\n| "), 1 + 10)
 
+    def test_before_takes_the_last_long_profile_of_its_version(self):
+        # T.32.29: 「前」(停止の 1 枚) の隣に `-profile_res_60.json` が無ければ、前の版の最後の 12 時間以上の
+        # ものを選ぶ (同じ時刻の `-snapshot.json` の版で見る。短いもの・違う版・匿名化した写しは選ばない)
+        before = "2025-12-30T101010Z-shutdown-snapshot.json"
+        other = dict(self.a, version="0.0.9+ccccccc", status=dict(self.a["status"], version="0.0.9+ccccccc"))
+        _, out, _ = self.run_collect(files={
+            before: self.a,
+            "2025-12-29T000000Z-snapshot.json": self.a,
+            "2025-12-29T000000Z-profile_res_60.json": FakeProfile(800, pad=0).page(0),
+            "2025-12-30T000000Z-snapshot.json": self.a,
+            "2025-12-30T000000Z-profile_res_60.json": FakeProfile(300, pad=0).page(0),      # 5 時間で短い
+            "2025-12-30T000000Z-profile_res_60.anon.json": FakeProfile(900, pad=0).page(0),
+            "2025-12-30T090000Z-snapshot.json": other,
+            "2025-12-30T090000Z-profile_res_60.json": FakeProfile(1000, pad=0).page(0),     # 違う版
+        }, BEFORE="{dir}/" + before)
+        tail = self.judged(out)
+        self.assertIn("前: `--profile` 800 標本", tail)
+
     def test_before_without_a_profile_next_to_it(self):
         before = "2025-12-30T101010Z-snapshot.json"
         _, out, _ = self.run_collect(files={before: self.a}, BEFORE="{dir}/" + before)
@@ -315,8 +335,8 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertNotIn("前: `--profile`", tail)
 
     def test_zero_and_the_daily_snapshots_are_passed_under_phase20_too(self):
-        """phase20・phase21・phase24・phase25・phase26・phase27・phase28 と既定 (phase28) でも `ZERO` は (g) の行に届き、日次の雪像の表が付く。"""
-        for criteria in ("phase20", "phase21", "phase24", "phase25", "phase26", "phase27", "phase28", None):
+        """phase20・phase21・phase24・phase25・phase26・phase27・phase28・phase29 と既定 (phase29) でも `ZERO` は (g) の行に届き、日次の雪像の表が付く。"""
+        for criteria in ("phase20", "phase21", "phase24", "phase25", "phase26", "phase27", "phase28", "phase29", None):
             with self.subTest(criteria=criteria):
                 self.zero_and_daily(criteria)
 
@@ -329,7 +349,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
                                             "2025-12-30T000000Z-snapshot.json": daily},
                                      criteria=criteria, ZERO="{dir}/2025-12-31T060000Z-snapshot.json")
         tail = self.judged(out)
-        self.assertIn("(snapshot-diff.py --criteria %s)" % (criteria or "phase28"), tail)
+        self.assertIn("(snapshot-diff.py --criteria %s)" % (criteria or "phase29"), tail)
         self.assertIn("`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満", tail)
         self.assertIn("**+1.5** MB (12.5 → 14.0 MB)", tail)
         self.assertIn("`cache_memory` 0.0 → 0.0", tail)

@@ -313,7 +313,7 @@ class Criteria15(unittest.TestCase):
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
                          ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
-                          "phase22", "phase23", "phase24", "phase25", "phase26", "phase27", "phase28"])
+                          "phase22", "phase23", "phase24", "phase25", "phase26", "phase27", "phase28", "phase29"])
 
 
 def conn_profile(conn_us_per_row):
@@ -2351,6 +2351,181 @@ class Deployed28(unittest.TestCase):
         self.assertIn("**24** 回", rows[22][2])
         self.assertEqual(rows[23][3], sd.MET)
         self.assertIn("0.70 倍", rows[23][2])
+
+
+class Criteria29Rows(unittest.TestCase):
+    """`--criteria phase29` (T.32.16・T.32.29・T.32.30): phase28 の 26 行のうち 5 行を名前解決の失敗の割合で動かない形にしたもの。"""
+
+    T0 = 1_800_000_000  # 時間の境目
+
+    def profile(self, hours, req_per_min, conn_us_per_ok, fail_share, bg_us_per_sec=900):
+        """`/profile?res=60` の作り物。名前解決に失敗した要求は `conn` の CPU を使わない。"""
+        rows = []
+        for i in range(int(hours * 60)):
+            ok = req_per_min * (1 - fail_share)
+            conn = conn_us_per_ok * ok
+            bg = bg_us_per_sec * 60
+            rows.append([self.T0 + 60 * i, req_per_min, conn + bg + 1000,
+                         [[1000, 60, []], [conn, 60, []], [bg * 0.2, 60, []], [bg * 0.15, 60, []], [bg * 0.65, 60, []]]])
+        return {"interval_secs": 60, "keys": ["t", "requests", "cpu_us", "threads"],
+                "roles": ["accept", "conn", "profile-sample", "cache-probe", "other"], "samples": rows}
+
+    def snap(self, prof, fails_per_hour, history=None):
+        hours = len(prof["samples"]) // 60
+        causes = ["dns", "refused", "unreachable", "timeout", "reset", "tls", "loop", "other"]
+        h = {"interval_secs": 3600, "causes": causes, "keys": ["t", "errors_by_cause"],
+             "samples": [[self.T0 + 3600 * i, [fails_per_hour, 0, 0, 0, 0, 0, 0, 0]] for i in range(hours)]}
+        return {"profile_res_60": prof, "history": {"3600": history or h}}
+
+    def test_phase29_replaces_five_rows_of_phase28(self):
+        p28, p29 = sd.RULES["phase28"], sd.RULES["phase29"]
+        self.assertEqual(len(p29), 26)
+        self.assertEqual([i for i in range(26) if p28[i] is not p29[i]], [4, 10, 12, 23, 24])
+        self.assertIs(p29[4], sc._p29_conn_per_resolved_request)
+        self.assertIs(p29[10], sc._p29_dns_slow)
+        self.assertIs(p29[12], sc._p29_connect_errors)
+        self.assertIs(p29[24], sc._p29_idle_cost)
+        self.assertEqual(p29[23]({"a": {}, "b": {}}, sc.PHASE29)[3], sd.SHOWN)
+
+    def test_conn_per_resolved_request_does_not_move_with_the_failure_share(self):
+        # T.31.99 の形: 名前解決に失敗した要求の割合だけが 40% → 66% に増える (成功した要求あたりの CPU は同じ)
+        pa, pb = self.profile(24, 30, 1000, 0.40), self.profile(24, 60, 1000, 0.66)
+        a, b = self.snap(pa, 30 * 60 * 0.40), self.snap(pb, 60 * 60 * 0.66)
+        row = sc._p29_conn_per_resolved_request({"a": a, "b": b}, sc.PHASE29)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("**1,000 → 1,000** us/名前解決に成功した要求 (**1.00** 倍)", row[2])
+        self.assertIn("要求 43,200 本のうち名前解決の失敗 17,280 本 (40%)", row[4])
+        self.assertIn("(66%)", row[4])
+        # 要求の全数あたりで比べた phase28 以前の読み方なら 0.57 倍に「下がって」見える (表示だけ)
+        self.assertIn("要求の全数あたり 600 → 340 us", row[2])
+        # 成功した要求あたりが 1.2 倍なら届かず
+        pc = self.profile(24, 60, 1200, 0.66)
+        row = sc._p29_conn_per_resolved_request({"a": a, "b": self.snap(pc, 60 * 60 * 0.66)}, sc.PHASE29)
+        self.assertEqual(row[3], sd.MISSED, row)
+        # 窓の端の 1 時間は重なった割合だけ数える (30 分ずらすと端の 2 時間が半分ずつ)
+        shifted = self.snap(pb, 60 * 60 * 0.66)
+        for s in shifted["history"]["3600"]["samples"]:
+            s[0] -= 1800
+        shifted["history"]["3600"]["samples"].append([self.T0 + 3600 * 24 - 1800, [60 * 60 * 0.66] + [0] * 7])
+        row = sc._p29_conn_per_resolved_request({"a": a, "b": shifted}, sc.PHASE29)
+        self.assertIn("**1,000 → 1,000**", row[2])
+
+    def test_short_or_missing_material_is_unknown_not_reference(self):
+        pa, pb = self.profile(24, 30, 1000, 0.4), self.profile(6, 30, 1000, 0.4)
+        a, b = self.snap(pa, 720), self.snap(pb, 720)
+        for rule in (sc._p29_conn_per_resolved_request, sc._p29_idle_cost):
+            row = rule({"a": a, "b": b}, sc.PHASE29)
+            self.assertEqual(row[3], sd.UNKNOWN, row)
+            self.assertIn("後の `/profile` が 6.0 時間", row[4])
+        # `/history` に `errors_by_cause` が無ければ失敗が数えられない
+        nb = self.snap(self.profile(24, 30, 1000, 0.4), 720,
+                       history={"interval_secs": 3600, "keys": ["t", "errors"], "samples": [[self.T0, 1]]})
+        row = sc._p29_conn_per_resolved_request({"a": a, "b": nb}, sc.PHASE29)
+        self.assertEqual(row[3], sd.UNKNOWN, row)
+        self.assertIn("`errors_by_cause`", row[4])
+
+    def test_idle_cost_is_us_per_second(self):
+        pa = self.profile(24, 30, 1000, 0.4, bg_us_per_sec=890)
+        pb = self.profile(24, 90, 1000, 0.7, bg_us_per_sec=894)
+        row = sc._p29_idle_cost({"a": self.snap(pa, 720), "b": self.snap(pb, 720)}, sc.PHASE29)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("**890 → 894** us/秒 (**1.00** 倍)", row[2])
+        self.assertIn("`profile-sample`", row[2])
+        pc = self.profile(24, 30, 1000, 0.4, bg_us_per_sec=1000)
+        self.assertEqual(sc._p29_idle_cost({"a": self.snap(pa, 720), "b": self.snap(pc, 720)}, sc.PHASE29)[3],
+                         sd.MISSED)
+
+    def hist_snap(self, rows, other_ports=True, up_hours=48):
+        keys = ["t", "errors", "errors_by_cause", "connects"]
+        if other_ports:
+            keys += ["other_port_errors", "other_port_attempts"]
+        taken = self.T0 + 3600 * up_hours
+        samples = [[self.T0 - 3600 * 5 + 3600 * i] + r[:len(keys) - 1] for i, r in enumerate(rows)]
+        return {"taken_at": taken, "uptime_secs": 3600 * up_hours - 1800,
+                "history": {"3600": {"interval_secs": 3600, "causes": list(sc.CAUSE_NAMES), "keys": keys,
+                                     "samples": samples}}}
+
+    @staticmethod
+    def rows(n, err, dns, conn, ope, opa):
+        """起動より前の 5 時間 (数えない) と、起動からの n 時間 (合計がだいたい引数になる)。"""
+        pad = [[999, [999] + [0] * 7, 999, 999, 999]] * 5
+        per = [[err // n + dns // n, [dns // n, err // n, 0, 0, 0, 0, 0, 0], conn // n, ope // n, opa // n]] * n
+        return pad + per
+
+    def test_connect_errors_read_443_and_80_since_start(self):
+        b = self.hist_snap(self.rows(48, 3024, 71856, 33168, 3024, 7200))
+        a = self.hist_snap(self.rows(48, 1440, 48000, 24000, 1392, 6960))
+        row = sc._p29_connect_errors({"a": a, "b": b}, sc.PHASE29)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("0.00260 (48 / 18,480) → **0.00000** (0 / 28,992)", row[2])
+        # 前の版に `other_port_*` が無ければ判定できず (後の値は出す)
+        a2 = self.hist_snap([r[:3] for r in self.rows(48, 1440, 48000, 24000, 1392, 6960)], other_ports=False)
+        row = sc._p29_connect_errors({"a": a2, "b": b}, sc.PHASE29)
+        self.assertEqual(row[3], sd.UNKNOWN, row)
+        self.assertIn("後 **0.00000** (0 / 28,992)", row[2])
+        self.assertIn("前の雪像の `/history?res=3600` に `other_port_errors`・`other_port_attempts` の欄が無い", row[4])
+        # 443・80 のエラーが前の 2 倍なら届かず
+        b3 = self.hist_snap(self.rows(48, 3024 + 4800, 71856, 33168, 3024, 7200))
+        self.assertEqual(sc._p29_connect_errors({"a": a, "b": b3}, sc.PHASE29)[3], sd.MISSED)
+
+    def slow_snap(self, events, with_fail_ms=True):
+        keys = ["t", "dns_misses", "dns_fail_misses", "dns_ms_sum"] + (["dns_fail_ms_sum"] if with_fail_ms else [])
+        samples = [[self.T0 + 60 * i, 0, 0, 0] + ([0] if with_fail_ms else []) for i in range(1440)]
+        # 100 分目までの 5 分: 失敗 5 回 × 2 秒 (成功したミスは 0) → 失敗の遅さで立った
+        for i in range(96, 101):
+            samples[i][1:] = [1, 1, 2000] + ([2000] if with_fail_ms else [])
+        # 700 分目までの 5 分: 成功した名前 10 回の平均 300 ms → 成功したミスで立った
+        for i in range(696, 701):
+            samples[i][1:] = [2, 0, 600] + ([0] if with_fail_ms else [])
+        return {"taken_at": self.T0 + 86400, "uptime_secs": 86400 * 2,
+                "events": {"events": events},
+                "history": {"60": {"interval_secs": 60, "keys": keys, "samples": samples}}}
+
+    def test_dns_slow_counts_only_resolved_misses(self):
+        ev = [{"kind": "anomaly", "at": self.T0 + 60 * 100, "text": "dns_slow: dns miss 2000 ms avg over 5m"},
+              {"kind": "anomaly", "at": self.T0 + 60 * 700, "text": "dns_slow: dns miss 300 ms avg over 5m"},
+              {"kind": "anomaly", "at": self.T0 + 60 * 700 + 30, "text": "cleared: dns_slow"}]
+        row = sc._p29_dns_slow({"a": {}, "b": self.slow_snap(ev)}, sc.PHASE29)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("(1 件 / 23.9 時間)", row[2])
+        self.assertIn("失敗の遅さで立った 1 件", row[2])
+        # 成功したミスで立った件が 1 時間に 0.1 を越えれば届かず
+        many = [dict(ev[1]) for _ in range(3)]
+        self.assertEqual(sc._p29_dns_slow({"a": {}, "b": self.slow_snap(many)}, sc.PHASE29)[3], sd.MISSED)
+        # `dns_fail_ms_sum` の欄が無い版は判定できず
+        row = sc._p29_dns_slow({"a": {}, "b": self.slow_snap(ev, with_fail_ms=False)}, sc.PHASE29)
+        self.assertEqual(row[3], sd.UNKNOWN, row)
+        self.assertIn("`dns_fail_ms_sum`", row[4])
+
+
+T3199_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-10-28T191810Z-shutdown-snapshot.json")
+T3199_BEFORE_PROFILE = os.path.join(DEPLOYED, "tokyo", "2026-10-28T143043Z-profile_res_60.json")
+T3199_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-10-31T063104Z-snapshot.json")
+T3199_AFTER_PROFILE = os.path.join(DEPLOYED, "tokyo", "2026-10-31T063104Z-profile_res_60.json")
+
+
+@unittest.skipUnless(all(os.path.exists(x) for x in (T3199_BEFORE, T3199_BEFORE_PROFILE,
+                                                     T3199_AFTER, T3199_AFTER_PROFILE)),
+                     "tokyo の実データが無い (status/tokyo/ の T.31.99 の 2 枚と `-profile_res_60.json`)")
+class Deployed29(unittest.TestCase):
+    """T.31.99 の 2 枚 (0.29.36 の停止 → 0.30.4 の 48.3 時間) と、前の版の 24 時間の `/profile` (T.32.29・T.32.30)。"""
+
+    def test_t3199_pair(self):
+        c = build([T3199_BEFORE, T3199_AFTER, "--no-dns", "--criteria", "phase29",
+                   "--profile", T3199_AFTER_PROFILE, "--profile-before", T3199_BEFORE_PROFILE])["criteria"]
+        rows = c["rows"]
+        self.assertEqual(len(rows), 26)
+        self.assertNotIn("reference", c)  # 「参考」が 0 行
+        self.assertIn("**1,116 → 1,301** us/名前解決に成功した要求 (**1.17** 倍)", rows[4][2])
+        self.assertIn("(41%)", rows[4][4])
+        self.assertIn("(66%)", rows[4][4])
+        self.assertIn("**890 → 894** us/秒", rows[24][2])
+        self.assertEqual(rows[24][3], sd.MET)
+        # 接続のエラー: 後は 8 / 29,008、前 (0.29.36) は欄が無いので判定できず
+        self.assertIn("後 **0.00028** (8 / 29,008)", rows[12][2])
+        self.assertEqual(rows[12][3], sd.UNKNOWN)
+        self.assertIn("T.30.3 より前の版", rows[12][4])
+        self.assertEqual(rows[23][3], sd.SHOWN)
 
 
 if __name__ == "__main__":
