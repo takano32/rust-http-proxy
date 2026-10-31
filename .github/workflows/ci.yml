@@ -44,6 +44,9 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ env.RUSTC_VERSION }}-${{ hashFiles('**/Cargo.toml') }}
+          # 版を上げると `Cargo.toml` の鍵が外れる (外れた ba512ad は 7 分 0 秒、当たった 96b4f49 は 5 分 56 秒)。
+          # 同じ rustc の前の鍵から部分一致で戻す (deployed-like-snapshot と同じ。T.32.33)
+          restore-keys: ${{ runner.os }}-cargo-${{ env.RUSTC_VERSION }}-
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # 文書とコードが同じ集合か (エンドポイント・環境変数・`/snapshot` の部・画面の関数・クレートの表。T.14.56)
@@ -67,12 +70,23 @@ jobs:
       # ベンチは既定のビルド対象から外してあるので明示的に作る
       - run: cargo build --release -p proxy-bench
 
-      # ベンチは数字を残すだけ (閾値では落とさない。CI の機械は揺れるため)
+      # ベンチは数字を残すだけ (閾値では落とさない。CI の機械は揺れるため)。**ただしベンチが落ちたら step も落とす**
+      # (T.32.33): 既定の shell (`bash -e {0}`) には `pipefail` が無く、`bench … | tee` の終了コードは `tee` の
+      # ものだった。`shell: bash` は `bash --noprofile --norc -eo pipefail {0}`。起動は `sleep 2` ではなく
+      # ポートが開くのを待つ (10 秒で開かなければ落とす)
       - name: Benchmark
+        shell: bash
         run: |
           HOME=$(mktemp -d) PROXY_ALLOW_LOCAL=on \
             ./target/release/rust-http-proxy --lite -p 18080 --bind 127.0.0.1 &
-          sleep 2
+          proxy=$!
+          trap 'kill "$proxy" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do
+            (exec 3<>/dev/tcp/127.0.0.1/18080) 2>/dev/null && break
+            kill -0 "$proxy" 2>/dev/null || { echo "プロキシが起動しなかった" >&2; exit 1; }
+            sleep 0.1
+          done
+          (exec 3<>/dev/tcp/127.0.0.1/18080) 2>/dev/null || { echo "10 秒でポートが開かなかった" >&2; exit 1; }
           ./target/release/bench --proxy 127.0.0.1:18080 --conc 8 --seconds 2 | tee bench.txt
           {
             echo '### bench (--lite, 8 並列, 2 秒)'
