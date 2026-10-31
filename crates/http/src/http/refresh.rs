@@ -217,8 +217,11 @@ fn revalidate(
         }
         return Ok("304, refreshed");
     }
-    if !(200..400).contains(&status) {
-        // オリジン側の問題: 古い表現は残す
+    if !(200..500).contains(&status) {
+        // オリジン側の問題 (5xx): 古い表現は残す。4xx (404・410 など) はオリジンの答えなので、
+        // 同期の再検証と同じく保存できれば置き換え、できなければ消す (RFC 9111 §4.3.3 で古い表現を
+        // 残してよいのは 5xx。T.32.13)。今までは 4xx でも残し、grace の間は古い 200 を `REFRESHING` で
+        // 配って、配るたびに再検証を 1 本出していた
         return Ok("origin error, stale kept");
     }
     // 最後が chunked でない TE (T.28.1): 区切りがオリジンと食い違いうるので保存し直さない

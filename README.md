@@ -983,7 +983,10 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
   再検証は同時に 1 本、全体で 32 本まで。**裏側の再検証は接続スレッドと同じ置き場で走ります**
   (`PROXY_MAX_THREADS` の内側)。空いているスレッドが無ければ**待たせずに捨て**、その要求はそのまま
   同期の再検証に回ります (捨てても正しさは崩れません。その項目は次の要求で取り直されます)。
-  捨てた回数は `/status` の `revalidations_dropped` と `/metrics` の `cache_revalidations_dropped_total` に出ます
+  捨てた回数は `/status` の `revalidations_dropped` と `/metrics` の `cache_revalidations_dropped_total` に出ます。
+  **裏側の再検証がオリジンの 4xx (`404`・`410` など) を受けたら、古い表現は残しません** (RFC 9111 §4.3.3。T.32.13):
+  同期の再検証と同じく、保存できる 4xx なら置き換え、できなければ項目を消します。古い表現を残すのは 5xx と接続の失敗だけです。
+  0.30.4 までは 4xx でも残し、grace の間は古い 200 を `REFRESHING` で配って、配るたびに再検証を 1 本出していました
 - 期限切れの表現があるのにオリジンが遅いときは、接続と最初の応答を `PROXY_STALE_WAIT_SECS` (既定 5 秒) までしか
   待たず、超えたら期限切れの表現を配信します (`cache=STALE`)
 - オリジンに繋がらない・5xx を返す場合は、`must-revalidate` でない限り期限切れの表現を配信します (`cache=STALE`)
