@@ -39,30 +39,6 @@ T.31.99 で 0.30.4 の RSS が 24 時間 48.6 MB → 48 時間 73.6 MB、`heap_f
 
 **32b 正しさと頑丈さ (本体を変える)**
 
-- [ ] **T.32.8 小文字のメソッド (`get`) の応答が GET の鍵に保存され、他の利用者の GET に配られる (キャッシュの毒)**
-  - 目的: メソッドは大小を区別する (RFC 9110 §9.1) のに、`is_get` / `head_only` を `eq_ignore_ascii_case` で決めているので (`crates/http/src/http/mod.rs:687-688`)、`get /x` が GET として参照・保存の対象になる (`mod.rs:796-801`)。オリジンへは `get` のまま転送される。再現 (`t32/protocol/p3_lowercase.py`、オリジンは Python の `http.server`): 攻撃者が `get http://O/index.html` を 1 本送るとオリジンは `501 Unsupported method ('get')`、続く**別の利用者の正しい `GET` 3 本がすべて `X-Cache: HIT` で 501 の頁**、オリジンには 1 本だけ。501・405 は経験則で保存できる状態コード (`crates/freshness/src/freshness.rs:15`) で、鮮度の指示が無くても `negative_ttl` の 60 秒は残る (送り直せば延ばせる。`405` + `max-age=600` でも HIT)。`head` も HEAD 扱いで、本文を返すオリジンの応答を先頭だけで切る。
-  - やること: GET / HEAD の判定を大小の区別ありにする (`method == "GET"`)。小文字のメソッドは未知のメソッドとして素通しし、保存も参照もしない (安全でないので無効化の側)。`CONNECT` (`crates/server/src/conn/serve_one.rs:488`) も揃えるかは任意 (今は `connect` でトンネルが開く。害は小さい)。
-  - 受け入れ基準: 結合試験で `get` の後の `GET` が MISS でオリジンの本物の 200。`GET` / `HEAD` の HIT は今のまま。forward の Ir が増えない。
-
-- [ ] **T.32.9 キャッシュ自身の再検証で、ETag が違う 304 を受けたら保存済みを延命しない**
-  - 目的: RFC 9111 §4.3.4 では、304 の強い validator が保存済みと一致しなければ、その 304 で保存済みを更新してはいけない。クライアントの条件付きの経路 (T.29.6) は `not_modified_selects` (`mod.rs:1861`) で照合しているが、**キャッシュ自身の再検証は 2 つの経路とも照合していない** (同期は `mod.rs:1313-1360`、裏は `crates/http/src/http/refresh.rs:184-211`)。再現 (`t32/protocol/p4_reval.py`・`p5_reval_fg.py`): `max-age=1, ETag "e"` の `v005` が期限切れになり、オリジンが `304, ETag "other", max-age=600` を返すと、その後の 3 本は `ETag: "other"; max-age=600; X-Cache: REVALIDATED/HIT` で**古い本文 `v005` を 10 分配り続けた**。下流のブラウザは `If-None-Match: "other"` で 304 をもらい続ける。
-  - やること: 両方の経路で、304 の ETag (無ければ Last-Modified) が「あって違う」なら更新しない。外れたら項目を消し、同期の経路は条件なしで 1 回取り直し、裏の経路は消して終える。validator の無い 304 は今どおり更新する。
-  - 受け入れ基準: 上の再現で 2 本目以降が新しい 200 (`ETag "other"` を古い本文に付けない)。一致する 304 は今どおり REVALIDATED。試験は同期と裏の各 1 本。
-
-- [ ] **T.32.12 不正な `Host` や authority を 400 にする (今は 502 nxdomain で 80 番宛ての origin エラーとして数える)**
-  - 目的: RFC 9112 §3.2 は不正な `Host` に 400 を MUST とする。今は `check_authority` (`crates/origin/src/request.rs:387-403`) が空と `@` しか見ないので、名前解決まで行って 502。再現 (`t32/protocol/p11_badhost.py`): `Host: a b`・`a, b`・`a/b`・`h:99999` など 6 本とも 502 で `rejected_requests.total` は 0、`/errors` と `/hosts` に `http://example.invalid x:80`・`http://a, b:80` などが並ぶ。`http://h:+22501/` は Rust の `parse` が `+` を受けて通り、オリジンへ `Host: 127.0.0.1:+22501` が届く。クライアントの誤りが 80 番の origin エラー・nxdomain・負のキャッシュの名前に乗り、`/slo` の `error_rate` と T.32.2 の名前の数にも効く。
-  - やること: authority を検証する (reg-name の文字・`[` IP リテラル `]`・ポートは 1〜5 桁の数字で 65535 以下、空のポートは既定のポート)。`Host` にも同じ検証を当て、外れたら 400 (`bad_uri` / `no_host`)。
-  - 受け入れ基準: 上の 7 形が 400 で `rejected_requests` に数えられ、`/hosts` と `/dns` に行が増えない。正当な `[::1]:p`・`h:080`・大文字のホストは通る。`framing-probe.py` に足す。
-
-- [ ] **T.32.13 裏の再検証がオリジンの 4xx (404・410) で古い表現を残す**
-  - 目的: `crates/http/src/http/refresh.rs:212-215` は 200〜399 以外をすべて「stale を残す」にしていて、オリジンが 404 を返した後も grace (既定 60 秒) の間は古い 200 を `REFRESHING` で配り、配るたびに再検証を 1 本出す。再現 (`t32/protocol/p4_reval.py` の D): 期限切れの後の 3 本がすべて `200 REFRESHING` の古い本文で、オリジンへは 4 本。同期の経路 (`p5_reval_fg.py` の D) は 404 で置き換わる。RFC 9111 §4.3.3 で古い表現を残してよいのは 5xx。
-  - やること: 5xx (と接続の失敗) だけ残し、保存できる 4xx は同期の経路と同じく置き換える (保存できないものは消す)。
-  - 受け入れ基準: D の再現で 2 本目の後は 404。5xx では今どおり stale を残す。
-
-- [ ] **T.32.15 小物: 要求の行末・応答の不正なヘッダー名・chunked の甘さ・`Via` の版・CONNECT の 502**
-  - 目的: (1) `write_request_headers` が行をそのまま書く (`crates/msg/src/headers.rs:121`) ので、LF だけの行末の要求は LF のまま転送され、プロキシが足す行は CRLF (`t32/protocol/p8_client.py`。CRLF でしか区切らないオリジンでは食い違いうる。実在のオリジンでは未確認)。(2) オリジンの応答の `X A: b` と `: v` をそのまま渡す (`p1_resp_heads.py`。`sanitize_response_head` (`headers.rs:507`))。(3) 要求の chunked でデータの後ろのごみ (`2\r\nokXX\r\n`)・`+2`・LF だけの行を受ける (`crates/msg/src/body.rs:357`・381。符号化し直すので密輸にはならない)。(4) `Via` の受けた版が常に `1.1` (RFC 9110 §7.6.3 は受けた版)。(5) CONNECT の 502 に `Date`・`Content-Length` が無い (T.29.9 の漏れ)。(6) `http/1.1`・`connect` (小文字) を受ける。
-  - やること: (1) 書くときに各行を `\r\n` に正規化する。(2) token でない名前の行を落とす。(3) データの後ろが空行でなければ 400。(4)〜(6) は直すか、そのままにする理由を台帳に書く。
-  - 受け入れ基準: `framing-probe.py` に各 1 行足して期待どおり。forward の Ir の増えを測って記す。
 
 **32c 計器と物差し (本体を変える)**
 
@@ -150,11 +126,6 @@ T.31.99 で 0.30.4 の RSS が 24 時間 48.6 MB → 48 時間 73.6 MB、`heap_f
   - 目的: `scripts/test_snapshot_criteria.py:562` などは `status/` 直下の 2026-09 の雪像を待ち、main の `status/` を繋いでも 23 本が飛ばされ、そのうち 18 本がこれ (CI では 29 本全部)。T.31.99 の 48 時間を固定する試験も無い。
   - やること: 匿名化して `scripts/testdata/` に寄せるか、消して記録を残す。
   - 受け入れ基準: 飛ばす理由が「tokyo の実データが無い」だけになる。
-
-- [ ] **T.32.35 要求に `Cookie` があり、応答に明示の鮮度も `public` も無ければ保存しない (利用者の決定: (b))**
-  - 目的: `Cache-Control`・`Expires`・`Last-Modified` の無い 200 に既定 TTL 300 秒 (`crates/freshness/src/freshness.rs:118-127`) を当てていて、再現 (`t32/protocol/p9_pool_cookie.py`) では `Cookie: user=alice` の `GET /whoami` の `you are alice` を、`user=bob`・`user=carol` が HIT で受けた。RFC 9111 §4.2.2 の経験則は「してよい」で違反ではないが、共有のキャッシュとしては Cookie ごとに違う本文を他人に配る形になる。
-  - やること: 保存の判定 (`response_policy_lines`) に要求の `Cookie` の有無を渡し、要求に `Cookie` があって応答に明示の鮮度 (`max-age`・`s-maxage`・`Expires`) も `public` も無ければ保存しない。参照 (HIT) の側は今のまま (保存しなければ当たらない)。README のキャッシュの段に書く。
-  - 受け入れ基準: 上の再現の 2 本目が MISS。`Cookie` の無い要求の経験則の保存と、明示の `max-age` を持つ応答の HIT は変わらない。
 
 - [ ] **T.32.37 `profile-sample` は、プロセスの CPU とスレッド数が前回と同じ秒は全スレッドを読まない (利用者の決定: (a))**
   - 目的: tokyo の CPU の 21.8% (263 us/s、うち kernel 208) を占める。毎秒の仕事はスレッドの起床 (1 回 30 us)・`/proc/self/task` の readdir・スレッドごとの stat の open・read・close (冷えた状態で 1 本 7 us) で、手元で 1 回約 190 us。試作 C (`t32/perf/protoC-skip-idle-scan.patch`、試作 B を含む) で暇な 45 秒の profile-sample 166〜169 → 81〜93 us/s (−48%)、合計 312〜343 → 216〜232 (−30%)、システムコールは暇な全体で 63.8 → 12.2 回/秒 (profile-sample 42.3 → 3.25)。コードは `crates/metrics-profile/src/profile.rs:1016-1103`、`crates/sysinfo/src/sysinfo/proc.rs:153-196`。
