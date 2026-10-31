@@ -357,8 +357,18 @@ fn test_integration_failed_connects_land_in_errors_by_cause() {
     cfg.timeout = Duration::from_millis(300);
     cfg.connect_timeout = Duration::from_millis(300);
     let proxy_port = start_test_proxy(cfg);
+    // 応答しない相手は**手元で作る** (T.32.24。sandbox の網は 192.0.2.1 を横取りして即 `refused` を返す)。
+    // backlog 0 で待ち受けて accept せず、1 本繋いで列を満たすと、後の SYN はカーネルが捨てる
+    let (_hole, _filler, hole) = {
+        use std::os::fd::FromRawFd;
+        let fd = rust_http_proxy::sys::listen_socket("127.0.0.1:0".parse().unwrap(), 0).unwrap();
+        let l = unsafe { TcpListener::from_raw_fd(fd) };
+        let addr = l.local_addr().unwrap();
+        let f = TcpStream::connect(addr).unwrap();
+        (l, f, format!("127.0.0.1:{}", addr.port()))
+    };
 
-    for target in [format!("127.0.0.1:{}", closed_port), "192.0.2.1:443".into()] {
+    for target in [format!("127.0.0.1:{}", closed_port), hole.clone()] {
         let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         s.write_all(format!("CONNECT {t} HTTP/1.1\r\nHost: {t}\r\n\r\n", t = target).as_bytes())
@@ -376,7 +386,7 @@ fn test_integration_failed_connects_land_in_errors_by_cause() {
         // 最後に引いた本文を見せて落とす)
         let want = [
             format!("connect://127.0.0.1:{}", closed_port),
-            "connect://192.0.2.1:443".to_string(),
+            format!("connect://{}", hole),
         ];
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         loop {
@@ -411,7 +421,7 @@ fn test_integration_failed_connects_land_in_errors_by_cause() {
     let refused = causes_of(&format!("127.0.0.1:{}", closed_port));
     assert_eq!(refused[1], 1, "refused が 1 件: {:?}", refused);
     assert_eq!(refused.iter().sum::<u64>(), 1, "他の原因に乗らない");
-    let timed_out = causes_of("192.0.2.1:443");
+    let timed_out = causes_of(&hole);
     assert_eq!(timed_out[3], 1, "timeout が 1 件: {:?}", timed_out);
     assert_eq!(timed_out.iter().sum::<u64>(), 1, "他の原因に乗らない");
 }

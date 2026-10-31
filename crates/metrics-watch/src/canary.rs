@@ -787,7 +787,10 @@ mod tests {
         let _s = SERIAL.locked();
         reset();
         // (1) AAAA があって生きていれば ms が出る
-        let v6 = TcpListener::bind("[::1]:0").expect("この機械の lo は ::1 を持つ");
+        let Ok(v6) = TcpListener::bind("[::1]:0") else {
+            eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T.32.24)");
+            return;
+        };
         let v6_port = v6.local_addr().unwrap().port();
         let got = probe(&format!("[::1]:{}", v6_port));
         assert!(got.error.is_none(), "{:?}", got);
@@ -837,7 +840,10 @@ mod tests {
         reset();
         let probes = ipv6_field("request_probes");
         // 繋がる 1 本
-        let v6 = TcpListener::bind("[::1]:0").expect("この機械の lo は ::1 を持つ");
+        let Ok(v6) = TcpListener::bind("[::1]:0") else {
+            eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T.32.24)");
+            return;
+        };
         let v6_port = v6.local_addr().unwrap().port();
         let got = probe(&format!("[::1]:{}", v6_port));
         assert!(got.ipv6_connect_ms.is_some(), "{:?}", got);
@@ -886,7 +892,10 @@ mod tests {
         assert_eq!(count(), (0, 1), "AAAA の無い周");
 
         // (2) AAAA があって生きていても `PROXY_CANARY_IPV6=off` なら試さない
-        let v6 = TcpListener::bind("[::1]:0").expect("この機械の lo は ::1 を持つ");
+        let Ok(v6) = TcpListener::bind("[::1]:0") else {
+            eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T.32.24)");
+            return;
+        };
         let v6_port = v6.local_addr().unwrap().port();
         configure("auto", Duration::from_secs(SECS), false);
         let got = probe(&format!("[::1]:{}", v6_port));
@@ -926,7 +935,10 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         reset();
         let before = crate::net::ipv6_counters();
-        let v6 = TcpListener::bind("[::1]:0").expect("この機械の lo は ::1 を持つ");
+        let Ok(v6) = TcpListener::bind("[::1]:0") else {
+            eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T.32.24)");
+            return;
+        };
         let v6_port = v6.local_addr().unwrap().port();
         let got = probe(&format!("[::1]:{}", v6_port));
         assert!(got.ipv6_connect_ms.is_some(), "{:?}", got);

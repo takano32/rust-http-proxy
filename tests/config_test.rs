@@ -397,14 +397,22 @@ fn test_integration_check_prints_capabilities_and_settings() {
         assert_eq!(code, 1, "読めないものがあれば 1:\n{}", text);
         assert!(text.contains("[NO]"), "{}", text);
     }
-    // この機械で読めなくてよいのは `proc_schedstat` だけ (カーネルの設定しだい)
+    // この機械で読めなくてよいのは `proc_schedstat` (カーネルの設定しだい) と、**試験のプロセスが同じ機械で
+    // 確かめても読めないもの** (cgroup の `cpu.stat` や IPv6 の既定経路が無いコンテナ。T.32.24)。印字が機械と食い違うのは落とす
     #[cfg(target_os = "linux")]
-    assert!(
-        missing.iter().all(|m| m == "proc_schedstat"),
-        "proc_schedstat 以外も読めない ({:?}):\n{}",
-        missing,
-        text
-    );
+    {
+        let here = rust_http_proxy::sysinfo::capabilities::probe();
+        let may_miss = here.missing();
+        assert!(
+            missing
+                .iter()
+                .all(|m| m == "proc_schedstat" || may_miss.contains(&m.as_str())),
+            "proc_schedstat とこの機械で読めないもの ({:?}) 以外も読めない ({:?}):\n{}",
+            may_miss,
+            missing,
+            text
+        );
+    }
 
     // 効いている設定と出どころ (`.env` / 環境変数 / 引数 / 既定) が並ぶ
     assert!(
