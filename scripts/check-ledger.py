@@ -26,6 +26,9 @@
       (締めのたびに §2 を書き直すのが 2 回続けて抜けたため)。
   (8) 参照 (T.28.21) … `TODO.md` と `tasks/*.md` の「未着手の T.n.m は …」が、`TASKS.md` に
       実在する未着手のタスクを指す (「」で引いた文は数えない)。
+  (9) 相対リンク (T.32.38) … `TASKS.md`・`TODO.md`・`tasks/*.md` の `[…](相対パス)` の指す先のファイルが、
+      **そのファイルの置き場所から辿って**ある (コードの囲みの中と `http:` などの URL は見ない)。
+      `TASKS.md` から `tasks/` へ移すときに `tasks/T29.md` のまま移して切れたのが 2 本あった。
 
 **意図的に外してあるものは下の除外表 (`SKIP_FILES`) に理由つきで持つ** (黙って無視しない)。
 差分が 1 件でもあれば理由を印字して exit 1。使うのは標準ライブラリだけ (外部のパッケージは使わない)。
@@ -70,6 +73,7 @@ CURRENT_HEAD = re.compile(r"^### デプロイ先の現在地 \((.*)\)\s*$", re.M
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)\+[0-9a-f]{7}")
 HEAD_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 OPEN_REF = re.compile(r"未着手の (T\.\d+\.\d+) は")
+MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 
 
 class Task:
@@ -371,7 +375,40 @@ def collect(root):
                 if m.group(1) not in open_ids:
                     led.ngs.append("%s:%d の「未着手の %s」が %s に無い" % (where, i + 1, m.group(1), TASKS_MD))
 
+    # --- (9) 相対リンクが置き場所から辿れる (T.32.38) ---------------------------------
+    sources = [(TODO, todo)] + [("tasks/" + name, read_lines(os.path.join(tdir, name)))
+                                for name in sorted(os.listdir(tdir)) if name.endswith(".md")]
+    if os.path.exists(os.path.join(root, TASKS_MD)):
+        sources.insert(0, (TASKS_MD, read_lines(os.path.join(root, TASKS_MD))))
+    for where, lines in sources:
+        for i, target in relative_links(lines):
+            path = target.partition("#")[0]
+            full = os.path.normpath(os.path.join(root, os.path.dirname(where), path))
+            if not os.path.exists(full):
+                base = os.path.dirname(where)
+                led.ngs.append("%s:%d のリンク %s の指す先が無い (%s辿る。移したなら移した先から辿れる形に)"
+                               % (where, i + 1, target, base + "/ から" if base else "根から"))
+
     return led
+
+
+def relative_links(lines):
+    """[(行番号 0 始まり, 相対リンクの先)]。コードの囲みの中・URL・ページ内 (`#…`) は外す。"""
+    out = []
+    fence = False
+    for i, line in enumerate(lines):
+        if line.startswith("```"):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        # インラインのコード (`[x](y)` と書いた例) は外す。リンクの文字が `…` でも `[](先)` として残る
+        for m in MD_LINK.finditer(re.sub(r"`[^`]*`", "", line)):
+            target = m.group(1)
+            if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith(("#", "/")):
+                continue
+            out.append((i, target))
+    return out
 
 
 def main(argv):

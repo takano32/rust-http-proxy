@@ -15,7 +15,8 @@
 #   (e) クレート     … README の「クレート構成」の表 vs `crates/*/Cargo.toml` の `[package] name`
 #   (f) 道具の置き方 … README が `scripts/<名前>.py` と書いている道具 vs 実ファイルの実行ビット
 #                        (直接叩かないもの = 共通部品・割った部・unittest が読むものは除外表)
-#   (g) 台帳        … `TASKS.md` (未着手)・`TODO.md` の §5 (索引)・`tasks/TNN.md` の 1 対 1 (移し忘れ・リンク・番号・1 行目)。
+#   (g) 台帳        … `TASKS.md` (未着手)・`TODO.md` の §5 (索引)・`tasks/TNN.md` の 1 対 1 (移し忘れ・リンク・番号・1 行目)、
+#                     3 つの相対リンクがその置き場所から辿れること (T.32.38)。
 #                     中身は `scripts/check-ledger.py` (試験は `scripts/test_check_ledger.py`)
 #   (h) 判定表の既定 … `collect-deployed.sh` の `CRITERIA` の既定 vs README の「既定は phaseNN」(T.28.23)
 #   (i) `-h` の既定 … `crates/base/src/cli.rs` の `-h` の括弧の数 vs README の環境変数の表の既定 (T.28.23)

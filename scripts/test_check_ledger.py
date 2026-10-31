@@ -340,10 +340,6 @@ class RealLedger(unittest.TestCase):
         self.assertTrue(re.search(r"tasks/TNN\.md \d+ 本", buf.getvalue()))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Ledger28(LedgerCase):
     """T.28.21 で足した (5)〜(8): 索引と範囲・済んだ節・現在地の版・未着手の参照。"""
 
@@ -399,3 +395,25 @@ class Ledger28(LedgerCase):
                                           "引用の「未着手の T.9.9 は TASKS.md」は数えない。"])
         self.assert_ng(out, "「未着手の T.2.99」が TASKS.md に無い")
         self.assertNotIn("T.9.9", out)
+
+    def test_relative_links_from_where_they_live(self):
+        # T.32.38: TASKS.md から tasks/ へ移したときに `tasks/T1.md` のまま残すと、tasks/ の中からは切れる
+        code, out = self.base(t2_lines=["  - 結果: 数字は [`tasks/T1.md`](tasks/T1.md) の T.1.1 の結果。", ""])
+        self.assert_ng(out, "tasks/T2.md:9 のリンク tasks/T1.md の指す先が無い (tasks/ から辿る")
+        # 移した先から辿れる形なら通る (ページ内・URL・コードの中の例は見ない)
+        code, out = self.base(t2_lines=["  - 結果: 数字は [`tasks/T1.md`](T1.md#t11) と [根](../TODO.md)、"
+                                        "[外](https://example.invalid/x)、[ここ](#here)、例 `[x](nope.md)`。",
+                                        "  - 前提: **デプロイ済み** (2026-10-25)、版 `0.2.1+abcdef0`。", ""])
+        self.assertEqual(code, 0, out)
+        # TASKS.md と TODO.md は根から辿る
+        code, out = self.base(tasks_md=["# TASKS", "", "[索引](tasks/README.md) と [無い](tasks/T9.md)", "",
+                                        "### タスク 3 (2026-10-25 に起こした: 見本)", ""] + task("T.3.1", status=" "),
+                              todo_extra=["[切れ](docs/none.md)", ""])
+        self.assert_ng(out, "TASKS.md:3 のリンク tasks/T9.md の指す先が無い (根から辿る")
+        self.assert_ng(out, "TODO.md:")
+        self.assertIn("docs/none.md", out)
+        self.assertNotIn("tasks/README.md の指す先", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
