@@ -188,7 +188,9 @@ fn start_test_proxy_on(
     let cfg = Arc::new(config);
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(cache_cfg));
-    let tls = TlsClient::load(true, ca_file.as_deref()).ok().flatten();
+    // 本番 (`crates/run`) と同じく、OpenSSL は最初の https:// オリジンで読む (T.32.5)。
+    // libssl が無ければ、そのときの接続が今までどおり `Unsupported` の誤り (502) になる
+    let tls = Some(TlsClient::deferred(true, ca_file.as_deref(), None));
     let mut origin_pool = Pool::new(cfg.pool_per_host, Duration::from_secs(30));
     // 捨てるオリジン接続のカーネルの RTT をホスト別統計に足す (本番の main.rs と同じ配線。T14.5)
     rust_http_proxy::attach_origin_rtt(&mut origin_pool, Arc::clone(&metrics));

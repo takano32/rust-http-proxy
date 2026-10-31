@@ -918,7 +918,13 @@ curl http://127.0.0.1:8080/https/example.com/file.zip -o file.zip
 502 にしていました。マッピング形式 (`/https/…`) はパスなので今までどおり小文字だけです。
 
 - TLS はシステムの OpenSSL (`libssl.so.3` / `libssl.so.1.1`) を実行時に読み込んで使います。クレートもビルド時の依存もなく、
-  ライブラリが無い環境では HTTPS 取得だけが無効になります (起動ログに出ます)
+  ライブラリが無い環境では HTTPS 取得だけが無効になります (ログに出ます)。
+  **読み込むのは最初の `https://` オリジンへの取得のとき**です (T.32.5。起動のときではありません)。CA の束の解析が起動の主スレッドの
+  70% を占め、dlopen と合わせて RSS 約 5.5 MB を、CONNECT しか来ない置き場でも払っていたためです (手元で起動 3 秒の RSS 25.8 → 20.3 MB)。
+  起動ログは `TLS: OpenSSL will be loaded on the first https:// origin (certificate verification on)` の 1 行で、読んだときに
+  `TLS: OpenSSL 3.0.13 … loaded` (無ければ今までと同じ `TLS: libssl not found` の WARN) がもう 1 行出ます。
+  読めるかどうかは `--check` の `tls` の行が今その場で読んで確かめます。`PROXY_TLS_CA_FILE` が開けないときは今までどおり起動で止まります。
+  検証の設定は読み込みの時期に関わらず同じです
 - 証明書は既定で検証します (システムの CA ストア、`SSL_CERT_FILE` / `SSL_CERT_DIR`、または `PROXY_TLS_CA_FILE`)
 - 応答の `Location` / `Content-Location` が絶対 URL なら `/https/host/path` 形式に書き換えるので、リダイレクトを追っても
   プロキシから外れません
@@ -1368,7 +1374,7 @@ curl -x localhost:8080 http://example.com/
 
 加えて、
 
-1. **TLS が使えない**: `dlopen` が機能しないので `libssl` を実行時に読み込めず、起動ログに
+1. **TLS が使えない**: `dlopen` が機能しないので `libssl` を実行時に読み込めず、最初の `https://` オリジンのときにログに
    `TLS: libssl not found` が出ます。`https://` オリジンの取得とキャッシュが無効になります
    (`CONNECT` トンネル = ブラウザの HTTPS は影響なし)
 2. **名前解決が NSS を通らない**: musl は `/etc/resolv.conf` だけを見ます (systemd-resolved / mDNS が効かない)

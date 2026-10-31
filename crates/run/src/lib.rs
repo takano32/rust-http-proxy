@@ -54,6 +54,22 @@ fn server_boot_id() -> Option<String> {
     }
 }
 
+/// 最初の https:// オリジンで OpenSSL を読んだ結果を 1 行 (T.32.5)。起動で読んでいたときと同じ文面。
+fn log_tls_loaded(r: &Result<Option<String>, String>) {
+    match r {
+        Ok(Some(version)) => log_info!(None, "TLS: {} loaded", version),
+        Ok(None) => log_warn!(
+            None,
+            "TLS: libssl not found; https:// origins are unavailable"
+        ),
+        Err(e) => log_error!(
+            None,
+            "TLS setup failed: {}; https:// origins are unavailable",
+            e
+        ),
+    }
+}
+
 /// `--check`: 起動前に**この環境で何が読めるか**と**効く設定**を印字する (T14.15)。
 ///
 /// Pterodactyl のような触れないコンテナで、`/status` を引く前に「統計の `null` は
@@ -134,6 +150,26 @@ fn check_environment() -> i32 {
             None => "no cgroup v2 cpu.stat (not part of the exit code)".to_string(),
         }
     );
+
+    // OpenSSL は起動では読まず最初の https:// オリジンで読むので (T.32.5)、読めるかはここで確かめる
+    if config.tls_enabled {
+        let (ok, text) = match TlsClient::load(config.tls_verify, config.tls_ca_file.as_deref()) {
+            Ok(Some(t)) => (
+                "ok",
+                format!(
+                    "{} (read on the first https:// origin, not at start)",
+                    t.version()
+                ),
+            ),
+            Ok(None) => (
+                "--",
+                "libssl not found; https:// origins are unavailable (not part of the exit code)"
+                    .to_string(),
+            ),
+            Err(e) => ("--", format!("{} (not part of the exit code)", e)),
+        };
+        println!("  [{}] {:<16} {}", ok, "tls", text);
+    }
 
     println!("\nsettings (source, name, effective value):");
     for s in config.settings() {
@@ -406,33 +442,31 @@ pub fn main() {
         );
         None
     } else {
-        match TlsClient::load(config.tls_verify, config.tls_ca_file.as_deref()) {
-            Ok(Some(t)) => {
-                log_info!(
-                    None,
-                    "TLS: {} (certificate verification {}{})",
-                    t.version(),
-                    if t.verifies() { "on" } else { "OFF" },
-                    config
-                        .tls_ca_file
-                        .as_ref()
-                        .map(|p| format!(", CA file {}", p.display()))
-                        .unwrap_or_default()
-                );
-                Some(t)
-            }
-            Ok(None) => {
-                log_warn!(
-                    None,
-                    "TLS: libssl not found; https:// origins are unavailable"
-                );
-                None
-            }
-            Err(e) => {
-                log_error!(None, "TLS setup failed: {}", e);
-                process::exit(1);
-            }
+        // **OpenSSL は最初の https:// オリジンへの取得のときに読む** (T.32.5)。CA の束の解析が起動の
+        // 主スレッドの 70% (callgrind で 1.77 億 Ir)、dlopen と合わせて RSS 約 5.5 MB で、CONNECT だけの
+        // 置き場では使われていなかった。読めるかどうかは `--check` が今ここで読んで確かめる。
+        // 指定された CA ファイルが開けないことだけは、今までどおり起動で止める
+        if let Some(path) = config.tls_ca_file.as_ref()
+            && let Err(e) = std::fs::File::open(path)
+        {
+            log_error!(None, "TLS setup failed: CA file {}: {}", path.display(), e);
+            process::exit(1);
         }
+        log_info!(
+            None,
+            "TLS: OpenSSL will be loaded on the first https:// origin (certificate verification {}{})",
+            if config.tls_verify { "on" } else { "OFF" },
+            config
+                .tls_ca_file
+                .as_ref()
+                .map(|p| format!(", CA file {}", p.display()))
+                .unwrap_or_default()
+        );
+        Some(TlsClient::deferred(
+            config.tls_verify,
+            config.tls_ca_file.as_deref(),
+            Some(log_tls_loaded),
+        ))
     };
     let mut origin_pool = Pool::with_total(config.pool_per_host, config.pool_total, ORIGIN_IDLE);
     // 捨てるオリジン接続のカーネルの RTT をホスト別統計に足す (T14.5)
