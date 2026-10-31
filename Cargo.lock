@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-watch"
-version = "0.32.16"
+version = "0.32.24"
 dependencies = [
  "proxy-metrics-slo",
 ]
