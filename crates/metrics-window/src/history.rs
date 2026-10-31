@@ -873,6 +873,16 @@ impl History {
         self.rings[0].locked().len()
     }
 
+    /// その解像度の `since <= t < until` の標本を古い順に `f` へ渡す (**鍵の内側で舐めるだけ**で写さない。
+    /// 60 秒の 1,440 行を写すと 1.4 MB の確保になる)。`/daily` が起動したときに今日の積み上げを
+    /// 読み戻した `history["60"]` から組み直すのに使う (T.32.18)。`f` の中で `History` に触らないこと
+    pub fn for_each_in(&self, res: usize, since: u64, until: u64, mut f: impl FnMut(&Sample)) {
+        let q = self.rings[res].locked();
+        for s in q.iter().filter(|s| s.t >= since && s.t < until) {
+            f(s);
+        }
+    }
+
     /// その解像度の標本数 (`res` は 0=5 秒, 1=1 分, 2=1 時間)。
     ///
     /// [`Self::len`] は 5 秒しか返さないので、3 つ足した「いま埋まっているぶん」

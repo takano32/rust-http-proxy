@@ -17,7 +17,14 @@
 //! 累計 (要求数・バイト・追い出し・山の枚数) は**日の境目の値の差**、区間の値
 //! (確立時間の分布・エラー・名前解決) は**その日の標本の足し合わせ**、ゲージ (同時接続数・
 //! RSS) は**最大と平均**。プロセスが動いていた時間だけが入るので、`secs` と `samples` で
-//! その日をどれだけ見ていたかが分かる (再起動した日は 1 日ぶんに満たない)。
+//! その日をどれだけ見ていたかが分かる。
+//!
+//! **再起動した日も前のプロセスのぶんを落とさない** (T.32.18): 積み上げはプロセスのメモリの中にしか
+//! 無いので、前は再起動した日の行が「再起動のあとのぶん」だけになっていた (tokyo の 10-28 は 0.29.36 の
+//! 19.3 時間が抜けて `secs` 16,819)。起動して最初の標本で、`.rrd` から読み戻した `history["60"]` の
+//! **UTC 0 時から**の行で今日の積み上げを組み直す ([`Writer::seed`])。`version` は「その日に動いた版」を
+//! 古い順に空白で並べる (`/events` の `start` から。1 つしか無ければ今までどおり 1 つ)。
+//! 前のプロセスの最後の 1 分 (窓が閉じる前に止まったぶん) と、山の写真の枚数 (`bursts`) は戻らない。
 
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
@@ -33,7 +40,9 @@ use crate::{log_debug, log_info, log_warn};
 
 /// 1 行の上限 (バイト。改行を含まない)。T.29.33 で `slo_rate_hours` を足したので 512 → 640
 /// (最悪の行が 491 B で、足す 80 B 弱が入らなかった。上限 2 MiB でも 3,276 日 = 9 年ぶん入る)。
-pub const MAX_LINE: usize = 640;
+/// T.32.17 の 2 欄と T.32.18 の版の並び ([`MAX_VERSIONS`]) で 640 → 672 (最悪 669 B。`/daily` の
+/// 240 KiB に 1 年 = 365 行がまだ入る。2 MiB は 3,120 日 = 8 年ぶん)。
+pub const MAX_LINE: usize = 672;
 /// ファイルの上限 (バイト)。越えたら古い行から捨てる。
 pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// `/daily?n=` の既定 (1 年) と上限。
@@ -47,6 +56,11 @@ pub const FILE_NAME: &str = ".rust-http-proxy.daily.jsonl";
 const MAX_JSON: usize = 240 * 1024;
 /// 版の文字列をこの長さで切る (1 行の上限を必ず守るため)。
 const MAX_VERSION: usize = 40;
+/// その日に動いた版の並び (空白で区切る。T.32.18) の長さの上限。越えたら古い版から落とす
+/// (今の版は必ず残る)。ふつうの版 (`0.30.4+ba512ad`) なら 5 つ入る。
+const MAX_VERSIONS: usize = 2 * MAX_VERSION;
+/// 組み直しに使う解像度 (`history["60"]`。T.32.18)。
+const SEED_RES: usize = 1;
 const SECS_PER_DAY: u64 = 86_400;
 /// 数を 15 桁で頭打ちにする (1 行 ≤ [`MAX_LINE`] を必ず守るため。現実の値は 10 桁以内)。
 const MAX_NUM: u64 = 999_999_999_999_999;
@@ -99,6 +113,14 @@ struct Acc {
     rss_max: u64,
     rss_sum: u64,
     rss_n: u64,
+    /// 組み直した前のプロセスのぶん (T.32.18): 見ていた秒 (60 秒の行の数 × 60)、要求とバイト
+    /// (行の `requests_delta` / `bytes_delta` の和)、追い出し (行どうしの通算の差の和)
+    seed_secs: u64,
+    seed_requests: u64,
+    seed_bytes: u64,
+    seed_evicted: u64,
+    /// その日に動いた版の並び (組み直したときだけ。`None` なら書く側の今の版)
+    versions: Option<String>,
 }
 
 impl Acc {
@@ -128,6 +150,31 @@ impl Acc {
             self.rss_max = self.rss_max.max(s.rss);
             self.rss_sum = self.rss_sum.saturating_add(s.rss);
             self.rss_n += 1;
+        }
+    }
+
+    /// 前のプロセスの 60 秒の行 1 本を足す (T.32.18)。区間の値は 5 秒の標本と同じく足し合わせ、
+    /// 標本の数は行に畳んだ 5 秒の本数 (`gauge_n`。古い行は 1)、RSS の平均はその本数で重みを付ける。
+    /// `prev_evicted` は 1 本前の行の `evicted_idle` (通算なので差を足す。減ったら再起動の段差で 0)
+    fn add_seed(&mut self, s: &Sample, prev_evicted: Option<u64>) {
+        let n = s.gauge_n.max(1);
+        self.samples += n;
+        self.seed_secs += crate::history::RESOLUTIONS[SEED_RES].0;
+        self.seed_requests += s.requests_delta;
+        self.seed_bytes += s.bytes_delta;
+        if let Some(p) = prev_evicted {
+            self.seed_evicted += s.evicted_idle.saturating_sub(p);
+        }
+        self.connect.merge(&s.connect);
+        self.errors += s.errors;
+        self.dns_misses += s.dns_misses;
+        self.dns_ms_sum += s.dns_ms_sum;
+        self.dns_fail_misses += s.dns_fail_misses;
+        self.active_max = self.active_max.max(s.active_max).max(s.active as u64);
+        if s.rss > 0 {
+            self.rss_max = self.rss_max.max(s.rss);
+            self.rss_sum = self.rss_sum.saturating_add(s.rss.saturating_mul(n));
+            self.rss_n += n;
         }
     }
 
@@ -172,10 +219,16 @@ impl Acc {
             mo,
             d,
             num(self.day.saturating_mul(SECS_PER_DAY)),
-            num(self.last_t.saturating_sub(self.first_t)),
+            num(self
+                .seed_secs
+                .saturating_add(self.last_t.saturating_sub(self.first_t))),
             num(self.samples),
-            num(self.end.requests.saturating_sub(self.start.requests)),
-            num(self.end.bytes.saturating_sub(self.start.bytes)),
+            num(self
+                .seed_requests
+                .saturating_add(self.end.requests.saturating_sub(self.start.requests))),
+            num(self
+                .seed_bytes
+                .saturating_add(self.end.bytes.saturating_sub(self.start.bytes))),
             num(connects),
             flt(self.connect.quantile_ms(0.5)),
             flt(self.connect.quantile_ms(0.95)),
@@ -185,13 +238,14 @@ impl Acc {
             num(self.errors),
             num(self.end.bursts.saturating_sub(self.start.bursts)),
             num(self.active_max),
-            num(self
-                .end
-                .evicted_idle
-                .saturating_sub(self.start.evicted_idle)),
+            num(self.seed_evicted.saturating_add(
+                self.end
+                    .evicted_idle
+                    .saturating_sub(self.start.evicted_idle)
+            )),
             num(self.rss_max),
             num(rss_avg),
-            version,
+            self.versions.as_deref().unwrap_or(version),
             rate_hours[0][0].min(99),
             rate_hours[0][1].min(99),
             rate_hours[1][0].min(99),
@@ -224,6 +278,46 @@ fn clean_version(v: &str) -> String {
         .collect()
 }
 
+/// その日に動いた版の並び (T.32.18)。`/events` の `start` (`version <版> on port …`) から、
+/// 0 時に動いていた版 (`with_midnight` のとき。0 時より前のいちばん新しい `start`) と、0 時から
+/// `until` までに起動した版を古い順に並べ、最後に今の版 `current` を置く (続けて同じ版は 1 つに)。
+/// 長さが [`MAX_VERSIONS`] を越えたら古い方から落とす。
+fn versions_of_day(
+    events: &[crate::events::Event],
+    day_start: u64,
+    until: u64,
+    with_midnight: bool,
+    current: &str,
+) -> String {
+    let mut starts: Vec<(u64, String)> = events
+        .iter()
+        .filter(|e| e.kind == crate::events::EventKind::Start)
+        .filter_map(|e| {
+            let v = e.text.strip_prefix("version ")?.split(' ').next()?;
+            Some((e.at, clean_version(v)))
+        })
+        .filter(|(at, v)| *at <= until && !v.is_empty())
+        .collect();
+    starts.sort_by_key(|(at, _)| *at);
+    let mut list: Vec<String> = Vec::new();
+    if with_midnight && let Some((_, v)) = starts.iter().rev().find(|(at, _)| *at < day_start) {
+        list.push(v.clone());
+    }
+    list.extend(
+        starts
+            .iter()
+            .filter(|(at, _)| *at >= day_start)
+            .map(|(_, v)| v.clone()),
+    );
+    list.push(current.to_string());
+    list.dedup();
+    // 今の版は必ず残す (古い方から落とす)
+    while list.len() > 1 && list.iter().map(|v| v.len() + 1).sum::<usize>() - 1 > MAX_VERSIONS {
+        list.remove(0);
+    }
+    list.join(" ")
+}
+
 /// 日次の要約を積んで、日が変わったら 1 行書くもの。
 ///
 /// 大域の状態 ([`configure`] / [`tick`]) はこれを 1 つ持っているだけで、
@@ -237,6 +331,8 @@ pub struct Writer {
     /// この起動で書いた行数と、書けなかった回数
     written: u64,
     errors: u64,
+    /// 起動して最初の標本で組み直したか (T.32.18。1 回だけ)
+    seeded: bool,
 }
 
 impl Writer {
@@ -250,7 +346,61 @@ impl Writer {
             acc: None,
             written: 0,
             errors: 0,
+            seeded: false,
         }
+    }
+
+    /// 起動して最初の標本 `first` の前に、読み戻した `history["60"]` の**今日の UTC 0 時から**の行で
+    /// 今日の積み上げを組み直す (T.32.18)。1 回だけ (2 回目からは何もしない)。
+    ///
+    /// 使う行は `0 時 <= t < first.t - 5` (`first` が持つ 5 秒の手前まで)。60 秒の行の `t` は窓の頭で、
+    /// 起動してから最初の行が閉じるのは 1 分あと = 組み直す時点の行は全部前のプロセスのもの。
+    /// `events` は `/events` の中身 (版の並びを作る)。行が 1 本も無ければ今までどおり (今の版だけ)。
+    pub fn seed(
+        &mut self,
+        h: &crate::history::History,
+        first: &Sample,
+        bursts: u64,
+        events: &[crate::events::Event],
+    ) {
+        if std::mem::replace(&mut self.seeded, true) || self.path.is_none() || self.acc.is_some() {
+            return;
+        }
+        let day = first.t / SECS_PER_DAY;
+        let day_start = day * SECS_PER_DAY;
+        // 今のプロセスの累計の起点は最初の標本 (`add` の `None` の枝と同じ)
+        let mut acc = Acc::start_at(day, first.t, Cum::take(first, bursts));
+        let mut prev_evicted = None;
+        let mut first_row = None;
+        h.for_each_in(SEED_RES, day_start, first.t.saturating_sub(5), |s| {
+            first_row.get_or_insert(s.t);
+            acc.add_seed(s, prev_evicted);
+            prev_evicted = Some(s.evicted_idle);
+        });
+        let Some(first_row) = first_row else {
+            return;
+        };
+        // 0 時に動いていた版を入れるのは、組み直した行が今日の最初の `start` より前からあるとき
+        let first_start = events
+            .iter()
+            .filter(|e| e.kind == crate::events::EventKind::Start && e.at >= day_start)
+            .map(|e| e.at)
+            .min();
+        let with_midnight = first_start.is_none_or(|at| first_row < at);
+        acc.versions = Some(versions_of_day(
+            events,
+            day_start,
+            first.t,
+            with_midnight,
+            &self.version,
+        ));
+        log_info!(
+            None,
+            "daily summary: rebuilt today from {} s of restored history (versions {})",
+            acc.seed_secs,
+            acc.versions.as_deref().unwrap_or("")
+        );
+        self.acc = Some(acc);
     }
 
     /// 履歴の標本を 1 本足す。日が変わっていたら終わった日の 1 行を書く。
@@ -452,7 +602,14 @@ pub fn tick(metrics: &Metrics, s: &Sample) {
         return;
     }
     let bursts = metrics.bursts.next_seq().saturating_sub(1);
-    writer().locked().add(s, bursts);
+    let mut w = writer().locked();
+    if !w.seeded {
+        // 起動して最初の標本: 読み戻した `history["60"]` で今日を組み直す (T.32.18。1 回だけ)。
+        // `/events` (512 件まで) を写すのもこの 1 回だけ
+        let (events, _) = crate::events::select(0, usize::MAX);
+        w.seed(&metrics.history, s, bursts, &events);
+    }
+    w.add(s, bursts);
 }
 
 /// `/daily?n=` の中身 (新しい方から `n` 日ぶん、並びは古い順)。
@@ -588,6 +745,152 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    /// `version <v> on port …` の `start` 1 件 (T.32.18)。
+    fn start_event(at: u64, v: &str) -> crate::events::Event {
+        crate::events::Event {
+            at,
+            kind: crate::events::EventKind::Start,
+            text: format!("version {} on port 8080 boot x", v),
+        }
+    }
+
+    /// プロセス 1 本ぶん: `from`〜`until` (5 秒ごと) の標本を `h` に積みながら `w` に足す (本番と同じ順:
+    /// `daily` が先、`push` が後)。要求は 5 秒に 10 本 (`requests` は**このプロセスの通算**で 0 から)、
+    /// CONNECT 1 本・ミス 2 回 (うち失敗 1 回)。返すのはこのプロセスが通した要求の数
+    fn run_process(
+        h: &crate::history::History,
+        w: &mut Writer,
+        from: u64,
+        until: u64,
+        events: &[crate::events::Event],
+    ) -> u64 {
+        let mut total = 0;
+        let mut t = from;
+        while t <= until {
+            let mut s = sample(t, total);
+            // 最初の 1 本は起点 (区間の値は 0。`tick.rs` の `totals` が `None` の 1 本目と同じ)
+            s.requests_delta = if t == from { 0 } else { 10 };
+            s.bytes_delta = s.requests_delta * 1024;
+            s.dns_fail_misses = 1;
+            s.gauge_n = 1;
+            if !w.seeded {
+                w.seed(h, &s, 0, events);
+            }
+            w.add(&s, 0);
+            h.push(s);
+            t += 5;
+            total += 10;
+        }
+        // 最後の 1 本の `requests` が通算 (= 足した `requests_delta` の和)
+        total - 10
+    }
+
+    /// T.32.18 の受け入れ基準: 日の途中で再起動しても、その日の `secs` が 86,400 前後になり、要求の和が
+    /// 前後のプロセスの和と一致する。前のプロセスのぶんは `.rrd` から読み戻した `history["60"]`
+    /// (ここでは前の `History` の 60 秒の行をそのまま `restore`) から組み直す。`version` はその日に動いた版の並び。
+    #[test]
+    fn a_restart_in_the_middle_of_the_day_keeps_the_earlier_process() {
+        let path = tmp("restart");
+        let day = 20_500 * DAY;
+        // 前のプロセス (0.1.0+aaa): 前の日の 23:00 から 12:00:00 まで。11:59 の行は 12:00:00 の標本で閉じる
+        let h1 = crate::history::History::default();
+        let mut w1 = Writer::new(Some(path.clone()), "0.1.0+aaa");
+        let ev1 = [start_event(day - 3600, "0.1.0+aaa")];
+        run_process(&h1, &mut w1, day - 3600, day + 12 * 3600, &ev1);
+        assert_eq!(lines(&path).len(), 1, "前の日の行は前のプロセスが書いた");
+        // 0 時からの 12 時間ぶんの要求 (12:00:00 の標本は窓が閉じる前に止まったので戻らない)
+        let before: u64 = 12 * 3600 / 5 * 10;
+        // 次のプロセス (0.1.0+bbb): 12:00:30 に起動。`.rrd` から 60 秒の行を読み戻す
+        let h2 = crate::history::History::default();
+        let mut rows = Vec::new();
+        h1.for_each_in(SEED_RES, 0, u64::MAX, |s| rows.push(*s));
+        h2.restore(SEED_RES, rows);
+        let mut w2 = Writer::new(Some(path.clone()), "0.1.0+bbb");
+        let ev2 = [
+            ev1[0].clone(),
+            start_event(day + 12 * 3600 + 30, "0.1.0+bbb"),
+        ];
+        // 翌日 0:00:00 の標本 (日をまたいだ最初の 1 本) は終わる日に足して、そこで 1 行書く
+        let after = run_process(&h2, &mut w2, day + 12 * 3600 + 30, day + DAY, &ev2);
+        let rows = lines(&path);
+        assert_eq!(rows.len(), 2, "{:?}", rows);
+        let today = &rows[1];
+        let secs: u64 = field(today, "secs").unwrap().parse().unwrap();
+        assert!(
+            (86_000..=86_400).contains(&secs),
+            "secs {}: {}",
+            secs,
+            today
+        );
+        let requests: u64 = field(today, "requests").unwrap().parse().unwrap();
+        assert_eq!(requests, before + after, "{}", today);
+        assert_eq!(field(today, "version"), Some("0.1.0+aaa 0.1.0+bbb"));
+        // 区間の値も前のプロセスのぶんが入る (CONNECT は 5 秒に 1 本)
+        let connects: u64 = field(today, "connects").unwrap().parse().unwrap();
+        assert!(connects > 17_000, "{}", today);
+        assert_eq!(field(today, "dns_resolved_per_connect"), Some("1.000"));
+        assert!(today.len() <= MAX_LINE);
+        // 組み直すのは起動して最初の 1 回だけ
+        assert!(w2.seeded);
+        let _ = fs::remove_file(&path);
+    }
+
+    /// 読み戻した行が無ければ (`.rrd` が無い・前の日のぶんしか無い) 今までどおり今のプロセスのぶんだけ。
+    #[test]
+    fn without_restored_rows_the_day_is_this_process_only() {
+        let path = tmp("norows");
+        let day = 20_600 * DAY;
+        let h = crate::history::History::default();
+        let mut w = Writer::new(Some(path.clone()), "0.1.0+ccc");
+        let ev = [
+            start_event(day - 50, "0.1.0+old"),
+            start_event(day + 600, "0.1.0+ccc"),
+        ];
+        run_process(&h, &mut w, day + 600, day + DAY + 5, &ev);
+        let rows = lines(&path);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(field(&rows[0], "version"), Some("0.1.0+ccc"));
+        let secs: u64 = field(&rows[0], "secs").unwrap().parse().unwrap();
+        assert_eq!(
+            secs,
+            DAY - 600,
+            "日をまたいだ最初の標本 (翌日 0:00:00) までの秒"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    /// 版の並び: 0 時に動いていた版 + 0 時からの `start` + 今の版 (続けて同じ版は 1 つ)。長すぎれば古い方から落とす。
+    #[test]
+    fn the_versions_of_the_day_are_listed_oldest_first() {
+        let day = 20_700 * DAY;
+        let ev = [
+            start_event(day - 7200, "0.1.0+old"),
+            start_event(day - 100, "0.1.0+a"),
+            start_event(day + 100, "0.1.0+b"),
+            start_event(day + 200, "0.1.0+b"),
+            crate::events::Event {
+                at: day + 300,
+                kind: crate::events::EventKind::Start,
+                text: "self-bench: 3 runs".to_string(),
+            },
+            start_event(day + 400, "0.1.0+c"),
+        ];
+        assert_eq!(
+            versions_of_day(&ev, day, day + 500, true, "0.1.0+c"),
+            "0.1.0+a 0.1.0+b 0.1.0+c"
+        );
+        assert_eq!(
+            versions_of_day(&ev, day, day + 500, false, "0.1.0+c"),
+            "0.1.0+b 0.1.0+c"
+        );
+        let many: Vec<_> = (0..20)
+            .map(|i| start_event(day + i, &format!("0.{}.0+abcdef0", i)))
+            .collect();
+        let v = versions_of_day(&many, day, day + 100, false, "9.9.9+fffffff");
+        assert!(v.len() <= MAX_VERSIONS, "{}", v);
+        assert!(v.ends_with("0.19.0+abcdef0 9.9.9+fffffff"), "{}", v);
+    }
+
     #[test]
     fn starting_twice_on_the_same_day_keeps_one_line() {
         let path = tmp("twice");
@@ -618,7 +921,7 @@ mod tests {
         assert_eq!(w.counts(), (0, 0));
     }
 
-    /// 1 行は必ず 512 B 以下 (現実離れした値でも)。
+    /// 1 行は必ず [`MAX_LINE`] 以下 (現実離れした値でも)。
     #[test]
     fn a_line_never_exceeds_the_limit() {
         let mut connect = Window::default();
@@ -646,6 +949,12 @@ mod tests {
             rss_max: u64::MAX,
             rss_sum: u64::MAX,
             rss_n: 1,
+            seed_secs: u64::MAX,
+            seed_requests: u64::MAX,
+            seed_bytes: u64::MAX,
+            seed_evicted: u64::MAX,
+            // その日に動いた版の並びも上限まで (T.32.18)
+            versions: Some("9".repeat(MAX_VERSIONS)),
         };
         let worst = acc.line(&clean_version(&"9".repeat(200)), [[u32::MAX; 2]; 2]);
         println!("daily line: worst {} B (limit {})", worst.len(), MAX_LINE);
@@ -677,6 +986,7 @@ mod tests {
             rss_max: 58_720_256,
             rss_sum: 52_428_800,
             rss_n: 1,
+            ..Acc::default()
         }
         .line("0.1.0+fffb795", [[23, 1], [24, 0]]);
         println!("daily line: typical {} B -> {}", typical.len(), typical);
