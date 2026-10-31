@@ -46,36 +46,12 @@ T.31.99 で 0.30.4 の RSS が 24 時間 48.6 MB → 48 時間 73.6 MB、`heap_f
 
 **32d 性能 (本体を変える。tokyo の CPU は 1,204 us/s、要求 1 本あたり 1,951 us で、役割は `conn` 22.7%・`profile-sample` 21.8%・`cache-probe` 15.5%・`history` 9.6%・`idle-watch` 6.4%・`persist` 4.1%)**
 
-- [ ] **T.32.19 出入りの多いトンネルの預け入れの往復を減らす (猶予 100 ms の下限)**
-  - 目的: tokyo の `/recent` (`2026-10-31T063104Z-snapshot.json`、4.3 時間・2,000 本) で預け入れ (`parks`) が 9,857 回 = **0.64 回/秒** (10-30 の 1 枚は 1.16 回/秒)。最多は login.live.com の 1 本で 220 秒に 407 回 (0.54 秒ごと)。預け入れの 74〜81% は平均の間隔が 1 秒未満のトンネル。手元で 4 本のトンネルが 0.5 秒ごとに 200 B を往復する形 (`t32/perf/chatty-ab.sh`、交互に 3 組) で、既定 (猶予 100 ms) は conn と idle-watch を合わせて 1 往復 **約 230 us**、`PROXY_PARK_GRACE_MS=1000` (預けない) は **約 110〜125 us**。預けて引き上げる 1 回が約 115 us で CONNECT を 1 本張るのより重い (`strace -c` で 1 往復ごとに epoll_ctl 4・futex 約 3.7・poll 3、スレッドの起床 3)。tokyo の idle-watch の 77〜102 us/s はこの往復と桁が合い、conn 側を合わせて **tokyo の CPU の 13〜18%** の見込み。コードは `crates/tunnel/src/tunnel.rs:681` (`MIN_PARK_GRACE = 100 ms`)、`crates/server/src/idle.rs` 267-341。
-  - やること (案): (a) 前回の預け入れが短く終わった (例 1 秒未満で起こされた) トンネルは次の猶予を倍にしていく (上限 1〜2 秒)。(b) トンネルの下限を 1 秒に。(c) epoll を `EPOLLONESHOT` と `EPOLL_CTL_MOD` で使い、出し入れ 4 回を 2 回に。本当に暇なトンネル (秒〜分) の預け入れは今のまま。
-  - 受け入れ基準: 手元の chatty (4 本・0.5 秒・40 往復) で 1 往復の CPU が −40% 以上、`--only connect` の CPU/本が +2% 以内、`--only idle-tunnels --conc 5000` の RSS とスレッドの数が前と同じ、idle・tunnel・overload の結合試験が通る。次の締めで tokyo の idle-watch の us/s と parks が下がる。
-
-- [ ] **T.32.20 `cache-probe` が 60 秒ごとに割当の下のファイルを全部たどるのを間引く**
-  - 目的: tokyo の雪像の `/profile` (5 秒の標本 717 本) を 1 分の中の位相で数えると、cache-probe の CPU の **73% が毎分同じ 5 秒**に集まる (`t32/perf/phase.py`)。1 分に 1 回動くのは `refresh_other_disk_usage` (`crates/cache/src/cache/probe.rs:22` の `OTHERS_INTERVAL_SECS = 60` と 151-158) で、tokyo は割当が fixed (3,072 MB) なので毎分 `sysinfo::dir_size_excluding(/home/container, キャッシュの置き場)` (`crates/sysinfo/src/sysinfo/fs.rs:147`) で全部のファイルを stat する (1 回およそ 10 ms ≈ 150〜170 us/s、tokyo の CPU の約 13%)。手元の再現 (`quota-walk.sh`、`SERVER_DISK=3072`): 0 ファイルで 69 us/s、5,000 ファイルで **248 us/s** (1 回 10.7 ms、1 ファイル 2.1 us)。tokyo の `/home/container` の件数は未確認 (割当の使用 427 MB、キャッシュ 57 MB)。
-  - やること: (a) 間隔を 600 秒にし、割当の残りが少ない (使用 80% 以上や ENOSPC の後) ときは 60 秒に戻す。(b) 前回から mtime の変わらないディレクトリは前回の合計を使う ((a) と組み合わせる)。README の「60 秒ごとに再計測」も直す。
-  - 受け入れ基準: 5,000 ファイルで cache-probe が 100 us/s 以下、割当に近づいたときは 60 秒以内に予算が縮む、cache 系の結合試験が通る。次の締めで tokyo の cache-probe の割合が 15.5% から下がる。
-
-- [ ] **T.32.21 毎秒・5 秒ごとに読む `/proc`・`/sys` の小さなファイルを開いたまま pread で読む**
-  - 目的: T.29.20 (1 本 4 回) の残り。history は 5 秒ごとに 16 ファイル (`/proc/self/cgroup` は 2 回)、cgroup v1 では無い `*.pressure` 5 本も毎回 open して ENOENT、cache-probe は 5 秒ごとに 12 ファイル。`procbench` (暖かい状態) で `/proc/thread-self/stat` 2,531 → 1,033 ns、`/proc/self/status` 7,063 → 3,016 ns、`/proc/net/netstat` 45,363 → 15,628 ns。試作 B (`t32/perf/protoB-keep-proc-fds.patch`) で暇な全体のシステムコール 63.8 → 27.2 回/秒 (history 11.7 → 5.8、cache-probe 9.4 → 2.8)、cache-probe 60 → 47 us/s、合計の中央値 340 → 311 us/s (−8.5%)。`read_small` は呼ぶたびに 4 KiB の Vec を作ってゼロで埋める (history の memset 約 4.7 万 Ir/回)。
-  - やること: `sysinfo` に「開いたままの小さなファイル」の型 (読めなくなったら開き直す) を置き、history・cache-probe・profile-sample の固定のパスに使う。無いと分かったパスは次の起動まで開き直さない。`/proc/self/cgroup` は一度だけ読む。`read_small` は器を使い回す。
-  - 受け入れ基準: 暇な既定 60 秒の `strace -f` でシステムコールが −50% 以上。`/status` と `/history` の値が前後で同じ。試験: ファイルが消えて現れる、cgroup の移動、4 KiB を超える `netstat`。
-
-- [ ] **T.32.22 `persist` が 60 秒ごとにホスト表 1,000 行を 1 行ずつ pwrite するのを、変わった行だけにする**
-  - 目的: tokyo の hosts は上限の 1,000 件で persist は 49.7 us/s、1 分の中の位相で 83% が同じ 5 秒。手元でホストを 1,200 件埋めると persist は **62 us/s**、1 分に `pwrite64` **1,001 回** (1 回の flush で 3.75 ms)。コードは `crates/metrics/src/persist.rs:191-216` (`flush_stats` → `write_table`) で、毎回 `hosts_sorted()` の 1,000 行を並べ替えて写してもいる。
-  - やること: 行ごとに前回書いた中身の hash を持ち、同じなら書かない。または区画をまとめて組んで 1 回で書く。
-  - 受け入れ基準: 1,200 ホストのうち 10 件だけ動く形で pwrite が 1 分 50 回以下、persist の CPU が −70%。再起動で読み戻す試験は今と同じ。
-
 **32e 道具・試験・文書・CI (本体を変えない。デプロイは要らない)**
-
-- [ ] **T.32.37 `profile-sample` は、プロセスの CPU とスレッド数が前回と同じ秒は全スレッドを読まない (利用者の決定: (a))**
-  - 目的: tokyo の CPU の 21.8% (263 us/s、うち kernel 208) を占める。毎秒の仕事はスレッドの起床 (1 回 30 us)・`/proc/self/task` の readdir・スレッドごとの stat の open・read・close (冷えた状態で 1 本 7 us) で、手元で 1 回約 190 us。試作 C (`t32/perf/protoC-skip-idle-scan.patch`、試作 B を含む) で暇な 45 秒の profile-sample 166〜169 → 81〜93 us/s (−48%)、合計 312〜343 → 216〜232 (−30%)、システムコールは暇な全体で 63.8 → 12.2 回/秒 (profile-sample 42.3 → 3.25)。コードは `crates/metrics-profile/src/profile.rs:1016-1103`、`crates/sysinfo/src/sysinfo/proc.rs:153-196`。
-  - やること: `/proc/self/stat` の utime + stime とスレッド数が前回と同じで、新しい要求も来ていない秒は全スレッドを読まず、前回の状態をもう 1 標本ぶん積む (T.29.21 の「休眠のまま ticks が同じなら前回の値」を全体に広げた形)。README の `/profile` の段に「状態の分布は 10 ms 以上走ったときだけ読み直す近似」と書く。T.32.21 (開いたままの読み) と組み合わせる。
-  - 受け入れ基準: 暇な既定 60 秒で profile-sample が −40% 以上。forward と CONNECT の負荷中の役割別の CPU と状態の分布が ±5% (T.29.21 と同じ見方)。スレッドが生まれた・消えた秒は必ず読み直す試験。
 
 - [ ] **T.32.99 締める (タスク 32 の版を 48 時間走らせたあとに見る・決める・書く)**
   - 前提: デプロイ先は `tokyo.sorahost.net:60357`。版は本体を最後に変えた小タスクの番号 (前のタグとぶつかるなら本体と proxy-server だけ最後の小タスクの番号に上げる)。デプロイそのものは利用者が決める。タグはデプロイの合図の直前に、クラウドのセッションから `workflow_dispatch` で打つ (T.32.32 が入っていれば CI が通ったコミットだけ)。「前」は 0.30.4 の最後の停止、0 時間は新しい版の起動 60 秒 (`--closeout` が版で選ぶ)。**今回は 24 時間ではなく 48 時間で見る** (段は 1 日 1 回の日次の雪像と、日によって来る総当たりで出るため)。
-  - 判定: 新しい phase (T.32.16・T.32.29・T.32.30 で作る。無ければ phase28)。ほかに見ること: `/history?res=3600` の `rss` に段が出ていないか (00Z と総当たりの時間、`mem_used`・`stores`・`evictions`)、`heap_free` の山、`memory.trim`、`dns.entries` が 4,096 以下 (T.32.2)、`/slo` の `excluded` が出ているか (T.32.10)、異常検知の件/時 (T.32.16・T.32.36)、tokyo の役割ごとの CPU (T.32.19〜22)、キャッシュに当たった要求の数と HIT の中身 (T.32.8・T.32.9)。
+  - **締める版は 0.32.37** (2026-11-01): 本体を最後に変えた小タスクの最大は T.32.37。前のタグ `v0.30.4` より大きいのでぶつからない。T.32.1 は開けたまま (T.32.99 で RSS に段が残るかを見てから決める)。CI が初めて既知の 6 本なしで回るので、ほかに見ること: CI の `cargo test --workspace` が失敗 0 本 (T.32.24)、watch.yml・release.yml・ci.yml の変更が実物で動くか (T.32.25・T.32.32・T.32.33)、TODO §2 のバイナリの大きさと「テスト 793 本」を直す (T.32.28 の申し送り)、`recent_test` の時間に頼る 2 本 (`errors_records_a_refused_connect`・`recent_records_the_kernel_rtt_of_both_sides`) が性能の組の作業中に既定の並列で 1 回ずつ落ちた (`--test-threads=2` では通る)。
+  - 判定: `--criteria phase29` (T.32.29・T.32.30・T.32.16 の行)。ほかに見ること: `/history?res=3600` の `rss` に段が出ていないか (00Z と総当たりの時間、`mem_used`・`stores`・`evictions`)、`heap_free` の山、`memory.trim`、`dns.entries` が 4,096 以下 (T.32.2)、`/slo` の `excluded` が出ているか (T.32.10)、異常検知の件/時 (T.32.16・T.32.36)、tokyo の役割ごとの CPU (T.32.19〜22)、キャッシュに当たった要求の数と HIT の中身 (T.32.8・T.32.9)。
 
 **利用者が決めたもの (2026-10-31)**: ホスト別統計の表 → (a)+(c)、満杯ならいちばん古い行を捨てる (T.32.10)。名前解決の待ち → (a) 別のスレッド群と締め切り (T.32.11)。鮮度の手がかりの無い応答 → (b) 要求に `Cookie` があり明示の鮮度も `public` も無ければ保存しない (T.32.35)。異常検知の `errors`・`dns_miss_rate` → (a) `/slo` と同じ数え方 (T.32.36)。`profile-sample` → (a) 暇な秒は読み飛ばす (T.32.37)。`tasks/` の切れたリンク → (a) 直して決まりに書く (T.32.38)。**メモリの異常検知 → (b) T.32.0・T.32.3 で段の正体を確かめたあとに決める** (番号は振らない。T.32.99 で RSS に段が残るかを見てから)。
 
