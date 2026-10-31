@@ -114,20 +114,6 @@ T.31.99 で 0.30.4 の RSS が 24 時間 48.6 MB → 48 時間 73.6 MB、`heap_f
 
 **32c 計器と物差し (本体を変える)**
 
-- [ ] **T.32.16 異常検知の `dns_slow` を、名前解決に成功したミスで判定する (名前解決の失敗の遅さで鳴っている)**
-  - 目的: 0.30.4 の起動から 62 件 (1.28 件/時。T.17〜T.23 のころは 0.02〜0.19 件/時)。`/recent` で直接確かめた 10-31 03:46:26 (3 ミス、合計 2,297 ms) は 3 回とも nxdomain で `imap.froggy.com.au` 1 回が 2,151 ms、03:23:50 (7 ミス、2,363 ms) は nxdomain 1 回が 1,991 ms。`/errors` で突き合わせた 13 件のうち 12 件は、失敗した名前解決を除くと条件 (3 回以上・合計 1,000 ms 以上) に届かない。`history["60"]` の 26 件のうち 12 件は名前解決に成功したミスが窓に 3 回未満。標本の `dns_ms_sum` には失敗した名前解決の ms も入っていて (`crates/metrics-core/src/metrics.rs:552-557`)、失敗のぶんの ms は持っていない。判定表 phase28 の「`dns_slow` が合計 1,000 ms 未満の窓で立っていない」行は、コードが T22.2 から合計 1,000 ms を条件にしているので構造上落ちない (T.23.99 から毎回 0 件)。
-  - やること: 5 秒の標本に `dns_fail_ms_sum` を 1 項目足す (`.rrd` 版 3 の予備 6 → 5、`/history` の鍵 54 → 55、古いレコードは 0 で読み戻る)。`dns_slow` は `(dns_ms_sum − fail) ÷ (dns_misses − fail_misses)` と、その回数・合計で判定する。判定表の行は新しい phase で「名前解決に成功したミスで立った件/時」に差し替える (過去の phase は動かさない)。
-  - 受け入れ基準: 雪像の再生で 26 → 2 件以下。単体試験: 失敗 3 回 × 2 秒では立たない、成功した名前 10 回の平均 300 ms で立つ。
-
-- [ ] **T.32.17 名前解決のミスの率の表示から、名前解決の失敗を除く (`/slo` だけが除いている)**
-  - 目的: 0.30.4 の起動からのミス 31,348 回のうち名前解決に失敗したもの 29,742 回、確立 33,177 本。snapshot-diff の §2 は「0.94 回/接続、接続 1 本あたり 55.7 ms」(`scripts/snapshot-diff.py:1076-1079`) だが、`/recent` で成功した接続の名前解決の待ちは 1,956 本で計 1,343 ms = 0.7 ms/本。判定表の表示だけの行は 0.95 回/接続 (失敗を除けば 0.048)。`/daily` の `dns_per_connect` は 1.137 / 1.09 で、`/slo` の同じ日は 0.039 / 0.053。ダッシュボードの KPI「名前解決」は 64.5% (`crates/web/src/dashboard.html:269-270,982`、misses ÷ (hits + misses))、失敗を除き `stale_hits` を当たりに数えれば 5.1%。
-  - やること: 道具 (snapshot-diff と phase の表示) は `history` の `dns_fail_misses` を引く。ダッシュボードは `/history` の和から出す (か `/status` の `dns` に失敗したミスの数を足す)。`/daily` に失敗を除いた率の欄を足す。
-  - 受け入れ基準: 実の 1 枚で 0.048 回/接続・KPI 5.1% が出る。欄の無い古い版では今どおり読める。
-
-- [ ] **T.32.18 `/daily` が、再起動した日の前のプロセスのぶんを落とさない**
-  - 目的: `2026-10-31T063104Z-daily.json` の 10-28 は `secs` 16,819 (4.7 時間)・要求 1,675 で、0.29.36 の 00:00〜19:18 (19.3 時間) が無い。書く側 (`crates/metrics-slo/src/daily.rs`) はプロセスのメモリの中の積み上げしか持たない。`.rrd` から読み戻した `history["60"]` には前日 06:16 からの 1,440 行があるが使っていない。デプロイの多い時期は日次の 14 日のうち 10 日が欠けた。
-  - やること: 起動したら、読み戻した `history["60"]` の UTC 0 時からの標本で今日の積み上げを組み直す。`version` は「その日に動いた版」の並びにする。
-  - 受け入れ基準: 結合試験で、日の途中で再起動してもその日の `secs` が 86,400 前後になり、要求の和が前後の和と一致する。
 
 **32d 性能 (本体を変える。tokyo の CPU は 1,204 us/s、要求 1 本あたり 1,951 us で、役割は `conn` 22.7%・`profile-sample` 21.8%・`cache-probe` 15.5%・`history` 9.6%・`idle-watch` 6.4%・`persist` 4.1%)**
 
@@ -217,11 +203,6 @@ T.31.99 で 0.30.4 の RSS が 24 時間 48.6 MB → 48 時間 73.6 MB、`heap_f
   - 目的: `Cache-Control`・`Expires`・`Last-Modified` の無い 200 に既定 TTL 300 秒 (`crates/freshness/src/freshness.rs:118-127`) を当てていて、再現 (`t32/protocol/p9_pool_cookie.py`) では `Cookie: user=alice` の `GET /whoami` の `you are alice` を、`user=bob`・`user=carol` が HIT で受けた。RFC 9111 §4.2.2 の経験則は「してよい」で違反ではないが、共有のキャッシュとしては Cookie ごとに違う本文を他人に配る形になる。
   - やること: 保存の判定 (`response_policy_lines`) に要求の `Cookie` の有無を渡し、要求に `Cookie` があって応答に明示の鮮度 (`max-age`・`s-maxage`・`Expires`) も `public` も無ければ保存しない。参照 (HIT) の側は今のまま (保存しなければ当たらない)。README のキャッシュの段に書く。
   - 受け入れ基準: 上の再現の 2 本目が MISS。`Cookie` の無い要求の経験則の保存と、明示の `max-age` を持つ応答の HIT は変わらない。
-
-- [ ] **T.32.36 異常検知の `errors` と `dns_miss_rate` を `/slo` と同じ数え方にする (利用者の決定: (a))**
-  - 目的: 0.30.4 の 48.3 時間の `/events` 185 件のうち 184 件が `dns_slow`・`errors`・`dns_miss_rate`。`errors` は「5 分のエラー − nxdomain ≥ 5」でポートを見ない (`crates/metrics-watch/src/anomaly.rs:491-493,546`) ので、`history["60"]` の再生で今の数え方 27 回、`other_port_errors` を引けば 0 回 (名前解決の失敗以外のエラー 855 件のうち 443・80 宛ては 2 件)。10-29 06:40 から 523 分立ちっ放しで、その間に本当の 443 の障害が来ても新しい 1 件は書かれない。`dns_miss_rate` は名前解決に失敗したミスも数え (`crates/metrics-window/src/history/summary.rs:149`)、1 時間の値は最大 2.76 (失敗を引けば最大 0.136、閾 0.20)。512 件のリングは今の速さで 5.6 日しかもたない。
-  - やること: `Summary` に `dns_fail_misses` と `other_port_errors` を畳む。`errors` は「エラー − 名前解決の失敗 (`dns` の原因全部) − `other_port_errors`」、`dns_miss_rate` は `(dns_misses − dns_fail_misses) ÷ 確立`。文面に外した件数と 443・80 以外の件数を添える。標本の列は増えない。README の異常検知の段に書く。
-  - 受け入れ基準: `2026-10-31T063104Z` の `history["60"]` の再生で `errors` 27 → 0、`dns_miss_rate` 2 → 0。単体試験: 443 の `refused` 5 件 / 5 分で立つ、`:993` の時間切れ 100 件では立たない、名前解決に成功したミス 0.3 回/接続で立つ。
 
 - [ ] **T.32.37 `profile-sample` は、プロセスの CPU とスレッド数が前回と同じ秒は全スレッドを読まない (利用者の決定: (a))**
   - 目的: tokyo の CPU の 21.8% (263 us/s、うち kernel 208) を占める。毎秒の仕事はスレッドの起床 (1 回 30 us)・`/proc/self/task` の readdir・スレッドごとの stat の open・read・close (冷えた状態で 1 本 7 us) で、手元で 1 回約 190 us。試作 C (`t32/perf/protoC-skip-idle-scan.patch`、試作 B を含む) で暇な 45 秒の profile-sample 166〜169 → 81〜93 us/s (−48%)、合計 312〜343 → 216〜232 (−30%)、システムコールは暇な全体で 63.8 → 12.2 回/秒 (profile-sample 42.3 → 3.25)。コードは `crates/metrics-profile/src/profile.rs:1016-1103`、`crates/sysinfo/src/sysinfo/proc.rs:153-196`。
