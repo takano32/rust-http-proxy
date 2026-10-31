@@ -19,8 +19,17 @@ use crate::{log_debug, log_info, log_warn};
 
 /// 期限切れ掃除の間隔 (秒)。
 const SWEEP_INTERVAL_SECS: u64 = 30;
-/// quota モードで割当ディレクトリ内の他者使用量を測り直す間隔 (秒)。
+/// quota モードで割当ディレクトリ内の他者使用量を測り直す、短いほうの間隔 (秒)。
+///
+/// 測り直しは割当の下のファイルを全部 stat する (tokyo で 1 回およそ 10 ms、
+/// 手元の 5,000 ファイルで 10.7 ms)。毎分たどると cache-probe の CPU の 7 割がこれになる
+/// (T.32.20) ので、ふだんは [`OTHERS_SLOW_SECS`] ごとにし、**割当に近い
+/// ([`OTHERS_NEAR_PERCENT`] 以上) か ENOSPC の後だけ**この間隔に戻す。
 const OTHERS_INTERVAL_SECS: u64 = 60;
+/// 割当から遠いときの測り直しの間隔 (秒。T.32.20)。
+const OTHERS_SLOW_SECS: u64 = 600;
+/// 「割当に近い」とみなす使用率 (%)。自分以外 + 前回から増えたファイルシステムの使用量 + 自分 (T.32.20)。
+const OTHERS_NEAR_PERCENT: u64 = 80;
 /// 圧迫を検知したあと、バラストの再確保を控える時間 (秒)。
 const PRESSURE_BACKOFF_SECS: u64 = 60;
 /// これ以上まとめて確保したときは info ログに出す。
@@ -55,6 +64,19 @@ pub fn spawn(cache: &Arc<Cache>) -> Option<JoinHandle<()>> {
         .ok()
 }
 
+/// 自分以外の使用量を測り直す時期か (T.32.20)。`since` は前回から経ったティック、
+/// `fast` / `slow` は短い / 長い間隔のティック数、`hurry` は ENOSPC の後、
+/// `estimate` は悲観的に見積もった割当の使用量。
+fn others_due_at(since: u64, fast: u64, slow: u64, hurry: bool, estimate: u64, quota: u64) -> bool {
+    if since >= slow {
+        return true;
+    }
+    if since < fast {
+        return false;
+    }
+    hurry || estimate.saturating_mul(100) >= quota.saturating_mul(OTHERS_NEAR_PERCENT)
+}
+
 /// 「全体の 1%」と「絶対量 (ただし全体の 1/10 まで)」の大きい方。小さな資源で床が全部を食わないようにする。
 fn floor_for(total: u64, absolute: u64) -> u64 {
     (total / 100).max(absolute.min(total / 10))
@@ -72,7 +94,7 @@ impl Cache {
             return;
         }
         let tick = self.ticks.fetch_add(1, Ordering::Relaxed) + 1;
-        if tick.is_multiple_of(self.ticks_per(OTHERS_INTERVAL_SECS)) {
+        if self.others_due(tick) {
             self.refresh_other_disk_usage();
         }
 
@@ -149,6 +171,34 @@ impl Cache {
         }
     }
 
+    /// このティックで自分以外の使用量を測り直すか (T.32.20)。
+    ///
+    /// 割当から遠いうちは [`OTHERS_SLOW_SECS`] ごと。近づいたかは**悲観的に**見積もる:
+    /// 前回測った自分以外の量に、前回からファイルシステム全体の使用量が**増えた**ぶんの和
+    /// (プローブごとの増えだけを足し、減ったぶんは引かない = 同じファイルシステムの別の所で
+    /// 消されても、割当の下で書かれたかもしれない量を見失わない) と自分の持ち分を足す。
+    /// statvfs は予算の計算で毎ティック読んでいるので、ここで増えるシステムコールは無い
+    fn others_due(&self, tick: u64) -> bool {
+        let DiskQuota::Fixed(quota) = self.quota else {
+            return false;
+        };
+        let since = tick.saturating_sub(self.others_walked_at.load(Ordering::Relaxed));
+        let grown = self.fs_grown.load(Ordering::Relaxed);
+        let estimate = self
+            .other_disk_usage
+            .load(Ordering::Relaxed)
+            .saturating_add(grown)
+            .saturating_add(self.disk.owned());
+        others_due_at(
+            since,
+            self.ticks_per(OTHERS_INTERVAL_SECS),
+            self.ticks_per(OTHERS_SLOW_SECS),
+            tick < self.others_hurry_until.load(Ordering::Relaxed),
+            estimate,
+            quota,
+        )
+    }
+
     /// quota モードで、割当ディレクトリ内の自分以外の使用量を測り直す。
     pub(super) fn refresh_other_disk_usage(&self) {
         if !matches!(self.quota, DiskQuota::Fixed(_)) {
@@ -156,6 +206,12 @@ impl Cache {
         }
         let others = sysinfo::dir_size_excluding(self.quota_root(), self.disk.dir());
         self.other_disk_usage.store(others, Ordering::Relaxed);
+        // 次の見積もりの起点 (T.32.20)。測れなければ 0 (= 増えたぶんを足さない)
+        let fs_used = sysinfo::fs_info(self.disk.dir()).map_or(0, |f| f.used);
+        self.fs_used.store(fs_used, Ordering::Relaxed);
+        self.fs_grown.store(0, Ordering::Relaxed);
+        self.others_walked_at
+            .store(self.ticks.load(Ordering::Relaxed), Ordering::Relaxed);
     }
 
     /// システム使用量を測り直し、マージンと両層の上限を更新する。戻り値はメモリ圧迫の有無。
@@ -292,6 +348,12 @@ impl Cache {
                                 f.total,
                             );
                             self.disk_enospc_seen.store(true, Ordering::Relaxed);
+                            // 割当の下の自分以外の量は、しばらく短い間隔で測り直す (T.32.20)
+                            self.others_hurry_until.store(
+                                self.ticks.load(Ordering::Relaxed)
+                                    + self.ticks_per(OTHERS_SLOW_SECS),
+                                Ordering::Relaxed,
+                            );
                             log_info!(
                                 None,
                                 "disk is full ({} ENOSPC on cache writes): backing off",
@@ -311,6 +373,11 @@ impl Cache {
                         if quota.is_some()
                             && let Some(real) = sysinfo::fs_info(self.disk.dir())
                         {
+                            // 自分以外の量を測り直すかの見積もりに使う (T.32.20)
+                            let prev = self.fs_used.swap(real.used.max(1), Ordering::Relaxed);
+                            if prev != 0 && real.used > prev {
+                                self.fs_grown.fetch_add(real.used - prev, Ordering::Relaxed);
+                            }
                             let real_keep =
                                 margins.disk.keep_free(floor_for(real.total, DISK_FLOOR), 0);
                             cap = cap.min(budget::disk_budget(owned, &real, percent, real_keep));
@@ -386,5 +453,26 @@ impl Cache {
         } else {
             log_debug!(None, "{}", msg);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn others_are_walked_every_ten_minutes_unless_near_the_quota_or_after_enospc() {
+        // 5 秒ごとのプローブ: 短い間隔 12 ティック、長い間隔 120 ティック (T.32.20)
+        let (fast, slow, q) = (12, 120, 1000);
+        // 割当から遠い (50%) うちは 60 秒経っても測らず、600 秒で測る
+        assert!(!others_due_at(12, fast, slow, false, 500, q));
+        assert!(!others_due_at(119, fast, slow, false, 500, q));
+        assert!(others_due_at(120, fast, slow, false, 500, q));
+        // 80% 以上なら 60 秒ごと (それより短くはしない)
+        assert!(!others_due_at(11, fast, slow, false, 800, q));
+        assert!(others_due_at(12, fast, slow, false, 800, q));
+        // ENOSPC の後も 60 秒ごと
+        assert!(others_due_at(12, fast, slow, true, 0, q));
+        assert!(!others_due_at(5, fast, slow, true, 0, q));
     }
 }

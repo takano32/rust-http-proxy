@@ -102,6 +102,14 @@ pub struct Cache {
     not_stored: notstored::NotStored,
     /// quota モードでの、割当ディレクトリ内の自分以外の使用量
     other_disk_usage: AtomicU64,
+    /// 自分以外の使用量を最後に測ったティック (T.32.20)
+    others_walked_at: AtomicU64,
+    /// そのときからファイルシステムの使用量が**増えた**ぶんの和 (プローブごとの増えだけ足す。T.32.20)
+    fs_grown: AtomicU64,
+    /// 直近のプローブで見たファイルシステムの使用量 (0 = 分からない。T.32.20)
+    fs_used: AtomicU64,
+    /// このティックまでは自分以外の使用量を短い間隔で測り直す (ENOSPC の後。T.32.20)
+    others_hurry_until: AtomicU64,
     /// このティックまではバラストの再確保を控える (メモリ圧迫・ENOSPC の後)
     backoff_until: AtomicU64,
     /// 直近のプローブで ENOSPC を観測した (バラストの再確保を控える合図)
@@ -165,6 +173,10 @@ impl Cache {
             inflight: inflight::InFlightTable::default(),
             not_stored,
             other_disk_usage: AtomicU64::new(0),
+            others_walked_at: AtomicU64::new(0),
+            fs_grown: AtomicU64::new(0),
+            fs_used: AtomicU64::new(0),
+            others_hurry_until: AtomicU64::new(0),
             backoff_until: AtomicU64::new(0),
             disk_enospc_seen: AtomicBool::new(false),
             pressure_logged: AtomicBool::new(false),

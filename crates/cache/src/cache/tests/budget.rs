@@ -252,6 +252,44 @@ fn quota_mode_budgets_against_allocation_minus_others_and_margin() {
 }
 
 #[test]
+fn quota_mode_shrinks_within_a_minute_when_others_approach_the_allocation() {
+    // T.32.20: 自分以外の量はふだん 10 分ごとに測り直すが、割当に近づいたら 60 秒以内に予算が縮む
+    // 「割当に近づいたか」はファイルシステムの使用量の増えで見積もるので、同じファイルシステムで
+    // 並んで走る試験が大きなファイルを消すと増えが打ち消される。ほかの試験が使わない
+    // tmpfs (`/dev/shm`) があればそこで測る
+    let shm = std::path::Path::new("/dev/shm");
+    let root = if shm.is_dir() {
+        let r = shm.join(format!("shp-test-quota-near-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&r);
+        r
+    } else {
+        test_dir("shp-test-quota-near")
+    };
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("server.jar"), vec![1u8; 10 * MIB as usize]).unwrap();
+    let cfg = CacheConfig {
+        disk_limit: Limit::Auto { percent: 100 },
+        disk_quota: DiskQuota::Fixed(100 * MIB),
+        quota_root: Some(root.clone()),
+        pterodactyl: true,
+        probe_interval: Duration::from_secs(5),
+        ..CacheConfig::fixed(MIB, 0, root.join("cache"))
+    };
+    let cache = Cache::new(cfg);
+    assert_eq!(cache.disk_capacity(), 80 * MIB);
+    // 割当の下にほかの誰かが 75 MiB 書いた (自分以外 85 MiB = 割当の 85%)
+    fs::write(root.join("world.dat"), vec![1u8; 75 * MIB as usize]).unwrap();
+    // 5 秒ごとのプローブ 12 回 (= 60 秒) のうちに測り直して縮む
+    for _ in 0..12 {
+        cache.probe_tick();
+    }
+    // 100 MiB − 床 10 MiB − 他ファイル 85 MiB = 5 MiB 以下 (マージンが育てば 0 まで縮む)
+    let cap = cache.disk_capacity();
+    assert!(cap <= 5 * MIB, "{} MiB", cap / MIB);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn auto_quota_uses_df_of_the_quota_root_unless_it_is_the_host_disk() {
     // 割当ディレクトリが / と同じファイルシステムなら「ホストディスク」→ 不明扱いで安全上限
     let same_fs = CacheConfig {
