@@ -140,11 +140,10 @@ fn payload_hash(payload: &[u8]) -> u64 {
         h = (h ^ w).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         h ^= h >> 29;
     };
-    let mut words = payload[..end].chunks_exact(8);
-    for c in &mut words {
-        mix(u64::from_le_bytes(c.try_into().unwrap_or([0; 8])));
+    let (words, rest) = payload[..end].as_chunks::<8>();
+    for c in words {
+        mix(u64::from_le_bytes(*c));
     }
-    let rest = words.remainder();
     if !rest.is_empty() {
         let mut w = [0u8; 8];
         w[..rest.len()].copy_from_slice(rest);
