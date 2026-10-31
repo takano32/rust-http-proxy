@@ -469,7 +469,7 @@
     `--lite` と `PROXY_BURST_PERCENT=0` では撮りません。**撮るのは履歴スレッドなので
     `PROXY_STATS_PERSIST=off` (履歴スレッドを起こさない設定) でも撮りません**。
     山が来るのを待たずに手元で確かめるには、`/recent` の個票を同じ間隔・同じ本数で張り直す
-    `bench --only replay` を使います (上の「デプロイ先のパターンを手元で再生する」)
+    `bench --only replay` を使います ([`docs/perf.md`](perf.md#デプロイ先のパターンを手元で再生する-bench---only-replay) の「デプロイ先のパターンを手元で再生する」)
   - **接続元 1 つの追跡 (T.14.27)**: `PROXY_TRACE_CLIENT=<ip>` を設定している間だけ、**その接続元の**
     要求を `/trace?n=200&since=<epoch>` (新しい順、既定 200 行・最大 1,000、1,000 行の環状) に残します。
     1 行 = 時刻 (`at`、epoch 秒)・接続 id (`conn`)・接続元 (`client`)・**要求行** (`method` / `target` / `version`)・
@@ -982,7 +982,7 @@
   - **起動直後の自己ベンチ** (`/status` の `self_bench`。T.14.43):
     `{"at":1789558422,"forward_us":42.6,"connect_us":140.0,"cores":4,"requests":20000,"connects":2000,"secs":3,"note":null}`。
     `PROXY_SELF_BENCH=on` で起動したときだけ入り、既定 (`off`) では `null` です。
-    **置いた先のコンテナの CPU で 1 要求が何 us か**を、上の「性能」の表と同じ物差しで出すためのもの
+    **置いた先のコンテナの CPU で 1 要求が何 us か**を、[README](../README.md#性能) の「性能」の表と同じ物差しで出すためのもの
     (詳しくは「置いた先の CPU/要求 を同じ物差しで測る」)。`forward_us` は CPU/要求、`connect_us` は
     CPU/本 で、どちらも**プロセスの utime+stime の増分から自己ベンチ自身のスレッドの取り分を引いた値**を
     操作数で割ったものです (`clock_gettime` の `CLOCK_PROCESS_CPUTIME_ID` / `CLOCK_THREAD_CPUTIME_ID`。

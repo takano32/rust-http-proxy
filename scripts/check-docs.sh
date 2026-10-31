@@ -5,7 +5,7 @@
 #
 # 今日の版はエンドポイントが 10 本以上増え、環境変数も増えた。増やしたのは別々のエージェントで、
 # **コードにあるのに文書に無い / 文書にあるのにコードに無い**が目で見つからなくなっている。
-# 突き合わせるのは 7 つ:
+# 突き合わせるのは 11 (下の (a)〜(k)):
 #
 #   (a) エンドポイント … `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"`
 #                        vs README の「動作確認 (curl)」の一覧 vs `/` の案内 (`endpoint_list`)
@@ -20,6 +20,8 @@
 #                     中身は `scripts/check-ledger.py` (試験は `scripts/test_check_ledger.py`)
 #   (h) 判定表の既定 … `collect-deployed.sh` の `CRITERIA` の既定 vs README の「既定は phaseNN」(T.28.23)
 #   (i) `-h` の既定 … `crates/base/src/cli.rs` の `-h` の括弧の数 vs README の環境変数の表の既定 (T.28.23)
+#   (j) 上の/下の   … README と `docs/*.md` の「上の「X」」「下の「X」」 vs 同じファイルの見出し・太字・段落の頭と向き (T.32.28)
+#   (k) いまの数字 … `docs/perf.md` の「いまの数字」の版 vs `TODO.md` §2 の「デプロイ先の現在地」の版 (T.32.28)
 #
 # **意図的に外してあるものは下の除外表に理由つきで持つ** (黙って無視しない)。
 # 差分が 1 件でもあれば理由を印字して exit 1。
@@ -300,10 +302,74 @@ print("(i) `-h` の既定: 数で書いた %d 個を README の表と比べた" 
 sys.exit(ng)
 HELPPY
 
+# --- (j) 「上の」「下の」の指す先 (T.32.28) ------------------------------------------
+# README と `docs/*.md` の「上の「X」」「下の「X」」が、**同じファイルの**見出し・太字 (`**…X…**`)・段落の頭 (`X…`) に
+# 実在し、向きが合うか。README を `docs/` に分けたとき (T.29.32) に指す先が別のファイルへ移って切れた所と、
+# 下にあるのに「上の」と書いた所があった。別のファイルを指すときは「上の」ではなくリンクで書く。
+# コードの囲みの中は見ない
+python3 - <<'UPDOWNPY' || NG=1
+import glob, re, sys
+REF = re.compile(r"(上|下)の「(?:\*\*)?([^」]+?)(?:\*\*)?」")
+ng = total = 0
+for path in ['README.md'] + sorted(glob.glob('docs/*.md')):
+    lines = open(path, encoding='utf-8').read().split('\n')
+    fence, body = False, []
+    for i, line in enumerate(lines):
+        if line.startswith('```'):
+            fence = not fence
+            continue
+        if not fence:
+            body.append((i, line))
+    for i, line in body:
+        for m in REF.finditer(line):
+            total += 1
+            way, name = m.group(1), m.group(2)
+            key = re.sub(r"\]\(#[^)]*\)|\[|`|\*", "", name).split("…")[0].strip()
+            hits = []
+            for j, other in body:
+                if j == i or not key:
+                    continue
+                plain = REF.sub("", other)          # ほかの「上の「X」」の中の X は指す先にしない
+                text = plain.replace("`", "")
+                head = re.match(r"^#{1,6} (.*)", text)
+                bold = any(key in b for b in re.findall(r"\*\*(.+?)\*\*", text))
+                lead = re.sub(r"^[\s>*-]*(?:\*\*)?", "", text).startswith(key)
+                if (head and key in head.group(1)) or bold or lead:
+                    hits.append(j)
+            if not hits:
+                print("  NG (j): %s:%d の %sの「%s」の指す先が同じファイルに無い (別のファイルならリンクで書く)"
+                      % (path, i + 1, way, name))
+                ng = 1
+            elif not any((j < i) if way == "上" else (j > i) for j in hits):
+                print("  NG (j): %s:%d の %sの「%s」は向きが逆 (%s 行目)"
+                      % (path, i + 1, way, name, ",".join(str(j + 1) for j in hits[:3])))
+                ng = 1
+print("(j) 「上の」「下の」: README と docs/*.md の %d か所を見た" % total)
+sys.exit(ng)
+UPDOWNPY
+
+# --- (k) `docs/perf.md` の「いまの数字」の版 (T.32.28) --------------------------------
+# `docs/perf.md` の「**いまの数字は 日付、… に X.Y.Z をデプロイして …**」の版が、`TODO.md` §2 の
+# 「### デプロイ先の現在地 (…)」の見出しの版と同じか。締めは §2 を直すが perf.md は 0.27.8 のまま 3 回残っていた
+python3 - <<'NOWPY' || NG=1
+import re, sys
+perf = open('docs/perf.md', encoding='utf-8').read()
+todo = open('TODO.md', encoding='utf-8').read()
+m = re.search(r"\*\*いまの数字は [^*]*? (\d+\.\d+\.\d+) をデプロイして", perf)
+h = re.search(r"^### デプロイ先の現在地 \([^\n]*? (\d+\.\d+\.\d+) をデプロイして", todo, re.M)
+if not m or not h:
+    print("  NG (k): %s に版が見つからない" % ("docs/perf.md の「いまの数字は」" if not m else "TODO.md §2 の見出し"))
+    sys.exit(1)
+print("(k) いまの数字の版: docs/perf.md %s / TODO.md §2 %s" % (m.group(1), h.group(1)))
+if m.group(1) != h.group(1):
+    print("  NG (k): docs/perf.md の「いまの数字」が %s (TODO.md §2 は %s)。締めで表ごと書き直す" % (m.group(1), h.group(1)))
+    sys.exit(1)
+NOWPY
+
 echo
 if [ "$NG" = 0 ]; then
-  echo "9 つを突き合わせて 差分 0 件。"
+  echo "11 を突き合わせて 差分 0 件。"
   exit 0
 fi
-echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 / 台帳 (\`TODO.md\` の §5 と \`tasks/\`) / 判定表の既定 / \`-h\` の既定 を直すか、理由を除外表に書くこと。"
+echo "差分あり。README / \`/\` の案内 / \`/snapshot\` / 環境変数の表 / 台帳 (\`TODO.md\` の §5 と \`tasks/\`) / 判定表の既定 / \`-h\` の既定 / 上の・下の / いまの数字 を直すか、理由を除外表に書くこと。"
 exit 1

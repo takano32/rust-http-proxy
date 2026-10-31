@@ -79,7 +79,7 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 | 同時 5,000 トンネル (アイドル) | **68 スレッド (山 260) / RSS 29.9 MB** | 68 (260) / 28.7 MB |
 | 暇な keep-alive 接続 2,000 本 | **25 スレッド / RSS 25.2 MB** | 28 スレッド / 25.4 MB |
 | 起動直後のスレッド | `--lite` で 4 本、既定で 7 本 (2026-09-08。今は 9 本 → 「起動直後のスレッド数」) | 同左 |
-| バイナリ | 1,381,872 B | **1,054,184 B** |
+| バイナリ | 1,381,872 B (2026-09-08) | **1,054,184 B** (2026-09-08。いまの配布物 v0.30.4 は x86_64 2,158,664 B・aarch64 1,962,008 B) |
 
 `release` は `cargo build --release` で作るもの、`dist` は配布用 (fat LTO、`cargo build --profile dist`) です。
 違いは下の「プロファイルの設定」を見てください。
@@ -454,7 +454,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   Happy Eyeballs (RFC 8305) で、名前が複数のアドレスを返したときに**先頭の候補が返らなければ次の候補を試し始めるまでの間隔** (ms)。
   受けるのは **10〜2000** (RFC 8305 の範囲) で、外れた値と数でない値は起動ログに `WARN` を 1 行出して既定の 250 に戻します (`/config` の出どころも `default` のまま)。
   **起動時に 1 回だけ読みます** (`.env` を書き換えても効かず、`/status` の `settings.restart_required` に出ます)。
-  IPv6 が黙って落ちる網ではホストごとに勝った族を覚えるので (上の「250 ms が消えたのは」)、この間隔を払うのは初めて見るホストと 600 秒に 1 回の IPv6 の探りだけです。
+  IPv6 が黙って落ちる網ではホストごとに勝った族を覚えるので ([`docs/perf.md`](docs/perf.md#デプロイ先-実際に使っているプロキシ-の数字) の「250 ms が消えたのは」)、この間隔を払うのは初めて見るホストと 600 秒に 1 回の IPv6 の探りだけです。
   縮めると SYN が遅いだけの相手にも 2 本目を同時に張る回数が増えるので、既定から動かす理由が無ければそのままにしてください
 - **`PROXY_KEEPALIVE_SECS`** (既定 `15`)
   クライアント接続を次の要求まで待つアイドル時間 (秒)。`0` で 1 接続 1 要求。
@@ -716,7 +716,7 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 - **`PROXY_SNAPSHOT_DAYS`** (既定 `30`)
   **日次の snapshot** を残す日数 (T.14.34)。
   履歴スレッドが **UTC の日付をまたいだ瞬間**にその時点の `/snapshot` をまるごと `$HOME/.rust-http-proxy/snapshots/<YYYY-MM-DD>.json` (名前は**終わった日**) に書き、**31 個目を書いたら最古を 1 つ消します**。
-  1 ファイルは `/snapshot` と同じ **4 MiB** まで (30 日で最大 120 MiB、静かなプロキシなら 1 日 20 KB 前後)。
+  日次の 1 ファイルは **6 MiB** まで (T.29.16。30 日で最大 180 MiB、静かなプロキシなら 1 日 20 KB 前後。tokyo の日次は 3.9 MB)。
   `0` で書きません。読む口は `/snapshots` と `/snapshots/<date>`。
   **起動と停止の 1 枚** (`<UTC 時刻>-start.json` / `-shutdown.json`。T.28.20) も同じ日数で、種類ごとに
   `PROXY_SNAPSHOT_DAYS` 日より古いものと新しい方から `PROXY_SNAPSHOT_DAYS` 枚を越えたものを消します (`0` で書きません)。
@@ -1190,8 +1190,8 @@ TTL は `s-maxage` → `max-age` → `Expires` → `Last-Modified` からの経�
 > 機械をまたいだ判定にならないためです。cgroup は systemd に作らせます (システムの `systemd-run --scope`、
 > 無ければ**ユーザーの** `systemd-run --user --scope`。どちらも無い環境では参考の RSS だけ出して判定しません)。
 ```bash
-# テスト実行
-cargo test
+# テスト実行 (ワークスペースなので --workspace。無いと根の `default-members = ["."]` で 1,069 本のうち 337 本しか回らない。T.32.28)
+cargo test --workspace
 
 # 通常ビルド
 cargo build
@@ -1213,7 +1213,7 @@ cargo run --release --bin bench -- --proxy 127.0.0.1:18080 --conc 8 --seconds 5
 # tunnel 行も --seconds 秒だけ 1 本のトンネルに流す (この行はベンチ律速。上の「性能」の注)
 # idle-tunnels / idle-conns は --conc 本を張ったまま --seconds 秒握る (スレッド数と RSS 用)。
 #   idle-conns は 1 要求ずつ通してから握る。どちらも PROXY_MAX_CONNS=8192 を付けて測る
-# connect-multi と replay は scripts/deployed-like.sh の中で回す (上の「デプロイ先に似せた条件」)。
+# connect-multi と replay は scripts/deployed-like.sh の中で回す (docs/perf.md の「デプロイ先に似せた条件で手元で測る」)。
 #   replay は /recent の個票を同じ間隔・同じ本数で張り直す (--replay-file / --speed / --rtt-file)
 
 # この機械での sendto / recvfrom 1 回の実費 (プロキシは使わない。CPU の固定が要る)
@@ -1256,8 +1256,8 @@ fmt に落ちるコミットを push しました)。`--only fmt,versions` / `--
 
 **文書とコードが同じ集合かを見るのは `scripts/check-docs.sh`** (T.14.56)。エンドポイントも環境変数も
 別々の作業で増えていくので、「**コードにあるのに文書に無い / 文書にあるのにコードに無い**」を機械で見ます。
-突き合わせるのは 9 つで、(a) `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"` と
-上の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`)、(b) コードの `"PROXY_…"` / `"SERVER_…"` の
+突き合わせるのは 11 で、(a) `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"` と
+下の「動作確認 (curl)」の一覧と `/` の案内 (`endpoint_list`)、(b) コードの `"PROXY_…"` / `"SERVER_…"` の
 文字列と上の「環境変数」の表の鍵の欄、(c) `/snapshot` の `parts` と個票のエンドポイント、
 (d) `scripts/check-dashboard.js` が画面の HTML から切り出す関数名と、そこで実際に呼んでいる名前、
 (e) 上の「クレート構成」の表と `crates/*/Cargo.toml` の `[package] name` (表の前の「(41 + 本体)」の数も見ます)、
@@ -1271,7 +1271,10 @@ unittest が名前で読む `test_*.py` は、叩かないものとして除外�
 **1 行目** (`# タスク NN — …`) を見ます。中身は `scripts/check-ledger.py` で、台帳だけを回すなら
 これ 1 本です。T.24.10 / T.24.13)、
 **(h) 判定表の既定** (`collect-deployed.sh` の `CRITERIA` の既定と、文書の「既定は phaseNN」。T.28.23)、
-**(i) `-h` の既定** (`crates/base/src/cli.rs` の `-h` が括弧で書く既定と、上の環境変数の表の既定。T.28.23) です。
+**(i) `-h` の既定** (`crates/base/src/cli.rs` の `-h` が括弧で書く既定と、上の環境変数の表の既定。T.28.23)、
+**(j) 上の/下の** (README と `docs/*.md` の「上の「X」」「下の「X」」が同じファイルの見出し・太字・段落の頭にあって向きが合うか。
+別のファイルを指すときはリンクで書きます。T.32.28)、**(k) いまの数字** (`docs/perf.md` の「いまの数字」の版が `TODO.md` §2 の
+「デプロイ先の現在地」の版と同じか。T.32.28) です。
 (f) と (h) は README のほかに `docs/*.md` (性能・特徴の本文。T.29.32) も読みます。
 **意図的に外してあるものはスクリプトの中の除外表に理由つきで持ちます** (`/snapshot` に入れない 18 の口、
 ビルド時にしか無い `PROXY_VERSION`、`tasks/README.md` = `tasks/` の索引 など)。差分が 1 件でもあれば
@@ -1681,7 +1684,7 @@ CPU と統計の鍵の時間を食います。そこで**大きい応答を組�
 **直近 5 分 (60 標本) の区間のヒストグラムを足し合わせて補間した値**に落ち、札が「直近 5 分」に戻ります
 (図「CONNECT 確立 p50 / p95」は今までどおり区間の補間です — 時系列は標本ごとの分布からしか描けないため)。「接続中」のカードには
 `上限 240 · 山 218 (直近 5 分) · 503 0` の行が出ます (山は `/history` の直近 5 分の `active_max` の最大。
-上限の 80% で黄、95% で赤)。その下の「**悪いホスト (上位 10)**」の表は `/status?sort=errors` と `?sort=dns` の
+上限の 80% で黄、95% で赤)。そのカードの下にある表「**悪いホスト (上位 10)**」は `/status?sort=errors` と `?sort=dns` の
 2 枚を混ぜたもので、エラー数・原因の内訳・名前解決の平均 (`dns_ms_sum ÷ dns_misses`) と合計・確立の平均
 (`connect_ms_sum ÷ timed`) が読めます (エラーも名前解決も無いホストは出しません)。
 ヘッダーには動いている版と、**どちらの窓か** (起動から / 通算) が出ます。
