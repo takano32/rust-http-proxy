@@ -225,9 +225,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // 版が `HTTP/1.x` でない要求 (`HTTP/9.9`・HTTP/2 の preface `PRI * HTTP/2.0`) は 505 (T27.8)。
     // 今までは `HTTP/9.9` を 1.1 として転送し、preface は `*` を宛先として引きに行って 502 だった
     if let Some(version) = version
-        && !version
-            .get(..7)
-            .is_some_and(|v| v.eq_ignore_ascii_case("HTTP/1."))
+        && !version.get(..7).is_some_and(|v| v == "HTTP/1.")
     {
         if let Some(more) =
             metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 505)
@@ -245,7 +243,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     }
 
     // `*` (asterisk-form) は `OPTIONS` だけ (RFC 9112 §3.2.4。T.29.9)。今までは `*` を宛先として引いて 502
-    if target == "*" && !method.eq_ignore_ascii_case("OPTIONS") {
+    if target == "*" && method != "OPTIONS" {
         if let Some(more) =
             metrics.record_bad_request(metrics::BadRequestReason::BadUri, peer_ip, 400)
         {
@@ -485,7 +483,8 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     }
 
     // ACL / Host Check
-    let is_connect = method.eq_ignore_ascii_case("CONNECT");
+    // メソッドは大小を区別する (RFC 9110 §9.1。T.32.15 (6)。T.32.8 と同じ)。`connect` は未知のメソッド
+    let is_connect = method == "CONNECT";
     // CONNECT は `http::handle_http_with_headers` を通らずトンネルの経路に入るので、
     // T19 で入れた要求の枠組みの検査がここへ来ない。**同じ判定をこの入口にも置く** (T27.0)。
     // CONNECT に本文は無く (RFC 9110 §9.3.6)、`Host` の重複 (RFC 9110 §7.2)・obs-fold
@@ -729,12 +728,13 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     }
 }
 
-/// 版が `HTTP/d.d` の形か (RFC 9112 §2.3。`HTTP` の大小は今までどおり問わない。T.29.8)。
+/// 版が `HTTP/d.d` の形か (RFC 9112 §2.3。T.29.8)。`HTTP` は大小を区別する (`HTTP-name = %s"HTTP"`。
+/// T.32.15 (6)。T.29.8 では問わずに `http/1.1` を通していた)。
 /// 形が合っていて `1.x` でないもの (`HTTP/2.0`・`HTTP/9.9`) は呼ぶ側が 505 にする。
 fn version_syntax_ok(v: &str) -> bool {
     let b = v.as_bytes();
     b.len() == 8
-        && b[..5].eq_ignore_ascii_case(b"HTTP/")
+        && &b[..5] == b"HTTP/"
         && b[5].is_ascii_digit()
         && b[6] == b'.'
         && b[7].is_ascii_digit()
@@ -746,7 +746,7 @@ mod tests {
 
     #[test]
     fn version_syntax() {
-        for ok in ["HTTP/1.1", "HTTP/1.0", "http/1.1", "HTTP/9.9", "HTTP/2.0"] {
+        for ok in ["HTTP/1.1", "HTTP/1.0", "HTTP/9.9", "HTTP/2.0"] {
             assert!(version_syntax_ok(ok), "{}", ok);
         }
         for bad in [
@@ -757,6 +757,8 @@ mod tests {
             "",
             "HTTP/1.x",
             "XTTP/1.1",
+            "http/1.1",
+            "Http/1.0",
         ] {
             assert!(!version_syntax_ok(bad), "{}", bad);
         }

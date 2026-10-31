@@ -121,7 +121,20 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
             out.extend_from_slice(b"\r\n");
             continue;
         }
-        out.extend_from_slice(line.as_bytes());
+        // 行末は CRLF にそろえる (T.32.15 (1))。行はクライアントの行末 (LF だけのこともある) を付けたまま
+        // 来るので、そのまま書くと LF だけの行とこちらが足す CRLF の行が混ざり、CRLF でしか区切らない
+        // オリジンと読み方が食い違いうる。ふつうの行 (CRLF で終わる) は今までどおり 1 回で写す
+        match line.as_bytes() {
+            [.., b'\r', b'\n'] => out.extend_from_slice(line.as_bytes()),
+            [rest @ .., b'\n'] => {
+                out.extend_from_slice(rest);
+                out.extend_from_slice(b"\r\n");
+            }
+            bytes => {
+                out.extend_from_slice(bytes);
+                out.extend_from_slice(b"\r\n");
+            }
+        }
     }
 
     if let Some(ip) = client_ip {
@@ -325,10 +338,13 @@ pub fn write_response_head<S: AsRef<str>>(
         };
         let (k, v) = (&line[..colon], &line[colon + 1..]);
         let name = k.trim_ascii();
+        // 名前が token でない行 (`X A: b`・`: v`) は落とす (RFC 9110 §5.1。T.32.15 (2))。今まではオリジンの
+        // 行をそのまま渡していた (要求の側は T.29.8 から 400)。どのみち落とす名前では字を見ないよう最後に置く
         if is_hop_by_hop_name(name)
             || named_in_connection(name)
             || drop_names.iter().any(|d| name.eq_ignore_ascii_case(d))
             || FRAMING_HEADERS.iter().any(|f| name.eq_ignore_ascii_case(f))
+            || !ascii::is_token(name)
         {
             fold_at = None;
             continue;
@@ -543,6 +559,11 @@ pub fn sanitize_response_head(head: &[u8]) -> ResponseHead {
             fold_target = None;
             continue;
         };
+        // 名前が token でない行は落とす ([`write_response_head`] と同じ。T.32.15 (2))
+        if !ascii::is_token(k.trim_ascii()) {
+            fold_target = None;
+            continue;
+        }
         let lower = k.trim_ascii().to_ascii_lowercase();
         if is_hop_by_hop(&lower)
             || custom_hop.contains(&lower)
@@ -672,6 +693,44 @@ mod tests {
             clean_value("plain"),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    /// T.32.15 (1): 要求の行末は LF だけでも CRLF にそろえて書く。
+    #[test]
+    fn request_lines_are_written_with_crlf() {
+        let raw = vec![
+            "X-A: 1\n".to_string(),
+            "X-B: 2\r\n".to_string(),
+            "X-C: 3".to_string(),
+        ];
+        let mut out = Vec::new();
+        write_request_headers(&mut out, &raw, None);
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.starts_with("X-A: 1\r\nX-B: 2\r\nX-C: 3\r\n"),
+            "{:?}",
+            text
+        );
+        assert_eq!(
+            text.matches('\n').count(),
+            text.matches("\r\n").count(),
+            "{:?}",
+            text
+        );
+    }
+
+    /// T.32.15 (2): 名前が token でない応答の行 (`X A: b`・`: v`) は落とす (両方の書き出し口で)。
+    #[test]
+    fn response_lines_with_a_non_token_name_are_dropped() {
+        let head = b"HTTP/1.1 200 OK\r\nX A: b\r\n: v\r\nX\"Q: 1\r\nX-Ok: y\r\nX-Sp : z\r\n\r\n";
+        let mut out = Vec::new();
+        write_response_head::<&str>(&mut out, head, None, &[], &[]);
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            "HTTP/1.1 200 OK\r\nX-Ok: y\r\nX-Sp: z\r\n\r\n"
+        );
+        let h = sanitize_response_head(head);
+        assert_eq!(h.lines, vec!["X-Ok: y".to_string(), "X-Sp: z".to_string()]);
     }
 
     #[test]

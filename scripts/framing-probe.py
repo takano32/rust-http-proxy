@@ -31,6 +31,9 @@ HTTP/1.1 へは今までどおり 103 → 200。0.29.35 では HTTP/1.0 の行�
 2026-10-31 に不正な `Host`・authority を足した (T.32.12。`t32_cases`): `Host: a b`・`a, b`・`a/b`・
 `h:99999`・絶対形式のポートの `+` は 400 (オリジンへ届かない)、大文字のホストは通る。
 0.30.4 では 400 の行が 502 (名前解決の失敗か接続の失敗) で外れる。
+同じ日に T.32.15 の小物を足した: LF だけの行末の要求は CRLF にそろえて届く、chunk のデータの後ろのごみと
+`+2` は 400、版の `http/1.1` (小文字) は 400、応答の token でない名前 (`X A: b`・`: v`) は落とす、
+CONNECT の 502 に `Date` と `Content-Length: 0`、`connect` (小文字) はトンネルにしない。0.30.4 ではこの 7 行が外れる。
 """
 import argparse
 import json
@@ -139,6 +142,43 @@ def t32_cases(origin_port):
         ("authority のポートの +", get(b"127.0.0.1:" + port, b"http://127.0.0.1:+" + port + b"/a"), 400, False,
          None),
         ("Host の大文字 (通る)", get(b"LOCALHOST:" + port), 200, True, None),
+        # T.32.15: 版の `HTTP` は大小を区別する。chunk の 2 行は本文の途中で断るので最後に置く
+        ("版の http/1.1 (小文字)", b"GET http://127.0.0.1:" + port + b"/a http/1.1\r\nHost: 127.0.0.1:" + port
+         + b"\r\n\r\n", 400, False, None),
+        # T.32.15: LF だけの行末は CRLF にそろえて転送する (オリジンには X-A が 1 本の行として届く)
+        ("LF だけの行末の要求", b"GET http://127.0.0.1:" + port + b"/lf HTTP/1.1\nHost: 127.0.0.1:" + port
+         + b"\nX-A: 1\n\n", 200, True, lambda seen: "X-A: 1" in seen["headers"]),
+        ("chunk のデータの後ろのごみ", b"POST http://127.0.0.1:" + port + b"/c HTTP/1.1\r\nHost: 127.0.0.1:" + port
+         + b"\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nokXX\r\n0\r\n\r\n", 400, True, None),
+        ("chunk の大きさ +2", b"POST http://127.0.0.1:" + port + b"/c HTTP/1.1\r\nHost: 127.0.0.1:" + port
+         + b"\r\nTransfer-Encoding: chunked\r\n\r\n+2\r\nok\r\n0\r\n\r\n", 400, True, None),
+    ]
+
+
+def t32_response_cases(origin_port, closed_port, echo_port):
+    """T.32.15 の応答側 (形は `t27_response_cases` と同じ 4 つ組)。"""
+    host = b"127.0.0.1:%d" % origin_port
+
+    def no_bad_names(resp):
+        head = resp.split(b"\r\n\r\n", 1)[0].split(b"\r\n")
+        return b"X-Ok: y" in head and not any(l.startswith((b"X A", b":")) for l in head)
+
+    def framed_502(resp):
+        head = resp.split(b"\r\n\r\n", 1)[0].lower().split(b"\r\n")
+        return any(l.startswith(b"date: ") for l in head) and b"content-length: 0" in head
+
+    def not_a_tunnel(resp):
+        return not resp.startswith(b"HTTP/1.1 200 ")
+
+    connect = b"%d" % closed_port
+    echo = b"127.0.0.1:%d" % echo_port
+    return [
+        ("応答の token でない名前", b"GET http://" + host + b"/resp-badname HTTP/1.1\r\nHost: " + host + b"\r\n\r\n",
+         200, no_bad_names),
+        ("CONNECT の 502 の Date と CL", b"CONNECT 127.0.0.1:" + connect + b" HTTP/1.1\r\nHost: 127.0.0.1:" + connect
+         + b"\r\n\r\n", 502, framed_502),
+        ("connect (小文字) はトンネルにしない", b"connect " + echo + b" HTTP/1.1\r\nHost: " + echo + b"\r\n\r\nping",
+         502, not_a_tunnel),
     ]
 
 
@@ -227,6 +267,11 @@ class _Origin(socketserver.StreamRequestHandler):
             if " /resp-cr " in lines[0] or " /resp-nul " in lines[0]:
                 bad = b"X-A: a\rSet-Cookie: evil=1" if "/resp-cr" in lines[0] else b"X-A: a\x00b"
                 self.wfile.write(b"HTTP/1.1 200 OK\r\n" + bad + b"\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                return
+            # T.32.15: 名前が token でない行を返すオリジン (プロキシが落とすかを見る)
+            if " /resp-badname " in lines[0]:
+                self.wfile.write(b"HTTP/1.1 200 OK\r\nX A: b\r\n: v\r\nX-Ok: y\r\nContent-Length: 2\r\n"
+                                 b"Connection: close\r\n\r\nok")
                 return
             # T.29.3: 103 を返してから 200
             if " /resp-103-" in lines[0]:
@@ -390,7 +435,8 @@ def main(argv=None):
                 % (name, got if got is not None else "(無応答)", want, seen["request_line"] if seen else "-",
                    "" if ok else "   ← ちがう")
             )
-        for name, raw, want, check in t27_response_cases(args.port + 1):
+        for name, raw, want, check in t27_response_cases(args.port + 1) + t32_response_cases(
+                args.port + 1, args.port + 3, args.port + 2):
             resp = _send(args.port, raw, args.timeout)
             got = _status(resp)
             ok = got == want and check(resp)

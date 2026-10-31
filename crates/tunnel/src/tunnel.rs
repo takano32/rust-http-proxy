@@ -138,7 +138,15 @@ fn open(
                     more
                 );
             }
-            let _ = client.write_all(format!("HTTP/1.1 {line}\r\n\r\n").as_bytes());
+            // `Date` と `Content-Length: 0` も付ける (RFC 9110 §6.6.1・§8.6。T.32.15 (5)。T.29.9 の漏れ)
+            let mut date = [0u8; 35];
+            let _ = client.write_all(
+                format!(
+                    "HTTP/1.1 {line}\r\n{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    crate::httpdate::date_line(&mut date)
+                )
+                .as_bytes(),
+            );
             let detail = detail_of(
                 started.elapsed(),
                 Some(Failure::from_io(&e)),

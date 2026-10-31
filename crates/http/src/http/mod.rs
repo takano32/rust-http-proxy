@@ -584,7 +584,7 @@ pub fn handle_http_parsed(
         return Ok(false);
     }
     let version = parts.next().unwrap_or("HTTP/1.0");
-    let http11 = version.eq_ignore_ascii_case("HTTP/1.1");
+    let http11 = version == "HTTP/1.1";
     // `Transfer-Encoding` の最後がちょうど 1 回の `chunked` でない要求 (RFC 9112 §6.3) と、
     // HTTP/1.0 の要求の `Transfer-Encoding` (§6.1 は「枠組みが壊れているとして扱う」) は 400 (T27.6)。
     // 今までは `xchunked`・`gzip` を本文なしとしてヘッダーだけ転送し、本文はクライアントの

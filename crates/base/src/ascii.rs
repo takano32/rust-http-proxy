@@ -30,6 +30,42 @@ pub fn count(s: &str, byte: u8) -> usize {
     s.as_bytes().iter().filter(|b| **b == byte).count()
 }
 
+/// token に使える字 (RFC 9110 §5.6.2 の tchar) の表。ヘッダー 1 行ごとに名前の全部の字を見るので、
+/// 1 字 1 回の表引きにしてある (T.29.8)。
+const TCHAR: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        let b = i as u8;
+        t[i] = b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'!' | b'#'
+                    | b'$'
+                    | b'%'
+                    | b'&'
+                    | b'\''
+                    | b'*'
+                    | b'+'
+                    | b'-'
+                    | b'.'
+                    | b'^'
+                    | b'_'
+                    | b'`'
+                    | b'|'
+                    | b'~'
+            );
+        i += 1;
+    }
+    t
+};
+
+/// 空でない token か (ヘッダーの名前・メソッド。T.29.8。T.32.15 で `proxy-origin` から移した)。
+#[inline]
+pub fn is_token(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| TCHAR[b as usize])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

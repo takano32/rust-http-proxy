@@ -355,6 +355,11 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
                         io::Error::new(io::ErrorKind::InvalidData, "bad chunk size")
                     })?;
                     let size_str = line.trim().split(';').next().unwrap_or("").trim();
+                    // 大きさは 16 進の数字だけ (RFC 9112 §7.1 の `1*HEXDIG`。T.32.15 (3))。
+                    // `from_str_radix` は先頭の `+` を受けるので (`+2`)、先に字を見る
+                    if !size_str.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad chunk size"));
+                    }
                     let size = u64::from_str_radix(size_str, 16).map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidData, "bad chunk size")
                     })?;
@@ -379,8 +384,16 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
                     return Ok(n);
                 }
                 ChunkState::DataCrlf => {
-                    if self.frame_line(MAX_CHUNK_SIZE_LINE)?.is_none() {
+                    let Some(line) = self.frame_line(MAX_CHUNK_SIZE_LINE)? else {
                         return Err(self.truncate());
+                    };
+                    // データの後ろは空行 (CRLF。LF だけも受ける) でなければならない (RFC 9112 §7.1。
+                    // T.32.15 (3))。今までは `2\r\nokXX\r\n` の `XX` を黙って読み捨てていた
+                    if !matches!(line.as_slice(), b"\r\n" | b"\n") {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "chunk data not followed by CRLF",
+                        ));
                     }
                     self.chunk = ChunkState::Size;
                 }
@@ -579,6 +592,29 @@ mod tests {
         let mut rest = Vec::new();
         r.read_to_end(&mut rest).unwrap();
         assert_eq!(rest, b"NEXT", "bytes after the body stay in the stream");
+    }
+
+    /// T.32.15 (3): データの後ろのごみ・`+` 付きの大きさは `InvalidData`。LF だけの行は今までどおり受ける。
+    #[test]
+    fn chunked_rejects_junk_after_data_and_signed_sizes() {
+        for raw in [
+            &b"2\r\nokXX\r\n0\r\n\r\n"[..],
+            b"+2\r\nok\r\n0\r\n\r\n",
+            b"-2\r\nok\r\n0\r\n\r\n",
+            b"2\r\nok 0\r\n\r\n",
+            b"\r\nok\r\n0\r\n\r\n",
+        ] {
+            let (out, _) = read_all(&mut BufReader::new(raw), Framing::Chunked);
+            assert_eq!(
+                out.unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{:?}",
+                String::from_utf8_lossy(raw)
+            );
+        }
+        let (out, clean) = read_all(&mut BufReader::new(&b"2\nok\n0\n\n"[..]), Framing::Chunked);
+        assert_eq!(out.unwrap(), b"ok");
+        assert!(clean);
     }
 
     /// T.29.1: chunk の大きさの行・データの後ろの行・trailer の行と合計に上限がある。

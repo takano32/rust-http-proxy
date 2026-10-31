@@ -63,39 +63,9 @@ pub struct RequestHeaders {
     pub upgrade: bool,
 }
 
-/// token に使える字 (RFC 9110 §5.6.2 の tchar) の表。ヘッダー 1 行ごとに名前の全部の字を見るので、
-/// 1 字 1 回の表引きにしてある (T.29.8)。
-const TCHAR: [bool; 256] = {
-    let mut t = [false; 256];
-    let mut i = 0;
-    while i < 256 {
-        let b = i as u8;
-        t[i] = b.is_ascii_alphanumeric()
-            || matches!(
-                b,
-                b'!' | b'#'
-                    | b'$'
-                    | b'%'
-                    | b'&'
-                    | b'\''
-                    | b'*'
-                    | b'+'
-                    | b'-'
-                    | b'.'
-                    | b'^'
-                    | b'_'
-                    | b'`'
-                    | b'|'
-                    | b'~'
-            );
-        i += 1;
-    }
-    t
-};
-
-/// 空でない token か (ヘッダーの名前。T.29.8)。
+/// 空でない token か (ヘッダーの名前。T.29.8)。表は [`ascii::is_token`] (T.32.15 で応答の側と共有)
 fn is_token(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| TCHAR[b as usize])
+    ascii::is_token(s)
 }
 
 pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestHeaders {
