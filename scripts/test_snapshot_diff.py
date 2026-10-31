@@ -498,6 +498,35 @@ def set_column(snap, res, name, value):
         row[i] = value
 
 
+class DnsTable(unittest.TestCase):
+    """§5 の「最後に使ってから」(T.32.31): `/dns` の一覧が切れていれば表全体とは書かない。"""
+
+    def test_a_truncated_list_says_only_the_oldest_side(self):
+        b = read(B)
+        whole = len(b["dns"]["entries"])
+        with written(b=b) as paths:
+            md = run([A, paths["b"], "--no-dns"])
+        self.assertIn(f"(表 {whole} 件中、warm 印つき", md)
+        b["dns"].update({"count": 7511, "shown": whole, "sort": "age", "truncated": True, "next_offset": whole})
+        with written(b=b) as paths:
+            md = run([A, paths["b"], "--no-dns"])
+        self.assertIn(f"(表 7,511 件のうち古い側の {whole} 件だけを見た。warm 印つき", md)
+        self.assertNotIn(f"(表 {whole} 件中", md)
+
+
+T3199_PAIR = [os.path.join(DEPLOYED, "tokyo", x) for x in ("2026-10-30T062500Z-snapshot.json",
+                                                            "2026-10-31T063104Z-snapshot.json")]
+
+
+@unittest.skipUnless(all(os.path.isfile(x) for x in T3199_PAIR), "tokyo の実データが無い (status/tokyo/ の 2 枚)")
+class DeployedDnsTable(unittest.TestCase):
+    """T.32.31 (1): 0.30.4 の 1 枚の `/dns` は 7,511 件のうち古い側の 4,763 件で止まっている。"""
+
+    def test_t3199_dns_table(self):
+        md = run(T3199_PAIR + ["--no-dns"])
+        self.assertIn("(表 7,511 件のうち古い側の 4,763 件だけを見た。", md)
+
+
 class NewColumns(unittest.TestCase):
     """T.15.0 (10) で末尾に足した 8 列 (`HFIELDS` は名前で引く)。"""
 

@@ -761,7 +761,8 @@ def dns_info(a, b, restarted):
             return cur
         return cur - sa.get(key, default)
 
-    entries = part(b, "dns").get("entries") or []
+    dns_part = part(b, "dns")
+    entries = dns_part.get("entries") or []
     idle = {label: 0 for _, label in IDLE_BUCKETS}
     warm = 0
     for e in entries:
@@ -780,6 +781,9 @@ def dns_info(a, b, restarted):
         "hits": d("hits"), "negative_hits": d("negative_hits"), "stale_served": d("stale_served"),
         "miss_ms_sum": d("miss_ms_sum", 0.0),
         "table": len(entries), "idle": idle,
+        # 一覧が切れているか (T.32.31)。`/dns` は古い順 (`sort: age`) なので、切れたら古い側の N 件だけ
+        "table_count": dns_part.get("count"), "table_truncated": bool(dns_part.get("truncated")),
+        "table_sort": dns_part.get("sort"),
         "top_refreshed": [(h, n_) for n_, h in refreshed if n_][:5],
         "refreshes_in_table": sum(n_ for n_, _ in refreshed),
         "before": {"entries": sa.get("entries"), "misses": sa.get("misses"),
@@ -1297,9 +1301,17 @@ def render(d, top):
          if dn["top_refreshed"] else " (引き直した名前は表に無い)"))
     p(f"- 負のキャッシュ命中 {n(dn['negative_hits'])} / 古い答えで代用 {n(dn['stale_served'])}")
     if dn["table"]:
+        # 一覧が切れていれば表全体とは読めない (T.32.31。`MAX_PAGES` で止まると古い順の頭の側しか来ない)
+        if dn.get("table_truncated"):
+            side = "古い側の" if dn.get("table_sort") == "age" else "頭の"
+            whole = (f"表 {n(dn['table_count'])} 件のうち{side} {n(dn['table'])} 件だけ"
+                     if dn.get("table_count") else f"一覧が切れていて{side} {n(dn['table'])} 件だけ")
+            scope = f"{whole}を見た。warm 印つき {dn['warm_in_table']} 件"
+        else:
+            scope = f"表 {dn['table']} 件中、warm 印つき {dn['warm_in_table']} 件"
         p(f"- 最後に使ってから: "
           + "、".join(f"{label} **{dn['idle'][label]}** 件" for _, label in IDLE_BUCKETS)
-          + f" (表 {dn['table']} 件中、warm 印つき {dn['warm_in_table']} 件)")
+          + f" ({scope})")
     p()
 
     # --- 6

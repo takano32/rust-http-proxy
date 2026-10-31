@@ -903,6 +903,7 @@ class CollectFromServerTest(unittest.TestCase):
         with open(SNAPSHOT_B, "rb") as f:
             snapshot = f.read()
         self.fetched = []
+        self.paths = []  # 届いた要求の順 (T.32.31)
 
         class H(BaseHTTPRequestHandler):
             def log_message(self, *_):
@@ -916,6 +917,7 @@ class CollectFromServerTest(unittest.TestCase):
                 h.wfile.write(body)
 
             def do_GET(h):
+                self.paths.append(h.path)
                 if h.path == "/snapshots":
                     return h.reply(200, json.dumps(listing).encode())
                 name = h.path[len("/snapshots/"):] if h.path.startswith("/snapshots/") else None
@@ -1055,6 +1057,18 @@ class CollectFromServerTest(unittest.TestCase):
         out = self.run_closeout(d, live, COLLECT_STAMP="2026-10-26T120000Z")
         self.assertEqual(self.fetched, [])
         self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % before, out)
+
+    def test_closeout_takes_the_status_first(self):
+        # T.32.31: 日次の雪像 (`/snapshots/<date>`。丸ごと `String` に読む) を引く前に `/status` を 1 本取り、
+        # 要約の RSS にはそれを使う (本番の 1 回で `/status` を取り直さない)
+        d = tempfile.mkdtemp(prefix="t3231-")
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        self.run_closeout(d, {"schema": 1, "version": "0.28.48+c0ffee1", "build": "release"})
+        firsts = [p for i, p in enumerate(self.paths) if p in ("/status", "/snapshots", "/snapshot")
+                  and p not in self.paths[:i]]
+        self.assertEqual(firsts, ["/status", "/snapshots", "/snapshot"], self.paths)
+        self.assertTrue(self.paths[1].startswith("/snapshots"), self.paths)
+        self.assertEqual(self.paths.count("/status"), 1, self.paths)
 
     def test_closeout_keeps_a_given_before(self):
         d = tempfile.mkdtemp(prefix="t2926-")

@@ -551,14 +551,44 @@ class Anomalies(unittest.TestCase):
     def test_a_full_ring_says_the_start_may_be_missing(self):
         t = read(B)["taken_at"]
         b = self.snapshot([{"at": t - 60, "kind": "anomaly", "text": "active_high: 200 of 240"}])
-        b["events"]["capacity"] = 3
+        # 起動 (1789043200) より前の出来事 (前の起動の `start`) は落ちた形にする
+        b["events"]["events"] = [e for e in b["events"]["events"] if e["at"] >= t - b["uptime_secs"]]
+        b["events"]["capacity"] = 2
         with written(b=b) as paths:
             md = run([paths["b"]])
         self.assertIn("**リングが満杯か応答が切れているので、起動直後のぶんが落ちているかもしれない**"
                       " (残っている最古は 2026-09-11 00:25:40Z)", md)
 
+    def test_a_full_ring_that_still_holds_older_events_does_not_warn(self):
+        # T.32.31: 起動より前の出来事が 1 件でも残っていれば (ここでは前の起動の `start`)、起動からのぶんは
+        # 落ちていない (0.30.4 の雪像は起動より前の 308 件と起動の `start` が残っているのに警告していた)
+        t = read(B)["taken_at"]
+        b = self.snapshot([{"at": t - 60, "kind": "anomaly", "text": "active_high: 200 of 240"}])
+        b["events"]["capacity"] = 3
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertNotIn("落ちているかもしれない", md)
+        # 応答そのものが切れていれば今までどおり警告する
+        b["events"]["truncated"] = True
+        with written(b=b) as paths:
+            md = run([paths["b"]])
+        self.assertIn("落ちているかもしれない", md)
+
     def test_an_old_snapshot_has_no_table(self):
         self.assertNotIn("`/events` の anomaly", run([A]))
+
+
+T3199 = os.path.join(os.path.dirname(HERE), "status", "tokyo", "2026-10-31T063104Z-snapshot.json")
+
+
+@unittest.skipUnless(os.path.isfile(T3199), "tokyo の実データが無い (status/tokyo/ の T.31.99 の 1 枚)")
+class Deployed3231(unittest.TestCase):
+    """T.32.31 (2): 0.30.4 の 48.3 時間の 1 枚は、リングが満杯でも起動より前の 308 件が残っているので警告しない。"""
+
+    def test_t3199_events_note(self):
+        md = run([T3199])
+        self.assertIn("起動より前の 308 件 (状態ファイルから読み戻した前の版のぶん) は外した", md)
+        self.assertNotIn("起動直後のぶんが落ちているかもしれない", md)
 
 
 class ClientWatch(unittest.TestCase):

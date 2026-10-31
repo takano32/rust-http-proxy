@@ -504,8 +504,12 @@ def anomaly_rates(snap):
     hours = up / 3600 if up > 0 else None
     table = sorted(((k, n, (n / hours) if hours else None) for k, n in counts.items()),
                    key=lambda r: (-r[1], r[0]))
-    # リングが満杯なら古い方から落ちているので、起動直後のぶんが欠けているかもしれない
+    # リングが満杯なら古い方から落ちているので、起動直後のぶんが欠けているかもしれない。ただし**起動より前の
+    # 出来事が 1 件でも残っていれば** (種類を問わない。起動の `start` も)、起動からのぶんは落ちていない (T.32.31。
+    # 起動より前の 308 件と起動の `start` が残っていても警告が出ていた)
     full = bool(ev.get("capacity") and len(rows) >= ev["capacity"])
+    if full and start is not None and any(isinstance(e, dict) and (e.get("at") or 0) <= start for e in rows):
+        full = False
     return {"rows": table, "cleared": cleared, "before": before, "hours": hours,
             "truncated": bool(ev.get("truncated")) or full, "oldest": oldest}
 

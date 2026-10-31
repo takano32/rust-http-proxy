@@ -220,14 +220,19 @@ if [ "$CLOSEOUT" = 1 ]; then
   CO=$(mktemp -d) || exit 1
   # shellcheck disable=SC2064  # いまの $CO で張る
   trap "rm -rf '$CO'" EXIT
-  CUR=$(curl -s --max-time "$MAX_TIME" "http://$PROXY/status" | python3 -c '
+  # **最初の 1 本は `/status`** (T.32.31): 下の取り寄せは日次の雪像 (3.9 MB。`/snapshots/<date>` はファイルを
+  # 丸ごと `String` に読む) を引くので、そのあとに取ると RSS が押し上がって見える。いまの版もここで読む。
+  # 取った 1 本は本番の 1 回の `STATUS_BEFORE` (要約の RSS) にそのまま使う
+  CO_STATUS="$CO/status-before.json"
+  curl -s --max-time "$MAX_TIME" "http://$PROXY/status" -o "$CO_STATUS" || { rm -f "$CO_STATUS"; CO_STATUS=; }
+  CUR=$(python3 -c '
 import json, sys
 try:
     v = json.load(sys.stdin).get("version")
 except (ValueError, AttributeError):
     v = None
 print(v if isinstance(v, str) else "")
-' 2>/dev/null) || CUR=
+' <"${CO_STATUS:-/dev/null}" 2>/dev/null) || CUR=
   CURRENT_VERSION=$CUR CLOSEOUT_PICK="$CO/pick" "$SELF" --from-server "$PROXY" "$DIR" >"$CO/fetch.md"
   fetch_rc=$?
   touch "$CO/pick"
@@ -246,6 +251,7 @@ print(v if isinstance(v, str) else "")
   [ "$FULL" = 1 ] && args+=(--full)
   [ "$FOLLOW" = 0 ] && args+=(--no-follow)
   BEFORE=${JUDGE_BEFORE:-$pick_before} ZERO=${ZERO:-$pick_zero} CLOSEOUT_HEAD="$CO/head.md" \
+    CLOSEOUT_STATUS=$([ -s "$CO_STATUS" ] && echo "$CO_STATUS") \
     "$SELF" "${args[@]}" "$PROXY" "$DIR"
   exit $?
 fi
@@ -480,7 +486,10 @@ trap 'rm -rf "$work"' EXIT
 # 取れなくても続ける (そのときは雪像の中の `/status` の RSS になる)。
 # (変数の名前は `STATUS_BEFORE`。`BEFORE` は判定表の相手を渡す環境変数。T.18.2)
 STATUS_BEFORE="$work/status-before.json"
-if ! curl -s --max-time "$MAX_TIME" "http://$PROXY/status" -o "$STATUS_BEFORE" ||
+# `--closeout` は取り寄せの前に取った 1 本を使う (T.32.31)
+if [ -n "${CLOSEOUT_STATUS:-}" ] && [ -s "$CLOSEOUT_STATUS" ]; then
+  cp "$CLOSEOUT_STATUS" "$STATUS_BEFORE"
+elif ! curl -s --max-time "$MAX_TIME" "http://$PROXY/status" -o "$STATUS_BEFORE" ||
   ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$STATUS_BEFORE" 2>/dev/null; then
   rm -f "$STATUS_BEFORE"
   STATUS_BEFORE=
