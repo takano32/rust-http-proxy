@@ -140,6 +140,23 @@ class History(unittest.TestCase):
         self.assertAlmostEqual(aft["ms_per_miss"], 11.0)
         self.assertAlmostEqual(aft["dns_ms_per_connect"], 0.55)
 
+    def test_dns_rate_without_failures_only_when_the_column_exists(self):
+        # T.32.17: `dns_fail_misses` の無い版 (この見本) は鍵ごと足さない (今までどおり読める)
+        self.assertNotIn("dns_ok_per_connect", self.h["after"])
+        rows = [dict({f: None for f in sd.HFIELDS}, t=i, connects=1000, connect_ms_sum=0, dns_misses=950,
+                     dns_ms_sum=57_500, dns_fail_misses=902, dns_fail_ms_sum=55_000, errors_by_cause=[])
+                for i in range(2)]
+        agg = sd.aggregate(rows, [1, 2], None)
+        self.assertAlmostEqual(agg["dns_per_connect"], 0.95)
+        self.assertAlmostEqual(agg["dns_ok_per_connect"], 0.048)
+        self.assertAlmostEqual(agg["dns_ok_ms_per_connect"], 2.5)
+        # 待ちの欄 (`dns_fail_ms_sum`。T.32.16) が無くても率は出す
+        for r in rows:
+            r["dns_fail_ms_sum"] = None
+        agg = sd.aggregate(rows, [1, 2], None)
+        self.assertAlmostEqual(agg["dns_ok_per_connect"], 0.048)
+        self.assertNotIn("dns_ok_ms_per_connect", agg)
+
     def test_bursts_change_the_answer_so_they_are_kept_separate(self):
         # T.14.0 の「(参考) バースト込み」の行: ミス 1 回が 12.0 -> 31.2 ms に化ける
         all_before = self.h["before_all"]

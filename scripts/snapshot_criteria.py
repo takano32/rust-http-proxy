@@ -38,6 +38,9 @@ HFIELDS = (
     # T16.0 で末尾に足した 3 列: `dns_warm` の区間の最大と、平均を出すための合計と標本数
     # (5 秒の行は `sum = 値, n = 1`。無い版と T16.0 より前の行は下の `aggregate` が今の平均に戻す)
     "dns_warm_max", "dns_warm_sum", "gauge_n",
+    # T.25.0 の名前解決に失敗したミスの数と、T.32.16 のその待ちの合計 (無い版では `None`)。名前解決のミスの率の
+    # 表示から失敗を除くのに使う (T.32.17)
+    "dns_fail_misses", "dns_fail_ms_sum",
 )
 # 平常時の閾 (T14.0: 1 時間 300 本未満の標本だけを「平常時」とする)。phase22 はこれと
 # 「期間の中央値の k 倍」の大きい方 (下の `PHASE22` と `normal_limit`。T22.1)
@@ -2944,12 +2947,36 @@ _p29_cgroup_cpu_shown = display_only(
     "要求あたりは名前解決に失敗した要求 (負のキャッシュで即 502) の割合で動く (T.31.99 で 40% → 66%)。"
     "判定は `conn` 役の名前解決に成功した要求あたりと、裏の役割の us/秒の 2 行で見る", was="phase28")
 
-# phase29 = phase28 の 26 行のうち 5 行を差し替えたもの (T.32.16・T.32.29・T.32.30)。並びは同じ:
-#   5 番目 (`conn` 役の CPU/要求) → 名前解決に成功した要求あたり、11 番目 (`dns_slow`) → 成功したミスで立った件/時、
+# phase29 = phase28 の 26 行のうち 6 行を差し替えたもの (T.32.16・T.32.17・T.32.29・T.32.30)。並びは同じ:
+#   3 番目 (平常時の名前解決のミス。表示だけ) → 名前解決の失敗を除いた率も添える、5 番目 (`conn` 役の CPU/要求) → 名前解決に成功した要求あたり、11 番目 (`dns_slow`) → 成功したミスで立った件/時、
 #   13 番目 (接続のエラー) → 起動からの `/history` の 443・80、24 番目 (cgroup の CPU/要求) → 表示だけ、
 #   25 番目 (裏の役割の割合) → 裏の役割の us/秒。**phase28 以前の並びと文面は 1 つも動かない**
+def _p29_miss_band_measured(c, th):
+    """T.32.17: 平常時の名前解決のミスの行 (phase23 の行) に、**名前解決の失敗を除いた**回/接続を添える。
+
+    phase23 までの回/接続は名前解決に失敗したミス (負のキャッシュの総当たり) も数えていて、T.31.99 は 0.95 回/接続
+    (失敗を除けば 0.048)。`/history` の `dns_fail_misses` の無い版は添えない (今までどおり)。
+    """
+    label, limit, shown, verdict, src = _p23_miss_band_measured(c, th)
+    parts = []
+    for key, name in (("after", "平常時"), ("after_all", "バースト込み")):
+        v = (c.get(key) or {}).get("dns_ok_per_connect")
+        if v is not None:
+            parts.append(f"{name} **{v:.3f}**" if key == "after" else f"{name} {v:.3f}")
+    if not parts:
+        return (label, limit, shown, verdict, src + "。`/history` に `dns_fail_misses` が無い (失敗を除いた率は出せない)")
+    return (label, limit, f"{shown}。名前解決の失敗を除くと " + "・".join(parts) + " 回/接続 (T.32.17)",
+            verdict, src + "、失敗を除いた率は (`dns_misses` − `dns_fail_misses`) ÷ `connects`")
+
+
+_p29_miss_band = display_only(
+    _p29_miss_band_measured,
+    lambda th: "平常時の名前解決のミス (回/接続。名前解決の失敗を除いた率と `/recent` の試行あたりも並べる)",
+    "宛先の数で動く使われ方の数字 (T20.99 は宛先 395 名前で 0.12、`cold` 408 回。10-20 は死んだ名前の"
+    "総当たりで 0.0850)", was="phase20")
+
 _P28 = RULES["phase28"]
-RULES["phase29"] = (_P28[:4] + (_p29_conn_per_resolved_request,) + _P28[5:10] + (_p29_dns_slow,) + _P28[11:12]
+RULES["phase29"] = (_P28[:2] + (_p29_miss_band,) + _P28[3:4] + (_p29_conn_per_resolved_request,) + _P28[5:10] + (_p29_dns_slow,) + _P28[11:12]
                     + (_p29_connect_errors,) + _P28[13:23] + (_p29_cgroup_cpu_shown, _p29_idle_cost) + _P28[25:])
 PHASE29 = dict(PHASE28)
 # `conn` 役の CPU/名前解決に成功した要求 と、裏の役割の us/秒 の倍率 (前の版のこの倍未満なら満たす。T.32.29)
@@ -3151,8 +3178,8 @@ def render_criteria(d, grouped):
           "(空きの塊とスタックの山は量と同時の接続数で動く)。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
     if c["name"] == "phase29":
-        # T.32.16・T.32.29・T.32.30。phase28 の 26 行のうち 5 行を名前解決の失敗の割合で動かない形にした
-        p("26 行の並びは phase28 と同じです。直したのは 5 行 (T.32.16・T.32.29・T.32.30): (1) `conn` 役の CPU は"
+        # T.32.16・T.32.17・T.32.29・T.32.30。phase28 の 26 行のうち 6 行を名前解決の失敗の割合で動かない形にした
+        p("26 行の並びは phase28 と同じです。直したのは 6 行 (T.32.16・T.32.17・T.32.29・T.32.30): (1) `conn` 役の CPU は"
           "**名前解決に成功した要求 1 本あたり**で前の版と比べます (1.1 倍未満。名前解決に失敗した要求は負のキャッシュで"
           "即 502 になり、T.31.99 では割合が 40% → 66% に増えて要求の全数あたりが動いた)。失敗の数は `/profile` の窓の"
           "`/history?res=3600` の `errors_by_cause.dns` です。(2) 暇なときの費用は割合ではなく**裏の役割 (`conn`・`accept` "
@@ -3163,7 +3190,8 @@ def render_criteria(d, grouped):
           "(`other_port_*` を引く) で読み、`/recent` の窓の値は表示だけです (前の版に欄が無ければ「判定できず」)。"
           "(4) `dns_slow` は**名前解決に成功したミスで立った件/時**で読みます (立つまでの 5 分の "
           "`dns_misses − dns_fail_misses` と `dns_ms_sum − dns_fail_ms_sum`。`dns_fail_ms_sum` の無い版は「判定できず」)。"
-          "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+          "(5) 表示だけの平常時の名前解決のミスの行に、名前解決の失敗を除いた回/接続 (`dns_misses − dns_fail_misses`) を"
+          "添えます (T.32.17)。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")

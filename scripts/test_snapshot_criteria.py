@@ -2377,10 +2377,10 @@ class Criteria29Rows(unittest.TestCase):
              "samples": [[self.T0 + 3600 * i, [fails_per_hour, 0, 0, 0, 0, 0, 0, 0]] for i in range(hours)]}
         return {"profile_res_60": prof, "history": {"3600": history or h}}
 
-    def test_phase29_replaces_five_rows_of_phase28(self):
+    def test_phase29_replaces_six_rows_of_phase28(self):
         p28, p29 = sd.RULES["phase28"], sd.RULES["phase29"]
         self.assertEqual(len(p29), 26)
-        self.assertEqual([i for i in range(26) if p28[i] is not p29[i]], [4, 10, 12, 23, 24])
+        self.assertEqual([i for i in range(26) if p28[i] is not p29[i]], [2, 4, 10, 12, 23, 24])
         self.assertIs(p29[4], sc._p29_conn_per_resolved_request)
         self.assertIs(p29[10], sc._p29_dns_slow)
         self.assertIs(p29[12], sc._p29_connect_errors)
@@ -2409,6 +2409,20 @@ class Criteria29Rows(unittest.TestCase):
         shifted["history"]["3600"]["samples"].append([self.T0 + 3600 * 24 - 1800, [60 * 60 * 0.66] + [0] * 7])
         row = sc._p29_conn_per_resolved_request({"a": a, "b": shifted}, sc.PHASE29)
         self.assertIn("**1,000 → 1,000**", row[2])
+
+    def test_miss_band_shows_the_rate_without_failures(self):
+        # T.32.17: 表示だけのミスの行に、名前解決の失敗を除いた回/接続を添える (欄の無い版は今までどおり)
+        c = {"a": {}, "b": {}, "after": {"dns_per_connect": 0.95, "dns_ok_per_connect": 0.048, "samples": 47,
+                                         "connects": 32637},
+             "after_all": {"dns_ok_per_connect": 0.047}}
+        row = sc._p29_miss_band(c, sc.PHASE29)
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertIn("**0.95** 回/接続", row[2])
+        self.assertIn("名前解決の失敗を除くと 平常時 **0.048**・バースト込み 0.047 回/接続", row[2])
+        old = {"a": {}, "b": {}, "after": {"dns_per_connect": 0.95, "samples": 47, "connects": 32637}, "after_all": {}}
+        row = sc._p29_miss_band(old, sc.PHASE29)
+        self.assertNotIn("失敗を除くと", row[2])
+        self.assertIn("`dns_fail_misses` が無い", row[4])
 
     def test_short_or_missing_material_is_unknown_not_reference(self):
         pa, pb = self.profile(24, 30, 1000, 0.4), self.profile(6, 30, 1000, 0.4)

@@ -346,6 +346,8 @@ def aggregate(rows, bounds, limit):
            "forwards": 0, "forward_ms_sum": 0.0, "forward_ms_max": 0, "forward_buckets": None,
            "waits": 0, "wait_ms_sum": 0.0, "wait_ms_max": 0, "wait_buckets": None,
            "dns_misses": 0, "dns_ms_sum": 0.0, "errors": 0,
+           # T.32.17: 名前解決に失敗したミスとその待ち (欄の無い版では None のまま。下で鍵ごと消す)
+           "dns_fail_misses": None, "dns_fail_ms_sum": None,
            "causes": [0] * len(CAUSE_NAMES), "active_max": 0, "requests": None,
            # T.15.0 (10) の列 (無い版では `dns_warm_avg` が None、残りは 0 のまま)
            "active_peak": 0, "requests_delta": 0, "bytes_delta": 0, "dns_warm_avg": None,
@@ -373,6 +375,9 @@ def aggregate(rows, bounds, limit):
                     out[kind + "_buckets"][j] += v
         out["dns_misses"] += (r["dns_misses"] or 0)
         out["dns_ms_sum"] += (r["dns_ms_sum"] or 0)
+        for key in ("dns_fail_misses", "dns_fail_ms_sum"):
+            if r.get(key) is not None:
+                out[key] = (out[key] or 0) + r[key]
         out["errors"] += (r["errors"] or 0)
         for j, v in enumerate(r["errors_by_cause"] or []):
             if j < len(out["causes"]):
@@ -409,6 +414,15 @@ def aggregate(rows, bounds, limit):
     out["dns_per_connect"] = (miss / conn) if conn else None
     out["ms_per_miss"] = (out["dns_ms_sum"] / miss) if miss else None
     out["dns_ms_per_connect"] = (out["dns_ms_sum"] / conn) if conn else None
+    # 名前解決の失敗を除いたミスの率と、接続 1 本あたりの待ち (T.32.17)。欄の無い版は鍵ごと足さない
+    # (`--out json` の形を今までと同じにする)
+    fail, fail_ms = out.pop("dns_fail_misses"), out.pop("dns_fail_ms_sum")
+    if fail is not None:
+        out["dns_fail_misses"] = fail
+        out["dns_ok_per_connect"] = ((miss - fail) / conn) if conn else None
+        if fail_ms is not None:
+            out["dns_fail_ms_sum"] = fail_ms
+            out["dns_ok_ms_per_connect"] = ((out["dns_ms_sum"] - fail_ms) / conn) if conn else None
     return out
 
 
@@ -1078,6 +1092,21 @@ def render(d, top):
           f"| **{ratio(aft['dns_per_connect'])} 回/接続**、"
           f"ミス 1 回 {ms(aft['ms_per_miss'])} ms、接続 1 本あたり {ms(aft['dns_ms_per_connect'])} ms "
           "| 同上 |")
+        # 名前解決の失敗 (負のキャッシュの総当たり) を除いたミス (T.32.17)。上の行は失敗も数えていて、
+        # T.31.99 は 0.94 回/接続・55.7 ms/接続 (失敗を除けば 0.048 回/接続)。欄の無い版と古い定義では出さない
+        crit = (d.get("criteria") or {}).get("name")
+        if crit not in FROZEN and any("dns_ok_per_connect" in x for x in (bef, aft, bef_all, aft_all)):
+            def ok(x, x_all):
+                if "dns_ok_per_connect" not in x:
+                    return "— (`/history` に `dns_fail_misses` が無い)"
+                t = f"**{x['dns_ok_per_connect']:.3f} 回/接続**"
+                if x.get("dns_ok_ms_per_connect") is not None:
+                    t += f"、接続 1 本あたり {ms(x['dns_ok_ms_per_connect'])} ms"
+                if x_all.get("dns_ok_per_connect") is not None:
+                    t += f" (バースト込み {x_all['dns_ok_per_connect']:.3f})"
+                return t
+            p(f"| 名前解決のミス (**名前解決の失敗を除く**。T.32.17) | {ok(bef, bef_all)} | {ok(aft, aft_all)} "
+              "| `dns_misses` − `dns_fail_misses` (待ちは `dns_ms_sum` − `dns_fail_ms_sum`) |")
         p(f"| forward 初バイト | avg {ms(bef['forward_avg'])} / p50 {ms(bef['forward_p50'])} "
           f"/ p95 {ms(bef['forward_p95'])} ms ({n(bef['forwards'])} 本) "
           f"| avg {ms(aft['forward_avg'])} / p50 {ms(aft['forward_p50'])} "
@@ -1401,10 +1430,10 @@ def parser():
                         "RSS の行を「前の版より下がる」に読み替えたもの。T.30.0・T.30.1。"
                         "phase28 = phase27 の 26 行のうち、cgroup の CPU を要求 1 本あたりに、RSS の行を "
                         "「`malloc_trim` が毎時動いて返している」に読み替えたもの。T.31.0・T.31.1。"
-                        "phase29 = phase28 の 26 行のうち 5 行を名前解決の失敗の割合で動かない形にしたもの "
+                        "phase29 = phase28 の 26 行のうち 6 行を名前解決の失敗の割合で動かない形にしたもの "
                         "(`conn` 役の CPU を名前解決に成功した要求あたり、裏の役割を us/秒、cgroup の CPU を表示だけ、"
-                        "接続のエラーを起動からの `/history` の 443・80、`dns_slow` を成功したミスで立った件/時)。"
-                        "T.32.16・T.32.29・T.32.30)")
+                        "接続のエラーを起動からの `/history` の 443・80、`dns_slow` を成功したミスで立った件/時、"
+                        "表示だけのミスの行に失敗を除いた率)。T.32.16・T.32.17・T.32.29・T.32.30)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst-median-k", type=int, default=None, metavar="K",
