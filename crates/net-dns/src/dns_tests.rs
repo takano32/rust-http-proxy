@@ -922,3 +922,46 @@ fn peeking_the_resolve_cost_does_not_take_it() {
     assert_eq!(peek_resolve_cost(), (0, 0), "take のあとは空");
     assert_eq!(take_resolve_cost(), (0, 0));
 }
+
+/// T.32.2: **引けない名前**でも表の上限 ([`MAX_ENTRIES`] = 4,096) を守る。前は失敗の経路が
+/// 無条件に `entry().or_insert_with` で行を足していたので、相異なる引けない名前の数だけ
+/// 表が伸びた (tokyo の 48 時間で 7,511 行、うち古い側の 4,146 行が答えの無い失敗の行)。
+#[test]
+fn failed_names_do_not_grow_the_table_past_the_cap() {
+    let _guard = RESOLVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    set_ttl(Duration::from_secs(60));
+    set_negative_ttl(NEGATIVE);
+    clear();
+    fn nxdomain(_: &str, _: u16) -> io::Result<Vec<IpAddr>> {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Could not resolve host",
+        ))
+    }
+    fn answer(_: &str, _: u16) -> io::Result<Vec<IpAddr>> {
+        Ok(vec![IpAddr::from([192, 0, 2, 7])])
+    }
+    // 答えのある名前を先に 100 個置く (失敗の行より先に捨てられてはいけない)
+    set_resolver_for_test(Some(answer));
+    for i in 0..100 {
+        resolve(&format!("t322-ok-{i}.example:443")).unwrap();
+    }
+    set_resolver_for_test(Some(nxdomain));
+    for i in 0..10_000 {
+        assert!(resolve(&format!("t322-nx-{i}.invalid:443")).is_err());
+    }
+    set_resolver_for_test(None);
+    let n = entries();
+    let kept_ok = (0..100)
+        .filter(|i| cached(&format!("t322-ok-{i}.example")).is_some_and(|(a, _)| a == 1))
+        .count();
+    // 直近の失敗は負のキャッシュとして残っている (上限の内側で古い失敗から捨てる)
+    let last = cached("t322-nx-9999.invalid");
+    clear();
+    assert!(
+        n <= MAX_ENTRIES,
+        "引けない名前 10,000 個のあとに表が {n} 行"
+    );
+    assert_eq!(kept_ok, 100, "答えのある行は失敗の行より後に捨てる");
+    assert_eq!(last, Some((0, true)), "直近の失敗は覚えている");
+}

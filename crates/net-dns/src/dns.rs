@@ -364,7 +364,27 @@ pub fn warm_count() -> usize {
     WARM_QUEUE.locked().len()
 }
 
+/// `getaddrinfo` の代わりに呼ぶ関数の型 ([`set_resolver_for_test`])。
+pub type ResolveFn = fn(&str, u16) -> io::Result<Vec<IpAddr>>;
+
+/// 名前解決の差し替え (**テストの口**。T.32.2)。`None` なら `getaddrinfo` を呼ぶ。
+///
+/// 鍵を取るのは OS に問い合わせるミスの経路だけ (1 回 ms の単位) で、当たりの経路と
+/// IP リテラルは触らない。本番の経路からは書かない。
+static RESOLVER_FOR_TEST: Mutex<Option<ResolveFn>> = Mutex::new(None);
+
+/// 名前解決の関数を差し替える (**テストの口**。T.32.2)。`None` で `getaddrinfo` に戻す。
+/// 引けない名前を何万個も作る試験や、応答しないリゾルバの試験 (結合試験は同じプロセスの中で
+/// プロキシを立てるので、ここを差し替えれば要求の経路の名前解決が変わる) のため。
+#[doc(hidden)]
+pub fn set_resolver_for_test(f: Option<ResolveFn>) {
+    *RESOLVER_FOR_TEST.locked() = f;
+}
+
 fn system_resolve(host: &str, port: u16) -> io::Result<Vec<IpAddr>> {
+    if let Some(f) = *RESOLVER_FOR_TEST.locked() {
+        return f(host, port);
+    }
     let addrs: Vec<IpAddr> = (host, port).to_socket_addrs()?.map(|a| a.ip()).collect();
     if addrs.is_empty() {
         return Err(io::Error::new(
@@ -715,6 +735,11 @@ pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Op
             Ok((addrs, slot.last_win_v6, false))
         }
         Err(e) => {
+            // 失敗の経路でも上限を守る (T.32.2)。前はここが無条件の `or_insert_with` で、
+            // 相異なる引けない名前の数だけ表が伸びた (tokyo の 48 時間で 7,511 行)
+            if table.len() >= MAX_ENTRIES && !table.contains_key(&key) {
+                evict_oldest(table);
+            }
             let entry = table.entry(key).or_insert_with(|| Entry::empty(now, None));
             entry.misses += 1;
             entry.misses_by_kind[miss_kind.index()] += 1;
@@ -854,10 +879,16 @@ fn with_port(addrs: &[IpAddr], port: u16) -> Vec<SocketAddr> {
     addrs.iter().map(|&ip| SocketAddr::new(ip, port)).collect()
 }
 
+/// 1 行捨てる。**答えの無い行 (失敗の行・族の記憶だけの行) を先に**、その中で古い順 (T.32.2)。
+///
+/// 答えのある行は serve-stale (21,600 秒) と古い答えで凌ぐ窓のために持っているが、答えの無い
+/// 行が持っているのは負のキャッシュ (既定 60 秒) だけで、捨てても次の 1 回が OS に行くだけ。
+/// 全部を舐める (4,096 行で 1 回 数十 us) が、呼ぶのは OS に問い合わせたミス (ms の単位) と
+/// 族の記憶の新しい行のときだけなので、古い順の印は持たない。
 fn evict_oldest(table: &mut HashMap<String, Entry>) {
     if let Some(k) = table
         .iter()
-        .min_by_key(|(_, e)| e.resolved_at)
+        .min_by_key(|(_, e)| (!e.addrs.is_empty(), e.resolved_at))
         .map(|(k, _)| k.clone())
     {
         table.remove(&k);
