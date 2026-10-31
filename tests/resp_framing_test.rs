@@ -507,9 +507,10 @@ fn test_integration_unchunked_transfer_encoding_is_502_for_http10() {
 fn test_integration_chunked_with_content_length_is_unchanged() {
     let origin_port = start_scripted_origin();
     let proxy_port = start_test_proxy(proxy_config());
+    // `Date` は秒の境目をまたぐと 2 本で違うので外して比べる (T.32.23)
     assert_eq!(
-        get(proxy_port, origin_port, "/chunked-cl"),
-        get(proxy_port, origin_port, "/chunked"),
+        without_date(&get(proxy_port, origin_port, "/chunked-cl")),
+        without_date(&get(proxy_port, origin_port, "/chunked")),
     );
 }
 
