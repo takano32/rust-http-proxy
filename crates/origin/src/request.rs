@@ -387,21 +387,131 @@ fn authority_end(rest: &str) -> usize {
 ///
 /// userinfo は今までは `user:pw@host` を丸ごと名前として引きに行き 502 になっていた。
 /// http(s) の URI では非推奨で、受け取った側は誤りとして扱うべきなので 400 にする
-/// (呼び出し側は [`parse_origin`] の失敗を `bad_uri` で断る)
-fn check_authority(host_port: &str) -> io::Result<()> {
+/// (呼び出し側は [`parse_origin`] の失敗を `bad_uri` で断る)。
+///
+/// T.32.12 から形も見る (RFC 3986 §3.2.2・RFC 9112 §3.2): ホストは reg-name の字 (英数字と `-._~`、
+/// `%XX`) か `[` IP リテラル `]`、ポートは 1〜5 桁の数字で 65535 以下。空のポート (`h:`) は既定の
+/// ポートの意味で、返す authority からは `:` を落とす。括弧の無い IPv6 (`::1`) は今までどおり通す。
+/// reg-name の sub-delims (`,`・`+`・`;` など) は RFC の文法では通るが、DNS の名前にはなりえないので断る。
+/// 今までは `a b`・`a, b`・`a/b`・`h:99999` を名前解決まで行って 502 nxdomain (80 番宛ての origin
+/// エラー) にし、`h:+22501` は Rust の `parse` が `+` を受けてオリジンへ `Host: h:+22501` を送っていた
+fn check_authority(host_port: &str) -> io::Result<&str> {
+    // 速い道: ふつうの `host` / `host:port` (reg-name の字のあとに `:` と 1〜5 桁の数字) は 1 回の走査で
+    // 決める。`[`・`%`・`@`・`:` 2 個以上・外れた形は下の遅い道で決め直す (結果は同じ。誤りの文言もそちら)
+    let b = host_port.as_bytes();
+    let host_end = b
+        .iter()
+        .position(|&c| !REG_NAME[c as usize])
+        .unwrap_or(b.len());
+    if host_end > 0 {
+        if host_end == b.len() {
+            return Ok(host_port);
+        }
+        if b[host_end] == b':' {
+            let port = &b[host_end + 1..];
+            if (1..=5).contains(&port.len()) {
+                let mut n = 0u32;
+                let mut digits = true;
+                for &d in port {
+                    digits &= d.is_ascii_digit();
+                    n = n * 10 + u32::from(d.wrapping_sub(b'0'));
+                }
+                if digits && n <= 65535 {
+                    return Ok(host_port);
+                }
+            }
+        }
+    }
+    check_authority_slow(host_port)
+}
+
+/// reg-name の字のうち `%` を除いたもの (英数字と `-._~`)。[`check_authority`] の速い道の表 (T.32.12)
+const REG_NAME: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0;
+    while i < 256 {
+        let b = i as u8;
+        t[i] = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~');
+        i += 1;
+    }
+    t
+};
+
+/// [`check_authority`] の遅い道 (IP リテラル・`%XX`・空のポート・誤りの形)。
+fn check_authority_slow(host_port: &str) -> io::Result<&str> {
+    let invalid = |what: &'static str| Err(io::Error::new(io::ErrorKind::InvalidInput, what));
     if host_port.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Missing host in request target",
-        ));
+        return invalid("Missing host in request target");
     }
     if host_port.contains('@') {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "userinfo in request target",
-        ));
+        return invalid("userinfo in request target");
     }
-    Ok(())
+    let b = host_port.as_bytes();
+    let ipv6 = |s: &[u8]| {
+        s.iter()
+            .all(|c| c.is_ascii_hexdigit() || matches!(c, b':' | b'.'))
+    };
+    let (host_ok, port) = if b[0] == b'[' {
+        match b.iter().position(|c| *c == b']') {
+            Some(end) => {
+                let inner = &b[1..end];
+                let ok = !inner.is_empty() && inner.contains(&b':') && ipv6(inner);
+                match &b[end + 1..] {
+                    [] => (ok, None),
+                    [b':', port @ ..] => (ok, Some(port)),
+                    _ => (false, None),
+                }
+            }
+            None => (false, None),
+        }
+    } else if ascii::count(host_port, b':') >= 2 {
+        // 括弧の無い IPv6 リテラル (ポート無し)。`net::split_host_port_ref` と同じ読み方
+        (ipv6(b), None)
+    } else {
+        let (host, port) = match b.iter().rposition(|c| *c == b':') {
+            Some(i) => (&b[..i], Some(&b[i + 1..])),
+            None => (b, None),
+        };
+        (!host.is_empty() && reg_name(host), port)
+    };
+    if !host_ok {
+        return invalid("invalid host in request target");
+    }
+    match port {
+        // 空のポートは既定のポート (RFC 3986 §3.2.3)。`:` を落として返す
+        Some([]) => Ok(&host_port[..host_port.len() - 1]),
+        Some(p)
+            if p.len() > 5
+                || !p.iter().all(u8::is_ascii_digit)
+                || p.iter().fold(0u32, |n, d| n * 10 + u32::from(d - b'0')) > 65535 =>
+        {
+            invalid("invalid port in request target")
+        }
+        _ => Ok(host_port),
+    }
+}
+
+/// reg-name (と IPv4) として受け付ける字か (英数字と `-._~`、`%` は 16 進 2 桁が続くこと)。T.32.12
+fn reg_name(host: &[u8]) -> bool {
+    let mut i = 0;
+    while i < host.len() {
+        match host[i] {
+            b'%' => {
+                if !host
+                    .get(i + 1..i + 3)
+                    .is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit))
+                {
+                    return false;
+                }
+                i += 3;
+                continue;
+            }
+            c if c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~') => {}
+            _ => return false,
+        }
+        i += 1;
+    }
+    true
 }
 
 /// 要求の対象から `#fragment` を落とす (RFC 9112 §3.2 の要求の対象に fragment は入らない。T27.8)。
@@ -434,8 +544,7 @@ pub fn strip_scheme(target: &str) -> Option<(Scheme, &str)> {
 pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origin> {
     let split = |scheme: Scheme, rest: &str, mapped: bool| -> io::Result<Origin> {
         let end = authority_end(rest);
-        let host_port = &rest[..end];
-        check_authority(host_port)?;
+        let host_port = check_authority(&rest[..end])?;
         // `http://h?q` の path は `/?q` (RFC 9112 §3.2.2: path が空なら `/` を補う)
         let path = match &rest[end..] {
             "" => "/".to_string(),
@@ -465,9 +574,11 @@ pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origi
     // 今までは `*` をホスト名として引きに行って 502 だった。OPTIONS 以外の `*` は受け付けの層が 400 で断る
     if target.starts_with('/') || target == "*" {
         return match host_header {
+            // `Host` も同じ形で確かめる (RFC 9112 §3.2 は不正な `Host` に 400 を求める。T.32.12)。
+            // 絶対形式の要求の `Host` (宛先には使わない) は入口の [`target_host`] だけが見る (要求ごとに 2 回なめない)
             Some(h) if !h.is_empty() => Ok(Origin {
                 scheme: Scheme::Http,
-                host_port: h.to_string(),
+                host_port: check_authority(h)?.to_string(),
                 path: without_fragment(target).to_string(),
                 mapped: false,
             }),
@@ -479,7 +590,7 @@ pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origi
     }
     Ok(Origin {
         scheme: Scheme::Http,
-        host_port: target.to_string(),
+        host_port: check_authority(target)?.to_string(),
         path: "/".to_string(),
         mapped: false,
     })
@@ -502,10 +613,13 @@ pub fn has_empty_path(target: &str) -> bool {
 /// [`parse_origin`] を呼ぶと要求ごとに `String` を 2 本 (`host_port` と `path`) 作ることになる。
 /// 返す文字列は必ず `target` か `host_header` の部分文字列なので確保が要らない。
 pub fn target_host<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Result<&'a str> {
-    let host_of = |rest: &'a str| -> io::Result<&'a str> {
-        let host_port = &rest[..authority_end(rest)];
-        check_authority(host_port)?;
-        Ok(host_port)
+    let host_of =
+        |rest: &'a str| -> io::Result<&'a str> { check_authority(&rest[..authority_end(rest)]) };
+    // `Host` も同じ形で確かめる (T.32.12)。ここは受け付けの入口なので、絶対形式の要求でも見る
+    // (宛先は要求の対象で決めるが、不正な値は不正。空の `Host` は形としては通す)
+    let host_header = match host_header {
+        Some(h) if !h.is_empty() => Some(check_authority(h)?),
+        other => other,
     };
     if let Some((_, rest)) = strip_scheme(target) {
         return host_of(rest);
@@ -524,8 +638,8 @@ pub fn target_host<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Res
             )),
         };
     }
-    // スキームも `/` も無い形 (`h` や `h:443`) は、丸ごとがホストになる
-    Ok(target)
+    // スキームも `/` も無い形 (`h` や `h:443`) は、丸ごとがホストになる (形は確かめる。T.32.12)
+    check_authority(target)
 }
 
 /// 要求ターゲットのスキームだけを**確保せずに**取り出す ([`parse_origin`] と同じ規則)。
@@ -721,6 +835,89 @@ mod content_length_tests {
 #[cfg(test)]
 mod target_host_tests {
     use super::*;
+
+    /// T.32.12: 不正な authority と `Host` は断り、正当な形 (IP リテラル・先頭の 0・大文字・空のポート) は通す。
+    #[test]
+    fn invalid_authority_and_host_are_refused() {
+        for bad in [
+            "example.invalid x",
+            "a, b",
+            "a/b",
+            "a b:443",
+            "exa mple.com",
+            "127.0.0.1:99999",
+            "h:+22501",
+            "h:123456",
+            "h:8a",
+            "[::1",
+            "[]:80",
+            "[::1]x",
+            "[g::1]:80",
+            ":80",
+            "h%2",
+            "h;x",
+        ] {
+            assert!(check_authority(bad).is_err(), "{:?}", bad);
+            // 対象の中の `/` は authority の終わりなので、絶対形式で試すのは `/` の無い形だけ
+            if !bad.contains('/') {
+                let target = format!("http://{}/x", bad);
+                assert!(parse_origin(&target, None).is_err(), "{:?}", target);
+                assert!(target_host(&target, None).is_err(), "{:?}", target);
+            }
+            assert!(parse_origin("/x", Some(bad)).is_err(), "Host: {:?}", bad);
+            assert!(target_host("/x", Some(bad)).is_err(), "Host: {:?}", bad);
+            // 絶対形式の要求でも `Host` は入口 (`target_host`) が確かめる
+            assert!(target_host("http://h/x", Some(bad)).is_err(), "{:?}", bad);
+        }
+        for good in [
+            "[::1]:8080",
+            "[2001:db8::1]",
+            "h:080",
+            "UPPER.Example.COM",
+            "127.0.0.1:65535",
+            "a-b_c~d.example",
+            "h%41",
+            "::1",
+        ] {
+            assert_eq!(check_authority(good).unwrap(), good, "{:?}", good);
+            assert_eq!(target_host("/x", Some(good)).unwrap(), good);
+        }
+        // 速い道と遅い道は同じ答え
+        for x in [
+            "h",
+            "h:1",
+            "h:65535",
+            "h:65536",
+            "h:00080",
+            "h:000080",
+            "h:",
+            ":1",
+            "a.b-c_d~e:8080",
+            "a b",
+            "a@b",
+            "a%41",
+            "::1",
+            "[::1]:80",
+            "h:8a",
+            "h:+1",
+            "",
+            "日本",
+        ] {
+            assert_eq!(
+                check_authority(x).ok(),
+                check_authority_slow(x).ok(),
+                "{:?}",
+                x
+            );
+        }
+        // 空のポートは既定のポート (`:` を落とす)
+        assert_eq!(check_authority("h:").unwrap(), "h");
+        assert_eq!(check_authority("[::1]:").unwrap(), "[::1]");
+        assert_eq!(parse_origin("http://h:/x", None).unwrap().host_port, "h");
+        assert_eq!(target_host("/x", Some("h:")).unwrap(), "h");
+        // 空の `Host` は絶対形式なら通す (宛先は要求の対象)
+        assert_eq!(parse_origin("http://h/x", Some("")).unwrap().host_port, "h");
+    }
 
     /// [`parse_origin`] の `host_port` と 1 文字も違わないこと (乖離すると ACL がすり抜ける)。
     #[test]

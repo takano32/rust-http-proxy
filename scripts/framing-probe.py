@@ -27,6 +27,10 @@ T.28.1 の時点ではどちらも TE の行を落としていた (この 2 行�
 HTTP/1.1 へは今までどおり 103 → 200。0.29.35 では HTTP/1.0 の行が外れる。
 同じ日に要求行とヘッダー名の文法を足した (T.29.8): 要求行が 4 要素・後ろに junk・対象の DEL / NUL、
 ヘッダー名の空白・`"`・制御文字・空の名前・コロンの無い行はどれも 400。0.29.35 ではこの 8 行が外れる。
+
+2026-10-31 に不正な `Host`・authority を足した (T.32.12。`t32_cases`): `Host: a b`・`a, b`・`a/b`・
+`h:99999`・絶対形式のポートの `+` は 400 (オリジンへ届かない)、大文字のホストは通る。
+0.30.4 では 400 の行が 502 (名前解決の失敗か接続の失敗) で外れる。
 """
 import argparse
 import json
@@ -116,6 +120,25 @@ def t27_cases(origin_port):
         ("名前の \" と制御文字", get(b"/a", b"X\"\x01A: 1\r\n"), 400, False, None),
         ("空の名前", get(b"/a", b": v\r\n"), 400, False, None),
         ("コロンの無い行", get(b"/a", b"Junk\r\n"), 400, False, None),
+    ]
+
+
+def t32_cases(origin_port):
+    """T.32 の要求側 (形は `t27_cases` と同じ 5 つ組)。"""
+    port = b"%d" % origin_port
+
+    def get(host, target=b"/a"):
+        return b"GET " + target + b" HTTP/1.1\r\nHost: " + host + b"\r\n\r\n"
+
+    return [
+        # T.32.12: `Host` と authority の形 (reg-name の字・IP リテラル・ポートは 5 桁まで 65535 以下)
+        ("Host: a b", get(b"a b"), 400, False, None),
+        ("Host: a, b", get(b"a, b"), 400, False, None),
+        ("Host: a/b", get(b"a/b"), 400, False, None),
+        ("Host: h:99999", get(b"127.0.0.1:99999"), 400, False, None),
+        ("authority のポートの +", get(b"127.0.0.1:" + port, b"http://127.0.0.1:+" + port + b"/a"), 400, False,
+         None),
+        ("Host の大文字 (通る)", get(b"LOCALHOST:" + port), 200, True, None),
     ]
 
 
@@ -353,8 +376,8 @@ def main(argv=None):
 
         # T.27.5 〜 T.27.8 の要求側 (5 つ目は届いた要求が満たすべきこと)
         print("")
-        print("%-28s %-8s %-8s %s" % ("T.27.5〜T.27.8", "状態", "期待", "オリジンに届いた要求行"))
-        for name, raw, want, may_reach, check in t27_cases(args.port + 1):
+        print("%-28s %-8s %-8s %s" % ("T.27.5〜T.27.8・T.32", "状態", "期待", "オリジンに届いた要求行"))
+        for name, raw, want, may_reach, check in t27_cases(args.port + 1) + t32_cases(args.port + 1):
             before = len(origin.seen)
             got = _status(_send(args.port, raw, args.timeout))
             reached = len(origin.seen) > before
