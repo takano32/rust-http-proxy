@@ -966,6 +966,8 @@ pub struct Sampler {
     prev: std::collections::HashMap<u32, PrevTask>,
     /// 読み取りの使い回し用
     buf: Vec<u8>,
+    /// スレッドごとの `stat` を開いたまま持つ (T.32.21)
+    files: crate::sysinfo::proc::TaskStatFiles,
     /// 標本を取るスレッド自身の tid ([`Sampler::for_self`] のときだけ。T.29.21)
     self_tid: Option<u32>,
     /// 1 clock tick の us
@@ -981,6 +983,12 @@ pub struct Sampler {
     schedstat_readable: bool,
 }
 
+/// スレッドの `stat` を開いたまま持つ本数の上限 (T.32.21)。
+///
+/// 暇なときは 10 本前後、`--only idle-tunnels --conc 5000` でも 132 本。越えたぶんは
+/// 毎回開いて読む (記述子を接続のぶんから食い過ぎないように)。
+const TASK_FILES_KEPT: usize = 128;
+
 impl Sampler {
     pub fn new(root: std::path::PathBuf, main_tid: u32) -> Sampler {
         Sampler {
@@ -988,6 +996,7 @@ impl Sampler {
             main_tid,
             prev: std::collections::HashMap::new(),
             buf: Vec::new(),
+            files: crate::sysinfo::proc::TaskStatFiles::new(TASK_FILES_KEPT),
             self_tid: None,
             tick_us: 1_000_000 / clock_tick(),
             pending: Threads::default(),
@@ -1033,7 +1042,8 @@ impl Sampler {
                 run_delay_ns: None,
             },
         };
-        let Some(scan) = crate::sysinfo::scan_tasks_reusing(&self.root, &mut self.buf, reuse)
+        let Some(scan) =
+            crate::sysinfo::scan_tasks_reusing(&self.root, &mut self.buf, &mut self.files, reuse)
         else {
             profile.set_sampler(SamplerState::Off);
             return;

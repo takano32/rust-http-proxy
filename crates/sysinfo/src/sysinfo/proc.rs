@@ -15,13 +15,26 @@ pub fn process_threads() -> Option<u64> {
     parse_status_threads(&read_small(std::path::Path::new("/proc/self/status"))?)
 }
 
-/// 小さな `/proc` / `/sys` のファイルを **open・read・read (EOF)・close の 4 回**で読む。
+/// 小さな `/proc` / `/sys` のファイルを読む。
 ///
 /// (T.29.20) `fs::read_to_string` は大きさを当てにするために `statx` と `lseek` を呼び、procfs は大きさ 0 を
 /// 返すので 32 B から倍々に読み直す (`/proc/self/status` で `read` 8 回 = 1 ファイル 11 回の
 /// システムコール)。1 秒ごとに読む所 (`cache-probe`・`profile-sample`・`history`) はこちらを使う。
 /// `buf` は使い回し (毎回確保しない)。読めなければ `None`。
+///
+/// **`/proc`・`/sys` の決まったパスは開いたままにして `pread` 1 回で読む** (T.32.21。[`KeptFiles`])。
+/// open・read・read (EOF)・close の 4 回が 1 回になり、procfs の open (パスの引き直しと
+/// seq_file の用意) も払わない (`/proc/self/status` 7.1 → 3.0 us)。スレッドごとのファイル
+/// (`/proc/self/task/<tid>/…`・`/proc/thread-self/…`) は開いたままにしない ([`keepable`])。
 pub fn read_small_into<'a>(path: &std::path::Path, buf: &'a mut Vec<u8>) -> Option<&'a str> {
+    if keepable(path) {
+        return KEPT.read(path, buf);
+    }
+    read_by_open(path, buf)
+}
+
+/// 開いて読み、閉じる (open・read・read (EOF)・close の 4 回)。
+fn read_by_open<'a>(path: &std::path::Path, buf: &'a mut Vec<u8>) -> Option<&'a str> {
     use std::io::Read as _;
     let mut f = std::fs::File::open(path).ok()?;
     if buf.len() < 4096 {
@@ -44,12 +57,161 @@ pub fn read_small_into<'a>(path: &std::path::Path, buf: &'a mut Vec<u8>) -> Opti
 }
 
 /// [`read_small_into`] の、持ち帰る版 (`fs::read_to_string(path).ok()` の置き換え)。
+///
+/// 読む器はスレッドごとに使い回す (T.32.21。呼ぶたびに 4 KiB を確保してゼロで埋めていた)。
+/// 返すのは中身の長さぶんの `String` だけ。
 pub fn read_small(path: &std::path::Path) -> Option<String> {
-    let mut buf = Vec::new();
-    let n = read_small_into(path, &mut buf)?.len();
-    buf.truncate(n);
-    // 中身は read_small_into が UTF-8 と確かめ済み (写さずに String にする)
-    String::from_utf8(buf).ok()
+    thread_local! {
+        static BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    BUF.try_with(|b| {
+        let mut b = b.try_borrow_mut().ok()?;
+        read_small_into(path, &mut b).map(str::to_owned)
+    })
+    .ok()
+    .flatten()
+}
+
+/// 開いたままにしてよいパスか (T.32.21)。
+///
+/// `/proc`・`/sys` の下で、**どのスレッドが開いても同じものを指す**パスだけ。
+/// `/proc/thread-self` は開いたスレッドを、`/proc/self/task/<tid>` はスレッドを 1 本ずつ指す
+/// (スレッドの数だけ記述子が要り、死んだスレッドの分が残る) ので外す。
+pub fn keepable(path: &std::path::Path) -> bool {
+    let s = path.as_os_str().as_encoded_bytes();
+    (s.starts_with(b"/proc/") || s.starts_with(b"/sys/"))
+        && !s.starts_with(b"/proc/thread-self")
+        && !s.windows(6).any(|w| w == b"/task/")
+}
+
+/// 開いたままにする数の上限 (T.32.21)。いまの読み手が使うのは 30 本ほどで、
+/// cgroup の階層が深くても 64 に届かない。越えたぶんは今までどおり開いて読む。
+const KEPT_MAX: usize = 64;
+/// 開いたままのファイルをこの回数読んだら 1 度開き直す (T.32.21)。
+///
+/// 消えた cgroup のファイルは `ENODEV` を返すので開き直せるが、**消えて同じパスに
+/// 作り直された**ふつうのファイルは古い中身を返し続ける。ときどき開き直して追いつく
+/// (5 秒ごとの読みなら 5 分 20 秒に 1 回、1 秒ごとでも 64 秒に 1 回)。
+const KEPT_REOPEN_EVERY: u32 = 64;
+
+enum Kept {
+    /// 開いている記述子と、開いてから読んだ回数
+    Open(std::sync::Arc<std::fs::File>, u32),
+    /// 一度は読めたが、いまは開けない (毎回開き直しを試す)
+    Gone,
+    /// 初めて開こうとしたら無かった (cgroup v1 の `*.pressure` など)。次の起動まで開き直さない
+    Missing,
+}
+
+/// 開いたままの小さなファイルの置き場 (T.32.21)。プロセスに 1 つ ([`KEPT`]) で、試験は自前で作る。
+///
+/// - 読むのは `pread(fd, buf, 0)` で、1 頁に収まるファイルは 1 回 (短く返ったら EOF とみなす。
+///   procfs・sysfs の seq_file は器が埋まるか終わりまで詰めて返す)。4 KiB を越えれば器を倍にして続きを読む
+/// - 読めなくなったら (`ENODEV`・`ESRCH` など) その場で開き直して 1 回だけ読み直す
+/// - **初めて開こうとして無かった**パスは覚えておき、次の起動まで開き直さない。
+///   一度でも読めたパスは、消えても毎回開き直しを試す (消えて現れるファイルを取りこぼさない)
+pub struct KeptFiles {
+    map: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Kept>>,
+}
+
+static KEPT: std::sync::LazyLock<KeptFiles> = std::sync::LazyLock::new(KeptFiles::new);
+
+impl Default for KeptFiles {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KeptFiles {
+    pub fn new() -> Self {
+        Self {
+            map: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// 開いたままにしている数 (試験と `/status` の記述子の数の説明用)。
+    pub fn open_count(&self) -> usize {
+        self.lock()
+            .values()
+            .filter(|k| matches!(k, Kept::Open(..)))
+            .count()
+    }
+
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<std::path::PathBuf, Kept>> {
+        // 中で panic する処理は無い (毒が付いても中身は壊れていない)
+        self.map.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `path` を `buf` に読む。読めなければ `None`。
+    pub fn read<'a>(&self, path: &std::path::Path, buf: &'a mut Vec<u8>) -> Option<&'a str> {
+        // 鍵の内では記述子を写すだけ (読むのは鍵の外)
+        let (kept, seen) = {
+            let mut map = self.lock();
+            match map.get_mut(path) {
+                Some(Kept::Missing) => return None,
+                Some(Kept::Gone) => (None, true),
+                Some(Kept::Open(f, reads)) => {
+                    *reads += 1;
+                    if *reads >= KEPT_REOPEN_EVERY {
+                        (None, true)
+                    } else {
+                        (Some(f.clone()), true)
+                    }
+                }
+                None => (None, false),
+            }
+        };
+        // 読めなくなった (消えた cgroup は ENODEV) ときは下で開き直す
+        if let Some(f) = kept
+            && let Some(n) = pread_all(&f, buf)
+        {
+            return std::str::from_utf8(&buf[..n]).ok();
+        }
+        let opened = std::fs::File::open(path);
+        let read = match &opened {
+            Ok(f) => pread_all(f, buf),
+            Err(_) => None,
+        };
+        let state = match (opened, read) {
+            (Ok(f), Some(_)) => Kept::Open(std::sync::Arc::new(f), 0),
+            (Err(e), _) if e.kind() == std::io::ErrorKind::NotFound && !seen => Kept::Missing,
+            _ => Kept::Gone,
+        };
+        let mut map = self.lock();
+        if map.len() < KEPT_MAX || map.contains_key(path) {
+            map.insert(path.to_path_buf(), state);
+        }
+        drop(map);
+        std::str::from_utf8(&buf[..read?]).ok()
+    }
+}
+
+/// 先頭から `pread` で読む。短く返ったら終わり (読み足りなければ器を倍にして続ける)。
+fn pread_all(f: &std::fs::File, buf: &mut Vec<u8>) -> Option<usize> {
+    use std::os::unix::fs::FileExt as _;
+    if buf.len() < 4096 {
+        buf.resize(4096, 0);
+    }
+    let mut n = 0usize;
+    loop {
+        if n == buf.len() {
+            let more = buf.len();
+            buf.resize(more * 2, 0);
+        }
+        match f.read_at(&mut buf[n..], n as u64) {
+            Ok(0) => return Some(n),
+            Ok(k) => {
+                n += k;
+                if n < buf.len() {
+                    return Some(n);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
 }
 
 pub fn parse_status_threads(text: &str) -> Option<u64> {
@@ -131,7 +293,65 @@ pub struct TaskScan {
 ///
 /// `buf` は読み取りの使い回し用 (毎回確保しないため)。
 pub fn scan_tasks(root: &std::path::Path, buf: &mut Vec<u8>) -> Option<TaskScan> {
-    scan_tasks_reusing(root, buf, |_, _, _| Known::default())
+    scan_tasks_reusing(root, buf, &mut TaskStatFiles::new(0), |_, _, _| {
+        Known::default()
+    })
+}
+
+/// スレッドごとの `stat` を開いたまま持つ置き場 (T.32.21)。標本を取る側が 1 つ持つ。
+///
+/// 毎秒の標本はスレッド 1 本ごとに `stat` を open・read・read・close していた (冷えた状態で
+/// 1 本 7 us、`profile-sample` のシステムコールの 9 割)。開いたまま `pread` 1 回で読み、
+/// 消えたスレッドの分は標本のたびに閉じる。tid が使い回されても、古い記述子は死んだ
+/// スレッドを指して `ESRCH` を返すので開き直す。`cap` を越えるスレッドは今までどおり開いて読む
+/// (記述子をスレッドの数だけ使うので、`ulimit -n` の小さい環境で接続のぶんを食わないように)。
+pub struct TaskStatFiles {
+    root: std::path::PathBuf,
+    cap: usize,
+    map: std::collections::HashMap<u32, std::fs::File>,
+}
+
+impl TaskStatFiles {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            root: std::path::PathBuf::new(),
+            cap,
+            map: std::collections::HashMap::new(),
+        }
+    }
+
+    /// 開いたままにしている数。
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// `tid` の `stat` (`dir` の下) を読む。
+    fn read<'a>(
+        &mut self,
+        tid: u32,
+        dir: &std::path::Path,
+        buf: &'a mut Vec<u8>,
+    ) -> Option<&'a str> {
+        if self.cap == 0 {
+            return read_into(&dir.join("stat"), buf);
+        }
+        if let Some(f) = self.map.get(&tid) {
+            if let Some(n) = pread_all(f, buf) {
+                return std::str::from_utf8(&buf[..n]).ok();
+            }
+            self.map.remove(&tid);
+        }
+        let f = std::fs::File::open(dir.join("stat")).ok()?;
+        let n = pread_all(&f, buf)?;
+        if self.map.len() < self.cap {
+            self.map.insert(tid, f);
+        }
+        std::str::from_utf8(&buf[..n]).ok()
+    }
 }
 
 /// [`scan_tasks_reusing`] の呼び出し側が「もう分かっている」と返す値 (T.29.21)。
@@ -153,9 +373,15 @@ pub struct Known {
 pub fn scan_tasks_reusing(
     root: &std::path::Path,
     buf: &mut Vec<u8>,
+    files: &mut TaskStatFiles,
     mut reuse: impl FnMut(u32, char, u64) -> Known,
 ) -> Option<TaskScan> {
     let mut out = TaskScan::default();
+    // 見る場所が変わったら持っている記述子は使えない (試験が差し替える)
+    if files.root != root {
+        files.map.clear();
+        files.root = root.to_path_buf();
+    }
     for entry in std::fs::read_dir(root).ok()? {
         let Ok(entry) = entry else { continue };
         let name = entry.file_name();
@@ -163,7 +389,7 @@ pub fn scan_tasks_reusing(
             continue;
         };
         let dir = entry.path();
-        let Some(text) = read_into(&dir.join("stat"), buf) else {
+        let Some(text) = files.read(tid, &dir, buf) else {
             continue;
         };
         let Some((comm, state, ticks, utime)) = parse_task_stat(text) else {
@@ -191,6 +417,12 @@ pub fn scan_tasks_reusing(
             syscall,
             run_delay_ns,
         });
+    }
+    // 消えたスレッドの記述子を閉じる (読めたスレッドだけ残す)
+    if !files.map.is_empty() {
+        let mut live: Vec<u32> = out.tasks.iter().map(|t| t.tid).collect();
+        live.sort_unstable();
+        files.map.retain(|tid, _| live.binary_search(tid).is_ok());
     }
     Some(out)
 }
@@ -271,6 +503,81 @@ mod tests {
         {
             let a = read_small(std::path::Path::new("/proc/self/cgroup")).unwrap();
             assert_eq!(a, std::fs::read_to_string("/proc/self/cgroup").unwrap());
+        }
+    }
+
+    /// 開いたままのファイル (T.32.21): 消えて現れる・初めから無い・4 KiB を越える。
+    #[test]
+    fn kept_files_follow_a_file_that_vanishes_and_reappears() {
+        let dir = std::env::temp_dir().join(format!("kept-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let kept = KeptFiles::new();
+        let mut buf = Vec::new();
+        let path = dir.join("value");
+        std::fs::write(&path, "1\n").unwrap();
+        assert_eq!(kept.read(&path, &mut buf), Some("1\n"));
+        assert_eq!(kept.open_count(), 1);
+        // 中身が変われば次の読みで見える (pread は先頭から読み直す)
+        std::fs::write(&path, "22\n").unwrap();
+        assert_eq!(kept.read(&path, &mut buf), Some("22\n"));
+        // 消えて同じパスに作り直された: 開き直しの周期のうちに新しい中身に追いつく
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "333\n").unwrap();
+        let caught_up =
+            (0..KEPT_REOPEN_EVERY + 1).any(|_| kept.read(&path, &mut buf) == Some("333\n"));
+        assert!(caught_up);
+        // 消えたまま: 読めない (一度読めたパスなので、開き直しは試し続ける)
+        std::fs::remove_file(&path).unwrap();
+        let gone = (0..KEPT_REOPEN_EVERY + 1).all(|i| {
+            let r = kept.read(&path, &mut buf).map(str::to_owned);
+            // 開き直すまでは古い記述子が消えたファイルの中身を返しうる
+            i < KEPT_REOPEN_EVERY || r.is_none()
+        });
+        assert!(gone);
+        std::fs::write(&path, "4\n").unwrap();
+        assert_eq!(kept.read(&path, &mut buf), Some("4\n"));
+        // 初めから無かったパスは覚えておき、あとで現れても開き直さない (次の起動まで)
+        let never = dir.join("never");
+        assert_eq!(kept.read(&never, &mut buf), None);
+        std::fs::write(&never, "x").unwrap();
+        assert_eq!(kept.read(&never, &mut buf), None);
+        // 4 KiB を越えるファイルも全部読める (器を倍にして続きを pread)
+        let big: String = (0..3000).map(|i| format!("line {i}\n")).collect();
+        let bigp = dir.join("big");
+        std::fs::write(&bigp, &big).unwrap();
+        for _ in 0..3 {
+            assert_eq!(kept.read(&bigp, &mut buf), Some(big.as_str()));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// procfs の実物を開いたまま読んでも `fs::read_to_string` と同じ形 (T.32.21)。
+    /// `/proc/net/netstat` は 4 KiB を越えうる (数値は動くので、見出しの行を比べる)。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kept_proc_files_read_like_read_to_string() {
+        assert!(keepable(std::path::Path::new("/proc/self/status")));
+        assert!(keepable(std::path::Path::new("/sys/fs/cgroup/memory.max")));
+        assert!(!keepable(std::path::Path::new("/proc/self/task/1/stat")));
+        assert!(!keepable(std::path::Path::new("/proc/thread-self/stat")));
+        assert!(!keepable(std::path::Path::new("/tmp/x")));
+        let headers = |t: &str| -> Vec<String> {
+            t.lines().step_by(2).map(str::to_owned).collect::<Vec<_>>()
+        };
+        for name in ["/proc/net/netstat", "/proc/net/snmp"] {
+            let path = std::path::Path::new(name);
+            let Ok(want) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            for _ in 0..3 {
+                let got = read_small(path).unwrap();
+                assert_eq!(headers(&got), headers(&want), "{name}");
+            }
+        }
+        let cg = std::path::Path::new("/proc/self/cgroup");
+        for _ in 0..3 {
+            assert_eq!(read_small(cg), std::fs::read_to_string(cg).ok());
         }
     }
 
@@ -394,6 +701,56 @@ mod tests {
         assert_eq!(scan.tasks[0].run_delay_ns, Some(250));
         assert!(scan.schedstat_readable);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// スレッドの `stat` を開いたまま読む (T.32.21): 消えたスレッドの記述子は閉じ、
+    /// 生まれたスレッドは読み、読んだ値は開いて読むのと同じ。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kept_task_files_follow_threads_that_come_and_go() {
+        let root = std::path::Path::new("/proc/self/task");
+        let mut files = TaskStatFiles::new(1024);
+        let mut buf = Vec::new();
+        let none = |_, _, _| Known::default();
+        let before = scan_tasks_reusing(root, &mut buf, &mut files, none).unwrap();
+        assert_eq!(files.len(), before.tasks.len());
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let h = std::thread::Builder::new()
+            .name("kept-probe".into())
+            .spawn(move || rx.recv().ok())
+            .unwrap();
+        // 名前は生まれたスレッドが自分で付けるので、見えるまで少し待つ
+        let probe_tid = (0..200)
+            .find_map(|_| {
+                let during = scan_tasks_reusing(root, &mut buf, &mut files, none).unwrap();
+                let tid = during
+                    .tasks
+                    .iter()
+                    .find(|t| t.comm == "kept-probe")
+                    .map(|t| t.tid);
+                if tid.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                tid
+            })
+            .expect("生まれたスレッドが見える");
+        assert!(files.map.contains_key(&probe_tid));
+        // 開いて読むのと同じ名前と状態
+        let fresh = scan_tasks(root, &mut buf).unwrap();
+        let f = fresh.tasks.iter().find(|t| t.tid == probe_tid).unwrap();
+        assert_eq!(f.comm, "kept-probe");
+        tx.send(()).unwrap();
+        h.join().unwrap();
+        let after = scan_tasks_reusing(root, &mut buf, &mut files, none).unwrap();
+        assert!(after.tasks.iter().all(|t| t.tid != probe_tid));
+        assert!(
+            !files.map.contains_key(&probe_tid),
+            "消えたスレッドの記述子は閉じる"
+        );
+        // 上限 0 は開いたままにしない
+        let mut none_kept = TaskStatFiles::new(0);
+        scan_tasks_reusing(root, &mut buf, &mut none_kept, none).unwrap();
+        assert!(none_kept.is_empty());
     }
 
     /// 実機では自分のスレッドが読めること (`/proc` があれば)。
