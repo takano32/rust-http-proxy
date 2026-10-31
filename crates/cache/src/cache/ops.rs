@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::entry::{Body, CachedResponse, head_len, read_head};
 use super::format::Meta;
-use super::key::{CacheKey, cache_key};
+use super::key::{CacheKey, KeyMap, cache_key};
 use super::quota::is_permanent;
 use super::sink::{StoreOutcome, StoreSink};
 use super::{Cache, CacheSource, now_epoch};
@@ -185,13 +185,72 @@ impl Cache {
         Some(resp)
     }
     /// URL とバリアントの対応を覚えておく (無効化用)。
+    ///
+    /// **表に上限がある** (T.32.6)。0.30.4 までは保存を始めるたび (保存に至らなかった回も) に 1 行
+    /// 足し、消すのは無効化と全消しだけだったので、名前の違う GET を撃たれると伸び続けた。
+    /// - バリアントの無いキー (= URL そのもののキー) は覚えない ([`invalidate`](Self::invalidate)
+    ///   はそれを必ず消すので、覚えても使わない)
+    /// - 行の数が [`variants_limit`](Self::variants_limit) に届いたら、もう両層に無いキーを
+    ///   捨てる (追い出し・期限切れ・保存に至らなかったもの)。残るのは両層に居るバリアントだけ
+    ///   なので、表は両層の件数を越えない
     pub fn remember_variant(&self, url: &str, key: CacheKey) {
         let base = cache_key("GET", url);
-        let mut v = self.variants.locked();
-        let list = v.entry(base).or_default();
-        if !list.contains(&key) {
-            list.push(key);
+        if key == base {
+            return;
         }
+        let full = {
+            let mut v = self.variants.locked();
+            let list = v.entry(base).or_default();
+            if !list.contains(&key) {
+                list.push(key);
+            }
+            v.len() >= self.variants_limit()
+        };
+        if full {
+            self.prune_variants();
+        }
+    }
+
+    /// バリアントの表の行の数 (T.32.6。試験と `/status` 向け)。
+    pub fn variants_len(&self) -> usize {
+        self.variants.locked().len()
+    }
+
+    /// 掃除を始める行の数: 両層の件数の 2 倍 (下限 4,096)。掃除のあとは両層の件数以下に
+    /// なるので、次の掃除までに少なくとも同じだけ足される (1 回あたりの手間は均すと定数)。
+    fn variants_limit(&self) -> usize {
+        let live = self.mem.usage().1 + self.disk.usage().1;
+        live.saturating_mul(2).max(4096)
+    }
+
+    /// もう両層に無いバリアントを表から捨てる (T.32.6)。層を引く間は表の鍵を持たない
+    /// (取り出して調べ、その間に足された行と混ぜて戻す)。
+    fn prune_variants(&self) {
+        let taken = std::mem::take(&mut *self.variants.locked());
+        let before = taken.len();
+        let mut kept: KeyMap<Vec<CacheKey>> = KeyMap::default();
+        for (base, mut list) in taken {
+            list.retain(|k| self.mem.peek(*k).is_some() || self.disk.lookup(*k).is_some());
+            if !list.is_empty() {
+                kept.insert(base, list);
+            }
+        }
+        let mut v = self.variants.locked();
+        for (base, list) in v.drain() {
+            let into = kept.entry(base).or_default();
+            for k in list {
+                if !into.contains(&k) {
+                    into.push(k);
+                }
+            }
+        }
+        *v = kept;
+        log_debug!(
+            None,
+            "cache variants pruned: {} -> {} urls",
+            before,
+            v.len()
+        );
     }
     /// URL のすべてのバリアントを消す (unsafe メソッドへの成功応答時, RFC 9111 §4.4)。
     /// 再起動前に保存されたバリアントは把握できないので、ベストエフォート。

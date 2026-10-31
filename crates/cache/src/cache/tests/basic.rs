@@ -172,3 +172,41 @@ fn coalescing_is_skipped_for_keys_that_were_not_stored() {
         cache.to_json()
     );
 }
+
+/// 名前の違うキャッシュ可能な GET を 50,000 本保存して追い出しても、バリアントの表は
+/// 掃除の上限 (両層の件数の 2 倍、下限 4,096) を越えず、無効化は効いたまま (T.32.6)。
+/// 0.30.4 までは 1 本ごとに 1 行足して消さなかった (50,000 行)。
+#[test]
+fn variants_table_stays_bounded_after_evictions() {
+    let mut cfg = CacheConfig::fixed(MIB, 0, test_dir("shp-test-variants-bound"));
+    cfg.reserve = Reserve::Off;
+    let cache = Cache::new(cfg);
+    let mut max_len = 0;
+    for i in 0..50_000 {
+        let url = format!("http://example.com/v/{}", i);
+        // URL そのもののキーは覚えない。Vary で分かれたキーだけが表に入る
+        let plain = cache_key("GET", &url);
+        let gz = crate::cache::cache_key_variant("GET", &url, "gzip");
+        cache.put(plain, &url, vec![b'p'; 512], Duration::from_secs(60), 1);
+        cache.put(gz, &url, vec![b'g'; 512], Duration::from_secs(60), 1);
+        max_len = max_len.max(cache.variants_len());
+    }
+    let live = cache.mem_usage().1 + cache.disk_usage().1;
+    assert!(
+        live < 50_000,
+        "メモリ 1 MiB なので追い出されている ({})",
+        live
+    );
+    assert!(
+        max_len <= (live * 2).max(4096),
+        "表 {} 行 (両層 {} 件)",
+        max_len,
+        live
+    );
+    // 最後の 1 本は両層に居るので、表から無効化できる
+    let url = "http://example.com/v/49999";
+    let gz = crate::cache::cache_key_variant("GET", url, "gzip");
+    assert!(cache.get(gz, 1).is_some());
+    assert_eq!(cache.invalidate(url, 1), 2);
+    assert!(cache.get(gz, 1).is_none());
+}
