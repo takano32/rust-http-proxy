@@ -1327,26 +1327,128 @@ fn the_destination_with_the_most_web_errors_is_counted_per_hour() {
     assert_eq!((cur.hour, cur.errors, cur.top_errors), (hour + 3600, 0, 0));
 }
 
-/// **T.30.4**: ホスト別統計が溢れて `other` に畳まれた宛先のエラーは、合計には入るが 1 つの宛先としては数えない。
+/// **T.32.10 (a)**: ホスト別統計が満杯のとき、新しい鍵は `last_seen` のいちばん古い行を 1 つ捨てて入る
+/// (前は全部 `other` に畳まれた)。捨てた行の通算は `other` に足し、捨てた数は `hosts_evicted` に出る。
+/// 空きがあるうちは何も捨てない。
 #[test]
-fn errors_folded_into_other_are_not_one_destination() {
+fn a_full_host_table_drops_the_oldest_row_for_a_new_key() {
+    let m = Metrics::new();
+    let now = crate::cache::now_epoch();
+    // 1,000 行が埋まった表 (どの行も 14 日前が最後。h0 だけ 20 日前)
+    let rows = (0..MAX_HOSTS)
+        .map(|i| {
+            let age = if i == 0 { 20 } else { 14 } * 86_400;
+            let s = HostStats {
+                requests: 2,
+                last_seen: now - age,
+                errors_by_cause: [1, 0, 0, 0, 0, 0, 0, 0],
+                dns_by_cause: [1, 0],
+                ..HostStats::default()
+            };
+            (format!("connect://h{i}.example:443"), s)
+        })
+        .collect();
+    m.restore(rows, Vec::new());
+    let nx_before = m.dns_cause_totals();
+    m.record_host("connect://new.example:443", HostOutcome::Bypass, 0);
+    let hosts = m.hosts_sorted();
+    assert_eq!(hosts.len(), MAX_HOSTS, "表の大きさは変わらない");
+    let names: Vec<&str> = hosts.iter().map(|(h, _)| h.as_str()).collect();
+    assert!(
+        names.contains(&"connect://new.example:443"),
+        "新しい鍵が行を持つ"
+    );
+    assert!(
+        !names.contains(&"connect://h0.example:443"),
+        "いちばん古い行を捨てる"
+    );
+    // `other` の行を作るぶんもう 1 行捨てる (1,000 行に収める)
+    assert_eq!(m.hosts_evicted(), 2);
+    let other = &hosts.iter().find(|(h, _)| h == "other").expect("other").1;
+    assert_eq!(other.requests, 4, "捨てた 2 行の通算は other に足す");
+    assert_eq!(m.dns_cause_totals(), nx_before, "表を舐めた合計は減らない");
+    // 既にある鍵は何も捨てない
+    m.record_host("connect://new.example:443", HostOutcome::Bypass, 0);
+    assert_eq!(m.hosts_evicted(), 2);
+    // 次の新しい鍵は 1 行だけ捨てる (`other` は捨てない)
+    m.record_host("connect://new2.example:443", HostOutcome::Bypass, 0);
+    assert_eq!(m.hosts_evicted(), 3);
+    assert_eq!(m.hosts_sorted().len(), MAX_HOSTS);
+    assert!(
+        m.to_json().contains(",\"hosts_evicted\":3}"),
+        "`/status` の末尾に出る"
+    );
+}
+
+/// **T.32.10 (c)**: `/slo` の宛先は、ホスト別統計から切り離した小さな表で数える。満杯の表から
+/// `other` に畳まれる宛先 (捨てられる行が無いとき) でも、その時間のエラーの宛先として数える。
+#[test]
+fn web_errors_count_their_destination_even_when_the_host_table_cannot_take_it() {
     let m = Metrics::new();
     let now = away_from_the_hour_boundary();
     m.web_error_hours(now);
     let took = Some(Duration::from_millis(5));
-    for i in 0..MAX_HOSTS {
-        let key = format!("connect://h{}.example:443", i);
-        m.record_host_detail(&key, HostOutcome::Bypass, 0, took, Detail::default());
+    // 満杯の表 (どの行も今使われている時系列の枠を持つ = 捨てられない。`other` に畳まれる形)
+    let rows = (0..MAX_HOSTS)
+        .map(|i| {
+            let s = HostStats {
+                requests: 1,
+                last_seen: now,
+                series_slot: Some(0),
+                ..HostStats::default()
+            };
+            (format!("connect://h{i}.example:443"), s)
+        })
+        .collect();
+    m.restore(rows, Vec::new());
+    let e = Detail {
+        cause: Some(ErrCause::Timeout),
+        ..Detail::default()
+    };
+    for _ in 0..3 {
+        m.record_host_detail("connect://late.example:443", HostOutcome::Error, 0, took, e);
     }
-    for i in 0..3 {
-        let key = format!("connect://late{}.example:443", i);
-        let e = Detail {
-            cause: Some(ErrCause::Timeout),
-            ..Detail::default()
-        };
+    m.record_host_detail(
+        "connect://late2.example:443",
+        HostOutcome::Error,
+        0,
+        took,
+        e,
+    );
+    assert_eq!(m.hosts_evicted(), 0, "捨てられる行が無い");
+    assert!(m.hosts_sorted().iter().any(|(h, _)| h == "other"));
+    let (_, cur) = m.web_error_hours(now);
+    assert_eq!(
+        (cur.errors, cur.destination.as_str(), cur.top_errors),
+        (4, "connect://late.example:443", 3)
+    );
+    // 行が無いので成功は数えられない (試行 = エラーだけ)
+    assert_eq!(cur.top_attempts, 3);
+}
+
+/// **T.32.10 (c)**: 小さな表は 64 宛てまで。溢れた宛先は合計にだけ入る。
+#[test]
+fn the_destination_table_of_the_hour_holds_up_to_64() {
+    let m = Metrics::new();
+    let now = away_from_the_hour_boundary();
+    m.web_error_hours(now);
+    let took = Some(Duration::from_millis(5));
+    let e = Detail {
+        cause: Some(ErrCause::Refused),
+        ..Detail::default()
+    };
+    for i in 0..web_dest::MAX_DESTS {
+        let key = format!("connect://d{i}.example:443");
         m.record_host_detail(&key, HostOutcome::Error, 0, took, e);
     }
+    // 65 個目は 2 件出しても宛先にはならない
+    for _ in 0..2 {
+        m.record_host_detail("connect://late.example:443", HostOutcome::Error, 0, took, e);
+    }
     let (_, cur) = m.web_error_hours(now);
-    assert_eq!((cur.errors, cur.top_errors), (3, 0));
-    assert_eq!(cur.destination, "");
+    assert_eq!(cur.errors, web_dest::MAX_DESTS as u64 + 2);
+    assert_eq!(
+        (cur.destination.as_str(), cur.top_errors),
+        ("connect://d0.example:443", 1)
+    );
 }

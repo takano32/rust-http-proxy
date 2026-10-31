@@ -6,10 +6,15 @@
 //! `slo` が [`DestHour`] を読んでする (エラーが 2 件以上で、いちばん多い宛先がその時間のエラーの半分以上なら、
 //! その宛先の試行とエラーを分子と分母から外す)。ここは**数えるだけ**。
 //!
-//! **持ち方**: 宛先ごとの数はホスト別統計の行 ([`HostStats::web_hour`]) に持つ (覚える宛先の数の上限は
-//! ホスト別統計と同じ [`super::MAX_HOSTS`]。溢れて `other` に畳まれた行は宛先として数えない)。表の側
-//! ([`DestTable`]) に持つのは、いまの時間・その時間のエラーの合計・いちばん多い宛先の名前と件数と、
-//! 確定した前の時間の 1 行だけ。
+//! **持ち方 (T.32.10 で変えた)**: その時間の宛先ごとのエラーの数は、ホスト別統計から切り離した小さな表
+//! ([`DestTable`] の `counts`、[`MAX_DESTS`] 行まで) に持つ。前はホスト別統計の行に持っていたので、表が
+//! 1,000 行で満杯になって `other` に畳まれた宛先 (tokyo の 0.30.4 では `pravda.me:443` も 10-30 20Z の 2 つも)
+//! は宛先として数えられず、48 時間で 1 時間も外せなかった。小さな表はその時間のエラーの宛先だけを持ち、
+//! 時間の区切りで空にする。溢れた宛先は合計にだけ入る。表の側に持つのはほかに、いまの時間・その時間の
+//! エラーの合計・いちばん多い宛先の名前と件数と、確定した前の時間の 1 行。
+//!
+//! いちばん多い宛先の**成功**の本数だけはホスト別統計の行 ([`HostStats::web_hour`]) から読む (下)。行が
+//! 無ければ (その時間のうちに満杯の表から捨てられた) 成功は 0 と見る (外す試行が少なめになるだけ)。
 //!
 //! **熱い経路に足したのはエラーのときだけ**: 成功の本数は、時間の区切りでホスト別統計の行の
 //! `timed` (応答時間を測った要求の通算) と `timed_errors` を写しておき、その差で出す
@@ -25,13 +30,19 @@ use super::HostStats;
 use std::collections::HashMap;
 
 const HOUR: u64 = 3600;
+/// 1 時間に覚える「エラーを出した 443・80 の宛先」の数の上限 (T.32.10)。
+///
+/// tokyo の 0.30.4 の 48 時間で、443・80 のエラーのあった時間の宛先は多くても数個。外すのは
+/// 「その時間のエラーの半分以上」を出した 1 つだけなので、64 を越えるほどばらけた時間に
+/// 外す宛先は無い (溢れた宛先を数えなくても判定は変わらない)。1 行は名前 + 8 バイト。
+pub(super) const MAX_DESTS: usize = 64;
 
 /// 1 時間ぶんの「いちばん多くエラーを出した 443・80 の宛先」(T.30.4。`/slo` が読む)。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DestHour {
     /// その時間の 0 分 (epoch 秒)
     pub hour: u64,
-    /// その時間の、名前解決に成功した 443・80 宛てのエラーの合計 (`other` に畳まれた宛先のぶんも入る)
+    /// その時間の、名前解決に成功した 443・80 宛てのエラーの合計 (小さな表から溢れた宛先のぶんも入る)
     pub errors: u64,
     /// いちばん多くエラーを出した宛先 (ホスト別統計の鍵)。エラーが 0 件なら空
     pub destination: String,
@@ -46,6 +57,8 @@ pub(super) struct DestTable {
     /// いま数えている時間 (0 = まだ 1 回も切り替えていない)
     hour: u64,
     errors: u64,
+    /// その時間の宛先ごとのエラー (ホスト別統計の鍵, 件数)。[`MAX_DESTS`] 行まで (T.32.10)
+    counts: Vec<(String, u64)>,
     top: String,
     top_errors: u64,
     /// 確定した前の時間 (切り替えたときに写す)
@@ -71,6 +84,7 @@ impl DestTable {
         }
         self.hour = hour;
         self.errors = 0;
+        self.counts.clear();
         self.top.clear();
         self.top_errors = 0;
     }
@@ -78,25 +92,29 @@ impl DestTable {
     /// エラー 1 件 (ホスト別統計の行を数えたあと。**エラーの経路だけ**から呼ぶ)。
     ///
     /// `timed` は応答時間を測ったエラーか、`web` は名前解決に成功した 443・80 宛てのエラーか。
-    /// `key` は行の鍵 (`other` に畳まれたときは `other`)。`roll` を先に済ませてあること。
+    /// `stats` はそのエラーを数えた行 (`other` に畳まれたときは `other` の行)、`key` は**宛先の鍵**
+    /// (畳まれても本当の宛先。T.32.10)。`roll` を先に済ませてあること。
     pub(super) fn on_error(&mut self, stats: &mut HostStats, key: &str, timed: bool, web: bool) {
-        let w = &mut stats.web_hour;
-        w.timed_errors += timed as u64;
+        stats.web_hour.timed_errors += timed as u64;
         if !web {
             return;
         }
         self.errors += 1;
-        if key == "other" {
+        // 宛先は小さな表で数える (64 行を舐めるのはエラーの経路だけ)
+        let n = match self.counts.iter().position(|(k, _)| k == key) {
+            Some(i) => {
+                self.counts[i].1 += 1;
+                self.counts[i].1
+            }
+            None if self.counts.len() < MAX_DESTS => {
+                self.counts.push((key.to_string(), 1));
+                1
+            }
             // 溢れた宛先は 1 つの宛先として数えない (合計には入れる)
-            return;
-        }
-        if w.hour != self.hour {
-            w.hour = self.hour;
-            w.errors = 0;
-        }
-        w.errors += 1;
-        if w.errors > self.top_errors {
-            self.top_errors = w.errors;
+            None => return,
+        };
+        if n > self.top_errors {
+            self.top_errors = n;
             if self.top != key {
                 self.top.clear();
                 self.top.push_str(key);
@@ -114,20 +132,19 @@ impl DestTable {
         if self.top_errors == 0 {
             return out;
         }
-        let Some(s) = map.get(&self.top) else {
-            return out;
-        };
-        let w = &s.web_hour;
-        let errors = if w.hour == self.hour { w.errors } else { 0 };
-        // 窓に入る成功 (forward の `blocked://`・`loop://` は窓に入らない。CONNECT はいつも入る)
+        let errors = self.top_errors;
+        // 窓に入る成功 (forward の `blocked://`・`loop://` は窓に入らない。CONNECT はいつも入る)。
+        // 成功の本数はホスト別統計の行から (行が無ければ 0)
         let counted = self.top.starts_with("connect://")
             || !(self.top.starts_with("blocked://") || self.top.starts_with("loop://"));
-        let ok = if counted {
-            s.timed
-                .saturating_sub(w.base_timed)
-                .saturating_sub(w.timed_errors.saturating_sub(w.base_timed_errors))
-        } else {
-            0
+        let ok = match map.get(&self.top) {
+            Some(s) if counted => {
+                let w = &s.web_hour;
+                s.timed
+                    .saturating_sub(w.base_timed)
+                    .saturating_sub(w.timed_errors.saturating_sub(w.base_timed_errors))
+            }
+            _ => 0,
         };
         out.destination = self.top.clone();
         out.top_errors = errors;

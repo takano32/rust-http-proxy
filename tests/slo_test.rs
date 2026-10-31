@@ -495,5 +495,112 @@ fn test_integration_slo_error_rate_leaves_out_one_destination_with_most_of_the_e
     slo::reset();
 }
 
-/// 4 本の試験は同じ大域の集計 (`slo::observe`) を使うので直列にする。
+/// **T.32.10 の受け入れ基準**: ホスト別統計が 1,000 行で埋まり、どの行も最後に使われたのが 14 日前の表でも、
+/// 新しい宛先 `pravda.example:443` の時間切れ 4 件と `:443` の成功 400 本を流すと、その宛先を外して満たす。
+/// 前は満杯の表に来た新しい鍵が全部 `other` に畳まれ、`other` は宛先にならないので 1 時間も外せなかった
+/// (tokyo の 0.30.4 の 48 時間で `excluded` 0 時間)。
+#[test]
+fn test_integration_slo_leaves_out_a_new_destination_even_when_the_host_table_is_full() {
+    use rust_http_proxy::cache::{Cache, CacheConfig};
+    use rust_http_proxy::metrics::{Detail, ErrCause, HostOutcome, HostStats, MAX_HOSTS, Metrics};
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    slo::reset();
+    let port = start_test_proxy(proxy_config());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    if now % 3600 >= 3590 {
+        std::thread::sleep(std::time::Duration::from_secs(3600 - now % 3600 + 1));
+    }
+    let now = now.max(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    );
+    let m = Metrics::new();
+    // 状態ファイルから読み戻した満杯の表 (14 日前が最後の 1,000 行)
+    let old = (0..MAX_HOSTS)
+        .map(|i| {
+            let s = HostStats {
+                requests: 2,
+                last_seen: now - 14 * 86_400,
+                ..HostStats::default()
+            };
+            (format!("connect://old{i}.example:443"), s)
+        })
+        .collect();
+    m.restore(old, Vec::new());
+    let cache = Cache::new(CacheConfig::disabled());
+    let took = Some(std::time::Duration::from_millis(20));
+    m.web_error_hours(now);
+    for _ in 0..400 {
+        let ok = Detail {
+            connect_ms: 20,
+            origin_rtt_us: 18_000,
+            ..Detail::default()
+        };
+        m.record_host_detail(
+            "connect://www.example.com:443",
+            HostOutcome::Bypass,
+            0,
+            took,
+            ok,
+        );
+    }
+    for _ in 0..4 {
+        let e = Detail {
+            cause: Some(ErrCause::Timeout),
+            connect_ms: 3000,
+            ..Detail::default()
+        };
+        m.record_host_detail(
+            "connect://pravda.example:443",
+            HostOutcome::Error,
+            0,
+            Some(std::time::Duration::from_secs(3)),
+            e,
+        );
+    }
+    let mut s = rust_http_proxy::history::take_sample(&m, &cache);
+    let (prev, cur) = m.web_error_hours(s.t);
+    s.t = cur.hour;
+    assert_eq!(
+        (
+            cur.errors,
+            cur.destination.as_str(),
+            cur.top_errors,
+            cur.top_attempts
+        ),
+        (4, "connect://pravda.example:443", 4, 4),
+        "{:?}",
+        cur
+    );
+    // 新しい鍵は古い行を捨てて入った (`other` の行を作るぶんを含めて 3 行)
+    assert_eq!(m.hosts_evicted(), 3);
+    let hosts = m.hosts_sorted();
+    assert_eq!(hosts.len(), MAX_HOSTS);
+    let www = hosts
+        .iter()
+        .find(|(h, _)| h == "connect://www.example.com:443");
+    assert_eq!(www.map(|(_, s)| s.requests), Some(400));
+    slo::observe(&s);
+    slo::observe_destinations(prev.as_ref(), &cur);
+    let body = endpoint_json(port, "/slo?days=1");
+    // 外して 0 / 400 で満たす (外さなければ 4 / 404 = 0.0099 で外れる)
+    assert!(
+        body.contains(&format!(
+            "[{},1,1,[0,0,0,0],[[0,400],[0,400]],{{\"destination\":\"connect://pravda.example:443\",\
+             \"errors\":4,\"attempts\":4,\"hour_errors\":4}}]",
+            cur.hour
+        )),
+        "{}",
+        body
+    );
+    assert!(body.contains("\"breaches\":[]"), "{}", body);
+    slo::reset();
+}
+
+/// ここの試験は同じ大域の集計 (`slo::observe`) を使うので直列にする。
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());

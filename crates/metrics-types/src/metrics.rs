@@ -606,7 +606,7 @@ pub struct HostStats {
 ///
 /// **成功の経路では 1 つも触らない**: この時間の成功の本数は、時間の区切りで写した
 /// `timed` (応答時間を測った要求の通算) と `timed_errors` (そのうちエラー) からの差で出す
-/// (成功 = Δ`timed` − Δ`timed_errors`)。エラーの経路だけが `timed_errors` と `errors` を足す。
+/// (成功 = Δ`timed` − Δ`timed_errors`)。エラーの経路だけが `timed_errors` を足す。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WebHour {
     /// 応答時間を測ったエラーの通算 (起動から。エラーの経路で足す)
@@ -614,10 +614,8 @@ pub struct WebHour {
     /// 時間の区切りで写した [`HostStats::timed`] と `timed_errors`
     pub base_timed: u64,
     pub base_timed_errors: u64,
-    /// `errors` を数えている時間 (その時間の 0 分。epoch 秒)
-    pub hour: u64,
-    /// その時間の、名前解決に成功した 443・80 宛てのエラー (`/slo` の `error_rate` の分子と同じ数え方)
-    pub errors: u64,
+    // その時間のエラーの数は T.32.10 からホスト別統計から切り離した小さな表
+    // (`proxy-metrics-core` の `web_dest::DestTable`) が持つ (表が満杯でも宛先を数えるため)
 }
 
 impl HostStats {
@@ -790,6 +788,49 @@ impl HostStats {
             self.rtt_us_min = us;
         }
         self.retrans = self.retrans.saturating_add(retrans as u64);
+    }
+
+    /// 捨てる行の通算を `self` (`other` の行) に足す (T.32.10。満杯の表から古い行を捨てるとき)。
+    ///
+    /// 通算の欄を全部足すので、表を舐めて足す合計 (`/metrics` の `errors_total{cause="nxdomain"}`
+    /// など) は行を捨てても減らない。最大・最小・最後の時刻は大きい方 / 小さい方。メモリだけの欄の
+    /// うち `series_slot` と `web_hour` (その時間の `/slo` の数え方) は足さない。
+    pub fn absorb(&mut self, o: &HostStats) {
+        self.requests += o.requests;
+        self.hits += o.hits;
+        self.misses += o.misses;
+        self.bypass += o.bypass;
+        self.errors += o.errors;
+        self.blocked += o.blocked;
+        self.bytes += o.bytes;
+        self.timed += o.timed;
+        self.duration_ms_sum += o.duration_ms_sum;
+        self.duration_ms_max = self.duration_ms_max.max(o.duration_ms_max);
+        for (a, b) in self.buckets.iter_mut().zip(o.buckets) {
+            *a += b;
+        }
+        self.last_seen = self.last_seen.max(o.last_seen);
+        self.dns_ms_sum += o.dns_ms_sum;
+        self.dns_misses += o.dns_misses;
+        self.connect_ms_sum += o.connect_ms_sum;
+        self.v4_wins += o.v4_wins;
+        self.v6_wins += o.v6_wins;
+        for (a, b) in self.errors_by_cause.iter_mut().zip(o.errors_by_cause) {
+            *a += b;
+        }
+        for (a, b) in self.dns_by_cause.iter_mut().zip(o.dns_by_cause) {
+            *a += b;
+        }
+        self.rtt_us_sum = self.rtt_us_sum.saturating_add(o.rtt_us_sum);
+        if o.rtt_us_min != 0 && (self.rtt_us_min == 0 || o.rtt_us_min < self.rtt_us_min) {
+            self.rtt_us_min = o.rtt_us_min;
+        }
+        self.rtt_samples += o.rtt_samples;
+        self.retrans = self.retrans.saturating_add(o.retrans);
+        self.bytes_in += o.bytes_in;
+        self.bytes_out += o.bytes_out;
+        self.sni_mismatch += o.sni_mismatch;
+        self.syn_retrans += o.syn_retrans;
     }
 
     /// RTT の平均 (ms)。標本が無ければ `None` (Linux 以外・`--lite` では出ない)。

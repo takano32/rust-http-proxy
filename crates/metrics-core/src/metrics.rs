@@ -103,6 +103,32 @@ struct HostTable {
     /// 443・80 宛てのエラーのいちばん多い宛先 (`/slo` の `error_rate` が外す。T.30.4)。
     /// 同じ鍵の中で、触るのはエラーの経路と履歴スレッドだけ
     dests: web_dest::DestTable,
+    /// 満杯の表から `last_seen` のいちばん古い行を捨てた数 (起動から。T.32.10)
+    evicted: u64,
+}
+
+/// 満杯のホスト表から `last_seen` のいちばん古い行を 1 つ捨て、通算は `other` の行に足す (T.32.10)。
+///
+/// `other` の行と、上位 16 の時系列の枠を持つ行 (`series_slot`) は捨てない。`other` の行を新しく
+/// 作ったときはもう 1 行捨てて、表を [`MAX_HOSTS`] 未満にする。捨てられたら `true`。
+/// 1,000 行を舐めるのは**新しい鍵が満杯の表に来たときだけ** (既にある鍵の要求は通らない)。
+fn evict_oldest_host(t: &mut HostTable) -> bool {
+    while t.map.len() >= MAX_HOSTS {
+        let Some(key) = t
+            .map
+            .iter()
+            .filter(|(k, s)| k.as_str() != "other" && s.series_slot.is_none())
+            .min_by_key(|(_, s)| s.last_seen)
+            .map(|(k, _)| k.clone())
+        else {
+            return false;
+        };
+        if let Some(gone) = t.map.remove(&key) {
+            t.map.entry("other".to_string()).or_default().absorb(&gone);
+            t.evicted += 1;
+        }
+    }
+    true
 }
 
 pub struct Metrics {
@@ -652,18 +678,24 @@ impl Metrics {
             }
             return;
         }
-        let key = if hosts.map.len() >= MAX_HOSTS {
-            "other".to_string()
-        } else {
+        // 満杯なら `last_seen` がいちばん古い行を 1 つ捨てて (通算は `other` に足す) 新しい鍵を入れる
+        // (T.32.10。利用者の決定 (a))。捨てられる行が無いときだけ今までどおり `other` に畳む
+        let key = if hosts.map.len() < MAX_HOSTS || evict_oldest_host(hosts) {
             host.to_string()
+        } else {
+            "other".to_string()
         };
-        let other = key == "other";
         let stats = hosts.map.entry(key).or_default();
         stats.count(now, outcome, bytes, took, detail);
         if failed {
-            let key = if other { "other" } else { host };
-            hosts.dests.on_error(stats, key, took.is_some(), web_error);
+            // `/slo` の宛先は畳まれても本当の鍵で数える (T.32.10 (c))
+            hosts.dests.on_error(stats, host, took.is_some(), web_error);
         }
+    }
+
+    /// 満杯の表から行を捨てた数 (`/status` の `hosts_evicted`。起動から。T.32.10)。
+    pub fn hosts_evicted(&self) -> u64 {
+        self.hosts.locked().evicted
     }
 
     /// 443・80 宛てのエラーのいちばん多い宛先の、確定した前の時間といまの時間 (T.30.4)。

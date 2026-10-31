@@ -172,7 +172,7 @@ impl Metrics {
     /// `rate_bps_total` は T14.39、`rejected_requests` は T14.28、`sni_mismatches` は
     /// T14.38、`self_bench` は T14.43、`readers` は T14.53、`syn_retrans_total` は
     /// T14.46、`records` は T14.41、`heavy_rejected` は T14.51、`slow_transfer_closed` は
-    /// T.29.34 で末尾に足したもの。
+    /// T.29.34、`hosts_evicted` は T.32.10 で末尾に足したもの。
     /// `boot` は T24.0 で `kernel` の隣 (直後) に足した (**既存の鍵の順は動かさない**)。
     fn push_tail(
         &self,
@@ -189,7 +189,7 @@ impl Metrics {
                 "\"kernel\":{},\"boot\":{},\"memory\":{},\"recent_quantiles\":{},\"rate_bps_total\":{},",
                 "\"rejected_requests\":{},\"sni_mismatches\":{},\"self_bench\":{},",
                 "\"readers\":{},\"syn_retrans_total\":{},\"records\":\"{}\",",
-                "\"heavy_rejected\":{},\"slow_transfer_closed\":{}}}"
+                "\"heavy_rejected\":{},\"slow_transfer_closed\":{},\"hosts_evicted\":{}}}"
             ),
             // カーネルと cgroup の統計 (5 秒の標本で読んだ最新の値。T14.12)。
             // ここから直に呼べるのは `dns` / `ipv6` と同じ**下の層**だから
@@ -222,7 +222,9 @@ impl Metrics {
             // 重い口が 1 本走っている最中に来て 503 で断った数 (T14.51)
             self.heavy_rejected.load(Ordering::Relaxed),
             // 転送中の最小の速さを下回って切った本数 (向きごと。T.29.34)。原子 3 本を読むだけ
-            slow_transfer_closed_json()
+            slow_transfer_closed_json(),
+            // 満杯のホスト別統計から古い行を捨てた数 (T.32.10)。ホスト表の鍵 1 回
+            self.hosts_evicted()
         );
     }
 }
