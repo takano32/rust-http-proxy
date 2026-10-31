@@ -112,6 +112,13 @@ pub struct Summary {
     /// 名前解決を除いた「確立 − オリジン側の RTT」の分布 (T.29.12 の `conn_excess`)。
     /// 異常検知の `connect_p95` はこちらで読む (T.29.11)。`/history?summary=1` の JSON には出さない
     pub conn_excess: Window,
+    /// `dns_misses` のうち名前解決に失敗した試みが払ったぶん (標本の `dns_fail_misses`。T.32.36)。
+    /// 異常検知の `dns_miss_rate` は `/slo` と同じく `(dns_misses − dns_fail_misses) ÷ 確立` で読む。
+    /// JSON には出さない (`conn_excess` と同じ)
+    pub dns_fail_misses: u64,
+    /// 名前解決に成功した 443・80 以外の宛先へのエラー (標本の `other_port_errors`。T.32.36)。
+    /// 異常検知の `errors` は `/slo` と同じく引く。JSON には出さない
+    pub other_port_errors: u64,
 }
 
 impl Summary {
@@ -138,6 +145,35 @@ impl Summary {
         self.dns_ms_sum += s.dns_ms_sum;
         self.active_max = self.active_max.max(s.active_max).max(s.active as u64);
         self.conn_excess.merge(&s.conn_excess);
+        self.dns_fail_misses += s.dns_fail_misses;
+        self.other_port_errors += s.other_port_errors;
+    }
+
+    /// 名前解決に失敗したエラー (原因 `dns` の全部。`nxdomain` も `dns_temp` も。T.32.36)。
+    pub fn dns_failed_errors(&self) -> u64 {
+        self.errors_by_cause[crate::metrics::ErrCause::Dns as usize].min(self.errors)
+    }
+
+    /// `/slo` の `error_rate` の分子と同じ数え方のエラー (T.32.36。利用者の決定 (a)):
+    /// **エラー − 名前解決の失敗 − 443・80 以外の宛先のエラー**。T.30.3 より前の標本は
+    /// `other_port_errors` が 0 なので、名前解決の失敗だけを引いた数になる。
+    pub fn web_errors(&self) -> u64 {
+        let resolved = self.errors - self.dns_failed_errors();
+        resolved - self.other_port_errors.min(resolved)
+    }
+
+    /// 名前解決に成功した試みが払ったミス (`dns_misses − dns_fail_misses`。T.32.36)。
+    pub fn resolved_dns_misses(&self) -> u64 {
+        self.dns_misses.saturating_sub(self.dns_fail_misses)
+    }
+
+    /// `/slo` の `dns_miss_per_connect` と同じ数え方の率 (名前解決に成功したミス ÷ 確立。T.32.36)。
+    pub fn resolved_dns_miss_per_connect(&self) -> f64 {
+        if self.connect.count == 0 {
+            0.0
+        } else {
+            self.resolved_dns_misses() as f64 / self.connect.count as f64
+        }
     }
 
     /// 確立した CONNECT の本数。

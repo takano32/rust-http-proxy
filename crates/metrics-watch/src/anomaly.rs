@@ -16,12 +16,12 @@
 //! |---|---|
 //! | `connect_p95` | CONNECT 1 本ごとの「確立 − オリジン側の RTT」(名前解決を除く。T.29.11) の p95 (直近 5 分) が直近 1 時間の p95 の [`CONNECT_RATIO`] 倍以上、かつ [`CONNECT_MIN_MS`] 以上、かつ [`CONNECT_MIN_SAMPLES`] 本以上 |
 //! | `dns_slow` | 名前解決のミス 1 回の平均 (直近 5 分) が [`DNS_MISS_MS`] と canary の基準線の [`DNS_CANARY_RATIO`] 倍の大きい方以上、かつ [`DNS_MIN_MISSES`] 回以上 (T17.1)、かつ窓のミスの合計が [`DNS_MIN_SUM_MS`] 以上 (T22.2) |
-//! | `errors` | エラーが 5 分で [`ERRORS_MIN`] 件以上 (**`nxdomain` は数えない**。T.28.17) |
+//! | `errors` | エラーが 5 分で [`ERRORS_MIN`] 件以上 (**`/slo` の `error_rate` と同じ数え方**: 名前解決の失敗 (原因 `dns` の全部) と 443・80 以外の宛先のエラーは数えない。T.32.36) |
 //! | `active_high` | 同時接続の山が `max_conns` の [`ACTIVE_PERCENT`]% 以上 (T14.6 の写真と同じ閾。写真があればその番号) |
 //! | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が増えた |
 //! | `cpu_throttled` | 直近 5 分に絞られた期間の割合が [`CPU_THROTTLED`] 以上 (T15.0 (6)) |
 //! | `tunnel_spin` | 5 秒に [`TUNNEL_SPIN_DELTA`] 回以上空回りするトンネルが [`TUNNEL_SPIN_SECS`] 秒続いた (T15.0 (6)) |
-//! | `dns_miss_rate` | 名前解決のミスが直近 1 時間で [`DNS_MISS_RATE`] 回/接続 以上 (T15.0 (9)) |
+//! | `dns_miss_rate` | 名前解決に成功したミス (`dns_misses − dns_fail_misses`。`/slo` と同じ。T.32.36) が直近 1 時間で [`DNS_MISS_RATE`] 回/接続 以上 (T15.0 (9)) |
 //! | `new_client` | `/clients` の `first_seen` がこの周期の窓の中 (**規則 6**。T14.54) |
 //!
 //! **規則 6 だけは形が違う**: 上の 8 種が「立つ / 収まる」の状態を持つ (同じ種類は
@@ -274,11 +274,6 @@ pub struct Counters {
     /// canary の名前解決の中央値 (ms。直近 [`BASE_SECS`] 秒。T17.1)。
     /// `None` = canary が `off` か、窓に 1 回も無い
     pub canary_dns_p50_ms: Option<u64>,
-    /// 名前解決の失敗のうち `nxdomain` の通算 ([`Metrics::dns_cause_totals`] の 1 番目。T.28.17)。
-    ///
-    /// 客が無い名前を頼んだ (= `blocked` と同じ客の都合) ので `errors` の判定から外す。
-    /// 標本 (`.rrd`) は DNS の内訳を持たない (T25.0) ので、判定が 5 分ぶんの点を覚えて増分を出す
-    pub nxdomain: u64,
 }
 
 impl Counters {
@@ -310,8 +305,6 @@ impl Counters {
             } else {
                 crate::canaryhist::dns_p50_ms(s.t.saturating_sub(BASE_SECS), s.t)
             },
-            // ホスト別の表を 1 回舐める (最大 1,000 行。5 秒に 1 回、`/status` を組むのと同じ数え方)
-            nxdomain: metrics.dns_cause_totals()[crate::metrics::DnsCause::Nxdomain as usize],
         }
     }
 }
@@ -414,8 +407,6 @@ pub struct Detector {
     /// [`KindState`] は「立つ / 解除」しか持たないので、「1 分続いたら」は
     /// **[`KINDS`] の外に状態を持つ規則** ([`NewClients`] と同じ形) で数える
     spin_since: Option<u64>,
-    /// 直近 5 分ぶんの `nxdomain` の通算 (時刻, 通算)。`errors` から外す数を出す (T.28.17)
-    nx_hist: VecDeque<(u64, u64)>,
 }
 
 /// 規則 6 の覚えていること (T14.54)。
@@ -451,7 +442,6 @@ impl Detector {
             cpu_hist: VecDeque::new(),
             cpu_since: None,
             spin_since: None,
-            nx_hist: VecDeque::new(),
         }
     }
 
@@ -488,9 +478,10 @@ impl Detector {
         };
         let w5 = fold(h, now, WINDOW_SECS);
         let base = fold(h, now, BASE_SECS);
-        // (3) 窓の中の `nxdomain` (客が無い名前を頼んだ) は `errors` に数えない (T.28.17)
-        let nx = self.nxdomain_window(c);
-        let errors = w5.errors.saturating_sub(nx);
+        // (3) `/slo` の `error_rate` と同じ数え方 (T.32.36。利用者の決定 (a)): 名前解決の失敗
+        // (原因 `dns` の全部。T.28.17 の `nxdomain` もここに入る) と 443・80 以外の宛先のエラー
+        // (メール宛の確立の時間切れ) は数えない。どちらも標本の列なので窓を畳むだけで出る
+        let errors = w5.web_errors();
 
         // (1) 確立の p95 は「確立 − RTT」(名前解決を除く) の窓で読む (T.29.11)
         let p95 = w5.conn_excess.quantile_ms(0.95);
@@ -523,8 +514,9 @@ impl Detector {
             self.spin_since = None;
             0
         };
-        // (9) ミスの**率**。窓は 1 時間 (`base`) で、立っている間は `CLEAR` の閾を使う
-        let miss_rate = base.dns_miss_per_connect();
+        // (9) ミスの**率**。窓は 1 時間 (`base`) で、立っている間は `CLEAR` の閾を使う。
+        // 名前解決に失敗した試みのミスは数えない (`/slo` と同じ。T.32.36)
+        let miss_rate = base.resolved_dns_miss_per_connect();
         let miss_limit = if self.state[I_DNS_MISS_RATE].firing {
             DNS_MISS_RATE_CLEAR
         } else {
@@ -564,7 +556,6 @@ impl Detector {
             spinning_total,
             spin_secs,
             dns_limit,
-            nx,
         };
         let mut out = Vec::new();
         for (i, &hit) in hits.iter().enumerate() {
@@ -600,21 +591,6 @@ impl Detector {
             }
         }
         out
-    }
-
-    /// 直近の窓 (`fold(h, now, WINDOW_SECS)` と同じ 5 分 + 1 周期) の `nxdomain` の増分 (T.28.17)。
-    ///
-    /// 窓の標本は `now - WINDOW_SECS <= t <= now` で、それぞれが手前の 1 周期 (5 秒) を持つので、
-    /// 起点は `now - WINDOW_SECS - 5` 秒の点。点がまだそこまで無ければ (起動直後)、いちばん古い点からの増分
-    /// (外す数が少なめに出る = 今までの判定に寄る側)。通算が減ったら (`.rrd` の作り直し) 0 にする
-    fn nxdomain_window(&mut self, c: Counters) -> u64 {
-        self.nx_hist.push_back((c.t, c.nxdomain));
-        let edge = c.t.saturating_sub(WINDOW_SECS + 5);
-        while self.nx_hist.len() > 1 && self.nx_hist.get(1).is_some_and(|p| p.0 <= edge) {
-            self.nx_hist.pop_front();
-        }
-        let first = self.nx_hist.front().map_or(c.nxdomain, |p| p.1);
-        c.nxdomain.saturating_sub(first)
     }
 
     /// 直近 [`WINDOW_SECS`] 秒ぶんの CPU の増分 (T15.0 (6))。
@@ -772,8 +748,6 @@ struct Facts<'a> {
     spin_secs: u64,
     /// `dns_slow` の閾 (ms。[`dns_miss_limit`])
     dns_limit: f64,
-    /// 直近の窓の `nxdomain` (`errors` に数えなかったもの。T.28.17)
-    nx: u64,
 }
 
 /// `dns_slow` の閾 (ms): [`DNS_MISS_MS`] と canary の基準線の [`DNS_CANARY_RATIO`] 倍の
@@ -821,18 +795,24 @@ fn fired_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>) -> String
         ),
         Kind::Errors => {
             let by = causes(&w5.errors_by_cause);
-            // 数は判定に使った数 (`nxdomain` を外したもの)。外したものがあればそれも書く (T.28.17。
-            // 外していなければ文面は今までどおり)。原因の内訳は標本の 8 つのまま (`dns` に `nxdomain` も入る)
+            // 数は判定に使った数 (`/slo` と同じ数え方。T.32.36)。外したもの (名前解決の失敗と
+            // 443・80 以外の宛先のエラー) があればその件数も書く (無ければ文面は今までどおり)。
+            // 原因の内訳は標本の 8 つのまま (外したものも入る)
+            let dns = w5.dns_failed_errors();
+            let other = w5.other_port_errors.min(w5.errors - dns);
+            let mut left_out = String::new();
+            if dns > 0 {
+                let _ = write!(left_out, "; {} dns not counted", dns);
+            }
+            if other > 0 {
+                let _ = write!(left_out, "; {} not to 443/80", other);
+            }
             format!(
                 "{}: {} errors in 5m (threshold {}{}){}{}",
                 head,
-                w5.errors.saturating_sub(f.nx),
+                w5.web_errors(),
                 ERRORS_MIN,
-                if f.nx > 0 {
-                    format!("; {} nxdomain not counted", f.nx)
-                } else {
-                    String::new()
-                },
+                left_out,
                 if by.is_empty() { "" } else { ": " },
                 by
             )
@@ -918,13 +898,19 @@ fn fired_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>) -> String
             s
         }
         // 名前解決のミスの**率** (T15.0 (9))。窓は 1 時間
+        // 名前解決に成功したミスで数える (T.32.36)。失敗のぶんを外していればその回数も書く
         Kind::DnsMissRate => format!(
-            "{}: dns misses {:.2}/connect over 1h (threshold {:.2}; {} misses, {} connects)",
+            "{}: dns misses {:.2}/connect over 1h (threshold {:.2}; {} misses, {} connects{})",
             head,
-            base.dns_miss_per_connect(),
+            base.resolved_dns_miss_per_connect(),
             DNS_MISS_RATE,
-            base.dns_misses,
+            base.resolved_dns_misses(),
             base.connects(),
+            if base.dns_fail_misses > 0 {
+                format!(", {} failed not counted", base.dns_fail_misses)
+            } else {
+                String::new()
+            },
         ),
     }
 }
@@ -945,7 +931,7 @@ fn cleared_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>, mins: u
             ms(w5.dns_miss_avg_ms()),
             w5.dns_misses
         ),
-        Kind::Errors => format!("{} ({} errors in 5m)", head, w5.errors.saturating_sub(f.nx)),
+        Kind::Errors => format!("{} ({} errors in 5m)", head, w5.web_errors()),
         Kind::ActiveHigh => format!("{} (active peaked at {} in 5m)", head, w5.active_max),
         Kind::Rejected => format!("{} (no new rejects for {}m)", head, CLEAR_SECS / 60),
         Kind::CpuThrottled => format!(
@@ -958,7 +944,7 @@ fn cleared_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>, mins: u
         Kind::DnsMissRate => format!(
             "{} (dns misses {:.2}/connect over 1h, {} connects)",
             head,
-            base.dns_miss_per_connect(),
+            base.resolved_dns_miss_per_connect(),
             base.connects()
         ),
     }

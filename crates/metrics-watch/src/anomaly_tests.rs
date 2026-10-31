@@ -2,6 +2,7 @@
 //! 届いていたため)。`check` を通すものは出来事のリングがプロセスで 1 組なので、今までどおり `reset` で片づける。
 
 use super::*;
+use crate::metrics::ErrCause;
 
 /// 5 秒周期の標本 1 本。
 fn point(t: u64) -> Sample {
@@ -343,7 +344,7 @@ fn errors_in_five_minutes_fire_once_and_clear() {
     for _ in 0..2 {
         let mut p = point(t);
         p.errors = 3;
-        p.errors_by_cause[0] = 2;
+        p.errors_by_cause[1] = 2;
         p.errors_by_cause[4] = 1;
         fired.extend(feed(&h, &mut d, p));
         t += 5;
@@ -352,7 +353,7 @@ fn errors_in_five_minutes_fire_once_and_clear() {
     assert_eq!(fired[0].kind, Kind::Errors);
     assert_eq!(
         fired[0].text,
-        "errors: 6 errors in 5m (threshold 5): dns 4, reset 2"
+        "errors: 6 errors in 5m (threshold 5): refused 4, reset 2"
     );
     // 窓から抜けるのに 5 分 + 外れたまま 5 分
     let (_, back) = calm(&h, &mut d, t, 900);
@@ -365,87 +366,96 @@ fn errors_in_five_minutes_fire_once_and_clear() {
     );
 }
 
-/// `nxdomain` の通算を渡して 1 本流す (T.28.17)。
-fn feed_nx(h: &History, d: &mut Detector, s: Sample, nxdomain: u64) -> Vec<Fired> {
-    feed_with(
-        h,
-        d,
-        s,
-        Counters {
-            nxdomain,
-            ..Counters::default()
-        },
-    )
-}
-
-/// (3) `nxdomain` (客が無い名前を頼んだ) だけのエラーは何件あっても立たない (T.28.17)。
-/// メール宛の総当たりで 5 分に 6〜20 件の `nxdomain` が続き、`/events` の環が 5 日で回っていた。
-#[test]
-fn nxdomain_errors_alone_do_not_fire() {
+/// 平常時の 1 分のあと、`n` 本の標本に `each` を当てて流し、`errors` の変わり目だけを返す (T.32.36)。
+fn errors_fired(n: usize, each: impl Fn(&mut Sample)) -> Vec<Fired> {
     let h = History::default();
     let mut d = Detector::new();
     let (mut t, _) = calm(&h, &mut d, 0, 60);
-    let mut nx = 100; // 通算は起動前から動いている (増分だけを見る)
     let mut fired = Vec::new();
-    for _ in 0..120 {
+    for _ in 0..n {
         let mut p = point(t);
-        p.errors = 4;
-        p.errors_by_cause[0] = 4;
-        nx += 4;
-        fired.extend(feed_nx(&h, &mut d, p, nx));
+        each(&mut p);
+        fired.extend(feed(&h, &mut d, p));
         t += 5;
     }
+    fired.retain(|f| f.kind == Kind::Errors);
+    fired
+}
+
+/// (3) 名前解決の失敗 (原因 `dns` の全部。`nxdomain` も `dns_temp` も) だけのエラーは何件あっても立たない
+/// (T.28.17 → T.32.36)。メール宛の総当たりで 5 分に 6〜20 件の `nxdomain` が続き、`/events` の環が 5 日で回っていた。
+#[test]
+fn dns_failures_alone_do_not_fire() {
+    let fired = errors_fired(120, |p| {
+        p.errors = 4;
+        p.errors_by_cause[ErrCause::Dns as usize] = 4;
+        p.dns_misses = 4;
+        p.dns_fail_misses = 4;
+    });
     assert!(
-        fired.iter().all(|f| f.kind != Kind::Errors),
-        "nxdomain だけでは立たない: {:?}",
+        fired.is_empty(),
+        "名前解決の失敗だけでは立たない: {:?}",
         fired
     );
 }
 
-/// (3) `nxdomain` を外した残りが 5 件以上なら立ち、文面に外した数が入る (T.28.17)。
+/// (3) 443 宛ての `refused` が 5 分に 5 件で立つ (T.32.36 の受け入れ基準)。
 #[test]
-fn errors_other_than_nxdomain_still_fire_and_say_what_was_left_out() {
-    let h = History::default();
-    let mut d = Detector::new();
-    let (mut t, _) = calm(&h, &mut d, 0, 60);
-    let mut nx = 0;
-    let mut fired = Vec::new();
-    // 1 標本に timeout 2 件 + nxdomain 3 件 を 3 回 = 数えるのは 6 件 (3 回目で越える)
-    for _ in 0..3 {
-        let mut p = point(t);
-        p.errors = 5;
-        p.errors_by_cause[0] = 3;
-        p.errors_by_cause[3] = 2;
-        nx += 3;
-        fired.extend(feed_nx(&h, &mut d, p, nx));
-        t += 5;
-    }
-    let errs: Vec<_> = fired.iter().filter(|f| f.kind == Kind::Errors).collect();
-    assert_eq!(errs.len(), 1, "{:?}", fired);
+fn five_refused_to_443_in_five_minutes_fire() {
+    let fired = errors_fired(5, |p| {
+        p.errors = 1;
+        p.errors_by_cause[ErrCause::Refused as usize] = 1;
+    });
+    assert_eq!(fired.len(), 1, "{:?}", fired);
     assert_eq!(
-        errs[0].text,
-        "errors: 6 errors in 5m (threshold 5; 9 nxdomain not counted): dns 9, timeout 6"
+        fired[0].text,
+        "errors: 5 errors in 5m (threshold 5): refused 5"
     );
-    // 2 回目の時点では 4 件 (立たない) だったこと = 外した数が効いている
-    assert!(t >= 75);
+    // 4 件では立たない
+    assert!(
+        errors_fired(4, |p| {
+            p.errors = 1;
+            p.errors_by_cause[ErrCause::Refused as usize] = 1;
+        })
+        .is_empty()
+    );
 }
 
-/// `nxdomain` の窓は 5 分 + 1 周期で、古い増分は外す数から抜ける (T.28.17)。
+/// (3) `:993` (443・80 以外) の確立の時間切れは 5 分に 100 件でも立たない (T.32.36 の受け入れ基準。
+/// 0.30.4 の `history["60"]` の再生で、今までの数え方の 27 回はどれもこれと名前解決の失敗だった)。
 #[test]
-fn the_nxdomain_window_forgets_old_increments() {
-    let mut d = Detector::new();
-    let c = |t, nxdomain| Counters {
-        t,
-        nxdomain,
-        ..Counters::default()
-    };
-    assert_eq!(d.nxdomain_window(c(1000, 50)), 0, "1 点目は増分 0");
-    assert_eq!(d.nxdomain_window(c(1005, 60)), 10);
-    // 5 分 + 5 秒たつと 1000 の点は窓の起点より古い (1005 が起点)
-    assert_eq!(d.nxdomain_window(c(1310, 60)), 0);
-    assert_eq!(d.nxdomain_window(c(1315, 70)), 10);
-    // 通算が減った (`.rrd` の作り直し) ら 0
-    assert_eq!(d.nxdomain_window(c(1320, 5)), 0);
+fn timeouts_to_other_ports_do_not_fire() {
+    let fired = errors_fired(10, |p| {
+        p.errors = 10;
+        p.errors_by_cause[ErrCause::Timeout as usize] = 10;
+        p.other_port_attempts = 10;
+        p.other_port_errors = 10;
+    });
+    assert!(
+        fired.is_empty(),
+        "443・80 以外だけでは立たない: {:?}",
+        fired
+    );
+}
+
+/// (3) 外した残りが 5 件以上なら立ち、文面に外した数 (名前解決の失敗と 443・80 以外) が入る (T.32.36)。
+#[test]
+fn errors_left_after_the_exclusions_still_fire_and_say_what_was_left_out() {
+    // 1 標本に 443 の timeout 2 件 + nxdomain 3 件 + :993 の timeout 1 件 を 3 回 = 数えるのは 6 件
+    let fired = errors_fired(3, |p| {
+        p.errors = 6;
+        p.errors_by_cause[ErrCause::Dns as usize] = 3;
+        p.errors_by_cause[ErrCause::Timeout as usize] = 3;
+        p.other_port_attempts = 1;
+        p.other_port_errors = 1;
+    });
+    assert_eq!(fired.len(), 1, "{:?}", fired);
+    assert_eq!(
+        fired[0].text,
+        "errors: 6 errors in 5m (threshold 5; 9 dns not counted; 3 not to 443/80): \
+         dns 9, timeout 9"
+    );
+    assert!(fired[0].text.len() <= crate::events::MAX_TEXT);
 }
 
 /// (4) 同時接続の山が `max_conns` の 50% 以上。
@@ -580,7 +590,7 @@ fn each_of_the_five_fires_once_and_clears_once() {
         p.dns_misses = 2;
         p.dns_ms_sum = 2 * 250;
         p.errors = 3;
-        p.errors_by_cause[0] = 3;
+        p.errors_by_cause[ErrCause::Timeout as usize] = 3;
         p.active_max = 218;
         let c = Counters {
             rejected_overload: (t - start) / 5,
@@ -904,6 +914,60 @@ fn a_high_dns_miss_rate_fires_after_the_warmup() {
     t += 5;
     // 同じ種類は収まるまで 1 回だけ
     assert!(feed_uptime(&h, &mut d, sample(t), DNS_MISS_RATE_WARMUP_SECS).is_empty());
+}
+
+/// 起動から 24 時間の 1 時間ちょっとに、1 標本 20 本の確立と `misses` 回のミス (うち `failed` 回は
+/// 名前解決に失敗した試みのぶん) を流し、`dns_miss_rate` の変わり目を返す (T.32.36)。
+fn miss_rate_fired(misses: u64, failed: u64) -> Vec<Fired> {
+    let h = History::default();
+    let mut d = Detector::new();
+    let mut t = 0u64;
+    let mut out = Vec::new();
+    while t <= BASE_SECS + 60 {
+        let mut p = connects(t, 20, 10);
+        p.dns_misses = misses;
+        p.dns_fail_misses = failed;
+        p.dns_ms_sum = misses * 10;
+        out.extend(feed_uptime(&h, &mut d, p, 24 * 3600));
+        t += 5;
+    }
+    out.retain(|f| f.kind == Kind::DnsMissRate);
+    out
+}
+
+/// (9) 名前解決に成功したミスが 0.3 回/接続 なら立つ (T.32.36 の受け入れ基準)。
+#[test]
+fn resolved_misses_at_point_three_per_connect_fire() {
+    let out = miss_rate_fired(6, 0);
+    assert_eq!(out.len(), 1, "{:?}", out);
+    assert!(
+        out[0]
+            .text
+            .starts_with("dns_miss_rate: dns misses 0.30/connect over 1h"),
+        "{}",
+        out[0].text
+    );
+}
+
+/// (9) 名前解決に失敗した試みのミスは数えない (`/slo` と同じ。T.32.36)。0.30.4 の 1 時間の値は
+/// 今までの数え方で最大 2.76、失敗を引くと最大 0.136 だった。失敗を外したら文面にその回数が入る
+#[test]
+fn failed_dns_misses_do_not_count_toward_the_rate() {
+    // 1 標本 55 回のミスのうち 54 回が失敗 = 今までなら 2.75/接続、名前解決に成功したぶんは 0.05
+    assert!(miss_rate_fired(55, 54).is_empty());
+    // 成功したぶんが閾を越えれば立ち、外した回数を添える
+    let out = miss_rate_fired(10, 4);
+    assert_eq!(out.len(), 1, "{:?}", out);
+    assert!(
+        out[0].text.contains("failed not counted)"),
+        "{}",
+        out[0].text
+    );
+    assert!(
+        out[0].text.len() <= crate::events::MAX_TEXT,
+        "{}",
+        out[0].text
+    );
 }
 
 /// (9) いまの切り方 (0.094〜0.171) では立たない。
