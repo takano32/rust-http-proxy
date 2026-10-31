@@ -2224,6 +2224,17 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
   見るのは再起動より後の標本だけです。`scripts/snapshot-diff.py` は**再起動の時刻で切った「後」の期間**しか
   判定に使わないので、この穴を踏みません (`--criteria phase15`)。
 
+**締めの結果を台帳に移すのは `scripts/ledger-close.py`** です (T.32.26。前は写しのスクリプトを毎回書き換えていました):
+
+```bash
+scripts/ledger-close.py T.32.5 結果.txt    # TASKS.md の T.32.5 を [x] にし、結果を足して tasks/T32.md へ。§5・索引・範囲の印も直す
+scripts/ledger-close.py --finish 32 --deployed 0.32.9+abc1234 --hours 48.2   # 全部済んだら前置きを移して節を消す
+```
+
+`結果.txt` には `  - 結果 (日付、`ハッシュ`): …` の行を、移した先 (`tasks/`) に置く文として書きます。本文は 1 文字も
+変えずに移し、**相対リンクだけは移した先から辿れる形に書き換えます** (T.32.38)。`--deployed` は `TODO.md` §2 の
+見出しの版と日付と参照先を直し、要点の数字は手で書く場所として出します。最後に `scripts/check-ledger.py` を回します。
+
 ### 5. 何かおかしいとき
 
 ```bash
