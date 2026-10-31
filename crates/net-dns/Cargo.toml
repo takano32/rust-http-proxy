@@ -1,6 +1,6 @@
 [package]
 name = "proxy-net-dns"
-version = "0.28.39"
+version = "0.32.11"
 edition = "2024"
 
 [lib]

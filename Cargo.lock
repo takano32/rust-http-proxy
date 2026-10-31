@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-config"
-version = "0.29.34"
+version = "0.32.11"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-http"
-version = "0.29.34"
+version = "0.32.11"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-core"
-version = "0.32.16"
+version = "0.32.10"
 dependencies = [
  "proxy-metrics-window",
 ]
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-types"
-version = "0.30.4"
+version = "0.32.10"
 dependencies = [
  "proxy-base",
  "proxy-net",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-net-conn"
-version = "0.18.1"
+version = "0.32.14"
 dependencies = [
  "proxy-base",
  "proxy-net-dns",
@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-net-dns"
-version = "0.28.39"
+version = "0.32.11"
 dependencies = [
  "proxy-base",
 ]
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-reload"
-version = "0.29.34"
+version = "0.32.11"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -292,7 +292,7 @@ version = "0.32.16"
 
 [[package]]
 name = "proxy-run"
-version = "0.28.48"
+version = "0.32.11"
 dependencies = [
  "proxy-server",
 ]
@@ -347,7 +347,7 @@ version = "0.17.11"
 
 [[package]]
 name = "proxy-tunnel"
-version = "0.29.34"
+version = "0.32.11"
 dependencies = [
  "proxy-base",
  "proxy-metrics",
