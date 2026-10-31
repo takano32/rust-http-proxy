@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-cache"
-version = "0.29.22"
+version = "0.32.7"
 dependencies = [
  "proxy-base",
  "proxy-cachecfg",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-config"
-version = "0.32.11"
+version = "0.32.3"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-core"
-version = "0.32.10"
+version = "0.32.4"
 dependencies = [
  "proxy-metrics-window",
 ]
@@ -292,7 +292,7 @@ version = "0.32.16"
 
 [[package]]
 name = "proxy-run"
-version = "0.32.11"
+version = "0.32.5"
 dependencies = [
  "proxy-server",
 ]
@@ -329,21 +329,21 @@ dependencies = [
 
 [[package]]
 name = "proxy-sys"
-version = "0.29.23"
+version = "0.32.3"
 dependencies = [
  "proxy-base",
 ]
 
 [[package]]
 name = "proxy-sysinfo"
-version = "0.30.1"
+version = "0.32.4"
 dependencies = [
  "proxy-sys",
 ]
 
 [[package]]
 name = "proxy-tls"
-version = "0.17.11"
+version = "0.32.5"
 
 [[package]]
 name = "proxy-tunnel"
