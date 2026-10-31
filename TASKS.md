@@ -45,11 +45,6 @@ T.31.99 で 0.30.4 の RSS が 24 時間 48.6 MB → 48 時間 73.6 MB、`heap_f
   - やること: 部ごとに組んではすぐ書き出す (クライアントへの応答・日次のファイル)、器を使い回す、のどちらかで一時の確保の山を下げる。応答の中身は 1 バイトも変えない。
   - 受け入れ基準: 手元の (a) の RSS の山が T.32.3 の後の値の半分以下。`/snapshot` の応答のバイト列が前と同じ (試験)。`check-docs` 差分 0。
 
-- [ ] **T.32.2 名前解決の表の上限 4,096 を、失敗した名前解決の経路でも守る**
-  - 目的: 成功したときは `table.len() >= MAX_ENTRIES` で 1 つ捨てる (`crates/net-dns/src/dns.rs:699-700`) が、失敗したときは無条件に `entry().or_insert_with` (同 `:718`) で、掃除も無い。tokyo の `status.dns.entries` は 48 時間で **7,511** (24 時間で 3,886)。一覧の古い側 4,763 件のうち 4,146 件は答えの無い失敗の行で、最古は 168,087 秒前 (serve-stale の 21,600 秒を大きく越える)。上限を越えたあとは、成功したミスのたびに `evict_oldest` が 7,500 行を鍵の内側で舐める。heap の行の +7.3 MB (`heap_used` 12.8 → 15.3 MB、+3,625 名前 ≈ 690 B/名前) の主な分とみられる。
-  - やること: 失敗の経路でも上限を守る (失敗した名前は負のキャッシュの 60 秒を過ぎたら捨てる、か上限の内側で古い失敗から捨てる)。`evict_oldest` が全部を舐めないように (古い順の印を持つ) するかは測って決める。
-  - 受け入れ基準: 単体試験で、引けない名前 10,000 個のあとに表が 4,096 以下。手元の総当たり 10,000 本の `heap_used` の増えが前の半分以下。
-
 - [ ] **T.32.4 `/status` の `memory` の内訳を常駐の値にする (`stacks_estimate` は予約、`heap_free` は返した頁込み、file の RSS が出ていない)**
   - 目的: smaps で測ったスタックの常駐は 1 本 8〜28 KiB で合計 **0.30〜0.96 MB** なのに、`stacks_estimate` は **17.0〜25.4 MB** (`crates/metrics-core/src/metrics/status.rs:383`・`:476` 付近の `conn × 256K + other × 2M`)。tokyo の最後の 1 枚は `heap_used` 15.3 + `heap_free` 36.1 + `mmap` 11.7 + `stacks_estimate` 22.0 = 85.1 MB で、`rss` 73.6 MB を超える (T.31.1 の行が「説明」として並べる 2 つを足すと RSS より大きい)。`heap_free` は trim で返した頁も数える (`crates/sysinfo/src/sysinfo/malloc.rs:138`。手元の trim 後で `heap_free` 11.6 MB に対し常駐の空きは約 5.7 MB)。RSS のうち file の頁が約 9 MB (libcrypto 3.9・本体 2.8・libc 1.8 MB) あり、どの欄にも出ていない。起動 3 秒後の `/status` の `rss` が 4.76 MB で、そのときの VmRSS は 25.9 MB (プローブの古い値)。
   - やること: `/proc/self/status` から VmRSS を読んでいる同じ 1 回で `RssAnon`・`RssFile` も出す。`stacks_estimate` は `stacks_reserved` に名前を変えるか、`/status` のときだけ smaps からスタックの常駐 (`stacks_resident`) を足す (1 回の読みの時間を測る)。`heap_free` の説明に「返した頁を含む」と書く。起動直後の `rss` は今読んだ値にする。判定表の表示の行も新しい欄を並べる (欄の無い版は今のまま)。
@@ -82,16 +77,6 @@ T.31.99 で 0.30.4 の RSS が 24 時間 48.6 MB → 48 時間 73.6 MB、`heap_f
   - やること: 両方の経路で、304 の ETag (無ければ Last-Modified) が「あって違う」なら更新しない。外れたら項目を消し、同期の経路は条件なしで 1 回取り直し、裏の経路は消して終える。validator の無い 304 は今どおり更新する。
   - 受け入れ基準: 上の再現で 2 本目以降が新しい 200 (`ETag "other"` を古い本文に付けない)。一致する 304 は今どおり REVALIDATED。試験は同期と裏の各 1 本。
 
-- [ ] **T.32.10 ホスト別統計の表 (1,000 行) が満杯で入れ替わらず、T.30.4 の宛先外しが本番で効かない (利用者の決定: (a)+(c)、満杯ならいちばん古い行)**
-  - 目的: `/hosts` の行は `restored_since` (10-08) からの通算で、日次の雪像では 10-16 (`2026-10-16T000000Z-snapshot.json` の count 1001) から毎日 1,000 行、`other` は 155 → 162,278 要求。満杯になると新しい鍵は全部 `other` に入り、行を捨てる仕組みが無い (`crates/metrics-core/src/metrics.rs:651-661`、`MAX_HOSTS` は `crates/metrics-types/src/metrics.rs:1037`)。`2026-10-31T063104Z-snapshot.json` の 1,000 行のうち 740 行は 7 日以上使われておらず (中央値 14.5 日前)、552 行は 2 要求以下。T.30.4 の `DestTable` は表の行でしか宛先を数えない (`other` は宛先にならない) ので、`2026-10-31T063104Z-slo.json` の `hourly` 49 時間で `excluded` は 0 時間。10-30 20Z は 443 のエラー 2 件 / 試行 347 本 (`api.debank.com:443` と `….cloudfront.hls.ttvnw.net:443` の時間切れ、どちらも表に無い) で 1 時間外れた (規則どおりなら 1/346 = 0.29% で満たす)。T.30.4 の動機の `pravda.me:443` も表に無かった。48 時間の `/slo` の外れ標本 631 のうち 589 (93%) がこの形の 2 時間で、日ごとの達成 96.0%・96.4% は外せていれば 99.8% 前後。`/hosts` の差分では窓の要求 53,429 本のうち 40,888 本 (76.5%) が `other` で見えない。
-  - やること: (a) 満杯のとき、`last_seen` がいちばん古い行を 1 つ捨てて新しい鍵を入れる (空きがあるうちは何も捨てない。捨てた行の数は `/status` に出す)。(c) `/slo` の宛先の数え方 (T.30.4 の `DestTable`) は表から切り離した小さな表 (その時間の 443・80 のエラーの宛先だけ、上限 64 ほど) にし、表に無い宛先でも外せるようにする。
-  - 受け入れ基準: 結合試験: 1,000 行が埋まり `last_seen` が 14 日前の表で、新しい宛先 `pravda.example:443` の時間切れ 4 件と 443 の成功 400 本を流すと `excluded` が出て満たす。tokyo の状態ファイルのまま再起動して 24 時間後、`/hosts` の Δ要求に占める `other` が 20% 未満 ((a)(b) のとき)。
-
-- [ ] **T.32.11 名前解決の待ちで接続の枠が全部ふさがる (getaddrinfo はキャンセルできない。利用者の決定: (a) 別のスレッド群と締め切り)**
-  - 目的: 要求の経路の名前解決 (`crates/net/src/acl.rs:299` `resolve_target` → `crates/net-dns/src/dns.rs:682` `system_resolve` → `getaddrinfo`) は接続を処理しているワーカーの上で同期に走り、その間ずっと接続の枠 (`OpenGuard`) とワーカー 1 本を握る。`getaddrinfo` には締め切りもキャンセルも無く、`PROXY_HEADER_TIMEOUT_SECS` (ヘッダー読了まで) も `PROXY_CONNECT_TIMEOUT_SECS` (TCP 確立だけ) も解決の待ちを縛らない。相異なる名前なら負のキャッシュも当たらない。再現 (`t32/robust/REPRO.md`): `unshare -m` の中で応答しないリゾルバ (127.0.0.1:53) を向け、`PROXY_MAX_CONNS=8` で相異なる名前 8 本の CONNECT を同時に出すと、8 本とも 4.01 秒枠を握って 502、その間 `live_threads=8`・`idle_threads=0`、0.5 秒後の**正当な要求 (即解決・近いオリジン) は 503 を即時に受けた**。tokyo は `PROXY_MAX_CONNS=240`・`PROXY_MAX_THREADS=128`・`PROXY_MAX_CONNS_PER_CLIENT=0` で、接続元が NAT の 1 つなので 1 人で 128 本の同時解決を握れる (リゾルバの不調や、攻撃者の権威サーバが応答を落とすと 1 回が数十秒になる)。
-  - やること: 名前解決を上限付きの別のスレッド群に逃がし、要求側は締め切り (新しい鍵 `PROXY_DNS_TIMEOUT_SECS`、既定は `PROXY_HEADER_TIMEOUT_SECS` と同じ 10 秒が目安、`0` で今までどおり待つ) で待って、超えたら枠を手放して 504 (原因 `dns_timeout`)。はぐれた `getaddrinfo` は上限の内側で走り続け、上限に達したら新しい名前解決は待たずに 504 で枠を食わない。IP リテラル・キャッシュに当たった名前は今までどおり速い道。`--check`・`/config`・環境変数の表に出す。
-  - 受け入れ基準: 上の再現 (相異なる遅い名前 N 本 = `max_threads`) で、正当な速い要求が窓の中で 200 を受ける。締め切りを超えた接続は 504 で枠を手放し `live_threads` が張り付かない結合試験。IP リテラル・キャッシュ当たりの速い道の CPU/要求が 1.05 倍以内。
-
 - [ ] **T.32.12 不正な `Host` や authority を 400 にする (今は 502 nxdomain で 80 番宛ての origin エラーとして数える)**
   - 目的: RFC 9112 §3.2 は不正な `Host` に 400 を MUST とする。今は `check_authority` (`crates/origin/src/request.rs:387-403`) が空と `@` しか見ないので、名前解決まで行って 502。再現 (`t32/protocol/p11_badhost.py`): `Host: a b`・`a, b`・`a/b`・`h:99999` など 6 本とも 502 で `rejected_requests.total` は 0、`/errors` と `/hosts` に `http://example.invalid x:80`・`http://a, b:80` などが並ぶ。`http://h:+22501/` は Rust の `parse` が `+` を受けて通り、オリジンへ `Host: 127.0.0.1:+22501` が届く。クライアントの誤りが 80 番の origin エラー・nxdomain・負のキャッシュの名前に乗り、`/slo` の `error_rate` と T.32.2 の名前の数にも効く。
   - やること: authority を検証する (reg-name の文字・`[` IP リテラル `]`・ポートは 1〜5 桁の数字で 65535 以下、空のポートは既定のポート)。`Host` にも同じ検証を当て、外れたら 400 (`bad_uri` / `no_host`)。
@@ -101,11 +86,6 @@ T.31.99 で 0.30.4 の RSS が 24 時間 48.6 MB → 48 時間 73.6 MB、`heap_f
   - 目的: `crates/http/src/http/refresh.rs:212-215` は 200〜399 以外をすべて「stale を残す」にしていて、オリジンが 404 を返した後も grace (既定 60 秒) の間は古い 200 を `REFRESHING` で配り、配るたびに再検証を 1 本出す。再現 (`t32/protocol/p4_reval.py` の D): 期限切れの後の 3 本がすべて `200 REFRESHING` の古い本文で、オリジンへは 4 本。同期の経路 (`p5_reval_fg.py` の D) は 404 で置き換わる。RFC 9111 §4.3.3 で古い表現を残してよいのは 5xx。
   - やること: 5xx (と接続の失敗) だけ残し、保存できる 4xx は同期の経路と同じく置き換える (保存できないものは消す)。
   - 受け入れ基準: D の再現で 2 本目の後は 404。5xx では今どおり stale を残す。
-
-- [ ] **T.32.14 Happy Eyeballs の上限外のスレッドと記述子に本数の上限を置く**
-  - 目的: `crates/net-conn/src/net.rs:628` の `connect_candidates` は候補アドレスごとに `thread::spawn` し、join しない・`PROXY_MAX_THREADS` に数えない・候補数に上限が無い。勝者が返ると敗者は `PROXY_CONNECT_TIMEOUT_SECS` (3 秒) まで connect を握ったまま残り、各自が記述子 1 つ + 既定 2 MiB のスタック (予約) を使う。`stagger` 250 ms ごとなので 3 秒の窓で 1 接続あたり最大 ~12 本。`auto_max_conns` は「1 接続あたり 4 記述子」(`crates/config/src/config.rs:37-45`) を前提にしている。実機の枯渇は未確認 (sandbox が私設宛てを横取りし、SYN を落とす多アドレス宛ての再現が作りにくい)。
-  - やること: 候補アドレスを接続時に N 件 (例 8) で切る。`auto_max_conns` の記述子の前提を README に書く。
-  - 受け入れ基準: 多アドレスのホストへの 1 接続で起こる上流接続のスレッド・記述子が N で頭打ちになる試験。Happy Eyeballs の既存の試験が通る。
 
 - [ ] **T.32.15 小物: 要求の行末・応答の不正なヘッダー名・chunked の甘さ・`Via` の版・CONNECT の 502**
   - 目的: (1) `write_request_headers` が行をそのまま書く (`crates/msg/src/headers.rs:121`) ので、LF だけの行末の要求は LF のまま転送され、プロキシが足す行は CRLF (`t32/protocol/p8_client.py`。CRLF でしか区切らないオリジンでは食い違いうる。実在のオリジンでは未確認)。(2) オリジンの応答の `X A: b` と `: v` をそのまま渡す (`p1_resp_heads.py`。`sanitize_response_head` (`headers.rs:507`))。(3) 要求の chunked でデータの後ろのごみ (`2\r\nokXX\r\n`)・`+2`・LF だけの行を受ける (`crates/msg/src/body.rs:357`・381。符号化し直すので密輸にはならない)。(4) `Via` の受けた版が常に `1.1` (RFC 9110 §7.6.3 は受けた版)。(5) CONNECT の 502 に `Date`・`Content-Length` が無い (T.29.9 の漏れ)。(6) `http/1.1`・`connect` (小文字) を受ける。
