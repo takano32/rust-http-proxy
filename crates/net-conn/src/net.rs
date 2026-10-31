@@ -571,6 +571,20 @@ pub fn ipv6_counters() -> [u64; 3] {
     ]
 }
 
+/// Happy Eyeballs で試す候補アドレスの上限 (T.32.14)。
+///
+/// 候補ごとに `thread::spawn` し、勝者が返っても敗者は締め切り (`PROXY_CONNECT_TIMEOUT_SECS`) まで
+/// 記述子 1 つとスレッド 1 本を握ったまま残る (join しない・`PROXY_MAX_THREADS` に数えない)。候補数に
+/// 上限が無いと、何十もの A / AAAA を返す名前への 1 接続がその数だけ記述子を使う。8 件あれば 250 ms 間隔で
+/// 2 秒ぶん試せ、交互に並べたあとで切るので両方の族が 4 件ずつ残る。
+pub const MAX_CANDIDATES: usize = 8;
+
+#[cfg(test)]
+thread_local! {
+    /// このスレッドで Happy Eyeballs が起こした接続の試行の数 (**テストだけ**。T.32.14)
+    static HE_LAUNCHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// 候補列に Happy Eyeballs で接続する本体。
 ///
 /// `timeout` が `Duration::ZERO` なら**締め切りを置かない** (`PROXY_TIMEOUT_SECS=0` = 無期限。
@@ -597,7 +611,9 @@ fn connect_candidates(
         });
     }
 
-    let addrs = interleave_from(addrs, preferred.unwrap_or_else(ipv6_first_for_new_host));
+    let mut addrs = interleave_from(addrs, preferred.unwrap_or_else(ipv6_first_for_new_host));
+    // 候補は先頭の [`MAX_CANDIDATES`] 件で切る (T.32.14)。交互に並べたあとで切るので両方の族が残る
+    addrs.truncate(MAX_CANDIDATES);
     let deadline = (!timeout.is_zero()).then(|| Instant::now() + timeout);
     let (tx, rx) = mpsc::channel::<(usize, io::Result<TcpStream>)>();
     let mut launched = 0usize;
@@ -625,6 +641,8 @@ fn connect_candidates(
                 tried_v6 = true;
                 IPV6_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
             }
+            #[cfg(test)]
+            HE_LAUNCHED.set(HE_LAUNCHED.get() + 1);
             thread::spawn(move || {
                 let _ = tx.send((index, connect_one(&addr, remaining)));
             });
@@ -699,6 +717,24 @@ fn connect_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T.32.14: 多アドレスのホストへの 1 接続で起こす試行 (スレッドと記述子) は [`MAX_CANDIDATES`] 件で
+    /// 頭打ち。拒否される loopback の番地 20 個 (拒否は即座に返るので、前は間隔を待たずに 20 本とも起こした)。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn happy_eyeballs_launches_at_most_max_candidates() {
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let addrs: Vec<SocketAddr> = (2..22u8)
+            .map(|i| SocketAddr::from(([127, 0, 0, i], port)))
+            .collect();
+        HE_LAUNCHED.set(0);
+        let err = connect_resolved("", addrs, Duration::from_secs(2)).expect_err("全部拒否");
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused, "{err}");
+        assert_eq!(HE_LAUNCHED.get(), MAX_CANDIDATES);
+    }
 
     #[test]
     fn canonicalizes_mapped_addresses() {
