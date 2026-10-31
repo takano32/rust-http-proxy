@@ -178,6 +178,8 @@ pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
         // 443・80 以外の宛先への試みとそのエラー (T.30.3。`/slo` の `error_rate` が引く)
         other_port_attempts: iv.other_port_attempts,
         other_port_errors: iv.other_port_errors,
+        // 名前解決に失敗した試みが払った ms (T.32.16。`dns_slow` が引く)
+        dns_fail_ms_sum: iv.dns_fail_ms_sum,
     }
 }
 

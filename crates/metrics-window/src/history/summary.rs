@@ -119,6 +119,9 @@ pub struct Summary {
     /// 名前解決に成功した 443・80 以外の宛先へのエラー (標本の `other_port_errors`。T.32.36)。
     /// 異常検知の `errors` は `/slo` と同じく引く。JSON には出さない
     pub other_port_errors: u64,
+    /// `dns_ms_sum` のうち名前解決に失敗した試みが払った ms (標本の `dns_fail_ms_sum`。T.32.16)。
+    /// 異常検知の `dns_slow` は名前解決に成功したミスで読む。JSON には出さない
+    pub dns_fail_ms_sum: u64,
 }
 
 impl Summary {
@@ -147,6 +150,20 @@ impl Summary {
         self.conn_excess.merge(&s.conn_excess);
         self.dns_fail_misses += s.dns_fail_misses;
         self.other_port_errors += s.other_port_errors;
+        self.dns_fail_ms_sum += s.dns_fail_ms_sum;
+    }
+
+    /// 名前解決に成功した試みのミスが払った ms (`dns_ms_sum − dns_fail_ms_sum`。T.32.16)。
+    pub fn resolved_dns_ms_sum(&self) -> u64 {
+        self.dns_ms_sum.saturating_sub(self.dns_fail_ms_sum)
+    }
+
+    /// 名前解決に成功したミス 1 回の平均 ms (T.32.16。`dns_slow` が読む)。
+    pub fn resolved_dns_miss_avg_ms(&self) -> f64 {
+        match self.resolved_dns_misses() {
+            0 => 0.0,
+            n => self.resolved_dns_ms_sum() as f64 / n as f64,
+        }
     }
 
     /// 名前解決に失敗したエラー (原因 `dns` の全部。`nxdomain` も `dns_temp` も。T.32.36)。

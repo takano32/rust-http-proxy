@@ -90,7 +90,7 @@ fn history_json(port: u16) -> String {
     endpoint_json(port, "/history?res=5")
 }
 
-/// `keys` は 54 個で T15.0 の 8 列・T16.0 の 3 列・T.28.45 の 5 列・T.29.12 の 4 列・T.30.3 の 2 列が末尾、`key_kinds` は同じ長さで 6 種類しか出ない。
+/// `keys` は 55 個で T15.0 の 8 列・T16.0 の 3 列・T.28.45 の 5 列・T.29.12 の 4 列・T.30.3 の 2 列・T.32.16 の 1 列が末尾、`key_kinds` は同じ長さで 6 種類しか出ない。
 #[test]
 fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     let (port, _metrics) = start_test_proxy_with_history(proxy_config(), TICK);
@@ -98,7 +98,7 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     let keys = str_array(&json, "keys");
     let kinds = str_array(&json, "key_kinds");
 
-    assert_eq!(keys.len(), 54, "{:?}", keys);
+    assert_eq!(keys.len(), 55, "{:?}", keys);
     assert_eq!(kinds.len(), keys.len(), "keys {:?} kinds {:?}", keys, kinds);
     assert_eq!(
         &keys[32..40],
@@ -145,10 +145,12 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     );
     // T.30.3 で足した 2 列 (443・80 以外の宛先への試みとそのエラー。`/slo` の `error_rate` が引く)
     assert_eq!(
-        &keys[52..],
+        &keys[52..54],
         &["other_port_attempts", "other_port_errors"],
         "T.30.3 も末尾に足す"
     );
+    // T.32.16 で足した 1 列 (名前解決に失敗した試みが払った ms。`dns_slow` が引く)
+    assert_eq!(&keys[54..], &["dns_fail_ms_sum"], "T.32.16 も末尾に足す");
     // 既存の綴りが 1 つも変わっていないこと (読む側は名前で引く)
     assert_eq!(keys[0], "t");
     assert_eq!(keys[1], "requests");
@@ -169,6 +171,7 @@ fn test_integration_history_keys_carry_the_new_columns_and_their_kinds() {
     assert_eq!(kind("wait_buckets"), "buckets");
     assert_eq!(kind("other_port_attempts"), "delta");
     assert_eq!(kind("other_port_errors"), "delta");
+    assert_eq!(kind("dns_fail_ms_sum"), "delta");
 
     // 標本の 1 行の列数も同じ (入れ子の配列は 1 列)
     let rows = rows(&json);

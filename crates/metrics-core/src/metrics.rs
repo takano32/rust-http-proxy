@@ -78,6 +78,9 @@ pub struct Interval {
     pub other_port_attempts: u64,
     /// そのうちエラーで終わったもの (T.30.3。メール宛 `:993` の確立の時間切れなど)
     pub other_port_errors: u64,
+    /// `dns_ms_sum` のうち、名前解決に失敗した試み (原因 `dns`) が払ったぶん (ms。T.32.16)。
+    /// 異常検知の `dns_slow` は「名前解決に成功したミス」の ms (`dns_ms_sum − dns_fail_ms_sum`) で読む
+    pub dns_fail_ms_sum: u64,
 }
 
 /// ホスト別統計の表と、区間の合計。1 つの鍵で守る。
@@ -554,6 +557,7 @@ impl Metrics {
             iv.dns_ms_sum += detail.dns_ms;
             if dns_failed {
                 iv.dns_fail_misses += detail.dns_misses;
+                iv.dns_fail_ms_sum += detail.dns_ms;
             }
             if let Some(c) = detail.cause {
                 iv.errors_by_cause[c as usize] += 1;

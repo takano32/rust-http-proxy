@@ -311,6 +311,82 @@ fn dns_slow_clears_only_after_five_calm_minutes() {
     assert!(out[1].cleared);
 }
 
+/// 平常時の 1 時間のあと、1 分ごとの頭の標本に名前解決のミスを 1 回ずつ `n` 回流す (`fail` 回目までは
+/// 名前解決に失敗した試みのミス)。1 回は `each_ms`。`dns_slow` の変わり目だけを返す (T.32.16)。
+fn dns_misses_with_failures(n: u64, fail: u64, each_ms: u64) -> Vec<Fired> {
+    let h = History::default();
+    let mut d = Detector::new();
+    let (mut t, _) = calm(&h, &mut d, 0, BASE_SECS);
+    let mut out = Vec::new();
+    // 4 分 (48 標本) に収める: 1 標本に 1 回、5 秒おき
+    for i in 0..48u64 {
+        let mut p = connects(t, 2, 10);
+        if i < n {
+            p.dns_misses = 1;
+            p.dns_ms_sum = each_ms;
+            if i < fail {
+                p.errors = 1;
+                p.errors_by_cause[ErrCause::Dns as usize] = 1;
+                p.dns_fail_misses = 1;
+                p.dns_fail_ms_sum = each_ms;
+            }
+        }
+        out.extend(feed(&h, &mut d, p));
+        t += 5;
+    }
+    out.retain(|f| f.kind == Kind::DnsSlow);
+    out
+}
+
+/// T.32.16 の受け入れ基準: 名前解決の**失敗** 3 回 × 2 秒では立たない (0.30.4 の 62 件の大半がこれ。
+/// `imap.froggy.com.au` の nxdomain 1 回が 2,151 ms)。成功した名前 10 回の平均 300 ms では立つ。
+#[test]
+fn slow_dns_failures_do_not_fire_but_slow_resolved_misses_do() {
+    assert!(
+        dns_misses_with_failures(3, 3, 2_000).is_empty(),
+        "失敗だけでは立たない"
+    );
+    let out = dns_misses_with_failures(10, 0, 300);
+    assert_eq!(out.len(), 1, "{:?}", out);
+    // 4 回目 (合計 1,200 ms) で立つ
+    assert_eq!(
+        out[0].text,
+        "dns_slow: dns miss 300 ms avg over 5m (threshold 100 ms; 4 misses, 1200 ms total)"
+    );
+    // 失敗 3 回 (2 秒) と成功 2 回 (50 ms) が混ざっても、成功が 3 回に届かないので立たない
+    // (今までは 5 回・合計 6,100 ms で立っていた)
+    assert!(dns_misses_with_failures(5, 3, 2_000).is_empty());
+}
+
+/// T.32.16: 失敗のぶんを外して立ったときは、外した回数を文面に添える (成功したミスの数字で書く)。
+#[test]
+fn dns_slow_says_how_many_failed_misses_it_left_out() {
+    let h = History::default();
+    let mut d = Detector::new();
+    let (mut t, _) = calm(&h, &mut d, 0, BASE_SECS);
+    let mut out = Vec::new();
+    for _ in 0..4 {
+        let mut p = connects(t, 2, 10);
+        // 成功 1 回 400 ms + 失敗 1 回 2,000 ms
+        p.dns_misses = 2;
+        p.dns_ms_sum = 2_400;
+        p.dns_fail_misses = 1;
+        p.dns_fail_ms_sum = 2_000;
+        p.errors = 1;
+        p.errors_by_cause[ErrCause::Dns as usize] = 1;
+        out.extend(feed(&h, &mut d, p));
+        t += 5;
+    }
+    out.retain(|f| f.kind == Kind::DnsSlow);
+    assert_eq!(out.len(), 1, "{:?}", out);
+    assert_eq!(
+        out[0].text,
+        "dns_slow: dns miss 400 ms avg over 5m (threshold 100 ms; 3 misses, 1200 ms total, \
+         3 failed not counted)"
+    );
+    assert!(out[0].text.len() <= crate::events::MAX_TEXT);
+}
+
 /// T17.1: canary の名前解決が 200 ms の網では閾は 3 倍の 600 ms。500 ms は立たない。
 #[test]
 fn a_slow_canary_raises_the_dns_threshold() {

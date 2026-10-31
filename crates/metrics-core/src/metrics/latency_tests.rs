@@ -1165,6 +1165,9 @@ fn the_interval_keeps_the_rtt_excess_and_the_misses_of_failed_lookups() {
     assert_eq!(iv.dns_misses, 1 + 1 + 1 + 1 + 2 + 1);
     assert_eq!(iv.dns_fail_misses, 2, "原因 `dns` の失敗のミスだけ");
     assert_eq!(m.totals().dns_fail_misses, 2, "通算にも入る");
+    // 失敗した試みが払った ms も別に持つ (T.32.16。`dns_slow` が引く)
+    assert_eq!(iv.dns_ms_sum, 6 + 40 + 5);
+    assert_eq!(iv.dns_fail_ms_sum, 40, "原因 `dns` の失敗の ms だけ");
 }
 
 /// T.30.3: 区間に「443・80 以外の宛先への試み」とそのエラーを積む (`/slo` の `error_rate` が引く)。
