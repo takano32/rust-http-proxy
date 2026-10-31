@@ -1171,6 +1171,31 @@ impl Metrics {
         self.hosts_sorted_by(HostSort::Requests)
     }
 
+    /// 要求数の多い上位 `n` 件 ([`Self::hosts_sorted`] の先頭 `n` 件と同じ顔ぶれ) を、
+    /// **写さず並べずに順不同で**見る (状態ファイルの 60 秒ごとの書き直し。T.32.22)。
+    ///
+    /// 表が `n` 件以下なら全部をそのまま、越えていれば `select_nth_unstable` で上位を選ぶ。
+    /// **鍵を握ったまま `f` を呼ぶ**ので、`f` は軽く (システムコールはしない) すること。
+    pub fn visit_top_hosts(&self, n: usize, mut f: impl FnMut(&str, &HostStats)) {
+        let hosts = self.hosts.locked();
+        if hosts.map.len() <= n {
+            for (k, s) in &hosts.map {
+                f(k, s);
+            }
+            return;
+        }
+        if n == 0 {
+            return;
+        }
+        let mut v: Vec<(&String, &HostStats)> = hosts.map.iter().collect();
+        v.select_nth_unstable_by(n - 1, |a, b| {
+            b.1.requests.cmp(&a.1.requests).then_with(|| a.0.cmp(b.0))
+        });
+        for (k, s) in &v[..n] {
+            f(k, s);
+        }
+    }
+
     /// 鍵を選んで並べたホスト別統計 (T13.3)。`/status?sort=` が上位 50 を切り出すのに使う。
     ///
     /// **同点は要求数 → 名前で崩す**ので、どの鍵でも順序は 1 つに決まる (テストが順序で書ける)。

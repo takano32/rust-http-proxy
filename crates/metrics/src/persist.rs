@@ -81,7 +81,80 @@ pub struct Store {
     /// **この起動で取った** heap の基準 (`at` = 取った時刻 (epoch 秒), `bytes`)。T24.4。
     /// 前の起動が状態ファイルに残した値は読み戻さない (別の起動の値なので使えない)
     baseline: Mutex<Option<(u64, u64)>>,
+    /// ホスト別・接続元別の表の、スロットごとに最後に書いた中身 (`[hosts, clients]`。T.32.22)
+    tables: Mutex<[Slots; 2]>,
+    /// 表のレコードを書いた・消した回数 (試験と `/status` の説明用。T.32.22)
+    table_writes: AtomicU64,
 }
+
+/// 表の 1 領域の「どのスロットに誰を、どんな中身で書いたか」(T.32.22)。
+///
+/// 60 秒ごとの書き直しは上位 1,000 行を 1 行ずつ `pwrite` していた (1 分に 1,001 回、
+/// 1 回の flush で 3.75 ms)。**名前ごとにスロットを固定し、中身の hash が前回と同じ行は
+/// 書かない**。並びの順位が入れ替わっても、名前のスロットは動かさない (読み戻しは
+/// 並びを見ないので、どのスロットに居てもよい)。上位から外れた名前のスロットは、
+/// 新しく入った名前が使い、余ったぶんだけ消す。
+#[derive(Default)]
+struct Slots {
+    /// スロット → (名前, 中身の hash)。空なら `None`
+    slots: Vec<Option<(String, u64)>>,
+    /// 名前 → スロット
+    by_name: std::collections::HashMap<String, usize>,
+}
+
+impl Slots {
+    /// 読み戻した中身から作る (起動直後の 1 回目の書き直しも、変わった行だけにする)。
+    fn from_loaded(count: usize, recs: &[(usize, Vec<u8>)]) -> Slots {
+        let mut t = Slots {
+            slots: vec![None; count],
+            by_name: std::collections::HashMap::new(),
+        };
+        for (idx, payload) in recs {
+            if *idx >= count {
+                continue;
+            }
+            let Some((name, _)) = HostStats::decode(payload) else {
+                continue;
+            };
+            // 同じ名前が 2 つあれば (壊れた書き直しの名残)、後のほうは空き扱い
+            if t.by_name.contains_key(&name) {
+                continue;
+            }
+            t.by_name.insert(name.clone(), *idx);
+            t.slots[*idx] = Some((name, payload_hash(payload)));
+        }
+        t
+    }
+}
+
+/// レコードの中身の hash。読み戻した中身はスロットの大きさまでゼロで埋まっているので、
+/// **末尾のゼロを除いて**比べる (書く前の `encode` の結果と同じ値になるように)。
+///
+/// 1 分に 1,000 行 × 約 600 B を通すので、SipHash (約 340 ns/行) ではなく 8 バイトずつ
+/// 混ぜる軽いもの (約 30 ns/行)。比べるのは同じスロットの前回の中身とだけで、外れると
+/// 「変わったのに書かない」になるが、64 ビットで偶然に揃う見込みは無視できる
+fn payload_hash(payload: &[u8]) -> u64 {
+    let end = payload.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ end as u64;
+    let mut mix = |w: u64| {
+        h = (h ^ w).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        h ^= h >> 29;
+    };
+    let mut words = payload[..end].chunks_exact(8);
+    for c in &mut words {
+        mix(u64::from_le_bytes(c.try_into().unwrap_or([0; 8])));
+    }
+    let rest = words.remainder();
+    if !rest.is_empty() {
+        let mut w = [0u8; 8];
+        w[..rest.len()].copy_from_slice(rest);
+        mix(u64::from_le_bytes(w));
+    }
+    h
+}
+
+/// 書き直しの 1 行: (いまのスロット (無ければ `None`), 名前, 中身, 中身の hash)。
+type Changed = (Option<usize>, String, Vec<u8>, u64);
 
 impl Store {
     /// 既定の場所 (`$HOME/.rust-http-proxy.rrd`)。
@@ -124,13 +197,18 @@ impl Store {
         let decode = |recs: Vec<Vec<u8>>| -> Vec<Sample> {
             recs.iter().filter_map(|p| Sample::decode(p)).collect()
         };
-        let stats = |region: Region| -> io::Result<Vec<(String, HostStats)>> {
-            Ok(rrd
-                .read_all(region)?
-                .iter()
+        // 表は 1 回だけ読み、中身と「どのスロットに誰が居るか」(T.32.22) の両方に使う
+        let host_recs = rrd.read_all(l.hosts)?;
+        let client_recs = rrd.read_all(l.clients)?;
+        let stats = |recs: &[(usize, Vec<u8>)]| -> Vec<(String, HostStats)> {
+            recs.iter()
                 .filter_map(|(_, p)| HostStats::decode(p))
-                .collect())
+                .collect()
         };
+        let tables = [
+            Slots::from_loaded(l.hosts.count, &host_recs),
+            Slots::from_loaded(l.clients.count, &client_recs),
+        ];
         // 個票は隣の別のファイル (T14.9)。開けなくても統計はそのまま動く
         let (recent, recent_loaded) = match crate::persist_recent::open_beside(&path) {
             Some((f, r)) => (Some(f), Some(r)),
@@ -139,8 +217,8 @@ impl Store {
         let loaded = Loaded {
             opened,
             history: [decode(fine_recs), decode(minute_recs), decode(hour_recs)],
-            hosts: stats(l.hosts)?,
-            clients: stats(l.clients)?,
+            hosts: stats(&host_recs),
+            clients: stats(&client_recs),
             size: l.total,
             recent: recent_loaded,
         };
@@ -155,6 +233,8 @@ impl Store {
             opened,
             recent,
             baseline: Mutex::new(None),
+            tables: Mutex::new(tables),
+            table_writes: AtomicU64::new(0),
         });
         Ok((store, loaded))
     }
@@ -190,22 +270,106 @@ impl Store {
     /// ホスト別・接続元別の表を書き直す。
     pub fn flush_stats(&self, metrics: &Metrics) {
         let l = self.rrd.layout;
-        self.write_table(l.hosts, &metrics.hosts_sorted());
-        self.write_table(l.clients, &metrics.clients_sorted());
+        let mut tables = self.tables.locked();
+        let [hosts, clients] = &mut *tables;
+        // ホスト別は統計の鍵の内側で、写さず並べずに上位を見る (T.32.22)
+        self.write_table(l.hosts, hosts, |f| {
+            metrics.visit_top_hosts(l.hosts.count, f)
+        });
+        // 接続元別は記録の形から直す必要があるので、今までどおり並べた写しから
+        let rows = metrics.clients_sorted();
+        self.write_table(l.clients, clients, |f| {
+            for (name, s) in rows.iter().take(l.clients.count) {
+                f(name, s);
+            }
+        });
+        drop(tables);
         self.flushes.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn write_table(&self, region: Region, rows: &[(String, HostStats)]) {
-        for (i, (name, s)) in rows.iter().take(region.count).enumerate() {
-            self.note("stats write", self.rrd.write(region, i, &s.encode(name)));
+    /// 表のレコードを書いた・消した回数の累計 (T.32.22)。
+    pub fn table_writes(&self) -> u64 {
+        self.table_writes.load(Ordering::Relaxed)
+    }
+
+    /// 上位 `region.count` 行を書く。**中身が前回と同じ行は書かない** ([`Slots`]。T.32.22)。
+    ///
+    /// `visit` は上位の行を順不同で 1 回ずつ渡す。渡された中では中身を組んで hash を比べる
+    /// だけで、書く (`pwrite`) のは `visit` を抜けたあと (統計の鍵を握ったまま書かない)。
+    fn write_table(
+        &self,
+        region: Region,
+        t: &mut Slots,
+        visit: impl FnOnce(&mut dyn FnMut(&str, &HostStats)),
+    ) {
+        if t.slots.len() != region.count {
+            *t = Slots {
+                slots: vec![None; region.count],
+                by_name: std::collections::HashMap::new(),
+            };
         }
-        for i in rows.len().min(region.count)..region.count {
-            // 前回より減った分は消す (最初の 1 本が空なら以降も空なので打ち切る)
-            if self.rrd.read_all_is_empty_at(region, i) {
-                break;
+        let mut seen = vec![false; region.count];
+        let mut changed: Vec<Changed> = Vec::new();
+        let mut visited = 0usize;
+        visit(&mut |name: &str, s: &HostStats| {
+            if visited >= region.count {
+                return;
             }
-            self.note("stats clear", self.rrd.clear(region, i));
+            visited += 1;
+            let payload = s.encode(name);
+            let h = payload_hash(&payload);
+            match t.by_name.get(name) {
+                Some(&i) => {
+                    seen[i] = true;
+                    if t.slots[i].as_ref().is_none_or(|(_, old)| *old != h) {
+                        changed.push((Some(i), name.to_owned(), payload, h));
+                    }
+                }
+                None => changed.push((None, name.to_owned(), payload, h)),
+            }
+        });
+        // 上位から外れた名前のスロットを空ける (新しく入った名前が上書きするか、最後に消す)。
+        // 空きは若い番号から使う (どのスロットでも読み戻せるが、ファイルの前に寄せておく)
+        let mut free: Vec<usize> = Vec::new();
+        for (i, slot) in t.slots.iter().enumerate().rev() {
+            match slot {
+                None => free.push(i),
+                Some((name, _)) if !seen[i] => {
+                    t.by_name.remove(name);
+                    free.push(i);
+                }
+                Some(_) => {}
+            }
         }
+        let mut writes = 0u64;
+        for (at, name, payload, h) in changed {
+            let Some(idx) = at.or_else(|| free.pop()) else {
+                // 上位 `count` 行に絞ってあるので空きは必ず足りる
+                continue;
+            };
+            writes += 1;
+            let r = self.rrd.write(region, idx, &payload);
+            // 書けなかったスロットは中身が分からないので、次の回に書き直す (hash 0)
+            let h = if r.is_ok() { h } else { 0 };
+            self.note("stats write", r);
+            t.by_name.insert(name.clone(), idx);
+            t.slots[idx] = Some((name, h));
+        }
+        // 外れた名前のスロットで、誰も上書きしなかったものを消す
+        for i in free {
+            if t.slots[i]
+                .as_ref()
+                .is_some_and(|(n, _)| t.by_name.get(n) != Some(&i))
+            {
+                writes += 1;
+                let r = self.rrd.clear(region, i);
+                if r.is_ok() {
+                    t.slots[i] = None;
+                }
+                self.note("stats clear", r);
+            }
+        }
+        self.table_writes.fetch_add(writes, Ordering::Relaxed);
     }
 
     /// 起動から [`baseline_after_secs`] 秒たったら、heap の基準を**1 回だけ**書く (T24.4)。
@@ -425,6 +589,66 @@ mod tests {
 
     fn cache() -> Cache {
         Cache::new(crate::cache::CacheConfig::disabled())
+    }
+
+    /// `n` 件のホストを持つ統計 (要求数は `i + 1`、`bump` に入った番号だけ 1,000,000 足す)。
+    fn hosts(n: usize, bump: &[usize]) -> Metrics {
+        let m = Metrics::new();
+        let rows = (0..n)
+            .map(|i| {
+                let s = HostStats {
+                    requests: i as u64 + 1 + if bump.contains(&i) { 1_000_000 } else { 0 },
+                    last_seen: 1_700_000_000 + i as u64,
+                    ..HostStats::default()
+                };
+                (format!("host{i}.example"), s)
+            })
+            .collect();
+        m.restore(rows, Vec::new());
+        m
+    }
+
+    /// 60 秒ごとの表の書き直しは**変わった行だけ** (T.32.22)。1,200 ホストのうち 10 件が動いた回は
+    /// 10 回 + 上位 1,000 の出入りのぶんだけ書き、再起動で読み戻す中身は今と同じ。
+    #[test]
+    fn the_stats_table_rewrites_only_the_rows_that_changed() {
+        let path = tmp("tables");
+        let (store, _) = Store::open(path.clone()).unwrap();
+        let first = hosts(1200, &[]);
+        store.flush_stats(&first);
+        assert_eq!(store.table_writes(), 1000, "初回は上位 1,000 行を書く");
+        // 何も変わらなければ 1 行も書かない
+        store.flush_stats(&first);
+        assert_eq!(store.table_writes(), 1000);
+        // 上位 1,000 の中の 5 件と、外の 5 件 (199 番以下 = 上位から外れていた) が動いた:
+        // 中の 5 件を書き直し、外の 5 件が入ったぶん 5 件が押し出される (5 スロットに上書き)
+        let bumped = [1000usize, 1100, 1150, 1199, 1050, 0, 1, 2, 3, 4];
+        let second = hosts(1200, &bumped);
+        store.flush_stats(&second);
+        let writes = store.table_writes() - 1000;
+        assert!(writes <= 50, "1 分の pwrite が 50 回を越えた: {writes}");
+        assert_eq!(
+            writes, 10,
+            "動いた 10 件だけ (押し出された 5 件のスロットは上書きで済む)"
+        );
+        drop(store);
+        // 読み戻すと、いまの上位 1,000 がそのまま戻る (並びはスロットの順で、名前で比べる)
+        let (store, loaded) = Store::open(path.clone()).unwrap();
+        let mut got = loaded.hosts.clone();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut want: Vec<_> = second.hosts_sorted().into_iter().take(1000).collect();
+        want.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(got, want);
+        // 読み戻した直後の書き直しも、変わっていなければ 1 行も書かない
+        store.flush_stats(&second);
+        assert_eq!(store.table_writes(), 0);
+        // 減ったら余りを消す
+        store.flush_stats(&hosts(10, &[]));
+        drop(store);
+        let (_, loaded) = Store::open(path.clone()).unwrap();
+        assert_eq!(loaded.hosts.len(), 10);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(crate::persist_recent::path_next_to(&path));
     }
 
     /// 起動から 60 秒の基準が **1 回だけ**書かれ、次の起動では取り直されること (T24.4)。

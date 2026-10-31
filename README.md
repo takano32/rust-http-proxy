@@ -715,6 +715,8 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
 - **`PROXY_STATS_PERSIST`** (既定 `on`)
   統計と履歴を `$HOME/.rust-http-proxy.rrd` (固定 8 MiB) に、**個票 (`/recent` `/errors` `/bursts` `/events` `/log`) を `$HOME/.rust-http-proxy.recent` (固定 4 MiB)** に残し、再起動後に読み戻す。
   **1 日 1 行の要約 `$HOME/.rust-http-proxy.daily.jsonl` (追記のみ、上限 2 MiB) もこの設定で書きます** (`/daily`)。
+  ホスト別・接続元別の表 (上位 1,000 行) は 60 秒ごとに書き直しますが、**名前ごとにスロットを固定し、中身が前回と同じ行は書きません** (T.32.22。
+  実測: 1,200 ホストのうち 10 件が動く形で `pwrite` 1,001 → 11 回/分、1 回の書き直しの命令数 10.9 → 3.2 M)。
   `off` で無効 (どちらの固定長ファイルも作らず、履歴の収集スレッドも起動しないので `/history` とダッシュボードのグラフ、**カーネルと cgroup の窓** (`/status` の `kernel`)、**ホスト別の時系列** (`/hosts/series`) は空になり、個票の `"persisted"` は `false`、日次の要約も **日次の snapshot** も書きません)
 - **`PROXY_SNAPSHOT_DAYS`** (既定 `30`)
   **日次の snapshot** を残す日数 (T.14.34)。
