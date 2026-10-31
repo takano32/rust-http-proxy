@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "proxy-base"
-version = "0.29.34"
+version = "0.32.15"
 
 [[package]]
 name = "proxy-bench"
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-freshness"
-version = "0.29.0"
+version = "0.32.35"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-http"
-version = "0.32.11"
+version = "0.32.15"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-msg"
-version = "0.29.24"
+version = "0.32.15"
 dependencies = [
  "proxy-base",
 ]
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-origin"
-version = "0.29.9"
+version = "0.32.15"
 dependencies = [
  "proxy-base",
  "proxy-net",
@@ -347,7 +347,7 @@ version = "0.32.5"
 
 [[package]]
 name = "proxy-tunnel"
-version = "0.32.11"
+version = "0.32.15"
 dependencies = [
  "proxy-base",
  "proxy-metrics",
