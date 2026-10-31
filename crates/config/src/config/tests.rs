@@ -13,6 +13,7 @@ fn test_valid_port() {
     assert_eq!(cfg.pool_per_host, 64);
     assert_eq!(cfg.pool_total, 256);
     assert_eq!(cfg.malloc_arenas, 8);
+    assert_eq!(cfg.malloc_mmap_threshold_kb, 256);
     assert_eq!(cfg.max_conns, default_max_conns());
     assert_eq!(cfg.tunnel_idle, Duration::from_secs(300));
     assert!(cfg.connect_ports.is_empty() && cfg.allow_local == AllowLocal::Off);

@@ -888,6 +888,10 @@
       1 回 1.2 ms)、返したページは空きの塊のままなので **`heap_free` の数は減らず、減るのは `rss`** です。
       `malloc_trim` も `mallinfo2` と同じく実行時に探します。履歴スレッドの無い `--lite` /
       `PROXY_STATS_PERSIST=off` では返しません
+    - **256 KiB 以上の確保は `mmap` に出ます** (T.32.3。`PROXY_MALLOC_MMAP_THRESHOLD_KB`)。glibc の閾を起動時に固定するので、
+      重い口の `String` やキャッシュの本文はアリーナでなく `mmap` に数えられ、free した時点で OS へ返ります。
+      0.30.4 までと比べると `heap_used` が小さく `mmap` が大きく出ますが、**`heap_used + mmap` は同じ**なので、
+      締めの heap の行 (`heap_used + mmap − cache_memory` と起動 60 秒の基準の差) は読み方を変えずに比べられます
     - `rss` はキャッシュのプローブ (既定 5 秒ごと) が読んだ値で、**同じ応答の
       `cache.system.process_rss_bytes` と同じ値**です (1 枚の中に食い違う RSS が 2 つ並ばないように)。
       プローブが止まっている (`PROXY_CACHE_PROBE_SECS=0` / キャッシュ無効 / `--lite`) ときだけ、

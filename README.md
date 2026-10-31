@@ -257,6 +257,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_PARK_IDLE` | `on` | 暇な接続をスレッドから外して監視スレッドに預ける |
 | `PROXY_PARK_GRACE_MS` | `3` | 預ける前に同じスレッドで待ってみる時間 (ms) |
 | `PROXY_MALLOC_ARENAS` | `8` | malloc のアリーナ数の上限 |
+| `PROXY_MALLOC_MMAP_THRESHOLD_KB` | `256` | glibc の mmap の閾を固定する値 (KiB。`0` で glibc の既定の動く閾) |
 | `PROXY_DNS_TTL_SECS` | `60` | 名前解決の結果を保持する秒数 |
 | `PROXY_DNS_NEGATIVE_SECS` | `60` | 名前解決の失敗を覚えておく秒数 (`0` で覚えない) |
 | `PROXY_DNS_WARM_SECS` | `0` | keep-warm: よく使う名前を裏で引き直し続ける窓 (秒。`0` で止める = 既定。T.21.3 までの既定は `3600`) |
@@ -528,6 +529,13 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   `2` も測りました (T.29.25、2026-10-27): 400 並列の forward のあとの `heap_free` 12.4 → 10.3 MiB、`malloc_trim` 後の RSS 33.7 → 32.9 MiB と小さく、
   8 並列の CPU/要求は +1.1% (user +3.0%) なので既定は `8` のままにしています。
   実際に掛かった値は `/status` の `memory.arenas` に出ます
+- **`PROXY_MALLOC_MMAP_THRESHOLD_KB`** (既定 `256`)
+  glibc の mmap の閾 (これ以上の確保はアリーナでなく `mmap` で取る) を起動時にこの値 (KiB) に固定し、trim の閾をその 4 倍 (既定 1 MiB) にします (T.32.3)。
+  `0` で glibc の既定の「動く閾」のまま。glibc は mmap で取った塊を free するたびに閾をその大きさまで (上限 32 MiB) 上げるので、
+  起動中に 2 MiB、14 MiB のキャッシュの本文を捨てると 14 MiB になり、以後の大きな一時の確保 (重い口の `String`・キャッシュの本文) はアリーナから取られて、
+  主でないアリーナの天辺の空きは `malloc_trim(0)` でも返りませんでした (実測: 14 MiB の GET→PURGE ×3 のあと trim しても `heap_free` 15.8 MB が残る)。
+  固定すると大きな確保が `mmap` に移るので、`/status` の `memory` は `heap_used` が小さく `mmap` が大きくなります (`heap_used + mmap` は同じ)。
+  glibc が受け付けなかったときは起動時に WARN 1 行 (動く閾のまま)
 
 #### 名前解決
 

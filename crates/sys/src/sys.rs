@@ -95,6 +95,25 @@ pub fn limit_malloc_arenas(max: c_int) -> bool {
     unsafe { mallopt(M_ARENA_MAX, max) == 1 }
 }
 
+/// glibc の `M_TRIM_THRESHOLD` / `M_MMAP_THRESHOLD` (malloc.h の定義値)。
+const M_TRIM_THRESHOLD: c_int = -1;
+const M_MMAP_THRESHOLD: c_int = -3;
+
+/// glibc の mmap の閾を `bytes` に固定し、trim の閾をその 4 倍にする (T.32.3)。
+/// **スレッドを作る前に 1 回だけ呼ぶこと。** 戻り値は 2 つとも受け付けられたか。
+///
+/// glibc は既定で「動く閾」を使い、mmap で取った塊を free するたびに閾をその大きさまで
+/// (動く閾の上限は 32 MiB) 上げ、trim の閾を 2 倍にする。上がった後は大きな一時の確保 (重い口の
+/// `String`、キャッシュの本文) がアリーナから取られ、主でないアリーナの天辺の空きは
+/// `free` でも `malloc_trim(0)` でも返らない。どちらかを `mallopt` で決めると
+/// `mp_.no_dyn_threshold` が立ち、閾はそれきり動かない。
+pub fn fix_malloc_mmap_threshold(bytes: usize) -> bool {
+    let mmap = bytes.min(c_int::MAX as usize) as c_int;
+    let trim = bytes.saturating_mul(4).min(c_int::MAX as usize) as c_int;
+    // SAFETY: 定数のパラメータ番号と値を渡すだけ。失敗は 0 で返る。
+    unsafe { mallopt(M_MMAP_THRESHOLD, mmap) == 1 && mallopt(M_TRIM_THRESHOLD, trim) == 1 }
+}
+
 thread_local! {
     /// このスレッドの番号。**スレッドの一生に 1 回だけ**システムコールを引く (T15.0 (4))。
     static TID: u32 = unsafe { c_gettid() } as u32;
@@ -935,6 +954,12 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::os::fd::AsRawFd;
+
+    /// glibc は閾と trim の閾を両方受け付ける (T.32.3。上限の扱いは glibc の版で違うので見ない)。
+    #[test]
+    fn fixes_the_mmap_threshold() {
+        assert!(fix_malloc_mmap_threshold(256 * 1024));
+    }
 
     #[test]
     fn splices_through_a_pipe() {

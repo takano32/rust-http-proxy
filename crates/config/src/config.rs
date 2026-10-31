@@ -528,6 +528,15 @@ pub struct Config {
     /// 実測 (2,000 本のアイドル keep-alive 接続): 既定 80.5 kB/接続 → 上限 8 で 26.8 kB (-67%)。
     /// 代償は高並列でのロック競合で、実測は conc=64 の CPU/要求 +4%、conc=8 では差なし。
     pub malloc_arenas: usize,
+    /// glibc の mmap の閾を固定する値 (KiB。`PROXY_MALLOC_MMAP_THRESHOLD_KB`、`0` で glibc の既定 =
+    /// 動く閾のまま。T.32.3)。
+    ///
+    /// glibc は mmap で取った塊を free すると閾をその大きさまで上げる (起動中に 2 MiB、14 MiB の
+    /// キャッシュの本文を捨てると 14 MiB)。以後は閾より小さい大きな確保がアリーナから取られ、
+    /// 主でないアリーナの天辺の空きは `malloc_trim(0)` でも返らない (実測: 14 MiB の GET→PURGE ×3
+    /// のあと trim しても `heap_free` 15.8 MB が残る)。値を固定すると動く閾が止まり、
+    /// trim の閾 (`M_TRIM_THRESHOLD`) はその 4 倍にする。
+    pub malloc_mmap_threshold_kb: usize,
     /// HTTPS のオリジンへ取得に行くか (システムの OpenSSL を使う)
     pub tls_enabled: bool,
     /// オリジンの証明書を検証するか
@@ -792,6 +801,10 @@ impl Config {
         if let Some(n) = bad.num::<usize>("PROXY_MALLOC_ARENAS") {
             cfg.malloc_arenas = n;
             src.mark("PROXY_MALLOC_ARENAS");
+        }
+        if let Some(n) = bad.num::<usize>("PROXY_MALLOC_MMAP_THRESHOLD_KB") {
+            cfg.malloc_mmap_threshold_kb = n;
+            src.mark("PROXY_MALLOC_MMAP_THRESHOLD_KB");
         }
         if let Some(ms) = bad.num::<u64>("PROXY_PARK_GRACE_MS") {
             cfg.park_grace = Duration::from_millis(ms);
@@ -1179,6 +1192,10 @@ impl Config {
             self.park_grace.as_millis().to_string(),
         );
         add("PROXY_MALLOC_ARENAS", self.malloc_arenas.to_string());
+        add(
+            "PROXY_MALLOC_MMAP_THRESHOLD_KB",
+            self.malloc_mmap_threshold_kb.to_string(),
+        );
         // 名前解決
         add("PROXY_DNS_TTL_SECS", secs(self.dns_ttl));
         add("PROXY_DNS_NEGATIVE_SECS", secs(self.dns_negative));
@@ -1359,6 +1376,7 @@ impl Config {
             park_idle: true,
             park_grace: Duration::from_millis(3),
             malloc_arenas: 8,
+            malloc_mmap_threshold_kb: 256,
             tls_enabled: true,
             tls_verify: true,
             tls_ca_file: None,

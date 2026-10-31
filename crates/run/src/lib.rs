@@ -259,6 +259,18 @@ pub fn main() {
             log_debug!(None, "mallopt(M_ARENA_MAX, {}) was refused", max);
         }
     }
+    // mmap の閾を固定する (動く閾を止める。T.32.3)。これも**スレッドを作る前**
+    #[cfg(target_os = "linux")]
+    if config.malloc_mmap_threshold_kb > 0 {
+        let bytes = config.malloc_mmap_threshold_kb.saturating_mul(1024);
+        if !proxy_server::sys::fix_malloc_mmap_threshold(bytes) {
+            log_warn!(
+                None,
+                "mallopt(M_MMAP_THRESHOLD, {} KiB) was refused; the threshold stays dynamic",
+                config.malloc_mmap_threshold_kb
+            );
+        }
+    }
     if config.lite {
         // ログレベルに依らず必ず出す起動バナー
         // 「統計を取らない」ではない (`/hosts` などはメモリに積む)。止めるものだけを並べる (T.28.44)
