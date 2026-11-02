@@ -1447,7 +1447,8 @@ def parser():
                         "接続のエラーを起動からの `/history` の 443・80、`dns_slow` を成功したミスで立った件/時、"
                         "表示だけのミスの行に失敗を除いた率)。T.32.16・T.32.17・T.32.29・T.32.30。"
                         "phase30 = phase29 の 26 行のうち `dns_slow` の行を「立った窓の名前解決に成功したミスの平均が"
-                        "前の版の 1.5 倍未満」(件/時は表示だけ) に読み替えたもの。T.33.1)")
+                        "前の版の 1.5 倍未満」(件/時は表示だけ) に、1 名前あたりの引き直しの行を「答えのある名前 1 つあたり "
+                        "(`/dns` の一覧が切れていれば引き直しの合計) が前の期間の 1.5 倍未満」に読み替えたもの。T.33.1・T.33.2)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst-median-k", type=int, default=None, metavar="K",

@@ -2987,11 +2987,12 @@ PHASE29["dns_min_misses"] = 3
 CRITERIA["phase29"] = PHASE29
 
 
-# --- Phase 30 (T.33.1。phase29 の 26 行のうち、T.32.99 で物差しの側が届かなかった行を使われ方で動かない形にしたもの) ---
+# --- Phase 30 (T.33.1・T.33.2。phase29 の 26 行のうち、T.32.99 で物差しの側が届かなかった 2 行を使われ方で動かない形にしたもの) ---
 #
 # T.32.99 (0.32.39 の 48.3 時間) で phase29 の `dns_slow` の行は 0.63 件/時 (15 件 / 23.9 時間、閾 0.1) の「届かず」。
 # 15 件とも初めて引く名前 (ほとんどが 1 つの接続元のメールのホスト) の名前解決そのものが遅い窓で、件/時は
-# 初めて引く名前の数 (使われ方) で動く。0.1 件/時は T.17〜T.23 の静かなころの値。
+# 初めて引く名前の数 (使われ方) で動く。0.1 件/時は T.17〜T.23 の静かなころの値。1 名前あたりの引き直しの行は、
+# 分母の `dns.entries` が表の上限と総当たりの濃さで 7,511 → 891 に動いて 6.27 倍の「届かず」だった (T.33.2)。
 
 def dns_slow_windows(snap, th):
     """`/events` の `dns_slow` が立った窓の、名前解決に**成功した**ミスの回数と待ちの合計 (T.33.1)。
@@ -3124,10 +3125,79 @@ def _p30_dns_slow(c, th):
     return (label, limit, shown + "。" + rates, verdict, src)
 
 
-# phase30 = phase29 の 26 行のうち 11 番目 (`dns_slow`) を差し替えたもの (T.33.1)。並びは同じ。
-# **phase29 以前の並びと文面は 1 つも動かない**
+def answered_names(snap):
+    """`/dns` の一覧のうち答えのある (`addrs` のある) 名前の数 (T.33.2)。
+
+    一覧が切れていれば (`truncated`、または `shown` < `count`) 数えられないので None。表の大半は答えの無い
+    失敗の行 (総当たりの死んだ名前) で、裏の引き直しの対象ではない。
+    """
+    d = part(snap, "dns")
+    rows = d.get("entries")
+    if not isinstance(rows, list) or d.get("truncated"):
+        return None
+    if isinstance(d.get("count"), int) and len(rows) < d["count"]:
+        return None
+    return sum(1 for e in rows if e.get("addrs") or e.get("addr_count"))
+
+
+def _p30_refresh_per_name(c, th):
+    """T.33.2: 裏の引き直し (回/時) を**答えのある名前 1 つあたり**で前の期間と比べ、1.5 倍未満なら満たす。
+
+    phase25 の行 (`_p25_refresh_per_name`) は `/status` の `dns.entries` (表の名前の数) で割っていて、表の上限
+    (T.32.2) や総当たりの濃さで分母が動く (T.32.99 は 7,511 → 891 名前で 0.04 → 0.25 回/時/名前、6.27 倍の
+    「届かず」。引き直しの合計は 302.4 → 224.9 回/時に下がっていた)。分母は `/dns` の一覧の `addrs` のある行の数
+    (`answered_names`) にする。前か後の一覧が切れていて数えられなければ、**引き直しの合計 (回/時)** が前の期間の
+    1.5 倍未満で比べる (理由を書く)。表の名前の数あたりと `expired` + `warm_stale` は表示だけ。
+    """
+    k = th["refresh_per_name_factor"]
+    label = (f"裏の引き直し (回/時) が、答えのある名前 1 つあたりで前の期間の {k} 倍未満 (T.33.2。`/dns` の一覧が"
+             "切れていれば引き直しの合計で。表の名前の数あたりと `expired` + `warm_stale` は表示だけ)")
+    limit = f"< 前 ×{k} (答えのある名前 1 つあたり、無ければ合計)"
+    rb, ra = counter_rates(c, "refreshes")
+    src = ("`/status` の `dns.refreshes` を 1 時間あたりにした (前は前の雪像の起動から、後は"
+           + ("その間" if dns_counter(c, "refreshes")[2] else "後の雪像の起動から") + ")")
+    if rb is None or ra is None:
+        return (label, limit, "—", UNKNOWN, "前か後の `/status` に `dns.refreshes` か `uptime_secs` が無い")
+    nb, na = answered_names(c["a"]), answered_names(c["b"])
+    extra = []
+    eb = (part(c["a"], "status").get("dns") or {}).get("entries")
+    ea = (part(c["b"], "status").get("dns") or {}).get("entries")
+    if eb and ea:
+        extra.append(f"表の名前あたり {ra / ea:.2f} 回/時/名前 (前 {rb / eb:.2f}、名前 {n(ea)}、前 {n(eb)})")
+    rates = [counter_rates(c, "misses_by_kind", kind) for kind in ("expired", "warm_stale")]
+    if not any(b is None or a is None for b, a in rates):
+        mb_, ma_ = sum(b for b, _ in rates) * 24, sum(a for _, a in rates) * 24
+        extra.append(f"`expired` + `warm_stale` {ma_:,.1f} 回/日 (前 {mb_:,.1f})")
+    if nb and na:
+        pb, pa = rb / nb, ra / na
+        shown = (f"**{pa:.2f}** 回/時/答えのある名前 (前 {pb:.2f}" + (f"、{pa / pb:.2f} 倍" if pb else "") + ")。"
+                 f"表示だけ: 合計 {ra:,.1f} 回/時 (前 {rb:,.1f})、答えのある名前 {n(na)} (前 {n(nb)})")
+        ok = pa < pb * k if pb else pa == 0
+        src += "、`/dns` の一覧 (切れていない) の `addrs` のある行の数で割った"
+    else:
+        why = []
+        for side, snap, v in (("前", c["a"], nb), ("後", c["b"], na)):
+            if v is None:
+                d = part(snap, "dns")
+                why.append(f"{side}の `/dns` の一覧が切れている ({n(len(d['entries']))} / {n(d.get('count'))} 行)"
+                           if isinstance(d.get("entries"), list) else f"{side}の雪像に `/dns` の部が無い")
+            elif not v:
+                why.append(f"{side}の `/dns` の一覧に答えのある名前が無い")
+        shown = (f"合計 **{ra:,.1f}** 回/時 (前 {rb:,.1f}" + (f"、{ra / rb:.2f} 倍" if rb else "") + ")")
+        ok = ra < rb * k if rb else ra == 0
+        src = "、".join(why) + " ので答えのある名前の数が出ない。引き直しの合計で比べた。" + src
+        known = [f"{side} {n(v)}" for side, v in (("後", na), ("前", nb)) if v]
+        if known:
+            extra.append("答えのある名前 " + "・".join(known))
+    if extra:
+        shown += ("。表示だけ: " if "表示だけ" not in shown else "、") + "、".join(extra)
+    return (label, limit, shown, MET if ok else MISSED, src)
+
+
+# phase30 = phase29 の 26 行のうち 11 番目 (`dns_slow`。T.33.1) と 15 番目 (1 名前あたりの引き直し。T.33.2) を
+# 差し替えたもの。並びは同じ。**phase29 以前の並びと文面は 1 つも動かない**
 _P29 = RULES["phase29"]
-RULES["phase30"] = _P29[:10] + (_p30_dns_slow,) + _P29[11:]
+RULES["phase30"] = _P29[:10] + (_p30_dns_slow,) + _P29[11:14] + (_p30_refresh_per_name,) + _P29[15:]
 PHASE30 = dict(PHASE29)
 # `dns_slow` が立った窓の成功したミスの平均の倍率 (前の版のこの倍未満なら満たす。T.33.1)
 PHASE30["dns_slow_avg_factor"] = 1.5
@@ -3341,12 +3411,15 @@ def render_criteria(d, grouped):
           "添えます (T.32.17)。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
         p()
     if c["name"] == "phase30":
-        # T.33.1。phase29 の 26 行のうち、物差しの側で届かなかった行を使われ方で動かない形にした
-        p("26 行の並びと材料は phase29 と同じです。直したのは 1 行 (T.33.1): `dns_slow` は**立った窓の、名前解決に"
+        # T.33.1・T.33.2。phase29 の 26 行のうち、物差しの側で届かなかった 2 行を使われ方で動かない形にした
+        p("26 行の並びと材料は phase29 と同じです。直したのは 2 行 (T.33.1・T.33.2): (1) `dns_slow` は**立った窓の、名前解決に"
           "成功したミスの平均**が前の版の 1.5 倍未満で読み、件/時は表示だけです (件/時は初めて引く名前の数で動き、"
           "T.32.99 は 0.63 件/時の「届かず」だった。平均はリゾルバの距離で決まる)。前の版に `dns_fail_ms_sum` が"
           "無ければ、失敗の混ざらない 1 分の標本は確か、混ざった 1 分は 0〜その 1 分の合計とした上下限で比べ、"
-          "どちらとも言えなければ「判定できず」(上下限を書く) です。**その部が雪像に無い行は「判定できず」**で、"
+          "どちらとも言えなければ「判定できず」(上下限を書く) です。(2) 裏の引き直しは**答えのある名前 1 つあたり** "
+          "(`/dns` の一覧の `addrs` のある行の数で割る) で前の期間の 1.5 倍未満で読み、前か後の一覧が切れていれば"
+          "**引き直しの合計 (回/時)** で比べます (表の名前の数 `dns.entries` は表の上限と総当たりの濃さで動き、T.32.99 は "
+          "7,511 → 891 名前で 6.27 倍の「届かず」だった)。**その部が雪像に無い行は「判定できず」**で、"
           "0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")

@@ -2312,11 +2312,12 @@ class Criteria30Rows(unittest.TestCase):
     def row(self, a, b):
         return sc._p30_dns_slow({"a": a, "b": b}, sc.PHASE30)
 
-    def test_phase30_replaces_only_the_dns_slow_row_of_phase29(self):
+    def test_phase30_replaces_two_rows_of_phase29(self):
         p29, p30 = sd.RULES["phase29"], sd.RULES["phase30"]
         self.assertEqual(len(p30), 26)
-        self.assertEqual([i for i in range(26) if p29[i] is not p30[i]], [10])
+        self.assertEqual([i for i in range(26) if p29[i] is not p30[i]], [10, 14])
         self.assertIs(p30[10], sc._p30_dns_slow)
+        self.assertIs(p30[14], sc._p30_refresh_per_name)
         self.assertEqual(sc.PHASE30["dns_slow_avg_factor"], 1.5)
 
     def test_the_same_slowness_is_met_whatever_the_rate(self):
@@ -2367,6 +2368,66 @@ class Criteria30Rows(unittest.TestCase):
         self.assertIn("比べる平均が無い", row[4])
 
 
+class Criteria30Refresh(unittest.TestCase):
+    """`--criteria phase30` (T.33.2): 裏の引き直しを答えのある名前 1 つあたりで読み、一覧が切れていれば合計で比べる。"""
+
+    @staticmethod
+    def snap(refreshes, names, answered, hours=48, truncated=False, expired=0):
+        """`/status` の `dns` と `/dns` の一覧。表の `names` 行のうち `answered` 行だけに答えがある。"""
+        rows = ([{"host": f"ok{i}.example", "addrs": ["192.0.2.1"], "addr_count": 1, "failed": None}
+                 for i in range(answered)]
+                + [{"host": f"dead{i}.example", "addrs": [], "addr_count": 0, "failed": {"secs_ago": 1}}
+                   for i in range(names - answered)])
+        shown = rows[:657] if truncated else rows
+        return {"uptime_secs": hours * 3600,
+                "status": {"dns": {"refreshes": refreshes, "entries": names,
+                                   "misses_by_kind": {"expired": expired, "warm_stale": 0}}},
+                "dns": {"count": names, "shown": len(shown), "truncated": truncated, "entries": shown}}
+
+    @staticmethod
+    def row(rule, a, b):
+        # 再起動をまたいだ 2 枚 (どちらも起動からの通算で読む)
+        return rule({"a": a, "b": b, "info": {"restarted": True}}, sc.PHASE30)
+
+    def test_the_number_of_names_alone_does_not_move_the_verdict(self):
+        # 受け入れ基準: 表の名前の数だけを 7,511 → 891 に変えた作り物 (答えのある名前 560 と引き直しは同じ)
+        a, b = self.snap(14_000, 7_511, 560), self.snap(10_800, 891, 560, hours=36)
+        row = self.row(sc._p30_refresh_per_name, a, b)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("**0.54** 回/時/答えのある名前 (前 0.52、1.03 倍)", row[2])
+        self.assertIn("表の名前あたり 0.34 回/時/名前 (前 0.04、名前 891、前 7,511)", row[2])
+        same = self.row(sc._p30_refresh_per_name, self.snap(14_000, 891, 560), b)
+        self.assertEqual(same[3], row[3])
+        # phase25〜29 の読み方 (表の名前の数で割る) は同じ作り物で「届かず」に動く
+        self.assertEqual(self.row(sc._p25_refresh_per_name, a, b)[3], sd.MISSED)
+        self.assertEqual(self.row(sc._p25_refresh_per_name, self.snap(14_000, 891, 560), b)[3], sd.MET)
+        # 答えのある名前あたりが前の 2 倍なら届かず
+        self.assertEqual(self.row(sc._p30_refresh_per_name, a, self.snap(21_600, 891, 560, hours=36))[3],
+                         sd.MISSED)
+
+    def test_a_truncated_list_falls_back_to_the_total(self):
+        # 前の `/dns` の一覧が切れている (T.32.99 の前は 657 / 7,511 行) と答えのある名前が数えられない
+        a = self.snap(14_000, 7_511, 560, truncated=True)
+        b = self.snap(10_800, 891, 560, hours=36)
+        row = self.row(sc._p30_refresh_per_name, a, b)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("合計 **300.0** 回/時 (前 291.7、1.03 倍)", row[2])
+        self.assertIn("答えのある名前 後 560", row[2])
+        self.assertIn("前の `/dns` の一覧が切れている (657 / 7,511 行) ので答えのある名前の数が出ない", row[4])
+        # 合計でも名前の数だけを変えた作り物で判定は動かない
+        self.assertEqual(self.row(sc._p30_refresh_per_name, self.snap(14_000, 891, 560, truncated=True), b)[3],
+                         row[3])
+        # 合計が前の 1.5 倍以上なら届かず
+        self.assertEqual(self.row(sc._p30_refresh_per_name, a, self.snap(16_000, 891, 560, hours=36))[3],
+                         sd.MISSED)
+        # `/dns` の部が無い雪像も合計で比べる。`dns.refreshes` が無ければ判定できず
+        nodns = {k: v for k, v in a.items() if k != "dns"}
+        row = self.row(sc._p30_refresh_per_name, nodns, b)
+        self.assertEqual(row[3], sd.MET)
+        self.assertIn("前の雪像に `/dns` の部が無い", row[4])
+        self.assertEqual(self.row(sc._p30_refresh_per_name, {"uptime_secs": 3600}, b)[3], sd.UNKNOWN)
+
+
 T3299_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-10-31T123625Z-shutdown-snapshot.json")
 T3299_BEFORE_PROFILE = os.path.join(DEPLOYED, "tokyo", "2026-10-31T063104Z-profile_res_60.json")
 T3299_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-11-02T125840Z-snapshot.json")
@@ -2394,6 +2455,18 @@ class Deployed30(unittest.TestCase):
         self.assertIn("0.63 件/時 (15 件 / 23.9 時間、成功したミスで立った)", row[2])
         self.assertIn("前 0.75 件/時 (18 件 / 23.9 時間、失敗込みの閾で立った)", row[2])
         self.assertIn("146〜1,094 ms", row[4])
+
+    def test_t3299_refreshes(self):
+        # phase29 は表の名前の数 (7,511 → 891) で割って 6.27 倍の「届かず」。phase30 は前の `/dns` の一覧が
+        # 切れている (657 / 7,511 行) ので引き直しの合計 302.4 → 224.9 回/時 (0.74 倍) で満たす
+        old = self.rows("phase29")[14]
+        self.assertEqual(old[3], sd.MISSED)
+        self.assertIn("6.27 倍", old[2])
+        row = self.rows("phase30")[14]
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("合計 **224.9** 回/時 (前 302.4、0.74 倍)", row[2])
+        self.assertIn("答えのある名前 後 563", row[2])
+        self.assertIn("前の `/dns` の一覧が切れている (657 / 7,511 行)", row[4])
 
 
 if __name__ == "__main__":
