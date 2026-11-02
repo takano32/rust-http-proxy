@@ -2987,6 +2987,153 @@ PHASE29["dns_min_misses"] = 3
 CRITERIA["phase29"] = PHASE29
 
 
+# --- Phase 30 (T.33.1。phase29 の 26 行のうち、T.32.99 で物差しの側が届かなかった行を使われ方で動かない形にしたもの) ---
+#
+# T.32.99 (0.32.39 の 48.3 時間) で phase29 の `dns_slow` の行は 0.63 件/時 (15 件 / 23.9 時間、閾 0.1) の「届かず」。
+# 15 件とも初めて引く名前 (ほとんどが 1 つの接続元のメールのホスト) の名前解決そのものが遅い窓で、件/時は
+# 初めて引く名前の数 (使われ方) で動く。0.1 件/時は T.17〜T.23 の静かなころの値。
+
+def dns_slow_windows(snap, th):
+    """`/events` の `dns_slow` が立った窓の、名前解決に**成功した**ミスの回数と待ちの合計 (T.33.1)。
+
+    窓は phase29 の行 (`_p29_dns_slow`) と同じ「立つまでの 5 分の `/history?res=60` の標本」で、起動からの
+    出来事のうち `/history?res=60` (1 日) の中のものだけ。重なった窓の標本は 1 回だけ数える。
+    `dns_fail_ms_sum` (T.32.16) のある版は、phase29 と同じく成功したミスで立った窓だけを選び、待ちは確か (`exact`)。
+    無い版 (0.30.4 まで) は立った窓 (失敗込みの閾で立った) を全部使い、1 分の標本ごとに、失敗の混ざらない 1 分は
+    確か、混ざった 1 分は成功したミスの待ちを 0〜その 1 分の合計として**上下限** (`lo`・`hi`) で返す。
+    `dns_fail_misses` も無ければ (T.32.17 より前) None。返すのは
+    `{"fired", "hours", "misses", "lo", "hi", "exact", "truncated"}`。
+    """
+    ev = part(snap, "events")
+    rows = ev.get("events")
+    h = history_part(snap, 60)
+    if not isinstance(rows, list) or h is None:
+        return None
+    hk = h["keys"]
+    if any(k not in hk for k in ("dns_misses", "dns_fail_misses", "dns_ms_sum")):
+        return None
+    exact = "dns_fail_ms_sum" in hk
+    idx = {k: hk.index(k) for k in ("dns_misses", "dns_fail_misses", "dns_ms_sum", "dns_fail_ms_sum") if k in hk}
+    samples = [s for s in h["samples"] if s and isinstance(s[0], (int, float))]
+    if not samples:
+        return None
+    up, taken = snap.get("uptime_secs") or 0, snap.get("taken_at") or 0
+    start = max(taken - up, samples[0][0] + 300)
+
+    def get(s, k):
+        return (s[idx[k]] if idx[k] < len(s) else 0) or 0
+    used, fired = set(), 0
+    for e in rows:
+        text = e.get("text") or ""
+        at = e.get("at") or 0
+        if e.get("kind") != "anomaly" or not text.startswith("dns_slow:") or at < start:
+            continue
+        w = [i for i, s in enumerate(samples) if at - 300 < s[0] + 60 <= at + 60]
+        if exact:
+            cnt = sum(get(samples[i], "dns_misses") - get(samples[i], "dns_fail_misses") for i in w)
+            tot = sum(get(samples[i], "dns_ms_sum") - get(samples[i], "dns_fail_ms_sum") for i in w)
+            if cnt < th["dns_min_misses"] or tot < th["dns_slow_min_sum_ms"]:
+                continue
+        fired += 1
+        used.update(w)
+    misses = lo = hi = 0
+    for i in used:
+        s = samples[i]
+        ok = get(s, "dns_misses") - get(s, "dns_fail_misses")
+        if ok <= 0:
+            continue
+        misses += ok
+        if exact:
+            v = get(s, "dns_ms_sum") - get(s, "dns_fail_ms_sum")
+            lo += v
+            hi += v
+        else:
+            hi += get(s, "dns_ms_sum")
+            if not get(s, "dns_fail_misses"):
+                lo += get(s, "dns_ms_sum")
+    return {"fired": fired, "hours": max(taken - start, 0) / 3600.0, "misses": misses,
+            "lo": lo, "hi": hi, "exact": exact, "truncated": bool(ev.get("truncated"))}
+
+
+def _p30_dns_slow(c, th):
+    """T.33.1: `dns_slow` が立った窓の、名前解決に成功したミスの平均が前の版の 1.5 倍未満。
+
+    phase29 の行 (`_p29_dns_slow`) は成功したミスで立った件/時 ≤ 0.1 で、件/時は初めて引く名前の数 (使われ方) で
+    動く (T.32.99 は 15 件 / 23.9 時間で 0.63)。平均はリゾルバの距離で決まり、使われ方で動きにくいので判定にし、
+    件/時は表示だけにする。前の版に `dns_fail_ms_sum` が無ければ平均は上下限 (`dns_slow_windows`) で、
+    上限でも閾を越えれば「届かず」、下限でも越えなければ「満たした」、間なら「判定できず」(上下限を書く)。
+    後の期間に成功したミスで立った窓が無ければ満たした。前の版に立った窓が無ければ比べる平均が無いので判定できず。
+    """
+    k = th["dns_slow_avg_factor"]
+    label = (f"`dns_slow` が立った窓の、名前解決に**成功した**ミスの平均が前の版の {k} 倍未満 "
+             "(T.33.1。件/時は表示だけ)")
+    limit = f"< 前 ×{k} (立った窓の成功したミスの平均)"
+    aft, bef = dns_slow_windows(c["b"], th), dns_slow_windows(c["a"], th)
+    if aft is None or not aft["exact"]:
+        return (label, limit, "—", UNKNOWN,
+                "後の雪像に `/events` か `/history?res=60` の `dns_fail_ms_sum` (T.32.16 で足した欄) が無い")
+    if not aft["hours"]:
+        return (label, limit, "—", UNKNOWN, "`/history?res=60` の窓と起動からの時間が重ならない")
+
+    def rate(v, what):
+        return f"{v['fired'] / v['hours']:.2f} 件/時 ({v['fired']} 件 / {v['hours']:,.1f} 時間、{what})"
+
+    def avg(v):
+        if not v["misses"]:
+            return None
+        if v["exact"]:
+            return f"{v['lo'] / v['misses']:,.0f} ms ({n(v['misses'])} 回、立った {v['fired']} 件)"
+        return (f"{v['lo'] / v['misses']:,.0f}〜{v['hi'] / v['misses']:,.0f} ms ({n(v['misses'])} 回、"
+                f"立った {v['fired']} 件。`dns_fail_ms_sum` の無い版なので上下限)")
+    src = ("`/events` の `dns_slow:` (起動から、`/history?res=60` の窓の中) が立つまでの 5 分の `/history?res=60` の"
+           "標本を重ねずに足し、(`dns_ms_sum − dns_fail_ms_sum`) ÷ (`dns_misses − dns_fail_misses`)。後は phase29 と"
+           f"同じく成功したミス {th['dns_min_misses']} 回以上・{th['dns_slow_min_sum_ms']:,} ms 以上で立った窓だけ")
+    if bef is not None and not bef["exact"]:
+        src += ("。前は `dns_fail_ms_sum` が無いので立った窓 (失敗込みの閾) を全部使い、失敗の混ざらない 1 分は確か、"
+                "混ざった 1 分は成功したミスの待ちを 0〜その 1 分の合計とした上下限")
+    if aft["truncated"] or (bef or {}).get("truncated"):
+        src += "。**`/events` が切れている** (立った件は下限)"
+    rates = "表示だけ: " + rate(aft, "成功したミスで立った")
+    if bef is not None and bef["hours"]:
+        rates += " (前 " + rate(bef, "成功したミスで立った" if bef["exact"] else "失敗込みの閾で立った") + ")"
+    if not aft["fired"]:
+        return (label, limit, f"後の期間に成功したミスで立った窓は **0** 件。{rates}", MET, src)
+    a = aft["lo"] / aft["misses"]
+    shown = f"**{a:,.0f}** ms ({n(aft['misses'])} 回、立った {aft['fired']} 件)"
+    if bef is None:
+        return (label, limit, shown + "。" + rates, UNKNOWN,
+                "前の雪像に `/events` か `/history?res=60` の `dns_misses`・`dns_fail_misses` が無い "
+                "(`dns_fail_misses` は T.32.17 で足した欄)。" + src)
+    if not bef["misses"]:
+        return (label, limit, shown + "。" + rates, UNKNOWN,
+                "前の版の `/history?res=60` の窓で立った窓に成功したミスが無い (比べる平均が無い)。" + src)
+    lo, hi = bef["lo"] / bef["misses"], bef["hi"] / bef["misses"]
+    if bef["exact"]:
+        shown += f" (前 {avg(bef)}" + (f"、{a / lo:.2f} 倍" if lo else "") + ")"
+        ok = a < lo * k if lo else False
+        return (label, limit, shown + "。" + rates, MET if ok else MISSED, src)
+    shown += f" (前 {avg(bef)})"
+    if lo and a < lo * k:
+        verdict = MET
+    elif a >= hi * k:
+        verdict = MISSED
+    else:
+        verdict = UNKNOWN
+        src = (f"前の平均の上下限 {lo:,.0f}〜{hi:,.0f} ms の {k} 倍 ({lo * k:,.0f}〜{hi * k:,.0f} ms) の間に後の "
+               f"{a:,.0f} ms があり、どちらとも言えない。" + src)
+    return (label, limit, shown + "。" + rates, verdict, src)
+
+
+# phase30 = phase29 の 26 行のうち 11 番目 (`dns_slow`) を差し替えたもの (T.33.1)。並びは同じ。
+# **phase29 以前の並びと文面は 1 つも動かない**
+_P29 = RULES["phase29"]
+RULES["phase30"] = _P29[:10] + (_p30_dns_slow,) + _P29[11:]
+PHASE30 = dict(PHASE29)
+# `dns_slow` が立った窓の成功したミスの平均の倍率 (前の版のこの倍未満なら満たす。T.33.1)
+PHASE30["dns_slow_avg_factor"] = 1.5
+CRITERIA["phase30"] = PHASE30
+
+
 def judge(name, hist, hosts, majors, status_b, overload, th,
           a=None, b=None, info=None, dns=None, errors=None, burst=BURST_PER_HOUR):
     """`RULES[name]` の各行を順に呼んで判定表にする。
@@ -3192,6 +3339,15 @@ def render_criteria(d, grouped):
           "`dns_misses − dns_fail_misses` と `dns_ms_sum − dns_fail_ms_sum`。`dns_fail_ms_sum` の無い版は「判定できず」)。"
           "(5) 表示だけの平常時の名前解決のミスの行に、名前解決の失敗を除いた回/接続 (`dns_misses − dns_fail_misses`) を"
           "添えます (T.32.17)。**その部が雪像に無い行は「判定できず」**で、0 とは書きません。")
+        p()
+    if c["name"] == "phase30":
+        # T.33.1。phase29 の 26 行のうち、物差しの側で届かなかった行を使われ方で動かない形にした
+        p("26 行の並びと材料は phase29 と同じです。直したのは 1 行 (T.33.1): `dns_slow` は**立った窓の、名前解決に"
+          "成功したミスの平均**が前の版の 1.5 倍未満で読み、件/時は表示だけです (件/時は初めて引く名前の数で動き、"
+          "T.32.99 は 0.63 件/時の「届かず」だった。平均はリゾルバの距離で決まる)。前の版に `dns_fail_ms_sum` が"
+          "無ければ、失敗の混ざらない 1 分の標本は確か、混ざった 1 分は 0〜その 1 分の合計とした上下限で比べ、"
+          "どちらとも言えなければ「判定できず」(上下限を書く) です。**その部が雪像に無い行は「判定できず」**で、"
+          "0 とは書きません。")
         p()
     p("| 完了の定義 | 閾値 | 実測 (後の期間) | 判定 | 出どころ |")
     p("|---|---|---|---|---|")

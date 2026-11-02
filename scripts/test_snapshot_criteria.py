@@ -325,7 +325,8 @@ class Criteria15(unittest.TestCase):
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
                          ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
-                          "phase22", "phase23", "phase24", "phase25", "phase26", "phase27", "phase28", "phase29"])
+                          "phase22", "phase23", "phase24", "phase25", "phase26", "phase27", "phase28", "phase29",
+                          "phase30"])
 
 
 def conn_profile(conn_us_per_row):
@@ -2283,6 +2284,116 @@ class Deployed29(unittest.TestCase):
         self.assertEqual(rows[12][3], sd.UNKNOWN)
         self.assertIn("T.30.3 より前の版", rows[12][4])
         self.assertEqual(rows[23][3], sd.SHOWN)
+
+
+class Criteria30Rows(unittest.TestCase):
+    """`--criteria phase30` (T.33.1): phase29 の `dns_slow` の行を「立った窓の成功したミスの平均」で読む。"""
+
+    T0 = 1_800_000_000
+
+    def snap(self, minutes, events, exact=True):
+        """1 日の `/history?res=60` (`minutes` = {分: (ミス, 失敗, 待ちの合計, 失敗の待ち)}) と、その分に立った `dns_slow`。"""
+        keys = ["t", "dns_misses", "dns_fail_misses", "dns_ms_sum"] + (["dns_fail_ms_sum"] if exact else [])
+        samples = []
+        for i in range(1440):
+            m, f, ms_, fms = minutes.get(i, (0, 0, 0, 0))
+            samples.append([self.T0 + 60 * i, m, f, ms_] + ([fms] if exact else []))
+        ev = [{"kind": "anomaly", "at": self.T0 + 60 * i + 30, "text": "dns_slow: dns miss 300 ms avg over 5m"}
+              for i in events]
+        ev.append({"kind": "anomaly", "at": self.T0 + 60 * 1430, "text": "cleared: dns_slow after 6m"})
+        return {"taken_at": self.T0 + 86400, "uptime_secs": 86400 * 2,
+                "events": {"events": ev}, "history": {"60": {"interval_secs": 60, "keys": keys, "samples": samples}}}
+
+    def slow(self, avg, count, exact=True, fails=(0, 0), start=100):
+        """`count` 件の窓。どの窓も成功したミス 4 回 × 平均 `avg` ms と、同じ 1 分に失敗 `fails` (回, ms)。"""
+        minutes = {start + 60 * j: (4 + fails[0], fails[0], 4 * avg + fails[1], fails[1]) for j in range(count)}
+        return self.snap(minutes, list(minutes), exact)
+
+    def row(self, a, b):
+        return sc._p30_dns_slow({"a": a, "b": b}, sc.PHASE30)
+
+    def test_phase30_replaces_only_the_dns_slow_row_of_phase29(self):
+        p29, p30 = sd.RULES["phase29"], sd.RULES["phase30"]
+        self.assertEqual(len(p30), 26)
+        self.assertEqual([i for i in range(26) if p29[i] is not p30[i]], [10])
+        self.assertIs(p30[10], sc._p30_dns_slow)
+        self.assertEqual(sc.PHASE30["dns_slow_avg_factor"], 1.5)
+
+    def test_the_same_slowness_is_met_whatever_the_rate(self):
+        # T.32.99 の形: 立った件が前の 3 倍 (初めて引く名前が多い = 使われ方) でも、平均が同じ程度なら満たす
+        row = self.row(self.slow(300, 5), self.slow(330, 15))
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("**330** ms (60 回、立った 15 件) (前 300 ms (20 回、立った 5 件)、1.10 倍)", row[2])
+        self.assertIn("表示だけ: 0.63 件/時 (15 件 / 23.9 時間、成功したミスで立った)", row[2])
+        # 平均が前の 2 倍なら届かず (件の数は同じでも)
+        self.assertEqual(self.row(self.slow(300, 5), self.slow(600, 5))[3], sd.MISSED)
+        # 後の期間に成功したミスで立った窓が無ければ満たした
+        quiet = self.snap({}, [])
+        self.assertEqual(self.row(self.slow(300, 5), quiet)[3], sd.MET)
+
+    def test_failed_misses_do_not_move_the_average(self):
+        # 同じ 1 分に 2 秒の失敗が混ざっても、`dns_fail_ms_sum` のある版では成功したミスの平均は同じ
+        row = self.row(self.slow(300, 5), self.slow(300, 5, fails=(3, 6000)))
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("**300** ms (20 回、立った 5 件)", row[2])
+        # 成功したミスが 3 回に満たない窓 (phase29 と同じく失敗の遅さで立った) は選ばない
+        failing = self.snap({100: (5, 4, 4100, 4000)}, [100])
+        self.assertIn("**0** 件", self.row(self.slow(300, 5), failing)[2])
+
+    def test_a_version_without_fail_ms_is_read_with_bounds(self):
+        # 前の版に `dns_fail_ms_sum` が無い (0.30.4): 失敗の混ざらない 1 分は確か、混ざった 1 分は 0〜合計
+        clean = self.slow(300, 5, exact=False)
+        row = self.row(clean, self.slow(330, 5))
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("前 300〜300 ms (20 回、立った 5 件。`dns_fail_ms_sum` の無い版なので上下限)", row[2])
+        self.assertIn("立った窓 (失敗込みの閾) を全部使い", row[4])
+        # 失敗の混ざった 1 分ばかりで上下限が広ければ判定できず (上下限とその 1.5 倍を書く)
+        mixed = self.slow(300, 5, exact=False, fails=(2, 1000))
+        row = self.row(mixed, self.slow(330, 5))
+        self.assertEqual(row[3], sd.UNKNOWN, row)
+        self.assertIn("前 0〜550 ms", row[2])
+        self.assertIn("前の平均の上下限 0〜550 ms の 1.5 倍 (0〜825 ms) の間に後の 330 ms があり", row[4])
+        # 上限の 1.5 倍でも越えれば届かず
+        self.assertEqual(self.row(mixed, self.slow(900, 5))[3], sd.MISSED)
+
+    def test_missing_material_is_unknown(self):
+        # 後の版に `dns_fail_ms_sum` が無い・前の版に `/history?res=60` が無い・前の版で立った窓が無い
+        self.assertEqual(self.row(self.slow(300, 5), self.slow(300, 5, exact=False))[3], sd.UNKNOWN)
+        row = self.row({}, self.slow(300, 5))
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("前の雪像に `/events` か `/history?res=60`", row[4])
+        row = self.row(self.snap({}, []), self.slow(300, 5))
+        self.assertEqual(row[3], sd.UNKNOWN)
+        self.assertIn("比べる平均が無い", row[4])
+
+
+T3299_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-10-31T123625Z-shutdown-snapshot.json")
+T3299_BEFORE_PROFILE = os.path.join(DEPLOYED, "tokyo", "2026-10-31T063104Z-profile_res_60.json")
+T3299_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-11-02T125840Z-snapshot.json")
+T3299_AFTER_PROFILE = os.path.join(DEPLOYED, "tokyo", "2026-11-02T125840Z-profile_res_60.json")
+
+
+@unittest.skipUnless(all(os.path.exists(x) for x in (T3299_BEFORE, T3299_BEFORE_PROFILE,
+                                                     T3299_AFTER, T3299_AFTER_PROFILE)),
+                     "tokyo の実データが無い (status/tokyo/ の T.32.99 の 2 枚と `-profile_res_60.json`)")
+class Deployed30(unittest.TestCase):
+    """T.32.99 の 2 枚 (0.30.4 の停止 → 0.32.39 の 48.3 時間) と、前の版の 24 時間の `/profile` (T.33.1)。"""
+
+    def rows(self, criteria):
+        return build([T3299_BEFORE, T3299_AFTER, "--no-dns", "--criteria", criteria,
+                      "--profile", T3299_AFTER_PROFILE, "--profile-before", T3299_BEFORE_PROFILE])["criteria"]["rows"]
+
+    def test_t3299_dns_slow(self):
+        # phase29 は 0.63 件/時の「届かず」。phase30 では平均で読み、後は 15 件の窓の成功したミス 72 回で 334 ms。
+        # 前 (0.30.4) は `dns_fail_ms_sum` が無く、立った 18 件の窓の成功したミス 50 回の平均は 98〜729 ms までしか
+        # 絞れないので、334 ms は 1.5 倍 (146〜1,094 ms) の間で「判定できず」(上下限を書く)
+        self.assertEqual(self.rows("phase29")[10][3], sd.MISSED)
+        row = self.rows("phase30")[10]
+        self.assertEqual(row[3], sd.UNKNOWN, row)
+        self.assertIn("**334** ms (72 回、立った 15 件) (前 98〜729 ms (50 回、立った 18 件。", row[2])
+        self.assertIn("0.63 件/時 (15 件 / 23.9 時間、成功したミスで立った)", row[2])
+        self.assertIn("前 0.75 件/時 (18 件 / 23.9 時間、失敗込みの閾で立った)", row[2])
+        self.assertIn("146〜1,094 ms", row[4])
 
 
 if __name__ == "__main__":

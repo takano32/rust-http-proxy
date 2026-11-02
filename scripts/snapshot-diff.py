@@ -36,7 +36,7 @@
 #   6. その間の出来事 (`/events`。無い版では飛ばす)
 #   7. エラーの原因別の件数 (`/hosts` の `errors_by_cause` の差分と `/errors` の個票)
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
-#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22|phase23|phase24|phase25|phase26|phase27|phase28|phase29` で **Phase の完了の定義に対する判定表**
+#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22|phase23|phase24|phase25|phase26|phase27|phase28|phase29|phase30` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
 #      (**判定の部は `scripts/snapshot_criteria.py`**。T.20.1 で割った)
 #      (T.15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
@@ -1445,7 +1445,9 @@ def parser():
                         "phase29 = phase28 の 26 行のうち 6 行を名前解決の失敗の割合で動かない形にしたもの "
                         "(`conn` 役の CPU を名前解決に成功した要求あたり、裏の役割を us/秒、cgroup の CPU を表示だけ、"
                         "接続のエラーを起動からの `/history` の 443・80、`dns_slow` を成功したミスで立った件/時、"
-                        "表示だけのミスの行に失敗を除いた率)。T.32.16・T.32.17・T.32.29・T.32.30)")
+                        "表示だけのミスの行に失敗を除いた率)。T.32.16・T.32.17・T.32.29・T.32.30。"
+                        "phase30 = phase29 の 26 行のうち `dns_slow` の行を「立った窓の名前解決に成功したミスの平均が"
+                        "前の版の 1.5 倍未満」(件/時は表示だけ) に読み替えたもの。T.33.1)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst-median-k", type=int, default=None, metavar="K",

@@ -66,7 +66,7 @@
 #                         15 本送るので、何度も回すときは 0 にする)
 #   DASHBOARD (既定 1)  … 0 で `check-dashboard.js` を飛ばす (Node が無ければ自動で飛ばす)
 #   DIFF (既定 1)       … 0 で前回との差分を飛ばす
-#   CRITERIA (既定 phase29) … 判定表に使う完了の定義 (`phase28` `phase27` `phase26` `phase25` `phase24` `phase23` `phase22` `phase21` `phase20` `phase18` `phase17`
+#   CRITERIA (既定 phase30) … 判定表に使う完了の定義 (`phase29` `phase28` `phase27` `phase26` `phase25` `phase24` `phase23` `phase22` `phase21` `phase20` `phase18` `phase17`
 #                         `phase15` `phase14` も残してある)。phase20 は phase18 の物差しを直したもの (T.20.1)、
 #                         phase21 は phase20 のミス・conn 役・IPv6 の探りの 3 行の読み方を直したもの (T.21.2)、
 #                         phase22 は phase21 の 10 行 + 22a の 4 行で、平常時を「300 本と期間の中央値の
@@ -87,7 +87,9 @@
 #                         「`malloc_trim` が毎時動いて返している」に読み替えたもの (T.31.0・T.31.1)、
 #                         phase29 は phase28 の 26 行のうち 5 行 (`conn` 役の CPU・裏の役割・cgroup の CPU・
 #                         接続のエラー・`dns_slow`) を名前解決の失敗の割合で動かない形にしたもの (T.32.16・
-#                         T.32.29・T.32.30)。
+#                         T.32.29・T.32.30)、
+#                         phase30 は phase29 の 26 行のうち `dns_slow` の行を「立った窓の成功したミスの平均が
+#                         前の版の 1.5 倍未満」に読み替えたもの (T.33.1)。
 #                         `off` で判定表を出さない
 #   BEFORE (無指定)     … **判定表の相手**にする雪像 (再デプロイの直前に撮った「前」。T.18.2)。
 #                         無ければ今までどおり直前の 1 枚 (再デプロイのあとは 0 時間の雪像になるので、
@@ -170,7 +172,7 @@ else
 fi
 DASHBOARD=${DASHBOARD:-1}
 DIFF=${DIFF:-1}
-CRITERIA=${CRITERIA:-phase29}
+CRITERIA=${CRITERIA:-phase30}
 # 判定表の相手 (「前」の雪像) と 0 時間の雪像 (T.18.2)。どちらも無指定なら今までどおり
 JUDGE_BEFORE=${BEFORE:-}
 ZERO=${ZERO:-}
@@ -957,14 +959,14 @@ PROFILE_BEFORE=
 [ "$CRITERIA" = off ] || CRIT="--criteria $CRITERIA"
 # phase18 の 2 行の材料 (T.18.2): `ZERO` があれば `--zero` で、日次の雪像の表は保存先 (`--from-server`
 # が `<日付>T000000Z-snapshot.json` を置く所) を `--daily-snapshots` で渡す。**phase18 と、同じ材料を
-# 使う phase20 (T.20.1)・phase21 (T.21.2)・phase22 (T.22.1)・phase23 (T.23.1)・phase24 (T.24.2)・phase25 (T.27.0)・phase26 (T.29.10)・phase27 (T.30.0)・phase28 (T.31.0)・phase29 (T.32.29) のときだけ**
+# 使う phase20 (T.20.1)・phase21 (T.21.2)・phase22 (T.22.1)・phase23 (T.23.1)・phase24 (T.24.2)・phase25 (T.27.0)・phase26 (T.29.10)・phase27 (T.30.0)・phase28 (T.31.0)・phase29 (T.32.29)・phase30 (T.33.1) のときだけ**
 # (phase24 と phase25 は `memory.baseline` が無い雪像のときだけ 0 時間の雪像で読むので、渡しておく)
 # (古い定義の判定表は今までと同じ命令で出す)
 P18=()
 if [ "$CRITERIA" = phase18 ] || [ "$CRITERIA" = phase20 ] || [ "$CRITERIA" = phase21 ] ||
   [ "$CRITERIA" = phase22 ] || [ "$CRITERIA" = phase23 ] || [ "$CRITERIA" = phase24 ] ||
   [ "$CRITERIA" = phase25 ] || [ "$CRITERIA" = phase26 ] || [ "$CRITERIA" = phase27 ] ||
-  [ "$CRITERIA" = phase28 ] || [ "$CRITERIA" = phase29 ]; then
+  [ "$CRITERIA" = phase28 ] || [ "$CRITERIA" = phase29 ] || [ "$CRITERIA" = phase30 ]; then
   [ -n "$ZERO" ] && P18+=(--zero "$ZERO")
   P18+=(--daily-snapshots "$DIR")
 fi
