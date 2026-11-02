@@ -210,6 +210,10 @@ pub struct Metrics {
     /// 重い口 (`/snapshot` `/profile` …) が既に 1 本走っていたので 503 で断った数 (T14.51)。
     /// 足すのは内部エンドポイントの経路だけで、プロキシとしての要求は 1 度も触らない
     pub heavy_rejected: AtomicU64,
+    /// 1 要求目の 1 バイト目も来ないまま `PROXY_HEADER_TIMEOUT_SECS` を過ぎ、408 を返さずに黙って
+    /// 閉じた接続の数 (`/status` の `silent_closes`。T.33.0)。ブラウザやクライアントの先張りの接続
+    /// (応答を読まない) が来るたびに増える。`rejected_requests` にも `/errors` にも入れない
+    pub silent_closes: AtomicU64,
     /// 起動時にリングの置き場を確保して触ったか (`/status` の `memory.rings_touched`。T17.8)。
     /// 立てるのは [`Metrics::prefault_rings`] だけ
     rings_touched: AtomicBool,
@@ -255,6 +259,7 @@ impl Metrics {
             sni_mismatches: AtomicU64::new(0),
             syn_retrans_total: AtomicU64::new(0),
             heavy_rejected: AtomicU64::new(0),
+            silent_closes: AtomicU64::new(0),
             rings_touched: AtomicBool::new(false),
             hosts: Mutex::new(HostTable::default()),
             clients: Mutex::new(HashMap::new()),

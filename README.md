@@ -245,7 +245,7 @@ check: ok (everything this proxy reads is readable)
 | `PROXY_MIN_TRANSFER_BPS` | `1024` | 転送中の最小の速さ (バイト/秒)。下回り続けたら切る。`0` で切らない |
 | `PROXY_MIN_TRANSFER_WINDOW_SECS` | `30` | 最小の速さを判定する窓 (相手を待った秒) |
 | `PROXY_CONNECT_TIMEOUT_SECS` | `3` | オリジンへの TCP の確立だけの締め切り (秒。`CONNECT` と forward) |
-| `PROXY_HEADER_TIMEOUT_SECS` | `10` | 要求行とヘッダーを読み終えるまでの総時間の締め切り (秒)。越えたら `408`。`0` で無し |
+| `PROXY_HEADER_TIMEOUT_SECS` | `10` | 要求行とヘッダーを読み終えるまでの総時間の締め切り (秒)。越えたら `408` (1 バイトも来ない接続は黙って閉じる)。`0` で無し |
 | `PROXY_HE_STAGGER_MS` | `250` | Happy Eyeballs で次の候補を試し始めるまでの間隔 (ms、10〜2000) |
 | `PROXY_KEEPALIVE_SECS` | `15` | クライアント接続を次の要求まで待つ時間 (秒) |
 | `PROXY_TUNNEL_IDLE_SECS` | `300` | CONNECT トンネルのアイドル打ち切り (秒) |
@@ -448,7 +448,16 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   `408` で閉じた接続は `/recent` の `reason` が **`error:header_timeout`** (T.29.10。それまでは CONNECT の確立の締め切りと同じ
   `error:timeout` で分けられませんでした)、`/status` の `rejected_requests.header_timeout` と `/errors` の 1 行
   (`bad_request:header_timeout`、状態 408) に数えます。ログは debug のままです (本数は相手が決めるので)。
-  要求行の前から黙ったままの接続は宛先も要求も無いので `/recent` には残らず、数だけが `rejected_requests` に入ります。
+  **1 要求目の 1 バイト目も来ないまま締め切りを過ぎた接続 (先張り) には 408 を返さず、黙って閉じます** (T.33.0)。
+  数は `/status` の **`silent_closes`** (`/metrics` の `sorahost_silent_closes_total`) だけに入れ、`rejected_requests` にも
+  `/errors` にも積みません (宛先も要求も無いので `/recent` にも残りません)。408 になるのは **1 バイト以上送ってから止まった接続**
+  (要求行やヘッダーの途中で止まる・1 バイトずつ送る slowloris) と、2 要求目以降で 1 バイト目から締め切りを越えた接続です。
+  **黙って閉じる根拠 (2026-11-02、T.33.0)**: 0.32.39 の tokyo の 48.3 時間で 408 が 3,415 件 (0.30.4 の 48 時間は 64 件) に
+  増え、全部が 1 つの接続元から宛先も要求も無いまま 10 秒黙った接続でした。`/errors` の個票では波 (20.5 秒おき・88 秒おき)
+  で来て止み、0.32.39 のままの 18 時間は 0.30.4 と同じ 1 件/時程度でした。手元で 0.30.4 と 0.32.39 に
+  同じ 11 通りの使われ方 (先張り・502 や 400 のあとの沈黙・keep-alive・トンネル・ヘッダーの途中で止まる) を当てても 408 の数は
+  同じで、増えはプロキシの変更ではなく使われ方 (先張りの接続) です。先張りの接続は応答を読まないので 408 を書いても届かず、
+  `/errors` の 500 行のうち 761 件ぶんを埋めていました。
   `.env` で即時反映 (次の接続から)
 - **`PROXY_HE_STAGGER_MS`** (既定 `250`)
   Happy Eyeballs (RFC 8305) で、名前が複数のアドレスを返したときに**先頭の候補が返らなければ次の候補を試し始めるまでの間隔** (ms)。
@@ -1853,6 +1862,7 @@ T.29.27 (設定の帯の読めない値と知らない鍵・版の隣のビル�
 かかった時間)、`sorahost_errors_total{cause="dns|refused|unreachable|timeout|reset|tls|loop|other"}`、
 **`sorahost_rejected_requests_total{reason="request_line|header_too_large|method|no_host|bad_uri|body_framing|obs_fold|dup_host|bad_header|header_timeout"}`**
 (読めずに 400 / 408 / 414 / 431 で断った要求。10 本で固定。T.14.28。`header_timeout` は T.29.10)、
+**`sorahost_silent_closes_total`** (1 バイトも来ないまま `PROXY_HEADER_TIMEOUT_SECS` を過ぎ、408 を返さずに閉じた先張りの接続。T.33.0)、
 `sorahost_fds` / `sorahost_max_fds` / `sorahost_process_threads`、
 **`sorahost_rtt_seconds_sum` / `_count`** (`{side="client"|"origin"}`。カーネルの平滑化 RTT。
 標本は接続 1 本の終わりに 1 つで、ホスト別は出しません) が出ます。
@@ -1913,6 +1923,8 @@ canary の `sorahost_canary_seconds{stage="dns"|"connect"|"ipv6_connect"}` (最�
 要求が来るので、**何が来たか**をこの 1 行で読むためのものです。エラー (5xx) ではないので `errors` /
 `errors_by_cause` には混ぜていません。**数えるのは断る経路だけ**で、通した要求は原子を 1 つも触りません。
 誰がいつ送ってきたかは `/errors` の個票 (`cause` が `bad_request:<reason>`) で読めます。
+1 バイトも送らないまま締め切りを過ぎた先張りの接続は**ここには入れず**、`/status` の末尾の **`silent_closes`** に数えます
+(408 を返さずに黙って閉じる。`/errors` にも積みません。T.33.0。前は `header_timeout` に入っていました)。
 ログの WARN は理由ごとに 1 分に 1 行です (T.28.9。上の「ログ」の節)。
 この 2 つを足すときに応答が 2 か所だけ変わりました: **壊れた要求行**には今までは何も返さずに閉じていましたが
 `400 Bad Request` を返してから閉じます (返した状態コードを個票に正しく書くため)、

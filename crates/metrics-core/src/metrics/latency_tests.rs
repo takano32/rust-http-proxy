@@ -1375,7 +1375,8 @@ fn a_full_host_table_drops_the_oldest_row_for_a_new_key() {
     assert_eq!(m.hosts_evicted(), 3);
     assert_eq!(m.hosts_sorted().len(), MAX_HOSTS);
     assert!(
-        m.to_json().contains(",\"hosts_evicted\":3}"),
+        m.to_json()
+            .contains(",\"hosts_evicted\":3,\"silent_closes\":0}"),
         "`/status` の末尾に出る"
     );
 }

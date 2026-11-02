@@ -150,7 +150,21 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
                 over_client.then_some(peer_ip),
             ));
         }
-        // 1 要求目が黙ったまま (accept から `first_read_timeout`) か、途中で黙った (T.28.0)
+        // 1 要求目の 1 バイト目も来ないまま締め切りを過ぎた = 先張りの接続 (T.33.0)。
+        // 応答を読まない相手なので 408 は返さずに黙って閉じ、数は `silent_closes` だけに
+        // (`rejected_requests` にも `/errors` にも積まない)。0.32.39 の tokyo の 48.3 時間の 408 の
+        // 3,415 件は宛先も要求も無いもので、1 つの接続元から波 (20.5 秒おき・88 秒おき) で来ていた。
+        // 1 バイトでも送ってから止まった接続 (本物の遅い要求) は下の 408 のまま
+        Err(e) if *served == 0 && !clock.started && clock.is_header_timeout(&e, 0) => {
+            metrics.silent_closes.fetch_add(1, Ordering::Relaxed);
+            log_debug!(
+                Some(conn_id),
+                "closed a silent connection (no byte within {} s)",
+                config.header_timeout.as_secs_f64()
+            );
+            return Ok(Step::Close(recent::CloseReason::IdleTimeout));
+        }
+        // 1 要求目の途中で黙った・期限切れ (T.28.0)
         Err(e) if clock.is_header_timeout(&e, *served) => {
             return header_timeout(client, metrics, peer_ip, conn_id, config.header_timeout);
         }

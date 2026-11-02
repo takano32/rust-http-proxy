@@ -213,9 +213,10 @@ impl HeaderClock<'_> {
         self.deadline.is_some_and(|d| Instant::now() >= d)
     }
 
-    /// 時間切れで返った読みを `408` にするか。1 要求目は締め切りが効いていれば何でも
+    /// 時間切れで返った読みを締め切りの扱いにするか。1 要求目は締め切りが効いていれば何でも
     /// (黙ったまま・途中で黙った・期限切れ)、2 要求目以降は期限を越えたときだけ
     /// (1 バイト目を待つ keep-alive のアイドルは今までどおり静かに閉じる)。
+    /// 1 要求目の黙ったまま (`started` が偽) は呼ぶ側が 408 を返さずに閉じる (T.33.0)。
     pub(super) fn is_header_timeout(&self, e: &io::Error, served: usize) -> bool {
         is_timeout(e) && !self.limit.is_zero() && (served == 0 || self.expired())
     }
@@ -313,7 +314,10 @@ fn linger(client: &TcpStream) {
 /// 要求行とヘッダーが期限 (`PROXY_HEADER_TIMEOUT_SECS`) までに揃わなかった接続に
 /// `408 Request Timeout` を返して閉じる (T.28.0)。
 ///
-/// 黙ったまま・1 バイトずつ送る接続 (slowloris) が来るたびに出るので、ログは debug に留める
+/// 1 要求目の 1 バイト目も来なかった接続 (先張り) はここへ来ない: 408 を返さずに閉じて
+/// `/status` の `silent_closes` に数える (T.33.0。`serve_one`)。ここへ来るのは 1 バイト以上
+/// 送ってから止まった接続 (ヘッダーの途中で止まる・1 バイトずつ送る slowloris) と、2 要求目以降の
+/// 期限切れ。来るたびに出るので、ログは debug に留める
 /// (1 本ごとに WARN を出すと、ログの環が攻撃の行で埋まる)。
 ///
 /// 数は `/status` の `rejected_requests.header_timeout` と `/errors` の 1 行 (`bad_request:header_timeout`、

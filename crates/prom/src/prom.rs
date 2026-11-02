@@ -506,6 +506,19 @@ pub fn render(m: &Metrics, cache: Option<&Cache>, conc: Concurrency) -> String {
             m.rejected_requests[i].load(Ordering::Relaxed),
         );
     }
+    // 1 バイトも来ないまま締め切りを過ぎ、408 を返さずに閉じた接続 (先張りの接続。T.33.0)
+    header(
+        &mut out,
+        "silent_closes_total",
+        "counter",
+        "Connections closed without a 408 because not a byte arrived within PROXY_HEADER_TIMEOUT_SECS",
+    );
+    line(
+        &mut out,
+        "silent_closes_total",
+        "",
+        m.silent_closes.load(Ordering::Relaxed),
+    );
     header(
         &mut out,
         "bytes_forwarded_total",

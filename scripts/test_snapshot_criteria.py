@@ -3022,9 +3022,19 @@ class Criteria26Rows(unittest.TestCase):
         self.assertEqual(row[3], sd.SHOWN)
         self.assertIn("**12** 件 (起動から 12.0 時間、24.0 件/24 時間)", row[2])
         self.assertIn("`error:header_timeout` 1 行 (うち 1 要求目を通したあとの 1 行)", row[2])
+        self.assertNotIn("silent_closes", row[2], "欄の無い版 (T.33.0 より前) には書かない")
         # T.29.10 より前の版には欄が無い = 0 と書かない
         old = self.snap({"rejected_requests": {"bad_header": 0, "total": 0}})
         self.assertEqual(sc._p26_header_timeouts(self.ctx(old), sc.PHASE26)[3], sd.UNKNOWN)
+
+    def test_the_header_timeout_row_shows_the_silent_closes_beside_the_408(self):
+        # T.33.0: 先張りの接続は 408 にせず `silent_closes` に数える。同じ行に並べ、判定は表示だけのまま
+        b = self.snap({"rejected_requests": {"header_timeout": 3, "total": 3}, "silent_closes": 1700},
+                      uptime=86400)
+        row = sc._p26_header_timeouts(self.ctx(b), sc.PHASE26)
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertIn("**3** 件 (起動から 24.0 時間、3.0 件/24 時間)", row[2])
+        self.assertIn("(`silent_closes`、T.33.0) **1,700** 本 (1,700.0 本/24 時間)", row[2])
 
     def test_log_errors_up_to_five_lines_are_met(self):
         def line(lv):

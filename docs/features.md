@@ -248,7 +248,8 @@
     「400 で断る」を採り、値を黙って変えない) /
     `bad_request:dup_host` (`Host` が 2 本以上ある。T.19.2) /
     `bad_request:bad_header` (名前とコロンの間に空白がある・値に CR / LF / NUL がある。T.27.5) /
-    `bad_request:header_timeout` (要求行とヘッダーが `PROXY_HEADER_TIMEOUT_SECS` までに揃わず 408。T.29.10)。
+    `bad_request:header_timeout` (要求行とヘッダーが `PROXY_HEADER_TIMEOUT_SECS` までに揃わず 408。T.29.10。
+    1 バイトも送らない先張りの接続は T.33.0 から 408 を返さずに閉じ、ここには積まずに `/status` の `silent_closes` に数える)。
     状態コードは**実際に返したもの**なので `400` / `408` / `414` / `431` のどれかで、
     **宛先 (`target`) は空**です — 要求行そのものは個票に入れません (壊れた要求行にも URL や
     ヘッダーが載っているため。入るのは接続元 IP と時刻と理由だけ)。数だけなら `/status` の
@@ -1214,4 +1215,5 @@
   - `PROXY_CONNECT_TIMEOUT_SECS` で **オリジンへの TCP の確立だけ** (`CONNECT` と、T.28.8 から forward も) に短い締め切りを置いています
     (**既定 3 秒**。未設定なら 3 秒と `PROXY_TIMEOUT_SECS` の小さい方)
   - `PROXY_HEADER_TIMEOUT_SECS` で**要求行とヘッダーを読み終えるまでの総時間**に締め切りを置いています
-    (**既定 10 秒**。越えたら `408 Request Timeout` で閉じる。黙ったまま・1 バイトずつ送る接続 (slowloris) 対策)
+    (**既定 10 秒**。越えたら `408 Request Timeout` で閉じる。黙ったまま・1 バイトずつ送る接続 (slowloris) 対策。
+    1 バイトも来ない先張りの接続は 408 を返さずに黙って閉じ、`/status` の `silent_closes` に数える。T.33.0)

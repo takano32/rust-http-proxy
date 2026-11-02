@@ -2176,7 +2176,8 @@ def _p26_header_timeouts(c, th):
 
     材料は後の雪像の `/status` の `rejected_requests.header_timeout` (起動からの通算) と、`/recent` の
     `error:header_timeout` の行 (うち `reqs` ≥ 1 = 1 要求目を通したあとの keep-alive で止まった接続)。
-    T.29.10 より前の版には欄が無いので「判定できず」(0 と書かない)。
+    T.29.10 より前の版には欄が無いので「判定できず」(0 と書かない)。T.33.0 からは 1 バイトも送らない先張りの接続を
+    408 にせず `/status` の `silent_closes` に数えるので、欄があれば同じ行に並べる (無い版は何も書かない)。
     """
     label = "408 (要求行とヘッダーの締め切り。`PROXY_HEADER_TIMEOUT_SECS`) の件数 (24 時間あたり)"
     limit = "— (表示だけ)"
@@ -2187,6 +2188,11 @@ def _p26_header_timeouts(c, th):
     count, hours = rej["header_timeout"], snap_hours(c["b"])
     day = per_day(count, hours)
     shown = f"**{n(count)}** 件 (起動から {n(hours)} 時間" + (f"、{day:,.1f} 件/24 時間" if day is not None else "") + ")"
+    silent = part(c["b"], "status").get("silent_closes")
+    if isinstance(silent, int):
+        sday = per_day(silent, hours)
+        shown += (f"。408 を返さずに黙って閉じた先張りの接続 (`silent_closes`、T.33.0) **{n(silent)}** 本"
+                  + (f" ({sday:,.1f} 本/24 時間)" if sday is not None else ""))
     rows = part(c["b"], "recent").get("recent")
     src = "`/status` の `rejected_requests.header_timeout` (起動からの通算)"
     if isinstance(rows, list):

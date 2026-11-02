@@ -1,8 +1,9 @@
 //! 要求行とヘッダーの総時間の締め切り (`PROXY_HEADER_TIMEOUT_SECS`) の結合テスト (T.28.0)。
 //!
 //! `SO_RCVTIMEO` は読めるたびに待ち直すので、黙ったままの接続も 1 バイトずつ送る接続
-//! (slowloris) も、それだけでワーカー 1 本と接続枠 1 つを握れた。締め切りを越えたら
-//! `408 Request Timeout` で閉じること、上限ぶんの沈黙を張られても `/status` が返ること、
+//! (slowloris) も、それだけでワーカー 1 本と接続枠 1 つを握れた。締め切りを越えたら閉じること
+//! (1 バイト以上送ってから止まった接続は `408 Request Timeout`、1 バイトも送らない先張りは 408 を返さずに
+//! 黙って `silent_closes` に数える。T.33.0)、上限ぶんの沈黙を張られても `/status` が返ること、
 //! 本文の転送は締め切りの外であることを見る。
 
 use std::io::{Read, Write};
@@ -52,17 +53,18 @@ fn read_until_closed(stream: &mut TcpStream, started: Instant) -> (String, Durat
     )
 }
 
-/// (a) 黙ったままの接続は締め切り + 1 秒以内に 408 で閉じる (`--lite` でも)。
+/// (a) 黙ったままの接続 (先張り) は締め切り + 1 秒以内に閉じる (`--lite` でも)。
+/// **408 は返さずに黙って閉じる** (T.33.0。T.28.0〜0.32.39 は 408 を返していた)。
 #[test]
-fn test_integration_silent_connection_gets_408_within_the_deadline() {
+fn test_integration_silent_connection_is_closed_within_the_deadline() {
     for lite in [false, true] {
         let port = ready(start_test_proxy(config_with_deadline(2, lite)));
         let started = Instant::now();
         let mut s = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
         let (got, took) = read_until_closed(&mut s, started);
         assert!(
-            got.starts_with("HTTP/1.1 408 Request Timeout"),
-            "lite={}: {:?} after {:?}",
+            got.is_empty(),
+            "lite={}: 先張りの接続には何も返さない: {:?} after {:?}",
             lite,
             got,
             took
@@ -74,6 +76,37 @@ fn test_integration_silent_connection_gets_408_within_the_deadline() {
             took
         );
     }
+}
+
+/// (a') 1 バイトでも送ってから黙った接続 (本物の遅い要求) は今までどおり 408 (T.33.0)。
+/// 要求行の途中 (`G` の 1 バイト) でも、ヘッダーの途中でも。
+#[test]
+fn test_integration_stalled_after_a_byte_still_gets_408() {
+    let port = ready(start_test_proxy(config_with_deadline(2, false)));
+    for sent in [
+        &b"G"[..],
+        &b"GET http://127.0.0.1:9/ HTTP/1.1\r\nHost: 127.0.0.1"[..],
+    ] {
+        let started = Instant::now();
+        let mut s = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        s.write_all(sent).unwrap();
+        let (got, took) = read_until_closed(&mut s, started);
+        assert!(
+            got.starts_with("HTTP/1.1 408 Request Timeout"),
+            "{:?}: {:?} after {:?}",
+            String::from_utf8_lossy(sent),
+            got,
+            took
+        );
+        assert!(took < Duration::from_secs(3), "{:?}", took);
+    }
+    let status = status_json(port);
+    assert!(
+        status.contains("\"header_timeout\":2,\"total\":2}")
+            && status.contains("\"silent_closes\":0"),
+        "遅い要求は `rejected_requests` に、`silent_closes` には入れない: {}",
+        status
+    );
 }
 
 /// 1 秒に 1 バイトずつ要求を送り、閉じられるまで続ける。閉じられたら届いた応答と時間を返す。
@@ -280,33 +313,74 @@ fn test_integration_large_bodies_are_not_cut_by_the_header_deadline() {
 }
 
 /// 受け付けのループが待ち受けにオプションを当てる前に握手を終えた接続も、締め切りで
-/// 408 になって閉じる (T.28.30)。今までは待ち受けの `SO_RCVTIMEO` を継承できず無期限だった。
+/// 閉じる (T.28.30)。今までは待ち受けの `SO_RCVTIMEO` を継承できず無期限だった。
+/// 何も送っていないので 408 は返さない (T.33.0)。
 #[test]
-fn test_integration_connection_made_before_serve_gets_408() {
+fn test_integration_connection_made_before_serve_is_closed() {
     let (port, conns) = start_test_proxy_with_early(config_with_deadline(2, false), 2);
     let started = Instant::now();
     for (i, mut s) in conns.into_iter().enumerate() {
         let (got, took) = read_until_closed(&mut s, started);
-        assert!(
-            got.starts_with("HTTP/1.1 408 Request Timeout"),
-            "{}: {:?} after {:?}",
-            i,
-            got,
-            took
-        );
+        assert!(got.is_empty(), "{}: {:?} after {:?}", i, got, took);
         assert!(took < Duration::from_secs(4), "{}: {:?}", i, took);
     }
     // そのあとの接続は今までどおり待ち受けから継承して動く
     let started = Instant::now();
     let mut s = TcpStream::connect(format!("127.0.0.1:{}", ready(port))).unwrap();
     let (got, took) = read_until_closed(&mut s, started);
+    assert!(got.is_empty(), "{:?} after {:?}", got, took);
     assert!(
-        got.starts_with("HTTP/1.1 408"),
-        "{:?} after {:?}",
-        got,
+        took >= Duration::from_millis(1800) && took < Duration::from_secs(3),
+        "{:?}",
         took
     );
-    assert!(took < Duration::from_secs(3), "{:?}", took);
+    let status = status_json(port);
+    assert!(
+        status.contains("\"silent_closes\":3"),
+        "3 本とも `silent_closes`: {}",
+        status
+    );
+}
+
+/// 先張りの接続 (何も送らずに締め切りを過ぎる) は `silent_closes` だけに数え、`rejected_requests`・
+/// `/errors`・`/metrics` の `rejected_requests_total` には入れない (T.33.0)。締め切りの前に
+/// 相手から閉じた先張りはどこにも数えない (今までどおり)。
+#[test]
+fn test_integration_silent_connection_counts_only_in_silent_closes() {
+    let port = ready(start_test_proxy(config_with_deadline(1, false)));
+    // 締め切りの前に相手が閉じる先張り
+    drop(TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap());
+    // 締め切りを過ぎる先張り 2 本
+    for _ in 0..2 {
+        let started = Instant::now();
+        let mut s = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        let (got, _) = read_until_closed(&mut s, started);
+        assert!(got.is_empty(), "{:?}", got);
+    }
+    let status = status_json(port);
+    assert!(
+        status.contains("\"silent_closes\":2"),
+        "締め切りを過ぎた 2 本だけ: {}",
+        status
+    );
+    assert!(
+        status.contains("\"header_timeout\":0,\"total\":0}"),
+        "`rejected_requests` には入れない: {}",
+        status
+    );
+    let errors = endpoint_json(port, "/errors");
+    assert!(
+        !errors.contains("bad_request:header_timeout"),
+        "`/errors` に積まない: {}",
+        errors
+    );
+    let prom = endpoint_json(port, "/metrics");
+    assert!(
+        prom.contains("sorahost_silent_closes_total 2")
+            && prom.contains("sorahost_rejected_requests_total{reason=\"header_timeout\"} 0"),
+        "{}",
+        prom
+    );
 }
 
 /// (f) 408 は数えられ、`/recent` の理由が CONNECT の確立の締め切り (`error:timeout`) と分かれる (T.29.10)。
