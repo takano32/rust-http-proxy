@@ -180,6 +180,9 @@ pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
         other_port_errors: iv.other_port_errors,
         // 名前解決に失敗した試みが払った ms (T.32.16。`dns_slow` が引く)
         dns_fail_ms_sum: iv.dns_fail_ms_sum,
+        // 443・80 宛ての、名前解決に成功したミスの回数と ms (T.33.3。`dns_slow` が読む)
+        web_dns_misses: iv.web_dns_misses,
+        web_dns_ms_sum: iv.web_dns_ms_sum,
     }
 }
 

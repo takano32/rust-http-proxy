@@ -54,19 +54,19 @@ fn keeps_the_newest_samples_in_order() {
     // (`dns_warm_max` / `dns_warm_sum` / `gauge_n`)、さらにうしろが T.28.45 の
     // `excess` の窓 4 列と `dns_fail_misses`、そのうしろが T.29.12 の `conn_excess` の窓 4 列、
     // そのうしろが T.30.3 の 2 列 (`other_port_attempts` / `other_port_errors`)、
-    // いちばんうしろが T.32.16 の `dns_fail_ms_sum`
+    // そのうしろが T.32.16 の `dns_fail_ms_sum`、いちばんうしろが T.33.3 の 2 列 (`web_dns_misses` / `web_dns_ms_sum`)
     assert!(
         json.contains(
             ",0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0,0,0,0,0,\
              0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,\
-             0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0]],\"closed\":{"
+             0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0,0,0]],\"closed\":{"
         ),
         "{}",
         &json[json.len() - 600..]
     );
     // `keys` の隣に同じ長さの `key_kinds` が並ぶ (T15.0 (10))
     assert!(
-        json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\",\"dns_warm_max\",\"dns_warm_sum\",\"gauge_n\",\"excesses\",\"excess_ms_sum\",\"excess_ms_max\",\"excess_buckets\",\"dns_fail_misses\",\"conn_excesses\",\"conn_excess_ms_sum\",\"conn_excess_ms_max\",\"conn_excess_buckets\",\"other_port_attempts\",\"other_port_errors\",\"dns_fail_ms_sum\"],\"key_kinds\":[\"time\",\"cumulative\","),
+        json.contains("\"evicted_idle\",\"waits\",\"wait_ms_sum\",\"wait_ms_max\",\"wait_buckets\",\"dns_warm\",\"requests_delta\",\"bytes_delta\",\"active_peak\",\"dns_warm_max\",\"dns_warm_sum\",\"gauge_n\",\"excesses\",\"excess_ms_sum\",\"excess_ms_max\",\"excess_buckets\",\"dns_fail_misses\",\"conn_excesses\",\"conn_excess_ms_sum\",\"conn_excess_ms_max\",\"conn_excess_buckets\",\"other_port_attempts\",\"other_port_errors\",\"dns_fail_ms_sum\",\"web_dns_misses\",\"web_dns_ms_sum\"],\"key_kinds\":[\"time\",\"cumulative\","),
         "{}",
         &json[..900]
     );
@@ -328,6 +328,8 @@ fn sample_encoding_round_trips() {
         other_port_attempts: 36,
         other_port_errors: 37,
         dns_fail_ms_sum: 38,
+        web_dns_misses: 39,
+        web_dns_ms_sum: 40,
     };
     let enc = s.encode();
     assert!(
@@ -372,8 +374,13 @@ fn sample_encoding_round_trips() {
         [36, 37],
         "`other_port_attempts` `other_port_errors` の順"
     );
-    // T.32.16 の 1 項目はいちばんうしろ
+    // T.32.16 の 1 項目、T.33.3 の 2 項目はさらにそのうしろ
     assert_eq!(d.u64(), 38, "`dns_fail_ms_sum`");
+    assert_eq!(
+        [d.u64(), d.u64()],
+        [39, 40],
+        "`web_dns_misses` `web_dns_ms_sum` の順"
+    );
 }
 
 /// 版 3 の予備は **60 項目ぶんで始まり、まだ残っている** (T14.14 の受け入れ基準)。
@@ -710,9 +717,9 @@ fn the_new_columns_fit_in_the_record_slack_and_version3_records_still_decode() {
     let enc = s.encode();
     // (a)
     assert_eq!(
-        SAMPLE_ITEMS - 17 - 16 - 2 - 1,
+        SAMPLE_ITEMS - 17 - 16 - 2 - 1 - 2,
         86,
-        "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列 (+ T.28.45 の 17 + T.29.12 の 16 + T.30.3 の 2 + T.32.16 の 1)"
+        "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列 (+ T.28.45 の 17 + T.29.12 の 16 + T.30.3 の 2 + T.32.16 の 1 + T.33.3 の 2)"
     );
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
     assert!(
@@ -886,7 +893,7 @@ fn the_connect_minus_rtt_window_fits_in_the_slack_and_older_records_read_it_as_e
     // (d)
     let n = KEYS.len();
     assert_eq!(
-        &KEYS[n - 7..n - 3],
+        &KEYS[n - 9..n - 5],
         &[
             "conn_excesses",
             "conn_excess_ms_sum",
@@ -895,14 +902,14 @@ fn the_connect_minus_rtt_window_fits_in_the_slack_and_older_records_read_it_as_e
         ]
     );
     assert_eq!(
-        &KEY_KINDS[n - 7..n - 3],
+        &KEY_KINDS[n - 9..n - 5],
         &["delta", "delta", "peak", "buckets"]
     );
     let h = History::default();
     h.push(s);
     let json = h.to_json();
     assert!(
-        json.contains(",2,73,70,[0,0,1,0,0,0,1,0,0,0,0,0,0],0,0,0]"),
+        json.contains(",2,73,70,[0,0,1,0,0,0,1,0,0,0,0,0,0],0,0,0,0,0]"),
         "{}",
         json
     );
@@ -965,7 +972,7 @@ fn the_other_port_counts_fit_in_the_slack_and_older_records_read_them_as_zero() 
     h.push(s);
     let json = h.to_json();
     assert!(
-        json.contains(",1,3,3,[0,0,1,0,0,0,0,0,0,0,0,0,0],9,6,0]"),
+        json.contains(",1,3,3,[0,0,1,0,0,0,0,0,0,0,0,0,0],9,6,0,0,0]"),
         "{}",
         json
     );
@@ -986,9 +993,14 @@ fn the_failed_dns_ms_fit_in_the_slack_and_older_records_read_them_as_zero() {
     s.gauge_n = 1;
     let enc = s.encode();
     // (a)
-    assert_eq!(SAMPLE_ITEMS, 122, "121 + T.32.16 の 1");
+    const {
+        assert!(
+            SAMPLE_ITEMS >= 122,
+            "121 + T.32.16 の 1 (T.33.3 でさらに 2)"
+        )
+    };
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
-    assert_eq!(SAMPLE_SPARE_ITEMS, 5);
+    const { assert!(SAMPLE_SPARE_ITEMS >= 1, "予備が残る") };
     assert_eq!(Sample::decode(&enc), Some(s));
     // (b)
     let mut old = enc[..121 * 8].to_vec();
@@ -997,6 +1009,8 @@ fn the_failed_dns_ms_fit_in_the_slack_and_older_records_read_them_as_zero() {
     assert_eq!(
         Sample {
             dns_fail_ms_sum: 0,
+            web_dns_misses: 0,
+            web_dns_ms_sum: 0,
             ..s
         },
         back,
@@ -1009,10 +1023,59 @@ fn the_failed_dns_ms_fit_in_the_slack_and_older_records_read_them_as_zero() {
     assert_eq!(agg.dns_fail_ms_sum, 2_107);
     // (d)
     let n = KEYS.len();
-    assert_eq!(KEYS[n - 1], "dns_fail_ms_sum");
-    assert_eq!(KEY_KINDS[n - 1], "delta");
+    assert_eq!(KEYS[n - 3], "dns_fail_ms_sum");
+    assert_eq!(KEY_KINDS[n - 3], "delta");
     let h = History::default();
     h.push(s);
     let json = h.to_json();
-    assert!(json.contains(",0,4,2100]"), "{}", json);
+    assert!(json.contains(",0,4,2100,0,0]"), "{}", json);
+}
+
+/// T.33.3 の `web_dns_misses`・`web_dns_ms_sum` (443・80 宛ての、名前解決に成功したミスの回数と ms。`dns_slow` が
+/// 読む) も**レコードの余白に足した**ので `.rrd` の版は上がらない。(a) 124 項目が 1 レコードに収まり予備が 3 項目
+/// 残る、(b) T.33.3 より前の 122 項目のレコードは 0 で読み戻り手前は 1 つもずれない、(c) 畳むと足し合わせ、
+/// (d) `/history` の列は**末尾**に 2 つ (`delta`)。
+#[test]
+fn the_web_dns_misses_fit_in_the_slack_and_older_records_read_them_as_zero() {
+    let mut s = sample(1_700_000_000);
+    s.dns_misses = 15;
+    s.dns_ms_sum = 5_500;
+    s.dns_fail_ms_sum = 100;
+    s.dns_fail_misses = 1;
+    s.web_dns_misses = 5;
+    s.web_dns_ms_sum = 1_500;
+    s.gauge_n = 1;
+    let enc = s.encode();
+    // (a)
+    assert_eq!(SAMPLE_ITEMS, 124, "122 + T.33.3 の 2");
+    assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
+    assert_eq!(SAMPLE_SPARE_ITEMS, 3);
+    assert_eq!(Sample::decode(&enc), Some(s));
+    // (b)
+    let mut old = enc[..122 * 8].to_vec();
+    old.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
+    let back = Sample::decode(&old).expect("T.33.3 より前のレコードも読める");
+    assert_eq!(
+        Sample {
+            web_dns_misses: 0,
+            web_dns_ms_sum: 0,
+            ..s
+        },
+        back,
+        "手前の項目は 1 つもずれない"
+    );
+    // (c)
+    let mut t = sample(1_700_000_005);
+    t.web_dns_misses = 2;
+    t.web_dns_ms_sum = 7;
+    let agg = Sample::downsample(&[s, t], 1_700_000_000);
+    assert_eq!((agg.web_dns_misses, agg.web_dns_ms_sum), (7, 1_507));
+    // (d)
+    let n = KEYS.len();
+    assert_eq!(&KEYS[n - 2..], &["web_dns_misses", "web_dns_ms_sum"]);
+    assert_eq!(&KEY_KINDS[n - 2..], &["delta", "delta"]);
+    let h = History::default();
+    h.push(s);
+    let json = h.to_json();
+    assert!(json.contains(",100,5,1500]"), "{}", json);
 }

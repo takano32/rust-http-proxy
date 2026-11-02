@@ -284,7 +284,8 @@ scripts/snapshot-diff.py a.json b.json --criteria phase29 --daily b-daily.json \
                          --zero zero.json --daily-snapshots status
 # phase30 (T.33.1・T.33.2) は phase29 の 26 行のうち `dns_slow` の行を、件/時ではなく立った窓の名前解決に成功したミスの平均が
 # 前の版の 1.5 倍未満で読むもの (`collect-deployed.sh` の既定は phase30)。件/時は表示だけ。前の版に `dns_fail_ms_sum` が
-# 無ければ上下限で比べ、どちらとも言えなければ判定できず。1 名前あたりの裏の引き直しは答えのある名前 (`/dns` の一覧の
+# 無ければ上下限で比べ、どちらとも言えなければ判定できず。`web_dns_misses`・`web_dns_ms_sum` (T.33.3) のある版は 443・80
+# 宛ての成功したミスだけで読む。1 名前あたりの裏の引き直しは答えのある名前 (`/dns` の一覧の
 # `addrs` のある行) 1 つあたりで前の 1.5 倍未満 (一覧が切れていれば引き直しの合計で。T.33.2)
 scripts/snapshot-diff.py a.json b.json --criteria phase30 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \

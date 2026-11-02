@@ -2357,6 +2357,22 @@ class Criteria30Rows(unittest.TestCase):
         # 上限の 1.5 倍でも越えれば届かず
         self.assertEqual(self.row(mixed, self.slow(900, 5))[3], sd.MISSED)
 
+    def test_the_web_columns_count_only_misses_for_443_and_80(self):
+        # T.33.3: `web_dns_misses`・`web_dns_ms_sum` のある版は 443・80 宛ての成功したミスだけで窓を選び、平均も出す。
+        # どの窓も成功したミス 4 回 × 300 ms のうち 443 宛ては 3 回 × 400 ms、残り 1 回 (`:993`) は 0 ms
+        keys = ["t", "dns_misses", "dns_fail_misses", "dns_ms_sum", "dns_fail_ms_sum", "web_dns_misses", "web_dns_ms_sum"]
+        after = self.slow(300, 5)
+        h = after["history"]["60"]
+        h["keys"] = keys
+        h["samples"] = [r + ([3, 1200] if r[1] else [0, 0]) for r in h["samples"]]
+        row = self.row(self.slow(300, 5), after)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("**400** ms (15 回、立った 5 件)", row[2])
+        self.assertIn("443・80 宛ての成功したミスだけで選び、数える (後)", row[4])
+        # 443・80 宛てが 2 回 (合計 800 ms) しかない窓は選ばない (`:993` の遅い名前解決だけで立った窓)
+        h["samples"] = [r[:5] + ([2, 800] if r[1] else [0, 0]) for r in h["samples"]]
+        self.assertIn("**0** 件", self.row(self.slow(300, 5), after)[2])
+
     def test_missing_material_is_unknown(self):
         # 後の版に `dns_fail_ms_sum` が無い・前の版に `/history?res=60` が無い・前の版で立った窓が無い
         self.assertEqual(self.row(self.slow(300, 5), self.slow(300, 5, exact=False))[3], sd.UNKNOWN)

@@ -15,7 +15,7 @@
 //! | 種類 | 立つ条件 |
 //! |---|---|
 //! | `connect_p95` | CONNECT 1 本ごとの「確立 − オリジン側の RTT」(名前解決を除く。T.29.11) の p95 (直近 5 分) が直近 1 時間の p95 の [`CONNECT_RATIO`] 倍以上、かつ [`CONNECT_MIN_MS`] 以上、かつ [`CONNECT_MIN_SAMPLES`] 本以上 |
-//! | `dns_slow` | **名前解決に成功した**ミス (T.32.16) 1 回の平均 (直近 5 分) が [`DNS_MISS_MS`] と canary の基準線の [`DNS_CANARY_RATIO`] 倍の大きい方以上、かつ [`DNS_MIN_MISSES`] 回以上 (T17.1)、かつ窓のミスの合計が [`DNS_MIN_SUM_MS`] 以上 (T22.2) |
+//! | `dns_slow` | **443・80 宛ての接続のための** (T.33.3)、**名前解決に成功した**ミス (T.32.16) 1 回の平均 (直近 5 分) が [`DNS_MISS_MS`] と canary の基準線の [`DNS_CANARY_RATIO`] 倍の大きい方以上、かつ [`DNS_MIN_MISSES`] 回以上 (T17.1)、かつ窓のミスの合計が [`DNS_MIN_SUM_MS`] 以上 (T22.2) |
 //! | `errors` | エラーが 5 分で [`ERRORS_MIN`] 件以上 (**`/slo` の `error_rate` と同じ数え方**: 名前解決の失敗 (原因 `dns` の全部) と 443・80 以外の宛先のエラーは数えない。T.32.36) |
 //! | `active_high` | 同時接続の山が `max_conns` の [`ACTIVE_PERCENT`]% 以上 (T14.6 の写真と同じ閾。写真があればその番号) |
 //! | `rejected` | `rejected_overload` / `evicted_idle` / `rejected_client_acl` が増えた |
@@ -533,10 +533,12 @@ impl Detector {
                 && w5.conn_excess.count >= CONNECT_MIN_SAMPLES,
             // (2) 名前解決に**成功した**ミスだけで読む (T.32.16)。0.30.4 の 62 件は nxdomain の
             // 2 秒級の失敗 (`imap.froggy.com.au` の 2,151 ms など) で鳴っていた。失敗の遅さは
-            // 客の頼んだ名前の都合で、利用者の待ちではない (`errors` と同じく `/slo` の数え方)
-            w5.resolved_dns_misses() >= DNS_MIN_MISSES
-                && w5.resolved_dns_miss_avg_ms() >= dns_limit
-                && w5.resolved_dns_ms_sum() >= DNS_MIN_SUM_MS,
+            // 客の頼んだ名前の都合で、利用者の待ちではない (`errors` と同じく `/slo` の数え方)。
+            // さらに 443・80 宛ての接続のための名前解決だけ (T.33.3。利用者の決定)。0.32.39 の 48 時間の
+            // 15 件は NAT の接続元が初めて引いたメールのホスト (`:993`・`:995`・`:143`) の遠い名前で鳴っていた
+            w5.web_dns_misses >= DNS_MIN_MISSES
+                && w5.web_dns_miss_avg_ms() >= dns_limit
+                && w5.web_dns_ms_sum >= DNS_MIN_SUM_MS,
             errors >= ERRORS_MIN,
             (self.threshold > 0 && peak >= self.threshold as u64) || shot.is_some(),
             delta.iter().any(|&d| d > 0),
@@ -788,20 +790,30 @@ fn fired_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>) -> String
                 base.conn_excess.count
             )
         }
-        // 名前解決に成功したミスの数字 (T.32.16)。失敗のぶんを外していればその回数も書く
-        Kind::DnsSlow => format!(
-            "{}: dns miss {} ms avg over 5m (threshold {} ms; {} misses, {} ms total{})",
-            head,
-            ms(w5.resolved_dns_miss_avg_ms()),
-            f.dns_limit as u64,
-            w5.resolved_dns_misses(),
-            w5.resolved_dns_ms_sum(),
+        // 443・80 宛ての、名前解決に成功したミスの数字 (T.32.16・T.33.3)。外したぶん (443・80 以外の宛ての
+        // 成功したミスと、失敗のミス) があればその回数も書く
+        Kind::DnsSlow => {
+            let mut left_out = String::new();
+            let other = w5.other_port_dns_misses();
+            if other > 0 {
+                let _ = write!(left_out, ", {} not to 443/80", other);
+            }
             if w5.dns_fail_misses > 0 {
-                format!(", {} failed not counted", w5.dns_fail_misses)
-            } else {
-                String::new()
-            },
-        ),
+                let _ = write!(left_out, ", {} failed", w5.dns_fail_misses);
+            }
+            if !left_out.is_empty() {
+                left_out.push_str(" not counted");
+            }
+            format!(
+                "{}: dns miss {} ms avg over 5m (threshold {} ms; {} misses, {} ms total{})",
+                head,
+                ms(w5.web_dns_miss_avg_ms()),
+                f.dns_limit as u64,
+                w5.web_dns_misses,
+                w5.web_dns_ms_sum,
+                left_out,
+            )
+        }
         Kind::Errors => {
             let by = causes(&w5.errors_by_cause);
             // 数は判定に使った数 (`/slo` と同じ数え方。T.32.36)。外したもの (名前解決の失敗と
@@ -937,8 +949,8 @@ fn cleared_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>, mins: u
         Kind::DnsSlow => format!(
             "{} (dns miss {} ms avg over 5m, {} misses)",
             head,
-            ms(w5.resolved_dns_miss_avg_ms()),
-            w5.resolved_dns_misses()
+            ms(w5.web_dns_miss_avg_ms()),
+            w5.web_dns_misses
         ),
         Kind::Errors => format!("{} ({} errors in 5m)", head, w5.web_errors()),
         Kind::ActiveHigh => format!("{} (active peaked at {} in 5m)", head, w5.active_max),

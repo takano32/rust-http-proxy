@@ -1242,6 +1242,74 @@ fn the_interval_counts_the_attempts_to_ports_other_than_443_and_80() {
     }
 }
 
+/// T.33.3: 区間に「443・80 宛ての、名前解決に成功したミス」の回数と ms を積む (`dns_slow` が読む)。
+///
+/// 見るのは: (a) `:443` の確立と `:80` の転送 (エラーで終わっても、名前は引けた) は入る、(b) `:993`・`:8080` は
+/// 入らない (`dns_misses` には入ったまま)、(c) 原因 `dns` の失敗は 443 宛てでも入らない、(d) ミスの無い要求は
+/// 何も足さない、(e) 通算にも入る。
+#[test]
+fn the_interval_counts_the_resolved_dns_misses_for_443_and_80() {
+    let m = Metrics::new();
+    let took = Some(Duration::from_millis(5));
+    let miss = |n, ms| Detail {
+        dns_misses: n,
+        dns_ms: ms,
+        ..Detail::default()
+    };
+    // (a)
+    m.record_host_detail(
+        "connect://a:443",
+        HostOutcome::Bypass,
+        0,
+        took,
+        miss(1, 300),
+    );
+    m.record_host_detail("http://b:80", HostOutcome::Miss, 0, took, miss(2, 120));
+    m.record_host_detail(
+        "connect://c:443",
+        HostOutcome::Error,
+        0,
+        took,
+        Detail {
+            cause: Some(ErrCause::Timeout),
+            ..miss(1, 50)
+        },
+    );
+    // (b)
+    m.record_host_detail(
+        "connect://imap:993",
+        HostOutcome::Bypass,
+        0,
+        took,
+        miss(1, 400),
+    );
+    m.record_host_detail("http://d:8080", HostOutcome::Miss, 0, took, miss(1, 70));
+    // (c)
+    m.record_host_detail(
+        "connect://nx:443",
+        HostOutcome::Error,
+        0,
+        took,
+        Detail {
+            cause: Some(ErrCause::Dns),
+            ..miss(2, 2_000)
+        },
+    );
+    // (d)
+    m.record_host_detail("connect://a:443", HostOutcome::Bypass, 0, took, miss(0, 0));
+    let iv = m.take_interval();
+    assert_eq!((iv.dns_misses, iv.dns_ms_sum), (8, 2_940));
+    assert_eq!((iv.dns_fail_misses, iv.dns_fail_ms_sum), (2, 2_000));
+    assert_eq!(
+        (iv.web_dns_misses, iv.web_dns_ms_sum),
+        (1 + 2 + 1, 300 + 120 + 50),
+        "443・80 宛ての、名前解決に成功したミスだけ"
+    );
+    // (e)
+    let all = m.totals();
+    assert_eq!((all.web_dns_misses, all.web_dns_ms_sum), (4, 470));
+}
+
 /// 時間の区切りの直前なら次の時間まで待つ (同じ時間の中で数えたいテスト用。T.30.4)。
 fn away_from_the_hour_boundary() -> u64 {
     let now = crate::cache::now_epoch();

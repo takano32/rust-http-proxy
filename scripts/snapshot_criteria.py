@@ -3008,8 +3008,9 @@ def dns_slow_windows(snap, th):
     `dns_fail_ms_sum` (T.32.16) のある版は、phase29 と同じく成功したミスで立った窓だけを選び、待ちは確か (`exact`)。
     無い版 (0.30.4 まで) は立った窓 (失敗込みの閾で立った) を全部使い、1 分の標本ごとに、失敗の混ざらない 1 分は
     確か、混ざった 1 分は成功したミスの待ちを 0〜その 1 分の合計として**上下限** (`lo`・`hi`) で返す。
-    `dns_fail_misses` も無ければ (T.32.17 より前) None。返すのは
-    `{"fired", "hours", "misses", "lo", "hi", "exact", "truncated"}`。
+    `dns_fail_misses` も無ければ (T.32.17 より前) None。`web_dns_misses`・`web_dns_ms_sum` (T.33.3) のある版は、
+    本体の `dns_slow` と同じく 443・80 宛ての成功したミスだけで窓を選び、回数と待ちもそれで数える (`web`)。返すのは
+    `{"fired", "hours", "misses", "lo", "hi", "exact", "web", "truncated"}`。
     """
     ev = part(snap, "events")
     rows = ev.get("events")
@@ -3020,7 +3021,9 @@ def dns_slow_windows(snap, th):
     if any(k not in hk for k in ("dns_misses", "dns_fail_misses", "dns_ms_sum")):
         return None
     exact = "dns_fail_ms_sum" in hk
-    idx = {k: hk.index(k) for k in ("dns_misses", "dns_fail_misses", "dns_ms_sum", "dns_fail_ms_sum") if k in hk}
+    web = exact and "web_dns_misses" in hk and "web_dns_ms_sum" in hk
+    idx = {k: hk.index(k) for k in ("dns_misses", "dns_fail_misses", "dns_ms_sum", "dns_fail_ms_sum",
+                                    "web_dns_misses", "web_dns_ms_sum") if k in hk}
     samples = [s for s in h["samples"] if s and isinstance(s[0], (int, float))]
     if not samples:
         return None
@@ -3029,6 +3032,12 @@ def dns_slow_windows(snap, th):
 
     def get(s, k):
         return (s[idx[k]] if idx[k] < len(s) else 0) or 0
+
+    def resolved(s):
+        """その 1 分の成功したミスの (回数, 待ち)。T.33.3 の列があれば 443・80 宛てだけ。"""
+        if web:
+            return get(s, "web_dns_misses"), get(s, "web_dns_ms_sum")
+        return get(s, "dns_misses") - get(s, "dns_fail_misses"), get(s, "dns_ms_sum") - get(s, "dns_fail_ms_sum")
     used, fired = set(), 0
     for e in rows:
         text = e.get("text") or ""
@@ -3037,8 +3046,8 @@ def dns_slow_windows(snap, th):
             continue
         w = [i for i, s in enumerate(samples) if at - 300 < s[0] + 60 <= at + 60]
         if exact:
-            cnt = sum(get(samples[i], "dns_misses") - get(samples[i], "dns_fail_misses") for i in w)
-            tot = sum(get(samples[i], "dns_ms_sum") - get(samples[i], "dns_fail_ms_sum") for i in w)
+            cnt = sum(resolved(samples[i])[0] for i in w)
+            tot = sum(resolved(samples[i])[1] for i in w)
             if cnt < th["dns_min_misses"] or tot < th["dns_slow_min_sum_ms"]:
                 continue
         fired += 1
@@ -3046,12 +3055,12 @@ def dns_slow_windows(snap, th):
     misses = lo = hi = 0
     for i in used:
         s = samples[i]
-        ok = get(s, "dns_misses") - get(s, "dns_fail_misses")
+        ok = resolved(s)[0] if exact else get(s, "dns_misses") - get(s, "dns_fail_misses")
         if ok <= 0:
             continue
         misses += ok
         if exact:
-            v = get(s, "dns_ms_sum") - get(s, "dns_fail_ms_sum")
+            v = resolved(s)[1]
             lo += v
             hi += v
         else:
@@ -3059,7 +3068,7 @@ def dns_slow_windows(snap, th):
             if not get(s, "dns_fail_misses"):
                 lo += get(s, "dns_ms_sum")
     return {"fired": fired, "hours": max(taken - start, 0) / 3600.0, "misses": misses,
-            "lo": lo, "hi": hi, "exact": exact, "truncated": bool(ev.get("truncated"))}
+            "lo": lo, "hi": hi, "exact": exact, "web": web, "truncated": bool(ev.get("truncated"))}
 
 
 def _p30_dns_slow(c, th):
@@ -3095,6 +3104,10 @@ def _p30_dns_slow(c, th):
     src = ("`/events` の `dns_slow:` (起動から、`/history?res=60` の窓の中) が立つまでの 5 分の `/history?res=60` の"
            "標本を重ねずに足し、(`dns_ms_sum − dns_fail_ms_sum`) ÷ (`dns_misses − dns_fail_misses`)。後は phase29 と"
            f"同じく成功したミス {th['dns_min_misses']} 回以上・{th['dns_slow_min_sum_ms']:,} ms 以上で立った窓だけ")
+    if aft["web"] or (bef or {}).get("web"):
+        src += ("。`web_dns_misses`・`web_dns_ms_sum` (T.33.3) のある版は本体の `dns_slow` と同じく 443・80 宛ての"
+                "成功したミスだけで選び、数える (" + "・".join(name for name, v in (("後", aft), ("前", bef))
+                                                         if (v or {}).get("web")) + ")")
     if bef is not None and not bef["exact"]:
         src += ("。前は `dns_fail_ms_sum` が無いので立った窓 (失敗込みの閾) を全部使い、失敗の混ざらない 1 分は確か、"
                 "混ざった 1 分は成功したミスの待ちを 0〜その 1 分の合計とした上下限")

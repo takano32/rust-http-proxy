@@ -28,6 +28,14 @@ fn connects_far(t: u64, n: usize, ms: u64, rtt: u64) -> Sample {
     p
 }
 
+/// 標本の名前解決に成功したミスを、全部 443・80 宛てのものとして数える (T.33.3。`dns_slow` は
+/// `web_dns_misses`・`web_dns_ms_sum` で判定する。T.33.3 より前の試験はどれも 443 宛てのつもりで書いてある)。
+fn all_web(mut p: Sample) -> Sample {
+    p.web_dns_misses = p.dns_misses - p.dns_fail_misses;
+    p.web_dns_ms_sum = p.dns_ms_sum - p.dns_fail_ms_sum;
+    p
+}
+
 /// 標本を 1 本流す (**本番と同じ順**: 履歴に積んでから判定する)。
 fn feed(h: &History, d: &mut Detector, s: Sample) -> Vec<Fired> {
     feed_with(h, d, s, Counters::default())
@@ -151,7 +159,7 @@ fn a_slow_dns_miss_fires_once_and_clears() {
         let mut p = connects(t, 2, 10);
         p.dns_misses = 3;
         p.dns_ms_sum = 3 * 140;
-        fired.extend(feed(&h, &mut d, p));
+        fired.extend(feed(&h, &mut d, all_web(p)));
         t += 5;
     }
     assert_eq!(fired.len(), 1, "{:?}", fired);
@@ -192,7 +200,7 @@ fn dns_misses_once_a_minute(misses: u64, each_ms: u64, canary: Option<u64>) -> V
             canary_dns_p50_ms: canary,
             ..Counters::default()
         };
-        out.extend(feed_with(&h, &mut d, p, c));
+        out.extend(feed_with(&h, &mut d, all_web(p), c));
         t += 5;
     }
     out
@@ -266,7 +274,7 @@ fn dns_miss_every_sample(each_ms: u64, secs: u64, calm_secs: u64) -> Vec<Fired> 
         let mut p = connects(t, 2, 10);
         p.dns_misses = 1;
         p.dns_ms_sum = each_ms;
-        out.extend(feed(&h, &mut d, p));
+        out.extend(feed(&h, &mut d, all_web(p)));
         t += 5;
     }
     out.extend(calm(&h, &mut d, t, calm_secs).1);
@@ -331,7 +339,7 @@ fn dns_misses_with_failures(n: u64, fail: u64, each_ms: u64) -> Vec<Fired> {
                 p.dns_fail_ms_sum = each_ms;
             }
         }
-        out.extend(feed(&h, &mut d, p));
+        out.extend(feed(&h, &mut d, all_web(p)));
         t += 5;
     }
     out.retain(|f| f.kind == Kind::DnsSlow);
@@ -374,7 +382,7 @@ fn dns_slow_says_how_many_failed_misses_it_left_out() {
         p.dns_fail_ms_sum = 2_000;
         p.errors = 1;
         p.errors_by_cause[ErrCause::Dns as usize] = 1;
-        out.extend(feed(&h, &mut d, p));
+        out.extend(feed(&h, &mut d, all_web(p)));
         t += 5;
     }
     out.retain(|f| f.kind == Kind::DnsSlow);
@@ -383,6 +391,91 @@ fn dns_slow_says_how_many_failed_misses_it_left_out() {
         out[0].text,
         "dns_slow: dns miss 400 ms avg over 5m (threshold 100 ms; 3 misses, 1200 ms total, \
          3 failed not counted)"
+    );
+    assert!(out[0].text.len() <= crate::events::MAX_TEXT);
+}
+
+/// 平常時の 1 時間のあと、5 秒ごとの標本に名前解決に成功したミスを 1 回ずつ流す: 443・80 以外の宛て (`:993`) を
+/// `other` 回 × `other_ms`、そのあと 443・80 宛てを `web` 回 × `web_ms`。`dns_slow` の変わり目だけを返す (T.33.3)。
+fn dns_misses_by_port(other: u64, other_ms: u64, web: u64, web_ms: u64) -> Vec<Fired> {
+    let h = History::default();
+    let mut d = Detector::new();
+    let (mut t, _) = calm(&h, &mut d, 0, BASE_SECS);
+    let mut out = Vec::new();
+    // 4 分 (48 標本) に収める
+    for i in 0..48u64 {
+        let mut p = connects(t, 2, 10);
+        if i < other {
+            p.dns_misses = 1;
+            p.dns_ms_sum = other_ms;
+        } else if i < other + web {
+            p.dns_misses = 1;
+            p.dns_ms_sum = web_ms;
+            p.web_dns_misses = 1;
+            p.web_dns_ms_sum = web_ms;
+        }
+        out.extend(feed(&h, &mut d, p));
+        t += 5;
+    }
+    out.retain(|f| f.kind == Kind::DnsSlow);
+    out
+}
+
+/// T.33.3 の受け入れ基準 (利用者の決定): `dns_slow` は 443・80 宛ての接続のための名前解決だけで判定する。
+/// `:993` 宛ての成功したミス 10 回 × 400 ms (0.32.39 の 15 件の形。NAT の接続元が初めて引いたメールのホスト)
+/// では立たず、`:443` 宛ての 5 回 × 300 ms では立つ。外した 443・80 以外の回数は文面に添える。
+#[test]
+fn only_misses_for_443_and_80_make_dns_slow_fire() {
+    assert!(
+        dns_misses_by_port(10, 400, 0, 0).is_empty(),
+        "`:993` 宛ての遅い名前解決だけでは立たない"
+    );
+    let out = dns_misses_by_port(0, 0, 5, 300);
+    assert_eq!(out.len(), 1, "{:?}", out);
+    // 4 回目 (合計 1,200 ms) で立つ
+    assert_eq!(
+        out[0].text,
+        "dns_slow: dns miss 300 ms avg over 5m (threshold 100 ms; 4 misses, 1200 ms total)"
+    );
+    // 両方が混ざっても 443・80 のぶんだけで読み、外した回数を添える (失敗も外していればその回数も)
+    let out = dns_misses_by_port(10, 400, 5, 300);
+    assert_eq!(out.len(), 1, "{:?}", out);
+    assert_eq!(
+        out[0].text,
+        "dns_slow: dns miss 300 ms avg over 5m (threshold 100 ms; 4 misses, 1200 ms total, \
+         10 not to 443/80 not counted)"
+    );
+    // 443 宛ては 2 回 (合計 600 ms) だけ: `:993` の 10 回 × 400 ms を足せば今までは立っていた
+    assert!(dns_misses_by_port(10, 400, 2, 300).is_empty());
+}
+
+/// T.33.3: 443・80 以外の宛てと失敗の両方を外したときの文面 (長さも出来事の上限に収まる)。
+#[test]
+fn dns_slow_says_how_many_misses_to_other_ports_and_failures_it_left_out() {
+    let h = History::default();
+    let mut d = Detector::new();
+    let (mut t, _) = calm(&h, &mut d, 0, BASE_SECS);
+    let mut out = Vec::new();
+    for _ in 0..4 {
+        let mut p = connects(t, 2, 10);
+        // 443 宛ての成功 1 回 400 ms + `:995` 宛ての成功 2 回 + 失敗 1 回 2,000 ms
+        p.dns_misses = 4;
+        p.dns_ms_sum = 400 + 2 * 600 + 2_000;
+        p.web_dns_misses = 1;
+        p.web_dns_ms_sum = 400;
+        p.dns_fail_misses = 1;
+        p.dns_fail_ms_sum = 2_000;
+        p.errors = 1;
+        p.errors_by_cause[ErrCause::Dns as usize] = 1;
+        out.extend(feed(&h, &mut d, p));
+        t += 5;
+    }
+    out.retain(|f| f.kind == Kind::DnsSlow);
+    assert_eq!(out.len(), 1, "{:?}", out);
+    assert_eq!(
+        out[0].text,
+        "dns_slow: dns miss 400 ms avg over 5m (threshold 100 ms; 3 misses, 1200 ms total, \
+         6 not to 443/80, 3 failed not counted)"
     );
     assert!(out[0].text.len() <= crate::events::MAX_TEXT);
 }
@@ -672,7 +765,7 @@ fn each_of_the_five_fires_once_and_clears_once() {
             rejected_overload: (t - start) / 5,
             ..Counters::default()
         };
-        fired.extend(feed_with(&h, &mut d, p, c));
+        fired.extend(feed_with(&h, &mut d, all_web(p), c));
         t += 5;
     }
     let mut kinds: Vec<&str> = fired.iter().map(|f| f.kind.name()).collect();

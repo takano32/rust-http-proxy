@@ -42,7 +42,7 @@ pub use crate::window::{CAPACITY, DEFAULT_N, INTERVAL, RESOLUTIONS, WINDOW_BOUND
 /// 2. [`Sample::encode`] の末尾に `u64` を 1 つ足す (= 予備の先頭を 1 つ使う)
 /// 3. [`Sample::decode`] の末尾で読む (古いレコードはそこがゼロ埋めなので 0 になる)
 /// 4. この数を増やす ([`Sample::encode`] の `debug_assert` と下の `const` が見張る)
-pub const SAMPLE_ITEMS: usize = 122;
+pub const SAMPLE_ITEMS: usize = 124;
 
 /// **版 3 を始めた時点の**固定の欄の数 (T14.14 のときの [`SAMPLE_ITEMS`])。
 ///
@@ -181,11 +181,18 @@ pub struct Sample {
     /// (0.30.4 の 62 件は nxdomain の 2 秒級の失敗で鳴っていた)。**T.32.16 より前のレコードは 0**
     /// = 今までどおり失敗のぶんの ms も成功したミスに入ったまま読み戻る
     pub dns_fail_ms_sum: u64,
+    /// その区間の、名前解決に**成功した**ミス (`dns_misses − dns_fail_misses`) のうち、**宛先のポートが 443・80**
+    /// のものの回数と ms の合計 (T.33.3。鍵の末尾の見分けは [`Self::other_port_attempts`] と同じ)。
+    /// 異常検知の `dns_slow` はこの 2 つで判定する (利用者の決定。0.32.39 の 48 時間の 15 件はどれも NAT の接続元が
+    /// 初めて引いたメールのホスト (`:993`・`:995`・`:143`) の遅い名前解決で鳴っていた)。
+    /// **T.33.3 より前のレコードは 0** で読み戻る (= `dns_slow` はその標本では立たない)
+    pub web_dns_misses: u64,
+    pub web_dns_ms_sum: u64,
 }
 
 /// `/history` の 1 標本の列名 (この順で [`Sample::push_row`] が値を並べる)。
 /// **キーを標本ごとに繰り返さない**ため、JSON は配列の配列にしてある (T12.4 (3))。
-pub const KEYS: [&str; 55] = [
+pub const KEYS: [&str; 57] = [
     "t",
     "requests",
     "bytes",
@@ -246,6 +253,9 @@ pub const KEYS: [&str; 55] = [
     "other_port_errors",
     // T.32.16 で末尾に足したもの (名前解決に失敗した試みが払った ms。`dns_slow` が引く)
     "dns_fail_ms_sum",
+    // T.33.3 で末尾に足したもの (443・80 宛ての、名前解決に成功したミスの回数と ms。`dns_slow` が読む)
+    "web_dns_misses",
+    "web_dns_ms_sum",
 ];
 
 /// [`KEYS`] と**同じ長さ・同じ並び**の「その列の読み方」(`/history` の `key_kinds`。T15.0 (10))。
@@ -320,6 +330,8 @@ pub const KEY_KINDS: [&str; KEYS.len()] = [
     "delta",      // other_port_attempts
     "delta",      // other_port_errors
     "delta",      // dns_fail_ms_sum
+    "delta",      // web_dns_misses
+    "delta",      // web_dns_ms_sum
 ];
 
 impl Sample {
@@ -390,7 +402,9 @@ impl Sample {
             self.other_port_attempts, self.other_port_errors
         );
         // T.32.16 で末尾に足したもの
-        let _ = write!(out, ",{}]", self.dns_fail_ms_sum);
+        let _ = write!(out, ",{}", self.dns_fail_ms_sum);
+        // T.33.3 で末尾に足したもの
+        let _ = write!(out, ",{},{}]", self.web_dns_misses, self.web_dns_ms_sum);
     }
 
     /// ゲージを畳むときの重み (= その行に畳んだ 5 秒の標本の数。T16.0)。
@@ -462,6 +476,8 @@ impl Sample {
         e.u64(self.other_port_attempts).u64(self.other_port_errors);
         // T.32.16 で足した 1 項目 (`decode` と同じ順)
         e.u64(self.dns_fail_ms_sum);
+        // T.33.3 で足した 2 項目 (`decode` と同じ順)
+        e.u64(self.web_dns_misses).u64(self.web_dns_ms_sum);
         debug_assert_eq!(e.0.len(), SAMPLE_ITEMS * 8, "固定の欄の数と食い違っている");
         e.0
     }
@@ -527,6 +543,9 @@ impl Sample {
         s.other_port_errors = d.u64();
         // T.32.16。それより前のレコードはここがゼロ埋めなので 0 (= 引くものが無い) で読み戻る
         s.dns_fail_ms_sum = d.u64();
+        // T.33.3。それより前のレコードはここがゼロ埋めなので 0 で読み戻る
+        s.web_dns_misses = d.u64();
+        s.web_dns_ms_sum = d.u64();
         Some(s)
     }
 
@@ -623,6 +642,8 @@ impl Sample {
             other_port_attempts: sum(|s| s.other_port_attempts),
             other_port_errors: sum(|s| s.other_port_errors),
             dns_fail_ms_sum: sum(|s| s.dns_fail_ms_sum),
+            web_dns_misses: sum(|s| s.web_dns_misses),
+            web_dns_ms_sum: sum(|s| s.web_dns_ms_sum),
         }
     }
 }

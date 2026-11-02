@@ -122,6 +122,10 @@ pub struct Summary {
     /// `dns_ms_sum` のうち名前解決に失敗した試みが払った ms (標本の `dns_fail_ms_sum`。T.32.16)。
     /// 異常検知の `dns_slow` は名前解決に成功したミスで読む。JSON には出さない
     pub dns_fail_ms_sum: u64,
+    /// 名前解決に成功したミスのうち 443・80 宛てのものの回数と ms (標本の `web_dns_misses`・`web_dns_ms_sum`。
+    /// T.33.3)。異常検知の `dns_slow` はこの 2 つで判定する。JSON には出さない
+    pub web_dns_misses: u64,
+    pub web_dns_ms_sum: u64,
 }
 
 impl Summary {
@@ -151,6 +155,22 @@ impl Summary {
         self.dns_fail_misses += s.dns_fail_misses;
         self.other_port_errors += s.other_port_errors;
         self.dns_fail_ms_sum += s.dns_fail_ms_sum;
+        self.web_dns_misses += s.web_dns_misses;
+        self.web_dns_ms_sum += s.web_dns_ms_sum;
+    }
+
+    /// 443・80 宛ての、名前解決に成功したミス 1 回の平均 ms (T.33.3。`dns_slow` が読む)。
+    pub fn web_dns_miss_avg_ms(&self) -> f64 {
+        match self.web_dns_misses {
+            0 => 0.0,
+            n => self.web_dns_ms_sum as f64 / n as f64,
+        }
+    }
+
+    /// 名前解決に成功したミスのうち、443・80 以外の宛てのもの (T.33.3。`dns_slow` が外して文面に添える)。
+    pub fn other_port_dns_misses(&self) -> u64 {
+        self.resolved_dns_misses()
+            .saturating_sub(self.web_dns_misses)
     }
 
     /// 名前解決に成功した試みのミスが払った ms (`dns_ms_sum − dns_fail_ms_sum`。T.32.16)。

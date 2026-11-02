@@ -81,6 +81,11 @@ pub struct Interval {
     /// `dns_ms_sum` のうち、名前解決に失敗した試み (原因 `dns`) が払ったぶん (ms。T.32.16)。
     /// 異常検知の `dns_slow` は「名前解決に成功したミス」の ms (`dns_ms_sum − dns_fail_ms_sum`) で読む
     pub dns_fail_ms_sum: u64,
+    /// 名前解決に成功した試みのミスのうち、**宛先のポートが 443・80** のもの (回数と ms の合計。T.33.3。
+    /// 利用者の決定: 異常検知の `dns_slow` は 443・80 宛ての接続のための名前解決だけで判定する)。
+    /// 鍵の末尾の見分けは `other_port_attempts` と同じ ([`web_port`])
+    pub web_dns_misses: u64,
+    pub web_dns_ms_sum: u64,
 }
 
 /// ホスト別統計の表と、区間の合計。1 つの鍵で守る。
@@ -611,6 +616,14 @@ impl Metrics {
                 } else if counted {
                     iv.forward.observe(ms);
                 }
+            }
+        }
+        // 443・80 宛ての、名前解決に成功したミス (T.33.3。`dns_slow` が読む)。ふつうの要求は名前がキャッシュに
+        // 当たってミスが 0 なので、比較 1 回で抜ける (上の繰り返しの中に置くと、成功の経路が +12 Ir だった)
+        if detail.dns_misses != 0 && !dns_failed && web_port(host) {
+            for iv in [&mut hosts.total, &mut hosts.interval] {
+                iv.web_dns_misses += detail.dns_misses;
+                iv.web_dns_ms_sum += detail.dns_ms;
             }
         }
         // 段階の窓 (T14.3 (1)) と、直近 1,024 本の標本そのもの (T14.31)。どちらも
