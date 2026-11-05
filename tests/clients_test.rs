@@ -226,7 +226,7 @@ fn test_integration_clients_reads_the_user_agent_only_on_the_first_request() {
 /// **Linux だけ**: ほかの OS では `tcp_rtt` が `(0, 0)` を返し (`crates/server/src/conn.rs` の
 /// `#[cfg(not(target_os = "linux"))]` の側)、`record_client_rtt` が `rtt_us == 0` で
 /// 早く返るので `rtt_ms` は常に `null` になる。RTT に寄りかかる結合テストは
-/// このリポジトリでは全部こうしてある (`tests/recent_test.rs` の T14.5 の 2 本)。
+/// このリポジトリでは全部こうしてある (`tests/recent_tables_test.rs` の T14.5 の 2 本)。
 #[test]
 #[cfg(target_os = "linux")]
 fn test_integration_clients_rtt_counts_only_proxied_connections() {

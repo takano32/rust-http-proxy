@@ -202,6 +202,34 @@ pub fn start_echo_server() -> u16 {
     port
 }
 
+/// 読んだぶんをそのまま返し、クライアントが送信側を閉じたら自分も閉じるオリジン。
+///
+/// トンネルの「ふつうの終わり方」(クライアントが先に EOF) を待ち時間なしに作るための道具
+/// (初めは `tests/recent_test.rs` にあった。T.34.117 で割ったときに、2 つの試験が使うので移した)。
+pub fn start_echo_origin() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if stream.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                // クライアントが送信側を閉じたので、こちらも閉じる (トンネルが終わる)
+            });
+        }
+    });
+    port
+}
+
 /// Content-Length ぶんの本文を最後まで読んでから、その要約を返すオリジン。
 pub fn start_body_echo_origin() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
