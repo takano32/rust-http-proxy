@@ -8,9 +8,10 @@ use super::fetch::Fetched;
 use super::lookup::CacheState;
 use super::respond::write_error;
 use super::serve::{can_serve_stale, serve_cached};
+use super::upstream::OriginConn;
 use super::{ClientWriter, Exchange, Stage, done, finished};
 use crate::body::Framing;
-use crate::cache::now_epoch;
+use crate::cache::{CacheSource, CachedResponse, now_epoch};
 use crate::freshness;
 use crate::headers;
 use crate::log_trace;
@@ -68,12 +69,10 @@ pub(super) fn examine_head(
     let (status, request_body_bytes, body_cut) =
         (fetched.status, fetched.request_body_bytes, fetched.body_cut);
     let head: &[u8] = &fetched.head;
-    let shared = x.shared;
     let cache = x.cache;
     let metrics = x.ctx.metrics;
     let conn_id = x.ctx.conn_id;
-    let (http11, head_only, pool_key, url) = (x.http11, x.ctx.head_only, x.ctx.pool_key, x.ctx.url);
-    let (key, now, cfg) = (cs.key, cs.now, cs.cfg);
+    let (http11, head_only, pool_key) = (x.http11, x.ctx.head_only, x.ctx.pool_key);
     // 本文の途中でオリジンが返した応答 (T.29.7): クライアントの本文の残りは読んでいないので、
     // 応答に `Connection: close` を付けて閉じる (次の要求の頭に本文の続きが来てしまう)
     if body_cut {
@@ -127,12 +126,7 @@ pub(super) fn examine_head(
                     more
                 );
             }
-            // 失敗の数え方 (`/status` の `errors`・`errors_by_cause`) に乗せる。
-            // 原因は既存の 8 つのうち「上のどれでもない」を使う (配列は伸ばさない)
-            x.ctx.detail.cause = Some(ErrCause::Other);
-            write_error(client, 502, "Bad Gateway")?;
-            x.ctx.log_failure(502);
-            return done(false);
+            return bad_gateway(x, client);
         }
     };
     // 頼んでいない 101 (RFC 9110 §15.2.2: クライアントが `Upgrade` で挙げていないプロトコルへ切り替えては
@@ -143,10 +137,7 @@ pub(super) fn examine_head(
             "502 Bad Gateway: unsolicited 101 Switching Protocols from {}",
             pool_key
         );
-        x.ctx.detail.cause = Some(ErrCause::Other);
-        write_error(client, 502, "Bad Gateway")?;
-        x.ctx.log_failure(502);
-        return done(false);
+        return bad_gateway(x, client);
     }
     let origin_reusable =
         head.starts_with(b"HTTP/1.1") && framing != Framing::Close && !conn_close && !body_cut;
@@ -172,94 +163,27 @@ pub(super) fn examine_head(
     if status == 304
         && let Some(entry) = cs.client_cond_entry.take()
     {
-        let cached_head = freshness::parse_cached_head(&entry.head);
-        let pairs_304 = headers::response_pairs(head);
-        if not_modified_selects(&cached_head, &pairs_304) {
-            if freshness::not_modified_forbids_storing(&pairs_304) {
-                cache.remove(key);
-            } else {
-                let p = freshness::revalidated_policy(&pairs_304, &cached_head, cfg, now);
-                match headers::merge_not_modified(&entry.head, head) {
-                    Some(new_head) => {
-                        cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
-                    }
-                    None => {
-                        cache.refresh(key, p.ttl, p.age, conn_id);
-                    }
-                }
-            }
-            log_debug!(
-                Some(conn_id),
-                "client-conditional 304 from {}: refreshed the stored entry",
-                pool_key
-            );
-        }
+        refresh_for_client_conditional(x, cs, &entry, head);
     }
 
     // 304: 保存済みの表現がまだ有効。延命して配信する
     if status == 304
         && let Some((entry, source)) = cs.stale.take()
     {
-        let cached_head = freshness::parse_cached_head(&entry.head);
-        let pairs_304 = headers::response_pairs(head);
-        let mut entry = entry;
-        // 304 が保存を禁じた (`no-store`・`private`・`Vary: Cookie` など): 延命せず項目を消し、
-        // この要求にだけ 304 のヘッダーを載せた写しを配る (T.29.0)。次の要求はオリジンへ行く
-        if freshness::not_modified_forbids_storing(&pairs_304) {
-            cache.remove(key);
-            if let Some(new_head) = headers::merge_not_modified(&entry.head, head) {
-                entry.replace_head(new_head);
-            }
-            if let Some(served) = headers::with_set_cookies(&entry.head, head) {
-                entry.replace_head(served);
-            }
-            entry.meta.stored_at = now_epoch();
-            entry.meta.expires_at = entry.meta.stored_at;
-            if origin_reusable && let Some(server) = fetched.server.take() {
-                shared.upstream.pool.put(pool_key, server, shared.timeout);
-            }
-            return finished(serve_cached(
-                client,
-                entry,
-                source,
-                "REVALIDATED",
-                0,
-                &x.ctx,
-            ));
-        }
-        let p = freshness::revalidated_policy(&pairs_304, &cached_head, cfg, now);
-        // 304 のヘッダーで保存済みの先頭を書き直して置き直し、配るのも新しい先頭にする
-        // (RFC 9111 §3.2・§4.3.4。T.28.2)。今までは期限だけ延ばし、配る先頭は古いままだった
-        let expires_at = match headers::merge_not_modified(&entry.head, head) {
-            Some(new_head) => {
-                let expires_at =
-                    cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
-                entry.replace_head(new_head);
-                expires_at
-            }
-            None => cache.refresh(key, p.ttl, p.age, conn_id),
-        };
-        // 配る `Age` も置き直した時刻から数える (`refresh` と同じく `now - 304 の Age`。T.28.34)。
-        // 今までは手元の写しの古い `stored_at` のままで、保存から N 秒たって再検証した直後の応答が
-        // `Age: N` になっていた (次の HIT からは新しい値)
-        entry.meta.stored_at = now_epoch().saturating_sub(p.age);
-        entry.meta.expires_at = expires_at;
-        // 304 の `Set-Cookie` は保存した先頭へは写さず (T.29.0)、再検証したこの要求にだけ渡す
-        if let Some(served) = headers::with_set_cookies(&entry.head, head) {
-            entry.replace_head(served);
-        }
-        if origin_reusable && let Some(server) = fetched.server.take() {
-            shared.upstream.pool.put(pool_key, server, shared.timeout);
-        }
-        let ttl_left = p.ttl.as_secs().saturating_sub(p.age);
-        return finished(serve_cached(
+        return serve_revalidated(
+            x,
             client,
+            cs,
+            // 使い回せる接続だけを渡す (プールへ戻す)。使い回せない接続は今までどおり段の外で閉じる
+            if origin_reusable {
+                fetched.server.take()
+            } else {
+                None
+            },
             entry,
             source,
-            "REVALIDATED",
-            ttl_left,
-            &x.ctx,
-        ));
+            head,
+        );
     }
     // オリジン障害: stale を配信 (禁止されていなければ)。この接続は再利用しない
     if STALE_ON_STATUS.contains(&status)
@@ -292,10 +216,7 @@ pub(super) fn examine_head(
                 more
             );
         }
-        x.ctx.detail.cause = Some(ErrCause::Other);
-        write_error(client, 502, "Bad Gateway")?;
-        x.ctx.log_failure(502);
-        return done(false);
+        return bad_gateway(x, client);
     }
     Ok(HeadFacts {
         framing,
@@ -304,6 +225,129 @@ pub(super) fn examine_head(
         origin_reusable,
         unframed_te,
     })
+}
+
+/// 502 を書いて終わる (壊れた `Content-Length`・頼んでいない 101・HTTP/1.0 へ送れない TE の 3 か所の
+/// 共通形。WARN の文面と絞り方は呼ぶ側に残す。T.34.18)。
+///
+/// 失敗の数え方 (`/status` の `errors`・`errors_by_cause`) に乗せる。
+/// 原因は既存の 8 つのうち「上のどれでもない」を使う (配列は伸ばさない)
+#[inline]
+fn bad_gateway<T>(x: &mut Exchange<'_>, client: &mut ClientWriter<'_>) -> Stage<T> {
+    x.ctx.detail.cause = Some(ErrCause::Other);
+    write_error(client, 502, "Bad Gateway")?;
+    x.ctx.log_failure(502);
+    done(false)
+}
+
+/// クライアントの条件付き要求に対するオリジンの 304 で、保存済みの表現 (`entry`) を延ばす (T.29.6)。
+/// 304 そのものは呼ぶ側がそのまま中継する。validator が違う 304 では触らない。
+fn refresh_for_client_conditional(
+    x: &Exchange<'_>,
+    cs: &CacheState<'_>,
+    entry: &CachedResponse,
+    head: &[u8],
+) {
+    let (cache, conn_id) = (x.cache, x.ctx.conn_id);
+    let (pool_key, url) = (x.ctx.pool_key, x.ctx.url);
+    let (key, now, cfg) = (cs.key, cs.now, cs.cfg);
+    let cached_head = freshness::parse_cached_head(&entry.head);
+    let pairs_304 = headers::response_pairs(head);
+    if not_modified_selects(&cached_head, &pairs_304) {
+        if freshness::not_modified_forbids_storing(&pairs_304) {
+            cache.remove(key);
+        } else {
+            let p = freshness::revalidated_policy(&pairs_304, &cached_head, cfg, now);
+            match headers::merge_not_modified(&entry.head, head) {
+                Some(new_head) => {
+                    cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
+                }
+                None => {
+                    cache.refresh(key, p.ttl, p.age, conn_id);
+                }
+            }
+        }
+        log_debug!(
+            Some(conn_id),
+            "client-conditional 304 from {}: refreshed the stored entry",
+            pool_key
+        );
+    }
+}
+
+/// 再検証の 304: 保存済みの表現 (`entry`) を延ばし (または保存を禁じられたら消し)、304 のヘッダーを
+/// 載せた先頭で配る。`reusable` はプールへ戻すオリジンとの接続 (使い回せないなら `None`)。
+fn serve_revalidated<T>(
+    x: &Exchange<'_>,
+    client: &mut ClientWriter<'_>,
+    cs: &CacheState<'_>,
+    reusable: Option<OriginConn>,
+    entry: CachedResponse,
+    source: CacheSource,
+    head: &[u8],
+) -> Stage<T> {
+    let (shared, cache, conn_id) = (x.shared, x.cache, x.ctx.conn_id);
+    let (pool_key, url) = (x.ctx.pool_key, x.ctx.url);
+    let (key, now, cfg) = (cs.key, cs.now, cs.cfg);
+    let cached_head = freshness::parse_cached_head(&entry.head);
+    let pairs_304 = headers::response_pairs(head);
+    let mut entry = entry;
+    // 304 が保存を禁じた (`no-store`・`private`・`Vary: Cookie` など): 延命せず項目を消し、
+    // この要求にだけ 304 のヘッダーを載せた写しを配る (T.29.0)。次の要求はオリジンへ行く
+    if freshness::not_modified_forbids_storing(&pairs_304) {
+        cache.remove(key);
+        if let Some(new_head) = headers::merge_not_modified(&entry.head, head) {
+            entry.replace_head(new_head);
+        }
+        if let Some(served) = headers::with_set_cookies(&entry.head, head) {
+            entry.replace_head(served);
+        }
+        entry.meta.stored_at = now_epoch();
+        entry.meta.expires_at = entry.meta.stored_at;
+        if let Some(server) = reusable {
+            shared.upstream.pool.put(pool_key, server, shared.timeout);
+        }
+        return finished(serve_cached(
+            client,
+            entry,
+            source,
+            "REVALIDATED",
+            0,
+            &x.ctx,
+        ));
+    }
+    let p = freshness::revalidated_policy(&pairs_304, &cached_head, cfg, now);
+    // 304 のヘッダーで保存済みの先頭を書き直して置き直し、配るのも新しい先頭にする
+    // (RFC 9111 §3.2・§4.3.4。T.28.2)。今までは期限だけ延ばし、配る先頭は古いままだった
+    let expires_at = match headers::merge_not_modified(&entry.head, head) {
+        Some(new_head) => {
+            let expires_at = cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
+            entry.replace_head(new_head);
+            expires_at
+        }
+        None => cache.refresh(key, p.ttl, p.age, conn_id),
+    };
+    // 配る `Age` も置き直した時刻から数える (`refresh` と同じく `now - 304 の Age`。T.28.34)。
+    // 今までは手元の写しの古い `stored_at` のままで、保存から N 秒たって再検証した直後の応答が
+    // `Age: N` になっていた (次の HIT からは新しい値)
+    entry.meta.stored_at = now_epoch().saturating_sub(p.age);
+    entry.meta.expires_at = expires_at;
+    // 304 の `Set-Cookie` は保存した先頭へは写さず (T.29.0)、再検証したこの要求にだけ渡す
+    if let Some(served) = headers::with_set_cookies(&entry.head, head) {
+        entry.replace_head(served);
+    }
+    if let Some(server) = reusable {
+        shared.upstream.pool.put(pool_key, server, shared.timeout);
+    }
+    let ttl_left = p.ttl.as_secs().saturating_sub(p.age);
+    finished(serve_cached(
+        client,
+        entry,
+        source,
+        "REVALIDATED",
+        ttl_left,
+        &x.ctx,
+    ))
 }
 
 #[cfg(test)]
