@@ -551,37 +551,9 @@ mod linux {
                 };
                 match what {
                     Parked::Http(conn) => {
-                        // ソケットにエラーが溜まっている (T14.52)。TCP keepalive が
-                        // 尽きた相手は `EPOLLERR` で起こされ、保留エラーが `ETIMEDOUT`
-                        // になっている。**`EPOLLIN` も一緒に立つ** (カーネルが受信を
-                        // 閉じた扱いにする) ので下の枝では拾えず、ワーカーを起こして
-                        // 読ませても errno が返るだけなので、ここで閉じる。
-                        // `ETIMEDOUT` は「相手が黙って消えた」= `client_dead`、それ以外
-                        // (`ECONNRESET` など) は今までどおり原因つきのエラーとして残す。
-                        // `getsockopt(SO_ERROR)` を引くのは **`EPOLLERR` が立った回だけ**
-                        // (ふつうの起床には 1 命令も増えない)
-                        if ev.events() & EPOLLERR != 0
-                            && let Some(err) = conn.take_client_error()
-                        {
+                        if on_http_event(watch, conn, ev.events()) {
                             closed += 1;
-                            conn.finish(if err.kind() == io::ErrorKind::TimedOut {
-                                CloseReason::ClientDead
-                            } else {
-                                CloseReason::error_from_io(&err)
-                            });
-                            drop(conn);
-                            continue;
                         }
-                        if ev.events() & EPOLLIN == 0 {
-                            // 読めるものが無いのに知らせが来た = 相手が黙って切った。
-                            // わざわざワーカーを起こして 0 バイトを読ませる必要はない
-                            // (水準通知なので、データがあれば必ず EPOLLIN も立つ)
-                            closed += 1;
-                            conn.finish(CloseReason::ClientEof);
-                            drop(conn);
-                            continue;
-                        }
-                        watch.resume_conn(conn);
                     }
                     // トンネルは EPOLLIN が無い (HUP / ERR だけの) ときもワーカーへ戻す。
                     // 閉じるのに shutdown・アクセスログ・統計が要るため
@@ -597,22 +569,61 @@ mod linux {
             }
             let expired = watch.expire(Instant::now());
             if !expired.is_empty() {
-                log_debug!(
-                    None,
-                    "closing {} parked connections past their deadline",
-                    expired.len()
-                );
-                for what in expired {
-                    match what {
-                        // ロックの外で落とす (close(2) の間、預けたいワーカーを待たせない)
-                        Parked::Http(conn) => {
-                            // 理由は `expire` が枠に書いてあるので、ここは数だけ移す (T14.4)
-                            conn.finish(CloseReason::KeepaliveTimeout);
-                            drop(conn);
-                        }
-                        Parked::Tunnel(idle) => watch.expire_tunnel(idle),
-                    }
+                close_expired(watch, expired);
+            }
+        }
+    }
+
+    /// 起こされた keep-alive 接続を、閉じるかワーカーへ戻す。ここで閉じたら `true`。
+    fn on_http_event(watch: &IdleWatch, conn: Box<Conn>, events: u32) -> bool {
+        // ソケットにエラーが溜まっている (T14.52)。TCP keepalive が
+        // 尽きた相手は `EPOLLERR` で起こされ、保留エラーが `ETIMEDOUT`
+        // になっている。**`EPOLLIN` も一緒に立つ** (カーネルが受信を
+        // 閉じた扱いにする) ので下の枝では拾えず、ワーカーを起こして
+        // 読ませても errno が返るだけなので、ここで閉じる。
+        // `ETIMEDOUT` は「相手が黙って消えた」= `client_dead`、それ以外
+        // (`ECONNRESET` など) は今までどおり原因つきのエラーとして残す。
+        // `getsockopt(SO_ERROR)` を引くのは **`EPOLLERR` が立った回だけ**
+        // (ふつうの起床には 1 命令も増えない)
+        if events & EPOLLERR != 0
+            && let Some(err) = conn.take_client_error()
+        {
+            conn.finish(if err.kind() == io::ErrorKind::TimedOut {
+                CloseReason::ClientDead
+            } else {
+                CloseReason::error_from_io(&err)
+            });
+            drop(conn);
+            return true;
+        }
+        if events & EPOLLIN == 0 {
+            // 読めるものが無いのに知らせが来た = 相手が黙って切った。
+            // わざわざワーカーを起こして 0 バイトを読ませる必要はない
+            // (水準通知なので、データがあれば必ず EPOLLIN も立つ)
+            conn.finish(CloseReason::ClientEof);
+            drop(conn);
+            return true;
+        }
+        watch.resume_conn(conn);
+        false
+    }
+
+    /// 期限の過ぎた預かりを閉じる (HTTP はここで落とし、トンネルはワーカーで閉じる)。
+    fn close_expired(watch: &IdleWatch, expired: Vec<Parked>) {
+        log_debug!(
+            None,
+            "closing {} parked connections past their deadline",
+            expired.len()
+        );
+        for what in expired {
+            match what {
+                // ロックの外で落とす (close(2) の間、預けたいワーカーを待たせない)
+                Parked::Http(conn) => {
+                    // 理由は `expire` が枠に書いてあるので、ここは数だけ移す (T14.4)
+                    conn.finish(CloseReason::KeepaliveTimeout);
+                    drop(conn);
                 }
+                Parked::Tunnel(idle) => watch.expire_tunnel(idle),
             }
         }
     }
