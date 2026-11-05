@@ -179,8 +179,8 @@ pub fn cgroup_limits_from(proc_cgroup: &str, sysfs: &Path) -> Vec<CgroupMem> {
 }
 
 fn walk_limits(root: &Path, cg_path: &str, files: &CgroupFiles, out: &mut Vec<CgroupMem>) {
-    let mut dir = root.join(cg_path.trim_start_matches('/'));
-    loop {
+    let dir = root.join(cg_path.trim_start_matches('/'));
+    super::cgroup::walk_up(&dir, root, |dir| {
         if let Some(limit) = read_number(&dir.join(files.limit)).filter(|&l| l < UNLIMITED) {
             let usage = read_number(&dir.join(files.usage)).unwrap_or(0);
             let inactive = read_stat(&dir.join(files.stat), files.inactive_key).unwrap_or(0);
@@ -194,14 +194,8 @@ fn walk_limits(root: &Path, cg_path: &str, files: &CgroupFiles, out: &mut Vec<Cg
                 pressure,
             });
         }
-        if dir == root {
-            break;
-        }
-        match dir.parent() {
-            Some(p) if p.starts_with(root) => dir = p.to_path_buf(),
-            _ => break,
-        }
-    }
+        std::ops::ControlFlow::<()>::Continue(())
+    });
 }
 
 fn read_number(path: &Path) -> Option<u64> {
@@ -209,10 +203,7 @@ fn read_number(path: &Path) -> Option<u64> {
 }
 
 fn read_stat(path: &Path, key: &str) -> Option<u64> {
-    read_small(path)?.lines().find_map(|l| {
-        let (k, v) = l.split_once(' ')?;
-        (k == key).then(|| v.trim().parse().ok()).flatten()
-    })
+    super::cgroup::stat_field(&read_small(path)?, key)
 }
 
 /// 自プロセスの常駐の内訳 (バイト。`/proc/self/status` の**同じ 1 回の読み**から。T.32.4)。

@@ -8,6 +8,7 @@
 //! 読むのは **5 秒の標本のときだけ**。cgroup v1 だけの環境・`/sys/fs/cgroup` が無い環境・
 //! PSI を持たないカーネルではそれぞれ `None` を返す (呼び出し側は `null` を出す)。
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 /// PSI の 1 資源ぶん (`some` / `full` の `avg10`)。形はメモリ側と同じなので型を共有する。
@@ -178,13 +179,44 @@ fn find_up_at<T>(
     name: &str,
     parse: impl Fn(&str) -> Option<T>,
 ) -> Option<(PathBuf, T)> {
-    let mut at = dir.to_path_buf();
-    loop {
+    walk_up(dir, root, |at| {
         let file = at.join(name);
         if let Some(text) = super::proc::read_small(&file)
             && let Some(v) = parse(&text)
         {
-            return Some((file, v));
+            return ControlFlow::Break((file, v));
+        }
+        ControlFlow::Continue(())
+    })
+}
+
+/// 階層のどこかに掛かっている `cpu.max` のうち、いちばんきついコア数。
+fn tightest_quota(dir: &Path, root: &Path) -> Option<f64> {
+    let mut best: Option<f64> = None;
+    walk_up(dir, root, |at| {
+        if let Some(text) = super::proc::read_small(&at.join("cpu.max"))
+            && let Some(cores) = parse_cpu_max(&text)
+        {
+            best = Some(best.map_or(cores, |b: f64| b.min(cores)));
+        }
+        ControlFlow::<()>::Continue(())
+    });
+    best
+}
+
+/// `dir` から `root` まで 1 段ずつ親へ遡り、各段で `f` を呼ぶ (T.34.68 で 4 か所のループを 1 つにした)。
+///
+/// `f` が `Break(v)` を返したらそこで止めて `Some(v)`。`root` に着いたか、親が `root` の外に出たら
+/// (`dir` が `root` の下に無いときは `dir` の 1 段だけ見て) `None`。
+pub(super) fn walk_up<T>(
+    dir: &Path,
+    root: &Path,
+    mut f: impl FnMut(&Path) -> ControlFlow<T>,
+) -> Option<T> {
+    let mut at = dir.to_path_buf();
+    loop {
+        if let ControlFlow::Break(v) = f(&at) {
+            return Some(v);
         }
         if at == root {
             return None;
@@ -192,26 +224,6 @@ fn find_up_at<T>(
         match at.parent() {
             Some(p) if p.starts_with(root) => at = p.to_path_buf(),
             _ => return None,
-        }
-    }
-}
-
-/// 階層のどこかに掛かっている `cpu.max` のうち、いちばんきついコア数。
-fn tightest_quota(dir: &Path, root: &Path) -> Option<f64> {
-    let mut at = dir.to_path_buf();
-    let mut best: Option<f64> = None;
-    loop {
-        if let Some(text) = super::proc::read_small(&at.join("cpu.max"))
-            && let Some(cores) = parse_cpu_max(&text)
-        {
-            best = Some(best.map_or(cores, |b: f64| b.min(cores)));
-        }
-        if at == root {
-            return best;
-        }
-        match at.parent() {
-            Some(p) if p.starts_with(root) => at = p.to_path_buf(),
-            _ => return best,
         }
     }
 }
@@ -224,8 +236,8 @@ pub fn parse_cpu_max(text: &str) -> Option<f64> {
     (period > 0.0 && quota > 0.0).then(|| quota / period)
 }
 
-/// `"名前 値"` が 1 行ずつ並ぶ形式 (`cpu.stat` / `memory.stat`) から 1 つ取る。
-fn stat_field(text: &str, key: &str) -> Option<u64> {
+/// `"名前 値"` が 1 行ずつ並ぶ形式 (`cpu.stat` / `memory.stat`) から 1 つ取る (`mem` の `memory.stat` もこれで読む)。
+pub(super) fn stat_field(text: &str, key: &str) -> Option<u64> {
     text.lines().find_map(|l| {
         let (k, v) = l.split_once(' ')?;
         (k == key).then(|| v.trim().parse().ok()).flatten()

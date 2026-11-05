@@ -24,7 +24,7 @@
 
 use std::fs;
 use std::net::ToSocketAddrs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::RwLock;
 use std::sync::mpsc;
 use std::thread;
@@ -305,7 +305,8 @@ pub fn cgroup_pressure_in(proc_cgroup: &str, sysfs: &Path, fallback: &Path) -> b
 
 /// `/proc/self/cgroup` の中身と cgroup の根を与えて、`name` が見つかるかを返す
 /// (テストのために分けてある。探し方は [`crate::sysinfo::mem::cgroup_limits_from`] と同じで、
-/// 自分の階層から根まで辿る)。
+/// 自分の階層から根まで辿る)。呼ぶのは試験だけ (T.34.68 で `#[cfg(test)]` にした)。
+#[cfg(test)]
 pub fn cgroup_file_in(proc_cgroup: &str, sysfs: &Path, name: &str) -> bool {
     for line in proc_cgroup.lines() {
         let mut parts = line.splitn(3, ':');
@@ -328,20 +329,17 @@ pub fn cgroup_file_in(proc_cgroup: &str, sysfs: &Path, name: &str) -> bool {
 }
 
 /// `root/cg_path` から `root` まで遡って `name` を探す。
+#[cfg(test)]
 fn walk_for(root: &Path, cg_path: &str, name: &str) -> bool {
-    let mut dir: PathBuf = root.join(cg_path.trim_start_matches('/'));
-    loop {
+    let dir = root.join(cg_path.trim_start_matches('/'));
+    super::cgroup::walk_up(&dir, root, |dir| {
         if dir.join(name).exists() {
-            return true;
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
         }
-        if dir == root {
-            return false;
-        }
-        match dir.parent() {
-            Some(p) if p.starts_with(root) => dir = p.to_path_buf(),
-            _ => return false,
-        }
-    }
+    })
+    .is_some()
 }
 
 /// `/proc/net/ipv6_route` に既定経路 (`::/0`) があるか。
