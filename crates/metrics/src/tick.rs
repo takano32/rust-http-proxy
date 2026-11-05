@@ -34,81 +34,132 @@ pub fn spawn_every(
     store: Option<Arc<crate::persist::Store>>,
     interval: Duration,
 ) -> JoinHandle<()> {
-    // 前に転送速度を控えた時刻 (T14.39)。1 回目は `None` = 控えるだけで速さは出さない
-    let mut swept: Option<Instant> = None;
-    // 前の標本の通算 (`requests` / `bytes`)。**区間の値をここで作る** (T15.0 (10))。
-    // リングから引き算で作らないのは、再起動の段差と欠けた標本で狂うため。
-    // 1 回目は `None` = 控えるだけで差は出さない (`swept` と同じ形)
-    let mut totals: Option<(u64, u64)> = None;
-    let mut record = move |metrics: &Arc<Metrics>, cache: &Cache| {
-        // いまの転送速度 (`/connections` の `rate_bps`。T14.39)。全 slot の `bytes` を
-        // 控えて差分 ÷ この周期を書く。**書くのはこのスレッドだけ**で、接続の経路は 0 増
-        metrics
-            .conns
-            .update_rates(swept.map_or(0, |t: Instant| t.elapsed().as_millis() as u64));
-        swept = Some(Instant::now());
-        // 山の写真と、閉じた接続の分布の窓 (T14.6)。**標本より先に**撮るのは、
-        // 越えてから撮るまでを 1 周期より短くするため
-        metrics.take_burst_shot();
-        // 下の層 (IPv4 優先の切替・圧迫・バラスト) の変わり目を出来事に 1 件 (T14.11)
-        crate::events::poll(cache);
-        let now = crate::cache::now_epoch();
-        metrics.history.closed.roll(now);
-        // 速さと半閉じの窓も同じ境目で閉じる (`closed` と時刻で突き合わせる。T14.25)
-        metrics.history.transfer.roll(now);
-        // ホスト別の時系列の窓送りと上位 16 の入れ替え (T14.22)。**5 分の境目でだけ**動く
-        metrics.roll_host_series();
-        let mut sample = take_sample(metrics, cache);
-        // 通算を標本化した 2 列 (`requests` / `bytes`) の**区間の値** (T15.0 (10))。
-        // 既存の 2 列はそのまま残し、隣に足す
-        if let Some((requests, bytes)) = totals {
-            sample.requests_delta = sample.requests.saturating_sub(requests);
-            sample.bytes_delta = sample.bytes.saturating_sub(bytes);
+    let mut tick = Tick::new(store);
+    tick.run(&metrics, &cache);
+    thread::Builder::new()
+        .name("history".into())
+        .spawn(move || {
+            loop {
+                thread::sleep(interval);
+                tick.run(&metrics, &cache);
+            }
+        })
+        .expect("spawn history thread")
+}
+
+/// `history` スレッドの 1 周 (T.34.37 で `spawn_every` の閉包から名前の付く段に割った)。
+///
+/// 段の順は割る前と同じ: 転送速度 → 窓を閉じる → 標本 → 標本を配る → 状態ファイル → 待ちの小仕事。
+struct Tick {
+    /// 前に転送速度を控えた時刻 (T14.39)。1 回目は `None` = 控えるだけで速さは出さない
+    swept: Option<Instant>,
+    /// 前の標本の通算 (`requests` / `bytes`)。**区間の値をここで作る** (T15.0 (10))。
+    /// リングから引き算で作らないのは、再起動の段差と欠けた標本で狂うため。
+    /// 1 回目は `None` = 控えるだけで差は出さない (`swept` と同じ形)
+    totals: Option<(u64, u64)>,
+    store: Option<Arc<crate::persist::Store>>,
+}
+
+impl Tick {
+    fn new(store: Option<Arc<crate::persist::Store>>) -> Tick {
+        Tick {
+            swept: None,
+            totals: None,
+            store,
         }
-        totals = Some((sample.requests, sample.bytes));
-        // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
-        crate::daily::tick(metrics, &sample);
-        // 同じ境目で前日ぶんの `/snapshot` を 1 ファイル残す (T14.34)。こちらも
-        // 書かない設定なら原子の読み 1 回で戻る (組むのは日付が変わったときだけ)
-        crate::snapshots::tick(cache, &sample);
-        let pushed = metrics.history.push(sample);
-        // 積んだあとに、直近 5 分が直近 1 時間の基準値から外れていないかを見る (T14.23)
-        crate::anomaly::check(metrics, &sample);
-        // 同じ標本を SLO の 4 つの閾に当て、時間ごとの達成率に 1 本足す (`/slo`。T14.50)
-        crate::slo::observe(&sample);
-        // その時間の 443・80 宛てのエラーのいちばん多い宛先も渡す (`error_rate` が外す。T.30.4)。
-        // 時間の区切りを越えていればここで確定させる (エラーの来ない時間も確定する)
-        let (prev, cur) = metrics.web_error_hours(sample.t);
-        crate::slo::observe_destinations(prev.as_ref(), &cur);
-        // 起動から 60 秒 (下の heap の基準と同じ待ち時間) で `/snapshot` を 1 枚残す (T.28.20。
-        // 締めの「0 時間」)。書かない設定と 2 回目からは原子の読み 1〜2 回で戻る
-        crate::snapshots::take_start_if_due(
-            cache,
-            metrics.start_time.elapsed().as_secs() >= crate::persist::baseline_after_secs(),
-        );
-        if let Some(st) = &store {
-            st.write_samples(&pushed);
-            st.write_recent(metrics);
-            // 起動から 60 秒たった時点の heap を 1 回だけ状態ファイルに残す (T24.4)。
-            // **キャッシュを知っているのはこのスレッド**なので、ここで読んで渡す
-            st.write_baseline_if_due(cache, metrics.start_time.elapsed());
+    }
+
+    /// 1 周ぶんの仕事をする。
+    fn run(&mut self, metrics: &Arc<Metrics>, cache: &Cache) {
+        self.sweep_rates(metrics);
+        roll_windows(metrics, cache);
+        let sample = self.sample(metrics, cache);
+        let pushed = publish(metrics, cache, sample);
+        if let Some(st) = &self.store {
+            persist(st, metrics, cache, &pushed);
         }
         // 利用者の要求が無い時間帯も待ちを測る (T14.10)。**ここでは測らない**
         // (名前解決と接続は `canary` スレッド 1 本の仕事で、この周期は止めない)
         crate::canary::tick(metrics);
         // 1 時間に 1 回、返していない空きのヒープを OS へ返す (T.29.25。間隔に満たなければ原子 1 回)
         crate::sysinfo::trim_if_due(now_epoch());
-    };
-    record(&metrics, &cache);
-    thread::Builder::new()
-        .name("history".into())
-        .spawn(move || {
-            loop {
-                thread::sleep(interval);
-                record(&metrics, &cache);
-            }
-        })
-        .expect("spawn history thread")
+    }
+
+    /// いまの転送速度 (`/connections` の `rate_bps`。T14.39)。全 slot の `bytes` を
+    /// 控えて差分 ÷ この周期を書く。**書くのはこのスレッドだけ**で、接続の経路は 0 増
+    fn sweep_rates(&mut self, metrics: &Metrics) {
+        metrics.conns.update_rates(
+            self.swept
+                .map_or(0, |t: Instant| t.elapsed().as_millis() as u64),
+        );
+        self.swept = Some(Instant::now());
+    }
+
+    /// 5 秒の標本を取り、通算を標本化した 2 列 (`requests` / `bytes`) の**区間の値**を埋める
+    /// (T15.0 (10))。既存の 2 列はそのまま残し、隣に足す
+    fn sample(&mut self, metrics: &Metrics, cache: &Cache) -> Sample {
+        let mut sample = take_sample(metrics, cache);
+        if let Some((requests, bytes)) = self.totals {
+            sample.requests_delta = sample.requests.saturating_sub(requests);
+            sample.bytes_delta = sample.bytes.saturating_sub(bytes);
+        }
+        self.totals = Some((sample.requests, sample.bytes));
+        sample
+    }
+}
+
+/// 標本より先に閉じる窓 (山の写真・出来事・閉じた接続・速さと半閉じ・ホスト別の時系列)。
+fn roll_windows(metrics: &Metrics, cache: &Cache) {
+    // 山の写真と、閉じた接続の分布の窓 (T14.6)。**標本より先に**撮るのは、
+    // 越えてから撮るまでを 1 周期より短くするため
+    metrics.take_burst_shot();
+    // 下の層 (IPv4 優先の切替・圧迫・バラスト) の変わり目を出来事に 1 件 (T14.11)
+    crate::events::poll(cache);
+    let now = crate::cache::now_epoch();
+    metrics.history.closed.roll(now);
+    // 速さと半閉じの窓も同じ境目で閉じる (`closed` と時刻で突き合わせる。T14.25)
+    metrics.history.transfer.roll(now);
+    // ホスト別の時系列の窓送りと上位 16 の入れ替え (T14.22)。**5 分の境目でだけ**動く
+    metrics.roll_host_series();
+}
+
+/// 標本を履歴に積み、日次・雪像・異常・SLO に配る。戻り値は各解像度に加わった標本。
+fn publish(metrics: &Metrics, cache: &Cache, sample: Sample) -> crate::history::Pushed {
+    // 日付が変わっていたら前日の要約を 1 行残す (T14.20)。書かない設定なら原子の読み 1 回
+    crate::daily::tick(metrics, &sample);
+    // 同じ境目で前日ぶんの `/snapshot` を 1 ファイル残す (T14.34)。こちらも
+    // 書かない設定なら原子の読み 1 回で戻る (組むのは日付が変わったときだけ)
+    crate::snapshots::tick(cache, &sample);
+    let pushed = metrics.history.push(sample);
+    // 積んだあとに、直近 5 分が直近 1 時間の基準値から外れていないかを見る (T14.23)
+    crate::anomaly::check(metrics, &sample);
+    // 同じ標本を SLO の 4 つの閾に当て、時間ごとの達成率に 1 本足す (`/slo`。T14.50)
+    crate::slo::observe(&sample);
+    // その時間の 443・80 宛てのエラーのいちばん多い宛先も渡す (`error_rate` が外す。T.30.4)。
+    // 時間の区切りを越えていればここで確定させる (エラーの来ない時間も確定する)
+    let (prev, cur) = metrics.web_error_hours(sample.t);
+    crate::slo::observe_destinations(prev.as_ref(), &cur);
+    // 起動から 60 秒 (下の heap の基準と同じ待ち時間) で `/snapshot` を 1 枚残す (T.28.20。
+    // 締めの「0 時間」)。書かない設定と 2 回目からは原子の読み 1〜2 回で戻る
+    crate::snapshots::take_start_if_due(
+        cache,
+        metrics.start_time.elapsed().as_secs() >= crate::persist::baseline_after_secs(),
+    );
+    pushed
+}
+
+/// 状態ファイルへ書く (標本・個票・起動 60 秒の heap の基準)。
+fn persist(
+    st: &crate::persist::Store,
+    metrics: &Metrics,
+    cache: &Cache,
+    pushed: &crate::history::Pushed,
+) {
+    st.write_samples(pushed);
+    st.write_recent(metrics);
+    // 起動から 60 秒たった時点の heap を 1 回だけ状態ファイルに残す (T24.4)。
+    // **キャッシュを知っているのはこのスレッド**なので、ここで読んで渡す
+    st.write_baseline_if_due(cache, metrics.start_time.elapsed());
 }
 
 /// 5 秒の標本を 1 本取る (`history` スレッドと状態ファイルが使う 1 本)。
@@ -192,4 +243,33 @@ fn process_counts() -> (u64, u64, u64) {
     let threads = crate::sysinfo::process_threads().unwrap_or(0);
     let (fds, max_fds) = crate::sysinfo::process_fds().unwrap_or((0, 0));
     (threads, fds, max_fds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 2 周回すと、2 本目の `requests_delta` / `bytes_delta` は 1 周目からの差になる (T.34.37)。
+    /// 1 本目は控えるだけで 0。
+    #[test]
+    fn the_second_tick_carries_the_difference_of_the_totals() {
+        let metrics = Arc::new(Metrics::new());
+        let cache = Cache::new(crate::cache::CacheConfig::disabled());
+        let mut tick = Tick::new(None);
+        for _ in 0..3 {
+            metrics.inc_requests();
+        }
+        metrics.add_bytes(1_000);
+        tick.run(&metrics, &cache);
+        for _ in 0..5 {
+            metrics.inc_requests();
+        }
+        metrics.add_bytes(234);
+        tick.run(&metrics, &cache);
+        let mut got = Vec::new();
+        metrics.history.for_each_in(0, 0, u64::MAX, |s| {
+            got.push((s.requests, s.requests_delta, s.bytes, s.bytes_delta))
+        });
+        assert_eq!(got, vec![(3, 0, 1_000, 0), (8, 5, 1_234, 234)]);
+    }
 }
