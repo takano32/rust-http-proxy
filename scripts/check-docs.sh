@@ -7,7 +7,7 @@
 # **コードにあるのに文書に無い / 文書にあるのにコードに無い**が目で見つからなくなっている。
 # 突き合わせるのは 11 (下の (a)〜(k)):
 #
-#   (a) エンドポイント … `crates/endpoints/src/endpoints/mod.rs` の `path == "/…"`
+#   (a) エンドポイント … `crates/endpoints/src/endpoints/dispatch.rs` の経路表 (match の腕)
 #                        vs README の「動作確認 (curl)」の一覧 vs `/` の案内 (`endpoint_list`)
 #   (b) 環境変数     … コードの `"PROXY_…"` / `"SERVER_…"` vs README の「環境変数」の表の鍵の欄
 #   (c) `/snapshot`  … `recent::snapshot` の `parts` vs 個票のエンドポイント
@@ -34,7 +34,8 @@ cd "$(dirname "$0")/.." || exit 1
 W=$(mktemp -d) || exit 1
 trap 'rm -rf "$W"' EXIT
 NG=0
-MOD=crates/endpoints/src/endpoints/mod.rs
+MOD=crates/endpoints/src/endpoints/dispatch.rs
+GUIDE=crates/endpoints/src/endpoints/pages.rs
 REC=crates/endpoints/src/endpoints/recent/snapshot.rs
 
 # 2 つの一覧 (整列済み) を突き合わせ、片側にしか無いものを印字する。
@@ -64,12 +65,13 @@ norm_ep() {
     grep -v '^/$' | grep -v '^$' | LC_ALL=C sort -u
 }
 {
-  grep -oE 'path == "[^"]*"' "$MOD" | sed 's/.*"\(.*\)"/\1/'
+  # 経路表の match の腕 (`"/a" | "/b" => …`)。T.34.4 で `path == "/…"` の if の連鎖から変えた。
+  grep -E '^ *"/[^"]*"( \| "[^"]*")* =>' "$MOD" | grep -oE '"/[^"]*"' | tr -d '"'
   grep -oE 'path\.strip_prefix\("[^"]*"\)' "$MOD" | sed 's/.*"\(.*\)".*/\1<date>/'
 } | norm_ep >"$W/ep-code"
 
 # `/` の案内 (`fn endpoint_list`)。1 行の先頭の `/…` がその行のパス。
-sed -n '/^fn endpoint_list/,/^}/p' "$MOD" |
+sed -n '/^\(pub(super) \)\{0,1\}fn endpoint_list/,/^}/p' "$GUIDE" |
   awk '/\\x20 \/|"  \// { if (match($0, /\/[A-Za-z0-9<>_.\/-]+/)) print substr($0, RSTART, RLENGTH) }' |
   sed 's|^/snapshots/<YYYY-MM-DD>$|/snapshots/<date>|' | norm_ep >"$W/ep-guide"
 
@@ -79,7 +81,7 @@ sed -n '/^## 動作確認 (curl)/,/^```$/p' README.md |
   grep -oE 'http://127\.0\.0\.1:8080/[A-Za-z0-9<>?=&|,.:/_%$()-]*' |
   sed -e 's|http://127.0.0.1:8080||' -e 's/[?].*//' | norm_ep >"$W/ep-readme"
 
-printf '(a) エンドポイント: %s の path == "/…" %s 件 / README「動作確認 (curl)」 %s 件 / `/` の案内 %s 件\n' \
+printf '(a) エンドポイント: %s の経路表 %s 件 / README「動作確認 (curl)」 %s 件 / `/` の案内 %s 件\n' \
   "$MOD" "$(wc -l <"$W/ep-code")" "$(wc -l <"$W/ep-readme")" "$(wc -l <"$W/ep-guide")"
 diffset "(a)" "コード" "$W/ep-code" "README" "$W/ep-readme"
 diffset '(a)' 'コード' "$W/ep-code" '`/` の案内' "$W/ep-guide"
