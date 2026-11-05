@@ -9,7 +9,7 @@ mod common;
 
 use std::process::Command;
 
-use common::{ENV_BASE, ProxyProcess, endpoint_json, scratch_dir, status_json, wait_until};
+use common::{ENV_BASE, ProxyProcess, endpoint_json, json, scratch_dir, status_json, wait_until};
 
 /// `$HOME` を一時ディレクトリにしてプロキシを起こす。`env_file` はそこに置く `.env` の中身、
 /// `vars` は**実際の環境変数**として渡すもの (出どころの `env` と `env_file` を作り分ける)。
@@ -41,21 +41,6 @@ fn start_proxy_logged(
     let child = builder.start();
     let (port, log) = (child.port, child.startup_log.clone());
     (child, port, dir, log)
-}
-
-/// `"key":` の後ろを 1 語だけ取る (数値・`true` / `false` ・`null`)。
-fn value_of(json: &str, key: &str) -> String {
-    let pat = format!("\"{}\":", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, json))
-        + pat.len();
-    json[at..]
-        .chars()
-        .take_while(|c| !matches!(c, ',' | '}' | ']'))
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 /// `--check` の最後の行から「読めなかったものの名前」を取り出す。
@@ -109,18 +94,28 @@ fn test_integration_capabilities_appear_in_status() {
     }
     // 真偽で答えるものは真偽で出る (「読めなかった」と「無かった」を分けるため)
     for key in ["proc_syscall", "tcp_info", "home_writable"] {
-        let v = value_of(&status, key);
+        let v = json::raw_value(&status, key);
         assert!(v == "true" || v == "false", "{} = {}", key, v);
     }
     // この機械 (Linux、cgroup v2、`$HOME` あり) では全部読める
     #[cfg(target_os = "linux")]
     {
-        assert_eq!(value_of(&status, "proc_syscall"), "true", "{}", status);
-        assert_eq!(value_of(&status, "tcp_info"), "true", "{}", status);
-        assert_eq!(value_of(&status, "home_writable"), "true", "{}", status);
+        assert_eq!(
+            json::raw_value(&status, "proc_syscall"),
+            "true",
+            "{}",
+            status
+        );
+        assert_eq!(json::raw_value(&status, "tcp_info"), "true", "{}", status);
+        assert_eq!(
+            json::raw_value(&status, "home_writable"),
+            "true",
+            "{}",
+            status
+        );
     }
     // 名前解決は数値か null (外に出られない環境では null)
-    let resolver = value_of(&status, "resolver_ms");
+    let resolver = json::raw_value(&status, "resolver_ms");
     assert!(
         resolver == "null" || resolver.parse::<u64>().is_ok(),
         "resolver_ms = {}",
@@ -128,7 +123,10 @@ fn test_integration_capabilities_appear_in_status() {
     );
     // 測った時刻が入っている (いつの判定かが読めること)
     assert!(
-        value_of(&status, "checked_at").parse::<u64>().unwrap_or(0) > 0,
+        json::raw_value(&status, "checked_at")
+            .parse::<u64>()
+            .unwrap_or(0)
+            > 0,
         "{}",
         status
     );

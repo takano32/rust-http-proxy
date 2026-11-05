@@ -58,21 +58,6 @@ fn rows(body: &str, key: &str) -> Vec<String> {
     out
 }
 
-/// `"key":<数>` を読む (整数だけ)。
-fn num(obj: &str, key: &str) -> u64 {
-    let pat = format!("\"{}\":", key);
-    let at = obj
-        .find(&pat)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, obj))
-        + pat.len();
-    obj[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{} が数でない: {}", key, obj))
-}
-
 /// 要求行と `Host` の間を空ける幅 (測る対象の「空き」)。
 const GAP: Duration = Duration::from_millis(40);
 /// 個票の `client_read` がこれ以上なら「空きが測れた」と見る (丸めのぶんだけ下に置く)。
@@ -85,19 +70,19 @@ fn newest_row(body: &str, needle: &str) -> Option<String> {
     rows(body, "recent")
         .into_iter()
         .filter(|r| r.contains(needle))
-        .max_by_key(|r| num(r, "id"))
+        .max_by_key(|r| json::uint(r, "id"))
 }
 
 /// `/recent?n=50` を引いて、`needle` を含む行の最大の `id` (無ければ `None`)。
 fn newest_id(proxy_port: u16, needle: &str) -> Option<u64> {
-    newest_row(&endpoint_json(proxy_port, "/recent?n=50"), needle).map(|r| num(&r, "id"))
+    newest_row(&endpoint_json(proxy_port, "/recent?n=50"), needle).map(|r| json::uint(&r, "id"))
 }
 
 /// 個票の `client_read` (0 のときは欄そのものが出ないので `None`)。
 fn client_read_ms(entry: &str) -> Option<u64> {
     entry
         .contains("\"client_read\":")
-        .then(|| num(entry, "client_read"))
+        .then(|| json::uint(entry, "client_read"))
 }
 
 /// 空けた間が個票の `client_read` に出るまで、同じ形の 1 本を送り直して、その個票を返す。
@@ -125,7 +110,7 @@ fn gap_in_the_record(
         );
         let body = endpoint_json(proxy_port, "/recent?n=50");
         let entry = newest_row(&body, needle).unwrap_or_else(|| panic!("{}: {}", what, body));
-        last = num(&entry, "id");
+        last = json::uint(&entry, "id");
         match client_read_ms(&entry) {
             Some(ms) if ms >= GAP_MS => return entry,
             other => seen.push(match other {
@@ -192,16 +177,16 @@ fn a_tunnel_records_both_the_connect_and_the_client_read_stage() {
         entry
     );
     assert!(
-        num(&entry, "client_read") >= GAP_MS,
+        json::uint(&entry, "client_read") >= GAP_MS,
         "空けた {} ms が入っていない: {}",
         GAP.as_millis(),
         entry
     );
     // loopback は名前を引かないので、引き算に使う値そのものが 0
-    assert_eq!(num(&entry, "dns"), 0, "{}", entry);
+    assert_eq!(json::uint(&entry, "dns"), 0, "{}", entry);
     // 「`dns` が 0 より大きいのに `connect` が 0」が出ないこと (受け入れ基準)
     assert!(
-        num(&entry, "dns") == 0 || num(&entry, "connect") > 0,
+        json::uint(&entry, "dns") == 0 || json::uint(&entry, "connect") > 0,
         "名前解決を払ったのに接続の段が 0: {}",
         entry
     );
@@ -251,7 +236,7 @@ fn a_failed_forward_keeps_its_client_read_stage() {
         entry
     );
     assert!(
-        num(&entry, "client_read") >= GAP_MS,
+        json::uint(&entry, "client_read") >= GAP_MS,
         "空けた {} ms が入っていない: {}",
         GAP.as_millis(),
         entry

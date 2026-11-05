@@ -10,22 +10,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{ProxyProcess, endpoint_json, scratch_dir, status_json, write_env};
-
-/// `"key":` に続く数を取る (テスト用の雑な取り出し。キーは前後の `"` を含めて渡す)。
-fn status_number(json: &str, key: &str) -> u64 {
-    let pat = format!("{}:", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("no {} in {}", key, json))
-        + pat.len();
-    json[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{} is not a number", key))
-}
+use common::{ProxyProcess, endpoint_json, json, scratch_dir, status_json, write_env};
 
 /// 版 3 の固定の大きさ (`proxy_rrd::rrd::FILE_SIZE`。T14.14 で 4 → 8 MiB)。
 const FILE_SIZE: u64 = 8 * 1024 * 1024;
@@ -98,9 +83,9 @@ fn test_integration_an_old_state_file_is_replaced_by_the_new_fixed_size_one() {
     // まだ 1 件も要求を通していないので、通算の始まりは 0 (= `hosts[]` が空)
     assert!(status.contains("\"restored_since\":0"), "{}", status);
     let pid = child.pid();
-    let fds = status_number(&status, "\"fds\"");
-    let max_fds = status_number(&status, "\"max_fds\"");
-    let threads = status_number(&status, "\"threads\"");
+    let fds = json::uint(&status, "fds");
+    let max_fds = json::uint(&status, "max_fds");
+    let threads = json::uint(&status, "threads");
     let ls = std::process::Command::new("ls")
         .arg(format!("/proc/{}/fd", pid))
         .output()

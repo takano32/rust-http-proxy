@@ -39,16 +39,6 @@ fn write_env(dir: &Path, records: &str) {
     );
 }
 
-/// JSON の `"key":"<値>"` を 1 つ読む (最初の 1 つ)。
-fn text_field(json: &str, key: &str) -> String {
-    let needle = format!("\"{}\":\"", key);
-    let at = json
-        .find(&needle)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, json));
-    let rest = &json[at + needle.len()..];
-    rest[..rest.find('"').expect("閉じ引用符")].to_string()
-}
-
 /// 16 桁の 16 進か (ハッシュにした接続元の形)。
 fn is_hashed(s: &str) -> bool {
     s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -185,7 +175,7 @@ fn test_integration_records_hashed_replaces_the_client_everywhere_with_one_value
     let status = endpoint_json(port, "/status");
     assert!(status.contains("\"records\":\"hashed\""), "{}", status);
 
-    let hashed = text_field(&endpoint_json(port, "/recent"), "client");
+    let hashed = json::string(&endpoint_json(port, "/recent"), "client");
     assert!(is_hashed(&hashed), "16 桁の 16 進でない: {}", hashed);
     for path in ["/clients", "/connections", "/errors", "/trace", "/readers"] {
         let json = endpoint_json(port, path);
@@ -218,7 +208,7 @@ fn test_integration_records_hashed_replaces_the_client_everywhere_with_one_value
     write_env(&dir, "hashed");
     let mut proxy = ProxyProcess::start(&dir);
     let tunnel = make_records(proxy.port, origin_port);
-    again.push_str(&text_field(
+    again.push_str(&json::string(
         &endpoint_json(proxy.port, "/clients"),
         "client",
     ));

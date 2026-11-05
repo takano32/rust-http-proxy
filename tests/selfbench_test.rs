@@ -12,7 +12,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{ProxyProcess, endpoint_json, scratch_dir};
+use common::{ProxyProcess, endpoint_json, json, scratch_dir};
 
 /// テスト用の `.env` を書く (`self_bench` を on にするかだけが違う)。
 ///
@@ -28,24 +28,6 @@ fn write_env(dir: &Path, self_bench: bool) {
             if self_bench { "on" } else { "off" }
         ),
     );
-}
-
-/// `"key":<数>` を 1 つ読む (`null` なら `None`)。
-fn number(json: &str, key: &str) -> Option<f64> {
-    let needle = format!("\"{}\":", key);
-    let at = json
-        .find(&needle)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, json));
-    let rest = &json[at + needle.len()..];
-    let value: String = rest
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
-    if value.is_empty() {
-        assert!(rest.starts_with("null"), "{} が数でも null でもない", key);
-        return None;
-    }
-    Some(value.parse().unwrap())
 }
 
 /// `PROXY_SELF_BENCH=on` の実バイナリで `/status` の `self_bench` に値が出ること。
@@ -64,15 +46,15 @@ fn test_integration_self_bench_fills_status() {
         .find("\"self_bench\":")
         .unwrap_or_else(|| panic!("self_bench が無い: {}", body));
     let body = body[start..].to_string();
-    let at = number(&body, "at").expect("測った時刻");
+    let at = json::number_opt(&body, "at").expect("測った時刻");
     assert!(at > 1_700_000_000.0, "時刻が epoch 秒でない: {}", at);
-    let forward = number(&body, "forward_us").expect("forward の CPU/要求");
-    let connect = number(&body, "connect_us").expect("CONNECT の CPU/本");
-    let requests = number(&body, "requests").expect("要求数");
-    let connects = number(&body, "connects").expect("本数");
-    assert_eq!(number(&body, "secs"), Some(3.0), "3 秒: {}", body);
+    let forward = json::number_opt(&body, "forward_us").expect("forward の CPU/要求");
+    let connect = json::number_opt(&body, "connect_us").expect("CONNECT の CPU/本");
+    let requests = json::number_opt(&body, "requests").expect("要求数");
+    let connects = json::number_opt(&body, "connects").expect("本数");
+    assert_eq!(json::number_opt(&body, "secs"), Some(3.0), "3 秒: {}", body);
     assert!(
-        number(&body, "cores").unwrap_or(0.0) >= 1.0,
+        json::number_opt(&body, "cores").unwrap_or(0.0) >= 1.0,
         "コア数が出ていない: {}",
         body
     );
@@ -130,14 +112,14 @@ fn test_integration_self_bench_fills_status() {
     // 載せると `/recent` の 4,096 件が 2,000 本の CONNECT で半分埋まり、`/hosts` に
     // 相手役の行が立ち、`/status` の合計が 20,000 要求になる
     let full = endpoint_json(proxy.port, "/status");
-    let total = number(&full, "total_requests").expect("要求の合計");
+    let total = json::number_opt(&full, "total_requests").expect("要求の合計");
     assert!(
         total < 100.0,
         "自己ベンチの要求が合計に乗っている: {} ({})",
         total,
         line
     );
-    let bytes = number(&full, "bytes_forwarded").expect("運んだバイト");
+    let bytes = json::number_opt(&full, "bytes_forwarded").expect("運んだバイト");
     assert!(
         bytes < 1_000_000.0,
         "自己ベンチのバイトが合計に乗っている: {} ({})",
@@ -153,7 +135,7 @@ fn test_integration_self_bench_fills_status() {
     );
     let recent = endpoint_json(proxy.port, "/recent");
     let after_rows = recent.find("],\"count\":").expect("/recent の count");
-    let shown = number(&recent[after_rows + 1..], "count").expect("個票の件数");
+    let shown = json::number_opt(&recent[after_rows + 1..], "count").expect("個票の件数");
     assert!(
         shown < 50.0,
         "自己ベンチの個票が {} 件残っている: {}",

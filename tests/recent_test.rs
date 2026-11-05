@@ -1095,20 +1095,6 @@ fn test_integration_snapshot_has_every_part_in_one_request() {
 // カーネルの RTT と再送 (`TCP_INFO`。T14.5)
 // ---------------------------------------------------------------------------
 
-/// `"key":<数>` に続く小数を取る (`null` なら `None`)。
-fn json_f64(json: &str, key: &str) -> Option<f64> {
-    let pat = format!("\"{}\":", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, json))
-        + pat.len();
-    let v: String = json[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
-        .collect();
-    v.parse().ok()
-}
-
 /// 閉じたトンネルの個票に**両側**のカーネルの RTT が載り、`/hosts` と `/status` の
 /// `clients[]` にも出ること (T14.5)。
 ///
@@ -1141,8 +1127,8 @@ fn test_integration_recent_records_the_kernel_rtt_of_both_sides() {
         .split("\"rtt_ms\":")
         .nth(1)
         .unwrap_or_else(|| panic!("rtt_ms が無い: {}", json));
-    let client_rtt = json_f64(rtt, "client").expect("クライアント側の RTT が null");
-    let origin_rtt = json_f64(rtt, "origin").expect("オリジン側の RTT が null");
+    let client_rtt = json::number_opt(rtt, "client").expect("クライアント側の RTT が null");
+    let origin_rtt = json::number_opt(rtt, "origin").expect("オリジン側の RTT が null");
     assert!(
         client_rtt < 1.0 && client_rtt > 0.0,
         "loopback のクライアント側 RTT が 1 ms 未満でない: {} ms ({})",
@@ -1171,8 +1157,8 @@ fn test_integration_recent_records_the_kernel_rtt_of_both_sides() {
         .split("\"rtt_ms\":")
         .nth(1)
         .unwrap_or_else(|| panic!("/hosts に rtt_ms が無い: {}", hosts));
-    let avg = json_f64(host_rtt, "avg").expect("/hosts の avg が null");
-    let min = json_f64(host_rtt, "min").expect("/hosts の min が null");
+    let avg = json::number_opt(host_rtt, "avg").expect("/hosts の avg が null");
+    let min = json::number_opt(host_rtt, "min").expect("/hosts の min が null");
     assert!(avg < 1.0 && min <= avg, "/hosts の RTT が変: {}", hosts);
     // 標本はトンネル 1 本の終わりの 1 つだけ (要求ごとには読まない)
     assert!(host_rtt.contains("\"samples\":1"), "{}", hosts);
@@ -1189,7 +1175,7 @@ fn test_integration_recent_records_the_kernel_rtt_of_both_sides() {
         .split("\"rtt_ms\":")
         .nth(1)
         .unwrap_or_else(|| panic!("clients[] に rtt_ms が無い: {}", status));
-    let c_avg = json_f64(c_rtt, "avg").expect("clients[] の avg が null");
+    let c_avg = json::number_opt(c_rtt, "avg").expect("clients[] の avg が null");
     assert!(c_avg < 1.0, "接続元の RTT が 1 ms 未満でない: {}", c_avg);
     assert!(c_rtt.contains("\"retrans\":0"), "{}", status);
 
@@ -1267,7 +1253,7 @@ fn test_integration_a_closed_http_connection_records_the_client_rtt() {
         .split("\"rtt_ms\":")
         .nth(1)
         .unwrap_or_else(|| panic!("rtt_ms が無い: {}", json));
-    let client_rtt = json_f64(rtt, "client").expect("クライアント側の RTT が null");
+    let client_rtt = json::number_opt(rtt, "client").expect("クライアント側の RTT が null");
     assert!(client_rtt < 1.0, "{} ms: {}", client_rtt, json);
     // オリジン側はトンネルではないので個票には載らない (プールが捨てるときにホスト別へ)
     assert!(

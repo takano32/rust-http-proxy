@@ -26,26 +26,6 @@ fn trim_of(status: &str) -> String {
     rest[..=end].to_string()
 }
 
-/// `"key":` の値を取る (`null` は `None`)。
-fn num(json: &str, key: &str) -> Option<u64> {
-    let pat = format!("\"{}\":", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("no {} in {}", key, json))
-        + pat.len();
-    let rest = &json[at..];
-    if rest.starts_with("null") {
-        return None;
-    }
-    Some(
-        rest.chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse()
-            .unwrap_or_else(|_| panic!("{} is not a number in {}", key, json)),
-    )
-}
-
 /// **受け入れ基準**: 履歴スレッドが無ければ 0 / `null`、間隔を縮めて 1 回呼ばれると数が増える。
 #[test]
 fn test_integration_memory_trim_counts_after_a_shortened_interval() {
@@ -64,7 +44,11 @@ fn test_integration_memory_trim_counts_after_a_shortened_interval() {
         "履歴スレッドが無ければ 0 / null: {}",
         t
     );
-    assert_eq!(num(&t, "every_secs"), Some(3600), "本番の既定は 1 時間");
+    assert_eq!(
+        json::uint_opt(&t, "every_secs"),
+        Some(3600),
+        "本番の既定は 1 時間"
+    );
 
     // 返せる空きを作る: 天辺に使用中の塊を 1 つ残して、下の 64 MiB (mmap の閾値より小さい塊) を
     // 解放する。`heap_free > heap_used` になるので、間隔が来れば `skipped` ではなく `count` が増える
@@ -85,22 +69,27 @@ fn test_integration_memory_trim_counts_after_a_shortened_interval() {
     wait_until(
         || {
             let t = trim_of(&status_json(port));
-            num(&t, "count").unwrap() + num(&t, "skipped").unwrap() >= 1
+            json::uint_opt(&t, "count").unwrap() + json::uint_opt(&t, "skipped").unwrap() >= 1
         },
         "trim_if_due が 1 回呼ばれる",
     );
     let t = trim_of(&status_json(port));
-    assert_eq!(num(&t, "every_secs"), Some(1), "{}", t);
-    let count = num(&t, "count").unwrap();
+    assert_eq!(json::uint_opt(&t, "every_secs"), Some(1), "{}", t);
+    let count = json::uint_opt(&t, "count").unwrap();
     assert!(count >= 1, "返せる空きがあるのに呼んでいない: {}", t);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let at = num(&t, "last_at").expect("呼んだら last_at は数");
+    let at = json::uint_opt(&t, "last_at").expect("呼んだら last_at は数");
     assert!(at <= now && at + 60 > now, "last_at {} / now {}", at, now);
-    let last = num(&t, "last_returned_bytes").expect("呼んだら last_returned_bytes は数");
-    assert!(num(&t, "last_us").is_some(), "{}", t);
-    assert!(num(&t, "total_returned_bytes").unwrap() >= last, "{}", t);
+    let last =
+        json::uint_opt(&t, "last_returned_bytes").expect("呼んだら last_returned_bytes は数");
+    assert!(json::uint_opt(&t, "last_us").is_some(), "{}", t);
+    assert!(
+        json::uint_opt(&t, "total_returned_bytes").unwrap() >= last,
+        "{}",
+        t
+    );
     assert_eq!(keep[0], 7);
 }

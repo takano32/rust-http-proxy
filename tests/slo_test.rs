@@ -58,21 +58,6 @@ fn burst_day(t0: u64) -> Vec<Sample> {
         .collect()
 }
 
-/// JSON の `"key":<数>` を読む (`null` は `None`)。
-fn number(json: &str, key: &str) -> Option<f64> {
-    let pat = format!("\"{}\":", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, json))
-        + pat.len();
-    json[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect::<String>()
-        .parse()
-        .ok()
-}
-
 /// **受け入れ基準**: `/slo` が 200・64 KiB 以下・`thresholds` が既定値。
 /// あわせて、履歴スレッドが積んだ集計が日ごと・時間ごとの達成率として読めること。
 #[test]
@@ -87,7 +72,7 @@ fn test_integration_slo_reports_the_share_of_time_the_thresholds_were_met() {
     assert!(empty.len() <= slo::MAX_BODY, "{} B", empty.len());
     assert!(empty.contains("\"ratio\":null"), "{}", empty);
     assert!(empty.contains("\"judged\":0"), "{}", empty);
-    assert_eq!(number(&empty, "days"), Some(7.0), "{}", empty);
+    assert_eq!(json::number_opt(&empty, "days"), Some(7.0), "{}", empty);
 
     // **閾は `PROXY_SLO` の既定** (`crates/config` の `DEFAULT_SLO` と同じ値であること
     // — 層が違うので数値を 2 か所に持っている。食い違ったらここで落ちる)
@@ -121,10 +106,15 @@ fn test_integration_slo_reports_the_share_of_time_the_thresholds_were_met() {
     assert!(body.len() <= slo::MAX_BODY, "{} B (64 KiB 超)", body.len());
     assert!(body.contains(defaults), "{}", body);
     // 手計算: 17,280 標本のうち 17〜23 時の 5,040 本が外れ → 12,240 / 17,280 = 0.70833
-    assert_eq!(number(&body, "judged"), Some(17_280.0), "{}", body);
-    assert_eq!(number(&body, "met"), Some(12_240.0), "{}", body);
+    assert_eq!(
+        json::number_opt(&body, "judged"),
+        Some(17_280.0),
+        "{}",
+        body
+    );
+    assert_eq!(json::number_opt(&body, "met"), Some(12_240.0), "{}", body);
     assert!(body.contains("\"ratio\":0.70833"), "{}", body);
-    assert_eq!(number(&body, "hours"), Some(24.0), "{}", body);
+    assert_eq!(json::number_opt(&body, "hours"), Some(24.0), "{}", body);
     // 外れた時間帯は 1 行 (17 時から 24 時まで連続)、外した閾は 3 つ
     assert!(
         body.contains(&format!(
@@ -162,11 +152,11 @@ fn test_integration_slo_reports_the_share_of_time_the_thresholds_were_met() {
 
     // `?days=` は 1〜31 に丸め、数でなければ既定 (7)
     assert_eq!(
-        number(&endpoint_json(port, "/slo?days=999"), "days"),
+        json::number_opt(&endpoint_json(port, "/slo?days=999"), "days"),
         Some(slo::MAX_DAYS as f64)
     );
     assert_eq!(
-        number(&endpoint_json(port, "/slo?days=abc"), "days"),
+        json::number_opt(&endpoint_json(port, "/slo?days=abc"), "days"),
         Some(slo::DEFAULT_DAYS as f64)
     );
 
@@ -245,7 +235,7 @@ fn test_integration_slo_judges_the_rates_on_the_sum_of_the_hour() {
         "{}",
         body
     );
-    assert_eq!(number(&body, "met"), Some(720.0), "{}", body);
+    assert_eq!(json::number_opt(&body, "met"), Some(720.0), "{}", body);
     // 日ごとの行に合計と時間の数
     assert!(
         body.contains(
@@ -364,7 +354,7 @@ fn test_integration_slo_error_rate_counts_only_the_attempts_to_ports_443_and_80(
         "{}",
         body
     );
-    assert_eq!(number(&body, "met"), Some(1.0), "{}", body);
+    assert_eq!(json::number_opt(&body, "met"), Some(1.0), "{}", body);
     slo::reset();
 }
 

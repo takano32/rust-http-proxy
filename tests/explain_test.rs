@@ -50,20 +50,6 @@ fn numbers(json: &str) -> &str {
         .unwrap_or_else(|| panic!("numbers が無い: {}", json))
 }
 
-/// `"key":"…"` / `"summary":"…"` のような文字列の値を 1 つ取る。
-fn string_value(json: &str, key: &str) -> String {
-    let pat = format!("\"{}\":\"", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("no {} in {}", key, json))
-        + pat.len();
-    let rest = &json[at..];
-    let end = rest
-        .find('"')
-        .unwrap_or_else(|| panic!("no end of {}", key));
-    rest[..end].to_string()
-}
-
 /// 1 ホストへ 3 本の CONNECT のあと、`/explain?host=` に統計・`/dns` の行・
 /// 3 本の個票・1 行の判定が揃うこと (受け入れ基準そのもの)。
 #[test]
@@ -172,7 +158,7 @@ fn test_integration_explain_host_gathers_stats_dns_and_the_records() {
     );
 
     // (5) 末尾の 1 行の判定 (段階の数字を並べた日本語) と、同じ内容の数字の欄
-    let summary = string_value(&json, "summary");
+    let summary = json::string(&json, "summary");
     assert!(
         summary.contains("3 要求 (CONNECT 3 / forward 0)"),
         "{}",
@@ -278,7 +264,7 @@ fn test_integration_explain_client_gathers_the_row_and_the_records() {
     );
     assert!(json.contains("\"rtt_ms\":"), "{}", json);
     // 同じ形の 1 行の判定
-    let summary = string_value(&json, "summary");
+    let summary = json::string(&json, "summary");
     assert!(summary.contains("3 要求。応答まで"), "{}", summary);
     assert!(summary.contains("宛先 1 種"), "{}", summary);
     assert!(summary.contains("閉じた接続の個票 3 本"), "{}", summary);

@@ -8,6 +8,7 @@
 mod capture;
 mod client;
 mod counters;
+pub mod json;
 mod net;
 mod origin;
 mod process;

@@ -204,17 +204,7 @@ pub fn get_body_via_proxy(proxy_port: u16, origin_port: u16, size: usize) -> Vec
 
 /// `/status` の JSON から整数の指標を 1 つ取る (`"key":123` の 123)。
 pub fn status_number(json: &str, key: &str) -> u64 {
-    let pat = format!("\"{}\":", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("no {} in {}", key, json))
-        + pat.len();
-    json[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{} is not a number in {}", key, json))
+    super::json::uint(json, key)
 }
 
 /// 1 本の接続で 1 要求を送り、応答を全部読む (`Connection: close`)。

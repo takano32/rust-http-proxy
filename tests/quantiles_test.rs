@@ -72,21 +72,6 @@ fn object_at(json: &str, key: &str, last: bool) -> String {
     panic!("{} が閉じていない: {}", key, rest);
 }
 
-/// `"key":<数>` を読む (小数も負号も読める)。
-fn num(obj: &str, key: &str) -> f64 {
-    let pat = format!("\"{}\":", key);
-    let at = obj
-        .find(&pat)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, obj))
-        + pat.len();
-    obj[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{} が数でない: {}", key, obj))
-}
-
 /// 1 本の CONNECT を張って、すぐ閉じる (確立の時間だけを数えさせる)。
 fn one_tunnel(proxy_port: u16, origin_port: u16) {
     let mut t = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
@@ -101,13 +86,13 @@ fn one_tunnel(proxy_port: u16, origin_port: u16) {
 /// 5 つの欄が揃っていて、p50 ≤ p90 ≤ p99 ≤ max であること。
 fn check_shape(obj: &str, what: &str) -> (f64, f64) {
     let (n, p50, p90, p99, max) = (
-        num(obj, "n"),
-        num(obj, "p50"),
-        num(obj, "p90"),
-        num(obj, "p99"),
-        num(obj, "max"),
+        json::number(obj, "n"),
+        json::number(obj, "p50"),
+        json::number(obj, "p90"),
+        json::number(obj, "p99"),
+        json::number(obj, "max"),
     );
-    assert!(num(obj, "window_secs") >= 0.0, "{}: {}", what, obj);
+    assert!(json::number(obj, "window_secs") >= 0.0, "{}: {}", what, obj);
     assert!(n <= 1024.0, "{}: n が 1,024 を超えた: {}", what, obj);
     assert!(
         p50 <= p90 && p90 <= p99 && p99 <= max,
@@ -162,11 +147,11 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
     assert!(wp50 >= cp50, "wait p50 {} < connect p50 {}", wp50, cp50);
     for key in ["p50", "p90", "p99", "max"] {
         assert!(
-            num(&wait, key) >= num(&connect, key),
+            json::number(&wait, key) >= json::number(&connect, key),
             "wait {} {} < connect {}: {}",
             key,
-            num(&wait, key),
-            num(&connect, key),
+            json::number(&wait, key),
+            json::number(&connect, key),
             q
         );
     }
@@ -183,9 +168,9 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
 
     // `memory.rings.quantiles` は固定 24 KiB (3 系統 × 1,024 本 × 8 B。T15.0 (2))
     let rings = object_of(&last_object_of(&status, "memory"), "rings");
-    assert_eq!(num(&rings, "quantiles"), 24576.0, "{}", rings);
+    assert_eq!(json::number(&rings, "quantiles"), 24576.0, "{}", rings);
     assert!(
-        num(&rings, "total") >= 24576.0,
+        json::number(&rings, "total") >= 24576.0,
         "合計に入っていない: {}",
         rings
     );
@@ -193,7 +178,7 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
     // `/history?summary=1` (T14.24) にも**別の鍵で**同じ値が添う (`p50_ms` は区間の補間)
     let summary = endpoint_json(proxy_port, "/history?summary=1&since=restart");
     let sq = object_of(&object_of(&summary, "recent_quantiles"), "connect");
-    assert_eq!(num(&sq, "n") as usize, TUNNELS, "{}", summary);
+    assert_eq!(json::number(&sq, "n") as usize, TUNNELS, "{}", summary);
     assert!(summary.contains("\"p50_ms\":"), "区間の補間も残ること");
     assert!(
         summary.len() <= 4096,
@@ -232,11 +217,11 @@ fn test_integration_b_lite_records_no_samples() {
         "`--lite` で書いた"
     );
     let q = object_of(&status_json(proxy_port), "recent_quantiles");
-    assert_eq!(num(&object_of(&q, "connect"), "n"), 0.0, "{}", q);
-    assert_eq!(num(&object_of(&q, "connect"), "max"), 0.0, "{}", q);
+    assert_eq!(json::number(&object_of(&q, "connect"), "n"), 0.0, "{}", q);
+    assert_eq!(json::number(&object_of(&q, "connect"), "max"), 0.0, "{}", q);
     // 3 本目も同じ (`queue` と `client_read` が 0 なので「4 段の和」を名乗れない)
-    assert_eq!(num(&object_of(&q, "wait"), "n"), 0.0, "{}", q);
-    assert_eq!(num(&object_of(&q, "wait"), "max"), 0.0, "{}", q);
+    assert_eq!(json::number(&object_of(&q, "wait"), "n"), 0.0, "{}", q);
+    assert_eq!(json::number(&object_of(&q, "wait"), "max"), 0.0, "{}", q);
 
     // 後始末 (このプロセスの他のテストを巻き込まない)
     rust_http_proxy::profile::set_enabled(true);

@@ -10,7 +10,7 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{ProxyProcess, endpoint_json, scratch_dir, wait_until};
+use common::{ProxyProcess, endpoint_json, json, scratch_dir, wait_until};
 
 /// テスト用の `.env` を書く (変えるのは `PROXY_TIMEOUT_SECS` だけ)。
 ///
@@ -26,20 +26,6 @@ fn write_env(dir: &Path, timeout_secs: u32) {
             timeout_secs
         ),
     );
-}
-
-/// JSON から `"key":<数>` を 1 つ読む (最初の 1 件 = いちばん新しい出来事)。
-fn first_number(json: &str, key: &str) -> u64 {
-    let needle = format!("\"{}\":", key);
-    let at = json
-        .find(&needle)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, json));
-    json[at + needle.len()..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{} が数でない: {}", key, json))
 }
 
 /// 起動 → `.env` の `PROXY_TIMEOUT_SECS` を書き換え → `/events` に `start` と `reload`
@@ -67,7 +53,7 @@ fn test_integration_events_shows_the_start_and_the_reload() {
         "起動の 1 件に設定の要約が無い: {}",
         body
     );
-    let start_at = first_number(&body, "at");
+    let start_at = json::uint(&body, "at");
     assert!(start_at > 1_600_000_000, "時刻が入っていない: {}", body);
     assert!(body.contains("\"count\":1"), "起動直後は 1 件: {}", body);
 
@@ -104,7 +90,7 @@ fn test_integration_events_shows_the_start_and_the_reload() {
         body.len()
     );
     // 新しい順 (先頭が再読込)
-    let reload_at = first_number(&body, "at");
+    let reload_at = json::uint(&body, "at");
     assert!(
         body.find("reload").unwrap() < body.find("\"kind\":\"start\"").unwrap(),
         "新しい順でない: {}",

@@ -583,7 +583,7 @@ fn test_integration_background_revalidation_stays_inside_the_worker_pool() {
         assert!(r.ends_with("worker pool body"), "{}", r);
     }
     thread::sleep(Duration::from_millis(1200));
-    let before_reval = json_number(&status_json(proxy_port), "background_revalidations");
+    let before_reval = json::uint(&status_json(proxy_port), "background_revalidations");
 
     // burst の最中ずっと見張る
     let stop = Arc::new(AtomicBool::new(false));
@@ -633,8 +633,8 @@ fn test_integration_background_revalidation_stays_inside_the_worker_pool() {
     );
     // 上限 4 に 8 本ぶつけたので、裏で走ったものと捨てたものの両方が出る
     let status = status_json(proxy_port);
-    let done = json_number(&status, "background_revalidations") - before_reval;
-    let dropped = json_number(&status, "revalidations_dropped");
+    let done = json::uint(&status, "background_revalidations") - before_reval;
+    let dropped = json::uint(&status, "revalidations_dropped");
     assert!(
         done >= 1,
         "空きがあるときは裏で走らせるはず: done={} dropped={}",
@@ -648,17 +648,6 @@ fn test_integration_background_revalidation_stays_inside_the_worker_pool() {
         done,
         dropped
     );
-}
-
-/// `\"key\":N` を数として取り出す (テスト用の雑な取り出し)。
-fn json_number(json: &str, key: &str) -> u64 {
-    let needle = format!("\"{}\":", key);
-    let at = json.find(&needle).unwrap_or_else(|| panic!("no {}", key)) + needle.len();
-    json[at..]
-        .split(|c: char| !c.is_ascii_digit())
-        .next()
-        .and_then(|d| d.parse().ok())
-        .unwrap_or_else(|| panic!("not a number: {}", key))
 }
 
 /// 空いている接続スレッドが 1 本も無ければ、裏側の再検証は**待ち行列に積まず捨てる** (T11.3)。
@@ -693,13 +682,13 @@ fn test_integration_background_revalidation_is_dropped_when_threads_are_capped()
 
     let status = status_json(proxy_port);
     assert_eq!(
-        json_number(&status, "revalidations_dropped"),
+        json::uint(&status, "revalidations_dropped"),
         1,
         "捨てた再検証が数えられていない: {}",
         status
     );
     assert_eq!(
-        json_number(&status, "revalidating"),
+        json::uint(&status, "revalidating"),
         0,
         "捨てたのに「再検証中」の印が残っている: {}",
         status

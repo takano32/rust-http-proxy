@@ -131,21 +131,6 @@ fn object_of(json: &str, key: &str) -> String {
     panic!("{} が閉じていない: {}", key, rest);
 }
 
-/// `"key":<数>` を読む。
-fn num(obj: &str, key: &str) -> f64 {
-    let pat = format!("\"{}\":", key);
-    let at = obj
-        .find(&pat)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, obj))
-        + pat.len();
-    obj[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{} が数でない: {}", key, obj))
-}
-
 /// CONNECT を 1 本送り、応答の先頭行を返す (接続はすぐ閉じる)。
 fn connect_once(proxy_port: u16, target_port: u16) -> String {
     let mut t = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
@@ -219,17 +204,27 @@ fn test_integration_failed_connects_stay_out_of_the_connect_windows() {
         column_sum(&h, "waits"),
         column_sum(&h, "errors"),
         column_sum(&h, "errors_by_cause"),
-        num(&qc, "n"),
-        num(&qw, "n"),
-        num(&host_row, "requests"),
-        num(&host_row, "errors"),
+        json::number(&qc, "n"),
+        json::number(&qw, "n"),
+        json::number(&host_row, "requests"),
+        json::number(&host_row, "errors"),
     );
 
     // 残る方: エラーと原因別、ホスト別の行
     assert_eq!(column_sum(&h, "errors"), FAILURES, "{}", h);
     assert_eq!(column_sum(&h, "errors_by_cause"), FAILURES, "{}", h);
-    assert_eq!(num(&host_row, "requests"), FAILURES as f64, "{}", host_row);
-    assert_eq!(num(&host_row, "errors"), FAILURES as f64, "{}", host_row);
+    assert_eq!(
+        json::number(&host_row, "requests"),
+        FAILURES as f64,
+        "{}",
+        host_row
+    );
+    assert_eq!(
+        json::number(&host_row, "errors"),
+        FAILURES as f64,
+        "{}",
+        host_row
+    );
     let (_, dead_stats) = metrics
         .hosts_sorted()
         .into_iter()
@@ -246,6 +241,6 @@ fn test_integration_failed_connects_stay_out_of_the_connect_windows() {
     assert_eq!(column_sum(&h, "waits"), 1, "{}", h);
     assert_eq!(column_sum(&h, "wait_buckets"), 1, "{}", h);
     // 入らない方: `/status` の直近の標本
-    assert_eq!(num(&qc, "n"), 1.0, "{}", q);
-    assert_eq!(num(&qw, "n"), 1.0, "{}", q);
+    assert_eq!(json::number(&qc, "n"), 1.0, "{}", q);
+    assert_eq!(json::number(&qw, "n"), 1.0, "{}", q);
 }

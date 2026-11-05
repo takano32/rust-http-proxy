@@ -21,21 +21,6 @@ fn now_epoch() -> u64 {
         .as_secs()
 }
 
-/// JSON の `"key":<数>` を読む (小数も負も無いので `status_number` で足りない分だけ)。
-fn number(json: &str, key: &str) -> f64 {
-    let pat = format!("\"{}\":", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, json))
-        + pat.len();
-    json[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{} が数ではない: {}", key, json))
-}
-
 /// T14.0 の平常時と同じ数字 (p50 8.3 / p95 80.7 ms) になる架空の 1 時間の標本列。
 ///
 /// 4,000 本を \[2,5\] 1,670・\[5,10\] 500・\[25,50\] 1,323・\[50,100\] 500・\[100,250\] 7 本に
@@ -102,34 +87,39 @@ fn test_integration_history_summary_folds_the_period_into_one_row() {
     assert!(body.len() <= MAX_BODY, "{} B (4 KiB 超)", body.len());
     // 標本そのものは返さない (`/history` は 284 KB、これは 1 行)
     assert!(!body.contains("\"keys\":"), "{}", body);
-    assert_eq!(number(&body, "from"), t0 as f64, "{}", body);
-    assert_eq!(number(&body, "to"), last as f64, "{}", body);
-    assert_eq!(number(&body, "interval_secs"), 3600.0, "{}", body);
-    assert_eq!(number(&body, "samples"), 20.0, "{}", body);
-    assert_eq!(number(&body, "burst_samples"), 2.0, "{}", body);
-    assert_eq!(number(&body, "connects"), 4000.0, "{}", body);
-    assert_eq!(number(&body, "p50_ms"), 8.3, "{}", body);
-    assert_eq!(number(&body, "p95_ms"), 80.7, "{}", body);
-    assert_eq!(number(&body, "dns_miss_per_connect"), 0.55, "{}", body);
-    assert_eq!(number(&body, "dns_miss_avg_ms"), 11.5, "{}", body);
+    assert_eq!(json::number(&body, "from"), t0 as f64, "{}", body);
+    assert_eq!(json::number(&body, "to"), last as f64, "{}", body);
+    assert_eq!(json::number(&body, "interval_secs"), 3600.0, "{}", body);
+    assert_eq!(json::number(&body, "samples"), 20.0, "{}", body);
+    assert_eq!(json::number(&body, "burst_samples"), 2.0, "{}", body);
+    assert_eq!(json::number(&body, "connects"), 4000.0, "{}", body);
+    assert_eq!(json::number(&body, "p50_ms"), 8.3, "{}", body);
+    assert_eq!(json::number(&body, "p95_ms"), 80.7, "{}", body);
+    assert_eq!(
+        json::number(&body, "dns_miss_per_connect"),
+        0.55,
+        "{}",
+        body
+    );
+    assert_eq!(json::number(&body, "dns_miss_avg_ms"), 11.5, "{}", body);
     // バーストの 2 時間のエラーと山は平常時に入らない
-    assert_eq!(number(&body, "errors"), 0.0, "{}", body);
-    assert_eq!(number(&body, "active_max"), 8.0, "{}", body);
+    assert_eq!(json::number(&body, "errors"), 0.0, "{}", body);
+    assert_eq!(json::number(&body, "active_max"), 8.0, "{}", body);
     assert!(body.contains("\"normal_hours_only\":true"), "{}", body);
     // 切った閾 (T.29.13): 300 本と中央値 200 本 × 3 の大きい方
-    assert_eq!(number(&body, "burst_limit"), 600.0, "{}", body);
+    assert_eq!(json::number(&body, "burst_limit"), 600.0, "{}", body);
 
     // 平常時で切らなければ同じ期間でも数字が化ける (T14.0 の「(参考) バースト込み」)
     let all = endpoint_json(
         port,
         &format!("/history?summary=1&since={}&until={}&res=3600", t0, last),
     );
-    assert_eq!(number(&all, "samples"), 22.0, "{}", all);
-    assert_eq!(number(&all, "connects"), 6000.0, "{}", all);
+    assert_eq!(json::number(&all, "samples"), 22.0, "{}", all);
+    assert_eq!(json::number(&all, "connects"), 6000.0, "{}", all);
     // 順位 3,000 が [25,50] の 830 / 1,323 の位置に落ちる: 25 + 25 × 0.6274 = 40.7
-    assert_eq!(number(&all, "p50_ms"), 40.7, "{}", all);
-    assert_eq!(number(&all, "errors"), 198.0, "{}", all);
-    assert_eq!(number(&all, "active_max"), 218.0, "{}", all);
+    assert_eq!(json::number(&all, "p50_ms"), 40.7, "{}", all);
+    assert_eq!(json::number(&all, "errors"), 198.0, "{}", all);
+    assert_eq!(json::number(&all, "active_max"), 218.0, "{}", all);
 
     // `summary` を付けない `/history` は今までどおり (標本の配列を返す)
     let full = endpoint_json(port, "/history?res=3600");
@@ -159,7 +149,10 @@ fn test_integration_history_summary_since_restart_matches_since_start_secs() {
     let body = endpoint_json(port, "/history?summary=1&since=restart");
     println!("since=restart -> {}", body);
     let uptime = status_number(&status_json(port), "since_start_secs");
-    let (from, to) = (number(&body, "from") as u64, number(&body, "to") as u64);
+    let (from, to) = (
+        json::number(&body, "from") as u64,
+        json::number(&body, "to") as u64,
+    );
     // **受け入れ基準**: `since=restart` の切り口が `/status` の `since_start_secs` と合う
     assert!(
         to.saturating_sub(from).abs_diff(uptime) <= 2,
@@ -171,14 +164,14 @@ fn test_integration_history_summary_since_restart_matches_since_start_secs() {
     assert!(from >= now.saturating_sub(2) && from <= now + 2, "{}", body);
     // 起動より前の標本は入らない (T14.0 が手でやっていた「再起動時刻で切る」)。
     // この起動は始まったばかりなので窓はほぼ 0 秒 — 入るとしても新しい 1 本だけ
-    assert!(number(&body, "samples") <= 1.0, "{}", body);
+    assert!(json::number(&body, "samples") <= 1.0, "{}", body);
     assert!(
         !body.contains("\"max_ms\":250"),
         "再起動前の標本が入っている: {}",
         body
     );
     // 期間が 1 時間に満たないので 5 秒の窓が選ばれる
-    assert_eq!(number(&body, "interval_secs"), 5.0, "{}", body);
+    assert_eq!(json::number(&body, "interval_secs"), 5.0, "{}", body);
     assert!(body.len() <= MAX_BODY, "{} B", body.len());
 
     // 同じ 2 本を epoch で切れば両方入る (= 上で外れたのは `since=restart` の働き)
@@ -190,9 +183,9 @@ fn test_integration_history_summary_since_restart_matches_since_start_secs() {
             now
         ),
     );
-    assert_eq!(number(&both, "samples"), 2.0, "{}", both);
-    assert_eq!(number(&both, "connects"), 2.0, "{}", both);
-    assert_eq!(number(&both, "max_ms"), 250.0, "{}", both);
+    assert_eq!(json::number(&both, "samples"), 2.0, "{}", both);
+    assert_eq!(json::number(&both, "connects"), 2.0, "{}", both);
+    assert_eq!(json::number(&both, "max_ms"), 250.0, "{}", both);
 
     // `/` の案内に載っている
     let list = endpoint_json(port, "/");
@@ -246,8 +239,8 @@ fn test_integration_history_summary_since_restart_counts_a_connect_right_after_s
     wait_until(
         || {
             let all = endpoint_json(port, "/history?summary=1&res=5");
-            taken.set(number(&all, "last_t") as u64);
-            number(&all, "connects") == 1.0
+            taken.set(json::number(&all, "last_t") as u64);
+            json::number(&all, "connects") == 1.0
         },
         "the history thread to take the interval",
     );
@@ -262,5 +255,5 @@ fn test_integration_history_summary_since_restart_counts_a_connect_right_after_s
     let body = endpoint_json(port, "/history?summary=1&since=restart");
     println!("t214: since=restart -> {}", body);
     // **受け入れ基準 (T21.4)**: 起動したあとに取った標本は全部 `since=restart` に入る
-    assert_eq!(number(&body, "connects"), 1.0, "{}", body);
+    assert_eq!(json::number(&body, "connects"), 1.0, "{}", body);
 }

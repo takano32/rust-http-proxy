@@ -66,21 +66,6 @@ fn row_of(json: &str, key: &str, name: &str) -> String {
     panic!("行が閉じていない: {}", rest);
 }
 
-/// 1 行から `"key":<数>` を読む。
-fn field(row: &str, key: &str) -> u64 {
-    let pat = format!("\"{}\":", key);
-    let at = row
-        .find(&pat)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, row))
-        + pat.len();
-    row[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{} が数でない: {}", key, row))
-}
-
 /// CONNECT で 1 KiB 上げて 2 KiB 下ろしたら、`bytes` がその和のまま 2 つに割れること。
 #[test]
 fn test_integration_a_connect_splits_its_bytes_into_up_and_down() {
@@ -120,9 +105,9 @@ fn test_integration_a_connect_splits_its_bytes_into_up_and_down() {
 
     let row = row_of(&endpoint_json(proxy_port, "/hosts"), "host", &host_key);
     let (bytes, up, down) = (
-        field(&row, "bytes"),
-        field(&row, "bytes_in"),
-        field(&row, "bytes_out"),
+        json::uint(&row, "bytes"),
+        json::uint(&row, "bytes_in"),
+        json::uint(&row, "bytes_out"),
     );
     assert!(up >= UP as u64, "上りが 1 KiB に足りない: {}", row);
     assert!(down >= DOWN as u64, "下りが 2 KiB に足りない: {}", row);
@@ -133,10 +118,10 @@ fn test_integration_a_connect_splits_its_bytes_into_up_and_down() {
     // `/status` の `hosts[]` と `clients[]` にも同じ 2 欄が出る (同じ組み立てを通る)
     let status = status_json(proxy_port);
     let host_row = row_of(&status, "host", &host_key);
-    assert_eq!(field(&host_row, "bytes_in"), up, "{}", host_row);
+    assert_eq!(json::uint(&host_row, "bytes_in"), up, "{}", host_row);
     let client_row = row_of(&status, "client", "127.0.0.1");
-    assert_eq!(field(&client_row, "bytes_in"), up, "{}", client_row);
-    assert_eq!(field(&client_row, "bytes_out"), down, "{}", client_row);
+    assert_eq!(json::uint(&client_row, "bytes_in"), up, "{}", client_row);
+    assert_eq!(json::uint(&client_row, "bytes_out"), down, "{}", client_row);
 }
 
 /// forward は要求本文が上り・応答が下りに入ること。
@@ -180,9 +165,9 @@ fn test_integration_a_forwarded_request_counts_its_body_as_upload() {
 
     let row = row_of(&endpoint_json(proxy_port, "/hosts"), "host", &host_key);
     let (bytes, up, down) = (
-        field(&row, "bytes"),
-        field(&row, "bytes_in"),
-        field(&row, "bytes_out"),
+        json::uint(&row, "bytes"),
+        json::uint(&row, "bytes_in"),
+        json::uint(&row, "bytes_out"),
     );
     assert_eq!(up, UP as u64, "上りは要求本文ちょうど: {}", row);
     assert_eq!(down, bytes, "下りは応答 (`bytes` と同じ): {}", row);
@@ -261,11 +246,11 @@ fn test_integration_a_pre_direction_state_file_restores_with_zero_direction_byte
     ] {
         let row = row_of(&status, key, name);
         // 前の欄はそのまま読める (ずれていれば要求数から化ける)
-        assert_eq!(field(&row, "requests"), requests, "{}", row);
+        assert_eq!(json::uint(&row, "requests"), requests, "{}", row);
         // 末尾に足した 2 欄は 0 で読み戻る。合計は昔のファイルにも入っている
-        assert_eq!(field(&row, "bytes"), 123_456, "{}", row);
-        assert_eq!(field(&row, "bytes_in"), 0, "{}", row);
-        assert_eq!(field(&row, "bytes_out"), 0, "{}", row);
+        assert_eq!(json::uint(&row, "bytes"), 123_456, "{}", row);
+        assert_eq!(json::uint(&row, "bytes_in"), 0, "{}", row);
+        assert_eq!(json::uint(&row, "bytes_out"), 0, "{}", row);
         // T14.5 の 4 欄も読めている (新しい 2 欄が前に割り込んでいれば RTT が化ける)
         assert!(
             row.contains("\"rtt_ms\":{\"avg\":30.100,\"min\":30.100,\"samples\":1},\"retrans\":2"),

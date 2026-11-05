@@ -16,26 +16,6 @@ use std::time::Duration;
 mod common;
 use common::*;
 
-/// `"key":` の値を取る (`null` は `None`)。`memory` の節だけを渡して使う。
-fn num(json: &str, key: &str) -> Option<u64> {
-    let pat = format!("\"{}\":", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("no {} in {}", key, json))
-        + pat.len();
-    let rest = &json[at..];
-    if rest.starts_with("null") {
-        return None;
-    }
-    Some(
-        rest.chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse()
-            .unwrap_or_else(|_| panic!("{} is not a number in {}", key, json)),
-    )
-}
-
 /// `/status` の `memory` の節を切り出す。
 ///
 /// **最後の `"memory"` を取る**: キャッシュの中にも同じ名前の節がある
@@ -91,11 +71,11 @@ fn without_trim(mem: &str) -> &str {
 /// 常駐の内訳 (T.32.4): `rss_anon + rss_file + rss_shmem` は同じ読みの `rss` に 1 頁以内で合い、
 /// スタックの常駐は予約 (`stacks_estimate`) より小さい。
 fn check_resident(mem: &str) {
-    let rss = num(mem, "rss").expect("rss");
+    let rss = json::uint_opt(mem, "rss").expect("rss");
     if let (Some(a), Some(f), Some(sh)) = (
-        num(mem, "rss_anon"),
-        num(mem, "rss_file"),
-        num(mem, "rss_shmem"),
+        json::uint_opt(mem, "rss_anon"),
+        json::uint_opt(mem, "rss_file"),
+        json::uint_opt(mem, "rss_shmem"),
     ) {
         assert!(
             (a + f + sh).abs_diff(rss) <= 4096,
@@ -103,7 +83,10 @@ fn check_resident(mem: &str) {
             mem
         );
     }
-    if let (Some(res), Some(est)) = (num(mem, "stacks_resident"), num(mem, "stacks_estimate")) {
+    if let (Some(res), Some(est)) = (
+        json::uint_opt(mem, "stacks_resident"),
+        json::uint_opt(mem, "stacks_estimate"),
+    ) {
         assert!(res > 0 && res < est, "{}", mem);
     }
 }
@@ -152,9 +135,9 @@ fn cache_rss(status: &str) -> String {
 fn check_heap(mem: &str, rss: Option<u64>) {
     let heap = rust_http_proxy::sysinfo::malloc_info();
     let (used, free, mmap) = (
-        num(mem, "heap_used"),
-        num(mem, "heap_free"),
-        num(mem, "mmap"),
+        json::uint_opt(mem, "heap_used"),
+        json::uint_opt(mem, "heap_free"),
+        json::uint_opt(mem, "mmap"),
     );
     assert_eq!(heap.is_some(), used.is_some(), "{}", mem);
     assert_eq!(heap.is_some(), free.is_some(), "{}", mem);
@@ -188,7 +171,7 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     let mem = memory_of(&status);
 
     // (1) その場で読んだ RSS = このテストのプロセスの RSS (同じプロセスなので近い値)
-    let rss = num(&mem, "rss");
+    let rss = json::uint_opt(&mem, "rss");
     let fresh = rust_http_proxy::sysinfo::process_rss();
     assert_eq!(rss.is_some(), fresh.is_some(), "{}", mem);
     if let (Some(rss), Some(fresh)) = (rss, fresh) {
@@ -211,7 +194,7 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     if threads > 0 {
         let conn = live.min(threads);
         assert_eq!(
-            num(&mem, "stacks_estimate"),
+            json::uint_opt(&mem, "stacks_estimate"),
             Some(conn * 256 * 1024 + (threads - conn) * 2 * 1024 * 1024),
             "threads={} live={}: {}",
             threads,
@@ -224,9 +207,17 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     let rings_json = sub_object(&mem, "rings");
     let rings: u64 = RING_KEYS
         .iter()
-        .map(|k| num(&rings_json, k).unwrap_or_else(|| panic!("{} が null: {}", k, rings_json)))
+        .map(|k| {
+            json::uint_opt(&rings_json, k)
+                .unwrap_or_else(|| panic!("{} が null: {}", k, rings_json))
+        })
         .sum();
-    assert_eq!(num(&rings_json, "total"), Some(rings), "{}", rings_json);
+    assert_eq!(
+        json::uint_opt(&rings_json, "total"),
+        Some(rings),
+        "{}",
+        rings_json
+    );
     assert!(rings > 0 && rings < 64 * 1024 * 1024, "{}", mem);
     assert!(mem.len() < 1024, "{} バイト: {}", mem.len(), mem);
 
@@ -235,13 +226,19 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     let used: u64 = RING_KEYS
         .iter()
         .map(|k| {
-            let cap = num(&rings_json, k).unwrap();
-            let now = num(&used_json, k).unwrap_or_else(|| panic!("{} が null: {}", k, used_json));
+            let cap = json::uint_opt(&rings_json, k).unwrap();
+            let now = json::uint_opt(&used_json, k)
+                .unwrap_or_else(|| panic!("{} が null: {}", k, used_json));
             assert!(now <= cap, "rings_used.{} {} > rings.{} {}", k, now, k, cap);
             now
         })
         .sum();
-    assert_eq!(num(&used_json, "total"), Some(used), "{}", used_json);
+    assert_eq!(
+        json::uint_opt(&used_json, "total"),
+        Some(used),
+        "{}",
+        used_json
+    );
     assert!(
         used <= rings,
         "rings_used.total {} > rings.total {}",
@@ -251,8 +248,8 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
 
     // (5) キャッシュは空なのでヒープには何も持っていない。`mallopt` を掛けるのは
     // `main.rs` だけなので、この場では `0` (= glibc の既定のまま) が正しい
-    assert_eq!(num(&mem, "cache_memory"), Some(0), "{}", mem);
-    assert_eq!(num(&mem, "arenas"), Some(0), "{}", mem);
+    assert_eq!(json::uint_opt(&mem, "cache_memory"), Some(0), "{}", mem);
+    assert_eq!(json::uint_opt(&mem, "arenas"), Some(0), "{}", mem);
 
     // (6) リングを起動時に触るのは `main` だけ (T17.8)。テスト用プロキシは触らないので `false`。
     // 鍵は `memory` の末尾に足した (`rings_used` までの並びは動かさない)。
@@ -286,16 +283,20 @@ fn test_integration_memory_rss_matches_the_probe_in_the_real_binary() {
 
     let status = endpoint_json(proxy.port, "/status");
     let mem = memory_of(&status);
-    let rss = num(&mem, "rss");
+    let rss = json::uint_opt(&mem, "rss");
     // プローブの値も出ている (同じ時刻の読みではないので一致は見ない)
     assert_ne!(cache_rss(&status), "null", "{}", status);
     check_resident(&mem);
     assert!(rss.unwrap_or(0) > 0, "{}", mem);
     check_heap(&mem, rss);
-    assert_eq!(num(&mem, "arenas"), Some(4), "{}", mem);
+    assert_eq!(json::uint_opt(&mem, "arenas"), Some(4), "{}", mem);
     // 起動しただけのプロキシでも、リングの容量とスタックの予約は出ている
-    assert!(num(&mem, "total").unwrap_or(0) > 0, "{}", mem);
-    assert!(num(&mem, "stacks_estimate").unwrap_or(0) > 0, "{}", mem);
+    assert!(json::uint_opt(&mem, "total").unwrap_or(0) > 0, "{}", mem);
+    assert!(
+        json::uint_opt(&mem, "stacks_estimate").unwrap_or(0) > 0,
+        "{}",
+        mem
+    );
     // 既定のプロファイルの Linux では起動時にリングを触っている (T17.8)
     assert_eq!(
         without_trim(&mem).ends_with(",\"rings_touched\":true,\"baseline\":null"),
