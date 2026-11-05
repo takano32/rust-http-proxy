@@ -1,6 +1,8 @@
 //! 1 回で全部の `/snapshot` と、残してある雪像の一覧・1 枚 (`/snapshots`。T14.34・T.28.20)。
 
-use super::super::{history_body, profile, status_body};
+use super::super::history::history_body;
+use super::super::profile;
+use super::super::status::status_body;
 use super::*;
 
 /// `/snapshots` — 日次で残した `/snapshot` の一覧 (T14.34)。
