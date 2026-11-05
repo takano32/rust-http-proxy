@@ -1,11 +1,15 @@
 //! `http` の単体テスト。
 
+use super::fetch::not_modified_conflicts;
 use super::serve::*;
 use super::*;
 use crate::body::RangeSpec;
 use crate::cache::{Body, Meta};
+use crate::cache::{CacheSource, CachedResponse};
+use crate::freshness;
 use crate::origin::Scheme;
 use crate::request::*;
+use std::io::{self, BufReader, Read};
 use std::sync::Arc;
 
 #[test]

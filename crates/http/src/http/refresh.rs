@@ -29,7 +29,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use super::{Shared, acquire_origin, read_response_head, request_head};
+use super::upstream::{acquire_origin, request_head};
+use super::{Shared, read_response_head};
 use crate::Upstream;
 use crate::body::{BodyReader, Framing};
 use crate::cache::{Cache, CacheKey, now_epoch};
@@ -183,7 +184,7 @@ fn revalidate(
 
     if status == 304 {
         // 304 の validator が保存済みと違う (T.32.9): 延ばさずに消して終える (次の要求は普通のミス)
-        if super::not_modified_conflicts(&cached, &rheaders) {
+        if super::fetch::not_modified_conflicts(&cached, &rheaders) {
             cache.remove(key);
             if reusable {
                 upstream.pool.put(&pool_key, server, timeout);
@@ -240,7 +241,7 @@ fn revalidate(
     };
     let mut sink = cache.begin_store(key, url, p.ttl, p.age, p.validators, expected, conn_id);
     sink.write(&stored_head);
-    let mut buf = super::CopyBuf::take();
+    let mut buf = super::buffers::CopyBuf::take();
     let clean = {
         let mut body = BodyReader::new(&mut server, framing);
         loop {

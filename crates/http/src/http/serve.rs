@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use super::Ctx;
+use super::ctx::{Ctx, content_length_line};
 use crate::body::{self, RangeSpec};
 use crate::cache::{CacheSource, CachedResponse};
 use crate::freshness::{self, CachedHead};
@@ -320,7 +320,7 @@ pub(super) fn write_cached_response(
             (0, body_len)
         }
     };
-    extra[n_extra] = super::content_length_line(&mut cl_buf, len);
+    extra[n_extra] = content_length_line(&mut cl_buf, len);
     n_extra += 1;
     // キャッシュから返す応答にも自分の `Via` を足す (T.28.10 (b))。保存した先頭には入っていない
     extra[n_extra] = crate::via::field();
