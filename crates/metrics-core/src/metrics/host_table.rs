@@ -113,6 +113,16 @@ pub(super) fn web_port(key: &str) -> bool {
     key.ends_with(":443") || key.ends_with(":80")
 }
 
+/// ホスト別統計の鍵が、確立 / 初バイトの窓・段階の窓に入る鍵か (T.34.40。`Shape::of` と
+/// `/slo` の宛先 (`web_dest`) の 2 か所の判定を 1 つにした)。
+///
+/// CONNECT (`connect://`) はいつも入る。forward のうち `blocked://` (拒否) と `loop://` (自分宛て) は入れない。
+/// 前綴りを見るだけで、解かない。
+#[inline]
+pub(super) fn counted_key(key: &str) -> bool {
+    key.starts_with("connect://") || !(key.starts_with("blocked://") || key.starts_with("loop://"))
+}
+
 impl Metrics {
     /// 満杯の表から行を捨てた数 (`/status` の `hosts_evicted`。起動から。T.32.10)。
     pub fn hosts_evicted(&self) -> u64 {

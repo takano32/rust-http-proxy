@@ -5,7 +5,7 @@
 //! 割っただけで、式も評価の順も変えていない。どれも `#[inline]` で、`record` の中へ畳まれる
 //! (codegen-units = 4 で別の CGU に落ちて呼び出しにならないように。T.34.0 の教訓)。
 
-use super::host_table::{evict_oldest_host, web_port};
+use super::host_table::{counted_key, evict_oldest_host, web_port};
 use super::*;
 
 impl Metrics {
@@ -133,7 +133,7 @@ impl Shape {
         // 鍵の種類は 1 回だけ見る (CONNECT のホスト別統計の鍵は `connect://` で始まる。
         // `tunnel::report`。前綴りを見るだけで済むので、呼び出し側に旗を持たせない)
         let connect = host.starts_with("connect://");
-        let counted = connect || !(host.starts_with("blocked://") || host.starts_with("loop://"));
+        let counted = counted_key(host);
         // 窓と時系列に入れる値 (ms)。**1 回だけ作る** (以前は Interval 2 つで 2 回作っていた。T14.22)
         let ms = took.map(|d| {
             detail

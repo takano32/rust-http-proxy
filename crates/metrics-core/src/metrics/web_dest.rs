@@ -135,8 +135,7 @@ impl DestTable {
         let errors = self.top_errors;
         // 窓に入る成功 (forward の `blocked://`・`loop://` は窓に入らない。CONNECT はいつも入る)。
         // 成功の本数はホスト別統計の行から (行が無ければ 0)
-        let counted = self.top.starts_with("connect://")
-            || !(self.top.starts_with("blocked://") || self.top.starts_with("loop://"));
+        let counted = super::host_table::counted_key(&self.top);
         let ok = match map.get(&self.top) {
             Some(s) if counted => {
                 let w = &s.web_hour;

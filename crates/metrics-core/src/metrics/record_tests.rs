@@ -259,3 +259,20 @@ fn the_interval_takes_one_shape_without_metrics() {
     assert_eq!((iv.web_dns_misses, iv.web_dns_ms_sum), (0, 0));
     assert_eq!(iv.wait.count, 0);
 }
+
+/// 窓に入る鍵の判定は 1 か所 (T.34.40)。CONNECT はいつも、forward は `blocked://`・`loop://` 以外。
+#[test]
+fn the_counted_key_is_decided_by_the_prefix_only() {
+    use super::host_table::counted_key;
+    for (key, want) in [
+        ("connect://a:443", true),
+        ("connect://blocked://a:443", true),
+        ("http://a:80", true),
+        ("https://a:443", true),
+        ("blocked://a:443", false),
+        ("loop://self:8080", false),
+        ("", true),
+    ] {
+        assert_eq!(counted_key(key), want, "{}", key);
+    }
+}
