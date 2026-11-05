@@ -25,7 +25,9 @@ mod write_request_tests;
 mod write_response_tests;
 
 pub use not_modified::{merge_not_modified, with_set_cookies};
-pub use request::{sanitize_and_inject_headers, write_request_headers};
+#[cfg(test)]
+use request::sanitize_and_inject_headers;
+pub use request::write_request_headers;
 pub use response::{ResponseHead, line_named, sanitize_response_head, write_response_head};
 pub use view::{response_lines, response_names, response_pairs, response_value};
 
@@ -42,14 +44,14 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
     "proxy-connection",
 ];
 
-pub fn is_hop_by_hop(name: &str) -> bool {
+pub(crate) fn is_hop_by_hop(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     HOP_BY_HOP_HEADERS.contains(&lower.as_str())
 }
 
 /// 小文字化した文字列を作らずに判定する版。
 #[inline]
-pub fn is_hop_by_hop_name(name: &str) -> bool {
+pub(crate) fn is_hop_by_hop_name(name: &str) -> bool {
     HOP_BY_HOP_HEADERS
         .iter()
         .any(|h| name.eq_ignore_ascii_case(h))

@@ -76,8 +76,10 @@ impl Framing {
     }
 
     /// 応答の枠組みを**生の先頭バイト列から**決める ([`Framing::of_response`] と同じ規則)。
-    /// 小文字の名前と値の組を作らずに済むので、素通しの経路はこちらを使う。
-    pub fn of_response_head(status: u16, head_only: bool, head: &[u8]) -> Framing {
+    /// 小文字の名前と値の組を作らずに済む。いまの熱い経路は [`Framing::scan_response_head`] を使うので、
+    /// これは `of_response_head_tests` が規則を突き合わせる手本として試験のときだけ作る (T.34.23)。
+    #[cfg(test)]
+    pub(crate) fn of_response_head(status: u16, head_only: bool, head: &[u8]) -> Framing {
         if head_only || (100..200).contains(&status) || status == 204 || status == 304 {
             return Framing::None;
         }
@@ -100,7 +102,7 @@ impl Framing {
 
     /// 応答の先頭に (空でない値の) `Transfer-Encoding` の行があるか (T.28.1)。
     ///
-    /// [`Framing::of_response_head_checked`] が [`Framing::Close`] を返したときだけ呼ぶ
+    /// [`Framing::scan_response_head`] の枠組みが [`Framing::Close`] だったときだけ呼ぶ
     /// (「CL も TE も無い」のか「最後が chunked でない TE」なのかを見分ける。後者は
     /// 区切りがオリジンと食い違いうるので保存しない)。熱い経路 (CL / chunked) では呼ばれない。
     pub fn response_has_transfer_encoding(head: &[u8]) -> bool {
@@ -153,7 +155,10 @@ impl Framing {
     /// 本文を持つ応答なら CL を見ずに [`Framing::Close`] (RFC 9112 §6.3。T.28.1)。
     /// 以前は CL で区切って TE を落とし、オリジンの接続を使い回して保存もしていた
     /// (CL の後ろに続けたバイトが次の応答として読まれうる)。
-    pub fn of_response_head_checked(
+    ///
+    /// 試験のときだけ作る (クレートの外にもクレートの中にも、試験のほかの利用者はいない。T.34.23)。
+    #[cfg(test)]
+    pub(crate) fn of_response_head_checked(
         status: u16,
         head_only: bool,
         head: &[u8],
@@ -163,7 +168,9 @@ impl Framing {
 
     /// [`Framing::of_response_head_checked`] と「`Connection` が `close` を挙げているか」を
     /// **1 回の走査**で返す (T.28.12。forward の経路は枠組み・CL の検査・`Connection` で 3 回なめていた)。
-    pub fn of_response_head_checked_with_close(
+    /// 試験のときだけ作る (T.34.23)。
+    #[cfg(test)]
+    pub(crate) fn of_response_head_checked_with_close(
         status: u16,
         head_only: bool,
         head: &[u8],
@@ -172,7 +179,7 @@ impl Framing {
         (scan.framing, scan.close)
     }
 
-    /// [`Framing::of_response_head_checked_with_close`] に `Age` の値も足したもの (T.29.4)。
+    /// `of_response_head_checked_with_close` (試験の手本) に `Age` の値も足したもの (T.29.4)。
     /// forward の経路は応答の先頭をこの 1 回だけなめる。
     pub fn scan_response_head(status: u16, head_only: bool, head: &[u8]) -> ResponseScan<'_> {
         let no_body = head_only || (100..200).contains(&status) || status == 204 || status == 304;

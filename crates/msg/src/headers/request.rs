@@ -1,12 +1,15 @@
 //! クライアントから受けた要求ヘッダーを、オリジンへ転送する形に整える。
 
+#[cfg(test)]
 use std::net::SocketAddr;
 
-use super::{ConnectionNames, FRAMING_HEADERS, is_hop_by_hop, is_hop_by_hop_name};
+#[cfg(test)]
+use super::is_hop_by_hop;
+use super::{ConnectionNames, FRAMING_HEADERS, is_hop_by_hop_name};
 use crate::ascii;
 use crate::via;
 
-/// 転送するリクエストヘッダーを `out` へ直接書く ([`sanitize_and_inject_headers`] と同じ規則)。
+/// 転送するリクエストヘッダーを `out` へ直接書く (試験の手本 `sanitize_and_inject_headers` と同じ規則)。
 ///
 /// `Vec<String>` を経由しないので、ヘッダー 1 本につき小文字化した名前と行の複製を作らない
 /// (実測: ヘッダー 11 本の要求で確保が 137 → 62 回/要求)。`Host:` は呼び出し側がオリジンの
@@ -103,7 +106,9 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
 ///
 /// 熱い経路は [`write_request_headers`] が同じ規則で `out` へ直接書く。こちらは組を作る
 /// 読みやすい形で、`write_request_tests` が 1 バイトも違わないことを突き合わせる相手 (手本) として残す。
-pub fn sanitize_and_inject_headers(
+/// 使うのは試験だけなので、試験のときだけ作る (クレートの外に利用者はいない。T.34.23)。
+#[cfg(test)]
+pub(crate) fn sanitize_and_inject_headers(
     headers: &[String],
     client_addr: Option<SocketAddr>,
 ) -> Vec<String> {
