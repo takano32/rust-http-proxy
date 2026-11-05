@@ -81,8 +81,8 @@ impl Margin {
             .unwrap_or(0)
     }
 
-    #[cfg(test)]
-    pub(crate) fn backoff(&self) -> u64 {
+    /// いまの後退の幅 (試験から読む。T.34.81 の cache の試験が使うので `pub` のまま)。
+    pub fn backoff(&self) -> u64 {
         self.backoff
     }
 
