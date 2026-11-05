@@ -360,6 +360,130 @@ def _status(raw):
         return None
 
 
+# ---------------------------------------------------------------- 判断 (純粋な関数。試験は test_framing_probe.py)
+
+def judge(got, want, may_reach=True, reached=False, check=None, evidence=None):
+    """1 本の判定: 状態が期待どおりで、届いてはいけない要求が届いておらず、`check` があれば
+    `evidence` (届いた要求の辞書・応答のバイト列) が満たすこと (T.34.136 で 4 つの節の式を 1 つにした)。
+
+    `check` は状態が合ったときだけ呼ぶ。`evidence` が None (届かなかった) なら `check` は満たさない。
+    """
+    return (got == want and (may_reach or not reached)
+            and (check is None or (evidence is not None and check(evidence))))
+
+
+def row(name, got, want, shown, ok):
+    """表の 1 行 (名前・状態・期待・見たもの、外れたら印)。`shown` は `%s` でそのまま出す。"""
+    return "%-28s %-8s %-8s %s%s" % (name, got if got is not None else "(無応答)", want, shown,
+                                     "" if ok else "   ← ちがう")
+
+
+def heading(title, what):
+    """表の見出しの 1 行。"""
+    return "%-28s %-8s %-8s %s" % (title, "状態", "期待", what)
+
+
+def summarize(failed):
+    """最後の 2 行と終了コード (外れが 1 本でもあれば 1)。"""
+    if failed:
+        return ["", "期待とちがう: %d 本" % failed], 1
+    return ["", "全部期待どおり。"], 0
+
+
+# ---------------------------------------------------------------- 実機で流す (配線)
+
+def probe_framing(port, origin, timeout, emit=print):
+    """`cases` の節を流して 1 行ずつ `emit` し、外れの本数を返す。"""
+    emit(heading("要求", "オリジンに届いたヘッダー"))
+    failed = 0
+    for name, raw, want, may_reach in cases(port + 1):
+        before = len(origin.seen)
+        got = _status(_send(port, raw, timeout))
+        reached = len(origin.seen) > before
+        headers = origin.seen[-1]["headers"] if reached else []
+        ok = judge(got, want, may_reach, reached)
+        failed += not ok
+        shown = ", ".join(h for h in headers if h.lower().startswith(("host:", "content-length:", "x-a")))
+        emit(row(name, got, want, shown or "-", ok))
+    return failed
+
+
+def probe_t27(port, origin, timeout, emit=print):
+    """T.27.5 〜 T.27.8・T.32 の要求側と応答側を流して 1 行ずつ `emit` し、外れの本数を返す。"""
+    emit("")
+    emit(heading("T.27.5〜T.27.8・T.32", "オリジンに届いた要求行"))
+    failed = 0
+    # 5 つ目は届いた要求が満たすべきこと
+    for name, raw, want, may_reach, check in t27_cases(port + 1) + t32_cases(port + 1):
+        before = len(origin.seen)
+        got = _status(_send(port, raw, timeout))
+        reached = len(origin.seen) > before
+        seen = origin.seen[-1] if reached else None
+        ok = judge(got, want, may_reach, reached, check, seen)
+        failed += not ok
+        emit(row(name, got, want, seen["request_line"] if seen else "-", ok))
+    for name, raw, want, check in t27_response_cases(port + 1) + t32_response_cases(port + 1, port + 3, port + 2):
+        resp = _send(port, raw, timeout)
+        got = _status(resp)
+        ok = judge(got, want, check=check, evidence=resp)
+        failed += not ok
+        emit(row(name, got, want, "期待どおり" if ok else repr(resp[:60]), ok))
+    return failed
+
+
+def probe_connect(port, echo, timeout, emit=print):
+    """CONNECT の節を流して 1 行ずつ `emit` し、外れの本数を返す (`http` の経路を通らないので別に見る。T.19.8)。"""
+    emit("")
+    emit(heading("CONNECT", "トンネル先が受け取ったバイト"))
+    failed = 0
+    for name, raw, want, may_reach in connect_cases(port + 2):
+        before = len(echo.seen)
+        got = _status(_send(port, raw, timeout))
+        seen_bytes = b"".join(echo.seen[before:])
+        ok = judge(got, want, may_reach, bool(seen_bytes))
+        failed += not ok
+        emit(row(name, got, want, seen_bytes[:40] or "-", ok))
+    return failed
+
+
+def start_servers(port):
+    """オリジン (port + 1) と CONNECT のトンネル先 (port + 2。受け取ったバイトをそのまま返す) を起こす。"""
+    origin = _Threaded(("127.0.0.1", port + 1), _Origin)
+    origin.seen = []  # type: ignore[attr-defined]
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    echo = _Threaded(("127.0.0.1", port + 2), _Echo)
+    echo.seen = []  # type: ignore[attr-defined]
+    threading.Thread(target=echo.serve_forever, daemon=True).start()
+    return origin, echo
+
+
+def start_proxy(binary, port, work):
+    """プロキシを起こす。キャッシュと状態ファイルはこの回だけの置き場 (`work`) に書く。
+
+    既定の置き場 (root なら `/var/cache/rust-http-proxy`) を使うと、2 回目の実行が前の回の項目に HIT して外れる。
+    """
+    env = dict(
+        os.environ,
+        PROXY_ALLOW_LOCAL="1",
+        PROXY_LOG_LEVEL="warn",
+        PROXY_CACHE_DIR=os.path.join(work, "cache"),
+        PROXY_STATS_PERSIST="off",
+    )
+    return subprocess.Popen([binary, "-p", str(port)], env=env, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+
+
+def wait_listening(port):
+    """プロキシが受け付けるまで待つ (最大 100 回 × 0.1 秒)。受け付けたら True。"""
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            return True
+        except OSError:
+            time.sleep(0.1)
+    return False
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="要求の枠組みを実機で流して状態を並べる")
     ap.add_argument("binary", help="プロキシのバイナリ (例 ./target/release/rust-http-proxy)")
@@ -367,99 +491,18 @@ def main(argv=None):
     ap.add_argument("--timeout", type=float, default=3.0, help="1 本あたりの待ち (秒)")
     args = ap.parse_args(argv)
 
-    origin = _Threaded(("127.0.0.1", args.port + 1), _Origin)
-    origin.seen = []  # type: ignore[attr-defined]
-    threading.Thread(target=origin.serve_forever, daemon=True).start()
-
-    # CONNECT のトンネル先 (受け取ったバイトをそのまま返す)
-    echo = _Threaded(("127.0.0.1", args.port + 2), _Echo)
-    echo.seen = []  # type: ignore[attr-defined]
-    threading.Thread(target=echo.serve_forever, daemon=True).start()
-
-    # キャッシュと状態ファイルはこの回だけの置き場に書く。既定の置き場 (root なら
-    # `/var/cache/rust-http-proxy`) を使うと、2 回目の実行が前の回の項目に HIT して外れる
+    origin, echo = start_servers(args.port)
     work = tempfile.TemporaryDirectory(prefix="framing-probe-")
-    env = dict(
-        os.environ,
-        PROXY_ALLOW_LOCAL="1",
-        PROXY_LOG_LEVEL="warn",
-        PROXY_CACHE_DIR=os.path.join(work.name, "cache"),
-        PROXY_STATS_PERSIST="off",
-    )
-    proxy = subprocess.Popen(
-        [args.binary, "-p", str(args.port)],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    proxy = start_proxy(args.binary, args.port, work.name)
     failed = 0
     try:
-        for _ in range(100):
-            try:
-                socket.create_connection(("127.0.0.1", args.port), timeout=0.2).close()
-                break
-            except OSError:
-                time.sleep(0.1)
-        else:
+        if not wait_listening(args.port):
             print("プロキシが起動しない: %s -p %d" % (args.binary, args.port), file=sys.stderr)
             return 1
-
-        print("%-28s %-8s %-8s %s" % ("要求", "状態", "期待", "オリジンに届いたヘッダー"))
-        for name, raw, want, may_reach in cases(args.port + 1):
-            before = len(origin.seen)
-            got = _status(_send(args.port, raw, args.timeout))
-            reached = len(origin.seen) > before
-            headers = origin.seen[-1]["headers"] if reached else []
-            ok = got == want and (may_reach or not reached)
-            if not ok:
-                failed += 1
-            shown = ", ".join(h for h in headers if h.lower().startswith(("host:", "content-length:", "x-a")))
-            print(
-                "%-28s %-8s %-8s %s%s"
-                % (name, got if got is not None else "(無応答)", want, shown or "-", "" if ok else "   ← ちがう")
-            )
-
-        # T.27.5 〜 T.27.8 の要求側 (5 つ目は届いた要求が満たすべきこと)
-        print("")
-        print("%-28s %-8s %-8s %s" % ("T.27.5〜T.27.8・T.32", "状態", "期待", "オリジンに届いた要求行"))
-        for name, raw, want, may_reach, check in t27_cases(args.port + 1) + t32_cases(args.port + 1):
-            before = len(origin.seen)
-            got = _status(_send(args.port, raw, args.timeout))
-            reached = len(origin.seen) > before
-            seen = origin.seen[-1] if reached else None
-            ok = got == want and (may_reach or not reached) and (check is None or (seen is not None and check(seen)))
-            if not ok:
-                failed += 1
-            print(
-                "%-28s %-8s %-8s %s%s"
-                % (name, got if got is not None else "(無応答)", want, seen["request_line"] if seen else "-",
-                   "" if ok else "   ← ちがう")
-            )
-        for name, raw, want, check in t27_response_cases(args.port + 1) + t32_response_cases(
-                args.port + 1, args.port + 3, args.port + 2):
-            resp = _send(args.port, raw, args.timeout)
-            got = _status(resp)
-            ok = got == want and check(resp)
-            if not ok:
-                failed += 1
-            print("%-28s %-8s %-8s %s%s" % (name, got if got is not None else "(無応答)", want,
-                                            "期待どおり" if ok else repr(resp[:60]),
-                                            "" if ok else "   ← ちがう"))
-
-        # CONNECT は `http` の経路を通らないので別に見る (T.19.8)
-        print("")
-        print("%-28s %-8s %-8s %s" % ("CONNECT", "状態", "期待", "トンネル先が受け取ったバイト"))
-        for name, raw, want, may_reach in connect_cases(args.port + 2):
-            before = len(echo.seen)
-            got = _status(_send(args.port, raw, args.timeout))
-            seen_bytes = b"".join(echo.seen[before:])
-            ok = got == want and (may_reach or not seen_bytes)
-            if not ok:
-                failed += 1
-            print(
-                "%-28s %-8s %-8s %s%s"
-                % (name, got if got is not None else "(無応答)", want, seen_bytes[:40] or "-", "" if ok else "   ← ちがう")
-            )
+        # 節ごとに流して、1 本ごとに印字する (割る前と同じく、流したそばから出る)
+        failed += probe_framing(args.port, origin, args.timeout)
+        failed += probe_t27(args.port, origin, args.timeout)
+        failed += probe_connect(args.port, echo, args.timeout)
     finally:
         proxy.terminate()
         try:
@@ -472,12 +515,10 @@ def main(argv=None):
         echo.server_close()
         work.cleanup()
 
-    print("")
-    if failed:
-        print("期待とちがう: %d 本" % failed)
-        return 1
-    print("全部期待どおり。")
-    return 0
+    lines, code = summarize(failed)
+    for line in lines:
+        print(line)
+    return code
 
 
 if __name__ == "__main__":
