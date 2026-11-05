@@ -340,7 +340,16 @@ def pick_res(a, b):
 
 
 def aggregate(rows, bounds, limit):
-    """標本を足し合わせて T.14.0 の表の 1 列にする。`limit` 以上の標本はバーストとして外す。"""
+    """標本を足し合わせて T.14.0 の表の 1 列にする。`limit` 以上の標本はバーストとして外す。
+
+    足し合わせ (`sum_samples`) と、そこから出す平均・分位点・率 (`derive_aggregate`) の 2 段 (T.34.131)。
+    """
+    out, warm_sum, warm_n = sum_samples(rows, limit)
+    return derive_aggregate(out, warm_sum, warm_n, bounds)
+
+
+def sum_samples(rows, limit):
+    """`aggregate` の 1 段目: 平常時の標本の数を足す。返すのは (列の辞書, `dns_warm` の合計, 標本数)。"""
     out = {"samples": 0, "burst_samples": 0, "first_t": None, "last_t": None,
            "connects": 0, "connect_ms_sum": 0.0, "connect_ms_max": 0, "connect_buckets": None,
            "forwards": 0, "forward_ms_sum": 0.0, "forward_ms_max": 0, "forward_buckets": None,
@@ -401,6 +410,11 @@ def aggregate(rows, bounds, limit):
             if r["dns_warm_max"] is not None:
                 out["dns_warm_max"] = max(out["dns_warm_max"] or 0,
                                           r["dns_warm_max"] or 0, r["dns_warm"])
+    return out, warm_sum, warm_n
+
+
+def derive_aggregate(out, warm_sum, warm_n, bounds):
+    """`aggregate` の 2 段目: 足した数から平均・p50 / p95・名前解決の率を出して `out` に足す。"""
     if warm_n:
         out["dns_warm_avg"] = warm_sum / warm_n
     for kind in ("connect", "forward", "wait"):
@@ -964,6 +978,15 @@ def build(a, b, args):
         "bursts": bursts_info(b, hist),
     }
     out["errors"] = errors_info(a, b, hosts, hist)
+    add_extras(out, a, b, args, info, hist, hosts, majors, status_b, overload)
+    return out
+
+
+def add_extras(out, a, b, args, info, hist, hosts, majors, status_b, overload):
+    """`build` の 2 段目: 定義 (`--criteria`) や引数で足したり足さなかったりする鍵を `out` に足す (T.34.131)。
+
+    足す順は割る前と同じ (`--out json` の鍵の順が変わらない)。
+    """
     # `other` (表からあふれたホストの畳み先) は §3 の比べの表から外して印を付ける (T.28.19)。
     # **`--criteria` のときは足さない** (過去の判定表の出力を 1 バイトも変えない決まり。
     # 行そのものは `hosts.rows` に残すので、エラーの合計 (§7) は変わらない)
@@ -992,12 +1015,32 @@ def build(a, b, args):
     # 日次の雪像の表 (T.18.2 (2))。渡されたときだけ鍵を足す
     if getattr(args, "daily_snapshots", None):
         out["daily_snapshots"] = daily_snapshots(args.daily_snapshots, b)
-    return out
 
 
 # ---------------------------------------------------------------- Markdown
 
 def render(d, top):
+    """`build()` の結果を Markdown で印字する。節ごとの関数を順に呼ぶ (T.34.131 で割った)。"""
+    render_title(d)
+    render_restart(d)
+    render_history(d)
+    render_hosts(d, top)
+    render_clients(d, top)
+    render_rtt_split(d)
+    render_dns(d)
+    render_events(d, top)
+    render_errors(d)
+    render_bursts(d, top)
+    # 9 (判定表。中身は `snapshot_criteria.py`)
+    if "criteria" in d:
+        render_criteria(d, d["hosts"].get("group") == "domain")
+    # 日次の雪像の表 (`--daily-snapshots`。T.18.2 (2))。判定表の下に置く
+    if "daily_snapshots" in d:
+        render_daily_snapshots(d)
+
+
+def render_title(d):
+    """見出しと、取得の時刻・形の版・落とした部分の箇条書き。"""
     p = print
     a, b = d["a"], d["b"]
     p(f"# snapshot-diff: `{a['label']}` → `{b['label']}`")
@@ -1014,7 +1057,10 @@ def render(d, top):
               f"{', '.join(who['dropped'])}")
     p()
 
-    # --- 1
+
+def render_restart(d):
+    """§1 再起動 (`restart_info` の結果)。"""
+    p = print
     r = d["restart"]
     p("## 1. 再起動")
     p()
@@ -1036,130 +1082,153 @@ def render(d, top):
     p(f"| `since_start_secs` | {n(r['since_start'][0])} | {n(r['since_start'][1])} |")
     p()
 
-    # --- 2
+
+def render_history(d):
+    """§2 平常時の前後: 見出しと切り方の前置き (表と注は下の 2 つ)。"""
+    p = print
     h = d["history"]
     p("## 2. 平常時の前後 (`/history` を再起動時刻で切る)")
     p()
     if not h:
         p("(`/history` がこの雪像に入っていない)")
         p()
+        return
+    if "limits" in h:
+        # phase22 (T.22.1)。前と後で閾が違う
+        lb, la = h["limits"]["before"], h["limits"]["after"]
+        md = h["medians"]
+        p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
+          f"**前は 1 標本 {lb:,} 本以上・後は {la:,} 本以上の窓 (バースト) を外した**もの同士で並べる "
+          f"({'phase22' if d.get('criteria') else '`--burst-median-k`'} の切り方。T.22.1: "
+          f"{h['limit']:,} 本 (T.14.0) と、その期間の 1 標本の本数の中央値 "
+          f"(前 {n(md['before'])}・後 {n(md['after'])} 本) の {h['median_k']} 倍の大きい方)。")
+        if la > h["limit"] and h["after"]["burst_samples"]:
+            p()
+            p(f"後の閾が {h['limit']:,} 本より上なので、下の「サーバー側で 1 要求」の URL "
+              "(`normal_hours_only=1` は 300 本で切る) とは平常時の窓が違う。"
+              "T.29.13 からのサーバーは中央値 × 3 で切るので同じ窓になる。")
     else:
-        bef, aft = h["before"], h["after"]
-        bef_all, aft_all = h["before_all"], h["after_all"]
-        if "limits" in h:
-            # phase22 (T.22.1)。前と後で閾が違う
-            lb, la = h["limits"]["before"], h["limits"]["after"]
-            md = h["medians"]
-            p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
-              f"**前は 1 標本 {lb:,} 本以上・後は {la:,} 本以上の窓 (バースト) を外した**もの同士で並べる "
-              f"({'phase22' if d.get('criteria') else '`--burst-median-k`'} の切り方。T.22.1: "
-              f"{h['limit']:,} 本 (T.14.0) と、その期間の 1 標本の本数の中央値 "
-              f"(前 {n(md['before'])}・後 {n(md['after'])} 本) の {h['median_k']} 倍の大きい方)。")
-            if la > h["limit"] and h["after"]["burst_samples"]:
-                p()
-                p(f"後の閾が {h['limit']:,} 本より上なので、下の「サーバー側で 1 要求」の URL "
-                  "(`normal_hours_only=1` は 300 本で切る) とは平常時の窓が違う。"
-                  "T.29.13 からのサーバーは中央値 × 3 で切るので同じ窓になる。")
-        else:
-            p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
-              f"**1 標本 {h['limit']} 本以上の窓 (バースト) を外した**もの同士で並べる (T.14.0 と同じ切り方)。")
-        p()
-        p("| 項目 | 前 | 後 | 出どころ |")
-        p("|---|---|---|---|")
-        p(f"| 期間 | {stamp(bef['first_t'])} → {stamp(h['boundary'])} "
-          f"(平常時 {bef['samples']} / {bef['samples'] + bef['burst_samples']} 標本) "
-          f"| {stamp(h['boundary'])} → {stamp(aft['last_t'])} "
-          f"(平常時 {aft['samples']} / {aft['samples'] + aft['burst_samples']} 標本) "
-          f"| `/history?res={h['res']}` |")
-        p(f"| CONNECT 確立 | avg {ms(bef['connect_avg'])} / **p50 {ms(bef['connect_p50'])}** "
-          f"/ p95 {ms(bef['connect_p95'])} ms ({n(bef['connects'])} 本) "
-          f"| avg {ms(aft['connect_avg'])} / **p50 {ms(aft['connect_p50'])}** "
-          f"/ p95 {ms(aft['connect_p95'])} ms ({n(aft['connects'])} 本) | 同上 |")
-        if "recent_connect" in d:
-            # T.20.1。上の行 (`/history` の区間) には失敗した接続の時間も入っている
-            rc = d["recent_connect"]
-            if rc is None:
-                p("| CONNECT 確立 (**成功した接続だけ**) | — | — | 後の雪像に `/recent` の部が無い |")
-            else:
-                window = ""
-                if rc["oldest"] and rc["taken_at"]:
-                    window = (f"、{stamp(rc['oldest'])} → 取得までの "
-                              f"{(rc['taken_at'] - rc['oldest']) / 3600:.1f} 時間")
-                p(f"| CONNECT 確立 (**成功した接続だけ**) | — (前の雪像の個票は見ない) "
-                  f"| **p50 {n(rc['p50'])}** / p95 {n(rc['p95'])} ms ({n(rc['n'])} 本。"
-                  f"ほかに失敗 {n(rc['failed'])} 本) "
-                  f"| 後の雪像の `/recent` の `kind == \"connect\"` で `reason` が `error` で"
-                  f"始まらない行の `ms.connect` (個票 {n(rc['rows'])} 行{window}"
-                  + ("。**256 KiB で切れている**ので窓は短い" if rc["truncated"] else "") + ") |")
-        p(f"| 名前解決のミス | **{ratio(bef['dns_per_connect'])} 回/接続**、"
-          f"ミス 1 回 {ms(bef['ms_per_miss'])} ms、接続 1 本あたり {ms(bef['dns_ms_per_connect'])} ms "
-          f"| **{ratio(aft['dns_per_connect'])} 回/接続**、"
-          f"ミス 1 回 {ms(aft['ms_per_miss'])} ms、接続 1 本あたり {ms(aft['dns_ms_per_connect'])} ms "
-          "| 同上 |")
-        # 名前解決の失敗 (負のキャッシュの総当たり) を除いたミス (T.32.17)。上の行は失敗も数えていて、
-        # T.31.99 は 0.94 回/接続・55.7 ms/接続 (失敗を除けば 0.048 回/接続)。欄の無い版と古い定義では出さない
-        crit = (d.get("criteria") or {}).get("name")
-        if crit not in FROZEN and any("dns_ok_per_connect" in x for x in (bef, aft, bef_all, aft_all)):
-            def ok(x, x_all):
-                if "dns_ok_per_connect" not in x:
-                    return "— (`/history` に `dns_fail_misses` が無い)"
-                t = f"**{x['dns_ok_per_connect']:.3f} 回/接続**"
-                if x.get("dns_ok_ms_per_connect") is not None:
-                    t += f"、接続 1 本あたり {ms(x['dns_ok_ms_per_connect'])} ms"
-                if x_all.get("dns_ok_per_connect") is not None:
-                    t += f" (バースト込み {x_all['dns_ok_per_connect']:.3f})"
-                return t
-            p(f"| 名前解決のミス (**名前解決の失敗を除く**。T.32.17) | {ok(bef, bef_all)} | {ok(aft, aft_all)} "
-              "| `dns_misses` − `dns_fail_misses` (待ちは `dns_ms_sum` − `dns_fail_ms_sum`) |")
-        p(f"| forward 初バイト | avg {ms(bef['forward_avg'])} / p50 {ms(bef['forward_p50'])} "
-          f"/ p95 {ms(bef['forward_p95'])} ms ({n(bef['forwards'])} 本) "
-          f"| avg {ms(aft['forward_avg'])} / p50 {ms(aft['forward_p50'])} "
-          f"/ p95 {ms(aft['forward_p95'])} ms ({n(aft['forwards'])} 本) | 同上 |")
-        p(f"| (参考) バースト込み | {ratio(bef_all['dns_per_connect'])} 回/接続、"
-          f"ミス 1 回 {ms(bef_all['ms_per_miss'])} ms、avg {ms(bef_all['connect_avg'])} "
-          f"/ p50 {ms(bef_all['connect_p50'])} / p95 {ms(bef_all['connect_p95'])} ms "
-          f"({n(bef_all['connects'])} 本、最大 {n(bef_all['connect_ms_max'])} ms) "
-          f"| {ratio(aft_all['dns_per_connect'])} 回/接続、"
-          f"ミス 1 回 {ms(aft_all['ms_per_miss'])} ms、avg {ms(aft_all['connect_avg'])} "
-          f"/ p50 {ms(aft_all['connect_p50'])} / p95 {ms(aft_all['connect_p95'])} ms "
-          f"({n(aft_all['connects'])} 本、最大 {n(aft_all['connect_ms_max'])} ms) | 同上 |")
-        p(f"| 山 (`active_max`) / エラー | {n(bef_all['active_max'])} / {n(bef_all['errors'])} 件 "
-          f"| {n(aft_all['active_max'])} / {n(aft_all['errors'])} 件 | 同上 |")
-        p()
-        if "recent_connect" in d and aft["connects"] \
-                and aft["errors"] / aft["connects"] > FAILED_SHARE_NOTE:
-            # T.20.1。本体は失敗した接続も同じ区間に足すので、失敗が多い期間は p95 がその時間になる
-            by = "、".join(f"{CAUSE_NAMES[i]} {n(v)}"
-                          for i, v in enumerate(aft["causes"]) if v) or "—"
-            p(f"**確立の区間には失敗した接続の時間も入っている**: 後の期間 (平常時) のエラーは "
-              f"{n(aft['errors'])} 件で、接続 {n(aft['connects'])} 本の "
-              f"{100.0 * aft['errors'] / aft['connects']:.1f}% "
-              f"(> {FAILED_SHARE_NOTE * 100:.0f}%。原因別: {by})。上の「CONNECT 確立」の avg / p50 / p95 は"
-              "繋がらなかった接続の「失敗するまでの時間」を含むので、繋がった接続の速さは"
-              "「成功した接続だけ」の行で読むこと。")
-            p()
-        if d.get("summary_url"):
-            p(f"「後」の列と同じ数字は**サーバー側で 1 要求**でも取れる (T.14.24): "
-              f"`curl \"http://PROXY{d['summary_url']}\"` "
-              "(`since=restart` なら起動から。`/history` を丸ごと取らなくてよい)")
-            p()
-        sc = d.get("summary_check")
-        if d.get("summary") and "error" in d["summary"]:
-            p(f"**`--summary` が読めなかった** (`{d['summary']['error']}`)。手元の集計だけで読む。")
-            p()
-        elif sc:
-            p(f"サーバー側の要約 (`?summary=1`、{stamp(sc['from'])} → {stamp(sc['to'])}、"
-              f"{sc['interval_secs']} 秒の窓、平常時 {'あり' if sc['normal_hours_only'] else 'なし'}) "
-              "と手元の集計を並べる (**窓が同じなら一致する**)。")
-            p()
-            p("| 項目 | サーバー (`?summary=1`) | 手元 (この道具) | |")
-            p("|---|---|---|---|")
-            for r in sc["rows"]:
-                mark = "" if r["same"] is None else ("一致" if r["same"] else "**違う**")
-                p(f"| {r['label']} | {n(r['server'])} | {n(r['local'])} | {mark} |")
-            p()
+        p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
+          f"**1 標本 {h['limit']} 本以上の窓 (バースト) を外した**もの同士で並べる (T.14.0 と同じ切り方)。")
+    p()
+    render_history_table(d, h)
+    render_history_notes(d, h)
 
-    # --- 3
+
+def render_history_table(d, h):
+    """§2 の前後の表 (確立・名前解決・初バイト・バースト込み・山とエラー)。"""
+    p = print
+    bef, aft = h["before"], h["after"]
+    bef_all, aft_all = h["before_all"], h["after_all"]
+    p("| 項目 | 前 | 後 | 出どころ |")
+    p("|---|---|---|---|")
+    p(f"| 期間 | {stamp(bef['first_t'])} → {stamp(h['boundary'])} "
+      f"(平常時 {bef['samples']} / {bef['samples'] + bef['burst_samples']} 標本) "
+      f"| {stamp(h['boundary'])} → {stamp(aft['last_t'])} "
+      f"(平常時 {aft['samples']} / {aft['samples'] + aft['burst_samples']} 標本) "
+      f"| `/history?res={h['res']}` |")
+    p(f"| CONNECT 確立 | avg {ms(bef['connect_avg'])} / **p50 {ms(bef['connect_p50'])}** "
+      f"/ p95 {ms(bef['connect_p95'])} ms ({n(bef['connects'])} 本) "
+      f"| avg {ms(aft['connect_avg'])} / **p50 {ms(aft['connect_p50'])}** "
+      f"/ p95 {ms(aft['connect_p95'])} ms ({n(aft['connects'])} 本) | 同上 |")
+    if "recent_connect" in d:
+        # T.20.1。上の行 (`/history` の区間) には失敗した接続の時間も入っている
+        rc = d["recent_connect"]
+        if rc is None:
+            p("| CONNECT 確立 (**成功した接続だけ**) | — | — | 後の雪像に `/recent` の部が無い |")
+        else:
+            window = ""
+            if rc["oldest"] and rc["taken_at"]:
+                window = (f"、{stamp(rc['oldest'])} → 取得までの "
+                          f"{(rc['taken_at'] - rc['oldest']) / 3600:.1f} 時間")
+            p(f"| CONNECT 確立 (**成功した接続だけ**) | — (前の雪像の個票は見ない) "
+              f"| **p50 {n(rc['p50'])}** / p95 {n(rc['p95'])} ms ({n(rc['n'])} 本。"
+              f"ほかに失敗 {n(rc['failed'])} 本) "
+              f"| 後の雪像の `/recent` の `kind == \"connect\"` で `reason` が `error` で"
+              f"始まらない行の `ms.connect` (個票 {n(rc['rows'])} 行{window}"
+              + ("。**256 KiB で切れている**ので窓は短い" if rc["truncated"] else "") + ") |")
+    p(f"| 名前解決のミス | **{ratio(bef['dns_per_connect'])} 回/接続**、"
+      f"ミス 1 回 {ms(bef['ms_per_miss'])} ms、接続 1 本あたり {ms(bef['dns_ms_per_connect'])} ms "
+      f"| **{ratio(aft['dns_per_connect'])} 回/接続**、"
+      f"ミス 1 回 {ms(aft['ms_per_miss'])} ms、接続 1 本あたり {ms(aft['dns_ms_per_connect'])} ms "
+      "| 同上 |")
+    # 名前解決の失敗 (負のキャッシュの総当たり) を除いたミス (T.32.17)。上の行は失敗も数えていて、
+    # T.31.99 は 0.94 回/接続・55.7 ms/接続 (失敗を除けば 0.048 回/接続)。欄の無い版と古い定義では出さない
+    crit = (d.get("criteria") or {}).get("name")
+    if crit not in FROZEN and any("dns_ok_per_connect" in x for x in (bef, aft, bef_all, aft_all)):
+        p(f"| 名前解決のミス (**名前解決の失敗を除く**。T.32.17) | {dns_ok_text(bef, bef_all)} | {dns_ok_text(aft, aft_all)} "
+          "| `dns_misses` − `dns_fail_misses` (待ちは `dns_ms_sum` − `dns_fail_ms_sum`) |")
+    p(f"| forward 初バイト | avg {ms(bef['forward_avg'])} / p50 {ms(bef['forward_p50'])} "
+      f"/ p95 {ms(bef['forward_p95'])} ms ({n(bef['forwards'])} 本) "
+      f"| avg {ms(aft['forward_avg'])} / p50 {ms(aft['forward_p50'])} "
+      f"/ p95 {ms(aft['forward_p95'])} ms ({n(aft['forwards'])} 本) | 同上 |")
+    p(f"| (参考) バースト込み | {ratio(bef_all['dns_per_connect'])} 回/接続、"
+      f"ミス 1 回 {ms(bef_all['ms_per_miss'])} ms、avg {ms(bef_all['connect_avg'])} "
+      f"/ p50 {ms(bef_all['connect_p50'])} / p95 {ms(bef_all['connect_p95'])} ms "
+      f"({n(bef_all['connects'])} 本、最大 {n(bef_all['connect_ms_max'])} ms) "
+      f"| {ratio(aft_all['dns_per_connect'])} 回/接続、"
+      f"ミス 1 回 {ms(aft_all['ms_per_miss'])} ms、avg {ms(aft_all['connect_avg'])} "
+      f"/ p50 {ms(aft_all['connect_p50'])} / p95 {ms(aft_all['connect_p95'])} ms "
+      f"({n(aft_all['connects'])} 本、最大 {n(aft_all['connect_ms_max'])} ms) | 同上 |")
+    p(f"| 山 (`active_max`) / エラー | {n(bef_all['active_max'])} / {n(bef_all['errors'])} 件 "
+      f"| {n(aft_all['active_max'])} / {n(aft_all['errors'])} 件 | 同上 |")
+    p()
+
+
+def dns_ok_text(x, x_all):
+    """§2 の「名前解決の失敗を除く」ミスの 1 セル (T.32.17)。欄の無い版はそう書く。"""
+    if "dns_ok_per_connect" not in x:
+        return "— (`/history` に `dns_fail_misses` が無い)"
+    t = f"**{x['dns_ok_per_connect']:.3f} 回/接続**"
+    if x.get("dns_ok_ms_per_connect") is not None:
+        t += f"、接続 1 本あたり {ms(x['dns_ok_ms_per_connect'])} ms"
+    if x_all.get("dns_ok_per_connect") is not None:
+        t += f" (バースト込み {x_all['dns_ok_per_connect']:.3f})"
+    return t
+
+
+def render_history_notes(d, h):
+    """§2 の表の下の注 (失敗した接続の割合・サーバー側の要約の URL と突き合わせ)。"""
+    p = print
+    aft = h["after"]
+    if "recent_connect" in d and aft["connects"] \
+            and aft["errors"] / aft["connects"] > FAILED_SHARE_NOTE:
+        # T.20.1。本体は失敗した接続も同じ区間に足すので、失敗が多い期間は p95 がその時間になる
+        by = "、".join(f"{CAUSE_NAMES[i]} {n(v)}"
+                      for i, v in enumerate(aft["causes"]) if v) or "—"
+        p(f"**確立の区間には失敗した接続の時間も入っている**: 後の期間 (平常時) のエラーは "
+          f"{n(aft['errors'])} 件で、接続 {n(aft['connects'])} 本の "
+          f"{100.0 * aft['errors'] / aft['connects']:.1f}% "
+          f"(> {FAILED_SHARE_NOTE * 100:.0f}%。原因別: {by})。上の「CONNECT 確立」の avg / p50 / p95 は"
+          "繋がらなかった接続の「失敗するまでの時間」を含むので、繋がった接続の速さは"
+          "「成功した接続だけ」の行で読むこと。")
+        p()
+    if d.get("summary_url"):
+        p(f"「後」の列と同じ数字は**サーバー側で 1 要求**でも取れる (T.14.24): "
+          f"`curl \"http://PROXY{d['summary_url']}\"` "
+          "(`since=restart` なら起動から。`/history` を丸ごと取らなくてよい)")
+        p()
+    sc = d.get("summary_check")
+    if d.get("summary") and "error" in d["summary"]:
+        p(f"**`--summary` が読めなかった** (`{d['summary']['error']}`)。手元の集計だけで読む。")
+        p()
+    elif sc:
+        p(f"サーバー側の要約 (`?summary=1`、{stamp(sc['from'])} → {stamp(sc['to'])}、"
+          f"{sc['interval_secs']} 秒の窓、平常時 {'あり' if sc['normal_hours_only'] else 'なし'}) "
+          "と手元の集計を並べる (**窓が同じなら一致する**)。")
+        p()
+        p("| 項目 | サーバー (`?summary=1`) | 手元 (この道具) | |")
+        p("|---|---|---|---|")
+        for r in sc["rows"]:
+            mark = "" if r["same"] is None else ("一致" if r["same"] else "**違う**")
+            p(f"| {r['label']} | {n(r['server'])} | {n(r['local'])} | {mark} |")
+        p()
+
+
+def render_hosts(d, top):
+    """§3 ホスト別 (`/hosts` の差分)。"""
+    p = print
+    a, b = d["a"], d["b"]
     hs = d["hosts"]
     grouped = hs.get("group") == "domain"
     p("## 3. ホスト別 (`/hosts` の差分)"
@@ -1225,7 +1294,10 @@ def render(d, top):
               f"({share:.1f}%)、その間の avg の中央値 **{ms(g['avg_median'])} ms**")
         p()
 
-    # --- 4
+
+def render_clients(d, top):
+    """§4 接続元別 (`/clients` の差分)。"""
+    p = print
     cl = d["clients"]
     # `distinct_targets` / `agent` / `ports` は `.rrd` に残らない**起動からの**欄なので、
     # 窓が再起動をまたぐと同じ行の中で時間軸が食い違う (Δ要求 9 なのに宛先 0 種、など)
@@ -1260,6 +1332,11 @@ def render(d, top):
         p(f"前の雪像に居て今は居ない接続元 {len(cl['gone'])} 件: "
           + "、".join(f"`{c['client']}`" for c in cl["gone"][:10]))
     p()
+
+
+def render_rtt_split(d):
+    """§4 の下の、接続元の RTT 別の表 (T.29.18。`rtt_split` があるときだけ)。"""
+    p = print
     rs = d.get("rtt_split")
     if rs:
         w = rs["window"]
@@ -1286,7 +1363,10 @@ def render(d, top):
               f"| {reasons} | {ports or '—'}・{n(g['targets'])} 宛先 |")
         p()
 
-    # --- 5
+
+def render_dns(d):
+    """§5 名前解決 (`/dns` の warm と引き直し)。"""
+    p = print
     dn = d["dns"]
     p("## 5. 名前解決 (`/dns` の warm と引き直し)")
     p()
@@ -1314,7 +1394,10 @@ def render(d, top):
           + f" ({scope})")
     p()
 
-    # --- 6
+
+def render_events(d, top):
+    """§6 その間の出来事 (`/events`)。"""
+    p = print
     ev = d["events"]
     p("## 6. その間の出来事 (`/events`)")
     p()
@@ -1332,7 +1415,10 @@ def render(d, top):
               f"| {e.get('text') or e.get('what') or e.get('msg') or '—'} |")
     p()
 
-    # --- 7
+
+def render_errors(d):
+    """§7 エラーの原因別。"""
+    p = print
     er = d["errors"]
     p("## 7. エラーの原因別")
     p()
@@ -1362,7 +1448,10 @@ def render(d, top):
                  f" ×{n(error_repeats(e))} (最後 `{stamp(e.get('last_at') or e.get('at'))}`)"))
     p()
 
-    # --- 8
+
+def render_bursts(d, top):
+    """§8 バースト (`/bursts`)。"""
+    p = print
     bu = d["bursts"]
     p("## 8. バースト (`/bursts`)")
     p()
@@ -1380,29 +1469,27 @@ def render(d, top):
           f"、同時接続の山 {n(bu['active_max'][0])} → {n(bu['active_max'][1])}")
     p()
 
-    # --- 9 (判定表。中身は `snapshot_criteria.py`)
-    if "criteria" in d:
-        render_criteria(d, grouped)
 
-    # --- 日次の雪像の表 (`--daily-snapshots`。T.18.2 (2))。判定表の下に置く
-    if "daily_snapshots" in d:
-        ds = d["daily_snapshots"]
-        p(f"**日次の雪像** (`--daily-snapshots {ds['dir']}` の `<日付>T000000Z-snapshot.json` "
-          f"{ds['files']} 枚のうち、後の雪像と同じ版 `{ds['version']}` の **{len(ds['rows'])} 枚**。"
-          "撮った時刻の順。名前の日付はその 1 日を写したもので、撮ったのは翌日 00:00 UTC の直後。"
-          "MB は 10^6 B)")
-        p()
-        if ds["rows"]:
-            p("| 雪像 | 起動から (時間) | `rss` | `heap_used` | `heap_free` | `mmap` "
-              "| `rings_used.total` | `ipv6.attempts` |")
-            p("|---|---:|---:|---:|---:|---:|---:|---:|")
-            for r in ds["rows"]:
-                p(f"| `{r['file']}` | {r['uptime_secs'] / 3600:,.1f} | {mb(r['rss'])} "
-                  f"| {mb(r['heap_used'])} | {mb(r['heap_free'])} | {mb(r['mmap'])} "
-                  f"| {mb(r['rings_used_total'])} | {n(r['ipv6_attempts'])} |")
-        else:
-            p("(同じ版の日次の雪像が無い。`collect-deployed.sh --from-server` で取り寄せられる)")
-        p()
+def render_daily_snapshots(d):
+    """判定表の下の日次の雪像の表 (`--daily-snapshots`。T.18.2 (2))。"""
+    p = print
+    ds = d["daily_snapshots"]
+    p(f"**日次の雪像** (`--daily-snapshots {ds['dir']}` の `<日付>T000000Z-snapshot.json` "
+      f"{ds['files']} 枚のうち、後の雪像と同じ版 `{ds['version']}` の **{len(ds['rows'])} 枚**。"
+      "撮った時刻の順。名前の日付はその 1 日を写したもので、撮ったのは翌日 00:00 UTC の直後。"
+      "MB は 10^6 B)")
+    p()
+    if ds["rows"]:
+        p("| 雪像 | 起動から (時間) | `rss` | `heap_used` | `heap_free` | `mmap` "
+          "| `rings_used.total` | `ipv6.attempts` |")
+        p("|---|---:|---:|---:|---:|---:|---:|---:|")
+        for r in ds["rows"]:
+            p(f"| `{r['file']}` | {r['uptime_secs'] / 3600:,.1f} | {mb(r['rss'])} "
+              f"| {mb(r['heap_used'])} | {mb(r['heap_free'])} | {mb(r['mmap'])} "
+              f"| {mb(r['rings_used_total'])} | {n(r['ipv6_attempts'])} |")
+    else:
+        p("(同じ版の日次の雪像が無い。`collect-deployed.sh --from-server` で取り寄せられる)")
+    p()
 
 
 # ---------------------------------------------------------------- 入口
