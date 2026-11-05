@@ -383,7 +383,6 @@ pub(crate) fn reset() {
     THRESHOLD.store(0, Ordering::Relaxed);
 }
 
-/// `anomaly` の単体テスト (T22.2 で別のファイルに移した。`anomaly.rs` が 2,000 行に届いていたため)。
+/// `anomaly` の単体テスト (T22.2 で別のファイルに移し、T.34.47 で規則ごとに `tests/` へ割った)。
 #[cfg(test)]
-#[path = "../anomaly_tests.rs"]
 mod tests;
