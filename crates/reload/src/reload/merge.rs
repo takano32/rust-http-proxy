@@ -74,16 +74,22 @@ fn merge_access(next: &mut Config, old: &Config, fresh: &Config, applied: &mut V
     }
     if fresh.endpoints_readonly != old.endpoints_readonly {
         next.endpoints_readonly = fresh.endpoints_readonly;
+        // 出どころも写す (T.34.151。下の 2 つも。前は写しておらず `/config` の `source` が `default` のままだった)
+        next.sources
+            .adopt(&fresh.sources, "PROXY_ENDPOINTS_READONLY");
         applied.push("PROXY_ENDPOINTS_READONLY");
     }
     // 接続元の ACL は `serve` が accept ごとに引き直すので、次に来る接続から効く
     if fresh.allow_clients != old.allow_clients {
         next.allow_clients = fresh.allow_clients.clone();
+        next.sources.adopt(&fresh.sources, "PROXY_ALLOW_CLIENTS");
         applied.push("PROXY_ALLOW_CLIENTS");
     }
     // 接続元ごとの上限も `serve` が accept ごとに引き直す (次に来る接続から効く)
     if fresh.max_conns_per_client != old.max_conns_per_client {
         next.max_conns_per_client = fresh.max_conns_per_client;
+        next.sources
+            .adopt(&fresh.sources, "PROXY_MAX_CONNS_PER_CLIENT");
         applied.push("PROXY_MAX_CONNS_PER_CLIENT");
     }
 }
