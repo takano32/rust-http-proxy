@@ -110,6 +110,7 @@ def merged_history(a, b, res):
             rows[row["t"]] = row
     return [rows[t] for t in sorted(rows)], bounds, causes, (interval or 0)
 
+
 MET, MISSED, UNKNOWN = "満たした", "届かず", "判定できず"
 # 閾を置かない行の判定の欄 (T20.1)。`judge()` の集計 (`tally`) には数えない
 SHOWN = "表示だけ"
