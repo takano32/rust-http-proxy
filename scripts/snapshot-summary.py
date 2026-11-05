@@ -701,6 +701,277 @@ def print_anomalies(a):
     print("- " + "。".join(notes))
 
 
+def status_delta(st, pst, prev, restarted):
+    """`main` の節が使う `delta(path)` を作る (`status` の通算から前回を引く。T.34.132 で外へ出した)。"""
+    def delta(path, default=0):
+        """`status` の通算から前回を引く (`--prev` が無ければそのまま)。
+
+        **再起動をまたいだら引き算しない**。`/status` の通算は再起動で 0 に戻るので、
+        前の雪像 (別のプロセス) の値を引くとその分だけ足りなくなる
+        (2026-09-16 の 2 枚では要求 3,312 − 11 = 3,301 と、前の版の 11 件を引いていた)。
+        `snapshot-diff.py` の §1 と同じく「起動から」の値として読む。
+        """
+        cur, old = st, pst
+        for k in path[:-1]:
+            cur, old = cur.get(k, {}) or {}, (old.get(k, {}) or {})
+        c = cur.get(path[-1], default)
+        if not prev or restarted:
+            return c
+        o = old.get(path[-1], default)
+        if isinstance(c, (int, float)) and isinstance(o, (int, float)) and c >= o:
+            return c - o
+        return c
+    return delta
+
+
+def head_lines(d, st, path, window):
+    """頭の箇条書き (版・無言の再起動・大きさ・落とした部・切れている部)。"""
+    out = []
+    out.append(f"- 版 `{d.get('version')}` / 起動から {(st.get('uptime_secs') or 0) / 3600:.1f} 時間"
+               f" / 取得 {stamp(d.get('taken_at'))} (`{d.get('taken_at')}`){window}")
+    # 無言の再起動 (T.23.2) を**頭に 1 行**。`/events` は 24 時間より長く残るので、`start` の
+    # 直前に `shutdown` があるかで見分けられる (判定は判定表の phase23 の行と同じ関数)
+    out.append("- 無言の再起動: " + silent_restart_text(silent_restarts(d)))
+    out.append("- 大きさ: " + size_report(path, d)[0])
+    if d.get("dropped"):
+        out.append(f"- **4 MiB を越えたので落とした部分**: {', '.join(d['dropped'])}")
+    cut = truncated_parts(d)
+    if cut:
+        out.append("- **応答が 256 KiB で切れている部**: "
+                   + "、".join(f"`{name}` ({num(shown)}"
+                              + (f"/{num(count)}" if count and count != shown else "") + " 件)"
+                              for name, shown, count in cut)
+                   + " (top-level の `dropped` は**部ごと**落としたもの。部の中の打ち切りは"
+                     "その部の `truncated` を見る)")
+    out.append("")
+    return out
+
+
+def overall_lines(d, st, before, delta, reqs, secs, restarted):
+    """「全体」の表 (要求・転送・接続・スレッド・断った数・キャッシュ・RSS)。"""
+    out = []
+    if restarted:
+        out.append("**再起動をまたいでいるので、`/status` の通算 (要求・転送・名前解決・上限で断った) は"
+                   "「起動から」の値** (引き算すると前の版のぶんを引いてしまう)。")
+        out.append("")
+    out.append("| 全体 | 値 |")
+    out.append("|---|---|")
+    out.append(f"| 要求 | {num(reqs)} ({reqs / secs:.3f} /s) |" if secs else f"| 要求 | {num(reqs)} |")
+    out.append(f"| 転送 | {fmt_bytes(delta(['bytes_forwarded']))} |")
+    out.append(f"| いまの接続 | {num(st.get('active_connections'))} / 上限 {num(st.get('max_conns'))}"
+               f" (預かり所 {num(st.get('parked_connections'))}、うちトンネル {num(st.get('parked_tunnels'))}) |")
+    out.append(f"| スレッド / fd | {num(st.get('live_threads'))} / {num(st.get('max_threads'))}"
+               f" ・ {num(st.get('fds'))} / {num(st.get('max_fds'))} |")
+    out.append(f"| 上限で断った / 追い出した | {num(delta(['rejected_overload']))}"
+               f" / {num(delta(['evicted_idle']))} |")
+    cache = st.get("cache") or {}
+    sysinfo = cache.get("system") or {}
+    out.append(f"| キャッシュ | 命中率 {hit_ratio_text(cache, st.get('uptime_secs'))} "
+               f"(使用 {fmt_bytes((cache.get('memory') or {}).get('used_bytes'))}) |")
+    rss, rss_note = sysinfo.get("process_rss_bytes"), ""
+    if before:
+        early = ((before.get("cache") or {}).get("system") or {}).get("process_rss_bytes")
+        if early is not None:
+            rss, rss_note = early, " (**RSS は雪像の前に取った `/status` の値**)"
+    out.append(f"| RSS | {fmt_bytes(rss)}{rss_note} |")
+    out.append("")
+    return out
+
+
+def cpu_lines(d, st):
+    """「CPU」の表 (`/profile` と cgroup のどちらも無い版では空)。"""
+    out = []
+    # CPU (割り当てに対する使用率・絞られた周期の割合・上位スレッド・走れずに待った時間)。
+    # **どちらの源も無い版では表ごと出さない** (T.15.0 (15))
+    prof = profile_totals(d)
+    cg = (st.get("kernel") or {}).get("cgroup_cpu") or {}
+    if prof or cg:
+        out.append("| CPU | 値 |")
+        out.append("|---|---|")
+        if prof:
+            used = cores(prof["cpu_us"], prof["secs"])
+            quota = cg.get("quota_cores")
+            share = (f" / 割り当て {num(quota)} コア の **{used / quota * 100:.1f}%**"
+                     if quota and used is not None else " (cgroup の割り当ては無い)")
+            # **コアは 3 桁**。1 桁だと 0.006 コアも 0.04 コアも「0.0」に潰れる
+            out.append(f"| 使用 | {'—' if used is None else f'{used:.3f}'} コア{share}"
+                       f" (`/profile` {prof['samples']} 標本 × {prof['interval_secs']} 秒) |")
+        split = user_kernel(prof, cg)
+        if split:
+            out.append(f"| ユーザー / カーネル | {split} |")
+        periods = cg.get("nr_periods")
+        if periods:
+            since = cg.get("since_start") or {}
+            sp, sth = since.get("nr_periods"), since.get("nr_throttled")
+            extra = (f"、起動から {sth / sp * 100:.1f}% ({num(sth)}/{num(sp)})"
+                     if sp else "")
+            out.append(f"| 絞られた周期 | **{cg.get('nr_throttled', 0) / periods * 100:.1f}%** "
+                       f"({num(cg.get('nr_throttled'))}/{num(periods)}){extra} |")
+        elif cg:
+            out.append(f"| 絞られた周期 | 絞られ {num(cg.get('nr_throttled'))} 回 "
+                       "(**この版に分母 `nr_periods` が無い**ので割合は出せない) |")
+        if prof and prof["top"]:
+            roles = prof["roles"]
+            shown = "、".join(
+                f"`{t['comm']}` (tid {t['tid']}"
+                + (f"、{roles[t['role']]}" if 0 <= t["role"] < len(roles) else "")
+                + f"、{t['cpu_us'] / 1000:,.0f} ms、走行 {num(t['running'])} 標本)"
+                for t in prof["top"][:3])
+            out.append(f"| 上位スレッド | {shown} |")
+        if prof and prof["run_delay_us"]:
+            pairs = sorted(zip(prof["roles"], prof["run_delay_us"]), key=lambda kv: -kv[1])
+            shown = "、".join(f"{r} {us / 1000:,.1f} ms" for r, us in pairs[:3] if us) or "—"
+            out.append(f"| 走れずに待った (`run_delay_us`) | {shown} |")
+        out.append("")
+    return out
+
+
+def dns_lines(st, pst, prev, restarted, reqs):
+    """「名前解決」の表。"""
+    out = []
+    dns = st.get("dns") or {}
+    pdns = (pst.get("dns") or {}) if (prev and not restarted) else {}
+    misses = dns.get("misses", 0) - pdns.get("misses", 0)
+    ms_sum = dns.get("miss_ms_sum", 0.0) - pdns.get("miss_ms_sum", 0.0)
+    out.append("| 名前解決 | 値 |")
+    out.append("|---|---|")
+    # 完了の定義の閾が 0.15 なので、2 桁だと 0.146 が「0.15」に丸まって判定を読み違える
+    out.append(f"| ミス | {num(misses)} ({misses / reqs:.3f} /要求) |" if reqs
+               else f"| ミス | {num(misses)} |")
+    out.append(f"| ミス 1 回 | {ms_sum / misses:.1f} ms |" if misses else "| ミス 1 回 | — |")
+    out.append(f"| 表 / warm / 引き直し | {num(dns.get('entries'))} / {num(dns.get('warm'))}"
+               f" / {num(dns.get('refreshes', 0) - pdns.get('refreshes', 0))} |")
+    out.append(f"| 負のキャッシュ命中 / 古い答えで代用 | {num(dns.get('negative_hits'))}"
+               f" / {num(dns.get('stale_served'))} |")
+    # ミスの種類別と引き直しの様子 (T.15.0 (7))。**どちらも起動からの通算**なので
+    # `--prev` でも引き算しない (`expired` が主なら窓、`warm_stale` なら引き直しの詰まり)
+    kinds = dns.get("misses_by_kind")
+    if kinds:
+        out.append("| ミスの種類別 (起動から) | "
+                   + " / ".join(f"{k} {num(kinds.get(k, 0))}" for k in MISS_KINDS) + " |")
+    if any(k in dns for k in ("refresh_failures", "refresh_late", "refresh_ms_max")):
+        out.append(f"| 引き直しの失敗 / 遅れ / 最大 (起動から) | "
+                   f"{num(dns.get('refresh_failures'))} 回 / {num(dns.get('refresh_late'))} 回"
+                   f" / {num(dns.get('refresh_ms_max'))} ms |")
+    out.append("")
+    return out
+
+
+def wait_lines(d):
+    """「待ち」の表 (履歴の全標本の確立・`wait`・初バイト)。"""
+    out = []
+    hist = (d.get("history") or {})
+    out.append("| 待ち (履歴の全標本) | 本数 | 平均 | p50 / p95 | 最大 |")
+    out.append("|---|---|---|---|---|")
+    # `wait` は**利用者が待つ時間** (`queue + client_read + dns + connect`。T.15.0 (2))。
+    # `connect` は要求行を読んだ後からしか測らないので、次の完了の定義の基準線はこちら
+    for label, prefix, res, last in (("CONNECT 確立 (直近 1 時間)", "connect", "5", None),
+                                     ("CONNECT 確立 (直近 1 日)", "connect", "60", None),
+                                     ("CONNECT 確立 (通算)", "connect", "3600", None),
+                                     ("利用者が待つ `wait` (直近 1 日)", "wait", "60", None),
+                                     ("forward 初バイト (直近 1 時間)", "forward", "5", None),
+                                     ("forward 初バイト (通算)", "forward", "3600", None)):
+        out.append(latency_line(label, hist.get(res) or {}, prefix, last))
+    out.append("")
+    return out
+
+
+def error_lines(d, prev):
+    """エラーの箇条書き (`/hosts` の差分か合計と、`/errors` の個票の頭 5 件)。"""
+    out = []
+    # エラーの合計は `/status` に無いので、`/hosts` (全ホスト) から出す。
+    # **表ごとの合計は引き算しない** (切れた表どうしだと負になる。上の `error_delta` を見る)
+    errors = part(d, "errors").get("errors") or []
+    ed = error_delta(d, prev)
+    where = "`/hosts` をホストの鍵で突き合わせた差分" if ed["windowed"] else "`/hosts` の合計"
+    if ed["back"]:
+        out.append(f"- エラー: **引き算できない** ({ed['back']} ホストで `/hosts` の通算が減っている"
+                   f" — `.rrd` が作り直された疑い。`scripts/snapshot-diff.py` の §7 を見ること)"
+                   f" / 個票 {records_count(errors)}")
+    else:
+        shown = " ".join(f"{CAUSE_NAMES[i]} {n}" for i, n in enumerate(ed["causes"]) if n) or "—"
+        out.append(f"- エラー: {num(ed['total'])} 件 ({where}) / 原因 {shown}"
+                   f" / 個票 {records_count(errors)}")
+    if ed["windowed"] and ed["gone"]:
+        out.append(f"  - 後の `/hosts` から消えたホスト {ed['gone']} 件 (通算のエラー"
+                   f" {ed['gone_errors']} 件) は差分から外した")
+    if ed["truncated"]:
+        pairs = "、".join(f"{num(s)}/{num(c)} 件" for s, c in zip(ed["shown"], ed["count"]))
+        out.append(f"  - `/hosts` は **256 KiB で切れている** ({pairs}) ので、"
+                   "下位のホストは前後で出入りする (合計どうしを引くと負になる)")
+    for e in errors[:5]:
+        out.append(f"  - `{stamp(e.get('at'))}` {e.get('kind')} {e.get('target')} → {e.get('status')}"
+                   f" ({e.get('cause')}、dns {e.get('dns_ms')} ms / connect {e.get('connect_ms')} ms、"
+                   f"from {e.get('client')}){repeats_tail(e)}")
+    out.append("")
+    return out
+
+
+def recent_lines(d):
+    """閉じた接続 (`/recent`) の箇条書き。"""
+    out = []
+    rec = part(d, "recent")
+    rows = rec.get("recent") or []
+    out.append(f"- 閉じた接続 (`/recent`): 通算 {num(rec.get('recorded'))} 本 / 覚えている {len(rows)} 本"
+               + ("" if not rec.get("truncated") else " (**応答は 256 KiB で切れている**)"))
+    if rows:
+        # **そろっている窓は「いちばん早く閉じた接続」から取得まで** (`at` の最小からではない)。
+        # 応答が切れているとき残っているのは「最後に閉じた N 本」なので、`at` の最小で窓を
+        # 切ると、その窓の中に**開始して窓の中で閉じなかった**接続が抜けたまま「全部」に見える。
+        ends = [r.get("at", 0) + r.get("secs", 0) for r in rows if r.get("at")]
+        if ends:
+            out.append(f"  - そろっている窓: {stamp(min(ends))} → {stamp(d.get('taken_at'))}"
+                       " (`min(at + secs)` から取得まで)"
+                       + ("。**これより前に閉じた接続は応答から落ちている** "
+                          "(`/recent?since=` を付けて取り直せば切れない)"
+                          if rec.get("truncated") else ""))
+        out.append(f"  - 閉じた理由: " + ", ".join(f"{k} {v}" for k, v in tally(rows, "reason").items()))
+        out.append(f"  - 種類: " + ", ".join(f"{k} {v}" for k, v in tally(rows, "kind").items()))
+        secs_all = [r.get("secs", 0) for r in rows]
+        out.append(f"  - 寿命: 中央値 {statistics.median(secs_all):.0f} 秒 / 最大 {max(secs_all):,} 秒")
+        up = sum(r.get("up", 0) for r in rows)
+        down = sum(r.get("down", 0) for r in rows)
+        out.append(f"  - バイト: 上り {fmt_bytes(up)} / 下り {fmt_bytes(down)}")
+        top_clients = tally(rows, "client")
+        out.append("  - 接続元: " + ", ".join(f"{k} {v}" for k, v in list(top_clients.items())[:5]))
+        slow = sorted(rows, key=lambda r: -(r.get("ms", {}).get("connect", 0)))[:5]
+        out.append("  - 確立の遅かった 5 本:")
+        for r in slow:
+            ms = r.get("ms", {})
+            out.append(f"    - {r.get('target')} connect {ms.get('connect', 0)} ms"
+                       f" / dns {ms.get('dns', 0)} ms ({r.get('reason')}、{r.get('secs')} 秒、"
+                       f"{fmt_bytes(r.get('up', 0) + r.get('down', 0))})")
+    out.append("")
+    return out
+
+
+def connection_lines(d):
+    """いまの接続 (`/connections`) と動かないトンネル、`/log` の箇条書き。"""
+    out = []
+    conns = part(d, "connections").get("connections") or []
+    out.append(f"- いまの接続 (`/connections`): {len(conns)} 本"
+               + ((" / " + ", ".join(f"{k} {v}" for k, v in tally(conns, "state").items())) if conns else ""))
+    # 動かないトンネル (T.15.0 (4) の証拠つき)。**閾は固定の 300 秒**なので見出しに書く
+    stuck = idle_tunnels(conns)
+    if stuck:
+        spins = sum(c.get("spins") or 0 for c in stuck)
+        half = sum(1 for c in stuck if c.get("half_closed"))
+        out.append(f"  - **動かないトンネル (`idle_secs` ≥ {IDLE_TUNNEL_SECS} 秒)**: {len(stuck)} 本"
+                   f" (半閉じ {half} 本、`spins` の合計 {num(spins)})")
+        for c in stuck[:5]:
+            out.append(f"    - `{c.get('target')}` {conn_evidence(c)}")
+    log = part(d, "log").get("lines") or []
+    out.append(f"- 警告と失敗 (`/log`): {len(log)} 行"
+               + ((" / 直近 `" + (log[0].get("msg") or "")[:120] + "`") if log else ""))
+    return out
+
+
+def emit(lines):
+    """節の関数が返した行を 1 行ずつ印字する。"""
+    for line in lines:
+        print(line)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="/snapshot を 1 枚の要点に畳む")
     p.add_argument("snapshot", nargs="?")
@@ -738,231 +1009,20 @@ def main(argv=None):
         restarted = restart_between(prev, d, dt)
         window = (f" (前回からの窓 {dt / 3600:.1f} 時間"
                   + ("、**再起動をまたいでいる**" if restarted else "") + ")")
-
-    def delta(path, default=0):
-        """`status` の通算から前回を引く (`--prev` が無ければそのまま)。
-
-        **再起動をまたいだら引き算しない**。`/status` の通算は再起動で 0 に戻るので、
-        前の雪像 (別のプロセス) の値を引くとその分だけ足りなくなる
-        (2026-09-16 の 2 枚では要求 3,312 − 11 = 3,301 と、前の版の 11 件を引いていた)。
-        `snapshot-diff.py` の §1 と同じく「起動から」の値として読む。
-        """
-        cur, old = st, pst
-        for k in path[:-1]:
-            cur, old = cur.get(k, {}) or {}, (old.get(k, {}) or {})
-        c = cur.get(path[-1], default)
-        if not prev or restarted:
-            return c
-        o = old.get(path[-1], default)
-        if isinstance(c, (int, float)) and isinstance(o, (int, float)) and c >= o:
-            return c - o
-        return c
-
-    print(f"- 版 `{d.get('version')}` / 起動から {(st.get('uptime_secs') or 0) / 3600:.1f} 時間"
-          f" / 取得 {stamp(d.get('taken_at'))} (`{d.get('taken_at')}`){window}")
-    # 無言の再起動 (T.23.2) を**頭に 1 行**。`/events` は 24 時間より長く残るので、`start` の
-    # 直前に `shutdown` があるかで見分けられる (判定は判定表の phase23 の行と同じ関数)
-    print("- 無言の再起動: " + silent_restart_text(silent_restarts(d)))
-    print("- 大きさ: " + size_report(args.snapshot, d)[0])
-    if d.get("dropped"):
-        print(f"- **4 MiB を越えたので落とした部分**: {', '.join(d['dropped'])}")
-    cut = truncated_parts(d)
-    if cut:
-        print("- **応答が 256 KiB で切れている部**: "
-              + "、".join(f"`{name}` ({num(shown)}"
-                         + (f"/{num(count)}" if count and count != shown else "") + " 件)"
-                         for name, shown, count in cut)
-              + " (top-level の `dropped` は**部ごと**落としたもの。部の中の打ち切りは"
-                "その部の `truncated` を見る)")
-    print()
-
+    delta = status_delta(st, pst, prev, restarted)
     reqs = delta(["total_requests"])
     # 通算を引き算した窓は「取得から取得まで」、引かないなら「起動から」
     secs = ((d.get("taken_at", 0) - prev.get("taken_at", 0)) if (prev and not restarted)
             else (st.get("uptime_secs") or 0))
-    if restarted:
-        print("**再起動をまたいでいるので、`/status` の通算 (要求・転送・名前解決・上限で断った) は"
-              "「起動から」の値** (引き算すると前の版のぶんを引いてしまう)。")
-        print()
-    print("| 全体 | 値 |")
-    print("|---|---|")
-    print(f"| 要求 | {num(reqs)} ({reqs / secs:.3f} /s) |" if secs else f"| 要求 | {num(reqs)} |")
-    print(f"| 転送 | {fmt_bytes(delta(['bytes_forwarded']))} |")
-    print(f"| いまの接続 | {num(st.get('active_connections'))} / 上限 {num(st.get('max_conns'))}"
-          f" (預かり所 {num(st.get('parked_connections'))}、うちトンネル {num(st.get('parked_tunnels'))}) |")
-    print(f"| スレッド / fd | {num(st.get('live_threads'))} / {num(st.get('max_threads'))}"
-          f" ・ {num(st.get('fds'))} / {num(st.get('max_fds'))} |")
-    print(f"| 上限で断った / 追い出した | {num(delta(['rejected_overload']))}"
-          f" / {num(delta(['evicted_idle']))} |")
-    cache = st.get("cache") or {}
-    sysinfo = cache.get("system") or {}
-    print(f"| キャッシュ | 命中率 {hit_ratio_text(cache, st.get('uptime_secs'))} "
-          f"(使用 {fmt_bytes((cache.get('memory') or {}).get('used_bytes'))}) |")
-    rss, rss_note = sysinfo.get("process_rss_bytes"), ""
-    if before:
-        early = ((before.get("cache") or {}).get("system") or {}).get("process_rss_bytes")
-        if early is not None:
-            rss, rss_note = early, " (**RSS は雪像の前に取った `/status` の値**)"
-    print(f"| RSS | {fmt_bytes(rss)}{rss_note} |")
-    print()
-
-    # CPU (割り当てに対する使用率・絞られた周期の割合・上位スレッド・走れずに待った時間)。
-    # **どちらの源も無い版では表ごと出さない** (T.15.0 (15))
-    prof = profile_totals(d)
-    cg = (st.get("kernel") or {}).get("cgroup_cpu") or {}
-    if prof or cg:
-        print("| CPU | 値 |")
-        print("|---|---|")
-        if prof:
-            used = cores(prof["cpu_us"], prof["secs"])
-            quota = cg.get("quota_cores")
-            share = (f" / 割り当て {num(quota)} コア の **{used / quota * 100:.1f}%**"
-                     if quota and used is not None else " (cgroup の割り当ては無い)")
-            # **コアは 3 桁**。1 桁だと 0.006 コアも 0.04 コアも「0.0」に潰れる
-            print(f"| 使用 | {'—' if used is None else f'{used:.3f}'} コア{share}"
-                  f" (`/profile` {prof['samples']} 標本 × {prof['interval_secs']} 秒) |")
-        split = user_kernel(prof, cg)
-        if split:
-            print(f"| ユーザー / カーネル | {split} |")
-        periods = cg.get("nr_periods")
-        if periods:
-            since = cg.get("since_start") or {}
-            sp, sth = since.get("nr_periods"), since.get("nr_throttled")
-            extra = (f"、起動から {sth / sp * 100:.1f}% ({num(sth)}/{num(sp)})"
-                     if sp else "")
-            print(f"| 絞られた周期 | **{cg.get('nr_throttled', 0) / periods * 100:.1f}%** "
-                  f"({num(cg.get('nr_throttled'))}/{num(periods)}){extra} |")
-        elif cg:
-            print(f"| 絞られた周期 | 絞られ {num(cg.get('nr_throttled'))} 回 "
-                  "(**この版に分母 `nr_periods` が無い**ので割合は出せない) |")
-        if prof and prof["top"]:
-            roles = prof["roles"]
-            shown = "、".join(
-                f"`{t['comm']}` (tid {t['tid']}"
-                + (f"、{roles[t['role']]}" if 0 <= t["role"] < len(roles) else "")
-                + f"、{t['cpu_us'] / 1000:,.0f} ms、走行 {num(t['running'])} 標本)"
-                for t in prof["top"][:3])
-            print(f"| 上位スレッド | {shown} |")
-        if prof and prof["run_delay_us"]:
-            pairs = sorted(zip(prof["roles"], prof["run_delay_us"]), key=lambda kv: -kv[1])
-            shown = "、".join(f"{r} {us / 1000:,.1f} ms" for r, us in pairs[:3] if us) or "—"
-            print(f"| 走れずに待った (`run_delay_us`) | {shown} |")
-        print()
-
-    dns = st.get("dns") or {}
-    pdns = (pst.get("dns") or {}) if (prev and not restarted) else {}
-    misses = dns.get("misses", 0) - pdns.get("misses", 0)
-    ms_sum = dns.get("miss_ms_sum", 0.0) - pdns.get("miss_ms_sum", 0.0)
-    print("| 名前解決 | 値 |")
-    print("|---|---|")
-    # 完了の定義の閾が 0.15 なので、2 桁だと 0.146 が「0.15」に丸まって判定を読み違える
-    print(f"| ミス | {num(misses)} ({misses / reqs:.3f} /要求) |" if reqs
-          else f"| ミス | {num(misses)} |")
-    print(f"| ミス 1 回 | {ms_sum / misses:.1f} ms |" if misses else "| ミス 1 回 | — |")
-    print(f"| 表 / warm / 引き直し | {num(dns.get('entries'))} / {num(dns.get('warm'))}"
-          f" / {num(dns.get('refreshes', 0) - pdns.get('refreshes', 0))} |")
-    print(f"| 負のキャッシュ命中 / 古い答えで代用 | {num(dns.get('negative_hits'))}"
-          f" / {num(dns.get('stale_served'))} |")
-    # ミスの種類別と引き直しの様子 (T.15.0 (7))。**どちらも起動からの通算**なので
-    # `--prev` でも引き算しない (`expired` が主なら窓、`warm_stale` なら引き直しの詰まり)
-    kinds = dns.get("misses_by_kind")
-    if kinds:
-        print("| ミスの種類別 (起動から) | "
-              + " / ".join(f"{k} {num(kinds.get(k, 0))}" for k in MISS_KINDS) + " |")
-    if any(k in dns for k in ("refresh_failures", "refresh_late", "refresh_ms_max")):
-        print(f"| 引き直しの失敗 / 遅れ / 最大 (起動から) | "
-              f"{num(dns.get('refresh_failures'))} 回 / {num(dns.get('refresh_late'))} 回"
-              f" / {num(dns.get('refresh_ms_max'))} ms |")
-    print()
-
-    hist = (d.get("history") or {})
-    print("| 待ち (履歴の全標本) | 本数 | 平均 | p50 / p95 | 最大 |")
-    print("|---|---|---|---|---|")
-    # `wait` は**利用者が待つ時間** (`queue + client_read + dns + connect`。T.15.0 (2))。
-    # `connect` は要求行を読んだ後からしか測らないので、次の完了の定義の基準線はこちら
-    for label, prefix, res, last in (("CONNECT 確立 (直近 1 時間)", "connect", "5", None),
-                                     ("CONNECT 確立 (直近 1 日)", "connect", "60", None),
-                                     ("CONNECT 確立 (通算)", "connect", "3600", None),
-                                     ("利用者が待つ `wait` (直近 1 日)", "wait", "60", None),
-                                     ("forward 初バイト (直近 1 時間)", "forward", "5", None),
-                                     ("forward 初バイト (通算)", "forward", "3600", None)):
-        print(latency_line(label, hist.get(res) or {}, prefix, last))
-    print()
-
-    # エラーの合計は `/status` に無いので、`/hosts` (全ホスト) から出す。
-    # **表ごとの合計は引き算しない** (切れた表どうしだと負になる。上の `error_delta` を見る)
-    errors = part(d, "errors").get("errors") or []
-    ed = error_delta(d, prev)
-    where = "`/hosts` をホストの鍵で突き合わせた差分" if ed["windowed"] else "`/hosts` の合計"
-    if ed["back"]:
-        print(f"- エラー: **引き算できない** ({ed['back']} ホストで `/hosts` の通算が減っている"
-              f" — `.rrd` が作り直された疑い。`scripts/snapshot-diff.py` の §7 を見ること)"
-              f" / 個票 {records_count(errors)}")
-    else:
-        shown = " ".join(f"{CAUSE_NAMES[i]} {n}" for i, n in enumerate(ed["causes"]) if n) or "—"
-        print(f"- エラー: {num(ed['total'])} 件 ({where}) / 原因 {shown}"
-              f" / 個票 {records_count(errors)}")
-    if ed["windowed"] and ed["gone"]:
-        print(f"  - 後の `/hosts` から消えたホスト {ed['gone']} 件 (通算のエラー"
-              f" {ed['gone_errors']} 件) は差分から外した")
-    if ed["truncated"]:
-        pairs = "、".join(f"{num(s)}/{num(c)} 件" for s, c in zip(ed["shown"], ed["count"]))
-        print(f"  - `/hosts` は **256 KiB で切れている** ({pairs}) ので、"
-              "下位のホストは前後で出入りする (合計どうしを引くと負になる)")
-    for e in errors[:5]:
-        print(f"  - `{stamp(e.get('at'))}` {e.get('kind')} {e.get('target')} → {e.get('status')}"
-              f" ({e.get('cause')}、dns {e.get('dns_ms')} ms / connect {e.get('connect_ms')} ms、"
-              f"from {e.get('client')}){repeats_tail(e)}")
-    print()
-
-    rec = part(d, "recent")
-    rows = rec.get("recent") or []
-    print(f"- 閉じた接続 (`/recent`): 通算 {num(rec.get('recorded'))} 本 / 覚えている {len(rows)} 本"
-          + ("" if not rec.get("truncated") else " (**応答は 256 KiB で切れている**)"))
-    if rows:
-        # **そろっている窓は「いちばん早く閉じた接続」から取得まで** (`at` の最小からではない)。
-        # 応答が切れているとき残っているのは「最後に閉じた N 本」なので、`at` の最小で窓を
-        # 切ると、その窓の中に**開始して窓の中で閉じなかった**接続が抜けたまま「全部」に見える。
-        ends = [r.get("at", 0) + r.get("secs", 0) for r in rows if r.get("at")]
-        if ends:
-            print(f"  - そろっている窓: {stamp(min(ends))} → {stamp(d.get('taken_at'))}"
-                  " (`min(at + secs)` から取得まで)"
-                  + ("。**これより前に閉じた接続は応答から落ちている** "
-                     "(`/recent?since=` を付けて取り直せば切れない)"
-                     if rec.get("truncated") else ""))
-        print(f"  - 閉じた理由: " + ", ".join(f"{k} {v}" for k, v in tally(rows, "reason").items()))
-        print(f"  - 種類: " + ", ".join(f"{k} {v}" for k, v in tally(rows, "kind").items()))
-        secs_all = [r.get("secs", 0) for r in rows]
-        print(f"  - 寿命: 中央値 {statistics.median(secs_all):.0f} 秒 / 最大 {max(secs_all):,} 秒")
-        up = sum(r.get("up", 0) for r in rows)
-        down = sum(r.get("down", 0) for r in rows)
-        print(f"  - バイト: 上り {fmt_bytes(up)} / 下り {fmt_bytes(down)}")
-        top_clients = tally(rows, "client")
-        print("  - 接続元: " + ", ".join(f"{k} {v}" for k, v in list(top_clients.items())[:5]))
-        slow = sorted(rows, key=lambda r: -(r.get("ms", {}).get("connect", 0)))[:5]
-        print("  - 確立の遅かった 5 本:")
-        for r in slow:
-            ms = r.get("ms", {})
-            print(f"    - {r.get('target')} connect {ms.get('connect', 0)} ms"
-                  f" / dns {ms.get('dns', 0)} ms ({r.get('reason')}、{r.get('secs')} 秒、"
-                  f"{fmt_bytes(r.get('up', 0) + r.get('down', 0))})")
-    print()
-
-    conns = part(d, "connections").get("connections") or []
-    print(f"- いまの接続 (`/connections`): {len(conns)} 本"
-          + ((" / " + ", ".join(f"{k} {v}" for k, v in tally(conns, "state").items())) if conns else ""))
-    # 動かないトンネル (T.15.0 (4) の証拠つき)。**閾は固定の 300 秒**なので見出しに書く
-    stuck = idle_tunnels(conns)
-    if stuck:
-        spins = sum(c.get("spins") or 0 for c in stuck)
-        half = sum(1 for c in stuck if c.get("half_closed"))
-        print(f"  - **動かないトンネル (`idle_secs` ≥ {IDLE_TUNNEL_SECS} 秒)**: {len(stuck)} 本"
-              f" (半閉じ {half} 本、`spins` の合計 {num(spins)})")
-        for c in stuck[:5]:
-            print(f"    - `{c.get('target')}` {conn_evidence(c)}")
-    log = part(d, "log").get("lines") or []
-    print(f"- 警告と失敗 (`/log`): {len(log)} 行"
-          + ((" / 直近 `" + (log[0].get("msg") or "")[:120] + "`") if log else ""))
+    # 節ごとに行の list を作って、作ったそばから印字する (T.34.132 で割った。印字の順と文は割る前と同じ)
+    emit(head_lines(d, st, args.snapshot, window))
+    emit(overall_lines(d, st, before, delta, reqs, secs, restarted))
+    emit(cpu_lines(d, st))
+    emit(dns_lines(st, pst, prev, restarted, reqs))
+    emit(wait_lines(d))
+    emit(error_lines(d, prev))
+    emit(recent_lines(d))
+    emit(connection_lines(d))
 
     # T17.0c: `/events` の anomaly の種類別 件/時 と、接続元の見張り。
     # **どちらも部が無い版では出さない** (古い雪像もそのまま読める)
