@@ -77,12 +77,13 @@ pub(super) fn refuse_blocked(
             more
         );
     }
-    metrics.record_host(
+    // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T.34.146)
+    let now = metrics.record_host(
         &format!("blocked://{}", bare_host),
         metrics::HostOutcome::Blocked,
         0,
     );
-    metrics.record_client(
+    metrics.record_client_at(
         peer_ip,
         metrics::HostOutcome::Blocked,
         0,
@@ -90,6 +91,7 @@ pub(super) fn refuse_blocked(
         (0, 0),
         None,
         Some(target_host),
+        now,
     );
     // 個票にも 1 件残す (`/errors`。T14.2 (4))。403 は集計では `blocked` に数えてあり、
     // `errors_by_cause` には乗らないので、**誰が何を拒否されたか**はここでしか読めない
@@ -137,7 +139,8 @@ pub(super) fn loop_detected(
         cause: Some(metrics::ErrCause::Loop),
         ..metrics::Detail::default()
     };
-    metrics.record_host_detail(
+    // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T.34.146)
+    let now = metrics.record_host_detail(
         &format!("loop://{}", host_header.unwrap_or(target)),
         metrics::HostOutcome::Error,
         0,
@@ -151,7 +154,7 @@ pub(super) fn loop_detected(
     // 作る側なので、母数 (T15.0 (12)) にはこの枝も入れる。自分宛ての要求は
     // 自分の `Via` を持たないので、ここへ来るのはプロキシとして受けた要求だけ
     *proxied = true;
-    metrics.record_client(
+    metrics.record_client_at(
         peer_ip,
         metrics::HostOutcome::Error,
         0,
@@ -159,6 +162,7 @@ pub(super) fn loop_detected(
         (0, 0),
         None,
         Some(host_header.unwrap_or(target)),
+        now,
     );
     Ok(Step::Close(recent::CloseReason::Error(
         metrics::ErrCause::Loop,

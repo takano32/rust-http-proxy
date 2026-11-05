@@ -195,14 +195,15 @@ fn record_stats(
         o.metrics.add_bytes(transferred);
     }
     let host_key = format!("connect://{}", o.addr_str);
-    o.metrics.record_host_detail(
+    // 読んだ壁時計は接続元の個票にも渡す (トンネル 1 本で 1 回。T.34.146)
+    let now = o.metrics.record_host_detail(
         &host_key,
         HostOutcome::Bypass,
         transferred,
         Some(o.connect_took),
         detail,
     );
-    o.metrics.record_client(
+    o.metrics.record_client_at(
         &o.client_ip,
         HostOutcome::Bypass,
         transferred,
@@ -211,6 +212,7 @@ fn record_stats(
         // 接続元の個票に宛先の種類とポートを数える (`/clients`。T14.7)。
         // トンネル 1 本の終わりに 1 回だけで、鍵は record_client のものをそのまま使う
         Some(&o.addr_str),
+        now,
     );
     // オリジン側の RTT はホスト別、クライアント側は接続元別へ (どちらも行が
     // できたあと = 上の 2 つより後に呼ぶこと。読めなければ鍵も取らない。T14.5)

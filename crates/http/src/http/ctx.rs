@@ -87,18 +87,21 @@ impl Ctx<'_> {
         // 出すのと同じ値) をそのまま運ぶだけ。ホスト別統計の鍵の内側で足す
         detail.bytes_in = self.up_bytes;
         detail.bytes_out = bytes;
-        self.metrics
-            .record_host_detail(self.pool_key, outcome, bytes, Some(took), detail);
+        // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T.34.146)
+        let now =
+            self.metrics
+                .record_host_detail(self.pool_key, outcome, bytes, Some(took), detail);
         self.metrics
             // 宛先はホスト別統計と同じ鍵 (`scheme://host:port`)。接続元の個票 (`/clients`) は
             // この鍵からホストとポートを取る (T14.7)
-            .record_client(
+            .record_client_at(
                 self.client_ip,
                 outcome,
                 bytes,
                 (self.up_bytes, bytes),
                 Some(took),
                 Some(self.pool_key),
+                now,
             );
         let mut digits = [0u8; 5];
         access(

@@ -2,6 +2,53 @@
 
 use super::*;
 
+/// 要求 1 本で壁時計を読むのは `Metrics::record` の 1 回だけ (T.34.146)。接続元の個票は
+/// ホスト別の記録が返した時刻をそのまま使い、自分では読み直さない
+/// (今までは `ClientStats::count` がもう 1 回読んでいた)。
+#[test]
+fn the_client_row_takes_the_clock_the_host_row_read() {
+    let m = Metrics::new();
+    // 渡した時刻がそのまま `last_seen` になる (時計を読み直すなら今の時刻になる)
+    m.record_client_at(
+        "10.0.0.1",
+        HostOutcome::Bypass,
+        1,
+        (0, 1),
+        None,
+        Some("http://example.com:80"),
+        1_000,
+    );
+    let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
+    assert_eq!(c.stats.last_seen, 1_000);
+    assert_eq!(c.stats.requests, 1);
+    // ホスト別の記録は読んだ時刻を返し、それがホストの行と接続元の行の両方に入る
+    let now = m.record_host_detail(
+        "http://example.com:80",
+        HostOutcome::Bypass,
+        1,
+        None,
+        Detail::default(),
+    );
+    assert!(now > 1_700_000_000);
+    m.record_client_at(
+        "10.0.0.1",
+        HostOutcome::Bypass,
+        1,
+        (0, 1),
+        None,
+        Some("http://example.com:80"),
+        now,
+    );
+    let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
+    assert_eq!(c.stats.last_seen, now);
+    let hosts = m.hosts_sorted();
+    let host = hosts
+        .iter()
+        .find(|(k, _)| k == "http://example.com:80")
+        .expect("ホストの行");
+    assert_eq!(host.1.last_seen, now);
+}
+
 /// 接続元の個票 (T14.7): `User-Agent`・宛先の種類・ポート・IP リテラル宛て。
 #[test]
 fn the_client_card_counts_agents_targets_ports_and_literals() {

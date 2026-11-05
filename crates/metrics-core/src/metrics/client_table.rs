@@ -10,6 +10,9 @@ impl Metrics {
     /// `target` はこの要求の宛先 (`scheme://host:port` / `host:port`。分からなければ
     /// `None`)。宛先の種類・ポート・IP リテラルは**この関数が既に取っている鍵の内側**で
     /// 数える (原子操作もシステムコールも増やさない。T14.7)。
+    ///
+    /// 壁時計は自分で読む。要求の経路はホスト別の記録が読んだ時刻を渡す
+    /// [`record_client_at`](Self::record_client_at) を使う (T.34.146)。
     pub fn record_client(
         &self,
         client: &str,
@@ -18,6 +21,33 @@ impl Metrics {
         dir: (u64, u64),
         took: Option<Duration>,
         target: Option<&str>,
+    ) {
+        self.record_client_at(
+            client,
+            outcome,
+            bytes,
+            dir,
+            took,
+            target,
+            crate::cache::now_epoch(),
+        );
+    }
+
+    /// [`record_client`](Self::record_client) の、壁時計 (epoch 秒) を受け取る版 (T.34.146)。
+    ///
+    /// `now` は同じ要求の [`record_host`](Self::record_host) / [`record_host_detail`](Self::record_host_detail)
+    /// が返した値。`Metrics::record` は壁時計を 1 回だけ読む約束なのに、今までは接続元の
+    /// 個票 ([`ClientStats::count`]) がもう 1 回読んでいた (要求 1 本で 2 回)。
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_client_at(
+        &self,
+        client: &str,
+        outcome: HostOutcome,
+        bytes: u64,
+        dir: (u64, u64),
+        took: Option<Duration>,
+        target: Option<&str>,
+        now: u64,
     ) {
         // ホスト別と同じ理由で、自己ベンチのぶんは `/clients` にも入れない (T14.43)
         if target.is_some_and(crate::selfbench::is_target) {
@@ -29,7 +59,7 @@ impl Metrics {
             return;
         }
         self.with_client(client, |stats| {
-            stats.count(outcome, bytes, dir, took, target)
+            stats.count(now, outcome, bytes, dir, took, target)
         });
     }
 

@@ -208,7 +208,8 @@ fn refuse_connect(
         stages,
         dns_before,
     );
-    a.metrics.record_host_detail(
+    // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T.34.146)
+    let now = a.metrics.record_host_detail(
         &format!("connect://{}", a.addr_str),
         HostOutcome::Error,
         0,
@@ -237,7 +238,7 @@ fn refuse_connect(
             0,
         );
     }
-    a.metrics.record_client(
+    a.metrics.record_client_at(
         a.client_ip,
         HostOutcome::Error,
         0,
@@ -245,6 +246,7 @@ fn refuse_connect(
         (0, 0),
         Some(a.started.elapsed()),
         Some(a.addr_str),
+        now,
     );
     access(
         a.conn_id,

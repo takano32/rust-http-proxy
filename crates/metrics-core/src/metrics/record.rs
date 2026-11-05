@@ -10,17 +10,21 @@ use super::*;
 
 impl Metrics {
     /// ホスト別に 1 要求を数える (応答時間なし)。
-    pub fn record_host(&self, host: &str, outcome: HostOutcome, bytes: u64) {
-        self.record(host, outcome, bytes, None, &Detail::default());
+    ///
+    /// 返すのは数えるときに読んだ壁時計 (epoch 秒)。同じ要求の
+    /// [`record_client_at`](Self::record_client_at) に渡すと、要求 1 本で時計を読むのが 1 回になる (T.34.146)。
+    pub fn record_host(&self, host: &str, outcome: HostOutcome, bytes: u64) -> u64 {
+        self.record(host, outcome, bytes, None, &Detail::default())
     }
 
     /// ホスト別に 1 要求と応答時間を数える。
     pub fn record_host_timed(&self, host: &str, outcome: HostOutcome, bytes: u64, took: Duration) {
-        self.record(host, outcome, bytes, Some(took), &Detail::default());
+        let _ = self.record(host, outcome, bytes, Some(took), &Detail::default());
     }
 
     /// [`record_host_timed`](Self::record_host_timed) に内訳を添えた版 (T12.4 (2))。
     /// 内訳は**この関数が取る鍵の内側**でしか触らないので、原子操作は増えない。
+    /// 返すのは [`record_host`](Self::record_host) と同じく、読んだ壁時計 (epoch 秒。T.34.146)。
     pub fn record_host_detail(
         &self,
         host: &str,
@@ -28,10 +32,11 @@ impl Metrics {
         bytes: u64,
         took: Option<Duration>,
         detail: Detail,
-    ) {
-        self.record(host, outcome, bytes, took, &detail);
+    ) -> u64 {
+        self.record(host, outcome, bytes, took, &detail)
     }
 
+    /// 1 要求を数え、読んだ壁時計 (epoch 秒) を返す (T.34.146)。
     fn record(
         &self,
         host: &str,
@@ -39,13 +44,14 @@ impl Metrics {
         bytes: u64,
         took: Option<Duration>,
         detail: &Detail,
-    ) {
+    ) -> u64 {
         // 起動時の自己ベンチ (T14.43) が自分で打った要求は `/hosts` にも窓にも入れない。
         // 入れると 20,000 要求ぶんの行・分位点・段階が実トラフィックの統計に混ざり、
         // デプロイ先の `/status` と `/history` が起動直後の 3 秒に支配される。
         // 費用は自己ベンチが回っていないときの原子の読み 1 回 (鍵も時計も触る前)
         if crate::selfbench::is_target(host) {
-            return;
+            // 呼ぶ側が接続元の個票に渡す時刻だけは返す (自己ベンチが回っている間だけ通る)
+            return crate::cache::now_epoch();
         }
         // 壁時計はここで 1 回だけ読む (ホスト別の `last_seen` と直近の標本 (T14.31) で
         // 使い回す。**読む回数は今までと同じ 1 回**)
@@ -95,6 +101,7 @@ impl Metrics {
                 .fetch_add(detail.syn_retrans as u64, Ordering::Relaxed);
         }
         hosts.count_host(host, &s, now, outcome, bytes, took, detail);
+        now
     }
 }
 

@@ -86,9 +86,11 @@ impl ClientStats {
     /// `dir` は向き別のバイト `(上り, 下り)` (T14.26)。接続元にも名前解決や族の内訳は
     /// 無いので、[`Detail`] はこの 2 欄だけを埋めて渡す (`/status` に 0 の列は増えない)。
     /// **呼ぶのは 1 つ上の層の `Metrics` だけ** (T14.55 でクレートを割るまでは
-    /// 同じクレートの中の `fn` だった)。
+    /// 同じクレートの中の `fn` だった)。`now` は呼ぶ側が読んだ壁時計 (epoch 秒)。
+    /// ここでは読み直さない (T.34.146。要求 1 本で時計を読むのは `Metrics::record` の 1 回)。
     pub fn count(
         &mut self,
+        now: u64,
         outcome: HostOutcome,
         bytes: u64,
         dir: (u64, u64),
@@ -100,8 +102,7 @@ impl ClientStats {
             bytes_out: dir.1,
             ..Detail::default()
         };
-        self.stats
-            .count(crate::cache::now_epoch(), outcome, bytes, took, &detail);
+        self.stats.count(now, outcome, bytes, took, &detail);
         if let Some(t) = target {
             self.note_target(t);
         }
