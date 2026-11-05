@@ -30,14 +30,11 @@
 //! 時計を読むのは中継が**書けなくて待ちに入る回だけ**なので、詰まらない中継
 //! (loopback) では 1 回も読まない。
 
-use std::collections::VecDeque;
 use std::fmt::Write as _;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::recent::SIDES;
-use crate::sync::LockExt;
-use crate::window::RESOLUTIONS;
+use crate::twores::{Counts, TwoRes, push_num_array, push_str_array};
 
 /// 速さを数える下限 (バイト)。これ未満のトンネルは `tunnels` にだけ数える。
 pub const MIN_BYTES: u64 = 1 << 10;
@@ -161,9 +158,47 @@ impl TransferCounts {
             self.half_close_ms_sum = self.half_close_ms_sum.saturating_add(took);
         }
     }
+}
+
+/// ms に丸める (0.5 ms 以上は 1 ms)。
+fn ms(d: Duration) -> u64 {
+    ((d.as_micros() + 500) / 1000).min(u64::MAX as u128) as u64
+}
+
+fn push_u64_array(out: &mut String, v: &[u64]) {
+    out.push('[');
+    push_num_array(out, v);
+    out.push(']');
+}
+
+/// 速さと半閉じの窓 (5 秒 × 720 と 60 秒 × 1,440)。
+///
+/// 書くのはトンネルの終わり ([`TransferWindows::observe`])、窓を閉じるのは
+/// history スレッド ([`TwoRes::roll`]) — `/history` の標本や `closed`
+/// と**同じ周期・同じ境目**で閉じるので、読む側は時刻で突き合わせられる。
+///
+/// **件数 0 の窓は残さない** (`closed` と同じ。行の先頭に窓の始まりの時刻がある)。
+/// 窓の扱いは `closed` と共通の [`TwoRes`] にある (T.34.34)。
+pub type TransferWindows = TwoRes<TransferCounts>;
+
+impl TwoRes<TransferCounts> {
+    /// 終わったトンネル 1 本を今の窓に足す (**トンネルの終わりで 1 回だけ**。鍵 1 回)。
+    pub fn observe(
+        &self,
+        bytes: u64,
+        relay: Duration,
+        half_close: Option<Duration>,
+        stall_ms: [u32; SIDES],
+    ) {
+        self.observe_with(|c| c.observe(bytes, relay, half_close, stall_ms));
+    }
+}
+
+impl Counts for TransferCounts {
+    const ROW_BYTES: usize = 120;
 
     /// 粗い解像度へ畳むときは足し合わせる (区間の値なので平均でも最後の値でもない)。
-    pub fn merge(&mut self, o: &TransferCounts) {
+    fn merge(&mut self, o: &TransferCounts) {
         self.tunnels += o.tunnels;
         self.speed_n += o.speed_n;
         for (a, b) in self.speed.iter_mut().zip(o.speed.iter()) {
@@ -184,12 +219,12 @@ impl TransferCounts {
             .saturating_add(o.stall_origin_ms_sum);
     }
 
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.tunnels == 0
     }
 
     /// 1 窓を配列 1 行として書く ([`TRANSFER_KEYS`] の順。先頭は窓の始まりの時刻)。
-    pub fn push_row(&self, out: &mut String, t: u64) {
+    fn push_row(&self, out: &mut String, t: u64) {
         let _ = write!(out, "[{},{},{},", t, self.tunnels, self.speed_n);
         push_u64_array(out, &self.speed);
         let _ = write!(out, ",{},", self.half_close_n);
@@ -204,165 +239,21 @@ impl TransferCounts {
             self.stall_origin_ms_sum
         );
     }
-}
 
-/// ms に丸める (0.5 ms 以上は 1 ms)。
-fn ms(d: Duration) -> u64 {
-    ((d.as_micros() + 500) / 1000).min(u64::MAX as u128) as u64
-}
-
-fn push_u64_array(out: &mut String, v: &[u64]) {
-    out.push('[');
-    for (i, n) in v.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        let _ = write!(out, "{}", n);
-    }
-    out.push(']');
-}
-
-fn push_num_array(out: &mut String, v: &[u64]) {
-    for (i, n) in v.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        let _ = write!(out, "{}", n);
-    }
-}
-
-#[derive(Default)]
-struct TransferState {
-    /// まだ閉じていない 5 秒の窓と、その始まり (5 秒に丸めた epoch)
-    cur: TransferCounts,
-    cur_t: u64,
-    /// まだ閉じていない 60 秒の窓 (閉じた 5 秒の窓を足し込む)
-    min_cur: TransferCounts,
-    min_t: u64,
-    fine: VecDeque<(u64, TransferCounts)>,
-    minute: VecDeque<(u64, TransferCounts)>,
-    /// 起動からの通算 (畳んだトンネルの本数)
-    total: u64,
-}
-
-/// 速さと半閉じの窓 (5 秒 × 720 と 60 秒 × 1,440)。
-///
-/// 書くのはトンネルの終わり ([`observe`](TransferWindows::observe))、窓を閉じるのは
-/// history スレッド ([`roll`](TransferWindows::roll)) — `/history` の標本や `closed`
-/// と**同じ周期・同じ境目**で閉じるので、読む側は時刻で突き合わせられる。
-///
-/// **件数 0 の窓は残さない** (`closed` と同じ。行の先頭に窓の始まりの時刻がある)。
-#[derive(Default)]
-pub struct TransferWindows {
-    inner: Mutex<TransferState>,
-}
-
-impl TransferWindows {
-    pub fn new() -> TransferWindows {
-        TransferWindows::default()
-    }
-
-    /// 終わったトンネル 1 本を今の窓に足す (**トンネルの終わりで 1 回だけ**。鍵 1 回)。
-    pub fn observe(
-        &self,
-        bytes: u64,
-        relay: Duration,
-        half_close: Option<Duration>,
-        stall_ms: [u32; SIDES],
-    ) {
-        let mut w = self.inner.locked();
-        w.total += 1;
-        w.cur.observe(bytes, relay, half_close, stall_ms);
-    }
-
-    /// 窓を閉じる (history スレッドが 5 秒ごとに呼ぶ)。
-    pub fn roll(&self, now: u64) {
-        let mut w = self.inner.locked();
-        let fine_t = (now / RESOLUTIONS[0].0) * RESOLUTIONS[0].0;
-        if fine_t != w.cur_t {
-            let done = std::mem::take(&mut w.cur);
-            let at = w.cur_t;
-            w.cur_t = fine_t;
-            if !done.is_empty() {
-                w.min_cur.merge(&done);
-                push_window(&mut w.fine, at, done, RESOLUTIONS[0].1);
-            }
-        }
-        let min_t = (now / RESOLUTIONS[1].0) * RESOLUTIONS[1].0;
-        if min_t != w.min_t {
-            let done = std::mem::take(&mut w.min_cur);
-            let at = w.min_t;
-            w.min_t = min_t;
-            if !done.is_empty() {
-                push_window(&mut w.minute, at, done, RESOLUTIONS[1].1);
-            }
-        }
-    }
-
-    /// 2 つの窓の置き場を満杯のぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
-    /// 返すのは触ったバイト数。
-    pub fn prefault(&self) -> usize {
-        let mut w = self.inner.locked();
-        crate::prefault::deque(&mut w.fine, RESOLUTIONS[0].1)
-            + crate::prefault::deque(&mut w.minute, RESOLUTIONS[1].1)
-    }
-
-    /// 残してある窓の数 (5 秒 / 60 秒) と、畳んだトンネルの本数の通算。
-    pub fn counts(&self) -> (usize, usize, u64) {
-        let w = self.inner.locked();
-        (w.fine.len(), w.minute.len(), w.total)
-    }
-
-    /// `/history` の `transfer` (解像度の添字は [`RESOLUTIONS`] と同じ)。
-    ///
-    /// **1 時間の解像度では残していない** (`null`)。`closed` と同じ理由で、
-    /// 「いま効いている設定が長すぎるか短すぎるか」を読むための分布には 30 日は要らない。
-    pub fn to_json_res(&self, res: usize) -> String {
-        if res > 1 {
-            return "null".to_string();
-        }
-        let w = self.inner.locked();
-        let ring = if res == 0 { &w.fine } else { &w.minute };
-        let mut out = String::with_capacity(256 + ring.len() * 120);
-        let _ = write!(out, "{{\"interval_secs\":{},\"keys\":[", RESOLUTIONS[res].0);
-        for (i, k) in TRANSFER_KEYS.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            let _ = write!(out, "\"{}\"", k);
-        }
+    fn push_head(out: &mut String) {
+        push_str_array(out, &TRANSFER_KEYS);
         out.push_str("],\"speed_bounds_bps\":[");
-        push_num_array(&mut out, &SPEED_BOUNDS_BPS);
+        push_num_array(out, &SPEED_BOUNDS_BPS);
         out.push_str("],\"half_close_bounds_ms\":[");
-        push_num_array(&mut out, &HALF_CLOSE_BOUNDS_MS);
+        push_num_array(out, &HALF_CLOSE_BOUNDS_MS);
         let _ = write!(out, "],\"min_bytes\":{},\"samples\":[", MIN_BYTES);
-        for (i, (t, c)) in ring.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            c.push_row(&mut out, *t);
-        }
-        let _ = write!(
-            out,
-            "],\"windows\":{},\"capacity\":{},\"recorded\":{}}}",
-            ring.len(),
-            RESOLUTIONS[res].1,
-            w.total
-        );
-        out
     }
-}
-
-fn push_window(ring: &mut VecDeque<(u64, TransferCounts)>, t: u64, c: TransferCounts, cap: usize) {
-    if ring.len() >= cap {
-        ring.pop_front();
-    }
-    ring.push_back((t, c));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::window::RESOLUTIONS;
 
     /// 詰まらなかったトンネル (T14.42)。
     const NO_STALL: [u32; SIDES] = [0; SIDES];

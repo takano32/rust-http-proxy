@@ -34,8 +34,8 @@ mod codec;
 // 閉じた接続の分布の窓
 mod closed;
 
+use crate::twores::{push_num_array, push_str_array};
 pub use closed::ClosedWindows;
-use closed::{push_num_array, push_str_array};
 pub use codec::{SAMPLE_ITEMS, SAMPLE_SPARE_ITEMS, V3_SPARE_ITEMS};
 pub use sample::{KEY_KINDS, KEYS, Sample};
 

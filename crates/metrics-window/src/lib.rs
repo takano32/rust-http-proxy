@@ -12,6 +12,8 @@ pub mod canaryhist;
 pub mod clients;
 pub mod history;
 pub mod transfer;
+// closed と transfer の 2 解像度の窓 (T.34.34)
+mod twores;
 
 // 割った先を今までの名前で出し直す (`proxy_metrics_window::profile` のような書き方をそのまま通す)。
 pub use proxy_metrics_profile::{profile, window};
