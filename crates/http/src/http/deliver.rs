@@ -461,8 +461,10 @@ fn storage_plan(
     } else {
         None
     };
-    if policy.is_none() && cs.stale.is_some() && (200..400).contains(&status) {
-        // 新しい表現が届いたのに保存できないので、古い表現も捨てる (4xx/5xx では残す)
+    if policy.is_none() && cs.stale.is_some() && (200..400).contains(&status) && status != 206 {
+        // 新しい表現が届いたのに保存できないので、古い表現も捨てる (4xx/5xx では残す)。
+        // `Range` 要求への 206 は全体の置き換えではないので残す (T.34.143。捨てると次の素の GET が
+        // 再検証で延ばせずに MISS になる)
         cache.remove(key);
     }
     // unsafe メソッドへの成功応答は対象 URL (と Location 先) のキャッシュを無効化する (RFC 9111 §4.4)
