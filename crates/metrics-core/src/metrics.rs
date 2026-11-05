@@ -318,3 +318,6 @@ mod tests;
 
 #[cfg(test)]
 mod latency_tests;
+
+#[cfg(test)]
+mod record_tests;
