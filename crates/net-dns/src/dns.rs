@@ -347,3 +347,7 @@ mod stale_tests;
 /// `dns` の単体テスト (T21.7 で別のファイルに移した)。
 #[cfg(test)]
 mod tests;
+
+/// keep-warm と裏の引き直しの単体テスト (T.34.62 で `tests` から分けた)。
+#[cfg(test)]
+mod warm_tests;
