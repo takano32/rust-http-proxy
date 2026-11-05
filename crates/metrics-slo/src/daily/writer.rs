@@ -10,6 +10,7 @@ use super::SEED_RES;
 use super::acc::{Acc, Cum};
 use super::file::{append, last_day};
 use super::versions::{clean_version, versions_of_day};
+use crate::day_rollover::DayRollover;
 
 /// 日次の要約を積んで、日が変わったら 1 行書くもの。
 ///
@@ -18,8 +19,8 @@ use super::versions::{clean_version, versions_of_day};
 pub struct Writer {
     path: Option<PathBuf>,
     version: String,
-    /// 最後にファイルへ書いた日 (起動時に最後の行から読む)
-    last_written: u64,
+    /// いま見ている日と、最後にファイルへ書いた日 (起動時に最後の行から読む。T.34.50)
+    rollover: DayRollover,
     acc: Option<Acc>,
     /// この起動で書いた行数と、書けなかった回数
     written: u64,
@@ -35,7 +36,7 @@ impl Writer {
         Writer {
             path,
             version: clean_version(version),
-            last_written,
+            rollover: DayRollover::new(last_written),
             acc: None,
             written: 0,
             errors: 0,
@@ -105,18 +106,19 @@ impl Writer {
         }
         let day = s.t / SECS_PER_DAY;
         let cum = Cum::take(s, bursts);
-        let finished = match self.acc.as_mut() {
-            Some(acc) if acc.day == day => {
+        let crossed = self.rollover.cross(s.t);
+        let finished = match (self.acc.as_mut(), crossed) {
+            (Some(acc), None) => {
                 acc.add(s, cum);
                 None
             }
-            Some(acc) => {
+            (Some(acc), Some(_)) => {
                 // 境目の標本の窓 (5 秒) はほとんどが前の日なので、**終わる日に足す**。
                 // 累計の差もここで閉じるので、次の日は同じ値から数え始める
                 acc.add(s, cum);
                 self.acc.replace(Acc::start_at(day, s.t, cum))
             }
-            None => {
+            (None, _) => {
                 let mut acc = Acc::start_at(day, s.t, cum);
                 acc.add(s, cum);
                 self.acc = Some(acc);
@@ -132,7 +134,7 @@ impl Writer {
         let Some(path) = self.path.clone() else {
             return;
         };
-        if done.day <= self.last_written {
+        if self.rollover.written(done.day) {
             // 同じ日の行が既にある (同じ日に 2 回起動した / 別のプロセスが書いた)
             log_debug!(
                 None,
@@ -147,7 +149,7 @@ impl Writer {
         let line = done.line(&self.version, rate_hours);
         match append(&path, &line) {
             Ok(()) => {
-                self.last_written = done.day;
+                self.rollover.mark_written(done.day);
                 self.written += 1;
                 log_info!(None, "daily summary {}: {}", path.display(), line);
             }

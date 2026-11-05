@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use super::names::{Moment, day_name, moment_name};
 use super::store::{newest_day, prune, prune_moments};
-use super::{DAILY_MAX_FILE, EXT, MAX_FILE, MAX_KEPT_DAYS, SECS_PER_DAY};
+use super::{DAILY_MAX_FILE, EXT, MAX_FILE, MAX_KEPT_DAYS};
+use crate::day_rollover::DayRollover;
 use crate::{log_debug, log_info, log_warn};
 
 // `Writer` は外に使い手が無いが `pub` のまま: `pub(crate)` に狭めると、試験だけが読む
@@ -26,10 +27,8 @@ pub struct Writer {
     dir: Option<PathBuf>,
     /// 残す日数 (`PROXY_SNAPSHOT_DAYS`。0 なら書かない)
     days: usize,
-    /// いま見ている日 (最初の標本で決まる。0 = まだ 1 本も見ていない)
-    day: u64,
-    /// 最後に書いた日 (起動時にいちばん新しいファイルの日付から)
-    last_written: u64,
+    /// いま見ている日と最後に書いた日 (起動時にいちばん新しいファイルの日付から。T.34.50)
+    rollover: DayRollover,
     written: u64,
     errors: u64,
     /// ディスクの予算で書かなかった回数
@@ -48,8 +47,7 @@ impl Writer {
         Writer {
             dir,
             days,
-            day: 0,
-            last_written,
+            rollover: DayRollover::new(last_written),
             written: 0,
             errors: 0,
             skipped: 0,
@@ -69,18 +67,9 @@ impl Writer {
         space: impl FnOnce(&Path) -> (Option<u64>, u64),
     ) -> Option<PathBuf> {
         let dir = self.dir.clone()?;
-        let day = t / SECS_PER_DAY;
-        let finished = match self.day {
-            0 => {
-                // 起動して最初の標本。この日が終わるまでは何も書かない
-                self.day = day;
-                return None;
-            }
-            cur if cur == day => return None,
-            cur => cur,
-        };
-        self.day = day;
-        if finished <= self.last_written {
+        // 起動して最初の標本はその日を覚えるだけ (この日が終わるまでは何も書かない)
+        let finished = self.rollover.cross(t)?;
+        if self.rollover.written(finished) {
             // その日のファイルが既にある (同じ日に 2 回起動した / 別のプロセスが書いた)
             log_debug!(
                 None,
@@ -104,7 +93,7 @@ impl Writer {
         if !self.put(&dir, &path, &body, DAILY_MAX_FILE, space) {
             return None;
         }
-        self.last_written = finished;
+        self.rollover.mark_written(finished);
         self.written += 1;
         let dropped = prune(&dir, self.days);
         log_info!(

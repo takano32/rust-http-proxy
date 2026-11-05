@@ -9,6 +9,7 @@
 //! (動作環境のメモリ上限は 120 MB)。**外部クレートは 1 つも使っていない。**
 
 pub mod daily;
+mod day_rollover;
 pub mod slo;
 pub mod snapshots;
 
