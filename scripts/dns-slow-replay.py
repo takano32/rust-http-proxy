@@ -2,7 +2,7 @@
 # `/events` の `dns_slow` (T.14.23 / T.17.1) を雪像の `/history?res=60` から作り直し、閾の案を並べる (T.22.2)。
 #
 # 材料は雪像 (`/snapshot`) 1 枚の `history["60"]` (1 分 × 1,440 行 = 24 時間) と、その `canary`
-# (canary の名前解決の ms)。判定の規則は `crates/metrics-watch/src/anomaly.rs` の `Detector::observe` を写した:
+# (canary の名前解決の ms)。判定の規則は `crates/metrics-watch/src/anomaly/detector.rs` の `Detector::hits` を写した:
 #   - 窓は直近 5 分 (`WINDOW_SECS`)。**1 分の行 5 本**を 1 つの窓にし、1 分ごとに判定する
 #     (実機は 5 秒の標本を 5 秒ごとに畳むので、立つ瞬間は最大 1 分ずれ、5 秒の境目にまたがる窓は見えない)
 #   - 立つ条件は案ごと (下の `PROPOSALS`)。閾は 100 ms と canary の中央値 (直近 1 時間) の 3 倍の大きい方

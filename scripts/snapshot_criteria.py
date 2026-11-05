@@ -870,7 +870,7 @@ def _p17_warm_max(c, th):
 def anomaly_rates(snap):
     """`/events` の anomaly を種類別に「起動からの 件/時」にする (部が無ければ None)。
 
-    種類は `text` の先頭の `<kind>:` (`crates/metrics-watch/src/anomaly.rs` の文面)。
+    種類は `text` の先頭の `<kind>:` (`crates/metrics-watch/src/anomaly/text.rs` の文面)。
     **`cleared:` (解けた知らせ) は数えない**。前の版から読み継いだ出来事が混ざるので、
     起動 (`taken_at − uptime_secs`) より前の `at` は外す。
     """

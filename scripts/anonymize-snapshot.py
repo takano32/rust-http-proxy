@@ -111,7 +111,7 @@ TEXT_V6_BRACKET = re.compile(r"\[([0-9A-Fa-f:.]{2,45})\]")
 TEXT_V6 = re.compile(r"(?<![\w:.\-])([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})(?![\w:.\-])")
 TEXT_V4 = re.compile(r"(?<![\w.\-])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])")
 TEXT_HOST = re.compile(r"(?<![\w.\-])([0-9A-Za-z_\-]+(?:\.[0-9A-Za-z_\-]+)+)(?::(\d{1,5}))?(?![\w.\-])")
-# `/events` の `new_client:` の説明の終わりにある `User-Agent` (`crates/metrics-watch/src/anomaly.rs` の
+# `/events` の `new_client:` の説明の終わりにある `User-Agent` (`crates/metrics-watch/src/anomaly/text.rs` の
 # `new_client_text`: `…, agent "<UA>")`)。UA は 128 B で切られることがあり、そのときは閉じの `")` が無い
 TEXT_AGENT = re.compile(r'(, agent ")(.*?)(?="\)$|$)')
 TLD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]{1,23}$")

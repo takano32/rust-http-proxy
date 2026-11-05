@@ -474,7 +474,7 @@ def started_at(snap):
 def anomaly_rates(snap):
     """`/events` の `anomaly` を**種類別に「起動からの件/時」**にする (T17.0c)。
 
-    種類は `text` の先頭の `<kind>:` (`crates/metrics-watch/src/anomaly.rs` の文面)。
+    種類は `text` の先頭の `<kind>:` (`crates/metrics-watch/src/anomaly/text.rs` の文面)。
     **`cleared:` (収まった) は数えない** — 立った回数が知りたいので、収まりまで数えると 2 倍に読める。
     `/events` のリングは状態ファイルに残って再起動をまたぐ (`restored`) ので、
     **起動より前の出来事は外す** (前の版の件数が混ざると、直した版の件/時が読めない)。

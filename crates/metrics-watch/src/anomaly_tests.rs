@@ -1,8 +1,11 @@
 //! `anomaly` の単体テスト (T22.2 で `anomaly.rs` の `mod tests` をそのまま移した。`anomaly.rs` が 2,000 行に
 //! 届いていたため)。`check` を通すものは出来事のリングがプロセスで 1 組なので、今までどおり `reset` で片づける。
 
+use super::detector::{dns_miss_limit, fold};
 use super::*;
+use crate::history::History;
 use crate::metrics::ErrCause;
+use crate::recent::ConnTable;
 
 /// 5 秒周期の標本 1 本。
 fn point(t: u64) -> Sample {
