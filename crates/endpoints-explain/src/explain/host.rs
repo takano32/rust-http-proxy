@@ -286,6 +286,41 @@ fn per(a: u64, b: u64) -> f64 {
     if b == 0 { 0.0 } else { a as f64 / b as f64 }
 }
 
+/// [`host_summary`] の文と数字の欄が共有する値 (**1 回だけ計算する**。T.34.101)。
+struct HostFigures {
+    /// 平均 (ms) と、その内訳の名前解決・接続・残り (ms)
+    avg: f64,
+    dns_ms: f64,
+    connect_ms: f64,
+    proxy_ms: f64,
+    p50: f64,
+    p95: f64,
+    /// カーネルの RTT の平均 (ms。標本が無ければ `None`)
+    rtt: Option<f64>,
+    /// 1 要求あたりの OS への名前解決の回数
+    miss_rate: f64,
+}
+
+impl HostFigures {
+    fn of(s: &HostStats) -> HostFigures {
+        // 時間の平均は「時間を測れた要求」で割る (段階の 3 つを同じ分母に揃える)
+        let n = if s.timed > 0 { s.timed } else { s.requests };
+        let avg = s.avg_ms();
+        let dns_ms = per(s.dns_ms_sum, n);
+        let connect_ms = per(s.connect_ms_sum, n);
+        HostFigures {
+            avg,
+            dns_ms,
+            connect_ms,
+            proxy_ms: (avg - dns_ms - connect_ms).max(0.0),
+            p50: s.quantile_ms(0.5),
+            p95: s.quantile_ms(0.95),
+            rtt: s.rtt_avg_ms(),
+            miss_rate: per(s.dns_misses, s.requests),
+        }
+    }
+}
+
 /// ホストの 1 行の判定と、同じ内容の数字の欄。
 ///
 /// **段階を足し算の形で並べるだけ** (`確立 259.0 ms = 名前解決 9.0 + 接続 250.0 +
@@ -300,15 +335,34 @@ pub(super) fn host_summary(
     errors: usize,
     known: bool,
 ) -> (String, String) {
-    // 時間の平均は「時間を測れた要求」で割る (段階の 3 つを同じ分母に揃える)
-    let n = if s.timed > 0 { s.timed } else { s.requests };
-    let avg = s.avg_ms();
-    let dns_ms = per(s.dns_ms_sum, n);
-    let connect_ms = per(s.connect_ms_sum, n);
-    let proxy_ms = (avg - dns_ms - connect_ms).max(0.0);
-    let (p50, p95) = (s.quantile_ms(0.5), s.quantile_ms(0.95));
-    let rtt = s.rtt_avg_ms();
-    let miss_rate = per(s.dns_misses, s.requests);
+    let f = HostFigures::of(s);
+    let numbers = host_numbers(s, &f, connects, forwards, dns_row, recent, errors);
+    let mut text = String::with_capacity(256);
+    if !known {
+        // 探した場所を全部並べて終わり (無い相手に「表に行は無い」を続けても読む手が増えるだけ)
+        text.push_str(
+            "この相手の記録は 1 件も無い (ホスト別の統計・名前解決の表・閉じた接続の個票・エラーのどれにも出てこない)。",
+        );
+        return (text, numbers);
+    }
+    if s.requests == 0 {
+        text.push_str("ホスト別の統計には 1 要求も無い (名前解決の表か個票にだけ居る)。");
+    } else {
+        stage_sentence(&mut text, s, &f, connects, forwards);
+        rtt_sentence(&mut text, s, &f);
+        resolver_sentence(&mut text, s, &f);
+    }
+    table_sentence(&mut text, dns_row);
+    let _ = write!(
+        text,
+        "閉じた接続の個票 {} 本、エラーの個票 {} 件 (段階と閉じた理由は recent / errors の欄)。",
+        recent, errors
+    );
+    (text, numbers)
+}
+
+/// 要求の数と、平均を段階の足し算に割った 1 文 (p50 / p95 まで)。
+fn stage_sentence(text: &mut String, s: &HostStats, f: &HostFigures, connects: u64, forwards: u64) {
     let label = if connects > 0 && forwards == 0 {
         "確立"
     } else if forwards > 0 && connects == 0 {
@@ -325,57 +379,54 @@ pub(super) fn host_summary(
     } else {
         "残り (プロキシ側の待ち + オリジンの応答と本文)"
     };
-    let mut text = String::with_capacity(256);
-    if !known {
-        // 探した場所を全部並べて終わり (無い相手に「表に行は無い」を続けても読む手が増えるだけ)
-        text.push_str(
-            "この相手の記録は 1 件も無い (ホスト別の統計・名前解決の表・閉じた接続の個票・エラーのどれにも出てこない)。",
-        );
-        return (
-            text,
-            host_numbers(s, connects, forwards, dns_row, recent, errors),
-        );
-    }
-    if s.requests == 0 {
-        text.push_str("ホスト別の統計には 1 要求も無い (名前解決の表か個票にだけ居る)。");
-    } else {
-        let _ = write!(
-            text,
-            "{} 要求 (CONNECT {} / forward {})。{}の平均 {:.1} ms = 名前解決 {:.1} + 接続 {:.1} + {} {:.1} ms。p50 {:.1} / p95 {:.1} ms。",
-            s.requests,
-            connects,
-            forwards,
-            label,
-            avg,
-            dns_ms,
-            connect_ms,
-            rest,
-            proxy_ms,
-            p50,
-            p95
-        );
-        match rtt {
-            Some(v) => {
-                let _ = write!(
-                    text,
-                    "カーネルの RTT {:.1} ms (標本 {}、再送 {})。",
-                    v, s.rtt_samples, s.retrans
-                );
-            }
-            None => text.push_str("カーネルの RTT は記録なし。"),
+    let _ = write!(
+        text,
+        "{} 要求 (CONNECT {} / forward {})。{}の平均 {:.1} ms = 名前解決 {:.1} + 接続 {:.1} + {} {:.1} ms。p50 {:.1} / p95 {:.1} ms。",
+        s.requests,
+        connects,
+        forwards,
+        label,
+        f.avg,
+        f.dns_ms,
+        f.connect_ms,
+        rest,
+        f.proxy_ms,
+        f.p50,
+        f.p95
+    );
+}
+
+/// カーネルの RTT の 1 文。
+fn rtt_sentence(text: &mut String, s: &HostStats, f: &HostFigures) {
+    match f.rtt {
+        Some(v) => {
+            let _ = write!(
+                text,
+                "カーネルの RTT {:.1} ms (標本 {}、再送 {})。",
+                v, s.rtt_samples, s.retrans
+            );
         }
-        let _ = write!(
-            text,
-            "名前解決は OS に {} 回 ({:.2} 回/要求、合計 {} ms)。エラー {} 件",
-            s.dns_misses, miss_rate, s.dns_ms_sum, s.errors
-        );
-        match top_cause(s) {
-            Some((name, count)) => {
-                let _ = write!(text, " (最多の原因 {} が {} 件)。", name, count);
-            }
-            None => text.push('。'),
-        }
+        None => text.push_str("カーネルの RTT は記録なし。"),
     }
+}
+
+/// OS への名前解決の回数と、エラーの数 (と最多の原因) の 1 文。
+fn resolver_sentence(text: &mut String, s: &HostStats, f: &HostFigures) {
+    let _ = write!(
+        text,
+        "名前解決は OS に {} 回 ({:.2} 回/要求、合計 {} ms)。エラー {} 件",
+        s.dns_misses, f.miss_rate, s.dns_ms_sum, s.errors
+    );
+    match top_cause(s) {
+        Some((name, count)) => {
+            let _ = write!(text, " (最多の原因 {} が {} 件)。", name, count);
+        }
+        None => text.push('。'),
+    }
+}
+
+/// 名前解決の表の行の 1 文 (行が無ければその理由の候補)。
+fn table_sentence(text: &mut String, dns_row: Option<&TableRow>) {
     match dns_row {
         Some(r) => {
             let _ = write!(
@@ -391,31 +442,18 @@ pub(super) fn host_summary(
             "名前解決の表に行は無い (IP リテラル宛てか、まだ引いていないか、追い出されたか)。",
         ),
     }
-    let _ = write!(
-        text,
-        "閉じた接続の個票 {} 本、エラーの個票 {} 件 (段階と閉じた理由は recent / errors の欄)。",
-        recent, errors
-    );
-
-    (
-        text,
-        host_numbers(s, connects, forwards, dns_row, recent, errors),
-    )
 }
 
 /// ホストの数字の欄 (`summary` の文章と**同じ値**を機械が読む形で)。
 fn host_numbers(
     s: &HostStats,
+    f: &HostFigures,
     connects: u64,
     forwards: u64,
     dns_row: Option<&TableRow>,
     recent: usize,
     errors: usize,
 ) -> String {
-    let n = if s.timed > 0 { s.timed } else { s.requests };
-    let avg = s.avg_ms();
-    let dns_ms = per(s.dns_ms_sum, n);
-    let connect_ms = per(s.connect_ms_sum, n);
     let mut numbers = String::with_capacity(512);
     let _ = write!(
         numbers,
@@ -424,21 +462,21 @@ fn host_numbers(
         connects,
         forwards,
         s.timed,
-        avg,
-        dns_ms,
-        connect_ms,
-        (avg - dns_ms - connect_ms).max(0.0),
-        s.quantile_ms(0.5),
-        s.quantile_ms(0.95),
+        f.avg,
+        f.dns_ms,
+        f.connect_ms,
+        f.proxy_ms,
+        f.p50,
+        f.p95,
         s.duration_ms_max,
-        match s.rtt_avg_ms() {
+        match f.rtt {
             Some(v) => format!("{:.1}", v),
             None => "null".to_string(),
         },
         s.rtt_samples,
         s.retrans,
         s.dns_misses,
-        per(s.dns_misses, s.requests),
+        f.miss_rate,
         s.dns_ms_sum,
         s.errors,
         s.error_rate(),
