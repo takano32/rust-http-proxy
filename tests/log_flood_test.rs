@@ -14,10 +14,9 @@
 mod common;
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::time::Duration;
 
-use common::{ProxyProcess, endpoint_json, scratch_dir, status_json, write_env};
+use common::{ProxyProcess, endpoint_json, raw_request_with, scratch_dir, status_json, write_env};
 
 fn home(tag: &str) -> std::path::PathBuf {
     let dir = scratch_dir(&format!("rhp-t2809-{}", tag));
@@ -28,17 +27,6 @@ fn home(tag: &str) -> std::path::PathBuf {
          PROXY_CANARY=off\n",
     );
     dir
-}
-
-fn send_raw(port: u16, bytes: &[u8]) -> String {
-    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    let _ = s.write_all(bytes);
-    // 書き終えたと伝える (向こうが読み捨ての待ち (`linger`) で 200 ms 止まらないように)
-    let _ = s.shutdown(std::net::Shutdown::Write);
-    let mut out = Vec::new();
-    let _ = s.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `/status` の `rejected_requests` の中の 1 つ。
@@ -69,9 +57,18 @@ fn test_integration_bad_requests_warn_once_per_reason_and_self_requests_stay_qui
     // (`method`)、CONNECT の `Host` が 2 本 (`dup_host`。本体クレートの入口で断る)
     let connect_dup = b"CONNECT example.invalid:443 HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n";
     for _ in 0..N {
-        assert!(send_raw(proxy.port, b"GET\r\n\r\n").starts_with("HTTP/1.1 400 "));
-        assert!(send_raw(proxy.port, b"@@@\r\n\r\n").starts_with("HTTP/1.1 400 "));
-        assert!(send_raw(proxy.port, connect_dup).starts_with("HTTP/1.1 400 "));
+        assert!(
+            raw_request_with(proxy.port, b"GET\r\n\r\n", Duration::from_secs(5), true)
+                .starts_with("HTTP/1.1 400 ")
+        );
+        assert!(
+            raw_request_with(proxy.port, b"@@@\r\n\r\n", Duration::from_secs(5), true)
+                .starts_with("HTTP/1.1 400 ")
+        );
+        assert!(
+            raw_request_with(proxy.port, connect_dup, Duration::from_secs(5), true)
+                .starts_with("HTTP/1.1 400 ")
+        );
     }
     // 自分宛ての要求 (ダッシュボードが引くもの)
     for _ in 0..5 {
@@ -168,22 +165,28 @@ fn test_integration_origin_failures_warn_once_per_reason() {
     const N: usize = 100;
     for i in 0..N {
         let t = format!("127.0.0.1:{}", closed);
-        let got = send_raw(
+        let got = raw_request_with(
             proxy.port,
             format!("CONNECT {t} HTTP/1.1\r\nHost: {t}\r\n\r\n").as_bytes(),
+            Duration::from_secs(5),
+            true,
         );
         assert!(got.starts_with("HTTP/1.1 502"), "{}", got);
-        let got = send_raw(
+        let got = raw_request_with(
             proxy.port,
             format!("GET http://{t}/{i} HTTP/1.1\r\nHost: {t}\r\nConnection: close\r\n\r\n")
                 .as_bytes(),
+            Duration::from_secs(5),
+            true,
         );
         assert!(got.starts_with("HTTP/1.1 502"), "{}", got);
         let o = format!("127.0.0.1:{}", short);
-        let got = send_raw(
+        let got = raw_request_with(
             proxy.port,
             format!("GET http://{o}/{i} HTTP/1.1\r\nHost: {o}\r\nConnection: close\r\n\r\n")
                 .as_bytes(),
+            Duration::from_secs(5),
+            true,
         );
         assert!(got.starts_with("HTTP/1.1 502"), "{}", got);
     }
@@ -240,7 +243,10 @@ fn test_integration_a_long_malformed_request_line_is_clipped_in_the_log() {
     // 空白の無い 60 KiB の 1 語 (`request_line`)
     let mut req = vec![b'A'; 60 * 1024];
     req.extend_from_slice(b"\r\n\r\n");
-    assert!(send_raw(proxy.port, &req).starts_with("HTTP/1.1 400 "));
+    assert!(
+        raw_request_with(proxy.port, &req, Duration::from_secs(5), true)
+            .starts_with("HTTP/1.1 400 ")
+    );
     let lines = proxy.drain_log(Duration::from_millis(500));
     let warn: Vec<&String> = lines
         .iter()

@@ -160,13 +160,23 @@ pub fn open_tunnel_with(
     stream
 }
 
-/// 1 本の接続に生のバイト列を投げ、応答 (あれば) と接続が閉じたかを返す。
+/// 1 本の接続に生のバイト列を投げ、応答 (あれば) と接続が閉じたかを返す (読みの締め切り 3 秒)。
 pub fn raw_request(proxy_port: u16, bytes: &[u8]) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    stream.write_all(bytes).unwrap();
+    raw_request_with(proxy_port, bytes, Duration::from_secs(3), false)
+}
+
+/// 生のバイト列を 1 本の接続に投げて、相手が閉じるまで (閉じなければ `timeout` まで) 読む
+/// (T.34.109 で各試験の `send_raw` をここへ寄せた)。
+///
+/// 書き込みの失敗は無視する: 長すぎるヘッダーや壊れた要求は、相手が途中で閉じることがある。
+/// `half_close` なら書き終えたと伝える (向こうが読み捨ての待ち (`linger`) で止まらないように)。
+pub fn raw_request_with(port: u16, bytes: &[u8], timeout: Duration, half_close: bool) -> String {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+    stream.set_read_timeout(Some(timeout)).unwrap();
+    let _ = stream.write_all(bytes);
+    if half_close {
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+    }
     let mut out = Vec::new();
     // 相手が閉じるまで読む (閉じなければタイムアウトで抜ける)
     let _ = stream.read_to_end(&mut out);

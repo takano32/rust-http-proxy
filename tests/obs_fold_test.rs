@@ -9,7 +9,7 @@
 //! **状態コードと、オリジンが実際に受け取ったヘッダーの両方**を固定する。
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -52,18 +52,6 @@ fn start_recording_origin(received: Arc<Mutex<Vec<String>>>) -> u16 {
     port
 }
 
-/// 生のバイト列を 1 本の接続に投げて、閉じるまで応答を読む。
-fn send_raw(proxy_port: u16, bytes: &[u8]) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let _ = stream.write_all(bytes);
-    let mut out = Vec::new();
-    let _ = stream.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// 空白始まりとタブ始まりの継続行は、どちらも 400 で断り、オリジンへは 1 バイトも送らない。
 #[test]
 fn test_integration_obsolete_line_folding_is_refused() {
@@ -73,24 +61,28 @@ fn test_integration_obsolete_line_folding_is_refused() {
     let host = format!("127.0.0.1:{}", origin_port);
 
     // (1) SP で折り返した `X-A: 1` + ` 2`
-    let resp = send_raw(
+    let resp = raw_request_with(
         proxy_port,
         format!(
             "GET http://{}/x HTTP/1.1\r\nHost: {}\r\nX-A: 1\r\n 2\r\nConnection: close\r\n\r\n",
             host, host
         )
         .as_bytes(),
+        Duration::from_secs(5),
+        false,
     );
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
 
     // (2) HTAB で折り返した `X-A: 1` + `\t2`
-    let resp = send_raw(
+    let resp = raw_request_with(
         proxy_port,
         format!(
             "GET http://{}/x HTTP/1.1\r\nHost: {}\r\nX-A: 1\r\n\t2\r\nConnection: close\r\n\r\n",
             host, host
         )
         .as_bytes(),
+        Duration::from_secs(5),
+        false,
     );
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
 
@@ -121,13 +113,15 @@ fn test_integration_plain_headers_still_pass() {
     let proxy_port = start_test_proxy(proxy_config());
     let host = format!("127.0.0.1:{}", origin_port);
 
-    let resp = send_raw(
+    let resp = raw_request_with(
         proxy_port,
         format!(
             "GET http://{}/x HTTP/1.1\r\nHost: {}\r\nX-A: 1\r\nX-B: 2\r\nConnection: close\r\n\r\n",
             host, host
         )
         .as_bytes(),
+        Duration::from_secs(5),
+        false,
     );
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
 

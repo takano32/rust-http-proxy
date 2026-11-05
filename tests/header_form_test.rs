@@ -12,26 +12,12 @@
 //! オリジンに届かないこと、`rejected_requests.bad_header` と `/metrics` が増えること、値の中の
 //! HTAB と、空白の無いふつうの行は今までどおり通ること、CONNECT の入口でも同じに断ること。
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod common;
 use common::*;
-
-/// 生のバイト列を 1 本の接続に投げて応答を全部読む (書けなくても落とさない)。
-fn send_raw(proxy_port: u16, bytes: &[u8]) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let _ = stream.write_all(bytes);
-    let mut out = Vec::new();
-    let _ = stream.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).into_owned()
-}
 
 /// 受け取った要求の全文を貯めるオリジン。
 fn capture_origin() -> (u16, Arc<Mutex<Vec<String>>>) {
@@ -92,7 +78,7 @@ fn test_integration_malformed_header_forms_are_rejected() {
         ),
     ];
     for (name, bytes) in &bad {
-        let resp = send_raw(proxy_port, bytes);
+        let resp = raw_request_with(proxy_port, bytes, Duration::from_secs(5), false);
         assert!(resp.starts_with("HTTP/1.1 400 "), "{}: {:?}", name, resp);
         // 400 を返してから閉じる (無言で切らない)
         assert!(resp.contains("Content-Length: 0"), "{}: {:?}", name, resp);
@@ -109,7 +95,7 @@ fn test_integration_malformed_header_forms_are_rejected() {
         "GET http://{h}/ok HTTP/1.1\r\nHost: {h}\r\nX-A: a\tb\r\nConnection: close\r\n\r\n",
         h = host
     );
-    let resp = send_raw(proxy_port, ok.as_bytes());
+    let resp = raw_request_with(proxy_port, ok.as_bytes(), Duration::from_secs(5), false);
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
     wait_until(|| !seen.lock().unwrap().is_empty(), "オリジンへの到達");
     assert!(seen.lock().unwrap()[0].contains("X-A: a\tb\r\n"));
@@ -145,7 +131,7 @@ fn test_integration_malformed_header_in_connect_is_rejected() {
             t = target
         ),
     ] {
-        let resp = send_raw(proxy_port, bytes.as_bytes());
+        let resp = raw_request_with(proxy_port, bytes.as_bytes(), Duration::from_secs(5), false);
         assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
         assert!(!resp.contains(" 200 "), "トンネルを張った: {:?}", resp);
     }
@@ -172,13 +158,15 @@ fn test_integration_cr_and_nul_in_response_values_become_spaces() {
     );
     let proxy_port = start_test_proxy(proxy_config());
     let host = format!("127.0.0.1:{}", origin_port);
-    let resp = send_raw(
+    let resp = raw_request_with(
         proxy_port,
         format!(
             "GET http://{h}/r HTTP/1.1\r\nHost: {h}\r\nConnection: close\r\n\r\n",
             h = host
         )
         .as_bytes(),
+        Duration::from_secs(5),
+        false,
     );
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
     assert!(

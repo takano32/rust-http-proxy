@@ -13,26 +13,12 @@
 //! 3. `/status` の `rejected_requests.dup_host` と `/metrics` の
 //!    `sorahost_rejected_requests_total{reason="dup_host"}` が 1 増える
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod common;
 use common::*;
-
-/// 生のバイト列を 1 本の接続に投げて応答を全部読む (書けなくても落とさない)。
-fn send_raw(proxy_port: u16, bytes: &[u8]) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let _ = stream.write_all(bytes);
-    let mut out = Vec::new();
-    let _ = stream.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).into_owned()
-}
 
 /// 受け取った要求の全文を貯めるオリジン (`start_origin` のハンドラに渡す)。
 fn capture_origin() -> (u16, Arc<Mutex<Vec<String>>>) {
@@ -89,7 +75,7 @@ fn test_integration_duplicate_host_is_rejected() {
          Connection: close\r\n\r\n",
         host, host
     );
-    let resp = send_raw(proxy_port, dup.as_bytes());
+    let resp = raw_request_with(proxy_port, dup.as_bytes(), Duration::from_secs(5), false);
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
     // 400 を返してから閉じる (無言で切らない)
     assert!(resp.contains("Content-Length: 0"), "{:?}", resp);
@@ -107,7 +93,7 @@ fn test_integration_duplicate_host_is_rejected() {
         "GET http://{}/once HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
         host, host
     );
-    let resp = send_raw(proxy_port, single.as_bytes());
+    let resp = raw_request_with(proxy_port, single.as_bytes(), Duration::from_secs(5), false);
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
     wait_until(|| !seen.lock().unwrap().is_empty(), "オリジンへの到達");
     let got = seen.lock().unwrap().clone();

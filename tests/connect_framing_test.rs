@@ -57,18 +57,6 @@ fn start_recording_echo() -> (u16, Arc<Mutex<Vec<Vec<u8>>>>) {
     (port, conns)
 }
 
-/// 生のバイト列を投げて、相手が閉じるまで読む (400 で閉じる経路用)。
-fn send_raw_to_end(proxy_port: u16, bytes: &[u8]) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let _ = stream.write_all(bytes);
-    let mut out = Vec::new();
-    let _ = stream.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// `/status` の `rejected_requests` から理由別の値だけを取り出す。
 fn rejected(status: &str, reason: &str) -> u64 {
     let start = status
@@ -111,7 +99,7 @@ fn test_integration_connect_with_broken_framing_is_rejected() {
         "CONNECT {h} HTTP/1.1\r\nHost: {h}\r\nHost: evil.example\r\n\r\n",
         h = host
     );
-    let resp = send_raw_to_end(proxy_port, dup.as_bytes());
+    let resp = raw_request_with(proxy_port, dup.as_bytes(), Duration::from_secs(5), false);
     assert!(
         resp.starts_with("HTTP/1.1 400 "),
         "Host 2 本の CONNECT が 400 でない: {:?}",
@@ -125,7 +113,7 @@ fn test_integration_connect_with_broken_framing_is_rejected() {
         "CONNECT {h} HTTP/1.1\r\nHost: {h}\r\nX-A: 1\r\n 2\r\n\r\n",
         h = host
     );
-    let resp = send_raw_to_end(proxy_port, fold.as_bytes());
+    let resp = raw_request_with(proxy_port, fold.as_bytes(), Duration::from_secs(5), false);
     assert!(
         resp.starts_with("HTTP/1.1 400 "),
         "obs-fold の CONNECT が 400 でない: {:?}",
@@ -137,7 +125,12 @@ fn test_integration_connect_with_broken_framing_is_rejected() {
         "CONNECT {h} HTTP/1.1\r\nHost: {h}\r\nContent-Length: 5\r\n\r\nhello",
         h = host
     );
-    let resp = send_raw_to_end(proxy_port, with_body.as_bytes());
+    let resp = raw_request_with(
+        proxy_port,
+        with_body.as_bytes(),
+        Duration::from_secs(5),
+        false,
+    );
     assert!(
         resp.starts_with("HTTP/1.1 400 "),
         "本文付きの CONNECT が 400 でない: {:?}",
@@ -149,7 +142,12 @@ fn test_integration_connect_with_broken_framing_is_rejected() {
         "CONNECT {h} HTTP/1.1\r\nHost: {h}\r\nTransfer-Encoding: chunked\r\n\r\n",
         h = host
     );
-    let resp = send_raw_to_end(proxy_port, chunked.as_bytes());
+    let resp = raw_request_with(
+        proxy_port,
+        chunked.as_bytes(),
+        Duration::from_secs(5),
+        false,
+    );
     assert!(
         resp.starts_with("HTTP/1.1 400 "),
         "Transfer-Encoding 付きの CONNECT が 400 でない: {:?}",

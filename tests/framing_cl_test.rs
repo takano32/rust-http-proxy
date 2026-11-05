@@ -7,7 +7,7 @@
 //! いまは形が壊れていれば 400 で断り (無言で閉じない)、同値の重複は 1 本に畳んで転送する。
 //! `Transfer-Encoding: chunked` と `Content-Length` の同時指定 (T14.28 の 400) は回帰しないこと。
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -46,20 +46,11 @@ fn recording_origin() -> Recording {
     (port, seen, hits, handle)
 }
 
-/// 生のバイト列を 1 本の接続に投げて応答を読み切る (所要時間も返す)。
+/// 生のバイト列を 1 本の接続に投げて応答を読み切る (所要時間も返す。接続から読み終わりまで)。
 fn send_raw(port: u16, bytes: &[u8]) -> (String, Duration) {
     let started = Instant::now();
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let _ = stream.write_all(bytes);
-    let mut out = Vec::new();
-    let _ = stream.read_to_end(&mut out);
-    (
-        String::from_utf8_lossy(&out).into_owned(),
-        started.elapsed(),
-    )
+    let out = raw_request_with(port, bytes, Duration::from_secs(5), false);
+    (out, started.elapsed())
 }
 
 /// 受け取った要求の中の `Content-Length` の値 (名前の大小は無視する)。

@@ -9,25 +9,12 @@
 //! 見るのは、断る 6 形が 400 でオリジンに届かず `body_framing` に数えられること、
 //! `gzip, chunked` (最後が chunked) と大文字の `Chunked` は今までどおり chunked として届くこと。
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod common;
 use common::*;
-
-fn send_raw(proxy_port: u16, bytes: &[u8]) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let _ = stream.write_all(bytes);
-    let mut out = Vec::new();
-    let _ = stream.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).into_owned()
-}
 
 fn capture_origin() -> (u16, Arc<Mutex<Vec<String>>>) {
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -111,7 +98,7 @@ fn test_integration_transfer_encoding_that_does_not_frame_is_rejected() {
         ),
     ];
     for (name, bytes) in &bad {
-        let resp = send_raw(proxy_port, bytes);
+        let resp = raw_request_with(proxy_port, bytes, Duration::from_secs(5), false);
         assert!(resp.starts_with("HTTP/1.1 400 "), "{}: {:?}", name, resp);
         // 応答は 1 つだけ (本文が次の要求として読まれていない)
         assert_eq!(resp.matches("HTTP/1.1 ").count(), 1, "{}: {:?}", name, resp);
@@ -130,7 +117,7 @@ fn test_integration_transfer_encoding_that_does_not_frame_is_rejected() {
     // 最後が chunked なら今までどおり chunked として届く (符号化の名前の大小は問わない)
     for te in ["gzip, chunked", "Chunked"] {
         seen.lock().unwrap().clear();
-        let resp = send_raw(
+        let resp = raw_request_with(
             proxy_port,
             &post(
                 &host,
@@ -138,6 +125,8 @@ fn test_integration_transfer_encoding_that_does_not_frame_is_rejected() {
                 &format!("Transfer-Encoding: {}\r\n", te),
                 CHUNKED_BODY,
             ),
+            Duration::from_secs(5),
+            false,
         );
         assert!(resp.starts_with("HTTP/1.1 200 "), "{}: {:?}", te, resp);
         wait_until(|| !seen.lock().unwrap().is_empty(), "オリジンへの到達");

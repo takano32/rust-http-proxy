@@ -11,7 +11,6 @@
 //! 数えるのは**断る経路だけ**なので、通した要求は 1 つも増やさない
 //! (最後のテストで「成功の経路は 0 増」を実際に確かめている)。
 
-use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -37,19 +36,6 @@ fn oversized_headers() -> Vec<u8> {
     req
 }
 
-/// 生のバイト列を 1 本の接続に投げて応答を読む (書き込みの失敗は無視する:
-/// 長すぎるヘッダーは相手が途中で閉じることがある)。
-fn send_raw(proxy_port: u16, bytes: &[u8]) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let _ = stream.write_all(bytes);
-    let mut out = Vec::new();
-    let _ = stream.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// `reason` の系列の値 (`/metrics` の `sorahost_rejected_requests_total{reason="…"}`)。
 fn prom_value(text: &str, reason: &str) -> u64 {
     let needle = format!("sorahost_rejected_requests_total{{reason=\"{}\"}} ", reason);
@@ -67,15 +53,30 @@ fn test_integration_bad_requests_are_counted_by_reason() {
     let (proxy_port, metrics) = start_test_proxy_with_metrics(proxy_config());
 
     // (1) 要求行が空白で 2 つに割れない → `request_line` (400)
-    let resp = send_raw(proxy_port, b"GARBAGE\r\n\r\n");
+    let resp = raw_request_with(
+        proxy_port,
+        b"GARBAGE\r\n\r\n",
+        Duration::from_secs(5),
+        false,
+    );
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
 
     // (2) ヘッダーの合計が上限を越える → `header_too_large` (431)
-    let resp = send_raw(proxy_port, &oversized_headers());
+    let resp = raw_request_with(
+        proxy_port,
+        &oversized_headers(),
+        Duration::from_secs(5),
+        false,
+    );
     assert!(resp.starts_with("HTTP/1.1 431 "), "{:?}", resp);
 
     // (3) オリジン形式なのに `Host` が無い → `no_host` (400)
-    let resp = send_raw(proxy_port, b"GET /somewhere HTTP/1.1\r\n\r\n");
+    let resp = raw_request_with(
+        proxy_port,
+        b"GET /somewhere HTTP/1.1\r\n\r\n",
+        Duration::from_secs(5),
+        false,
+    );
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
 
     // それぞれ 1 ずつ、ほかの 3 種は 0 のまま
@@ -145,11 +146,21 @@ fn test_integration_the_other_three_reasons() {
     let (proxy_port, metrics) = start_test_proxy_with_metrics(proxy_config());
 
     // メソッドが HTTP の token として読めない (走査が投げるゴミ) → `method`
-    let resp = send_raw(proxy_port, b"\x01\x02\x03\r\n\r\n");
+    let resp = raw_request_with(
+        proxy_port,
+        b"\x01\x02\x03\r\n\r\n",
+        Duration::from_secs(5),
+        false,
+    );
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
 
     // 絶対 URI にホストが無い → `bad_uri`
-    let resp = send_raw(proxy_port, b"GET http:/// HTTP/1.1\r\nHost: x\r\n\r\n");
+    let resp = raw_request_with(
+        proxy_port,
+        b"GET http:/// HTTP/1.1\r\nHost: x\r\n\r\n",
+        Duration::from_secs(5),
+        false,
+    );
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
 
     // `Content-Length` と `Transfer-Encoding: chunked` が両方ある (要求の密輸) → `body_framing`
@@ -159,7 +170,7 @@ fn test_integration_the_other_three_reasons() {
          Content-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
         origin_port, origin_port
     );
-    let resp = send_raw(proxy_port, req.as_bytes());
+    let resp = raw_request_with(proxy_port, req.as_bytes(), Duration::from_secs(5), false);
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
 
     let count = |r: BadRequestReason| metrics.rejected_requests[r as usize].load(Ordering::Relaxed);
@@ -198,14 +209,13 @@ fn test_integration_successful_requests_do_not_count() {
         assert!(head.starts_with("HTTP/1.1 200 "), "{}", head);
     }
     // 本文のある要求 (`Content-Length` だけ) も枠は正しいので通る
-    let resp = send_raw(
+    let resp = raw_request_with(
         proxy_port,
         format!(
             "POST http://{}/x HTTP/1.1\r\nHost: {}\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
             host, host
         )
-        .as_bytes(),
-    );
+        .as_bytes(), Duration::from_secs(5), false);
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
 
     // 内部エンドポイント (`/status` は自分宛て) も数えない
