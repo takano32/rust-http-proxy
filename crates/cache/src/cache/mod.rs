@@ -151,9 +151,25 @@ impl Cache {
         } else {
             cfg.disk_quota
         };
+        let cache = Self::blank(cfg, quota);
+        if !cache.cfg.enabled {
+            return cache;
+        }
+        cache.init_disk();
+        cache.init_disk_probe();
+
+        cache.refresh_other_disk_usage();
+        cache.refresh_budget();
+        let evicted = cache.mem.enforce() + cache.disk.enforce();
+        cache.count_evictions(evicted);
+        cache
+    }
+
+    /// 骨組み (どの層もまだ空で、ディスクも開いていない。T.34.84)。
+    fn blank(cfg: CacheConfig, quota: DiskQuota) -> Self {
         // 入れ替えの周期は既定の TTL に合わせる (`cfg` はこのあと構造体に移すのでここで作る)
         let not_stored = notstored::NotStored::new(cfg.default_ttl.as_secs());
-        let cache = Self {
+        Self {
             quota,
             mem: MemTier::new(cfg.reserve.is_on()),
             disk: DiskTier::new(cfg.dir.clone(), cfg.reserve.is_on(), cfg.disk_max_entries),
@@ -197,19 +213,20 @@ impl Cache {
             bytes_served: AtomicU64::new(0),
             budget_evictions: AtomicU64::new(0),
             last_budget_eviction: Mutex::new(None),
-        };
-        if !cache.cfg.enabled {
-            return cache;
         }
+    }
 
-        match cache
+    /// ディスク層を開いて索引を戻し、RAM 上の FS ならディスクのバラストを止める
+    /// (起動ログの 1〜2 行目。T.34.84)。
+    fn init_disk(&self) {
+        match self
             .disk
-            .init(&cache.clock, now_epoch(), cache.cfg.max_stale.as_secs())
+            .init(&self.clock, now_epoch(), self.cfg.max_stale.as_secs())
         {
             Ok(r) => log_info!(
                 None,
                 "disk cache ready at {} ({} entries restored, {} expired removed, {} migrated, {} stray files removed)",
-                cache.cfg.dir.display(),
+                self.cfg.dir.display(),
                 r.restored,
                 r.expired,
                 r.migrated,
@@ -218,40 +235,39 @@ impl Cache {
             Err(e) => log_warn!(
                 None,
                 "disk cache disabled for dir {}: {}",
-                cache.cfg.dir.display(),
+                self.cfg.dir.display(),
                 e
             ),
         }
-        if let Some(fstype) = sysinfo::fs_type(cache.disk.dir()).filter(|_| cache.disk.is_ready())
+        if let Some(fstype) = sysinfo::fs_type(self.disk.dir()).filter(|_| self.disk.is_ready())
             && sysinfo::is_ram_backed(&fstype)
         {
             log_warn!(
                 None,
                 "cache dir {} is on {} (RAM-backed): disk reservation disabled; set PROXY_CACHE_DIR to a real disk",
-                cache.cfg.dir.display(),
+                self.cfg.dir.display(),
                 fstype
             );
-            cache.disk.disable_reserve();
+            self.disk.disable_reserve();
         }
-        if cache.quota_unknown_on_pterodactyl() {
-            if cache.cfg.disk_probe && cache.disk.reserve_active() {
-                let state = cache.quota_root().join(".rust-http-proxy.state");
-                *cache.disk_probe.locked() = Some(DiskProbe::load(&state, now_epoch()));
+    }
+
+    /// Pterodactyl で割当が分からなければ、割当の探索を用意する (できなければ警告して
+    /// ディスクのバラストを止める。T.34.84)。
+    fn init_disk_probe(&self) {
+        if self.quota_unknown_on_pterodactyl() {
+            if self.cfg.disk_probe && self.disk.reserve_active() {
+                let state = self.quota_root().join(".rust-http-proxy.state");
+                *self.disk_probe.locked() = Some(DiskProbe::load(&state, now_epoch()));
             } else {
                 log_warn!(
                     None,
                     "Pterodactyl detected but the disk allocation is unknown and probing is unavailable (needs reservation): disk cache capped at {} MiB; put SERVER_DISK=<allocation MB> (0 = unlimited, auto = trust df) in $HOME/.env to use more",
                     config::PTERODACTYL_UNKNOWN_QUOTA_DISK / MIB
                 );
-                cache.disk.disable_reserve();
+                self.disk.disable_reserve();
             }
         }
-
-        cache.refresh_other_disk_usage();
-        cache.refresh_budget();
-        let evicted = cache.mem.enforce() + cache.disk.enforce();
-        cache.count_evictions(evicted);
-        cache
     }
 
     /// バックグラウンドのプローブスレッドを起動する (`probe_interval` が 0 なら起動しない)。
