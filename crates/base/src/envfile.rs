@@ -118,25 +118,24 @@ pub enum VarSource {
 /// 値そのものではなく出どころだけを返すのは、`/config` が「既定のままか、`.env` に
 /// 書いたのか、パネルが渡しているのか」を見せるため。
 pub fn var_source(key: &str) -> Option<VarSource> {
-    if OVERRIDES.get().is_some_and(|o| o.contains_key(key)) {
-        return Some(VarSource::Cli);
-    }
-    if loaded().vars.contains_key(key) {
-        return Some(VarSource::File);
-    }
-    env::var(key).is_ok().then_some(VarSource::Env)
+    lookup(key).map(|(_, source)| source)
 }
 
 /// コマンドライン引数 → `$HOME/.env` → 実際の環境変数の順に探す。
 pub fn var(key: &str) -> Option<String> {
+    lookup(key).map(|(value, _)| value)
+}
+
+/// [`var`] と [`var_source`] が共有する探し方 (T.34.78 で 2 つに書いてあった順を 1 つにした):
+/// コマンドライン引数 → `$HOME/.env` → 実際の環境変数。値と、それがどの層から来たか。
+fn lookup(key: &str) -> Option<(String, VarSource)> {
     if let Some(v) = OVERRIDES.get().and_then(|o| o.get(key)) {
-        return Some(v.clone());
+        return Some((v.clone(), VarSource::Cli));
     }
-    loaded()
-        .vars
-        .get(key)
-        .cloned()
-        .or_else(|| env::var(key).ok())
+    if let Some(v) = loaded().vars.get(key) {
+        return Some((v.clone(), VarSource::File));
+    }
+    env::var(key).ok().map(|v| (v, VarSource::Env))
 }
 
 /// 読み込んだ `.env` のパス (無ければ `None`)。
@@ -191,5 +190,15 @@ mod tests {
     fn real_environment_wins() {
         // PATH は必ず実環境にあるので、ファイル側の値には置き換わらない
         assert_eq!(var("PATH"), env::var("PATH").ok());
+    }
+
+    /// T.34.78: 値と出どころは同じ探し方から出る (どちらか一方だけが見つかることはない)。
+    #[test]
+    fn the_value_and_its_source_come_from_one_lookup() {
+        for key in ["PATH", "HOME", "PROXY_NO_SUCH_KEY_T3478"] {
+            assert_eq!(var(key).is_some(), var_source(key).is_some(), "{key}");
+            assert_eq!(lookup(key).map(|(v, _)| v), var(key));
+        }
+        assert_eq!(lookup("PATH").map(|(_, s)| s), Some(VarSource::Env));
     }
 }
