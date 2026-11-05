@@ -242,6 +242,7 @@ def analyze(snap):
 
 
 def render(path, a, connects):
+    """1 枚の雪像の節: 頭 (版と部の様子) と (1)〜(4) の 4 つの物差し (T.34.138 で割った)。"""
     lines = [f"## {path}", f"版 {a['version']}、雪像 {stamp(a['taken_at'])}。"]
 
     e = a["errors"]
@@ -262,8 +263,16 @@ def render(path, a, connects):
                      f"試行 {num(r['attempts'])} (connect"
                      + (f"。http の行 {num(r['http_rows'])} 件は外す" if r['http_rows'] else "")
                      + f")、成功 {num(r['success'])}、失敗 {num(r['failures'])}。")
+    lines += ruler_lines(a)
+    lines += resolved_lines(r)
+    lines += merged_lines(r)
+    lines += target_lines(r, connects)
+    return "\n".join(lines)
 
-    # (1) いまの物差し
+
+def ruler_lines(a):
+    """(1) いまの物差し (`errors_by_cause` 合計 ÷ `connects`)。"""
+    lines = []
     lines += ["", "### (1) いまの物差し = `errors_by_cause` 合計 ÷ `connects`"]
     h = a["history"]
     if h is None or h["whole"] is None:
@@ -281,8 +290,12 @@ def render(path, a, connects):
             inner = " / ".join(f"{k} {num(v)}" for k, v in s["causes"].items())
             lines.append(f"| うち recent の窓と重なる {num(s['rows'])} 行 | {num(s['connects'])} | "
                          f"{num(s['errors'])} | {fmt_rate(s['rate'])} | {inner} |")
+    return lines
 
-    # (2) 名前解決に成功した試行あたり
+
+def resolved_lines(r):
+    """(2) 名前解決に成功した試行を分母にした率。"""
+    lines = []
     lines += ["", "### (2) 名前解決に成功した試行を分母にした率"]
     if not r or not r.get("attempts"):
         lines.append("判定できず (`recent` の試行が無い)。")
@@ -298,8 +311,12 @@ def render(path, a, connects):
                      f"{fmt_rate(r['all_per_resolved'])} |")
         lines.append("")
         lines.append("原因別: " + " / ".join(f"{k} {num(v)}" for k, v in sorted(r["causes"].items())) + "。")
+    return lines
 
-    # (3) 連続した失敗をまとめた率
+
+def merged_lines(r):
+    """(3) 接続元×宛先の連続した失敗を 1 件にまとめた率。"""
+    lines = []
     lines += ["", "### (3) 接続元×宛先の連続した失敗を 1 件にまとめた率"]
     if not r or not r.get("attempts"):
         lines.append("判定できず (`recent` の試行が無い)。")
@@ -317,8 +334,12 @@ def render(path, a, connects):
         lines.append(f"| dns を含む全失敗 | 試行 {num(r['attempts'])} | {num(m60['all']['raw'])} | "
                      f"{num(m60['all']['groups'])} | {fmt_rate(m60['all']['rate'])} | "
                      f"{num(m300['all']['groups'])} | {fmt_rate(m300['all']['rate'])} |")
+    return lines
 
-    # (4) 宛先ごと
+
+def target_lines(r, connects):
+    """(4) 宛先ごと (上位 `TOP_TARGETS`、試行の多い順)。"""
+    lines = []
     lines += ["", f"### (4) 宛先ごと (上位 {TOP_TARGETS}、試行の多い順)"]
     if not r or not r.get("attempts"):
         lines.append("判定できず (`recent` の試行が無い)。")
@@ -331,7 +352,7 @@ def render(path, a, connects):
             lines.append(f"| `{c['target']}` | {num(c['attempts'])} | {num(c['success'])} | "
                          f"{num(c['dns'])} | {num(c['timeout'])} | {num(c['refused'])} | "
                          f"{num(c['other'])} |")
-    return "\n".join(lines)
+    return lines
 
 
 def main(argv=None):

@@ -169,9 +169,7 @@ def print_groups(title, rows, diff):
         print("  (差分では p50 / p95 / max は通算の値。区間の分位点は差し引けない)")
 
 
-def main(argv=None):
-    # 引数を渡せるようにしてあるのは単体テスト (`scripts/test_status_diff.py`) から
-    # 呼ぶため (`snapshot-diff.py` の `main(argv=None)` と同じ作法)
+def parser():
     p = argparse.ArgumentParser(
         description="デプロイ先の /status (または /hosts) をホスト別に読む "
                     "(1 つなら通算、2 つなら差分)")
@@ -188,6 +186,14 @@ def main(argv=None):
     p.add_argument("--sort", choices=["errors", "dns", "slow"], metavar="KEY",
                    help="1 枚のときの並びを errors|dns|slow にし、内訳の列を足す "
                         "(/status?sort= を取った JSON をそのまま読むため。差分は要求数順の 2 枚で取る)")
+    return p
+
+
+def main(argv=None):
+    """読む → 行を組む (`host_rows`) → 頭の注 (`print_header`) → 表 (`print_hosts`)。T.34.138 で割った。"""
+    # 引数を渡せるようにしてあるのは単体テスト (`scripts/test_status_diff.py`) から
+    # 呼ぶため (`snapshot-diff.py` の `main(argv=None)` と同じ作法)
+    p = parser()
     args = p.parse_args(argv)
 
     if len(args.files) > 2:
@@ -197,6 +203,17 @@ def main(argv=None):
         p.error("--sort は 1 枚のときだけ (差分は要求数順の 2 枚で取る)")
     snaps = [load(f) for f in args.files]
     diff = len(snaps) == 2
+    rows, folded, names, mode = host_rows(snaps, diff, args)
+    print_header(args, snaps, diff, mode, names)
+    print_hosts(args, rows, folded, diff, mode)
+    return 0
+
+
+def host_rows(snaps, diff, args):
+    """ホストの行 (1 枚なら通算、2 枚なら差分) に AAAA の有無を付け、`other` を分け、まとめる。
+
+    返すのは (表の行, `other` の行, AAAA を引いた名前, AAAA の引き方)。
+    """
     if diff:
         a, b = snaps
         older = {h["host"]: h for h in a["hosts"]}
@@ -224,7 +241,12 @@ def main(argv=None):
     # eTLD+1 でまとめる (AAAA を引いたあと。群ごとに「全部あり / 全部なし」を見るため)
     if args.group == "domain":
         rows = group_by_domain(rows)
+    return rows, folded, names, mode
 
+
+def print_header(args, snaps, diff, mode, names):
+    """頭の `#` の注 (読んだもの・形の版・窓・切れているか・AAAA の引き方)。"""
+    a, b = (snaps[0], snaps[1]) if diff else (snaps[0], None)
     src = {"dns": "getaddrinfo", "file": args.aaaa, "none": "引かない"}[mode]
     print(f"# status-diff: {' -> '.join(args.files)}")
     # 応答の形の版 (T.14.49)。**版の無い古い出力は「版 0」** として今までどおり読む
@@ -253,6 +275,9 @@ def main(argv=None):
                   "?limit= か ?sort= で絞ること")
     print(f"# AAAA の判定: {src} / ホスト {len(names)}")
 
+
+def print_hosts(args, rows, folded, diff, mode):
+    """並べ替えて CONNECT と forward の表、`other` の 1 行、AAAA 別の中央値、差分の注を出す。"""
     shown = [r for r in rows if r["timed"] >= args.min_timed]
     # 並べ替えの鍵は `/status?sort=` と同じ (同点は要求数 → 名前で崩す。T.13.3)
     order = {
@@ -283,7 +308,6 @@ def main(argv=None):
         print()
         print("注: Δavg_ms の ± は avg_ms の丸め (0.1 ms 刻み) から来る誤差の上限。"
               "Δtimed が小さいと当てにならない。")
-    return 0
 
 
 if __name__ == "__main__":

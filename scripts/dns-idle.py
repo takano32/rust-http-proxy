@@ -388,6 +388,20 @@ def stamp(t):
 
 
 def render(out):
+    """結果を Markdown にする。雪像の一覧・窓ごと・模型・判定の節を順につなぐ (T.34.138 で割った)。"""
+    lines = snapshot_lines(out)
+    for w in out["windows"]:
+        lines.append("")
+        if w.get("restart_reason"):
+            lines.append("(起動が変わったので前の雪像とは比べない: %s)" % w["restart_reason"])
+        lines += pair_lines(w, out["top"]) if w["kind"] == "pair" else boot_lines(w, out["top"])
+    lines += model_lines(out)
+    lines += verdict_lines(out)
+    return "\n".join(lines)
+
+
+def snapshot_lines(out):
+    """頭: 読んだ雪像 1 枚 1 行。"""
     lines = []
     for s in out["snapshots"]:
         lines.append("雪像 %s: %s (起動から %.2f 時間、版 %s、`/dns` %s 件%s、`/hosts`%s)"
@@ -395,99 +409,118 @@ def render(out):
                         s["version"], s["dns_entries"],
                         " (切れている)" if s["dns_truncated"] else "",
                         " (切れている)" if s["hosts_truncated"] else ""))
-    for w in out["windows"]:
-        lines.append("")
-        if w.get("restart_reason"):
-            lines.append("(起動が変わったので前の雪像とは比べない: %s)" % w["restart_reason"])
-        if w["kind"] == "pair":
-            lines.append("## 窓 %s → %s (%.2f 時間、同じプロセス)%s"
-                         % (w["from_path"], w["to_path"], w["hours"],
-                            "" if not w["dns_truncated"] else " — `/dns` が切れている"))
-            lines.append("引き直し %d 回 (%.1f 回/時)、名前ごとに読めた分 %d 回 (被覆 %s)"
-                         % (w["refreshes_total"],
-                            w["refreshes_total"] / w["hours"] if w["hours"] else 0,
-                            w["refreshes_judged"], pct(w["coverage"])))
-            lines.append("| 名前 | 引き直し | 回/時 | 要求 | 回/時 | 引き直し/要求 | "
-                         "idle 秒 (窓の終わり) |")
-            lines.append("|---|---|---|---|---|---|---|")
-            for r in top_rows(w["rows"], out["top"]):
-                lines.append("| %s | %d | %s | %s | %s | %s | %s |"
-                             % (r["name"], r["refreshes"], fmt(r["refresh_per_hour"]),
-                                "—" if r["requests"] is None else r["requests"],
-                                fmt(r["requests_per_hour"]), fmt(r["refreshes_per_request"], 2),
-                                r["idle_secs"]))
-            if w["unused_share"] is None:
-                lines.append("使われていない引き直し: 判定できない (差が読める名前が無い)")
-            else:
-                lines.append("**使われていない引き直し** (`Δ要求` が 0 の名前): %d / %d 回 = **%s** "
-                             "(窓の全引き直し %d 回に対しては %s)"
-                             % (w["unused"], w["refreshes_judged"], pct(w["unused_share"]),
-                                w["refreshes_total"], pct(w["unused_share_total"])))
-        else:
-            lines.append("## 起動から %s (%.2f 時間、雪像 1 枚)%s"
-                         % (w["to_path"], w["hours"],
-                            "" if not w["dns_truncated"] else " — `/dns` が切れている"))
-            lines.append("引き直し %d 回 (%.1f 回/時)、表の名前 %d 件、warm %s 件 "
-                         "(keep-warm の窓 %s 秒、TTL %s 秒、k %s 秒)"
-                         % (w["refreshes_total"],
-                            w["refreshes_total"] / w["hours"] if w["hours"] else 0,
-                            w["names"], w["warm"], fmt(w["warm_secs"], 0), w["ttl_secs"],
-                            int(w["k_secs"])))
-            lines.append("| 名前 | 引き直し | 回/時 | 要求 (通算) | idle 秒 |")
-            lines.append("|---|---|---|---|---|")
-            for r in top_rows(w["rows"], out["top"]):
-                lines.append("| %s | %d | %s | %s | %s |"
-                             % (r["name"], r["refreshes"], fmt(r["refresh_per_hour"]),
-                                "—" if r["requests"] is None else format(r["requests"], ","),
-                                r["idle_secs"]))
-            lines.append("要求は `/hosts` の**通算** (状態ファイルから復元した分を含む) なので "
-                         "回/時には直さない。この窓の中の使用は `/dns` の `idle_secs` "
-                         "(この起動の中の最後の使用からの秒) で読む")
-            if w["warm_secs"] in (0, "0"):
-                lines.append("keep-warm が 0 なので、タイマーで起きる引き直しは 0 回"
-                             " (引き直しは全部、要求の経路 = 使われた名前)")
+    return lines
+
+
+def pair_lines(w, top):
+    """同じプロセスの 2 枚で挟んだ窓 (引き直しと要求の差、使われていない引き直しの割合)。"""
+    lines = []
+    lines.append("## 窓 %s → %s (%.2f 時間、同じプロセス)%s"
+                 % (w["from_path"], w["to_path"], w["hours"],
+                    "" if not w["dns_truncated"] else " — `/dns` が切れている"))
+    lines.append("引き直し %d 回 (%.1f 回/時)、名前ごとに読めた分 %d 回 (被覆 %s)"
+                 % (w["refreshes_total"],
+                    w["refreshes_total"] / w["hours"] if w["hours"] else 0,
+                    w["refreshes_judged"], pct(w["coverage"])))
+    lines.append("| 名前 | 引き直し | 回/時 | 要求 | 回/時 | 引き直し/要求 | "
+                 "idle 秒 (窓の終わり) |")
+    lines.append("|---|---|---|---|---|---|---|")
+    for r in top_rows(w["rows"], top):
+        lines.append("| %s | %d | %s | %s | %s | %s | %s |"
+                     % (r["name"], r["refreshes"], fmt(r["refresh_per_hour"]),
+                        "—" if r["requests"] is None else r["requests"],
+                        fmt(r["requests_per_hour"]), fmt(r["refreshes_per_request"], 2),
+                        r["idle_secs"]))
+    if w["unused_share"] is None:
+        lines.append("使われていない引き直し: 判定できない (差が読める名前が無い)")
+    else:
+        lines.append("**使われていない引き直し** (`Δ要求` が 0 の名前): %d / %d 回 = **%s** "
+                     "(窓の全引き直し %d 回に対しては %s)"
+                     % (w["unused"], w["refreshes_judged"], pct(w["unused_share"]),
+                        w["refreshes_total"], pct(w["unused_share_total"])))
+    return lines
+
+
+def boot_lines(w, top):
+    """雪像 1 枚の、起動からの窓 (引き直しの通算と、名前ごとの `idle_secs`)。"""
+    lines = []
+    lines.append("## 起動から %s (%.2f 時間、雪像 1 枚)%s"
+                 % (w["to_path"], w["hours"],
+                    "" if not w["dns_truncated"] else " — `/dns` が切れている"))
+    lines.append("引き直し %d 回 (%.1f 回/時)、表の名前 %d 件、warm %s 件 "
+                 "(keep-warm の窓 %s 秒、TTL %s 秒、k %s 秒)"
+                 % (w["refreshes_total"],
+                    w["refreshes_total"] / w["hours"] if w["hours"] else 0,
+                    w["names"], w["warm"], fmt(w["warm_secs"], 0), w["ttl_secs"],
+                    int(w["k_secs"])))
+    lines.append("| 名前 | 引き直し | 回/時 | 要求 (通算) | idle 秒 |")
+    lines.append("|---|---|---|---|---|")
+    for r in top_rows(w["rows"], top):
+        lines.append("| %s | %d | %s | %s | %s |"
+                     % (r["name"], r["refreshes"], fmt(r["refresh_per_hour"]),
+                        "—" if r["requests"] is None else format(r["requests"], ","),
+                        r["idle_secs"]))
+    lines.append("要求は `/hosts` の**通算** (状態ファイルから復元した分を含む) なので "
+                 "回/時には直さない。この窓の中の使用は `/dns` の `idle_secs` "
+                 "(この起動の中の最後の使用からの秒) で読む")
+    if w["warm_secs"] in (0, "0"):
+        lines.append("keep-warm が 0 なので、タイマーで起きる引き直しは 0 回"
+                     " (引き直しは全部、要求の経路 = 使われた名前)")
+    return lines
+
+
+def model_lines(out):
+    """模型 (`dns-replay.py` の `Table`) の節。`--model` が無ければ空。"""
+    lines = []
     m = out.get("model")
-    if m:
-        w = m["window"]
+    if not m:
+        return []
+    w = m["window"]
+    lines.append("")
+    lines.append("## 模型 (`scripts/dns-replay.py` の `Table`、窓 %.2f 時間、到着 %d 件、"
+                 "TTL %d 秒 / warm %d 秒 / serve-stale %d 秒)"
+                 % (w["hours"], w["arrivals"], w["ttl_secs"], w["warm_secs"],
+                    w["serve_stale_secs"]))
+    lines.append("| 規則 | 引き直し | 回/時 | うち warm (タイマー) / 先回り / 古い答え | "
+                 "タイマーの割合 |")
+    lines.append("|---|---|---|---|---|")
+    for label in ("k", "ttl"):
+        r = m["rules"][label]
+        name = "k=%d (いまの規則)" % r["refresh_at"] if label == "k" else \
+            "ttl=%d (先回りなし)" % r["refresh_at"]
+        lines.append("| %s | %d | %.1f | %d / %d / %d | %s |"
+                     % (name, r["refreshes"], r["per_hour"], r["warm"],
+                        r["ask"], r["stale"], pct(r["warm_share"])))
+    c = m.get("compare")
+    if c:
         lines.append("")
-        lines.append("## 模型 (`scripts/dns-replay.py` の `Table`、窓 %.2f 時間、到着 %d 件、"
-                     "TTL %d 秒 / warm %d 秒 / serve-stale %d 秒)"
-                     % (w["hours"], w["arrivals"], w["ttl_secs"], w["warm_secs"],
-                        w["serve_stale_secs"]))
-        lines.append("| 規則 | 引き直し | 回/時 | うち warm (タイマー) / 先回り / 古い答え | "
-                     "タイマーの割合 |")
-        lines.append("|---|---|---|---|---|")
-        for label in ("k", "ttl"):
-            r = m["rules"][label]
-            name = "k=%d (いまの規則)" % r["refresh_at"] if label == "k" else \
-                "ttl=%d (先回りなし)" % r["refresh_at"]
-            lines.append("| %s | %d | %.1f | %d / %d / %d | %s |"
-                         % (name, r["refreshes"], r["per_hour"], r["warm"],
-                            r["ask"], r["stale"], pct(r["warm_share"])))
-        c = m.get("compare")
-        if c:
-            lines.append("")
-            lines.append("| 名前 | 観測 回/時 | 模型 k=%d | 模型 ttl=%d | 到着 回/時 | "
-                         "間隔 観測 / k / ttl 秒 |"
-                         % (m["rules"]["k"]["refresh_at"], m["rules"]["ttl"]["refresh_at"]))
-            lines.append("|---|---|---|---|---|---|")
-            for r in c["names"]:
-                lines.append("| %s | %.1f | %.1f | %.1f | %.1f | %.0f / %.0f / %.0f |"
-                             % (r["name"], r["observed_per_hour"], r["k_per_hour"],
-                                r["ttl_per_hour"], r["arrivals_per_hour"],
-                                r["interval_observed"] or 0, r["interval_k"] or 0,
-                                r["interval_ttl"] or 0))
-            lines.append("上位 %d 名前の合計: 観測 %.1f 回/時、模型 k=%d は %.1f 回/時 (%s)、"
-                         "ttl=%d は %.1f 回/時 (%s) → **%s が効いている**"
-                         % (len(c["names"]), c["observed_sum"],
-                            m["rules"]["k"]["refresh_at"], c["k_sum"], signed(c["k_error"]),
-                            m["rules"]["ttl"]["refresh_at"], c["ttl_sum"],
-                            signed(c["ttl_error"]),
-                            {"k": "k (3/4 TTL の先回り)", "ttl": "TTL",
-                             "warm": "keep-warm (タイマー)"}[c["pick"]]))
-            if c["pick"] == "warm":
-                lines.append("(keep-warm が動いているので、引き直しの間隔はタイマーの 45 秒が決める。"
-                             "k と ttl の差はタイマーの回数に埋もれて読めない)")
+        lines.append("| 名前 | 観測 回/時 | 模型 k=%d | 模型 ttl=%d | 到着 回/時 | "
+                     "間隔 観測 / k / ttl 秒 |"
+                     % (m["rules"]["k"]["refresh_at"], m["rules"]["ttl"]["refresh_at"]))
+        lines.append("|---|---|---|---|---|---|")
+        for r in c["names"]:
+            lines.append("| %s | %.1f | %.1f | %.1f | %.1f | %.0f / %.0f / %.0f |"
+                         % (r["name"], r["observed_per_hour"], r["k_per_hour"],
+                            r["ttl_per_hour"], r["arrivals_per_hour"],
+                            r["interval_observed"] or 0, r["interval_k"] or 0,
+                            r["interval_ttl"] or 0))
+        lines.append("上位 %d 名前の合計: 観測 %.1f 回/時、模型 k=%d は %.1f 回/時 (%s)、"
+                     "ttl=%d は %.1f 回/時 (%s) → **%s が効いている**"
+                     % (len(c["names"]), c["observed_sum"],
+                        m["rules"]["k"]["refresh_at"], c["k_sum"], signed(c["k_error"]),
+                        m["rules"]["ttl"]["refresh_at"], c["ttl_sum"],
+                        signed(c["ttl_error"]),
+                        {"k": "k (3/4 TTL の先回り)", "ttl": "TTL",
+                         "warm": "keep-warm (タイマー)"}[c["pick"]]))
+        if c["pick"] == "warm":
+            lines.append("(keep-warm が動いているので、引き直しの間隔はタイマーの 45 秒が決める。"
+                         "k と ttl の差はタイマーの回数に埋もれて読めない)")
+    return lines
+
+
+def verdict_lines(out):
+    """判定の節 (T.24.1 の目安と、いちばん新しい判定できる窓での段 2 の判断)。"""
+    lines = []
     v = out.get("verdict") or {}
     lines.append("")
     lines.append("## 判定 (T.24.1 の目安: 使われていない名前の引き直しが全体の %d%% 以上なら段 2)"
@@ -511,7 +544,7 @@ def render(out):
         lines.append("**段 2 の判断** (いちばん新しい、判定できる窓 = %s): %s → %s"
                      % (newest[0], pct(newest[1]["share"]),
                         "段 2 に進む" if newest[1]["go"] else "段 2 は要らない"))
-    return "\n".join(lines)
+    return lines
 
 
 def top_rows(rows, n):
