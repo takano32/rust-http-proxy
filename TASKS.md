@@ -69,17 +69,6 @@
 
 **キャッシュ・エンドポイント・ベンチ の残り (T.34.4 のレビューから)**
 
-- [ ] **T.34.88 Cache の 12 個の pub カウンタを包む (http の 5 か所を機械的に直す)**
-  - 目的: `cache/mod.rs:120-138` の `pub hits_mem…bytes_served: AtomicU64` を、`http/mod.rs:861,1015,1218,1411` (`stale_served`) と `:923` (`coalesced`) が直に触っている。
-  - やること:
-    - `cache/counters.rs` の `Counters` に移し、欄は `pub(crate)` にする。
-    - 外へは `note_stale_served()`・`note_coalesced()` と、試験用の読み口を出す。
-    - http の 5 か所を置き換える。T.34.0 の取り込みの後にやる。
-  - 受け入れ基準:
-    - `cargo test -p proxy-cache -p proxy-http` と `tests/cache_test.rs`・`schema_test.rs`・`status_light_test.rs` が通る。
-    - `/status` は 1 バイトも変わらない。
-  - 値打ち: 中 / 熱い経路 (包むだけ) / T.34.0 の後。
-
 **ルート・結合試験・scripts の残り (T.34.5 のレビューから)**
 
 - [ ] **T.34.103 tests/common/mod.rs (1,064 行) を origin・proxy・client・net・process に割る**
@@ -274,18 +263,6 @@
   - 目的: `Metrics::record` は `now_epoch()` を 1 回だけ読む約束になっている。ところが `ClientStats::count` (`metrics-window/src/clients.rs:103-104`) が、自分でもう 1 回読んでいる。
   - やること: `record_client` に `now` を渡す (呼び出し側は 5 か所)。
   - 値打ち: 低 / 熱い経路 / 本体を変える。
-- [ ] **T.34.156 ポートの無いブラケット付き IPv6 の `Host: [::1]` が自分宛てと判定されない (T.34.4 のレビューで見つけた)**
-  - 目的: `endpoints/incoming.rs:139-148` の `authority_port` が、最後の `:` で割って `1]` を読み、`None` を返す。そのため、80 で待ち受けていても転送に落ちる。
-  - 再現: `local_path("/status", 80, Some("[::1]"))` が `None` になる。
-  - やること: ポートの無いブラケット付きの形は 80 とする。今の振る舞いを縛っている単体試験 `the_authority_port_defaults_to_80_and_reads_bracketed_ipv6` の 2 行は `Some(80)` に直す。
-  - 値打ち: 低〜中 / 本体を変える。
-- [ ] **T.34.158 確かめる: `PROXY_CACHE_ENABLED=off` でもバリアントの表が伸びるか (T.34.4 のレビューで見つけた)**
-  - 目的: `cache/ops.rs:395-452` の `begin_store` は、`enabled` を見る前に `remember_variant` を呼ぶ。呼ぶ側 (`http/mod.rs:1578`・`refresh.rs:241`) が `enabled` を見ていなければ、表が伸びる。
-  - やること: 試験で確かめ、伸びるなら `enabled` を先に見るようにする。
-  - 値打ち: 低。
-- [ ] **T.34.160 PURGE が URL をパスとして `/readers` に残す (T.34.4 のレビューで見つけた)**
-  - 目的: `endpoints/mod.rs:148-150` で、PURGE の要求は `local_path` を通らない。そのため `record_reader(client, req.path)` に `http://host/path` がそのまま渡る。
-  - 値打ち: 低 / 本体を変える。
 - [ ] **T.34.161 時間に頼る試験 `tests/idle_sleep_test.rs:76` を時間に頼らない形に (T.34.4 で負荷の下で 1 回落ちた)**
   - 目的: `test_integration_idle_watch_sleeps_while_nothing_is_parked` が、`cargo test --workspace` の負荷の下で「預かりが 0 なのに idle-watch が起きた」と言って落ちた。単体では 3/3 通る。
   - ほかの候補: selfbench の 50 ms の sleep (`lib.rs:291-294`)、canary の `a_probe_measures_a_real_connect_and_a_refused_one`、profile の `the_busiest_thread_comes_first_in_threads_top` (T.34.2 のレビュー)。
