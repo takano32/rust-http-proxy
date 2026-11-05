@@ -7,25 +7,11 @@
 //! (e) CONNECT の宛先にポートが無い・0 なら 400 (今までは 502)
 //! (f) chunk の大きさが読めない本文は 400 (クライアントの誤り。今までは 502)
 
-use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod common;
 use common::*;
-
-fn capture_origin() -> (u16, Arc<Mutex<Vec<String>>>) {
-    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&seen);
-    let (port, _handle) = start_origin(
-        Arc::new(AtomicUsize::new(0)),
-        Arc::new(move |req, _n| {
-            sink.lock().unwrap().push(req.to_string());
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_vec()
-        }),
-    );
-    (port, seen)
-}
 
 fn settle_and_take(seen: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
     std::thread::sleep(Duration::from_millis(200));

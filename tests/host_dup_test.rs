@@ -13,32 +13,10 @@
 //! 3. `/status` の `rejected_requests.dup_host` と `/metrics` の
 //!    `sorahost_rejected_requests_total{reason="dup_host"}` が 1 増える
 
-use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod common;
 use common::*;
-
-/// 受け取った要求の全文を貯めるオリジン (`start_origin` のハンドラに渡す)。
-fn capture_origin() -> (u16, Arc<Mutex<Vec<String>>>) {
-    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&seen);
-    let (port, _handle) = start_origin(
-        Arc::new(AtomicUsize::new(0)),
-        Arc::new(move |req, _n| {
-            sink.lock().unwrap().push(req.to_string());
-            let body = "hello from mock origin";
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .into_bytes()
-        }),
-    );
-    (port, seen)
-}
 
 /// 要求の全文から `Host:` の行だけを取り出す (名前の大小は無視する)。
 fn host_lines(req: &str) -> Vec<String> {
@@ -52,20 +30,14 @@ fn host_lines(req: &str) -> Vec<String> {
         .collect()
 }
 
-/// `/metrics` の `sorahost_rejected_requests_total{reason="…"}` の値。
-fn prom_value(text: &str, reason: &str) -> u64 {
-    let needle = format!("sorahost_rejected_requests_total{{reason=\"{}\"}} ", reason);
-    let line = text
-        .lines()
-        .find(|l| l.starts_with(&needle))
-        .unwrap_or_else(|| panic!("{} の系列が無い", reason));
-    line[needle.len()..].trim().parse().unwrap()
-}
+/// 要求を貯めるオリジンの応答 (`start_mock_origin` と同じ本文。T.34.110 で定数にした)。
+const HELLO: &[u8] =
+    b"HTTP/1.1 200 OK\r\nContent-Length: 22\r\nConnection: close\r\n\r\nhello from mock origin";
 
 /// `Host` 2 本 → 400 でオリジンへ届かない。1 本 → 今までどおり 200 で `Host` は 1 本。
 #[test]
 fn test_integration_duplicate_host_is_rejected() {
-    let (origin_port, seen) = capture_origin();
+    let (origin_port, seen) = capture_origin_replying(HELLO);
     let (proxy_port, _metrics) = start_test_proxy_with_metrics(proxy_config());
     let host = format!("127.0.0.1:{}", origin_port);
 

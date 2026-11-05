@@ -12,8 +12,7 @@ use common::*;
 fn recording_origin(counter: Arc<AtomicUsize>, seen: Arc<Mutex<Vec<String>>>) -> u16 {
     start_origin(
         counter,
-        Arc::new(move |req, _| {
-            seen.lock().unwrap().push(req.to_string());
+        capturing(seen, move |req, _| {
             let cc = if req.starts_with("GET /s ") {
                 "max-age=600"
             } else {

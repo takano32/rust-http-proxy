@@ -10,8 +10,8 @@
 //!    `/metrics` の `sorahost_kernel_*` も同じ標本から出る
 #![cfg(target_os = "linux")]
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::Write;
+use std::net::TcpStream;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -31,25 +31,6 @@ fn get(port: u16, path: &str) -> String {
 
 fn body_of(resp: &str) -> &str {
     resp.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("")
-}
-
-/// 読むだけで何も返さず、閉じもしないリスナー (`overload_test` と同じ道具)。
-///
-/// ここへ張ったトンネルでクライアントが送信側だけ閉じると**片方向だけ EOF**になり、
-/// 預かり所に預けられない = 上限に当たっても「閉じて席を作る」が効かない。
-fn start_quiet_origin() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    std::thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 1024];
-                while !matches!(stream.read(&mut buf), Ok(0) | Err(_)) {}
-                std::mem::forget(stream);
-            });
-        }
-    });
-    port
 }
 
 /// `/healthz` は `/status` の写しではなく、軽い健康診断の JSON を返す。

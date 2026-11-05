@@ -5,14 +5,18 @@
 // 下の `pub use` の glob も、そのバイナリで使わなければ「使っていない」と言われるので黙らせる
 #![allow(unused_imports)]
 
+mod capture;
 mod client;
+mod counters;
 mod net;
 mod origin;
 mod process;
 mod proxy;
 mod scratch;
 
+pub use capture::*;
 pub use client::*;
+pub use counters::*;
 pub use net::*;
 pub use origin::*;
 pub use process::*;

@@ -12,36 +12,12 @@
 //! オリジンに届かないこと、`rejected_requests.bad_header` と `/metrics` が増えること、値の中の
 //! HTAB と、空白の無いふつうの行は今までどおり通ること、CONNECT の入口でも同じに断ること。
 
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod common;
 use common::*;
-
-/// 受け取った要求の全文を貯めるオリジン。
-fn capture_origin() -> (u16, Arc<Mutex<Vec<String>>>) {
-    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&seen);
-    let (port, _handle) = start_origin(
-        Arc::new(AtomicUsize::new(0)),
-        Arc::new(move |req, _n| {
-            sink.lock().unwrap().push(req.to_string());
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_vec()
-        }),
-    );
-    (port, seen)
-}
-
-/// `/metrics` の `sorahost_rejected_requests_total{reason="…"}` の値。
-fn prom_value(text: &str, reason: &str) -> u64 {
-    let needle = format!("sorahost_rejected_requests_total{{reason=\"{}\"}} ", reason);
-    let line = text
-        .lines()
-        .find(|l| l.starts_with(&needle))
-        .unwrap_or_else(|| panic!("{} の系列が無い", reason));
-    line[needle.len()..].trim().parse().unwrap()
-}
 
 #[test]
 fn test_integration_malformed_header_forms_are_rejected() {

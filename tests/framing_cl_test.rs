@@ -29,19 +29,9 @@ type Recording = (
 
 /// 受け取った要求の全文を覚えておくオリジン (何が届いたかを見るため)。
 fn recording_origin() -> Recording {
-    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen: Captured = Arc::new(Mutex::new(Vec::new()));
     let hits = Arc::new(AtomicUsize::new(0));
-    let sink = Arc::clone(&seen);
-    let handler: Arc<Handler> = Arc::new(move |req: &str, _n: usize| {
-        sink.lock().unwrap().push(req.to_string());
-        let body = "ok";
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        )
-        .into_bytes()
-    });
+    let handler = capturing(Arc::clone(&seen), |_req, _n| OK_CLOSE.to_vec());
     let (port, handle) = start_origin(Arc::clone(&hits), handler);
     (port, seen, hits, handle)
 }

@@ -9,7 +9,7 @@
 #![cfg(target_os = "linux")]
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
@@ -24,28 +24,6 @@ fn proxy_with_limit(max_conns: usize) -> (u16, std::sync::Arc<rust_http_proxy::m
     // 握ったままの keep-alive 接続が預かり所の期限で閉じないように長くする
     cfg.keepalive = Duration::from_secs(60);
     start_test_proxy_with_metrics(cfg)
-}
-
-/// 読むだけで何も返さず、閉じもしないリスナー。
-///
-/// ここへ張ったトンネルでクライアントが送信側だけ閉じると、トンネルは**片方向だけ EOF**
-/// になる。この形は預けられない (預かり所は両方向とも暇なものだけ預かる) ので、
-/// 「全部のトンネルが忙しい = 閉じるものが無い」状態を待ち時間なしに作れる。
-fn start_quiet_origin() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
-            thread::spawn(move || {
-                let mut buf = [0u8; 1024];
-                while !matches!(stream.read(&mut buf), Ok(0) | Err(_)) {}
-                // EOF を見ても**閉じない**。記述子ごと手放してこのスレッドは終わる
-                // (テストが終わるまで開いたまま = トンネルは片方向 EOF のまま生き続ける)
-                std::mem::forget(stream);
-            });
-        }
-    });
-    port
 }
 
 /// 忙しい (預けられない) トンネルで上限をちょうど埋める。

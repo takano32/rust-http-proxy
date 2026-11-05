@@ -131,25 +131,6 @@ fn test_integration_errors_keeps_the_newest_first_and_honours_n() {
     );
 }
 
-/// 読むだけで何も返さず、閉じもしないリスナー (`tests/overload_test.rs` と同じ道具)。
-///
-/// ここへ張ったトンネルでクライアントが送信側だけ閉じると**片方向だけ EOF** になり、
-/// 預けられない = ずっと `relaying` のトンネルが作れる。
-fn start_quiet_origin() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    std::thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 1024];
-                while !matches!(std::io::Read::read(&mut stream, &mut buf), Ok(0) | Err(_)) {}
-                std::mem::forget(stream);
-            });
-        }
-    });
-    port
-}
-
 /// 握ったトンネルが `/connections` に `parked` として、中継中のトンネルが
 /// `relaying` として見えること (T13.4 の受け入れ基準 (b))。
 #[test]

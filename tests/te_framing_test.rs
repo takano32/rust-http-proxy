@@ -9,25 +9,10 @@
 //! 見るのは、断る 6 形が 400 でオリジンに届かず `body_framing` に数えられること、
 //! `gzip, chunked` (最後が chunked) と大文字の `Chunked` は今までどおり chunked として届くこと。
 
-use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod common;
 use common::*;
-
-fn capture_origin() -> (u16, Arc<Mutex<Vec<String>>>) {
-    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&seen);
-    let (port, _handle) = start_origin(
-        Arc::new(AtomicUsize::new(0)),
-        Arc::new(move |req, _n| {
-            sink.lock().unwrap().push(req.to_string());
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_vec()
-        }),
-    );
-    (port, seen)
-}
 
 fn post(host: &str, version: &str, headers: &str, body: &str) -> Vec<u8> {
     format!(

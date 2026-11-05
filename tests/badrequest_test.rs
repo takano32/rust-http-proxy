@@ -36,16 +36,6 @@ fn oversized_headers() -> Vec<u8> {
     req
 }
 
-/// `reason` の系列の値 (`/metrics` の `sorahost_rejected_requests_total{reason="…"}`)。
-fn prom_value(text: &str, reason: &str) -> u64 {
-    let needle = format!("sorahost_rejected_requests_total{{reason=\"{}\"}} ", reason);
-    let line = text
-        .lines()
-        .find(|l| l.starts_with(&needle))
-        .unwrap_or_else(|| panic!("{} の系列が無い", reason));
-    line[needle.len()..].trim().parse().unwrap()
-}
-
 /// 受け入れ基準の 3 つ (壊れた要求行・長すぎるヘッダー・`Host` 無しの HTTP/1.1) を送ると、
 /// それぞれの理由が 1 ずつ増え、`/errors` に 3 件、`/metrics` に 3 本の系列が 1 になる。
 #[test]

@@ -16,7 +16,9 @@ mod common;
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use common::{ProxyProcess, endpoint_json, raw_request_with, scratch_dir, status_json, write_env};
+use common::{
+    ProxyProcess, endpoint_json, raw_request_with, rejected, scratch_dir, status_json, write_env,
+};
 
 fn home(tag: &str) -> std::path::PathBuf {
     let dir = scratch_dir(&format!("rhp-t2809-{}", tag));
@@ -27,22 +29,6 @@ fn home(tag: &str) -> std::path::PathBuf {
          PROXY_CANARY=off\n",
     );
     dir
-}
-
-/// `/status` の `rejected_requests` の中の 1 つ。
-fn rejected(status: &str, reason: &str) -> u64 {
-    let block = status
-        .split("\"rejected_requests\":{")
-        .nth(1)
-        .expect("rejected_requests が無い");
-    let needle = format!("\"{}\":", reason);
-    let at = block.find(&needle).expect("理由が無い") + needle.len();
-    block[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap()
 }
 
 #[test]
