@@ -73,10 +73,10 @@ pub(super) fn fetch(
 ) -> Stage<Fetched> {
     let shared = x.shared;
     let cache = x.cache;
-    let metrics = x.metrics;
-    let conn_id = x.conn_id;
-    let (method, http11, req_framing) = (x.method, x.http11, x.req_framing);
-    let (pool_key, server_addr) = (x.pool_key, x.server_addr);
+    let metrics = x.ctx.metrics;
+    let conn_id = x.ctx.conn_id;
+    let (method, http11, req_framing) = (x.ctx.method, x.http11, x.req_framing);
+    let (pool_key, server_addr) = (x.ctx.pool_key, x.server_addr);
     let conditional_lines = cs
         .stale
         .as_ref()
@@ -107,7 +107,7 @@ pub(super) fn fetch(
     };
 
     // 本文の無い冪等な要求だけ、再利用した接続が死んでいたときに 1 回やり直す
-    let retryable = req_framing == crate::body::Framing::None && (x.is_get || x.head_only);
+    let retryable = req_framing == crate::body::Framing::None && (x.is_get || x.ctx.head_only);
     // 1xx を中継したか。中継したらクライアントはもう応答の先頭を受け取っているので、
     // プールの接続を掴み直して同じ 1xx をもう一度出さない (やり直さない)
     let mut interim_sent = false;

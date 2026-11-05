@@ -126,6 +126,25 @@ pub fn write_response_head<S: AsRef<str>>(
     drop_names: &[&str],
     extra: &[S],
 ) {
+    write_response_lines(out, head, status_line, drop_names);
+    for line in extra {
+        out.extend_from_slice(line.as_ref().as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"\r\n");
+}
+
+/// [`write_response_head`] の、足す行 (`extra`) の手前まで (状態行とオリジンのヘッダー)。
+///
+/// 総称でない本体に分けてあるのは、機械語をこのクレートで 1 つだけ作るため (T.34.8)。総称のままだと
+/// 呼ぶ側のクレート (http) の CGU で作られ、そちらの組み方しだいで `extend_from_slice` が呼び出しに
+/// 落ちていた (段に割った T.34.0 のあと、forward で要求ごとに +50 Ir 前後)。
+fn write_response_lines(
+    out: &mut Vec<u8>,
+    head: &[u8],
+    status_line: Option<&str>,
+    drop_names: &[&str],
+) {
     // 不正な UTF-8 のときだけ写しを作る
     let lossy;
     let text: &str = match std::str::from_utf8(head) {
@@ -197,11 +216,6 @@ pub fn write_response_head<S: AsRef<str>>(
         fold_at = Some(out.len());
         out.extend_from_slice(b"\r\n");
     }
-    for line in extra {
-        out.extend_from_slice(line.as_ref().as_bytes());
-        out.extend_from_slice(b"\r\n");
-    }
-    out.extend_from_slice(b"\r\n");
 }
 
 /// 状態行を書く。`status_line` があればそれ、無ければオリジンの状態行 (`first`) の版だけを

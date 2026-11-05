@@ -114,13 +114,39 @@ type ClientWriter<'s> = BufWriter<GuardedWrite<'s>>;
 
 /// 段の途中で応答を書き終えた印 (この要求はもう次の段へ進まない)。
 ///
-/// 中身は [`handle_http_parsed`] の戻り値そのもの (`Ok(keep)` はクライアント接続を次の要求に
-/// 使えるか)。`io::Error` から作れるので、段の中では `?` がそのまま使える。
-struct Done(io::Result<bool>);
+/// 中身は [`handle_http_parsed`] の戻り値 (`Keep` / `Close` はクライアント接続を次の要求に
+/// 使えるか、`Err` は書けなかった)。`io::Error` から作れるので、段の中では `?` がそのまま使える。
+/// `io::Result<bool>` を包まずに 3 つの形の enum にしてある (T.34.8 (d))。
+enum Done {
+    Keep,
+    Close,
+    Err(io::Error),
+}
+
+impl Done {
+    #[inline]
+    fn of(result: io::Result<bool>) -> Done {
+        match result {
+            Ok(true) => Done::Keep,
+            Ok(false) => Done::Close,
+            Err(e) => Done::Err(e),
+        }
+    }
+
+    #[inline]
+    fn into_result(self) -> io::Result<bool> {
+        match self {
+            Done::Keep => Ok(true),
+            Done::Close => Ok(false),
+            Done::Err(e) => Err(e),
+        }
+    }
+}
 
 impl From<io::Error> for Done {
+    #[inline]
     fn from(e: io::Error) -> Done {
-        Done(Err(e))
+        Done::Err(e)
     }
 }
 
@@ -129,35 +155,31 @@ type Stage<T> = Result<T, Done>;
 
 /// 応答を書き終えた (`keep` はクライアント接続を次の要求に使えるか)。
 fn done<T>(keep: bool) -> Stage<T> {
-    Err(Done(Ok(keep)))
+    Err(if keep { Done::Keep } else { Done::Close })
 }
 
 /// 配信の結果 (`serve_cached` などの戻り値) をそのまま [`handle_http_parsed`] の戻り値にする。
 fn finished<T>(result: io::Result<bool>) -> Stage<T> {
-    Err(Done(result))
+    Err(Done::of(result))
 }
 
 /// 1 要求ぶんの文脈。入口で決まったこと (要求行・枠組み・要求先) と、段をまたいで使う参照を
 /// まとめて持つ。読む口と書く口 (`reader` / `client`) は借用の都合で段の引数として別に渡す。
+///
+/// 要求行のメソッド・正規化 URL・プールの鍵・接続番号・`metrics`・`req`・`head_only` は [`Ctx`] にあるので
+/// ここには重ねて持たない (`x.ctx.url` のように読む。組み立ての写しを減らす。T.34.8)。
 struct Exchange<'a> {
     shared: &'a Shared<'a>,
     cache: &'a Cache,
-    metrics: &'a Metrics,
     client_ip: Option<&'a str>,
-    conn_id: usize,
-    req: &'a RequestHeaders,
     /// 転送するヘッダー (`Max-Forwards` を 1 減らしたときは差し替えた写し)
     raw_headers: &'a [String],
-    method: &'a str,
     http11: bool,
     is_get: bool,
-    head_only: bool,
     /// 要求の本文の枠組み
     req_framing: Framing,
     origin: Origin,
-    /// 正規化 URL・プールの鍵・接続先 (1 本の `String` から借りる)
-    url: &'a str,
-    pool_key: &'a str,
+    /// 接続先 (正規化 URL・プールの鍵と同じ 1 本の `String` から借りる)
     server_addr: &'a str,
     ctx: Ctx<'a>,
 }
@@ -204,7 +226,7 @@ pub fn handle_http_parsed(
         shared,
     ) {
         Ok(keep) => Ok(keep),
-        Err(Done(result)) => result,
+        Err(done) => done.into_result(),
     }
 }
 
@@ -336,25 +358,19 @@ fn forward(
     let mut x = Exchange {
         shared,
         cache,
-        metrics,
         client_ip,
-        conn_id,
-        req,
         raw_headers,
-        method,
         http11,
         is_get,
-        head_only,
         req_framing,
         origin,
-        url,
-        pool_key,
         server_addr,
         ctx,
     };
 
     // ---- キャッシュ参照 ----
-    let mut cs = lookup::consult(&mut x, client, reader)?;
+    let mut cs = lookup::CacheState::new(cache.config());
+    lookup::consult(&mut x, client, reader, &mut cs)?;
     // ---- オリジンへ転送 ----
     let mut fetched = fetch::fetch(&mut x, client, reader, &mut cs, send_continue)?;
     // ---- 応答の先頭を見て決める ----
@@ -438,5 +454,5 @@ fn refuse(
         }
     }
     let _ = write_error(client, status, reason);
-    Done(Ok(false))
+    Done::Close
 }

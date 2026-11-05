@@ -70,9 +70,9 @@ pub(super) fn examine_head(
     let head: &[u8] = &fetched.head;
     let shared = x.shared;
     let cache = x.cache;
-    let metrics = x.metrics;
-    let conn_id = x.conn_id;
-    let (http11, head_only, pool_key, url) = (x.http11, x.head_only, x.pool_key, x.url);
+    let metrics = x.ctx.metrics;
+    let conn_id = x.ctx.conn_id;
+    let (http11, head_only, pool_key, url) = (x.http11, x.ctx.head_only, x.ctx.pool_key, x.ctx.url);
     let (key, now, cfg) = (cs.key, cs.now, cs.cfg);
     // 本文の途中でオリジンが返した応答 (T.29.7): クライアントの本文の残りは読んでいないので、
     // 応答に `Connection: close` を付けて閉じる (次の要求の頭に本文の続きが来てしまう)
@@ -137,7 +137,7 @@ pub(super) fn examine_head(
     };
     // 頼んでいない 101 (RFC 9110 §15.2.2: クライアントが `Upgrade` で挙げていないプロトコルへ切り替えては
     // ならない。T.29.9)。今まではそのまま返していた。この接続はもう HTTP ではないので使い回さない
-    if status == 101 && !x.req.upgrade {
+    if status == 101 && !x.ctx.req.upgrade {
         log_warn!(
             Some(conn_id),
             "502 Bad Gateway: unsolicited 101 Switching Protocols from {}",

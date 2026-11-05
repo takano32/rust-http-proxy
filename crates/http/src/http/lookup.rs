@@ -37,6 +37,25 @@ pub(super) struct CacheState<'c> {
     pub leader: Option<LeaderGuard<'c>>,
 }
 
+impl<'c> CacheState<'c> {
+    /// 何も決めていない状態 (キャッシュ無効と同じ形)。[`consult`] が欄を埋める出力欄として使う。
+    #[inline]
+    pub(super) fn new(cfg: &'c CacheConfig) -> CacheState<'c> {
+        CacheState {
+            key: CacheKey(0),
+            now: 0,
+            cfg,
+            cache_on: false,
+            lookup_allowed: false,
+            store_allowed: false,
+            force_revalidate: false,
+            stale: None,
+            client_cond_entry: None,
+            leader: None,
+        }
+    }
+}
+
 /// 要求の `max-age=N` / `min-fresh=N` を、保存済みの表現がそのままでは満たさないか (T.28.10 (c))。
 ///
 /// `max-age`: 保存からの経過 (`now - stored_at`) が N 秒を越える。`min-fresh`: 期限までが N 秒に足りない。
@@ -48,24 +67,26 @@ fn client_wants_fresher(cache_control: &str, entry: &CachedResponse, now: u64) -
             .is_some_and(|n| entry.ttl_left(now) < n)
 }
 
-/// キャッシュを参照する。保存から返せたらそこで終わり ([`done`])、そうでなければオリジンへ行くための状態を返す。
+/// キャッシュを参照する。保存から返せたらそこで終わり ([`done`])、そうでなければオリジンへ行くための状態を
+/// `cs` ([`CacheState::new`] で作った出力欄) に書く (大きな構造体を戻り値で運ぶ写しを避ける。T.34.8)。
 #[inline]
 pub(super) fn consult<'c>(
     x: &mut Exchange<'c>,
     client: &mut ClientWriter<'_>,
     reader: &mut ClientReader<'_>,
-) -> Stage<CacheState<'c>> {
+    cs: &mut CacheState<'c>,
+) -> Stage<()> {
     let cache = x.cache;
-    let req = x.req;
-    let conn_id = x.conn_id;
+    let req = x.ctx.req;
+    let conn_id = x.ctx.conn_id;
     let req_framing = x.req_framing;
-    let cfg = cache.config();
+    let cfg = cs.cfg;
     // キャッシュ無効時は鍵の生成も鮮度判定もしない (素通しの経路を最短にする)
     let cache_on = cache.enabled();
     let (key, client_no_store, mut force_revalidate, only_if_cached, now) = if cache_on {
         let variant = freshness::accept_encoding_variant(req.accept_encoding.as_deref());
         (
-            cache_key_variant("GET", x.url, &variant),
+            cache_key_variant("GET", x.ctx.url, &variant),
             freshness::has_directive(&req.cache_control, "no-store"),
             freshness::has_directive(&req.cache_control, "no-cache")
                 || freshness::directive_value(&req.cache_control, "max-age") == Some(0),
@@ -78,19 +99,18 @@ pub(super) fn consult<'c>(
     };
     // 本文付きの GET は本文でも意味が変わりうるのでキャッシュしない
     let lookup_allowed = cache_on
-        && (x.is_get || x.head_only)
+        && (x.is_get || x.ctx.head_only)
         && !req.authorization
         && !client_no_store
         && req_framing == body::Framing::None;
     let store_allowed = lookup_allowed && x.is_get && req.range.is_none();
     let client_conditional = req.if_none_match.is_some() || req.if_modified_since.is_some();
 
-    let mut stale: Option<(CachedResponse, CacheSource)> = None;
-    // クライアント自身の条件付き要求のときの、期限切れの保存済みの表現 (T.29.6)
-    let mut client_cond_entry: Option<CachedResponse> = None;
+    // 期限切れの保存済みの表現 (`cs.stale`) と、クライアント自身の条件付き要求のときの期限切れの
+    // 保存済みの表現 (`cs.client_cond_entry`。T.29.6) は出力欄へ直に書く
     if lookup_allowed {
         if let Some((entry, source)) = cache.get(key, conn_id) {
-            cache.remember_variant(x.url, key);
+            cache.remember_variant(x.ctx.url, key);
             // 要求の `max-age=N` (N > 0) と `min-fresh=N` (RFC 9111 §5.2.1.1・§5.2.1.3。T.28.10 (c)):
             // 保存から N 秒より古い・期限まで N 秒ない表現は、そのままでは返さず再検証する
             // (`max-age=0` と同じ扱い)。今までは見ずに HIT にしていた。`Cache-Control` の無い要求は
@@ -133,7 +153,7 @@ pub(super) fn consult<'c>(
                         x.shared,
                         &x.origin,
                         key,
-                        x.url,
+                        x.ctx.url,
                         entry.head.clone(),
                         req.accept_encoding.clone(),
                     )
@@ -142,18 +162,18 @@ pub(super) fn consult<'c>(
                     cache.stale_served.fetch_add(1, Ordering::Relaxed);
                     return finished(serve_cached(client, entry, source, "REFRESHING", 0, &x.ctx));
                 }
-                stale = Some((entry, source));
+                cs.stale = Some((entry, source));
             } else if entry.meta.validators {
                 // オリジンの 304 で保存済みの表現も延ばせるように持っておく (T.29.6)。
                 // `stale` には入れない (条件はクライアントのものをそのまま送り、stale も配らない)
-                client_cond_entry = Some(entry);
+                cs.client_cond_entry = Some(entry);
             }
         }
     } else if cache_on {
         log_debug!(
             Some(conn_id),
             "cache BYPASS (method={} auth={} cc='{}')",
-            x.method,
+            x.ctx.method,
             req.authorization,
             req.cache_control
         );
@@ -174,19 +194,18 @@ pub(super) fn consult<'c>(
 
     // 保存されないと分かっている鍵 (T11.9) は 1 回だけ見て、入場制御と合流の両方に使う (T.28.13 (c))。
     // その鍵は前に見ているので、入場制御に通しても「2 回目」で通る (門番の表を引かずに済ませる)
-    let known_unstored = store_allowed && stale.is_none() && !cache.may_coalesce(key, now);
+    let known_unstored = store_allowed && cs.stale.is_none() && !cache.may_coalesce(key, now);
 
     // ---- 入場制御: 層が埋まっているとき、初めて見た URL は保存しない (2 回目から) ----
-    let store_allowed = store_allowed && (stale.is_some() || known_unstored || cache.admit(key));
+    let store_allowed = store_allowed && (cs.stale.is_some() || known_unstored || cache.admit(key));
 
     // ---- 同時ミスの合流: 同じキーを誰かが取得中なら、その保存完了を待ってキャッシュから返す ----
     // **保存されないと分かっている URL では合流しない** (T11.9)。待っても保存されないので、
     // 起きてから結局自分でオリジンへ行くことになり、待ち損 (`futex` 1.76 回/要求) だけが残る。
     // 初めて見る URL では今までどおり合流する
-    let mut leader = None;
-    if store_allowed && stale.is_none() && !known_unstored {
+    if store_allowed && cs.stale.is_none() && !known_unstored {
         match cache.begin_fetch(key) {
-            FetchTicket::Leader(guard) => leader = Some(guard),
+            FetchTicket::Leader(guard) => cs.leader = Some(guard),
             FetchTicket::Follower(inflight) => {
                 log_debug!(
                     Some(conn_id),
@@ -216,18 +235,13 @@ pub(super) fn consult<'c>(
             }
         }
     }
-    Ok(CacheState {
-        key,
-        now,
-        cfg,
-        cache_on,
-        lookup_allowed,
-        store_allowed,
-        force_revalidate,
-        stale,
-        client_cond_entry,
-        leader,
-    })
+    cs.key = key;
+    cs.now = now;
+    cs.cache_on = cache_on;
+    cs.lookup_allowed = lookup_allowed;
+    cs.store_allowed = store_allowed;
+    cs.force_revalidate = force_revalidate;
+    Ok(())
 }
 
 #[cfg(test)]

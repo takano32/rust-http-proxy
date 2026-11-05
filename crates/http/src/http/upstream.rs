@@ -105,6 +105,9 @@ pub(super) fn acquire_origin(
 ///
 /// `total` には送れたぶんを積む (途中で失敗しても、そこまでのバイト数が残る。T.29.7)。
 /// 読む 1 回ごとに見張り (`rate`) で待ちを測る (本文を送ってこない相手を切る。T.29.34)。
+/// 呼ぶのは `fetch` の 1 か所だけで、本文の無い要求では分岐 1 つで返るので、呼び出しにせず埋め込む
+/// (別の CGU に落ちると要求ごとに呼び出しが 1 回増える。T.34.8)
+#[inline]
 pub(super) fn forward_request_body(
     reader: &mut crate::clientio::ClientReader<'_>,
     server: &mut OriginStream,

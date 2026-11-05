@@ -54,15 +54,15 @@ pub(super) fn deliver(
         cs.lookup_allowed,
         cs.store_allowed,
     );
-    let (shared, cache, metrics, conn_id) = (x.shared, x.cache, x.metrics, x.conn_id);
-    let (http11, head_only, url) = (x.http11, x.head_only, x.url);
+    let (shared, cache, metrics, conn_id) = (x.shared, x.cache, x.ctx.metrics, x.ctx.conn_id);
+    let (http11, head_only, url) = (x.http11, x.ctx.head_only, x.ctx.url);
 
     // ---- 配信しつつ保存 ----
     let policy = if store_allowed && unframed_te.is_none() {
         freshness::response_policy_lines(
             status,
             headers::response_lines(&head),
-            x.req.cookie,
+            x.ctx.req.cookie,
             cfg,
             now,
         )
@@ -155,7 +155,10 @@ pub(super) fn deliver(
 
     let cache_state: Cow<'static, str> = if clean {
         if origin_reusable {
-            shared.upstream.pool.put(x.pool_key, server, shared.timeout);
+            shared
+                .upstream
+                .pool
+                .put(x.ctx.pool_key, server, shared.timeout);
         }
         match (policy, sink) {
             (Some(p), Some(s)) => {
@@ -208,14 +211,14 @@ pub(super) fn deliver(
 /// キャッシュを無効化する (RFC 9111 §4.4)。
 #[inline]
 fn invalidate_targets(x: &Exchange<'_>, head: &[u8]) {
-    x.cache.invalidate(x.url, x.conn_id);
+    x.cache.invalidate(x.ctx.url, x.ctx.conn_id);
     for name in ["location", "content-location"] {
         if let Some(target) = headers::response_value(head, name)
             && let Ok(o) = parse_origin(target, None)
             && o.scheme == x.origin.scheme
             && o.server_addr() == x.server_addr
         {
-            x.cache.invalidate(&o.url(), x.conn_id);
+            x.cache.invalidate(&o.url(), x.ctx.conn_id);
         }
     }
 }
@@ -350,7 +353,7 @@ fn read_small_body_first(
     client_framing: Framing,
     head_only: bool,
 ) -> Stage<(Option<CopyBuf>, usize)> {
-    let conn_id = x.conn_id;
+    let conn_id = x.ctx.conn_id;
     let mut pre_buf: Option<CopyBuf> = None;
     let mut early = 0usize;
     if !head_only
@@ -384,7 +387,7 @@ fn read_small_body_first(
             }
             // 原因は既存の 8 つ (EOF で切られた = `reset`)
             x.ctx.detail.cause = Some(ErrCause::Reset);
-            if let Some(more) = x.metrics.origin_warn(Failure::of(ErrCause::Reset)) {
+            if let Some(more) = x.ctx.metrics.origin_warn(Failure::of(ErrCause::Reset)) {
                 log_warn!(
                     Some(conn_id),
                     "502 Bad Gateway: origin body ended at {}B of {}B{}",
@@ -421,7 +424,7 @@ fn relay_body(
     client_framing: Framing,
     head_only: bool,
 ) -> Stage<(u64, bool)> {
-    let conn_id = x.conn_id;
+    let conn_id = x.ctx.conn_id;
     let mut body_bytes = 0u64;
     let mut clean = true;
     // ---- 書き換えも保存もしない本文は splice(2) でカーネル内を運ぶ ----
@@ -495,7 +498,7 @@ fn relay_body(
                         log_warn!(
                             Some(conn_id),
                             "origin body from {} cut: {}{}",
-                            x.pool_key,
+                            x.ctx.pool_key,
                             e,
                             more
                         );
