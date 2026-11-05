@@ -29,6 +29,25 @@ fn test_level_parse() {
     assert_eq!(Level::parse("nonsense"), None);
 }
 
+/// T.34.73: 5 つの水準は符号を往復し、知らない符号は読み戻しなら `Warn`、`current_level` なら `Trace`。
+#[test]
+fn every_level_round_trips_through_its_code() {
+    for l in [
+        Level::Error,
+        Level::Warn,
+        Level::Info,
+        Level::Debug,
+        Level::Trace,
+    ] {
+        assert_eq!(Level::from_code(l as u8), Some(l));
+        assert_eq!(Level::from_u8(l as u8), l);
+    }
+    assert_eq!(Level::from_code(5), None);
+    assert_eq!(Level::from_u8(5), Level::Warn);
+    assert_eq!(Level::from_u8(u8::MAX), Level::Warn);
+    assert_eq!(Level::from_code(5).unwrap_or(Level::Trace), Level::Trace);
+}
+
 #[test]
 fn test_level_ordering() {
     assert!(Level::Error < Level::Info);

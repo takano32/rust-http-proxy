@@ -50,15 +50,23 @@ impl Level {
         }
     }
 
+    /// 符号 (`Level as u8`) から戻す。知らない値は `None` (T.34.73 で `from_u8` と
+    /// [`current_level`] の 2 つの表をここ 1 つにまとめた。知らない値の行き先は呼ぶ側が決める)。
+    #[inline]
+    fn from_code(v: u8) -> Option<Level> {
+        match v {
+            0 => Some(Level::Error),
+            1 => Some(Level::Warn),
+            2 => Some(Level::Info),
+            3 => Some(Level::Debug),
+            4 => Some(Level::Trace),
+            _ => None,
+        }
+    }
+
     /// 符号から戻す (状態ファイルの読み戻し。知らない値は [`Level::Warn`])。
     pub fn from_u8(v: u8) -> Level {
-        match v {
-            0 => Level::Error,
-            2 => Level::Info,
-            3 => Level::Debug,
-            4 => Level::Trace,
-            _ => Level::Warn,
-        }
+        Level::from_code(v).unwrap_or(Level::Warn)
     }
 
     pub fn parse(s: &str) -> Option<Level> {
@@ -80,13 +88,8 @@ pub fn set_level(level: Level) {
 }
 
 pub fn current_level() -> Level {
-    match CURRENT_LEVEL.load(Ordering::Relaxed) {
-        0 => Level::Error,
-        1 => Level::Warn,
-        2 => Level::Info,
-        3 => Level::Debug,
-        _ => Level::Trace,
-    }
+    // 書くのは `set_level` だけなので知らない値は来ない。来たら前と同じく `Trace` に倒す
+    Level::from_code(CURRENT_LEVEL.load(Ordering::Relaxed)).unwrap_or(Level::Trace)
 }
 
 pub fn enabled(level: Level) -> bool {
