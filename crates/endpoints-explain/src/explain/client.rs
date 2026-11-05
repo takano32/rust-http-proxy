@@ -122,7 +122,7 @@ pub(super) fn client_summary(
 ) -> (String, String) {
     let empty = ClientStats::default();
     let c = row.unwrap_or(&empty);
-    let s = &c.stats;
+    let s = c.stats();
     let avg = s.avg_ms();
     let (p50, p95) = (s.quantile_ms(0.5), s.quantile_ms(0.95));
     let rtt = s.rtt_avg_ms();
@@ -157,10 +157,10 @@ pub(super) fn client_summary(
                 None => "User-Agent は記録なし".to_string(),
             },
             c.distinct_targets(),
-            c.literal_targets,
-            c.nonstandard_ports,
+            c.literal_targets(),
+            c.nonstandard_ports(),
             s.errors,
-            c.rejected
+            c.rejected()
         );
     }
     let _ = write!(
@@ -174,7 +174,7 @@ pub(super) fn client_summary(
 
 /// 接続元の数字の欄 (`summary` の文章と**同じ値**)。
 fn client_numbers(c: &ClientStats, recent: usize, errors: usize) -> String {
-    let s = &c.stats;
+    let s = c.stats();
     let mut numbers = String::with_capacity(512);
     let _ = write!(
         numbers,
@@ -198,10 +198,10 @@ fn client_numbers(c: &ClientStats, recent: usize, errors: usize) -> String {
         s.bytes_in,
         s.bytes_out,
         c.distinct_targets(),
-        c.literal_targets,
-        c.nonstandard_ports,
-        c.rejected,
-        c.first_seen,
+        c.literal_targets(),
+        c.nonstandard_ports(),
+        c.rejected(),
+        c.first_seen(),
         recent,
         errors
     );

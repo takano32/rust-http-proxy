@@ -96,7 +96,7 @@ impl Metrics {
         let client = crate::records::client_key(client);
         let mut clients = self.clients.locked();
         if let Some(c) = clients.get_mut(client.as_ref()) {
-            c.stats.observe_rtt(rtt_us, retrans);
+            c.observe_rtt(rtt_us, retrans);
         }
     }
 
@@ -117,7 +117,7 @@ impl Metrics {
             .clients
             .locked()
             .values()
-            .fold((0, 0), |a, c| fold(a, &c.stats));
+            .fold((0, 0), |a, c| fold(a, c.stats()));
         let origin = self.hosts.locked().map.values().fold((0, 0), fold);
         [client, origin]
     }
@@ -146,14 +146,14 @@ impl Metrics {
         if !crate::records::recording() {
             return;
         }
-        self.with_client(client, |stats| stats.rejected += 1);
+        self.with_client(client, |stats| stats.note_rejected());
     }
 
     /// 要求数の多い順に並べた接続元別統計 (`.rrd` と `/metrics` が使う欄だけ)。
     pub fn clients_sorted(&self) -> Vec<(String, HostStats)> {
         self.clients_sorted_by(ClientSort::Requests)
             .into_iter()
-            .map(|(k, s)| (k, s.stats))
+            .map(|(k, s)| (k, s.into_stats()))
             .collect()
     }
 
@@ -169,19 +169,19 @@ impl Metrics {
             .collect();
         v.sort_by(|a, b| {
             let tie =
-                b.1.stats
+                b.1.stats()
                     .requests
-                    .cmp(&a.1.stats.requests)
+                    .cmp(&a.1.stats().requests)
                     .then_with(|| a.0.cmp(&b.0));
             match sort {
                 ClientSort::Requests => tie,
-                ClientSort::Recent => b.1.stats.last_seen.cmp(&a.1.stats.last_seen).then(tie),
+                ClientSort::Recent => b.1.stats().last_seen.cmp(&a.1.stats().last_seen).then(tie),
                 ClientSort::Targets => {
                     b.1.distinct_targets()
                         .cmp(&a.1.distinct_targets())
                         .then(tie)
                 }
-                ClientSort::Literal => b.1.literal_targets.cmp(&a.1.literal_targets).then(tie),
+                ClientSort::Literal => b.1.literal_targets().cmp(&a.1.literal_targets()).then(tie),
             }
         });
         v
@@ -204,15 +204,18 @@ impl Metrics {
             let clients = self.clients.locked();
             clients
                 .iter()
-                .filter(|(_, s)| s.first_seen > 0 && s.first_seen >= from && s.first_seen <= to)
+                .filter(|(_, s)| {
+                    let t = s.first_seen();
+                    t > 0 && t >= from && t <= to
+                })
                 .map(|(k, s)| NewClient {
                     client: k.clone(),
-                    first_seen: s.first_seen,
+                    first_seen: s.first_seen(),
                     agent: s.agent().map(|a| a.to_string()),
-                    requests: s.stats.requests,
+                    requests: s.stats().requests,
                     // `ports` は**出た順**に伸びるので、先頭が最初の宛先のポート
-                    port: s.ports.first().map(|(p, _)| *p),
-                    literal: s.literal_targets > 0,
+                    port: s.first_port(),
+                    literal: s.has_literal_targets(),
                 })
                 .collect()
         };

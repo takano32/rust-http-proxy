@@ -19,8 +19,8 @@ fn the_client_row_takes_the_clock_the_host_row_read() {
         1_000,
     );
     let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
-    assert_eq!(c.stats.last_seen, 1_000);
-    assert_eq!(c.stats.requests, 1);
+    assert_eq!(c.stats().last_seen, 1_000);
+    assert_eq!(c.stats().requests, 1);
     // ホスト別の記録は読んだ時刻を返し、それがホストの行と接続元の行の両方に入る
     let now = m.record_host_detail(
         "http://example.com:80",
@@ -40,7 +40,7 @@ fn the_client_row_takes_the_clock_the_host_row_read() {
         now,
     );
     let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
-    assert_eq!(c.stats.last_seen, now);
+    assert_eq!(c.stats().last_seen, now);
     let hosts = m.hosts_sorted();
     let host = hosts
         .iter()
@@ -65,19 +65,19 @@ fn the_client_card_counts_agents_targets_ports_and_literals() {
     let v = m.clients_sorted_by(ClientSort::Requests);
     assert_eq!(v[0].0, "10.0.0.1");
     let c = &v[0].1;
-    assert_eq!(c.stats.requests, 3);
-    assert_eq!(c.agents, vec!["t147/1.0".to_string()]);
+    assert_eq!(c.stats().requests, 3);
+    assert_eq!(c.agents(), vec!["t147/1.0".to_string()]);
     assert_eq!(c.agent(), Some("t147/1.0"));
-    assert_eq!(c.agents_dropped, 0);
+    assert_eq!(c.agents_dropped(), 0);
     // 宛先は example.com と 192.0.2.7 の 2 種 (ポートが違っても同じホスト)
     assert_eq!(c.distinct_targets(), 2);
-    assert!(!c.targets_capped);
-    assert_eq!(c.literal_targets, 1);
-    assert_eq!(c.nonstandard_ports, 1);
+    assert!(!c.targets_capped());
+    assert_eq!(c.literal_targets(), 1);
+    assert_eq!(c.nonstandard_ports(), 1);
     // 同数のポートは番号の小さい順 (順序は 1 つに決まる)
     assert_eq!(c.ports_sorted(), vec![(80, 1), (443, 1), (8443, 1)]);
-    assert_eq!(c.ports_other, 0);
-    assert!(c.first_seen > 1_700_000_000);
+    assert_eq!(c.ports_other(), 0);
+    assert!(c.first_seen() > 1_700_000_000);
     // 宛先の指紋は大小を同一視する
     m.record_client(
         "10.0.0.1",
@@ -120,14 +120,14 @@ fn the_client_card_keeps_four_agents() {
     }
     m.record_client("10.0.0.1", HostOutcome::Bypass, 0, (0, 0), None, None);
     let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
-    assert_eq!(c.agents.len(), MAX_CLIENT_AGENTS);
-    assert_eq!(c.agents_dropped, 2);
+    assert_eq!(c.agents().len(), MAX_CLIENT_AGENTS);
+    assert_eq!(c.agents_dropped(), 2);
     // 覚えた中で最後に見たものが `/status` に出る 1 つ
     assert_eq!(c.agent(), Some("ua/3"));
     m.record_client_agent("10.0.0.1", "ua/0");
     let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
     assert_eq!(c.agent(), Some("ua/0"));
-    assert_eq!(c.agents.len(), MAX_CLIENT_AGENTS, "並びは変えない");
+    assert_eq!(c.agents().len(), MAX_CLIENT_AGENTS, "並びは変えない");
 
     // 同じ長い `User-Agent` は 1 種のまま (切った形で見比べるため)
     let long = "x".repeat(300);
@@ -136,12 +136,12 @@ fn the_client_card_keeps_four_agents() {
     m2.record_client_agent("10.0.0.2", &long);
     m2.record_client("10.0.0.2", HostOutcome::Bypass, 0, (0, 0), None, None);
     let c2 = m2.clients_sorted_by(ClientSort::Requests).remove(0).1;
-    assert_eq!(c2.agents.len(), 1);
-    assert_eq!(c2.agents_dropped, 0);
+    assert_eq!(c2.agents().len(), 1);
+    assert_eq!(c2.agents_dropped(), 0);
     assert!(
-        c2.agents[0].len() <= MAX_AGENT_BYTES,
+        c2.agents()[0].len() <= MAX_AGENT_BYTES,
         "{}",
-        c2.agents[0].len()
+        c2.agents()[0].len()
     );
 }
 
@@ -161,7 +161,7 @@ fn the_client_card_caps_targets_and_ports() {
     }
     let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
     assert_eq!(c.distinct_targets(), MAX_CLIENT_TARGETS);
-    assert!(c.targets_capped);
+    assert!(c.targets_capped());
     assert_eq!(
         c.ports_sorted(),
         vec![(443, MAX_CLIENT_TARGETS as u64 + 10)]
@@ -183,9 +183,9 @@ fn the_client_card_caps_targets_and_ports() {
         .find(|(k, _)| k == "10.0.0.2")
         .expect("10.0.0.2 の行")
         .1;
-    assert_eq!(c2.ports.len(), MAX_CLIENT_PORTS);
-    assert_eq!(c2.ports_other, 2);
-    assert_eq!(c2.nonstandard_ports, 10);
+    assert_eq!(c2.ports().len(), MAX_CLIENT_PORTS);
+    assert_eq!(c2.ports_other(), 2);
+    assert_eq!(c2.nonstandard_ports(), 10);
     assert_eq!(c2.distinct_targets(), 1);
 }
 
@@ -240,7 +240,10 @@ fn clients_can_be_sorted_by_requests_recent_targets_or_literals() {
     assert_eq!(first(ClientSort::Requests), "10.0.0.1");
     assert_eq!(first(ClientSort::Recent), "10.0.0.2");
     // 読み戻した接続元は「いつから居るか」が分からない
-    assert_eq!(m.clients_sorted_by(ClientSort::Requests)[0].1.first_seen, 0);
+    assert_eq!(
+        m.clients_sorted_by(ClientSort::Requests)[0].1.first_seen(),
+        0
+    );
 
     // (2) 宛先の種類と IP リテラル宛ても向きを逆にする
     let m2 = Metrics::new();
@@ -307,6 +310,6 @@ fn the_target_key_is_split_the_same_way_everywhere() {
     );
     let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
     assert_eq!(c.distinct_targets(), 1);
-    assert!(c.ports.is_empty());
-    assert_eq!(c.nonstandard_ports, 0);
+    assert!(c.ports().is_empty());
+    assert_eq!(c.nonstandard_ports(), 0);
 }

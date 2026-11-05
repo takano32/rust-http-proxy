@@ -236,9 +236,11 @@ fn the_client_page_keeps_its_key_order() {
     assert!(none.ends_with(",\"truncated\":false}"), "{}", none);
 
     // 行があれば `stats` にその行 (`/clients` と同じ形) が入り、`known` は真
-    let mut c = ClientStats::default();
-    c.stats.requests = 4;
-    c.rejected = 1;
+    let mut c = ClientStats::restored(HostStats {
+        requests: 4,
+        ..HostStats::default()
+    });
+    c.note_rejected();
     let known = ClientFacts {
         ip: "10.0.0.1".to_string(),
         row: Some(("10.0.0.1".to_string(), c.clone())),

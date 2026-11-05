@@ -24,29 +24,29 @@ use crate::metrics::{
 #[derive(Debug, Default, Clone)]
 pub struct ClientStats {
     /// 要求数・転送量・応答時間 (`/status` の `clients[]` の今までの欄)
-    pub stats: HostStats,
+    stats: HostStats,
     /// 初めて見た時刻 (epoch 秒)。**`0` はこの起動より前から居た**
     /// (状態ファイルから読み戻した接続元。いつからかは分からない)
-    pub first_seen: u64,
+    first_seen: u64,
     /// 見た `User-Agent` (最大 [`MAX_CLIENT_AGENTS`] 種、先頭 [`MAX_AGENT_BYTES`] バイト)
-    pub agents: Vec<String>,
+    agents: Vec<String>,
     /// そのうち最後に見たものの添字 (`/status` に出す 1 つ)
     agent_last: usize,
     /// 覚え切れなかった `User-Agent` の数 (5 種類目以降を名乗った接続の数)
-    pub agents_dropped: u64,
+    agents_dropped: u64,
     /// 宛先ホストの指紋 (最大 [`MAX_CLIENT_TARGETS`])。**名前は持たない**:
     /// 読みたいのは「何種類か」だけで、名前を持つと 1,000 接続元 × 256 件で MB になる
     targets: std::collections::HashSet<u64>,
     /// 宛先が [`MAX_CLIENT_TARGETS`] を超えた (`/clients` では `256+` の意味)
-    pub targets_capped: bool,
+    targets_capped: bool,
     /// 使ったポートと、その要求数 (最大 [`MAX_CLIENT_PORTS`] 種)
-    pub ports: Vec<(u16, u64)>,
+    ports: Vec<(u16, u64)>,
     /// 覚え切れなかったポートへの要求数
-    pub ports_other: u64,
+    ports_other: u64,
     /// 宛先が IP リテラルだった要求数 (名前を引かずに繋いでいる = 普通のブラウザではない)
-    pub literal_targets: u64,
+    literal_targets: u64,
     /// 443 / 80 以外のポートへの要求数
-    pub nonstandard_ports: u64,
+    nonstandard_ports: u64,
     /// 直前の要求の宛先 (そのままの文字列) と、そこから決まる 4 つ。
     /// **同じ宛先が続く間は分解も指紋も表もやり直さない**ための記憶
     /// ([`ClientStats::note_target`] の実測を参照)
@@ -57,7 +57,7 @@ pub struct ClientStats {
     last_ports_other: bool,
     /// 接続元ごとの同時接続の上限 (`PROXY_MAX_CONNS_PER_CLIENT`) に当たって断った本数
     /// (T14.13)。**書くのは断った経路だけ** ([`Metrics::record_client_rejected`])
-    pub rejected: u64,
+    rejected: u64,
 }
 
 impl ClientStats {
@@ -201,6 +201,101 @@ impl ClientStats {
         }
         self.agents.push(agent);
         self.agent_last = self.agents.len() - 1;
+    }
+
+    /// 接続元ごとの同時接続の上限に当たって断った 1 本を数える (T14.13)。
+    /// **呼ぶのは断った経路だけ** ([`Metrics::record_client_rejected`])。
+    /// 欄を外から書かせないために置いた (T.34.38)。
+    #[inline]
+    pub fn note_rejected(&mut self) {
+        self.rejected += 1;
+    }
+
+    /// カーネルの RTT と再送を 1 標本足す (`/clients`。T14.5。接続の終わりだけ)。
+    /// 中身は [`HostStats::observe_rtt`] (T.34.38 で欄を閉じたので、ここを通す)。
+    #[inline]
+    pub fn observe_rtt(&mut self, rtt_us: u32, retrans: u32) {
+        self.stats.observe_rtt(rtt_us, retrans);
+    }
+
+    // ── 読むだけの口 (T.34.38。欄はどれも書けるのがこの型の中だけになった) ──
+
+    /// 要求数・転送量・応答時間 (`/status` の `clients[]` の今までの欄)。
+    #[inline]
+    pub fn stats(&self) -> &HostStats {
+        &self.stats
+    }
+
+    /// 要求数・転送量・応答時間だけを取り出す (`.rrd` と `/metrics` が使う欄)。
+    #[inline]
+    pub fn into_stats(self) -> HostStats {
+        self.stats
+    }
+
+    /// 初めて見た時刻 (epoch 秒)。**`0` はこの起動より前から居た** (状態ファイルから読み戻した)。
+    #[inline]
+    pub fn first_seen(&self) -> u64 {
+        self.first_seen
+    }
+
+    /// 見た `User-Agent` (覚えた順)。
+    #[inline]
+    pub fn agents(&self) -> &[String] {
+        &self.agents
+    }
+
+    /// 覚え切れなかった `User-Agent` の数。
+    #[inline]
+    pub fn agents_dropped(&self) -> u64 {
+        self.agents_dropped
+    }
+
+    /// 宛先が [`MAX_CLIENT_TARGETS`] を超えたか (`/clients` では `256+` の意味)。
+    #[inline]
+    pub fn targets_capped(&self) -> bool {
+        self.targets_capped
+    }
+
+    /// 使ったポートと、その要求数 (**出た順**。要求数の順は [`ClientStats::ports_sorted`])。
+    #[inline]
+    pub fn ports(&self) -> &[(u16, u64)] {
+        &self.ports
+    }
+
+    /// 最初に使ったポート (`ports` は**出た順**に伸びるので、先頭が最初の宛先のポート)。
+    #[inline]
+    pub fn first_port(&self) -> Option<u16> {
+        self.ports.first().map(|(p, _)| *p)
+    }
+
+    /// 覚え切れなかったポートへの要求数。
+    #[inline]
+    pub fn ports_other(&self) -> u64 {
+        self.ports_other
+    }
+
+    /// 宛先が IP リテラルだった要求数。
+    #[inline]
+    pub fn literal_targets(&self) -> u64 {
+        self.literal_targets
+    }
+
+    /// IP リテラル宛ての要求が 1 本でもあったか。
+    #[inline]
+    pub fn has_literal_targets(&self) -> bool {
+        self.literal_targets > 0
+    }
+
+    /// 443 / 80 以外のポートへの要求数。
+    #[inline]
+    pub fn nonstandard_ports(&self) -> u64 {
+        self.nonstandard_ports
+    }
+
+    /// 同時接続の上限に当たって断った本数 (T14.13)。
+    #[inline]
+    pub fn rejected(&self) -> u64 {
+        self.rejected
     }
 
     /// 宛先ホストの種類 ([`MAX_CLIENT_TARGETS`] で頭打ち。

@@ -393,7 +393,7 @@ pub(super) fn clients(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static 
     // `clients[]` は `.rrd` の通算なので、いつからの通算かも一緒に出す (`/hosts` と同じ)
     let restored_since = all
         .iter()
-        .map(|(_, s)| s.stats.last_seen)
+        .map(|(_, s)| s.stats().last_seen)
         .filter(|&t| t > 0)
         .min()
         .unwrap_or(0);

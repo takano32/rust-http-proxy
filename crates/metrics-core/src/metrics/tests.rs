@@ -306,7 +306,7 @@ fn the_direction_columns_fit_in_the_slot_and_old_records_read_back_as_zero() {
     );
     // 接続元別にも同じ 2 欄が出る (`/status` の `clients[]` と `/clients`)
     let c = m.clients_sorted_by(ClientSort::Requests).remove(0).1;
-    assert_eq!((c.stats.bytes_in, c.stats.bytes_out), (1024, 2048));
+    assert_eq!((c.stats().bytes_in, c.stats().bytes_out), (1024, 2048));
     assert!(
         c.to_json("10.0.0.1")
             .contains("\"bytes_in\":1024,\"bytes_out\":2048"),

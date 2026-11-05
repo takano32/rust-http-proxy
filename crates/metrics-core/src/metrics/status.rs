@@ -81,7 +81,7 @@ impl Metrics {
                 format!(
                     "{{\"client\":\"{}\",{}{}}}",
                     crate::json::escape(&c),
-                    stats_json(&s.stats, false),
+                    stats_json(s.stats(), false),
                     // T14.7 の 4 つは**末尾に足す** (既存の鍵の順は変えない)
                     s.status_json()
                 )
