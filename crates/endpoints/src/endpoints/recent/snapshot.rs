@@ -270,6 +270,7 @@ fn drop_to_fit(part: &mut [(&'static str, String)], limit: usize) -> Vec<&'stati
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::with_ep;
     use super::*;
     use crate::metrics::Metrics;
 
@@ -323,32 +324,6 @@ mod tests {
             slot.finish(reason, tally, if worst { u32::MAX } else { 0 });
             m.record_closed(i);
         }
-    }
-
-    fn with_ep<R>(m: &Metrics, f: impl FnOnce(&Endpoint<'_>) -> R) -> R {
-        let cache = crate::cache::Cache::new(crate::cache::CacheConfig::disabled());
-        let concurrency = || crate::metrics::Concurrency {
-            max_conns: 0,
-            max_threads: 0,
-            live_threads: 0,
-            idle_threads: 0,
-            queued_jobs: 0,
-        };
-        let ep = Endpoint {
-            metrics: m,
-            cache: &cache,
-            conn_id: 1,
-            port: 8080,
-            host: None,
-            client: None,
-            pac_direct: &[],
-            lite: false,
-            readonly: false,
-            version: "test",
-            build: "test",
-            concurrency: &concurrency,
-        };
-        f(&ep)
     }
 
     /// 雪像の `recent` の部 (その部の閉じ括弧までではなく、部の始まりから最後まで)。
