@@ -354,3 +354,25 @@ fn the_three_stages_from_the_profile_show_up_in_the_record() {
     // 0 の段階 (`first_byte`) は出さない
     assert!(!json.contains("\"first_byte\""), "{}", json);
 }
+
+/// 開いた時刻は「閉じた時刻 − 寿命」(T.34.48。時刻を注入して秒まで縛る)。
+#[test]
+fn closed_entry_at_dates_the_entry_from_the_given_epoch() {
+    let t = ConnTable::new();
+    let opened = Instant::now();
+    let slot = t.register(4, "198.51.100.4", opened).unwrap();
+    slot.begin_tunnel("example.net:443");
+    let e = slot
+        .closed_entry_at(
+            opened + std::time::Duration::from_millis(90_500),
+            1_800_000_000,
+        )
+        .expect("宛先のある接続は残る");
+    assert_eq!(e.at, 1_800_000_000 - 90, "寿命の秒 (切り捨て) を引く");
+    assert_eq!(e.secs, 90);
+    // 寿命が時刻より長くても 0 で止まる
+    let e = slot
+        .closed_entry_at(opened + std::time::Duration::from_secs(30), 10)
+        .unwrap();
+    assert_eq!(e.at, 0);
+}

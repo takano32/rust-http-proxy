@@ -455,6 +455,13 @@ impl ConnSlot {
     /// それだけで埋まってしまう (2,000 件 = 2.8 時間ぶん)。数は `/status` にあるので、
     /// 個票としては残さない。
     pub fn closed_entry(&self, now: Instant) -> Option<RecentEntry> {
+        self.closed_entry_at(now, crate::cache::now_epoch())
+    }
+
+    /// [`ConnSlot::closed_entry`] の本体 (T.34.48)。`epoch` は閉じた時刻 (epoch 秒) で、
+    /// 開いた時刻は `epoch − 寿命` で出す (時計を中で読まないので、試験が時刻を縛れる)。
+    #[inline]
+    pub(crate) fn closed_entry_at(&self, now: Instant, epoch: u64) -> Option<RecentEntry> {
         let target = clip(&self.target.locked(), MAX_RECENT_TARGET);
         let requests = self.requests.load(Ordering::Relaxed);
         if target.is_empty() && requests == 0 {
@@ -480,7 +487,7 @@ impl ConnSlot {
         Some(RecentEntry {
             id: self.id,
             // 開いた時刻は「いま − 寿命」で出す (接続を受けるときに時計を読まない)
-            at: crate::cache::now_epoch().saturating_sub(age.as_secs()),
+            at: epoch.saturating_sub(age.as_secs()),
             client: self.client.clone(),
             target,
             connect: self.is_connect(),

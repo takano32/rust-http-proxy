@@ -227,3 +227,40 @@ fn the_tally_counts_clients_targets_states_and_kinds_without_a_clock() {
     assert!(empty.clients.is_empty() && empty.targets.is_empty());
     assert_eq!(empty.states, [0; CONN_STATES]);
 }
+
+/// 撮った時刻と `/proc` の数は渡した値がそのまま入る (T.34.48)。
+#[test]
+fn take_at_records_the_given_time_and_process_counts() {
+    let t = ConnTable::new();
+    let slot = t.register(1, "198.51.100.1", Instant::now()).unwrap();
+    slot.begin_tunnel("example.net:443");
+    let shot = BurstShot::take_at(
+        &t.snapshot(),
+        3,
+        1,
+        1,
+        8,
+        4,
+        5,
+        6,
+        1_800_000_007,
+        (42, 900, 4096),
+    );
+    assert_eq!(shot.at, 1_800_000_007);
+    assert_eq!((shot.threads, shot.fds, shot.max_fds), (42, 900, 4096));
+    assert_eq!(
+        (shot.seq, shot.evicted_idle, shot.rejected_overload),
+        (3, 5, 6)
+    );
+    let json = shot.to_json();
+    assert!(
+        json.starts_with("{\"at\":1800000007,\"seq\":3,"),
+        "{}",
+        json
+    );
+    assert!(
+        json.ends_with(",\"threads\":42,\"fds\":900,\"max_fds\":4096}"),
+        "{}",
+        json
+    );
+}

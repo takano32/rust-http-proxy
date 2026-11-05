@@ -365,3 +365,26 @@ fn blocked_entries_carry_their_own_cause_names() {
         assert!(json.len() <= 256, "1 件が {} B", json.len());
     }
 }
+
+/// 時刻は渡した値で、まとめる前の `last_at` も同じ (T.34.48)。
+#[test]
+fn an_entry_at_a_given_time_carries_it_in_at_and_last_at() {
+    let e = ErrorEntry::at(
+        1_800_000_123,
+        EntryKind::Connect,
+        "h.example.net:443",
+        "127.0.0.1",
+        502,
+        EntryCause::Error(ErrCause::Refused),
+        7,
+        9,
+    );
+    assert_eq!(
+        (e.at, e.last_at, e.repeats),
+        (1_800_000_123, 1_800_000_123, 1)
+    );
+    assert_eq!(
+        e.to_json(),
+        "{\"at\":1800000123,\"kind\":\"connect\",\"target\":\"h.example.net:443\",\"cause\":\"refused\",\"dns_ms\":7,\"connect_ms\":9,\"status\":502,\"client\":\"127.0.0.1\",\"repeats\":1,\"last_at\":1800000123}"
+    );
+}

@@ -198,7 +198,31 @@ impl ErrorEntry {
         dns_ms: u64,
         connect_ms: u64,
     ) -> ErrorEntry {
-        let at = crate::cache::now_epoch();
+        ErrorEntry::at(
+            crate::cache::now_epoch(),
+            kind,
+            target,
+            client,
+            status,
+            cause,
+            dns_ms,
+            connect_ms,
+        )
+    }
+
+    /// [`ErrorEntry::new`] の本体 (T.34.48)。時刻 `at` (epoch 秒) を受ける。
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub(crate) fn at(
+        at: u64,
+        kind: EntryKind,
+        target: &str,
+        client: &str,
+        status: u16,
+        cause: EntryCause,
+        dns_ms: u64,
+        connect_ms: u64,
+    ) -> ErrorEntry {
         ErrorEntry {
             at,
             kind,

@@ -145,10 +145,39 @@ impl BurstShot {
         evicted_idle: u64,
         rejected_overload: u64,
     ) -> BurstShot {
+        let counts = process_counts();
+        BurstShot::take_at(
+            rows,
+            seq,
+            active,
+            trigger_active,
+            max_conns,
+            threshold,
+            evicted_idle,
+            rejected_overload,
+            crate::cache::now_epoch(),
+            counts,
+        )
+    }
+
+    /// [`BurstShot::take`] の本体 (T.34.48)。撮った時刻 `at` (epoch 秒) と、`/proc` から読んだ
+    /// `(スレッド数, 記述子, その上限)` を受ける (時計も `/proc` も中で読まない)。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn take_at(
+        rows: &[Arc<ConnSlot>],
+        seq: u64,
+        active: usize,
+        trigger_active: usize,
+        max_conns: usize,
+        threshold: usize,
+        evicted_idle: u64,
+        rejected_overload: u64,
+        at: u64,
+        (threads, fds, max_fds): (u64, u64, u64),
+    ) -> BurstShot {
         let t = ShotTally::of(rows);
-        let (threads, fds, max_fds) = process_counts();
         BurstShot {
-            at: crate::cache::now_epoch(),
+            at,
             seq,
             active,
             trigger_active,
