@@ -8,6 +8,7 @@
 //! - `reserve` 有効時は予算の未使用分を `ballast.reserve` に fallocate して先行確保する
 //! - 書き込み・読み出し後はページキャッシュを手放し、L1 との二重キャッシュを避ける
 
+mod ballast;
 mod scan;
 pub mod writer;
 
@@ -15,25 +16,20 @@ pub use scan::ScanReport;
 pub use writer::DiskWriter;
 
 use crate::sync::LockExt;
-use std::fs::{self, File, OpenOptions};
+use ballast::Ballast;
+use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::config::MIB;
 use crate::format::{self, Meta};
 use crate::key::CacheKey;
 use crate::lru::{LruEntry, Store};
-use crate::sysinfo;
 use crate::{log_debug, log_warn};
 
 pub const SHARDS: usize = 256;
 const BALLAST_FILE: &str = "ballast.reserve";
-/// バラストの伸長はこれ以上の余裕があるときだけ行い、細かな伸縮を避ける。
-const BALLAST_STEP: u64 = 16 * MIB;
-/// 1 回の fallocate で伸ばす最大量 (巨大な 1 回呼び出しでスレッドを止めない)。
-const BALLAST_GROW_MAX: u64 = 1024 * MIB;
 const ENOSPC: i32 = 28;
 const EDQUOT: i32 = 122;
 
@@ -73,12 +69,6 @@ pub struct DiskHit {
     pub size: u64,
 }
 
-struct Ballast {
-    file: Option<File>,
-    bytes: u64,
-    supported: bool,
-}
-
 pub struct DiskTier {
     dir: PathBuf,
     ready: AtomicBool,
@@ -116,11 +106,7 @@ impl DiskTier {
             index: Mutex::new(Store::default()),
             capacity: AtomicU64::new(0),
             entry_capacity: AtomicU64::new(0),
-            ballast: Mutex::new(Ballast {
-                file: None,
-                bytes: 0,
-                supported: reserve,
-            }),
+            ballast: Mutex::new(Ballast::new(reserve)),
             ballast_bytes: AtomicU64::new(0),
             reserve,
             enospc: AtomicU64::new(0),
@@ -204,20 +190,6 @@ impl DiskTier {
             .saturating_sub(self.in_flight_bytes())
     }
 
-    pub fn reserve_active(&self) -> bool {
-        self.reserve && self.ballast.locked().supported
-    }
-
-    /// 先行確保を止めてバラストファイルを消す (tmpfs 上など、確保しても意味がない場合)。
-    pub fn disable_reserve(&self) {
-        let mut b = self.ballast.locked();
-        b.supported = false;
-        b.bytes = 0;
-        b.file = None;
-        self.ballast_bytes.store(0, Ordering::Relaxed);
-        let _ = fs::remove_file(self.dir.join(BALLAST_FILE));
-    }
-
     /// 直近のプローブ以降の ENOSPC 回数を取り出してリセットする。
     pub fn take_enospc(&self) -> u64 {
         self.enospc.swap(0, Ordering::Relaxed)
@@ -275,39 +247,6 @@ impl DiskTier {
         self.prepare_ballast();
         self.ready.store(true, Ordering::Relaxed);
         Ok(report)
-    }
-
-    /// バラストファイルを空の状態で用意する。開けなければ先行確保だけ諦める (致命的にはしない)。
-    fn prepare_ballast(&self) {
-        let path = self.dir.join(BALLAST_FILE);
-        let mut b = self.ballast.locked();
-        b.bytes = 0;
-        self.ballast_bytes.store(0, Ordering::Relaxed);
-        if !self.reserve {
-            b.file = None;
-            let _ = fs::remove_file(&path);
-            return;
-        }
-        // 前回分は空にして、予算計算のあとで改めて伸ばす
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-        {
-            Ok(f) => b.file = Some(f),
-            Err(e) => {
-                b.file = None;
-                b.supported = false;
-                log_warn!(
-                    None,
-                    "disk reservation unavailable ({}): {} (using limit only)",
-                    path.display(),
-                    e
-                );
-            }
-        }
     }
 
     /// インデックス上のメタ情報 (`stored_at` は当てにしないこと)。
@@ -471,89 +410,6 @@ impl DiskTier {
         self.make_room(0)
     }
 
-    fn shrink_ballast(&self, by: u64) {
-        let mut b = self.ballast.locked();
-        if b.bytes == 0 {
-            return;
-        }
-        let new_len = b.bytes.saturating_sub(by);
-        match &b.file {
-            Some(f) => match f.set_len(new_len) {
-                Ok(()) => b.bytes = new_len,
-                Err(e) => log_warn!(None, "disk reservation shrink failed: {}", e),
-            },
-            None => b.bytes = 0,
-        }
-        self.ballast_bytes.store(b.bytes, Ordering::Relaxed);
-    }
-
-    /// 抱えてよい合計 (エントリ + バラスト) がこの値になるまでバラストを切り詰める。
-    /// 段階化で上限が下がったときに呼ぶ (予算が縮んだときの [`Self::make_room`] と同じ道)。
-    pub fn release_ballast_to(&self, max_owned: u64) {
-        let over = self.owned().saturating_sub(max_owned);
-        if over > 0 {
-            self.shrink_ballast(over);
-        }
-    }
-
-    /// 予算の未使用分をバラストファイルで埋める。戻り値は追加したバイト数。
-    ///
-    /// `max_owned` は「エントリ + バラストがこれを超えないところまで」の上限
-    /// (段階化。`PROXY_CACHE_RESERVE` の既定)。`eager` は `u64::MAX`。
-    pub fn fill_ballast(&self, max_owned: u64) -> u64 {
-        if !self.reserve || !self.is_ready() {
-            return 0;
-        }
-        // 書き込み中の分も埋めてはいけない
-        let target = self
-            .capacity()
-            .min(max_owned)
-            .saturating_sub(self.usage().0)
-            .saturating_sub(self.in_flight_bytes());
-        let mut b = self.ballast.locked();
-        let Ballast {
-            file,
-            bytes,
-            supported,
-        } = &mut *b;
-        let Some(file) = file.as_ref().filter(|_| *supported) else {
-            return 0;
-        };
-        let mut added = 0u64;
-        while bytes.saturating_add(BALLAST_STEP) <= target {
-            let step = (target - *bytes).min(BALLAST_GROW_MAX);
-            match sysinfo::preallocate(file, *bytes, step) {
-                Ok(()) => {
-                    *bytes += step;
-                    added += step;
-                }
-                Err(e) if sysinfo::is_unsupported(&e) => {
-                    *supported = false;
-                    let _ = file.set_len(0);
-                    *bytes = 0;
-                    log_warn!(
-                        None,
-                        "disk reservation unavailable on {}: {} (using limit only)",
-                        self.dir.display(),
-                        e
-                    );
-                    break;
-                }
-                Err(e) => {
-                    // 自分の先行確保が入らないだけなので、他者の圧迫 (ENOSPC) には数えない。
-                    // 割当の探索には「ここが限界」の合図として渡す
-                    if matches!(e.raw_os_error(), Some(ENOSPC) | Some(EDQUOT)) {
-                        self.fill_failed.store(true, Ordering::Relaxed);
-                    }
-                    log_debug!(None, "disk reservation paused: {}", e);
-                    break;
-                }
-            }
-        }
-        self.ballast_bytes.store(*bytes, Ordering::Relaxed);
-        added
-    }
-
     /// 期限切れで再検証できない、または期限から `max_stale` 秒以上経ったエントリを削除する。
     pub fn sweep(&self, now: u64, max_stale: u64) -> usize {
         let keys = {
@@ -564,16 +420,5 @@ impl DiskTier {
             self.remove(*key);
         }
         keys.len()
-    }
-
-    /// バラストを手放す (終了時)。
-    pub fn shutdown(&self) {
-        let mut b = self.ballast.locked();
-        if let Some(f) = b.file.take() {
-            let _ = f.set_len(0);
-        }
-        b.bytes = 0;
-        self.ballast_bytes.store(0, Ordering::Relaxed);
-        let _ = fs::remove_file(self.dir.join(BALLAST_FILE));
     }
 }
