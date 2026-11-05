@@ -46,37 +46,12 @@ pub(super) fn deliver(
         origin_reusable,
         unframed_te,
     } = facts;
-    let (key, now, cfg, cache_on, lookup_allowed, store_allowed) = (
-        cs.key,
-        cs.now,
-        cs.cfg,
-        cs.cache_on,
-        cs.lookup_allowed,
-        cs.store_allowed,
-    );
-    let (shared, cache, metrics, conn_id) = (x.shared, x.cache, x.ctx.metrics, x.ctx.conn_id);
+    let key = cs.key;
+    let (cache, conn_id) = (x.cache, x.ctx.conn_id);
     let (http11, head_only, url) = (x.http11, x.ctx.head_only, x.ctx.url);
 
     // ---- 配信しつつ保存 ----
-    let policy = if store_allowed && unframed_te.is_none() {
-        freshness::response_policy_lines(
-            status,
-            headers::response_lines(&head),
-            x.ctx.req.cookie,
-            cfg,
-            now,
-        )
-    } else {
-        None
-    };
-    if policy.is_none() && cs.stale.is_some() && (200..400).contains(&status) {
-        // 新しい表現が届いたのに保存できないので、古い表現も捨てる (4xx/5xx では残す)
-        cache.remove(key);
-    }
-    // unsafe メソッドへの成功応答は対象 URL (と Location 先) のキャッシュを無効化する (RFC 9111 §4.4)
-    if !x.is_get && !head_only && (200..400).contains(&status) && cache_on {
-        invalidate_targets(x, &head);
-    }
+    let policy = storage_plan(x, cs, status, &head, unframed_te.is_some());
     // 保存するのは元の Location のまま (配信時に必要なら書き換える)。
     // マッピング形式でなければ String を 1 本ずつ作らずに直接バイト列へ書く。
     // **保存しないなら組み立てもしない**: 素通しの経路では、この 1 本のために
@@ -153,58 +128,22 @@ pub(super) fn deliver(
     }
     client.flush()?;
 
-    let cache_state: Cow<'static, str> = if clean {
-        if origin_reusable {
-            shared
-                .upstream
-                .pool
-                .put(x.ctx.pool_key, server, shared.timeout);
-        }
-        match (policy, sink) {
-            (Some(p), Some(s)) => {
-                let out = s.finish();
-                if out.memory || out.disk {
-                    if let Some(guard) = cs.leader.take() {
-                        guard.complete(FetchOutcome::Stored);
-                    }
-                    // 保存できたときだけ組み立てる (素通しの経路では確保しない)
-                    Cow::Owned(format!("MISS stored ttl={}s", p.ttl.as_secs()))
-                } else {
-                    Cow::Borrowed("MISS")
-                }
-            }
-            _ if !lookup_allowed => Cow::Borrowed("BYPASS"),
-            _ => Cow::Borrowed("MISS"),
-        }
-    } else {
-        // 途中で切れた本文はクライアントにもそれと分かる形 (終端チャンク無し / 短い本文) で伝わる
-        if let Some(s) = sink {
-            s.abort();
-        }
-        x.ctx.keep_client = false;
-        Cow::Borrowed("MISS truncated")
-    };
-
-    // 保存されなかった場合は待っている要求に自分で取りに行かせる (Drop でも通知される)
-    if let Some(guard) = cs.leader.take() {
-        // この鍵は保存されないと分かったので覚えておく (次の同時ミスは合流させない。T11.9)。
-        // 途中で切れた転送は一時的な失敗なので覚えない (次はうまくいくかもしれない)
-        if clean {
-            cache.remember_not_stored(key, now);
-        }
-        guard.complete(FetchOutcome::NotStored);
+    if clean && origin_reusable {
+        x.shared
+            .upstream
+            .pool
+            .put(x.ctx.pool_key, server, x.shared.timeout);
     }
     let total = client_head.len() as u64 + body_bytes;
-    // 起動時の自己ベンチ (T14.43) が自分で打った要求のバイトは合計に足さない
-    // (`/status` の `bytes_forwarded` と `/history` の `bytes` に 20 MB の山が立つため)。
-    // 費用は自己ベンチが回っていないときの原子の読み 1 回
-    if !proxy_metrics::selfbench::is_target(x.ctx.pool_key) {
-        metrics.add_bytes(total + request_body_bytes);
-    }
-    // 個票の「上り」は要求の本文ぶん (ヘッダーぶんは本体クレートが足す。T14.4)
-    x.ctx.up_bytes = request_body_bytes;
-    x.ctx.log(status, total, &cache_state);
-    Ok(x.ctx.keep_client)
+    let keep = finish(
+        x,
+        cs,
+        policy.as_ref(),
+        &mut sink,
+        clean,
+        (status, total, request_body_bytes),
+    );
+    Ok(keep)
 }
 
 /// unsafe メソッドへの成功応答で、対象 URL と `Location` / `Content-Location` の先 (同じオリジンのもの) の
@@ -440,40 +379,10 @@ fn relay_body(
             >= super::passthrough::SPLICE_MIN_BYTES
     {
         use std::os::fd::AsRawFd;
-        let (origin_fd, client_fd) = (
-            origin_tcp.as_raw_fd(),
-            client.get_ref().get_ref().as_raw_fd(),
-        );
-        // 応答ヘッダーを読むときに一緒に読んでしまった本文の先頭は自分で書く
-        // (ヘッダーと同じ 1 回の sendto に載る)
-        let buffered = server.buffer().len().min(total as usize);
-        if buffered > 0 {
-            let prefix = server.buffer()[..buffered].to_vec();
-            client.write_all(&prefix)?;
-            server.consume(buffered);
-            body_bytes += buffered as u64;
-        }
-        client.flush()?;
-        // 最小の速さを見るときだけ、運ぶ間クライアントを待たない形にする (T.29.34)
-        let nonblocking = client.get_ref().is_on();
-        if nonblocking {
-            client.get_ref().get_ref().set_nonblocking(true)?;
-        }
-        let relayed = super::passthrough::relay(
-            origin_fd,
-            client_fd,
-            total - buffered as u64,
-            client.get_mut().guard(),
-            x.shared.timeout,
-        );
-        if nonblocking {
-            client.get_ref().get_ref().set_nonblocking(false)?;
-        }
-        let (moved, ok) = relayed?;
+        let (moved, ok) = splice_body(x, client, server, origin_tcp.as_raw_fd(), total)?;
         body_bytes += moved;
         clean = ok;
         spliced = true;
-        crate::log_trace!(Some(conn_id), "spliced {}B of body to the client", moved);
     }
     #[cfg(not(target_os = "linux"))]
     let _ = head_only;
@@ -526,6 +435,149 @@ fn relay_body(
         clean = clean && body.finished_cleanly();
     }
     Ok((body_bytes, clean))
+}
+
+/// 保存の方針を決める (保存してよい要求で、閉じるまでの TE でない応答だけ)。保存しないと決まった
+/// 新しい表現 (2xx / 3xx) が届いたら古い表現も捨て、unsafe メソッドへの成功応答では対象のキャッシュを
+/// 無効化する (T.34.19)。
+#[inline]
+fn storage_plan(
+    x: &Exchange<'_>,
+    cs: &CacheState<'_>,
+    status: u16,
+    head: &[u8],
+    unframed_te: bool,
+) -> Option<freshness::Policy> {
+    let (cache, head_only) = (x.cache, x.ctx.head_only);
+    let (key, now, cfg, cache_on) = (cs.key, cs.now, cs.cfg, cs.cache_on);
+    let policy = if cs.store_allowed && !unframed_te {
+        freshness::response_policy_lines(
+            status,
+            headers::response_lines(head),
+            x.ctx.req.cookie,
+            cfg,
+            now,
+        )
+    } else {
+        None
+    };
+    if policy.is_none() && cs.stale.is_some() && (200..400).contains(&status) {
+        // 新しい表現が届いたのに保存できないので、古い表現も捨てる (4xx/5xx では残す)
+        cache.remove(key);
+    }
+    // unsafe メソッドへの成功応答は対象 URL (と Location 先) のキャッシュを無効化する (RFC 9111 §4.4)
+    if !x.is_get && !head_only && (200..400).contains(&status) && cache_on {
+        invalidate_targets(x, head);
+    }
+    policy
+}
+
+/// 本文を運び終えたあとの始末: 保存を締め (または捨て)、合流を待つ要求へ結果を知らせ、バイトを数えて
+/// アクセスログを書く (使い回せる接続をプールへ戻すのは呼ぶ側で、この前)。戻り値はクライアント接続を
+/// 次の要求に使えるか。
+///
+/// `(status, total, request_body_bytes)` の `total` はクライアントへ書いた先頭と本文のバイト数。
+#[inline]
+fn finish(
+    x: &mut Exchange<'_>,
+    cs: &mut CacheState<'_>,
+    policy: Option<&freshness::Policy>,
+    sink: &mut Option<StoreSink<'_>>,
+    clean: bool,
+    (status, total, request_body_bytes): (u16, u64, u64),
+) -> bool {
+    let (cache, metrics) = (x.cache, x.ctx.metrics);
+    let (key, now, lookup_allowed) = (cs.key, cs.now, cs.lookup_allowed);
+    let cache_state: Cow<'static, str> = if clean {
+        match (policy, sink.take()) {
+            (Some(p), Some(s)) => {
+                let out = s.finish();
+                if out.memory || out.disk {
+                    if let Some(guard) = cs.leader.take() {
+                        guard.complete(FetchOutcome::Stored);
+                    }
+                    // 保存できたときだけ組み立てる (素通しの経路では確保しない)
+                    Cow::Owned(format!("MISS stored ttl={}s", p.ttl.as_secs()))
+                } else {
+                    Cow::Borrowed("MISS")
+                }
+            }
+            _ if !lookup_allowed => Cow::Borrowed("BYPASS"),
+            _ => Cow::Borrowed("MISS"),
+        }
+    } else {
+        // 途中で切れた本文はクライアントにもそれと分かる形 (終端チャンク無し / 短い本文) で伝わる
+        if let Some(s) = sink.take() {
+            s.abort();
+        }
+        x.ctx.keep_client = false;
+        Cow::Borrowed("MISS truncated")
+    };
+
+    // 保存されなかった場合は待っている要求に自分で取りに行かせる (Drop でも通知される)
+    if let Some(guard) = cs.leader.take() {
+        // この鍵は保存されないと分かったので覚えておく (次の同時ミスは合流させない。T11.9)。
+        // 途中で切れた転送は一時的な失敗なので覚えない (次はうまくいくかもしれない)
+        if clean {
+            cache.remember_not_stored(key, now);
+        }
+        guard.complete(FetchOutcome::NotStored);
+    }
+    // 起動時の自己ベンチ (T14.43) が自分で打った要求のバイトは合計に足さない
+    // (`/status` の `bytes_forwarded` と `/history` の `bytes` に 20 MB の山が立つため)。
+    // 費用は自己ベンチが回っていないときの原子の読み 1 回
+    if !proxy_metrics::selfbench::is_target(x.ctx.pool_key) {
+        metrics.add_bytes(total + request_body_bytes);
+    }
+    // 個票の「上り」は要求の本文ぶん (ヘッダーぶんは本体クレートが足す。T14.4)
+    x.ctx.up_bytes = request_body_bytes;
+    x.ctx.log(status, total, &cache_state);
+    x.ctx.keep_client
+}
+
+/// 書き換えも保存もしない大きな本文を `splice(2)` でカーネル内を運ぶ (Linux だけ)。
+/// 戻り値は (運んだバイト数, 最後まで届いたか)。
+#[cfg(target_os = "linux")]
+#[inline]
+fn splice_body(
+    x: &Exchange<'_>,
+    client: &mut ClientWriter<'_>,
+    server: &mut OriginConn,
+    origin_fd: std::os::fd::RawFd,
+    total: u64,
+) -> Stage<(u64, bool)> {
+    use std::os::fd::AsRawFd;
+    let conn_id = x.ctx.conn_id;
+    let mut moved_prefix = 0u64;
+    let client_fd = client.get_ref().get_ref().as_raw_fd();
+    // 応答ヘッダーを読むときに一緒に読んでしまった本文の先頭は自分で書く
+    // (ヘッダーと同じ 1 回の sendto に載る)
+    let buffered = server.buffer().len().min(total as usize);
+    if buffered > 0 {
+        let prefix = server.buffer()[..buffered].to_vec();
+        client.write_all(&prefix)?;
+        server.consume(buffered);
+        moved_prefix = buffered as u64;
+    }
+    client.flush()?;
+    // 最小の速さを見るときだけ、運ぶ間クライアントを待たない形にする (T.29.34)
+    let nonblocking = client.get_ref().is_on();
+    if nonblocking {
+        client.get_ref().get_ref().set_nonblocking(true)?;
+    }
+    let relayed = super::passthrough::relay(
+        origin_fd,
+        client_fd,
+        total - buffered as u64,
+        client.get_mut().guard(),
+        x.shared.timeout,
+    );
+    if nonblocking {
+        client.get_ref().get_ref().set_nonblocking(false)?;
+    }
+    let (moved, ok) = relayed?;
+    crate::log_trace!(Some(conn_id), "spliced {}B of body to the client", moved);
+    Ok((moved_prefix + moved, ok))
 }
 
 #[cfg(test)]
