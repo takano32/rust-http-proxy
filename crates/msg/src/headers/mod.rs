@@ -75,6 +75,7 @@ struct ConnectionNames<'a> {
 
 impl<'a> ConnectionNames<'a> {
     /// `lines` (`Name: value` の行。行末は付いていてもよい) の `Connection:` の行から集める。
+    #[inline]
     fn collect(lines: impl Iterator<Item = &'a str>) -> Self {
         let mut me = ConnectionNames {
             names: [""; MAX_CUSTOM_HOP],
@@ -103,6 +104,7 @@ impl<'a> ConnectionNames<'a> {
 
     /// `name` が指名されているか (大小は無視)。枠を溢れていれば `lines` をもう一度なめる
     /// (`lines` は溢れたときだけ呼ばれる)。
+    #[inline]
     fn contains<I>(&self, name: &str, lines: impl FnOnce() -> I) -> bool
     where
         I: Iterator<Item = &'a str>,
@@ -124,6 +126,7 @@ impl<'a> ConnectionNames<'a> {
 }
 
 /// `line` が `Connection:` の行ならその値 (コロンより後ろ。前後の空白は付いたまま)。
+#[inline]
 fn connection_value(line: &str) -> Option<&str> {
     let (k, v) = ascii::split_once(line, b':')?;
     k.trim_ascii()

@@ -76,6 +76,7 @@ struct TeTally {
 
 impl TeTally {
     /// 1 行ぶんの値を足す。並びの空の要素は読み飛ばす
+    #[inline]
     fn add(&mut self, value: &str) {
         for t in value
             .split(',')
@@ -88,6 +89,7 @@ impl TeTally {
     }
 
     /// 最後の符号化が chunked で、chunked が 1 回だけか (RFC 9112 §6.1)
+    #[inline]
     fn chunked(&self) -> bool {
         self.last_chunked && self.chunked_count == 1
     }
@@ -157,6 +159,7 @@ pub fn parse_request_headers_visit(
 impl RequestHeaders {
     /// ヘッダー 1 本 (名前と値は前後の空白を落としたもの) を見て、使う欄を埋める。
     /// 名前の比較は上から順に 1 回ずつで、どれにも当たらない行は何もしない。
+    #[inline]
     fn note(&mut self, name: &str, v_trim: &str, te: &mut TeTally, conn_id: usize) {
         let is = |want: &str| name.eq_ignore_ascii_case(want);
         if is("host") {

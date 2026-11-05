@@ -63,6 +63,7 @@ struct HeadLines {
 
 impl HeadLines {
     /// `text` の `first_end` (状態行の改行の位置) より後ろを走査する。
+    #[inline]
     fn scan(text: &str, first_end: usize) -> HeadLines {
         let bytes = text.as_bytes();
         let mut me = HeadLines {
@@ -94,6 +95,7 @@ impl HeadLines {
     }
 
     /// `i` 番目の行 (`text` は `scan` に渡したもの)。
+    #[inline]
     fn at<'t>(&self, text: &'t str, i: usize) -> &'t str {
         let (s, e) = if i < INLINE_LINES {
             self.inline[i]
@@ -104,6 +106,7 @@ impl HeadLines {
     }
 
     /// 全部の行を順に。
+    #[inline]
     fn iter<'t>(&self, text: &'t str) -> impl Iterator<Item = &'t str> {
         (0..self.n).map(move |i| self.at(text, i))
     }
@@ -203,6 +206,7 @@ pub fn write_response_head<S: AsRef<str>>(
 
 /// 状態行を書く。`status_line` があればそれ、無ければオリジンの状態行 (`first`) の版だけを
 /// `HTTP/1.1` に揃える (版の後ろが無ければ `200 OK`)。CRLF まで書く。
+#[inline]
 fn write_status_line(out: &mut Vec<u8>, first: &str, status_line: Option<&str>) {
     match status_line {
         Some(sl) => out.extend_from_slice(sl.as_bytes()),
