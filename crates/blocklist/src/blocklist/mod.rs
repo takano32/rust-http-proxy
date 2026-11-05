@@ -182,10 +182,17 @@ pub fn check(host: &str) -> Verdict {
         return Verdict::Clear;
     }
     let exempt = EXEMPT.read_locked();
-    if exempt.iter().any(|p| crate::acl::match_pattern(p, &host)) {
+    verdict(set, &exempt, &host)
+}
+
+/// 一覧と対象外のパターンからの判定 (`host` はポートなしの小文字。T.34.64 で [`check`] から出した)。
+/// 対象外に合えば `Exempt`、一覧のどれか (親ドメインを含む) に当たれば `Listed`。
+#[inline]
+fn verdict(set: &HashSet<String>, exempt: &[String], host: &str) -> Verdict {
+    if exempt.iter().any(|p| crate::acl::match_pattern(p, host)) {
         return Verdict::Exempt;
     }
-    if walk(&host, |h| set.contains(h)) {
+    if walk(host, |h| set.contains(h)) {
         Verdict::Listed
     } else {
         Verdict::Clear
@@ -210,7 +217,7 @@ pub fn blocked_total() -> u64 {
     BLOCKED.load(Ordering::Relaxed)
 }
 
-/// hosts 形式 / 1 行 1 ドメインの文字列を解析する。
+/// URL から取った一覧の保存先 (`$HOME/.rust-http-proxy.blocklist`。再起動後も使う)。
 fn cache_path() -> Option<PathBuf> {
     crate::envfile::env_path().map(|p| p.with_file_name(".rust-http-proxy.blocklist"))
 }
@@ -225,7 +232,8 @@ fn mtime(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-/// `url` を GET して本文を返す (リダイレクトは 5 回まで追う)。
+/// 一覧を組み直す: ファイル ([`load_file`]) → URL ([`load_url`]) → 表に置いて記録 ([`record`])。
+/// T.34.64 で 3 段に割った (順と文面は前と同じ)。
 fn rebuild(upstream: &Upstream, timeout: Duration, fetch_url: bool) {
     let sources = state().sources.clone();
     let mut set = HashSet::new();
@@ -234,54 +242,23 @@ fn rebuild(upstream: &Upstream, timeout: Duration, fetch_url: bool) {
     let mut error = None;
 
     if let Some(path) = &sources.file {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                let parsed = parse(&text);
+        match load_file(path) {
+            Ok(parsed) => {
                 file_entries = parsed.len();
                 set.extend(parsed);
             }
-            Err(e) => error = Some(format!("{}: {}", path.display(), e)),
+            Err(e) => error = Some(e),
         }
     }
 
     let mut fetched_now = false;
     if let Some(url) = &sources.url {
-        let cache = cache_path();
-        let mut text = None;
-        if fetch_url {
-            let started = Instant::now();
-            match fetch(url, upstream, timeout) {
-                Ok(body) => {
-                    let body = String::from_utf8_lossy(&body).into_owned();
-                    if let Some(p) = &cache
-                        && let Err(e) = std::fs::write(p, &body)
-                    {
-                        log_warn!(None, "blocklist: could not save {}: {}", p.display(), e);
-                    }
-                    log_info!(
-                        None,
-                        "blocklist: fetched {} ({} bytes in {:.1}s)",
-                        url,
-                        body.len(),
-                        started.elapsed().as_secs_f64()
-                    );
-                    fetched_now = true;
-                    text = Some(body);
-                }
-                Err(e) => {
-                    log_warn!(None, "blocklist: fetch {} failed: {}", url, e);
-                    error = Some(format!("{}: {}", url, e));
-                }
-            }
+        let loaded = load_url(url, upstream, timeout, fetch_url);
+        fetched_now = loaded.fetched_now;
+        if let Some(e) = loaded.error {
+            error = Some(e);
         }
-        if text.is_none()
-            && let Some(p) = &cache
-            && let Ok(saved) = std::fs::read_to_string(p)
-        {
-            text = Some(saved);
-        }
-        if let Some(t) = text {
-            let parsed = parse(&t);
+        if let Some(parsed) = loaded.parsed {
             url_entries = parsed.len();
             set.extend(parsed);
         }
@@ -289,18 +266,133 @@ fn rebuild(upstream: &Upstream, timeout: Duration, fetch_url: bool) {
 
     let entries = set.len();
     *SET.write_locked() = Some(Arc::new(set));
+    let tried = fetch_url && sources.url.is_some();
+    record(
+        &sources,
+        (entries, file_entries, url_entries),
+        error,
+        fetched_now,
+        tried,
+    );
+}
+
+/// `PROXY_BLOCKLIST_FILE` を読んで解析する。読めなければ `"<道>: <理由>"`。
+fn load_file(path: &Path) -> Result<HashSet<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(parse(&text)),
+        Err(e) => Err(format!("{}: {}", path.display(), e)),
+    }
+}
+
+/// [`load_url`] の結果。
+struct UrlLoad {
+    /// 解析した一覧 (取れず、保存済みも無ければ `None`)
+    parsed: Option<HashSet<String>>,
+    /// いま取りに行って取れた
+    fetched_now: bool,
+    /// 取りに行って失敗した理由 (`"<url>: <理由>"`)
+    error: Option<String>,
+}
+
+/// `PROXY_BLOCKLIST_URL` を (`fetch_url` なら) 取りに行き、取れたら保存する。取れなかったか
+/// 取りに行かなかったときは、保存済みの写しを使う。
+fn load_url(url: &str, upstream: &Upstream, timeout: Duration, fetch_url: bool) -> UrlLoad {
+    let cache = cache_path();
+    let mut text = None;
+    let mut fetched_now = false;
+    let mut error = None;
+    if fetch_url {
+        let started = Instant::now();
+        match fetch(url, upstream, timeout) {
+            Ok(body) => {
+                let body = String::from_utf8_lossy(&body).into_owned();
+                if let Some(p) = &cache
+                    && let Err(e) = std::fs::write(p, &body)
+                {
+                    log_warn!(None, "blocklist: could not save {}: {}", p.display(), e);
+                }
+                log_info!(
+                    None,
+                    "blocklist: fetched {} ({} bytes in {:.1}s)",
+                    url,
+                    body.len(),
+                    started.elapsed().as_secs_f64()
+                );
+                fetched_now = true;
+                text = Some(body);
+            }
+            Err(e) => {
+                log_warn!(None, "blocklist: fetch {} failed: {}", url, e);
+                error = Some(format!("{}: {}", url, e));
+            }
+        }
+    }
+    if text.is_none()
+        && let Some(p) = &cache
+        && let Ok(saved) = std::fs::read_to_string(p)
+    {
+        text = Some(saved);
+    }
+    UrlLoad {
+        parsed: text.map(|t| parse(&t)),
+        fetched_now,
+        error,
+    }
+}
+
+/// 次に URL を取りに行く基準の時刻 (`State::fetched_at`)。監視スレッドは
+/// `fetched_at + refresh` を過ぎたら取りに行く。
+///
+/// - いま取れた: 組み直した時刻 (`updated_at`)
+/// - 取りに行って失敗した: [`RETRY`] 後にもう一度 (`now - refresh + RETRY`)
+/// - 取りに行かなかった: 前のまま (`prev`)
+fn next_fetch_at(
+    fetched_now: bool,
+    tried: bool,
+    updated_at: u64,
+    now: u64,
+    refresh: Duration,
+    prev: u64,
+) -> u64 {
+    if fetched_now {
+        updated_at
+    } else if tried {
+        now.saturating_sub(refresh.as_secs()) + RETRY.as_secs()
+    } else {
+        prev
+    }
+}
+
+/// 組み直した結果を `/status` の状態に残し、ログと出来事の時系列 (T14.11) に 1 件ずつ出す。
+/// `counts` は (全体, ファイル, URL) の件数。
+fn record(
+    sources: &Sources,
+    counts: (usize, usize, usize),
+    error: Option<String>,
+    fetched_now: bool,
+    tried: bool,
+) {
+    let (entries, file_entries, url_entries) = counts;
     let mut st = state();
     st.entries = entries;
     st.file_entries = file_entries;
     st.url_entries = url_entries;
     st.updated_at = now_epoch();
     st.error = error;
-    if fetched_now {
-        st.fetched_at = st.updated_at;
-    } else if fetch_url && sources.url.is_some() {
-        // 失敗: RETRY 後にもう一度
-        st.fetched_at = now_epoch().saturating_sub(sources.refresh.as_secs()) + RETRY.as_secs();
-    }
+    // 失敗のときは RETRY 後にもう一度 (時刻は前と同じく、組み直した時刻とは別に読む)
+    let now = if fetched_now || !tried {
+        st.updated_at
+    } else {
+        now_epoch()
+    };
+    st.fetched_at = next_fetch_at(
+        fetched_now,
+        tried,
+        st.updated_at,
+        now,
+        sources.refresh,
+        st.fetched_at,
+    );
     log_info!(
         None,
         "blocklist: {} domains (file {}, url {}){}",
@@ -442,6 +534,51 @@ mod tests {
 
     /// グローバルな SET / OVERRIDES を触るテストを直列にする
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// T.34.64: 取れたら組み直した時刻、失敗なら RETRY 後、取りに行かなければ前のまま。
+    #[test]
+    fn the_next_fetch_time_has_three_forms() {
+        let day = Duration::from_secs(86_400);
+        assert_eq!(next_fetch_at(true, true, 1_000, 1_001, day, 5), 1_000);
+        assert_eq!(
+            next_fetch_at(false, true, 1_000, 200_000, day, 5),
+            200_000 - 86_400 + RETRY.as_secs()
+        );
+        // 起動直後の時刻が refresh より小さくても溢れない
+        assert_eq!(next_fetch_at(false, true, 10, 10, day, 5), RETRY.as_secs());
+        assert_eq!(next_fetch_at(false, false, 1_000, 1_001, day, 5), 5);
+    }
+
+    /// T.34.64: 対象外が一覧より先、一覧は親ドメインでも当たる。鍵は取らない。
+    #[test]
+    fn the_verdict_reads_the_exemptions_before_the_list() {
+        let set = parse(
+            "0.0.0.0 tracker.example
+exact.example.com
+",
+        );
+        let exempt = vec!["*.safe.tracker.example".to_string()];
+        assert_eq!(verdict(&set, &exempt, "tracker.example"), Verdict::Listed);
+        assert_eq!(
+            verdict(&set, &exempt, "cdn.tracker.example"),
+            Verdict::Listed
+        );
+        assert_eq!(
+            verdict(&set, &exempt, "x.safe.tracker.example"),
+            Verdict::Exempt
+        );
+        assert_eq!(
+            verdict(&set, &exempt, "safe.tracker.example"),
+            Verdict::Exempt
+        );
+        assert_eq!(verdict(&set, &exempt, "example.com"), Verdict::Clear);
+        assert_eq!(verdict(&set, &[], "sub.exact.example.com"), Verdict::Listed);
+        // 一覧に無いホストでも対象外に合えば Exempt (呼ぶ側は一覧が空でないときだけ呼ぶ)
+        assert_eq!(
+            verdict(&set, &["other.org".into()], "other.org"),
+            Verdict::Exempt
+        );
+    }
 
     #[test]
     fn parses_hosts_and_plain_formats() {
