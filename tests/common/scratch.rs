@@ -6,10 +6,13 @@ use std::path::{Path, PathBuf};
 /// 起動ログを読むための info)。
 pub const ENV_BASE: &str = "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\n";
 
-/// `<一時ディレクトリ>/<name>` を空にして返す (作りはしない。キャッシュの置き場のように、
+/// `<一時ディレクトリ>/<name>-<pid>` を空にして返す (作りはしない。キャッシュの置き場のように、
 /// 使う側が作るもの用)。
+///
+/// pid を付けるのは、worktree を並べて同じ試験を回したとき、別の実行が使っている最中の
+/// 置き場を消さないため (T.34.162。[`scratch_dir`] と同じ)。
 pub fn fresh_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(name);
+    let dir = std::env::temp_dir().join(format!("{}-{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     dir
 }

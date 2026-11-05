@@ -1,4 +1,4 @@
-//! 試験の道具 `common::json` の単体試験 (T.34.111)。
+//! 試験の道具 `common::json` (と `common` のほかの小さな道具) の単体試験 (T.34.111)。
 //!
 //! 道具そのものが誤っていると、それを使う試験が全部「通るはずのないものが通る」に
 //! なるので、取り出し方の約束をここで縛る。
@@ -113,4 +113,16 @@ fn json_find_item_takes_the_first_item_with_the_needle() {
         json::find_item(doc, "connections", "\"kind\":\"connect\""),
         r#"{"kind":"connect","id":2,"ms":{"a":1}}"#
     );
+}
+
+/// キャッシュの置き場 (`cache_cfg` / `disk_only` が使う) には pid が付く。付かないと、
+/// worktree を並べて回したとき別の実行が使っている最中の置き場を消す (T.34.162)。
+#[test]
+fn fresh_dir_puts_the_pid_in_the_name() {
+    let dir = common::fresh_dir("rhp-t34162-fresh");
+    assert_eq!(
+        dir.file_name().unwrap().to_str().unwrap(),
+        format!("rhp-t34162-fresh-{}", std::process::id())
+    );
+    assert!(!dir.exists(), "空にして返す (作りはしない)");
 }
