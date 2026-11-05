@@ -32,8 +32,9 @@
 //! **T25.2 で 3 ファイルに割った** (T24.8 の案 A) のを、**T.34.2 で関心ごとに割り直した**:
 //! 閉じた理由は `recent/close_reason.rs`、閉じた接続の個票 (と接続ごとの積み上げ) は
 //! `recent/entry.rs`、その固定長リングは `recent/ring.rs`、山の写真は `recent/burst.rs`、
-//! 閉じた分布は `recent/closed.rs`、エラーの個票とリングは `recent/errors.rs`、接続の表と
-//! リングの 1 枠は `recent/conns.rs`。ここには**共通の定数 (段階と側の添字) だけ**を置く。
+//! 閉じた分布は `recent/closed.rs`、エラーの個票とリングは `recent/errors.rs`、接続の 1 枠は
+//! `recent/conn_slot.rs`、接続の表は `recent/conn_table.rs`。ここには**共通の定数 (段階と側の
+//! 添字) だけ**を置く。
 //! 行を動かしただけで中身は変えていない。`pub use` で出し直すので、外からの `recent::…` の
 //! 経路は変わらない。
 //!
@@ -42,7 +43,8 @@
 mod burst;
 mod close_reason;
 mod closed;
-mod conns;
+mod conn_slot;
+mod conn_table;
 mod entry;
 mod errors;
 mod ring;
@@ -50,7 +52,8 @@ mod ring;
 pub use burst::*;
 pub use close_reason::*;
 pub use closed::*;
-pub use conns::*;
+pub use conn_slot::*;
+pub use conn_table::*;
 pub use entry::*;
 pub use errors::*;
 pub use ring::*;

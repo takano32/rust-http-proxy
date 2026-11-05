@@ -130,3 +130,8 @@ impl RecentRing {
         self.inner.locked().restored
     }
 }
+
+/// 閉じた接続のリングの単体試験 (T.34.2 で別のファイルに移した)。
+#[cfg(test)]
+#[path = "ring_tests.rs"]
+mod tests;

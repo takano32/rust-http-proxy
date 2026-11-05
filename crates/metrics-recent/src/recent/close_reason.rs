@@ -149,3 +149,8 @@ impl CloseReason {
         }
     }
 }
+
+/// 閉じた理由の単体試験 (T.34.2 で別のファイルに移した)。
+#[cfg(test)]
+#[path = "close_reason_tests.rs"]
+mod tests;
