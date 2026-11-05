@@ -35,6 +35,35 @@ fn parse_name(name: &str) -> Option<(CacheKey, bool)> {
         .map(|k| (k, false))
 }
 
+/// 分割ディレクトリのファイル 1 つを、ヘッダーを読まずに索引へ入れてよいか (T.34.96)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// 高速パス: mtime に有効期限が入っていて、まだ先。この `Meta` で索引に入れる
+    /// (`stored_at` は 0 = ヒット時にヘッダーから読み直す)
+    IndexOnly(Meta),
+    /// mtime が過去 (期限切れ、またはコピー等で mtime が失われた) か読めない: ヘッダーを読む
+    ReadHeader,
+}
+
+/// ファイルの mtime (epoch 秒) と拡張子のバリデータの有無から、扱いを決める (I/O の無い
+/// 純粋な関数。T.34.96)。
+fn classify(mtime: Option<u64>, validators: bool, now: u64) -> Keep {
+    match mtime {
+        Some(t) if t > now => Keep::IndexOnly(Meta {
+            stored_at: 0,
+            expires_at: t,
+            validators,
+        }),
+        _ => Keep::ReadHeader,
+    }
+}
+
+/// 同じキーの `.cache` と `.vcache` が両方あったとき、先に索引にあった方 (`old`) を残すか
+/// (期限の長い方を残す。同じなら後から見つけた方。T.34.96)。
+fn keep_longer(old: &Meta, new: &Meta) -> bool {
+    old.expires_at > new.expires_at
+}
+
 impl DiskTier {
     /// 直下の旧レイアウトのエントリを分割ディレクトリへ移し、一時ファイルを消す。
     pub(crate) fn scan_root(
@@ -106,14 +135,9 @@ impl DiskTier {
                 continue;
             };
             let size = stat.len();
-            let meta = match mtime_epoch(&stat) {
-                // 高速パス: mtime に有効期限が入っていて、まだ先
-                Some(t) if t > now => Meta {
-                    stored_at: 0,
-                    expires_at: t,
-                    validators,
-                },
-                _ => match format::read_meta(&path) {
+            let meta = match classify(mtime_epoch(&stat), validators, now) {
+                Keep::IndexOnly(meta) => meta,
+                Keep::ReadHeader => match format::read_meta(&path) {
                     Some(m) => m,
                     None => {
                         let _ = fs::remove_file(&path);
@@ -137,7 +161,7 @@ impl DiskTier {
                 && old.meta.validators != validators
             {
                 // 同じキーの .cache と .vcache が両方ある (確定途中で落ちた等) → 期限の長い方を残す
-                if old.meta.expires_at > meta.expires_at {
+                if keep_longer(&old.meta, &meta) {
                     let _ = fs::remove_file(&path);
                     index.insert(key, old, seq);
                 } else {
@@ -168,5 +192,73 @@ pub(crate) fn set_expiry_mtime(path: &Path, expires_at: u64) {
         UNIX_EPOCH.checked_add(Duration::from_secs(expires_at)),
     ) {
         let _ = f.set_modified(t);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEX: &str = "0123456789abcdef0123456789abcdef";
+
+    /// ファイル名は `<キー 32 桁>.cache` か `.vcache` だけを受ける (T.34.96)。
+    #[test]
+    fn a_name_is_a_key_and_its_extension() {
+        // `CacheKey` は Debug を持たないので、== で比べる
+        let key = CacheKey::from_hex(HEX).expect("32 桁の 16 進");
+        assert!(parse_name(&format!("{}.cache", HEX)) == Some((key, false)));
+        assert!(parse_name(&format!("{}.vcache", HEX)) == Some((key, true)));
+        assert!(parse_name(&format!("{}.tmp", HEX)).is_none());
+        assert!(parse_name(HEX).is_none(), "拡張子が無い");
+        assert!(parse_name("ballast.reserve").is_none());
+        assert!(parse_name("xyz.cache").is_none(), "16 進でない");
+        assert!(
+            parse_name(&format!("{}.cache", &HEX[..31])).is_none(),
+            "桁が足りない"
+        );
+        assert!(parse_name(".cache").is_none());
+    }
+
+    /// mtime がまだ先ならヘッダーを読まない。過去・ちょうど・読めないなら読む (T.34.96)。
+    #[test]
+    fn only_a_future_mtime_skips_the_header() {
+        assert_eq!(
+            classify(Some(101), true, 100),
+            Keep::IndexOnly(Meta {
+                stored_at: 0,
+                expires_at: 101,
+                validators: true,
+            })
+        );
+        assert_eq!(classify(Some(100), false, 100), Keep::ReadHeader);
+        assert_eq!(classify(Some(0), false, 100), Keep::ReadHeader);
+        assert_eq!(classify(None, true, 100), Keep::ReadHeader);
+    }
+
+    /// `.cache` と `.vcache` が両方あれば期限の長い方を残す (同じなら後から見つけた方) (T.34.96)。
+    #[test]
+    fn the_longer_lived_twin_is_kept() {
+        let m = |expires_at| Meta {
+            stored_at: 0,
+            expires_at,
+            validators: false,
+        };
+        assert!(keep_longer(&m(200), &m(100)));
+        assert!(!keep_longer(&m(100), &m(200)));
+        assert!(!keep_longer(&m(100), &m(100)));
+    }
+
+    /// 有効期限を書いた mtime はそのまま epoch 秒で読み戻せる (T.34.96)。
+    #[test]
+    fn the_expiry_round_trips_through_the_mtime() {
+        let path = std::env::temp_dir().join(format!(
+            "rust-http-proxy-scan-test-{}.cache",
+            std::process::id()
+        ));
+        fs::write(&path, b"x").expect("書ける");
+        set_expiry_mtime(&path, 2_000_000_000);
+        let got = mtime_epoch(&fs::metadata(&path).expect("stat"));
+        let _ = fs::remove_file(&path);
+        assert_eq!(got, Some(2_000_000_000));
     }
 }
