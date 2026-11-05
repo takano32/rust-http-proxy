@@ -312,13 +312,20 @@ fn test_integration_a_client_just_above_the_minimum_gets_the_whole_body() {
 }
 
 /// `0` なら切らない (前と同じ振る舞い)。窓 (2 秒) の 4 倍たっても開いたまま。
+///
+/// 無通信の締め切りは見ている長さ (8 秒) より長くする (T.34.161)。3 秒のままだと、負荷の下で
+/// 遅い読み手のスレッドが 3 秒回ってこないだけで無通信で切られ、「0 なのに切られた」と
+/// 見える (最小の速さとは関わりの無い揺れ)。これで 8 秒の間に切りうるのは最小の速さの
+/// 見張りだけになり、読み手が回ってくる早さに左右されない。
 #[test]
 fn test_integration_zero_never_closes_a_slow_reader() {
     let origin = start_big_origin(16 << 20);
-    let proxy_port = start_test_proxy(config(MinRate {
+    let mut cfg = config(MinRate {
         bps: 0,
         window: Duration::from_secs(2),
-    }));
+    });
+    cfg.timeout = Duration::from_secs(60);
+    let proxy_port = start_test_proxy(cfg);
     let stop = Arc::new(AtomicBool::new(false));
     let r = slow_reader(get(proxy_port, origin, true), Arc::clone(&stop));
     wait_until(|| active(proxy_port) == 1, "繋がる");
