@@ -78,8 +78,30 @@ fn start_test_proxy_on(
     cache_cfg: CacheConfig,
     ca_file: Option<std::path::PathBuf>,
 ) -> (u16, Arc<rust_http_proxy::workers::Workers>, Arc<Metrics>) {
-    let port = listener.local_addr().unwrap().port();
     let cfg = Arc::new(config);
+    let first = Arc::clone(&cfg);
+    wire_and_serve(
+        listener,
+        &first,
+        move || Arc::clone(&cfg),
+        cache_cfg,
+        ca_file,
+    )
+}
+
+/// 試験用プロキシの配線 (T.34.105 で 1 本にした)。`cfg` は起動のときの設定で、
+/// 接続ごとの設定は `config_of` から引く (固定の設定も、差し替えられる設定も同じ配線を通る)。
+///
+/// 前は差し替えられる版が別に配線を書いていて、`attach_origin_rtt`・`conns.set_enabled`・
+/// `sni::set_peek`・`TlsClient::deferred` が無かった (本番と違う配線で動いていた)。
+fn wire_and_serve(
+    listener: TcpListener,
+    cfg: &Config,
+    config_of: impl Fn() -> Arc<Config> + Send + 'static,
+    cache_cfg: CacheConfig,
+    ca_file: Option<std::path::PathBuf>,
+) -> (u16, Arc<rust_http_proxy::workers::Workers>, Arc<Metrics>) {
+    let port = listener.local_addr().unwrap().port();
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(cache_cfg));
     // 本番 (`crates/run`) と同じく、OpenSSL は最初の https:// オリジンで読む (T.32.5)。
@@ -110,7 +132,7 @@ fn start_test_proxy_on(
     thread::spawn(move || {
         rust_http_proxy::serve(
             listener,
-            || Arc::clone(&cfg),
+            config_of,
             rust_http_proxy::Limiter::new(),
             workers,
             metrics,
@@ -160,38 +182,21 @@ pub fn start_test_proxy_with_store(
 /// `.env` の再読込のように**設定を差し替えられる**テスト用プロキシ (T11.6)。
 ///
 /// 返した `RwLock` の中身を入れ替えると、`serve` が次に受ける接続から新しい設定を引く
-/// (本番の `reload::Live::config()` と同じ形)。
+/// (本番の `reload::Live::config()` と同じ形)。配線は固定の設定の版と同じ (T.34.105)。
 pub fn start_test_proxy_with_live_config(
     config: Config,
 ) -> (u16, Arc<std::sync::RwLock<Arc<Config>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
     let live = Arc::new(std::sync::RwLock::new(Arc::new(config)));
-    let cfg = live.read().unwrap().clone();
-    let metrics = Arc::new(Metrics::new());
-    let cache = Arc::new(Cache::new(CacheConfig::disabled()));
-    let pool = Arc::new(Upstream {
-        pool: Pool::new(cfg.pool_per_host, Duration::from_secs(30)),
-        tls: None,
-    });
-    let workers = Arc::new(rust_http_proxy::workers::Workers::new(cfg.max_threads));
-    let park = cfg.park_idle.then(|| {
-        rust_http_proxy::idle::IdleWatch::start(Arc::clone(&workers), Arc::clone(&metrics))
-            .expect("idle watcher")
-    });
+    let first = live.read().unwrap().clone();
     let shared = Arc::clone(&live);
-    thread::spawn(move || {
-        rust_http_proxy::serve(
-            listener,
-            || Arc::clone(&shared.read().unwrap()),
-            rust_http_proxy::Limiter::new(),
-            workers,
-            metrics,
-            cache,
-            pool,
-            park,
-        )
-    });
+    let (port, _, _) = wire_and_serve(
+        listener,
+        &first,
+        move || Arc::clone(&shared.read().unwrap()),
+        CacheConfig::disabled(),
+        None,
+    );
     (port, live)
 }
 
