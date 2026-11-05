@@ -128,36 +128,8 @@ pub(super) fn consult<'c>(
             }
             // クライアント自身の条件付き要求は、そのままオリジンに判断させる
             if !client_conditional {
-                // 期限切れ直後 (grace 内) なら、すぐ返して裏で再検証する (stale-while-revalidate)。
-                // 既定の grace は新鮮だった期間のある表現だけに使い、max-age=0 (毎回再検証) の表現は
-                // オリジンが stale-while-revalidate を明示したときだけ対象にする
-                let head = freshness::parse_cached_head(&entry.head);
-                let default_grace = if entry.meta.expires_at > entry.meta.stored_at {
-                    cfg.grace.as_secs()
-                } else {
-                    0
-                };
-                let grace = default_grace.max(
-                    head.cache_control
-                        .as_deref()
-                        .and_then(|cc| freshness::directive_value(cc, "stale-while-revalidate"))
-                        .unwrap_or(0),
-                );
-                let stale_for = now.saturating_sub(entry.meta.expires_at);
-                if !force_revalidate
-                    && grace > 0
-                    && entry.meta.validators
-                    && head.may_serve_stale()
-                    && stale_for <= grace
-                    && refresh::spawn(
-                        x.shared,
-                        &x.origin,
-                        key,
-                        x.ctx.url,
-                        entry.head.clone(),
-                        req.accept_encoding.clone(),
-                    )
-                {
+                // 期限切れ直後 (grace 内) なら、すぐ返して裏で再検証する (stale-while-revalidate)
+                if !force_revalidate && try_refreshing(x, key, now, &entry, cfg.grace.as_secs()) {
                     body::drain(reader, req_framing)?;
                     cache.stale_served.fetch_add(1, Ordering::Relaxed);
                     return finished(serve_cached(client, entry, source, "REFRESHING", 0, &x.ctx));
@@ -204,36 +176,7 @@ pub(super) fn consult<'c>(
     // 起きてから結局自分でオリジンへ行くことになり、待ち損 (`futex` 1.76 回/要求) だけが残る。
     // 初めて見る URL では今までどおり合流する
     if store_allowed && cs.stale.is_none() && !known_unstored {
-        match cache.begin_fetch(key) {
-            FetchTicket::Leader(guard) => cs.leader = Some(guard),
-            FetchTicket::Follower(inflight) => {
-                log_debug!(
-                    Some(conn_id),
-                    "cache WAIT: another request is fetching key={}",
-                    key
-                );
-                // `shared.timeout` が 0 (無期限) のときはここだけ「待たない」意味に
-                // なるが、待たなければ自分で取りに行くだけなので安全側。
-                // 先頭のスレッドを無期限に待つ形にはしない (相手が固まると連鎖する)
-                if inflight.wait(x.shared.timeout) == Some(FetchOutcome::Stored)
-                    && let Some((entry, source)) = cache.get(key, conn_id)
-                    && entry.is_fresh(now_epoch())
-                {
-                    body::drain(reader, req_framing)?;
-                    cache.coalesced.fetch_add(1, Ordering::Relaxed);
-                    let ttl_left = entry.ttl_left(now_epoch());
-                    return finished(serve_cached(
-                        client,
-                        entry,
-                        source,
-                        "COALESCED",
-                        ttl_left,
-                        &x.ctx,
-                    ));
-                }
-                // 保存されなかった・間に合わなかった: 自分で取りに行く
-            }
-        }
+        coalesce(x, client, reader, cs, key)?;
     }
     cs.key = key;
     cs.now = now;
@@ -241,6 +184,96 @@ pub(super) fn consult<'c>(
     cs.lookup_allowed = lookup_allowed;
     cs.store_allowed = store_allowed;
     cs.force_revalidate = force_revalidate;
+    Ok(())
+}
+
+/// 期限切れの表現を返して裏で再検証してよい猶予 (秒。0 なら返さない)。
+///
+/// 既定の猶予 (`default_grace`、`PROXY_CACHE_GRACE_SECS`) は新鮮だった期間のある表現だけに使い、
+/// max-age=0 (毎回再検証) の表現はオリジンが `stale-while-revalidate` を明示したときだけ対象にする。
+/// 両方あれば大きい方 (T.34.20 で `consult` から出した。純粋な計算)。
+#[inline]
+fn grace_for(entry: &CachedResponse, cache_control: Option<&str>, default_grace: u64) -> u64 {
+    let default_grace = if entry.meta.expires_at > entry.meta.stored_at {
+        default_grace
+    } else {
+        0
+    };
+    default_grace.max(
+        cache_control
+            .and_then(|cc| freshness::directive_value(cc, "stale-while-revalidate"))
+            .unwrap_or(0),
+    )
+}
+
+/// stale-while-revalidate: 期限切れの表現 (`entry`) が猶予の内で、validator があり、配ってよい表現なら、
+/// 裏の再検証を起こす。起こせたら真 (呼ぶ側がこの表現を `REFRESHING` で返す)。`default_grace` は
+/// 既定の猶予 (秒。[`grace_for`])。
+fn try_refreshing(
+    x: &Exchange<'_>,
+    key: CacheKey,
+    now: u64,
+    entry: &CachedResponse,
+    default_grace: u64,
+) -> bool {
+    let head = freshness::parse_cached_head(&entry.head);
+    let grace = grace_for(entry, head.cache_control.as_deref(), default_grace);
+    let stale_for = now.saturating_sub(entry.meta.expires_at);
+    grace > 0
+        && entry.meta.validators
+        && head.may_serve_stale()
+        && stale_for <= grace
+        && refresh::spawn(
+            x.shared,
+            &x.origin,
+            key,
+            x.ctx.url,
+            entry.head.clone(),
+            x.ctx.req.accept_encoding.clone(),
+        )
+}
+
+/// 同時ミスの合流: 先頭になれたら印 (`cs.leader`) を持ってオリジンへ行き、誰かが取得中なら保存の
+/// 完了を待ってキャッシュから返す (`COALESCED`)。保存されなかった・間に合わなかったら自分で取りに行く。
+#[inline]
+fn coalesce<'c>(
+    x: &mut Exchange<'c>,
+    client: &mut ClientWriter<'_>,
+    reader: &mut ClientReader<'_>,
+    cs: &mut CacheState<'c>,
+    key: CacheKey,
+) -> Stage<()> {
+    let (cache, conn_id, req_framing) = (x.cache, x.ctx.conn_id, x.req_framing);
+    match cache.begin_fetch(key) {
+        FetchTicket::Leader(guard) => cs.leader = Some(guard),
+        FetchTicket::Follower(inflight) => {
+            log_debug!(
+                Some(conn_id),
+                "cache WAIT: another request is fetching key={}",
+                key
+            );
+            // `shared.timeout` が 0 (無期限) のときはここだけ「待たない」意味に
+            // なるが、待たなければ自分で取りに行くだけなので安全側。
+            // 先頭のスレッドを無期限に待つ形にはしない (相手が固まると連鎖する)
+            if inflight.wait(x.shared.timeout) == Some(FetchOutcome::Stored)
+                && let Some((entry, source)) = cache.get(key, conn_id)
+                && entry.is_fresh(now_epoch())
+            {
+                body::drain(reader, req_framing)?;
+                cache.coalesced.fetch_add(1, Ordering::Relaxed);
+                let ttl_left = entry.ttl_left(now_epoch());
+                return finished(serve_cached(
+                    client,
+                    entry,
+                    source,
+                    "COALESCED",
+                    ttl_left,
+                    &x.ctx,
+                ));
+            }
+            // 保存されなかった・間に合わなかった: 自分で取りに行く
+        }
+    }
     Ok(())
 }
 
@@ -285,5 +318,41 @@ mod tests {
             !client_wants_fresher("max-age=x", &e, now),
             "読めない値は見ない"
         );
+    }
+
+    /// 既定の猶予は新鮮だった期間のある表現だけ、`stale-while-revalidate` は明示されれば max-age=0 の
+    /// 表現にも効き、両方あれば大きい方 (T.34.20)。
+    #[test]
+    fn grace_for_takes_the_default_only_for_entries_that_were_fresh() {
+        let fresh_once = entry(1_000, 1_060);
+        let always_stale = entry(1_000, 1_000);
+        assert_eq!(grace_for(&fresh_once, None, 30), 30);
+        assert_eq!(
+            grace_for(&always_stale, None, 30),
+            0,
+            "max-age=0 には既定を使わない"
+        );
+        assert_eq!(
+            grace_for(
+                &always_stale,
+                Some("max-age=0, stale-while-revalidate=5"),
+                30
+            ),
+            5
+        );
+        assert_eq!(
+            grace_for(&fresh_once, Some("stale-while-revalidate=90"), 30),
+            90
+        );
+        assert_eq!(
+            grace_for(&fresh_once, Some("stale-while-revalidate=10"), 30),
+            30
+        );
+        assert_eq!(
+            grace_for(&fresh_once, Some("stale-while-revalidate=x"), 30),
+            30,
+            "読めない値は見ない"
+        );
+        assert_eq!(grace_for(&fresh_once, Some("max-age=60"), 0), 0);
     }
 }
