@@ -98,8 +98,16 @@ def merged_history(a, b, res):
 
     A の最後の窓は取得の途中までしか埋まっていないことがあるので、B が持っていれば B が勝つ。
     """
+    return merged_histories((a, b), res)
+
+
+def merged_histories(snaps, res):
+    """N 枚の `/history?res=` を時刻で重ねる (同じ時刻は**後ろの雪像の値**を採る)。
+
+    `merged_history` (2 枚) と `weekly-report.py` (N 枚) の 1 つの本体 (T.34.133 で写しをまとめた)。
+    """
     rows, bounds, causes, interval = {}, [], list(CAUSE_NAMES), None
-    for snap in (a, b):
+    for snap in snaps:
         h = (snap.get("history") or {}).get(res) or {}
         if not h:
             continue
@@ -109,6 +117,19 @@ def merged_history(a, b, res):
         for row in norm_history(h):
             rows[row["t"]] = row
     return [rows[t] for t in sorted(rows)], bounds, causes, (interval or 0)
+
+
+def history_res(snaps):
+    """使う `/history` の解像度 (粗いほど長く残っているので 3600 を第一希望。**後ろの雪像から**探す)。
+
+    `snapshot-diff.py` の `pick_res` (2 枚) と `weekly-report.py` (N 枚) の 1 つの本体 (T.34.133)。
+    """
+    for res in ("3600", "60", "5"):
+        for snap in reversed(snaps):
+            h = (snap.get("history") or {}).get(res)
+            if h and h.get("samples"):
+                return res
+    return None
 
 
 MET, MISSED, UNKNOWN = "満たした", "届かず", "判定できず"

@@ -237,7 +237,7 @@ class SevenDays(unittest.TestCase):
                          f"{day['normal']['connect_p50']:.1f}")
 
     def test_the_week_aggregate_is_the_same_as_aggregating_the_window_at_once(self):
-        rows, bounds, _c, interval = wr.merged_history(
+        rows, bounds, _c, interval = sd.merged_histories(
             [sd.load_source(p, False) for p in sorted(wr.expand([self.tmp.name]))], "3600")
         limit = max(1, round(sd.BURST_PER_HOUR * interval / 3600.0))
         self.assertEqual(self.d["week"]["normal"], sd.aggregate(rows, bounds, limit))

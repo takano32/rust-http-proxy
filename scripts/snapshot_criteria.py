@@ -32,7 +32,8 @@ from proxydata import CAUSE_NAMES  # noqa: E402,F401
 # (`snapshot-diff.py` の一覧・`snapshot-summary.py`・試験の `sc.*`) は割る前と変わらない
 from criteria.common import (  # noqa: E402,F401
     BURST_MEDIAN_K, BURST_PER_HOUR, HFIELDS, MAJOR_HOSTS, MET, MISSED, REFERENCE, SHOWN, UNKNOWN, change,
-    merged_history, miss_rate, ms, n, norm_history, normal_limit, part, per_hour, ratio, stamp,
+    history_res, merged_histories, merged_history, miss_rate, ms, n, norm_history, normal_limit, part,
+    per_hour, ratio, stamp,
 )
 from criteria.restarts import (  # noqa: E402,F401
     START_BOOT, START_VERSION, boot_split_text, restart_info, silent_restart_text, silent_restarts,

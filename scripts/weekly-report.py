@@ -156,35 +156,6 @@ def load_inputs(paths):
 
 # ---------------------------------------------------------------- 履歴を日で切る
 
-def pick_res(snaps):
-    """使う解像度 (粗いほど長く残っているので 3600 が第一希望。`snapshot-diff.py` と同じ)。"""
-    for res in ("3600", "60", "5"):
-        for snap in reversed(snaps):
-            h = (snap.get("history") or {}).get(res)
-            if h and h.get("samples"):
-                return res
-    return None
-
-
-def merged_history(snaps, res):
-    """N 枚の `/history?res=` を時刻で重ねる (同じ時刻は**新しい雪像の値**を採る)。
-
-    `snapshot-diff.py` の `merged_history` を 2 枚から N 枚に広げただけ
-    (雪像の最後の窓は取得の途中までしか埋まっていないので、後の雪像が勝つ)。
-    """
-    rows, bounds, causes, interval = {}, [], list(CAUSE_NAMES), None
-    for snap in snaps:
-        h = (snap.get("history") or {}).get(res) or {}
-        if not h:
-            continue
-        bounds = h.get("bounds_ms") or bounds
-        causes = h.get("causes") or causes
-        interval = h.get("interval_secs") or interval
-        for row in sd.norm_history(h):
-            rows[row["t"]] = row
-    return [rows[t] for t in sorted(rows)], bounds, causes, (interval or 0)
-
-
 def from_daily(line):
     """`/daily` の 1 行を `aggregate()` と同じ鍵に並べ替える (無い欄は None)。"""
     out = dict.fromkeys(
@@ -403,9 +374,9 @@ def week_total(stats, window, bounds, limit):
 
 
 def build(snaps, daily, args):
-    res = pick_res(snaps)
+    res = sd.history_res(snaps)
     if res:
-        rows, bounds, causes, interval = merged_history(snaps, res)
+        rows, bounds, causes, interval = sd.merged_histories(snaps, res)
     else:
         rows, bounds, causes, interval = [], [], list(CAUSE_NAMES), 0
     limit = max(1, round(args.burst * interval / 3600.0)) if interval else args.burst
@@ -453,12 +424,27 @@ def used_causes(d):
 
 
 def render(d, top):
+    """週次の要約の Markdown を文字列で返す。節ごとの関数が行の list を返す (T.34.133 で割った)。"""
+    out = []
+    for lines in (head_lines(d),
+                  requests_lines(d),
+                  connect_lines(d),
+                  dns_lines(d),
+                  error_lines(d),
+                  burst_lines(d),
+                  client_lines(d, top),
+                  slow_host_lines(d, top),
+                  new_host_lines(d, top)):
+        out += lines
+    return "\n".join(out) + "\n"
+
+
+def head_lines(d):
+    """頭: 件数と何日ぶんか、日別の数字の出どころ、入力の雪像、週ぜんたい (平常時) の 1 段落。"""
     out = []
     p = out.append
-    days, stats, week = d["days"], d["stats"], d["week"]
+    days, week = d["days"], d["week"]
     n, ms, ratio = sd.n, sd.ms, sd.ratio
-
-    # --- 頭 (件数と何日ぶんか)
     p(f"# rust-http-proxy — 週次の要約 ({days[0]} 〜 {days[-1]})")
     p("")
     p(f"- **雪像 {len(d['snaps'])} 枚、{len(days)} 日ぶん** "
@@ -490,8 +476,15 @@ def render(d, top):
       f"(ミス 1 回 {ms(week['normal']['ms_per_miss'])} ms)、エラー {n(week['all']['errors'])}、"
       f"標本 {n(week['normal']['samples'])} / {n(week['samples'])}")
     p("")
+    return out
 
-    # --- 1
+
+def requests_lines(d):
+    """§1 要求数 (日別。バーストの窓も入れた全部)。"""
+    out = []
+    p = out.append
+    days, stats, week = d["days"], d["stats"], d["week"]
+    n = sd.n
     p("## 1. 要求数 (日別)")
     p("")
     p("**バーストの窓も入れた**その日の全部 (表 2 と 3 は平常時だけなので本数が合わない)。")
@@ -509,8 +502,15 @@ def render(d, top):
       f"| **{n(week['all']['connects'])}** | **{n(week['all']['forwards'])}** "
       f"| **{n(week['samples'])}** | |")
     p("")
+    return out
 
-    # --- 2
+
+def connect_lines(d):
+    """§2 CONNECT 確立 p50 / p95 (日別。平常時)。"""
+    out = []
+    p = out.append
+    days, stats, week = d["days"], d["stats"], d["week"]
+    n, ms = sd.n, sd.ms
     p("## 2. CONNECT 確立 p50 / p95 (日別)")
     p("")
     p("平常時 (バーストの窓を外した標本) の値。`/history` の対数バケツから "
@@ -528,8 +528,16 @@ def render(d, top):
       f"| **{ms(w['connect_p95'])}** | **{n(w['connect_ms_max'])}** | **{n(w['connects'])}** "
       f"| **{ms(w['forward_p50'])} / {ms(w['forward_p95'])}** | **{n(w['burst_samples'])}** |")
     p("")
+    return out
 
-    # --- 3
+
+def dns_lines(d):
+    """§3 名前解決のミス率 (日別。平常時)。"""
+    out = []
+    p = out.append
+    days, stats, week = d["days"], d["stats"], d["week"]
+    n, ms, ratio = sd.n, sd.ms, sd.ratio
+    w = week["normal"]
     p("## 3. 名前解決のミス率 (日別)")
     p("")
     p("| 日 | ミス/接続 | ミス | ミス 1 回 ms | 接続 1 本あたり ms |")
@@ -541,8 +549,15 @@ def render(d, top):
     p(f"| **週** | **{ratio(w['dns_per_connect'])}** | **{n(w['dns_misses'])}** "
       f"| **{ms(w['ms_per_miss'])}** | **{ms(w['dns_ms_per_connect'])}** |")
     p("")
+    return out
 
-    # --- 4
+
+def error_lines(d):
+    """§4 エラー (原因別。その週に出た原因だけを列にする)。"""
+    out = []
+    p = out.append
+    days, stats, week = d["days"], d["stats"], d["week"]
+    n = sd.n
     p("## 4. エラー (原因別)")
     p("")
     cols = used_causes(d)
@@ -568,8 +583,15 @@ def render(d, top):
         p("")
         p(f"原因の並びは `/status` の `errors_by_cause` と同じ ({causes_text(week['all']['causes'])})。")
     p("")
+    return out
 
-    # --- 5
+
+def burst_lines(d):
+    """§5 山 (`/bursts` の写真か、無ければ同時接続の最大と外した窓)。"""
+    out = []
+    p = out.append
+    days, stats, week = d["days"], d["stats"], d["week"]
+    n = sd.n
     p("## 5. 山 (バースト)")
     p("")
     if d["has_bursts"]:
@@ -607,8 +629,15 @@ def render(d, top):
             p(f"| {day} | {n(row['all']['active_max'])} | {n(hill)} | {how} |")
         p(f"| **週** | **{n(week['all']['active_max'])}** | **{n(total)}** | |")
     p("")
+    return out
 
-    # --- 6
+
+def client_lines(d, top):
+    """§6 接続元の出入り (日別の出入りと、週の上位 `top` 件)。"""
+    out = []
+    p = out.append
+    days = d["days"]
+    n, ms = sd.n, sd.ms
     p("## 6. 接続元の出入り")
     p("")
     if not d["clients"]:
@@ -646,8 +675,14 @@ def render(d, top):
         if len(order) > top:
             p(f"| (ほか {len(order) - top} 件) | | | | | |")
     p("")
+    return out
 
-    # --- 7
+
+def slow_host_lines(d, top):
+    """§7 遅かったホスト 上位 `top` (`avg_ms` × 要求数)。"""
+    out = []
+    p = out.append
+    n, ms = sd.n, sd.ms
     h = d["hosts"]
     p(f"## 7. 遅かったホスト 上位 {top} (`avg_ms` × 要求数)")
     p("")
@@ -676,8 +711,14 @@ def render(d, top):
               f"| {n(round(r['total_ms']))} | {ms(r['avg_ms'])} | {ms(r['p50_ms'])} "
               f"| {ms(r['p95_ms'])} | {n(r['max_ms'])} | {causes_text(r['errors_by_cause'])} |")
     p("")
+    return out
 
-    # --- 8
+
+def new_host_lines(d, top):
+    """§8 新しく見たホスト (前の雪像に無かった名前)。"""
+    out = []
+    p = out.append
+    days = d["days"]
     p("## 8. 新しく見たホスト (前の雪像に無かった名前)")
     p("")
     nh = d["new_hosts"]
@@ -697,7 +738,7 @@ def render(d, top):
                 shown += f" (ほか {len(fresh) - top} 件)"
             p(f"| {day} | {len(fresh)} | {shown or '—'} |")
     p("")
-    return "\n".join(out) + "\n"
+    return out
 
 
 # ---------------------------------------------------------------- 入口

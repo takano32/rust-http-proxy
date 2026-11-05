@@ -159,9 +159,11 @@ from snapshot_criteria import (  # noqa: E402,F401
     dns_counter,
     dns_name_refreshes,
     dns_slow_events,
+    history_res,
     judge,
     mb,
     memory_of,
+    merged_histories,
     merged_history,
     minute_parts,
     miss_kinds,
@@ -330,13 +332,8 @@ def load_source(src, from_files):
 # `snapshot_criteria.py` に置いてある (上で取り込んでいる)。
 
 def pick_res(a, b):
-    """使う解像度 (粗いほど長く残っているので 3600 を第一希望)。"""
-    for res in ("3600", "60", "5"):
-        for snap in (b, a):
-            h = (snap.get("history") or {}).get(res)
-            if h and h.get("samples"):
-                return res
-    return None
+    """使う解像度 (粗いほど長く残っているので 3600 を第一希望。B から探す。本体は `history_res`)。"""
+    return history_res((a, b))
 
 
 def aggregate(rows, bounds, limit):
