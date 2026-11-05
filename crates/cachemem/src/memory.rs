@@ -108,7 +108,7 @@ impl MemTier {
     pub fn get(&self, key: CacheKey, now: u64, seq: u64) -> Option<MemHit> {
         let mut store = self.store.locked();
         let entry = store.get(key)?;
-        if entry.meta.expires_at > now || entry.meta.validators {
+        if entry.meta.is_servable(now) {
             let hit = MemHit {
                 data: Arc::clone(&entry.data),
                 meta: entry.meta,

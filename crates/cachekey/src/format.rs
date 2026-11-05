@@ -32,6 +32,17 @@ pub struct Meta {
     pub validators: bool,
 }
 
+impl Meta {
+    /// `now` に出してよいか (まだ新しいか、期限切れでも再検証できるか)。
+    ///
+    /// 偽のエントリは誰にも返せない (再検証もできない期限切れ) ので、引いた側がその場で消す。
+    /// L1 の HIT と L2 の索引・ファイルのヘッダーの 3 か所が同じ式を持っていた (T.34.87)。
+    #[inline]
+    pub fn is_servable(&self, now: u64) -> bool {
+        self.expires_at > now || self.validators
+    }
+}
+
 /// 解析したヘッダー。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {

@@ -1,11 +1,13 @@
 //! `Cache` の読み書き操作: 参照 (L1 → L2、昇格)、ストリーミング保存、延命、無効化。
 
 use crate::sync::LockExt;
+use std::fs::File;
 use std::io::{BufReader, Read};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use super::disk::DiskHit;
 use super::entry::{Body, CachedResponse, head_len, read_head};
 use super::format::Meta;
 use super::key::{CacheKey, KeyMap, cache_key};
@@ -204,20 +206,54 @@ impl Cache {
         None
     }
     /// L2 を引き、小さければ L1 へ昇格させる。壊れた・再検証できない期限切れのエントリはここで消す。
+    ///
+    /// 開く ([`Self::open_disk_hit`]) → 小さければ昇格 ([`Self::promote_to_memory`])、
+    /// 大きければ流す ([`Self::stream_from_disk`]) → 統計とログ (T.34.87)。
     fn get_from_disk(&self, key: CacheKey, now: u64, conn_id: usize) -> Option<CachedResponse> {
+        let hit = self.open_disk_hit(key, now, conn_id)?;
+        let meta = hit.meta;
+        let size = hit.size;
+        let reader = BufReader::with_capacity(256 * 1024, hit.file);
+        let promote = size <= self.cfg.mem_max_object_size;
+        let resp = if promote {
+            self.promote_to_memory(key, reader, meta, size, conn_id)?
+        } else {
+            self.stream_from_disk(key, reader, meta, size, conn_id)?
+        };
+        self.disk.touch(key, self.tick());
+        self.hits_disk.fetch_add(1, Ordering::Relaxed);
+        self.bytes_served.fetch_add(size, Ordering::Relaxed);
+        log_debug!(
+            Some(conn_id),
+            "cache L2 {} key={} size={}B age={}s{}",
+            if resp.is_fresh(now) { "HIT" } else { "STALE" },
+            key,
+            size,
+            now.saturating_sub(meta.stored_at),
+            if promote {
+                " (promoted to L1)"
+            } else {
+                " (streaming from disk)"
+            }
+        );
+        Some(resp)
+    }
+
+    /// 索引を見てファイルを開く。出せない (再検証できない期限切れ・壊れている) なら消して `None`。
+    fn open_disk_hit(&self, key: CacheKey, now: u64, conn_id: usize) -> Option<DiskHit> {
         if !self.disk.is_ready() {
             return None;
         }
         let indexed = self.disk.lookup(key)?;
-        if indexed.expires_at <= now && !indexed.validators {
+        if !indexed.is_servable(now) {
             self.disk.remove(key);
             return None;
         }
-        let hit = match self.disk.open(key) {
-            Ok(Some(hit)) if hit.meta.expires_at > now || hit.meta.validators => hit,
+        match self.disk.open(key) {
+            Ok(Some(hit)) if hit.meta.is_servable(now) => Some(hit),
             Ok(_) => {
                 self.disk.remove(key);
-                return None;
+                None
             }
             Err(e) => {
                 // 壊れている・無い場合だけ消す。一時的な I/O エラー (fd 枯渇など) では残す
@@ -232,66 +268,66 @@ impl Cache {
                         e
                     );
                 }
-                return None;
+                None
             }
-        };
-        let meta = hit.meta;
-        let size = hit.size;
-        let mut reader = BufReader::with_capacity(256 * 1024, hit.file);
-        let resp = if size <= self.cfg.mem_max_object_size {
-            let mut data = Vec::with_capacity(size as usize);
-            if let Err(e) = reader.read_to_end(&mut data) {
-                log_warn!(Some(conn_id), "cache L2 read failed key={}: {}", key, e);
-                if is_permanent(&e) {
-                    self.disk.remove(key);
-                }
-                return None;
-            }
-            sysinfo::drop_page_cache(reader.get_ref());
-            let data = Arc::new(data);
-            let evicted = self.mem.insert(key, Arc::clone(&data), meta, self.tick());
-            self.count_evictions(evicted);
-            let offset = head_len(&data);
-            CachedResponse {
-                head: data[..offset].to_vec(),
-                size,
-                body: Body::Memory { data, offset },
-                meta,
-            }
-        } else {
-            let head = match read_head(&mut reader) {
-                Ok(h) => h,
-                Err(e) => {
-                    log_warn!(Some(conn_id), "cache L2 read failed key={}: {}", key, e);
-                    self.disk.remove(key);
-                    return None;
-                }
-            };
-            CachedResponse {
-                head,
-                size,
-                body: Body::File(reader),
-                meta,
-            }
-        };
-        self.disk.touch(key, self.tick());
-        self.hits_disk.fetch_add(1, Ordering::Relaxed);
-        self.bytes_served.fetch_add(size, Ordering::Relaxed);
-        log_debug!(
-            Some(conn_id),
-            "cache L2 {} key={} size={}B age={}s{}",
-            if resp.is_fresh(now) { "HIT" } else { "STALE" },
-            key,
-            size,
-            now.saturating_sub(meta.stored_at),
-            if size <= self.cfg.mem_max_object_size {
-                " (promoted to L1)"
-            } else {
-                " (streaming from disk)"
-            }
-        );
-        Some(resp)
+        }
     }
+
+    /// 小さなディスクヒットを読み切って L1 へ入れ、メモリの本文として返す。
+    fn promote_to_memory(
+        &self,
+        key: CacheKey,
+        mut reader: BufReader<File>,
+        meta: Meta,
+        size: u64,
+        conn_id: usize,
+    ) -> Option<CachedResponse> {
+        let mut data = Vec::with_capacity(size as usize);
+        if let Err(e) = reader.read_to_end(&mut data) {
+            log_warn!(Some(conn_id), "cache L2 read failed key={}: {}", key, e);
+            if is_permanent(&e) {
+                self.disk.remove(key);
+            }
+            return None;
+        }
+        sysinfo::drop_page_cache(reader.get_ref());
+        let data = Arc::new(data);
+        let evicted = self.mem.insert(key, Arc::clone(&data), meta, self.tick());
+        self.count_evictions(evicted);
+        let offset = head_len(&data);
+        Some(CachedResponse {
+            head: data[..offset].to_vec(),
+            size,
+            body: Body::Memory { data, offset },
+            meta,
+        })
+    }
+
+    /// 大きなディスクヒットは頭だけ読み、本文はファイルから流す。
+    fn stream_from_disk(
+        &self,
+        key: CacheKey,
+        mut reader: BufReader<File>,
+        meta: Meta,
+        size: u64,
+        conn_id: usize,
+    ) -> Option<CachedResponse> {
+        let head = match read_head(&mut reader) {
+            Ok(h) => h,
+            Err(e) => {
+                log_warn!(Some(conn_id), "cache L2 read failed key={}: {}", key, e);
+                self.disk.remove(key);
+                return None;
+            }
+        };
+        Some(CachedResponse {
+            head,
+            size,
+            body: Body::File(reader),
+            meta,
+        })
+    }
+
     /// URL とバリアントの対応を覚えておく (無効化用)。
     ///
     /// **表に上限がある** (T.32.6)。0.30.4 までは保存を始めるたび (保存に至らなかった回も) に 1 行
