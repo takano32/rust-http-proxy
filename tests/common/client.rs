@@ -5,6 +5,7 @@ use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
 
+use super::origin::content_length;
 use super::{POLL_MAX, POLL_STEP};
 
 /// ヘッダーの終わり (空行) まで 1 バイトずつ読む (本文を 1 バイトも読み過ごさないため)。
@@ -23,13 +24,11 @@ pub fn read_head(stream: &mut TcpStream) -> Vec<u8> {
 }
 
 /// 1 本の接続で複数の要求を送るための、Content-Length 付き応答の読み取り。
+///
+/// `Content-Length` の名前の大小は区別しない (オリジン側の読み取りと同じ。T.34.163)。
 pub fn read_response(stream: &mut TcpStream) -> (String, Vec<u8>) {
     let head = String::from_utf8_lossy(&read_head(stream)).into_owned();
-    let len: usize = head
-        .lines()
-        .find_map(|l| l.strip_prefix("Content-Length: "))
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(0);
+    let len = content_length(&head);
     let mut body = vec![0u8; len];
     stream.read_exact(&mut body).unwrap();
     (head, body)

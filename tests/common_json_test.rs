@@ -126,3 +126,27 @@ fn fresh_dir_puts_the_pid_in_the_name() {
     );
     assert!(!dir.exists(), "空にして返す (作りはしない)");
 }
+
+/// `read_response` は `Content-Length` の名前を大小を区別せずに読む (オリジン側の
+/// 読み取りと同じ。T.34.163)。区別すると本文を読まずに返し、次の応答の頭がずれる。
+#[test]
+fn read_response_reads_content_length_in_any_case() {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nabc")
+            .unwrap();
+        s.write_all(b"HTTP/1.1 204 No Content\r\nCONTENT-LENGTH:0\r\n\r\n")
+            .unwrap();
+    });
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let (head, body) = common::read_response(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{}", head);
+    assert_eq!(body, b"abc");
+    let (head, body) = common::read_response(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 204 No Content"), "{}", head);
+    assert!(body.is_empty());
+    server.join().unwrap();
+}

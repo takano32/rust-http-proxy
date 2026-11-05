@@ -10,7 +10,9 @@ use std::thread;
 pub type Handler = dyn Fn(&str, usize) -> Vec<u8> + Send + Sync;
 
 /// ヘッダー部から `Content-Length` の値を取る (無ければ 0)。名前の大小は無視する。
-fn content_length(head: &str) -> usize {
+///
+/// クライアント側の [`super::read_response`] も同じものを使う (T.34.163)。
+pub(super) fn content_length(head: &str) -> usize {
     head.lines()
         .find_map(|l| {
             let (k, v) = l.split_once(':')?;
