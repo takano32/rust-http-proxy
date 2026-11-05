@@ -1,7 +1,10 @@
 //! 接続の 1 枠の単体試験 (T.34.2 で `conns.rs` の `conn_tests` から移した。名前はそのまま)。
 
 use super::*;
-use crate::recent::{ConnTable, RecentRing};
+use crate::recent::{
+    ConnTable, RecentRing, STAGE_CLIENT_READ, STAGE_CONNECT, STAGE_DNS, STAGE_FIRST_RELAY,
+    STAGE_QUEUE,
+};
 
 /// `poll` の旗は `IN|HUP` のように表の順の名前で並べ、下位 16 bit がクライアント側・上位が
 /// オリジン側 (T15.0 (4)。T.34.2 で直に押さえる)。
@@ -309,4 +312,45 @@ fn a_keepalive_connection_shows_one_descriptor() {
     assert!(json.contains("\"target\":\"\""), "{}", json);
     assert!(json.contains("\"fds\":1"), "{}", json);
     assert!(json.contains("\"id\":7"), "{}", json);
+}
+
+/// T14.3 が足した 3 つの段階 (`queue` / `client_read` / `first_relay`) が個票に出ること。
+///
+/// `dns` と `connect` は必ず出て、残りは 0 でないときだけ出る (0 の段階で行を伸ばさない)。
+#[test]
+fn the_three_stages_from_the_profile_show_up_in_the_record() {
+    let t = ConnTable::new();
+    let slot = t.register(3, "198.51.100.7", Instant::now()).expect("枠");
+    slot.begin_tunnel("a.example.net:443");
+    let mut tally = ConnTally::default();
+    let mut ms = [0u64; STAGES];
+    ms[STAGE_DNS] = 6;
+    ms[STAGE_CONNECT] = 9;
+    ms[STAGE_QUEUE] = 159;
+    ms[STAGE_CLIENT_READ] = 2;
+    ms[STAGE_FIRST_RELAY] = 37;
+    tally.add_request(0, 4, 4, ms, 0);
+    slot.finish(CloseReason::ClientEof, tally, 0);
+    let json = t
+        .unregister(3)
+        .expect("枠が返る")
+        .closed_entry(Instant::now())
+        .expect("宛先のある接続は残る")
+        .to_json();
+    for (name, v) in [
+        ("dns", 6),
+        ("connect", 9),
+        ("queue", 159),
+        ("client_read", 2),
+        ("first_relay", 37),
+    ] {
+        assert!(
+            json.contains(&format!("\"{}\":{}", name, v)),
+            "{} が出ていない: {}",
+            name,
+            json
+        );
+    }
+    // 0 の段階 (`first_byte`) は出さない
+    assert!(!json.contains("\"first_byte\""), "{}", json);
 }

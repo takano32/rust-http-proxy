@@ -13,7 +13,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
-use super::errors::{MAX_CLIENT, MAX_MS, MAX_SECS, MAX_TARGET, clip};
+use super::clip::clip;
+use super::errors::{MAX_CLIENT, MAX_MS, MAX_SECS, MAX_TARGET};
 use super::{
     CLIENT_SIDE, CloseReason, ConnTally, MAX_RECENT_TARGET, MAX_SNI, ORIGIN_SIDE, RecentEntry,
     SIDE_NAMES, SIDES, STAGES,

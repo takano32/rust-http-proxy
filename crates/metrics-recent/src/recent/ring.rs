@@ -10,7 +10,7 @@
 use std::sync::Mutex;
 
 use super::RecentEntry;
-use super::errors::drain_unwritten;
+use super::ringbuf::{drain_unwritten, newest_at, push_wrapping};
 use crate::sync::LockExt;
 
 /// 閉じた接続の個票を何件覚えておくか (固定。T14.4)。
@@ -62,14 +62,9 @@ impl RecentRing {
             return;
         }
         let mut r = self.inner.locked();
-        r.total += 1;
-        if r.buf.len() < MAX_RECENT {
-            r.buf.push(entry);
-            return;
-        }
-        let at = r.next;
-        r.buf[at] = entry;
-        r.next = (at + 1) % MAX_RECENT;
+        let g = &mut *r;
+        g.total += 1;
+        push_wrapping(&mut g.buf, &mut g.next, MAX_RECENT, entry);
     }
 
     /// 条件に合うものを**新しい順**で返す。2 つ目は起動からの通算 (捨てた分も含む)。
@@ -81,9 +76,7 @@ impl RecentRing {
         let len = r.buf.len();
         let mut out = Vec::with_capacity(len.min(MAX_RECENT));
         for i in 0..len {
-            let start = if len < MAX_RECENT { len } else { r.next };
-            let at = (start + len - 1 - i) % len;
-            let e = &r.buf[at];
+            let e = &r.buf[newest_at(len, MAX_RECENT, r.next, i)];
             if e.at < since || (!client.is_empty() && e.client != client) {
                 continue;
             }

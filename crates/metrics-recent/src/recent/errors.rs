@@ -1,13 +1,16 @@
 //! エラーの個票とリング (`recent` の一部。T25.2 で `recent.rs` から移した)。
 //!
-//! [`ErrorEntry`]・[`EntryKind`]・[`EntryCause`] と [`ErrorRing`]、それに
-//! 切り詰めの [`clip`] を置く。**`recent` の他の塊はここを呼ぶだけ** (葉)。
+//! [`ErrorEntry`]・[`EntryKind`]・[`EntryCause`] と [`ErrorRing`]。**`recent` の他の塊は
+//! ここを呼ぶだけ** (葉)。切り詰めの `clip` は `recent/clip.rs`、リングの添字の式は
+//! `recent/ringbuf.rs` に出した (T.34.2。同じ式を 5 本のリングで書いていたのを 1 か所に)。
 //!
 //! 行を動かしただけで中身は変えていない。外から見える名前は `recent` の
 //! `pub use` でそのまま (T25.2)。
 
 use std::sync::Mutex;
 
+use super::clip::clip;
+use super::ringbuf::{drain_unwritten, newest_at, push_wrapping};
 use crate::metrics::{BadRequestReason, BlockCause, DnsCause, ErrCause};
 use crate::sync::LockExt;
 
@@ -33,7 +36,7 @@ pub const MAX_CLIENT: usize = 45;
 /// 500 件が全部その 1 種類で埋まり、バーストの `timeout` 8 件が押し出されて読めなかった。
 /// 全件を探すと鍵の中の仕事が 500 件ぶんになるので、**直近の 8 件だけ**を見る
 /// (間に別の失敗が 7 件まで挟まっても同じ行に足せる。書くのはエラーの経路だけ)。
-pub const MERGE_WINDOW: usize = 8;
+pub(crate) const MERGE_WINDOW: usize = 8;
 
 /// 記録しておく ms の上限 (7 桁 = 約 2.7 時間)。1 件の長さを決めるために頭打ちにする。
 pub(super) const MAX_MS: u64 = 9_999_999;
@@ -240,52 +243,6 @@ impl ErrorEntry {
     }
 }
 
-/// 文字列を `max` バイト以内に切る (文字の途中で切らない。切ったら `…` を付ける)。
-pub fn clip(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    // `…` は UTF-8 で 3 バイトなので、その手前までに収める
-    let room = max.saturating_sub(3);
-    let mut end = room;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut out = String::with_capacity(max);
-    out.push_str(&s[..end]);
-    out.push('…');
-    out
-}
-
-/// リングの「まだファイルに書いていない件」を**古い順**で取り出す (T14.9)。
-///
-/// 印を位置ではなく**通算の件数** (`total`) にしてあるのは、リングが古いものを
-/// 上書きするため: 位置で覚えると 1 周したときに「どこまで書いたか」が分からなくなる。
-/// `max` を越える分は**古い方から落とす** (1 周期の書き込みを 64 KiB に抑えるため。
-/// 落とした件数を 2 つ目に返す。メモリのリングには全部残っている)。
-pub(super) fn drain_unwritten<T: Clone>(
-    buf: &[T],
-    next: usize,
-    cap: usize,
-    total: u64,
-    written: &mut u64,
-    max: usize,
-) -> (Vec<T>, u64) {
-    let len = buf.len();
-    let pending = total.saturating_sub(*written).min(len as u64) as usize;
-    *written = total;
-    if pending == 0 {
-        return (Vec::new(), 0);
-    }
-    let take = pending.min(max);
-    // 満杯になる前は先頭が最古、満杯になってからは次に書く位置が最古
-    let start = if len < cap { 0 } else { next };
-    let out = ((len - take)..len)
-        .map(|i| buf[(start + i) % len].clone())
-        .collect();
-    (out, (pending - take) as u64)
-}
-
 /// 直近のエラーの固定長リング。**書くのはエラーの経路だけ。**
 ///
 /// 置き場は使った分だけ伸び、[`MAX_ERRORS`] 件で頭打ち (そこからは古いものを上書き)。
@@ -319,9 +276,9 @@ impl Ring {
     fn merge(&mut self, entry: &ErrorEntry) -> bool {
         let len = self.buf.len();
         // `next` の 1 つ手前が最新 (満杯になる前は末尾が最新)。[`ErrorRing::recent`] と同じ
-        let start = if len < MAX_ERRORS { len } else { self.next };
         for i in 0..len.min(MERGE_WINDOW) {
-            let row = &mut self.buf[(start + len - 1 - i) % len];
+            let at = newest_at(len, MAX_ERRORS, self.next, i);
+            let row = &mut self.buf[at];
             if row.same_failure(entry) {
                 row.repeats = row.repeats.saturating_add(1);
                 row.last_at = entry.at;
@@ -336,13 +293,7 @@ impl Ring {
     /// 1 行足す (満杯なら最も古いものを上書きする)。
     fn add(&mut self, entry: ErrorEntry) {
         self.rows += 1;
-        if self.buf.len() < MAX_ERRORS {
-            self.buf.push(entry);
-            return;
-        }
-        let at = self.next;
-        self.buf[at] = entry;
-        self.next = (at + 1) % MAX_ERRORS;
+        push_wrapping(&mut self.buf, &mut self.next, MAX_ERRORS, entry);
     }
 }
 
@@ -387,9 +338,7 @@ impl ErrorRing {
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
             // `next` の 1 つ手前が最新 (満杯になる前は `next == 0` なので末尾が最新)
-            let start = if len < MAX_ERRORS { len } else { r.next };
-            let at = (start + len - 1 - i) % len;
-            out.push(r.buf[at].clone());
+            out.push(r.buf[newest_at(len, MAX_ERRORS, r.next, i)].clone());
         }
         (out, r.total)
     }
@@ -443,426 +392,7 @@ impl ErrorRing {
     }
 }
 
+/// エラーの個票とリングの単体試験 (T.34.2 で別のファイルに移した)。
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::recent::{
-        CloseReason, ConnTable, ConnTally, STAGE_CLIENT_READ, STAGE_CONNECT, STAGE_DNS,
-        STAGE_FIRST_RELAY, STAGE_QUEUE, STAGES,
-    };
-    use std::time::Instant;
-
-    fn entry(n: u64) -> ErrorEntry {
-        ErrorEntry::new(
-            EntryKind::Connect,
-            &format!("h{}.example.net:443", n),
-            "127.0.0.1",
-            502,
-            EntryCause::Error(ErrCause::Refused),
-            0,
-            1,
-        )
-    }
-
-    /// T14.3 が足した 3 つの段階 (`queue` / `client_read` / `first_relay`) が個票に出ること。
-    ///
-    /// `dns` と `connect` は必ず出て、残りは 0 でないときだけ出る (0 の段階で行を伸ばさない)。
-    #[test]
-    fn the_three_stages_from_the_profile_show_up_in_the_record() {
-        let t = ConnTable::new();
-        let slot = t.register(3, "198.51.100.7", Instant::now()).expect("枠");
-        slot.begin_tunnel("a.example.net:443");
-        let mut tally = ConnTally::default();
-        let mut ms = [0u64; STAGES];
-        ms[STAGE_DNS] = 6;
-        ms[STAGE_CONNECT] = 9;
-        ms[STAGE_QUEUE] = 159;
-        ms[STAGE_CLIENT_READ] = 2;
-        ms[STAGE_FIRST_RELAY] = 37;
-        tally.add_request(0, 4, 4, ms, 0);
-        slot.finish(CloseReason::ClientEof, tally, 0);
-        let json = t
-            .unregister(3)
-            .expect("枠が返る")
-            .closed_entry(Instant::now())
-            .expect("宛先のある接続は残る")
-            .to_json();
-        for (name, v) in [
-            ("dns", 6),
-            ("connect", 9),
-            ("queue", 159),
-            ("client_read", 2),
-            ("first_relay", 37),
-        ] {
-            assert!(
-                json.contains(&format!("\"{}\":{}", name, v)),
-                "{} が出ていない: {}",
-                name,
-                json
-            );
-        }
-        // 0 の段階 (`first_byte`) は出さない
-        assert!(!json.contains("\"first_byte\""), "{}", json);
-    }
-
-    #[test]
-    fn the_ring_keeps_the_newest_entries_first() {
-        let ring = ErrorRing::new();
-        assert!(ring.is_empty());
-        for i in 0..3 {
-            ring.push(entry(i));
-        }
-        let (got, total) = ring.recent(10);
-        assert_eq!(total, 3);
-        assert_eq!(got.len(), 3);
-        assert_eq!(got[0].target, "h2.example.net:443");
-        assert_eq!(got[2].target, "h0.example.net:443");
-        assert_eq!(ring.recent(2).0.len(), 2);
-    }
-
-    #[test]
-    fn the_ring_overwrites_the_oldest_when_full() {
-        let ring = ErrorRing::new();
-        for i in 0..(MAX_ERRORS as u64 + 7) {
-            ring.push(entry(i));
-        }
-        let (got, total) = ring.recent(MAX_ERRORS);
-        assert_eq!(total, MAX_ERRORS as u64 + 7);
-        assert_eq!(got.len(), MAX_ERRORS);
-        // 最新は最後に書いたもの、最古は 500 件前
-        assert_eq!(
-            got[0].target,
-            format!("h{}.example.net:443", MAX_ERRORS as u64 + 6)
-        );
-        assert_eq!(got[MAX_ERRORS - 1].target, "h7.example.net:443");
-    }
-
-    /// 1 件は 300 B 以内 (500 件で 150 KB。256 KiB の上限に対して余裕がある)。
-    ///
-    /// T20.3 で `repeats` (最大 10 桁) と `last_at` (10 桁) を末尾に足したので、
-    /// 上限を 256 → 300 B に上げた (鍵 2 つで 22 B + 値 20 B)。
-    #[test]
-    fn one_entry_fits_in_300_bytes() {
-        let long = "a".repeat(300);
-        let e = ErrorEntry::new(
-            EntryKind::Forward,
-            &long,
-            "2001:0db8:0000:0000:0000:ff00:0042:8329%enp0s31f6xx",
-            502,
-            EntryCause::Error(ErrCause::Unreachable),
-            u64::MAX,
-            u64::MAX,
-        );
-        assert!(e.target.len() <= MAX_TARGET, "{}", e.target.len());
-        assert!(e.client.len() <= MAX_CLIENT, "{}", e.client.len());
-        let mut e = e;
-        e.repeats = u32::MAX;
-        let json = e.to_json();
-        assert!(json.len() <= 300, "1 件が {} B", json.len());
-        assert!(json.contains("\"kind\":\"forward\""));
-        assert!(json.contains("\"cause\":\"unreachable\""));
-    }
-
-    /// 同じ失敗 1 件ぶん (IPv6 だけの宛先への 502 の形。T20.3)。
-    fn same(connect_ms: u64) -> ErrorEntry {
-        ErrorEntry::new(
-            EntryKind::Connect,
-            "v6only.example.net:443",
-            "198.51.100.7",
-            502,
-            EntryCause::Error(ErrCause::Unreachable),
-            3,
-            connect_ms,
-        )
-    }
-
-    /// 同じ失敗を 1,000 回書いても 1 行で、`repeats` と通算が 1,000 (T20.3)。
-    ///
-    /// ファイルへ書くのも行ができたときの 1 回だけ (まとめた回は書かない)。
-    #[test]
-    fn a_thousand_repeats_of_one_failure_stay_in_one_row() {
-        let ring = ErrorRing::new();
-        ring.push(same(1));
-        // 1 行目はここで書かれる。以後の 999 回は行を足さないので、書くものが無い
-        assert_eq!(ring.take_unwritten(usize::MAX).0.len(), 1);
-        for i in 1..1000u64 {
-            let mut e = same(1000 + i);
-            e.at += i;
-            ring.push(e);
-        }
-        let (got, total) = ring.recent(MAX_ERRORS);
-        assert_eq!(got.len(), 1);
-        assert_eq!(ring.len(), 1);
-        assert_eq!(total, 1000);
-        assert_eq!(got[0].repeats, 1000);
-        // 行の時刻は最初の 1 回、`last_at` と ms は最後の 1 回
-        assert_eq!(got[0].last_at, got[0].at + 999);
-        assert_eq!(got[0].connect_ms, 1999);
-        assert_eq!(got[0].dns_ms, 3);
-        let (unwritten, dropped) = ring.take_unwritten(usize::MAX);
-        assert!(unwritten.is_empty(), "まとめた回を書き直している");
-        assert_eq!(dropped, 0);
-        // JSON は足すだけ: 今までの 8 つの鍵の後ろに `repeats` と `last_at`
-        let json = got[0].to_json();
-        assert!(
-            json.ends_with(&format!(
-                ",\"status\":502,\"client\":\"198.51.100.7\",\"repeats\":1000,\"last_at\":{}}}",
-                got[0].last_at
-            )),
-            "{}",
-            json
-        );
-        println!(
-            "T20.3 同じ失敗 1,000 回: {} 行 / total {} / repeats {} / {} B",
-            got.len(),
-            total,
-            got[0].repeats,
-            json.len()
-        );
-    }
-
-    /// まとめていない行は `repeats` 1・`last_at` は `at` と同じ (T20.3)。
-    #[test]
-    fn a_single_failure_reports_one_repeat_and_its_own_time() {
-        let e = entry(1);
-        assert_eq!(e.repeats, 1);
-        assert_eq!(e.last_at, e.at);
-        let json = e.to_json();
-        assert!(
-            json.ends_with(&format!(",\"repeats\":1,\"last_at\":{}}}", e.at)),
-            "{}",
-            json
-        );
-    }
-
-    /// 間に別の失敗が入っても、新しい方から 8 件の中なら同じ行に足す (T20.3)。
-    #[test]
-    fn another_failure_in_between_does_not_split_the_row() {
-        let ring = ErrorRing::new();
-        ring.push(same(1));
-        ring.push(entry(1));
-        ring.push(same(2));
-        let (got, total) = ring.recent(10);
-        assert_eq!(total, 3);
-        assert_eq!(got.len(), 2);
-        // 並びは行ができた順の新しい順のまま (足された行が前に出てこない)
-        assert_eq!(got[0].target, "h1.example.net:443");
-        assert_eq!(got[0].repeats, 1);
-        assert_eq!(got[1].target, "v6only.example.net:443");
-        assert_eq!(got[1].repeats, 2);
-        assert_eq!(got[1].connect_ms, 2);
-
-        // 間に 7 件 (= 同じ失敗は新しい方から 8 件目) まではまとまる
-        let ring = ErrorRing::new();
-        ring.push(same(1));
-        for i in 0..(MERGE_WINDOW as u64 - 1) {
-            ring.push(entry(i));
-        }
-        ring.push(same(2));
-        let (got, total) = ring.recent(MAX_ERRORS);
-        assert_eq!(total, MERGE_WINDOW as u64 + 1);
-        assert_eq!(got.len(), MERGE_WINDOW);
-        assert_eq!(got[MERGE_WINDOW - 1].repeats, 2);
-    }
-
-    /// 9 件前の同じ失敗は別の行 (鍵の中で比べるのは最大 8 件。T20.3)。
-    #[test]
-    fn the_same_failure_nine_rows_back_starts_a_new_row() {
-        let ring = ErrorRing::new();
-        ring.push(same(1));
-        for i in 0..(MERGE_WINDOW as u64) {
-            ring.push(entry(i));
-        }
-        ring.push(same(2));
-        let (got, total) = ring.recent(MAX_ERRORS);
-        assert_eq!(total, MERGE_WINDOW as u64 + 2);
-        assert_eq!(got.len(), MERGE_WINDOW + 2);
-        assert_eq!(got[0].target, "v6only.example.net:443");
-        assert_eq!(got[0].repeats, 1);
-        assert_eq!(got[MERGE_WINDOW + 1].target, "v6only.example.net:443");
-        assert_eq!(got[MERGE_WINDOW + 1].repeats, 1);
-        // 次の 1 回は新しい方の行に足す
-        ring.push(same(3));
-        let (got, _) = ring.recent(MAX_ERRORS);
-        assert_eq!(got.len(), MERGE_WINDOW + 2);
-        assert_eq!(got[0].repeats, 2);
-        assert_eq!(got[MERGE_WINDOW + 1].repeats, 1);
-    }
-
-    /// 5 つの鍵 (`kind`・`target`・`cause`・`status`・`client`) のどれかが違えば別の行 (T20.3)。
-    #[test]
-    fn a_different_client_cause_kind_status_or_target_is_another_row() {
-        let ring = ErrorRing::new();
-        let base = same(1);
-        ring.push(base.clone());
-        let mut other_client = base.clone();
-        other_client.client = "198.51.100.8".to_string();
-        let mut other_cause = base.clone();
-        other_cause.cause = EntryCause::Error(ErrCause::Timeout);
-        let mut other_kind = base.clone();
-        other_kind.kind = EntryKind::Forward;
-        let mut other_status = base.clone();
-        other_status.status = 504;
-        let mut other_target = base.clone();
-        other_target.target = "v6only.example.net:8443".to_string();
-        for e in [
-            other_client,
-            other_cause,
-            other_kind,
-            other_status,
-            other_target,
-        ] {
-            ring.push(e);
-        }
-        let (got, total) = ring.recent(MAX_ERRORS);
-        assert_eq!(total, 6);
-        assert_eq!(got.len(), 6);
-        assert!(got.iter().all(|e| e.repeats == 1));
-        // ms と時刻だけが違うものは同じ行
-        let mut later = base.clone();
-        later.at += 140;
-        later.dns_ms = 9;
-        ring.push(later);
-        let (got, total) = ring.recent(MAX_ERRORS);
-        assert_eq!(total, 7);
-        assert_eq!(got.len(), 6);
-        assert_eq!(got[5].repeats, 2);
-        assert_eq!(got[5].dns_ms, 9);
-    }
-
-    /// 満杯で一巡したあとも、新しい方から 8 件を正しく見ること (T20.3)。
-    #[test]
-    fn merging_still_finds_the_newest_rows_after_the_ring_wraps() {
-        let ring = ErrorRing::new();
-        for i in 0..(MAX_ERRORS as u64 + 3) {
-            ring.push(entry(i));
-        }
-        // 最新 (h502) と、新しい方から 8 件目 (h495) に足す。9 件目 (h494) は別の行になる
-        let newest = MAX_ERRORS as u64 + 2;
-        ring.push(entry(newest));
-        ring.push(entry(newest - 7));
-        let (got, total) = ring.recent(MAX_ERRORS);
-        assert_eq!(total, MAX_ERRORS as u64 + 5);
-        assert_eq!(got[0].repeats, 2);
-        assert_eq!(got[7].repeats, 2);
-        ring.push(entry(newest - 8));
-        let (got, _) = ring.recent(MAX_ERRORS);
-        assert_eq!(got[0].target, format!("h{}.example.net:443", newest - 8));
-        assert_eq!(got[0].repeats, 1);
-        assert_eq!(got[9].repeats, 1);
-    }
-
-    /// 読み戻した行はまとめない (ファイルの 1 行 = 1 行、`repeats` 1。T20.3)。
-    ///
-    /// 読み戻したあとの同じ失敗は、今までどおり新しい方の行に足す。書き直しもしない。
-    #[test]
-    fn restored_rows_are_not_merged_and_not_rewritten() {
-        let ring = ErrorRing::new();
-        ring.restore(vec![same(1), same(2), same(3)]);
-        let (got, total) = ring.recent(MAX_ERRORS);
-        assert_eq!(got.len(), 3);
-        assert_eq!(total, 3);
-        assert_eq!(ring.restored(), 3);
-        assert!(got.iter().all(|e| e.repeats == 1));
-        assert!(ring.take_unwritten(usize::MAX).0.is_empty());
-        ring.push(same(4));
-        let (got, total) = ring.recent(MAX_ERRORS);
-        assert_eq!(got.len(), 3);
-        assert_eq!(total, 4);
-        assert_eq!(got[0].repeats, 2);
-        assert!(ring.take_unwritten(usize::MAX).0.is_empty());
-        // 新しい行ができたら、その 1 行だけ書く
-        ring.push(entry(1));
-        let (unwritten, _) = ring.take_unwritten(usize::MAX);
-        assert_eq!(unwritten.len(), 1);
-        assert_eq!(unwritten[0].target, "h1.example.net:443");
-    }
-
-    /// `io::Error` から閉じた理由を決める (T25.0)。DNS だけ内訳を持つ。
-    #[test]
-    fn errors_closing_a_connection_carry_the_dns_split() {
-        use std::io::{Error, ErrorKind};
-        let nx = Error::other("failed to lookup address information: Name or service not known");
-        let temp = Error::other(
-            "failed to lookup address information: Temporary failure in name resolution",
-        );
-        assert_eq!(
-            CloseReason::error_from_io(&nx),
-            CloseReason::ErrorDns(DnsCause::Nxdomain)
-        );
-        assert_eq!(
-            CloseReason::error_from_io(&temp),
-            CloseReason::ErrorDns(DnsCause::DnsTemp)
-        );
-        // DNS 以外は今までどおり 8 つの原因の綴り
-        assert_eq!(
-            CloseReason::error_from_io(&Error::new(ErrorKind::ConnectionRefused, "x")),
-            CloseReason::Error(ErrCause::Refused)
-        );
-        // `/errors` の `cause` も同じ 2 つ (符号 20・21 で往復する)
-        for (cause, name) in [
-            (EntryCause::ErrorDns(DnsCause::Nxdomain), "nxdomain"),
-            (EntryCause::ErrorDns(DnsCause::DnsTemp), "dns_temp"),
-        ] {
-            assert_eq!(cause.name(), name);
-            assert_eq!(EntryCause::from_code(cause.code()), cause);
-            let e = ErrorEntry::new(
-                EntryKind::Connect,
-                "imap.example.jp:993",
-                "198.51.100.7",
-                502,
-                cause,
-                2,
-                0,
-            );
-            let json = e.to_json();
-            assert!(
-                json.contains(&format!("\"cause\":\"{}\"", name)),
-                "{}",
-                json
-            );
-            assert!(json.len() <= 256, "1 件が {} B", json.len());
-        }
-    }
-
-    /// 403 の個票は `/errors` に `acl` / `blocklist` の名前で出る (T14.2 (4))。
-    ///
-    /// 集計 (`errors_by_cause`) には乗らないので、[`ErrCause`] とは別の型で持つ。
-    #[test]
-    fn blocked_entries_carry_their_own_cause_names() {
-        for (cause, name) in [
-            (BlockCause::Acl, "acl"),
-            (BlockCause::Blocklist, "blocklist"),
-            (BlockCause::ConnectPort, "connect_port"),
-            (BlockCause::Local, "local"),
-        ] {
-            let e = ErrorEntry::new(
-                EntryKind::Connect,
-                "ads.example.net:443",
-                "198.51.100.7",
-                403,
-                EntryCause::Blocked(cause),
-                0,
-                0,
-            );
-            let json = e.to_json();
-            assert!(
-                json.contains(&format!("\"cause\":\"{}\"", name)),
-                "{}",
-                json
-            );
-            assert!(json.contains("\"status\":403"), "{}", json);
-            assert!(json.contains("\"kind\":\"connect\""), "{}", json);
-            assert!(json.len() <= 256, "1 件が {} B", json.len());
-        }
-    }
-
-    #[test]
-    fn clip_does_not_split_a_character() {
-        assert_eq!(clip("abc", 8), "abc");
-        assert_eq!(clip("abcdefghij", 8), "abcde…");
-        // 3 バイト文字の途中で切らない
-        assert_eq!(clip("日本語です", 8), "日…");
-        assert!(clip("日本語です", 8).len() <= 8);
-    }
-}
+#[path = "errors_tests.rs"]
+mod tests;

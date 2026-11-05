@@ -21,6 +21,7 @@
 
 use std::sync::Mutex;
 
+use crate::recent::ringbuf::{newest_at, push_wrapping};
 use crate::recent::{CloseReason, MAX_CLIENT, STAGE_CONNECT, STAGE_NAMES, STAGES, clip};
 use crate::sync::LockExt;
 
@@ -36,8 +37,8 @@ pub const MAX_TRACE: usize = 1000;
 pub const MAX_PATH: usize = 256;
 
 /// メソッドと HTTP の版に残す長さ (バイト)。壊れた要求行でも行が太らないための歯止め。
-pub const MAX_METHOD: usize = 16;
-pub const MAX_VERSION: usize = 16;
+pub(crate) const MAX_METHOD: usize = 16;
+pub(crate) const MAX_VERSION: usize = 16;
 
 /// 1 行が最悪で使うヒープ (`/status` の `memory.rings.trace` の見積もりに使う)。
 pub const MAX_LINE_ESTIMATE: usize =
@@ -164,14 +165,9 @@ pub fn push(line: Line<'_>) {
         reason: line.reason,
     };
     let mut r = RING.locked();
-    r.total += 1;
-    if r.buf.len() < MAX_TRACE {
-        r.buf.push(entry);
-        return;
-    }
-    let at = r.next;
-    r.buf[at] = entry;
-    r.next = (at + 1) % MAX_TRACE;
+    let g = &mut *r;
+    g.total += 1;
+    push_wrapping(&mut g.buf, &mut g.next, MAX_TRACE, entry);
 }
 
 /// 条件に合う行を**新しい順**で `n` 行まで返す。2 つ目は起動からの通算 (捨てた分も含む)。
@@ -186,8 +182,7 @@ pub fn select(since: u64, n: usize) -> (Vec<TraceLine>, u64) {
             break;
         }
         // `next` の 1 つ手前が最新 (満杯になる前は `next == 0` なので末尾が最新)
-        let start = if len < MAX_TRACE { len } else { r.next };
-        let e = &r.buf[(start + len - 1 - i) % len];
+        let e = &r.buf[newest_at(len, MAX_TRACE, r.next, i)];
         if e.at < since {
             continue;
         }

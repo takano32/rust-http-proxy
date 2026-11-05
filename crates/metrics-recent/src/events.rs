@@ -33,6 +33,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
+use crate::recent::ringbuf::{drain_unwritten, newest_at, push_wrapping};
 use crate::sync::LockExt;
 
 /// 覚えておく出来事の数 (固定)。
@@ -179,14 +180,9 @@ pub fn push(kind: EventKind, text: &str) {
         text: crate::recent::clip(text, MAX_TEXT),
     };
     let mut r = RING.locked();
-    r.total += 1;
-    if r.buf.len() < MAX_EVENTS {
-        r.buf.push(event);
-        return;
-    }
-    let at = r.next;
-    r.buf[at] = event;
-    r.next = (at + 1) % MAX_EVENTS;
+    let g = &mut *r;
+    g.total += 1;
+    push_wrapping(&mut g.buf, &mut g.next, MAX_EVENTS, event);
 }
 
 /// 条件に合うものを**新しい順**で `n` 件まで返す。2 つ目は起動からの通算 (捨てた分も含む)。
@@ -201,8 +197,7 @@ pub fn select(since: u64, n: usize) -> (Vec<Event>, u64) {
             break;
         }
         // `next` の 1 つ手前が最新 (満杯になる前は `next == 0` なので末尾が最新)
-        let start = if len < MAX_EVENTS { len } else { r.next };
-        let e = &r.buf[(start + len - 1 - i) % len];
+        let e = &r.buf[newest_at(len, MAX_EVENTS, r.next, i)];
         if e.at < since {
             continue;
         }
@@ -237,18 +232,8 @@ pub fn clear() {
 /// リングが古い件を上書きするため。
 pub fn take_unwritten(max: usize) -> (Vec<Event>, u64) {
     let mut r = RING.locked();
-    let len = r.buf.len();
-    let pending = r.total.saturating_sub(r.written).min(len as u64) as usize;
-    r.written = r.total;
-    if pending == 0 {
-        return (Vec::new(), 0);
-    }
-    let take = pending.min(max);
-    let start = if len < MAX_EVENTS { 0 } else { r.next };
-    let out = ((len - take)..len)
-        .map(|i| r.buf[(start + i) % len].clone())
-        .collect();
-    (out, (pending - take) as u64)
+    let g = &mut *r;
+    drain_unwritten(&g.buf, g.next, MAX_EVENTS, g.total, &mut g.written, max)
 }
 
 /// 出来事のリングの置き場を [`MAX_EVENTS`] 件ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
@@ -267,14 +252,9 @@ pub fn restore(events: Vec<Event>) {
     let n = events.len().min(MAX_EVENTS);
     for e in events {
         let mut r = RING.locked();
-        r.total += 1;
-        if r.buf.len() < MAX_EVENTS {
-            r.buf.push(e);
-            continue;
-        }
-        let at = r.next;
-        r.buf[at] = e;
-        r.next = (at + 1) % MAX_EVENTS;
+        let g = &mut *r;
+        g.total += 1;
+        push_wrapping(&mut g.buf, &mut g.next, MAX_EVENTS, e);
     }
     let mut r = RING.locked();
     r.written = r.total;

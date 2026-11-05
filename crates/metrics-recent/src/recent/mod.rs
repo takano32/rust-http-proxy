@@ -33,14 +33,16 @@
 //! 閉じた理由は `recent/close_reason.rs`、閉じた接続の個票 (と接続ごとの積み上げ) は
 //! `recent/entry.rs`、その固定長リングは `recent/ring.rs`、山の写真は `recent/burst.rs`、
 //! 閉じた分布は `recent/closed.rs`、エラーの個票とリングは `recent/errors.rs`、接続の 1 枠は
-//! `recent/conn_slot.rs`、接続の表は `recent/conn_table.rs`。ここには**共通の定数 (段階と側の
-//! 添字) だけ**を置く。
+//! `recent/conn_slot.rs`、接続の表は `recent/conn_table.rs`、文字列の切り詰めは `recent/clip.rs`、
+//! 5 本のリングに共通の添字の式は `recent/ringbuf.rs`。ここには**共通の定数 (段階と側の添字)
+//! だけ**を置く。
 //! 行を動かしただけで中身は変えていない。`pub use` で出し直すので、外からの `recent::…` の
 //! 経路は変わらない。
 //!
 //! [`Metrics::record_error`]: crate::metrics::Metrics::record_error
 
 mod burst;
+mod clip;
 mod close_reason;
 mod closed;
 mod conn_slot;
@@ -48,8 +50,10 @@ mod conn_table;
 mod entry;
 mod errors;
 mod ring;
+pub(crate) mod ringbuf;
 
 pub use burst::*;
+pub use clip::*;
 pub use close_reason::*;
 pub use closed::*;
 pub use conn_slot::*;

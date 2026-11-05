@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::ConnSlot;
-use super::errors::drain_unwritten;
+use super::ringbuf::{drain_unwritten, newest_at, push_wrapping};
 use crate::sync::LockExt;
 
 /// 山の写真 (`/bursts`) を何枚覚えておくか (固定。T14.6)。
@@ -347,14 +347,9 @@ impl BurstRing {
             return;
         }
         let mut r = self.inner.locked();
-        r.total += 1;
-        if r.buf.len() < MAX_BURSTS {
-            r.buf.push(shot);
-            return;
-        }
-        let at = r.next;
-        r.buf[at] = shot;
-        r.next = (at + 1) % MAX_BURSTS;
+        let g = &mut *r;
+        g.total += 1;
+        push_wrapping(&mut g.buf, &mut g.next, MAX_BURSTS, shot);
     }
 
     /// 次に撮る 1 枚の通し番号 (1 始まり)。
@@ -369,9 +364,7 @@ impl BurstRing {
         let n = n.min(len);
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
-            let start = if len < MAX_BURSTS { len } else { r.next };
-            let at = (start + len - 1 - i) % len;
-            out.push(r.buf[at].clone());
+            out.push(r.buf[newest_at(len, MAX_BURSTS, r.next, i)].clone());
         }
         (out, r.total)
     }
