@@ -132,6 +132,25 @@ pub(in crate::endpoints) fn snapshot_with(
     recent_max: Option<usize>,
     limit: usize,
 ) -> (u16, &'static str, String) {
+    let mut part = collect_parts(ep, recent_max, limit);
+    if recent_max.is_some() {
+        fit_full_recent(&mut part, limit, || recent(ep, Some("n=2000")).2);
+    }
+    let dropped = drop_to_fit(&mut part, limit);
+    let at = crate::cache::now_epoch();
+    let uptime = ep.metrics.start_time.elapsed().as_secs();
+    let body = render_snapshot(ep.version, uptime, at, limit, &part, &dropped);
+    (200, "application/json", body)
+}
+
+/// 17 の部を、それぞれの口と同じ関数で組む (T.34.91 で [`snapshot_with`] から出した)。
+///
+/// 並びは `parts` に出る順そのもの。`recent_max` は [`snapshot_with`] と同じ。
+fn collect_parts(
+    ep: &Endpoint<'_>,
+    recent_max: Option<usize>,
+    limit: usize,
+) -> Vec<(&'static str, String)> {
     use crate::history::History;
     use crate::metrics::HostSort;
 
@@ -139,7 +158,7 @@ pub(in crate::endpoints) fn snapshot_with(
     // 先に全部組んでから、合計が 4 MiB を越えていたら順に落とす
     // `status` の 3 通りは**今までどおり `hosts[]` も入れる** (軽い形は `/status?hosts=0`
     // だけの話で、`/snapshot` の `parts` は変えない。T25.1 段 2)
-    let mut part: Vec<(&'static str, String)> = vec![
+    vec![
         ("status", status_body(ep, HostSort::Requests, true)),
         ("status_errors", status_body(ep, HostSort::Errors, true)),
         ("status_dns", status_body(ep, HostSort::Dns, true)),
@@ -170,13 +189,23 @@ pub(in crate::endpoints) fn snapshot_with(
         ("profile", profile::profile(ep, Some("res=5")).2),
         ("events", events(ep, Some("n=512")).2),
         ("log", log(ep, Some("n=1000")).2),
-    ];
+    ]
+}
+
+/// 組んだ部を 1 つの JSON にする (I/O も時計も読まない純粋な関数。T.34.91)。
+///
+/// `parts` の名前は落とした部 (`null`) も含めて全部 `"parts"` に並び、`dropped` に
+/// 落とした名前が並ぶ。`history.*` の部は `"history":{"5":…,"60":…}` に入れ子にする。
+fn render_snapshot(
+    version: &str,
+    uptime: u64,
+    at: u64,
+    limit: usize,
+    part: &[(&'static str, String)],
+    dropped: &[&'static str],
+) -> String {
     let names: Vec<&'static str> = part.iter().map(|(k, _)| *k).collect();
-    if recent_max.is_some() {
-        fit_full_recent(&mut part, limit, || recent(ep, Some("n=2000")).2);
-    }
-    let dropped = drop_to_fit(&mut part, limit);
-    let total: usize = overhead_of(&part) + part.iter().map(|(_, v)| v.len()).sum::<usize>();
+    let total: usize = overhead_of(part) + part.iter().map(|(_, v)| v.len()).sum::<usize>();
 
     let mut out = String::with_capacity(total + 1024);
     // 応答の形の版は**いちばん先頭の鍵** (T14.49)。**各部にもそれぞれ入っている**
@@ -185,9 +214,9 @@ pub(in crate::endpoints) fn snapshot_with(
     let _ = write!(
         out,
         "\"taken_at\":{},\"version\":\"{}\",\"uptime_secs\":{},\"limit_bytes\":{},\"parts\":[",
-        crate::cache::now_epoch(),
-        crate::json::escape(ep.version),
-        ep.metrics.start_time.elapsed().as_secs(),
+        at,
+        crate::json::escape(version),
+        uptime,
         limit,
     );
     for (i, name) in names.iter().enumerate() {
@@ -200,7 +229,7 @@ pub(in crate::endpoints) fn snapshot_with(
     out.push(']');
     // `history` だけは `{"5":…,"60":…,"3600":…}` に入れ子にする (`/history?res=` と同じ鍵)
     let mut history_open = false;
-    for (name, body) in &part {
+    for (name, body) in part {
         match name.strip_prefix("history.") {
             Some(res) => {
                 out.push_str(if history_open { "," } else { ",\"history\":{" });
@@ -220,7 +249,7 @@ pub(in crate::endpoints) fn snapshot_with(
         out.push('}');
     }
     out.push('}');
-    (200, "application/json", out)
+    out
 }
 
 /// 全部入れた `recent` で合計が `limit` を越えるなら、`cut` (いつもの 256 KiB で切った `recent`) に
@@ -478,5 +507,50 @@ mod tests {
         );
         assert_eq!(part[0].1.len(), 100, "`/status` は落とさない");
         assert_eq!(part[2].1.len(), 400, "60 秒の履歴は落とさない");
+    }
+
+    /// 偽の部を組むと、頭・`parts`・`dropped` と、`history.*` の入れ子がそのまま出る (T.34.91)。
+    #[test]
+    fn the_snapshot_renders_parts_and_nests_history() {
+        let part = vec![
+            ("status", "{\"s\":1}".to_string()),
+            ("history.5", "[5]".to_string()),
+            ("history.60", "[60]".to_string()),
+            ("recent", "null".to_string()),
+            ("log", "{\"l\":2}".to_string()),
+        ];
+        let out = render_snapshot("1.2.\"3\"", 42, 1_700_000_000, 4096, &part, &["recent"]);
+        assert_eq!(
+            out,
+            concat!(
+                "{\"schema\":1,\"taken_at\":1700000000,\"version\":\"1.2.\\\"3\\\"\",",
+                "\"uptime_secs\":42,\"limit_bytes\":4096,",
+                "\"parts\":[\"status\",\"history.5\",\"history.60\",\"recent\",\"log\"],",
+                "\"dropped\":[\"recent\"],",
+                "\"status\":{\"s\":1},\"history\":{\"5\":[5],\"60\":[60]},",
+                "\"recent\":null,\"log\":{\"l\":2}}"
+            )
+        );
+    }
+
+    /// `history.*` が最後の部でも入れ子を閉じ、何も落とさなければ `dropped` は空 (T.34.91)。
+    #[test]
+    fn the_snapshot_closes_a_trailing_history() {
+        let part = vec![
+            ("history.3600", "[1]".to_string()),
+            ("dns", "{}".to_string()),
+            ("history.5", "null".to_string()),
+        ];
+        let out = render_snapshot("v", 0, 0, 1, &part, &[]);
+        assert!(
+            out.ends_with(
+                "\"dropped\":[],\"history\":{\"3600\":[1]},\"dns\":{},\"history\":{\"5\":null}}"
+            ),
+            "{}",
+            out
+        );
+        // 部が 1 つも無くても形は崩れない
+        let empty = render_snapshot("v", 0, 0, 1, &[], &[]);
+        assert!(empty.ends_with("\"parts\":[],\"dropped\":[]}"), "{}", empty);
     }
 }

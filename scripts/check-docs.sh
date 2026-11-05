@@ -112,8 +112,8 @@ sed 's/^/    除外: /;s/\t/ — /' "$W/env-skip"
 
 # --- (c) `/snapshot` の parts -------------------------------------------------
 # `parts` の名前を口の綴りに戻す: `status_errors` / `status_dns` は `/status` の並べ替え、
-# `history.5` などは `/history` の解像度、`hosts_series` は `/hosts/series`。
-sed -n '/let mut part: Vec<(&.static str, String)> = vec!\[/,/^    \];/p' "$REC" |
+# `history.5` などは `/history` の解像度、`hosts_series` は `/hosts/series`。部の並びは `collect_parts` の `vec![…]` (T.34.91)。
+sed -n '/^fn collect_parts(/,/^    \]$/p' "$REC" |
   grep -oE '^ *\(?"[a-z0-9_.]+",' | sed 's/[^"]*"\([^"]*\)".*/\1/' >"$W/parts-raw"
 sed -e 's/^status_.*$/status/' -e 's/^history\..*$/history/' -e 's|^hosts_series$|hosts/series|' \
   "$W/parts-raw" | sed 's|^|/|' | LC_ALL=C sort -u >"$W/parts-ep"
