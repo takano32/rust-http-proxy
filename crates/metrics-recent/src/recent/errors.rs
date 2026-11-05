@@ -10,7 +10,7 @@
 use std::sync::Mutex;
 
 use super::clip::clip;
-use super::ringbuf::{drain_unwritten, newest_at, push_wrapping};
+use super::ringbuf::FixedRing;
 use crate::metrics::{BadRequestReason, BlockCause, DnsCause, ErrCause};
 use crate::sync::LockExt;
 
@@ -277,19 +277,13 @@ pub struct ErrorRing {
 
 #[derive(Default)]
 struct Ring {
-    buf: Vec<ErrorEntry>,
-    /// 次に書く位置 (`buf` が満杯になってからだけ意味を持つ)
-    next: usize,
-    /// 起動からの通算 (捨てた分も、同じ行にまとめた分も含む)
-    total: u64,
+    /// 置き場と通算 (捨てた分も、同じ行にまとめた分も含む)・ファイルに書いた所 (T14.9。**`rows` で
+    /// 数える**: `rows` との差が「まだ書いていない件」)・読み戻した件数 (`/errors` の `"restored"`)
+    ring: FixedRing<ErrorEntry, MAX_ERRORS>,
     /// **行を足した回数**の通算 (T20.3。同じ行にまとめた 1 件は数えない)。
     /// ファイルに書くのは行ができたときの 1 回なので、書いた所の印はこちらで数える
     /// (`total` で数えると、まとめた回数ぶん同じ行を書き直してしまう)
     rows: u64,
-    /// **ファイルに書いた所までの `rows`** (T14.9。`rows` との差が「まだ書いていない件」)
-    written: u64,
-    /// 起動時に状態ファイルから読み戻した件数 (`/errors` の `"restored"`)
-    restored: usize,
 }
 
 impl Ring {
@@ -298,11 +292,10 @@ impl Ring {
     /// 足したら `true` (呼んだ側は行を足さない)。行の `at` と並びは動かさず、
     /// `repeats` を 1 増やして `last_at` と `dns_ms` / `connect_ms` を最後の 1 回の値にする。
     fn merge(&mut self, entry: &ErrorEntry) -> bool {
-        let len = self.buf.len();
+        let len = self.ring.len();
         // `next` の 1 つ手前が最新 (満杯になる前は末尾が最新)。[`ErrorRing::recent`] と同じ
         for i in 0..len.min(MERGE_WINDOW) {
-            let at = newest_at(len, MAX_ERRORS, self.next, i);
-            let row = &mut self.buf[at];
+            let row = self.ring.newest_mut(i);
             if row.same_failure(entry) {
                 row.repeats = row.repeats.saturating_add(1);
                 row.last_at = entry.at;
@@ -317,7 +310,7 @@ impl Ring {
     /// 1 行足す (満杯なら最も古いものを上書きする)。
     fn add(&mut self, entry: ErrorEntry) {
         self.rows += 1;
-        push_wrapping(&mut self.buf, &mut self.next, MAX_ERRORS, entry);
+        self.ring.write(entry);
     }
 }
 
@@ -346,7 +339,7 @@ impl ErrorRing {
             return;
         }
         let mut r = self.inner.locked();
-        r.total += 1;
+        r.ring.count();
         if r.merge(&entry) {
             return;
         }
@@ -357,19 +350,18 @@ impl ErrorRing {
     /// (捨てた分も、同じ行にまとめた分も含む)。
     pub fn recent(&self, n: usize) -> (Vec<ErrorEntry>, u64) {
         let r = self.inner.locked();
-        let len = r.buf.len();
-        let n = n.min(len);
+        let n = n.min(r.ring.len());
         let mut out = Vec::with_capacity(n);
-        for i in 0..n {
-            // `next` の 1 つ手前が最新 (満杯になる前は `next == 0` なので末尾が最新)
-            out.push(r.buf[newest_at(len, MAX_ERRORS, r.next, i)].clone());
+        // `next` の 1 つ手前が最新 (満杯になる前は `next == 0` なので末尾が最新)
+        for e in r.ring.newest().take(n) {
+            out.push(e.clone());
         }
-        (out, r.total)
+        (out, r.ring.total())
     }
 
     /// 覚えている件数。
     pub fn len(&self) -> usize {
-        self.inner.locked().buf.len()
+        self.inner.locked().ring.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -379,9 +371,9 @@ impl ErrorRing {
     /// まだファイルに書いていない件を古い順で取り出す (**history スレッドだけが呼ぶ**。T14.9)。
     pub fn take_unwritten(&self, max: usize) -> (Vec<ErrorEntry>, u64) {
         let mut r = self.inner.locked();
-        let g = &mut *r;
         // 印は**行の通算** (`rows`)。まとめた 1 件は行を足していないので書かない (T20.3)
-        drain_unwritten(&g.buf, g.next, MAX_ERRORS, g.rows, &mut g.written, max)
+        let mark = r.rows;
+        r.ring.take_unwritten(mark, max)
     }
 
     /// 置き場を [`MAX_ERRORS`] 件ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
@@ -389,7 +381,7 @@ impl ErrorRing {
     /// 既定のプロファイルの Linux だけが呼ぶ (呼べば「1 件も出なければ 1 バイトも確保しない」
     /// は外れる)。触るのは 1 件の固定部だけで、文字列は書くときに確保する。返すのは触ったバイト数。
     pub fn prefault(&self) -> usize {
-        crate::prefault::vec(&mut self.inner.locked().buf, MAX_ERRORS)
+        self.inner.locked().ring.prefault()
     }
 
     /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
@@ -402,17 +394,17 @@ impl ErrorRing {
         let mut r = self.inner.locked();
         if crate::records::recording() {
             for e in entries {
-                r.total += 1;
+                r.ring.count();
                 r.add(e);
             }
         }
-        r.written = r.rows;
-        r.restored = n;
+        let mark = r.rows;
+        r.ring.finish_restore(mark, n);
     }
 
     /// 再起動前から引き継いだ件数 (`/errors` の `"restored"`)。
     pub fn restored(&self) -> usize {
-        self.inner.locked().restored
+        self.inner.locked().ring.restored()
     }
 }
 

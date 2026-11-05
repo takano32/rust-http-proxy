@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::ConnSlot;
-use super::ringbuf::{drain_unwritten, newest_at, push_wrapping};
+use super::ringbuf::FixedRing;
 use crate::sync::LockExt;
 
 /// 山の写真 (`/bursts`) を何枚覚えておくか (固定。T14.6)。
@@ -294,20 +294,7 @@ pub struct BurstRing {
     /// 旗を立てた接続が見ていた閾と上限 (写真と、山が引いたかの判定に使う)
     threshold: AtomicUsize,
     max_conns: AtomicUsize,
-    inner: Mutex<BurstBuf>,
-}
-
-#[derive(Default)]
-struct BurstBuf {
-    buf: Vec<BurstShot>,
-    /// 次に書く位置 (`buf` が満杯になってからだけ意味を持つ)
-    next: usize,
-    /// 起動からの通算 (捨てた分も含む)
-    total: u64,
-    /// **ファイルに書いた所までの通算** (T14.9)
-    written: u64,
-    /// 起動時に状態ファイルから読み戻した枚数 (`/bursts` の `"restored"`)
-    restored: usize,
+    inner: Mutex<FixedRing<BurstShot, MAX_BURSTS>>,
 }
 
 impl Default for BurstRing {
@@ -323,7 +310,7 @@ impl BurstRing {
             pending: AtomicUsize::new(0),
             threshold: AtomicUsize::new(0),
             max_conns: AtomicUsize::new(0),
-            inner: Mutex::new(BurstBuf::default()),
+            inner: Mutex::new(FixedRing::new()),
         }
     }
 
@@ -375,31 +362,27 @@ impl BurstRing {
         if !crate::records::recording() {
             return;
         }
-        let mut r = self.inner.locked();
-        let g = &mut *r;
-        g.total += 1;
-        push_wrapping(&mut g.buf, &mut g.next, MAX_BURSTS, shot);
+        self.inner.locked().push(shot);
     }
 
     /// 次に撮る 1 枚の通し番号 (1 始まり)。
     pub fn next_seq(&self) -> u64 {
-        self.inner.locked().total + 1
+        self.inner.locked().total() + 1
     }
 
     /// 直近 `n` 枚を**新しい順**で返す。2 つ目は起動からの通算 (捨てた分も含む)。
     pub fn recent(&self, n: usize) -> (Vec<BurstShot>, u64) {
         let r = self.inner.locked();
-        let len = r.buf.len();
-        let n = n.min(len);
+        let n = n.min(r.len());
         let mut out = Vec::with_capacity(n);
-        for i in 0..n {
-            out.push(r.buf[newest_at(len, MAX_BURSTS, r.next, i)].clone());
+        for e in r.newest().take(n) {
+            out.push(e.clone());
         }
-        (out, r.total)
+        (out, r.total())
     }
 
     pub fn len(&self) -> usize {
-        self.inner.locked().buf.len()
+        self.inner.locked().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -427,15 +410,15 @@ impl BurstRing {
     /// まだファイルに書いていない枚数を古い順で取り出す (**history スレッドだけが呼ぶ**。T14.9)。
     pub fn take_unwritten(&self, max: usize) -> (Vec<BurstShot>, u64) {
         let mut r = self.inner.locked();
-        let g = &mut *r;
-        drain_unwritten(&g.buf, g.next, MAX_BURSTS, g.total, &mut g.written, max)
+        let mark = r.total();
+        r.take_unwritten(mark, max)
     }
 
     /// 置き場を [`MAX_BURSTS`] 枚ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
     ///
     /// 触るのは 1 枚の固定部だけで、写真の中の一覧は撮るときに確保する。返すのは触ったバイト数。
     pub fn prefault(&self) -> usize {
-        crate::prefault::vec(&mut self.inner.locked().buf, MAX_BURSTS)
+        self.inner.locked().prefault()
     }
 
     /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
@@ -447,13 +430,13 @@ impl BurstRing {
             self.push(shot);
         }
         let mut r = self.inner.locked();
-        r.written = r.total;
-        r.restored = n;
+        let mark = r.total();
+        r.finish_restore(mark, n);
     }
 
     /// 再起動前から引き継いだ枚数 (`/bursts` の `"restored"`)。
     pub fn restored(&self) -> usize {
-        self.inner.locked().restored
+        self.inner.locked().restored()
     }
 }
 

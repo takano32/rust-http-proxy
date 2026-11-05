@@ -6,6 +6,9 @@
 //! ([`drain_unwritten`]) の式を 1 か所に置き、ここで直に試験する。どれも `#[inline]` の小さな関数で、
 //! 接続の終了で 1 回通る `RecentRing::push` の費用は変わらない (同じ式を書いていた所を呼び出しに
 //! 置き換えただけ)。
+//!
+//! T.34.49 で、5 本が同じ 5 欄 (置き場・次に書く位置・通算・書いた所・読み戻した件数) を別々に
+//! 持っていたのを [`FixedRing`] 1 つにまとめた。各リングの内側は `Mutex<FixedRing<T, CAP>>`。
 
 /// 新しい方から `i` 番目 (`0` = 最新) が `buf` のどこに居るか。
 ///
@@ -56,6 +59,117 @@ pub(crate) fn drain_unwritten<T: Clone>(
         .map(|i| buf[(start + i) % len].clone())
         .collect();
     (out, (pending - take) as u64)
+}
+
+/// 固定長リング 1 本 (T.34.49): 置き場・次に書く位置・通算・ファイルに書いた所・読み戻した件数。
+///
+/// 閉じた接続・山の写真・エラー・出来事・追跡の 5 本が同じ 5 欄と同じ操作を持っていたので、
+/// ここに 1 つにまとめた。上限の件数は型の `CAP` (定数なので、前の `push_wrapping(…, MAX_*, …)` と
+/// 同じ命令になる)。鍵は持たない (各リングが `Mutex<FixedRing<…>>` で包む)。
+pub(crate) struct FixedRing<T, const CAP: usize> {
+    buf: Vec<T>,
+    /// 次に書く位置 (`buf` が満杯になってからだけ意味を持つ)
+    next: usize,
+    /// 起動からの通算 (捨てた分も含む)
+    total: u64,
+    /// **ファイルに書いた所までの通算** (T14.9。印の数え方は呼ぶ側が決める)
+    written: u64,
+    /// 起動時に状態ファイルから読み戻した件数 (`"restored"`)
+    restored: usize,
+}
+
+impl<T, const CAP: usize> Default for FixedRing<T, CAP> {
+    fn default() -> Self {
+        FixedRing::new()
+    }
+}
+
+impl<T, const CAP: usize> FixedRing<T, CAP> {
+    /// 空のリング (1 バイトも確保しない。`static` にも置ける)。
+    pub(crate) const fn new() -> Self {
+        FixedRing {
+            buf: Vec::new(),
+            next: 0,
+            total: 0,
+            written: 0,
+            restored: 0,
+        }
+    }
+
+    /// 1 件書いて通算を 1 進める (満杯なら最も古いものを上書きする)。
+    #[inline]
+    pub(crate) fn push(&mut self, item: T) {
+        self.total += 1;
+        self.write(item);
+    }
+
+    /// 通算を進めずに 1 件書く (エラーのリングは通算と行を別に数える。T20.3)。
+    #[inline]
+    pub(crate) fn write(&mut self, item: T) {
+        push_wrapping(&mut self.buf, &mut self.next, CAP, item);
+    }
+
+    /// 通算だけを 1 進める (同じ行にまとめた 1 件。T20.3)。
+    #[inline]
+    pub(crate) fn count(&mut self) {
+        self.total += 1;
+    }
+
+    /// 覚えている件数。
+    pub(crate) fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// 起動からの通算 (捨てた分も含む)。
+    pub(crate) fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// 起動時に読み戻した件数。
+    pub(crate) fn restored(&self) -> usize {
+        self.restored
+    }
+
+    /// **新しい順**に並べた中身 (`0` 番目が最新)。
+    pub(crate) fn newest(&self) -> impl Iterator<Item = &T> + '_ {
+        let len = self.buf.len();
+        (0..len).map(move |i| &self.buf[newest_at(len, CAP, self.next, i)])
+    }
+
+    /// 新しい方から `i` 番目 (`i < len()` で呼ぶ) を書き換える口 (エラーの行をまとめる。T20.3)。
+    pub(crate) fn newest_mut(&mut self, i: usize) -> &mut T {
+        let len = self.buf.len();
+        &mut self.buf[newest_at(len, CAP, self.next, i)]
+    }
+
+    /// まだファイルに書いていない件を古い順で取り出す。印は `mark` (通算の件数。ふつうは
+    /// [`FixedRing::total`]、エラーは行の通算) まで進める。
+    pub(crate) fn take_unwritten(&mut self, mark: u64, max: usize) -> (Vec<T>, u64)
+    where
+        T: Clone,
+    {
+        drain_unwritten(&self.buf, self.next, CAP, mark, &mut self.written, max)
+    }
+
+    /// 置き場を `CAP` 件ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。返すのは触ったバイト数。
+    pub(crate) fn prefault(&mut self) -> usize {
+        crate::prefault::vec(&mut self.buf, CAP)
+    }
+
+    /// 読み戻しを終える: 読み戻した件は書き直さないので印を `mark` に合わせ、件数を覚える。
+    pub(crate) fn finish_restore(&mut self, mark: u64, n: usize) {
+        self.written = mark;
+        self.restored = n;
+    }
+
+    /// 空に戻す (試験用の口が呼ぶ)。置き場は確保したまま。
+    pub(crate) fn clear(&mut self) {
+        self.buf.clear();
+        self.next = 0;
+        self.total = 0;
+        self.written = 0;
+        self.restored = 0;
+    }
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-use crate::recent::ringbuf::{drain_unwritten, newest_at, push_wrapping};
+use crate::recent::ringbuf::FixedRing;
 use crate::sync::LockExt;
 
 /// 覚えておく出来事の数 (固定)。
@@ -144,28 +144,12 @@ impl Event {
     }
 }
 
-#[derive(Default)]
-struct EventRing {
-    buf: Vec<Event>,
-    /// 次に書く位置 (`buf` が満杯になってからだけ意味を持つ)
-    next: usize,
-    /// 起動からの通算 (捨てた分も含む)
-    total: u64,
-    /// **個票のファイルに書いた所までの通算** (T14.9)
-    written: u64,
-    /// 起動時に読み戻した件数 (`/events` の `"restored"`)
-    restored: usize,
-}
-
 /// 出来事のリング。**書くのは稀な経路だけ**なので、要求を処理する経路はこの鍵を
 /// 1 度も取らない (置き場は使った分だけ伸び、1 件も起きなければ 1 バイトも確保しない)。
-static RING: Mutex<EventRing> = Mutex::new(EventRing {
-    buf: Vec::new(),
-    next: 0,
-    total: 0,
-    written: 0,
-    restored: 0,
-});
+///
+/// 書いた所の印は**個票のファイルに書いた所までの通算** (T14.9)、読み戻した件数は
+/// `/events` の `"restored"`。
+static RING: Mutex<FixedRing<Event, MAX_EVENTS>> = Mutex::new(FixedRing::new());
 
 /// 1 件書く (満杯なら最も古いものを上書きする)。**稀な経路からだけ呼ぶこと。**
 pub fn push(kind: EventKind, text: &str) {
@@ -179,10 +163,7 @@ pub fn push(kind: EventKind, text: &str) {
         kind,
         text: crate::recent::clip(text, MAX_TEXT),
     };
-    let mut r = RING.locked();
-    let g = &mut *r;
-    g.total += 1;
-    push_wrapping(&mut g.buf, &mut g.next, MAX_EVENTS, event);
+    RING.locked().push(event);
 }
 
 /// 条件に合うものを**新しい順**で `n` 件まで返す。2 つ目は起動からの通算 (捨てた分も含む)。
@@ -190,25 +171,23 @@ pub fn push(kind: EventKind, text: &str) {
 /// 絞りはここ (鍵の内側) で済ませる。`since` は「その時刻以降に起きたもの」。
 pub fn select(since: u64, n: usize) -> (Vec<Event>, u64) {
     let r = RING.locked();
-    let len = r.buf.len();
-    let mut out = Vec::with_capacity(len.min(n));
-    for i in 0..len {
+    let mut out = Vec::with_capacity(r.len().min(n));
+    // `next` の 1 つ手前が最新 (満杯になる前は `next == 0` なので末尾が最新)
+    for e in r.newest() {
         if out.len() >= n {
             break;
         }
-        // `next` の 1 つ手前が最新 (満杯になる前は `next == 0` なので末尾が最新)
-        let e = &r.buf[newest_at(len, MAX_EVENTS, r.next, i)];
         if e.at < since {
             continue;
         }
         out.push(e.clone());
     }
-    (out, r.total)
+    (out, r.total())
 }
 
 /// 覚えている件数。
 pub fn len() -> usize {
-    RING.locked().buf.len()
+    RING.locked().len()
 }
 
 pub fn is_empty() -> bool {
@@ -217,12 +196,7 @@ pub fn is_empty() -> bool {
 
 /// リングを空にする (テスト用)。
 pub fn clear() {
-    let mut r = RING.locked();
-    r.buf.clear();
-    r.next = 0;
-    r.total = 0;
-    r.written = 0;
-    r.restored = 0;
+    RING.locked().clear();
 }
 
 /// まだ個票のファイルに書いていない件を**古い順**で取り出す (T14.9)。
@@ -232,8 +206,8 @@ pub fn clear() {
 /// リングが古い件を上書きするため。
 pub fn take_unwritten(max: usize) -> (Vec<Event>, u64) {
     let mut r = RING.locked();
-    let g = &mut *r;
-    drain_unwritten(&g.buf, g.next, MAX_EVENTS, g.total, &mut g.written, max)
+    let mark = r.total();
+    r.take_unwritten(mark, max)
 }
 
 /// 出来事のリングの置き場を [`MAX_EVENTS`] 件ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
@@ -241,7 +215,7 @@ pub fn take_unwritten(max: usize) -> (Vec<Event>, u64) {
 /// 既定のプロファイルの Linux だけが呼ぶ (呼べば「1 件も起きなければ 1 バイトも確保しない」
 /// は外れる)。触るのは 1 件の固定部だけで、説明の文字列は書くときに確保する。返すのは触ったバイト数。
 pub fn prefault() -> usize {
-    crate::prefault::vec(&mut RING.locked().buf, MAX_EVENTS)
+    RING.locked().prefault()
 }
 
 /// 個票のファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
@@ -251,19 +225,16 @@ pub fn prefault() -> usize {
 pub fn restore(events: Vec<Event>) {
     let n = events.len().min(MAX_EVENTS);
     for e in events {
-        let mut r = RING.locked();
-        let g = &mut *r;
-        g.total += 1;
-        push_wrapping(&mut g.buf, &mut g.next, MAX_EVENTS, e);
+        RING.locked().push(e);
     }
     let mut r = RING.locked();
-    r.written = r.total;
-    r.restored = n;
+    let mark = r.total();
+    r.finish_restore(mark, n);
 }
 
 /// 再起動前から引き継いだ件数 (`/events` の `"restored"`)。
 pub fn restored_count() -> usize {
-    RING.locked().restored
+    RING.locked().restored()
 }
 
 /// `slot` が覚えている時刻と違う時 (= その 1 時間で最初) なら `true`。
@@ -446,7 +417,7 @@ mod tests {
         let _g = guard();
         push(EventKind::Start, "old");
         let mut r = RING.locked();
-        r.buf[0].at = 1000;
+        r.newest_mut(0).at = 1000;
         drop(r);
         push(EventKind::Reload, "new");
         let now = crate::cache::now_epoch();

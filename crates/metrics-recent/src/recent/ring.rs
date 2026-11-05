@@ -3,14 +3,14 @@
 //!
 //! 書くのは**接続の終了で 1 回** ([`RecentRing::push`])。読む口 (`/recent`) と、ファイルへ
 //! 追記する history スレッド ([`RecentRing::take_unwritten`]) は同じ鍵の内側で絞る。
-//! 「まだ書いていない件」の数え方は `errors.rs` の [`drain_unwritten`] と共通。
+//! 中身は [`FixedRing`] (5 本のリングで共通。T.34.49)。
 //!
 //! 行を動かしただけで中身は変えていない。外から見える名前は `recent` の `pub use` でそのまま。
 
 use std::sync::Mutex;
 
 use super::RecentEntry;
-use super::ringbuf::{drain_unwritten, newest_at, push_wrapping};
+use super::ringbuf::FixedRing;
 use crate::sync::LockExt;
 
 /// 閉じた接続の個票を何件覚えておくか (固定。T14.4)。
@@ -25,20 +25,8 @@ pub const MAX_RECENT: usize = 2000;
 /// `/connections` が「いま」しか見せないのに対し、ここは「起きたこと」を残す口で、
 /// バーストのとき誰が何を開いたか・遅かった 1 本がどの段階で遅かったかを後から読む。
 pub struct RecentRing {
-    inner: Mutex<RecentBuf>,
-}
-
-#[derive(Default)]
-struct RecentBuf {
-    buf: Vec<RecentEntry>,
-    /// 次に書く位置 (`buf` が満杯になってからだけ意味を持つ)
-    next: usize,
-    /// 起動からの通算 (捨てた分も含む)
-    total: u64,
-    /// **ファイルに書いた所までの通算** (T14.9)
-    written: u64,
-    /// 起動時に状態ファイルから読み戻した件数 (`/recent` の `"restored"`)
-    restored: usize,
+    /// 置き場・通算・ファイルに書いた所 (T14.9)・読み戻した件数 (`/recent` の `"restored"`)
+    inner: Mutex<FixedRing<RecentEntry, MAX_RECENT>>,
 }
 
 impl Default for RecentRing {
@@ -50,7 +38,7 @@ impl Default for RecentRing {
 impl RecentRing {
     pub fn new() -> RecentRing {
         RecentRing {
-            inner: Mutex::new(RecentBuf::default()),
+            inner: Mutex::new(FixedRing::new()),
         }
     }
 
@@ -61,10 +49,7 @@ impl RecentRing {
         if !crate::records::recording() {
             return;
         }
-        let mut r = self.inner.locked();
-        let g = &mut *r;
-        g.total += 1;
-        push_wrapping(&mut g.buf, &mut g.next, MAX_RECENT, entry);
+        self.inner.locked().push(entry);
     }
 
     /// 条件に合うものを**新しい順**で返す。2 つ目は起動からの通算 (捨てた分も含む)。
@@ -73,20 +58,18 @@ impl RecentRing {
     /// `client` は接続元の完全一致 (空なら絞らない)。
     pub fn select(&self, since: u64, client: &str) -> (Vec<RecentEntry>, u64) {
         let r = self.inner.locked();
-        let len = r.buf.len();
-        let mut out = Vec::with_capacity(len.min(MAX_RECENT));
-        for i in 0..len {
-            let e = &r.buf[newest_at(len, MAX_RECENT, r.next, i)];
+        let mut out = Vec::with_capacity(r.len().min(MAX_RECENT));
+        for e in r.newest() {
             if e.at < since || (!client.is_empty() && e.client != client) {
                 continue;
             }
             out.push(e.clone());
         }
-        (out, r.total)
+        (out, r.total())
     }
 
     pub fn len(&self) -> usize {
-        self.inner.locked().buf.len()
+        self.inner.locked().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -96,15 +79,15 @@ impl RecentRing {
     /// まだファイルに書いていない件を古い順で取り出す (**history スレッドだけが呼ぶ**。T14.9)。
     pub fn take_unwritten(&self, max: usize) -> (Vec<RecentEntry>, u64) {
         let mut r = self.inner.locked();
-        let g = &mut *r;
-        drain_unwritten(&g.buf, g.next, MAX_RECENT, g.total, &mut g.written, max)
+        let mark = r.total();
+        r.take_unwritten(mark, max)
     }
 
     /// 置き場を [`MAX_RECENT`] 件ぶん確保して触る (**起動時に 1 回だけ**。T17.8)。
     ///
     /// 触るのは 1 件の固定部だけで、文字列は書くときに確保する。返すのは触ったバイト数。
     pub fn prefault(&self) -> usize {
-        crate::prefault::vec(&mut self.inner.locked().buf, MAX_RECENT)
+        self.inner.locked().prefault()
     }
 
     /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
@@ -114,13 +97,13 @@ impl RecentRing {
             self.push(e);
         }
         let mut r = self.inner.locked();
-        r.written = r.total;
-        r.restored = n;
+        let mark = r.total();
+        r.finish_restore(mark, n);
     }
 
     /// 再起動前から引き継いだ件数 (`/recent` の `"restored"`)。
     pub fn restored(&self) -> usize {
-        self.inner.locked().restored
+        self.inner.locked().restored()
     }
 }
 

@@ -21,7 +21,7 @@
 
 use std::sync::Mutex;
 
-use crate::recent::ringbuf::{newest_at, push_wrapping};
+use crate::recent::ringbuf::FixedRing;
 use crate::recent::{CloseReason, MAX_CLIENT, STAGE_CONNECT, STAGE_NAMES, STAGES, clip};
 use crate::sync::LockExt;
 
@@ -123,22 +123,10 @@ pub struct Line<'a> {
     pub reason: Option<CloseReason>,
 }
 
-#[derive(Default)]
-struct TraceRing {
-    buf: Vec<TraceLine>,
-    /// 次に書く位置 (`buf` が満杯になってからだけ意味を持つ)
-    next: usize,
-    /// 起動からの通算 (捨てた分も含む)
-    total: u64,
-}
-
 /// 追跡のリング。**書くのは旗の立った接続だけ**なので、既定 (`PROXY_TRACE_CLIENT` が空)
-/// では 1 度もこの鍵を取らず、1 バイトも確保しない。
-static RING: Mutex<TraceRing> = Mutex::new(TraceRing {
-    buf: Vec::new(),
-    next: 0,
-    total: 0,
-});
+/// では 1 度もこの鍵を取らず、1 バイトも確保しない (ファイルには書かないので、書いた所の印と
+/// 読み戻した件数は使わない)。
+static RING: Mutex<FixedRing<TraceLine, MAX_TRACE>> = Mutex::new(FixedRing::new());
 
 /// 1 行書く (満杯なら最も古い行を上書きする)。
 ///
@@ -164,10 +152,7 @@ pub fn push(line: Line<'_>) {
         stage_ms: line.stage_ms,
         reason: line.reason,
     };
-    let mut r = RING.locked();
-    let g = &mut *r;
-    g.total += 1;
-    push_wrapping(&mut g.buf, &mut g.next, MAX_TRACE, entry);
+    RING.locked().push(entry);
 }
 
 /// 条件に合う行を**新しい順**で `n` 行まで返す。2 つ目は起動からの通算 (捨てた分も含む)。
@@ -175,25 +160,23 @@ pub fn push(line: Line<'_>) {
 /// 絞りはここ (鍵の内側) で済ませる。`since` は「その時刻以降に書いたもの」。
 pub fn select(since: u64, n: usize) -> (Vec<TraceLine>, u64) {
     let r = RING.locked();
-    let len = r.buf.len();
-    let mut out = Vec::with_capacity(len.min(n));
-    for i in 0..len {
+    let mut out = Vec::with_capacity(r.len().min(n));
+    // `next` の 1 つ手前が最新 (満杯になる前は `next == 0` なので末尾が最新)
+    for e in r.newest() {
         if out.len() >= n {
             break;
         }
-        // `next` の 1 つ手前が最新 (満杯になる前は `next == 0` なので末尾が最新)
-        let e = &r.buf[newest_at(len, MAX_TRACE, r.next, i)];
         if e.at < since {
             continue;
         }
         out.push(e.clone());
     }
-    (out, r.total)
+    (out, r.total())
 }
 
 /// 覚えている行数。
 pub fn len() -> usize {
-    RING.locked().buf.len()
+    RING.locked().len()
 }
 
 pub fn is_empty() -> bool {
@@ -202,10 +185,7 @@ pub fn is_empty() -> bool {
 
 /// リングを空にする (テスト用)。
 pub fn clear() {
-    let mut r = RING.locked();
-    r.buf.clear();
-    r.next = 0;
-    r.total = 0;
+    RING.locked().clear();
 }
 
 /// リングは 1 本きり (静的) なので、テストはこの鍵で 1 つずつ通す
