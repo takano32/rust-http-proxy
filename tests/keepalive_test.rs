@@ -679,23 +679,10 @@ fn test_integration_the_last_request_gets_connection_close_before_the_close() {
 // 消えたクライアントの検知 (`PROXY_TCP_KEEPALIVE`。T14.52)
 // ------------------------------------------------------------------
 
-/// `sockaddr_in` (16 B)。プロキシ側の記述子を探すために自分で宣言する
-/// (外部クレートは足さない方針なので `tests/common` の `connect_from` と同じ作法)。
+/// `sockaddr_in` と `getsockname`/`getpeername`。プロキシ側の記述子を探すために使う
+/// (外部クレートは足さない方針なので、宣言は `tests/common` の `ffi` に 1 つだけ置く。T.34.104)。
 #[cfg(target_os = "linux")]
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct SockAddrIn {
-    family: u16,
-    port: u16,
-    addr: [u8; 4],
-    zero: [u8; 8],
-}
-
-#[cfg(target_os = "linux")]
-unsafe extern "C" {
-    fn getsockname(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
-    fn getpeername(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
-}
+use common::ffi::{SockAddrIn, getpeername, getsockname};
 
 /// その記述子の (自分のポート, 相手のポート)。IPv4 の繋がったソケットでなければ `None`。
 #[cfg(target_os = "linux")]

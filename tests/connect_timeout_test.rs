@@ -21,7 +21,7 @@ use common::*;
 /// `127.0.0.1` の黒穴 (`listen(fd, 0)` + 詰め物 1 本)。返り値は生かしておくこと。
 ///
 /// `libc` は足さない (§0) ので `listen(2)` だけ直に宣言する。`tests/` で
-/// `unsafe extern "C"` を宣言する先例は `tests/common/mod.rs` の `connect_from`。
+/// `unsafe extern "C"` を宣言する先例は `tests/common/net.rs` の `ffi`。
 #[cfg(target_os = "linux")]
 fn blackhole_v4() -> Option<(TcpListener, TcpStream, SocketAddr)> {
     use std::os::fd::AsRawFd;

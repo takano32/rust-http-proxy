@@ -33,7 +33,7 @@ const HEAD: usize = 64;
 /// 旗を取り合って負けた側が 503 を受け取る (プロキシの誤りではない)。
 ///
 /// 下の [`get_body`] は 400 / 404 / 405 の**状態コードごと**見るのが仕事なので、503 を待って
-/// 引き直す `common::endpoint_json` (`tests/common/mod.rs`。200 でなければ落ちる) を使えない。
+/// 引き直す `common::endpoint_json` (`tests/common/client.rs`。200 でなければ落ちる) を使えない。
 /// だから 3 本を直列にする (手本は `tests/history_depth_test.rs` の `SERIAL`)。
 /// 鍵が毒されていても `into_inner` で進める (先に落ちたテストが残りを道連れにしないように)。
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());

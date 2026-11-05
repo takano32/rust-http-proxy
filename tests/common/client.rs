@@ -5,8 +5,15 @@ use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
 
-/// 1 本の接続で複数の要求を送るための、Content-Length 付き応答の読み取り。
-pub fn read_response(stream: &mut TcpStream) -> (String, Vec<u8>) {
+/// 待つループの刻み。[`POLL_MAX`] 回で 10 秒 (負荷の高い CI でも落ちない幅)。
+pub const POLL_STEP: Duration = Duration::from_millis(20);
+/// 待つループの回数の上限 ([`wait_until`] と [`endpoint_json`] の引き直しが共有する)。
+pub const POLL_MAX: usize = 500;
+
+/// ヘッダーの終わり (空行) まで 1 バイトずつ読む (本文を 1 バイトも読み過ごさないため)。
+///
+/// 相手が先に閉じたら、そこまでの分を返す。
+pub fn read_head(stream: &mut TcpStream) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
     while !buf.ends_with(b"\r\n\r\n") {
@@ -15,7 +22,12 @@ pub fn read_response(stream: &mut TcpStream) -> (String, Vec<u8>) {
         }
         buf.push(byte[0]);
     }
-    let head = String::from_utf8_lossy(&buf).into_owned();
+    buf
+}
+
+/// 1 本の接続で複数の要求を送るための、Content-Length 付き応答の読み取り。
+pub fn read_response(stream: &mut TcpStream) -> (String, Vec<u8>) {
+    let head = String::from_utf8_lossy(&read_head(stream)).into_owned();
     let len: usize = head
         .lines()
         .find_map(|l| l.strip_prefix("Content-Length: "))
@@ -56,11 +68,11 @@ pub fn endpoint_json(proxy_port: u16, path: &str) -> String {
     // `/snapshot` や `/explain` を引いている間は `503 {"error":"busy"}` が返る。
     // 実装の誤りではないので、`wait_until` と同じ幅だけ待って引き直す (T14.55)
     let mut out = raw_get(proxy_port, &req);
-    for _ in 0..500 {
+    for _ in 0..POLL_MAX {
         if !(out.starts_with("HTTP/1.1 503 ") && out.contains("\"busy\"")) {
             break;
         }
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(POLL_STEP);
         out = raw_get(proxy_port, &req);
     }
     assert!(out.starts_with("HTTP/1.1 200 "), "{} -> {}", path, out);
@@ -72,11 +84,11 @@ pub fn endpoint_json(proxy_port: u16, path: &str) -> String {
 
 /// `cond` が真になるまで最大 10 秒待つ (負荷の高い CI でも落ちない幅)。
 pub fn wait_until(cond: impl Fn() -> bool, what: &str) {
-    for _ in 0..500 {
+    for _ in 0..POLL_MAX {
         if cond() {
             return;
         }
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(POLL_STEP);
     }
     panic!("timed out waiting: {}", what);
 }
@@ -110,15 +122,7 @@ pub fn one_keepalive_request(stream: &mut TcpStream, host: &str, path: &str) -> 
 
 /// CONNECT の 200 応答を読み切る。
 pub fn read_connect_response(stream: &mut TcpStream) -> String {
-    let mut buf = Vec::new();
-    let mut byte = [0u8; 1];
-    while !buf.ends_with(b"\r\n\r\n") {
-        if stream.read(&mut byte).unwrap() == 0 {
-            break;
-        }
-        buf.push(byte[0]);
-    }
-    String::from_utf8_lossy(&buf).into_owned()
+    String::from_utf8_lossy(&read_head(stream)).into_owned()
 }
 
 /// 1 本の接続に生のバイト列を投げ、応答 (あれば) と接続が閉じたかを返す。
