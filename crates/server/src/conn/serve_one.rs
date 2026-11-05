@@ -5,6 +5,7 @@ use super::*;
 use super::access::{access_decision, loop_detected, refuse_blocked};
 use super::connect_check::{connect_header_reason, connect_target_ok};
 use super::first_line::{Peer, first_line_wait, read_request_line, refuse_request_line};
+use super::forward::{ForwardParts, first_target, forward_request, shared_for};
 use super::header_read::{HeaderClock, overload, read_headers, refuse_headers};
 use super::request_line::check_request_line;
 
@@ -311,83 +312,35 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         });
     }
 
-    // keep-alive の HTTP 接続の宛先を `/connections` に出す (T14.2 (5))。
-    // **書くのは接続の最初の要求のときだけ** (2 本目以降は宛先が変わりうるが、
-    // 要求ごとに表を触らない方針は T13.4 のまま)。CONNECT はトンネルを開くときに書く。
-    //
-    // 宛先は CONNECT と同じ `host:port` の形にそろえる (T14.48)。ポートを書かない要求
-    // (`http://example.com/`) には、ホスト別統計の鍵 (`pool_key` = `scheme://host:port`) と
-    // **同じ規則**でスキームの既定 (http なら 80) を補うので、個票を読む道具は
-    // 「ポートのある形」と「無い形」の 2 つを扱わなくてよい。確保が要るのはポートを
-    // 省いたときだけで、通るのは接続の最初の要求の 1 回
+    // keep-alive の HTTP 接続の宛先を `/connections` に出す (接続の最初の要求だけ。T14.2 (5))
     if *served == 0
         && let Some(slot) = slot.as_ref()
     {
-        match host_port {
-            Some(_) => slot.set_first_target(target_host),
-            None => slot.set_first_target(&net::join_host_port(
-                bare_host,
-                request::target_scheme(target).default_port(),
-            )),
-        }
+        first_target(slot, target, target_host, bare_host, host_port);
     }
-    // この接続で処理する最後の要求か (`Config::max_requests_per_conn`。T14.2)。
-    // `http` 側はこれが立っていると応答に `Connection: close` を付け、`keep` に false を返す
+    // この接続で処理する最後の要求か (`Config::max_requests_per_conn`。T14.2)
     let last = *served + 1 >= config.max_requests_per_conn;
-    let shared = http::Shared {
-        timeout: config.timeout,
-        // forward のオリジン接続の確立も CONNECT と同じ締め切り (T.28.8)
-        connect_timeout: config.connect_timeout,
-        // 転送中の最小の速さ (T.29.34)。見張りは `http` が要求ごとに作る
-        min_transfer: &config.min_transfer,
-        keepalive: config.keepalive,
+    let parts = ForwardParts {
+        config,
         conn_id,
-        metrics: Arc::clone(metrics),
-        cache: Arc::clone(cache),
-        upstream: Arc::clone(upstream),
-        // 裏側の再検証もこの置き場で走らせる (T11.3)。借りるだけなので要求あたりの費用は 0
-        workers: &*workers,
-        // プールに無くて繋ぎに行くときは、判定で引いた答えを使う (T12.7)
-        resolved: resolved.as_ref(),
-        last,
-        stages,
-        read_started,
-        // 閉じた接続の個票に積み上げる箱 (T14.4)。`--lite` では枠が無いので渡さない
-        tally: slot.is_some().then_some(tally),
-        // 追跡中の接続元か (`PROXY_TRACE_CLIENT`。T14.27)。要求ごとに読むのはこの
-        // 旗 1 つだけで、立っていない要求は `Ctx::log` の分岐 1 回で飛ばす
-        traced: slot.as_ref().is_some_and(|s| s.traced()),
+        metrics,
+        cache,
+        upstream,
+        workers,
+        slot: slot.as_ref(),
+        tally,
     };
-    let keep = http::handle_http_parsed(
-        client,
-        Some(peer_ip),
+    let shared = shared_for(parts, resolved.as_ref(), last, stages, read_started);
+    let step = forward_request(
+        peer,
         &request_line,
         raw_headers,
         &req,
         &mut reader,
         &shared,
+        slot.as_ref(),
     )?;
     scratch.request_line = request_line;
     *served += 1;
-    // `last` が立っていれば `keep` は必ず false (応答に `Connection: close` が付いている)
-    if !keep {
-        // 1,000 要求で打ち切ったのか、クライアントが `Connection: close` を求めたのか
-        // (どちらも `/recent` の理由になる。T14.4)
-        Ok(Step::Close(if last {
-            recent::CloseReason::Limit
-        } else {
-            recent::CloseReason::ClientEof
-        }))
-    } else {
-        // 応答を書き終えて**次の要求を待つ直前**に、この接続の累計バイトを
-        // `/connections` の枠へ 1 回だけ写す (T24.5。T13.4 の「要求ごとに書かない」は
-        // そのまま — 書くのは待ちに入るこの 1 か所だけ)。値は「この接続で終わった
-        // 要求のバイトの和」なので、**いま処理中の 1 要求は入らない** (要求 1 本ぶん
-        // 遅れる)。`tally` は要求ごとに箱の中で足しているだけで、原子に移すのはここ
-        if let Some(slot) = slot.as_ref() {
-            let t = tally.get();
-            slot.set_bytes(t.up.saturating_add(t.down));
-        }
-        Ok(Step::Next)
-    }
+    Ok(step)
 }

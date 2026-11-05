@@ -4,6 +4,7 @@ mod access;
 mod connect;
 mod connect_check;
 mod first_line;
+mod forward;
 mod header_read;
 mod request_line;
 mod serve_one;
