@@ -20,7 +20,7 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use super::{Endpoint, next_offset, offset_param, parse_query};
+use super::{Endpoint, next_offset, num_param, offset_param, param, parse_query, str_param};
 use crate::events::MAX_EVENTS;
 use crate::metrics::SCHEMA_HEAD;
 use crate::recent::{BurstShot, MAX_BURSTS, MAX_ERRORS};
@@ -72,15 +72,6 @@ fn array_within_budget(
     (n, cut)
 }
 
-/// `?key=` の文字列 (無ければ `""`)。
-fn str_param(query: Option<&str>, key: &str) -> String {
-    parse_query(query.unwrap_or(""))
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default()
-}
-
 /// 個票を状態ファイルに残しているか (`$HOME/.rust-http-proxy.recent`。T14.9)。
 ///
 /// `PROXY_STATS_PERSIST=off` と、ファイルが開けなかったときは `false`
@@ -93,16 +84,6 @@ fn persisted(ep: &Endpoint<'_>) -> bool {
             .metrics
             .recent_persisted
             .load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// `?key=N` を読む (無い / 読めない / 範囲外は既定か端に倒す。`/status?sort=` と同じ方針)。
-fn num_param(query: Option<&str>, key: &str, default: usize, max: usize) -> usize {
-    parse_query(query.unwrap_or(""))
-        .iter()
-        .find(|(k, _)| k == key)
-        .and_then(|(_, v)| v.parse::<usize>().ok())
-        .unwrap_or(default)
-        .clamp(1, max)
 }
 
 /// `/errors?n=100` — 直近のエラーの個票 (新しい順、既定 100 件・最大 [`MAX_ERRORS`])。
@@ -467,10 +448,8 @@ pub(super) fn clients(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static 
 pub(super) fn trace(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, MAX_TRACE);
     // `?since=` は `/recent` `/events` と同じ扱い (「その時刻以降に書いたもの」)
-    let since = parse_query(query.unwrap_or(""))
-        .iter()
-        .find(|(k, _)| k == "since")
-        .and_then(|(_, v)| v.parse::<u64>().ok())
+    let since = param(&parse_query(query.unwrap_or("")), "since")
+        .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
     let (rows, total) = crate::trace::select(since, n);
     let mut out = String::with_capacity(8192);
@@ -544,10 +523,8 @@ pub(super) fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static s
 pub(super) fn events(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, MAX_EVENTS);
     // `?since=` は `/recent` と同じ扱い (「その時刻以降に起きたもの」。無ければ 0 = 全部)
-    let since = parse_query(query.unwrap_or(""))
-        .iter()
-        .find(|(k, _)| k == "since")
-        .and_then(|(_, v)| v.parse::<u64>().ok())
+    let since = param(&parse_query(query.unwrap_or("")), "since")
+        .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
     let (events, total) = crate::events::select(since, n);
     let mut out = String::with_capacity(8192);

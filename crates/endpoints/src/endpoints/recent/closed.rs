@@ -5,7 +5,7 @@
 
 use std::fmt::Write as _;
 
-use super::super::{next_offset, offset_param, parse_query};
+use super::super::{next_offset, offset_param, param, parse_query};
 use super::{Endpoint, MAX_BODY, array_within_budget, num_param, persisted, str_param};
 use crate::metrics::SCHEMA_HEAD;
 use crate::recent::{MAX_RECENT, RecentEntry};
@@ -114,10 +114,8 @@ pub(super) fn recent_within(
 ) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, MAX_RECENT);
     let offset = offset_param(query, MAX_RECENT);
-    let since = parse_query(query.unwrap_or(""))
-        .iter()
-        .find(|(k, _)| k == "since")
-        .and_then(|(_, v)| v.parse::<u64>().ok())
+    let since = param(&parse_query(query.unwrap_or("")), "since")
+        .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
     let client = str_param(query, "client");
     let sort = RecentSort::from_param(&str_param(query, "sort"));

@@ -5,7 +5,10 @@
 
 pub mod core;
 
-pub use core::{Endpoint, has_flag, next_offset, offset_param, parse_query, percent_decode};
+pub use core::{
+    Endpoint, has_flag, next_offset, num_param, offset_param, param, parse_query, percent_decode,
+    str_param,
+};
 
 // 下の層をこのクレートの名前空間にも出す (`crate::sync` のような書き方をそのまま通すため)。
 pub use proxy_base::{

@@ -1,7 +1,7 @@
 //! `/status` (集計の JSON。`?sort=` と `?hosts=0`) と `/metrics` (Prometheus) の組み立て。
 
 use super::respond::Reply;
-use super::{Endpoint, parse_query};
+use super::{Endpoint, param, parse_query};
 use crate::metrics;
 use crate::persist;
 use crate::prom;
@@ -28,12 +28,7 @@ pub(super) fn prometheus(ep: &Endpoint<'_>) -> Reply {
 
 /// `/status?sort=requests|errors|dns|slow` の切り出しの鍵 (知らない値は既定 = 要求数順。T13.3)。
 fn host_sort(params: &[(String, String)]) -> metrics::HostSort {
-    params
-        .iter()
-        .find(|(k, _)| k == "sort")
-        .map_or(metrics::HostSort::Requests, |(_, v)| {
-            metrics::HostSort::from_param(v)
-        })
+    param(params, "sort").map_or(metrics::HostSort::Requests, metrics::HostSort::from_param)
 }
 
 /// `/status?hosts=0` のときに `hosts[]` を省くか (T25.1 段 2)。
@@ -43,10 +38,7 @@ fn host_sort(params: &[(String, String)]) -> metrics::HostSort {
 /// 占め、宛先が増えるほど育つ (`MAX_HOSTS` = 1,000 で約 538 KB) ので、監視が 30 秒ごとに
 /// 引く口はここを落とした軽い形を使う。
 fn include_hosts(params: &[(String, String)]) -> bool {
-    params
-        .iter()
-        .find(|(k, _)| k == "hosts")
-        .is_none_or(|(_, v)| v != "0")
+    param(params, "hosts").is_none_or(|v| v != "0")
 }
 
 /// `/status` の本体を組み立てる (`?sort=` は `hosts[]` の上位 50 を切り出す鍵。T13.3)。

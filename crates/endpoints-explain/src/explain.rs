@@ -26,7 +26,7 @@ mod host;
 mod tests;
 
 use crate::metrics::SCHEMA_HEAD;
-use crate::{Endpoint, parse_query};
+use crate::{Endpoint, param, parse_query};
 
 /// 応答 1 本の上限 (64 KiB)。個票の口 (256 KiB) より小さいのは、ここが
 /// 「1 相手ぶんを 1 画面で読む」口で、件数の上限 (10 本 / 5 件) がそもそも小さいため。
@@ -59,13 +59,7 @@ const MAX_NAME: usize = 80;
 /// どちらも書いていなければ 400 (`/lookup` と同じ方針: 引数が要る口は案内を返す)。
 pub fn explain(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let params = parse_query(query.unwrap_or(""));
-    let value = |key: &str| {
-        params
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default()
-    };
+    let value = |key: &str| param(&params, key).unwrap_or_default().to_string();
     let host = value("host");
     let client = value("client");
     if !host.is_empty() {

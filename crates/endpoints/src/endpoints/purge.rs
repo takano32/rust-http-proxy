@@ -1,7 +1,7 @@
 //! キャッシュを引く・消す口: `/purge` と `PURGE` メソッド (全バリアントを消す)、`/lookup` (項目の状態)。
 
 use super::respond::Reply;
-use super::{Endpoint, parse_query};
+use super::{Endpoint, param, parse_query};
 use crate::cache::cache_key;
 use crate::http::parse_origin;
 use crate::metrics;
@@ -18,8 +18,8 @@ pub(super) fn purge(ep: &Endpoint<'_>, query: Option<&str>) -> Reply {
         )
             .into();
     }
-    match params.iter().find(|(k, _)| k == "url") {
-        Some((_, url)) => purge_url(ep, url),
+    match param(&params, "url") {
+        Some(url) => purge_url(ep, url),
         None => Reply::json_error(400, "use /purge?url=<url> or /purge?all=1"),
     }
 }
@@ -49,8 +49,8 @@ pub(super) fn purge_url(ep: &Endpoint<'_>, url: &str) -> Reply {
 /// `/lookup?url=<url>` — 引数が要る口は案内を返す (`/explain` と同じ方針)。
 pub(super) fn lookup(ep: &Endpoint<'_>, query: Option<&str>) -> Reply {
     let params = parse_query(query.unwrap_or(""));
-    match params.iter().find(|(k, _)| k == "url") {
-        Some((_, url)) => lookup_url(ep, url),
+    match param(&params, "url") {
+        Some(url) => lookup_url(ep, url),
         None => Reply::json_error(400, "use /lookup?url=<url>"),
     }
 }

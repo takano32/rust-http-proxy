@@ -55,16 +55,39 @@ pub fn has_flag(query: Option<&str>, key: &str) -> bool {
 /// `?offset=N` を読む (無い / 読めない値は 0。上は `max` で止める。T15.0 (11))。
 ///
 /// 読むのは `/recent` `/hosts` `/profile` `/dns` の 4 つで (`/dns` は T27.1)、**読み方はここ 1 か所**に置く。
-/// `recent.rs` の `num_param` と別なのは**下限が 0** だから (あちらは `.clamp(1, max)` なので
+/// [`num_param`] と別なのは**下限が 0** だから (あちらは `.clamp(1, max)` なので
 /// 「1 件目から」を表せない)。意味は「いまの並びを何本飛ばすか」で、並びは `/recent` が
 /// 閉じた新しい順、`/hosts` が `sort=` の順、`/profile` が新しい標本の順。
 pub fn offset_param(query: Option<&str>, max: usize) -> usize {
-    parse_query(query.unwrap_or(""))
-        .iter()
-        .find(|(k, _)| k == "offset")
-        .and_then(|(_, v)| v.parse::<usize>().ok())
+    param(&parse_query(query.unwrap_or("")), "offset")
+        .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0)
         .min(max)
+}
+
+/// 解いた問い合わせ ([`parse_query`]) から `key` の値を引く。同じ鍵が 2 つあれば**最初の 1 つ**。
+///
+/// 問い合わせを読む口はどれもこれを通す (T.34.93。前は `iter().find(…)` が 15 か所に写されていた)。
+pub fn param<'p>(params: &'p [(String, String)], key: &str) -> Option<&'p str> {
+    params
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+/// `?key=` の文字列 (無ければ `""`)。
+pub fn str_param(query: Option<&str>, key: &str) -> String {
+    param(&parse_query(query.unwrap_or("")), key)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `?key=N` を読む (無い / 読めない / 範囲外は既定か端に倒す。`/status?sort=` と同じ方針)。
+pub fn num_param(query: Option<&str>, key: &str, default: usize, max: usize) -> usize {
+    param(&parse_query(query.unwrap_or("")), key)
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
+        .clamp(1, max)
 }
 
 /// 次の頁の `offset` (続きが無ければ `null`)。上の 3 つが同じ綴りで応答の末尾に出す。
@@ -115,5 +138,24 @@ fn hex(b: u8) -> Option<u8> {
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 同じ鍵が 2 つあれば最初の 1 つ、値の無い鍵は `""`、無い鍵は `None` (T.34.93)。
+    #[test]
+    fn a_parameter_is_the_first_value_of_its_key() {
+        let params = parse_query("sort=slow&n&sort=bytes&url=http%3A%2F%2Fa%2F");
+        assert_eq!(param(&params, "sort"), Some("slow"));
+        assert_eq!(param(&params, "n"), Some(""));
+        assert_eq!(param(&params, "url"), Some("http://a/"));
+        assert_eq!(param(&params, "missing"), None);
+        assert_eq!(str_param(Some("sort=slow&sort=bytes"), "sort"), "slow");
+        assert_eq!(num_param(Some("n=5&n=9"), "n", 100, 500), 5);
+        assert_eq!(offset_param(Some("offset=9999"), 2000), 2000);
+        assert_eq!(offset_param(Some("offset=x"), 2000), 0);
     }
 }

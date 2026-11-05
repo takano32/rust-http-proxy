@@ -5,25 +5,19 @@
 //! 純粋な関数なので、そのまま単体試験で縛ってある。
 
 use super::respond::Reply;
-use super::{Endpoint, parse_query};
+use super::{Endpoint, param, parse_query};
 
 /// `/history` — `?summary=1` なら期間を畳んだ 1 行だけ、そうでなければ標本の配列。
 pub(super) fn history(ep: &Endpoint<'_>, query: Option<&str>) -> Reply {
     let params = parse_query(query.unwrap_or(""));
-    let res = params
-        .iter()
-        .find(|(k, _)| k == "res")
-        .and_then(|(_, v)| v.parse::<u64>().ok());
+    let res = param(&params, "res").and_then(|v| v.parse::<u64>().ok());
     if params.iter().any(|(k, v)| k == "summary" && v != "0") {
         // 期間を畳んだ 1 行だけ (標本は返さない。T14.24)
         return (200, "application/json", history_summary(ep, &params, res)).into();
     }
     let res = res.map_or(0, crate::history::History::index_for);
     // `n=` は**新しい方から何本返すか** (既定 720、`res=5` だけ 4,320 まで。T14.32)
-    let n = params
-        .iter()
-        .find(|(k, _)| k == "n")
-        .and_then(|(_, v)| v.parse::<usize>().ok());
+    let n = param(&params, "n").and_then(|v| v.parse::<usize>().ok());
     (200, "application/json", history_body(ep, res, n)).into()
 }
 
@@ -86,12 +80,7 @@ fn summary_params(
     now: u64,
     started: u64,
 ) -> crate::history::summary::Params {
-    let val = |key: &str| {
-        params
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
-    };
+    let val = |key: &str| param(params, key);
     crate::history::summary::Params {
         since: match val("since") {
             Some("restart") => started,

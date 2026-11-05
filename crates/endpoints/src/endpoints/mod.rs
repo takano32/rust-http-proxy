@@ -37,9 +37,10 @@ use crate::metrics::{self, Metrics};
 // `/explain` は `proxy-endpoints-explain` にある (T15.12 段 1 (ii))。
 // **今までと同じ綴りで使えるように**ここで出し直す (`crate::endpoints::Endpoint`、
 // 子モジュールの `super::parse_query` / `super::has_flag` / `super::offset_param` /
-// `super::next_offset`、`explain::explain`)。
+// `super::next_offset`、`super::param` / `super::num_param` / `super::str_param` (T.34.93)、
+// `explain::explain`)。
 pub use proxy_endpoints_core::{Endpoint, parse_query, percent_decode};
-use proxy_endpoints_core::{has_flag, next_offset, offset_param};
+use proxy_endpoints_core::{has_flag, next_offset, num_param, offset_param, param, str_param};
 use proxy_endpoints_explain as explain;
 
 mod blocklist;

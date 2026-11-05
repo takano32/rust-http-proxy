@@ -26,7 +26,7 @@
 
 use std::fmt::Write as _;
 
-use super::{Endpoint, has_flag, next_offset, offset_param, parse_query};
+use super::{Endpoint, has_flag, next_offset, offset_param, param, parse_query};
 use crate::metrics::{SCHEMA, SCHEMA_HEAD};
 use crate::profile::{self, Profile};
 
@@ -46,12 +46,7 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
         );
     }
     let params = parse_query(query.unwrap_or(""));
-    let num = |key: &str| {
-        params
-            .iter()
-            .find(|(k, _)| k == key)
-            .and_then(|(_, v)| v.parse::<u64>().ok())
-    };
+    let num = |key: &str| param(&params, key).and_then(|v| v.parse::<u64>().ok());
     let res = num("res").map(Profile::index_for).unwrap_or(0);
     let p = &ep.metrics.profile;
     // 標本を返さない要約 (**重い口ではない**。T15.0 (11))

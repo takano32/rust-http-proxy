@@ -9,7 +9,7 @@
 pub mod explain;
 
 pub use explain::{MAX_BODY, explain};
-pub use proxy_endpoints_core::{Endpoint, parse_query};
+pub use proxy_endpoints_core::{Endpoint, param, parse_query};
 
 // 下の層をこのクレートの名前空間にも出す (`crate::sync` のような書き方をそのまま通すため)。
 pub use proxy_base::{
