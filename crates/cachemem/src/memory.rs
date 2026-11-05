@@ -7,23 +7,24 @@
 //! 期限切れでもバリデータ (ETag / Last-Modified) を持つエントリは再検証用に残す。
 
 use crate::sync::LockExt;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::format::Meta;
 use crate::key::CacheKey;
+use crate::log_debug;
 use crate::lru::{LruEntry, Store};
-use crate::{log_debug, log_warn};
 
-/// バラストの割り当て単位。glibc の mmap 閾値の上限 (32 MiB) を超えるサイズにして、
-/// 解放時に確実に OS へ返るようにする。
-pub const BALLAST_CHUNK: usize = 64 * 1024 * 1024;
+mod ballast;
+
+pub use ballast::BALLAST_CHUNK;
+use ballast::MemBallast;
 /// 予算縮退時に 1 回のロックで追い出す最大件数 (ロック保持時間を抑える)。
 const EVICT_BATCH: usize = 256;
 
-pub struct MemEntry {
-    pub data: Arc<Vec<u8>>,
-    pub meta: Meta,
+struct MemEntry {
+    data: Arc<Vec<u8>>,
+    meta: Meta,
     last_used: u64,
 }
 
@@ -48,10 +49,8 @@ pub struct MemHit {
 pub struct MemTier {
     store: Mutex<Store<MemEntry>>,
     capacity: AtomicU64,
-    ballast: Mutex<Vec<Vec<u8>>>,
-    ballast_bytes: AtomicU64,
+    ballast: MemBallast,
     reserve: bool,
-    alloc_failed: AtomicBool,
 }
 
 impl MemTier {
@@ -59,10 +58,8 @@ impl MemTier {
         Self {
             store: Mutex::new(Store::default()),
             capacity: AtomicU64::new(0),
-            ballast: Mutex::new(Vec::new()),
-            ballast_bytes: AtomicU64::new(0),
+            ballast: MemBallast::new(),
             reserve,
-            alloc_failed: AtomicBool::new(false),
         }
     }
 
@@ -81,7 +78,7 @@ impl MemTier {
     }
 
     pub fn ballast_bytes(&self) -> u64 {
-        self.ballast_bytes.load(Ordering::Relaxed)
+        self.ballast.bytes()
     }
 
     /// エントリ + バラスト (自分がシステムから取っている分)。
@@ -139,22 +136,7 @@ impl MemTier {
             if let Some(old) = store.insert(key, entry, seq) {
                 dropped.push(old.data);
             }
-            let mut evicted = 0;
-            while store.bytes() > capacity {
-                let Some((k, e)) = store.pop_lru() else {
-                    break;
-                };
-                log_debug!(
-                    None,
-                    "cache L1 EVICT key={} freed={}B (usage {}/{} B)",
-                    k,
-                    e.data.len(),
-                    store.bytes(),
-                    capacity
-                );
-                dropped.push(e.data);
-                evicted += 1;
-            }
+            let evicted = evict_over(&mut store, capacity, &mut dropped);
             (store.bytes(), evicted)
         };
         self.release_ballast(bytes, capacity);
@@ -217,22 +199,7 @@ impl MemTier {
 
     /// `cache_bytes + バラスト > capacity` の間、バラストを解放する。
     pub fn release_ballast(&self, cache_bytes: u64, capacity: u64) {
-        if self.ballast_bytes() == 0 {
-            return;
-        }
-        let mut freed = Vec::new();
-        {
-            let mut ballast = self.ballast.locked();
-            while cache_bytes.saturating_add(self.ballast_bytes()) > capacity {
-                let Some(chunk) = ballast.pop() else {
-                    break;
-                };
-                self.ballast_bytes
-                    .fetch_sub(chunk.len() as u64, Ordering::Relaxed);
-                freed.push(chunk);
-            }
-        }
-        drop(freed);
+        self.ballast.release(cache_bytes, capacity);
     }
 
     /// 予算の未使用分をバラストで埋める。戻り値は追加したバイト数。
@@ -240,36 +207,11 @@ impl MemTier {
     /// `max_owned` は「エントリ + バラストがこれを超えないところまで」の上限で、
     /// 段階化 (`PROXY_CACHE_RESERVE` の既定) が実使用量から決める。`eager` は `u64::MAX`。
     pub fn fill_ballast(&self, max_owned: u64) -> u64 {
-        if !self.reserve || self.alloc_failed.load(Ordering::Relaxed) {
+        if !self.reserve {
             return 0;
         }
-        let mut added = 0u64;
-        loop {
-            let capacity = self.capacity().min(max_owned);
-            if self.owned().saturating_add(BALLAST_CHUNK as u64) > capacity {
-                break;
-            }
-            let mut chunk: Vec<u8> = Vec::new();
-            if chunk.try_reserve_exact(BALLAST_CHUNK).is_err() {
-                self.alloc_failed.store(true, Ordering::Relaxed);
-                log_warn!(
-                    None,
-                    "memory reservation stopped: allocating {} MiB failed",
-                    BALLAST_CHUNK / (1024 * 1024)
-                );
-                break;
-            }
-            // 0 以外で埋めて calloc 最適化を避け、全ページを実際にコミットさせる
-            chunk.resize(BALLAST_CHUNK, 0xA5);
-            {
-                let mut ballast = self.ballast.locked();
-                ballast.push(chunk);
-                self.ballast_bytes
-                    .fetch_add(BALLAST_CHUNK as u64, Ordering::Relaxed);
-            }
-            added += BALLAST_CHUNK as u64;
-        }
-        added
+        self.ballast
+            .fill(|| self.capacity().min(max_owned), || self.usage().0)
     }
 
     /// 期限切れで再検証できない、または期限から `max_stale` 秒以上経ったエントリを削除する。
@@ -288,4 +230,31 @@ impl MemTier {
         drop(dropped);
         n
     }
+}
+
+/// 合計が `capacity` を越えている間、LRU の古い方から追い出す (本文は `dropped` に預け、
+/// 鍵を放してから解放する)。戻り値は追い出した件数 (T.34.100 で `insert` から出した)。
+#[inline]
+fn evict_over(
+    store: &mut Store<MemEntry>,
+    capacity: u64,
+    dropped: &mut Vec<Arc<Vec<u8>>>,
+) -> usize {
+    let mut evicted = 0;
+    while store.bytes() > capacity {
+        let Some((k, e)) = store.pop_lru() else {
+            break;
+        };
+        log_debug!(
+            None,
+            "cache L1 EVICT key={} freed={}B (usage {}/{} B)",
+            k,
+            e.data.len(),
+            store.bytes(),
+            capacity
+        );
+        dropped.push(e.data);
+        evicted += 1;
+    }
+    evicted
 }
