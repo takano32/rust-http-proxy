@@ -80,22 +80,8 @@ pub fn explain(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
 
 /// 配列を 1 つ書く (`MAX_BODY` に収まる分だけ。`array_within` の 64 KiB 版)。
 fn array_within(out: &mut String, items: impl IntoIterator<Item = String>) -> bool {
-    let budget = MAX_BODY - TRAILER;
-    out.push('[');
-    let (mut n, mut cut) = (0usize, false);
-    for item in items {
-        if out.len() + item.len() + 2 > budget {
-            cut = true;
-            break;
-        }
-        if n > 0 {
-            out.push(',');
-        }
-        out.push_str(&item);
-        n += 1;
-    }
-    out.push(']');
-    cut
+    // 並べ方は個票の口と 1 つ (T.34.94)
+    proxy_endpoints_core::array_within(out, items, MAX_BODY - TRAILER).1
 }
 
 /// 直近の異常 (T14.23) を新しい順に [`MAX_ANOMALIES`] 件。

@@ -54,22 +54,8 @@ fn array_within_budget(
     items: impl IntoIterator<Item = String>,
     limit: usize,
 ) -> (usize, bool) {
-    let budget = limit - TRAILER;
-    out.push('[');
-    let (mut n, mut cut) = (0usize, false);
-    for item in items {
-        if out.len() + item.len() + 2 > budget {
-            cut = true;
-            break;
-        }
-        if n > 0 {
-            out.push(',');
-        }
-        out.push_str(&item);
-        n += 1;
-    }
-    out.push(']');
-    (n, cut)
+    // 並べ方は `/explain` と 1 つ (T.34.94)
+    proxy_endpoints_core::array_within(out, items, limit - TRAILER)
 }
 
 /// 個票を状態ファイルに残しているか (`$HOME/.rust-http-proxy.recent`。T14.9)。

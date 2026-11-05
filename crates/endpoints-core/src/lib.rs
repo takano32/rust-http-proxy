@@ -6,8 +6,8 @@
 pub mod core;
 
 pub use core::{
-    Endpoint, has_flag, next_offset, num_param, offset_param, param, parse_query, percent_decode,
-    str_param,
+    Endpoint, array_within, has_flag, next_offset, num_param, offset_param, param, parse_query,
+    percent_decode, str_param,
 };
 
 // 下の層をこのクレートの名前空間にも出す (`crate::sync` のような書き方をそのまま通すため)。

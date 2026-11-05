@@ -90,6 +90,35 @@ pub fn num_param(query: Option<&str>, key: &str, default: usize, max: usize) -> 
         .clamp(1, max)
 }
 
+/// 要素を `budget` バイトまで `[...]` に並べる。入り切らなかったらそこで止める。
+/// 返すのは (書けた件数, 打ち切ったか)。
+///
+/// `budget` は `out` 全体 (前に書いてあるぶんを含む) の上限で、呼ぶ側が末尾のぶんを
+/// 引いて渡す (`/recent` などは 256 KiB − 512 B、`/explain` は 64 KiB − 2 KiB)。
+/// 1 要素ごとに「`,` と閉じの `]` の 2 バイト」を見込んで判定する。前は個票の口と
+/// `/explain` が同じループを別々に持っていた (T.34.94)。
+pub fn array_within(
+    out: &mut String,
+    items: impl IntoIterator<Item = String>,
+    budget: usize,
+) -> (usize, bool) {
+    out.push('[');
+    let (mut n, mut cut) = (0usize, false);
+    for item in items {
+        if out.len() + item.len() + 2 > budget {
+            cut = true;
+            break;
+        }
+        if n > 0 {
+            out.push(',');
+        }
+        out.push_str(&item);
+        n += 1;
+    }
+    out.push(']');
+    (n, cut)
+}
+
 /// 次の頁の `offset` (続きが無ければ `null`)。上の 3 つが同じ綴りで応答の末尾に出す。
 pub fn next_offset(offset: usize, shown: usize, total: usize) -> String {
     match offset + shown < total {
@@ -146,6 +175,25 @@ mod tests {
     use super::*;
 
     /// 同じ鍵が 2 つあれば最初の 1 つ、値の無い鍵は `""`、無い鍵は `None` (T.34.93)。
+    /// 予算に収まるところまで並べ、収まらなければ `]` で閉じて打ち切りを返す (T.34.94)。
+    #[test]
+    fn an_array_stops_at_the_budget() {
+        let mut out = String::from("{\"a\":");
+        // 2 本目を書く前は `{"a":[1` の 7 バイト。7 + "22" (2) + 2 = 11 ≤ 11 で入る
+        let (n, cut) = array_within(&mut out, ["1".to_string(), "22".to_string()], 11);
+        assert_eq!((n, cut), (2, false));
+        assert_eq!(out, "{\"a\":[1,22]");
+        // 予算を 1 バイト減らすと 2 本目は入らない
+        let mut out = String::from("{\"a\":");
+        let (n, cut) = array_within(&mut out, ["1".to_string(), "22".to_string()], 10);
+        assert_eq!((n, cut), (1, true));
+        assert_eq!(out, "{\"a\":[1]");
+        // 空なら `[]`
+        let mut out = String::new();
+        assert_eq!(array_within(&mut out, Vec::<String>::new(), 0), (0, false));
+        assert_eq!(out, "[]");
+    }
+
     #[test]
     fn a_parameter_is_the_first_value_of_its_key() {
         let params = parse_query("sort=slow&n&sort=bytes&url=http%3A%2F%2Fa%2F");
