@@ -9,6 +9,8 @@ pub mod ascii;
 pub mod cli;
 pub mod clock;
 pub mod envfile;
+// 起動ごとに変わる種 (`records` の塩と `via` の印。T.34.74)
+mod entropy;
 pub mod hostport;
 pub mod httpdate;
 pub mod json;

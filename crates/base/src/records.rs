@@ -20,11 +20,8 @@
 //! 「誰が」を含まないため (README に書いてある)。
 
 use std::borrow::Cow;
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hasher};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `PROXY_RECORDS` の値。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -102,24 +99,13 @@ pub fn recording() -> bool {
 
 /// この起動の塩 (`RandomState` の種 + 時刻 + プロセス番号 + スタックのアドレス)。
 ///
-/// 外部クレートは足さない方針 (§0) なので、[`crate::via`] の印と同じ作り方をする。
+/// 外部クレートは足さない方針 (§0) なので、[`crate::via`] の印と同じ作り方をする
+/// (`crate::entropy::boot_entropy`。印とは別に 1 回呼んで覚える)。
 /// **起動ごとに変わる**ので、同じ接続元でも再起動すれば別の値になり、値から IP を
 /// 引き当てる表 (IPv4 は 43 億通りしかない) を作り置きできない。
 fn salt() -> u64 {
     static SALT: OnceLock<u64> = OnceLock::new();
-    *SALT.get_or_init(|| {
-        let anchor = 0u8;
-        let mut h = RandomState::new().build_hasher();
-        h.write_usize(&anchor as *const u8 as usize);
-        h.write_u64(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.subsec_nanos() as u64 ^ d.as_secs())
-                .unwrap_or(0),
-        );
-        h.write_u32(std::process::id());
-        h.finish()
-    })
+    *SALT.get_or_init(crate::entropy::boot_entropy)
 }
 
 /// 16 進 16 桁 (塩つき FNV-1a 64 ビット)。**塩を先に流してから**本文を流す。

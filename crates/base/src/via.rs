@@ -9,29 +9,17 @@
 //! 行は**起動時に 1 回だけ**組み立て、熱い経路 (`headers::write_request_headers`) は
 //! `&'static str` をそのまま書く (要求ごとに `String` を作らない)。
 
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hasher};
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `1.1 rust-http-proxy/xxxxxxxx` (`Via` の値そのもの)。
 static TOKEN: OnceLock<String> = OnceLock::new();
 /// `Via: 1.1 rust-http-proxy/xxxxxxxx\r\n` (転送する要求にそのまま書く 1 行)。
 static LINE: OnceLock<String> = OnceLock::new();
 
-/// 8 桁 16 進の印を作る。`RandomState` の種 + 時刻 + スタックのアドレスを混ぜる。
+/// 8 桁 16 進の印を作る。`RandomState` の種 + 時刻 + スタックのアドレスを混ぜる
+/// (`crate::entropy::boot_entropy`。塩とは別に 1 回呼ぶ)。
 fn mark() -> String {
-    let anchor = 0u8;
-    let mut h = RandomState::new().build_hasher();
-    h.write_usize(&anchor as *const u8 as usize);
-    h.write_u64(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u64 ^ d.as_secs())
-            .unwrap_or(0),
-    );
-    h.write_u32(std::process::id());
-    let v = h.finish();
+    let v = crate::entropy::boot_entropy();
     format!("{:08x}", (v ^ (v >> 32)) as u32)
 }
 
