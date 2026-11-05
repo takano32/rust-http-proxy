@@ -2,12 +2,12 @@
 
 use crate::sync::LockExt;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{self, BufReader, Read};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use super::disk::DiskHit;
+use super::disk::{DiskHit, DiskWriter};
 use super::entry::{Body, CachedResponse, head_len, read_head};
 use super::format::Meta;
 use super::key::{CacheKey, KeyMap, cache_key};
@@ -600,13 +600,27 @@ impl Cache {
         expires_at: u64,
         conn_id: usize,
     ) -> bool {
-        let only_expiry = || self.disk.refresh(key, stored_at, expires_at, self.tick());
         if !self.disk.is_ready() {
             return false;
         }
-        let hit = match self.disk.open(key) {
-            Ok(Some(hit)) => hit,
-            _ => return only_expiry(),
+        // 置き換えのどこで失敗しても、後始末は「期限だけ延ばす」1 つ (T.34.97)
+        self.replace_disk_head(key, url, head, stored_at, expires_at, conn_id)
+            || self.disk.refresh(key, stored_at, expires_at, self.tick())
+    }
+
+    /// 先頭を `head` に替えた新しいファイルを書いて置き換える。置き換えたら真
+    /// (無い・読めない・書けない・保存に至らなかったは偽で、呼ぶ側が期限だけ延ばす)。
+    fn replace_disk_head(
+        &self,
+        key: CacheKey,
+        url: &str,
+        head: &[u8],
+        stored_at: u64,
+        expires_at: u64,
+        conn_id: usize,
+    ) -> bool {
+        let Ok(Some(hit)) = self.disk.open(key) else {
+            return false;
         };
         let meta = Meta {
             stored_at,
@@ -615,31 +629,23 @@ impl Cache {
         };
         let mut reader = BufReader::with_capacity(64 * 1024, hit.file);
         let Ok(old_head) = read_head(&mut reader) else {
-            return only_expiry();
+            return false;
         };
         let body_len = hit.size.saturating_sub(old_head.len() as u64);
         let expected = (head.len() as u64).saturating_add(body_len);
-        let mut writer = match self.disk.begin(
+        let Ok(Some(mut writer)) = self.disk.begin(
             key,
             url,
             meta,
             self.tick(),
             Some(expected),
             self.cfg.max_object_size,
-        ) {
-            Ok(Some(w)) => w,
-            _ => return only_expiry(),
+        ) else {
+            return false;
         };
-        let copied = writer.write(head).and_then(|_| {
-            let mut buf = vec![0u8; 64 * 1024];
-            loop {
-                let n = reader.read(&mut buf)?;
-                if n == 0 {
-                    return Ok(());
-                }
-                writer.write(&buf[..n])?;
-            }
-        });
+        let copied = writer
+            .write(head)
+            .and_then(|()| copy_body(&mut reader, &mut writer));
         sysinfo::drop_page_cache(reader.get_ref());
         if let Err(e) = copied {
             log_warn!(
@@ -649,16 +655,12 @@ impl Cache {
                 e
             );
             writer.abort();
-            return only_expiry();
+            return false;
         }
         match writer.finish(self.tick()) {
-            Ok(r) if r.stored => {
-                self.count_evictions(r.evicted);
-                true
-            }
             Ok(r) => {
                 self.count_evictions(r.evicted);
-                only_expiry()
+                r.stored
             }
             Err(e) => {
                 log_warn!(
@@ -667,7 +669,7 @@ impl Cache {
                     key,
                     e
                 );
-                only_expiry()
+                false
             }
         }
     }
@@ -675,5 +677,17 @@ impl Cache {
     pub fn remove(&self, key: CacheKey) {
         self.mem.remove(key);
         self.disk.remove(key);
+    }
+}
+
+/// 本文を `reader` の終わりまで `writer` へ写す (64 KiB ずつ。T.34.97)。
+fn copy_body(reader: &mut impl Read, writer: &mut DiskWriter<'_>) -> io::Result<()> {
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        writer.write(&buf[..n])?;
     }
 }
