@@ -169,40 +169,55 @@ fn main() {
         args.conc, args.seconds, args.body_bytes, args.cacheable, !args.no_keepalive, origin
     );
 
-    let want = |name: &str| args.only == "all" || args.only == name;
-
-    if want("direct") {
-        let direct_req = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", origin).into_bytes();
-        http_load(
-            origin,
-            direct_req,
-            args.conc,
-            args.seconds,
-            !args.no_keepalive,
-        )
-        .print("direct");
+    if wants(&args, "direct") {
+        direct_mode(&args, origin);
     }
 
     let Some(proxy) = args.proxy.as_deref() else {
         return;
     };
-    let proxy = parse_addr(proxy);
+    proxy_modes(&args, parse_addr(proxy), origin);
+}
 
-    if want("forward") {
-        let forward_req =
-            format!("GET http://{0}/ HTTP/1.1\r\nHost: {0}\r\n\r\n", origin).into_bytes();
-        http_load(
-            proxy,
-            forward_req,
-            args.conc,
-            args.seconds,
-            !args.no_keepalive,
-        )
-        .print("forward");
+/// `--only` がこのモードを選んでいるか (`all` は全部。握り続けるモードなどは別に見る)。
+fn wants(args: &Args, name: &str) -> bool {
+    args.only == "all" || args.only == name
+}
+
+/// オリジン直結の要求/秒 (ベンチが律速していないことの確認)。
+fn direct_mode(args: &Args, origin: SocketAddr) {
+    let direct_req = format!("GET / HTTP/1.1\r\nHost: {}\r\n\r\n", origin).into_bytes();
+    http_load(
+        origin,
+        direct_req,
+        args.conc,
+        args.seconds,
+        !args.no_keepalive,
+    )
+    .print("direct");
+}
+
+/// 平文 HTTP をプロキシ経由で転送したときの要求/秒と p50/p99。
+fn forward_mode(args: &Args, proxy: SocketAddr, origin: SocketAddr) {
+    let forward_req = format!("GET http://{0}/ HTTP/1.1\r\nHost: {0}\r\n\r\n", origin).into_bytes();
+    http_load(
+        proxy,
+        forward_req,
+        args.conc,
+        args.seconds,
+        !args.no_keepalive,
+    )
+    .print("forward");
+}
+
+/// プロキシを通すモードを、印字の順に回す (T.34.102 で `main` から出した)。
+fn proxy_modes(args: &Args, proxy: SocketAddr, origin: SocketAddr) {
+    if wants(args, "forward") {
+        forward_mode(args, proxy, origin);
     }
 
     // トンネル `--conc N` 本のスループット合計 (他のモードと同じく `--seconds` 秒で終わる)
-    if want("tunnel") {
+    if wants(args, "tunnel") {
         tunnel_mode(proxy, args.conc, args.seconds);
     }
 
@@ -225,7 +240,7 @@ fn main() {
     }
 
     // CONNECT の確立/秒
-    if !want("connect") {
+    if !wants(args, "connect") {
         return;
     }
     connect_mode(proxy, args.conc, args.seconds);

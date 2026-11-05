@@ -205,7 +205,15 @@ mod linux {
             dur.as_secs(),
             (1e6 / us_per_tick()).round() as u64
         );
+        floor(dur);
+        peek_empty(dur);
+        send_recv_same_thread(dur);
+        send_recv_split(dur);
+        pingpong(dur);
+    }
 
+    /// 出入りだけの床 (T.34.102 で `run` から出した。以下の 4 つも同じ)。
+    fn floor(dur: Duration) {
         // 1. 何もしないシステムコール = 出入りだけの床
         measure("getppid".into(), 0, 1, dur, || {
             // SAFETY: 引数の無いシステムコール。
@@ -214,7 +222,10 @@ mod linux {
             }
         })
         .print();
+    }
 
+    /// 空のソケットを覗く 1 回。
+    fn peek_empty(dur: Duration) {
         // 2. プールの生存確認と同じ形: 空のソケットへの recv(MSG_PEEK|MSG_DONTWAIT)
         {
             let (a, _b) = pair(1 << 20);
@@ -225,7 +236,10 @@ mod linux {
             })
             .print();
         }
+    }
 
+    /// 同じスレッドで送って受ける (大きさ 5 通り)。
+    fn send_recv_same_thread(dur: Duration) {
         // 3. 送って受ける (同じスレッド)。loopback は sendto の中で受信側の TCP 処理まで
         //    済ませるので、続く recvfrom は待たずに全部返る = 寝起きが入っていない値
         for bytes in [64usize, 1024, 4096, 16384, 65536] {
@@ -253,7 +267,10 @@ mod linux {
             let _ = a.shutdown(Shutdown::Both);
             let _ = b.shutdown(Shutdown::Both);
         }
+    }
 
+    /// 送りと受けの 1 回ぶんを、片方だけ回数を増やした傾きで切り分ける。
+    fn send_recv_split(dur: Duration) {
         // 3b. sendto と recvfrom の切り分け。1 周の中で片方だけ回数を増やし、
         //     増えたぶんの傾きから 1 回ぶんを出す (64 B なのでコピー量の差は無視できる)。
         //     8 回送って 1 回で受ける → 傾きは sendto 1 回ぶん
@@ -298,7 +315,10 @@ mod linux {
             .print();
             let _ = a.shutdown(Shutdown::Both);
         }
+    }
 
+    /// 2 スレッドの往復 (相手役の置き場所 2 通り × 大きさ 2 通り)。
+    fn pingpong(dur: Duration) {
         // 4. 2 スレッドの往復。測るのはこのスレッドだけなので 1 周 = sendto 1 + recvfrom 1
         //    + 「寝て起こされる」1 回。3. との差がそのぶん。
         //    相手役を cpu0-3 に置くと、プロキシ (cpu4-7) がベンチ (cpu0-3) を起こす本番と同じ形になる
