@@ -83,7 +83,7 @@ impl Config {
     /// 締め切りと間隔: CONNECT の確立・要求行とヘッダー・Happy Eyeballs の間隔・keep-alive。
     fn read_timeouts(&mut self, src: &mut Sources, bad: &mut EnvProblems) {
         // CONNECT のオリジン接続だけの締め切り (T15.6)。書かなければ `Config::new` が入れた
-        // 既定 (5 秒と `PROXY_TIMEOUT_SECS` の小さい方) のまま = 出どころも `default` のまま。
+        // 既定 (3 秒と `PROXY_TIMEOUT_SECS` の小さい方。T.28.43) のまま = 出どころも `default` のまま。
         // 書いてあればその値をそのまま使う (`0` と明示すれば無期限。T10.6)
         if let Some(secs) = bad.num::<u64>("PROXY_CONNECT_TIMEOUT_SECS") {
             self.connect_timeout =
