@@ -133,6 +133,11 @@ fn authority_port(authority: &str) -> Option<u16> {
     if authority.is_empty() {
         return None;
     }
+    // ポートの無いブラケット付き (`[::1]`) も 80。最後の `:` で割ると `1]` を読んで `None` になり、
+    // 80 で待ち受けていても転送に落ちていた (T.34.156)
+    if authority.starts_with('[') && authority.ends_with(']') {
+        return Some(80);
+    }
     match authority.rsplit_once(':') {
         Some((h, p)) if !h.ends_with(']') || h.starts_with('[') => p.parse::<u16>().ok(),
         _ => Some(80),
@@ -154,6 +159,9 @@ mod local_path_tests {
             Some("/purge?all=1")
         );
         assert_eq!(local_path("/", 80, Some("proxy.example.net")), Some("/"));
+        // ポートの無いブラケット付きの IPv6 の `Host` は 80 で待ち受けていれば自分宛て (T.34.156)
+        assert_eq!(local_path("/status", 80, Some("[::1]")), Some("/status"));
+        assert_eq!(local_path("/status", 8080, Some("[::1]")), None);
         // ポートが違えば今までどおり転送する (透過プロキシの使い方を壊さない)
         assert_eq!(local_path("/status", 8080, Some("example.com")), None);
         assert_eq!(local_path("/status", 8080, Some("example.com:80")), None);
@@ -171,6 +179,8 @@ mod local_path_tests {
             Some("/status")
         );
         assert_eq!(local_path("http://[::1]:60624", 60624, None), Some("/"));
+        assert_eq!(local_path("http://[::1]/status", 80, None), Some("/status"));
+        assert_eq!(local_path("http://[::1]/status", 60624, None), None);
         assert_eq!(local_path("http://example.com/status", 60624, None), None);
         assert_eq!(
             local_path("http://example.com/status", 80, None),
@@ -192,10 +202,9 @@ mod local_path_tests {
         assert_eq!(authority_port("example.com:8080"), Some(8080));
         assert_eq!(authority_port("[::1]:8080"), Some(8080));
         assert_eq!(authority_port("[2001:db8::1]:80"), Some(80));
-        // ポートの無いブラケット付きの IPv6 は、最後の `:` で割って `1]` を読もうとして `None` になる
-        // (= 自分宛てにならない。80 にはならない)。T.34.4 で見つけたが、振る舞いは変えずにここで縛っておく
-        assert_eq!(authority_port("[::1]"), None);
-        assert_eq!(authority_port("[2001:db8::1]"), None);
+        // ポートの無いブラケット付きの IPv6 も 80 (T.34.156。前は最後の `:` で割って `1]` を読み、`None` だった)
+        assert_eq!(authority_port("[::1]"), Some(80));
+        assert_eq!(authority_port("[2001:db8::1]"), Some(80));
         // 読めないポートと空の authority は「自分宛てではない」
         assert_eq!(authority_port("host:nope"), None);
         assert_eq!(authority_port("host:70000"), None);
