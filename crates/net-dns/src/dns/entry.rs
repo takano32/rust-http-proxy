@@ -1,14 +1,15 @@
-//! 表 (`TABLE`) の 1 行 (`Entry`) と、鍵の内側で決めて鍵の外で数える `Looked` / `MissKind`、
+//! 表 (`TABLE`) の 1 行 (`Entry`) と、鍵の内側の判断 (`Entry::look` → `Lookup`。T.34.55)、
+//! 鍵の内側で決めて鍵の外で数える `Looked` / `MissKind`、
 //! 行の追い出し (`evict_oldest`)、答えの集合が変わったかの比べ方 (`addrs_changed`)。T.34.54 で
 //! `dns.rs` から移した (`addrs_changed` は `dns_warm.rs` から。本体は変えていない)。
 //! 欄は子 (`view`・`warm`・`pool`・`lookup`・試験) が直に触るので `pub(super)`。
 
-use super::{MISS_COLD, MISS_EXPIRED, MISS_NEGATIVE, MISS_WARM_STALE};
+use super::{MISS_COLD, MISS_EXPIRED, MISS_NEGATIVE, MISS_WARM_STALE, STALE_MAX, refresh_after};
 use std::collections::HashMap;
 use std::io;
 use std::net::IpAddr;
 use std::sync::atomic::AtomicU64;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub(super) struct Entry {
     pub(super) addrs: Vec<IpAddr>,
@@ -124,6 +125,133 @@ impl MissKind {
     }
 }
 
+/// 表を 1 回引いたときに**鍵の内側で**決めたこと ([`Entry::look`] の答え。T.34.55)。
+/// 数える (原子操作) のも、待ち行列に入れたあとで起こすのも、鍵を放してから呼び出し側がやる。
+pub(super) struct Lookup {
+    /// このホストで最後に勝った族 (T12.1)
+    pub(super) pref: Option<bool>,
+    /// 表から答えが出たか (`None` = このあとミスになる)
+    pub(super) found: Option<Looked>,
+    /// ミスだったときの種類 (T15.0 (7))
+    pub(super) miss_kind: MissKind,
+    /// 裏の引き直しを頼むか (期限前の先回り (T13.1) と serve-stale (T21.3))
+    pub(super) ask: bool,
+    /// この参照で warm になったか (T14.1)。立っていれば呼び出し側が `warm_promote` を呼ぶ
+    pub(super) promote: bool,
+}
+
+impl Lookup {
+    /// 表に載っていない名前 (`cold` のミス)。
+    pub(super) const ABSENT: Lookup = Lookup {
+        pref: None,
+        found: None,
+        miss_kind: MissKind::Cold,
+        ask: false,
+        promote: false,
+    };
+}
+
+impl Entry {
+    /// 要求の経路で表に当たった行を読み、使った印を書き、答え・ミスの種類・裏の引き直しを決める
+    /// (T.34.55 で `resolve_host_marked` の鍵の内側をそのまま移した。判断の順は前と同じ)。
+    ///
+    /// 時刻と設定値は引数で受けるので、表 (`TABLE`) も `Instant::now()` も経ずに試験できる。
+    /// `negative` と `serve_stale` は**要る枝でだけ呼ぶ** (当たりの経路で原子を読まないため。
+    /// 本番は `negative_ttl` / `serve_stale` を渡す)。
+    #[inline]
+    pub(super) fn look(
+        &mut self,
+        now: Instant,
+        ttl: Duration,
+        window: Duration,
+        negative: impl Fn() -> Duration,
+        serve_stale: impl Fn() -> Duration,
+    ) -> Lookup {
+        let e = self;
+        let pref = e.last_win_v6;
+        let mut found: Option<Looked> = None;
+        let mut miss_kind = MissKind::Cold;
+        let mut ask = false;
+        // **`warm` はここで読む** (T15.0 (7)): 下の `warm_promote` が `e.warm = true` を
+        // 書くので、あとで読むと「2 回目の使用でミスした」が `warm_stale` に化ける
+        let was_warm = e.warm;
+        // 「熱い」= **この参照の 1 つ前**の使用が TTL 以内。印はここで更新する
+        let idle = now.duration_since(e.last_used);
+        let hot = idle < ttl;
+        // warm = 直近 W 秒に **2 回以上**使われた名前。この参照が 2 回目なら
+        // 待ち行列に入れる (1 回だけの名前は入れない。引き直しても二度と来ない)。
+        // **答えを持っている名前だけ**を warm にする: 引けない名前は先回りする
+        // 期限を持たず (要求の経路は負のキャッシュで止まる)、1 回 約 2 秒かかるので、
+        // 待ち行列に入れると `dns-refresh` の 1 本が本当に熱い名前を待たせる
+        let promote = !e.warm && !window.is_zero() && idle < window && !e.addrs.is_empty();
+        e.prev_used = e.last_used;
+        // warm の間に来た要求を数える (T15.0 (7)。**「要求の経路は増やさない」の
+        // 例外その 1**: 既に握っている鍵の内側の、非原子の加算 1 つ・分岐なしで、
+        // システムコールも確保も増えない)
+        e.warm_requests += u64::from(was_warm);
+        e.last_used = now;
+        let age = now.duration_since(e.resolved_at);
+        if !e.addrs.is_empty() && age < ttl {
+            // 期限の 3/4 を過ぎた熱いホストは、答えは今の表から返して (ヒット)、
+            // 裏で 1 回だけ引き直す。利用者は期限切れのミス (デプロイ先で 約 10 ms、
+            // 混むと 100 ms 超) を待たない (T13.1)
+            ask = hot && !e.refreshing && age >= refresh_after(ttl);
+            if ask {
+                e.refreshing = true;
+            }
+            found = Some(Looked::Hit(e.addrs.clone()));
+        } else {
+            let negative = negative();
+            if let Some((at, kind, msg)) = &e.failed_at
+                && !negative.is_zero()
+                && now.duration_since(*at) < negative
+            {
+                // 覚えている失敗の内側でも、**古い答えがあるなら繋ぐ方を選ぶ**。
+                // 負のキャッシュが 60 秒になったので、ここでエラーを返すと
+                // 「古い答えで凌ぐ」窓 (`STALE_MAX`) がそのぶん潰れる (T13.1)
+                found = Some(if !e.addrs.is_empty() && age < STALE_MAX {
+                    Looked::Stale(e.addrs.clone())
+                } else {
+                    Looked::Negative(io::Error::new(*kind, msg.clone()))
+                });
+            } else if !e.addrs.is_empty() && age < serve_stale() {
+                // serve-stale (T21.3): 期限は切れたが齢が窓の中 = 古い答えをそのまま返し、
+                // 裏で 1 回だけ引き直す (同じ名前を二重に頼まない)。**覚えている失敗が
+                // あるときは上の枝が先** (負のキャッシュの間はリゾルバを叩かない)
+                ask = !e.refreshing;
+                if ask {
+                    e.refreshing = true;
+                }
+                found = Some(Looked::Served(e.addrs.clone()));
+            }
+        }
+        if found.is_none() {
+            // ここまで来た = 表では答えられない = このあとミスになる。種類の優先順位は
+            // **warm_stale → negative → expired → cold** (T15.0 (7))。`refresh_one` は
+            // 失敗しても `failed_at` を書かない (上のコメント) ので、warm な名前に
+            // 載っている失敗は要求の経路が書いたもの = 「引き直しが間に合っていない」の
+            // 証拠は `warm` の旗の方が強い
+            miss_kind = if was_warm {
+                MissKind::WarmStale
+            } else if e.failed_at.is_some() {
+                MissKind::Negative
+            } else if !e.addrs.is_empty() {
+                MissKind::Expired
+            } else {
+                // 答えを持っていない入れ物 (`remember_family` が族の記憶だけ置いた等)
+                MissKind::Cold
+            };
+        }
+        Lookup {
+            pref,
+            found,
+            miss_kind,
+            ask,
+            promote,
+        }
+    }
+}
+
 /// 1 行捨てる。**答えの無い行 (失敗の行・族の記憶だけの行) を先に**、その中で古い順 (T.32.2)。
 ///
 /// 答えのある行は serve-stale (21,600 秒) と古い答えで凌ぐ窓のために持っているが、答えの無い
@@ -155,3 +283,7 @@ pub(super) fn addrs_changed(old: &[IpAddr], new: &[IpAddr]) -> bool {
     }
     !new.iter().all(|a| old.contains(a)) || !old.iter().all(|a| new.contains(a))
 }
+
+/// `Entry::look` の単体試験 (表も時計も経ない。T.34.55)。
+#[cfg(test)]
+mod tests;
