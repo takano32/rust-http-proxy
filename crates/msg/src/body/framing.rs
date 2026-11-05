@@ -27,18 +27,6 @@ pub struct ResponseScan<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BadLength<'a>(pub &'a str);
 
-/// `Content-Length` の値として受け付ける形か (RFC 9110 §8.6 の `1*DIGIT`、`u64` に収まること)。
-///
-/// 要求側 (`proxy-origin` の `request::content_length_value`) と同じ決まり:
-/// `-1`・`+5`・`5, 5`・空・`0x5`・21 桁はどれも受け付けない。先頭の `0` は文法どおり許す。
-fn content_length_value(v: &str) -> Option<u64> {
-    // `str::parse::<u64>` は先頭の `+` を受け付けるので、数字だけであることを先に見る
-    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    v.parse::<u64>().ok()
-}
-
 /// `Transfer-Encoding` の並びを読んだ結果 (T.28.1)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Te {
@@ -204,7 +192,7 @@ impl Framing {
             } else if k.eq_ignore_ascii_case("content-length") {
                 // 最初の不正な値で止める (重複して不一致・数字でない・負・桁あふれ)
                 if bad.is_none() {
-                    match (length, content_length_value(v)) {
+                    match (length, crate::ascii::content_length_value(v)) {
                         (_, None) => bad = Some(BadLength(v)),
                         (Some(prev), Some(n)) if prev != n => bad = Some(BadLength(v)),
                         (_, Some(n)) => length = Some(n),
@@ -283,16 +271,5 @@ mod te_tests {
         assert_eq!(Te::Chunked.add("gzip"), Te::Unchunked);
         assert_eq!(Te::Unchunked.add("chunked"), Te::Chunked);
         assert_eq!(Te::Chunked.add(""), Te::Chunked);
-    }
-
-    /// 応答の `Content-Length` の値の形 (要求側の `request::content_length_value` と同じ決まり)。
-    #[test]
-    fn content_length_value_accepts_only_plain_digits() {
-        assert_eq!(content_length_value("0"), Some(0));
-        assert_eq!(content_length_value("0007"), Some(7));
-        assert_eq!(content_length_value("18446744073709551615"), Some(u64::MAX));
-        for bad in ["", "-1", "+5", "5, 5", "0x5", "5.", "18446744073709551616"] {
-            assert_eq!(content_length_value(bad), None, "{:?}", bad);
-        }
     }
 }

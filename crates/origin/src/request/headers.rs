@@ -202,7 +202,7 @@ impl RequestHeaders {
             // RFC 9110 §8.6: `Content-Length = 1*DIGIT`。数字だけの 10 進で `u64` に収まること。
             // 重複は全部同じ値なら 1 本に畳んでよく、1 つでも違えば本文の切れ目が決まらないので
             // 要求を断る (T19.1)
-            match (self.content_length, content_length_value(v_trim)) {
+            match (self.content_length, ascii::content_length_value(v_trim)) {
                 // ここの行は debug (T.28.9)。印が立った要求は呼ぶ側が必ず 400 で断り、そちらが
                 // 理由ごとに 1 分に 1 行の WARN を出す (1 本ごとに WARN だと数を相手が決められる)
                 (_, None) => {
@@ -242,18 +242,6 @@ impl RequestHeaders {
             te.add(v_trim);
         }
     }
-}
-
-/// `Content-Length` の値として受け付ける形か (RFC 9110 §8.6 の `1*DIGIT`、`u64` に収まること)。
-///
-/// `-1`・`+5`・`5, 5`・空・`0x5`・21 桁 (u64 に収まらない) はどれも受け付けない。
-/// 先頭の `0` は文法どおり許す (`0007` は 7)。**確保しない**ので要求ごとの費用は数字の判定 1 回。
-fn content_length_value(v: &str) -> Option<u64> {
-    // `str::parse::<u64>` は先頭の `+` を受け付けるので、数字だけであることを先に見る
-    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    v.parse::<u64>().ok()
 }
 
 #[cfg(test)]

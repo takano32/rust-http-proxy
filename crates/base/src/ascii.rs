@@ -66,6 +66,21 @@ pub fn is_token(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| TCHAR[b as usize])
 }
 
+/// `Content-Length` の値として受け付ける形か (RFC 9110 §8.6 の `1*DIGIT`、`u64` に収まること)。
+///
+/// `-1`・`+5`・`5, 5`・空・`0x5`・21 桁 (u64 に収まらない) はどれも受け付けない。
+/// 先頭の `0` は文法どおり許す (`0007` は 7)。**確保しない**ので要求ごとの費用は数字の判定 1 回。
+/// 要求側 (`proxy-origin` の `request`) と応答側 (`proxy-msg` の `body`) が同じ決まりで読む
+/// (T.34.21 で 2 つあった同じ本文をここへ寄せた)。
+#[inline]
+pub fn content_length_value(v: &str) -> Option<u64> {
+    // `str::parse::<u64>` は先頭の `+` を受け付けるので、数字だけであることを先に見る
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    v.parse::<u64>().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +101,17 @@ mod tests {
             assert_eq!(split_once(s, b':'), s.split_once(':'), "{:?}", s);
             assert_eq!(rsplit_once(s, b':'), s.rsplit_once(':'), "{:?}", s);
             assert_eq!(count(s, b':'), s.matches(':').count(), "{:?}", s);
+        }
+    }
+
+    /// `Content-Length` の値の形 (要求側と応答側が同じ決まりで読む。T.34.21 で `proxy-msg` から移した)。
+    #[test]
+    fn content_length_value_accepts_only_plain_digits() {
+        assert_eq!(content_length_value("0"), Some(0));
+        assert_eq!(content_length_value("0007"), Some(7));
+        assert_eq!(content_length_value("18446744073709551615"), Some(u64::MAX));
+        for bad in ["", "-1", "+5", "5, 5", "0x5", "5.", "18446744073709551616"] {
+            assert_eq!(content_length_value(bad), None, "{:?}", bad);
         }
     }
 }

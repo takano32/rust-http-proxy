@@ -99,7 +99,7 @@ pub(super) fn open(req: TunnelRequest<'_>) -> io::Result<Opened> {
     let started = Instant::now();
     // この時計より**前に**払われた名前解決 (入口の ACL。`PROXY_ALLOW_LOCAL=false` が
     // 既定なので普通はここに入る) を控える (T15.0 (1))。thread-local の読み 1 回で、
-    // 時計もシステムコールも増えない。使い道は下の [`detail_of`] の引き算だけ
+    // 時計もシステムコールも増えない。使い道は下の [`Detail::of_connect`] の引き算だけ
     let dns_before = dns::peek_resolve_cost().0;
     // `client_read` は「要求行が届いてからここまで」(入口で読んだ時計をそのまま使うので、
     // 1 本あたりの時計は増えない。T14.3 (1))
@@ -129,7 +129,7 @@ pub(super) fn open(req: TunnelRequest<'_>) -> io::Result<Opened> {
 
     // ホスト別の応答時間は接続確立まで (トンネル自体の寿命は応答時間ではない)
     let connect_took = started.elapsed();
-    let detail = detail_of(connect_took, None, stages, dns_before);
+    let detail = Detail::of_connect(connect_took, None, stages, dns_before);
     // `/connections` の 1 行を「CONNECT の中継中」にする (1 本につき 1 回だけ。T13.4)
     if let Some(s) = &slot {
         s.begin_tunnel(&addr_str);
@@ -182,32 +182,27 @@ fn refuse_connect(
     dns_before: u64,
 ) {
     // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T.32.11)
-    let (code, line): (u16, &str) = if dns::is_timeout(e) {
-        (504, "504 Gateway Timeout")
+    let (code, reason): (u16, &str) = if dns::is_timeout(e) {
+        (504, "Gateway Timeout")
     } else {
-        (502, "502 Bad Gateway")
+        (502, "Bad Gateway")
     };
     // 理由ごとに 1 分に 1 行 (T.29.15。本数は `/errors` と `/hosts` が持つ)
     if let Some(more) = a.metrics.origin_warn(Failure::from_io(e)) {
         log_warn!(
             Some(a.conn_id),
-            "{}: connect {} failed: {}{}",
-            line,
+            "{} {}: connect {} failed: {}{}",
+            code,
+            reason,
             a.addr_str,
             e,
             more
         );
     }
     // `Date` と `Content-Length: 0` も付ける (RFC 9110 §6.6.1・§8.6。T.32.15 (5)。T.29.9 の漏れ)
-    let mut date = [0u8; 35];
-    let _ = client.write_all(
-        format!(
-            "HTTP/1.1 {line}\r\n{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            crate::httpdate::date_line(&mut date)
-        )
-        .as_bytes(),
-    );
-    let detail = detail_of(
+    let mut head = [0u8; crate::httpdate::ERROR_HEAD_MAX];
+    let _ = client.write_all(crate::httpdate::error_head(code, reason, &mut head));
+    let detail = Detail::of_connect(
         a.started.elapsed(),
         Some(Failure::from_io(e)),
         stages,
@@ -264,55 +259,4 @@ fn refuse_connect(
             cache: "BYPASS",
         },
     );
-}
-
-/// 確立までの内訳を組み立てる。**呼ぶのは接続が終わった直後の 1 回だけ**
-/// (thread-local を読んで 0 に戻すので、2 回呼ぶと 2 回目が空になる)。
-///
-/// 接続にかかった時間は「全体 − 名前解決」で出す (`net` 側に測る口は足さない。
-/// forward の `connect_ms` から TLS の握手が抜けて、別の読み違いを生むため)。
-///
-/// **`dns_before` は `total` の時計を始める前に既に払われていた名前解決 (ms)**
-/// (T15.0 (1))。`PROXY_ALLOW_LOCAL=false` (既定) では入口の ACL が `open()` より前に
-/// 名前を引くので、`take_resolve_cost` の値には `total` に入っていないぶんが混ざる。
-/// それを引かずに「全体 − 名前解決」をすると**接続の段が 0 に潰れる**
-/// (デプロイ先の実測: ミスした個票 54 本のうち 40 本が `connect` 0 ms で、その 40 本の
-/// カーネル RTT の中央値は 11.4 ms)。同じ理由で `client_read` にはそのぶんが丸ごと
-/// 入っているので、こちらは引く。**時計 (`started`) は動かしていない**ので、
-/// `connect_took` = `/history` の `connect` の窓・`recent_quantiles.connect`・`/slo` は
-/// 1 ms も動かない (Phase 12〜14 の p50 と比べられる値のまま)。
-pub(super) fn detail_of(
-    total: Duration,
-    cause: Option<Failure>,
-    stages: StageMs,
-    dns_before: u64,
-) -> Detail {
-    let (dns_ms, dns_misses) = crate::dns::take_resolve_cost();
-    let total_ms = total.as_millis().min(u64::MAX as u128) as u64;
-    // `total` の窓の**内側**で払った名前解決だけを引く
-    let dns_inside = dns_ms.saturating_sub(dns_before);
-    Detail {
-        dns_ms,
-        dns_misses,
-        connect_ms: total_ms.saturating_sub(dns_inside),
-        family_v6: crate::dns::take_family(),
-        // 確立までに SYN を送り直した回数 (T14.46)。読んだのは `net` の確立点の
-        // `getsockopt` 1 回で、ここは thread-local を読んで 0 に戻すだけ
-        syn_retrans: crate::dns::take_syn_retrans(),
-        // 失敗のときは 8 つの原因と DNS の内訳を 1 回で受け取る (T25.0)
-        cause: cause.map(|f| f.cause),
-        dns_cause: cause.and_then(|f| f.dns),
-        // CONNECT は「確立まで」がそのまま窓に入る値なので指定しない
-        first_byte_ms: None,
-        // `queue` と `client_read` は本体クレートが測った値 (T14.3 (1))。
-        // `client_read` には時計より前の名前解決が丸ごと入っているので除く (T15.0 (1))
-        stages: StageMs {
-            client_read: stages
-                .client_read
-                .saturating_sub(dns_before.min(u32::MAX as u64) as u32),
-            ..stages
-        },
-        // 向き別のバイト (T14.26) は終わってからでないと分からないので `report` が入れる
-        ..Detail::default()
-    }
 }

@@ -9,14 +9,14 @@ use super::respond::{forward_interim, write_error};
 use super::serve::{can_serve_stale, serve_cached};
 use super::upstream::{
     OriginConn, acquire_origin, build_request_head, forward_request_body, is_client_body_error,
-    is_stale_conn_error, origin_detail,
+    is_stale_conn_error,
 };
 use super::{ClientWriter, Exchange, Stage, done, finished};
 use crate::clientio::ClientReader;
 use crate::freshness;
 use crate::headers;
 use crate::log_trace;
-use crate::metrics::{BadRequestReason, Failure};
+use crate::metrics::{BadRequestReason, Detail, Failure};
 use crate::{log_debug, log_warn};
 
 /// オリジンから応答の先頭を読み終えたところ。
@@ -137,7 +137,12 @@ pub(super) fn fetch(
             }
         };
         if !reused {
-            x.ctx.detail = origin_detail(acquire_started, None, x.ctx.detail.stages, dns_before);
+            x.ctx.detail = Detail::of_connect(
+                acquire_started.elapsed(),
+                None,
+                x.ctx.detail.stages,
+                dns_before,
+            );
         }
         metrics.inc_origin_conn(reused);
         let sent = send_request(
@@ -376,8 +381,8 @@ fn connect_failed<T>(
     }
     // 入口で測った `client_read` は `ctx.detail` にしか無いので、
     // `shared.stages` ではなくこちらを引き継ぐ (T17.4)
-    x.ctx.detail = origin_detail(
-        acquire_started,
+    x.ctx.detail = Detail::of_connect(
+        acquire_started.elapsed(),
         Some(Failure::from_io(&e)),
         x.ctx.detail.stages,
         dns_before,

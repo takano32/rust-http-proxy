@@ -7,14 +7,8 @@ use crate::log_trace;
 
 /// 自前の誤りの応答。T.29.9 から `Date` も付ける (RFC 9110 §6.6.1)。
 pub(super) fn write_error(client: &mut impl Write, status: u16, reason: &str) -> io::Result<()> {
-    let mut date = [0u8; 35];
-    let resp = format!(
-        "HTTP/1.1 {} {}\r\n{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        status,
-        reason,
-        crate::httpdate::date_line(&mut date)
-    );
-    client.write_all(resp.as_bytes())?;
+    let mut head = [0u8; crate::httpdate::ERROR_HEAD_MAX];
+    client.write_all(crate::httpdate::error_head(status, reason, &mut head))?;
     client.flush()
 }
 

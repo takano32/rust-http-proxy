@@ -126,6 +126,32 @@ pub fn date_line(buf: &mut [u8; 35]) -> &str {
     std::str::from_utf8(&buf[..]).unwrap_or("Date: Thu, 01 Jan 1970 00:00:00 GMT")
 }
 
+/// [`error_head`] が組む頭の長さの上限 (理由句が 64 字までなら収まる)。
+pub const ERROR_HEAD_MAX: usize = 160;
+
+/// 自前の誤り応答 (本文なし) の頭を `buf` に組んで返す (T.34.21)。**確保しない**。
+///
+/// `HTTP/1.1 <status> <reason>` に、`Date` (RFC 9110 §6.6.1。T.29.9)・`Content-Length: 0`・
+/// `Connection: close` を付けた形。`http` の誤り応答・`server` の要求を断る応答・
+/// `tunnel` の 502 / 504 が、別々に組んでいた同じ 1 行をここへ寄せた。
+/// `reason` は呼ぶ側が持つ短い定数 (64 字を超えると切れる)。
+pub fn error_head<'b>(status: u16, reason: &str, buf: &'b mut [u8; ERROR_HEAD_MAX]) -> &'b [u8] {
+    use std::io::Write;
+    debug_assert!(reason.len() <= 64, "理由句が長すぎて頭が切れる");
+    let mut date = [0u8; 35];
+    let date = date_line(&mut date);
+    let len = {
+        let mut rest = &mut buf[..];
+        let _ = write!(
+            rest,
+            "HTTP/1.1 {} {}\r\n{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            status, reason, date
+        );
+        ERROR_HEAD_MAX - rest.len()
+    };
+    &buf[..len]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +206,28 @@ mod tests {
         let epoch = 1_788_288_860;
         let (y, mo, d, h, mi, s) = crate::log::civil_from_epoch(epoch);
         assert_eq!(epoch_from_civil(y, mo, d, h, mi, s), Some(epoch));
+    }
+
+    /// T.34.21: 誤り応答の頭は、それまで 3 か所が `format!` で組んでいた形と 1 バイトも違わない。
+    #[test]
+    fn error_head_matches_the_old_format() {
+        for (status, reason) in [
+            (400, "Bad Request"),
+            (431, "Request Header Fields Too Large"),
+            (502, "Bad Gateway"),
+            (504, "Gateway Timeout"),
+        ] {
+            let mut buf = [0u8; ERROR_HEAD_MAX];
+            let got = error_head(status, reason, &mut buf).to_vec();
+            let text = std::str::from_utf8(&got).unwrap();
+            // 日付は時計で変わるので、組んだ行から抜いて同じ式で組み直す
+            let date = text.lines().nth(1).unwrap();
+            let old = format!(
+                "HTTP/1.1 {} {}\r\n{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                status, reason, date
+            );
+            assert_eq!(text, old);
+            assert!(date.starts_with("Date: ") && date.ends_with(" GMT") && date.len() == 35);
+        }
     }
 }

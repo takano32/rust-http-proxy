@@ -1,8 +1,9 @@
 //! オリジンとのやり取りの部品: 接続の取得 (プールか新規)、要求の先頭の組み立て、
-//! 要求本文の転送、接続を掴むまでの内訳、失敗の見分け。
+//! 要求本文の転送、失敗の見分け (接続を掴むまでの内訳は T.34.21 で
+//! `metrics::Detail::of_connect` へ移した)。
 
 use std::io::{self, BufReader, Read, Write};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::buffers::{CopyBuf, ORIGIN_READ_BUF};
 use crate::Upstream;
@@ -10,7 +11,6 @@ use crate::body::{self, BodyReader, Framing};
 use crate::dns;
 use crate::headers;
 use crate::log_debug;
-use crate::metrics::{Detail, Failure, StageMs};
 use crate::origin::{self, OriginStream};
 use crate::request::Origin;
 use proxy_base::minrate::Side;
@@ -176,51 +176,6 @@ pub(super) fn client_body_error(e: io::Error) -> io::Error {
 /// `e` がクライアントの本文を読む側の誤りか ([`client_body_error`] で包んだもの)。
 pub(super) fn is_client_body_error(e: &io::Error) -> bool {
     e.get_ref().is_some_and(|i| i.is::<ClientBodyError>())
-}
-
-/// オリジンを掴むまでの内訳を組み立てる (T12.4 (2))。**接続を試した直後の 1 回だけ**呼ぶ
-/// (thread-local を読んで 0 に戻すので、2 回呼ぶと 2 回目が空になる)。
-///
-/// **`dns_before` は `acquire_started` より前に既に払われていた名前解決 (ms)**
-/// (T15.0 (1)。トンネル側の `detail_of` と同じ引き算)。入口の ACL
-/// (`PROXY_ALLOW_LOCAL=false` が既定) がここより前に名前を引くので、それを引かずに
-/// 「全体 − 名前解決」をすると接続の段が 0 に潰れ、同じぶんが `client_read` にも
-/// 二重に乗る。**プールを使い回した要求はこの関数を通らない**ので、そちらの
-/// `client_read` には ACL の名前解決が入ったままになる (要求の 1%。README に 1 行)。
-pub(super) fn origin_detail(
-    acquire_started: Instant,
-    cause: Option<Failure>,
-    stages: StageMs,
-    dns_before: u64,
-) -> Detail {
-    let (dns_ms, dns_misses) = crate::dns::take_resolve_cost();
-    let total_ms = acquire_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-    // `acquire_started` からの窓の**内側**で払った名前解決だけを引く
-    let dns_inside = dns_ms.saturating_sub(dns_before);
-    Detail {
-        dns_ms,
-        dns_misses,
-        connect_ms: total_ms.saturating_sub(dns_inside),
-        family_v6: crate::dns::take_family(),
-        // 確立までに SYN を送り直した回数 (T14.46)。**プールが接続を張った要求だけ**
-        // 0 でない (使い回せた要求は `net` の確立点を通らないので 0)
-        syn_retrans: crate::dns::take_syn_retrans(),
-        // 失敗のときは 8 つの原因と DNS の内訳を 1 回で受け取る (T25.0)
-        cause: cause.map(|f| f.cause),
-        dns_cause: cause.and_then(|f| f.dns),
-        first_byte_ms: None,
-        // ここまでに測った段階 (`queue` / `client_read`) は引き継ぐ (T14.3 (1))。
-        // `client_read` には時計より前の名前解決が丸ごと入っているので除く (T15.0 (1))
-        stages: StageMs {
-            client_read: stages
-                .client_read
-                .saturating_sub(dns_before.min(u32::MAX as u64) as u32),
-            ..stages
-        },
-        // 向き別のバイト (T14.26) は応答を流し終えてからでないと分からない
-        // (`Ctx::log` が入れる)
-        ..Detail::default()
-    }
 }
 
 /// 再利用した接続が死んでいた (要求が届いていない) と判断してよいエラーか。
