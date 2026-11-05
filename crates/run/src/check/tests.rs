@@ -27,7 +27,7 @@ fn a_setting_line_pads_the_source_and_the_name() {
         "  default   PROXY_TIMEOUT_SECS             30"
     );
     // 長い名前は詰めずにそのまま
-    let long = "PROXY_A_VERY_LONG_SETTING_NAME_X";
+    let long = "A_VERY_LONG_SETTING_NAME_FOR_THE_TEST";
     assert_eq!(
         setting_line("env", long, "v"),
         format!("  env       {} v", long)

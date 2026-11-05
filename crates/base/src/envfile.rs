@@ -195,7 +195,7 @@ mod tests {
     /// T.34.78: 値と出どころは同じ探し方から出る (どちらか一方だけが見つかることはない)。
     #[test]
     fn the_value_and_its_source_come_from_one_lookup() {
-        for key in ["PATH", "HOME", "PROXY_NO_SUCH_KEY_T3478"] {
+        for key in ["PATH", "HOME", "PROXY_NO_SUCH_KEY_T1415"] {
             assert_eq!(var(key).is_some(), var_source(key).is_some(), "{key}");
             assert_eq!(lookup(key).map(|(v, _)| v), var(key));
         }
