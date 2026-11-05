@@ -42,82 +42,6 @@
 
 **HTTP の経路 の残り (T.34.0 のレビューから)**
 
-- [ ] **T.34.9 tunnel.rs (1,587 行) を関心ごとのモジュールに割る**
-  - 割り方:
-    - `tunnel/mod.rs`: 入口。
-    - `open.rs`: `Reported`・`Opened`・`Info`・`open`・`detail_of`。
-    - `report.rs`。
-    - `portable.rs`: Linux 以外の版。
-    - `relay/mod.rs` と `relay/dir.rs`。
-    - `tests.rs`・`relay/tests.rs`。
-  - やること: 動かすだけにし、公開の綴りは `pub use` で残す。
-  - 受け入れ基準:
-    - 結合試験 10 本が通る: tunnel・connect_framing・sni・stall・tunnel_evidence・tunnel_spin・min_transfer・failed_connect・failed_connect_log・bytes_dir。
-    - 700 行超のファイルが 0 になる。
-    - connect の Ir が ±0.5% 以内。割った小さな部品には `#[inline]` を付ける。
-  - 値打ち: 高 / 熱い経路 / tunnel の他の小タスクより先。
-- [ ] **T.34.10 `relay::Idle::run_until_idle` (310 行) を、向きの送り出し・待ちの決め方・SNI の覗きに割る**
-  - 目的: 1 つの輪に、次のものが混ざっている。冒頭では欄を 15 本の `&mut` に割いて借用を通している。
-    - 方向ごとの fill/drain、EOF の控え、`poll` の関心の組み立て。
-    - 待ち時間の決め方、詰まりの計測、空回りの証拠。
-  - やること:
-    - `Dir::pump() -> Progress` を作る。
-    - 純粋な `interest(dirs)` と `wait_budget(grace, parkable, timeout, rate_left, events)` を出す。
-    - `peek_sni_once` と `EofNote` を作る。
-    - 輪の本体を 100 行以下にする。
-  - 受け入れ基準:
-    - `interest` の 8 通りと、`wait_budget` の単体試験を足す。
-    - `bench.py --only tunnel` の MiB/s と、connect の Ir (±0.5%) が変わらない。
-    - tunnel_evidence・tunnel_spin・stall が通る。
-  - 値打ち: 高 / 熱い経路 (バイトごと) / tunnel.rs の分割の後。
-- [ ] **T.34.11 server の serve_one (730 行) を割る (1): 要求行の読みと文法、断る応答の共通形**
-  - やること:
-    - 純粋な `check_request_line(line) -> Result<RequestLine, RequestLineError>` を `request_line.rs` に出す。
-    - `first_line_wait()` と `read_request_line()` を出す。
-    - `refuse(…, warn: impl FnOnce)` を作り、10 か所の同じ形をまとめる。文面は呼ぶ側に残す。
-  - 受け入れ基準:
-    - `check_request_line` の単体試験 (7 形) を足す。
-    - 結合試験 6 本と framing-probe が通る。
-    - forward の Ir が ±0.5% 以内。
-    - serve_one を 300 行以下にする。
-  - 値打ち: 高 / 熱い経路 / 単独。
-- [ ] **T.34.12 serve_one を割る (2): ヘッダーの読みの輪・CONNECT の入口の検査・宛先の判定**
-  - やること:
-    - `read_headers` を出す。
-    - 純粋な `connect_header_reason` と `connect_target_ok` を出す。
-    - `access_decision`・`refuse_blocked`・`loop_detected` を、`access.rs`/`connect_check.rs` に置く。
-  - 受け入れ基準:
-    - 優先順と境目の単体試験を足す。
-    - 結合試験 7 本と framing-probe が通る。
-    - forward の Ir が ±0.5% 以内。
-  - 値打ち: 高 / 熱い経路 / (1) の後。
-- [ ] **T.34.13 tunnel の `open` (150 行) と `report` (143 行) を割る**
-  - やること: `refuse_connect` を出し、`report` を `finish_slot`・`record_stats`・アクセスログの 3 段に割る。
-  - 受け入れ基準:
-    - 結合試験 8 本が通る。個票とログは 1 字も変わらない。
-    - connect の Ir が ±0.5% 以内。
-  - 値打ち: 中 / tunnel.rs の分割の後。
-- [ ] **T.34.14 CONNECT の引数 13〜16 個を、`TunnelRequest` にまとめる**
-  - 対象: `handle_connect`・`handle_connect_parked`・`open`・`start_tunnel`。
-  - やること: server の呼び出し 2 か所を機械的に直す。
-  - 受け入れ基準:
-    - clippy の allow が 4 つ消える。
-    - connect の Ir が ±0.5% 以内。
-  - 値打ち: 中 / tunnel.rs の分割の後。
-- [ ] **T.34.15 serve_one を割る (3): 転送の準備と、要求のあとの始末**
-  - やること: `first_target`・`shared_for`・`forward_request` を出す。
-  - 受け入れ基準:
-    - 結合試験 5 本が通る。
-    - forward の Ir が ±0.5% 以内。
-  - 値打ち: 中 / (1)(2) の後。
-- [ ] **T.34.16 server の lib.rs の `serve` (accept の輪、300 行) を `admit` と `spawn_connection` に割る**
-  - やること:
-    - `admit -> Admission` と `spawn_connection` に割る。
-    - 503 を書く 2 か所は、`reject_overloaded` にまとめる。
-  - 受け入れ基準:
-    - 結合試験 8 本が通る。
-    - connect の Ir が ±0.5% 以内。
-  - 値打ち: 中 / 接続ごと / 単独。
 - [ ] **T.34.21 クレートをまたぐ重複を除く: `content_length_value`・`detail_of`/`origin_detail`・誤り応答の 1 行**
   - 目的:
     - `content_length_value` が、msg と origin に同じ本文で 2 つある。
@@ -131,12 +55,6 @@
     - 3 か所の応答と、個票の値が 1 バイトも変わらない。
     - Ir が ±0.5% 以内。
   - 値打ち: 中 / base と metrics-types の分割の後。
-- [ ] **T.34.22 workers.rs (779 行) の試験を workers/tests.rs に移し、スレッドを起こす所を `spawn_conn_thread` 1 つにする**
-  - 受け入れ基準: 12 本が通り、ファイルを 400 行以下にする。
-  - 値打ち: 低。
-- [ ] **T.34.25 server の idle.rs の `watch_loop` (88 行) の、事象の枝を関数に出す**
-  - やること: `on_http_event` と `close_expired` を出す。
-  - 値打ち: 低。
 
 **メトリクスの土台 の残り (T.34.1 のレビューから)**
 
@@ -587,6 +505,17 @@
 - [ ] **T.34.163 `common::read_response` が `Content-Length:` を大文字小文字を区別して探す (T.34.5 のレビューで見つけた)**
   - 目的: 同じファイルの `content_length` は区別しない。いまは実害が無い。
   - 値打ち: 低。
+
+- [ ] **T.34.165 server の serve_one (334 行) を 300 行以下にする: `endpoints::Endpoint` を組む所と `Step::Connect` を組む所を出す (T.34.15 の残り)**
+  - 目的: T.34.11・12・15 のあと、`serve_one` は 334 行で、T.34.11 の受け入れ基準の 300 行に届いていない。大きな塊は 2 つ残っている。
+    - `endpoints::Endpoint` を組む所 (約 40 行)。
+    - `Step::Connect` を組む所 (約 20 行)。
+  - やること: この 2 つを関数に出す。熱い経路なので、呼び出しのまま残って増えるなら `#[inline(always)]` を付ける。
+  - 受け入れ基準:
+    - `serve_one` を 300 行以下にする。
+    - 結合試験 (proxy・keepalive・tunnel・connect_framing) と framing-probe が通る。
+    - `scripts/callgrind-per-request.py` で測り、forward と connect の Ir が ±0.5% 以内。
+  - 値打ち: 低〜中 / 熱い経路。
 
 - [ ] **T.34.99 締める (タスク 34 の版を走らせたあとに見る・決める・書く)**
   - 前提:
