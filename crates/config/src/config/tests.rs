@@ -1,4 +1,6 @@
 //! `config` の単体テスト (T.28.47 で `config.rs` が 2,000 行を越えたので別のファイルに移した。中身は同じ)。
+//! 子のモジュールの中だけで閉じる試験 (上限の計算・出どころ・keepalive の読み方・一覧の切り方) は
+//! それぞれの子に置いてある (T.34.3)。ここは `Config` を組んで見るもの。
 
 use super::*;
 
@@ -22,48 +24,6 @@ fn test_valid_port() {
 }
 
 #[test]
-fn test_auto_max_conns() {
-    // 1 接続 4 記述子 + 予備 64。記述子切れ (accept の EMFILE) より先に 503 で断れる値
-    assert_eq!(auto_max_conns(256), 48);
-    assert_eq!(auto_max_conns(1024), 240);
-    assert_eq!(auto_max_conns(4096), 1008);
-    // 記述子が余っていても頭打ち (fd 以外の資源の歯止め)
-    assert_eq!(auto_max_conns(524_288), MAX_CONNS_CAP);
-    assert_eq!(auto_max_conns(1_048_576), MAX_CONNS_CAP);
-    assert_eq!(auto_max_conns(u64::MAX), MAX_CONNS_CAP);
-    // 予備にも足りない極端な環境でも 0 (= 無制限) にはしない
-    assert_eq!(auto_max_conns(64), 1);
-    assert_eq!(auto_max_conns(0), 1);
-    // 既定はこの計算そのもので、上限を超えない
-    assert!((1..=MAX_CONNS_CAP).contains(&default_max_conns()));
-}
-
-#[test]
-fn test_default_max_threads() {
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let want = (cores * THREADS_PER_CORE).clamp(MIN_MAX_THREADS, MAX_MAX_THREADS);
-    // 接続数に余裕があればコア数から決まる
-    assert_eq!(default_max_threads(0), want, "無制限のときもスレッドは有限");
-    assert_eq!(default_max_threads(MAX_CONNS_CAP), want);
-    // 接続数の上限の方が小さければそちらに従う (受けない接続のスレッドは要らない)
-    assert_eq!(default_max_threads(16), 16);
-    assert_eq!(default_max_threads(1), 1);
-    // 何があっても無制限にはしない
-    assert!(default_max_threads(0) > 0 && default_max_threads(0) <= MAX_MAX_THREADS);
-    let cfg = Config::new("8080", None, None, Duration::from_secs(30)).unwrap();
-    assert_eq!(cfg.max_threads, default_max_threads(cfg.max_conns));
-}
-
-#[test]
-fn test_bind_list() {
-    let list = parse_bind_list(" ::, 0.0.0.0 ,[::1]").unwrap();
-    assert_eq!(list.len(), 3);
-    assert!(list[0].is_ipv6() && list[1].is_ipv4() && list[2].is_loopback());
-    assert!(parse_bind_list("nope").is_err());
-    assert!(parse_bind_list("").unwrap().is_empty());
-}
-
-#[test]
 fn test_cache_defaults() {
     let cfg = Config::new("8080", None, None, Duration::from_secs(30)).unwrap();
     assert!(cfg.cache.mem_limit.is_auto());
@@ -71,70 +31,6 @@ fn test_cache_defaults() {
     assert_eq!(cfg.cache.mem_limit.target_percent(), Some(100));
     assert!(cfg.cache.enabled);
     assert_eq!(cfg.cache.reserve, proxy_cache::cache::Reserve::Staged);
-}
-
-#[test]
-fn sources_only_mark_values_that_took_effect() {
-    let mut src = Sources::default();
-    // 印が無ければ既定
-    assert_eq!(src.get("PROXY_DNS_TTL_SECS"), Source::Default);
-    // どこにも書かれていないキーは、印を付けても既定のまま
-    // (「効いた」と呼べる値がそもそも無い)
-    src.mark("PROXY_DNS_TTL_SECS");
-    assert_eq!(src.get("PROXY_DNS_TTL_SECS"), Source::Default);
-    // 実環境にあるキーは `env` として読める (配線の確認。`PATH` はどこでもある)
-    assert_eq!(Source::of("PATH"), Source::Env);
-    assert_eq!(Source::of("PROXY_NO_SUCH_KEY_T1415"), Source::Default);
-    // 再読込では**当てた項目だけ**写す
-    let mut fresh = Sources::default();
-    fresh.0.push(("PROXY_DNS_TTL_SECS", Source::EnvFile));
-    fresh.0.push(("SERVER_PORT", Source::EnvFile));
-    let mut next = Sources::default();
-    next.adopt(&fresh, "PROXY_DNS_TTL_SECS");
-    assert_eq!(next.get("PROXY_DNS_TTL_SECS"), Source::EnvFile);
-    assert_eq!(next.get("SERVER_PORT"), Source::Default, "写していない項目");
-    // 消えたら既定に戻る
-    next.adopt(&Sources::default(), "PROXY_DNS_TTL_SECS");
-    assert_eq!(next.get("PROXY_DNS_TTL_SECS"), Source::Default);
-    assert_eq!(
-        [
-            Source::Default.as_str(),
-            Source::Env.as_str(),
-            Source::EnvFile.as_str(),
-            Source::Cli.as_str()
-        ],
-        ["default", "env", "env_file", "cli"]
-    );
-}
-
-/// `PROXY_TCP_KEEPALIVE` の書き方 (T14.52)。半端な指定は既定に落とす。
-#[test]
-fn tcp_keepalive_parses_on_off_and_three_numbers() {
-    assert_eq!(TcpKeepalive::parse("on"), Some(Some(DEFAULT_TCP_KEEPALIVE)));
-    assert_eq!(
-        TcpKeepalive::parse(" ON "),
-        Some(Some(DEFAULT_TCP_KEEPALIVE))
-    );
-    assert_eq!(TcpKeepalive::parse("1"), Some(Some(DEFAULT_TCP_KEEPALIVE)));
-    assert_eq!(TcpKeepalive::parse("off"), Some(None));
-    assert_eq!(TcpKeepalive::parse("0"), Some(None));
-    assert_eq!(TcpKeepalive::parse("no"), Some(None));
-    assert_eq!(
-        TcpKeepalive::parse("on:1:1:2"),
-        Some(Some(TcpKeepalive {
-            idle_secs: 1,
-            intvl_secs: 1,
-            count: 2,
-        }))
-    );
-    // 既定は約 90 秒で `ETIMEDOUT` (`PROXY_TUNNEL_IDLE_SECS` の 300 秒より十分短い)
-    assert_eq!(DEFAULT_TCP_KEEPALIVE.dead_after_secs(), 90);
-    // 読めない書き方は `None` = 既定のまま
-    for bad in [
-        "on:1", "on:1:2", "on:0:1:2", "on:1:1:0", "on:a:b:c", "maybe", "",
-    ] {
-        assert_eq!(TcpKeepalive::parse(bad), None, "{}", bad);
-    }
 }
 
 /// `/config` に出る形は `.env` にそのまま書き戻せること (T14.52)。
@@ -420,56 +316,19 @@ fn settings_show_the_effective_value_of_every_key() {
     assert!(total >= 50, "{} 件しか出ていない", total);
 }
 
+/// `PROXY_PEEK_SNI` の書き戻し (T14.38): `off` / `on` (= 443 だけ) / `on:<port>`。
 #[test]
-fn long_lists_are_cut_with_a_marker() {
-    let many: Vec<String> = (0..100)
-        .map(|i| format!("host-{}.example.net", i))
-        .collect();
-    let out = list_value(&many);
-    assert!(out.len() <= LIST_CAP, "{} B", out.len());
-    assert!(out.ends_with("more\"]"), "{}", out);
-    assert!(out.starts_with("[\"host-0.example.net\","), "{}", out);
-    // 短い一覧はそのまま
-    assert_eq!(
-        list_value(&["a".to_string(), "b".to_string()]),
-        "[\"a\",\"b\"]"
-    );
-    assert_eq!(list_value(&[]), "[]");
+fn peek_sni_spec_writes_off_on_and_the_extra_port() {
+    let mut cfg = Config::new("9090", None, None, Duration::from_secs(5)).expect("port");
+    assert_eq!(cfg.peek_sni_spec(), "on", "既定は 443 だけ");
+    cfg.peek_sni = None;
+    assert_eq!(cfg.peek_sni_spec(), "off");
+    cfg.peek_sni = Some(8443);
+    assert_eq!(cfg.peek_sni_spec(), "on:8443");
 }
 
 #[test]
 fn test_invalid_port() {
     assert!(Config::new("invalid", None, None, Duration::from_secs(30)).is_err());
     assert!(Config::new("99999", None, None, Duration::from_secs(30)).is_err());
-}
-
-/// 山の写真の閾 (T14.6): 上限 × 割合。撮らない設定は [`usize::MAX`] (比較 1 回のまま)。
-#[test]
-fn the_burst_threshold_is_a_share_of_the_connection_limit() {
-    assert_eq!(burst_threshold(8, 50), 4);
-    assert_eq!(burst_threshold(240, 50), 120);
-    assert_eq!(burst_threshold(4096, 90), 3686);
-    // 100% は上限そのもの (T13.2 の「上限の外の枠 4 本」は含めない)
-    assert_eq!(burst_threshold(240, 100), 240);
-    assert_eq!(
-        burst_threshold(240, 150),
-        240,
-        "100 を超える割合は 100 に倒す"
-    );
-    // 小さすぎる上限でも 0 にはしない (0 だと 1 本目から撮ってしまう)
-    assert_eq!(burst_threshold(1, 50), 1);
-    // 撮らない設定
-    assert_eq!(burst_threshold(240, 0), usize::MAX);
-    assert_eq!(burst_threshold(0, 50), usize::MAX, "無制限には閾が無い");
-
-    let mut cfg = Config::new("8080", None, None, Duration::from_secs(30)).unwrap();
-    assert_eq!(cfg.burst_percent, DEFAULT_BURST_PERCENT);
-    assert_eq!(cfg.burst_at, burst_threshold(cfg.max_conns, 50));
-    cfg.max_conns = 8;
-    cfg.refresh_burst_at();
-    assert_eq!(cfg.burst_at, 4);
-    // `--lite` は個票を記録しないので閾そのものを置かない
-    cfg.lite = true;
-    cfg.refresh_burst_at();
-    assert_eq!(cfg.burst_at, usize::MAX);
 }
