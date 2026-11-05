@@ -39,15 +39,15 @@
 
 import argparse
 import ipaddress
-import json
 import os
 import statistics
 import sys
-from datetime import datetime, timezone
 
 # 無言の再起動の判定は**判定表と同じ関数**を使う (`--criteria` の行と要点の 1 行が食い違わないように)。
 # 置き場は import できる側の `scripts/snapshot_criteria.py` (T.20.1 の決まり。T.23.2)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from proxydata import fmt_bytes as _fmt_bytes  # noqa: E402
+from proxydata import load_json, utc_stamp  # noqa: E402
 from snapshot_criteria import silent_restart_text, silent_restarts  # noqa: E402
 
 # `/status` の `errors_by_cause` の並び (`crates/metrics-types` の ERR_CAUSE_NAMES)。
@@ -66,9 +66,8 @@ HIT_RATIO_MIN_PER_DAY = 100
 DEFAULT_LIMIT_BYTES = 4 * 1024 * 1024
 
 
-def load(path):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+# 包みを開かずに読む (`proxydata.load_json`。T.34.134 で寄せた)
+load = load_json
 
 
 def num(v, unit=""):
@@ -87,20 +86,18 @@ def stamp(t):
     """
     if not t:
         return "—"
-    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    return utc_stamp(t)
 
 
 def fmt_bytes(n):
     """バイト数を読める形に (`scripts/proxydata.py` の `fmt_bytes()` と同じ単位)。
 
-    **割るのは 1,024 なので単位は GiB / MiB / KiB** (画面の `fmtBytes` と同じ)。
+    **割るのは 1,024 なので単位は GiB / MiB / KiB** (画面の `fmtBytes` と同じ)。値が無ければ `—`
+    (`proxydata` の版は無い値を受けない。負の値の書き方は同じ。T.34.134 で本体を寄せた)。
     """
     if n is None:
         return "—"
-    for unit, div in (("GiB", 1 << 30), ("MiB", 1 << 20), ("KiB", 1 << 10)):
-        if abs(n) >= div:
-            return f"{n / div:.1f} {unit}"
-    return f"{n} B"
+    return _fmt_bytes(n)
 
 
 def quantile(buckets, count, top, p, bounds):

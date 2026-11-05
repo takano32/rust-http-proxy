@@ -76,7 +76,6 @@ import math
 import os
 import re
 import sys
-from datetime import datetime, timezone
 
 # 読む部分は `scripts/proxydata.py` (`status-diff.py` と共有)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -92,6 +91,7 @@ from proxydata import (  # noqa: E402
     resolve_aaaa,
     row_of,
     schema_of,
+    taken_at_from_name,
     warn_newer,
 )
 
@@ -189,18 +189,14 @@ from snapshot_criteria import (  # noqa: E402,F401
 
 # ---------------------------------------------------------------- 読み込み
 
-def taken_at_from_name(path):
-    """`…/2026-09-16T0106Z-status` の `2026-09-16T0106Z` を epoch 秒にする (読めなければ 0)。"""
-    m = re.search(r"(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})(\d{2})?Z", os.path.basename(path))
-    if not m:
-        return 0
-    y, mo, d, hh, mm, ss = m.groups()
-    return int(datetime(int(y), int(mo), int(d), int(hh), int(mm), int(ss or 0),
-                        tzinfo=timezone.utc).timestamp())
-
-
 def classify(suffix):
-    """ファイル名の `PREFIX-` より後ろを `/snapshot` の部分の名前にする (使わないなら None)。"""
+    """ファイル名の `PREFIX-` より後ろを `/snapshot` の部分の名前にする (使わないなら None)。
+
+    `anonymize-snapshot.py` にも同じ名前の `classify` があるが、**中身が違うので寄せない** (T.34.134):
+    あちらはファイル名まるごとから時刻を外して読み、`snapshot` も部として返し、`status.json` 以外の
+    `status…` も `/status` と読み、返す部の一覧も違う (こちらは `daily`、あちらは `hosts_series` と
+    `profile`)。寄せると片方の読み方が変わる。
+    """
     s = suffix
     if s.startswith("status_sort_errors"):
         return "status_errors"

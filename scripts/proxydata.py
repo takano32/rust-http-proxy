@@ -13,11 +13,14 @@
 
 import ipaddress
 import json
+import os
+import re
 import socket
 import statistics
 import sys
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 CONNECT = "connect://"
 # `/status` の `errors_by_cause` の並び (`crates/metrics-types` の ERR_CAUSE_NAMES)。
@@ -200,9 +203,40 @@ def group_by_domain(rows):
     return out
 
 
-def load(path):
+def load_json(path):
+    """JSON のファイルをそのまま読む (`load` と違い、`/snapshot` の包みを開かない。T.34.134 で寄せた)。"""
     with open(path, encoding="utf-8") as f:
-        return unwrap(json.load(f))
+        return json.load(f)
+
+
+def load(path):
+    return unwrap(load_json(path))
+
+
+# 雪像のファイル名の時刻 (`…/2026-09-16T0106Z-status`・`2026-10-24T184027Z-snapshot.json`)
+STAMP_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})(\d{2})?Z")
+
+
+def taken_at_from_name(path):
+    """`…/2026-09-16T0106Z-status` の `2026-09-16T0106Z` を epoch 秒にする (読めなければ 0)。
+
+    `snapshot-diff.py` (`--from-files`) と `anonymize-snapshot.py` が同じ読み方をする (T.34.134 で寄せた)。
+    """
+    m = STAMP_RE.search(os.path.basename(path))
+    if not m:
+        return 0
+    y, mo, d, hh, mm, ss = m.groups()
+    return int(datetime(int(y), int(mo), int(d), int(hh), int(mm), int(ss or 0),
+                        tzinfo=timezone.utc).timestamp())
+
+
+def utc_stamp(t):
+    """epoch 秒を UTC の `2026-09-16 23:31:54Z` の形にする。
+
+    **値が無いときの書き方は道具ごとに違う** (判定表は `?`、要点は `—`、`error-mix.py` は `None` だけ `—`)
+    ので、それは呼ぶ側の `stamp()` が決める (T.34.134 で綴りだけを寄せた)。
+    """
+    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
 def unwrap(snap):

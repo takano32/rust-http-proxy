@@ -6,9 +6,7 @@
 
 import math
 import statistics
-from datetime import datetime, timezone
-
-from proxydata import CAUSE_NAMES
+from proxydata import CAUSE_NAMES, utc_stamp
 
 
 # `/history` の標本のうちこの道具が読む欄 (`crates/metrics/src/history.rs` の KEYS)。
@@ -58,7 +56,7 @@ def miss_rate(row):
 def stamp(t):
     if not t:
         return "?"
-    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    return utc_stamp(t)
 
 
 def n(v, unit=""):

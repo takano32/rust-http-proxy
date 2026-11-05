@@ -31,8 +31,11 @@
 
 import argparse
 import json
+import os
 import sys
-from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from proxydata import load_json, utc_stamp  # noqa: E402
 
 # `crates/metrics-types` の ERR_CAUSE_NAMES (errors_by_cause の並び)。T.25.0 で後ろに
 # 2 つ (`dns` の内訳) が足されたが、ここは**8 つだけ**を読む: `total = sum(causes)` を
@@ -46,16 +49,15 @@ MERGE_SECS = (60, 300)
 TOP_TARGETS = 20
 
 
-def load(path):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+# 包みを開かずに読む (`proxydata.load_json`。T.34.134 で寄せた)
+load = load_json
 
 
 def stamp(t):
     """epoch 秒を UTC の読める形に (`scripts/snapshot-summary.py` の `stamp()` と同じ綴り)。"""
     if t is None:
         return "—"
-    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    return utc_stamp(t)
 
 
 def num(v):

@@ -54,11 +54,10 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
 
 # まとめの単位 (eTLD+1 の近似) は `scripts/proxydata.py` と同じ 1 関数を使う (T.14.54)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from proxydata import etld1  # noqa: E402
+from proxydata import STAMP_RE, etld1, taken_at_from_name  # noqa: E402
 
 # ---------------------------------------------------------------- 置き換えの対象
 
@@ -503,26 +502,17 @@ class Anonymizer:
 PART_ORDER = ("status", "status_errors", "status_dns", "history.5", "history.60", "history.3600",
               "dns", "errors", "connections", "recent", "hosts", "hosts_series", "clients",
               "bursts", "profile", "events", "log")
-STAMP_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})(\d{2})?Z")
-
-
-def taken_at_from_name(path):
-    """`…/2026-09-16T0106Z-status` の `2026-09-16T0106Z` を epoch 秒にする (読めなければ 0)。
-
-    `scripts/snapshot-diff.py` の同名の関数と同じ読み方。
-    """
-    m = STAMP_RE.search(os.path.basename(path))
-    if not m:
-        return 0
-    y, mo, d, hh, mm, ss = m.groups()
-    return int(datetime(int(y), int(mo), int(d), int(hh), int(mm), int(ss or 0),
-                        tzinfo=timezone.utc).timestamp())
+# ファイル名の時刻 (`STAMP_RE`) と、それを epoch 秒にする `taken_at_from_name` は `snapshot-diff.py` と
+# 同じ読み方なので `scripts/proxydata.py` に寄せた (T.34.134)
 
 
 def classify(name):
     """ファイル名の (時刻より後ろの) 部分を `/snapshot` の部の名前にする (使わないなら None)。
 
-    `scripts/snapshot-diff.py` の `classify()` と同じ見分け方。
+    `scripts/snapshot-diff.py` の `classify()` と同じ見分け方の部分が多いが、**中身が違うので寄せない**
+    (T.34.134): こちらはファイル名まるごとから時刻を外して読み、`snapshot` も部として返し、`status…` は
+    `status.json` に限らず `/status` と読み、返す部の一覧も違う (こちらは `hosts_series` と `profile`、
+    あちらは `daily`)。寄せると片方の読み方が変わる。
     """
     s = STAMP_RE.sub("", os.path.basename(name)).lstrip("-")
     if s.startswith("snapshot"):
