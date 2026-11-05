@@ -21,15 +21,15 @@ use common::*;
 /// スレッドの名前は**生まれたスレッドが自分で付ける**ので、立ち上げの直後は見えないことがある
 /// (見えるまで待つ)。
 fn idle_watch_wakeups() -> u64 {
-    let mut found = Vec::new();
-    for _ in 0..500 {
-        found = idle_watch_counts();
-        if found.len() == 1 {
-            return found[0];
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    panic!("idle-watch はこのプロセスに 1 本のはず: {:?}", found);
+    wait_for(
+        "idle-watch はこのプロセスに 1 本のはず",
+        Duration::from_millis(20),
+        Limit::Tries(500),
+        || match idle_watch_counts()[..] {
+            [n] => Some(n),
+            _ => None,
+        },
+    )
 }
 
 fn idle_watch_counts() -> Vec<u64> {

@@ -660,20 +660,21 @@ fn test_integration_connection_limit_returns_503() {
 
     // 1 本閉じれば次は通る
     held.pop();
-    for _ in 0..50 {
-        let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-        let req = format!(
-            "GET http://{}/after HTTP/1.1\r\nHost: {}\r\n\r\n",
-            host, host
-        );
-        s.write_all(req.as_bytes()).unwrap();
-        let (head, _) = read_response(&mut s);
-        if head.starts_with("HTTP/1.1 200") {
-            return;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    panic!("a slot should have been freed");
+    wait_until_for(
+        || {
+            let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+            let req = format!(
+                "GET http://{}/after HTTP/1.1\r\nHost: {}\r\n\r\n",
+                host, host
+            );
+            s.write_all(req.as_bytes()).unwrap();
+            let (head, _) = read_response(&mut s);
+            head.starts_with("HTTP/1.1 200")
+        },
+        "a slot should have been freed",
+        Duration::from_millis(20),
+        Limit::Tries(50),
+    );
 }
 
 #[test]

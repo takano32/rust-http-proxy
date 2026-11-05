@@ -1,14 +1,11 @@
-//! クライアント側の読み書き (要求を投げて応答を読む、自分宛ての口を引く、待つ)。
+//! クライアント側の読み書き (要求を投げて応答を読む、自分宛ての口を引く)。
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
 
-/// 待つループの刻み。[`POLL_MAX`] 回で 10 秒 (負荷の高い CI でも落ちない幅)。
-pub const POLL_STEP: Duration = Duration::from_millis(20);
-/// 待つループの回数の上限 ([`wait_until`] と [`endpoint_json`] の引き直しが共有する)。
-pub const POLL_MAX: usize = 500;
+use super::{POLL_MAX, POLL_STEP};
 
 /// ヘッダーの終わり (空行) まで 1 バイトずつ読む (本文を 1 バイトも読み過ごさないため)。
 ///
@@ -80,17 +77,6 @@ pub fn endpoint_json(proxy_port: u16, path: &str) -> String {
         Some((_, body)) => body.to_string(),
         None => String::new(),
     }
-}
-
-/// `cond` が真になるまで最大 10 秒待つ (負荷の高い CI でも落ちない幅)。
-pub fn wait_until(cond: impl Fn() -> bool, what: &str) {
-    for _ in 0..POLL_MAX {
-        if cond() {
-            return;
-        }
-        thread::sleep(POLL_STEP);
-    }
-    panic!("timed out waiting: {}", what);
 }
 
 pub fn get_via_proxy(proxy_port: u16, url: &str, host: &str) -> String {

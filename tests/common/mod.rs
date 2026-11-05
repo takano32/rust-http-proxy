@@ -14,6 +14,7 @@ mod origin;
 mod process;
 mod proxy;
 mod scratch;
+mod wait;
 
 pub use capture::*;
 pub use client::*;
@@ -23,3 +24,4 @@ pub use origin::*;
 pub use process::*;
 pub use proxy::*;
 pub use scratch::*;
+pub use wait::*;

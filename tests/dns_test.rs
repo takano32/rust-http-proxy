@@ -188,23 +188,20 @@ fn a_hot_name_is_refreshed_in_the_background() {
     let dns = dns_status(proxy);
     assert!(dns.contains("\"negative_ttl_secs\":"), "{}", dns);
     let before = status_number(&dns, "refreshes");
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let res = get_via_proxy(proxy, &url, &host);
-        assert!(
-            res.starts_with("HTTP/1.1 200"),
-            "{}",
-            &res[..res.len().min(80)]
-        );
-        if status_number(&dns_status(proxy), "refreshes") > before {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "期限の 3/4 を過ぎても裏で引き直していない"
-        );
-        std::thread::sleep(Duration::from_millis(250));
-    }
+    wait_until_for(
+        || {
+            let res = get_via_proxy(proxy, &url, &host);
+            assert!(
+                res.starts_with("HTTP/1.1 200"),
+                "{}",
+                &res[..res.len().min(80)]
+            );
+            status_number(&dns_status(proxy), "refreshes") > before
+        },
+        "期限の 3/4 を過ぎても裏で引き直していない",
+        Duration::from_millis(250),
+        Limit::Within(Duration::from_secs(30)),
+    );
     rust_http_proxy::dns::set_ttl(Duration::from_secs(60));
 }
 

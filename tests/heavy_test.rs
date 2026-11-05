@@ -114,14 +114,12 @@ fn test_integration_only_one_snapshot_is_built_at_a_time() {
     // 1 本目: 旗を取ったところで止まる
     let hold = test_hooks::hold_snapshots();
     let first = std::thread::spawn(move || get(port, "/snapshot"));
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while test_hooks::paused_snapshots() == 0 {
-        assert!(
-            Instant::now() < deadline,
-            "1 本目が組み立ての手前まで来ない"
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    wait_until_for(
+        || test_hooks::paused_snapshots() != 0,
+        "1 本目が組み立ての手前まで来ない",
+        Duration::from_millis(1),
+        Limit::Within(Duration::from_secs(30)),
+    );
     // 残り 3 本: 1 本目が旗を握っている間に届くので、どれも組まずに断られる
     let mut resps = race(port, "/snapshot", 3);
     drop(hold);

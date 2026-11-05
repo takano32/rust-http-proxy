@@ -211,14 +211,15 @@ fn test_integration_background_304_forbidding_storage_removes_the_entry() {
         "background revalidation",
     );
     // 裏の 304 が項目を消すまで待つ: 次の要求は条件付きでなくオリジンへ行く
-    let mut c = String::new();
-    for _ in 0..50 {
-        c = get_via_proxy(proxy_port, &url, &host);
-        if counter.load(Ordering::SeqCst) >= 3 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let c = wait_for(
+        "裏の 304 が項目を消し、3 本目がオリジンへ行く",
+        Duration::from_millis(20),
+        Limit::Tries(50),
+        || {
+            let c = get_via_proxy(proxy_port, &url, &host);
+            (counter.load(Ordering::SeqCst) >= 3).then_some(c)
+        },
+    );
     assert!(!c.contains(SECRET), "{}", c);
     assert!(!c.contains("no-store"), "{}", c);
     assert_eq!(body_of(&c), BODY, "{}", c);

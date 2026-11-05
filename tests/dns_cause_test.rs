@@ -132,14 +132,15 @@ fn test_integration_dns_failures_show_their_split_cause() {
     // `/recent` の `reason` は接続が閉じたあとに載る (1 本だけなので待つ)
     let reason = format!("\"reason\":\"error:{}\"", want_name);
     let target = format!("\"target\":\"{}:443\"", HOST);
-    let mut recent = String::new();
-    for _ in 0..500 {
-        recent = endpoint_json(proxy_port, "/recent?n=20");
-        if recent.contains(&reason) && recent.contains(&target) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let recent = wait_for(
+        &format!("/recent に {} と {} が出る", reason, target),
+        Duration::from_millis(20),
+        Limit::Tries(500),
+        || {
+            let recent = endpoint_json(proxy_port, "/recent?n=20");
+            (recent.contains(&reason) && recent.contains(&target)).then_some(recent)
+        },
+    );
     assert!(recent.contains(&reason), "{}", recent);
     assert!(recent.contains(&target), "{}", recent);
     println!("t250b: /recent に {} が出た", reason);

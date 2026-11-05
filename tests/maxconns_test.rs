@@ -72,18 +72,19 @@ fn test_integration_auto_max_conns_rejects_with_503_before_descriptors_run_out()
 
     // 握っていたぶんを返せば、また通る (記述子を使い切っていない証拠)
     drop(held);
-    for _ in 0..100 {
-        let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-        let req = format!(
-            "GET http://{}/after HTTP/1.1\r\nHost: {}\r\n\r\n",
-            host, host
-        );
-        s.write_all(req.as_bytes()).unwrap();
-        let (head, _) = read_response(&mut s);
-        if head.starts_with("HTTP/1.1 200") {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("接続を閉じても上限が下がらない");
+    wait_until_for(
+        || {
+            let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+            let req = format!(
+                "GET http://{}/after HTTP/1.1\r\nHost: {}\r\n\r\n",
+                host, host
+            );
+            s.write_all(req.as_bytes()).unwrap();
+            let (head, _) = read_response(&mut s);
+            head.starts_with("HTTP/1.1 200")
+        },
+        "接続を閉じても上限が下がらない",
+        Duration::from_millis(20),
+        Limit::Tries(100),
+    );
 }

@@ -123,14 +123,15 @@ fn test_integration_background_304_rewrites_the_stored_head() {
         "background revalidation",
     );
     // 裏の 304 が書き直した先頭が配られる
-    let mut third = String::new();
-    for _ in 0..50 {
-        third = get_via_proxy(proxy_port, &url, &host);
-        if third.contains("X-Ver: 2") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let third = wait_for(
+        "裏の 304 が書き直した先頭 (X-Ver: 2) が配られる",
+        Duration::from_millis(20),
+        Limit::Tries(50),
+        || {
+            let third = get_via_proxy(proxy_port, &url, &host);
+            third.contains("X-Ver: 2").then_some(third)
+        },
+    );
     assert!(third.contains("X-Cache: HIT"), "{}", third);
     assert!(third.contains("Cache-Control: max-age=600"), "{}", third);
     assert!(third.contains("X-Ver: 2"), "{}", third);

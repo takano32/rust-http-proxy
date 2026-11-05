@@ -365,23 +365,17 @@ fn test_integration_failed_connects_land_in_errors_by_cause() {
             format!("connect://127.0.0.1:{}", closed_port),
             format!("connect://{}", hole),
         ];
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        loop {
-            let s = status_json(proxy_port);
-            if want
-                .iter()
-                .all(|h| s.contains(&format!("\"host\":\"{}\"", h)))
-            {
-                break s;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "3 秒待っても 2 つの行がそろわない ({}): {}",
-                want.join(", "),
-                s
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
+        wait_for(
+            &format!("3 秒待っても 2 つの行がそろわない ({})", want.join(", ")),
+            Duration::from_millis(5),
+            Limit::Within(Duration::from_secs(3)),
+            || {
+                let s = status_json(proxy_port);
+                want.iter()
+                    .all(|h| s.contains(&format!("\"host\":\"{}\"", h)))
+                    .then_some(s)
+            },
+        )
     };
     // `errors_by_cause` は [dns, refused, unreachable, timeout, reset, tls, loop, other]
     let causes_of = |host: &str| -> Vec<u64> {
