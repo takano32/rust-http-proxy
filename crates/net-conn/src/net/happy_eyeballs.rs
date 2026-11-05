@@ -120,49 +120,16 @@ pub(super) fn connect_candidates(
     let mut addrs = interleave_from(addrs, preferred.unwrap_or_else(ipv6_first_for_new_host));
     // 候補は先頭の [`MAX_CANDIDATES`] 件で切る (T.32.14)。交互に並べたあとで切るので両方の族が残る
     addrs.truncate(MAX_CANDIDATES);
-    let mut race = Race::new(&addrs, timeout);
-    loop {
-        let now = Instant::now();
-        if race.should_launch(now) {
-            race.launch(now);
-        }
-        match race.wait(now) {
-            Ok((index, Ok(stream))) => {
-                note_winner(
-                    host,
-                    &stream,
-                    addrs[index].is_ipv6(),
-                    race.tried_v6,
-                    preferred,
-                );
-                return Ok(stream);
-            }
-            Ok((_, Err(e))) => {
-                race.pending -= 1;
-                race.last_err = Some(e);
-                if race.pending == 0 && race.launched == addrs.len() {
-                    break;
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                if race.deadline.is_some_and(|d| Instant::now() >= d) {
-                    // 締め切りで抜けたか (T15.0 (3))。立てるのは**この締め切りの `break` だけ**で、
-                    // 「全候補が失敗した」の `break` では立てない (そのときの `last_err` は本物の理由)
-                    race.timed_out = true;
-                    break;
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-    // 締め切りで抜けたときは「終わった理由」を返す (T15.0 (3))。ここで `last_err`
-    // (先に返ってきた 1 本の `ECONNREFUSED` 等) を返すと、30 秒黙って待った接続が
-    // `/errors` にも `/hosts` の `errors_by_cause` にも `refused` として残り、
-    // 原因別の集計がそのまま狂う (`ErrCause::from_io` はこの 1 つの札しか見ない)
-    if race.timed_out {
-        return Err(attempts_timed_out());
-    }
-    Err(race.last_err.unwrap_or_else(attempts_timed_out))
+    let mut race = Race::new(&addrs, timeout, stagger(), connect_one);
+    let (index, stream) = race.run()?;
+    note_winner(
+        host,
+        &stream,
+        addrs[index].is_ipv6(),
+        race.tried_v6,
+        preferred,
+    );
+    Ok(stream)
 }
 
 /// 候補が 1 つのときの接続 (並べ替えも全体の勝敗の記録も要らない)。
@@ -209,15 +176,26 @@ fn note_winner(
     }
 }
 
+/// 1 つのアドレスへ繋ぐ関数の形 ([`Race`] が試行ごとのスレッドで呼ぶ)。本番は [`connect_one`]、
+/// 試験は締め切りと間隔を確かめるための作り物を渡す (T.34.79。総称なので単相化され、`dyn` にはならない)。
+trait Connect<S>: Fn(&SocketAddr, Option<Duration>) -> io::Result<S> + Copy + Send + 'static {}
+impl<S, F> Connect<S> for F where
+    F: Fn(&SocketAddr, Option<Duration>) -> io::Result<S> + Copy + Send + 'static
+{
+}
+
 /// 1 回の接続の中で走っている試行の集まり (`connect_candidates` のループの状態)。
-struct Race<'a> {
+///
+/// `S` は繋いだもの (本番は `TcpStream`)、`F` は 1 つのアドレスへ繋ぐ関数 (T.34.79)。
+struct Race<'a, S, F> {
     addrs: &'a [SocketAddr],
     /// 全体の締め切り (`timeout` が 0 なら無し)
     deadline: Option<Instant>,
     /// 間隔は 1 回の接続の中では変わらないので、最初に 1 回だけ読む
     stagger: Duration,
-    tx: mpsc::Sender<(usize, io::Result<TcpStream>)>,
-    rx: mpsc::Receiver<(usize, io::Result<TcpStream>)>,
+    connect: F,
+    tx: mpsc::Sender<(usize, io::Result<S>)>,
+    rx: mpsc::Receiver<(usize, io::Result<S>)>,
     /// 起動した試行の数と、まだ結果の返っていない数
     launched: usize,
     pending: usize,
@@ -231,13 +209,14 @@ struct Race<'a> {
     timed_out: bool,
 }
 
-impl<'a> Race<'a> {
-    fn new(addrs: &'a [SocketAddr], timeout: Duration) -> Race<'a> {
+impl<'a, S: Send + 'static, F: Connect<S>> Race<'a, S, F> {
+    fn new(addrs: &'a [SocketAddr], timeout: Duration, stagger: Duration, connect: F) -> Self {
         let (tx, rx) = mpsc::channel();
         Race {
             addrs,
             deadline: (!timeout.is_zero()).then(|| Instant::now() + timeout),
-            stagger: stagger(),
+            stagger,
+            connect,
             tx,
             rx,
             launched: 0,
@@ -247,6 +226,44 @@ impl<'a> Race<'a> {
             last_err: None,
             timed_out: false,
         }
+    }
+
+    /// 候補を間隔をずらして起こし、最初に繋がったもの (候補の添字と繋いだもの) を返す。
+    /// 全部が失敗したら最後に返ってきた失敗、締め切りを過ぎたら `TimedOut`。
+    fn run(&mut self) -> io::Result<(usize, S)> {
+        loop {
+            let now = Instant::now();
+            if self.should_launch(now) {
+                self.launch(now);
+            }
+            match self.wait(now) {
+                Ok((index, Ok(stream))) => return Ok((index, stream)),
+                Ok((_, Err(e))) => {
+                    self.pending -= 1;
+                    self.last_err = Some(e);
+                    if self.pending == 0 && self.launched == self.addrs.len() {
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if self.deadline.is_some_and(|d| Instant::now() >= d) {
+                        // 締め切りで抜けたか (T15.0 (3))。立てるのは**この締め切りの `break` だけ**で、
+                        // 「全候補が失敗した」の `break` では立てない (そのときの `last_err` は本物の理由)
+                        self.timed_out = true;
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        // 締め切りで抜けたときは「終わった理由」を返す (T15.0 (3))。ここで `last_err`
+        // (先に返ってきた 1 本の `ECONNREFUSED` 等) を返すと、30 秒黙って待った接続が
+        // `/errors` にも `/hosts` の `errors_by_cause` にも `refused` として残り、
+        // 原因別の集計がそのまま狂う (`ErrCause::from_io` はこの 1 つの札しか見ない)
+        if self.timed_out {
+            return Err(attempts_timed_out());
+        }
+        Err(self.last_err.take().unwrap_or_else(attempts_timed_out))
     }
 
     /// 次の候補を起こすか: 候補が残っていて、走っているものが無いか間隔が過ぎた。
@@ -259,6 +276,7 @@ impl<'a> Race<'a> {
         let addr = self.addrs[self.launched];
         let index = self.launched;
         let tx = self.tx.clone();
+        let connect = self.connect;
         let remaining = self.deadline.map(|d| {
             d.saturating_duration_since(now)
                 .max(Duration::from_millis(1))
@@ -270,7 +288,7 @@ impl<'a> Race<'a> {
         #[cfg(test)]
         HE_LAUNCHED.set(HE_LAUNCHED.get() + 1);
         thread::spawn(move || {
-            let _ = tx.send((index, connect_one(&addr, remaining)));
+            let _ = tx.send((index, connect(&addr, remaining)));
         });
         self.launched += 1;
         self.pending += 1;
@@ -279,7 +297,7 @@ impl<'a> Race<'a> {
 
     /// 次の結果を待つ。締め切りが無いときは、まだ launch していないぶんの間隔だけ待ち、
     /// 全部 launch したあとは結果が出るまで待つ (無期限)。
-    fn wait(&self, now: Instant) -> Result<(usize, io::Result<TcpStream>), RecvTimeoutError> {
+    fn wait(&self, now: Instant) -> Result<(usize, io::Result<S>), RecvTimeoutError> {
         let wait = if self.launched < self.addrs.len() {
             Some(self.next_launch.saturating_duration_since(now))
         } else {
@@ -291,3 +309,7 @@ impl<'a> Race<'a> {
         }
     }
 }
+
+/// `Race` の締め切りと間隔の単体試験 (T.34.79。作り物の接続関数で、網には出ない)。
+#[cfg(test)]
+mod race_tests;
