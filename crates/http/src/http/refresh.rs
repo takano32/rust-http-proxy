@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use super::upstream::{acquire_origin, request_head};
+use super::upstream::{OriginConn, acquire_origin, request_head};
 use super::{Shared, read_response_head};
 use crate::Upstream;
 use crate::body::{BodyReader, Framing};
@@ -183,40 +183,21 @@ fn revalidate(
     let cfg = cache.config();
 
     if status == 304 {
-        // 304 の validator が保存済みと違う (T.32.9): 延ばさずに消して終える (次の要求は普通のミス)
-        if super::fetch::not_modified_conflicts(&cached, &rheaders) {
-            cache.remove(key);
-            if reusable {
-                upstream.pool.put(&pool_key, server, timeout);
-            }
-            return Ok("304 names another representation, removed");
-        }
-        // 304 が保存を禁じた: 延命せず消す (T.29.0)。304 の `Set-Cookie` は誰にも渡さない
-        // (裏の再検証の要求は利用者のものではない)
-        if freshness::not_modified_forbids_storing(&rheaders) {
-            cache.remove(key);
-            if reusable {
-                upstream.pool.put(&pool_key, server, timeout);
-            }
-            return Ok("304 forbids storing, removed");
-        }
-        let p = freshness::revalidated_policy(&rheaders, &cached, cfg, now);
-        // 304 のヘッダーで保存済みの先頭も書き直す (T.28.2。同期の再検証と同じ)
-        match headers::merge_not_modified(cached_head, &rhead) {
-            Some(new_head) => {
-                cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
-            }
-            None => {
-                cache.refresh(key, p.ttl, p.age, conn_id);
-            }
-        }
-        cache
-            .background_revalidations
-            .fetch_add(1, Ordering::Relaxed);
+        let outcome = apply_not_modified(
+            cache,
+            key,
+            url,
+            conn_id,
+            now,
+            &cached,
+            cached_head,
+            &rhead,
+            &rheaders,
+        );
         if reusable {
             upstream.pool.put(&pool_key, server, timeout);
         }
-        return Ok("304, refreshed");
+        return Ok(outcome);
     }
     if !(200..500).contains(&status) {
         // オリジン側の問題 (5xx): 古い表現は残す。4xx (404・410 など) はオリジンの答えなので、
@@ -233,7 +214,71 @@ fn revalidate(
         cache.remove(key);
         return Ok("not cacheable any more, removed");
     };
-    let sanitized = headers::sanitize_response_head(&rhead);
+    if !store_fresh_copy(cache, key, url, conn_id, &mut server, framing, &rhead, &p)? {
+        return Ok("truncated, stale kept");
+    }
+    if reusable {
+        upstream.pool.put(&pool_key, server, timeout);
+    }
+    Ok("replaced with a fresh copy")
+}
+
+/// 裏の再検証で届いた 304 を保存済みの表現に当てる (T.34.24)。validator が保存済みと違う (T.32.9)・
+/// 保存を禁じた (T.29.0) なら消し、そうでなければ期限を延ばして先頭も書き直す (T.28.2)。
+/// 戻り値はログに書く結末。接続をプールへ戻すのは呼ぶ側 (この後)。
+#[allow(clippy::too_many_arguments)]
+fn apply_not_modified(
+    cache: &Cache,
+    key: CacheKey,
+    url: &str,
+    conn_id: usize,
+    now: u64,
+    cached: &freshness::CachedHead,
+    cached_head: &[u8],
+    rhead: &[u8],
+    rheaders: &[(String, String)],
+) -> &'static str {
+    // 304 の validator が保存済みと違う (T.32.9): 延ばさずに消して終える (次の要求は普通のミス)
+    if super::fetch::not_modified_conflicts(cached, rheaders) {
+        cache.remove(key);
+        return "304 names another representation, removed";
+    }
+    // 304 が保存を禁じた: 延命せず消す (T.29.0)。304 の `Set-Cookie` は誰にも渡さない
+    // (裏の再検証の要求は利用者のものではない)
+    if freshness::not_modified_forbids_storing(rheaders) {
+        cache.remove(key);
+        return "304 forbids storing, removed";
+    }
+    let p = freshness::revalidated_policy(rheaders, cached, cache.config(), now);
+    // 304 のヘッダーで保存済みの先頭も書き直す (T.28.2。同期の再検証と同じ)
+    match headers::merge_not_modified(cached_head, rhead) {
+        Some(new_head) => {
+            cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
+        }
+        None => {
+            cache.refresh(key, p.ttl, p.age, conn_id);
+        }
+    }
+    cache
+        .background_revalidations
+        .fetch_add(1, Ordering::Relaxed);
+    "304, refreshed"
+}
+
+/// 裏の再検証で届いた新しい表現 (`rhead` と本文) を保存し直す (T.34.24)。本文が途中で切れたら保存を
+/// 捨てて偽 (古い表現が残る)。読めなければ誤り。
+#[allow(clippy::too_many_arguments)]
+fn store_fresh_copy(
+    cache: &Cache,
+    key: CacheKey,
+    url: &str,
+    conn_id: usize,
+    server: &mut OriginConn,
+    framing: Framing,
+    rhead: &[u8],
+    p: &freshness::Policy,
+) -> io::Result<bool> {
+    let sanitized = headers::sanitize_response_head(rhead);
     let stored_head = sanitized.assemble(&[] as &[&str]);
     let expected = match framing {
         Framing::Length(n) => Some(n.saturating_add(stored_head.len() as u64)),
@@ -243,7 +288,7 @@ fn revalidate(
     sink.write(&stored_head);
     let mut buf = super::buffers::CopyBuf::take();
     let clean = {
-        let mut body = BodyReader::new(&mut server, framing);
+        let mut body = BodyReader::new(&mut *server, framing);
         loop {
             match body.read(&mut buf) {
                 Ok(0) => break,
@@ -258,14 +303,11 @@ fn revalidate(
     };
     if !clean {
         sink.abort();
-        return Ok("truncated, stale kept");
+        return Ok(false);
     }
     sink.finish();
     cache
         .background_revalidations
         .fetch_add(1, Ordering::Relaxed);
-    if reusable {
-        upstream.pool.put(&pool_key, server, timeout);
-    }
-    Ok("replaced with a fresh copy")
+    Ok(true)
 }

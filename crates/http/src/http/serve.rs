@@ -261,6 +261,57 @@ pub(super) struct Serve<'a> {
     pub map_locations: bool,
 }
 
+/// `Range` の解釈 ([`RangeSpec`]) から決まる、保存済みの表現の返し方 ([`range_plan`])。
+#[derive(Debug, PartialEq, Eq)]
+struct RangePlan {
+    status: u16,
+    /// ステータス行を差し替えるのは 206 / 416 のときだけ (`None` なら保存済みのものを使う)
+    status_line: Option<&'static str>,
+    /// 保存済みの先頭から落とすヘッダー (416 のときだけ。空なら何も落とさない)
+    drop_names: &'static [&'static str],
+    /// `Content-Range` の行 (206 は `Some(Some((始め, 終わり)))`、416 は `Some(None)`、全体なら `None`)
+    content_range: Option<Option<(u64, u64)>>,
+    /// 返す本文の始めと長さ
+    start: u64,
+    len: u64,
+}
+
+/// 保存済みの表現の返し方を決める (純粋な計算。T.34.24)。`head` は保存済みの先頭 (全体を返すときの
+/// ステータスを読む)、`body_len` は本文の長さ。
+#[inline]
+fn range_plan(range: RangeSpec, body_len: u64, head: &[u8]) -> RangePlan {
+    match range {
+        RangeSpec::Bytes { start, end } => RangePlan {
+            status: 206,
+            status_line: Some("HTTP/1.1 206 Partial Content"),
+            drop_names: &[],
+            content_range: Some(Some((start, end))),
+            start,
+            len: end - start + 1,
+        },
+        // 本文を返さないので、保存してある `Content-Type` は落とす。
+        // **両方の経路で落とすこと**: マッピング形式は `ResponseHead` を組み立てるが、
+        // それ以外は生の先頭をそのまま `write_response_head` に渡すので、
+        // `ResponseHead` の側だけを直しても素の HIT では残ってしまう (T10.7)
+        RangeSpec::Unsatisfiable => RangePlan {
+            status: 416,
+            status_line: Some("HTTP/1.1 416 Range Not Satisfiable"),
+            drop_names: &["content-type"],
+            content_range: Some(None),
+            start: 0,
+            len: 0,
+        },
+        RangeSpec::Ignore => RangePlan {
+            status: status_of(head),
+            status_line: None,
+            drop_names: &[],
+            content_range: None,
+            start: 0,
+            len: body_len,
+        },
+    }
+}
+
 /// キャッシュ済みレスポンスに枠組み (Content-Length) と `X-Cache` / `Age` を付けて書き出す。
 /// 戻り値は (ステータス, 書いたバイト数)。
 pub(super) fn write_cached_response(
@@ -289,37 +340,18 @@ pub(super) fn write_cached_response(
     extra[1] = age_line(&mut age_buf, serve.age);
     let mut n_extra = 2usize;
 
-    let status;
-    // ステータス行を差し替えるのは 206 / 416 のときだけ (`None` なら保存済みのものを使う)
-    let status_line: Option<&str>;
-    // 保存済みの先頭から落とすヘッダー (416 のときだけ。空なら何も落とさない)
-    let mut drop_names: &[&str] = &[];
-    let (start, len) = match serve.range {
-        RangeSpec::Bytes { start, end } => {
-            status = 206;
-            status_line = Some("HTTP/1.1 206 Partial Content");
-            extra[n_extra] = content_range_line(&mut cr_buf, Some((start, end)), body_len);
-            n_extra += 1;
-            (start, end - start + 1)
-        }
-        RangeSpec::Unsatisfiable => {
-            status = 416;
-            status_line = Some("HTTP/1.1 416 Range Not Satisfiable");
-            // 本文を返さないので、保存してある `Content-Type` は落とす。
-            // **両方の経路で落とすこと**: マッピング形式は `ResponseHead` を組み立てるが、
-            // それ以外は生の先頭をそのまま `write_response_head` に渡すので、
-            // `ResponseHead` の側だけを直しても素の HIT では残ってしまう (T10.7)
-            drop_names = &["content-type"];
-            extra[n_extra] = content_range_line(&mut cr_buf, None, body_len);
-            n_extra += 1;
-            (0, 0)
-        }
-        RangeSpec::Ignore => {
-            status = status_of(&entry.head);
-            status_line = None;
-            (0, body_len)
-        }
-    };
+    let RangePlan {
+        status,
+        status_line,
+        drop_names,
+        content_range,
+        start,
+        len,
+    } = range_plan(serve.range, body_len, &entry.head);
+    if let Some(range) = content_range {
+        extra[n_extra] = content_range_line(&mut cr_buf, range, body_len);
+        n_extra += 1;
+    }
     extra[n_extra] = content_length_line(&mut cl_buf, len);
     n_extra += 1;
     // キャッシュから返す応答にも自分の `Via` を足す (T.28.10 (b))。保存した先頭には入っていない
@@ -452,5 +484,33 @@ mod extra_line_tests {
                 .unwrap_or(200);
             assert_eq!(status_of(head), old, "head={:?}", head);
         }
+    }
+
+    /// 206 は範囲と `Content-Range`、416 は本文なしで `Content-Type` を落とし、範囲を見ないときは
+    /// 保存済みのステータスのまま全体 (T.34.24)。
+    #[test]
+    fn range_plan_of_each_range_spec() {
+        let head = b"HTTP/1.1 203 Non-Authoritative Information\r\nContent-Length: 10\r\n\r\n";
+        let p = range_plan(RangeSpec::Bytes { start: 2, end: 5 }, 10, head);
+        assert_eq!(
+            p,
+            RangePlan {
+                status: 206,
+                status_line: Some("HTTP/1.1 206 Partial Content"),
+                drop_names: &[],
+                content_range: Some(Some((2, 5))),
+                start: 2,
+                len: 4,
+            }
+        );
+        let p = range_plan(RangeSpec::Unsatisfiable, 10, head);
+        assert_eq!((p.status, p.len, p.content_range), (416, 0, Some(None)));
+        assert_eq!(p.drop_names, &["content-type"]);
+        let p = range_plan(RangeSpec::Ignore, 10, head);
+        assert_eq!(
+            (p.status, p.status_line, p.content_range, p.start, p.len),
+            (203, None, None, 0, 10)
+        );
+        assert!(p.drop_names.is_empty());
     }
 }
