@@ -99,8 +99,12 @@ impl BadRequestReason {
     /// ([`ErrCause::from_io`](super::ErrCause::from_io) と同じ作法)。メソッドらしきものが token として
     /// 読めなければ [`BadRequestReason::Method`] (走査が投げるゴミ)、
     /// 読めるなら要求行そのものの形が足りない ([`BadRequestReason::RequestLine`])。
+    ///
+    /// 区切りは要求行を割る側 (`proxy-server` の `check_request_line`) と同じ **ASCII の空白だけ**
+    /// (T.34.142。今までは Unicode の空白で割っていたので、`G\u{a0}ET` を `G` と読んで
+    /// `request_line` に数えていた)。
     pub fn of_request_line(line: &str) -> BadRequestReason {
-        match line.split_whitespace().next() {
+        match line.split_ascii_whitespace().next() {
             Some(m) if !is_method_token(m) => BadRequestReason::Method,
             _ => BadRequestReason::RequestLine,
         }
@@ -209,6 +213,20 @@ mod tests {
         assert_eq!(
             BadRequestReason::of_request_line("取得 / HTTP/1.1"),
             BadRequestReason::Method
+        );
+    }
+
+    /// 区切りは ASCII の空白だけ (要求行を割る側と同じ。T.34.142)。NBSP はメソッドの中に残るので
+    /// `G\u{a0}ET\u{a0}/x` は 1 語 = token でない = `method` (今までは `G` と読んで `request_line`)。
+    #[test]
+    fn a_request_line_is_split_on_ascii_whitespace_only() {
+        assert_eq!(
+            BadRequestReason::of_request_line("G\u{a0}ET\u{a0}/x\r\n"),
+            BadRequestReason::Method
+        );
+        assert_eq!(
+            BadRequestReason::of_request_line("GET\t/x\r\n"),
+            BadRequestReason::RequestLine
         );
     }
 }

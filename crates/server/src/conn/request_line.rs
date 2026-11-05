@@ -21,6 +21,9 @@ pub(super) enum RequestLineError<'a> {
     Version(&'a str),
     /// `*` (asterisk-form) を `OPTIONS` 以外のメソッドで使った。400。中身はメソッド
     Asterisk(&'a str),
+    /// メソッドが token (RFC 9110 §5.6.2・RFC 9112 §3) でない (`G\u{a0}ET`・`GE@T`)。400。
+    /// 中身はメソッド (T.34.142)
+    Method(&'a str),
 }
 
 impl RequestLineError<'_> {
@@ -61,6 +64,13 @@ pub(super) fn check_request_line(line: &str) -> Result<RequestLine<'_>, RequestL
     // `*` (asterisk-form) は `OPTIONS` だけ (RFC 9112 §3.2.4。T.29.9)。今までは `*` を宛先として引いて 502
     if target == "*" && method != "OPTIONS" {
         return Err(RequestLineError::Asterisk(method));
+    }
+    // メソッドは token だけ (RFC 9112 §3 の `method = token`。T.34.142)。今までは形しか見ず、
+    // `G\u{a0}ET /x HTTP/1.1` (区切りは ASCII の空白だけなので NBSP はメソッドの中に残る) や
+    // `GE@T` をそのままオリジンへ送っていた。見るのは上の判定を全部通った行だけなので、
+    // 今まで断っていた行の理由は変わらない
+    if !proxy_base::ascii::is_token(method) {
+        return Err(RequestLineError::Method(method));
     }
     Ok(RequestLine {
         method,
@@ -171,6 +181,30 @@ mod tests {
         let e = check_request_line("GET * HTTP/1.1\r\n").unwrap_err();
         assert_eq!(e, RequestLineError::Asterisk("GET"));
         assert_eq!(e.status(), 400);
+    }
+
+    /// T.34.142: token でないメソッドは 400 (`method`)。token の字だけのメソッドは知らなくても通す。
+    #[test]
+    fn a_method_that_is_not_a_token_is_refused() {
+        for (line, method) in [
+            ("G\u{a0}ET /x HTTP/1.1\r\n", "G\u{a0}ET"),
+            ("GE@T http://h/ HTTP/1.1\r\n", "GE@T"),
+            ("GET\u{1} / HTTP/1.1\r\n", "GET\u{1}"),
+        ] {
+            let e = check_request_line(line).unwrap_err();
+            assert_eq!(e, RequestLineError::Method(method), "{line:?}");
+            assert_eq!(e.status(), 400);
+        }
+        assert!(check_request_line("X~CUSTOM! /x HTTP/1.1\r\n").is_ok());
+        // 今まで断っていた行は、今までの理由のまま (メソッドの判定はいちばん後)
+        assert_eq!(
+            check_request_line("GE@T * HTTP/1.1\r\n"),
+            Err(RequestLineError::Asterisk("GE@T"))
+        );
+        assert_eq!(
+            check_request_line("GE@T / HTTP/2.0\r\n"),
+            Err(RequestLineError::Version("HTTP/2.0"))
+        );
     }
 
     #[test]

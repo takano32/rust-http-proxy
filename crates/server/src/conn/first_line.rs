@@ -115,6 +115,21 @@ pub(super) fn refuse_request_line(
                 )
             },
         ),
+        // メソッドが token でない (T.34.142)。理由と数え方は、割れない要求行の先頭が token で
+        // ないとき (`BadRequestReason::of_request_line`) と同じ `method`
+        RequestLineError::Method(method) => peer.refuse(
+            metrics::BadRequestReason::Method,
+            status,
+            "Bad Request",
+            |more| {
+                log_warn!(
+                    Some(conn_id),
+                    "400 Bad Request: method is not a token: {}{}",
+                    crate::log::Clip(method),
+                    more
+                )
+            },
+        ),
     }
 }
 

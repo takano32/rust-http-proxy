@@ -241,7 +241,7 @@
     **読めずに断った要求もここに入ります** (T.14.28。原因は `bad_request:<reason>` の 10 種
     = `bad_request:request_line` (要求行が空白で 2 つに割れない / 長すぎて 414) /
     `bad_request:header_too_large` (ヘッダーが長すぎて 431) / `bad_request:method` (メソッドが
-    HTTP の token として読めない) / `bad_request:no_host` (オリジン形式なのに `Host` が無い) /
+    HTTP の token として読めない。要求行が 3 つにそろっていても、メソッドが token でなければ (`GE@T`・NBSP の混ざった `GET`) ここ。T.34.142) / `bad_request:no_host` (オリジン形式なのに `Host` が無い) /
     `bad_request:bad_uri` (絶対 URI やマッピング形式にホストが無い) / `bad_request:body_framing`
     (`Content-Length` と `Transfer-Encoding: chunked` が両方ある = 要求の密輸) /
     `bad_request:obs_fold` (折り返したヘッダー = 次の行が SP / HTAB で始まる。RFC 9112 §5.2 の
