@@ -54,18 +54,6 @@
 
 **見つけたバグと怪しい所 (直す仕事。振る舞いを変えるので、リファクタリングとは別のコミットにする)**
 
-- [ ] **T.34.161 時間に頼る試験 `tests/idle_sleep_test.rs:76` を時間に頼らない形に (T.34.4 で負荷の下で 1 回落ちた)**
-  - 目的: `test_integration_idle_watch_sleeps_while_nothing_is_parked` が、`cargo test --workspace` の負荷の下で「預かりが 0 なのに idle-watch が起きた」と言って落ちた。単体では 3/3 通る。
-  - ほかの候補: selfbench の 50 ms の sleep (`lib.rs:291-294`)、canary の `a_probe_measures_a_real_connect_and_a_refused_one`、profile の `the_busiest_thread_comes_first_in_threads_top` (T.34.2 のレビュー)。
-  - 値打ち: 中 (CI の揺れ)。
-- [ ] **T.34.162 試験の `cache_cfg(dir)` (`tests/common/mod.rs:451-458`) と `disk_only(dir)` (`revalidate_cookie_test.rs:59`) が、一時ディレクトリに pid を付けずに `remove_dir_all` する (T.34.5 のレビューで見つけた)**
-  - 目的: worktree を並べて `cargo test` を回すと、別の実行が使っている最中のキャッシュを消してしまう。
-  - やること: 名前に `std::process::id()` を入れる。
-  - 値打ち: 中 (試験の揺れ) / 本体は変えない。
-- [ ] **T.34.163 `common::read_response` が `Content-Length:` を大文字小文字を区別して探す (T.34.5 のレビューで見つけた)**
-  - 目的: 同じファイルの `content_length` は区別しない。いまは実害が無い。
-  - 値打ち: 低。
-
 - [ ] **T.34.99 締める (タスク 34 の版を走らせたあとに見る・決める・書く)**
   - 前提:
     - 振る舞いを変えないリファクタリングなので、判定は今の判定表 (`--criteria phase30`) が前の版と同じに満たすこと。
