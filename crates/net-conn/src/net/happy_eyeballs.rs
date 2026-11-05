@@ -41,7 +41,7 @@ pub fn stagger() -> Duration {
 /// 記述子 1 つとスレッド 1 本を握ったまま残る (join しない・`PROXY_MAX_THREADS` に数えない)。候補数に
 /// 上限が無いと、何十もの A / AAAA を返す名前への 1 接続がその数だけ記述子を使う。8 件あれば 250 ms 間隔で
 /// 2 秒ぶん試せ、交互に並べたあとで切るので両方の族が 4 件ずつ残る。
-pub const MAX_CANDIDATES: usize = 8;
+pub(crate) const MAX_CANDIDATES: usize = 8;
 
 #[cfg(test)]
 thread_local! {

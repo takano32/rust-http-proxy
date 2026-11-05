@@ -11,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// ログを 1 行出すだけなら [`log_line`] / [`access`] が使い回しのバッファへ直接書くので、
 /// この関数は `String` が要る呼び出し元のためだけに残してある。
-pub fn timestamp() -> String {
+#[cfg(test)]
+pub(crate) fn timestamp() -> String {
     let mut buf = Vec::with_capacity(24);
     push_timestamp(&mut buf);
     String::from_utf8(buf).unwrap_or_default()

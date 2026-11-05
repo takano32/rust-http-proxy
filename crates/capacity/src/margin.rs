@@ -72,7 +72,7 @@ impl Margin {
     }
 
     /// 窓の中で隣り合うサンプル間の差の最大値。
-    pub fn volatility(&self) -> u64 {
+    pub(crate) fn volatility(&self) -> u64 {
         self.history
             .iter()
             .zip(self.history.iter().skip(1))
@@ -81,7 +81,8 @@ impl Margin {
             .unwrap_or(0)
     }
 
-    pub fn backoff(&self) -> u64 {
+    #[cfg(test)]
+    pub(crate) fn backoff(&self) -> u64 {
         self.backoff
     }
 

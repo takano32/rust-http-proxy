@@ -45,7 +45,7 @@ impl Throttle {
 
     /// 前に通してから `period_secs` 以上たっていれば通す (`Some` = 1 行出してよい)。
     /// 同時に来たときは比較交換に勝った 1 本だけが通る。
-    pub fn pass_at(&self, now: u64, period_secs: u64) -> Option<Skipped> {
+    pub(crate) fn pass_at(&self, now: u64, period_secs: u64) -> Option<Skipped> {
         let last = self.last.load(Ordering::Relaxed);
         if (last == 0 || now.saturating_sub(last - 1) >= period_secs)
             && self
@@ -82,7 +82,7 @@ impl std::fmt::Display for Skipped {
 pub struct Clip<'a>(pub &'a str);
 
 /// [`Clip`] が載せる長さの上限 (バイト)。
-pub const CLIP_BYTES: usize = 256;
+pub(crate) const CLIP_BYTES: usize = 256;
 
 impl std::fmt::Display for Clip<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

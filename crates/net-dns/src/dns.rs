@@ -60,16 +60,18 @@ pub use cost::{
 use entry::{Entry, addrs_changed, evict_oldest};
 pub use lookup::{relookup_after_stale, resolve_host_marked};
 pub use pool::{
-    LIMIT_DEFAULT as RESOLVER_LIMIT_DEFAULT, TIMEOUT_DEFAULT, counters as resolver_counters,
-    is_timeout, limit as resolver_limit, limit_for_threads as resolver_limit_for_threads,
-    set_limit as set_resolver_limit, set_timeout, timeout,
+    TIMEOUT_DEFAULT, counters as resolver_counters, is_timeout, limit as resolver_limit,
+    limit_for_threads as resolver_limit_for_threads, set_limit as set_resolver_limit, set_timeout,
+    timeout,
 };
-pub use resolved::{Resolved, resolve, resolve_host, resolve_with_pref, resolve_with_pref_marked};
+#[cfg(test)]
+use resolved::resolve_with_pref;
+pub use resolved::{Resolved, resolve, resolve_host, resolve_with_pref_marked};
 pub use view::{DnsSort, MAX_ROW_ADDRS, TableRow, counters, entries, status_json, table};
 use warm::{refresh_after, request_refresh, wake_refresher, warm_clear, warm_promote};
 
 /// 解決に失敗したとき、この時間以内の古い結果なら使う。
-pub const STALE_MAX: Duration = Duration::from_secs(3600);
+pub(crate) const STALE_MAX: Duration = Duration::from_secs(3600);
 /// 失敗を覚えておく時間の既定 (`PROXY_DNS_NEGATIVE_SECS` で変える。0 で覚えない)。
 ///
 /// 5 秒から 60 秒にした (T13.1)。デプロイ先の 58.6 時間で解決の失敗は 80 件・**1 回 約 2 秒**
@@ -214,7 +216,7 @@ pub fn set_warm_window(window: Duration) {
     }
 }
 
-pub fn warm_window() -> Duration {
+pub(crate) fn warm_window() -> Duration {
     Duration::from_secs(WARM_SECS.load(Ordering::Relaxed))
 }
 
@@ -224,7 +226,7 @@ pub fn set_serve_stale(window: Duration) {
     SERVE_STALE_SECS.store(window.as_secs(), Ordering::Relaxed);
 }
 
-pub fn serve_stale() -> Duration {
+pub(crate) fn serve_stale() -> Duration {
     Duration::from_secs(SERVE_STALE_SECS.load(Ordering::Relaxed))
 }
 

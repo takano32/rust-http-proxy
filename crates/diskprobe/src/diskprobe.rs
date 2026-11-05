@@ -29,7 +29,7 @@ use state::{Note, Saved, learn};
 /// 最初の上限 (実データの上限でもある)。
 pub const START: u64 = 512 * MIB;
 /// fast モードで 1 プローブごとに伸ばす量。
-pub const FAST_STEP: u64 = 512 * MIB;
+pub(crate) const FAST_STEP: u64 = 512 * MIB;
 /// これだけ止められなければ確認済みとみなす。
 const CONFIRM_SECS: u64 = 600;
 /// 生存記録の間隔。
@@ -149,7 +149,8 @@ impl DiskProbe {
         self.cap
     }
 
-    pub fn learned(&self) -> Option<u64> {
+    #[cfg(test)]
+    pub(crate) fn learned(&self) -> Option<u64> {
         self.learned
     }
 

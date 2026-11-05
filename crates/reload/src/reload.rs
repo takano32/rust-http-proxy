@@ -30,7 +30,7 @@ use crate::{envfile, log_info, log_warn};
 mod merge;
 
 /// inotify が無い / 取りこぼした場合に備えた mtime 確認の間隔。
-pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// 保存直後の連続イベントをまとめるための待ち時間。
 const SETTLE: Duration = Duration::from_millis(200);
 

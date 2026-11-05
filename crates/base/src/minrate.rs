@@ -103,7 +103,7 @@ pub fn closed_counts() -> [u64; SIDES] {
 
 /// 遅すぎて切ったことを表すエラーの中身 ([`is_slow`] で見分ける)。
 #[derive(Debug)]
-pub struct TooSlow {
+pub(crate) struct TooSlow {
     pub bytes: u64,
     pub waited: Duration,
     pub min_bps: u64,
@@ -124,7 +124,8 @@ impl std::fmt::Display for TooSlow {
 impl std::error::Error for TooSlow {}
 
 /// [`RateGuard`] が切ったエラーか。種類は `TimedOut` (締め切りの仲間として数えられる)。
-pub fn is_slow(e: &io::Error) -> bool {
+#[cfg(test)]
+pub(crate) fn is_slow(e: &io::Error) -> bool {
     e.get_ref().is_some_and(|inner| inner.is::<TooSlow>())
 }
 
@@ -246,7 +247,7 @@ impl RateGuard {
 
     /// いまの窓で 1 度でも待ったか (待ち始めた相手は小さな書きも測る)。
     #[inline]
-    pub fn stalling(&self) -> bool {
+    pub(crate) fn stalling(&self) -> bool {
         !self.stalled.is_zero()
     }
 
@@ -291,7 +292,7 @@ fn unsent(_fd: i32) -> u64 {
 /// 枠を握り続けるには送信バッファを越える大きな応答が要り、それは `BufWriter` の容量
 /// (64 KiB) ごとの書きになるので、大きな書きだけ測れば足りる。いまの窓で 1 度でも
 /// 待った相手は ([`RateGuard::stalling`]) 小さな書きも測る。
-pub const TIMED_MIN_BYTES: usize = 16 * 1024;
+pub(crate) const TIMED_MIN_BYTES: usize = 16 * 1024;
 
 /// クライアントへの書きを包んで、大きな書きの待ちを [`RateGuard`] に積む (`BufWriter` の中に置く)。
 ///

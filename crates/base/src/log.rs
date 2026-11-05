@@ -19,16 +19,18 @@ use std::sync::atomic::{AtomicU8, Ordering};
 mod format;
 mod ring;
 mod throttle;
+pub use format::civil_from_epoch;
 #[cfg(test)]
 use format::push_timestamp_at;
-pub use format::{civil_from_epoch, timestamp};
+#[cfg(test)]
+use format::timestamp;
 use format::{push_access, push_prefix};
 use ring::remember;
 pub use ring::{
     Line, MAX_LOG_LINE, MAX_LOG_LINES, clear_recent, prefault, recent, recent_len, restore,
     restored_count, take_unwritten,
 };
-pub use throttle::{CLIP_BYTES, Clip, Skipped, Throttle, WARN_EVERY_SECS};
+pub use throttle::{Clip, Skipped, Throttle, WARN_EVERY_SECS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {

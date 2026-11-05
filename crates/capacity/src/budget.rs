@@ -17,8 +17,8 @@ use std::path::Path;
 use crate::sysinfo::{self, CgroupMem, FsInfo, MemPressure};
 
 /// この値以上の PSI avg10 (%) を圧迫とみなす。
-pub const PRESSURE_SOME_AVG10: f64 = 20.0;
-pub const PRESSURE_FULL_AVG10: f64 = 5.0;
+pub(crate) const PRESSURE_SOME_AVG10: f64 = 20.0;
+pub(crate) const PRESSURE_FULL_AVG10: f64 = 5.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemSnapshot {
@@ -172,7 +172,7 @@ pub fn percent_of(total: u64, percent: u8) -> u64 {
 }
 
 /// 目標使用量 (バイト): 空きを `keep_free` だけ残した量。`percent` % を超えない。
-pub fn target_bytes(total: u64, percent: u8, keep_free: u64) -> u64 {
+pub(crate) fn target_bytes(total: u64, percent: u8, keep_free: u64) -> u64 {
     percent_of(total, percent).min(total.saturating_sub(keep_free))
 }
 

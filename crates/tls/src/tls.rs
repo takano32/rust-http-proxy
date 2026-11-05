@@ -84,7 +84,8 @@ impl TlsClient {
     }
 
     /// 読み込み済みか (`--check` や試験が、遅らせたことを確かめるため)。
-    pub fn is_loaded(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_loaded(&self) -> bool {
         self.state.get().is_some()
     }
 
@@ -153,7 +154,8 @@ impl TlsClient {
         }
     }
 
-    pub fn verifies(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn verifies(&self) -> bool {
         self.verify
     }
 

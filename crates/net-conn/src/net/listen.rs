@@ -13,7 +13,7 @@ use crate::{log_debug, log_warn};
 pub const STD_BACKLOG: u32 = 128;
 
 /// backlog の既定 (`PROXY_LISTEN_BACKLOG=0`) の頭打ち。
-pub const DEFAULT_BACKLOG_CAP: u32 = 1024;
+pub(crate) const DEFAULT_BACKLOG_CAP: u32 = 1024;
 
 /// backlog の既定: **`min(1024, /proc/sys/net/core/somaxconn)`** (T14.47)。
 ///
@@ -124,7 +124,7 @@ pub fn bind_all(addrs: &[IpAddr], port: u16, backlog: u32) -> io::Result<Vec<Tcp
     bind_all_with(addrs, port, super::ipv6_enabled(), backlog)
 }
 
-pub fn bind_all_with(
+pub(crate) fn bind_all_with(
     addrs: &[IpAddr],
     port: u16,
     ipv6: bool,

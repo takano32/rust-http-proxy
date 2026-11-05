@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 /// `PROXY_DNS_TIMEOUT_SECS` の既定 (`PROXY_HEADER_TIMEOUT_SECS` の既定と同じ 10 秒)。
 pub const TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
 /// 同時に走らせる `getaddrinfo` の上限の既定 (起動時に `PROXY_MAX_THREADS` の 1/4 に当て直す)。
-pub const LIMIT_DEFAULT: usize = 16;
+pub(crate) const LIMIT_DEFAULT: usize = 16;
 /// 締め切り・上限で諦めたエラーの文言の頭 (`/errors` と `/log` に出る。`dns_temp` に数える)。
 const TIMEOUT_PREFIX: &str = "dns_timeout";
 /// 仕事の無い `dns-resolve` スレッドが終わるまでの時間。

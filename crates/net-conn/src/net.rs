@@ -32,15 +32,16 @@ mod tests;
 pub use crate::hostport::{
     join_host_port, split_host_port, split_host_port_ref, with_default_port,
 };
-pub use addrs::{canonical_addr, canonical_ip, interleave, interleave_from};
+pub use addrs::{canonical_addr, canonical_ip};
 pub use connect::{connect, connect_resolved, connect_with};
-pub use happy_eyeballs::{
-    DEFAULT_STAGGER, MAX_CANDIDATES, STAGGER_RANGE_MS, connect_addr, set_stagger, stagger,
-};
+#[cfg(test)]
+use happy_eyeballs::MAX_CANDIDATES;
+pub use happy_eyeballs::{DEFAULT_STAGGER, STAGGER_RANGE_MS, connect_addr, set_stagger, stagger};
 pub use ipv6::{
     IPV6_TEST_LOCK, ipv6_counters, ipv6_enabled, ipv6_status_json, ipv6_v4_first, note_canary_ipv6,
     set_ipv6_enabled,
 };
-pub use listen::{
-    DEFAULT_BACKLOG_CAP, STD_BACKLOG, bind_all, bind_all_with, default_backlog, describe_listener,
-};
+pub use listen::STD_BACKLOG;
+#[cfg(test)]
+use listen::{DEFAULT_BACKLOG_CAP, bind_all_with};
+pub use listen::{bind_all, default_backlog, describe_listener};

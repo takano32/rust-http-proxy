@@ -61,7 +61,7 @@ fn month(s: &str) -> Option<u32> {
 }
 
 /// 暦日時 (UTC) から UNIX 時刻 (秒)。1970 年より前は `None`。
-pub fn epoch_from_civil(y: i64, m: u32, d: u32, h: u32, mi: u32, s: u32) -> Option<u64> {
+pub(crate) fn epoch_from_civil(y: i64, m: u32, d: u32, h: u32, mi: u32, s: u32) -> Option<u64> {
     // Howard Hinnant の days_from_civil
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -77,7 +77,7 @@ pub fn epoch_from_civil(y: i64, m: u32, d: u32, h: u32, mi: u32, s: u32) -> Opti
 /// UNIX 時刻 (秒) を IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`、29 字) で `buf` に書く (T.29.9)。
 ///
 /// 応答の `Date` (RFC 9110 §6.6.1) に使う。確保はしない。
-pub fn imf_fixdate(epoch: u64, buf: &mut [u8; 29]) -> &str {
+pub(crate) fn imf_fixdate(epoch: u64, buf: &mut [u8; 29]) -> &str {
     const DAYS: [&[u8; 3]; 7] = [b"Thu", b"Fri", b"Sat", b"Sun", b"Mon", b"Tue", b"Wed"];
     const MONTHS: [&[u8; 3]; 12] = [
         b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov",
