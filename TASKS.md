@@ -42,20 +42,6 @@
 
 **HTTP の経路 の残り (T.34.0 のレビューから)**
 
-- [ ] **T.34.21 クレートをまたぐ重複を除く: `content_length_value`・`detail_of`/`origin_detail`・誤り応答の 1 行**
-  - 目的:
-    - `content_length_value` が、msg と origin に同じ本文で 2 つある。
-    - `tunnel::detail_of` と `http::upstream::origin_detail` は、ほぼ同じ計算をしている。
-    - 誤り応答の 1 行を、3 か所 (`http/respond.rs`・`server/conn/header_read.rs`・`tunnel.rs:143-148`) が別々に組んでいる。
-  - やること:
-    - `proxy_base::ascii::content_length_value` を置く。
-    - `proxy_base::httpdate::error_head` を置く (確保しない)。
-    - metrics-types に `Detail::of_connect` を置く。
-  - 受け入れ基準:
-    - 3 か所の応答と、個票の値が 1 バイトも変わらない。
-    - Ir が ±0.5% 以内。
-  - 値打ち: 中 / base と metrics-types の分割の後。
-
 **メトリクスの土台 の残り (T.34.1 のレビューから)**
 
 - [ ] **T.34.38 `ClientStats` の `pub` の欄 (10 個) を、メソッドに寄せる**
@@ -251,18 +237,6 @@
 
 **見つけたバグと怪しい所 (直す仕事。振る舞いを変えるので、リファクタリングとは別のコミットにする)**
 
-- [ ] **T.34.141 `header_read.rs::linger` の時間の上限が、読み 1 回ごとの上限でしかない (T.34.0 のレビューで見つけた)**
-  - 目的: `server/src/conn/header_read.rs:301-312` は、断ったあと 64 KiB まで読み捨てる。ところが締め切りの 200 ms は、1 回の `read` の無通信の締め切りでしかない。そのため 1 バイトを 150 ms おきに送り続ける相手に、ワーカーを最長で約 2.7 時間握られる。注記の「時間も上限つき」と食い違っている。
-  - 再現: 400 を起こす要求を送ったあと、1 バイトずつ 150 ms おきに送り続ける。
-  - やること: 全体の締め切り (例: 1 秒) を `Instant` で持つ。
-  - 値打ち: **中〜高** (ワーカーを握られる) / 本体を変える。
-- [ ] **T.34.142 要求行のメソッドが token かどうかを見ていない (T.34.0 のレビューで見つけた)**
-  - 目的: `serve_one.rs:220-238` は要求行の形しか見ない。そのため `G\u{a0}ET /x HTTP/1.1` のような要求も、そのままオリジンへ届く (RFC 9112 §3)。また、断る経路は `split_whitespace` で、通す経路は `split_ascii_whitespace` と、区切り方が違う。
-  - 値打ち: 中 / 本体を変える。
-- [ ] **T.34.146 要求 1 本で、壁時計を 2 回読んでいる (T.34.1 のレビューで見つけた)**
-  - 目的: `Metrics::record` は `now_epoch()` を 1 回だけ読む約束になっている。ところが `ClientStats::count` (`metrics-window/src/clients.rs:103-104`) が、自分でもう 1 回読んでいる。
-  - やること: `record_client` に `now` を渡す (呼び出し側は 5 か所)。
-  - 値打ち: 低 / 熱い経路 / 本体を変える。
 - [ ] **T.34.161 時間に頼る試験 `tests/idle_sleep_test.rs:76` を時間に頼らない形に (T.34.4 で負荷の下で 1 回落ちた)**
   - 目的: `test_integration_idle_watch_sleeps_while_nothing_is_parked` が、`cargo test --workspace` の負荷の下で「預かりが 0 なのに idle-watch が起きた」と言って落ちた。単体では 3/3 通る。
   - ほかの候補: selfbench の 50 ms の sleep (`lib.rs:291-294`)、canary の `a_probe_measures_a_real_connect_and_a_refused_one`、profile の `the_busiest_thread_comes_first_in_threads_top` (T.34.2 のレビュー)。
@@ -274,17 +248,6 @@
 - [ ] **T.34.163 `common::read_response` が `Content-Length:` を大文字小文字を区別して探す (T.34.5 のレビューで見つけた)**
   - 目的: 同じファイルの `content_length` は区別しない。いまは実害が無い。
   - 値打ち: 低。
-
-- [ ] **T.34.165 server の serve_one (334 行) を 300 行以下にする: `endpoints::Endpoint` を組む所と `Step::Connect` を組む所を出す (T.34.15 の残り)**
-  - 目的: T.34.11・12・15 のあと、`serve_one` は 334 行で、T.34.11 の受け入れ基準の 300 行に届いていない。大きな塊は 2 つ残っている。
-    - `endpoints::Endpoint` を組む所 (約 40 行)。
-    - `Step::Connect` を組む所 (約 20 行)。
-  - やること: この 2 つを関数に出す。熱い経路なので、呼び出しのまま残って増えるなら `#[inline(always)]` を付ける。
-  - 受け入れ基準:
-    - `serve_one` を 300 行以下にする。
-    - 結合試験 (proxy・keepalive・tunnel・connect_framing) と framing-probe が通る。
-    - `scripts/callgrind-per-request.py` で測り、forward と connect の Ir が ±0.5% 以内。
-  - 値打ち: 低〜中 / 熱い経路。
 
 - [ ] **T.34.99 締める (タスク 34 の版を走らせたあとに見る・決める・書く)**
   - 前提:
