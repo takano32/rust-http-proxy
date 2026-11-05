@@ -34,13 +34,6 @@ fn proxy_with_client_limit(max_conns_per_client: usize) -> (u16, Arc<Metrics>) {
     start_test_proxy_with_metrics(cfg)
 }
 
-fn connect_request(target_port: u16) -> String {
-    format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    )
-}
-
 /// `src` から CONNECT を 1 本張り、応答の先頭行までを返す (200 なら接続も返す)。
 fn connect_via(src: [u8; 4], proxy_port: u16, target_port: u16) -> (String, TcpStream) {
     let mut s = connect_from(src, proxy_port);

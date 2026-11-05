@@ -35,23 +35,6 @@ fn burst_proxy(max_conns: usize, percent: usize) -> (u16, Arc<Metrics>) {
     start_test_proxy_with_history(cfg, TICK)
 }
 
-/// CONNECT を張って `200` まで読む。
-fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream.set_nodelay(true).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let head = read_connect_response(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
-    stream
-}
-
 /// history スレッドが `n` 周期ぶん回るまで待つ (標本が増えるのを数える)。
 fn wait_ticks(metrics: &Metrics, n: usize) {
     let want = metrics.history.len() + n;

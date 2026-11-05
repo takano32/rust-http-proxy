@@ -125,6 +125,41 @@ pub fn read_connect_response(stream: &mut TcpStream) -> String {
     String::from_utf8_lossy(&read_head(stream)).into_owned()
 }
 
+/// `127.0.0.1:<target_port>` 宛ての CONNECT の要求文 (T.34.108 で 1 つにした)。
+pub fn connect_request(target_port: u16) -> String {
+    format!(
+        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        target_port, target_port
+    )
+}
+
+/// CONNECT を張って `200` まで読む (テストの定型。読みの締め切りは 10 秒)。
+pub fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
+    open_tunnel_with(proxy_port, target_port, Duration::from_secs(10), None)
+}
+
+/// [`open_tunnel`] の締め切りを選べる版 (長く握る試験は読みを 20 秒に、送りっぱなしの
+/// 試験は書きの締め切りも付ける)。`200` でなければ落ちる。
+pub fn open_tunnel_with(
+    proxy_port: u16,
+    target_port: u16,
+    read_timeout: Duration,
+    write_timeout: Option<Duration>,
+) -> TcpStream {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
+    stream.set_nodelay(true).unwrap();
+    stream.set_read_timeout(Some(read_timeout)).unwrap();
+    if write_timeout.is_some() {
+        stream.set_write_timeout(write_timeout).unwrap();
+    }
+    stream
+        .write_all(connect_request(target_port).as_bytes())
+        .unwrap();
+    let head = read_connect_response(&mut stream);
+    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
+    stream
+}
+
 /// 1 本の接続に生のバイト列を投げ、応答 (あれば) と接続が閉じたかを返す。
 pub fn raw_request(proxy_port: u16, bytes: &[u8]) -> String {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();

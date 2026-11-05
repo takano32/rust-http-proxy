@@ -150,14 +150,8 @@ fn num(obj: &str, key: &str) -> f64 {
 fn connect_once(proxy_port: u16, target_port: u16) -> String {
     let mut t = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
     t.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
-    t.write_all(
-        format!(
-            "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-            target_port, target_port
-        )
-        .as_bytes(),
-    )
-    .unwrap();
+    t.write_all(connect_request(target_port).as_bytes())
+        .unwrap();
     read_connect_response(&mut t)
 }
 

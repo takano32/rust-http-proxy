@@ -55,23 +55,6 @@ fn rate_proxy() -> (u16, Arc<Metrics>) {
     start_test_proxy_with_history(cfg, TICK)
 }
 
-/// CONNECT を張って `200` まで読む。
-fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream.set_nodelay(true).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let head = read_connect_response(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
-    stream
-}
-
 /// **1 MiB/s で流し続ける**オリジン (`stop` が立つか相手が閉じるまで)。
 ///
 /// 内蔵の echo (`start_echo_server`) は送った分しか返さないので「流し続ける」が作れない。
@@ -171,7 +154,7 @@ fn test_integration_a_streaming_tunnel_shows_its_current_rate() {
     let origin_port = start_streaming_origin(Arc::clone(&stop), Arc::clone(&sent));
     let (proxy_port, metrics) = rate_proxy();
 
-    let tunnel = open_tunnel(proxy_port, origin_port);
+    let tunnel = open_tunnel_with(proxy_port, origin_port, Duration::from_secs(20), None);
     let got = Arc::new(AtomicU64::new(0));
     let reader = drain(tunnel.try_clone().unwrap(), Arc::clone(&got));
 
@@ -302,7 +285,7 @@ fn test_integration_an_idle_tunnel_falls_back_to_zero() {
 
     // 1 MiB 上げて 1 MiB 下ろす (echo なので運ぶのは合計 2 MiB)。下りを読まないまま
     // 上りを書くと緩衝が埋まって止まるので、書くのは別スレッド
-    let tunnel = open_tunnel(proxy_port, echo_port);
+    let tunnel = open_tunnel_with(proxy_port, echo_port, Duration::from_secs(20), None);
     let mut writer = tunnel.try_clone().unwrap();
     let sender = thread::spawn(move || {
         writer.write_all(&vec![0x5au8; MIB as usize]).unwrap();

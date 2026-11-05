@@ -46,23 +46,6 @@ fn evidence_config() -> Config {
     cfg
 }
 
-/// CONNECT を張って `200` まで読む。
-fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream.set_nodelay(true).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let head = read_connect_response(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
-    stream
-}
-
 /// **accept して黙るだけ**のオリジン (`start_echo_server` と違って 1 バイトも返さない)。
 ///
 /// 届いたバイトは読み捨てる (読まないと詰まりになって別のものを測ってしまう)。
@@ -140,7 +123,7 @@ fn test_integration_a_half_closed_tunnel_shows_its_evidence() {
     let (origin_port, held) = start_mute_origin();
     let proxy_port = start_test_proxy(evidence_config());
 
-    let mut client = open_tunnel(proxy_port, origin_port);
+    let mut client = open_tunnel_with(proxy_port, origin_port, Duration::from_secs(20), None);
     client.write_all(b"hello").unwrap();
     client.flush().unwrap();
     // クライアントが先に EOF (プロキシは dirs[0] を done にしてオリジンへ shutdown(Write))。
@@ -271,7 +254,7 @@ fn test_integration_a_busy_tunnel_does_not_count_spins() {
     let origin_port = start_echo_server();
     let proxy_port = start_test_proxy(evidence_config());
 
-    let mut client = open_tunnel(proxy_port, origin_port);
+    let mut client = open_tunnel_with(proxy_port, origin_port, Duration::from_secs(20), None);
     // **1 往復ずつ**、返ってくるまで待ってから次を送る (中継の輪を
     // 「起きる → 進む → 待つ」に毎回通すため。まとめて送ると 1 回の起床で流れきってしまう)
     let mut echoed = [0u8; CHUNK];

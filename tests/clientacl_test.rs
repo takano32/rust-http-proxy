@@ -76,13 +76,6 @@ fn wait_reloaded(port: u16) {
     );
 }
 
-fn connect_request(target_port: u16) -> String {
-    format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    )
-}
-
 #[test]
 fn test_integration_allow_clients_closes_strangers_and_counts_them() {
     let echo_port = start_echo_server();

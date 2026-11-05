@@ -53,10 +53,7 @@ fn test_integration_idle_tunnel_is_closed_after_the_idle_timeout() {
     let proxy_port = start_test_proxy(cfg);
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        echo_port, echo_port
-    );
+    let req = connect_request(echo_port);
     stream.write_all(req.as_bytes()).unwrap();
     assert!(read_connect_response(&mut stream).starts_with("HTTP/1.1 200"));
 
@@ -82,31 +79,11 @@ fn test_integration_connect_port_restriction() {
     let proxy_port = start_test_proxy(cfg);
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        echo_port, echo_port
-    );
+    let req = connect_request(echo_port);
     stream.write_all(req.as_bytes()).unwrap();
     let mut resp = String::new();
     stream.read_to_string(&mut resp).unwrap();
     assert!(resp.starts_with("HTTP/1.1 403 Forbidden"), "{}", resp);
-}
-
-/// CONNECT を張って `200` まで読む (テストの定型)。
-fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream.set_nodelay(true).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let head = read_connect_response(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
-    stream
 }
 
 /// 接続を受けて EOF まで読み、読み終わったことを知らせるだけのリスナー。

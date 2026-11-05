@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{
-    ProxyProcess, endpoint_json, proxy_config, raw_get, scratch_dir, start_test_proxy_with_history,
-    write_env,
+    ProxyProcess, connect_request, endpoint_json, proxy_config, raw_get, scratch_dir,
+    start_test_proxy_with_history, write_env,
 };
 use rust_http_proxy::snapshots;
 
@@ -85,14 +85,7 @@ fn test_integration_the_daily_snapshot_keeps_the_whole_recent_ring() {
     for _ in 0..2_100 {
         let mut t = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
         t.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
-        t.write_all(
-            format!(
-                "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-                echo, echo
-            )
-            .as_bytes(),
-        )
-        .unwrap();
+        t.write_all(connect_request(echo).as_bytes()).unwrap();
         let head = common::read_connect_response(&mut t);
         assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
     }

@@ -26,23 +26,6 @@ fn proxy_with_limit(max_conns: usize) -> (u16, std::sync::Arc<rust_http_proxy::m
     start_test_proxy_with_metrics(cfg)
 }
 
-/// CONNECT を張って `200` まで読む。
-fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream.set_nodelay(true).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let head = read_connect_response(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
-    stream
-}
-
 /// 読むだけで何も返さず、閉じもしないリスナー。
 ///
 /// ここへ張ったトンネルでクライアントが送信側だけ閉じると、トンネルは**片方向だけ EOF**
@@ -172,14 +155,7 @@ fn test_integration_busy_tunnels_are_not_closed_and_the_client_gets_503() {
         "busy tunnels are not parked"
     );
 
-    let resp = raw_request(
-        proxy_port,
-        format!(
-            "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-            quiet_port, quiet_port
-        )
-        .as_bytes(),
-    );
+    let resp = raw_request(proxy_port, connect_request(quiet_port).as_bytes());
     assert!(resp.starts_with("HTTP/1.1 503"), "{}", resp);
     assert!(resp.contains("Retry-After: 1"), "{}", resp);
     assert_eq!(

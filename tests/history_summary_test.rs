@@ -227,14 +227,7 @@ fn test_integration_history_summary_since_restart_counts_a_connect_right_after_s
     {
         let mut t = std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
         t.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
-        t.write_all(
-            format!(
-                "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-                echo_port, echo_port
-            )
-            .as_bytes(),
-        )
-        .unwrap();
+        t.write_all(connect_request(echo_port).as_bytes()).unwrap();
         let head = read_connect_response(&mut t);
         assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
     }

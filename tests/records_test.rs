@@ -14,10 +14,8 @@
 //! 動くテストと旗を取り合わない。`.env` の配線もまとめて見られる)。
 #![cfg(target_os = "linux")]
 
-use std::io::Write;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 mod common;
 use common::*;
@@ -54,23 +52,6 @@ fn text_field(json: &str, key: &str) -> String {
 /// 16 桁の 16 進か (ハッシュにした接続元の形)。
 fn is_hashed(s: &str) -> bool {
     s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-/// CONNECT を 1 本張って `200` まで読む (閉じずに返す = `/connections` に 1 行残る)。
-fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
-    let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    s.write_all(
-        format!(
-            "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-            target_port, target_port
-        )
-        .as_bytes(),
-    )
-    .unwrap();
-    let head = read_connect_response(&mut s);
-    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
-    s
 }
 
 /// 個票が残りうることを 1 通り起こす: 転送 1 要求 (閉じる) → `/recent` `/clients` `/hosts`

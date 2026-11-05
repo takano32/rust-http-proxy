@@ -11,7 +11,7 @@
 #![cfg(target_os = "linux")]
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -37,23 +37,6 @@ fn transfer_proxy() -> (u16, Arc<Metrics>) {
     // 握ったままの接続が預かり所の期限で閉じないように長くする
     cfg.keepalive = Duration::from_secs(60);
     start_test_proxy_with_history(cfg, TICK)
-}
-
-/// CONNECT を張って `200` まで読む。
-fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream.set_nodelay(true).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let head = read_connect_response(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
-    stream
 }
 
 /// クライアントの EOF を見てから `delay` だけ待って閉じるオリジン (**半閉じを作る**)。
@@ -184,7 +167,7 @@ fn test_integration_a_megabyte_lands_in_one_speed_bucket() {
     // 1 MiB 上げて 1 MiB 下ろす (echo なので運ぶのは合計 2 MiB)。
     // 書くのは別スレッド: 下りを読まないまま上りを 1 MiB 書くと、下りの緩衝が
     // 埋まったところで試験そのものが止まる
-    let tunnel = open_tunnel(proxy_port, echo_port);
+    let tunnel = open_tunnel_with(proxy_port, echo_port, Duration::from_secs(20), None);
     let mut writer = tunnel.try_clone().unwrap();
     let sender = thread::spawn(move || {
         writer.write_all(&vec![0x5au8; MIB]).unwrap();
@@ -270,7 +253,7 @@ fn test_integration_a_half_closed_tunnel_lands_in_one_half_close_bucket() {
     let (proxy_port, metrics) = transfer_proxy();
 
     // 少し流してからクライアントが先に閉じる (= 半閉じ)。オリジンは 150 ms 待って閉じる
-    let mut tunnel = open_tunnel(proxy_port, origin_port);
+    let mut tunnel = open_tunnel_with(proxy_port, origin_port, Duration::from_secs(20), None);
     tunnel.write_all(b"hello").unwrap();
     let mut buf = [0u8; 5];
     tunnel.read_exact(&mut buf).unwrap();

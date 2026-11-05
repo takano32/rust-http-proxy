@@ -150,32 +150,6 @@ fn start_quiet_origin() -> u16 {
     port
 }
 
-/// CONNECT を張って `200` まで読む。
-fn open_tunnel(proxy_port: u16, target_port: u16) -> std::net::TcpStream {
-    use std::io::{Read, Write};
-    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream.set_nodelay(true).unwrap();
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-        .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        if stream.read(&mut byte).unwrap() == 0 {
-            break;
-        }
-        head.push(byte[0]);
-    }
-    let head = String::from_utf8_lossy(&head).into_owned();
-    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
-    stream
-}
-
 /// 握ったトンネルが `/connections` に `parked` として、中継中のトンネルが
 /// `relaying` として見えること (T13.4 の受け入れ基準 (b))。
 #[test]

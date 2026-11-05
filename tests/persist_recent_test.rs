@@ -10,8 +10,6 @@
 
 mod common;
 
-use std::io::Write;
-use std::net::TcpStream;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -32,23 +30,6 @@ const EVENT_TEXT: &str = "t149 event must survive a restart";
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
     scratch_dir(&format!("rhp-t149-{}", name))
-}
-
-/// CONNECT を張って `200` まで読む。
-fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream.set_nodelay(true).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let head = read_connect_response(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
-    stream
 }
 
 /// 受け入れ基準そのもの: 起動 → CONNECT 3 本を閉じる → 周期 1 回ぶん待つ → 止める →

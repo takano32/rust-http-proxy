@@ -116,10 +116,7 @@ fn test_integration_connect_still_works_with_the_default_timeout() {
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        origin_port, origin_port
-    );
+    let req = connect_request(origin_port);
     std::io::Write::write_all(&mut stream, req.as_bytes()).unwrap();
     let head = read_connect_response(&mut stream);
     assert!(head.starts_with("HTTP/1.1 200"), "{}", head);

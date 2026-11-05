@@ -54,26 +54,6 @@ fn stall_proxy() -> (u16, Arc<Metrics>) {
     start_test_proxy_with_history(cfg, TICK)
 }
 
-/// CONNECT を張って `200` まで読む。
-fn open_tunnel(proxy_port: u16, target_port: u16) -> TcpStream {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
-    stream.set_nodelay(true).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
-    let req = format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let head = read_connect_response(&mut stream);
-    assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
-    stream
-}
-
 /// **全速で送り続ける**オリジン (`stop` が立つか相手が閉じるまで)。
 ///
 /// 読まないクライアントを作るには、緩衝 (クライアントの受信・プロキシの送信・
@@ -199,7 +179,12 @@ fn test_integration_a_client_that_stops_reading_stalls_the_client_side() {
     let origin_port = start_blasting_origin(Arc::clone(&stop), Arc::clone(&sent));
     let (proxy_port, metrics) = stall_proxy();
 
-    let mut tunnel = open_tunnel(proxy_port, origin_port);
+    let mut tunnel = open_tunnel_with(
+        proxy_port,
+        origin_port,
+        Duration::from_secs(20),
+        Some(Duration::from_secs(20)),
+    );
     // **2 秒間 1 バイトも読まない**。緩衝が埋まるとプロキシはクライアントへ
     // 書けなくなり、`poll` で `POLLOUT` を待つ = そこで初めて時計を読む
     let paused = Instant::now();
@@ -261,7 +246,12 @@ fn test_integration_an_origin_that_stops_reading_stalls_the_origin_side() {
     let origin_port = start_deaf_origin(PAUSE + Duration::from_millis(200), Arc::clone(&got));
     let (proxy_port, metrics) = stall_proxy();
 
-    let tunnel = open_tunnel(proxy_port, origin_port);
+    let tunnel = open_tunnel_with(
+        proxy_port,
+        origin_port,
+        Duration::from_secs(20),
+        Some(Duration::from_secs(20)),
+    );
     // **書き続ける**クライアント (オリジンが読み始めるまで緩衝が埋まる)。
     // `write_all` は詰まると止まるので、止める合図は 1 刻みごとに見る
     let stop = Arc::new(AtomicBool::new(false));
@@ -328,7 +318,12 @@ fn test_integration_a_healthy_tunnel_does_not_stall() {
 
     // 1 MiB 上げて 1 MiB 下ろす (echo なので運ぶのは合計 2 MiB)。
     // 下りを読みながら上げるので、どちらの向きも詰まらない
-    let tunnel = open_tunnel(proxy_port, echo_port);
+    let tunnel = open_tunnel_with(
+        proxy_port,
+        echo_port,
+        Duration::from_secs(20),
+        Some(Duration::from_secs(20)),
+    );
     let mut writer = tunnel.try_clone().unwrap();
     let sender = thread::spawn(move || {
         writer.write_all(&vec![0x5au8; MIB]).unwrap();

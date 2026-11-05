@@ -94,13 +94,7 @@ fn test_integration_a_connect_splits_its_bytes_into_up_and_down() {
         .set_read_timeout(Some(Duration::from_secs(20)))
         .unwrap();
     tunnel
-        .write_all(
-            format!(
-                "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-                origin_port, origin_port
-            )
-            .as_bytes(),
-        )
+        .write_all(connect_request(origin_port).as_bytes())
         .unwrap();
     let head = read_connect_response(&mut tunnel);
     assert!(head.starts_with("HTTP/1.1 200"), "{}", head);

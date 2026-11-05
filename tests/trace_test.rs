@@ -65,13 +65,6 @@ fn snapshot_parts(body: &str) -> String {
     body[at..end].to_string()
 }
 
-fn connect_request(target_port: u16) -> String {
-    format!(
-        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
-        target_port, target_port
-    )
-}
-
 /// CONNECT を 1 本張ってすぐ閉じる (トンネルの終わりで `/trace` に 1 行残るように)。
 fn open_and_close_a_tunnel(proxy_port: u16, target_port: u16) {
     let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
