@@ -245,7 +245,7 @@ fn once_per_hour(slot: &AtomicU64) -> bool {
     once_per_hour_at(slot, crate::cache::now_epoch() / 3600)
 }
 
-/// [`once_per_hour`] の本体 (T.34.53)。`hour` は epoch 秒 / 3,600 (時計を中で読まない)。
+/// [`once_per_hour`] の本体 (T34.53)。`hour` は epoch 秒 / 3,600 (時計を中で読まない)。
 fn once_per_hour_at(slot: &AtomicU64, hour: u64) -> bool {
     let last = slot.load(Ordering::Relaxed);
     last != hour
@@ -488,7 +488,7 @@ mod tests {
         assert!(once_per_hour(&SLOT), "時間が変われば通る");
     }
 
-    /// 2 つの時間で 1 回ずつ通る (時刻を注入する。T.34.53)。時計が戻っても「違う時間」なら通す。
+    /// 2 つの時間で 1 回ずつ通る (時刻を注入する。T34.53)。時計が戻っても「違う時間」なら通す。
     #[test]
     fn once_per_hour_at_lets_one_through_per_hour() {
         let slot = AtomicU64::new(u64::MAX);

@@ -1,6 +1,6 @@
-//! `config` の単体テスト (T.28.47 で `config.rs` が 2,000 行を越えたので別のファイルに移した。中身は同じ)。
+//! `config` の単体テスト (T28.47 で `config.rs` が 2,000 行を越えたので別のファイルに移した。中身は同じ)。
 //! 子のモジュールの中だけで閉じる試験 (上限の計算・出どころ・keepalive の読み方・一覧の切り方) は
-//! それぞれの子に置いてある (T.34.3)。ここは `Config` を組んで見るもの。
+//! それぞれの子に置いてある (T34.3)。ここは `Config` を組んで見るもの。
 
 use super::*;
 
@@ -47,7 +47,7 @@ fn tcp_keepalive_spec_round_trips_through_parse() {
     assert_eq!(TcpKeepalive::parse("off"), Some(None));
 }
 
-/// CONNECT の締め切りの規則を 1 本で縛る (T15.6 (2)、既定を 5 秒にした T23.3、3 秒にした T.28.43)。
+/// CONNECT の締め切りの規則を 1 本で縛る (T15.6 (2)、既定を 5 秒にした T23.3、3 秒にした T28.43)。
 ///
 /// `(PROXY_TIMEOUT_SECS, PROXY_CONNECT_TIMEOUT_SECS) → 実効値` の 6 通り。
 /// `Config::new` も同じ関数を通ることを、未設定の 4 通りで一緒に見る。
@@ -56,7 +56,7 @@ fn connect_timeout_defaults_to_three_seconds() {
     let d = Duration::from_secs;
     // (timeout, 明示の値, 期待する実効値, 何を縛っているか)
     let cases: [(u64, Option<u64>, u64, &str); 6] = [
-        (30, None, 3, "既定の 30 秒なら 3 秒に縮む (T.28.43 の本体)"),
+        (30, None, 3, "既定の 30 秒なら 3 秒に縮む (T28.43 の本体)"),
         (5, None, 3, "5 秒 (T23.3 の既定) の共通の締め切りでも 3 秒"),
         (2, None, 2, "3 秒より短い共通の締め切りには合わせる"),
         (
@@ -95,7 +95,7 @@ fn connect_timeout_defaults_to_three_seconds() {
 
 /// `PROXY_CONNECT_TIMEOUT_SECS` を書いたら、**その値がそのまま**効く (T23.3)。
 ///
-/// 既定を 3 秒にしても、10 秒 (T23.3 の前の既定)・5 秒 (T.28.43 の前の既定) や 1 秒を
+/// 既定を 3 秒にしても、10 秒 (T23.3 の前の既定)・5 秒 (T28.43 の前の既定) や 1 秒を
 /// 書いた人の値は書き換えない (戻すのも `.env` の 1 行でできる)。
 #[test]
 fn connect_timeout_uses_the_explicit_value_as_is() {
@@ -156,7 +156,7 @@ fn settings_show_the_connect_timeout() {
             .value
             .clone()
     };
-    // 既定は 3 秒 (T15.6 (2)、T23.3、T.28.43)。共通の締め切りは 30 秒のまま
+    // 既定は 3 秒 (T15.6 (2)、T23.3、T28.43)。共通の締め切りは 30 秒のまま
     assert_eq!(find(&cfg, "PROXY_CONNECT_TIMEOUT_SECS"), "3");
     assert_eq!(find(&cfg, "PROXY_TIMEOUT_SECS"), "30");
     // 戻し方 (`.env` に `PROXY_CONNECT_TIMEOUT_SECS=30`) も実効値で出る
@@ -165,7 +165,7 @@ fn settings_show_the_connect_timeout() {
     assert_eq!(find(&cfg, "PROXY_TIMEOUT_SECS"), "30", "共通の側は動かない");
 }
 
-/// 要求行とヘッダーの締め切りの規則 (T.28.0。`connect_timeout_for` と同じ形)。
+/// 要求行とヘッダーの締め切りの規則 (T28.0。`connect_timeout_for` と同じ形)。
 #[test]
 fn header_timeout_defaults_to_ten_seconds() {
     let d = Duration::from_secs;
@@ -200,7 +200,7 @@ fn header_timeout_defaults_to_ten_seconds() {
     assert_eq!(shown.as_deref(), Some("10"));
 }
 
-/// 1 要求目の 1 バイト目を待つ長さは小さい方。`0` は「無し」なのでもう片方 (T.28.0)。
+/// 1 要求目の 1 バイト目を待つ長さは小さい方。`0` は「無し」なのでもう片方 (T28.0)。
 #[test]
 fn first_read_timeout_is_the_shorter_one() {
     let d = Duration::from_secs;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/watch-deployed.py` (T.28.26) の単体テスト。偽のサーバーを 127.0.0.1 に立てて `main` も回す。"""
+"""`scripts/watch-deployed.py` (T28.26) の単体テスト。偽のサーバーを 127.0.0.1 に立てて `main` も回す。"""
 
 import contextlib
 import io
@@ -58,7 +58,7 @@ class Judge(unittest.TestCase):
 
 
 class Since(unittest.TestCase):
-    """T.32.25: 窓は前回の成功した見張りから (GitHub の schedule は実際には 2〜7.5 時間おき)。"""
+    """T32.25: 窓は前回の成功した見張りから (GitHub の schedule は実際には 2〜7.5 時間おき)。"""
 
     def test_a_silent_restart_between_runs_7_5_hours_apart_is_caught(self):
         last = NOW - int(7.5 * 3600)

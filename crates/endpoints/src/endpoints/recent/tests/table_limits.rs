@@ -1,5 +1,5 @@
 //! 表の口 (`/dns` `/log` `/hosts` `/clients` `/hosts/series`) の応答が
-//! [`MAX_BODY`] (256 KiB) に収まること (T.34.86 で tests.rs から分けた)。
+//! [`MAX_BODY`] (256 KiB) に収まること (T34.86 で tests.rs から分けた)。
 
 use super::*;
 

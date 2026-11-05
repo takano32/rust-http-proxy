@@ -56,7 +56,7 @@ pub(super) mod consts {
 /// 呼び出し側の accept ループは `WouldBlock` を「まだ来ていない」として読み飛ばすこと。
 /// `read` が 0 (= 無期限) のときは `accept()` も無期限に待つ。
 ///
-/// 読み (`SO_RCVTIMEO`) と書き (`SO_SNDTIMEO`) は別の値にできる (T.28.0)。読みは 1 要求目の
+/// 読み (`SO_RCVTIMEO`) と書き (`SO_SNDTIMEO`) は別の値にできる (T28.0)。読みは 1 要求目の
 /// 要求行を待つ長さ (`PROXY_HEADER_TIMEOUT_SECS` と `PROXY_TIMEOUT_SECS` の小さい方)、
 /// 書きは `PROXY_TIMEOUT_SECS` のまま。
 ///

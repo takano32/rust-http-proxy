@@ -85,7 +85,7 @@ fn the_sampler_accumulates_per_role_deltas() {
         "待ち時間も増分だけ積む"
     );
     // `syscall` が無ければ partial (ticks を進める: 休眠のまま ticks が同じスレッドは
-    // 前回の値を使い回して開かないので。T.29.21)
+    // 前回の値を使い回して開かないので。T29.21)
     write(2, "conn", 26, None, Some(8_000));
     write(1, "proxy", 11, None, Some(1_000));
     s.sample(&p);
@@ -112,7 +112,7 @@ fn the_sampler_accumulates_per_role_deltas() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **休眠のまま ticks が同じスレッドは `syscall`・`schedstat` を読み直さない** (T.29.21)。
+/// **休眠のまま ticks が同じスレッドは `syscall`・`schedstat` を読み直さない** (T29.21)。
 /// 走ったスレッド (ticks が進んだ / 状態が `S` でない) は毎回読む。
 #[test]
 fn the_sampler_skips_unchanged_sleeping_threads() {
@@ -361,10 +361,10 @@ fn the_busiest_thread_comes_first_in_threads_top() {
     let _ = spinner.join();
 }
 
-/// 暇な秒は全スレッドを読まず、スレッドが生まれた・消えた秒と要求が来た秒は必ず読み直す (T.32.37)。
+/// 暇な秒は全スレッドを読まず、スレッドが生まれた・消えた秒と要求が来た秒は必ず読み直す (T32.37)。
 ///
 /// 本物の `/proc/self` と `sleep` に頼らず、差し替えたディレクトリ (`<dir>/<tid>/stat`) と
-/// プロセス全体の読み (`whole` = (スレッド数, tick, 要求の累計)) を注入して確かめる (T.34.43)。
+/// プロセス全体の読み (`whole` = (スレッド数, tick, 要求の累計)) を注入して確かめる (T34.43)。
 #[test]
 fn the_sampler_skips_idle_seconds_but_rereads_when_threads_come_and_go() {
     // 本番の読み口 (`/proc/self/stat`) は Linux なら読める

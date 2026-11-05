@@ -2,7 +2,7 @@
 //!
 //! [`ErrorEntry`]・[`EntryKind`]・[`EntryCause`] と [`ErrorRing`]。**`recent` の他の塊は
 //! ここを呼ぶだけ** (葉)。切り詰めの `clip` は `recent/clip.rs`、リングの添字の式は
-//! `recent/ringbuf.rs` に出した (T.34.2。同じ式を 5 本のリングで書いていたのを 1 か所に)。
+//! `recent/ringbuf.rs` に出した (T34.2。同じ式を 5 本のリングで書いていたのを 1 か所に)。
 //!
 //! 行を動かしただけで中身は変えていない。外から見える名前は `recent` の
 //! `pub use` でそのまま (T25.2)。
@@ -58,7 +58,7 @@ pub enum EntryCause {
     /// 集計の `errors_by_cause` では 9・10 番目に同じ数が入る
     ErrorDns(DnsCause),
     Blocked(BlockCause),
-    /// 読めずに 400 / 408 / 414 / 431 で断った要求 (T14.28。408 は T.29.10)。`cause` は `bad_request:<reason>`
+    /// 読めずに 400 / 408 / 414 / 431 で断った要求 (T14.28。408 は T29.10)。`cause` は `bad_request:<reason>`
     BadRequest(BadRequestReason),
 }
 
@@ -74,7 +74,7 @@ impl EntryCause {
     }
 
     /// ファイルに書くときの符号 (T14.9)。5xx は 0〜7、403 は 100〜103、
-    /// 読めなかった要求 (400 / 408 / 414 / 431) は 200〜209 (T14.28 / T19.2 / T19.3 / T27.5 / T.29.10)。
+    /// 読めなかった要求 (400 / 408 / 414 / 431) は 200〜209 (T14.28 / T19.2 / T19.3 / T27.5 / T29.10)。
     pub fn code(self) -> u64 {
         match self {
             EntryCause::Error(c) => c as u64,
@@ -210,7 +210,7 @@ impl ErrorEntry {
         )
     }
 
-    /// [`ErrorEntry::new`] の本体 (T.34.48)。時刻 `at` (epoch 秒) を受ける。
+    /// [`ErrorEntry::new`] の本体 (T34.48)。時刻 `at` (epoch 秒) を受ける。
     #[allow(clippy::too_many_arguments)]
     #[inline]
     pub(crate) fn at(
@@ -408,7 +408,7 @@ impl ErrorRing {
     }
 }
 
-/// エラーの個票とリングの単体試験 (T.34.2 で別のファイルに移した)。
+/// エラーの個票とリングの単体試験 (T34.2 で別のファイルに移した)。
 #[cfg(test)]
 #[path = "errors_tests.rs"]
 mod tests;

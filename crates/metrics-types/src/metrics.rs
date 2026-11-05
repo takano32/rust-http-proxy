@@ -6,7 +6,7 @@
 //! (`proxy-metrics-recent`) がこの型を使い、`Metrics` がその個票を持つ =
 //! 間に挟まないと輪になるため (T14.55 で割った)。
 //!
-//! T.34.1 で関心ごとにモジュールへ割った。**外から見える名前は全部ここから引ける**
+//! T34.1 で関心ごとにモジュールへ割った。**外から見える名前は全部ここから引ける**
 //! (`crate::metrics::HostStats` のような書き方は割る前と同じに通る):
 //!
 //! - [`schema`](self): 応答の形の版 (`SCHEMA` / `SCHEMA_HEAD` / `with_schema`)
@@ -47,7 +47,7 @@ pub use status::{Concurrency, HostSort, StatusExtras};
 mod bad_request_reason_tests {
     use super::BadRequestReason;
 
-    /// 絶対 URI のスキームの大小を問わず、ホストが無いのは `bad_uri` (T.28.33)。
+    /// 絶対 URI のスキームの大小を問わず、ホストが無いのは `bad_uri` (T28.33)。
     #[test]
     fn of_target_reads_the_scheme_case_insensitively() {
         for t in [

@@ -19,7 +19,7 @@
 //! RSS) は**最大と平均**。プロセスが動いていた時間だけが入るので、`secs` と `samples` で
 //! その日をどれだけ見ていたかが分かる。
 //!
-//! **再起動した日も前のプロセスのぶんを落とさない** (T.32.18): 積み上げはプロセスのメモリの中にしか
+//! **再起動した日も前のプロセスのぶんを落とさない** (T32.18): 積み上げはプロセスのメモリの中にしか
 //! 無いので、前は再起動した日の行が「再起動のあとのぶん」だけになっていた (tokyo の 10-28 は 0.29.36 の
 //! 19.3 時間が抜けて `secs` 16,819)。起動して最初の標本で、`.rrd` から読み戻した `history["60"]` の
 //! **UTC 0 時から**の行で今日の積み上げを組み直す ([`Writer::seed`])。`version` は「その日に動いた版」を
@@ -45,9 +45,9 @@ use crate::sync::LockExt;
 
 pub use writer::Writer;
 
-/// 1 行の上限 (バイト。改行を含まない)。T.29.33 で `slo_rate_hours` を足したので 512 → 640
+/// 1 行の上限 (バイト。改行を含まない)。T29.33 で `slo_rate_hours` を足したので 512 → 640
 /// (最悪の行が 491 B で、足す 80 B 弱が入らなかった。上限 2 MiB でも 3,276 日 = 9 年ぶん入る)。
-/// T.32.17 の 2 欄と T.32.18 の版の並び ([`MAX_VERSIONS`]) で 640 → 672 (最悪 669 B。`/daily` の
+/// T32.17 の 2 欄と T32.18 の版の並び ([`MAX_VERSIONS`]) で 640 → 672 (最悪 669 B。`/daily` の
 /// 240 KiB に 1 年 = 365 行がまだ入る。2 MiB は 3,120 日 = 8 年ぶん)。
 pub const MAX_LINE: usize = 672;
 /// ファイルの上限 (バイト)。越えたら古い行から捨てる。
@@ -63,10 +63,10 @@ pub(crate) const FILE_NAME: &str = ".rust-http-proxy.daily.jsonl";
 const MAX_JSON: usize = 240 * 1024;
 /// 版の文字列をこの長さで切る (1 行の上限を必ず守るため)。
 const MAX_VERSION: usize = 40;
-/// その日に動いた版の並び (空白で区切る。T.32.18) の長さの上限。越えたら古い版から落とす
+/// その日に動いた版の並び (空白で区切る。T32.18) の長さの上限。越えたら古い版から落とす
 /// (今の版は必ず残る)。ふつうの版 (`0.30.4+ba512ad`) なら 5 つ入る。
 const MAX_VERSIONS: usize = 2 * MAX_VERSION;
-/// 組み直しに使う解像度 (`history["60"]`。T.32.18)。
+/// 組み直しに使う解像度 (`history["60"]`。T32.18)。
 const SEED_RES: usize = 1;
 const SECS_PER_DAY: u64 = 86_400;
 /// 数を 15 桁で頭打ちにする (1 行 ≤ [`MAX_LINE`] を必ず守るため。現実の値は 10 桁以内)。
@@ -120,7 +120,7 @@ pub fn tick(metrics: &Metrics, s: &Sample) {
     let bursts = metrics.bursts.next_seq().saturating_sub(1);
     let mut w = writer().locked();
     if !w.seeded() {
-        // 起動して最初の標本: 読み戻した `history["60"]` で今日を組み直す (T.32.18。1 回だけ)。
+        // 起動して最初の標本: 読み戻した `history["60"]` で今日を組み直す (T32.18。1 回だけ)。
         // `/events` (512 件まで) を写すのもこの 1 回だけ
         let (events, _) = crate::events::select(0, usize::MAX);
         w.seed(&metrics.history, s, bursts, &events);

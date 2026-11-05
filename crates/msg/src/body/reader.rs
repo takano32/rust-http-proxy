@@ -22,14 +22,14 @@ pub struct BodyReader<'a, R: BufRead> {
     chunk: ChunkState,
     done: bool,
     truncated: bool,
-    /// ここまでに読んだ trailer の合計 (T.29.1)
+    /// ここまでに読んだ trailer の合計 (T29.1)
     trailer_bytes: usize,
 }
 
-/// chunk の大きさの行 (拡張込み) とデータの後ろの CRLF の行の上限 (T.29.1)。
+/// chunk の大きさの行 (拡張込み) とデータの後ろの CRLF の行の上限 (T29.1)。
 /// 16 進の大きさは 16 桁で足りるので、拡張に十分な幅を残して 4 KiB。
 pub const MAX_CHUNK_SIZE_LINE: usize = 4 * 1024;
-/// trailer の 1 行と合計の上限 (T.29.1)。
+/// trailer の 1 行と合計の上限 (T29.1)。
 pub const MAX_TRAILER_LINE: usize = 8 * 1024;
 pub const MAX_TRAILER_BYTES: usize = 64 * 1024;
 
@@ -62,7 +62,7 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
     }
 
     /// 枠の行 (chunk の大きさの行・データの後ろの CRLF・trailer の行) を 1 本、`limit` バイトまで読む
-    /// (T.29.1)。行が無いまま閉じたら `Ok(None)`、`limit` までに改行が来なければ `InvalidData`。
+    /// (T29.1)。行が無いまま閉じたら `Ok(None)`、`limit` までに改行が来なければ `InvalidData`。
     ///
     /// 今までは `read_line` で上限が無く、改行を送らずに `f` を流し続けるだけで 1 本の要求が
     /// 何百 MiB も抱えた (クライアントの chunked の POST で +793 MiB、オリジンの chunk 行で +702 MiB)。
@@ -117,7 +117,7 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
                         return Err(self.truncate());
                     };
                     // データの後ろは空行 (CRLF。LF だけも受ける) でなければならない (RFC 9112 §7.1。
-                    // T.32.15 (3))。今までは `2\r\nokXX\r\n` の `XX` を黙って読み捨てていた
+                    // T32.15 (3))。今までは `2\r\nokXX\r\n` の `XX` を黙って読み捨てていた
                     if !matches!(line.as_slice(), b"\r\n" | b"\n") {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -130,7 +130,7 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
                     let Some(line) = self.frame_line(MAX_TRAILER_LINE)? else {
                         return Err(self.truncate());
                     };
-                    // trailer は読み捨てるが、行の数だけ足していけるので合計にも上限を置く (T.29.1)
+                    // trailer は読み捨てるが、行の数だけ足していけるので合計にも上限を置く (T29.1)
                     self.trailer_bytes += line.len();
                     if self.trailer_bytes > MAX_TRAILER_BYTES {
                         return Err(io::Error::new(
@@ -152,7 +152,7 @@ impl<'a, R: BufRead> BodyReader<'a, R> {
 
 /// chunk の大きさの行 (`<16 進>[;拡張]\r\n`) を読む。
 ///
-/// 大きさは 16 進の数字だけ (RFC 9112 §7.1 の `1*HEXDIG`。T.32.15 (3))。`from_str_radix` は
+/// 大きさは 16 進の数字だけ (RFC 9112 §7.1 の `1*HEXDIG`。T32.15 (3))。`from_str_radix` は
 /// 先頭の `+` を受けるので (`+2`)、先に字を見る。読めない行は `InvalidData`。
 fn chunk_size(line: &[u8]) -> io::Result<u64> {
     let bad = || io::Error::new(io::ErrorKind::InvalidData, "bad chunk size");
@@ -197,7 +197,7 @@ impl<R: BufRead> Read for BodyReader<'_, R> {
 
 /// 本文を読み捨てる (転送しないリクエスト本文など)。
 pub fn drain<R: BufRead>(inner: &mut R, framing: Framing) -> io::Result<u64> {
-    // 本文が無いなら読まない (`io::copy` は 8 KiB の置き場を毎回ゼロ埋めする。T.28.12)
+    // 本文が無いなら読まない (`io::copy` は 8 KiB の置き場を毎回ゼロ埋めする。T28.12)
     if framing == Framing::None {
         return Ok(0);
     }

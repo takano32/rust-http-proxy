@@ -1,4 +1,4 @@
-//! 断った要求の数の読み方 (`/metrics` の系列と `/status` の `rejected_requests`。T.34.110)。
+//! 断った要求の数の読み方 (`/metrics` の系列と `/status` の `rejected_requests`。T34.110)。
 
 /// `reason` の系列の値 (`/metrics` の `sorahost_rejected_requests_total{reason="…"}`)。
 pub fn prom_value(text: &str, reason: &str) -> u64 {

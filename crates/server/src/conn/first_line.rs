@@ -1,4 +1,4 @@
-//! 要求行を待つ長さ ([`first_line_wait`]) と、要求行の読み ([`read_request_line`])。T.34.11
+//! 要求行を待つ長さ ([`first_line_wait`]) と、要求行の読み ([`read_request_line`])。T34.11
 
 use super::*;
 
@@ -7,7 +7,7 @@ use super::header_read::{
 };
 use super::request_line::RequestLineError;
 
-/// 断る・閉じるときに要る、この接続の素性といまの要求の番号 (借りるだけ。T.34.11)。
+/// 断る・閉じるときに要る、この接続の素性といまの要求の番号 (借りるだけ。T34.11)。
 #[derive(Clone, Copy)]
 pub(super) struct Peer<'a> {
     pub(super) client: &'a TcpStream,
@@ -21,7 +21,7 @@ pub(super) struct Peer<'a> {
     pub(super) overflow: bool,
     /// その枠を使ったのが接続元ごとの上限か (断った 1 本はそちらに数える。T14.13)
     pub(super) over_client: bool,
-    /// 要求行とヘッダーを読み終える期限 (`PROXY_HEADER_TIMEOUT_SECS`。T.28.0)
+    /// 要求行とヘッダーを読み終える期限 (`PROXY_HEADER_TIMEOUT_SECS`。T28.0)
     pub(super) header_timeout: std::time::Duration,
 }
 
@@ -50,7 +50,7 @@ impl Peer<'_> {
 /// 文法を通らなかった要求行を断る (400 / 505。`check_request_line`)。
 ///
 /// **個票に要求行そのものは入れない** (壊れた行にも URL が載っているため)。
-/// WARN は理由ごとに 1 分に 1 行 (T.28.9)。
+/// WARN は理由ごとに 1 分に 1 行 (T28.9)。
 #[cold]
 pub(super) fn refuse_request_line(
     peer: Peer<'_>,
@@ -115,7 +115,7 @@ pub(super) fn refuse_request_line(
                 )
             },
         ),
-        // メソッドが token でない (T.34.142)。理由と数え方は、割れない要求行の先頭が token で
+        // メソッドが token でない (T34.142)。理由と数え方は、割れない要求行の先頭が token で
         // ないとき (`BadRequestReason::of_request_line`) と同じ `method`
         RequestLineError::Method(method) => peer.refuse(
             metrics::BadRequestReason::Method,
@@ -153,7 +153,7 @@ pub(super) fn first_line_wait(
         (served > 0 && parkable && !config.park_grace.is_zero() && !config.keepalive.is_zero())
             .then_some(config.park_grace);
     // 最初の要求は `PROXY_HEADER_TIMEOUT_SECS` と通常のタイムアウトの小さい方
-    // (accept から 1 バイト目までを縛る。T.28.0)、2 回目以降は keep-alive のアイドル時間で待つ。
+    // (accept から 1 バイト目までを縛る。T28.0)、2 回目以降は keep-alive のアイドル時間で待つ。
     // 両方 0 なら 1 要求目は無期限に待つ (= 何も送ってこない接続を閉じない。T10.6。
     // `PROXY_TIMEOUT_SECS=0` だけでは、未設定のヘッダーの締め切り (10 秒) が残る)
     let first = config::first_read_timeout(config.timeout, config.header_timeout);
@@ -211,7 +211,7 @@ fn end_of_first_line(
     match read {
         Ok(Line::Idle) => Ok(Step::Park),
         // 理由別に 1 件数えて個票にも残す (`/errors`。T14.28)。**断る経路だけ**を通るので
-        // 通した要求には 1 命令も足していない。WARN は理由ごとに 1 分に 1 行 (T.28.9)
+        // 通した要求には 1 命令も足していない。WARN は理由ごとに 1 分に 1 行 (T28.9)
         Ok(Line::Read(None)) => refuse(
             client,
             metrics,
@@ -268,7 +268,7 @@ fn end_of_first_line(
                 over_client.then_some(peer_ip),
             ))
         }
-        // 1 要求目の 1 バイト目も来ないまま締め切りを過ぎた = 先張りの接続 (T.33.0)。
+        // 1 要求目の 1 バイト目も来ないまま締め切りを過ぎた = 先張りの接続 (T33.0)。
         // 応答を読まない相手なので 408 は返さずに黙って閉じ、数は `silent_closes` だけに
         // (`rejected_requests` にも `/errors` にも積まない)。0.32.39 の tokyo の 48.3 時間の 408 の
         // 3,415 件は宛先も要求も無いもので、1 つの接続元から波 (20.5 秒おき・88 秒おき) で来ていた。
@@ -282,7 +282,7 @@ fn end_of_first_line(
             );
             Ok(Step::Close(recent::CloseReason::IdleTimeout))
         }
-        // 1 要求目の途中で黙った・期限切れ (T.28.0)
+        // 1 要求目の途中で黙った・期限切れ (T28.0)
         Err(e) if clock.is_header_timeout(&e, served) => {
             header_timeout(client, metrics, peer_ip, conn_id, limit)
         }

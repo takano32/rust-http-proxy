@@ -109,7 +109,7 @@ fn write_checks(body: &mut String, checks: &[Check]) {
     }
 }
 
-/// `/healthz` の検査に入る測り (T.34.83)。読むのは [`read`] だけで、判定 ([`checks_for`])
+/// `/healthz` の検査に入る測り (T34.83)。読むのは [`read`] だけで、判定 ([`checks_for`])
 /// はこの値だけから決まる。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Readings {
@@ -145,7 +145,7 @@ fn read(ep: &Endpoint<'_>) -> Readings {
     }
 }
 
-/// 測りから 7 つの検査を決める (I/O の無い純粋な関数。閾はここだけにある。T.34.83)。
+/// 測りから 7 つの検査を決める (I/O の無い純粋な関数。閾はここだけにある。T34.83)。
 fn checks_for(r: &Readings) -> [Check; 7] {
     [
         // この応答が届いている = 待ち受けは生きていて accept できている
@@ -310,7 +310,7 @@ mod tests {
         }
     }
 
-    /// 7 つの名前と並びは JSON の鍵の順そのもの (T.34.83)。
+    /// 7 つの名前と並びは JSON の鍵の順そのもの (T34.83)。
     #[test]
     fn the_checks_keep_their_order() {
         let names: Vec<&str> = checks_for(&healthy()).iter().map(|c| c.name).collect();
@@ -334,7 +334,7 @@ mod tests {
         }
     }
 
-    /// 記述子は上限の 90% に**届いたら**偽 (T.34.83)。
+    /// 記述子は上限の 90% に**届いたら**偽 (T34.83)。
     #[test]
     fn descriptors_fail_at_ninety_percent() {
         let at = |fds| {
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(check(&c, "fds").detail, "\"open\":89,\"max\":100");
     }
 
-    /// 接続の上限 0 は無制限 (いつも真)、上限があれば `others < max` (T.34.83)。
+    /// 接続の上限 0 は無制限 (いつも真)、上限があれば `others < max` (T34.83)。
     #[test]
     fn connections_fail_only_at_a_real_limit() {
         let at = |others, max_conns| {
@@ -381,7 +381,7 @@ mod tests {
         );
     }
 
-    /// 接続の数は**いまの `/healthz` の 1 本を除いて**数える (T.34.83)。
+    /// 接続の数は**いまの `/healthz` の 1 本を除いて**数える (T34.83)。
     #[test]
     fn the_health_check_does_not_count_itself() {
         let m = crate::metrics::Metrics::new();
@@ -420,7 +420,7 @@ mod tests {
         );
     }
 
-    /// 状態ファイルの書込エラーと待ち行列の溢れは、5 分に 1 回でも偽 (T.34.83)。
+    /// 状態ファイルの書込エラーと待ち行列の溢れは、5 分に 1 回でも偽 (T34.83)。
     #[test]
     fn one_state_file_error_or_listen_overflow_fails() {
         for (n, want) in [(0, true), (1, false)] {
@@ -439,7 +439,7 @@ mod tests {
         }
     }
 
-    /// 名前解決のミスが 2,000 ms に**届いたら**リゾルバが死んでいるとみなす (T.34.83)。
+    /// 名前解決のミスが 2,000 ms に**届いたら**リゾルバが死んでいるとみなす (T34.83)。
     #[test]
     fn the_resolver_fails_at_two_seconds() {
         let at = |ms| {
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(at(2_000), Some(false));
     }
 
-    /// CPU の絞りは窓が 5 分ぶん満ちるまで `null`、満ちたら soft な検査 (T.34.83)。
+    /// CPU の絞りは窓が 5 分ぶん満ちるまで `null`、満ちたら soft な検査 (T34.83)。
     #[test]
     fn cpu_throttling_waits_for_a_full_window_and_stays_soft() {
         let at = |sampled_secs, throttled| {

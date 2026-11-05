@@ -17,9 +17,9 @@ pub struct ResponseScan<'a> {
     pub framing: Result<Framing, BadLength<'a>>,
     /// `Connection` が `close` を挙げているか
     pub close: bool,
-    /// 最後の `Age` の行の値 (無ければ `None`。T.29.4)
+    /// 最後の `Age` の行の値 (無ければ `None`。T29.4)
     pub age: Option<&'a str>,
-    /// `Date` の行があるか (無ければ forward が付ける。T.29.9)
+    /// `Date` の行があるか (無ければ forward が付ける。T29.9)
     pub date: bool,
 }
 
@@ -27,7 +27,7 @@ pub struct ResponseScan<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BadLength<'a>(pub &'a str);
 
-/// `Transfer-Encoding` の並びを読んだ結果 (T.28.1)。
+/// `Transfer-Encoding` の並びを読んだ結果 (T28.1)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Te {
     /// `Transfer-Encoding` が無い (空の値の行しか無い場合も含む)
@@ -40,7 +40,7 @@ enum Te {
 
 impl Te {
     /// 1 行ぶんの値を足す。複数の行は 1 つの並びとして読み、空の要素は読み飛ばす
-    /// (要求側の T.27.6 と同じ読み方)。決めるのは「並び全体の最後の符号化」。
+    /// (要求側の T27.6 と同じ読み方)。決めるのは「並び全体の最後の符号化」。
     fn add(self, value: &str) -> Te {
         match value
             .rsplit(',')
@@ -65,7 +65,7 @@ impl Framing {
 
     /// 応答の枠組みを**生の先頭バイト列から**決める ([`Framing::of_response`] と同じ規則)。
     /// 小文字の名前と値の組を作らずに済む。いまの熱い経路は [`Framing::scan_response_head`] を使うので、
-    /// これは `of_response_head_tests` が規則を突き合わせる手本として試験のときだけ作る (T.34.23)。
+    /// これは `of_response_head_tests` が規則を突き合わせる手本として試験のときだけ作る (T34.23)。
     #[cfg(test)]
     pub(crate) fn of_response_head(status: u16, head_only: bool, head: &[u8]) -> Framing {
         if head_only || (100..200).contains(&status) || status == 204 || status == 304 {
@@ -82,13 +82,13 @@ impl Framing {
         }
         match te {
             Te::Chunked => Framing::Chunked,
-            // 最後が chunked でない TE は、CL があっても閉じるまでが本文 (RFC 9112 §6.3。T.28.1)
+            // 最後が chunked でない TE は、CL があっても閉じるまでが本文 (RFC 9112 §6.3。T28.1)
             Te::Unchunked => Framing::Close,
             Te::Absent => length.map(Framing::Length).unwrap_or(Framing::Close),
         }
     }
 
-    /// 応答の先頭に (空でない値の) `Transfer-Encoding` の行があるか (T.28.1)。
+    /// 応答の先頭に (空でない値の) `Transfer-Encoding` の行があるか (T28.1)。
     ///
     /// [`Framing::scan_response_head`] の枠組みが [`Framing::Close`] だったときだけ呼ぶ
     /// (「CL も TE も無い」のか「最後が chunked でない TE」なのかを見分ける。後者は
@@ -100,7 +100,7 @@ impl Framing {
     }
 
     /// 応答の `Transfer-Encoding` の並びを、クライアントへそのまま伝える 1 行
-    /// (`Transfer-Encoding: gzip, br`。CRLF なし) にする (T.28.35)。並びが空なら `None`。
+    /// (`Transfer-Encoding: gzip, br`。CRLF なし) にする (T28.35)。並びが空なら `None`。
     ///
     /// 最後が chunked でない TE の応答は閉じるまでを本文にして、符号化はほどかずに渡すので、
     /// TE の行も残さないとクライアントには符号化済みのバイトが TE なしに見える (RFC 9112 §6.1)。
@@ -140,11 +140,11 @@ impl Framing {
     /// 転送するので、壊れた値を素通ししない。
     ///
     /// **最後の符号化が chunked でない `Transfer-Encoding`** (`gzip`・`xchunked` など) は、
-    /// 本文を持つ応答なら CL を見ずに [`Framing::Close`] (RFC 9112 §6.3。T.28.1)。
+    /// 本文を持つ応答なら CL を見ずに [`Framing::Close`] (RFC 9112 §6.3。T28.1)。
     /// 以前は CL で区切って TE を落とし、オリジンの接続を使い回して保存もしていた
     /// (CL の後ろに続けたバイトが次の応答として読まれうる)。
     ///
-    /// 試験のときだけ作る (クレートの外にもクレートの中にも、試験のほかの利用者はいない。T.34.23)。
+    /// 試験のときだけ作る (クレートの外にもクレートの中にも、試験のほかの利用者はいない。T34.23)。
     #[cfg(test)]
     pub(crate) fn of_response_head_checked(
         status: u16,
@@ -155,8 +155,8 @@ impl Framing {
     }
 
     /// [`Framing::of_response_head_checked`] と「`Connection` が `close` を挙げているか」を
-    /// **1 回の走査**で返す (T.28.12。forward の経路は枠組み・CL の検査・`Connection` で 3 回なめていた)。
-    /// 試験のときだけ作る (T.34.23)。
+    /// **1 回の走査**で返す (T28.12。forward の経路は枠組み・CL の検査・`Connection` で 3 回なめていた)。
+    /// 試験のときだけ作る (T34.23)。
     #[cfg(test)]
     pub(crate) fn of_response_head_checked_with_close(
         status: u16,
@@ -167,7 +167,7 @@ impl Framing {
         (scan.framing, scan.close)
     }
 
-    /// `of_response_head_checked_with_close` (試験の手本) に `Age` の値も足したもの (T.29.4)。
+    /// `of_response_head_checked_with_close` (試験の手本) に `Age` の値も足したもの (T29.4)。
     /// forward の経路は応答の先頭をこの 1 回だけなめる。
     pub fn scan_response_head(status: u16, head_only: bool, head: &[u8]) -> ResponseScan<'_> {
         let no_body = head_only || (100..200).contains(&status) || status == 204 || status == 304;
@@ -208,7 +208,7 @@ impl Framing {
         let framing = match te {
             // chunked が来ていれば CL は見ない (RFC 9112 §6.3。今までの優先順位のまま)
             Te::Chunked => Ok(Framing::Chunked),
-            // 最後が chunked でない TE は CL を見ずに閉じるまで (T.28.1)
+            // 最後が chunked でない TE は CL を見ずに閉じるまで (T28.1)
             Te::Unchunked if !no_body => Ok(Framing::Close),
             _ => match bad {
                 Some(b) => Err(b),
@@ -226,7 +226,7 @@ impl Framing {
 
     /// リクエストの枠組み (枠が無ければ本文なし)。
     ///
-    /// 最後が chunked でない TE の要求は、ここへ来る前に 400 で断っている (T.27.6)。
+    /// 最後が chunked でない TE の要求は、ここへ来る前に 400 で断っている (T27.6)。
     pub fn of_request(headers: &[(String, String)]) -> Framing {
         Self::of_headers(headers).unwrap_or(Framing::None)
     }
@@ -243,7 +243,7 @@ impl Framing {
         }
         match te {
             Te::Chunked => Some(Framing::Chunked),
-            // 最後が chunked でない TE は CL を無視して閉じるまで (T.28.1)
+            // 最後が chunked でない TE は CL を無視して閉じるまで (T28.1)
             Te::Unchunked => Some(Framing::Close),
             Te::Absent => length.map(Framing::Length),
         }

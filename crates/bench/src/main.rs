@@ -27,7 +27,7 @@
 //!      そのままに、ポートだけ内蔵オリジンへ置き換える。名前解決は
 //!      `scripts/deployed-like.sh --hosts-from <path>` の `/etc/hosts` に任せる
 //!
-//! 中の割り方 (T.34.4): 引数は [`args`]、相手役は [`origin`]、集計と `conc` 本で回す骨組みは
+//! 中の割り方 (T34.4): 引数は [`args`]、相手役は [`origin`]、集計と `conc` 本で回す骨組みは
 //! [`report`]、HTTP の打ち手は [`http`]、握り続けるモードは [`idle`]、名前宛ての CONNECT は
 //! [`multi`]、システムコールの実費は [`syscost`]、個票の再生は [`replay`]。ここに残るのは
 //! モードの振り分け ([`main`]) と、トンネルと CONNECT の 2 モード。
@@ -210,7 +210,7 @@ fn forward_mode(args: &Args, proxy: SocketAddr, origin: SocketAddr) {
     .print("forward");
 }
 
-/// プロキシを通すモードを、印字の順に回す (T.34.102 で `main` から出した)。
+/// プロキシを通すモードを、印字の順に回す (T34.102 で `main` から出した)。
 fn proxy_modes(args: &Args, proxy: SocketAddr, origin: SocketAddr) {
     if wants(args, "forward") {
         forward_mode(args, proxy, origin);

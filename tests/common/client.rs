@@ -25,7 +25,7 @@ pub fn read_head(stream: &mut TcpStream) -> Vec<u8> {
 
 /// 1 本の接続で複数の要求を送るための、Content-Length 付き応答の読み取り。
 ///
-/// `Content-Length` の名前の大小は区別しない (オリジン側の読み取りと同じ。T.34.163)。
+/// `Content-Length` の名前の大小は区別しない (オリジン側の読み取りと同じ。T34.163)。
 pub fn read_response(stream: &mut TcpStream) -> (String, Vec<u8>) {
     let head = String::from_utf8_lossy(&read_head(stream)).into_owned();
     let len = content_length(&head);
@@ -110,7 +110,7 @@ pub fn read_connect_response(stream: &mut TcpStream) -> String {
     String::from_utf8_lossy(&read_head(stream)).into_owned()
 }
 
-/// `127.0.0.1:<target_port>` 宛ての CONNECT の要求文 (T.34.108 で 1 つにした)。
+/// `127.0.0.1:<target_port>` 宛ての CONNECT の要求文 (T34.108 で 1 つにした)。
 pub fn connect_request(target_port: u16) -> String {
     format!(
         "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
@@ -151,7 +151,7 @@ pub fn raw_request(proxy_port: u16, bytes: &[u8]) -> String {
 }
 
 /// 生のバイト列を 1 本の接続に投げて、相手が閉じるまで (閉じなければ `timeout` まで) 読む
-/// (T.34.109 で各試験の `send_raw` をここへ寄せた)。
+/// (T34.109 で各試験の `send_raw` をここへ寄せた)。
 ///
 /// 書き込みの失敗は無視する: 長すぎるヘッダーや壊れた要求は、相手が途中で閉じることがある。
 /// `half_close` なら書き終えたと伝える (向こうが読み捨ての待ち (`linger`) で止まらないように)。
@@ -204,7 +204,7 @@ pub fn raw_get(proxy_port: u16, request: &str) -> String {
     out
 }
 
-/// 応答からプロキシが付けた `Date: <IMF-fixdate>` の行を 1 本だけ取り除く (T.29.9)。
+/// 応答からプロキシが付けた `Date: <IMF-fixdate>` の行を 1 本だけ取り除く (T29.9)。
 ///
 /// `Date` の無い応答には転送のときに今の時刻の `Date` が付くので、バイト列で固定する試験は
 /// これを通してから比べる。**ちょうど 1 本あること**もここで確かめる。

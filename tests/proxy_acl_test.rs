@@ -1,6 +1,6 @@
 //! 宛て先と接続元の制限 (ACL・メタデータと私設アドレスの既定の拒否・接続の上限) の結合テスト。
 //!
-//! 初めは `tests/proxy_test.rs` にあった (T.34.116 で割った)。
+//! 初めは `tests/proxy_test.rs` にあった (T34.116 で割った)。
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -105,7 +105,7 @@ fn test_integration_metadata_address_is_forbidden_by_default() {
     assert!(resp.starts_with("HTTP/1.1 403 Forbidden"), "{}", resp);
 }
 
-/// 私設アドレスの宛て先 (T.28.41 の受け入れ基準で挙げた 5 つ)。forward は `http://<この>/`、
+/// 私設アドレスの宛て先 (T28.41 の受け入れ基準で挙げた 5 つ)。forward は `http://<この>/`、
 /// CONNECT は `<この>:443` で送る。v4-mapped の書き方 (`[::ffff:10.0.0.1]`) も同じに扱う
 const PRIVATE_TARGETS: [&str; 6] = [
     "10.0.0.1",
@@ -153,7 +153,7 @@ fn refused(proxy_port: u16, target: &str, connect: bool) -> bool {
     got == OWN_403
 }
 
-/// T.28.41: 既定 (`PROXY_ALLOW_LOCAL` 無し) では私設アドレス宛ても 403 (CONNECT も forward も)。
+/// T28.41: 既定 (`PROXY_ALLOW_LOCAL` 無し) では私設アドレス宛ても 403 (CONNECT も forward も)。
 /// `private` なら私設アドレスは通り、ループバック・リンクローカルは 403 のまま。`on` は全部通す。
 #[test]
 fn test_integration_private_addresses_are_forbidden_by_default() {

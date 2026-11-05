@@ -1,4 +1,4 @@
-//! 接続元 IP の許可リスト (`PROXY_ALLOW_CLIENTS`)。T.34.65 で `acl.rs` から移した (本体は変えていない)。
+//! 接続元 IP の許可リスト (`PROXY_ALLOW_CLIENTS`)。T34.65 で `acl.rs` から移した (本体は変えていない)。
 
 use std::net::IpAddr;
 

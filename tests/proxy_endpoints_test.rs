@@ -1,6 +1,6 @@
 //! 自分宛ての口 (`/healthz`・`/status`・`/metrics`・purge と lookup) の結合テスト。
 //!
-//! 初めは `tests/proxy_test.rs` にあった (T.34.116 で割った)。
+//! 初めは `tests/proxy_test.rs` にあった (T34.116 で割った)。
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -55,7 +55,7 @@ fn test_integration_the_version_is_the_same_in_v_and_in_status() {
         .output()
         .expect("could not run the proxy binary");
     assert!(out.status.success());
-    // 版のあとにビルドの種類が付く (T.28.42。`config_test` が 3 か所の一致を見ている)
+    // 版のあとにビルドの種類が付く (T28.42。`config_test` が 3 か所の一致を見ている)
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
         format!("rust-http-proxy {} ({})", version, rust_http_proxy::BUILD)

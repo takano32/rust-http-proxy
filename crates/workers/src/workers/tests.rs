@@ -57,7 +57,7 @@ fn reuses_one_thread_for_sequential_jobs() {
 
 #[test]
 fn run_outside_runs_beside_a_full_pool() {
-    // 上限 1 本のスレッドが塞がっていても、`run_outside` の仕事は待ち行列に積まれずに走る (T.28.0)
+    // 上限 1 本のスレッドが塞がっていても、`run_outside` の仕事は待ち行列に積まれずに走る (T28.0)
     let w = Arc::new(Workers::new(1));
     let (block_tx, block_rx) = mpsc::channel::<()>();
     w.run(Box::new(move || {

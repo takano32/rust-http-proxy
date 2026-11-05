@@ -13,7 +13,7 @@ use super::{
     Endpoint, blocklist, config, health, history, pac, parse_query, profile, purge, recent, status,
 };
 
-/// ブラウザが勝手に取りに来るアイコンのパス (204 で返す。T.28.7)。口の一覧には入れない。
+/// ブラウザが勝手に取りに来るアイコンのパス (204 で返す。T28.7)。口の一覧には入れない。
 const FAVICON: &str = "/favicon.ico";
 
 /// 門を通った自分宛ての要求に答える口を選ぶ。
@@ -27,7 +27,7 @@ pub(super) fn dispatch(ep: &Endpoint<'_>, req: &Incoming<'_>, target: &str) -> R
         return Reply::json_error(405, "use GET for this endpoint").with_allow("Allow: GET\r\n");
     }
     if !req.method.is_get() {
-        // GET / HEAD / PURGE 以外 (POST など) は 405 + `Allow: GET, HEAD` (T.28.7)。
+        // GET / HEAD / PURGE 以外 (POST など) は 405 + `Allow: GET, HEAD` (T28.7)。
         // 今までは 404 と案内 2.8 KB で、「無い口」と「メソッドが違う」の区別が付かなかった
         return Reply::json_error(405, "method not allowed").with_allow("Allow: GET, HEAD\r\n");
     }
@@ -130,7 +130,7 @@ fn dispatch_get(ep: &Endpoint<'_>, req: &Incoming<'_>, target: &str) -> Reply {
         "/" | "" => (200, "text/plain; charset=utf-8", endpoint_list(ep.lite)).into(),
         _ => match path.strip_prefix("/snapshots/") {
             // 残してある 1 日ぶんをそのまま (T14.34)。起動と停止の 1 枚 (`<時刻>-start|shutdown`。
-            // T.28.20) も同じ口。どちらとしても読めない名前は 404
+            // T28.20) も同じ口。どちらとしても読めない名前は 404
             Some(date) => recent::snapshot_file(date).into(),
             // 自分宛てだが知らないパス: 自分へ転送するとループするので 404
             None => (

@@ -1,5 +1,5 @@
 //! ローカル宛て・私設アドレス宛ての判定 (`PROXY_ALLOW_LOCAL`) と、判定と接続で同じ答えを使う
-//! `resolve_target`、自己ベンチの相手役の除外 (T14.43)。T.34.65 で `acl.rs` から移した (本体は変えていない)。
+//! `resolve_target`、自己ベンチの相手役の除外 (T14.43)。T34.65 で `acl.rs` から移した (本体は変えていない)。
 
 use crate::dns::Resolved;
 use std::net::IpAddr;
@@ -17,7 +17,7 @@ pub fn is_local_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// 私設アドレス (T.28.41): `10.0.0.0/8`・`172.16.0.0/12`・`192.168.0.0/16`・
+/// 私設アドレス (T28.41): `10.0.0.0/8`・`172.16.0.0/12`・`192.168.0.0/16`・
 /// `100.64.0.0/10` (CGNAT の共有アドレス、RFC 6598)・`fc00::/7` (ULA)。
 /// v4-mapped IPv6 (`::ffff:10.0.0.1`) は [`crate::net::canonical_ip`] で IPv4 に直してから見る。
 pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
@@ -28,7 +28,7 @@ pub(crate) fn is_private_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// `PROXY_ALLOW_LOCAL` の 3 つの書き方 (T.28.41)。どこ宛てを 403 で断るか。
+/// `PROXY_ALLOW_LOCAL` の 3 つの書き方 (T28.41)。どこ宛てを 403 で断るか。
 ///
 /// | 値 | ループバック・リンクローカル・未指定 | 私設アドレス |
 /// |---|---|---|
@@ -76,7 +76,7 @@ pub(super) fn is_refused_ip(ip: IpAddr, allow_private: bool) -> bool {
 /// 解決できないものはローカル扱いにしない (先で 502 になる)。
 ///
 /// 断るのはループバック・リンクローカル・未指定と、`allow_private` が偽 (`PROXY_ALLOW_LOCAL`
-/// が既定の `off`) なら私設アドレスも (T.28.41)。名前は答えの**どれか 1 つ**が当たれば断る。
+/// が既定の `off`) なら私設アドレスも (T28.41)。名前は答えの**どれか 1 つ**が当たれば断る。
 pub fn resolve_target(host_or_addr: &str, allow_private: bool) -> (bool, Option<Resolved<'_>>) {
     let (host, port) = crate::net::split_host_port_ref(host_or_addr);
     if let Ok(ip) = host.parse::<IpAddr>() {
@@ -133,7 +133,7 @@ fn is_self_bench_target(ip: IpAddr, port: Option<u16>) -> bool {
 }
 
 /// [`resolve_target`] の、答えが要らない呼び出し側のための版 (既定の `off` = 私設アドレスも断る)。
-/// 呼ぶのは試験だけなので `#[cfg(test)]` (T.34.65 で外から使われていないことを確かめて狭めた)。
+/// 呼ぶのは試験だけなので `#[cfg(test)]` (T34.65 で外から使われていないことを確かめて狭めた)。
 #[cfg(test)]
 pub(crate) fn is_local_target(host_or_addr: &str) -> bool {
     resolve_target(host_or_addr, false).0

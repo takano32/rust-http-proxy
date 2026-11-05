@@ -1,5 +1,5 @@
 //! 転送の準備 ([`first_target`]・[`shared_for`]) と、転送して要求のあとの始末を決める
-//! ([`forward_request`])。T.34.15
+//! ([`forward_request`])。T34.15
 
 use super::*;
 
@@ -70,9 +70,9 @@ pub(super) fn shared_for<'a>(
     } = p;
     http::Shared {
         timeout: config.timeout,
-        // forward のオリジン接続の確立も CONNECT と同じ締め切り (T.28.8)
+        // forward のオリジン接続の確立も CONNECT と同じ締め切り (T28.8)
         connect_timeout: config.connect_timeout,
-        // 転送中の最小の速さ (T.29.34)。見張りは `http` が要求ごとに作る
+        // 転送中の最小の速さ (T29.34)。見張りは `http` が要求ごとに作る
         min_transfer: &config.min_transfer,
         keepalive: config.keepalive,
         conn_id,

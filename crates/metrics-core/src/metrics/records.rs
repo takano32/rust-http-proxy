@@ -1,5 +1,5 @@
 //! 個票のリングへの記録 (`/errors` `/recent` `/bursts`) と、断った要求・オリジン側の失敗の WARN の門
-//! (T.34.26 で `metrics.rs` から移した)。
+//! (T34.26 で `metrics.rs` から移した)。
 //!
 //! 行を動かしただけで中身は変えていない。
 
@@ -127,11 +127,11 @@ impl Metrics {
     /// 宛先はまだ解けていないので空のままにする。集計 (`errors_by_cause`) にも
     /// 足さない: 4xx はエラー (5xx) ではないので、混ぜると `/status` が読めなくなる。
     ///
-    /// **戻り値は WARN を 1 行出してよいか** (T.28.9)。不正な要求の本数は攻撃者が決めるので、
+    /// **戻り値は WARN を 1 行出してよいか** (T28.9)。不正な要求の本数は攻撃者が決めるので、
     /// 理由ごとに 1 分に 1 回 (`log::WARN_EVERY_SECS`) だけ `Some` を返し、中身は前の行から
     /// 抑えた本数 (行の終わりにそのまま `{}` で付ける)。呼ぶ側は
     /// `if let Some(more) = metrics.record_bad_request(..) { log_warn!(.., "…{}", more) }` の形で出す
-    #[must_use = "WARN を出すかどうかを返す (T.28.9)"]
+    #[must_use = "WARN を出すかどうかを返す (T28.9)"]
     pub fn record_bad_request(
         &self,
         reason: BadRequestReason,
@@ -153,14 +153,14 @@ impl Metrics {
         self.rejected_warn[reason as usize].pass(crate::log::WARN_EVERY_SECS)
     }
 
-    /// オリジン側の失敗の WARN を 1 行出してよいか (T.29.15)。**理由ごとに 1 分に 1 回**だけ `Some` を返し、
+    /// オリジン側の失敗の WARN を 1 行出してよいか (T29.15)。**理由ごとに 1 分に 1 回**だけ `Some` を返し、
     /// 中身は前の行から抑えた本数 (行の終わりにそのまま `{}` で付ける)。
     ///
     /// 0.28.48 の tokyo の `/log` は 1,000 行 (19.95 時間) が 100% `502 Bad Gateway: connect <mail>:993/995
     /// failed: lookup` で、24 時間で 2,228 行あった (本数は相手 = 総当たりする利用者が決める)。理由は
     /// [`ErrCause`] の 8 つと、名前解決の内訳 (`nxdomain` / `dns_temp`) の 2 つ。呼ぶ側は
     /// `if let Some(more) = metrics.origin_warn(f) { log_warn!(.., "…{}", more) }` の形で出す
-    #[must_use = "WARN を出すかどうかを返す (T.29.15)"]
+    #[must_use = "WARN を出すかどうかを返す (T29.15)"]
     pub fn origin_warn(&self, f: Failure) -> Option<crate::log::Skipped> {
         let i = match f.dns {
             Some(d) => ERR_CAUSES + d as usize,

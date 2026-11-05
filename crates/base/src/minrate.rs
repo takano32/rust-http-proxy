@@ -1,4 +1,4 @@
-//! 転送中の最小の速さ (`PROXY_MIN_TRANSFER_BPS` / `PROXY_MIN_TRANSFER_WINDOW_SECS`。T.29.34)。
+//! 転送中の最小の速さ (`PROXY_MIN_TRANSFER_BPS` / `PROXY_MIN_TRANSFER_WINDOW_SECS`。T29.34)。
 //!
 //! `PROXY_TIMEOUT_SECS` は**無通信**の締め切りで、1 バイトでも動けば待ち直す。1 B / 2 秒でしか
 //! 読まない (slow-read) か送らない (slow-POST) 相手は、それだけで接続の枠を握り続けられる
@@ -85,7 +85,7 @@ pub const SIDE_NAMES: [&str; SIDES] = ["response", "request_body", "tunnel"];
 /// 切った本数 (起動からの通算。[`Side`] ごと)。
 static CLOSED: [AtomicU64; SIDES] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 
-/// WARN を種類ごとに 1 分 1 行へ絞る門 (T.28.9 と同じ形)。
+/// WARN を種類ごとに 1 分 1 行へ絞る門 (T28.9 と同じ形)。
 static WARNED: [crate::log::Throttle; SIDES] = [
     crate::log::Throttle::new(),
     crate::log::Throttle::new(),

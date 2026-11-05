@@ -289,7 +289,7 @@ fn the_ipv6_side_is_one_extra_connection_and_null_when_it_cannot_connect() {
     reset();
     // (1) AAAA があって生きていれば ms が出る
     let Ok(v6) = TcpListener::bind("[::1]:0") else {
-        eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T.32.24)");
+        eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T32.24)");
         return;
     };
     let v6_port = v6.local_addr().unwrap().port();
@@ -342,7 +342,7 @@ fn a_round_that_tries_ipv6_counts_ipv6_runs_and_no_request_probe() {
     let probes = ipv6_field("request_probes");
     // 繋がる 1 本
     let Ok(v6) = TcpListener::bind("[::1]:0") else {
-        eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T.32.24)");
+        eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T32.24)");
         return;
     };
     let v6_port = v6.local_addr().unwrap().port();
@@ -394,7 +394,7 @@ fn a_round_without_aaaa_counts_ipv6_skipped() {
 
     // (2) AAAA があって生きていても `PROXY_CANARY_IPV6=off` なら試さない
     let Ok(v6) = TcpListener::bind("[::1]:0") else {
-        eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T.32.24)");
+        eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T32.24)");
         return;
     };
     let v6_port = v6.local_addr().unwrap().port();
@@ -437,7 +437,7 @@ fn the_canary_ipv6_side_takes_over_the_ipv6_probe() {
     reset();
     let before = crate::net::ipv6_counters();
     let Ok(v6) = TcpListener::bind("[::1]:0") else {
-        eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T.32.24)");
+        eprintln!("飛ばした: この機械の lo は ::1 を持たない (IPv6 の無い sandbox。T32.24)");
         return;
     };
     let v6_port = v6.local_addr().unwrap().port();
@@ -452,7 +452,7 @@ fn the_canary_ipv6_side_takes_over_the_ipv6_probe() {
     reset();
 }
 
-/// 引けた答えの分け方 (T.34.45): AAAA の先頭は族で絞る前に控え、IPv6 を切ってあれば A だけ試す。
+/// 引けた答えの分け方 (T34.45): AAAA の先頭は族で絞る前に控え、IPv6 を切ってあれば A だけ試す。
 #[test]
 fn split_addrs_keeps_the_first_aaaa_and_filters_by_family() {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -480,7 +480,7 @@ fn split_addrs_keeps_the_first_aaaa_and_filters_by_family() {
     assert_eq!(split_addrs(vec![b1], 443, false), (Some(sa(b1)), vec![]));
 }
 
-/// `auto` は直近 3,600 秒の CONNECT の宛先だけを選ぶ (時刻を注入する。T.34.45)。
+/// `auto` は直近 3,600 秒の CONNECT の宛先だけを選ぶ (時刻を注入する。T34.45)。
 #[test]
 fn auto_target_at_skips_targets_older_than_an_hour_and_non_connect_hosts() {
     let m = Metrics::new();
@@ -513,7 +513,7 @@ fn auto_target_at_skips_targets_older_than_an_hour_and_non_connect_hosts() {
     );
 }
 
-/// `/status` の `canary` の 1 回ぶん (T.34.45): 成功は `error` が `null`、失敗は逃がした文字列。
+/// `/status` の `canary` の 1 回ぶん (T34.45): 成功は `error` が `null`、失敗は逃がした文字列。
 #[test]
 fn push_json_writes_null_or_the_escaped_error() {
     let ok = Probe {

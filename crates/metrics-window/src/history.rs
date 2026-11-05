@@ -25,7 +25,7 @@ use std::sync::Mutex;
 // **今までの名前でここから引ける** (`crate::history::Window` / `RESOLUTIONS` …)。
 pub use crate::window::{CAPACITY, DEFAULT_N, INTERVAL, RESOLUTIONS, WINDOW_BOUNDS_MS, Window};
 
-// 標本・符号・閉じた窓は割ってある (T.34.28)。**今までの名前でここから引ける**
+// 標本・符号・閉じた窓は割ってある (T34.28)。**今までの名前でここから引ける**
 // (`crate::history::Sample` / `KEYS` / `SAMPLE_ITEMS` / `ClosedWindows` …)。
 // 標本 1 本と列の名前・読み方、1 行の書き出しと畳み方
 mod sample;
@@ -132,7 +132,7 @@ impl History {
 
     /// その解像度の `since <= t < until` の標本を古い順に `f` へ渡す (**鍵の内側で舐めるだけ**で写さない。
     /// 60 秒の 1,440 行を写すと 1.4 MB の確保になる)。`/daily` が起動したときに今日の積み上げを
-    /// 読み戻した `history["60"]` から組み直すのに使う (T.32.18)。`f` の中で `History` に触らないこと
+    /// 読み戻した `history["60"]` から組み直すのに使う (T32.18)。`f` の中で `History` に触らないこと
     pub fn for_each_in(&self, res: usize, since: u64, until: u64, mut f: impl FnMut(&Sample)) {
         let q = self.rings[res].locked();
         for s in q.iter().filter(|s| s.t >= since && s.t < until) {
@@ -245,7 +245,7 @@ impl History {
 }
 
 /// `/history` の見出し (`interval_secs`・`keys`・`key_kinds`・`bounds_ms`・`causes`) と `samples` の口
-/// (T.34.28 で [`History::to_json_res_n`] から出した)。版の鍵 (`SCHEMA_HEAD`) の直後に書く。
+/// (T34.28 で [`History::to_json_res_n`] から出した)。版の鍵 (`SCHEMA_HEAD`) の直後に書く。
 fn push_header(out: &mut String, res: usize) {
     let _ = write!(out, "\"interval_secs\":{},\"keys\":[", RESOLUTIONS[res].0);
     push_str_array(out, &KEYS);
@@ -263,7 +263,7 @@ fn push_header(out: &mut String, res: usize) {
 #[cfg(test)]
 mod tests;
 
-/// 標本 1 本の `.rrd` のレコードと予備 (T.34.28 で `tests.rs` から割った)。
+/// 標本 1 本の `.rrd` のレコードと予備 (T34.28 で `tests.rs` から割った)。
 #[cfg(test)]
 mod codec_tests;
 

@@ -78,7 +78,7 @@ pub(crate) fn v2_dir_from(proc_cgroup: &str, sysfs: &Path) -> Option<PathBuf> {
 
 /// CPU の絞り (`cpu.stat` と `cpu.max`) と PSI (`cpu.pressure` / `memory.pressure` / `io.pressure`)。
 ///
-/// **`/proc/self/cgroup` は 1 回だけ読み**、見つけた階層を両方に使う (T.34.148。前は `cgroup_cpu` と
+/// **`/proc/self/cgroup` は 1 回だけ読み**、見つけた階層を両方に使う (T34.148。前は `cgroup_cpu` と
 /// `cgroup_pressure` が別々に読み、5 秒の標本ごとに 2 回開いていた)。CPU の絞りは読めなければ
 /// 各項目が `None`。PSI は cgroup に無ければ `/proc/pressure/*` (機械全体) に落ち、どちらも無い
 /// カーネル (`CONFIG_PSI` 無し) では `None`。
@@ -210,7 +210,7 @@ fn tightest_quota(dir: &Path, root: &Path) -> Option<f64> {
     best
 }
 
-/// `dir` から `root` まで 1 段ずつ親へ遡り、各段で `f` を呼ぶ (T.34.68 で 4 か所のループを 1 つにした)。
+/// `dir` から `root` まで 1 段ずつ親へ遡り、各段で `f` を呼ぶ (T34.68 で 4 か所のループを 1 つにした)。
 ///
 /// `f` が `Break(v)` を返したらそこで止めて `Some(v)`。`root` に着いたか、親が `root` の外に出たら
 /// (`dir` が `root` の下に無いときは `dir` の 1 段だけ見て) `None`。
@@ -381,7 +381,7 @@ full avg10=2.99 avg60=2.10 avg300=0.90 total=166527343
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// T.34.148: 1 回だけ読んだ階層を CPU と PSI の両方に使う。階層が無ければ CPU は全部 `None`、
+    /// T34.148: 1 回だけ読んだ階層を CPU と PSI の両方に使う。階層が無ければ CPU は全部 `None`、
     /// PSI は機械全体 (`/proc/pressure/*`) だけを見る (前に `cgroup_pressure` が `None` の階層で
     /// していたのと同じ)。
     #[test]

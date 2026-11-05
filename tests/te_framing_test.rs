@@ -88,7 +88,7 @@ fn test_integration_transfer_encoding_that_does_not_frame_is_rejected() {
         // 応答は 1 つだけ (本文が次の要求として読まれていない)
         assert_eq!(resp.matches("HTTP/1.1 ").count(), 1, "{}: {:?}", name, resp);
     }
-    // 印の要求が届くまで待ってから見る (固定の sleep の代わり。T.34.114)
+    // 印の要求が届くまで待ってから見る (固定の sleep の代わり。T34.114)
     settle_with_mark(proxy_port, origin_port, &seen);
     assert!(
         seen.lock().unwrap().is_empty(),

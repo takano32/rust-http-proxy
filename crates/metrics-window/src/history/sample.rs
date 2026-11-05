@@ -1,5 +1,5 @@
 //! `/history` の標本 1 本 ([`Sample`]) と列の名前・読み方 ([`KEYS`]・[`KEY_KINDS`])、
-//! 1 行の書き出しと粗い解像度への畳み方 (T.34.28 で `history.rs` から移した)。
+//! 1 行の書き出しと粗い解像度への畳み方 (T34.28 で `history.rs` から移した)。
 
 use super::*;
 
@@ -87,44 +87,44 @@ pub struct Sample {
     /// `(値, 1)` として読む ([`Sample::gauge_weight`])
     pub dns_warm_sum: u64,
     pub gauge_n: u64,
-    /// その区間に閉じた CONNECT 1 本ごとの **「確立 − オリジン側のカーネルの RTT」** (ms。T.28.45)。
+    /// その区間に閉じた CONNECT 1 本ごとの **「確立 − オリジン側のカーネルの RTT」** (ms。T28.45)。
     ///
     /// 確立は `dns + connect` の段 (入口の ACL が先に引いた名前解決も含む = `/recent` の
     /// `ms.dns + ms.connect`)、RTT はトンネルの終わりに読む `tcpi_rtt` (`/recent` の
     /// `rtt_ms.origin`)。差を ms に**切り上げ**、負なら 0。**RTT が読めなかった接続と
     /// 失敗した接続は入れない**ので `excess.count <= connect.count`。
     /// [`Self::connect`] の p50 は 1 RTT = 距離で決まる (tokyo は 18 ms) ので、`/slo` の
-    /// `connect_p50_ms` / `connect_p95_ms` はこちらで判定する (T.28.16 段 1 の模型)。
-    /// **T.28.45 より前のレコードはゼロ埋め** = 空の窓で読み戻る
+    /// `connect_p50_ms` / `connect_p95_ms` はこちらで判定する (T28.16 段 1 の模型)。
+    /// **T28.45 より前のレコードはゼロ埋め** = 空の窓で読み戻る
     pub excess: Window,
     /// その区間の [`Self::dns_misses`] のうち、**名前解決に失敗した試み** (`errors_by_cause`
-    /// の `dns`) が払ったミス (T.28.45)。`/slo` の `dns_miss_per_connect` は
+    /// の `dns`) が払ったミス (T28.45)。`/slo` の `dns_miss_per_connect` は
     /// `(dns_misses − dns_fail_misses) ÷ 確立` (メール宛の総当たりの NXDOMAIN を数えない)。
-    /// T.28.45 より前のレコードは 0
+    /// T28.45 より前のレコードは 0
     pub dns_fail_misses: u64,
     /// その区間に閉じた CONNECT 1 本ごとの **「確立 (`connect` の段だけ) − オリジン側のカーネルの RTT」**
-    /// (ms。T.29.12)。[`Self::excess`] から**名前解決を除いた**もので、本数は同じ。
+    /// (ms。T29.12)。[`Self::excess`] から**名前解決を除いた**もので、本数は同じ。
     /// 10-26 の tokyo で excess が 50 ms を越えた成功 36 本の excess の合計 19,789 ms のうち 15,159 ms (77%) が
     /// 名前解決 (34 本がメール宛) だったので、`/slo` の `connect_p50_ms` / `connect_p95_ms` はこちらで判定し、
-    /// 名前解決の遅れは `dns_slow` (異常検知) に任せる。**T.29.12 より前のレコードはゼロ埋め** = 空の窓
+    /// 名前解決の遅れは `dns_slow` (異常検知) に任せる。**T29.12 より前のレコードはゼロ埋め** = 空の窓
     pub conn_excess: Window,
     /// その区間の、名前解決に成功した試み (確立・転送の成功と、原因 `dns` 以外のエラー) のうち
-    /// **宛先のポートが 443・80 以外**の本数と、そのうちエラーで終わった本数 (T.30.3)。
+    /// **宛先のポートが 443・80 以外**の本数と、そのうちエラーで終わった本数 (T30.3)。
     /// `/slo` の `error_rate` は今までの分子と分母からこの 2 つを引いた **443・80 宛てだけ**で判定する
     /// (利用者の決定。10-28 の tokyo で外れの大半はメール宛 `:993`・`:995`・`:143` の確立の時間切れ)。
-    /// **T.30.3 より前のレコードはゼロ埋め** = 引くものが無いので、旧の数え方 (全部のポート) で読み戻る
+    /// **T30.3 より前のレコードはゼロ埋め** = 引くものが無いので、旧の数え方 (全部のポート) で読み戻る
     pub other_port_attempts: u64,
     pub other_port_errors: u64,
-    /// その区間の [`Self::dns_ms_sum`] のうち、**名前解決に失敗した試み**が払った ms (T.32.16)。
+    /// その区間の [`Self::dns_ms_sum`] のうち、**名前解決に失敗した試み**が払った ms (T32.16)。
     /// 異常検知の `dns_slow` は `(dns_ms_sum − dns_fail_ms_sum) ÷ (dns_misses − dns_fail_misses)` で読む
-    /// (0.30.4 の 62 件は nxdomain の 2 秒級の失敗で鳴っていた)。**T.32.16 より前のレコードは 0**
+    /// (0.30.4 の 62 件は nxdomain の 2 秒級の失敗で鳴っていた)。**T32.16 より前のレコードは 0**
     /// = 今までどおり失敗のぶんの ms も成功したミスに入ったまま読み戻る
     pub dns_fail_ms_sum: u64,
     /// その区間の、名前解決に**成功した**ミス (`dns_misses − dns_fail_misses`) のうち、**宛先のポートが 443・80**
-    /// のものの回数と ms の合計 (T.33.3。鍵の末尾の見分けは [`Self::other_port_attempts`] と同じ)。
+    /// のものの回数と ms の合計 (T33.3。鍵の末尾の見分けは [`Self::other_port_attempts`] と同じ)。
     /// 異常検知の `dns_slow` はこの 2 つで判定する (利用者の決定。0.32.39 の 48 時間の 15 件はどれも NAT の接続元が
     /// 初めて引いたメールのホスト (`:993`・`:995`・`:143`) の遅い名前解決で鳴っていた)。
-    /// **T.33.3 より前のレコードは 0** で読み戻る (= `dns_slow` はその標本では立たない)
+    /// **T33.3 より前のレコードは 0** で読み戻る (= `dns_slow` はその標本では立たない)
     pub web_dns_misses: u64,
     pub web_dns_ms_sum: u64,
 }
@@ -176,23 +176,23 @@ pub const KEYS: [&str; 57] = [
     "dns_warm_max",
     "dns_warm_sum",
     "gauge_n",
-    // T.28.45 で末尾に足したもの (`connect` と同じ 4 列の形 + 1 列)
+    // T28.45 で末尾に足したもの (`connect` と同じ 4 列の形 + 1 列)
     "excesses",
     "excess_ms_sum",
     "excess_ms_max",
     "excess_buckets",
     "dns_fail_misses",
-    // T.29.12 で末尾に足したもの (名前解決を除いた「確立 − RTT」。`connect` と同じ 4 列の形)
+    // T29.12 で末尾に足したもの (名前解決を除いた「確立 − RTT」。`connect` と同じ 4 列の形)
     "conn_excesses",
     "conn_excess_ms_sum",
     "conn_excess_ms_max",
     "conn_excess_buckets",
-    // T.30.3 で末尾に足したもの (443・80 以外の宛先への試みと、そのエラー。`/slo` の `error_rate` が引く)
+    // T30.3 で末尾に足したもの (443・80 以外の宛先への試みと、そのエラー。`/slo` の `error_rate` が引く)
     "other_port_attempts",
     "other_port_errors",
-    // T.32.16 で末尾に足したもの (名前解決に失敗した試みが払った ms。`dns_slow` が引く)
+    // T32.16 で末尾に足したもの (名前解決に失敗した試みが払った ms。`dns_slow` が引く)
     "dns_fail_ms_sum",
-    // T.33.3 で末尾に足したもの (443・80 宛ての、名前解決に成功したミスの回数と ms。`dns_slow` が読む)
+    // T33.3 で末尾に足したもの (443・80 宛ての、名前解決に成功したミスの回数と ms。`dns_slow` が読む)
     "web_dns_misses",
     "web_dns_ms_sum",
 ];
@@ -329,20 +329,20 @@ impl Sample {
             self.dns_warm_sum,
             self.gauge_n
         );
-        // T.28.45 で末尾に足したもの (`connect` と同じ 4 列の形 + 1 列)
+        // T28.45 で末尾に足したもの (`connect` と同じ 4 列の形 + 1 列)
         self.excess.push_json(out);
         let _ = write!(out, ",{}", self.dns_fail_misses);
-        // T.29.12 で末尾に足したもの
+        // T29.12 で末尾に足したもの
         self.conn_excess.push_json(out);
-        // T.30.3 で末尾に足したもの
+        // T30.3 で末尾に足したもの
         let _ = write!(
             out,
             ",{},{}",
             self.other_port_attempts, self.other_port_errors
         );
-        // T.32.16 で末尾に足したもの
+        // T32.16 で末尾に足したもの
         let _ = write!(out, ",{}", self.dns_fail_ms_sum);
-        // T.33.3 で末尾に足したもの
+        // T33.3 で末尾に足したもの
         let _ = write!(out, ",{},{}]", self.web_dns_misses, self.web_dns_ms_sum);
     }
 
@@ -386,7 +386,7 @@ impl Sample {
         let dns_warm_sum: u64 = window.iter().map(Sample::dns_warm_total).sum();
         let max = |f: fn(&Sample) -> u64| window.iter().map(f).max().unwrap_or(0);
         let sum = |f: fn(&Sample) -> u64| window.iter().map(f).sum::<u64>();
-        // 区間の値 (応答時間の分布・エラーの原因) は足し合わせる (畳む段。T.34.28)
+        // 区間の値 (応答時間の分布・エラーの原因) は足し合わせる (畳む段。T34.28)
         let Folded {
             connect,
             forward,
@@ -451,7 +451,7 @@ impl Sample {
     }
 }
 
-/// 粗い解像度へ畳むときの、区間の値の足し合わせ (T.34.28 で [`Sample::downsample`] から割った「畳む段」)。
+/// 粗い解像度へ畳むときの、区間の値の足し合わせ (T34.28 で [`Sample::downsample`] から割った「畳む段」)。
 struct Folded {
     connect: Window,
     forward: Window,
@@ -467,7 +467,7 @@ impl Folded {
         let mut forward = Window::default();
         // 利用者が待つ時間も区間の値なので `connect` と同じ畳み方 (T15.0 (10))
         let mut wait = Window::default();
-        // 「確立 − RTT」も区間の値 (T.28.45)
+        // 「確立 − RTT」も区間の値 (T28.45)
         let mut excess = Window::default();
         let mut conn_excess = Window::default();
         let mut errors_by_cause = [0u64; crate::metrics::ERR_CAUSES];

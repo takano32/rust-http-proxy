@@ -1,8 +1,8 @@
-//! 標本 1 本の判定 ([`judge`]) の単体試験 (T.34.2 で `slo.rs` の `mod tests` から移した。名前はそのまま)。
+//! 標本 1 本の判定 ([`judge`]) の単体試験 (T34.2 で `slo.rs` の `mod tests` から移した。名前はそのまま)。
 
 use super::*;
 
-/// **T.28.45**: 確立の 2 つの閾は「確立 − RTT」の窓で判定する (距離で外れない)。
+/// **T28.45**: 確立の 2 つの閾は「確立 − RTT」の窓で判定する (距離で外れない)。
 /// 確立 40 ms (tokyo の 1 RTT 18 ms の 2 往復ぶん) でも、RTT を引いた残りが 2 ms なら満たす。
 #[test]
 fn the_connect_thresholds_judge_the_excess_over_rtt() {
@@ -29,7 +29,7 @@ fn the_connect_thresholds_judge_the_excess_over_rtt() {
     slow.conn_excess = crate::history::Window::default();
     slow.conn_excess.observe(70);
     assert_eq!(judge(&th, &slow).bits, 0b0011, "{:?}", judge(&th, &slow));
-    // **T.29.12**: 名前解決が遅いだけ (`dns + connect − RTT` は 300 ms、`connect − RTT` は 2 ms) なら
+    // **T29.12**: 名前解決が遅いだけ (`dns + connect − RTT` は 300 ms、`connect − RTT` は 2 ms) なら
     // 確立の 2 つは外さない (メール宛のリゾルバの遅れは `dns_slow` が見る)
     let mut slow_dns = Sample::default();
     for _ in 0..10 {
@@ -38,14 +38,14 @@ fn the_connect_thresholds_judge_the_excess_over_rtt() {
         slow_dns.conn_excess.observe(2);
     }
     assert!(judge(&th, &slow_dns).met(), "{:?}", judge(&th, &slow_dns));
-    // 窓が空 (T.29.12 より前の標本・RTT が読めなかった本だけ) は確立の 2 つを外さない
+    // 窓が空 (T29.12 より前の標本・RTT が読めなかった本だけ) は確立の 2 つを外さない
     let mut old = Sample::default();
     old.connect.observe(300);
     let v = judge(&th, &old);
     assert!(v.judged && v.met(), "{:?}", v);
 }
 
-/// **T.28.45 (E1)**: `error_rate` は名前解決に成功した試みあたり
+/// **T28.45 (E1)**: `error_rate` は名前解決に成功した試みあたり
 /// (`(errors − dns) ÷ (試み − dns)`)。名前解決の失敗だけの標本は「判定なし」。
 #[test]
 fn the_error_rate_counts_only_attempts_whose_name_resolved() {
@@ -77,9 +77,9 @@ fn the_error_rate_counts_only_attempts_whose_name_resolved() {
     assert_eq!(tr.hours().count(), 0);
 }
 
-/// **T.30.3**: `error_rate` は宛先のポートが 443・80 の試みだけ (利用者の決定)。5 秒の標本の
+/// **T30.3**: `error_rate` は宛先のポートが 443・80 の試みだけ (利用者の決定)。5 秒の標本の
 /// `other_port_attempts` / `other_port_errors` を今までの分子と分母から引く。どちらも 0 の標本
-/// (T.30.3 より前のレコード) は全部のポートのまま。443・80 以外のエラーだけの標本は「判定なし」。
+/// (T30.3 より前のレコード) は全部のポートのまま。443・80 以外のエラーだけの標本は「判定なし」。
 #[test]
 fn the_error_rate_counts_only_the_attempts_to_ports_443_and_80() {
     let th = DEFAULT;
@@ -129,7 +129,7 @@ fn the_error_rate_counts_only_the_attempts_to_ports_443_and_80() {
     assert_eq!(v.den[1], 100);
 }
 
-/// **T.28.45**: `dns_miss_per_connect` は名前解決に失敗した試みのミスを除く
+/// **T28.45**: `dns_miss_per_connect` は名前解決に失敗した試みのミスを除く
 /// (`(dns_misses − dns_fail_misses) ÷ 確立`)。
 #[test]
 fn the_miss_rate_leaves_out_the_misses_of_failed_lookups() {
@@ -156,7 +156,7 @@ fn a_sample_without_a_connect_or_an_error_is_not_judged() {
     let v = judge(&th, &empty);
     assert!(!v.judged, "{:?}", v);
     assert!(!v.met());
-    // 達成率の分母にも入らない (T.29.33 から、転送の 1 本は比の 1 時間の合計の分母には入る)
+    // 達成率の分母にも入らない (T29.33 から、転送の 1 本は比の 1 時間の合計の分母には入る)
     let mut tr = Tracker::new();
     tr.observe(&th, &empty);
     let hours: Vec<Hour> = tr.hours().collect();

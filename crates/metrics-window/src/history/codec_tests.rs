@@ -1,5 +1,5 @@
 //! 標本 1 本の `.rrd` のレコード (`Sample::encode` / `decode`) と予備の試験
-//! (T.34.28 で `tests.rs` から移した。名前はそのまま)。
+//! (T34.28 で `tests.rs` から移した。名前はそのまま)。
 
 use super::codec::V3_FIXED_ITEMS;
 use super::tests::sample;
@@ -23,13 +23,13 @@ fn sample_encoding_round_trips() {
     wait.observe(1);
     wait.observe(40);
     wait.observe(4000);
-    // T.28.45 の「確立 − RTT」の窓も、ほかの 3 つと全部違える
+    // T28.45 の「確立 − RTT」の窓も、ほかの 3 つと全部違える
     let mut excess = Window::default();
     excess.observe(2);
     excess.observe(60);
     excess.observe(61);
     excess.observe(700);
-    // T.29.12 の名前解決を除いた窓も、ほかの 4 つと全部違える
+    // T29.12 の名前解決を除いた窓も、ほかの 4 つと全部違える
     let mut conn_excess = Window::default();
     conn_excess.observe(4);
     conn_excess.observe(30);
@@ -106,10 +106,10 @@ fn sample_encoding_round_trips() {
         [32, 33, 34],
         "`dns_warm_max` `dns_warm_sum` `gauge_n` の順"
     );
-    // T.28.45 の 17 項目はさらにそのうしろ
+    // T28.45 の 17 項目はさらにそのうしろ
     assert_eq!(Window::decode(&mut d), excess, "`excess` の窓 16 項目");
     assert_eq!(d.u64(), 35, "`dns_fail_misses`");
-    // T.29.12 の窓 16 項目、T.30.3 の 2 項目はさらにそのうしろ
+    // T29.12 の窓 16 項目、T30.3 の 2 項目はさらにそのうしろ
     assert_eq!(
         Window::decode(&mut d),
         conn_excess,
@@ -120,7 +120,7 @@ fn sample_encoding_round_trips() {
         [36, 37],
         "`other_port_attempts` `other_port_errors` の順"
     );
-    // T.32.16 の 1 項目、T.33.3 の 2 項目はさらにそのうしろ
+    // T32.16 の 1 項目、T33.3 の 2 項目はさらにそのうしろ
     assert_eq!(d.u64(), 38, "`dns_fail_ms_sum`");
     assert_eq!(
         [d.u64(), d.u64()],
@@ -256,7 +256,7 @@ fn the_new_columns_fit_in_the_record_slack_and_version3_records_still_decode() {
     assert_eq!(
         SAMPLE_ITEMS - 17 - 16 - 2 - 1 - 2,
         86,
-        "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列 (+ T.28.45 の 17 + T.29.12 の 16 + T.30.3 の 2 + T.32.16 の 1 + T.33.3 の 2)"
+        "63 + `wait` の窓 16 + 4 列 + T16.0 の 3 列 (+ T28.45 の 17 + T29.12 の 16 + T30.3 の 2 + T32.16 の 1 + T33.3 の 2)"
     );
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
     assert!(
@@ -297,11 +297,11 @@ fn the_new_columns_fit_in_the_record_slack_and_version3_records_still_decode() {
     );
 }
 
-/// T.28.45 の 2 つ (`excess` = 接続ごとの「確立 − カーネルの RTT」の窓と
+/// T28.45 の 2 つ (`excess` = 接続ごとの「確立 − カーネルの RTT」の窓と
 /// `dns_fail_misses` = 名前解決に失敗した試みのミス) も**レコードの余白に足した**ので
 /// `.rrd` の版は上がらない。
 ///
-/// 見るのは 4 つ: (a) 103 項目が 1 レコードに収まり予備が残る、(b) T.28.45 より前の
+/// 見るのは 4 つ: (a) 103 項目が 1 レコードに収まり予備が残る、(b) T28.45 より前の
 /// 86 項目のレコード (末尾はゼロ埋め) を読むと 2 つが 0 (= 空の窓) で、手前は 1 つもずれない、
 /// (c) 値を入れた標本も往復する、(d) 粗い解像度へは `connect` と同じく足し合わせ、
 /// `/history` の列は**末尾**に 5 つ (`excesses` `excess_ms_sum` `excess_ms_max`
@@ -320,7 +320,7 @@ fn the_rtt_excess_window_fits_in_the_slack_and_older_records_read_it_as_empty() 
     const {
         assert!(
             SAMPLE_ITEMS >= 103,
-            "86 + `excess` の窓 16 + `dns_fail_misses` 1 (T.29.12 でさらに 16)"
+            "86 + `excess` の窓 16 + `dns_fail_misses` 1 (T29.12 でさらに 16)"
         )
     };
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
@@ -332,10 +332,10 @@ fn the_rtt_excess_window_fits_in_the_slack_and_older_records_read_it_as_empty() 
     );
     // (c)
     assert_eq!(Sample::decode(&enc), Some(s));
-    // (b) T.28.45 より前の 86 項目
+    // (b) T28.45 より前の 86 項目
     let mut old = enc[..86 * 8].to_vec();
     old.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
-    let back = Sample::decode(&old).expect("T.28.45 より前のレコードも読める");
+    let back = Sample::decode(&old).expect("T28.45 より前のレコードも読める");
     assert_eq!((back.excess, back.dns_fail_misses), (Window::default(), 0));
     assert_eq!(
         Sample {
@@ -370,7 +370,7 @@ fn the_rtt_excess_window_fits_in_the_slack_and_older_records_read_it_as_empty() 
         &KEY_KINDS[n..n + 5],
         &["delta", "delta", "peak", "buckets", "delta"]
     );
-    // 行にその 5 列が並ぶ (後ろは T.29.12 の空の窓)
+    // 行にその 5 列が並ぶ (後ろは T29.12 の空の窓)
     let h = History::default();
     h.push(s);
     let json = h.to_json();
@@ -381,8 +381,8 @@ fn the_rtt_excess_window_fits_in_the_slack_and_older_records_read_it_as_empty() 
     );
 }
 
-/// T.29.12 の `conn_excess` (名前解決を除いた「確立 − カーネルの RTT」) も**レコードの余白に足した**ので
-/// `.rrd` の版は上がらない。(a) 119 項目が 1 レコードに収まり予備が残る、(b) T.29.12 より前の 103 項目の
+/// T29.12 の `conn_excess` (名前解決を除いた「確立 − カーネルの RTT」) も**レコードの余白に足した**ので
+/// `.rrd` の版は上がらない。(a) 119 項目が 1 レコードに収まり予備が残る、(b) T29.12 より前の 103 項目の
 /// レコードは空の窓で読み戻り手前は 1 つもずれない、(c) 畳むと足し合わせ、(d) `/history` の列は**末尾**に 4 つ。
 #[test]
 fn the_connect_minus_rtt_window_fits_in_the_slack_and_older_records_read_it_as_empty() {
@@ -397,7 +397,7 @@ fn the_connect_minus_rtt_window_fits_in_the_slack_and_older_records_read_it_as_e
     const {
         assert!(
             SAMPLE_ITEMS >= 119,
-            "103 + `conn_excess` の窓 16 (T.30.3 でさらに 2)"
+            "103 + `conn_excess` の窓 16 (T30.3 でさらに 2)"
         )
     };
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
@@ -406,7 +406,7 @@ fn the_connect_minus_rtt_window_fits_in_the_slack_and_older_records_read_it_as_e
     // (b)
     let mut old = enc[..103 * 8].to_vec();
     old.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
-    let back = Sample::decode(&old).expect("T.29.12 より前のレコードも読める");
+    let back = Sample::decode(&old).expect("T29.12 より前のレコードも読める");
     assert_eq!(
         Sample {
             conn_excess: Window::default(),
@@ -452,9 +452,9 @@ fn the_connect_minus_rtt_window_fits_in_the_slack_and_older_records_read_it_as_e
     );
 }
 
-/// T.30.3 の `other_port_attempts` / `other_port_errors` (443・80 以外の宛先への試みとそのエラー。`/slo` の
+/// T30.3 の `other_port_attempts` / `other_port_errors` (443・80 以外の宛先への試みとそのエラー。`/slo` の
 /// `error_rate` が引く) も**レコードの余白に足した**ので `.rrd` の版は上がらない。(a) 121 項目が 1 レコードに
-/// 収まり予備が残る、(b) T.30.3 より前の 119 項目のレコードは 0 (= 引くものが無い = 旧の数え方) で読み戻り
+/// 収まり予備が残る、(b) T30.3 より前の 119 項目のレコードは 0 (= 引くものが無い = 旧の数え方) で読み戻り
 /// 手前は 1 つもずれない、(c) 畳むと足し合わせ、(d) `/history` の列は**末尾**に 2 つ (`delta`)。
 #[test]
 fn the_other_port_counts_fit_in_the_slack_and_older_records_read_them_as_zero() {
@@ -467,19 +467,14 @@ fn the_other_port_counts_fit_in_the_slack_and_older_records_read_them_as_zero() 
     s.gauge_n = 1;
     let enc = s.encode();
     // (a)
-    const {
-        assert!(
-            SAMPLE_ITEMS >= 121,
-            "119 + T.30.3 の 2 (T.32.16 でさらに 1)"
-        )
-    };
+    const { assert!(SAMPLE_ITEMS >= 121, "119 + T30.3 の 2 (T32.16 でさらに 1)") };
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
     const { assert!(SAMPLE_SPARE_ITEMS >= 1, "予備が残る") };
     assert_eq!(Sample::decode(&enc), Some(s));
     // (b)
     let mut old = enc[..119 * 8].to_vec();
     old.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
-    let back = Sample::decode(&old).expect("T.30.3 より前のレコードも読める");
+    let back = Sample::decode(&old).expect("T30.3 より前のレコードも読める");
     assert_eq!(
         Sample {
             other_port_attempts: 0,
@@ -515,8 +510,8 @@ fn the_other_port_counts_fit_in_the_slack_and_older_records_read_them_as_zero() 
     );
 }
 
-/// T.32.16 の `dns_fail_ms_sum` (名前解決に失敗した試みが払った ms。`dns_slow` が引く) も**レコードの余白に
-/// 足した**ので `.rrd` の版は上がらない。(a) 122 項目が 1 レコードに収まり予備が 5 項目残る、(b) T.32.16 より前の
+/// T32.16 の `dns_fail_ms_sum` (名前解決に失敗した試みが払った ms。`dns_slow` が引く) も**レコードの余白に
+/// 足した**ので `.rrd` の版は上がらない。(a) 122 項目が 1 レコードに収まり予備が 5 項目残る、(b) T32.16 より前の
 /// 121 項目のレコードは 0 (= 引くものが無い) で読み戻り手前は 1 つもずれない、(c) 畳むと足し合わせ、
 /// (d) `/history` の列は**末尾**に 1 つ (`delta`)。
 #[test]
@@ -530,19 +525,14 @@ fn the_failed_dns_ms_fit_in_the_slack_and_older_records_read_them_as_zero() {
     s.gauge_n = 1;
     let enc = s.encode();
     // (a)
-    const {
-        assert!(
-            SAMPLE_ITEMS >= 122,
-            "121 + T.32.16 の 1 (T.33.3 でさらに 2)"
-        )
-    };
+    const { assert!(SAMPLE_ITEMS >= 122, "121 + T32.16 の 1 (T33.3 でさらに 2)") };
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
     const { assert!(SAMPLE_SPARE_ITEMS >= 1, "予備が残る") };
     assert_eq!(Sample::decode(&enc), Some(s));
     // (b)
     let mut old = enc[..121 * 8].to_vec();
     old.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
-    let back = Sample::decode(&old).expect("T.32.16 より前のレコードも読める");
+    let back = Sample::decode(&old).expect("T32.16 より前のレコードも読める");
     assert_eq!(
         Sample {
             dns_fail_ms_sum: 0,
@@ -568,9 +558,9 @@ fn the_failed_dns_ms_fit_in_the_slack_and_older_records_read_them_as_zero() {
     assert!(json.contains(",0,4,2100,0,0]"), "{}", json);
 }
 
-/// T.33.3 の `web_dns_misses`・`web_dns_ms_sum` (443・80 宛ての、名前解決に成功したミスの回数と ms。`dns_slow` が
+/// T33.3 の `web_dns_misses`・`web_dns_ms_sum` (443・80 宛ての、名前解決に成功したミスの回数と ms。`dns_slow` が
 /// 読む) も**レコードの余白に足した**ので `.rrd` の版は上がらない。(a) 124 項目が 1 レコードに収まり予備が 3 項目
-/// 残る、(b) T.33.3 より前の 122 項目のレコードは 0 で読み戻り手前は 1 つもずれない、(c) 畳むと足し合わせ、
+/// 残る、(b) T33.3 より前の 122 項目のレコードは 0 で読み戻り手前は 1 つもずれない、(c) 畳むと足し合わせ、
 /// (d) `/history` の列は**末尾**に 2 つ (`delta`)。
 #[test]
 fn the_web_dns_misses_fit_in_the_slack_and_older_records_read_them_as_zero() {
@@ -584,14 +574,14 @@ fn the_web_dns_misses_fit_in_the_slack_and_older_records_read_them_as_zero() {
     s.gauge_n = 1;
     let enc = s.encode();
     // (a)
-    assert_eq!(SAMPLE_ITEMS, 124, "122 + T.33.3 の 2");
+    assert_eq!(SAMPLE_ITEMS, 124, "122 + T33.3 の 2");
     assert_eq!(enc.len(), SAMPLE_ITEMS * 8);
     assert_eq!(SAMPLE_SPARE_ITEMS, 3);
     assert_eq!(Sample::decode(&enc), Some(s));
     // (b)
     let mut old = enc[..122 * 8].to_vec();
     old.resize(crate::rrd::SAMPLE_RECORD - 4, 0);
-    let back = Sample::decode(&old).expect("T.33.3 より前のレコードも読める");
+    let back = Sample::decode(&old).expect("T33.3 より前のレコードも読める");
     assert_eq!(
         Sample {
             web_dns_misses: 0,

@@ -11,7 +11,7 @@ pub fn vary_is_supported(v: &str) -> bool {
 /// キャッシュキーに含める `Accept-Encoding` の正規形 (小文字・q=0 除外・ソート・重複除去)。
 pub fn accept_encoding_variant(value: Option<&str>) -> String {
     // 無い・空と、小文字のトークン 1 つ (`gzip` など) は並べ替えるものが無いので、そのまま返す
-    // (`Vec` とトークンごとの `String` と `join` を作らない。T.28.13 (b))
+    // (`Vec` とトークンごとの `String` と `join` を作らない。T28.13 (b))
     let v = value.unwrap_or("").trim();
     if v.is_empty() {
         return String::new();

@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-// 責務ごとに子のファイルへ分けてある (T.34.56)。公開の名前はここで出し直す (`proxy_base::log::…` のまま)。
+// 責務ごとに子のファイルへ分けてある (T34.56)。公開の名前はここで出し直す (`proxy_base::log::…` のまま)。
 // - `format`: 時刻と行の頭、アクセスログの本体の組み立て
 // - `ring`: `/log` のリング (warn 以上の直近の行) と状態ファイルへの書き出し・読み戻し
 // - `throttle`: 警告を絞る門 (`Throttle`) と、長い文字列を切って載せる `Clip`
@@ -52,7 +52,7 @@ impl Level {
         }
     }
 
-    /// 符号 (`Level as u8`) から戻す。知らない値は `None` (T.34.73 で `from_u8` と
+    /// 符号 (`Level as u8`) から戻す。知らない値は `None` (T34.73 で `from_u8` と
     /// [`current_level`] の 2 つの表をここ 1 つにまとめた。知らない値の行き先は呼ぶ側が決める)。
     #[inline]
     fn from_code(v: u8) -> Option<Level> {

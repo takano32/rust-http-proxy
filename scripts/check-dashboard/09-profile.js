@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 8. /profile を読む関数 (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 8. /profile を読む関数 (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 8. `/profile` を読む関数 (段階・スレッド・ロック。T14.3)
 const profFile = process.argv[4] || path.join(__dirname, 'testdata', 'profile-res5.json');

@@ -1,4 +1,4 @@
-//! 雪像のファイル名の往復 (`snapshots` の一部。T.34.2 で `snapshots.rs` から移した)。
+//! 雪像のファイル名の往復 (`snapshots` の一部。T34.2 で `snapshots.rs` から移した)。
 //!
 //! 日次の 1 枚は `YYYY-MM-DD` ([`day_name`] ↔ [`day_of`])、起動と停止の 1 枚は
 //! `<YYYY-MM-DDTHHMMSSZ>-start|shutdown` ([`moment_name`] ↔ [`parse_moment`])。
@@ -51,7 +51,7 @@ pub(super) fn day_of(name: &str) -> Option<u64> {
     u64::try_from(days).ok()
 }
 
-/// 起動と停止の 1 枚の種類 (T.28.20)。名前は `<YYYY-MM-DDTHHMMSSZ>-<種類>.json`。
+/// 起動と停止の 1 枚の種類 (T28.20)。名前は `<YYYY-MM-DDTHHMMSSZ>-<種類>.json`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Moment {
     /// 起動から `memory.baseline` と同じ 60 秒 (締めの「0 時間」)

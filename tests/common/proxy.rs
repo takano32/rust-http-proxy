@@ -48,7 +48,7 @@ pub fn start_test_proxy_full(
     start_test_proxy_parts(config, cache_cfg, ca_file).0
 }
 
-/// `serve` を呼ぶ前に `early` 本の接続の握手を済ませておく版 (起動直後の接続のテスト用。T.28.30)。
+/// `serve` を呼ぶ前に `early` 本の接続の握手を済ませておく版 (起動直後の接続のテスト用。T28.30)。
 ///
 /// 握手は待ち受けの accept 待ちの列に載ったまま、受け付けのループが待ち受けに
 /// オプションを当てるより前に終わっている (= 待ち受けの設定を継承していない)。
@@ -89,7 +89,7 @@ fn start_test_proxy_on(
     )
 }
 
-/// 試験用プロキシの配線 (T.34.105 で 1 本にした)。`cfg` は起動のときの設定で、
+/// 試験用プロキシの配線 (T34.105 で 1 本にした)。`cfg` は起動のときの設定で、
 /// 接続ごとの設定は `config_of` から引く (固定の設定も、差し替えられる設定も同じ配線を通る)。
 ///
 /// 前は差し替えられる版が別に配線を書いていて、`attach_origin_rtt`・`conns.set_enabled`・
@@ -104,7 +104,7 @@ fn wire_and_serve(
     let port = listener.local_addr().unwrap().port();
     let metrics = Arc::new(Metrics::new());
     let cache = Arc::new(Cache::new(cache_cfg));
-    // 本番 (`crates/run`) と同じく、OpenSSL は最初の https:// オリジンで読む (T.32.5)。
+    // 本番 (`crates/run`) と同じく、OpenSSL は最初の https:// オリジンで読む (T32.5)。
     // libssl が無ければ、そのときの接続が今までどおり `Unsupported` の誤り (502) になる
     let tls = Some(TlsClient::deferred(true, ca_file.as_deref(), None));
     let mut origin_pool = Pool::new(cfg.pool_per_host, Duration::from_secs(30));
@@ -182,7 +182,7 @@ pub fn start_test_proxy_with_store(
 /// `.env` の再読込のように**設定を差し替えられる**テスト用プロキシ (T11.6)。
 ///
 /// 返した `RwLock` の中身を入れ替えると、`serve` が次に受ける接続から新しい設定を引く
-/// (本番の `reload::Live::config()` と同じ形)。配線は固定の設定の版と同じ (T.34.105)。
+/// (本番の `reload::Live::config()` と同じ形)。配線は固定の設定の版と同じ (T34.105)。
 pub fn start_test_proxy_with_live_config(
     config: Config,
 ) -> (u16, Arc<std::sync::RwLock<Arc<Config>>>) {
@@ -203,7 +203,7 @@ pub fn start_test_proxy_with_live_config(
 pub fn proxy_config() -> Config {
     let mut cfg = Config::new("0", None, None, Duration::from_secs(5)).unwrap();
     cfg.keepalive = Duration::from_secs(2);
-    // テストのオリジンは 127.0.0.1 なので、ローカル宛て (と私設アドレス宛て。T.28.41) の既定の拒否を外す
+    // テストのオリジンは 127.0.0.1 なので、ローカル宛て (と私設アドレス宛て。T28.41) の既定の拒否を外す
     cfg.allow_local = rust_http_proxy::acl::AllowLocal::On;
     cfg
 }

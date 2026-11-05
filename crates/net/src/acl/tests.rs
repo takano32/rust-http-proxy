@@ -1,4 +1,4 @@
-//! `acl` の単体試験 (T.34.65 で `acl.rs` の `mod tests` と `mod local_tests` をそのまま移した)。
+//! `acl` の単体試験 (T34.65 で `acl.rs` の `mod tests` と `mod local_tests` をそのまま移した)。
 
 use super::*;
 use std::net::IpAddr;
@@ -131,7 +131,7 @@ fn local_targets_are_recognised() {
     assert!(is_local_target("[::ffff:127.0.0.1]"), "v4-mapped");
     assert!(!is_local_target("93.184.216.34"));
     assert!(!is_local_target("93.184.216.34"), "外向きの IP は通す");
-    // T.28.41: 私設アドレス (と v4-mapped の書き方) も既定では断る
+    // T28.41: 私設アドレス (と v4-mapped の書き方) も既定では断る
     for t in [
         "10.0.0.1",
         "10.255.255.1:80",
@@ -215,7 +215,7 @@ fn the_check_and_the_connect_share_one_lookup() {
     crate::dns::clear();
 }
 
-/// T.28.41: 名前を引いた答えが私設アドレスなら、既定 (`allow_private` が偽) では断り、
+/// T28.41: 名前を引いた答えが私設アドレスなら、既定 (`allow_private` が偽) では断り、
 /// `private` では通す。ループバックはどちらでも断る。
 #[test]
 fn names_answering_private_addresses_are_refused_by_default() {
@@ -292,7 +292,7 @@ fn the_resolved_answer_carries_the_stale_mark() {
     crate::dns::clear();
 }
 
-/// T.34.66: 大文字のパターンも小文字の名前に当たる (`host` 側は小文字のまま比べる)。
+/// T34.66: 大文字のパターンも小文字の名前に当たる (`host` 側は小文字のまま比べる)。
 #[test]
 fn match_pattern_lowers_the_pattern_but_not_the_host() {
     assert!(match_pattern("Example.COM", "example.com"));
@@ -305,7 +305,7 @@ fn match_pattern_lowers_the_pattern_but_not_the_host() {
     assert!(match_pattern("", ""));
 }
 
-/// T.34.66: `*.a.b` は `a.b` と `x.a.b` に当たり、`xa.b` (`.` の無い続き) には当たらない。
+/// T34.66: `*.a.b` は `a.b` と `x.a.b` に当たり、`xa.b` (`.` の無い続き) には当たらない。
 #[test]
 fn a_wildcard_matches_the_name_and_its_subdomains_only() {
     assert!(match_pattern("*.a.b", "a.b"));

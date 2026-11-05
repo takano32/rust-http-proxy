@@ -334,7 +334,7 @@ fn test_integration_failed_connects_land_in_errors_by_cause() {
     cfg.timeout = Duration::from_millis(300);
     cfg.connect_timeout = Duration::from_millis(300);
     let proxy_port = start_test_proxy(cfg);
-    // 応答しない相手は**手元で作る** (T.32.24。sandbox の網は 192.0.2.1 を横取りして即 `refused` を返す)。
+    // 応答しない相手は**手元で作る** (T32.24。sandbox の網は 192.0.2.1 を横取りして即 `refused` を返す)。
     // backlog 0 で待ち受けて accept せず、1 本繋いで列を満たすと、後の SYN はカーネルが捨てる
     let (_hole, _filler, hole) = {
         use std::os::fd::FromRawFd;

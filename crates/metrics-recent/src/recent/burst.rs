@@ -1,5 +1,5 @@
 //! 山の写真 (`/bursts`。T14.6) — 1 枚 ([`BurstShot`]) と、そのリングと「撮ってくれ」の旗
-//! ([`BurstRing`])。`recent` の一部 (T.34.2 で `recent/mod.rs` から移した)。
+//! ([`BurstRing`])。`recent` の一部 (T34.2 で `recent/mod.rs` から移した)。
 //!
 //! **accept の経路がするのは閾を越えたときの原子の読み 1 回** ([`BurstRing::request`]) だけで、
 //! 撮るのは history スレッド。写真の中身は `/connections` の表 ([`ConnSlot`](super::ConnSlot) の
@@ -72,7 +72,7 @@ pub struct BurstShot {
     pub max_fds: u64,
 }
 
-/// `/connections` の表を数えたもの (写真 1 枚の「表から読める部分」。T.34.2 で [`BurstShot::take`]
+/// `/connections` の表を数えたもの (写真 1 枚の「表から読める部分」。T34.2 で [`BurstShot::take`]
 /// から割った)。
 ///
 /// 時計も `/proc` も触らないので、単体試験は枠の並びを渡すだけで中身を確かめられる。
@@ -160,7 +160,7 @@ impl BurstShot {
         )
     }
 
-    /// [`BurstShot::take`] の本体 (T.34.48)。撮った時刻 `at` (epoch 秒) と、`/proc` から読んだ
+    /// [`BurstShot::take`] の本体 (T34.48)。撮った時刻 `at` (epoch 秒) と、`/proc` から読んだ
     /// `(スレッド数, 記述子, その上限)` を受ける (時計も `/proc` も中で読まない)。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_at(
@@ -440,7 +440,7 @@ impl BurstRing {
     }
 }
 
-/// 山の写真の単体試験 (T14.6。T.34.2 で別のファイルに移した)。
+/// 山の写真の単体試験 (T14.6。T34.2 で別のファイルに移した)。
 #[cfg(test)]
 #[path = "burst_tests.rs"]
 mod tests;

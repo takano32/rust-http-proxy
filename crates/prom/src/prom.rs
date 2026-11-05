@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 use crate::cache::Cache;
 use crate::metrics::{Concurrency, Metrics};
 
-// `render` の節は仕事ごとに割ってある (T.34.27)。出す順は `render` が呼ぶ順で、1 行も変えていない。
+// `render` の節は仕事ごとに割ってある (T34.27)。出す順は `render` が呼ぶ順で、1 行も変えていない。
 // プロセス全体の数え物 (名前解決・IPv6・ブロックリスト・要求・オリジン・確立・canary・ロック・エラー)
 mod process;
 // ホスト別・接続元別の表
@@ -172,10 +172,10 @@ fn boot_id_info(out: &mut String, id: Option<&str>) {
     line(out, "boot_id_info", &format!("id=\"{}\"", escape(id)), 1);
 }
 
-/// 版とビルドの種類を **info 型** (値は常に `1`) で出す (T.29.19)。
+/// 版とビルドの種類を **info 型** (値は常に `1`) で出す (T29.19)。
 ///
 /// `sorahost_boot_id_info` はあるのに版の系列が無く、監視からは「いつ版が変わったか」が読めなかった。
-/// ラベルは `/status` の `version` (`0.29.35+b2b26c1` の形) と `build` (`release` / `dist` / `debug`。T.28.42) の
+/// ラベルは `/status` の `version` (`0.29.35+b2b26c1` の形) と `build` (`release` / `dist` / `debug`。T28.42) の
 /// 2 つで、系列は 1 本 (版を入れ替えると古い系列は止まる)。`/metrics` の口が末尾に足す
 /// ([`render`] は版を知らない層なので、引数で受ける)。
 pub fn build_info(out: &mut String, version: &str, build: &str) {

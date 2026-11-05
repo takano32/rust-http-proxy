@@ -16,7 +16,7 @@
 //! という答えそのものが読む人の欲しい情報なので 404 にしない)。応答は [`MAX_BODY`]
 //! (64 KiB) 以下で、個票は 10 本・エラーは 5 件まで。
 //!
-//! 中の割り方 (T.34.4): ホストは [`host`]、接続元は [`client`]。どちらも「表とリングを読んで
+//! 中の割り方 (T34.4): ホストは [`host`]、接続元は [`client`]。どちらも「表とリングを読んで
 //! 材料を集める」(`gather`) と「材料を JSON に並べる」(`render`。時計もリングも読まない) に
 //! 分けてあるので、鍵の並びは材料を手で作って単体試験で縛れる。
 
@@ -80,7 +80,7 @@ pub fn explain(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
 
 /// 配列を 1 つ書く (`MAX_BODY` に収まる分だけ。`array_within` の 64 KiB 版)。
 fn array_within(out: &mut String, items: impl IntoIterator<Item = String>) -> bool {
-    // 並べ方は個票の口と 1 つ (T.34.94)
+    // 並べ方は個票の口と 1 つ (T34.94)
     proxy_endpoints_core::array_within(out, items, MAX_BODY - TRAILER).1
 }
 

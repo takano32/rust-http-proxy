@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 14. 応答の形の版 (schema) (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 14. 応答の形の版 (schema) (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 14. **応答の形の版 (`schema`。T14.49)**。
 // プロキシの応答は先頭に `"schema":1` を持つようになった。ここで見るのは 2 つ:

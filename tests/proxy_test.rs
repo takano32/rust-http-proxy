@@ -1,7 +1,7 @@
 //! 中継そのものの結合テスト (転送・オリジン接続のプール・要求と応答の本文・付け足すヘッダー)。
 //!
 //! 自分宛ての口は `proxy_endpoints_test.rs`、ACL と上限は `proxy_acl_test.rs`、壊れた要求と
-//! 枠組みは `proxy_framing_test.rs`、自分宛てのループは `proxy_loop_test.rs` に割った (T.34.116)。
+//! 枠組みは `proxy_framing_test.rs`、自分宛てのループは `proxy_loop_test.rs` に割った (T34.116)。
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -218,7 +218,7 @@ fn test_integration_interim_100_continue_is_not_forwarded() {
         payload
     );
     stream.write_all(req.as_bytes()).unwrap();
-    // T.28.3 から、本文つきの `Expect: 100-continue` にはプロキシが自分で 100 を 1 回返す。
+    // T28.3 から、本文つきの `Expect: 100-continue` にはプロキシが自分で 100 を 1 回返す。
     // オリジンの 100 は今までどおり中継しないので、100 は 1 回だけで、次が本物の応答
     let (interim, _) = read_response(&mut stream);
     assert_eq!(interim, "HTTP/1.1 100 Continue\r\n\r\n");

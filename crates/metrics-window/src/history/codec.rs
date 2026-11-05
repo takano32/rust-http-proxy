@@ -1,5 +1,5 @@
 //! 標本 1 本の `.rrd` のレコード ([`Sample::encode`] / [`Sample::decode`]) と、固定の欄・予備の数
-//! (T.34.28 で `history.rs` から移した)。
+//! (T34.28 で `history.rs` から移した)。
 
 use super::*;
 use crate::rrd::{Dec, Enc};
@@ -86,16 +86,16 @@ impl Sample {
             .u64(self.dns_warm_max)
             .u64(self.dns_warm_sum)
             .u64(self.gauge_n);
-        // T.28.45 で足した 17 項目 (`decode` と同じ順)
+        // T28.45 で足した 17 項目 (`decode` と同じ順)
         self.excess.encode(&mut e);
         e.u64(self.dns_fail_misses);
-        // T.29.12 で足した 16 項目 (`decode` と同じ順)
+        // T29.12 で足した 16 項目 (`decode` と同じ順)
         self.conn_excess.encode(&mut e);
-        // T.30.3 で足した 2 項目 (`decode` と同じ順)
+        // T30.3 で足した 2 項目 (`decode` と同じ順)
         e.u64(self.other_port_attempts).u64(self.other_port_errors);
-        // T.32.16 で足した 1 項目 (`decode` と同じ順)
+        // T32.16 で足した 1 項目 (`decode` と同じ順)
         e.u64(self.dns_fail_ms_sum);
-        // T.33.3 で足した 2 項目 (`decode` と同じ順)
+        // T33.3 で足した 2 項目 (`decode` と同じ順)
         e.u64(self.web_dns_misses).u64(self.web_dns_ms_sum);
         debug_assert_eq!(e.0.len(), SAMPLE_ITEMS * 8, "固定の欄の数と食い違っている");
         e.0
@@ -152,17 +152,17 @@ impl Sample {
         s.dns_warm_max = d.u64();
         s.dns_warm_sum = d.u64();
         s.gauge_n = d.u64();
-        // T.28.45。それより前のレコードはここがゼロ埋めなので空の窓と 0 で読み戻る
+        // T28.45。それより前のレコードはここがゼロ埋めなので空の窓と 0 で読み戻る
         s.excess = Window::decode(&mut d);
         s.dns_fail_misses = d.u64();
-        // T.29.12。それより前のレコードはここがゼロ埋めなので空の窓で読み戻る
+        // T29.12。それより前のレコードはここがゼロ埋めなので空の窓で読み戻る
         s.conn_excess = Window::decode(&mut d);
-        // T.30.3。それより前のレコードはここがゼロ埋めなので 0 (= 引くものが無い = 全部のポート) で読み戻る
+        // T30.3。それより前のレコードはここがゼロ埋めなので 0 (= 引くものが無い = 全部のポート) で読み戻る
         s.other_port_attempts = d.u64();
         s.other_port_errors = d.u64();
-        // T.32.16。それより前のレコードはここがゼロ埋めなので 0 (= 引くものが無い) で読み戻る
+        // T32.16。それより前のレコードはここがゼロ埋めなので 0 (= 引くものが無い) で読み戻る
         s.dns_fail_ms_sum = d.u64();
-        // T.33.3。それより前のレコードはここがゼロ埋めなので 0 で読み戻る
+        // T33.3。それより前のレコードはここがゼロ埋めなので 0 で読み戻る
         s.web_dns_misses = d.u64();
         s.web_dns_ms_sum = d.u64();
         Some(s)

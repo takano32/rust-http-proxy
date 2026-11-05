@@ -56,7 +56,7 @@ use metrics::Metrics;
 /// `/status` の 3 か所に同じ文字列を出す (T12.6)。
 pub const VERSION: &str = env!("PROXY_VERSION");
 
-/// ビルドの種類 = cargo のプロファイル名 (`build.rs` が作る `PROXY_BUILD`。T.28.42)。
+/// ビルドの種類 = cargo のプロファイル名 (`build.rs` が作る `PROXY_BUILD`。T28.42)。
 ///
 /// `cargo build --release` なら `release`、`--profile dist` なら `dist`、`cargo build` /
 /// `cargo test` なら `debug`。どの最適化で作ったバイナリかを外から見るためのもので、
@@ -153,13 +153,13 @@ pub fn serve(
     // 引き継ぐ。待ち受けに 1 回当てておけば、接続ごとの setsockopt 3 回が要らない (T9.3)。
     // 当たらなかった環境では None のままで、従来どおり接続ごとに設定する。
     // timeout 0 (= 無期限、T10.6) も `timeval {0, 0}` としてそのまま継承させる。
-    // 読みは 1 要求目の要求行を待つ長さ (`PROXY_HEADER_TIMEOUT_SECS` との小さい方。T.28.0)、
+    // 読みは 1 要求目の要求行を待つ長さ (`PROXY_HEADER_TIMEOUT_SECS` との小さい方。T28.0)、
     // 書きは `PROXY_TIMEOUT_SECS`。持つのは `(書き, 読み)` の組
     let mut inherited = inherit_on_listener(&listener, &config_of());
     // 当てる前に握手を終えて accept 待ちの列に載っている接続は、待ち受けのオプションを
     // 継承していない (Linux は握手が済んだ時点で待ち受けを写す)。起動直後に再接続してくる
     // クライアントがこれを踏むと無期限のまま扱われるので、いま列にある分を先に引き取り、
-    // その接続だけ接続ごとに設定する (T.28.30)。費用は起動時と当て直したときの数回だけ
+    // その接続だけ接続ごとに設定する (T28.30)。費用は起動時と当て直したときの数回だけ
     let mut backlog = take_backlog(&listener);
     // 日付の変わり目に `/snapshot` を 1 枚組む閉包を履歴スレッドへ預ける (T14.34)。
     // 組み立ては要求で来たときと同じ関数で、**下の層 (`proxy-metrics`) から上の層を
@@ -302,7 +302,7 @@ pub fn serve(
     }
 }
 
-/// [`serve`] の輪が接続ごとに借りる、待ち受け全体の持ち物 (T.34.16)。
+/// [`serve`] の輪が接続ごとに借りる、待ち受け全体の持ち物 (T34.16)。
 struct Parts<'a> {
     limiter: &'a Arc<Limiter>,
     workers: &'a Arc<workers::Workers>,
@@ -467,7 +467,7 @@ fn spawn_connection(
     // (数を引くのは `/status` に来たときだけ。要求ごとには引かない)
     let wk = Arc::clone(workers);
     // 上限の外で受けた接続は、ワーカーが全部塞がっていても待ち行列に積まずに
-    // 上限の外のスレッドで動かす (T.28.0)。上限ぶんの接続が黙ってワーカーを握って
+    // 上限の外のスレッドで動かす (T28.0)。上限ぶんの接続が黙ってワーカーを握って
     // いると、積んだ `/status` はそれが放されるまで動けない (T13.2 の狙いが崩れる)。
     // 本数は `OVERFLOW_SLOTS` (4 本) で縛られている
     let outside = overflow.is_some();
@@ -534,7 +534,7 @@ fn inherit_on_listener(
     None
 }
 
-/// いま accept 待ちの列に載っている接続を、待たずに全部引き取る (T.28.30)。
+/// いま accept 待ちの列に載っている接続を、待たずに全部引き取る (T28.30)。
 ///
 /// 待ち受けを一時だけ非ブロッキングにして `WouldBlock` まで accept する。accept した接続は
 /// 非ブロッキングを引き継がない (`accept4` に `SOCK_NONBLOCK` を渡していない)。
@@ -559,7 +559,7 @@ fn take_backlog(
     out
 }
 
-/// 待ち受けに継承させる `(書き, 読み)` のタイムアウト (T.28.0)。
+/// 待ち受けに継承させる `(書き, 読み)` のタイムアウト (T28.0)。
 ///
 /// 書きは `PROXY_TIMEOUT_SECS`、読みは 1 要求目の要求行の 1 バイト目を待つ長さ
 /// ([`config::first_read_timeout`])。読みを継承させておけば、黙った接続を

@@ -30,7 +30,7 @@ pub(super) fn mark_cache_sources(src: &mut Sources, bad: &mut EnvProblems) {
             src.mark(key);
         }
     }
-    // 読めたら印、書いてあって読めなければ WARN と `invalid` (T.28.6)
+    // 読めたら印、書いてあって読めなければ WARN と `invalid` (T28.6)
     let mut check = |key: &'static str, ok: bool, expected: &'static str| match raw(key) {
         Some(_) if ok => src.mark(key),
         Some(v) => bad.reject(key, &v, expected),

@@ -1,4 +1,4 @@
-//! オリジンの応答の読みの締め切りを `timeout` に数える (T.28.5)。
+//! オリジンの応答の読みの締め切りを `timeout` に数える (T28.5)。
 //!
 //! オリジンの読みはブロッキング + `SO_RCVTIMEO` で、Linux では締め切りが切れると
 //! `WouldBlock` (EAGAIN = os error 11) が返る。0.27.8 までは `ErrCause::from_io` が
@@ -29,7 +29,7 @@ fn start_silent_origin(silent: Duration) -> u16 {
     port
 }
 
-/// **受け入れ基準 (T.28.5)**: 2 秒の締め切りに対し 3 秒黙るオリジンは 502 で、
+/// **受け入れ基準 (T28.5)**: 2 秒の締め切りに対し 3 秒黙るオリジンは 502 で、
 /// `errors_by_cause` の `timeout` に入り、ログに "timed out" が出る。
 #[cfg(target_os = "linux")]
 #[test]

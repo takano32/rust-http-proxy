@@ -35,7 +35,7 @@ fn parse_name(name: &str) -> Option<(CacheKey, bool)> {
         .map(|k| (k, false))
 }
 
-/// 分割ディレクトリのファイル 1 つを、ヘッダーを読まずに索引へ入れてよいか (T.34.96)。
+/// 分割ディレクトリのファイル 1 つを、ヘッダーを読まずに索引へ入れてよいか (T34.96)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Keep {
     /// 高速パス: mtime に有効期限が入っていて、まだ先。この `Meta` で索引に入れる
@@ -46,7 +46,7 @@ enum Keep {
 }
 
 /// ファイルの mtime (epoch 秒) と拡張子のバリデータの有無から、扱いを決める (I/O の無い
-/// 純粋な関数。T.34.96)。
+/// 純粋な関数。T34.96)。
 fn classify(mtime: Option<u64>, validators: bool, now: u64) -> Keep {
     match mtime {
         Some(t) if t > now => Keep::IndexOnly(Meta {
@@ -59,7 +59,7 @@ fn classify(mtime: Option<u64>, validators: bool, now: u64) -> Keep {
 }
 
 /// 同じキーの `.cache` と `.vcache` が両方あったとき、先に索引にあった方 (`old`) を残すか
-/// (期限の長い方を残す。同じなら後から見つけた方。T.34.96)。
+/// (期限の長い方を残す。同じなら後から見つけた方。T34.96)。
 fn keep_longer(old: &Meta, new: &Meta) -> bool {
     old.expires_at > new.expires_at
 }
@@ -201,7 +201,7 @@ mod tests {
 
     const HEX: &str = "0123456789abcdef0123456789abcdef";
 
-    /// ファイル名は `<キー 32 桁>.cache` か `.vcache` だけを受ける (T.34.96)。
+    /// ファイル名は `<キー 32 桁>.cache` か `.vcache` だけを受ける (T34.96)。
     #[test]
     fn a_name_is_a_key_and_its_extension() {
         // `CacheKey` は Debug を持たないので、== で比べる
@@ -219,7 +219,7 @@ mod tests {
         assert!(parse_name(".cache").is_none());
     }
 
-    /// mtime がまだ先ならヘッダーを読まない。過去・ちょうど・読めないなら読む (T.34.96)。
+    /// mtime がまだ先ならヘッダーを読まない。過去・ちょうど・読めないなら読む (T34.96)。
     #[test]
     fn only_a_future_mtime_skips_the_header() {
         assert_eq!(
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(classify(None, true, 100), Keep::ReadHeader);
     }
 
-    /// `.cache` と `.vcache` が両方あれば期限の長い方を残す (同じなら後から見つけた方) (T.34.96)。
+    /// `.cache` と `.vcache` が両方あれば期限の長い方を残す (同じなら後から見つけた方) (T34.96)。
     #[test]
     fn the_longer_lived_twin_is_kept() {
         let m = |expires_at| Meta {
@@ -248,7 +248,7 @@ mod tests {
         assert!(!keep_longer(&m(100), &m(100)));
     }
 
-    /// 有効期限を書いた mtime はそのまま epoch 秒で読み戻せる (T.34.96)。
+    /// 有効期限を書いた mtime はそのまま epoch 秒で読み戻せる (T34.96)。
     #[test]
     fn the_expiry_round_trips_through_the_mtime() {
         let path = std::env::temp_dir().join(format!(

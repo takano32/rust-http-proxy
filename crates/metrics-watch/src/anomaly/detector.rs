@@ -188,7 +188,7 @@ impl Detector {
         self.transition(&r, &hits)
     }
 
-    /// 1 周期ぶんの読み: 累計の増分・窓の畳み・CPU の窓・空回りの続いた秒 (T.34.44)。
+    /// 1 周期ぶんの読み: 累計の増分・窓の畳み・CPU の窓・空回りの続いた秒 (T34.44)。
     ///
     /// `last_totals` → `last_shots` → (窓を畳む) → `cpu_window` → `spin_since` の順に進める
     /// (割る前の [`Detector::observe`] と同じ順)。規則の当たりはここでは決めない ([`Detector::hits`])。
@@ -240,16 +240,16 @@ impl Detector {
         }
     }
 
-    /// 8 規則の当たり ([`KINDS`] の順。T.34.44)。**状態は読むだけで変えない**
+    /// 8 規則の当たり ([`KINDS`] の順。T34.44)。**状態は読むだけで変えない**
     /// (立っている間の閾の切り替えに `firing` と `base_p95` を見る)。
     pub(super) fn hits(&self, r: &Reading) -> [bool; KINDS.len()] {
         let (w5, base) = (&r.w5, &r.base);
-        // (3) `/slo` の `error_rate` と同じ数え方 (T.32.36。利用者の決定 (a)): 名前解決の失敗
-        // (原因 `dns` の全部。T.28.17 の `nxdomain` もここに入る) と 443・80 以外の宛先のエラー
+        // (3) `/slo` の `error_rate` と同じ数え方 (T32.36。利用者の決定 (a)): 名前解決の失敗
+        // (原因 `dns` の全部。T28.17 の `nxdomain` もここに入る) と 443・80 以外の宛先のエラー
         // (メール宛の確立の時間切れ) は数えない。どちらも標本の列なので窓を畳むだけで出る
         let errors = w5.web_errors();
 
-        // (1) 確立の p95 は「確立 − RTT」(名前解決を除く) の窓で読む (T.29.11)
+        // (1) 確立の p95 は「確立 − RTT」(名前解決を除く) の窓で読む (T29.11)
         let p95 = w5.conn_excess.quantile_ms(0.95);
         let p95_base = base.conn_excess.quantile_ms(0.95);
         let peak = w5.active_max;
@@ -268,7 +268,7 @@ impl Detector {
             CPU_THROTTLED
         };
         // (9) ミスの**率**。窓は 1 時間 (`base`) で、立っている間は `CLEAR` の閾を使う。
-        // 名前解決に失敗した試みのミスは数えない (`/slo` と同じ。T.32.36)
+        // 名前解決に失敗した試みのミスは数えない (`/slo` と同じ。T32.36)
         let miss_rate = base.resolved_dns_miss_per_connect();
         let miss_limit = if self.state[I_DNS_MISS_RATE].firing {
             DNS_MISS_RATE_CLEAR
@@ -283,10 +283,10 @@ impl Detector {
             && base.conn_excess.count > 0
             && p95 >= CONNECT_RATIO * p95_ref
             && w5.conn_excess.count >= CONNECT_MIN_SAMPLES;
-        // (2) 名前解決に**成功した**ミスだけで読む (T.32.16)。0.30.4 の 62 件は nxdomain の
+        // (2) 名前解決に**成功した**ミスだけで読む (T32.16)。0.30.4 の 62 件は nxdomain の
         // 2 秒級の失敗 (`imap.froggy.com.au` の 2,151 ms など) で鳴っていた。失敗の遅さは
         // 客の頼んだ名前の都合で、利用者の待ちではない (`errors` と同じく `/slo` の数え方)。
-        // さらに 443・80 宛ての接続のための名前解決だけ (T.33.3。利用者の決定)。0.32.39 の 48 時間の
+        // さらに 443・80 宛ての接続のための名前解決だけ (T33.3。利用者の決定)。0.32.39 の 48 時間の
         // 15 件は NAT の接続元が初めて引いたメールのホスト (`:993`・`:995`・`:143`) の遠い名前で鳴っていた
         hits[I_DNS_SLOW] = w5.web_dns_misses >= DNS_MIN_MISSES
             && w5.web_dns_miss_avg_ms() >= r.dns_limit
@@ -304,7 +304,7 @@ impl Detector {
         hits
     }
 
-    /// 立つ / 解除の状態機械 (T.34.44)。**変わり目だけ**を返す。
+    /// 立つ / 解除の状態機械 (T34.44)。**変わり目だけ**を返す。
     ///
     /// 立つのは収まるまで 1 回で、そのとき基準値の p95 を `base_p95` に控える。外れたまま
     /// [`CLEAR_SECS`] 秒続いたら解除を 1 件書く。

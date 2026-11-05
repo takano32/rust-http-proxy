@@ -1,4 +1,4 @@
-# 判定表 (`scripts/snapshot_criteria.py`) の**閾と並び** (T.34.129 で割った)。
+# 判定表 (`scripts/snapshot_criteria.py`) の**閾と並び** (T34.129 で割った)。
 #
 # Phase ごとの閾の辞書 (`PHASE14`〜`PHASE30`)・`--criteria` の名前から閾を引く `CRITERIA`・出力を
 # 変えない定義 `FROZEN`・名前から判定の関数の並びを引く `RULES` を、Phase の順に組む。判定の関数は
@@ -223,15 +223,15 @@ RULES["phase25"] = replaced(RULES["phase24"], {13: _p25_connect_errors, 15: _p25
                                                16: _p25_silent_restarts})
 
 
-# T.29.10: phase26 = phase25 の 17 行 + 18〜25 番目 (T.29.15 で 26 番目)。**phase25 以前の並びは 1 つも動かない**
+# T29.10: phase26 = phase25 の 17 行 + 18〜25 番目 (T29.15 で 26 番目)。**phase25 以前の並びは 1 つも動かない**
 PHASE26 = dict(PHASE25)
-# `/log` の error の行の上限 (T.28.99 の (3)「0〜数件」。0.29.35 の起動 2 分では 2 行)
+# `/log` の error の行の上限 (T28.99 の (3)「0〜数件」。0.29.35 の起動 2 分では 2 行)
 PHASE26["log_error_max"] = 5
-# T.29.25 の受け入れ基準 (24 時間で `rss − (heap_used + mmap + cache_memory)` < 10 MB)
+# T29.25 の受け入れ基準 (24 時間で `rss − (heap_used + mmap + cache_memory)` < 10 MB)
 PHASE26["rss_gap_mb"] = 10.0
-# T.29.20〜22 で減らす裏の役割 (0.28.48 の tokyo で `profile-sample` 32.5%・`cache-probe` 23.4%)
+# T29.20〜22 で減らす裏の役割 (0.28.48 の tokyo で `profile-sample` 32.5%・`cache-probe` 23.4%)
 PHASE26["idle_roles"] = ("profile-sample", "cache-probe")
-# T.29.15: オリジン側の失敗の WARN を絞る原因の数 (`crates/metrics-core` の `ORIGIN_WARN_REASONS` = 8 + 2)
+# T29.15: オリジン側の失敗の WARN を絞る原因の数 (`crates/metrics-core` の `ORIGIN_WARN_REASONS` = 8 + 2)
 PHASE26["origin_warn_per_minute"] = 10
 CRITERIA["phase26"] = PHASE26
 RULES["phase26"] = RULES["phase25"] + (
@@ -239,25 +239,25 @@ RULES["phase26"] = RULES["phase25"] + (
     _p26_rss_gap, _p26_cgroup_cpu, _p26_role_shares, _p26_origin_warn_per_minute)
 
 
-# phase27 = phase26 の 26 行のうち 13 番目 (接続のエラー) と 23 番目 (RSS) だけ差し替えたもの (T.30.0・T.30.1)。
+# phase27 = phase26 の 26 行のうち 13 番目 (接続のエラー) と 23 番目 (RSS) だけ差し替えたもの (T30.0・T30.1)。
 # **phase26 以前の並びと文面は 1 つも動かない**
 RULES["phase27"] = replaced(RULES["phase26"], {13: _p27_connect_errors, 23: _p27_rss_gap})
 PHASE27 = dict(PHASE26)
-# 前も後も「名前解決に成功した試行」がこの本数に満たなければ、接続のエラーの行は判定しない (T.30.0)
+# 前も後も「名前解決に成功した試行」がこの本数に満たなければ、接続のエラーの行は判定しない (T30.0)
 PHASE27["min_resolved_attempts"] = 1000
 CRITERIA["phase27"] = PHASE27
 
 
-# phase28 = phase27 の 26 行のうち 23 番目 (RSS) と 24 番目 (cgroup の CPU) だけ差し替えたもの (T.31.0・T.31.1)。
+# phase28 = phase27 の 26 行のうち 23 番目 (RSS) と 24 番目 (cgroup の CPU) だけ差し替えたもの (T31.0・T31.1)。
 # **phase27 以前の並びと文面は 1 つも動かない**
 RULES["phase28"] = replaced(RULES["phase27"], {23: _p28_trim_works, 24: _p28_cgroup_cpu_per_request})
 PHASE28 = dict(PHASE27)
-# cgroup の CPU/要求 が前の版のこの倍率未満なら満たす (T.31.0)
+# cgroup の CPU/要求 が前の版のこの倍率未満なら満たす (T31.0)
 PHASE28["cpu_per_request_factor"] = 1.1
 CRITERIA["phase28"] = PHASE28
 
 
-# phase29 = phase28 の 26 行のうち 6 行を差し替えたもの (T.32.16・T.32.17・T.32.29・T.32.30)。並びは同じ:
+# phase29 = phase28 の 26 行のうち 6 行を差し替えたもの (T32.16・T32.17・T32.29・T32.30)。並びは同じ:
 #   3 番目 (平常時の名前解決のミス。表示だけ) → 名前解決の失敗を除いた率も添える、5 番目 (`conn` 役の CPU/要求) → 名前解決に成功した要求あたり、11 番目 (`dns_slow`) → 成功したミスで立った件/時、
 #   13 番目 (接続のエラー) → 起動からの `/history` の 443・80、24 番目 (cgroup の CPU/要求) → 表示だけ、
 #   25 番目 (裏の役割の割合) → 裏の役割の us/秒。**phase28 以前の並びと文面は 1 つも動かない**
@@ -265,18 +265,18 @@ RULES["phase29"] = replaced(RULES["phase28"], {
     3: _p29_miss_band, 5: _p29_conn_per_resolved_request, 11: _p29_dns_slow, 13: _p29_connect_errors,
     24: _p29_cgroup_cpu_shown, 25: _p29_idle_cost})
 PHASE29 = dict(PHASE28)
-# `conn` 役の CPU/名前解決に成功した要求 と、裏の役割の us/秒 の倍率 (前の版のこの倍未満なら満たす。T.32.29)
+# `conn` 役の CPU/名前解決に成功した要求 と、裏の役割の us/秒 の倍率 (前の版のこの倍未満なら満たす。T32.29)
 PHASE29["conn_per_resolved_factor"] = 1.1
 PHASE29["idle_cost_factor"] = 1.1
-# `dns_slow` の「成功したミスで立った」の回数の下限 (`anomaly.rs` の `DNS_MIN_MISSES`。T.32.16)
+# `dns_slow` の「成功したミスで立った」の回数の下限 (`anomaly.rs` の `DNS_MIN_MISSES`。T32.16)
 PHASE29["dns_min_misses"] = 3
 CRITERIA["phase29"] = PHASE29
 
 
-# phase30 = phase29 の 26 行のうち 11 番目 (`dns_slow`。T.33.1) と 15 番目 (1 名前あたりの引き直し。T.33.2) を
+# phase30 = phase29 の 26 行のうち 11 番目 (`dns_slow`。T33.1) と 15 番目 (1 名前あたりの引き直し。T33.2) を
 # 差し替えたもの。並びは同じ。**phase29 以前の並びと文面は 1 つも動かない**
 RULES["phase30"] = replaced(RULES["phase29"], {11: _p30_dns_slow, 15: _p30_refresh_per_name})
 PHASE30 = dict(PHASE29)
-# `dns_slow` が立った窓の成功したミスの平均の倍率 (前の版のこの倍未満なら満たす。T.33.1)
+# `dns_slow` が立った窓の成功したミスの平均の倍率 (前の版のこの倍未満なら満たす。T33.1)
 PHASE30["dns_slow_avg_factor"] = 1.5
 CRITERIA["phase30"] = PHASE30

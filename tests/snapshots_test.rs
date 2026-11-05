@@ -68,7 +68,7 @@ fn recent_number(body: &str, key: &str) -> u64 {
     common::status_number(&body[at..], key)
 }
 
-/// **T.28.46**: 日次の 1 枚は `recent` を 1 MiB まで持ち、環 (2,000 件) が全部入る。
+/// **T28.46**: 日次の 1 枚は `recent` を 1 MiB まで持ち、環 (2,000 件) が全部入る。
 ///
 /// 実際に CONNECT を 2,100 本通して閉じ、環を満杯にしてから日付をまたがせる (組み立てから
 /// ファイルまでは本物の経路)。同じ瞬間のいつもの `/snapshot` (部ごと 256 KiB で切る) と
@@ -98,7 +98,7 @@ fn test_integration_the_daily_snapshot_keeps_the_whole_recent_ring() {
     common::wait_until(|| path.exists(), "日次の snapshot が書かれる");
     let daily = std::fs::read_to_string(&path).unwrap();
     println!(
-        "T.28.46 手元の 2,100 本: いつもの /snapshot {} B (recent {} 行) / 日次 {} B (recent {} 行)",
+        "T28.46 手元の 2,100 本: いつもの /snapshot {} B (recent {} 行) / 日次 {} B (recent {} 行)",
         usual.len(),
         recent_number(&usual, "shown"),
         daily.len(),
@@ -127,7 +127,7 @@ fn test_integration_snapshots_writes_a_file_when_the_day_changes() {
     for _ in 0..3 {
         let _ = endpoint_json(port, "/status");
     }
-    // 日が変わるまでは 1 つも書かない (前の 150 ms = 50 ms の周期で 3 回ぶん回るのを待つ。T.34.114)
+    // 日が変わるまでは 1 つも書かない (前の 150 ms = 50 ms の周期で 3 回ぶん回るのを待つ。T34.114)
     common::wait_ticks(&metrics, 3);
     assert!(
         !snaps.exists(),
@@ -168,7 +168,7 @@ fn test_integration_snapshots_writes_a_file_when_the_day_changes() {
     assert_eq!(served, body, "ファイルと同じものを返していない");
 
     // 同じ日のうちは増えない (履歴スレッドは 50 ms ごとに回り続けている。前の 200 ms =
-    // 4 周期ぶん回るのを待つ。T.34.114)
+    // 4 周期ぶん回るのを待つ。T34.114)
     common::wait_ticks(&metrics, 4);
     assert_eq!(std::fs::read_dir(&snaps).unwrap().count(), 1);
 
@@ -209,7 +209,7 @@ fn test_integration_snapshots_lists_and_serves_saved_days() {
     // `PROXY_SNAPSHOT_DAYS` がそのまま出る (設定の配線)
     assert!(list.contains("\"days\":7"), "{}", list);
     assert!(list.contains("\"max_bytes\":4194304"), "{}", list);
-    // 日次の 1 枚だけの上限 (T.29.16)
+    // 日次の 1 枚だけの上限 (T29.16)
     assert!(list.contains("\"daily_max_bytes\":6291456}"), "{}", list);
     assert!(list.contains(&snaps.display().to_string()), "{}", list);
     // 並びは**古い順**

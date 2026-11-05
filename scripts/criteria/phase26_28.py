@@ -1,4 +1,4 @@
-# 判定表 (`scripts/snapshot_criteria.py`) の **Phase 26〜28 の行** (T.34.128 で割った)。
+# 判定表 (`scripts/snapshot_criteria.py`) の **Phase 26〜28 の行** (T34.128 で割った)。
 #
 # phase26 で 18 番目から後ろに足した 9 行 (408・`/log` の error・`/errors` の `local`・3 秒で切った確立・
 # `rejected_requests`・RSS の返していない分・cgroup の CPU・裏の役割の割合・`/log` の 502 の 1 分あたり)、
@@ -11,11 +11,11 @@ from .phase20_22 import profile_span
 from .phase23_25 import DNS_FAILURES, _p23_connect_errors, recent_attempts
 
 
-# --- Phase 26 (T.29.10。phase25 の 17 行 + T.28.99 で手で読んだ「ほかに見ること」と T.29.99 の見ること) ---
+# --- Phase 26 (T29.10。phase25 の 17 行 + T28.99 で手で読んだ「ほかに見ること」と T29.99 の見ること) ---
 #
-# phase25 の 17 行は 1 つも動かさず、**18 番目から後ろに足す**。T.28.99 の「ほかに見ること (2)〜(8)」は
-# 個票を手で数えていた (408 は数が無かった)。T.29.99 の見ること (RSS・CPU) も、雪像で読めるものはここに置く。
-# 他人の `Set-Cookie` (T.29.0) は雪像に数が無いので行にしない (結合テストで見る)。
+# phase25 の 17 行は 1 つも動かさず、**18 番目から後ろに足す**。T28.99 の「ほかに見ること (2)〜(8)」は
+# 個票を手で数えていた (408 は数が無かった)。T29.99 の見ること (RSS・CPU) も、雪像で読めるものはここに置く。
+# 他人の `Set-Cookie` (T29.0) は雪像に数が無いので行にしない (結合テストで見る)。
 
 def snap_hours(snap):
     """雪像の起動からの時間 (時。`uptime_secs` が無ければ None)。"""
@@ -243,7 +243,7 @@ def _p26_role_shares(c, th):
     return (label, limit, shown, verdict, src)
 
 
-# `/log` の行のうち、オリジン側の失敗の WARN (T.29.15 で原因ごとに 1 分 1 行に絞った行) の頭
+# `/log` の行のうち、オリジン側の失敗の WARN (T29.15 で原因ごとに 1 分 1 行に絞った行) の頭
 ORIGIN_WARN_PREFIXES = ("502 Bad Gateway", "origin response timed out", "failed to read origin response")
 
 
@@ -276,9 +276,9 @@ def _p26_origin_warn_per_minute(c, th):
     return (label, limit, shown, MET if not worst or worst[1] <= k else MISSED, src)
 
 
-# --- Phase 27 (T.30.0・T.30.1。phase26 の 26 行のうち 2 行だけ読み方を変えたもの) ---
+# --- Phase 27 (T30.0・T30.1。phase26 の 26 行のうち 2 行だけ読み方を変えたもの) ---
 #
-# T.29.99 で届かなかった 2 行は、どちらも物差しの穴だった: 接続のエラーの行は「試行 1,000 本以上」の下限が
+# T29.99 で届かなかった 2 行は、どちらも物差しの穴だった: 接続のエラーの行は「試行 1,000 本以上」の下限が
 # 分母 (名前解決に成功した試行) に掛かっておらず、名前の引けないメール宛の総当たりで分母が 489 本しか
 # 残らなかった。RSS の行は手元から置いた 10 MB の閾で、tokyo では前の版も 31.8 MB だった。
 def recent_dns_ports(snap, top=3):
@@ -364,9 +364,9 @@ def _p27_rss_gap(c, th):
     return (label, limit, shown, MET if gb < ga else MISSED, src)
 
 
-# --- Phase 28 (T.31.0・T.31.1。phase27 の 26 行のうち 2 行だけ、量に左右されない物差しにしたもの) ---
+# --- Phase 28 (T31.0・T31.1。phase27 の 26 行のうち 2 行だけ、量に左右されない物差しにしたもの) ---
 #
-# T.30.99 で届かなかった 2 行は、どちらも前の版の値と**絶対値**で比べる行で、要求が 1 時間あたり約 1.6 倍・
+# T30.99 で届かなかった 2 行は、どちらも前の版の値と**絶対値**で比べる行で、要求が 1 時間あたり約 1.6 倍・
 # 確立の時間切れ 88 件/時 (前 12) の期間に動いた (`conn` 役の CPU/要求は 0.42 倍、`malloc_trim` は毎時動いていた)。
 def _p28_cgroup_cpu_per_request(c, th):
     """T.31.0: cgroup の起動からの CPU ÷ 起動からの要求 (`total_requests`) が前の版の `cpu_per_request_factor` 倍未満。
@@ -438,7 +438,7 @@ def _p28_trim_works(c, th):
     extra = []
     if gb is not None:
         extra.append(f"`rss − (…)` {gb:,.1f} MB" + (f" (前 {ga:,.1f})" if ga is not None else ""))
-    # 常駐の内訳 (T.32.4。欄の無い版は今までどおり 2 つだけ)
+    # 常駐の内訳 (T32.4。欄の無い版は今までどおり 2 つだけ)
     extra += [f"`{x}` {mb(m[x])} MB" for x in ("heap_free", "stacks_estimate", "stacks_resident", "rss_anon", "rss_file")
               if m.get(x) is not None]
     if extra:

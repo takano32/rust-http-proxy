@@ -1,4 +1,4 @@
-//! 接続の 1 枠の単体試験 (T.34.2 で `conns.rs` の `conn_tests` から移した。名前はそのまま)。
+//! 接続の 1 枠の単体試験 (T34.2 で `conns.rs` の `conn_tests` から移した。名前はそのまま)。
 
 use super::*;
 use crate::recent::{
@@ -7,7 +7,7 @@ use crate::recent::{
 };
 
 /// `poll` の旗は `IN|HUP` のように表の順の名前で並べ、下位 16 bit がクライアント側・上位が
-/// オリジン側 (T15.0 (4)。T.34.2 で直に押さえる)。
+/// オリジン側 (T15.0 (4)。T34.2 で直に押さえる)。
 #[test]
 fn revents_are_packed_per_side_and_named_in_order() {
     let packed = pack_revents(0x001 | 0x010, 0x004);
@@ -26,7 +26,7 @@ fn revents_are_packed_per_side_and_named_in_order() {
 }
 
 /// 半閉じは「側 + 1」を上位 8 bit、接続を受けてからの ms を下位 56 bit に詰め、`0` は「まだ」
-/// (T15.0 (4)。T.34.2 で直に押さえる)。
+/// (T15.0 (4)。T34.2 で直に押さえる)。
 #[test]
 fn half_closed_packs_the_side_and_the_ms_and_zero_means_not_yet() {
     assert_eq!(unpack_half_closed(0), None);
@@ -355,7 +355,7 @@ fn the_three_stages_from_the_profile_show_up_in_the_record() {
     assert!(!json.contains("\"first_byte\""), "{}", json);
 }
 
-/// 開いた時刻は「閉じた時刻 − 寿命」(T.34.48。時刻を注入して秒まで縛る)。
+/// 開いた時刻は「閉じた時刻 − 寿命」(T34.48。時刻を注入して秒まで縛る)。
 #[test]
 fn closed_entry_at_dates_the_entry_from_the_given_epoch() {
     let t = ConnTable::new();

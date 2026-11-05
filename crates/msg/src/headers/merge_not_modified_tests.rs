@@ -1,7 +1,7 @@
 use super::*;
 
 /// 304 の名前は全部差し替え、無い名前と状態行は残す。枠組み・hop-by-hop・`Age`・
-/// `Content-Encoding` は写さない (T.28.2)。
+/// `Content-Encoding` は写さない (T28.2)。
 #[test]
 fn replaces_named_fields_and_keeps_the_rest() {
     let stored = b"HTTP/1.1 200 OK\r\nCache-Control: max-age=1\r\nX-Ver: 1\r\nX-Ver: 1b\r\n\
@@ -20,7 +20,7 @@ fn replaces_named_fields_and_keeps_the_rest() {
 }
 
 /// 304 の `Set-Cookie` / `Set-Cookie2` は保存する先頭へ写さず、保存済みに残っていた写しも
-/// 落とす (T.29.0)。配る写しには [`with_set_cookies`] で 304 の分だけを足す。
+/// 落とす (T29.0)。配る写しには [`with_set_cookies`] で 304 の分だけを足す。
 #[test]
 fn set_cookie_is_not_merged_but_handed_to_the_requester() {
     let stored = b"HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nSet-Cookie: old=leak\r\n\r\n";

@@ -24,12 +24,12 @@ const SWEEP_INTERVAL_SECS: u64 = 30;
 ///
 /// 測り直しは割当の下のファイルを全部 stat する (tokyo で 1 回およそ 10 ms、
 /// 手元の 5,000 ファイルで 10.7 ms)。毎分たどると cache-probe の CPU の 7 割がこれになる
-/// (T.32.20) ので、ふだんは [`OTHERS_SLOW_SECS`] ごとにし、**割当に近い
+/// (T32.20) ので、ふだんは [`OTHERS_SLOW_SECS`] ごとにし、**割当に近い
 /// ([`OTHERS_NEAR_PERCENT`] 以上) か ENOSPC の後だけ**この間隔に戻す。
 const OTHERS_INTERVAL_SECS: u64 = 60;
-/// 割当から遠いときの測り直しの間隔 (秒。T.32.20)。
+/// 割当から遠いときの測り直しの間隔 (秒。T32.20)。
 const OTHERS_SLOW_SECS: u64 = 600;
-/// 「割当に近い」とみなす使用率 (%)。自分以外 + 前回から増えたファイルシステムの使用量 + 自分 (T.32.20)。
+/// 「割当に近い」とみなす使用率 (%)。自分以外 + 前回から増えたファイルシステムの使用量 + 自分 (T32.20)。
 const OTHERS_NEAR_PERCENT: u64 = 80;
 /// 圧迫を検知したあと、バラストの再確保を控える時間 (秒)。
 const PRESSURE_BACKOFF_SECS: u64 = 60;
@@ -65,7 +65,7 @@ pub fn spawn(cache: &Arc<Cache>) -> Option<JoinHandle<()>> {
         .ok()
 }
 
-/// 自分以外の使用量を測り直す時期か (T.32.20)。`since` は前回から経ったティック、
+/// 自分以外の使用量を測り直す時期か (T32.20)。`since` は前回から経ったティック、
 /// `fast` / `slow` は短い / 長い間隔のティック数、`hurry` は ENOSPC の後、
 /// `estimate` は悲観的に見積もった割当の使用量。
 fn others_due_at(since: u64, fast: u64, slow: u64, hurry: bool, estimate: u64, quota: u64) -> bool {
@@ -83,7 +83,7 @@ fn floor_for(total: u64, absolute: u64) -> u64 {
     (total / 100).max(absolute.min(total / 10))
 }
 
-/// メモリ層の予算の決め ([`mem_budget_for`] の戻り値。T.34.81)。
+/// メモリ層の予算の決め ([`mem_budget_for`] の戻り値。T34.81)。
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct MemBudget {
     /// 上限 (バイト)
@@ -96,7 +96,7 @@ struct MemBudget {
     detail: (&'static str, f64),
 }
 
-/// `auto` のメモリ層の予算を、測った値とマージンから決める (I/O もログも無い。T.34.81)。
+/// `auto` のメモリ層の予算を、測った値とマージンから決める (I/O もログも無い。T34.81)。
 ///
 /// マージンは観測で動くので `&mut` で受ける: ホストの PSI はホスト側のマージンにだけ、
 /// cgroup の PSI は cgroup 側にだけ効かせる (cgroup に PSI が無ければホストの PSI を見る)。
@@ -145,7 +145,7 @@ fn mem_budget_for(m: &MemSnapshot, owned: u64, percent: u8, margins: &mut Margin
     }
 }
 
-/// ディスク層の予算の決め ([`disk_budget_for`] の戻り値。T.34.81)。
+/// ディスク層の予算の決め ([`disk_budget_for`] の戻り値。T34.81)。
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct DiskBudget {
     /// 上限 (バイト)
@@ -156,7 +156,7 @@ struct DiskBudget {
     what: &'static str,
 }
 
-/// `auto` のディスク層の予算を、測った値とマージンから決める (I/O もログも無い。T.34.81)。
+/// `auto` のディスク層の予算を、測った値とマージンから決める (I/O もログも無い。T34.81)。
 ///
 /// `f` は分母にするファイルシステム (割当があれば割当で計算した値)、`real` は割当で
 /// 計算しているときの実際のファイルシステム (その空きは超えられない)。`enospc` は
@@ -218,7 +218,7 @@ impl Cache {
         self.mem
             .release_ballast(self.mem.usage().0, self.mem.capacity().min(mem_ceiling));
         self.disk.release_ballast_to(disk_ceiling);
-        // 予算で追い出したら理由を残す (T.32.7。中身は `ops.rs`)
+        // 予算で追い出したら理由を残す (T32.7。中身は `ops.rs`)
         let evicted = self.enforce_budget();
         self.count_evictions(evicted);
 
@@ -284,7 +284,7 @@ impl Cache {
         }
     }
 
-    /// このティックで自分以外の使用量を測り直すか (T.32.20)。
+    /// このティックで自分以外の使用量を測り直すか (T32.20)。
     ///
     /// 割当から遠いうちは [`OTHERS_SLOW_SECS`] ごと。近づいたかは**悲観的に**見積もる:
     /// 前回測った自分以外の量に、前回からファイルシステム全体の使用量が**増えた**ぶんの和
@@ -319,7 +319,7 @@ impl Cache {
         }
         let others = sysinfo::dir_size_excluding(self.quota_root(), self.disk.dir());
         self.other_disk_usage.store(others, Ordering::Relaxed);
-        // 次の見積もりの起点 (T.32.20)。測れなければ 0 (= 増えたぶんを足さない)
+        // 次の見積もりの起点 (T32.20)。測れなければ 0 (= 増えたぶんを足さない)
         let fs_used = sysinfo::fs_info(self.disk.dir()).map_or(0, |f| f.used);
         self.fs_used.store(fs_used, Ordering::Relaxed);
         self.fs_grown.store(0, Ordering::Relaxed);
@@ -331,7 +331,7 @@ impl Cache {
     ///
     /// このときはホスト FS は見ず、割当の探索 ([`DiskProbe`](super::diskprobe::DiskProbe))
     /// か固定の小さな上限 ([`PTERODACTYL_UNKNOWN_QUOTA_DISK`]) にする。`new()` とプローブの
-    /// 両方がこの 1 つを読む (T.34.81)。
+    /// 両方がこの 1 つを読む (T34.81)。
     pub(super) fn quota_unknown_on_pterodactyl(&self) -> bool {
         self.cfg.pterodactyl && self.cfg.disk_limit.is_auto() && !self.quota.is_known()
     }
@@ -340,7 +340,7 @@ impl Cache {
     ///
     /// 測る ([`budget::take`]・ENOSPC の数) → 決める ([`Self::decide_mem`] /
     /// [`Self::decide_disk`]。式は純粋な [`mem_budget_for`] / [`disk_budget_for`]) →
-    /// 書く (上限・ログ・スナップショット) の 3 段 (T.34.81)。
+    /// 書く (上限・ログ・スナップショット) の 3 段 (T34.81)。
     pub fn refresh_budget(&self) -> bool {
         // --- 測る ---
         let quota = match self.quota {
@@ -458,7 +458,7 @@ impl Cache {
             None
         };
         if let Some(real) = &real {
-            // 自分以外の量を測り直すかの見積もりに使う (T.32.20)
+            // 自分以外の量を測り直すかの見積もりに使う (T32.20)
             let prev = self.fs_used.swap(real.used.max(1), Ordering::Relaxed);
             if prev != 0 && real.used > prev {
                 self.fs_grown.fetch_add(real.used - prev, Ordering::Relaxed);
@@ -475,7 +475,7 @@ impl Cache {
         );
         if enospc > 0 {
             self.disk_enospc_seen.store(true, Ordering::Relaxed);
-            // 割当の下の自分以外の量は、しばらく短い間隔で測り直す (T.32.20)
+            // 割当の下の自分以外の量は、しばらく短い間隔で測り直す (T32.20)
             self.others_hurry_until.store(
                 self.ticks.load(Ordering::Relaxed) + self.ticks_per(OTHERS_SLOW_SECS),
                 Ordering::Relaxed,
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn others_are_walked_every_ten_minutes_unless_near_the_quota_or_after_enospc() {
-        // 5 秒ごとのプローブ: 短い間隔 12 ティック、長い間隔 120 ティック (T.32.20)
+        // 5 秒ごとのプローブ: 短い間隔 12 ティック、長い間隔 120 ティック (T32.20)
         let (fast, slow, q) = (12, 120, 1000);
         // 割当から遠い (50%) うちは 60 秒経っても測らず、600 秒で測る
         assert!(!others_due_at(12, fast, slow, false, 500, q));
@@ -629,7 +629,7 @@ mod tests {
         }
     }
 
-    /// 床は「全体の 1%」「絶対量」「全体の 1/10」の 3 形 (T.34.81)。
+    /// 床は「全体の 1%」「絶対量」「全体の 1/10」の 3 形 (T34.81)。
     #[test]
     fn the_floor_takes_one_of_three_shapes() {
         // 大きな資源: 全体の 1% が絶対量より大きい
@@ -640,7 +640,7 @@ mod tests {
         assert_eq!(floor_for(GIB, 256 * MIB), GIB / 10);
     }
 
-    /// cgroup も PSI も無ければ、ホストの床だけで決まる (T.34.81)。
+    /// cgroup も PSI も無ければ、ホストの床だけで決まる (T34.81)。
     #[test]
     fn without_cgroup_or_psi_the_host_floor_decides() {
         let mut mg = margins();
@@ -655,7 +655,7 @@ mod tests {
         assert_eq!(mg.cgroup.backoff(), 0);
     }
 
-    /// cgroup が無くホストの PSI が熱ければ、ホスト側だけが退く (T.34.81)。
+    /// cgroup が無くホストの PSI が熱ければ、ホスト側だけが退く (T34.81)。
     #[test]
     fn host_psi_without_cgroup_backs_off_only_the_host() {
         let mut mg = margins();
@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(b.keep_free, percent_of(10 * GIB, BACKOFF_PERCENT));
     }
 
-    /// cgroup があれば cgroup の床と使用率を出し、PSI が無ければどちらも退かない (T.34.81)。
+    /// cgroup があれば cgroup の床と使用率を出し、PSI が無ければどちらも退かない (T34.81)。
     #[test]
     fn a_cgroup_without_psi_adds_its_own_floor() {
         let mut mg = margins();
@@ -688,7 +688,7 @@ mod tests {
         assert_eq!(mg.cgroup.backoff(), 0);
     }
 
-    /// cgroup に PSI が無ければホストの PSI を見るが、あれば cgroup の PSI だけを見る (T.34.81)。
+    /// cgroup に PSI が無ければホストの PSI を見るが、あれば cgroup の PSI だけを見る (T34.81)。
     #[test]
     fn a_cgroup_follows_its_own_psi_and_falls_back_to_the_host() {
         // cgroup に PSI が無い + ホストが熱い → 両方が退く
@@ -725,7 +725,7 @@ mod tests {
         }
     }
 
-    /// ENOSPC の後は全体の 5% (床より小さければ床) だけ退く (T.34.81)。
+    /// ENOSPC の後は全体の 5% (床より小さければ床) だけ退く (T34.81)。
     #[test]
     fn enospc_backs_the_disk_off_by_five_percent_or_the_floor() {
         let f = fs(100 * GIB, 50 * GIB);
@@ -748,7 +748,7 @@ mod tests {
         assert_eq!(m.backoff(), floor_for(4 * GIB, DISK_FLOOR));
     }
 
-    /// 割当で計算していても、実際のファイルシステムの空きで切る (T.34.81)。
+    /// 割当で計算していても、実際のファイルシステムの空きで切る (T34.81)。
     #[test]
     fn the_real_filesystem_caps_a_quota_budget() {
         let quota = fs(10 * GIB, 2 * GIB);

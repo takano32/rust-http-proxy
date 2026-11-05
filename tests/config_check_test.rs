@@ -1,7 +1,7 @@
 //! `capabilities` (この環境で何が読めるか) と、`rust-http-proxy --check` (起動せずに環境と効く設定を
 //! 印字して終わる)・`-V` の結合テスト (T14.15)。
 //!
-//! 初めは `tests/config_test.rs` にあった (T.34.120 で割った)。
+//! 初めは `tests/config_test.rs` にあった (T34.120 で割った)。
 
 mod common;
 
@@ -77,7 +77,7 @@ fn test_integration_check_prints_capabilities_and_settings() {
         assert!(text.contains("[NO]"), "{}", text);
     }
     // この機械で読めなくてよいのは `proc_schedstat` (カーネルの設定しだい) と、**試験のプロセスが同じ機械で
-    // 確かめても読めないもの** (cgroup の `cpu.stat` や IPv6 の既定経路が無いコンテナ。T.32.24)。印字が機械と食い違うのは落とす
+    // 確かめても読めないもの** (cgroup の `cpu.stat` や IPv6 の既定経路が無いコンテナ。T32.24)。印字が機械と食い違うのは落とす
     #[cfg(target_os = "linux")]
     {
         let here = rust_http_proxy::sysinfo::capabilities::probe();
@@ -102,7 +102,7 @@ fn test_integration_check_prints_capabilities_and_settings() {
     assert!(text.contains("env       PROXY_KEEPALIVE_SECS"), "{}", text);
     assert!(text.contains("cli       SERVER_PORT"), "{}", text);
     assert!(text.contains("default   PROXY_TIMEOUT_SECS"), "{}", text);
-    // CONNECT 専用の締め切りも `--check` に出る (書いていないので既定の 3 秒。T15.6 (2)、T23.3、T.28.43)
+    // CONNECT 専用の締め切りも `--check` に出る (書いていないので既定の 3 秒。T15.6 (2)、T23.3、T28.43)
     assert!(
         text.contains("default   PROXY_CONNECT_TIMEOUT_SECS"),
         "{}",
@@ -188,7 +188,7 @@ fn test_integration_he_stagger_is_read_once_and_falls_back_when_out_of_range() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// ビルドの種類 (cargo のプロファイル名) が `-V`・`--check`・`/status` に出る (T.28.42)。
+/// ビルドの種類 (cargo のプロファイル名) が `-V`・`--check`・`/status` に出る (T28.42)。
 ///
 /// 値は `build.rs` が `OUT_DIR` から読む (`release` と `dist` を分けるのは
 /// `crates/server/build_profile.rs` の単体の試験)。この試験のバイナリは `cargo test` の
@@ -243,7 +243,7 @@ fn test_integration_build_profile_is_shown_in_version_check_and_status() {
     );
 }
 
-/// `--check` の読み手が先に閉じても (`--check | head -1`)、パニックせずに黙って終わる (T.28.48)。
+/// `--check` の読み手が先に閉じても (`--check | head -1`)、パニックせずに黙って終わる (T28.48)。
 /// 以前は `println!` が `EPIPE` で `failed printing to stdout` のパニックを出していた。
 #[test]
 fn test_integration_check_is_quiet_when_the_reader_closes_early() {

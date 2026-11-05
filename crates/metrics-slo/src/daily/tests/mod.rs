@@ -1,4 +1,4 @@
-//! `daily` の単体試験。ファイルの扱いの試験は [`file`] に割った (T.34.46)。
+//! `daily` の単体試験。ファイルの扱いの試験は [`file`] に割った (T34.46)。
 
 mod file;
 
@@ -81,7 +81,7 @@ fn a_line_is_written_when_the_utc_day_changes() {
     let _ = fs::remove_file(&path);
 }
 
-/// T.32.17: 名前解決に失敗した試みのミスを除いた率 (`dns_resolved_per_connect`) を末尾の欄に書く。
+/// T32.17: 名前解決に失敗した試みのミスを除いた率 (`dns_resolved_per_connect`) を末尾の欄に書く。
 /// `dns_per_connect` は今までどおり失敗も入れた値 (読む側の互換)。
 #[test]
 fn a_line_carries_the_miss_rate_without_failed_lookups() {
@@ -104,7 +104,7 @@ fn a_line_carries_the_miss_rate_without_failed_lookups() {
     let _ = fs::remove_file(&path);
 }
 
-/// `version <v> on port …` の `start` 1 件 (T.32.18)。
+/// `version <v> on port …` の `start` 1 件 (T32.18)。
 fn start_event(at: u64, v: &str) -> crate::events::Event {
     crate::events::Event {
         at,
@@ -144,7 +144,7 @@ fn run_process(
     total - 10
 }
 
-/// T.32.18 の受け入れ基準: 日の途中で再起動しても、その日の `secs` が 86,400 前後になり、要求の和が
+/// T32.18 の受け入れ基準: 日の途中で再起動しても、その日の `secs` が 86,400 前後になり、要求の和が
 /// 前後のプロセスの和と一致する。前のプロセスのぶんは `.rrd` から読み戻した `history["60"]`
 /// (ここでは前の `History` の 60 秒の行をそのまま `restore`) から組み直す。`version` はその日に動いた版の並び。
 #[test]
@@ -312,7 +312,7 @@ fn a_line_never_exceeds_the_limit() {
         seed_requests: u64::MAX,
         seed_bytes: u64::MAX,
         seed_evicted: u64::MAX,
-        // その日に動いた版の並びも上限まで (T.32.18)
+        // その日に動いた版の並びも上限まで (T32.18)
         versions: Some("9".repeat(MAX_VERSIONS)),
     };
     let worst = acc.line(&clean_version(&"9".repeat(200)), [[u32::MAX; 2]; 2]);

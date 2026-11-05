@@ -33,7 +33,7 @@ fn burst_day(t0: u64) -> Vec<Sample> {
                 t,
                 ..Sample::default()
             };
-            // 確立の判定は「確立 − RTT」の窓 (T.28.45。T.29.12 から名前解決を除いた `conn_excess`)
+            // 確立の判定は「確立 − RTT」の窓 (T28.45。T29.12 から名前解決を除いた `conn_excess`)
             // なので、同じ値を 3 つに入れる
             let mut put = |ms: u64| {
                 s.connect.observe(ms);
@@ -140,7 +140,7 @@ fn test_integration_slo_reports_the_share_of_time_the_thresholds_were_met() {
     assert_has(&list, "/slo?days=7");
 }
 
-/// 1 時間 (720 本の 5 秒) に確立 1,000 本と、名前解決に成功した試みのエラー `errors` 件 (T.29.33)。
+/// 1 時間 (720 本の 5 秒) に確立 1,000 本と、名前解決に成功した試みのエラー `errors` 件 (T29.33)。
 /// エラーは**確立 1 本だけの 5 秒**に置く (5 秒ごとに判定すると 1 / 2 = 0.5 でその 5 秒が外れる形)。
 fn hour_with_errors(t0: u64, errors: usize) -> Vec<Sample> {
     (0..720usize)
@@ -165,7 +165,7 @@ fn hour_with_errors(t0: u64, errors: usize) -> Vec<Sample> {
         .collect()
 }
 
-/// **T.29.33 の受け入れ基準**: 比 (`error_rate`) は 1 時間の合計で判定する。1 時間に確立 1,000 本・
+/// **T29.33 の受け入れ基準**: 比 (`error_rate`) は 1 時間の合計で判定する。1 時間に確立 1,000 本・
 /// エラー 4 本 (4 / 1,004) なら満たし、6 本 (6 / 1,006) なら外す。どちらもエラーは確立 1 本の 5 秒に
 /// 置いてあり、5 秒ごとの判定なら 4 本でも 4 つの 5 秒が外れていた。`/slo` に 1 時間の合計
 /// (分子と分母)・比ごとの満たした / 外した時間の数・直近 1 時間の合計が出る。
@@ -213,7 +213,7 @@ fn test_integration_slo_judges_the_rates_on_the_sum_of_the_hour() {
     assert_has(&body, "\"rate_window_secs\":3600");
 }
 
-/// **T.30.3 の受け入れ基準**: `error_rate` は宛先のポートが 443・80 の試みだけを数える (利用者の決定)。
+/// **T30.3 の受け入れ基準**: `error_rate` は宛先のポートが 443・80 の試みだけを数える (利用者の決定)。
 /// ホスト別統計の口 (`record_host_detail`。トンネルと転送が呼ぶのと同じ) に、1 時間ぶんとして
 /// `:993` の確立の時間切れ 100 本・`:443` の確立の成功 1,000 本・`:443` の拒否 4 本を入れ、履歴スレッドと
 /// 同じ `take_sample` で 5 秒の標本を作って `/slo` に流す。443・80 だけなら 4 / 1,004 = 0.00398 で満たし、
@@ -251,7 +251,7 @@ fn test_integration_slo_error_rate_counts_only_the_attempts_to_ports_443_and_80(
     );
     // `.rrd` のレコードを往復しても同じ (予備に足した 2 項目)
     assert_eq!(Sample::decode(&s.encode()), Some(s));
-    // 旧の数え方 (T.30.3 より前の標本 = 2 項目が 0) なら外れる
+    // 旧の数え方 (T30.3 より前の標本 = 2 項目が 0) なら外れる
     let old = Sample {
         other_port_attempts: 0,
         other_port_errors: 0,
@@ -280,7 +280,7 @@ fn test_integration_slo_error_rate_counts_only_the_attempts_to_ports_443_and_80(
     assert_num(&body, "met", 1.0);
 }
 
-/// **T.30.4 の受け入れ基準**: 1 時間のエラーの半分以上が 1 つの宛先なら、その宛先を外して `error_rate` を判定する
+/// **T30.4 の受け入れ基準**: 1 時間のエラーの半分以上が 1 つの宛先なら、その宛先を外して `error_rate` を判定する
 /// (利用者の決定)。ホスト別統計の口 (`record_host_detail`) に、その時間のぶんとして `:443` の確立の成功 400 本・
 /// `pravda.example:443` の確立の時間切れ 4 件・別の宛先の拒否 1 件を入れ、履歴スレッドと同じく `take_sample` の
 /// 標本と `web_error_hours` の宛先の表を `/slo` に流す。外せば 1 / 401 = 0.0025 で満たし、旧の数え方 (外さない)
@@ -366,7 +366,7 @@ fn test_integration_slo_error_rate_leaves_out_one_destination_with_most_of_the_e
     );
 }
 
-/// **T.32.10 の受け入れ基準**: ホスト別統計が 1,000 行で埋まり、どの行も最後に使われたのが 14 日前の表でも、
+/// **T32.10 の受け入れ基準**: ホスト別統計が 1,000 行で埋まり、どの行も最後に使われたのが 14 日前の表でも、
 /// 新しい宛先 `pravda.example:443` の時間切れ 4 件と `:443` の成功 400 本を流すと、その宛先を外して満たす。
 /// 前は満杯の表に来た新しい鍵が全部 `other` に畳まれ、`other` は宛先にならないので 1 時間も外せなかった
 /// (tokyo の 0.30.4 の 48 時間で `excluded` 0 時間)。
@@ -441,7 +441,7 @@ fn test_integration_slo_leaves_out_a_new_destination_even_when_the_host_table_is
 /// ここの試験は同じ大域の集計 (`slo::observe`) を使うので直列にする。
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 試験に共通の始まり (直列の鍵を取り、集計を空にし、試験用プロキシを起こす)。T.34.121 で出した。
+/// 試験に共通の始まり (直列の鍵を取り、集計を空にし、試験用プロキシを起こす)。T34.121 で出した。
 ///
 /// 落とすときに集計を空にし直してから鍵を返す (前は各試験の最後で `slo::reset()` を呼んでいた)。
 struct Scene {
@@ -482,8 +482,8 @@ fn past_hour_boundary() -> u64 {
 
 /// 閾は `PROXY_SLO` の既定 (`crates/config` の `DEFAULT_SLO` と同じ値であること
 /// — 層が違うので数値を 2 か所に持っている。食い違ったらここで落ちる)。
-/// T.28.45 で既定を 5 / 50 ms (確立 − RTT) にし、3 つの読み方を `basis` に出した
-/// (T.29.12 で確立から名前解決を外し、T.29.33 で比の 2 つを 1 時間の合計にし、T.30.3 で
+/// T28.45 で既定を 5 / 50 ms (確立 − RTT) にし、3 つの読み方を `basis` に出した
+/// (T29.12 で確立から名前解決を外し、T29.33 で比の 2 つを 1 時間の合計にし、T30.3 で
 /// `error_rate` を 443・80 宛てだけにした)
 const DEFAULTS: &str = "\"thresholds\":{\"connect_p50_ms\":5,\"connect_p95_ms\":50,\
                         \"error_rate\":0.005,\"dns_miss_per_connect\":0.2},\

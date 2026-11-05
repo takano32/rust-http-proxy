@@ -23,19 +23,19 @@ const STALE_ON_STATUS: &[u16] = &[500, 502, 503, 504];
 pub(super) struct HeadFacts {
     /// 応答の本文の枠組み
     pub framing: Framing,
-    /// 素通しの応答に付け直す `Age` (T.29.4)
+    /// 素通しの応答に付け直す `Age` (T29.4)
     pub age_secs: Option<u64>,
-    /// `Date` の行があるか (無ければ自分で付ける。T.29.9)
+    /// `Date` の行があるか (無ければ自分で付ける。T29.9)
     pub has_date: bool,
     /// オリジンとの接続を使い回せるか (HTTP/1.1・閉じるまでの枠組みでない・`Connection: close` でない・
     /// 本文の途中で返した応答でない)
     pub origin_reusable: bool,
-    /// 最後が chunked でない `Transfer-Encoding` の並び (T.28.1・T.28.35)。閉じるまでを本文にして
+    /// 最後が chunked でない `Transfer-Encoding` の並び (T28.1・T28.35)。閉じるまでを本文にして
     /// 保存せず、TE の行はクライアントへ伝える
     pub unframed_te: Option<String>,
 }
 
-/// 304 が保存済みの表現を指しているか (RFC 9111 §4.3.4 の「更新する保存済みの応答を選ぶ」の簡易版。T.29.6)。
+/// 304 が保存済みの表現を指しているか (RFC 9111 §4.3.4 の「更新する保存済みの応答を選ぶ」の簡易版。T29.6)。
 ///
 /// 304 に `ETag` があれば保存済みの `ETag` と一致すること (弱い印 `W/` も含めて文字どおり)。
 /// 無ければ `Last-Modified` が一致すること。どちらも無い 304 は選ばない (別の表現かもしれない)。
@@ -71,7 +71,7 @@ pub(super) fn examine_head(
     let metrics = x.ctx.metrics;
     let conn_id = x.ctx.conn_id;
     let (http11, head_only, pool_key) = (x.http11, x.ctx.head_only, x.ctx.pool_key);
-    // 本文の途中でオリジンが返した応答 (T.29.7): クライアントの本文の残りは読んでいないので、
+    // 本文の途中でオリジンが返した応答 (T29.7): クライアントの本文の残りは読んでいないので、
     // 応答に `Connection: close` を付けて閉じる (次の要求の頭に本文の続きが来てしまう)
     if body_cut {
         x.ctx.keep_client = false;
@@ -83,7 +83,7 @@ pub(super) fn examine_head(
             request_body_bytes
         );
     }
-    // trace が切れていれば応答の先頭をもう 1 回なめない (T.28.12)
+    // trace が切れていれば応答の先頭をもう 1 回なめない (T28.12)
     if crate::log::enabled(crate::log::Level::Trace) {
         for (k, v) in headers::response_lines(head) {
             log_trace!(Some(conn_id), "res header  {}: {}", k, v);
@@ -94,11 +94,11 @@ pub(super) fn examine_head(
     // ついでに `Content-Length` を検査する (T19.5)。重複して不一致・数字でない・負・
     // u64 に収まらない桁数は、そのまま通すと「名乗った長さと実際に送るバイトが食い違う」
     // 応答になるので、オリジンの応答として扱わず 502 に差し替える (この接続は再利用しない)
-    // 枠組みと `Connection: close` を 1 回の走査で (T.28.12)
-    // `Age` もこの 1 回で拾う (T.29.4。下の `age_secs`)
+    // 枠組みと `Connection: close` を 1 回の走査で (T28.12)
+    // `Age` もこの 1 回で拾う (T29.4。下の `age_secs`)
     let scan = Framing::scan_response_head(status, head_only, head);
     let (framing, conn_close, scan_date) = (scan.framing, scan.close, scan.date);
-    // 素通しの応答に付け直す `Age` (T.29.4)。`Age` は end-to-end (RFC 9110 §7.6・9111 §4.2.3) なのに、
+    // 素通しの応答に付け直す `Age` (T29.4)。`Age` は end-to-end (RFC 9110 §7.6・9111 §4.2.3) なのに、
     // 枠組みの名前と一緒に [`headers::write_response_head`] が無条件に落としていた (HIT にだけ付いた)。
     // 値は保存するときの `policy.age` と同じ `max(受けた Age, now − Date)`。**オリジンが `Age` を
     // 付けてきた応答だけ**に付ける (`Date` だけの応答に足すと、時計のずれがそのまま `Age` に出る)。
@@ -128,7 +128,7 @@ pub(super) fn examine_head(
         }
     };
     // 頼んでいない 101 (RFC 9110 §15.2.2: クライアントが `Upgrade` で挙げていないプロトコルへ切り替えては
-    // ならない。T.29.9)。今まではそのまま返していた。この接続はもう HTTP ではないので使い回さない
+    // ならない。T29.9)。今まではそのまま返していた。この接続はもう HTTP ではないので使い回さない
     if status == 101 && !x.ctx.req.upgrade {
         log_warn!(
             Some(conn_id),
@@ -139,11 +139,11 @@ pub(super) fn examine_head(
     }
     let origin_reusable =
         head.starts_with(b"HTTP/1.1") && framing != Framing::Close && !conn_close && !body_cut;
-    // 最後が chunked でない `Transfer-Encoding` の応答 (T.28.1)。閉じるまでを本文にして返すが、
+    // 最後が chunked でない `Transfer-Encoding` の応答 (T28.1)。閉じるまでを本文にして返すが、
     // 区切りがオリジンと食い違っているかもしれないので保存しない (接続は上で使い回さない)。
     // 見分けるのは閉じるまでの応答のときだけ (CL / chunked の熱い経路では先頭をなめ直さない)
     //
-    // 符号化はほどかずに渡すので、TE の行もクライアントへ伝える (T.28.35。配信の段の `client_framing`)
+    // 符号化はほどかずに渡すので、TE の行もクライアントへ伝える (T28.35。配信の段の `client_framing`)
     let unframed_te = (framing == Framing::Close)
         .then(|| Framing::response_transfer_encoding_line(head))
         .flatten();
@@ -154,7 +154,7 @@ pub(super) fn examine_head(
         );
     }
 
-    // クライアントの条件付き要求に対するオリジンの 304 (T.29.6): 304 はそのまま中継するが、
+    // クライアントの条件付き要求に対するオリジンの 304 (T29.6): 304 はそのまま中継するが、
     // 304 の validator が保存済みの表現と一致すれば、保存済みの表現も延ばして先頭を書き直す
     // (RFC 9111 §4.3.4)。今までは延ばさなかったので、続く素の GET が古い先頭のまま
     // `REFRESHING` でオリジンへ行っていた。validator が違う 304 では触らない
@@ -203,7 +203,7 @@ pub(super) fn examine_head(
 
     // 最後が chunked でない TE を HTTP/1.0 のクライアントへは送れない (RFC 9112 §6.1: TE を送ってよいのは
     // HTTP/1.1 以上を名乗った要求への応答だけ)。符号化をほどけないので、TE を落として符号化済みの
-    // バイトを本文として渡す (T.28.35 より前の振る舞い) 代わりに 502 にする (この接続は再利用しない)
+    // バイトを本文として渡す (T28.35 より前の振る舞い) 代わりに 502 にする (この接続は再利用しない)
     if !http11 && let Some(te) = unframed_te.as_deref() {
         if let Some(more) = metrics.origin_warn(Failure::of(ErrCause::Other)) {
             log_warn!(
@@ -226,7 +226,7 @@ pub(super) fn examine_head(
 }
 
 /// 502 を書いて終わる (壊れた `Content-Length`・頼んでいない 101・HTTP/1.0 へ送れない TE の 3 か所の
-/// 共通形。WARN の文面と絞り方は呼ぶ側に残す。T.34.18)。
+/// 共通形。WARN の文面と絞り方は呼ぶ側に残す。T34.18)。
 ///
 /// 失敗の数え方 (`/status` の `errors`・`errors_by_cause`) に乗せる。
 /// 原因は既存の 8 つのうち「上のどれでもない」を使う (配列は伸ばさない)
@@ -238,7 +238,7 @@ fn bad_gateway<T>(x: &mut Exchange<'_>, client: &mut ClientWriter<'_>) -> Stage<
     done(false)
 }
 
-/// クライアントの条件付き要求に対するオリジンの 304 で、保存済みの表現 (`entry`) を延ばす (T.29.6)。
+/// クライアントの条件付き要求に対するオリジンの 304 で、保存済みの表現 (`entry`) を延ばす (T29.6)。
 /// 304 そのものは呼ぶ側がそのまま中継する。validator が違う 304 では触らない。
 fn refresh_for_client_conditional(
     x: &Exchange<'_>,
@@ -291,7 +291,7 @@ fn serve_revalidated<T>(
     let pairs_304 = headers::response_pairs(head);
     let mut entry = entry;
     // 304 が保存を禁じた (`no-store`・`private`・`Vary: Cookie` など): 延命せず項目を消し、
-    // この要求にだけ 304 のヘッダーを載せた写しを配る (T.29.0)。次の要求はオリジンへ行く
+    // この要求にだけ 304 のヘッダーを載せた写しを配る (T29.0)。次の要求はオリジンへ行く
     if freshness::not_modified_forbids_storing(&pairs_304) {
         cache.remove(key);
         if let Some(new_head) = headers::merge_not_modified(&entry.head, head) {
@@ -316,7 +316,7 @@ fn serve_revalidated<T>(
     }
     let p = freshness::revalidated_policy(&pairs_304, &cached_head, cfg, now);
     // 304 のヘッダーで保存済みの先頭を書き直して置き直し、配るのも新しい先頭にする
-    // (RFC 9111 §3.2・§4.3.4。T.28.2)。今までは期限だけ延ばし、配る先頭は古いままだった
+    // (RFC 9111 §3.2・§4.3.4。T28.2)。今までは期限だけ延ばし、配る先頭は古いままだった
     let expires_at = match headers::merge_not_modified(&entry.head, head) {
         Some(new_head) => {
             let expires_at = cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
@@ -325,12 +325,12 @@ fn serve_revalidated<T>(
         }
         None => cache.refresh(key, p.ttl, p.age, conn_id),
     };
-    // 配る `Age` も置き直した時刻から数える (`refresh` と同じく `now - 304 の Age`。T.28.34)。
+    // 配る `Age` も置き直した時刻から数える (`refresh` と同じく `now - 304 の Age`。T28.34)。
     // 今までは手元の写しの古い `stored_at` のままで、保存から N 秒たって再検証した直後の応答が
     // `Age: N` になっていた (次の HIT からは新しい値)
     entry.meta.stored_at = now_epoch().saturating_sub(p.age);
     entry.meta.expires_at = expires_at;
-    // 304 の `Set-Cookie` は保存した先頭へは写さず (T.29.0)、再検証したこの要求にだけ渡す
+    // 304 の `Set-Cookie` は保存した先頭へは写さず (T29.0)、再検証したこの要求にだけ渡す
     if let Some(served) = headers::with_set_cookies(&entry.head, head) {
         entry.replace_head(served);
     }
@@ -358,7 +358,7 @@ mod tests {
             .collect()
     }
 
-    /// 304 が保存済みの表現を指しているか (T.29.6): `ETag` があれば文字どおり一致、無ければ `Last-Modified`、
+    /// 304 が保存済みの表現を指しているか (T29.6): `ETag` があれば文字どおり一致、無ければ `Last-Modified`、
     /// どちらも無ければ選ばない。
     #[test]
     fn not_modified_selects_by_etag_then_last_modified() {

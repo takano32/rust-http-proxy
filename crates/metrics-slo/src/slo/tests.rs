@@ -1,4 +1,4 @@
-//! `slo` の単体試験の共通部 (T.34.2 で `slo.rs` の `mod tests` から移した。試験の名前はそのまま)。
+//! `slo` の単体試験の共通部 (T34.2 で `slo.rs` の `mod tests` から移した。試験の名前はそのまま)。
 //!
 //! 判定 ([`judge`]) の試験は `judge_tests.rs`、集計と `/slo` の応答の試験は `tracker_tests.rs`。
 //! 標本と 1 日・1 時間ぶんの並びを作る道具をここに置き、2 つから `use super::*` で引く。
@@ -11,7 +11,7 @@ mod judge;
 mod tracker;
 
 /// 5 秒の標本 1 本。`connects` 本の確立を `ms` で置く (「確立 − RTT」の窓にも同じ `ms`。
-/// 確立の 2 つの閾はそちらで判定する。T.28.45)。
+/// 確立の 2 つの閾はそちらで判定する。T28.45)。
 fn sample(t: u64, connects: u64, ms: u64) -> Sample {
     let mut s = Sample {
         t,
@@ -81,7 +81,7 @@ fn hour_of(t0: u64, connects: u64, errors: u64, spread: bool) -> Vec<Sample> {
     out
 }
 
-/// その時間の宛先の表 (T.30.4)。
+/// その時間の宛先の表 (T30.4)。
 fn dest(hour: u64, errors: u64, name: &str, top_errors: u64, top_attempts: u64) -> DestHour {
     DestHour {
         hour,

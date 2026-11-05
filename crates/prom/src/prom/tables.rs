@@ -1,6 +1,6 @@
 //! `/metrics` のうちホスト別・接続元別の表。
 //!
-//! T.34.27 で `prom.rs` の `render` から割った。行を動かしただけで、出す順も文面も変えていない。
+//! T34.27 で `prom.rs` の `render` から割った。行を動かしただけで、出す順も文面も変えていない。
 
 use super::*;
 use crate::metrics::HostStats;

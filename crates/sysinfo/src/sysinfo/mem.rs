@@ -3,7 +3,7 @@
 use super::proc::read_small;
 use std::path::Path;
 
-// 自プロセスの常駐の内訳とスレッドのスタックの常駐 (T.32.4) は T.34.76 で `mem/rss.rs` に分けた
+// 自プロセスの常駐の内訳とスレッドのスタックの常駐 (T32.4) は T34.76 で `mem/rss.rs` に分けた
 mod rss;
 pub use rss::{ProcessRss, process_rss_detail, stacks_resident};
 

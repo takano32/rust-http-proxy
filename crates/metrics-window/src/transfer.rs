@@ -178,7 +178,7 @@ fn push_u64_array(out: &mut String, v: &[u64]) {
 /// と**同じ周期・同じ境目**で閉じるので、読む側は時刻で突き合わせられる。
 ///
 /// **件数 0 の窓は残さない** (`closed` と同じ。行の先頭に窓の始まりの時刻がある)。
-/// 窓の扱いは `closed` と共通の [`TwoRes`] にある (T.34.34)。
+/// 窓の扱いは `closed` と共通の [`TwoRes`] にある (T34.34)。
 pub type TransferWindows = TwoRes<TransferCounts>;
 
 impl TwoRes<TransferCounts> {

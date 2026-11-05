@@ -1,4 +1,4 @@
-//! authority (`host[:port]`) の形の検査 (RFC 3986 §3.2・RFC 9112 §3.2。T.32.12)。
+//! authority (`host[:port]`) の形の検査 (RFC 3986 §3.2・RFC 9112 §3.2。T32.12)。
 
 use std::io;
 
@@ -17,7 +17,7 @@ pub(super) fn authority_end(rest: &str) -> usize {
 /// http(s) の URI では非推奨で、受け取った側は誤りとして扱うべきなので 400 にする
 /// (呼び出し側は [`super::parse_origin`] の失敗を `bad_uri` で断る)。
 ///
-/// T.32.12 から形も見る (RFC 3986 §3.2.2・RFC 9112 §3.2): ホストは reg-name の字 (英数字と `-._~`、
+/// T32.12 から形も見る (RFC 3986 §3.2.2・RFC 9112 §3.2): ホストは reg-name の字 (英数字と `-._~`、
 /// `%XX`) か `[` IP リテラル `]`、ポートは 1〜5 桁の数字で 65535 以下。空のポート (`h:`) は既定の
 /// ポートの意味で、返す authority からは `:` を落とす。括弧の無い IPv6 (`::1`) は今までどおり通す。
 /// reg-name の sub-delims (`,`・`+`・`;` など) は RFC の文法では通るが、DNS の名前にはなりえないので断る。
@@ -53,7 +53,7 @@ pub(super) fn check_authority(host_port: &str) -> io::Result<&str> {
     check_authority_slow(host_port)
 }
 
-/// reg-name の字のうち `%` を除いたもの (英数字と `-._~`)。[`check_authority`] の速い道の表 (T.32.12)
+/// reg-name の字のうち `%` を除いたもの (英数字と `-._~`)。[`check_authority`] の速い道の表 (T32.12)
 const REG_NAME: [bool; 256] = {
     let mut t = [false; 256];
     let mut i = 0;
@@ -119,7 +119,7 @@ pub(super) fn check_authority_slow(host_port: &str) -> io::Result<&str> {
     }
 }
 
-/// reg-name (と IPv4) として受け付ける字か (英数字と `-._~`、`%` は 16 進 2 桁が続くこと)。T.32.12
+/// reg-name (と IPv4) として受け付ける字か (英数字と `-._~`、`%` は 16 進 2 桁が続くこと)。T32.12
 fn reg_name(host: &[u8]) -> bool {
     let mut i = 0;
     while i < host.len() {

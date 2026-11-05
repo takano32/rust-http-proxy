@@ -242,7 +242,7 @@ impl Default for CacheConfig {
                 percent: DEFAULT_TARGET_PERCENT,
             },
             reserve: Reserve::Staged,
-            // 1 → 5 秒 (T.29.22。暇なときの裏の費用。上限は `put` 側が自分で守る)
+            // 1 → 5 秒 (T29.22。暇なときの裏の費用。上限は `put` 側が自分で守る)
             probe_interval: Duration::from_secs(5),
             dir: std::env::temp_dir().join("rust-http-proxy-cache"),
             mem_keep_free: 0,
@@ -357,7 +357,7 @@ pub fn resolve_default_dir(pterodactyl: bool) -> PathBuf {
 }
 
 /// [`resolve_default_dir`] の候補の順の判断 (環境変数の読みと「書けるか」を引数で受ける。
-/// T.34.85)。`writable` は最初に真を返した候補で止まる (その先の候補は作らない)。
+/// T34.85)。`writable` は最初に真を返した候補で止まる (その先の候補は作らない)。
 fn pick_default_dir(
     pterodactyl: bool,
     var: impl Fn(&str) -> Option<OsString>,
@@ -491,7 +491,7 @@ mod tests {
         assert!(!cfg.pterodactyl);
     }
 
-    /// 既定のディレクトリの候補の順 (T.34.85)。
+    /// 既定のディレクトリの候補の順 (T34.85)。
     ///
     /// ふだんは `/var/cache` → XDG (無ければ `~/.cache`)、Pterodactyl では XDG を無視して
     /// `~/.cache` → `/var/cache`。どれも書けなければ一時ディレクトリ。

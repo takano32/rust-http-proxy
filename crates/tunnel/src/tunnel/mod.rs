@@ -37,7 +37,7 @@ pub use relay::{Idle, Park, expire, resume};
 #[cfg(not(target_os = "linux"))]
 use report::report;
 
-/// CONNECT 1 本を始めるのに要るもの (入口で読んだ素性と設定。T.34.14)。
+/// CONNECT 1 本を始めるのに要るもの (入口で読んだ素性と設定。T34.14)。
 ///
 /// 本体クレートの `start_tunnel` が組み、[`handle_connect`] / [`handle_connect_parked`] を
 /// 通って `open` まで運ぶ (引数 13〜16 個の並びを 1 つにした)。
@@ -51,7 +51,7 @@ pub struct TunnelRequest<'a> {
     pub timeout: Duration,
     /// 双方向とも動きが無ければ閉じるまでの時間 (`None` で無期限)
     pub idle: Option<Duration>,
-    /// 書き側の最小の速さ (T.29.34。Linux の `poll` + `splice` の中継だけが見る)
+    /// 書き側の最小の速さ (T29.34。Linux の `poll` + `splice` の中継だけが見る)
     pub min_transfer: MinRate,
     pub conn_id: usize,
     pub metrics: Arc<Metrics>,
@@ -78,7 +78,7 @@ pub fn handle_connect(req: TunnelRequest<'_>) -> io::Result<()> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // 最小の速さは Linux の `poll` + `splice` の中継だけが見る (T.29.34)
+        // 最小の速さは Linux の `poll` + `splice` の中継だけが見る (T29.34)
         let idle = req.idle;
         let Opened {
             client,

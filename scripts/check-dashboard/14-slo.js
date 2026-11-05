@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 13. KPI「今日の SLO」 (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 13. KPI「今日の SLO」 (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 13. KPI「今日の SLO」(T14.50)。`/slo` の応答から**今日 (UTC) の達成率**と
 // 「いちばん外した閾」「直近の外れた時間帯」が読めること。`/slo` を持たない版
@@ -45,10 +45,10 @@ if (slo.breaches !== 1) fail('外れた時間帯の数が合わない: ' + slo.b
 for (const part of ['判定 17,280 標本', '2026-09-11T17Z〜2026-09-12T00Z', '直近 7 日']) {
   if (slo.detail.indexOf(part) < 0) fail('内訳に ' + part + ' が無い: ' + slo.detail);
 }
-// T.29.33 より前の `/slo` (`rate_window_secs` も `rates` も無い) は今までの説明のまま
+// T29.33 より前の `/slo` (`rate_window_secs` も `rates` も無い) は今までの説明のまま
 if (api.sloTitle(sloJson).indexOf('4 つの閾を 5 秒の標本ごと') < 0) fail('古い /slo の説明が変わった: ' + api.sloTitle(sloJson));
 if (slo.detail.indexOf('1 時間の合計') >= 0) fail('古い /slo に 1 時間の合計を出した: ' + slo.detail);
-// T.29.33 の `/slo`: 比の 2 つは 1 時間の合計で判定し、今日の分子 / 分母と外した時間の数を出す
+// T29.33 の `/slo`: 比の 2 つは 1 時間の合計で判定し、今日の分子 / 分母と外した時間の数を出す
 const sloHourly = api.sloKpi(
   Object.assign({}, sloJson, {
     rate_window_secs: 3600,
@@ -72,8 +72,8 @@ const sloHourlyTitle = api.sloTitle(
 if (sloHourlyTitle.indexOf('1 時間の合計で判定') < 0) fail('1 時間の合計の説明が無い: ' + sloHourlyTitle);
 if (sloHourlyTitle.indexOf('名前解決に成功した試行あたり (1 時間の合計)') < 0) fail('basis の _hourly_sum が読めていない: ' + sloHourlyTitle);
 if (sloHourlyTitle.indexOf('名前解決を除いた確立') < 0) fail('basis の connect_minus_rtt が読めていない: ' + sloHourlyTitle);
-if (sloHourly.detail.indexOf('443・80') >= 0) fail('T.30.3 より前の basis で 443・80 と書いた: ' + sloHourly.detail);
-// T.30.3: `error_rate` は 443・80 宛てだけ (`basis.error_rate` が `resolved_web_attempts_hourly_sum`)。tooltip と内訳に書く
+if (sloHourly.detail.indexOf('443・80') >= 0) fail('T30.3 より前の basis で 443・80 と書いた: ' + sloHourly.detail);
+// T30.3: `error_rate` は 443・80 宛てだけ (`basis.error_rate` が `resolved_web_attempts_hourly_sum`)。tooltip と内訳に書く
 const webBasis = { connect: 'connect_minus_rtt', error_rate: 'resolved_web_attempts_hourly_sum', dns_miss_per_connect: 'excluding_failed_lookups_hourly_sum' };
 const sloWeb = Object.assign({}, sloJson, { rate_window_secs: 3600, basis: webBasis });
 const sloWebTitle = api.sloTitle(sloWeb);
@@ -93,7 +93,7 @@ if (sloWebKpi.detail.indexOf('error_rate (443・80 だけ) 4 / 1,004 (1 時間�
   fail('443・80 だけの error_rate が内訳に無い: ' + sloWebKpi.detail);
 if (sloWebKpi.detail.indexOf('dns_miss_per_connect 3 / 1,000') < 0) fail('dns_miss_per_connect に印が付いた: ' + sloWebKpi.detail);
 if (sloWebKpi.detail.indexOf('外した') >= 0) fail('excluded の無い版で外した宛先を書いた: ' + sloWebKpi.detail);
-// T.30.4: 1 つの宛先に偏ったエラーを外す (`basis.error_rate` の末尾が `_excluding_top_destination`)。
+// T30.4: 1 つの宛先に偏ったエラーを外す (`basis.error_rate` の末尾が `_excluding_top_destination`)。
 // tooltip に外し方、内訳に外した時間の数とエラーの件数 (`today.rates.error_rate.excluded`)
 const topBasis = Object.assign({}, webBasis, { error_rate: 'resolved_web_attempts_hourly_sum_excluding_top_destination' });
 const sloTop = Object.assign({}, sloJson, { rate_window_secs: 3600, basis: topBasis });

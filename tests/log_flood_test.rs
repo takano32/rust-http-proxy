@@ -1,4 +1,4 @@
-//! ログの量を攻撃者が決められないことの結合テスト (T.28.9)。
+//! ログの量を攻撃者が決められないことの結合テスト (T28.9)。
 //!
 //! 0.27.8 までは、不正な要求 1 本につき WARN が 1 行 (20 本 → 20 行) で上限が無く、
 //! 自分宛ての要求 (`/status` など) も既定の INFO で 1 本 1 行出ていた (ダッシュボードを
@@ -73,7 +73,7 @@ fn test_integration_bad_requests_warn_once_per_reason_and_self_requests_stay_qui
         .filter(|l| l.contains("dup_host in CONNECT"))
         .count();
     println!(
-        "T.28.9 不正な要求 {} 本 × 3 種: WARN {} 行 (要求行の 2 種 {} 行、dup_host {} 行)",
+        "T28.9 不正な要求 {} 本 × 3 種: WARN {} 行 (要求行の 2 種 {} 行、dup_host {} 行)",
         N,
         warn.len(),
         malformed,
@@ -131,14 +131,14 @@ fn short_body_origin() -> u16 {
     port
 }
 
-/// **T.29.15**: オリジン側の 502 の WARN も**理由ごとに 1 分に 1 行**。繋がらない宛先 (`refused`) への
+/// **T29.15**: オリジン側の 502 の WARN も**理由ごとに 1 分に 1 行**。繋がらない宛先 (`refused`) への
 /// CONNECT と転送を 100 本ずつ、本文の途中で切るオリジン (`reset`) へ 100 本送っても WARN は理由ごとに
 /// 1〜2 行で、件数は `/status` の `errors_by_cause` と `/errors` が全部持つ。
 /// 0.28.48 の tokyo の `/log` は 1,000 行がメール宛の `502 Bad Gateway: connect … failed` で埋まっていた。
 #[test]
 fn test_integration_origin_failures_warn_once_per_reason() {
     let dir = home("origin");
-    // 宛先がループバックなので私設宛ての既定 (T.28.41) を外す
+    // 宛先がループバックなので私設宛ての既定 (T28.41) を外す
     let env = std::fs::read_to_string(dir.join(".env")).unwrap() + "PROXY_ALLOW_LOCAL=on\n";
     std::fs::write(dir.join(".env"), env).unwrap();
     let proxy = ProxyProcess::start(&dir);
@@ -189,7 +189,7 @@ fn test_integration_origin_failures_warn_once_per_reason() {
         .filter(|l| l.contains("origin body ended"))
         .count();
     println!(
-        "T.29.15 繋がらない宛先 {} × 2 + 本文の途中で切るオリジン {}: WARN {} 行 (connect {} 行、本文 {} 行)",
+        "T29.15 繋がらない宛先 {} × 2 + 本文の途中で切るオリジン {}: WARN {} 行 (connect {} 行、本文 {} 行)",
         N,
         N,
         warn.len(),
@@ -219,8 +219,8 @@ fn test_integration_origin_failures_warn_once_per_reason() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 壊れた要求行の WARN に載るのは先頭 256 バイトと全体の長さだけ (T.28.38)。
-/// 行の数は T.28.9 で 1 分 1 行にしたが、1 行の長さは要求行 (最大 64 KiB) のままだった。
+/// 壊れた要求行の WARN に載るのは先頭 256 バイトと全体の長さだけ (T28.38)。
+/// 行の数は T28.9 で 1 分 1 行にしたが、1 行の長さは要求行 (最大 64 KiB) のままだった。
 #[test]
 fn test_integration_a_long_malformed_request_line_is_clipped_in_the_log() {
     let dir = home("clip");

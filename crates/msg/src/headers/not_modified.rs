@@ -1,12 +1,12 @@
-//! 再検証の 304 で届いたヘッダーで、保存済みの応答の先頭を書き直す (RFC 9111 §3.2・§4.3.4。T.28.2)。
+//! 再検証の 304 で届いたヘッダーで、保存済みの応答の先頭を書き直す (RFC 9111 §3.2・§4.3.4。T28.2)。
 
 use super::{clean_value, response_lines, write_response_head};
 
-/// 304 から保存済みの先頭へ写さない名前 (T.28.2)。枠組み・hop-by-hop・`Connection` で指名された
+/// 304 から保存済みの先頭へ写さない名前 (T28.2)。枠組み・hop-by-hop・`Connection` で指名された
 /// 名前・`Age` ([`write_response_head`] が落とすもの) に加えて、保存した本文の形を決めている
 /// `Content-Encoding` と `Content-Range` (304 が違う値を返しても本文は変わらないので、写すと食い違う)、
 /// それに `Set-Cookie` / `Set-Cookie2` (再検証した 1 人の利用者あての値。写すと次の `REVALIDATED` と
-/// `HIT` で他の利用者へ配ってしまう。T.29.0。その人へは [`with_set_cookies`] で渡す)。
+/// `HIT` で他の利用者へ配ってしまう。T29.0。その人へは [`with_set_cookies`] で渡す)。
 const NOT_UPDATED_BY_304: &[&str] = &[
     "content-encoding",
     "content-range",
@@ -15,7 +15,7 @@ const NOT_UPDATED_BY_304: &[&str] = &[
 ];
 
 /// `head` (状態行 + ヘッダー + 空行) の末尾に、`not_modified` (オリジンの 304 の先頭) の
-/// `Set-Cookie` / `Set-Cookie2` の行を足したもの (T.29.0)。再検証した要求のクライアントへ配る
+/// `Set-Cookie` / `Set-Cookie2` の行を足したもの (T29.0)。再検証した要求のクライアントへ配る
 /// 写しだけに使い、保存する先頭には入れない。足す行が無ければ `None`。
 pub fn with_set_cookies(head: &[u8], not_modified: &[u8]) -> Option<Vec<u8>> {
     let is_cookie =
@@ -36,7 +36,7 @@ pub fn with_set_cookies(head: &[u8], not_modified: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// 再検証の 304 で届いたヘッダーで、保存済みの応答の先頭を書き直す (RFC 9111 §3.2・§4.3.4。T.28.2)。
+/// 再検証の 304 で届いたヘッダーで、保存済みの応答の先頭を書き直す (RFC 9111 §3.2・§4.3.4。T28.2)。
 ///
 /// `stored` は保存済みの先頭 (状態行 + ヘッダー + 空行)、`not_modified` はオリジンの 304 の先頭。
 /// 304 にある名前 (写さない名前を除く) は、保存済みの同じ名前の行を**全部**落として 304 の行に
@@ -63,7 +63,7 @@ pub fn merge_not_modified(stored: &[u8], not_modified: &[u8]) -> Option<Vec<u8>>
         .map_or(stored.len(), |i| i + 1);
     out.extend_from_slice(&stored[..status_end]);
     for (k, v) in response_lines(stored) {
-        // 0.28.48 までの 304 が写した `Set-Cookie` も、次の再検証で落とす (T.29.0)。保存は
+        // 0.28.48 までの 304 が写した `Set-Cookie` も、次の再検証で落とす (T29.0)。保存は
         // `Set-Cookie` のある応答をもともと取らないので、保存済みの先頭にあるのはその写しだけ
         if updated(k)
             || k.eq_ignore_ascii_case("set-cookie")

@@ -1,4 +1,4 @@
-//! `PURGE <url>` を引いた接続元は、`/readers` に URL ではなく `/purge` として残る (T.34.160)。
+//! `PURGE <url>` を引いた接続元は、`/readers` に URL ではなく `/purge` として残る (T34.160)。
 //!
 //! PURGE の要求は自分宛て判定 (`local_path`) を通らず、要求ターゲット (URL) をそのまま持つ。
 //! 前はそれが読み手の表の `last_path` に入り、`http://host/path` (他所の URL) が記録に残っていた。

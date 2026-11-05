@@ -1,5 +1,5 @@
 //! 閉じた接続 1 本の個票 ([`RecentEntry`]) と、接続を持つスレッドが要求ごとに積む箱
-//! ([`ConnTally`])。`recent` の一部 (T.34.2 で `recent/mod.rs` から移した)。
+//! ([`ConnTally`])。`recent` の一部 (T34.2 で `recent/mod.rs` から移した)。
 //!
 //! 個票を作るのは [`ConnSlot::closed_entry`](super::ConnSlot::closed_entry) (接続の終了で 1 回)、
 //! 書き出すのは [`RecentEntry::to_json`] (`/recent` の 1 要素。**鍵の順は末尾に足すだけ**)。

@@ -1,10 +1,10 @@
-//! `/status` の組み立て (`metrics` の一部。T.28.27 で `metrics.rs` から移した)。
+//! `/status` の組み立て (`metrics` の一部。T28.27 で `metrics.rs` から移した)。
 //!
 //! [`Metrics::to_json_with_cache`] とその部品 (`push_*`・`boot`・`canary`) を置く。`memory` は
-//! `memory.rs` に割った (T.34.32)。
+//! `memory.rs` に割った (T34.32)。
 //!
 //! 行を動かしただけで中身は変えていない。外から見える名前は `metrics` の
-//! `pub use` でそのまま (T.28.27)。
+//! `pub use` でそのまま (T28.27)。
 
 use super::facts::{LiveProcess, ProcessFacts};
 use super::*;
@@ -25,7 +25,7 @@ impl Metrics {
     }
 
     /// [`Metrics::to_json_with_cache`] の本体。このプロセスの値 (`/proc` など) を `facts` から読む
-    /// (T.34.41。試験は固定の値を渡して欄をバイト単位で縛る)。読む場所と順は前と同じ。
+    /// (T34.41。試験は固定の値を渡して欄をバイト単位で縛る)。読む場所と順は前と同じ。
     pub(super) fn to_json_with_facts(
         &self,
         cache: Option<&Cache>,
@@ -67,7 +67,7 @@ impl Metrics {
         // `/proc` を読むのはこのパスに来たときだけ (要求ごとには読まない)
         let threads = facts.threads().unwrap_or(0);
         let (fds, max_fds) = facts.fds().unwrap_or((0, 0));
-        // RSS は**今読む** (T.32.4)。内訳 (`RssAnon`・`RssFile`・`RssShmem`) と同じ 1 回の
+        // RSS は**今読む** (T32.4)。内訳 (`RssAnon`・`RssFile`・`RssShmem`) と同じ 1 回の
         // `/proc/self/status` の読みから出すので、足すと `rss` に合う。T14.21 はキャッシュの
         // プローブの値 (`cache.system.process_rss_bytes`) を使っていたが、起動直後はプローブが
         // 起動中に読んだ古い値 (起動 3 秒で 4.76 MB、VmRSS は 25.9 MB) だった。プローブの値は
@@ -174,7 +174,7 @@ impl Metrics {
     /// `rate_bps_total` は T14.39、`rejected_requests` は T14.28、`sni_mismatches` は
     /// T14.38、`self_bench` は T14.43、`readers` は T14.53、`syn_retrans_total` は
     /// T14.46、`records` は T14.41、`heavy_rejected` は T14.51、`slow_transfer_closed` は
-    /// T.29.34、`hosts_evicted` は T.32.10、`silent_closes` は T.33.0 で末尾に足したもの。
+    /// T29.34、`hosts_evicted` は T32.10、`silent_closes` は T33.0 で末尾に足したもの。
     /// `boot` は T24.0 で `kernel` の隣 (直後) に足した (**既存の鍵の順は動かさない**)。
     #[allow(clippy::too_many_arguments)]
     fn push_tail(
@@ -225,17 +225,17 @@ impl Metrics {
             crate::records::mode().name(),
             // 重い口が 1 本走っている最中に来て 503 で断った数 (T14.51)
             self.heavy_rejected.load(Ordering::Relaxed),
-            // 転送中の最小の速さを下回って切った本数 (向きごと。T.29.34)。原子 3 本を読むだけ
+            // 転送中の最小の速さを下回って切った本数 (向きごと。T29.34)。原子 3 本を読むだけ
             slow_transfer_closed_json(),
-            // 満杯のホスト別統計から古い行を捨てた数 (T.32.10)。ホスト表の鍵 1 回
+            // 満杯のホスト別統計から古い行を捨てた数 (T32.10)。ホスト表の鍵 1 回
             self.hosts_evicted(),
-            // 1 バイトも来ないまま締め切りを過ぎ、408 を返さずに閉じた接続 (T.33.0)
+            // 1 バイトも来ないまま締め切りを過ぎ、408 を返さずに閉じた接続 (T33.0)
             self.silent_closes.load(Ordering::Relaxed)
         );
     }
 }
 
-/// `/status` の `slow_transfer_closed` (T.29.34)。`{"response":N,"request_body":N,"tunnel":N}`。
+/// `/status` の `slow_transfer_closed` (T29.34)。`{"response":N,"request_body":N,"tunnel":N}`。
 fn slow_transfer_closed_json() -> String {
     let counts = crate::minrate::closed_counts();
     let mut out = String::from("{");

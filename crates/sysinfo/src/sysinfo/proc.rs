@@ -7,7 +7,7 @@
 //!
 //! `/proc` の無い環境では `None` を返し、履歴には 0 が入る。
 
-// 責務ごとに子のファイルへ分けてある (T.34.61)。公開の名前はここで出し直す
+// 責務ごとに子のファイルへ分けてある (T34.61)。公開の名前はここで出し直す
 // (`proxy_sysinfo::sysinfo::proc::…` のまま。metrics-profile が引く綴りも同じ)。
 // - `kept`: 小さなファイルの読み方と、開いたままにして読む `KeptFiles`
 // - `tasks`: スレッドごとの標本と、その読み取り・解釈
@@ -44,7 +44,7 @@ pub fn process_fds() -> Option<(u64, u64)> {
 }
 
 /// `RLIMIT_NOFILE` のソフト上限。`getrlimit` を呼ぶのは `sys::max_open_files` の 1 か所だけにした
-/// (T.34.69。前はここにも同じ呼び出しがあり、cfg の条件も違っていた)。
+/// (T34.69。前はここにも同じ呼び出しがあり、cfg の条件も違っていた)。
 #[cfg(target_os = "linux")]
 fn max_fds() -> Option<u64> {
     crate::sys::max_open_files()

@@ -1,10 +1,10 @@
 //! 自プロセスの常駐の内訳 (`VmRSS` / `RssAnon` / `RssFile` / `RssShmem`) と、スレッドのスタックとして
-//! 常駐しているページの合計 (T.32.4)。T.34.76 で `mem.rs` から移した (本体は変えていない)。
+//! 常駐しているページの合計 (T32.4)。T34.76 で `mem.rs` から移した (本体は変えていない)。
 
 use super::{read_small, sized_field};
 use std::path::Path;
 
-/// 自プロセスの常駐の内訳 (バイト。`/proc/self/status` の**同じ 1 回の読み**から。T.32.4)。
+/// 自プロセスの常駐の内訳 (バイト。`/proc/self/status` の**同じ 1 回の読み**から。T32.4)。
 ///
 /// `rss` は `VmRSS`、`anon` / `file` / `shmem` は `RssAnon` / `RssFile` / `RssShmem`
 /// (`rss = anon + file + shmem`)。`Rss*` はカーネル 4.5 から (それより前は `None`)。
@@ -16,7 +16,7 @@ pub struct ProcessRss {
     pub shmem: Option<u64>,
 }
 
-/// 自プロセスの常駐の内訳を今読む (T.32.4)。
+/// 自プロセスの常駐の内訳を今読む (T32.4)。
 pub fn process_rss_detail() -> Option<ProcessRss> {
     parse_status_rss_detail(&read_small(Path::new("/proc/self/status"))?)
 }
@@ -35,7 +35,7 @@ pub(crate) fn parse_status_rss_detail(text: &str) -> Option<ProcessRss> {
     })
 }
 
-/// スレッドのスタックとして常駐しているページの合計 (バイト。T.32.4)。
+/// スレッドのスタックとして常駐しているページの合計 (バイト。T32.4)。
 ///
 /// `/status` の `memory.stacks_estimate` は予約 (接続スレッド 256 KiB・ほか 2 MiB) の合計で、
 /// 実際に触ったのは 1 本 8〜28 KiB だった (tokyo の 22.0 MB に対し常駐は 1 MB 未満)。
@@ -132,7 +132,7 @@ mod tests {
     }
 
     /// 番兵が下に接した `rw-p` と `[stack]` だけを拾い、アリーナ (`rw-p` の上に `---p`) と
-    /// 名前のある写像は拾わない (T.32.4。smaps の見出しの行も同じ形)。
+    /// 名前のある写像は拾わない (T32.4。smaps の見出しの行も同じ形)。
     #[test]
     fn finds_only_thread_stacks_in_maps() {
         let text = "\

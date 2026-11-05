@@ -29,7 +29,7 @@
 //! 通すのは [`ErrorEntry::new`] と [`ConnTable::register`] の 2 か所だけで、
 //! `/recent` (枠から作る) も `/bursts` (表から作る) もそこから流れてくる。
 //!
-//! **T25.2 で 3 ファイルに割った** (T24.8 の案 A) のを、**T.34.2 で関心ごとに割り直した**:
+//! **T25.2 で 3 ファイルに割った** (T24.8 の案 A) のを、**T34.2 で関心ごとに割り直した**:
 //! 閉じた理由は `recent/close_reason.rs`、閉じた接続の個票 (と接続ごとの積み上げ) は
 //! `recent/entry.rs`、その固定長リングは `recent/ring.rs`、山の写真は `recent/burst.rs`、
 //! 閉じた分布は `recent/closed.rs`、エラーの個票とリングは `recent/errors.rs`、接続の 1 枠は

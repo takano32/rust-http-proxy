@@ -1,11 +1,11 @@
-//! 設定を読んだときに見つけた**読めない値**と**知らない名前** (T.28.6)。
+//! 設定を読んだときに見つけた**読めない値**と**知らない名前** (T28.6)。
 //!
 //! `Config::from_env` が `parse().ok()` で黙って既定に落としていた所を、ここの
 //! [`EnvProblems::num`] などに寄せた (読めなければ WARN を 1 行出して既定のまま)。
 
 use crate::envfile;
 
-/// 書いてあったが読めなかった値 1 つ (T.28.6)。効いているのは既定値。
+/// 書いてあったが読めなかった値 1 つ (T28.6)。効いているのは既定値。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidVar {
     /// 環境変数名 (`PROXY_*` / `SERVER_*`)
@@ -16,7 +16,7 @@ pub struct InvalidVar {
     pub expected: &'static str,
 }
 
-/// `.env` に書いてあるが、このプロキシが読まない名前 1 つ (T.28.6)。
+/// `.env` に書いてあるが、このプロキシが読まない名前 1 つ (T28.6)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownVar {
     pub key: String,
@@ -29,7 +29,7 @@ pub(crate) const INVALID_VALUE_CAP: usize = 64;
 /// 「打ち間違いかも」と候補を添える編集距離の上限。
 pub(crate) const SUGGEST_DISTANCE: usize = 2;
 
-/// 設定を読んだときに見つけた**読めない値**と**知らない名前** (T.28.6)。
+/// 設定を読んだときに見つけた**読めない値**と**知らない名前** (T28.6)。
 ///
 /// どちらも WARN を 1 行ずつ出したうえでここに残し、`--check` と `/status` の
 /// `settings.invalid` / `settings.unknown` (`/config` の `reload` も同じもの) に出す。
@@ -61,7 +61,7 @@ impl EnvProblems {
         }
     }
 
-    /// 真偽の鍵。`0` / `false` / `off` / `no` が偽で、それ以外は**今までどおり真** (T.28.31)。
+    /// 真偽の鍵。`0` / `false` / `off` / `no` が偽で、それ以外は**今までどおり真** (T28.31)。
     ///
     /// 真として読む書き方 (`1` / `true` / `on` / `yes` と空) の外は WARN を 1 行出して覚える
     /// (扱いは真のまま。`PROXY_ALLOW_LOCAL=maybe` が黙って on になっていた)。
@@ -84,7 +84,7 @@ impl EnvProblems {
         }
     }
 
-    /// `PROXY_ALLOW_LOCAL` (T.28.41)。真偽の書き方 ([`Self::flag`]) に `private` を足したもの。
+    /// `PROXY_ALLOW_LOCAL` (T28.41)。真偽の書き方 ([`Self::flag`]) に `private` を足したもの。
     /// `private` は私設アドレス宛てだけ通す (ループバック・リンクローカル・未指定は断ったまま)。
     /// 読めない値は [`Self::flag`] と同じく WARN を 1 行出して覚え、扱いは `on` のまま。
     pub(super) fn allow_local(&mut self, key: &'static str) -> Option<crate::acl::AllowLocal> {
@@ -108,7 +108,7 @@ impl EnvProblems {
         }
     }
 
-    /// `PROXY_PROFILE` が `lite` か。空でも `lite` でもない値は WARN 1 行 (既定のまま。T.28.31)。
+    /// `PROXY_PROFILE` が `lite` か。空でも `lite` でもない値は WARN 1 行 (既定のまま。T28.31)。
     pub(super) fn profile_is_lite(&mut self) -> bool {
         let Some(v) = Self::present("PROXY_PROFILE") else {
             return false;
@@ -120,7 +120,7 @@ impl EnvProblems {
         lite
     }
 
-    /// `PROXY_SLO` の読めなかった項目 (`Slo::parse` が飛ばしたもの) を 1 行にまとめて WARN (T.28.31)。
+    /// `PROXY_SLO` の読めなかった項目 (`Slo::parse` が飛ばしたもの) を 1 行にまとめて WARN (T28.31)。
     pub(super) fn slo_items(&mut self, skipped: &[&str]) {
         if !skipped.is_empty() {
             self.reject(

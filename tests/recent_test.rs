@@ -2,7 +2,7 @@
 //!
 //! 初めは個票のエンドポイント (T13.4) を全部ここで見ていた。`/errors` は `recent_errors_test.rs`、
 //! `/connections` は `recent_connections_test.rs`、`/dns` `/log` `/hosts` とカーネルの RTT は
-//! `recent_tables_test.rs`、`/snapshot` は `recent_snapshot_test.rs` に割った (T.34.117)。
+//! `recent_tables_test.rs`、`/snapshot` は `recent_snapshot_test.rs` に割った (T34.117)。
 //!
 //! 集計 (`/status`) と時系列 (`/history`) では読めない「**誰が・いつ・なぜ**」を
 //! 出す口なので、見るのは「実際に起きたことがその形で出てくるか」だけ。
@@ -94,7 +94,7 @@ fn test_integration_recent_records_a_closed_tunnel() {
     assert!(!json.contains("\"truncated\":true"), "{}", json);
 }
 
-/// **T.29.18**: `/recent?rtt_client=lt100|ge100` で接続元のカーネルの RTT (100 ms) で個票を 2 つに割る。
+/// **T29.18**: `/recent?rtt_client=lt100|ge100` で接続元のカーネルの RTT (100 ms) で個票を 2 つに割る。
 /// 手元の lo の RTT は数十 us なので、閉じたトンネルは `lt100` にだけ出て `ge100` には出ない。
 #[test]
 #[cfg(target_os = "linux")]

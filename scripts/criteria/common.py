@@ -1,8 +1,8 @@
-# 判定表 (`scripts/snapshot_criteria.py`) の**小物** (T.34.124 で割った)。
+# 判定表 (`scripts/snapshot_criteria.py`) の**小物** (T34.124 で割った)。
 #
 # `/history` の欄の名前・平常時の閾・判定の欄の文言と、判定の関数と `snapshot-diff.py` の差分の
 # 両方が使う読む小物・印字の小物・履歴を重ねる小物。`snapshot-diff.py` は名前に `-` があって
-# `import` できないので、共有するものは import できる側 (ここ) に置く (T.20.1 の決まり)。
+# `import` できないので、共有するものは import できる側 (ここ) に置く (T20.1 の決まり)。
 
 import math
 import statistics
@@ -25,15 +25,15 @@ HFIELDS = (
     # T16.0 で末尾に足した 3 列: `dns_warm` の区間の最大と、平均を出すための合計と標本数
     # (5 秒の行は `sum = 値, n = 1`。無い版と T16.0 より前の行は下の `aggregate` が今の平均に戻す)
     "dns_warm_max", "dns_warm_sum", "gauge_n",
-    # T.25.0 の名前解決に失敗したミスの数と、T.32.16 のその待ちの合計 (無い版では `None`)。名前解決のミスの率の
-    # 表示から失敗を除くのに使う (T.32.17)
+    # T25.0 の名前解決に失敗したミスの数と、T32.16 のその待ちの合計 (無い版では `None`)。名前解決のミスの率の
+    # 表示から失敗を除くのに使う (T32.17)
     "dns_fail_misses", "dns_fail_ms_sum",
 )
 # 平常時の閾 (T14.0: 1 時間 300 本未満の標本だけを「平常時」とする)。phase22 はこれと
 # 「期間の中央値の k 倍」の大きい方 (下の `PHASE22` と `normal_limit`。T22.1)
 BURST_PER_HOUR = 300
 # 平常時を「300 本と、その期間の中央値のこの倍の大きい方」で切るときの倍率 (phase22 の `burst_median_k`。T22.1)。
-# T.29.13 からサーバーの `/history?summary=1&normal_hours_only=1` も同じ規則で、`collect-deployed.sh` は
+# T29.13 からサーバーの `/history?summary=1&normal_hours_only=1` も同じ規則で、`collect-deployed.sh` は
 # `--criteria` を付けない差分 (要約の §2) にも `--burst-median-k` でこの値を渡す
 BURST_MEDIAN_K = 3
 # Phase 14 の完了の定義で名指しされている主要ホスト以外を選ぶときの数

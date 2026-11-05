@@ -164,7 +164,7 @@ fn invalidate_targets(x: &Exchange<'_>, head: &[u8]) {
 
 /// クライアント向けの枠組み: 長さが分かればそのまま、分からなければ HTTP/1.1 には再 chunk。
 /// 最後が chunked でない TE の応答 (`unframed_te`) は、オリジンの TE の行を残して閉じるまでを本文にする
-/// (T.28.35。`gzip, chunked` に包み直してもよいが、バイト列をオリジンのまま渡す方を選んだ)
+/// (T28.35。`gzip, chunked` に包み直してもよいが、バイト列をオリジンのまま渡す方を選んだ)
 #[inline]
 fn client_framing(framing: Framing, unframed_te: bool, http11: bool) -> Framing {
     match framing {
@@ -219,7 +219,7 @@ fn build_client_head(
         Framing::None if head_only => {
             // HEAD: GET と同じヘッダーを返す (本文は無い)。TE があれば GET と同じく、最後が chunked なら
             // `Transfer-Encoding: chunked`、そうでなければオリジンの並びを 1 行で (HTTP/1.1 のクライアントだけ。
-            // T.28.36)。TE が無ければ `Content-Length`
+            // T28.36)。TE が無ければ `Content-Length`
             let te = if http11 {
                 Framing::response_transfer_encoding_line(head)
             } else {
@@ -245,8 +245,8 @@ fn build_client_head(
         }
         _ => {}
     }
-    // 応答にも自分の `Via` を足す (RFC 9110 §7.6.3。T.28.10 (b))。保存する先頭 (`cached_head`) には入れない
-    // `Date` の無い応答には自分で付ける (RFC 9110 §6.6.1: 時計を持つ送り手は付けなければならない。T.29.9)。
+    // 応答にも自分の `Via` を足す (RFC 9110 §7.6.3。T28.10 (b))。保存する先頭 (`cached_head`) には入れない
+    // `Date` の無い応答には自分で付ける (RFC 9110 §6.6.1: 時計を持つ送り手は付けなければならない。T29.9)。
     // 有無は枠組みと同じ 1 回の走査で見ているので、`Date` のある応答 (ほとんど全部) には何も足さない
     if !has_date {
         extra[n_extra] = crate::httpdate::date_line(&mut date_buf);
@@ -399,7 +399,7 @@ fn relay_body(
                     clean = false;
                     break;
                 }
-                // chunk の枠が壊れている・行が長すぎる (T.29.1)。先頭はもう出ているので、途中で切れた
+                // chunk の枠が壊れている・行が長すぎる (T29.1)。先頭はもう出ているので、途中で切れた
                 // 本文と同じに扱う (終端の chunk を出さずに閉じる)。本数はオリジンが決めるので 1 分に 1 行
                 Err(ref e) if e.kind() == io::ErrorKind::InvalidData => {
                     static FRAMING_WARN: crate::log::Throttle = crate::log::Throttle::new();
@@ -439,7 +439,7 @@ fn relay_body(
 
 /// 保存の方針を決める (保存してよい要求で、閉じるまでの TE でない応答だけ)。保存しないと決まった
 /// 新しい表現 (2xx / 3xx) が届いたら古い表現も捨て、unsafe メソッドへの成功応答では対象のキャッシュを
-/// 無効化する (T.34.19)。
+/// 無効化する (T34.19)。
 #[inline]
 fn storage_plan(
     x: &Exchange<'_>,
@@ -463,7 +463,7 @@ fn storage_plan(
     };
     if policy.is_none() && cs.stale.is_some() && (200..400).contains(&status) && status != 206 {
         // 新しい表現が届いたのに保存できないので、古い表現も捨てる (4xx/5xx では残す)。
-        // `Range` 要求への 206 は全体の置き換えではないので残す (T.34.143。捨てると次の素の GET が
+        // `Range` 要求への 206 は全体の置き換えではないので残す (T34.143。捨てると次の素の GET が
         // 再検証で延ばせずに MISS になる)
         cache.remove(key);
     }
@@ -562,7 +562,7 @@ fn splice_body(
         moved_prefix = buffered as u64;
     }
     client.flush()?;
-    // 最小の速さを見るときだけ、運ぶ間クライアントを待たない形にする (T.29.34)
+    // 最小の速さを見るときだけ、運ぶ間クライアントを待たない形にする (T29.34)
     let nonblocking = client.get_ref().is_on();
     if nonblocking {
         client.get_ref().get_ref().set_nonblocking(true)?;
@@ -587,7 +587,7 @@ mod tests {
     use super::*;
 
     /// クライアント向けの枠組み: 長さが分かればそのまま、分からなければ 1.1 には再 chunk、1.0 には閉じるまで。
-    /// 最後が chunked でない TE の応答は版に関わらず閉じるまで (TE の行は残す。T.28.35)。
+    /// 最後が chunked でない TE の応答は版に関わらず閉じるまで (TE の行は残す。T28.35)。
     #[test]
     fn client_framing_follows_the_version() {
         for f in [Framing::None, Framing::Length(5)] {

@@ -1,4 +1,4 @@
-//! 起動の段 (T.34.59 で `main` (479 行) を割った)。段の順と、起動ログの文面と順は割る前と同じ。
+//! 起動の段 (T34.59 で `main` (479 行) を割った)。段の順と、起動ログの文面と順は割る前と同じ。
 //!
 //! [`run`] が上から順に呼ぶ: malloc の調整 → 実行時の調整値 → 待ち受け → `.env` の監視 →
 //! 統計と記録 → TLS → オリジンの接続 → 停止シグナル → 起動ログ → accept。
@@ -58,7 +58,7 @@ fn tune_malloc(config: &Config) {
             log_debug!(None, "mallopt(M_ARENA_MAX, {}) was refused", max);
         }
     }
-    // mmap の閾を固定する (動く閾を止める。T.32.3)。これも**スレッドを作る前**
+    // mmap の閾を固定する (動く閾を止める。T32.3)。これも**スレッドを作る前**
     #[cfg(target_os = "linux")]
     if config.malloc_mmap_threshold_kb > 0 {
         let bytes = config.malloc_mmap_threshold_kb.saturating_mul(1024);
@@ -76,7 +76,7 @@ fn tune_malloc(config: &Config) {
 fn apply_runtime_knobs(config: &Config) {
     if config.lite {
         // ログレベルに依らず必ず出す起動バナー
-        // 「統計を取らない」ではない (`/hosts` などはメモリに積む)。止めるものだけを並べる (T.28.44)
+        // 「統計を取らない」ではない (`/hosts` などはメモリに積む)。止めるものだけを並べる (T28.44)
         println!(
             "profile: lite (no cache, no blocklist, no saved statistics, no per-connection records, warn log level)"
         );
@@ -88,7 +88,7 @@ fn apply_runtime_knobs(config: &Config) {
     proxy_server::dns::set_negative_ttl(config.dns_negative);
     proxy_server::dns::set_warm_window(config.dns_warm);
     proxy_server::dns::set_serve_stale(config.dns_stale);
-    // 名前解決の締め切りと、引かせるスレッド群の上限 (ワーカーの 1/4。T.32.11)
+    // 名前解決の締め切りと、引かせるスレッド群の上限 (ワーカーの 1/4。T32.11)
     proxy_server::dns::set_timeout(config.dns_timeout);
     proxy_server::dns::set_resolver_limit(proxy_server::dns::resolver_limit_for_threads(
         config.max_threads,
@@ -226,7 +226,7 @@ fn build_tls(config: &Config) -> Option<TlsClient> {
         );
         None
     } else {
-        // **OpenSSL は最初の https:// オリジンへの取得のときに読む** (T.32.5)。CA の束の解析が起動の
+        // **OpenSSL は最初の https:// オリジンへの取得のときに読む** (T32.5)。CA の束の解析が起動の
         // 主スレッドの 70% (callgrind で 1.77 億 Ir)、dlopen と合わせて RSS 約 5.5 MB で、CONNECT だけの
         // 置き場では使われていなかった。読めるかどうかは `--check` が今ここで読んで確かめる。
         // 指定された CA ファイルが開けないことだけは、今までどおり起動で止める
@@ -296,7 +296,7 @@ fn install_shutdown(
                 proxy_server::events::EventKind::Shutdown,
                 "stop signal received; saving statistics",
             );
-            // 状態ファイルを書く前に `/snapshot` を 1 枚 (T.28.20。締めの「前」)。
+            // 状態ファイルを書く前に `/snapshot` を 1 枚 (T28.20。締めの「前」)。
             // `recent` は切らずに全部入れる。後始末の上限 (`signal::GRACE` = 3 秒) の中に
             // 収まるよう、組んで書くまでにかかった時間をログに出す
             let t = std::time::Instant::now();
@@ -600,7 +600,7 @@ fn server_boot_id() -> Option<String> {
     }
 }
 
-/// 最初の https:// オリジンで OpenSSL を読んだ結果を 1 行 (T.32.5)。起動で読んでいたときと同じ文面。
+/// 最初の https:// オリジンで OpenSSL を読んだ結果を 1 行 (T32.5)。起動で読んでいたときと同じ文面。
 fn log_tls_loaded(r: &Result<Option<String>, String>) {
     match r {
         Ok(Some(version)) => log_info!(None, "TLS: {} loaded", version),
@@ -665,7 +665,7 @@ mod tests {
         s.parse().unwrap()
     }
 
-    /// T.34.59: 全部のアドレスで待っているときだけループバックに読み替え、ポートは保つ。
+    /// T34.59: 全部のアドレスで待っているときだけループバックに読み替え、ポートは保つ。
     #[test]
     fn an_unspecified_listener_is_reached_over_loopback() {
         assert_eq!(

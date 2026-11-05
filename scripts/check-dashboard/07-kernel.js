@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 6. カーネルと cgroup の窓 (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 6. カーネルと cgroup の窓 (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 6. カーネルと cgroup の窓 (`/history` の `kernel` と `/status` の `kernel`。T14.12)。
 //    実出力の作り置きは `kernel` より前の版なので、**あれば読む**形にしてある。

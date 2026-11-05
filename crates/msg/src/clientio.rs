@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::io::{self, BufRead, Read};
 use std::net::TcpStream;
 
-// 先読みバッファの**スレッドごとの**置き場 (T.29.24)。
+// 先読みバッファの**スレッドごとの**置き場 (T29.24)。
 //
 // 接続ごとに `resize(8 KiB, 0)` していたぶんの**ゼロ埋め (8,210 命令/接続) と malloc/free** を
 // 無くす。`release()` / `take_buffered()` / `Drop` で返し、`fill_buf` が借りる。中身は前の接続の
@@ -181,7 +181,7 @@ mod tests {
         (c, s)
     }
 
-    /// 使い回した器でも、見えるのは今回 `read` が書いたぶんだけ (前の接続の中身が漏れない。T.29.24)。
+    /// 使い回した器でも、見えるのは今回 `read` が書いたぶんだけ (前の接続の中身が漏れない。T29.24)。
     #[test]
     fn a_pooled_buffer_shows_only_what_this_read_wrote() {
         let (client, mut peer) = pair();

@@ -7,7 +7,7 @@ use super::Cache;
 use super::config::{DiskQuota, Limit};
 
 /// 値があればその表記、無ければ `null` (`/status` の数と [`BudgetEviction`] の欄が使う 1 つ。
-/// 前は `opt`・`opt_f`・`BudgetEviction::to_json` の閉包の 3 つあった。T.34.98)。
+/// 前は `opt`・`opt_f`・`BudgetEviction::to_json` の閉包の 3 つあった。T34.98)。
 fn opt(v: Option<impl Display>) -> String {
     v.map_or_else(|| "null".to_string(), |x| x.to_string())
 }
@@ -17,7 +17,7 @@ fn one_decimal(x: f64) -> String {
     format!("{:.1}", x)
 }
 
-/// プローブが予算で追い出した 1 回の様子 (T.32.7。`/status` の `cache.last_budget_eviction`)。
+/// プローブが予算で追い出した 1 回の様子 (T32.7。`/status` の `cache.last_budget_eviction`)。
 ///
 /// 10-31 02:34 の tokyo で、大きな転送 (32.6・375.5・253.8 MB) の間にメモリのキャッシュが
 /// `evictions` 20 で 13.87 MB → 0 になり、1 分ごとの `mem_limit` は 189 → 126 → 53 → 164 MB と
@@ -44,7 +44,7 @@ pub struct BudgetEviction {
 }
 
 impl BudgetEviction {
-    /// `/status` の 1 要素 (鍵の並びは固定。`null` の書き方は `/status` の [`opt`] と 1 つ。T.34.98)。
+    /// `/status` の 1 要素 (鍵の並びは固定。`null` の書き方は `/status` の [`opt`] と 1 つ。T34.98)。
     pub fn to_json(self) -> String {
         format!(
             concat!(
@@ -176,7 +176,7 @@ impl Cache {
             opt(fs.map(|f| f.total)),
             opt(fs.map(|f| f.available)),
             opt(fs.map(|f| one_decimal(f.used_percent()))),
-            // 予算で追い出した回数と最後の 1 回 (T.32.7)。**末尾に足した**
+            // 予算で追い出した回数と最後の 1 回 (T32.7)。**末尾に足した**
             self.budget_evictions(),
             self.last_budget_eviction()
                 .map_or_else(|| "null".to_string(), |e| e.to_json()),

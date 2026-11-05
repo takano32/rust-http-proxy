@@ -1,7 +1,7 @@
 #!/bin/bash
 # README・`/` の案内・`/snapshot`・画面の関数名が**コードと同じ集合**か、README が叩く道具に
-# 実行ビットがあるかを機械で見る (T.14.56・T.24.7)。台帳 (`TODO.md` の §5 と `tasks/TNN.md`) の
-# 1 対 1 も一緒に見る (T.24.10)。
+# 実行ビットがあるかを機械で見る (T14.56・T24.7)。台帳 (`TODO.md` の §5 と `tasks/TNN.md`) の
+# 1 対 1 も一緒に見る (T24.10)。
 #
 # 今日の版はエンドポイントが 10 本以上増え、環境変数も増えた。増やしたのは別々のエージェントで、
 # **コードにあるのに文書に無い / 文書にあるのにコードに無い**が目で見つからなくなっている。
@@ -16,12 +16,12 @@
 #   (f) 道具の置き方 … README が `scripts/<名前>.py` と書いている道具 vs 実ファイルの実行ビット
 #                        (直接叩かないもの = 共通部品・割った部・unittest が読むものは除外表)
 #   (g) 台帳        … `TASKS.md` (未着手)・`TODO.md` の §5 (索引)・`tasks/TNN.md` の 1 対 1 (移し忘れ・リンク・番号・1 行目)、
-#                     3 つの相対リンクがその置き場所から辿れること (T.32.38)。
+#                     3 つの相対リンクがその置き場所から辿れること (T32.38)。
 #                     中身は `scripts/check-ledger.py` (試験は `scripts/test_check_ledger.py`)
-#   (h) 判定表の既定 … `collect-deployed.sh` の `CRITERIA` の既定 vs README の「既定は phaseNN」(T.28.23)
-#   (i) `-h` の既定 … `crates/base/src/cli.rs` の `-h` の括弧の数 vs README の環境変数の表の既定 (T.28.23)
-#   (j) 上の/下の   … README と `docs/*.md` の「上の「X」」「下の「X」」 vs 同じファイルの見出し・太字・段落の頭と向き (T.32.28)
-#   (k) いまの数字 … `docs/perf.md` の「いまの数字」の版 vs `TODO.md` §2 の「デプロイ先の現在地」の版 (T.32.28)
+#   (h) 判定表の既定 … `collect-deployed.sh` の `CRITERIA` の既定 vs README の「既定は phaseNN」(T28.23)
+#   (i) `-h` の既定 … `crates/base/src/cli.rs` の `-h` の括弧の数 vs README の環境変数の表の既定 (T28.23)
+#   (j) 上の/下の   … README と `docs/*.md` の「上の「X」」「下の「X」」 vs 同じファイルの見出し・太字・段落の頭と向き (T32.28)
+#   (k) いまの数字 … `docs/perf.md` の「いまの数字」の版 vs `TODO.md` §2 の「デプロイ先の現在地」の版 (T32.28)
 #
 # **意図的に外してあるものは下の除外表に理由つきで持つ** (黙って無視しない)。
 # 差分が 1 件でもあれば理由を印字して exit 1。
@@ -65,7 +65,7 @@ norm_ep() {
     grep -v '^/$' | grep -v '^$' | LC_ALL=C sort -u
 }
 {
-  # 経路表の match の腕 (`"/a" | "/b" => …`)。T.34.4 で `path == "/…"` の if の連鎖から変えた。
+  # 経路表の match の腕 (`"/a" | "/b" => …`)。T34.4 で `path == "/…"` の if の連鎖から変えた。
   grep -E '^ *"/[^"]*"( \| "[^"]*")* =>' "$MOD" | grep -oE '"/[^"]*"' | tr -d '"'
   grep -oE 'path\.strip_prefix\("[^"]*"\)' "$MOD" | sed 's/.*"\(.*\)".*/\1<date>/'
 } | norm_ep >"$W/ep-code"
@@ -93,7 +93,7 @@ echo "    別名: /inspect=/dashboard/inspect, /probe.html=/probe, 末尾の / �
 # (`config.rs` の `src.mark()` と各クレートの `envfile::var()` はここに入る)。
 cat >"$W/env-skip" <<'EOF'
 PROXY_VERSION	crates/server/build.rs が作るビルド時の値 (`env!`)。実行時に読む設定ではない
-PROXY_BUILD	crates/server/build.rs が作るビルドの種類 (`env!`。T.28.42)。実行時に読む設定ではない
+PROXY_BUILD	crates/server/build.rs が作るビルドの種類 (`env!`。T28.42)。実行時に読む設定ではない
 PROXY_NO_SUCH_KEY_T1415	「設定されていない鍵」を確かめるテスト専用の名前
 EOF
 grep -rhoE '"(PROXY|SERVER)_[A-Z0-9]+[A-Z0-9_]*"' --include='*.rs' crates/ src/ |
@@ -112,7 +112,7 @@ sed 's/^/    除外: /;s/\t/ — /' "$W/env-skip"
 
 # --- (c) `/snapshot` の parts -------------------------------------------------
 # `parts` の名前を口の綴りに戻す: `status_errors` / `status_dns` は `/status` の並べ替え、
-# `history.5` などは `/history` の解像度、`hosts_series` は `/hosts/series`。部の並びは `collect_parts` の `vec![…]` (T.34.91)。
+# `history.5` などは `/history` の解像度、`hosts_series` は `/hosts/series`。部の並びは `collect_parts` の `vec![…]` (T34.91)。
 sed -n '/^fn collect_parts(/,/^    \]$/p' "$REC" |
   grep -oE '^ *\(?"[a-z0-9_.]+",' | sed 's/[^"]*"\([^"]*\)".*/\1/' >"$W/parts-raw"
 sed -e 's/^status_.*$/status/' -e 's/^history\..*$/history/' -e 's|^hosts_series$|hosts/series|' \
@@ -134,10 +134,10 @@ cat >"$W/snap-skip" <<'EOF'
 /snapshot	自分自身
 /snapshots	ディスクに残した過去の雪像の一覧 (雪像の中に雪像は入れない)
 /snapshots/<date>	同上 (1 日ぶんの中身)
-/readers	`/status` の末尾の `readers` に上位 20 が入る (T.14.53)
-/trace	`PROXY_TRACE_CLIENT` を設定したときだけ中身があり、**URL のパスが入る** (T.14.27)。誰でも取れる雪像には入れない
-/slo	`/history` の標本から判定し直せる (T.14.50)
-/daily	日ごとの要約はファイル (`~/.rust-http-proxy.daily.jsonl`) に永久に残る。雪像は「そのときの様子」を撮るもの (T.14.20 の申し送り「`parts` に足す」は T.28.28 で足さないと決めた: `collect-deployed.sh` が `-daily.json` を別に取り、雪像の 4 MiB の枠を食わないため。足すなら `scripts/anonymize-snapshot.py` の PART_ORDER と `snapshot-diff.py` も一緒に直す)
+/readers	`/status` の末尾の `readers` に上位 20 が入る (T14.53)
+/trace	`PROXY_TRACE_CLIENT` を設定したときだけ中身があり、**URL のパスが入る** (T14.27)。誰でも取れる雪像には入れない
+/slo	`/history` の標本から判定し直せる (T14.50)
+/daily	日ごとの要約はファイル (`~/.rust-http-proxy.daily.jsonl`) に永久に残る。雪像は「そのときの様子」を撮るもの (T14.20 の申し送り「`parts` に足す」は T28.28 で足さないと決めた: `collect-deployed.sh` が `-daily.json` を別に取り、雪像の 4 MiB の枠を食わないため。足すなら `scripts/anonymize-snapshot.py` の PART_ORDER と `snapshot-diff.py` も一緒に直す)
 EOF
 cut -f1 "$W/snap-skip" | LC_ALL=C sort -u >"$W/snap-skip-names"
 LC_ALL=C sort -u "$W/ep-code" | comm -23 - "$W/snap-skip-names" >"$W/snap-want"
@@ -220,7 +220,7 @@ fi
 
 # --- (f) 道具の置き方 (実行ビット) ----------------------------------------------
 # README が `scripts/<名前>.py` と書いているものは、**そのまま叩ける道具**であること
-# (`scripts/snapshot-diff.py a.json b.json` のように打つ。T.24.7)。README にあるのにファイルが
+# (`scripts/snapshot-diff.py a.json b.json` のように打つ。T24.7)。README にあるのにファイルが
 # 無いものも NG (名前を変えたのに文書を直し忘れた、がここで出る)。
 # **叩かないものは下の除外表に理由つきで持つ** (書かずに外すと、次に足した道具が素通りする)。
 cat >"$W/py-skip" <<'EOF'
@@ -229,7 +229,7 @@ snapshot_criteria.py	判定の部。入口は `snapshot-diff.py` (単体では�
 test_*.py	unittest が名前で読む (`python3 -m unittest discover -s scripts`)
 EOF
 # 同じ名前は説明の節と例の節の両方に出るので 1 つに畳む。
-# README から分けた本文 (`docs/*.md`。T.29.32) も同じ文書として読む
+# README から分けた本文 (`docs/*.md`。T29.32) も同じ文書として読む
 grep -ohE 'scripts/[A-Za-z0-9_.-]+\.py' README.md docs/*.md | sed 's|^scripts/||' | LC_ALL=C sort -u >"$W/py-readme"
 WANT=0
 : >"$W/py-want"
@@ -258,14 +258,14 @@ while read -r name; do
 done <"$W/py-want"
 
 # --- (g) 台帳 (TASKS.md の未着手・TODO.md の §5 の索引・tasks/TNN.md) ---------
-# 済んだ Phase の本文を `tasks/TNN.md` へ移したので (T.24.9)、**移し忘れ・リンク切れ・番号の重複**を
-# 見る (T.24.10)。4 つの規則と足場 1 つは `scripts/check-ledger.py` の頭に書いてある (試験は
+# 済んだ Phase の本文を `tasks/TNN.md` へ移したので (T24.9)、**移し忘れ・リンク切れ・番号の重複**を
+# 見る (T24.10)。4 つの規則と足場 1 つは `scripts/check-ledger.py` の頭に書いてある (試験は
 # `scripts/test_check_ledger.py`)。**`TODO.md` と `tasks/*.md` は読むだけで、1 文字も変えない。**
 python3 scripts/check-ledger.py || NG=1
 
-# --- (h) 判定表の既定 (T.28.23) -------------------------------------------------
+# --- (h) 判定表の既定 (T28.23) -------------------------------------------------
 # `collect-deployed.sh` の `CRITERIA` の既定と、README の「既定は phaseNN」の書き方がそろっているか。
-# T.27.0 で phase25 にしたのに README は 3 か所 phase24 のままだった (2026-10-25 の洗い出しで見つかった)
+# T27.0 で phase25 にしたのに README は 3 か所 phase24 のままだった (2026-10-25 の洗い出しで見つかった)
 python3 - <<'CRITPY' || NG=1
 import glob, re, sys
 src = open('scripts/collect-deployed.sh', encoding='utf-8').read()
@@ -274,7 +274,7 @@ if not m:
     print("  NG (h): scripts/collect-deployed.sh に CRITERIA の既定が見つからない")
     sys.exit(1)
 want = m.group(1)
-# README から分けた本文 (`docs/*.md`。T.29.32) も同じ文書として読む
+# README から分けた本文 (`docs/*.md`。T29.32) も同じ文書として読む
 readme = ''.join(open(f, encoding='utf-8').read() for f in ['README.md'] + sorted(glob.glob('docs/*.md')))
 bad = sorted(set(x for x in re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)(phase\d+)', readme)
                  if x != want))
@@ -285,9 +285,9 @@ for x in bad:
 sys.exit(1 if bad else 0)
 CRITPY
 
-# --- (i) `-h` の既定 (T.28.23) ----------------------------------------------------
+# --- (i) `-h` の既定 (T28.23) ----------------------------------------------------
 # `crates/base/src/cli.rs` の `-h` が括弧で書く既定 (`(5, 0 = unlimited)` の 5) と、README の環境変数の表の
-# 既定の欄がそろっているか。T.23.3 で CONNECT の締め切りを 5 秒にしたのに `-h` は 10 のままだった
+# 既定の欄がそろっているか。T23.3 で CONNECT の締め切りを 5 秒にしたのに `-h` は 10 のままだった
 python3 - <<'HELPPY' || NG=1
 import re, sys
 cli = open('crates/base/src/cli.rs', encoding='utf-8').read()
@@ -304,9 +304,9 @@ print("(i) `-h` の既定: 数で書いた %d 個を README の表と比べた" 
 sys.exit(ng)
 HELPPY
 
-# --- (j) 「上の」「下の」の指す先 (T.32.28) ------------------------------------------
+# --- (j) 「上の」「下の」の指す先 (T32.28) ------------------------------------------
 # README と `docs/*.md` の「上の「X」」「下の「X」」が、**同じファイルの**見出し・太字 (`**…X…**`)・段落の頭 (`X…`) に
-# 実在し、向きが合うか。README を `docs/` に分けたとき (T.29.32) に指す先が別のファイルへ移って切れた所と、
+# 実在し、向きが合うか。README を `docs/` に分けたとき (T29.32) に指す先が別のファイルへ移って切れた所と、
 # 下にあるのに「上の」と書いた所があった。別のファイルを指すときは「上の」ではなくリンクで書く。
 # コードの囲みの中は見ない
 python3 - <<'UPDOWNPY' || NG=1
@@ -350,7 +350,7 @@ print("(j) 「上の」「下の」: README と docs/*.md の %d か所を見た
 sys.exit(ng)
 UPDOWNPY
 
-# --- (k) `docs/perf.md` の「いまの数字」の版 (T.32.28) --------------------------------
+# --- (k) `docs/perf.md` の「いまの数字」の版 (T32.28) --------------------------------
 # `docs/perf.md` の「**いまの数字は 日付、… に X.Y.Z をデプロイして …**」の版が、`TODO.md` §2 の
 # 「### デプロイ先の現在地 (…)」の見出しの版と同じか。締めは §2 を直すが perf.md は 0.27.8 のまま 3 回残っていた
 python3 - <<'NOWPY' || NG=1

@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 2. /history を読む関数 (切り出し・分位点・合成・山) (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 2. /history を読む関数 (切り出し・分位点・合成・山) (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 2. `/history` と `/status` と個票を読む関数を取り出して動かす (DOM に触らない 8 つだけ)
 const names = [
@@ -31,9 +31,9 @@ const names = [
   'idleTunnels',
   'dnsMissKinds',
   'waitKpi',
-  // T.29.18: 近い接続元 (RTT < 100 ms) の待ち
+  // T29.18: 近い接続元 (RTT < 100 ms) の待ち
   'nearWaitKpi',
-  // T.29.19: キャッシュ命中率に母数
+  // T29.19: キャッシュ命中率に母数
   'hitKpi',
   // 100% の横棒 1 本を組み立てる側 (T15.0 (14) で tooltip の整形を呼ぶ側に渡せるようにした)
   'stackHtml',
@@ -43,7 +43,7 @@ const names = [
   'fmtNum',
   'fmtDur',
   'bootKind',
-  // 設定の帯・版の隣のビルド・`/slo` の tooltip (T.29.27)
+  // 設定の帯・版の隣のビルド・`/slo` の tooltip (T29.27)
   'settingsLines',
   'versionLabel',
   'sloTitle',

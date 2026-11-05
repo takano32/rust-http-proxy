@@ -102,7 +102,7 @@ fn test_integration_the_baseline_appears_after_the_wait_and_stays_put() {
     );
 
     // 何周期たっても動かない (1 回だけ書く)。前の 300 ms (20 ms の周期で 15 回) と同じだけ
-    // 履歴の周期が回るのを待つ (T.34.114)
+    // 履歴の周期が回るのを待つ (T34.114)
     wait_ticks(&metrics, 15);
     let mem = memory_of(&status_json(port));
     assert_eq!(baseline_of(&mem), first, "1 回だけ書く: {}", mem);

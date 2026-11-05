@@ -91,7 +91,7 @@ pub(super) fn last_day(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-/// 新しい方から `n` 行まで、改行込みで `budget` バイトに収まるだけ取る (並びは古い順。T.34.46)。
+/// 新しい方から `n` 行まで、改行込みで `budget` バイトに収まるだけ取る (並びは古い順。T34.46)。
 ///
 /// 返すのは (取った行, 件数か大きさで古い行を落としたか)。
 pub(super) fn newest_within(all: Vec<String>, n: usize, budget: usize) -> (Vec<String>, bool) {

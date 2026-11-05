@@ -1,4 +1,4 @@
-//! 304 で届いた新しいヘッダーで保存済みの応答を書き直す (RFC 9111 §3.2・§4.3.4。T.28.2)。
+//! 304 で届いた新しいヘッダーで保存済みの応答を書き直す (RFC 9111 §3.2・§4.3.4。T28.2)。
 //!
 //! 0.27.8 までは、再検証の 304 が `Cache-Control: max-age=600` と `X-Ver: 2` を返しても、
 //! 内部の期限 (TTL) だけ延ばし、配る先頭は古いまま (`max-age=0`・`X-Ver: 1`) だった。
@@ -85,7 +85,7 @@ fn check_sync_revalidation(cache: CacheConfig, source: &str) {
     assert_eq!(counter.load(Ordering::SeqCst), 2);
 }
 
-/// **受け入れ基準 (T.28.2)**: メモリ (L1) の項目。
+/// **受け入れ基準 (T28.2)**: メモリ (L1) の項目。
 #[test]
 fn test_integration_304_rewrites_the_stored_head_in_memory() {
     check_sync_revalidation(cache_cfg("shp-it-304-head-mem"), "memory");
@@ -146,7 +146,7 @@ fn age_of(resp: &str) -> Option<u64> {
 }
 
 /// 保存 (`max-age=0`) から 3 秒たってから再検証し、REVALIDATED の応答の `Age` が 0〜1 であること
-/// (T.28.34)。直す前は古い `stored_at` から数えて 3 だった。`bare_304` なら 304 に写す
+/// (T28.34)。直す前は古い `stored_at` から数えて 3 だった。`bare_304` なら 304 に写す
 /// ヘッダーが無い (先頭を書き直さず期限だけ延ばす経路)。
 fn check_age_after_revalidation(cache: CacheConfig, source: &str, bare_304: bool) {
     let counter = Arc::new(AtomicUsize::new(0));
@@ -196,7 +196,7 @@ fn check_age_after_revalidation(cache: CacheConfig, source: &str, bare_304: bool
     assert_eq!(counter.load(Ordering::SeqCst), 2);
 }
 
-/// **受け入れ基準 (T.28.34)**: メモリ (L1) の項目、304 のヘッダーで先頭を書き直す経路。
+/// **受け入れ基準 (T28.34)**: メモリ (L1) の項目、304 のヘッダーで先頭を書き直す経路。
 #[test]
 fn test_integration_revalidated_age_counts_from_the_refresh_in_memory() {
     check_age_after_revalidation(cache_cfg("shp-it-304-age-mem"), "memory", false);

@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 16. T15.0 (14) の 5 枚のカード (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 16. T15.0 (14) の 5 枚のカード (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 16. T15.0 (14) の 5 枚のカード。作り物は**インラインの定数**で、5 枚それぞれに
 // 「欄がある版」と「**欄が無い古い版**」の 2 通りを通す。
@@ -299,7 +299,7 @@ if (api.waitKpi({ recent_quantiles: { wait: { n: 0 } } }, null, hist.bounds_ms) 
 }
 // 既存の KPI (`connectKpi`) は 1 つも変わらない
 if (api.connectKpi(waitStatus, kpiWin, hist.bounds_ms).p50 !== 8.4) fail('connectKpi が変わった');
-// T.29.18: 近い接続元 (RTT < 100 ms) の待ちは `/recent?rtt_client=lt100` の成功した CONNECT の
+// T29.18: 近い接続元 (RTT < 100 ms) の待ちは `/recent?rtt_client=lt100` の成功した CONNECT の
 // queue + client_read + dns + connect の実測の分位点。`rtt_client` を知らない版 (絞られていない) は null
 const nearRows = [
   { kind: 'connect', reason: 'server_eof', ms: { queue: 1, client_read: 0, dns: 0, connect: 11 } },
@@ -315,7 +315,7 @@ if (near.label.indexOf('近い接続元 3 本') < 0) fail('札が違う: ' + nea
 if (api.nearWaitKpi({ recent: nearRows }) !== null) fail('rtt_client を知らない版で null になっていない');
 if (api.nearWaitKpi({ recent: [], rtt_client: 'lt100' }) !== null) fail('0 本は null のはず');
 if (api.nearWaitKpi(null) !== null) fail('null でも例外なく null のはず');
-// T.29.19: キャッシュ命中率は母数 (n=) を添え、1 日あたり 100 本未満なら率を出さない (tokyo の 24 時間は 43 / 80)
+// T29.19: キャッシュ命中率は母数 (n=) を添え、1 日あたり 100 本未満なら率を出さない (tokyo の 24 時間は 43 / 80)
 const fewHits = api.hitKpi({ uptime_secs: 86798, cache: { hits: 43, misses: 37, hits_memory: 24, hits_disk: 19 } });
 if (fewHits.pct !== null) fail('1 日 80 本で率を出した: ' + fewHits.pct);
 if (fewHits.detail.indexOf('(n=80。1 日 100 本未満なので率は出さない)') < 0) fail('母数が無い: ' + fewHits.detail);

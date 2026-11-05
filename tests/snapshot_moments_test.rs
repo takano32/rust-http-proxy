@@ -1,7 +1,7 @@
-//! 起動と停止の雪像 (`snapshots/<時刻>-start.json` と `-shutdown.json`) の結合テスト (T.28.20)。
+//! 起動と停止の雪像 (`snapshots/<時刻>-start.json` と `-shutdown.json`) の結合テスト (T28.20)。
 //!
 //! 締めの判定の「前」(再デプロイの直前) と「0 時間」(直後) は、撮った機械にしか残らなかった
-//! (T.25.99 は「前」が無く日次で代用、T.27.99 はコンテナに置いた)。プロキシ自身が
+//! (T25.99 は「前」が無く日次で代用、T27.99 はコンテナに置いた)。プロキシ自身が
 //! **停止シグナルで状態ファイルを書く前に 1 枚** (`-shutdown`)、**起動から 60 秒 (`memory.baseline`
 //! を書く所) で 1 枚** (`-start`) を日次の雪像の隣に残し、`/snapshots` の `moments` に並べて
 //! `/snapshots/<名前>` で返す。
@@ -91,7 +91,7 @@ fn test_integration_the_start_snapshot_is_written_once_after_the_wait() {
     let name = &names[0];
     assert!(stamped(name, "start"), "{}", name);
     // 何周期たっても増えない (1 回だけ)。前の 300 ms (20 ms の周期で 15 回) と同じだけ
-    // 履歴の周期が回るのを待つ (T.34.114)
+    // 履歴の周期が回るのを待つ (T34.114)
     common::wait_ticks(&metrics, 15);
     assert_eq!(moments(&snaps, "start"), names);
     // 日次の 1 枚とは別物 (日が変わっていないので日次は無い)
@@ -134,7 +134,7 @@ fn test_integration_sigterm_leaves_a_shutdown_snapshot() {
     let took = t.elapsed();
     let lines = proxy.drain_log(Duration::from_millis(200));
     println!(
-        "T.28.20 SIGTERM から終わるまで {:.0} ms (後始末の上限 {:?})",
+        "T28.20 SIGTERM から終わるまで {:.0} ms (後始末の上限 {:?})",
         took.as_secs_f64() * 1000.0,
         rust_http_proxy::signal::GRACE
     );
@@ -146,7 +146,7 @@ fn test_integration_sigterm_leaves_a_shutdown_snapshot() {
         .iter()
         .find(|l| l.contains("shutdown snapshot"))
         .unwrap_or_else(|| panic!("停止の雪像の行が無い: {:#?}", lines));
-    println!("T.28.20 {}", logged);
+    println!("T28.20 {}", logged);
     // 後始末が終わったことの行 (状態ファイルも書けている = 雪像が後始末の時間を食い潰していない)
     assert!(
         lines.iter().any(|l| l.contains("statistics saved to")),

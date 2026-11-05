@@ -217,7 +217,7 @@ fn a_high_dns_miss_rate_fires_after_the_warmup() {
 }
 
 /// 起動から 24 時間の 1 時間ちょっとに、1 標本 20 本の確立と `misses` 回のミス (うち `failed` 回は
-/// 名前解決に失敗した試みのぶん) を流し、`dns_miss_rate` の変わり目を返す (T.32.36)。
+/// 名前解決に失敗した試みのぶん) を流し、`dns_miss_rate` の変わり目を返す (T32.36)。
 fn miss_rate_fired(misses: u64, failed: u64) -> Vec<Fired> {
     let h = History::default();
     let mut d = Detector::new();
@@ -235,7 +235,7 @@ fn miss_rate_fired(misses: u64, failed: u64) -> Vec<Fired> {
     out
 }
 
-/// (9) 名前解決に成功したミスが 0.3 回/接続 なら立つ (T.32.36 の受け入れ基準)。
+/// (9) 名前解決に成功したミスが 0.3 回/接続 なら立つ (T32.36 の受け入れ基準)。
 #[test]
 fn resolved_misses_at_point_three_per_connect_fire() {
     let out = miss_rate_fired(6, 0);
@@ -249,7 +249,7 @@ fn resolved_misses_at_point_three_per_connect_fire() {
     );
 }
 
-/// (9) 名前解決に失敗した試みのミスは数えない (`/slo` と同じ。T.32.36)。0.30.4 の 1 時間の値は
+/// (9) 名前解決に失敗した試みのミスは数えない (`/slo` と同じ。T32.36)。0.30.4 の 1 時間の値は
 /// 今までの数え方で最大 2.76、失敗を引くと最大 0.136 だった。失敗を外したら文面にその回数が入る
 #[test]
 fn failed_dns_misses_do_not_count_toward_the_rate() {

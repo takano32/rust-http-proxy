@@ -1,4 +1,4 @@
-//! `?offset=` の頁送り (`next_offset`。T.34.86 で tests.rs から分けた)。
+//! `?offset=` の頁送り (`next_offset`。T34.86 で tests.rs から分けた)。
 
 use super::*;
 

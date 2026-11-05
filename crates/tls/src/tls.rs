@@ -12,7 +12,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::ptr;
 
-// 責務ごとに子のファイルへ分けてある (T.34.77)。公開の名前はここで出し直す (`proxy_tls::tls::…` のまま)。
+// 責務ごとに子のファイルへ分けてある (T34.77)。公開の名前はここで出し直す (`proxy_tls::tls::…` のまま)。
 // - `api`: OpenSSL の関数ポインタの束 (dlopen / dlsym)
 // - `stream`: TLS で包んだ TCP ストリーム
 mod api;
@@ -33,7 +33,7 @@ impl Drop for Loaded {
     }
 }
 
-/// [`TlsClient::deferred`] が最初の利用で読み込んだ結果を知らせる先 (起動のログを書くため。T.32.5)。
+/// [`TlsClient::deferred`] が最初の利用で読み込んだ結果を知らせる先 (起動のログを書くため。T32.5)。
 ///
 /// `Ok(Some(版))` は読めた、`Ok(None)` は libssl が見つからない、`Err` は CA の読み込みなどの失敗。
 /// **1 プロセスで 1 回だけ**、最初に https:// のオリジンへ取りに行ったスレッドの上で呼ばれる。
@@ -42,7 +42,7 @@ pub type OnLoad = fn(&Result<Option<String>, String>);
 /// TLS クライアント (共有の SSL_CTX)。
 ///
 /// [`TlsClient::load`] はその場で OpenSSL を読み込む。[`TlsClient::deferred`] は**最初の
-/// [`TlsClient::connect`] まで読み込まない** (T.32.5)。起動の callgrind で主スレッドの 70% が
+/// [`TlsClient::connect`] まで読み込まない** (T32.5)。起動の callgrind で主スレッドの 70% が
 /// `SSL_CTX_set_default_verify_paths` (CA の束の PEM の解析) で、dlopen と合わせて RSS 約 5.5 MB・
 /// 起動 20 ms を、https:// のオリジンを取りに行かない (CONNECT だけの) 置き場でも払っていたため。
 /// 検証の設定は読み込みの時期に関わらず同じ。
@@ -69,7 +69,7 @@ impl TlsClient {
         }
     }
 
-    /// 最初の [`TlsClient::connect`] で OpenSSL を読み込むクライアントを作る (T.32.5)。
+    /// 最初の [`TlsClient::connect`] で OpenSSL を読み込むクライアントを作る (T32.5)。
     ///
     /// 読み込みの結果は `on_load` に 1 回だけ渡る。libssl が無ければ、その後の
     /// [`TlsClient::connect`] は [`load`](TlsClient::load) が `None` を返したときの呼び出し側と
@@ -245,7 +245,7 @@ mod tests {
         }
     }
 
-    /// 遅らせたクライアントは作っただけでは読まず、最初の利用で 1 回だけ読んで知らせる (T.32.5)。
+    /// 遅らせたクライアントは作っただけでは読まず、最初の利用で 1 回だけ読んで知らせる (T32.5)。
     #[test]
     fn deferred_client_loads_once_on_first_use() {
         use std::sync::atomic::{AtomicUsize, Ordering};

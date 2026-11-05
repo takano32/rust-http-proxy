@@ -1,4 +1,4 @@
-//! 相手役 (内蔵オリジンと sink。T.34.80 で lib.rs から分けた)。
+//! 相手役 (内蔵オリジンと sink。T34.80 で lib.rs から分けた)。
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};

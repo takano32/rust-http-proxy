@@ -1,4 +1,4 @@
-//! 失敗した CONNECT のログが WARN 1 行だけになることの結合テスト (T.28.4)。
+//! 失敗した CONNECT のログが WARN 1 行だけになることの結合テスト (T28.4)。
 //!
 //! 0.27.8 までは、tunnel が 502 を書いて WARN を出したあと、同じ `io::Error` を呼び元
 //! (`run_conn`) が ERROR でもう 1 行出していた (宛先の無い `error: Connection refused …`)。

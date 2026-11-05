@@ -104,13 +104,13 @@ pub struct Cache {
     not_stored: notstored::NotStored,
     /// quota モードでの、割当ディレクトリ内の自分以外の使用量
     other_disk_usage: AtomicU64,
-    /// 自分以外の使用量を最後に測ったティック (T.32.20)
+    /// 自分以外の使用量を最後に測ったティック (T32.20)
     others_walked_at: AtomicU64,
-    /// そのときからファイルシステムの使用量が**増えた**ぶんの和 (プローブごとの増えだけ足す。T.32.20)
+    /// そのときからファイルシステムの使用量が**増えた**ぶんの和 (プローブごとの増えだけ足す。T32.20)
     fs_grown: AtomicU64,
-    /// 直近のプローブで見たファイルシステムの使用量 (0 = 分からない。T.32.20)
+    /// 直近のプローブで見たファイルシステムの使用量 (0 = 分からない。T32.20)
     fs_used: AtomicU64,
-    /// このティックまでは自分以外の使用量を短い間隔で測り直す (ENOSPC の後。T.32.20)
+    /// このティックまでは自分以外の使用量を短い間隔で測り直す (ENOSPC の後。T32.20)
     others_hurry_until: AtomicU64,
     /// このティックまではバラストの再確保を控える (メモリ圧迫・ENOSPC の後)
     backoff_until: AtomicU64,
@@ -119,10 +119,10 @@ pub struct Cache {
     pressure_logged: AtomicBool,
     mem_fallback_warned: AtomicBool,
     disk_fallback_warned: AtomicBool,
-    /// 通算のカウンタ (12 個。書くのはこのクレートと `note_*` だけ。T.34.88)
+    /// 通算のカウンタ (12 個。書くのはこのクレートと `note_*` だけ。T34.88)
     counters: Counters,
     doorkeeper: admission::Doorkeeper,
-    /// プローブが予算 (動く上限) で追い出した回数と、最後の 1 回の様子 (T.32.7)
+    /// プローブが予算 (動く上限) で追い出した回数と、最後の 1 回の様子 (T32.7)
     budget_evictions: AtomicU64,
     last_budget_eviction: Mutex<Option<status::BudgetEviction>>,
 }
@@ -151,7 +151,7 @@ impl Cache {
         cache
     }
 
-    /// 骨組み (どの層もまだ空で、ディスクも開いていない。T.34.84)。
+    /// 骨組み (どの層もまだ空で、ディスクも開いていない。T34.84)。
     fn blank(cfg: CacheConfig, quota: DiskQuota) -> Self {
         // 入れ替えの周期は既定の TTL に合わせる (`cfg` はこのあと構造体に移すのでここで作る)
         let not_stored = notstored::NotStored::new(cfg.default_ttl.as_secs());
@@ -159,7 +159,7 @@ impl Cache {
             quota,
             mem: MemTier::new(cfg.reserve.is_on()),
             disk: DiskTier::new(cfg.dir.clone(), cfg.reserve.is_on(), cfg.disk_max_entries),
-            // 窓・減衰はプローブの間隔に合わせて秒で保つ (T.29.22)
+            // 窓・減衰はプローブの間隔に合わせて秒で保つ (T29.22)
             margins: Mutex::new(Margins {
                 host: Margin::with_interval(cfg.mem_keep_free, cfg.probe_interval.as_secs()),
                 cgroup: Margin::with_interval(cfg.mem_keep_free, cfg.probe_interval.as_secs()),
@@ -192,7 +192,7 @@ impl Cache {
     }
 
     /// ディスク層を開いて索引を戻し、RAM 上の FS ならディスクのバラストを止める
-    /// (起動ログの 1〜2 行目。T.34.84)。
+    /// (起動ログの 1〜2 行目。T34.84)。
     fn init_disk(&self) {
         match self
             .disk
@@ -228,7 +228,7 @@ impl Cache {
     }
 
     /// Pterodactyl で割当が分からなければ、割当の探索を用意する (できなければ警告して
-    /// ディスクのバラストを止める。T.34.84)。
+    /// ディスクのバラストを止める。T34.84)。
     fn init_disk_probe(&self) {
         if self.quota_unknown_on_pterodactyl() {
             if self.cfg.disk_probe && self.disk.reserve_active() {
@@ -355,7 +355,7 @@ impl Cache {
         self.not_stored.rotations()
     }
 
-    /// 通算のカウンタの読み口 (`/metrics`・5 秒の標本・試験が読む。T.34.88)。
+    /// 通算のカウンタの読み口 (`/metrics`・5 秒の標本・試験が読む。T34.88)。
     #[inline]
     pub fn counters(&self) -> &Counters {
         &self.counters

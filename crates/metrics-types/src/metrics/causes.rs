@@ -153,7 +153,7 @@ pub struct Failure {
 }
 
 impl Failure {
-    /// 名前解決ではない原因 1 つ (`dns` は `None`。T.29.15 の WARN の絞りの鍵などに)。
+    /// 名前解決ではない原因 1 つ (`dns` は `None`。T29.15 の WARN の絞りの鍵などに)。
     pub fn of(cause: ErrCause) -> Failure {
         Failure { cause, dns: None }
     }
@@ -182,7 +182,7 @@ pub enum BlockCause {
     /// `PROXY_CONNECT_PORTS` の外のポートへの CONNECT だった
     ConnectPort,
     /// ループバック・リンクローカル・私設アドレス宛て (`PROXY_ALLOW_LOCAL=off` の SSRF 除け。
-    /// 私設アドレスは T.28.41 から。`private` ではループバック・リンクローカルだけ)
+    /// 私設アドレスは T28.41 から。`private` ではループバック・リンクローカルだけ)
     Local,
 }
 
@@ -219,7 +219,7 @@ impl ErrCause {
                 ErrCause::Unreachable
             }
             // ブロッキングの読み書きに `SO_RCVTIMEO` / `SO_SNDTIMEO` を当てていると、Linux では
-            // 締め切りが切れたときに `WouldBlock` (EAGAIN = os error 11) が返る (T.28.5。
+            // 締め切りが切れたときに `WouldBlock` (EAGAIN = os error 11) が返る (T28.5。
             // 今までは `other` に数えていた)。ここを通るのは終端のエラーだけなので、
             // 非ブロッキングの「まだ読めない」が紛れ込むことはない
             K::TimedOut | K::WouldBlock => ErrCause::Timeout,
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(c(ErrorKind::NetworkUnreachable), ErrCause::Unreachable);
         assert_eq!(c(ErrorKind::HostUnreachable), ErrCause::Unreachable);
         assert_eq!(c(ErrorKind::TimedOut), ErrCause::Timeout);
-        // `SO_RCVTIMEO` の締め切りは Linux では EAGAIN で返る (T.28.5)
+        // `SO_RCVTIMEO` の締め切りは Linux では EAGAIN で返る (T28.5)
         assert_eq!(c(ErrorKind::WouldBlock), ErrCause::Timeout);
         #[cfg(target_os = "linux")]
         assert_eq!(

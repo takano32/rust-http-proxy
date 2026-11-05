@@ -1,14 +1,14 @@
 //! 小さな `/proc`・`/sys` のファイルの読み方 (`read_small*`) と、決まったパスを開いたままにして
-//! `pread` 1 回で読む `KeptFiles` (T.32.21)。T.34.61 で `proc.rs` から移した (本体は変えていない)。
+//! `pread` 1 回で読む `KeptFiles` (T32.21)。T34.61 で `proc.rs` から移した (本体は変えていない)。
 
 /// 小さな `/proc` / `/sys` のファイルを読む。
 ///
-/// (T.29.20) `fs::read_to_string` は大きさを当てにするために `statx` と `lseek` を呼び、procfs は大きさ 0 を
+/// (T29.20) `fs::read_to_string` は大きさを当てにするために `statx` と `lseek` を呼び、procfs は大きさ 0 を
 /// 返すので 32 B から倍々に読み直す (`/proc/self/status` で `read` 8 回 = 1 ファイル 11 回の
 /// システムコール)。1 秒ごとに読む所 (`cache-probe`・`profile-sample`・`history`) はこちらを使う。
 /// `buf` は使い回し (毎回確保しない)。読めなければ `None`。
 ///
-/// **`/proc`・`/sys` の決まったパスは開いたままにして `pread` 1 回で読む** (T.32.21。[`KeptFiles`])。
+/// **`/proc`・`/sys` の決まったパスは開いたままにして `pread` 1 回で読む** (T32.21。[`KeptFiles`])。
 /// open・read・read (EOF)・close の 4 回が 1 回になり、procfs の open (パスの引き直しと
 /// seq_file の用意) も払わない (`/proc/self/status` 7.1 → 3.0 us)。スレッドごとのファイル
 /// (`/proc/self/task/<tid>/…`・`/proc/thread-self/…`) は開いたままにしない ([`keepable`])。
@@ -44,7 +44,7 @@ fn read_by_open<'a>(path: &std::path::Path, buf: &'a mut Vec<u8>) -> Option<&'a 
 
 /// [`read_small_into`] の、持ち帰る版 (`fs::read_to_string(path).ok()` の置き換え)。
 ///
-/// 読む器はスレッドごとに使い回す (T.32.21。呼ぶたびに 4 KiB を確保してゼロで埋めていた)。
+/// 読む器はスレッドごとに使い回す (T32.21。呼ぶたびに 4 KiB を確保してゼロで埋めていた)。
 /// 返すのは中身の長さぶんの `String` だけ。
 pub fn read_small(path: &std::path::Path) -> Option<String> {
     thread_local! {
@@ -58,7 +58,7 @@ pub fn read_small(path: &std::path::Path) -> Option<String> {
     .flatten()
 }
 
-/// 開いたままにしてよいパスか (T.32.21)。
+/// 開いたままにしてよいパスか (T32.21)。
 ///
 /// `/proc`・`/sys` の下で、**どのスレッドが開いても同じものを指す**パスだけ。
 /// `/proc/thread-self` は開いたスレッドを、`/proc/self/task/<tid>` はスレッドを 1 本ずつ指す
@@ -70,10 +70,10 @@ pub(crate) fn keepable(path: &std::path::Path) -> bool {
         && !s.windows(6).any(|w| w == b"/task/")
 }
 
-/// 開いたままにする数の上限 (T.32.21)。いまの読み手が使うのは 30 本ほどで、
+/// 開いたままにする数の上限 (T32.21)。いまの読み手が使うのは 30 本ほどで、
 /// cgroup の階層が深くても 64 に届かない。越えたぶんは今までどおり開いて読む。
 const KEPT_MAX: usize = 64;
-/// 開いたままのファイルをこの回数読んだら 1 度開き直す (T.32.21)。
+/// 開いたままのファイルをこの回数読んだら 1 度開き直す (T32.21)。
 ///
 /// 消えた cgroup のファイルは `ENODEV` を返すので開き直せるが、**消えて同じパスに
 /// 作り直された**ふつうのファイルは古い中身を返し続ける。ときどき開き直して追いつく
@@ -89,7 +89,7 @@ enum Kept {
     Missing,
 }
 
-/// 開いたままの小さなファイルの置き場 (T.32.21)。プロセスに 1 つ ([`KEPT`]) で、試験は自前で作る。
+/// 開いたままの小さなファイルの置き場 (T32.21)。プロセスに 1 つ ([`KEPT`]) で、試験は自前で作る。
 ///
 /// - 読むのは `pread(fd, buf, 0)` で、1 頁に収まるファイルは 1 回 (短く返ったら EOF とみなす。
 ///   procfs・sysfs の seq_file は器が埋まるか終わりまで詰めて返す)。4 KiB を越えれば器を倍にして続きを読む
@@ -115,7 +115,7 @@ impl KeptFiles {
         }
     }
 
-    /// 開いたままにしている数 (試験だけが使う。T.34.71 で `#[cfg(test)]` にした)。
+    /// 開いたままにしている数 (試験だけが使う。T34.71 で `#[cfg(test)]` にした)。
     #[cfg(test)]
     pub(crate) fn open_count(&self) -> usize {
         self.lock()

@@ -286,7 +286,7 @@ fn per(a: u64, b: u64) -> f64 {
     if b == 0 { 0.0 } else { a as f64 / b as f64 }
 }
 
-/// [`host_summary`] の文と数字の欄が共有する値 (**1 回だけ計算する**。T.34.101)。
+/// [`host_summary`] の文と数字の欄が共有する値 (**1 回だけ計算する**。T34.101)。
 struct HostFigures {
     /// 平均 (ms) と、その内訳の名前解決・接続・残り (ms)
     avg: f64,

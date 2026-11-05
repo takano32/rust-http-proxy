@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""デプロイ先の最小の見張り (T.28.26)。`.github/workflows/watch.yml` が回す (cron は毎時だが、実際の間隔は 2〜7.5 時間)。
+"""デプロイ先の最小の見張り (T28.26)。`.github/workflows/watch.yml` が回す (cron は毎時だが、実際の間隔は 2〜7.5 時間)。
 
 読むのは `/healthz` と `/events?n=200` と `/status?hosts=0` の 3 つだけ (どれも読む口)。次のどれかで exit 1:
 
   - `/healthz` が 200 でない、または `ok` が真でない (落ちている検査の名前を出す)
   - **前回の見張りから** (`--since`。無ければ直近 `--window` 分、既定 480 分) に**無言の再起動** = 直前の
-    出来事が `shutdown` でない `start` がある (T.32.25。cron は `17 * * * *` でも GitHub の schedule は
+    出来事が `shutdown` でない `start` がある (T32.25。cron は `17 * * * *` でも GitHub の schedule は
     121.2 時間で 23 回 (中央値 5.5 時間・最大 7.5 時間) しか回らず、75 分の窓では約 8 割の期間の再起動が
     見えなかった。workflow は前回の成功した実行の時刻を `--since` に渡す)
     (`scripts/snapshot_criteria.py` の `silent_restarts` と同じ見方。ホストの再起動 (`boot` が変わった) も
@@ -85,9 +85,9 @@ def judge(healthz, events, status, now, window_min):
 
 # `--since` から、さらにさかのぼる分 (前回の見張りが読んだ直後の再起動を、次の窓から落とさない)
 SINCE_OVERLAP_MIN = 15
-# `--since` が無いときの窓 (分)。GitHub の schedule の実際の間隔の最大 7.5 時間より長く (T.32.25)
+# `--since` が無いときの窓 (分)。GitHub の schedule の実際の間隔の最大 7.5 時間より長く (T32.25)
 DEFAULT_WINDOW_MIN = 480
-# `--since` から出した窓の下限 (分。T.28.26 の 75 分)
+# `--since` から出した窓の下限 (分。T28.26 の 75 分)
 MIN_WINDOW_MIN = 75
 
 

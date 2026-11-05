@@ -173,7 +173,7 @@ mod tests {
         }
     }
 
-    /// `--lite` の説明は「止めるもの」と「残るもの」の両方を書く (T.28.44)。
+    /// `--lite` の説明は「止めるもの」と「残るもの」の両方を書く (T28.44)。
     /// `/hosts` などの統計は lite でもメモリに積むので、「no statistics」とは書かない
     #[test]
     fn help_says_what_lite_turns_off_and_what_it_keeps() {

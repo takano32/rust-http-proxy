@@ -1,6 +1,6 @@
 //! 起動時の設定 ([`Config`])。環境変数と `.env` とコマンドライン引数から 1 つの `Config` を作る。
 //!
-//! 責務ごとに子のファイルへ分けてある (T.34.3)。公開の名前はここで出し直すので、呼ぶ側の綴り
+//! 責務ごとに子のファイルへ分けてある (T34.3)。公開の名前はここで出し直すので、呼ぶ側の綴り
 //! (`config::connect_timeout_for` など) は `config.rs` が 1 枚だった頃と同じ:
 //!
 //! - `limits`: 同時接続・スレッド・記述子の上限と既定 (`auto` の決め方)
@@ -73,15 +73,15 @@ pub struct Config {
     /// ソケットへ渡すときは [`proxy_base::timeout::for_socket`] で `None` に直す
     /// (`std` は `Duration::ZERO` を `InvalidInput` で断るため)。
     pub timeout: Duration,
-    /// 転送中の最小の速さ (`PROXY_MIN_TRANSFER_BPS` / `PROXY_MIN_TRANSFER_WINDOW_SECS`。T.29.34)。
+    /// 転送中の最小の速さ (`PROXY_MIN_TRANSFER_BPS` / `PROXY_MIN_TRANSFER_WINDOW_SECS`。T29.34)。
     ///
     /// 相手を待った時間 (書けずに / 本文を読めずに待った時間) が窓に達するたびに、その間に
     /// 運べたバイトが `bps × 秒` に届かなければ切る。既定 30 秒の窓で 1 KiB/s、`bps = 0` で切らない。
     /// [`Config::timeout`] は無通信の締め切り (1 バイトでも動けば待ち直す) で、こちらとは別に効く
     pub min_transfer: proxy_base::minrate::MinRate,
-    /// **オリジンへの TCP の確立だけ** (CONNECT と、T.28.8 から forward) に効く締め切り (`PROXY_CONNECT_TIMEOUT_SECS`、`0` で無期限)。
+    /// **オリジンへの TCP の確立だけ** (CONNECT と、T28.8 から forward) に効く締め切り (`PROXY_CONNECT_TIMEOUT_SECS`、`0` で無期限)。
     ///
-    /// **既定は 3 秒** ([`DEFAULT_CONNECT_TIMEOUT`]。T15.6 (2)、T23.3、T.28.43)。実効値は
+    /// **既定は 3 秒** ([`DEFAULT_CONNECT_TIMEOUT`]。T15.6 (2)、T23.3、T28.43)。実効値は
     /// [`connect_timeout_for`] が 1 か所で決める (未設定なら 3 秒と [`Config::timeout`] の
     /// 小さい方。`PROXY_TIMEOUT_SECS=0` でも 3 秒)。`PROXY_TIMEOUT_SECS` は CONNECT の
     /// オリジン接続だけでなく forward の読み書き・クライアントソケット・キャッシュの
@@ -89,10 +89,10 @@ pub struct Config {
     ///
     /// **持っているのは実効値** (`Option` にしない。明示の `0` = 無期限はそのまま写す。T10.6)。
     /// 効くのは `crates/server/src/conn.rs` の CONNECT から `start_tunnel` へ渡す所と、forward の
-    /// `http::Shared::connect_timeout` (TCP の確立だけ。T.28.8) の 2 か所で、forward の読み書きと
+    /// `http::Shared::connect_timeout` (TCP の確立だけ。T28.8) の 2 か所で、forward の読み書きと
     /// blocklist の取得は `timeout` のまま。
     pub connect_timeout: Duration,
-    /// 要求行とヘッダーを読み終えるまでの締め切り (`PROXY_HEADER_TIMEOUT_SECS`、既定 10 秒、`0` で無し。T.28.0)。
+    /// 要求行とヘッダーを読み終えるまでの締め切り (`PROXY_HEADER_TIMEOUT_SECS`、既定 10 秒、`0` で無し。T28.0)。
     ///
     /// **1 バイト目が来てから最後のヘッダーまでの総時間**を縛る (`SO_RCVTIMEO` は読めるたびに
     /// 待ち直すので、1 バイトずつ送られると `PROXY_TIMEOUT_SECS` では切れない)。1 要求目は
@@ -128,7 +128,7 @@ pub struct Config {
     /// 代償は高並列でのロック競合で、実測は conc=64 の CPU/要求 +4%、conc=8 では差なし。
     pub malloc_arenas: usize,
     /// glibc の mmap の閾を固定する値 (KiB。`PROXY_MALLOC_MMAP_THRESHOLD_KB`、`0` で glibc の既定 =
-    /// 動く閾のまま。T.32.3)。
+    /// 動く閾のまま。T32.3)。
     ///
     /// glibc は mmap で取った塊を free すると閾をその大きさまで上げる (起動中に 2 MiB、14 MiB の
     /// キャッシュの本文を捨てると 14 MiB)。以後は閾より小さい大きな確保がアリーナから取られ、
@@ -163,7 +163,7 @@ pub struct Config {
     /// この齢までは古い答えで繋ぎに行き、裏で 1 回引き直す (serve-stale、RFC 8767)。
     /// 既定 21,600 秒は `scripts/dns-replay.py --serve-stale` の再生で決めた
     pub dns_stale: Duration,
-    /// 要求の経路が名前解決を待つ締め切り (`PROXY_DNS_TIMEOUT_SECS`、既定 10 秒、0 で締め切りなし。T.32.11)。
+    /// 要求の経路が名前解決を待つ締め切り (`PROXY_DNS_TIMEOUT_SECS`、既定 10 秒、0 で締め切りなし。T32.11)。
     ///
     /// `getaddrinfo` はキャンセルできないので、上限付きの別のスレッド群 (`PROXY_MAX_THREADS` の 1/4)
     /// に引かせ、過ぎたら 504 で接続の枠を手放す。上限の本数がもう走っていれば待たずに 504
@@ -222,7 +222,7 @@ pub struct Config {
     pub connect_ports: PortSet,
     /// ループバック・リンクローカル・私設アドレス宛てのオリジンを許すか (`PROXY_ALLOW_LOCAL`、既定 off)。
     /// 既定ではクラウドのメタデータ (`169.254.169.254`) 経由の SSRF と、私設アドレス
-    /// (`10/8`・`172.16/12`・`192.168/16`・`100.64/10`・`fc00::/7`) 宛てを 403 で止める (T.28.41)。
+    /// (`10/8`・`172.16/12`・`192.168/16`・`100.64/10`・`fc00::/7`) 宛てを 403 で止める (T28.41)。
     /// `private` は私設アドレスだけ通す ([`AllowLocal`])
     pub allow_local: AllowLocal,
     /// CONNECT トンネルのアイドル打ち切り時間 (`PROXY_TUNNEL_IDLE_SECS`、既定 300 秒、`0` で無期限)
@@ -305,7 +305,7 @@ pub struct Config {
     pub tcp_keepalive: Option<TcpKeepalive>,
     /// 各値の出どころ (`/config` の `source`。T14.15)。効いた値にだけ印が付く
     pub sources: Sources,
-    /// 読めなかった値と知らない名前 (`--check` と `settings.invalid` / `settings.unknown`。T.28.6)
+    /// 読めなかった値と知らない名前 (`--check` と `settings.invalid` / `settings.unknown`。T28.6)
     pub problems: EnvProblems,
 }
 

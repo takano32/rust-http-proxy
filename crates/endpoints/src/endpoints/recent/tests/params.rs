@@ -1,4 +1,4 @@
-//! 問い合わせの数の読み (`num_param` / `offset_param`。T.34.86 で tests.rs から分けた)。
+//! 問い合わせの数の読み (`num_param` / `offset_param`。T34.86 で tests.rs から分けた)。
 
 use super::*;
 

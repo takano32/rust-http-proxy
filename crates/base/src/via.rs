@@ -33,7 +33,7 @@ pub fn line() -> &'static str {
     LINE.get_or_init(|| format!("Via: {}\r\n", token()))
 }
 
-/// クライアントへ返す応答に足す 1 行 (`Via: 1.1 rust-http-proxy/xxxxxxxx`。CRLF なし。T.28.10 (b))。
+/// クライアントへ返す応答に足す 1 行 (`Via: 1.1 rust-http-proxy/xxxxxxxx`。CRLF なし。T28.10 (b))。
 ///
 /// RFC 9110 §7.6.3 は要求と応答の両方で `Via` を求める。応答は書き出す口が `extra` の行
 /// (CRLF を付けずに並べる) を取るので、そちらの形にしてある。オリジンの `Via` の行は

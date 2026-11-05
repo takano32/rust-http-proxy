@@ -41,13 +41,13 @@ pub(super) struct Acc {
     pub(super) errors: u64,
     pub(super) dns_misses: u64,
     pub(super) dns_ms_sum: u64,
-    /// `dns_misses` のうち名前解決に失敗した試みのぶん (標本の `dns_fail_misses`。T.32.17)
+    /// `dns_misses` のうち名前解決に失敗した試みのぶん (標本の `dns_fail_misses`。T32.17)
     pub(super) dns_fail_misses: u64,
     pub(super) active_max: u64,
     pub(super) rss_max: u64,
     pub(super) rss_sum: u64,
     pub(super) rss_n: u64,
-    /// 組み直した前のプロセスのぶん (T.32.18): 見ていた秒 (60 秒の行の数 × 60)、要求とバイト
+    /// 組み直した前のプロセスのぶん (T32.18): 見ていた秒 (60 秒の行の数 × 60)、要求とバイト
     /// (行の `requests_delta` / `bytes_delta` の和)、追い出し (行どうしの通算の差の和)
     pub(super) seed_secs: u64,
     pub(super) seed_requests: u64,
@@ -87,7 +87,7 @@ impl Acc {
         }
     }
 
-    /// 前のプロセスの 60 秒の行 1 本を足す (T.32.18)。区間の値は 5 秒の標本と同じく足し合わせ、
+    /// 前のプロセスの 60 秒の行 1 本を足す (T32.18)。区間の値は 5 秒の標本と同じく足し合わせ、
     /// 標本の数は行に畳んだ 5 秒の本数 (`gauge_n`。古い行は 1)、RSS の平均はその本数で重みを付ける。
     /// `prev_evicted` は 1 本前の行の `evicted_idle` (通算なので差を足す。減ったら再起動の段差で 0)
     pub(super) fn add_seed(&mut self, s: &Sample, prev_evicted: Option<u64>) {
@@ -116,7 +116,7 @@ impl Acc {
     /// (数は 15 桁・小数は 6 桁 + 1 位・版は [`MAX_VERSION`](super::MAX_VERSION) 文字で頭打ち)。
     ///
     /// `rate_hours` は `/slo` の比の 2 つを 1 時間の合計で判定した `[満たした時間, 外した時間]`
-    /// (T.29.33。その日のうちこのプロセスが動いていた時間だけ)。
+    /// (T29.33。その日のうちこのプロセスが動いていた時間だけ)。
     pub(super) fn line(&self, version: &str, rate_hours: [[u32; 2]; crate::slo::RATES]) -> String {
         let (y, mo, d, ..) = crate::log::civil_from_epoch(self.day.saturating_mul(SECS_PER_DAY));
         let connects = self.connect.count;
@@ -125,7 +125,7 @@ impl Acc {
         } else {
             self.dns_misses as f64 / connects as f64
         };
-        // 名前解決に成功したミス ÷ 確立 (`/slo` の `dns_miss_per_connect` と同じ数え方。T.32.17)。
+        // 名前解決に成功したミス ÷ 確立 (`/slo` の `dns_miss_per_connect` と同じ数え方。T32.17)。
         // `dns_per_connect` は今までどおり失敗した試みのミスも入れた値で、読む側の互換のため残す
         let resolved_per = if connects == 0 {
             0.0
@@ -184,7 +184,7 @@ impl Acc {
             rate_hours[0][1].min(99),
             rate_hours[1][0].min(99),
             rate_hours[1][1].min(99),
-            // 末尾に足した欄 (T.32.17)。無い古い行は読む側が `dns_per_connect` に落ちる
+            // 末尾に足した欄 (T32.17)。無い古い行は読む側が `dns_per_connect` に落ちる
             num(self.dns_fail_misses),
             flt(resolved_per),
         );

@@ -1,4 +1,4 @@
-# 判定表 (`scripts/snapshot_criteria.py`) の **Phase 23〜25 の行** (T.34.127 で割った)。
+# 判定表 (`scripts/snapshot_criteria.py`) の **Phase 23〜25 の行** (T34.127 で割った)。
 #
 # phase23 で直した接続のエラー (名前解決に成功した試行あたり)・ミスの行・heap の行と無言の再起動の行、
 # phase24 の無言の再起動・heap (起動 60 秒の基準から)・確立の尾 (RTT + N ms) の行、phase25 で読み方を
@@ -16,7 +16,7 @@ from .restarts import boot_split_text, restart_info, silent_restart_text, silent
 
 # --- Phase 23 (T23.1。phase22 の 14 行のうち、エラーの行の分母と heap の「判定できず」の書き方を直したもの) ---
 
-# `/recent` の理由のうち名前解決の失敗 (`error:` の後ろ)。`dns` は T25.0 より前の綴り (T.29.36)
+# `/recent` の理由のうち名前解決の失敗 (`error:` の後ろ)。`dns` は T25.0 より前の綴り (T29.36)
 DNS_FAILURES = ("dns", "nxdomain", "dns_temp")
 
 
@@ -44,7 +44,7 @@ def recent_attempts(snap, causes):
             ats.append(r["at"])
         reason = r.get("reason") or ""
         cause = reason[len("error:"):] if reason.startswith("error:") else None
-        # T25.0 からは名前解決の失敗を `error:nxdomain` / `error:dns_temp` と綴る (T.29.36。今まで
+        # T25.0 からは名前解決の失敗を `error:nxdomain` / `error:dns_temp` と綴る (T29.36。今まで
         # `error:dns` だけを外していたので、phase23 以降の分母に名前解決の失敗が混ざっていた)
         if cause in DNS_FAILURES:
             dns += 1

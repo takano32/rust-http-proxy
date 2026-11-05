@@ -1,4 +1,4 @@
-//! selfbench の単体試験 (T.34.80 で lib.rs から分けた)。
+//! selfbench の単体試験 (T34.80 で lib.rs から分けた)。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -69,7 +69,7 @@ fn requests_are_counted_across_reads() {
 #[test]
 fn cpu_of_the_process_and_of_this_thread_is_readable() {
     // スレッドを先に読む: 後で読んだプロセスの値は、先に読んだこのスレッドの値を必ず含む
-    // (逆の順だと、2 回の読みの間にこのスレッドが走った分だけ `p < t` になりうる。T.28.37)
+    // (逆の順だと、2 回の読みの間にこのスレッドが走った分だけ `p < t` になりうる。T28.37)
     let t = thread_cpu_us().expect("このスレッドの CPU");
     let p = process_cpu_us().expect("プロセスの CPU");
     assert!(
@@ -164,7 +164,7 @@ fn phase(ok: u64, bad: u64, capped: bool) -> Phase {
     }
 }
 
-/// `note` の文面は 7 通り (T.34.80)。
+/// `note` の文面は 7 通り (T34.80)。
 #[test]
 fn the_note_names_each_of_its_seven_cases() {
     assert_eq!(
@@ -198,7 +198,7 @@ fn the_note_names_each_of_its_seven_cases() {
     );
 }
 
-/// 鍵の判定は旗を見ずに、渡したポートだけで決まる (T.34.80)。
+/// 鍵の判定は旗を見ずに、渡したポートだけで決まる (T34.80)。
 #[test]
 fn a_target_matches_on_a_known_port_of_a_loopback_host() {
     let ports = [41234, 41235];
@@ -215,7 +215,7 @@ fn a_target_matches_on_a_known_port_of_a_loopback_host() {
     assert!(!target_matches("http://127.0.0.1:41234", &[0, 0]));
 }
 
-/// 1 本も通らなかった段階は CPU/操作 を出さない (0 で割らない。T.34.80)。
+/// 1 本も通らなかった段階は CPU/操作 を出さない (0 で割らない。T34.80)。
 #[test]
 fn a_phase_with_no_operations_has_no_per_op_figure() {
     let empty = Phase {

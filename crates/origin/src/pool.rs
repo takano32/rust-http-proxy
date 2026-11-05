@@ -86,7 +86,7 @@ impl Pool {
     /// **読み残しのある接続**を捨てる。`put` が見られるのは `BufReader` の読み残しだけで、
     /// 戻したあとにオリジンが遅れて送ったバイトはカーネルの受信キューにある。T26.0 で
     /// やり直せる要求 (GET / HEAD) だけこの 1 回 (実測 0.28 us) を省いていたが、省くとその
-    /// バイトを次の要求の応答として読み、キャッシュにも入れていた (T.29.2 で戻した)。
+    /// バイトを次の要求の応答として読み、キャッシュにも入れていた (T29.2 で戻した)。
     pub fn get(&self, host: &str, want: Duration) -> Option<BufReader<OriginStream>> {
         if !self.enabled() {
             return None;

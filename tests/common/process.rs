@@ -13,13 +13,13 @@ pub struct ProxyProcess {
     child: std::process::Child,
     pub port: u16,
     lines: std::sync::mpsc::Receiver<String>,
-    /// 待ち受けの行より前に出た起動ログの行 (`state file ...` や設定の WARN。T.34.106)
+    /// 待ち受けの行より前に出た起動ログの行 (`state file ...` や設定の WARN。T34.106)
     pub startup_log: Vec<String>,
     /// 待ち受けの行そのもの (`rust-http-proxy <版> listening on ... backlog N ...`)
     pub banner: String,
 }
 
-/// [`ProxyProcess::builder`] の組み立て (T.34.106)。`HOME` のほかに渡す環境変数と、
+/// [`ProxyProcess::builder`] の組み立て (T34.106)。`HOME` のほかに渡す環境変数と、
 /// 起動ログの 1 行を待つ長さを持つ。
 pub struct ProxyBuilder {
     home: std::path::PathBuf,
@@ -98,7 +98,7 @@ impl ProxyProcess {
         ProxyProcess::builder(home).start()
     }
 
-    /// 環境変数や待つ長さを足して起動するための組み立て (T.34.106)。
+    /// 環境変数や待つ長さを足して起動するための組み立て (T34.106)。
     pub fn builder(home: &std::path::Path) -> ProxyBuilder {
         ProxyBuilder {
             home: home.to_path_buf(),
@@ -159,7 +159,7 @@ impl ProxyProcess {
         panic!("timed out waiting for a log line containing {:?}", needle);
     }
 
-    /// 標準出力に届いた行を、`quiet` のあいだ何も来なくなるまで全部引き取る (T.28.9)。
+    /// 標準出力に届いた行を、`quiet` のあいだ何も来なくなるまで全部引き取る (T28.9)。
     pub fn drain_log(&self, quiet: Duration) -> Vec<String> {
         let mut out = Vec::new();
         while let Ok(line) = self.lines.recv_timeout(quiet) {

@@ -1,4 +1,4 @@
-//! キャッシュの小物 (T.28.10): ホスト名の大小・応答の `Via`・要求の `Cache-Control`・壊れた `max-age`。
+//! キャッシュの小物 (T28.10): ホスト名の大小・応答の `Via`・要求の `Cache-Control`・壊れた `max-age`。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 15. 調査ページの今日・今週・出来事と異常 (と煙試験) (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 15. 調査ページの今日・今週・出来事と異常 (と煙試験) (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 15. 「調査」ページの「今日」「今週」「出来事と異常」(T14.44)。
 //     `dailyRows` (`/daily`。T14.20)・`weeklyRows` (`/daily` の 7 行をブラウザの中で足す +
@@ -65,7 +65,7 @@ if (calc.dns_per_connect !== 0.25) fail('ミス率を自分で出せていない
 if (insNew.dailyRows({ days: [{ day: 'x', t: 1 }] }, 7).rows[0].dns_per_connect !== null) {
   fail('CONNECT 0 の日はミス率を出さない (null) はず');
 }
-// T.32.17: 失敗を除いた率の欄 (`dns_resolved_per_connect`)。無ければ `dns_fail_misses` から出し、
+// T32.17: 失敗を除いた率の欄 (`dns_resolved_per_connect`)。無ければ `dns_fail_misses` から出し、
 // どちらも無い古い行は null (表は今までの `dns_per_connect` を出す)
 const res1 = insNew.dailyRows({ days: [{ day: 'a', t: 1, connects: 200, dns_misses: 50,
   dns_per_connect: 0.25, dns_resolved_per_connect: 0.04 }] }, 7).rows[0];

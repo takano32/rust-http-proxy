@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 
-/// オリジン側の失敗の WARN を絞る理由の数 ([`ErrCause`] の 8 つ + 名前解決の内訳 2 つ。T.29.15)。
+/// オリジン側の失敗の WARN を絞る理由の数 ([`ErrCause`] の 8 つ + 名前解決の内訳 2 つ。T29.15)。
 pub const ORIGIN_WARN_REASONS: usize = ERR_CAUSES + DNS_CAUSES;
 
 // 接続元の個票と、内部エンドポイントを引いた接続元は下の層
@@ -26,24 +26,24 @@ pub use crate::clients::{
     ClientStats, MAX_READER_PATH, MAX_READERS, Reader, STATUS_READERS, fingerprint, target_parts,
 };
 
-// `/status` の組み立ては `metrics/status.rs` に割った (T.28.27)。**今までの名前でここから引ける**
+// `/status` の組み立ては `metrics/status.rs` に割った (T28.27)。**今までの名前でここから引ける**
 // (`crate::metrics::set_canary_status` / `CANARY_STATUS_UNSET`)。
 mod status;
 
-// `/status` の `memory` (見積もり・実測・描画。T.34.32)
+// `/status` の `memory` (見積もり・実測・描画。T34.32)
 mod memory;
 
-// `/status` が読むこのプロセスの値 (`/proc` など。T.34.41)
+// `/status` が読むこのプロセスの値 (`/proc` など。T34.41)
 mod facts;
 
 pub use status::{CANARY_STATUS_UNSET, set_canary_status};
 
-// `/slo` の `error_rate` が外す「1 つの宛先に偏ったエラー」の数 (T.30.4)
+// `/slo` の `error_rate` が外す「1 つの宛先に偏ったエラー」の数 (T30.4)
 mod web_dest;
 
 pub use web_dest::DestHour;
 
-// `impl Metrics` は仕事ごとに割ってある (T.34.26)。ここに残すのは構造体・`new`・原子の増減と
+// `impl Metrics` は仕事ごとに割ってある (T34.26)。ここに残すのは構造体・`new`・原子の増減と
 // `impl profile::Source` だけ。**行を動かしただけ**で、公開 API は変えていない。
 // ホスト別統計の表と区間の合計 ([`Interval`])、その問い合わせ
 mod host_table;
@@ -96,10 +96,10 @@ pub struct Metrics {
     /// 要求を読めずに断った数 (理由別。`/status` の `rejected_requests`。T14.28)。
     /// **書くのは断る経路だけ**なので、通した要求はこの配列を 1 度も触らない
     pub rejected_requests: [AtomicU64; BAD_REQUEST_REASONS],
-    /// 断った要求の WARN を理由ごとに 1 分に 1 回へ絞る門 (T.28.9)。本数は上の
+    /// 断った要求の WARN を理由ごとに 1 分に 1 回へ絞る門 (T28.9)。本数は上の
     /// `rejected_requests` が持つので、ログには 1 分に 1 行と抑えた本数だけを出す
     pub rejected_warn: [crate::log::Throttle; BAD_REQUEST_REASONS],
-    /// オリジン側の失敗 (502 / 時間切れ) の WARN を**理由ごとに 1 分に 1 回**へ絞る門 (T.29.15)。
+    /// オリジン側の失敗 (502 / 時間切れ) の WARN を**理由ごとに 1 分に 1 回**へ絞る門 (T29.15)。
     /// 並びは [`ErrCause`] の 8 つ + 名前解決の内訳 2 つ ([`Metrics::origin_warn`])。本数は
     /// `/errors`・`/hosts`・`errors_by_cause` が持つので、ログには 1 分に 1 行と抑えた本数だけを出す
     pub origin_warn: [crate::log::Throttle; ORIGIN_WARN_REASONS],
@@ -139,7 +139,7 @@ pub struct Metrics {
     /// 足すのは内部エンドポイントの経路だけで、プロキシとしての要求は 1 度も触らない
     pub heavy_rejected: AtomicU64,
     /// 1 要求目の 1 バイト目も来ないまま `PROXY_HEADER_TIMEOUT_SECS` を過ぎ、408 を返さずに黙って
-    /// 閉じた接続の数 (`/status` の `silent_closes`。T.33.0)。ブラウザやクライアントの先張りの接続
+    /// 閉じた接続の数 (`/status` の `silent_closes`。T33.0)。ブラウザやクライアントの先張りの接続
     /// (応答を読まない) が来るたびに増える。`rejected_requests` にも `/errors` にも入れない
     pub silent_closes: AtomicU64,
     /// 起動時にリングの置き場を確保して触ったか (`/status` の `memory.rings_touched`。T17.8)。

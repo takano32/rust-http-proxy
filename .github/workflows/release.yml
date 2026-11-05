@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - "v*"
-  # タグをこの workflow の中で打ってからビルドする口 (T.27.99。2026-10-24)。クラウドのセッションからは
+  # タグをこの workflow の中で打ってからビルドする口 (T27.99。2026-10-24)。クラウドのセッションからは
   # タグの git push も GitHub API の書き込みも通らないので、GitHub のツールでこれを起動して打つ。
   # GITHUB_TOKEN で push したタグは別の workflow を起動しないので、上の `push: tags` と二重には走らない
   workflow_dispatch:
@@ -23,7 +23,7 @@ on:
 
 permissions:
   contents: write
-  # タグを打つコミットの CI (ci.yml の `check`) の結果を読む (T.32.32)
+  # タグを打つコミットの CI (ci.yml の `check`) の結果を読む (T32.32)
   checks: read
 
 jobs:
@@ -34,8 +34,8 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      # 取り出すのは main (歴史とタグを全部)。入力の `ref` は下で git に解かせる (T.29.30): `actions/checkout` の
-      # `ref` はブランチ・タグ・完全な SHA しか取れず、T.28.99 の 1 回目 (run 40254718138) は短いハッシュで落ちた
+      # 取り出すのは main (歴史とタグを全部)。入力の `ref` は下で git に解かせる (T29.30): `actions/checkout` の
+      # `ref` はブランチ・タグ・完全な SHA しか取れず、T28.99 の 1 回目 (run 40254718138) は短いハッシュで落ちた
       - uses: actions/checkout@v7
         with:
           ref: main
@@ -73,7 +73,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "打つコミット: $commit (main の先頭 $main より $behind コミット前)"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
-      # CI が通ったコミットにだけ打つ (T.32.32)。v0.28.48 (b56160a) は同じコミットの CI が終わる前に打っていた
+      # CI が通ったコミットにだけ打つ (T32.32)。v0.28.48 (b56160a) は同じコミットの CI が終わる前に打っていた
       # (結果は success、1 つ前のコミットは fmt で落ちていた)。`ci.yml` の `check` の最後の 1 回が
       # 終わっていて success でなければ、理由と CI の頁を出して落とす
       - name: Check that CI passed on the commit
@@ -143,7 +143,7 @@ jobs:
           # workflow_dispatch では、いま打ったタグを取り出す (push のときは既定のタグのまま)
           ref: ${{ needs.tag.outputs.tag || github.ref }}
           # クレートの版の決まりは「前回のデプロイ (版を書いたコミット) から中身が変わったか」を履歴で見るので、
-          # 歴史とタグを全部取る (T.26.3)
+          # 歴史とタグを全部取る (T26.3)
           fetch-depth: 0
       # 各クレートの版が決まり (デプロイの番号 X.Y.Z、全クレート = 本体 = proxy-server = タグ) に合っているか。
       # 合わなければ名前と理由を出して落ちる (タスクの中での --task 忘れ等)
@@ -166,7 +166,7 @@ jobs:
       - name: Rename
         run: |
           cp target/${{ matrix.target }}/dist/rust-http-proxy rust-http-proxy-${{ matrix.target }}
-          # 取り寄せた側が確かめられるように、ターゲットごとに SHA-256 を 1 行のファイルで添える (T.28.22)
+          # 取り寄せた側が確かめられるように、ターゲットごとに SHA-256 を 1 行のファイルで添える (T28.22)
           sha256sum rust-http-proxy-${{ matrix.target }} > rust-http-proxy-${{ matrix.target }}.sha256
       - uses: softprops/action-gh-release@v3
         with:

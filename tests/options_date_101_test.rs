@@ -1,4 +1,4 @@
-//! 小物 3 つ (T.29.9): `OPTIONS *`・応答の `Date`・頼んでいない 101。
+//! 小物 3 つ (T29.9): `OPTIONS *`・応答の `Date`・頼んでいない 101。
 //!
 //! (1) `OPTIONS http://h:P` (空のパス) はオリジンへ `OPTIONS *` で送る (RFC 9112 §3.2.4)。`OPTIONS *` + `Host`
 //!     は `Host` のオリジンへ `*` のまま送る (今までは `*` をホスト名として引いて 502)。`*` は OPTIONS 以外 400。
@@ -78,7 +78,7 @@ fn test_integration_options_asterisk() {
         &format!("OPTIONS http://{h}/x HTTP/1.1\r\nHost: {h}\r\nConnection: close\r\n\r\n"),
     );
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
-    // 3 本とも 200 が返った = オリジンは応答を返す前に積み終えている (待たずに見てよい。T.34.114)
+    // 3 本とも 200 が返った = オリジンは応答を返す前に積み終えている (待たずに見てよい。T34.114)
     assert_eq!(
         *seen.lock().unwrap(),
         vec![
@@ -99,7 +99,7 @@ fn test_integration_options_asterisk() {
         "OPTIONS * HTTP/1.1\r\nConnection: close\r\n\r\n",
     );
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
-    // 印の要求が届くまで待ってから見る (固定の sleep の代わり。T.34.114)
+    // 印の要求が届くまで待ってから見る (固定の sleep の代わり。T34.114)
     settle_with_mark(proxy_port, port, &seen);
     assert_eq!(seen.lock().unwrap().len(), 3);
 }

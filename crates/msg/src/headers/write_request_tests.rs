@@ -49,7 +49,7 @@ fn matches_the_previous_implementation_byte_for_byte() {
         ]),
         // 区切りの無い行 (無視される)
         vec!["NoColon\r\n".to_string(), "A: b\r\n".to_string()],
-        // `Expect` は転送しない (T.28.3。どちらの実装も落とす)
+        // `Expect` は転送しない (T28.3。どちらの実装も落とす)
         lines(&["eXpEcT: 100-continue", "Content-Length: 5", "A: b"]),
         Vec::new(),
     ];

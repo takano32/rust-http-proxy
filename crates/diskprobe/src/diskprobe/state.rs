@@ -1,4 +1,4 @@
-//! 状態ファイルの中身 (`Saved`) と、前回の終わり方から割当を学ぶ判断 (`learn`)。T.34.63 で
+//! 状態ファイルの中身 (`Saved`) と、前回の終わり方から割当を学ぶ判断 (`learn`)。T34.63 で
 //! `DiskProbe::load` (153 行) から出した。どちらもファイルも時計も触らない (時刻は引数で受ける)。
 
 use super::{CONFIRM_SECS, FAST_STEP, FLOOR, Mode, RELEARN_SECS, START};

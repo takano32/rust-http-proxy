@@ -1,4 +1,4 @@
-//! [`Detector::hits`]・[`Detector::transition`]・[`CpuWindow`] の単体試験 (T.34.44)。
+//! [`Detector::hits`]・[`Detector::transition`]・[`CpuWindow`] の単体試験 (T34.44)。
 //!
 //! 窓を畳まずに [`Reading`] を直に組んで渡す (履歴のリングも時計も要らない)。
 

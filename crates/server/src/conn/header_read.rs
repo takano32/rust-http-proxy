@@ -22,7 +22,7 @@ const KEEP_LINE_CAP: usize = 1024;
 
 /// 要求を断ったあと、応答が RST で消えないように読み捨てる上限 (時間とバイト数)。
 /// `LINGER_TIMEOUT` は読み 1 回の無通信の締め切り、`LINGER_TOTAL` は読み捨て全体の締め切り
-/// (T.34.141。前者だけだと、少しずつ送り続ける相手にワーカーを握られる)。
+/// (T34.141。前者だけだと、少しずつ送り続ける相手にワーカーを握られる)。
 const LINGER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 const LINGER_TOTAL: std::time::Duration = std::time::Duration::from_secs(1);
 const LINGER_BYTES: usize = 64 * 1024;
@@ -164,7 +164,7 @@ pub(super) enum HeaderStop {
     TooManyBytes,
     /// 行が `MAX_HEADER_LINES` を越えた (431)
     TooManyLines,
-    /// ヘッダーの途中で期限を越えた・黙った (408。T.28.0)
+    /// ヘッダーの途中で期限を越えた・黙った (408。T28.0)
     Timeout,
     /// ほかの読みの失敗 (そのまま返す)
     Io(io::Error),
@@ -173,7 +173,7 @@ pub(super) enum HeaderStop {
 /// ヘッダーを空行まで読んで `scratch` に積み、ヘッダー全体の大きさ (要求行を含む) を返す。
 ///
 /// `header_bytes` は要求行のバイト数。ヘッダーは読むだけで、なめるのは読み終えてからの 1 回
-/// (`parse_request_headers_visit`。T.28.15)。
+/// (`parse_request_headers_visit`。T28.15)。
 #[inline]
 pub(super) fn read_headers(
     reader: &mut clientio::ClientReader<'_>,
@@ -190,7 +190,7 @@ pub(super) fn read_headers(
         let line = match read_line_or_idle(reader, scratch.next(), extend, false, extended, clock) {
             Ok(Line::Read(v)) => v,
             Ok(Line::Idle) => unreachable!("allow_idle is false"),
-            // ヘッダーの途中で期限を越えた・黙った (T.28.0)
+            // ヘッダーの途中で期限を越えた・黙った (T28.0)
             Err(e) if clock.is_header_timeout(&e, served) => return Err(HeaderStop::Timeout),
             Err(e) => return Err(HeaderStop::Io(e)),
         };
@@ -251,7 +251,7 @@ pub(super) fn refuse_headers(peer: Peer<'_>, stop: HeaderStop) -> io::Result<Ste
     }
 }
 
-/// 要求行とヘッダーを読み終える期限 (`PROXY_HEADER_TIMEOUT_SECS`。T.28.0)。
+/// 要求行とヘッダーを読み終える期限 (`PROXY_HEADER_TIMEOUT_SECS`。T28.0)。
 ///
 /// `SO_RCVTIMEO` は読めるたびに待ち直す「無通信の締め切り」なので、1 バイトずつ送られると
 /// 何秒たっても切れない (slowloris)。ここでは **1 バイト目を受け取ってから**の総時間を
@@ -316,7 +316,7 @@ impl HeaderClock<'_> {
     /// 時間切れで返った読みを締め切りの扱いにするか。1 要求目は締め切りが効いていれば何でも
     /// (黙ったまま・途中で黙った・期限切れ)、2 要求目以降は期限を越えたときだけ
     /// (1 バイト目を待つ keep-alive のアイドルは今までどおり静かに閉じる)。
-    /// 1 要求目の黙ったまま (`started` が偽) は呼ぶ側が 408 を返さずに閉じる (T.33.0)。
+    /// 1 要求目の黙ったまま (`started` が偽) は呼ぶ側が 408 を返さずに閉じる (T33.0)。
     pub(super) fn is_header_timeout(&self, e: &io::Error, served: usize) -> bool {
         is_timeout(e) && !self.limit.is_zero() && (served == 0 || self.expired())
     }
@@ -381,7 +381,7 @@ fn read_limited_line(
 
 pub(super) fn reject(client: &TcpStream, status: u16, reason: &str) -> io::Result<()> {
     let mut client = client;
-    // `Date` も付ける (RFC 9110 §6.6.1。T.29.9)
+    // `Date` も付ける (RFC 9110 §6.6.1。T29.9)
     let mut head = [0u8; crate::httpdate::ERROR_HEAD_MAX];
     client.write_all(crate::httpdate::error_head(status, reason, &mut head))?;
     client.flush()?;
@@ -389,8 +389,8 @@ pub(super) fn reject(client: &TcpStream, status: u16, reason: &str) -> io::Resul
     Ok(())
 }
 
-/// 要求を断る共通の形 (T.34.11): 理由別に 1 件数えて個票にも残し (`/errors`。T14.28)、
-/// WARN は理由ごとに 1 分に 1 行 (T.28.9) だけ `warn` に出させ (文面は呼ぶ側が持つ)、
+/// 要求を断る共通の形 (T34.11): 理由別に 1 件数えて個票にも残し (`/errors`。T14.28)、
+/// WARN は理由ごとに 1 分に 1 行 (T28.9) だけ `warn` に出させ (文面は呼ぶ側が持つ)、
 /// `status` を返してから閉じる (無言で切ると客からは「落ちた」と見える)。
 ///
 /// **断る経路だけ**を通るので、通した要求には 1 命令も足さない。
@@ -416,7 +416,7 @@ pub(super) fn refuse(
 /// これ自体を居座りに使うことはできない)。
 ///
 /// 時間の上限は 2 つ: 読み 1 回の無通信 ([`LINGER_TIMEOUT`]) と、読み捨て全体
-/// ([`LINGER_TOTAL`]。T.34.141)。全体の残りが 1 回の締め切りより短くなったら、
+/// ([`LINGER_TOTAL`]。T34.141)。全体の残りが 1 回の締め切りより短くなったら、
 /// 読みの締め切りを残りに縮める (setsockopt が増えるのは最後の 200 ms の読みだけ)。
 fn linger(client: &TcpStream) {
     let mut client = client;
@@ -441,16 +441,16 @@ fn linger(client: &TcpStream) {
 }
 
 /// 要求行とヘッダーが期限 (`PROXY_HEADER_TIMEOUT_SECS`) までに揃わなかった接続に
-/// `408 Request Timeout` を返して閉じる (T.28.0)。
+/// `408 Request Timeout` を返して閉じる (T28.0)。
 ///
 /// 1 要求目の 1 バイト目も来なかった接続 (先張り) はここへ来ない: 408 を返さずに閉じて
-/// `/status` の `silent_closes` に数える (T.33.0。`serve_one`)。ここへ来るのは 1 バイト以上
+/// `/status` の `silent_closes` に数える (T33.0。`serve_one`)。ここへ来るのは 1 バイト以上
 /// 送ってから止まった接続 (ヘッダーの途中で止まる・1 バイトずつ送る slowloris) と、2 要求目以降の
 /// 期限切れ。来るたびに出るので、ログは debug に留める
 /// (1 本ごとに WARN を出すと、ログの環が攻撃の行で埋まる)。
 ///
 /// 数は `/status` の `rejected_requests.header_timeout` と `/errors` の 1 行 (`bad_request:header_timeout`、
-/// 状態 408)、`/recent` の理由は `error:header_timeout` (T.29.10。CONNECT の確立の締め切りの
+/// 状態 408)、`/recent` の理由は `error:header_timeout` (T29.10。CONNECT の確立の締め切りの
 /// `error:timeout` と分ける)。ログは数えたあとも debug のまま (WARN の絞りの戻り値は捨てる)
 pub(super) fn header_timeout(
     client: &TcpStream,
@@ -527,7 +527,7 @@ mod tests {
     }
 
     /// 断ったあとの読み捨ては、少しずつ送り続ける相手にも全体で [`LINGER_TOTAL`] までしか
-    /// ワーカーを渡さない (T.34.141)。直す前は締め切りが読み 1 回ごとの 200 ms だけで、
+    /// ワーカーを渡さない (T34.141)。直す前は締め切りが読み 1 回ごとの 200 ms だけで、
     /// 150 ms おきに 1 バイト送る相手には 64 KiB ぶん (約 2.7 時間) 握られていた。
     #[test]
     fn linger_gives_up_after_the_total_deadline_even_on_a_slow_drip() {

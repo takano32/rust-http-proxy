@@ -173,7 +173,7 @@ fn coalescing_is_skipped_for_keys_that_were_not_stored() {
 }
 
 /// 名前の違うキャッシュ可能な GET を 50,000 本保存して追い出しても、バリアントの表は
-/// 掃除の上限 (両層の件数の 2 倍、下限 4,096) を越えず、無効化は効いたまま (T.32.6)。
+/// 掃除の上限 (両層の件数の 2 倍、下限 4,096) を越えず、無効化は効いたまま (T32.6)。
 /// 0.30.4 までは 1 本ごとに 1 行足して消さなかった (50,000 行)。
 #[test]
 fn variants_table_stays_bounded_after_evictions() {

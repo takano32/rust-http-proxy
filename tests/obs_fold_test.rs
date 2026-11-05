@@ -87,7 +87,7 @@ fn test_integration_obsolete_line_folding_is_refused() {
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
 
     // オリジンには 1 本も繋いでいない (継続行を捨てて 200 で通していた今までとの違い)。
-    // 印の要求が届くまで待ってから見る (T.34.114)
+    // 印の要求が届くまで待ってから見る (T34.114)
     settle_with_mark(proxy_port, origin_port, &received);
     let seen = received.lock().unwrap();
     assert!(seen.is_empty(), "オリジンに届いてはいけない: {:?}", *seen);
@@ -126,7 +126,7 @@ fn test_integration_plain_headers_still_pass() {
     );
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
 
-    // 200 が返った = オリジンは応答を書く前に積み終えている (待たずに見てよい。T.34.114)
+    // 200 が返った = オリジンは応答を書く前に積み終えている (待たずに見てよい。T34.114)
     let seen = received.lock().unwrap();
     assert_eq!(seen.len(), 1, "{:?}", *seen);
     let head = seen[0].split("\r\n\r\n").next().unwrap_or("");

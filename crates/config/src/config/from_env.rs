@@ -26,7 +26,7 @@ impl Config {
         // **効いた値にだけ**出どころの印を付ける (`/config` の `source`。T14.15)。
         // 読めない書き方は既定に落ちるので、その行は `default` のままになる
         let mut src = Sources::default();
-        // 読めない値と知らない名前 (T.28.6)。読めない値は WARN を 1 行出して既定のまま
+        // 読めない値と知らない名前 (T28.6)。読めない値は WARN を 1 行出して既定のまま
         let mut bad = EnvProblems::default();
         let mut cfg = Self::read_base(&mut src, &mut bad)?;
         cfg.read_timeouts(&mut src, &mut bad);
@@ -83,14 +83,14 @@ impl Config {
     /// 締め切りと間隔: CONNECT の確立・要求行とヘッダー・Happy Eyeballs の間隔・keep-alive。
     fn read_timeouts(&mut self, src: &mut Sources, bad: &mut EnvProblems) {
         // CONNECT のオリジン接続だけの締め切り (T15.6)。書かなければ `Config::new` が入れた
-        // 既定 (3 秒と `PROXY_TIMEOUT_SECS` の小さい方。T.28.43) のまま = 出どころも `default` のまま。
+        // 既定 (3 秒と `PROXY_TIMEOUT_SECS` の小さい方。T28.43) のまま = 出どころも `default` のまま。
         // 書いてあればその値をそのまま使う (`0` と明示すれば無期限。T10.6)
         if let Some(secs) = bad.num::<u64>("PROXY_CONNECT_TIMEOUT_SECS") {
             self.connect_timeout =
                 connect_timeout_for(self.timeout, Some(Duration::from_secs(secs)));
             src.mark("PROXY_CONNECT_TIMEOUT_SECS");
         }
-        // 要求行とヘッダーの締め切り (T.28.0)。書かなければ `Config::new` の既定のまま
+        // 要求行とヘッダーの締め切り (T28.0)。書かなければ `Config::new` の既定のまま
         if let Some(secs) =
             envfile::var("PROXY_HEADER_TIMEOUT_SECS").and_then(|s| s.trim().parse::<u64>().ok())
         {
@@ -232,7 +232,7 @@ impl Config {
             src.mark("PROXY_BURST_PERCENT");
         }
         self.refresh_burst_at();
-        // 転送中の最小の速さ (T.29.34)。`0` で切らない
+        // 転送中の最小の速さ (T29.34)。`0` で切らない
         if let Some(bps) = bad.num::<u64>("PROXY_MIN_TRANSFER_BPS") {
             self.min_transfer.bps = bps;
             src.mark("PROXY_MIN_TRANSFER_BPS");
@@ -441,7 +441,7 @@ impl Config {
         let mut cache = CacheConfig::from_env();
         if self.lite {
             // lite ではブロックリストの取得もキャッシュもしない。**ブロックリストは明示指定 (`PROXY_BLOCKLIST_FILE` /
-            // `_URL`) より lite が勝つ** (読まない)。キャッシュだけは `PROXY_CACHE_ENABLED` の明示指定が勝つ (T.28.48)
+            // `_URL`) より lite が勝つ** (読まない)。キャッシュだけは `PROXY_CACHE_ENABLED` の明示指定が勝つ (T28.48)
             self.blocklist_file = None;
             self.blocklist_url = None;
             if envfile::var("PROXY_CACHE_ENABLED").is_none() {

@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use crate::config::MIB;
 use crate::{log_info, log_warn};
 
-// 状態ファイルの中身と、前回の終わり方から学ぶ判断 (T.34.63)
+// 状態ファイルの中身と、前回の終わり方から学ぶ判断 (T34.63)
 mod state;
 use state::{Note, Saved, learn};
 
@@ -82,7 +82,7 @@ pub struct DiskProbe {
 impl DiskProbe {
     /// 状態ファイルを読み、前回の終わり方から割当を学習する。
     ///
-    /// 段取り (T.34.63 で割った): 読む ([`Saved::parse`]) → 判断 ([`learn`]) → ログ → 保存。
+    /// 段取り (T34.63 で割った): 読む ([`Saved::parse`]) → 判断 ([`learn`]) → ログ → 保存。
     /// 状態ファイルが無いときだけは前と同じく、保存してからログを出す (書けなかったときの WARN が先)。
     pub fn load(path: &Path, now: u64) -> Self {
         let saved = fs::read_to_string(path).ok().map(|t| Saved::parse(&t));
@@ -162,7 +162,7 @@ impl DiskProbe {
     /// 毎プローブ呼ぶ。`entries` は実データ、`owned` は実データ + バラスト、`fill_failed` は
     /// 直前のバラスト伸長が (ENOSPC 等で) 失敗したか。戻り値は (実データの上限, 全体の上限)。
     pub fn tick(&mut self, now: u64, entries: u64, owned: u64, fill_failed: bool) -> (u64, u64) {
-        // `entries` は今どの段でも使っていない (T.34.63 で使っていなかった `tick_slow` の引数を外した)。
+        // `entries` は今どの段でも使っていない (T34.63 で使っていなかった `tick_slow` の引数を外した)。
         // 公開の形は呼ぶ側 (cache) に合わせて残す
         let _ = entries;
         let mut changed = false;

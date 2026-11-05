@@ -11,7 +11,7 @@ pub type Handler = dyn Fn(&str, usize) -> Vec<u8> + Send + Sync;
 
 /// ヘッダー部から `Content-Length` の値を取る (無ければ 0)。名前の大小は無視する。
 ///
-/// クライアント側の [`super::read_response`] も同じものを使う (T.34.163)。
+/// クライアント側の [`super::read_response`] も同じものを使う (T34.163)。
 pub(super) fn content_length(head: &str) -> usize {
     head.lines()
         .find_map(|l| {
@@ -81,7 +81,7 @@ pub fn start_origin(
                         // 読み残すと close のときに RST が飛び、プロキシ側で 502 になる (T19.1)。
                         // 終端は**本文の中だけ**で探す: ヘッダーの最後の行が `0` で終わると
                         // (プロキシの `Via` の印は 16 進なので 16 回に 1 回)、ヘッダーの終わりの
-                        // 空行を終端と取り違えて本文の途中で返していた (T.28.37)
+                        // 空行を終端と取り違えて本文の途中で返していた (T28.37)
                         while !req[head_end..].windows(5).any(|w| w == b"0\r\n\r\n") {
                             match stream.read(&mut buf) {
                                 Ok(0) | Err(_) => break,
@@ -207,7 +207,7 @@ pub fn start_echo_server() -> u16 {
 /// 読んだぶんをそのまま返し、クライアントが送信側を閉じたら自分も閉じるオリジン。
 ///
 /// トンネルの「ふつうの終わり方」(クライアントが先に EOF) を待ち時間なしに作るための道具
-/// (初めは `tests/recent_test.rs` にあった。T.34.117 で割ったときに、2 つの試験が使うので移した)。
+/// (初めは `tests/recent_test.rs` にあった。T34.117 で割ったときに、2 つの試験が使うので移した)。
 pub fn start_echo_origin() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

@@ -34,7 +34,7 @@ use crate::rrd::ring::Ring;
 use crate::rrd::{Enc, Opened, Region, Rrd};
 use crate::{log_info, log_warn};
 
-// 表の 1 領域のスロットの割り当てと、書き直しの判断 (I/O をしない。T.34.31)
+// 表の 1 領域のスロットの割り当てと、書き直しの判断 (I/O をしない。T34.31)
 mod slots;
 
 use slots::Slots;
@@ -86,9 +86,9 @@ pub struct Store {
     /// **この起動で取った** heap の基準 (`at` = 取った時刻 (epoch 秒), `bytes`)。T24.4。
     /// 前の起動が状態ファイルに残した値は読み戻さない (別の起動の値なので使えない)
     baseline: Mutex<Option<(u64, u64)>>,
-    /// ホスト別・接続元別の表の、スロットごとに最後に書いた中身 (`[hosts, clients]`。T.32.22)
+    /// ホスト別・接続元別の表の、スロットごとに最後に書いた中身 (`[hosts, clients]`。T32.22)
     tables: Mutex<[Slots; 2]>,
-    /// 表のレコードを書いた・消した回数 (試験と `/status` の説明用。T.32.22)
+    /// 表のレコードを書いた・消した回数 (試験と `/status` の説明用。T32.22)
     table_writes: AtomicU64,
 }
 
@@ -133,7 +133,7 @@ impl Store {
         let decode = |recs: Vec<Vec<u8>>| -> Vec<Sample> {
             recs.iter().filter_map(|p| Sample::decode(p)).collect()
         };
-        // 表は 1 回だけ読み、中身と「どのスロットに誰が居るか」(T.32.22) の両方に使う
+        // 表は 1 回だけ読み、中身と「どのスロットに誰が居るか」(T32.22) の両方に使う
         let host_recs = rrd.read_all(l.hosts)?;
         let client_recs = rrd.read_all(l.clients)?;
         let stats = |recs: &[(usize, Vec<u8>)]| -> Vec<(String, HostStats)> {
@@ -208,7 +208,7 @@ impl Store {
         let l = self.rrd.layout;
         let mut tables = self.tables.locked();
         let [hosts, clients] = &mut *tables;
-        // ホスト別は統計の鍵の内側で、写さず並べずに上位を見る (T.32.22)
+        // ホスト別は統計の鍵の内側で、写さず並べずに上位を見る (T32.22)
         self.write_table(l.hosts, hosts, |f| {
             metrics.visit_top_hosts(l.hosts.count, f)
         });
@@ -223,12 +223,12 @@ impl Store {
         self.flushes.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// 表のレコードを書いた・消した回数の累計 (T.32.22)。
+    /// 表のレコードを書いた・消した回数の累計 (T32.22)。
     pub fn table_writes(&self) -> u64 {
         self.table_writes.load(Ordering::Relaxed)
     }
 
-    /// 上位 `region.count` 行を書く。**中身が前回と同じ行は書かない** ([`Slots`]。T.32.22)。
+    /// 上位 `region.count` 行を書く。**中身が前回と同じ行は書かない** ([`Slots`]。T32.22)。
     ///
     /// `visit` は上位の行を順不同で 1 回ずつ渡す。渡された中では中身を組んで hash を比べる
     /// だけで、書く (`pwrite`) のは `visit` を抜けたあと (統計の鍵を握ったまま書かない)。
@@ -238,7 +238,7 @@ impl Store {
         t: &mut Slots,
         visit: impl FnOnce(&mut dyn FnMut(&str, &HostStats)),
     ) {
-        // どのスロットに何を書くかは表だけで決める (I/O はしない。T.34.31)
+        // どのスロットに何を書くかは表だけで決める (I/O はしない。T34.31)
         let plan = t.plan(region.count, visit);
         let mut writes = 0u64;
         for (idx, name, payload, h) in plan.writes {

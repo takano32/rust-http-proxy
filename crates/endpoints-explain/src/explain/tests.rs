@@ -122,7 +122,7 @@ fn the_one_line_verdict_lines_up_the_stages() {
     assert!(numbers.contains("\"requests\":0"), "{}", numbers);
 }
 
-/// ホストの 1 枚の**鍵の並び** (T.34.4 で材料と組み立てを分けたので、材料を手で作って縛る)。
+/// ホストの 1 枚の**鍵の並び** (T34.4 で材料と組み立てを分けたので、材料を手で作って縛る)。
 ///
 /// 読む道具 (`scripts/` と `inspect.html`) は鍵の名前と順で引くので、ここが 1 バイト変わると
 /// 読めなくなる。表もリングも読まず、`render` だけを通す。

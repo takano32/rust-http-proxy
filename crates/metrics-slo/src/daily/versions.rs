@@ -1,4 +1,4 @@
-//! その日に動いた版の並び (T.32.18)。
+//! その日に動いた版の並び (T32.18)。
 
 use super::{MAX_VERSION, MAX_VERSIONS};
 
@@ -10,7 +10,7 @@ pub(super) fn clean_version(v: &str) -> String {
         .collect()
 }
 
-/// その日に動いた版の並び (T.32.18)。`/events` の `start` (`version <版> on port …`) から、
+/// その日に動いた版の並び (T32.18)。`/events` の `start` (`version <版> on port …`) から、
 /// 0 時に動いていた版 (`with_midnight` のとき。0 時より前のいちばん新しい `start`) と、0 時から
 /// `until` までに起動した版を古い順に並べ、最後に今の版 `current` を置く (続けて同じ版は 1 つに)。
 /// 長さが [`MAX_VERSIONS`] を越えたら古い方から落とす。

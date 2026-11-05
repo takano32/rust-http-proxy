@@ -133,7 +133,7 @@ fn without_fragment(path: &str) -> &str {
 ///
 /// スキームは大小を区別しない (RFC 9110 §4.2.3) のに小文字だけを見ていたので、
 /// `HTTP://h/p` はスキームの無い形として丸ごとを authority に読み、`[HTTP://h/p]:80` を
-/// 引きに行って 502 になっていた (T.28.33)。マッピング形式 (`/https/`) はパスなので今までどおり小文字だけ。
+/// 引きに行って 502 になっていた (T28.33)。マッピング形式 (`/https/`) はパスなので今までどおり小文字だけ。
 pub fn strip_scheme(target: &str) -> Option<(Scheme, &str)> {
     let strip = |prefix: &str| -> Option<&str> {
         let head = target.get(..prefix.len())?;
@@ -178,11 +178,11 @@ pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origi
     if let Some(rest) = target.strip_prefix("/http/") {
         return split(Scheme::Http, rest, true);
     }
-    // `*` (asterisk-form。`OPTIONS *` だけ。RFC 9112 §3.2.4) は `Host` のサーバー全体を指す (T.29.9)。
+    // `*` (asterisk-form。`OPTIONS *` だけ。RFC 9112 §3.2.4) は `Host` のサーバー全体を指す (T29.9)。
     // 今までは `*` をホスト名として引きに行って 502 だった。OPTIONS 以外の `*` は受け付けの層が 400 で断る
     if target.starts_with('/') || target == "*" {
         return match host_header {
-            // `Host` も同じ形で確かめる (RFC 9112 §3.2 は不正な `Host` に 400 を求める。T.32.12)。
+            // `Host` も同じ形で確かめる (RFC 9112 §3.2 は不正な `Host` に 400 を求める。T32.12)。
             // 絶対形式の要求の `Host` (宛先には使わない) は入口の [`target_host`] だけが見る (要求ごとに 2 回なめない)
             Some(h) if !h.is_empty() => Ok(Origin {
                 scheme: Scheme::Http,
@@ -204,7 +204,7 @@ pub fn parse_origin(target: &str, host_header: Option<&str>) -> io::Result<Origi
     })
 }
 
-/// 絶対形式 (`http://h:P`) かマッピング形式 (`/http/h:P`) で、authority の後ろが空か (T.29.9)。
+/// 絶対形式 (`http://h:P`) かマッピング形式 (`/http/h:P`) で、authority の後ろが空か (T29.9)。
 ///
 /// `OPTIONS` でこの形なら、オリジンへは `OPTIONS *` を送る (RFC 9112 §3.2.4。今までは `/` を補っていた)。
 pub fn has_empty_path(target: &str) -> bool {
@@ -223,7 +223,7 @@ pub fn has_empty_path(target: &str) -> bool {
 pub fn target_host<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Result<&'a str> {
     let host_of =
         |rest: &'a str| -> io::Result<&'a str> { check_authority(&rest[..authority_end(rest)]) };
-    // `Host` も同じ形で確かめる (T.32.12)。ここは受け付けの入口なので、絶対形式の要求でも見る
+    // `Host` も同じ形で確かめる (T32.12)。ここは受け付けの入口なので、絶対形式の要求でも見る
     // (宛先は要求の対象で決めるが、不正な値は不正。空の `Host` は形としては通す)
     let host_header = match host_header {
         Some(h) if !h.is_empty() => Some(check_authority(h)?),
@@ -246,7 +246,7 @@ pub fn target_host<'a>(target: &'a str, host_header: Option<&'a str>) -> io::Res
             )),
         };
     }
-    // スキームも `/` も無い形 (`h` や `h:443`) は、丸ごとがホストになる (形は確かめる。T.32.12)
+    // スキームも `/` も無い形 (`h` や `h:443`) は、丸ごとがホストになる (形は確かめる。T32.12)
     check_authority(target)
 }
 

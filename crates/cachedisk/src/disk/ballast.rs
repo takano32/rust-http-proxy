@@ -1,6 +1,6 @@
 //! ディスクのバラスト (`ballast.reserve`。予算の未使用分を fallocate で先行確保する)。
 //!
-//! T.34.90 で `mod.rs` から分けた。ファイルと長さは [`Ballast`] だけが書き、
+//! T34.90 で `mod.rs` から分けた。ファイルと長さは [`Ballast`] だけが書き、
 //! [`DiskTier`] は鍵を取って呼び、戻り値でログと記帳 (`ballast_bytes`・`fill_failed`) をする。
 
 use std::fs::{self, File, OpenOptions};

@@ -6,12 +6,12 @@ use std::fmt::Write as _;
 /// 「平常時」の閾 (T14.0): **1 時間に 300 本以上**確立した標本はバーストとして外す。
 /// `scripts/snapshot-diff.py` の `BURST_PER_HOUR` と同じ値。
 ///
-/// T.29.13 からは**下限**で、実際の閾は「これと、その期間の 1 標本の本数の中央値 ×
+/// T29.13 からは**下限**で、実際の閾は「これと、その期間の 1 標本の本数の中央値 ×
 /// [`BURST_MEDIAN_K`] の大きい方」([`normal_limit`])。tokyo は毎時 475〜1,760 本で、300 本で切ると
 /// `normal_hours_only=1` が 23 時間の全部をバーストとして外していた (`samples 0, burst_samples 25`)。
 pub const BURST_PER_HOUR: u64 = 300;
 
-/// 平常時の閾の「中央値の何倍」(T.29.13)。`scripts/snapshot_criteria.py` の phase22 の
+/// 平常時の閾の「中央値の何倍」(T29.13)。`scripts/snapshot_criteria.py` の phase22 の
 /// `burst_median_k` (T22.1) と同じ値で、量の揃った日のいちばん多い 1 時間 (最大 / 中央値 2.0) を切らない。
 pub const BURST_MEDIAN_K: u64 = 3;
 
@@ -28,7 +28,7 @@ pub struct Params {
     pub until: u64,
     /// `?res=` (秒)。無ければ**期間の長さ**で選ぶ
     pub res: Option<u64>,
-    /// バーストの標本を外す (T14.0 の「平常時」。閾は [`normal_limit`]。T.29.13)
+    /// バーストの標本を外す (T14.0 の「平常時」。閾は [`normal_limit`]。T29.13)
     pub normal_hours_only: bool,
 }
 
@@ -62,7 +62,7 @@ pub fn burst_limit(interval_secs: u64) -> u64 {
     ((BURST_PER_HOUR * interval_secs + 1800) / 3600).max(1)
 }
 
-/// 平常時の閾 (1 標本の本数。これ以上はバースト) を、その期間の標本の本数 `counts` から出す (T.29.13)。
+/// 平常時の閾 (1 標本の本数。これ以上はバースト) を、その期間の標本の本数 `counts` から出す (T29.13)。
 ///
 /// `base` ([`burst_limit`]) と「本数の中央値 × [`BURST_MEDIAN_K`]」(切り上げ) の大きい方。
 /// **`scripts/snapshot_criteria.py` の `normal_limit` と同じ計算** (中央値は本数が偶数なら真ん中 2 つの
@@ -106,24 +106,24 @@ pub struct Summary {
     pub dns_ms_sum: u64,
     /// 同時接続数の山 (ゲージなので最大値で畳む)
     pub active_max: u64,
-    /// `normal_hours_only` で使った閾 (1 標本の本数。これ以上をバーストとして外した。T.29.13)。
+    /// `normal_hours_only` で使った閾 (1 標本の本数。これ以上をバーストとして外した。T29.13)。
     /// 切っていなければ 0
     pub burst_limit: u64,
-    /// 名前解決を除いた「確立 − オリジン側の RTT」の分布 (T.29.12 の `conn_excess`)。
-    /// 異常検知の `connect_p95` はこちらで読む (T.29.11)。`/history?summary=1` の JSON には出さない
+    /// 名前解決を除いた「確立 − オリジン側の RTT」の分布 (T29.12 の `conn_excess`)。
+    /// 異常検知の `connect_p95` はこちらで読む (T29.11)。`/history?summary=1` の JSON には出さない
     pub conn_excess: Window,
-    /// `dns_misses` のうち名前解決に失敗した試みが払ったぶん (標本の `dns_fail_misses`。T.32.36)。
+    /// `dns_misses` のうち名前解決に失敗した試みが払ったぶん (標本の `dns_fail_misses`。T32.36)。
     /// 異常検知の `dns_miss_rate` は `/slo` と同じく `(dns_misses − dns_fail_misses) ÷ 確立` で読む。
-    /// JSON の末尾にも出す (T.32.17。ダッシュボードの KPI「名前解決」が読む)
+    /// JSON の末尾にも出す (T32.17。ダッシュボードの KPI「名前解決」が読む)
     pub dns_fail_misses: u64,
-    /// 名前解決に成功した 443・80 以外の宛先へのエラー (標本の `other_port_errors`。T.32.36)。
+    /// 名前解決に成功した 443・80 以外の宛先へのエラー (標本の `other_port_errors`。T32.36)。
     /// 異常検知の `errors` は `/slo` と同じく引く。JSON には出さない
     pub other_port_errors: u64,
-    /// `dns_ms_sum` のうち名前解決に失敗した試みが払った ms (標本の `dns_fail_ms_sum`。T.32.16)。
+    /// `dns_ms_sum` のうち名前解決に失敗した試みが払った ms (標本の `dns_fail_ms_sum`。T32.16)。
     /// 異常検知の `dns_slow` は名前解決に成功したミスで読む。JSON には出さない
     pub dns_fail_ms_sum: u64,
     /// 名前解決に成功したミスのうち 443・80 宛てのものの回数と ms (標本の `web_dns_misses`・`web_dns_ms_sum`。
-    /// T.33.3)。異常検知の `dns_slow` はこの 2 つで判定する。JSON には出さない
+    /// T33.3)。異常検知の `dns_slow` はこの 2 つで判定する。JSON には出さない
     pub web_dns_misses: u64,
     pub web_dns_ms_sum: u64,
 }
@@ -159,7 +159,7 @@ impl Summary {
         self.web_dns_ms_sum += s.web_dns_ms_sum;
     }
 
-    /// 443・80 宛ての、名前解決に成功したミス 1 回の平均 ms (T.33.3。`dns_slow` が読む)。
+    /// 443・80 宛ての、名前解決に成功したミス 1 回の平均 ms (T33.3。`dns_slow` が読む)。
     pub fn web_dns_miss_avg_ms(&self) -> f64 {
         match self.web_dns_misses {
             0 => 0.0,
@@ -167,18 +167,18 @@ impl Summary {
         }
     }
 
-    /// 名前解決に成功したミスのうち、443・80 以外の宛てのもの (T.33.3。`dns_slow` が外して文面に添える)。
+    /// 名前解決に成功したミスのうち、443・80 以外の宛てのもの (T33.3。`dns_slow` が外して文面に添える)。
     pub fn other_port_dns_misses(&self) -> u64 {
         self.resolved_dns_misses()
             .saturating_sub(self.web_dns_misses)
     }
 
-    /// 名前解決に成功した試みのミスが払った ms (`dns_ms_sum − dns_fail_ms_sum`。T.32.16)。
+    /// 名前解決に成功した試みのミスが払った ms (`dns_ms_sum − dns_fail_ms_sum`。T32.16)。
     pub fn resolved_dns_ms_sum(&self) -> u64 {
         self.dns_ms_sum.saturating_sub(self.dns_fail_ms_sum)
     }
 
-    /// 名前解決に成功したミス 1 回の平均 ms (T.32.16。`dns_slow` が読む)。
+    /// 名前解決に成功したミス 1 回の平均 ms (T32.16。`dns_slow` が読む)。
     pub fn resolved_dns_miss_avg_ms(&self) -> f64 {
         match self.resolved_dns_misses() {
             0 => 0.0,
@@ -186,25 +186,25 @@ impl Summary {
         }
     }
 
-    /// 名前解決に失敗したエラー (原因 `dns` の全部。`nxdomain` も `dns_temp` も。T.32.36)。
+    /// 名前解決に失敗したエラー (原因 `dns` の全部。`nxdomain` も `dns_temp` も。T32.36)。
     pub fn dns_failed_errors(&self) -> u64 {
         self.errors_by_cause[crate::metrics::ErrCause::Dns as usize].min(self.errors)
     }
 
-    /// `/slo` の `error_rate` の分子と同じ数え方のエラー (T.32.36。利用者の決定 (a)):
-    /// **エラー − 名前解決の失敗 − 443・80 以外の宛先のエラー**。T.30.3 より前の標本は
+    /// `/slo` の `error_rate` の分子と同じ数え方のエラー (T32.36。利用者の決定 (a)):
+    /// **エラー − 名前解決の失敗 − 443・80 以外の宛先のエラー**。T30.3 より前の標本は
     /// `other_port_errors` が 0 なので、名前解決の失敗だけを引いた数になる。
     pub fn web_errors(&self) -> u64 {
         let resolved = self.errors - self.dns_failed_errors();
         resolved - self.other_port_errors.min(resolved)
     }
 
-    /// 名前解決に成功した試みが払ったミス (`dns_misses − dns_fail_misses`。T.32.36)。
+    /// 名前解決に成功した試みが払ったミス (`dns_misses − dns_fail_misses`。T32.36)。
     pub fn resolved_dns_misses(&self) -> u64 {
         self.dns_misses.saturating_sub(self.dns_fail_misses)
     }
 
-    /// `/slo` の `dns_miss_per_connect` と同じ数え方の率 (名前解決に成功したミス ÷ 確立。T.32.36)。
+    /// `/slo` の `dns_miss_per_connect` と同じ数え方の率 (名前解決に成功したミス ÷ 確立。T32.36)。
     pub fn resolved_dns_miss_per_connect(&self) -> f64 {
         if self.connect.count == 0 {
             0.0
@@ -293,9 +293,9 @@ impl Summary {
         out.push_str("],\"causes\":[");
         super::push_str_array(&mut out, &ERR_CAUSE_NAMES);
         let _ = write!(out, "],\"active_max\":{}", self.active_max);
-        // 末尾に足した鍵 (T.29.13): 平常時を切った閾
+        // 末尾に足した鍵 (T29.13): 平常時を切った閾
         let _ = write!(out, ",\"burst_limit\":{}", self.burst_limit);
-        // 末尾に足した鍵 (T.32.17): `dns_misses` のうち名前解決に失敗した試みのぶん。ダッシュボードの
+        // 末尾に足した鍵 (T32.17): `dns_misses` のうち名前解決に失敗した試みのぶん。ダッシュボードの
         // KPI「名前解決」が `/status` のミスから失敗の割合を引く (`/slo` と同じく失敗を数えない)
         let _ = write!(out, ",\"dns_fail_misses\":{}", self.dns_fail_misses);
         if let Some(q) = recent {
@@ -317,7 +317,7 @@ pub fn of(h: &History, p: &Params) -> Summary {
     let interval = RESOLUTIONS[res].0;
     let ring = h.rings[res].locked();
     let in_window = |s: &&Sample| s.t >= p.since && s.t <= p.until;
-    // 平常時 = 「1 時間 300 本と、その期間の 1 標本の本数の中央値 × 3 の大きい方」未満の標本 (T.29.13)
+    // 平常時 = 「1 時間 300 本と、その期間の 1 標本の本数の中央値 × 3 の大きい方」未満の標本 (T29.13)
     let limit = p.normal_hours_only.then(|| {
         let mut counts: Vec<u64> = ring
             .iter()
@@ -335,7 +335,7 @@ pub fn of(h: &History, p: &Params) -> Summary {
         ..Summary::default()
     };
     for s in ring.iter().filter(in_window) {
-        // 平常時の標本だけ (T14.0 / T.29.13)。外した数も返す
+        // 平常時の標本だけ (T14.0 / T29.13)。外した数も返す
         if limit.is_some_and(|l| s.connect.count >= l) {
             out.burst_samples += 1;
             continue;

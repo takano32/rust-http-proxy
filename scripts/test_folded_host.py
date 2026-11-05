@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`/hosts` の `other` 行 (表からあふれたホストの畳み先) を分位点の比べから外す試験 (T.28.19)。
+"""`/hosts` の `other` 行 (表からあふれたホストの畳み先) を分位点の比べから外す試験 (T28.19)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 

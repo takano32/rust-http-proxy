@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 3. /status を読む関数 (名前解決の KPI と悪いホスト) (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 3. /status を読む関数 (名前解決の KPI と悪いホスト) (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 3. `/status` を読む関数 (名前解決の KPI と「悪いホスト」の表。T13.3)
 const statusFile = process.argv[3] || path.join(__dirname, 'testdata', 'status.json');
@@ -22,7 +22,7 @@ if (api.dnsStats({ dns: {} }).warm !== null) fail('warm が無ければ null の
 if (api.dnsStats({ dns: { warm: 5, warm_secs: 900 } }).warm !== 5) {
   fail('warm を読めていない');
 }
-// T.32.17: ミス率は名前解決に失敗した試みのミスを除く (`/history?summary=1&since=restart` の
+// T32.17: ミス率は名前解決に失敗した試みのミスを除く (`/history?summary=1&since=restart` の
 // `dns_fail_misses ÷ dns_misses` を `/status` のミスから引き、`stale_hits` を当たりに数える)。
 // 数字は 0.30.4 の 48 時間の雪像 (`2026-10-31T063104Z`): 今までの 64.5% が 5.1% になる
 const realDns = { dns: { hits: 17266, misses: 31358, stale_hits: 12591 } };

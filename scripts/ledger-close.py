@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
-"""台帳の締め (`TASKS.md` の済んだ小タスクを `tasks/TNN.md` へ移す) を道具にしたもの (T.32.26)。
+"""台帳の締め (`TASKS.md` の済んだ小タスクを `tasks/TNN.md` へ移す) を道具にしたもの (T32.26)。
 
 前はセッションの作業場に写し (`close_task29.py`〜`close_task31.py`) を置き、番号・題・日付・前のタスクの
-正規表現を毎回書き換えていた。写しが直さないもの (`TODO.md` 冒頭の「T.15〜T.N」、`tasks/README.md` の
+正規表現を毎回書き換えていた。写しが直さないもの (`TODO.md` 冒頭の「T15〜T.N」、`tasks/README.md` の
 「タスク 0〜N」、全部済んだときの前置きの移動、§5 の「タスク N は全部済んだ」) は毎回手で直していた。
 
 使い方 (リポジトリの根から。`-C DIR` で別の根):
 
-  scripts/ledger-close.py T.32.5 結果.txt [--title 題] [--index 索引の題] [--date YYYY-MM-DD]
-      `TASKS.md` の `- [ ] **T.32.5 …` とその下の字下げした行を `[x]` にし、`結果.txt` の行 (`  - 結果 (…): …`
+  scripts/ledger-close.py T32.5 結果.txt [--title 題] [--index 索引の題] [--date YYYY-MM-DD]
+      `TASKS.md` の `- [ ] **T32.5 …` とその下の字下げした行を `[x]` にし、`結果.txt` の行 (`  - 結果 (…): …`
       の形で書いておく) を足して `tasks/T32.md` の末尾へ移す。`tasks/T32.md` が無ければ 1 行目と前書きを作る
       (`--title` は 1 行目の題。省くと `TASKS.md` の `### タスク 32 (… に起こした: 題)` の題)。
       `TODO.md` の §5 の「済んだ N 本の本文は …」の行 (無ければタスク 31 の節の後ろに節ごと)、`tasks/README.md` の
       表の行 (`--index` は新しく作るときの説明。省くと `--title` と同じ)、範囲の印 2 つ (`TODO.md` 冒頭の
-      「T.15〜T.N」と `tasks/README.md` の 1 行目の「タスク 0〜N」) を直す。
+      「T15〜T.N」と `tasks/README.md` の 1 行目の「タスク 0〜N」) を直す。
 
   scripts/ledger-close.py --finish 32 [--deployed X.Y.Z[+hash]] [--hours H] [--note 文] [--date YYYY-MM-DD]
       小タスクが全部済んだ (`TASKS.md` の節に `- [ ]` が残っていない) タスクを締める: 節の前置き (見出しと
       小タスク以外の段落) を `tasks/T32.md` の末尾の「## タスク 32 の前置きと判断の記録 (…)」へ移し
       (見出しは `####` に下げる)、`TASKS.md` から節を消し (ほかに開いているタスクが無ければ「なし (…)。」)、
-      §5 の行の末尾に「タスク 32 は全部済んだ (日付、文)。」を足す (`--note` を省くと「T.32.99 で締めた」、
-      `--deployed` なら「T.32.99 で X.Y.Z を締めた」)。`--deployed` を渡すと `TODO.md` §2 の
+      §5 の行の末尾に「タスク 32 は全部済んだ (日付、文)。」を足す (`--note` を省くと「T32.99 で締めた」、
+      `--deployed` なら「T32.99 で X.Y.Z を締めた」)。`--deployed` を渡すと `TODO.md` §2 の
       「### デプロイ先の現在地 (…)」の見出しの日付・版 (と `--hours` の時間) と、次の段落の参照先
       (`tasks/TNN.md` の **T.N.99 の結果**) を直す (要点の数字は手で書く。最後に書き直す場所を出す)。
 
 **移すときは本文を 1 文字も変えない。ただし相対リンクだけは、移した先 (`tasks/`) から辿れる形に書き換える**
-(T.32.38。`TASKS.md` の `[x](tasks/T30.md)` は `tasks/T30.md` の中では `[x](T30.md)`。リンクの文字は変えない)。
+(T32.38。`TASKS.md` の `[x](tasks/T30.md)` は `tasks/T30.md` の中では `[x](T30.md)`。リンクの文字は変えない)。
 `結果.txt` は移した先に置く文として書く (書き換えない)。
 
 最後に `scripts/check-ledger.py` を回し、差分があれば 1 で抜ける (`--no-check` で回さない)。
@@ -43,14 +43,14 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-TID = re.compile(r"^T\.(\d+)\.(\d+)$")
+TID = re.compile(r"^T(\d+)\.(\d+)$")
 SECTION = re.compile(r"^### タスク (\d+) \((\d{4}-\d{2}-\d{2}) に起こした: (.*)\)$")
 LINK = re.compile(r"(\]\()([^)\s]+)(\))")
-TODO_RANGE = re.compile(r"(済んだタスクのタスク本文 \(T\.15〜T\.)(\d+)(。)")
+TODO_RANGE = re.compile(r"(済んだタスクのタスク本文 \(T15〜T)(\d+)(。)")
 README_HEAD = re.compile(r"^(# tasks/ — 済んだタスクの本文 \(タスク 0〜)(\d+)(\))", re.M)
 CURRENT_HEAD = re.compile(r"^### デプロイ先の現在地 \((\d{4}-\d{2}-\d{2})、(.*) に (\d+\.\d+\.\d+) をデプロイして "
                           r"([\d.]+) 時間\)$", re.M)
-CURRENT_REF = re.compile(r"\[`tasks/T(\d+)\.md`\]\(tasks/T\d+\.md\) の \*\*T\.\d+\.99 の結果\*\*")
+CURRENT_REF = re.compile(r"\[`tasks/T(\d+)\.md`\]\(tasks/T\d+\.md\) の \*\*T\d+\.99 の結果\*\*")
 
 
 class Error(Exception):
@@ -68,7 +68,7 @@ def write(root, rel, text):
 
 
 def rewrite_links(text, src_dir, dst_dir):
-    """`src_dir` (根からの相対。根は "") に置いてあった本文の相対リンクを、`dst_dir` から辿れる形にする (T.32.38)。"""
+    """`src_dir` (根からの相対。根は "") に置いてあった本文の相対リンクを、`dst_dir` から辿れる形にする (T32.38)。"""
     if src_dir == dst_dir:
         return text
 
@@ -110,11 +110,11 @@ def section_of(lines, n):
 
 
 def minor(tid):
-    return int(tid.split(".")[2])
+    return int(tid.split(".")[-1])
 
 
 def done_ids(text, n):
-    return sorted(set(re.findall(r"^- \[x\] \*\*(T\.%d\.\d+)" % n, text, re.M)), key=minor)
+    return sorted(set(re.findall(r"^- \[x\] \*\*(T%d\.\d+)" % n, text, re.M)), key=minor)
 
 
 def todo_line(n, done, span):
@@ -123,7 +123,7 @@ def todo_line(n, done, span):
 
 
 def bump_ranges(root, n):
-    """範囲の印 2 つ (`TODO.md` 冒頭の「T.15〜T.N」と `tasks/README.md` の「タスク 0〜N」) を N まで広げる。"""
+    """範囲の印 2 つ (`TODO.md` 冒頭の「T15〜T.N」と `tasks/README.md` の「タスク 0〜N」) を N まで広げる。"""
     o = read(root, "TODO.md")
     o2 = TODO_RANGE.sub(lambda m: m.group(1) + str(max(n, int(m.group(2)))) + m.group(3), o, count=1)
     if o2 != o:
@@ -138,7 +138,7 @@ def close(root, tid, result, title=None, index=None, date=None):
     """1 本の小タスクを移す。移した先の相対パスを返す。"""
     m = TID.match(tid)
     if not m:
-        raise Error("小タスクの番号は T.<タスク>.<番号> の形で渡す (例: T.32.5): %s" % tid)
+        raise Error("小タスクの番号は T.<タスク>.<番号> の形で渡す (例: T32.5): %s" % tid)
     n = int(m.group(1))
     date = date or datetime.date.today().isoformat()
     t = read(root, "TASKS.md").split("\n")
@@ -190,13 +190,13 @@ def close(root, tid, result, title=None, index=None, date=None):
     # tasks/README.md の表の行
     r = read(root, "tasks/README.md")
     span = "%s〜%s" % (done[0], done[-1])
-    row = re.compile(r"^\| T\.%d\.[^|]*\| \[T%d\.md\]\(T%d\.md\) \|" % (n, n, n), re.M)
+    row = re.compile(r"^\| T%d\.[^|]*\| \[T%d\.md\]\(T%d\.md\) \|" % (n, n, n), re.M)
     if row.search(r):
         r = row.sub(lambda _: "| %s | [T%d.md](T%d.md) |" % (span, n, n), r, count=1)
     else:
         if index is None:
             raise Error("tasks/README.md にタスク %d の行が無い (--index で説明を渡す)" % n)
-        prev = re.search(r"^\| T\.%d\.[^\n]*$" % (n - 1), r, re.M)
+        prev = re.search(r"^\| T%d\.[^\n]*$" % (n - 1), r, re.M)
         if prev is None:
             raise Error("tasks/README.md にタスク %d の行の前に置くタスク %d の行が無い" % (n, n - 1))
         new_row = "| %s | [T%d.md](T%d.md) | %s (%s) |" % (span, n, n, index, date)
@@ -223,7 +223,7 @@ def finish(root, n, deployed=None, hours=None, note=None, date=None, next_task=N
     if not os.path.exists(os.path.join(root, rel)):
         raise Error("%s が無い (小タスクを 1 本も移していない)" % rel)
     done = done_ids(read(root, rel), n)
-    last = done[-1] if done else "T.%d.99" % n
+    last = done[-1] if done else "T%d.99" % n
 
     # 前置きを tasks/TNN.md の末尾へ (見出しは #### に下げる。相対リンクは移した先から辿れる形に)
     pre = list(body)
@@ -272,7 +272,7 @@ def finish(root, n, deployed=None, hours=None, note=None, date=None, next_task=N
         o = o[:cur.start()] + new_head + o[cur.end():]
         ref = CURRENT_REF.search(o, cur.start())
         if ref is not None:
-            o = o[:ref.start()] + ("[`tasks/T%d.md`](tasks/T%d.md) の **T.%d.99 の結果**" % (n, n, n)) + o[ref.end():]
+            o = o[:ref.start()] + ("[`tasks/T%d.md`](tasks/T%d.md) の **T%d.99 の結果**" % (n, n, n)) + o[ref.end():]
         todo_hand.append("TODO.md §2「デプロイ先の現在地」の段落の雪像の名前・判定・要点 (見出しと参照先は直した)")
     write(root, "TODO.md", o)
     bump_ranges(root, n)
@@ -288,9 +288,9 @@ def check(root):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="台帳の締め (TASKS.md の済んだ小タスクを tasks/TNN.md へ移す。T.32.26)")
+    ap = argparse.ArgumentParser(description="台帳の締め (TASKS.md の済んだ小タスクを tasks/TNN.md へ移す。T32.26)")
     ap.add_argument("-C", dest="root", default=os.path.dirname(HERE), help="リポジトリの根 (既定はこの 1 つ上)")
-    ap.add_argument("tid", nargs="?", help="移す小タスク (T.32.5 など)")
+    ap.add_argument("tid", nargs="?", help="移す小タスク (T32.5 など)")
     ap.add_argument("result", nargs="?", help="足す「結果」の行を書いたファイル")
     ap.add_argument("--title", help="tasks/TNN.md を新しく作るときの 1 行目の題")
     ap.add_argument("--index", help="tasks/README.md の表に新しく足す行の説明 (省くと --title)")

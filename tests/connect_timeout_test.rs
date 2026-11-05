@@ -89,7 +89,7 @@ fn test_integration_connect_timeout_cuts_the_connect_short() {
 
 /// 既定の締め切り (規則どおりの実効値) のままでも普通の CONNECT は 200 で通る。
 ///
-/// `proxy_config()` の `timeout` は 5 秒で、`connect_timeout` は**既定の 3 秒** (T.28.43)
+/// `proxy_config()` の `timeout` は 5 秒で、`connect_timeout` は**既定の 3 秒** (T28.43)
 /// (`min(3, PROXY_TIMEOUT_SECS)`。T15.6 (2))。T23.3 の既定 5 秒のときは既定と `min` の
 /// どちらで 5 秒になったかを区別できなかったが、3 秒になって既定の側が勝つと分かる。
 /// 見張っているのは `Config::new` が規則を通ること (下の `assert_eq!`) と、
@@ -106,7 +106,7 @@ fn test_integration_connect_still_works_with_the_default_timeout() {
     assert_eq!(
         cfg.connect_timeout,
         std::time::Duration::from_secs(3),
-        "`PROXY_TIMEOUT_SECS` は 5 秒だが、既定の 3 秒の方が短い (T.28.43)"
+        "`PROXY_TIMEOUT_SECS` は 5 秒だが、既定の 3 秒の方が短い (T28.43)"
     );
     assert_eq!(cfg.timeout, std::time::Duration::from_secs(5));
     let proxy_port = start_test_proxy(cfg);
@@ -122,7 +122,7 @@ fn test_integration_connect_still_works_with_the_default_timeout() {
     assert!(head.starts_with("HTTP/1.1 200"), "{}", head);
 }
 
-/// **T.28.8**: forward のオリジン接続の確立にも `connect_timeout` が効く。
+/// **T28.8**: forward のオリジン接続の確立にも `connect_timeout` が効く。
 ///
 /// 0.27.8 までは forward は `config.timeout` (`PROXY_TIMEOUT_SECS`、ここでは 5 秒) のままで、
 /// 繋がらない宛先への forward 1 本がワーカーを締め切りいっぱい握っていた (tokyo の `/errors` に

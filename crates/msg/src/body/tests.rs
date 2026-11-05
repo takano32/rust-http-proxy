@@ -55,7 +55,7 @@ fn decodes_chunked_with_extensions_and_trailers() {
     assert_eq!(rest, b"NEXT", "bytes after the body stay in the stream");
 }
 
-/// T.32.15 (3): データの後ろのごみ・`+` 付きの大きさは `InvalidData`。LF だけの行は今までどおり受ける。
+/// T32.15 (3): データの後ろのごみ・`+` 付きの大きさは `InvalidData`。LF だけの行は今までどおり受ける。
 #[test]
 fn chunked_rejects_junk_after_data_and_signed_sizes() {
     for raw in [
@@ -78,7 +78,7 @@ fn chunked_rejects_junk_after_data_and_signed_sizes() {
     assert!(clean);
 }
 
-/// T.29.1: chunk の大きさの行・データの後ろの行・trailer の行と合計に上限がある。
+/// T29.1: chunk の大きさの行・データの後ろの行・trailer の行と合計に上限がある。
 /// 上限を越えたら、そこまでしか読まずに `InvalidData` で止まる。
 #[test]
 fn chunked_framing_lines_are_bounded() {

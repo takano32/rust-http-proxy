@@ -1,9 +1,9 @@
-//! 要求行とヘッダーの総時間の締め切り (`PROXY_HEADER_TIMEOUT_SECS`) の結合テスト (T.28.0)。
+//! 要求行とヘッダーの総時間の締め切り (`PROXY_HEADER_TIMEOUT_SECS`) の結合テスト (T28.0)。
 //!
 //! `SO_RCVTIMEO` は読めるたびに待ち直すので、黙ったままの接続も 1 バイトずつ送る接続
 //! (slowloris) も、それだけでワーカー 1 本と接続枠 1 つを握れた。締め切りを越えたら閉じること
 //! (1 バイト以上送ってから止まった接続は `408 Request Timeout`、1 バイトも送らない先張りは 408 を返さずに
-//! 黙って `silent_closes` に数える。T.33.0)、上限ぶんの沈黙を張られても `/status` が返ること、
+//! 黙って `silent_closes` に数える。T33.0)、上限ぶんの沈黙を張られても `/status` が返ること、
 //! 本文の転送は締め切りの外であることを見る。
 
 use std::io::{Read, Write};
@@ -27,7 +27,7 @@ fn config_with_deadline(secs: u64, lite: bool) -> rust_http_proxy::config::Confi
 /// 受け付けのループが動き出すまで待つ (`/healthz` を 1 本通す)。
 ///
 /// 時間を測る起点を「ループが動いている」にそろえるため。ループより前に握手を終えた接続も
-/// 締め切りで閉じることは `test_integration_connection_made_before_serve_gets_408` が見る (T.28.30)
+/// 締め切りで閉じることは `test_integration_connection_made_before_serve_gets_408` が見る (T28.30)
 fn ready(port: u16) -> u16 {
     let got = raw_get(
         port,
@@ -54,7 +54,7 @@ fn read_until_closed(stream: &mut TcpStream, started: Instant) -> (String, Durat
 }
 
 /// (a) 黙ったままの接続 (先張り) は締め切り + 1 秒以内に閉じる (`--lite` でも)。
-/// **408 は返さずに黙って閉じる** (T.33.0。T.28.0〜0.32.39 は 408 を返していた)。
+/// **408 は返さずに黙って閉じる** (T33.0。T28.0〜0.32.39 は 408 を返していた)。
 #[test]
 fn test_integration_silent_connection_is_closed_within_the_deadline() {
     for lite in [false, true] {
@@ -78,7 +78,7 @@ fn test_integration_silent_connection_is_closed_within_the_deadline() {
     }
 }
 
-/// (a') 1 バイトでも送ってから黙った接続 (本物の遅い要求) は今までどおり 408 (T.33.0)。
+/// (a') 1 バイトでも送ってから黙った接続 (本物の遅い要求) は今までどおり 408 (T33.0)。
 /// 要求行の途中 (`G` の 1 バイト) でも、ヘッダーの途中でも。
 #[test]
 fn test_integration_stalled_after_a_byte_still_gets_408() {
@@ -313,8 +313,8 @@ fn test_integration_large_bodies_are_not_cut_by_the_header_deadline() {
 }
 
 /// 受け付けのループが待ち受けにオプションを当てる前に握手を終えた接続も、締め切りで
-/// 閉じる (T.28.30)。今までは待ち受けの `SO_RCVTIMEO` を継承できず無期限だった。
-/// 何も送っていないので 408 は返さない (T.33.0)。
+/// 閉じる (T28.30)。今までは待ち受けの `SO_RCVTIMEO` を継承できず無期限だった。
+/// 何も送っていないので 408 は返さない (T33.0)。
 #[test]
 fn test_integration_connection_made_before_serve_is_closed() {
     let (port, conns) = start_test_proxy_with_early(config_with_deadline(2, false), 2);
@@ -343,7 +343,7 @@ fn test_integration_connection_made_before_serve_is_closed() {
 }
 
 /// 先張りの接続 (何も送らずに締め切りを過ぎる) は `silent_closes` だけに数え、`rejected_requests`・
-/// `/errors`・`/metrics` の `rejected_requests_total` には入れない (T.33.0)。締め切りの前に
+/// `/errors`・`/metrics` の `rejected_requests_total` には入れない (T33.0)。締め切りの前に
 /// 相手から閉じた先張りはどこにも数えない (今までどおり)。
 #[test]
 fn test_integration_silent_connection_counts_only_in_silent_closes() {
@@ -383,7 +383,7 @@ fn test_integration_silent_connection_counts_only_in_silent_closes() {
     );
 }
 
-/// (f) 408 は数えられ、`/recent` の理由が CONNECT の確立の締め切り (`error:timeout`) と分かれる (T.29.10)。
+/// (f) 408 は数えられ、`/recent` の理由が CONNECT の確立の締め切り (`error:timeout`) と分かれる (T29.10)。
 ///
 /// 今までは debug ログだけで `/status`・`/errors` に数が無く、`/recent` の理由は `error:timeout`
 /// (確立の締め切りと同じ綴り) だった。

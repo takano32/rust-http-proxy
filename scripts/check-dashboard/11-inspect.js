@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 10. 調査ページ (inspect.html) の描画関数 (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 10. 調査ページ (inspect.html) の描画関数 (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 10. 「調査」ページ (`crates/web/src/inspect.html`。T14.8) の描画関数。
 //    `/dashboard` と同じ作法で **DOM に触らない 9 つ**を名前で抜き出し、

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use super::happy_eyeballs::HE_LAUNCHED;
 use super::*;
 
-/// T.32.14: 多アドレスのホストへの 1 接続で起こす試行 (スレッドと記述子) は [`MAX_CANDIDATES`] 件で
+/// T32.14: 多アドレスのホストへの 1 接続で起こす試行 (スレッドと記述子) は [`MAX_CANDIDATES`] 件で
 /// 頭打ち。拒否される loopback の番地 20 個 (拒否は即座に返るので、前は間隔を待たずに 20 本とも起こした)。
 #[cfg(target_os = "linux")]
 #[test]

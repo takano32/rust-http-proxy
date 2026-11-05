@@ -27,7 +27,7 @@ fn now_epoch() -> u64 {
 /// 置くと、p50 = 5 + 5 × (2000 − 1670)/500 = **8.3**、
 /// p95 = 50 + 50 × (3800 − 3493)/500 = **80.7**。平常時の閾 (1 時間 300 本) を越えないように
 /// 1 標本 200 本ずつ 20 時間に分け、そのあとにバーストの 2 時間 (1 時間 1,000 本、500 ms) を足す
-/// (T.29.13 から平常時の閾は 300 本と中央値 200 × 3 = 600 本の大きい方なので、バーストは 600 本を越える)。
+/// (T29.13 から平常時の閾は 300 本と中央値 200 × 3 = 600 本の大きい方なので、バーストは 600 本を越える)。
 fn t14_0_hours(t0: u64) -> Vec<Sample> {
     let mut normal: Vec<Sample> = (0..20)
         .map(|i| {
@@ -106,7 +106,7 @@ fn test_integration_history_summary_folds_the_period_into_one_row() {
     assert_eq!(json::number(&body, "errors"), 0.0, "{}", body);
     assert_eq!(json::number(&body, "active_max"), 8.0, "{}", body);
     assert!(body.contains("\"normal_hours_only\":true"), "{}", body);
-    // 切った閾 (T.29.13): 300 本と中央値 200 本 × 3 の大きい方
+    // 切った閾 (T29.13): 300 本と中央値 200 本 × 3 の大きい方
     assert_eq!(json::number(&body, "burst_limit"), 600.0, "{}", body);
 
     // 平常時で切らなければ同じ期間でも数字が化ける (T14.0 の「(参考) バースト込み」)

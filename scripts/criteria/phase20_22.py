@@ -1,4 +1,4 @@
-# 判定表 (`scripts/snapshot_criteria.py`) の **Phase 20〜22 の行** (T.34.126 で割った)。
+# 判定表 (`scripts/snapshot_criteria.py`) の **Phase 20〜22 の行** (T34.126 で割った)。
 #
 # phase20 で直した heap の行と、行を**表示だけ**にする `display_only`・phase21 で読み方を直した 3 行・
 # phase22 で足した `dns_slow` と keep-warm を戻す条件の行と、その材料を読む小物

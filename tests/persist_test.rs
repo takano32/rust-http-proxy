@@ -190,7 +190,7 @@ fn test_integration_a_pre_rtt_state_file_restores_with_zero_rtt() {
 
 // ---- T14.14: 版 2 のファイルを置いて起動し、版 3 へ詰め直させる ----
 // 版 2 の割り付けと fixture は `tests/common/rrd_v2.rs` (この試験だけが使うので `common` の
-// 外に置き、ここから `#[path]` で取り込む。T.34.122)
+// 外に置き、ここから `#[path]` で取り込む。T34.122)
 
 #[path = "common/rrd_v2.rs"]
 mod rrd_v2;

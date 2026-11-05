@@ -1,6 +1,6 @@
 //! keep-warm の待ち行列 (`WARM_QUEUE`) の出し入れと、裏で引き直す `dns-refresh` スレッド (T13.1・T14.1)。
 //! 表 (`TABLE`) とカウンタは親の `dns` にあり、ここからそのまま触る。T21.7 で `dns.rs` から移した
-//! (関数の本体は変えていない。親から呼ぶものだけ `pub(super)`)。T.34.54 で `dns/warm.rs` に置き直し、
+//! (関数の本体は変えていない。親から呼ぶものだけ `pub(super)`)。T34.54 で `dns/warm.rs` に置き直し、
 //! 答えの集合の比べ方 (`addrs_changed`) は `entry` へ移した。
 
 use super::{
@@ -230,7 +230,7 @@ pub(super) fn wake_refresher() {
 ///
 /// `requested` は要求の経路が頼んだ 1 回 ([`request_refresh`]。頼む前に表の `refreshing` を立てる)。
 /// そのときは**旗が立っていない項目には触らない**: 頼んだあとで `clear()` された名前に同じ名前の
-/// 新しい項目ができていても、前の頼みで引き直して数えない (T.28.39。旗は新しい項目が自分で頼む
+/// 新しい項目ができていても、前の頼みで引き直して数えない (T28.39。旗は新しい項目が自分で頼む
 /// ときにしか立たない)。keep-warm の待ち行列から来る分 (`false`) は旗を使わないので今までどおり。
 pub(super) fn refresh_one(key: &str, requested: bool) {
     // 引き直しにかかった時間 (T15.0 (7))。下の `now` と引き算するので時計は 1 回増えるだけ
@@ -254,7 +254,7 @@ pub(super) fn refresh_one(key: &str, requested: bool) {
             return;
         };
         if requested && !entry.refreshing {
-            // 頼んだあとで `clear()` され、同じ名前の新しい項目ができた (T.28.39)
+            // 頼んだあとで `clear()` され、同じ名前の新しい項目ができた (T28.39)
             return;
         }
         entry.refreshing = false;

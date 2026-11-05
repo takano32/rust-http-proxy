@@ -1,6 +1,6 @@
-//! 表 (`TABLE`) の 1 行 (`Entry`) と、鍵の内側の判断 (`Entry::look` → `Lookup`。T.34.55)、
+//! 表 (`TABLE`) の 1 行 (`Entry`) と、鍵の内側の判断 (`Entry::look` → `Lookup`。T34.55)、
 //! 鍵の内側で決めて鍵の外で数える `Looked` / `MissKind`、
-//! 行の追い出し (`evict_oldest`)、答えの集合が変わったかの比べ方 (`addrs_changed`)。T.34.54 で
+//! 行の追い出し (`evict_oldest`)、答えの集合が変わったかの比べ方 (`addrs_changed`)。T34.54 で
 //! `dns.rs` から移した (`addrs_changed` は `dns_warm.rs` から。本体は変えていない)。
 //! 欄は子 (`view`・`warm`・`pool`・`lookup`・試験) が直に触るので `pub(super)`。
 
@@ -125,7 +125,7 @@ impl MissKind {
     }
 }
 
-/// 表を 1 回引いたときに**鍵の内側で**決めたこと ([`Entry::look`] の答え。T.34.55)。
+/// 表を 1 回引いたときに**鍵の内側で**決めたこと ([`Entry::look`] の答え。T34.55)。
 /// 数える (原子操作) のも、待ち行列に入れたあとで起こすのも、鍵を放してから呼び出し側がやる。
 pub(super) struct Lookup {
     /// このホストで最後に勝った族 (T12.1)
@@ -153,7 +153,7 @@ impl Lookup {
 
 impl Entry {
     /// 要求の経路で表に当たった行を読み、使った印を書き、答え・ミスの種類・裏の引き直しを決める
-    /// (T.34.55 で `resolve_host_marked` の鍵の内側をそのまま移した。判断の順は前と同じ)。
+    /// (T34.55 で `resolve_host_marked` の鍵の内側をそのまま移した。判断の順は前と同じ)。
     ///
     /// 時刻と設定値は引数で受けるので、表 (`TABLE`) も `Instant::now()` も経ずに試験できる。
     /// `negative` と `serve_stale` は**要る枝でだけ呼ぶ** (当たりの経路で原子を読まないため。
@@ -252,7 +252,7 @@ impl Entry {
     }
 }
 
-/// 1 行捨てる。**答えの無い行 (失敗の行・族の記憶だけの行) を先に**、その中で古い順 (T.32.2)。
+/// 1 行捨てる。**答えの無い行 (失敗の行・族の記憶だけの行) を先に**、その中で古い順 (T32.2)。
 ///
 /// 答えのある行は serve-stale (21,600 秒) と古い答えで凌ぐ窓のために持っているが、答えの無い
 /// 行が持っているのは負のキャッシュ (既定 60 秒) だけで、捨てても次の 1 回が OS に行くだけ。
@@ -284,6 +284,6 @@ pub(super) fn addrs_changed(old: &[IpAddr], new: &[IpAddr]) -> bool {
     !new.iter().all(|a| old.contains(a)) || !old.iter().all(|a| new.contains(a))
 }
 
-/// `Entry::look` の単体試験 (表も時計も経ない。T.34.55)。
+/// `Entry::look` の単体試験 (表も時計も経ない。T34.55)。
 #[cfg(test)]
 mod tests;

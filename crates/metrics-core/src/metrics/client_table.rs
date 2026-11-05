@@ -1,4 +1,4 @@
-//! 接続元 IP ごとの個票の表 (`/clients`。T.34.26 で `metrics.rs` から移した)。
+//! 接続元 IP ごとの個票の表 (`/clients`。T34.26 で `metrics.rs` から移した)。
 //!
 //! 行を動かしただけで中身は変えていない。
 
@@ -12,7 +12,7 @@ impl Metrics {
     /// 数える (原子操作もシステムコールも増やさない。T14.7)。
     ///
     /// 壁時計は自分で読む。要求の経路はホスト別の記録が読んだ時刻を渡す
-    /// [`record_client_at`](Self::record_client_at) を使う (T.34.146)。
+    /// [`record_client_at`](Self::record_client_at) を使う (T34.146)。
     pub fn record_client(
         &self,
         client: &str,
@@ -33,7 +33,7 @@ impl Metrics {
         );
     }
 
-    /// [`record_client`](Self::record_client) の、壁時計 (epoch 秒) を受け取る版 (T.34.146)。
+    /// [`record_client`](Self::record_client) の、壁時計 (epoch 秒) を受け取る版 (T34.146)。
     ///
     /// `now` は同じ要求の [`record_host`](Self::record_host) / [`record_host_detail`](Self::record_host_detail)
     /// が返した値。`Metrics::record` は壁時計を 1 回だけ読む約束なのに、今までは接続元の
@@ -63,7 +63,7 @@ impl Metrics {
         });
     }
 
-    /// 接続元の行を取るか作って、`f` を 1 回呼ぶ (T.34.35。`record_client`・`record_client_agent`・
+    /// 接続元の行を取るか作って、`f` を 1 回呼ぶ (T34.35。`record_client`・`record_client_agent`・
     /// `record_client_rejected` の 3 か所が同じ形で持っていたもの)。
     ///
     /// 鍵は接続元の表の 1 回だけ。**既にある行はキーを作り直さない** (毎要求の `String` 確保をしない)。

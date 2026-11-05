@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/callgrind-per-request.py` (T.34.7) の単体テスト。
+"""`scripts/callgrind-per-request.py` (T34.7) の単体テスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
@@ -39,7 +39,7 @@ class ReadTotals(unittest.TestCase):
 
 class PerRequest(unittest.TestCase):
     def test_slope_of_two_runs(self):
-        # T.34.0 の base forward: N=400 で 10,259,244、N=2000 で 45,662,457 → 22,127 Ir/要求
+        # T34.0 の base forward: N=400 で 10,259,244、N=2000 で 45,662,457 → 22,127 Ir/要求
         self.assertEqual(cg.per_request(400, 10259244, 2000, 45662457), 22127)
 
     def test_fixed_cost_cancels(self):

@@ -43,10 +43,10 @@ pub fn response_policy(
 /// [`response_policy`] を借用の「名前, 値」の並びで (名前の大小は問わない)。
 ///
 /// forward の経路は応答の先頭を `response_lines` のまま渡す (小文字の `String` の組を
-/// 要求ごとに作らない。T.28.13 (a))。保存しない応答 (`no-store` など) でも毎回通る判定なので、
+/// 要求ごとに作らない。T28.13 (a))。保存しない応答 (`no-store` など) でも毎回通る判定なので、
 /// 確保を減らした分がそのまま効く。
 ///
-/// `request_cookie` は要求に `Cookie` があったか (T.32.35)。真なら、応答に明示の鮮度 (`s-maxage`・
+/// `request_cookie` は要求に `Cookie` があったか (T32.35)。真なら、応答に明示の鮮度 (`s-maxage`・
 /// `max-age`・`Expires`) も `public` も無いとき保存しない。経験則と既定 TTL は「してよい」(RFC 9111 §4.2.2)
 /// だが、共有のキャッシュでは Cookie ごとに違う本文 (`you are alice`) を他の利用者に配る形になるため
 pub fn response_policy_lines<'a>(
@@ -101,7 +101,7 @@ pub fn response_policy_lines<'a>(
         || has_directive(&cache_control, "proxy-revalidate");
 
     // 指示はあるのに値が読めない (`max-age=abc`・`max-age=-1`・値なし) ときは「既に古い」= 0
-    // (RFC 9111 §4.2.1 は無効な鮮度情報を古いとみなすよう勧める。T.28.10 (d))。今までは
+    // (RFC 9111 §4.2.1 は無効な鮮度情報を古いとみなすよう勧める。T28.10 (d))。今までは
     // 無いのと同じに扱って Expires / 経験則 / 既定 TTL (300 秒) で新鮮にしていた
     let directive = |name: &str| {
         directive_value(&cache_control, name)
@@ -168,7 +168,7 @@ pub fn revalidated_policy(
     cfg: &CacheConfig,
     now: u64,
 ) -> Policy {
-    // 304 の `Set-Cookie` は保存する先頭へ写さない (T.29.0) ので、保存の可否と TTL にも数えない
+    // 304 の `Set-Cookie` は保存する先頭へ写さない (T29.0) ので、保存の可否と TTL にも数えない
     // (数えると `response_policy` が `None` になり、延ばすはずの TTL が 0 になる)
     let mut hs: Vec<(String, String)> = headers_304
         .iter()
@@ -201,7 +201,7 @@ pub fn revalidated_policy(
     })
 }
 
-/// 再検証の 304 が「この表現を保存するな」と言っているか (T.29.0)。`Cache-Control` / `Pragma` の
+/// 再検証の 304 が「この表現を保存するな」と言っているか (T29.0)。`Cache-Control` / `Pragma` の
 /// `no-store`・`private`、対応できない `Vary` (`Vary: Cookie` など)。`Set-Cookie` は見ない
 /// (保存する先頭へは写さないので、保存を止める理由にならない)。真なら延命せず項目を消す。
 /// 0.28.48 までは写したまま `REVALIDATED` / `HIT` で配り続けていた (TTL が 0 になるだけ)。

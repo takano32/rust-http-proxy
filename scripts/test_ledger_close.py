@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""`scripts/ledger-close.py` (台帳の締め) の単体テスト (T.32.26)。
+"""`scripts/ledger-close.py` (台帳の締め) の単体テスト (T32.26)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
 (1) 再生: このリポジトリの履歴の台帳 (`3cd4499` → `95c7566` → `75305de`) に道具を当てて、4 ファイル
 (`TASKS.md`・`TODO.md`・`tasks/README.md`・`tasks/T31.md`) が同じバイト列になる。75305de は手で書いて
 「。 タスク 31」と空白が入ったのと、前置きの相対リンク `tasks/T30.md` が `tasks/` の中から切れていた
-(T.32.38) ので、その 2 か所は直した形と比べる。履歴の無い浅い clone では飛ばす。
+(T32.38) ので、その 2 か所は直した形と比べる。履歴の無い浅い clone では飛ばす。
 (2) 作り物の小さな台帳で: 新しい `tasks/TNN.md` と索引の行を作る・範囲の印 2 つを広げる・`--finish` の
 `--deployed` で §2 の見出しを直す・ほかに開いているタスクがあれば「なし」を書かない・使い方の誤り。
 """
@@ -37,7 +37,9 @@ def run(*args):
 def git_show(rev, path):
     out = subprocess.run(["git", "-C", ROOT, "show", "%s:%s" % (rev, path)], stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL)
-    return out.stdout.decode("utf-8") if out.returncode == 0 else None
+    # 過去のコミットの台帳は番号を `T.31.0` と書いていた。いまの書き方 (`T31.0`) に直して読む。
+    text = out.stdout.decode("utf-8") if out.returncode == 0 else None
+    return re.sub(r"(?<![A-Za-z0-9_\\])T\.(?=\d)", "T", text) if text is not None else None
 
 
 def have(rev):
@@ -49,7 +51,7 @@ def results_of(text, tid):
     """`tasks/T31.md` の `tid` の「結果」の行 (字下げした続きの行も) を取り出す。"""
     out, cur, on = [], None, False
     for line in text.split("\n"):
-        m = re.match(r"^- \[x\] \*\*(T\.\d+\.\d+) ", line)
+        m = re.match(r"^- \[x\] \*\*(T\d+\.\d+) ", line)
         if m:
             cur, on = m.group(1), False
             continue
@@ -84,7 +86,7 @@ class ReplayTest(unittest.TestCase):
             write(self.w, f, git_show("3cd4499", f))
         self.res = {}
         b31, c31 = git_show("95c7566", "tasks/T31.md"), git_show("75305de", "tasks/T31.md")
-        for tid, src in (("T.31.0", b31), ("T.31.1", b31), ("T.31.99", c31)):
+        for tid, src in (("T31.0", b31), ("T31.1", b31), ("T31.99", c31)):
             path = os.path.join(self.w, "r-%s.txt" % tid)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(results_of(src, tid))
@@ -102,23 +104,23 @@ class ReplayTest(unittest.TestCase):
 
     def test_replay(self):
         code, out = run("-C", self.w, "--no-check", "--date", "2026-10-30",
-                        "--title", "T.30.99 で届かなかった 2 行を量に左右されない物差しに",
-                        "--index", "T.30.99 の CPU と RSS の行を量に左右されない物差しに", "T.31.0", self.res["T.31.0"])
+                        "--title", "T30.99 で届かなかった 2 行を量に左右されない物差しに",
+                        "--index", "T30.99 の CPU と RSS の行を量に左右されない物差しに", "T31.0", self.res["T31.0"])
         self.assertEqual(code, 0, out)
-        code, out = run("-C", self.w, "--no-check", "--date", "2026-10-30", "T.31.1", self.res["T.31.1"])
+        code, out = run("-C", self.w, "--no-check", "--date", "2026-10-30", "T31.1", self.res["T31.1"])
         self.assertEqual(code, 0, out)
         self.same("95c7566")
 
-        code, out = run("-C", self.w, "--no-check", "--date", "2026-10-31", "T.31.99", self.res["T.31.99"])
+        code, out = run("-C", self.w, "--no-check", "--date", "2026-10-31", "T31.99", self.res["T31.99"])
         self.assertEqual(code, 0, out)
         code, out = run("-C", self.w, "--no-check", "--date", "2026-10-31", "--finish", "31",
-                        "--note", "T.31.99 で 0.30.4 を phase28 で読み直した。デプロイは無し")
+                        "--note", "T31.99 で 0.30.4 を phase28 で読み直した。デプロイは無し")
         self.assertEqual(code, 0, out)
 
         def fixed(f, text):
             if f == "TODO.md":  # 75305de の手書きの空白
                 return text.replace("(TASKS.md)。 タスク 31 は全部済んだ", "(TASKS.md)。タスク 31 は全部済んだ")
-            if f == "tasks/T31.md":  # T.32.38: 移した先から辿れるリンク
+            if f == "tasks/T31.md":  # T32.38: 移した先から辿れるリンク
                 return text.replace("[`tasks/T30.md`](tasks/T30.md)", "[`tasks/T30.md`](T30.md)")
             return text
 
@@ -133,10 +135,10 @@ TASKS = """# TASKS.md
 
 前置きの段落 ([`tasks/T4.md`](tasks/T4.md) と [README](README.md#運用) を指す)。
 
-- [ ] **T.5.0 ひとつめ**
+- [ ] **T5.0 ひとつめ**
   - 目的: [`scripts/x.py`](scripts/x.py) を直す。
 
-- [ ] **T.5.99 締める**
+- [ ] **T5.99 締める**
   - 前提: なし。
 
 **利用者が決めたもの**: なし。
@@ -144,17 +146,17 @@ TASKS = """# TASKS.md
 
 TODO = """# TODO.md
 
-> | [`tasks/TNN.md`](tasks/README.md) | 済んだタスクのタスク本文 (T.15〜T.4。1 文字も変えずに移したもの)。索引は `tasks/README.md` |
+> | [`tasks/TNN.md`](tasks/README.md) | 済んだタスクのタスク本文 (T15〜T4。1 文字も変えずに移したもの)。索引は `tasks/README.md` |
 
 ### デプロイ先の現在地 (2026-01-01、tokyo (`tokyo.example:1`) に 0.4.9 をデプロイして 24.0 時間)
 
-**数字の本文は締めの結果にだけ置く**。いまの数字は [`tasks/T4.md`](tasks/T4.md) の **T.4.99 の結果** (要点)。
+**数字の本文は締めの結果にだけ置く**。いまの数字は [`tasks/T4.md`](tasks/T4.md) の **T4.99 の結果** (要点)。
 
 ## 5. 索引
 
 ### タスク 4 (2026-01-01 に起こした: 前の題)
 
-**済んだ 1 本の本文は [`tasks/T4.md`](tasks/T4.md) に移した** (2026-01-01。T.4.99、1 文字も変えていない)。
+**済んだ 1 本の本文は [`tasks/T4.md`](tasks/T4.md) に移した** (2026-01-01。T4.99、1 文字も変えていない)。
 
 ### タスク 19 (2026-10-23 に起こした: 別の題)
 
@@ -165,7 +167,7 @@ README = """# tasks/ — 済んだタスクの本文 (タスク 0〜4)
 
 | 番号 | ファイル | 中身 |
 |---|---|---|
-| T.4.99〜T.4.99 | [T4.md](T4.md) | 前の題 (2026-01-01) |
+| T4.99〜T4.99 | [T4.md](T4.md) | 前の題 (2026-01-01) |
 
 - 終わり。
 """
@@ -191,40 +193,40 @@ class SyntheticTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
 
     def test_new_task_file_index_and_ranges(self):
-        self.close("T.5.0")
+        self.close("T5.0")
         t5 = read(self.w, "tasks/T5.md")
         self.assertTrue(t5.startswith("# タスク 5 — 記録 (作り物の題)\n\n> `TASKS.md` のタスク 5 のうち、"), t5)
-        self.assertIn("- [x] **T.5.0 ひとつめ**\n  - 目的: [`scripts/x.py`](../scripts/x.py) を直す。\n"
+        self.assertIn("- [x] **T5.0 ひとつめ**\n  - 目的: [`scripts/x.py`](../scripts/x.py) を直す。\n"
                       "  - 結果 (2026-01-03、`abc1234`): 直した ([`T4.md`](T4.md))。\n", t5)
         tasks = read(self.w, "TASKS.md")
-        self.assertNotIn("T.5.0", tasks)
+        self.assertNotIn("T5.0", tasks)
         self.assertNotIn("\n\n\n", tasks)
-        self.assertIn("を指す)。\n\n- [ ] **T.5.99 締める**", tasks)
+        self.assertIn("を指す)。\n\n- [ ] **T5.99 締める**", tasks)
         todo = read(self.w, "TODO.md")
-        self.assertIn("(T.15〜T.5。", todo)
+        self.assertIn("(T15〜T5。", todo)
         self.assertIn("### タスク 4 (2026-01-01 に起こした: 前の題)\n\n**済んだ 1 本の本文は [`tasks/T4.md`]"
-                      "(tasks/T4.md) に移した** (2026-01-01。T.4.99、1 文字も変えていない)。\n\n"
+                      "(tasks/T4.md) に移した** (2026-01-01。T4.99、1 文字も変えていない)。\n\n"
                       "### タスク 5 (2026-01-02 に起こした: 作り物の題)\n\n**済んだ 1 本の本文は [`tasks/T5.md`]"
-                      "(tasks/T5.md) に移した** (2026-01-02〜03。T.5.0、1 文字も変えていない)。"
+                      "(tasks/T5.md) に移した** (2026-01-02〜03。T5.0、1 文字も変えていない)。"
                       "未着手の残りは [`TASKS.md`](TASKS.md)。\n\n### タスク 19", todo)
         readme = read(self.w, "tasks/README.md")
         self.assertIn("# tasks/ — 済んだタスクの本文 (タスク 0〜5)", readme)
-        self.assertIn("| T.4.99〜T.4.99 | [T4.md](T4.md) | 前の題 (2026-01-01) |\n"
-                      "| T.5.0〜T.5.0 | [T5.md](T5.md) | 作り物の題 (2026-01-03) |\n", readme)
+        self.assertIn("| T4.99〜T4.99 | [T4.md](T4.md) | 前の題 (2026-01-01) |\n"
+                      "| T5.0〜T5.0 | [T5.md](T5.md) | 作り物の題 (2026-01-03) |\n", readme)
 
     def test_finish_deployed(self):
-        self.close("T.5.0")
+        self.close("T5.0")
         code, out = run("-C", self.w, "--no-check", "--date", "2026-01-03", "--finish", "5")
-        self.assertEqual(code, 2, out)  # T.5.99 が残っている
+        self.assertEqual(code, 2, out)  # T5.99 が残っている
         self.assertIn("未着手が 1 本", out)
-        self.close("T.5.99")
+        self.close("T5.99")
         code, out = run("-C", self.w, "--no-check", "--date", "2026-01-04", "--finish", "5",
                         "--deployed", "0.5.3+abcdef0", "--hours", "48.1")
         self.assertEqual(code, 0, out)
         self.assertIn("手で書く", out)
         tasks = read(self.w, "TASKS.md")
         self.assertTrue(tasks.endswith("## いま開いているタスク\n\n"
-                                       "なし (タスク 5 は 2026-01-04 に T.5.99 で締めた。タスク 6 はまだ起こしていない)。\n"),
+                                       "なし (タスク 5 は 2026-01-04 に T5.99 で締めた。タスク 6 はまだ起こしていない)。\n"),
                         tasks)
         t5 = read(self.w, "tasks/T5.md")
         self.assertTrue(t5.endswith(
@@ -233,10 +235,10 @@ class SyntheticTest(unittest.TestCase):
             "前置きの段落 ([`tasks/T4.md`](T4.md) と [README](../README.md#運用) を指す)。\n\n"
             "**利用者が決めたもの**: なし。\n"), t5)
         todo = read(self.w, "TODO.md")
-        self.assertIn("(2026-01-02〜03。T.5.0・T.5.99、1 文字も変えていない)。未着手の残りは [`TASKS.md`](TASKS.md)。"
-                      "タスク 5 は全部済んだ (2026-01-04、T.5.99 で 0.5.3 を締めた)。\n", todo)
+        self.assertIn("(2026-01-02〜03。T5.0・T5.99、1 文字も変えていない)。未着手の残りは [`TASKS.md`](TASKS.md)。"
+                      "タスク 5 は全部済んだ (2026-01-04、T5.99 で 0.5.3 を締めた)。\n", todo)
         self.assertIn("### デプロイ先の現在地 (2026-01-04、tokyo (`tokyo.example:1`) に 0.5.3 をデプロイして 48.1 時間)", todo)
-        self.assertIn("いまの数字は [`tasks/T5.md`](tasks/T5.md) の **T.5.99 の結果** (要点)", todo)
+        self.assertIn("いまの数字は [`tasks/T5.md`](tasks/T5.md) の **T5.99 の結果** (要点)", todo)
         # 2 度目は節が無いので誤り
         code, out = run("-C", self.w, "--no-check", "--finish", "5")
         self.assertEqual(code, 2, out)
@@ -244,26 +246,26 @@ class SyntheticTest(unittest.TestCase):
     def test_finish_keeps_other_open_sections(self):
         write(self.w, "TASKS.md", TASKS.replace("**利用者が決めたもの**: なし。\n",
                                                 "**利用者が決めたもの**: なし。\n\n### タスク 6 (2026-01-03 に起こした: 次)\n\n"
-                                                "- [ ] **T.6.0 次の**\n"))
-        self.close("T.5.0")
-        self.close("T.5.99")
+                                                "- [ ] **T6.0 次の**\n"))
+        self.close("T5.0")
+        self.close("T5.99")
         code, out = run("-C", self.w, "--no-check", "--finish", "5")
         self.assertEqual(code, 0, out)
         tasks = read(self.w, "TASKS.md")
         self.assertNotIn("なし (", tasks)
-        self.assertIn("## いま開いているタスク\n\n### タスク 6 (2026-01-03 に起こした: 次)\n\n- [ ] **T.6.0 次の**\n",
+        self.assertIn("## いま開いているタスク\n\n### タスク 6 (2026-01-03 に起こした: 次)\n\n- [ ] **T6.0 次の**\n",
                       tasks)
 
     def test_usage_errors(self):
-        for args in (["T.5.7", self.r], ["T5.0", self.r], ["T.5.0"], ["--finish", "5", "T.5.0", self.r],
-                     ["T.5.0", self.r, "--note", "x"], ["--finish", "5", "--hours", "1"]):
+        for args in (["T5.7", self.r], ["T.5.0", self.r], ["T5.0"], ["--finish", "5", "T5.0", self.r],
+                     ["T5.0", self.r, "--note", "x"], ["--finish", "5", "--hours", "1"]):
             code, out = run("-C", self.w, "--no-check", *args)
             self.assertEqual(code, 2, (args, out))
         self.assertEqual(read(self.w, "TASKS.md"), TASKS)  # 誤りでは何も書き換えない
 
     def test_check_ledger_runs(self):
         # --no-check を付けなければ最後に check-ledger.py を回す (作り物の台帳は合わないので 1)
-        code, out = run("-C", self.w, "--date", "2026-01-03", "T.5.0", self.r)
+        code, out = run("-C", self.w, "--date", "2026-01-03", "T5.0", self.r)
         self.assertEqual(code, 1, out)
 
 

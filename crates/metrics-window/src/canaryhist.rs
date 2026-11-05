@@ -26,7 +26,7 @@ struct Row {
 }
 
 impl Row {
-    /// `/history` の `canary` の 1 標本を配列 1 行として書く ([`KEYS`] の順。T.34.39 で
+    /// `/history` の `canary` の 1 標本を配列 1 行として書く ([`KEYS`] の順。T34.39 で
     /// [`push_history_json`] から出した)。
     fn push_json(&self, out: &mut String) {
         let _ = write!(
@@ -149,7 +149,7 @@ pub fn clear() {
 mod tests {
     use super::*;
 
-    /// 1 行の書き出しは [`KEYS`] の順で、宛先は JSON の文字列に直し、IPv6 側が無ければ `null` (T.34.39)。
+    /// 1 行の書き出しは [`KEYS`] の順で、宛先は JSON の文字列に直し、IPv6 側が無ければ `null` (T34.39)。
     #[test]
     fn a_row_is_written_in_the_key_order() {
         let mut out = String::new();

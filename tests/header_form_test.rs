@@ -59,7 +59,7 @@ fn test_integration_malformed_header_forms_are_rejected() {
         // 400 を返してから閉じる (無言で切らない)
         assert!(resp.contains("Content-Length: 0"), "{}: {:?}", name, resp);
     }
-    // 印の要求が届くまで待ってから見る (固定の sleep の代わり。T.34.114)
+    // 印の要求が届くまで待ってから見る (固定の sleep の代わり。T34.114)
     settle_with_mark(proxy_port, origin_port, &seen);
     assert!(
         seen.lock().unwrap().is_empty(),
@@ -112,7 +112,7 @@ fn test_integration_malformed_header_in_connect_is_rejected() {
         assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
         assert!(!resp.contains(" 200 "), "トンネルを張った: {:?}", resp);
     }
-    // 印の要求が届くまで待ってから見る (固定の sleep の代わり。T.34.114)
+    // 印の要求が届くまで待ってから見る (固定の sleep の代わり。T34.114)
     settle_with_mark(proxy_port, origin_port, &seen);
     assert!(seen.lock().unwrap().is_empty());
     let status = status_json(proxy_port);

@@ -50,7 +50,7 @@ pub struct Detail {
     /// **`connect_ms` が 1,000 ms 台の接続はここが 1 以上**になる。
     /// forward は**プールが接続を張ったときだけ**値が入る (使い回した要求は 0)
     pub syn_retrans: u8,
-    /// オリジン側のカーネルの RTT (us。T.28.45)。**CONNECT のトンネルの終わり**に
+    /// オリジン側のカーネルの RTT (us。T28.45)。**CONNECT のトンネルの終わり**に
     /// `tunnel::report` が読んだ `tcpi_rtt` (`/recent` の `rtt_ms.origin` と同じ値) を運ぶだけで、
     /// 新しいシステムコールは無い。`0` は「読めなかった / forward」。
     /// `Metrics::record` が `dns_ms + connect_ms − これ` を 5 秒の標本の `excess` の窓に入れる
@@ -60,7 +60,7 @@ pub struct Detail {
 impl Detail {
     /// オリジン (forward) / 宛先 (CONNECT) を掴むまでの内訳を組み立てる (T12.4 (2))。
     /// **接続を試した直後の 1 回だけ**呼ぶ (thread-local を読んで 0 に戻すので、2 回呼ぶと
-    /// 2 回目が空になる)。T.34.21 で `tunnel::detail_of` と `http::upstream::origin_detail`
+    /// 2 回目が空になる)。T34.21 で `tunnel::detail_of` と `http::upstream::origin_detail`
     /// (同じ計算が 2 つあった) をここへ寄せた。
     ///
     /// 接続にかかった時間は「全体 (`total`) − 名前解決」で出す (`net` 側に測る口は足さない。
@@ -148,7 +148,7 @@ pub struct StageMs {
     pub body: u32,
 }
 
-/// T.34.21 で `proxy-tunnel` の `tunnel::tests` から移した (`detail_of` の試験)。
+/// T34.21 で `proxy-tunnel` の `tunnel::tests` から移した (`detail_of` の試験)。
 #[cfg(test)]
 mod tests {
     use super::*;

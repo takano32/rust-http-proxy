@@ -1,4 +1,4 @@
-//! `reload` の判断の単体試験 (T.34.58)。`Config` を 2 つ作って比べるだけで、`.env` も inotify も触らない。
+//! `reload` の判断の単体試験 (T34.58)。`Config` を 2 つ作って比べるだけで、`.env` も inotify も触らない。
 
 use super::merge::{merge_live, restart_required};
 use crate::config::Config;
@@ -138,7 +138,7 @@ fn merge_live_with_nothing_changed_applies_nothing() {
     assert_eq!(next.timeout, base().timeout);
 }
 
-/// **T.34.153**: `/events` の `reload` の前後の値は `--check` と同じ外し方 (空の文字列は `""` のまま。
+/// **T34.153**: `/events` の `reload` の前後の値は `--check` と同じ外し方 (空の文字列は `""` のまま。
 /// 前はここだけ外していて `PROXY_ALLOW_CLIENTS  → 127.0.0.1` と空白が 2 つ並んだ)。
 #[test]
 fn changed_values_unquote_like_the_check_listing() {

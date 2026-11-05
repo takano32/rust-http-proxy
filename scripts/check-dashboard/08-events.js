@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 7. /events の時系列 (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 7. /events の時系列 (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 7. `/events` の時系列 (T14.11)。12 種で固定なので、綴りが増減したらここで気づく
 // (`anomaly` は異常の自動検知が書く 1 件 (T14.23)、`new_client` は初めて見た接続元 (T14.54))

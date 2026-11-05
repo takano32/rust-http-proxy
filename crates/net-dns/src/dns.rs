@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-// 責務ごとに子のファイルへ分けてある (T21.7。T.34.54 で `dns/` の下に置き直した)。子は親の
+// 責務ごとに子のファイルへ分けてある (T21.7。T34.54 で `dns/` の下に置き直した)。子は親の
 // private な表とカウンタをそのまま触るので、中身は `dns.rs` にあった頃と同じ。公開の名前は
 // ここで出し直す (`proxy_net_dns::dns::…` のまま)。
 //
@@ -50,7 +50,7 @@ mod entry;
 mod lookup;
 mod view;
 mod warm;
-// 要求の経路の名前解決を上限付きの別のスレッド群に逃がし、締め切りで待つのをやめる (T.32.11)
+// 要求の経路の名前解決を上限付きの別のスレッド群に逃がし、締め切りで待つのをやめる (T32.11)
 mod pool;
 mod resolved;
 pub use cost::{
@@ -238,13 +238,13 @@ pub fn warm_count() -> usize {
 /// `getaddrinfo` の代わりに呼ぶ関数の型 ([`set_resolver_for_test`])。
 pub type ResolveFn = fn(&str, u16) -> io::Result<Vec<IpAddr>>;
 
-/// 名前解決の差し替え (**テストの口**。T.32.2)。`None` なら `getaddrinfo` を呼ぶ。
+/// 名前解決の差し替え (**テストの口**。T32.2)。`None` なら `getaddrinfo` を呼ぶ。
 ///
 /// 鍵を取るのは OS に問い合わせるミスの経路だけ (1 回 ms の単位) で、当たりの経路と
 /// IP リテラルは触らない。本番の経路からは書かない。
 static RESOLVER_FOR_TEST: Mutex<Option<ResolveFn>> = Mutex::new(None);
 
-/// 名前解決の関数を差し替える (**テストの口**。T.32.2)。`None` で `getaddrinfo` に戻す。
+/// 名前解決の関数を差し替える (**テストの口**。T32.2)。`None` で `getaddrinfo` に戻す。
 /// 引けない名前を何万個も作る試験や、応答しないリゾルバの試験 (結合試験は同じプロセスの中で
 /// プロキシを立てるので、ここを差し替えれば要求の経路の名前解決が変わる) のため。
 #[doc(hidden)]
@@ -350,6 +350,6 @@ mod stale_tests;
 #[cfg(test)]
 mod tests;
 
-/// keep-warm と裏の引き直しの単体テスト (T.34.62 で `tests` から分けた)。
+/// keep-warm と裏の引き直しの単体テスト (T34.62 で `tests` から分けた)。
 #[cfg(test)]
 mod warm_tests;

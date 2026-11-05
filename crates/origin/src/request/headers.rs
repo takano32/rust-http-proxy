@@ -30,7 +30,7 @@ pub struct RequestHeaders {
     /// 今までは本文なしとしてヘッダーだけを転送し、本文はクライアントの次の要求として読まれた
     pub te_invalid: bool,
     pub authorization: bool,
-    /// `Cookie` の行があった (T.32.35)。明示の鮮度も `public` も無い応答は保存しない
+    /// `Cookie` の行があった (T32.35)。明示の鮮度も `public` も無い応答は保存しない
     pub cookie: bool,
     pub cache_control: String,
     pub if_none_match: Option<String>,
@@ -48,18 +48,18 @@ pub struct RequestHeaders {
     /// または値に CR / LF / NUL がある (RFC 9110 §5.5。断るか SP に置き換える)。どちらも前段と
     /// 後段で読み方が割れる (`Content-Length : 5` を無視するオリジン、CR を改行と読むオリジン)。
     /// 要求は置き換えると値が黙って変わるので**断る**。断るのは `http` 側と CONNECT の入口。
-    /// T.29.8 から、名前が token でない (空・空白・制御文字・`"` など) 行とコロンの無い行もここに入る
+    /// T29.8 から、名前が token でない (空・空白・制御文字・`"` など) 行とコロンの無い行もここに入る
     pub bad_header: bool,
-    /// `Expect: 100-continue` (大小無視) があった (T.28.3)。本文のある HTTP/1.1 の要求なら、
+    /// `Expect: 100-continue` (大小無視) があった (T28.3)。本文のある HTTP/1.1 の要求なら、
     /// `http` 側が本文を読む前に `100 Continue` を返す (`Expect` の行はオリジンへ転送しない)
     pub expect_continue: bool,
     /// `Expect` に `100-continue` 以外の期待があった (RFC 9110 §10.1.1。`http` 側が 417 で断る)
     pub expect_unknown: bool,
-    /// `Upgrade` の行があった (T.29.9)。無いのにオリジンが 101 を返したら `http` 側が 502 にする
+    /// `Upgrade` の行があった (T29.9)。無いのにオリジンが 101 を返したら `http` 側が 502 にする
     pub upgrade: bool,
 }
 
-/// 空でない token か (ヘッダーの名前。T.29.8)。表は [`ascii::is_token`] (T.32.15 で応答の側と共有)
+/// 空でない token か (ヘッダーの名前。T29.8)。表は [`ascii::is_token`] (T32.15 で応答の側と共有)
 fn is_token(s: &str) -> bool {
     ascii::is_token(s)
 }
@@ -104,7 +104,7 @@ pub fn parse_request_headers(raw_headers: &[String], conn_id: usize) -> RequestH
 ///
 /// 受け付けの層 (`serve_one`) が `Via` と `User-Agent` だけを別に見るためのもので、
 /// ヘッダーをなめるのは**この 1 回だけ**になる (今までは `serve_one` が host / CL / TE / Via /
-/// User-Agent を手でなめ、続いてここが全部をなめ直していた。T.28.15)。
+/// User-Agent を手でなめ、続いてここが全部をなめ直していた。T28.15)。
 pub fn parse_request_headers_visit(
     raw_headers: &[String],
     conn_id: usize,
@@ -120,12 +120,12 @@ pub fn parse_request_headers_visit(
             h.obs_fold = true;
             continue;
         }
-        // コロンの無い行は不正 (T.29.8。今までは黙って捨て、オリジンへは転送していた)
+        // コロンの無い行は不正 (T29.8。今までは黙って捨て、オリジンへは転送していた)
         let Some((k, v)) = ascii::split_once(line, b':') else {
             h.bad_header = true;
             continue;
         };
-        // 名前は空でない token だけ (RFC 9110 §5.1。T.29.8): 名前の後ろの空白 (`Content-Length : 5`。T27.5)、
+        // 名前は空でない token だけ (RFC 9110 §5.1。T29.8): 名前の後ろの空白 (`Content-Length : 5`。T27.5)、
         // 名前の中の空白・制御文字・`"`・`(` など、空の名前 (`: v`) はどれも不正。値の CR / LF / NUL (T27.5) も。
         // 行は行末の CRLF (か LF) を付けたまま来るので、行末の CR / LF を外した残りの途中にあるものだけを見る
         if !is_token(k)
@@ -146,7 +146,7 @@ pub fn parse_request_headers_visit(
         h.chunked = te.chunked();
         h.te_invalid = !h.chunked;
         if h.te_invalid {
-            // debug: 呼ぶ側が 400 で断って WARN を絞って出す (T.28.9)
+            // debug: 呼ぶ側が 400 で断って WARN を絞って出す (T28.9)
             log_debug!(
                 Some(conn_id),
                 "Transfer-Encoding does not end in a single chunked coding"
@@ -203,7 +203,7 @@ impl RequestHeaders {
             // 重複は全部同じ値なら 1 本に畳んでよく、1 つでも違えば本文の切れ目が決まらないので
             // 要求を断る (T19.1)
             match (self.content_length, ascii::content_length_value(v_trim)) {
-                // ここの行は debug (T.28.9)。印が立った要求は呼ぶ側が必ず 400 で断り、そちらが
+                // ここの行は debug (T28.9)。印が立った要求は呼ぶ側が必ず 400 で断り、そちらが
                 // 理由ごとに 1 分に 1 行の WARN を出す (1 本ごとに WARN だと数を相手が決められる)
                 (_, None) => {
                     log_debug!(Some(conn_id), "invalid Content-Length: {:?}", v_trim);
@@ -224,7 +224,7 @@ impl RequestHeaders {
         } else if is("upgrade") {
             self.upgrade = true;
         } else if is("expect") {
-            // 並びの空の要素は読み飛ばす。`100-continue` 以外が 1 つでもあれば 417 (T.28.3)
+            // 並びの空の要素は読み飛ばす。`100-continue` 以外が 1 つでもあれば 417 (T28.3)
             for t in v_trim
                 .split(',')
                 .map(str::trim_ascii)

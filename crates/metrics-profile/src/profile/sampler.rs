@@ -48,7 +48,7 @@ struct PrevTask {
     syscall: Option<i64>,
     /// `schedstat` の走れずに待った ns (読めなければ `None`)
     run_delay_ns: Option<u64>,
-    /// 役割 ([`role_of`])。全スレッドを読まない秒に前回の状態を積むのに使う (T.32.37)
+    /// 役割 ([`role_of`])。全スレッドを読まない秒に前回の状態を積むのに使う (T32.37)
     role: usize,
 }
 
@@ -67,9 +67,9 @@ pub(crate) struct Sampler {
     prev: std::collections::HashMap<u32, PrevTask>,
     /// 読み取りの使い回し用
     buf: Vec<u8>,
-    /// スレッドごとの `stat` を開いたまま持つ (T.32.21)
+    /// スレッドごとの `stat` を開いたまま持つ (T32.21)
     files: crate::sysinfo::proc::TaskStatFiles,
-    /// 標本を取るスレッド自身の tid ([`Sampler::for_self`] のときだけ。T.29.21)
+    /// 標本を取るスレッド自身の tid ([`Sampler::for_self`] のときだけ。T29.21)
     self_tid: Option<u32>,
     /// 1 clock tick の us
     tick_us: u64,
@@ -83,13 +83,13 @@ pub(crate) struct Sampler {
     /// `schedstat` が 1 本でも読めたか (読めなければ `run_delay_us` は `null`)
     schedstat_readable: bool,
     /// 前に全スレッドを読んだときの (スレッド数, プロセスの utime + stime の tick, 要求の累計)。
-    /// 次の秒も同じなら全スレッドを読まない (T.32.37)
+    /// 次の秒も同じなら全スレッドを読まない (T32.37)
     last_whole: Option<(u64, u64, u64)>,
     /// 全スレッドを読まずに済ませた回数 (試験用)
     skipped: u64,
 }
 
-/// スレッドの `stat` を開いたまま持つ本数の上限 (T.32.21)。
+/// スレッドの `stat` を開いたまま持つ本数の上限 (T32.21)。
 ///
 /// 暇なときは 10 本前後、`--only idle-tunnels --conc 5000` でも 132 本。越えたぶんは
 /// 毎回開いて読む (記述子を接続のぶんから食い過ぎないように)。
@@ -115,10 +115,10 @@ impl Sampler {
     }
 
     /// 1 回ぶん取る。**プロセスの CPU (tick) とスレッド数と要求の数が前回と同じ秒は
-    /// 全スレッドを読まず**、前回の状態をもう 1 標本ぶん積む (T.32.37。利用者の決定 (a))。
+    /// 全スレッドを読まず**、前回の状態をもう 1 標本ぶん積む (T32.37。利用者の決定 (a))。
     ///
     /// どのスレッドも 10 ms (1 tick) 走っていなければ、状態は「前と同じ所で寝ている」と
-    /// みなせる (T.29.21 の「休眠のまま ticks が同じなら前回の値」をプロセス全体に広げた形)。
+    /// みなせる (T29.21 の「休眠のまま ticks が同じなら前回の値」をプロセス全体に広げた形)。
     /// 毎秒の仕事は `/proc/self/task` の readdir とスレッドごとの `stat` で、暇な秒に
     /// これを省くと `profile-sample` の CPU がおよそ半分になる。スレッドが生まれた・消えた秒は
     /// スレッド数が変わるので必ず読み直す。`/proc/self/stat` を読むのは [`Sampler::for_self`] のときだけ
@@ -128,7 +128,7 @@ impl Sampler {
         self.sample_unless_same(profile, whole);
     }
 
-    /// プロセス全体の (スレッド数, utime + stime の tick, 要求の累計) を読む (I/O はここだけ。T.34.43)。
+    /// プロセス全体の (スレッド数, utime + stime の tick, 要求の累計) を読む (I/O はここだけ。T34.43)。
     ///
     /// [`Sampler::for_self`] でなければ読まずに `None` (= 毎回全スレッドを読む)。
     pub(crate) fn read_whole(&mut self, requests: u64) -> Option<(u64, u64, u64)> {
@@ -144,7 +144,7 @@ impl Sampler {
         }
     }
 
-    /// `whole` が前回と同じなら前回の状態を 1 標本ぶん積み、違えば全スレッドを読む (判断。T.34.43)。
+    /// `whole` が前回と同じなら前回の状態を 1 標本ぶん積み、違えば全スレッドを読む (判断。T34.43)。
     pub(crate) fn sample_unless_same(&mut self, profile: &Profile, whole: Option<(u64, u64, u64)>) {
         if whole.is_some() && whole == self.last_whole && !self.prev.is_empty() {
             self.repeat_last();
@@ -154,7 +154,7 @@ impl Sampler {
         self.sample(profile);
     }
 
-    /// 前回の状態をもう 1 標本ぶん積む (CPU と待ちの増えは 0。T.32.37)。
+    /// 前回の状態をもう 1 標本ぶん積む (CPU と待ちの増えは 0。T32.37)。
     fn repeat_last(&mut self) {
         self.skipped += 1;
         for (tid, p) in &self.prev {
@@ -172,7 +172,7 @@ impl Sampler {
     /// 自プロセス用 (`/proc/self/task`)。
     ///
     /// **標本を取るスレッドの中で呼ぶこと** (自分の tid を `/proc/thread-self` から覚え、
-    /// 自分の `syscall` は読まずに `read` とする。T.29.21)。
+    /// 自分の `syscall` は読まずに `read` とする。T29.21)。
     pub(crate) fn for_self() -> Sampler {
         let mut s = Sampler::new(
             std::path::PathBuf::from("/proc/self/task"),
@@ -187,7 +187,7 @@ impl Sampler {
     /// 1 回ぶん取る。読めなければ [`SamplerState::Off`] を書いて何もしない。
     pub(crate) fn sample(&mut self, profile: &Profile) {
         // **休眠のまま ticks が前回と同じスレッドは `syscall` と `schedstat` を開かない**
-        // (T.29.21)。走っていないので待ちの増えは 0、居るシステムコールも前回のまま
+        // (T29.21)。走っていないので待ちの増えは 0、居るシステムコールも前回のまま
         // (10 ms 未満だけ走って別の所で寝直したスレッドは 1 標本古く見える。待ちの増えは
         // 次に読んだときに累計の差で入るので消えない)。暇なときの open は 1 本 3 → 1
         // **自分 (この標本を取っているスレッド) の `syscall` はいつも `read`** (自分の `syscall` を

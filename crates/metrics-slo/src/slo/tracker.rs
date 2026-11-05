@@ -1,5 +1,5 @@
 //! 時間ごとの集計 ([`Tracker`] と、その 1 時間 [`Hour`] / 外れた時間帯 [`Breach`] / 期間の畳み
-//! [`Report`]。`slo` の一部。T.34.2 で `slo.rs` から移した)。
+//! [`Report`]。`slo` の一部。T34.2 で `slo.rs` から移した)。
 //!
 //! リングに持つのは閾を当てる前の積み上げ ([`Slot`]) で、閾は読むとき ([`Slot::tally`]) に当てる
 //! (判定は [`judge`] から何度でも作り直せる)。**触るのは履歴スレッドと `/slo` だけ**。
@@ -17,7 +17,7 @@ use crate::metrics::DestHour;
 /// 1 時間ぶんの**積み上げ** (リングに持つもの。閾の当て方は [`Slot::tally`] が決める)。
 ///
 /// 速さ (確立の 2 つ) は 5 秒の標本ごとの判定を畳み、比の 2 つは**分子と分母の合計**を持つ
-/// (T.29.33。利用者の決定: 比は 1 時間の合計で判定する)。
+/// (T29.33。利用者の決定: 比は 1 時間の合計で判定する)。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Slot {
     t: u64,
@@ -37,7 +37,7 @@ impl Slot {
     /// 「達成していない」**と数える (`met` = 0、外した比の `miss` = 判定した 5 秒の数、`worst` = その時間の比)。
     /// 満たした時間の `met` は速さの 2 つを満たした 5 秒の数。分母が 0 の比は外さない (判定なし)。
     ///
-    /// `dest` はその時間の宛先の表 (T.30.4)。[`excludes`] なら、その宛先のエラーと試行を `error_rate` の
+    /// `dest` はその時間の宛先の表 (T30.4)。[`excludes`] なら、その宛先のエラーと試行を `error_rate` の
     /// 分子と分母から引いてから当てる (引いた数は `excluded`)。
     fn tally(&self, th: &Thresholds, dest: Option<&DestHour>) -> Hour {
         let limits = th.limits();
@@ -80,7 +80,7 @@ impl Slot {
 
 /// 1 時間ぶん (と、それを日・期間で足したもの) の集計。
 ///
-/// T.29.33 から `met` は「速さの 2 つを 5 秒ごとに満たし、**その時間の比の 2 つも 1 時間の合計で満たした**」
+/// T29.33 から `met` は「速さの 2 つを 5 秒ごとに満たし、**その時間の比の 2 つも 1 時間の合計で満たした**」
 /// 5 秒の数。`miss` の 2・3 番目 (比) は、その比を外した時間の判定した 5 秒の数。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Hour {
@@ -94,14 +94,14 @@ pub struct Hour {
     pub miss: [u32; 4],
     /// 閾ごとの最悪の値 (速さは外した 5 秒の中で、比は外した時間の 1 時間の値。外していなければ 0)
     pub worst: [f64; 4],
-    /// 比の 2 つの分子と分母の合計 (T.29.33。`error_rate` = 名前解決に成功した試みのエラー ÷ 試み
-    /// (T.30.3 から 443・80 宛てだけ)、
+    /// 比の 2 つの分子と分母の合計 (T29.33。`error_rate` = 名前解決に成功した試みのエラー ÷ 試み
+    /// (T30.3 から 443・80 宛てだけ)、
     /// `dns_miss_per_connect` = 失敗した試みを除いたミス ÷ 確立)
     pub num: [u64; RATES],
     pub den: [u64; RATES],
-    /// 比ごとの `[満たした時間, 外した時間]` (分母 0 の時間はどちらにも数えない。T.29.33)
+    /// 比ごとの `[満たした時間, 外した時間]` (分母 0 の時間はどちらにも数えない。T29.33)
     pub rate_hours: [[u32; 2]; RATES],
-    /// `error_rate` から外した宛先の `[エラー, 試行]` と、外した時間の数 (T.30.4。`num` / `den` は外したあと)
+    /// `error_rate` から外した宛先の `[エラー, 試行]` と、外した時間の数 (T30.4。`num` / `den` は外したあと)
     pub excluded: [u64; 2],
     pub excluded_hours: u32,
 }
@@ -140,9 +140,9 @@ impl Hour {
     }
 }
 
-/// 直近 1 時間 (いまから [`RATE_WINDOW_SECS`] 秒) の比の合計 (`/slo` の `last_hour`。T.29.33)。
+/// 直近 1 時間 (いまから [`RATE_WINDOW_SECS`] 秒) の比の合計 (`/slo` の `last_hour`。T29.33)。
 ///
-/// T.30.4 から `error_rate` の `num` / `den` は、外した宛先のぶんを引いたあと (`excluded`)。
+/// T30.4 から `error_rate` の `num` / `den` は、外した宛先のぶんを引いたあと (`excluded`)。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LastHour {
     /// 窓の始まり (いま − 1 時間) と終わり (いま)
@@ -152,12 +152,12 @@ pub struct LastHour {
     pub samples: u32,
     pub num: [u64; RATES],
     pub den: [u64; RATES],
-    /// `error_rate` から外した `[エラー, 試行]` と、外した宛先 (いまの時間・前の時間の順。T.30.4)
+    /// `error_rate` から外した `[エラー, 試行]` と、外した宛先 (いまの時間・前の時間の順。T30.4)
     pub excluded: [u64; 2],
     pub destinations: Vec<String>,
 }
 
-/// 外した宛先 `d` のうち、窓に掛かる `part` 秒ぶんの `(エラー, 試行)` (T.30.4。T.34.52 で
+/// 外した宛先 `d` のうち、窓に掛かる `part` 秒ぶんの `(エラー, 試行)` (T30.4。T34.52 で
 /// [`Tracker::last_hour`] から出した)。
 ///
 /// エラーは `num0` (窓の `error_rate` の分子)、試行は `den0` (分母) で頭打ちにし、試行はエラーより
@@ -177,11 +177,11 @@ pub(crate) fn apportioned(d: &DestHour, part: u64, num0: u64, den0: u64) -> Opti
 #[derive(Debug, Default)]
 pub(crate) struct Tracker {
     hours: VecDeque<Slot>,
-    /// 直近 1 時間の 5 秒ごとの比の分子と分母 (`last_hour` 用。720 本 × 40 B ≈ 28 KiB。T.29.33)
+    /// 直近 1 時間の 5 秒ごとの比の分子と分母 (`last_hour` 用。720 本 × 40 B ≈ 28 KiB。T29.33)
     recent: VecDeque<(u64, [u64; RATES], [u64; RATES])>,
     /// 最後に [`Tracker::observe`] が受けた閾 ([`Tracker::hours`] が当てる)
     th: Option<Thresholds>,
-    /// 時間ごとの「いちばん多くエラーを出した 443・80 の宛先」(T.30.4。時刻の順、エラーのあった時間だけ。
+    /// 時間ごとの「いちばん多くエラーを出した 443・80 の宛先」(T30.4。時刻の順、エラーのあった時間だけ。
     /// 多くて [`HOURS`] 行)
     dests: VecDeque<DestHour>,
 }
@@ -247,7 +247,7 @@ impl Tracker {
         v
     }
 
-    /// その時間の宛先の表を受ける (T.30.4。履歴スレッドが 5 秒ごとに、確定した前の時間と
+    /// その時間の宛先の表を受ける (T30.4。履歴スレッドが 5 秒ごとに、確定した前の時間と
     /// いまの時間の途中の集計を渡す)。同じ時間の行は差し替える。エラーの無い時間は持たない。
     pub fn observe_destinations(&mut self, prev: Option<&DestHour>, cur: &DestHour) {
         for d in prev.into_iter().chain(std::iter::once(cur)) {
@@ -283,7 +283,7 @@ impl Tracker {
         s.tally(th, self.dest_of(s.t))
     }
 
-    /// その時間に `error_rate` から外した宛先 (外していなければ `None`。T.30.4)。
+    /// その時間に `error_rate` から外した宛先 (外していなければ `None`。T30.4)。
     pub fn excluded_destination(&self, t: u64) -> Option<&DestHour> {
         self.dest_of(t).filter(|d| excludes(d))
     }
@@ -311,7 +311,7 @@ impl Tracker {
                 out.den[i] += den[i];
             }
         }
-        // 外した宛先 (T.30.4): いまの時間 (窓にまるごと入る) はそのまま、前の時間は窓に掛かる秒の割合で按分
+        // 外した宛先 (T30.4): いまの時間 (窓にまるごと入る) はそのまま、前の時間は窓に掛かる秒の割合で按分
         let cur = now - now % HOUR;
         let share = HOUR - now % HOUR;
         for (t, part) in [(cur, HOUR), (cur.saturating_sub(HOUR), share)] {
@@ -333,7 +333,7 @@ impl Tracker {
         out
     }
 
-    /// その日 (UTC の 0 時 `day_t` から 24 時間) の、比ごとの `[満たした時間, 外した時間]` (日次の 1 行。T.29.33)。
+    /// その日 (UTC の 0 時 `day_t` から 24 時間) の、比ごとの `[満たした時間, 外した時間]` (日次の 1 行。T29.33)。
     pub fn rate_hours_of_day(&self, th: &Thresholds, day_t: u64) -> [[u32; 2]; RATES] {
         let mut out = [[0u32; 2]; RATES];
         for h in self
@@ -381,7 +381,7 @@ impl Tracker {
                 Some(d) if d.t == day => d.add(&h),
                 _ => out.daily.push(Hour { t: day, ..h }),
             }
-            // 外した宛先の名前 (T.30.4。`hourly` の末尾と `breaches` の `excluded` が読む)
+            // 外した宛先の名前 (T30.4。`hourly` の末尾と `breaches` の `excluded` が読む)
             if h.excluded_hours > 0
                 && let Some(d) = self.dest_of(h.t)
             {
@@ -444,9 +444,9 @@ pub struct Report {
     pub hourly: Vec<Hour>,
     /// 外れた時間帯 (古い順)
     pub breaches: Vec<Breach>,
-    /// 直近 1 時間の比の合計 (T.29.33)
+    /// 直近 1 時間の比の合計 (T29.33)
     pub last_hour: LastHour,
-    /// `error_rate` から宛先を外した時間 (古い順。T.30.4)
+    /// `error_rate` から宛先を外した時間 (古い順。T30.4)
     pub excluded: Vec<DestHour>,
 }
 
@@ -455,7 +455,7 @@ mod tests {
     use super::*;
 
     /// 1 時間の積み上げに閾を当てる: 比を満たせば `met` は速さを満たした 5 秒の数、比を外せばその時間の
-    /// 5 秒を全部「達成していない」と数え、分母 0 の比は判定しない (T.29.33。T.34.2 で直に押さえる)。
+    /// 5 秒を全部「達成していない」と数え、分母 0 の比は判定しない (T29.33。T34.2 で直に押さえる)。
     #[test]
     fn tally_turns_a_slot_into_an_hour_with_the_rates_judged_on_the_sum() {
         let th = super::super::DEFAULT;
@@ -493,7 +493,7 @@ mod tests {
             ..slot
         };
         assert_eq!(quiet.tally(&th, None).rate_hours, [[0, 0], [0, 0]]);
-        // 偏った宛先を外すと分子と分母から引かれ、外した数が残る (T.30.4)
+        // 偏った宛先を外すと分子と分母から引かれ、外した数が残る (T30.4)
         let dest = DestHour {
             hour: 3600,
             errors: 6,
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(h.met, 700, "外したら 1 / 1,001 で満たす");
     }
 
-    /// 日・期間へ足すときは数は和、最悪の値は最大 (T.34.2 で直に押さえる)。
+    /// 日・期間へ足すときは数は和、最悪の値は最大 (T34.2 で直に押さえる)。
     #[test]
     fn hours_add_up_and_keep_the_worst_value() {
         let mut a = Hour {
@@ -553,7 +553,7 @@ mod tests {
         }
     }
 
-    /// 前の時間が窓に半分掛かれば、エラーも試行も半分を引く (T.34.52)。
+    /// 前の時間が窓に半分掛かれば、エラーも試行も半分を引く (T34.52)。
     #[test]
     fn apportioned_takes_the_share_of_the_window() {
         assert_eq!(

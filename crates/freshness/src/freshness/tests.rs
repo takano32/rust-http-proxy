@@ -5,7 +5,7 @@ use super::*;
 use crate::cache::CacheConfig;
 
 /// 304 の `no-store`・`private`・`Vary: Cookie` は保存を禁じる。`Set-Cookie` と
-/// `Vary: Accept-Encoding` は禁じない (T.29.0)。
+/// `Vary: Accept-Encoding` は禁じない (T29.0)。
 #[test]
 fn not_modified_forbidding_storage() {
     let f = |hs: &[(&str, &str)]| not_modified_forbids_storing(&hdrs(hs));
@@ -88,7 +88,7 @@ fn max_age_s_maxage_and_expires() {
     assert!(response_policy(200, &hdrs(&[("expires", "0")]), &c, NOW).is_none());
 }
 
-/// 読めない `max-age` / `s-maxage` は「既に古い」(T.28.10 (d))。バリデータが無ければ保存しない、
+/// 読めない `max-age` / `s-maxage` は「既に古い」(T28.10 (d))。バリデータが無ければ保存しない、
 /// あれば毎回再検証 (TTL 0) で保存する。読める値は今までどおり。
 #[test]
 fn unreadable_max_age_is_stale() {
@@ -282,7 +282,7 @@ fn accept_encoding_is_normalized() {
     assert_eq!(accept_encoding_variant(Some("gzip, gzip")), "gzip");
 }
 
-/// T.28.13 (b): 速い道 (無い・空・小文字のトークン 1 つ) も遅い道と同じ正規形。
+/// T28.13 (b): 速い道 (無い・空・小文字のトークン 1 つ) も遅い道と同じ正規形。
 #[test]
 fn accept_encoding_fast_path_matches_the_slow_one() {
     for (v, want) in [
@@ -299,7 +299,7 @@ fn accept_encoding_fast_path_matches_the_slow_one() {
     }
 }
 
-/// T.32.35: 要求に `Cookie` があれば、明示の鮮度も `public` も無い応答は保存しない。
+/// T32.35: 要求に `Cookie` があれば、明示の鮮度も `public` も無い応答は保存しない。
 #[test]
 fn cookie_request_needs_explicit_freshness_or_public() {
     let lm = "Sun, 06 Nov 1994 08:49:37 GMT";
@@ -338,7 +338,7 @@ fn cookie_request_needs_explicit_freshness_or_public() {
     );
 }
 
-/// T.28.13 (a): 借用の並び (名前の大小を問わない) で読んでも、小文字の組と同じ方針。
+/// T28.13 (a): 借用の並び (名前の大小を問わない) で読んでも、小文字の組と同じ方針。
 #[test]
 fn policy_from_borrowed_lines_matches_the_pairs() {
     let cases: &[&[(&str, &str)]] = &[
@@ -590,7 +590,7 @@ fn revalidated_policy_prefers_304_headers_then_stored_directives() {
     );
 }
 
-/// 304 の `Set-Cookie` は方針に数えない (T.29.0)。304 の `Expires` だけでも保存済みの
+/// 304 の `Set-Cookie` は方針に数えない (T29.0)。304 の `Expires` だけでも保存済みの
 /// `Cache-Control` は引き継がず、304 が `private` なら保存済みのバリデータで TTL 0 の方針に倒す。
 #[test]
 fn revalidated_policy_ignores_set_cookie_and_falls_back_on_the_stored_validators() {

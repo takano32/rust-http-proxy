@@ -8,7 +8,7 @@ use std::os::fd::AsRawFd;
 
 use super::*;
 
-/// glibc は閾と trim の閾を両方受け付ける (T.32.3。上限の扱いは glibc の版で違うので見ない)。
+/// glibc は閾と trim の閾を両方受け付ける (T32.3。上限の扱いは glibc の版で違うので見ない)。
 #[test]
 fn fixes_the_mmap_threshold() {
     assert!(fix_malloc_mmap_threshold(256 * 1024));
@@ -129,7 +129,7 @@ fn accepted_sockets_inherit_the_listener_options() {
 
 #[test]
 fn accepted_sockets_inherit_separate_read_and_write_timeouts() {
-    // 読み (1 要求目の要求行を待つ長さ) と書き (`PROXY_TIMEOUT_SECS`) は別の値で継承する (T.28.0)
+    // 読み (1 要求目の要求行を待つ長さ) と書き (`PROXY_TIMEOUT_SECS`) は別の値で継承する (T28.0)
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let read = std::time::Duration::from_secs(3);

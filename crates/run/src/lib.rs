@@ -12,13 +12,13 @@ use proxy_server::config::Config;
 use proxy_server::log;
 use proxy_server::log_error;
 
-// `--check` の印字 (T.34.60 で `check_environment` をここから移した)
+// `--check` の印字 (T34.60 で `check_environment` をここから移した)
 mod check;
 mod startup;
 
 /// 起動の全部 (ルートの `src/main.rs` から呼ばれる)。引数と設定を読み、残りは [`startup::run`] の段に渡す。
 pub fn main() {
-    // `-V` は版のあとにビルドの種類 (`release` / `dist`) を添える (T.28.42)
+    // `-V` は版のあとにビルドの種類 (`release` / `dist`) を添える (T28.42)
     let version = format!("{} ({})", proxy_server::VERSION, proxy_server::BUILD);
     match proxy_server::cli::parse(std::env::args().skip(1), &version) {
         proxy_server::cli::Cli::Print(msg, 0) => {

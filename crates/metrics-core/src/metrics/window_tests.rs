@@ -1,5 +1,5 @@
 //! 区間の合計 (`Interval`) と窓の試験: `wait`・失敗を窓に入れないこと・RTT の差・443/80 以外の試み・
-//! 443/80 宛ての名前解決のミス (T.34.33 で `latency_tests.rs` から移した)。
+//! 443/80 宛ての名前解決のミス (T34.33 で `latency_tests.rs` から移した)。
 
 use super::host_table::web_port;
 use super::*;
@@ -249,7 +249,7 @@ fn error_rate_counts_all_requests() {
     assert_eq!(s.timed, 0);
 }
 
-/// T.28.45: 区間に「確立 (`dns + connect`) − オリジン側のカーネルの RTT」の窓と、
+/// T28.45: 区間に「確立 (`dns + connect`) − オリジン側のカーネルの RTT」の窓と、
 /// 名前解決に失敗した試みのミスを積む (`/slo` の判定の元)。
 ///
 /// 見るのは: (a) 確立 6 + 20 = 26 ms・RTT 18.3 ms の CONNECT は 7.7 → **8 ms** (切り上げ)、
@@ -331,12 +331,12 @@ fn the_interval_keeps_the_rtt_excess_and_the_misses_of_failed_lookups() {
     assert_eq!(iv.dns_misses, 1 + 1 + 1 + 1 + 2 + 1);
     assert_eq!(iv.dns_fail_misses, 2, "原因 `dns` の失敗のミスだけ");
     assert_eq!(m.totals().dns_fail_misses, 2, "通算にも入る");
-    // 失敗した試みが払った ms も別に持つ (T.32.16。`dns_slow` が引く)
+    // 失敗した試みが払った ms も別に持つ (T32.16。`dns_slow` が引く)
     assert_eq!(iv.dns_ms_sum, 6 + 40 + 5);
     assert_eq!(iv.dns_fail_ms_sum, 40, "原因 `dns` の失敗の ms だけ");
 }
 
-/// T.30.3: 区間に「443・80 以外の宛先への試み」とそのエラーを積む (`/slo` の `error_rate` が引く)。
+/// T30.3: 区間に「443・80 以外の宛先への試み」とそのエラーを積む (`/slo` の `error_rate` が引く)。
 ///
 /// 見るのは: (a) `:443`・`:80` の成功とエラーは入らない、(b) `:993` の時間切れ・`:8080` の転送の成功
 /// (`:80` で終わらない)・`:5228` の確立の成功は入る、(c) 原因 `dns` の失敗は試みに数えない (`/slo` が
@@ -408,7 +408,7 @@ fn the_interval_counts_the_attempts_to_ports_other_than_443_and_80() {
     }
 }
 
-/// T.33.3: 区間に「443・80 宛ての、名前解決に成功したミス」の回数と ms を積む (`dns_slow` が読む)。
+/// T33.3: 区間に「443・80 宛ての、名前解決に成功したミス」の回数と ms を積む (`dns_slow` が読む)。
 ///
 /// 見るのは: (a) `:443` の確立と `:80` の転送 (エラーで終わっても、名前は引けた) は入る、(b) `:993`・`:8080` は
 /// 入らない (`dns_misses` には入ったまま)、(c) 原因 `dns` の失敗は 443 宛てでも入らない、(d) ミスの無い要求は

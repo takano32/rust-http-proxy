@@ -14,7 +14,7 @@
 use std::collections::VecDeque;
 
 /// 変動幅を見る窓の長さ (秒)。プローブ回数には [`Margin::with_interval`] が直す
-/// (T.29.22 でプローブの既定を 1 → 5 秒にしたので、回数で持つと窓が 5 倍に延びる)。
+/// (T29.22 でプローブの既定を 1 → 5 秒にしたので、回数で持つと窓が 5 倍に延びる)。
 const WINDOW_SECS: u64 = 60;
 /// 変動幅に掛ける安全係数。
 const VOLATILITY_FACTOR: u64 = 2;
@@ -81,7 +81,7 @@ impl Margin {
             .unwrap_or(0)
     }
 
-    /// いまの後退の幅 (試験から読む。T.34.81 の cache の試験が使うので `pub` のまま)。
+    /// いまの後退の幅 (試験から読む。T34.81 の cache の試験が使うので `pub` のまま)。
     pub fn backoff(&self) -> u64 {
         self.backoff
     }
@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(m.keep_free(0, 0), 375 * MIB);
     }
 
-    /// プローブが 5 秒ごとでも窓・減衰・倍にする間隔は**秒で**同じ (T.29.22)。
+    /// プローブが 5 秒ごとでも窓・減衰・倍にする間隔は**秒で**同じ (T29.22)。
     #[test]
     fn counts_follow_the_probe_interval() {
         let mut m = Margin::with_interval(0, 5);

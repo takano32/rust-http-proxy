@@ -1,6 +1,6 @@
 //! keep-alive の 2 本目からの応答が Nagle で遅れないことの結合テスト (と、その判定の単体試験)。
 //!
-//! 初めは `tests/keepalive_test.rs` にあった (T.34.119 で割った)。
+//! 初めは `tests/keepalive_test.rs` にあった (T34.119 で割った)。
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};

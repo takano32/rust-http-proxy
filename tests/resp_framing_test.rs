@@ -26,7 +26,7 @@ use common::*;
 /// `Connection: close` を付けて返すので、プロキシはこの接続をプールに戻さない
 /// (次の要求が死んだ接続を掴んで再試行する分の揺れを無くす)。
 ///
-/// 応答の表は [`scripted_response`]、1 本の接続の受け答えは [`serve_scripted`] (T.34.123 で割った)。
+/// 応答の表は [`scripted_response`]、1 本の接続の受け答えは [`serve_scripted`] (T34.123 で割った)。
 fn start_scripted_origin() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -82,12 +82,12 @@ fn scripted_response(path: &str) -> Vec<u8> {
         "/chunked" => b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\
               \r\n5\r\nhello\r\n0\r\n\r\n"
             .to_vec(),
-        // 正常: chunked と CL が両方 (chunked で読む。T.28.1 で変えない形)
+        // 正常: chunked と CL が両方 (chunked で読む。T28.1 で変えない形)
         "/chunked-cl" => b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\
               Content-Length: 3\r\nConnection: close\r\n\
               \r\n5\r\nhello\r\n0\r\n\r\n"
             .to_vec(),
-        // 値に UTF-8 として読めないバイト (obs-text) がある (T.28.12 で 502 → 通す)
+        // 値に UTF-8 として読めないバイト (obs-text) がある (T28.12 で 502 → 通す)
         "/obs-text" => b"HTTP/1.1 200 OK\r\nX-Name: caf\xe9\r\nContent-Length: 5\r\n\
               Connection: close\r\n\r\nhello"
             .to_vec(),
@@ -247,8 +247,8 @@ fn test_integration_good_responses_are_unchanged() {
     let origin_port = start_scripted_origin();
     let proxy_port = start_test_proxy(proxy_config());
 
-    // T.28.10 (b) から、どの応答にも自分の `Via` が 1 行付く (それ以外は今までどおり)。
-    // T.29.9 から `Date` の無い応答には `Date` も 1 行付く (`without_date` で外して比べる)
+    // T28.10 (b) から、どの応答にも自分の `Via` が 1 行付く (それ以外は今までどおり)。
+    // T29.9 から `Date` の無い応答には `Date` も 1 行付く (`without_date` で外して比べる)
     let via = rust_http_proxy::via::token();
     // CL 1 本の応答: 状態行・ヘッダー・本文まで含めて今までどおりのバイト列
     assert_eq!(
@@ -332,7 +332,7 @@ fn test_integration_truncated_large_body_closes_the_connection() {
 }
 
 /// 最後が chunked でない `Transfer-Encoding` と `Content-Length` を一緒に返し、
-/// 本文の後ろに余分なバイトを続けるオリジン (T.28.1)。
+/// 本文の後ろに余分なバイトを続けるオリジン (T28.1)。
 ///
 /// 応答を書いたあと 300 ms は同じ接続で次の要求を待ち、来れば同じ接続で答える
 /// (= プロキシが接続を使い回すと 1 本で済む)。来なければ閉じる。
@@ -379,11 +379,11 @@ fn start_te_cl_origin(te: &'static str) -> (u16, Arc<AtomicUsize>, Arc<AtomicUsi
     (port, conns, reqs)
 }
 
-/// **受け入れ基準 (T.28.1)**: TE (最後が chunked でない) + CL の応答は、CL を捨てて閉じるまでを
+/// **受け入れ基準 (T28.1)**: TE (最後が chunked でない) + CL の応答は、CL を捨てて閉じるまでを
 /// 本文として返す。オリジンへの接続は使い回さず (3 要求で 3 本)、キャッシュにも入らない。
 ///
-/// **T.28.35**: HTTP/1.1 のクライアントへは TE の行を残し (符号化はほどかずそのまま)、閉じるまでを
-/// 本文にして返す (RFC 9112 §6.1: chunked で終わらない TE の応答は閉じて区切る)。T.28.1 の時点では
+/// **T28.35**: HTTP/1.1 のクライアントへは TE の行を残し (符号化はほどかずそのまま)、閉じるまでを
+/// 本文にして返す (RFC 9112 §6.1: chunked で終わらない TE の応答は閉じて区切る)。T28.1 の時点では
 /// TE の行を落として `Transfer-Encoding: chunked` で包み直していたので、クライアントには符号化済みの
 /// バイトが TE なしに見えていた。複数の行は 1 行の並びに畳む。
 #[test]
@@ -468,7 +468,7 @@ fn test_integration_unchunked_transfer_encoding_reads_until_close() {
     }
 }
 
-/// **T.28.35**: HTTP/1.0 のクライアントへは TE を送れず (RFC 9112 §6.1)、符号化もほどけないので 502
+/// **T28.35**: HTTP/1.0 のクライアントへは TE を送れず (RFC 9112 §6.1)、符号化もほどけないので 502
 /// (TE を落として符号化済みのバイトを本文として渡さない)。オリジンの接続は使い回さず、保存もしない。
 #[test]
 fn test_integration_unchunked_transfer_encoding_is_502_for_http10() {
@@ -497,7 +497,7 @@ fn test_integration_unchunked_transfer_encoding_is_502_for_http10() {
 fn test_integration_chunked_with_content_length_is_unchanged() {
     let origin_port = start_scripted_origin();
     let proxy_port = start_test_proxy(proxy_config());
-    // `Date` は秒の境目をまたぐと 2 本で違うので外して比べる (T.32.23)
+    // `Date` は秒の境目をまたぐと 2 本で違うので外して比べる (T32.23)
     assert_eq!(
         without_date(&get(proxy_port, origin_port, "/chunked-cl")),
         without_date(&get(proxy_port, origin_port, "/chunked")),
@@ -505,7 +505,7 @@ fn test_integration_chunked_with_content_length_is_unchanged() {
 }
 
 /// 値に UTF-8 として読めないバイト (obs-text、RFC 9110 5.5) がある応答は 502 にせず、
-/// 読めないバイトを U+FFFD に置き換えて返す (T.28.12。以前は行ごとの `String` で読んでいて 502)。
+/// 読めないバイトを U+FFFD に置き換えて返す (T28.12。以前は行ごとの `String` で読んでいて 502)。
 #[test]
 fn test_integration_obs_text_in_a_response_header_is_relayed() {
     let origin = start_scripted_origin();
@@ -517,7 +517,7 @@ fn test_integration_obs_text_in_a_response_header_is_relayed() {
     assert_eq!((cl, body), (Some(5), "hello"));
 }
 
-/// **T.28.36**: HEAD の応答も GET と同じ TE の行を返す。最後が chunked でない並びはそのまま、
+/// **T28.36**: HEAD の応答も GET と同じ TE の行を返す。最後が chunked でない並びはそのまま、
 /// chunked で終わる並びは `Transfer-Encoding: chunked` (GET はほどいて包み直す)。HTTP/1.0 へは落とす。
 #[test]
 fn test_integration_head_keeps_the_transfer_encoding_line() {

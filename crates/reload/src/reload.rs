@@ -26,7 +26,7 @@ use crate::config::Config;
 use crate::sysinfo::inotify::Watch;
 use crate::{envfile, log_info, log_warn};
 
-// 再読込で当てる項目と、再起動が要る項目の判断 (T.34.58)
+// 再読込で当てる項目と、再起動が要る項目の判断 (T34.58)
 mod merge;
 
 /// inotify が無い / 取りこぼした場合に備えた mtime 確認の間隔。
@@ -85,7 +85,7 @@ impl Live {
 
     /// `.env` を読み直して反映する。変更の有無にかかわらず呼んでよい。
     ///
-    /// 段取りは T.34.58 で割った: 読む → 当てる ([`merge::merge_live`]) → 起動時に固定される
+    /// 段取りは T34.58 で割った: 読む → 当てる ([`merge::merge_live`]) → 起動時に固定される
     /// 項目を比べる ([`merge::restart_required`]) → ログと出来事と `/status` の状態に残す
     /// ([`record_reload`])。順と文面は割る前と同じ。
     pub fn reload(&self) {
@@ -130,7 +130,7 @@ impl Live {
             crate::json::list(&st.applied),
             crate::json::list(&st.restart_required),
             crate::json::quote_opt(st.error.as_deref()),
-            // 読めなかった値と知らない名前 (T.28.6。足しただけ。正しい `.env` では `[]`)
+            // 読めなかった値と知らない名前 (T28.6。足しただけ。正しい `.env` では `[]`)
             problems.invalid_json(),
             problems.unknown_json(),
         )
@@ -198,7 +198,7 @@ fn changed_values(changed: &[String], old: &Config, fresh: &Config) -> String {
     let value = |all: &[crate::config::Setting], key: &str| {
         all.iter().find(|s| s.key == key).map(|s| {
             // JSON の値をそのまま出すと文字列に引用符が付くので、単純なものは外す
-            // (`--check` の印字と同じ関数。T.34.153: 前はここだけ空の中身も外し、`KEY  → x` になっていた)
+            // (`--check` の印字と同じ関数。T34.153: 前はここだけ空の中身も外し、`KEY  → x` になっていた)
             crate::config::printable_value(&s.value)
         })
     };
@@ -268,7 +268,7 @@ pub fn spawn(live: Arc<Live>, tick: impl Fn() + Send + 'static) -> Option<thread
     Some(handle)
 }
 
-/// `env-reload` スレッドの本体 (T.34.58 で [`spawn`] から出した。本体は変えていない)。
+/// `env-reload` スレッドの本体 (T34.58 で [`spawn`] から出した。本体は変えていない)。
 fn watch_loop(live: Arc<Live>, path: PathBuf, watch: Option<Watch>, tick: impl Fn()) {
     // この環境で何が読めるか (T14.15) は**起動時 1 回 + 1 時間ごと**。専用のスレッドは
     // 立てず、この一巡 (最長 `POLL_INTERVAL`) のついでに測り直す (要求の経路では触らない)。
@@ -309,6 +309,6 @@ fn watch_loop(live: Arc<Live>, path: PathBuf, watch: Option<Watch>, tick: impl F
     }
 }
 
-/// `reload` の判断の単体試験 (T.34.58)。
+/// `reload` の判断の単体試験 (T34.58)。
 #[cfg(test)]
 mod tests;

@@ -1,4 +1,4 @@
-//! `Expect: 100-continue` に、本文を読む前に `100 Continue` を返す (T.28.3)。
+//! `Expect: 100-continue` に、本文を読む前に `100 Continue` を返す (T28.3)。
 //!
 //! 0.27.8 までは 100 を自分でも返さず、オリジンの 100 も中継しなかった
 //! (`crates/msg/src/response.rs` の `read_head_forwarding`)。100 を厳密に待つクライアントは
@@ -42,7 +42,7 @@ fn read_head(stream: &mut TcpStream) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
-/// **受け入れ基準 (T.28.3)**: ヘッダーだけ送った時点で `100 Continue` が届き、本文を送ると 200。
+/// **受け入れ基準 (T28.3)**: ヘッダーだけ送った時点で `100 Continue` が届き、本文を送ると 200。
 /// `Expect` の行はオリジンへ届かない。
 #[test]
 fn test_integration_expect_100_continue_gets_100_before_the_body() {

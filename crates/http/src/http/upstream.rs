@@ -1,5 +1,5 @@
 //! オリジンとのやり取りの部品: 接続の取得 (プールか新規)、要求の先頭の組み立て、
-//! 要求本文の転送、失敗の見分け (接続を掴むまでの内訳は T.34.21 で
+//! 要求本文の転送、失敗の見分け (接続を掴むまでの内訳は T34.21 で
 //! `metrics::Detail::of_connect` へ移した)。
 
 use std::io::{self, BufReader, Read, Write};
@@ -69,7 +69,7 @@ pub(super) fn request_head(
 /// `timeout` は接続と最初の応答を待つ時間 (stale があるときは短くする)。
 ///
 /// プールから取り出すときは**どの要求でも**生存確認 (`recv(MSG_PEEK|MSG_DONTWAIT)` 1 回) をする
-/// (T.29.2)。T26.0 で GET / HEAD (やり直せる要求) だけ省いていたが、省くと「前の応答を読み切った
+/// (T29.2)。T26.0 で GET / HEAD (やり直せる要求) だけ省いていたが、省くと「前の応答を読み切った
 /// あとにオリジンが遅れて送ったバイト」を次の要求の応答として読んでしまう (手元で: `GET /a` の
 /// `CL: 2` の 0.3 秒後に届いた `HTTP/1.1 200 … X-Injected: yes … EVIL` が次の `GET /b` の応答になり、
 /// その次は `HIT`)。覗けば読み残しがある接続は捨てる。覗いてから読むまでの窓は塞げない (README)。
@@ -88,7 +88,7 @@ pub(super) fn acquire_origin(
     }
     log_debug!(Some(conn_id), "connecting to origin {}", pool_key);
     // TCP の確立だけは短い締め切り (`PROXY_CONNECT_TIMEOUT_SECS`)。`timeout` の方が短ければ
-    // (stale を持っていて待たない回) そちらに合わせる。0 (無期限) は必ず負ける (T.28.8)
+    // (stale を持っていて待たない回) そちらに合わせる。0 (無期限) は必ず負ける (T28.8)
     let stream = origin::connect_within(
         origin.scheme,
         &origin.server_addr(),
@@ -103,10 +103,10 @@ pub(super) fn acquire_origin(
 
 /// クライアントのリクエスト本文をオリジンへ同じ枠組みで転送する。戻り値は本文のバイト数。
 ///
-/// `total` には送れたぶんを積む (途中で失敗しても、そこまでのバイト数が残る。T.29.7)。
-/// 読む 1 回ごとに見張り (`rate`) で待ちを測る (本文を送ってこない相手を切る。T.29.34)。
+/// `total` には送れたぶんを積む (途中で失敗しても、そこまでのバイト数が残る。T29.7)。
+/// 読む 1 回ごとに見張り (`rate`) で待ちを測る (本文を送ってこない相手を切る。T29.34)。
 /// 呼ぶのは `fetch` の 1 か所だけで、本文の無い要求では分岐 1 つで返るので、呼び出しにせず埋め込む
-/// (別の CGU に落ちると要求ごとに呼び出しが 1 回増える。T.34.8)
+/// (別の CGU に落ちると要求ごとに呼び出しが 1 回増える。T34.8)
 #[inline]
 pub(super) fn forward_request_body(
     reader: &mut crate::clientio::ClientReader<'_>,

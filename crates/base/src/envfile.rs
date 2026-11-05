@@ -126,7 +126,7 @@ pub fn var(key: &str) -> Option<String> {
     lookup(key).map(|(value, _)| value)
 }
 
-/// [`var`] と [`var_source`] が共有する探し方 (T.34.78 で 2 つに書いてあった順を 1 つにした):
+/// [`var`] と [`var_source`] が共有する探し方 (T34.78 で 2 つに書いてあった順を 1 つにした):
 /// コマンドライン引数 → `$HOME/.env` → 実際の環境変数。値と、それがどの層から来たか。
 fn lookup(key: &str) -> Option<(String, VarSource)> {
     if let Some(v) = OVERRIDES.get().and_then(|o| o.get(key)) {
@@ -143,7 +143,7 @@ pub fn loaded_path() -> Option<PathBuf> {
     loaded().path.clone()
 }
 
-/// `.env` に書いてあるキーの名前 (名前順。知らない名前の WARN 用。T.28.6)。
+/// `.env` に書いてあるキーの名前 (名前順。知らない名前の WARN 用。T28.6)。
 pub fn file_keys() -> Vec<String> {
     let mut keys: Vec<String> = loaded().vars.keys().cloned().collect();
     keys.sort();
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(var("PATH"), env::var("PATH").ok());
     }
 
-    /// T.34.78: 値と出どころは同じ探し方から出る (どちらか一方だけが見つかることはない)。
+    /// T34.78: 値と出どころは同じ探し方から出る (どちらか一方だけが見つかることはない)。
     #[test]
     fn the_value_and_its_source_come_from_one_lookup() {
         for key in ["PATH", "HOME", "PROXY_NO_SUCH_KEY_T1415"] {

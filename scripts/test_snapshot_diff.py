@@ -132,7 +132,7 @@ class History(unittest.TestCase):
         self.assertAlmostEqual(aft["dns_ms_per_connect"], 0.55)
 
     def test_dns_rate_without_failures_only_when_the_column_exists(self):
-        # T.32.17: `dns_fail_misses` の無い版 (この見本) は鍵ごと足さない (今までどおり読める)
+        # T32.17: `dns_fail_misses` の無い版 (この見本) は鍵ごと足さない (今までどおり読める)
         self.assertNotIn("dns_ok_per_connect", self.h["after"])
         rows = [dict({f: None for f in sd.HFIELDS}, t=i, connects=1000, connect_ms_sum=0, dns_misses=950,
                      dns_ms_sum=57_500, dns_fail_misses=902, dns_fail_ms_sum=55_000, errors_by_cause=[])
@@ -141,7 +141,7 @@ class History(unittest.TestCase):
         self.assertAlmostEqual(agg["dns_per_connect"], 0.95)
         self.assertAlmostEqual(agg["dns_ok_per_connect"], 0.048)
         self.assertAlmostEqual(agg["dns_ok_ms_per_connect"], 2.5)
-        # 待ちの欄 (`dns_fail_ms_sum`。T.32.16) が無くても率は出す
+        # 待ちの欄 (`dns_fail_ms_sum`。T32.16) が無くても率は出す
         for r in rows:
             r["dns_fail_ms_sum"] = None
         agg = sd.aggregate(rows, [1, 2], None)
@@ -149,7 +149,7 @@ class History(unittest.TestCase):
         self.assertNotIn("dns_ok_ms_per_connect", agg)
 
     def test_bursts_change_the_answer_so_they_are_kept_separate(self):
-        # T.14.0 の「(参考) バースト込み」の行: ミス 1 回が 12.0 -> 31.2 ms に化ける
+        # T14.0 の「(参考) バースト込み」の行: ミス 1 回が 12.0 -> 31.2 ms に化ける
         all_before = self.h["before_all"]
         self.assertEqual(all_before["connects"], 700)
         self.assertAlmostEqual(all_before["ms_per_miss"], 31.2)
@@ -846,7 +846,7 @@ class Schema(unittest.TestCase):
         self.assertEqual(err.getvalue(), "")
 
 
-# **T.32.34 で消した `Deployed` (5 本)**: T.14.17 の受け入れ基準 (実出力から T.14.0 の表と同じ数字) を、`status/` 直下の
+# **T32.34 で消した `Deployed` (5 本)**: T14.17 の受け入れ基準 (実出力から T14.0 の表と同じ数字) を、`status/` 直下の
 # nagoya の生の出力 (`2026-09-12T2018Z`・`2026-09-16T0106Z`) で見ていたが、その出力はどの機械にも残っていない。
 # 同じ 2026-09-16 の実データは匿名化した写し (`testdata/deployed-2026-09-16.anon.json`) で下の `Anonymized` が回す。
 @unittest.skipUnless(os.path.isfile(os.path.join(DATA, "deployed-2026-09-16.anon.json")),
@@ -869,7 +869,7 @@ class Anonymized(unittest.TestCase):
         top = max(rows, key=lambda r: r["requests"])
         self.assertEqual((top["requests"], top["connect"]), (4427, True))
         self.assertRegex(top["name"], r"^host-\d{4}\.example$")
-        # `/history?res=3600` を起動時刻で切った平常時 = T.14.0 の表の「あと」の列
+        # `/history?res=3600` を起動時刻で切った平常時 = T14.0 の表の「あと」の列
         started = snap["taken_at"] - snap["uptime_secs"]
         hrows, bounds, _causes, interval = sd.merged_history(snap, snap, "3600")
         limit = max(1, round(sd.BURST_PER_HOUR * interval / 3600.0))
@@ -910,7 +910,7 @@ class Anonymized0926(unittest.TestCase):
         for name in ("recent", "profile", "events", "hosts_series"):
             self.assertIn(name, snap["parts"])
             self.assertTrue(snap[name], name)
-        # T.16.0 の 3 列 (履歴の `dns_warm` の和と最大)
+        # T16.0 の 3 列 (履歴の `dns_warm` の和と最大)
         keys = snap["history"]["3600"]["keys"]
         self.assertEqual(keys[-3:], ["dns_warm_max", "dns_warm_sum", "gauge_n"])
 

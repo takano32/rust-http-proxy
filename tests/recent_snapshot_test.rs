@@ -1,6 +1,6 @@
 //! `/snapshot` (1 要求で全部取る。T14.4) の結合テスト。
 //!
-//! 初めは `tests/recent_test.rs` にあった (T.34.117 で割った)。
+//! 初めは `tests/recent_test.rs` にあった (T34.117 で割った)。
 
 mod common;
 

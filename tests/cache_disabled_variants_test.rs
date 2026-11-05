@@ -1,4 +1,4 @@
-//! `PROXY_CACHE_ENABLED=off` ではバリアントの表 (URL → 保存したバリアントの鍵) が伸びないこと (T.34.158)。
+//! `PROXY_CACHE_ENABLED=off` ではバリアントの表 (URL → 保存したバリアントの鍵) が伸びないこと (T34.158)。
 //!
 //! `Cache::begin_store` は `enabled` を見る前に `remember_variant` を呼ぶ。呼ぶ側
 //! (`http/deliver.rs` の保存・`http/lookup.rs` のヒット・`http/refresh.rs` の裏の再検証) が

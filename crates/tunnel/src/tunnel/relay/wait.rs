@@ -75,7 +75,7 @@ pub(super) fn poll_set(socks: &[TcpStream; 2], events: [i16; 2]) -> [PollFd; 2] 
 /// 両方向とも暇 (`parkable`) なら、待つのは猶予 (`grace_ms`) のあいだだけで、空振りしたら
 /// 預ける。そうでなければ無通信の締め切り (`timeout_ms`)。
 ///
-/// 書けずに待つ向きは、最小の速さの窓の残り (`rate_left(向き)`) より長く眠らない (T.29.34)。
+/// 書けずに待つ向きは、最小の速さの窓の残り (`rate_left(向き)`) より長く眠らない (T29.34)。
 /// 窓の残りを読むのは `POLLOUT` が立っている向きだけ。
 /// 読まない相手はめったに `POLLOUT` を返さないので、無通信の締め切り (300 秒) まで
 /// 眠ると判定が遅れる。縮めたときは、`poll` が 0 で戻ってもアイドル打ち切りにしない
@@ -135,7 +135,7 @@ pub(super) fn charge_stall(
         for (side, ev) in events.iter().enumerate() {
             if ev & POLLOUT != 0 {
                 stall_us[side] = stall_us[side].saturating_add(waited);
-                // 同じ待ちを最小の速さの見張りにも積む (T.29.34)
+                // 同じ待ちを最小の速さの見張りにも積む (T29.34)
                 too_slow |= rate[side].note(elapsed, 0).is_err();
             }
         }

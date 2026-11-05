@@ -1,4 +1,4 @@
-//! プールの接続に遅れて届いたバイトを、次の要求の応答として配らない (T.29.2)。
+//! プールの接続に遅れて届いたバイトを、次の要求の応答として配らない (T29.2)。
 //!
 //! T26.0 で GET / HEAD (やり直せる要求) はプールから取り出すときの `recv(MSG_PEEK)` を省いた。
 //! `put` は `BufReader` の読み残ししか見ないので、**応答を読み切って戻したあとに**オリジンが
@@ -90,7 +90,7 @@ fn test_integration_late_bytes_on_a_pooled_connection_are_not_served() {
     let a = get_via_proxy(proxy_port, &url("/a"), &host);
     assert!(a.ends_with("\r\n\r\nok"), "{:?}", a);
     // オリジンが頼まれていない応答を送り終えるまで待つ (接続はプールに戻っている)。
-    // 送り終えた合図で待つ (前は 600 ms の固定の sleep。T.34.114)
+    // 送り終えた合図で待つ (前は 600 ms の固定の sleep。T34.114)
     wait_until(
         || late_sent.load(Ordering::SeqCst) == 1,
         "オリジンが頼まれていない応答を送り終える",

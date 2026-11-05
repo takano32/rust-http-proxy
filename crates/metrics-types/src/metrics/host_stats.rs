@@ -89,13 +89,13 @@ pub struct HostStats {
     /// [`HostStats::retrans`] (T14.5) は**接続の終わり**に読んだ通算 (データの再送を含む)、
     /// こちらは**確立の直後**なので SYN の再送だけ = 「繋ぐのに何回やり直したか」
     pub syn_retrans: u64,
-    /// `/slo` の `error_rate` が 1 つの宛先に偏ったエラーを外すための、その時間の数 (T.30.4)。
+    /// `/slo` の `error_rate` が 1 つの宛先に偏ったエラーを外すための、その時間の数 (T30.4)。
     /// **`.rrd` には書かない** (メモリだけ。`/slo` の集計も再起動で消えるので揃う)。
     /// 書くのは `proxy-metrics-core` の `Metrics` の**エラーの経路と時間の区切り**だけ
     pub web_hour: WebHour,
 }
 
-/// ホスト 1 つの「いまの UTC の 1 時間」の、443・80 宛てのエラーと試行を出すための欄 (T.30.4)。
+/// ホスト 1 つの「いまの UTC の 1 時間」の、443・80 宛てのエラーと試行を出すための欄 (T30.4)。
 ///
 /// **成功の経路では 1 つも触らない**: この時間の成功の本数は、時間の区切りで写した
 /// `timed` (応答時間を測った要求の通算) と `timed_errors` (そのうちエラー) からの差で出す
@@ -107,7 +107,7 @@ pub struct WebHour {
     /// 時間の区切りで写した [`HostStats::timed`] と `timed_errors`
     pub base_timed: u64,
     pub base_timed_errors: u64,
-    // その時間のエラーの数は T.32.10 からホスト別統計から切り離した小さな表
+    // その時間のエラーの数は T32.10 からホスト別統計から切り離した小さな表
     // (`proxy-metrics-core` の `web_dest::DestTable`) が持つ (表が満杯でも宛先を数えるため)
 }
 
@@ -188,7 +188,7 @@ impl HostStats {
         self.retrans = self.retrans.saturating_add(retrans as u64);
     }
 
-    /// 捨てる行の通算を `self` (`other` の行) に足す (T.32.10。満杯の表から古い行を捨てるとき)。
+    /// 捨てる行の通算を `self` (`other` の行) に足す (T32.10。満杯の表から古い行を捨てるとき)。
     ///
     /// 通算の欄を全部足すので、表を舐めて足す合計 (`/metrics` の `errors_total{cause="nxdomain"}`
     /// など) は行を捨てても減らない。最大・最小・最後の時刻は大きい方 / 小さい方。メモリだけの欄の
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!((s.timed, s.buckets[2]), (1, 1));
     }
 
-    /// 捨てる行の畳み込み (T.32.10): 通算は足し、最大は大きい方、RTT の最小は 0 を無視した小さい方、
+    /// 捨てる行の畳み込み (T32.10): 通算は足し、最大は大きい方、RTT の最小は 0 を無視した小さい方、
     /// `series_slot` と `web_hour` は触らない。
     #[test]
     fn absorb_adds_the_totals_and_keeps_the_extremes() {

@@ -52,7 +52,7 @@ impl CachedResponse {
         self.size.saturating_sub(self.head.len() as u64)
     }
 
-    /// 先頭を差し替える (本文の長さはそのまま、`size` を合わせる)。T.28.2・T.29.0。
+    /// 先頭を差し替える (本文の長さはそのまま、`size` を合わせる)。T28.2・T29.0。
     pub fn replace_head(&mut self, head: Vec<u8>) {
         self.size = self.body_len().saturating_add(head.len() as u64);
         self.head = head;

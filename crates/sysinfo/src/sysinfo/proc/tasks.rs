@@ -1,5 +1,5 @@
 //! スレッド 1 本ごとの標本 (`/proc/<pid>/task/<tid>/` の `stat`・`syscall`・`schedstat`。T14.3 (2)) と、
-//! その読み取り。T.34.61 で `proc.rs` から移した (本体は変えていない)。
+//! その読み取り。T34.61 で `proc.rs` から移した (本体は変えていない)。
 
 use super::kept::pread_all;
 use super::read_small_into;
@@ -47,7 +47,7 @@ pub fn scan_tasks(root: &std::path::Path, buf: &mut Vec<u8>) -> Option<TaskScan>
     })
 }
 
-/// スレッドごとの `stat` を開いたまま持つ置き場 (T.32.21)。標本を取る側が 1 つ持つ。
+/// スレッドごとの `stat` を開いたまま持つ置き場 (T32.21)。標本を取る側が 1 つ持つ。
 ///
 /// 毎秒の標本はスレッド 1 本ごとに `stat` を open・read・read・close していた (冷えた状態で
 /// 1 本 7 us、`profile-sample` のシステムコールの 9 割)。開いたまま `pread` 1 回で読み、
@@ -103,7 +103,7 @@ impl TaskStatFiles {
     }
 }
 
-/// [`scan_tasks_reusing`] の呼び出し側が「もう分かっている」と返す値 (T.29.21)。
+/// [`scan_tasks_reusing`] の呼び出し側が「もう分かっている」と返す値 (T29.21)。
 /// `Some` の項目は対応するファイルを開かずにその値を使い、`None` の項目は読む。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Known {
@@ -113,7 +113,7 @@ pub struct Known {
     pub run_delay_ns: Option<Option<u64>>,
 }
 
-/// [`scan_tasks`] の、前回の値を使い回せる版 (T.29.21)。
+/// [`scan_tasks`] の、前回の値を使い回せる版 (T29.21)。
 ///
 /// `stat` を先に読み、`reuse(tid, 状態, ticks)` が [`Known`] で値を返した項目は `syscall` /
 /// `schedstat` を**開かずに**その値を使う (呼び出し側は「休眠のままで ticks が前回と同じ」=

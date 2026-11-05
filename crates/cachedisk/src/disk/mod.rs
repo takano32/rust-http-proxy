@@ -125,13 +125,13 @@ impl DiskTier {
         self.in_flight.load(Ordering::Relaxed)
     }
 
-    /// 書き込み中の一時ファイルのために `bytes` を確保する ([`DiskWriter`] だけが呼ぶ。T.34.89)。
+    /// 書き込み中の一時ファイルのために `bytes` を確保する ([`DiskWriter`] だけが呼ぶ。T34.89)。
     #[inline]
     pub(crate) fn reserve_in_flight(&self, bytes: u64) {
         self.in_flight.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// 確保していた `bytes` を戻す (確定・中止。T.34.89)。
+    /// 確保していた `bytes` を戻す (確定・中止。T34.89)。
     #[inline]
     pub(crate) fn release_in_flight(&self, bytes: u64) {
         self.in_flight.fetch_sub(bytes, Ordering::Relaxed);

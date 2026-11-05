@@ -74,9 +74,9 @@ impl Config {
     fn settings_connections(&self, add: &mut impl FnMut(&'static str, String)) {
         // 接続と上限
         add("PROXY_TIMEOUT_SECS", secs(self.timeout));
-        // 実効値 (未設定なら既定の 3 秒と `PROXY_TIMEOUT_SECS` の小さい方が出る。T15.6、T.28.43)
+        // 実効値 (未設定なら既定の 3 秒と `PROXY_TIMEOUT_SECS` の小さい方が出る。T15.6、T28.43)
         add("PROXY_CONNECT_TIMEOUT_SECS", secs(self.connect_timeout));
-        // 実効値 (未設定なら既定の 10 秒と `PROXY_TIMEOUT_SECS` の小さい方。T.28.0)
+        // 実効値 (未設定なら既定の 10 秒と `PROXY_TIMEOUT_SECS` の小さい方。T28.0)
         add("PROXY_HEADER_TIMEOUT_SECS", secs(self.header_timeout));
         add(
             "PROXY_HE_STAGGER_MS",
@@ -134,7 +134,7 @@ impl Config {
             "PROXY_CONNECT_PORTS",
             crate::json::quote(&self.connect_ports.spec()),
         );
-        // `on` / `off` は真偽、`private` だけ文字列 (T.28.41)
+        // `on` / `off` は真偽、`private` だけ文字列 (T28.41)
         add("PROXY_ALLOW_LOCAL", self.allow_local.json().to_string());
         // 公開プロキシの止め方 (T14.18) と山の写真の閾 (T14.6)。マージのときに親が足した
         add(
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(quota_value(DiskQuota::Auto), "\"auto\"");
     }
 
-    /// T.34.75: 鍵の順は README の表と同じ流れ (待ち受け → 接続 → 名前解決 → 遮断 → TLS → 記録 →
+    /// T34.75: 鍵の順は README の表と同じ流れ (待ち受け → 接続 → 名前解決 → 遮断 → TLS → 記録 →
     /// キャッシュ) で、`/config` と `--check` がこの順に並べる。割る前の順をそのまま書き写した。
     #[test]
     fn settings_keys_keep_the_readme_order() {

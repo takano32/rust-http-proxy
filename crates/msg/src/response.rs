@@ -7,7 +7,7 @@ use std::io::{self, BufRead};
 
 use crate::log_trace;
 
-/// 応答の先頭 (状態行 + ヘッダー行。1xx は 1 本ずつ) の合計の上限 (T.29.1)。
+/// 応答の先頭 (状態行 + ヘッダー行。1xx は 1 本ずつ) の合計の上限 (T29.1)。
 ///
 /// 要求の先頭の上限 (`proxy-server` の `MAX_HEADER_BYTES`) と同じ 128 KiB。今までは無制限で、
 /// 空行を送らずにヘッダーを流し続けるオリジン (フォワードプロキシでは宛先をクライアントが選べる)
@@ -15,7 +15,7 @@ use crate::log_trace;
 /// 呼ぶ側は 502 にする。
 pub const MAX_RESPONSE_HEAD: usize = 128 * 1024;
 
-/// 応答の先頭が [`MAX_RESPONSE_HEAD`] を越えた印 (`io::Error` の中身。T.29.1)。
+/// 応答の先頭が [`MAX_RESPONSE_HEAD`] を越えた印 (`io::Error` の中身。T29.1)。
 ///
 /// 種類は `Other` にしてある (`InvalidData` だと「再利用した接続の読み残し」としてやり直しに回り、
 /// 同じ悪いオリジンをもう 1 回叩くことになる)。
@@ -60,7 +60,7 @@ pub fn read_head<R: BufRead>(reader: &mut R) -> io::Result<(Vec<u8>, u16)> {
 /// 切り替えの応答で、プロトコルを切り替えない中継では最終応答として扱う。
 ///
 /// `100 Continue` も中継しない (`Expect: 100-continue` には中継の本体が本文を読む前に自分で
-/// 100 を返し、`Expect` の行はオリジンへ転送しない (T.28.3)。オリジンが勝手に返した 100 を
+/// 100 を返し、`Expect` の行はオリジンへ転送しない (T28.3)。オリジンが勝手に返した 100 を
 /// 出すと、クライアントには 100 が 2 回届く)。
 /// 1xx は何本でもよく、`on_interim` は届いた順に呼ばれ、その後で最終応答を返す。
 pub fn read_head_forwarding<R: BufRead, F>(
@@ -95,9 +95,9 @@ pub fn read_response_head<R: BufRead>(reader: &mut R) -> io::Result<ResponseHead
 /// 応答を 1 つだけ読む (1xx の読み飛ばしは呼び出し側)。
 ///
 /// 行ごとの `String` (確保 2 回 + UTF-8 の検証 + 写し) を経由せず、`head` へ直接積む。
-/// 読んだバイト列は今までと 1 バイトも変わらない (T.28.12)。
+/// 読んだバイト列は今までと 1 バイトも変わらない (T28.12)。
 ///
-/// **合計 [`MAX_RESPONSE_HEAD`] までしか読まない** (T.29.1)。手元のバッファ (`fill_buf`) を
+/// **合計 [`MAX_RESPONSE_HEAD`] までしか読まない** (T29.1)。手元のバッファ (`fill_buf`) を
 /// 上限で切った窓の中で行を探し、窓を読み終えてから 1 回だけ `consume` する。行ごとの
 /// `read_until` を `take` で包む形より命令が少ない (包むと先頭 1 つで 70〜90 Ir 増えた)。
 fn read_one_response_head<R: BufRead>(reader: &mut R) -> io::Result<(Vec<u8>, u16)> {
@@ -230,7 +230,7 @@ HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
         assert_eq!(seen, 0);
     }
 
-    /// T.29.1 で読み方を「バッファの窓の中で行を探す」に変えたので、行がバッファの境目を
+    /// T29.1 で読み方を「バッファの窓の中で行を探す」に変えたので、行がバッファの境目を
     /// またいでも (容量 1〜40 バイト) 読む先頭と残りが同じことを見る。
     #[test]
     fn head_is_the_same_across_buffer_boundaries() {
@@ -282,7 +282,7 @@ HTTP/1.1 200 OK\r\nX-A: 1\r\nX-Long: 0123456789012345678901234567890123456789\r\
         assert_eq!(r, b"HTTP/1.1 200 OK\r\n\r\n", "壊れた状態行の 1 行だけ読む");
     }
 
-    /// T.29.1: 先頭が 128 KiB を越えたら、そこまでしか読まずに [`HeadTooLarge`] で止まる。
+    /// T29.1: 先頭が 128 KiB を越えたら、そこまでしか読まずに [`HeadTooLarge`] で止まる。
     /// 64 KiB の正当な先頭は通る。
     #[test]
     fn response_head_is_bounded() {

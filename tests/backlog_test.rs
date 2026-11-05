@@ -134,7 +134,7 @@ fn test_integration_default_listen_backlog_is_somaxconn_capped_at_1024() {
 /// 使い捨ての `HOME` (`.env` と状態ファイルの置き場)。
 ///
 /// 名前は `rhp-<tag>-<pid>` (前は後ろに時刻のナノ秒も付けていた。試験ごとに `tag` が違うので
-/// pid までで一意になる。T.34.107)。
+/// pid までで一意になる。T34.107)。
 fn tempdir(tag: &str) -> std::path::PathBuf {
     scratch_dir(&format!("rhp-{}", tag))
 }

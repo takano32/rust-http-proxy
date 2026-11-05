@@ -1,6 +1,6 @@
 //! 同じ表現を取りに行く要求の合流 (と、保存できない応答は合流させないこと) の結合テスト。
 //!
-//! 初めは `tests/cache_test.rs` にあった (T.34.118 で割った)。
+//! 初めは `tests/cache_test.rs` にあった (T34.118 で割った)。
 
 use std::sync::Arc;
 use std::thread;

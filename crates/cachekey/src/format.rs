@@ -36,7 +36,7 @@ impl Meta {
     /// `now` に出してよいか (まだ新しいか、期限切れでも再検証できるか)。
     ///
     /// 偽のエントリは誰にも返せない (再検証もできない期限切れ) ので、引いた側がその場で消す。
-    /// L1 の HIT と L2 の索引・ファイルのヘッダーの 3 か所が同じ式を持っていた (T.34.87)。
+    /// L1 の HIT と L2 の索引・ファイルのヘッダーの 3 か所が同じ式を持っていた (T34.87)。
     #[inline]
     pub fn is_servable(&self, now: u64) -> bool {
         self.expires_at > now || self.validators
@@ -45,7 +45,7 @@ impl Meta {
     /// `now` に `age` 秒経った表現を受け取り、`ttl_secs` 秒の鮮度を持たせたときのメタ情報。
     ///
     /// 保存した時刻は `now − age`、期限は `now + (ttl − age)` (どちらも端で止める)。
-    /// 保存・延命 (304)・ヘッダーの書き直しの 3 か所が同じ式を持っていた (T.34.92)。
+    /// 保存・延命 (304)・ヘッダーの書き直しの 3 か所が同じ式を持っていた (T34.92)。
     #[inline]
     pub fn fresh_for(now: u64, ttl_secs: u64, age: u64, validators: bool) -> Meta {
         Meta {
@@ -56,7 +56,7 @@ impl Meta {
     }
 
     /// 掃除で消してよいか: 期限切れで再検証できない、または期限から `max_stale` 秒以上経った
-    /// (L1・L2 の掃除と起動走査が同じ判定を使う。前は `memory::is_garbage`。T.34.92)。
+    /// (L1・L2 の掃除と起動走査が同じ判定を使う。前は `memory::is_garbage`。T34.92)。
     #[inline]
     pub fn is_garbage(&self, now: u64, max_stale: u64) -> bool {
         self.expires_at <= now
@@ -188,7 +188,7 @@ mod tests {
         }
     }
 
-    /// 出してよいのは期限の前か、バリデータを持つ (再検証できる) とき (T.34.87)。
+    /// 出してよいのは期限の前か、バリデータを持つ (再検証できる) とき (T34.87)。
     #[test]
     fn a_meta_is_servable_before_expiry_or_with_validators() {
         assert!(meta(0, 101, false).is_servable(100));
@@ -200,7 +200,7 @@ mod tests {
         assert!(meta(0, 0, true).is_servable(u64::MAX));
     }
 
-    /// 保存の時刻と期限は `now − age` と `now + (ttl − age)` で、端で止まる (T.34.92)。
+    /// 保存の時刻と期限は `now − age` と `now + (ttl − age)` で、端で止まる (T34.92)。
     #[test]
     fn fresh_for_counts_the_age_against_the_ttl() {
         assert_eq!(
@@ -224,7 +224,7 @@ mod tests {
         );
     }
 
-    /// 掃除で消すのは、期限切れで再検証できないか、期限から `max_stale` 秒経ったもの (T.34.92)。
+    /// 掃除で消すのは、期限切れで再検証できないか、期限から `max_stale` 秒経ったもの (T34.92)。
     #[test]
     fn garbage_is_expired_and_unrevalidatable_or_too_stale() {
         let stale = 3_600;

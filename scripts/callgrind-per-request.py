@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# callgrind の下でプロキシを起こし、forward / hit / connect の **Ir/要求** を印字する (T.34.7)。
+# callgrind の下でプロキシを起こし、forward / hit / connect の **Ir/要求** を印字する (T34.7)。
 #
 #     scripts/callgrind-per-request.py --bin target/release/rust-http-proxy
 #     scripts/callgrind-per-request.py --bin before/rust-http-proxy --bin target/release/rust-http-proxy --rounds 2
 #
-# 測り方は T.28.12・T.29.24・T.34.0 と同じ: `--lite` + `PROXY_LOG_LEVEL=warn`、応答本文 1 KiB、
+# 測り方は T28.12・T29.24・T34.0 と同じ: `--lite` + `PROXY_LOG_LEVEL=warn`、応答本文 1 KiB、
 # 並列 2 (`--conc`)。自分で立てたオリジン (127.0.0.1 の空きポート) へ **ちょうど N 本** の要求を流してから
 # SIGTERM で止め、callgrind の出力の `totals:` (Ir) を読む。起動と終了の固定費を消すため、
 # N を 2 通り (`--n1` 400 と `--n2` 2000) 回して **傾き (Ir2 − Ir1) / (N2 − N1)** を 1 本あたりとする。
@@ -216,7 +216,7 @@ def measure(binary, port, origin_port, mode, n, conc, out):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="callgrind で forward / hit / connect の Ir/要求 を測る (T.34.7)")
+    ap = argparse.ArgumentParser(description="callgrind で forward / hit / connect の Ir/要求 を測る (T34.7)")
     ap.add_argument("--bin", action="append", required=True, help="測るバイナリ (2 つ以上で交互に測り、最初を基準に比べる)")
     ap.add_argument("--port", type=int, default=19100, help="プロキシに待ち受けさせるポート (既定 19100)")
     ap.add_argument("--modes", default=",".join(MODES), help="測る形 (既定 forward,hit,connect)")

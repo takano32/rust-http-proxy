@@ -479,7 +479,7 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                     prefix: &prefix,
                     timeout,
                     idle,
-                    // 書き側の最小の速さ (T.29.34)
+                    // 書き側の最小の速さ (T29.34)
                     min_transfer: config.min_transfer,
                     conn_id,
                     metrics,
@@ -554,7 +554,7 @@ pub fn run_conn(mut conn: Box<Conn>) {
     if let Err(e) = pump(conn) {
         if tunnel::is_reported(&e) {
             // 繋がらなかった CONNECT: tunnel が 502 を書き、WARN 1 行と `/errors` の個票まで
-            // 出してある。同じ失敗を ERROR で出し直さない (T.28.4)
+            // 出してある。同じ失敗を ERROR で出し直さない (T28.4)
             log_debug!(Some(conn_id), "connection ended: {}", e);
         } else if e.kind() != io::ErrorKind::UnexpectedEof
             && e.kind() != io::ErrorKind::ConnectionReset

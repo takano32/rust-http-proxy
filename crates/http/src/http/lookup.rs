@@ -29,7 +29,7 @@ pub(super) struct CacheState<'c> {
     pub force_revalidate: bool,
     /// 期限切れの保存済みの表現 (オリジンの 304 で延命、障害なら stale として配る)
     pub stale: Option<(CachedResponse, CacheSource)>,
-    /// クライアント自身の条件付き要求のときの、期限切れの保存済みの表現 (T.29.6)
+    /// クライアント自身の条件付き要求のときの、期限切れの保存済みの表現 (T29.6)
     pub client_cond_entry: Option<CachedResponse>,
     /// 同時ミスの合流で先頭になった印 (保存の成否を待っている要求へ知らせる)
     pub leader: Option<LeaderGuard<'c>>,
@@ -54,7 +54,7 @@ impl<'c> CacheState<'c> {
     }
 }
 
-/// 要求の `max-age=N` / `min-fresh=N` を、保存済みの表現がそのままでは満たさないか (T.28.10 (c))。
+/// 要求の `max-age=N` / `min-fresh=N` を、保存済みの表現がそのままでは満たさないか (T28.10 (c))。
 ///
 /// `max-age`: 保存からの経過 (`now - stored_at`) が N 秒を越える。`min-fresh`: 期限までが N 秒に足りない。
 /// 値の読めない指示は見ない (今までどおり)。`max-age=0` は呼ぶ側が先に `no-cache` と同じに扱っている。
@@ -66,7 +66,7 @@ fn client_wants_fresher(cache_control: &str, entry: &CachedResponse, now: u64) -
 }
 
 /// キャッシュを参照する。保存から返せたらそこで終わり ([`done`])、そうでなければオリジンへ行くための状態を
-/// `cs` ([`CacheState::new`] で作った出力欄) に書く (大きな構造体を戻り値で運ぶ写しを避ける。T.34.8)。
+/// `cs` ([`CacheState::new`] で作った出力欄) に書く (大きな構造体を戻り値で運ぶ写しを避ける。T34.8)。
 #[inline]
 pub(super) fn consult<'c>(
     x: &mut Exchange<'c>,
@@ -88,7 +88,7 @@ pub(super) fn consult<'c>(
             freshness::has_directive(&req.cache_control, "no-store"),
             freshness::has_directive(&req.cache_control, "no-cache")
                 || freshness::directive_value(&req.cache_control, "max-age") == Some(0),
-            // `only-if-cached` (RFC 9111 §5.2.1.7。T.28.10 (c)): 保存から返せなければ 504
+            // `only-if-cached` (RFC 9111 §5.2.1.7。T28.10 (c)): 保存から返せなければ 504
             freshness::has_directive(&req.cache_control, "only-if-cached"),
             now_epoch(),
         )
@@ -105,11 +105,11 @@ pub(super) fn consult<'c>(
     let client_conditional = req.if_none_match.is_some() || req.if_modified_since.is_some();
 
     // 期限切れの保存済みの表現 (`cs.stale`) と、クライアント自身の条件付き要求のときの期限切れの
-    // 保存済みの表現 (`cs.client_cond_entry`。T.29.6) は出力欄へ直に書く
+    // 保存済みの表現 (`cs.client_cond_entry`。T29.6) は出力欄へ直に書く
     if lookup_allowed {
         if let Some((entry, source)) = cache.get(key, conn_id) {
             cache.remember_variant(x.ctx.url, key);
-            // 要求の `max-age=N` (N > 0) と `min-fresh=N` (RFC 9111 §5.2.1.1・§5.2.1.3。T.28.10 (c)):
+            // 要求の `max-age=N` (N > 0) と `min-fresh=N` (RFC 9111 §5.2.1.1・§5.2.1.3。T28.10 (c)):
             // 保存から N 秒より古い・期限まで N 秒ない表現は、そのままでは返さず再検証する
             // (`max-age=0` と同じ扱い)。今までは見ずに HIT にしていた。`Cache-Control` の無い要求は
             // 空文字の判定 1 回だけ
@@ -134,7 +134,7 @@ pub(super) fn consult<'c>(
                 }
                 cs.stale = Some((entry, source));
             } else if entry.meta.validators {
-                // オリジンの 304 で保存済みの表現も延ばせるように持っておく (T.29.6)。
+                // オリジンの 304 で保存済みの表現も延ばせるように持っておく (T29.6)。
                 // `stale` には入れない (条件はクライアントのものをそのまま送り、stale も配らない)
                 cs.client_cond_entry = Some(entry);
             }
@@ -150,7 +150,7 @@ pub(super) fn consult<'c>(
     }
 
     // `only-if-cached` で保存から返せなかった (無い・古い・保存できない要求): オリジンへは行かずに 504
-    // (RFC 9111 §5.2.1.7。T.28.10 (c))。今まではオリジンへ行っていた
+    // (RFC 9111 §5.2.1.7。T28.10 (c))。今まではオリジンへ行っていた
     if only_if_cached {
         body::drain(reader, req_framing)?;
         log_debug!(
@@ -162,7 +162,7 @@ pub(super) fn consult<'c>(
         return done(false);
     }
 
-    // 保存されないと分かっている鍵 (T11.9) は 1 回だけ見て、入場制御と合流の両方に使う (T.28.13 (c))。
+    // 保存されないと分かっている鍵 (T11.9) は 1 回だけ見て、入場制御と合流の両方に使う (T28.13 (c))。
     // その鍵は前に見ているので、入場制御に通しても「2 回目」で通る (門番の表を引かずに済ませる)
     let known_unstored = store_allowed && cs.stale.is_none() && !cache.may_coalesce(key, now);
 
@@ -189,7 +189,7 @@ pub(super) fn consult<'c>(
 ///
 /// 既定の猶予 (`default_grace`、`PROXY_CACHE_GRACE_SECS`) は新鮮だった期間のある表現だけに使い、
 /// max-age=0 (毎回再検証) の表現はオリジンが `stale-while-revalidate` を明示したときだけ対象にする。
-/// 両方あれば大きい方 (T.34.20 で `consult` から出した。純粋な計算)。
+/// 両方あれば大きい方 (T34.20 で `consult` から出した。純粋な計算)。
 #[inline]
 fn grace_for(entry: &CachedResponse, cache_control: Option<&str>, default_grace: u64) -> u64 {
     let default_grace = if entry.meta.expires_at > entry.meta.stored_at {
@@ -298,7 +298,7 @@ mod tests {
         }
     }
 
-    /// 要求の `max-age=N` は保存からの経過で、`min-fresh=N` は期限までの残りで見る (T.28.10 (c))。
+    /// 要求の `max-age=N` は保存からの経過で、`min-fresh=N` は期限までの残りで見る (T28.10 (c))。
     #[test]
     fn max_age_and_min_fresh_of_the_request() {
         // 保存から 10 秒、期限まで 50 秒
@@ -319,7 +319,7 @@ mod tests {
     }
 
     /// 既定の猶予は新鮮だった期間のある表現だけ、`stale-while-revalidate` は明示されれば max-age=0 の
-    /// 表現にも効き、両方あれば大きい方 (T.34.20)。
+    /// 表現にも効き、両方あれば大きい方 (T34.20)。
     #[test]
     fn grace_for_takes_the_default_only_for_entries_that_were_fresh() {
         let fresh_once = entry(1_000, 1_060);

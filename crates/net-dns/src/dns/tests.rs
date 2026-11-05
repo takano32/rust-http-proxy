@@ -1,6 +1,6 @@
 //! `dns` の単体テスト (表・負のキャッシュ・ミスの種類・費用の箱)。T21.7 で `dns.rs` の
 //! `mod tests` をそのまま移した。表もカウンタもプロセスで 1 組なので、`RESOLVE_TEST_LOCK` を握って直列に回す。
-//! keep-warm と裏の引き直しの試験は T.34.62 で `warm_tests.rs` へ移した。補助関数はそちらからも
+//! keep-warm と裏の引き直しの試験は T34.62 で `warm_tests.rs` へ移した。補助関数はそちらからも
 //! 使うので `pub(super)`。
 
 use super::*;
@@ -518,7 +518,7 @@ fn peeking_the_resolve_cost_does_not_take_it() {
     assert_eq!(take_resolve_cost(), (0, 0));
 }
 
-/// T.32.2: **引けない名前**でも表の上限 ([`MAX_ENTRIES`] = 4,096) を守る。前は失敗の経路が
+/// T32.2: **引けない名前**でも表の上限 ([`MAX_ENTRIES`] = 4,096) を守る。前は失敗の経路が
 /// 無条件に `entry().or_insert_with` で行を足していたので、相異なる引けない名前の数だけ
 /// 表が伸びた (tokyo の 48 時間で 7,511 行、うち古い側の 4,146 行が答えの無い失敗の行)。
 #[test]

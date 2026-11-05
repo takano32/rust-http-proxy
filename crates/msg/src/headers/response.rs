@@ -53,7 +53,7 @@ const INLINE_LINES: usize = 48;
 /// 応答の先頭の、状態行より後ろの空でない行の範囲 (行末の空白は落とした形)。
 ///
 /// 1 回の走査で範囲だけを控え、名前の判定と書き出しはその範囲に対して行う
-/// (`split('\n')` の反復子を 2 回回していた。T.28.12)。範囲は `(始まり, 終わり)` の
+/// (`split('\n')` の反復子を 2 回回していた。T28.12)。範囲は `(始まり, 終わり)` の
 /// バイト位置で、[`INLINE_LINES`] 本までは確保せずに持つ。
 struct HeadLines {
     inline: [(u32, u32); INLINE_LINES],
@@ -136,9 +136,9 @@ pub fn write_response_head<S: AsRef<str>>(
 
 /// [`write_response_head`] の、足す行 (`extra`) の手前まで (状態行とオリジンのヘッダー)。
 ///
-/// 総称でない本体に分けてあるのは、機械語をこのクレートで 1 つだけ作るため (T.34.8)。総称のままだと
+/// 総称でない本体に分けてあるのは、機械語をこのクレートで 1 つだけ作るため (T34.8)。総称のままだと
 /// 呼ぶ側のクレート (http) の CGU で作られ、そちらの組み方しだいで `extend_from_slice` が呼び出しに
-/// 落ちていた (段に割った T.34.0 のあと、forward で要求ごとに +50 Ir 前後)。
+/// 落ちていた (段に割った T34.0 のあと、forward で要求ごとに +50 Ir 前後)。
 fn write_response_lines(
     out: &mut Vec<u8>,
     head: &[u8],
@@ -188,8 +188,8 @@ fn write_response_lines(
         };
         let (k, v) = (&line[..colon], &line[colon + 1..]);
         let name = k.trim_ascii();
-        // 名前が token でない行 (`X A: b`・`: v`) は落とす (RFC 9110 §5.1。T.32.15 (2))。今まではオリジンの
-        // 行をそのまま渡していた (要求の側は T.29.8 から 400)。どのみち落とす名前では字を見ないよう最後に置く
+        // 名前が token でない行 (`X A: b`・`: v`) は落とす (RFC 9110 §5.1。T32.15 (2))。今まではオリジンの
+        // 行をそのまま渡していた (要求の側は T29.8 から 400)。どのみち落とす名前では字を見ないよう最後に置く
         if is_hop_by_hop_name(name)
             || named_in_connection(name)
             || drop_names.iter().any(|d| name.eq_ignore_ascii_case(d))
@@ -279,7 +279,7 @@ pub fn sanitize_response_head(head: &[u8]) -> ResponseHead {
             fold_target = None;
             continue;
         };
-        // 名前が token でない行は落とす ([`write_response_head`] と同じ。T.32.15 (2))
+        // 名前が token でない行は落とす ([`write_response_head`] と同じ。T32.15 (2))
         if !ascii::is_token(k.trim_ascii()) {
             fold_target = None;
             continue;

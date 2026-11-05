@@ -35,7 +35,7 @@ fn errors_in_five_minutes_fire_once_and_clear() {
     );
 }
 
-/// 平常時の 1 分のあと、`n` 本の標本に `each` を当てて流し、`errors` の変わり目だけを返す (T.32.36)。
+/// 平常時の 1 分のあと、`n` 本の標本に `each` を当てて流し、`errors` の変わり目だけを返す (T32.36)。
 fn errors_fired(n: usize, each: impl Fn(&mut Sample)) -> Vec<Fired> {
     let h = History::default();
     let mut d = Detector::new();
@@ -52,7 +52,7 @@ fn errors_fired(n: usize, each: impl Fn(&mut Sample)) -> Vec<Fired> {
 }
 
 /// (3) 名前解決の失敗 (原因 `dns` の全部。`nxdomain` も `dns_temp` も) だけのエラーは何件あっても立たない
-/// (T.28.17 → T.32.36)。メール宛の総当たりで 5 分に 6〜20 件の `nxdomain` が続き、`/events` の環が 5 日で回っていた。
+/// (T28.17 → T32.36)。メール宛の総当たりで 5 分に 6〜20 件の `nxdomain` が続き、`/events` の環が 5 日で回っていた。
 #[test]
 fn dns_failures_alone_do_not_fire() {
     let fired = errors_fired(120, |p| {
@@ -68,7 +68,7 @@ fn dns_failures_alone_do_not_fire() {
     );
 }
 
-/// (3) 443 宛ての `refused` が 5 分に 5 件で立つ (T.32.36 の受け入れ基準)。
+/// (3) 443 宛ての `refused` が 5 分に 5 件で立つ (T32.36 の受け入れ基準)。
 #[test]
 fn five_refused_to_443_in_five_minutes_fire() {
     let fired = errors_fired(5, |p| {
@@ -90,7 +90,7 @@ fn five_refused_to_443_in_five_minutes_fire() {
     );
 }
 
-/// (3) `:993` (443・80 以外) の確立の時間切れは 5 分に 100 件でも立たない (T.32.36 の受け入れ基準。
+/// (3) `:993` (443・80 以外) の確立の時間切れは 5 分に 100 件でも立たない (T32.36 の受け入れ基準。
 /// 0.30.4 の `history["60"]` の再生で、今までの数え方の 27 回はどれもこれと名前解決の失敗だった)。
 #[test]
 fn timeouts_to_other_ports_do_not_fire() {
@@ -107,7 +107,7 @@ fn timeouts_to_other_ports_do_not_fire() {
     );
 }
 
-/// (3) 外した残りが 5 件以上なら立ち、文面に外した数 (名前解決の失敗と 443・80 以外) が入る (T.32.36)。
+/// (3) 外した残りが 5 件以上なら立ち、文面に外した数 (名前解決の失敗と 443・80 以外) が入る (T32.36)。
 #[test]
 fn errors_left_after_the_exclusions_still_fire_and_say_what_was_left_out() {
     // 1 標本に 443 の timeout 2 件 + nxdomain 3 件 + :993 の timeout 1 件 を 3 回 = 数えるのは 6 件

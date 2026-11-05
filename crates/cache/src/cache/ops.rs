@@ -51,7 +51,7 @@ impl Cache {
     }
 
     /// プローブの追い出し (両層の上限まで)。メモリの層から追い出したら、その回の上限と
-    /// 材料を [`BudgetEviction`] に残し、info のログに 1 行出す (T.32.7)。追い出した件数の合計を返す。
+    /// 材料を [`BudgetEviction`] に残し、info のログに 1 行出す (T32.7)。追い出した件数の合計を返す。
     pub(super) fn enforce_budget(&self) -> usize {
         let (before, _) = self.mem.usage();
         let limit = self.mem.capacity();
@@ -96,12 +96,12 @@ impl Cache {
         mem + disk
     }
 
-    /// プローブが予算で追い出した回数 (メモリの層。T.32.7)。
+    /// プローブが予算で追い出した回数 (メモリの層。T32.7)。
     pub fn budget_evictions(&self) -> u64 {
         self.budget_evictions.load(Ordering::Relaxed)
     }
 
-    /// 最後に予算で追い出した 1 回 (T.32.7)。
+    /// 最後に予算で追い出した 1 回 (T32.7)。
     pub fn last_budget_eviction(&self) -> Option<BudgetEviction> {
         *self.last_budget_eviction.locked()
     }
@@ -159,7 +159,7 @@ impl Cache {
     /// L2 を引き、小さければ L1 へ昇格させる。壊れた・再検証できない期限切れのエントリはここで消す。
     ///
     /// 開く ([`Self::open_disk_hit`]) → 小さければ昇格 ([`Self::promote_to_memory`])、
-    /// 大きければ流す ([`Self::stream_from_disk`]) → 統計とログ (T.34.87)。
+    /// 大きければ流す ([`Self::stream_from_disk`]) → 統計とログ (T34.87)。
     fn get_from_disk(&self, key: CacheKey, now: u64, conn_id: usize) -> Option<CachedResponse> {
         let hit = self.open_disk_hit(key, now, conn_id)?;
         let meta = hit.meta;
@@ -283,7 +283,7 @@ impl Cache {
 
     /// URL とバリアントの対応を覚えておく (無効化用)。
     ///
-    /// **表に上限がある** (T.32.6)。0.30.4 までは保存を始めるたび (保存に至らなかった回も) に 1 行
+    /// **表に上限がある** (T32.6)。0.30.4 までは保存を始めるたび (保存に至らなかった回も) に 1 行
     /// 足し、消すのは無効化と全消しだけだったので、名前の違う GET を撃たれると伸び続けた。
     /// - バリアントの無いキー (= URL そのもののキー) は覚えない ([`invalidate`](Self::invalidate)
     ///   はそれを必ず消すので、覚えても使わない)
@@ -308,7 +308,7 @@ impl Cache {
         }
     }
 
-    /// バリアントの表の行の数 (T.32.6。試験と `/status` 向け)。
+    /// バリアントの表の行の数 (T32.6。試験と `/status` 向け)。
     pub fn variants_len(&self) -> usize {
         self.variants.locked().len()
     }
@@ -320,7 +320,7 @@ impl Cache {
         live.saturating_mul(2).max(4096)
     }
 
-    /// もう両層に無いバリアントを表から捨てる (T.32.6)。層を引く間は表の鍵を持たない
+    /// もう両層に無いバリアントを表から捨てる (T32.6)。層を引く間は表の鍵を持たない
     /// (取り出して調べ、その間に足された行と混ぜて戻す)。
     fn prune_variants(&self) {
         let taken = std::mem::take(&mut *self.variants.locked());
@@ -486,7 +486,7 @@ impl Cache {
         expires_at
     }
     /// 再検証 (304) で届いたヘッダーで書き直した先頭 `head` に差し替えて置き直し、延命する
-    /// (RFC 9111 §3.2・§4.3.4。T.28.2)。戻り値は新しい期限 ([`Cache::refresh`] と同じ)。
+    /// (RFC 9111 §3.2・§4.3.4。T28.2)。戻り値は新しい期限 ([`Cache::refresh`] と同じ)。
     ///
     /// [`Cache::refresh`] は期限 (メタ) だけを延ばしていたので、304 が `Cache-Control: max-age=600`
     /// を返しても、配る先頭は古いまま (`max-age=1`) で、下流のキャッシュとクライアントの鮮度の
@@ -556,7 +556,7 @@ impl Cache {
         if !self.disk.is_ready() {
             return false;
         }
-        // 置き換えのどこで失敗しても、後始末は「期限だけ延ばす」1 つ (T.34.97)
+        // 置き換えのどこで失敗しても、後始末は「期限だけ延ばす」1 つ (T34.97)
         self.replace_disk_head(key, url, head, stored_at, expires_at, conn_id)
             || self.disk.refresh(key, stored_at, expires_at, self.tick())
     }
@@ -633,7 +633,7 @@ impl Cache {
     }
 }
 
-/// 本文を `reader` の終わりまで `writer` へ写す (64 KiB ずつ。T.34.97)。
+/// 本文を `reader` の終わりまで `writer` へ写す (64 KiB ずつ。T34.97)。
 fn copy_body(reader: &mut impl Read, writer: &mut DiskWriter<'_>) -> io::Result<()> {
     let mut buf = vec![0u8; 64 * 1024];
     loop {

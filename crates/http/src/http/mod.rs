@@ -63,10 +63,10 @@ use respond::{write_error, write_max_forwards_zero};
 /// 接続をまたいで共有する状態。
 pub struct Shared<'a> {
     pub timeout: Duration,
-    /// オリジンへの TCP の確立だけに当てる締め切り (`PROXY_CONNECT_TIMEOUT_SECS` の実効値。T.28.8)。
+    /// オリジンへの TCP の確立だけに当てる締め切り (`PROXY_CONNECT_TIMEOUT_SECS` の実効値。T28.8)。
     /// 応答の読み書きは今までどおり [`Shared::timeout`]
     pub connect_timeout: Duration,
-    /// 転送中の最小の速さ (T.29.34)。応答をクライアントへ書くのと要求の本文を読むのに
+    /// 転送中の最小の速さ (T29.34)。応答をクライアントへ書くのと要求の本文を読むのに
     /// 1 つずつ見張り ([`proxy_base::minrate::RateGuard`]) を作る
     pub min_transfer: &'a proxy_base::minrate::MinRate,
     pub keepalive: Duration,
@@ -116,7 +116,7 @@ type ClientWriter<'s> = BufWriter<GuardedWrite<'s>>;
 ///
 /// 中身は [`handle_http_parsed`] の戻り値 (`Keep` / `Close` はクライアント接続を次の要求に
 /// 使えるか、`Err` は書けなかった)。`io::Error` から作れるので、段の中では `?` がそのまま使える。
-/// `io::Result<bool>` を包まずに 3 つの形の enum にしてある (T.34.8 (d))。
+/// `io::Result<bool>` を包まずに 3 つの形の enum にしてある (T34.8 (d))。
 enum Done {
     Keep,
     Close,
@@ -167,7 +167,7 @@ fn finished<T>(result: io::Result<bool>) -> Stage<T> {
 /// まとめて持つ。読む口と書く口 (`reader` / `client`) は借用の都合で段の引数として別に渡す。
 ///
 /// 要求行のメソッド・正規化 URL・プールの鍵・接続番号・`metrics`・`req`・`head_only` は [`Ctx`] にあるので
-/// ここには重ねて持たない (`x.ctx.url` のように読む。組み立ての写しを減らす。T.34.8)。
+/// ここには重ねて持たない (`x.ctx.url` のように読む。組み立ての写しを減らす。T34.8)。
 struct Exchange<'a> {
     shared: &'a Shared<'a>,
     cache: &'a Cache,
@@ -206,7 +206,7 @@ pub fn handle_http_with_headers(
 }
 
 /// [`handle_http_with_headers`] の、ヘッダーを読み終えた (`parse_request_headers` 済みの) 版。
-/// 受け付けの層はヘッダーを 1 回だけなめてここへ渡す (T.28.15)。
+/// 受け付けの層はヘッダーを 1 回だけなめてここへ渡す (T28.15)。
 pub fn handle_http_parsed(
     client: &TcpStream,
     client_ip: Option<&str>,
@@ -243,7 +243,7 @@ fn forward(
 ) -> Stage<bool> {
     let started = Instant::now();
     let conn_id = shared.conn_id;
-    // 読まないクライアントへの書きを見張る (T.29.34)。測るのは大きな書きだけなので
+    // 読まないクライアントへの書きを見張る (T29.34)。測るのは大きな書きだけなので
     // (`GuardedWrite`)、1 回で書き終わる小さな応答には時計を 1 度も足さない
     let client = &mut BufWriter::with_capacity(
         CLIENT_WRITE_BUF,
@@ -270,7 +270,7 @@ fn forward(
     let keep_client = admission::keep_client(req, http11, shared.last, shared.keepalive.is_zero());
     let req_framing = admission::request_framing(req);
     let send_continue = admission::wants_continue(req, http11, req_framing);
-    // メソッドは大小を区別する (RFC 9110 §9.1。T.32.8)。`get` を GET として扱うと、オリジンへは
+    // メソッドは大小を区別する (RFC 9110 §9.1。T32.8)。`get` を GET として扱うと、オリジンへは
     // `get` のまま届いて 501・405 が返り、それが GET の鍵に保存されて他の利用者の `GET` に配られていた
     // (キャッシュの毒)。小文字は未知のメソッドとして素通しし、保存も参照もしない
     let is_get = method == "GET";
@@ -302,7 +302,7 @@ fn forward(
     // ---- 要求先 ----
     let origin = match parse_origin(target, req.host.as_deref()) {
         // 空のパスの `OPTIONS` (`OPTIONS http://h:P`) はサーバー全体への問い合わせなので、オリジンへは
-        // `OPTIONS *` を送る (RFC 9112 §3.2.4。T.29.9)。今までは `/` を補って `OPTIONS /` にしていた。
+        // `OPTIONS *` を送る (RFC 9112 §3.2.4。T29.9)。今までは `/` を補って `OPTIONS /` にしていた。
         // ほかのメソッドには文字列の比較 1 回だけ
         Ok(mut o) => {
             if method == "OPTIONS" && crate::request::has_empty_path(target) {
@@ -379,7 +379,7 @@ fn forward(
     deliver::deliver(&mut x, client, &mut cs, fetched, facts)
 }
 
-/// 受け入れの判定で断った要求に、理由を数えて (WARN は理由ごとに 1 分に 1 行。T.28.9) 400 / 417 を書く。
+/// 受け入れの判定で断った要求に、理由を数えて (WARN は理由ごとに 1 分に 1 行。T28.9) 400 / 417 を書く。
 ///
 /// 理由別に 1 件数えて個票にも残す (T14.28)。**個票に要求行そのものは入れない**。
 fn refuse(
@@ -394,7 +394,7 @@ fn refuse(
     let more = match rej.reason(request_line) {
         Some(why) => metrics.record_bad_request(why, client_ip.unwrap_or("-"), status),
         None => {
-            // `rejected_requests` の理由には無いが、これも本数は相手が決めるので 1 分に 1 行 (T.28.9)
+            // `rejected_requests` の理由には無いが、これも本数は相手が決めるので 1 分に 1 行 (T28.9)
             static EXPECT_WARN: crate::log::Throttle = crate::log::Throttle::new();
             EXPECT_WARN.pass(crate::log::WARN_EVERY_SECS)
         }

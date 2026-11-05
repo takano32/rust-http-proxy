@@ -1,4 +1,4 @@
-//! 接続が閉じた理由 ([`CloseReason`]。`recent` の一部。T.34.2 で `recent/mod.rs` から移した)。
+//! 接続が閉じた理由 ([`CloseReason`]。`recent` の一部。T34.2 で `recent/mod.rs` から移した)。
 //!
 //! 符号 ([`CloseReason::code`] / [`CloseReason::from_code`]) は [`ConnSlot`](super::ConnSlot) の
 //! 原子と個票のファイル (T14.9) に書くもので、**既存の値は動かさない**。分布の添字
@@ -44,7 +44,7 @@ pub enum CloseReason {
     /// (16) の後ろに足す (既存の符号は動かさない)
     ErrorDns(DnsCause),
     /// 要求行とヘッダーが期限 (`PROXY_HEADER_TIMEOUT_SECS`) までに揃わず 408 で閉じた
-    /// (T.28.0)。`/recent` の `reason` は `error:header_timeout` (T.29.10。それまでは CONNECT の
+    /// (T28.0)。`/recent` の `reason` は `error:header_timeout` (T29.10。それまでは CONNECT の
     /// 確立の締め切りと同じ `error:timeout` で分けられなかった)。`/history` の分布では
     /// 今までどおり `error:*` の 1 列 ([`CloseReason::index`] は 7)。**符号は 19**
     HeaderTimeout,
@@ -150,7 +150,7 @@ impl CloseReason {
     }
 }
 
-/// 閉じた理由の単体試験 (T.34.2 で別のファイルに移した)。
+/// 閉じた理由の単体試験 (T34.2 で別のファイルに移した)。
 #[cfg(test)]
 #[path = "close_reason_tests.rs"]
 mod tests;

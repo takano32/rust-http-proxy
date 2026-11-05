@@ -69,7 +69,7 @@ fn test_integration_early_hints_are_relayed() {
 
     // 1 バイトも違わずに固定する。`100 Continue` は出さず、1xx の `Connection` /
     // `Keep-Alive` は落とし、`X-A: 1` + ` 2` は SP 1 個に畳む
-    // T.28.10 (b) から最終応答に自分の `Via` が 1 行付く (1xx には付けない)
+    // T28.10 (b) から最終応答に自分の `Via` が 1 行付く (1xx には付けない)
     let expected = format!(
         "HTTP/1.1 103 Early Hints\r\n\
 Link: </s.css>; rel=preload; as=style\r\n\
@@ -86,7 +86,7 @@ Connection: close\r\n\
 ok",
         rust_http_proxy::via::token()
     );
-    // T.29.9 から最終応答に `Date` が 1 行付く (オリジンが付けていないので。1xx には付けない)
+    // T29.9 から最終応答に `Date` が 1 行付く (オリジンが付けていないので。1xx には付けない)
     let got = without_date(&String::from_utf8_lossy(&got)).into_bytes();
     assert_eq!(
         String::from_utf8_lossy(&got),
@@ -128,7 +128,7 @@ ok",
     );
 }
 
-/// T.29.3: HTTP/1.0 のクライアントへは 1xx を送らない (RFC 9110 §15.2 の MUST NOT。1.0 の
+/// T29.3: HTTP/1.0 のクライアントへは 1xx を送らない (RFC 9110 §15.2 の MUST NOT。1.0 の
 /// クライアントは 103 を最終応答と読む)。読み捨てて、最初の状態行が最終応答の 200 になる。
 #[test]
 fn test_integration_interim_responses_are_not_sent_to_http10_clients() {
@@ -163,9 +163,9 @@ fn test_integration_response_without_interim_is_unchanged() {
     let proxy_port = start_test_proxy(proxy_config());
 
     let got = raw_bytes(proxy_port, &get_request(origin_port));
-    // T.29.9 から `Date` の無い応答には `Date` が 1 行付く (外して比べる)
+    // T29.9 から `Date` の無い応答には `Date` が 1 行付く (外して比べる)
     let got = without_date(&String::from_utf8_lossy(&got)).into_bytes();
-    // T.28.10 (b) から自分の `Via` が 1 行だけ増える (ほかは 1 バイトも変わらない)
+    // T28.10 (b) から自分の `Via` が 1 行だけ増える (ほかは 1 バイトも変わらない)
     let expected = format!(
         "HTTP/1.1 200 OK\r\nX-Foo: bar\r\nContent-Length: 5\r\nVia: {}\r\nConnection: close\r\n\r\nhello",
         rust_http_proxy::via::token()

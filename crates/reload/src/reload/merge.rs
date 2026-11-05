@@ -1,5 +1,5 @@
 //! 再読込で当てる項目 (`merge_live`) と、起動時に固定されるので再起動が要る項目
-//! (`restart_required`) の判断。T.34.58 で `Live::reload` (286 行) から出した。
+//! (`restart_required`) の判断。T34.58 で `Live::reload` (286 行) から出した。
 //!
 //! `merge_live` の副作用 (DNS の表・canary・ブロックリスト・ログの水準などへ当てる) は、
 //! 割る前と同じ順のまま中に残してある。`restart_required` は 2 つの `Config` を比べるだけ。
@@ -19,7 +19,7 @@ pub(super) fn merge_live(old: &Config, fresh: &Config) -> (Config, Vec<&'static 
     merge_connections(&mut next, old, fresh, &mut applied);
     merge_dns(&mut next, old, fresh, &mut applied);
     merge_rest(&mut next, old, fresh, &mut applied);
-    // 読めなかった値と知らない名前は**いまの `.env` のもの**に差し替える (T.28.6。
+    // 読めなかった値と知らない名前は**いまの `.env` のもの**に差し替える (T28.6。
     // 直した行は消え、新しく書き損じた行が出る)。値そのものは上で当てた既定のまま
     next.problems = fresh.problems.clone();
     (next, applied)
@@ -48,7 +48,7 @@ fn merge_access(next: &mut Config, old: &Config, fresh: &Config, applied: &mut V
             .adopt(&fresh.sources, "PROXY_CONNECT_TIMEOUT_SECS");
         applied.push("PROXY_CONNECT_TIMEOUT_SECS");
     }
-    // 要求行とヘッダーの締め切り (T.28.0)。`connect_timeout` と同じく実効値で比べる
+    // 要求行とヘッダーの締め切り (T28.0)。`connect_timeout` と同じく実効値で比べる
     // (未設定のまま `PROXY_TIMEOUT_SECS` が 10 秒を跨いで動いたときもここに入る)。
     // 待ち受けに継承させた読み取りタイムアウトは、次の accept で食い違いを見て当て直す
     if fresh.header_timeout != old.header_timeout {
@@ -74,7 +74,7 @@ fn merge_access(next: &mut Config, old: &Config, fresh: &Config, applied: &mut V
     }
     if fresh.endpoints_readonly != old.endpoints_readonly {
         next.endpoints_readonly = fresh.endpoints_readonly;
-        // 出どころも写す (T.34.151。下の 2 つも。前は写しておらず `/config` の `source` が `default` のままだった)
+        // 出どころも写す (T34.151。下の 2 つも。前は写しておらず `/config` の `source` が `default` のままだった)
         next.sources
             .adopt(&fresh.sources, "PROXY_ENDPOINTS_READONLY");
         applied.push("PROXY_ENDPOINTS_READONLY");
@@ -123,7 +123,7 @@ fn merge_connections(
         next.sources.adopt(&fresh.sources, "PROXY_TRACE_CLIENT");
         applied.push("PROXY_TRACE_CLIENT");
     }
-    // 転送中の最小の速さ (T.29.34)。見張りを作るのは要求・トンネルの頭なので、次に始まる転送から効く
+    // 転送中の最小の速さ (T29.34)。見張りを作るのは要求・トンネルの頭なので、次に始まる転送から効く
     if fresh.min_transfer != old.min_transfer {
         next.min_transfer = fresh.min_transfer;
         next.sources.adopt(&fresh.sources, "PROXY_MIN_TRANSFER_BPS");
@@ -146,7 +146,7 @@ fn merge_connections(
     if fresh.max_threads != old.max_threads {
         next.max_threads = fresh.max_threads;
         next.sources.adopt(&fresh.sources, "PROXY_MAX_THREADS");
-        // 名前解決のスレッド群の上限はワーカーの 1/4 (T.32.11)
+        // 名前解決のスレッド群の上限はワーカーの 1/4 (T32.11)
         crate::dns::set_resolver_limit(crate::dns::resolver_limit_for_threads(fresh.max_threads));
         applied.push("PROXY_MAX_THREADS");
     }
@@ -185,7 +185,7 @@ fn merge_dns(next: &mut Config, old: &Config, fresh: &Config, applied: &mut Vec<
         crate::dns::set_serve_stale(fresh.dns_stale);
         applied.push("PROXY_DNS_STALE_SECS");
     }
-    // 名前解決の締め切りも次の問い合わせから効く (走っているものは止めない。T.32.11)
+    // 名前解決の締め切りも次の問い合わせから効く (走っているものは止めない。T32.11)
     if fresh.dns_timeout != old.dns_timeout {
         next.dns_timeout = fresh.dns_timeout;
         next.sources.adopt(&fresh.sources, "PROXY_DNS_TIMEOUT_SECS");

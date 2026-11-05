@@ -48,13 +48,13 @@ fn array_within(out: &mut String, items: impl IntoIterator<Item = String>) -> (u
     array_within_budget(out, items, MAX_BODY)
 }
 
-/// [`array_within`] の上限を `limit` にした版 (停止の雪像の `recent` だけが使う。T.28.20)。
+/// [`array_within`] の上限を `limit` にした版 (停止の雪像の `recent` だけが使う。T28.20)。
 fn array_within_budget(
     out: &mut String,
     items: impl IntoIterator<Item = String>,
     limit: usize,
 ) -> (usize, bool) {
-    // 並べ方は `/explain` と 1 つ (T.34.94)
+    // 並べ方は `/explain` と 1 つ (T34.94)
     proxy_endpoints_core::array_within(out, items, limit - TRAILER)
 }
 

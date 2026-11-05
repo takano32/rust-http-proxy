@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 9. /history の transfer (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 9. /history の transfer (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 9. `/history` の `transfer` (T14.25)。`closed` と同じく**標本とは別の配列**なので、
 // ここも既存の読み方に 1 行も触らずに足せる。作り置きの `/history` は T14.25 より前に

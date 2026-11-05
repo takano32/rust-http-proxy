@@ -1,7 +1,7 @@
-//! `log` の単体試験 (T.34.56 で `log.rs` の `mod tests` をそのまま移した)。`RING_TEST_LOCK` の綴りは
+//! `log` の単体試験 (T34.56 で `log.rs` の `mod tests` をそのまま移した)。`RING_TEST_LOCK` の綴りは
 //! `minrate.rs`・`records.rs` の試験が引くので `crate::log::tests::RING_TEST_LOCK` のまま。
 
-/// T.28.38: 長い文字列は先頭 256 バイトと全体の長さだけ (短いものは `{:?}` のまま)。
+/// T28.38: 長い文字列は先頭 256 バイトと全体の長さだけ (短いものは `{:?}` のまま)。
 #[test]
 fn clip_cuts_long_values_and_keeps_short_ones() {
     assert_eq!(Clip("GET / HTTP/1.1").to_string(), "\"GET / HTTP/1.1\"");
@@ -29,7 +29,7 @@ fn test_level_parse() {
     assert_eq!(Level::parse("nonsense"), None);
 }
 
-/// T.34.73: 5 つの水準は符号を往復し、知らない符号は読み戻しなら `Warn`、`current_level` なら `Trace`。
+/// T34.73: 5 つの水準は符号を往復し、知らない符号は読み戻しなら `Warn`、`current_level` なら `Trace`。
 #[test]
 fn every_level_round_trips_through_its_code() {
     for l in [
@@ -54,7 +54,7 @@ fn test_level_ordering() {
     assert!(Level::Trace > Level::Debug);
 }
 
-/// 1 分に 1 回だけ通し、通すときに前の行から抑えた本数を返す (T.28.9)。
+/// 1 分に 1 回だけ通し、通すときに前の行から抑えた本数を返す (T28.9)。
 #[test]
 fn throttle_passes_once_per_period_and_reports_what_it_held_back() {
     let t = Throttle::new();

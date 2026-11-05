@@ -1,6 +1,6 @@
-//! 閉じた接続の分布の窓 ([`ClosedWindows`]。T14.6。T.34.28 で `history.rs` から移した)。
+//! 閉じた接続の分布の窓 ([`ClosedWindows`]。T14.6。T34.28 で `history.rs` から移した)。
 //!
-//! 窓の扱い (閉じる・触る・数える・配列を書く) は `transfer` と共通の [`TwoRes`] にある (T.34.34)。
+//! 窓の扱い (閉じる・触る・数える・配列を書く) は `transfer` と共通の [`TwoRes`] にある (T34.34)。
 //! ここに残すのは 1 窓ぶんの数え物 ([`ClosedCounts`]) の口と、1 本を足す `observe` だけ。
 
 use crate::recent::ClosedCounts;

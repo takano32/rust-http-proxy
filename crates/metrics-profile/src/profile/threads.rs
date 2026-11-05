@@ -39,7 +39,7 @@ pub(crate) const SYSCALL_NAMES: [&str; 19] = [
     "fstat",
 ];
 
-/// `read` の番号 (標本を取るスレッドが自分の `syscall` を読んだときに見える値。T.29.21)。
+/// `read` の番号 (標本を取るスレッドが自分の `syscall` を読んだときに見える値。T29.21)。
 pub(super) const READ_NR: i64 = {
     let mut i = 0;
     while !matches!(SYSCALL_NAMES[i].as_bytes(), b"read") {
@@ -64,7 +64,7 @@ pub(super) const SYSCALL_NRS: [i64; SYSCALL_NAMES.len()] = [
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 pub(super) const SYSCALL_NRS: [i64; SYSCALL_NAMES.len()] = [-1; SYSCALL_NAMES.len()];
 
-/// 同じ枠に数える別の番号 (`(番号, SYSCALL_NAMES の位置)`。T.29.14)。
+/// 同じ枠に数える別の番号 (`(番号, SYSCALL_NAMES の位置)`。T29.14)。
 ///
 /// x86_64 には `ppoll` / `epoll_pwait` の古い形の `poll` (7) / `epoll_wait` (232) があり、std の
 /// 待ちはそちらを使う (aarch64 には無い)。tokyo の `/profile` の `unknown_syscalls` が `sys_7` 129,929・

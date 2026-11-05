@@ -1,5 +1,5 @@
 //! 再読込で当てた `PROXY_ENDPOINTS_READONLY`・`PROXY_ALLOW_CLIENTS`・`PROXY_MAX_CONNS_PER_CLIENT` の
-//! `/config` の `source` が、`.env` に追随する (T.34.151)。
+//! `/config` の `source` が、`.env` に追随する (T34.151)。
 //!
 //! 0.34.x までは、この 3 つは値を当てても出どころを写しておらず、`.env` に書いて再読込しても
 //! `/config` の `source` が `default` のままだった (他の当てる項目は `env_file` になる)。

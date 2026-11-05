@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/collect-deployed.sh` が使う Python の部 (T.34.139 で埋め込みから出した)。
+"""`scripts/collect-deployed.sh` が使う Python の部 (T34.139 で埋め込みから出した)。
 
     python3 scripts/collect_follow.py <小命令> 引数…
 
@@ -42,7 +42,7 @@ def snapshot_list(argv):
 
 
 def pick(argv):
-    """`DIR` の起動と停止の 1 枚から、締めの「前」と「0 時間」を版で選んで箇条で出す (T.29.26)。"""
+    """`DIR` の起動と停止の 1 枚から、締めの「前」と「0 時間」を版で選んで箇条で出す (T29.26)。"""
     d = argv[1]
     cur = os.environ.get("CURRENT_VERSION") or None
     pick_out = os.environ.get("CLOSEOUT_PICK") or None
@@ -89,7 +89,7 @@ def pick(argv):
     why = {}
     before = zero = None
     if not any(m["ver"] for m in ms):
-        # 版の読めない古い形: 最後の停止と、その後の最初の起動 (T.28.20 のまま)
+        # 版の読めない古い形: 最後の停止と、その後の最初の起動 (T28.20 のまま)
         stops = [m for m in ms if m["kind"] == "shutdown"]
         before = stops[-1] if stops else None
         zero = next((m for m in ms if m["kind"] == "start" and (before is None or m["at"] > before["at"])), None) \
@@ -159,9 +159,9 @@ def pick(argv):
 
 
 def follow_plan(argv):
-    """雪像の切れた `recent`・`hosts`・`dns`・`profile` の続きの引き方を 1 部 1 行で出す (T.22.5・T.27.1)。"""
+    """雪像の切れた `recent`・`hosts`・`dns`・`profile` の続きの引き方を 1 部 1 行で出す (T22.5・T27.1)。"""
     # 雪像がその部を組むときの引数 + `offset=` (`crates/endpoints/src/endpoints/recent/snapshot.rs` の `snapshot`)
-    # `dns` と `profile` は T.27.1 で足した (`/dns` の `offset=` は 0.27 から。0.25.4 には無い)
+    # `dns` と `profile` は T27.1 で足した (`/dns` の `offset=` は 0.27 から。0.25.4 には無い)
     URL = {"recent": "/recent?n=2000&offset=", "hosts": "/hosts?limit=1000&offset=",
            "dns": "/dns?sort=age&limit=4096&offset=", "profile": "/profile?res=5&offset="}
     # 部の中で行の並ぶ鍵 (`/dns` は `entries`、`/profile` は `samples`)
@@ -184,7 +184,7 @@ def next_offset(argv):
 
 
 def follow_join(argv):
-    """追って取った続きの頁を雪像の同じ部に繋いで置き直し、要約の 1 行を出す (T.22.5・T.27.1・T.30.2)。"""
+    """追って取った続きの頁を雪像の同じ部に繋いで置き直し、要約の 1 行を出す (T22.5・T27.1・T30.2)。"""
     out, follow_ms, snap_ms, max_pages, follow_secs = argv[1:6]
     # `@<部>:<止めた理由>` のあとに、その部の続きの頁のファイルが並ぶ
     plan, cur = [], None
@@ -257,7 +257,7 @@ def follow_join(argv):
         elif why == "failed":
             line += f"。**打ち切った**: 続きが取れなかった (残りは offset={rest} から)"
         notes.append(line)
-    # 道具が繋いだ印 (T.30.2): プロキシが返した 1 枚の大きさと、繋いだ部。要約の大きさの警告は
+    # 道具が繋いだ印 (T30.2): プロキシが返した 1 枚の大きさと、繋いだ部。要約の大きさの警告は
     # 繋いだあとの大きさではなく `served_bytes` で判定する (繋げば上限を越えるのは当たり前)
     d["joined"] = {"parts": [name for name, _, _ in plan], "served_bytes": served_bytes}
     tmp = out + ".part"
@@ -299,7 +299,7 @@ def profile_join(argv):
 
 
 def full_plan(argv):
-    """`--full` で続きを引く部を 1 部 1 行で出す (T.15.0 (11))。"""
+    """`--full` で続きを引く部を 1 部 1 行で出す (T15.0 (11))。"""
     # 続きを引ける部と、その URL の形 (雪像がその部を組むときの引数 + `offset=`)
     URL = {
         "recent": "/recent?n=2000&offset=",
@@ -328,7 +328,7 @@ def full_plan(argv):
 
 
 def judge_profile(argv):
-    """`BEFORE` と同じ版の、12 時間以上ある最後の `-profile_res_60.json` を選ぶ (T.32.29)。"""
+    """`BEFORE` と同じ版の、12 時間以上ある最後の `-profile_res_60.json` を選ぶ (T32.29)。"""
     before, d = argv[1], argv[2]
 
     def version(path):

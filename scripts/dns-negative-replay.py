@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 名前解決の**負のキャッシュ** (`PROXY_DNS_NEGATIVE_SECS`、既定 60 秒) の持ち時間を変えたときに、
 # 引き直し (OS への問い合わせ) と待ちがどれだけ減るか、**誤って断る本数**がいくつになるかを
-# 雪像 1 枚の上で数える (T.27.3 段 1)。
+# 雪像 1 枚の上で数える (T27.3 段 1)。
 #
 # 材料は雪像 (`/snapshot`) 1 枚:
 #   - `/log` の `502 Bad Gateway: connect <host:port> failed: failed to lookup address information:
@@ -33,9 +33,9 @@ import json
 import re
 import sys
 
-# 段 1 の N (T.27.3)。最初が今の既定
+# 段 1 の N (T27.3)。最初が今の既定
 DEFAULT_SECS = (60, 300, 900, 3600)
-# 目安 (T.27.3): 待ちの合計が 1 日 1 分以上縮み、誤って断る本数が 0 なら段 2 (既定を変える)
+# 目安 (T27.3): 待ちの合計が 1 日 1 分以上縮み、誤って断る本数が 0 なら段 2 (既定を変える)
 TARGET_SAVED_SECS_PER_DAY = 60.0
 
 NXDOMAIN = "failed to lookup address information: Name or service not known"
@@ -139,7 +139,7 @@ def run(snap, secs_list):
     cal = calibrate(snap, arr)
     avg_ms = (cal or {}).get("avg_ms")
     if avg_ms is None:
-        # T.25.0 より前の版は NXDOMAIN を `dns` の 1 つにまとめていた (`nxdomain` の綴りは 0.25 から)
+        # T25.0 より前の版は NXDOMAIN を `dns` の 1 つにまとめていた (`nxdomain` の綴りは 0.25 から)
         errs = [e.get("dns_ms") or 0 for e in part(snap, "errors", "errors") if e.get("cause") in ("nxdomain", "dns")]
         errs = [x for x in errs if x > 0]
         avg_ms = (sum(errs) / len(errs)) if errs else 0.0

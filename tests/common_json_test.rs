@@ -1,4 +1,4 @@
-//! 試験の道具 `common::json` (と `common` のほかの小さな道具) の単体試験 (T.34.111)。
+//! 試験の道具 `common::json` (と `common` のほかの小さな道具) の単体試験 (T34.111)。
 //!
 //! 道具そのものが誤っていると、それを使う試験が全部「通るはずのないものが通る」に
 //! なるので、取り出し方の約束をここで縛る。
@@ -58,7 +58,7 @@ fn json_a_value_that_is_not_a_number_fails_with_the_key_and_the_json() {
 }
 
 // ------------------------------------------------------------------
-// オブジェクト・配列・行 (T.34.112)
+// オブジェクト・配列・行 (T34.112)
 // ------------------------------------------------------------------
 
 #[test]
@@ -116,7 +116,7 @@ fn json_find_item_takes_the_first_item_with_the_needle() {
 }
 
 /// キャッシュの置き場 (`cache_cfg` / `disk_only` が使う) には pid が付く。付かないと、
-/// worktree を並べて回したとき別の実行が使っている最中の置き場を消す (T.34.162)。
+/// worktree を並べて回したとき別の実行が使っている最中の置き場を消す (T34.162)。
 #[test]
 fn fresh_dir_puts_the_pid_in_the_name() {
     let dir = common::fresh_dir("rhp-t34162-fresh");
@@ -128,7 +128,7 @@ fn fresh_dir_puts_the_pid_in_the_name() {
 }
 
 /// `read_response` は `Content-Length` の名前を大小を区別せずに読む (オリジン側の
-/// 読み取りと同じ。T.34.163)。区別すると本文を読まずに返し、次の応答の頭がずれる。
+/// 読み取りと同じ。T34.163)。区別すると本文を読まずに返し、次の応答の頭がずれる。
 #[test]
 fn read_response_reads_content_length_in_any_case() {
     use std::io::Write;

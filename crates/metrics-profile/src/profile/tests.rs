@@ -273,7 +273,7 @@ fn states_map_to_syscall_names() {
     assert_eq!(names[1], "recvfrom");
 }
 
-/// **T.29.14**: x86_64 の `poll` (7) と `epoll_wait` (232) は `ppoll` / `epoll_pwait` の枠に数え、
+/// **T29.14**: x86_64 の `poll` (7) と `epoll_wait` (232) は `ppoll` / `epoll_pwait` の枠に数え、
 /// `unknown_syscalls` に落ちない (状態の数は変えない)。
 #[cfg(target_arch = "x86_64")]
 #[test]

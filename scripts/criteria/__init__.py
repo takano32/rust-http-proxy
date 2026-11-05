@@ -1,4 +1,4 @@
-# `scripts/snapshot_criteria.py` (判定表) の中身を割って置く所 (T.34.124〜T.34.129)。
+# `scripts/snapshot_criteria.py` (判定表) の中身を割って置く所 (T34.124〜T34.129)。
 #
 # 入口は `snapshot_criteria.py` のまま (README がファイル名で指し、`snapshot-diff.py`・
 # `snapshot-summary.py`・試験が約 60 の名前を名前で取り込んでいる)。そちらが全部を同じ名前で

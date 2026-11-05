@@ -19,7 +19,7 @@ pub(super) fn status(ep: &Endpoint<'_>, query: Option<&str>) -> Reply {
 /// `/metrics` — Prometheus のテキスト形式。
 ///
 /// 上限といまのスレッド数はここで 1 回だけ引く (`/status` と同じ形)。
-/// 版とビルドの種類は末尾に 1 行 (T.29.19。描く側はこの層の `Endpoint` しか持たない)。
+/// 版とビルドの種類は末尾に 1 行 (T29.19。描く側はこの層の `Endpoint` しか持たない)。
 pub(super) fn prometheus(ep: &Endpoint<'_>) -> Reply {
     let mut body = prom::render(ep.metrics, Some(ep.cache), (ep.concurrency)());
     prom::build_info(&mut body, ep.version, ep.build);
@@ -67,7 +67,7 @@ pub(super) fn status_body(ep: &Endpoint<'_>, sort: metrics::HostSort, hosts: boo
             hosts,
         },
     );
-    // ビルドの種類は**末尾に足す** (T.28.42。既存の鍵の順は 1 バイトも変えない)。
+    // ビルドの種類は**末尾に足す** (T28.42。既存の鍵の順は 1 バイトも変えない)。
     // 値は cargo のプロファイル名なので英数字と `-` `_` だけ (逃がす文字は無いが、念のため通す)
     if out.ends_with('}') {
         out.pop();

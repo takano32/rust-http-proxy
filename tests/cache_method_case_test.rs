@@ -1,4 +1,4 @@
-//! メソッドの大小 (T.32.8): `get` の応答を GET の鍵に保存して、他の利用者の `GET` に配らない。
+//! メソッドの大小 (T32.8): `get` の応答を GET の鍵に保存して、他の利用者の `GET` に配らない。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

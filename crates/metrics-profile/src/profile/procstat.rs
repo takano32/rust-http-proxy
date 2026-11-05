@@ -20,7 +20,7 @@ pub(crate) fn process_cpu_split_us() -> Option<(u64, u64)> {
     parse_stat_cpu_split_us(&text)
 }
 
-/// `/proc/<pid>/stat` の (スレッド数 (項目 20), utime + stime (tick)) (T.32.37)。
+/// `/proc/<pid>/stat` の (スレッド数 (項目 20), utime + stime (tick)) (T32.37)。
 pub(crate) fn parse_stat_threads_ticks(text: &str) -> Option<(u64, u64)> {
     let rest = &text[text.rfind(')')? + 1..];
     let mut it = rest.split_whitespace();

@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 5. /history の closed と /bursts の写真 (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 5. /history の closed と /bursts の写真 (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 5. `/history` の `closed` (T14.6) と `/bursts` の写真を読む。
 // **標本 (`samples`) とは別の配列**なので、ここは既存の読み方に 1 行も触らずに足せる。

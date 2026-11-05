@@ -1,5 +1,5 @@
 //! `/config` (効いている設定とその出どころ) の結合テスト (T14.15)。`capabilities` (この環境で
-//! 何が読めるか) と `--check` は `config_check_test.rs` に割った (T.34.120)。
+//! 何が読めるか) と `--check` は `config_check_test.rs` に割った (T34.120)。
 //!
 //! どれも**実バイナリを起こして**見る。`capabilities` を測るのは `.env` の監視スレッドで、
 //! 出どころ (`default` / `env` / `env_file`) は `$HOME/.env` と実際の環境変数の両方が要るので、
@@ -23,7 +23,7 @@ fn start_proxy(
     (child, port, dir)
 }
 
-/// [`start_proxy`] と同じだが、待ち受けの行までに出た起動ログの行も返す (T.28.6)。
+/// [`start_proxy`] と同じだが、待ち受けの行までに出た起動ログの行も返す (T28.6)。
 fn start_proxy_logged(
     tag: &str,
     env_file: &str,
@@ -75,7 +75,7 @@ fn assert_settings(json: &str, want: &[(&str, &str, &str, &str)]) {
     }
 }
 
-/// 転送中の最小の速さの 2 つの鍵が `/config` に出て、`.env` と環境変数から読めること (T.29.34)。
+/// 転送中の最小の速さの 2 つの鍵が `/config` に出て、`.env` と環境変数から読めること (T29.34)。
 #[test]
 fn test_integration_min_transfer_keys_are_read_and_shown() {
     let (_child, port, dir) = start_proxy(
@@ -127,7 +127,7 @@ fn test_integration_config_shows_effective_values_and_their_source() {
             ("PROXY_KEEPALIVE_SECS", "7", "env", "環境変数で渡した行"),
             ("PROXY_TIMEOUT_SECS", "30", "default", "書いていない行"),
             // CONNECT 専用の締め切りも書いていないので、既定の 3 秒が出どころ `default` で出る
-            // (`PROXY_TIMEOUT_SECS` は 30 のまま。T15.6 (2)、既定を 5 秒にした T23.3、3 秒にした T.28.43)
+            // (`PROXY_TIMEOUT_SECS` は 30 のまま。T15.6 (2)、既定を 5 秒にした T23.3、3 秒にした T28.43)
             (
                 "PROXY_CONNECT_TIMEOUT_SECS",
                 "3",
@@ -187,7 +187,7 @@ fn test_integration_config_shows_effective_values_and_their_source() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `.env` の打ち間違い (知らない名前) と読めない値 (T.28.6): 起動ログに WARN を 1 行ずつ、
+/// `.env` の打ち間違い (知らない名前) と読めない値 (T28.6): 起動ログに WARN を 1 行ずつ、
 /// `/status` の `settings.invalid` / `settings.unknown` に名前が出る。再読込で直せば消え、
 /// 書き損じれば出る。**正しい `.env` では WARN が 1 行も増えない**。
 #[test]
@@ -292,7 +292,7 @@ fn test_integration_env_typos_and_unreadable_values_are_reported() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 真偽の鍵・`PROXY_PROFILE`・`PROXY_SLO` の読めない値も WARN 1 行ずつ (T.28.31)。
+/// 真偽の鍵・`PROXY_PROFILE`・`PROXY_SLO` の読めない値も WARN 1 行ずつ (T28.31)。
 /// 扱いは今までどおり (真偽の鍵は on、`PROXY_PROFILE` は既定、`PROXY_SLO` は読めた項目だけ当てる)。
 #[test]
 fn test_integration_unreadable_flags_profile_and_slo_are_reported() {
@@ -342,7 +342,7 @@ fn test_integration_unreadable_flags_profile_and_slo_are_reported() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// T.28.41: `PROXY_ALLOW_LOCAL=private` は読める値 (WARN を出さない)。`/config` には文字列で、
+/// T28.41: `PROXY_ALLOW_LOCAL=private` は読める値 (WARN を出さない)。`/config` には文字列で、
 /// `--check` には `private` と出る。`on` / `off` は今までどおり真偽で出る。
 #[test]
 fn test_integration_allow_local_private_is_a_readable_value() {

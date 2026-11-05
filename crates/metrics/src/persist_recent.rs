@@ -35,7 +35,7 @@ use crate::rrd::{Dec, Enc, Fixed, Region};
 use crate::sync::LockExt;
 use crate::{log_info, log_warn};
 
-// レコードの中身 (固定幅の欄・組み立て時の大きさの検査・`encode_*` / `decode_*`) は割ってある (T.34.29)
+// レコードの中身 (固定幅の欄・組み立て時の大きさの検査・`encode_*` / `decode_*`) は割ってある (T34.29)
 mod codec;
 
 use codec::{

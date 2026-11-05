@@ -1,5 +1,5 @@
 //! 環境変数の小さな読み手 ([`Env`])。`CacheConfig::from_lookup` の規則を 1 つずつ持つ
-//! (T.34.85 で `from_lookup` の 5 つの閉包から出した)。
+//! (T34.85 で `from_lookup` の 5 つの閉包から出した)。
 //!
 //! 読み元は `lookup` で受ける (ふだんは `envfile::var`、試験では表)。どの読みも
 //! **前後の空白を落とし、空なら書いていないのと同じ**に扱う。
@@ -92,7 +92,7 @@ mod tests {
         Env::new(move |k: &str| (k == "K").then(|| v.to_string()))
     }
 
-    /// 空白だけの値と空の値は、書いていないのと同じ (T.34.85)。
+    /// 空白だけの値と空の値は、書いていないのと同じ (T34.85)。
     #[test]
     fn blank_values_are_unset() {
         assert_eq!(one("  x  ").get("K"), Some("x".to_string()));
@@ -101,7 +101,7 @@ mod tests {
         assert_eq!(one("x").get("OTHER"), None);
     }
 
-    /// 旗の 8 形: 偽の綴り 4 つ (大文字でも) と、真になるそれ以外 (T.34.85)。
+    /// 旗の 8 形: 偽の綴り 4 つ (大文字でも) と、真になるそれ以外 (T34.85)。
     #[test]
     fn a_flag_is_false_only_for_four_spellings() {
         for v in ["0", "false", "off", "no", "OFF", " No "] {
@@ -115,7 +115,7 @@ mod tests {
         assert!(!one("").flag("K", false));
     }
 
-    /// 割合は 1〜100 だけ通し、範囲外と読めない値は既定に倒す (T.34.85)。
+    /// 割合は 1〜100 だけ通し、範囲外と読めない値は既定に倒す (T34.85)。
     #[test]
     fn a_percent_outside_one_to_hundred_falls_back() {
         assert_eq!(one("1").percent("K"), 1);
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(one("5").positive("K"), Some(5));
     }
 
-    /// 読めない数は書いていないのと同じで既定に倒す。MiB は桁あふれで止める (T.34.85)。
+    /// 読めない数は書いていないのと同じで既定に倒す。MiB は桁あふれで止める (T34.85)。
     #[test]
     fn unreadable_numbers_fall_back_to_the_default() {
         let d = Duration::from_secs(7);
@@ -145,7 +145,7 @@ mod tests {
         assert_eq!(one(" 42 ").num("K"), Some(42));
     }
 
-    /// 上限は読めなければ `auto` (その割合で)、読めればその形 (T.34.85)。
+    /// 上限は読めなければ `auto` (その割合で)、読めればその形 (T34.85)。
     #[test]
     fn a_limit_falls_back_to_auto_at_its_percent() {
         let env = Env::new(|k: &str| match k {

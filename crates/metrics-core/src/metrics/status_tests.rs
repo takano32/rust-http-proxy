@@ -1,5 +1,5 @@
 //! `/status` の組み立ての試験: 並べ替えの鍵・64 KiB の上限・軽い口 (`?hosts=0`)
-//! (T.34.33 で `latency_tests.rs` から移した)。
+//! (T34.33 で `latency_tests.rs` から移した)。
 
 use super::*;
 
@@ -269,7 +269,7 @@ fn number_of(json: &str, key: &str) -> u64 {
         .unwrap()
 }
 
-/// 試験のための固定のプロセスの値 (T.34.41)。`full` が偽なら全部読めなかった形。
+/// 試験のための固定のプロセスの値 (T34.41)。`full` が偽なら全部読めなかった形。
 struct FixedFacts {
     full: bool,
 }
@@ -311,7 +311,7 @@ impl super::facts::ProcessFacts for FixedFacts {
     }
 }
 
-/// `/status` のうちプロセスの値から来る欄を、固定の値でバイト単位に縛る (T.34.41)。
+/// `/status` のうちプロセスの値から来る欄を、固定の値でバイト単位に縛る (T34.41)。
 /// `threads`・`fds`・`max_fds`・`boot`・`memory` (rss・heap・スタック・常駐の内訳)。
 #[test]
 fn the_process_facts_land_byte_for_byte_in_the_status() {

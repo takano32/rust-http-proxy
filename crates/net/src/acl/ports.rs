@@ -1,4 +1,4 @@
-//! 許可するポートの集合 (`PROXY_CONNECT_PORTS`)。T.34.65 で `acl.rs` から移した (本体は変えていない)。
+//! 許可するポートの集合 (`PROXY_CONNECT_PORTS`)。T34.65 で `acl.rs` から移した (本体は変えていない)。
 
 /// 許可するポートの集合 (`PROXY_CONNECT_PORTS`)。空なら制限なし。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

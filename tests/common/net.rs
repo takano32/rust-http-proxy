@@ -8,7 +8,7 @@ use std::net::TcpStream;
 #[cfg(target_os = "linux")]
 use ffi::{AF_INET, SOCK_STREAM, SockAddrIn};
 
-/// 試験が直に呼ぶ libc の口 (T.34.104 で 3 か所の宣言を 1 つにした)。
+/// 試験が直に呼ぶ libc の口 (T34.104 で 3 か所の宣言を 1 つにした)。
 ///
 /// `std` には bind してから connect する口も、`listen` しない束縛の口も、相手の番地を
 /// 読む口も無いので、`crates/sys` と同じ作法で直に宣言する (外部クレートは足さない)。

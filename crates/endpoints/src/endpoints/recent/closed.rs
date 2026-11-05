@@ -1,4 +1,4 @@
-//! `/recent` — **閉じた接続**の個票 (T14.4)。T.34.82 で recent.rs から分けた。
+//! `/recent` — **閉じた接続**の個票 (T14.4)。T34.82 で recent.rs から分けた。
 //!
 //! 並べ替え ([`RecentSort`])・接続元の RTT での絞り ([`RttClient`]) と、口の本体
 //! ([`recent`] / 停止の雪像も使う [`recent_within`])。
@@ -39,13 +39,13 @@ impl RecentSort {
     }
 }
 
-/// 接続元のカーネルの RTT で個票を 2 つに割る閾 (us。`/recent?rtt_client=lt100|ge100`。T.29.18)。
+/// 接続元のカーネルの RTT で個票を 2 つに割る閾 (us。`/recent?rtt_client=lt100|ge100`。T29.18)。
 ///
 /// tokyo の接続元は NAT の 1 つに見えるが、RTT で 2 集団に割れる (近い 21% = RTT p50 約 20 ms、
 /// 遠い 79% = 約 245 ms。first_relay p50 は 20 ms と 4.1 秒)。100 ms は 2 つの山の間。
 pub(super) const RTT_CLIENT_SPLIT_US: u32 = 100_000;
 
-/// `/recent?rtt_client=` の値 (T.29.18)。
+/// `/recent?rtt_client=` の値 (T29.18)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RttClient {
     /// 絞らない (既定)
@@ -106,7 +106,7 @@ pub(in crate::endpoints) fn recent(
 }
 
 /// [`recent`] の本体。`limit` は応答の上限 (ふだんは [`MAX_BODY`]、停止の雪像だけ
-/// [`MAX_SNAPSHOT`]。T.28.20)。
+/// [`MAX_SNAPSHOT`]。T28.20)。
 pub(super) fn recent_within(
     ep: &Endpoint<'_>,
     query: Option<&str>,
@@ -119,7 +119,7 @@ pub(super) fn recent_within(
         .unwrap_or(0);
     let client = str_param(query, "client");
     let sort = RecentSort::from_param(&str_param(query, "sort"));
-    // 接続元の RTT で 2 集団に割る (T.29.18。NAT の向こうの近い利用者と遠い利用者)
+    // 接続元の RTT で 2 集団に割る (T29.18。NAT の向こうの近い利用者と遠い利用者)
     let rtt_client = RttClient::from_param(&str_param(query, "rtt_client"));
     // 絞りはリングの鍵の内側で済ませる (2,000 件を複製してから捨てない)
     let (mut rows, total) = ep.metrics.closed.select(since, &client);
@@ -203,7 +203,7 @@ mod tests {
     }
 
     /// `?rtt_client=` は接続元の RTT を 100 ms で 2 つに割り、読めなかった行 (0) は
-    /// 絞るときはどちらにも入れない (T.34.82)。
+    /// 絞るときはどちらにも入れない (T34.82)。
     #[test]
     fn rtt_client_keeps_split_at_100_ms() {
         let unread = entry(0);

@@ -122,7 +122,7 @@ fn test_write_cached_response_injects_framing_and_headers() {
         write_cached_response(&mut out, entry, &serve(RangeSpec::Ignore, false)).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert_eq!(status, 200);
-    // T.28.10 (b) から、キャッシュから返す応答にも自分の `Via` が 1 行付く
+    // T28.10 (b) から、キャッシュから返す応答にも自分の `Via` が 1 行付く
     let want = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Cache: HIT from rust-http-proxy (disk)\r\nAge: 42\r\nContent-Length: 2\r\nVia: {}\r\nConnection: keep-alive\r\n\r\nhi",
         crate::via::token()
@@ -426,7 +426,7 @@ fn test_locate_matches_the_generic_normalisation_on_many_inputs() {
     assert_eq!(checked, hosts.len() * paths.len() * schemes.len());
 }
 
-/// 再検証の 304 が別の表現を指しているか (T.32.9)。validator の無い 304・比べる相手の無いときは偽
+/// 再検証の 304 が別の表現を指しているか (T32.9)。validator の無い 304・比べる相手の無いときは偽
 #[test]
 fn not_modified_conflicts_only_when_a_validator_differs() {
     let cached = freshness::parse_cached_head(

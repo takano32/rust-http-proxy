@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 雪像から **名前ごとの引き直しの回数と、実際の使用回数** を並べ、
-# 「1 時間に 1 回も使われていないのに引き直した回」の割合を出す (T.24.1 の段 1)。
+# 「1 時間に 1 回も使われていないのに引き直した回」の割合を出す (T24.1 の段 1)。
 #
 # 材料は雪像 (`/snapshot`) の 3 か所:
 #   - `/status` の `dns.refreshes` … 起動からの引き直しの**合計** (表が切れていても完全)
@@ -388,7 +388,7 @@ def stamp(t):
 
 
 def render(out):
-    """結果を Markdown にする。雪像の一覧・窓ごと・模型・判定の節を順につなぐ (T.34.138 で割った)。"""
+    """結果を Markdown にする。雪像の一覧・窓ごと・模型・判定の節を順につなぐ (T34.138 で割った)。"""
     lines = snapshot_lines(out)
     for w in out["windows"]:
         lines.append("")
@@ -519,11 +519,11 @@ def model_lines(out):
 
 
 def verdict_lines(out):
-    """判定の節 (T.24.1 の目安と、いちばん新しい判定できる窓での段 2 の判断)。"""
+    """判定の節 (T24.1 の目安と、いちばん新しい判定できる窓での段 2 の判断)。"""
     lines = []
     v = out.get("verdict") or {}
     lines.append("")
-    lines.append("## 判定 (T.24.1 の目安: 使われていない名前の引き直しが全体の %d%% 以上なら段 2)"
+    lines.append("## 判定 (T24.1 の目安: 使われていない名前の引き直しが全体の %d%% 以上なら段 2)"
                  % int(IDLE_SHARE * 100))
     newest = None
     for w in out["windows"]:

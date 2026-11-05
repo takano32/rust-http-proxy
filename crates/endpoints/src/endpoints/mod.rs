@@ -15,13 +15,13 @@
 //! 応答は常に `Connection: close`。認証は無いので、到達できる人は誰でも purge できる
 //! (公開ポートなら ACL や到達制御で守ること)。`PROXY_ENDPOINTS_READONLY=on` にすると
 //! **書き換える口だけ** (`/purge` / `PURGE` / `/blocklist?action=`) を 405 で断る (T14.18)。
-//! 書き換える口も読む口と同じくポートだけで決め、名前は見ない (T.29.35、利用者の決定
-//! 「すべて外から使える」。T.28.40 で名前を自分のときだけに絞り、T.28.47 で `PROXY_SELF_NAMES` を
+//! 書き換える口も読む口と同じくポートだけで決め、名前は見ない (T29.35、利用者の決定
+//! 「すべて外から使える」。T28.40 で名前を自分のときだけに絞り、T28.47 で `PROXY_SELF_NAMES` を
 //! 足したのを戻した。公開の名前で開いたダッシュボードの「消す」「上書き」が転送になっていたため)。
 //! **重い口** (`/snapshot` `/profile` `/explain` と大きく引いた `/hosts` `/recent` `/history`) は
 //! **同時に 1 本だけ**組み、2 本目からは `503` + `Retry-After: 1` で断る (T14.51)。
 //!
-//! 中の割り方 (T.34.4): 要求の読み方は [`incoming`] (ポートだけの判定・メソッドの種類・パスと
+//! 中の割り方 (T34.4): 要求の読み方は [`incoming`] (ポートだけの判定・メソッドの種類・パスと
 //! 問い合わせ)、門は [`heavy`] (重い口の旗) と [`handle`] (読み取り専用)、経路表は [`dispatch`]、
 //! 応答の形は [`respond`]。`/status` `/metrics` は [`status`]、`/history` は [`history`]、
 //! `/purge` `/lookup` は [`purge`]、ページ 3 本と `/` の案内は [`pages`]。
@@ -37,7 +37,7 @@ use crate::metrics::{self, Metrics};
 // `/explain` は `proxy-endpoints-explain` にある (T15.12 段 1 (ii))。
 // **今までと同じ綴りで使えるように**ここで出し直す (`crate::endpoints::Endpoint`、
 // 子モジュールの `super::parse_query` / `super::has_flag` / `super::offset_param` /
-// `super::next_offset`、`super::param` / `super::num_param` / `super::str_param` (T.34.93)、
+// `super::next_offset`、`super::param` / `super::num_param` / `super::str_param` (T34.93)、
 // `explain::explain`)。
 pub use proxy_endpoints_core::{Endpoint, parse_query, percent_decode};
 use proxy_endpoints_core::{has_flag, next_offset, num_param, offset_param, param, str_param};
@@ -75,7 +75,7 @@ pub struct SnapshotSource {
     /// 待ち受けポート (`Endpoint` の自分宛て判定と同じ値。中身には出ない)
     pub port: u16,
     pub version: &'static str,
-    /// ビルドの種類 (`/status` の `build`。T.28.42)
+    /// ビルドの種類 (`/status` の `build`。T28.42)
     pub build: &'static str,
     pub lite: bool,
     pub readonly: bool,
@@ -91,8 +91,8 @@ pub struct SnapshotSource {
 /// この層より**下**にあるため (下から上を呼ぶと依存が輪になる。T14.11 の `events::poll`
 /// と同じ判断で、**向きは上から預ける**)。
 pub fn register_snapshot(src: SnapshotSource) {
-    // 引数は「`recent` の部の上限」(`None` = 256 KiB で切る。停止の 1 枚は 4 MiB = 全部 (T.28.20)、
-    // 日次は 1 MiB (T.28.46))
+    // 引数は「`recent` の部の上限」(`None` = 256 KiB で切る。停止の 1 枚は 4 MiB = 全部 (T28.20)、
+    // 日次は 1 MiB (T28.46))
     crate::snapshots::set_builder(Box::new(move |recent_max, limit| {
         let ep = Endpoint {
             metrics: &src.metrics,
@@ -136,7 +136,7 @@ pub fn handle(
     // 応答を組む前に数えるので、**読んだ応答にはその要求自身が入っている**
     // (`/status` を 3 回引いた 3 回目の応答が `count: 3`)。
     // **`PURGE <url>` は `/purge` として残す** (同じ仕事をする `/purge?url=` と同じ口)。
-    // PURGE の `req.path` は要求ターゲットの URL そのもので、前は他所の URL が記録に残っていた (T.34.160)
+    // PURGE の `req.path` は要求ターゲットの URL そのもので、前は他所の URL が記録に残っていた (T34.160)
     if let Some(client) = ep.client {
         let path = if req.method.is_purge() {
             "/purge"
@@ -177,7 +177,7 @@ pub fn handle(
     let response = respond::render(&reply, heavy_busy, req.method.is_head());
     client.write_all(response.as_bytes())?;
     client.flush()?;
-    // 自分宛ての要求の行は debug (T.28.9)。ダッシュボードを開いたままにすると約 1.2 行/秒で
+    // 自分宛ての要求の行は debug (T28.9)。ダッシュボードを開いたままにすると約 1.2 行/秒で
     // コンソールを埋めていた (`PROXY_LOG_LEVEL=debug` にすれば今までどおり見える)
     log_debug!(
         Some(ep.conn_id),

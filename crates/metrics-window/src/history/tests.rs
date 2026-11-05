@@ -52,10 +52,10 @@ fn keeps_the_newest_samples_in_order() {
     // 標本の配列の閉じ方は変えず、その**後ろ**に閉じた接続の分布が付く (T14.6)。
     // 末尾は T15.0 (10) で足した `wait_buckets` と 4 列 (`dns_warm` /
     // `requests_delta` / `bytes_delta` / `active_peak`)、そのうしろが T16.0 の 3 列
-    // (`dns_warm_max` / `dns_warm_sum` / `gauge_n`)、さらにうしろが T.28.45 の
-    // `excess` の窓 4 列と `dns_fail_misses`、そのうしろが T.29.12 の `conn_excess` の窓 4 列、
-    // そのうしろが T.30.3 の 2 列 (`other_port_attempts` / `other_port_errors`)、
-    // そのうしろが T.32.16 の `dns_fail_ms_sum`、いちばんうしろが T.33.3 の 2 列 (`web_dns_misses` / `web_dns_ms_sum`)
+    // (`dns_warm_max` / `dns_warm_sum` / `gauge_n`)、さらにうしろが T28.45 の
+    // `excess` の窓 4 列と `dns_fail_misses`、そのうしろが T29.12 の `conn_excess` の窓 4 列、
+    // そのうしろが T30.3 の 2 列 (`other_port_attempts` / `other_port_errors`)、
+    // そのうしろが T32.16 の `dns_fail_ms_sum`、いちばんうしろが T33.3 の 2 列 (`web_dns_misses` / `web_dns_ms_sum`)
     assert!(
         json.contains(
             ",0,0,0,[0,0,0,0,0,0,0,0,0,0,0,0,0],0,0,0,0,0,0,0,\

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/dns-negative-replay.py` (T.27.3 段 1) の単体テスト。雪像は架空のものをその場で作る。"""
+"""`scripts/dns-negative-replay.py` (T27.3 段 1) の単体テスト。雪像は架空のものをその場で作る。"""
 
 import contextlib
 import io

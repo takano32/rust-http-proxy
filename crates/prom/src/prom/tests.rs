@@ -1,4 +1,4 @@
-//! `/metrics` の単体試験 (T.34.27 で `prom.rs` から移した。名前はそのまま)。
+//! `/metrics` の単体試験 (T34.27 で `prom.rs` から移した。名前はそのまま)。
 
 use super::*;
 use crate::metrics::HostOutcome;
@@ -434,7 +434,7 @@ fn renders_the_not_stored_rotations_counter() {
     );
 }
 
-/// 版とビルドの種類が `sorahost_build_info{version,build} 1` の 1 行で出ること (T.29.19)。
+/// 版とビルドの種類が `sorahost_build_info{version,build} 1` の 1 行で出ること (T29.19)。
 #[test]
 fn renders_the_build_info_with_two_labels() {
     let mut out = String::new();

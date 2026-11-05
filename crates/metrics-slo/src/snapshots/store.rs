@@ -1,4 +1,4 @@
-//! 置き場所にあるファイルの一覧と間引き (`snapshots` の一部。T.34.2 で `snapshots.rs` から移した)。
+//! 置き場所にあるファイルの一覧と間引き (`snapshots` の一部。T34.2 で `snapshots.rs` から移した)。
 //!
 //! 日次の 1 枚 ([`existing`] / [`newest_day`] / [`prune`]) と起動・停止の 1 枚 ([`existing_moments`] /
 //! [`prune_moments`]) を名前の形で見分ける。**何を消すかの判断** ([`stale_moments`]) はディスクを
@@ -23,7 +23,7 @@ pub struct Saved {
     pub t: u64,
 }
 
-/// `/snapshots` の `moments` の 1 行 (起動と停止の 1 枚。T.28.20)。
+/// `/snapshots` の `moments` の 1 行 (起動と停止の 1 枚。T28.20)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedMoment {
     /// `<YYYY-MM-DDTHHMMSSZ>-<種類>` (`/snapshots/<名前>` で読める)
@@ -60,7 +60,7 @@ pub(super) fn newest_day(dir: &Path) -> u64 {
         .unwrap_or_default()
 }
 
-/// `/snapshots` の `files` (日次の 1 枚。古い順。T.34.51 で `list` から移した)。
+/// `/snapshots` の `files` (日次の 1 枚。古い順。T34.51 で `list` から移した)。
 pub(super) fn saved(dir: &Path) -> Vec<Saved> {
     existing(dir)
         .into_iter()
@@ -79,7 +79,7 @@ pub(super) fn saved(dir: &Path) -> Vec<Saved> {
         .collect()
 }
 
-/// `/snapshots` の `moments` (起動と停止の 1 枚。古い順。T.34.51 で `list` から移した)。
+/// `/snapshots` の `moments` (起動と停止の 1 枚。古い順。T34.51 で `list` から移した)。
 pub(super) fn saved_moments(dir: &Path) -> Vec<SavedMoment> {
     existing_moments(dir)
         .into_iter()
@@ -133,7 +133,7 @@ pub(super) fn existing_moments(dir: &Path) -> Vec<(String, u64, Moment)> {
 }
 
 /// `m` の種類のうち、`now` から `days` 日より古いものと、新しい方から `days` 枚を越えたものを消す
-/// (T.28.20)。消した数を返す。**別の種類と日次の 1 枚には触らない**。
+/// (T28.20)。消した数を返す。**別の種類と日次の 1 枚には触らない**。
 pub(super) fn prune_moments(dir: &Path, days: usize, m: Moment, now: u64) -> usize {
     let mine: Vec<(String, u64)> = existing_moments(dir)
         .into_iter()
@@ -152,7 +152,7 @@ pub(super) fn prune_moments(dir: &Path, days: usize, m: Moment, now: u64) -> usi
 }
 
 /// 消す名前 (古い順に並んだ同じ種類の `(名前, 撮った時刻)` から): `now` から `days` 日より古いものと、
-/// 新しい方から `days` 枚を越えたぶん (T.28.20)。**時計もディスクも触らない。**
+/// 新しい方から `days` 枚を越えたぶん (T28.20)。**時計もディスクも触らない。**
 fn stale_moments(mine: &[(String, u64)], days: usize, now: u64) -> Vec<&str> {
     let oldest = now.saturating_sub(days as u64 * SECS_PER_DAY);
     let over = mine.len().saturating_sub(days);
@@ -167,7 +167,7 @@ fn stale_moments(mine: &[(String, u64)], days: usize, now: u64) -> Vec<&str> {
 mod tests {
     use super::*;
 
-    /// 消すのは「`days` 日より古い」か「新しい方から `days` 枚を越えた」もの (T.28.20。T.34.2 で直に押さえる)。
+    /// 消すのは「`days` 日より古い」か「新しい方から `days` 枚を越えた」もの (T28.20。T34.2 で直に押さえる)。
     #[test]
     fn stale_moments_drop_the_old_and_the_surplus() {
         let day = SECS_PER_DAY;

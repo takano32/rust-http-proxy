@@ -1,6 +1,6 @@
-//! 再検証の 304 が返す利用者あての値を、他の利用者へ配らない (T.29.0)。
+//! 再検証の 304 が返す利用者あての値を、他の利用者へ配らない (T29.0)。
 //!
-//! 0.28.48 までは T.28.2 の `merge_not_modified` が 304 の `Set-Cookie` を保存済みの先頭へ写し、
+//! 0.28.48 までは T28.2 の `merge_not_modified` が 304 の `Set-Cookie` を保存済みの先頭へ写し、
 //! 次の利用者の `REVALIDATED` と `HIT` (メモリにもディスクにも) に同じ `Set-Cookie` が付いていた。
 //! 304 の `Vary: Cookie`・`private`・`no-store` も写したまま配り続けていた (TTL が 0 になるだけ)。
 
@@ -97,13 +97,13 @@ fn check_set_cookie(cache: CacheConfig, source: &str) {
     assert_eq!(counter.load(Ordering::SeqCst), 3);
 }
 
-/// **受け入れ基準 (T.29.0)**: `Set-Cookie`、メモリ (L1)。
+/// **受け入れ基準 (T29.0)**: `Set-Cookie`、メモリ (L1)。
 #[test]
 fn test_integration_304_set_cookie_reaches_only_the_requester_in_memory() {
     check_set_cookie(cache_cfg("shp-it-304-cookie-mem"), "memory");
 }
 
-/// **受け入れ基準 (T.29.0)**: `Set-Cookie`、ディスク (L2) だけの項目。
+/// **受け入れ基準 (T29.0)**: `Set-Cookie`、ディスク (L2) だけの項目。
 #[test]
 fn test_integration_304_set_cookie_reaches_only_the_requester_on_disk() {
     check_set_cookie(disk_only("shp-it-304-cookie-disk"), "disk");
@@ -140,7 +140,7 @@ fn check_forbidding_304(cache: CacheConfig, extra: &'static str, forbidden: &str
     );
 }
 
-/// **受け入れ基準 (T.29.0)**: `Vary: Cookie`。
+/// **受け入れ基準 (T29.0)**: `Vary: Cookie`。
 #[test]
 fn test_integration_304_vary_cookie_removes_the_entry() {
     check_forbidding_304(
@@ -150,7 +150,7 @@ fn test_integration_304_vary_cookie_removes_the_entry() {
     );
 }
 
-/// **受け入れ基準 (T.29.0)**: `private` (ディスクの項目でも消える)。
+/// **受け入れ基準 (T29.0)**: `private` (ディスクの項目でも消える)。
 #[test]
 fn test_integration_304_private_removes_the_entry() {
     check_forbidding_304(
@@ -160,7 +160,7 @@ fn test_integration_304_private_removes_the_entry() {
     );
 }
 
-/// **受け入れ基準 (T.29.0)**: `no-store`。
+/// **受け入れ基準 (T29.0)**: `no-store`。
 #[test]
 fn test_integration_304_no_store_removes_the_entry() {
     check_forbidding_304(

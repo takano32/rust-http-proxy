@@ -6,7 +6,7 @@ use super::parse_query;
 
 /// 要求のメソッドの種類。
 ///
-/// **HEAD は GET として組み、本文だけ書かない** (RFC 9110 §9.3.2: GET と同じヘッダー。T.28.7)。
+/// **HEAD は GET として組み、本文だけ書かない** (RFC 9110 §9.3.2: GET と同じヘッダー。T28.7)。
 /// 外の生死監視やロードバランサは既定で HEAD を投げるものが多く、今までは全部 404 だった。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Method {
@@ -14,7 +14,7 @@ pub(super) enum Method {
     Head,
     /// `PURGE <url>` (要求ターゲットをそのまま URL として消す)
     Purge,
-    /// GET / HEAD / PURGE 以外 (POST など) → 405 (T.28.7)
+    /// GET / HEAD / PURGE 以外 (POST など) → 405 (T28.7)
     Other,
 }
 
@@ -116,7 +116,7 @@ pub(super) fn local_path<'a>(target: &'a str, port: u16, host: Option<&str>) -> 
     if target.starts_with('/') {
         return (authority_port(host?)? == port).then_some(target);
     }
-    // スキームは大小を区別しない (`Http://` も。T.28.33)
+    // スキームは大小を区別しない (`Http://` も。T28.33)
     let rest = target
         .get(..7)
         .filter(|s| s.eq_ignore_ascii_case("http://"))
@@ -134,7 +134,7 @@ fn authority_port(authority: &str) -> Option<u16> {
         return None;
     }
     // ポートの無いブラケット付き (`[::1]`) も 80。最後の `:` で割ると `1]` を読んで `None` になり、
-    // 80 で待ち受けていても転送に落ちていた (T.34.156)
+    // 80 で待ち受けていても転送に落ちていた (T34.156)
     if authority.starts_with('[') && authority.ends_with(']') {
         return Some(80);
     }
@@ -159,7 +159,7 @@ mod local_path_tests {
             Some("/purge?all=1")
         );
         assert_eq!(local_path("/", 80, Some("proxy.example.net")), Some("/"));
-        // ポートの無いブラケット付きの IPv6 の `Host` は 80 で待ち受けていれば自分宛て (T.34.156)
+        // ポートの無いブラケット付きの IPv6 の `Host` は 80 で待ち受けていれば自分宛て (T34.156)
         assert_eq!(local_path("/status", 80, Some("[::1]")), Some("/status"));
         assert_eq!(local_path("/status", 8080, Some("[::1]")), None);
         // ポートが違えば今までどおり転送する (透過プロキシの使い方を壊さない)
@@ -188,7 +188,7 @@ mod local_path_tests {
         );
         assert_eq!(local_path("http://example.com:8080/x", 60624, None), None);
         assert_eq!(local_path("https://example.com:60624/x", 60624, None), None);
-        // スキームは大小を区別しない (T.28.33)
+        // スキームは大小を区別しない (T28.33)
         for t in ["HTTP://h:60624/status", "Http://h:60624/status"] {
             assert_eq!(local_path(t, 60624, None), Some("/status"), "{}", t);
         }
@@ -202,7 +202,7 @@ mod local_path_tests {
         assert_eq!(authority_port("example.com:8080"), Some(8080));
         assert_eq!(authority_port("[::1]:8080"), Some(8080));
         assert_eq!(authority_port("[2001:db8::1]:80"), Some(80));
-        // ポートの無いブラケット付きの IPv6 も 80 (T.34.156。前は最後の `:` で割って `1]` を読み、`None` だった)
+        // ポートの無いブラケット付きの IPv6 も 80 (T34.156。前は最後の `:` で割って `1]` を読み、`None` だった)
         assert_eq!(authority_port("[::1]"), Some(80));
         assert_eq!(authority_port("[2001:db8::1]"), Some(80));
         // 読めないポートと空の authority は「自分宛てではない」
@@ -211,7 +211,7 @@ mod local_path_tests {
         assert_eq!(authority_port(""), None);
     }
 
-    /// メソッドの種類は名前の大小を問わず、HEAD は GET として組む (T.28.7)。
+    /// メソッドの種類は名前の大小を問わず、HEAD は GET として組む (T28.7)。
     #[test]
     fn methods_are_classified_case_insensitively() {
         assert_eq!(Method::parse("GET"), Method::Get);

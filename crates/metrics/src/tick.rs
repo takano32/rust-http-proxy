@@ -47,7 +47,7 @@ pub fn spawn_every(
         .expect("spawn history thread")
 }
 
-/// `history` スレッドの 1 周 (T.34.37 で `spawn_every` の閉包から名前の付く段に割った)。
+/// `history` スレッドの 1 周 (T34.37 で `spawn_every` の閉包から名前の付く段に割った)。
 ///
 /// 段の順は割る前と同じ: 転送速度 → 窓を閉じる → 標本 → 標本を配る → 状態ファイル → 待ちの小仕事。
 struct Tick {
@@ -81,7 +81,7 @@ impl Tick {
         // 利用者の要求が無い時間帯も待ちを測る (T14.10)。**ここでは測らない**
         // (名前解決と接続は `canary` スレッド 1 本の仕事で、この周期は止めない)
         crate::canary::tick(metrics);
-        // 1 時間に 1 回、返していない空きのヒープを OS へ返す (T.29.25。間隔に満たなければ原子 1 回)
+        // 1 時間に 1 回、返していない空きのヒープを OS へ返す (T29.25。間隔に満たなければ原子 1 回)
         crate::sysinfo::trim_if_due(now_epoch());
     }
 
@@ -135,11 +135,11 @@ fn publish(metrics: &Metrics, cache: &Cache, sample: Sample) -> crate::history::
     crate::anomaly::check(metrics, &sample);
     // 同じ標本を SLO の 4 つの閾に当て、時間ごとの達成率に 1 本足す (`/slo`。T14.50)
     crate::slo::observe(&sample);
-    // その時間の 443・80 宛てのエラーのいちばん多い宛先も渡す (`error_rate` が外す。T.30.4)。
+    // その時間の 443・80 宛てのエラーのいちばん多い宛先も渡す (`error_rate` が外す。T30.4)。
     // 時間の区切りを越えていればここで確定させる (エラーの来ない時間も確定する)
     let (prev, cur) = metrics.web_error_hours(sample.t);
     crate::slo::observe_destinations(prev.as_ref(), &cur);
-    // 起動から 60 秒 (下の heap の基準と同じ待ち時間) で `/snapshot` を 1 枚残す (T.28.20。
+    // 起動から 60 秒 (下の heap の基準と同じ待ち時間) で `/snapshot` を 1 枚残す (T28.20。
     // 締めの「0 時間」)。書かない設定と 2 回目からは原子の読み 1〜2 回で戻る
     crate::snapshots::take_start_if_due(
         cache,
@@ -221,17 +221,17 @@ pub fn take_sample(metrics: &Metrics, cache: &Cache) -> Sample {
         dns_warm_max: dns_warm,
         dns_warm_sum: dns_warm,
         gauge_n: 1,
-        // 「確立 − カーネルの RTT」と名前解決に失敗した試みのミス (T.28.45。`/slo` が読む)
+        // 「確立 − カーネルの RTT」と名前解決に失敗した試みのミス (T28.45。`/slo` が読む)
         excess: iv.excess,
         dns_fail_misses: iv.dns_fail_misses,
-        // 名前解決を除いた「確立 − RTT」(T.29.12。`/slo` の確立の 2 つが読む)
+        // 名前解決を除いた「確立 − RTT」(T29.12。`/slo` の確立の 2 つが読む)
         conn_excess: iv.conn_excess,
-        // 443・80 以外の宛先への試みとそのエラー (T.30.3。`/slo` の `error_rate` が引く)
+        // 443・80 以外の宛先への試みとそのエラー (T30.3。`/slo` の `error_rate` が引く)
         other_port_attempts: iv.other_port_attempts,
         other_port_errors: iv.other_port_errors,
-        // 名前解決に失敗した試みが払った ms (T.32.16。`dns_slow` が引く)
+        // 名前解決に失敗した試みが払った ms (T32.16。`dns_slow` が引く)
         dns_fail_ms_sum: iv.dns_fail_ms_sum,
-        // 443・80 宛ての、名前解決に成功したミスの回数と ms (T.33.3。`dns_slow` が読む)
+        // 443・80 宛ての、名前解決に成功したミスの回数と ms (T33.3。`dns_slow` が読む)
         web_dns_misses: iv.web_dns_misses,
         web_dns_ms_sum: iv.web_dns_ms_sum,
     }
@@ -249,7 +249,7 @@ fn process_counts() -> (u64, u64, u64) {
 mod tests {
     use super::*;
 
-    /// 2 周回すと、2 本目の `requests_delta` / `bytes_delta` は 1 周目からの差になる (T.34.37)。
+    /// 2 周回すと、2 本目の `requests_delta` / `bytes_delta` は 1 周目からの差になる (T34.37)。
     /// 1 本目は控えるだけで 0。
     #[test]
     fn the_second_tick_carries_the_difference_of_the_totals() {

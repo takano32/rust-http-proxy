@@ -1,5 +1,5 @@
 //! 接続 1 本の枠 ([`ConnSlot`]) とその状態 ([`ConnState`])。`recent` の一部 (T25.2 で
-//! `recent.rs` から `conns.rs` へ移し、T.34.2 で表 ([`ConnTable`](super::ConnTable)) と分けた)。
+//! `recent.rs` から `conns.rs` へ移し、T34.2 で表 ([`ConnTable`](super::ConnTable)) と分けた)。
 //!
 //! **状態と転送バイトは原子で書く。** 接続の経路が触るのは原子の読み書きだけで、表の鍵は
 //! 登録と抹消 (表の側) にしか無い。`/connections` の 1 行 ([`ConnSlot::to_json`]) と閉じた
@@ -458,7 +458,7 @@ impl ConnSlot {
         self.closed_entry_at(now, crate::cache::now_epoch())
     }
 
-    /// [`ConnSlot::closed_entry`] の本体 (T.34.48)。`epoch` は閉じた時刻 (epoch 秒) で、
+    /// [`ConnSlot::closed_entry`] の本体 (T34.48)。`epoch` は閉じた時刻 (epoch 秒) で、
     /// 開いた時刻は `epoch − 寿命` で出す (時計を中で読まないので、試験が時刻を縛れる)。
     #[inline]
     pub(crate) fn closed_entry_at(&self, now: Instant, epoch: u64) -> Option<RecentEntry> {
@@ -659,7 +659,7 @@ impl ConnSlot {
     }
 }
 
-/// 接続の 1 枠の単体試験 (T.34.2 で別のファイルに移した)。
+/// 接続の 1 枠の単体試験 (T34.2 で別のファイルに移した)。
 #[cfg(test)]
 #[path = "conn_slot_tests.rs"]
 mod tests;

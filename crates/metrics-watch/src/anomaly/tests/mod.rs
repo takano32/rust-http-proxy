@@ -1,7 +1,7 @@
 //! `anomaly` の単体テスト (T22.2 で `anomaly.rs` の `mod tests` をそのまま移した。`anomaly.rs` が 2,000 行に
 //! 届いていたため)。`check` を通すものは出来事のリングがプロセスで 1 組なので、今までどおり `reset` で片づける。
 //!
-//! 共通の道具と、規則をまたぐ試験をここに置き、規則ごとの試験は子のファイルに割った (T.34.47)。
+//! 共通の道具と、規則をまたぐ試験をここに置き、規則ごとの試験は子のファイルに割った (T34.47)。
 
 mod clients;
 mod cpu_spin_rate;
@@ -23,12 +23,12 @@ fn point(t: u64) -> Sample {
     }
 }
 
-/// `n` 本の CONNECT が `ms` ミリ秒で確立した標本 (RTT は 0 = 「確立 − RTT」も `ms`。T.29.11)。
+/// `n` 本の CONNECT が `ms` ミリ秒で確立した標本 (RTT は 0 = 「確立 − RTT」も `ms`。T29.11)。
 fn connects(t: u64, n: usize, ms: u64) -> Sample {
     connects_far(t, n, ms, 0)
 }
 
-/// `n` 本の CONNECT が `ms` ミリ秒で確立し、オリジンまでの RTT が `rtt` ms の標本 (T.29.11)。
+/// `n` 本の CONNECT が `ms` ミリ秒で確立し、オリジンまでの RTT が `rtt` ms の標本 (T29.11)。
 fn connects_far(t: u64, n: usize, ms: u64, rtt: u64) -> Sample {
     let mut p = point(t);
     for _ in 0..n {
@@ -39,8 +39,8 @@ fn connects_far(t: u64, n: usize, ms: u64, rtt: u64) -> Sample {
     p
 }
 
-/// 標本の名前解決に成功したミスを、全部 443・80 宛てのものとして数える (T.33.3。`dns_slow` は
-/// `web_dns_misses`・`web_dns_ms_sum` で判定する。T.33.3 より前の試験はどれも 443 宛てのつもりで書いてある)。
+/// 標本の名前解決に成功したミスを、全部 443・80 宛てのものとして数える (T33.3。`dns_slow` は
+/// `web_dns_misses`・`web_dns_ms_sum` で判定する。T33.3 より前の試験はどれも 443 宛てのつもりで書いてある)。
 fn all_web(mut p: Sample) -> Sample {
     p.web_dns_misses = p.dns_misses - p.dns_fail_misses;
     p.web_dns_ms_sum = p.dns_ms_sum - p.dns_fail_ms_sum;

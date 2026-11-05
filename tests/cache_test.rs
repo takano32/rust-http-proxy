@@ -1,7 +1,7 @@
 //! キャッシュの結合テスト (保存・範囲取得・無効化・https のオリジン)。
 //!
 //! 再検証と古い表現の提供は `cache_revalidate_test.rs`、取りに行く要求の合流は
-//! `cache_coalesce_test.rs` に割った (T.34.118)。
+//! `cache_coalesce_test.rs` に割った (T34.118)。
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

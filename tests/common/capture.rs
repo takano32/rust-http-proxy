@@ -1,4 +1,4 @@
-//! 届いた要求を貯めるオリジンと、黙るオリジン (T.34.110 で各試験から寄せた)。
+//! 届いた要求を貯めるオリジンと、黙るオリジン (T34.110 で各試験から寄せた)。
 
 use std::io::Read;
 use std::net::TcpListener;
@@ -43,7 +43,7 @@ pub fn capture_origin_replying(response: &'static [u8]) -> (u16, Captured) {
 /// 印の要求の道 ([`settle_with_mark`])。
 pub const SETTLE_MARK: &str = "/t34114-settle-mark";
 
-/// 「断った要求がオリジンへ届いていない」を見る前の合図 (T.34.114。固定の sleep の代わり)。
+/// 「断った要求がオリジンへ届いていない」を見る前の合図 (T34.114。固定の sleep の代わり)。
 ///
 /// 同じオリジンへ印の要求 (`GET /t34114-settle-mark`) を 1 本通し、その 200 を受け取る。
 /// 要求を貯めるオリジンは応答を返す前に積むので、200 が返った時点で印は `seen` にある。

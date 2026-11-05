@@ -1,4 +1,4 @@
-# 判定表 (`scripts/snapshot_criteria.py`) の **Phase 14〜18 の行** (T.34.125 で割った)。
+# 判定表 (`scripts/snapshot_criteria.py`) の **Phase 14〜18 の行** (T34.125 で割った)。
 #
 # phase14 の 4 行・phase15 の 6 行・phase17 で足した 4 行・phase18 で足した 2 行と、その材料を読む小物
 # (`/profile` の役割の CPU・`/history?res=60` の閉じ方・`/dns` の引き直し・`/daily` の幅・メモリ)。

@@ -1,13 +1,13 @@
-// `scripts/check-dashboard.js` の節: 17. dashboard.html の大きさ・18. 起動のカード・19. 設定の帯 (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 17. dashboard.html の大きさ・18. 起動のカード・19. 設定の帯 (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 17. `dashboard.html` の大きさ。inspect は Rust 側で 64 KiB を見張っているのに
 // dashboard には上限が無かった (T15.0 (14) で足した)。外部ライブラリを読み込まない
 // 1 ページという方針を守るための歯止めで、超えたら**中身を削るか上限を上げるか**を先に決める
-// T.28.25 (2026-10-25) で 80 → 96 KiB に上げた (余白が 1,405 B しか無く、起動のカードを足すと越えた)。
+// T28.25 (2026-10-25) で 80 → 96 KiB に上げた (余白が 1,405 B しか無く、起動のカードを足すと越えた)。
 // inspect.html と同じ上限。コメントを削って入れる案は、読み手のための注をなくすので採らなかった
 const DASH_MAX = 96 * 1024;
 
-// 18. 起動のカード (T.28.25): `/events` から「普通の再起動 / 無言の再起動」を決める `bootKind`
+// 18. 起動のカード (T28.25): `/events` から「普通の再起動 / 無言の再起動」を決める `bootKind`
 const bootStart = (at, boot) => ({ at, kind: 'start', text: 'version 0.28.0+abc on port 60357 boot ' + boot + ' (profile default)' });
 let bk = api.bootKind([bootStart(100, 'aaaa'), { at: 200, kind: 'shutdown', text: 'stop' }, bootStart(230, 'aaaa'),
   { at: 230, kind: 'anomaly', text: '同じ秒の出来事は直前と見ない' }]);
@@ -20,11 +20,11 @@ if (api.bootKind([]).kind !== 'none' || api.bootKind(undefined).kind !== 'none')
 // 実データ (匿名化した雪像に /events があれば) でも落ちない
 const realEvents = statusFile && fs.existsSync(statusFile) ? (JSON.parse(fs.readFileSync(statusFile, 'utf8')).events || null) : null;
 const realKind = realEvents ? api.bootKind(realEvents.events || realEvents).kind : 'none';
-console.log('OK: 起動のカード (T.28.25) の bootKind: 普通の再起動・無言の再起動・窓の先頭・記録なしを読み分けた (' +
+console.log('OK: 起動のカード (T28.25) の bootKind: 普通の再起動・無言の再起動・窓の先頭・記録なしを読み分けた (' +
   (realEvents ? '実データ ' + realKind : '実データに /events なし') + ')');
 
-// 19. 設定の帯・版の隣のビルド・`/slo` の読み方 (T.29.27)
-// (1) `.env` の読めない値と知らない鍵 (T.28.6 の `settings.invalid` / `unknown`) を 1 つ 1 行で
+// 19. 設定の帯・版の隣のビルド・`/slo` の読み方 (T29.27)
+// (1) `.env` の読めない値と知らない鍵 (T28.6 の `settings.invalid` / `unknown`) を 1 つ 1 行で
 const stBad = {
   path: '/home/container/.env', watch: 'inotify', reloads: 0, last_reload: 0, applied: [], restart_required: [], error: null,
   invalid: [{ key: 'PROXY_MAX_CONNS', value: 'lots' }, { key: 'PROXY_SLO', value: '<b>' }],
@@ -36,7 +36,7 @@ if (sl[0].indexOf('読めない値') < 0 || sl[0].indexOf('PROXY_MAX_CONNS=lots'
 if (sl[1].indexOf('&lt;b&gt;') < 0 || sl[1].indexOf('<b>読めない値') !== 0) fail('読めない値が逃がされていない: ' + sl[1]);
 if (sl[2].indexOf('知らない鍵') < 0 || sl[2].indexOf('もしかして <code>PROXY_MAX_CONNS</code>') < 0) fail('知らない鍵の候補が無い: ' + sl[2]);
 if (sl[3].indexOf('FOO_BAR') < 0 || sl[3].indexOf('もしかして') >= 0) fail('候補の無い知らない鍵に候補が付いた: ' + sl[3]);
-// 正しい `.env` (`[]`) と、欄の無い古い版 (T.28.6 より前) では何も出さない (帯は隠れたまま)
+// 正しい `.env` (`[]`) と、欄の無い古い版 (T28.6 より前) では何も出さない (帯は隠れたまま)
 if (api.settingsLines(Object.assign({}, stBad, { invalid: [], unknown: [] })).length !== 0) fail('正しい .env で行が出た');
 const stOld = { path: '.env', watch: 'poll', reloads: 1, last_reload: 0, applied: [], restart_required: [], error: null };
 if (api.settingsLines(stOld).length !== 0 || api.settingsLines(null).length !== 0) fail('欄の無い古い版で行が出た');
@@ -46,7 +46,7 @@ if (api.settingsLines(Object.assign({}, stOld, { error: 'x', restart_required: [
 if (api.versionLabel({ version: '0.29.35+b2b26c1', build: 'release' }) !== '0.29.35+b2b26c1 (release)') fail('版の隣にビルドが出ない');
 if (api.versionLabel({ version: '0.28.30+abc' }) !== '0.28.30+abc') fail('build の無い版で括弧が出た');
 if (api.versionLabel({}) !== '') fail('版の無い出力で空にならない');
-// (4) `/slo` の `basis` (T.28.45) があれば tooltip は閾ごとの読み方。無い版は旧い読み方と断る
+// (4) `/slo` の `basis` (T28.45) があれば tooltip は閾ごとの読み方。無い版は旧い読み方と断る
 const basis = { connect: 'establish_minus_rtt', error_rate: 'resolved_attempts', dns_miss_per_connect: 'excluding_failed_lookups' };
 const sloNew = Object.assign({}, sloJson, { basis });
 const tNew = api.sloTitle(sloNew);
@@ -59,7 +59,7 @@ if (tOld.indexOf('basis') >= 0 || tOld.indexOf('確立そのもの') < 0) fail('
 if (api.sloKpi(sloNew).detail.indexOf('閾 10、確立 − RTT') < 0) fail('basis のある内訳に確立 − RTT が無い: ' + api.sloKpi(sloNew).detail);
 if (api.sloKpi(sloJson).detail.indexOf('確立 − RTT') >= 0) fail('basis の無い内訳に確立 − RTT が出た');
 console.log('OK: 設定の帯 (読めない値 2・知らない鍵 2 を 1 行ずつ、候補つき。欄の無い版は 0 行)・版の隣のビルド (' +
-  api.versionLabel({ version: '0.29.35+b2b26c1', build: 'release' }) + ')・/slo の basis の tooltip (あり / なし) を確かめた (T.29.27)');
+  api.versionLabel({ version: '0.29.35+b2b26c1', build: 'release' }) + ')・/slo の basis の tooltip (あり / なし) を確かめた (T29.27)');
 
 const dashBytes = Buffer.byteLength(html);
 if (dashBytes > DASH_MAX) {

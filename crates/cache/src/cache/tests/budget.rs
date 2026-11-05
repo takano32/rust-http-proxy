@@ -36,7 +36,7 @@ fn shrinking_budget_evicts_down_to_new_capacity() {
     assert_eq!(cache.mem_usage().1, 3);
 }
 
-/// プローブの追い出しは、上限を下げられて追い出した回の様子を残し、`/status` に出す (T.32.7)。
+/// プローブの追い出しは、上限を下げられて追い出した回の様子を残し、`/status` に出す (T32.7)。
 #[test]
 fn budget_eviction_is_recorded_with_its_limit() {
     let cache = fresh("shp-test-budget-evict", 10 * MIB, 0);
@@ -253,7 +253,7 @@ fn quota_mode_budgets_against_allocation_minus_others_and_margin() {
 
 #[test]
 fn quota_mode_shrinks_within_a_minute_when_others_approach_the_allocation() {
-    // T.32.20: 自分以外の量はふだん 10 分ごとに測り直すが、割当に近づいたら 60 秒以内に予算が縮む
+    // T32.20: 自分以外の量はふだん 10 分ごとに測り直すが、割当に近づいたら 60 秒以内に予算が縮む
     // 「割当に近づいたか」はファイルシステムの使用量の増えで見積もるので、同じファイルシステムで
     // 並んで走る試験が大きなファイルを消すと増えが打ち消される。ほかの試験が使わない
     // tmpfs (`/dev/shm`) があればそこで測る

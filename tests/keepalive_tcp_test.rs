@@ -1,7 +1,7 @@
 //! **TCP の** keepalive (`PROXY_TCP_KEEPALIVE`。T14.52) で、消えたクライアントを検知する設定が
 //! accept したソケットに当たることの結合テスト。HTTP の keep-alive (`PROXY_KEEPALIVE_SECS`) とは別のもの。
 //!
-//! 初めは `tests/keepalive_test.rs` の末尾にあった (T.34.119 で割った)。
+//! 初めは `tests/keepalive_test.rs` の末尾にあった (T34.119 で割った)。
 
 use std::net::TcpStream;
 
@@ -14,7 +14,7 @@ use common::*;
 // ------------------------------------------------------------------
 
 /// `sockaddr_in` と `getsockname`/`getpeername`。プロキシ側の記述子を探すために使う
-/// (外部クレートは足さない方針なので、宣言は `tests/common` の `ffi` に 1 つだけ置く。T.34.104)。
+/// (外部クレートは足さない方針なので、宣言は `tests/common` の `ffi` に 1 つだけ置く。T34.104)。
 #[cfg(target_os = "linux")]
 use common::ffi::{SockAddrIn, getpeername, getsockname};
 

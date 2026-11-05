@@ -1,4 +1,4 @@
-//! 閉じた接続の分布の単体試験 (T14.6。T.34.2 で `recent/mod.rs` の `burst_tests` から移した)。
+//! 閉じた接続の分布の単体試験 (T14.6。T34.2 で `recent/mod.rs` の `burst_tests` から移した)。
 
 use super::*;
 use crate::metrics::ErrCause;
@@ -128,7 +128,7 @@ fn every_reason_has_its_own_column() {
     assert_eq!(BYTE_BOUNDS[10], 1 << 30);
 }
 
-/// 区間は「`v <= 境目` の最初の段」、どれにも収まらなければ最後の「上限なし」(T.34.2 で直に押さえる)。
+/// 区間は「`v <= 境目` の最初の段」、どれにも収まらなければ最後の「上限なし」(T34.2 で直に押さえる)。
 #[test]
 fn bucket_of_puts_a_value_on_its_first_fitting_bound() {
     assert_eq!(bucket_of(&LIFE_BOUNDS_SECS, 0), 0);

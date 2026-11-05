@@ -20,7 +20,7 @@ fn checked_rejects_every_broken_content_length() {
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n",
             Ok(Framing::Chunked),
         ),
-        // 最後が chunked でない TE は CL を捨てて閉じるまで (T.28.1)。CL が壊れていても見ない
+        // 最後が chunked でない TE は CL を捨てて閉じるまで (T28.1)。CL が壊れていても見ない
         (
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\n",
             Ok(Framing::Close),
@@ -143,7 +143,7 @@ fn checked_rejects_every_broken_content_length() {
     ));
 }
 
-/// T.29.4: 1 回の走査で `Age` の値も拾う (枠組みと `Connection` の判定は今までと同じ)。
+/// T29.4: 1 回の走査で `Age` の値も拾う (枠組みと `Connection` の判定は今までと同じ)。
 #[test]
 fn scan_picks_up_the_age() {
     let head = b"HTTP/1.1 200 OK\r\nAGE: 500\r\nContent-Length: 2\r\nConnection: close\r\n\r\n";
@@ -155,7 +155,7 @@ fn scan_picks_up_the_age() {
     assert_eq!(Framing::scan_response_head(200, false, head).age, None);
 }
 
-/// T.28.35: クライアントへ伝える TE の行は、複数の行を 1 つの並びに畳み、空の要素を読み飛ばす。
+/// T28.35: クライアントへ伝える TE の行は、複数の行を 1 つの並びに畳み、空の要素を読み飛ばす。
 #[test]
 fn transfer_encoding_line_joins_the_list() {
     let line = |h: &[u8]| Framing::response_transfer_encoding_line(h);
@@ -190,7 +190,7 @@ fn matches_the_pairs_version() {
         b"HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n",
         b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n",
         b"HTTP/1.1 200 OK\r\n\r\n",
-        // T.28.1: 最後が chunked でない TE と CL
+        // T28.1: 最後が chunked でない TE と CL
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\n",
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n",
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n",

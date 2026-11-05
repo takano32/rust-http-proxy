@@ -198,11 +198,11 @@ fn revalidate(
     if !(200..500).contains(&status) {
         // オリジン側の問題 (5xx): 古い表現は残す。4xx (404・410 など) はオリジンの答えなので、
         // 同期の再検証と同じく保存できれば置き換え、できなければ消す (RFC 9111 §4.3.3 で古い表現を
-        // 残してよいのは 5xx。T.32.13)。今までは 4xx でも残し、grace の間は古い 200 を `REFRESHING` で
+        // 残してよいのは 5xx。T32.13)。今までは 4xx でも残し、grace の間は古い 200 を `REFRESHING` で
         // 配って、配るたびに再検証を 1 本出していた
         return Ok("origin error, stale kept");
     }
-    // 最後が chunked でない TE (T.28.1): 区切りがオリジンと食い違いうるので保存し直さない
+    // 最後が chunked でない TE (T28.1): 区切りがオリジンと食い違いうるので保存し直さない
     if framing == Framing::Close && Framing::response_has_transfer_encoding(&rhead) {
         return Ok("unframed Transfer-Encoding, stale kept");
     }
@@ -219,8 +219,8 @@ fn revalidate(
     Ok("replaced with a fresh copy")
 }
 
-/// 裏の再検証で届いた 304 を保存済みの表現に当てる (T.34.24)。validator が保存済みと違う (T.32.9)・
-/// 保存を禁じた (T.29.0) なら消し、そうでなければ期限を延ばして先頭も書き直す (T.28.2)。
+/// 裏の再検証で届いた 304 を保存済みの表現に当てる (T34.24)。validator が保存済みと違う (T32.9)・
+/// 保存を禁じた (T29.0) なら消し、そうでなければ期限を延ばして先頭も書き直す (T28.2)。
 /// 戻り値はログに書く結末。接続をプールへ戻すのは呼ぶ側 (この後)。
 #[allow(clippy::too_many_arguments)]
 fn apply_not_modified(
@@ -234,19 +234,19 @@ fn apply_not_modified(
     rhead: &[u8],
     rheaders: &[(String, String)],
 ) -> &'static str {
-    // 304 の validator が保存済みと違う (T.32.9): 延ばさずに消して終える (次の要求は普通のミス)
+    // 304 の validator が保存済みと違う (T32.9): 延ばさずに消して終える (次の要求は普通のミス)
     if super::fetch::not_modified_conflicts(cached, rheaders) {
         cache.remove(key);
         return "304 names another representation, removed";
     }
-    // 304 が保存を禁じた: 延命せず消す (T.29.0)。304 の `Set-Cookie` は誰にも渡さない
+    // 304 が保存を禁じた: 延命せず消す (T29.0)。304 の `Set-Cookie` は誰にも渡さない
     // (裏の再検証の要求は利用者のものではない)
     if freshness::not_modified_forbids_storing(rheaders) {
         cache.remove(key);
         return "304 forbids storing, removed";
     }
     let p = freshness::revalidated_policy(rheaders, cached, cache.config(), now);
-    // 304 のヘッダーで保存済みの先頭も書き直す (T.28.2。同期の再検証と同じ)
+    // 304 のヘッダーで保存済みの先頭も書き直す (T28.2。同期の再検証と同じ)
     match headers::merge_not_modified(cached_head, rhead) {
         Some(new_head) => {
             cache.refresh_with_head(key, url, &new_head, p.ttl, p.age, conn_id);
@@ -259,7 +259,7 @@ fn apply_not_modified(
     "304, refreshed"
 }
 
-/// 裏の再検証で届いた新しい表現 (`rhead` と本文) を保存し直す (T.34.24)。本文が途中で切れたら保存を
+/// 裏の再検証で届いた新しい表現 (`rhead` と本文) を保存し直す (T34.24)。本文が途中で切れたら保存を
 /// 捨てて偽 (古い表現が残る)。読めなければ誤り。
 #[allow(clippy::too_many_arguments)]
 fn store_fresh_copy(

@@ -1,4 +1,4 @@
-//! `snapshots` の単体試験 (T.34.2 で `snapshots.rs` の `mod tests` から移した。名前はそのまま)。
+//! `snapshots` の単体試験 (T34.2 で `snapshots.rs` の `mod tests` から移した。名前はそのまま)。
 
 use super::names::{day_of, moment_name};
 use super::store::{existing, existing_moments, newest_day};
@@ -195,10 +195,10 @@ fn dates_round_trip_and_bad_names_are_refused() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// 起動と停止の名前は往復でき、読めない名前は入れない (T.28.20)。
+/// 起動と停止の名前は往復でき、読めない名前は入れない (T28.20)。
 #[test]
 fn moment_names_round_trip_and_bad_names_are_refused() {
-    // 2026-10-25T20:31:34Z (tokyo の T.28 の雪像の時刻)
+    // 2026-10-25T20:31:34Z (tokyo の T28 の雪像の時刻)
     let t = 20_751 * DAY + 20 * 3600 + 31 * 60 + 34;
     assert_eq!(
         moment_name(t, Moment::Shutdown),
@@ -311,7 +311,7 @@ fn the_global_writer_records_and_reads_back() {
         t,
         ..Sample::default()
     };
-    // 組み方に渡った「`recent` の部の上限」を中身に写す (T.28.20・T.28.46。`null` = 256 KiB で切る)
+    // 組み方に渡った「`recent` の部の上限」を中身に写す (T28.20・T28.46。`null` = 256 KiB で切る)
     set_builder(Box::new(|max, _limit| {
         format!(
             "{{\"taken_at\":1,\"parts\":[\"status\"],\"recent_max\":{}}}",
@@ -362,7 +362,7 @@ fn the_global_writer_records_and_reads_back() {
     assert_eq!(l.files[0].date, day_name(20_600));
     assert!(l.files[0].bytes > 0 && l.bytes == l.files[0].bytes);
     assert!(read(&day_name(20_600)).unwrap().contains("\"taken_at\""));
-    // 日次の 1 枚は `recent` を 1 MiB まで持つ方で組む (T.28.46)
+    // 日次の 1 枚は `recent` を 1 MiB まで持つ方で組む (T28.46)
     assert!(
         read(&day_name(20_600))
             .unwrap()

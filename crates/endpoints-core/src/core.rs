@@ -34,7 +34,7 @@ pub struct Endpoint<'a> {
     /// 動いているバイナリの版 (`/status` に出す。本体クレートの `VERSION`)
     pub version: &'a str,
     /// ビルドの種類 = cargo のプロファイル名 (`release` / `dist` / `debug`。`/status` の
-    /// 末尾の `build` に出す。本体クレートの `BUILD`。T.28.42)
+    /// 末尾の `build` に出す。本体クレートの `BUILD`。T28.42)
     pub build: &'a str,
     /// 上限といまのスレッド数を引く口 (`/status` と `/metrics` を組み立てるときだけ呼ぶ)。
     ///
@@ -67,7 +67,7 @@ pub fn offset_param(query: Option<&str>, max: usize) -> usize {
 
 /// 解いた問い合わせ ([`parse_query`]) から `key` の値を引く。同じ鍵が 2 つあれば**最初の 1 つ**。
 ///
-/// 問い合わせを読む口はどれもこれを通す (T.34.93。前は `iter().find(…)` が 15 か所に写されていた)。
+/// 問い合わせを読む口はどれもこれを通す (T34.93。前は `iter().find(…)` が 15 か所に写されていた)。
 pub fn param<'p>(params: &'p [(String, String)], key: &str) -> Option<&'p str> {
     params
         .iter()
@@ -96,7 +96,7 @@ pub fn num_param(query: Option<&str>, key: &str, default: usize, max: usize) -> 
 /// `budget` は `out` 全体 (前に書いてあるぶんを含む) の上限で、呼ぶ側が末尾のぶんを
 /// 引いて渡す (`/recent` などは 256 KiB − 512 B、`/explain` は 64 KiB − 2 KiB)。
 /// 1 要素ごとに「`,` と閉じの `]` の 2 バイト」を見込んで判定する。前は個票の口と
-/// `/explain` が同じループを別々に持っていた (T.34.94)。
+/// `/explain` が同じループを別々に持っていた (T34.94)。
 pub fn array_within(
     out: &mut String,
     items: impl IntoIterator<Item = String>,
@@ -174,8 +174,8 @@ fn hex(b: u8) -> Option<u8> {
 mod tests {
     use super::*;
 
-    /// 同じ鍵が 2 つあれば最初の 1 つ、値の無い鍵は `""`、無い鍵は `None` (T.34.93)。
-    /// 予算に収まるところまで並べ、収まらなければ `]` で閉じて打ち切りを返す (T.34.94)。
+    /// 同じ鍵が 2 つあれば最初の 1 つ、値の無い鍵は `""`、無い鍵は `None` (T34.93)。
+    /// 予算に収まるところまで並べ、収まらなければ `]` で閉じて打ち切りを返す (T34.94)。
     #[test]
     fn an_array_stops_at_the_budget() {
         let mut out = String::from("{\"a\":");

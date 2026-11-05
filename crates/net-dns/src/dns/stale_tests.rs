@@ -85,7 +85,7 @@ fn an_expired_answer_inside_the_window_is_served_and_refreshed_once() {
     assert!(!stale);
     let status = status_json();
     assert!(
-        // T.32.11 で後ろに欄が足されたので、末尾ではなく並びで見る
+        // T32.11 で後ろに欄が足されたので、末尾ではなく並びで見る
         status.contains(&format!(
             ",\"stale_hits\":{},\"stale_retries\":{},",
             n(&STALE_HITS),
@@ -256,7 +256,7 @@ fn the_default_does_not_keep_names_warm_and_serve_stale_takes_the_expired_use() 
 }
 
 /// 頼んだあとで `clear()` された名前に同じ名前の新しい項目ができても、前の頼みでは引き直さない
-/// (T.28.39)。以前は待ち行列に残った前のテストの頼みが新しい項目を引き直して数え、
+/// (T28.39)。以前は待ち行列に残った前のテストの頼みが新しい項目を引き直して数え、
 /// `an_expired_answer_inside_the_window_is_served_and_refreshed_once` がたまに 1 回多く数えていた。
 #[test]
 fn a_refresh_requested_before_clear_does_not_touch_the_new_entry() {

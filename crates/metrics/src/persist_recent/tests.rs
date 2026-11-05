@@ -1,4 +1,4 @@
-//! 個票の永続化の試験 (T.34.29 で `persist_recent.rs` から移した。名前はそのまま)。
+//! 個票の永続化の試験 (T34.29 で `persist_recent.rs` から移した。名前はそのまま)。
 
 use super::codec::*;
 use super::*;

@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 4. 個票 (/errors /connections) (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 4. 個票 (/errors /connections) (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 4. 個票 (`/errors` `/connections`) を読む関数 (T13.4)。実出力の作り置きは無いので、
 // 形だけ同じ架空のデータで見る (ホスト名は架空、接続元はドキュメント用の範囲)

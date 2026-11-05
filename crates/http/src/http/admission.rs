@@ -34,7 +34,7 @@ pub(super) enum Rejection<'a> {
     TransferEncoding { te_invalid: bool, version: &'a str },
     /// `Host` が 2 本以上 (T19.2)
     DupHost,
-    /// `100-continue` 以外の `Expect` (T.28.3)。これだけ 417
+    /// `100-continue` 以外の `Expect` (T28.3)。これだけ 417
     ExpectUnknown,
     /// `Content-Length` と `Transfer-Encoding: chunked` が両方ある (T14.28)
     ChunkedAndLength,
@@ -113,7 +113,7 @@ pub(super) fn check<'a>(
     if req.dup_host {
         return Err(Rejection::DupHost);
     }
-    // `100-continue` 以外の `Expect` は満たせないので 417 (RFC 9110 §10.1.1。T.28.3)。
+    // `100-continue` 以外の `Expect` は満たせないので 417 (RFC 9110 §10.1.1。T28.3)。
     // 本文が続くかもしれないので閉じる。印は `Expect` の行があるときしか立たない
     if req.expect_unknown {
         return Err(Rejection::ExpectUnknown);
@@ -136,7 +136,7 @@ pub(super) fn check<'a>(
 
 /// 要求の本文の枠組み ([`check`] を通った要求だけ)。
 ///
-/// `Content-Length: 0` は本文が無いのと同じ (T.29.5)。`Length(0)` のままだと「本文つきの GET」として
+/// `Content-Length: 0` は本文が無いのと同じ (T29.5)。`Length(0)` のままだと「本文つきの GET」として
 /// キャッシュを素通り (`cache BYPASS`) していた。行そのものは今までどおりオリジンへ転送する
 /// (`raw_headers` から書くので、ここで畳んでも消えない)
 #[inline]
@@ -172,7 +172,7 @@ pub(super) fn keep_client(
 }
 
 /// `Expect: 100-continue` の本文つきの要求に、本文を読む前に `100 Continue` を 1 回返すか
-/// (RFC 9110 §10.1.1。T.28.3)。今までは自分でも返さず、オリジンの 100 も中継しないので、
+/// (RFC 9110 §10.1.1。T28.3)。今までは自分でも返さず、オリジンの 100 も中継しないので、
 /// 100 を厳密に待つクライアントは締め切りまで本文を送らず、こちらは本文を待って止まっていた。
 /// HTTP/1.0 の要求の 100-continue は無視する (§10.1.1)
 #[inline]
@@ -369,7 +369,7 @@ mod tests {
         );
     }
 
-    /// 本文の枠組み: chunked が勝ち、`Content-Length: 0` は本文なし (T.29.5)。
+    /// 本文の枠組み: chunked が勝ち、`Content-Length: 0` は本文なし (T29.5)。
     #[test]
     fn framing_of_the_request_body() {
         assert_eq!(request_framing(&parse(&["Host: h"])), Framing::None);

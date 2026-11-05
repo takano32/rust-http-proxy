@@ -1,5 +1,5 @@
 //! 宛先の判定 ([`access_decision`]) と、判定で断る 2 つの応答 ([`refuse_blocked`] の 403・
-//! [`loop_detected`] の 508)。T.34.12
+//! [`loop_detected`] の 508)。T34.12
 
 use super::*;
 
@@ -33,7 +33,7 @@ pub(super) fn access_decision<'h>(
         let _ = dns::take_resolve_cost();
         let _ = dns::take_family();
         let _ = dns::take_syn_retrans();
-        // `private` なら私設アドレスは通す (ループバック・リンクローカル・未指定は断る。T.28.41)
+        // `private` なら私設アドレスは通す (ループバック・リンクローカル・未指定は断る。T28.41)
         let (local, r) = acl::resolve_target(target_host, config.allow_local.allows_private());
         resolved = r;
         local.then_some(metrics::BlockCause::Local)
@@ -59,7 +59,7 @@ pub(super) fn refuse_blocked(
         conn_id,
         ..
     } = peer;
-    // 403 も宛先を選ぶのは相手なので、理由ごとに 1 分に 1 行 (T.28.9)。本数は
+    // 403 も宛先を選ぶのは相手なので、理由ごとに 1 分に 1 行 (T28.9)。本数は
     // `/status` の宛先・接続元ごとの `blocked` と `/errors` の個票が持つ
     static BLOCK_WARN: [log::Throttle; 4] = [const { log::Throttle::new() }; 4];
     let gate = match why {
@@ -77,7 +77,7 @@ pub(super) fn refuse_blocked(
             more
         );
     }
-    // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T.34.146)
+    // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T34.146)
     let now = metrics.record_host(
         &format!("blocked://{}", bare_host),
         metrics::HostOutcome::Blocked,
@@ -121,7 +121,7 @@ pub(super) fn loop_detected(
         conn_id,
         ..
     } = peer;
-    // 自分の印は外から付けられる (誰かが印を写して送ってくる) ので、これも 1 分に 1 行 (T.28.9)
+    // 自分の印は外から付けられる (誰かが印を写して送ってくる) ので、これも 1 分に 1 行 (T28.9)
     static LOOP_WARN: log::Throttle = log::Throttle::new();
     if let Some(more) = LOOP_WARN.pass(log::WARN_EVERY_SECS) {
         log_warn!(
@@ -139,7 +139,7 @@ pub(super) fn loop_detected(
         cause: Some(metrics::ErrCause::Loop),
         ..metrics::Detail::default()
     };
-    // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T.34.146)
+    // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T34.146)
     let now = metrics.record_host_detail(
         &format!("loop://{}", host_header.unwrap_or(target)),
         metrics::HostOutcome::Error,
@@ -221,7 +221,7 @@ mod tests {
         let off = config(None, "", acl::AllowLocal::Off);
         assert_eq!(decide(&off, "127.0.0.1:8080", false), Some(B::Local));
         assert_eq!(decide(&off, "[::1]:8080", false), Some(B::Local));
-        // `private` でもループバックは断る (T.28.41)
+        // `private` でもループバックは断る (T28.41)
         let private = config(None, "", acl::AllowLocal::Private);
         assert_eq!(decide(&private, "127.0.0.1:8080", false), Some(B::Local));
         // `on` なら名前も引かずに通す

@@ -87,7 +87,7 @@ impl ClientStats {
     /// 無いので、[`Detail`] はこの 2 欄だけを埋めて渡す (`/status` に 0 の列は増えない)。
     /// **呼ぶのは 1 つ上の層の `Metrics` だけ** (T14.55 でクレートを割るまでは
     /// 同じクレートの中の `fn` だった)。`now` は呼ぶ側が読んだ壁時計 (epoch 秒)。
-    /// ここでは読み直さない (T.34.146。要求 1 本で時計を読むのは `Metrics::record` の 1 回)。
+    /// ここでは読み直さない (T34.146。要求 1 本で時計を読むのは `Metrics::record` の 1 回)。
     pub fn count(
         &mut self,
         now: u64,
@@ -205,20 +205,20 @@ impl ClientStats {
 
     /// 接続元ごとの同時接続の上限に当たって断った 1 本を数える (T14.13)。
     /// **呼ぶのは断った経路だけ** ([`Metrics::record_client_rejected`])。
-    /// 欄を外から書かせないために置いた (T.34.38)。
+    /// 欄を外から書かせないために置いた (T34.38)。
     #[inline]
     pub fn note_rejected(&mut self) {
         self.rejected += 1;
     }
 
     /// カーネルの RTT と再送を 1 標本足す (`/clients`。T14.5。接続の終わりだけ)。
-    /// 中身は [`HostStats::observe_rtt`] (T.34.38 で欄を閉じたので、ここを通す)。
+    /// 中身は [`HostStats::observe_rtt`] (T34.38 で欄を閉じたので、ここを通す)。
     #[inline]
     pub fn observe_rtt(&mut self, rtt_us: u32, retrans: u32) {
         self.stats.observe_rtt(rtt_us, retrans);
     }
 
-    // ── 読むだけの口 (T.34.38。欄はどれも書けるのがこの型の中だけになった) ──
+    // ── 読むだけの口 (T34.38。欄はどれも書けるのがこの型の中だけになった) ──
 
     /// 要求数・転送量・応答時間 (`/status` の `clients[]` の今までの欄)。
     #[inline]

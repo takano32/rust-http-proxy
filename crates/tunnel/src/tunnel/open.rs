@@ -13,7 +13,7 @@ use crate::net;
 use crate::recent::{CloseReason, ConnSlot, ConnTally, STAGE_CONNECT, STAGE_DNS, STAGES};
 use crate::{log_debug, log_warn};
 
-/// 「502 を書いて WARN と統計まで出し終えた」失敗の印 (T.28.4)。
+/// 「502 を書いて WARN と統計まで出し終えた」失敗の印 (T28.4)。
 ///
 /// [`open`] が繋げなかったときの `io::Error` をこれで包んで返す (種類 (`kind`) と文面は
 /// 元のまま)。呼び元 (`run_conn`) は [`is_reported`] で見分け、ERROR で出し直さない。
@@ -34,7 +34,7 @@ impl std::error::Error for Reported {
     }
 }
 
-/// tunnel がもう報告した失敗か (502 を書き、WARN と `/errors` の個票まで出してある。T.28.4)。
+/// tunnel がもう報告した失敗か (502 を書き、WARN と `/errors` の個票まで出してある。T28.4)。
 pub fn is_reported(e: &io::Error) -> bool {
     e.get_ref().is_some_and(|inner| inner.is::<Reported>())
 }
@@ -181,13 +181,13 @@ fn refuse_connect(
     stages: StageMs,
     dns_before: u64,
 ) {
-    // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T.32.11)
+    // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T32.11)
     let (code, reason): (u16, &str) = if dns::is_timeout(e) {
         (504, "Gateway Timeout")
     } else {
         (502, "Bad Gateway")
     };
-    // 理由ごとに 1 分に 1 行 (T.29.15。本数は `/errors` と `/hosts` が持つ)
+    // 理由ごとに 1 分に 1 行 (T29.15。本数は `/errors` と `/hosts` が持つ)
     if let Some(more) = a.metrics.origin_warn(Failure::from_io(e)) {
         log_warn!(
             Some(a.conn_id),
@@ -199,7 +199,7 @@ fn refuse_connect(
             more
         );
     }
-    // `Date` と `Content-Length: 0` も付ける (RFC 9110 §6.6.1・§8.6。T.32.15 (5)。T.29.9 の漏れ)
+    // `Date` と `Content-Length: 0` も付ける (RFC 9110 §6.6.1・§8.6。T32.15 (5)。T29.9 の漏れ)
     let mut head = [0u8; crate::httpdate::ERROR_HEAD_MAX];
     let _ = client.write_all(crate::httpdate::error_head(code, reason, &mut head));
     let detail = Detail::of_connect(
@@ -208,7 +208,7 @@ fn refuse_connect(
         stages,
         dns_before,
     );
-    // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T.34.146)
+    // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T34.146)
     let now = a.metrics.record_host_detail(
         &format!("connect://{}", a.addr_str),
         HostOutcome::Error,

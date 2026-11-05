@@ -1,9 +1,9 @@
-//! 閉じた接続の固定長リング ([`RecentRing`]。`/recent`。`recent` の一部。T.34.2 で
+//! 閉じた接続の固定長リング ([`RecentRing`]。`/recent`。`recent` の一部。T34.2 で
 //! `recent/mod.rs` から移した)。
 //!
 //! 書くのは**接続の終了で 1 回** ([`RecentRing::push`])。読む口 (`/recent`) と、ファイルへ
 //! 追記する history スレッド ([`RecentRing::take_unwritten`]) は同じ鍵の内側で絞る。
-//! 中身は [`FixedRing`] (5 本のリングで共通。T.34.49)。
+//! 中身は [`FixedRing`] (5 本のリングで共通。T34.49)。
 //!
 //! 行を動かしただけで中身は変えていない。外から見える名前は `recent` の `pub use` でそのまま。
 
@@ -107,7 +107,7 @@ impl RecentRing {
     }
 }
 
-/// 閉じた接続のリングの単体試験 (T.34.2 で別のファイルに移した)。
+/// 閉じた接続のリングの単体試験 (T34.2 で別のファイルに移した)。
 #[cfg(test)]
 #[path = "ring_tests.rs"]
 mod tests;

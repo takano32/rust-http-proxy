@@ -1,4 +1,4 @@
-//! `epoll(7)` と `eventfd(2)` の薄い包み (暇な keep-alive 接続の預かり所の監視。T.29.23)。
+//! `epoll(7)` と `eventfd(2)` の薄い包み (暇な keep-alive 接続の預かり所の監視。T29.23)。
 
 use std::ffi::{c_int, c_uint, c_void};
 use std::io;
@@ -122,7 +122,7 @@ impl Drop for Epoll {
     }
 }
 
-/// `eventfd(2)` (待たない・`exec` で閉じる)。眠っている `epoll_wait` を起こす呼び鈴 (T.29.23)。
+/// `eventfd(2)` (待たない・`exec` で閉じる)。眠っている `epoll_wait` を起こす呼び鈴 (T29.23)。
 ///
 /// 鳴らした回数はカーネルの中の 8 バイトの数に足されるだけなので、何度鳴らしても溢れず、
 /// 読むまで `EPOLLIN` が立ち続ける (読む前に鳴らせば、次の `epoll_wait` はすぐ戻る)。

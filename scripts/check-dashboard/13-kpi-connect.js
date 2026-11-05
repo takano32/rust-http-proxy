@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 12. KPI「CONNECT 確立 p50」 (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 12. KPI「CONNECT 確立 p50」 (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 12. KPI「CONNECT 確立 p50」(T14.31)。`recent_quantiles` があれば**区間の補間ではなく
 // 直近 1,024 本の実測**を使い、無い版の `/status` では今までどおり区間の補間に落ちること。

@@ -212,7 +212,7 @@ mod linux {
         pingpong(dur);
     }
 
-    /// 出入りだけの床 (T.34.102 で `run` から出した。以下の 4 つも同じ)。
+    /// 出入りだけの床 (T34.102 で `run` から出した。以下の 4 つも同じ)。
     fn floor(dur: Duration) {
         // 1. 何もしないシステムコール = 出入りだけの床
         measure("getppid".into(), 0, 1, dur, || {

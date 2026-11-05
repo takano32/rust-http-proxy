@@ -263,7 +263,7 @@ fn auto_target(metrics: &Metrics) -> Option<String> {
     auto_target_at(metrics, crate::cache::now_epoch())
 }
 
-/// [`auto_target`] の本体 (時刻を受ける。T.34.45)。
+/// [`auto_target`] の本体 (時刻を受ける。T34.45)。
 fn auto_target_at(metrics: &Metrics, now: u64) -> Option<String> {
     metrics
         .hosts_sorted_by(crate::metrics::HostSort::Requests)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# 2 枚の `/snapshot` から「**何が変わったか**」を全部出す (TODO.md T.14.17)。
+# 2 枚の `/snapshot` から「**何が変わったか**」を全部出す (TODO.md T14.17)。
 #
-# T.14.0 の分析は `/status` の差分・`/history` の再起動時刻での切り分け・`/dns` の個票・
+# T14.0 の分析は `/status` の差分・`/history` の再起動時刻での切り分け・`/dns` の個票・
 # `/hosts` の差分を手作業で組み合わせたもので、Python を 5 回書いた。それを 1 コマンドにする。
 # 出力は Markdown なので `TODO.md` にそのまま貼れる。
 #
@@ -22,14 +22,14 @@
 #    `-errors_n_500` `-connections` `-log_n_500` … を名前で見分ける。取得時刻は接頭辞の
 #    `YYYY-MM-DDTHHMM[SS]Z` から読む。`-metrics` と `-dashboard` は JSON ではないので見ない。)
 #
-# 出すもの (T.14.17 の (1)〜(9)):
+# 出すもの (T14.17 の (1)〜(9)):
 #   1. 再起動をまたいでいるか (`uptime_secs` / `since_start_secs` と `version`)
-#   2. `/history` を**再起動時刻で切った**平常時 (1 時間 300 本未満の標本) の前後 — T.14.0 の表の形。
+#   2. `/history` を**再起動時刻で切った**平常時 (1 時間 300 本未満の標本) の前後 — T14.0 の表の形。
 #      `/history` の確立の区間には**失敗した接続の時間も入っている**ので、後の雪像の `/recent` から
-#      **成功した接続だけ**の確立時間も 1 行並べる (T.20.1。`--criteria` が phase14〜phase18 のときは
+#      **成功した接続だけ**の確立時間も 1 行並べる (T20.1。`--criteria` が phase14〜phase18 のときは
 #      出さない — その 4 つの出力は過去の判定を出し直せるように 1 文字も変えない)
 #   3. ホスト別 (`/hosts` 最大 1,000 件) の差分 (`status-diff.py` と同じ読み方)。
-#      **`--group domain` で eTLD+1 にまとめられる** (T.14.54。`img.dlsite.jp` と
+#      **`--group domain` で eTLD+1 にまとめられる** (T14.54。`img.dlsite.jp` と
 #      `www.dlsite.jp` が `dlsite.jp` の 1 行。`www.dlsite.com` は別の単位)
 #   4. 接続元別 (`/clients`) の差分と**新しく現れた接続元**
 #   5. 名前解決 (`/dns`) の warm と引き直し
@@ -38,27 +38,27 @@
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
 #   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22|phase23|phase24|phase25|phase26|phase27|phase28|phase29|phase30` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
-#      (**判定の部は `scripts/snapshot_criteria.py`**。T.20.1 で割った)
-#      (T.15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
-#      phase18 (T.18.2) は phase17 の 8 行 + `--zero FILE` (0 時間の雪像) からの
+#      (**判定の部は `scripts/snapshot_criteria.py`**。T20.1 で割った)
+#      (T15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
+#      phase18 (T18.2) は phase17 の 8 行 + `--zero FILE` (0 時間の雪像) からの
 #      `heap_used + mmap` の増え + `ipv6.request_probes` の 10 行。
-#      phase20 (T.20.1) は同じ 10 行の物差しを直したもの: `heap_used + mmap` から
+#      phase20 (T20.1) は同じ 10 行の物差しを直したもの: `heap_used + mmap` から
 #      `cache_memory` を引き、ミス率・`timeout`・`dns_warm` の最大の 3 行は表示だけ (集計に数えない)。
-#      phase21 (T.21.2) は phase20 の 10 行のうち 3 行の読み方を直したもの: 平常時のミスは表示だけ
+#      phase21 (T21.2) は phase20 の 10 行のうち 3 行の読み方を直したもの: 平常時のミスは表示だけ
 #      (日ごとの幅と `cold` / `expired` の内訳)、conn 役の CPU/要求 は前か後の `/profile` が 12 時間に
 #      満たなければ「参考」(集計に数えない)、`ipv6.request_probes` は 0 時間の雪像から 3 時間以内なら満たす。
-#      phase22 (T.22.1) は phase21 の 10 行 + 22a の 4 行 (`dns_slow` の新しい閾・T.22.4 の戻す条件 2 つと目安)。
+#      phase22 (T22.1) は phase21 の 10 行 + 22a の 4 行 (`dns_slow` の新しい閾・T22.4 の戻す条件 2 つと目安)。
 #      **平常時の切り方もこの定義だけ違う**: 300 本と、その期間の 1 標本の本数の中央値の 3 倍の大きい方
 #      以上をバーストとする (`snapshot_criteria.normal_limit`)
 #      `--daily-snapshots DIR` を足すと、`DIR` の日次の雪像 (`<日付>T000000Z-snapshot.json`) のうち
 #      後の雪像と同じ版のものを時刻順に並べた `memory` と `ipv6.attempts` の表が判定表の下に付く
 #
-# **応答の形の版 (`schema`。T.14.49)**: 新しいプロキシの応答は先頭に `"schema":1` を持ちます。
+# **応答の形の版 (`schema`。T14.49)**: 新しいプロキシの応答は先頭に `"schema":1` を持ちます。
 # 読む側は版で分岐しますが、**版の無い古い出力 (版 0) も今までどおり読めます**
 # (`status/` に残っている雪像はどれも版の無い形)。読んだ版は出力の
 # 「形の版 `schema` A → B」の行と `--out json` の `a.schema` / `b.schema` に出ます。
 #
-# **平常時の切り出し方** (T.14.0 と同じ): `/history?res=3600` の標本のうち **1 時間 300 本未満**
+# **平常時の切り出し方** (T14.0 と同じ): `/history?res=3600` の標本のうち **1 時間 300 本未満**
 # のものだけを使う。バーストの時間帯 (2026-09-11 17〜23 時のような) を混ぜると、ミス 1 回の平均が
 # 12.6 ms から 36.0 ms に化けて「直した効き」が読めなくなる。分位点の補間は
 # `crates/metrics/src/history.rs` の `Window::quantile_ms` と同じ (`proxydata.quantile_ms`)。
@@ -96,7 +96,7 @@ from proxydata import (  # noqa: E402
 )
 
 # 判定の部 (`--criteria`) と、差分と判定の両方が使う小物は `scripts/snapshot_criteria.py` に
-# 割ってある (T.20.1)。**同じ名前で取り込み直す**ので、この道具の使い方・出力・外から見える名前
+# 割ってある (T20.1)。**同じ名前で取り込み直す**ので、この道具の使い方・出力・外から見える名前
 # (`sd.CRITERIA` `sd.RULES` `sd.judge` `sd.part` …。テストと `weekly-report.py` が使う) は変わらない
 from snapshot_criteria import (  # noqa: E402,F401
     BURST_MEDIAN_K,
@@ -262,7 +262,7 @@ def normalize(snap, label, from_files=False):
     st = part(snap, "status")
     snap["label"] = label
     snap["from_files"] = from_files
-    # 応答の形の版 (T.14.49)。雪像に無ければ `/status` の部の版、それも無ければ 0
+    # 応答の形の版 (T14.49)。雪像に無ければ `/status` の部の版、それも無ければ 0
     snap["schema"] = schema_of(snap) or schema_of(st)
     snap["history"] = {str(k): v for k, v in (snap.get("history") or {}).items()}
     if not snap.get("version"):
@@ -348,12 +348,12 @@ def sum_samples(rows, limit):
            "forwards": 0, "forward_ms_sum": 0.0, "forward_ms_max": 0, "forward_buckets": None,
            "waits": 0, "wait_ms_sum": 0.0, "wait_ms_max": 0, "wait_buckets": None,
            "dns_misses": 0, "dns_ms_sum": 0.0, "errors": 0,
-           # T.32.17: 名前解決に失敗したミスとその待ち (欄の無い版では None のまま。下で鍵ごと消す)
+           # T32.17: 名前解決に失敗したミスとその待ち (欄の無い版では None のまま。下で鍵ごと消す)
            "dns_fail_misses": None, "dns_fail_ms_sum": None,
            "causes": [0] * len(CAUSE_NAMES), "active_max": 0, "requests": None,
-           # T.15.0 (10) の列 (無い版では `dns_warm_avg` が None、残りは 0 のまま)
+           # T15.0 (10) の列 (無い版では `dns_warm_avg` が None、残りは 0 のまま)
            "active_peak": 0, "requests_delta": 0, "bytes_delta": 0, "dns_warm_avg": None,
-           # T.16.0 の列 (無い版では None)
+           # T16.0 の列 (無い版では None)
            "dns_warm_max": None}
     warm_sum, warm_n = 0, 0
     for r in rows:
@@ -388,9 +388,9 @@ def sum_samples(rows, limit):
         out["active_peak"] = max(out["active_peak"], r["active_peak"] or 0)
         out["requests_delta"] += (r["requests_delta"] or 0)
         out["bytes_delta"] += (r["bytes_delta"] or 0)
-        # **平均する** (`dns_warm` はその瞬間のゲージ)。T.15.0 より前に撮った標本は 0 で
+        # **平均する** (`dns_warm` はその瞬間のゲージ)。T15.0 より前に撮った標本は 0 で
         # 読み戻るので、再起動をまたいだ「前」の期間では 0 に引きずられる。
-        # T.16.0 からは行ごとの合計と標本数 (`dns_warm_sum` / `gauge_n`) で Σsum / Σn
+        # T16.0 からは行ごとの合計と標本数 (`dns_warm_sum` / `gauge_n`) で Σsum / Σn
         # (行の平均は丸めてあるので、平均の平均にしない)。無い行は今までどおり 1 行 = 1 本
         if r["dns_warm"] is not None:
             if r["gauge_n"]:
@@ -399,7 +399,7 @@ def sum_samples(rows, limit):
             else:
                 warm_sum += r["dns_warm"]
                 warm_n += 1
-            # 最大は `dns_warm_max` (T.16.0)。T.16.0 より前の行は 0 なので平均を下限にする
+            # 最大は `dns_warm_max` (T16.0)。T16.0 より前の行は 0 なので平均を下限にする
             if r["dns_warm_max"] is not None:
                 out["dns_warm_max"] = max(out["dns_warm_max"] or 0,
                                           r["dns_warm_max"] or 0, r["dns_warm"])
@@ -421,7 +421,7 @@ def derive_aggregate(out, warm_sum, warm_n, bounds):
     out["dns_per_connect"] = (miss / conn) if conn else None
     out["ms_per_miss"] = (out["dns_ms_sum"] / miss) if miss else None
     out["dns_ms_per_connect"] = (out["dns_ms_sum"] / conn) if conn else None
-    # 名前解決の失敗を除いたミスの率と、接続 1 本あたりの待ち (T.32.17)。欄の無い版は鍵ごと足さない
+    # 名前解決の失敗を除いたミスの率と、接続 1 本あたりの待ち (T32.17)。欄の無い版は鍵ごと足さない
     # (`--out json` の形を今までと同じにする)
     fail, fail_ms = out.pop("dns_fail_misses"), out.pop("dns_fail_ms_sum")
     if fail is not None:
@@ -469,7 +469,7 @@ def history_split(a, b, info, burst, median_k=None):
     return out
 
 
-# --------------------------------------------- (4a) 接続元の RTT 別 (`/recent`。T.29.18)
+# --------------------------------------------- (4a) 接続元の RTT 別 (`/recent`。T29.18)
 
 # 接続元のカーネルの RTT で個票を 2 つに割る閾 (ms。`/recent?rtt_client=lt100|ge100` と同じ 100 ms)
 RTT_CLIENT_SPLIT_MS = 100.0
@@ -529,7 +529,7 @@ def rtt_split(snap):
 
 # --------------------------------------------- (2a) 成功した接続だけの確立時間 (`/recent`)
 
-# 後の期間のエラーが接続のこの割合を超えたら、確立の区間に失敗が混ざっていると断る (T.20.1)
+# 後の期間のエラーが接続のこの割合を超えたら、確立の区間に失敗が混ざっていると断る (T20.1)
 FAILED_SHARE_NOTE = 0.05
 
 
@@ -788,7 +788,7 @@ def dns_info(a, b, restarted):
         "hits": d("hits"), "negative_hits": d("negative_hits"), "stale_served": d("stale_served"),
         "miss_ms_sum": d("miss_ms_sum", 0.0),
         "table": len(entries), "idle": idle,
-        # 一覧が切れているか (T.32.31)。`/dns` は古い順 (`sort: age`) なので、切れたら古い側の N 件だけ
+        # 一覧が切れているか (T32.31)。`/dns` は古い順 (`sort: age`) なので、切れたら古い側の N 件だけ
         "table_count": dns_part.get("count"), "table_truncated": bool(dns_part.get("truncated")),
         "table_sort": dns_part.get("sort"),
         "top_refreshed": [(h, n_) for n_, h in refreshed if n_][:5],
@@ -831,7 +831,7 @@ def errors_info(a, b, hosts, hist):
     lo, hi = a["taken_at"], b["taken_at"]
     in_window = []
     if isinstance(recorded, list):
-        # まとめた行 (T.20.3) は `at` (最初) 〜 `last_at` (最後) の幅を持つので、窓に**掛かって
+        # まとめた行 (T20.3) は `at` (最初) 〜 `last_at` (最後) の幅を持つので、窓に**掛かって
         # いれば**入れる (`last_at` の無い版は `at` だけ = 今までと同じ)。回数は行ごとにしか
         # 無いので、前の雪像より前から続いている行は**窓より前の回も一緒に数える**
         in_window = [e for e in recorded
@@ -921,7 +921,7 @@ def daily_snapshots(dirname, b):
 # ---------------------------------------------------------------- 組み立て
 
 def build(a, b, args):
-    # `/daily` は雪像に入っていないので、渡されたら新しい雪像の部として足す (T.15.15 (2))
+    # `/daily` は雪像に入っていないので、渡されたら新しい雪像の部として足す (T15.15 (2))
     if getattr(args, "daily", None):
         b["daily"] = load(args.daily)
     # `/profile?res=60` も雪像に入らない (256 KiB で切れる部とは別に取る)。phase17 の CPU の行の材料 (T17.0a)
@@ -929,12 +929,12 @@ def build(a, b, args):
         b["profile_res_60"] = load(args.profile)
     if getattr(args, "profile_before", None):
         a["profile_res_60"] = load(args.profile_before)
-    # 0 時間の雪像 (再起動の直後の 1 枚)。phase18 の `heap_used + mmap` の行の材料 (T.18.2)
+    # 0 時間の雪像 (再起動の直後の 1 枚)。phase18 の `heap_used + mmap` の行の材料 (T18.2)
     if getattr(args, "zero", None):
         b["zero_snapshot"] = load_source(args.zero, False)
     info = restart_info(a, b)
-    # 平常時の切り方は定義が `burst_median_k` を持つときだけ変わる (phase22。T.22.1)。`--criteria` が無ければ
-    # `--burst-median-k` (T.29.13。既定は無し = T.14.0 の 300 本だけ。tokyo は毎時 475〜1,760 本で、300 本で切ると
+    # 平常時の切り方は定義が `burst_median_k` を持つときだけ変わる (phase22。T22.1)。`--criteria` が無ければ
+    # `--burst-median-k` (T29.13。既定は無し = T14.0 の 300 本だけ。tokyo は毎時 475〜1,760 本で、300 本で切ると
     # 後の 23 標本が全部バーストだったので、`collect-deployed.sh` は差分にこれを渡す)
     if args.criteria:
         median_k = CRITERIA[args.criteria].get("burst_median_k")
@@ -980,20 +980,20 @@ def add_extras(out, a, b, args, info, hist, hosts, majors, status_b, overload):
 
     足す順は割る前と同じ (`--out json` の鍵の順が変わらない)。
     """
-    # `other` (表からあふれたホストの畳み先) は §3 の比べの表から外して印を付ける (T.28.19)。
+    # `other` (表からあふれたホストの畳み先) は §3 の比べの表から外して印を付ける (T28.19)。
     # **`--criteria` のときは足さない** (過去の判定表の出力を 1 バイトも変えない決まり。
     # 行そのものは `hosts.rows` に残すので、エラーの合計 (§7) は変わらない)
     if not args.criteria:
         hosts["folded"] = [r for r in hosts["rows"] if is_folded(r)]
-    # 成功した接続だけの確立時間 (T.20.1)。**phase14〜phase18 の出力は変えない**ので、そのときは鍵ごと足さない
+    # 成功した接続だけの確立時間 (T20.1)。**phase14〜phase18 の出力は変えない**ので、そのときは鍵ごと足さない
     if args.criteria not in FROZEN:
         out["recent_connect"] = recent_connects(b)
-        # 接続元の RTT 別の表 (T.29.18)。古い定義 (FROZEN) の出力は変えない
+        # 接続元の RTT 別の表 (T29.18)。古い定義 (FROZEN) の出力は変えない
         out["rtt_split"] = rtt_split(b)
-    # サーバー側の要約 (T.14.24)。`--summary` があれば読んで手元の集計と並べる
+    # サーバー側の要約 (T14.24)。`--summary` があれば読んで手元の集計と並べる
     if hist:
-        # T.29.13 より前の版のサーバーの `normal_hours_only=1` は 300 本で切る。後の閾が上がって後の期間に
-        # バーストが残らないなら、全部の標本 (`normal_hours_only` なし) が同じ窓になる (T.22.1)
+        # T29.13 より前の版のサーバーの `normal_hours_only=1` は 300 本で切る。後の閾が上がって後の期間に
+        # バーストが残らないなら、全部の標本 (`normal_hours_only` なし) が同じ窓になる (T22.1)
         normal = not (hist.get("limits") and hist["limits"]["after"] > hist["limit"]
                       and not hist["after"]["burst_samples"])
         out["summary_url"] = summary_url(info["boundary"], b["taken_at"],
@@ -1005,7 +1005,7 @@ def add_extras(out, a, b, args, info, hist, hosts, majors, status_b, overload):
         out["criteria"] = judge(args.criteria, hist, hosts, majors, status_b, overload,
                                 CRITERIA[args.criteria], a=a, b=b, info=info,
                                 dns=out["dns"], errors=out["errors"], burst=args.burst)
-    # 日次の雪像の表 (T.18.2 (2))。渡されたときだけ鍵を足す
+    # 日次の雪像の表 (T18.2 (2))。渡されたときだけ鍵を足す
     if getattr(args, "daily_snapshots", None):
         out["daily_snapshots"] = daily_snapshots(args.daily_snapshots, b)
 
@@ -1027,7 +1027,7 @@ def render(d, top):
     # 9 (判定表。中身は `snapshot_criteria.py`)
     if "criteria" in d:
         render_criteria(d, d["hosts"].get("group") == "domain")
-    # 日次の雪像の表 (`--daily-snapshots`。T.18.2 (2))。判定表の下に置く
+    # 日次の雪像の表 (`--daily-snapshots`。T18.2 (2))。判定表の下に置く
     if "daily_snapshots" in d:
         render_daily_snapshots(d)
 
@@ -1040,7 +1040,7 @@ def render_title(d):
     p()
     p(f"- 取得 {stamp(a['taken_at'])} → {stamp(b['taken_at'])}"
       + (f" (窓 {d['restart']['wall_secs'] / 3600:.1f} 時間)" if d["restart"]["wall_secs"] else ""))
-    # 応答の形の版 (T.14.49)。0 = `schema` を持たない古い出力 (推測で読んだ)
+    # 応答の形の版 (T14.49)。0 = `schema` を持たない古い出力 (推測で読んだ)
     p(f"- 形の版 `schema` {a.get('schema', 0)} → {b.get('schema', 0)}"
       + ("" if a.get("schema") and b.get("schema")
          else " (0 = 版を持たない古い出力。鍵の有無から推測して読んだ)"))
@@ -1087,7 +1087,7 @@ def render_history(d):
         p()
         return
     if "limits" in h:
-        # phase22 (T.22.1)。前と後で閾が違う
+        # phase22 (T22.1)。前と後で閾が違う
         lb, la = h["limits"]["before"], h["limits"]["after"]
         md = h["medians"]
         p(f"`/history?res={h['res']}` の {h['samples']} 標本を {stamp(h['boundary'])} で切り、"
@@ -1125,7 +1125,7 @@ def render_history_table(d, h):
       f"| avg {ms(aft['connect_avg'])} / **p50 {ms(aft['connect_p50'])}** "
       f"/ p95 {ms(aft['connect_p95'])} ms ({n(aft['connects'])} 本) | 同上 |")
     if "recent_connect" in d:
-        # T.20.1。上の行 (`/history` の区間) には失敗した接続の時間も入っている
+        # T20.1。上の行 (`/history` の区間) には失敗した接続の時間も入っている
         rc = d["recent_connect"]
         if rc is None:
             p("| CONNECT 確立 (**成功した接続だけ**) | — | — | 後の雪像に `/recent` の部が無い |")
@@ -1145,8 +1145,8 @@ def render_history_table(d, h):
       f"| **{ratio(aft['dns_per_connect'])} 回/接続**、"
       f"ミス 1 回 {ms(aft['ms_per_miss'])} ms、接続 1 本あたり {ms(aft['dns_ms_per_connect'])} ms "
       "| 同上 |")
-    # 名前解決の失敗 (負のキャッシュの総当たり) を除いたミス (T.32.17)。上の行は失敗も数えていて、
-    # T.31.99 は 0.94 回/接続・55.7 ms/接続 (失敗を除けば 0.048 回/接続)。欄の無い版と古い定義では出さない
+    # 名前解決の失敗 (負のキャッシュの総当たり) を除いたミス (T32.17)。上の行は失敗も数えていて、
+    # T31.99 は 0.94 回/接続・55.7 ms/接続 (失敗を除けば 0.048 回/接続)。欄の無い版と古い定義では出さない
     crit = (d.get("criteria") or {}).get("name")
     if crit not in FROZEN and any("dns_ok_per_connect" in x for x in (bef, aft, bef_all, aft_all)):
         p(f"| 名前解決のミス (**名前解決の失敗を除く**。T.32.17) | {dns_ok_text(bef, bef_all)} | {dns_ok_text(aft, aft_all)} "
@@ -1186,7 +1186,7 @@ def render_history_notes(d, h):
     aft = h["after"]
     if "recent_connect" in d and aft["connects"] \
             and aft["errors"] / aft["connects"] > FAILED_SHARE_NOTE:
-        # T.20.1。本体は失敗した接続も同じ区間に足すので、失敗が多い期間は p95 がその時間になる
+        # T20.1。本体は失敗した接続も同じ区間に足すので、失敗が多い期間は p95 がその時間になる
         by = "、".join(f"{CAUSE_NAMES[i]} {n(v)}"
                       for i, v in enumerate(aft["causes"]) if v) or "—"
         p(f"**確立の区間には失敗した接続の時間も入っている**: 後の期間 (平常時) のエラーは "
@@ -1245,7 +1245,7 @@ def render_hosts(d, top):
             "新しいほうを 1 枚で読むこと: `scripts/status-diff.py B.json`)。")
         p()
     if d["restart"]["restarted"]:
-        # T.14.0 の注意: `.rrd` の通算は再起動をまたぐので、差分の窓は「取得から取得まで」になる
+        # T14.0 の注意: `.rrd` の通算は再起動をまたぐので、差分の窓は「取得から取得まで」になる
         before = d["restart"]["started_at"] - a["taken_at"]
         p(f"**この差分の窓は {stamp(a['taken_at'])} → {stamp(b['taken_at'])}** "
           f"(`.rrd` の通算の引き算なので、**再起動前の {before / 3600:.1f} 時間を含む**)。"
@@ -1374,7 +1374,7 @@ def render_dns(d):
          if dn["top_refreshed"] else " (引き直した名前は表に無い)"))
     p(f"- 負のキャッシュ命中 {n(dn['negative_hits'])} / 古い答えで代用 {n(dn['stale_served'])}")
     if dn["table"]:
-        # 一覧が切れていれば表全体とは読めない (T.32.31。`MAX_PAGES` で止まると古い順の頭の側しか来ない)
+        # 一覧が切れていれば表全体とは読めない (T32.31。`MAX_PAGES` で止まると古い順の頭の側しか来ない)
         if dn.get("table_truncated"):
             side = "古い側の" if dn.get("table_sort") == "age" else "頭の"
             whole = (f"表 {n(dn['table_count'])} 件のうち{side} {n(dn['table'])} 件だけ"
@@ -1424,7 +1424,7 @@ def render_errors(d):
     if er["recorded"] is None:
         p("- `/errors` の個票はこの雪像に入っていない")
     else:
-        # 件数は `repeats` を足して数える (T.20.3)。まとめた行があるときだけ行数を並べる
+        # 件数は `repeats` を足して数える (T20.3)。まとめた行があるときだけ行数を並べる
         # (無い版の出力は 1 文字も変えない)
         rows_n = len(er["in_window"])
         total_n = sum(error_repeats(e) for e in er["in_window"])

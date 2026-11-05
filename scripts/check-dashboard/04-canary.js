@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 5. canary の配列 (2 の続き) (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 5. canary の配列 (2 の続き) (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 5. canary の配列 (T14.10、T14.37 で 5 列目)。`/history` の応答に**別の配列**として付く
 // (`{"keys":[...],"samples":[[t,dns_ms,connect_ms,"host",ipv6_connect_ms],...]}`)。描くのは

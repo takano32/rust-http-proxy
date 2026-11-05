@@ -28,12 +28,12 @@ pub(super) struct Fetched {
     pub status: u16,
     /// 転送した要求の本文のバイト数
     pub request_body_bytes: u64,
-    /// オリジンが要求の本文を読み切らずに閉じた (T.29.7)。立っていれば応答は渡すが、
+    /// オリジンが要求の本文を読み切らずに閉じた (T29.7)。立っていれば応答は渡すが、
     /// クライアントの本文の残りが読めていないので、クライアントともオリジンとも続けない
     pub body_cut: bool,
 }
 
-/// 再検証の 304 が保存済みとは別の表現を指しているか (RFC 9111 §4.3.4。T.32.9)。
+/// 再検証の 304 が保存済みとは別の表現を指しているか (RFC 9111 §4.3.4。T32.9)。
 ///
 /// 304 の `ETag` が保存済みの `ETag` と違う (比べるのは弱い印 `W/` を外して)、または `ETag` で比べられず
 /// `Last-Modified` が両方にあって違うときに真。validator の無い 304 と、比べる相手が保存済みに無いときは偽
@@ -110,7 +110,7 @@ pub(super) fn fetch(
     // 1xx を中継したか。中継したらクライアントはもう応答の先頭を受け取っているので、
     // プールの接続を掴み直して同じ 1xx をもう一度出さない (やり直さない)
     let mut interim_sent = false;
-    // オリジンが要求の本文を読み切らずに閉じたか (T.29.7)。立っていれば応答は渡すが、
+    // オリジンが要求の本文を読み切らずに閉じたか (T29.7)。立っていれば応答は渡すが、
     // クライアントの本文の残りが読めていないので、クライアントともオリジンとも続けない
     let mut body_cut = false;
     let mut attempt = 0;
@@ -158,7 +158,7 @@ pub(super) fn fetch(
         let sent_at = crate::profile::mark();
         // 1xx (100 と 101 を除く) はヘッダーだけクライアントへ中継し、最終応答を読み続ける (T19.6)。
         // HTTP/1.0 のクライアントへは送らない (RFC 9110 §15.2 の MUST NOT。1.0 のクライアントは
-        // 103 を最終応答と読む。T.29.3): 読み捨てて最終応答だけを返す
+        // 103 を最終応答と読む。T29.3): 読み捨てて最終応答だけを返す
         let result = sent.and_then(|n| {
             crate::response::read_head_forwarding(&mut server, |head, status| {
                 if !http11 {
@@ -260,11 +260,11 @@ pub(super) fn fetch(
                 // オリジンの読み書きはブロッキング + `SO_RCVTIMEO` / `SO_SNDTIMEO` なので、
                 // Linux では締め切りが切れると `WouldBlock` (EAGAIN) が返る。そのまま出すと
                 // "Resource temporarily unavailable (os error 11)" になって締め切りと読めないので、
-                // 言い換える (原因の数え方は `ErrCause::from_io` が `timeout` に寄せる。T.28.5)
+                // 言い換える (原因の数え方は `ErrCause::from_io` が `timeout` に寄せる。T28.5)
                 // 応答を読む途中の失敗も同じ分け方 (T25.0)。DNS はここまで来ないが、
                 // `cause` と `dns_cause` を 1 か所で決めておくと組み合わせがずれない
                 let failure = Failure::from_io(&e);
-                // WARN は理由ごとに 1 分に 1 行 (T.29.15)
+                // WARN は理由ごとに 1 分に 1 行 (T29.15)
                 if let Some(more) = shared.metrics.origin_warn(failure) {
                     if matches!(
                         e.kind(),
@@ -302,7 +302,7 @@ pub(super) fn fetch(
     }
 }
 
-/// 1 回の試み (要求を送って応答の先頭を読んだ) の結果をどう扱うか ([`judge`] が決める。T.34.17)。
+/// 1 回の試み (要求を送って応答の先頭を読んだ) の結果をどう扱うか ([`judge`] が決める。T34.17)。
 #[derive(Debug)]
 enum Attempt {
     /// 再利用した接続が 408 / 421 を返した: 新しい接続でやり直す
@@ -335,7 +335,7 @@ fn judge(
         Ok(((_, status), _)) if again && (status == 408 || status == 421) => {
             Attempt::RetryStatus(status)
         }
-        // 再検証の 304 の validator が保存済みと「あって違う」(RFC 9111 §4.3.4。T.32.9): その 304 で
+        // 再検証の 304 の validator が保存済みと「あって違う」(RFC 9111 §4.3.4。T32.9): その 304 で
         // 保存済みを延ばすと、古い本文に新しい `ETag` を付けて配り続ける (下流は新しい `ETag` で
         // 304 をもらい続ける)。本文の無い GET だけ
         Ok(((head, 304), _)) if conflicts(&head) => Attempt::Refetch,
@@ -361,13 +361,13 @@ fn connect_failed<T>(
 ) -> Stage<T> {
     let (shared, cache, conn_id) = (x.shared, x.cache, x.ctx.conn_id);
     let (req_framing, server_addr) = (x.req_framing, x.server_addr);
-    // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T.32.11)
+    // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T32.11)
     let (code, reason) = if crate::dns::is_timeout(&e) {
         (504, "Gateway Timeout")
     } else {
         (502, "Bad Gateway")
     };
-    // 理由ごとに 1 分に 1 行 (T.29.15。本数は `/errors` と `/hosts` が持つ)
+    // 理由ごとに 1 分に 1 行 (T29.15。本数は `/errors` と `/hosts` が持つ)
     if let Some(more) = shared.metrics.origin_warn(Failure::from_io(&e)) {
         log_warn!(
             Some(conn_id),
@@ -428,7 +428,7 @@ fn send_request(
     let mut body_sent = 0u64;
     let sent = head_sent
         .and_then(|_| {
-            // 本文を送ってこないクライアントを見張る (T.29.34。見張りは本文のある要求だけが作る)
+            // 本文を送ってこないクライアントを見張る (T29.34。見張りは本文のある要求だけが作る)
             forward_request_body(
                 reader,
                 server.get_mut(),
@@ -440,7 +440,7 @@ fn send_request(
         })
         .and_then(|n| server.get_mut().flush().map(|_| n));
     // 本文を送る途中でオリジンが閉じた (`EPIPE` / `ECONNRESET`): 先に応答 (413 など) を返して
-    // 閉じたのかもしれないので、読み残しの応答を読みに行く (RFC 9112 §9.5。T.29.7)。
+    // 閉じたのかもしれないので、読み残しの応答を読みに行く (RFC 9112 §9.5。T29.7)。
     // 読めなければ今までどおり 502。本文の無い要求は対象外 (死んだ接続のやり直しに回す)。
     // 正常な要求にはシステムコールを 1 つも足さない (失敗したときだけ通る)
     Ok(match sent {
@@ -482,7 +482,7 @@ mod tests {
         panic!("304 でないのに保存済みと比べた")
     }
 
-    /// 408 / 421 はやり直してよい試みのときだけやり直し、そうでなければそのまま渡す (T.34.17)。
+    /// 408 / 421 はやり直してよい試みのときだけやり直し、そうでなければそのまま渡す (T34.17)。
     #[test]
     fn judge_retries_408_and_421_only_when_the_attempt_may_be_repeated() {
         for status in [408, 421] {

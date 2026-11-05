@@ -276,7 +276,7 @@ struct RangePlan {
     len: u64,
 }
 
-/// 保存済みの表現の返し方を決める (純粋な計算。T.34.24)。`head` は保存済みの先頭 (全体を返すときの
+/// 保存済みの表現の返し方を決める (純粋な計算。T34.24)。`head` は保存済みの先頭 (全体を返すときの
 /// ステータスを読む)、`body_len` は本文の長さ。
 #[inline]
 fn range_plan(range: RangeSpec, body_len: u64, head: &[u8]) -> RangePlan {
@@ -354,7 +354,7 @@ pub(super) fn write_cached_response(
     }
     extra[n_extra] = content_length_line(&mut cl_buf, len);
     n_extra += 1;
-    // キャッシュから返す応答にも自分の `Via` を足す (T.28.10 (b))。保存した先頭には入っていない
+    // キャッシュから返す応答にも自分の `Via` を足す (T28.10 (b))。保存した先頭には入っていない
     extra[n_extra] = crate::via::field();
     n_extra += 1;
     extra[n_extra] = if serve.keep_alive {
@@ -421,7 +421,7 @@ pub(super) fn write_not_modified(
         out.push_str(&line);
         out.push_str("\r\n");
     }
-    // キャッシュが返す 304 にも `Via` (T.28.10 (b))
+    // キャッシュが返す 304 にも `Via` (T28.10 (b))
     out.push_str(crate::via::line());
     out.push_str(if keep_alive {
         "Connection: keep-alive\r\n\r\n"
@@ -487,7 +487,7 @@ mod extra_line_tests {
     }
 
     /// 206 は範囲と `Content-Range`、416 は本文なしで `Content-Type` を落とし、範囲を見ないときは
-    /// 保存済みのステータスのまま全体 (T.34.24)。
+    /// 保存済みのステータスのまま全体 (T34.24)。
     #[test]
     fn range_plan_of_each_range_spec() {
         let head = b"HTTP/1.1 203 Non-Authoritative Information\r\nContent-Length: 10\r\n\r\n";

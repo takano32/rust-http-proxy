@@ -133,7 +133,7 @@ pub fn is_target(key: &str) -> bool {
     target_matches(key, &ports)
 }
 
-/// [`is_target`] の判定の中身 (旗も静的な `PORTS` も読まない純粋な関数。T.34.80)。
+/// [`is_target`] の判定の中身 (旗も静的な `PORTS` も読まない純粋な関数。T34.80)。
 fn target_matches(key: &str, ports: &[u32]) -> bool {
     let Some((host, port)) = key.rsplit_once(':') else {
         return false;
@@ -297,7 +297,7 @@ pub fn run(proxy: SocketAddr, exempt: &dyn Fn(&[u16])) -> Report {
     publish(report, &note_for(&forward, &connect))
 }
 
-/// 1 つの段階 (forward か CONNECT) の結果 (T.34.80)。
+/// 1 つの段階 (forward か CONNECT) の結果 (T34.80)。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Phase {
     /// 通った数 (200 が返った要求 / 確立できた CONNECT)
@@ -338,7 +338,7 @@ where
     }
 }
 
-/// `note` の文面 (純粋な関数。T.34.80)。何も書くことがなければ空。
+/// `note` の文面 (純粋な関数。T34.80)。何も書くことがなければ空。
 fn note_for(forward: &Phase, connect: &Phase) -> String {
     match (forward.ok, connect.ok) {
         (0, 0) => format!(

@@ -38,7 +38,7 @@ from test_snapshot_diff import (  # noqa: E402
 )
 
 
-# **T.32.34 で消した実データの試験 (どの機械でも回らなかった 18 本)**: 次の 9 つの組は `status/` 直下の nagoya の雪像
+# **T32.34 で消した実データの試験 (どの機械でも回らなかった 18 本)**: 次の 9 つの組は `status/` 直下の nagoya の雪像
 # (2026-09-24〜2026-10-08) と、もう手元に無い tokyo の古い雪像 (2026-10-08〜2026-10-22) を待っていて、main の
 # `status/` を繋いでも飛ばされていた (雪像はリポジトリに入れず、tokyo の手元の `status/tokyo/` にも 10-22 より前は残って
 # いない)。確かめていた数字は各タスクの `結果` (`tasks/T17.md`〜`tasks/T24.md`) にあり、判定の関数そのものは同じ番号の
@@ -1959,7 +1959,7 @@ class Criteria27Rows(unittest.TestCase):
         self.assertIs(p27[22], sc._p27_rss_gap)
 
     def test_a_small_resolved_denominator_is_not_judged(self):
-        # T.29.99 の形: 後は 1,985 本のうち 1,496 本が名前の引けないメール宛で、分母 489 本
+        # T29.99 の形: 後は 1,985 本のうち 1,496 本が名前の引けないメール宛で、分母 489 本
         a, b = self.recent(1937, 39, 21), self.recent(403, 1496, 86, port="995")
         row = sc._p27_connect_errors({"a": a, "b": b}, sc.PHASE27)
         self.assertEqual(row[3], sd.UNKNOWN)
@@ -1983,7 +1983,7 @@ class Criteria27Rows(unittest.TestCase):
         return {"uptime_secs": 86400, "status": {"memory": m}}
 
     def test_the_rss_gap_is_compared_with_the_previous_version(self):
-        # T.29.99: 前 82.3 − (20.4 + 15.7 + 14.4) = 31.8、後 52.3 − (11.8 + 11.6) = 28.9
+        # T29.99: 前 82.3 − (20.4 + 15.7 + 14.4) = 31.8、後 52.3 − (11.8 + 11.6) = 28.9
         a = self.mem(82.3, 20.4, 15.7, 14.4)
         b = self.mem(52.3, 11.8, 11.6, 0, heap_free=23.0e6, stacks_estimate=22.3e6)
         row = sc._p27_rss_gap({"a": a, "b": b}, sc.PHASE27)
@@ -2042,7 +2042,7 @@ class Criteria28Rows(unittest.TestCase):
         self.assertIs(p28[23], sc._p28_cgroup_cpu_per_request)
 
     def test_cpu_is_compared_per_request(self):
-        # T.30.99 の形: コアは 1.09 倍だが要求は 1.56 倍 → 要求 1 本あたりは 0.70 倍で満たす
+        # T30.99 の形: コアは 1.09 倍だが要求は 1.56 倍 → 要求 1 本あたりは 0.70 倍で満たす
         a = self.snap(124_000_000, 29.0 * 3600, 42_672)
         b = self.snap(113_000_000, 24.2 * 3600, 55_327)
         row = sc._p28_cgroup_cpu_per_request({"a": a, "b": b}, sc.PHASE28)
@@ -2132,7 +2132,7 @@ class Criteria29Rows(unittest.TestCase):
         self.assertEqual(p29[23]({"a": {}, "b": {}}, sc.PHASE29)[3], sd.SHOWN)
 
     def test_conn_per_resolved_request_does_not_move_with_the_failure_share(self):
-        # T.31.99 の形: 名前解決に失敗した要求の割合だけが 40% → 66% に増える (成功した要求あたりの CPU は同じ)
+        # T31.99 の形: 名前解決に失敗した要求の割合だけが 40% → 66% に増える (成功した要求あたりの CPU は同じ)
         pa, pb = self.profile(24, 30, 1000, 0.40), self.profile(24, 60, 1000, 0.66)
         a, b = self.snap(pa, 30 * 60 * 0.40), self.snap(pb, 60 * 60 * 0.66)
         row = sc._p29_conn_per_resolved_request({"a": a, "b": b}, sc.PHASE29)
@@ -2155,7 +2155,7 @@ class Criteria29Rows(unittest.TestCase):
         self.assertIn("**1,000 → 1,000**", row[2])
 
     def test_miss_band_shows_the_rate_without_failures(self):
-        # T.32.17: 表示だけのミスの行に、名前解決の失敗を除いた回/接続を添える (欄の無い版は今までどおり)
+        # T32.17: 表示だけのミスの行に、名前解決の失敗を除いた回/接続を添える (欄の無い版は今までどおり)
         c = {"a": {}, "b": {}, "after": {"dns_per_connect": 0.95, "dns_ok_per_connect": 0.048, "samples": 47,
                                          "connects": 32637},
              "after_all": {"dns_ok_per_connect": 0.047}}
@@ -2321,7 +2321,7 @@ class Criteria30Rows(unittest.TestCase):
         self.assertEqual(sc.PHASE30["dns_slow_avg_factor"], 1.5)
 
     def test_the_same_slowness_is_met_whatever_the_rate(self):
-        # T.32.99 の形: 立った件が前の 3 倍 (初めて引く名前が多い = 使われ方) でも、平均が同じ程度なら満たす
+        # T32.99 の形: 立った件が前の 3 倍 (初めて引く名前が多い = 使われ方) でも、平均が同じ程度なら満たす
         row = self.row(self.slow(300, 5), self.slow(330, 15))
         self.assertEqual(row[3], sd.MET, row)
         self.assertIn("**330** ms (60 回、立った 15 件) (前 300 ms (20 回、立った 5 件)、1.10 倍)", row[2])
@@ -2358,7 +2358,7 @@ class Criteria30Rows(unittest.TestCase):
         self.assertEqual(self.row(mixed, self.slow(900, 5))[3], sd.MISSED)
 
     def test_the_web_columns_count_only_misses_for_443_and_80(self):
-        # T.33.3: `web_dns_misses`・`web_dns_ms_sum` のある版は 443・80 宛ての成功したミスだけで窓を選び、平均も出す。
+        # T33.3: `web_dns_misses`・`web_dns_ms_sum` のある版は 443・80 宛ての成功したミスだけで窓を選び、平均も出す。
         # どの窓も成功したミス 4 回 × 300 ms のうち 443 宛ては 3 回 × 400 ms、残り 1 回 (`:993`) は 0 ms
         keys = ["t", "dns_misses", "dns_fail_misses", "dns_ms_sum", "dns_fail_ms_sum", "web_dns_misses", "web_dns_ms_sum"]
         after = self.slow(300, 5)
@@ -2422,7 +2422,7 @@ class Criteria30Refresh(unittest.TestCase):
                          sd.MISSED)
 
     def test_a_truncated_list_falls_back_to_the_total(self):
-        # 前の `/dns` の一覧が切れている (T.32.99 の前は 657 / 7,511 行) と答えのある名前が数えられない
+        # 前の `/dns` の一覧が切れている (T32.99 の前は 657 / 7,511 行) と答えのある名前が数えられない
         a = self.snap(14_000, 7_511, 560, truncated=True)
         b = self.snap(10_800, 891, 560, hours=36)
         row = self.row(sc._p30_refresh_per_name, a, b)
@@ -3039,12 +3039,12 @@ class Criteria26Rows(unittest.TestCase):
         self.assertIn("**12** 件 (起動から 12.0 時間、24.0 件/24 時間)", row[2])
         self.assertIn("`error:header_timeout` 1 行 (うち 1 要求目を通したあとの 1 行)", row[2])
         self.assertNotIn("silent_closes", row[2], "欄の無い版 (T.33.0 より前) には書かない")
-        # T.29.10 より前の版には欄が無い = 0 と書かない
+        # T29.10 より前の版には欄が無い = 0 と書かない
         old = self.snap({"rejected_requests": {"bad_header": 0, "total": 0}})
         self.assertEqual(sc._p26_header_timeouts(self.ctx(old), sc.PHASE26)[3], sd.UNKNOWN)
 
     def test_the_header_timeout_row_shows_the_silent_closes_beside_the_408(self):
-        # T.33.0: 先張りの接続は 408 にせず `silent_closes` に数える。同じ行に並べ、判定は表示だけのまま
+        # T33.0: 先張りの接続は 408 にせず `silent_closes` に数える。同じ行に並べ、判定は表示だけのまま
         b = self.snap({"rejected_requests": {"header_timeout": 3, "total": 3}, "silent_closes": 1700},
                       uptime=86400)
         row = sc._p26_header_timeouts(self.ctx(b), sc.PHASE26)
@@ -3133,12 +3133,12 @@ class Criteria26Rows(unittest.TestCase):
     def test_origin_warn_lines_are_counted_per_minute(self):
         def line(at, msg):
             return {"at": at, "level": "warn", "msg": msg}
-        # T.29.15 の前の形: 同じ 1 分にメール宛の 502 が 12 行
+        # T29.15 の前の形: 同じ 1 分にメール宛の 502 が 12 行
         old = [line(1793068500 + i, f"502 Bad Gateway: connect imap.example:993 failed: lookup {i}") for i in range(12)]
         row = sc._p26_origin_warn_per_minute(self.ctx(self.snap(log=old)), sc.PHASE26)
         self.assertEqual(row[3], sd.MISSED)
         self.assertIn("1 分の最大 **12** 行", row[2])
-        # T.29.15 の後: 原因ごとに 1 行で、抑えた本数を添える
+        # T29.15 の後: 原因ごとに 1 行で、抑えた本数を添える
         new = [line(1793068500, "502 Bad Gateway: connect imap.example:993 failed: lookup"),
                line(1793068560, "502 Bad Gateway: connect imap.example:993 failed: lookup"
                                 " (+40 more since the previous line, not logged)"),

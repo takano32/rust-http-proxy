@@ -1,6 +1,6 @@
 //! `--check`: 起動前に**この環境で何が読めるか**と**効く設定**を印字する (T14.15)。
 //!
-//! T.34.60 で `lib.rs` の `check_environment` (135 行) をここへ移し、行の組み立てを純粋な関数
+//! T34.60 で `lib.rs` の `check_environment` (135 行) をここへ移し、行の組み立てを純粋な関数
 //! (`capability_description`・`flag_line`・`setting_value_for_print`・`setting_line`・`tls_line`) に、
 //! 印字を `print_capabilities`・`print_settings`・`print_problems` に割った。文面と順は前と同じ。
 
@@ -19,7 +19,7 @@ use proxy_server::tls::TlsClient;
 /// 1 つでも読めなければ 1。**名前解決を外す**のは、リゾルバが遅い環境でも
 /// プロキシとしては動く (そしてそれ自体が測りたい数字) ため。
 pub(crate) fn check_environment() -> i32 {
-    // `--check | head` のように読み手が先に閉じても、パニックせずに黙って終わる (T.28.48)
+    // `--check | head` のように読み手が先に閉じても、パニックせずに黙って終わる (T28.48)
     signal::quiet_on_closed_pipe();
     print_header();
     let config = match Config::from_env() {
@@ -54,7 +54,7 @@ pub(crate) fn check_environment() -> i32 {
 /// 版・ビルドの種類・設定ファイル。
 fn print_header() {
     println!("rust-http-proxy {} --check", proxy_server::VERSION);
-    // どの最適化で作ったバイナリか (cargo のプロファイル名。T.28.42)
+    // どの最適化で作ったバイナリか (cargo のプロファイル名。T28.42)
     println!("build profile: {}", proxy_server::BUILD);
     match proxy_server::envfile::loaded_path() {
         Some(p) => println!(
@@ -115,7 +115,7 @@ fn print_capabilities(caps: &Capabilities, config: &Config) {
         )
     );
 
-    // OpenSSL は起動では読まず最初の https:// オリジンで読むので (T.32.5)、読めるかはここで確かめる
+    // OpenSSL は起動では読まず最初の https:// オリジンで読むので (T32.5)、読めるかはここで確かめる
     if config.tls_enabled {
         let loaded = TlsClient::load(config.tls_verify, config.tls_ca_file.as_deref())
             .map(|t| t.map(|t| t.version()));
@@ -135,7 +135,7 @@ fn print_settings(config: &Config) {
     }
 }
 
-/// 書いたのに効いていない行 (T.28.6)。正しい設定では 1 行も出ない。
+/// 書いたのに効いていない行 (T28.6)。正しい設定では 1 行も出ない。
 fn print_problems(problems: &EnvProblems) {
     if !problems.invalid.is_empty() {
         println!("\nnot readable (ignored; the default is in effect):");
@@ -175,7 +175,7 @@ fn flag_line(mark: &str, name: &str, text: &str) -> String {
 /// `Setting::value` (JSON の値) を印字の形にする: 文字列の引用符は、中身が空でなく `\` を
 /// 含まないときだけ外す。
 ///
-/// 中身は `config::printable_value` (`/events` の `reload` の前後の値と同じ外し方。T.34.153 で 1 つにした)。
+/// 中身は `config::printable_value` (`/events` の `reload` の前後の値と同じ外し方。T34.153 で 1 つにした)。
 fn setting_value_for_print(value: &str) -> String {
     // JSON の値をそのまま出すと文字列に引用符が付くので、単純なものは外す
     proxy_server::config::printable_value(value)

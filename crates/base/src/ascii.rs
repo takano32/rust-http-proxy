@@ -31,7 +31,7 @@ pub fn count(s: &str, byte: u8) -> usize {
 }
 
 /// token に使える字 (RFC 9110 §5.6.2 の tchar) の表。ヘッダー 1 行ごとに名前の全部の字を見るので、
-/// 1 字 1 回の表引きにしてある (T.29.8)。
+/// 1 字 1 回の表引きにしてある (T29.8)。
 const TCHAR: [bool; 256] = {
     let mut t = [false; 256];
     let mut i = 0;
@@ -60,7 +60,7 @@ const TCHAR: [bool; 256] = {
     t
 };
 
-/// 空でない token か (ヘッダーの名前・メソッド。T.29.8。T.32.15 で `proxy-origin` から移した)。
+/// 空でない token か (ヘッダーの名前・メソッド。T29.8。T32.15 で `proxy-origin` から移した)。
 #[inline]
 pub fn is_token(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| TCHAR[b as usize])
@@ -71,7 +71,7 @@ pub fn is_token(s: &str) -> bool {
 /// `-1`・`+5`・`5, 5`・空・`0x5`・21 桁 (u64 に収まらない) はどれも受け付けない。
 /// 先頭の `0` は文法どおり許す (`0007` は 7)。**確保しない**ので要求ごとの費用は数字の判定 1 回。
 /// 要求側 (`proxy-origin` の `request`) と応答側 (`proxy-msg` の `body`) が同じ決まりで読む
-/// (T.34.21 で 2 つあった同じ本文をここへ寄せた)。
+/// (T34.21 で 2 つあった同じ本文をここへ寄せた)。
 #[inline]
 pub fn content_length_value(v: &str) -> Option<u64> {
     // `str::parse::<u64>` は先頭の `+` を受け付けるので、数字だけであることを先に見る
@@ -104,7 +104,7 @@ mod tests {
         }
     }
 
-    /// `Content-Length` の値の形 (要求側と応答側が同じ決まりで読む。T.34.21 で `proxy-msg` から移した)。
+    /// `Content-Length` の値の形 (要求側と応答側が同じ決まりで読む。T34.21 で `proxy-msg` から移した)。
     #[test]
     fn content_length_value_accepts_only_plain_digits() {
         assert_eq!(content_length_value("0"), Some(0));

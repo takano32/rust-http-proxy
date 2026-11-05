@@ -1,6 +1,6 @@
 //! 自分宛ての要求 (ダッシュボード・オリジン形式・`Via` の印) がループしないことの結合テスト。
 //!
-//! 初めは `tests/proxy_test.rs` にあった (T.34.116 で割った)。
+//! 初めは `tests/proxy_test.rs` にあった (T34.116 で割った)。
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

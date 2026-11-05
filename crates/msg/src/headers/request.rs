@@ -38,7 +38,7 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
         // ここだけで落とすと両者が食い違う
         let framing_header = FRAMING_HEADERS.iter().any(|f| name.eq_ignore_ascii_case(f));
         // `Expect` はこちらが受け持つ (100-continue は自分で 100 を返し、それ以外は 417 で
-        // 断っている。T.28.3) ので、オリジンへは転送しない
+        // 断っている。T28.3) ので、オリジンへは転送しない
         if name.eq_ignore_ascii_case("host")
             || is_hop_by_hop_name(name)
             || name.eq_ignore_ascii_case("expect")
@@ -66,7 +66,7 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
             out.extend_from_slice(b"\r\n");
             continue;
         }
-        // 行末は CRLF にそろえる (T.32.15 (1))。行はクライアントの行末 (LF だけのこともある) を付けたまま
+        // 行末は CRLF にそろえる (T32.15 (1))。行はクライアントの行末 (LF だけのこともある) を付けたまま
         // 来るので、そのまま書くと LF だけの行とこちらが足す CRLF の行が混ざり、CRLF でしか区切らない
         // オリジンと読み方が食い違いうる。ふつうの行 (CRLF で終わる) は今までどおり 1 回で写す
         match line.as_bytes() {
@@ -106,7 +106,7 @@ pub fn write_request_headers(out: &mut Vec<u8>, headers: &[String], client_ip: O
 ///
 /// 熱い経路は [`write_request_headers`] が同じ規則で `out` へ直接書く。こちらは組を作る
 /// 読みやすい形で、`write_request_tests` が 1 バイトも違わないことを突き合わせる相手 (手本) として残す。
-/// 使うのは試験だけなので、試験のときだけ作る (クレートの外に利用者はいない。T.34.23)。
+/// 使うのは試験だけなので、試験のときだけ作る (クレートの外に利用者はいない。T34.23)。
 #[cfg(test)]
 pub(crate) fn sanitize_and_inject_headers(
     headers: &[String],

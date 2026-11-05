@@ -1,4 +1,4 @@
-// `scripts/check-dashboard.js` の節: 11. 端末から測るページ (probe.html) (T.34.140 で割った。単体では動かさない。
+// `scripts/check-dashboard.js` の節: 11. 端末から測るページ (probe.html) (T34.140 で割った。単体では動かさない。
 // 前の節の `const` を使うので、`check-dashboard.js` が名前の順につないで 1 つの本文として回す)
 // 11. 「端末から測る」ページ (`crates/web/src/probe.html`。T14.33) の関数。
 //     ブラウザが無いので、(1) 作り物の数列で `median`、(2) `/snapshot` の中の `/status` の

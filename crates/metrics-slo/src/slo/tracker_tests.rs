@@ -1,4 +1,4 @@
-//! 時間ごとの集計と `/slo` の応答の単体試験 (T.34.2 で `slo.rs` の `mod tests` から移した。名前はそのまま)。
+//! 時間ごとの集計と `/slo` の応答の単体試験 (T34.2 で `slo.rs` の `mod tests` から移した。名前はそのまま)。
 
 use super::super::judge::SPEED_BITS;
 use super::*;
@@ -211,7 +211,7 @@ fn out_of_order_samples_land_in_their_own_hour() {
     assert_eq!((h[0].judged, h[0].met), (2, 1));
 }
 
-/// **T.29.33 の受け入れ基準 (単体)**: 1 時間に確立 1,000 本・エラー 4 本なら比は満たし
+/// **T29.33 の受け入れ基準 (単体)**: 1 時間に確立 1,000 本・エラー 4 本なら比は満たし
 /// (4 / 1,004 = 0.0040)、6 本なら外す (6 / 1,006 = 0.0060)。エラーを確立 1 本の 5 秒に置いても
 /// (5 秒ごとなら 0.5 で外れる) 確立の多い 5 秒に置いても結果は同じ。
 #[test]
@@ -259,7 +259,7 @@ fn the_rates_are_judged_on_the_sum_of_the_hour() {
     }
 }
 
-/// **T.29.33**: 速さ (確立の 2 つ) は今までどおり 5 秒の標本ごと。比を満たした時間の達成は
+/// **T29.33**: 速さ (確立の 2 つ) は今までどおり 5 秒の標本ごと。比を満たした時間の達成は
 /// 速さを満たした 5 秒の数そのもの。
 #[test]
 fn the_speed_is_still_judged_every_five_seconds() {
@@ -286,7 +286,7 @@ fn the_speed_is_still_judged_every_five_seconds() {
     );
 }
 
-/// **T.29.33**: 直近 1 時間 (`last_hour`) は時間の区切りをまたいで、いまから 3,600 秒の合計。
+/// **T29.33**: 直近 1 時間 (`last_hour`) は時間の区切りをまたいで、いまから 3,600 秒の合計。
 /// 時間の区切りの判定とは別に読める (0 時台は 3 / 363 で外し、直近 1 時間は 3 / 723 で満たす)。
 #[test]
 fn the_last_hour_is_a_rolling_sum() {
@@ -331,7 +331,7 @@ fn the_last_hour_is_a_rolling_sum() {
     assert_eq!(tr.rate_hours_of_day(&th, t0), [[1, 1], [2, 0]]);
 }
 
-/// **T.30.4 の受け入れ基準 (単体)**: エラーが 2 件以上で、いちばん多い宛先がその時間のエラーの半分以上なら
+/// **T30.4 の受け入れ基準 (単体)**: エラーが 2 件以上で、いちばん多い宛先がその時間のエラーの半分以上なら
 /// その宛先の試行とエラーを外す。4 つの宛先に 1 件ずつ・1 件だけの時間は外さない (今までどおり)。
 #[test]
 fn the_error_rate_leaves_out_one_destination_with_most_of_the_errors_of_the_hour() {
@@ -447,7 +447,7 @@ fn the_global_tracker_is_configurable_and_resettable() {
     assert_eq!(report(1_789_084_800, 1).total.judged, 0);
 }
 
-/// 試験だけの小さな JSON の読み手: `s` が JSON の値 1 つとして読めるか (T.34.149)。
+/// 試験だけの小さな JSON の読み手: `s` が JSON の値 1 つとして読めるか (T34.149)。
 fn json_value_ok(s: &str) -> bool {
     fn ws(b: &[u8], i: &mut usize) {
         while *i < b.len() && b[*i].is_ascii_whitespace() {
@@ -543,7 +543,7 @@ fn the_tiny_json_reader_tells_good_from_bad() {
     assert!(!json_value_ok("[1 2]"));
 }
 
-/// **受け入れ基準 (T.34.149)**: `breaches` を 2 行目以降で打ち切っても、末尾に `,` を残さず
+/// **受け入れ基準 (T34.149)**: `breaches` を 2 行目以降で打ち切っても、末尾に `,` を残さず
 /// JSON として読める (前は `[{…},{…},]` になった)。外れた各時間に長い名前の宛先を外させて、
 /// 128 行の途中で [`MAX_BODY`] − 2 KiB を越えさせる。
 #[test]

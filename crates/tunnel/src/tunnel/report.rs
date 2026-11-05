@@ -187,7 +187,7 @@ fn record_stats(
     // CONNECT のホストと SNI の食い違い (T14.38)。旗は中継の入口で 1 回だけ立ててあり、
     // ここはホスト別統計が既に取る鍵の内側へ運ぶだけ (原子もシステムコールも増えない)
     detail.sni_mismatch = o.sni_mismatch;
-    // オリジン側のカーネルの RTT を区間の「確立 − RTT」の窓へ運ぶ (T.28.45)。上で個票に
+    // オリジン側のカーネルの RTT を区間の「確立 − RTT」の窓へ運ぶ (T28.45)。上で個票に
     // 渡したのと同じ値で、読み直さない
     detail.origin_rtt_us = rtt_us[ORIGIN_SIDE];
     // 自己ベンチ (T14.43) のトンネルは合計にも足さない (`/hosts` と同じ理由)
@@ -195,7 +195,7 @@ fn record_stats(
         o.metrics.add_bytes(transferred);
     }
     let host_key = format!("connect://{}", o.addr_str);
-    // 読んだ壁時計は接続元の個票にも渡す (トンネル 1 本で 1 回。T.34.146)
+    // 読んだ壁時計は接続元の個票にも渡す (トンネル 1 本で 1 回。T34.146)
     let now = o.metrics.record_host_detail(
         &host_key,
         HostOutcome::Bypass,

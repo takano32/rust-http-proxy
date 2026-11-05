@@ -54,7 +54,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // 猶予で待っている間に要求が届き始めたら、本来のアイドル時間まで待ち直す
     let extend = grace.map(|_| config.keepalive);
     let mut extended = false;
-    // 要求行とヘッダーを読み終える期限 (T.28.0)。普通の要求では時計を 1 回も読まない
+    // 要求行とヘッダーを読み終える期限 (T28.0)。普通の要求では時計を 1 回も読まない
     let mut clock = HeaderClock {
         stream: client,
         current: read_timeout,
@@ -212,7 +212,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     }
 
     // ACL / Host Check
-    // メソッドは大小を区別する (RFC 9110 §9.1。T.32.15 (6)。T.32.8 と同じ)。`connect` は未知のメソッド
+    // メソッドは大小を区別する (RFC 9110 §9.1。T32.15 (6)。T32.8 と同じ)。`connect` は未知のメソッド
     let is_connect = method == "CONNECT";
     // CONNECT の枠組みの検査 (T27.0)。断れば宛先へは接続もしない
     if is_connect && let Some(reason) = connect_header_reason(&req, has_body) {
@@ -305,7 +305,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
 }
 
 /// プロキシ自身のエンドポイント (/dashboard, /status, /metrics, /proxy.pac, /purge, /lookup, PURGE)
-/// なら応えて true を返す (T.34.165 で [`serve_one`] から出した)。
+/// なら応えて true を返す (T34.165 で [`serve_one`] から出した)。
 ///
 /// `port` は実際に受けたポート、`host` は要求の `Host` ヘッダー。
 #[inline(always)]
@@ -357,7 +357,7 @@ fn own_endpoint(
     endpoints::handle(&mut &*peer.client, method, target, &ep)
 }
 
-/// CONNECT トンネルへ移る [`Step::Connect`] を組む (T.34.165 で [`serve_one`] から出した)。
+/// CONNECT トンネルへ移る [`Step::Connect`] を組む (T34.165 で [`serve_one`] から出した)。
 #[inline(always)]
 fn connect_step(
     reader: &mut clientio::ClientReader<'_>,

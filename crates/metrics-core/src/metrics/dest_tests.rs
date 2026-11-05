@@ -1,9 +1,9 @@
 //! `/slo` が外す「443・80 宛てのエラーのいちばん多い宛先」と、満杯のホスト表の試験
-//! (T.34.33 で `latency_tests.rs` から移した)。
+//! (T34.33 で `latency_tests.rs` から移した)。
 
 use super::*;
 
-/// 時間の区切りの直前なら次の時間まで待つ (同じ時間の中で数えたいテスト用。T.30.4)。
+/// 時間の区切りの直前なら次の時間まで待つ (同じ時間の中で数えたいテスト用。T30.4)。
 fn away_from_the_hour_boundary() -> u64 {
     let now = crate::cache::now_epoch();
     if now % 3600 >= 3590 {
@@ -12,7 +12,7 @@ fn away_from_the_hour_boundary() -> u64 {
     crate::cache::now_epoch()
 }
 
-/// **T.30.4**: 443・80 宛てのエラーのいちばん多い宛先を、ホスト別統計の行で時間ごとに数える。
+/// **T30.4**: 443・80 宛てのエラーのいちばん多い宛先を、ホスト別統計の行で時間ごとに数える。
 ///
 /// 見るのは: (a) エラーの合計は名前解決に成功した 443・80 宛てだけ (`:993`・原因 `dns` は入らない)、
 /// (b) いちばん多い宛先の試行 = その時間の窓に入った成功 + エラー (成功は区切りで写した `timed` からの差。
@@ -88,7 +88,7 @@ fn the_destination_with_the_most_web_errors_is_counted_per_hour() {
     assert_eq!((cur.hour, cur.errors, cur.top_errors), (hour + 3600, 0, 0));
 }
 
-/// **T.32.10 (a)**: ホスト別統計が満杯のとき、新しい鍵は `last_seen` のいちばん古い行を 1 つ捨てて入る
+/// **T32.10 (a)**: ホスト別統計が満杯のとき、新しい鍵は `last_seen` のいちばん古い行を 1 つ捨てて入る
 /// (前は全部 `other` に畳まれた)。捨てた行の通算は `other` に足し、捨てた数は `hosts_evicted` に出る。
 /// 空きがあるうちは何も捨てない。
 #[test]
@@ -142,7 +142,7 @@ fn a_full_host_table_drops_the_oldest_row_for_a_new_key() {
     );
 }
 
-/// **T.34.145**: 満杯の表で `last_seen` が同着なら、捨てる行は名前の順で決まる (前は HashMap の
+/// **T34.145**: 満杯の表で `last_seen` が同着なら、捨てる行は名前の順で決まる (前は HashMap の
 /// 順で、実行ごとに違う行を捨てた)。同じ `last_seen` の 1,000 行に新しい鍵を 1 件入れると、
 /// 名前のいちばん小さい 2 行 (新しい鍵のぶんと、`other` の行を作るぶん) が捨てられる。
 #[test]
@@ -169,7 +169,7 @@ fn a_tie_on_last_seen_drops_the_rows_in_name_order() {
     assert!(names.iter().any(|h| h == "connect://h0002.example:443"));
 }
 
-/// **T.32.10 (c)**: `/slo` の宛先は、ホスト別統計から切り離した小さな表で数える。満杯の表から
+/// **T32.10 (c)**: `/slo` の宛先は、ホスト別統計から切り離した小さな表で数える。満杯の表から
 /// `other` に畳まれる宛先 (捨てられる行が無いとき) でも、その時間のエラーの宛先として数える。
 #[test]
 fn web_errors_count_their_destination_even_when_the_host_table_cannot_take_it() {
@@ -215,7 +215,7 @@ fn web_errors_count_their_destination_even_when_the_host_table_cannot_take_it() 
     assert_eq!(cur.top_attempts, 3);
 }
 
-/// **T.32.10 (c)**: 小さな表は 64 宛てまで。溢れた宛先は合計にだけ入る。
+/// **T32.10 (c)**: 小さな表は 64 宛てまで。溢れた宛先は合計にだけ入る。
 #[test]
 fn the_destination_table_of_the_hour_holds_up_to_64() {
     let m = Metrics::new();

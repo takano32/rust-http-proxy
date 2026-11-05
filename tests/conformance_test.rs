@@ -14,7 +14,7 @@ mod common;
 use common::*;
 
 /// 印の要求が届くまで待ってから、届いた要求を全部取る (断った要求が届いていないかを
-/// 見る所。固定の sleep の代わり。T.34.114)。
+/// 見る所。固定の sleep の代わり。T34.114)。
 fn settle_and_take(
     proxy_port: u16,
     origin_port: u16,
@@ -167,7 +167,7 @@ fn test_integration_versions_connect_ports_and_bad_chunks() {
     }
 }
 
-/// T.29.8: 要求行はちょうど 3 要素・対象は VCHAR・版は `HTTP/d.d`、ヘッダー名は空でない token。
+/// T29.8: 要求行はちょうど 3 要素・対象は VCHAR・版は `HTTP/d.d`、ヘッダー名は空でない token。
 /// 外れたら 400 で、オリジンへは 1 本も届かない (今までは 505 か、そのまま転送していた)。
 /// 正しい形 (区切りの空白が 2 個・`HTTP/1.0`・token の記号を使った名前) は今までどおり通る。
 #[test]

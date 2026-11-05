@@ -1,4 +1,4 @@
-//! `Entry::look` の単体試験 (T.34.55)。表 (`TABLE`) にも時計にも触らないので、鍵は握らない。
+//! `Entry::look` の単体試験 (T34.55)。表 (`TABLE`) にも時計にも触らないので、鍵は握らない。
 
 use super::*;
 use std::cell::Cell;

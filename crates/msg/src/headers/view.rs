@@ -8,7 +8,7 @@ use crate::ascii;
 /// 素通しの経路 (枠組みと `Connection` しか見ない) はこれだけで足りる。
 ///
 /// 値に UTF-8 として読めないバイト (obs-text) がある行は、名前だけ読んで値を `"\u{FFFD}"` 1 字にする
-/// (T.28.12)。以前は読めない行を空行と取り違えてそこで終わり、後ろの `Content-Length` などを
+/// (T28.12)。以前は読めない行を空行と取り違えてそこで終わり、後ろの `Content-Length` などを
 /// 見落としていた (応答の先頭を行ごとの `String` で読んでいた頃は、その前に 502 で落ちていた)。
 /// 値を読めないものとして渡すので、`Content-Length` なら 502、`Transfer-Encoding` なら閉じるまでになる。
 pub fn response_lines(head: &[u8]) -> impl Iterator<Item = (&str, &str)> {

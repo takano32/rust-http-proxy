@@ -1,4 +1,4 @@
-//! `/status` の `memory` (T14.21。T.34.32 で `status.rs` から移した)。
+//! `/status` の `memory` (T14.21。T34.32 で `status.rs` から移した)。
 //!
 //! 180 行の `memory_json` を、記録のリングの見積もり ([`RingBytes::full`])・いま埋まっているぶんの
 //! 実測 ([`RingBytes::used`])・描画 ([`memory_json`]) に割った。出す JSON は 1 バイトも変えていない
@@ -188,7 +188,7 @@ impl RingBytes {
 ///
 /// **足して RSS になる形ではない** (README の `/status` の節にも同じ注意を書いてある):
 ///
-/// - `rss` は今読んだ `VmRSS` (T.32.4。それまではキャッシュのプローブの値で、起動直後は古かった)。
+/// - `rss` は今読んだ `VmRSS` (T32.4。それまではキャッシュのプローブの値で、起動直後は古かった)。
 ///   末尾の `rss_anon` / `rss_file` / `rss_shmem` は**同じ 1 回の読み**の `RssAnon` / `RssFile` /
 ///   `RssShmem` で、足すと `rss` になる (file は本体と libc・libcrypto などの共有ライブラリ)
 /// - `heap_used` / `heap_free` / `mmap` は `mallinfo2(3)` の `uordblks` / `fordblks` /
@@ -197,7 +197,7 @@ impl RingBytes {
 ///   `mmap` も確保しただけで触っていないページは常駐しない (`calloc` の大きな塊など)
 /// - `stacks_estimate` は**予約**の合計。接続スレッド (`conn`) は 256 KiB、それ以外は Rust の
 ///   既定 2 MiB。常駐しているのは末尾の `stacks_resident` (smaps のスタックの写像の `Rss` の和。
-///   T.32.4) で、1 本 8〜28 KiB しか触っていない
+///   T32.4) で、1 本 8〜28 KiB しか触っていない
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
 ///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
 /// - `rings` は記録のリングが**満杯のときの見積もり** ([`RingBytes::full`])。`readers` だけは
@@ -206,7 +206,7 @@ impl RingBytes {
 /// - `rings_used` は同じ鍵で**いま埋まっているぶんの実バイト** ([`RingBytes::used`])。
 ///   必ず `rings_used.<名前> <= rings.<名前>`。割合は出さない (`used ÷ capacity` で
 ///   出せるが、割合からは実バイトを戻せない)
-/// - `trim` は 1 時間に 1 回の `malloc_trim(0)` の通算 (T.30.1)。`count` は呼んだ回数、
+/// - `trim` は 1 時間に 1 回の `malloc_trim(0)` の通算 (T30.1)。`count` は呼んだ回数、
 ///   `skipped` は間隔は来たが `heap_free <= heap_used` で呼ばなかった回数、返した量は RSS の差
 /// - `rings_touched` は起動時に `rings` の置き場を確保して触ったか (T17.8)。`true` なら
 ///   `rss` は起動直後から天井の近くに居る (`--lite` と Linux 以外は `false`)
@@ -235,7 +235,7 @@ pub(super) fn memory_json(
     let other = threads.saturating_sub(conn_threads);
     let stacks = (threads > 0).then(|| conn * CONN_STACK + other * THREAD_STACK);
     let rss = detail.map(|d| d.rss);
-    // スタックの常駐 (T.32.4)。smaps を 1 回読む (この口に来たときだけ)
+    // スタックの常駐 (T32.4)。smaps を 1 回読む (この口に来たときだけ)
     let stacks_resident = facts.stacks_resident();
     let heap = facts.heap();
     let opt = |v: Option<u64>| v.map_or_else(|| "null".to_string(), |x| x.to_string());
@@ -275,10 +275,10 @@ pub(super) fn memory_json(
         // 起動 60 秒の heap の基準 (T24.4)。**この起動のぶんだけ**。これも末尾に足した
         // (無ければ `null`。古い版の雪像と同じ形)
         baseline,
-        // 1 時間に 1 回の `malloc_trim` の通算 (T.30.1)。これも `memory` の末尾に足した。
+        // 1 時間に 1 回の `malloc_trim` の通算 (T30.1)。これも `memory` の末尾に足した。
         // `history` スレッドが動かない (`--lite` / `PROXY_STATS_PERSIST=off`) なら 0 / `null`
         crate::sysinfo::trim_stats().to_json(),
-        // 常駐の内訳 (T.32.4)。`rss` と同じ 1 回の読み。**`memory` の末尾に足した**
+        // 常駐の内訳 (T32.4)。`rss` と同じ 1 回の読み。**`memory` の末尾に足した**
         opt(detail.and_then(|d| d.anon)),
         opt(detail.and_then(|d| d.file)),
         opt(detail.and_then(|d| d.shmem)),
@@ -291,7 +291,7 @@ pub(super) fn memory_json(
 mod tests {
     use super::*;
 
-    /// 11 項目のどれも `used <= full` で、`total` は 11 項目の和 (T.34.32)。
+    /// 11 項目のどれも `used <= full` で、`total` は 11 項目の和 (T34.32)。
     #[test]
     fn the_rings_in_use_never_exceed_the_full_estimate() {
         let m = Metrics::new();
@@ -323,7 +323,7 @@ mod tests {
         assert!(used.total() <= full.total());
     }
 
-    /// 書き出しは 11 項目を名前の順に並べ、最後に `total` (T.34.32)。
+    /// 書き出しは 11 項目を名前の順に並べ、最後に `total` (T34.32)。
     #[test]
     fn the_rings_json_lists_eleven_names_then_the_total() {
         let r = RingBytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);

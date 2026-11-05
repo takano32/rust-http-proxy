@@ -1,9 +1,9 @@
-//! 要求ごとの記録 ([`Metrics::record`]。T.34.26 で `metrics.rs` から移した)。
+//! 要求ごとの記録 ([`Metrics::record`]。T34.26 で `metrics.rs` から移した)。
 //!
 //! 1 件の分類 ([`Shape::of`]。純粋)・区間への加算 ([`Interval::observe`])・段階の窓
-//! ([`HostTable::note_profile`])・行の更新 ([`HostTable::count_host`]) に割ってある (T.34.30)。
+//! ([`HostTable::note_profile`])・行の更新 ([`HostTable::count_host`]) に割ってある (T34.30)。
 //! 割っただけで、式も評価の順も変えていない。どれも `#[inline]` で、`record` の中へ畳まれる
-//! (codegen-units = 4 で別の CGU に落ちて呼び出しにならないように。T.34.0 の教訓)。
+//! (codegen-units = 4 で別の CGU に落ちて呼び出しにならないように。T34.0 の教訓)。
 
 use super::host_table::{counted_key, evict_oldest_host, web_port};
 use super::*;
@@ -12,7 +12,7 @@ impl Metrics {
     /// ホスト別に 1 要求を数える (応答時間なし)。
     ///
     /// 返すのは数えるときに読んだ壁時計 (epoch 秒)。同じ要求の
-    /// [`record_client_at`](Self::record_client_at) に渡すと、要求 1 本で時計を読むのが 1 回になる (T.34.146)。
+    /// [`record_client_at`](Self::record_client_at) に渡すと、要求 1 本で時計を読むのが 1 回になる (T34.146)。
     pub fn record_host(&self, host: &str, outcome: HostOutcome, bytes: u64) -> u64 {
         self.record(host, outcome, bytes, None, &Detail::default())
     }
@@ -24,7 +24,7 @@ impl Metrics {
 
     /// [`record_host_timed`](Self::record_host_timed) に内訳を添えた版 (T12.4 (2))。
     /// 内訳は**この関数が取る鍵の内側**でしか触らないので、原子操作は増えない。
-    /// 返すのは [`record_host`](Self::record_host) と同じく、読んだ壁時計 (epoch 秒。T.34.146)。
+    /// 返すのは [`record_host`](Self::record_host) と同じく、読んだ壁時計 (epoch 秒。T34.146)。
     pub fn record_host_detail(
         &self,
         host: &str,
@@ -36,7 +36,7 @@ impl Metrics {
         self.record(host, outcome, bytes, took, &detail)
     }
 
-    /// 1 要求を数え、読んだ壁時計 (epoch 秒) を返す (T.34.146)。
+    /// 1 要求を数え、読んだ壁時計 (epoch 秒) を返す (T34.146)。
     fn record(
         &self,
         host: &str,
@@ -69,7 +69,7 @@ impl Metrics {
         for iv in [&mut hosts.total, &mut hosts.interval] {
             iv.observe(&s, detail);
         }
-        // 443・80 宛ての、名前解決に成功したミス (T.33.3。`dns_slow` が読む)。ふつうの要求は名前がキャッシュに
+        // 443・80 宛ての、名前解決に成功したミス (T33.3。`dns_slow` が読む)。ふつうの要求は名前がキャッシュに
         // 当たってミスが 0 なので、比較 1 回で抜ける (上の繰り返しの中に置くと、成功の経路が +12 Ir だった)
         if detail.dns_misses != 0 && !s.dns_failed && web_port(host) {
             for iv in [&mut hosts.total, &mut hosts.interval] {
@@ -105,7 +105,7 @@ impl Metrics {
     }
 }
 
-/// 1 件の形 (T.34.30)。[`Metrics::record`] が鍵の内側で 1 回だけ作り、区間・段階・行の更新が読む。
+/// 1 件の形 (T34.30)。[`Metrics::record`] が鍵の内側で 1 回だけ作り、区間・段階・行の更新が読む。
 ///
 /// **純粋** (鍵も時計も原子も触らない) なので、`Metrics` を組まずに試験できる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,11 +157,11 @@ impl Shape {
         // (下の `stats.count`。「その相手に掛かった時間」なので失敗も入れたまま) に残る。
         // 比較はここで 1 回だけ (下の `errors` の分岐が元から見ていたものを使い回す)
         let failed = outcome == HostOutcome::Error;
-        // 「確立 − カーネルの RTT」(T.28.45)。RTT が読めた CONNECT だけ (forward は 0 で来る)。
+        // 「確立 − カーネルの RTT」(T28.45)。RTT が読めた CONNECT だけ (forward は 0 で来る)。
         // 確立は `dns + connect` (入口の ACL が先に引いた名前解決も入る = `/recent` の
         // `ms.dns + ms.connect`)。us で引いて ms に**切り上げ** (5.2 ms を 5 に丸めて閾を
         // 通さない)、負は 0。引き算 1 回で、時計もシステムコールも増えない
-        // T.29.12: 名前解決を除いた `connect − RTT` も同じ引き算でもう 1 つ (`/slo` の確立の 2 つが読む。
+        // T29.12: 名前解決を除いた `connect − RTT` も同じ引き算でもう 1 つ (`/slo` の確立の 2 つが読む。
         // 確立の外れの大半はリゾルバの遅さだった = 10-26 の 36 本で excess の 77%)
         let excess = (detail.origin_rtt_us > 0).then(|| {
             let rtt_us = detail.origin_rtt_us as u64;
@@ -176,7 +176,7 @@ impl Shape {
             )
         });
         let dns_failed = detail.cause == Some(ErrCause::Dns);
-        // 443・80 以外の宛先への試み (T.30.3。`/slo` の `error_rate` の分子と分母から引く)。
+        // 443・80 以外の宛先への試み (T30.3。`/slo` の `error_rate` の分子と分母から引く)。
         // 試み = 窓に入る成功か、原因 `dns` 以外のエラー (`/slo` の `attempts` と同じ数え方)。
         // ポートは鍵の末尾 4 バイトを比べるだけ ([`web_port`]。解かない)。成功の経路では
         // 比較 2 回で、確保もシステムコールも増えない
@@ -185,8 +185,8 @@ impl Shape {
         } else {
             ms.is_some() && counted
         } && !web_port(host);
-        // 名前解決に成功した 443・80 宛てのエラー (T.30.4。いちばん多い宛先を `/slo` が外す)。
-        // **エラーの経路だけ**: 成功は `failed` の比較 1 回で抜ける (`web_port` は T.30.3 の
+        // 名前解決に成功した 443・80 宛てのエラー (T30.4。いちばん多い宛先を `/slo` が外す)。
+        // **エラーの経路だけ**: 成功は `failed` の比較 1 回で抜ける (`web_port` は T30.3 の
         // `other_port` が成功のときだけ読んでいる)
         let web_error = failed && !dns_failed && web_port(host);
         Shape {
@@ -203,8 +203,8 @@ impl Shape {
 }
 
 impl Interval {
-    /// 1 件を区間の合計に足す (T.34.30。[`Metrics::record`] が `total` と `interval` の 2 つに呼ぶ)。
-    /// 443・80 宛ての名前解決のミス (`web_dns_*`) は足さない (呼ぶ側が別の分岐で足す。T.33.3)。
+    /// 1 件を区間の合計に足す (T34.30。[`Metrics::record`] が `total` と `interval` の 2 つに呼ぶ)。
+    /// 443・80 宛ての名前解決のミス (`web_dns_*`) は足さない (呼ぶ側が別の分岐で足す。T33.3)。
     #[inline]
     pub(super) fn observe(&mut self, s: &Shape, detail: &Detail) {
         self.dns_misses += detail.dns_misses;
@@ -239,7 +239,7 @@ impl Interval {
 }
 
 impl HostTable {
-    /// 段階の窓と直近の標本に 1 件を入れる (T.34.30)。呼ぶのは「時間があり、窓に入る鍵で、
+    /// 段階の窓と直近の標本に 1 件を入れる (T34.30)。呼ぶのは「時間があり、窓に入る鍵で、
     /// 段階を記録していて、エラーでない」ときだけ ([`Metrics::record`] が見る)。
     #[inline]
     pub(super) fn note_profile(&mut self, s: &Shape, d: Duration, detail: &Detail, now: u64) {
@@ -279,7 +279,7 @@ impl HostTable {
         }
     }
 
-    /// ホスト別の行に 1 件を数える (T.34.30)。無ければ行を作る (満杯なら古い行を捨てるか `other` に畳む)。
+    /// ホスト別の行に 1 件を数える (T34.30)。無ければ行を作る (満杯なら古い行を捨てるか `other` に畳む)。
     #[allow(clippy::too_many_arguments)]
     #[inline]
     pub(super) fn count_host(
@@ -307,7 +307,7 @@ impl HostTable {
             return;
         }
         // 満杯なら `last_seen` がいちばん古い行を 1 つ捨てて (通算は `other` に足す) 新しい鍵を入れる
-        // (T.32.10。利用者の決定 (a))。捨てられる行が無いときだけ今までどおり `other` に畳む
+        // (T32.10。利用者の決定 (a))。捨てられる行が無いときだけ今までどおり `other` に畳む
         let key = if self.map.len() < MAX_HOSTS || evict_oldest_host(self) {
             host.to_string()
         } else {
@@ -316,7 +316,7 @@ impl HostTable {
         let stats = self.map.entry(key).or_default();
         stats.count(now, outcome, bytes, took, detail);
         if s.failed {
-            // `/slo` の宛先は畳まれても本当の鍵で数える (T.32.10 (c))
+            // `/slo` の宛先は畳まれても本当の鍵で数える (T32.10 (c))
             self.dests
                 .on_error(stats, host, took.is_some(), s.web_error);
         }

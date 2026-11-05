@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/framing-probe.py` の判断 (判定・表の行・まとめ・ケースの表) の単体テスト (T.34.136)。
+"""`scripts/framing-probe.py` の判断 (判定・表の行・まとめ・ケースの表) の単体テスト (T34.136)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 

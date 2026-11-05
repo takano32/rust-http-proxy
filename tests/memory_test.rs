@@ -3,7 +3,7 @@
 //! 見るのは 4 つ:
 //!
 //! 1. `memory.rss` は今読んだ値で、同じ読みの `rss_anon + rss_file + rss_shmem` と 1 頁以内で
-//!    合い、`stacks_resident` は予約より小さいこと (T.32.4。それまでは実バイナリでは
+//!    合い、`stacks_resident` は予約より小さいこと (T32.4。それまでは実バイナリでは
 //!    `cache.system.process_rss_bytes` と同じプローブの値で、起動直後は古かった)
 //! 2. プローブが止まっているとき (テスト用プロキシ) は、その場で読んだ**今の** RSS が出ること
 //! 3. `mallinfo2` が読める環境では `heap_used + heap_free + mmap ≤ rss × 1.1`、
@@ -41,8 +41,8 @@ fn memory_of(status: &str) -> String {
     panic!("memory の括弧が閉じていない: {}", rest);
 }
 
-/// `memory` の `,"trim":{…}` (T.30.1) から後ろを外した手前を返す。`trim` の後ろは常駐の内訳の
-/// 4 つ (T.32.4) で、それが `memory` の最後の鍵であることも見る。
+/// `memory` の `,"trim":{…}` (T30.1) から後ろを外した手前を返す。`trim` の後ろは常駐の内訳の
+/// 4 つ (T32.4) で、それが `memory` の最後の鍵であることも見る。
 fn without_trim(mem: &str) -> &str {
     let (head, tail) = mem
         .rsplit_once(",\"trim\":{")
@@ -68,7 +68,7 @@ fn without_trim(mem: &str) -> &str {
     head
 }
 
-/// 常駐の内訳 (T.32.4): `rss_anon + rss_file + rss_shmem` は同じ読みの `rss` に 1 頁以内で合い、
+/// 常駐の内訳 (T32.4): `rss_anon + rss_file + rss_shmem` は同じ読みの `rss` に 1 頁以内で合い、
 /// スタックの常駐は予約 (`stacks_estimate`) より小さい。
 fn check_resident(mem: &str) {
     let rss = json::uint_opt(mem, "rss").expect("rss");
@@ -171,7 +171,7 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
         );
     }
 
-    // (2) ヒープと常駐の内訳 (T.32.4)
+    // (2) ヒープと常駐の内訳 (T32.4)
     check_heap(&mem, rss);
     check_resident(&mem);
 
@@ -241,7 +241,7 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     // (6) リングを起動時に触るのは `main` だけ (T17.8)。テスト用プロキシは触らないので `false`。
     // 鍵は `memory` の末尾に足した (`rings_used` までの並びは動かさない)。
     // **その後ろに `baseline` が付く** (状態ファイルを持たないテスト用プロキシなので `null`。T24.4)。
-    // さらに後ろが `trim` (T.30.1。中身は `tests/trim_test.rs`)
+    // さらに後ろが `trim` (T30.1。中身は `tests/trim_test.rs`)
     let head = without_trim(&mem);
     assert!(
         head.ends_with("},\"rings_touched\":false,\"baseline\":null"),
@@ -250,7 +250,7 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     );
 }
 
-/// 実バイナリでは、`memory.rss` が今読んだ値で常駐の内訳と合い (T.32.4。それまでは
+/// 実バイナリでは、`memory.rss` が今読んだ値で常駐の内訳と合い (T32.4。それまでは
 /// `cache.system.process_rss_bytes` と同じ値で、起動直後は古かった)、
 /// `arenas` に `PROXY_MALLOC_ARENAS` が出る。
 ///

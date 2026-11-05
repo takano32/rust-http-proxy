@@ -1,9 +1,9 @@
-//! `proc` の単体試験 (T.34.61 で `proc.rs` の `mod tests` をそのまま移した)。
+//! `proc` の単体試験 (T34.61 で `proc.rs` の `mod tests` をそのまま移した)。
 
 use super::kept::KEPT_REOPEN_EVERY;
 use super::*;
 
-/// 読む中身は `fs::read_to_string` と同じであること (4 KiB を越える・空・UTF-8 でない・無い。T.29.20)。
+/// 読む中身は `fs::read_to_string` と同じであること (4 KiB を越える・空・UTF-8 でない・無い。T29.20)。
 #[test]
 fn read_small_matches_read_to_string() {
     let dir = std::env::temp_dir().join(format!("read-small-{}", std::process::id()));
@@ -36,7 +36,7 @@ fn read_small_matches_read_to_string() {
     }
 }
 
-/// 開いたままのファイル (T.32.21): 消えて現れる・初めから無い・4 KiB を越える。
+/// 開いたままのファイル (T32.21): 消えて現れる・初めから無い・4 KiB を越える。
 #[test]
 fn kept_files_follow_a_file_that_vanishes_and_reappears() {
     let dir = std::env::temp_dir().join(format!("kept-files-{}", std::process::id()));
@@ -81,7 +81,7 @@ fn kept_files_follow_a_file_that_vanishes_and_reappears() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// procfs の実物を開いたまま読んでも `fs::read_to_string` と同じ形 (T.32.21)。
+/// procfs の実物を開いたまま読んでも `fs::read_to_string` と同じ形 (T32.21)。
 /// `/proc/net/netstat` は 4 KiB を越えうる (数値は動くので、見出しの行を比べる)。
 #[cfg(target_os = "linux")]
 #[test]
@@ -172,7 +172,7 @@ fn parses_a_task_stat_line() {
     assert_eq!(parse_task_stat("こわれている"), None);
 }
 
-/// T.34.61: カーネルが 15 文字で切った comm (`TASK_COMM_LEN` - 1) はそのまま返す (末尾を足さない)。
+/// T34.61: カーネルが 15 文字で切った comm (`TASK_COMM_LEN` - 1) はそのまま返す (末尾を足さない)。
 #[test]
 fn a_task_stat_with_a_truncated_comm_keeps_the_15_characters() {
     let line = "77 (proxy-history-w) R 1 1 0 0 -1 4194368 0 0 0 0 5 7 0 0 20 0 8 0 100 0";
@@ -185,7 +185,7 @@ fn a_task_stat_with_a_truncated_comm_keeps_the_15_characters() {
     assert_eq!(comm, "");
 }
 
-/// T.34.61: 項目が足りない行 (stime まで届かない・状態が無い・数でない) は `None`。
+/// T34.61: 項目が足りない行 (stime まで届かない・状態が無い・数でない) は `None`。
 #[test]
 fn a_task_stat_without_enough_fields_is_none() {
     // utime (項目 14) までで stime が無い
@@ -259,7 +259,7 @@ fn a_task_directory_without_syscall_is_partial() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// スレッドの `stat` を開いたまま読む (T.32.21): 消えたスレッドの記述子は閉じ、
+/// スレッドの `stat` を開いたまま読む (T32.21): 消えたスレッドの記述子は閉じ、
 /// 生まれたスレッドは読み、読んだ値は開いて読むのと同じ。
 #[cfg(target_os = "linux")]
 #[test]

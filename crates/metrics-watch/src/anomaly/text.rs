@@ -79,7 +79,7 @@ pub(super) fn fired_text(kind: Kind, w5: &Summary, base: &Summary, f: &Facts<'_>
 fn connect_p95_text(head: &str, w5: &Summary, base: &Summary) -> String {
     let p95 = w5.conn_excess.quantile_ms(0.95);
     let p95_base = base.conn_excess.quantile_ms(0.95);
-    // `connect-rtt` = 名前解決を除いた「確立 − RTT」(T.29.11)。倍率は基準値 1 ms を下限に割る
+    // `connect-rtt` = 名前解決を除いた「確立 − RTT」(T29.11)。倍率は基準値 1 ms を下限に割る
     format!(
         "{}: connect-rtt p95 {} ms over 5m is {:.1}x the 1h baseline {} ms ({} of {} connects)",
         head,
@@ -93,7 +93,7 @@ fn connect_p95_text(head: &str, w5: &Summary, base: &Summary) -> String {
 
 /// (2) `dns_slow` が立ったとき。
 ///
-/// 443・80 宛ての、名前解決に成功したミスの数字 (T.32.16・T.33.3)。外したぶん (443・80 以外の宛ての
+/// 443・80 宛ての、名前解決に成功したミスの数字 (T32.16・T33.3)。外したぶん (443・80 以外の宛ての
 /// 成功したミスと、失敗のミス) があればその回数も書く
 fn dns_slow_text(head: &str, w5: &Summary, f: &Facts<'_>) -> String {
     let mut left_out = String::new();
@@ -121,7 +121,7 @@ fn dns_slow_text(head: &str, w5: &Summary, f: &Facts<'_>) -> String {
 /// (3) `errors` が立ったとき。
 fn errors_text(head: &str, w5: &Summary) -> String {
     let by = causes(&w5.errors_by_cause);
-    // 数は判定に使った数 (`/slo` と同じ数え方。T.32.36)。外したもの (名前解決の失敗と
+    // 数は判定に使った数 (`/slo` と同じ数え方。T32.36)。外したもの (名前解決の失敗と
     // 443・80 以外の宛先のエラー) があればその件数も書く (無ければ文面は今までどおり)。
     // 原因の内訳は標本の 8 つのまま (外したものも入る)
     let dns = w5.dns_failed_errors();
@@ -237,7 +237,7 @@ fn tunnel_spin_text(head: &str, f: &Facts<'_>) -> String {
 
 /// (9) `dns_miss_rate` が立ったとき。名前解決のミスの**率** (T15.0 (9))。窓は 1 時間
 ///
-/// 名前解決に成功したミスで数える (T.32.36)。失敗のぶんを外していればその回数も書く
+/// 名前解決に成功したミスで数える (T32.36)。失敗のぶんを外していればその回数も書く
 fn dns_miss_rate_text(head: &str, base: &Summary) -> String {
     format!(
         "{}: dns misses {:.2}/connect over 1h (threshold {:.2}; {} misses, {} connects{})",

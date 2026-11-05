@@ -23,7 +23,7 @@ pub fn limit_malloc_arenas(max: c_int) -> bool {
 const M_TRIM_THRESHOLD: c_int = -1;
 const M_MMAP_THRESHOLD: c_int = -3;
 
-/// glibc の mmap の閾を `bytes` に固定し、trim の閾をその 4 倍にする (T.32.3)。
+/// glibc の mmap の閾を `bytes` に固定し、trim の閾をその 4 倍にする (T32.3)。
 /// **スレッドを作る前に 1 回だけ呼ぶこと。** 戻り値は 2 つとも受け付けられたか。
 ///
 /// glibc は既定で「動く閾」を使い、mmap で取った塊を free するたびに閾をその大きさまで
@@ -48,7 +48,7 @@ pub(super) fn mmap_thresholds(bytes: usize) -> (c_int, c_int) {
 mod tests {
     use super::*;
 
-    /// trim の閾は mmap の閾の 4 倍で、どちらも `c_int` で頭打ち (T.32.3)。
+    /// trim の閾は mmap の閾の 4 倍で、どちらも `c_int` で頭打ち (T32.3)。
     #[test]
     fn the_trim_threshold_is_four_times_the_mmap_threshold_and_both_fit_an_int() {
         assert_eq!(mmap_thresholds(256 * 1024), (256 * 1024, 1024 * 1024));

@@ -1,5 +1,5 @@
 //! `dlopen` / `dlsym` で解決する OpenSSL の関数ポインタの束 (`Api`) と、使う定数・型。
-//! T.34.77 で `tls.rs` から移した (本体は変えていない)。
+//! T34.77 で `tls.rs` から移した (本体は変えていない)。
 
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_ulong, c_void};
 

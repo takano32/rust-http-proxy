@@ -1,4 +1,4 @@
-//! 試験の一時ディレクトリと、実バイナリに読ませる `.env` の共通の文面 (T.34.107)。
+//! 試験の一時ディレクトリと、実バイナリに読ませる `.env` の共通の文面 (T34.107)。
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,7 @@ pub const ENV_BASE: &str = "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL
 /// 使う側が作るもの用)。
 ///
 /// pid を付けるのは、worktree を並べて同じ試験を回したとき、別の実行が使っている最中の
-/// 置き場を消さないため (T.34.162。[`scratch_dir`] と同じ)。
+/// 置き場を消さないため (T34.162。[`scratch_dir`] と同じ)。
 pub fn fresh_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("{}-{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

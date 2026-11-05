@@ -1,6 +1,6 @@
 //! 要求を読めずに断った理由 ([`BadRequestReason`]。T14.28)。**断る経路からだけ**通る。
 
-/// 要求を読めずに断った理由 (T14.28 / T19.2 / T27.5 / T.29.10)。**10 種で固定** (足すときは末尾に)。
+/// 要求を読めずに断った理由 (T14.28 / T19.2 / T27.5 / T29.10)。**10 種で固定** (足すときは末尾に)。
 ///
 /// 公開ポートには走査 (scanner) の要求が来る。今までは 400 / 414 / 431 で閉じるだけで
 /// **何が来たか**の数が無かったので、`/status` の `rejected_requests` (理由別) と
@@ -32,8 +32,8 @@ pub enum BadRequestReason {
     /// ヘッダーの形が不正 (名前とコロンの間に空白がある = RFC 9112 §5.1、値に CR / LF / NUL がある =
     /// RFC 9110 §5.5)。どちらも前段と後段で読み方が割れる (要求の密輸)。T27.5
     BadHeader = 8,
-    /// 要求行とヘッダーが期限 (`PROXY_HEADER_TIMEOUT_SECS`) までに揃わず 408 で閉じた (T.28.0)。
-    /// T.29.10 までは debug ログだけで数が無く、`/recent` の理由も CONNECT の確立の締め切りと
+    /// 要求行とヘッダーが期限 (`PROXY_HEADER_TIMEOUT_SECS`) までに揃わず 408 で閉じた (T28.0)。
+    /// T29.10 までは debug ログだけで数が無く、`/recent` の理由も CONNECT の確立の締め切りと
     /// 同じ `error:timeout` だった
     HeaderTimeout = 9,
 }
@@ -101,7 +101,7 @@ impl BadRequestReason {
     /// 読めるなら要求行そのものの形が足りない ([`BadRequestReason::RequestLine`])。
     ///
     /// 区切りは要求行を割る側 (`proxy-server` の `check_request_line`) と同じ **ASCII の空白だけ**
-    /// (T.34.142。今までは Unicode の空白で割っていたので、`G\u{a0}ET` を `G` と読んで
+    /// (T34.142。今までは Unicode の空白で割っていたので、`G\u{a0}ET` を `G` と読んで
     /// `request_line` に数えていた)。
     pub fn of_request_line(line: &str) -> BadRequestReason {
         match line.split_ascii_whitespace().next() {
@@ -121,7 +121,7 @@ impl BadRequestReason {
         if !is_method_token(method) {
             return BadRequestReason::Method;
         }
-        // 絶対 URI のスキームは大小を区別しない (`HTTP://` も。T.28.33)、マッピング形式はパスなので小文字だけ
+        // 絶対 URI のスキームは大小を区別しない (`HTTP://` も。T28.33)、マッピング形式はパスなので小文字だけ
         let absolute = ["http://", "https://"].iter().any(|p| {
             target
                 .get(..p.len())
@@ -216,7 +216,7 @@ mod tests {
         );
     }
 
-    /// 区切りは ASCII の空白だけ (要求行を割る側と同じ。T.34.142)。NBSP はメソッドの中に残るので
+    /// 区切りは ASCII の空白だけ (要求行を割る側と同じ。T34.142)。NBSP はメソッドの中に残るので
     /// `G\u{a0}ET\u{a0}/x` は 1 語 = token でない = `method` (今までは `G` と読んで `request_line`)。
     #[test]
     fn a_request_line_is_split_on_ascii_whitespace_only() {

@@ -1,4 +1,4 @@
-//! 閉じた接続のリングの単体試験 (T.34.2 で `conns.rs` の `conn_tests` から移した。名前はそのまま)。
+//! 閉じた接続のリングの単体試験 (T34.2 で `conns.rs` の `conn_tests` から移した。名前はそのまま)。
 
 use super::*;
 use crate::recent::{CloseReason, SIDES, STAGES};
@@ -31,7 +31,7 @@ fn entry(id: u64) -> RecentEntry {
 }
 
 /// まだファイルに書いていない件は古い順に取り出し、取り出した所まで印が進む。`max` を越えるぶんは
-/// 古い方から落として件数だけ返す。読み戻した件は書き直さない (T14.9。T.34.2 で直に押さえる)。
+/// 古い方から落として件数だけ返す。読み戻した件は書き直さない (T14.9。T34.2 で直に押さえる)。
 #[test]
 fn unwritten_entries_come_out_oldest_first_and_restored_ones_are_not_rewritten() {
     let ring = RecentRing::new();

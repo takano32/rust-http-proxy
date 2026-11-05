@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RSS の段を手元で再生して、どの確保が残るかを測る (T.32.0)。
+"""RSS の段を手元で再生して、どの確保が残るかを測る (T32.0)。
 
     scripts/memory-replay.py target/release/rust-http-proxy            # 4 つとも
     scripts/memory-replay.py BIN --only a,d                             # 選んで
@@ -11,7 +11,7 @@
 
 どの場面も、まず手元のオリジンへの CONNECT を `--warm` 本 (既定 2,000) 流して `/recent` を埋める。
 
-- (a) 重い口: `/snapshot` を 5 回 (日次の雪像は同じ組み立てで上限が大きいだけ。T.29.16)
+- (a) 重い口: `/snapshot` を 5 回 (日次の雪像は同じ組み立てで上限が大きいだけ。T29.16)
 - (b) 名前解決の総当たり: 名前の引けない宛先 (`*.invalid`) への CONNECT を `--nx` 本 (既定 4,000、8 並列)
 - (c) (b) のあとに (a)
 - (d) メモリのキャッシュに 14 MiB の forward GET を入れて PURGE (= 追い出し) を 3 回、

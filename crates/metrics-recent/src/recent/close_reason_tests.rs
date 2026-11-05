@@ -1,4 +1,4 @@
-//! 閉じた理由の単体試験 (T.34.2 で `conns.rs` の `conn_tests` から移した。名前はそのまま)。
+//! 閉じた理由の単体試験 (T34.2 で `conns.rs` の `conn_tests` から移した。名前はそのまま)。
 
 use super::*;
 use crate::recent::{CLOSE_REASON_NAMES, CLOSE_REASONS};
@@ -21,7 +21,7 @@ fn every_close_reason_survives_the_round_trip() {
         // T25.0。DNS の失敗は内訳の綴りで出る
         (CloseReason::ErrorDns(DnsCause::Nxdomain), "error:nxdomain"),
         (CloseReason::ErrorDns(DnsCause::DnsTemp), "error:dns_temp"),
-        // T.29.10。408 は確立の締め切り (`error:timeout`) と別の綴り
+        // T29.10。408 は確立の締め切り (`error:timeout`) と別の綴り
         (CloseReason::HeaderTimeout, "error:header_timeout"),
     ];
     for (reason, name) in all {

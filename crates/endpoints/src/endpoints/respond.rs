@@ -8,7 +8,7 @@ pub(super) struct Reply {
     pub(super) status: u16,
     pub(super) content_type: &'static str,
     pub(super) body: String,
-    /// 405 に添える使えるメソッド (RFC 9110 §15.5.6。T.28.7 の 2 つの枝だけが入れる。
+    /// 405 に添える使えるメソッド (RFC 9110 §15.5.6。T28.7 の 2 つの枝だけが入れる。
     /// 読み取り専用で断った書き換え (T14.18) の 405 は今までどおり何も足さない)
     pub(super) allow: &'static str,
 }
@@ -35,7 +35,7 @@ impl Reply {
             .into()
     }
 
-    /// `Allow:` の行を添える (405 の 2 つの枝。T.28.7)。
+    /// `Allow:` の行を添える (405 の 2 つの枝。T28.7)。
     pub(super) fn with_allow(mut self, allow: &'static str) -> Reply {
         self.allow = allow;
         self
@@ -112,7 +112,7 @@ mod tests {
         assert!(out.ends_with("\r\n\r\nnot found.\n"));
     }
 
-    /// HEAD は GET と同じヘッダー (`Content-Length` も GET の本文の長さ) で本文だけ書かない (T.28.7)。
+    /// HEAD は GET と同じヘッダー (`Content-Length` も GET の本文の長さ) で本文だけ書かない (T28.7)。
     #[test]
     fn head_keeps_the_headers_and_drops_the_body() {
         let r = reply(200, "text/html; charset=utf-8", "<html>page</html>");
@@ -151,7 +151,7 @@ mod tests {
         assert!(!unhealthy.contains("Retry-After"));
     }
 
-    /// 405 の `Allow:` は `Content-Length` の次・`Cache-Control` の前 (T.28.7)。
+    /// 405 の `Allow:` は `Content-Length` の次・`Cache-Control` の前 (T28.7)。
     #[test]
     fn the_allow_header_sits_between_the_framing_and_cache_control() {
         let r = Reply::json_error(405, "method not allowed").with_allow("Allow: GET, HEAD\r\n");

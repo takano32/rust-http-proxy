@@ -1,5 +1,5 @@
 //! ホスト別統計の表 ([`HostTable`]) と区間の合計 ([`Interval`])、その問い合わせ
-//! (T.34.26 で `metrics.rs` から移した)。
+//! (T34.26 で `metrics.rs` から移した)。
 //!
 //! 行を動かしただけで中身は変えていない。外から見える名前は `metrics` の `pub use` でそのまま。
 
@@ -32,24 +32,24 @@ pub struct Interval {
     /// 名乗れない)。`/history` に列として出すのは T15.0 (10) の仕事で、ここは値を
     /// 用意するところまで。**欄は末尾に足す** (既存の並びを動かさない)
     pub wait: crate::history::Window,
-    /// CONNECT 1 本ごとの「確立 (`dns + connect`) − オリジン側のカーネルの RTT」(ms。T.28.45)。
+    /// CONNECT 1 本ごとの「確立 (`dns + connect`) − オリジン側のカーネルの RTT」(ms。T28.45)。
     /// 成功してカーネルの RTT が読めた本数だけ (`crate::history::Sample::excess` の元)
     pub excess: crate::history::Window,
-    /// `dns_misses` のうち、名前解決に失敗した試み (原因 `dns`) が払ったぶん (T.28.45)
+    /// `dns_misses` のうち、名前解決に失敗した試み (原因 `dns`) が払ったぶん (T28.45)
     pub dns_fail_misses: u64,
     /// CONNECT 1 本ごとの「確立 (`connect` だけ。**名前解決を除く**) − オリジン側のカーネルの RTT」
-    /// (ms。T.29.12)。`excess` と同じ本数 (成功して RTT が読めたもの) で、`/slo` の確立の 2 つはこちら
+    /// (ms。T29.12)。`excess` と同じ本数 (成功して RTT が読めたもの) で、`/slo` の確立の 2 つはこちら
     pub conn_excess: crate::history::Window,
     /// 名前解決に成功した試み (確立・転送の窓に入った成功と、原因 `dns` 以外のエラー) のうち、
-    /// **宛先のポートが 443・80 以外**のもの (T.30.3。利用者の決定: `/slo` の `error_rate` は 443・80 だけ)。
+    /// **宛先のポートが 443・80 以外**のもの (T30.3。利用者の決定: `/slo` の `error_rate` は 443・80 だけ)。
     /// 鍵 (`scheme://host:port`) の末尾が `:443` か `:80` でなければここに数える
     pub other_port_attempts: u64,
-    /// そのうちエラーで終わったもの (T.30.3。メール宛 `:993` の確立の時間切れなど)
+    /// そのうちエラーで終わったもの (T30.3。メール宛 `:993` の確立の時間切れなど)
     pub other_port_errors: u64,
-    /// `dns_ms_sum` のうち、名前解決に失敗した試み (原因 `dns`) が払ったぶん (ms。T.32.16)。
+    /// `dns_ms_sum` のうち、名前解決に失敗した試み (原因 `dns`) が払ったぶん (ms。T32.16)。
     /// 異常検知の `dns_slow` は「名前解決に成功したミス」の ms (`dns_ms_sum − dns_fail_ms_sum`) で読む
     pub dns_fail_ms_sum: u64,
-    /// 名前解決に成功した試みのミスのうち、**宛先のポートが 443・80** のもの (回数と ms の合計。T.33.3。
+    /// 名前解決に成功した試みのミスのうち、**宛先のポートが 443・80** のもの (回数と ms の合計。T33.3。
     /// 利用者の決定: 異常検知の `dns_slow` は 443・80 宛ての接続のための名前解決だけで判定する)。
     /// 鍵の末尾の見分けは `other_port_attempts` と同じ ([`web_port`])
     pub web_dns_misses: u64,
@@ -73,14 +73,14 @@ pub(super) struct HostTable {
     /// 直近 1,024 本の標本そのもの (`/status` の `recent_quantiles`。T14.31)。
     /// ここも**同じ鍵の中**で、書くのは 8 バイト 1 回
     pub(super) quantiles: crate::quantiles::Quantiles,
-    /// 443・80 宛てのエラーのいちばん多い宛先 (`/slo` の `error_rate` が外す。T.30.4)。
+    /// 443・80 宛てのエラーのいちばん多い宛先 (`/slo` の `error_rate` が外す。T30.4)。
     /// 同じ鍵の中で、触るのはエラーの経路と履歴スレッドだけ
     pub(super) dests: web_dest::DestTable,
-    /// 満杯の表から `last_seen` のいちばん古い行を捨てた数 (起動から。T.32.10)
+    /// 満杯の表から `last_seen` のいちばん古い行を捨てた数 (起動から。T32.10)
     pub(super) evicted: u64,
 }
 
-/// 満杯のホスト表から `last_seen` のいちばん古い行 (同着は名前の小さい方) を 1 つ捨て、通算は `other` の行に足す (T.32.10)。
+/// 満杯のホスト表から `last_seen` のいちばん古い行 (同着は名前の小さい方) を 1 つ捨て、通算は `other` の行に足す (T32.10)。
 ///
 /// `other` の行と、上位 16 の時系列の枠を持つ行 (`series_slot`) は捨てない。`other` の行を新しく
 /// 作ったときはもう 1 行捨てて、表を [`MAX_HOSTS`] 未満にする。捨てられたら `true`。
@@ -91,7 +91,7 @@ pub(super) fn evict_oldest_host(t: &mut HostTable) -> bool {
             .map
             .iter()
             .filter(|(k, s)| k.as_str() != "other" && s.series_slot.is_none())
-            // 同着は名前の順で崩す (T.34.145。HashMap の順に任せると実行ごとに捨てる行が変わる。
+            // 同着は名前の順で崩す (T34.145。HashMap の順に任せると実行ごとに捨てる行が変わる。
             // `record_reader` と同じ作法)
             .min_by(|a, b| a.1.last_seen.cmp(&b.1.last_seen).then_with(|| a.0.cmp(b.0)))
             .map(|(k, _)| k.clone())
@@ -106,7 +106,7 @@ pub(super) fn evict_oldest_host(t: &mut HostTable) -> bool {
     true
 }
 
-/// ホスト別統計の鍵 (`scheme://host:port`) の宛先のポートが 443 か 80 か (T.30.3。`/slo` の `error_rate` が数えるもの)。
+/// ホスト別統計の鍵 (`scheme://host:port`) の宛先のポートが 443 か 80 か (T30.3。`/slo` の `error_rate` が数えるもの)。
 ///
 /// 解かずに末尾を比べるだけ (`:8080` は `:80` で終わらず、`:1443` は `:443` で終わらない)。ポートの無い鍵
 /// (`loop://` の `Host` にポートが無いとき) は 443・80 以外として数える。
@@ -115,7 +115,7 @@ pub(super) fn web_port(key: &str) -> bool {
     key.ends_with(":443") || key.ends_with(":80")
 }
 
-/// ホスト別統計の鍵が、確立 / 初バイトの窓・段階の窓に入る鍵か (T.34.40。`Shape::of` と
+/// ホスト別統計の鍵が、確立 / 初バイトの窓・段階の窓に入る鍵か (T34.40。`Shape::of` と
 /// `/slo` の宛先 (`web_dest`) の 2 か所の判定を 1 つにした)。
 ///
 /// CONNECT (`connect://`) はいつも入る。forward のうち `blocked://` (拒否) と `loop://` (自分宛て) は入れない。
@@ -126,12 +126,12 @@ pub(super) fn counted_key(key: &str) -> bool {
 }
 
 impl Metrics {
-    /// 満杯の表から行を捨てた数 (`/status` の `hosts_evicted`。起動から。T.32.10)。
+    /// 満杯の表から行を捨てた数 (`/status` の `hosts_evicted`。起動から。T32.10)。
     pub fn hosts_evicted(&self) -> u64 {
         self.hosts.locked().evicted
     }
 
-    /// 443・80 宛てのエラーのいちばん多い宛先の、確定した前の時間といまの時間 (T.30.4)。
+    /// 443・80 宛てのエラーのいちばん多い宛先の、確定した前の時間といまの時間 (T30.4)。
     ///
     /// **呼ぶのは履歴スレッドだけ** (5 秒ごと。`/slo` に渡す)。`now` の時間に切り替わっていれば
     /// ここで切り替える (エラーが 1 件も来ない時間も確定させるため)。切り替えない回は鍵 1 回と比較 1 回、
@@ -277,7 +277,7 @@ impl Metrics {
     }
 
     /// 要求数の多い上位 `n` 件 ([`Self::hosts_sorted`] の先頭 `n` 件と同じ顔ぶれ) を、
-    /// **写さず並べずに順不同で**見る (状態ファイルの 60 秒ごとの書き直し。T.32.22)。
+    /// **写さず並べずに順不同で**見る (状態ファイルの 60 秒ごとの書き直し。T32.22)。
     ///
     /// 表が `n` 件以下なら全部をそのまま、越えていれば `select_nth_unstable` で上位を選ぶ。
     /// **鍵を握ったまま `f` を呼ぶ**ので、`f` は軽く (システムコールはしない) すること。

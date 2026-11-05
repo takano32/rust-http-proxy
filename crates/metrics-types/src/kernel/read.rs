@@ -14,7 +14,7 @@ use super::{
 /// いまの生の値を読む (源ごとに読めたかを旗で持つ)。**5 秒の標本のときだけ**呼ぶこと。
 pub(super) fn read_now(t: u64) -> Latest {
     let tcp = tcp_stats();
-    // `/proc/self/cgroup` は 1 回だけ読む (T.34.148)
+    // `/proc/self/cgroup` は 1 回だけ読む (T34.148)
     let (cpu, psi) = cgroup_cpu_and_pressure();
     let dns = crate::dns::resolve_cost_total();
     let state_file = super::STATE_FILE_ERRORS.get().and_then(|f| f());

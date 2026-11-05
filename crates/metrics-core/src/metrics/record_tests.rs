@@ -1,4 +1,4 @@
-//! 1 件の分類 (`Shape::of`) と区間への加算 (`Interval::observe`) の単体試験 (T.34.30)。
+//! 1 件の分類 (`Shape::of`) と区間への加算 (`Interval::observe`) の単体試験 (T34.30)。
 
 use super::record::Shape;
 use super::*;
@@ -7,7 +7,7 @@ fn detail() -> Detail {
     Detail::default()
 }
 
-/// 10 形の分類 (T.34.30)。`counted`・`ms`・`other_port`・`web_error` の組み合わせを表で縛る。
+/// 10 形の分類 (T34.30)。`counted`・`ms`・`other_port`・`web_error` の組み合わせを表で縛る。
 #[test]
 fn the_shape_of_one_request_is_a_pure_table() {
     let ms = |v| Some(Duration::from_millis(v));
@@ -214,7 +214,7 @@ fn the_shape_of_one_request_is_a_pure_table() {
     }
 }
 
-/// `Interval::observe` を `Metrics` なしで回す (T.34.30)。成功は窓へ、失敗は件数と原因へ。
+/// `Interval::observe` を `Metrics` なしで回す (T34.30)。成功は窓へ、失敗は件数と原因へ。
 #[test]
 fn the_interval_takes_one_shape_without_metrics() {
     let mut iv = Interval::default();
@@ -260,7 +260,7 @@ fn the_interval_takes_one_shape_without_metrics() {
     assert_eq!(iv.wait.count, 0);
 }
 
-/// 窓に入る鍵の判定は 1 か所 (T.34.40)。CONNECT はいつも、forward は `blocked://`・`loop://` 以外。
+/// 窓に入る鍵の判定は 1 か所 (T34.40)。CONNECT はいつも、forward は `blocked://`・`loop://` 以外。
 #[test]
 fn the_counted_key_is_decided_by_the_prefix_only() {
     use super::host_table::counted_key;

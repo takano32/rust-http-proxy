@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use crate::headers;
 use crate::log_trace;
 
-/// 自前の誤りの応答。T.29.9 から `Date` も付ける (RFC 9110 §6.6.1)。
+/// 自前の誤りの応答。T29.9 から `Date` も付ける (RFC 9110 §6.6.1)。
 pub(super) fn write_error(client: &mut impl Write, status: u16, reason: &str) -> io::Result<()> {
     let mut head = [0u8; crate::httpdate::ERROR_HEAD_MAX];
     client.write_all(crate::httpdate::error_head(status, reason, &mut head))?;
@@ -148,7 +148,7 @@ mod tests {
         );
     }
 
-    /// 自前の誤りの応答の形 (T.29.9 から `Date` つき)。
+    /// 自前の誤りの応答の形 (T29.9 から `Date` つき)。
     #[test]
     fn error_responses_carry_date_and_close() {
         let mut out = Vec::new();

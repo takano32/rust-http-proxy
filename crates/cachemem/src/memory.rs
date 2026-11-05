@@ -233,7 +233,7 @@ impl MemTier {
 }
 
 /// 合計が `capacity` を越えている間、LRU の古い方から追い出す (本文は `dropped` に預け、
-/// 鍵を放してから解放する)。戻り値は追い出した件数 (T.34.100 で `insert` から出した)。
+/// 鍵を放してから解放する)。戻り値は追い出した件数 (T34.100 で `insert` から出した)。
 #[inline]
 fn evict_over(
     store: &mut Store<MemEntry>,

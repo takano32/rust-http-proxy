@@ -6,7 +6,7 @@
 //! - `Vary` は `Accept-Encoding` のみ対応 (キャッシュキーに正規化して含める)。それ以外は保存しない
 //! - クライアントの条件付き要求 (`If-None-Match` / `If-Modified-Since`) はキャッシュ側で 304 を返す
 //!
-//! 中の割り方 (T.34.4): 指示の読み方と `Vary` / `Accept-Encoding` は [`directives`]、保存可否と TTL
+//! 中の割り方 (T34.4): 指示の読み方と `Vary` / `Accept-Encoding` は [`directives`]、保存可否と TTL
 //! の判断は [`policy`]、保存済みの先頭と条件付き要求は [`cached_head`]。どれも入力だけを見る純粋な
 //! 関数で、名前は今までどおり `freshness::…` で引ける (ここで出し直している)。熱い経路から呼ばれる
 //! `response_policy_lines`・`accept_encoding_variant`・`has_directive`・`directive_value` は

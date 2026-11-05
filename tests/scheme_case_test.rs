@@ -1,4 +1,4 @@
-//! 絶対 URI のスキームの大小 (T.28.33): `HTTP://` と `Http://` も `http://` と同じに読む
+//! 絶対 URI のスキームの大小 (T28.33): `HTTP://` と `Http://` も `http://` と同じに読む
 //! (RFC 9110 §4.2.3: スキームは大小を区別しない)。
 
 use std::sync::atomic::{AtomicUsize, Ordering};

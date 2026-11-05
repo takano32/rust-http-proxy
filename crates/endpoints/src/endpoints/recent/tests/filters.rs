@@ -1,4 +1,4 @@
-//! 個票の絞りと並べ替え (`?n=` `?since=` `?client=` `?sort=`。T.34.86 で tests.rs から分けた)。
+//! 個票の絞りと並べ替え (`?n=` `?since=` `?client=` `?sort=`。T34.86 で tests.rs から分けた)。
 
 use super::*;
 

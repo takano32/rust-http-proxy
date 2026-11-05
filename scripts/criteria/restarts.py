@@ -1,4 +1,4 @@
-# 判定表 (`scripts/snapshot_criteria.py`) の**再起動**の部 (T.34.124 で割った)。
+# 判定表 (`scripts/snapshot_criteria.py`) の**再起動**の部 (T34.124 で割った)。
 #
 # 2 枚の雪像の間の再起動 (`restart_info`。差分の §1) と、`/events` の `start` から無言の再起動を
 # 数える部 (`silent_restarts`。判定表の phase23 以降の行と `snapshot-summary.py` が使う。T23.2)。

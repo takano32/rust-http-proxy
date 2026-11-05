@@ -2,7 +2,7 @@
 //!
 //! keep-alive の応答が Nagle で遅れないことは `keepalive_nagle_test.rs`、**TCP の** keepalive
 //! (`PROXY_TCP_KEEPALIVE`。T14.52。HTTP の keep-alive (`PROXY_KEEPALIVE_SECS`) とは別のもの) は
-//! `keepalive_tcp_test.rs` に割った (T.34.119)。
+//! `keepalive_tcp_test.rs` に割った (T34.119)。
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -271,13 +271,13 @@ fn test_integration_zero_timeout_never_closes_a_silent_connection() {
 
     let mut forever = proxy_config();
     forever.timeout = Duration::ZERO;
-    // 要求行とヘッダーの締め切り (T.28.0) は未設定なら `PROXY_TIMEOUT_SECS=0` でも 10 秒残る。
+    // 要求行とヘッダーの締め切り (T28.0) は未設定なら `PROXY_TIMEOUT_SECS=0` でも 10 秒残る。
     // 黙った接続を無期限に置くのは両方 0 のとき
     forever.header_timeout = Duration::ZERO;
     let forever_port = start_test_proxy(forever);
 
     let mut buf = [0u8; 1];
-    // 200 ms のタイムアウト: 黙っていると閉じられる (T.28.0 から 408 を返してから閉じる)
+    // 200 ms のタイムアウト: 黙っていると閉じられる (T28.0 から 408 を返してから閉じる)
     let mut closed = TcpStream::connect(format!("127.0.0.1:{}", quick_port)).unwrap();
     closed
         .set_read_timeout(Some(Duration::from_secs(10)))

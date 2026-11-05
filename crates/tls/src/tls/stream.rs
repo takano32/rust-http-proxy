@@ -1,5 +1,5 @@
 //! TLS で包んだ TCP ストリーム (`TlsStream`。読み書きはバイトごとに通る)。
-//! T.34.77 で `tls.rs` から移した (本体は変えていない)。
+//! T34.77 で `tls.rs` から移した (本体は変えていない)。
 
 use super::api::*;
 use std::ffi::{c_int, c_void};

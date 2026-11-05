@@ -9,29 +9,29 @@
 終わったら自分が起こした PID だけを止める。判定は「期待する状態コード」との
 突き合わせで、1 つでも外れたら exit 1。
 
-この表は 2026-10-23 に 0.26.0 で見つけた穴 (T.19.1 〜 T.19.3、CONNECT は T.19.8) を固定するためのもの。
+この表は 2026-10-23 に 0.26.0 で見つけた穴 (T19.1 〜 T19.3、CONNECT は T19.8) を固定するためのもの。
 `Content-Length` の重複不一致・21 桁・カンマ・負、`Host` 2 本、obs-fold は
 どれも「オリジンへ素通し」だった。直ったあとは全部 400 になる。
 
-2026-10-24 に 0.27.1 で見つけた穴 (T.27.5 〜 T.27.8) も足した (`t27_cases` と `t27_response_cases`):
+2026-10-24 に 0.27.1 で見つけた穴 (T27.5 〜 T27.8) も足した (`t27_cases` と `t27_response_cases`):
 名前とコロンの間の空白・値の CR / NUL (400)、`Transfer-Encoding` の最後が chunked でない・2 回・
 HTTP/1.0 (400)、応答の値の CR / NUL (SP に置き換えて返す)、`Max-Forwards`・userinfo・fragment・
 版・CONNECT のポート・壊れた chunk。0.27.1 ではこの節の行が外れる。
 
-2026-10-25 に応答の `Transfer-Encoding` (最後が chunked でない) + `Content-Length` を足した (T.28.1):
+2026-10-25 に応答の `Transfer-Encoding` (最後が chunked でない) + `Content-Length` を足した (T28.1):
 CL を捨てて閉じるまでを本文にする。chunked + CL は今までどおり chunked。0.27.8 では前の行が外れる。
-同じ日に TE の行の扱いを足した (T.28.35): HTTP/1.1 へは TE の行を残して閉じて区切り、HTTP/1.0 へは 502。
-T.28.1 の時点ではどちらも TE の行を落としていた (この 2 行が外れる)。
+同じ日に TE の行の扱いを足した (T28.35): HTTP/1.1 へは TE の行を残して閉じて区切り、HTTP/1.0 へは 502。
+T28.1 の時点ではどちらも TE の行を落としていた (この 2 行が外れる)。
 
-2026-10-27 に 1xx の中間応答を足した (T.29.3): HTTP/1.0 のクライアントへは 103 を送らず 200 だけ、
+2026-10-27 に 1xx の中間応答を足した (T29.3): HTTP/1.0 のクライアントへは 103 を送らず 200 だけ、
 HTTP/1.1 へは今までどおり 103 → 200。0.29.35 では HTTP/1.0 の行が外れる。
-同じ日に要求行とヘッダー名の文法を足した (T.29.8): 要求行が 4 要素・後ろに junk・対象の DEL / NUL、
+同じ日に要求行とヘッダー名の文法を足した (T29.8): 要求行が 4 要素・後ろに junk・対象の DEL / NUL、
 ヘッダー名の空白・`"`・制御文字・空の名前・コロンの無い行はどれも 400。0.29.35 ではこの 8 行が外れる。
 
-2026-10-31 に不正な `Host`・authority を足した (T.32.12。`t32_cases`): `Host: a b`・`a, b`・`a/b`・
+2026-10-31 に不正な `Host`・authority を足した (T32.12。`t32_cases`): `Host: a b`・`a, b`・`a/b`・
 `h:99999`・絶対形式のポートの `+` は 400 (オリジンへ届かない)、大文字のホストは通る。
 0.30.4 では 400 の行が 502 (名前解決の失敗か接続の失敗) で外れる。
-同じ日に T.32.15 の小物を足した: LF だけの行末の要求は CRLF にそろえて届く、chunk のデータの後ろのごみと
+同じ日に T32.15 の小物を足した: LF だけの行末の要求は CRLF にそろえて届く、chunk のデータの後ろのごみと
 `+2` は 400、版の `http/1.1` (小文字) は 400、応答の token でない名前 (`X A: b`・`: v`) は落とす、
 CONNECT の 502 に `Date` と `Content-Length: 0`、`connect` (小文字) はトンネルにしない。0.30.4 ではこの 7 行が外れる。
 """
@@ -71,7 +71,7 @@ def cases(origin_port):
 
 
 def t27_cases(origin_port):
-    """T.27.5 〜 T.27.8 の要求側。5 つ目は「届いたときに満たすべきこと」(届いた要求の辞書を受け取る)。"""
+    """T27.5 〜 T27.8 の要求側。5 つ目は「届いたときに満たすべきこと」(届いた要求の辞書を受け取る)。"""
     base = b"http://127.0.0.1:%d" % origin_port
     host = b"Host: 127.0.0.1:%d\r\n" % origin_port
 
@@ -109,12 +109,12 @@ def t27_cases(origin_port):
         ("HTTP/2 の preface", b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", 505, False, None),
         ("chunk の大きさ 0x5", post(b"Transfer-Encoding: chunked\r\n", b"0x5\r\nhello\r\n0\r\n\r\n"), 400, True,
          None),
-        # T.28.3: 本文つきの 100-continue には先に 100 (最初の状態行)、Expect は転送しない。ほかの期待は 417
+        # T28.3: 本文つきの 100-continue には先に 100 (最初の状態行)、Expect は転送しない。ほかの期待は 417
         ("Expect: 100-continue", post(b"Expect: 100-continue\r\nContent-Length: 5\r\n", b"hello"), 100, True,
          lambda seen: not any(h.lower().startswith("expect:") for h in seen["headers"])
          and seen["body"] == "hello"),
         ("Expect: fancy は 417", post(b"Expect: fancy\r\nContent-Length: 5\r\n", b"hello"), 417, False, None),
-        # T.29.8: 要求行はちょうど 3 要素・対象は VCHAR・版は HTTP/d.d、ヘッダー名は token
+        # T29.8: 要求行はちょうど 3 要素・対象は VCHAR・版は HTTP/d.d、ヘッダー名は token
         ("要求行が 4 要素 (a b)", b"GET " + base + b"/a b HTTP/1.1\r\n" + host + b"\r\n", 400, False, None),
         ("要求行の後ろに junk", get(b"/a", version=b"HTTP/1.1 junk"), 400, False, None),
         ("対象に DEL", get(b"/a\x7f"), 400, False, None),
@@ -127,14 +127,14 @@ def t27_cases(origin_port):
 
 
 def t32_cases(origin_port):
-    """T.32 の要求側 (形は `t27_cases` と同じ 5 つ組)。"""
+    """T32 の要求側 (形は `t27_cases` と同じ 5 つ組)。"""
     port = b"%d" % origin_port
 
     def get(host, target=b"/a"):
         return b"GET " + target + b" HTTP/1.1\r\nHost: " + host + b"\r\n\r\n"
 
     return [
-        # T.32.12: `Host` と authority の形 (reg-name の字・IP リテラル・ポートは 5 桁まで 65535 以下)
+        # T32.12: `Host` と authority の形 (reg-name の字・IP リテラル・ポートは 5 桁まで 65535 以下)
         ("Host: a b", get(b"a b"), 400, False, None),
         ("Host: a, b", get(b"a, b"), 400, False, None),
         ("Host: a/b", get(b"a/b"), 400, False, None),
@@ -142,10 +142,10 @@ def t32_cases(origin_port):
         ("authority のポートの +", get(b"127.0.0.1:" + port, b"http://127.0.0.1:+" + port + b"/a"), 400, False,
          None),
         ("Host の大文字 (通る)", get(b"LOCALHOST:" + port), 200, True, None),
-        # T.32.15: 版の `HTTP` は大小を区別する。chunk の 2 行は本文の途中で断るので最後に置く
+        # T32.15: 版の `HTTP` は大小を区別する。chunk の 2 行は本文の途中で断るので最後に置く
         ("版の http/1.1 (小文字)", b"GET http://127.0.0.1:" + port + b"/a http/1.1\r\nHost: 127.0.0.1:" + port
          + b"\r\n\r\n", 400, False, None),
-        # T.32.15: LF だけの行末は CRLF にそろえて転送する (オリジンには X-A が 1 本の行として届く)
+        # T32.15: LF だけの行末は CRLF にそろえて転送する (オリジンには X-A が 1 本の行として届く)
         ("LF だけの行末の要求", b"GET http://127.0.0.1:" + port + b"/lf HTTP/1.1\nHost: 127.0.0.1:" + port
          + b"\nX-A: 1\n\n", 200, True, lambda seen: "X-A: 1" in seen["headers"]),
         ("chunk のデータの後ろのごみ", b"POST http://127.0.0.1:" + port + b"/c HTTP/1.1\r\nHost: 127.0.0.1:" + port
@@ -156,7 +156,7 @@ def t32_cases(origin_port):
 
 
 def t32_response_cases(origin_port, closed_port, echo_port):
-    """T.32.15 の応答側 (形は `t27_response_cases` と同じ 4 つ組)。"""
+    """T32.15 の応答側 (形は `t27_response_cases` と同じ 4 つ組)。"""
     host = b"127.0.0.1:%d" % origin_port
 
     def no_bad_names(resp):
@@ -183,7 +183,7 @@ def t32_response_cases(origin_port, closed_port, echo_port):
 
 
 def t27_response_cases(origin_port):
-    """T.27.7 の応答側。オリジンが壊れた値を返し、プロキシは SP に置き換えて 200 で返す。"""
+    """T27.7 の応答側。オリジンが壊れた値を返し、プロキシは SP に置き換えて 200 で返す。"""
     host = b"127.0.0.1:%d" % origin_port
 
     def get(path):
@@ -197,15 +197,15 @@ def t27_response_cases(origin_port):
         return b"GET http://" + host + path + b" HTTP/1.0\r\nHost: " + host + b"\r\n\r\n"
 
     def until_close(resp):
-        # T.28.1: CL を捨てて閉じるまでを本文にする (CL は付かない)。
-        # T.28.35: TE の行はオリジンのまま残し、包み直さずに閉じて区切る
+        # T28.1: CL を捨てて閉じるまでを本文にする (CL は付かない)。
+        # T28.35: TE の行はオリジンのまま残し、包み直さずに閉じて区切る
         head, _, body = resp.partition(b"\r\n\r\n")
         lines = head.lower().split(b"\r\n")
         return (b"content-length" not in head.lower() and b"transfer-encoding: gzip" in lines
                 and b"connection: close" in lines and body == b"helloEXTRA")
 
     def no_te(resp):
-        # T.28.35: HTTP/1.0 へは TE を送れないので 502 (符号化済みのバイトを本文として渡さない)
+        # T28.35: HTTP/1.0 へは TE を送れないので 502 (符号化済みのバイトを本文として渡さない)
         head, _, body = resp.partition(b"\r\n\r\n")
         return b"transfer-encoding" not in head.lower() and body == b""
 
@@ -215,7 +215,7 @@ def t27_response_cases(origin_port):
         return b"content-length" not in head.lower() and body == b"5\r\nhello\r\n0\r\n\r\n"
 
     def no_interim(resp):
-        # T.29.3: HTTP/1.0 へは 1xx を送らない (最初の状態行が最終応答)
+        # T29.3: HTTP/1.0 へは 1xx を送らない (最初の状態行が最終応答)
         return resp.startswith(b"HTTP/1.1 200 ") and b" 103 " not in resp and resp.endswith(b"\r\n\r\nok")
 
     def interim_first(resp):
@@ -234,7 +234,7 @@ def t27_response_cases(origin_port):
 
 
 def connect_cases(echo_port):
-    """CONNECT の入口 (T.27.0)。`http` の経路を通らないので、同じ検査が効いているかを見る。"""
+    """CONNECT の入口 (T27.0)。`http` の経路を通らないので、同じ検査が効いているかを見る。"""
     authority = b"127.0.0.1:%d" % echo_port
     head = b"CONNECT " + authority + b" HTTP/1.1\r\n"
     return [
@@ -242,7 +242,7 @@ def connect_cases(echo_port):
         ("CONNECT + Host 2 本", head + b"Host: " + authority + b"\r\nHost: evil.example\r\n\r\n", 400, False),
         ("CONNECT + obs-fold", head + b"Host: " + authority + b"\r\nX-A: 1\r\n 2\r\n\r\n", 400, False),
         ("CONNECT + CL (本文 5 B)", head + b"Host: " + authority + b"\r\nContent-Length: 5\r\n\r\nhello", 400, False),
-        # T.27.5 と T.27.8
+        # T27.5 と T27.8
         ("CONNECT + 名前とコロンの間の空白", head + b"Host : " + authority + b"\r\n\r\n", 400, False),
         ("CONNECT + 値の CR", head + b"Host: " + authority + b"\r\nX-A: a\rb\r\n\r\n", 400, False),
         ("CONNECT のポートなし", b"CONNECT 127.0.0.1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", 400, False),
@@ -263,22 +263,22 @@ class _Origin(socketserver.StreamRequestHandler):
                 raw += chunk
             head, _, rest = raw.partition(b"\r\n\r\n")
             lines = [l.decode("latin1") for l in head.split(b"\r\n")]
-            # T.27.7: 壊れた値を返すオリジン (プロキシが SP に置き換えるかを見る)
+            # T27.7: 壊れた値を返すオリジン (プロキシが SP に置き換えるかを見る)
             if " /resp-cr " in lines[0] or " /resp-nul " in lines[0]:
                 bad = b"X-A: a\rSet-Cookie: evil=1" if "/resp-cr" in lines[0] else b"X-A: a\x00b"
                 self.wfile.write(b"HTTP/1.1 200 OK\r\n" + bad + b"\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
                 return
-            # T.32.15: 名前が token でない行を返すオリジン (プロキシが落とすかを見る)
+            # T32.15: 名前が token でない行を返すオリジン (プロキシが落とすかを見る)
             if " /resp-badname " in lines[0]:
                 self.wfile.write(b"HTTP/1.1 200 OK\r\nX A: b\r\n: v\r\nX-Ok: y\r\nContent-Length: 2\r\n"
                                  b"Connection: close\r\n\r\nok")
                 return
-            # T.29.3: 103 を返してから 200
+            # T29.3: 103 を返してから 200
             if " /resp-103-" in lines[0]:
                 self.wfile.write(b"HTTP/1.1 103 Early Hints\r\nLink: </a.css>; rel=preload\r\n\r\n"
                                  b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
                 return
-            # T.28.1: 最後が chunked でない TE と CL を一緒に返し、CL の後ろにも続ける
+            # T28.1: 最後が chunked でない TE と CL を一緒に返し、CL の後ろにも続ける
             if " /resp-te-cl " in lines[0]:
                 self.wfile.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Length: 5\r\n\r\nhelloEXTRA")
                 return
@@ -364,7 +364,7 @@ def _status(raw):
 
 def judge(got, want, may_reach=True, reached=False, check=None, evidence=None):
     """1 本の判定: 状態が期待どおりで、届いてはいけない要求が届いておらず、`check` があれば
-    `evidence` (届いた要求の辞書・応答のバイト列) が満たすこと (T.34.136 で 4 つの節の式を 1 つにした)。
+    `evidence` (届いた要求の辞書・応答のバイト列) が満たすこと (T34.136 で 4 つの節の式を 1 つにした)。
 
     `check` は状態が合ったときだけ呼ぶ。`evidence` が None (届かなかった) なら `check` は満たさない。
     """
@@ -409,9 +409,9 @@ def probe_framing(port, origin, timeout, emit=print):
 
 
 def probe_t27(port, origin, timeout, emit=print):
-    """T.27.5 〜 T.27.8・T.32 の要求側と応答側を流して 1 行ずつ `emit` し、外れの本数を返す。"""
+    """T27.5 〜 T27.8・T32 の要求側と応答側を流して 1 行ずつ `emit` し、外れの本数を返す。"""
     emit("")
-    emit(heading("T.27.5〜T.27.8・T.32", "オリジンに届いた要求行"))
+    emit(heading("T27.5〜T27.8・T32", "オリジンに届いた要求行"))
     failed = 0
     # 5 つ目は届いた要求が満たすべきこと
     for name, raw, want, may_reach, check in t27_cases(port + 1) + t32_cases(port + 1):
@@ -432,7 +432,7 @@ def probe_t27(port, origin, timeout, emit=print):
 
 
 def probe_connect(port, echo, timeout, emit=print):
-    """CONNECT の節を流して 1 行ずつ `emit` し、外れの本数を返す (`http` の経路を通らないので別に見る。T.19.8)。"""
+    """CONNECT の節を流して 1 行ずつ `emit` し、外れの本数を返す (`http` の経路を通らないので別に見る。T19.8)。"""
     emit("")
     emit(heading("CONNECT", "トンネル先が受け取ったバイト"))
     failed = 0

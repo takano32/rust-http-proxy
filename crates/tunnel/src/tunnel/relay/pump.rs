@@ -1,7 +1,7 @@
 //! 向きの送り出し ([`Dir::pump`]): 送信元 → 中継 → 送信先を、動かせるだけ動かす。
 //!
 //! 書き込む先は `Idle` の 1 つの欄 [`Flow`] にまとめてある (輪の冒頭で欄を 1 本ずつ
-//! `&mut` に割いていた形の置き換え。T.34.10)。
+//! `&mut` に割いていた形の置き換え。T34.10)。
 use std::io;
 use std::net::{Shutdown, TcpStream};
 use std::os::fd::AsRawFd;
@@ -68,7 +68,7 @@ pub(super) struct Flow {
     /// 覗いた SNI が CONNECT のホストと食い違ったか (T14.38)。`Idle` が落ちるときに
     /// `Info::sni_mismatch` へ写す (統計に足すのは `report`)
     pub(super) sni_mismatch: bool,
-    /// 書き側の最小の速さの見張り (`[クライアントへ, オリジンへ]`。添字は `socks` と同じ。T.29.34)。
+    /// 書き側の最小の速さの見張り (`[クライアントへ, オリジンへ]`。添字は `socks` と同じ。T29.34)。
     ///
     /// 積むのは `stall_us` と同じ「書けなくて `poll` で待った時間」と、その向きへ渡したバイト。
     /// **送るものが無くて待った時間 (片側が黙っているだけの half-idle) は入らない**ので、
@@ -155,7 +155,7 @@ impl Dir {
                     self.offset += n;
                     self.moved += n as u64;
                     flow.transferred += n as u64;
-                    // 渡したバイトを見張りに足す (待ちが 0 なので足し算だけ。T.29.34)
+                    // 渡したバイトを見張りに足す (待ちが 0 なので足し算だけ。T29.34)
                     let _ = flow.rate[self.dst].note(Duration::ZERO, n as u64);
                     progressed = true;
                 }

@@ -1,6 +1,6 @@
 //! 壊れた要求と枠組み (落ちない・ヘッダーの合計の上限・`Connection` で指名した枠組みのヘッダー) の結合テスト。
 //!
-//! 初めは `tests/proxy_test.rs` にあった (T.34.116 で割った)。
+//! 初めは `tests/proxy_test.rs` にあった (T34.116 で割った)。
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -208,7 +208,7 @@ fn test_integration_connection_named_framing_headers_do_not_smuggle() {
         let mut resp = String::new();
         let _ = s.read_to_string(&mut resp);
 
-        // 応答を読み終えた = オリジンは応答を書く前に積み終えている (待たずに見てよい。T.34.114)
+        // 応答を読み終えた = オリジンは応答を書く前に積み終えている (待たずに見てよい。T34.114)
         let seen = received.lock().unwrap();
         let last = seen.last().cloned().unwrap_or_default();
         let (head, body) = last.split_once("\r\n\r\n").unwrap_or((last.as_str(), ""));

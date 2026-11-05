@@ -100,7 +100,7 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     (200, "application/json", out)
 }
 
-/// 標本の前まで: 版・解像度・段階とロックの名前・1 標本の並び (`"samples":[` まで。T.34.95)。
+/// 標本の前まで: 版・解像度・段階とロックの名前・1 標本の並び (`"samples":[` まで。T34.95)。
 fn write_head(out: &mut String, p: &Profile, res: usize) {
     // 応答の形の版は**いちばん先頭の鍵** (T14.49)
     out.push_str(SCHEMA_HEAD);
@@ -130,7 +130,7 @@ fn write_head(out: &mut String, p: &Profile, res: usize) {
     out.push_str("],\"samples\":[");
 }
 
-/// 標本の後ろ: 通算・直近 5 分の要約・頁の位置 (閉じ括弧まで。T.34.95)。
+/// 標本の後ろ: 通算・直近 5 分の要約・頁の位置 (閉じ括弧まで。T34.95)。
 fn write_tail(out: &mut String, p: &Profile, res: usize, page: &Page) {
     out.push_str("],\"locks_total\":[");
     join(out, crate::sync::lock_contended().iter(), |o, v| {
@@ -244,7 +244,7 @@ fn quoted(out: &mut String, s: &&str) {
 mod tests {
     use super::*;
 
-    /// 1 標本の並び 12 個は、この順のまま (読む側は添字で引く。T.34.95)。
+    /// 1 標本の並び 12 個は、この順のまま (読む側は添字で引く。T34.95)。
     #[test]
     fn the_sample_keys_keep_their_order() {
         assert_eq!(
@@ -291,7 +291,7 @@ mod tests {
         }
     }
 
-    /// 尾は通算・直近 5 分・頁の位置の順で、頁の位置は末尾 (T.34.95)。
+    /// 尾は通算・直近 5 分・頁の位置の順で、頁の位置は末尾 (T34.95)。
     #[test]
     fn the_tail_ends_with_the_page_position() {
         let m = crate::metrics::Metrics::new();

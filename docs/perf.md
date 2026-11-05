@@ -1,6 +1,6 @@
 # 性能の測り方とデプロイ先の数字
 
-> README の「性能」の節の続き (T.29.32 で README から移した。本文は移す前と同じ)。loopback の表と測り方の要点は
+> README の「性能」の節の続き (T29.32 で README から移した。本文は移す前と同じ)。loopback の表と測り方の要点は
 > [README の「性能」](../README.md#性能) にあります。ここは置いた先での測り方 (`PROXY_SELF_BENCH`)・デプロイ先の数字と
 > 判定表の定義の移り変わり・手元での再現 (`memory-replay.py`・`deployed-like.sh`・`bench --only replay`)・トンネルの MiB/s の注です。
 > 文中の「下の」「上の」は、移す前の README の中での位置を指しているものがあります。
@@ -56,37 +56,37 @@ curl -s localhost:8080/status | grep -o '"self_bench":{[^}]*}'
 **道具はどれも `scripts/` に置いてあり、この README が `scripts/<名前>.py` と書いているものは実行ビット付き**
 なので、そのまま `scripts/snapshot-diff.py a.json b.json` と打てます (`proxydata.py` は共通部品、
 `snapshot_criteria.py` は `snapshot-diff.py` の判定の部、`test_*.py` は unittest が名前で読むものなので
-実行ビットは付けません)。**この区別は `scripts/check-docs.sh` の (f) が毎回見ます** (T.24.7)。
+実行ビットは付けません)。**この区別は `scripts/check-docs.sh` の (f) が毎回見ます** (T24.7)。
 
-**要求の枠組み (`Content-Length` / `Host` / 折り返し) を実機で流すなら `scripts/framing-probe.py`** (T.19.4)。
+**要求の枠組み (`Content-Length` / `Host` / 折り返し) を実機で流すなら `scripts/framing-probe.py`** (T19.4)。
 `python3 scripts/framing-probe.py ./target/release/rust-http-proxy` で、オリジンとプロキシを自分で起こして
 10 通り (正常・CL の重複同値/不一致・21 桁・カンマ・負・数字でない・`Host` 2 本・obs-fold の空白/タブ) を流し、
 状態コードと**オリジンが受け取ったヘッダー**を並べます。1 つでも期待と違えば exit 1 なので、直したことの
 確かめと、次の退行の見張りに使えます。
-T.27.9 で 2026-10-24 に見つけた形も足しました (要求 19 通り・応答 2 通り・CONNECT 4 通り): 名前とコロンの間の空白と
-値の CR / NUL は 400 (T.27.5)、`Transfer-Encoding` の最後がちょうど 1 回の `chunked` でない・HTTP/1.0 の TE は 400
-(`gzip, chunked` は通る。T.27.6)、応答の値の CR / NUL は SP に置き換えて返す (T.27.7。値に UTF-8 として読めないバイト (obs-text) のある応答も、0.28.12 からは 502 にせずそのバイトを U+FFFD にして返す。T.28.12)、`Max-Forwards: 0` の
+T27.9 で 2026-10-24 に見つけた形も足しました (要求 19 通り・応答 2 通り・CONNECT 4 通り): 名前とコロンの間の空白と
+値の CR / NUL は 400 (T27.5)、`Transfer-Encoding` の最後がちょうど 1 回の `chunked` でない・HTTP/1.0 の TE は 400
+(`gzip, chunked` は通る。T27.6)、応答の値の CR / NUL は SP に置き換えて返す (T27.7。値に UTF-8 として読めないバイト (obs-text) のある応答も、0.28.12 からは 502 にせずそのバイトを U+FFFD にして返す。T28.12)、`Max-Forwards: 0` の
 TRACE / OPTIONS は自分で応え 0 でなければ 1 減らす・URI の userinfo は 400・`#fragment` は落とす・`HTTP/1.x` でない版は 505・
-CONNECT のポートなし / 0 は 400・読めない chunk の大きさは 400 (T.27.8)。0.27.1 ではこのうち 24 行が外れます
+CONNECT のポートなし / 0 は 400・読めない chunk の大きさは 400 (T27.8)。0.27.1 ではこのうち 24 行が外れます
 (値の CR で区切りがずれたオリジンの接続がプールに戻り、次の無関係な要求まで無応答になる形も出ます)。
-応答の 2 形も足しました (T.28.1): オリジンが**最後が `chunked` でない `Transfer-Encoding`** (`gzip`・`xchunked` など) と
+応答の 2 形も足しました (T28.1): オリジンが**最後が `chunked` でない `Transfer-Encoding`** (`gzip`・`xchunked` など) と
 `Content-Length` を一緒に返したら、CL を捨てて**接続が閉じるまでを本文**にし (RFC 9112 §6.3)、オリジンの接続は
 使い回さず、キャッシュにも保存しません (0.27.8 までは CL で区切って TE を落とし、接続を使い回して保存もしていました)。
 `chunked` と CL が両方なら今までどおり `chunked` です。
-**その応答の TE の行はクライアントへ伝えます** (T.28.35。RFC 9112 §6.1): 符号化 (`gzip` など) はほどかずにオリジンの
+**その応答の TE の行はクライアントへ伝えます** (T28.35。RFC 9112 §6.1): 符号化 (`gzip` など) はほどかずにオリジンの
 バイト列のまま渡すので、HTTP/1.1 のクライアントへは**オリジンの `Transfer-Encoding` の並びを 1 行に畳んで残し**
 (`chunked` で包み直さず)、`Connection: close` で閉じて区切ります。HTTP/1.0 のクライアントへは TE を送れず、
-符号化もほどけないので **`502 Bad Gateway`** にします (`/errors` の原因は `other`)。T.28.1 の時点では TE の行を落として
+符号化もほどけないので **`502 Bad Gateway`** にします (`/errors` の原因は `other`)。T28.1 の時点では TE の行を落として
 `chunked` で包み直していた (HTTP/1.0 へは TE なしで閉じて区切っていた) ので、クライアントには符号化済みのバイトが
 TE なしの本文に見えていました。framing-probe にこの 2 形を足してあります。
-**要求行とヘッダー名の文法も見ます** (T.29.8。RFC 9112 §3・9110 §5.1): 要求行は**ちょうど 3 要素**
+**要求行とヘッダー名の文法も見ます** (T29.8。RFC 9112 §3・9110 §5.1): 要求行は**ちょうど 3 要素**
 (メソッド・対象・版。区切りの空白の数は問わない)、対象は VCHAR (0x21〜0x7E) だけ、版は `HTTP/d.d` の形で、
 外れたら `400` (理由は `request_line`)。版の無い行 (HTTP/0.9 の形) も 400 です。形が合っていて `1.x` でない版は今までどおり 505。
 ヘッダーの名前は空でない token だけで、名前の中の空白・制御文字・`"` など、空の名前、コロンの無い行は `400`
 (理由は `bad_header`。CONNECT の入口も同じ)。0.29.35 までは `GET http://h/a b HTTP/1.1` を 505 (`b` を版と読んだ)、
 `… HTTP/1.1 junk` と版の無い行を 1.0 として受け付け、対象の DEL / NUL をそのまま転送し、コロンの無い行は黙って捨てていました。
 framing-probe に 8 行足してあります。
-小物 3 つ (T.29.9): (1) 空のパスの `OPTIONS` (`OPTIONS http://h:P`) はオリジンへ **`OPTIONS *`** で送り (RFC 9112 §3.2.4。
+小物 3 つ (T29.9): (1) 空のパスの `OPTIONS` (`OPTIONS http://h:P`) はオリジンへ **`OPTIONS *`** で送り (RFC 9112 §3.2.4。
 今までは `OPTIONS /`)、`OPTIONS *` + `Host` は `Host` のオリジンへ `*` のまま送ります (今までは `*` をホスト名として引いて 502)。
 `*` は OPTIONS 以外 `400`。(2) **`Date` の無い応答には転送のときに今の時刻の `Date` を付け** (RFC 9110 §6.6.1。
 ある応答はオリジンのまま)、自前の応答 (400 / 408 / 414 / 431 / 505 / 417 / 502 / 504 と `Max-Forwards: 0` の 200) にも付けます。
@@ -94,44 +94,44 @@ framing-probe に 8 行足してあります。
 オリジンが `101 Switching Protocols` を返したら `502` にします (RFC 9110 §15.2.2。今まではそのまま返していました。
 `Upgrade` のある要求には今までどおり 101 を返します。プロトコルの切り替えはしません)。
 オリジンの 1xx の中間応答 (`103 Early Hints` など。100 と 101 は除く) はクライアントへ中継しますが (T19.6)、
-**HTTP/1.0 のクライアントへは送らず読み捨てます** (T.29.3。RFC 9110 §15.2 の MUST NOT。1.0 のクライアントは 103 を
+**HTTP/1.0 のクライアントへは送らず読み捨てます** (T29.3。RFC 9110 §15.2 の MUST NOT。1.0 のクライアントは 103 を
 最終応答と読む)。framing-probe の「HTTP/1.0 + 103」の行で見ます (0.29.35 では外れる)。
-HEAD の応答も GET と同じ TE の行を返します (T.28.36。最後が `chunked` の並びは `Transfer-Encoding: chunked`、そうでない並びはそのまま。HTTP/1.0 へは落とす)。
-要求の `Expect` も 2 形 (T.28.3): 本文つきの HTTP/1.1 の要求の **`Expect: 100-continue` (大小無視) には、本文を読む前に
+HEAD の応答も GET と同じ TE の行を返します (T28.36。最後が `chunked` の並びは `Transfer-Encoding: chunked`、そうでない並びはそのまま。HTTP/1.0 へは落とす)。
+要求の `Expect` も 2 形 (T28.3): 本文つきの HTTP/1.1 の要求の **`Expect: 100-continue` (大小無視) には、本文を読む前に
 `HTTP/1.1 100 Continue` を 1 回返し**、`Expect` の行はオリジンへ転送しません (オリジンの 100 は今までどおり読み飛ばします)。
 `100-continue` 以外の期待は `417 Expectation Failed` で閉じます。本文の無い要求と HTTP/1.0 の要求には 100 を返しません。
 0.27.8 までは 100 を返さなかったので、100 を厳密に待つクライアントは締め切りまで本文を送らずに止まっていました。
-**要求の本文を送る途中でオリジンが応答を返して閉じたら、その応答を渡します** (T.29.7。RFC 9112 §9.5):
+**要求の本文を送る途中でオリジンが応答を返して閉じたら、その応答を渡します** (T29.7。RFC 9112 §9.5):
 本文の書き込みが `EPIPE` / `ECONNRESET` で落ちたときだけ、届いている応答 (`413 Payload Too Large` など) を読みに行き、
 読めればそのまま返して `Connection: close` で閉じます (クライアントの本文の残りは読んでいないため)。読めなければ
 今までどおり `502`。0.29.35 までは 8 MiB の POST に先頭だけ読んで 413 を返すオリジンでも 502 でした。
 正常な要求のシステムコールは増えません (失敗したときだけ通る道)。
-**応答の先頭と chunk の枠の行にも長さの上限があります** (T.29.1。要求の先頭は前から 1 行 64 KiB・合計 128 KiB で 414 / 431):
+**応答の先頭と chunk の枠の行にも長さの上限があります** (T29.1。要求の先頭は前から 1 行 64 KiB・合計 128 KiB で 414 / 431):
 応答の先頭 (状態行 + ヘッダー) は合計 **128 KiB** を越えたら `502 Bad Gateway` (原因は `other`、やり直さない)、
 chunk の大きさの行 (拡張込み) とデータの後ろの行は **4 KiB**、trailer は 1 行 **8 KiB**・合計 **64 KiB** を越えたら、
 クライアントの本文なら `400`、オリジンの本文なら先頭はもう出ているので**終端の chunk を出さずに閉じます**
 (WARN は 1 分に 1 行)。0.29.35 までは無制限で、空行を送らずにヘッダーを流し続けるオリジン (宛先はクライアントが選べる)
 に 300 MB 流されると RSS が 18 → 907 MB、改行なしの `f` を chunked の POST で 796 MiB 送ると +793 MiB になりました。
 
-**1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T.14.4)。`/snapshot` を
+**1 回で全部取るなら `scripts/collect-deployed.sh HOST:PORT [DIR]`** (T14.4)。`/snapshot` を
 `DIR/<UTC 時刻>-snapshot.json` (既定はリポジトリの `status/`。`.gitignore` 済み) に保存し、要点
 (`scripts/snapshot-summary.py`)・ホスト別 (`status-diff.py`。**前回の雪像があれば差分**)・
 ダッシュボードの読み方 (`check-dashboard.js`)・手元から見た待ち (`probe-deployed.sh`) を
 続けて回して **Markdown 1 枚**を標準出力に出します (同じものを雪像の隣の `<時刻>-collect.md` にも残し、
 雪像に入らない `/daily` `/healthz` `/slo` `/config` `/profile?res=60` も `<時刻>-<口>.json` で隣に置きます。
 `/profile?res=60` は 1 枚 (256 KiB) だと 24 時間のうち約 5 時間しか入らないので、`--full` が無くても `next_offset` が `null` になるまで `offset=` で追い、`samples` を 1 つに繋いで `truncated` を `false` にしたものを置きます。枚数の上限は `MAX_PAGES`。
-**雪像の `recent` と `hosts` も、256 KiB で切れていれば既定で `offset=` で追い、雪像の同じ部に行を足して置き直します** (T.22.5。T.27.1 から `dns` と `profile` も。`/dns` の `offset=` は 0.27.1 からで、それより前の版では 1 枚ぶんのまま要約にそう書きます。形は `/snapshot` のままなので、下の道具はどれもそのまま全部を読みます。2026-10-17 の tokyo では 1 枚に `recent` 2,000 件中 576 件 (33 分ぶん)・`hosts` 1,001 件中 574 件しか入りませんでした)。上限は部ごとに `MAX_PAGES` 枚と、続きを引く時間の合計 `FOLLOW_SECS` (既定 60 秒) で、越えたら止めて要約にそう書きます (`truncated` と `next_offset` は残りを指したまま)。`FULL=0` か `--no-follow` で前のとおり追いません。
-さらに、下の `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた**匿名化した写し** `<時刻>-snapshot.anon.json` と、同じ表で通した `<時刻>-daily.anon.json` `<時刻>-profile_res_60.anon.json` も隣に置きます (T.17.16。`ANON=0` で置きません)。テストへ持ち込むときはこの写しを `scripts/testdata/` へ移します)。`status-diff.py` は `/snapshot` の JSON を
+**雪像の `recent` と `hosts` も、256 KiB で切れていれば既定で `offset=` で追い、雪像の同じ部に行を足して置き直します** (T22.5。T27.1 から `dns` と `profile` も。`/dns` の `offset=` は 0.27.1 からで、それより前の版では 1 枚ぶんのまま要約にそう書きます。形は `/snapshot` のままなので、下の道具はどれもそのまま全部を読みます。2026-10-17 の tokyo では 1 枚に `recent` 2,000 件中 576 件 (33 分ぶん)・`hosts` 1,001 件中 574 件しか入りませんでした)。上限は部ごとに `MAX_PAGES` 枚と、続きを引く時間の合計 `FOLLOW_SECS` (既定 60 秒) で、越えたら止めて要約にそう書きます (`truncated` と `next_offset` は残りを指したまま)。`FULL=0` か `--no-follow` で前のとおり追いません。
+さらに、下の `anonymize-snapshot.py` で名前・IP・UA だけを置き換えた**匿名化した写し** `<時刻>-snapshot.anon.json` と、同じ表で通した `<時刻>-daily.anon.json` `<時刻>-profile_res_60.anon.json` も隣に置きます (T17.16。`ANON=0` で置きません)。テストへ持ち込むときはこの写しを `scripts/testdata/` へ移します)。`status-diff.py` は `/snapshot` の JSON を
 そのまま読めるので、保存したファイルを 2 つ渡せばいつでも差分が取れます:
 
 ```bash
 scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo > today.md   # 1 日 1 回 (保存先はホストごとに分ける)
 PROBE=0 scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo      # 本物の要求を送らずに取る
 scripts/collect-deployed.sh --from-server tokyo.sorahost.net:60357 status/tokyo  # 回し忘れた日を取り寄せる
-scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo     # 締め: 取り寄せ → 前と 0 時間を版で選ぶ → 本番 → 前提 (T.29.26)
+scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo     # 締め: 取り寄せ → 前と 0 時間を版で選ぶ → 本番 → 前提 (T29.26)
 scripts/collect-deployed.sh --full tokyo.sorahost.net:60357 status/tokyo       # 切れた部の続きも `offset=` で追う
-scripts/collect-deployed.sh --no-follow tokyo.sorahost.net:60357 status/tokyo  # 切れた `recent`・`hosts`・`dns`・`profile` を追わない (T.22.5 より前の既定)
-VIA=$HTTPS_PROXY scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo  # CONNECT しか通さないプロキシの内側 (クラウドのセッション) から。探りは飛ばす (T.27.2)
+scripts/collect-deployed.sh --no-follow tokyo.sorahost.net:60357 status/tokyo  # 切れた `recent`・`hosts`・`dns`・`profile` を追わない (T22.5 より前の既定)
+VIA=$HTTPS_PROXY scripts/collect-deployed.sh tokyo.sorahost.net:60357 status/tokyo  # CONNECT しか通さないプロキシの内側 (クラウドのセッション) から。探りは飛ばす (T27.2)
 scripts/status-diff.py status/*-snapshot.json    # 最初と最後で差分
 scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまとめる
 ```
@@ -142,14 +142,14 @@ scripts/status-diff.py status/*-snapshot.json --group domain  # eTLD+1 でまと
 手元に無い日付だけ**を取り寄せて `DIR/<日付>T000000Z-snapshot.json` に置きます
 (中身は `/snapshot` そのものなので、`status-diff.py` も `snapshot-diff.py` も
 `weekly-report.py` もそのまま読めます)。
-**起動と停止の 1 枚** (T.28.20。下記 `/snapshots` の `moments`) も手元に無いものだけ取り寄せて
+**起動と停止の 1 枚** (T28.20。下記 `/snapshots` の `moments`) も手元に無いものだけ取り寄せて
 `DIR/<UTC 時刻>-shutdown-snapshot.json` / `-start-snapshot.json` に置き、**最後の停止とその後の最初の起動**を
 `BEFORE=… ZERO=…` の形で 1 行出します (締めの「前」と「0 時間」を撮り忘れても、再デプロイのあとにこれで埋まります)。
 
-要点 (`snapshot-summary.py`) の**頭には「無言の再起動」の 1 行**が付きます (T.23.2): `/events` の `start` の直前が `shutdown` でない起動 (落とされたか、止め方が違う) を時刻・前の起動の長さ・版つきで数え、0 件なら「0 件 (直前が `shutdown` の起動 N 件)」、`/events` の部が無い雪像では「判定できず」と書きます
-(2026-10-20 の tokyo は 2026-10-17 22:14:52Z の 1 回で、前の起動は 19.2 時間。10-15 の雪像は 0 件)。同じ判定は `--criteria phase23` の判定表にも 1 行で入ります (行を足すのは T.23.1。判定の関数は要点と同じ `scripts/snapshot_criteria.py` の `silent_restarts()`)。
+要点 (`snapshot-summary.py`) の**頭には「無言の再起動」の 1 行**が付きます (T23.2): `/events` の `start` の直前が `shutdown` でない起動 (落とされたか、止め方が違う) を時刻・前の起動の長さ・版つきで数え、0 件なら「0 件 (直前が `shutdown` の起動 N 件)」、`/events` の部が無い雪像では「判定できず」と書きます
+(2026-10-20 の tokyo は 2026-10-17 22:14:52Z の 1 回で、前の起動は 19.2 時間。10-15 の雪像は 0 件)。同じ判定は `--criteria phase23` の判定表にも 1 行で入ります (行を足すのは T23.1。判定の関数は要点と同じ `scripts/snapshot_criteria.py` の `silent_restarts()`)。
 
-要点 (`snapshot-summary.py`) の最後には 2 つの表が付きます (T.17.0c): **`/events` の anomaly を種類別に「起動からの件/時」**
+要点 (`snapshot-summary.py`) の最後には 2 つの表が付きます (T17.0c): **`/events` の anomaly を種類別に「起動からの件/時」**
 (`cleared:` は数えず、状態ファイルから読み戻した起動より前の出来事は外します) と、**接続元の見張り** — 新しく現れた接続元
 (`--prev` があれば前の `/clients` に居ないもの、無ければ `first_seen` が起動より後)・IP リテラル宛ての要求・443 / 80 以外への
 CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)・`/events` の `new_client`・**`/readers` に居て `/clients` に居ない
@@ -158,7 +158,7 @@ CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)�
 
 保存先は**リポジトリの外**にしてください (個票には接続元 IP と宛先ホストが並びます)。
 
-**エラーを「使われ方」から切り離して数え直すには `scripts/error-mix.py SNAP.json …`** (T.23.0)。
+**エラーを「使われ方」から切り離して数え直すには `scripts/error-mix.py SNAP.json …`** (T23.0)。
 雪像の `recent` を 1 行 = 1 試行として、(1) いまの物差し (`history["3600"]` の `errors_by_cause` の合計 ÷ `connects`)、
 (2) 名前解決に成功した試行を分母にした率 (`reason == "error:dns"` を分母から外す)、(3) 接続元×宛先の
 連続した失敗を 1 件にまとめた率 (間隔の閾 N = 60 / 300 秒。間で成功したら別の一続き)、(4) 宛先ごとの
@@ -166,16 +166,16 @@ CONNECT (`/clients` の起動からの通算と、`/recent` の窓の中の数)�
 件数、`errors` の `count`/`kept`) を添えます。`recent` は 2,000 件の環状なので窓は 1 日より短いことがあり
 (2026-10-20 の雪像では 7.9 時間)、部が無い雪像は「判定できず」と書いて 0 とは書きません。
 
-**2 枚の雪像から「何が変わったか」を全部読むのは `scripts/snapshot-diff.py A B`** (T.14.17)。
+**2 枚の雪像から「何が変わったか」を全部読むのは `scripts/snapshot-diff.py A B`** (T14.17)。
 再起動をまたいでいるかを `uptime_secs` と `version` で見て、**`/history` をその再起動時刻で切り**、
 **バーストの無い時間帯 (1 時間 300 本未満の標本) どうし**で CONNECT 確立の p50 / p95 と
 名前解決のミス率を並べます (**`--criteria phase22` のときだけ**、前と後で別々に「300 本と、その期間の
-1 時間の本数の中央値の 3 倍の大きい方」以上をバーストとします。T.22.1) (`/status` の通算は再起動で 0 に戻るので、そのまま引き算すると
+1 時間の本数の中央値の 3 倍の大きい方」以上をバーストとします。T22.1) (`/status` の通算は再起動で 0 に戻るので、そのまま引き算すると
 「いつからの値か」が混ざります)。続けてホスト別・接続元別 (**新しく現れた接続元**)・
 名前解決の warm と引き直し・出来事・エラーの原因別・バーストを出し、`--criteria phase14` を
 足すと**完了の定義に対する判定表** (満たした / 届かず / 判定できず) が最後に付きます。
 出力は Markdown なので `TODO.md` にそのまま貼れます。
-**`0.18.0` までの版は、`/history` の確立の区間 (と `/status` の `recent_quantiles.connect`) に、繋がらずに 502 を返した接続の「失敗するまでの時間」も入っています**。黒穴の宛先を繰り返し叩く端末が居ると p95 がその時間になります (2026-10-08 の雪像は p95 2,066 ms)。**T.20.4 からは、エラーで終わった 1 件は確立 / 初バイト / `wait` の区間にも直近の標本にも入りません** (`connects` は繋がった本数。失敗は `errors` / `errors_by_cause` / `/errors` / ホスト別の行に残ります。「API」の `/history` の説明)。前後の雪像が T.20.4 をまたぐと `connects` と確立の分位点の数え方が違うので、その 1 回は要約の「CONNECT 確立 (成功した接続だけ)」の行で比べてください。「平常時の前後」の表には後の雪像の `/recent` から**成功した接続だけ**の確立時間 (本数・p50・p95。同じ雪像で 398 本・7 / 66 ms) も 1 行並べ、後の期間のエラーが接続の 5% を超えるときは表の下で断ります (T.20.1。`--criteria` が phase14 / phase15 / phase17 / phase18 のときは出しません — この 4 つの出力は過去の判定を出し直せるように変えない決まりです)。判定の部は `scripts/snapshot_criteria.py` に割ってあります (入口は `snapshot-diff.py` のまま。そのテストは `scripts/test_snapshot_criteria.py`)。
+**`0.18.0` までの版は、`/history` の確立の区間 (と `/status` の `recent_quantiles.connect`) に、繋がらずに 502 を返した接続の「失敗するまでの時間」も入っています**。黒穴の宛先を繰り返し叩く端末が居ると p95 がその時間になります (2026-10-08 の雪像は p95 2,066 ms)。**T20.4 からは、エラーで終わった 1 件は確立 / 初バイト / `wait` の区間にも直近の標本にも入りません** (`connects` は繋がった本数。失敗は `errors` / `errors_by_cause` / `/errors` / ホスト別の行に残ります。「API」の `/history` の説明)。前後の雪像が T20.4 をまたぐと `connects` と確立の分位点の数え方が違うので、その 1 回は要約の「CONNECT 確立 (成功した接続だけ)」の行で比べてください。「平常時の前後」の表には後の雪像の `/recent` から**成功した接続だけ**の確立時間 (本数・p50・p95。同じ雪像で 398 本・7 / 66 ms) も 1 行並べ、後の期間のエラーが接続の 5% を超えるときは表の下で断ります (T20.1。`--criteria` が phase14 / phase15 / phase17 / phase18 のときは出しません — この 4 つの出力は過去の判定を出し直せるように変えない決まりです)。判定の部は `scripts/snapshot_criteria.py` に割ってあります (入口は `snapshot-diff.py` のまま。そのテストは `scripts/test_snapshot_criteria.py`)。
 
 ```bash
 scripts/snapshot-diff.py status/2026-09-1{2,6}*-snapshot.json --criteria phase14
@@ -196,34 +196,34 @@ scripts/snapshot-diff.py a.json b.json --criteria phase17 --daily b-daily.json \
 scripts/snapshot-diff.py a.json b.json --criteria phase18 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase20 (T.20.1) は phase18 と同じ並びの 10 行で、材料も同じ。物差しを 2 つ直してある:
+# phase20 (T20.1) は phase18 と同じ並びの 10 行で、材料も同じ。物差しを 2 つ直してある:
 # `heap_used + mmap` の増えは `cache_memory` (メモリのキャッシュ。上限まで使ってよい) を引いてから比べ、
 # `discord.com` のミス率・`timeout`・`dns_warm` の最大と `warm_evicted` の 3 行は「表示だけ」(閾を置かず、集計に数えない)
 scripts/snapshot-diff.py a.json b.json --criteria phase20 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase21 (T.21.2) は phase20 と同じ並びの 10 行で、材料も同じ。T.20.99 で届かなかった 3 行の読み方を直してある:
+# phase21 (T21.2) は phase20 と同じ並びの 10 行で、材料も同じ。T20.99 で届かなかった 3 行の読み方を直してある:
 # 平常時のミスは「表示だけ」(日ごとの幅と `misses_by_kind` の `cold` / `expired` … の内訳を並べる)、
 # conn 役の CPU/要求 は前か後の `/profile` が 12 時間 (`res=60` で 720 標本) に満たなければ「参考」(集計に数えない)、
 # `ipv6.request_probes` は最後に探ったのが `--zero` の取得から 3 時間以内なら「満たした」(起動直後は canary が IPv6 をまだ見ていない)
 scripts/snapshot-diff.py a.json b.json --criteria phase21 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase22 (T.22.1) は phase21 の 10 行 + 22a の 4 行で、材料も同じ。足した 4 行は
-# `dns_slow` が窓のミスの合計 1,000 ms 未満の窓で立った件数 (0 で満たした。新しい閾 = 合計 1,000 ms 以上 (T.22.2) での件/時は表示だけ)、
+# phase22 (T22.1) は phase21 の 10 行 + 22a の 4 行で、材料も同じ。足した 4 行は
+# `dns_slow` が窓のミスの合計 1,000 ms 未満の窓で立った件数 (0 で満たした。新しい閾 = 合計 1,000 ms 以上 (T22.2) での件/時は表示だけ)、
 # keep-warm の既定を戻す 2 つの条件 (`stale_retries` が `stale_hits` の 1% 以上・`refused`/`unreachable`/`timeout` の
-# **接続 1 本あたり**が前の 1.5 倍以上で「届かず」。件/時は表示だけ。T.22.4)、T.22.4 の目安 (引き直しの回/時が前の半分以下・
+# **接続 1 本あたり**が前の 1.5 倍以上で「届かず」。件/時は表示だけ。T22.4)、T22.4 の目安 (引き直しの回/時が前の半分以下・
 # `expired` + `warm_stale` の増えが 1 日 10 回以内)。phase21 の `/events` の行 (`dns_slow` ≤ 0.1 件/時) は phase22 では表示だけ
 # (件/時の閾は使われ方で落ちるので、`dns_slow` の判定は上の行に任せる)。
 # 裏の引き直しの行は warm 0 (keep-warm を止めた既定) だと warm の平均で割れないので、理由と通算の 1 時間あたりを並べる。
 # **平常時の切り方もこの定義だけ違う** (`--criteria` 無しでも `--burst-median-k 3` で同じ切り方になる。collect-deployed.sh の
-# 判定表の無い差分はこれを付ける。T.29.13): 1 時間の本数が 300 本と、その期間の中央値の 3 倍の大きい方以上をバーストとする
+# 判定表の無い差分はこれを付ける。T29.13): 1 時間の本数が 300 本と、その期間の中央値の 3 倍の大きい方以上をバーストとする
 # (量の多い tokyo で 300 本だと 29 標本のうち 23 がバーストになった。量の少ない期間は 300 本の切り方のまま)。
 # §2 の表の頭に前と後の閾を書き、`--out json` の `history` に `median_k` `medians` `limits` が足される
 scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase23 (T.23.1) は phase22 の 14 行を土台に、エラーの行の**分母**と heap の行の書き方だけを直した 16 行。
+# phase23 (T23.1) は phase22 の 14 行を土台に、エラーの行の**分母**と heap の行の書き方だけを直した 16 行。
 # 接続のエラー (`refused`・`unreachable`・`timeout`) は `/recent` の connect の 1 行を 1 試行とし、
 # **名前解決に失敗した行 (`error:dns`) を分母から外した**「名前解決に成功した試行あたり」で見る
 # (前の期間の 1.5 倍以上なら「届かず」。件/時と、分母が `connects` だった phase22 の行は表示だけ)。
@@ -232,61 +232,61 @@ scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
 # (死んだ名前の総当たりという使われ方の数字なので表示だけ)。heap の行は、`--zero` の雪像と起動が
 # 違うときに `/events` の `start` の時刻を添える (黙って「判定できず」にしない。2026-10-17 22:14:52Z の
 # 無言の再起動がこれで読める)。最後の行は無言の再起動 (`/events` の `start` の直前に `shutdown` が無い起動)
-# が 0 回 (T.23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は phase30)
+# が 0 回 (T23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は phase30)
 scripts/snapshot-diff.py a.json b.json --criteria phase23 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase24 (T.24.2) は phase23 の 16 行をそのまま持ち越し、**2 行だけ読み方を変えた**もの:
+# phase24 (T24.2) は phase23 の 16 行をそのまま持ち越し、**2 行だけ読み方を変えた**もの:
 # heap の行は、`/status` の `memory.baseline` (状態ファイルに**起動から 60 秒で 1 回だけ**書く
-# `heap_used + mmap − cache_memory`。T.24.4) があれば**それとの差**で読む (`--zero` の 0 時間の雪像は要らない。
+# `heap_used + mmap − cache_memory`。T24.4) があれば**それとの差**で読む (`--zero` の 0 時間の雪像は要らない。
 # ホストの管理者に起動し直されても、起動ごとの基準なので判定できる)。`baseline` が無い雪像は phase23 と同じ
 # 0 時間の雪像との差に戻り、どちらも無ければ「判定できず」。最後の行は**こちらが原因の**無言の再起動
 # (同じ `boot` のまま起動し直した回) が 0 回で、`boot` が変わった回 (ホストのカーネルごとの再起動。
 # 2026-10-21 の 2 回) は時刻つきで理由を書き、**数から外す**。
-# 17 番目 (T.24.3) は、確立の**尾**を固定の 6 ms ではなく**そのときのホストの RTT + 5 ms**で読む
-# (T.14.99 の決まり)。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を**同じ行で対にした**
+# 17 番目 (T24.3) は、確立の**尾**を固定の 6 ms ではなく**そのときのホストの RTT + 5 ms**で読む
+# (T14.99 の決まり)。`/recent` の connect の行の `ms.connect` と `rtt_ms.origin` を**同じ行で対にした**
 # 差の中央値 (プロキシの取り分) と p95 (尾) を出し、尾が 5 ms 未満なら「距離」(相手までの RTT で
 # 説明できる)。**`/recent` は 2,000 件の環状なので、窓と本数が実測の欄に出る**。`rtt_ms.origin` の
-# 無い雪像 (Linux 以外・`--lite`) は「判定できず」。phase25 (T.27.0) は phase24 の 17 行のうち、接続のエラーの行に
+# 無い雪像 (Linux 以外・`--lite`) は「判定できず」。phase25 (T27.0) は phase24 の 17 行のうち、接続のエラーの行に
 # 試行 1,000 本の下限、引き直しの行を 1 名前あたり、無言の再起動の行を「前の雪像より後の起動だけ」に読み替えたもの
 scripts/snapshot-diff.py a.json b.json --criteria phase24 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase26 (T.29.10) は phase25 の 17 行を 1 つも動かさず、18 番目から後ろに 9 行を足したもの。T.28.99 で手で読んでいた 408 の件数 (`rejected_requests.header_timeout`。表示だけ)・
+# phase26 (T29.10) は phase25 の 17 行を 1 つも動かさず、18 番目から後ろに 9 行を足したもの。T28.99 で手で読んでいた 408 の件数 (`rejected_requests.header_timeout`。表示だけ)・
 # `/log` の error の行が 5 行以下・`/errors` の `local` (私設宛ての 403) が 0 件・3 秒で切った確立と成功した確立の最大と
-# `syn_retrans` 1 / 2 の本数 (表示だけ)・`rejected_requests` の合計と理由別 (表示だけ) と、T.29.99 の
-# `rss − (heap_used + mmap + cache_memory)` が 10 MB 未満 (T.29.25)・cgroup の起動からの CPU が前の版より下がる・
+# `syn_retrans` 1 / 2 の本数 (表示だけ)・`rejected_requests` の合計と理由別 (表示だけ) と、T29.99 の
+# `rss − (heap_used + mmap + cache_memory)` が 10 MB 未満 (T29.25)・cgroup の起動からの CPU が前の版より下がる・
 # `profile-sample` と `cache-probe` の CPU の割合が前の版より下がる (前か後の `/profile` が 12 時間未満なら参考)・
-# `/log` のオリジン側の失敗 (502・時間切れ) の WARN が 1 分に 10 行以下 (T.29.15。原因ごとに 1 分 1 行)
+# `/log` のオリジン側の失敗 (502・時間切れ) の WARN が 1 分に 10 行以下 (T29.15。原因ごとに 1 分 1 行)
 scripts/snapshot-diff.py a.json b.json --criteria phase26 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase27 (T.30.0・T.30.1) は phase26 の 26 行のうち 2 行だけ読み方を変えたもの。
-# 接続のエラーの行は、前も後も**分母 (名前解決に成功した試行) が 1,000 本以上**のときだけ判定する (T.29.99 は名前の
+# phase27 (T30.0・T30.1) は phase26 の 26 行のうち 2 行だけ読み方を変えたもの。
+# 接続のエラーの行は、前も後も**分母 (名前解決に成功した試行) が 1,000 本以上**のときだけ判定する (T29.99 は名前の
 # 引けないメール宛の総当たりで分母が 489 本、16.40 倍で「届かず」だった)。RSS の返していない分の行は、固定の 10 MB ではなく
 # **前の版の同じ値より下がる**で読み、`heap_free`・`stacks_estimate`・`malloc_trim` の回数と返した量 (`/status` の
-# `memory.trim`。T.30.1) は表示だけで並べる
+# `memory.trim`。T30.1) は表示だけで並べる
 scripts/snapshot-diff.py a.json b.json --criteria phase27 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase28 (T.31.0・T.31.1) は phase27 の 26 行のうち 2 行を量に左右されない物差しにしたもの。
-# cgroup の CPU はコアの合計ではなく**起動からの要求 1 本あたり**で前の版と比べ (1.1 倍未満。T.30.99 は要求が 1.6 倍でコアの合計が
+# phase28 (T31.0・T31.1) は phase27 の 26 行のうち 2 行を量に左右されない物差しにしたもの。
+# cgroup の CPU はコアの合計ではなく**起動からの要求 1 本あたり**で前の版と比べ (1.1 倍未満。T30.99 は要求が 1.6 倍でコアの合計が
 # 1.09 倍の「届かず」だった)、RSS の返していない分は **`malloc_trim` が毎時動いて返しているか** (`memory.trim`) で読む
 scripts/snapshot-diff.py a.json b.json --criteria phase28 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase29 (T.32.16・T.32.29・T.32.30) は phase28 の 26 行のうち 5 行を名前解決の失敗の割合で動かない形にしたもの。
+# phase29 (T32.16・T32.29・T32.30) は phase28 の 26 行のうち 5 行を名前解決の失敗の割合で動かない形にしたもの。
 # `conn` 役の CPU は名前解決に成功した要求あたり、暇なときの費用は裏の役割の
 # us/秒 (どちらも前の版の 1.1 倍未満。`/profile` が 12 時間に満たなければ判定できず)、cgroup の CPU は表示だけ、接続の
 # エラーは起動からの `/history?res=3600` の 443・80 宛て、`dns_slow` は名前解決に成功したミスで立った件/時
 scripts/snapshot-diff.py a.json b.json --criteria phase29 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase30 (T.33.1・T.33.2) は phase29 の 26 行のうち `dns_slow` の行を、件/時ではなく立った窓の名前解決に成功したミスの平均が
+# phase30 (T33.1・T33.2) は phase29 の 26 行のうち `dns_slow` の行を、件/時ではなく立った窓の名前解決に成功したミスの平均が
 # 前の版の 1.5 倍未満で読むもの (`collect-deployed.sh` の既定は phase30)。件/時は表示だけ。前の版に `dns_fail_ms_sum` が
-# 無ければ上下限で比べ、どちらとも言えなければ判定できず。`web_dns_misses`・`web_dns_ms_sum` (T.33.3) のある版は 443・80
+# 無ければ上下限で比べ、どちらとも言えなければ判定できず。`web_dns_misses`・`web_dns_ms_sum` (T33.3) のある版は 443・80
 # 宛ての成功したミスだけで読む。1 名前あたりの裏の引き直しは答えのある名前 (`/dns` の一覧の
-# `addrs` のある行) 1 つあたりで前の 1.5 倍未満 (一覧が切れていれば引き直しの合計で。T.33.2)
+# `addrs` のある行) 1 つあたりで前の 1.5 倍未満 (一覧が切れていれば引き直しの合計で。T33.2)
 scripts/snapshot-diff.py a.json b.json --criteria phase30 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
@@ -295,7 +295,7 @@ scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
                          --from-files status/2026-09-16T0106Z
 ```
 
-**`--group domain` は「dlsite 全体で何件か」を読むためのまとめ方です** (T.14.54)。`/hosts` は
+**`--group domain` は「dlsite 全体で何件か」を読むためのまとめ方です** (T14.54)。`/hosts` は
 `img.dlsite.jp` と `www.dlsite.jp` を別の行で持つので、相手ごとの合計が読めません。
 `--group domain` は **eTLD+1 が同じホスト同士を 1 行にまとめます** (`img.dlsite.jp` +
 `www.dlsite.jp` → `dlsite.jp`。`www.dlsite.com` は eTLD+1 が違うので**別の行**です)。
@@ -313,9 +313,9 @@ scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
   `AAAA` は全部同じときだけその値です
 - IP リテラル宛て・`localhost`・表からあふれた `other` は**まとめずにそのまま**出ます
 
-**表からあふれた `other` の行は、ホストどうしを比べる表に入れません** (T.28.19)。`other` は `/hosts` の 1,000 行から
+**表からあふれた `other` の行は、ホストどうしを比べる表に入れません** (T28.19)。`other` は `/hosts` の 1,000 行から
 あふれたホストの畳み先で、生きた CONNECT・forward・死んだ宛先への総当たりを 1 行に混ぜた**版をまたぐ通算**です
-(10-25 の tokyo では p95 10,006 ms・max 10,012 ms で、これは T.23.3 で 10 → 5 秒にする前の timeout の残り)。
+(10-25 の tokyo では p95 10,006 ms・max 10,012 ms で、これは T23.3 で 10 → 5 秒にする前の timeout の残り)。
 `status-diff.py` は CONNECT / forward の表と AAAA 別の中央値から外し、表の下に「`other` (混在・通算)」の 1 行
 (要求・計測・avg・エラーの原因・名前解決のミス。分位点は出さない) を出します。`snapshot-diff.py` も §3 の表と
 AAAA 別の中央値から外して同じ印の 1 行を出します (`--out json` では `hosts.folded`)。**`--criteria` を付けたときは
@@ -325,10 +325,10 @@ AAAA 別の中央値から外して同じ印の 1 行を出します (`--out jso
 (`CRITERIA=off` で止められます。判定表の相手は `BEFORE=<雪像>` で、0 時間の雪像は `ZERO=<雪像>` で渡せます。[README](../README.md#4-24-時間後) の「運用」の 4)。道具の単体テストは `python3 -m unittest discover -s scripts`
 (架空の雪像 `scripts/testdata/snapshot-a.json` / `snapshot-b.json` と、下の匿名化した実データで回ります)。
 
-**1 週間ぶんをまとめて読むのは `scripts/weekly-report.py`** (T.14.40)。`snapshot-diff.py` が
+**1 週間ぶんをまとめて読むのは `scripts/weekly-report.py`** (T14.40)。`snapshot-diff.py` が
 「2 枚の間に何が変わったか」を見るのに対して、こちらは**溜まった雪像を日で切って 1 週間を 1 枚**にします。
 入力は雪像の置き場 (`status/`) でも、`*-snapshot.json` を並べても、
-`/daily` (T.14.20) の JSON でも、`$HOME/.rust-http-proxy.daily.jsonl` そのものでも構いません
+`/daily` (T14.20) の JSON でも、`$HOME/.rust-http-proxy.daily.jsonl` そのものでも構いません
 (混ぜてよい。**7 日ぶん無ければあるぶんで**出して、何枚・何日ぶんだったかを頭に書きます)。
 出るのは表 8 つ — **要求数 / CONNECT 確立 p50・p95 / 名前解決のミス率 / エラー (原因別) / 山 /
 接続元の出入り / 遅かったホスト上位 / 新しく見たホスト**:
@@ -346,10 +346,10 @@ scripts/weekly-report.py status/ --out json    # 表の元の辞書をそのま�
 日ごとの表には出どころ (`/history?res=3600` か `/daily`) が入ります。
 `/hosts` と `/clients` は `.rrd` の通算なので**いちばん古い雪像といちばん新しい雪像の差**で読み、
 雪像が 1 枚しか無いときは「引き算できない」と断って通算のまま並べます。
-「山」は `/bursts` (T.14.6) があれば写真の枚数と最大、無ければ `/history` の `active_max` で代えます。
+「山」は `/bursts` (T14.6) があれば写真の枚数と最大、無ければ `/history` の `active_max` で代えます。
 出力は「デプロイ先の現在地」を締める文書と、次のタスクの入力にするためのものです。
 
-**実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T.14.35)。雪像には
+**実データを匿名化してテストへ持ち込むのは `scripts/anonymize-snapshot.py`** (T14.35)。雪像には
 個人の閲覧先が並ぶのでそのままではリポジトリに入れられませんが、**ホスト名** (`host-0001.g0007.example`)・
 **接続元 IP** (`198.51.100.x`)・**名前解決の答え** (`203.0.113.x`)・**`User-Agent`** (`ua-01`。`agents` の一覧も、
 いまの版の `agent` (単数) も、`/events` の `new_client:` の説明の終わりの `agent "…"` も同じ表)・
@@ -357,7 +357,7 @@ scripts/weekly-report.py status/ --out json    # 表の元の辞書をそのま�
 置き換えは**決定的** (同じ入力からは同じ出力) なので、**匿名化したあとの 2 枚でそのまま差分が取れます**。
 ホスト名の `gNNNN` は**まとめの単位 (eTLD+1) の番号**で、`img.dlsite.jp` と `www.dlsite.jp` は
 同じ番号 (= 匿名化後も同じ eTLD+1 `gNNNN.example`) に落ちます。**上の `--group domain` の粒度が
-匿名化したあとも読める**ようにするためです (T.14.54)。古い形 (`host-0001.example`) の
+匿名化したあとも読める**ようにするためです (T14.54)。古い形 (`host-0001.example`) の
 匿名化済みファイルはそのまま通ります (2 回かけても名前は変わりません)。
 **数字は 1 つも変わりません** (件数・ms・区間・閉じた理由・時刻・`version`・`path`)。`connect://` の
 scheme と port、表の上限を越えた分の行 (`other`) はそのままです。
@@ -368,7 +368,7 @@ scripts/anonymize-snapshot.py status/2026-09-16T0106Z-snapshot.json \
 # `/snapshot` より前の形 (1 本ずつ取ったファイル群) からも組めます (`-metrics` 等は飛ばします)
 scripts/anonymize-snapshot.py status/2026-09-16T0106Z-* -o anon.json
 scripts/snapshot-diff.py old.anon.json new.anon.json      # 匿名化したあとでも差分は取れる
-# 雪像に入らない口 (`/daily` `/profile?res=60`) も雪像と同じ表で (既定の出力は隣の `<名前>.anon.json`。T.17.16)
+# 雪像に入らない口 (`/daily` `/profile?res=60`) も雪像と同じ表で (既定の出力は隣の `<名前>.anon.json`。T17.16)
 scripts/anonymize-snapshot.py status/2026-09-26T114602Z-snapshot.json -o new.anon.json \
     --side status/2026-09-26T114602Z-daily.json --side status/2026-09-26T114602Z-profile_res_60.json=p60.anon.json
 ```
@@ -376,30 +376,30 @@ scripts/anonymize-snapshot.py status/2026-09-26T114602Z-snapshot.json -o new.ano
 同梱の `scripts/testdata/deployed-2026-09-16.anon.json` (778 KiB) がその出力で、**デプロイ先の
 2026-09-16 の雪像そのまま**です (ホスト 817 件・名前解決 90 件・`res=60` は 1,440 標本)。
 `node scripts/check-dashboard.js` と `python3 -m unittest discover -s scripts` がこれを読み、
-`/history?res=3600` を起動時刻で切った平常時から **T.14.0 の表と同じ数字** (名前解決 0.55 回/接続、
+`/history?res=3600` を起動時刻で切った平常時から **T14.0 の表と同じ数字** (名前解決 0.55 回/接続、
 CONNECT 確立 p50 8.3 / p95 80.7 ms、ミス 1 回 11.5 ms) が出ることを見ています。
 2 枚目の `scripts/testdata/deployed-2026-09-26.anon.json` (2.3 MiB。隣に `-daily.anon.json` と `-profile_res_60.anon.json`) は
 **2026-09-26 の雪像** (版 `0.1.0+2e57626`、起動から 47.2 時間) で、2026-09-16 の版に無かった `recent` / `profile` / `events` /
-`hosts_series` と T.16.0 の 3 列が入っています。2026-09-16 → 2026-09-26 で `--criteria phase15` / `phase17` の判定表が出て、
-T.16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 0、`dns_slow` 0.61 件/時) が出ることを見ています
-(T.17.16。名前は番号が前後で合わないので、`discord.com` を見張る行は「判定できず」になります)。
+`hosts_series` と T16.0 の 3 列が入っています。2026-09-16 → 2026-09-26 で `--criteria phase15` / `phase17` の判定表が出て、
+T16.99 の数字 (`conn` 役 0.0013 コア、`dns_warm_max` 15、`warm_evicted` 0、`dns_slow` 0.61 件/時) が出ることを見ています
+(T17.16。名前は番号が前後で合わないので、`discord.com` を見張る行は「判定できず」になります)。
 
 **いまの数字は 2026-11-05、tokyo (`tokyo.sorahost.net:60357`) に 0.33.3 をデプロイして 19.2 時間の実測**です (`TODO.md` §2 と同じ版。
-`scripts/check-docs.sh` の (k) が見ます。T.32.28)。出どころは雪像 1 枚 (`VIA=$HTTPS_PROXY scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo`
+`scripts/check-docs.sh` の (k) が見ます。T32.28)。出どころは雪像 1 枚 (`VIA=$HTTPS_PROXY scripts/collect-deployed.sh --closeout tokyo.sorahost.net:60357 status/tokyo`
 が取った `status/tokyo/2026-11-05T095107Z-snapshot.json`)。版は `0.33.3+458b007` (2026-11-04 14:41:16Z に無言で起動し直したもの。本体は `v0.33.3` = `75d7361` と同じ) です。
-数字の本文と判定 (`--criteria phase30` で満たした 13・届かず 3) は [`tasks/T33.md`](../tasks/T33.md) の T.33.99 の結果にあり、`TODO.md` の §2「デプロイ先の現在地」はそこを指しています (T.28.21 で、締めのたびに表を書き写すのをやめました)。**雪像はリポジトリに入れません** (利用者の閲覧先ホストと接続元 IP が並びます)。
+数字の本文と判定 (`--criteria phase30` で満たした 13・届かず 3) は [`tasks/T33.md`](../tasks/T33.md) の T33.99 の結果にあり、`TODO.md` の §2「デプロイ先の現在地」はそこを指しています (T28.21 で、締めのたびに表を書き写すのをやめました)。**雪像はリポジトリに入れません** (利用者の閲覧先ホストと接続元 IP が並びます)。
 
 | 項目 | tokyo (0.33.3、19.2 時間) |
 |---|---|
 | 要求 | 14,613 本 (761 本/時)。名前解決に失敗した要求が 30% (メール宛の NXDOMAIN の総当たり)。接続元は全部 `10.255.0.1` (手前の NAT) |
 | CONNECT 確立 | 直近の個票 584 本で **p50 12.0 / p95 248.0 ms**。同じ行の RTT は p50 16.1 / p95 250.1 ms で、**確立 − RTT の p95 は +0.5 ms** (= 遅れは相手までの距離) |
-| 名前解決 | 表 1,761 名前 (上限 4,096)、締め切り (10 秒) の 504 は 0、`dns_slow` 0 件 (T.33.3) |
+| 名前解決 | 表 1,761 名前 (上限 4,096)、締め切り (10 秒) の 504 は 0、`dns_slow` 0 件 (T33.3) |
 | エラー | 接続のエラー (443・80) は 0 / 7,361 |
 | CPU | cgroup の通算 **0.0007 コア**、`conn` 役は要求の全数あたり 821 → 784 us (名前解決に成功した要求あたりは 1.31 倍。失敗の割合が 4% → 30%)、暇なときの裏の役割は 1.13 倍 |
 | メモリ | RSS 28.7 MB。`heap_used + mmap − cache_memory` は起動 60 秒の基準 18.6 MB から **+3.6 MB**。`malloc_trim` は 19 回で計 28.5 MB を返した |
-| 断った要求 | **0 本** (`header_timeout` も 0。何も送らずに閉じた接続は 408 を返さず `silent_closes` 37 本に数える。T.33.0。前の版は 63.9 時間で 3,835 本) |
+| 断った要求 | **0 本** (`header_timeout` も 0。何も送らずに閉じた接続は 408 を返さず `silent_closes` 37 本に数える。T33.0。前の版は 63.9 時間で 3,835 本) |
 
-- **利用者の待ちは実質 1 RTT** で、コードで縮められる所はほぼ残っていません (T.14.99 の結論のまま。2026-10-25 の洗い出しでも同じ)。待ちの尾・失敗・`dns_slow` のほとんどは、死んだメールサーバーへの総当たりという使われ方です。
+- **利用者の待ちは実質 1 RTT** で、コードで縮められる所はほぼ残っていません (T14.99 の結論のまま。2026-10-25 の洗い出しでも同じ)。待ちの尾・失敗・`dns_slow` のほとんどは、死んだメールサーバーへの総当たりという使われ方です。
 - **接続元が全部 `10.255.0.1` に見えます** (手前の NAT の内側の番地)。tokyo では接続元ごとの上限・許可・追跡は効きません。
 - **2026-10-08 に nagoya から tokyo へ切り替えました** (`TODO.md` の付録 A「デプロイ先の切り替え」)。nagoya の数字と tokyo の 1〜3 枚目は付録 A に残してあります。
 
@@ -418,12 +418,12 @@ canary が IPv6 を見ていないときは 600 秒に 1 回、利用者の要�
 
 **残っている待ちは遠いホストの RTT だけ**です。上のとおり確立の中央値は 1 往復そのもので、プロキシ側では縮みません。
 タスク 14 の頃の 1 枚にあった尾 (p90 53.5 / p95 78.0 ms) は、2026-10-01 の 1 枚では平常時の `wait` で p90 9.9 / p95 18.0 ms でした
-(タスク 15 から CPU の絞りは 0 のまま。`TODO.md` の T.15.5。尾の残りは遠い相手への connect で、行き先の構成で上下します)。
-**名前解決は、nagoya では待ちの主役ではありませんでした** (接続 1 本あたり 6.4 → 1.6 ms)。**tokyo では接続 1 本あたり 4.2 ms でしたが、T.21.3 で 1.9 ms になりました** (期限切れの答えの引き直しを待たなくなったため。残りは初めて引く名前)。
+(タスク 15 から CPU の絞りは 0 のまま。`TODO.md` の T15.5。尾の残りは遠い相手への connect で、行き先の構成で上下します)。
+**名前解決は、nagoya では待ちの主役ではありませんでした** (接続 1 本あたり 6.4 → 1.6 ms)。**tokyo では接続 1 本あたり 4.2 ms でしたが、T21.3 で 1.9 ms になりました** (期限切れの答えの引き直しを待たなくなったため。残りは初めて引く名前)。
 
 ## RSS の段を手元で再生する (`scripts/memory-replay.py`)
 
-T.32.0 (2026-10-31)。0.30.4 の 48 時間で RSS が 48.6 → 73.6 MB と段になって増え、`malloc_trim(0)` で戻らなかった分の正体を
+T32.0 (2026-10-31)。0.30.4 の 48 時間で RSS が 48.6 → 73.6 MB と段になって増え、`malloc_trim(0)` で戻らなかった分の正体を
 手元で確かめるための手順です。場面ごとに新しいプロセスを 127.0.0.1 で起こし (HOME とキャッシュの置き場は使い捨て、
 `PROXY_ALLOW_LOCAL=on`・`PROXY_CANARY=off`)、手元のオリジン (スクリプトの中のスレッド) への CONNECT 2,000 本で
 `/recent` を埋めてから、次の 4 つを流します。
@@ -444,7 +444,7 @@ trim は gdb で `malloc_trim(0)` を 1 回呼び (1 時間ごとの trim の代
 `mp_.no_dyn_threshold`・`narenas` も gdb で読みます (gdb が無ければ `-`)。数字は MB (10^6)、
 `heap_used`・`heap_free`・`mmap` は `/status` の `memory` (`mallinfo2`)。
 
-**T.32.3 の前** (`8264a66` = 0.30.4 と同じ malloc の設定。2026-10-31、4 コアの sandbox):
+**T32.3 の前** (`8264a66` = 0.30.4 と同じ malloc の設定。2026-10-31、4 コアの sandbox):
 
 | 場面 | 段 | rss | 山 | heap_used | heap_free | mmap | mmap_threshold | arenas |
 |---|---|---|---|---|---|---|---|---|
@@ -468,13 +468,13 @@ trim は gdb で `malloc_trim(0)` を 1 回呼び (1 時間ごとの trim の代
   上がった後は 14 MiB の本文がアリーナから取られ、PURGE しても `heap_free` 15.8 MB のまま trim で返りません (主でない
   アリーナの天辺は `malloc_trim(0)` が詰めない)。**(d) の +15.2 MB はそのまま居座る**
 - (c) の `/snapshot` ×5 は山 +4.9 MB、trim 後も **+2.9 MB** 残ります (閾 2 MiB より小さい一時の `String` がアリーナに残る)
-- (b) の総当たりは +10 MB で、うち `heap_used` +5 MB は名前解決の表が埋まった分 (T.32.2)。trim で返るのは 1.2 MB だけ
+- (b) の総当たりは +10 MB で、うち `heap_used` +5 MB は名前解決の表が埋まった分 (T32.2)。trim で返るのは 1.2 MB だけ
 - tokyo の 10-30 16Z の段 +16.7 MB (`history["60"]` で 16:18 の 45.3 MB → 16:24 の 62.0 MB) は、**16:18〜16:20 の +6.6 MB**
   (保存 0、09:02・12:36 と同じ形 = 重い口とみられる。未確認) と、**16:21〜16:23 のメモリのキャッシュ 13.9 MB** (`mem_used`
   0 → 13,857,210、`stores` 18 → 35。RSS は +10.1 MB で、残り 3.8 MB は手元の `heap_free` の使い回し) に分かれます。
   キャッシュの分は (d) と同じ形 (追い出した 10-31 02:34 に RSS −4.6 MB しか戻らない)
 
-**T.32.3 の後** (`PROXY_MALLOC_MMAP_THRESHOLD_KB=256` が既定。閾 262,144・`no_dyn_threshold` 1 のまま動かない。同じ日・同じ機械):
+**T32.3 の後** (`PROXY_MALLOC_MMAP_THRESHOLD_KB=256` が既定。閾 262,144・`no_dyn_threshold` 1 のまま動かない。同じ日・同じ機械):
 
 | 場面 | 段 | rss | 山 | heap_used | heap_free | mmap | 前との差 |
 |---|---|---|---|---|---|---|---|
@@ -490,7 +490,7 @@ trim は gdb で `malloc_trim(0)` を 1 回呼び (1 時間ごとの trim の代
 | (d) | `/snapshot` ×5 → trim 後 | 27.7 | 28.3 | 2.2 | 0.9 | 15.6 | 42.3 → 27.7 |
 
 - **キャッシュの本文は捨てた時点で OS へ返る** ((d))。14 MiB の本文は `mmap` で取られ、PURGE の `free` で `munmap` される
-- 重い口の残りは +2.9 → +0.6 MB ((c))。山 (+3.6 MB) は残るので、`/snapshot` を部ごとに書き出す (T.32.1) のはこの山を下げる話
+- 重い口の残りは +2.9 → +0.6 MB ((c))。山 (+3.6 MB) は残るので、`/snapshot` を部ごとに書き出す (T32.1) のはこの山を下げる話
 - 名前解決の総当たりは +10.0 → +5.4 MB。表が大きくなるときの作り直し (256 KiB を超える `HashMap` の器) が `mmap` に移ったため
 - CPU/要求 (`scripts/cpu-per-request.sh`、前後交互、forward 3 組・CONNECT 6 組の中央値): forward 46.28 → 43.87 us (0.95 倍)、
   CONNECT 88.83 → 88.28 us (0.99 倍)。どちらの経路も 256 KiB を超える確保をしないので変わらない

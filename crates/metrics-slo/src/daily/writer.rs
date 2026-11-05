@@ -19,13 +19,13 @@ use crate::day_rollover::DayRollover;
 pub struct Writer {
     path: Option<PathBuf>,
     version: String,
-    /// いま見ている日と、最後にファイルへ書いた日 (起動時に最後の行から読む。T.34.50)
+    /// いま見ている日と、最後にファイルへ書いた日 (起動時に最後の行から読む。T34.50)
     rollover: DayRollover,
     acc: Option<Acc>,
     /// この起動で書いた行数と、書けなかった回数
     written: u64,
     errors: u64,
-    /// 起動して最初の標本で組み直したか (T.32.18。1 回だけ)
+    /// 起動して最初の標本で組み直したか (T32.18。1 回だけ)
     seeded: bool,
 }
 
@@ -45,7 +45,7 @@ impl Writer {
     }
 
     /// 起動して最初の標本 `first` の前に、読み戻した `history["60"]` の**今日の UTC 0 時から**の行で
-    /// 今日の積み上げを組み直す (T.32.18)。1 回だけ (2 回目からは何もしない)。
+    /// 今日の積み上げを組み直す (T32.18)。1 回だけ (2 回目からは何もしない)。
     ///
     /// 使う行は `0 時 <= t < first.t - 5` (`first` が持つ 5 秒の手前まで)。60 秒の行の `t` は窓の頭で、
     /// 起動してから最初の行が閉じるのは 1 分あと = 組み直す時点の行は全部前のプロセスのもの。
@@ -144,7 +144,7 @@ impl Writer {
             );
             return;
         }
-        // `/slo` の比を 1 時間の合計で判定した時間の数 (T.29.33)。集計はメモリの大域にある
+        // `/slo` の比を 1 時間の合計で判定した時間の数 (T29.33)。集計はメモリの大域にある
         let rate_hours = crate::slo::rate_hours_of_day(done.day.saturating_mul(SECS_PER_DAY));
         let line = done.line(&self.version, rate_hours);
         match append(&path, &line) {
@@ -172,7 +172,7 @@ impl Writer {
         self.path.as_deref()
     }
 
-    /// 起動して最初の標本で組み直したか (T.32.18)。
+    /// 起動して最初の標本で組み直したか (T32.18)。
     pub(crate) fn seeded(&self) -> bool {
         self.seeded
     }

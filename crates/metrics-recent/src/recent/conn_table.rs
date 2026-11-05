@@ -1,5 +1,5 @@
 //! いま開いている接続の表 ([`ConnTable`]。`/connections`) と、空回りしている接続の
-//! [`SpinningConn`]。`recent` の一部 (T25.2 で `recent.rs` から `conns.rs` へ移し、T.34.2 で
+//! [`SpinningConn`]。`recent` の一部 (T25.2 で `recent.rs` から `conns.rs` へ移し、T34.2 で
 //! 枠 ([`ConnSlot`]) と分けた)。
 //!
 //! **表の鍵を取るのは接続の開始と終了の 2 回だけ** ([`ConnTable::register`] /
@@ -323,7 +323,7 @@ pub struct SpinningConn {
     pub spins_delta: u64,
 }
 
-/// 接続の表の単体試験 (T.34.2 で別のファイルに移した)。
+/// 接続の表の単体試験 (T34.2 で別のファイルに移した)。
 #[cfg(test)]
 #[path = "conn_table_tests.rs"]
 mod tests;

@@ -64,7 +64,7 @@ fn connect_p95_needs_twenty_samples_in_the_window() {
     assert_eq!(CONNECT_MIN_SAMPLES, 20);
 }
 
-/// **T.29.11**: `connect_p95` は「確立 − RTT」(名前解決を除く) で読む。遠い宛先の割合が動いて確立そのものの
+/// **T29.11**: `connect_p95` は「確立 − RTT」(名前解決を除く) で読む。遠い宛先の割合が動いて確立そのものの
 /// p95 が上がっても (0.28.48 の 00:25 の窓: 確立 p95 122 ms・`connect − RTT` の p95 1 ms) 立たず、
 /// RTT を引いても 100 ms 遅い確立が 20 本あれば立つ。基準値の p95 が 0 ms (全部 RTT ちょうど) でも立てる。
 #[test]

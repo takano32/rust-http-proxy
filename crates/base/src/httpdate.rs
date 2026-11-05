@@ -74,7 +74,7 @@ pub(crate) fn epoch_from_civil(y: i64, m: u32, d: u32, h: u32, mi: u32, s: u32) 
     u64::try_from(secs).ok()
 }
 
-/// UNIX 時刻 (秒) を IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`、29 字) で `buf` に書く (T.29.9)。
+/// UNIX 時刻 (秒) を IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`、29 字) で `buf` に書く (T29.9)。
 ///
 /// 応答の `Date` (RFC 9110 §6.6.1) に使う。確保はしない。
 pub(crate) fn imf_fixdate(epoch: u64, buf: &mut [u8; 29]) -> &str {
@@ -114,7 +114,7 @@ pub(crate) fn imf_fixdate(epoch: u64, buf: &mut [u8; 29]) -> &str {
     std::str::from_utf8(&buf[..]).unwrap_or("Thu, 01 Jan 1970 00:00:00 GMT")
 }
 
-/// 今の時刻の `Date: <IMF-fixdate>` の行 (行末の CRLF は付けない。35 字。T.29.9)。
+/// 今の時刻の `Date: <IMF-fixdate>` の行 (行末の CRLF は付けない。35 字。T29.9)。
 pub fn date_line(buf: &mut [u8; 35]) -> &str {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -129,9 +129,9 @@ pub fn date_line(buf: &mut [u8; 35]) -> &str {
 /// [`error_head`] が組む頭の長さの上限 (理由句が 64 字までなら収まる)。
 pub const ERROR_HEAD_MAX: usize = 160;
 
-/// 自前の誤り応答 (本文なし) の頭を `buf` に組んで返す (T.34.21)。**確保しない**。
+/// 自前の誤り応答 (本文なし) の頭を `buf` に組んで返す (T34.21)。**確保しない**。
 ///
-/// `HTTP/1.1 <status> <reason>` に、`Date` (RFC 9110 §6.6.1。T.29.9)・`Content-Length: 0`・
+/// `HTTP/1.1 <status> <reason>` に、`Date` (RFC 9110 §6.6.1。T29.9)・`Content-Length: 0`・
 /// `Connection: close` を付けた形。`http` の誤り応答・`server` の要求を断る応答・
 /// `tunnel` の 502 / 504 が、別々に組んでいた同じ 1 行をここへ寄せた。
 /// `reason` は呼ぶ側が持つ短い定数 (64 字を超えると切れる)。
@@ -156,7 +156,7 @@ pub fn error_head<'b>(status: u16, reason: &str, buf: &'b mut [u8; ERROR_HEAD_MA
 mod tests {
     use super::*;
 
-    /// T.29.9: 書いた日付は `parse` で読み戻せて、元の時刻になる。
+    /// T29.9: 書いた日付は `parse` で読み戻せて、元の時刻になる。
     #[test]
     fn imf_fixdate_round_trips() {
         let mut buf = [0u8; 29];
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(epoch_from_civil(y, mo, d, h, mi, s), Some(epoch));
     }
 
-    /// T.34.21: 誤り応答の頭は、それまで 3 か所が `format!` で組んでいた形と 1 バイトも違わない。
+    /// T34.21: 誤り応答の頭は、それまで 3 か所が `format!` で組んでいた形と 1 バイトも違わない。
     #[test]
     fn error_head_matches_the_old_format() {
         for (status, reason) in [

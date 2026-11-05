@@ -148,7 +148,7 @@ impl HostSeries {
         self.reassign(&keep, hosts);
     }
 
-    /// 起動直後の 1 回: 通算の基準を置くだけ (T.34.36 で [`Self::rotate`] から割った段)。
+    /// 起動直後の 1 回: 通算の基準を置くだけ (T34.36 で [`Self::rotate`] から割った段)。
     fn seed(&mut self, w: u64, hosts: &HashMap<String, HostStats>) {
         for (name, s) in hosts.iter() {
             self.recent.insert(
@@ -315,7 +315,7 @@ impl HostSeries {
     }
 }
 
-/// (3) 上位 16 を選ぶ (**純粋**。T.34.36 で [`HostSeries::rotate`] から出した)。
+/// (3) 上位 16 を選ぶ (**純粋**。T34.36 で [`HostSeries::rotate`] から出した)。
 ///
 /// 直近 1 時間の要求数 ([`Recent::score`]) が 0 のホストは選ばない。同点は名前で崩すので順序は 1 つに決まる。
 /// **枠が余っているなら今の住人 (`residents`) はそのまま残す**: この 1 時間 静かだっただけの
@@ -548,14 +548,14 @@ mod tests {
             .collect()
     }
 
-    /// 同点は名前の順で崩し、0 のホストは選ばない (T.34.36)。
+    /// 同点は名前の順で崩し、0 のホストは選ばない (T34.36)。
     #[test]
     fn ties_are_broken_by_name_and_silent_hosts_are_not_picked() {
         let r = scores(&[("c", 5), ("a", 5), ("b", 9), ("z", 0)]);
         assert_eq!(pick_top(&r, &[]), vec!["b", "a", "c"]);
     }
 
-    /// 選ぶのは 16 まで (17 番目は落ちる。T.34.36)。
+    /// 選ぶのは 16 まで (17 番目は落ちる。T34.36)。
     #[test]
     fn the_top_is_cut_at_sixteen() {
         let rows: Vec<(String, u32)> = (0..20).map(|i| (format!("h{:02}", i), 100 - i)).collect();
@@ -571,7 +571,7 @@ mod tests {
         assert_eq!(top.last().map(String::as_str), Some("h15"));
     }
 
-    /// 枠が余っていれば今の住人は残し、満ちていれば忙しいホストを押しのけない (T.34.36)。
+    /// 枠が余っていれば今の住人は残し、満ちていれば忙しいホストを押しのけない (T34.36)。
     #[test]
     fn residents_keep_the_spare_slots_but_never_push_out_a_busy_host() {
         let r = scores(&[("busy", 7)]);

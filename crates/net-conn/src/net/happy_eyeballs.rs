@@ -35,7 +35,7 @@ pub fn stagger() -> Duration {
     Duration::from_millis(STAGGER_MS.load(Ordering::Relaxed))
 }
 
-/// Happy Eyeballs で試す候補アドレスの上限 (T.32.14)。
+/// Happy Eyeballs で試す候補アドレスの上限 (T32.14)。
 ///
 /// 候補ごとに `thread::spawn` し、勝者が返っても敗者は締め切り (`PROXY_CONNECT_TIMEOUT_SECS`) まで
 /// 記述子 1 つとスレッド 1 本を握ったまま残る (join しない・`PROXY_MAX_THREADS` に数えない)。候補数に
@@ -45,7 +45,7 @@ pub(crate) const MAX_CANDIDATES: usize = 8;
 
 #[cfg(test)]
 thread_local! {
-    /// このスレッドで Happy Eyeballs が起こした接続の試行の数 (**テストだけ**。T.32.14)
+    /// このスレッドで Happy Eyeballs が起こした接続の試行の数 (**テストだけ**。T32.14)
     pub(super) static HE_LAUNCHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -118,7 +118,7 @@ pub(super) fn connect_candidates(
     }
 
     let mut addrs = interleave_from(addrs, preferred.unwrap_or_else(ipv6_first_for_new_host));
-    // 候補は先頭の [`MAX_CANDIDATES`] 件で切る (T.32.14)。交互に並べたあとで切るので両方の族が残る
+    // 候補は先頭の [`MAX_CANDIDATES`] 件で切る (T32.14)。交互に並べたあとで切るので両方の族が残る
     addrs.truncate(MAX_CANDIDATES);
     let mut race = Race::new(&addrs, timeout, stagger(), connect_one);
     let (index, stream) = race.run()?;
@@ -177,7 +177,7 @@ fn note_winner(
 }
 
 /// 1 つのアドレスへ繋ぐ関数の形 ([`Race`] が試行ごとのスレッドで呼ぶ)。本番は [`connect_one`]、
-/// 試験は締め切りと間隔を確かめるための作り物を渡す (T.34.79。総称なので単相化され、`dyn` にはならない)。
+/// 試験は締め切りと間隔を確かめるための作り物を渡す (T34.79。総称なので単相化され、`dyn` にはならない)。
 trait Connect<S>: Fn(&SocketAddr, Option<Duration>) -> io::Result<S> + Copy + Send + 'static {}
 impl<S, F> Connect<S> for F where
     F: Fn(&SocketAddr, Option<Duration>) -> io::Result<S> + Copy + Send + 'static
@@ -186,7 +186,7 @@ impl<S, F> Connect<S> for F where
 
 /// 1 回の接続の中で走っている試行の集まり (`connect_candidates` のループの状態)。
 ///
-/// `S` は繋いだもの (本番は `TcpStream`)、`F` は 1 つのアドレスへ繋ぐ関数 (T.34.79)。
+/// `S` は繋いだもの (本番は `TcpStream`)、`F` は 1 つのアドレスへ繋ぐ関数 (T34.79)。
 struct Race<'a, S, F> {
     addrs: &'a [SocketAddr],
     /// 全体の締め切り (`timeout` が 0 なら無し)
@@ -310,6 +310,6 @@ impl<'a, S: Send + 'static, F: Connect<S>> Race<'a, S, F> {
     }
 }
 
-/// `Race` の締め切りと間隔の単体試験 (T.34.79。作り物の接続関数で、網には出ない)。
+/// `Race` の締め切りと間隔の単体試験 (T34.79。作り物の接続関数で、網には出ない)。
 #[cfg(test)]
 mod race_tests;

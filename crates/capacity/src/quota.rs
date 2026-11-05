@@ -19,7 +19,7 @@ pub fn is_permanent(e: &io::Error) -> bool {
 /// (total が一致) ならホストディスクが見えているだけなので `Unknown` に落とす。
 /// Pterodactyl では判断材料として df 相当の数字を常にログに出す。
 ///
-/// T.34.67 で判断を純粋な [`decide`] に、ログを [`QuotaDecision::log`] に分けた (文面と順は前と同じ)。
+/// T34.67 で判断を純粋な [`decide`] に、ログを [`QuotaDecision::log`] に分けた (文面と順は前と同じ)。
 pub fn resolve_quota(cfg: &CacheConfig) -> DiskQuota {
     let root = cfg.quota_root.as_deref().unwrap_or(&cfg.dir);
     let df = sysinfo::fs_info(root);

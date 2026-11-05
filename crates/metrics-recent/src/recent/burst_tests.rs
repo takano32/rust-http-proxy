@@ -1,4 +1,4 @@
-//! 山の写真の単体試験 (T14.6。T.34.2 で `recent/mod.rs` の `burst_tests` から移した)。
+//! 山の写真の単体試験 (T14.6。T34.2 で `recent/mod.rs` の `burst_tests` から移した)。
 
 use super::*;
 use crate::recent::{ConnState, ConnTable};
@@ -165,7 +165,7 @@ fn the_burst_ring_keeps_the_newest_fifty() {
     assert_eq!(ring.recent(2).0.len(), 2);
 }
 
-/// 多い順に `max` 件まで取り、同数は名前の順で安定させ、残りは本数だけ (T.34.2 で直に押さえる)。
+/// 多い順に `max` 件まで取り、同数は名前の順で安定させ、残りは本数だけ (T34.2 で直に押さえる)。
 #[test]
 fn top_counts_keeps_the_busiest_and_sums_the_rest() {
     let rows = vec![
@@ -190,7 +190,7 @@ fn top_counts_keeps_the_busiest_and_sums_the_rest() {
 }
 
 /// 表を数える所 ([`ShotTally::of`]) は時計も `/proc` も触らない: 宛先の無い枠は宛先に数えず、
-/// 状態と種類は枠の原子から読む (T.34.2)。
+/// 状態と種類は枠の原子から読む (T34.2)。
 #[test]
 fn the_tally_counts_clients_targets_states_and_kinds_without_a_clock() {
     let t = ConnTable::new();
@@ -228,7 +228,7 @@ fn the_tally_counts_clients_targets_states_and_kinds_without_a_clock() {
     assert_eq!(empty.states, [0; CONN_STATES]);
 }
 
-/// 撮った時刻と `/proc` の数は渡した値がそのまま入る (T.34.48)。
+/// 撮った時刻と `/proc` の数は渡した値がそのまま入る (T34.48)。
 #[test]
 fn take_at_records_the_given_time_and_process_counts() {
     let t = ConnTable::new();

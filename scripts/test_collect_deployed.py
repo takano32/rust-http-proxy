@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """`scripts/collect-deployed.sh` が `/profile?res=60` を `offset=` で追って 1 つに繋ぐ試験 (T17.0b) と、
-雪像の隣に匿名化した写しを置く試験 (T.17.16)、判定表の相手を `BEFORE` / `ZERO` で渡す試験 (T.18.2)、
-雪像の切れた `recent`・`hosts` を既定で追って雪像に繋ぐ試験 (T.22.5)、`--from-server` が締めの「前」と
-「0 時間」を版で選び、`--closeout` が 1 回で取り寄せ・本番・前提まで出す試験 (T.29.26)。
+雪像の隣に匿名化した写しを置く試験 (T17.16)、判定表の相手を `BEFORE` / `ZERO` で渡す試験 (T18.2)、
+雪像の切れた `recent`・`hosts` を既定で追って雪像に繋ぐ試験 (T22.5)、`--from-server` が締めの「前」と
+「0 時間」を版で選び、`--closeout` が 1 回で取り寄せ・本番・前提まで出す試験 (T29.26)。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 
@@ -11,7 +11,7 @@
 (`Profile::rows_within_page` と `next_offset`) を写した偽のサーバー**を 127.0.0.1 に立てて回す。
 標本の中身は架空 (時刻と詰め物だけ)。デプロイ先には行かない。
 
-**この 1 本の試験は並べて回す** (T.28.29。下の `load_tests`)。時間のほとんどは `collect-deployed.sh` を
+**この 1 本の試験は並べて回す** (T28.29。下の `load_tests`)。時間のほとんどは `collect-deployed.sh` を
 起こす 41 回 (1 回 0.6〜2 秒。中で `python3` と `curl` を合わせて 20 本ほど起こす) で、偽のサーバーを立てる
 のは数 ms なので、使い回しても縮まない。試験どうしは偽のサーバー・一時ディレクトリ・環境変数の
 写しをそれぞれ持ち、何も分け合わないので、`CPU の数` 本 (`COLLECT_TEST_JOBS` で変えられる。
@@ -46,7 +46,7 @@ class FakeProfile:
     """`/profile?res=60` の頁の切り方だけを写したもの。"""
 
     def __init__(self, count, pad=800):
-        # 1 標本 ≈ 850 B (T.16.99 の実測: 256 KiB に 308 標本)
+        # 1 標本 ≈ 850 B (T16.99 の実測: 256 KiB に 308 標本)
         # 並びは `keys` のとおり: 時刻・要求・プロセスの CPU (us)・役割ごとの `[cpu_us, 標本, 状態]`・詰め物
         self.samples = [[1_000_000 + 60 * i, 10, 2000, [0, [500, 60, 0]], "x" * pad]
                         for i in range(count)]
@@ -212,9 +212,9 @@ class CollectProfileTest(unittest.TestCase):
 
 
 class CollectBeforeZeroTest(unittest.TestCase):
-    """判定表の相手を `BEFORE`、0 時間の雪像を `ZERO` で渡す (T.18.2)。
+    """判定表の相手を `BEFORE`、0 時間の雪像を `ZERO` で渡す (T18.2)。
 
-    既定の `CRITERIA` は phase30 (T.33.1)。下のテストは `criteria="phase18"` を名指しして回す
+    既定の `CRITERIA` は phase30 (T33.1)。下のテストは `criteria="phase18"` を名指しして回す
     (`BEFORE` / `ZERO` の受け渡しは定義に依らない)。
 
     偽のサーバーが返す「いまの雪像」は `testdata/snapshot-b.json` (版 `0.1.0+bbbbbbb`、起動から 12 時間、
@@ -279,7 +279,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
         # phase29 で表示だけにした cgroup の CPU の行)
         self.assertIn("(ほかに表示だけ 7 行。集計に数えない)", tail)
         self.assertNotIn("参考", tail.split("\n\n")[-2])
-        self.assertEqual(tail.count("\n| "), 1 + 26)          # 表の頭 + 26 行 (T.29.10・T.29.15 で phase25 の 17 行に 9 行)
+        self.assertEqual(tail.count("\n| "), 1 + 26)          # 表の頭 + 26 行 (T29.10・T29.15 で phase25 の 17 行に 9 行)
         # `baseline` も `boot` も無い雪像なので、heap の行は phase23 の読み方に戻る
         self.assertIn("`heap_used + mmap − cache_memory` の 0 時間の雪像からの増えが 5 MB 未満", tail)
         self.assertIn("こちらが原因の無言の再起動", tail)
@@ -311,7 +311,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
         self.assertEqual(tail.count("\n| "), 1 + 10)
 
     def test_before_takes_the_last_long_profile_of_its_version(self):
-        # T.32.29: 「前」(停止の 1 枚) の隣に `-profile_res_60.json` が無ければ、前の版の最後の 12 時間以上の
+        # T32.29: 「前」(停止の 1 枚) の隣に `-profile_res_60.json` が無ければ、前の版の最後の 12 時間以上の
         # ものを選ぶ (同じ時刻の `-snapshot.json` の版で見る。短いもの・違う版・匿名化した写しは選ばない)
         before = "2025-12-30T101010Z-shutdown-snapshot.json"
         other = dict(self.a, version="0.0.9+ccccccc", status=dict(self.a["status"], version="0.0.9+ccccccc"))
@@ -413,7 +413,7 @@ class CollectBeforeZeroTest(unittest.TestCase):
 
 
 class CollectAnonTest(unittest.TestCase):
-    """雪像の隣に匿名化した写し (`-snapshot.anon.json` と隣の口の `.anon.json`) を置く (T.17.16)。"""
+    """雪像の隣に匿名化した写し (`-snapshot.anon.json` と隣の口の `.anon.json`) を置く (T17.16)。"""
 
     def run_collect(self, **env):
         srv = serve(FakeProfile(10))
@@ -471,7 +471,7 @@ class CollectAnonTest(unittest.TestCase):
 
 
 class FakeRows:
-    """`/recent?n=2000&offset=` と `/hosts?limit=1000&offset=` の頁の切り方だけを写したもの (T.22.5)。
+    """`/recent?n=2000&offset=` と `/hosts?limit=1000&offset=` の頁の切り方だけを写したもの (T22.5)。
 
     `rows` は**応答の並び** (`recent` は閉じた新しい順、`hosts` は要求数の順)。頁は
     `array_within` と同じく 1 行ずつ足して予算を越える手前で切り、`next_offset` は
@@ -533,7 +533,7 @@ class FakeRows:
 
 
 class FakeDns:
-    """`/dns?sort=age&limit=4096&offset=` の頁の切り方だけを写したもの (T.27.1)。
+    """`/dns?sort=age&limit=4096&offset=` の頁の切り方だけを写したもの (T27.1)。
 
     `old=True` は 0.25.4 までの `/dns` (`offset` も `next_offset` も無い。切れても続きは引けない)。
     """
@@ -566,7 +566,7 @@ def serve_follow(recent, hosts, dns=None, prof5=None):
     """雪像の `recent`・`hosts` を上の偽の 1 枚目にし、`/recent` `/hosts` で続きを返す。
 
     `dns` (`FakeDns`) と `prof5` (`FakeProfile` を `/profile?res=5` に見立てる) を渡すと、
-    雪像のその部も偽の 1 枚目にし、`/dns` と `/profile?res=5` で続きを返す (T.27.1)。
+    雪像のその部も偽の 1 枚目にし、`/dns` と `/profile?res=5` で続きを返す (T27.1)。
     """
     with open(SNAPSHOT) as f:
         base = json.load(f)
@@ -623,7 +623,7 @@ def serve_follow(recent, hosts, dns=None, prof5=None):
 
 
 class CollectFollowTest(unittest.TestCase):
-    """切れた `recent`・`hosts` を既定で `offset=` で追い、雪像の同じ部に繋ぐ (T.22.5)。
+    """切れた `recent`・`hosts` を既定で `offset=` で追い、雪像の同じ部に繋ぐ (T22.5)。
 
     偽の `recent` は 2,000 件 (リングの `MAX_RECENT`) で 1 枚に約 530 件、`hosts` は
     1,001 件 (`limit=1000` でも `offset=` で全部届く) で 1 枚に約 380 件。
@@ -674,7 +674,7 @@ class CollectFollowTest(unittest.TestCase):
         self.assertEqual(list(hs), list(self.hosts.page(0, 1000)))
         self.assertIn("recent", snap["parts"])
         pages = -(-2000 // self.first[0])
-        self.assertIn("- 切れた部の続き (既定で追う。T.22.5): `recent` %d 枚で %s → 2,000 件 (全 2,000 件)"
+        self.assertIn("- 切れた部の続き (既定で追う。T22.5): `recent` %d 枚で %s → 2,000 件 (全 2,000 件)"
                       % (pages, format(self.first[0], ",")), out)
         self.assertIn("`hosts` 3 枚で %d → 1,001 件 (全 1,001 件)" % self.first[1], out)
         self.assertRegex(out, r"\(続き \d+\.\d 秒。`/snapshot` 自体は \d+\.\d 秒\)")
@@ -711,7 +711,7 @@ class CollectFollowTest(unittest.TestCase):
         self.assertEqual(sorted(ids), list(range(2000)))     # 新しく閉じた 1 本は入らない
         self.assertIn("頁の重なり 1 件を落とした", out)
         self.assertFalse(snap["recent"]["truncated"])
-        # 繋いだ印と、プロキシが返した 1 枚の大きさ (T.30.2。要約の大きさの警告はこちらで判定する)
+        # 繋いだ印と、プロキシが返した 1 枚の大きさ (T30.2。要約の大きさの警告はこちらで判定する)
         self.assertIn("recent", snap["joined"]["parts"])
         self.assertGreater(snap["joined"]["served_bytes"], 0)
 
@@ -762,7 +762,7 @@ class CollectFollowTest(unittest.TestCase):
         # 上限を越えなければ `--full` で別ファイルに落ちる `recent`・`hosts` は無い
         d, _, _ = self.run_collect(args=("--full",))
         self.assertFalse([n for n in os.listdir(d) if "-page" in n])
-        # `--full --no-follow` は T.22.5 より前の `--full` (2 つとも別ファイル)
+        # `--full --no-follow` は T22.5 より前の `--full` (2 つとも別ファイル)
         d, _, snap = self.run_collect(args=("--full", "--no-follow"))
         names = os.listdir(d)
         self.assertIn(self.STAMP + "-page2-recent.json", names)
@@ -771,7 +771,7 @@ class CollectFollowTest(unittest.TestCase):
 
 
     def test_dns_and_profile_are_joined_too(self):
-        # T.27.1: T.25.99 の雪像は `dns` 811 件中 678 件、`profile` 720 標本中 348 で切れていた
+        # T27.1: T25.99 の雪像は `dns` 811 件中 678 件、`profile` 720 標本中 348 で切れていた
         dns, prof5 = FakeDns(1500), FakeProfile(720)
         first = (len(dns.page(0)["entries"]), len(prof5.page(0)["samples"]))
         self.assertTrue(dns.page(0)["truncated"] and prof5.page(0)["truncated"])
@@ -796,7 +796,7 @@ class CollectFollowTest(unittest.TestCase):
 
 
 class CollectViaTest(unittest.TestCase):
-    """`VIA` (T.27.2): デプロイ先への curl を全部 `-x "$VIA" -p` (CONNECT のトンネル) で通す。
+    """`VIA` (T27.2): デプロイ先への curl を全部 `-x "$VIA" -p` (CONNECT のトンネル) で通す。
 
     curl を偽物に差し替え、引数を控えてから `-x VAL -p` を外して本物の curl で偽のサーバーへ行く。
     """
@@ -853,8 +853,8 @@ class CollectViaTest(unittest.TestCase):
 
 class CollectFromServerTest(unittest.TestCase):
     """`--from-server` が日次の雪像に加えて起動と停止の 1 枚 (`moments`) も取り寄せ、
-    `BEFORE` / `ZERO` に渡せる名前で置く試験 (T.28.20)。偽のサーバーは `/snapshots` の形だけを写す。
-    T.29.26 から「前」と「0 時間」を各 1 枚の版で選ぶ (`T2899` の 4 枚)。`--closeout` は `live` を付けた
+    `BEFORE` / `ZERO` に渡せる名前で置く試験 (T28.20)。偽のサーバーは `/snapshots` の形だけを写す。
+    T29.26 から「前」と「0 時間」を各 1 枚の版で選ぶ (`T2899` の 4 枚)。`--closeout` は `live` を付けた
     偽のサーバー (`/status` と `/snapshot` も返す) で回す。"""
 
     DAY = "2026-10-24"
@@ -862,8 +862,8 @@ class CollectFromServerTest(unittest.TestCase):
     START = "2026-10-25T203301Z-start"
     OLD_START = "2026-10-20T010203Z-start"
 
-    # T.28.99 と同じ 4 枚 (+ 古い起動 1 枚): 0.27.8 の停止 → 0.28.39 の起動 → 53 分後に停止 → 0.28.48 の起動。
-    # 時刻だけで選ぶと「前」が 0.28.39 の停止になる (T.28.99 で手で差し替えた)
+    # T28.99 と同じ 4 枚 (+ 古い起動 1 枚): 0.27.8 の停止 → 0.28.39 の起動 → 53 分後に停止 → 0.28.48 の起動。
+    # 時刻だけで選ぶと「前」が 0.28.39 の停止になる (T28.99 で手で差し替えた)
     T2899 = [
         ("2026-10-20T010203Z-start", "0.27.8+a01dd0c", "B0", 101),
         ("2026-10-25T203134Z-shutdown", "0.27.8+a01dd0c", "B0", 101),
@@ -874,7 +874,7 @@ class CollectFromServerTest(unittest.TestCase):
 
     @staticmethod
     def moment_body(name, version, boot, pid):
-        # 起動の 1 枚は起動から 60 秒、停止の 1 枚は停止の直前に撮る (T.28.20)。taken_at は名前の時刻
+        # 起動の 1 枚は起動から 60 秒、停止の 1 枚は停止の直前に撮る (T28.20)。taken_at は名前の時刻
         t = calendar.timegm(time.strptime(name[:18], "%Y-%m-%dT%H%M%SZ"))
         up = 60 if name.endswith("-start") else 3600
         return {"schema": 1, "taken_at": t, "version": version, "uptime_secs": up, "parts": ["status"],
@@ -897,14 +897,14 @@ class CollectFromServerTest(unittest.TestCase):
                 bodies[name] = json.dumps(self.moment_body(name, *versions[name])).encode()
             else:
                 body = {"schema": 1, "taken_at": 1, "parts": ["status"], "status": {"requests": len(name)}}
-                # 大きさの警告 (T.29.16) を試す 1 枚だけ膨らませる
+                # 大きさの警告 (T29.16) を試す 1 枚だけ膨らませる
                 if pad and name in pad:
                     body["pad"] = "x" * pad[name]
                 bodies[name] = json.dumps(body).encode()
         with open(SNAPSHOT_B, "rb") as f:
             snapshot = f.read()
         self.fetched = []
-        self.paths = []  # 届いた要求の順 (T.32.31)
+        self.paths = []  # 届いた要求の順 (T32.31)
 
         class H(BaseHTTPRequestHandler):
             def log_message(self, *_):
@@ -962,7 +962,7 @@ class CollectFromServerTest(unittest.TestCase):
         }
 
     def test_a_daily_snapshot_over_the_limit_is_warned(self):
-        """T.29.16 (a): 取り寄せた雪像の大きさと上限 (`limit_bytes`、無ければ 4 MiB) の割合を 1 行ずつ出し、
+        """T29.16 (a): 取り寄せた雪像の大きさと上限 (`limit_bytes`、無ければ 4 MiB) の割合を 1 行ずつ出し、
         90% 以上なら警告する (日次が上限を越えると `recent` が 256 KiB に戻る)。"""
         _, out = self.run_from_server(self.listing(), pad={self.DAY: 4 * 1024 * 1024 + 10})
         line = [x for x in out.splitlines() if self.DAY + "T000000Z-snapshot.json`: " in x]
@@ -1002,7 +1002,7 @@ class CollectFromServerTest(unittest.TestCase):
         self.assertNotIn("BEFORE=", out)
 
     def test_before_and_zero_are_chosen_by_version_not_by_time(self):
-        # T.28.99 の 4 枚: 前 = 0.27.8 の停止 (系列 0.28 の途中の 0.28.39 は飛ばす)、0 時間 = 0.28.48 の起動
+        # T28.99 の 4 枚: 前 = 0.27.8 の停止 (系列 0.28 の途中の 0.28.39 は飛ばす)、0 時間 = 0.28.48 の起動
         d, out = self.run_from_server(self.t2899_listing(), versions=self.t2899_versions())
         self.assertIn("BEFORE=%s/2026-10-25T203134Z-shutdown-snapshot.json "
                       "ZERO=%s/2026-10-25T212745Z-start-snapshot.json" % (d, d), out)
@@ -1060,7 +1060,7 @@ class CollectFromServerTest(unittest.TestCase):
         self.assertIn("- 判定表の相手 (`BEFORE`): `%s`" % before, out)
 
     def test_closeout_takes_the_status_first(self):
-        # T.32.31: 日次の雪像 (`/snapshots/<date>`。丸ごと `String` に読む) を引く前に `/status` を 1 本取り、
+        # T32.31: 日次の雪像 (`/snapshots/<date>`。丸ごと `String` に読む) を引く前に `/status` を 1 本取り、
         # 要約の RSS にはそれを使う (本番の 1 回で `/status` を取り直さない)
         d = tempfile.mkdtemp(prefix="t3231-")
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
@@ -1090,7 +1090,7 @@ class CollectFromServerTest(unittest.TestCase):
         self.assertNotIn("ZERO=", out)
 
 
-# --- 並べて回す (T.28.29) ---------------------------------------------------------
+# --- 並べて回す (T28.29) ---------------------------------------------------------
 
 class _Recorder(unittest.TestResult):
     """1 本の試験の結果 (成功・失敗・飛ばし・subTest) を控え、あとで本物の結果へ同じ順に流し直す。"""

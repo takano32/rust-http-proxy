@@ -31,11 +31,11 @@ impl Config {
             acl,
             timeout,
             min_transfer: proxy_base::minrate::MinRate::DEFAULT,
-            // 未設定のときの実効値は `connect_timeout_for` が決める (既定 3 秒。T.28.43。
+            // 未設定のときの実効値は `connect_timeout_for` が決める (既定 3 秒。T28.43。
             // `timeout` が 3 秒より短ければそちらに合わせる。T15.6 (2))。ここで入れておくと
             // `Config::new` を呼ぶ既存の所 (テストと `/config` の組み立て) が自動で追随する
             connect_timeout: connect_timeout_for(timeout, None),
-            // 未設定のときの実効値は `header_timeout_for` (既定 10 秒と `timeout` の小さい方。T.28.0)
+            // 未設定のときの実効値は `header_timeout_for` (既定 10 秒と `timeout` の小さい方。T28.0)
             header_timeout: header_timeout_for(timeout, None),
             he_stagger: crate::net::DEFAULT_STAGGER,
             keepalive: Duration::from_secs(15),

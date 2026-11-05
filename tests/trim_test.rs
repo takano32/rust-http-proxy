@@ -1,6 +1,6 @@
-//! `/status` の `memory.trim` (1 時間に 1 回の `malloc_trim` の通算) の結合テスト (T.30.1)。
+//! `/status` の `memory.trim` (1 時間に 1 回の `malloc_trim` の通算) の結合テスト (T30.1)。
 //!
-//! T.29.25 の `malloc_trim` が返したかは info の 1 行にしか出ず、tokyo では `/log` の 1,000 行が
+//! T29.25 の `malloc_trim` が返したかは info の 1 行にしか出ず、tokyo では `/log` の 1,000 行が
 //! warn で埋まって見えなかった。`/status` の `memory` の末尾に `trim` を足したので、ここで見るのは 2 つ:
 //!
 //! 1. `history` スレッドが動かない形 (`--lite` / `PROXY_STATS_PERSIST=off` と同じ) では、

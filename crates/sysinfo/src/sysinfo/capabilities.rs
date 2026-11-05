@@ -54,7 +54,7 @@ pub struct Capabilities {
     /// `/status` の `kernel.cgroup_cpu` が読む `cpu.stat` がある (T14.12 の CPU の絞り)。
     ///
     /// 読む側は cgroup v2 の階層 (`0::/…`) を根まで遡って、絞りの欄のある `cpu.stat` を
-    /// 探す ([`super::cgroup::cgroup_cpu_path`])。判定もそれと**同じ道**で決める (T.28.11。
+    /// 探す ([`super::cgroup::cgroup_cpu_path`])。判定もそれと**同じ道**で決める (T28.11。
     /// それまでは v1 の `cpu` コントローラの `cpu.stat` でも真になり、[ok] なのに値は `null` だった)
     pub cgroup_cpu: bool,
     /// 自分の cgroup に `cpu.pressure` がある (T14.12 の PSI)
@@ -185,9 +185,9 @@ fn probe_fast() -> Capabilities {
         proc_syscall: proc_syscall_readable(),
         proc_schedstat: proc_task_file_readable("schedstat"),
         tcp_info: tcp_info_works(),
-        // 読む側 (`cgroup::cgroup_cpu_and_pressure` の CPU の側) と同じ道で判定する (T.28.11)
+        // 読む側 (`cgroup::cgroup_cpu_and_pressure` の CPU の側) と同じ道で判定する (T28.11)
         cgroup_cpu: cgroup_cpu_here(),
-        // 読む側 (`cgroup::cgroup_cpu_and_pressure` の PSI の側) と同じく `/proc/pressure/cpu` への落とし込みも見る (T.28.32)
+        // 読む側 (`cgroup::cgroup_cpu_and_pressure` の PSI の側) と同じく `/proc/pressure/cpu` への落とし込みも見る (T28.32)
         cgroup_pressure: cgroup_pressure_here(),
         ipv6_route: has_ipv6_default_route(),
         resolver_ms: None,
@@ -261,7 +261,7 @@ fn tcp_info_ok(fd: i32) -> bool {
     rc == 0 && len >= 8
 }
 
-/// `/status` の `kernel.cgroup_cpu` が読める `cpu.stat` があるか (読む側と同じ道。T.28.11)。
+/// `/status` の `kernel.cgroup_cpu` が読める `cpu.stat` があるか (読む側と同じ道。T28.11)。
 fn cgroup_cpu_here() -> bool {
     match fs::read_to_string("/proc/self/cgroup") {
         Ok(text) => cgroup_cpu_in(&text, Path::new("/sys/fs/cgroup")),
@@ -278,7 +278,7 @@ pub(crate) fn cgroup_cpu_in(proc_cgroup: &str, sysfs: &Path) -> bool {
         .is_some()
 }
 
-/// `/status` の `kernel.cgroup_pressure.cpu` が値を持つか (読む側と同じ道。T.28.32)。
+/// `/status` の `kernel.cgroup_pressure.cpu` が値を持つか (読む側と同じ道。T28.32)。
 fn cgroup_pressure_here() -> bool {
     let text = fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
     cgroup_pressure_in(
@@ -305,7 +305,7 @@ pub(crate) fn cgroup_pressure_in(proc_cgroup: &str, sysfs: &Path, fallback: &Pat
 
 /// `/proc/self/cgroup` の中身と cgroup の根を与えて、`name` が見つかるかを返す
 /// (テストのために分けてある。探し方は [`crate::sysinfo::mem::cgroup_limits_from`] と同じで、
-/// 自分の階層から根まで辿る)。呼ぶのは試験だけ (T.34.68 で `#[cfg(test)]` にした)。
+/// 自分の階層から根まで辿る)。呼ぶのは試験だけ (T34.68 で `#[cfg(test)]` にした)。
 #[cfg(test)]
 pub fn cgroup_file_in(proc_cgroup: &str, sysfs: &Path, name: &str) -> bool {
     for line in proc_cgroup.lines() {
@@ -427,7 +427,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// `cgroup_cpu` は読む側 (`cgroup::cgroup_cpu_and_pressure` の CPU の側) と同じ道で決まる (T.28.11)。
+    /// `cgroup_cpu` は読む側 (`cgroup::cgroup_cpu_and_pressure` の CPU の側) と同じ道で決まる (T28.11)。
     /// v1 だけの `/proc/self/cgroup` では、`cpu` コントローラに `cpu.stat` があっても偽
     /// (読む側は v2 しか見ないので、[ok] なのに値は `null` になっていた)。
     #[test]

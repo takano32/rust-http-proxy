@@ -1,6 +1,6 @@
 //! キャッシュの再検証と古い表現の提供 (304・オリジンの失敗・grace・裏の再検証) の結合テスト。
 //!
-//! 初めは `tests/cache_test.rs` にあった (T.34.118 で割った)。
+//! 初めは `tests/cache_test.rs` にあった (T34.118 で割った)。
 
 use std::sync::Arc;
 use std::thread;

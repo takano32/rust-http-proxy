@@ -1,6 +1,6 @@
 //! 個票のエンドポイント `/errors` の結合テスト (T13.4)。
 //!
-//! 初めは `tests/recent_test.rs` にあった (T.34.117 で割った)。
+//! 初めは `tests/recent_test.rs` にあった (T34.117 で割った)。
 
 mod common;
 

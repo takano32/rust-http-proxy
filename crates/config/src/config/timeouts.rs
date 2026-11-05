@@ -17,12 +17,12 @@ use std::time::Duration;
 /// 「5 秒は攻めすぎ」と言った根拠 (再送の重なり) は 5 秒では踏まない。
 /// 戻す条件は「5 秒で切った接続のうち本当は繋がったはずのものが 1 日 1 本以上」(T23.99)。
 ///
-/// **5 秒 → 3 秒 (2026-10-26、T.28.43。利用者の決定 6)**。タスク 28 の洗い出しの見積もりで、
+/// **5 秒 → 3 秒 (2026-10-26、T28.43。利用者の決定 6)**。タスク 28 の洗い出しの見積もりで、
 /// 縮む待ちは 4.6〜9.0 分/日、落とす成功は 0〜0.23 本/日 (T23.3 の「1 日 1 本未満」を満たす)。
-/// forward の確立も T.28.8 からこの値を使う。戻す条件は T23.3 と同じ (切った成功が 1 日 1 本以上)。
+/// forward の確立も T28.8 からこの値を使う。戻す条件は T23.3 と同じ (切った成功が 1 日 1 本以上)。
 pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// 要求行とヘッダーを読み終えるまでの締め切りの既定 (`PROXY_HEADER_TIMEOUT_SECS`。T.28.0)。
+/// 要求行とヘッダーを読み終えるまでの締め切りの既定 (`PROXY_HEADER_TIMEOUT_SECS`。T28.0)。
 ///
 /// **10 秒**。tokyo の雪像 (`2026-10-25T203134Z`、1 時間ぶん) の `/profile` では、要求行から
 /// `Host` まで (`client_read`) は CONNECT 1,105 本で**最大 0 ms** (ヘッダーは 1 つの塊で届く)。
@@ -33,7 +33,7 @@ pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// (`PROXY_TIMEOUT_SECS`) から 10 秒に縮む。
 pub(crate) const DEFAULT_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 要求行とヘッダーの締め切りの**実効値を決める唯一の場所** (T.28.0。[`connect_timeout_for`] と同じ形)。
+/// 要求行とヘッダーの締め切りの**実効値を決める唯一の場所** (T28.0。[`connect_timeout_for`] と同じ形)。
 ///
 /// - `explicit` = `PROXY_HEADER_TIMEOUT_SECS` に書かれた値。書いてあれば**そのまま**
 ///   (`0` と明示すれば締め切り無し = 今までどおり `PROXY_TIMEOUT_SECS` の無通信の締め切りだけ)。
@@ -49,7 +49,7 @@ pub(crate) fn header_timeout_for(timeout: Duration, explicit: Option<Duration>) 
     }
 }
 
-/// 1 要求目の要求行の 1 バイト目を待つ読み取りタイムアウト (T.28.0)。
+/// 1 要求目の要求行の 1 バイト目を待つ読み取りタイムアウト (T28.0)。
 ///
 /// 1 要求目は accept からこの長さで黙った接続を切る。`timeout` と `header` の小さい方で、
 /// どちらかが `0` (無期限 / 締め切り無し) ならもう片方、両方 `0` なら `0` (無期限)。
@@ -78,7 +78,7 @@ pub(crate) fn parse_stagger_ms(v: &str) -> Option<Duration> {
 ///
 /// - `explicit` = `PROXY_CONNECT_TIMEOUT_SECS` に書かれた値。書いてあれば**そのまま**
 ///   (`0` と明示すれば無期限)。
-/// - 未設定なら [`DEFAULT_CONNECT_TIMEOUT`] (3 秒。T.28.43)。ただし `PROXY_TIMEOUT_SECS`
+/// - 未設定なら [`DEFAULT_CONNECT_TIMEOUT`] (3 秒。T28.43)。ただし `PROXY_TIMEOUT_SECS`
 ///   (`timeout`) が `0` でなく 3 秒より短ければ、その値に合わせる (= `min(3, timeout)`。
 ///   全体の締め切りを 2 秒にした人の connect が 3 秒になるのはおかしい)。
 /// - `timeout` が `0` (無期限。T10.6) でも、未設定の connect は **3 秒**

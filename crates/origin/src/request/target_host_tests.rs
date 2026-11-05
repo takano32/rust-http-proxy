@@ -1,7 +1,7 @@
 use super::*;
 use crate::origin::Scheme;
 
-/// T.32.12: 不正な authority と `Host` は断り、正当な形 (IP リテラル・先頭の 0・大文字・空のポート) は通す。
+/// T32.12: 不正な authority と `Host` は断り、正当な形 (IP リテラル・先頭の 0・大文字・空のポート) は通す。
 #[test]
 fn invalid_authority_and_host_are_refused() {
     for bad in [
@@ -164,7 +164,7 @@ fn the_scheme_matches_parse_origin() {
     assert_eq!(target_scheme("h").default_port(), 80);
 }
 
-/// T.28.33: 絶対 URI のスキームは大小を区別せず、小文字と同じ [`Origin`] になる
+/// T28.33: 絶対 URI のスキームは大小を区別せず、小文字と同じ [`Origin`] になる
 /// (URL・プールキー・接続先も小文字のスキームで組み立てる)。マッピング形式はパスなので小文字だけ。
 #[test]
 fn the_scheme_is_case_insensitive() {

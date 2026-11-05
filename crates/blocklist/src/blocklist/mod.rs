@@ -185,7 +185,7 @@ pub fn check(host: &str) -> Verdict {
     verdict(set, &exempt, &host)
 }
 
-/// 一覧と対象外のパターンからの判定 (`host` はポートなしの小文字。T.34.64 で [`check`] から出した)。
+/// 一覧と対象外のパターンからの判定 (`host` はポートなしの小文字。T34.64 で [`check`] から出した)。
 /// 対象外に合えば `Exempt`、一覧のどれか (親ドメインを含む) に当たれば `Listed`。
 #[inline]
 fn verdict(set: &HashSet<String>, exempt: &[String], host: &str) -> Verdict {
@@ -233,7 +233,7 @@ fn mtime(path: &Path) -> Option<u64> {
 }
 
 /// 一覧を組み直す: ファイル ([`load_file`]) → URL ([`load_url`]) → 表に置いて記録 ([`record`])。
-/// T.34.64 で 3 段に割った (順と文面は前と同じ)。
+/// T34.64 で 3 段に割った (順と文面は前と同じ)。
 fn rebuild(upstream: &Upstream, timeout: Duration, fetch_url: bool) {
     let sources = state().sources.clone();
     let mut set = HashSet::new();
@@ -535,7 +535,7 @@ mod tests {
     /// グローバルな SET / OVERRIDES を触るテストを直列にする
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    /// T.34.64: 取れたら組み直した時刻、失敗なら RETRY 後、取りに行かなければ前のまま。
+    /// T34.64: 取れたら組み直した時刻、失敗なら RETRY 後、取りに行かなければ前のまま。
     #[test]
     fn the_next_fetch_time_has_three_forms() {
         let day = Duration::from_secs(86_400);
@@ -549,7 +549,7 @@ mod tests {
         assert_eq!(next_fetch_at(false, false, 1_000, 1_001, day, 5), 5);
     }
 
-    /// T.34.64: 対象外が一覧より先、一覧は親ドメインでも当たる。鍵は取らない。
+    /// T34.64: 対象外が一覧より先、一覧は親ドメインでも当たる。鍵は取らない。
     #[test]
     fn the_verdict_reads_the_exemptions_before_the_list() {
         let set = parse(

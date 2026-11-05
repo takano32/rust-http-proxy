@@ -1,7 +1,7 @@
 //! リクエストの解析: 使うヘッダーの抽出と、要求先 (オリジン) の決定。
 //!
 //! - `headers`: 要求ヘッダーのうち転送・キャッシュ判断に使うもの ([`RequestHeaders`]) を 1 回の走査で拾う
-//! - `authority`: `host[:port]` の形の検査 (RFC 3986 §3.2・RFC 9112 §3.2。T.32.12)
+//! - `authority`: `host[:port]` の形の検査 (RFC 3986 §3.2・RFC 9112 §3.2。T32.12)
 //! - `target`: 要求行の対象と `Host` から要求先 ([`Origin`]) を決め、正規化 URL ([`Located`]) を組む
 
 mod authority;

@@ -1,4 +1,4 @@
-//! `/metrics` のうちカーネルと cgroup の統計 (T14.12。T.34.27 で `prom.rs` から移した)。
+//! `/metrics` のうちカーネルと cgroup の統計 (T14.12。T34.27 で `prom.rs` から移した)。
 
 use super::*;
 use crate::kernel::{self, Latest};

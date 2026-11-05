@@ -1,5 +1,5 @@
 //! 判定 (ACL) と接続が同じ答えを使うための入れ物 (`Resolved`) と、`resolve*` の入口。
-//! 本体の表引きは `lookup` にある。T.34.54 で `dns.rs` から移した (本体は変えていない)。
+//! 本体の表引きは `lookup` にある。T34.54 で `dns.rs` から移した (本体は変えていない)。
 
 use super::resolve_host_marked;
 use std::io;

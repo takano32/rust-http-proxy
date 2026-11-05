@@ -237,7 +237,7 @@ pub fn status_json() -> String {
         // T21.3 で末尾に足したもの (起動からの通算)。`stale_served` とは意味が違う
         STALE_HITS.load(Ordering::Relaxed),
         STALE_RETRIES.load(Ordering::Relaxed),
-        // T.32.11 で末尾に足したもの: 締め切り (秒)・締め切りで諦めた回数・上限で待たずに
+        // T32.11 で末尾に足したもの: 締め切り (秒)・締め切りで諦めた回数・上限で待たずに
         // 断った回数・諦めたあとに答えが出て表に書いた回数 (起動からの通算)、いま走っている
         // `getaddrinfo` の数とその上限
         timeout.as_secs(),

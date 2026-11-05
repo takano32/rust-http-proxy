@@ -1,4 +1,4 @@
-//! 1 回で全部の `/snapshot` と、残してある雪像の一覧・1 枚 (`/snapshots`。T14.34・T.28.20)。
+//! 1 回で全部の `/snapshot` と、残してある雪像の一覧・1 枚 (`/snapshots`。T14.34・T28.20)。
 
 use super::super::history::history_body;
 use super::super::profile;
@@ -26,7 +26,7 @@ pub(in crate::endpoints) fn snapshots() -> (u16, &'static str, String) {
             )
         }),
     );
-    // 起動と停止の 1 枚 (T.28.20) は別の並びにする (日次の `files` を読む道具が、日付で
+    // 起動と停止の 1 枚 (T28.20) は別の並びにする (日次の `files` を読む道具が、日付で
     // 取りに行く口に名前を渡して 404 にならないように)。**新しい欄は末尾に足す**
     out.push_str(",\"moments\":");
     let (moments_shown, moments_cut) = array_within(
@@ -55,14 +55,14 @@ pub(in crate::endpoints) fn snapshots() -> (u16, &'static str, String) {
         moments_shown,
         l.moments_bytes,
         moments_cut,
-        // 日次の 1 枚だけの上限 (T.29.16。`max_bytes` は起動・停止の 1 枚と `/snapshot` の 4 MiB)
+        // 日次の 1 枚だけの上限 (T29.16。`max_bytes` は起動・停止の 1 枚と `/snapshot` の 4 MiB)
         crate::snapshots::DAILY_MAX_FILE
     );
     (200, "application/json", out)
 }
 
 /// `/snapshots/<YYYY-MM-DD>` — 残してある 1 日ぶんを**そのまま**返す (T14.34)。
-/// `/snapshots/<YYYY-MM-DDTHHMMSSZ>-start|shutdown` (起動と停止の 1 枚。T.28.20) も同じ口。
+/// `/snapshots/<YYYY-MM-DDTHHMMSSZ>-start|shutdown` (起動と停止の 1 枚。T28.20) も同じ口。
 ///
 /// 中身は `/snapshot` の応答そのもの (組み直さない) なので、`scripts/snapshot-diff.py` や
 /// `scripts/collect-deployed.sh --from-server` がそのまま読める。**版 (`schema`) も
@@ -112,21 +112,21 @@ pub(in crate::endpoints) fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, S
 }
 
 /// [`snapshot`] の本体。`recent_max` が `Some(上限)` なら **`recent` を部の 256 KiB ([`MAX_BODY`]) で
-/// 切らずに、その上限まで入れる** (停止の雪像は [`MAX_SNAPSHOT`] = 2,000 件を全部。T.28.20。
-/// 日次の雪像は `snapshots::DAILY_RECENT_MAX` = 1 MiB。T.28.46)。`None` はいつもの `/snapshot`。
+/// 切らずに、その上限まで入れる** (停止の雪像は [`MAX_SNAPSHOT`] = 2,000 件を全部。T28.20。
+/// 日次の雪像は `snapshots::DAILY_RECENT_MAX` = 1 MiB。T28.46)。`None` はいつもの `/snapshot`。
 ///
 /// 日次は部ごと 256 KiB で切っていたので `/recent` が約 580 行しか入らず、締めの「前」に日次を
-/// 使うと接続のエラーの行が「判定できず」になった (T.28.18)。1 MiB なら 1 件 400〜500 B の
+/// 使うと接続のエラーの行が「判定できず」になった (T28.18)。1 MiB なら 1 件 400〜500 B の
 /// 行で環の 2,000 件が入る。
 ///
 /// 締めの「前」は `/recent` の窓が判定の分母 (phase25 の接続のエラーは試行 1,000 本が下限) になるのに、
-/// `collect-deployed.sh` が `offset=` で続きを追って繋ぐ形 (T.22.5) は、`--from-server` で取り寄せた
+/// `collect-deployed.sh` が `offset=` で続きを追って繋ぐ形 (T22.5) は、`--from-server` で取り寄せた
 /// 1 枚にはできない (取り寄せたときにはもうプロセスが居ない)。全部入れても 2,000 件 × 1 件 500 B
 /// 前後 = 1 MB 前後で、合計が 4 MiB を越えるときは**切った `recent` に戻してから**いつもの順に落とす
 /// (全部入れたせいで `recent` ごと `null` にはしない)。
 ///
 /// `limit` は全体の上限 (いつもの `/snapshot` と起動・停止の 1 枚は [`MAX_SNAPSHOT`] = 4 MiB、
-/// 日次の 1 枚は `snapshots::DAILY_MAX_FILE` = 6 MiB。T.29.16)。`limit_bytes` に出る。
+/// 日次の 1 枚は `snapshots::DAILY_MAX_FILE` = 6 MiB。T29.16)。`limit_bytes` に出る。
 pub(in crate::endpoints) fn snapshot_with(
     ep: &Endpoint<'_>,
     recent_max: Option<usize>,
@@ -143,7 +143,7 @@ pub(in crate::endpoints) fn snapshot_with(
     (200, "application/json", body)
 }
 
-/// 17 の部を、それぞれの口と同じ関数で組む (T.34.91 で [`snapshot_with`] から出した)。
+/// 17 の部を、それぞれの口と同じ関数で組む (T34.91 で [`snapshot_with`] から出した)。
 ///
 /// 並びは `parts` に出る順そのもの。`recent_max` は [`snapshot_with`] と同じ。
 fn collect_parts(
@@ -192,7 +192,7 @@ fn collect_parts(
     ]
 }
 
-/// 組んだ部を 1 つの JSON にする (I/O も時計も読まない純粋な関数。T.34.91)。
+/// 組んだ部を 1 つの JSON にする (I/O も時計も読まない純粋な関数。T34.91)。
 ///
 /// `parts` の名前は落とした部 (`null`) も含めて全部 `"parts"` に並び、`dropped` に
 /// 落とした名前が並ぶ。`history.*` の部は `"history":{"5":…,"60":…}` に入れ子にする。
@@ -253,7 +253,7 @@ fn render_snapshot(
 }
 
 /// 全部入れた `recent` で合計が `limit` を越えるなら、`cut` (いつもの 256 KiB で切った `recent`) に
-/// 置き換える (T.28.20)。置き換えたかを返す。
+/// 置き換える (T28.20)。置き換えたかを返す。
 fn fit_full_recent(
     part: &mut [(&'static str, String)],
     limit: usize,
@@ -369,7 +369,7 @@ mod tests {
         p.find(",\"hosts\":").expect("hosts の部が無い")
     }
 
-    /// **T.28.46 の受け入れ基準**: 日次の 1 枚 (`snapshot_with(.., Some(DAILY_RECENT_MAX))`) は
+    /// **T28.46 の受け入れ基準**: 日次の 1 枚 (`snapshot_with(.., Some(DAILY_RECENT_MAX))`) は
     /// `recent` を 1 MiB まで持ち、ありがちな行なら**環の 2,000 件が全部入る**
     /// (いつもの `/snapshot` は 256 KiB で切って 2,000 件を割る)。最悪の値の行は 1 MiB で切る。
     #[test]
@@ -385,7 +385,7 @@ mod tests {
             )
         });
         println!(
-            "T.28.46 recent 2,000 件 (ありがちな行): いつもの雪像 {} B (recent {} B) / 日次 {} B (recent {} B)",
+            "T28.46 recent 2,000 件 (ありがちな行): いつもの雪像 {} B (recent {} B) / 日次 {} B (recent {} B)",
             usual.len(),
             recent_bytes(&usual),
             day.len(),
@@ -411,7 +411,7 @@ mod tests {
     }
 
     /// 停止の雪像 (`snapshot_with(.., Some(MAX_SNAPSHOT))`) は `recent` の 2,000 件を切らずに全部入れ、
-    /// いつもの `/snapshot` は今までどおり 256 KiB で切る (T.28.20)。行は最悪の値で埋める。
+    /// いつもの `/snapshot` は今までどおり 256 KiB で切る (T28.20)。行は最悪の値で埋める。
     #[test]
     fn the_shutdown_snapshot_keeps_every_recent_row() {
         let m = Metrics::new();
@@ -424,7 +424,7 @@ mod tests {
             (usual, full, t.elapsed())
         });
         println!(
-            "T.28.20 recent 2,000 件 (最悪の値): いつもの雪像 {} B / 停止の雪像 {} B、停止の 1 枚を組むのに {:.1} ms (debug ビルド)",
+            "T28.20 recent 2,000 件 (最悪の値): いつもの雪像 {} B / 停止の雪像 {} B、停止の 1 枚を組むのに {:.1} ms (debug ビルド)",
             usual.len(),
             full.len(),
             took.as_secs_f64() * 1000.0
@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(part[1], ("recent", "cut".to_string()));
     }
 
-    /// **T.29.16**: 日次の 1 枚だけ上限は 6 MiB。0.28.48 の日次 `2026-10-26` の大きさ (全体 3,692,328 B、
+    /// **T29.16**: 日次の 1 枚だけ上限は 6 MiB。0.28.48 の日次 `2026-10-26` の大きさ (全体 3,692,328 B、
     /// `history` 1,550,971 B・`recent` 896,914 B) に `history` が 60 万 B 増えて 4 MiB を越えても、日次なら
     /// `recent` の 2,000 行を切らずに持つ (4 MiB の上限では 256 KiB の `recent` に黙って戻っていた)。
     #[test]
@@ -509,7 +509,7 @@ mod tests {
         assert_eq!(part[2].1.len(), 400, "60 秒の履歴は落とさない");
     }
 
-    /// 偽の部を組むと、頭・`parts`・`dropped` と、`history.*` の入れ子がそのまま出る (T.34.91)。
+    /// 偽の部を組むと、頭・`parts`・`dropped` と、`history.*` の入れ子がそのまま出る (T34.91)。
     #[test]
     fn the_snapshot_renders_parts_and_nests_history() {
         let part = vec![
@@ -533,7 +533,7 @@ mod tests {
         );
     }
 
-    /// `history.*` が最後の部でも入れ子を閉じ、何も落とさなければ `dropped` は空 (T.34.91)。
+    /// `history.*` が最後の部でも入れ子を閉じ、何も落とさなければ `dropped` は空 (T34.91)。
     #[test]
     fn the_snapshot_closes_a_trailing_history() {
         let part = vec![

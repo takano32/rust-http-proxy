@@ -1,4 +1,4 @@
-//! エラーの個票とリングの単体試験 (T.34.2 で `errors.rs` から移した。名前はそのまま)。
+//! エラーの個票とリングの単体試験 (T34.2 で `errors.rs` から移した。名前はそのまま)。
 
 use super::*;
 use crate::recent::CloseReason;
@@ -366,7 +366,7 @@ fn blocked_entries_carry_their_own_cause_names() {
     }
 }
 
-/// 時刻は渡した値で、まとめる前の `last_at` も同じ (T.34.48)。
+/// 時刻は渡した値で、まとめる前の `last_at` も同じ (T34.48)。
 #[test]
 fn an_entry_at_a_given_time_carries_it_in_at_and_last_at() {
     let e = ErrorEntry::at(

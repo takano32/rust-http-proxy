@@ -1,4 +1,4 @@
-//! `/slo` の応答を組む ([`Report::to_json`]。`slo` の一部。T.34.2 で `slo.rs` から移した)。
+//! `/slo` の応答を組む ([`Report::to_json`]。`slo` の一部。T34.2 で `slo.rs` から移した)。
 //!
 //! ここに在るのは**文字列を組む所だけ**: 時間ごとの集計 ([`Report`] / [`Hour`] / [`Breach`]) は
 //! `tracker.rs` が作り、ここはそれを `/slo` の形 (鍵の順は末尾に足すだけ) に書く。[`MAX_BODY`]
@@ -34,7 +34,7 @@ impl Report {
 
     /// `/slo` の応答 (**[`MAX_BODY`] 以下**。越えるぶんは時間ごとの行から落として `truncated`)。
     ///
-    /// 段は 5 つ (T.34.2 で割った。書く順と文字は変えていない): 頭と期間の合計 → 今日と日ごと →
+    /// 段は 5 つ (T34.2 で割った。書く順と文字は変えていない): 頭と期間の合計 → 今日と日ごと →
     /// 外れた時間帯 → 時間ごと → 締めくくり (直近 1 時間)。
     pub fn to_json(&self) -> String {
         let mut out = String::with_capacity(8 * 1024);
@@ -100,7 +100,7 @@ impl Report {
         out.push_str("],\"breaches\":[");
         let mut cut = self.breaches.len() > MAX_BREACHES;
         for (i, b) in self.breaches.iter().take(MAX_BREACHES).enumerate() {
-            // 判定はコンマより前 (T.34.149。後だと打ち切ったとき `[{…},]` が残る。`hourly` と同じ順)
+            // 判定はコンマより前 (T34.149。後だと打ち切ったとき `[{…},]` が残る。`hourly` と同じ順)
             if out.len() > MAX_BODY - TRAILER {
                 cut = true;
                 break;
@@ -116,8 +116,8 @@ impl Report {
     /// 時間ごとの行。返すのは打ち切ったか。
     fn push_hourly(&self, out: &mut String) -> bool {
         // 時間ごとは**キーを 1 回だけ**出して配列の配列にする (`/history` と同じ作法。T12.4 (3))。
-        // 末尾の `rate_sums` は比の 2 つの `[分子, 分母]` (T.29.33。`error_rate` は宛先を外したあと)、
-        // そのうしろの `excluded` は外した宛先 (T.30.4。外していない時間は `null`)
+        // 末尾の `rate_sums` は比の 2 つの `[分子, 分母]` (T29.33。`error_rate` は宛先を外したあと)、
+        // そのうしろの `excluded` は外した宛先 (T30.4。外していない時間は `null`)
         out.push_str(
             "],\"hourly_keys\":[\"t\",\"judged\",\"met\",\"misses\",\"rate_sums\",\"excluded\"],\
              \"hourly\":[",
@@ -151,7 +151,7 @@ impl Report {
     /// 締めくくり: 打ち切ったか、比を合計する窓、直近 1 時間の合計。
     fn push_tail(&self, out: &mut String, cut: bool) {
         let _ = write!(out, "],\"truncated\":{},", cut);
-        // **末尾に足した鍵** (T.29.33): 比を合計する窓と、直近 1 時間の合計
+        // **末尾に足した鍵** (T29.33): 比を合計する窓と、直近 1 時間の合計
         let _ = write!(
             out,
             "\"rate_window_secs\":{},\"last_hour\":{{\"from\":{},\"to\":{},\"samples\":{},\"rates\":",
@@ -174,7 +174,7 @@ impl Report {
     }
 }
 
-/// `hourly` の末尾の 1 つ (T.30.4): `{"destination":"connect://pravda.example:443","errors":4,"attempts":4,"hour_errors":5}`
+/// `hourly` の末尾の 1 つ (T30.4): `{"destination":"connect://pravda.example:443","errors":4,"attempts":4,"hour_errors":5}`
 /// (`errors` / `attempts` は実際に引いた数、`hour_errors` はその時間の 443・80 宛てのエラーの合計)。
 fn excluded_json(d: &DestHour, h: &Hour) -> String {
     format!(
@@ -200,8 +200,8 @@ fn push_day(out: &mut String, d: &Hour) {
         ratio_json(d.ratio()),
         miss_json(&d.miss),
     );
-    // 比の 2 つの合計と、満たした / 外した時間の数 (T.29.33。閾は `/slo` の `thresholds`)。
-    // `error_rate` には外した宛先の時間の数とエラー・試行も (T.30.4)
+    // 比の 2 つの合計と、満たした / 外した時間の数 (T29.33。閾は `/slo` の `thresholds`)。
+    // `error_rate` には外した宛先の時間の数とエラー・試行も (T30.4)
     push_rates(
         out,
         &d.num,
@@ -223,10 +223,10 @@ enum Tail<'a> {
     Hours(&'a [[u32; 2]; RATES]),
 }
 
-/// 比の 2 つを `{"error_rate":{"num":..,"den":..,"value":..,…},...}` で書く (T.29.33)。
+/// 比の 2 つを `{"error_rate":{"num":..,"den":..,"value":..,…},...}` で書く (T29.33)。
 ///
 /// `value` (と `met`) は分母が 0 なら `null`。`error_rate` の末尾には `"excluded":{excluded}` を付ける
-/// (T.30.4。外した宛先のぶん。`num` / `den` は外したあと)。
+/// (T30.4。外した宛先のぶん。`num` / `den` は外したあと)。
 fn push_rates(
     out: &mut String,
     num: &[u64; RATES],
@@ -305,7 +305,7 @@ fn push_breach(out: &mut String, b: &Breach, th: &Thresholds, excluded: &[DestHo
             num(b.tally.worst[i]),
             num(limits[i]),
         );
-        // 比は外した時間の数と、その時間帯の合計の分子・分母も添える (T.29.33)
+        // 比は外した時間の数と、その時間帯の合計の分子・分母も添える (T29.33)
         if i >= RATE_AT {
             let r = i - RATE_AT;
             let _ = write!(
@@ -316,7 +316,7 @@ fn push_breach(out: &mut String, b: &Breach, th: &Thresholds, excluded: &[DestHo
         }
         out.push('}');
     }
-    // その時間帯に `error_rate` から外した宛先 (T.30.4。外したあとも外れた時間。名前は重ねない)
+    // その時間帯に `error_rate` から外した宛先 (T30.4。外したあとも外れた時間。名前は重ねない)
     let mut names: Vec<&str> = Vec::new();
     for d in excluded
         .iter()
@@ -371,7 +371,7 @@ mod tests {
     use super::*;
 
     /// 閾と値は「整数なら整数、そうでなければ意味のある桁だけ」(末尾の 0 と `.` を落とす。
-    /// T.34.2 で直に押さえる)。
+    /// T34.2 で直に押さえる)。
     #[test]
     fn numbers_are_written_without_trailing_zeros() {
         assert_eq!(num(5.0), "5");

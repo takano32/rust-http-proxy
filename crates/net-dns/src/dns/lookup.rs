@@ -1,5 +1,5 @@
 //! 表を引く本体 (`resolve_host_marked`) と、serve-stale の古い答えで繋げなかったときの引き直し
-//! (`relookup_after_stale`)。T.34.54 で `dns.rs` から移した (本体は変えていない)。T.34.55 で、鍵の内側の
+//! (`relookup_after_stale`)。T34.54 で `dns.rs` から移した (本体は変えていない)。T34.55 で、鍵の内側の
 //! 判断を `Entry::look` に、ミスの書き戻しを `store_answer` に、同期の引き直しを `relookup_sync` に出した。
 
 use super::cost::RESOLVE_COST;
@@ -88,7 +88,7 @@ pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Op
     miss_kind.counter().fetch_add(1, Ordering::Relaxed);
     // ミスのときだけ `Instant` を 2 回読む (当たりの経路は 1 命令も増えない。T12.4 (2))
     let t0 = Instant::now();
-    // 締め切りつきで別のスレッドに引かせる (T.32.11。`PROXY_DNS_TIMEOUT_SECS=0` なら自分で引く)
+    // 締め切りつきで別のスレッドに引かせる (T32.11。`PROXY_DNS_TIMEOUT_SECS=0` なら自分で引く)
     let result = pool::resolve(host, port);
     let us = t0.elapsed().as_micros().min(u64::MAX as u128) as u64;
     RESOLVE_US_SUM.fetch_add(us, Ordering::Relaxed);
@@ -99,7 +99,7 @@ pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Op
     store_answer(key, now, pref, miss_kind, result)
 }
 
-/// ミスで引いた答え (または失敗) を表に書き戻して、呼び出し側へ返す値を作る (T.34.55 で
+/// ミスで引いた答え (または失敗) を表に書き戻して、呼び出し側へ返す値を作る (T34.55 で
 /// `resolve_host_marked` から出した。本体は変えていない)。`pref` は鍵の内側で読んだ族の記憶、
 /// `miss_kind` はこのミスの種類 (行の `misses_by_kind` に足す)。
 fn store_answer(
@@ -137,10 +137,10 @@ fn store_answer(
             }
             Ok((addrs, slot.last_win_v6, false))
         }
-        // 上限の本数が走っていて引きもしなかった (T.32.11)。その名前の失敗としては覚えない
+        // 上限の本数が走っていて引きもしなかった (T32.11)。その名前の失敗としては覚えない
         Err(e) if pool::is_busy(&e) => Err(e),
         Err(e) => {
-            // 失敗の経路でも上限を守る (T.32.2)。前はここが無条件の `or_insert_with` で、
+            // 失敗の経路でも上限を守る (T32.2)。前はここが無条件の `or_insert_with` で、
             // 相異なる引けない名前の数だけ表が伸びた (tokyo の 48 時間で 7,511 行)
             if table.len() >= MAX_ENTRIES && !table.contains_key(&key) {
                 evict_oldest(table);
@@ -197,7 +197,7 @@ pub fn relookup_after_stale(
 }
 
 /// [`relookup_after_stale`] で表にまだ新しい答えが無いときに、同期で引いて表に書き戻す
-/// (T.34.55 で出した。本体は変えていない)。引けなければ `None`。
+/// (T34.55 で出した。本体は変えていない)。引けなければ `None`。
 fn relookup_sync(host: &str, port: u16, key: &str) -> Option<(Vec<IpAddr>, Option<bool>)> {
     // 同期で引く。数え方は `resolve_host` のミスの経路と同じ (4 種の和 = `misses`)
     MISSES.fetch_add(1, Ordering::Relaxed);

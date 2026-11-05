@@ -1,6 +1,6 @@
 //! 版 2 (`SHPRRD02`) の状態ファイルを組む fixture (T14.14)。
 //!
-//! 初めは `tests/persist_test.rs` にあった (T.34.122 で移した)。そこの
+//! 初めは `tests/persist_test.rs` にあった (T34.122 で移した)。そこの
 //! `test_integration_a_version_two_state_file_is_converted_to_version_three` だけが使うので、
 //! `tests/common/mod.rs` には入れず、`#[path]` で取り込む (ほかの試験バイナリは組まない)。
 

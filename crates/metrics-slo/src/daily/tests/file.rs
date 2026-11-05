@@ -66,7 +66,7 @@ fn broken_lines_are_ignored() {
     let _ = fs::remove_file(&path);
 }
 
-/// `/daily` の切り方 (T.34.46): 新しい方から件数で切る・大きさで切る・切らない。並びは古い順。
+/// `/daily` の切り方 (T34.46): 新しい方から件数で切る・大きさで切る・切らない。並びは古い順。
 #[test]
 fn newest_within_cuts_by_count_or_by_size() {
     let all = || -> Vec<String> { (0..5).map(|i| format!("{{\"t\":{}}}", i)).collect() };

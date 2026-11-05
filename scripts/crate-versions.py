@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""クレートの版の決まりを数える・確かめる・上げる道具 (T.21.1 で作り、T.21.6 で決まりを置き換えた)。
+"""クレートの版の決まりを数える・確かめる・上げる道具 (T21.1 で作り、T21.6 で決まりを置き換えた)。
 
 決まり (2026-10-15、利用者の提案を親が細部まで決めた。README の「クレート構成」):
 
   (1) 各クレートの `version` は、**そのクレートの中身を最後に変えたタスクの番号** `0.<Phase>.<番号>`
-      (T.21.3 → `0.21.3`、T.17.11 → `0.17.11`。英字の付くタスク (T17.0a) は英字を落とす)。
-  (2) タスクの中で上げる: 取り込む前に `--task T.21.3` を回すと、基準 (`--since REF`。既定は `main` との
+      (T21.3 → `0.21.3`、T17.11 → `0.17.11`。英字の付くタスク (T17.0a) は英字を落とす)。
+  (2) タスクの中で上げる: 取り込む前に `--task T21.3` を回すと、基準 (`--since REF`。既定は `main` との
       分かれ目 = `git merge-base HEAD main`) から中身が変わったクレートの版を `0.21.3` にする。
   (3) 本体 (`rust-http-proxy`) と `proxy-server` は、そのビルドに入っている最後のタスク = 全クレートの版と、
       本体 (`src/`) を最後に変えたタスクの番号のうち最大。`proxy-server` は本体と同じ
@@ -15,7 +15,7 @@
 「中身が変わった」= メンバーのディレクトリ (`crates/<名前>/`) の下の差分のうち、`Cargo.toml` の
 `[package]` の `version = …` の 1 行を除いたもの。本体の中身は `src/` の下と、**ルートの `Cargo.toml`**
 (`[package]` の版の行と `[workspace]` の `members = [...]` を除く。`[profile.*]` の `codegen-units` を
-変えてもビルドは変わるのに、前は数えずに「決まりに合う」と出た。T.29.28)。
+変えてもビルドは変わるのに、前は数えずに「決まりに合う」と出た。T29.28)。
 
 `--check` の決まり (**コミットの文面には頼らない**。文面にタスク番号が無いコミットも、複数の番号が並ぶものもあるため):
   (a) 版の形が `0.P.T`。
@@ -26,12 +26,12 @@
       作業ツリーの版の行が HEAD と違えば作業ツリーが書いた (コミット前の `--task` を確かめられるように)。
       「後に中身が変わった」= そのコミットの中身と作業ツリーの中身 (版の行を除く) が違う。
       本体と proxy-server は全部の最大なので、番号の小さいタスクが後から入っても版が変わらない。この 2 つは
-      どれかのクレートの版の行を書いたコミット (= `--task` を回した) より後に中身が変わっていなければよい (T.28.0)。
+      どれかのクレートの版の行を書いたコミット (= `--task` を回した) より後に中身が変わっていなければよい (T28.0)。
       同じタスクの中で 2 回目の `--task` を回したとき、もうその番号のクレートも同じで、同じ版の行を
-      書いたコミットより後に中身が変わっていなければよい (T.28.27)。
+      書いたコミットより後に中身が変わっていなければよい (T28.27)。
   (d) タグの上 (HEAD を指す `v*` のタグがある) なら、本体の版 = タグ。
   (e) `Cargo.lock` の各メンバー (本体と全クレート) の版が、その `Cargo.toml` の版と同じ。`Cargo.toml` を
-      手で上げて `Cargo.lock` をそのままにしても、CI は `--locked` なしでビルドするので気づかない (T.29.28)。
+      手で上げて `Cargo.lock` をそのままにしても、CI は `--locked` なしでビルドするので気づかない (T29.28)。
       `Cargo.lock` が無いリポジトリでは見ない。
 
 使い方 (リポジトリの根から。`-C DIR` で別のリポジトリ):
@@ -41,9 +41,9 @@
   scripts/crate-versions.py --task TID [--since REF]
                                                    REF から中身が変わったクレートの版を TID の番号にし、
                                                    本体と proxy-server を全部の最大にする (`Cargo.lock` の該当の行も直す)。
-                                                   REF を渡さず main の上 (分かれ目 = HEAD) で 0 本なら 2 で止まる (T.32.27)
+                                                   REF を渡さず main の上 (分かれ目 = HEAD) で 0 本なら 2 で止まる (T32.27)
   scripts/crate-versions.py --task TID --fix       基準を使わず、--check の (c) で落ちるもの (上げ忘れ) だけを上げる
-                                                   (取り込んだあとの main の上で回す形。T.32.27)
+                                                   (取り込んだあとの main の上で回す形。T32.27)
 
 外部のパッケージは使わない (標準ライブラリだけ)。`release.yml` の ubuntu-22.04 の python3 (3.10) で動くこと
 (`tomllib` は 3.11 からなので使わず、`Cargo.toml` は行で読む)。
@@ -59,12 +59,12 @@ import sys
 TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)$")
 # 決まり (a): `0.<Phase>.<番号>`
 VER_RE = re.compile(r"^0\.(\d+)\.(\d+)$")
-# タスクの番号 (`T.21.3`、`T17.0a`。英字は落とす)
-TASK_RE = re.compile(r"^T\.(\d+)\.(\d+)[a-z]?$")
+# タスクの番号 (`T21.3`、`T17.0a`。英字は落とす)
+TASK_RE = re.compile(r"^T(\d+)\.(\d+)[a-z]?$")
 # `[package]` の版の行 (`version = "0.20.0"`)。行の頭から書いてあるものだけを見る
 VERSION_LINE_RE = re.compile(r'^version\s*=\s*"([^"]*)"\s*$')
 SERVER = "proxy-server"
-ROOT_CONTENT = ("src", "Cargo.toml")  # 本体の「中身」(ルートの Cargo.toml は T.29.28 から)
+ROOT_CONTENT = ("src", "Cargo.toml")  # 本体の「中身」(ルートの Cargo.toml は T29.28 から)
 
 
 class Error(Exception):
@@ -85,7 +85,7 @@ def ver_key(text):
 
 
 def task_version(tid):
-    """`T.21.3` → `0.21.3` (英字は落とす)。形が違えば None。"""
+    """`T21.3` → `0.21.3` (英字は落とす)。形が違えば None。"""
     m = TASK_RE.match(tid)
     return "0.%d.%d" % (int(m.group(1)), int(m.group(2))) if m else None
 
@@ -123,7 +123,7 @@ def without_version_line(text):
 
 
 def without_members(text):
-    """`[workspace]` の `members = [...]` (複数行も) を除いた中身 (本体の中身を比べるときに使う。T.29.28)。"""
+    """`[workspace]` の `members = [...]` (複数行も) を除いた中身 (本体の中身を比べるときに使う。T29.28)。"""
     out = []
     section = None
     skipping = False
@@ -362,7 +362,7 @@ def judge(repo):
     tags = repo.tags_at_head()
     if tags and "v%s" % repo.root.version not in tags:
         bad.append((repo.root.name, "タグ %s の上なのに本体の版が %s (決まり d)" % (" ".join(tags), repo.root.version)))
-    # (e) Cargo.lock の版が Cargo.toml と同じ (T.29.28)
+    # (e) Cargo.lock の版が Cargo.toml と同じ (T29.28)
     lock = repo.show(None, "Cargo.lock")
     if lock is not None:
         locked = lock_versions(lock)
@@ -376,16 +376,16 @@ def judge(repo):
 
 
 def stale(repo, origins):
-    """決まり (c) の上げ忘れ: [(単位, 版の行を書いたコミット)]。`--task --fix` もこれで上げるものを選ぶ (T.32.27)。"""
+    """決まり (c) の上げ忘れ: [(単位, 版の行を書いたコミット)]。`--task --fix` もこれで上げるものを選ぶ (T32.27)。"""
     out = []
     for u in repo.units():
         origin = origins[u.name]
         if origin is not None and repo.content_changed(u, origin):
             # 版の行を書き直せない場合が 2 つある。どちらも、後で `--task` を回したコミット (= ほかの
             # クレートの版の行を書いた) より後に中身が変わっていなければよい:
-            # - 本体と proxy-server は全部の最大なので、番号の小さいタスクが後から入ると版が変わらない (T.28.0)
+            # - 本体と proxy-server は全部の最大なので、番号の小さいタスクが後から入ると版が変わらない (T28.0)
             # - 同じタスクの中で 2 回目の `--task` を回すと、もうその番号になっているクレートは版が
-            #   変わらない (T.28.27)。このときは同じ版の行を書いたコミットだけを見る
+            #   変わらない (T28.27)。このときは同じ版の行を書いたコミットだけを見る
             whole = u.name in (repo.root.name, SERVER)
             origin = next((origins[v.name] for v in repo.units()
                            if (whole or v.version == u.version)
@@ -443,21 +443,21 @@ def bump_task(repo, tid, since, fix=False):
     """--task: since から中身が変わったクレートを tid の版にし、本体と proxy-server を全部の最大にする。
 
     (基準, 版, 書き換えた {名前: 版}) を返す。本体の版は下げない (いまの本体の版も最大の候補に入れる)。
-    `fix` なら基準を使わず、`--check` の決まり (c) で落ちるもの (上げ忘れ) だけを上げる (T.32.27。
+    `fix` なら基準を使わず、`--check` の決まり (c) で落ちるもの (上げ忘れ) だけを上げる (T32.27。
     取り込んだあとの main の上で回す形)。そのとき基準は "(c)" を返す。
 
     基準を渡さず、`main` との分かれ目が HEAD そのもの (= main の上や取り込んだ直後) で上げるものが 0 本なら、
-    黙って 0 本で抜けずに使い方の誤りにする (T.32.27。前は「上げた: 0」・終了コード 0 で、`--check` が後で落とした)。
+    黙って 0 本で抜けずに使い方の誤りにする (T32.27。前は「上げた: 0」・終了コード 0 で、`--check` が後で落とした)。
     """
     new = task_version(tid)
     if new is None:
-        raise Error("タスクの番号は T<Phase>.<番号> の形で渡す (例: T.21.3、T17.0a): %s" % tid)
+        raise Error("タスクの番号は T<Phase>.<番号> の形で渡す (例: T21.3、T17.0a): %s" % tid)
     current = {u.name: u.version for u in repo.units()}
     if fix:
         origins = {u.name: repo.version_origin(u) for u in repo.units()}
         names = {u.name for u, _ in stale(repo, origins)}
         # 上げ忘れが同じ番号のまま (= そのタスクの版の行をもう書いたあとに中身を変えた) なら、版の行が
-        # 変わらないので決まり (c) は満たせない。黙って「上げた: 0」で抜けずに止める (T.32.39)
+        # 変わらないので決まり (c) は満たせない。黙って「上げた: 0」で抜けずに止める (T32.39)
         same = sorted(n for n in names if current.get(n) == new)
         if same:
             raise Error("上げ忘れの %s はもう %s で、同じ番号では決まり (c) を満たせない。"
@@ -524,16 +524,16 @@ def print_list(repo, origins, bad):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="クレートの版の決まり (T.21.6: 版 = 中身を最後に変えたタスクの番号)")
+    ap = argparse.ArgumentParser(description="クレートの版の決まり (T21.6: 版 = 中身を最後に変えたタスクの番号)")
     ap.add_argument("-C", dest="repo", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
                     help="リポジトリ (既定はこのスクリプトの 1 つ上)")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--list", action="store_true")
     g.add_argument("--check", action="store_true")
-    g.add_argument("--task", metavar="TID", help="タスクの番号 (T.21.3 など)")
+    g.add_argument("--task", metavar="TID", help="タスクの番号 (T21.3 など)")
     ap.add_argument("--since", metavar="REF", help="--task の基準 (既定は git merge-base HEAD main)")
     ap.add_argument("--fix", action="store_true",
-                    help="--task で、基準の代わりに --check の決まり c で落ちるもの (上げ忘れ) だけを上げる (T.32.27)")
+                    help="--task で、基準の代わりに --check の決まり c で落ちるもの (上げ忘れ) だけを上げる (T32.27)")
     a = ap.parse_args(argv)
     repo = None
     try:

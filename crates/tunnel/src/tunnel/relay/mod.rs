@@ -37,7 +37,7 @@ const FOREVER: Duration = Duration::from_secs(365 * 86400);
 /// 猶予 3 ms だと CPU/本 175.2 → 190.2 us (+8.6%)、p99 1.709 → 2.263 ms (+32%) で、
 /// 「閉じられる直前に預けて、すぐ起こされる」ぶんを丸ごと払っていた。
 pub(super) const MIN_PARK_GRACE: Duration = Duration::from_millis(100);
-/// 猶予を伸ばす上限 (T.32.19)。
+/// 猶予を伸ばす上限 (T32.19)。
 ///
 /// 預けて **[`SHORT_PARK`] 未満で起こされた**トンネルは、次の猶予を倍にしていく
 /// (100 → 200 → 400 → 800 → 1,000 ms)。0.5 秒ごとに小さく往復するトンネル
@@ -46,10 +46,10 @@ pub(super) const MIN_PARK_GRACE: Duration = Duration::from_millis(100);
 /// を払わなくなる。秒〜分の単位で暇なトンネルは預けたあと長く眠るので、
 /// 起こされた時点で猶予は下限に戻る (預かりの数とスレッドの数は今のまま)
 const MAX_PARK_GRACE: Duration = Duration::from_secs(1);
-/// これより短く預けられていたら「預けたのは損だった」とみなす (T.32.19)。
+/// これより短く預けられていたら「預けたのは損だった」とみなす (T32.19)。
 const SHORT_PARK: Duration = Duration::from_secs(1);
 
-/// 起こされたあとの次の猶予 (T.32.19)。`parked` は預けられていた時間、`base` は下限。
+/// 起こされたあとの次の猶予 (T32.19)。`parked` は預けられていた時間、`base` は下限。
 fn next_grace(grace: Duration, base: Duration, parked: Duration) -> Duration {
     if parked < SHORT_PARK {
         grace.saturating_mul(2).min(MAX_PARK_GRACE.max(base))
@@ -88,7 +88,7 @@ pub struct Idle {
     idle: Option<Duration>,
     /// 預け先と、預ける前に同じスレッドで待ってみる猶予の下限 (`None` なら預けない)
     park: Option<(Arc<dyn Park>, Duration)>,
-    /// いまの猶予 (下限から始め、すぐ起こされるたびに倍にする。[`next_grace`]。T.32.19)
+    /// いまの猶予 (下限から始め、すぐ起こされるたびに倍にする。[`next_grace`]。T32.19)
     grace: Duration,
     /// アクセスログと統計に要る素性
     info: Info,
@@ -200,7 +200,7 @@ impl Idle {
                     .parked_ms
                     .saturating_add(crate::profile::ms_u32(parked));
             }
-            // 次の猶予 (T.32.19)。時計はここで 1 回読んだぶんを使い回す
+            // 次の猶予 (T32.19)。時計はここで 1 回読んだぶんを使い回す
             if let Some((_, base)) = &self.park {
                 self.grace = next_grace(self.grace, *base, parked);
             }
@@ -222,7 +222,7 @@ impl Idle {
             s.set_bytes(self.flow.transferred);
         }
         // 預けた時刻 (T14.3 (1))。預かってもらえなければ `no_park` が消す。
-        // 猶予を伸ばす判定 (T.32.19) にも使うので `--lite` でも読む (預ける 1 回に 1 回)
+        // 猶予を伸ばす判定 (T32.19) にも使うので `--lite` でも読む (預ける 1 回に 1 回)
         self.parked_at = Some(Instant::now());
     }
 
@@ -382,7 +382,7 @@ pub(super) fn start(
                 .1
                 .unwrap_or(0),
         );
-    // 書き側の見張りは向きごとに 1 つ (T.29.34)
+    // 書き側の見張りは向きごとに 1 つ (T29.34)
     // 判定は相手に届いた量で見る (送信キューに残った分を引く)
     let guard = min_transfer.guard(proxy_base::minrate::Side::Tunnel, info.conn_id);
     let mut rate = [guard.clone(), guard];

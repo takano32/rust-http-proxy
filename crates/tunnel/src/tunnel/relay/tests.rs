@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn grace_doubles_after_short_parks_and_resets_after_a_long_one() {
-    // T.32.19: 0.5 秒ごとに起こされるトンネルは 100 → 200 → 400 → 800 → 1,000 ms で止まる
+    // T32.19: 0.5 秒ごとに起こされるトンネルは 100 → 200 → 400 → 800 → 1,000 ms で止まる
     let short = Duration::from_millis(400);
     let mut g = MIN_PARK_GRACE;
     let mut seen = Vec::new();
@@ -113,7 +113,7 @@ fn wait_budget_caps_only_the_directions_waiting_to_write() {
         budget(None, false, 300_000, [Some(ms(50)), None], [POLLIN, 0]),
         (300_000, false)
     );
-    // 書けずに待つ向きは窓の残りまでしか眠らない (T.29.34)
+    // 書けずに待つ向きは窓の残りまでしか眠らない (T29.34)
     assert_eq!(
         budget(None, false, 300_000, [Some(ms(50)), None], [POLLOUT, 0]),
         (50, true)

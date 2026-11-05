@@ -1,6 +1,6 @@
 //! 個票のエンドポイント `/dns` `/log` `/hosts` と、カーネルの RTT と再送 (T13.4・T14.5) の結合テスト。
 //!
-//! 初めは `tests/recent_test.rs` にあった (T.34.117 で割った)。
+//! 初めは `tests/recent_test.rs` にあった (T34.117 で割った)。
 
 mod common;
 

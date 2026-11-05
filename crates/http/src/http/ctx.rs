@@ -87,7 +87,7 @@ impl Ctx<'_> {
         // 出すのと同じ値) をそのまま運ぶだけ。ホスト別統計の鍵の内側で足す
         detail.bytes_in = self.up_bytes;
         detail.bytes_out = bytes;
-        // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T.34.146)
+        // 読んだ壁時計は接続元の個票にも渡す (要求 1 本で 1 回。T34.146)
         let now =
             self.metrics
                 .record_host_detail(self.pool_key, outcome, bytes, Some(took), detail);

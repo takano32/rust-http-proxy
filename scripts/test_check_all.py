@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`scripts/check-all.sh` (短絡しない一括確認。T.29.29) のテスト。
+"""`scripts/check-all.sh` (短絡しない一括確認。T29.29) のテスト。
 
     python3 -m unittest discover -s scripts        # リポジトリの根から
 

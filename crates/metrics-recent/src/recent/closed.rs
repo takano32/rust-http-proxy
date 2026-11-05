@@ -1,5 +1,5 @@
 //! 「その窓に閉じた接続」の分布 ([`ClosedCounts`]。`/history` の `closed`。T14.6)。
-//! `recent` の一部 (T.34.2 で `recent/mod.rs` から移した)。
+//! `recent` の一部 (T34.2 で `recent/mod.rs` から移した)。
 //!
 //! 足すのは [`ClosedCounts::observe`] (接続の終了で 1 回。**既に鍵の内側**)、畳むのは
 //! [`ClosedCounts::merge`]、書くのは [`ClosedCounts::push_row`] ([`CLOSED_KEYS`] の順)。
@@ -189,7 +189,7 @@ fn push_u64_array(out: &mut String, v: &[u64]) {
     out.push(']');
 }
 
-/// 閉じた分布の単体試験 (T14.6。T.34.2 で別のファイルに移した)。
+/// 閉じた分布の単体試験 (T14.6。T34.2 で別のファイルに移した)。
 #[cfg(test)]
 #[path = "closed_tests.rs"]
 mod tests;

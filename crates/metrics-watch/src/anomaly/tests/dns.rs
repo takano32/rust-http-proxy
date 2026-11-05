@@ -174,7 +174,7 @@ fn dns_slow_clears_only_after_five_calm_minutes() {
 }
 
 /// 平常時の 1 時間のあと、1 分ごとの頭の標本に名前解決のミスを 1 回ずつ `n` 回流す (`fail` 回目までは
-/// 名前解決に失敗した試みのミス)。1 回は `each_ms`。`dns_slow` の変わり目だけを返す (T.32.16)。
+/// 名前解決に失敗した試みのミス)。1 回は `each_ms`。`dns_slow` の変わり目だけを返す (T32.16)。
 fn dns_misses_with_failures(n: u64, fail: u64, each_ms: u64) -> Vec<Fired> {
     let h = History::default();
     let mut d = Detector::new();
@@ -200,7 +200,7 @@ fn dns_misses_with_failures(n: u64, fail: u64, each_ms: u64) -> Vec<Fired> {
     out
 }
 
-/// T.32.16 の受け入れ基準: 名前解決の**失敗** 3 回 × 2 秒では立たない (0.30.4 の 62 件の大半がこれ。
+/// T32.16 の受け入れ基準: 名前解決の**失敗** 3 回 × 2 秒では立たない (0.30.4 の 62 件の大半がこれ。
 /// `imap.froggy.com.au` の nxdomain 1 回が 2,151 ms)。成功した名前 10 回の平均 300 ms では立つ。
 #[test]
 fn slow_dns_failures_do_not_fire_but_slow_resolved_misses_do() {
@@ -220,7 +220,7 @@ fn slow_dns_failures_do_not_fire_but_slow_resolved_misses_do() {
     assert!(dns_misses_with_failures(5, 3, 2_000).is_empty());
 }
 
-/// T.32.16: 失敗のぶんを外して立ったときは、外した回数を文面に添える (成功したミスの数字で書く)。
+/// T32.16: 失敗のぶんを外して立ったときは、外した回数を文面に添える (成功したミスの数字で書く)。
 #[test]
 fn dns_slow_says_how_many_failed_misses_it_left_out() {
     let h = History::default();
@@ -250,7 +250,7 @@ fn dns_slow_says_how_many_failed_misses_it_left_out() {
 }
 
 /// 平常時の 1 時間のあと、5 秒ごとの標本に名前解決に成功したミスを 1 回ずつ流す: 443・80 以外の宛て (`:993`) を
-/// `other` 回 × `other_ms`、そのあと 443・80 宛てを `web` 回 × `web_ms`。`dns_slow` の変わり目だけを返す (T.33.3)。
+/// `other` 回 × `other_ms`、そのあと 443・80 宛てを `web` 回 × `web_ms`。`dns_slow` の変わり目だけを返す (T33.3)。
 fn dns_misses_by_port(other: u64, other_ms: u64, web: u64, web_ms: u64) -> Vec<Fired> {
     let h = History::default();
     let mut d = Detector::new();
@@ -275,7 +275,7 @@ fn dns_misses_by_port(other: u64, other_ms: u64, web: u64, web_ms: u64) -> Vec<F
     out
 }
 
-/// T.33.3 の受け入れ基準 (利用者の決定): `dns_slow` は 443・80 宛ての接続のための名前解決だけで判定する。
+/// T33.3 の受け入れ基準 (利用者の決定): `dns_slow` は 443・80 宛ての接続のための名前解決だけで判定する。
 /// `:993` 宛ての成功したミス 10 回 × 400 ms (0.32.39 の 15 件の形。NAT の接続元が初めて引いたメールのホスト)
 /// では立たず、`:443` 宛ての 5 回 × 300 ms では立つ。外した 443・80 以外の回数は文面に添える。
 #[test]
@@ -303,7 +303,7 @@ fn only_misses_for_443_and_80_make_dns_slow_fire() {
     assert!(dns_misses_by_port(10, 400, 2, 300).is_empty());
 }
 
-/// T.33.3: 443・80 以外の宛てと失敗の両方を外したときの文面 (長さも出来事の上限に収まる)。
+/// T33.3: 443・80 以外の宛てと失敗の両方を外したときの文面 (長さも出来事の上限に収まる)。
 #[test]
 fn dns_slow_says_how_many_misses_to_other_ports_and_failures_it_left_out() {
     let h = History::default();

@@ -5,7 +5,7 @@ fn parse(lines: &[&str]) -> RequestHeaders {
     parse_request_headers(&raw, 0)
 }
 
-/// `Expect` の読み方 (T.28.3): `100-continue` は大小無視、それ以外が 1 つでもあれば `expect_unknown`。
+/// `Expect` の読み方 (T28.3): `100-continue` は大小無視、それ以外が 1 つでもあれば `expect_unknown`。
 #[test]
 fn expect_continue_and_unknown_expectations() {
     let h = parse(&["Expect: 100-continue"]);

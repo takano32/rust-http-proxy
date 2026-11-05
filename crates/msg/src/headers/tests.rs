@@ -37,7 +37,7 @@ fn connection_names_are_found_with_and_without_overflow() {
     assert!(!custom.contains("x-a", || lines.iter().map(String::as_str)));
 }
 
-/// T.28.12: 値に UTF-8 として読めないバイトがある行で終わらず、後ろの行も読む。
+/// T28.12: 値に UTF-8 として読めないバイトがある行で終わらず、後ろの行も読む。
 /// 読めない値は U+FFFD 1 字 (CL なら壊れた値として扱われる)。
 #[test]
 fn response_lines_read_past_obs_text() {
@@ -76,7 +76,7 @@ fn cr_and_nul_in_a_response_value_become_spaces() {
     ));
 }
 
-/// T.32.15 (1): 要求の行末は LF だけでも CRLF にそろえて書く。
+/// T32.15 (1): 要求の行末は LF だけでも CRLF にそろえて書く。
 #[test]
 fn request_lines_are_written_with_crlf() {
     let raw = vec![
@@ -100,7 +100,7 @@ fn request_lines_are_written_with_crlf() {
     );
 }
 
-/// T.32.15 (2): 名前が token でない応答の行 (`X A: b`・`: v`) は落とす (両方の書き出し口で)。
+/// T32.15 (2): 名前が token でない応答の行 (`X A: b`・`: v`) は落とす (両方の書き出し口で)。
 #[test]
 fn response_lines_with_a_non_token_name_are_dropped() {
     let head = b"HTTP/1.1 200 OK\r\nX A: b\r\n: v\r\nX\"Q: 1\r\nX-Ok: y\r\nX-Sp : z\r\n\r\n";

@@ -1,4 +1,4 @@
-//! 日次と起動・停止の 1 枚を書くもの ([`Writer`]。`snapshots` の一部。T.34.2 で `snapshots.rs`
+//! 日次と起動・停止の 1 枚を書くもの ([`Writer`]。`snapshots` の一部。T34.2 で `snapshots.rs`
 //! から移した)。
 //!
 //! `/snapshot` を組む閉包と、書き先の空きを測る閉包は**引数で受ける** ([`Writer::add`] /
@@ -17,7 +17,7 @@ use crate::day_rollover::DayRollover;
 use crate::{log_debug, log_info, log_warn};
 
 // `Writer` は外に使い手が無いが `pub` のまま: `pub(crate)` に狭めると、試験だけが読む
-// `counts` / `moments_written` (とその欄) が dead_code になる (T.34.2)
+// `counts` / `moments_written` (とその欄) が dead_code になる (T34.2)
 
 /// 日次の `/snapshot` を書くもの。
 ///
@@ -27,13 +27,13 @@ pub struct Writer {
     dir: Option<PathBuf>,
     /// 残す日数 (`PROXY_SNAPSHOT_DAYS`。0 なら書かない)
     days: usize,
-    /// いま見ている日と最後に書いた日 (起動時にいちばん新しいファイルの日付から。T.34.50)
+    /// いま見ている日と最後に書いた日 (起動時にいちばん新しいファイルの日付から。T34.50)
     rollover: DayRollover,
     written: u64,
     errors: u64,
     /// ディスクの予算で書かなかった回数
     skipped: u64,
-    /// 起動と停止の 1 枚を書いた数 (T.28.20)
+    /// 起動と停止の 1 枚を書いた数 (T28.20)
     moments: u64,
 }
 
@@ -111,7 +111,7 @@ impl Writer {
         Some(path)
     }
 
-    /// 起動と停止の 1 枚 (T.28.20) を `t` (撮った時刻) の名前で書く。戻り値は書いたファイル。
+    /// 起動と停止の 1 枚 (T28.20) を `t` (撮った時刻) の名前で書く。戻り値は書いたファイル。
     ///
     /// 書いたら同じ種類の古いもの ([`prune_moments`]) を消す。書き先が無い設定
     /// (`PROXY_SNAPSHOT_DAYS=0` / `PROXY_STATS_PERSIST=off`) では `build` を呼ばない。
@@ -211,7 +211,7 @@ impl Writer {
         (self.written, self.errors, self.skipped)
     }
 
-    /// 起動と停止の 1 枚を書いた数 (T.28.20)。
+    /// 起動と停止の 1 枚を書いた数 (T28.20)。
     pub fn moments_written(&self) -> u64 {
         self.moments
     }

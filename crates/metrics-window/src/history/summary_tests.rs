@@ -279,7 +279,7 @@ fn the_summary_response_fits_in_4_kib() {
     println!("summary の大きさ: {} B\n{}", json.len(), json);
 }
 
-/// **T.29.13**: 平常時の閾は「1 時間 300 本と、その期間の中央値 × 3 の大きい方」。tokyo (0.28.48 の 23 時間、
+/// **T29.13**: 平常時の閾は「1 時間 300 本と、その期間の中央値 × 3 の大きい方」。tokyo (0.28.48 の 23 時間、
 /// 毎時 475〜1,760 本) は 300 本で切ると 23 時間が全部バーストになった (`samples 0, burst_samples 23`)。
 #[test]
 fn the_normal_hours_of_a_busy_day_are_not_empty() {

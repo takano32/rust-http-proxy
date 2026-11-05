@@ -1,5 +1,5 @@
 //! 要求行の文法 ([`check_request_line`])。ソケットも統計も見ない純粋な判定で、
-//! 断るときの理由・状態・WARN の文面は [`RequestLineError`] から呼ぶ側が組む (T.34.11)。
+//! 断るときの理由・状態・WARN の文面は [`RequestLineError`] から呼ぶ側が組む (T34.11)。
 
 /// 文法を通った要求行 (どれも要求行の借用)。
 #[derive(Debug, PartialEq, Eq)]
@@ -22,7 +22,7 @@ pub(super) enum RequestLineError<'a> {
     /// `*` (asterisk-form) を `OPTIONS` 以外のメソッドで使った。400。中身はメソッド
     Asterisk(&'a str),
     /// メソッドが token (RFC 9110 §5.6.2・RFC 9112 §3) でない (`G\u{a0}ET`・`GE@T`)。400。
-    /// 中身はメソッド (T.34.142)
+    /// 中身はメソッド (T34.142)
     Method(&'a str),
 }
 
@@ -43,7 +43,7 @@ pub(super) fn check_request_line(line: &str) -> Result<RequestLine<'_>, RequestL
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
         return Err(RequestLineError::Malformed);
     };
-    // 要求行の文法 (RFC 9112 §3。T.29.8): **ちょうど 3 要素** (メソッド・対象・版) で、対象は VCHAR だけ、
+    // 要求行の文法 (RFC 9112 §3。T29.8): **ちょうど 3 要素** (メソッド・対象・版) で、対象は VCHAR だけ、
     // 版は `HTTP/d.d` の形。外れたら 400。今までは `GET http://h/a b HTTP/1.1` の `b` を版と読んで 505、
     // `… HTTP/1.1 junk` と版の無い行 (HTTP/0.9 の形) を 1.0 として受け付け、対象の DEL / NUL / 制御文字を
     // そのまま転送していた。区切りの空白の数は今までどおり問わない
@@ -61,11 +61,11 @@ pub(super) fn check_request_line(line: &str) -> Result<RequestLine<'_>, RequestL
     if !version.get(..7).is_some_and(|v| v == "HTTP/1.") {
         return Err(RequestLineError::Version(version));
     }
-    // `*` (asterisk-form) は `OPTIONS` だけ (RFC 9112 §3.2.4。T.29.9)。今までは `*` を宛先として引いて 502
+    // `*` (asterisk-form) は `OPTIONS` だけ (RFC 9112 §3.2.4。T29.9)。今までは `*` を宛先として引いて 502
     if target == "*" && method != "OPTIONS" {
         return Err(RequestLineError::Asterisk(method));
     }
-    // メソッドは token だけ (RFC 9112 §3 の `method = token`。T.34.142)。今までは形しか見ず、
+    // メソッドは token だけ (RFC 9112 §3 の `method = token`。T34.142)。今までは形しか見ず、
     // `G\u{a0}ET /x HTTP/1.1` (区切りは ASCII の空白だけなので NBSP はメソッドの中に残る) や
     // `GE@T` をそのままオリジンへ送っていた。見るのは上の判定を全部通った行だけなので、
     // 今まで断っていた行の理由は変わらない
@@ -79,8 +79,8 @@ pub(super) fn check_request_line(line: &str) -> Result<RequestLine<'_>, RequestL
     })
 }
 
-/// 版が `HTTP/d.d` の形か (RFC 9112 §2.3。T.29.8)。`HTTP` は大小を区別する (`HTTP-name = %s"HTTP"`。
-/// T.32.15 (6)。T.29.8 では問わずに `http/1.1` を通していた)。
+/// 版が `HTTP/d.d` の形か (RFC 9112 §2.3。T29.8)。`HTTP` は大小を区別する (`HTTP-name = %s"HTTP"`。
+/// T32.15 (6)。T29.8 では問わずに `http/1.1` を通していた)。
 /// 形が合っていて `1.x` でないもの (`HTTP/2.0`・`HTTP/9.9`) は呼ぶ側が 505 にする。
 #[inline]
 fn version_syntax_ok(v: &str) -> bool {
@@ -183,7 +183,7 @@ mod tests {
         assert_eq!(e.status(), 400);
     }
 
-    /// T.34.142: token でないメソッドは 400 (`method`)。token の字だけのメソッドは知らなくても通す。
+    /// T34.142: token でないメソッドは 400 (`method`)。token の字だけのメソッドは知らなくても通す。
     #[test]
     fn a_method_that_is_not_a_token_is_refused() {
         for (line, method) in [

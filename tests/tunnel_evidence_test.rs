@@ -73,7 +73,7 @@ fn start_mute_origin() -> (u16, mpsc::Receiver<TcpStream>) {
 }
 
 /// `/connections` の配列から `"kind":"connect"` の行を 1 つ取り出す
-/// (`common::json::array_items` で行に割る。T.34.112)。
+/// (`common::json::array_items` で行に割る。T34.112)。
 fn connect_row(json: &str) -> Option<String> {
     json::array_items(json, "connections")
         .into_iter()

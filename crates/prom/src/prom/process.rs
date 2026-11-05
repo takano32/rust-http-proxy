@@ -1,6 +1,6 @@
 //! `/metrics` のうちプロセス全体の数え物 (名前解決・IPv6・ブロックリスト・要求・オリジン・確立・canary・ロック・エラー)。
 //!
-//! T.34.27 で `prom.rs` の `render` から割った。行を動かしただけで、出す順も文面も変えていない。
+//! T34.27 で `prom.rs` の `render` から割った。行を動かしただけで、出す順も文面も変えていない。
 
 use super::*;
 use crate::metrics::Interval;
@@ -119,7 +119,7 @@ pub(super) fn request_metrics(out: &mut String, m: &Metrics, conc: Concurrency) 
     );
     line(out, "max_threads", "", conc.max_threads);
     // 接続スレッドの数はラベル付きの 1 系列にそろえた (T11.5 の候補 → T12.4 (4))。
-    // **旧名 (`sorahost_live_threads` / `sorahost_idle_threads`) も出し続ける** (はじめは 1 版だけのつもりだった。T.28.23 で残すと決めた)
+    // **旧名 (`sorahost_live_threads` / `sorahost_idle_threads`) も出し続ける** (はじめは 1 版だけのつもりだった。T28.23 で残すと決めた)
     // ので、監視側は次の版までに `sorahost_threads{state=...}` へ移せる
     header(
         out,
@@ -234,7 +234,7 @@ pub(super) fn request_metrics(out: &mut String, m: &Metrics, conc: Concurrency) 
             m.rejected_requests[i].load(Ordering::Relaxed),
         );
     }
-    // 1 バイトも来ないまま締め切りを過ぎ、408 を返さずに閉じた接続 (先張りの接続。T.33.0)
+    // 1 バイトも来ないまま締め切りを過ぎ、408 を返さずに閉じた接続 (先張りの接続。T33.0)
     header(
         out,
         "silent_closes_total",
