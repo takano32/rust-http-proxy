@@ -186,6 +186,15 @@ pub fn serve(
             }),
         });
     }
+    let parts = Parts {
+        limiter: &limiter,
+        workers: &workers,
+        metrics: &metrics,
+        cache: &cache,
+        upstream: &upstream,
+        park: park.as_ref(),
+        local_port,
+    };
     loop {
         // incoming() は accept() の戻り値のアドレスを捨てるので accept() を直接呼ぶ
         // (接続ごとの getpeername が 1 回減る)
@@ -274,158 +283,225 @@ pub fn serve(
         if cfg.max_threads != workers.max_threads() {
             workers.set_limit(cfg.max_threads);
         }
-        let mut overflow = None;
-        // 接続元ごとの同時接続の上限 (`PROXY_MAX_CONNS_PER_CLIENT`。T14.13)。
-        // **認証ではなく公平さの上限**で、1 人が `PROXY_MAX_CONNS` を使い切って本人が
-        // 503 になるのを防ぐためのもの。既定 (0) の費用は下の分岐 1 回だけ。
-        //
-        // 数え方: 数えるのは `/connections` の表と同じ鍵の内側にある「接続元ごとの本数」で、
-        // 引くのは `HashMap` 1 回 (240 本を数え直さない)。鍵は `Conn::new` の登録と同じ
-        // 正規化した接続元 IP なので、数と表は必ず一致する。
-        //
-        // **自分宛ての内部エンドポイントは数えない**: accept の時点では要求が読めないので、
-        // 上限に当たった接続は T13.2 と同じ「上限 + 4 本」の枠で受け、要求行を読んでから
-        // 決める (自分宛てなら普通に応答、それ以外はワーカーが 503 + `Retry-After: 1`)。
-        // 枠が埋まっていたらここで 503 を返して閉じる。こうすると、上限に当たっている
-        // 接続元からでも `/status` が取れる (監視が消えない。T13.2 の狙いと同じ)。
-        if cfg.max_conns_per_client > 0 {
-            let client = net::canonical_addr(peer).ip().to_string();
-            if metrics
-                .conns
-                .at_client_limit(&client, cfg.max_conns_per_client)
-            {
-                overflow = OverflowGuard::try_acquire(&limiter, true);
-                if overflow.is_none() {
-                    metrics.record_client_rejected(&client);
-                    log_debug!(
-                        None,
-                        "over PROXY_MAX_CONNS_PER_CLIENT={} for {}: 503",
-                        cfg.max_conns_per_client,
-                        client
-                    );
-                    if conn_inherited.is_none() {
-                        let _ = stream.set_write_timeout(timeout::for_socket(cfg.timeout));
-                    }
-                    let _ = stream.write_all(OVERLOAD_RESPONSE);
-                    let _ = stream.flush();
-                    continue;
-                }
+        let overflow = match admit(&parts, &cfg, peer) {
+            Admission::Accept { overflow } => overflow,
+            Admission::Overloaded => {
+                reject_overloaded(&mut stream, conn_inherited.is_none(), &cfg);
+                continue;
             }
-        } else if metrics.conns.counting_clients() {
-            // 上限を `0` に戻したら数えるのもやめる (`.env` で即時反映)
-            metrics.conns.stop_counting_clients();
-        }
+        };
         // 接続元 1 つの追跡 (`PROXY_TRACE_CLIENT`。T14.27)。**接続元を見るのはここだけ**で、
-        // 一致した接続には下の `Conn::new` が枠 (`ConnSlot`) に旗を立てる。以降は
+        // 一致した接続には `Conn::new` が枠 (`ConnSlot`) に旗を立てる。以降は
         // 要求ごとにその旗を読む分岐 1 回で済む (文字列の比較も設定の引き直しもしない)。
         // 既定 (空) の費用は `is_some_and` の分岐 1 回だけで、照合にも入らない。
         // `.env` で書き換えると**次に来る接続から**効く (開いている接続の旗は動かない)
         let traced = cfg
             .trace_client
             .is_some_and(|ip| ip == net::canonical_addr(peer).ip());
-        // 上限に当たったときの段取り (T13.2):
-        //   1. 預かり所の**暇なトンネル**を最古から 1 本閉じて席を作る (閉じるのはこのスレッド。
-        //      持ち分が同期で返るので、すぐ下の `OpenGuard::acquire` がその席に座れる)
-        //   2. 閉じるものが無ければ、自分宛てかもしれないぶんとして `OVERFLOW_SLOTS` 本までは
-        //      受ける (要求行と `Host` を読んでから、自分宛てでなければワーカーが 503 を返す)
-        //   3. それも埋まっていたら今までどおりスレッドを起こさずに 503
-        let max = cfg.max_conns;
-        if max > 0 && limiter.open() >= max {
-            let made_room = park.as_ref().is_some_and(|w| w.evict_oldest_tunnel());
-            if made_room {
-                // 出来事の時系列に 1 件 (**1 時間に初めて起きたときだけ**。T14.11)
-                events::note_evict(limiter.open(), max);
-            }
-            // 接続元ごとの上限で枠を取ってあれば、その枠をそのまま使う (二重には取らない)
-            if !made_room && overflow.is_none() {
-                overflow = OverflowGuard::try_acquire(&limiter, false);
-            }
-            if !made_room && overflow.is_none() {
-                metrics
-                    .rejected_overload
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let now = cache::now_epoch() as usize;
-                let last = limiter.warned.load(Ordering::Relaxed);
-                if now.saturating_sub(last) >= 60
-                    && limiter
-                        .warned
-                        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_ok()
-                {
-                    log_warn!(
-                        None,
-                        "connection limit reached ({} open, PROXY_MAX_CONNS={}) and no idle tunnel to close; returning 503",
-                        limiter.open(),
-                        max
-                    );
-                }
-                if conn_inherited.is_none() {
-                    let _ = stream.set_write_timeout(timeout::for_socket(cfg.timeout));
-                }
-                let _ = stream.write_all(OVERLOAD_RESPONSE);
-                let _ = stream.flush();
-                continue;
+        spawn_connection(&parts, stream, peer, overflow, cfg, conn_inherited, traced);
+    }
+}
+
+/// [`serve`] の輪が接続ごとに借りる、待ち受け全体の持ち物 (T.34.16)。
+struct Parts<'a> {
+    limiter: &'a Arc<Limiter>,
+    workers: &'a Arc<workers::Workers>,
+    metrics: &'a Arc<Metrics>,
+    cache: &'a Arc<Cache>,
+    upstream: &'a Arc<Upstream>,
+    park: Option<&'a Arc<idle::IdleWatch>>,
+    /// 待ち受けポート (接続ごとに引かない)
+    local_port: u16,
+}
+
+/// accept した 1 本を受けるか ([`admit`] の結果)。
+enum Admission {
+    /// 受ける。`overflow` は上限の外の枠を使ったとき (T13.2 / T14.13)
+    Accept { overflow: Option<OverflowGuard> },
+    /// 枠も無いので、スレッドを起こさずに 503 を返して閉じる
+    Overloaded,
+}
+
+/// 同時接続の上限 (接続元ごと・全体) に照らして、受けるかを決める。
+///
+/// 503 で断るときの数え (`rejected_per_client` / `rejected_overload`) とログはここで出し、
+/// 応答を書くのは呼ぶ側 ([`reject_overloaded`])。
+#[inline(always)]
+fn admit(parts: &Parts<'_>, cfg: &Config, peer: std::net::SocketAddr) -> Admission {
+    let Parts {
+        limiter,
+        metrics,
+        park,
+        ..
+    } = *parts;
+    let mut overflow = None;
+    // 接続元ごとの同時接続の上限 (`PROXY_MAX_CONNS_PER_CLIENT`。T14.13)。
+    // **認証ではなく公平さの上限**で、1 人が `PROXY_MAX_CONNS` を使い切って本人が
+    // 503 になるのを防ぐためのもの。既定 (0) の費用は下の分岐 1 回だけ。
+    //
+    // 数え方: 数えるのは `/connections` の表と同じ鍵の内側にある「接続元ごとの本数」で、
+    // 引くのは `HashMap` 1 回 (240 本を数え直さない)。鍵は `Conn::new` の登録と同じ
+    // 正規化した接続元 IP なので、数と表は必ず一致する。
+    //
+    // **自分宛ての内部エンドポイントは数えない**: accept の時点では要求が読めないので、
+    // 上限に当たった接続は T13.2 と同じ「上限 + 4 本」の枠で受け、要求行を読んでから
+    // 決める (自分宛てなら普通に応答、それ以外はワーカーが 503 + `Retry-After: 1`)。
+    // 枠が埋まっていたらここで 503 を返して閉じる。こうすると、上限に当たっている
+    // 接続元からでも `/status` が取れる (監視が消えない。T13.2 の狙いと同じ)。
+    if cfg.max_conns_per_client > 0 {
+        let client = net::canonical_addr(peer).ip().to_string();
+        if metrics
+            .conns
+            .at_client_limit(&client, cfg.max_conns_per_client)
+        {
+            overflow = OverflowGuard::try_acquire(limiter, true);
+            if overflow.is_none() {
+                metrics.record_client_rejected(&client);
+                log_debug!(
+                    None,
+                    "over PROXY_MAX_CONNS_PER_CLIENT={} for {}: 503",
+                    cfg.max_conns_per_client,
+                    client
+                );
+                return Admission::Overloaded;
             }
         }
-        let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
-        // 待ち行列の段階 (`queue`) の起点 (T14.3 (1))。`--lite` では時計を読まない
-        let queued_at = profile::mark();
-        // 同時接続数の持ち分は番人として取って仕事へ運ぶ。`Conn::new` が途中で失敗しても、
-        // 仕事がワーカーへ渡らずに落ちても、番人の `Drop` が必ず 1 回だけ返す (T9.6)
-        let (open, now_open) = OpenGuard::acquire(Arc::clone(&limiter));
-        // 山の写真 (T14.6): 上限の一定割合を**下から上に越えた瞬間**だけ、history スレッドに
-        // 1 枚頼む (旗を立てるだけ)。**越えていない経路はこの比較 1 回で終わる** —
-        // 撮らない設定 (`PROXY_BURST_PERCENT=0` / `PROXY_MAX_CONNS=0` / `--lite`) では
-        // `burst_at` が `usize::MAX` なので、同じ比較がそのまま「撮らない」になる
-        if now_open > cfg.burst_at {
+    } else if metrics.conns.counting_clients() {
+        // 上限を `0` に戻したら数えるのもやめる (`.env` で即時反映)
+        metrics.conns.stop_counting_clients();
+    }
+    // 上限に当たったときの段取り (T13.2):
+    //   1. 預かり所の**暇なトンネル**を最古から 1 本閉じて席を作る (閉じるのはこのスレッド。
+    //      持ち分が同期で返るので、すぐあとの `OpenGuard::acquire` がその席に座れる)
+    //   2. 閉じるものが無ければ、自分宛てかもしれないぶんとして `OVERFLOW_SLOTS` 本までは
+    //      受ける (要求行と `Host` を読んでから、自分宛てでなければワーカーが 503 を返す)
+    //   3. それも埋まっていたら今までどおりスレッドを起こさずに 503
+    let max = cfg.max_conns;
+    if max > 0 && limiter.open() >= max {
+        let made_room = park.is_some_and(|w| w.evict_oldest_tunnel());
+        if made_room {
+            // 出来事の時系列に 1 件 (**1 時間に初めて起きたときだけ**。T14.11)
+            events::note_evict(limiter.open(), max);
+        }
+        // 接続元ごとの上限で枠を取ってあれば、その枠をそのまま使う (二重には取らない)
+        if !made_room && overflow.is_none() {
+            overflow = OverflowGuard::try_acquire(limiter, false);
+        }
+        if !made_room && overflow.is_none() {
             metrics
-                .bursts
-                .request(now_open, cfg.burst_at, cfg.max_conns);
-        }
-        let m = Arc::clone(&metrics);
-        let c = Arc::clone(&cache);
-        let p = Arc::clone(&upstream);
-        let w = park.clone();
-        // `/status` が上限とスレッド数を出すために、接続にワーカー置き場も持たせる
-        // (数を引くのは `/status` に来たときだけ。要求ごとには引かない)
-        let wk = Arc::clone(&workers);
-        // 上限の外で受けた接続は、ワーカーが全部塞がっていても待ち行列に積まずに
-        // 上限の外のスレッドで動かす (T.28.0)。上限ぶんの接続が黙ってワーカーを握って
-        // いると、積んだ `/status` はそれが放されるまで動けない (T13.2 の狙いが崩れる)。
-        // 本数は `OVERFLOW_SLOTS` (4 本) で縛られている
-        let outside = overflow.is_some();
-        let job: Box<dyn FnOnce() + Send> = Box::new(move || {
-            // 同時接続数と active_connections の持ち分は Conn が持つ (接続の寿命と一致させる)
-            let accepted = Accepted { peer, local_port };
-            match Conn::new(
-                stream,
-                accepted,
-                open,
-                overflow,
-                cfg,
-                m,
-                c,
-                p,
-                w,
-                wk,
-                conn_inherited,
-                conn_id,
-                queued_at,
-                traced,
-            ) {
-                Ok(conn) => run_conn(Box::new(conn)),
-                Err(e) => log_error!(Some(conn_id), "{}", e),
+                .rejected_overload
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let now = cache::now_epoch() as usize;
+            let last = limiter.warned.load(Ordering::Relaxed);
+            if now.saturating_sub(last) >= 60
+                && limiter
+                    .warned
+                    .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                log_warn!(
+                    None,
+                    "connection limit reached ({} open, PROXY_MAX_CONNS={}) and no idle tunnel to close; returning 503",
+                    limiter.open(),
+                    max
+                );
             }
-        });
-        let started = if outside {
-            workers.run_outside(job)
-        } else {
-            workers.run(job)
-        };
-        if started.is_err() {
-            // 渡せなかった仕事はここで落ちる。持ち分はその中の `OpenGuard` が返す (T9.6)
-            log_error!(Some(conn_id), "failed to get a thread for the connection");
+            return Admission::Overloaded;
         }
+    }
+    Admission::Accept { overflow }
+}
+
+/// 上限で断った接続に 503 を書いて閉じる (スレッドは起こさない)。
+///
+/// 待ち受けの書きのタイムアウトを継承していない接続 (`set_timeout`) には、書く前に当てる。
+#[cold]
+fn reject_overloaded(stream: &mut TcpStream, set_timeout: bool, cfg: &Config) {
+    if set_timeout {
+        let _ = stream.set_write_timeout(timeout::for_socket(cfg.timeout));
+    }
+    let _ = stream.write_all(OVERLOAD_RESPONSE);
+    let _ = stream.flush();
+}
+
+/// 受けた接続に番号と持ち分を付け、ワーカーで [`run_conn`] を回す。
+#[inline(always)]
+fn spawn_connection(
+    parts: &Parts<'_>,
+    stream: TcpStream,
+    peer: std::net::SocketAddr,
+    overflow: Option<OverflowGuard>,
+    cfg: Arc<Config>,
+    conn_inherited: Option<std::time::Duration>,
+    traced: bool,
+) {
+    let Parts {
+        limiter,
+        workers,
+        metrics,
+        cache,
+        upstream,
+        park,
+        local_port,
+    } = *parts;
+    let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    // 待ち行列の段階 (`queue`) の起点 (T14.3 (1))。`--lite` では時計を読まない
+    let queued_at = profile::mark();
+    // 同時接続数の持ち分は番人として取って仕事へ運ぶ。`Conn::new` が途中で失敗しても、
+    // 仕事がワーカーへ渡らずに落ちても、番人の `Drop` が必ず 1 回だけ返す (T9.6)
+    let (open, now_open) = OpenGuard::acquire(Arc::clone(limiter));
+    // 山の写真 (T14.6): 上限の一定割合を**下から上に越えた瞬間**だけ、history スレッドに
+    // 1 枚頼む (旗を立てるだけ)。**越えていない経路はこの比較 1 回で終わる** —
+    // 撮らない設定 (`PROXY_BURST_PERCENT=0` / `PROXY_MAX_CONNS=0` / `--lite`) では
+    // `burst_at` が `usize::MAX` なので、同じ比較がそのまま「撮らない」になる
+    if now_open > cfg.burst_at {
+        metrics
+            .bursts
+            .request(now_open, cfg.burst_at, cfg.max_conns);
+    }
+    let m = Arc::clone(metrics);
+    let c = Arc::clone(cache);
+    let p = Arc::clone(upstream);
+    let w = park.cloned();
+    // `/status` が上限とスレッド数を出すために、接続にワーカー置き場も持たせる
+    // (数を引くのは `/status` に来たときだけ。要求ごとには引かない)
+    let wk = Arc::clone(workers);
+    // 上限の外で受けた接続は、ワーカーが全部塞がっていても待ち行列に積まずに
+    // 上限の外のスレッドで動かす (T.28.0)。上限ぶんの接続が黙ってワーカーを握って
+    // いると、積んだ `/status` はそれが放されるまで動けない (T13.2 の狙いが崩れる)。
+    // 本数は `OVERFLOW_SLOTS` (4 本) で縛られている
+    let outside = overflow.is_some();
+    let job: Box<dyn FnOnce() + Send> = Box::new(move || {
+        // 同時接続数と active_connections の持ち分は Conn が持つ (接続の寿命と一致させる)
+        let accepted = Accepted { peer, local_port };
+        match Conn::new(
+            stream,
+            accepted,
+            open,
+            overflow,
+            cfg,
+            m,
+            c,
+            p,
+            w,
+            wk,
+            conn_inherited,
+            conn_id,
+            queued_at,
+            traced,
+        ) {
+            Ok(conn) => run_conn(Box::new(conn)),
+            Err(e) => log_error!(Some(conn_id), "{}", e),
+        }
+    });
+    let started = if outside {
+        workers.run_outside(job)
+    } else {
+        workers.run(job)
+    };
+    if started.is_err() {
+        // 渡せなかった仕事はここで落ちる。持ち分はその中の `OpenGuard` が返す (T9.6)
+        log_error!(Some(conn_id), "failed to get a thread for the connection");
     }
 }
 
