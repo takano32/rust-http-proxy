@@ -80,7 +80,7 @@ pub(super) struct HostTable {
     pub(super) evicted: u64,
 }
 
-/// 満杯のホスト表から `last_seen` のいちばん古い行を 1 つ捨て、通算は `other` の行に足す (T.32.10)。
+/// 満杯のホスト表から `last_seen` のいちばん古い行 (同着は名前の小さい方) を 1 つ捨て、通算は `other` の行に足す (T.32.10)。
 ///
 /// `other` の行と、上位 16 の時系列の枠を持つ行 (`series_slot`) は捨てない。`other` の行を新しく
 /// 作ったときはもう 1 行捨てて、表を [`MAX_HOSTS`] 未満にする。捨てられたら `true`。
@@ -91,7 +91,9 @@ pub(super) fn evict_oldest_host(t: &mut HostTable) -> bool {
             .map
             .iter()
             .filter(|(k, s)| k.as_str() != "other" && s.series_slot.is_none())
-            .min_by_key(|(_, s)| s.last_seen)
+            // 同着は名前の順で崩す (T.34.145。HashMap の順に任せると実行ごとに捨てる行が変わる。
+            // `record_reader` と同じ作法)
+            .min_by(|a, b| a.1.last_seen.cmp(&b.1.last_seen).then_with(|| a.0.cmp(b.0)))
             .map(|(k, _)| k.clone())
         else {
             return false;

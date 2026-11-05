@@ -142,6 +142,33 @@ fn a_full_host_table_drops_the_oldest_row_for_a_new_key() {
     );
 }
 
+/// **T.34.145**: 満杯の表で `last_seen` が同着なら、捨てる行は名前の順で決まる (前は HashMap の
+/// 順で、実行ごとに違う行を捨てた)。同じ `last_seen` の 1,000 行に新しい鍵を 1 件入れると、
+/// 名前のいちばん小さい 2 行 (新しい鍵のぶんと、`other` の行を作るぶん) が捨てられる。
+#[test]
+fn a_tie_on_last_seen_drops_the_rows_in_name_order() {
+    let m = Metrics::new();
+    let now = crate::cache::now_epoch();
+    let rows = (0..MAX_HOSTS)
+        .map(|i| {
+            let s = HostStats {
+                requests: 1,
+                last_seen: now - 86_400,
+                ..HostStats::default()
+            };
+            (format!("connect://h{i:04}.example:443"), s)
+        })
+        .collect();
+    m.restore(rows, Vec::new());
+    m.record_host("connect://new.example:443", HostOutcome::Bypass, 0);
+    assert_eq!(m.hosts_evicted(), 2);
+    let names: Vec<String> = m.hosts_sorted().into_iter().map(|(h, _)| h).collect();
+    for gone in ["connect://h0000.example:443", "connect://h0001.example:443"] {
+        assert!(!names.iter().any(|h| h == gone), "{gone} が残った");
+    }
+    assert!(names.iter().any(|h| h == "connect://h0002.example:443"));
+}
+
 /// **T.32.10 (c)**: `/slo` の宛先は、ホスト別統計から切り離した小さな表で数える。満杯の表から
 /// `other` に畳まれる宛先 (捨てられる行が無いとき) でも、その時間のエラーの宛先として数える。
 #[test]
