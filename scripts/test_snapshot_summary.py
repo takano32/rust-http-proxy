@@ -9,25 +9,19 @@
 """
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
 import tempfile
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "testdata")
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-ss = _load("snapshot_summary", "snapshot-summary.py")
+ss = _testing.load("snapshot_summary", "snapshot-summary.py")
 
 A = os.path.join(DATA, "snapshot-a.json")
 B = os.path.join(DATA, "snapshot-b.json")
@@ -40,10 +34,7 @@ def read(path):
 
 def run(argv):
     """Markdown を文字列で受け取る。"""
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        ss.main(argv)
-    return out.getvalue()
+    return _testing.run_main(ss, argv)
 
 
 @contextlib.contextmanager
@@ -174,7 +165,7 @@ class RepeatsInTheDiff(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.sd = _load("snapshot_diff_for_repeats", "snapshot-diff.py")
+        cls.sd = _testing.load("snapshot_diff_for_repeats", "snapshot-diff.py")
 
     def diff(self, b):
         out = io.StringIO()

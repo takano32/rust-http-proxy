@@ -10,25 +10,18 @@
 """
 
 import contextlib
-import importlib.util
-import io
 import json
 import os
 import tempfile
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-sd = _load("status_diff", "status-diff.py")
-pd = _load("proxydata", "proxydata.py")
+sd = _testing.load("status_diff", "status-diff.py")
+pd = _testing.load("proxydata", "proxydata.py")
 
 
 def host(key, requests, avg_ms=10.0, timed=None, **extra):
@@ -63,10 +56,7 @@ HOSTS = {
 
 def run(argv):
     """`status-diff.py` を回して標準出力を文字列で受け取る。"""
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        sd.main(argv)
-    return out.getvalue()
+    return _testing.run_main(sd, argv)
 
 
 @contextlib.contextmanager

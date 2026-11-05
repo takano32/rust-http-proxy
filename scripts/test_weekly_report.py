@@ -11,13 +11,12 @@
 7 日ぶん (2026-09-10 〜 09-16) 入っているので、1 枚でも 7 日の表が出る。
 """
 
-import contextlib
-import importlib.util
-import io
 import json
 import os
 import tempfile
 import unittest
+
+import _testing
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "testdata")
@@ -25,15 +24,8 @@ ANON = os.path.join(DATA, "deployed-2026-09-16.anon.json")
 LOCAL = os.path.join(DATA, "snapshot-local.json")
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-wr = _load("weekly_report", "weekly-report.py")
-sd = _load("snapshot_diff", "snapshot-diff.py")
+wr = _testing.load("weekly_report", "weekly-report.py")
+sd = _testing.load("snapshot_diff", "snapshot-diff.py")
 
 DAY = 86400
 # 複製のもとにする 1 日 (24 標本、バースト無し、エラー 0 の平常な日)
@@ -47,10 +39,7 @@ def read(path):
 
 def run(argv):
     """Markdown を文字列で受け取る。"""
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        wr.main(argv)
-    return out.getvalue()
+    return _testing.run_main(wr, argv)
 
 
 def build(argv):

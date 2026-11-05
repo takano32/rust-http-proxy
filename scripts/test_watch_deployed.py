@@ -2,7 +2,6 @@
 """`scripts/watch-deployed.py` (T.28.26) の単体テスト。偽のサーバーを 127.0.0.1 に立てて `main` も回す。"""
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -10,10 +9,10 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-spec = importlib.util.spec_from_file_location("watch_deployed", os.path.join(HERE, "watch-deployed.py"))
-wd = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(wd)
+wd = _testing.load("watch_deployed", "watch-deployed.py")
 
 NOW = 1_800_000_000
 

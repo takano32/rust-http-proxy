@@ -8,24 +8,18 @@
 """
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
 import tempfile
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-cf = _load("connect_fail_replay", "connect-fail-replay.py")
+cf = _testing.load("connect_fail_replay", "connect-fail-replay.py")
 
 START = 1_000_000
 A = "a.example.invalid:443"

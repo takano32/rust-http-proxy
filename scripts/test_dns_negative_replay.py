@@ -2,15 +2,14 @@
 """`scripts/dns-negative-replay.py` (T.27.3 段 1) の単体テスト。雪像は架空のものをその場で作る。"""
 
 import contextlib
-import importlib.util
 import io
 import os
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-spec = importlib.util.spec_from_file_location("dns_negative_replay", os.path.join(HERE, "dns-negative-replay.py"))
-dnr = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(dnr)
+dnr = _testing.load("dns_negative_replay", "dns-negative-replay.py")
 
 T0 = 1_792_000_000
 

@@ -11,25 +11,19 @@
 git の設定は利用者のものを読まない (`GIT_CONFIG_GLOBAL` を空に向ける) ので、署名やフックに左右されない。
 """
 
-import importlib.util
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "crate-versions.py")
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-cv = _load("crate_versions", "crate-versions.py")
+cv = _testing.load("crate_versions", "crate-versions.py")
 
 ENV = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
            GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",

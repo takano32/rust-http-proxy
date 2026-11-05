@@ -10,38 +10,27 @@
 (3) `--criteria` のときは出力が変わらない (`hosts` に `folded` を足さず、§3 にも `other` が残る)。
 """
 
-import contextlib
-import importlib.util
-import io
 import json
 import os
 import tempfile
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "testdata")
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-status_diff = _load("status_diff_t2819", "status-diff.py")
-snapshot_diff = _load("snapshot_diff_t2819", "snapshot-diff.py")
-pd = _load("proxydata_t2819", "proxydata.py")
+status_diff = _testing.load("status_diff_t2819", "status-diff.py")
+snapshot_diff = _testing.load("snapshot_diff_t2819", "snapshot-diff.py")
+pd = _testing.load("proxydata_t2819", "proxydata.py")
 
 A = os.path.join(DATA, "snapshot-a.json")
 B = os.path.join(DATA, "snapshot-b.json")
 
 
 def run(mod, argv):
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        mod.main(argv)
-    return out.getvalue()
+    return _testing.run_main(mod, argv)
 
 
 def host(key, requests, p95):

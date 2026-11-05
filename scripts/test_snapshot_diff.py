@@ -13,27 +13,21 @@
 """
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
 import tempfile
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "testdata")
 DEPLOYED = os.path.join(os.path.dirname(HERE), "status")
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-sd = _load("snapshot_diff", "snapshot-diff.py")
-pd = _load("proxydata", "proxydata.py")
+sd = _testing.load("snapshot_diff", "snapshot-diff.py")
+pd = _testing.load("proxydata", "proxydata.py")
 
 A = os.path.join(DATA, "snapshot-a.json")
 B = os.path.join(DATA, "snapshot-b.json")
@@ -42,10 +36,7 @@ AAAA = os.path.join(DATA, "aaaa.json")
 
 def run(argv):
     """Markdown を文字列で受け取る。"""
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        sd.main(argv)
-    return out.getvalue()
+    return _testing.run_main(sd, argv)
 
 
 def build(argv=None):

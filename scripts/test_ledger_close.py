@@ -11,7 +11,6 @@
 `--deployed` で §2 の見出しを直す・ほかに開いているタスクがあれば「なし」を書かない・使い方の誤り。
 """
 
-import importlib.util
 import os
 import re
 import subprocess
@@ -19,14 +18,14 @@ import sys
 import tempfile
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 TOOL = os.path.join(HERE, "ledger-close.py")
 FILES = ["TASKS.md", "TODO.md", "tasks/README.md", "tasks/T31.md"]
 
-spec = importlib.util.spec_from_file_location("ledger_close", TOOL)
-lc = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(lc)
+lc = _testing.load("ledger_close", "ledger-close.py")
 
 
 def run(*args):

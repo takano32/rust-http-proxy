@@ -7,24 +7,18 @@
 """
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
 import tempfile
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-ct = _load("connect_timeout_replay", "connect-timeout-replay.py")
+ct = _testing.load("connect_timeout_replay", "connect-timeout-replay.py")
 
 START = 2_000_000
 BOUNDS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000]

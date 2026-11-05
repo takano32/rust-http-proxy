@@ -15,24 +15,18 @@
 """
 
 import contextlib
-import importlib.util
 import io
 import os
 import re
 import tempfile
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-cl = _load("check_ledger", "check-ledger.py")
+cl = _testing.load("check_ledger", "check-ledger.py")
 
 BODY = ("目的", "変更箇所", "やること", "受け入れ基準")
 

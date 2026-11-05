@@ -7,24 +7,18 @@
 """
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
 import tempfile
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-ds = _load("dns_slow_replay", "dns-slow-replay.py")
+ds = _testing.load("dns_slow_replay", "dns-slow-replay.py")
 
 T0 = 1_800_000_000
 

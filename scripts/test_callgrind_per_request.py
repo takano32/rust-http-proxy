@@ -6,21 +6,15 @@
 valgrind もプロキシも起こさない。傾きの計算・totals の読み取り・増減と表の行だけを見る。
 """
 
-import importlib.util
 import os
 import unittest
+
+import _testing
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-cg = _load("callgrind_per_request", "callgrind-per-request.py")
+cg = _testing.load("callgrind_per_request", "callgrind-per-request.py")
 
 
 class ReadTotals(unittest.TestCase):

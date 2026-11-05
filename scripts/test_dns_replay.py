@@ -8,24 +8,18 @@
 """
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
 import unittest
 
+import _testing
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "testdata")
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-dr = _load("dns_replay", "dns-replay.py")
+dr = _testing.load("dns_replay", "dns-replay.py")
 SNAP = os.path.join(DATA, "replay-dns.json")
 
 

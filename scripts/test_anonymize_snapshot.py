@@ -11,7 +11,6 @@
 「匿名化済みの形になっているか」だけを見る)。
 """
 
-import importlib.util
 import io
 import ipaddress
 import re
@@ -20,6 +19,8 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr
+
+import _testing
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "testdata")
@@ -34,15 +35,8 @@ ALLOWED_NETS = tuple(ipaddress.ip_network(n) for n in (
     "127.0.0.0/8", "0.0.0.0/32", "::1/128", "::/128"))
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-an = _load("anonymize_snapshot", "anonymize-snapshot.py")
-pd = _load("proxydata", "proxydata.py")
+an = _testing.load("anonymize_snapshot", "anonymize-snapshot.py")
+pd = _testing.load("proxydata", "proxydata.py")
 
 
 def sample():
