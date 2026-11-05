@@ -28,10 +28,23 @@ impl Metrics {
         if !crate::records::recording() {
             return;
         }
+        self.with_client(client, |stats| {
+            stats.count(outcome, bytes, dir, took, target)
+        });
+    }
+
+    /// 接続元の行を取るか作って、`f` を 1 回呼ぶ (T.34.35。`record_client`・`record_client_agent`・
+    /// `record_client_rejected` の 3 か所が同じ形で持っていたもの)。
+    ///
+    /// 鍵は接続元の表の 1 回だけ。**既にある行はキーを作り直さない** (毎要求の `String` 確保をしない)。
+    /// 表が [`MAX_CLIENTS`] で満杯なら `other` の行に畳む。記録の一括 off (`records::recording()`) は
+    /// 呼ぶ側が先に見ておくこと (ここは記録の形 (`client_key`) に直すところから)。
+    #[inline]
+    fn with_client(&self, client: &str, f: impl FnOnce(&mut ClientStats)) {
         let client = &crate::records::client_key(client);
         let mut clients = self.clients.locked();
         if let Some(stats) = clients.get_mut(client.as_ref()) {
-            stats.count(outcome, bytes, dir, took, target);
+            f(stats);
             return;
         }
         let key = if clients.len() >= MAX_CLIENTS {
@@ -39,10 +52,7 @@ impl Metrics {
         } else {
             client.to_string()
         };
-        clients
-            .entry(key)
-            .or_insert_with(ClientStats::now)
-            .count(outcome, bytes, dir, took, target);
+        f(clients.entry(key).or_insert_with(ClientStats::now));
     }
 
     /// 接続元 (クライアント側) のカーネルの RTT と再送を 1 標本足す (`/clients`。T14.5)。
@@ -91,21 +101,7 @@ impl Metrics {
         if !crate::records::recording() {
             return;
         }
-        let client = &crate::records::client_key(client);
-        let mut clients = self.clients.locked();
-        if let Some(stats) = clients.get_mut(client.as_ref()) {
-            stats.note_agent(agent);
-            return;
-        }
-        let key = if clients.len() >= MAX_CLIENTS {
-            "other".to_string()
-        } else {
-            client.to_string()
-        };
-        clients
-            .entry(key)
-            .or_insert_with(ClientStats::now)
-            .note_agent(agent);
+        self.with_client(client, |stats| stats.note_agent(agent));
     }
 
     /// 接続元ごとの同時接続の上限に当たって断った 1 本を数える (`/clients` の `rejected`。T14.13)。
@@ -120,18 +116,7 @@ impl Metrics {
         if !crate::records::recording() {
             return;
         }
-        let client = &crate::records::client_key(client);
-        let mut clients = self.clients.locked();
-        if let Some(stats) = clients.get_mut(client.as_ref()) {
-            stats.rejected += 1;
-            return;
-        }
-        let key = if clients.len() >= MAX_CLIENTS {
-            "other".to_string()
-        } else {
-            client.to_string()
-        };
-        clients.entry(key).or_insert_with(ClientStats::now).rejected += 1;
+        self.with_client(client, |stats| stats.rejected += 1);
     }
 
     /// 要求数の多い順に並べた接続元別統計 (`.rrd` と `/metrics` が使う欄だけ)。
