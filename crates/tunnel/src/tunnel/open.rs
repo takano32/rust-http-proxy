@@ -112,88 +112,15 @@ pub(super) fn open(
     let mut server = match connect_with_timeout(&addr_str, resolved, timeout) {
         Ok(s) => s,
         Err(e) => {
-            // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T.32.11)
-            let (code, line): (u16, &str) = if dns::is_timeout(&e) {
-                (504, "504 Gateway Timeout")
-            } else {
-                (502, "502 Bad Gateway")
-            };
-            // 理由ごとに 1 分に 1 行 (T.29.15。本数は `/errors` と `/hosts` が持つ)
-            if let Some(more) = metrics.origin_warn(Failure::from_io(&e)) {
-                log_warn!(
-                    Some(conn_id),
-                    "{}: connect {} failed: {}{}",
-                    line,
-                    addr_str,
-                    e,
-                    more
-                );
-            }
-            // `Date` と `Content-Length: 0` も付ける (RFC 9110 §6.6.1・§8.6。T.32.15 (5)。T.29.9 の漏れ)
-            let mut date = [0u8; 35];
-            let _ = client.write_all(
-                format!(
-                    "HTTP/1.1 {line}\r\n{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    crate::httpdate::date_line(&mut date)
-                )
-                .as_bytes(),
-            );
-            let detail = detail_of(
-                started.elapsed(),
-                Some(Failure::from_io(&e)),
-                stages,
-                dns_before,
-            );
-            metrics.record_host_detail(
-                &format!("connect://{}", addr_str),
-                HostOutcome::Error,
-                0,
-                Some(started.elapsed()),
-                detail,
-            );
-            // 個票にも 1 件残す (`/errors`。誰の・いつ・なぜ。T13.4)
-            metrics.record_error(true, &addr_str, &client_ip, code, &detail);
-            // 閉じた接続の個票にも相手を残す (`/recent`。**エラーの経路だけ**。T14.4)
-            if let Some(s) = &slot {
-                s.failed_tunnel(&addr_str);
-                let mut stage_ms = [0u64; STAGES];
-                stage_ms[STAGE_DNS] = detail.dns_ms;
-                stage_ms[STAGE_CONNECT] = detail.connect_ms;
-                s.finish(
-                    CloseReason::error_from_io(&e),
-                    ConnTally {
-                        up: 0,
-                        down: 0,
-                        status: code,
-                        stage_ms,
-                        // 繋がらなかったのでカーネルに聞ける相手がいない (T14.5)
-                        ..ConnTally::default()
-                    },
-                    0,
-                );
-            }
-            metrics.record_client(
-                &client_ip,
-                HostOutcome::Error,
-                0,
-                // 繋がらなかったので運んだバイトは上りも下りも無い (T14.26)
-                (0, 0),
-                Some(started.elapsed()),
-                Some(&addr_str),
-            );
-            access(
+            let attempt = Attempt {
                 conn_id,
-                &Access {
-                    client: &client_ip,
-                    method: "CONNECT",
-                    target: &addr_str,
-                    version: "HTTP/1.1",
-                    status: &code.to_string(),
-                    bytes: 0,
-                    duration_ms: started.elapsed().as_secs_f64() * 1000.0,
-                    cache: "BYPASS",
-                },
-            );
+                addr_str: &addr_str,
+                client_ip: &client_ip,
+                metrics: &metrics,
+                slot: slot.as_ref(),
+                started,
+            };
+            refuse_connect(&mut client, &e, &attempt, stages, dns_before);
             // WARN と統計はここで出し終えた。呼び元が ERROR で出し直さないように印を付ける
             return Err(io::Error::new(e.kind(), Reported(e)));
         }
@@ -230,6 +157,112 @@ pub(super) fn open(
             sni_mismatch: false,
         },
     })
+}
+
+/// 繋ぎに行った 1 本の素性 (失敗の報告に要るもの。繋がれば [`Info`] へ移る)。
+struct Attempt<'a> {
+    conn_id: usize,
+    /// `host:port`
+    addr_str: &'a str,
+    client_ip: &'a str,
+    metrics: &'a Metrics,
+    slot: Option<&'a Arc<ConnSlot>>,
+    /// CONNECT を受けた時刻 (アクセスログの所要時間はここから測る)
+    started: Instant,
+}
+
+/// 繋げなかった CONNECT を断る: 502 (名前解決の締め切りなら 504) を書き、WARN と統計・
+/// `/errors` と `/recent` の個票・アクセスログを出す (呼び元は [`Reported`] で包んで返す)。
+fn refuse_connect(
+    client: &mut TcpStream,
+    e: &io::Error,
+    a: &Attempt<'_>,
+    stages: StageMs,
+    dns_before: u64,
+) {
+    // 名前解決が締め切りを過ぎた (または上限で断った) ときは 504 (T.32.11)
+    let (code, line): (u16, &str) = if dns::is_timeout(e) {
+        (504, "504 Gateway Timeout")
+    } else {
+        (502, "502 Bad Gateway")
+    };
+    // 理由ごとに 1 分に 1 行 (T.29.15。本数は `/errors` と `/hosts` が持つ)
+    if let Some(more) = a.metrics.origin_warn(Failure::from_io(e)) {
+        log_warn!(
+            Some(a.conn_id),
+            "{}: connect {} failed: {}{}",
+            line,
+            a.addr_str,
+            e,
+            more
+        );
+    }
+    // `Date` と `Content-Length: 0` も付ける (RFC 9110 §6.6.1・§8.6。T.32.15 (5)。T.29.9 の漏れ)
+    let mut date = [0u8; 35];
+    let _ = client.write_all(
+        format!(
+            "HTTP/1.1 {line}\r\n{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            crate::httpdate::date_line(&mut date)
+        )
+        .as_bytes(),
+    );
+    let detail = detail_of(
+        a.started.elapsed(),
+        Some(Failure::from_io(e)),
+        stages,
+        dns_before,
+    );
+    a.metrics.record_host_detail(
+        &format!("connect://{}", a.addr_str),
+        HostOutcome::Error,
+        0,
+        Some(a.started.elapsed()),
+        detail,
+    );
+    // 個票にも 1 件残す (`/errors`。誰の・いつ・なぜ。T13.4)
+    a.metrics
+        .record_error(true, a.addr_str, a.client_ip, code, &detail);
+    // 閉じた接続の個票にも相手を残す (`/recent`。**エラーの経路だけ**。T14.4)
+    if let Some(s) = a.slot {
+        s.failed_tunnel(a.addr_str);
+        let mut stage_ms = [0u64; STAGES];
+        stage_ms[STAGE_DNS] = detail.dns_ms;
+        stage_ms[STAGE_CONNECT] = detail.connect_ms;
+        s.finish(
+            CloseReason::error_from_io(e),
+            ConnTally {
+                up: 0,
+                down: 0,
+                status: code,
+                stage_ms,
+                // 繋がらなかったのでカーネルに聞ける相手がいない (T14.5)
+                ..ConnTally::default()
+            },
+            0,
+        );
+    }
+    a.metrics.record_client(
+        a.client_ip,
+        HostOutcome::Error,
+        0,
+        // 繋がらなかったので運んだバイトは上りも下りも無い (T14.26)
+        (0, 0),
+        Some(a.started.elapsed()),
+        Some(a.addr_str),
+    );
+    access(
+        a.conn_id,
+        &Access {
+            client: a.client_ip,
+            method: "CONNECT",
+            target: a.addr_str,
+            version: "HTTP/1.1",
+            status: &code.to_string(),
+            bytes: 0,
+            duration_ms: a.started.elapsed().as_secs_f64() * 1000.0,
+            cache: "BYPASS",
+        },
+    );
 }
 
 /// 確立までの内訳を組み立てる。**呼ぶのは接続が終わった直後の 1 回だけ**

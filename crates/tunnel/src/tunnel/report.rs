@@ -1,13 +1,14 @@
 //! トンネルが終わったときのアクセスログと統計 ([`report`])。
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::open::Info;
 use crate::log::{Access, access};
-use crate::metrics::HostOutcome;
+use crate::metrics::{Detail, HostOutcome};
 use crate::recent::{
-    CLIENT_SIDE, CloseReason, ConnTally, ORIGIN_SIDE, SIDES, STAGE_CLIENT_READ, STAGE_CONNECT,
-    STAGE_DNS, STAGE_FIRST_RELAY, STAGE_QUEUE, STAGES,
+    CLIENT_SIDE, CloseReason, ConnSlot, ConnTally, ORIGIN_SIDE, SIDES, STAGE_CLIENT_READ,
+    STAGE_CONNECT, STAGE_DNS, STAGE_FIRST_RELAY, STAGE_QUEUE, STAGES,
 };
 
 /// 両側のカーネルの RTT (us) と再送の通算を読む (`[クライアント側, オリジン側]`)。
@@ -70,61 +71,113 @@ pub(super) fn report(
     // 実際にリングへ書くのは本体クレートの `ActiveGuard::drop` (= この直後)。
     // **段階は上で組み立てた `detail`** (T14.3 の `first_relay` まで入っている) から取る
     if let Some(s) = &o.slot {
-        let mut stage_ms = [0u64; STAGES];
-        stage_ms[STAGE_DNS] = detail.dns_ms;
-        stage_ms[STAGE_CONNECT] = detail.connect_ms;
-        stage_ms[STAGE_QUEUE] = detail.stages.queue as u64;
-        stage_ms[STAGE_CLIENT_READ] = detail.stages.client_read as u64;
-        stage_ms[STAGE_FIRST_RELAY] = detail.stages.first_relay as u64;
-        s.finish(
+        let end = Ending {
+            up,
+            down,
+            transferred,
+            alive,
             reason,
-            ConnTally {
-                up,
-                down,
-                status: 0,
-                stage_ms,
-                rtt_us,
-                retrans,
-                // 確立までの SYN の再送 (T14.46)。確立の直後に読んだ値をそのまま運ぶ
-                syn_retrans: detail.syn_retrans,
-                // 中継が書けるのを待った ms (T14.42)。中継のループで数え終えた
-                // ものをそのまま運ぶだけで、ここでは時計も割り算も無い
-                stall_ms,
-            },
-            0,
-        );
-        // 速さと半閉じの分布に 1 本足す (T14.25)。**中継の時間 = 寿命 − 確立まで −
-        // 預かり所にいた時間** (預けは利用者が待っていない時間なので中継ではない。
-        // T14.3 の `stages.relay` と同じ引き算だが、あちらは `/profile` が止まっていると
-        // 0 なので、ここは枠の預かり秒 (T14.4) から出す = プロファイルの設定に依らない)。
-        // ここは既に「個票を残す接続」(= `--lite` ではない) の内側で、時計も上で 1 回
-        // 読んだものを使うので、足すのは引き算と割り算 1 回ずつと窓の鍵 1 回だけ
-        let parked = s.parked_ms().saturating_sub(o.parked_ms_at_start);
-        let relay = alive
-            .saturating_sub(o.connect_took)
-            .saturating_sub(Duration::from_millis(parked));
-        o.metrics
-            .history
-            .transfer
-            .observe(transferred, relay, half_close, stall_ms);
-        // 接続元 1 つの追跡 (`/trace`。T14.27)。**旗が立っているトンネルだけ** 1 行書く。
-        // 立っていない本数の費用はこの分岐 1 回だけで、宛先・段階の ms・閉じた理由・
-        // 寿命はすぐ上で既に組んだものをそのまま渡す (時計も確保も増やさない)
-        if s.traced() {
-            crate::trace::push(crate::trace::Line {
-                conn_id: o.conn_id,
-                client: &o.client_ip,
-                method: "CONNECT",
-                target: &o.addr_str,
-                version: "HTTP/1.1",
-                status: 200,
-                took_ms: alive.as_millis().min(u64::MAX as u128) as u64,
-                bytes: transferred,
-                stage_ms,
-                reason: Some(reason),
-            });
-        }
+            half_close,
+            stall_ms,
+            rtt_us,
+            retrans,
+        };
+        finish_slot(o, s, &detail, &end);
     }
+    record_stats(o, detail, (up, down), transferred, rtt_us, retrans);
+    log_access(o, transferred, alive);
+}
+
+/// トンネル 1 本の終わりに数えたもの ([`finish_slot`] に渡す。時計は `report` で 1 回だけ読む)。
+///
+/// 枠の無い `--lite` では作らない (枠の外の 2 段には値をそのまま渡す)。
+struct Ending {
+    /// クライアント → 宛先のバイト数
+    up: u64,
+    /// 宛先 → クライアントのバイト数
+    down: u64,
+    /// `up + down`
+    transferred: u64,
+    /// トンネルの寿命
+    alive: Duration,
+    reason: CloseReason,
+    half_close: Option<Duration>,
+    stall_ms: [u32; SIDES],
+    /// 両側のカーネルの RTT (us) と再送の通算 (`[クライアント側, オリジン側]`)
+    rtt_us: [u32; SIDES],
+    retrans: [u32; SIDES],
+}
+
+/// 閉じた接続の個票・速さと半閉じの分布・`/trace` の 1 行 (枠のある接続だけ = `--lite` ではない)。
+#[inline(never)]
+fn finish_slot(o: &Info, s: &Arc<ConnSlot>, detail: &Detail, end: &Ending) {
+    let mut stage_ms = [0u64; STAGES];
+    stage_ms[STAGE_DNS] = detail.dns_ms;
+    stage_ms[STAGE_CONNECT] = detail.connect_ms;
+    stage_ms[STAGE_QUEUE] = detail.stages.queue as u64;
+    stage_ms[STAGE_CLIENT_READ] = detail.stages.client_read as u64;
+    stage_ms[STAGE_FIRST_RELAY] = detail.stages.first_relay as u64;
+    s.finish(
+        end.reason,
+        ConnTally {
+            up: end.up,
+            down: end.down,
+            status: 0,
+            stage_ms,
+            rtt_us: end.rtt_us,
+            retrans: end.retrans,
+            // 確立までの SYN の再送 (T14.46)。確立の直後に読んだ値をそのまま運ぶ
+            syn_retrans: detail.syn_retrans,
+            // 中継が書けるのを待った ms (T14.42)。中継のループで数え終えた
+            // ものをそのまま運ぶだけで、ここでは時計も割り算も無い
+            stall_ms: end.stall_ms,
+        },
+        0,
+    );
+    // 速さと半閉じの分布に 1 本足す (T14.25)。**中継の時間 = 寿命 − 確立まで −
+    // 預かり所にいた時間** (預けは利用者が待っていない時間なので中継ではない。
+    // T14.3 の `stages.relay` と同じ引き算だが、あちらは `/profile` が止まっていると
+    // 0 なので、ここは枠の預かり秒 (T14.4) から出す = プロファイルの設定に依らない)。
+    // ここは既に「個票を残す接続」(= `--lite` ではない) の内側で、時計も上で 1 回
+    // 読んだものを使うので、足すのは引き算と割り算 1 回ずつと窓の鍵 1 回だけ
+    let parked = s.parked_ms().saturating_sub(o.parked_ms_at_start);
+    let relay = end
+        .alive
+        .saturating_sub(o.connect_took)
+        .saturating_sub(Duration::from_millis(parked));
+    o.metrics
+        .history
+        .transfer
+        .observe(end.transferred, relay, end.half_close, end.stall_ms);
+    // 接続元 1 つの追跡 (`/trace`。T14.27)。**旗が立っているトンネルだけ** 1 行書く。
+    // 立っていない本数の費用はこの分岐 1 回だけで、宛先・段階の ms・閉じた理由・
+    // 寿命はすぐ上で既に組んだものをそのまま渡す (時計も確保も増やさない)
+    if s.traced() {
+        crate::trace::push(crate::trace::Line {
+            conn_id: o.conn_id,
+            client: &o.client_ip,
+            method: "CONNECT",
+            target: &o.addr_str,
+            version: "HTTP/1.1",
+            status: 200,
+            took_ms: end.alive.as_millis().min(u64::MAX as u128) as u64,
+            bytes: end.transferred,
+            stage_ms,
+            reason: Some(end.reason),
+        });
+    }
+}
+
+/// ホスト別と接続元別の統計 (`--lite` でも生きている)。
+#[inline]
+fn record_stats(
+    o: &Info,
+    mut detail: Detail,
+    (up, down): (u64, u64),
+    transferred: u64,
+    rtt_us: [u32; SIDES],
+    retrans: [u32; SIDES],
+) {
     // 向き別のバイト (T14.26)。**数え直しはしていない**: 中継が方向ごとに持っている
     // `up` / `down` (すぐ上で個票に渡したのと同じ値) をホスト別統計の鍵の内側へ
     // 運ぶだけなので、足し算 2 回のほかに費用は無い。`--lite` (枠が無い = 上の
@@ -165,6 +218,11 @@ pub(super) fn report(
         .record_host_rtt(&host_key, rtt_us[ORIGIN_SIDE], retrans[ORIGIN_SIDE]);
     o.metrics
         .record_client_rtt(&o.client_ip, rtt_us[CLIENT_SIDE], retrans[CLIENT_SIDE]);
+}
+
+/// アクセスログの 1 行。
+#[inline]
+fn log_access(o: &Info, transferred: u64, alive: Duration) {
     access(
         o.conn_id,
         &Access {
