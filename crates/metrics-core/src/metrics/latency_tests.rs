@@ -89,38 +89,8 @@ fn the_bounds_are_a_geometric_ladder() {
     }
 }
 
-/// `io::Error` から 8 つの原因へ畳めること (T12.4 (2))。
-#[test]
-fn io_errors_fold_into_eight_causes() {
-    use std::io::{Error, ErrorKind};
-    let c = |k: ErrorKind| ErrCause::from_io(&Error::new(k, "x"));
-    assert_eq!(c(ErrorKind::ConnectionRefused), ErrCause::Refused);
-    assert_eq!(c(ErrorKind::NetworkUnreachable), ErrCause::Unreachable);
-    assert_eq!(c(ErrorKind::HostUnreachable), ErrCause::Unreachable);
-    assert_eq!(c(ErrorKind::TimedOut), ErrCause::Timeout);
-    // `SO_RCVTIMEO` の締め切りは Linux では EAGAIN で返る (T.28.5)
-    assert_eq!(c(ErrorKind::WouldBlock), ErrCause::Timeout);
-    #[cfg(target_os = "linux")]
-    assert_eq!(
-        ErrCause::from_io(&Error::from_raw_os_error(11)),
-        ErrCause::Timeout
-    );
-    assert_eq!(c(ErrorKind::ConnectionReset), ErrCause::Reset);
-    assert_eq!(c(ErrorKind::BrokenPipe), ErrCause::Reset);
-    assert_eq!(c(ErrorKind::NotFound), ErrCause::Dns);
-    assert_eq!(c(ErrorKind::PermissionDenied), ErrCause::Other);
-    // `getaddrinfo` の失敗は種別が付かないことがあるので文言も見る
-    assert_eq!(
-        ErrCause::from_io(&Error::other("failed to lookup address information: x")),
-        ErrCause::Dns
-    );
-    assert_eq!(
-        ErrCause::from_io(&Error::other("TLS handshake failed")),
-        ErrCause::Tls
-    );
-    assert_eq!(ErrCause::Loop.name(), "loop");
-    assert_eq!(ERR_CAUSE_NAMES.len(), ERR_CAUSES);
-}
+// `io::Error` から 8 つの原因へ畳む試験 (`io_errors_fold_into_eight_causes`) は、判定を持つ
+// 下の層 `proxy-metrics-types` の `metrics::causes` へ移した (T.34.1)
 
 /// 名前解決の失敗を `nxdomain` / `dns_temp` に割り、`errors_by_cause` の**うしろ**に
 /// 足すこと (T25.0)。**先頭 8 つの意味と並びは動かさない** (過去の雪像は 8 要素)。
