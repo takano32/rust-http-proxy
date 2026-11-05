@@ -40,6 +40,7 @@
 import os
 import re
 import sys
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -182,16 +183,34 @@ def tasks_in(lines, where):
 
 
 def collect(root):
-    """台帳を読んで `Ledger` を返す (読み取りだけ)。"""
+    """台帳を読んで `Ledger` を返す (読み取りだけ)。
+
+    読む (`read_ledger`)・移し忘れとリンク (`check_moves_and_links`)・番号の重複と本数
+    (`check_numbers`)・索引と範囲と参照先 (`check_index_and_refs`) の 4 段 (T.34.137 で割った)。
+    NG と注の並びは割る前と同じ (段を同じ順に回す)。
+    """
     led = Ledger()
-    todo = read_lines(os.path.join(root, TODO))
+    t = read_ledger(led, root)
+    check_moves_and_links(led, t)
+    check_numbers(led, t)
+    check_index_and_refs(led, t)
+    return led
+
+
+def read_ledger(led, root):
+    """`tasks/TNN.md`・`TODO.md` の §5・`TASKS.md` を読み、形の NG を `led` に足す。
+
+    返すのは後の段が読む材料 (`types.SimpleNamespace`)。
+    """
+    t = types.SimpleNamespace(root=root)
+    t.todo = todo = read_lines(os.path.join(root, TODO))
     sections = phase_sections(section5(todo))
     led.sections = len(sections)
-    bodies = {num: body for num, _, body in sections}
+    t.bodies = {num: body for num, _, body in sections}
 
     # --- tasks/ のファイル ---------------------------------------------------
-    tdir = os.path.join(root, TASKS)
-    names = {}
+    t.tdir = tdir = os.path.join(root, TASKS)
+    t.names = names = {}
     for name in sorted(os.listdir(tdir)):
         if not name.endswith(".md"):
             continue
@@ -204,7 +223,7 @@ def collect(root):
             led.ngs.append("tasks/%s が台帳の型 `TNN.md` に合わない (索引なら除外表に理由を書く)" % name)
     led.files = len(names)
 
-    filed = {}
+    t.filed = filed = {}
     for num, name in sorted(names.items()):
         lines = read_lines(os.path.join(tdir, name))
         head = lines[0] if lines else ""
@@ -222,8 +241,8 @@ def collect(root):
                                % (task.at(), task.ident, num))
 
     # --- §5 の節 -------------------------------------------------------------
-    inline = {}
-    links = {}
+    t.inline = inline = {}
+    t.links = links = {}
     for num, _, body in sections:
         inline[num] = tasks_in(body, "%s §5 タスク %d" % (TODO, num))
         led.inline += len(inline[num])
@@ -235,11 +254,11 @@ def collect(root):
                 led.ngs.append("%s の番号 %s がタスク %d の節にある"
                                % (task.at(), task.ident, num))
 
-    # --- (1) 移し忘れ ---------------------------------------------------------
-    # `TASKS.md` (未着手) を先に見る。無い木 (古い形) では §5 の行を未着手として見る。
-    tpath = os.path.join(root, TASKS_MD)
-    open_tasks = {}
-    if os.path.isfile(tpath):
+    # --- (1) の材料: `TASKS.md` (未着手) を先に見る。無い木 (古い形) では §5 の行を未着手として見る。
+    t.has_tasks_md = os.path.isfile(os.path.join(root, TASKS_MD))
+    t.open_tasks = open_tasks = {}
+    if t.has_tasks_md:
+        tpath = os.path.join(root, TASKS_MD)
         for num, _, body in phase_sections(list(enumerate(read_lines(tpath)))):
             open_tasks[num] = tasks_in(body, "%s タスク %d" % (TASKS_MD, num))
             led.open += len(open_tasks[num])
@@ -248,6 +267,14 @@ def collect(root):
                 if task.phase != num:
                     led.ngs.append("%s の番号 %s がタスク %d の節にある"
                                    % (task.at(), task.ident, num))
+    return t
+
+
+def check_moves_and_links(led, t):
+    """(1) 移し忘れと (2) リンク (両方向)。"""
+    names, filed, inline, links, open_tasks = t.names, t.filed, t.inline, t.links, t.open_tasks
+    # --- (1) 移し忘れ ---------------------------------------------------------
+    if t.has_tasks_md:
         for num in sorted(open_tasks):
             done = [task for task in open_tasks[num] if task.done]
             if done:
@@ -293,6 +320,10 @@ def collect(root):
             led.ngs.append("tasks/%s を指す `### タスク %d (…)` の見出しが §5 に無い"
                            % (names[num], num))
 
+
+def check_numbers(led, t):
+    """(3) 番号の重複と、(足) 見出しの「済んだ N 本」。"""
+    names, filed, inline, open_tasks = t.names, t.filed, t.inline, t.open_tasks
     # --- (3) 番号の重複 -------------------------------------------------------
     all_tasks = [task for num in sorted(inline) for task in inline[num]]
     all_tasks += [task for num in sorted(open_tasks) for task in open_tasks[num]]
@@ -315,7 +346,7 @@ def collect(root):
 
     # --- (足) 見出しの「済んだ N 本」 ------------------------------------------
     for num in sorted(names):
-        text = "\n".join(line for _, line in bodies.get(num, []))
+        text = "\n".join(line for _, line in t.bodies.get(num, []))
         m = LINK_COUNT.search(text)
         if not m:
             led.ngs.append("§5 のタスク %d の見出しに「済んだ N 本の本文は …」の行が無い" % num)
@@ -323,6 +354,10 @@ def collect(root):
             led.ngs.append("§5 のタスク %d の「済んだ %s 本」が tasks/%s の %d 本と合わない"
                            % (num, m.group(1), names[num], len(filed.get(num, []))))
 
+
+def check_index_and_refs(led, t):
+    """(5) 索引と範囲・(6) 済んだ節の残り・(7) §2 の現在地の版・(8) 「未着手の T.n.m」の参照先・(9) 相対リンク。"""
+    root, tdir, todo, names, open_tasks = t.root, t.tdir, t.todo, t.names, t.open_tasks
     # --- (5) 索引と範囲 (T.28.21) ------------------------------------------------
     top = max(names) if names else None
     readme = os.path.join(tdir, "README.md")
@@ -388,8 +423,6 @@ def collect(root):
                 base = os.path.dirname(where)
                 led.ngs.append("%s:%d のリンク %s の指す先が無い (%s辿る。移したなら移した先から辿れる形に)"
                                % (where, i + 1, target, base + "/ から" if base else "根から"))
-
-    return led
 
 
 def relative_links(lines):
