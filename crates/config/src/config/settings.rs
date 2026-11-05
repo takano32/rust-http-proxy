@@ -33,7 +33,6 @@ impl Config {
     /// 並べる順は「待ち受け → 接続 → 名前解決 → 遮断 → TLS → 記録 → キャッシュ」で、
     /// README の表と同じ流れにしてある。
     pub fn settings(&self) -> Vec<Setting> {
-        let c = &self.cache;
         let mut out: Vec<Setting> = Vec::with_capacity(64);
         let mut add = |key: &'static str, value: String| {
             out.push(Setting {
@@ -42,11 +41,18 @@ impl Config {
                 source: self.sources.get(key),
             })
         };
-        let mib = |bytes: u64| (bytes / MIB).to_string();
-        let secs = |d: Duration| d.as_secs().to_string();
-        let path = |p: Option<&PathBuf>| {
-            crate::json::quote_opt(p.map(|p| p.display().to_string()).as_deref())
-        };
+        self.settings_listen(&mut add);
+        self.settings_connections(&mut add);
+        self.settings_dns(&mut add);
+        self.settings_access(&mut add);
+        self.settings_tls(&mut add);
+        self.settings_records(&mut add);
+        self.settings_cache(&mut add);
+        out
+    }
+
+    /// [`Config::settings`] の段: 待ち受け (`SERVER_PORT`・`PROXY_BIND`・`PROXY_IPV6`・backlog)。
+    fn settings_listen(&self, add: &mut impl FnMut(&'static str, String)) {
         // 待ち受け
         add("SERVER_PORT", self.port.to_string());
         add(
@@ -62,6 +68,10 @@ impl Config {
         add("PROXY_IPV6", self.ipv6.to_string());
         // backlog は実効値 (`0` を書かれても、ここには決まった数が出る。T14.47)
         add("PROXY_LISTEN_BACKLOG", self.listen_backlog.to_string());
+    }
+
+    /// [`Config::settings`] の段: 接続と上限 (締め切り・keep-alive・同時接続・ワーカー・オリジンのプール・malloc)。
+    fn settings_connections(&self, add: &mut impl FnMut(&'static str, String)) {
         // 接続と上限
         add("PROXY_TIMEOUT_SECS", secs(self.timeout));
         // 実効値 (未設定なら既定の 3 秒と `PROXY_TIMEOUT_SECS` の小さい方が出る。T15.6、T.28.43)
@@ -97,6 +107,10 @@ impl Config {
             "PROXY_MALLOC_MMAP_THRESHOLD_KB",
             self.malloc_mmap_threshold_kb.to_string(),
         );
+    }
+
+    /// [`Config::settings`] の段: 名前解決と canary。
+    fn settings_dns(&self, add: &mut impl FnMut(&'static str, String)) {
         // 名前解決
         add("PROXY_DNS_TTL_SECS", secs(self.dns_ttl));
         add("PROXY_DNS_NEGATIVE_SECS", secs(self.dns_negative));
@@ -109,6 +123,10 @@ impl Config {
         add("PROXY_CANARY", crate::json::quote(&self.canary));
         add("PROXY_CANARY_SECS", secs(self.canary_secs));
         add("PROXY_CANARY_IPV6", self.canary_ipv6.to_string());
+    }
+
+    /// [`Config::settings`] の段: あて先と接続元の許可・拒否、SNI の覗き、ブロックリスト、PAC。
+    fn settings_access(&self, add: &mut impl FnMut(&'static str, String)) {
         // あて先の許可・拒否
         add("PROXY_ALLOW_HOSTS", list_value(&self.acl.allow_hosts));
         add("PROXY_DENY_HOSTS", list_value(&self.acl.deny_hosts));
@@ -148,6 +166,10 @@ impl Config {
         add("PROXY_BLOCKLIST_REFRESH_SECS", secs(self.blocklist_refresh));
         add("PROXY_BLOCKLIST_EXEMPT", list_value(&self.blocklist_exempt));
         add("PROXY_PAC_DIRECT", list_value(&self.pac_direct));
+    }
+
+    /// [`Config::settings`] の段: TLS と、消えたクライアントの検知。
+    fn settings_tls(&self, add: &mut impl FnMut(&'static str, String)) {
         // TLS (パスだけ。証明書の中身は読まない)
         add("PROXY_TLS", self.tls_enabled.to_string());
         add("PROXY_TLS_VERIFY", self.tls_verify.to_string());
@@ -157,6 +179,10 @@ impl Config {
             "PROXY_TCP_KEEPALIVE",
             crate::json::quote(&self.tcp_keepalive_spec()),
         );
+    }
+
+    /// [`Config::settings`] の段: 記録・プロファイル・ログの水準。
+    fn settings_records(&self, add: &mut impl FnMut(&'static str, String)) {
         // 記録とプロファイル
         add("PROXY_RECORDS", crate::json::quote(self.records.name()));
         add("PROXY_STATS_PERSIST", self.stats_persist.to_string());
@@ -181,6 +207,11 @@ impl Config {
                     .to_ascii_lowercase(),
             ),
         );
+    }
+
+    /// [`Config::settings`] の段: キャッシュとディスク割当。
+    fn settings_cache(&self, add: &mut impl FnMut(&'static str, String)) {
+        let c = &self.cache;
         // キャッシュ (値は `CacheConfig` が持っているもの)
         add("PROXY_CACHE_ENABLED", c.enabled.to_string());
         add(
@@ -236,8 +267,22 @@ impl Config {
                 .map(|b| (b / MIB).to_string())
                 .unwrap_or_else(|| "null".to_string()),
         );
-        out
     }
+}
+
+/// MiB 数 (切り捨て)。
+fn mib(bytes: u64) -> String {
+    (bytes / MIB).to_string()
+}
+
+/// 秒数。
+fn secs(d: Duration) -> String {
+    d.as_secs().to_string()
+}
+
+/// パス (無ければ `null`)。
+fn path(p: Option<&PathBuf>) -> String {
+    crate::json::quote_opt(p.map(|p| p.display().to_string()).as_deref())
 }
 
 /// 一覧 1 つを書くのに使ってよいバイト数。
@@ -326,5 +371,97 @@ mod tests {
         assert_eq!(quota_value(DiskQuota::Unlimited), "0");
         assert_eq!(quota_value(DiskQuota::Fixed(10 * 1024 * MIB)), "10240");
         assert_eq!(quota_value(DiskQuota::Auto), "\"auto\"");
+    }
+
+    /// T.34.75: 鍵の順は README の表と同じ流れ (待ち受け → 接続 → 名前解決 → 遮断 → TLS → 記録 →
+    /// キャッシュ) で、`/config` と `--check` がこの順に並べる。割る前の順をそのまま書き写した。
+    #[test]
+    fn settings_keys_keep_the_readme_order() {
+        const KEYS: [&str; 81] = [
+            "SERVER_PORT",
+            "PROXY_BIND",
+            "PROXY_IPV6",
+            "PROXY_LISTEN_BACKLOG",
+            "PROXY_TIMEOUT_SECS",
+            "PROXY_CONNECT_TIMEOUT_SECS",
+            "PROXY_HEADER_TIMEOUT_SECS",
+            "PROXY_HE_STAGGER_MS",
+            "PROXY_KEEPALIVE_SECS",
+            "PROXY_TUNNEL_IDLE_SECS",
+            "PROXY_MIN_TRANSFER_BPS",
+            "PROXY_MIN_TRANSFER_WINDOW_SECS",
+            "PROXY_MAX_CONNS",
+            "PROXY_MAX_CONNS_PER_CLIENT",
+            "PROXY_MAX_THREADS",
+            "PROXY_ORIGIN_POOL",
+            "PROXY_ORIGIN_POOL_TOTAL",
+            "PROXY_PARK_IDLE",
+            "PROXY_PARK_GRACE_MS",
+            "PROXY_MALLOC_ARENAS",
+            "PROXY_MALLOC_MMAP_THRESHOLD_KB",
+            "PROXY_DNS_TTL_SECS",
+            "PROXY_DNS_NEGATIVE_SECS",
+            "PROXY_DNS_WARM_SECS",
+            "PROXY_DNS_STALE_SECS",
+            "PROXY_DNS_TIMEOUT_SECS",
+            "PROXY_CANARY",
+            "PROXY_CANARY_SECS",
+            "PROXY_CANARY_IPV6",
+            "PROXY_ALLOW_HOSTS",
+            "PROXY_DENY_HOSTS",
+            "PROXY_CONNECT_PORTS",
+            "PROXY_ALLOW_LOCAL",
+            "PROXY_ENDPOINTS_READONLY",
+            "PROXY_ALLOW_CLIENTS",
+            "PROXY_TRACE_CLIENT",
+            "PROXY_PEEK_SNI",
+            "PROXY_BURST_PERCENT",
+            "PROXY_BLOCKLIST_FILE",
+            "PROXY_BLOCKLIST_URL",
+            "PROXY_BLOCKLIST_REFRESH_SECS",
+            "PROXY_BLOCKLIST_EXEMPT",
+            "PROXY_PAC_DIRECT",
+            "PROXY_TLS",
+            "PROXY_TLS_VERIFY",
+            "PROXY_TLS_CA_FILE",
+            "PROXY_TCP_KEEPALIVE",
+            "PROXY_RECORDS",
+            "PROXY_STATS_PERSIST",
+            "PROXY_SNAPSHOT_DAYS",
+            "PROXY_SLO",
+            "PROXY_PROFILE",
+            "PROXY_PROFILE_SAMPLE_MS",
+            "PROXY_SELF_BENCH",
+            "PROXY_LOG_LEVEL",
+            "PROXY_CACHE_ENABLED",
+            "PROXY_CACHE_DIR",
+            "PROXY_MEM_CACHE_MB",
+            "PROXY_DISK_CACHE_MB",
+            "PROXY_MEM_TARGET_PERCENT",
+            "PROXY_DISK_TARGET_PERCENT",
+            "PROXY_MEM_KEEP_FREE_MB",
+            "PROXY_DISK_KEEP_FREE_MB",
+            "PROXY_CACHE_RESERVE",
+            "PROXY_CACHE_PROBE_SECS",
+            "PROXY_CACHE_TTL_SECS",
+            "PROXY_CACHE_HEURISTIC_PERCENT",
+            "PROXY_CACHE_HEURISTIC_MAX_SECS",
+            "PROXY_CACHE_MAX_STALE_SECS",
+            "PROXY_CACHE_GRACE_SECS",
+            "PROXY_STALE_WAIT_SECS",
+            "PROXY_CACHE_MAX_OBJECT_MB",
+            "PROXY_MEM_CACHE_MAX_OBJECT_MB",
+            "PROXY_DISK_MAX_ENTRIES",
+            "PROXY_CACHE_ADMISSION",
+            "PROXY_NEGATIVE_TTL_SECS",
+            "PROXY_DISK_QUOTA_MB",
+            "SERVER_DISK",
+            "PROXY_DISK_QUOTA_ROOT",
+            "PROXY_DISK_PROBE",
+            "SERVER_MEMORY",
+        ];
+        let c = Config::new("8080", None, None, Duration::from_secs(5)).unwrap();
+        let keys: Vec<&str> = c.settings().iter().map(|s| s.key).collect();
+        assert_eq!(keys, KEYS);
     }
 }
