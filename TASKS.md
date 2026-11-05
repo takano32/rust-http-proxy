@@ -35,3 +35,1242 @@
   - **締めるデプロイ 0.33.3** (2026-11-03 04:33:28Z 起動、版 `0.33.3+75d7361`、ビルド `release`): タグ `v0.33.3` = `75d7361` (注釈付き。決まりどおり CI が通ってから聞かずに打った。`release.yml` の run 41496212766、x86_64 2,252,232 B / aarch64 2,048,192 B)。前の 0.32.39 は 63.9 時間で止めた (止める前の 1 枚の要点: RSS 85.0 MB のうちメモリのキャッシュ 49.0 MB、`dns.entries` 4,096 (上限に届いた)、名前解決の締め切りの 504 が 4 本・`resolver_busy` 0、`dns_slow` 46 回、408 は 3,835 件)。起動 2 分の雪像 `status/tokyo/2026-11-03T043502Z-*` (コミットしない。プロキシが返した 1 枚は 47.7%)。起動 94 秒で `rss` 30.6 MB、`silent_closes` 0、`rejected_requests` 0、`/log` の warn 3 行 (メール宛 2・IPv4 first への切り替え 1)、error 0。~~48 時間後 (2026-11-05 04:35Z ごろ)~~ → 下の再起動で 11:55Z ごろに変えた。`--closeout` で締める (408 の波と `dns_slow` は日によって来るので T.32.99 と同じく 48 時間で見る)。
   - **無言の再起動 1 回 (ホストの再起動)** (2026-11-03 13:10Z に利用者の「サーバの再起動あったかも」で確かめた): 11:52:53Z に `start` (版 `0.33.3+4df39c1`、`boot.id` が `2c725916…` → `7b60cdda…` に変わった = ホストのカーネルごとの再起動) があり、直前に `shutdown` が無い。`/history?res=60` は 11:48 → 11:52 の 4 分が空いていて、止まっていたのは長くても 4 分。停止の 1 枚 (`shutdown` の雪像) は無い。版の `+4df39c1` は台帳だけのコミット (TASKS.md の 1 行) で、`75d7361` と本体の中身は同じ (デプロイ先が main の先頭から組み直したとみられる)。判定表の「こちらが原因の無言の再起動」は同じ `boot` のときだけ数えるので、この 1 回は理由つきで数から外れる。**締めの 48 時間は 11:52:53Z の起動から数え直し、2026-11-05 11:55Z ごろに締める** (`--closeout` の 0 時間は 04:34 の起動の 1 枚になるが、起動からの通算は 11:52 からの値になる)。
   - 判定: `--criteria phase30` (T.33.1・T.33.2)。ほかに見ること: 408 の件/時と時刻の分布 (T.33.0)。
+
+### タスク 34 (2026-11-05 に起こした: 全体のリファクタリング — テストしやすさ・責務の分割・カプセル化)
+
+利用者の指示「Fable max でリファクタリングしてくれ。テスト可能なことと責務の分割、カプセル化などを重視して細かいファイルに割って構わない」(2026-11-05)。そのあと「Fable max でレビューとリファクタリングを継続するが、詳細については Opus で行うので、やることすべてをタスクに積んでください」と指示があった。
+
+- 経緯: Fable の 6 人が範囲ごとにレビューした (T.34.0〜T.34.4 は一部を割ってから。T.34.5 はレビューだけ)。残りは、Opus の作業者 1 人が 1 コミットで仕上げられる大きさの小タスクに起こした。
+  - 共通の指示 (目標・越えてはいけない線・確かめ方) は、scratchpad の `t34/brief.md` にある。要点は 4 つ。
+    1. **振る舞いを 1 バイトも変えない** (応答・ログ・JSON・ファイル形式)。
+    2. **熱い経路は callgrind の Ir を前後で比べ、増えは +0.5% 以内にする**。割った熱い部品には `#[inline]` を付ける (T.34.0 の教訓)。
+    3. 試験を消さない・弱めない。名前も変えない。
+    4. 外部クレートを足さず、クレートも増やさない。
+  - 決まりでは、新しいタスクは前のタスクの締め (T.33.99) の後に起こす。今回は利用者の指示で、締めの前に起こした。T.33.99 の締め (0.33.3) には影響しない。
+  - 版: 本体の中身を変える (振る舞いは変えない) ので、デプロイが要る。版は、最後に本体を変えた小タスクの番号にする。
+- 並べ方:
+  - 範囲ごとに、Fable が割った記録 (T.34.0〜T.34.5)、取り込み (T.34.6)、残りの小タスク (値打ちの高い順)、見つけたバグ (リファクタリングではなく直す仕事。**振る舞いを変えるので、リファクタリングの小タスクとは別のコミットにする**) の順に置く。
+  - 「…の後」と書いた順序は、同じファイルを触るために要る順。
+
+- [ ] **T.34.0 HTTP の経路 (msg・origin・http) を割る (Fable の 1 回目)**
+  - 結果 (2026-11-05、`51d8865`): msg の headers.rs 1,131 行を `headers/{mod,request,response,view,not_modified}.rs` と試験 5 ファイルに、body.rs 962 行を `body/{mod,framing,reader,range}.rs` と試験 2 ファイルに割った。最大は 291 行。
+    - `Connection:` で指名された名前の覚え方が 2 か所にあったので、`ConnectionNames` 1 つにまとめた。行の範囲の控えは `HeadLines` に、チャンクの大きさの行は `chunk_size()` に出した。判定の順と文面は同じ。
+    - 単体試験は 40 → 45 本。結合試験 14 本が通った。
+    - Ir は `write_response_head` が +1.6% (`ba9cae4` の `#[inline]` 込み)。
+  - 結果 (2026-11-05、`86bc5f1`): origin の request.rs 1,003 行を、`request/{mod,headers,authority,target}.rs` と試験 2 ファイルに割った。
+    - `parse_request_headers_visit` (138 行) は、輪・`RequestHeaders::note`・`TeTally` に分けた。
+    - 単体試験は 17 → 21 本。結合試験 8 本が通った。Ir は同じ。
+  - 結果 (2026-11-05、`e4b2a03`): http/mod.rs 2,171 行 (`handle_http_parsed` が 1,310 行) を、段ごとのモジュールに割った。
+    - 内訳: mod 442・admission 442・lookup 275・fetch 387・reply 350・deliver 681・ctx 192・upstream 318・respond 174・buffers 92・passthrough 136。
+    - 段は `Stage<T> = Result<T, Done>` を返し、段をまたぐ参照は `Exchange` で受け渡す。判定の順・数える理由・WARN の文面・後始末の順は同じ。
+    - 単体試験は 16 → 34 本。`pub` を 8 つ狭めた。`cargo test --workspace` は 0 件落ち、framing-probe は「全部期待どおり」。
+    - **Ir は brief の +0.5% を越えた**: forward は 22,127 → 22,803 Ir/要求 (+3.0%)、HIT は +1.4%、CONNECT は ±0 (callgrind、`--lite`、conc 2、2,000 本と 400 本の傾き)。
+      - 増えた内訳は、`Stage`/`Exchange` の受け渡しで +190 Ir、構造体の移動の memcpy で +140 Ir。
+      - CPU/要求に直すと +0.3% 程度。
+      - このコミットだけを戻せば、元の形に戻せる。縮める道は下の小タスク「http の段の受け渡しの Ir を縮める」に起こした。
+  - 結果 (2026-11-05、`ba9cae4`): msg と origin の、割った熱い経路の部品 10 か所に `#[inline]` を付けた。
+    - codegen-units = 4 だと、モジュールを割った部品が別の CGU に落ちて、呼び出しになっていた。
+    - 教訓: **割った熱い部品には `#[inline]` を付け、必ず Ir を測る**。
+  - まとめ:
+    - 担当の 700 行超は 7 → 3 ファイル (残りは tunnel.rs 1,587・serve_one.rs 780・workers.rs 779)。単体試験は +27 本。
+    - 測る道具 (`measure.py`・`driver.sh`、基準のバイナリ `bin-base`) は、scratchpad の `t34/perf/` に置いてある (コミットしていない)。
+  - 残り: 枝 `worktree-agent-a381b739b6f804ad2` (worktree `.claude/worktrees/agent-a381b739b6f804ad2`) を main へ取り込む (T.34.6)。
+- [ ] **T.34.1 メトリクスの土台 (metrics-types・rrd) を割る (Fable の 1 回目)**
+  - 結果 (2026-11-05、`f217138`): `metrics-types/src/metrics.rs` 1,187 行を、80 行と `metrics/` の 9 本 (最大 481 行) に割った。
+    - 9 本: `host_stats`・`causes`・`bad_request`・`host_record`・`host_json`・`status`・`clients`・`detail`・`schema`。
+    - 行を動かしただけで、式は 1 つも変えていない。公開 API は再輸出で変わらない。
+    - 単体試験を 18 本足した (例: `the_row_json_is_byte_for_byte_stable`、`a_short_record_reads_the_missing_columns_as_zero`)。
+    - 割る前後で、`/status` (8 形)・`/metrics` (4 形)・`/history`・`.rrd`・`.recent` を一時的なハーネスでバイト単位に比べ、一致した。
+    - callgrind の Ir (release、3 形 × 100k 回): `record_host_detail` は 289,321,803 → 289,321,803、`record_client` は 31,202,080 → 31,202,080 で、差は ±0。
+  - 結果 (2026-11-05、`fe05352`): `metrics-types/src/kernel.rs` 973 行を、293 行と `kernel/{json 402, window 295, tests 229, read 195}` に割った。
+    - I/O の `read_now` と、判断の `Latest::from_sources`・`State::record`・`Health::of` を分けた。
+    - 130 行の `status_json` は 4 段に割った。鍵を 1 回だけ取って値を写してから組む形にした (前は 4 回取っていた。出力は同じ)。
+    - 単体試験を 5 本足した (`/status` の `kernel` の節をバイト単位で縛る試験を含む)。`/status` と `/history` は前後でバイト単位に一致した。
+  - 結果 (2026-11-05、`4745086`): `rrd/src/rrd/mod.rs` 693 行を、249 行と `layout.rs` 237・`codec.rs` 107・`tests.rs` 208 に割った。
+    - 誰も呼んでいなかった `Fixed::read_all_is_empty_at` を消した。
+    - 単体試験を 5 本足した (7 つの領域に隙間が無く、合計が 4,274,208 B になることを縛る試験を含む)。
+    - `.rrd`/`.recent` のレコードの 16 進は、前後で一致した。
+  - まとめ:
+    - fmt・clippy・`cargo test --workspace` が全部通った。check-docs の差分は 0。
+    - 担当で残る 700 行超のファイルは 7 本: metrics-core の metrics.rs 1,364・latency_tests.rs 1,493、history.rs 1,067・history/tests.rs 1,081、persist_recent.rs 1,135、persist.rs 706、prom.rs 1,730。
+  - 残り: 枝 `worktree-agent-a1fbee98f5bd2f4f9` (worktree `.claude/worktrees/agent-a1fbee98f5bd2f4f9`) を main へ取り込む (T.34.6)。
+- [ ] **T.34.2 メトリクスの上層 (metrics-recent・metrics-slo) を割る (Fable の 1 回目)**
+  - 結果 (2026-11-05、`c981623`): `recent/mod.rs` 1,416 行 → `mod.rs` 105 + `close_reason.rs` 151 + `entry.rs` 217 + `ring.rs` 132 + `burst.rs` 399 + `closed.rs` 190、試験は `burst_tests.rs` / `closed_tests.rs` へ (名前そのまま)。写真の数え上げを `ShotTally::of` (時計も `/proc` も触らない) に割った。単体試験 +3、`pub` を 4 つ狭めた。式は変えていない。
+  - 結果 (2026-11-05、`44f6ff5`): `recent/conns.rs` 1,469 行 → `conn_slot.rs` 637 + `conn_table.rs` 324、`conn_tests` 14 本を 4 ファイルへ。半閉じの詰め方を `pack_half_closed` / `unpack_half_closed` (`#[inline]`、式は同じ) に出した。単体試験 +4、`pub` を 2 つ狭めた。`register` / `unregister` / 原子の書き込みは 1 命令も変えていない。
+  - 結果 (2026-11-05、`a64d8d2`): `recent/errors.rs` 868 行 → `errors.rs` 401 + `errors_tests.rs` 369 + `clip.rs` 35 + `ringbuf.rs` 137。リング 5 本の「新しい順の添字」(6 か所)・「1 件書く」(6 か所)・「まだ書いていない件の取り出し」を `newest_at` / `push_wrapping` / `drain_unwritten` (`#[inline]`) の 1 か所に。単体試験 +3、`pub` を 3 つ狭めた。
+  - 結果 (2026-11-05、`b12cd97`): `metrics-slo/src/slo.rs` 1,887 行 → `slo/mod.rs` 272 + `judge.rs` 127 + `tracker.rs` 534 + `report.rs` 409、試験 3 ファイル。`Report::to_json` 110 行を書く順のまま 5 段に。単体試験 +4、`pub` を 7 つ狭めた。`/slo` の JSON は同じ定数と `write!` を同じ順に通す。
+  - 結果 (2026-11-05、`13247e6`): `metrics-slo/src/snapshots.rs` 1,128 行 → `snapshots/mod.rs` 338 + `names.rs` 113 (純粋) + `writer.rs` 264 + `store.rs` 137 + `tests.rs` 380。間引きの判断を `stale_moments` (ディスクを触らない) に出した。`Writer` の欄の直読み 3 か所を `dir()` / `days()` に。単体試験 +1、`pub` を 4 つ狭めた。
+  - まとめ: 担当 4 クレートの 700 行超は 10 → 5、単体試験 +15 (metrics-recent 52 → 62、metrics-slo 43 → 48)、狭めた `pub` 20。Ir は測っていない (式を変えた所が無く、触ったのは接続の終了とエラーの経路だけ)。`cargo test --workspace` 1,139 本通過・0 件落ち、check-docs 差分 0。
+  - 残り: 枝 `worktree-agent-ab148581157b1cb16` (worktree `.claude/worktrees/agent-ab148581157b1cb16`) を main へ取り込む (T.34.6)。
+- [ ] **T.34.3 網・設定・システム (net-conn・config・sys) を割る (Fable の 1 回目)**
+  - 結果 (2026-11-05、`baa412a`): `net-conn/src/net.rs` 1,650 行を割った。
+    - 内訳: `net.rs` 44 (`pub use` だけ) と `net/{addrs 87, connect 178, happy_eyeballs 293, ipv6 378, listen 279}`、試験の `net/{tests 282, ipv6_tests 641}`。
+    - IPv6 の全体状態 (10 本の `static`) は、時計を閉包で受ける `Ipv6Policy` にまとめた。原子の読み書きの数と場所は変わらない。
+    - 純粋な関数に出したもの: `classify_bind_failure`、`somaxconn` の読み方、`usable_family`、ほか。
+    - 単体試験を 11 本足した (例: `three_losses_without_a_win_switch_to_v4_first_and_probe_every_600_s`)。
+    - Happy Eyeballs は、局所変数を `Race` 構造体にまとめて 3 段に割っただけ。確保・鍵・`dyn` は足していない。Ir は測っていない。
+    - 公開 API の綴りは全部そのまま残した。ignore の計測試験は名前が `net::ipv6_tests::measures_leftover_attempts` に変わった。
+  - 結果 (2026-11-05、`561e774`): `config/src/config.rs` 1,581 行を、312 行と子 10 本 (最大 460 行) に割った。
+    - 380 行の `Config::from_env` を、鍵の群ごとの 9 段 (`read_base` … `finish_with_cache`) にした。読む順は元の 1 本と同じなので、環境変数の読み方・既定値・`--check`・WARN の文面と順は変わらない。
+    - 純粋な関数に出したもの: `CountSpec`・`PeekSniSpec`・`lowercase_list`・`is_http_url`・`TcpKeepalive::spec`・`max_threads_for`。単体試験を 9 本足した。
+    - `tests/config_test` 10 本・`reload_test` 9 本ほかが通った。check-docs の差分は 0。
+  - 結果 (2026-11-05、`d2f98b8`): `sys/src/sys.rs` 1,360 行を、`sys.rs` 52 と `sys/{io 194, epoll 169, sockopt 276, tcpinfo 127, listen 205, process 128, malloc 63}`・`tests 412` に割った。
+    - バイトごとに通る `io` は、関数の形も属性も同じ (同じクレートの中での移動だけ)。
+    - `getsockopt` の包みを `get<T>` 1 つにまとめた。
+    - 純粋な関数に出したもの: `timeval` の丸め、`parse_tcp_info`、`SockAddr::from_std`、`keepalive_value`、`mmap_thresholds`、`parse_boot_id`。単体試験を 6 本足した。
+  - まとめ:
+    - 公開 API は全部 `pub use` で残したので、担当の外は 1 文字も触っていない。`cargo test --workspace` は 123 の試験バイナリが全部 ok。
+    - 700 行超のファイルで残っているもの: `net-dns/src/dns_tests.rs` 968、`dns.rs` 928、`base/src/log.rs` 922、`sysinfo/src/sysinfo/proc.rs` 767、`run/src/lib.rs` 736。
+  - 残り: 枝 `worktree-agent-a4ba85404ef016990` (worktree `.claude/worktrees/agent-a4ba85404ef016990`) を main へ取り込む (T.34.6)。
+- [ ] **T.34.4 キャッシュ・エンドポイント・ベンチ (endpoints・bench・endpoints-explain・freshness) を割る (Fable の 1 回目)**
+  - 結果 (2026-11-05、`1cd1bec`): `endpoints/mod.rs` 1,263 行 (`handle` 331 行) を 9 ファイルに割った。
+    - 内訳: mod.rs 201 (`handle` 70 行) と、incoming.rs 273・heavy.rs 146・respond.rs 196・dispatch.rs 144・status.rs 123・history.rs 166・purge.rs 98・pages.rs 340。
+    - 寄せたもの: `Reply::json_error` に `{"schema":N,"error":"…"}` の 6 か所を寄せた。経路表は if の連鎖から完全一致の match にした。
+    - 応答の文字列・ヘッダーの順・debug ログの順は同じ。
+    - 単体試験は 38 → 52 本。結合試験 13 本が通った。
+  - 結果 (2026-11-05、`fb29eec`): bench の `main.rs` 1,235 行と `replay.rs` 1,026 行を、13 ファイル (最大 376 行) に割った。
+    - `Args::parse` を純粋な関数にした。`replay::run` 140 行は 5 段に分けた。
+    - 印字と使い方の表示は同じ。
+    - 単体試験は 6 → 13 本。bin の中の `pub` 約 35 か所を `pub(crate)` に狭めた。
+  - 結果 (2026-11-05、`66f5b06`): `endpoints-explain/src/explain.rs` 825 行を、explain.rs 124・host.rs 506・client.rs 209・tests.rs 292 に割った。
+    - 材料集め (`HostFacts::gather`/`ClientFacts::gather`) と、純粋な `render` に分けた。鍵の順はそのまま。
+    - 単体試験は 4 → 7 本 (鍵の順を文字列で縛る 2 本を含む)。
+  - 結果 (2026-11-05、`31cf68d`): `freshness.rs` 824 行を、freshness.rs 29 (`pub use` で今までの綴りを保つ)・directives.rs 69・policy.rs 220・cached_head.rs 132・tests.rs 652 に割った。
+    - 関数の中身は 1 行も変えずに移した。熱い経路だが同じクレート内の移動なので、Ir は測っていない。
+    - 単体試験は 15 → 23 本。HTTP の日付の組み立ての重複 2 か所は `http_date` に寄せた。
+    - 結合試験 13 本が通った。
+  - まとめ:
+    - 700 行超のファイルは 8 → 3。実装ファイルの最大は 1,263 → 642 行 (cache/ops.rs)。単体試験は +32 本。
+    - HEAD `31cf68d` で fmt と clippy が通った。`cargo test --workspace` は 1,155 本通過・1 本落ち (`idle_sleep_test` の揺れ。単体では 3/3 通過)。
+  - 残り: 枝 `worktree-agent-ad92b8f81eebbd2eb` (worktree `.claude/worktrees/agent-ad92b8f81eebbd2eb`) を main へ取り込む (T.34.6)。
+- [ ] **T.34.5 ルート `src/`・結合試験 `tests/`・`scripts/` をレビューする (Fable、コードは変えない)**
+  - 結果 (2026-11-05、レビューのみ・コミット無し):
+    - `src/` は facade 11 行と bin 8 行だけで、割る所は無い。`benches/` は無い。
+    - `tests/` は 93 ファイル・26,918 行・`#[test]` 352 本。
+      - 700 行超は 6 本: proxy_test 1,404、recent_test 1,403、common/mod.rs 1,064、cache_test 883、keepalive_test 809、config_test 802。
+      - 重複: `open_tunnel` ×11、`send_raw` ×8、JSON の手書きの切り出し約 30 種、`capture_origin` ×4、`prom_value` ×4、実バイナリの起こし方 7 ファイル、`.env` の文面 28 か所、一時ディレクトリ 36 か所。
+      - 固定の `sleep` は約 110 か所 (手書きの待ちループ約 10、「何も起きない」の待ち約 16、TTL の待ち約 15)。
+    - `scripts/` は Python の道具 20 本と試験 21 本、shell 10 本、JS 1 本。
+      - 700 行超は 7 本: snapshot_criteria.py 3,454、check-dashboard.js 2,620、snapshot-diff.py 1,505、collect-deployed.sh 1,122、snapshot-summary.py 981、dns-replay.py 778、weekly-report.py 749。
+      - 80 行を超える関数が 11 本 (snapshot-diff の `render` が 406 行)。
+    - `python3 -m unittest discover -s scripts` は 745 本 OK。
+  - 残り: なし (レビューだけ)。T.34.6 で、ほかと一緒に済みにする。
+- [ ] **T.34.6 Fable の枝 (T.34.0〜T.34.4、計 19 コミット) を main へ取り込み、版をそろえる**
+  - やること:
+    - `git cherry-pick` で、T.34.0 → T.34.1 → T.34.2 → T.34.3 → T.34.4 の順に取り込む。クレートは重ならない。T.34.1 だけは metrics-core の試験を 1 本、別のファイルへ移している。
+    - 取り込み終えたら、全部の確かめを回す: fmt・clippy・`cargo test --workspace`・scripts の unittest・check-docs・check-dashboard・framing-probe。
+    - `crate-versions.py --task T.34.6 --fix` で版をそろえる。
+  - **利用者の判断**: `e4b2a03` (http の段の割り) は forward の Ir が +3.0% (CPU/要求では +0.3%) で、決まりの +0.5% を越えている。取り込むなら、下の「http の段の受け渡しの Ir を縮める」で縮める。縮まらなければ、戻すかどうかを利用者が決める。
+  - 受け入れ基準:
+    - 確かめが全部通る。
+    - T.34.0〜T.34.5 の枠を `- [x]` にする。
+    - worktree を片付ける (`git worktree remove -f -f`)。
+
+**HTTP の経路 の残り (T.34.0 のレビューから)**
+
+- [ ] **T.34.7 callgrind で Ir/要求を測る道具を scripts/ に入れる (`scripts/callgrind-per-request.py`)**
+  - 目的: T.28.12・T.29.24・T.34.0 の測り方は、毎回手で組んでいる。T.34.0 で使った `measure.py`/`driver.sh` (scratchpad の `t34/perf/`) は repo に無い。
+  - やること:
+    - オリジンを立て、callgrind の下でプロキシを起こす。N=400 と 2000 の傾きから、forward/hit/connect の Ir/要求を印字する。`--bin` で前後のバイナリを交互に測る。
+    - 傾きの計算と totals の読み取りに、unittest を足す。
+    - README に 1 行足し、check-docs の (f) に実行ビットを足す。
+  - 受け入れ基準: unittest が通り、check-docs の差分が 0。
+  - 値打ち: 中 (熱い経路の小タスクの全部が使う) / **熱い経路の小タスクより先**。
+- [ ] **T.34.8 http の段の受け渡しの Ir (+3.0%) を縮める**
+  - 目的: `e4b2a03` で、forward が 22,127 → 22,803 Ir/要求、HIT が +1.4% になった。
+  - やること: 1 つずつ測り、効かないものは戻す。
+    - (a) `CacheState` を `&mut` の出力欄にする。
+    - (b) `Fetched` も同じく `&mut` の出力欄にする。
+    - (c) `Exchange` の欄のうち `Ctx` と重なるものを一本化する。
+    - (d) `Done` を `enum { Keep, Close, Err }` にする。
+  - 受け入れ基準:
+    - forward は 22,250 以内、HIT は 20,145 の +0.5% 以内に収める。
+    - 試験と framing-probe が通る。
+    - 届かなければ、測った表を台帳に書き、`e4b2a03` を戻すかを**利用者に決めてもらう**。
+  - 値打ち: 高 / 熱い経路 / http の他の小タスクより先。
+- [ ] **T.34.9 tunnel.rs (1,587 行) を関心ごとのモジュールに割る**
+  - 割り方:
+    - `tunnel/mod.rs`: 入口。
+    - `open.rs`: `Reported`・`Opened`・`Info`・`open`・`detail_of`。
+    - `report.rs`。
+    - `portable.rs`: Linux 以外の版。
+    - `relay/mod.rs` と `relay/dir.rs`。
+    - `tests.rs`・`relay/tests.rs`。
+  - やること: 動かすだけにし、公開の綴りは `pub use` で残す。
+  - 受け入れ基準:
+    - 結合試験 10 本が通る: tunnel・connect_framing・sni・stall・tunnel_evidence・tunnel_spin・min_transfer・failed_connect・failed_connect_log・bytes_dir。
+    - 700 行超のファイルが 0 になる。
+    - connect の Ir が ±0.5% 以内。割った小さな部品には `#[inline]` を付ける。
+  - 値打ち: 高 / 熱い経路 / tunnel の他の小タスクより先。
+- [ ] **T.34.10 `relay::Idle::run_until_idle` (310 行) を、向きの送り出し・待ちの決め方・SNI の覗きに割る**
+  - 目的: 1 つの輪に、次のものが混ざっている。冒頭では欄を 15 本の `&mut` に割いて借用を通している。
+    - 方向ごとの fill/drain、EOF の控え、`poll` の関心の組み立て。
+    - 待ち時間の決め方、詰まりの計測、空回りの証拠。
+  - やること:
+    - `Dir::pump() -> Progress` を作る。
+    - 純粋な `interest(dirs)` と `wait_budget(grace, parkable, timeout, rate_left, events)` を出す。
+    - `peek_sni_once` と `EofNote` を作る。
+    - 輪の本体を 100 行以下にする。
+  - 受け入れ基準:
+    - `interest` の 8 通りと、`wait_budget` の単体試験を足す。
+    - `bench.py --only tunnel` の MiB/s と、connect の Ir (±0.5%) が変わらない。
+    - tunnel_evidence・tunnel_spin・stall が通る。
+  - 値打ち: 高 / 熱い経路 (バイトごと) / tunnel.rs の分割の後。
+- [ ] **T.34.11 server の serve_one (730 行) を割る (1): 要求行の読みと文法、断る応答の共通形**
+  - やること:
+    - 純粋な `check_request_line(line) -> Result<RequestLine, RequestLineError>` を `request_line.rs` に出す。
+    - `first_line_wait()` と `read_request_line()` を出す。
+    - `refuse(…, warn: impl FnOnce)` を作り、10 か所の同じ形をまとめる。文面は呼ぶ側に残す。
+  - 受け入れ基準:
+    - `check_request_line` の単体試験 (7 形) を足す。
+    - 結合試験 6 本と framing-probe が通る。
+    - forward の Ir が ±0.5% 以内。
+    - serve_one を 300 行以下にする。
+  - 値打ち: 高 / 熱い経路 / 単独。
+- [ ] **T.34.12 serve_one を割る (2): ヘッダーの読みの輪・CONNECT の入口の検査・宛先の判定**
+  - やること:
+    - `read_headers` を出す。
+    - 純粋な `connect_header_reason` と `connect_target_ok` を出す。
+    - `access_decision`・`refuse_blocked`・`loop_detected` を、`access.rs`/`connect_check.rs` に置く。
+  - 受け入れ基準:
+    - 優先順と境目の単体試験を足す。
+    - 結合試験 7 本と framing-probe が通る。
+    - forward の Ir が ±0.5% 以内。
+  - 値打ち: 高 / 熱い経路 / (1) の後。
+- [ ] **T.34.13 tunnel の `open` (150 行) と `report` (143 行) を割る**
+  - やること: `refuse_connect` を出し、`report` を `finish_slot`・`record_stats`・アクセスログの 3 段に割る。
+  - 受け入れ基準:
+    - 結合試験 8 本が通る。個票とログは 1 字も変わらない。
+    - connect の Ir が ±0.5% 以内。
+  - 値打ち: 中 / tunnel.rs の分割の後。
+- [ ] **T.34.14 CONNECT の引数 13〜16 個を、`TunnelRequest` にまとめる**
+  - 対象: `handle_connect`・`handle_connect_parked`・`open`・`start_tunnel`。
+  - やること: server の呼び出し 2 か所を機械的に直す。
+  - 受け入れ基準:
+    - clippy の allow が 4 つ消える。
+    - connect の Ir が ±0.5% 以内。
+  - 値打ち: 中 / tunnel.rs の分割の後。
+- [ ] **T.34.15 serve_one を割る (3): 転送の準備と、要求のあとの始末**
+  - やること: `first_target`・`shared_for`・`forward_request` を出す。
+  - 受け入れ基準:
+    - 結合試験 5 本が通る。
+    - forward の Ir が ±0.5% 以内。
+  - 値打ち: 中 / (1)(2) の後。
+- [ ] **T.34.16 server の lib.rs の `serve` (accept の輪、300 行) を `admit` と `spawn_connection` に割る**
+  - やること:
+    - `admit -> Admission` と `spawn_connection` に割る。
+    - 503 を書く 2 か所は、`reject_overloaded` にまとめる。
+  - 受け入れ基準:
+    - 結合試験 8 本が通る。
+    - connect の Ir が ±0.5% 以内。
+  - 値打ち: 中 / 接続ごと / 単独。
+- [ ] **T.34.17 http の `fetch::fetch` (258 行) を、送りと読みに割る**
+  - やること: `connect_failed`・`send_request`・`judge -> Attempt` に割る。
+  - 受け入れ基準:
+    - 結合試験 7 本が通る。
+    - forward の Ir が ±0.5% 以内。
+  - 値打ち: 中 / 熱い経路 / 「Ir を縮める」の後。
+- [ ] **T.34.18 http の `reply::examine_head` (243 行) の、304 の 2 つの枝を割る**
+  - やること: `refresh_for_client_conditional`・`serve_revalidated`・`bad_gateway` (502 の 3 か所の共通形) を出す。
+  - 受け入れ基準:
+    - 結合試験 7 本が通る。
+    - forward の Ir が ±0.5% 以内。
+  - 値打ち: 中 / 単独。
+- [ ] **T.34.19 http の `deliver::deliver` (183 行) と `relay_body` (108 行) を割る**
+  - やること: `storage_plan`・`finish`・`splice_body` を出す。
+  - 受け入れ基準:
+    - 結合試験 7 本が通る。
+    - forward の Ir が ±0.5% 以内。
+  - 値打ち: 中 / 「Ir を縮める」の後。
+- [ ] **T.34.20 http の `lookup::consult` (190 行) を、stale-while-revalidate と合流に割る**
+  - やること: 純粋な `grace_for` を出し、`try_refreshing` と `coalesce` に割る。
+  - 受け入れ基準:
+    - `grace_for` の単体試験を足す。
+    - HIT の Ir が ±0.5% 以内。
+  - 値打ち: 中 / 熱い経路 (HIT) / 「Ir を縮める」の後。
+- [ ] **T.34.21 クレートをまたぐ重複を除く: `content_length_value`・`detail_of`/`origin_detail`・誤り応答の 1 行**
+  - 目的:
+    - `content_length_value` が、msg と origin に同じ本文で 2 つある。
+    - `tunnel::detail_of` と `http::upstream::origin_detail` は、ほぼ同じ計算をしている。
+    - 誤り応答の 1 行を、3 か所 (`http/respond.rs`・`server/conn/header_read.rs`・`tunnel.rs:143-148`) が別々に組んでいる。
+  - やること:
+    - `proxy_base::ascii::content_length_value` を置く。
+    - `proxy_base::httpdate::error_head` を置く (確保しない)。
+    - metrics-types に `Detail::of_connect` を置く。
+  - 受け入れ基準:
+    - 3 か所の応答と、個票の値が 1 バイトも変わらない。
+    - Ir が ±0.5% 以内。
+  - 値打ち: 中 / base と metrics-types の分割の後。
+- [ ] **T.34.22 workers.rs (779 行) の試験を workers/tests.rs に移し、スレッドを起こす所を `spawn_conn_thread` 1 つにする**
+  - 受け入れ基準: 12 本が通り、ファイルを 400 行以下にする。
+  - 値打ち: 低。
+- [ ] **T.34.23 msg の公開範囲を狭める**
+  - 対象: `is_hop_by_hop`・`is_hop_by_hop_name`・`sanitize_and_inject_headers`・`Framing::of_response_head*` の 3 つ。
+  - やること: grep で利用者が無いことを確かめてから狭める。
+  - 値打ち: 低。
+- [ ] **T.34.24 http の `serve::write_cached_response` (105 行) と `refresh::revalidate` (135 行) を割る**
+  - やること: 純粋な `range_plan`・`apply_not_modified`・`store_fresh_copy` を出す。
+  - 受け入れ基準: 既存の 6 本と結合試験が通り、HIT の Ir が ±0.5% 以内。
+  - 値打ち: 低。
+- [ ] **T.34.25 server の idle.rs の `watch_loop` (88 行) の、事象の枝を関数に出す**
+  - やること: `on_http_event` と `close_expired` を出す。
+  - 値打ち: 低。
+
+**メトリクスの土台 の残り (T.34.1 のレビューから)**
+
+- [ ] **T.34.26 metrics-core の metrics.rs (1,364 行) を、表・記録・個票・接続元・読み手に割る**
+  - 目的: 1 つの `impl Metrics` に、次のものが混ざっている。
+    - `Interval` と `HostTable`、要求ごとの `record` (512-712)。
+    - 個票の 8 本 (341-499)、ホスト表の問い合わせ (715-813・1166-1262)、接続元の表 (820-958・1084-1158)、読み手の表 (969-1081)、原子の増減。
+  - やること:
+    - root (構造体・`new`・原子・`web_port`・`impl profile::Source`) だけを残す。
+    - `metrics/{host_table,record,records,client_table,readers}.rs` に、`impl Metrics` を分けて書く。
+    - 公開 API は変えない。行を動かすだけにする。
+  - 受け入れ基準:
+    - 試験の本数が前後で同じ。
+    - `/status` の出力を、一時的なハーネスで前後突き合わせる。揺れる欄は伏せる。ハーネスはコミットしない。
+    - **熱い経路**: callgrind の試験台 (`examples/record_bench.rs`。3 形 × 100k 回、基準 289,321,803 Ir) で、`record_host_detail` の Ir が同じ。
+    - root を 400 行以下、各モジュールを 450 行以下にする。
+  - 値打ち: 高 / 熱い経路 (移すだけ) / 下の `record`・接続元・`counted_key` の小タスクより先。
+- [ ] **T.34.27 prom.rs (1,730 行) の `render` (835 行) を節ごとの関数に割り、試験を tests.rs へ移す**
+  - やること:
+    - 節ごとの関数に切り出す: `dns_metrics`・`ipv6_metrics`・`blocklist_metrics`・`request_metrics`・`origin_metrics`・`connect_metrics`・`canary_metrics`・`lock_metrics`・`error_metrics`・`host_metrics`・`client_metrics`・`host_duration_metrics`・`cache_metrics`・`system_metrics`。
+    - **出す順は 1 行も変えない**。hosts/clients は 1 回だけ取って渡す。
+    - `kernel_metrics` は 3 つに割る。
+    - 既存の 11 本を `prom/tests.rs` へ移す。
+  - 受け入れ基準:
+    - 4 形 (空・中身あり・キャッシュの有無・200 ホスト 150 接続元) で、`render` の出力が前後でバイト単位に同じ。揺れる値は伏せる。
+    - 単体試験と、`proxy_test`/`kernel_test` が通る。
+    - 各ファイルを 700 行以下にする。
+    - `prom.rs:494` の古い注記 (8 種 → 10 種) は直してよい。
+  - 値打ち: 高 / 熱い経路でない / 単独。
+- [ ] **T.34.28 metrics-window の history.rs (1,067 行) を標本・符号・閉じた窓に割り、試験も割る**
+  - やること:
+    - `history/sample.rs` を作る: `Sample`・`KEYS`・`KEY_KINDS`・`push_row`・`downsample`。`downsample` は畳む段と組む段の 2 つに割る。
+    - `history/codec.rs` を作る: 定数・`encode`/`decode`。
+    - `history/closed.rs` を作る: `ClosedWindows`。
+    - root は再輸出と `History` だけにして、約 320 行にする。
+    - `to_json_res_n` の見出しは `push_header` に出す。
+    - 試験は `tests.rs` と `codec_tests.rs` (9 本) に割る。
+  - 受け入れ基準:
+    - 構成した 2 時間ぶんの標本で、`/history?res=5|60|3600`・`?n=100`・closed/transfer・summary・`encode` の出力が前後でバイト単位に同じ。
+    - 試験 40 本と、`history_columns`・`history_depth`・`history_summary`・`persist` の結合試験が通る。
+    - 各ファイルを 600 行以下にする。
+  - 値打ち: 高 / 熱い経路でない / 下の `TwoRes` の小タスクより先。
+- [ ] **T.34.29 metrics の persist_recent.rs (1,135 行) を、符号と試験に割る**
+  - やること:
+    - `persist_recent/codec.rs` を作る: 幅の定数、const assert、`encode_*`/`decode_*`。
+    - `persist_recent/tests.rs` を作る: 既存の 10 本。
+    - root は約 450 行にする。
+    - `write_new` は `Rings::append` に切ってもよい。書く順 (closed → errors → bursts → events → log) は変えない。
+  - 受け入れ基準:
+    - 固定の個票で `write_new` を 2 回回し、5 つの領域の 16 進・`Written`・読み戻しの `Restored` が前後で同じ。
+    - `persist_recent`・`recent`・`bursts` の試験が通る。
+  - 値打ち: 高 / 熱い経路でない / 単独。
+- [ ] **T.34.30 `Metrics::record` (約 200 行) を、1 件の形 (`Shape::of`)・区間への加算・段階の窓・行の更新に割る**
+  - 目的: 1 件の分類 (535-589) が、`Metrics` を組んで `take_interval` を経ないと試験できない。
+  - やること:
+    - 純粋な `Shape::of(host, outcome, took, &Detail)` を作る。**`web_port` を評価する回数と順は変えない**。
+    - `Interval::observe`・`HostTable::note_profile`・`HostTable::count_host` に割る。
+    - 全部 `#[inline]` にする。確保・`dyn`・鍵・原子は増やさない。
+  - 受け入れ基準:
+    - `record_host_detail` の Ir が基準の +0.5% 以内。越えたら `#[inline(always)]` を試し、それでも越えたら戻す。
+    - 既存の試験が通る。
+    - 単体試験を足す: `Shape::of` の表 (10 形)、`Interval::observe` を `Metrics` なしで。
+    - `record` を 80 行以下にする。
+  - 値打ち: 高 / 熱い経路 (要求ごと) / metrics.rs の分割の後。
+- [ ] **T.34.31 persist.rs の `Slots` で、どの行を書くかの判断 (`plan`) を I/O から分けて試験する**
+  - 目的: `write_table` (298-372) は、判断と `pwrite` を 1 つの関数に持つ。そのため試験は、実ファイルで 1,200 行を回している。
+  - やること:
+    - `persist/slots.rs` に `Slots`・`payload_hash` と、`plan()`・`wrote()`・`cleared()` を置く。
+    - 書く順は変えない。
+  - 受け入れ基準:
+    - 表の中身と `table_writes` の数 (1,000・0・10・0) が前後で同じ。
+    - `plan` の単体試験を 5 形足す。
+    - persist.rs を 500 行以下にする。
+  - 値打ち: 中 / 熱い経路でない / 単独。
+- [ ] **T.34.32 metrics-core の status.rs の `memory_json` (180 行) を、見積もり・実測・描画に割る**
+  - やること: `metrics/memory.rs` に `RingBytes::{full, used, total, push_json}` を置く。
+  - 受け入れ基準:
+    - `/status` の `memory` が前後で同じ。
+    - 単体試験を足す: 11 項目で `used <= full`、`total` が和になる。
+    - `memory_test`・`ring_prefault_test` が通る。
+  - 値打ち: 中 / 熱い経路でない / 単独。
+- [ ] **T.34.33 metrics-core の latency_tests.rs (1,493 行) を話題ごとの 5 ファイルに割る**
+  - 割り方: latency・window・status・client・dest。
+  - 受け入れ基準: 本数 (37) が同じで、各ファイルを 500 行以下にする。
+  - 値打ち: 中。
+- [ ] **T.34.34 closed と transfer の 2 解像度の窓を、1 つの `TwoRes<C>` にまとめる (metrics-window)**
+  - 目的: `history.rs:664-786` と `transfer.rs:235-361` が同じ約 90 行を持ち、`push_num_array` も 2 か所にある。
+  - やること:
+    - `twores.rs` に `trait Counts` と `TwoRes<C>` を置く。
+    - `pub type ClosedWindows`/`TransferWindows` にして、呼び方は変えない。
+  - 受け入れ基準:
+    - closed/transfer の JSON がバイト単位に同じ。
+    - 既存の試験と、`transfer_test`・`bursts_test`・`stall_test` が通る。
+    - 合わせて 80 行以上減る。
+  - 値打ち: 中 / 熱い経路でない / history.rs の分割の後。
+- [ ] **T.34.35 接続元の行を「取るか作る」3 か所を、`with_client` 1 つにまとめる**
+  - 対象: `record_client`・`record_client_agent`・`record_client_rejected`。
+  - 受け入れ基準:
+    - `record_client` の Ir (基準 31,202,080 / 100k 回) が +0.5% 以内。
+    - 接続元の試験が通る。
+  - 値打ち: 中 / 熱い経路 / metrics.rs の分割の後。
+- [ ] **T.34.36 metrics-types の hostseries.rs の `rotate` (90 行) を段に割り、`pick_top` を純粋な関数にする**
+  - 受け入れ基準:
+    - 既存の 7 本と `hostseries_test` が通る。
+    - 単体試験を足す: 同点の崩し方、16 で切ること、空いた枠の今の住人を残すこと。
+  - 値打ち: 低〜中。
+- [ ] **T.34.37 metrics の tick.rs の 1 周の仕事を、`Tick::run` と名前の付く段にする**
+  - 受け入れ基準:
+    - 結合試験 6 本が通る。
+    - 2 回回すと、2 本目の `requests_delta` が差になる単体試験を足す。
+  - 値打ち: 低。
+- [ ] **T.34.38 `ClientStats` の `pub` の欄 (10 個) を、メソッドに寄せる**
+  - やること: `first_port`・`has_literal_targets`・`note_rejected` を足す。metrics-core の 2 か所と endpoints-explain の 2 か所を機械的に直す。
+  - 受け入れ基準: clients・newclient・explain・perclient の試験が通る。
+  - 値打ち: 低 / metrics.rs の分割の後。
+- [ ] **T.34.39 canaryhist の行の JSON を `Row::push_json` に出す**
+  - 値打ち: 低。
+- [ ] **T.34.40 「窓に入る鍵か」の判定を `counted_key` 1 つにまとめる**
+  - 対象: `metrics.rs:537-538` と `web_dest.rs:138-139` の 2 か所。
+  - 受け入れ基準: `record` の Ir が同じ。
+  - 値打ち: 低 / metrics.rs の分割の後。
+- [ ] **T.34.41 `/status` の組み立てが読む `/proc` の値を、`ProcessFacts` として引数で受ける**
+  - やること: 公開の `to_json_with_cache` は残す。
+  - 受け入れ基準: 固定の `ProcessFacts` で、欄をバイト単位に縛る単体試験を足す。
+  - 値打ち: 低 / `memory_json` の分割の後。
+
+**メトリクスの上層 の残り (T.34.2 のレビューから)**
+
+- [ ] **T.34.42 `metrics-profile` の profile.rs (2,199 行) を 7 モジュールに割る**
+  - 目的: 段階の窓 (`Stages` 415-532)、役割と状態の表 (111-350)、1 窓の `Sample` と JSON (534-705)、環 `Profile` (707-896)、`/proc` を読む `Sampler` (939-1193)、`/proc/<pid>/stat` の解析 (1195-1254)、`spawn`/`tick` (1263-1323) が 1 ファイルにある。`Sample::push_row` は 84 行、`Sampler::sample` は 83 行。外に使い手の無い `pub` が 20。
+  - やること: 次のモジュールに割る。
+    - `profile/mod.rs`: `RESOLUTIONS` ほか。`ON`/`SAMPLE_MS`/`mark`/`on`/`ms_u32` (381-413、要求ごとの `#[inline]`) は**そのまま**置く。`Source`・`Tick`/`spawn`/`tick` もここ。
+    - `stages.rs`、`threads.rs` (111-350)、`sample.rs`、`rings.rs`、`sampler.rs`、`procstat.rs`。
+    - `sample.rs` の `push_row` は `push_roles`/`push_top`/`push_run_delay` の 3 段に割る (文字は変えない)。
+    - `sampler.rs` の 1105-1152 は `account()` に出す。
+    - 試験は `tests.rs` と `sampler_tests.rs` に分ける。
+    - 20 の `pub` を `pub(crate)` に狭める。ただし `SamplerState`・`RoleWindow`・`NSTATES` は pub のまま。
+  - 受け入れ基準:
+    - 単体試験 28 本が同じ名前で通る。結合試験 `tests/profile_test.rs`・`tunnel_spin_test.rs`・`history_columns_test.rs` も通る。
+    - `/profile` の文字を縛る試験 (`empty_stages_are_written_as_a_single_zero` ほか) がそのまま通る。
+    - 単体試験を足す: `push_windows`、`merge_top` を直に、`state_names`。
+    - 最大ファイルを 700 行未満にする。
+    - `mark`/`on`/`ms_u32` は行を動かすだけにする。式に触ったら forward の Ir を比べる。
+  - 値打ち: 高 / 熱い経路は `mark` ほかだけ (触らない) / 次の小タスクより先。
+- [ ] **T.34.43 `the_sampler_skips_idle_seconds_but_rereads_when_threads_come_and_go` を /proc と時間に頼らない形に**
+  - 目的: `Sampler::sample_unless_idle` (`profile.rs:1027-1044`) は、`/proc/self/stat` を読む I/O と「前回と同じなら読み飛ばす」判断を 1 関数で持つ。試験 (2064-2121) は本物の `/proc/self` と `sleep(5ms)` × 200 回に頼るので、負荷の下で落ちる (T.33.99 で 2 回)。
+  - やること:
+    - `read_whole(&mut self, requests) -> Option<(u64,u64,u64)>` (I/O) と `pub(crate) sample_unless_same(&mut self, profile, whole)` (判断) に割る。`sample_unless_idle` は 2 つを続けて呼ぶだけにする。
+    - 試験は差し替えディレクトリ (`<dir>/<tid>/stat`) に `whole` を注入する形に書き直す。名前は変えない。
+    - 次の 6 つの主張を全部残す:
+      1. 初回は読む。
+      2. 暇な秒は読み飛ばす。
+      3. 読み飛ばした秒も 1 標本積む。
+      4. 要求が来たら読み直す。
+      5. スレッドが生まれたら読み直す。
+      6. スレッドが消えたら読み直す。
+    - Linux では `for_self().read_whole(0)` が `Some` になることを 1 行で確かめる。
+  - 受け入れ基準:
+    - `sleep` と総当たりを無くす。
+    - 並列と `--test-threads=1` で 20 回ずつ回して落ちない。
+    - 本番の `/proc` の読みの回数は変えない。
+  - 値打ち: 高 (CI の揺れを消す) / 熱い経路でない / 上の分割の後。
+- [ ] **T.34.44 `metrics-watch` の anomaly.rs (1,070 行) を判定・説明文・大域の口に割る**
+  - 目的: `Detector::observe` (463-599、137 行) が、増分の読み・窓の畳み・8 規則の読み・`hits`・立つ/解除の状態機械を 1 関数で持つ。`fired_text` (774-937、164 行) は 8 種の文面の `match`。外に使い手の無い `pub` が 35。
+  - やること:
+    - `anomaly/mod.rs` には、定数・`Kind`/`I_*`・`Counters`・`Fired`・大域の口を置く。
+    - `anomaly/detector.rs` には、`CpuWindow`・`Detector`・`NewClients`・`fold`・`dns_miss_limit` を置く。
+    - `anomaly/text.rs` には、`Facts`・`ms`・`causes`・`fired_text`・`cleared_text`・`new_client_text` を置く。
+    - `observe` は `read() -> Reading`・`hits(&Reading) -> [bool; N]`・`transition()` に割る。`last_totals`/`last_shots`/`cpu_window`/`spin_since` を進める順は変えない。
+    - `fired_text` は規則ごとの 8 関数にし、`match` は振り分けだけにする。
+    - `pub` を `pub(crate)` に狭める。ただし `cpu_window_is_full`・`configure`・`check`・`CPU_THROTTLED` は pub のまま。
+  - 受け入れ基準:
+    - `anomaly_tests.rs` の 54 本 (文面を 1 文字単位で縛る) が名前も中身もそのまま通る。`tests/events_test.rs`・`tunnel_spin_test.rs` も通る。
+    - 単体試験を足す: `hits()` の各規則の境目 (閾ちょうどで立たない、1 越えて立つ)、`transition()` の状態機械 (立つのは 1 回、300 秒で解除、`base_p95` の控え)、`CpuWindow::ratio`/`cores`/`top`、`ms`/`causes`。
+    - 各ファイルを 400 行前後にする。
+  - 値打ち: 高 / 熱い経路でない / anomaly_tests.rs の分割より先。
+- [ ] **T.34.45 `metrics-watch` の canary.rs (953 行) を設定・1 回の試行・スレッドの口に割る**
+  - 目的: `probe` (314-377) は、名前解決・AAAA の先頭の控え・族での絞り込み・接続が一体になっている。`auto_target` (299-311) は `now_epoch()` を中で読むので、窓の外を選ばないことが試験できない。`Probe::push_json` は `status_json` 越しにしか試験されていない。
+  - やること:
+    - `canary/mod.rs`・`canary/probe.rs`・`canary/tests.rs` に割る。
+    - 純粋な関数を 2 つ出す: `split_addrs(addrs, port, ipv6) -> (Option<SocketAddr>, Vec<SocketAddr>)` と `auto_target_at(metrics, now)`。
+    - `AUTO_WINDOW_SECS`・`DEADLINE`・`DEFAULT_PORT` を `pub(crate)` に狭める。
+  - 受け入れ基準:
+    - 単体試験 9 本が同じ名前で通る。`the_default_canary_status_is_byte_identical_to_off` も含む。
+    - `tests/canary_test.rs`・`status_light_test.rs` が通る。
+    - 単体試験を足す: `split_addrs` (AAAA が無いとき、`ipv6=false`、v6 の先頭)、`auto_target_at` (3,600 秒より古い宛先と `connect://` 以外は選ばない)、`push_json` の 2 形。
+  - 値打ち: 中〜高 / 熱い経路でない / 単独。
+- [ ] **T.34.46 `metrics-slo` の daily.rs (1,091 行) を積み上げ・版の並び・書く所・ファイルの扱いに割る**
+  - 目的: `Cum`/`Acc` (75-259)、`versions_of_day` (273-319)、`Writer` (321-479)、ファイルの追記・切り詰め・読み戻し (481-564)、大域の口 (580-648) が 1 ファイルにある。`recent` の「新しい方から n 行を 240 KiB に収める」ループを、試験 (1032-1043) が手で写している。大域の口は `Writer` の `path`・`seeded` を直に読む。
+  - やること:
+    - `daily/{mod,acc,versions,writer,file,tests}.rs` に割る。
+    - `Writer` に `path()`・`seeded()` を足し、欄の直読みをやめる。
+    - `newest_within(all, n, budget) -> (Vec<String>, bool)` を出し、試験はそれを呼ぶ形にする。
+    - `FILE_NAME` を `pub(crate)` に狭める。
+  - 受け入れ基準:
+    - 単体試験 15 本と `tests/daily_test.rs`・`persist_test.rs` が通る。
+    - `Acc::line` の `write!` の文字列は 1 文字も変えない。
+    - 単体試験を足す: `newest_within` (件数で切る、大きさで切る、切らない)、`is_line`・`field` の境目。
+    - 最大ファイルを 450 行以下にする。
+  - 値打ち: 中〜高 / 熱い経路でない / 単独。
+- [ ] **T.34.47 `metrics-watch` の anomaly_tests.rs (1,463 行) を規則ごとに割る**
+  - 目的: 共通の道具 (7-115) と規則ごとの道具が、試験の間に挟まっていて読みにくい。
+  - やること:
+    - `anomaly/tests/mod.rs` (共通の道具) と、規則ごとの `speed.rs`・`dns.rs`・`errors_active_rejected.rs`・`cpu_spin_rate.rs`・`clients.rs` に割る。
+    - 各ファイルは `use super::*;` で道具を引く。
+    - `#[path]` をやめる。
+  - 受け入れ基準:
+    - 同じ 54 本の名前が `cargo test -p proxy-metrics-watch anomaly` に出て、全部通る。
+    - 各ファイルを 400 行以下にする。
+  - 値打ち: 中 / 熱い経路でない / anomaly.rs の分割の後。
+- [ ] **T.34.48 `metrics-recent` の 3 つの個票が時計と /proc を引数で受けるようにする**
+  - 目的: `ConnSlot::closed_entry` (`conn_slot.rs:457`) と `ErrorEntry::new` (`errors.rs:192`) は `now_epoch()` を中で読む。`BurstShot::take` (`burst.rs:138`) は `now_epoch()` と `process_counts()` を中で読む。そのため試験は `at > 1_700_000_000` でしか縛れず、`e.at += i` と書き換えて凌いでいる。
+  - やること:
+    - `closed_entry_at(now, epoch)`・`ErrorEntry::at(at, …)`・`BurstShot::take_at(…, at, (threads, fds, max_fds))` を本体にする。いまの関数は、時刻と `/proc` の値を渡すだけの殻にする。
+    - `*_at` は `pub(crate)` にする。
+  - 受け入れ基準:
+    - 単体試験 62 本と `tests/recent_test.rs`・`bursts_test.rs`・`persist_recent_test.rs` が通る。
+    - 単体試験を足す: 時刻と数を縛る 3 本。
+    - 引数が 1 つ増えるだけで命令は変わらないので、Ir の比較は要らない。
+  - 値打ち: 中 / 接続の終了とエラーの経路 / 単独。
+- [ ] **T.34.49 `metrics-recent` の 5 本のリングを 1 つの `FixedRing<T>` に畳む**
+  - 目的: `RecentBuf`・`BurstBuf`・`errors::Ring`・`EventRing`・`TraceRing` が、同じ 5 欄と同じ操作 (`push`・新しい順・`take_unwritten`・`prefault`・`restore`) を持っている。T.34.2 で添字の式だけは 1 か所にした。
+  - やること:
+    - `ringbuf.rs` に `pub(crate) struct FixedRing<T>` を置き、各リングの内側を `Mutex<FixedRing<T>>` にする。
+    - `ErrorRing` は印を `rows` で数えるので、呼ぶ側が印の通算を渡す形にする。
+    - `cap` は引数で渡すか、`const CAP` にする。
+  - 受け入れ基準:
+    - 単体試験 62 本と、結合試験 `recent`・`bursts`・`persist_recent`・`events`・`trace` が通る。
+    - `RecentRing::push` の命令が増えないことを、`objdump -d` の長さで前後比べる。
+    - `ringbuf.rs` は 300 行以下にする。
+  - 値打ち: 中 / 接続の終了で 1 回 / 上の「時計を引数で受ける」の後。
+- [ ] **T.34.50 snapshots と daily の「日の境目で 1 回だけ書く」判断を 1 つにする**
+  - 目的: `snapshots/writer.rs:65-123` と `daily.rs:409-473` の `Writer::add` が、同じ判断を別々に書いている。
+  - やること:
+    - `metrics-slo/src/day_rollover.rs` に `DayRollover { day, last_written }` と `cross(t) -> Option<u64>` を置き、2 つの `Writer` がそれを持つ。
+    - daily の「境目の標本は終わる日に足す」は、呼ぶ側に残す。
+  - 受け入れ基準:
+    - 日の境目の既存の試験 6 本 (`starting_twice_on_the_same_day_keeps_one_file`/`…_one_line`、`a_file_is_written_when_the_utc_day_changes`/`a_line_…`、`the_oldest_is_dropped_at_the_thirty_first`、`a_restart_in_the_middle_of_the_day_keeps_the_earlier_process`) が通る。
+    - `cross` の単体試験を足す: 初回、同じ日、翌日、既に書いた日、2 日飛び。
+  - 値打ち: 低〜中 / 熱い経路でない / daily.rs の分割の後。
+- [ ] **T.34.51 snapshots/mod.rs の `list` の組み立てを `store.rs` へ移す**
+  - 目的: `snapshots/mod.rs:246-297` の `list()` (52 行) が、`fs::metadata` を読みながら `Saved`/`SavedMoment` を組んでいる。置き場所の担当は `store.rs` なのに、ここだけ `mod.rs` に残っている。
+  - やること:
+    - `store.rs` に `saved(dir)`・`saved_moments(dir)` と型の定義を移し、`pub use` で出し直す。
+    - `list()` は 10 行ほどにする。
+  - 受け入れ基準: `the_global_writer_records_and_reads_back` と `tests/snapshots_test.rs`・`snapshot_moments_test.rs` が通る。
+  - 値打ち: 低 / 熱い経路でない / 単独。
+- [ ] **T.34.52 slo/tracker.rs の `last_hour` の按分を純粋な関数に出す**
+  - 目的: `tracker.rs:284-341` の後半に、外した宛先のぶんを按分して引く計算 (T.30.4) が埋まっている。試験は `excluded == [2, 2]` の 1 点だけ。
+  - やること: `apportioned(d, part, num0, den0) -> Option<(u64, u64)>` を出し、`last_hour` はそれを 2 回呼ぶ。
+  - 受け入れ基準:
+    - `tracker_tests.rs` の 13 本と `tests/slo_test.rs` が通る。
+    - `apportioned` の単体試験を足す: 半分の按分、`e == 0`、`den0` での頭打ち。
+  - 値打ち: 低 / 熱い経路でない / 単独。
+- [ ] **T.34.53 events.rs の `once_per_hour` が時刻を受けるようにする**
+  - 目的: `events.rs:273-281` が `now_epoch()` を中で読むので、試験は `SLOT.store(0)` で「時間が変わった」ことにしている。
+  - やること: `once_per_hour_at(slot, hour)` を本体にする。`trace::push` の `at` も同じ形にできるが、値打ちは低い。
+  - 受け入れ基準:
+    - 単体試験 11 本と `tests/events_test.rs` が通る。
+    - 2 つの時刻で 1 回ずつ通ることを確かめる単体試験を足す。
+  - 値打ち: 低 / 熱い経路でない / 単独。
+
+**網・設定・システム の残り (T.34.3 のレビューから)**
+
+- [ ] **T.34.54 net-dns の dns.rs (928 行) を dns/ に割る (ファイルの分割だけ)**
+  - 目的: 1 ファイルに、次のものが同居している。子は `#[path]` で横に並んでいる。
+    - 表 (`TABLE` / `WARM_QUEUE`) とカウンタ 20 本。
+    - スレッドごとの費用の箱 3 つと、take/peek/note の 8 関数 (162-246)。
+    - `Entry`、`Resolved` と `resolve*` の入口、`Looked` / `MissKind`。
+    - `resolve_host_marked` (577-766)、`relookup_after_stale`、族の記憶。
+  - やること:
+    - root (表・カウンタ・調整値・`clear`・`pub use`) だけを残す。
+    - `dns_view`・`dns_warm`・`dns_pool`・`dns_stale_tests`・`dns_tests` を `git mv` で `dns/{view,warm,pool,stale_tests,tests}.rs` に移し、`#[path]` を外す。
+    - 新しい子として `dns/cost.rs`・`dns/resolved.rs`・`dns/entry.rs` を作る。
+    - 子が触る static は `pub(super)` にする。公開の綴りは `pub use` で全部残す。
+  - 受け入れ基準:
+    - `cargo test -p proxy-net-dns`、`tests/dns_test.rs`・`dns_cause_test.rs`・`dns_timeout_test.rs`、acl の `the_check_and_the_connect_share_one_lookup` が通る。
+    - `dns.rs` は 400 行以下、子はどれも 300 行以下にする。`/status` の `dns` は変わらない。
+  - 値打ち: 高 / 熱い経路だが移動だけ / 下の 2 つ (`resolve_host_marked`・`dns_tests.rs`) より先。
+- [ ] **T.34.55 `resolve_host_marked` (190 行) の鍵の内側の判断を `Entry::look` に出す**
+  - 目的: 鍵の内側 (598-678) で `was_warm`/`hot`/`promote`/`ask`/`found`/`miss_kind` を決めている。この判断は `Entry` の欄と時刻と設定値だけで決まるのに、`TABLE` と `Instant::now()` を経ないと試験できない。
+  - やること:
+    - `Entry::look(&mut self, now, ttl, window, negative, serve_stale) -> Lookup` に、**同じ順のまま**移す。
+    - ミスの書き戻し (718-765) は `store_answer` に、同期の引き直し (800-837) は `relookup_sync` に割る。
+    - 当たりの経路で原子の読みを増やさない。
+  - 受け入れ基準:
+    - `Entry::look` の単体試験を 6 本以上足す: 3/4 を過ぎたら `ask`、`Stale`、`Served` + `ask`、`miss_kind` の優先順、`promote`、`was_warm`。
+    - 既存の dns の試験が通る。
+    - **熱い経路**: 名前宛ての forward で、callgrind の Ir を前後で比べる。増えは +0.5% 以内にする。
+  - 値打ち: 高 / 熱い経路 / dns/ の分割の後。
+- [ ] **T.34.56 base の log.rs (922 行) を log/{format,ring,throttle,tests} に割る**
+  - 目的: 水準、時刻と行の頭、`/log` のリング、アクセスログ、WARN の絞り、マクロが 1 ファイルにある。`access()` は要求ごとに通る。
+  - やること:
+    - root (`Level`・水準・`log_line`・`access`・`write_line`/`emit`・マクロ) だけを残す。
+    - 子を作る: `format.rs` (時刻と `push_access`)、`ring.rs`、`throttle.rs`、`tests.rs`。
+    - `log::tests::RING_TEST_LOCK` の綴りは残す (`minrate.rs`・`records.rs` が引いている)。
+    - `#[inline]` は足さない。
+  - 受け入れ基準:
+    - `cargo test -p proxy-base` が通る。文面を縛る `test_*_matches_the_old_format` 3 本も含む。
+    - `tests/persist_recent_test.rs`・`log_flood_test.rs`・`recent_test.rs` が通る。
+    - `log.rs` は 250 行以下にする。
+    - **熱い経路**: forward 8 並列の callgrind で、`access` の Ir が前後で同じ (+0.5% 以内)。
+  - 値打ち: 高 / 熱い経路 (移動だけ) / 下の `LogRing` の小タスクより先。
+- [ ] **T.34.57 `/log` のリングを `LogRing` のメソッドに寄せ、`remember` と `restore` の重複を除く**
+  - 目的: 「満杯なら上書きして進む」が 2 回書いてある。添字の計算も `recent` と `take_unwritten` が別々に持っている。そのため単体試験は、プロセス全体の鍵を握って回している。
+  - やること:
+    - `LogRing::{push, recent, take_unwritten, restore, start}` を作る。自由関数は鍵を取って委譲するだけにする。
+    - 本文を 256 B で切る処理は、純粋な関数に出す。
+    - `restore` の鍵の取り方を変えるかどうかは選んで、doc に書く。
+  - 受け入れ基準:
+    - `LogRing` を直に作る単体試験を 5 本以上足す。
+    - 既存の 3 本と `tests/persist_recent_test.rs` が通る。
+  - 値打ち: 高 / 熱い経路でない / log/ の分割の後。
+- [ ] **T.34.58 reload の `Live::reload` (286 行) を `merge_live`・`restart_required`・`record_reload` に割る**
+  - 目的: `reload.rs:84-369` が 1 本の関数。再起動が要るかどうかの判断は 2 つの `Config` の比較だけで決まるのに、単体試験が 0 本。
+  - やること:
+    - `merge_live(old, fresh) -> (Config, Vec<&str>)` を出す。副作用は、今と同じ順のまま中に残す。
+    - 純粋な `restart_required(boot, fresh)` と、`record_reload` を出す。
+    - `reload` は 20 行にする。`spawn` の監視ループは `watch_loop` に出す。
+  - 受け入れ基準:
+    - `restart_required` の単体試験を足す。鍵を 1 つずつ変えて、名前と順を見る。
+    - `merge_live` の、副作用の無い項目の試験を 3 本以上足す。
+    - `tests/reload_test.rs` 9 本と `config_test.rs` が通る。ログと `/events` の文面は変わらない。
+    - 関数は全部 80 行以下にする。
+  - 値打ち: 高 / 熱い経路でない / 単独。
+- [ ] **T.34.59 run の `main` (479 行) を起動の段に割る (run/src/startup.rs)**
+  - やること:
+    - `tune_malloc`・`apply_runtime_knobs`・`bind_listeners`・`build_tls`・`install_shutdown`・`log_startup`・`serve_all` に割る。
+    - 起動ログ 8 本は、文面も順も**そのまま**にする。
+    - 純粋な `loopback_target` に単体試験を足す。
+  - 受け入れ基準:
+    - プロセスを起動する結合試験 (`proxy_test`・`selfbench_test`・`persist_test`・`events_test`) が通る。
+    - `lib.rs` は 300 行以下、関数は全部 80 行以下にする。
+  - 値打ち: 高 / 熱い経路でない / 下の `check_environment` とは独立。
+- [ ] **T.34.60 run の `check_environment` (135 行) を check.rs に出し、印字の判断を純粋な関数にする**
+  - やること:
+    - 純粋な関数を出す: `capability_description`・`flag_line`・`setting_value_for_print`・`setting_line`・`tls_line`。
+    - 印字は `print_capabilities`/`print_settings`/`print_problems` に割る。
+  - 受け入れ基準:
+    - 純粋な関数の単体試験を足す。引用符の外し方の 4 形も見る。
+    - `tests/config_test.rs` が通る。
+    - `cargo run -q -- --check` の出力を、前後で diff して差が 0 行。
+  - 値打ち: 中 / 熱い経路でない / 単独。
+- [ ] **T.34.61 sysinfo の proc.rs (767 行) を kept・tasks に割る**
+  - やること:
+    - root (`process_threads`/`process_fds`/`parse_status_threads`) だけを残す。
+    - `proc/kept.rs` (read_small 系と `KeptFiles`)、`proc/tasks.rs` (`TaskSample` 系と parse 3 本)、`proc/tests.rs` に分ける。
+    - metrics-profile が引く綴りは残す。
+  - 受け入れ基準:
+    - sysinfo と metrics-profile の試験が通る。
+    - `proc.rs` は 150 行以下、子は 350 行以下にする。
+    - `parse_task_stat` の境目 (15 字で切れた comm、項目が足りない行) の試験を 2 本足す。
+  - 値打ち: 中 / 熱い経路でない / 単独。
+- [ ] **T.34.62 net-dns の dns_tests.rs (968 行) を表の試験と keep-warm の試験に割る**
+  - やること:
+    - keep-warm の 8 本を `dns/warm_tests.rs` へ移す。
+    - 補助関数 20 本は `pub(super)` にして、`dns/tests.rs` に残す。
+    - 名前は変えない。
+  - 受け入れ基準:
+    - 本数が同じまま、全部通る。
+    - 2 つのファイルとも 600 行以下にする。
+  - 値打ち: 中 / dns/ の分割の後。
+- [ ] **T.34.63 diskprobe の `DiskProbe::load` (153 行) の状態ファイルの読み書きを、純粋な `Saved` に出す**
+  - やること:
+    - `Saved::parse` と `Saved::to_text` を出す。`to_text` は今の `save` と同じ文字列にする。
+    - 判断は `learn(saved, now) -> (fields, Note)` に出す。
+    - `load` は、読む → 判断 → ログ → 保存の段取りにする。
+    - `tick_slow` で使われていない引数 `entries` を見直す。公開の `tick` は変えない。
+  - 受け入れ基準:
+    - `Saved` の往復と、`learn` の 6 通りを単体試験で見る。
+    - 既存の 5 本が通る。状態ファイルの 11 行の形式は 1 バイトも変わらない。
+  - 値打ち: 中 / 熱い経路でない / 単独。
+- [ ] **T.34.64 `blocklist::rebuild` (101 行) をファイル・URL・記録の 3 段に割る**
+  - やること:
+    - `load_file`・`load_url`・純粋な `next_fetch_at`・`record` に割る。
+    - `check` の判断は `verdict(set, exempt, override_hit, host)` に出してよい。ただし鍵の取り方と早期の `Clear` は変えない (要求ごとに通る)。
+  - 受け入れ基準:
+    - 単体試験を足す: `next_fetch_at` の 3 形と、`verdict`。
+    - 既存の 3 本と `readonly_test.rs` が通る。ログと `/status` の `blocklist` は変わらない。
+  - 値打ち: 中 / `check` は要求ごと / 単独。
+- [ ] **T.34.65 net の acl.rs (666 行) を ports・clients・local・patterns に割る**
+  - やること:
+    - root (`AclConfig`・`match_pattern`) だけを残す。
+    - `acl/{ports,clients,local,tests}.rs` に分ける。
+    - `is_local_target` と `is_private_ip` は、外から使われていないことを確かめてから `pub(crate)` にする。
+  - 受け入れ基準:
+    - `cargo test -p proxy-net`、`tests/clientacl_test.rs`・`perclient_test.rs`・`host_authority_test.rs` が通る。
+    - root は 150 行以下にする。
+  - 値打ち: 中 / 移動だけ / 下の `match_pattern` の小タスクより先。
+- [ ] **T.34.66 `match_pattern` が要求ごとにする確保 (`to_ascii_lowercase` と `format!`) を無くす**
+  - 目的: `acl.rs:354-367` は照合のたびに `String` を 2 つ作る。`PROXY_ALLOW_HOSTS`/`DENY_HOSTS`/`BLOCKLIST_EXEMPT` を設定した置き場では、要求ごと・パターンごとに無駄な確保になる。
+  - やること: 小文字のパターンは借用のまま比べる。`*.` は `ends_with` と、その手前が `.` かで見る。
+  - 受け入れ基準:
+    - 既存の 4 本が通る。
+    - 大文字のパターンと、`*.a.b` に `a.b`/`x.a.b`/`xa.b` を当てる単体試験を足す。
+    - `PROXY_ALLOW_HOSTS=*.example.com` の forward で、確保が要求ごとに 2 回減る。
+  - 値打ち: 中 / 熱い経路 (設定したときだけ) / acl.rs の分割の後。
+- [ ] **T.34.67 capacity の `quota::resolve_quota` (71 行) の判断とログを分け、単体試験を置く**
+  - やること: 純粋な `decide(configured, pterodactyl, df, rootfs) -> QuotaDecision` を出す。ログの文面は変えない。
+  - 受け入れ基準: `decide` の 6 通りを単体試験で見て、キャッシュの結合試験が通る。
+  - 値打ち: 中 / 熱い経路でない / 単独。
+- [ ] **T.34.68 cgroup の階層を根まで遡るループを 1 つにする (sysinfo の cgroup.rs / mem.rs / capabilities.rs)**
+  - 目的:
+    - 同じループが 4 か所にある (`cgroup.rs:175-197,200-217`・`mem.rs:181-205`・`capabilities.rs:331-345`)。
+    - `read_stat` と `stat_field` は同じ読み方をしている。
+    - `cgroup_file_in`/`walk_for` は試験でしか使われていない。
+  - やること:
+    - `walk_up(dir, root, f)` を作って 4 か所を書き直す。
+    - `stat_field` に寄せる。
+    - 試験でしか使わないものは `#[cfg(test)]` にするか、消す。
+  - 受け入れ基準:
+    - sysinfo の試験が通る。
+    - この機械で、`/status` の cgroup の値が前後で同じ。
+  - 値打ち: 中 / 熱い経路でない / 単独。
+- [ ] **T.34.69 `sysinfo::proc::max_fds` を `sys::max_open_files` に寄せる**
+  - 目的: `getrlimit` を 2 か所で呼んでいて、cfg の条件も違う (`all(linux, 64bit)` と `any(aarch64, x86_64)`)。
+  - 受け入れ基準: fds の 2 本が通り、`/status` と `/healthz` の `max_fds` が前後で同じ。
+  - 値打ち: 低〜中。
+- [ ] **T.34.70 config の、外から使われていない pub 19 個を `pub(crate)` に狭める**
+  - 対象:
+    - `Config::with_cache`、`tcp_keepalive_spec`、`DEFAULT_TCP_KEEPALIVE`。
+    - `DEFAULT_PEEK_SNI_PORT`、`MAX_CONNS_CAP`、`default_max_conns`、`DEFAULT_BURST_PERCENT`、`DEFAULT_SNAPSHOT_DAYS`、`MAX_SNAPSHOT_DAYS`、`burst_threshold`、`DEFAULT_MAX_REQUESTS_PER_CONN`。
+    - `parse_bind_list`、`INVALID_VALUE_CAP`、`SUGGEST_DISTANCE`、`Slo::parse_skipping`。
+    - `DEFAULT_CONNECT_TIMEOUT`、`DEFAULT_HEADER_TIMEOUT`、`header_timeout_for`、`parse_stagger_ms`。
+  - やること: それぞれ grep で利用者が無いことを確かめてから狭める。
+  - 受け入れ基準: clippy と、config の試験が通る。
+  - 値打ち: 中 / config の他の変更の後。
+- [ ] **T.34.71 sysinfo の、外から使われていない pub 約 30 個を `pub(crate)` に狭める**
+  - 対象: capabilities・cgroup・fs・malloc・mem・net・proc の `parse_*` ほか。
+  - 受け入れ基準: sysinfo・metrics-profile・capacity の試験と clippy が通る。
+  - 値打ち: 中 / proc.rs の分割と cgroup のループの小タスクの後。
+- [ ] **T.34.72 net・net-conn・net-dns・tls・reload・capacity・diskprobe・base の、外から使われていない pub を狭める**
+  - 対象:
+    - net-conn: `interleave`・`MAX_CANDIDATES`・`bind_all_with` ほか。
+    - net-dns: `STALE_MAX`・`warm_window`・`resolve_with_pref` ほか。
+    - tls: `is_loaded`・`verifies`。
+    - base: `httpdate::epoch_from_civil`・`minrate::{TooSlow, is_slow}` ほか。
+  - やること: facade の `pub use` の綴りでも grep して確かめる。
+  - 受け入れ基準: clippy と `tests/` 全部が通る。
+  - 値打ち: 中 / 各クレートの分割の後。
+- [ ] **T.34.73 log の水準の符号から `Level` への対応を 1 つにする**
+  - 目的: `log.rs:40-48` の `Level::from_u8` と `68-76` の `current_level` が、同じ表を 2 回書いている。
+  - 受け入れ基準:
+    - 既存の 3 本と、5 つの水準を往復する単体試験が通る。
+    - `access` の経路の Ir が前後で同じ。
+  - 値打ち: 低〜中 / log/ の分割と一緒にやってよい。
+- [ ] **T.34.74 `records::salt` と `via::mark` の起動ごとの種を 1 つにする (`boot_entropy`)**
+  - 受け入れ基準: 既存の 4 本が通る。
+  - 値打ち: 低。
+- [ ] **T.34.75 `Config::settings` (206 行) を README の節に合わせた 7 段に割る**
+  - やること:
+    - 割る**前に**、鍵の順を固定の配列と突き合わせる試験を足す。
+    - `add` は `impl FnMut` で受ける。
+  - 受け入れ基準: `tests/config_test.rs` の鍵の順の試験が通る。
+  - 値打ち: 低 / config の pub を狭める小タスクの前。
+- [ ] **T.34.76 sysinfo の mem.rs のスレッドのスタックの常駐 (T.32.4) を rss.rs に分ける**
+  - 受け入れ基準: 既存の 3 本が通り、`mem.rs` は 300 行以下になる。
+  - 値打ち: 低。
+- [ ] **T.34.77 tls.rs (542 行) を api (dlopen の束) と stream に割る**
+  - 受け入れ基準: tls の 4 本が通る。
+  - 値打ち: 低 / `TlsStream` はバイトごとに通るが、移動だけ。
+- [ ] **T.34.78 `envfile::var` と `var_source` の探索の順を `lookup` 1 つにまとめる**
+  - 受け入れ基準: 既存の 3 本と、`config_test` の `source` の試験が通る。
+  - 値打ち: 低。
+- [ ] **T.34.79 Happy Eyeballs の `Race` で接続する関数を差し替えられるようにして、締め切りと間隔の判断を単体試験に**
+  - やること: 接続する関数を `impl Fn` の総称で受ける (単相化なので `dyn` にはならない)。
+  - 受け入れ基準:
+    - 単体試験を 3 本足す: 締め切りで `TimedOut`、`stagger` の後に 2 本目、全部失敗したら最後の失敗。
+    - CONNECT の Ir が前後で +0.5% 以内。
+  - 値打ち: 低 / 熱い経路。
+
+**キャッシュ・エンドポイント・ベンチ の残り (T.34.4 のレビューから)**
+
+- [ ] **T.34.80 selfbench/lib.rs (958 行) を cpu・load・partner・tests に割り、`run` を段と純粋な `note_for` に分ける**
+  - 目的: `run` (222-322、100 行) が、相手役の起動・旗・2 段の計測・`note` の文面 7 分岐を 1 つに持つ。`is_target` (125-138) は静的な `PORTS`/`ACTIVE` を読むので試験できない。CPU の読み (349-440)・打ち手 (449-643)・相手役 (651-810) が同じファイルにある。
+  - やること:
+    - `selfbench/{cpu,load,partner,tests}.rs` に割る。
+    - `run` は `measure_phase()` を 2 回呼んで `Phase { ok, bad, capped, cpu_us }` を受け、純粋な `note_for(&Phase, &Phase) -> String` に渡す形にする。
+    - `is_target` は、純粋な `target_matches(key, ports)` と、それを包む薄い関数に分ける。
+    - `Report` の欄を `pub(crate)` にできるか確かめる。
+  - 受け入れ基準:
+    - 単体試験 7 本と `tests/selfbench_test.rs` が通る。`status_json`/`summary()` の文面は変わらない。
+    - 単体試験を足す: `note_for` の 7 分岐、`target_matches`、`Phase` の 0 本のとき。
+    - lib.rs を 400 行以下にする。`active()` は変えない。
+  - 値打ち: 高 / 熱い経路でない / 単独。
+- [ ] **T.34.81 cache/probe.rs の `refresh_budget` (210 行) を測りと決めに分ける**
+  - 目的: `cache/probe.rs:218-427` に、測り (`budget::take`・`fs_info`・`take_enospc`)、決め (cgroup・PSI のマージン・`floor_for`・割当の探索・ENOSPC の後退・実 FS の空き)、状態の更新が混ざっている。決めは実機の `/proc` でしか試験できない。`unknown_quota` の式は `mod.rs:238` にも重複している。
+  - やること:
+    - 純粋な `mem_budget_for(&MemSnapshot, owned, percent, &mut Margins) -> MemBudget` と `disk_budget_for(&FsInfo, real, owned, percent, enospc, quota, margins) -> DiskBudget` を出す。
+    - `refresh_budget` は、測る・決める・書くの 3 段にする。
+    - `quota_unknown_on_pterodactyl()` を 1 つにする。
+    - 入力の型 (`MemSnapshot` 等) が手で組めなければ、小さな入力の struct を置く。
+  - 受け入れ基準:
+    - `cargo test -p proxy-cache` と `tests/cache_test.rs`・`memory_test.rs`・`heap_baseline_test.rs` が通る。ログの文面は変わらない。
+    - 単体試験を足す: cgroup の有無 × PSI の有無、ENOSPC の後退、実 FS の空きで切る枝、`floor_for` の 3 形。
+    - `refresh_budget` を 60 行以下にする。
+  - 値打ち: 高 / 熱い経路でない (5 秒ごと) / 下の `Cache::new` の小タスクと関数を共有する。
+- [ ] **T.34.82 endpoints/recent.rs (733 行) の `/recent` を recent/closed.rs に出し、pub を狭める**
+  - 目的: `RecentSort`・`RttClient`・`recent`/`recent_within` (454-605) は、他の 11 の口と関心が違う。これらの `pub fn` は、mod が私有なのに `pub` のまま。
+  - やること:
+    - 上の 4 つを `recent/closed.rs` へ移し、`pub(super) use` で出し直す。
+    - 口と型を `pub(super)` か private に狭める。
+    - `RttClient::keeps` の単体試験を足す。
+  - 受け入れ基準:
+    - `cargo test -p proxy-endpoints` と `tests/recent_test.rs`・`snapshots_test.rs`・`schema_test.rs` が通る。
+    - recent.rs を 600 行以下にする。
+  - 値打ち: 高 / 熱い経路でない / 単独。
+- [ ] **T.34.83 health.rs の `healthz` を測り (`Readings`) と判定 (`checks_for`) に分け、閾を単体で試験する**
+  - 目的: `health.rs:113-206` が、読みと 7 つの検査の閾を 1 つに持つ。閾は 1 つも試験で縛られていない。閾は次の 6 つ。
+    - fds の 90%。
+    - `others < max`。
+    - `state_file_errors_5m == 0`。
+    - `listen_overflows_5m == 0`。
+    - `dns_miss_ms < 2000`。
+    - CPU の絞りは、窓が満ちてから見る。
+  - やること: `read(ep) -> Readings` と、純粋な `checks_for(&Readings) -> [Check; 7]` に割る。
+  - 受け入れ基準:
+    - `tests/kernel_test.rs`・`head_test.rs`・`schema_test.rs`・`proxy_test.rs` が通る。
+    - 境目ごとの単体試験を足す: fds 90%、`max_conns` 0、自分を除いた `others`、2,000 ms、CPU の窓が満ちる前の `null`。
+    - `healthz` を 40 行以下にする。
+  - 値打ち: 中〜高 (監視の 503 の判定が試験されていない) / 熱い経路でない / 単独。
+- [ ] **T.34.84 `Cache::new` (110 行) を骨組み・ディスクの初期化・割当の探索の初期化に割る**
+  - 目的: `cache/mod.rs:148-256` に、構造体の literal・`disk.init` と警告・RAM 上の FS の判定・割当の探索の準備・最初の refresh が並んでいる。
+  - やること: `blank()`・`init_disk()`・`init_disk_probe()`・`quota_unknown_on_pterodactyl()` に割る。最後の 1 つは probe.rs と共有する。
+  - 受け入れ基準:
+    - `cargo test -p proxy-cache` と `tests/cache_test.rs`・`persist_test.rs` が通る。
+    - 起動ログの 3 行は、文面も順も変わらない。
+    - `new` を 40 行以下にする。
+  - 値打ち: 中 / 熱い経路でない / 上の probe.rs の小タスクの後に続けてやる。
+- [ ] **T.34.85 cachecfg の `from_lookup` (100 行) を小さな読み手 `Env` に寄せ、規則を 1 つずつ単体で試験する**
+  - 目的: `cachecfg/src/config.rs:272-371` に、閉包 5 つと 20 の欄が手で並ぶ。規則 (`flag`・`percent` の範囲・0 を捨てる) は大きな表でしか試験されていない。`resolve_default_dir` (402-437) には、候補の順の判断と副作用が混ざっている。
+  - やること:
+    - `config/env.rs` に `Env<F>` と、`get`/`num`/`flag`/`percent`/`secs`/`mib`/`limit` を置く。
+    - `resolve_default_dir` は、`var` と `writable` を引数で受ける形にする。読み元は `env::var_os` のまま変えない。
+  - 受け入れ基準:
+    - 単体試験 3 本と `tests/config_test.rs`・`cache_test.rs` が通る。
+    - 単体試験を足す: `flag` の 8 形、`percent` の範囲外、読めない値、候補の順。
+    - `from_lookup` を 50 行以下にする。
+  - 値打ち: 中 / 熱い経路でない / 単独。
+- [ ] **T.34.86 endpoints/recent/tests.rs (1,066 行) を関心ごとに割り、`Endpoint` の組み立てを 1 つの助けにまとめる**
+  - 目的: `Endpoint {…}` と `Concurrency` の組み立てが 6 回写されている。`recent/snapshot.rs:328-353`・`pac.rs:135-166`・`config.rs` の試験も含めると 9 か所になる。
+  - やること:
+    - `recent/tests/mod.rs` (助けの `with_ep`) と、`limits.rs`・`paging.rs`・`filters.rs`・`params.rs` に割る。
+    - snapshot.rs の `with_ep` は、この助けに寄せる。
+    - 試験の名前は変えない。
+  - 受け入れ基準:
+    - 同じ 52 本が通る。
+    - 最大ファイルを 400 行以下にする。
+  - 値打ち: 中 / 熱い経路でない / recent/closed.rs の後。
+- [ ] **T.34.87 ops.rs の `get_from_disk` (95 行) を開く・昇格・流すに割り、期限の判定を `Meta::is_servable` にまとめる**
+  - 目的: `cache/ops.rs:207-302` が 1 関数で全部を持つ。`expires_at > now || validators` という式が、`ops.rs:218`・`:224` と `cachemem/src/memory.rs:111` の 3 か所にある。
+  - やること:
+    - `open_disk_hit`・`promote_to_memory`・`stream_from_disk` に割る。
+    - `cachekey/format.rs` の `Meta` に `#[inline] is_servable(now)` を足し、3 か所を置き換える。
+  - 受け入れ基準:
+    - `cargo test -p proxy-cache` (disk 系の 4 本) と、`tests/cache_test.rs` 17 本・`cache_smalls_test.rs` が通る。
+    - ログは変わらない。
+    - **熱い経路**: L1 HIT も通るので、`cpu-per-request.sh --cacheable` と callgrind (T.28.12 の測り方) で、HIT の Ir を前後で比べる。増えは +0.5% 以内にする。
+  - 値打ち: 中 / 熱い経路 / 単独。
+- [ ] **T.34.88 Cache の 12 個の pub カウンタを包む (http の 5 か所を機械的に直す)**
+  - 目的: `cache/mod.rs:120-138` の `pub hits_mem…bytes_served: AtomicU64` を、`http/mod.rs:861,1015,1218,1411` (`stale_served`) と `:923` (`coalesced`) が直に触っている。
+  - やること:
+    - `cache/counters.rs` の `Counters` に移し、欄は `pub(crate)` にする。
+    - 外へは `note_stale_served()`・`note_coalesced()` と、試験用の読み口を出す。
+    - http の 5 か所を置き換える。T.34.0 の取り込みの後にやる。
+  - 受け入れ基準:
+    - `cargo test -p proxy-cache -p proxy-http` と `tests/cache_test.rs`・`schema_test.rs`・`status_light_test.rs` が通る。
+    - `/status` は 1 バイトも変わらない。
+  - 値打ち: 中 / 熱い経路 (包むだけ) / T.34.0 の後。
+- [ ] **T.34.89 `DiskTier` の `in_flight` を私有にし、クレート内だけの pub を `pub(crate)` に狭め、使っていない `read`/`write` を消す**
+  - 目的:
+    - `cachedisk/src/disk/mod.rs:99` の `pub in_flight` を、`writer.rs:111,116,124` が直に増減している。
+    - `note_io`・`shard_dir`・`make_room`・`enforce_entry_cap`・`max_entries`・`scan_root`・`scan_shard`・`set_expiry_mtime` の 8 つは、クレートの中でしか呼ばれないのに `pub`。
+    - `DiskTier::read`(361-371) と `write`(424-438) は、どこからも呼ばれていない。
+  - やること:
+    - `reserve_in_flight`/`release_in_flight` を足して、writer.rs の 3 か所を置き換える。
+    - 上の 8 つと `DiskEntry` を `pub(crate)` に狭める。
+    - `read`/`write` は、grep で利用者が無いことを確かめてから消す。
+  - 受け入れ基準:
+    - `cargo test -p proxy-cache` が通る。`in_flight_bytes()`/`free_room()` は pub のまま残す。
+    - `tests/cache_test.rs` が通り、dead_code の警告が出ない。
+  - 値打ち: 中 / 熱い経路でない / 単独。
+- [ ] **T.34.90 cachedisk の Ballast を disk/ballast.rs の `impl Ballast` に寄せる**
+  - 目的: `struct Ballast` を、`prepare_ballast`・`disable_reserve`・`shrink_ballast`・`fill_ballast`・`shutdown` の 5 か所が直に書いている。さらに `ballast_bytes` との二重の記帳がある。
+  - やること:
+    - `prepare`・`shrink_to`・`grow -> Grow { added, unsupported, fill_failed }`・`drop_all` を持たせる。
+    - `DiskTier` は鍵を取って呼び、戻り値で記帳するだけにする。
+  - 受け入れ基準:
+    - `cargo test -p proxy-cache` と `tests/cache_test.rs`・`memory_test.rs` が通る。ログは変わらない。
+    - `mod.rs` を 480 行以下にする。
+  - 値打ち: 中 / 熱い経路でない / 上の `in_flight` の小タスクの後。
+- [ ] **T.34.91 `snapshot_with` (95 行) を集める・組むに割り、組み立てを部の偽物で単体試験する**
+  - 目的: `recent/snapshot.rs:130-226` は 17 の部を組んで入りきらせ、`history` を畳む。この畳み方には単体試験が無い。
+  - やること: `collect_parts()` と、純粋な `render_snapshot(version, uptime, at, limit, parts, dropped)` に割る。
+  - 受け入れ基準:
+    - snapshot の 4 本と `tests/snapshots_test.rs`・`snapshot_moments_test.rs`・`heavy_test.rs` が通る。
+    - 偽の部を使った単体試験を足す: `parts`・`dropped`・`history` の入れ子・`null` の部。
+  - 値打ち: 中 / 熱い経路でない / 単独。
+- [ ] **T.34.92 `Meta` に `fresh_for` / `is_garbage` を寄せ、期限の式の重複を消す (cachekey/format.rs)**
+  - 目的: `stored_at`/`expires_at` の式が、`cache/ops.rs:405-409`・`484-486`・`524-526` の 3 か所にある。`memory::is_garbage` (`cachemem/src/memory.rs:294`) は `Meta` の判定なのに、cachedisk が借りて使っている。
+  - やること:
+    - `Meta::fresh_for` と `Meta::is_garbage` を足す。
+    - 3 か所と 4 か所 (`memory.rs:280`・`disk/mod.rs:579`・`scan.rs:56,121`) を置き換える。
+    - `memory::is_garbage` を消す。
+  - 受け入れ基準:
+    - cache・cachemem・cachedisk・cachekey の試験と、`tests/cache_test.rs`・`revalidate_headers_test.rs`・`persist_test.rs` が通る。
+    - `Meta` の単体試験を足す。
+  - 値打ち: 中 / 熱い経路でない / `is_servable` の小タスクと一緒でもよい。
+- [ ] **T.34.93 endpoints の問い合わせの読みを endpoints-core の `param()` に寄せる**
+  - 目的: `params.iter().find(|(k, _)| k == "…")` の形が 15 か所にある (history・status・purge・profile・recent・explain・blocklist)。`str_param`/`num_param` は recent.rs にあり、`has_flag`/`offset_param` は endpoints-core にあって、読み方が 2 か所に分かれている。
+  - やること: endpoints-core に `param`・`num_param`・`str_param` を置き、各所を置き換える。
+  - 受け入れ基準:
+    - endpoints・endpoints-core・endpoints-explain の試験と、`tests/recent_test.rs`・`history_summary_test.rs`・`profile_test.rs`・`status_light_test.rs` が通る。
+    - 読めない値の倒し方は、既存の単体試験が縛る。
+  - 値打ち: 中 / 熱い経路でない / recent/closed.rs の後。
+- [ ] **T.34.94 `array_within` の 3 つの実装を endpoints-core に 1 つにまとめる**
+  - 目的: `endpoints/recent.rs:44-70`・`endpoints-explain/src/explain.rs:92-108`・`endpoints/config.rs:76-90` が、同じループを持つ。
+  - やること: `endpoints-core::array_within(out, items, budget) -> (usize, bool)` を置き、3 か所を置き換える。打ち切りの境の式は変えない。
+  - 受け入れ基準: 予算を縛る既存の試験 (256 KiB の 9 本、64 KiB の 2 本) が通る。
+  - 値打ち: 低〜中 / 熱い経路でない / `param()` の小タスクと一緒でもよい。
+- [ ] **T.34.95 endpoints/profile.rs の `profile` (100 行) を頭・標本・尾に割る**
+  - 目的: `endpoints/profile.rs:40-142` の、頭の 6 つの配列と尾の部分に単体試験が無い。
+  - やること: `write_head` と `write_tail` に割り、`keys` 12 個の順を単体試験で縛る。
+  - 受け入れ基準: `tests/profile_test.rs`・`heavy_test.rs`・`schema_test.rs` と `node scripts/check-dashboard.js` が通る。
+  - 値打ち: 低〜中 / 熱い経路でない / 単独。
+- [ ] **T.34.96 cachedisk の scan.rs: `parse_name` の単体試験と、ファイル 1 つの扱いの判定を純粋な関数にする**
+  - 目的: `parse_name`・`mtime_epoch` に単体試験が無い。`scan_shard` (76-151) には、I/O と「索引だけ・ヘッダーを読む・消す・長い方を残す」の判定が混ざっている。
+  - やること: `classify(mtime, validators, now) -> Keep` と `keep_longer(old, new)` を出し、`parse_name` と一緒に単体で試験する。
+  - 受け入れ基準: disk 系の 4 本と `tests/persist_test.rs` が通る。
+  - 値打ち: 低〜中 / 熱い経路でない (起動時) / `in_flight` の小タスクの後。
+- [ ] **T.34.97 ops.rs の `rewrite_disk_head` (80 行) の本文の写しを `copy_body` に出す**
+  - やること:
+    - `copy_body(reader, writer) -> io::Result<()>` を出す。
+    - 失敗のときの後始末 (`only_expiry` を 4 回呼んでいる) は、`match` 1 つにまとめる。
+  - 受け入れ基準:
+    - `tests/revalidate_headers_test.rs` の 6 本が通る。ログは変わらない。
+    - 50 行以下にする。
+  - 値打ち: 低〜中 / 304 のときだけ通る / `get_from_disk` の小タスクの後。
+- [ ] **T.34.98 cache の status.rs の `opt`/`opt_f` と、`BudgetEviction::to_json` の `opt` を 1 つにまとめる**
+  - やること: `BudgetEviction` (ops.rs:25-70) を status.rs へ移し、`opt` を 1 つにする。
+  - 受け入れ基準: `tests/schema_test.rs`・`status_light_test.rs` が通る。
+  - 値打ち: 低。
+- [ ] **T.34.100 cachemem のバラストを memory/ballast.rs に出し、`MemEntry` を私有にする**
+  - やること:
+    - `MemBallast { chunks, bytes, alloc_failed }` に `fill`・`release`・`bytes` を持たせる。
+    - `MemEntry` を private にする。
+    - `insert` の追い出しのループは `evict_over` に出す。
+  - 受け入れ基準:
+    - `tests/memory_test.rs` が通る。
+    - **`MemTier::get` (L1 HIT) は 1 行も変えない。**
+  - 値打ち: 低 / 熱い経路の隣。
+- [ ] **T.34.101 explain/host.rs の `host_summary` (110 行) を文ごとの関数に割り、数字は 1 回だけ計算する**
+  - 目的: `host_summary` は `host_numbers` と同じ値を 2 度計算している。
+  - やること: `HostFigures` を 1 回だけ計算し、`stage_sentence` ほかの文ごとの関数に割る。
+  - 受け入れ基準: `the_one_line_verdict_lines_up_the_stages`・`the_host_page_keeps_its_key_order`・`tests/explain_test.rs` が通る。
+  - 値打ち: 低。
+- [ ] **T.34.102 bench の `main()` (95 行) と `syscost::run` (130 行) を段に割る**
+  - 受け入れ基準: bench の 13 本が通り、`cargo build --release -p proxy-bench` が通る。印字の文面と順は変わらない。
+  - 値打ち: 低。
+
+**ルート・結合試験・scripts の残り (T.34.5 のレビューから)**
+
+- [ ] **T.34.103 tests/common/mod.rs (1,064 行) を origin・proxy・client・net・process に割る**
+  - 目的: モックのオリジン、試験用のプロキシの起動、クライアント側の読み書き、生のソケットの FFI、`ProxyProcess`、`without_date` が 1 ファイルにある。93 本の試験バイナリが全部これをコンパイルしている。
+  - やること:
+    - `mod.rs` は `mod …; pub use …::*;` と `#![allow(dead_code)]` だけにする。
+    - `common/{origin,proxy,client,net,process}.rs` に移す。
+    - コメントは一緒に運ぶ。
+  - 受け入れ基準:
+    - `use common::*;` と `use common::{a, b}` の書き方が全部そのまま通る。
+    - 試験 352 本が全部通る。
+    - 各ファイルを 400 行以下にする。
+  - 値打ち: 高 / tests の他の小タスクの前提。
+- [ ] **T.34.104 tests/common の中の重複 (FFI の宣言 3 つ、先頭の読み取り 2 つ、待ちの定数) を 1 つにする**
+  - 目的:
+    - `SockAddrIn` と `socket`/`bind` の宣言が 3 か所にある: `common/mod.rs:606-618`・`669-679` と `keepalive_test.rs:687-699`。
+    - `read_response` と `read_connect_response` は、同じ 1 バイトずつ読むループを持っている。
+    - `endpoint_json` は、`wait_until` の 500 × 20 ms を写して持っている。
+  - やること:
+    - `common/net.rs` に `mod ffi` を 1 つ置く。
+    - `read_head` を出す。
+    - `POLL_STEP`/`POLL_MAX` を共有する。
+  - 受け入れ基準:
+    - keepalive・perclient・tunnel・proxy の試験が通る。
+    - `SockAddrIn` の定義が 1 つだけになる。
+  - 値打ち: 中 / common の分割の後。
+- [ ] **T.34.105 試験用プロキシの配線を 1 本にする (`start_test_proxy_on` と `start_test_proxy_with_live_config`)**
+  - 目的: `common/mod.rs:181-230` と `270-302` で配線が 2 回書いてあり、後者には `attach_origin_rtt`・`conns.set_enabled(!cfg.lite)`・`sni::set_peek`・`TlsClient::deferred` が無い。そのため idle_sleep・perclient・reload の試験は、本番と違う配線で動いている。
+  - やること: `wire_and_serve(listener, config_of: impl Fn() -> Arc<Config>, …)` を 1 つにする。
+  - 受け入れ基準:
+    - 3 つの試験が通る。
+    - perclient の `--lite` の試験の主張が変わらないことを確かめる。
+  - 値打ち: 高 (試験の忠実さ) / common の分割の後。
+- [ ] **T.34.106 実バイナリの起こし方を `ProxyProcess::builder` に寄せる (6 ファイルの自前の起動と、`KillOnDrop` ×3)**
+  - 目的: config・persist・backlog・bytes_dir・canary・reload の試験が、同じ起動をそれぞれ約 60 行ずつ書いている。
+  - やること: `ProxyProcess::builder(home).env(k, v).start()` を作る。起動までのログは `startup_log`・`banner` で持たせる。
+  - 受け入れ基準:
+    - 6 つの試験が通る。
+    - 失敗したときに子プロセスを残さない。
+  - 値打ち: 高 / common の分割の後。
+- [ ] **T.34.107 一時ディレクトリと `.env` の文面を、common の `scratch_dir`・`write_env` に寄せる**
+  - 目的: 一時ディレクトリが 36 か所、`.env` の共通の 3 行が 28 か所に書き写されている。
+  - 受け入れ基準:
+    - `grep 'temp_dir()' tests/*_test.rs` が 0 件になる。
+    - 各試験の `.env` の鍵と値は今と同じ。
+  - 値打ち: 中 / common の分割の後。あわせて下の `cache_cfg` の pid 付けを直す。
+- [ ] **T.34.108 `open_tunnel` ×11 と CONNECT の要求文 ×8 を common に寄せる**
+  - やること: `common::{connect_request, open_tunnel, open_tunnel_with}` を置く。締め切り 20 秒や write の締め切りが要る試験は `_with` を使う。
+  - 受け入れ基準: 該当の試験が通り、`fn open_tunnel` が tests/*_test.rs に 0 本になる。
+  - 値打ち: 高 / common の分割の後。
+- [ ] **T.34.109 `send_raw` ×8 と `raw_request` を `raw_request_with(port, bytes, timeout, half_close)` 1 つにする**
+  - 受け入れ基準: 8 ファイルの試験が通る。
+  - 値打ち: 中。
+- [ ] **T.34.110 要求を貯めるオリジン、黙るオリジン、`/metrics` の系列の読み方を common に寄せる**
+  - 対象: `capture_origin` ほか 8 本、`start_quiet_origin` ×3、`prom_value` ×4、`rejected` ×2。
+  - 受け入れ基準: 該当する 12 ファイルの試験が通る。応答の本文は今と同じにする。
+  - 値打ち: 中。
+- [ ] **T.34.111 JSON の手書きの切り出し (数と文字列の約 15 本) を `tests/common/json.rs` に寄せる**
+  - やること: `uint`・`uint_opt`・`number`・`number_opt`・`raw_value`・`string` を置く。
+  - 受け入れ基準:
+    - 落ちたときの文面に、鍵と JSON が入る。
+    - 単体試験を 5 本ほど足す。
+  - 値打ち: 高 / common の分割の後。
+- [ ] **T.34.112 JSON の手書きの切り出し (オブジェクト・配列・行の約 15 本) を `common::json` に寄せる**
+  - やること: `object`・`last_object`・`array_items`・`sample_rows`・`string_array`・`find_item` を置く。
+  - 受け入れ基準:
+    - 16 ファイルの試験が通る。
+    - 入れ子・文字列の中の括弧・空の配列の単体試験を足す。
+  - 値打ち: 高 / 上の小タスク (数と文字列) の後。
+- [ ] **T.34.113 手書きの待ちループ (約 10 か所) を `wait_for` / `wait_until_for` に寄せる**
+  - 対象: dns_cause・idle_sleep・maxconns・proxy・revalidate_cookie・revalidate_headers・tunnel・heavy・min_transfer・dns。
+  - 受け入れ基準:
+    - 上限と刻みは今と同じ値を渡す。
+    - 落ちたときの文面に `what` が出る。
+  - 値打ち: 高 (揺れが減る)。
+- [ ] **T.34.114 「何も起きないこと」を見る固定の sleep (約 16 か所) を、正の合図を待ってから見る形にする**
+  - やること:
+    - 合図を待ってから否定を見る。合図の例は、`rejected_requests` が +1 になること、`background_revalidations`、EOF。
+    - 合図が無いものは `common::SETTLE` に寄せ、理由をコメントに書く。
+  - 受け入れ基準:
+    - 各試験の主張は変えない。
+    - 固定の sleep を半分以下にする。
+  - 値打ち: 中 / 上の待ちループの小タスクの後。
+- [ ] **T.34.115 時計 (TTL) に頼る sleep (約 15 か所) を、時計を差し替えられるようにしてから移す**
+  - 対象: cache_test・revalidate_*・header_timeout・idle_sleep・min_transfer・canary・stall。
+  - やること:
+    - 先に crates の側に時計の差し替え口を作る。
+    - `start_test_proxy_*` に `clock` を渡す版を足して、試験を 1 本ずつ移す。
+    - いまは一覧を `common/proxy.rs` の頭に残しておく。
+  - 値打ち: 低 / 時計の差し替えが先に要る。
+- [ ] **T.34.116 proxy_test.rs (1,404 行・26 本) を中継・自分宛ての口・ACL・枠組み・ループに割る**
+  - 受け入れ基準:
+    - 5 つのファイルの合計が 26 本になる。
+    - 各ファイルを 500 行以下にする。
+    - `proxy_test.rs` は残す。
+  - 値打ち: 中 / tests の重複の寄せの後。
+- [ ] **T.34.117 recent_test.rs (1,403 行・21 本) を口ごとに割る**
+  - 割り方: `/errors`・`/connections`・`/dns`/`/log`/`/hosts`・`/recent`・`/snapshot`。
+  - 受け入れ基準: 合計が 21 本で、各ファイルを 500 行以下にする。
+  - 値打ち: 中。
+- [ ] **T.34.118 cache_test.rs (883 行・17 本) を基本・再検証・合流に割る**
+  - 受け入れ基準: 合計が 17 本。
+  - 値打ち: 中。
+- [ ] **T.34.119 keepalive_test.rs (809 行・18 本) を HTTP keep-alive・Nagle・TCP keepalive に割る**
+  - 受け入れ基準: 合計が 18 本で、`keepalive_test.rs` を 450 行以下にする。
+  - 値打ち: 中 / FFI の小タスクの後。
+- [ ] **T.34.120 config_test.rs (802 行・10 本) を `/config` と `--check` に割り、`assert_setting` の表で短くする**
+  - 受け入れ基準: 合計が 10 本で、各ファイルを 450 行以下にする。
+  - 値打ち: 中 / `ProxyProcess::builder` の小タスクの後。
+- [ ] **T.34.121 slo_test.rs の 4 本の儀式と、時の区切りの待ちを関数にする**
+  - やること: `scene()`・`past_hour_boundary()`・`observe_errors()` を出す。
+  - 受け入れ基準: 各試験を 80 行以下にする。
+  - 値打ち: 低。
+- [ ] **T.34.122 persist_test.rs の版 2 の fixture (約 190 行) を `tests/common/rrd_v2.rs` へ移す**
+  - 受け入れ基準: `persist_test.rs` を 450 行以下にする。
+  - 値打ち: 低。
+- [ ] **T.34.123 resp_framing_test.rs の `start_scripted_origin` (104 行) を、表と配り手に割る**
+  - 値打ち: 低。
+- [ ] **T.34.124 snapshot_criteria.py (3,454 行) を `scripts/criteria/` に割る (1/6: 小物と再起動)**
+  - 目的: snapshot-diff・snapshot-summary・試験が、約 60 の名前 (私的なものも含む) を名前で取り込んでいる。そのため**取り込み口の名前は 1 つも変えない**。README がファイル名で指しているので、`snapshot_criteria.py` は facade として残す。
+  - やること:
+    - `criteria/common.py` と `criteria/restarts.py` に移す。
+    - facade の側で、明示的に import し直す。
+  - 受け入れ基準:
+    - 変える前に、`snapshot-diff.py --criteria phase14〜30` を testdata の組全部に当て、出力を保存しておく。
+    - 変えた後の出力と diff して、差が 0 行。
+    - 745 本が OK で、check-docs の差分が 0。
+  - 値打ち: 高 / 2〜6 の前提。
+- [ ] **T.34.125 snapshot_criteria.py を割る (2/6: Phase 14〜18、約 620 行 → `criteria/phase14_18.py`)**
+  - 受け入れ基準: 1/6 と同じ (出力の差 0)。
+  - 値打ち: 高。
+- [ ] **T.34.126 snapshot_criteria.py を割る (3/6: Phase 20〜22、約 390 行 → `criteria/phase20_22.py`)**
+  - 受け入れ基準: 1/6 と同じ。
+  - 値打ち: 高。
+- [ ] **T.34.127 snapshot_criteria.py を割る (4/6: Phase 23〜25、約 480 行 → `criteria/phase23_25.py`)**
+  - 受け入れ基準: 1/6 と同じ。
+  - 値打ち: 高。
+- [ ] **T.34.128 snapshot_criteria.py を割る (5/6: Phase 26〜28、約 470 行 → `criteria/phase26_28.py`)**
+  - 受け入れ基準: 1/6 と同じ。
+  - 値打ち: 高。
+- [ ] **T.34.129 snapshot_criteria.py を割る (6/6: Phase 29〜30 と、`RULES` を 1 か所に)**
+  - やること:
+    - Phase 29〜30 を `criteria/phase29_30.py` に移す。
+    - `criteria/rules.py` で `RULES` を順に組む。添字の切り貼りは、並びを試験で固定してから書き直す。
+    - facade は約 300 行にする。
+  - 受け入れ基準: 1/6 と同じ。あわせて、`RULES` の各段の関数名の一覧が前後で同じ。
+  - 値打ち: 高。
+- [ ] **T.34.130 `render_criteria` (194 行) と `silent_restarts` (98 行) を段に割る**
+  - 受け入れ基準: 出力の差が 0 で、各関数を 60 行以下にする。
+  - 値打ち: 中 / 6/6 の後。
+- [ ] **T.34.131 snapshot-diff.py の `render` (406 行) を節ごとの関数に、`aggregate`・`build` を 2 つに割る**
+  - 受け入れ基準: testdata の組・`--from-files`・`--daily-snapshots` の出力が前後で同じ。
+  - 値打ち: 高。
+- [ ] **T.34.132 snapshot-summary.py の `main` (274 行) を、行の list を返す節の関数に割る**
+  - 受け入れ基準: testdata の雪像 (単独と `--prev` 付き) と手元の雪像で、出力が前後で同じ。
+  - 値打ち: 高。
+- [ ] **T.34.133 weekly-report.py の `render` (246 行) を節に割り、`merged_history`/`pick_res` の写しを消す**
+  - 受け入れ基準: 3 つの試験が通り、週次の出力の差が 0。
+  - 値打ち: 中 / criteria の 1/6 の後。
+- [ ] **T.34.134 Python の小物の重複 (`fmt_bytes`・`stamp`・`taken_at_from_name`・`load`) を proxydata に寄せる**
+  - やること: 寄せる。2 つの `classify` は中身が違うので寄せず、その理由をコメントに書く。
+  - 値打ち: 中。
+- [ ] **T.34.135 試験の `_load` ×14 と `run` ×8 を `scripts/_testing.py` に寄せる**
+  - 受け入れ基準: 745 本が通り、試験の名前は変えない。
+  - 値打ち: 高 (安い)。
+- [ ] **T.34.136 framing-probe.py (484 行、試験なし) から判断を切り出して、試験を足す**
+  - やること:
+    - ケースの表を純粋なデータにする。
+    - `judge` と `summarize` を純粋な関数にする。
+    - `main` は配線だけにする。
+  - 受け入れ基準: 実機の印字が前後で同じ。
+  - 値打ち: 中。
+- [ ] **T.34.137 check-ledger.py の `collect` (209 行) を 4 つに割る**
+  - 受け入れ基準: check-docs の (g) の印字が同じ。
+  - 値打ち: 低。
+- [ ] **T.34.138 dns-idle.py・error-mix.py・status-diff.py の印字の関数 (91〜125 行) を節に割る**
+  - 値打ち: 低。
+- [ ] **T.34.139 collect-deployed.sh (1,122 行) の埋め込み Python の大きい 4 本を `collect_follow.py` に出し、節を shell の関数に包む**
+  - 受け入れ基準:
+    - `test_collect_deployed.py` と shellcheck と check-docs の (h) が通る。
+    - 偽のサーバー相手に作った `-collect.md` が前後で同じ。
+  - 値打ち: 中。
+- [ ] **T.34.140 check-dashboard.js (2,620 行) を節ごとのモジュールに割る**
+  - やること: check-docs の (d) は、連結して読むように 1 行だけ変える。
+  - 受け入れ基準: 印字と (d) の N が同じ。
+  - 値打ち: 低〜中。
+
+**見つけたバグと怪しい所 (直す仕事。振る舞いを変えるので、リファクタリングとは別のコミットにする)**
+
+- [ ] **T.34.141 `header_read.rs::linger` の時間の上限が、読み 1 回ごとの上限でしかない (T.34.0 のレビューで見つけた)**
+  - 目的: `server/src/conn/header_read.rs:301-312` は、断ったあと 64 KiB まで読み捨てる。ところが締め切りの 200 ms は、1 回の `read` の無通信の締め切りでしかない。そのため 1 バイトを 150 ms おきに送り続ける相手に、ワーカーを最長で約 2.7 時間握られる。注記の「時間も上限つき」と食い違っている。
+  - 再現: 400 を起こす要求を送ったあと、1 バイトずつ 150 ms おきに送り続ける。
+  - やること: 全体の締め切り (例: 1 秒) を `Instant` で持つ。
+  - 値打ち: **中〜高** (ワーカーを握られる) / 本体を変える。
+- [ ] **T.34.142 要求行のメソッドが token かどうかを見ていない (T.34.0 のレビューで見つけた)**
+  - 目的: `serve_one.rs:220-238` は要求行の形しか見ない。そのため `G\u{a0}ET /x HTTP/1.1` のような要求も、そのままオリジンへ届く (RFC 9112 §3)。また、断る経路は `split_whitespace` で、通す経路は `split_ascii_whitespace` と、区切り方が違う。
+  - 値打ち: 中 / 本体を変える。
+- [ ] **T.34.143 Range 要求の再検証で 206 が返ると、期限切れの全体の表現を捨ててしまう (T.34.0 のレビューで見つけた)**
+  - 目的: `http/deliver.rs:72-75` で起きる。次の素の GET が MISS になる (無駄だが、正しさは崩れない)。
+  - 再現:
+    1. max-age=1 で ETag 付きの 10 KiB を保存する。
+    2. 2 秒待つ。
+    3. `Range: bytes=0-9` で GET する (206 が返る)。
+    4. 素の GET を送ると MISS になる。
+  - 値打ち: 低〜中 / 本体を変える。
+- [ ] **T.34.144 `only-if-cached` 付きの POST や `Authorization` 付きの要求が 504 になる。これが意図かどうかを確かめる (T.34.0 のレビューで見つけた)**
+  - 値打ち: 低 / 利用者の判断。
+- [ ] **T.34.145 満杯のホスト表から捨てる行が、実行ごとに変わる (T.34.1 のレビューで見つけた)**
+  - 目的: `metrics-core/src/metrics.rs:120-137` の `evict_oldest_host` は、`min_by_key(last_seen)` で同点を崩していない。そのため、どの行を捨てるかが HashMap の順で決まる。`record_reader` の方は名前で崩している。
+  - 再現: 同じ `last_seen` の 1,000 行を `restore` してから、新しい鍵を 1 件入れる。
+  - やること: `.then_with(|| a.0.cmp(b.0))` で、名前で崩す。
+  - 値打ち: 低〜中 / 本体を変える。
+- [ ] **T.34.146 要求 1 本で、壁時計を 2 回読んでいる (T.34.1 のレビューで見つけた)**
+  - 目的: `Metrics::record` は `now_epoch()` を 1 回だけ読む約束になっている。ところが `ClientStats::count` (`metrics-window/src/clients.rs:103-104`) が、自分でもう 1 回読んでいる。
+  - やること: `record_client` に `now` を渡す (呼び出し側は 5 か所)。
+  - 値打ち: 低 / 熱い経路 / 本体を変える。
+- [ ] **T.34.147 ホスト表が 1,001 行になりうる。また `.rrd` の表のスロット番号が実行ごとに違う (T.34.1 のレビューで見つけた)**
+  - 目的:
+    - `metrics.rs:699-706` は、捨てられる行が無いときに `other` を作るので、`MAX_HOSTS + 1` 行になる。README の上限の書き方と合っているかを確かめる。
+    - `persist.rs` の `write_table` は、HashMap の順でスロットを配る。読み戻しは並びを見ないので害は無い。
+  - やること: どちらも、注記で済ませるか直すかを決める。
+  - 値打ち: 低。
+- [ ] **T.34.148 5 秒ごとに `/proc/self/cgroup` を 2 回読んでいる (`cgroup_cpu`・`cgroup_pressure`) (T.34.1 のレビューで見つけた)**
+  - 値打ち: 低 / I/O の回数が変わる。
+- [ ] **T.34.149 `/slo` の `breaches` を打ち切ると末尾に `,` が残り JSON が壊れる (T.34.2 のレビューで見つけた)**
+  - 目的:
+    - 場所: `crates/metrics-slo/src/slo/report.rs` の `Report::push_breaches` (元の `slo.rs:800-808`)。
+    - 原因: `if i > 0 { out.push(','); }` の**後**で `out.len() > MAX_BODY - TRAILER` を判定している。そのため 2 行目以降で打ち切ると `[{…},{…},]` になる (`hourly` は判定してからコンマを打つので正しい)。
+    - 再現: 31 日ぶん 1 時間おきに外れを置き、外れた各時間に長い名前 (`connect://` + 60 文字) の宛先を外させて、1 行を 500 B 級にする。すると 128 行の途中で 63,488 B を越える。
+  - やること: 判定をコンマより前に移す (hourly と同じ順)。
+  - 受け入れ基準: 上の形の試験が、直す前に落ちて直した後に通る (JSON として読める)。
+  - 値打ち: 中 (壊れた JSON を返す) / 本体を変える (デプロイが要る)。
+- [ ] **T.34.150 `PROXY_RECORDS=off` でも `restored` に読み戻した件数が出る (T.34.2 のレビューで見つけた)**
+  - 目的: `RecentRing::restore`・`BurstRing::restore`・`ErrorRing::restore` は、off のときは捨てるのに `restored = n` を立てる。そのため `/recent`・`/bursts`・`/errors` が、空のリングに N 件と出す。
+  - やること: off のときは 0 を立てる。意図した振る舞いなら、doc に一言書くだけにする。
+  - 受け入れ基準: `.recent` が残った状態で off にして起動し、`restored` が 0 になる試験。
+  - 値打ち: 低 / 本体を変える。
+- [ ] **T.34.151 再読込で、3 つの鍵の `source` が `default` のままになる (T.34.3 のレビューで見つけた)**
+  - 目的: `reload.rs:158-171` の `PROXY_ENDPOINTS_READONLY`/`ALLOW_CLIENTS`/`MAX_CONNS_PER_CLIENT` は、値を当てるのに `sources.adopt` を呼んでいない。
+  - 再現: `.env` に `PROXY_ENDPOINTS_READONLY=on` を足して再読込すると、`/config` の `source` が `default` のまま。
+  - 値打ち: 低〜中 / 本体を変える。
+- [ ] **T.34.152 `--lite` で、`PROXY_LOG_LEVEL` を消して再読込すると `info` に戻る (lite の既定は `warn`) (T.34.3 のレビューで見つけた)**
+  - 目的:
+    - `reload.rs:298-305` は、消えたら `Level::Info` に戻す。
+    - `log.rs:89` の読めない値の知らせは、`falling back to 'info'` と言いながら、lite では `warn` に落ちる。
+    - `from_env.rs:434` の `expected` に `trace` が無い。
+  - やること: 文面が変わるので、利用者の判断が要る。
+  - 値打ち: 低 / 本体を変える。
+- [ ] **T.34.153 `--check` と `/events` の `reload` で、引用符の外し方が揃っていない (T.34.3 のレビューで見つけた)**
+  - 目的: `run/src/lib.rs:177-180` は `!inner.is_empty() && !inner.contains('\\')` で外すが、`reload.rs:412-415` は `!inner.contains('\\')` だけで外す。
+  - 値打ち: 低 (見かけの不揃い)。
+- [ ] **T.34.154 `capabilities` の `tcp_info_ok` が、読む側より甘い (T.34.3 のレビューで見つけた)**
+  - 目的: `capabilities.rs:248-262` は 8 バイト以上書ければ `[ok]` にするが、`sys::tcp_info` は 76 バイト要る。古いカーネルでは `[ok]` なのに値が `null` になりうる (この機械では再現しない)。
+  - やること: `sys::tcp_info(fd).is_some()` に寄せる。判定が厳しくなる。
+  - 値打ち: 低 / 本体を変える。
+- [ ] **T.34.155 コメントの直し: 接続の締め切りの既定は 3 秒 (T.28.43) なのに、「5 秒」と書いてある (`config/from_env.rs:65-67`) (T.34.3 のレビューで見つけた)**
+  - 値打ち: 低 (コメントだけ)。
+- [ ] **T.34.156 ポートの無いブラケット付き IPv6 の `Host: [::1]` が自分宛てと判定されない (T.34.4 のレビューで見つけた)**
+  - 目的: `endpoints/incoming.rs:139-148` の `authority_port` が、最後の `:` で割って `1]` を読み、`None` を返す。そのため、80 で待ち受けていても転送に落ちる。
+  - 再現: `local_path("/status", 80, Some("[::1]"))` が `None` になる。
+  - やること: ポートの無いブラケット付きの形は 80 とする。今の振る舞いを縛っている単体試験 `the_authority_port_defaults_to_80_and_reads_bracketed_ipv6` の 2 行は `Some(80)` に直す。
+  - 値打ち: 低〜中 / 本体を変える。
+- [ ] **T.34.157 `/lookup` の `size` が、メモリの項目とディスクだけの項目とで食い違う (T.34.4 のレビューで見つけた)**
+  - 目的: `cache/ops.rs:82-101` の `peek` は、メモリの項目ならワイヤ長を返し、ディスクだけの項目なら SHPC2 のヘッダー行込みの長さを返す。
+  - 再現: メモリの上限より大きい本文を保存して、`/lookup?url=` を読む。
+  - やること: どちらで揃えるかを決め、README の定義と合わせる。
+  - 値打ち: 低。
+- [ ] **T.34.158 確かめる: `PROXY_CACHE_ENABLED=off` でもバリアントの表が伸びるか (T.34.4 のレビューで見つけた)**
+  - 目的: `cache/ops.rs:395-452` の `begin_store` は、`enabled` を見る前に `remember_variant` を呼ぶ。呼ぶ側 (`http/mod.rs:1578`・`refresh.rs:241`) が `enabled` を見ていなければ、表が伸びる。
+  - やること: 試験で確かめ、伸びるなら `enabled` を先に見るようにする。
+  - 値打ち: 低。
+- [ ] **T.34.159 cachecfg の既定のディレクトリ選びに副作用があり、`.env` の `HOME` と食い違う (T.34.4 のレビューで見つけた)**
+  - 目的: `cachecfg/src/config.rs:402-437` は、設定を読むだけで `create_dir_all` と `.write-test` を行う。また `HOME`/`XDG_CACHE_HOME` を、`lookup` (`.env` 込み) ではなく `env::var_os` から読む。そのため `.env` に `HOME` を書くと、`quota_root` と既定のキャッシュのディレクトリが食い違う。
+  - やること: 方針を決める (利用者の判断)。
+  - 値打ち: 低。
+- [ ] **T.34.160 PURGE が URL をパスとして `/readers` に残す (T.34.4 のレビューで見つけた)**
+  - 目的: `endpoints/mod.rs:148-150` で、PURGE の要求は `local_path` を通らない。そのため `record_reader(client, req.path)` に `http://host/path` がそのまま渡る。
+  - 値打ち: 低 / 本体を変える。
+- [ ] **T.34.161 時間に頼る試験 `tests/idle_sleep_test.rs:76` を時間に頼らない形に (T.34.4 で負荷の下で 1 回落ちた)**
+  - 目的: `test_integration_idle_watch_sleeps_while_nothing_is_parked` が、`cargo test --workspace` の負荷の下で「預かりが 0 なのに idle-watch が起きた」と言って落ちた。単体では 3/3 通る。
+  - ほかの候補: selfbench の 50 ms の sleep (`lib.rs:291-294`)、canary の `a_probe_measures_a_real_connect_and_a_refused_one`、profile の `the_busiest_thread_comes_first_in_threads_top` (T.34.2 のレビュー)。
+  - 値打ち: 中 (CI の揺れ)。
+- [ ] **T.34.162 試験の `cache_cfg(dir)` (`tests/common/mod.rs:451-458`) と `disk_only(dir)` (`revalidate_cookie_test.rs:59`) が、一時ディレクトリに pid を付けずに `remove_dir_all` する (T.34.5 のレビューで見つけた)**
+  - 目的: worktree を並べて `cargo test` を回すと、別の実行が使っている最中のキャッシュを消してしまう。
+  - やること: 名前に `std::process::id()` を入れる。
+  - 値打ち: 中 (試験の揺れ) / 本体は変えない。
+- [ ] **T.34.163 `common::read_response` が `Content-Length:` を大文字小文字を区別して探す (T.34.5 のレビューで見つけた)**
+  - 目的: 同じファイルの `content_length` は区別しない。いまは実害が無い。
+  - 値打ち: 低。
+- [ ] **T.34.164 `anomaly_rates` の数え方が、snapshot-summary.py:474 と snapshot_criteria.py:870 で違う (T.34.5 のレビューで見つけた)**
+  - 目的: 同じ雪像でも、要約の件数/時と判定表の行がずれることがある。
+  - やること: どちらが正しいかを決める。出力は凍結なので、直すなら新しい判定表の版で直す。
+  - 値打ち: 低〜中。
+
+- [ ] **T.34.99 締める (タスク 34 の版を走らせたあとに見る・決める・書く)**
+  - 前提:
+    - 振る舞いを変えないリファクタリングなので、判定は今の判定表 (`--criteria phase30`) が前の版と同じに満たすこと。
+    - 熱い経路の小タスクは、それぞれ Ir を台帳に書いてある。締めでは CPU/要求と RSS を前の版と比べる。
+    - 版は、本体を最後に変えた小タスクの番号にする。デプロイそのものは利用者が決める。
