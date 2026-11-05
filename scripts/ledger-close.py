@@ -2,7 +2,7 @@
 """台帳の締め (`TASKS.md` の済んだ小タスクを `tasks/TNN.md` へ移す) を道具にしたもの (T32.26)。
 
 前はセッションの作業場に写し (`close_task29.py`〜`close_task31.py`) を置き、番号・題・日付・前のタスクの
-正規表現を毎回書き換えていた。写しが直さないもの (`TODO.md` 冒頭の「T15〜T.N」、`tasks/README.md` の
+正規表現を毎回書き換えていた。写しが直さないもの (`TODO.md` 冒頭の「T15〜TN」、`tasks/README.md` の
 「タスク 0〜N」、全部済んだときの前置きの移動、§5 の「タスク N は全部済んだ」) は毎回手で直していた。
 
 使い方 (リポジトリの根から。`-C DIR` で別の根):
@@ -13,16 +13,16 @@
       (`--title` は 1 行目の題。省くと `TASKS.md` の `### タスク 32 (… に起こした: 題)` の題)。
       `TODO.md` の §5 の「済んだ N 本の本文は …」の行 (無ければタスク 31 の節の後ろに節ごと)、`tasks/README.md` の
       表の行 (`--index` は新しく作るときの説明。省くと `--title` と同じ)、範囲の印 2 つ (`TODO.md` 冒頭の
-      「T15〜T.N」と `tasks/README.md` の 1 行目の「タスク 0〜N」) を直す。
+      「T15〜TN」と `tasks/README.md` の 1 行目の「タスク 0〜N」) を直す。
 
   scripts/ledger-close.py --finish 32 [--deployed X.Y.Z[+hash]] [--hours H] [--note 文] [--date YYYY-MM-DD]
       小タスクが全部済んだ (`TASKS.md` の節に `- [ ]` が残っていない) タスクを締める: 節の前置き (見出しと
       小タスク以外の段落) を `tasks/T32.md` の末尾の「## タスク 32 の前置きと判断の記録 (…)」へ移し
       (見出しは `####` に下げる)、`TASKS.md` から節を消し (ほかに開いているタスクが無ければ「なし (…)。」)、
-      §5 の行の末尾に「タスク 32 は全部済んだ (日付、文)。」を足す (`--note` を省くと「T32.99 で締めた」、
-      `--deployed` なら「T32.99 で X.Y.Z を締めた」)。`--deployed` を渡すと `TODO.md` §2 の
+      §5 の行の末尾に「タスク 32 は全部済んだ (日付、文)。」を足す (`--note` を省くと「T32.999 で締めた」、
+      `--deployed` なら「T32.999 で X.Y.Z を締めた」)。`--deployed` を渡すと `TODO.md` §2 の
       「### デプロイ先の現在地 (…)」の見出しの日付・版 (と `--hours` の時間) と、次の段落の参照先
-      (`tasks/TNN.md` の **T.N.99 の結果**) を直す (要点の数字は手で書く。最後に書き直す場所を出す)。
+      (`tasks/TNN.md` の **TN.999 の結果** (それより前の締めは TN.99)) を直す (要点の数字は手で書く。最後に書き直す場所を出す)。
 
 **移すときは本文を 1 文字も変えない。ただし相対リンクだけは、移した先 (`tasks/`) から辿れる形に書き換える**
 (T32.38。`TASKS.md` の `[x](tasks/T30.md)` は `tasks/T30.md` の中では `[x](T30.md)`。リンクの文字は変えない)。
@@ -50,7 +50,7 @@ TODO_RANGE = re.compile(r"(済んだタスクのタスク本文 \(T15〜T)(\d+)(
 README_HEAD = re.compile(r"^(# tasks/ — 済んだタスクの本文 \(タスク 0〜)(\d+)(\))", re.M)
 CURRENT_HEAD = re.compile(r"^### デプロイ先の現在地 \((\d{4}-\d{2}-\d{2})、(.*) に (\d+\.\d+\.\d+) をデプロイして "
                           r"([\d.]+) 時間\)$", re.M)
-CURRENT_REF = re.compile(r"\[`tasks/T(\d+)\.md`\]\(tasks/T\d+\.md\) の \*\*T\d+\.99 の結果\*\*")
+CURRENT_REF = re.compile(r"\[`tasks/T(\d+)\.md`\]\(tasks/T\d+\.md\) の \*\*T\d+\.999? の結果\*\*")
 
 
 class Error(Exception):
@@ -123,7 +123,7 @@ def todo_line(n, done, span):
 
 
 def bump_ranges(root, n):
-    """範囲の印 2 つ (`TODO.md` 冒頭の「T15〜T.N」と `tasks/README.md` の「タスク 0〜N」) を N まで広げる。"""
+    """範囲の印 2 つ (`TODO.md` 冒頭の「T15〜TN」と `tasks/README.md` の「タスク 0〜N」) を N まで広げる。"""
     o = read(root, "TODO.md")
     o2 = TODO_RANGE.sub(lambda m: m.group(1) + str(max(n, int(m.group(2)))) + m.group(3), o, count=1)
     if o2 != o:
@@ -138,7 +138,7 @@ def close(root, tid, result, title=None, index=None, date=None):
     """1 本の小タスクを移す。移した先の相対パスを返す。"""
     m = TID.match(tid)
     if not m:
-        raise Error("小タスクの番号は T.<タスク>.<番号> の形で渡す (例: T32.5): %s" % tid)
+        raise Error("小タスクの番号は T<タスク>.<番号> の形で渡す (例: T32.5): %s" % tid)
     n = int(m.group(1))
     date = date or datetime.date.today().isoformat()
     t = read(root, "TASKS.md").split("\n")
@@ -223,7 +223,8 @@ def finish(root, n, deployed=None, hours=None, note=None, date=None, next_task=N
     if not os.path.exists(os.path.join(root, rel)):
         raise Error("%s が無い (小タスクを 1 本も移していない)" % rel)
     done = done_ids(read(root, rel), n)
-    last = done[-1] if done else "T%d.99" % n
+    # 締めの番号は最後の小タスク (2026-11-05 から `Tn.999`。それより前の締めは `Tn.99`)
+    last = done[-1] if done else "T%d.999" % n
 
     # 前置きを tasks/TNN.md の末尾へ (見出しは #### に下げる。相対リンクは移した先から辿れる形に)
     pre = list(body)
@@ -272,7 +273,7 @@ def finish(root, n, deployed=None, hours=None, note=None, date=None, next_task=N
         o = o[:cur.start()] + new_head + o[cur.end():]
         ref = CURRENT_REF.search(o, cur.start())
         if ref is not None:
-            o = o[:ref.start()] + ("[`tasks/T%d.md`](tasks/T%d.md) の **T%d.99 の結果**" % (n, n, n)) + o[ref.end():]
+            o = o[:ref.start()] + ("[`tasks/T%d.md`](tasks/T%d.md) の **%s の結果**" % (n, n, last)) + o[ref.end():]
         todo_hand.append("TODO.md §2「デプロイ先の現在地」の段落の雪像の名前・判定・要点 (見出しと参照先は直した)")
     write(root, "TODO.md", o)
     bump_ranges(root, n)

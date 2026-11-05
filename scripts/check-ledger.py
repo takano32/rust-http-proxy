@@ -18,13 +18,13 @@
   (足) 見出しの「済んだ N 本の本文は …」の N が、`tasks/TNN.md` のタスクの本数と合うこと
       (T24.9 が番号ごとに書いたので、片方だけ足したときにここで出る)。
   (5) 索引と範囲 (T28.21) … `tasks/README.md` の表に全部の `TNN.md` の行がある、その見出しの
-      「タスク 0〜N」と `TODO.md` 冒頭の「T15〜T.N」の N が `tasks/` のいちばん大きい番号。
+      「タスク 0〜N」と `TODO.md` 冒頭の「T15〜TN」の N が `tasks/` のいちばん大きい番号。
   (6) 済んだ節 (T28.21) … `TASKS.md` の `### タスク N (…)` の節が未着手を 1 本以上持つ
       (全部済んだら節ごと消す。2026-10-25 に済んだ節が 5 つ残っていた)。
   (7) 現在地の版 (T28.21) … `TODO.md` §2 の `### デプロイ先の現在地 (…)` の見出しの版が、
       `tasks/*.md` の「デプロイ済み」の行に出るいちばん新しい版 (`X.Y.Z+hash`) と同じ
       (締めのたびに §2 を書き直すのが 2 回続けて抜けたため)。
-  (8) 参照 (T28.21) … `TODO.md` と `tasks/*.md` の「未着手の T.n.m は …」が、`TASKS.md` に
+  (8) 参照 (T28.21) … `TODO.md` と `tasks/*.md` の「未着手の Tn.m は …」が、`TASKS.md` に
       実在する未着手のタスクを指す (「」で引いた文は数えない)。
   (9) 相対リンク (T32.38) … `TASKS.md`・`TODO.md`・`tasks/*.md` の `[…](相対パス)` の指す先のファイルが、
       **そのファイルの置き場所から辿って**ある (コードの囲みの中と `http:` などの URL は見ない)。
@@ -356,7 +356,7 @@ def check_numbers(led, t):
 
 
 def check_index_and_refs(led, t):
-    """(5) 索引と範囲・(6) 済んだ節の残り・(7) §2 の現在地の版・(8) 「未着手の T.n.m」の参照先・(9) 相対リンク。"""
+    """(5) 索引と範囲・(6) 済んだ節の残り・(7) §2 の現在地の版・(8) 「未着手の Tn.m」の参照先・(9) 相対リンク。"""
     root, tdir, todo, names, open_tasks = t.root, t.tdir, t.todo, t.names, t.open_tasks
     # --- (5) 索引と範囲 (T28.21) ------------------------------------------------
     top = max(names) if names else None
@@ -398,7 +398,7 @@ def check_index_and_refs(led, t):
                            "「デプロイ済み」は %s)"
                            % (".".join(map(str, have)) if have else "(無い)", ".".join(map(str, deployed))))
 
-    # --- (8) 「未着手の T.n.m は …」の参照先 (T28.21) -------------------------------
+    # --- (8) 「未着手の Tn.m は …」の参照先 (T28.21) -------------------------------
     open_ids = {task.ident for num in open_tasks for task in open_tasks[num] if not task.done}
     sources = [(TODO, todo)] + [("tasks/" + name, read_lines(os.path.join(tdir, name)))
                                 for name in names.values()]
