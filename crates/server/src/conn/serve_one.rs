@@ -2,10 +2,12 @@
 
 use super::*;
 
+use super::first_line::{Peer, first_line_wait, read_request_line, refuse_request_line};
 use super::header_read::{
-    HeaderClock, Line, MAX_HEADER_BYTES, MAX_HEADER_LINES, MAX_LINE, header_timeout, is_timeout,
-    overload, read_line_or_idle, reject,
+    HeaderClock, Line, MAX_HEADER_BYTES, MAX_HEADER_LINES, header_timeout, overload,
+    read_line_or_idle, reject,
 };
+use super::request_line::check_request_line;
 
 /// 要求を 1 つ処理する。次に何をするかを返す。
 pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
@@ -42,32 +44,7 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     let scratch = scratch.as_mut().expect("just set");
     scratch.reset();
 
-    // 2 回目以降で監視スレッドに預けられるなら、待つのは猶予のあいだだけ。
-    // 空振りしたら「暇だ」と解釈して預ける (poll を別に呼ばずに済む)。
-    // **`config.timeout` が 0 (無期限) でもここは変わらない**: 猶予は `park_grace` の
-    // 長さで、`timeout` とは別物なので、空振り = 「暇だ」の判定はそのまま起きる
-    // (T6.5 の預ける仕組みは無期限でも動く。結合テストで確かめてある)
-    let grace = (*served > 0
-        && park.is_some()
-        && !config.park_grace.is_zero()
-        && !config.keepalive.is_zero())
-    .then_some(config.park_grace);
-    // 最初の要求は `PROXY_HEADER_TIMEOUT_SECS` と通常のタイムアウトの小さい方
-    // (accept から 1 バイト目までを縛る。T.28.0)、2 回目以降は keep-alive のアイドル時間で待つ。
-    // 両方 0 なら 1 要求目は無期限に待つ (= 何も送ってこない接続を閉じない。T10.6。
-    // `PROXY_TIMEOUT_SECS=0` だけでは、未設定のヘッダーの締め切り (10 秒) が残る)
-    let first = config::first_read_timeout(config.timeout, config.header_timeout);
-    let wait = match (grace, *served) {
-        (Some(g), _) => g,
-        // 上限の外で受けた接続は、要求行を待つ時間を切る (T13.2)。枠は `OVERFLOW_SLOTS` 本
-        // しかないので、黙ったままの接続に占領させると `/status` が取れなくなる
-        (None, 0) if overflow => match first {
-            t if t.is_zero() => OVERFLOW_READ_TIMEOUT,
-            t => t.min(OVERFLOW_READ_TIMEOUT),
-        },
-        (None, 0) => first,
-        (None, _) => config.keepalive,
-    };
+    let (grace, wait) = first_line_wait(config, *served, park.is_some(), overflow);
     // タイムアウトの再設定は値が変わるときだけ (setsockopt は要求ごとに効いてくる)。
     // `wait` が 0 なら無期限 (`PROXY_TIMEOUT_SECS=0`。T10.6)
     if *read_timeout != Some(wait) {
@@ -86,89 +63,25 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         deadline: None,
     };
     let mut reader = buf.reader(client);
-    match read_line_or_idle(
+    let peer = Peer {
+        client,
+        metrics,
+        ip: peer_ip,
+        conn_id,
+        served: *served,
+        overflow,
+        over_client,
+        header_timeout: config.header_timeout,
+    };
+    if let Some(step) = read_request_line(
         &mut reader,
         &mut scratch.request_line,
         extend,
-        true,
         &mut extended,
         &mut clock,
+        peer,
     ) {
-        Ok(Line::Idle) => return Ok(Step::Park),
-        Ok(Line::Read(None)) => {
-            // 理由別に 1 件数えて個票にも残す (`/errors`。T14.28)。**断る経路だけ**を通るので
-            // 通した要求には 1 命令も足していない。WARN は理由ごとに 1 分に 1 行 (T.28.9)
-            if let Some(more) =
-                metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 414)
-            {
-                log_warn!(
-                    Some(conn_id),
-                    "414 URI Too Long (request line over {} bytes){}",
-                    MAX_LINE,
-                    more
-                );
-            }
-            reject(client, 414, "URI Too Long")?;
-            return Ok(Step::Close(recent::CloseReason::Shutdown));
-        }
-        Ok(Line::Read(Some(0))) => {
-            log_debug!(Some(conn_id), "client closed ({} requests served)", *served);
-            return Ok(Step::Close(recent::CloseReason::ClientEof));
-        }
-        Ok(Line::Read(Some(_))) => {}
-        // 1 バイト目から期限を越えた (1 バイトずつの trickle。2 要求目以降も)
-        Err(e) if is_timeout(&e) && clock.expired() => {
-            return header_timeout(client, metrics, peer_ip, conn_id, config.header_timeout);
-        }
-        Err(e)
-            if *served > 0
-                && matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::ConnectionReset
-                ) =>
-        {
-            log_debug!(Some(conn_id), "keep-alive idle timeout: {}", e);
-            return Ok(Step::Close(recent::CloseReason::KeepaliveTimeout));
-        }
-        // 上限の外で受けたのに何も送ってこない接続 (T13.2)。自分宛てか分からないまま
-        // 枠を握らせておけないので、待つのをやめて 503 で閉じる
-        Err(e)
-            if overflow
-                && matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-        {
-            return Ok(overload(
-                client,
-                metrics,
-                conn_id,
-                "a silent connection",
-                false,
-                over_client.then_some(peer_ip),
-            ));
-        }
-        // 1 要求目の 1 バイト目も来ないまま締め切りを過ぎた = 先張りの接続 (T.33.0)。
-        // 応答を読まない相手なので 408 は返さずに黙って閉じ、数は `silent_closes` だけに
-        // (`rejected_requests` にも `/errors` にも積まない)。0.32.39 の tokyo の 48.3 時間の 408 の
-        // 3,415 件は宛先も要求も無いもので、1 つの接続元から波 (20.5 秒おき・88 秒おき) で来ていた。
-        // 1 バイトでも送ってから止まった接続 (本物の遅い要求) は下の 408 のまま
-        Err(e) if *served == 0 && !clock.started && clock.is_header_timeout(&e, 0) => {
-            metrics.silent_closes.fetch_add(1, Ordering::Relaxed);
-            log_debug!(
-                Some(conn_id),
-                "closed a silent connection (no byte within {} s)",
-                config.header_timeout.as_secs_f64()
-            );
-            return Ok(Step::Close(recent::CloseReason::IdleTimeout));
-        }
-        // 1 要求目の途中で黙った・期限切れ (T.28.0)
-        Err(e) if clock.is_header_timeout(&e, *served) => {
-            return header_timeout(client, metrics, peer_ip, conn_id, config.header_timeout);
-        }
-        Err(e) => return Err(e),
+        return step;
     }
     // ここから `Host` を読み終えるまでが `client_read` の段階 (T14.3 (1))。
     // **起点は要求行が届いたところ**で、接続を開けたまま黙っている時間は含めない
@@ -190,88 +103,14 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     );
 
     let request_line = std::mem::take(&mut scratch.request_line);
-    let mut parts = request_line.split_ascii_whitespace();
-    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
-        // メソッドが token として読めなければ `method`、読めるなら `request_line` (T14.28)。
-        // **個票に要求行そのものは入れない** (壊れた行にも URL が載っているため)。
-        // WARN は理由ごとに 1 分に 1 行 (T.28.9)
-        if let Some(more) = metrics.record_bad_request(
-            metrics::BadRequestReason::of_request_line(&request_line),
-            peer_ip,
-            400,
-        ) {
-            log_warn!(
-                Some(conn_id),
-                "malformed request line: {}{}",
-                crate::log::Clip(request_line.trim()),
-                more
-            );
+    let (method, target) = match check_request_line(&request_line) {
+        Ok(l) => (l.method, l.target),
+        Err(e) => {
+            let step = refuse_request_line(peer, &request_line, e)?;
+            scratch.request_line = request_line;
+            return Ok(step);
         }
-        // 今までは応答を返さずに閉じていた。理由を数えるからには**返した状態コードを
-        // 個票に正しく書く**必要があるので、414 / 431 と同じ形で 400 を返してから閉じる
-        reject(client, 400, "Bad Request")?;
-        scratch.request_line = request_line;
-        return Ok(Step::Close(recent::CloseReason::Shutdown));
     };
-    // 要求行の文法 (RFC 9112 §3。T.29.8): **ちょうど 3 要素** (メソッド・対象・版) で、対象は VCHAR だけ、
-    // 版は `HTTP/d.d` の形。外れたら 400。今までは `GET http://h/a b HTTP/1.1` の `b` を版と読んで 505、
-    // `… HTTP/1.1 junk` と版の無い行 (HTTP/0.9 の形) を 1.0 として受け付け、対象の DEL / NUL / 制御文字を
-    // そのまま転送していた。区切りの空白の数は今までどおり問わない
-    let version = parts.next();
-    if parts.next().is_some()
-        || !version.is_some_and(version_syntax_ok)
-        || !target.bytes().all(|b| b.is_ascii_graphic())
-    {
-        if let Some(more) =
-            metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 400)
-        {
-            log_warn!(
-                Some(conn_id),
-                "400 Bad Request: request line is not `method target HTTP/x.y`: {}{}",
-                crate::log::Clip(request_line.trim()),
-                more
-            );
-        }
-        reject(client, 400, "Bad Request")?;
-        scratch.request_line = request_line;
-        return Ok(Step::Close(recent::CloseReason::Shutdown));
-    }
-    // 版が `HTTP/1.x` でない要求 (`HTTP/9.9`・HTTP/2 の preface `PRI * HTTP/2.0`) は 505 (T27.8)。
-    // 今までは `HTTP/9.9` を 1.1 として転送し、preface は `*` を宛先として引きに行って 502 だった
-    if let Some(version) = version
-        && !version.get(..7).is_some_and(|v| v == "HTTP/1.")
-    {
-        if let Some(more) =
-            metrics.record_bad_request(metrics::BadRequestReason::RequestLine, peer_ip, 505)
-        {
-            log_warn!(
-                Some(conn_id),
-                "505 HTTP Version Not Supported: {}{}",
-                crate::log::Clip(version),
-                more
-            );
-        }
-        reject(client, 505, "HTTP Version Not Supported")?;
-        scratch.request_line = request_line;
-        return Ok(Step::Close(recent::CloseReason::Shutdown));
-    }
-
-    // `*` (asterisk-form) は `OPTIONS` だけ (RFC 9112 §3.2.4。T.29.9)。今までは `*` を宛先として引いて 502
-    if target == "*" && method != "OPTIONS" {
-        if let Some(more) =
-            metrics.record_bad_request(metrics::BadRequestReason::BadUri, peer_ip, 400)
-        {
-            log_warn!(
-                Some(conn_id),
-                "400 Bad Request: `*` target with {}{}",
-                crate::log::Clip(method),
-                more
-            );
-        }
-        reject(client, 400, "Bad Request")?;
-        scratch.request_line = request_line;
-        return Ok(Step::Close(recent::CloseReason::Shutdown));
-    }
 
     // ヘッダー全体の大きさ (要求行を含む)
     let mut header_bytes = request_line.len();
@@ -297,34 +136,30 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         };
         match line {
             None => {
-                if let Some(more) = metrics.record_bad_request(
+                return peer.refuse(
                     metrics::BadRequestReason::HeaderTooLarge,
-                    peer_ip,
                     431,
-                ) {
-                    log_warn!(Some(conn_id), "431 Request Header Fields Too Large{}", more);
-                }
-                reject(client, 431, "Request Header Fields Too Large")?;
-                return Ok(Step::Close(recent::CloseReason::Shutdown));
+                    "Request Header Fields Too Large",
+                    |more| log_warn!(Some(conn_id), "431 Request Header Fields Too Large{}", more),
+                );
             }
             Some(0) => break,
             Some(n) => {
                 header_bytes += n;
                 if header_bytes > MAX_HEADER_BYTES {
-                    if let Some(more) = metrics.record_bad_request(
+                    return peer.refuse(
                         metrics::BadRequestReason::HeaderTooLarge,
-                        peer_ip,
                         431,
-                    ) {
-                        log_warn!(
-                            Some(conn_id),
-                            "431 Request Header Fields Too Large (headers over {} bytes){}",
-                            MAX_HEADER_BYTES,
-                            more
-                        );
-                    }
-                    reject(client, 431, "Request Header Fields Too Large")?;
-                    return Ok(Step::Close(recent::CloseReason::Shutdown));
+                        "Request Header Fields Too Large",
+                        |more| {
+                            log_warn!(
+                                Some(conn_id),
+                                "431 Request Header Fields Too Large (headers over {} bytes){}",
+                                MAX_HEADER_BYTES,
+                                more
+                            )
+                        },
+                    );
                 }
             }
         }
@@ -332,17 +167,18 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             break;
         }
         if index >= MAX_HEADER_LINES {
-            if let Some(more) =
-                metrics.record_bad_request(metrics::BadRequestReason::HeaderTooLarge, peer_ip, 431)
-            {
-                log_warn!(
-                    Some(conn_id),
-                    "431 Request Header Fields Too Large (too many lines){}",
-                    more
-                );
-            }
-            reject(client, 431, "Request Header Fields Too Large")?;
-            return Ok(Step::Close(recent::CloseReason::Shutdown));
+            return peer.refuse(
+                metrics::BadRequestReason::HeaderTooLarge,
+                431,
+                "Request Header Fields Too Large",
+                |more| {
+                    log_warn!(
+                        Some(conn_id),
+                        "431 Request Header Fields Too Large (too many lines){}",
+                        more
+                    )
+                },
+            );
         }
         scratch.commit();
     }
@@ -523,18 +359,16 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             None
         };
         if let Some(reason) = reason {
-            if let Some(more) = metrics.record_bad_request(reason, peer_ip, 400) {
+            // ステータスを返してから閉じる (無言で切ると客からは「落ちた」と見える)
+            return peer.refuse(reason, 400, "Bad Request", |more| {
                 log_warn!(
                     Some(conn_id),
                     "400 Bad Request: {} in CONNECT {}{}",
                     reason.name(),
                     target,
                     more
-                );
-            }
-            // ステータスを返してから閉じる (無言で切ると客からは「落ちた」と見える)
-            reject(client, 400, "Bad Request")?;
-            return Ok(Step::Close(recent::CloseReason::Shutdown));
+                )
+            });
         }
     }
     // 判定に要るのはホストだけなので、要求行から借りる (String を 2 本作らない)
@@ -545,16 +379,16 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             Ok(h) => h,
             Err(e) => {
                 // `Host` が無い (`no_host`) のか絶対 URI が壊れている (`bad_uri`) のかを
-                // 分けて数える (T14.28)。判定は**断る経路だけ**を通る
-                if let Some(more) = metrics.record_bad_request(
-                    metrics::BadRequestReason::of_target(method, target),
-                    peer_ip,
-                    400,
-                ) {
-                    log_warn!(Some(conn_id), "400 Bad Request: {}{}", e, more);
-                }
-                let _ = reject(client, 400, "Bad Request");
-                return Ok(Step::Close(recent::CloseReason::Shutdown));
+                // 分けて数える (T14.28)。判定は**断る経路だけ**を通る。
+                // ここだけは応答を書けなくても閉じるだけ (元から `let _ = reject(..)`)
+                return peer
+                    .refuse(
+                        metrics::BadRequestReason::of_target(method, target),
+                        400,
+                        "Bad Request",
+                        |more| log_warn!(Some(conn_id), "400 Bad Request: {}{}", e, more),
+                    )
+                    .or(Ok(Step::Close(recent::CloseReason::Shutdown)));
             }
         }
     };
@@ -562,18 +396,19 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // CONNECT の宛先は `host:port` の形でなければならない (RFC 9110 §9.3.6)。ポートが無い・読めない・0 の
     // ときは今まで 443 とみなすか 0 番へ繋ぎに行って 502 だった。クライアントの誤りなので 400 (T27.8)
     if is_connect && (bare_host.is_empty() || !host_port.is_some_and(|p| p != 0)) {
-        if let Some(more) =
-            metrics.record_bad_request(metrics::BadRequestReason::BadUri, peer_ip, 400)
-        {
-            log_warn!(
-                Some(conn_id),
-                "400 Bad Request: CONNECT target without a port: {}{}",
-                target,
-                more
-            );
-        }
-        reject(client, 400, "Bad Request")?;
-        return Ok(Step::Close(recent::CloseReason::Shutdown));
+        return peer.refuse(
+            metrics::BadRequestReason::BadUri,
+            400,
+            "Bad Request",
+            |more| {
+                log_warn!(
+                    Some(conn_id),
+                    "400 Bad Request: CONNECT target without a port: {}{}",
+                    target,
+                    more
+                )
+            },
+        );
     }
     // ローカル宛ての判定で引いた答え (接続でもう一度引かないために持ち回す。T12.7)
     let mut resolved: Option<dns::Resolved> = None;
@@ -739,42 +574,5 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
             slot.set_bytes(t.up.saturating_add(t.down));
         }
         Ok(Step::Next)
-    }
-}
-
-/// 版が `HTTP/d.d` の形か (RFC 9112 §2.3。T.29.8)。`HTTP` は大小を区別する (`HTTP-name = %s"HTTP"`。
-/// T.32.15 (6)。T.29.8 では問わずに `http/1.1` を通していた)。
-/// 形が合っていて `1.x` でないもの (`HTTP/2.0`・`HTTP/9.9`) は呼ぶ側が 505 にする。
-fn version_syntax_ok(v: &str) -> bool {
-    let b = v.as_bytes();
-    b.len() == 8
-        && &b[..5] == b"HTTP/"
-        && b[5].is_ascii_digit()
-        && b[6] == b'.'
-        && b[7].is_ascii_digit()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::version_syntax_ok;
-
-    #[test]
-    fn version_syntax() {
-        for ok in ["HTTP/1.1", "HTTP/1.0", "HTTP/9.9", "HTTP/2.0"] {
-            assert!(version_syntax_ok(ok), "{}", ok);
-        }
-        for bad in [
-            "HTTP/1.1junk",
-            "HTTP/1",
-            "HTTP/11.1",
-            "b",
-            "",
-            "HTTP/1.x",
-            "XTTP/1.1",
-            "http/1.1",
-            "Http/1.0",
-        ] {
-            assert!(!version_syntax_ok(bad), "{}", bad);
-        }
     }
 }

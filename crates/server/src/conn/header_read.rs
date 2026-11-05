@@ -295,6 +295,28 @@ pub(super) fn reject(client: &TcpStream, status: u16, reason: &str) -> io::Resul
     Ok(())
 }
 
+/// 要求を断る共通の形 (T.34.11): 理由別に 1 件数えて個票にも残し (`/errors`。T14.28)、
+/// WARN は理由ごとに 1 分に 1 行 (T.28.9) だけ `warn` に出させ (文面は呼ぶ側が持つ)、
+/// `status` を返してから閉じる (無言で切ると客からは「落ちた」と見える)。
+///
+/// **断る経路だけ**を通るので、通した要求には 1 命令も足さない。
+#[cold]
+pub(super) fn refuse(
+    client: &TcpStream,
+    metrics: &Metrics,
+    peer_ip: &str,
+    why: metrics::BadRequestReason,
+    status: u16,
+    reason: &str,
+    warn: impl FnOnce(crate::log::Skipped),
+) -> io::Result<Step> {
+    if let Some(more) = metrics.record_bad_request(why, peer_ip, status) {
+        warn(more);
+    }
+    reject(client, status, reason)?;
+    Ok(Step::Close(recent::CloseReason::Shutdown))
+}
+
 /// 断ったあと、相手がまだ送っている途中で閉じると RST になり、書いた応答ごと捨てられて
 /// クライアントは理由が分からない。少しだけ読み捨ててから閉じる (時間もバイト数も上限つきなので、
 /// これ自体を居座りに使うことはできない)。
