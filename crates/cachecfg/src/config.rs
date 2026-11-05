@@ -1,10 +1,14 @@
 //! キャッシュ設定: 上限の指定方法 (固定 / 自動) と環境変数の解釈。
 
-use std::env;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+mod env;
+
+use env::Env;
 
 pub const MIB: u64 = 1024 * 1024;
 
@@ -240,7 +244,7 @@ impl Default for CacheConfig {
             reserve: Reserve::Staged,
             // 1 → 5 秒 (T.29.22。暇なときの裏の費用。上限は `put` 側が自分で守る)
             probe_interval: Duration::from_secs(5),
-            dir: env::temp_dir().join("rust-http-proxy-cache"),
+            dir: std::env::temp_dir().join("rust-http-proxy-cache"),
             mem_keep_free: 0,
             disk_keep_free: 0,
             default_ttl: Duration::from_secs(300),
@@ -271,101 +275,50 @@ impl CacheConfig {
     /// 環境変数相当の値を `lookup` から読んで設定を組み立てる (テストしやすいよう分離)。
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
         let d = Self::default();
-        let get = |k: &str| {
-            lookup(k)
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        };
-        let num = |k: &str| get(k).and_then(|v| v.parse::<u64>().ok());
-        let flag = |k: &str, default: bool| {
-            get(k)
-                .map(|v| {
-                    !matches!(
-                        v.to_ascii_lowercase().as_str(),
-                        "0" | "false" | "off" | "no"
-                    )
-                })
-                .unwrap_or(default)
-        };
-        let percent = |k: &str| {
-            num(k)
-                .filter(|p| (1..=100).contains(p))
-                .map(|p| p as u8)
-                .unwrap_or(DEFAULT_TARGET_PERCENT)
-        };
-        let limit = |k: &str, pct_key: &str| {
-            let pct = percent(pct_key);
-            get(k)
-                .and_then(|v| Limit::parse(&v, pct))
-                .unwrap_or(Limit::Auto { percent: pct })
-        };
-
-        let pterodactyl = get("P_SERVER_UUID").is_some();
-        let home = get("HOME").map(PathBuf::from);
-        let dir = get("PROXY_CACHE_DIR")
+        let env = Env::new(lookup);
+        let pterodactyl = env.get("P_SERVER_UUID").is_some();
+        let home = env.get("HOME").map(PathBuf::from);
+        let dir = env
+            .get("PROXY_CACHE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| resolve_default_dir(pterodactyl));
-
         Self {
-            enabled: flag("PROXY_CACHE_ENABLED", true),
-            mem_limit: limit("PROXY_MEM_CACHE_MB", "PROXY_MEM_TARGET_PERCENT"),
-            disk_limit: limit("PROXY_DISK_CACHE_MB", "PROXY_DISK_TARGET_PERCENT"),
-            reserve: get("PROXY_CACHE_RESERVE")
-                .map(|v| Reserve::parse(&v))
-                .unwrap_or(d.reserve),
-            probe_interval: num("PROXY_CACHE_PROBE_SECS")
-                .map(Duration::from_secs)
-                .unwrap_or(d.probe_interval),
+            enabled: env.flag("PROXY_CACHE_ENABLED", true),
+            mem_limit: env.limit("PROXY_MEM_CACHE_MB", "PROXY_MEM_TARGET_PERCENT"),
+            disk_limit: env.limit("PROXY_DISK_CACHE_MB", "PROXY_DISK_TARGET_PERCENT"),
+            reserve: env
+                .get("PROXY_CACHE_RESERVE")
+                .map_or(d.reserve, |v| Reserve::parse(&v)),
+            probe_interval: env.secs("PROXY_CACHE_PROBE_SECS", d.probe_interval),
             dir,
-            mem_keep_free: num("PROXY_MEM_KEEP_FREE_MB")
-                .map(|v| v.saturating_mul(MIB))
-                .unwrap_or(d.mem_keep_free),
-            disk_keep_free: num("PROXY_DISK_KEEP_FREE_MB")
-                .map(|v| v.saturating_mul(MIB))
-                .unwrap_or(d.disk_keep_free),
-            default_ttl: num("PROXY_CACHE_TTL_SECS")
-                .map(Duration::from_secs)
-                .unwrap_or(d.default_ttl),
-            heuristic_percent: num("PROXY_CACHE_HEURISTIC_PERCENT")
-                .filter(|p| (0..=100).contains(p))
-                .map(|p| p as u8)
-                .unwrap_or(d.heuristic_percent),
-            heuristic_max: num("PROXY_CACHE_HEURISTIC_MAX_SECS")
-                .map(Duration::from_secs)
-                .unwrap_or(d.heuristic_max),
-            max_stale: num("PROXY_CACHE_MAX_STALE_SECS")
-                .map(Duration::from_secs)
-                .unwrap_or(d.max_stale),
-            grace: num("PROXY_CACHE_GRACE_SECS")
-                .map(Duration::from_secs)
-                .unwrap_or(d.grace),
-            stale_wait: num("PROXY_STALE_WAIT_SECS")
-                .map(Duration::from_secs)
-                .unwrap_or(d.stale_wait),
-            max_object_size: num("PROXY_CACHE_MAX_OBJECT_MB")
-                .map(|v| v.saturating_mul(MIB))
-                .unwrap_or(d.max_object_size),
-            mem_max_object_size: num("PROXY_MEM_CACHE_MAX_OBJECT_MB")
-                .map(|v| v.saturating_mul(MIB))
-                .unwrap_or(d.mem_max_object_size),
-            disk_max_entries: num("PROXY_DISK_MAX_ENTRIES")
-                .filter(|&v| v > 0)
-                .map(|v| v as usize)
-                .unwrap_or(d.disk_max_entries),
-            disk_quota: get("PROXY_DISK_QUOTA_MB")
-                .or_else(|| get("SERVER_DISK"))
+            mem_keep_free: env.mib("PROXY_MEM_KEEP_FREE_MB", d.mem_keep_free),
+            disk_keep_free: env.mib("PROXY_DISK_KEEP_FREE_MB", d.disk_keep_free),
+            default_ttl: env.secs("PROXY_CACHE_TTL_SECS", d.default_ttl),
+            heuristic_percent: env.percent_from(
+                "PROXY_CACHE_HEURISTIC_PERCENT",
+                0,
+                d.heuristic_percent,
+            ),
+            heuristic_max: env.secs("PROXY_CACHE_HEURISTIC_MAX_SECS", d.heuristic_max),
+            max_stale: env.secs("PROXY_CACHE_MAX_STALE_SECS", d.max_stale),
+            grace: env.secs("PROXY_CACHE_GRACE_SECS", d.grace),
+            stale_wait: env.secs("PROXY_STALE_WAIT_SECS", d.stale_wait),
+            max_object_size: env.mib("PROXY_CACHE_MAX_OBJECT_MB", d.max_object_size),
+            mem_max_object_size: env.mib("PROXY_MEM_CACHE_MAX_OBJECT_MB", d.mem_max_object_size),
+            disk_max_entries: env
+                .positive("PROXY_DISK_MAX_ENTRIES")
+                .map_or(d.disk_max_entries, |v| v as usize),
+            disk_quota: env
+                .get("PROXY_DISK_QUOTA_MB")
+                .or_else(|| env.get("SERVER_DISK"))
                 .and_then(|v| DiskQuota::parse(&v))
                 .unwrap_or(DiskQuota::Unknown),
-            quota_root: get("PROXY_DISK_QUOTA_ROOT").map(PathBuf::from).or(home),
-            mem_alloc: num("SERVER_MEMORY")
-                .filter(|&v| v > 0)
-                .map(|v| v.saturating_mul(MIB)),
+            quota_root: env.get("PROXY_DISK_QUOTA_ROOT").map(PathBuf::from).or(home),
+            mem_alloc: env.positive("SERVER_MEMORY").map(|v| v.saturating_mul(MIB)),
             pterodactyl,
-            disk_probe: flag("PROXY_DISK_PROBE", true),
-            admission: flag("PROXY_CACHE_ADMISSION", d.admission),
-            negative_ttl: num("PROXY_NEGATIVE_TTL_SECS")
-                .map(Duration::from_secs)
-                .unwrap_or(d.negative_ttl),
+            disk_probe: env.flag("PROXY_DISK_PROBE", true),
+            admission: env.flag("PROXY_CACHE_ADMISSION", d.admission),
+            negative_ttl: env.secs("PROXY_NEGATIVE_TTL_SECS", d.negative_ttl),
         }
     }
 
@@ -400,11 +353,21 @@ impl CacheConfig {
 /// Pterodactyl ではコンテナが起動ごとに作り直され `/home/container` だけが残るので、
 /// 2 を最優先にする。
 pub fn resolve_default_dir(pterodactyl: bool) -> PathBuf {
+    pick_default_dir(pterodactyl, |k| std::env::var_os(k), is_writable_dir)
+}
+
+/// [`resolve_default_dir`] の候補の順の判断 (環境変数の読みと「書けるか」を引数で受ける。
+/// T.34.85)。`writable` は最初に真を返した候補で止まる (その先の候補は作らない)。
+fn pick_default_dir(
+    pterodactyl: bool,
+    var: impl Fn(&str) -> Option<OsString>,
+    writable: impl Fn(&Path) -> bool,
+) -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
-    let home = env::var_os("HOME").filter(|v| !v.is_empty());
+    let home = var("HOME").filter(|v| !v.is_empty());
     // Pterodactyl では残るのはボリューム ($HOME) だけなので、イメージが XDG_CACHE_HOME を
     // どこかに向けていても無視する
-    let xdg = env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty() && !pterodactyl);
+    let xdg = var("XDG_CACHE_HOME").filter(|v| !v.is_empty() && !pterodactyl);
     if let Some(xdg) = xdg {
         candidates.push(PathBuf::from(xdg).join("rust-http-proxy"));
     } else if let Some(home) = home {
@@ -420,7 +383,7 @@ pub fn resolve_default_dir(pterodactyl: bool) -> PathBuf {
     }
     candidates
         .into_iter()
-        .find(|c| is_writable_dir(c.as_path()))
+        .find(|c| writable(c.as_path()))
         .unwrap_or_else(|| CacheConfig::default().dir)
 }
 
@@ -526,5 +489,68 @@ mod tests {
         assert_eq!(cfg.disk_keep_free, 512 * MIB);
         assert_eq!(cfg.mem_alloc, None);
         assert!(!cfg.pterodactyl);
+    }
+
+    /// 既定のディレクトリの候補の順 (T.34.85)。
+    ///
+    /// ふだんは `/var/cache` → XDG (無ければ `~/.cache`)、Pterodactyl では XDG を無視して
+    /// `~/.cache` → `/var/cache`。どれも書けなければ一時ディレクトリ。
+    #[cfg(unix)]
+    #[test]
+    fn the_default_dir_candidates_come_in_order() {
+        use std::cell::RefCell;
+        let vars = |home: Option<&'static str>, xdg: Option<&'static str>| {
+            move |k: &str| match k {
+                "HOME" => home.map(OsString::from),
+                "XDG_CACHE_HOME" => xdg.map(OsString::from),
+                _ => None,
+            }
+        };
+        // 書けるかを聞かれた順を記録し、どれも書けないと答える
+        let tried = |pterodactyl, home, xdg| {
+            let asked = RefCell::new(Vec::new());
+            let got = pick_default_dir(pterodactyl, vars(home, xdg), |p: &Path| {
+                asked.borrow_mut().push(p.to_path_buf());
+                false
+            });
+            assert_eq!(
+                got,
+                CacheConfig::default().dir,
+                "どれも書けなければ一時ディレクトリ"
+            );
+            asked.into_inner()
+        };
+        let p = PathBuf::from;
+        assert_eq!(
+            tried(false, Some("/h"), Some("/x")),
+            [p("/var/cache/rust-http-proxy"), p("/x/rust-http-proxy")]
+        );
+        assert_eq!(
+            tried(false, Some("/h"), None),
+            [
+                p("/var/cache/rust-http-proxy"),
+                p("/h/.cache/rust-http-proxy")
+            ]
+        );
+        // 空の値は書いていないのと同じ
+        assert_eq!(
+            tried(false, Some(""), Some("")),
+            [p("/var/cache/rust-http-proxy")]
+        );
+        assert_eq!(
+            tried(true, Some("/home/container"), Some("/x")),
+            [
+                p("/home/container/.cache/rust-http-proxy"),
+                p("/var/cache/rust-http-proxy")
+            ]
+        );
+        // 最初に書けた候補で止まる (その先は聞かない)
+        let asked = RefCell::new(0);
+        let got = pick_default_dir(true, vars(Some("/home/container"), None), |_: &Path| {
+            *asked.borrow_mut() += 1;
+            true
+        });
+        assert_eq!(got, p("/home/container/.cache/rust-http-proxy"));
+        assert_eq!(asked.into_inner(), 1);
     }
 }
