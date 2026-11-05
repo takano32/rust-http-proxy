@@ -1,3 +1,4 @@
+use super::host_table::web_port;
 use super::*;
 
 #[test]
