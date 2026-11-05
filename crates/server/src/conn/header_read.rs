@@ -21,7 +21,10 @@ const KEEP_LINES: usize = 32;
 const KEEP_LINE_CAP: usize = 1024;
 
 /// 要求を断ったあと、応答が RST で消えないように読み捨てる上限 (時間とバイト数)。
+/// `LINGER_TIMEOUT` は読み 1 回の無通信の締め切り、`LINGER_TOTAL` は読み捨て全体の締め切り
+/// (T.34.141。前者だけだと、少しずつ送り続ける相手にワーカーを握られる)。
 const LINGER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+const LINGER_TOTAL: std::time::Duration = std::time::Duration::from_secs(1);
 const LINGER_BYTES: usize = 64 * 1024;
 
 thread_local! {
@@ -411,12 +414,25 @@ pub(super) fn refuse(
 /// 断ったあと、相手がまだ送っている途中で閉じると RST になり、書いた応答ごと捨てられて
 /// クライアントは理由が分からない。少しだけ読み捨ててから閉じる (時間もバイト数も上限つきなので、
 /// これ自体を居座りに使うことはできない)。
+///
+/// 時間の上限は 2 つ: 読み 1 回の無通信 ([`LINGER_TIMEOUT`]) と、読み捨て全体
+/// ([`LINGER_TOTAL`]。T.34.141)。全体の残りが 1 回の締め切りより短くなったら、
+/// 読みの締め切りを残りに縮める (setsockopt が増えるのは最後の 200 ms の読みだけ)。
 fn linger(client: &TcpStream) {
     let mut client = client;
     let _ = client.set_read_timeout(Some(LINGER_TIMEOUT));
+    let deadline = Instant::now() + LINGER_TOTAL;
     let mut sink = [0u8; 8 * 1024];
     let mut drained = 0usize;
     while drained < LINGER_BYTES {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        if left < LINGER_TIMEOUT {
+            // 0 は「無期限」になるので渡さない (上で 0 なら抜けている)
+            let _ = client.set_read_timeout(Some(left));
+        }
         match client.read(&mut sink) {
             Ok(0) | Err(_) => break,
             Ok(n) => drained += n,
@@ -508,6 +524,40 @@ mod tests {
             // ここで置き場はスレッドへ戻る。このあとスレッドが終わり、置き場が破棄される
         });
         h.join().expect("the worker thread must exit cleanly");
+    }
+
+    /// 断ったあとの読み捨ては、少しずつ送り続ける相手にも全体で [`LINGER_TOTAL`] までしか
+    /// ワーカーを渡さない (T.34.141)。直す前は締め切りが読み 1 回ごとの 200 ms だけで、
+    /// 150 ms おきに 1 バイト送る相手には 64 KiB ぶん (約 2.7 時間) 握られていた。
+    #[test]
+    fn linger_gives_up_after_the_total_deadline_even_on_a_slow_drip() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sender = std::thread::spawn(move || {
+            let mut s = TcpStream::connect(addr).unwrap();
+            // 150 ms おきに 1 バイト、最長 4.5 秒 (読み 1 回の締め切り 200 ms には必ず間に合う)
+            for _ in 0..30 {
+                if s.write_all(b"x").is_err() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+        });
+        let (server, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        linger(&server);
+        let took = started.elapsed();
+        drop(server);
+        sender.join().unwrap();
+        assert!(
+            took >= LINGER_TOTAL - std::time::Duration::from_millis(50),
+            "送り続けている間は締め切りまで読み捨てる: {took:?}"
+        );
+        assert!(
+            took < LINGER_TOTAL + std::time::Duration::from_millis(500),
+            "全体の締め切りで諦める: {took:?}"
+        );
     }
 
     /// 借りて返すと、行の容量は使い回されるが中身は残らない。
