@@ -54,7 +54,7 @@ mod writer;
 
 pub use names::{Moment, day_name};
 pub(crate) use names::{is_date, parse_moment};
-use store::{existing, existing_moments};
+pub use store::{Saved, SavedMoment};
 pub use writer::Writer;
 
 /// 1 ファイルの上限 (4 MiB。`/snapshot` の上限 `endpoints::recent::MAX_SNAPSHOT` と同じ値)。
@@ -120,27 +120,6 @@ fn build(recent_max: Option<usize>, limit: u64) -> Option<String> {
         .locked()
         .as_ref()
         .map(|f| f(recent_max, limit as usize))
-}
-
-/// `/snapshots` に返す一覧の 1 行。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Saved {
-    /// `YYYY-MM-DD` (その日の分)
-    pub date: String,
-    pub bytes: u64,
-    /// 書いた時刻 (mtime。epoch 秒。読めなければ 0)
-    pub t: u64,
-}
-
-/// `/snapshots` の `moments` の 1 行 (起動と停止の 1 枚。T.28.20)。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedMoment {
-    /// `<YYYY-MM-DDTHHMMSSZ>-<種類>` (`/snapshots/<名前>` で読める)
-    pub name: String,
-    pub kind: Moment,
-    pub bytes: u64,
-    /// 撮った時刻 (名前の時刻。epoch 秒)
-    pub t: u64,
 }
 
 /// `/snapshots` に返す中身。
@@ -242,56 +221,22 @@ fn free_bytes(dir: &Path) -> Option<u64> {
         .map(|f| f.available)
 }
 
-/// `/snapshots` の一覧。
+/// `/snapshots` の一覧 (組み立ては `store.rs`。T.34.51)。
 pub fn list() -> Listing {
     let w = writer().locked();
     let (dir, days) = (w.dir().map(Path::to_path_buf), w.days());
     drop(w);
-    let Some(dir) = dir else {
-        return Listing {
-            dir: None,
-            days,
-            files: Vec::new(),
-            bytes: 0,
-            moments: Vec::new(),
-            moments_bytes: 0,
-        };
+    let (files, moments) = match &dir {
+        Some(d) => (store::saved(d), store::saved_moments(d)),
+        None => (Vec::new(), Vec::new()),
     };
-    let files: Vec<Saved> = existing(&dir)
-        .into_iter()
-        .map(|date| {
-            let meta = fs::metadata(dir.join(format!("{}{}", date, EXT))).ok();
-            Saved {
-                date,
-                bytes: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                t: meta
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
-            }
-        })
-        .collect();
-    let bytes = files.iter().map(|f| f.bytes).sum();
-    let moments: Vec<SavedMoment> = existing_moments(&dir)
-        .into_iter()
-        .map(|(name, t, kind)| SavedMoment {
-            bytes: fs::metadata(dir.join(format!("{}{}", name, EXT)))
-                .map(|m| m.len())
-                .unwrap_or(0),
-            name,
-            kind,
-            t,
-        })
-        .collect();
-    let moments_bytes = moments.iter().map(|f| f.bytes).sum();
     Listing {
-        dir: Some(dir),
+        bytes: files.iter().map(|f| f.bytes).sum(),
+        moments_bytes: moments.iter().map(|f| f.bytes).sum(),
+        dir,
         days,
         files,
-        bytes,
         moments,
-        moments_bytes,
     }
 }
 

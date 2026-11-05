@@ -1,7 +1,7 @@
 //! `snapshots` の単体試験 (T.34.2 で `snapshots.rs` の `mod tests` から移した。名前はそのまま)。
 
 use super::names::{day_of, moment_name};
-use super::store::newest_day;
+use super::store::{existing, existing_moments, newest_day};
 use super::writer::fits;
 use super::*;
 

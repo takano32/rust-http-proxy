@@ -13,6 +13,27 @@ use super::names::{Moment, day_of, is_date, parse_moment};
 use super::{EXT, SECS_PER_DAY};
 use crate::log_warn;
 
+/// `/snapshots` に返す一覧の 1 行。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Saved {
+    /// `YYYY-MM-DD` (その日の分)
+    pub date: String,
+    pub bytes: u64,
+    /// 書いた時刻 (mtime。epoch 秒。読めなければ 0)
+    pub t: u64,
+}
+
+/// `/snapshots` の `moments` の 1 行 (起動と停止の 1 枚。T.28.20)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedMoment {
+    /// `<YYYY-MM-DDTHHMMSSZ>-<種類>` (`/snapshots/<名前>` で読める)
+    pub name: String,
+    pub kind: Moment,
+    pub bytes: u64,
+    /// 撮った時刻 (名前の時刻。epoch 秒)
+    pub t: u64,
+}
+
 /// 置いてある日付 (古い順)。`<YYYY-MM-DD>.json` だけを見る。
 pub(super) fn existing(dir: &Path) -> Vec<String> {
     let Ok(rd) = fs::read_dir(dir) else {
@@ -37,6 +58,40 @@ pub(super) fn newest_day(dir: &Path) -> u64 {
         .last()
         .and_then(|d| day_of(d))
         .unwrap_or_default()
+}
+
+/// `/snapshots` の `files` (日次の 1 枚。古い順。T.34.51 で `list` から移した)。
+pub(super) fn saved(dir: &Path) -> Vec<Saved> {
+    existing(dir)
+        .into_iter()
+        .map(|date| {
+            let meta = fs::metadata(dir.join(format!("{}{}", date, EXT))).ok();
+            Saved {
+                date,
+                bytes: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                t: meta
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            }
+        })
+        .collect()
+}
+
+/// `/snapshots` の `moments` (起動と停止の 1 枚。古い順。T.34.51 で `list` から移した)。
+pub(super) fn saved_moments(dir: &Path) -> Vec<SavedMoment> {
+    existing_moments(dir)
+        .into_iter()
+        .map(|(name, t, kind)| SavedMoment {
+            bytes: fs::metadata(dir.join(format!("{}{}", name, EXT)))
+                .map(|m| m.len())
+                .unwrap_or(0),
+            name,
+            kind,
+            t,
+        })
+        .collect()
 }
 
 /// `days` 個を超えたぶんを**古い方から**消す。消した数を返す。
