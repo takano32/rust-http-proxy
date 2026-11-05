@@ -12,7 +12,7 @@ use super::*;
 /// 日付・大きさを並べるだけで、中身を読むのは [`snapshot_file`] (`/snapshots/<date>`)。
 /// `PROXY_STATS_PERSIST=off` と `PROXY_SNAPSHOT_DAYS=0` では 1 つも書いていないので
 /// `dir` が `null` で `files` は空。
-pub fn snapshots() -> (u16, &'static str, String) {
+pub(in crate::endpoints) fn snapshots() -> (u16, &'static str, String) {
     let l = crate::snapshots::list();
     let mut out = String::with_capacity(1024);
     out.push_str(SCHEMA_HEAD);
@@ -68,7 +68,7 @@ pub fn snapshots() -> (u16, &'static str, String) {
 /// `scripts/collect-deployed.sh --from-server` がそのまま読める。**版 (`schema`) も
 /// 書いた時のまま**で、読む道具は版の無い古いファイルも今までどおり読める (T14.49)。日付として読めない名前と
 /// 置いていない日は 404 (`..` を書かれても置き場所の外は見ない)。
-pub fn snapshot_file(date: &str) -> (u16, &'static str, String) {
+pub(in crate::endpoints) fn snapshot_file(date: &str) -> (u16, &'static str, String) {
     match crate::snapshots::read(date) {
         Some(body) => (200, "application/json", body),
         None => (
@@ -87,7 +87,7 @@ pub fn snapshot_file(date: &str) -> (u16, &'static str, String) {
 ///
 /// デプロイ先から 1 日 1 回取って保存する大きさなので、回線を占めない・エディタで
 /// 開ける・`python -m json.tool` が通る、の 3 つが収まる値にしてある。
-pub const MAX_SNAPSHOT: usize = 4 * 1024 * 1024;
+pub(super) const MAX_SNAPSHOT: usize = 4 * 1024 * 1024;
 
 /// `/snapshot` が越えたときに落とす順 (大きいものから)。落としたものは `"dropped"` に出る。
 const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
@@ -107,7 +107,7 @@ const DROP_ORDER: [&str; 3] = ["recent", "log", "history.5"];
 /// **`history.*` にはカーネルと cgroup の窓 (`kernel`) も一緒に入る** (T14.12。`/history` と同じ組み立て)。
 /// **T14.3 の `/profile` は、入ったらここに 1 行足す** (`parts` に名前が出るので、
 /// 読む側は「この版に何が入っていたか」を JSON だけで判別できる)。
-pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
+pub(in crate::endpoints) fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
     snapshot_with(ep, None, MAX_SNAPSHOT)
 }
 
@@ -127,7 +127,7 @@ pub fn snapshot(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
 ///
 /// `limit` は全体の上限 (いつもの `/snapshot` と起動・停止の 1 枚は [`MAX_SNAPSHOT`] = 4 MiB、
 /// 日次の 1 枚は `snapshots::DAILY_MAX_FILE` = 6 MiB。T.29.16)。`limit_bytes` に出る。
-pub fn snapshot_with(
+pub(in crate::endpoints) fn snapshot_with(
     ep: &Endpoint<'_>,
     recent_max: Option<usize>,
     limit: usize,

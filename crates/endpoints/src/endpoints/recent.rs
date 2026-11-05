@@ -23,18 +23,21 @@ use std::time::Instant;
 use super::{Endpoint, next_offset, offset_param, parse_query};
 use crate::events::MAX_EVENTS;
 use crate::metrics::SCHEMA_HEAD;
-use crate::recent::{BurstShot, MAX_BURSTS, MAX_ERRORS, MAX_RECENT, RecentEntry};
+use crate::recent::{BurstShot, MAX_BURSTS, MAX_ERRORS};
 use crate::trace::{MAX_PATH, MAX_TRACE};
 
+mod closed;
 mod snapshot;
 #[cfg(test)]
 mod tests;
 
-pub use snapshot::{snapshot, snapshot_file, snapshot_with, snapshots};
+pub(super) use closed::recent;
+use closed::recent_within;
+pub(super) use snapshot::{snapshot, snapshot_file, snapshot_with, snapshots};
 
 /// 個票の応答 1 本の上限 (256 KiB)。監視が 1 分おきに引いても回線を埋めない大きさで、
 /// `/errors` 500 件・`/connections` 240 件・`/hosts` 1,000 件のどれも収まる。
-pub const MAX_BODY: usize = 256 * 1024;
+pub(super) const MAX_BODY: usize = 256 * 1024;
 
 /// 末尾 (`],"truncated":true,...}`) のために空けておくぶん。
 const TRAILER: usize = 512;
@@ -103,7 +106,7 @@ fn num_param(query: Option<&str>, key: &str, default: usize, max: usize) -> usiz
 }
 
 /// `/errors?n=100` — 直近のエラーの個票 (新しい順、既定 100 件・最大 [`MAX_ERRORS`])。
-pub fn errors(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn errors(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 100, MAX_ERRORS);
     let (entries, total) = ep.metrics.errors.recent(n);
     let mut out = String::with_capacity(4096);
@@ -128,7 +131,7 @@ pub fn errors(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
 ///
 /// `--lite` では登録していないので空の一覧を返す (`"lite":true` でそれと分かる)。
 /// 件数の上限は置かず、[`MAX_BODY`] に収まるところまで出す (`"truncated"` で分かる)。
-pub fn connections(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
+pub(super) fn connections(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
     let now = Instant::now();
     let all = ep.metrics.conns.snapshot();
     let count = all.len();
@@ -152,7 +155,7 @@ pub fn connections(ep: &Endpoint<'_>) -> (u16, &'static str, String) {
 /// **`?offset=` (T27.1)**: 雪像は `limit=4096` で引くが、tokyo の 811 名前は 256 KiB に 678 件しか
 /// 入らなかった (T25.99)。`offset` は `sort=` で並べたあとの列を何本飛ばすかで、`next_offset` が
 /// 次の頁の `offset` (`/hosts` と同じ読み方)。表は [`crate::dns`] の上限 4,096 件まで。
-pub fn dns(query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn dns(query: Option<&str>) -> (u16, &'static str, String) {
     let sort = crate::dns::DnsSort::from_param(&str_param(query, "sort"));
     let limit = num_param(query, "limit", 300, 4096);
     let offset = offset_param(query, 4096);
@@ -185,7 +188,7 @@ pub fn dns(query: Option<&str>) -> (u16, &'static str, String) {
 ///
 /// `info` のアクセスログは写していない (熱い経路を重くしないため。T10.10)。
 /// 動作環境 (Pterodactyl) のコンソールは流れて消えるので、これがその代わり。
-pub fn log(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn log(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, crate::log::MAX_LOG_LINES);
     let (lines, total) = crate::log::recent(n);
     let mut out = String::with_capacity(8192);
@@ -217,7 +220,7 @@ pub fn log(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String
 /// (`$HOME/.rust-http-proxy.daily.jsonl`) は**永久に残る** (上限 2 MiB = 11 年ぶん)。
 /// 行はファイルにある JSON をそのまま並べるだけ (プロキシは組み立て直さない)。
 /// `PROXY_STATS_PERSIST=off` では 1 行も書いていないので `days` は空で `path` が `null`。
-pub fn daily(query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn daily(query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(
         query,
         "n",
@@ -251,7 +254,7 @@ pub fn daily(query: Option<&str>) -> (u16, &'static str, String) {
 /// 日ごと・時間ごとに畳んで、**外れた時間帯 (連続する外れは 1 行)** と一緒に返すだけ。
 /// 応答は [`crate::slo::MAX_BODY`] (64 KiB) 以下。判定していない標本
 /// (確立が 1 本も無い 5 秒) は分母に入らないので `ratio` が `null` になることがある。
-pub fn slo(query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn slo(query: Option<&str>) -> (u16, &'static str, String) {
     let days = num_param(
         query,
         "days",
@@ -287,7 +290,7 @@ fn log_line_json(line: &crate::log::Line) -> String {
 /// 639 件で切れていた (2 枚の雪像の差分から 8 ホストが黙って落ちた)。`offset` は
 /// **`sort=` で並べたあとの列**を何本飛ばすかで、`next_offset` が次の頁の `offset`。
 /// `limit` の最大 1,000 と「200 を越えたら重い口」はそのまま。
-pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let sort = crate::metrics::HostSort::from_param(&str_param(query, "sort"));
     let limit = num_param(query, "limit", 200, crate::metrics::MAX_HOSTS);
     let offset = offset_param(query, crate::metrics::MAX_HOSTS);
@@ -343,7 +346,7 @@ pub fn hosts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
 /// 標本は**古い順**で、`i` 番目の時刻は `t0 + i * window_secs` (`t` を 288 × 16 個
 /// 並べると応答が 50 KB 太るので置いていない)。上位に居ないホストは系列を持たない
 /// (空の一覧になる) ので、`tracked` で「いま何本あるか」が分かる。
-pub fn host_series(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn host_series(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let host = str_param(query, "host");
     let top = num_param(
         query,
@@ -415,7 +418,7 @@ fn series_json(s: &crate::hostseries::Series) -> String {
 ///
 /// `"persisted":false` は「この行の新しい欄は状態ファイルに残らない (再起動で消える)」の意味。
 /// `.rrd` のスロットに余白が無いので**版を上げずにメモリだけで持つ**と決めた ([`crate::metrics::ClientStats`])。
-pub fn clients(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn clients(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let sort = crate::metrics::ClientSort::from_param(&str_param(query, "sort"));
     let limit = num_param(query, "limit", 200, crate::metrics::MAX_CLIENTS);
     let all = ep.metrics.clients_sorted_by(sort);
@@ -449,161 +452,6 @@ pub fn clients(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     (200, "application/json", out)
 }
 
-/// `/recent` の並べ替えの鍵。
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum RecentSort {
-    /// 閉じた新しい順 (既定)
-    Time,
-    /// 確立にかかった ms の大きい順 (「遅かった 1 本」を探す)
-    Slow,
-    /// 運んだバイトの多い順
-    Bytes,
-}
-
-impl RecentSort {
-    fn from_param(v: &str) -> RecentSort {
-        match v {
-            "slow" => RecentSort::Slow,
-            "bytes" => RecentSort::Bytes,
-            _ => RecentSort::Time,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            RecentSort::Time => "time",
-            RecentSort::Slow => "slow",
-            RecentSort::Bytes => "bytes",
-        }
-    }
-}
-
-/// 接続元のカーネルの RTT で個票を 2 つに割る閾 (us。`/recent?rtt_client=lt100|ge100`。T.29.18)。
-///
-/// tokyo の接続元は NAT の 1 つに見えるが、RTT で 2 集団に割れる (近い 21% = RTT p50 約 20 ms、
-/// 遠い 79% = 約 245 ms。first_relay p50 は 20 ms と 4.1 秒)。100 ms は 2 つの山の間。
-pub const RTT_CLIENT_SPLIT_US: u32 = 100_000;
-
-/// `/recent?rtt_client=` の値 (T.29.18)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RttClient {
-    /// 絞らない (既定)
-    Any,
-    /// 接続元の RTT が 100 ms 未満 (RTT が読めなかった行は入れない)
-    Lt100,
-    /// 100 ms 以上
-    Ge100,
-}
-
-impl RttClient {
-    fn from_param(v: &str) -> RttClient {
-        match v {
-            "lt100" => RttClient::Lt100,
-            "ge100" => RttClient::Ge100,
-            _ => RttClient::Any,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            RttClient::Any => "",
-            RttClient::Lt100 => "lt100",
-            RttClient::Ge100 => "ge100",
-        }
-    }
-
-    /// その行を残すか (`rtt_us` が 0 = 読めなかった行は、絞るときはどちらにも入れない)。
-    pub fn keeps(self, e: &RecentEntry) -> bool {
-        let rtt = e.rtt_us[crate::recent::CLIENT_SIDE];
-        match self {
-            RttClient::Any => true,
-            RttClient::Lt100 => rtt > 0 && rtt < RTT_CLIENT_SPLIT_US,
-            RttClient::Ge100 => rtt >= RTT_CLIENT_SPLIT_US,
-        }
-    }
-}
-
-/// `/recent?n=200&offset=0&since=<epoch>&client=<ip>&sort=time|slow|bytes&rtt_client=lt100|ge100` — **閉じた接続**の個票
-/// (既定 200 件・最大 [`MAX_RECENT`]。T14.4)。
-///
-/// `/connections` は「いま」しか見えず、`/errors` は失敗だけ。ここは閉じた接続 1 本ごとの
-/// 記録なので、**バーストのとき誰が何を開いたか**も**遅かった 1 本がどの段階で遅かったか**も
-/// 後から読める。書くのは接続の終了で 1 回だけ (`ConnSlot` の抹消と同じ場所)。
-///
-/// **`?offset=` (T15.0 (11))**: 2,000 件は 1 件 424 B で [`MAX_BODY`] の 3.2 倍あり、
-/// 1 枚では 615 件しか返らない。`offset` は**いまの並び** (`sort=` のあと。既定は
-/// **閉じた新しい順**) を何本飛ばすかで、`next_offset` が次の頁の `offset`
-/// (続きが無ければ `null`)。**`id` は accept 順・`at` は開いた時刻**でどちらも並びとは
-/// 一致しない (長生きのトンネルは若い `id` で最後に閉じる) ので、頁を跨ぐ目印には使えない。
-/// 取っている間に新しく閉じた接続があると並びがずれて**同じ行が 2 つの頁に出る**ことは
-/// あるが (**欠けることは無い**)、行に `id` があるので読む側で落とせる。
-pub fn recent(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
-    recent_within(ep, query, MAX_BODY)
-}
-
-/// [`recent`] の本体。`limit` は応答の上限 (ふだんは [`MAX_BODY`]、停止の雪像だけ
-/// [`MAX_SNAPSHOT`]。T.28.20)。
-fn recent_within(
-    ep: &Endpoint<'_>,
-    query: Option<&str>,
-    limit: usize,
-) -> (u16, &'static str, String) {
-    let n = num_param(query, "n", 200, MAX_RECENT);
-    let offset = offset_param(query, MAX_RECENT);
-    let since = parse_query(query.unwrap_or(""))
-        .iter()
-        .find(|(k, _)| k == "since")
-        .and_then(|(_, v)| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    let client = str_param(query, "client");
-    let sort = RecentSort::from_param(&str_param(query, "sort"));
-    // 接続元の RTT で 2 集団に割る (T.29.18。NAT の向こうの近い利用者と遠い利用者)
-    let rtt_client = RttClient::from_param(&str_param(query, "rtt_client"));
-    // 絞りはリングの鍵の内側で済ませる (2,000 件を複製してから捨てない)
-    let (mut rows, total) = ep.metrics.closed.select(since, &client);
-    if rtt_client != RttClient::Any {
-        rows.retain(|e| rtt_client.keeps(e));
-    }
-    let matched = rows.len();
-    match sort {
-        // `select` が既に新しい順で返している
-        RecentSort::Time => {}
-        // `sort_by_key` は安定なので、同点は `select` が返した新しい順のまま
-        RecentSort::Slow => rows.sort_by_key(|e| std::cmp::Reverse(e.connect_ms())),
-        RecentSort::Bytes => rows.sort_by_key(|e| std::cmp::Reverse(e.bytes())),
-    }
-    let mut out = String::with_capacity(8192);
-    out.push_str(SCHEMA_HEAD);
-    out.push_str("\"recent\":");
-    let (shown, cut) = array_within_budget(
-        &mut out,
-        rows.iter().skip(offset).take(n).map(RecentEntry::to_json),
-        limit,
-    );
-    // 新しい欄は**末尾**に足す (既存の鍵の順は変えない)
-    let _ = write!(
-        out,
-        ",\"count\":{},\"matched\":{},\"shown\":{},\"kept\":{},\"capacity\":{},\"recorded\":{},\"sort\":\"{}\",\"since\":{},\"client\":\"{}\",\"persisted\":{},\"restored\":{},\"truncated\":{},\"lite\":{},\"offset\":{},\"next_offset\":{},\"rtt_client\":\"{}\"}}",
-        shown,
-        matched,
-        shown,
-        ep.metrics.closed.len(),
-        MAX_RECENT,
-        total,
-        sort.name(),
-        since,
-        crate::json::escape(&client),
-        persisted(ep),
-        ep.metrics.closed.restored(),
-        cut,
-        !ep.metrics.conns.enabled(),
-        offset,
-        next_offset(offset, shown, matched),
-        rtt_client.name()
-    );
-    (200, "application/json", out)
-}
-
 /// `/trace?n=200&since=<epoch>` — 追跡中の接続元 1 つの要求の並び (新しい順、既定 200 行・
 /// 最大 [`MAX_TRACE`]。T14.27)。
 ///
@@ -616,7 +464,7 @@ fn recent_within(
 /// `/snapshot` には**入れない** (パスが雪像のファイルに残らないように)。リングは
 /// **メモリだけ**なので再起動で消える (T14.9 の永続化の対象ではない)。
 /// `--lite` は枠 (`ConnSlot`) を作らないので旗も立たず、1 行も残らない。
-pub fn trace(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn trace(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, MAX_TRACE);
     // `?since=` は `/recent` `/events` と同じ扱い (「その時刻以降に書いたもの」)
     let since = parse_query(query.unwrap_or(""))
@@ -654,7 +502,7 @@ pub fn trace(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Stri
 /// 撮るのは history スレッドなので、**accept の経路には比較 1 回しか増えていない**。
 /// 裏を返すと **`PROXY_STATS_PERSIST=off` (履歴スレッドを起こさない) では撮らない**。
 /// `--lite` では `/connections` の表そのものが空なので写真も撮らない (`"lite":true`)。
-pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", MAX_BURSTS, MAX_BURSTS);
     let (shots, total) = ep.metrics.bursts.recent(n);
     let mut out = String::with_capacity(8192);
@@ -693,7 +541,7 @@ pub fn bursts(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, Str
 /// `settings` は最後の 1 回しか残さない。種類は `kinds` に並ぶ 12 種で固定
 /// (11 種目は異常の自動検知 `anomaly` (T14.23)、12 種目は初めて見た接続元
 /// `new_client` (T14.54 の規則 6))。
-pub fn events(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
+pub(super) fn events(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     let n = num_param(query, "n", 200, MAX_EVENTS);
     // `?since=` は `/recent` と同じ扱い (「その時刻以降に起きたもの」。無ければ 0 = 全部)
     let since = parse_query(query.unwrap_or(""))
