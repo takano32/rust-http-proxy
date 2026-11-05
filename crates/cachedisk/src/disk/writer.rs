@@ -10,7 +10,6 @@ use crate::sync::LockExt;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::{DiskEntry, DiskTier, WriteOutcome};
@@ -111,12 +110,12 @@ impl<'a> DiskWriter<'a> {
                 "no room left in the disk cache",
             ));
         }
-        self.tier.in_flight.fetch_add(extra, Ordering::Relaxed);
+        self.tier.reserve_in_flight(extra);
         self.room = needed;
         // 空きが残っていればその分だけ先読み (無ければ次のチャンクで厳密に空ける)
         let slack = self.tier.free_room().min(ROOM_STEP);
         if slack > 0 {
-            self.tier.in_flight.fetch_add(slack, Ordering::Relaxed);
+            self.tier.reserve_in_flight(slack);
             self.room += slack;
         }
         Ok(())
@@ -124,7 +123,7 @@ impl<'a> DiskWriter<'a> {
 
     fn release_room(&mut self) {
         if self.room > 0 {
-            self.tier.in_flight.fetch_sub(self.room, Ordering::Relaxed);
+            self.tier.release_in_flight(self.room);
             self.room = 0;
         }
     }

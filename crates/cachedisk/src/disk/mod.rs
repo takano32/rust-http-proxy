@@ -37,10 +37,10 @@ const BALLAST_GROW_MAX: u64 = 1024 * MIB;
 const ENOSPC: i32 = 28;
 const EDQUOT: i32 = 122;
 
-pub struct DiskEntry {
-    pub size: u64,
+pub(crate) struct DiskEntry {
+    pub(crate) size: u64,
     /// 起動走査で復元したエントリは `stored_at` が 0 (ヒット時にヘッダーから読み直す)。
-    pub meta: Meta,
+    pub(crate) meta: Meta,
     last_used: u64,
 }
 
@@ -94,8 +94,9 @@ pub struct DiskTier {
     enospc: AtomicU64,
     /// 直近のバラスト伸長が (ENOSPC / EDQUOT で) 失敗した
     fill_failed: AtomicBool,
-    /// 書き込み中の一時ファイルのために確保している容量 (確定・中止で戻す)
-    pub in_flight: AtomicU64,
+    /// 書き込み中の一時ファイルのために確保している容量 (確定・中止で戻す)。
+    /// 増減は [`DiskWriter`] が [`Self::reserve_in_flight`] / [`Self::release_in_flight`] で行う
+    in_flight: AtomicU64,
     /// 索引に保持するエントリ数の上限 (メモリを食い潰さないため)
     max_entries: usize,
 }
@@ -136,6 +137,18 @@ impl DiskTier {
 
     pub fn in_flight_bytes(&self) -> u64 {
         self.in_flight.load(Ordering::Relaxed)
+    }
+
+    /// 書き込み中の一時ファイルのために `bytes` を確保する ([`DiskWriter`] だけが呼ぶ。T.34.89)。
+    #[inline]
+    pub(crate) fn reserve_in_flight(&self, bytes: u64) {
+        self.in_flight.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// 確保していた `bytes` を戻す (確定・中止。T.34.89)。
+    #[inline]
+    pub(crate) fn release_in_flight(&self, bytes: u64) {
+        self.in_flight.fetch_sub(bytes, Ordering::Relaxed);
     }
 
     pub fn dir(&self) -> &Path {
@@ -216,7 +229,7 @@ impl DiskTier {
     }
 
     /// I/O 結果を通過させつつ、ENOSPC を数える。
-    pub fn note_io<T>(&self, r: io::Result<T>) -> io::Result<T> {
+    pub(crate) fn note_io<T>(&self, r: io::Result<T>) -> io::Result<T> {
         if let Err(e) = &r
             && e.raw_os_error() == Some(ENOSPC)
         {
@@ -225,7 +238,7 @@ impl DiskTier {
         r
     }
 
-    pub fn shard_dir(&self, key: CacheKey) -> PathBuf {
+    pub(crate) fn shard_dir(&self, key: CacheKey) -> PathBuf {
         self.dir.join(format!("{:02x}", key.shard()))
     }
 
@@ -356,19 +369,6 @@ impl DiskTier {
         Ok(Some(DiskHit { meta, file, size }))
     }
 
-    /// ファイル全体を読む (小さなエントリ・テスト用)。
-    pub fn read(&self, key: CacheKey) -> io::Result<Option<(Meta, Vec<u8>)>> {
-        let Some(meta) = self.lookup(key) else {
-            return Ok(None);
-        };
-        let path = self.path_for(key, meta.validators);
-        let result = format::read_entry(&path);
-        if let Ok(f) = File::open(&path) {
-            sysinfo::drop_page_cache(&f);
-        }
-        result
-    }
-
     /// エントリを消す。ファイルの削除は索引ロックの下で行い、確定直後のファイルを消さないようにする。
     pub fn remove(&self, key: CacheKey) {
         let mut index = self.index.locked();
@@ -419,26 +419,9 @@ impl DiskTier {
         }
     }
 
-    /// 一括書き込み (小さなエントリ・テスト用)。
-    pub fn write(
-        &self,
-        key: CacheKey,
-        url: &str,
-        data: &[u8],
-        meta: Meta,
-        seq: u64,
-    ) -> io::Result<WriteOutcome> {
-        let Some(mut w) = self.begin(key, url, meta, seq, Some(data.len() as u64), u64::MAX)?
-        else {
-            return Ok(WriteOutcome::default());
-        };
-        w.write(data)?;
-        w.finish(seq)
-    }
-
     /// `extra` バイトを (書き込み中の分に加えて) 追加しても上限に収まるよう、
     /// バラスト → LRU の順に空ける。追い出し件数を返す。
-    pub fn make_room(&self, extra: u64) -> usize {
+    pub(crate) fn make_room(&self, extra: u64) -> usize {
         if !self.is_ready() {
             return 0;
         }
@@ -468,7 +451,7 @@ impl DiskTier {
     }
 
     /// 索引の件数上限を超えた分を LRU で追い出す (索引ロックを持って呼ぶ)。
-    pub fn enforce_entry_cap(&self, index: &mut Store<DiskEntry>) -> usize {
+    pub(crate) fn enforce_entry_cap(&self, index: &mut Store<DiskEntry>) -> usize {
         let mut evicted = 0;
         while index.len() > self.max_entries {
             let Some((key, e)) = index.pop_lru() else {
@@ -480,7 +463,7 @@ impl DiskTier {
         evicted
     }
 
-    pub fn max_entries(&self) -> usize {
+    pub(crate) fn max_entries(&self) -> usize {
         self.max_entries
     }
 

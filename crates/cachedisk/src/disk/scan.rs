@@ -37,7 +37,12 @@ fn parse_name(name: &str) -> Option<(CacheKey, bool)> {
 
 impl DiskTier {
     /// 直下の旧レイアウトのエントリを分割ディレクトリへ移し、一時ファイルを消す。
-    pub fn scan_root(&self, now: u64, max_stale: u64, report: &mut ScanReport) -> io::Result<()> {
+    pub(crate) fn scan_root(
+        &self,
+        now: u64,
+        max_stale: u64,
+        report: &mut ScanReport,
+    ) -> io::Result<()> {
         for entry in fs::read_dir(&self.dir)?.flatten() {
             let path = entry.path();
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -72,7 +77,7 @@ impl DiskTier {
         Ok(())
     }
 
-    pub fn scan_shard(
+    pub(crate) fn scan_shard(
         &self,
         shard: &Path,
         index: &mut Store<DiskEntry>,
@@ -157,7 +162,7 @@ fn mtime_epoch(meta: &fs::Metadata) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-pub fn set_expiry_mtime(path: &Path, expires_at: u64) {
+pub(crate) fn set_expiry_mtime(path: &Path, expires_at: u64) {
     if let (Ok(f), Some(t)) = (
         OpenOptions::new().write(true).open(path),
         UNIX_EPOCH.checked_add(Duration::from_secs(expires_at)),
