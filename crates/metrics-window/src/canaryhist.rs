@@ -25,6 +25,22 @@ struct Row {
     ipv6_connect_ms: Option<u64>,
 }
 
+impl Row {
+    /// `/history` の `canary` の 1 標本を配列 1 行として書く ([`KEYS`] の順。T.34.39 で
+    /// [`push_history_json`] から出した)。
+    fn push_json(&self, out: &mut String) {
+        let _ = write!(
+            out,
+            "[{},{},{},\"{}\",{}]",
+            self.t,
+            self.dns_ms,
+            self.connect_ms,
+            crate::json::escape(&self.host),
+            num_or_null(self.ipv6_connect_ms),
+        );
+    }
+}
+
 /// `/history` の `canary` の列名 (この順で並ぶ)。
 ///
 /// **足すのは末尾だけ** (T14.37 で `canary_ipv6_connect_ms` を 5 列目に足した)。
@@ -83,15 +99,7 @@ pub fn push_history_json(out: &mut String, res: usize) {
             if i > 0 {
                 out.push(',');
             }
-            let _ = write!(
-                out,
-                "[{},{},{},\"{}\",{}]",
-                r.t,
-                r.dns_ms,
-                r.connect_ms,
-                crate::json::escape(&r.host),
-                num_or_null(r.ipv6_connect_ms),
-            );
+            r.push_json(out);
         }
     }
     drop(guard);
@@ -140,6 +148,30 @@ pub fn clear() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 1 行の書き出しは [`KEYS`] の順で、宛先は JSON の文字列に直し、IPv6 側が無ければ `null` (T.34.39)。
+    #[test]
+    fn a_row_is_written_in_the_key_order() {
+        let mut out = String::new();
+        Row {
+            t: 60,
+            dns_ms: 3,
+            connect_ms: 4,
+            host: "a\"b:443".to_string(),
+            ipv6_connect_ms: None,
+        }
+        .push_json(&mut out);
+        out.push(',');
+        Row {
+            t: 65,
+            dns_ms: 0,
+            connect_ms: 9,
+            host: "c:443".to_string(),
+            ipv6_connect_ms: Some(11),
+        }
+        .push_json(&mut out);
+        assert_eq!(out, "[60,3,4,\"a\\\"b:443\",null],[65,0,9,\"c:443\",11]");
+    }
 
     /// T17.1: 窓の中の `dns_ms` の中央値。窓の外と、1 行も無いときは数えない。
     /// (このクレートで [`RINGS`] に触るテストはこれ 1 本だけ)
