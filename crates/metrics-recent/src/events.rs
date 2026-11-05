@@ -242,7 +242,11 @@ pub fn restored_count() -> usize {
 /// 起きるたびに書くと 1 つの出来事でリングが埋まるものに掛ける歯止め。
 /// 初期値は [`u64::MAX`] にしておくと最初の 1 回は必ず通る。
 fn once_per_hour(slot: &AtomicU64) -> bool {
-    let hour = crate::cache::now_epoch() / 3600;
+    once_per_hour_at(slot, crate::cache::now_epoch() / 3600)
+}
+
+/// [`once_per_hour`] の本体 (T.34.53)。`hour` は epoch 秒 / 3,600 (時計を中で読まない)。
+fn once_per_hour_at(slot: &AtomicU64, hour: u64) -> bool {
     let last = slot.load(Ordering::Relaxed);
     last != hour
         && slot
@@ -482,6 +486,21 @@ mod tests {
         assert!(!once_per_hour(&SLOT), "同じ時間は通さない");
         SLOT.store(0, Ordering::Relaxed);
         assert!(once_per_hour(&SLOT), "時間が変われば通る");
+    }
+
+    /// 2 つの時間で 1 回ずつ通る (時刻を注入する。T.34.53)。時計が戻っても「違う時間」なら通す。
+    #[test]
+    fn once_per_hour_at_lets_one_through_per_hour() {
+        let slot = AtomicU64::new(u64::MAX);
+        assert!(once_per_hour_at(&slot, 500_000));
+        assert!(!once_per_hour_at(&slot, 500_000), "同じ時間の 2 回目");
+        assert!(once_per_hour_at(&slot, 500_001), "次の時間の 1 回目");
+        assert!(!once_per_hour_at(&slot, 500_001));
+        assert!(
+            once_per_hour_at(&slot, 500_000),
+            "前の時間に戻っても違う時間"
+        );
+        assert_eq!(slot.load(Ordering::Relaxed), 500_000);
     }
 
     #[test]
