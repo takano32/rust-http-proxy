@@ -14,7 +14,7 @@
 # それより前は `/hosts_series` の 5 分ごとの件数から到着を作る (窓の中に等間隔に置く)。
 # 助走は上位 16 ホストしか持たないので、**ミスと引き直しは区間の中だけで数える**。
 #
-# **写した規則** (`dns.rs` の `resolve_host` / `warm_promote` / `warm_next` / `refresh_one`):
+# **写した規則** (`dns.rs` と `dns/` の `resolve_host` / `warm_promote` / `warm_next` / `refresh_one`):
 #   - TTL 60 秒 (`PROXY_DNS_TTL_SECS`)。表の答えが TTL 以内なら当たり、それ以外はミス (同期で引く)
 #   - 当たりでも「1 つ前の使用が TTL 以内 (hot)」かつ齢が 3/4 TTL 以上なら裏で 1 回引き直す
 #   - 2 回目の使用で warm に上げる (`promote`)。条件は下の `RULES` (**ここだけを差し替える**)
@@ -143,7 +143,7 @@ class Table:
     def __init__(self, rule, ttl=TTL, window=WARM, max_warm=MAX_WARM, serve_stale=0,
                  promote_at="now", refresh_at=None):
         self.rule = rule
-        # `warm_promote` の最初の予定: "now" = 上げた時刻 + 3/4 TTL (いまの `dns_warm.rs`)、
+        # `warm_promote` の最初の予定: "now" = 上げた時刻 + 3/4 TTL (いまの `dns/warm.rs`)、
         # "answer" = 答えを引いた時刻 + 3/4 TTL (既知の小物の直しの案。T.22.4)
         self.promote_at = promote_at
         # 先回りを始める齢 (秒)。`None` = TTL の 3/4 (いまの `refresh_after`)。

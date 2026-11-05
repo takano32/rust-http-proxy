@@ -27,10 +27,9 @@
 //! 引き直し、番地が変わっていれば 1 回だけ繋ぎ直す。
 
 use crate::sync::LockExt;
-use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
 use std::io;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 // 本体では使わない。テスト (`use super::*`) の `thread::sleep` のために残す (T21.7)
@@ -38,24 +37,36 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-// 責務ごとに子のファイルへ分けてある (T21.7)。子は親の private な表とカウンタをそのまま触るので、
-// 中身は `dns.rs` にあった頃と同じ。公開の名前はここで出し直す (`proxy_net_dns::dns::…` のまま)。
-#[path = "dns_view.rs"]
+// 責務ごとに子のファイルへ分けてある (T21.7。T.34.54 で `dns/` の下に置き直した)。子は親の
+// private な表とカウンタをそのまま触るので、中身は `dns.rs` にあった頃と同じ。公開の名前は
+// ここで出し直す (`proxy_net_dns::dns::…` のまま)。
+//
+// - `cost`: スレッドごとの費用の箱 (名前解決の費用・族・SYN の再送) と、その take / peek / note
+// - `entry`: 表の 1 行 (`Entry`)、鍵の内側で決める `Looked` / `MissKind`、行の追い出し
+// - `resolved`: 判定と接続が同じ答えを使うための `Resolved` と `resolve*` の入口
+// - `lookup`: 表を引く本体 (`resolve_host_marked`) と、古い答えで繋げなかったときの引き直し
+mod cost;
+mod entry;
+mod lookup;
 mod view;
-#[path = "dns_warm.rs"]
 mod warm;
 // 要求の経路の名前解決を上限付きの別のスレッド群に逃がし、締め切りで待つのをやめる (T.32.11)
-#[path = "dns_pool.rs"]
 mod pool;
+mod resolved;
+pub use cost::{
+    note_family, note_resolve_cost, note_syn_retrans, peek_resolve_cost, resolve_cost_total,
+    take_family, take_resolve_cost, take_syn_retrans,
+};
+use entry::{Entry, addrs_changed, evict_oldest};
+pub use lookup::{relookup_after_stale, resolve_host_marked};
 pub use pool::{
     LIMIT_DEFAULT as RESOLVER_LIMIT_DEFAULT, TIMEOUT_DEFAULT, counters as resolver_counters,
     is_timeout, limit as resolver_limit, limit_for_threads as resolver_limit_for_threads,
     set_limit as set_resolver_limit, set_timeout, timeout,
 };
+pub use resolved::{Resolved, resolve, resolve_host, resolve_with_pref, resolve_with_pref_marked};
 pub use view::{DnsSort, MAX_ROW_ADDRS, TableRow, counters, entries, status_json, table};
-use warm::{
-    addrs_changed, refresh_after, request_refresh, wake_refresher, warm_clear, warm_promote,
-};
+use warm::{refresh_after, request_refresh, wake_refresher, warm_clear, warm_promote};
 
 /// 解決に失敗したとき、この時間以内の古い結果なら使う。
 pub const STALE_MAX: Duration = Duration::from_secs(3600);
@@ -158,156 +169,6 @@ static STALE_HITS: AtomicU64 = AtomicU64::new(0);
 /// 表に新しい答えが既にあったときも数える。同期で `getaddrinfo` を待った回は
 /// **ミス (`expired`) にも数える** (利用者が待ったので)。
 static STALE_RETRIES: AtomicU64 = AtomicU64::new(0);
-
-thread_local! {
-    /// このスレッドが直近に払った名前解決の費用 (us の合計と回数)。**ホスト別の内訳に
-    /// 使う**もので、原子操作を増やさないための thread-local。読む側が 0 に戻す。
-    ///
-    /// `const` で初期化しているので destructor が登録されず、スレッドの終了中に触っても
-    /// `AccessError` にならない (`Drop` を持つ thread-local と違って `with` で足りる)。
-    static RESOLVE_COST: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
-    /// このスレッドで直近に確立した接続の族 (`Some(true)` = IPv6)。
-    /// 書くのは [`note_family`] (接続が確立した 1 か所だけ)、読む側が `None` に戻す。
-    static LAST_FAMILY: Cell<Option<bool>> = const { Cell::new(None) };
-    /// このスレッドで直近に確立した接続の **SYN の再送回数** (T14.46)。
-    /// 書くのは [`note_syn_retrans`] (確立した直後の 1 か所だけ)、読む側が 0 に戻す。
-    /// 確立直後の `tcpi_total_retrans` は SYN の再送しか数えていないので、
-    /// **値がそのまま「この接続は確立に何回 SYN を送り直したか」**になる
-    static LAST_SYN_RETRANS: Cell<u8> = const { Cell::new(0) };
-}
-
-/// 直近の名前解決の費用を読み、0 に戻す (ms の合計と回数)。
-///
-/// **測る前にも 1 回呼んで捨てること**。ここは要求をまたいで貯まる箱なので、
-/// 前の要求が残していったぶんを次の要求のホストに付けないようにする。
-pub fn take_resolve_cost() -> (u64, u64) {
-    let (us, n) = RESOLVE_COST.replace((0, 0));
-    // 1 ms 未満のミス (手元の loopback) は 0 ms として数える。デプロイ先の
-    // ミスは Docker の内蔵 DNS 越しで ms の単位なので、この丸めで足りる
-    ((us + 500) / 1000, n)
-}
-
-/// 直近の名前解決の費用を**読むだけ** (0 に戻さない。T15.0 (1))。丸め方は
-/// [`take_resolve_cost`] と同じなので、同じ箱を読んでいる限り値は一致する。
-///
-/// 使い道は 1 つで、**自分の時計を始める前に「もう払われているぶん」を控える**こと。
-/// `PROXY_ALLOW_LOCAL=false` (既定) では入口の ACL (`crates/server/src/conn/serve_one.rs` の `acl::resolve_target`)
-/// がトンネルの時計より前に名前を引くので、あとで `take` した費用には**自分の窓の外**の
-/// ぶんが混ざっている。それを引かずに「全体 − 名前解決」をすると、接続の段が 0 に潰れる。
-pub fn peek_resolve_cost() -> (u64, u64) {
-    let (us, n) = RESOLVE_COST.get();
-    ((us + 500) / 1000, n)
-}
-
-/// 名前解決の費用 (us と回数) をこのスレッドの箱に足す (**テストの口**)。
-///
-/// 本番でここに書くのは [`resolve_host`] のミスの経路 1 か所だけ (原子と同じ場所で
-/// 書いている) なので、呼ぶのはテストだけ。入口の ACL が**時計より前に**払った状態を
-/// 作って、[`peek_resolve_cost`] を使う引き算 (T15.0 (1)) を確かめるために使う。
-pub fn note_resolve_cost(us: u64, misses: u64) {
-    RESOLVE_COST.set({
-        let (s, n) = RESOLVE_COST.get();
-        (s + us, n + misses)
-    });
-}
-
-/// 直近に確立した接続の族を読み、`None` に戻す。
-pub fn take_family() -> Option<bool> {
-    LAST_FAMILY.replace(None)
-}
-
-/// 接続が確立した族を控える (`crate::net` の確立点だけが呼ぶ)。thread-local への
-/// 書き込み 1 回で、原子操作もシステムコールも増えない。
-pub fn note_family(v6: bool) {
-    LAST_FAMILY.set(Some(v6));
-}
-
-/// 直近に確立した接続の SYN の再送回数を読み、0 に戻す (T14.46)。
-///
-/// **測る前にも 1 回呼んで捨てること** ([`take_resolve_cost`] と同じ理由。
-/// 前の要求が残していったぶんを次のホストに付けない)。
-pub fn take_syn_retrans() -> u8 {
-    LAST_SYN_RETRANS.replace(0)
-}
-
-/// 確立した接続の SYN の再送回数を控える (`crate::net` の確立点だけが呼ぶ)。
-/// thread-local への書き込み 1 回で、原子操作は増えない (`getsockopt` 1 回は
-/// 呼ぶ側が払う)。255 で頭打ち。
-pub fn note_syn_retrans(n: u8) {
-    LAST_SYN_RETRANS.set(n);
-}
-
-/// `getaddrinfo` に費やした時間の合計 (us) と回数 (`/metrics` と `/status`)。
-pub fn resolve_cost_total() -> (u64, u64) {
-    (
-        RESOLVE_US_SUM.load(Ordering::Relaxed),
-        MISSES.load(Ordering::Relaxed),
-    )
-}
-
-struct Entry {
-    addrs: Vec<IpAddr>,
-    resolved_at: Instant,
-    /// この名前を最後に引いた時刻 (T13.1)。**期限前に裏で引き直すのは「直近 TTL 内に
-    /// 使われた熱いホスト」だけ**にするための印で、表に当たるたびに書く
-    /// (既に鍵の内側なので鍵取りは増えない)。
-    last_used: Instant,
-    /// **1 つ前**の使用時刻 (T14.1)。warm の判定 (「直近 W 秒に 2 回以上」) に要るのは
-    /// これだけで、要求の経路は `last_used` を押し出すだけ (鍵は既に取っている)。
-    prev_used: Instant,
-    /// warm な名前か = [`WARM_QUEUE`] に載っているか (T14.1)。**熱い経路で鍵を 2 つ
-    /// 取らないための写し**で、待ち行列への出し入れと必ず同時に書く。
-    warm: bool,
-    /// 次に裏で引き直す時刻 (`/dns` の `next_refresh_secs`。warm でなければ `None`)。
-    next_refresh: Option<Instant>,
-    /// 裏で引き直している最中 (同じ名前の引き直しを 1 本に絞る旗)。
-    refreshing: bool,
-    /// この名前で OS に問い合わせた回数 (`/dns?sort=misses`。T13.4)。
-    /// **書くのは既に表の鍵を取っている場所だけ**なので、原子操作は増えない
-    misses: u64,
-    /// この名前を期限前に裏で引き直した回数 (T13.4)
-    refreshes: u64,
-    /// 引き直しで答えの集合が変わった回数 (`/dns` の `changes`。T14.37)。
-    /// **最初に答えを得たときは数えない** (変化ではないので)
-    changes: u64,
-    /// この名前のミスを種類別に数えたもの (`/dns` の `misses_by_kind`。T15.0 (7))。
-    /// 並びは [`MissKind::index`] で、**和は `misses` と一致する**。
-    /// 表いっぱい (4,096 件) でも +128 KiB
-    misses_by_kind: [u64; 4],
-    /// **warm な状態で**この名前が引かれた回数 (`/dns` の `warm_requests`。T15.0 (7))。
-    /// keep-warm が実際に何回の要求を救ったかは、これと `refreshes` を比べて読む
-    /// (引き直し 1 回あたり何回の要求が当たったか)。比べる相手が累計なので、
-    /// **warm を外れて入り直しても 0 に戻さない**
-    warm_requests: u64,
-    /// 直近の失敗 (負のキャッシュ)
-    failed_at: Option<(Instant, io::ErrorKind, String)>,
-    /// このホストで最後に接続できた族 (`Some(true)` = IPv6)。RFC 8305 §8 の
-    /// 「過去の結果で優先する族を変える」ための記憶で、**TTL で引き直しても残す**
-    /// (アドレスは変わっても、そのホストへどちらの族で届くかは変わりにくい)。
-    last_win_v6: Option<bool>,
-}
-
-impl Entry {
-    /// まだ答えの無い入れ物 (族の記憶だけ先に置くことがある)。
-    fn empty(now: Instant, last_win_v6: Option<bool>) -> Entry {
-        Entry {
-            addrs: Vec::new(),
-            resolved_at: now,
-            last_used: now,
-            prev_used: now,
-            warm: false,
-            next_refresh: None,
-            refreshing: false,
-            misses: 0,
-            refreshes: 0,
-            changes: 0,
-            misses_by_kind: [0; 4],
-            warm_requests: 0,
-            failed_at: None,
-            last_win_v6,
-        }
-    }
-}
 
 static TABLE: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
 
@@ -413,145 +274,6 @@ pub fn resolve_uncached(host: &str, port: u16) -> io::Result<Vec<IpAddr>> {
     system_resolve(host, port)
 }
 
-/// 判定 (ACL) が引いた答えを、そのまま接続まで運ぶための入れ物 (T12.7)。
-///
-/// ローカル宛ての判定 (`proxy_net::acl::resolve_target`) と、その直後の接続
-/// (`proxy_net::net::connect_with`) は**同じ答えを使う**。名前解決が 1 要求 1 回で
-/// 済むだけでなく、`PROXY_DNS_TTL_SECS=0` (キャッシュ無効) でも判定と接続が
-/// 別の答えを引かない (DNS rebinding で判定をすり抜けられない)。
-pub struct Resolved<'a> {
-    /// 解決したホスト名。**別のホスト宛ての接続には使わない**ための鍵で、
-    /// 突き合わせは大小無視 (要求ごとに小文字の複製を作らない)
-    host: &'a str,
-    addrs: Vec<IpAddr>,
-    /// このホストで最後に勝った族 (T12.1)。同じ鍵取りで一緒に受け取っておく
-    preferred: Option<bool>,
-    /// serve-stale で返した期限切れの答えか (T21.3)。立っていれば、接続側は繋げなかったとき
-    /// 1 回だけ引き直して繋ぎ直す ([`relookup_after_stale`])
-    stale: bool,
-}
-
-impl<'a> Resolved<'a> {
-    pub fn new(host: &'a str, addrs: Vec<IpAddr>, preferred: Option<bool>) -> Resolved<'a> {
-        Resolved {
-            host,
-            addrs,
-            preferred,
-            stale: false,
-        }
-    }
-
-    /// serve-stale で返した答えだという印を付ける (T21.3)。
-    pub fn with_stale(mut self, stale: bool) -> Resolved<'a> {
-        self.stale = stale;
-        self
-    }
-
-    /// serve-stale で返した期限切れの答えか (T21.3)。
-    pub fn is_stale(&self) -> bool {
-        self.stale
-    }
-
-    pub fn addrs(&self) -> &[IpAddr] {
-        &self.addrs
-    }
-
-    /// ホスト名の借用を手放してアドレス列だけを取り出す (別のスコープへ運ぶとき)。
-    pub fn into_addrs(self) -> Vec<IpAddr> {
-        self.addrs
-    }
-
-    pub fn preferred(&self) -> Option<bool> {
-        self.preferred
-    }
-
-    /// `host` の答えなら、ポートを付けた候補列を返す (別のホストなら `None` = 引き直す)。
-    pub fn socket_addrs_for(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
-        self.host
-            .eq_ignore_ascii_case(host)
-            .then(|| with_port(&self.addrs, port))
-    }
-}
-
-/// `addr_str` (`host:port`) を解決する。キャッシュがあれば OS に問い合わせない。
-pub fn resolve(addr_str: &str) -> io::Result<Vec<SocketAddr>> {
-    resolve_with_pref(addr_str).map(|(addrs, _)| addrs)
-}
-
-/// [`resolve`] に「最後に勝った族」の記憶を添えて返す (T12.1)。**表を引くのは 1 回だけ**
-/// にするためで、接続側が別に [`preferred_family`] を呼ぶと鍵を 2 回取ることになる。
-pub fn resolve_with_pref(addr_str: &str) -> io::Result<(Vec<SocketAddr>, Option<bool>)> {
-    resolve_with_pref_marked(addr_str).map(|(addrs, pref, _)| (addrs, pref))
-}
-
-/// [`resolve_with_pref`] に「serve-stale で返した期限切れの答えか」の印を添えて返す (T21.3)。
-pub fn resolve_with_pref_marked(
-    addr_str: &str,
-) -> io::Result<(Vec<SocketAddr>, Option<bool>, bool)> {
-    let (host, port) = crate::hostport::split_host_port_ref(addr_str);
-    let Some(port) = port else {
-        return addr_str
-            .to_socket_addrs()
-            .map(|i| (i.collect(), None, false));
-    };
-    // IP リテラルは表も確保も要らない (熱い経路: ベンチも `127.0.0.1:port` で来る)
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return Ok((vec![SocketAddr::new(ip, port)], None, false));
-    }
-    let (addrs, pref, stale) = resolve_host_marked(host, port)?;
-    Ok((with_port(&addrs, port), pref, stale))
-}
-
-/// 表を引いて出た答え。**数える (原子操作) のは鍵を放してから**なので、
-/// 鍵の内側では「どれだったか」だけを持って出る (T12.4 (2))。
-enum Looked {
-    /// 期限内の答え
-    Hit(Vec<IpAddr>),
-    /// 覚えている失敗より優先した古い答え
-    Stale(Vec<IpAddr>),
-    /// serve-stale で返す期限切れの答え (T21.3。ミスではない)
-    Served(Vec<IpAddr>),
-    /// 覚えている失敗 (負のキャッシュ)
-    Negative(io::Error),
-}
-
-/// ミス 1 件の種類 (T15.0 (7))。**表の鍵の内側でしか決められない**: 鍵を放したあとの
-/// 書き戻しは `entry().or_insert_with()` で入れ物を作り直すので、「ミスの直前の姿」が
-/// 読めない。[`Looked`] と同じ流儀で、鍵の内側で決めて外で数える。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MissKind {
-    /// 表にまだ答えが無い (初めての名前、追い出された名前、族の記憶だけの入れ物、TTL 0)
-    Cold,
-    /// 答えは持っていたが TTL を過ぎた (窓の外なので誰も引き直していない)
-    Expired,
-    /// **warm なのにミスした** = 裏の引き直しが間に合っていない (T15.4 の主役)
-    WarmStale,
-    /// 覚えている失敗の期限が切れたので引き直す (前回引けなかった名前)
-    Negative,
-}
-
-impl MissKind {
-    /// `misses_by_kind` の添字 (`/status` と `/dns` の並びと同じ)。
-    fn index(self) -> usize {
-        match self {
-            MissKind::Cold => 0,
-            MissKind::Expired => 1,
-            MissKind::WarmStale => 2,
-            MissKind::Negative => 3,
-        }
-    }
-
-    /// この種類を数える静的カウンタ。
-    fn counter(self) -> &'static AtomicU64 {
-        match self {
-            MissKind::Cold => &MISS_COLD,
-            MissKind::Expired => &MISS_EXPIRED,
-            MissKind::WarmStale => &MISS_WARM_STALE,
-            MissKind::Negative => &MISS_NEGATIVE,
-        }
-    }
-}
-
 /// `misses_by_kind` の JSON (`/status` の `dns` と `/dns` の 1 行で同じ形)。
 /// 並びは [`MissKind::index`]。
 fn misses_by_kind_json(v: &[u64; 4]) -> String {
@@ -559,284 +281,6 @@ fn misses_by_kind_json(v: &[u64; 4]) -> String {
         "{{\"cold\":{},\"expired\":{},\"warm_stale\":{},\"negative\":{}}}",
         v[0], v[1], v[2], v[3]
     )
-}
-
-/// ホスト名を解決して**アドレスだけ**を返す (T12.7)。`port` は `getaddrinfo` に渡す
-/// サービス番号で、キャッシュの鍵はホスト名だけ (返す側でポートを付ける)。
-///
-/// IP リテラルは表を使わない (解決するものが無い)。`PROXY_DNS_TTL_SECS=0` の
-/// ときも表を使わないが、**OS に投げた回数はミスとして数える**
-/// (`dns.hits + dns.misses` が「解決した回数」を表すため。T12.7)。
-pub fn resolve_host(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bool>)> {
-    resolve_host_marked(host, port).map(|(addrs, pref, _)| (addrs, pref))
-}
-
-/// [`resolve_host`] に「serve-stale で返した期限切れの答えか」の印 (3 つ目) を添えて返す (T21.3)。
-/// 印が立つのは serve-stale の回だけで、IP リテラル・TTL 0・負のキャッシュ・引き直しの失敗で
-/// 凌いだ古い答え (`stale_served`) では立たない。
-pub fn resolve_host_marked(host: &str, port: u16) -> io::Result<(Vec<IpAddr>, Option<bool>, bool)> {
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return Ok((vec![ip], None, false));
-    }
-    let ttl = ttl();
-    if ttl.is_zero() {
-        MISSES.fetch_add(1, Ordering::Relaxed);
-        // 表を触らないので「直前の姿」も無い = いつも `cold` (T15.0 (7))
-        MISS_COLD.fetch_add(1, Ordering::Relaxed);
-        return pool::resolve(host, port).map(|a| (a, None, false));
-    }
-    let key = host.to_ascii_lowercase();
-    let now = Instant::now();
-    let window = warm_window();
-    let mut pref = None;
-    // 表から答えが出たか (**数えるのは鍵を放してから**。T12.4 (2))
-    let mut found: Option<Looked> = None;
-    // ミスだったときの種類 (T15.0 (7))。表に載っていない名前は `cold`
-    let mut miss_kind = MissKind::Cold;
-    // 期限前の先回りを頼むか (T13.1) / この参照で warm になったか (T14.1)
-    let (mut ask, mut promote) = (false, false);
-    {
-        // 取り合いを数える (T14.3 (3))。空いていれば `locked` と同じ費用
-        let mut guard = TABLE.locked_counted(&crate::sync::LOCK_CONTENDED[crate::sync::LOCK_DNS]);
-        let table = guard.get_or_insert_with(HashMap::new);
-        if let Some(e) = table.get_mut(&key) {
-            pref = e.last_win_v6;
-            // **`warm` はここで読む** (T15.0 (7)): 下の `warm_promote` が `e.warm = true` を
-            // 書くので、あとで読むと「2 回目の使用でミスした」が `warm_stale` に化ける
-            let was_warm = e.warm;
-            // 「熱い」= **この参照の 1 つ前**の使用が TTL 以内。印はここで更新する
-            let idle = now.duration_since(e.last_used);
-            let hot = idle < ttl;
-            // warm = 直近 W 秒に **2 回以上**使われた名前。この参照が 2 回目なら
-            // 待ち行列に入れる (1 回だけの名前は入れない。引き直しても二度と来ない)。
-            // **答えを持っている名前だけ**を warm にする: 引けない名前は先回りする
-            // 期限を持たず (要求の経路は負のキャッシュで止まる)、1 回 約 2 秒かかるので、
-            // 待ち行列に入れると `dns-refresh` の 1 本が本当に熱い名前を待たせる
-            promote = !e.warm && !window.is_zero() && idle < window && !e.addrs.is_empty();
-            e.prev_used = e.last_used;
-            // warm の間に来た要求を数える (T15.0 (7)。**「要求の経路は増やさない」の
-            // 例外その 1**: 既に握っている鍵の内側の、非原子の加算 1 つ・分岐なしで、
-            // システムコールも確保も増えない)
-            e.warm_requests += u64::from(was_warm);
-            e.last_used = now;
-            let age = now.duration_since(e.resolved_at);
-            if !e.addrs.is_empty() && age < ttl {
-                // 期限の 3/4 を過ぎた熱いホストは、答えは今の表から返して (ヒット)、
-                // 裏で 1 回だけ引き直す。利用者は期限切れのミス (デプロイ先で 約 10 ms、
-                // 混むと 100 ms 超) を待たない (T13.1)
-                ask = hot && !e.refreshing && age >= refresh_after(ttl);
-                if ask {
-                    e.refreshing = true;
-                }
-                found = Some(Looked::Hit(e.addrs.clone()));
-            } else {
-                let negative = negative_ttl();
-                if let Some((at, kind, msg)) = &e.failed_at
-                    && !negative.is_zero()
-                    && now.duration_since(*at) < negative
-                {
-                    // 覚えている失敗の内側でも、**古い答えがあるなら繋ぐ方を選ぶ**。
-                    // 負のキャッシュが 60 秒になったので、ここでエラーを返すと
-                    // 「古い答えで凌ぐ」窓 (`STALE_MAX`) がそのぶん潰れる (T13.1)
-                    found = Some(if !e.addrs.is_empty() && age < STALE_MAX {
-                        Looked::Stale(e.addrs.clone())
-                    } else {
-                        Looked::Negative(io::Error::new(*kind, msg.clone()))
-                    });
-                } else if !e.addrs.is_empty() && age < serve_stale() {
-                    // serve-stale (T21.3): 期限は切れたが齢が窓の中 = 古い答えをそのまま返し、
-                    // 裏で 1 回だけ引き直す (同じ名前を二重に頼まない)。**覚えている失敗が
-                    // あるときは上の枝が先** (負のキャッシュの間はリゾルバを叩かない)
-                    ask = !e.refreshing;
-                    if ask {
-                        e.refreshing = true;
-                    }
-                    found = Some(Looked::Served(e.addrs.clone()));
-                }
-            }
-            if found.is_none() {
-                // ここまで来た = 表では答えられない = このあとミスになる。種類の優先順位は
-                // **warm_stale → negative → expired → cold** (T15.0 (7))。`refresh_one` は
-                // 失敗しても `failed_at` を書かない (上のコメント) ので、warm な名前に
-                // 載っている失敗は要求の経路が書いたもの = 「引き直しが間に合っていない」の
-                // 証拠は `warm` の旗の方が強い
-                miss_kind = if was_warm {
-                    MissKind::WarmStale
-                } else if e.failed_at.is_some() {
-                    MissKind::Negative
-                } else if !e.addrs.is_empty() {
-                    MissKind::Expired
-                } else {
-                    // 答えを持っていない入れ物 (`remember_family` が族の記憶だけ置いた等)
-                    MissKind::Cold
-                };
-            }
-            if promote {
-                warm_promote(table, &key, now, ttl);
-            }
-        }
-    }
-    if promote {
-        wake_refresher();
-    }
-    if ask {
-        request_refresh(key.clone());
-    }
-    match found {
-        Some(Looked::Hit(addrs)) => {
-            HITS.fetch_add(1, Ordering::Relaxed);
-            return Ok((addrs, pref, false));
-        }
-        Some(Looked::Stale(addrs)) => {
-            STALE.fetch_add(1, Ordering::Relaxed);
-            return Ok((addrs, pref, false));
-        }
-        Some(Looked::Served(addrs)) => {
-            // ミスではない (`misses` にも `misses_by_kind` にも入れない。T21.3)
-            STALE_HITS.fetch_add(1, Ordering::Relaxed);
-            return Ok((addrs, pref, true));
-        }
-        Some(Looked::Negative(e)) => {
-            FAILURES.fetch_add(1, Ordering::Relaxed);
-            return Err(e);
-        }
-        None => {}
-    }
-    MISSES.fetch_add(1, Ordering::Relaxed);
-    // 種類別も同じ場所で 1 つ (T15.0 (7)。**4 つの和は `MISSES` と一致する**)
-    miss_kind.counter().fetch_add(1, Ordering::Relaxed);
-    // ミスのときだけ `Instant` を 2 回読む (当たりの経路は 1 命令も増えない。T12.4 (2))
-    let t0 = Instant::now();
-    // 締め切りつきで別のスレッドに引かせる (T.32.11。`PROXY_DNS_TIMEOUT_SECS=0` なら自分で引く)
-    let result = pool::resolve(host, port);
-    let us = t0.elapsed().as_micros().min(u64::MAX as u128) as u64;
-    RESOLVE_US_SUM.fetch_add(us, Ordering::Relaxed);
-    RESOLVE_COST.set({
-        let (s, n) = RESOLVE_COST.get();
-        (s + us, n + 1)
-    });
-    let mut guard = TABLE.locked();
-    let table = guard.get_or_insert_with(HashMap::new);
-    match result {
-        Ok(addrs) => {
-            if table.len() >= MAX_ENTRIES && !table.contains_key(&key) {
-                evict_oldest(table);
-            }
-            // 引き直しでも族の記憶は引き継ぐ。裏の引き直しが走っている最中なら
-            // その旗も残す (同じ名前を 2 本引きに行かせない)
-            let slot = table.entry(key).or_insert_with(|| Entry::empty(now, pref));
-            // 期限切れの引き直しで答えが変わったか (T14.37。裏の引き直しと同じ物差し)。
-            // ここは既にミスの経路 (`getaddrinfo` を待ったあと) なので、鍵の内側の
-            // 比較 1 回と原子 1 つは測れない
-            if addrs_changed(&slot.addrs, &addrs) {
-                slot.changes += 1;
-                CHANGES.fetch_add(1, Ordering::Relaxed);
-            }
-            slot.addrs = addrs.clone();
-            slot.resolved_at = now;
-            slot.last_used = now;
-            slot.misses += 1;
-            slot.misses_by_kind[miss_kind.index()] += 1;
-            slot.failed_at = None;
-            if slot.last_win_v6.is_none() {
-                slot.last_win_v6 = pref;
-            }
-            Ok((addrs, slot.last_win_v6, false))
-        }
-        // 上限の本数が走っていて引きもしなかった (T.32.11)。その名前の失敗としては覚えない
-        Err(e) if pool::is_busy(&e) => Err(e),
-        Err(e) => {
-            // 失敗の経路でも上限を守る (T.32.2)。前はここが無条件の `or_insert_with` で、
-            // 相異なる引けない名前の数だけ表が伸びた (tokyo の 48 時間で 7,511 行)
-            if table.len() >= MAX_ENTRIES && !table.contains_key(&key) {
-                evict_oldest(table);
-            }
-            let entry = table.entry(key).or_insert_with(|| Entry::empty(now, None));
-            entry.misses += 1;
-            entry.misses_by_kind[miss_kind.index()] += 1;
-            entry.failed_at = Some((now, e.kind(), e.to_string()));
-            if !entry.addrs.is_empty() && now.duration_since(entry.resolved_at) < STALE_MAX {
-                STALE.fetch_add(1, Ordering::Relaxed);
-                let pref = entry.last_win_v6;
-                return Ok((entry.addrs.clone(), pref, false));
-            }
-            Err(e)
-        }
-    }
-}
-
-/// serve-stale で返した古い答えで繋げなかったときに、**1 回だけ**引き直す (T21.3)。
-///
-/// 返すのは**番地の集合が `old` から変わったときだけ** `Some((新しい答え, 族の記憶))` で、
-/// 呼び出し側はそのときだけ繋ぎ直す (同じ番地へ繋ぎ直しても同じ失敗をするだけなので)。
-/// 引けなかったときも `None` (呼び出し側は元の接続のエラーを返す)。
-///
-/// 裏の引き直し (古い答えを返したときに頼んだもの) が既に済んでいれば、表の新しい答えを使い
-/// `getaddrinfo` は待たない。まだなら同期で引いて表に書き戻し、その回は**ミス (`expired`) に数える**
-/// (利用者が待ったので。`stale_retries` はどちらの場合も 1 つ増える)。
-/// 要求の経路で呼ばれるのは「古い答えで `refused` / `unreachable` / `timeout`」のときだけ。
-pub fn relookup_after_stale(
-    host: &str,
-    port: u16,
-    old: &[IpAddr],
-) -> Option<(Vec<IpAddr>, Option<bool>)> {
-    let ttl = ttl();
-    if ttl.is_zero() || host.parse::<IpAddr>().is_ok() {
-        return None;
-    }
-    STALE_RETRIES.fetch_add(1, Ordering::Relaxed);
-    let key = host.to_ascii_lowercase();
-    // 裏の引き直しが先に済んでいれば、その答えを使う
-    let fresh = TABLE
-        .locked()
-        .as_ref()
-        .and_then(|t| t.get(&key))
-        .filter(|e| {
-            !e.addrs.is_empty() && Instant::now().saturating_duration_since(e.resolved_at) < ttl
-        })
-        .map(|e| (e.addrs.clone(), e.last_win_v6));
-    let (addrs, pref) = match fresh {
-        Some(f) => f,
-        None => {
-            // 同期で引く。数え方は `resolve_host` のミスの経路と同じ (4 種の和 = `misses`)
-            MISSES.fetch_add(1, Ordering::Relaxed);
-            MISS_EXPIRED.fetch_add(1, Ordering::Relaxed);
-            let t0 = Instant::now();
-            let result = pool::resolve(host, port);
-            let now = Instant::now();
-            let us = now
-                .saturating_duration_since(t0)
-                .as_micros()
-                .min(u64::MAX as u128) as u64;
-            RESOLVE_US_SUM.fetch_add(us, Ordering::Relaxed);
-            RESOLVE_COST.set({
-                let (s, n) = RESOLVE_COST.get();
-                (s + us, n + 1)
-            });
-            let mut changed = false;
-            let mut pref = None;
-            {
-                let mut guard = TABLE.locked();
-                if let Some(e) = guard.as_mut().and_then(|t| t.get_mut(&key)) {
-                    e.misses += 1;
-                    e.misses_by_kind[MissKind::Expired.index()] += 1;
-                    pref = e.last_win_v6;
-                    if let Ok(addrs) = &result {
-                        changed = addrs_changed(&e.addrs, addrs);
-                        e.changes += u64::from(changed);
-                        e.addrs = addrs.clone();
-                        e.resolved_at = now;
-                        e.failed_at = None;
-                    }
-                }
-            }
-            if changed {
-                CHANGES.fetch_add(1, Ordering::Relaxed);
-            }
-            (result.ok()?, pref)
-        }
-    };
-    addrs_changed(old, &addrs).then_some((addrs, pref))
 }
 
 /// 表に答えを 1 件、**齢を指定して**置く (**テストの口**。結合テストが serve-stale の
@@ -886,26 +330,6 @@ pub fn remember_family(host: &str, v6: bool) {
     table.insert(key, Entry::empty(Instant::now(), Some(v6)));
 }
 
-fn with_port(addrs: &[IpAddr], port: u16) -> Vec<SocketAddr> {
-    addrs.iter().map(|&ip| SocketAddr::new(ip, port)).collect()
-}
-
-/// 1 行捨てる。**答えの無い行 (失敗の行・族の記憶だけの行) を先に**、その中で古い順 (T.32.2)。
-///
-/// 答えのある行は serve-stale (21,600 秒) と古い答えで凌ぐ窓のために持っているが、答えの無い
-/// 行が持っているのは負のキャッシュ (既定 60 秒) だけで、捨てても次の 1 回が OS に行くだけ。
-/// 全部を舐める (4,096 行で 1 回 数十 us) が、呼ぶのは OS に問い合わせたミス (ms の単位) と
-/// 族の記憶の新しい行のときだけなので、古い順の印は持たない。
-fn evict_oldest(table: &mut HashMap<String, Entry>) {
-    if let Some(k) = table
-        .iter()
-        .min_by_key(|(_, e)| (!e.addrs.is_empty(), e.resolved_at))
-        .map(|(k, _)| k.clone())
-    {
-        table.remove(&k);
-    }
-}
-
 /// 覚えている結果を全部捨てる (`.env` の TTL 変更やテスト用)。warm の待ち行列も空にする。
 pub fn clear() {
     let mut guard = TABLE.locked();
@@ -916,12 +340,10 @@ pub fn clear() {
     q.clear();
 }
 
-/// serve-stale (T21.3) の単体テスト。dns.rs が 2,000 行を超えているので別のファイルに置く。
+/// serve-stale (T21.3) の単体テスト。dns.rs が 2,000 行を超えていたので別のファイルに置く。
 #[cfg(test)]
-#[path = "dns_stale_tests.rs"]
 mod stale_tests;
 
 /// `dns` の単体テスト (T21.7 で別のファイルに移した)。
 #[cfg(test)]
-#[path = "dns_tests.rs"]
 mod tests;

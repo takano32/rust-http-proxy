@@ -1,15 +1,16 @@
 //! keep-warm の待ち行列 (`WARM_QUEUE`) の出し入れと、裏で引き直す `dns-refresh` スレッド (T13.1・T14.1)。
 //! 表 (`TABLE`) とカウンタは親の `dns` にあり、ここからそのまま触る。T21.7 で `dns.rs` から移した
-//! (関数の本体は変えていない。親から呼ぶものだけ `pub(super)`)。
+//! (関数の本体は変えていない。親から呼ぶものだけ `pub(super)`)。T.34.54 で `dns/warm.rs` に置き直し、
+//! 答えの集合の比べ方 (`addrs_changed`) は `entry` へ移した。
 
 use super::{
     CHANGES, Entry, MAX_WARM, REFRESH_FAILURES, REFRESH_LATE, REFRESH_LATE_AFTER, REFRESH_US_MAX,
-    REFRESH_US_SUM, REFRESHES, TABLE, WARM_EVICTED, WARM_QUEUE, system_resolve, ttl, warm_window,
+    REFRESH_US_SUM, REFRESHES, TABLE, WARM_EVICTED, WARM_QUEUE, addrs_changed, system_resolve, ttl,
+    warm_window,
 };
 use crate::log_warn;
 use crate::sync::LockExt;
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -283,22 +284,6 @@ pub(super) fn refresh_one(key: &str, requested: bool) {
     if changed {
         CHANGES.fetch_add(1, Ordering::Relaxed);
     }
-}
-
-/// 引き直しで**答えの集合**が変わったか (T14.37)。
-///
-/// **順序は見ない**: `getaddrinfo` は同じ答えを毎回違う順で返すことがあり (CDN の
-/// ラウンドロビン、`rotate` を有効にした resolv.conf)、並びの入れ替わりを「変化」と
-/// 数えると `changes` が「本当に別のサーバーに振られた回数」として読めなくなる。
-///
-/// **前の答えが空のとき (= 最初の解決、族の記憶だけ置いた入れ物) は変化と数えない。**
-/// 1 つの名前のアドレスは多くても十数本で、`getaddrinfo` は同じアドレスを 2 度返さない
-/// ので、本数と両向きの包含で足りる (並べ替えも確保もしない)。
-pub(super) fn addrs_changed(old: &[IpAddr], new: &[IpAddr]) -> bool {
-    if old.is_empty() || old.len() != new.len() {
-        return !old.is_empty();
-    }
-    !new.iter().all(|a| old.contains(a)) || !old.iter().all(|a| new.contains(a))
 }
 
 /// 引き直しの旗を下ろす (頼めなかったとき)。
