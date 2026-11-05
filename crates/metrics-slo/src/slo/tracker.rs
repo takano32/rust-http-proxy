@@ -157,6 +157,22 @@ pub struct LastHour {
     pub destinations: Vec<String>,
 }
 
+/// 外した宛先 `d` のうち、窓に掛かる `part` 秒ぶんの `(エラー, 試行)` (T.30.4。T.34.52 で
+/// [`Tracker::last_hour`] から出した)。
+///
+/// エラーは `num0` (窓の `error_rate` の分子)、試行は `den0` (分母) で頭打ちにし、試行はエラーより
+/// 少なくしない。窓に掛かるぶんにエラーが無い (前の時間の早いうちのエラー) なら `None` で、試行も引かない。
+pub(crate) fn apportioned(d: &DestHour, part: u64, num0: u64, den0: u64) -> Option<(u64, u64)> {
+    let e = (d.top_errors * part / HOUR).min(num0);
+    if e == 0 {
+        return None;
+    }
+    let a = (d.top_attempts.max(d.top_errors) * part / HOUR)
+        .max(e)
+        .min(den0);
+    Some((e, a))
+}
+
 /// 時間ごとの集計のリング (**触るのは履歴スレッドと `/slo` だけ**)。
 #[derive(Debug, Default)]
 pub(crate) struct Tracker {
@@ -305,14 +321,9 @@ impl Tracker {
             let Some(d) = self.excluded_destination(t) else {
                 continue;
             };
-            let e = (d.top_errors * part / HOUR).min(out.num[0]);
-            if e == 0 {
-                // 窓に掛かるぶんにエラーが無い (前の時間の早いうちのエラー) なら試行も引かない
+            let Some((e, a)) = apportioned(d, part, out.num[0], out.den[0]) else {
                 continue;
-            }
-            let a = (d.top_attempts.max(d.top_errors) * part / HOUR)
-                .max(e)
-                .min(out.den[0]);
+            };
             out.num[0] -= e;
             out.den[0] -= a;
             out.excluded[0] += e;
@@ -530,5 +541,46 @@ mod tests {
         assert_eq!((a.num, a.den), ([4, 2], [106, 10]));
         assert_eq!(a.rate_hours, [[1, 1], [1, 0]]);
         assert_eq!((a.excluded, a.excluded_hours), ([2, 2], 1));
+    }
+
+    fn dest(top_errors: u64, top_attempts: u64) -> DestHour {
+        DestHour {
+            hour: 3600,
+            errors: top_errors,
+            destination: "connect://x.example.net:443".to_string(),
+            top_errors,
+            top_attempts,
+        }
+    }
+
+    /// 前の時間が窓に半分掛かれば、エラーも試行も半分を引く (T.34.52)。
+    #[test]
+    fn apportioned_takes_the_share_of_the_window() {
+        assert_eq!(
+            apportioned(&dest(10, 40), HOUR / 2, 100, 1000),
+            Some((5, 20))
+        );
+        // いまの時間 (まるごと) はそのまま
+        assert_eq!(apportioned(&dest(10, 40), HOUR, 100, 1000), Some((10, 40)));
+        // 試行がエラーより少なく数えられていても、エラーより少なくは引かない
+        assert_eq!(apportioned(&dest(10, 4), HOUR, 100, 1000), Some((10, 10)));
+    }
+
+    /// 窓に掛かるぶんのエラーが 0 なら試行も引かない (`None`)。
+    #[test]
+    fn apportioned_is_none_without_errors_in_the_window() {
+        assert_eq!(apportioned(&dest(1, 40), HOUR / 4, 100, 1000), None);
+        assert_eq!(apportioned(&dest(0, 40), HOUR, 100, 1000), None);
+        // 窓の分子が 0 (引けるエラーが無い) も同じ
+        assert_eq!(apportioned(&dest(10, 40), HOUR, 0, 1000), None);
+    }
+
+    /// 窓の分子・分母を越えては引かない (`num0`・`den0` で頭打ち)。
+    #[test]
+    fn apportioned_is_capped_by_the_window_totals() {
+        assert_eq!(apportioned(&dest(10, 40), HOUR, 3, 1000), Some((3, 40)));
+        assert_eq!(apportioned(&dest(10, 40), HOUR, 100, 25), Some((10, 25)));
+        // 分母がエラーより小さければ分母で止める (エラーより少なくしないのは分母の内側で)
+        assert_eq!(apportioned(&dest(10, 40), HOUR, 100, 6), Some((10, 6)));
     }
 }
