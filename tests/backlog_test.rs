@@ -19,19 +19,12 @@ mod common;
 use std::process::Command;
 use std::time::Duration;
 
-use common::{ProxyProcess, raw_get};
+use common::{ProxyProcess, raw_get, scratch_dir, write_env};
 
 /// `.env` を置いてプロキシを起こし、`(子, 待ち受けポート, 起動の 1 行)` を返す。
 fn start_proxy(dir: &std::path::Path, extra: &str) -> (ProxyProcess, u16, String) {
     // 待ち受けを 1 本にする (`ss -ltn` の行を取り違えないため)。ログは info で起動行を読む
-    std::fs::write(
-        dir.join(".env"),
-        format!(
-            "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n{}",
-            extra
-        ),
-    )
-    .unwrap();
+    write_env(dir, &format!("PROXY_CACHE_RESERVE=off\n{}", extra));
     let proxy = ProxyProcess::builder(dir)
         .line_wait(Duration::from_secs(30))
         .start();
@@ -139,16 +132,9 @@ fn test_integration_default_listen_backlog_is_somaxconn_capped_at_1024() {
 }
 
 /// 使い捨ての `HOME` (`.env` と状態ファイルの置き場)。
+///
+/// 名前は `rhp-<tag>-<pid>` (前は後ろに時刻のナノ秒も付けていた。試験ごとに `tag` が違うので
+/// pid までで一意になる。T.34.107)。
 fn tempdir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "rhp-{}-{}-{}",
-        tag,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    scratch_dir(&format!("rhp-{}", tag))
 }

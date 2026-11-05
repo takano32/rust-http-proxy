@@ -78,9 +78,7 @@ fn test_integration_the_baseline_appears_after_the_wait_and_stays_put() {
     rust_http_proxy::persist::set_baseline_after_secs(1);
     assert_eq!(rust_http_proxy::persist::baseline_after_secs(), 1);
 
-    let dir = std::env::temp_dir().join(format!("rhp-t244-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t244");
     let rrd = dir.join(".rust-http-proxy.rrd");
     let opened_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

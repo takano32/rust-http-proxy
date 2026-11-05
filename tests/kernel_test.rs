@@ -175,14 +175,8 @@ fn test_integration_healthz_is_503_when_the_connection_limit_is_full() {
 /// `/status` の `kernel` は `null`、というのも仕様のうち)。
 #[test]
 fn test_integration_kernel_window_shows_up_in_history_status_and_metrics() {
-    let dir = std::env::temp_dir().join(format!("rhp-t1412-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\n",
-    )
-    .unwrap();
+    let dir = scratch_dir("rhp-t1412");
+    write_env(&dir, "");
     let proxy = ProxyProcess::start(&dir);
 
     // (1) `/history?res=5` の `kernel` の配列

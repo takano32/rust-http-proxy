@@ -210,8 +210,7 @@ pub fn proxy_config() -> Config {
 
 /// 固定上限 (メモリ 200 MiB / ディスク 2048 MiB) のテスト用キャッシュ設定。
 pub fn cache_cfg(dir: &str) -> CacheConfig {
-    let dir = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = super::fresh_dir(dir);
     CacheConfig {
         default_ttl: Duration::from_secs(60),
         ..CacheConfig::fixed(200 * MIB, 2048 * MIB, dir)

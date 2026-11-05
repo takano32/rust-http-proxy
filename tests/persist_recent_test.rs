@@ -31,10 +31,7 @@ const WARN_LINE: &str = "t149 individual records must survive a restart";
 const EVENT_TEXT: &str = "t149 event must survive a restart";
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rhp-t149-{}-{}", name, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    scratch_dir(&format!("rhp-t149-{}", name))
 }
 
 /// CONNECT を張って `200` まで読む。
@@ -209,15 +206,7 @@ fn test_integration_a_stop_signal_writes_the_last_records() {
     let dir = temp_dir("sigterm");
     let recent = dir.join(".rust-http-proxy.recent");
     let echo_port = start_echo_server();
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\n\
-         PROXY_BIND=127.0.0.1\n\
-         PROXY_LOG_LEVEL=info\n\
-         PROXY_ALLOW_LOCAL=on\n\
-         PROXY_CACHE_RESERVE=off\n",
-    )
-    .unwrap();
+    write_env(&dir, "PROXY_ALLOW_LOCAL=on\nPROXY_CACHE_RESERVE=off\n");
 
     let mut proxy = ProxyProcess::start(&dir);
     assert_eq!(
@@ -263,16 +252,12 @@ fn test_integration_a_stop_signal_writes_the_last_records() {
 fn test_integration_nothing_is_written_when_persistence_is_off() {
     let dir = temp_dir("off");
     let echo_port = start_echo_server();
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\n\
-         PROXY_BIND=127.0.0.1\n\
-         PROXY_LOG_LEVEL=info\n\
-         PROXY_ALLOW_LOCAL=on\n\
+    write_env(
+        &dir,
+        "PROXY_ALLOW_LOCAL=on\n\
          PROXY_STATS_PERSIST=off\n\
          PROXY_CACHE_RESERVE=off\n",
-    )
-    .unwrap();
+    );
 
     let proxy = ProxyProcess::start(&dir);
     drop(open_tunnel(proxy.port, echo_port));
@@ -304,15 +289,7 @@ fn test_integration_a_corrupt_recent_file_is_rebuilt() {
         *b = (i % 251) as u8;
     }
     std::fs::write(&recent, &raw).unwrap();
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\n\
-         PROXY_BIND=127.0.0.1\n\
-         PROXY_LOG_LEVEL=info\n\
-         PROXY_ALLOW_LOCAL=on\n\
-         PROXY_CACHE_RESERVE=off\n",
-    )
-    .unwrap();
+    write_env(&dir, "PROXY_ALLOW_LOCAL=on\nPROXY_CACHE_RESERVE=off\n");
 
     let proxy = ProxyProcess::start(&dir);
     assert_eq!(

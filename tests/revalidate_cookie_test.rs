@@ -57,8 +57,7 @@ fn body_of(resp: &str) -> &str {
 }
 
 fn disk_only(dir: &str) -> CacheConfig {
-    let dir = std::env::temp_dir().join(dir);
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = fresh_dir(dir);
     CacheConfig {
         default_ttl: Duration::from_secs(60),
         ..CacheConfig::fixed(0, 2048 * MIB, dir)

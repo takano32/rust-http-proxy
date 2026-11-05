@@ -175,19 +175,13 @@ fn test_integration_the_per_client_limit_is_off_by_default() {
 #[test]
 fn test_integration_the_env_var_works_in_the_lite_profile() {
     let echo_port = start_echo_server();
-    let dir = std::env::temp_dir().join(format!("rhp-t1413-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\n\
-         PROXY_BIND=127.0.0.1\n\
-         PROXY_PROFILE=lite\n\
-         PROXY_LOG_LEVEL=info\n\
+    let dir = scratch_dir("rhp-t1413");
+    write_env(
+        &dir,
+        "PROXY_PROFILE=lite\n\
          PROXY_ALLOW_LOCAL=on\n\
          PROXY_MAX_CONNS_PER_CLIENT=2\n",
-    )
-    .unwrap();
+    );
     let proxy = ProxyProcess::start(&dir);
 
     let (h1, _t1) = connect_via([127, 0, 0, 1], proxy.port, echo_port);

@@ -94,8 +94,7 @@ fn test_integration_304_rewrites_the_stored_head_in_memory() {
 /// ディスク (L2) だけの項目 (メモリの上限 0)。書き直したファイルから HIT になる。
 #[test]
 fn test_integration_304_rewrites_the_stored_head_on_disk() {
-    let dir = std::env::temp_dir().join("shp-it-304-head-disk");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = fresh_dir("shp-it-304-head-disk");
     let cache = CacheConfig {
         default_ttl: Duration::from_secs(60),
         ..CacheConfig::fixed(0, 2048 * MIB, dir)
@@ -205,8 +204,7 @@ fn test_integration_revalidated_age_counts_from_the_refresh_in_memory() {
 /// ディスク (L2) だけの項目 (メモリの上限 0)。
 #[test]
 fn test_integration_revalidated_age_counts_from_the_refresh_on_disk() {
-    let dir = std::env::temp_dir().join("shp-it-304-age-disk");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = fresh_dir("shp-it-304-age-disk");
     let cache = CacheConfig {
         default_ttl: Duration::from_secs(60),
         ..CacheConfig::fixed(0, 2048 * MIB, dir)

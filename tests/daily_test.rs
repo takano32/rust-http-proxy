@@ -8,28 +8,18 @@
 
 mod common;
 
-use common::{ProxyProcess, endpoint_json, status_number};
+use common::{ProxyProcess, endpoint_json, scratch_dir, status_number, write_env};
 
 /// 個票の上限 (`endpoints::recent::MAX_BODY`)。
 const MAX_BODY: usize = 256 * 1024;
 
 fn home(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rhp-t1420-{}-{}", tag, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    scratch_dir(&format!("rhp-t1420-{}", tag))
 }
 
 /// 置いてある要約 (架空の 3 日ぶん)。
 fn seed(dir: &std::path::Path, extra_env: &str) {
-    std::fs::write(
-        dir.join(".env"),
-        format!(
-            "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n{}",
-            extra_env
-        ),
-    )
-    .unwrap();
+    write_env(dir, &format!("PROXY_CACHE_RESERVE=off\n{}", extra_env));
     let mut out = String::new();
     for (i, day) in ["2026-09-13", "2026-09-14", "2026-09-15"]
         .iter()

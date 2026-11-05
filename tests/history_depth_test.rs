@@ -43,10 +43,7 @@ const T0: u64 = 1_770_000_000;
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rhp-t1432-{}-{}", name, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    scratch_dir(&format!("rhp-t1432-{}", name))
 }
 
 /// `"samples":[[..],[..]]` の行数 (入れ子の配列は 1 列として数えない)。

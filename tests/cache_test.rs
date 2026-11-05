@@ -418,8 +418,7 @@ fn test_integration_https_origin_is_fetched_and_cached() {
         eprintln!("skipping: libssl not available");
         return;
     }
-    let dir = std::env::temp_dir().join("shp-it-tls");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = fresh_dir("shp-it-tls");
     let Some((origin_port, cert, mut child)) = start_tls_origin(&dir) else {
         eprintln!("skipping: openssl or python3 with ssl not available");
         return;

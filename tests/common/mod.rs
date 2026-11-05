@@ -10,9 +10,11 @@ mod net;
 mod origin;
 mod process;
 mod proxy;
+mod scratch;
 
 pub use client::*;
 pub use net::*;
 pub use origin::*;
 pub use process::*;
 pub use proxy::*;
+pub use scratch::*;

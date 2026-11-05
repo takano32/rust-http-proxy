@@ -15,24 +15,16 @@ use std::thread;
 use std::time::Duration;
 
 use common::{
-    ProxyProcess, one_keepalive_request, proxy_config, start_counting_origin,
+    ProxyProcess, one_keepalive_request, proxy_config, scratch_dir, start_counting_origin,
     start_test_proxy_with_live_config, status_json, wait_until,
 };
 
 /// テスト用の `.env` を書く (変えるのは `PROXY_MAX_THREADS` だけ)。
 fn write_env(dir: &std::path::Path, max_threads: usize) {
-    std::fs::write(
-        dir.join(".env"),
-        format!(
-            "SERVER_PORT=0\n\
-             PROXY_BIND=127.0.0.1\n\
-             PROXY_PROFILE=lite\n\
-             PROXY_LOG_LEVEL=info\n\
-             PROXY_MAX_THREADS={}\n",
-            max_threads
-        ),
-    )
-    .unwrap();
+    common::write_env(
+        dir,
+        &format!("PROXY_PROFILE=lite\nPROXY_MAX_THREADS={}\n", max_threads),
+    );
 }
 
 /// `.env` を書き換えると `PROXY_MAX_THREADS` が変わること (T11.6)。
@@ -41,9 +33,7 @@ fn write_env(dir: &std::path::Path, max_threads: usize) {
 /// 上限は `Workers` が持っている値そのものなので、これが変われば当たっている。
 #[test]
 fn test_integration_max_threads_changes_when_the_env_file_is_rewritten() {
-    let dir = std::env::temp_dir().join(format!("rhp-t116-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t116");
     write_env(&dir, 5);
 
     // 起動ログは標準出力へ出る (読み続けないとパイプが詰まるので、`ProxyProcess` が専用の

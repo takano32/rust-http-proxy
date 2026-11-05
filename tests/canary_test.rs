@@ -217,18 +217,10 @@ fn canary_obj_series(history: &str) -> String {
 
 /// テスト用の `.env` を書く (変えるのは `PROXY_CANARY` だけ)。
 fn write_env(dir: &std::path::Path, canary: &str) {
-    std::fs::write(
-        dir.join(".env"),
-        format!(
-            "SERVER_PORT=0\n\
-             PROXY_BIND=127.0.0.1\n\
-             PROXY_LOG_LEVEL=info\n\
-             PROXY_CANARY={}\n\
-             PROXY_CANARY_SECS=1\n",
-            canary
-        ),
-    )
-    .unwrap();
+    common::write_env(
+        dir,
+        &format!("PROXY_CANARY={}\nPROXY_CANARY_SECS=1\n", canary),
+    );
 }
 
 /// **実バイナリ**で `PROXY_CANARY` / `PROXY_CANARY_SECS` が効き、`.env` の書き換えで
@@ -239,9 +231,7 @@ fn test_integration_the_env_file_turns_the_canary_on_and_off() {
     let (target_port, _t) = start_counting_origin(Arc::clone(&probed), "");
     let target = format!("127.0.0.1:{}", target_port);
 
-    let dir = std::env::temp_dir().join(format!("rhp-t1410-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1410");
     write_env(&dir, &target);
 
     // 落ちても子プロセスを残さない番人 (`ProxyProcess` が落とすときに kill する)

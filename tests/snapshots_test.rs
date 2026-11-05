@@ -14,29 +14,22 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use common::{ProxyProcess, endpoint_json, proxy_config, raw_get, start_test_proxy_with_history};
+use common::{
+    ProxyProcess, endpoint_json, proxy_config, raw_get, scratch_dir, start_test_proxy_with_history,
+    write_env,
+};
 use rust_http_proxy::snapshots;
 
 /// `/snapshot` の上限 (`endpoints::recent::MAX_SNAPSHOT`)。
 const MAX_SNAPSHOT: usize = 4 * 1024 * 1024;
 
 fn home(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rhp-t1434-{}-{}", tag, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    scratch_dir(&format!("rhp-t1434-{}", tag))
 }
 
 /// `$HOME/.env` と、置いてある日次の snapshot (架空の 3 日ぶん)。
 fn seed(dir: &Path, extra_env: &str, days: &[&str]) -> PathBuf {
-    std::fs::write(
-        dir.join(".env"),
-        format!(
-            "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n{}",
-            extra_env
-        ),
-    )
-    .unwrap();
+    write_env(dir, &format!("PROXY_CACHE_RESERVE=off\n{}", extra_env));
     let snaps = dir.join(".rust-http-proxy").join("snapshots");
     if !days.is_empty() {
         std::fs::create_dir_all(&snaps).unwrap();

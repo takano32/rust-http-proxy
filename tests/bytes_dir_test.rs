@@ -205,9 +205,7 @@ fn test_integration_a_forwarded_request_counts_its_body_as_upload() {
 fn test_integration_a_pre_direction_state_file_restores_with_zero_direction_bytes() {
     use rust_http_proxy::rrd::{Enc, Rrd};
 
-    let dir = std::env::temp_dir().join(format!("rhp-t1426-persist-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1426-persist");
     let path = dir.join(".rust-http-proxy.rrd");
 
     // いまの版のファイルを作り、**T14.26 より前の形** (名前 128 B + 53 項目) で 1 行ずつ書く
@@ -245,11 +243,7 @@ fn test_integration_a_pre_direction_state_file_restores_with_zero_direction_byte
         }
     }
 
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n",
-    )
-    .unwrap();
+    write_env(&dir, "PROXY_CACHE_RESERVE=off\n");
     let child = ProxyProcess::builder(&dir)
         .line_wait(Duration::from_secs(30))
         .start();

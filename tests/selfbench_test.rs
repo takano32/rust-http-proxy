@@ -12,26 +12,22 @@ mod common;
 
 use std::path::Path;
 
-use common::{ProxyProcess, endpoint_json};
+use common::{ProxyProcess, endpoint_json, scratch_dir};
 
 /// テスト用の `.env` を書く (`self_bench` を on にするかだけが違う)。
 ///
 /// 履歴スレッドとキャッシュを止めてあるのは、測るものを増やさないため
 /// (自己ベンチが見るのは素通しの forward と CONNECT だけ)。
 fn write_env(dir: &Path, self_bench: bool) {
-    std::fs::write(
-        dir.join(".env"),
-        format!(
-            "SERVER_PORT=0\n\
-             PROXY_BIND=127.0.0.1\n\
-             PROXY_LOG_LEVEL=info\n\
-             PROXY_STATS_PERSIST=off\n\
+    common::write_env(
+        dir,
+        &format!(
+            "PROXY_STATS_PERSIST=off\n\
              PROXY_CACHE_ENABLED=off\n\
              PROXY_SELF_BENCH={}\n",
             if self_bench { "on" } else { "off" }
         ),
-    )
-    .unwrap();
+    );
 }
 
 /// `"key":<数>` を 1 つ読む (`null` なら `None`)。
@@ -55,9 +51,7 @@ fn number(json: &str, key: &str) -> Option<f64> {
 /// `PROXY_SELF_BENCH=on` の実バイナリで `/status` の `self_bench` に値が出ること。
 #[test]
 fn test_integration_self_bench_fills_status() {
-    let dir = std::env::temp_dir().join(format!("rhp-t1443-on-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1443-on");
     write_env(&dir, true);
     let proxy = ProxyProcess::start(&dir);
     // 3 秒回してから 1 行出る (`log_info!` の英語 1 行 = `/events` に添える要約と同じ)
@@ -183,9 +177,7 @@ fn test_integration_self_bench_fills_status() {
 /// 既定 (`off`) では `/status` の `self_bench` は `null` で、`/events` にも 1 件も無いこと。
 #[test]
 fn test_integration_self_bench_is_null_by_default() {
-    let dir = std::env::temp_dir().join(format!("rhp-t1443-off-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1443-off");
     write_env(&dir, false);
     let proxy = ProxyProcess::start(&dir);
     let body = endpoint_json(proxy.port, "/status");

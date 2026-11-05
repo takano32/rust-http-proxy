@@ -10,7 +10,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{ProxyProcess, endpoint_json, status_json};
+use common::{ProxyProcess, endpoint_json, scratch_dir, status_json, write_env};
 
 /// `"key":` に続く数を取る (テスト用の雑な取り出し。キーは前後の `"` を含めて渡す)。
 fn status_number(json: &str, key: &str) -> u64 {
@@ -33,11 +33,7 @@ const FILE_SIZE: u64 = 8 * 1024 * 1024;
 /// `.env` を置いてプロキシを起こし、`(子, 待ち受けポート, 最後の `state file ...` の行)`。
 fn start_proxy(dir: &std::path::Path) -> (ProxyProcess, u16, String) {
     // 既定プロファイル (lite だと統計を永続化しない)。ログは info で起動行を読む
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n",
-    )
-    .unwrap();
+    write_env(dir, "PROXY_CACHE_RESERVE=off\n");
     let child = ProxyProcess::builder(dir)
         .line_wait(Duration::from_secs(30))
         .start();
@@ -58,9 +54,7 @@ fn write_version_one_rrd(path: &std::path::Path) {
 
 #[test]
 fn test_integration_an_old_state_file_is_replaced_by_the_new_fixed_size_one() {
-    let dir = std::env::temp_dir().join(format!("rhp-t124-persist-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t124-persist");
     let rrd = dir.join(".rust-http-proxy.rrd");
     write_version_one_rrd(&rrd);
     assert_eq!(std::fs::metadata(&rrd).unwrap().len(), 1_064_960);
@@ -140,9 +134,7 @@ fn test_integration_an_old_state_file_is_replaced_by_the_new_fixed_size_one() {
 fn test_integration_a_pre_rtt_state_file_restores_with_zero_rtt() {
     use rust_http_proxy::rrd::{Enc, Rrd};
 
-    let dir = std::env::temp_dir().join(format!("rhp-t145-persist-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t145-persist");
     let path = dir.join(".rust-http-proxy.rrd");
 
     // いまの版のファイルを作り、**T14.5 より前の形** (名前 128 B + 49 項目) で 1 行ずつ書く
@@ -487,9 +479,7 @@ fn count_samples(json: &str) -> usize {
 /// ファイルは 8,388,608 B 固定。2 回目の起動では変換しない (`converted_from` は null)。
 #[test]
 fn test_integration_a_version_two_state_file_is_converted_to_version_three() {
-    let dir = std::env::temp_dir().join(format!("rhp-t1414-persist-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1414-persist");
     let path = dir.join(".rust-http-proxy.rrd");
     let fx = Fixture::load();
     write_version_two_rrd(&path, &fx);

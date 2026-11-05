@@ -93,22 +93,12 @@ fn test_integration_endpoints_are_writable_by_default() {
 /// 起動ログの行**で、`.env` を読み直した瞬間が分かる。
 #[test]
 fn test_integration_readonly_follows_the_env_file() {
-    let dir = std::env::temp_dir().join(format!("rhp-t1418-ro-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1418-ro");
     let write_env = |v: &str| {
-        std::fs::write(
-            dir.join(".env"),
-            format!(
-                "SERVER_PORT=0\n\
-                 PROXY_BIND=127.0.0.1\n\
-                 PROXY_PROFILE=lite\n\
-                 PROXY_LOG_LEVEL=info\n\
-                 PROXY_ENDPOINTS_READONLY={}\n",
-                v
-            ),
-        )
-        .unwrap();
+        common::write_env(
+            &dir,
+            &format!("PROXY_PROFILE=lite\nPROXY_ENDPOINTS_READONLY={}\n", v),
+        );
     };
 
     write_env("off");

@@ -9,7 +9,7 @@ mod common;
 
 use std::process::Command;
 
-use common::{ProxyProcess, endpoint_json, status_json, wait_until};
+use common::{ENV_BASE, ProxyProcess, endpoint_json, scratch_dir, status_json, wait_until};
 
 /// `$HOME` を一時ディレクトリにしてプロキシを起こす。`env_file` はそこに置く `.env` の中身、
 /// `vars` は**実際の環境変数**として渡すもの (出どころの `env` と `env_file` を作り分ける)。
@@ -29,9 +29,7 @@ fn start_proxy_logged(
     env_file: &str,
     vars: &[(&str, &str)],
 ) -> (ProxyProcess, u16, std::path::PathBuf, Vec<String>) {
-    let dir = std::env::temp_dir().join(format!("rhp-t1415-{}-{}", tag, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir(&format!("rhp-t1415-{}", tag));
     std::fs::write(dir.join(".env"), env_file).unwrap();
 
     // 子プロセスは落ちても残らない (`ProxyProcess` の番人)。起動ログは標準出力へ出るので、
@@ -86,11 +84,7 @@ fn check_missing(text: &str) -> Vec<String> {
 /// (名前解決の測定に最大 2 秒かかる)。出そろうまで待って形を見る。
 #[test]
 fn test_integration_capabilities_appear_in_status() {
-    let (_child, port, dir) = start_proxy(
-        "caps",
-        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\n",
-        &[],
-    );
+    let (_child, port, dir) = start_proxy("caps", ENV_BASE, &[]);
     wait_until(
         || !status_json(port).contains("\"capabilities\":null"),
         "capabilities が測り終わる",
@@ -211,7 +205,7 @@ fn test_integration_min_transfer_keys_are_read_and_shown() {
 #[test]
 fn test_integration_config_shows_effective_values_and_their_source() {
     let env_file = |ttl: Option<u32>| {
-        let mut text = String::from("SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\n");
+        let mut text = String::from(ENV_BASE);
         if let Some(ttl) = ttl {
             text.push_str(&format!("PROXY_DNS_TTL_SECS={}\n", ttl));
         }
@@ -318,9 +312,7 @@ fn test_integration_config_shows_effective_values_and_their_source() {
 /// 読めなければ、それはこの機械の設定がおかしいので落とす。
 #[test]
 fn test_integration_check_prints_capabilities_and_settings() {
-    let dir = std::env::temp_dir().join(format!("rhp-t1415-check-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1415-check");
     std::fs::write(dir.join(".env"), "PROXY_DNS_TTL_SECS=30\n").unwrap();
 
     let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
@@ -405,9 +397,7 @@ fn test_integration_check_prints_capabilities_and_settings() {
 /// **warn を 1 行出して既定の 250 ms (出どころ `default`) に戻す**。`--check` で両方を見る。
 #[test]
 fn test_integration_he_stagger_is_read_once_and_falls_back_when_out_of_range() {
-    let dir = std::env::temp_dir().join(format!("rhp-t176-stagger-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t176-stagger");
     let check = |env_file: &str| {
         std::fs::write(dir.join(".env"), env_file).unwrap();
         let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
@@ -475,7 +465,7 @@ fn test_integration_he_stagger_is_read_once_and_falls_back_when_out_of_range() {
 /// 書き損じれば出る。**正しい `.env` では WARN が 1 行も増えない**。
 #[test]
 fn test_integration_env_typos_and_unreadable_values_are_reported() {
-    let base = "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\n";
+    let base = ENV_BASE;
     let bad = format!(
         "{}PROXY_TIMOUT_SECS=20\nPROXY_KEEPALIVE_SECS=abc\nPROXY_TIMEOUT_SECS=xyz\nPROXY_FOO_BAR=1\n",
         base
@@ -554,9 +544,7 @@ fn test_integration_env_typos_and_unreadable_values_are_reported() {
     let _ = std::fs::remove_dir_all(&dir);
 
     // `--check` にも名前が出る
-    let dir = std::env::temp_dir().join(format!("rhp-t2806-check-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t2806-check");
     std::fs::write(dir.join(".env"), &bad).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
         .arg("--check")
@@ -584,7 +572,7 @@ fn test_integration_env_typos_and_unreadable_values_are_reported() {
 /// 扱いは今までどおり (真偽の鍵は on、`PROXY_PROFILE` は既定、`PROXY_SLO` は読めた項目だけ当てる)。
 #[test]
 fn test_integration_unreadable_flags_profile_and_slo_are_reported() {
-    let base = "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\n";
+    let base = ENV_BASE;
     let bad = format!(
         "{}PROXY_ALLOW_LOCAL=maybe\nPROXY_PROFILE=fast\nPROXY_SLO=connect_p50_ms=20,error_rate=abc,foo=1\n",
         base
@@ -634,9 +622,8 @@ fn test_integration_unreadable_flags_profile_and_slo_are_reported() {
 /// `--check` には `private` と出る。`on` / `off` は今までどおり真偽で出る。
 #[test]
 fn test_integration_allow_local_private_is_a_readable_value() {
-    let env =
-        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_ALLOW_LOCAL=Private\n";
-    let (child, port, dir, log) = start_proxy_logged("t2841", env, &[]);
+    let env = format!("{}PROXY_ALLOW_LOCAL=Private\n", ENV_BASE);
+    let (child, port, dir, log) = start_proxy_logged("t2841", &env, &[]);
     assert!(!log.iter().any(|l| l.contains(" is not ")), "{:#?}", log);
     assert!(status_json(port).contains("\"invalid\":[],\"unknown\":[]"));
     let config = endpoint_json(port, "/config");
@@ -647,9 +634,7 @@ fn test_integration_allow_local_private_is_a_readable_value() {
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);
 
-    let dir = std::env::temp_dir().join(format!("rhp-t2841-check-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t2841-check");
     std::fs::write(dir.join(".env"), env).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
         .arg("--check")
@@ -683,9 +668,7 @@ fn test_integration_build_profile_is_shown_in_version_check_and_status() {
     };
     assert_eq!(build, expected, "テストのビルドのプロファイル");
 
-    let dir = std::env::temp_dir().join(format!("rhp-t2842-build-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t2842-build");
     let out = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
         .arg("-V")
         .env("HOME", &dir)
@@ -730,9 +713,7 @@ fn test_integration_build_profile_is_shown_in_version_check_and_status() {
 fn test_integration_check_is_quiet_when_the_reader_closes_early() {
     use std::io::Read;
     use std::process::Stdio;
-    let dir = std::env::temp_dir().join(format!("rhp-t2848-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t2848");
     let mut child = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
         .arg("--check")
         .env("HOME", &dir)

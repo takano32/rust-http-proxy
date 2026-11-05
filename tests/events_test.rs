@@ -10,26 +10,22 @@ mod common;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{ProxyProcess, endpoint_json, wait_until};
+use common::{ProxyProcess, endpoint_json, scratch_dir, wait_until};
 
 /// テスト用の `.env` を書く (変えるのは `PROXY_TIMEOUT_SECS` だけ)。
 ///
 /// 履歴スレッドとキャッシュを止めてあるのは、`ipv6` / `pressure` / `ballast` の 3 種
 /// (履歴スレッドの周期で拾う出来事) を混ぜずに `start` と `reload` だけを見るため。
 fn write_env(dir: &Path, timeout_secs: u32) {
-    std::fs::write(
-        dir.join(".env"),
-        format!(
-            "SERVER_PORT=0\n\
-             PROXY_BIND=127.0.0.1\n\
-             PROXY_LOG_LEVEL=info\n\
-             PROXY_STATS_PERSIST=off\n\
+    common::write_env(
+        dir,
+        &format!(
+            "PROXY_STATS_PERSIST=off\n\
              PROXY_CACHE_ENABLED=off\n\
              PROXY_TIMEOUT_SECS={}\n",
             timeout_secs
         ),
-    )
-    .unwrap();
+    );
 }
 
 /// JSON から `"key":<数>` を 1 つ読む (最初の 1 件 = いちばん新しい出来事)。
@@ -50,9 +46,7 @@ fn first_number(json: &str, key: &str) -> u64 {
 /// (`PROXY_TIMEOUT_SECS 30 → 10`) が時刻つきで見えること。`?since=` で絞れること。
 #[test]
 fn test_integration_events_shows_the_start_and_the_reload() {
-    let dir = std::env::temp_dir().join(format!("rhp-t1411-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1411");
     write_env(&dir, 30);
     let proxy = ProxyProcess::start(&dir);
 

@@ -17,18 +17,16 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use common::{ProxyProcess, endpoint_json, status_json};
+use common::{ProxyProcess, endpoint_json, scratch_dir, status_json, write_env};
 
 fn home(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rhp-t2809-{}-{}", tag, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n\
-         PROXY_STATS_PERSIST=off\nPROXY_CANARY=off\n",
-    )
-    .unwrap();
+    let dir = scratch_dir(&format!("rhp-t2809-{}", tag));
+    write_env(
+        &dir,
+        "PROXY_CACHE_RESERVE=off\n\
+         PROXY_STATS_PERSIST=off\n\
+         PROXY_CANARY=off\n",
+    );
     dir
 }
 

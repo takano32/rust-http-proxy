@@ -23,29 +23,22 @@ mod common;
 use common::*;
 
 fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rhp-t1441-{}-{}", name, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    scratch_dir(&format!("rhp-t1441-{}", name))
 }
 
 /// `.env` を置く。**`PROXY_PROFILE=lite` にはしない** (`--lite` はもともと個票を作らないので、
 /// 旗が効いているのか `--lite` なのか分からなくなる)。`PROXY_TRACE_CLIENT` は `/trace` に
 /// 1 行残すため、`PROXY_STATS_PERSIST` は既定 (on) のまま = `persisted` と `/history` を見る。
 fn write_env(dir: &Path, records: &str) {
-    std::fs::write(
-        dir.join(".env"),
-        format!(
-            "SERVER_PORT=0\n\
-             PROXY_BIND=127.0.0.1\n\
-             PROXY_LOG_LEVEL=info\n\
-             PROXY_ALLOW_LOCAL=on\n\
+    common::write_env(
+        dir,
+        &format!(
+            "PROXY_ALLOW_LOCAL=on\n\
              PROXY_TRACE_CLIENT=127.0.0.1\n\
              PROXY_RECORDS={}\n",
             records
         ),
-    )
-    .unwrap();
+    );
 }
 
 /// JSON の `"key":"<値>"` を 1 つ読む (最初の 1 つ)。

@@ -212,23 +212,17 @@ fn test_only_the_configured_client_is_traced() {
 #[test]
 fn test_integration_the_env_file_takes_effect_on_the_next_connection() {
     let (origin_port, _origin) = start_mock_origin();
-    let dir = std::env::temp_dir().join(format!("rhp-t1427-env-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1427-env");
     let write_env = |client: &str| {
-        std::fs::write(
-            dir.join(".env"),
-            format!(
-                "SERVER_PORT=0\n\
-                 PROXY_BIND=127.0.0.1\n\
-                 PROXY_LOG_LEVEL=info\n\
-                 PROXY_ALLOW_LOCAL=on\n\
+        common::write_env(
+            &dir,
+            &format!(
+                "PROXY_ALLOW_LOCAL=on\n\
                  PROXY_CACHE_ENABLED=off\n\
                  PROXY_TRACE_CLIENT={}\n",
                 client
             ),
-        )
-        .unwrap();
+        );
     };
 
     // まずは別の接続元を追いかけている
@@ -295,19 +289,13 @@ fn test_integration_the_env_file_takes_effect_on_the_next_connection() {
 #[test]
 fn test_integration_the_lite_profile_does_not_trace() {
     let (origin_port, _origin) = start_mock_origin();
-    let dir = std::env::temp_dir().join(format!("rhp-t1427-lite-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\n\
-         PROXY_BIND=127.0.0.1\n\
-         PROXY_PROFILE=lite\n\
-         PROXY_LOG_LEVEL=info\n\
+    let dir = scratch_dir("rhp-t1427-lite");
+    common::write_env(
+        &dir,
+        "PROXY_PROFILE=lite\n\
          PROXY_ALLOW_LOCAL=on\n\
          PROXY_TRACE_CLIENT=127.0.0.1\n",
-    )
-    .unwrap();
+    );
     let proxy = ProxyProcess::start(&dir);
 
     let url = format!("http://127.0.0.1:{}/lite", origin_port);

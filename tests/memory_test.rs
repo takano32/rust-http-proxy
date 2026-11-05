@@ -274,9 +274,7 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
 /// `mallopt(M_ARENA_MAX)` をスレッドを作る前に 1 回掛けるのも `main.rs` の仕事。
 #[test]
 fn test_integration_memory_rss_matches_the_probe_in_the_real_binary() {
-    let dir = std::env::temp_dir().join(format!("rhp-t1421-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1421");
     std::fs::write(
         dir.join(".env"),
         "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_MALLOC_ARENAS=4\nPROXY_CACHE_PROBE_SECS=1\n",

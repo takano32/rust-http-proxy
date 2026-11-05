@@ -86,23 +86,17 @@ fn connect_request(target_port: u16) -> String {
 #[test]
 fn test_integration_allow_clients_closes_strangers_and_counts_them() {
     let echo_port = start_echo_server();
-    let dir = std::env::temp_dir().join(format!("rhp-t1418-acl-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch_dir("rhp-t1418-acl");
     let write_env = |clients: &str| {
-        std::fs::write(
-            dir.join(".env"),
-            format!(
-                "SERVER_PORT=0\n\
-                 PROXY_BIND=127.0.0.1\n\
-                 PROXY_PROFILE=lite\n\
-                 PROXY_LOG_LEVEL=info\n\
+        common::write_env(
+            &dir,
+            &format!(
+                "PROXY_PROFILE=lite\n\
                  PROXY_ALLOW_LOCAL=on\n\
                  PROXY_ALLOW_CLIENTS={}\n",
                 clients
             ),
-        )
-        .unwrap();
+        );
     };
 
     // `127.0.0.1` はこの一覧に無い

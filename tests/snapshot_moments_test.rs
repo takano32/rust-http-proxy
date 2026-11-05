@@ -21,14 +21,14 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use common::{ProxyProcess, endpoint_json, proxy_config, start_test_proxy_with_history};
+use common::{
+    ProxyProcess, endpoint_json, proxy_config, scratch_dir, start_test_proxy_with_history,
+    write_env,
+};
 use rust_http_proxy::snapshots;
 
 fn home(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rhp-t2820-{}-{}", tag, std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    scratch_dir(&format!("rhp-t2820-{}", tag))
 }
 
 /// 置き場所にある `*-<kind>.json` の名前 (拡張子なし、古い順)。
@@ -121,12 +121,7 @@ fn test_integration_the_start_snapshot_is_written_once_after_the_wait() {
 #[test]
 fn test_integration_sigterm_leaves_a_shutdown_snapshot() {
     let dir = home("shutdown");
-    std::fs::write(
-        dir.join(".env"),
-        "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n\
-         PROXY_CANARY=off\n",
-    )
-    .unwrap();
+    write_env(&dir, "PROXY_CACHE_RESERVE=off\nPROXY_CANARY=off\n");
     let snaps = dir.join(".rust-http-proxy").join("snapshots");
 
     let mut proxy = ProxyProcess::start(&dir);
