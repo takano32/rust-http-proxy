@@ -320,4 +320,16 @@ mod tests;
 mod latency_tests;
 
 #[cfg(test)]
+mod window_tests;
+
+#[cfg(test)]
+mod status_tests;
+
+#[cfg(test)]
+mod client_tests;
+
+#[cfg(test)]
+mod dest_tests;
+
+#[cfg(test)]
 mod record_tests;
