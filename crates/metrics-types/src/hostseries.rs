@@ -135,28 +135,47 @@ impl HostSeries {
             return;
         }
         if !self.seeded {
-            for (name, s) in hosts.iter() {
-                self.recent.insert(
-                    name.clone(),
-                    Recent {
-                        last_total: s.requests,
-                        hits: [0; RANK_WINDOWS],
-                    },
-                );
-            }
-            self.seeded = true;
-            self.cur_win = w;
-            self.cur = (w % SAMPLES as u64) as usize;
+            self.seed(w, hosts);
             return;
         }
-        // (1) 標本を進める。飛んだぶんも順に 0 に戻す (24 時間前の値を残さない)
+        self.advance(w);
+        self.count_hits(hosts);
+        // (3) 上位 16 (同点は名前で崩すので順序は 1 つに決まる)。1 件も無ければ何もしない
+        let keep = pick_top(&self.recent, &self.names);
+        if keep.is_empty() && self.names.is_empty() {
+            return;
+        }
+        self.reassign(&keep, hosts);
+    }
+
+    /// 起動直後の 1 回: 通算の基準を置くだけ (T.34.36 で [`Self::rotate`] から割った段)。
+    fn seed(&mut self, w: u64, hosts: &HashMap<String, HostStats>) {
+        for (name, s) in hosts.iter() {
+            self.recent.insert(
+                name.clone(),
+                Recent {
+                    last_total: s.requests,
+                    hits: [0; RANK_WINDOWS],
+                },
+            );
+        }
+        self.seeded = true;
+        self.cur_win = w;
+        self.cur = (w % SAMPLES as u64) as usize;
+    }
+
+    /// (1) 標本を進める。飛んだぶんも順に 0 に戻す (24 時間前の値を残さない)
+    fn advance(&mut self, w: u64) {
         let steps = (w - self.cur_win).min(SAMPLES as u64);
         for _ in 0..steps {
             self.cur = (self.cur + 1) % SAMPLES;
             self.clear_sample(self.cur);
         }
         self.cur_win = w;
-        // (2) 直近 12 窓の要求数 (ホスト表の通算との差分)
+    }
+
+    /// (2) 直近 12 窓の要求数 (ホスト表の通算との差分)
+    fn count_hits(&mut self, hosts: &HashMap<String, HostStats>) {
         let pos = (self.rotations % RANK_WINDOWS as u64) as usize;
         self.rotations += 1;
         for r in self.recent.values_mut() {
@@ -167,34 +186,10 @@ impl HostSeries {
             r.hits[pos] = s.requests.saturating_sub(r.last_total).min(u32::MAX as u64) as u32;
             r.last_total = s.requests;
         }
-        // (3) 上位 16 (同点は名前で崩すので順序は 1 つに決まる)。1 件も無ければ何もしない
-        let mut keep: Vec<String> = {
-            let mut rank: Vec<(u64, &str)> = self
-                .recent
-                .iter()
-                .map(|(k, r)| (r.score(), k.as_str()))
-                .filter(|&(sc, _)| sc > 0)
-                .collect();
-            rank.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
-            rank.truncate(SLOTS);
-            rank.into_iter().map(|(_, n)| n.to_string()).collect()
-        };
-        // **枠が余っているなら今の住人はそのまま残す**: この 1 時間 静かだっただけの
-        // ホスト (夜だけ動く相手) の 24 時間が、誰も欲しがっていない枠で消えないように。
-        // 忙しいホストを押しのけることは無い (上位を全部置いたあとの余りだけ)
-        if keep.len() < SLOTS {
-            for n in self.names.iter() {
-                if keep.len() >= SLOTS {
-                    break;
-                }
-                if !n.is_empty() && !keep.iter().any(|h| h == n) {
-                    keep.push(n.clone());
-                }
-            }
-        }
-        if keep.is_empty() && self.names.is_empty() {
-            return;
-        }
+    }
+
+    /// (4) 落ちたホストの旗を下ろし、上がったホストに空き枠を配る
+    fn reassign(&mut self, keep: &[String], hosts: &mut HashMap<String, HostStats>) {
         self.alloc();
         // 落ちたホストの旗を下ろして枠を空ける
         for i in 0..SLOTS {
@@ -207,7 +202,7 @@ impl HostSeries {
             self.names[i].clear();
         }
         // 上がったホストに空き枠を配る (**前の住人の標本は捨てる**)
-        for h in &keep {
+        for h in keep {
             if self.names.iter().any(|n| n == h) {
                 continue;
             }
@@ -318,6 +313,36 @@ impl HostSeries {
         let at = slot * SAMPLES * FIELDS;
         data[at..at + SAMPLES * FIELDS].fill(0);
     }
+}
+
+/// (3) 上位 16 を選ぶ (**純粋**。T.34.36 で [`HostSeries::rotate`] から出した)。
+///
+/// 直近 1 時間の要求数 ([`Recent::score`]) が 0 のホストは選ばない。同点は名前で崩すので順序は 1 つに決まる。
+/// **枠が余っているなら今の住人 (`residents`) はそのまま残す**: この 1 時間 静かだっただけの
+/// ホスト (夜だけ動く相手) の 24 時間が、誰も欲しがっていない枠で消えないように。
+/// 忙しいホストを押しのけることは無い (上位を全部置いたあとの余りだけ)
+fn pick_top(recent: &HashMap<String, Recent>, residents: &[String]) -> Vec<String> {
+    let mut keep: Vec<String> = {
+        let mut rank: Vec<(u64, &str)> = recent
+            .iter()
+            .map(|(k, r)| (r.score(), k.as_str()))
+            .filter(|&(sc, _)| sc > 0)
+            .collect();
+        rank.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+        rank.truncate(SLOTS);
+        rank.into_iter().map(|(_, n)| n.to_string()).collect()
+    };
+    if keep.len() < SLOTS {
+        for n in residents.iter() {
+            if keep.len() >= SLOTS {
+                break;
+            }
+            if !n.is_empty() && !keep.iter().any(|h| h == n) {
+                keep.push(n.clone());
+            }
+        }
+    }
+    keep
 }
 
 /// 1 ホストぶんの系列 ([`HostSeries::view`] の結果)。
@@ -511,5 +536,56 @@ mod tests {
         s.rotate(101, &mut hosts);
         assert_eq!(hosts["a"].series_slot, Some(0));
         assert_eq!(s.view(None, SLOTS).window_secs, 1);
+    }
+
+    fn scores(rows: &[(&str, u32)]) -> HashMap<String, Recent> {
+        rows.iter()
+            .map(|(n, h)| {
+                let mut r = Recent::default();
+                r.hits[0] = *h;
+                (n.to_string(), r)
+            })
+            .collect()
+    }
+
+    /// 同点は名前の順で崩し、0 のホストは選ばない (T.34.36)。
+    #[test]
+    fn ties_are_broken_by_name_and_silent_hosts_are_not_picked() {
+        let r = scores(&[("c", 5), ("a", 5), ("b", 9), ("z", 0)]);
+        assert_eq!(pick_top(&r, &[]), vec!["b", "a", "c"]);
+    }
+
+    /// 選ぶのは 16 まで (17 番目は落ちる。T.34.36)。
+    #[test]
+    fn the_top_is_cut_at_sixteen() {
+        let rows: Vec<(String, u32)> = (0..20).map(|i| (format!("h{:02}", i), 100 - i)).collect();
+        let r = scores(
+            &rows
+                .iter()
+                .map(|(n, h)| (n.as_str(), *h))
+                .collect::<Vec<_>>(),
+        );
+        let top = pick_top(&r, &[]);
+        assert_eq!(top.len(), SLOTS);
+        assert_eq!(top.first().map(String::as_str), Some("h00"));
+        assert_eq!(top.last().map(String::as_str), Some("h15"));
+    }
+
+    /// 枠が余っていれば今の住人は残し、満ちていれば忙しいホストを押しのけない (T.34.36)。
+    #[test]
+    fn residents_keep_the_spare_slots_but_never_push_out_a_busy_host() {
+        let r = scores(&[("busy", 7)]);
+        let residents = vec![String::new(), "night".to_string(), "busy".to_string()];
+        assert_eq!(pick_top(&r, &residents), vec!["busy", "night"]);
+        let rows: Vec<(String, u32)> = (0..16).map(|i| (format!("h{:02}", i), 50)).collect();
+        let r = scores(
+            &rows
+                .iter()
+                .map(|(n, h)| (n.as_str(), *h))
+                .collect::<Vec<_>>(),
+        );
+        let top = pick_top(&r, &["night".to_string()]);
+        assert_eq!(top.len(), SLOTS);
+        assert!(!top.iter().any(|h| h == "night"));
     }
 }
