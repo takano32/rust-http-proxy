@@ -37,41 +37,6 @@ const TUNNELS: usize = 12;
 /// 通す forward の本数。
 const FORWARDS: usize = 8;
 
-/// `"key":{...}` の中身を切り出す (入れ子つき)。
-fn object_of(json: &str, key: &str) -> String {
-    object_at(json, key, false)
-}
-
-/// 同じ名前が入れ子にもあるとき (`memory` は `cache.memory` が先に出る) の**最後の 1 つ**。
-fn last_object_of(json: &str, key: &str) -> String {
-    object_at(json, key, true)
-}
-
-fn object_at(json: &str, key: &str, last: bool) -> String {
-    let pat = format!("\"{}\":{{", key);
-    let found = if last {
-        json.rfind(&pat)
-    } else {
-        json.find(&pat)
-    };
-    let at = found.unwrap_or_else(|| panic!("{} が無い: {}", key, json)) + pat.len() - 1;
-    let rest = &json[at..];
-    let mut depth = 0usize;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return rest[..=i].to_string();
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("{} が閉じていない: {}", key, rest);
-}
-
 /// 1 本の CONNECT を張って、すぐ閉じる (確立の時間だけを数えさせる)。
 fn one_tunnel(proxy_port: u16, origin_port: u16) {
     let mut t = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
@@ -129,9 +94,9 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
     );
 
     let status = status_json(proxy_port);
-    let q = object_of(&status, "recent_quantiles");
-    let connect = object_of(&q, "connect");
-    let forward = object_of(&q, "forward");
+    let q = json::object(&status, "recent_quantiles");
+    let connect = json::object(&q, "connect");
+    let forward = json::object(&q, "forward");
 
     let (cn, cp50) = check_shape(&connect, "connect");
     assert_eq!(cn as usize, TUNNELS, "CONNECT の本数: {}", connect);
@@ -141,7 +106,7 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
     assert!(cp50 < 1000.0, "loopback で 1 秒はかからない: {}", connect);
 
     // 3 本目の環 `wait` (T15.0 (2))。本数は確立と同じで、各分位点は確立以上
-    let wait = object_of(&q, "wait");
+    let wait = json::object(&q, "wait");
     let (wn, wp50) = check_shape(&wait, "wait");
     assert_eq!(wn, cn, "`wait` の本数が確立と違う: {}", q);
     assert!(wp50 >= cp50, "wait p50 {} < connect p50 {}", wp50, cp50);
@@ -167,7 +132,7 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
     );
 
     // `memory.rings.quantiles` は固定 24 KiB (3 系統 × 1,024 本 × 8 B。T15.0 (2))
-    let rings = object_of(&last_object_of(&status, "memory"), "rings");
+    let rings = json::object(&json::last_object(&status, "memory"), "rings");
     assert_eq!(json::number(&rings, "quantiles"), 24576.0, "{}", rings);
     assert!(
         json::number(&rings, "total") >= 24576.0,
@@ -177,7 +142,7 @@ fn test_integration_a_status_shows_the_exact_recent_quantiles() {
 
     // `/history?summary=1` (T14.24) にも**別の鍵で**同じ値が添う (`p50_ms` は区間の補間)
     let summary = endpoint_json(proxy_port, "/history?summary=1&since=restart");
-    let sq = object_of(&object_of(&summary, "recent_quantiles"), "connect");
+    let sq = json::object(&json::object(&summary, "recent_quantiles"), "connect");
     assert_eq!(json::number(&sq, "n") as usize, TUNNELS, "{}", summary);
     assert!(summary.contains("\"p50_ms\":"), "区間の補間も残ること");
     assert!(
@@ -216,12 +181,22 @@ fn test_integration_b_lite_records_no_samples() {
         (0, 0, 0, 0, 0, 0),
         "`--lite` で書いた"
     );
-    let q = object_of(&status_json(proxy_port), "recent_quantiles");
-    assert_eq!(json::number(&object_of(&q, "connect"), "n"), 0.0, "{}", q);
-    assert_eq!(json::number(&object_of(&q, "connect"), "max"), 0.0, "{}", q);
+    let q = json::object(&status_json(proxy_port), "recent_quantiles");
+    assert_eq!(
+        json::number(&json::object(&q, "connect"), "n"),
+        0.0,
+        "{}",
+        q
+    );
+    assert_eq!(
+        json::number(&json::object(&q, "connect"), "max"),
+        0.0,
+        "{}",
+        q
+    );
     // 3 本目も同じ (`queue` と `client_read` が 0 なので「4 段の和」を名乗れない)
-    assert_eq!(json::number(&object_of(&q, "wait"), "n"), 0.0, "{}", q);
-    assert_eq!(json::number(&object_of(&q, "wait"), "max"), 0.0, "{}", q);
+    assert_eq!(json::number(&json::object(&q, "wait"), "n"), 0.0, "{}", q);
+    assert_eq!(json::number(&json::object(&q, "wait"), "max"), 0.0, "{}", q);
 
     // 後始末 (このプロセスの他のテストを巻き込まない)
     rust_http_proxy::profile::set_enabled(true);

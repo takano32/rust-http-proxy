@@ -46,28 +46,6 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     scratch_dir(&format!("rhp-t1432-{}", name))
 }
 
-/// `"samples":[[..],[..]]` の行数 (入れ子の配列は 1 列として数えない)。
-/// 最初の `"samples":[` = 標本の配列 (`closed` / `transfer` / `canary` / `kernel` の
-/// 窓はその後ろに別の配列で付く)。
-fn rows(json: &str) -> usize {
-    let at = json.find("\"samples\":[").expect("no samples") + "\"samples\":[".len();
-    let (mut depth, mut n) = (0usize, 0usize);
-    for c in json[at..].chars() {
-        match c {
-            '[' => {
-                depth += 1;
-                if depth == 1 {
-                    n += 1;
-                }
-            }
-            ']' if depth == 0 => break,
-            ']' => depth -= 1,
-            _ => {}
-        }
-    }
-    n
-}
-
 /// 標本の行の先頭 (= その行の `t`)。
 fn first_t(json: &str) -> u64 {
     let at = json.find("\"samples\":[[").expect("no samples") + "\"samples\":[[".len();
@@ -100,12 +78,17 @@ fn test_integration_history_res5_keeps_six_hours_and_defaults_to_720() {
 
     // 既定は今までどおり 720 本 (1 時間ぶん。応答の大きさを変えない)
     let body = endpoint_json(port, "/history?res=5");
-    assert_eq!(rows(&body), DEFAULT_N, "既定が {} 本", rows(&body));
+    assert_eq!(
+        json::sample_rows(&body).len(),
+        DEFAULT_N,
+        "既定が {} 本",
+        json::sample_rows(&body).len()
+    );
     assert_eq!(first_t(&body), newest - (DEFAULT_N as u64 - 1) * 5);
     assert!(body.contains(&format!("[{},", newest)), "最新の標本が無い");
     println!(
         "/history?res=5 の既定: {} 標本 / {} B ({} 〜 {})",
-        rows(&body),
+        json::sample_rows(&body).len(),
         body.len(),
         first_t(&body),
         newest
@@ -113,30 +96,41 @@ fn test_integration_history_res5_keeps_six_hours_and_defaults_to_720() {
 
     // `n=4320` で 6 時間ぶん (4,320 本 × 5 秒 = 21,600 秒)
     let six = endpoint_json(port, "/history?res=5&n=4320");
-    assert_eq!(rows(&six), CAPACITY, "n=4320 で {} 本", rows(&six));
+    assert_eq!(
+        json::sample_rows(&six).len(),
+        CAPACITY,
+        "n=4320 で {} 本",
+        json::sample_rows(&six).len()
+    );
     assert_eq!(newest - first_t(&six), (CAPACITY as u64 - 1) * 5);
     assert_eq!(newest - first_t(&six), 6 * 3600 - 5, "6 時間ぶん");
     println!(
         "/history?res=5&n=4320: {} 標本 / {} B ({} 秒ぶん)",
-        rows(&six),
+        json::sample_rows(&six).len(),
         six.len(),
         newest - first_t(&six) + 5
     );
 
     // 上は 4,320 本で頭打ち、下は 1 本 (`/errors?n=` などと同じ作法)
     assert_eq!(
-        rows(&endpoint_json(port, "/history?res=5&n=99999")),
+        json::sample_rows(&endpoint_json(port, "/history?res=5&n=99999")).len(),
         CAPACITY
     );
-    assert_eq!(rows(&endpoint_json(port, "/history?res=5&n=0")), 1);
     assert_eq!(
-        rows(&endpoint_json(port, "/history?res=5&n=abc")),
+        json::sample_rows(&endpoint_json(port, "/history?res=5&n=0")).len(),
+        1
+    );
+    assert_eq!(
+        json::sample_rows(&endpoint_json(port, "/history?res=5&n=abc")).len(),
         DEFAULT_N
     );
-    assert_eq!(rows(&endpoint_json(port, "/history?res=5&n=100")), 100);
+    assert_eq!(
+        json::sample_rows(&endpoint_json(port, "/history?res=5&n=100")).len(),
+        100
+    );
     // 切るのは**新しい方から** (いちばん新しい標本は必ず入る)
     let one = endpoint_json(port, "/history?res=5&n=1");
-    assert_eq!(rows(&one), 1);
+    assert_eq!(json::sample_rows(&one).len(), 1);
     assert_eq!(first_t(&one), newest);
 
     // 1 分と 1 時間は 1 本も変えない (既定で全部返る)
@@ -147,7 +141,13 @@ fn test_integration_history_res5_keeps_six_hours_and_defaults_to_720() {
             .history
             .restore(res, (0..cap as u64).map(|i| sample(T0 + i * secs)));
         let body = endpoint_json(port, &format!("/history?res={}", secs));
-        assert_eq!(rows(&body), cap, "res={} が {} 本", secs, rows(&body));
+        assert_eq!(
+            json::sample_rows(&body).len(),
+            cap,
+            "res={} が {} 本",
+            secs,
+            json::sample_rows(&body).len()
+        );
         assert_eq!(History::capacity(res), cap);
     }
 }
@@ -187,7 +187,10 @@ fn test_integration_the_state_file_still_keeps_only_720_five_second_samples() {
     let h = rust_http_proxy::history::History::default();
     h.restore(0, loaded.history[0].clone());
     assert_eq!(h.len(), RESOLUTIONS[0].1);
-    assert_eq!(rows(&h.to_json_res_n(0, Some(CAPACITY))), RESOLUTIONS[0].1);
+    assert_eq!(
+        json::sample_rows(&h.to_json_res_n(0, Some(CAPACITY))).len(),
+        RESOLUTIONS[0].1
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

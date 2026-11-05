@@ -91,19 +91,6 @@ fn check_resident(mem: &str) {
     }
 }
 
-/// `memory` の `rings` / `rings_used` の 1 つを切り出す (同じ鍵が 2 度出るので必要。T15.0 (13))。
-fn sub_object(mem: &str, key: &str) -> String {
-    let pat = format!("\"{}\":{{", key);
-    let at = mem
-        .find(&pat)
-        .unwrap_or_else(|| panic!("no {} in {}", key, mem));
-    let rest = &mem[at + pat.len() - 1..];
-    let end = rest
-        .find('}')
-        .unwrap_or_else(|| panic!("{} の括弧が閉じていない: {}", key, rest));
-    rest[..=end].to_string()
-}
-
 /// `rings` と `rings_used` が持つ鍵 (`total` を除く。この順でなくてよい)。
 ///
 /// `quantiles` は直近 1,024 本の標本の環状 (T14.31)、`readers` は内部エンドポイントを
@@ -204,7 +191,7 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     }
 
     // (4) リングの容量は足し算が合っていて、`/status` を太らせない大きさに収まっている
-    let rings_json = sub_object(&mem, "rings");
+    let rings_json = json::object(&mem, "rings");
     let rings: u64 = RING_KEYS
         .iter()
         .map(|k| {
@@ -222,7 +209,7 @@ fn test_integration_memory_breakdown_agrees_with_the_rest_of_status() {
     assert!(mem.len() < 1024, "{} バイト: {}", mem.len(), mem);
 
     // (4b) いま埋まっているぶんは同じ鍵で、どれも容量を越えない (T15.0 (13))
-    let used_json = sub_object(&mem, "rings_used");
+    let used_json = json::object(&mem, "rings_used");
     let used: u64 = RING_KEYS
         .iter()
         .map(|k| {

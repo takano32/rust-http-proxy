@@ -16,46 +16,6 @@ use std::time::Duration;
 mod common;
 use common::*;
 
-/// `"<key>":[ ... ]` を 1 件ずつに割る (`ms` や `rtt_ms` が入れ子なので括弧を数える)。
-fn rows(body: &str, key: &str) -> Vec<String> {
-    let head = format!("\"{}\":[", key);
-    let at = body
-        .find(&head)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, body))
-        + head.len();
-    let rest = &body[at..];
-    let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '{' => {
-                if depth == 0 {
-                    start = i;
-                }
-                depth += 1;
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    out.push(rest[start..=i].to_string());
-                }
-            }
-            ']' if depth == 0 => break,
-            _ => {}
-        }
-    }
-    out
-}
-
-/// `needle` を含む 1 件 (無ければ落ちる)。
-fn row_with(body: &str, key: &str, needle: &str) -> String {
-    rows(body, key)
-        .into_iter()
-        .find(|r| r.contains(needle))
-        .unwrap_or_else(|| panic!("{} が無い: {}", needle, body))
-}
-
 /// CONNECT を 1 本張って、少しだけ流してから閉じる。
 fn tunnel_once(proxy_port: u16, target: &str) {
     let mut s = TcpStream::connect(format!("127.0.0.1:{}", proxy_port)).unwrap();
@@ -82,7 +42,7 @@ fn a_loopback_connect_records_zero_syn_retransmissions() {
         "/recent に CONNECT が 1 本",
     );
     let body = endpoint_json(proxy_port, "/recent?n=50");
-    let entry = row_with(&body, "recent", &format!("\"target\":\"{}\"", target));
+    let entry = json::find_item(&body, "recent", &format!("\"target\":\"{}\"", target));
     assert!(
         entry.contains("\"syn_retrans\":0"),
         "loopback で SYN の再送が出ている: {}",
@@ -91,7 +51,7 @@ fn a_loopback_connect_records_zero_syn_retransmissions() {
 
     // ホスト別 (`/hosts`) と全体 (`/status`) の欄。どちらもメモリだけの欄
     let hosts = endpoint_json(proxy_port, "/hosts?limit=50");
-    let host = row_with(&hosts, "hosts", &format!("connect://{}", target));
+    let host = json::find_item(&hosts, "hosts", &format!("connect://{}", target));
     assert!(host.contains("\"syn_retrans\":0"), "{}", host);
 
     let status = status_json(proxy_port);
@@ -124,7 +84,7 @@ fn forwarded_requests_carry_the_field_too() {
         "/recent に http が 1 本",
     );
     let body = endpoint_json(proxy_port, "/recent?n=50");
-    let entry = row_with(&body, "recent", "\"kind\":\"http\"");
+    let entry = json::find_item(&body, "recent", "\"kind\":\"http\"");
     assert!(
         entry.contains("\"syn_retrans\":0"),
         "loopback で SYN の再送が出ている: {}",

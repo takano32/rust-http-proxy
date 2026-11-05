@@ -432,31 +432,6 @@ fn sum_numbers(json: &str, key: &str) -> u64 {
     total
 }
 
-/// `"samples":[[..],[..]]` の行数 (入れ子の配列があるので深さで数える)。
-fn count_samples(json: &str) -> usize {
-    let head = "\"samples\":[";
-    let at = json.find(head).expect("samples が無い") + head.len();
-    let (mut depth, mut rows) = (0usize, 0usize);
-    for c in json[at..].chars() {
-        match c {
-            '[' => {
-                if depth == 0 {
-                    rows += 1;
-                }
-                depth += 1;
-            }
-            ']' => {
-                if depth == 0 {
-                    break;
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-    rows
-}
-
 /// 版 2 の `.rrd` を置いて起動すると、**読み捨てずに版 3 へ詰め直す** (T14.14)。
 ///
 /// 見るのは受け入れ基準のとおり: ホスト別の `requests` の合計と `/history?res=3600` の
@@ -553,7 +528,7 @@ fn test_integration_a_version_two_state_file_is_converted_to_version_three() {
     for (res, secs) in [(0usize, 5u64), (1, 60), (2, 3600)] {
         let h = endpoint_json(port, &format!("/history?res={}", secs));
         assert_eq!(
-            count_samples(&h),
+            json::sample_rows(&h).len(),
             fx.samples[res].0,
             "res={} の標本数が変わった",
             secs

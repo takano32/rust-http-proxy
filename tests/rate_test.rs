@@ -104,21 +104,13 @@ fn drain(mut stream: TcpStream, got: Arc<AtomicU64>) -> thread::JoinHandle<()> {
     })
 }
 
-/// `/connections` の配列から `"kind":"connect"` の行を 1 つ取り出す。
-fn connect_row(json: &str) -> String {
-    let head = "\"connections\":[";
-    let at = json.find(head).expect("connections がある") + head.len();
-    let end = at + json[at..].find(']').expect("配列が閉じている");
-    json[at..end]
-        .split("},{")
-        .find(|r| r.contains("\"kind\":\"connect\""))
-        .unwrap_or_else(|| panic!("CONNECT の行が無い: {}", json))
-        .to_string()
-}
-
 /// `/connections` と `/status` から、いまの速さを 2 通りで読む。
 fn read_rates(proxy_port: u16) -> (u64, u64, String) {
-    let row = connect_row(&endpoint_json(proxy_port, "/connections"));
+    let row = json::find_item(
+        &endpoint_json(proxy_port, "/connections"),
+        "connections",
+        "\"kind\":\"connect\"",
+    );
     let rate = status_number(&row, "rate_bps");
     let total = status_number(&status_json(proxy_port), "rate_bps_total");
     (rate, total, row)

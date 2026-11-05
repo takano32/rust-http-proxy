@@ -26,38 +26,6 @@ use std::time::Duration;
 mod common;
 use common::*;
 
-/// `"<key>":[ ... ]` を 1 件ずつに割る (`ms` や `rtt_ms` が入れ子なので括弧を数える)。
-fn rows(body: &str, key: &str) -> Vec<String> {
-    let head = format!("\"{}\":[", key);
-    let at = body
-        .find(&head)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, body))
-        + head.len();
-    let rest = &body[at..];
-    let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '{' => {
-                if depth == 0 {
-                    start = i;
-                }
-                depth += 1;
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    out.push(rest[start..=i].to_string());
-                }
-            }
-            ']' if depth == 0 => break,
-            _ => {}
-        }
-    }
-    out
-}
-
 /// 要求行と `Host` の間を空ける幅 (測る対象の「空き」)。
 const GAP: Duration = Duration::from_millis(40);
 /// 個票の `client_read` がこれ以上なら「空きが測れた」と見る (丸めのぶんだけ下に置く)。
@@ -67,7 +35,7 @@ const TRIES: usize = 10;
 
 /// `/recent` の行のうち `needle` を含むものの**いちばん新しい 1 件** (`id` が最大)。
 fn newest_row(body: &str, needle: &str) -> Option<String> {
-    rows(body, "recent")
+    json::array_items(body, "recent")
         .into_iter()
         .filter(|r| r.contains(needle))
         .max_by_key(|r| json::uint(r, "id"))

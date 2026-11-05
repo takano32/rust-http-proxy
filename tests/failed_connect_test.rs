@@ -30,60 +30,14 @@ const TICK: Duration = Duration::from_millis(100);
 /// 繋がらない宛先へ送る CONNECT の本数。
 const FAILURES: u64 = 3;
 
-/// `"keys":[…]` の中身を綴りの並びとして取り出す (`tests/history_columns_test.rs` と同じ)。
-fn str_array(json: &str, key: &str) -> Vec<String> {
-    let pat = format!("\"{}\":[", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("no {} in {}", key, &json[..200]))
-        + pat.len();
-    let end = at + json[at..].find(']').expect("unterminated array");
-    json[at..end]
-        .split(',')
-        .map(|s| s.trim_matches('"').to_string())
-        .collect()
-}
-
-/// 標本の配列の各行を、**入れ子の配列を 1 列と数えて**切り出す。
-fn rows(json: &str) -> Vec<Vec<String>> {
-    let at = json.find("\"samples\":[").expect("no samples") + "\"samples\":[".len();
-    let mut out = Vec::new();
-    let (mut depth, mut cur, mut field) = (0usize, Vec::new(), String::new());
-    for c in json[at..].chars() {
-        match c {
-            '[' if depth == 0 => depth = 1,
-            '[' => {
-                depth += 1;
-                field.push(c);
-            }
-            ',' if depth == 1 => {
-                cur.push(std::mem::take(&mut field));
-            }
-            ']' if depth == 1 => {
-                cur.push(std::mem::take(&mut field));
-                out.push(std::mem::take(&mut cur));
-                depth = 0;
-            }
-            ']' if depth == 0 => break,
-            ']' => {
-                depth -= 1;
-                field.push(c);
-            }
-            _ if depth >= 1 => field.push(c),
-            _ => {}
-        }
-    }
-    out
-}
-
 /// 列の名前で、全部の標本を足した値 (入れ子の配列は中身を全部足す)。
 fn column_sum(json: &str, name: &str) -> u64 {
-    let keys = str_array(json, "keys");
+    let keys = json::string_array(json, "keys");
     let i = keys
         .iter()
         .position(|k| k == name)
         .unwrap_or_else(|| panic!("no column {}", name));
-    rows(json)
+    json::sample_rows(json)
         .iter()
         .map(|row| {
             row[i]
@@ -97,38 +51,13 @@ fn column_sum(json: &str, name: &str) -> u64 {
 
 /// 列の名前で、全部の標本の最大 (`*_ms_max` 用)。
 fn column_max(json: &str, name: &str) -> u64 {
-    let keys = str_array(json, "keys");
+    let keys = json::string_array(json, "keys");
     let i = keys.iter().position(|k| k == name).unwrap();
-    rows(json)
+    json::sample_rows(json)
         .iter()
         .map(|row| row[i].parse::<u64>().unwrap())
         .max()
         .unwrap_or(0)
-}
-
-/// `"key":{...}` の中身を切り出す (入れ子つき。`tests/quantiles_test.rs` と同じ)。
-fn object_of(json: &str, key: &str) -> String {
-    let pat = format!("\"{}\":{{", key);
-    let at = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, json))
-        + pat.len()
-        - 1;
-    let rest = &json[at..];
-    let mut depth = 0usize;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return rest[..=i].to_string();
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("{} が閉じていない: {}", key, rest);
 }
 
 /// CONNECT を 1 本送り、応答の先頭行を返す (接続はすぐ閉じる)。
@@ -178,15 +107,15 @@ fn test_integration_failed_connects_stay_out_of_the_connect_windows() {
     // (1 本目は、区間を読んだあと積む前の周期に当たっているかもしれない)。
     // エラー 3 件と成功の 1 本がどの標本に入るかは周期しだいなので、全部の標本を足して見る
     let history = || endpoint_json(proxy_port, "/history?res=5");
-    let before = rows(&history()).len();
+    let before = json::sample_rows(&history()).len();
     wait_until(
-        || rows(&history()).len() >= before + 2,
+        || json::sample_rows(&history()).len() >= before + 2,
         "the history thread to take the interval",
     );
     let h = history();
     let status = status_json(proxy_port);
-    let q = object_of(&status, "recent_quantiles");
-    let (qc, qw) = (object_of(&q, "connect"), object_of(&q, "wait"));
+    let q = json::object(&status, "recent_quantiles");
+    let (qc, qw) = (json::object(&q, "connect"), json::object(&q, "wait"));
     let host_row = {
         let pat = format!("{{\"host\":\"{}\",", dead_key);
         let at = status

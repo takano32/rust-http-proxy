@@ -78,46 +78,6 @@ fn tunnel_with_client_hello(proxy_port: u16, target: &str, sni: &str) {
     drop(s);
 }
 
-/// `"<key>":[ ... ]` を 1 件ずつに割る (`ms` や `rtt_ms` が入れ子なので括弧を数える)。
-fn rows(body: &str, key: &str) -> Vec<String> {
-    let head = format!("\"{}\":[", key);
-    let at = body
-        .find(&head)
-        .unwrap_or_else(|| panic!("{} が無い: {}", key, body))
-        + head.len();
-    let rest = &body[at..];
-    let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '{' => {
-                if depth == 0 {
-                    start = i;
-                }
-                depth += 1;
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    out.push(rest[start..=i].to_string());
-                }
-            }
-            ']' if depth == 0 => break,
-            _ => {}
-        }
-    }
-    out
-}
-
-/// `needle` を含む 1 件 (無ければ落ちる)。
-fn row_with(body: &str, key: &str, needle: &str) -> String {
-    rows(body, key)
-        .into_iter()
-        .find(|r| r.contains(needle))
-        .unwrap_or_else(|| panic!("{} が無い: {}", needle, body))
-}
-
 /// 受け入れ基準 (1): `PROXY_PEEK_SNI=on:<内蔵オリジンのポート>` のとき、CONNECT の
 /// あとに送った ClientHello の SNI が個票に出て、CONNECT のホストと違えば
 /// `sni_mismatches` が +1 されること。
@@ -146,7 +106,7 @@ fn the_sni_of_the_first_bytes_lands_in_the_record_and_counts_the_mismatch() {
         "/recent に CONNECT が 2 本",
     );
     let body = endpoint_json(proxy_port, "/recent?n=50");
-    let mismatched = row_with(&body, "recent", "\"sni\":\"example.test\"");
+    let mismatched = json::find_item(&body, "recent", "\"sni\":\"example.test\"");
     assert!(
         mismatched.contains(&format!("\"target\":\"{}\"", target)),
         "宛先が違う: {}",
@@ -162,7 +122,7 @@ fn the_sni_of_the_first_bytes_lands_in_the_record_and_counts_the_mismatch() {
     let status = status_json(proxy_port);
     assert_eq!(status_number(&status, "sni_mismatches"), 1, "{}", status);
     let hosts = endpoint_json(proxy_port, "/hosts?limit=50");
-    let host = row_with(&hosts, "hosts", &format!("connect://{}", target));
+    let host = json::find_item(&hosts, "hosts", &format!("connect://{}", target));
     assert!(host.contains("\"sni_mismatch\":1"), "{}", host);
 }
 

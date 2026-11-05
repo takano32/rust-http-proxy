@@ -73,15 +73,11 @@ fn start_mute_origin() -> (u16, mpsc::Receiver<TcpStream>) {
 }
 
 /// `/connections` の配列から `"kind":"connect"` の行を 1 つ取り出す
-/// (`tests/rate_test.rs` と同じ手)。
+/// (`common::json::array_items` で行に割る。T.34.112)。
 fn connect_row(json: &str) -> Option<String> {
-    let head = "\"connections\":[";
-    let at = json.find(head)? + head.len();
-    let end = at + json[at..].find(']')?;
-    json[at..end]
-        .split("},{")
+    json::array_items(json, "connections")
+        .into_iter()
         .find(|r| r.contains("\"kind\":\"connect\""))
-        .map(|r| r.to_string())
 }
 
 /// `"key":<数>` を読む (欄が無ければ `None`。`status_number` と違って落ちない)。
