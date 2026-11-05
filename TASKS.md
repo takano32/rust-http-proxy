@@ -44,11 +44,6 @@
 
 **メトリクスの土台 の残り (T.34.1 のレビューから)**
 
-- [ ] **T.34.38 `ClientStats` の `pub` の欄 (10 個) を、メソッドに寄せる**
-  - やること: `first_port`・`has_literal_targets`・`note_rejected` を足す。metrics-core の 2 か所と endpoints-explain の 2 か所を機械的に直す。
-  - 受け入れ基準: clients・newclient・explain・perclient の試験が通る。
-  - 値打ち: 低 / metrics.rs の分割の後。
-
 **メトリクスの上層 の残り (T.34.2 のレビューから)**
 
 **網・設定・システム の残り (T.34.3 のレビューから)**
