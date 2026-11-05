@@ -3174,3 +3174,112 @@ class Deployed26(unittest.TestCase):
         self.assertIn("**2,267** ms", rows[20][2])
         self.assertIn("どの理由も 0", rows[21][2])
         self.assertIn("**15.4** MB", rows[22][2])
+
+
+class RulesOrder(unittest.TestCase):
+    """`RULES` の各段の並びを、関数の名前 (`snapshot_criteria` の中の名前) で固定する (T.34.129)。
+
+    段の組み立てを添字の切り貼りから「何番目を差し替える」の書き方に直したときに、並びが 1 つも
+    動いていないことをここで見る。`display_only` で包んだ行は包みの名前 (`_p20_watch_host` など) で引く。
+    """
+
+    WANT = {
+        "phase14": (
+            "_p14_dns_per_connect", "_p14_major_hosts", "_p14_connect_p50", "_p14_overload",
+        ),
+        "phase15": (
+            "_p15_watch_host", "_p15_refresh_rate", "_p15_miss_band", "_p15_conn_cores", "_p15_closed_shape",
+            "_p15_timeout",
+        ),
+        "phase17": (
+            "_p15_watch_host", "_p15_refresh_rate", "_p15_miss_band", "_p15_timeout", "_p17_conn_per_request",
+            "_p17_warm_max", "_p17_events", "_p17_cgroup",
+        ),
+        "phase18": (
+            "_p15_watch_host", "_p15_refresh_rate", "_p15_miss_band", "_p15_timeout", "_p17_conn_per_request",
+            "_p17_warm_max", "_p17_events", "_p17_cgroup", "_p18_heap", "_p18_request_probes",
+        ),
+        "phase20": (
+            "_p20_watch_host", "_p15_refresh_rate", "_p15_miss_band", "_p20_timeout", "_p17_conn_per_request",
+            "_p20_warm_max", "_p17_events", "_p17_cgroup", "_p20_heap", "_p18_request_probes",
+        ),
+        "phase21": (
+            "_p20_watch_host", "_p15_refresh_rate", "_p21_miss_band", "_p20_timeout", "_p21_conn_per_request",
+            "_p20_warm_max", "_p17_events", "_p17_cgroup", "_p20_heap", "_p21_request_probes",
+        ),
+        "phase22": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p21_miss_band", "_p20_timeout", "_p21_conn_per_request",
+            "_p20_warm_max", "_p22_events", "_p17_cgroup", "_p20_heap", "_p21_request_probes",
+            "_p22_dns_slow", "_p22_stale_retries", "_p22_connect_errors", "_p22_refresh_and_stale_misses",
+        ),
+        "phase23": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p23_miss_band", "_p20_timeout", "_p21_conn_per_request",
+            "_p20_warm_max", "_p22_events", "_p17_cgroup", "_p23_heap", "_p21_request_probes",
+            "_p22_dns_slow", "_p22_stale_retries", "_p23_connect_errors", "_p22_connect_errors_shown",
+            "_p22_refresh_and_stale_misses", "_p23_silent_restarts",
+        ),
+        "phase24": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p23_miss_band", "_p20_timeout", "_p21_conn_per_request",
+            "_p20_warm_max", "_p22_events", "_p17_cgroup", "_p24_heap", "_p21_request_probes",
+            "_p22_dns_slow", "_p22_stale_retries", "_p23_connect_errors", "_p22_connect_errors_shown",
+            "_p22_refresh_and_stale_misses", "_p24_silent_restarts", "_p24_connect_tail",
+        ),
+        "phase25": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p23_miss_band", "_p20_timeout", "_p21_conn_per_request",
+            "_p20_warm_max", "_p22_events", "_p17_cgroup", "_p24_heap", "_p21_request_probes",
+            "_p22_dns_slow", "_p22_stale_retries", "_p25_connect_errors", "_p22_connect_errors_shown",
+            "_p25_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail",
+        ),
+        "phase26": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p23_miss_band", "_p20_timeout", "_p21_conn_per_request",
+            "_p20_warm_max", "_p22_events", "_p17_cgroup", "_p24_heap", "_p21_request_probes",
+            "_p22_dns_slow", "_p22_stale_retries", "_p25_connect_errors", "_p22_connect_errors_shown",
+            "_p25_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail", "_p26_header_timeouts",
+            "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut", "_p26_rejected", "_p26_rss_gap",
+            "_p26_cgroup_cpu", "_p26_role_shares", "_p26_origin_warn_per_minute",
+        ),
+        "phase27": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p23_miss_band", "_p20_timeout", "_p21_conn_per_request",
+            "_p20_warm_max", "_p22_events", "_p17_cgroup", "_p24_heap", "_p21_request_probes",
+            "_p22_dns_slow", "_p22_stale_retries", "_p27_connect_errors", "_p22_connect_errors_shown",
+            "_p25_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail", "_p26_header_timeouts",
+            "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut", "_p26_rejected", "_p27_rss_gap",
+            "_p26_cgroup_cpu", "_p26_role_shares", "_p26_origin_warn_per_minute",
+        ),
+        "phase28": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p23_miss_band", "_p20_timeout", "_p21_conn_per_request",
+            "_p20_warm_max", "_p22_events", "_p17_cgroup", "_p24_heap", "_p21_request_probes",
+            "_p22_dns_slow", "_p22_stale_retries", "_p27_connect_errors", "_p22_connect_errors_shown",
+            "_p25_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail", "_p26_header_timeouts",
+            "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut", "_p26_rejected", "_p28_trim_works",
+            "_p28_cgroup_cpu_per_request", "_p26_role_shares", "_p26_origin_warn_per_minute",
+        ),
+        "phase29": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p29_miss_band", "_p20_timeout",
+            "_p29_conn_per_resolved_request", "_p20_warm_max", "_p22_events", "_p17_cgroup", "_p24_heap",
+            "_p21_request_probes", "_p29_dns_slow", "_p22_stale_retries", "_p29_connect_errors",
+            "_p22_connect_errors_shown", "_p25_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail",
+            "_p26_header_timeouts", "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut",
+            "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_p29_idle_cost",
+            "_p26_origin_warn_per_minute",
+        ),
+        "phase30": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p29_miss_band", "_p20_timeout",
+            "_p29_conn_per_resolved_request", "_p20_warm_max", "_p22_events", "_p17_cgroup", "_p24_heap",
+            "_p21_request_probes", "_p30_dns_slow", "_p22_stale_retries", "_p29_connect_errors",
+            "_p22_connect_errors_shown", "_p30_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail",
+            "_p26_header_timeouts", "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut",
+            "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_p29_idle_cost",
+            "_p26_origin_warn_per_minute",
+        ),
+    }
+
+    def test_each_phase_lists_the_same_rules_in_the_same_order(self):
+        names = {}
+        for key, value in sorted(vars(sc).items()):
+            if key.startswith("_p") and callable(value):
+                names.setdefault(id(value), key)
+        got = {phase: tuple(names.get(id(rule), "?") for rule in rules) for phase, rules in sc.RULES.items()}
+        self.assertEqual(list(got), list(self.WANT))
+        for phase, want in self.WANT.items():
+            self.assertEqual(got[phase], want, phase)
