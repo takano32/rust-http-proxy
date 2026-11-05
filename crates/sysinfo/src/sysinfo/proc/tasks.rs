@@ -186,7 +186,7 @@ fn read_into<'a>(path: &std::path::Path, buf: &'a mut Vec<u8>) -> Option<&'a str
 /// **comm は括弧で囲まれていて空白も括弧も含みうる**ので、最初の `(` と最後の `)` で切る。
 /// utime を別に返すのは、ユーザー空間とカーネル側を分けて読むため (T16.0。
 /// `codegen-units` の類が効くのはユーザー空間だけで、合計では差が埋もれる)。
-pub fn parse_task_stat(text: &str) -> Option<(String, char, u64, u64)> {
+pub(crate) fn parse_task_stat(text: &str) -> Option<(String, char, u64, u64)> {
     let open = text.find('(')?;
     let close = text.rfind(')')?;
     let comm = text.get(open + 1..close)?.to_string();
@@ -204,13 +204,13 @@ pub fn parse_task_stat(text: &str) -> Option<(String, char, u64, u64)> {
 /// 1 行は `"run_time_ns wait_time_ns nr_timeslices"` で、**2 番目**が
 /// 「走行可能なのに CPU に乗れずに待たされた ns の通算」(`sched_info.run_delay`)。
 /// CPU の絞り (cgroup の quota) と隣のプロセスとの取り合いは、どちらもここに出る。
-pub fn parse_schedstat(text: &str) -> Option<u64> {
+pub(crate) fn parse_schedstat(text: &str) -> Option<u64> {
     text.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// `/proc/<pid>/task/<tid>/syscall` の 1 行目からシステムコール番号を取る。
 /// `running` と `-1` はどちらも「システムコールの中に居ない」= `Some(-1)`。
-pub fn parse_syscall(text: &str) -> Option<i64> {
+pub(crate) fn parse_syscall(text: &str) -> Option<i64> {
     let first = text.split_whitespace().next()?;
     if first == "running" {
         return Some(-1);

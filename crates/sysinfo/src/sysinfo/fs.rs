@@ -183,7 +183,7 @@ pub fn fs_type(path: &Path) -> Option<String> {
 }
 
 /// `/proc/mounts` の内容から `path` を含む最も深いマウントポイントの種別を返す。
-pub fn parse_mounts(text: &str, path: &Path) -> Option<String> {
+pub(crate) fn parse_mounts(text: &str, path: &Path) -> Option<String> {
     let mut best: Option<(usize, &str)> = None;
     for line in text.lines() {
         let mut f = line.split_whitespace();

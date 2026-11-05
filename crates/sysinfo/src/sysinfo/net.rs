@@ -72,7 +72,7 @@ pub fn tcp_stats() -> TcpStats {
 }
 
 /// 読む先のディレクトリを差し替えられる版 (テスト用)。
-pub fn tcp_stats_in(dir: &Path) -> TcpStats {
+pub(crate) fn tcp_stats_in(dir: &Path) -> TcpStats {
     let read = |name: &str| super::proc::read_small(&dir.join(name));
     TcpStats {
         ext: read("netstat").as_deref().and_then(parse_netstat),
@@ -106,7 +106,7 @@ fn each_field(text: &str, prefix: &str, mut f: impl FnMut(&str, u64)) -> bool {
     true
 }
 
-pub fn parse_netstat(text: &str) -> Option<TcpExt> {
+pub(crate) fn parse_netstat(text: &str) -> Option<TcpExt> {
     let mut e = TcpExt::default();
     let found = each_field(text, "TcpExt:", |n, v| match n {
         "ListenOverflows" => e.listen_overflows = v,
@@ -119,7 +119,7 @@ pub fn parse_netstat(text: &str) -> Option<TcpExt> {
     found.then_some(e)
 }
 
-pub fn parse_snmp(text: &str) -> Option<TcpSnmp> {
+pub(crate) fn parse_snmp(text: &str) -> Option<TcpSnmp> {
     let mut s = TcpSnmp::default();
     let found = each_field(text, "Tcp:", |n, v| match n {
         "RetransSegs" => s.retrans_segs = v,
@@ -129,7 +129,7 @@ pub fn parse_snmp(text: &str) -> Option<TcpSnmp> {
     found.then_some(s)
 }
 
-pub fn parse_sockstat(text: &str) -> Option<SockStat> {
+pub(crate) fn parse_sockstat(text: &str) -> Option<SockStat> {
     let row = text.lines().find_map(|l| l.strip_prefix("TCP:"))?;
     let mut s = SockStat::default();
     let mut it = row.split_whitespace();

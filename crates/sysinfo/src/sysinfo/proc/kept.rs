@@ -63,7 +63,7 @@ pub fn read_small(path: &std::path::Path) -> Option<String> {
 /// `/proc`・`/sys` の下で、**どのスレッドが開いても同じものを指す**パスだけ。
 /// `/proc/thread-self` は開いたスレッドを、`/proc/self/task/<tid>` はスレッドを 1 本ずつ指す
 /// (スレッドの数だけ記述子が要り、死んだスレッドの分が残る) ので外す。
-pub fn keepable(path: &std::path::Path) -> bool {
+pub(crate) fn keepable(path: &std::path::Path) -> bool {
     let s = path.as_os_str().as_encoded_bytes();
     (s.starts_with(b"/proc/") || s.starts_with(b"/sys/"))
         && !s.starts_with(b"/proc/thread-self")
@@ -115,8 +115,9 @@ impl KeptFiles {
         }
     }
 
-    /// 開いたままにしている数 (試験と `/status` の記述子の数の説明用)。
-    pub fn open_count(&self) -> usize {
+    /// 開いたままにしている数 (試験だけが使う。T.34.71 で `#[cfg(test)]` にした)。
+    #[cfg(test)]
+    pub(crate) fn open_count(&self) -> usize {
         self.lock()
             .values()
             .filter(|k| matches!(k, Kept::Open(..)))

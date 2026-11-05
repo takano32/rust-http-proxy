@@ -13,11 +13,12 @@
 // - `tasks`: スレッドごとの標本と、その読み取り・解釈
 mod kept;
 mod tasks;
-pub use kept::{KeptFiles, keepable, read_small, read_small_into};
-pub use tasks::{
-    Known, TaskSample, TaskScan, TaskStatFiles, parse_schedstat, parse_syscall, parse_task_stat,
-    scan_tasks, scan_tasks_reusing,
-};
+#[cfg(test)]
+use kept::keepable;
+pub use kept::{KeptFiles, read_small, read_small_into};
+pub use tasks::{Known, TaskSample, TaskScan, TaskStatFiles, scan_tasks, scan_tasks_reusing};
+#[cfg(test)]
+use tasks::{parse_schedstat, parse_syscall, parse_task_stat};
 
 /// プロセス全体のスレッド数 (`/proc/self/status` の `Threads:`)。
 ///
@@ -27,7 +28,7 @@ pub fn process_threads() -> Option<u64> {
     parse_status_threads(&read_small(std::path::Path::new("/proc/self/status"))?)
 }
 
-pub fn parse_status_threads(text: &str) -> Option<u64> {
+pub(crate) fn parse_status_threads(text: &str) -> Option<u64> {
     text.lines()
         .find_map(|l| l.strip_prefix("Threads:"))
         .and_then(|v| v.trim().parse().ok())

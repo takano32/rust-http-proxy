@@ -21,7 +21,7 @@ pub fn process_rss_detail() -> Option<ProcessRss> {
     parse_status_rss_detail(&read_small(Path::new("/proc/self/status"))?)
 }
 
-pub fn parse_status_rss_detail(text: &str) -> Option<ProcessRss> {
+pub(crate) fn parse_status_rss_detail(text: &str) -> Option<ProcessRss> {
     let field = |key: &str| {
         text.lines()
             .find_map(|l| l.strip_prefix(key))
@@ -56,7 +56,7 @@ pub fn stacks_resident() -> Option<u64> {
 /// スタックと見なすのは主スレッドの `[stack]` と、**すぐ下に `---p` の番兵が接している
 /// 名前の無い `rw-p`** (glibc の `pthread_create` が取るスタックの形: 下端に番兵を置いて上へ使う)。
 /// malloc のアリーナは逆に `rw-p` の上に `---p` の予約が続くので数えない。
-pub fn parse_stack_ranges(text: &str) -> Vec<(u64, u64)> {
+pub(crate) fn parse_stack_ranges(text: &str) -> Vec<(u64, u64)> {
     // 直前の写像: (終わりの番地, 名前の無い `---p` で 64 KiB 以下か)
     let mut prev: Option<(u64, bool)> = None;
     let mut out = Vec::new();

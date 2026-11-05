@@ -60,12 +60,12 @@ pub struct CgroupPressure {
 ///
 /// v1 しか無い環境では `None`。コンテナで cgroup 名前空間が切られていると
 /// パスは `/` になるので、そのまま `/sys/fs/cgroup` を指す。
-pub fn cgroup_v2_dir() -> Option<PathBuf> {
+pub(crate) fn cgroup_v2_dir() -> Option<PathBuf> {
     let text = super::proc::read_small(Path::new("/proc/self/cgroup"))?;
     v2_dir_from(&text, Path::new("/sys/fs/cgroup"))
 }
 
-pub fn v2_dir_from(proc_cgroup: &str, sysfs: &Path) -> Option<PathBuf> {
+pub(crate) fn v2_dir_from(proc_cgroup: &str, sysfs: &Path) -> Option<PathBuf> {
     for line in proc_cgroup.lines() {
         let mut parts = line.splitn(3, ':');
         // v2 は「階層 id が 0 で、コントローラ欄が空」の 1 行だけ (`0::/path`)
@@ -108,7 +108,7 @@ pub fn cgroup_pressure() -> CgroupPressure {
 }
 
 /// 読む先を差し替えられる版 (テスト用)。`dir` から `root` まで遡って最初に読めたものを使う。
-pub fn cgroup_cpu_in(dir: &Path, root: &Path) -> CgroupCpu {
+pub(crate) fn cgroup_cpu_in(dir: &Path, root: &Path) -> CgroupCpu {
     let stat = find_up(dir, root, "cpu.stat", parse_cpu_stat).unwrap_or_default();
     CgroupCpu {
         nr_throttled: stat.nr_throttled,
@@ -150,12 +150,12 @@ pub fn cgroup_cpu_path() -> Option<PathBuf> {
 }
 
 /// 読む先を差し替えられる版 (テスト用)。
-pub fn cgroup_cpu_path_in(dir: &Path, root: &Path) -> Option<PathBuf> {
+pub(crate) fn cgroup_cpu_path_in(dir: &Path, root: &Path) -> Option<PathBuf> {
     find_up_at(dir, root, "cpu.stat", parse_cpu_stat).map(|(path, _)| path)
 }
 
 /// 差し替えられる版の PSI (テスト用。`/proc/pressure` への落とし込みはしない)。
-pub fn cgroup_pressure_in(dir: &Path, root: &Path) -> CgroupPressure {
+pub(crate) fn cgroup_pressure_in(dir: &Path, root: &Path) -> CgroupPressure {
     let one = |name: &str| find_up(dir, root, name, super::mem::parse_pressure);
     CgroupPressure {
         cpu: one("cpu.pressure"),
@@ -229,7 +229,7 @@ pub(super) fn walk_up<T>(
 }
 
 /// `"200000 100000"` → 2.0 コア。`"max 100000"` (無制限) は `None`。
-pub fn parse_cpu_max(text: &str) -> Option<f64> {
+pub(crate) fn parse_cpu_max(text: &str) -> Option<f64> {
     let mut it = text.split_whitespace();
     let quota: f64 = it.next()?.parse().ok()?;
     let period: f64 = it.next().unwrap_or("100000").parse().ok()?;

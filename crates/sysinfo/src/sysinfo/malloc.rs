@@ -45,7 +45,7 @@ pub fn set_arena_max(max: usize) {
 static ARENA_MAX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// 返していない空きを OS へ返す間隔 (秒。T.29.25)。
-pub const TRIM_EVERY_SECS: u64 = 3600;
+pub(crate) const TRIM_EVERY_SECS: u64 = 3600;
 
 /// 前に [`trim_if_due`] が見た時刻 (epoch 秒。`0` = まだ見ていない)。
 static LAST_TRIM_CHECK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -60,7 +60,7 @@ pub fn set_trim_every_secs(secs: u64) {
 }
 
 /// いまの [`trim_if_due`] の間隔 (秒)。
-pub fn trim_every_secs() -> u64 {
+pub(crate) fn trim_every_secs() -> u64 {
     TRIM_EVERY.load(std::sync::atomic::Ordering::Relaxed)
 }
 

@@ -272,7 +272,7 @@ fn cgroup_cpu_here() -> bool {
 /// `/proc/self/cgroup` の中身と cgroup の根を与えて、読む側 ([`super::cgroup::cgroup_cpu`])
 /// が値を得られるかを返す (テストのために分けてある)。v2 の行 (`0::/…`) が無ければ偽
 /// (v1 の `cpu` コントローラの `cpu.stat` は読む側が見ないので数えない)。
-pub fn cgroup_cpu_in(proc_cgroup: &str, sysfs: &Path) -> bool {
+pub(crate) fn cgroup_cpu_in(proc_cgroup: &str, sysfs: &Path) -> bool {
     super::cgroup::v2_dir_from(proc_cgroup, sysfs)
         .and_then(|dir| super::cgroup::cgroup_cpu_path_in(&dir, sysfs))
         .is_some()
@@ -292,7 +292,7 @@ fn cgroup_pressure_here() -> bool {
 /// ([`super::cgroup::cgroup_pressure`] の `cpu`) が値を得られるかを返す (テストのために分けてある)。
 /// v2 の階層を根まで遡って読める `cpu.pressure` があるか、無ければ `fallback` が読めるか
 /// (v1 の階層の `cpu.pressure` は読む側が見ないので数えない)。
-pub fn cgroup_pressure_in(proc_cgroup: &str, sysfs: &Path, fallback: &Path) -> bool {
+pub(crate) fn cgroup_pressure_in(proc_cgroup: &str, sysfs: &Path, fallback: &Path) -> bool {
     super::cgroup::v2_dir_from(proc_cgroup, sysfs)
         .and_then(|dir| super::cgroup::cgroup_pressure_in(&dir, sysfs).cpu)
         .is_some()
@@ -348,7 +348,7 @@ fn has_ipv6_default_route() -> bool {
 }
 
 /// 1 行目の宛先が 32 桁の `0` で、次の欄 (prefix 長) が `00` なら既定経路。
-pub fn parse_ipv6_default_route(text: &str) -> bool {
+pub(crate) fn parse_ipv6_default_route(text: &str) -> bool {
     text.lines().any(|line| {
         let mut f = line.split_whitespace();
         match (f.next(), f.next()) {

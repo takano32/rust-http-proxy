@@ -5,9 +5,7 @@ use std::path::Path;
 
 // 自プロセスの常駐の内訳とスレッドのスタックの常駐 (T.32.4) は T.34.76 で `mem/rss.rs` に分けた
 mod rss;
-pub use rss::{
-    ProcessRss, parse_stack_ranges, parse_status_rss_detail, process_rss_detail, stacks_resident,
-};
+pub use rss::{ProcessRss, process_rss_detail, stacks_resident};
 
 /// システム全体のメモリ量 (バイト)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +40,7 @@ pub fn mem_info() -> Option<MemInfo> {
     parse_meminfo(&read_small(Path::new("/proc/meminfo"))?)
 }
 
-pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
+pub(crate) fn parse_meminfo(text: &str) -> Option<MemInfo> {
     let mut total = None;
     let mut available = None;
     let mut free = None;
@@ -98,7 +96,7 @@ pub fn process_rss() -> Option<u64> {
     parse_status_rss(&read_small(Path::new("/proc/self/status"))?)
 }
 
-pub fn parse_status_rss(text: &str) -> Option<u64> {
+pub(crate) fn parse_status_rss(text: &str) -> Option<u64> {
     text.lines()
         .find_map(|l| l.strip_prefix("VmRSS:"))
         .and_then(sized_field)
@@ -108,7 +106,7 @@ pub fn mem_pressure() -> Option<MemPressure> {
     parse_pressure(&read_small(Path::new("/proc/pressure/memory"))?)
 }
 
-pub fn parse_pressure(text: &str) -> Option<MemPressure> {
+pub(crate) fn parse_pressure(text: &str) -> Option<MemPressure> {
     let mut some = None;
     let mut full = None;
     for line in text.lines() {
@@ -167,7 +165,7 @@ const V1: CgroupFiles = CgroupFiles {
 /// v1 は無制限だと巨大な値 (2^63 付近) を返すので、それ未満だけを制限とみなす。
 const UNLIMITED: u64 = 1 << 62;
 
-pub fn cgroup_limits_from(proc_cgroup: &str, sysfs: &Path) -> Vec<CgroupMem> {
+pub(crate) fn cgroup_limits_from(proc_cgroup: &str, sysfs: &Path) -> Vec<CgroupMem> {
     let mut out = Vec::new();
     for line in proc_cgroup.lines() {
         let mut parts = line.splitn(3, ':');
