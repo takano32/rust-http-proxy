@@ -1,8 +1,9 @@
 //! Linux の 1 スレッド中継 (`poll` + `splice`) と、暇なときの預け入れ。
 //!
-//! 片方向の中継 (`Dir`) と中継パイプの置き場は `dir` にある。
+//! 片方向の中継 (`Dir`) と中継パイプの置き場は `dir`、向きの送り出し (`Dir::pump`) は `pump`、
+//! 待ちの決め方 (`poll` の関心・待つ長さ・詰まりの計測) は `wait` にある。
 use std::io;
-use std::net::{Shutdown, TcpStream};
+use std::net::TcpStream;
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,25 +12,19 @@ use super::open::{Info, Opened};
 use super::report::report;
 use crate::log_trace;
 use crate::metrics::ErrCause;
-use crate::recent::{CLIENT_SIDE, CloseReason, ConnSlot, ConnState, ORIGIN_SIDE, SIDES};
-use crate::sys::{self, POLLERR, POLLHUP, POLLIN, POLLOUT, PollFd};
-use proxy_base::minrate::{MinRate, RateGuard};
+use crate::recent::{CloseReason, ConnSlot, ConnState, SIDES};
+use crate::sys;
+use proxy_base::minrate::MinRate;
 
 mod dir;
+mod pump;
 #[cfg(test)]
 mod tests;
+mod wait;
 
-use dir::{Dir, Relay, went_away};
-
-/// `poll` に渡す記述子。**関心 (`events`) が無いなら `-1`** (T15.5)。
-///
-/// `poll(2)` は負の記述子を無視して `revents` を 0 にする。関心が 0 の記述子を
-/// そのまま渡すと、`events` に関係なく返る `POLLERR` / `POLLHUP` で
-/// 「誰も面倒を見ない起床」が起きて空回りになる (呼ぶ側の注記を見よ)。
-#[inline]
-fn poll_fd(sock: &TcpStream, events: i16) -> RawFd {
-    if events == 0 { -1 } else { sock.as_raw_fd() }
-}
+use dir::{Dir, went_away};
+use pump::{EofNote, Flow, Progress};
+use wait::{charge_stall, interest, mark_readable, poll_set, stall_clock, wait_budget};
 
 /// 無期限 (`PROXY_TUNNEL_IDLE_SECS=0`) のトンネルを預けるときの「遠い期限」。
 /// 預かり所は期限の早い順に並べた集合で待つので、期限そのものは必ず要る。
@@ -65,7 +60,7 @@ fn next_grace(grace: Duration, base: Duration, parked: Duration) -> Duration {
 
 /// [`Idle::run_until_idle`] の結果。
 enum Outcome {
-    /// トンネルは終わった (運んだ合計は `Idle::transferred` にある)
+    /// トンネルは終わった (運んだ合計は `Flow::transferred` にある)
     Done,
     /// 両方向とも暇になった (預けてよい)
     Idle,
@@ -86,8 +81,9 @@ pub trait Park: Send + Sync {
 pub struct Idle {
     socks: [TcpStream; 2],
     dirs: [Dir; 2],
-    /// 双方向に運んだ合計バイト数 (預けても引き継ぐ)
-    transferred: u64,
+    /// 向きの送り出しが書く数え (運んだ合計・閉じた理由・先に EOF を出した側・SNI・
+    /// 最小の速さの見張り。預けても引き継ぐ)
+    flow: Flow,
     /// 無通信で打ち切るまでの時間 (`None` で無期限)
     idle: Option<Duration>,
     /// 預け先と、預ける前に同じスレッドで待ってみる猶予の下限 (`None` なら預けない)
@@ -96,28 +92,10 @@ pub struct Idle {
     grace: Duration,
     /// アクセスログと統計に要る素性
     info: Info,
-    /// `200` を書いてから最初の中継バイトまで (ms。T14.3 (1))
-    first_relay_ms: u32,
     /// いま預けられているなら、預けた時刻 (T14.3 (1))
     parked_at: Option<Instant>,
     /// 預けられていた合計 (ms)
     parked_ms: u32,
-    /// 中継の中で決まった閉じた理由 (アイドル打ち切り / `poll` の失敗。T14.4)。
-    /// 外から閉じられたとき (追い出し・監視の停止) は枠に直接書いてあるので
-    /// ここは `None` のままで、`ConnSlot::finish` の先着優先でそちらが勝つ
-    close: Option<CloseReason>,
-    /// 先に EOF を出したのはどちらと、それがいつか (`0` = クライアント、`1` = 宛先)。
-    ///
-    /// 側は閉じた理由 (T14.4)、時刻は**半閉じから反対側が閉じるまで**の分布 (T14.25)。
-    /// 書くのは `get_or_insert_with` の中 = **トンネル 1 本につき多くて 1 回**で、
-    /// バイトを動かす道 (splice の往復) には 1 命令も足していない
-    first_eof: Option<(usize, Instant)>,
-    /// まだ SNI を覗いていないか (`PROXY_PEEK_SNI`。T14.38)。
-    ///
-    /// 立っているのは「個票の枠があり (= `--lite` ではない)、宛先が 443
-    /// (または試験用の口) の CONNECT」だけで、**最初にクライアント側が読めた
-    /// ときに 1 回覗いて倒す** (トンネル 1 本に `recv(MSG_PEEK)` は多くて 1 回)
-    peek_sni: bool,
     /// 書けるのを待った合計 (us。`[クライアント側, オリジン側]`。T14.42)。
     ///
     /// 添字は `socks` の添字と同じで、`0` は「**クライアントへ**書けなくて待った」
@@ -134,12 +112,6 @@ pub struct Idle {
     /// (`stall_us` と同じ扱い) で、`/connections` と個票へは
     /// [`ConnSlot::set_relaying`] が待ちに入るたびに 1 回だけ写す
     spins: u64,
-    /// 書き側の最小の速さの見張り (`[クライアントへ, オリジンへ]`。添字は `socks` と同じ。T.29.34)。
-    ///
-    /// 積むのは `stall_us` と同じ「書けなくて `poll` で待った時間」と、その向きへ渡したバイト。
-    /// **送るものが無くて待った時間 (片側が黙っているだけの half-idle) は入らない**ので、
-    /// 暇なトンネルは今までどおり `PROXY_TUNNEL_IDLE_SECS` で閉じる。預けても引き継ぐ
-    rate: [RateGuard; SIDES],
     /// 本体クレートの持ち分 (同時接続数と `active_connections`)。中身は見ない
     _hold: Box<dyn Send>,
 }
@@ -161,18 +133,21 @@ impl Drop for Idle {
             d.drop_relay();
         }
         // 段階 (T14.3 (1))。`relay` は `report` が引き算で出す
-        self.info.detail.stages.first_relay = self.first_relay_ms;
+        self.info.detail.stages.first_relay = self.flow.first_relay_ms;
         self.info.detail.stages.park = self.parked_ms;
         // 閉じた理由 (T14.4): 中継の中で決まっていればそれ、決まっていなければ
         // **先に EOF を出した側**。どちらも無ければプロキシ側の都合 (`shutdown`)
-        let reason = self.close.unwrap_or(match self.first_eof {
+        let reason = self.flow.close.unwrap_or(match self.flow.eof.0 {
             Some((0, _)) => CloseReason::ClientEof,
             Some(_) => CloseReason::ServerEof,
             None => CloseReason::Shutdown,
         });
         // 半閉じで終わったトンネルだけ、半閉じから反対側が閉じる (= いま) までを
         // 数える (T14.25)。両側とも EOF を出さずに終わったものは `None`
-        let half_close = self.first_eof.map(|(_, at)| at.elapsed());
+        let half_close = self.flow.eof.0.map(|(_, at)| at.elapsed());
+        // 覗いた SNI の食い違い (T14.38)。中継の入口で 1 回だけ立てた旗を、統計に足す
+        // `report` が読む `Info` へ写す
+        self.info.sni_mismatch = self.flow.sni_mismatch;
         // `dirs[0]` はクライアント → 宛先 (上り)、`dirs[1]` は宛先 → クライアント (下り)
         // `socks` はまだ生きている (落ちるのはこの関数を抜けたあと)。T14.5
         report(
@@ -244,7 +219,7 @@ impl Idle {
         }
         // ここまでに運んだバイト数を `/connections` に見せる (預ける直前の 1 回)
         if let Some(s) = &self.info.slot {
-            s.set_bytes(self.transferred);
+            s.set_bytes(self.flow.transferred);
         }
         // 預けた時刻 (T14.3 (1))。預かってもらえなければ `no_park` が消す。
         // 猶予を伸ばす判定 (T.32.19) にも使うので `--lite` でも読む (預ける 1 回に 1 回)
@@ -267,142 +242,31 @@ impl Idle {
             .park
             .as_ref()
             .map(|_| grace.as_millis().min(i32::MAX as u128) as i32);
-        let socks = &self.socks;
         let slot = self.info.slot.as_ref();
-        let established = self.info.established;
+        let info = &self.info;
+        let socks = &self.socks;
         let dirs = &mut self.dirs;
-        let transferred = &mut self.transferred;
-        let first_relay = &mut self.first_relay_ms;
-        // 閉じた理由に使う 2 つ (T14.4)。どちらも 1 本の終わりに 1 回書くだけ
-        let close = &mut self.close;
-        let first_eof = &mut self.first_eof;
-        // SNI を覗く枠 (T14.38)。`Info` の別々の欄なので `slot` と一緒に借りられる
-        let peek_sni = &mut self.peek_sni;
-        let sni_mismatch = &mut self.info.sni_mismatch;
-        let addr_str = &self.info.addr_str;
+        // 向きの送り出しが書く数え (`Idle` の別々の欄なので一緒に借りられる)
+        let flow = &mut self.flow;
         // 書けるのを待った時間 (T14.42)。預けても引き継ぐので `Idle` の欄
         let stall_us = &mut self.stall_us;
-        let rate = &mut self.rate;
         // 空回りの証拠 (T15.0 (4))。`spins` は預けても引き継ぐので `Idle` の欄、
         // 残りの 2 つは**前の周の `poll`** の結果なので輪の外の局所変数
         // (待ちに入る所は `poll` の前なので、そこで置けるのは 1 周前の旗)
         let spins = &mut self.spins;
         let mut poll_woke = false;
         let mut last_revents = 0u32;
-        // 先に EOF を出した側を 1 回だけ控える (T14.4 の閉じた理由 / T14.25 の
-        // 半閉じの秒) のと同じ場所で、`/connections` の枠にも向きを置く
-        // (T15.0 (4))。**トンネル 1 本につき多くて 1 回**で、2 回目からは
-        // `is_none()` の比較だけ
-        let mut note_eof = |side: usize| {
-            if first_eof.is_none() {
-                *first_eof = Some((side, Instant::now()));
-                if let Some(s) = slot {
-                    s.set_half_closed(side);
-                }
-            }
-        };
 
         loop {
             let mut progressed = false;
             for d in dirs.iter_mut() {
-                if d.done {
-                    continue;
-                }
-                // 送信元 → 中継 (読めると分かってから中継バッファを用意する)
-                if !d.src_eof && d.pending == 0 && d.readable {
-                    // CONNECT の最初のバイトから SNI を覗く (T14.38)。**`200` を
-                    // 書いたあと、最初の中継の前に 1 回だけ** `recv(MSG_PEEK)` で、
-                    // バイトは消費しないので下の `fill` (splice) はそのまま通る。
-                    // 壊れていれば `None` で中継は続く (ここで閉じない)
-                    if *peek_sni && d.src == 0 {
-                        *peek_sni = false;
-                        let mut buf = [0u8; crate::sni::PEEK_LEN];
-                        if let Ok(n) = sys::peek(socks[0].as_raw_fd(), &mut buf)
-                            && let Some(name) = crate::sni::parse_client_hello(&buf[..n])
-                        {
-                            if let Some(s) = slot {
-                                s.set_sni(name);
-                            }
-                            *sni_mismatch = crate::sni::differs(addr_str, name);
-                        }
-                    }
-                    match d.fill(socks) {
-                        Ok(0) => {
-                            d.src_eof = true;
-                            note_eof(d.src);
-                            progressed = true;
-                        }
-                        Ok(n) => {
-                            d.pending = n;
-                            d.offset = 0;
-                            progressed = true;
-                        }
-                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => d.readable = false,
-                        Err(ref e) => {
-                            // 消えたクライアント (T14.52)。keepalive が尽きた
-                            // ソケットは `ETIMEDOUT` で返るので、`client_eof`
-                            // (ふつうに切った) と区別して記録する。オリジン側の
-                            // `ETIMEDOUT` は「相手が消えた」ではあってもクライアント
-                            // ではないので、従来どおり EOF として扱う
-                            if d.src == CLIENT_SIDE && went_away(e) {
-                                *close = Some(CloseReason::ClientDead);
-                            }
-                            d.src_eof = true;
-                            note_eof(d.src);
-                            progressed = true;
-                        }
-                    }
-                }
-                // 中継 → 送信先
-                while d.pending > 0 {
-                    match d.drain(socks) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            // 最初の中継バイト (T14.3 (1))。比較 1 回で、時計を読むのは
-                            // 1 本につき 1 回だけ (`--lite` では `established` が `None`)
-                            if *transferred == 0
-                                && let Some(t) = established
-                            {
-                                *first_relay = crate::profile::ms_u32(t.elapsed());
-                            }
-                            d.pending -= n;
-                            d.offset += n;
-                            d.moved += n as u64;
-                            *transferred += n as u64;
-                            // 渡したバイトを見張りに足す (待ちが 0 なので足し算だけ。T.29.34)
-                            let _ = rate[d.dst].note(Duration::ZERO, n as u64);
-                            progressed = true;
-                        }
-                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                        // 送信先が閉じた: この方向は終わり、相手にも伝える
-                        Err(ref e) => {
-                            // 書こうとした先が消えたクライアントだったとき (T14.52)
-                            if d.dst == CLIENT_SIDE && went_away(e) {
-                                *close = Some(CloseReason::ClientDead);
-                            }
-                            // 先に手を引いたのは**送信先**の側 (T14.4)
-                            note_eof(d.dst);
-                            d.pending = 0;
-                            // パイプに残ったぶんはもう渡せない。置き場へ返さずに閉じる
-                            // (返すと次のトンネルに他人のバイトが混ざる)
-                            d.relay = Relay::Unset;
-                            d.src_eof = true;
-                            progressed = true;
-                            break;
-                        }
-                    }
-                }
-                if d.src_eof && d.pending == 0 {
-                    let _ = socks[d.dst].shutdown(Shutdown::Write);
-                    d.done = true;
-                    progressed = true;
-                }
+                progressed |= d.pump(socks, flow, info) == Progress::Moved;
             }
             // 相手が消えたトンネルは、残った向き (オリジン → クライアント) を
             // 待たずにここで閉じる (T14.52)。書き先が死んでいるのでオリジンから
             // 来るバイトはもう誰にも渡せず、待てば `PROXY_TUNNEL_IDLE_SECS`
             // (300 秒) までこのトンネルが席を占め続ける
-            if matches!(close, Some(CloseReason::ClientDead)) {
+            if matches!(flow.close, Some(CloseReason::ClientDead)) {
                 log_trace!(Some(conn_id), "tunnel closed: the client went away");
                 break;
             }
@@ -419,41 +283,9 @@ impl Idle {
                 continue;
             }
 
-            // どちらも動かなかったので待つ
-            let mut events = [0i16; 2];
-            for d in dirs.iter() {
-                if d.done {
-                    continue;
-                }
-                if !d.src_eof && d.pending == 0 {
-                    events[d.src] |= POLLIN;
-                }
-                if d.pending > 0 {
-                    events[d.dst] |= POLLOUT;
-                }
-            }
-            // **関心の無い記述子は `poll` に渡さない** (T15.5)。`poll(2)` は
-            // `events` が 0 でも `POLLERR` / `POLLHUP` を必ず返すので、渡すと
-            // 「誰も面倒を見ない起床」が生まれる: 上の輪は `readable` を立てるだけで、
-            // その記述子を読む向きが `done` なら輪の先頭で飛ばされ、反対の向きは
-            // 自分の送信元しか見ていないので 1 バイトも進まない (`progressed = false`)。
-            // `poll` が 0 を返さないのでアイドル打ち切りにも永久に当たらず、
-            // **1 本のトンネルが 1 スレッドを回し続ける** (2026-09-18 のデプロイ先は
-            // この形のトンネル 2 本で CPU 割り当て 0.5 コアを 27 時間食い切っていた。
-            // `mtalk.google.com:5228`、齢 25.4 時間、通算 9 kB、0 bps)。
-            //
-            // 負の記述子は `poll(2)` が無視して `revents` を 0 にするので、これで
-            // **`poll` が返した起床は必ず、その記述子への `fill` か `drain` の
-            // システムコール 1 回につながる**という不変条件が立つ (関心が `POLLIN`
-            // なら `fill` が EOF かエラーを返して進み、`POLLOUT` なら `drain` が
-            // 書けるかエラーを返して進む)。どの向きも `done` でなければ `POLLIN` か
-            // `POLLOUT` を 1 つは立てる (すぐ上の輪) ので、両方 0 になるのは
-            // 「全部 `done`」= この手前で輪を抜けるときだけ。死んだ半閉じの
-            // トンネルは今までどおりアイドル打ち切り (`PROXY_TUNNEL_IDLE_SECS`) で閉じる
-            let mut fds = [
-                PollFd::new(poll_fd(&socks[0], events[0]), events[0]),
-                PollFd::new(poll_fd(&socks[1], events[1]), events[1]),
-            ];
+            // どちらも動かなかったので待つ (関心の無い記述子は渡さない。T15.5)
+            let events = interest(dirs);
+            let mut fds = poll_set(socks, events);
             // 両方向とも暇なら、待つのは猶予のあいだだけ。空振りしたら預ける。
             // **片方向だけ EOF (half-close) のトンネルは預けない**: 残った方向は
             // 「相手に shutdown を伝えて閉じる」までが仕事で、そこまで預かり所に
@@ -469,55 +301,21 @@ impl Idle {
                 if poll_woke {
                     *spins = spins.saturating_add(1);
                 }
-                s.set_relaying(*transferred, *spins, last_revents);
+                s.set_relaying(flow.transferred, *spins, last_revents);
             }
             let parkable = grace_ms.is_some() && dirs.iter().all(Dir::quiet);
-            let mut wait_ms = match grace_ms {
-                Some(g) if parkable => g,
-                _ => timeout_ms,
-            };
-            // 書けずに待つ向きは、最小の速さの窓の残りより長く眠らない (T.29.34)。
-            // 読まない相手はめったに `POLLOUT` を返さないので、無通信の締め切り (300 秒) まで
-            // 眠ると判定が遅れる。縮めたときは、`poll` が 0 で戻ってもアイドル打ち切りにしない
-            let mut capped = false;
-            for (side, ev) in events.iter().enumerate() {
-                if ev & POLLOUT != 0
-                    && let Some(left) = rate[side].left()
-                {
-                    let ms = left.as_millis().clamp(1, i32::MAX as u128) as i32;
-                    if wait_ms < 0 || ms < wait_ms {
-                        wait_ms = ms;
-                        capped = true;
-                    }
-                }
-            }
-            // 中継の詰まりの向き (T14.42)。**書けなくて待ちに入る回だけ**時計を
-            // 読む: `events` に `POLLOUT` が立つのは、直前の `drain` (splice) が
-            // `EAGAIN` で止まって `pending` が残っている方向だけなので、
-            // **書けば必ず入る相手 (loopback) では `Instant::now()` を 1 度も
-            // 呼ばない** — ここの比較 1 回で終わる。64 KiB ごとでも splice ごとでも
-            // なく「待ちに入る回」なので、`--lite` でも同じように読む
-            // (T14.25 の「最初の EOF の 1 回」と同じ扱い)
-            let stall_from =
-                ((events[CLIENT_SIDE] | events[ORIGIN_SIDE]) & POLLOUT != 0).then(Instant::now);
+            let (wait_ms, capped) = wait_budget(
+                grace_ms,
+                parkable,
+                timeout_ms,
+                |side| flow.rate[side].left(),
+                events,
+            );
+            let stall_from = stall_clock(events);
             let polled = sys::poll_fds(&mut fds, wait_ms);
-            // 待ち終わったのでもう 1 回読み、**書けなかった向きだけ**に積む。
-            // 両方詰まっていれば両方に積む (どちらも「その間書けなかった」ため)
-            let mut too_slow = false;
-            if let Some(t) = stall_from {
-                let elapsed = t.elapsed();
-                let waited = elapsed.as_micros().min(u64::MAX as u128) as u64;
-                for (side, ev) in events.iter().enumerate() {
-                    if ev & POLLOUT != 0 {
-                        stall_us[side] = stall_us[side].saturating_add(waited);
-                        // 同じ待ちを最小の速さの見張りにも積む (T.29.34)
-                        too_slow |= rate[side].note(elapsed, 0).is_err();
-                    }
-                }
-            }
-            if too_slow {
+            if charge_stall(stall_from, events, stall_us, &mut flow.rate) {
                 log_trace!(Some(conn_id), "tunnel closed: slower than the minimum rate");
-                *close = Some(CloseReason::Error(ErrCause::Timeout));
+                flow.close = Some(CloseReason::Error(ErrCause::Timeout));
                 break;
             }
             // 次に待ちへ入るときに置く証拠 (T15.0 (4))。旗は**この周の `poll` が
@@ -531,7 +329,7 @@ impl Idle {
                 Ok(0) if parkable => return Outcome::Idle,
                 Ok(0) if wait_ms >= 0 && !capped => {
                     log_trace!(Some(conn_id), "tunnel idle timeout after {}ms", wait_ms);
-                    *close = Some(CloseReason::IdleTimeout);
+                    flow.close = Some(CloseReason::IdleTimeout);
                     break;
                 }
                 Ok(_) => {}
@@ -539,7 +337,7 @@ impl Idle {
                     log_trace!(Some(conn_id), "tunnel poll failed: {}", e);
                     // `poll` が `ETIMEDOUT` を返すことはまず無いが、返ってきたなら
                     // 「相手が消えた」で間違いない (T14.52。比較 1 回)
-                    *close = Some(if went_away(&e) {
+                    flow.close = Some(if went_away(&e) {
                         CloseReason::ClientDead
                     } else {
                         CloseReason::error_from_io(&e)
@@ -547,12 +345,7 @@ impl Idle {
                     break;
                 }
             }
-            for d in dirs.iter_mut() {
-                // HUP / ERR でも read して EOF を確かめる
-                if fds[d.src].revents & (POLLIN | POLLHUP | POLLERR) != 0 {
-                    d.readable = true;
-                }
-            }
+            mark_readable(dirs, &fds);
         }
 
         log_trace!(
@@ -599,20 +392,23 @@ pub(super) fn start(
     drive(Box::new(Idle {
         socks: [client, server],
         dirs: [Dir::new(0, 1), Dir::new(1, 0)],
-        transferred: 0,
+        flow: Flow {
+            transferred: 0,
+            first_relay_ms: 0,
+            close: None,
+            eof: EofNote::default(),
+            peek_sni,
+            sni_mismatch: false,
+            rate,
+        },
         idle,
         park,
         grace,
         info,
-        first_relay_ms: 0,
         parked_at: None,
         parked_ms: 0,
-        close: None,
-        first_eof: None,
-        peek_sni,
         stall_us: [0; SIDES],
         spins: 0,
-        rate,
         _hold: hold,
     }));
     Ok(())
