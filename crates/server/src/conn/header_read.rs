@@ -4,6 +4,8 @@ use super::*;
 
 use std::io::{BufRead, Read};
 
+use super::first_line::Peer;
+
 /// 要求行・ヘッダー行 1 本の最大長と、ヘッダー行数の上限 (超えたら 414 / 431)。
 pub(super) const MAX_LINE: usize = 64 * 1024;
 pub(super) const MAX_HEADER_LINES: usize = 256;
@@ -148,6 +150,101 @@ pub(super) fn read_line_or_idle(
             }
             Err(e) => return Err(e),
         }
+    }
+}
+
+/// [`read_headers`] が読むのをやめた理由 (断る応答は [`refuse_headers`] が組む)。
+pub(super) enum HeaderStop {
+    /// 1 行が `MAX_LINE` を越えた (431)
+    LineTooLong,
+    /// ヘッダー全体が `MAX_HEADER_BYTES` を越えた (431)
+    TooManyBytes,
+    /// 行が `MAX_HEADER_LINES` を越えた (431)
+    TooManyLines,
+    /// ヘッダーの途中で期限を越えた・黙った (408。T.28.0)
+    Timeout,
+    /// ほかの読みの失敗 (そのまま返す)
+    Io(io::Error),
+}
+
+/// ヘッダーを空行まで読んで `scratch` に積み、ヘッダー全体の大きさ (要求行を含む) を返す。
+///
+/// `header_bytes` は要求行のバイト数。ヘッダーは読むだけで、なめるのは読み終えてからの 1 回
+/// (`parse_request_headers_visit`。T.28.15)。
+#[inline]
+pub(super) fn read_headers(
+    reader: &mut clientio::ClientReader<'_>,
+    scratch: &mut Scratch,
+    extend: Option<std::time::Duration>,
+    extended: &mut bool,
+    clock: &mut HeaderClock<'_>,
+    served: usize,
+    mut header_bytes: usize,
+) -> Result<usize, HeaderStop> {
+    loop {
+        let index = scratch.used;
+        // 要求の途中なので、空振りしても預けない (待ち直す)
+        let line = match read_line_or_idle(reader, scratch.next(), extend, false, extended, clock) {
+            Ok(Line::Read(v)) => v,
+            Ok(Line::Idle) => unreachable!("allow_idle is false"),
+            // ヘッダーの途中で期限を越えた・黙った (T.28.0)
+            Err(e) if clock.is_header_timeout(&e, served) => return Err(HeaderStop::Timeout),
+            Err(e) => return Err(HeaderStop::Io(e)),
+        };
+        match line {
+            None => return Err(HeaderStop::LineTooLong),
+            Some(0) => break,
+            Some(n) => {
+                header_bytes += n;
+                if header_bytes > MAX_HEADER_BYTES {
+                    return Err(HeaderStop::TooManyBytes);
+                }
+            }
+        }
+        if scratch.lines[index].trim().is_empty() {
+            break;
+        }
+        if index >= MAX_HEADER_LINES {
+            return Err(HeaderStop::TooManyLines);
+        }
+        scratch.commit();
+    }
+    Ok(header_bytes)
+}
+
+/// ヘッダーを読み切れなかった要求を断る (431 / 408)。読みの失敗はそのまま返す。
+#[cold]
+pub(super) fn refuse_headers(peer: Peer<'_>, stop: HeaderStop) -> io::Result<Step> {
+    let conn_id = peer.conn_id;
+    let why = metrics::BadRequestReason::HeaderTooLarge;
+    let reason = "Request Header Fields Too Large";
+    match stop {
+        HeaderStop::LineTooLong => peer.refuse(why, 431, reason, |more| {
+            log_warn!(Some(conn_id), "431 Request Header Fields Too Large{}", more)
+        }),
+        HeaderStop::TooManyBytes => peer.refuse(why, 431, reason, |more| {
+            log_warn!(
+                Some(conn_id),
+                "431 Request Header Fields Too Large (headers over {} bytes){}",
+                MAX_HEADER_BYTES,
+                more
+            )
+        }),
+        HeaderStop::TooManyLines => peer.refuse(why, 431, reason, |more| {
+            log_warn!(
+                Some(conn_id),
+                "431 Request Header Fields Too Large (too many lines){}",
+                more
+            )
+        }),
+        HeaderStop::Timeout => header_timeout(
+            peer.client,
+            peer.metrics,
+            peer.ip,
+            conn_id,
+            peer.header_timeout,
+        ),
+        HeaderStop::Io(e) => Err(e),
     }
 }
 

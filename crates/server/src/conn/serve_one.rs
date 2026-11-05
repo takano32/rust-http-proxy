@@ -2,11 +2,10 @@
 
 use super::*;
 
+use super::access::{access_decision, loop_detected, refuse_blocked};
+use super::connect_check::{connect_header_reason, connect_target_ok};
 use super::first_line::{Peer, first_line_wait, read_request_line, refuse_request_line};
-use super::header_read::{
-    HeaderClock, Line, MAX_HEADER_BYTES, MAX_HEADER_LINES, header_timeout, overload,
-    read_line_or_idle, reject,
-};
+use super::header_read::{HeaderClock, overload, read_headers, refuse_headers};
 use super::request_line::check_request_line;
 
 /// 要求を 1 つ処理する。次に何をするかを返す。
@@ -113,75 +112,18 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     };
 
     // ヘッダー全体の大きさ (要求行を含む)
-    let mut header_bytes = request_line.len();
-    // ヘッダーは読むだけで、なめるのは読み終えてからの 1 回 (`parse_request_headers_visit`。T.28.15)
-    loop {
-        let index = scratch.used;
-        // 要求の途中なので、空振りしても預けない (待ち直す)
-        let line = match read_line_or_idle(
-            &mut reader,
-            scratch.next(),
-            extend,
-            false,
-            &mut extended,
-            &mut clock,
-        ) {
-            Ok(Line::Read(v)) => v,
-            Ok(Line::Idle) => unreachable!("allow_idle is false"),
-            // ヘッダーの途中で期限を越えた・黙った (T.28.0)
-            Err(e) if clock.is_header_timeout(&e, *served) => {
-                return header_timeout(client, metrics, peer_ip, conn_id, config.header_timeout);
-            }
-            Err(e) => return Err(e),
-        };
-        match line {
-            None => {
-                return peer.refuse(
-                    metrics::BadRequestReason::HeaderTooLarge,
-                    431,
-                    "Request Header Fields Too Large",
-                    |more| log_warn!(Some(conn_id), "431 Request Header Fields Too Large{}", more),
-                );
-            }
-            Some(0) => break,
-            Some(n) => {
-                header_bytes += n;
-                if header_bytes > MAX_HEADER_BYTES {
-                    return peer.refuse(
-                        metrics::BadRequestReason::HeaderTooLarge,
-                        431,
-                        "Request Header Fields Too Large",
-                        |more| {
-                            log_warn!(
-                                Some(conn_id),
-                                "431 Request Header Fields Too Large (headers over {} bytes){}",
-                                MAX_HEADER_BYTES,
-                                more
-                            )
-                        },
-                    );
-                }
-            }
-        }
-        if scratch.lines[index].trim().is_empty() {
-            break;
-        }
-        if index >= MAX_HEADER_LINES {
-            return peer.refuse(
-                metrics::BadRequestReason::HeaderTooLarge,
-                431,
-                "Request Header Fields Too Large",
-                |more| {
-                    log_warn!(
-                        Some(conn_id),
-                        "431 Request Header Fields Too Large (too many lines){}",
-                        more
-                    )
-                },
-            );
-        }
-        scratch.commit();
-    }
+    let header_bytes = match read_headers(
+        &mut reader,
+        scratch,
+        extend,
+        &mut extended,
+        &mut clock,
+        *served,
+        request_line.len(),
+    ) {
+        Ok(n) => n,
+        Err(stop) => return refuse_headers(peer, stop),
+    };
     let raw_headers = scratch.headers();
     // `User-Agent` は行の添字で覚える (`/clients`。T14.7)。**拾うのは接続の最初の要求だけ**で、
     // 2 要求目からはこの旗が倒れているので、ヘッダー 1 行につき比較 1 回で飛ばせる
@@ -220,54 +162,9 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         ..metrics::StageMs::default()
     };
 
-    // 自分の印の付いた `Via` を受けた = 自分を通った要求が自分に戻ってきた (T12.3 の保険)。
-    // 印は起動ごとの乱数なので、rust-http-proxy を 2 段に並べた正当な構成 (別プロセス) は
-    // 誤検出しない。同じプロセスの別の待ち受けへ回した形はここで 1 段目で止まる
+    // 自分の印の付いた `Via` を受けた = 自分を通った要求が自分に戻ってきた (T12.3 の保険)
     if via_loop {
-        // 自分の印は外から付けられる (誰かが印を写して送ってくる) ので、これも 1 分に 1 行 (T.28.9)
-        static LOOP_WARN: log::Throttle = log::Throttle::new();
-        if let Some(more) = LOOP_WARN.pass(log::WARN_EVERY_SECS) {
-            log_warn!(
-                Some(conn_id),
-                "508 Loop Detected (request carries our own Via: {}){}",
-                via::token(),
-                more
-            );
-        }
-        reject(client, 508, "Loop Detected")?;
-        // 原因つきで 1 件数える (T12.4 (2))。ここは要求ターゲットをまだ解いていないので、
-        // 鍵は `Host` (無ければ要求ターゲット) から作る。この経路は 1 要求に 1 回しか
-        // 通らないので `format!` の確保は熱い経路に乗らない
-        let detail = metrics::Detail {
-            cause: Some(metrics::ErrCause::Loop),
-            ..metrics::Detail::default()
-        };
-        metrics.record_host_detail(
-            &format!("loop://{}", host_header.unwrap_or(target)),
-            metrics::HostOutcome::Error,
-            0,
-            None,
-            detail,
-        );
-        // 個票にも 1 件残す (`/errors`。T13.4)
-        metrics.record_error(false, host_header.unwrap_or(target), peer_ip, 508, &detail);
-        // この枝は下の `endpoints::handle` より**手前**で return するので、下の
-        // `*proxied = true` を通らない。ここも `record_client` で `clients[]` の行を
-        // 作る側なので、母数 (T15.0 (12)) にはこの枝も入れる。自分宛ての要求は
-        // 自分の `Via` を持たないので、ここへ来るのはプロキシとして受けた要求だけ
-        *proxied = true;
-        metrics.record_client(
-            peer_ip,
-            metrics::HostOutcome::Error,
-            0,
-            // 508 で閉じたので運んだバイトは上りも下りも無い (T14.26)
-            (0, 0),
-            None,
-            Some(host_header.unwrap_or(target)),
-        );
-        return Ok(Step::Close(recent::CloseReason::Error(
-            metrics::ErrCause::Loop,
-        )));
+        return loop_detected(peer, host_header, target, proxied);
     }
 
     // プロキシ自身のエンドポイント (/dashboard, /status, /metrics, /proxy.pac, /purge, /lookup, PURGE)
@@ -335,41 +232,18 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     // ACL / Host Check
     // メソッドは大小を区別する (RFC 9110 §9.1。T.32.15 (6)。T.32.8 と同じ)。`connect` は未知のメソッド
     let is_connect = method == "CONNECT";
-    // CONNECT は `http::handle_http_with_headers` を通らずトンネルの経路に入るので、
-    // T19 で入れた要求の枠組みの検査がここへ来ない。**同じ判定をこの入口にも置く** (T27.0)。
-    // CONNECT に本文は無く (RFC 9110 §9.3.6)、`Host` の重複 (RFC 9110 §7.2)・obs-fold
-    // (RFC 9112 §5.2)・本文の枠組みをそのままにしてトンネルを張ると、ヘッダーの後ろに
-    // 付けたバイトが**トンネルの最初のデータとして宛先へ流れる** (前段がいる構成では要求の密輸)。
-    // ここで断れば宛先へは接続もしない (`Step::Connect` に進まない) ので、1 バイトも届かない。
-    if is_connect {
-        let h = &req;
-        let reason = if h.dup_host {
-            Some(metrics::BadRequestReason::DupHost)
-        } else if h.obs_fold {
-            Some(metrics::BadRequestReason::ObsFold)
-        } else if h.bad_header {
-            // 名前とコロンの間の空白・値の CR / LF / NUL (T27.5)
-            Some(metrics::BadRequestReason::BadHeader)
-        } else if has_body || h.content_length_invalid {
-            // `has_body` はヘッダーを読むループが `Content-Length` / `Transfer-Encoding` を
-            // 見たときに立つ旗 (本文を読むため)。値が数字でない `Content-Length` も
-            // ここに含まれる (T19.1 と同じ扱い = `body_framing`)
-            Some(metrics::BadRequestReason::BodyFraming)
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            // ステータスを返してから閉じる (無言で切ると客からは「落ちた」と見える)
-            return peer.refuse(reason, 400, "Bad Request", |more| {
-                log_warn!(
-                    Some(conn_id),
-                    "400 Bad Request: {} in CONNECT {}{}",
-                    reason.name(),
-                    target,
-                    more
-                )
-            });
-        }
+    // CONNECT の枠組みの検査 (T27.0)。断れば宛先へは接続もしない
+    if is_connect && let Some(reason) = connect_header_reason(&req, has_body) {
+        // ステータスを返してから閉じる (無言で切ると客からは「落ちた」と見える)
+        return peer.refuse(reason, 400, "Bad Request", |more| {
+            log_warn!(
+                Some(conn_id),
+                "400 Bad Request: {} in CONNECT {}{}",
+                reason.name(),
+                target,
+                more
+            )
+        });
     }
     // 判定に要るのはホストだけなので、要求行から借りる (String を 2 本作らない)
     let target_host: &str = if is_connect {
@@ -393,9 +267,8 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         }
     };
     let (bare_host, host_port) = net::split_host_port_ref(target_host);
-    // CONNECT の宛先は `host:port` の形でなければならない (RFC 9110 §9.3.6)。ポートが無い・読めない・0 の
-    // ときは今まで 443 とみなすか 0 番へ繋ぎに行って 502 だった。クライアントの誤りなので 400 (T27.8)
-    if is_connect && (bare_host.is_empty() || !host_port.is_some_and(|p| p != 0)) {
+    // CONNECT の宛先は `host:port` の形でなければならない (RFC 9110 §9.3.6。T27.8)
+    if is_connect && !connect_target_ok(bare_host, host_port) {
         return peer.refuse(
             metrics::BadRequestReason::BadUri,
             400,
@@ -411,67 +284,9 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         );
     }
     // ローカル宛ての判定で引いた答え (接続でもう一度引かないために持ち回す。T12.7)
-    let mut resolved: Option<dns::Resolved> = None;
-    let denied = if !config.acl.is_allowed(target_host) {
-        Some(metrics::BlockCause::Acl)
-    } else if blocklist::is_blocked(bare_host) {
-        Some(metrics::BlockCause::Blocklist)
-    } else if is_connect && !config.connect_ports.allows(host_port.unwrap_or(443)) {
-        Some(metrics::BlockCause::ConnectPort)
-    } else if config.allow_local != acl::AllowLocal::On {
-        // クラウドのメタデータ (169.254.169.254) 経由の SSRF を止める。
-        // **判定に使った答えはそのまま接続へ渡す** (名前解決は 1 要求 1 回。T12.7)。
-        // 名前解決の費用はここで払うので、前の要求がこのスレッドに残した分は
-        // 解決の前に捨てる (次の `take` でこの要求のぶんだけが取れるように。T12.4 (2))
-        let _ = dns::take_resolve_cost();
-        let _ = dns::take_family();
-        let _ = dns::take_syn_retrans();
-        // `private` なら私設アドレスは通す (ループバック・リンクローカル・未指定は断る。T.28.41)
-        let (local, r) = acl::resolve_target(target_host, config.allow_local.allows_private());
-        resolved = r;
-        local.then_some(metrics::BlockCause::Local)
-    } else {
-        None
-    };
+    let (denied, resolved) = access_decision(config, target_host, bare_host, host_port, is_connect);
     if let Some(why) = denied {
-        // 403 も宛先を選ぶのは相手なので、理由ごとに 1 分に 1 行 (T.28.9)。本数は
-        // `/status` の宛先・接続元ごとの `blocked` と `/errors` の個票が持つ
-        static BLOCK_WARN: [log::Throttle; 4] = [const { log::Throttle::new() }; 4];
-        let gate = match why {
-            metrics::BlockCause::Acl => 0,
-            metrics::BlockCause::Blocklist => 1,
-            metrics::BlockCause::ConnectPort => 2,
-            metrics::BlockCause::Local => 3,
-        };
-        if let Some(more) = BLOCK_WARN[gate].pass(log::WARN_EVERY_SECS) {
-            log_warn!(
-                Some(conn_id),
-                "403 Forbidden ({} blocked host: {}){}",
-                why.label(),
-                target_host,
-                more
-            );
-        }
-        metrics.record_host(
-            &format!("blocked://{}", bare_host),
-            metrics::HostOutcome::Blocked,
-            0,
-        );
-        metrics.record_client(
-            peer_ip,
-            metrics::HostOutcome::Blocked,
-            0,
-            // 403 で断ったので運んだバイトは上りも下りも無い (T14.26)
-            (0, 0),
-            None,
-            Some(target_host),
-        );
-        // 個票にも 1 件残す (`/errors`。T14.2 (4))。403 は集計では `blocked` に数えてあり、
-        // `errors_by_cause` には乗らないので、**誰が何を拒否されたか**はここでしか読めない
-        metrics.record_blocked(is_connect, target_host, peer_ip, why);
-        (&*client).write_all(FORBIDDEN_RESPONSE)?;
-        (&*client).flush()?;
-        return Ok(Step::Close(recent::CloseReason::Shutdown));
+        return refuse_blocked(peer, why, target_host, bare_host, is_connect);
     }
 
     if is_connect {
