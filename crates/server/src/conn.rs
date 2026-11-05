@@ -468,29 +468,27 @@ fn pump(mut conn: Box<Conn>) -> io::Result<()> {
                 let resolved = addrs.map(|addrs| {
                     dns::Resolved::new(net::split_host_port_ref(&target).0, addrs, preferred)
                 });
-                return start_tunnel(
+                let req = tunnel::TunnelRequest {
                     client,
-                    &target,
-                    &prefix,
+                    target: &target,
+                    prefix: &prefix,
                     timeout,
                     idle,
                     // 書き側の最小の速さ (T.29.34)
-                    config.min_transfer,
+                    min_transfer: config.min_transfer,
                     conn_id,
                     metrics,
                     // 接続元 IP は接続ごとに 1 回作ってある。ここで渡さないと
                     // トンネル側が `peer_addr()` を引き直す (`getpeername` が 1 本ごとに 1 回)
-                    peer_ip,
-                    resolved.as_ref(),
-                    park,
-                    config.park_grace,
-                    hold,
+                    client_ip: peer_ip,
+                    resolved: resolved.as_ref(),
                     // `/connections` の枠をそのままトンネルへ運ぶ (T13.4)。
                     // 抹消するのは `hold` の中の `ActiveGuard` なので、寿命は一致する
                     slot,
                     stages,
                     read_started,
-                );
+                };
+                return start_tunnel(req, park, config.park_grace, hold);
             }
         }
     }

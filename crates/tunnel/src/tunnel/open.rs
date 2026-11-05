@@ -5,7 +5,7 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::connect_with_timeout;
+use super::{TunnelRequest, connect_with_timeout};
 use crate::dns;
 use crate::log::{Access, access};
 use crate::metrics::{Detail, Failure, HostOutcome, Metrics, StageMs};
@@ -80,21 +80,22 @@ pub(super) struct Info {
 
 /// 宛先へつなぎ、`200` と先読みぶん (`prefix`) を送る。
 /// つなげなければ 502 を書き、ログと統計を出して `Err` ([`Reported`] で包む = 呼び元は出し直さない)。
-#[allow(clippy::too_many_arguments)]
 #[inline]
-pub(super) fn open(
-    mut client: TcpStream,
-    target: &str,
-    prefix: &[u8],
-    timeout: Duration,
-    conn_id: usize,
-    metrics: Arc<Metrics>,
-    client_ip: String,
-    resolved: Option<&dns::Resolved<'_>>,
-    slot: Option<Arc<ConnSlot>>,
-    mut stages: StageMs,
-    read_started: Option<Instant>,
-) -> io::Result<Opened> {
+pub(super) fn open(req: TunnelRequest<'_>) -> io::Result<Opened> {
+    let TunnelRequest {
+        mut client,
+        target,
+        prefix,
+        timeout,
+        conn_id,
+        metrics,
+        client_ip,
+        resolved,
+        slot,
+        mut stages,
+        read_started,
+        ..
+    } = req;
     let started = Instant::now();
     // この時計より**前に**払われた名前解決 (入口の ACL。`PROXY_ALLOW_LOCAL=false` が
     // 既定なので普通はここに入る) を控える (T15.0 (1))。thread-local の読み 1 回で、

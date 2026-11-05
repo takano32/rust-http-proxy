@@ -37,66 +37,54 @@ pub use relay::{Idle, Park, expire, resume};
 #[cfg(not(target_os = "linux"))]
 use report::report;
 
-/// `prefix` はリクエストヘッダーの直後に既に読み込んでしまったバイト列 (先にサーバーへ渡す)。
+/// CONNECT 1 本を始めるのに要るもの (入口で読んだ素性と設定。T.34.14)。
+///
+/// 本体クレートの `start_tunnel` が組み、[`handle_connect`] / [`handle_connect_parked`] を
+/// 通って `open` まで運ぶ (引数 13〜16 個の並びを 1 つにした)。
+pub struct TunnelRequest<'a> {
+    pub client: TcpStream,
+    /// CONNECT の宛先 (`host[:port]`。ポートが無ければ 443)
+    pub target: &'a str,
+    /// リクエストヘッダーの直後に既に読み込んでしまったバイト列 (先にサーバーへ渡す)
+    pub prefix: &'a [u8],
+    /// オリジンへの接続の締め切り
+    pub timeout: Duration,
+    /// 双方向とも動きが無ければ閉じるまでの時間 (`None` で無期限)
+    pub idle: Option<Duration>,
+    /// 書き側の最小の速さ (T.29.34。Linux の `poll` + `splice` の中継だけが見る)
+    pub min_transfer: MinRate,
+    pub conn_id: usize,
+    pub metrics: Arc<Metrics>,
+    /// 接続元 IP の文字列。接続を受けたときに 1 回だけ作ったものを運ぶ
+    /// (ここで `peer_addr()` を引き直すと、トンネル 1 本ごとに `getpeername` が 1 回増える)
+    pub client_ip: String,
+    /// ACL の判定が引いた答え。あれば接続のときに解決し直さない (T12.7)
+    pub resolved: Option<&'a dns::Resolved<'a>>,
+    /// `/connections` の枠 (T13.4)
+    pub slot: Option<Arc<ConnSlot>>,
+    /// 本体クレートが測った段階 (`queue` など。T14.3 (1))
+    pub stages: StageMs,
+    /// 要求行が届いた時刻 (`client_read` の起点)
+    pub read_started: Option<Instant>,
+}
+
+/// CONNECT を 1 本まかなう (`req.prefix` は先にサーバーへ渡す)。
 ///
 /// 暇なトンネルを監視スレッドへ預けたい呼び出し側は [`handle_connect_parked`] を使う (Linux)。
-#[allow(clippy::too_many_arguments)]
-pub fn handle_connect(
-    client: TcpStream,
-    target: &str,
-    prefix: &[u8],
-    timeout: Duration,
-    idle: Option<Duration>,
-    min_transfer: MinRate,
-    conn_id: usize,
-    metrics: Arc<Metrics>,
-    client_ip: String,
-    resolved: Option<&dns::Resolved<'_>>,
-    slot: Option<Arc<ConnSlot>>,
-    stages: StageMs,
-    read_started: Option<Instant>,
-) -> io::Result<()> {
+pub fn handle_connect(req: TunnelRequest<'_>) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
-        handle_connect_parked(
-            client,
-            target,
-            prefix,
-            timeout,
-            idle,
-            min_transfer,
-            conn_id,
-            metrics,
-            client_ip,
-            resolved,
-            None,
-            Box::new(()),
-            slot,
-            stages,
-            read_started,
-        )
+        handle_connect_parked(req, None, Box::new(()))
     }
     #[cfg(not(target_os = "linux"))]
     {
         // 最小の速さは Linux の `poll` + `splice` の中継だけが見る (T.29.34)
-        let _ = min_transfer;
+        let idle = req.idle;
         let Opened {
             client,
             server,
             info,
-        } = open(
-            client,
-            target,
-            prefix,
-            timeout,
-            conn_id,
-            metrics,
-            client_ip,
-            resolved,
-            slot,
-            stages,
-            read_started,
-        )?;
+        } = open(req)?;
         let (up, down) = tunnel(client, server, idle)?;
         // Linux 以外は片方向ずつ `io::copy` するだけなので、どちらが先に EOF を出したかは
         // 分からない (`/recent` の理由は `shutdown` になる)
@@ -123,40 +111,14 @@ pub fn handle_connect(
 /// `hold` は本体クレートの持ち分 (同時接続数と `active_connections` のガード) で、
 /// 中身は見ないがトンネルが終わるまで落とさずに運ぶ (預けた瞬間に数が減ると
 /// `PROXY_MAX_CONNS` の意味が壊れる)。
-/// `client_ip` は接続元 IP の文字列。接続を受けたときに 1 回だけ作ったものを運ぶ
-/// (ここで `peer_addr()` を引き直すと、トンネル 1 本ごとに `getpeername` が 1 回増える)。
 #[cfg(target_os = "linux")]
-#[allow(clippy::too_many_arguments)]
 pub fn handle_connect_parked(
-    client: TcpStream,
-    target: &str,
-    prefix: &[u8],
-    timeout: Duration,
-    idle: Option<Duration>,
-    min_transfer: MinRate,
-    conn_id: usize,
-    metrics: Arc<Metrics>,
-    client_ip: String,
-    resolved: Option<&dns::Resolved<'_>>,
+    req: TunnelRequest<'_>,
     park: Option<(Arc<dyn Park>, Duration)>,
     hold: Box<dyn Send>,
-    slot: Option<Arc<ConnSlot>>,
-    stages: StageMs,
-    read_started: Option<Instant>,
 ) -> io::Result<()> {
-    let opened = open(
-        client,
-        target,
-        prefix,
-        timeout,
-        conn_id,
-        metrics,
-        client_ip,
-        resolved,
-        slot,
-        stages,
-        read_started,
-    )?;
+    let (idle, min_transfer) = (req.idle, req.min_transfer);
+    let opened = open(req)?;
     // トンネルの猶予は HTTP の keep-alive より長く取る (下限 [`relay::MIN_PARK_GRACE`])
     let park = park.map(|(w, grace)| (w, grace.max(relay::MIN_PARK_GRACE)));
     relay::start(opened, idle, min_transfer, park, hold)
