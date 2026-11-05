@@ -168,37 +168,18 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
         return loop_detected(peer, host_header, target, proxied);
     }
 
-    // プロキシ自身のエンドポイント (/dashboard, /status, /metrics, /proxy.pac, /purge, /lookup, PURGE)
-    // 上限といまのスレッド数は `/status` のときだけ引く (`Workers` の鍵は全接続スレッドが
-    // 共有しているので、要求ごとに数えると熱い経路に乗る)
-    let concurrency = || crate::metrics::Concurrency {
-        max_conns: config.max_conns,
-        max_threads: workers.max_threads(),
-        live_threads: workers.live_count(),
-        idle_threads: workers.idle_count(),
-        queued_jobs: workers.queued(),
-    };
-    let ep = endpoints::Endpoint {
+    // プロキシ自身のエンドポイントか ([`own_endpoint`])。組んだ持ち物は転送でも使う
+    let parts = ForwardParts {
+        config,
+        conn_id,
         metrics,
         cache,
-        conn_id,
-        // 実際に受けたポート (テストや複数 bind でも自分宛て判定が合うように)
-        port: local_port,
-        host: host_header,
-        // 内部エンドポイントを引いた接続元を 1 行残すため (`/status` の `readers`。T14.53)。
-        // 数えるのは `endpoints::handle` が「自分宛て」と決めたあとなので、
-        // プロキシとして通す要求はこの値を 1 度も使わない。**渡すのは生の IP**で、
-        // `PROXY_RECORDS` の off / hashed は記録の入口 (`Metrics::record_reader`) が
-        // 見る (接続元を記録の形に直す関数は 1 つだけ。T14.41)
-        client: Some(peer_ip),
-        pac_direct: &config.pac_direct,
-        lite: config.lite,
-        readonly: config.endpoints_readonly,
-        version: VERSION,
-        build: BUILD,
-        concurrency: &concurrency,
+        upstream,
+        workers,
+        slot: slot.as_ref(),
+        tally,
     };
-    if endpoints::handle(&mut &*client, method, target, &ep)? {
+    if own_endpoint(peer, &parts, local_port, host_header, method, target)? {
         return Ok(Step::Close(recent::CloseReason::Shutdown));
     }
     // ここから下は「自分宛てではない = プロキシとして扱う要求」なので、この接続を
@@ -291,25 +272,13 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     }
 
     if is_connect {
-        // 先読みしてしまったバイト (TLS ClientHello など) はトンネルへ渡す。
-        // 同時に読み取りバッファを手放す (トンネルの間は要求として読まないので、
-        // アイドルのトンネルを大量に抱えるときの資源が減る)
-        let prefix = reader.take_buffered();
-        let (addrs, preferred) = match resolved {
-            Some(r) => {
-                let preferred = r.preferred();
-                (Some(r.into_addrs()), preferred)
-            }
-            None => (None, None),
-        };
-        return Ok(Step::Connect {
-            target: target.to_string(),
-            prefix,
-            addrs,
-            preferred,
+        return Ok(connect_step(
+            &mut reader,
+            target,
+            resolved,
             stages,
             read_started,
-        });
+        ));
     }
 
     // keep-alive の HTTP 接続の宛先を `/connections` に出す (接続の最初の要求だけ。T14.2 (5))
@@ -320,16 +289,6 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     }
     // この接続で処理する最後の要求か (`Config::max_requests_per_conn`。T14.2)
     let last = *served + 1 >= config.max_requests_per_conn;
-    let parts = ForwardParts {
-        config,
-        conn_id,
-        metrics,
-        cache,
-        upstream,
-        workers,
-        slot: slot.as_ref(),
-        tally,
-    };
     let shared = shared_for(parts, resolved.as_ref(), last, stages, read_started);
     let step = forward_request(
         peer,
@@ -343,4 +302,87 @@ pub(super) fn serve_one(conn: &mut Conn) -> io::Result<Step> {
     scratch.request_line = request_line;
     *served += 1;
     Ok(step)
+}
+
+/// プロキシ自身のエンドポイント (/dashboard, /status, /metrics, /proxy.pac, /purge, /lookup, PURGE)
+/// なら応えて true を返す (T.34.165 で [`serve_one`] から出した)。
+///
+/// `port` は実際に受けたポート、`host` は要求の `Host` ヘッダー。
+#[inline(always)]
+fn own_endpoint(
+    peer: Peer<'_>,
+    parts: &ForwardParts<'_>,
+    port: u16,
+    host: Option<&str>,
+    method: &str,
+    target: &str,
+) -> io::Result<bool> {
+    let ForwardParts {
+        config,
+        conn_id,
+        metrics,
+        cache,
+        workers,
+        ..
+    } = *parts;
+    // 上限といまのスレッド数は `/status` のときだけ引く (`Workers` の鍵は全接続スレッドが
+    // 共有しているので、要求ごとに数えると熱い経路に乗る)
+    let concurrency = || crate::metrics::Concurrency {
+        max_conns: config.max_conns,
+        max_threads: workers.max_threads(),
+        live_threads: workers.live_count(),
+        idle_threads: workers.idle_count(),
+        queued_jobs: workers.queued(),
+    };
+    let ep = endpoints::Endpoint {
+        metrics,
+        cache,
+        conn_id,
+        // 実際に受けたポート (テストや複数 bind でも自分宛て判定が合うように)
+        port,
+        host,
+        // 内部エンドポイントを引いた接続元を 1 行残すため (`/status` の `readers`。T14.53)。
+        // 数えるのは `endpoints::handle` が「自分宛て」と決めたあとなので、
+        // プロキシとして通す要求はこの値を 1 度も使わない。**渡すのは生の IP**で、
+        // `PROXY_RECORDS` の off / hashed は記録の入口 (`Metrics::record_reader`) が
+        // 見る (接続元を記録の形に直す関数は 1 つだけ。T14.41)
+        client: Some(peer.ip),
+        pac_direct: &config.pac_direct,
+        lite: config.lite,
+        readonly: config.endpoints_readonly,
+        version: VERSION,
+        build: BUILD,
+        concurrency: &concurrency,
+    };
+    endpoints::handle(&mut &*peer.client, method, target, &ep)
+}
+
+/// CONNECT トンネルへ移る [`Step::Connect`] を組む (T.34.165 で [`serve_one`] から出した)。
+#[inline(always)]
+fn connect_step(
+    reader: &mut clientio::ClientReader<'_>,
+    target: &str,
+    resolved: Option<dns::Resolved<'_>>,
+    stages: metrics::StageMs,
+    read_started: Option<Instant>,
+) -> Step {
+    // 先読みしてしまったバイト (TLS ClientHello など) はトンネルへ渡す。
+    // 同時に読み取りバッファを手放す (トンネルの間は要求として読まないので、
+    // アイドルのトンネルを大量に抱えるときの資源が減る)
+    let prefix = reader.take_buffered();
+    let (addrs, preferred) = match resolved {
+        Some(r) => {
+            let preferred = r.preferred();
+            (Some(r.into_addrs()), preferred)
+        }
+        None => (None, None),
+    };
+    Step::Connect {
+        target: target.to_string(),
+        prefix,
+        addrs,
+        preferred,
+        stages,
+        read_started,
+    }
 }
