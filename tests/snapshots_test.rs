@@ -122,13 +122,13 @@ fn test_integration_snapshots_writes_a_file_when_the_day_changes() {
     let snaps = dir.join("snapshots");
     // 書き先と日数を決めてから履歴スレッドを起こす (本番の main.rs と同じ順)
     snapshots::configure(Some(snaps.clone()), snapshots::DEFAULT_DAYS);
-    let (port, _metrics) = start_test_proxy_with_history(proxy_config(), Duration::from_millis(50));
+    let (port, metrics) = start_test_proxy_with_history(proxy_config(), Duration::from_millis(50));
     // 中身が空にならないように少しだけ動かす (自分宛ての要求も記録に残る)
     for _ in 0..3 {
         let _ = endpoint_json(port, "/status");
     }
-    // 日が変わるまでは 1 つも書かない
-    std::thread::sleep(Duration::from_millis(150));
+    // 日が変わるまでは 1 つも書かない (前の 150 ms = 50 ms の周期で 3 回ぶん回るのを待つ。T.34.114)
+    common::wait_ticks(&metrics, 3);
     assert!(
         !snaps.exists(),
         "日が変わっていないのに書いている: {:?}",
@@ -167,8 +167,9 @@ fn test_integration_snapshots_writes_a_file_when_the_day_changes() {
     let served = endpoint_json(port, &format!("/snapshots/{}", date));
     assert_eq!(served, body, "ファイルと同じものを返していない");
 
-    // 同じ日のうちは増えない (履歴スレッドは 50 ms ごとに回り続けている)
-    std::thread::sleep(Duration::from_millis(200));
+    // 同じ日のうちは増えない (履歴スレッドは 50 ms ごとに回り続けている。前の 200 ms =
+    // 4 周期ぶん回るのを待つ。T.34.114)
+    common::wait_ticks(&metrics, 4);
     assert_eq!(std::fs::read_dir(&snaps).unwrap().count(), 1);
 
     // 置いていない日と、日付として読めない名前は 404

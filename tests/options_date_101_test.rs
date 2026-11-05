@@ -7,7 +7,6 @@
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 mod common;
 use common::*;
@@ -79,7 +78,7 @@ fn test_integration_options_asterisk() {
         &format!("OPTIONS http://{h}/x HTTP/1.1\r\nHost: {h}\r\nConnection: close\r\n\r\n"),
     );
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
-    std::thread::sleep(Duration::from_millis(100));
+    // 3 本とも 200 が返った = オリジンは応答を返す前に積み終えている (待たずに見てよい。T.34.114)
     assert_eq!(
         *seen.lock().unwrap(),
         vec![
@@ -100,7 +99,8 @@ fn test_integration_options_asterisk() {
         "OPTIONS * HTTP/1.1\r\nConnection: close\r\n\r\n",
     );
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
-    std::thread::sleep(Duration::from_millis(100));
+    // 印の要求が届くまで待ってから見る (固定の sleep の代わり。T.34.114)
+    settle_with_mark(proxy_port, port, &seen);
     assert_eq!(seen.lock().unwrap().len(), 3);
 }
 

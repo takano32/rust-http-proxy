@@ -84,7 +84,7 @@ fn test_integration_the_baseline_appears_after_the_wait_and_stays_put() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let (port, _metrics, store) =
+    let (port, metrics, store) =
         start_test_proxy_with_store(proxy_config(), Duration::from_millis(20), rrd.clone());
     let store = store.expect("状態ファイル");
 
@@ -101,8 +101,9 @@ fn test_integration_the_baseline_appears_after_the_wait_and_stays_put() {
         opened_at
     );
 
-    // 何周期たっても動かない (1 回だけ書く)
-    std::thread::sleep(Duration::from_millis(300));
+    // 何周期たっても動かない (1 回だけ書く)。前の 300 ms (20 ms の周期で 15 回) と同じだけ
+    // 履歴の周期が回るのを待つ (T.34.114)
+    wait_ticks(&metrics, 15);
     let mem = memory_of(&status_json(port));
     assert_eq!(baseline_of(&mem), first, "1 回だけ書く: {}", mem);
     assert_eq!(store.baseline(), Some((at, bytes)));

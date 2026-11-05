@@ -51,8 +51,8 @@ fn test_integration_duplicate_host_is_rejected() {
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
     // 400 を返してから閉じる (無言で切らない)
     assert!(resp.contains("Content-Length: 0"), "{:?}", resp);
-    // オリジンには 1 バイトも届いていない
-    std::thread::sleep(Duration::from_millis(200));
+    // オリジンには 1 バイトも届いていない (印の要求が届くまで待ってから見る。T.34.114)
+    settle_with_mark(proxy_port, origin_port, &seen);
     let before = seen.lock().unwrap().clone();
     assert!(
         before.is_empty(),

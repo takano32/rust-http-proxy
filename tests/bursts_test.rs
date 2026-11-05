@@ -35,12 +35,6 @@ fn burst_proxy(max_conns: usize, percent: usize) -> (u16, Arc<Metrics>) {
     start_test_proxy_with_history(cfg, TICK)
 }
 
-/// history スレッドが `n` 周期ぶん回るまで待つ (標本が増えるのを数える)。
-fn wait_ticks(metrics: &Metrics, n: usize) {
-    let want = metrics.history.len() + n;
-    wait_until(|| metrics.history.len() >= want, "history thread to tick");
-}
-
 /// 閾を越えた瞬間に 1 枚だけ撮り、山が引いてから越え直すと 2 枚目を撮ること。
 ///
 /// 受け入れ基準そのもの: `PROXY_MAX_CONNS=8` `PROXY_BURST_PERCENT=50` (= 閾 4) で

@@ -72,7 +72,7 @@ fn test_integration_the_start_snapshot_is_written_once_after_the_wait() {
     let snaps = dir.join("snapshots");
     snapshots::configure(Some(snaps.clone()), snapshots::DEFAULT_DAYS);
     let started = Instant::now();
-    let (port, _metrics) = start_test_proxy_with_history(proxy_config(), Duration::from_millis(20));
+    let (port, metrics) = start_test_proxy_with_history(proxy_config(), Duration::from_millis(20));
     // 中身が空にならないように少しだけ動かす
     for _ in 0..3 {
         let _ = endpoint_json(port, "/healthz");
@@ -90,8 +90,9 @@ fn test_integration_the_start_snapshot_is_written_once_after_the_wait() {
     assert_eq!(names.len(), 1, "{:?}", names);
     let name = &names[0];
     assert!(stamped(name, "start"), "{}", name);
-    // 何周期たっても増えない (1 回だけ)
-    std::thread::sleep(Duration::from_millis(300));
+    // 何周期たっても増えない (1 回だけ)。前の 300 ms (20 ms の周期で 15 回) と同じだけ
+    // 履歴の周期が回るのを待つ (T.34.114)
+    common::wait_ticks(&metrics, 15);
     assert_eq!(moments(&snaps, "start"), names);
     // 日次の 1 枚とは別物 (日が変わっていないので日次は無い)
     assert!(moments(&snaps, "shutdown").is_empty());

@@ -17,13 +17,18 @@ mod common;
 use common::*;
 
 /// 1 本の接続で要求を待ち続けるオリジン。`/a` には応答の 0.3 秒後に頼まれていない応答を足す。
-fn start_late_bytes_origin(seen: Arc<Mutex<Vec<String>>>, conns: Arc<AtomicUsize>) -> u16 {
+fn start_late_bytes_origin(
+    seen: Arc<Mutex<Vec<String>>>,
+    conns: Arc<AtomicUsize>,
+    late_sent: Arc<AtomicUsize>,
+) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
             conns.fetch_add(1, Ordering::SeqCst);
             let seen = Arc::clone(&seen);
+            let late_sent = Arc::clone(&late_sent);
             thread::spawn(move || {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -51,6 +56,8 @@ fn start_late_bytes_origin(seen: Arc<Mutex<Vec<String>>>, conns: Arc<AtomicUsize
                             b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nCache-Control: max-age=600\r\n\
                               X-Injected: yes\r\n\r\nEVIL",
                         );
+                        // 書き終えた (ループバックでは相手の受信の列に入っている) 合図
+                        late_sent.fetch_add(1, Ordering::SeqCst);
                     } else {
                         let _ = stream.write_all(
                             b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nCache-Control: max-age=600\r\n\r\nreal_b",
@@ -69,7 +76,12 @@ fn start_late_bytes_origin(seen: Arc<Mutex<Vec<String>>>, conns: Arc<AtomicUsize
 fn test_integration_late_bytes_on_a_pooled_connection_are_not_served() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let conns = Arc::new(AtomicUsize::new(0));
-    let origin_port = start_late_bytes_origin(Arc::clone(&seen), Arc::clone(&conns));
+    let late_sent = Arc::new(AtomicUsize::new(0));
+    let origin_port = start_late_bytes_origin(
+        Arc::clone(&seen),
+        Arc::clone(&conns),
+        Arc::clone(&late_sent),
+    );
     let proxy_port =
         start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-pool-late-bytes"));
     let host = format!("127.0.0.1:{}", origin_port);
@@ -77,8 +89,12 @@ fn test_integration_late_bytes_on_a_pooled_connection_are_not_served() {
 
     let a = get_via_proxy(proxy_port, &url("/a"), &host);
     assert!(a.ends_with("\r\n\r\nok"), "{:?}", a);
-    // オリジンが頼まれていない応答を送り終えるまで待つ (接続はプールに戻っている)
-    thread::sleep(Duration::from_millis(600));
+    // オリジンが頼まれていない応答を送り終えるまで待つ (接続はプールに戻っている)。
+    // 送り終えた合図で待つ (前は 600 ms の固定の sleep。T.34.114)
+    wait_until(
+        || late_sent.load(Ordering::SeqCst) == 1,
+        "オリジンが頼まれていない応答を送り終える",
+    );
 
     let b = get_via_proxy(proxy_port, &url("/b"), &host);
     assert!(

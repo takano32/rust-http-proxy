@@ -40,6 +40,33 @@ pub fn capture_origin_replying(response: &'static [u8]) -> (u16, Captured) {
     (port, seen)
 }
 
+/// 印の要求の道 ([`settle_with_mark`])。
+pub const SETTLE_MARK: &str = "/t34114-settle-mark";
+
+/// 「断った要求がオリジンへ届いていない」を見る前の合図 (T.34.114。固定の sleep の代わり)。
+///
+/// 同じオリジンへ印の要求 (`GET /t34114-settle-mark`) を 1 本通し、その 200 を受け取る。
+/// 要求を貯めるオリジンは応答を返す前に積むので、200 が返った時点で印は `seen` にある。
+/// 断った要求が誤って転送されていたなら、プロキシはそれをクライアントへ返す前に送り終えて
+/// いるので、往復ぶん遅れて届く印より先にオリジンへ着いて積まれている。
+/// 印の行は `seen` から取り除くので、呼んだあとの `seen` は前と同じ形で見られる。
+pub fn settle_with_mark(proxy_port: u16, origin_port: u16, seen: &Mutex<Vec<String>>) {
+    let host = format!("127.0.0.1:{}", origin_port);
+    let url = format!("http://{}{}", host, SETTLE_MARK);
+    let resp = super::get_via_proxy(proxy_port, &url, &host);
+    assert!(
+        resp.starts_with("HTTP/1.1 200 "),
+        "印の要求が通らない: {:?}",
+        resp
+    );
+    let mut seen = seen.lock().unwrap();
+    let at = seen
+        .iter()
+        .position(|r| r.contains(SETTLE_MARK))
+        .unwrap_or_else(|| panic!("印の要求がオリジンに積まれていない: {:?}", *seen));
+    seen.remove(at);
+}
+
 /// 読むだけで何も返さず、閉じもしないリスナー。
 ///
 /// ここへ張ったトンネルでクライアントが送信側だけ閉じると、トンネルは**片方向だけ EOF**

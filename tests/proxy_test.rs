@@ -1256,7 +1256,7 @@ fn test_integration_connection_named_framing_headers_do_not_smuggle() {
         let mut resp = String::new();
         let _ = s.read_to_string(&mut resp);
 
-        thread::sleep(Duration::from_millis(300));
+        // 応答を読み終えた = オリジンは応答を書く前に積み終えている (待たずに見てよい。T.34.114)
         let seen = received.lock().unwrap();
         let last = seen.last().cloned().unwrap_or_default();
         let (head, body) = last.split_once("\r\n\r\n").unwrap_or((last.as_str(), ""));

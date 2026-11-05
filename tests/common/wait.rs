@@ -53,3 +53,17 @@ pub fn wait_until_for(mut cond: impl FnMut() -> bool, what: &str, step: Duration
 pub fn wait_until(cond: impl Fn() -> bool, what: &str) {
     wait_until_for(cond, what, POLL_STEP, Limit::Tries(POLL_MAX))
 }
+
+/// 「何も起きないこと」を見る前に置く、合図の無いときだけの猶予 (T.34.114)。
+///
+/// 正の合図 (応答が返った・印の要求が届いた・履歴が N 周期回った) を待てるところは、そちらで
+/// 待つ。これを使うのは、合図になる出来事がどこにも数えられていない所だけ (使う所に理由を書く)。
+pub const SETTLE: Duration = Duration::from_millis(200);
+
+/// 履歴スレッドが `n` 周期ぶん回るまで待つ (5 秒の解像度の標本が `n` 本増えるのを数える)。
+///
+/// 「何周期たっても変わらない」を見る試験の合図 (初めは bursts の試験にあった)。
+pub fn wait_ticks(metrics: &rust_http_proxy::metrics::Metrics, n: usize) {
+    let want = metrics.history.len() + n;
+    wait_until(|| metrics.history.len() >= want, "history thread to tick");
+}

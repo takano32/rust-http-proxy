@@ -13,8 +13,19 @@ use std::time::Duration;
 mod common;
 use common::*;
 
-fn settle_and_take(seen: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
-    std::thread::sleep(Duration::from_millis(200));
+/// 印の要求が届くまで待ってから、届いた要求を全部取る (断った要求が届いていないかを
+/// 見る所。固定の sleep の代わり。T.34.114)。
+fn settle_and_take(
+    proxy_port: u16,
+    origin_port: u16,
+    seen: &Arc<Mutex<Vec<String>>>,
+) -> Vec<String> {
+    settle_with_mark(proxy_port, origin_port, seen);
+    take(seen)
+}
+
+/// 届いた要求を全部取る (200 を受け取った後。オリジンは応答の前に積むので待たなくてよい)。
+fn take(seen: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
     std::mem::take(&mut *seen.lock().unwrap())
 }
 
@@ -33,7 +44,7 @@ fn test_integration_max_forwards_on_trace_and_options() {
     );
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
     assert!(resp.contains("Content-Length: 0\r\n"), "{:?}", resp);
-    assert!(settle_and_take(&seen).is_empty());
+    assert!(settle_and_take(proxy_port, origin_port, &seen).is_empty());
 
     // 0 の TRACE: 受け取った要求を message/http で返す。Cookie と Authorization は返さない
     let resp = raw_request_with(
@@ -64,7 +75,7 @@ fn test_integration_max_forwards_on_trace_and_options() {
         "{:?}",
         body
     );
-    assert!(settle_and_take(&seen).is_empty());
+    assert!(settle_and_take(proxy_port, origin_port, &seen).is_empty());
 
     // 0 でなければ 1 減らして転送する
     let resp = raw_request_with(
@@ -75,7 +86,7 @@ fn test_integration_max_forwards_on_trace_and_options() {
         .as_bytes(), Duration::from_secs(5), false);
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
     wait_until(|| !seen.lock().unwrap().is_empty(), "オリジンへの到達");
-    let got = settle_and_take(&seen);
+    let got = take(&seen);
     assert!(got[0].contains("Max-Forwards: 2\r\n"), "{:?}", got);
     assert!(!got[0].contains("Max-Forwards: 3"), "{:?}", got);
 }
@@ -93,7 +104,7 @@ fn test_integration_userinfo_and_fragment() {
         false,
     );
     assert!(resp.starts_with("HTTP/1.1 400 "), "{:?}", resp);
-    assert!(settle_and_take(&seen).is_empty());
+    assert!(settle_and_take(proxy_port, origin_port, &seen).is_empty());
 
     let resp = raw_request_with(
         proxy_port,
@@ -104,7 +115,7 @@ fn test_integration_userinfo_and_fragment() {
     );
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
     wait_until(|| !seen.lock().unwrap().is_empty(), "オリジンへの到達");
-    let got = settle_and_take(&seen);
+    let got = take(&seen);
     assert!(got[0].starts_with("GET /a?q=1 HTTP/1.1\r\n"), "{:?}", got);
 }
 
@@ -129,7 +140,7 @@ fn test_integration_versions_connect_ports_and_bad_chunks() {
         false,
     );
     assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}", resp);
-    settle_and_take(&seen);
+    take(&seen);
 
     for target in ["127.0.0.1", "127.0.0.1:0", "127.0.0.1:abc", ":443"] {
         let resp = raw_request_with(
@@ -187,7 +198,7 @@ fn test_integration_request_line_and_header_name_grammar() {
         assert!(resp.starts_with("HTTP/1.1 400 "), "{}: {:?}", name, resp);
     }
     assert!(
-        settle_and_take(&seen).is_empty(),
+        settle_and_take(proxy_port, origin_port, &seen).is_empty(),
         "断った要求がオリジンへ届いた"
     );
     // 断った理由に乗る (要求行は `request_line`、ヘッダーは `bad_header`)
@@ -206,5 +217,5 @@ fn test_integration_request_line_and_header_name_grammar() {
         let resp = raw_request_with(proxy_port, req.as_bytes(), Duration::from_secs(5), false);
         assert!(resp.starts_with("HTTP/1.1 200 "), "{:?}: {:?}", req, resp);
     }
-    assert_eq!(settle_and_take(&seen).len(), 3);
+    assert_eq!(take(&seen).len(), 3);
 }

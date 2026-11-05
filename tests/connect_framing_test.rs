@@ -126,7 +126,10 @@ fn test_integration_connect_with_broken_framing_is_rejected() {
     );
 
     // 宛先には**接続もしない** (受理した本数 0、受け取ったバイト 0)。少し待ってから見る
-    thread::sleep(Duration::from_millis(200));
+    // 合図が無い: 宛先は接続ごとに閉じたときに積むエコーで、印の接続を張ると数えたい本数が
+    // 変わる。プロキシ側は 400 を返す前に繋ぐかどうかを決め終えているので、宛先のスレッドが
+    // 積むまでの猶予だけ置く (T.34.114)
+    thread::sleep(SETTLE);
     let got = conns.lock().unwrap().clone();
     assert!(
         got.is_empty(),
