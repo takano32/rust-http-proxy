@@ -1,8 +1,6 @@
 //! キャッシュ参照の段: 鍵と鮮度の判定、新鮮なら配信 (HIT / REFRESHING)、期限切れなら
 //! 再検証に備えて保持、`only-if-cached`、入場制御と同時ミスの合流。
 
-use std::sync::atomic::Ordering;
-
 use super::respond::write_error;
 use super::serve::serve_cached;
 use super::{ClientWriter, Exchange, Stage, done, finished, refresh};
@@ -131,7 +129,7 @@ pub(super) fn consult<'c>(
                 // 期限切れ直後 (grace 内) なら、すぐ返して裏で再検証する (stale-while-revalidate)
                 if !force_revalidate && try_refreshing(x, key, now, &entry, cfg.grace.as_secs()) {
                     body::drain(reader, req_framing)?;
-                    cache.stale_served.fetch_add(1, Ordering::Relaxed);
+                    cache.note_stale_served();
                     return finished(serve_cached(client, entry, source, "REFRESHING", 0, &x.ctx));
                 }
                 cs.stale = Some((entry, source));
@@ -260,7 +258,7 @@ fn coalesce<'c>(
                 && entry.is_fresh(now_epoch())
             {
                 body::drain(reader, req_framing)?;
-                cache.coalesced.fetch_add(1, Ordering::Relaxed);
+                cache.note_coalesced();
                 let ttl_left = entry.ttl_left(now_epoch());
                 return finished(serve_cached(
                     client,

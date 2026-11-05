@@ -2,7 +2,6 @@
 //! 再利用した接続が死んでいたときと 408 / 421 のやり直し、1xx の中継、失敗時の stale の配信もここ。
 
 use std::io::{self, Write};
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use super::lookup::CacheState;
@@ -287,7 +286,7 @@ pub(super) fn fetch(
                     && !cs.force_revalidate
                     && can_serve_stale(&entry)
                 {
-                    cache.stale_served.fetch_add(1, Ordering::Relaxed);
+                    cache.note_stale_served();
                     return finished(serve_cached(client, entry, source, "STALE", 0, &x.ctx));
                 }
                 write_error(client, 502, "Bad Gateway")?;
@@ -388,7 +387,7 @@ fn connect_failed<T>(
         && can_serve_stale(&entry)
     {
         crate::body::drain(reader, req_framing)?;
-        cache.stale_served.fetch_add(1, Ordering::Relaxed);
+        cache.note_stale_served();
         return finished(serve_cached(client, entry, source, "STALE", 0, &x.ctx));
     }
     write_error(client, code, reason)?;

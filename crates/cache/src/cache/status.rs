@@ -79,9 +79,9 @@ impl Cache {
     pub fn to_json(&self) -> String {
         let (mem_bytes, mem_entries) = self.mem_usage();
         let (disk_bytes, disk_entries) = self.disk_usage();
-        let hits_mem = self.hits_mem.load(Ordering::Relaxed);
-        let hits_disk = self.hits_disk.load(Ordering::Relaxed);
-        let misses = self.misses.load(Ordering::Relaxed);
+        let hits_mem = self.counters.hits_mem.load(Ordering::Relaxed);
+        let hits_disk = self.counters.hits_disk.load(Ordering::Relaxed);
+        let misses = self.counters.misses.load(Ordering::Relaxed);
         let lookups = hits_mem + hits_disk + misses;
         let hit_ratio = if lookups == 0 {
             0.0
@@ -121,18 +121,20 @@ impl Cache {
             hits_disk,
             misses,
             hit_ratio,
-            self.stores.load(Ordering::Relaxed),
-            self.evictions.load(Ordering::Relaxed),
-            self.revalidations.load(Ordering::Relaxed),
-            self.background_revalidations.load(Ordering::Relaxed),
-            self.revalidations_dropped.load(Ordering::Relaxed),
+            self.counters.stores.load(Ordering::Relaxed),
+            self.counters.evictions.load(Ordering::Relaxed),
+            self.counters.revalidations.load(Ordering::Relaxed),
+            self.counters
+                .background_revalidations
+                .load(Ordering::Relaxed),
+            self.counters.revalidations_dropped.load(Ordering::Relaxed),
             self.revalidating_count(),
-            self.stale_served.load(Ordering::Relaxed),
-            self.coalesced.load(Ordering::Relaxed),
+            self.counters.stale_served.load(Ordering::Relaxed),
+            self.counters.coalesced.load(Ordering::Relaxed),
             self.not_stored_rotations(),
             self.inflight_count(),
-            self.admission_rejected.load(Ordering::Relaxed),
-            self.bytes_served.load(Ordering::Relaxed),
+            self.counters.admission_rejected.load(Ordering::Relaxed),
+            self.counters.bytes_served.load(Ordering::Relaxed),
             self.cfg.reserve,
             mem_bytes,
             self.mem_capacity(),

@@ -13,28 +13,18 @@ pub(super) fn cache_metrics(out: &mut String, c: &Cache) -> proxy_cache::budget:
         out,
         "cache_hits_total",
         "tier=\"memory\"",
-        c.hits_mem.load(Ordering::Relaxed),
+        c.counters().hits_mem(),
     );
     line(
         out,
         "cache_hits_total",
         "tier=\"disk\"",
-        c.hits_disk.load(Ordering::Relaxed),
+        c.counters().hits_disk(),
     );
     header(out, "cache_misses_total", "counter", "Cache misses");
-    line(
-        out,
-        "cache_misses_total",
-        "",
-        c.misses.load(Ordering::Relaxed),
-    );
+    line(out, "cache_misses_total", "", c.counters().misses());
     header(out, "cache_stores_total", "counter", "Responses stored");
-    line(
-        out,
-        "cache_stores_total",
-        "",
-        c.stores.load(Ordering::Relaxed),
-    );
+    line(out, "cache_stores_total", "", c.counters().stores());
     header(
         out,
         "cache_revalidations_total",
@@ -45,7 +35,7 @@ pub(super) fn cache_metrics(out: &mut String, c: &Cache) -> proxy_cache::budget:
         out,
         "cache_revalidations_total",
         "",
-        c.revalidations.load(Ordering::Relaxed),
+        c.counters().revalidations(),
     );
     header(
         out,
@@ -57,7 +47,7 @@ pub(super) fn cache_metrics(out: &mut String, c: &Cache) -> proxy_cache::budget:
         out,
         "cache_background_revalidations_total",
         "",
-        c.background_revalidations.load(Ordering::Relaxed),
+        c.counters().background_revalidations(),
     );
     header(
         out,
@@ -69,7 +59,7 @@ pub(super) fn cache_metrics(out: &mut String, c: &Cache) -> proxy_cache::budget:
         out,
         "cache_revalidations_dropped_total",
         "",
-        c.revalidations_dropped.load(Ordering::Relaxed),
+        c.counters().revalidations_dropped(),
     );
     header(
         out,
@@ -81,7 +71,7 @@ pub(super) fn cache_metrics(out: &mut String, c: &Cache) -> proxy_cache::budget:
         out,
         "cache_stale_served_total",
         "",
-        c.stale_served.load(Ordering::Relaxed),
+        c.counters().stale_served(),
     );
     header(
         out,
@@ -96,12 +86,7 @@ pub(super) fn cache_metrics(out: &mut String, c: &Cache) -> proxy_cache::budget:
         "counter",
         "Requests that waited for an in-flight fetch instead of contacting the origin",
     );
-    line(
-        out,
-        "cache_coalesced_total",
-        "",
-        c.coalesced.load(Ordering::Relaxed),
-    );
+    line(out, "cache_coalesced_total", "", c.counters().coalesced());
     header(
         out,
         "cache_not_stored_rotations_total",
@@ -131,15 +116,10 @@ pub(super) fn cache_metrics(out: &mut String, c: &Cache) -> proxy_cache::budget:
         out,
         "cache_admission_rejected_total",
         "",
-        c.admission_rejected.load(Ordering::Relaxed),
+        c.counters().admission_rejected(),
     );
     header(out, "cache_evictions_total", "counter", "Entries evicted");
-    line(
-        out,
-        "cache_evictions_total",
-        "",
-        c.evictions.load(Ordering::Relaxed),
-    );
+    line(out, "cache_evictions_total", "", c.counters().evictions());
     header(
         out,
         "cache_bytes_served_total",
@@ -150,7 +130,7 @@ pub(super) fn cache_metrics(out: &mut String, c: &Cache) -> proxy_cache::budget:
         out,
         "cache_bytes_served_total",
         "",
-        c.bytes_served.load(Ordering::Relaxed),
+        c.counters().bytes_served(),
     );
     header(
         out,

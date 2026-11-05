@@ -10,7 +10,6 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 #[test]
@@ -29,7 +28,7 @@ fn put_get_roundtrip_hits_memory() {
     assert_eq!(src, CacheSource::Memory);
     assert!(resp.is_fresh(crate::cache::now_epoch()));
     assert_eq!(resp.read_all().unwrap(), b"payload");
-    assert_eq!(cache.hits_mem.load(Ordering::Relaxed), 1);
+    assert_eq!(cache.counters().hits_mem(), 1);
     assert!(
         cache.disk_path(key).unwrap().exists(),
         "entry should also be on disk"
@@ -53,7 +52,7 @@ fn oversized_object_is_not_cached() {
     );
     assert!(!out.memory && !out.disk);
     assert!(cache.get(key, 1).is_none());
-    assert_eq!(cache.stores.load(Ordering::Relaxed), 0);
+    assert_eq!(cache.counters().stores(), 0);
 }
 
 #[test]
@@ -128,7 +127,7 @@ fn admission_gates_first_sightings_only_when_the_tier_is_full() {
     let k2 = cache_key("GET", "http://example.com/2");
     assert!(!cache.admit(k2), "first sighting is refused under pressure");
     assert!(cache.admit(k2), "second sighting is admitted");
-    assert_eq!(cache.admission_rejected.load(Ordering::Relaxed), 1);
+    assert_eq!(cache.counters().admission_rejected(), 1);
     assert!(
         cache.admit(k1),
         "a key seen before the pressure is admitted"

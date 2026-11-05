@@ -26,7 +26,6 @@
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::upstream::{OriginConn, acquire_origin, request_head};
@@ -118,10 +117,7 @@ pub fn spawn(
         Err(_returned) => {
             // 生きているスレッドが上限。**待ち行列には積まない** (モジュール冒頭の理由)。
             // 戻ってきた仕事はここで落ち、番人が印を消す
-            shared
-                .cache
-                .revalidations_dropped
-                .fetch_add(1, Ordering::Relaxed);
+            shared.cache.note_revalidation_dropped();
             log_debug!(
                 Some(conn_id),
                 "background revalidation skipped (no worker thread available)"
@@ -259,9 +255,7 @@ fn apply_not_modified(
             cache.refresh(key, p.ttl, p.age, conn_id);
         }
     }
-    cache
-        .background_revalidations
-        .fetch_add(1, Ordering::Relaxed);
+    cache.note_background_revalidation();
     "304, refreshed"
 }
 
@@ -306,8 +300,6 @@ fn store_fresh_copy(
         return Ok(false);
     }
     sink.finish();
-    cache
-        .background_revalidations
-        .fetch_add(1, Ordering::Relaxed);
+    cache.note_background_revalidation();
     Ok(true)
 }

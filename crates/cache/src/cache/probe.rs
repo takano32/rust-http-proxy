@@ -275,7 +275,7 @@ impl Cache {
             Reserve::Eager => u64::MAX,
             Reserve::Staged if probing => u64::MAX,
             Reserve::Staged => {
-                if self.stores.load(Ordering::Relaxed) == 0 {
+                if self.counters.stores.load(Ordering::Relaxed) == 0 {
                     0
                 } else {
                     used.saturating_mul(STAGED_MULTIPLIER)

@@ -14,6 +14,7 @@
 //! ヒット時はそれをそのままクライアントへ再生する。期限切れでもバリデータを持つ
 //! エントリは残し、呼び出し側が再検証 (304) して延命する。
 
+mod counters;
 mod ops;
 pub mod probe;
 pub mod sink;
@@ -26,6 +27,7 @@ pub use proxy_cachedisk::disk;
 pub use proxy_cachemem::{admission, entry, inflight, lru, memory, notstored};
 
 pub use config::{CacheConfig, DiskQuota, Limit, MIB, Reserve};
+pub use counters::Counters;
 pub use entry::{Body, CachedResponse};
 pub use format::Meta;
 pub use inflight::{FetchOutcome, FetchTicket};
@@ -117,25 +119,9 @@ pub struct Cache {
     pressure_logged: AtomicBool,
     mem_fallback_warned: AtomicBool,
     disk_fallback_warned: AtomicBool,
-    pub hits_mem: AtomicU64,
-    pub hits_disk: AtomicU64,
-    pub misses: AtomicU64,
-    pub stores: AtomicU64,
-    pub revalidations: AtomicU64,
-    /// 裏で完了した再検証 (304 での延命と差し替えの両方)
-    pub background_revalidations: AtomicU64,
-    /// 接続スレッドの上限に当たって捨てた裏側の再検証の数 (T11.3)。
-    /// 捨てても正しさは崩れない (その項目は次の要求で普通のミスとして取り直される)
-    pub revalidations_dropped: AtomicU64,
-    /// 期限切れの表現をそのまま配信した回数 (grace 内・オリジン障害・待ち切れ)
-    pub stale_served: AtomicU64,
-    /// 同時ミスの合流で、オリジンへ行かずに済んだ要求の数
-    pub coalesced: AtomicU64,
-    /// 入場制御で見送った保存の数 (初回の要求)
-    pub admission_rejected: AtomicU64,
+    /// 通算のカウンタ (12 個。書くのはこのクレートと `note_*` だけ。T.34.88)
+    counters: Counters,
     doorkeeper: admission::Doorkeeper,
-    pub evictions: AtomicU64,
-    pub bytes_served: AtomicU64,
     /// プローブが予算 (動く上限) で追い出した回数と、最後の 1 回の様子 (T.32.7)
     budget_evictions: AtomicU64,
     last_budget_eviction: Mutex<Option<status::BudgetEviction>>,
@@ -198,19 +184,8 @@ impl Cache {
             pressure_logged: AtomicBool::new(false),
             mem_fallback_warned: AtomicBool::new(false),
             disk_fallback_warned: AtomicBool::new(false),
-            hits_mem: AtomicU64::new(0),
-            hits_disk: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
-            stores: AtomicU64::new(0),
-            revalidations: AtomicU64::new(0),
-            background_revalidations: AtomicU64::new(0),
-            revalidations_dropped: AtomicU64::new(0),
-            stale_served: AtomicU64::new(0),
-            coalesced: AtomicU64::new(0),
-            admission_rejected: AtomicU64::new(0),
+            counters: Counters::default(),
             doorkeeper: admission::Doorkeeper::default(),
-            evictions: AtomicU64::new(0),
-            bytes_served: AtomicU64::new(0),
             budget_evictions: AtomicU64::new(0),
             last_budget_eviction: Mutex::new(None),
         }
@@ -341,7 +316,9 @@ impl Cache {
         if seen || !self.under_pressure() {
             return true;
         }
-        self.admission_rejected.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .admission_rejected
+            .fetch_add(1, Ordering::Relaxed);
         false
     }
 
@@ -376,6 +353,40 @@ impl Cache {
     /// 「保存されない鍵」の記憶を入れ替えた回数 (テストと状態表示用)。
     pub fn not_stored_rotations(&self) -> u64 {
         self.not_stored.rotations()
+    }
+
+    /// 通算のカウンタの読み口 (`/metrics`・5 秒の標本・試験が読む。T.34.88)。
+    #[inline]
+    pub fn counters(&self) -> &Counters {
+        &self.counters
+    }
+
+    /// 期限切れの表現をそのまま配信した (grace 内・オリジン障害・待ち切れ)。
+    #[inline]
+    pub fn note_stale_served(&self) {
+        self.counters.stale_served.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 同時ミスの合流で、オリジンへ行かずに済んだ。
+    #[inline]
+    pub fn note_coalesced(&self) {
+        self.counters.coalesced.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 接続スレッドの上限に当たって、裏側の再検証を捨てた (T11.3)。
+    #[inline]
+    pub fn note_revalidation_dropped(&self) {
+        self.counters
+            .revalidations_dropped
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 裏側の再検証が終わった (304 での延命と差し替えの両方)。
+    #[inline]
+    pub fn note_background_revalidation(&self) {
+        self.counters
+            .background_revalidations
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// 進行中の取得の数。
@@ -417,7 +428,9 @@ impl Cache {
 
     fn count_evictions(&self, n: usize) {
         if n > 0 {
-            self.evictions.fetch_add(n as u64, Ordering::Relaxed);
+            self.counters
+                .evictions
+                .fetch_add(n as u64, Ordering::Relaxed);
         }
     }
 }

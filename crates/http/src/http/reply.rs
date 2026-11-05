@@ -2,8 +2,6 @@
 //! 壊れた `Content-Length` と頼んでいない 101 の 502、再検証の 304 (保存済みの延命と配信)、
 //! オリジン障害時の stale、HTTP/1.0 へ送れない `Transfer-Encoding`。
 
-use std::sync::atomic::Ordering;
-
 use super::fetch::Fetched;
 use super::lookup::CacheState;
 use super::respond::write_error;
@@ -196,7 +194,7 @@ pub(super) fn examine_head(
             "origin returned {}: serving stale entry",
             status
         );
-        cache.stale_served.fetch_add(1, Ordering::Relaxed);
+        cache.note_stale_served();
         return finished(serve_cached(client, entry, source, "STALE", 0, &x.ctx));
     }
     if cs.lookup_allowed {

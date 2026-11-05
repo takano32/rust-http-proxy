@@ -93,7 +93,7 @@ impl StoreSink<'_> {
             }
         }
         if out.memory || out.disk {
-            cache.stores.fetch_add(1, Ordering::Relaxed);
+            cache.counters.stores.fetch_add(1, Ordering::Relaxed);
             log_debug!(
                 Some(self.conn_id),
                 "cache STORE key={} size={}B ttl={}s validators={} tiers={}{} url={}",

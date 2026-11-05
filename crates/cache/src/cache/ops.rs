@@ -133,8 +133,10 @@ impl Cache {
                 },
                 meta: hit.meta,
             };
-            self.hits_mem.fetch_add(1, Ordering::Relaxed);
-            self.bytes_served.fetch_add(resp.size, Ordering::Relaxed);
+            self.counters.hits_mem.fetch_add(1, Ordering::Relaxed);
+            self.counters
+                .bytes_served
+                .fetch_add(resp.size, Ordering::Relaxed);
             log_debug!(
                 Some(conn_id),
                 "cache L1 {} key={} size={}B age={}s",
@@ -150,7 +152,7 @@ impl Cache {
             return Some((resp, CacheSource::Disk));
         }
 
-        self.misses.fetch_add(1, Ordering::Relaxed);
+        self.counters.misses.fetch_add(1, Ordering::Relaxed);
         log_debug!(Some(conn_id), "cache MISS key={}", key);
         None
     }
@@ -170,8 +172,10 @@ impl Cache {
             self.stream_from_disk(key, reader, meta, size, conn_id)?
         };
         self.disk.touch(key, self.tick());
-        self.hits_disk.fetch_add(1, Ordering::Relaxed);
-        self.bytes_served.fetch_add(size, Ordering::Relaxed);
+        self.counters.hits_disk.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .bytes_served
+            .fetch_add(size, Ordering::Relaxed);
         log_debug!(
             Some(conn_id),
             "cache L2 {} key={} size={}B age={}s{}",
@@ -469,7 +473,7 @@ impl Cache {
         let in_mem = self.mem.refresh(key, stored_at, expires_at, self.tick());
         let on_disk = self.disk.refresh(key, stored_at, expires_at, self.tick());
         if in_mem || on_disk {
-            self.revalidations.fetch_add(1, Ordering::Relaxed);
+            self.counters.revalidations.fetch_add(1, Ordering::Relaxed);
         }
         log_debug!(
             Some(conn_id),
@@ -525,7 +529,7 @@ impl Cache {
         }
         let on_disk = self.rewrite_disk_head(key, url, head, stored_at, expires_at, conn_id);
         if in_mem || on_disk {
-            self.revalidations.fetch_add(1, Ordering::Relaxed);
+            self.counters.revalidations.fetch_add(1, Ordering::Relaxed);
         }
         log_debug!(
             Some(conn_id),

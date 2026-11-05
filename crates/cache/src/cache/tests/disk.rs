@@ -10,7 +10,6 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 #[test]
@@ -39,7 +38,7 @@ fn disk_hit_after_memory_eviction_promotes() {
     assert_eq!(src, CacheSource::Disk);
     assert_eq!(resp.size, 80);
     assert_eq!(resp.read_all().unwrap().len(), 80);
-    assert_eq!(cache.hits_disk.load(Ordering::Relaxed), 1);
+    assert_eq!(cache.counters().hits_disk(), 1);
     // 昇格したので次はメモリヒット
     assert_eq!(cache.get(k1, 4).unwrap().1, CacheSource::Memory);
 }
@@ -56,7 +55,7 @@ fn expired_entry_without_validators_is_a_miss() {
         1,
     );
     assert!(cache.get(key, 1).is_none());
-    assert_eq!(cache.misses.load(Ordering::Relaxed), 1);
+    assert_eq!(cache.counters().misses(), 1);
     assert!(cache.disk_path(key).is_none());
 }
 
@@ -93,7 +92,7 @@ fn stale_entry_with_validators_survives_and_can_be_refreshed() {
         assert!(expires > now);
         let (resp, _) = cache.get(key, 1).unwrap();
         assert!(resp.is_fresh(now));
-        assert_eq!(cache.revalidations.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.counters().revalidations(), 1);
     }
     // 再起動後も (mtime が延びているので) 新鮮なまま復元される
     let cache = Cache::new(cfg.clone());
@@ -147,7 +146,7 @@ fn disk_capacity_is_enforced_by_lru() {
     let (bytes, entries) = cache.disk_usage();
     assert!(bytes <= 700, "disk usage {} exceeds limit", bytes);
     assert!(entries < 10 && entries > 0);
-    assert!(cache.evictions.load(Ordering::Relaxed) > 0);
+    assert!(cache.counters().evictions() > 0);
     // 最古のものからディスク上で消えている (メモリ層には残っていてよい)
     assert!(
         cache
