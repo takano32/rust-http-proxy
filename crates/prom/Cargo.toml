@@ -1,6 +1,6 @@
 [package]
 name = "proxy-prom"
-version = "0.33.0"
+version = "0.34.165"
 edition = "2024"
 
 [lib]

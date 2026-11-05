@@ -1,6 +1,6 @@
 [package]
 name = "proxy-selfbench"
-version = "0.28.37"
+version = "0.34.165"
 edition = "2024"
 
 [lib]

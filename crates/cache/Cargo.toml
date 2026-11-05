@@ -1,6 +1,6 @@
 [package]
 name = "proxy-cache"
-version = "0.32.20"
+version = "0.34.165"
 edition = "2024"
 
 [lib]
