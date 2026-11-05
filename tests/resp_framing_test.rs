@@ -25,109 +25,99 @@ use common::*;
 ///
 /// `Connection: close` を付けて返すので、プロキシはこの接続をプールに戻さない
 /// (次の要求が死んだ接続を掴んで再試行する分の揺れを無くす)。
+///
+/// 応答の表は [`scripted_response`]、1 本の接続の受け答えは [`serve_scripted`] (T.34.123 で割った)。
 fn start_scripted_origin() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
-            thread::spawn(move || {
-                stream
-                    .set_read_timeout(Some(Duration::from_millis(500)))
-                    .unwrap();
-                // 要求の先頭を読み切ってから、パスを見て応答を選ぶ
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 4096];
-                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    match stream.read(&mut chunk) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                    }
-                }
-                let head = String::from_utf8_lossy(&buf).into_owned();
-                let path = head
-                    .lines()
-                    .next()
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .unwrap_or("")
-                    .to_string();
-                let response: Vec<u8> = match path.as_str() {
-                    // 正常: CL 5 と 5 バイト
-                    "/ok" => {
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
-                            .to_vec()
-                    }
-                    // 正常: 重複した CL が同値 (1 本に畳んでよい)
-                    "/dup-same" => b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\
-                          Connection: close\r\n\r\nhello"
-                        .to_vec(),
-                    // 正常: chunked (CL は付かない)
-                    "/chunked" => {
-                        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\
-                          \r\n5\r\nhello\r\n0\r\n\r\n"
-                            .to_vec()
-                    }
-                    // 正常: chunked と CL が両方 (chunked で読む。T.28.1 で変えない形)
-                    "/chunked-cl" => b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\
-                          Content-Length: 3\r\nConnection: close\r\n\
-                          \r\n5\r\nhello\r\n0\r\n\r\n"
-                        .to_vec(),
-                    // 値に UTF-8 として読めないバイト (obs-text) がある (T.28.12 で 502 → 通す)
-                    "/obs-text" => b"HTTP/1.1 200 OK\r\nX-Name: caf\xe9\r\nContent-Length: 5\r\n\
-                          Connection: close\r\n\r\nhello"
-                        .to_vec(),
-                    // 壊れている: 重複した CL が不一致 (5 と 6)
-                    "/dup" => b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\
-                          Connection: close\r\n\r\nhello"
-                        .to_vec(),
-                    // 壊れている: 名乗った 10 バイトに足りない 3 バイトで閉じる
-                    "/short" => {
-                        let mut v =
-                            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nabc"
-                                .to_vec();
-                        let _ = stream.write_all(&v);
-                        let _ = stream.flush();
-                        let _ = stream.shutdown(Shutdown::Both);
-                        v.clear();
-                        v
-                    }
-                    // 壊れている: 手元のバッファ (32 KiB) を超えるので素通しで流す大きさ
-                    "/big-short" => {
-                        let mut v =
-                            b"HTTP/1.1 200 OK\r\nContent-Length: 40000\r\nConnection: close\r\n\r\n"
-                                .to_vec();
-                        v.extend(std::iter::repeat_n(b'x', 1000));
-                        let _ = stream.write_all(&v);
-                        let _ = stream.flush();
-                        let _ = stream.shutdown(Shutdown::Both);
-                        v.clear();
-                        v
-                    }
-                    // 壊れている: 数字でない / 負 / u64 に収まらない桁数
-                    "/bad-num" => {
-                        b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\nConnection: close\r\n\r\nhello"
-                            .to_vec()
-                    }
-                    "/negative" => {
-                        b"HTTP/1.1 200 OK\r\nContent-Length: -1\r\nConnection: close\r\n\r\nhello"
-                            .to_vec()
-                    }
-                    "/huge" => b"HTTP/1.1 200 OK\r\nContent-Length: 999999999999999999999\r\n\
-                          Connection: close\r\n\r\nhello"
-                        .to_vec(),
-                    _ => {
-                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                            .to_vec()
-                    }
-                };
-                if !response.is_empty() {
-                    let _ = stream.write_all(&response);
-                    let _ = stream.flush();
-                    let _ = stream.shutdown(Shutdown::Both);
-                }
-            });
+        for stream in listener.incoming().flatten() {
+            thread::spawn(move || serve_scripted(stream));
         }
     });
     port
+}
+
+/// 要求の先頭を読み切ってから、パスを見て応答を選び、書いて両方向を閉じる。
+///
+/// 名乗った長さに足りない応答 (`/short`・`/big-short`) も、書いたらすぐ閉じるので途中で切れる。
+fn serve_scripted(mut stream: TcpStream) {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let path = request_path(&mut stream);
+    let _ = stream.write_all(&scripted_response(&path));
+    let _ = stream.flush();
+    let _ = stream.shutdown(Shutdown::Both);
+}
+
+/// 要求の先頭 (空行まで) を読み、要求行のパスを返す (読めなければ空)。
+fn request_path(stream: &mut TcpStream) -> String {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
+    let head = String::from_utf8_lossy(&buf).into_owned();
+    head.lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("")
+        .to_string()
+}
+
+/// パスごとの応答の表 (正常な形と、壊れた `Content-Length` の形)。
+fn scripted_response(path: &str) -> Vec<u8> {
+    match path {
+        // 正常: CL 5 と 5 バイト
+        "/ok" => b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".to_vec(),
+        // 正常: 重複した CL が同値 (1 本に畳んでよい)
+        "/dup-same" => b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\
+              Connection: close\r\n\r\nhello"
+            .to_vec(),
+        // 正常: chunked (CL は付かない)
+        "/chunked" => b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\
+              \r\n5\r\nhello\r\n0\r\n\r\n"
+            .to_vec(),
+        // 正常: chunked と CL が両方 (chunked で読む。T.28.1 で変えない形)
+        "/chunked-cl" => b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\
+              Content-Length: 3\r\nConnection: close\r\n\
+              \r\n5\r\nhello\r\n0\r\n\r\n"
+            .to_vec(),
+        // 値に UTF-8 として読めないバイト (obs-text) がある (T.28.12 で 502 → 通す)
+        "/obs-text" => b"HTTP/1.1 200 OK\r\nX-Name: caf\xe9\r\nContent-Length: 5\r\n\
+              Connection: close\r\n\r\nhello"
+            .to_vec(),
+        // 壊れている: 重複した CL が不一致 (5 と 6)
+        "/dup" => b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\
+              Connection: close\r\n\r\nhello"
+            .to_vec(),
+        // 壊れている: 名乗った 10 バイトに足りない 3 バイトで閉じる
+        "/short" => {
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nabc".to_vec()
+        }
+        // 壊れている: 手元のバッファ (32 KiB) を超えるので素通しで流す大きさ
+        "/big-short" => {
+            let mut v =
+                b"HTTP/1.1 200 OK\r\nContent-Length: 40000\r\nConnection: close\r\n\r\n".to_vec();
+            v.extend(std::iter::repeat_n(b'x', 1000));
+            v
+        }
+        // 壊れている: 数字でない / 負 / u64 に収まらない桁数
+        "/bad-num" => {
+            b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\nConnection: close\r\n\r\nhello".to_vec()
+        }
+        "/negative" => {
+            b"HTTP/1.1 200 OK\r\nContent-Length: -1\r\nConnection: close\r\n\r\nhello".to_vec()
+        }
+        "/huge" => b"HTTP/1.1 200 OK\r\nContent-Length: 999999999999999999999\r\n\
+              Connection: close\r\n\r\nhello"
+            .to_vec(),
+        _ => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+    }
 }
 
 /// `/status` のホスト別の行の `errors_by_cause` (10 要素) を数として読む。
