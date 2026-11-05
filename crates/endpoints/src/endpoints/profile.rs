@@ -36,6 +36,31 @@ const HEADER_ROOM: usize = 4096;
 /// `?summary=1` が畳む 3 段 (名前と秒数。`all` = 環に残っている全部)。
 const SPANS: [(&str, u64); 3] = [("5m", 300), ("1h", 3600), ("all", 0)];
 
+/// 1 標本の並び (`/history` の `keys` と同じ役。新しい欄は末尾にだけ足す)。
+const SAMPLE_KEYS: [&str; 12] = [
+    "t",
+    "requests",
+    "cpu_us",
+    "connect",
+    "forward",
+    "threads",
+    "locks",
+    "queue",
+    "threads_top",
+    "run_delay_us",
+    "user_us",
+    "cpu_user_us",
+];
+
+/// 1 枚の頁の位置 (`?n=` `?offset=` と、環の何本のうち何本を出したか)。
+struct Page {
+    total: usize,
+    shown: usize,
+    cut: bool,
+    n: usize,
+    offset: usize,
+}
+
 /// `/profile?res=5|60&n=&offset=&summary=1` を組み立てる。
 pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, String) {
     if ep.lite {
@@ -62,6 +87,21 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     let (rows, shown, total, cut) = p.rows_within_page(res, budget, n, offset);
 
     let mut out = String::with_capacity(rows.len() + HEADER_ROOM);
+    write_head(&mut out, p, res);
+    out.push_str(&rows);
+    let page = Page {
+        total,
+        shown,
+        cut,
+        n,
+        offset,
+    };
+    write_tail(&mut out, p, res, &page);
+    (200, "application/json", out)
+}
+
+/// 標本の前まで: 版・解像度・段階とロックの名前・1 標本の並び (`"samples":[` まで。T.34.95)。
+fn write_head(out: &mut String, p: &Profile, res: usize) {
     // 応答の形の版は**いちばん先頭の鍵** (T14.49)
     out.push_str(SCHEMA_HEAD);
     let _ = write!(
@@ -71,35 +111,37 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
         profile::sample_ms(),
         p.sampler().name()
     );
-    join(&mut out, crate::history::WINDOW_BOUNDS_MS.iter(), |o, b| {
+    join(out, crate::history::WINDOW_BOUNDS_MS.iter(), |o, b| {
         let _ = write!(o, "{}", b);
     });
     out.push_str("],\"stages\":{\"connect\":[");
-    join(&mut out, profile::CONNECT_STAGES.iter(), quoted);
+    join(out, profile::CONNECT_STAGES.iter(), quoted);
     out.push_str("],\"forward\":[");
-    join(&mut out, profile::FORWARD_STAGES.iter(), quoted);
+    join(out, profile::FORWARD_STAGES.iter(), quoted);
     out.push_str("]},\"roles\":[");
-    join(&mut out, profile::ROLES.iter(), quoted);
+    join(out, profile::ROLES.iter(), quoted);
     out.push_str("],\"states\":[");
-    join(&mut out, profile::state_names().iter(), quoted);
+    join(out, profile::state_names().iter(), quoted);
     out.push_str("],\"lock_names\":[");
-    join(&mut out, crate::sync::LOCK_NAMES.iter(), quoted);
+    join(out, crate::sync::LOCK_NAMES.iter(), quoted);
     // 1 標本の並び (`/history` の `keys` と同じ役)
-    out.push_str(
-        "],\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\"locks\",\"queue\",\
-         \"threads_top\",\"run_delay_us\",\"user_us\",\"cpu_user_us\"],\"samples\":[",
-    );
-    out.push_str(&rows);
+    out.push_str("],\"keys\":[");
+    join(out, SAMPLE_KEYS.iter(), quoted);
+    out.push_str("],\"samples\":[");
+}
+
+/// 標本の後ろ: 通算・直近 5 分の要約・頁の位置 (閉じ括弧まで。T.34.95)。
+fn write_tail(out: &mut String, p: &Profile, res: usize, page: &Page) {
     out.push_str("],\"locks_total\":[");
-    join(&mut out, crate::sync::lock_contended().iter(), |o, v| {
+    join(out, crate::sync::lock_contended().iter(), |o, v| {
         let _ = write!(o, "{}", v);
     });
     out.push_str("],\"queue_total\":[");
-    join(&mut out, crate::sync::queue_totals().iter(), |o, v| {
+    join(out, crate::sync::queue_totals().iter(), |o, v| {
         let _ = write!(o, "{}", v);
     });
     out.push_str("],\"unknown_syscalls\":[");
-    join(&mut out, p.unknown_syscalls().iter(), |o, (nr, n)| {
+    join(out, p.unknown_syscalls().iter(), |o, (nr, n)| {
         let _ = write!(o, "[\"sys_{}\",{}]", nr, n);
     });
     // 直近 5 分の要約 (**プロセスの CPU/要求**。§2 の loopback の 41 us/要求 と同じ物差し)
@@ -121,14 +163,13 @@ pub fn profile(ep: &Endpoint<'_>, query: Option<&str>) -> (u16, &'static str, St
     let _ = write!(
         out,
         ",\"count\":{},\"shown\":{},\"truncated\":{},\"n\":{},\"offset\":{},\"next_offset\":{}}}",
-        total,
-        shown,
-        cut,
-        n,
-        offset,
-        next_offset(offset, shown, total)
+        page.total,
+        page.shown,
+        page.cut,
+        page.n,
+        page.offset,
+        next_offset(page.offset, page.shown, page.total)
     );
-    (200, "application/json", out)
 }
 
 /// `?summary=1` — 標本を返さず、5 分 / 1 時間 / 全部の 3 段に畳んだ CPU/要求 だけ (T15.0 (11))。
@@ -197,4 +238,106 @@ fn join<T>(
 
 fn quoted(out: &mut String, s: &&str) {
     let _ = write!(out, "\"{}\"", s);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 1 標本の並び 12 個は、この順のまま (読む側は添字で引く。T.34.95)。
+    #[test]
+    fn the_sample_keys_keep_their_order() {
+        assert_eq!(
+            SAMPLE_KEYS,
+            [
+                "t",
+                "requests",
+                "cpu_us",
+                "connect",
+                "forward",
+                "threads",
+                "locks",
+                "queue",
+                "threads_top",
+                "run_delay_us",
+                "user_us",
+                "cpu_user_us"
+            ]
+        );
+        let m = crate::metrics::Metrics::new();
+        let mut out = String::new();
+        write_head(&mut out, &m.profile, 0);
+        assert!(out.starts_with(SCHEMA_HEAD), "{}", out);
+        // 前は 1 本の文字列で書いていた並びと 1 バイトも違わない
+        assert!(
+            out.ends_with(
+                "],\"keys\":[\"t\",\"requests\",\"cpu_us\",\"connect\",\"forward\",\"threads\",\
+                 \"locks\",\"queue\",\"threads_top\",\"run_delay_us\",\"user_us\",\"cpu_user_us\"],\
+                 \"samples\":["
+            ),
+            "{}",
+            out
+        );
+        for key in [
+            "\"interval_secs\":",
+            "\"bounds_ms\":[",
+            "\"stages\":{\"connect\":[",
+            "],\"forward\":[",
+            "]},\"roles\":[",
+            "],\"states\":[",
+            "],\"lock_names\":[",
+        ] {
+            assert!(out.contains(key), "{} が無い: {}", key, out);
+        }
+    }
+
+    /// 尾は通算・直近 5 分・頁の位置の順で、頁の位置は末尾 (T.34.95)。
+    #[test]
+    fn the_tail_ends_with_the_page_position() {
+        let m = crate::metrics::Metrics::new();
+        let mut out = String::new();
+        let page = Page {
+            total: 3,
+            shown: 2,
+            cut: true,
+            n: 5,
+            offset: 0,
+        };
+        write_tail(&mut out, &m.profile, 0, &page);
+        assert!(out.starts_with("],\"locks_total\":["), "{}", out);
+        let order = [
+            "],\"queue_total\":[",
+            "],\"unknown_syscalls\":[",
+            "],\"recent\":{\"secs\":300,\"requests\":0,\"cpu_us\":0,\"cpu_per_request_us\":null,",
+        ];
+        let mut at = 0;
+        for key in order {
+            let i = out[at..]
+                .find(key)
+                .unwrap_or_else(|| panic!("{} が無い: {}", key, out));
+            at += i + key.len();
+        }
+        assert!(
+            out.ends_with(
+                ",\"count\":3,\"shown\":2,\"truncated\":true,\"n\":5,\"offset\":0,\"next_offset\":2}"
+            ),
+            "{}",
+            out
+        );
+        // 続きが無ければ `null`
+        let mut out = String::new();
+        let last = Page {
+            total: 3,
+            shown: 1,
+            cut: false,
+            n: 1,
+            offset: 2,
+        };
+        write_tail(&mut out, &m.profile, 0, &last);
+        assert!(
+            out.ends_with("\"offset\":2,\"next_offset\":null}"),
+            "{}",
+            out
+        );
+    }
 }
