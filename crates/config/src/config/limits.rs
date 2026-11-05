@@ -15,7 +15,7 @@ const NOFILE_RESERVE: u64 = 64;
 /// `on:<port>` を指定すると 443 に加えてそのポートでも覗く (試験のオリジンを 443 に
 /// 立てられないため。`proxy-tunnel` の `sni::TLS_PORT` と同じ値で、この層は
 /// トンネルのクレートに依存しないので数値で持つ)。
-pub const DEFAULT_PEEK_SNI_PORT: u16 = 443;
+pub(crate) const DEFAULT_PEEK_SNI_PORT: u16 = 443;
 
 /// `PROXY_MAX_CONNS=auto` の頭打ち。
 ///
@@ -23,7 +23,7 @@ pub const DEFAULT_PEEK_SNI_PORT: u16 = 443;
 /// **fd 以外の資源 (スレッド・RSS) の歯止め**でもあるため。T2.1 で入れた既定と同じ値で、
 /// 根拠は T2.3 の実測 (同時 5,000 本のアイドル接続で RSS 198 MiB。動作環境のコンテナは小さい)。
 /// これを超える値が要るなら数値で明示してもらう。
-pub const MAX_CONNS_CAP: usize = 4096;
+pub(crate) const MAX_CONNS_CAP: usize = 4096;
 
 /// `RLIMIT_NOFILE` の soft limit から同時接続数の上限を決める (`PROXY_MAX_CONNS=auto`)。
 ///
@@ -36,7 +36,7 @@ pub fn auto_max_conns(nofile_soft: u64) -> usize {
 }
 
 /// `PROXY_MAX_CONNS` の既定 (= `auto`)。`RLIMIT_NOFILE` が読めない環境では [`MAX_CONNS_CAP`]。
-pub fn default_max_conns() -> usize {
+pub(crate) fn default_max_conns() -> usize {
     #[cfg(target_os = "linux")]
     if let Some(soft) = crate::sys::max_open_files() {
         return auto_max_conns(soft);
@@ -49,16 +49,16 @@ pub fn default_max_conns() -> usize {
 /// `PROXY_MAX_CONNS` の半分を越えたら 1 枚撮る。半分なのは、デプロイ先の山 (218 / 240) が
 /// 上限の 91% まで行った実測 (§2) に対して、**山が立ち始めた時点**を残したいため
 /// (上限の間際まで待つと、T13.2 の追い出しが動いたあとの姿しか撮れない)。
-pub const DEFAULT_BURST_PERCENT: usize = 50;
+pub(crate) const DEFAULT_BURST_PERCENT: usize = 50;
 
 /// 日次の `/snapshot` を残す日数の既定 (`PROXY_SNAPSHOT_DAYS`。T14.34)。
 ///
 /// 1 日 1 ファイル (`/snapshot` と同じ 4 MiB まで) を `$HOME/.rust-http-proxy/snapshots/` に
 /// 残す。30 日なのは `/history` のいちばん粗い解像度 (1 時間 × 30 日) と同じ長さにするため
-pub const DEFAULT_SNAPSHOT_DAYS: usize = 30;
+pub(crate) const DEFAULT_SNAPSHOT_DAYS: usize = 30;
 /// 同じく上限 (書き間違いで `$HOME` を埋めないための歯止め。`proxy-metrics` の
 /// `snapshots::MAX_KEPT_DAYS` と同じ値。この層は計測クレートに依存しないので数値で持つ)。
-pub const MAX_SNAPSHOT_DAYS: usize = 365;
+pub(crate) const MAX_SNAPSHOT_DAYS: usize = 365;
 
 /// 「この本数を**越えた**瞬間に 1 枚撮る」の本数 (T14.6)。
 ///
@@ -68,7 +68,7 @@ pub const MAX_SNAPSHOT_DAYS: usize = 365;
 ///
 /// 割合を当てるのは `max_conns` だけで、**T13.2 の「上限の外の枠 4 本」は含めない**
 /// (自分宛ての `/status` を受けるための枠なので、山の大きさの物差しに混ぜない)。
-pub fn burst_threshold(max_conns: usize, percent: usize) -> usize {
+pub(crate) fn burst_threshold(max_conns: usize, percent: usize) -> usize {
     if max_conns == 0 || percent == 0 {
         return usize::MAX;
     }
@@ -123,7 +123,7 @@ pub(super) fn max_threads_for(cores: usize, max_conns: usize) -> usize {
 ///
 /// 認証なしの開放プロキシなので、1 本の接続を無限に使い回されないところで切る。
 /// 上限の要求は普通に応答し、その応答に `Connection: close` を付けてから閉じる。
-pub const DEFAULT_MAX_REQUESTS_PER_CONN: usize = 1000;
+pub(crate) const DEFAULT_MAX_REQUESTS_PER_CONN: usize = 1000;
 
 #[cfg(test)]
 mod tests {

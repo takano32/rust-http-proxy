@@ -93,7 +93,7 @@ impl Config {
     }
 
     /// キャッシュ設定を差し替える。
-    pub fn with_cache(mut self, cache: CacheConfig) -> Self {
+    pub(crate) fn with_cache(mut self, cache: CacheConfig) -> Self {
         self.cache = cache;
         self
     }

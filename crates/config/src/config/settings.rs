@@ -10,7 +10,7 @@ use crate::cache::{DiskQuota, Limit, MIB};
 
 impl Config {
     /// `PROXY_TCP_KEEPALIVE` の効いている値を `.env` に書き戻せる形で返す (T14.52)。
-    pub fn tcp_keepalive_spec(&self) -> String {
+    pub(crate) fn tcp_keepalive_spec(&self) -> String {
         TcpKeepalive::spec(self.tcp_keepalive)
     }
 

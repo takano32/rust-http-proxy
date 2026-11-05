@@ -25,9 +25,9 @@ pub struct UnknownVar {
 }
 
 /// 覚えておく値の長さの上限 (`/status` が長い値で膨らまないように)。
-pub const INVALID_VALUE_CAP: usize = 64;
+pub(crate) const INVALID_VALUE_CAP: usize = 64;
 /// 「打ち間違いかも」と候補を添える編集距離の上限。
-pub const SUGGEST_DISTANCE: usize = 2;
+pub(crate) const SUGGEST_DISTANCE: usize = 2;
 
 /// 設定を読んだときに見つけた**読めない値**と**知らない名前** (T.28.6)。
 ///

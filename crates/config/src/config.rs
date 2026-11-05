@@ -34,20 +34,21 @@ mod source;
 mod timeouts;
 
 use cache_sources::mark_cache_sources;
-pub use keepalive::{DEFAULT_TCP_KEEPALIVE, TcpKeepalive};
-pub use limits::{
+pub(crate) use keepalive::DEFAULT_TCP_KEEPALIVE;
+pub use keepalive::TcpKeepalive;
+pub(crate) use limits::{
     DEFAULT_BURST_PERCENT, DEFAULT_MAX_REQUESTS_PER_CONN, DEFAULT_PEEK_SNI_PORT,
-    DEFAULT_SNAPSHOT_DAYS, FDS_PER_CONN, MAX_CONNS_CAP, MAX_SNAPSHOT_DAYS, auto_max_conns,
-    burst_threshold, default_max_conns, default_max_threads,
+    DEFAULT_SNAPSHOT_DAYS, MAX_SNAPSHOT_DAYS, burst_threshold, default_max_conns,
 };
-pub use parse::parse_bind_list;
-pub use problems::{EnvProblems, INVALID_VALUE_CAP, InvalidVar, SUGGEST_DISTANCE, UnknownVar};
+pub use limits::{FDS_PER_CONN, auto_max_conns, default_max_threads};
+pub(crate) use parse::parse_bind_list;
+pub use problems::{EnvProblems, InvalidVar, UnknownVar};
 pub use slo::{DEFAULT_SLO, Slo};
 pub use source::{Setting, Source, Sources};
-pub use timeouts::{
-    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HEADER_TIMEOUT, connect_timeout_for, first_read_timeout,
-    header_timeout_for, parse_stagger_ms,
-};
+#[cfg(test)]
+use timeouts::{DEFAULT_CONNECT_TIMEOUT, DEFAULT_HEADER_TIMEOUT};
+pub use timeouts::{connect_timeout_for, first_read_timeout};
+pub(crate) use timeouts::{header_timeout_for, parse_stagger_ms};
 
 #[derive(Debug, Clone)]
 pub struct Config {

@@ -42,7 +42,7 @@ impl Slo {
     }
 
     /// [`Slo::parse`] と同じで、飛ばした項目 (空の項目は除く) も返す (WARN に使う。T.28.31)。
-    pub fn parse_skipping(spec: &str) -> (Slo, Vec<&str>) {
+    pub(crate) fn parse_skipping(spec: &str) -> (Slo, Vec<&str>) {
         let (mut out, mut skipped) = (DEFAULT_SLO, Vec::new());
         for item in spec.split(',').filter(|i| !i.trim().is_empty()) {
             let Some((k, v)) = item.split_once('=') else {

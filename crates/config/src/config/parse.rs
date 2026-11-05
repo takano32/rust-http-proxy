@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::str::FromStr;
 
 /// `PROXY_BIND` のカンマ区切りアドレス (`::`, `0.0.0.0`, `127.0.0.1`, `[::1]`)。空なら自動。
-pub fn parse_bind_list(s: &str) -> Result<Vec<IpAddr>, String> {
+pub(crate) fn parse_bind_list(s: &str) -> Result<Vec<IpAddr>, String> {
     s.split(',')
         .map(str::trim)
         .filter(|item| !item.is_empty())

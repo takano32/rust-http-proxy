@@ -20,7 +20,7 @@ use std::time::Duration;
 /// **5 秒 → 3 秒 (2026-10-26、T.28.43。利用者の決定 6)**。タスク 28 の洗い出しの見積もりで、
 /// 縮む待ちは 4.6〜9.0 分/日、落とす成功は 0〜0.23 本/日 (T23.3 の「1 日 1 本未満」を満たす)。
 /// forward の確立も T.28.8 からこの値を使う。戻す条件は T23.3 と同じ (切った成功が 1 日 1 本以上)。
-pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// 要求行とヘッダーを読み終えるまでの締め切りの既定 (`PROXY_HEADER_TIMEOUT_SECS`。T.28.0)。
 ///
@@ -31,7 +31,7 @@ pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// 落ちた塊の再送 (RTO 0.2〜1 秒から倍々) が 3〜4 回重なっても間に合う。一方、沈黙と
 /// 1 バイトずつの trickle (slowloris) が 1 本でワーカーと接続枠を握れる時間は 30 秒
 /// (`PROXY_TIMEOUT_SECS`) から 10 秒に縮む。
-pub const DEFAULT_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const DEFAULT_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 要求行とヘッダーの締め切りの**実効値を決める唯一の場所** (T.28.0。[`connect_timeout_for`] と同じ形)。
 ///
@@ -41,7 +41,7 @@ pub const DEFAULT_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 ///   10 秒より短ければ、その値に合わせる (= `min(10, timeout)`)。
 /// - `timeout` が `0` (無期限。T10.6) でも、未設定なら **10 秒** (黙った接続を無期限に
 ///   置いておく理由は無い。置いておきたければ `0` と明示する)。
-pub fn header_timeout_for(timeout: Duration, explicit: Option<Duration>) -> Duration {
+pub(crate) fn header_timeout_for(timeout: Duration, explicit: Option<Duration>) -> Duration {
     match explicit {
         Some(d) => d,
         None if timeout.is_zero() => DEFAULT_HEADER_TIMEOUT,
@@ -64,7 +64,7 @@ pub fn first_read_timeout(timeout: Duration, header: Duration) -> Duration {
 
 /// `PROXY_HE_STAGGER_MS` の値を読む (T17.6)。数でないか範囲 ([`crate::net::STAGGER_RANGE_MS`]) の
 /// 外なら `None` (呼ぶ側が既定に戻して warn する)。
-pub fn parse_stagger_ms(v: &str) -> Option<Duration> {
+pub(crate) fn parse_stagger_ms(v: &str) -> Option<Duration> {
     v.trim()
         .parse::<u64>()
         .ok()

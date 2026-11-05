@@ -5,7 +5,7 @@
 /// 60 秒無通信で探りを出し、10 秒おきに 3 回返事が無ければ**約 90 秒**で
 /// `ETIMEDOUT` にする。`PROXY_TUNNEL_IDLE_SECS` (300 秒) より十分短いので、
 /// 「本当に暇」で閉じる前に「相手が消えた」を見分けられる。
-pub const DEFAULT_TCP_KEEPALIVE: TcpKeepalive = TcpKeepalive {
+pub(crate) const DEFAULT_TCP_KEEPALIVE: TcpKeepalive = TcpKeepalive {
     idle_secs: 60,
     intvl_secs: 10,
     count: 3,
