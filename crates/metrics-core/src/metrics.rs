@@ -30,6 +30,9 @@ pub use crate::clients::{
 // (`crate::metrics::set_canary_status` / `CANARY_STATUS_UNSET`)。
 mod status;
 
+// `/status` の `memory` (見積もり・実測・描画。T.34.32)
+mod memory;
+
 pub use status::{CANARY_STATUS_UNSET, set_canary_status};
 
 // `/slo` の `error_rate` が外す「1 つの宛先に偏ったエラー」の数 (T.30.4)
