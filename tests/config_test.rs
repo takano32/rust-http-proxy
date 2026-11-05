@@ -7,23 +7,9 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
+use std::process::Command;
 
-use common::{endpoint_json, status_json, wait_until};
-
-/// 落ちても子プロセスを残さない番人。
-struct KillOnDrop(Child);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
+use common::{ProxyProcess, endpoint_json, status_json, wait_until};
 
 /// `$HOME` を一時ディレクトリにしてプロキシを起こす。`env_file` はそこに置く `.env` の中身、
 /// `vars` は**実際の環境変数**として渡すもの (出どころの `env` と `env_file` を作り分ける)。
@@ -32,7 +18,7 @@ fn start_proxy(
     tag: &str,
     env_file: &str,
     vars: &[(&str, &str)],
-) -> (KillOnDrop, u16, std::path::PathBuf) {
+) -> (ProxyProcess, u16, std::path::PathBuf) {
     let (child, port, dir, _) = start_proxy_logged(tag, env_file, vars);
     (child, port, dir)
 }
@@ -42,47 +28,20 @@ fn start_proxy_logged(
     tag: &str,
     env_file: &str,
     vars: &[(&str, &str)],
-) -> (KillOnDrop, u16, std::path::PathBuf, Vec<String>) {
+) -> (ProxyProcess, u16, std::path::PathBuf, Vec<String>) {
     let dir = std::env::temp_dir().join(format!("rhp-t1415-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(".env"), env_file).unwrap();
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"));
-    cmd.env("HOME", &dir);
+    // 子プロセスは落ちても残らない (`ProxyProcess` の番人)。起動ログは標準出力へ出るので、
+    // 待ち受けの行までに出た行を `startup_log` で受け取る
+    let mut builder = ProxyProcess::builder(&dir);
     for (k, v) in vars {
-        cmd.env(k, v);
+        builder = builder.env(k, v);
     }
-    let mut child = KillOnDrop(
-        cmd.stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("could not start the proxy binary"),
-    );
-    // 起動ログは標準出力へ出る。読み続けないとパイプが詰まるので専用スレッドで引き取る
-    let stdout = child.0.stdout.take().expect("piped stdout");
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                return;
-            }
-        }
-    });
-    let mut port = None;
-    let mut log = Vec::new();
-    while let Ok(line) = rx.recv_timeout(Duration::from_secs(20)) {
-        if let Some((_, rest)) = line.split_once("listening on ") {
-            port = rest
-                .split_whitespace()
-                .next()
-                .and_then(|a| a.rsplit(':').next())
-                .and_then(|p| p.parse::<u16>().ok());
-            break;
-        }
-        log.push(line);
-    }
-    let port = port.expect("the proxy did not log its listening port");
+    let child = builder.start();
+    let (port, log) = (child.port, child.startup_log.clone());
     (child, port, dir, log)
 }
 

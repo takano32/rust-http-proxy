@@ -16,25 +16,13 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
+use std::process::Command;
 use std::time::Duration;
 
-use common::raw_get;
-
-struct KillOnDrop(Child);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
+use common::{ProxyProcess, raw_get};
 
 /// `.env` を置いてプロキシを起こし、`(子, 待ち受けポート, 起動の 1 行)` を返す。
-fn start_proxy(dir: &std::path::Path, extra: &str) -> (KillOnDrop, u16, String) {
+fn start_proxy(dir: &std::path::Path, extra: &str) -> (ProxyProcess, u16, String) {
     // 待ち受けを 1 本にする (`ss -ltn` の行を取り違えないため)。ログは info で起動行を読む
     std::fs::write(
         dir.join(".env"),
@@ -44,42 +32,11 @@ fn start_proxy(dir: &std::path::Path, extra: &str) -> (KillOnDrop, u16, String) 
         ),
     )
     .unwrap();
-    let mut child = KillOnDrop(
-        Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
-            .env("HOME", dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("could not start the proxy binary"),
-    );
-    let stdout = child.0.stdout.take().expect("piped stdout");
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                return;
-            }
-        }
-    });
-    let mut port = None;
-    let mut banner = String::new();
-    while let Ok(line) = rx.recv_timeout(Duration::from_secs(30)) {
-        if let Some(rest) = line.split_once("listening on ") {
-            port = rest
-                .1
-                .split_whitespace()
-                .next()
-                .and_then(|a| a.rsplit(':').next())
-                .and_then(|p| p.parse::<u16>().ok());
-            banner = line;
-            break;
-        }
-    }
-    (
-        child,
-        port.expect("the proxy did not log its listening port"),
-        banner,
-    )
+    let proxy = ProxyProcess::builder(dir)
+        .line_wait(Duration::from_secs(30))
+        .start();
+    let (port, banner) = (proxy.port, proxy.banner.clone());
+    (proxy, port, banner)
 }
 
 /// `ss -ltn` の `Send-Q` (= `listen(2)` に渡した backlog)。`ss` が無ければ `None`。

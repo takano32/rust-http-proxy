@@ -13,14 +13,44 @@ pub struct ProxyProcess {
     child: std::process::Child,
     pub port: u16,
     lines: std::sync::mpsc::Receiver<String>,
+    /// 待ち受けの行より前に出た起動ログの行 (`state file ...` や設定の WARN。T.34.106)
+    pub startup_log: Vec<String>,
+    /// 待ち受けの行そのもの (`rust-http-proxy <版> listening on ... backlog N ...`)
+    pub banner: String,
 }
 
-impl ProxyProcess {
-    /// `HOME=home` で起動し、待ち受けポートが分かるまで待つ。`home/.env` は呼ぶ側が先に置く。
-    pub fn start(home: &std::path::Path) -> ProxyProcess {
+/// [`ProxyProcess::builder`] の組み立て (T.34.106)。`HOME` のほかに渡す環境変数と、
+/// 起動ログの 1 行を待つ長さを持つ。
+pub struct ProxyBuilder {
+    home: std::path::PathBuf,
+    vars: Vec<(String, String)>,
+    line_wait: Duration,
+}
+
+impl ProxyBuilder {
+    /// **実際の環境変数**として渡す (`.env` とは出どころが違う)。
+    pub fn env(mut self, key: &str, value: &str) -> ProxyBuilder {
+        self.vars.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    /// 起動ログの 1 行を待つ長さ (既定 20 秒)。
+    pub fn line_wait(mut self, wait: Duration) -> ProxyBuilder {
+        self.line_wait = wait;
+        self
+    }
+
+    /// 起動し、待ち受けポートが分かるまで待つ。`home/.env` は呼ぶ側が先に置く。
+    ///
+    /// 子プロセスは最初に番人へ入れるので、待ち受けの行が出ずに落ちても残らない。
+    pub fn start(self) -> ProxyProcess {
         use std::io::BufRead;
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
-            .env("HOME", home)
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"));
+        cmd.env("HOME", &self.home);
+        for (k, v) in &self.vars {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -37,23 +67,59 @@ impl ProxyProcess {
                 }
             }
         });
+        let mut proc = ProxyProcess {
+            child,
+            port: 0,
+            lines: rx,
+            startup_log: Vec::new(),
+            banner: String::new(),
+        };
         let mut port = None;
-        while let Ok(line) = rx.recv_timeout(Duration::from_secs(20)) {
+        while let Ok(line) = proc.lines.recv_timeout(self.line_wait) {
             if let Some((_, rest)) = line.split_once("listening on ") {
                 port = rest
                     .split_whitespace()
                     .next()
                     .and_then(|a| a.rsplit(':').next())
                     .and_then(|p| p.parse::<u16>().ok());
+                proc.banner = line;
                 break;
             }
+            proc.startup_log.push(line);
         }
-        let port = port.expect("the proxy did not log its listening port");
-        ProxyProcess {
-            child,
-            port,
-            lines: rx,
+        proc.port = port.expect("the proxy did not log its listening port");
+        proc
+    }
+}
+
+impl ProxyProcess {
+    /// `HOME=home` で起動し、待ち受けポートが分かるまで待つ。`home/.env` は呼ぶ側が先に置く。
+    pub fn start(home: &std::path::Path) -> ProxyProcess {
+        ProxyProcess::builder(home).start()
+    }
+
+    /// 環境変数や待つ長さを足して起動するための組み立て (T.34.106)。
+    pub fn builder(home: &std::path::Path) -> ProxyBuilder {
+        ProxyBuilder {
+            home: home.to_path_buf(),
+            vars: Vec::new(),
+            line_wait: Duration::from_secs(20),
         }
+    }
+
+    /// 子プロセスの pid (`/proc/<pid>/fd` を数える試験用)。
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// 起動ログのうち `needle` を含む**最後の**行 (無ければ空)。
+    pub fn startup_line(&self, needle: &str) -> String {
+        self.startup_log
+            .iter()
+            .rev()
+            .find(|l| l.contains(needle))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// **停止シグナル (SIGTERM) を送って終わるまで待つ** (T14.9)。

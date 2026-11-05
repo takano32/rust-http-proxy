@@ -10,13 +10,9 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
-use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
 
 use common::*;
@@ -219,16 +215,6 @@ fn canary_obj_series(history: &str) -> String {
     panic!("canary の括弧が閉じていない: {}", rest);
 }
 
-/// 落ちても子プロセスを残さない番人 (`reload_test.rs` と同じ形)。
-struct KillOnDrop(Child);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 /// テスト用の `.env` を書く (変えるのは `PROXY_CANARY` だけ)。
 fn write_env(dir: &std::path::Path, canary: &str) {
     std::fs::write(
@@ -258,36 +244,9 @@ fn test_integration_the_env_file_turns_the_canary_on_and_off() {
     std::fs::create_dir_all(&dir).unwrap();
     write_env(&dir, &target);
 
-    let mut child = KillOnDrop(
-        Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
-            .env("HOME", &dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("could not start the proxy binary"),
-    );
-    let stdout = child.0.stdout.take().expect("piped stdout");
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                return;
-            }
-        }
-    });
-    let mut port = None;
-    while let Ok(line) = rx.recv_timeout(Duration::from_secs(20)) {
-        if let Some(rest) = line.split_once("listening on ") {
-            port = rest
-                .1
-                .split_whitespace()
-                .next()
-                .and_then(|a| a.rsplit(':').next())
-                .and_then(|p| p.parse::<u16>().ok());
-            break;
-        }
-    }
-    let port = port.expect("the proxy did not log its listening port");
+    // 落ちても子プロセスを残さない番人 (`ProxyProcess` が落とすときに kill する)
+    let child = ProxyProcess::start(&dir);
+    let port = child.port;
 
     // 2 周期ぶん繋いだら、`/status` と `/history` に値が出ている
     wait_until(

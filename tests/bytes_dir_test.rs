@@ -9,10 +9,8 @@
 //! 応答が下りに入ること、(c) **T14.26 より前に書かれた `.rrd`** (`HostStats` が 53 項目) から
 //! 起動しても落ちず、新しい 2 欄が 0 で読み戻ること (T14.5 と同じ流儀で実バイナリを起こす)。
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -197,15 +195,6 @@ fn test_integration_a_forwarded_request_counts_its_body_as_upload() {
     assert!(down > 0, "応答のバイトが 0: {}", row);
 }
 
-struct KillOnDrop(Child);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 /// T14.26 より前の形 (`HostStats` が 53 項目) で書かれた行を置いて起動しても
 /// 落ちず、新しい 2 欄 (向き別のバイト) が 0 で読み戻ること。
 ///
@@ -261,40 +250,11 @@ fn test_integration_a_pre_direction_state_file_restores_with_zero_direction_byte
         "SERVER_PORT=0\nPROXY_BIND=127.0.0.1\nPROXY_LOG_LEVEL=info\nPROXY_CACHE_RESERVE=off\n",
     )
     .unwrap();
-    let mut child = KillOnDrop(
-        Command::new(env!("CARGO_BIN_EXE_rust-http-proxy"))
-            .env("HOME", &dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("could not start the proxy binary"),
-    );
-    let stdout = child.0.stdout.take().expect("piped stdout");
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                return;
-            }
-        }
-    });
-    let mut port = None;
-    let mut state_line = String::new();
-    while let Ok(line) = rx.recv_timeout(Duration::from_secs(30)) {
-        if line.contains("state file ") {
-            state_line = line.clone();
-        }
-        if let Some(rest) = line.split_once("listening on ") {
-            port = rest
-                .1
-                .split_whitespace()
-                .next()
-                .and_then(|a| a.rsplit(':').next())
-                .and_then(|p| p.parse::<u16>().ok());
-            break;
-        }
-    }
-    let port = port.expect("the proxy did not log its listening port");
+    let child = ProxyProcess::builder(&dir)
+        .line_wait(Duration::from_secs(30))
+        .start();
+    let port = child.port;
+    let state_line = child.startup_line("state file ");
     assert!(
         !state_line.contains("created"),
         "版は上げていないので作り直さないはず: {:?}",
