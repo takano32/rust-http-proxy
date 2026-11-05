@@ -169,7 +169,7 @@ impl std::fmt::Display for ClientBodyError {
 
 impl std::error::Error for ClientBodyError {}
 
-fn client_body_error(e: io::Error) -> io::Error {
+pub(super) fn client_body_error(e: io::Error) -> io::Error {
     io::Error::new(e.kind(), ClientBodyError(e))
 }
 
