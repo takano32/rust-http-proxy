@@ -90,6 +90,18 @@ pub struct Setting {
     pub source: Source,
 }
 
+/// [`Setting::value`] (JSON の値) を人が読む印字の形にする: 文字列の引用符は、中身が空でなく `\` を
+/// 含まないときだけ外す (空は `""` のまま残して「空」と分かるようにする)。
+///
+/// `--check` の一覧と `/events` の `reload` の前後の値が同じこれを通る (T.34.153。前は `/events` の側だけ
+/// 空の中身でも外していた)。
+pub fn printable_value(value: &str) -> String {
+    match value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+        Some(inner) if !inner.is_empty() && !inner.contains('\\') => inner.to_string(),
+        _ => value.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

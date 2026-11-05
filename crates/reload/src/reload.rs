@@ -198,11 +198,8 @@ fn changed_values(changed: &[String], old: &Config, fresh: &Config) -> String {
     let value = |all: &[crate::config::Setting], key: &str| {
         all.iter().find(|s| s.key == key).map(|s| {
             // JSON の値をそのまま出すと文字列に引用符が付くので、単純なものは外す
-            // (`--check` の印字と同じ扱い)
-            match s.value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
-                Some(inner) if !inner.contains('\\') => inner.to_string(),
-                _ => s.value.clone(),
-            }
+            // (`--check` の印字と同じ関数。T.34.153: 前はここだけ空の中身も外し、`KEY  → x` になっていた)
+            crate::config::printable_value(&s.value)
         })
     };
     changed

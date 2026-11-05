@@ -44,7 +44,7 @@ pub use limits::{FDS_PER_CONN, auto_max_conns, default_max_threads};
 pub(crate) use parse::parse_bind_list;
 pub use problems::{EnvProblems, InvalidVar, UnknownVar};
 pub use slo::{DEFAULT_SLO, Slo};
-pub use source::{Setting, Source, Sources};
+pub use source::{Setting, Source, Sources, printable_value};
 #[cfg(test)]
 use timeouts::{DEFAULT_CONNECT_TIMEOUT, DEFAULT_HEADER_TIMEOUT};
 pub use timeouts::{connect_timeout_for, first_read_timeout};

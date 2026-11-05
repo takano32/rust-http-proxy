@@ -174,12 +174,11 @@ fn flag_line(mark: &str, name: &str, text: &str) -> String {
 
 /// `Setting::value` (JSON の値) を印字の形にする: 文字列の引用符は、中身が空でなく `\` を
 /// 含まないときだけ外す。
+///
+/// 中身は `config::printable_value` (`/events` の `reload` の前後の値と同じ外し方。T.34.153 で 1 つにした)。
 fn setting_value_for_print(value: &str) -> String {
     // JSON の値をそのまま出すと文字列に引用符が付くので、単純なものは外す
-    match value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
-        Some(inner) if !inner.is_empty() && !inner.contains('\\') => inner.to_string(),
-        _ => value.to_string(),
-    }
+    proxy_server::config::printable_value(value)
 }
 
 /// `  source    name                           value` の 1 行。

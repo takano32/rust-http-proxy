@@ -137,3 +137,22 @@ fn merge_live_with_nothing_changed_applies_nothing() {
     assert!(names(&applied).is_empty());
     assert_eq!(next.timeout, base().timeout);
 }
+
+/// **T.34.153**: `/events` の `reload` の前後の値は `--check` と同じ外し方 (空の文字列は `""` のまま。
+/// 前はここだけ外していて `PROXY_ALLOW_CLIENTS  → 127.0.0.1` と空白が 2 つ並んだ)。
+#[test]
+fn changed_values_unquote_like_the_check_listing() {
+    let old = base();
+    let mut fresh = base();
+    fresh.allow_clients = crate::acl::ClientAcl::parse("127.0.0.1");
+    fresh.timeout = Duration::from_secs(9);
+    let changed = [
+        "PROXY_ALLOW_CLIENTS".to_string(),
+        "PROXY_TIMEOUT_SECS".to_string(),
+        "PROXY_NO_SUCH_KEY_T1415".to_string(),
+    ];
+    assert_eq!(
+        super::changed_values(&changed, &old, &fresh),
+        "PROXY_ALLOW_CLIENTS \"\" \u{2192} 127.0.0.1, PROXY_TIMEOUT_SECS 5 \u{2192} 9, PROXY_NO_SUCH_KEY_T1415"
+    );
+}
