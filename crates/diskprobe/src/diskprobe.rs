@@ -22,6 +22,10 @@ use std::path::{Path, PathBuf};
 use crate::config::MIB;
 use crate::{log_info, log_warn};
 
+// 状態ファイルの中身と、前回の終わり方から学ぶ判断 (T.34.63)
+mod state;
+use state::{Note, Saved, learn};
+
 /// 最初の上限 (実データの上限でもある)。
 pub const START: u64 = 512 * MIB;
 /// fast モードで 1 プローブごとに伸ばす量。
@@ -77,158 +81,58 @@ pub struct DiskProbe {
 
 impl DiskProbe {
     /// 状態ファイルを読み、前回の終わり方から割当を学習する。
+    ///
+    /// 段取り (T.34.63 で割った): 読む ([`Saved::parse`]) → 判断 ([`learn`]) → ログ → 保存。
+    /// 状態ファイルが無いときだけは前と同じく、保存してからログを出す (書けなかったときの WARN が先)。
     pub fn load(path: &Path, now: u64) -> Self {
-        let mut p = Self {
+        let saved = fs::read_to_string(path).ok().map(|t| Saved::parse(&t));
+        let (state, note) = learn(saved.as_ref(), now);
+        let p = Self::from_saved(path, state);
+        if note == Note::Fresh {
+            p.save();
+            note.log();
+        } else {
+            note.log();
+            p.save();
+        }
+        p
+    }
+
+    /// 状態ファイルの 11 項目から組む (fast の伸び検知は 0 から)。
+    fn from_saved(path: &Path, s: Saved) -> Self {
+        Self {
             path: path.to_path_buf(),
-            mode: Mode::Fast,
-            confirmed: START,
-            cap: START,
-            raised_at: now,
-            started_at: now,
-            alive: now,
-            learned: None,
-            learned_at: 0,
-            early_stops: 0,
-            found: None,
-            found_at: 0,
+            mode: s.mode,
+            confirmed: s.confirmed,
+            cap: s.cap,
+            raised_at: s.raised_at,
+            started_at: s.started_at,
+            alive: s.alive,
+            learned: s.learned,
+            learned_at: s.learned_at,
+            early_stops: s.early_stops,
+            found: s.found,
+            found_at: s.found_at,
             prev_owned: 0,
             stalled: 0,
-        };
-        let Ok(text) = fs::read_to_string(path) else {
-            p.save();
-            log_info!(
-                None,
-                "disk allocation unknown: probing it by reserving {} MiB at a time until the filesystem refuses (data limited to {} MiB until confirmed after {} min)",
-                FAST_STEP / MIB,
-                START / MIB,
-                CONFIRM_SECS / 60
-            );
-            return p;
-        };
-        let mut saved = p.clone();
-        saved.raised_at = 0;
-        saved.started_at = 0;
-        saved.alive = 0;
-        saved.confirmed = 0;
-        for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else {
-                continue;
-            };
-            let v = v.trim();
-            if k.trim() == "mode" {
-                saved.mode = if v == "slow" { Mode::Slow } else { Mode::Fast };
-                continue;
-            }
-            let Ok(n) = v.parse::<u64>() else {
-                continue;
-            };
-            match k.trim() {
-                "confirmed" => saved.confirmed = n,
-                "cap" => saved.cap = n,
-                "raised_at" => saved.raised_at = n,
-                "started_at" => saved.started_at = n,
-                "alive" => saved.alive = n,
-                "learned" => saved.learned = (n > 0).then_some(n),
-                "learned_at" => saved.learned_at = n,
-                "early_stops" => saved.early_stops = n,
-                "found" => saved.found = (n > 0).then_some(n),
-                "found_at" => saved.found_at = n,
-                _ => {}
-            }
         }
-        let stopped_early = saved.started_at > 0
-            && saved.alive >= saved.started_at
-            && saved.alive.saturating_sub(saved.started_at) < CONFIRM_SECS;
-        p.mode = saved.mode;
+    }
 
-        if let Some(l) = saved.learned
-            && now.saturating_sub(saved.learned_at) < RELEARN_SECS
-        {
-            p.learned = Some(l);
-            p.learned_at = saved.learned_at;
-            p.confirmed = l;
-            p.cap = l;
-            log_info!(
-                None,
-                "disk allocation learned earlier: {} MiB (re-probed after {} days)",
-                l / MIB,
-                RELEARN_SECS / 86_400
-            );
-        } else if saved.mode == Mode::Fast {
-            if stopped_early {
-                // fast で伸ばしている間に止められた = Wings がディレクトリサイズで止めるホスト。
-                // 以後は緩やかな探索に切り替える
-                p.mode = Mode::Slow;
-                p.confirmed = 0;
-                p.cap = START;
-                log_warn!(
-                    None,
-                    "the server was stopped {} s after start while reserving disk quickly: the allocation is enforced by Wings, switching to the gradual probe from {} MiB",
-                    saved.alive.saturating_sub(saved.started_at),
-                    START / MIB
-                );
-            } else {
-                log_info!(
-                    None,
-                    "disk allocation unknown: probing it by reserving {} MiB at a time until the filesystem refuses",
-                    FAST_STEP / MIB
-                );
-            }
-        } else {
-            p.confirmed = saved.confirmed;
-            p.cap = saved.cap.max(FLOOR);
-            let stopped_after_raise = saved.cap > saved.confirmed
-                && saved.confirmed >= START
-                && saved.raised_at > 0
-                && saved.alive >= saved.raised_at
-                && saved.alive.saturating_sub(saved.raised_at) < CONFIRM_SECS;
-            if stopped_after_raise {
-                p.learned = Some(saved.confirmed);
-                p.learned_at = now;
-                p.confirmed = saved.confirmed;
-                p.cap = saved.confirmed;
-                log_warn!(
-                    None,
-                    "disk allocation learned: {} MiB (the server was stopped {} s after raising the cache to {} MiB)",
-                    saved.confirmed / MIB,
-                    saved.alive.saturating_sub(saved.raised_at),
-                    saved.cap / MIB
-                );
-            } else if stopped_early && saved.confirmed < START {
-                p.early_stops = saved.early_stops + 1;
-                if p.early_stops >= 2 {
-                    p.learned = Some(FLOOR);
-                    p.learned_at = now;
-                    p.confirmed = FLOOR;
-                    p.cap = FLOOR;
-                    log_warn!(
-                        None,
-                        "disk allocation seems smaller than {} MiB (stopped within {} min of start twice): using {} MiB; set SERVER_DISK in $HOME/.env if this is wrong",
-                        START / MIB,
-                        CONFIRM_SECS / 60,
-                        FLOOR / MIB
-                    );
-                } else {
-                    p.confirmed = 0;
-                    p.cap = START;
-                    log_info!(
-                        None,
-                        "disk allocation unknown: probing gradually again from {} MiB (previous run ended early)",
-                        START / MIB
-                    );
-                }
-            } else {
-                p.confirmed = saved.cap.max(saved.confirmed).max(FLOOR);
-                p.cap = p.confirmed;
-                log_info!(
-                    None,
-                    "disk allocation unknown: resuming the gradual probe at {} MiB",
-                    p.cap / MIB
-                );
-            }
+    /// 状態ファイルに書く 11 項目。
+    fn saved(&self) -> Saved {
+        Saved {
+            mode: self.mode,
+            confirmed: self.confirmed,
+            cap: self.cap,
+            raised_at: self.raised_at,
+            started_at: self.started_at,
+            alive: self.alive,
+            learned: self.learned,
+            learned_at: self.learned_at,
+            early_stops: self.early_stops,
+            found: self.found,
+            found_at: self.found_at,
         }
-        p.save();
-        p
     }
 
     pub fn mode(&self) -> Mode {
@@ -257,6 +161,9 @@ impl DiskProbe {
     /// 毎プローブ呼ぶ。`entries` は実データ、`owned` は実データ + バラスト、`fill_failed` は
     /// 直前のバラスト伸長が (ENOSPC 等で) 失敗したか。戻り値は (実データの上限, 全体の上限)。
     pub fn tick(&mut self, now: u64, entries: u64, owned: u64, fill_failed: bool) -> (u64, u64) {
+        // `entries` は今どの段でも使っていない (T.34.63 で使っていなかった `tick_slow` の引数を外した)。
+        // 公開の形は呼ぶ側 (cache) に合わせて残す
+        let _ = entries;
         let mut changed = false;
         if now.saturating_sub(self.alive) >= HEARTBEAT_SECS {
             self.alive = now;
@@ -269,7 +176,7 @@ impl DiskProbe {
         if self.learned.is_none() {
             changed |= match self.mode {
                 Mode::Fast => self.tick_fast(now, owned, fill_failed),
-                Mode::Slow => self.tick_slow(now, entries),
+                Mode::Slow => self.tick_slow(now),
             };
         }
         if changed {
@@ -328,7 +235,7 @@ impl DiskProbe {
         false
     }
 
-    fn tick_slow(&mut self, now: u64, entries: u64) -> bool {
+    fn tick_slow(&mut self, now: u64) -> bool {
         let mut changed = false;
         if self.cap > self.confirmed && now.saturating_sub(self.raised_at) >= CONFIRM_SECS {
             self.confirmed = self.cap;
@@ -340,7 +247,6 @@ impl DiskProbe {
                 CONFIRM_SECS / 60
             );
         }
-        let _ = entries;
         if self.cap == self.confirmed && self.confirmed >= START {
             let next = self.cap.saturating_add(FAST_STEP);
             self.cap = next;
@@ -358,20 +264,7 @@ impl DiskProbe {
     }
 
     fn save(&self) {
-        let text = format!(
-            "mode={}\nconfirmed={}\ncap={}\nraised_at={}\nstarted_at={}\nalive={}\nlearned={}\nlearned_at={}\nearly_stops={}\nfound={}\nfound_at={}\n",
-            self.mode.as_str(),
-            self.confirmed,
-            self.cap,
-            self.raised_at,
-            self.started_at,
-            self.alive,
-            self.learned.unwrap_or(0),
-            self.learned_at,
-            self.early_stops,
-            self.found.unwrap_or(0),
-            self.found_at
-        );
+        let text = self.saved().to_text();
         if let Err(e) = fs::write(&self.path, text) {
             log_warn!(
                 None,
