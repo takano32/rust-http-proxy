@@ -362,61 +362,62 @@ fn the_busiest_thread_comes_first_in_threads_top() {
 }
 
 /// 暇な秒は全スレッドを読まず、スレッドが生まれた・消えた秒と要求が来た秒は必ず読み直す (T.32.37)。
-#[cfg(target_os = "linux")]
+///
+/// 本物の `/proc/self` と `sleep` に頼らず、差し替えたディレクトリ (`<dir>/<tid>/stat`) と
+/// プロセス全体の読み (`whole` = (スレッド数, tick, 要求の累計)) を注入して確かめる (T.34.43)。
 #[test]
 fn the_sampler_skips_idle_seconds_but_rereads_when_threads_come_and_go() {
-    let p = Profile::default();
-    let mut s = Sampler::for_self();
-    s.sample_unless_idle(&p, 0);
-    assert_eq!(s.skipped, 0, "初回は必ず読む");
-    // 同じプロセスの別の試験が CPU を使うと tick が進むので、読み飛ばしが起きるまで試す
-    let skipped = (0..200).any(|_| {
-        s.sample_unless_idle(&p, 0);
-        if s.skipped > 0 {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-        false
-    });
-    assert!(skipped, "暇な秒が 1 度も読み飛ばされない");
-    // 読み飛ばした秒も 1 標本ぶん積む (状態の分布の分母が減らない)
-    let samples: u64 = s.pending.iter().map(|w| w.samples).sum();
-    assert!(samples > s.prev.len() as u64);
-    // 要求が来た秒は読み直す
-    let before = s.skipped;
-    s.sample_unless_idle(&p, 1);
-    assert_eq!(s.skipped, before, "要求が来た秒を読み飛ばした");
-    // スレッドが生まれた秒は読み直す (新しいスレッドが前回の標本に入る)
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    let h = thread::Builder::new()
-        .name("t3237-born".into())
-        .spawn(move || rx.recv().ok())
+    // 本番の読み口 (`/proc/self/stat`) は Linux なら読める
+    #[cfg(target_os = "linux")]
+    assert!(Sampler::for_self().read_whole(0).is_some());
+
+    let dir = std::env::temp_dir().join(format!("t3443-idle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let write = |tid: u32| {
+        let d = dir.join(tid.to_string());
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("stat"),
+            format!("{tid} (t{tid}) S 1 1 0 0 -1 0 0 0 0 0 5 0 0 0 20 0 8 0 100 0\n"),
+        )
         .unwrap();
-    let born = (0..200).find_map(|_| {
-        s.sample_unless_idle(&p, 1);
-        let tid =
-            crate::sysinfo::scan_tasks(std::path::Path::new("/proc/self/task"), &mut Vec::new())
-                .and_then(|scan| scan.tasks.into_iter().find(|t| t.comm == "t3237-born"))
-                .map(|t| t.tid);
-        match tid {
-            Some(tid) => {
-                // 名前が付いたあとの 1 回で、そのスレッドが読まれている
-                s.sample_unless_idle(&p, 1);
-                Some(tid)
-            }
-            None => {
-                std::thread::sleep(Duration::from_millis(5));
-                None
-            }
-        }
-    });
-    let born = born.expect("生まれたスレッドが見える");
-    assert!(s.prev.contains_key(&born), "生まれたスレッドを読んでいない");
-    tx.send(()).unwrap();
-    h.join().unwrap();
-    // 消えた秒も読み直す (消えたスレッドが前回の標本から落ちる)
-    s.sample_unless_idle(&p, 1);
-    assert!(!s.prev.contains_key(&born), "消えたスレッドが残っている");
+    };
+    write(1);
+    write(2);
+    let p = Profile::default();
+    let mut s = Sampler::new(dir.clone(), 1);
+    // 1. 初回は読む
+    s.sample_unless_same(&p, Some((2, 100, 0)));
+    assert_eq!(s.skipped, 0, "初回は必ず読む");
+    assert_eq!(s.prev.len(), 2);
+    // 2. 暇な秒 (前回と同じ) は読み飛ばす。読んでいれば見えるはずのスレッドを足しても見えない
+    write(9);
+    s.sample_unless_same(&p, Some((2, 100, 0)));
+    assert_eq!(s.skipped, 1, "暇な秒が読み飛ばされない");
+    assert!(
+        !s.prev.contains_key(&9),
+        "読み飛ばした秒にディレクトリを読んだ"
+    );
+    std::fs::remove_dir_all(dir.join("9")).unwrap();
+    // 3. 読み飛ばした秒も 1 標本ぶん積む (状態の分布の分母が減らない)
+    let samples: u64 = s.pending.iter().map(|w| w.samples).sum();
+    assert_eq!(samples, 2 * s.prev.len() as u64);
+    assert!(samples > s.prev.len() as u64);
+    // 4. 要求が来た秒は読み直す
+    let before = s.skipped;
+    s.sample_unless_same(&p, Some((2, 100, 1)));
+    assert_eq!(s.skipped, before, "要求が来た秒を読み飛ばした");
+    // 5. スレッドが生まれた秒は読み直す (新しいスレッドが前回の標本に入る)
+    write(3);
+    s.sample_unless_same(&p, Some((3, 100, 1)));
+    assert_eq!(s.skipped, before, "スレッドが生まれた秒を読み飛ばした");
+    assert!(s.prev.contains_key(&3), "生まれたスレッドを読んでいない");
+    // 6. 消えた秒も読み直す (消えたスレッドが前回の標本から落ちる)
+    std::fs::remove_dir_all(dir.join("3")).unwrap();
+    s.sample_unless_same(&p, Some((2, 100, 1)));
+    assert_eq!(s.skipped, before, "スレッドが消えた秒を読み飛ばした");
+    assert!(!s.prev.contains_key(&3), "消えたスレッドが残っている");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `/proc` が読めない環境では `off` に落ちる (受け入れ基準)。

@@ -124,7 +124,15 @@ impl Sampler {
     /// スレッド数が変わるので必ず読み直す。`/proc/self/stat` を読むのは [`Sampler::for_self`] のときだけ
     /// (試験が差し替えた `root` はこのプロセスのものではない)。
     pub(crate) fn sample_unless_idle(&mut self, profile: &Profile, requests: u64) {
-        let whole = if self.self_tid.is_some() {
+        let whole = self.read_whole(requests);
+        self.sample_unless_same(profile, whole);
+    }
+
+    /// プロセス全体の (スレッド数, utime + stime の tick, 要求の累計) を読む (I/O はここだけ。T.34.43)。
+    ///
+    /// [`Sampler::for_self`] でなければ読まずに `None` (= 毎回全スレッドを読む)。
+    pub(crate) fn read_whole(&mut self, requests: u64) -> Option<(u64, u64, u64)> {
+        if self.self_tid.is_some() {
             crate::sysinfo::proc::read_small_into(
                 std::path::Path::new("/proc/self/stat"),
                 &mut self.buf,
@@ -133,7 +141,11 @@ impl Sampler {
             .map(|(threads, ticks)| (threads, ticks, requests))
         } else {
             None
-        };
+        }
+    }
+
+    /// `whole` が前回と同じなら前回の状態を 1 標本ぶん積み、違えば全スレッドを読む (判断。T.34.43)。
+    pub(crate) fn sample_unless_same(&mut self, profile: &Profile, whole: Option<(u64, u64, u64)>) {
         if whole.is_some() && whole == self.last_whole && !self.prev.is_empty() {
             self.repeat_last();
             return;
