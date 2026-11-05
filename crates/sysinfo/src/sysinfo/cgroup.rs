@@ -76,24 +76,30 @@ pub(crate) fn v2_dir_from(proc_cgroup: &str, sysfs: &Path) -> Option<PathBuf> {
     None
 }
 
-/// CPU の絞り (`cpu.stat` と `cpu.max`)。読めなければ各項目が `None`。
-pub fn cgroup_cpu() -> CgroupCpu {
-    match cgroup_v2_dir() {
-        Some(dir) => cgroup_cpu_in(&dir, Path::new("/sys/fs/cgroup")),
+/// CPU の絞り (`cpu.stat` と `cpu.max`) と PSI (`cpu.pressure` / `memory.pressure` / `io.pressure`)。
+///
+/// **`/proc/self/cgroup` は 1 回だけ読み**、見つけた階層を両方に使う (T.34.148。前は `cgroup_cpu` と
+/// `cgroup_pressure` が別々に読み、5 秒の標本ごとに 2 回開いていた)。CPU の絞りは読めなければ
+/// 各項目が `None`。PSI は cgroup に無ければ `/proc/pressure/*` (機械全体) に落ち、どちらも無い
+/// カーネル (`CONFIG_PSI` 無し) では `None`。
+pub fn cgroup_cpu_and_pressure() -> (CgroupCpu, CgroupPressure) {
+    let dir = cgroup_v2_dir();
+    (cpu_of(dir.as_deref()), pressure_of(dir.as_deref()))
+}
+
+/// CPU の絞り (`dir` は自プロセスの cgroup v2 の階層。無ければ各項目が `None`)。
+fn cpu_of(dir: Option<&Path>) -> CgroupCpu {
+    match dir {
+        Some(dir) => cgroup_cpu_in(dir, Path::new("/sys/fs/cgroup")),
         None => CgroupCpu::default(),
     }
 }
 
-/// PSI (`cpu.pressure` / `memory.pressure` / `io.pressure`)。
-///
-/// cgroup に無ければ `/proc/pressure/*` (機械全体) に落ちる。どちらも無いカーネル
-/// (`CONFIG_PSI` 無し) では `None`。
-pub fn cgroup_pressure() -> CgroupPressure {
-    let dir = cgroup_v2_dir();
+/// PSI (`dir` は自プロセスの cgroup v2 の階層。`/proc/pressure/*` への落とし込みつき)。
+fn pressure_of(dir: Option<&Path>) -> CgroupPressure {
     let root = Path::new("/sys/fs/cgroup");
     let one = |name: &str, fallback: &str| {
-        dir.as_deref()
-            .and_then(|d| find_up(d, root, name, super::mem::parse_pressure))
+        dir.and_then(|d| find_up(d, root, name, super::mem::parse_pressure))
             .or_else(|| {
                 super::proc::read_small(Path::new(fallback))
                     .as_deref()
@@ -373,6 +379,28 @@ full avg10=2.99 avg60=2.10 avg300=0.90 total=166527343
             "同じ (親の) ファイルの値"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// T.34.148: 1 回だけ読んだ階層を CPU と PSI の両方に使う。階層が無ければ CPU は全部 `None`、
+    /// PSI は機械全体 (`/proc/pressure/*`) だけを見る (前に `cgroup_pressure` が `None` の階層で
+    /// していたのと同じ)。
+    #[test]
+    fn one_cgroup_lookup_feeds_both_the_cpu_and_the_pressure() {
+        assert_eq!(cpu_of(None), CgroupCpu::default());
+        let machine = |f: &str| {
+            super::super::proc::read_small(Path::new(f))
+                .as_deref()
+                .and_then(super::super::mem::parse_pressure)
+                .is_some()
+        };
+        let psi = pressure_of(None);
+        assert_eq!(psi.memory.is_some(), machine("/proc/pressure/memory"));
+        assert_eq!(psi.io.is_some(), machine("/proc/pressure/io"));
+        let (cpu, _) = cgroup_cpu_and_pressure();
+        assert_eq!(
+            cpu.quota_cores,
+            cpu_of(cgroup_v2_dir().as_deref()).quota_cores
+        );
     }
 
     /// 読めない環境 (cgroup v1 / `/sys/fs/cgroup` が無い) では全部 `None`。

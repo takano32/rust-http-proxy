@@ -3,7 +3,7 @@
 //! **読む (I/O) と旗を立てる判断を分けてある**: 源の値を与えれば [`Latest::from_sources`] は
 //! 試験から直に呼べる (`/proc` の無い環境でも、読めない源が `null` になる形を確かめられる)。
 
-use crate::sysinfo::cgroup::{CgroupCpu, CgroupPressure, cgroup_cpu, cgroup_pressure};
+use crate::sysinfo::cgroup::{CgroupCpu, CgroupPressure, cgroup_cpu_and_pressure};
 use crate::sysinfo::net::{TcpStats, tcp_stats};
 
 use super::{
@@ -14,8 +14,8 @@ use super::{
 /// いまの生の値を読む (源ごとに読めたかを旗で持つ)。**5 秒の標本のときだけ**呼ぶこと。
 pub(super) fn read_now(t: u64) -> Latest {
     let tcp = tcp_stats();
-    let cpu = cgroup_cpu();
-    let psi = cgroup_pressure();
+    // `/proc/self/cgroup` は 1 回だけ読む (T.34.148)
+    let (cpu, psi) = cgroup_cpu_and_pressure();
     let dns = crate::dns::resolve_cost_total();
     let state_file = super::STATE_FILE_ERRORS.get().and_then(|f| f());
     Latest::from_sources(t, &tcp, &cpu, &psi, dns, state_file)

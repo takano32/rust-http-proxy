@@ -24,7 +24,7 @@ pub mod net;
 pub mod proc;
 
 pub use capabilities::Capabilities;
-pub use cgroup::{CgroupCpu, CgroupPressure, Psi, cgroup_cpu, cgroup_pressure};
+pub use cgroup::{CgroupCpu, CgroupPressure, Psi, cgroup_cpu_and_pressure};
 pub use fs::{
     FsInfo, dir_size_excluding, drop_page_cache, fs_info, fs_type, is_ram_backed, is_unsupported,
     preallocate,

@@ -185,9 +185,9 @@ fn probe_fast() -> Capabilities {
         proc_syscall: proc_syscall_readable(),
         proc_schedstat: proc_task_file_readable("schedstat"),
         tcp_info: tcp_info_works(),
-        // 読む側 (`cgroup::cgroup_cpu`) と同じ道で判定する (T.28.11)
+        // 読む側 (`cgroup::cgroup_cpu_and_pressure` の CPU の側) と同じ道で判定する (T.28.11)
         cgroup_cpu: cgroup_cpu_here(),
-        // 読む側 (`cgroup::cgroup_pressure`) と同じく `/proc/pressure/cpu` への落とし込みも見る (T.28.32)
+        // 読む側 (`cgroup::cgroup_cpu_and_pressure` の PSI の側) と同じく `/proc/pressure/cpu` への落とし込みも見る (T.28.32)
         cgroup_pressure: cgroup_pressure_here(),
         ipv6_route: has_ipv6_default_route(),
         resolver_ms: None,
@@ -269,7 +269,7 @@ fn cgroup_cpu_here() -> bool {
     }
 }
 
-/// `/proc/self/cgroup` の中身と cgroup の根を与えて、読む側 ([`super::cgroup::cgroup_cpu`])
+/// `/proc/self/cgroup` の中身と cgroup の根を与えて、読む側 ([`super::cgroup::cgroup_cpu_and_pressure`] の CPU の側)
 /// が値を得られるかを返す (テストのために分けてある)。v2 の行 (`0::/…`) が無ければ偽
 /// (v1 の `cpu` コントローラの `cpu.stat` は読む側が見ないので数えない)。
 pub(crate) fn cgroup_cpu_in(proc_cgroup: &str, sysfs: &Path) -> bool {
@@ -289,7 +289,7 @@ fn cgroup_pressure_here() -> bool {
 }
 
 /// `/proc/self/cgroup` の中身・cgroup の根・機械全体の PSI のファイルを与えて、読む側
-/// ([`super::cgroup::cgroup_pressure`] の `cpu`) が値を得られるかを返す (テストのために分けてある)。
+/// ([`super::cgroup::cgroup_cpu_and_pressure`] の PSI の `cpu`) が値を得られるかを返す (テストのために分けてある)。
 /// v2 の階層を根まで遡って読める `cpu.pressure` があるか、無ければ `fallback` が読めるか
 /// (v1 の階層の `cpu.pressure` は読む側が見ないので数えない)。
 pub(crate) fn cgroup_pressure_in(proc_cgroup: &str, sysfs: &Path, fallback: &Path) -> bool {
@@ -427,7 +427,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// `cgroup_cpu` は読む側 (`cgroup::cgroup_cpu`) と同じ道で決まる (T.28.11)。
+    /// `cgroup_cpu` は読む側 (`cgroup::cgroup_cpu_and_pressure` の CPU の側) と同じ道で決まる (T.28.11)。
     /// v1 だけの `/proc/self/cgroup` では、`cpu` コントローラに `cpu.stat` があっても偽
     /// (読む側は v2 しか見ないので、[ok] なのに値は `null` になっていた)。
     #[test]
