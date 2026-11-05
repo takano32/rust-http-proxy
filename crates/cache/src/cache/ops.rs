@@ -13,61 +13,10 @@ use super::format::Meta;
 use super::key::{CacheKey, KeyMap, cache_key};
 use super::quota::is_permanent;
 use super::sink::{StoreOutcome, StoreSink};
+use super::status::BudgetEviction;
 use super::{Cache, CacheSource, now_epoch};
 use crate::sysinfo;
 use crate::{log_debug, log_info, log_warn};
-
-/// プローブが予算で追い出した 1 回の様子 (T.32.7。`/status` の `cache.last_budget_eviction`)。
-///
-/// 10-31 02:34 の tokyo で、大きな転送 (32.6・375.5・253.8 MB) の間にメモリのキャッシュが
-/// `evictions` 20 で 13.87 MB → 0 になり、1 分ごとの `mem_limit` は 189 → 126 → 53 → 164 MB と
-/// 動いていたが、どの 5 秒で何が上限を下げたかは残っていなかった。追い出したその 5 秒の
-/// 上限と、上限を決めた材料 (余白・cgroup の使用量・空き・活性なファイルの頁) を残す。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BudgetEviction {
-    /// いつ (epoch 秒)
-    pub at: u64,
-    /// 追い出した件数 (メモリの層)
-    pub entries: u64,
-    /// 追い出す前と後のメモリの層の使用量 (バイト)
-    pub bytes_before: u64,
-    pub bytes_after: u64,
-    /// そのときの上限 (バイト)
-    pub limit_bytes: u64,
-    /// 上限を決めた材料 (プローブのその回の値。読めなければ `None`)
-    pub keep_free_bytes: u64,
-    pub cgroup_keep_free_bytes: u64,
-    pub mem_available_bytes: Option<u64>,
-    pub mem_active_file_bytes: Option<u64>,
-    pub cgroup_usage_bytes: Option<u64>,
-    pub cgroup_limit_bytes: Option<u64>,
-}
-
-impl BudgetEviction {
-    /// `/status` の 1 要素 (鍵の並びは固定)。
-    pub fn to_json(self) -> String {
-        let opt = |v: Option<u64>| v.map_or_else(|| "null".to_string(), |x| x.to_string());
-        format!(
-            concat!(
-                "{{\"at\":{},\"entries\":{},\"bytes_before\":{},\"bytes_after\":{},",
-                "\"limit_bytes\":{},\"keep_free_bytes\":{},\"cgroup_keep_free_bytes\":{},",
-                "\"mem_available_bytes\":{},\"mem_active_file_bytes\":{},",
-                "\"cgroup_usage_bytes\":{},\"cgroup_limit_bytes\":{}}}"
-            ),
-            self.at,
-            self.entries,
-            self.bytes_before,
-            self.bytes_after,
-            self.limit_bytes,
-            self.keep_free_bytes,
-            self.cgroup_keep_free_bytes,
-            opt(self.mem_available_bytes),
-            opt(self.mem_active_file_bytes),
-            opt(self.cgroup_usage_bytes),
-            opt(self.cgroup_limit_bytes),
-        )
-    }
-}
 
 /// `peek` の結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

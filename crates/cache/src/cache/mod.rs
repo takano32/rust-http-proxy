@@ -138,7 +138,7 @@ pub struct Cache {
     pub bytes_served: AtomicU64,
     /// プローブが予算 (動く上限) で追い出した回数と、最後の 1 回の様子 (T.32.7)
     budget_evictions: AtomicU64,
-    last_budget_eviction: Mutex<Option<ops::BudgetEviction>>,
+    last_budget_eviction: Mutex<Option<status::BudgetEviction>>,
 }
 
 /// 同時に走らせる裏側の再検証の上限。
