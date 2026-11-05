@@ -75,14 +75,60 @@ def silent_restarts(snap):
     2026-10-17 22:14:52Z の再起動は `shutdown` の行を残しておらず、heap の行が黙って
     「判定できず」になった (T22.99)。`/events` は 24 時間より長く残るので、`start` の直前が
     `shutdown` かどうかで見分けられる。**気づけないまま 24 時間を捨てるのを防ぐ計器**。
+    1 件ずつの見方は `sort_start` に書いてある (ここが本体。要点と判定表の両方がこの 1 つを使う)。
 
-    見方 (ここが本体。要点と判定表の両方がこの 1 つを使う):
-      - **起動の行は文面が `version …` で始まる `start` だけ**。`start` の種類は自己ベンチの要約にも
-        使われていて (`PROXY_SELF_BENCH=on` で起動の 3 秒後に 1 件)、それを起動と数えると
-        「直前に `shutdown` が無い」と誤って言う。数えなかった件数は `other_starts` に残す。
+    返すのは次の辞書。`/events` の部が無ければ None (呼ぶ側が「判定できず」と書く)。
+      `starts` は起動の `start` の行の数 (自己ベンチの `start` は `other_starts`)、
+      `silent` / `graceful` / `edge` はそれぞれの内訳、`host` / `process` / `boot_unknown` は
+      **無言の再起動の切り分け** (T24.0。`sort_start` を参照)、
+      `hours` は起動からの時間、`kept` / `count` / `capacity` / `restored` / `truncated` は `/events` の欄。
+    """
+    ev = part(snap, "events")
+    rows = ev.get("events")
+    if not isinstance(rows, list):
+        return None
+    marks = sorted((e for e in rows if isinstance(e, dict) and e.get("at")), key=lambda e: e["at"])
+    out = restart_tally(snap, ev, rows, marks)
+    prev = None            # 直前に見た起動の `start` (無言かどうかを言うには、これが要る)
+    prev_boot = None       # その `start` の `boot` (1 つ前の起動のホスト)
+    for e in marks:
+        if e.get("kind") != "start":
+            continue
+        # **起動の `start` は文面が `version …` で始まる行だけ**。`start` の種類は自己ベンチの
+        # 要約にも使われており (`PROXY_SELF_BENCH=on` で起動の 3 秒後に 1 件)、それを起動と
+        # 数えると「直前に `shutdown` が無い」と誤って言う。数えなかった件数は `other_starts` に残す
+        if not START_VERSION.match(e.get("text") or ""):
+            out["other_starts"] += 1
+            continue
+        out["starts"] += 1
+        prev_boot = sort_start(out, e, marks, prev, prev_boot)
+        prev = e
+    return out
+
+
+def restart_tally(snap, ev, rows, marks):
+    """`silent_restarts` が返す辞書の器 (数は 0、内訳は空。`/events` の欄と起動からの時間は埋める)。"""
+    up = snap.get("uptime_secs") or 0
+    return {
+        "starts": 0, "silent": [], "graceful": [], "edge": [], "other_starts": 0,
+        "hours": (up / 3600.0) if up else None,
+        "count": ev.get("count"), "kept": ev.get("kept", len(rows)),
+        "capacity": ev.get("capacity"), "restored": ev.get("restored"),
+        "truncated": bool(ev.get("truncated")),
+        "oldest": marks[0]["at"] if marks else None,
+        "started_at": ((snap.get("taken_at") or 0) - up) if (snap.get("taken_at") and up) else None,
+        # 無言の再起動の切り分け (T24.0。`sort_start` を参照)
+        "host": [], "process": [], "boot_unknown": 0,
+    }
+
+
+def sort_start(out, e, marks, prev, prev_boot):
+    """起動の `start` 1 件 `e` を `out` の内訳 (`edge` / `graceful` / `silent`) に入れ、その `boot` を返す。
+
+    見方:
       - `at` が**その `start` より前**の最後の出来事が `shutdown` なら、普通の再起動
         (同じ秒の出来事は「直前」と見ない。起動の瞬間に `anomaly` が同じ `at` で載る)。
-      - 直前の出来事が `shutdown` でなければ**無言の再起動**。前の `start` からの時間
+      - 直前の出来事が `shutdown` でなければ**無言の再起動**。前の `start` (`prev`) からの時間
         (`prev_hours`) を添える。前の起動の後に `shutdown` が残っていれば `downtime` (止まっていた秒数)、
         残っていなければ None (落とされたので分からない)。
       - **状態ファイルから読み戻した古い `start` (`restored`) も、同じ規則で見る**。読み戻した
@@ -91,14 +137,8 @@ def silent_restarts(snap):
         「無言だった」とは言えないので `edge` に分ける (数えない)。
         2026-10-20 の雪像では、10-08 09:24:20Z の `start` (読み戻しの先頭) がここに入る。
 
-    返すのは次の辞書。`/events` の部が無ければ None (呼ぶ側が「判定できず」と書く)。
-      `starts` は起動の `start` の行の数 (自己ベンチの `start` は `other_starts`)、
-      `silent` / `graceful` / `edge` はそれぞれの内訳、`host` / `process` / `boot_unknown` は
-      **無言の再起動の切り分け** (T24.0。下の 3 つ)、
-      `hours` は起動からの時間、`kept` / `count` / `capacity` / `restored` / `truncated` は `/events` の欄。
-
     **ホストの再起動か、プロセスだけの再起動か** (T24.0): 無言の再起動の 1 件ずつについて、
-    その `start` の文面の `boot` (T24.0 から載る) と**1 つ前の起動の `boot`** を比べる。
+    その `start` の文面の `boot` (T24.0 から載る) と**1 つ前の起動の `boot`** (`prev_boot`) を比べる。
       - `host` … `boot` が変わっている = **ホスト (カーネル) が起動し直した** (2026-10-21 の 2 回。
         利用者に聞いてホストの管理者によるものと分かった)。**こちらでは防げない**。
       - `process` … `boot` が同じ = **プロセスだけが起動し直した** (落ちた・外から止められた)。
@@ -106,67 +146,36 @@ def silent_restarts(snap):
       - `boot_unknown` … どちらかの行に `boot` が無い (T24.0 より前の版が書いた行)。
         判定できないので `host` / `process` のどちらにも数えない。
     """
-    ev = part(snap, "events")
-    rows = ev.get("events")
-    if not isinstance(rows, list):
-        return None
-    marks = sorted((e for e in rows if isinstance(e, dict) and e.get("at")), key=lambda e: e["at"])
-    up = snap.get("uptime_secs") or 0
-    out = {
-        "starts": 0, "silent": [], "graceful": [], "edge": [], "other_starts": 0,
-        "hours": (up / 3600.0) if up else None,
-        "count": ev.get("count"), "kept": ev.get("kept", len(rows)),
-        "capacity": ev.get("capacity"), "restored": ev.get("restored"),
-        "truncated": bool(ev.get("truncated")),
-        "oldest": marks[0]["at"] if marks else None,
-        "started_at": ((snap.get("taken_at") or 0) - up) if (snap.get("taken_at") and up) else None,
-        # 無言の再起動の切り分け (T24.0。上を参照)
-        "host": [], "process": [], "boot_unknown": 0,
-    }
-    prev = None            # 直前に見た起動の `start` (無言かどうかを言うには、これが要る)
-    prev_boot = None       # その `start` の `boot` (1 つ前の起動のホスト)
-    for e in marks:
-        if e.get("kind") != "start":
-            continue
-        # **起動の `start` は文面が `version …` で始まる行だけ**。`start` の種類は自己ベンチの
-        # 要約にも使われており (`PROXY_SELF_BENCH=on` で起動の 3 秒後に 1 件)、それを起動と
-        # 数えると「直前に `shutdown` が無い」と誤って言う
-        if not START_VERSION.match(e.get("text") or ""):
-            out["other_starts"] += 1
-            continue
-        out["starts"] += 1
-        at = e["at"]
-        boot = start_boot(e)
-        item = {"at": at, "version": start_version(e), "boot": boot}
-        # **同じ秒の出来事は「直前」と見ない** (`at` が strictly 小さいものだけ)
-        earlier = [m for m in marks if m["at"] < at]
-        if not earlier:
-            out["edge"].append(dict(item, why="窓の先頭"))
-        elif earlier[-1].get("kind") == "shutdown":
-            out["graceful"].append(dict(item, downtime=at - earlier[-1]["at"]))
-        elif prev is None:
-            # 窓が起動の途中から始まっている (`start` が読み戻しの先頭より前にある)
-            out["edge"].append(dict(item, why="窓が起動の途中から始まっている"))
+    at = e["at"]
+    boot = start_boot(e)
+    item = {"at": at, "version": start_version(e), "boot": boot}
+    # **同じ秒の出来事は「直前」と見ない** (`at` が strictly 小さいものだけ)
+    earlier = [m for m in marks if m["at"] < at]
+    if not earlier:
+        out["edge"].append(dict(item, why="窓の先頭"))
+    elif earlier[-1].get("kind") == "shutdown":
+        out["graceful"].append(dict(item, downtime=at - earlier[-1]["at"]))
+    elif prev is None:
+        # 窓が起動の途中から始まっている (`start` が読み戻しの先頭より前にある)
+        out["edge"].append(dict(item, why="窓が起動の途中から始まっている"))
+    else:
+        shut = [m for m in earlier if m.get("kind") == "shutdown"]
+        shut = shut[-1] if shut else None
+        item = dict(
+            item, prev_at=prev["at"], prev_version=start_version(prev),
+            prev_hours=(at - prev["at"]) / 3600.0,
+            shutdown_at=(shut["at"] if shut else None),
+            # 前の起動より**後**に `shutdown` が残っているときだけ「止まっていた秒数」が言える
+            downtime=((at - shut["at"]) if (shut and shut["at"] > prev["at"]) else None),
+            # 1 つ前の起動の `boot` (T24.0)。無ければ「同じホストか」を言えない
+            prev_boot=prev_boot,
+        )
+        if boot and prev_boot:
+            (out["process"] if boot == prev_boot else out["host"]).append(item)
         else:
-            shut = [m for m in earlier if m.get("kind") == "shutdown"]
-            shut = shut[-1] if shut else None
-            item = dict(
-                item, prev_at=prev["at"], prev_version=start_version(prev),
-                prev_hours=(at - prev["at"]) / 3600.0,
-                shutdown_at=(shut["at"] if shut else None),
-                # 前の起動より**後**に `shutdown` が残っているときだけ「止まっていた秒数」が言える
-                downtime=((at - shut["at"]) if (shut and shut["at"] > prev["at"]) else None),
-                # 1 つ前の起動の `boot` (T24.0)。無ければ「同じホストか」を言えない
-                prev_boot=prev_boot,
-            )
-            if boot and prev_boot:
-                (out["process"] if boot == prev_boot else out["host"]).append(item)
-            else:
-                out["boot_unknown"] += 1
-            out["silent"].append(item)
-        prev = e
-        prev_boot = boot
-    return out
+            out["boot_unknown"] += 1
+        out["silent"].append(item)
+    return boot
 
 
 def boot_split_text(r):
