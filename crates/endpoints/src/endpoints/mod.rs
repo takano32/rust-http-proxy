@@ -134,9 +134,16 @@ pub fn handle(
     // (T14.7 の `clients[]` はその逆で、自分宛てだけの接続を数えない)。
     // 渡すのは**問い合わせ文字列を外したパス**で、数えるのは 1 要求につき 1 回だけ。
     // 応答を組む前に数えるので、**読んだ応答にはその要求自身が入っている**
-    // (`/status` を 3 回引いた 3 回目の応答が `count: 3`)
+    // (`/status` を 3 回引いた 3 回目の応答が `count: 3`)。
+    // **`PURGE <url>` は `/purge` として残す** (同じ仕事をする `/purge?url=` と同じ口)。
+    // PURGE の `req.path` は要求ターゲットの URL そのもので、前は他所の URL が記録に残っていた (T.34.160)
     if let Some(client) = ep.client {
-        ep.metrics.record_reader(client, req.path);
+        let path = if req.method.is_purge() {
+            "/purge"
+        } else {
+            req.path
+        };
+        ep.metrics.record_reader(client, path);
     }
     // **重い口は同時に 1 本だけ**組む (T14.51)。取れなければ下で `503` + `Retry-After: 1`。
     // 番人は口を組むところより長く生き、**組み終わったところ**で旗を戻す (途中で `?` で
