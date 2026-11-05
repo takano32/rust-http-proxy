@@ -1,6 +1,6 @@
 //! `/history` の標本に足した 8 列と `key_kinds` の結合テスト (T15.0 (8) + (10))。
 //!
-//! 畳み方と `.rrd` の往復そのものは `crates/metrics-window/src/history/tests.rs` の単体テストで
+//! 畳み方と `.rrd` の往復そのものは `crates/metrics-window/src/history/{tests,codec_tests}.rs` の単体テストで
 //! 見ている。ここで見るのは**口の配線**:
 //!
 //! - `keys` が 40 個で、末尾が `waits` … `active_peak` の順に並ぶこと
@@ -26,7 +26,7 @@ const TICK: Duration = Duration::from_millis(300);
 /// 山として張る本数 (受け入れ基準の 50 本)。
 const SPIKE: usize = 50;
 
-/// `key_kinds` に出てよい綴り (`crates/metrics-window/src/history.rs` の `KEY_KINDS`)。
+/// `key_kinds` に出てよい綴り (`crates/metrics-window/src/history/sample.rs` の `KEY_KINDS`)。
 const KINDS: [&str; 6] = ["time", "cumulative", "delta", "gauge", "peak", "buckets"];
 
 /// `"keys":[…]` / `"key_kinds":[…]` の中身を綴りの並びとして取り出す。
