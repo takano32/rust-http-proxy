@@ -6,6 +6,7 @@
 //! 行を動かしただけで中身は変えていない。外から見える名前は `metrics` の
 //! `pub use` でそのまま (T.28.27)。
 
+use super::facts::{LiveProcess, ProcessFacts};
 use super::*;
 
 impl Metrics {
@@ -20,6 +21,17 @@ impl Metrics {
     /// 呼ぶ形になって依存が輪になるため。`/status` を組み立てるのは `proxy-endpoints`
     /// の仕事で、ここはその部品を並べるだけにする。
     pub fn to_json_with_cache(&self, cache: Option<&Cache>, extra: StatusExtras<'_>) -> String {
+        self.to_json_with_facts(cache, extra, &LiveProcess)
+    }
+
+    /// [`Metrics::to_json_with_cache`] の本体。このプロセスの値 (`/proc` など) を `facts` から読む
+    /// (T.34.41。試験は固定の値を渡して欄をバイト単位で縛る)。読む場所と順は前と同じ。
+    pub(super) fn to_json_with_facts(
+        &self,
+        cache: Option<&Cache>,
+        extra: StatusExtras<'_>,
+        facts: &impl ProcessFacts,
+    ) -> String {
         let uptime = self.start_time.elapsed().as_secs();
         let requests = self.total_requests.load(Ordering::Relaxed);
         let active = self.active_connections.load(Ordering::Relaxed);
@@ -53,14 +65,14 @@ impl Metrics {
         // `hosts[]` を省いても値は同じ (表を 1 回舐めるだけ。T25.1 段 2)
         let restored_since = self.restored_since();
         // `/proc` を読むのはこのパスに来たときだけ (要求ごとには読まない)
-        let threads = crate::sysinfo::process_threads().unwrap_or(0);
-        let (fds, max_fds) = crate::sysinfo::process_fds().unwrap_or((0, 0));
+        let threads = facts.threads().unwrap_or(0);
+        let (fds, max_fds) = facts.fds().unwrap_or((0, 0));
         // RSS は**今読む** (T.32.4)。内訳 (`RssAnon`・`RssFile`・`RssShmem`) と同じ 1 回の
         // `/proc/self/status` の読みから出すので、足すと `rss` に合う。T14.21 はキャッシュの
         // プローブの値 (`cache.system.process_rss_bytes`) を使っていたが、起動直後はプローブが
         // 起動中に読んだ古い値 (起動 3 秒で 4.76 MB、VmRSS は 25.9 MB) だった。プローブの値は
         // `cache.system` に `probed_at` 付きで今までどおり出る
-        let rss = crate::sysinfo::process_rss_detail();
+        let rss = facts.rss();
         let clients_json: Vec<String> = self
             .clients_sorted_by(ClientSort::Requests)
             .into_iter()
@@ -93,6 +105,7 @@ impl Metrics {
             cache,
             // 状態ファイルの「起動 60 秒の heap」(T24.4)。上の層が組んだ JSON をそのまま入れる
             extra.baseline,
+            facts,
         );
         out
     }
@@ -163,6 +176,7 @@ impl Metrics {
     /// T14.46、`records` は T14.41、`heavy_rejected` は T14.51、`slow_transfer_closed` は
     /// T.29.34、`hosts_evicted` は T.32.10、`silent_closes` は T.33.0 で末尾に足したもの。
     /// `boot` は T24.0 で `kernel` の隣 (直後) に足した (**既存の鍵の順は動かさない**)。
+    #[allow(clippy::too_many_arguments)]
     fn push_tail(
         &self,
         out: &mut String,
@@ -171,6 +185,7 @@ impl Metrics {
         conn_threads: u64,
         cache: Option<&Cache>,
         baseline: &str,
+        facts: &impl ProcessFacts,
     ) {
         let _ = write!(
             out,
@@ -185,10 +200,10 @@ impl Metrics {
             // (`settings` のような上の層の部品は `extra` で受け取る)
             crate::kernel::status_json(),
             // ホストの起動ごとに変わる `boot_id` と、このプロセスの `pid` (T24.0)
-            boot_json(),
+            facts.boot_json(),
             // RSS の内訳 (T14.21)。`mallinfo2` を読むのはこの経路だけ。
             // `baseline` は状態ファイルが持っている「起動 60 秒の heap」(T24.4)
-            super::memory::memory_json(self, rss, threads, conn_threads, cache, baseline),
+            super::memory::memory_json(self, rss, threads, conn_threads, cache, baseline, facts),
             // 直近 1,024 本の正確な分位点 (T14.31)。区間の補間ではない実測の並び
             self.recent_quantiles_json(),
             // いま流れているバイト/秒の合計 (T14.39)。history スレッドが 5 秒ごとに
@@ -244,7 +259,7 @@ fn slow_transfer_closed_json() -> String {
 /// **値はプロセスの生存中に変わらない**ので起動に 1 回だけ読み ([`OnceLock`])、読めない環境
 /// (procfs が無い) は `id` を `null` にする (**`/status` は落とさない**)。`/events` の `start` の
 /// 文面にも先頭 12 文字を載せる (`crates/run/src/lib.rs`。1 件 128 B の枠に収めるため)。
-fn boot_json() -> String {
+pub(super) fn boot_json() -> String {
     static BOOT: OnceLock<Option<String>> = OnceLock::new();
     let pid = std::process::id();
     match BOOT.get_or_init(boot_id) {

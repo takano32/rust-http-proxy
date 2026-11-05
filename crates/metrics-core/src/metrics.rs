@@ -33,6 +33,9 @@ mod status;
 // `/status` の `memory` (見積もり・実測・描画。T.34.32)
 mod memory;
 
+// `/status` が読むこのプロセスの値 (`/proc` など。T.34.41)
+mod facts;
+
 pub use status::{CANARY_STATUS_UNSET, set_canary_status};
 
 // `/slo` の `error_rate` が外す「1 つの宛先に偏ったエラー」の数 (T.30.4)

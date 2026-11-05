@@ -268,3 +268,113 @@ fn number_of(json: &str, key: &str) -> u64 {
         .parse()
         .unwrap()
 }
+
+/// 試験のための固定のプロセスの値 (T.34.41)。`full` が偽なら全部読めなかった形。
+struct FixedFacts {
+    full: bool,
+}
+
+impl super::facts::ProcessFacts for FixedFacts {
+    fn threads(&self) -> Option<u64> {
+        self.full.then_some(7)
+    }
+
+    fn fds(&self) -> Option<(u64, u64)> {
+        self.full.then_some((9, 1024))
+    }
+
+    fn rss(&self) -> Option<crate::sysinfo::ProcessRss> {
+        self.full.then_some(crate::sysinfo::ProcessRss {
+            rss: 1_000_000,
+            anon: Some(600_000),
+            file: Some(300_000),
+            shmem: Some(100_000),
+        })
+    }
+
+    fn stacks_resident(&self) -> Option<u64> {
+        self.full.then_some(49_152)
+    }
+
+    fn heap(&self) -> Option<crate::sysinfo::MallocInfo> {
+        self.full.then_some(crate::sysinfo::MallocInfo {
+            arena: 800_000,
+            used: 500_000,
+            free: 200_000,
+            mmap: 65_536,
+            mmap_blocks: 1,
+        })
+    }
+
+    fn boot_json(&self) -> String {
+        "{\"id\":\"b00t\",\"pid\":42}".to_string()
+    }
+}
+
+/// `/status` のうちプロセスの値から来る欄を、固定の値でバイト単位に縛る (T.34.41)。
+/// `threads`・`fds`・`max_fds`・`boot`・`memory` (rss・heap・スタック・常駐の内訳)。
+#[test]
+fn the_process_facts_land_byte_for_byte_in_the_status() {
+    use super::memory::RingBytes;
+    let m = Metrics::new();
+    let extra = StatusExtras {
+        concurrency: Concurrency {
+            live_threads: 3,
+            ..Concurrency::default()
+        },
+        ..StatusExtras::default()
+    };
+    let mut rings = String::new();
+    RingBytes::full().push_json(&mut rings);
+    let mut used = String::new();
+    RingBytes::used(&m).push_json(&mut used);
+    let tail = format!(
+        ",\"rings_touched\":false,\"baseline\":null,\"trim\":{},",
+        crate::sysinfo::trim_stats().to_json()
+    );
+
+    let json = m.to_json_with_facts(None, extra, &FixedFacts { full: true });
+    assert!(
+        json.contains(
+            "\"threads\":7,\"fds\":9,\"max_fds\":1024,\"active_connections\":0,\"max_conns\":0,"
+        ),
+        "{}",
+        json
+    );
+    // スタックの予約 = 接続スレッド 3 本 × 256 KiB + 残り 4 本 × 2 MiB
+    let memory = format!(
+        concat!(
+            "\"boot\":{{\"id\":\"b00t\",\"pid\":42}},\"memory\":{{\"rss\":1000000,",
+            "\"heap_used\":500000,\"heap_free\":200000,\"mmap\":65536,",
+            "\"stacks_estimate\":9175040,\"cache_memory\":0,\"rings\":{},\"arenas\":{},",
+            "\"rings_used\":{}{}\"rss_anon\":600000,\"rss_file\":300000,\"rss_shmem\":100000,",
+            "\"stacks_resident\":49152}},\"recent_quantiles\":"
+        ),
+        rings,
+        crate::sysinfo::arena_max(),
+        used,
+        tail
+    );
+    assert!(json.contains(&memory), "{}\n---\n{}", memory, json);
+
+    // 何も読めない環境: 数は 0、内訳は `null` (`/status` は落とさない)
+    let json = m.to_json_with_facts(None, StatusExtras::default(), &FixedFacts { full: false });
+    assert!(
+        json.contains("\"threads\":0,\"fds\":0,\"max_fds\":0,"),
+        "{}",
+        json
+    );
+    let memory = format!(
+        concat!(
+            "\"memory\":{{\"rss\":null,\"heap_used\":null,\"heap_free\":null,\"mmap\":null,",
+            "\"stacks_estimate\":null,\"cache_memory\":0,\"rings\":{},\"arenas\":{},",
+            "\"rings_used\":{}{}\"rss_anon\":null,\"rss_file\":null,\"rss_shmem\":null,",
+            "\"stacks_resident\":null}}"
+        ),
+        rings,
+        crate::sysinfo::arena_max(),
+        used,
+        tail
+    );
+    assert!(json.contains(&memory), "{}\n---\n{}", memory, json);
+}

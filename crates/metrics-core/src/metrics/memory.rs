@@ -219,6 +219,7 @@ pub(super) fn memory_json(
     conn_threads: u64,
     cache: Option<&Cache>,
     baseline: &str,
+    facts: &impl super::facts::ProcessFacts,
 ) -> String {
     /// 接続スレッドのスタック (`crates/workers` の `STACK_SIZE` と同じ値)。
     /// あちらは private なので写してある (変えるときは両方)。
@@ -235,8 +236,8 @@ pub(super) fn memory_json(
     let stacks = (threads > 0).then(|| conn * CONN_STACK + other * THREAD_STACK);
     let rss = detail.map(|d| d.rss);
     // スタックの常駐 (T.32.4)。smaps を 1 回読む (この口に来たときだけ)
-    let stacks_resident = crate::sysinfo::stacks_resident();
-    let heap = crate::sysinfo::malloc_info();
+    let stacks_resident = facts.stacks_resident();
+    let heap = facts.heap();
     let opt = |v: Option<u64>| v.map_or_else(|| "null".to_string(), |x| x.to_string());
 
     let mut out = String::new();
