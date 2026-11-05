@@ -64,6 +64,7 @@ SERVER_PORT=8080 ./target/release/rust-http-proxy
 比べるときは必ず同じ固定の仕方で測ってください。数字は 2026-09-08 の実測で、`TODO.md` の §2 と同じものです
 (出典: T.10.11 / T.11.4)。括弧の **(NN%)** は**プロキシが使った 1 コアぶんの割合** (割り当ては 4 コア = 400%)。
 これが 100% に遠い行は**プロキシが律速していない** = その req/s はプロキシの上限ではありません。
+**命令数 (callgrind の Ir/要求) で前後を比べる**のは `scripts/callgrind-per-request.py --bin 前 --bin 後` です (forward / HIT / CONNECT を N=400 と 2000 の傾きで出し、最初のバイナリを基準に増減 % を添えます。T.34.7)。
 
 | 項目 | `release` (`cargo build --release`) | `dist` (配布用) |
 |---|---|---|
