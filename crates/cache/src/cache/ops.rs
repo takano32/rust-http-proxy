@@ -439,11 +439,7 @@ impl Cache {
         conn_id: usize,
     ) -> StoreSink<'_> {
         let now = now_epoch();
-        let meta = Meta {
-            stored_at: now.saturating_sub(age),
-            expires_at: now.saturating_add(ttl.as_secs().saturating_sub(age)),
-            validators,
-        };
+        let meta = Meta::fresh_for(now, ttl.as_secs(), age, validators);
         self.remember_variant(url, key);
         let mem_buf =
             if self.cfg.enabled && expected.is_none_or(|e| e <= self.cfg.mem_max_object_size) {
@@ -516,9 +512,11 @@ impl Cache {
     /// 再検証 (304) に成功したので有効期限を延ばし、経過時間 (Age) を `age` から数え直す。
     /// 戻り値は新しい期限。
     pub fn refresh(&self, key: CacheKey, ttl: Duration, age: u64, conn_id: usize) -> u64 {
-        let now = now_epoch();
-        let stored_at = now.saturating_sub(age);
-        let expires_at = now.saturating_add(ttl.as_secs().saturating_sub(age));
+        let Meta {
+            stored_at,
+            expires_at,
+            ..
+        } = Meta::fresh_for(now_epoch(), ttl.as_secs(), age, false);
         let in_mem = self.mem.refresh(key, stored_at, expires_at, self.tick());
         let on_disk = self.disk.refresh(key, stored_at, expires_at, self.tick());
         if in_mem || on_disk {
@@ -556,8 +554,11 @@ impl Cache {
         conn_id: usize,
     ) -> u64 {
         let now = now_epoch();
-        let stored_at = now.saturating_sub(age);
-        let expires_at = now.saturating_add(ttl.as_secs().saturating_sub(age));
+        let Meta {
+            stored_at,
+            expires_at,
+            ..
+        } = Meta::fresh_for(now, ttl.as_secs(), age, false);
         let mut in_mem = false;
         if let Some(hit) = self.mem.get(key, now, self.tick()) {
             let offset = head_len(&hit.data);

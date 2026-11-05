@@ -41,6 +41,27 @@ impl Meta {
     pub fn is_servable(&self, now: u64) -> bool {
         self.expires_at > now || self.validators
     }
+
+    /// `now` に `age` 秒経った表現を受け取り、`ttl_secs` 秒の鮮度を持たせたときのメタ情報。
+    ///
+    /// 保存した時刻は `now − age`、期限は `now + (ttl − age)` (どちらも端で止める)。
+    /// 保存・延命 (304)・ヘッダーの書き直しの 3 か所が同じ式を持っていた (T.34.92)。
+    #[inline]
+    pub fn fresh_for(now: u64, ttl_secs: u64, age: u64, validators: bool) -> Meta {
+        Meta {
+            stored_at: now.saturating_sub(age),
+            expires_at: now.saturating_add(ttl_secs.saturating_sub(age)),
+            validators,
+        }
+    }
+
+    /// 掃除で消してよいか: 期限切れで再検証できない、または期限から `max_stale` 秒以上経った
+    /// (L1・L2 の掃除と起動走査が同じ判定を使う。前は `memory::is_garbage`。T.34.92)。
+    #[inline]
+    pub fn is_garbage(&self, now: u64, max_stale: u64) -> bool {
+        self.expires_at <= now
+            && (!self.validators || self.expires_at.saturating_add(max_stale) <= now)
+    }
 }
 
 /// 解析したヘッダー。
@@ -165,6 +186,57 @@ mod tests {
             expires_at,
             validators,
         }
+    }
+
+    /// 出してよいのは期限の前か、バリデータを持つ (再検証できる) とき (T.34.87)。
+    #[test]
+    fn a_meta_is_servable_before_expiry_or_with_validators() {
+        assert!(meta(0, 101, false).is_servable(100));
+        assert!(
+            !meta(0, 100, false).is_servable(100),
+            "期限ちょうどは切れている"
+        );
+        assert!(meta(0, 100, true).is_servable(100));
+        assert!(meta(0, 0, true).is_servable(u64::MAX));
+    }
+
+    /// 保存の時刻と期限は `now − age` と `now + (ttl − age)` で、端で止まる (T.34.92)。
+    #[test]
+    fn fresh_for_counts_the_age_against_the_ttl() {
+        assert_eq!(
+            Meta::fresh_for(1_000, 300, 0, true),
+            meta(1_000, 1_300, true)
+        );
+        assert_eq!(
+            Meta::fresh_for(1_000, 300, 60, false),
+            meta(940, 1_240, false)
+        );
+        // TTL より古い表現は、もう期限切れ (期限 = いま)
+        assert_eq!(
+            Meta::fresh_for(1_000, 300, 400, false),
+            meta(600, 1_000, false)
+        );
+        // 時刻より大きな age は、保存の時刻が 0 で止まる (期限は TTL の残りぶん先)
+        assert_eq!(Meta::fresh_for(10, 300, 50, false), meta(0, 260, false));
+        assert_eq!(
+            Meta::fresh_for(u64::MAX, 300, 0, false).expires_at,
+            u64::MAX
+        );
+    }
+
+    /// 掃除で消すのは、期限切れで再検証できないか、期限から `max_stale` 秒経ったもの (T.34.92)。
+    #[test]
+    fn garbage_is_expired_and_unrevalidatable_or_too_stale() {
+        let stale = 3_600;
+        // 期限の前は何でも残す
+        assert!(!meta(0, 101, false).is_garbage(100, stale));
+        // 期限切れで再検証できない
+        assert!(meta(0, 100, false).is_garbage(100, stale));
+        // 再検証できるなら max_stale まで残す
+        assert!(!meta(0, 100, true).is_garbage(100 + stale - 1, stale));
+        assert!(meta(0, 100, true).is_garbage(100 + stale, stale));
+        // 期限 + max_stale が桁あふれしても上で止まる (パニックしない)
+        assert!(!meta(0, u64::MAX - 1, true).is_garbage(u64::MAX - 1, stale));
     }
 
     #[test]

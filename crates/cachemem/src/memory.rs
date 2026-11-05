@@ -277,7 +277,7 @@ impl MemTier {
         let mut dropped = Vec::new();
         {
             let mut store = self.store.locked();
-            let keys = store.keys_where(|e| is_garbage(&e.meta, now, max_stale));
+            let keys = store.keys_where(|e| e.meta.is_garbage(now, max_stale));
             for key in keys {
                 if let Some(e) = store.remove(key) {
                     dropped.push(e.data);
@@ -288,9 +288,4 @@ impl MemTier {
         drop(dropped);
         n
     }
-}
-
-/// 期限切れで再検証できない、または期限から `max_stale` 秒以上経っているか。
-pub fn is_garbage(meta: &Meta, now: u64, max_stale: u64) -> bool {
-    meta.expires_at <= now && (!meta.validators || meta.expires_at.saturating_add(max_stale) <= now)
 }

@@ -16,7 +16,6 @@ use crate::format::{self, Meta};
 use crate::key::CacheKey;
 use crate::log_info;
 use crate::lru::Store;
-use crate::memory::is_garbage;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ScanReport {
@@ -53,7 +52,7 @@ impl DiskTier {
                 continue;
             };
             match format::read_meta(&path) {
-                Some(meta) if !is_garbage(&meta, now, max_stale) => {
+                Some(meta) if !meta.is_garbage(now, max_stale) => {
                     let dest = self.path_for(key, meta.validators);
                     if fs::rename(&path, &dest).is_ok() {
                         set_expiry_mtime(&dest, meta.expires_at);
@@ -118,7 +117,7 @@ impl DiskTier {
                     }
                 },
             };
-            if is_garbage(&meta, now, max_stale) {
+            if meta.is_garbage(now, max_stale) {
                 let _ = fs::remove_file(&path);
                 report.expired += 1;
                 continue;

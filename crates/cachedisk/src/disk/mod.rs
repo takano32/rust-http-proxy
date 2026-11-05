@@ -25,7 +25,6 @@ use crate::config::MIB;
 use crate::format::{self, Meta};
 use crate::key::CacheKey;
 use crate::lru::{LruEntry, Store};
-use crate::memory::is_garbage;
 use crate::sysinfo;
 use crate::{log_debug, log_warn};
 
@@ -576,7 +575,7 @@ impl DiskTier {
     pub fn sweep(&self, now: u64, max_stale: u64) -> usize {
         let keys = {
             let index = self.index.locked();
-            index.keys_where(|e| is_garbage(&e.meta, now, max_stale))
+            index.keys_where(|e| e.meta.is_garbage(now, max_stale))
         };
         for key in &keys {
             self.remove(*key);
