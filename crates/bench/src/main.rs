@@ -26,1015 +26,30 @@
 //!      (`--only replay --replay-file <path> [--speed 10]`。T14.29)。宛先のホスト名は
 //!      そのままに、ポートだけ内蔵オリジンへ置き換える。名前解決は
 //!      `scripts/deployed-like.sh --hosts-from <path>` の `/etc/hosts` に任せる
+//!
+//! 中の割り方 (T.34.4): 引数は [`args`]、相手役は [`origin`]、集計と `conc` 本で回す骨組みは
+//! [`report`]、HTTP の打ち手は [`http`]、握り続けるモードは [`idle`]、名前宛ての CONNECT は
+//! [`multi`]、システムコールの実費は [`syscost`]、個票の再生は [`replay`]。ここに残るのは
+//! モードの振り分け ([`main`]) と、トンネルと CONNECT の 2 モード。
 
+mod args;
+mod http;
+mod idle;
+mod multi;
+mod origin;
 mod replay;
+mod report;
+mod syscost;
 
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::net::{Shutdown, SocketAddr};
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// トンネルのスループット計測で 1 回に読む大きさ。
-///
-/// 送る側 ([`spawn_blaster`]) は相手が閉じるまで送り続け、受ける側は `--seconds` 秒で止める。
-/// **転送量ではなく時間で終わらせる**のは、他のモードと揃えるためと、短すぎる計測だと
-/// `/proc/<pid>/stat` の 10 ms 刻みが結果を丸めてしまうため。256 MiB 固定だった頃は
-/// 0.2 秒しか走らず、プロキシの user CPU が 1 tick 未満で「0.00 us/MiB」に見えていた (T10.8)。
-const TUNNEL_READ_BYTES: usize = 256 * 1024;
-
-struct Args {
-    proxy: Option<String>,
-    conc: usize,
-    seconds: u64,
-    body_bytes: usize,
-    /// オリジン応答を保存可能にする (キャッシュ HIT 側を測る)
-    cacheable: bool,
-    /// 測る種類 ("all" / "direct" / "forward" / "tunnel" / "connect" / "connect-multi" /
-    /// "idle-tunnels" / "idle-conns" / "syscall-cost" / "replay")
-    only: String,
-    /// 1 要求ごとに接続を張り直す (接続あたりの固定費を測る)
-    no_keepalive: bool,
-    /// `--only replay` が読む個票 (`/recent` / `/snapshot` / `/connections` の JSON。T14.29)
-    replay_file: Option<String>,
-    /// `--only replay` の RTT の出どころ (`/hosts` の JSON。個票と同じ JSON にあれば要らない)
-    rtt_file: Option<String>,
-    /// 再生の倍速 (`--only replay`。1 で等速、10 で 10 倍速)
-    speed: f64,
-    /// 再生を打ち切る秒 (`--only replay`。0 なら個票を最後まで再生する)
-    replay_secs: u64,
-    /// `/status` と `/bursts` を引く先 (既定は `--proxy` と同じ)
-    admin: Option<String>,
-}
-
-fn usage() -> ! {
-    eprintln!(
-        "usage: bench [--proxy HOST:PORT] [--conc N] [--seconds N] [--body-bytes N]\n\
-                     [--only direct|forward|tunnel|connect|connect-multi|idle-tunnels|\n\
-                             idle-conns|syscall-cost|replay|all]\n\
-                     [--replay-file PATH] [--rtt-file PATH] [--speed N] [--replay-secs N]\n\
-                     [--admin HOST:PORT]\n\
-         \n\
-         Without --proxy only the direct (origin) baseline is measured.\n\
-         --only replay needs --replay-file (a /recent, /snapshot or /connections JSON)."
-    );
-    std::process::exit(2);
-}
-
-fn parse_args() -> Args {
-    let mut args = Args {
-        proxy: None,
-        conc: 8,
-        seconds: 5,
-        body_bytes: 1024,
-        cacheable: false,
-        only: "all".to_string(),
-        no_keepalive: false,
-        replay_file: None,
-        rtt_file: None,
-        speed: 1.0,
-        replay_secs: 0,
-        admin: None,
-    };
-    let mut it = std::env::args().skip(1);
-    while let Some(a) = it.next() {
-        let mut value = || it.next().unwrap_or_else(|| usage());
-        match a.as_str() {
-            "--proxy" => args.proxy = Some(value()),
-            "--conc" => args.conc = value().parse().unwrap_or_else(|_| usage()),
-            "--seconds" => args.seconds = value().parse().unwrap_or_else(|_| usage()),
-            "--body-bytes" => args.body_bytes = value().parse().unwrap_or_else(|_| usage()),
-            "--cacheable" => args.cacheable = true,
-            "--only" => args.only = value(),
-            "--no-keepalive" => args.no_keepalive = true,
-            "--replay-file" => args.replay_file = Some(value()),
-            "--rtt-file" => args.rtt_file = Some(value()),
-            "--speed" => args.speed = value().parse().unwrap_or_else(|_| usage()),
-            "--replay-secs" => args.replay_secs = value().parse().unwrap_or_else(|_| usage()),
-            "--admin" => args.admin = Some(value()),
-            "-h" | "--help" => usage(),
-            _ => usage(),
-        }
-    }
-    if args.conc == 0 || args.seconds == 0 || !(args.speed.is_finite() && args.speed > 0.0) {
-        usage();
-    }
-    args
-}
-
-// ---------------------------------------------------------------- オリジン
-
-/// 固定応答を 1 回の `write_all` で返す keep-alive オリジン。
-fn spawn_origin(body_bytes: usize, cacheable: bool) -> io::Result<SocketAddr> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let addr = listener.local_addr()?;
-    let body = vec![b'x'; body_bytes];
-    let mut response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\
-         Cache-Control: {}\r\n\r\n",
-        body.len(),
-        if cacheable { "max-age=60" } else { "no-store" }
-    )
-    .into_bytes();
-    response.extend_from_slice(&body);
-    let response = Arc::new(response);
-    thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let response = Arc::clone(&response);
-            thread::spawn(move || {
-                let _ = stream.set_nodelay(true);
-                let _ = serve_origin(stream, &response);
-            });
-        }
-    });
-    Ok(addr)
-}
-
-/// 要求ヘッダーを読み飛ばし、1 要求ごとに固定応答を返す (本文付きの要求は来ない前提)。
-fn serve_origin(mut stream: TcpStream, response: &[u8]) -> io::Result<()> {
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut line = String::new();
-    loop {
-        let mut headers = 0usize;
-        loop {
-            line.clear();
-            if reader.read_line(&mut line)? == 0 {
-                return Ok(());
-            }
-            if line == "\r\n" || line == "\n" {
-                break;
-            }
-            headers += 1;
-            if headers > 256 {
-                return Ok(());
-            }
-        }
-        stream.write_all(response)?;
-    }
-}
-
-/// 接続されたら相手が閉じるまで送り続ける (トンネルのスループット用)。
-///
-/// 受ける側が `--seconds` 秒で切るので、この関数は量では止まらない。
-fn spawn_blaster() -> io::Result<SocketAddr> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let addr = listener.local_addr()?;
-    thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            thread::spawn(move || {
-                let _ = stream.set_nodelay(true);
-                let chunk = vec![b'y'; 1 << 20];
-                let mut stream = stream;
-                while stream.write_all(&chunk).is_ok() {
-                    // 受ける側が切るまで送り続ける (量では止まらない)
-                }
-                let _ = stream.shutdown(Shutdown::Both);
-            });
-        }
-    });
-    Ok(addr)
-}
-
-/// 接続されたらすぐ閉じる (短命トンネルの相手)。
-fn spawn_sink() -> io::Result<SocketAddr> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let addr = listener.local_addr()?;
-    thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let _ = stream.shutdown(Shutdown::Both);
-        }
-    });
-    Ok(addr)
-}
-
-/// 接続を受けて持ち続けるだけのリスナー (アイドルトンネルの相手)。
-/// 読みも書きも閉じもしないので、トンネルは両方向とも暇なまま残る。
-fn spawn_holder() -> io::Result<SocketAddr> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let addr = listener.local_addr()?;
-    thread::spawn(move || {
-        // 1 本 1 スレッドにすると 5,000 スレッドになるので、受けたら Vec に積むだけ
-        let mut held: Vec<TcpStream> = Vec::new();
-        for stream in listener.incoming().flatten() {
-            held.push(stream);
-        }
-    });
-    Ok(addr)
-}
-
-// ---------------------------------------------------------------- 集計
-
-struct Report {
-    ops: u64,
-    bytes: u64,
-    elapsed: Duration,
-    latencies_us: Vec<u32>,
-}
-
-impl Report {
-    fn percentile(&self, p: f64) -> f64 {
-        if self.latencies_us.is_empty() {
-            return 0.0;
-        }
-        let idx = ((self.latencies_us.len() - 1) as f64 * p).round() as usize;
-        self.latencies_us[idx] as f64 / 1000.0
-    }
-
-    /// `--only connect-multi` 用の 1 行 (p50 / p95 / **max**)。
-    ///
-    /// この経路で読みたいのは「250 ms を払ったか」なので、p99 より **max** が効く
-    /// (1 本目だけ払って以後は払わない、が正しい姿)。**`(N ops in X.Xs)` の形は
-    /// [`Report::print`] と揃える** (`scripts/cpu-per-request.sh` がこの括弧から
-    /// 操作数を読んで CPU/本 を出す)。
-    fn print_multi(&self, label: &str) {
-        let secs = self.elapsed.as_secs_f64().max(1e-9);
-        println!(
-            "{:<8} {:>9.0} op/s  p50 {:>8.3} ms  p95 {:>8.3} ms  max {:>8.3} ms  ({} ops in {:.1}s)",
-            label,
-            self.ops as f64 / secs,
-            self.percentile(0.50),
-            self.percentile(0.95),
-            self.percentile(1.0),
-            self.ops,
-            secs,
-        );
-    }
-
-    fn print(&self, label: &str) {
-        let secs = self.elapsed.as_secs_f64().max(1e-9);
-        println!(
-            "{:<8} {:>9.0} op/s  {:>8.1} MiB/s  p50 {:>7.3} ms  p99 {:>7.3} ms  ({} ops in {:.1}s)",
-            label,
-            self.ops as f64 / secs,
-            self.bytes as f64 / secs / (1024.0 * 1024.0),
-            self.percentile(0.50),
-            self.percentile(0.99),
-            self.ops,
-            secs,
-        );
-    }
-}
-
-/// `conc` 本のスレッドで `seconds` 秒だけ `work` を回す。`work` は 1 回の操作の
-/// (バイト数) を返し、レイテンシは呼び出し側で測る。
-fn run_load<F>(conc: usize, seconds: u64, work: F) -> Report
-where
-    F: Fn(&AtomicBool, &mut Vec<u32>, &mut u64) + Send + Sync + 'static,
-{
-    let stop = Arc::new(AtomicBool::new(false));
-    let work = Arc::new(work);
-    let started = Instant::now();
-    let mut handles = Vec::with_capacity(conc);
-    for _ in 0..conc {
-        let stop = Arc::clone(&stop);
-        let work = Arc::clone(&work);
-        handles.push(thread::spawn(move || {
-            let mut lat = Vec::new();
-            let mut bytes = 0u64;
-            work(&stop, &mut lat, &mut bytes);
-            (lat, bytes)
-        }));
-    }
-    thread::sleep(Duration::from_secs(seconds));
-    stop.store(true, Ordering::Relaxed);
-    let mut latencies_us = Vec::new();
-    let mut bytes = 0u64;
-    for h in handles {
-        if let Ok((lat, b)) = h.join() {
-            latencies_us.extend(lat);
-            bytes += b;
-        }
-    }
-    let elapsed = started.elapsed();
-    latencies_us.sort_unstable();
-    Report {
-        ops: latencies_us.len() as u64,
-        bytes,
-        elapsed,
-        latencies_us,
-    }
-}
-
-// ---------------------------------------------------------------- HTTP
-
-/// 応答を 1 つ読み切る。戻り値は読んだバイト数と keep-alive 可否。
-fn read_response(reader: &mut BufReader<TcpStream>, line: &mut String) -> io::Result<(u64, bool)> {
-    let mut total = 0u64;
-    let mut length: Option<u64> = None;
-    let mut keep = true;
-    loop {
-        line.clear();
-        let n = reader.read_line(line)?;
-        if n == 0 {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
-        }
-        total += n as u64;
-        if line == "\r\n" || line == "\n" {
-            break;
-        }
-        if let Some((k, v)) = line.split_once(':') {
-            if k.eq_ignore_ascii_case("content-length") {
-                length = v.trim().parse().ok();
-            } else if k.eq_ignore_ascii_case("connection") && v.trim().eq_ignore_ascii_case("close")
-            {
-                keep = false;
-            }
-        }
-    }
-    let mut body = vec![0u8; 64 * 1024];
-    let mut left = length.unwrap_or(0);
-    while left > 0 {
-        let want = left.min(body.len() as u64) as usize;
-        reader.read_exact(&mut body[..want])?;
-        left -= want as u64;
-        total += want as u64;
-    }
-    Ok((total, keep))
-}
-
-/// keep-alive で HTTP 要求を投げ続ける負荷。`request` は 1 要求ぶんのバイト列。
-fn http_load(
-    target: SocketAddr,
-    request: Vec<u8>,
-    conc: usize,
-    seconds: u64,
-    keepalive: bool,
-) -> Report {
-    run_load(conc, seconds, move |stop, lat, bytes| {
-        let mut conn: Option<(TcpStream, BufReader<TcpStream>)> = None;
-        let mut line = String::new();
-        while !stop.load(Ordering::Relaxed) {
-            if conn.is_none() {
-                let Ok(s) = TcpStream::connect(target) else {
-                    thread::sleep(Duration::from_millis(5));
-                    continue;
-                };
-                let _ = s.set_nodelay(true);
-                let Ok(clone) = s.try_clone() else { continue };
-                conn = Some((s, BufReader::new(clone)));
-            }
-            let (sock, reader) = conn.as_mut().expect("connected");
-            let t0 = Instant::now();
-            let outcome = sock
-                .write_all(&request)
-                .and_then(|()| read_response(reader, &mut line));
-            match outcome {
-                Ok((n, keep)) => {
-                    lat.push(t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
-                    *bytes += n;
-                    if !keep || !keepalive {
-                        conn = None;
-                    }
-                }
-                Err(_) => conn = None,
-            }
-        }
-    })
-}
-
-/// CONNECT を張って 200 応答まで読む。
-///
-/// `target` は**文字列**。IP リテラル (`127.0.0.1:38123`) なら
-/// プロキシは名前解決を通らず、名前 (`multi.test:38123`) なら通る
-/// (`--only connect` と `--only connect-multi` の違いはここだけ)。
-fn open_tunnel(proxy: SocketAddr, target: &str) -> io::Result<(TcpStream, BufReader<TcpStream>)> {
-    let mut sock = TcpStream::connect(proxy)?;
-    sock.set_nodelay(true)?;
-    let req = format!("CONNECT {0} HTTP/1.1\r\nHost: {0}\r\n\r\n", target);
-    sock.write_all(req.as_bytes())?;
-    let mut reader = BufReader::new(sock.try_clone()?);
-    let mut line = String::new();
-    let mut status_ok = false;
-    let mut first = true;
-    loop {
-        line.clear();
-        if reader.read_line(&mut line)? == 0 {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
-        }
-        if first {
-            status_ok = line.contains(" 200 ");
-            first = false;
-        }
-        if line == "\r\n" || line == "\n" {
-            break;
-        }
-    }
-    if !status_ok {
-        return Err(io::Error::other("CONNECT was refused"));
-    }
-    Ok((sock, reader))
-}
-
-/// 張ったトンネルを `seconds` 秒読み続け、受け取ったバイト数を返す。
-///
-/// 読み終わったら**その場で切る**。切らないと blaster が送り続けたまま
-/// 次のモードの計測に混ざる。
-fn drain_tunnel(sock: TcpStream, mut reader: BufReader<TcpStream>, seconds: u64) -> u64 {
-    let mut buf = vec![0u8; TUNNEL_READ_BYTES];
-    let deadline = Duration::from_secs(seconds);
-    let t0 = Instant::now();
-    let mut got = 0u64;
-    loop {
-        match reader.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => got += n as u64,
-        }
-        if t0.elapsed() >= deadline {
-            break;
-        }
-    }
-    let _ = sock.shutdown(Shutdown::Both);
-    got
-}
-
-/// CONNECT を張り、`200` を読み切ったソケットだけを返す (`BufReader` を残さない)。
-///
-/// アイドルトンネルを 5,000 本握るモード用。[`open_tunnel`] は 1 本につき
-/// `try_clone` した記述子と 8 KiB の `BufReader` を持つので、本数ぶん積むと
-/// ベンチ側が先に重くなる。CONNECT の応答のあとには何も続かないので 1 バイトずつ読む。
-fn open_tunnel_bare(proxy: SocketAddr, target: SocketAddr) -> io::Result<TcpStream> {
-    let mut sock = TcpStream::connect(proxy)?;
-    sock.set_nodelay(true)?;
-    let req = format!("CONNECT {0} HTTP/1.1\r\nHost: {0}\r\n\r\n", target);
-    sock.write_all(req.as_bytes())?;
-    let mut head = Vec::with_capacity(64);
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        if sock.read(&mut byte)? == 0 {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
-        }
-        head.push(byte[0]);
-        if head.len() > 4096 {
-            return Err(io::Error::other("CONNECT response header too long"));
-        }
-    }
-    if !head.starts_with(b"HTTP/1.1 200") {
-        return Err(io::Error::other("CONNECT was refused"));
-    }
-    Ok(sock)
-}
-
-/// `conc` 本の CONNECT を張り、`seconds` 秒そのまま握る。
-///
-/// プロキシ側の「アイドルなトンネル 1 本あたりのスレッドと RSS」を見るためのモード。
-/// 5,000 本張るので、ベンチ側は 1 スレッドで接続を `Vec` に持つ (5,000 スレッドを作らない)。
-/// プロキシの `PROXY_MAX_CONNS` (既定 4096) に当たるので、測るときは `0` か 8192 にする。
-fn idle_tunnels(proxy: SocketAddr, conc: usize, seconds: u64) {
-    let holder = spawn_holder().expect("holder");
-    let mut held: Vec<TcpStream> = Vec::with_capacity(conc);
-    let mut latencies_us: Vec<u32> = Vec::with_capacity(conc);
-    let mut failed = 0usize;
-    let started = Instant::now();
-    for _ in 0..conc {
-        let t0 = Instant::now();
-        match open_tunnel_bare(proxy, holder) {
-            Ok(sock) => {
-                latencies_us.push(t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
-                held.push(sock);
-            }
-            Err(_) => failed += 1,
-        }
-    }
-    let opened = started.elapsed();
-    println!(
-        "idle-tun {} tunnels open in {:.1}s ({} failed); holding {}s",
-        held.len(),
-        opened.as_secs_f64(),
-        failed,
-        seconds
-    );
-    // 握ったまま待つ (この間にプロキシのスレッド数と RSS を見る)
-    thread::sleep(Duration::from_secs(seconds));
-    // 握れた本数を「操作数」として出す (scripts/cpu-per-request.sh がこの行から読む)
-    latencies_us.sort_unstable();
-    Report {
-        ops: held.len() as u64,
-        bytes: 0,
-        elapsed: started.elapsed(),
-        latencies_us,
-    }
-    .print("idle-tun");
-    drop(held);
-}
-
-/// keep-alive 接続を 1 本張り、**1 要求だけ通してから**そのソケットを返す。
-///
-/// 応答を読むための [`BufReader`] (と `try_clone` した記述子) はここで捨てる。
-/// 2,000 本ぶん抱えるとベンチ側が先に重くなるため ([`open_tunnel_bare`] と同じ理由)。
-/// 応答のあとに続くものは無いので、捨てても取りこぼさない。
-fn open_idle_conn(proxy: SocketAddr, request: &[u8], line: &mut String) -> io::Result<TcpStream> {
-    let mut sock = TcpStream::connect(proxy)?;
-    sock.set_nodelay(true)?;
-    let mut reader = BufReader::new(sock.try_clone()?);
-    sock.write_all(request)?;
-    let (_, keep) = read_response(&mut reader, line)?;
-    if !keep {
-        return Err(io::Error::other("proxy closed the keep-alive connection"));
-    }
-    drop(reader);
-    Ok(sock)
-}
-
-/// `conc` 本の keep-alive 接続を張り、**1 要求ずつ通してから** `seconds` 秒そのまま握る。
-///
-/// プロキシ側の「暇な keep-alive 接続 1 本あたりのスレッドと RSS」を見るためのモード
-/// ([`idle_tunnels`] の HTTP 版)。2,000 本張るので、ベンチ側は **1 スレッドで接続を `Vec` に持つ**
-/// (2,000 スレッドを作らない)。プロキシの `PROXY_MAX_CONNS` に当たるので、測るときは 8192 にする。
-///
-/// **1 要求通してから暇にするのが大事**。要求を 1 本も通していない接続はプロキシから見ると
-/// 「まだ 1 バイトも読んでいない接続」で、預ける仕組み (T6.5 の猶予) にかかる状態が違う。
-/// 見たいのは「1 要求通したあと暇になった接続」の方なので、必ず 1 往復させてから握る。
-///
-/// **握る時間はプロキシの `PROXY_KEEPALIVE_SECS` (既定 15 秒) より短くすること。**
-/// 越えると預かり所が期限切れで閉じてしまい、途中から本数が減った状態を測ることになる。
-/// 最後に「まだ生きている本数」を印字するので、減っていればその行で分かる。
-fn idle_conns(proxy: SocketAddr, origin: SocketAddr, conc: usize, seconds: u64) {
-    let request = format!("GET http://{0}/ HTTP/1.1\r\nHost: {0}\r\n\r\n", origin).into_bytes();
-    let mut held: Vec<TcpStream> = Vec::with_capacity(conc);
-    let mut latencies_us: Vec<u32> = Vec::with_capacity(conc);
-    let mut line = String::new();
-    let mut failed = 0usize;
-    let started = Instant::now();
-    for _ in 0..conc {
-        let t0 = Instant::now();
-        match open_idle_conn(proxy, &request, &mut line) {
-            Ok(sock) => {
-                latencies_us.push(t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
-                held.push(sock);
-            }
-            Err(_) => failed += 1,
-        }
-    }
-    let opened = started.elapsed();
-    println!(
-        "idle-con {} keep-alive conns open (1 request each) in {:.1}s ({} failed); holding {}s",
-        held.len(),
-        opened.as_secs_f64(),
-        failed,
-        seconds
-    );
-    // 握ったまま待つ (この間にプロキシのスレッド数と RSS を見る)
-    thread::sleep(Duration::from_secs(seconds));
-    // まだ生きている本数を数える。プロキシは黙っているはずなので、生きていれば
-    // ノンブロッキングの read が WouldBlock、閉じられていれば 0 バイトの EOF になる。
-    let mut alive = 0usize;
-    let mut byte = [0u8; 1];
-    for sock in &held {
-        let _ = sock.set_nonblocking(true);
-        let mut r: &TcpStream = sock;
-        if matches!(r.read(&mut byte), Err(ref e) if e.kind() == io::ErrorKind::WouldBlock) {
-            alive += 1;
-        }
-    }
-    println!(
-        "idle-con {} of {} still open after {}s",
-        alive,
-        held.len(),
-        seconds
-    );
-    // 握れた本数を「操作数」として出す (scripts/cpu-per-request.sh がこの行から読む)
-    latencies_us.sort_unstable();
-    Report {
-        ops: held.len() as u64,
-        bytes: 0,
-        elapsed: started.elapsed(),
-        latencies_us,
-    }
-    .print("idle-con");
-    drop(held);
-}
-
-// ---------------------------------------------- システムコールの実費 (--only syscall-cost)
-
-/// この機械での「1 回のシステムコールの実費」を測る隠しモード (T10.3 用)。
-///
-/// プロキシもオリジンも使わない。loopback の TCP ソケット対を自分で作り、
-/// `sendto` / `recvfrom` を何もしないループで回して 1 回あたりの CPU を出す。
-/// 見るのは **`/proc/self/task/<tid>/stat` の utime / stime** で、`strace` は使わない
-/// (`strace` は 1 回のコストを大きく変えてしまうので、回数を数える用)。
-///
-/// **必ず `taskset` で固定して走らせること。** この機械は big.LITTLE で、
-/// システムコールのコストが cpu0-3 (Cortex-A55) と cpu4-7 (Cortex-A78) で 2 倍以上違う。
-///
-/// ```text
-/// taskset -c 4-7 bench --only syscall-cost --seconds 3
-/// ```
-#[cfg(target_os = "linux")]
-mod syscost {
-    use std::ffi::{c_int, c_void};
-    use std::io::{Read, Write};
-    use std::net::{Shutdown, TcpListener, TcpStream};
-    use std::os::fd::AsRawFd;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::thread;
-    use std::time::{Duration, Instant};
-
-    // 外部クレートは使わない (TODO.md §0)。crates/sys/src/sys.rs と同じ形で宣言する。
-    unsafe extern "C" {
-        fn getppid() -> c_int;
-        fn gettid() -> c_int;
-        fn sysconf(name: c_int) -> i64;
-        fn setsockopt(
-            fd: c_int,
-            level: c_int,
-            name: c_int,
-            value: *const c_void,
-            len: u32, // socklen_t
-        ) -> c_int;
-        fn sched_setaffinity(pid: c_int, size: usize, mask: *const u64) -> c_int;
-    }
-
-    /// `_SC_CLK_TCK` (glibc)。`/proc/<pid>/stat` の utime / stime の単位。
-    const SC_CLK_TCK: c_int = 2;
-    const SOL_SOCKET: c_int = 1;
-    const SO_SNDBUF: c_int = 7;
-    const SO_RCVBUF: c_int = 8;
-
-    /// ソケットバッファを広げる。既定の送信バッファは 16 KiB しかないので、
-    /// 64 KiB を 1 回で送るモードが「相手が読むまで待つ」形になってしまう
-    /// (同じスレッドで送って受けるので、待たれると止まる)。
-    fn set_bufs(s: &TcpStream, bytes: c_int) {
-        for name in [SO_SNDBUF, SO_RCVBUF] {
-            // SAFETY: 有効な fd と、c_int 1 つぶんの正しい長さを渡している。
-            unsafe {
-                setsockopt(
-                    s.as_raw_fd(),
-                    SOL_SOCKET,
-                    name,
-                    (&raw const bytes).cast::<c_void>(),
-                    size_of::<c_int>() as u32,
-                );
-            }
-        }
-    }
-
-    /// 呼んだスレッドを `mask` の cpu に固定する (0x0f = cpu0-3、0xf0 = cpu4-7)。
-    fn pin(mask: u64) -> bool {
-        // SAFETY: pid 0 = 自スレッド。mask は 8 バイトの有効な領域で、長さを渡している。
-        unsafe { sched_setaffinity(0, size_of::<u64>(), &raw const mask) == 0 }
-    }
-
-    /// このスレッドの utime + stime (tick)。プロセス全体ではなくスレッド単位で見るので、
-    /// 相手役のスレッドの CPU が混ざらない。
-    fn cpu_ticks() -> (u64, u64) {
-        // SAFETY: 引数の無いシステムコール。
-        let tid = unsafe { gettid() };
-        let stat =
-            std::fs::read_to_string(format!("/proc/self/task/{}/stat", tid)).unwrap_or_default();
-        // comm に空白や ')' が入りうるので、最後の ')' から後ろを見る
-        let rest = stat.rsplit_once(')').map(|(_, r)| r).unwrap_or("");
-        let f: Vec<&str> = rest.split_whitespace().collect();
-        // rest の先頭は 3 番目のフィールド (state) なので、utime は 14 - 3、stime は 15 - 3
-        let get = |i: usize| f.get(i).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-        (get(11), get(12))
-    }
-
-    fn us_per_tick() -> f64 {
-        // SAFETY: 定数を渡すだけ。
-        let tck = unsafe { sysconf(SC_CLK_TCK) };
-        if tck > 0 { 1e6 / tck as f64 } else { 10_000.0 }
-    }
-
-    /// 1 行ぶんの計測結果。`calls` は 1 周で発行するシステムコールの数。
-    struct Row {
-        what: String,
-        bytes: usize,
-        calls: usize,
-        iters: u64,
-        user_us: f64,
-        kern_us: f64,
-        wall_us: f64,
-    }
-
-    impl Row {
-        fn print(&self) {
-            let cpu = self.user_us + self.kern_us;
-            println!(
-                "{:<24} {:>6} B  {} call  {:>7.3} us/iter (user {:>6.3} / kernel {:>6.3})  \
-                 {:>7.3} us/call  wall {:>7.3}  {} iters",
-                self.what,
-                self.bytes,
-                self.calls,
-                cpu,
-                self.user_us,
-                self.kern_us,
-                cpu / self.calls as f64,
-                self.wall_us,
-                self.iters,
-            );
-        }
-    }
-
-    /// `dur` のあいだ `f` を回し、1 周あたりの CPU を返す。
-    /// 時計を毎回見ると (vDSO でも) 数十 ns の下駄をはくので、64 周ごとに見る。
-    fn measure(
-        what: String,
-        bytes: usize,
-        calls: usize,
-        dur: Duration,
-        mut f: impl FnMut(),
-    ) -> Row {
-        let us = us_per_tick();
-        let (u0, s0) = cpu_ticks();
-        let t0 = Instant::now();
-        let mut iters = 0u64;
-        loop {
-            for _ in 0..64 {
-                f();
-            }
-            iters += 64;
-            if t0.elapsed() >= dur {
-                break;
-            }
-        }
-        let wall = t0.elapsed();
-        let (u1, s1) = cpu_ticks();
-        let n = iters as f64;
-        Row {
-            what,
-            bytes,
-            calls,
-            iters,
-            user_us: (u1 - u0) as f64 * us / n,
-            kern_us: (s1 - s0) as f64 * us / n,
-            wall_us: wall.as_secs_f64() * 1e6 / n,
-        }
-    }
-
-    /// loopback の TCP 接続を 1 本作る (両端を返す)。
-    fn pair(bufs: c_int) -> (TcpStream, TcpStream) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let a = TcpStream::connect(listener.local_addr().expect("addr")).expect("connect");
-        let (b, _) = listener.accept().expect("accept");
-        for s in [&a, &b] {
-            let _ = s.set_nodelay(true);
-            set_bufs(s, bufs);
-            // 保険。相手が読んでくれないと止まってしまう形の測り方をするので、
-            // 詰まったら待ち続けずに落とす (プロキシ本体も時間制限つきで読み書きしている)
-            let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
-            let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
-        }
-        (a, b)
-    }
-
-    /// 送って受ける相手役のスレッド。`mask` が 0 でなければその cpu に固定する。
-    fn echo(
-        mut b: TcpStream,
-        bytes: usize,
-        mask: u64,
-        stop: Arc<AtomicBool>,
-    ) -> thread::JoinHandle<()> {
-        thread::spawn(move || {
-            if mask != 0 {
-                pin(mask);
-            }
-            let mut buf = vec![0u8; bytes];
-            while !stop.load(Ordering::Relaxed) {
-                let mut got = 0usize;
-                while got < bytes {
-                    match b.read(&mut buf[got..]) {
-                        Ok(0) | Err(_) => return,
-                        Ok(n) => got += n,
-                    }
-                }
-                if b.write_all(&buf).is_err() {
-                    return;
-                }
-            }
-        })
-    }
-
-    pub fn run(seconds: u64) {
-        let dur = Duration::from_secs(seconds.max(1));
-        println!(
-            "syscall-cost: {}s per row, {} tick/s (このスレッドの utime+stime を周回数で割った値)",
-            dur.as_secs(),
-            (1e6 / us_per_tick()).round() as u64
-        );
-
-        // 1. 何もしないシステムコール = 出入りだけの床
-        measure("getppid".into(), 0, 1, dur, || {
-            // SAFETY: 引数の無いシステムコール。
-            unsafe {
-                getppid();
-            }
-        })
-        .print();
-
-        // 2. プールの生存確認と同じ形: 空のソケットへの recv(MSG_PEEK|MSG_DONTWAIT)
-        {
-            let (a, _b) = pair(1 << 20);
-            a.set_nonblocking(true).expect("nonblocking");
-            let mut byte = [0u8; 1];
-            measure("recv peek EAGAIN".into(), 1, 1, dur, || {
-                let _ = a.peek(&mut byte);
-            })
-            .print();
-        }
-
-        // 3. 送って受ける (同じスレッド)。loopback は sendto の中で受信側の TCP 処理まで
-        //    済ませるので、続く recvfrom は待たずに全部返る = 寝起きが入っていない値
-        for bytes in [64usize, 1024, 4096, 16384, 65536] {
-            let (mut a, mut b) = pair(1 << 20);
-            let out = vec![b'x'; bytes];
-            let mut inbuf = vec![0u8; bytes];
-            let mut recvs = 0u64;
-            let row = measure("sendto+recvfrom".into(), bytes, 2, dur, || {
-                a.write_all(&out).expect("send");
-                let mut got = 0usize;
-                while got < bytes {
-                    match b.read(&mut inbuf[got..]) {
-                        Ok(0) => break,
-                        Ok(n) => got += n,
-                        Err(e) => panic!("recv: {}", e),
-                    }
-                    recvs += 1;
-                }
-            });
-            row.print();
-            // 1 周で recvfrom が 2 回以上に分かれていたら、us/call の分母が違う
-            if recvs > row.iters {
-                println!("  (recvfrom {:.2} 回/周)", recvs as f64 / row.iters as f64);
-            }
-            let _ = a.shutdown(Shutdown::Both);
-            let _ = b.shutdown(Shutdown::Both);
-        }
-
-        // 3b. sendto と recvfrom の切り分け。1 周の中で片方だけ回数を増やし、
-        //     増えたぶんの傾きから 1 回ぶんを出す (64 B なのでコピー量の差は無視できる)。
-        //     8 回送って 1 回で受ける → 傾きは sendto 1 回ぶん
-        {
-            let (mut a, mut b) = pair(1 << 20);
-            let out = vec![b'x'; 64];
-            let mut inbuf = vec![0u8; 64 * 8];
-            measure("sendto x8 + recvfrom".into(), 64, 9, dur, || {
-                for _ in 0..8 {
-                    a.write_all(&out).expect("send");
-                }
-                let mut got = 0usize;
-                while got < 64 * 8 {
-                    match b.read(&mut inbuf[got..]) {
-                        Ok(0) => break,
-                        Ok(n) => got += n,
-                        Err(e) => panic!("recv: {}", e),
-                    }
-                }
-            })
-            .print();
-            let _ = a.shutdown(Shutdown::Both);
-        }
-        // 1 回で送って 8 回に分けて受ける → 傾きは recvfrom 1 回ぶん
-        {
-            let (mut a, mut b) = pair(1 << 20);
-            let out = vec![b'x'; 64 * 8];
-            let mut inbuf = [0u8; 64];
-            measure("sendto + recvfrom x8".into(), 64, 9, dur, || {
-                a.write_all(&out).expect("send");
-                for _ in 0..8 {
-                    let mut got = 0usize;
-                    while got < 64 {
-                        match b.read(&mut inbuf[got..]) {
-                            Ok(0) => break,
-                            Ok(n) => got += n,
-                            Err(e) => panic!("recv: {}", e),
-                        }
-                    }
-                }
-            })
-            .print();
-            let _ = a.shutdown(Shutdown::Both);
-        }
-
-        // 4. 2 スレッドの往復。測るのはこのスレッドだけなので 1 周 = sendto 1 + recvfrom 1
-        //    + 「寝て起こされる」1 回。3. との差がそのぶん。
-        //    相手役を cpu0-3 に置くと、プロキシ (cpu4-7) がベンチ (cpu0-3) を起こす本番と同じ形になる
-        for (label, mask) in [("pingpong echo@4-7", 0xf0u64), ("pingpong echo@0-3", 0x0f)] {
-            for bytes in [64usize, 1024] {
-                let (mut a, b) = pair(1 << 20);
-                let stop = Arc::new(AtomicBool::new(false));
-                let h = echo(b, bytes, mask, Arc::clone(&stop));
-                let out = vec![b'x'; bytes];
-                let mut inbuf = vec![0u8; bytes];
-                measure(label.into(), bytes, 2, dur, || {
-                    a.write_all(&out).expect("send");
-                    let mut got = 0usize;
-                    while got < bytes {
-                        match a.read(&mut inbuf[got..]) {
-                            Ok(0) => panic!("echo closed"),
-                            Ok(n) => got += n,
-                            Err(e) => panic!("recv: {}", e),
-                        }
-                    }
-                })
-                .print();
-                stop.store(true, Ordering::Relaxed);
-                let _ = a.shutdown(Shutdown::Both);
-                let _ = h.join();
-            }
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-mod syscost {
-    /// Linux 以外では測らない (`/proc/self/task/<tid>/stat` が無い)。
-    pub fn run(_seconds: u64) {
-        println!("syscall-cost: linux only");
-    }
-}
-
-/// `--only connect-multi` の宛先の名前。
-///
-/// `scripts/deployed-like.sh` が名前空間の中の `/etc/hosts` に
-/// **AAAA (黒穴) と A (生きているループバック) の 2 行**で置く。
-/// この名前はどの実在のドメインとも衝突しない (`.test` は RFC 6761 の予約)。
-const MULTI_HOST: &str = "multi.test";
-
-/// 名前宛ての CONNECT を `--seconds` 秒張り続ける (`--only connect-multi`)。
-///
-/// `--only connect` との違いは**宛先だけ**で、IP リテラルではなく名前を書く。プロキシ側では候補が 2 つ (黒穴の AAAA と生きている A) になるので
-/// **Happy Eyeballs の本体** (`crates/net-conn/src/net.rs` の `connect_candidates`) を通る。
-/// `--only connect` は候補が 1 つ (`addrs.len() == 1`) の短絡に入るため、この経路は
-/// Phase 12 まで一度も手元で測れていなかった (T10.1 が「無罪」と結論した理由。T14.16)。
-///
-/// 出す数字は **1 本目の確立時間**と、そのあとの p50 / p95 / max。
-/// T12.1 より前のプロキシは毎回 `STAGGER` の 250 ms を払い、今のプロキシは
-/// 1 本目だけ払って以後は払わない (= p50 が 1 ms 未満)。
-///
-/// **`--conc` は 3 以上にすること。** T12.1 の「全体で 3 回続けて負けたら IPv4 を先頭」は
-/// 1 本目の負けを数えるが、2 本目からはホストごとの記憶 (`last_win_v6`) が効いて
-/// そもそも IPv6 を試さない。同時に走り出した `--conc` 本ぶんだけが「まだ誰も負けていない」
-/// 状態で賭けるので、`/status` の `v4_first` が立つのは `--conc >= 3` のときだけ。
-fn connect_multi(proxy: SocketAddr, conc: usize, seconds: u64) {
-    let sink = spawn_sink().expect("sink");
-    let target = format!("{}:{}", MULTI_HOST, sink.port());
-    // 名前が引けない機械 (= `scripts/deployed-like.sh` の外) では測らずに終わる。
-    // 終了コード 2 は「この機械では測れない」の意味で、スクリプトが見分けられる。
-    let addrs: Vec<SocketAddr> = match (MULTI_HOST, sink.port()).to_socket_addrs() {
-        Ok(it) => it.collect(),
-        Err(e) => {
-            println!(
-                "connect-multi: cannot resolve {} ({}); run it inside scripts/deployed-like.sh",
-                MULTI_HOST, e
-            );
-            std::process::exit(2);
-        }
-    };
-    let v6 = addrs.iter().find(|a| a.is_ipv6());
-    let v4 = addrs.iter().find(|a| a.is_ipv4());
-    let (Some(v6), Some(v4)) = (v6, v4) else {
-        println!(
-            "connect-multi: {} needs one AAAA and one A, got {:?}; \
-             run it inside scripts/deployed-like.sh",
-            MULTI_HOST, addrs
-        );
-        std::process::exit(2);
-    };
-    println!(
-        "cnct-mlt target {} -> {} (v6, blackholed) + {} (v4, alive)",
-        target,
-        v6.ip(),
-        v4.ip()
-    );
-    // 各スレッドの **1 本目**だけ別に集める (まだ誰も負けていない状態で張る 1 本)。
-    // 触るのはスレッドあたり 1 回だけなので、熱い経路に錠は入らない。
-    let firsts = Arc::new(Mutex::new(Vec::<u32>::new()));
-    let collector = Arc::clone(&firsts);
-    let report = run_load(conc, seconds, move |stop, lat, _bytes| {
-        let mut first = true;
-        while !stop.load(Ordering::Relaxed) {
-            let t0 = Instant::now();
-            match open_tunnel(proxy, &target) {
-                Ok((sock, _)) => {
-                    let us = t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
-                    if first {
-                        first = false;
-                        collector.lock().expect("firsts").push(us);
-                    }
-                    lat.push(us);
-                    let _ = sock.shutdown(Shutdown::Both);
-                }
-                Err(_) => thread::sleep(Duration::from_millis(2)),
-            }
-        }
-    });
-    let mut first = firsts.lock().expect("firsts").clone();
-    first.sort_unstable();
-    if first.is_empty() {
-        println!("cnct-mlt no CONNECT succeeded (is the proxy allowed to reach 127.0.0.1?)");
-        std::process::exit(2);
-    }
-    println!(
-        "cnct-mlt first {:>8.3} ms  (median of {} threads' first CONNECT; min {:.3} max {:.3})",
-        first[first.len() / 2] as f64 / 1000.0,
-        first.len(),
-        first[0] as f64 / 1000.0,
-        first[first.len() - 1] as f64 / 1000.0,
-    );
-    report.print_multi("cnct-mlt");
-}
+use args::Args;
+use http::{drain_tunnel, http_load, open_tunnel};
+use origin::{spawn_blaster, spawn_origin, spawn_sink};
+use report::run_load;
 
 fn parse_addr(s: &str) -> SocketAddr {
     use std::net::ToSocketAddrs;
@@ -1047,8 +62,94 @@ fn parse_addr(s: &str) -> SocketAddr {
         })
 }
 
+/// デプロイ先の個票の再生 (相手は自前の再生オリジンなので、固定応答オリジンは使わない)。
+fn replay_mode(args: &Args) {
+    let (Some(proxy), Some(file)) = (args.proxy.as_deref(), args.replay_file.as_deref()) else {
+        eprintln!("bench: --only replay needs --proxy and --replay-file");
+        args::usage();
+    };
+    let proxy = parse_addr(proxy);
+    replay::run(&replay::ReplayArgs {
+        proxy,
+        file,
+        rtt_file: args.rtt_file.as_deref(),
+        speed: args.speed,
+        limit_secs: args.replay_secs,
+        admin: args.admin.as_deref().map_or(proxy, parse_addr),
+    });
+}
+
+/// トンネル `conc` 本のスループット合計 (他のモードと同じく `seconds` 秒で終わる)。
+fn tunnel_mode(proxy: SocketAddr, conc: usize, seconds: u64) {
+    let blaster = spawn_blaster().expect("blaster");
+    let blaster = blaster.to_string();
+    // 2 本目以降を先に張ってスレッドへ渡し、**1 本目はこのスレッドで回す**。
+    // こうすると `--conc 1` では下の `for` が 1 度も回らず、スレッドを 1 本も
+    // 足さない元のままの経路になる (§2 の「トンネル 1 本」はこの条件の値なので、
+    // 並列を足したことで数字が動かないようにする)。
+    let mut readers = Vec::new();
+    let mut failed = 0usize;
+    for _ in 1..conc {
+        match open_tunnel(proxy, &blaster) {
+            Ok((sock, reader)) => {
+                readers.push(thread::spawn(move || drain_tunnel(sock, reader, seconds)));
+            }
+            Err(_) => failed += 1,
+        }
+    }
+    match open_tunnel(proxy, &blaster) {
+        Ok((sock, reader)) => {
+            let t0 = Instant::now();
+            let mut got = drain_tunnel(sock, reader, seconds);
+            let secs = t0.elapsed().as_secs_f64().max(1e-9);
+            for h in readers {
+                got += h.join().unwrap_or(0);
+            }
+            let live = conc - failed;
+            println!(
+                "{:<8} {:>9} op/s  {:>8.1} MiB/s  ({} MiB through {} tunnel{})",
+                "tunnel",
+                live,
+                got as f64 / secs / (1024.0 * 1024.0),
+                got / (1 << 20),
+                live,
+                if live == 1 { "" } else { "s" }
+            );
+            if failed > 0 {
+                println!("tunnel   {} of {} tunnels failed to open", failed, conc);
+            }
+        }
+        Err(e) => {
+            // 1 本目が張れなくても、先に張った 2 本目以降は流れている。
+            // 待たずに次のモードへ進むとその通信が混ざるので、ここで待つ
+            for h in readers {
+                let _ = h.join();
+            }
+            println!("tunnel   skipped: {}", e);
+        }
+    }
+}
+
+/// CONNECT の確立/秒 (短命トンネル)。
+fn connect_mode(proxy: SocketAddr, conc: usize, seconds: u64) {
+    let sink = spawn_sink().expect("sink").to_string();
+    run_load(conc, seconds, move |stop, lat, _bytes| {
+        while !stop.load(Ordering::Relaxed) {
+            let t0 = Instant::now();
+            match open_tunnel(proxy, &sink) {
+                Ok((sock, _)) => {
+                    lat.push(t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
+                    let _ = sock.shutdown(Shutdown::Both);
+                }
+                Err(_) => thread::sleep(Duration::from_millis(2)),
+            }
+        }
+    })
+    .print("connect");
+}
+
 fn main() {
-    let args = parse_args();
+    let args = args::parse_args();
 
     // システムコールの実費だけを測るモード (プロキシもオリジンも使わない)
     if args.only == "syscall-cost" {
@@ -1058,19 +159,7 @@ fn main() {
 
     // デプロイ先の個票の再生 (相手は自前の再生オリジンなので、下の固定応答オリジンは使わない)
     if args.only == "replay" {
-        let (Some(proxy), Some(file)) = (args.proxy.as_deref(), args.replay_file.as_deref()) else {
-            eprintln!("bench: --only replay needs --proxy and --replay-file");
-            usage();
-        };
-        let proxy = parse_addr(proxy);
-        replay::run(&replay::ReplayArgs {
-            proxy,
-            file,
-            rtt_file: args.rtt_file.as_deref(),
-            speed: args.speed,
-            limit_secs: args.replay_secs,
-            admin: args.admin.as_deref().map_or(proxy, parse_addr),
-        });
+        replay_mode(&args);
         return;
     }
 
@@ -1114,74 +203,24 @@ fn main() {
 
     // トンネル `--conc N` 本のスループット合計 (他のモードと同じく `--seconds` 秒で終わる)
     if want("tunnel") {
-        let blaster = spawn_blaster().expect("blaster");
-        let blaster = blaster.to_string();
-        // 2 本目以降を先に張ってスレッドへ渡し、**1 本目はこのスレッドで回す**。
-        // こうすると `--conc 1` では下の `for` が 1 度も回らず、スレッドを 1 本も
-        // 足さない元のままの経路になる (§2 の「トンネル 1 本」はこの条件の値なので、
-        // 並列を足したことで数字が動かないようにする)。
-        let mut readers = Vec::new();
-        let mut failed = 0usize;
-        for _ in 1..args.conc {
-            match open_tunnel(proxy, &blaster) {
-                Ok((sock, reader)) => {
-                    let seconds = args.seconds;
-                    readers.push(thread::spawn(move || drain_tunnel(sock, reader, seconds)));
-                }
-                Err(_) => failed += 1,
-            }
-        }
-        match open_tunnel(proxy, &blaster) {
-            Ok((sock, reader)) => {
-                let t0 = Instant::now();
-                let mut got = drain_tunnel(sock, reader, args.seconds);
-                let secs = t0.elapsed().as_secs_f64().max(1e-9);
-                for h in readers {
-                    got += h.join().unwrap_or(0);
-                }
-                let live = args.conc - failed;
-                println!(
-                    "{:<8} {:>9} op/s  {:>8.1} MiB/s  ({} MiB through {} tunnel{})",
-                    "tunnel",
-                    live,
-                    got as f64 / secs / (1024.0 * 1024.0),
-                    got / (1 << 20),
-                    live,
-                    if live == 1 { "" } else { "s" }
-                );
-                if failed > 0 {
-                    println!(
-                        "tunnel   {} of {} tunnels failed to open",
-                        failed, args.conc
-                    );
-                }
-            }
-            Err(e) => {
-                // 1 本目が張れなくても、先に張った 2 本目以降は流れている。
-                // 待たずに次のモードへ進むとその通信が混ざるので、ここで待つ
-                for h in readers {
-                    let _ = h.join();
-                }
-                println!("tunnel   skipped: {}", e);
-            }
-        }
+        tunnel_mode(proxy, args.conc, args.seconds);
     }
 
     // アイドルなトンネルを握り続ける (--only idle-tunnels のときだけ。all には入れない)
     if args.only == "idle-tunnels" {
-        idle_tunnels(proxy, args.conc, args.seconds);
+        idle::idle_tunnels(proxy, args.conc, args.seconds);
         return;
     }
 
     // 1 要求ずつ通した keep-alive 接続を握り続ける (--only idle-conns のときだけ。all には入れない)
     if args.only == "idle-conns" {
-        idle_conns(proxy, origin, args.conc, args.seconds);
+        idle::idle_conns(proxy, origin, args.conc, args.seconds);
         return;
     }
 
     // 名前宛ての CONNECT (--only connect-multi のときだけ。名前空間が要るので all には入れない)
     if args.only == "connect-multi" {
-        connect_multi(proxy, args.conc, args.seconds);
+        multi::connect_multi(proxy, args.conc, args.seconds);
         return;
     }
 
@@ -1189,47 +228,5 @@ fn main() {
     if !want("connect") {
         return;
     }
-    let sink = spawn_sink().expect("sink").to_string();
-    run_load(args.conc, args.seconds, move |stop, lat, _bytes| {
-        while !stop.load(Ordering::Relaxed) {
-            let t0 = Instant::now();
-            match open_tunnel(proxy, &sink) {
-                Ok((sock, _)) => {
-                    lat.push(t0.elapsed().as_micros().min(u32::MAX as u128) as u32);
-                    let _ = sock.shutdown(Shutdown::Both);
-                }
-                Err(_) => thread::sleep(Duration::from_millis(2)),
-            }
-        }
-    })
-    .print("connect");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `--only connect-multi` の行は p50 / p95 / **max** を出す (T14.16)。
-    /// max は `percentile(1.0)`。この経路で読みたいのは「250 ms を払った本があるか」なので、
-    /// p99 より max が効く (1 本目だけ払って以後は払わない、が正しい姿)。
-    #[test]
-    fn percentile_covers_median_p95_and_max() {
-        let r = Report {
-            ops: 5,
-            bytes: 0,
-            elapsed: Duration::from_secs(1),
-            latencies_us: vec![1_000, 2_000, 3_000, 4_000, 250_000],
-        };
-        assert_eq!(r.percentile(0.50), 3.0);
-        assert_eq!(r.percentile(0.95), 250.0);
-        assert_eq!(r.percentile(1.0), 250.0);
-        // 1 本も張れなかったときも落ちない
-        let empty = Report {
-            ops: 0,
-            bytes: 0,
-            elapsed: Duration::from_secs(1),
-            latencies_us: Vec::new(),
-        };
-        assert_eq!(empty.percentile(1.0), 0.0);
-    }
+    connect_mode(proxy, args.conc, args.seconds);
 }
