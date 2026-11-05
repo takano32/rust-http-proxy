@@ -154,7 +154,7 @@ sed 's/^/    除外: /;s/\t/ — /' "$W/snap-skip"
 python3 - <<'PY' >"$W/api-out"
 import re
 
-src = open('scripts/check-dashboard.js', encoding='utf-8').read()
+src = ''.join(open(p, encoding='utf-8').read() for p in ['scripts/check-dashboard.js'] + sorted(__import__('glob').glob('scripts/check-dashboard/[0-9][0-9]-*.js')))
 consts = dict(re.findall(r"const\s+(\w+)\s*=\s*\[([^\]]*)\];", src))
 pages = {}
 
