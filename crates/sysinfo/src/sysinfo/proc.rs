@@ -42,28 +42,14 @@ pub fn process_fds() -> Option<(u64, u64)> {
     Some((n, max_fds().unwrap_or(0)))
 }
 
-#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+/// `RLIMIT_NOFILE` のソフト上限。`getrlimit` を呼ぶのは `sys::max_open_files` の 1 か所だけにした
+/// (T.34.69。前はここにも同じ呼び出しがあり、cfg の条件も違っていた)。
+#[cfg(target_os = "linux")]
 fn max_fds() -> Option<u64> {
-    // 64bit Linux の `struct rlimit` は u64 2 つ (soft, hard)
-    #[repr(C)]
-    struct RLimit {
-        cur: u64,
-        max: u64,
-    }
-    const RLIMIT_NOFILE: i32 = 7;
-    unsafe extern "C" {
-        fn getrlimit(resource: i32, rlim: *mut RLimit) -> i32;
-    }
-    let mut l = RLimit { cur: 0, max: 0 };
-    // SAFETY: 呼び出し先は書き込み先の大きさを `struct rlimit` (16 バイト) と見なし、
-    // こちらもちょうどその大きさを渡している
-    if unsafe { getrlimit(RLIMIT_NOFILE, &mut l) } != 0 {
-        return None;
-    }
-    Some(l.cur)
+    crate::sys::max_open_files()
 }
 
-#[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+#[cfg(not(target_os = "linux"))]
 fn max_fds() -> Option<u64> {
     None
 }
