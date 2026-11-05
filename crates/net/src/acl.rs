@@ -66,19 +66,40 @@ fn extract_host(host_or_addr: &str) -> &str {
     crate::net::split_host_port_ref(host_or_addr).0
 }
 
+/// `pattern` (大小を問わない。`*.` で始まればその名前と下位の名前) が `host` に当たるか。
+///
+/// 比べ方は「`pattern` を小文字にしたものと `host` をバイトで比べる」(`host` は呼ぶ側が小文字に
+/// してから渡す)。T.34.66 で、照合のたびに作っていた `String` 2 つ (`to_ascii_lowercase` と
+/// `format!(".{suffix}")`) を無くした: パターンは借用のまま 1 バイトずつ小文字にして比べ、`*.` は
+/// 末尾が一致することと、その手前が `.` であることで見る。
+#[inline]
 pub fn match_pattern(pattern: &str, host: &str) -> bool {
-    let pattern = pattern.to_ascii_lowercase();
-    if pattern == host {
+    let (pattern, host) = (pattern.as_bytes(), host.as_bytes());
+    if eq_lowered(pattern, host) {
         return true;
     }
-
-    if let Some(suffix) = pattern.strip_prefix("*.")
-        && (host == suffix || host.ends_with(&format!(".{}", suffix)))
-    {
-        return true;
+    // `*` と `.` は小文字にしても変わらないので、そのまま外してよい
+    if let Some(suffix) = pattern.strip_prefix(b"*.") {
+        if eq_lowered(suffix, host) {
+            return true;
+        }
+        // `host` が `.{suffix}` で終わるか
+        if host.len() > suffix.len() {
+            let cut = host.len() - suffix.len();
+            return host[cut - 1] == b'.' && eq_lowered(suffix, &host[cut..]);
+        }
     }
-
     false
+}
+
+/// `pattern` を ASCII の小文字にしたものが `host` とバイトで等しいか (確保しない)。
+#[inline]
+fn eq_lowered(pattern: &[u8], host: &[u8]) -> bool {
+    pattern.len() == host.len()
+        && pattern
+            .iter()
+            .zip(host)
+            .all(|(p, h)| p.to_ascii_lowercase() == *h)
 }
 
 #[cfg(test)]

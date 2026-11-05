@@ -291,3 +291,35 @@ fn the_resolved_answer_carries_the_stale_mark() {
     }
     crate::dns::clear();
 }
+
+/// T.34.66: 大文字のパターンも小文字の名前に当たる (`host` 側は小文字のまま比べる)。
+#[test]
+fn match_pattern_lowers_the_pattern_but_not_the_host() {
+    assert!(match_pattern("Example.COM", "example.com"));
+    assert!(match_pattern("*.Example.Com", "api.example.com"));
+    assert!(match_pattern("*.EXAMPLE.com", "example.com"));
+    // 前と同じく、`host` は小文字で来る約束なので大文字の名前には当たらない
+    assert!(!match_pattern("example.com", "Example.com"));
+    assert!(!match_pattern("example.com", "example.co"));
+    assert!(!match_pattern("", "a"));
+    assert!(match_pattern("", ""));
+}
+
+/// T.34.66: `*.a.b` は `a.b` と `x.a.b` に当たり、`xa.b` (`.` の無い続き) には当たらない。
+#[test]
+fn a_wildcard_matches_the_name_and_its_subdomains_only() {
+    assert!(match_pattern("*.a.b", "a.b"));
+    assert!(match_pattern("*.a.b", "x.a.b"));
+    assert!(match_pattern("*.a.b", "y.x.a.b"));
+    assert!(!match_pattern("*.a.b", "xa.b"));
+    assert!(!match_pattern("*.a.b", "b"));
+    assert!(!match_pattern("*.a.b", ".b"));
+    assert!(match_pattern("*.a.b", ".a.b"));
+    // `*.` だけのパターンは前と同じく、空の名前と `.` で終わる名前に当たる
+    assert!(match_pattern("*.", ""));
+    assert!(match_pattern("*.", "x."));
+    assert!(!match_pattern("*.", "x"));
+    // 文字の途中で切っても落ちない (バイトで比べる)
+    assert!(!match_pattern("*.b", "あb"));
+    assert!(match_pattern("*.ä", "x.ä"));
+}
