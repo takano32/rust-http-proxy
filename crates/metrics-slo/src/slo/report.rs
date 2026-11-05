@@ -100,12 +100,13 @@ impl Report {
         out.push_str("],\"breaches\":[");
         let mut cut = self.breaches.len() > MAX_BREACHES;
         for (i, b) in self.breaches.iter().take(MAX_BREACHES).enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
+            // 判定はコンマより前 (T.34.149。後だと打ち切ったとき `[{…},]` が残る。`hourly` と同じ順)
             if out.len() > MAX_BODY - TRAILER {
                 cut = true;
                 break;
+            }
+            if i > 0 {
+                out.push(',');
             }
             push_breach(out, b, &self.thresholds, &self.excluded);
         }

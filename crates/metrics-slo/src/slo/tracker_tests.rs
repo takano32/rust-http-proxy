@@ -446,3 +446,151 @@ fn the_global_tracker_is_configurable_and_resettable() {
     assert_eq!(thresholds(), DEFAULT);
     assert_eq!(report(1_789_084_800, 1).total.judged, 0);
 }
+
+/// 試験だけの小さな JSON の読み手: `s` が JSON の値 1 つとして読めるか (T.34.149)。
+fn json_value_ok(s: &str) -> bool {
+    fn ws(b: &[u8], i: &mut usize) {
+        while *i < b.len() && b[*i].is_ascii_whitespace() {
+            *i += 1;
+        }
+    }
+    fn string(b: &[u8], i: &mut usize) -> bool {
+        *i += 1;
+        while *i < b.len() {
+            match b[*i] {
+                b'\\' => *i += 2,
+                b'"' => {
+                    *i += 1;
+                    return true;
+                }
+                _ => *i += 1,
+            }
+        }
+        false
+    }
+    /// `[` / `{` の中身を `close` まで読む (`{` なら各要素の前に `"鍵":` を読む)。
+    fn items(b: &[u8], i: &mut usize, close: u8) -> bool {
+        *i += 1;
+        ws(b, i);
+        if b.get(*i) == Some(&close) {
+            *i += 1;
+            return true;
+        }
+        loop {
+            if close == b'}' {
+                ws(b, i);
+                if b.get(*i) != Some(&b'"') || !string(b, i) {
+                    return false;
+                }
+                ws(b, i);
+                if b.get(*i) != Some(&b':') {
+                    return false;
+                }
+                *i += 1;
+            }
+            if !value(b, i) {
+                return false;
+            }
+            ws(b, i);
+            match b.get(*i) {
+                Some(b',') => *i += 1,
+                Some(c) if *c == close => {
+                    *i += 1;
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+    }
+    fn value(b: &[u8], i: &mut usize) -> bool {
+        ws(b, i);
+        match b.get(*i) {
+            Some(b'{') => items(b, i, b'}'),
+            Some(b'[') => items(b, i, b']'),
+            Some(b'"') => string(b, i),
+            Some(c) if c.is_ascii_digit() || *c == b'-' => {
+                *i += 1;
+                while *i < b.len()
+                    && matches!(b[*i], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+                {
+                    *i += 1;
+                }
+                true
+            }
+            _ => ["true", "false", "null"].iter().any(|w| {
+                let ok = b[*i..].starts_with(w.as_bytes());
+                if ok {
+                    *i += w.len();
+                }
+                ok
+            }),
+        }
+    }
+    let b = s.as_bytes();
+    let mut i = 0;
+    let ok = value(b, &mut i);
+    ws(b, &mut i);
+    ok && i == b.len()
+}
+
+#[test]
+fn the_tiny_json_reader_tells_good_from_bad() {
+    assert!(json_value_ok(
+        "{\"a\":[1,-2.5e3,\"x\\\"y\",true,null,{}],\"b\":[]}"
+    ));
+    assert!(!json_value_ok("{\"a\":[1,2,]}"));
+    assert!(!json_value_ok("{\"a\":1,}"));
+    assert!(!json_value_ok("[1 2]"));
+}
+
+/// **受け入れ基準 (T.34.149)**: `breaches` を 2 行目以降で打ち切っても、末尾に `,` を残さず
+/// JSON として読める (前は `[{…},{…},]` になった)。外れた各時間に長い名前の宛先を外させて、
+/// 128 行の途中で [`MAX_BODY`] − 2 KiB を越えさせる。
+#[test]
+fn cutting_the_breaches_leaves_no_trailing_comma() {
+    let t0 = 1_789_084_800;
+    let mut rep = Report {
+        now: t0 + 31 * DAY,
+        days: MAX_DAYS,
+        from: t0,
+        to: t0 + 31 * DAY,
+        thresholds: DEFAULT,
+        today_t: t0 + 30 * DAY,
+        ..Report::default()
+    };
+    for k in 0..128u64 {
+        let from = t0 + 2 * k * HOUR;
+        let mut tally = Hour {
+            t: from,
+            judged: 720,
+            ..Hour::default()
+        };
+        tally.miss[2] = 720;
+        tally.worst[2] = 0.5;
+        tally.rate_hours[0] = [0, 1];
+        tally.num[0] = 10;
+        tally.den[0] = 20;
+        tally.excluded = [5, 5];
+        tally.excluded_hours = 1;
+        rep.breaches.push(Breach {
+            from,
+            to: from + HOUR,
+            hours: 1,
+            tally,
+        });
+        // 1 行を 500 B 級にする (`connect://` + 60 文字の宛先を 4 つ)
+        for j in 0..4u64 {
+            let name = format!("connect://{:0>57}{}.x", k * 10 + j, "h");
+            rep.excluded.push(dest(from, 5, &name, 5, 5));
+        }
+    }
+    let json = rep.to_json();
+    assert!(json.len() <= MAX_BODY, "{} B", json.len());
+    assert!(json.contains("\"truncated\":true"), "{}", &json[..200]);
+    let at = json.find("],\"hourly_keys\"").expect("hourly_keys");
+    assert!(
+        json_value_ok(&json),
+        "JSON として読めない: …{}",
+        &json[at.saturating_sub(80)..at + 20]
+    );
+}
