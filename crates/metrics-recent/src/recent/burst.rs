@@ -424,8 +424,13 @@ impl BurstRing {
     /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
     ///
     /// 通し番号 (`seq`) は `total` から作るので、読み戻すと再起動前の続きから振られる。
+    /// `PROXY_RECORDS=off` なら何も入れず、`restored` も 0 にする (T35.4)。
     pub fn restore(&self, shots: Vec<BurstShot>) {
-        let n = shots.len().min(MAX_BURSTS);
+        let n = if crate::records::recording() {
+            shots.len().min(MAX_BURSTS)
+        } else {
+            0
+        };
         for shot in shots {
             self.push(shot);
         }

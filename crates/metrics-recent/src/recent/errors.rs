@@ -388,16 +388,20 @@ impl ErrorRing {
     ///
     /// 読み戻した件は**書き直さない** (印を行の通算に合わせる) 。件数は `/errors` の
     /// `"restored"` に出す。**読み戻すときはまとめない** (T20.3。ファイルの 1 行 = 1 行で、
-    /// `repeats` は 1 から。`PROXY_RECORDS=off` なら今までどおり何も入れない)。
+    /// `repeats` は 1 から。`PROXY_RECORDS=off` なら今までどおり何も入れず、`restored` も
+    /// 0 にする (T35.4。0.35 までは渡された件数を立てていた)。
     pub fn restore(&self, entries: Vec<ErrorEntry>) {
-        let n = entries.len().min(MAX_ERRORS);
         let mut r = self.inner.locked();
-        if crate::records::recording() {
+        let n = if crate::records::recording() {
+            let n = entries.len().min(MAX_ERRORS);
             for e in entries {
                 r.ring.count();
                 r.add(e);
             }
-        }
+            n
+        } else {
+            0
+        };
         let mark = r.rows;
         r.ring.finish_restore(mark, n);
     }

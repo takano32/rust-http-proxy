@@ -91,8 +91,15 @@ impl RecentRing {
     }
 
     /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
+    ///
+    /// `PROXY_RECORDS=off` なら何も入れず、`restored` も 0 にする (T35.4。0.35 までは
+    /// 捨てたのに渡された件数を立てていた)。
     pub fn restore(&self, entries: Vec<RecentEntry>) {
-        let n = entries.len().min(MAX_RECENT);
+        let n = if crate::records::recording() {
+            entries.len().min(MAX_RECENT)
+        } else {
+            0
+        };
         for e in entries {
             self.push(e);
         }
