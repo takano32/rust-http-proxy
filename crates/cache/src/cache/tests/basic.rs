@@ -269,7 +269,7 @@ fn chunked_body_is_kept_without_the_doubling_slack() {
 }
 
 /// `/status` の `cache.memory.alloc_bytes` は本文の確保の大きさの合計で、保存の最後で縮めるので
-/// 長さの分からない本文を入れても `used_bytes` と一致する (T35.11 の案 1。判定表 phase31 が読む)。
+/// 長さの分からない本文を入れても `used_bytes` と一致する (T35.11 の案 1。判定表 phase35 が読む)。
 #[test]
 fn status_reports_alloc_bytes_equal_to_used_bytes() {
     let cache = fresh("shp-test-alloc-bytes", 8 * MIB, 16 * MIB);

@@ -232,7 +232,7 @@ scripts/snapshot-diff.py a.json b.json --criteria phase22 --daily b-daily.json \
 # (死んだ名前の総当たりという使われ方の数字なので表示だけ)。heap の行は、`--zero` の雪像と起動が
 # 違うときに `/events` の `start` の時刻を添える (黙って「判定できず」にしない。2026-10-17 22:14:52Z の
 # 無言の再起動がこれで読める)。最後の行は無言の再起動 (`/events` の `start` の直前に `shutdown` が無い起動)
-# が 0 回 (T23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は phase31)
+# が 0 回 (T23.2)。**古い定義を出し直すときは `CRITERIA=phase23` を渡す** (collect-deployed.sh の既定は phase35)
 scripts/snapshot-diff.py a.json b.json --criteria phase23 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
@@ -290,13 +290,13 @@ scripts/snapshot-diff.py a.json b.json --criteria phase29 --daily b-daily.json \
 scripts/snapshot-diff.py a.json b.json --criteria phase30 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# phase31 (T35.9・T35.11。`collect-deployed.sh` の既定) は phase30 の 26 行のうち 2 行を直したもの。`/events` の anomaly の行
+# phase35 (T35.9・T35.11。`collect-deployed.sh` の既定) は phase30 の 26 行のうち 2 行を直したもの。`/events` の anomaly の行
 # (表示だけ) を、要約 (`snapshot-summary.py`) の表と同じ関数 (`scripts/criteria/common.py` の `anomaly_rates_since_start`)
 # で数え (件/時は 3 桁)、heap の行を `heap_used + mmap − cache_memory` の起動 60 秒の基準からの増えから、さらに
 # キャッシュの持ち物 (本文の確保の端数と索引・鍵) を引いた残りで読む。端数は `cache.memory.alloc_bytes` (T35.11 で
 # 足した本文の確保の大きさの合計) があれば `alloc_bytes − used_bytes` の 1 つに決まり、無い雪像 (それより前の版) は
 # 0〜(`used_bytes` + 件数 × 64 KiB) の幅で引いて、残りの上下限が閾をまたげば判定できず
-scripts/snapshot-diff.py a.json b.json --criteria phase31 --daily b-daily.json \
+scripts/snapshot-diff.py a.json b.json --criteria phase35 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます

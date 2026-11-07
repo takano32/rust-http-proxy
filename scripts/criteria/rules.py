@@ -28,7 +28,7 @@ from .phase29_30 import (
     _p29_cgroup_cpu_shown, _p29_conn_per_resolved_request, _p29_connect_errors, _p29_dns_slow,
     _p29_idle_cost, _p29_miss_band, _p30_dns_slow, _p30_refresh_per_name,
 )
-from .phase31 import _p31_events, _p31_heap
+from .phase35 import _p35_events, _p35_heap
 
 
 # ---------------------------------------------------------------- (9) 判定表
@@ -283,9 +283,9 @@ PHASE30["dns_slow_avg_factor"] = 1.5
 CRITERIA["phase30"] = PHASE30
 
 
-# phase31 = phase30 の 26 行のうち 7 番目 (`/events` の anomaly。表示だけ) を、要約 (`snapshot-summary.py`) と
+# phase35 = phase30 の 26 行のうち 7 番目 (`/events` の anomaly。表示だけ) を、要約 (`snapshot-summary.py`) と
 # 同じ関数で数える行に (T35.9)、9 番目 (heap) をキャッシュの持ち物 (本文の確保の端数と索引) を引いた残りで
 # 読む行に (T35.11) 差し替えたもの。並びは同じ。**phase30 以前の並びと文面は 1 つも動かない**
-RULES["phase31"] = replaced(RULES["phase30"], {7: _p31_events, 9: _p31_heap})
+RULES["phase35"] = replaced(RULES["phase30"], {7: _p35_events, 9: _p35_heap})
 PHASE31 = dict(PHASE30)
-CRITERIA["phase31"] = PHASE31
+CRITERIA["phase35"] = PHASE31

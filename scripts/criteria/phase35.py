@@ -17,13 +17,13 @@ from .phase23_25 import _p24_heap
 # `status.uptime_secs` を先に見るか)・`:` の無い文面 (外すか `?` に数えるか)・「切れている」の読み方
 # (応答の `truncated` だけか、リングが満杯で起動より前の出来事が残っていない時も含めるか) が違い、同じ雪像でも
 # 要約の件/時と判定表の行がずれることがあった (T34.5 のレビュー)。利用者の判断 (2026-11-07) で要約の
-# 数え方に揃え、phase31 からはその 1 つの関数 (`criteria/common.py` の `anomaly_rates_since_start`) を使う。
+# 数え方に揃え、phase35 からはその 1 つの関数 (`criteria/common.py` の `anomaly_rates_since_start`) を使う。
 # 件/時は要約の表と同じく 3 桁 (閾 0.1 件/時の近くで 2 桁に丸めると読み違える)。
 
-def _p31_events_measured(c, th):
+def _p35_events_measured(c, th):
     """T35.9: `/events` の anomaly の種類別 件/時 (要約の表と同じ関数・同じ 3 桁)。
 
-    行の形は `_p17_events` と同じ (閾のある種類を先に太字で、前の雪像の件/時を添える)。phase31 では
+    行の形は `_p17_events` と同じ (閾のある種類を先に太字で、前の雪像の件/時を添える)。phase35 では
     下の `display_only` で表示だけにする (phase22 から `dns_slow` の判定は別の行に任せている)。
     """
     limits = th["events_per_hour"]
@@ -61,8 +61,8 @@ def _p31_events_measured(c, th):
     return (label, limit, "、".join(shown), verdict, src)
 
 
-_p31_events = display_only(
-    _p31_events_measured,
+_p35_events = display_only(
+    _p35_events_measured,
     lambda th: "`/events` の anomaly の種類別 件/時 (`dns_slow` を含めて表示だけ。要約と同じ数え方)",
     "`dns_slow` の判定は新しい閾の行 (合計 1,000 ms 未満の窓で立った件数) に任せる。T22.2 の模型で tokyo の後は"
     "本当に遅い窓だけで 0.17 件/時あり、件/時の閾は使われ方で落ちる (親の判断 2026-10-17)", was="phase21")
@@ -122,7 +122,7 @@ def cache_owned_range(st):
             what + f"、本文の確保の端数 0〜{mb(top)} MB (`{ALLOC_KEY}` が無いので `used_bytes` + 件数 × 64 KiB まで)")
 
 
-def _p31_heap(c, th):
+def _p35_heap(c, th):
     """T35.11: (g) を、`heap_used + mmap − cache_memory` からキャッシュの持ち物を引いた残りの、起動 60 秒の基準からの増えで読む。
 
     キャッシュがメモリやディスクを使うのは良いことなので、届かずにしない (利用者の判断 2026-11-07)。

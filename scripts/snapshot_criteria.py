@@ -10,7 +10,7 @@
 #   `phase23_25.py`  Phase 23〜25 の行 (T24.3 の確立の尾を含む) とその材料を読む小物
 #   `phase26_28.py`  Phase 26〜28 の行とその材料を読む小物
 #   `phase29_30.py`  Phase 29〜30 の行とその材料を読む小物
-#   `phase31.py`     Phase 31 の行 (T35.9・T35.11)
+#   `phase35.py`     Phase 31 の行 (T35.9・T35.11)
 #   `rules.py`       閾の辞書 (`PHASE14`〜`PHASE31`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
 # ここに残っているのは、`RULES` の行を順に呼ぶ `judge()` と、判定表の印字 (`render_criteria()`) だけ。
 #
@@ -71,9 +71,9 @@ from criteria.phase29_30 import (  # noqa: E402,F401
     _p30_dns_slow, _p30_refresh_per_name, answered_names, dns_failures_between, dns_slow_windows,
     history_part, history_since_start, profile_roles_us, profile_window,
 )
-from criteria.phase31 import (  # noqa: E402,F401
-    ALLOC_KEY, CHUNKED_FIRST_BYTES, INDEX_BYTES_DISK, INDEX_BYTES_MEMORY, _p31_events, _p31_events_measured,
-    _p31_heap, cache_owned_range,
+from criteria.phase35 import (  # noqa: E402,F401
+    ALLOC_KEY, CHUNKED_FIRST_BYTES, INDEX_BYTES_DISK, INDEX_BYTES_MEMORY, _p35_events, _p35_events_measured,
+    _p35_heap, cache_owned_range,
 )
 from criteria.rules import (  # noqa: E402,F401
     CRITERIA, FROZEN, PHASE14, PHASE15, PHASE17, PHASE18, PHASE20, PHASE21, PHASE22, PHASE23, PHASE24,
@@ -262,7 +262,7 @@ INTRO = {
                 "0 とは書きません。"),
     # T35.9・T35.11。phase30 の 26 行のうち、表示だけの `/events` の行を要約と同じ数え方にし、heap の行から
     # キャッシュの持ち物を引いた
-    "phase31": ("26 行の並びと材料は phase30 と同じです。直したのは 2 行 (T35.9・T35.11): (1) `/events` の anomaly の件/時 "
+    "phase35": ("26 行の並びと材料は phase30 と同じです。直したのは 2 行 (T35.9・T35.11): (1) `/events` の anomaly の件/時 "
                 "(表示だけ) を、**要約 (`snapshot-summary.py`) の表と同じ関数**で数えます (起動は取得 − `status.uptime_secs`、"
                 "`:` の無い文面は `?` に数える、リングが満杯で起動より前の出来事が残っていなければ「切れている」。件/時は 3 桁)。"
                 "phase30 までの数え方とは起動の時刻と切れの読み方が違い、同じ雪像でも要約と行がずれることがありました。"

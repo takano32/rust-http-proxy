@@ -49,7 +49,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from proxydata import fmt_bytes as _fmt_bytes  # noqa: E402
 from proxydata import load_json, utc_stamp  # noqa: E402
 from snapshot_criteria import silent_restart_text, silent_restarts  # noqa: E402
-# `/events` の anomaly の数え方は判定表の phase31 と同じ 1 つの関数 (`criteria/common.py`。T35.9)
+# `/events` の anomaly の数え方は判定表の phase35 と同じ 1 つの関数 (`criteria/common.py`。T35.9)
 from snapshot_criteria import anomaly_rates_since_start as anomaly_rates  # noqa: E402
 from snapshot_criteria import started_at  # noqa: E402
 

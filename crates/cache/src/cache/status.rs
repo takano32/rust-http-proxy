@@ -144,7 +144,7 @@ impl Cache {
             self.mem_reserved(),
             snap.mem_keep_free,
             snap.cgroup_keep_free,
-            // 本文の確保の大きさの合計 (T35.11。判定表 phase31 の heap の行が読む。**部の末尾に足した**)
+            // 本文の確保の大きさの合計 (T35.11。判定表 phase35 の heap の行が読む。**部の末尾に足した**)
             self.mem_alloc_bytes(),
             disk_bytes,
             self.disk_capacity(),
