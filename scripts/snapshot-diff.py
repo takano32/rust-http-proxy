@@ -1530,7 +1530,8 @@ def parser():
                         "前の版の 1.5 倍未満」(件/時は表示だけ) に、1 名前あたりの引き直しの行を「答えのある名前 1 つあたり "
                         "(`/dns` の一覧が切れていれば引き直しの合計) が前の期間の 1.5 倍未満」に読み替えたもの。T.33.1・T.33.2。"
                         "phase31 = phase30 の 26 行のうち `/events` の anomaly の行 (表示だけ) を要約 "
-                        "(`snapshot-summary.py`) と同じ関数で数えるもの。T35.9)")
+                        "(`snapshot-summary.py`) と同じ関数で数え、heap の行をキャッシュの持ち物 (本文の確保の端数と"
+                        "索引) を引いた残りで読むもの。T35.9・T35.11)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst-median-k", type=int, default=None, metavar="K",

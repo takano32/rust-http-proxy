@@ -10,7 +10,7 @@
 #   `phase23_25.py`  Phase 23〜25 の行 (T24.3 の確立の尾を含む) とその材料を読む小物
 #   `phase26_28.py`  Phase 26〜28 の行とその材料を読む小物
 #   `phase29_30.py`  Phase 29〜30 の行とその材料を読む小物
-#   `phase31.py`     Phase 31 の行 (T35.9〜)
+#   `phase31.py`     Phase 31 の行 (T35.9・T35.11)
 #   `rules.py`       閾の辞書 (`PHASE14`〜`PHASE31`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
 # ここに残っているのは、`RULES` の行を順に呼ぶ `judge()` と、判定表の印字 (`render_criteria()`) だけ。
 #
@@ -71,7 +71,10 @@ from criteria.phase29_30 import (  # noqa: E402,F401
     _p30_dns_slow, _p30_refresh_per_name, answered_names, dns_failures_between, dns_slow_windows,
     history_part, history_since_start, profile_roles_us, profile_window,
 )
-from criteria.phase31 import _p31_events, _p31_events_measured  # noqa: E402,F401
+from criteria.phase31 import (  # noqa: E402,F401
+    ALLOC_KEY, CHUNKED_FIRST_BYTES, INDEX_BYTES_DISK, INDEX_BYTES_MEMORY, _p31_events, _p31_events_measured,
+    _p31_heap, cache_owned_range,
+)
 from criteria.rules import (  # noqa: E402,F401
     CRITERIA, FROZEN, PHASE14, PHASE15, PHASE17, PHASE18, PHASE20, PHASE21, PHASE22, PHASE23, PHASE24,
     PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, PHASE31, RULES,
@@ -257,11 +260,17 @@ INTRO = {
                 "**引き直しの合計 (回/時)** で比べます (表の名前の数 `dns.entries` は表の上限と総当たりの濃さで動き、T.32.99 は "
                 "7,511 → 891 名前で 6.27 倍の「届かず」だった)。**その部が雪像に無い行は「判定できず」**で、"
                 "0 とは書きません。"),
-    # T35.9。phase30 の 26 行のうち、表示だけの `/events` の行を要約と同じ数え方にした
-    "phase31": ("26 行の並びと材料は phase30 と同じです。直したのは 1 行 (T35.9): `/events` の anomaly の件/時 (表示だけ) を、"
-                "**要約 (`snapshot-summary.py`) の表と同じ関数**で数えます (起動は取得 − `status.uptime_secs`、`:` の無い文面は "
-                "`?` に数える、リングが満杯で起動より前の出来事が残っていなければ「切れている」。件/時は 3 桁)。phase30 までの"
-                "数え方とは起動の時刻と切れの読み方が違い、同じ雪像でも要約と行がずれることがありました。"
+    # T35.9・T35.11。phase30 の 26 行のうち、表示だけの `/events` の行を要約と同じ数え方にし、heap の行から
+    # キャッシュの持ち物を引いた
+    "phase31": ("26 行の並びと材料は phase30 と同じです。直したのは 2 行 (T35.9・T35.11): (1) `/events` の anomaly の件/時 "
+                "(表示だけ) を、**要約 (`snapshot-summary.py`) の表と同じ関数**で数えます (起動は取得 − `status.uptime_secs`、"
+                "`:` の無い文面は `?` に数える、リングが満杯で起動より前の出来事が残っていなければ「切れている」。件/時は 3 桁)。"
+                "phase30 までの数え方とは起動の時刻と切れの読み方が違い、同じ雪像でも要約と行がずれることがありました。"
+                "(2) heap の行は `heap_used + mmap − cache_memory` の起動 60 秒の基準からの増えから、さらに**キャッシュの"
+                "持ち物** (本文の確保の端数と索引・鍵) を引いた残りで読みます (キャッシュがメモリを使うのは良いことで、"
+                "届かずにしない)。`cache_memory` は本文の長さの和で、長さの分からない (chunked の) 本文は 64 KiB から"
+                "倍々で育った確保のまま置かれる (T35.11 で手元で測った)。雪像に本文ごとの確保が無いので、端数は "
+                "0〜(`used_bytes` + 件数 × 64 KiB) の幅で引き、残りの上下限が閾をまたげば「判定できず」(上下限を書く) です。"
                 "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。"),
 }
 
