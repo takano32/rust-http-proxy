@@ -71,7 +71,11 @@ impl StoreSink<'_> {
             bytes: self.total,
             ..StoreOutcome::default()
         };
-        if let Some(buf) = self.mem_buf.take() {
+        if let Some(mut buf) = self.mem_buf.take() {
+            // 長さの分からない (chunked の) 本文は 64 KiB から倍々で育てたので、余りを返してから置く
+            // (10 MB の本文で 6.8 MB が `cache_memory` の外に残っていた。T35.11)。保存 1 件に高々 1 回の
+            // 写しで、長さの分かった本文 (確保 = 長さ) では何もしない。HIT の経路は変わらない
+            buf.shrink_to_fit();
             let evicted = cache
                 .mem
                 .insert(self.key, Arc::new(buf), self.meta, cache.tick());

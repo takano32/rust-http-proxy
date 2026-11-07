@@ -244,3 +244,26 @@ fn freshness_follows_the_injected_clock() {
     assert!(resp.is_fresh(cache.now()));
     assert_eq!(cache.peek(key).unwrap().meta.expires_at, 1_000_021);
 }
+
+/// 長さの分からない (chunked の) 本文は 64 KiB から倍々で育つ `Vec` に受けるが、保存の最後で
+/// 縮めるので、メモリに置く本文の確保は長さと同じ (T35.11 の案 2。前は 3 MiB の本文で 4 MiB 確保していた)。
+#[test]
+fn chunked_body_is_kept_without_the_doubling_slack() {
+    let cache = fresh("shp-test-chunked-shrink", 8 * MIB, 16 * MIB);
+    let url = "http://example.com/chunked";
+    let key = cache_key("GET", url);
+    let payload = wire(&vec![b'C'; 3 * MIB as usize]);
+    let mut sink = cache.begin_store(key, url, Duration::from_secs(60), 0, false, None, 1);
+    for chunk in payload.chunks(70_000) {
+        sink.write(chunk);
+    }
+    assert!(sink.finish().memory);
+
+    let (resp, src) = cache.get(key, 1).expect("hit");
+    assert_eq!(src, CacheSource::Memory);
+    let Body::Memory { data, .. } = &resp.body else {
+        panic!("メモリの本文のはず");
+    };
+    assert_eq!(data.len(), payload.len());
+    assert_eq!(data.capacity(), data.len(), "倍々に育てた余りを返している");
+}
