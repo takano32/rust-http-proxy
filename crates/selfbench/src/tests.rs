@@ -16,8 +16,12 @@ use crate::partner::count_requests;
 fn status_is_null_before_the_first_run() {
     // このテストは `run` を呼ばない (呼ぶテストと同じプロセスだと順序に依るので、
     // 実バイナリでの確認は `tests/selfbench_test.rs` に置いてある)
-    if last().is_none() {
-        assert_eq!(status_json(), "null");
+    // 同じプロセスの別の試験が途中で `publish` しうるので、読む前と後の両方で空だったときだけ
+    // 縛る (前だけ見ると、その間に書かれた 1 件で落ちる。T35.12)
+    let before = last().is_none();
+    let json = status_json();
+    if before && last().is_none() {
+        assert_eq!(json, "null");
     }
 }
 
