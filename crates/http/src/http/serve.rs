@@ -41,9 +41,11 @@ pub(super) fn serve_cached(
     source: CacheSource,
     label: &str,
     ttl_left: u64,
+    now: u64,
     ctx: &Ctx<'_>,
 ) -> io::Result<bool> {
-    let age = entry.age();
+    // `now` は呼ぶ側が注入された時計 (`Cache::now`) から、配る直前に読んだ値 (T35.1)
+    let age = entry.age_at(now);
     let conditional = ctx.req.if_none_match.is_some() || ctx.req.if_modified_since.is_some();
     // 条件付きでも Range でもない素の HIT では、保存したヘッダーを読み直す必要がない
     // (毎ヒットで全ヘッダー行を String に作り直していた)

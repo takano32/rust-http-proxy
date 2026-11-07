@@ -5,7 +5,6 @@ use std::io::{self, BufRead, BufReader, Cursor, Read};
 use std::sync::Arc;
 
 use crate::format::Meta;
-use crate::now_epoch;
 
 /// ヘッダー部の上限 (これを超える場合は壊れているとみなす)。
 const HEAD_MAX: usize = 1024 * 1024;
@@ -39,8 +38,9 @@ impl CachedResponse {
         self.meta.expires_at > now
     }
 
-    pub fn age(&self) -> u64 {
-        now_epoch().saturating_sub(self.meta.stored_at)
+    /// `now` (epoch 秒) の時点での経過秒。`now` は呼ぶ側が注入された時計から読む (T35.1)。
+    pub fn age_at(&self, now: u64) -> u64 {
+        now.saturating_sub(self.meta.stored_at)
     }
 
     pub fn ttl_left(&self, now: u64) -> u64 {

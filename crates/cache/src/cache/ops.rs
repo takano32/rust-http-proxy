@@ -14,7 +14,7 @@ use super::key::{CacheKey, KeyMap, cache_key};
 use super::quota::is_permanent;
 use super::sink::{StoreOutcome, StoreSink};
 use super::status::BudgetEviction;
-use super::{Cache, CacheSource, now_epoch};
+use super::{Cache, CacheSource};
 use crate::sysinfo;
 use crate::{log_debug, log_info, log_warn};
 
@@ -71,7 +71,7 @@ impl Cache {
             let snap = self.snapshot();
             let m = snap.mem.as_ref();
             let rec = BudgetEviction {
-                at: now_epoch(),
+                at: self.now(),
                 entries: mem as u64,
                 bytes_before: before,
                 bytes_after: self.mem.usage().0,
@@ -130,7 +130,7 @@ impl Cache {
         if !self.cfg.enabled {
             return None;
         }
-        let now = now_epoch();
+        let now = self.now();
 
         if let Some(hit) = self.mem.get(key, now, self.tick()) {
             let offset = head_len(&hit.data);
@@ -153,7 +153,7 @@ impl Cache {
                 if resp.is_fresh(now) { "HIT" } else { "STALE" },
                 key,
                 resp.size,
-                resp.age()
+                resp.age_at(now)
             );
             return Some((resp, CacheSource::Memory));
         }
@@ -401,7 +401,7 @@ impl Cache {
         expected: Option<u64>,
         conn_id: usize,
     ) -> StoreSink<'_> {
-        let now = now_epoch();
+        let now = self.now();
         let meta = Meta::fresh_for(now, ttl.as_secs(), age, validators);
         self.remember_variant(url, key);
         let mem_buf =
@@ -479,7 +479,7 @@ impl Cache {
             stored_at,
             expires_at,
             ..
-        } = Meta::fresh_for(now_epoch(), ttl.as_secs(), age, false);
+        } = Meta::fresh_for(self.now(), ttl.as_secs(), age, false);
         let in_mem = self.mem.refresh(key, stored_at, expires_at, self.tick());
         let on_disk = self.disk.refresh(key, stored_at, expires_at, self.tick());
         if in_mem || on_disk {
@@ -516,7 +516,7 @@ impl Cache {
         age: u64,
         conn_id: usize,
     ) -> u64 {
-        let now = now_epoch();
+        let now = self.now();
         let Meta {
             stored_at,
             expires_at,

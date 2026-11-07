@@ -209,3 +209,38 @@ fn variants_table_stays_bounded_after_evictions() {
     assert_eq!(cache.invalidate(url, 1), 2);
     assert!(cache.get(gz, 1).is_none());
 }
+
+/// 注入した時計だけが「いま」を決める (T35.1): 手で進めるまで新鮮、進めれば期限切れ、
+/// `refresh` は進めた「いま」から延ばす。
+#[test]
+fn freshness_follows_the_injected_clock() {
+    use crate::clock::ManualClock;
+    let clock = ManualClock::at(1_000_000);
+    let cfg = CacheConfig::fixed(MIB, 4 * MIB, test_dir("shp-test-manual-clock"));
+    let cache = Cache::with_clock(cfg, clock.clone());
+    assert_eq!(cache.now(), 1_000_000);
+    let url = "http://example.com/clock";
+    let key = cache_key("GET", url);
+    cache.put_with(key, url, wire(b"tick"), Duration::from_secs(10), true, 1);
+
+    let (resp, _) = cache.get(key, 1).expect("hit");
+    assert_eq!(
+        resp.meta.stored_at, 1_000_000,
+        "保存の時刻も注入した時計から"
+    );
+    assert!(resp.is_fresh(cache.now()));
+    assert_eq!(resp.age_at(cache.now()), 0);
+
+    clock.advance(Duration::from_secs(11));
+    let (resp, _) = cache
+        .get(key, 1)
+        .expect("期限切れでもバリデータ付きなら返る");
+    assert!(!resp.is_fresh(cache.now()), "進めた時計で期限が切れる");
+    assert_eq!(resp.age_at(cache.now()), 11);
+
+    let expires = cache.refresh(key, Duration::from_secs(10), 0, 1);
+    assert_eq!(expires, 1_000_011 + 10, "延命は進めた「いま」から");
+    let (resp, _) = cache.get(key, 1).expect("hit");
+    assert!(resp.is_fresh(cache.now()));
+    assert_eq!(cache.peek(key).unwrap().meta.expires_at, 1_000_021);
+}

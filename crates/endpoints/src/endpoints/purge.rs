@@ -64,7 +64,8 @@ fn lookup_url(ep: &Endpoint<'_>, url: &str) -> Reply {
     let key = cache_key("GET", &canonical);
     match ep.cache.peek(key) {
         Some(info) => {
-            let now = crate::cache::now_epoch();
+            // 鮮度は注入された時計で (キャッシュ自身と同じ「いま」。T35.1)
+            let now = ep.cache.now();
             (
                 200,
                 "application/json",

@@ -14,7 +14,7 @@ use super::config::{
     DiskQuota, FALLBACK_DISK, FALLBACK_MEM, Limit, MIB, PTERODACTYL_UNKNOWN_QUOTA_DISK, Reserve,
 };
 use super::margin::Margin;
-use super::{Cache, Margins, now_epoch};
+use super::{Cache, Margins};
 use crate::sysinfo::{self, FsInfo};
 use crate::{log_debug, log_info, log_warn};
 
@@ -223,7 +223,7 @@ impl Cache {
         self.count_evictions(evicted);
 
         if tick.is_multiple_of(self.ticks_per(SWEEP_INTERVAL_SECS)) {
-            let now = now_epoch();
+            let now = self.now();
             let max_stale = self.cfg.max_stale.as_secs();
             let n = self.mem.sweep(now, max_stale) + self.disk.sweep(now, max_stale);
             if n > 0 {
@@ -500,7 +500,7 @@ impl Cache {
             return (PTERODACTYL_UNKNOWN_QUOTA_DISK, None, None);
         };
         let (confirmed, mut cap) = pr.tick(
-            now_epoch(),
+            self.now(),
             self.disk.usage().0,
             self.disk.owned(),
             self.disk.take_fill_failed(),

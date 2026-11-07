@@ -32,7 +32,7 @@ use super::upstream::{OriginConn, acquire_origin, request_head};
 use super::{Shared, read_response_head};
 use crate::Upstream;
 use crate::body::{BodyReader, Framing};
-use crate::cache::{Cache, CacheKey, now_epoch};
+use crate::cache::{Cache, CacheKey};
 use crate::freshness;
 use crate::headers;
 use crate::log_debug;
@@ -175,7 +175,7 @@ fn revalidate(
         && !rheaders.iter().any(|(k, v)| {
             k == "connection" && v.split(',').any(|t| t.trim().eq_ignore_ascii_case("close"))
         });
-    let now = now_epoch();
+    let now = cache.now();
     let cfg = cache.config();
 
     if status == 304 {

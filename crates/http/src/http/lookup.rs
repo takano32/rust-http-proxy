@@ -8,7 +8,7 @@ use crate::body;
 use crate::cache::inflight::LeaderGuard;
 use crate::cache::{
     CacheConfig, CacheKey, CacheSource, CachedResponse, FetchOutcome, FetchTicket,
-    cache_key_variant, now_epoch,
+    cache_key_variant,
 };
 use crate::clientio::ClientReader;
 use crate::freshness;
@@ -90,7 +90,8 @@ pub(super) fn consult<'c>(
                 || freshness::directive_value(&req.cache_control, "max-age") == Some(0),
             // `only-if-cached` (RFC 9111 §5.2.1.7。T28.10 (c)): 保存から返せなければ 504
             freshness::has_directive(&req.cache_control, "only-if-cached"),
-            now_epoch(),
+            // 「いま」は注入された時計から (T35.1)
+            cache.now(),
         )
     } else {
         (CacheKey(0), false, false, false, 0)
@@ -122,7 +123,15 @@ pub(super) fn consult<'c>(
             if entry.is_fresh(now) && !force_revalidate {
                 body::drain(reader, req_framing)?;
                 let ttl_left = entry.ttl_left(now);
-                return finished(serve_cached(client, entry, source, "HIT", ttl_left, &x.ctx));
+                return finished(serve_cached(
+                    client,
+                    entry,
+                    source,
+                    "HIT",
+                    ttl_left,
+                    cache.now(),
+                    &x.ctx,
+                ));
             }
             // クライアント自身の条件付き要求は、そのままオリジンに判断させる
             if !client_conditional {
@@ -130,7 +139,15 @@ pub(super) fn consult<'c>(
                 if !force_revalidate && try_refreshing(x, key, now, &entry, cfg.grace.as_secs()) {
                     body::drain(reader, req_framing)?;
                     cache.note_stale_served();
-                    return finished(serve_cached(client, entry, source, "REFRESHING", 0, &x.ctx));
+                    return finished(serve_cached(
+                        client,
+                        entry,
+                        source,
+                        "REFRESHING",
+                        0,
+                        cache.now(),
+                        &x.ctx,
+                    ));
                 }
                 cs.stale = Some((entry, source));
             } else if entry.meta.validators {
@@ -255,17 +272,18 @@ fn coalesce<'c>(
             // 先頭のスレッドを無期限に待つ形にはしない (相手が固まると連鎖する)
             if inflight.wait(x.shared.timeout) == Some(FetchOutcome::Stored)
                 && let Some((entry, source)) = cache.get(key, conn_id)
-                && entry.is_fresh(now_epoch())
+                && entry.is_fresh(cache.now())
             {
                 body::drain(reader, req_framing)?;
                 cache.note_coalesced();
-                let ttl_left = entry.ttl_left(now_epoch());
+                let ttl_left = entry.ttl_left(cache.now());
                 return finished(serve_cached(
                     client,
                     entry,
                     source,
                     "COALESCED",
                     ttl_left,
+                    cache.now(),
                     &x.ctx,
                 ));
             }

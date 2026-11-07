@@ -9,7 +9,7 @@ use super::serve::{can_serve_stale, serve_cached};
 use super::upstream::OriginConn;
 use super::{ClientWriter, Exchange, Stage, done, finished};
 use crate::body::Framing;
-use crate::cache::{CacheSource, CachedResponse, now_epoch};
+use crate::cache::{CacheSource, CachedResponse};
 use crate::freshness;
 use crate::headers;
 use crate::log_trace;
@@ -110,7 +110,7 @@ pub(super) fn examine_head(
         .and_then(|v| v.trim_ascii().parse::<u64>().ok())
         .map(|age| {
             let date = headers::response_value(head, "date").and_then(crate::httpdate::parse);
-            age.max(date.map_or(0, |d| now_epoch().saturating_sub(d)))
+            age.max(date.map_or(0, |d| cache.now().saturating_sub(d)))
         });
     let framing = match framing {
         Ok(framing) => framing,
@@ -195,7 +195,15 @@ pub(super) fn examine_head(
             status
         );
         cache.note_stale_served();
-        return finished(serve_cached(client, entry, source, "STALE", 0, &x.ctx));
+        return finished(serve_cached(
+            client,
+            entry,
+            source,
+            "STALE",
+            0,
+            cache.now(),
+            &x.ctx,
+        ));
     }
     if cs.lookup_allowed {
         metrics.inc_cache_miss();
@@ -300,7 +308,7 @@ fn serve_revalidated<T>(
         if let Some(served) = headers::with_set_cookies(&entry.head, head) {
             entry.replace_head(served);
         }
-        entry.meta.stored_at = now_epoch();
+        entry.meta.stored_at = cache.now();
         entry.meta.expires_at = entry.meta.stored_at;
         if let Some(server) = reusable {
             shared.upstream.pool.put(pool_key, server, shared.timeout);
@@ -311,6 +319,7 @@ fn serve_revalidated<T>(
             source,
             "REVALIDATED",
             0,
+            cache.now(),
             &x.ctx,
         ));
     }
@@ -328,7 +337,7 @@ fn serve_revalidated<T>(
     // 配る `Age` も置き直した時刻から数える (`refresh` と同じく `now - 304 の Age`。T28.34)。
     // 今までは手元の写しの古い `stored_at` のままで、保存から N 秒たって再検証した直後の応答が
     // `Age: N` になっていた (次の HIT からは新しい値)
-    entry.meta.stored_at = now_epoch().saturating_sub(p.age);
+    entry.meta.stored_at = cache.now().saturating_sub(p.age);
     entry.meta.expires_at = expires_at;
     // 304 の `Set-Cookie` は保存した先頭へは写さず (T29.0)、再検証したこの要求にだけ渡す
     if let Some(served) = headers::with_set_cookies(&entry.head, head) {
@@ -344,6 +353,7 @@ fn serve_revalidated<T>(
         source,
         "REVALIDATED",
         ttl_left,
+        cache.now(),
         &x.ctx,
     ))
 }

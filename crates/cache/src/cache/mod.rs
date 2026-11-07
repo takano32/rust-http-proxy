@@ -53,6 +53,7 @@ use crate::sysinfo;
 use crate::{log_info, log_warn};
 
 pub use crate::clock::now_epoch;
+use crate::clock::{self, SharedClock};
 // 土台は別クレート。move 前と同じ `cache::config` のような書き方をそのまま通す
 pub use proxy_cachecfg::config;
 pub use proxy_cachekey::{format, key};
@@ -89,6 +90,9 @@ pub struct Cache {
     disk: DiskTier,
     /// LRU の採番用カウンタ (両層で共有)
     clock: AtomicU64,
+    /// 「いま」(epoch 秒) を読む時計のポート (T35.1)。鮮度・`Age`・掃除・延命はここだけから読む。
+    /// 本番は `SystemClock`、試験は `ManualClock` (組み立ての根で 1 回だけ決める)
+    time: SharedClock,
     ticks: AtomicU64,
     snapshot: Mutex<Snapshot>,
     margins: Mutex<Margins>,
@@ -131,13 +135,20 @@ pub struct Cache {
 const MAX_BACKGROUND_REVALIDATIONS: usize = 32;
 
 impl Cache {
+    /// OS の壁時計で動くキャッシュ ([`Cache::with_clock`] に `clock::system()` を渡すのと同じ)。
     pub fn new(cfg: CacheConfig) -> Self {
+        Self::with_clock(cfg, clock::system())
+    }
+
+    /// 時計を注入して作る (T35.1)。キャッシュが読む「いま」はすべて `time` から来る
+    /// (起動時の索引の掃除・鮮度・延命・定期の掃除)。
+    pub fn with_clock(cfg: CacheConfig, time: SharedClock) -> Self {
         let quota = if cfg.enabled {
             resolve_quota(&cfg)
         } else {
             cfg.disk_quota
         };
-        let cache = Self::blank(cfg, quota);
+        let cache = Self::blank(cfg, quota, time);
         if !cache.cfg.enabled {
             return cache;
         }
@@ -152,7 +163,7 @@ impl Cache {
     }
 
     /// 骨組み (どの層もまだ空で、ディスクも開いていない。T34.84)。
-    fn blank(cfg: CacheConfig, quota: DiskQuota) -> Self {
+    fn blank(cfg: CacheConfig, quota: DiskQuota, time: SharedClock) -> Self {
         // 入れ替えの周期は既定の TTL に合わせる (`cfg` はこのあと構造体に移すのでここで作る)
         let not_stored = notstored::NotStored::new(cfg.default_ttl.as_secs());
         Self {
@@ -167,6 +178,7 @@ impl Cache {
             }),
             cfg,
             clock: AtomicU64::new(0),
+            time,
             ticks: AtomicU64::new(0),
             snapshot: Mutex::new(Snapshot::default()),
             disk_probe: Mutex::new(None),
@@ -196,7 +208,7 @@ impl Cache {
     fn init_disk(&self) {
         match self
             .disk
-            .init(&self.clock, now_epoch(), self.cfg.max_stale.as_secs())
+            .init(&self.clock, self.now(), self.cfg.max_stale.as_secs())
         {
             Ok(r) => log_info!(
                 None,
@@ -233,7 +245,7 @@ impl Cache {
         if self.quota_unknown_on_pterodactyl() {
             if self.cfg.disk_probe && self.disk.reserve_active() {
                 let state = self.quota_root().join(".rust-http-proxy.state");
-                *self.disk_probe.locked() = Some(DiskProbe::load(&state, now_epoch()));
+                *self.disk_probe.locked() = Some(DiskProbe::load(&state, self.now()));
             } else {
                 log_warn!(
                     None,
@@ -252,6 +264,14 @@ impl Cache {
 
     pub fn config(&self) -> &CacheConfig {
         &self.cfg
+    }
+
+    /// 注入された時計の「いま」(epoch 秒。T35.1)。キャッシュの鮮度・`Age`・延命を決める側
+    /// (このクレートと `http` の参照・再検証・配信、`/lookup`) は、自由関数の `now_epoch()` ではなく
+    /// これを読む (試験が `ManualClock` で時間を進めたとき、全部が同じ「いま」を見るように)。
+    #[inline]
+    pub fn now(&self) -> u64 {
+        self.time.epoch()
     }
 
     /// 実際に使っているディスク割当の扱い。

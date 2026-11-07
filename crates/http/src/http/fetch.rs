@@ -292,7 +292,15 @@ pub(super) fn fetch(
                     && can_serve_stale(&entry)
                 {
                     cache.note_stale_served();
-                    return finished(serve_cached(client, entry, source, "STALE", 0, &x.ctx));
+                    return finished(serve_cached(
+                        client,
+                        entry,
+                        source,
+                        "STALE",
+                        0,
+                        cache.now(),
+                        &x.ctx,
+                    ));
                 }
                 write_error(client, 502, "Bad Gateway")?;
                 x.ctx.log_failure(502);
@@ -393,7 +401,15 @@ fn connect_failed<T>(
     {
         crate::body::drain(reader, req_framing)?;
         cache.note_stale_served();
-        return finished(serve_cached(client, entry, source, "STALE", 0, &x.ctx));
+        return finished(serve_cached(
+            client,
+            entry,
+            source,
+            "STALE",
+            0,
+            cache.now(),
+            &x.ctx,
+        ));
     }
     write_error(client, code, reason)?;
     // 原因つきで 1 件数える (デプロイ先の「エラー 12 件、原因は不明」を無くす)
