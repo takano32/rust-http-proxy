@@ -23,7 +23,9 @@ use crate::{log_debug, log_info, log_warn};
 pub struct PeekInfo {
     pub memory: bool,
     pub disk: bool,
-    /// メモリにあればその長さ、無ければディスク上のファイルサイズ
+    /// 保存した応答 (ステータス行・ヘッダー・本文) の長さ = 配るバイト数。メモリの項目も
+    /// ディスクだけの項目も同じ定義 (T35.7。0.35 までのディスクだけの項目は SHPC2 のヘッダー行込みの
+    /// ファイルの大きさだった)。ディスクのファイルが読めなければ索引のファイルの大きさ
     pub size: u64,
     pub meta: Meta,
 }
@@ -40,12 +42,20 @@ impl Cache {
                 size,
                 meta,
             }),
-            (None, Some((size, meta))) => Some(PeekInfo {
-                memory: false,
-                disk: true,
-                size,
-                meta,
-            }),
+            (None, Some((file_size, meta))) => {
+                // 索引はファイルの大きさしか持たないので、ヘッダー行だけ読んで本体の長さを取る
+                // (`/lookup` だけが呼ぶ。LRU と統計には触らない)
+                let size = match self.disk.open(key) {
+                    Ok(Some(hit)) => hit.size,
+                    _ => file_size,
+                };
+                Some(PeekInfo {
+                    memory: false,
+                    disk: true,
+                    size,
+                    meta,
+                })
+            }
             (None, None) => None,
         }
     }

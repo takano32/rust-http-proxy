@@ -442,3 +442,36 @@ fn disk_entry_cap_evicts_least_recently_used() {
             .is_some()
     );
 }
+
+/// `/lookup` の `size` は、メモリの項目もディスクだけの項目も「保存した応答の長さ」(配るバイト数) で
+/// 揃う (T35.7。0.35 までのディスクだけの項目は SHPC2 のヘッダー行込みのファイルの大きさだった)。
+#[test]
+fn peek_size_is_the_response_length_in_both_tiers() {
+    let cache = fresh("shp-test-peek-size", 100, 4 * MIB);
+    let k1 = cache_key("GET", "http://example.com/peek/1");
+    let k2 = cache_key("GET", "http://example.com/peek/2");
+    cache.put(
+        k1,
+        "http://example.com/peek/1",
+        vec![b'a'; 80],
+        Duration::from_secs(60),
+        1,
+    );
+    let mem = cache.peek(k1).unwrap();
+    assert!(mem.memory);
+    assert_eq!(mem.size, 80);
+    // 2 件目でメモリから追い出し、1 件目はディスクだけになる
+    cache.put(
+        k2,
+        "http://example.com/peek/2",
+        vec![b'b'; 80],
+        Duration::from_secs(60),
+        2,
+    );
+    let disk = cache.peek(k1).unwrap();
+    assert!(!disk.memory && disk.disk, "{:?}", disk);
+    assert_eq!(disk.size, 80, "ディスクだけの項目もヘッダー行を含めない");
+    // 覗いても統計は動かず、メモリへの昇格もしない
+    assert_eq!(cache.counters().hits_disk(), 0);
+    assert!(!cache.peek(k1).unwrap().memory);
+}
