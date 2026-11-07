@@ -10,7 +10,8 @@
 #   `phase23_25.py`  Phase 23〜25 の行 (T24.3 の確立の尾を含む) とその材料を読む小物
 #   `phase26_28.py`  Phase 26〜28 の行とその材料を読む小物
 #   `phase29_30.py`  Phase 29〜30 の行とその材料を読む小物
-#   `rules.py`       閾の辞書 (`PHASE14`〜`PHASE30`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
+#   `phase31.py`     Phase 31 の行 (T35.9〜)
+#   `rules.py`       閾の辞書 (`PHASE14`〜`PHASE31`)・`CRITERIA`・`FROZEN`・`RULES` (Phase の順に組む)
 # ここに残っているのは、`RULES` の行を順に呼ぶ `judge()` と、判定表の印字 (`render_criteria()`) だけ。
 #
 # 小物までこちら側にあるのは、`snapshot-diff.py` は名前に `-` があって `import` できないため
@@ -31,9 +32,9 @@ from proxydata import CAUSE_NAMES  # noqa: E402,F401
 # 割った中身 (`scripts/criteria/`。T34.124〜)。**同じ名前で取り込み直す**ので、ここから取り込む側
 # (`snapshot-diff.py` の一覧・`snapshot-summary.py`・試験の `sc.*`) は割る前と変わらない
 from criteria.common import (  # noqa: E402,F401
-    BURST_MEDIAN_K, BURST_PER_HOUR, HFIELDS, MAJOR_HOSTS, MET, MISSED, REFERENCE, SHOWN, UNKNOWN, change,
-    history_res, merged_histories, merged_history, miss_rate, ms, n, norm_history, normal_limit, part,
-    per_hour, ratio, stamp,
+    BURST_MEDIAN_K, BURST_PER_HOUR, HFIELDS, MAJOR_HOSTS, MET, MISSED, REFERENCE, SHOWN, UNKNOWN,
+    anomaly_rates_since_start, change, history_res, merged_histories, merged_history, miss_rate, ms, n,
+    norm_history, normal_limit, part, per_hour, ratio, stamp, started_at,
 )
 from criteria.restarts import (  # noqa: E402,F401
     START_BOOT, START_VERSION, boot_split_text, restart_info, silent_restart_text, silent_restarts,
@@ -70,9 +71,10 @@ from criteria.phase29_30 import (  # noqa: E402,F401
     _p30_dns_slow, _p30_refresh_per_name, answered_names, dns_failures_between, dns_slow_windows,
     history_part, history_since_start, profile_roles_us, profile_window,
 )
+from criteria.phase31 import _p31_events, _p31_events_measured  # noqa: E402,F401
 from criteria.rules import (  # noqa: E402,F401
     CRITERIA, FROZEN, PHASE14, PHASE15, PHASE17, PHASE18, PHASE20, PHASE21, PHASE22, PHASE23, PHASE24,
-    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, RULES,
+    PHASE25, PHASE26, PHASE27, PHASE28, PHASE29, PHASE30, PHASE31, RULES,
 )
 
 
@@ -255,6 +257,12 @@ INTRO = {
                 "**引き直しの合計 (回/時)** で比べます (表の名前の数 `dns.entries` は表の上限と総当たりの濃さで動き、T.32.99 は "
                 "7,511 → 891 名前で 6.27 倍の「届かず」だった)。**その部が雪像に無い行は「判定できず」**で、"
                 "0 とは書きません。"),
+    # T35.9。phase30 の 26 行のうち、表示だけの `/events` の行を要約と同じ数え方にした
+    "phase31": ("26 行の並びと材料は phase30 と同じです。直したのは 1 行 (T35.9): `/events` の anomaly の件/時 (表示だけ) を、"
+                "**要約 (`snapshot-summary.py`) の表と同じ関数**で数えます (起動は取得 − `status.uptime_secs`、`:` の無い文面は "
+                "`?` に数える、リングが満杯で起動より前の出来事が残っていなければ「切れている」。件/時は 3 桁)。phase30 までの"
+                "数え方とは起動の時刻と切れの読み方が違い、同じ雪像でも要約と行がずれることがありました。"
+                "**その部が雪像に無い行は「判定できず」**で、0 とは書きません。"),
 }
 
 

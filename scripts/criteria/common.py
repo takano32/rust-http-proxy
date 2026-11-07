@@ -51,6 +51,63 @@ def miss_rate(row):
     return (row["dns_misses"] / row["requests"]) if row["requests"] else None
 
 
+# ---------------------------------------------------------------- `/events` の anomaly (T35.9)
+
+def started_at(snap):
+    """起動の時刻 (epoch 秒) = 取得の時刻 − `uptime_secs`。どちらかが無ければ None。"""
+    up = part(snap, "status").get("uptime_secs") or snap.get("uptime_secs")
+    t = snap.get("taken_at")
+    return (t - up) if (t and up is not None) else None
+
+
+def anomaly_rates_since_start(snap):
+    """`/events` の `anomaly` を**種類別に「起動からの件/時」**にする (T17.0c)。
+
+    `snapshot-summary.py` の要約の表と、判定表の phase31 の `/events` の行 (`_p31_events`) の
+    **1 つの本体** (T35.9 で要約から移した。中身は 1 文字も変えていない)。phase30 までの行は
+    `criteria/phase14_18.py` の `anomaly_rates` (起動を `uptime_secs` だけで出し、`:` の無い文面を
+    数えない古い数え方) のままにしてある (過去の出力を変えないため)。
+
+    種類は `text` の先頭の `<kind>:` (`crates/metrics-watch/src/anomaly/text.rs` の文面)。
+    **`cleared:` (収まった) は数えない** — 立った回数が知りたいので、収まりまで数えると 2 倍に読める。
+    `/events` のリングは状態ファイルに残って再起動をまたぐ (`restored`) ので、
+    **起動より前の出来事は外す** (前の版の件数が混ざると、直した版の件/時が読めない)。
+    部が無い版では None (呼ぶ側が表ごと出さない)。
+    """
+    ev = part(snap, "events")
+    rows = ev.get("events")
+    if not isinstance(rows, list):
+        return None
+    start = started_at(snap)
+    up = (snap.get("taken_at") or 0) - start if start is not None else 0
+    counts, cleared, before, oldest = {}, 0, 0, None
+    for e in rows:
+        if e.get("kind") != "anomaly":
+            continue
+        at = e.get("at") or 0
+        if start is not None and at < start:
+            before += 1
+            continue
+        oldest = at if oldest is None else min(oldest, at)
+        text = e.get("text") or ""
+        kind = text.split(":", 1)[0].strip() if ":" in text else "?"
+        if kind == "cleared":
+            cleared += 1
+            continue
+        counts[kind] = counts.get(kind, 0) + 1
+    hours = up / 3600 if up > 0 else None
+    table = sorted(((k, n, (n / hours) if hours else None) for k, n in counts.items()),
+                   key=lambda r: (-r[1], r[0]))
+    # リングが満杯なら古い方から落ちているので、起動直後のぶんが欠けているかもしれない。ただし**起動より前の
+    # 出来事が 1 件でも残っていれば** (種類を問わない。起動の `start` も)、起動からのぶんは落ちていない (T32.31。
+    # 起動より前の 308 件と起動の `start` が残っていても警告が出ていた)
+    full = bool(ev.get("capacity") and len(rows) >= ev["capacity"])
+    if full and start is not None and any(isinstance(e, dict) and (e.get("at") or 0) <= start for e in rows):
+        full = False
+    return {"rows": table, "cleared": cleared, "before": before, "hours": hours,
+            "truncated": bool(ev.get("truncated")) or full, "oldest": oldest}
+
+
 # ---------------------------------------------------------------- 印字の小物
 
 def stamp(t):

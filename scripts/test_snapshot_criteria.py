@@ -326,7 +326,7 @@ class Criteria15(unittest.TestCase):
         self.assertEqual(sorted(sd.CRITERIA),
                          ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
                           "phase22", "phase23", "phase24", "phase25", "phase26", "phase27", "phase28", "phase29",
-                          "phase30"])
+                          "phase30", "phase31"])
 
 
 def conn_profile(conn_us_per_row):
@@ -3272,6 +3272,15 @@ class RulesOrder(unittest.TestCase):
             "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_p29_idle_cost",
             "_p26_origin_warn_per_minute",
         ),
+        "phase31": (
+            "_p20_watch_host", "_p22_refresh_rate", "_p29_miss_band", "_p20_timeout",
+            "_p29_conn_per_resolved_request", "_p20_warm_max", "_p31_events", "_p17_cgroup", "_p24_heap",
+            "_p21_request_probes", "_p30_dns_slow", "_p22_stale_retries", "_p29_connect_errors",
+            "_p22_connect_errors_shown", "_p30_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail",
+            "_p26_header_timeouts", "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut",
+            "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_p29_idle_cost",
+            "_p26_origin_warn_per_minute",
+        ),
     }
 
     def test_each_phase_lists_the_same_rules_in_the_same_order(self):
@@ -3283,3 +3292,74 @@ class RulesOrder(unittest.TestCase):
         self.assertEqual(list(got), list(self.WANT))
         for phase, want in self.WANT.items():
             self.assertEqual(got[phase], want, phase)
+
+
+class Criteria31Events(unittest.TestCase):
+    """`--criteria phase31` (T35.9): `/events` の anomaly の行を要約 (`snapshot-summary.py`) と同じ関数で数える。"""
+
+    T0 = 1_800_000_000
+
+    def snap(self, events, uptime=7200, top_uptime=True, capacity=None):
+        """起動から `uptime` 秒の雪像。`events` は `(起動からの秒, 文面)`、負の秒は起動より前。"""
+        start = self.T0 - uptime
+        ev = {"events": [{"kind": "anomaly", "at": start + t, "text": text} for t, text in events]}
+        if capacity is not None:
+            ev["capacity"] = capacity
+        s = {"taken_at": self.T0, "status": {"uptime_secs": uptime}, "events": ev}
+        if top_uptime:
+            s["uptime_secs"] = uptime
+        return s
+
+    def row(self, rule, a, b):
+        return rule({"a": a, "b": b}, sc.PHASE31)
+
+    def test_phase31_replaces_only_the_events_row_of_phase30(self):
+        p30, p31 = sd.RULES["phase30"], sd.RULES["phase31"]
+        self.assertEqual(len(p31), 26)
+        self.assertEqual([i for i in range(26) if p30[i] is not p31[i]], [6])
+        self.assertIs(p31[6], sc._p31_events)
+        self.assertEqual(sc.PHASE31, sc.PHASE30)
+
+    def test_the_summary_and_the_row_share_one_function(self):
+        import _testing
+        ss = _testing.load("snapshot_summary_t359", "snapshot-summary.py")
+        self.assertIs(ss.anomaly_rates, sc.anomaly_rates_since_start)
+        self.assertIs(ss.started_at, sc.started_at)
+
+    def test_the_row_prints_the_summary_numbers(self):
+        a = self.snap([(60, "dns_slow: x")])
+        b = self.snap([(-30, "dns_slow: before the start"), (60, "dns_slow: a"), (120, "dns_slow: b"),
+                       (130, "cleared: dns_slow after 1m"), (200, "connect_p95: c"), (300, "no colon here")])
+        rates = sc.anomaly_rates_since_start(b)
+        self.assertEqual(rates["rows"], [("dns_slow", 2, 1.0), ("?", 1, 0.5), ("connect_p95", 1, 0.5)])
+        row = self.row(sc._p31_events, a, b)
+        self.assertEqual(row[3], sd.SHOWN)
+        self.assertEqual(row[1], "— (phase21 は `dns_slow` ≤ 0.1)")
+        self.assertEqual(row[2], "`dns_slow` **1.000** 件/時 (2 件、前 0.500)、`?` 0.500 件/時 (1 件、前 0.000)、"
+                                 "`connect_p95` 0.500 件/時 (1 件、前 0.000)")
+        self.assertIn("起動 (取得 − `status.uptime_secs`) より前の 1 件を外し、起動からの 2.0 時間で割った", row[4])
+        # phase30 の行は `:` の無い文面を数えない (古い数え方のまま)
+        old = self.row(sc._p22_events, a, b)
+        self.assertNotIn("`?`", old[2])
+        self.assertIn("`dns_slow` **1.00** 件/時 (2 件、前 0.50)", old[2])
+
+    def test_the_uptime_comes_from_the_status_part_first(self):
+        # 雪像の上の段に `uptime_secs` の無い雪像: phase30 は数えられず、phase31 (要約) は `status` から読む
+        b = self.snap([(60, "dns_slow: a")], top_uptime=False)
+        self.assertEqual(self.row(sc._p22_events, {}, b)[2], "—")
+        row = self.row(sc._p31_events, {}, b)
+        self.assertIn("`dns_slow` **0.500** 件/時 (1 件)", row[2])
+        self.assertIn("前の雪像に `/events` が無い", row[4])
+
+    def test_a_full_ring_without_older_events_is_read_as_cut(self):
+        b = self.snap([(60, "dns_slow: a"), (70, "dns_slow: b")], capacity=2)
+        self.assertIn("**`/events` が満杯か切れている**", self.row(sc._p31_events, {}, b)[4])
+        self.assertNotIn("切れている", self.row(sc._p22_events, {}, b)[4])
+        # 起動より前の出来事が 1 件でも残っていれば、起動からのぶんは落ちていない (T32.31)
+        b = self.snap([(-10, "dns_slow: old"), (60, "dns_slow: a")], capacity=2)
+        self.assertNotIn("切れている", self.row(sc._p31_events, {}, b)[4])
+
+    def test_a_snapshot_without_events_cannot_be_judged(self):
+        row = self.row(sc._p31_events, {}, {"taken_at": self.T0, "uptime_secs": 60})
+        self.assertEqual(row[2], "—")
+        self.assertIn("後の雪像に `/events` の部が無い", row[4])

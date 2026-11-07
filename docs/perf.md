@@ -290,6 +290,11 @@ scripts/snapshot-diff.py a.json b.json --criteria phase29 --daily b-daily.json \
 scripts/snapshot-diff.py a.json b.json --criteria phase30 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
+# phase31 (T35.9) は phase30 の 26 行のうち `/events` の anomaly の行 (表示だけ) を、要約 (`snapshot-summary.py`) の
+# 表と同じ関数 (`scripts/criteria/common.py` の `anomaly_rates_since_start`) で数えるもの。件/時は要約と同じ 3 桁
+scripts/snapshot-diff.py a.json b.json --criteria phase31 --daily b-daily.json \
+                         --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
+                         --zero zero.json --daily-snapshots status
 # `/snapshot` より前の形 (`/status` と `/history` を 1 本ずつ取ったファイル群) からも組めます
 scripts/snapshot-diff.py --from-files status/2026-09-12T2018Z \
                          --from-files status/2026-09-16T0106Z

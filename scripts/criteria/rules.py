@@ -1,6 +1,6 @@
 # 判定表 (`scripts/snapshot_criteria.py`) の**閾と並び** (T34.129 で割った)。
 #
-# Phase ごとの閾の辞書 (`PHASE14`〜`PHASE30`)・`--criteria` の名前から閾を引く `CRITERIA`・出力を
+# Phase ごとの閾の辞書 (`PHASE14`〜`PHASE31`)・`--criteria` の名前から閾を引く `CRITERIA`・出力を
 # 変えない定義 `FROZEN`・名前から判定の関数の並びを引く `RULES` を、Phase の順に組む。判定の関数は
 # `criteria/phase*.py` にある。`RULES` の並びは `test_snapshot_criteria.py` の `RulesOrder` が固定している。
 
@@ -28,6 +28,7 @@ from .phase29_30 import (
     _p29_cgroup_cpu_shown, _p29_conn_per_resolved_request, _p29_connect_errors, _p29_dns_slow,
     _p29_idle_cost, _p29_miss_band, _p30_dns_slow, _p30_refresh_per_name,
 )
+from .phase31 import _p31_events
 
 
 # ---------------------------------------------------------------- (9) 判定表
@@ -280,3 +281,10 @@ PHASE30 = dict(PHASE29)
 # `dns_slow` が立った窓の成功したミスの平均の倍率 (前の版のこの倍未満なら満たす。T33.1)
 PHASE30["dns_slow_avg_factor"] = 1.5
 CRITERIA["phase30"] = PHASE30
+
+
+# phase31 = phase30 の 26 行のうち 7 番目 (`/events` の anomaly。表示だけ) を、要約 (`snapshot-summary.py`) と
+# 同じ関数で数える行に差し替えたもの (T35.9)。並びは同じ。**phase30 以前の並びと文面は 1 つも動かない**
+RULES["phase31"] = replaced(RULES["phase30"], {7: _p31_events})
+PHASE31 = dict(PHASE30)
+CRITERIA["phase31"] = PHASE31
