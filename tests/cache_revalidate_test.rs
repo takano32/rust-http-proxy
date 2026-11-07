@@ -82,13 +82,16 @@ fn test_integration_grace_serves_stale_and_refreshes_in_background() {
             .into_bytes()
         }),
     );
-    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-grace"));
+    // キャッシュの時計は手で進める (T35.1。TTL の切れを実時間で待たない)
+    let clock = ManualClock::starting_now();
+    let (proxy_port, _) =
+        start_test_proxy_clocked(proxy_config(), cache_cfg("shp-it-grace"), clock.clone());
     let host = format!("127.0.0.1:{}", origin_port);
     let url = format!("http://{}/grace", host);
 
     let first = get_via_proxy(proxy_port, &url, &host);
     assert!(first.ends_with("grace body 1"), "{}", first);
-    thread::sleep(Duration::from_millis(1500));
+    clock.advance(Duration::from_secs(2));
 
     // 期限切れ直後: すぐ古い表現が返り (REFRESHING)、裏で再検証が走る
     let started = std::time::Instant::now();
@@ -179,7 +182,10 @@ fn test_integration_background_revalidation_stays_inside_the_worker_pool() {
         slow_revalidating_origin(Arc::clone(&counter), Duration::from_millis(300));
     let mut cfg = proxy_config();
     cfg.max_threads = MAX_THREADS;
-    let (proxy_port, workers) = start_test_proxy_with_workers(cfg, cache_cfg("shp-it-revalpool"));
+    // キャッシュの時計は手で進める (T35.1。TTL の切れを実時間で待たない)
+    let clock = ManualClock::starting_now();
+    let (proxy_port, workers) =
+        start_test_proxy_clocked(cfg, cache_cfg("shp-it-revalpool"), clock.clone());
     let host = format!("127.0.0.1:{}", origin_port);
     let urls: Vec<String> = (0..URLS)
         .map(|i| format!("http://{}/pool{}", host, i))
@@ -190,7 +196,7 @@ fn test_integration_background_revalidation_stays_inside_the_worker_pool() {
         let r = get_via_proxy(proxy_port, url, &host);
         assert!(r.ends_with("worker pool body"), "{}", r);
     }
-    thread::sleep(Duration::from_millis(1200));
+    clock.advance(Duration::from_secs(2));
     let before_reval = json::uint(&status_json(proxy_port), "background_revalidations");
 
     // burst の最中ずっと見張る
@@ -270,13 +276,16 @@ fn test_integration_background_revalidation_is_dropped_when_threads_are_capped()
     let mut cfg = proxy_config();
     // 上限 1 = いま要求を処理しているスレッドで全部。裏の再検証に回せる空きは無い
     cfg.max_threads = 1;
-    let proxy_port = start_test_proxy_with_cache(cfg, cache_cfg("shp-it-revaldrop"));
+    // キャッシュの時計は手で進める (T35.1。TTL の切れを実時間で待たない)
+    let clock = ManualClock::starting_now();
+    let (proxy_port, _) =
+        start_test_proxy_clocked(cfg, cache_cfg("shp-it-revaldrop"), clock.clone());
     let host = format!("127.0.0.1:{}", origin_port);
     let url = format!("http://{}/capped", host);
 
     let first = get_via_proxy(proxy_port, &url, &host);
     assert!(first.ends_with("worker pool body"), "{}", first);
-    thread::sleep(Duration::from_millis(1200));
+    clock.advance(Duration::from_secs(2));
 
     // 期限切れ直後。裏へ回せないので REFRESHING にはならず、同期で再検証して返す
     let second = get_via_proxy(proxy_port, &url, &host);

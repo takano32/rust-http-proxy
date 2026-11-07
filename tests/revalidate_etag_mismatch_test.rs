@@ -76,13 +76,17 @@ fn test_integration_sync_revalidation_ignores_a_304_for_another_etag() {
 fn test_integration_background_revalidation_ignores_a_304_for_another_etag() {
     let counter = Arc::new(AtomicUsize::new(0));
     let port = origin_switching_representation(Arc::clone(&counter), 1);
-    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-etag-bg"));
+    // キャッシュの時計は手で進める (T35.1。TTL の切れを実時間で待たない)
+    let clock = ManualClock::starting_now();
+    let (proxy_port, _) =
+        start_test_proxy_clocked(proxy_config(), cache_cfg("shp-it-etag-bg"), clock.clone());
     let url = format!("http://127.0.0.1:{}/b", port);
     let host = format!("127.0.0.1:{}", port);
 
     let first = get_via_proxy(proxy_port, &url, &host);
     assert_eq!(body_of(&first), "old", "{}", first);
-    std::thread::sleep(Duration::from_millis(2100));
+    // `max-age=1` の期限を過ぎ、grace の内
+    clock.advance(Duration::from_secs(2));
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(second.contains("X-Cache: REFRESHING"), "{}", second);
     assert_eq!(body_of(&second), "old", "{}", second);
@@ -90,8 +94,11 @@ fn test_integration_background_revalidation_ignores_a_304_for_another_etag() {
         || counter.load(Ordering::SeqCst) >= 2,
         "background revalidation",
     );
-    // 裏の仕事が項目を消し終えるのを待つ (304 を受けてから消すまで)
-    std::thread::sleep(Duration::from_millis(300));
+    // 裏の仕事が項目を消し終えるのを待つ (304 を受けてから消すまで。再検証中の印が外れるのは仕事の最後)
+    wait_until(
+        || status_json(proxy_port).contains("\"revalidating\":0"),
+        "the background revalidation should finish",
+    );
     let third = get_via_proxy(proxy_port, &url, &host);
     assert!(!third.contains("X-Cache"), "{}", third);
     assert_eq!(

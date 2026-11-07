@@ -1,4 +1,24 @@
 //! 試験用プロキシをこのプロセスの中で起こす口と、試験用の設定。
+//!
+//! # 時計に頼る試験の一覧 (T35.1)
+//!
+//! キャッシュの「いま」(鮮度・`Age`・延命) は `Cache` に注入した時計 (`proxy_base::clock::Clock`)
+//! から読む。TTL の切れを待つ試験は [`start_test_proxy_clocked`] に [`ManualClock`] を渡し、
+//! `thread::sleep` の代わりに `clock.advance(..)` で時間を進める。
+//!
+//! 移したもの (実時間の待ち 1.2〜3 秒 → 0):
+//! - `cache_revalidate_test`: grace の REFRESHING・裏の再検証の置き場・置き場が満杯で捨てる
+//! - `revalidate_4xx_test` (3 本)・`revalidate_cookie_test` (裏の 304)・
+//!   `revalidate_etag_mismatch_test` (裏の 304)・`revalidate_headers_test` (裏の 304・`Age` の 3 本)・
+//!   `range_revalidate_test`
+//!
+//! 実時間のまま残すもの (時計を偽っても、待っているのはカーネルか相手のスレッド):
+//! - `header_timeout_test`・`min_transfer_test`・`stall_test`: 締め切りは `SO_RCVTIMEO`/`poll`
+//!   の待ちと組 (読む `Instant` だけ偽っても `read` は返らない)
+//! - `idle_sleep_test`: 監視スレッドが実際に眠り続けることそのものを見る
+//! - `canary_test`: 周期で起きる見張りのスレッドが繋がない (起きる回数) ことを見る
+//! - `cache_revalidate_test` の遅いオリジン (`stale_wait`)・`cache_coalesce_test`: オリジンの
+//!   応答の遅れ (相手のスレッドの `sleep`) と、合流の `Condvar` の待ち
 
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -7,6 +27,9 @@ use std::time::Duration;
 
 use rust_http_proxy::Upstream;
 use rust_http_proxy::cache::{Cache, CacheConfig, MIB};
+/// TTL の切れを手で作る時計 (T35.1)。[`start_test_proxy_clocked`] に渡す
+pub use rust_http_proxy::clock::ManualClock;
+use rust_http_proxy::clock::{self, SharedClock};
 use rust_http_proxy::config::Config;
 use rust_http_proxy::metrics::Metrics;
 use rust_http_proxy::pool::Pool;
@@ -48,6 +71,35 @@ pub fn start_test_proxy_full(
     start_test_proxy_parts(config, cache_cfg, ca_file).0
 }
 
+/// キャッシュの時計を注入して起動する版 (T35.1)。接続スレッドの置き場も返す。
+///
+/// `clock` に `ManualClock` を渡すと、キャッシュの鮮度・`Age`・延命・掃除が読む「いま」は
+/// その時計だけになる。TTL の切れを `thread::sleep` で待たず、`clock.advance(..)` で作れる。
+/// 時計はこのプロキシの `Cache` だけのもの (大域ではない) なので、同じバイナリで並んで走る
+/// 隣の試験には漏れない。
+///
+/// **実時間のまま残るもの**: 締め切り・最低転送速度・合流の待ち (`Instant` とカーネルの待ち)。
+/// これらに頼る試験 (header_timeout・min_transfer・stall・idle_sleep・canary・遅いオリジンの
+/// `stale_wait`) は実時間で待つ (理由は `proxy_base::clock` の doc)。
+pub fn start_test_proxy_clocked(
+    config: Config,
+    cache_cfg: CacheConfig,
+    clock: SharedClock,
+) -> (u16, Arc<rust_http_proxy::workers::Workers>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let cfg = Arc::new(config);
+    let first = Arc::clone(&cfg);
+    let (port, workers, _) = wire_and_serve(
+        listener,
+        &first,
+        move || Arc::clone(&cfg),
+        cache_cfg,
+        None,
+        clock,
+    );
+    (port, workers)
+}
+
 /// `serve` を呼ぶ前に `early` 本の接続の握手を済ませておく版 (起動直後の接続のテスト用。T28.30)。
 ///
 /// 握手は待ち受けの accept 待ちの列に載ったまま、受け付けのループが待ち受けに
@@ -86,6 +138,7 @@ fn start_test_proxy_on(
         move || Arc::clone(&cfg),
         cache_cfg,
         ca_file,
+        clock::system(),
     )
 }
 
@@ -100,10 +153,12 @@ fn wire_and_serve(
     config_of: impl Fn() -> Arc<Config> + Send + 'static,
     cache_cfg: CacheConfig,
     ca_file: Option<std::path::PathBuf>,
+    clock: SharedClock,
 ) -> (u16, Arc<rust_http_proxy::workers::Workers>, Arc<Metrics>) {
     let port = listener.local_addr().unwrap().port();
     let metrics = Arc::new(Metrics::new());
-    let cache = Arc::new(Cache::new(cache_cfg));
+    // 時計はここ (組み立ての根) で 1 回だけ決めて `Cache` に注入する (T35.1)
+    let cache = Arc::new(Cache::with_clock(cache_cfg, clock));
     // 本番 (`crates/run`) と同じく、OpenSSL は最初の https:// オリジンで読む (T32.5)。
     // libssl が無ければ、そのときの接続が今までどおり `Unsupported` の誤り (502) になる
     let tls = Some(TlsClient::deferred(true, ca_file.as_deref(), None));
@@ -196,6 +251,7 @@ pub fn start_test_proxy_with_live_config(
         move || Arc::clone(&shared.read().unwrap()),
         CacheConfig::disabled(),
         None,
+        clock::system(),
     );
     (port, live)
 }

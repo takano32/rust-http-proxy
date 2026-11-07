@@ -107,14 +107,19 @@ fn test_integration_304_rewrites_the_stored_head_on_disk() {
 fn test_integration_background_304_rewrites_the_stored_head() {
     let counter = Arc::new(AtomicUsize::new(0));
     let (origin_port, _origin) = start_origin_with_new_headers_on_304(Arc::clone(&counter), 1);
-    let proxy_port =
-        start_test_proxy_with_cache(proxy_config(), cache_cfg("shp-it-304-head-background"));
+    // キャッシュの時計は手で進める (T35.1。TTL の切れを実時間で待たない)
+    let clock = ManualClock::starting_now();
+    let (proxy_port, _) = start_test_proxy_clocked(
+        proxy_config(),
+        cache_cfg("shp-it-304-head-background"),
+        clock.clone(),
+    );
     let url = format!("http://127.0.0.1:{}/r", origin_port);
     let host = format!("127.0.0.1:{}", origin_port);
 
     let first = get_via_proxy(proxy_port, &url, &host);
     assert!(first.contains("X-Ver: 1"), "{}", first);
-    std::thread::sleep(Duration::from_millis(2100));
+    clock.advance(Duration::from_secs(2));
     // 期限切れ直後: 古い表現をすぐ返し、裏で再検証する
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(second.contains("X-Cache: REFRESHING"), "{}", second);
@@ -174,13 +179,15 @@ fn check_age_after_revalidation(cache: CacheConfig, source: &str, bare_304: bool
             .into_bytes()
         }),
     );
-    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache);
+    // キャッシュの時計は手で進める (T35.1。TTL の切れを実時間で待たない)
+    let clock = ManualClock::starting_now();
+    let (proxy_port, _) = start_test_proxy_clocked(proxy_config(), cache, clock.clone());
     let url = format!("http://127.0.0.1:{}/age", origin_port);
     let host = format!("127.0.0.1:{}", origin_port);
 
     let first = get_via_proxy(proxy_port, &url, &host);
     assert_eq!(body_of(&first), BODY, "{}", first);
-    std::thread::sleep(Duration::from_secs(3));
+    clock.advance(Duration::from_secs(3));
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(
         second.contains(&format!(

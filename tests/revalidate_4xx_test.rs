@@ -30,21 +30,27 @@ fn origin_then(counter: Arc<AtomicUsize>, later: &'static str) -> u16 {
 fn third_after_background(later: &'static str, dir: &str) -> (String, Arc<AtomicUsize>) {
     let counter = Arc::new(AtomicUsize::new(0));
     let port = origin_then(Arc::clone(&counter), later);
-    let proxy_port = start_test_proxy_with_cache(proxy_config(), cache_cfg(dir));
+    // キャッシュの時計は手で進める (T35.1。TTL の切れを実時間で待たない)
+    let clock = ManualClock::starting_now();
+    let (proxy_port, _) = start_test_proxy_clocked(proxy_config(), cache_cfg(dir), clock.clone());
     let url = format!("http://127.0.0.1:{}/d", port);
     let host = format!("127.0.0.1:{}", port);
 
     let first = get_via_proxy(proxy_port, &url, &host);
     assert!(first.ends_with("old"), "{}", first);
-    std::thread::sleep(Duration::from_millis(2100));
+    // `max-age=1` の期限を過ぎ、grace (60 秒) の内
+    clock.advance(Duration::from_secs(2));
     let second = get_via_proxy(proxy_port, &url, &host);
     assert!(second.contains("X-Cache: REFRESHING"), "{}", second);
     wait_until(
         || counter.load(Ordering::SeqCst) >= 2,
         "background revalidation",
     );
-    // 裏の仕事が応答を読んで置き換える・消すまで
-    std::thread::sleep(Duration::from_millis(300));
+    // 裏の仕事が応答を読んで置き換える・消すまで (再検証中の印が外れるのは仕事の最後)
+    wait_until(
+        || status_json(proxy_port).contains("\"revalidating\":0"),
+        "the background revalidation should finish",
+    );
     (get_via_proxy(proxy_port, &url, &host), counter)
 }
 

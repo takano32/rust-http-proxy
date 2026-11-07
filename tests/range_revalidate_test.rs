@@ -56,13 +56,16 @@ fn test_integration_a_206_on_revalidation_keeps_the_stale_full_representation() 
         grace: Duration::ZERO,
         ..cache_cfg("shp-it-range-reval")
     };
-    let proxy_port = start_test_proxy_with_cache(proxy_config(), cfg);
+    // キャッシュの時計は手で進める (T35.1。TTL の切れを実時間で待たない)
+    let clock = ManualClock::starting_now();
+    let (proxy_port, _) = start_test_proxy_clocked(proxy_config(), cfg, clock.clone());
     let url = format!("http://127.0.0.1:{}/r", port);
     let host = format!("127.0.0.1:{}", port);
 
     let first = get_via_proxy(proxy_port, &url, &host);
     assert!(first.starts_with("HTTP/1.1 200 "), "{}", first);
-    std::thread::sleep(Duration::from_millis(2100));
+    // `max-age=1` の期限を過ぎる (猶予 0 なのでオリジンへ回る)
+    clock.advance(Duration::from_secs(2));
 
     let ranged = get_via_proxy_with(proxy_port, &url, &host, "Range: bytes=0-9\r\n");
     assert!(ranged.starts_with("HTTP/1.1 206 "), "{}", ranged);
