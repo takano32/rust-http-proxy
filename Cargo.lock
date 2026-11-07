@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "proxy-base"
-version = "0.34.165"
+version = "0.35.12"
 
 [[package]]
 name = "proxy-bench"
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-cache"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-base",
  "proxy-cachecfg",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-cachecfg"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-base",
 ]
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-cachemem"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-base",
  "proxy-cachekey",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-config"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-endpoints"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-http"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-base",
  "proxy-cache",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-core"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-metrics-window",
 ]
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-metrics-recent"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-cache",
  "proxy-metrics-types",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-reload"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -299,14 +299,14 @@ dependencies = [
 
 [[package]]
 name = "proxy-selfbench"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-base",
 ]
 
 [[package]]
 name = "proxy-server"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-sysinfo"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-sys",
 ]
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "rust-http-proxy"
-version = "0.34.165"
+version = "0.35.12"
 dependencies = [
  "proxy-endpoints",
  "proxy-run",
