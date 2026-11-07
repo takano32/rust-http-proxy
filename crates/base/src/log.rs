@@ -98,21 +98,32 @@ pub fn enabled(level: Level) -> bool {
     level <= current_level()
 }
 
+/// `PROXY_LOG_LEVEL` が無い・読めないときの高さ: lite プロファイルは warn、ほかは info。
+///
+/// 起動時 ([`init_from_env`]) と再読込で `.env` から消したときの両方がここを使う (T35.5。
+/// 0.35 までは再読込の側が lite でも info に戻していた)。
+pub fn default_level(lite: bool) -> Level {
+    if lite { Level::Warn } else { Level::Info }
+}
+
 /// `PROXY_LOG_LEVEL` からログレベルを初期化する。
 pub fn init_from_env() {
+    let lite =
+        crate::envfile::var("PROXY_PROFILE").is_some_and(|v| v.trim().eq_ignore_ascii_case("lite"));
+    let fallback = default_level(lite);
     if let Some(v) = crate::envfile::var("PROXY_LOG_LEVEL") {
         if let Some(l) = Level::parse(&v) {
             set_level(l);
             return;
         }
-        println!("Unknown PROXY_LOG_LEVEL '{}', falling back to 'info'", v);
+        // 知らせは実際の行き先を言う (T35.5。0.35 までは lite でも 'info' と言っていた)
+        println!(
+            "Unknown PROXY_LOG_LEVEL '{}', falling back to '{}'",
+            v,
+            fallback.as_str().trim().to_ascii_lowercase()
+        );
     }
-    // lite プロファイルの既定は warn (明示指定があれば上で返している)
-    if crate::envfile::var("PROXY_PROFILE").is_some_and(|v| v.trim().eq_ignore_ascii_case("lite")) {
-        set_level(Level::Warn);
-        return;
-    }
-    set_level(Level::Info);
+    set_level(fallback);
 }
 
 thread_local! {

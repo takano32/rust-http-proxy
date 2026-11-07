@@ -431,7 +431,7 @@ impl Config {
             if crate::log::Level::parse(&v).is_some() {
                 src.mark("PROXY_LOG_LEVEL");
             } else {
-                bad.note("PROXY_LOG_LEVEL", &v, "error, warn, info or debug");
+                bad.note("PROXY_LOG_LEVEL", &v, "error, warn, info, debug or trace");
             }
         }
     }

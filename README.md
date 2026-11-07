@@ -779,7 +779,8 @@ Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。
   `off` では起動時の分岐 1 つ以外何も走りません (`--lite` でも明示すれば回ります)。
   **再起動で反映**
 - **`PROXY_LOG_LEVEL`** (既定 `info`)
-  ログレベル (`error` / `warn` / `info` / `debug` / `trace`)
+  ログレベル (`error` / `warn` / `info` / `debug` / `trace`)。`--lite` の既定は `warn`。読めない値と、再読込で
+  `.env` から消したときも、この既定 (lite なら `warn`) に戻ります (T35.5。0.35 までは再読込で消すと lite でも `info` でした)
 
 #### キャッシュとディスク割当
 

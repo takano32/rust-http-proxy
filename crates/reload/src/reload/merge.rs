@@ -233,9 +233,11 @@ fn merge_rest(next: &mut Config, old: &Config, fresh: &Config, applied: &mut Vec
         crate::blocklist::configure(bl);
         applied.push("PROXY_BLOCKLIST_*");
     }
+    // 消した・読めないときは起動時と同じ既定 (lite なら warn。T35.5)。lite は起動時に
+    // 固定される項目なので、いま効いている `old` の側を見る
     let level = envfile::var("PROXY_LOG_LEVEL")
         .and_then(|v| log::Level::parse(&v))
-        .unwrap_or(log::Level::Info);
+        .unwrap_or(log::default_level(old.lite));
     if level != log::current_level() {
         log::set_level(level);
         next.sources.adopt(&fresh.sources, "PROXY_LOG_LEVEL");
