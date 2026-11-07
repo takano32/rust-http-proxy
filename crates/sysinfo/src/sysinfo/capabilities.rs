@@ -241,24 +241,12 @@ fn tcp_info_works() -> bool {
     false
 }
 
-/// `getsockopt(SOL_TCP, TCP_INFO)` が通るか (T14.5 が読む口と同じ呼び方)。
-///
-/// 構造体は `linux/tcp.h` の `struct tcp_info`。カーネルは `min(len, sizeof)` しか
-/// 書かないので、104 バイトの緩衝を渡せば古いカーネルでも溢れない。
+/// `getsockopt(SOL_TCP, TCP_INFO)` で RTT が読めるか。**読む口 ([`crate::sys::tcp_info`]) そのもの**を呼ぶ
+/// (T35.6)。0.35 までは自前で呼んで 8 バイト以上書ければ真にしていたが、読む側は RTT の欄の次
+/// (76 バイト) まで要るので、古いカーネルでは `[ok]` なのに値が `null` になりえた。
 #[cfg(target_os = "linux")]
 fn tcp_info_ok(fd: i32) -> bool {
-    const SOL_TCP: i32 = 6;
-    const TCP_INFO: i32 = 11;
-    unsafe extern "C" {
-        fn getsockopt(fd: i32, level: i32, name: i32, val: *mut u8, len: *mut u32) -> i32;
-    }
-    let mut buf = [0u8; 104];
-    let mut len = buf.len() as u32;
-    // SAFETY: 書き込み先は 104 バイトの配列で、その大きさを `len` で渡している。
-    // カーネルは `len` を超えて書かず、書けた大きさを `len` に返す
-    let rc = unsafe { getsockopt(fd, SOL_TCP, TCP_INFO, buf.as_mut_ptr(), &mut len) };
-    // 先頭 8 バイト (u8 の旗) すら返らないなら、読めても使い物にならない
-    rc == 0 && len >= 8
+    crate::sys::tcp_info(fd).is_some()
 }
 
 /// `/status` の `kernel.cgroup_cpu` が読める `cpu.stat` があるか (読む側と同じ道。T28.11)。
@@ -485,6 +473,22 @@ mod tests {
         // v1 だけなら読む側は cgroup を見ない (落とし込みが無ければ偽)
         assert!(!cgroup_pressure_in("4:cpu,cpuacct:/app\n", &sysfs, &none));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `tcp_info` の判定は読む側 (`sys::tcp_info`) と同じ答えを出す (T35.6)。TCP の待ち受けは真、
+    /// TCP でないソケットは偽。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tcp_info_follows_the_reader() {
+        use std::os::fd::AsRawFd;
+        let tcp = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        assert_eq!(
+            tcp_info_ok(tcp.as_raw_fd()),
+            crate::sys::tcp_info(tcp.as_raw_fd()).is_some()
+        );
+        assert!(tcp_info_ok(tcp.as_raw_fd()));
+        let udp = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        assert!(!tcp_info_ok(udp.as_raw_fd()));
     }
 
     #[test]
