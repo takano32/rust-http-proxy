@@ -36,7 +36,7 @@
 #   6. その間の出来事 (`/events`。無い版では飛ばす)
 #   7. エラーの原因別の件数 (`/hosts` の `errors_by_cause` の差分と `/errors` の個票)
 #   8. バーストの写真 (`/bursts`。無ければ `/history` から山の数だけ出す)
-#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22|phase23|phase24|phase25|phase26|phase27|phase28|phase29|phase30|phase35` で **Phase の完了の定義に対する判定表**
+#   9. `--criteria phase14|phase15|phase17|phase18|phase20|phase21|phase22|phase23|phase24|phase25|phase26|phase27|phase28|phase29|phase30|T35` で **Phase の完了の定義に対する判定表**
 #      (満たした / 届かず / 判定できず)。判定の 1 行 = 1 つの関数で、`RULES` に並べてある
 #      (**判定の部は `scripts/snapshot_criteria.py`**。T20.1 で割った)
 #      (T15.0 (15)。**材料の部が雪像に無ければ「判定できず」**で、0 とは書かない)。
@@ -101,7 +101,7 @@ from proxydata import (  # noqa: E402
 from snapshot_criteria import (  # noqa: E402,F401
     BURST_MEDIAN_K,
     BURST_PER_HOUR,
-    CRITERIA,
+    CRITERIA, CRITERIA_ALIASES, criteria_name,
     FROZEN,
     HFIELDS,
     MAJOR_HOSTS,
@@ -1497,7 +1497,7 @@ def parser():
                         "から組む。2 回まで渡せる")
     p.add_argument("--aaaa", metavar="FILE", help='{"host": true/false} の JSON で AAAA の有無を与える')
     p.add_argument("--no-dns", action="store_true", help="AAAA を引かない")
-    p.add_argument("--criteria", choices=sorted(CRITERIA), metavar="NAME",
+    p.add_argument("--criteria", choices=sorted(set(CRITERIA) | set(CRITERIA_ALIASES)), metavar="NAME",
                    help="完了の定義に対する判定表を出す (phase14 = Phase 14 の 4 行、"
                         "phase15 = T.15.4 / T.15.5 / T.15.6 の 6 行。T.15.15 で物差しを直した。"
                         "phase17 = T.17.99 の 8 行、phase18 = phase17 の 8 行 + T.18.0 の (g)(h) の "
@@ -1529,7 +1529,7 @@ def parser():
                         "phase30 = phase29 の 26 行のうち `dns_slow` の行を「立った窓の名前解決に成功したミスの平均が"
                         "前の版の 1.5 倍未満」(件/時は表示だけ) に、1 名前あたりの引き直しの行を「答えのある名前 1 つあたり "
                         "(`/dns` の一覧が切れていれば引き直しの合計) が前の期間の 1.5 倍未満」に読み替えたもの。T.33.1・T.33.2。"
-                        "phase35 = phase30 の 26 行のうち `/events` の anomaly の行 (表示だけ) を要約 "
+                        "T35 = phase30 の 26 行のうち `/events` の anomaly の行 (表示だけ) を要約 "
                         "(`snapshot-summary.py`) と同じ関数で数え、heap の行をキャッシュの持ち物 (本文の確保の端数と"
                         "索引) を引いた残りで読むもの。T35.9・T35.11)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
@@ -1569,6 +1569,9 @@ def parser():
 def main(argv=None):
     p = parser()
     args = p.parse_args(argv)
+    if args.criteria:
+        # タスクの番号の別名 (T33 など) は、元の phaseNN に引いて同じ判定表を出す (T35.14)
+        args.criteria = criteria_name(args.criteria)
     sources = [(f, False) for f in args.files] + [(f, True) for f in args.from_files]
     if len(sources) != 2:
         p.error("渡せるのは 2 つ (位置引数か --from-files で 2 枚)")

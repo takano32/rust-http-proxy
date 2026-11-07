@@ -63,7 +63,7 @@ def started_at(snap):
 def anomaly_rates_since_start(snap):
     """`/events` の `anomaly` を**種類別に「起動からの件/時」**にする (T17.0c)。
 
-    `snapshot-summary.py` の要約の表と、判定表の phase35 の `/events` の行 (`_p35_events`) の
+    `snapshot-summary.py` の要約の表と、判定表の T35 の `/events` の行 (`_t35_events`) の
     **1 つの本体** (T35.9 で要約から移した。中身は 1 文字も変えていない)。phase30 までの行は
     `criteria/phase14_18.py` の `anomaly_rates` (起動を `uptime_secs` だけで出し、`:` の無い文面を
     数えない古い数え方) のままにしてある (過去の出力を変えないため)。

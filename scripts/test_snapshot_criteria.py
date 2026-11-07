@@ -324,9 +324,9 @@ class Criteria15(unittest.TestCase):
 
     def test_both_criteria_can_be_chosen(self):
         self.assertEqual(sorted(sd.CRITERIA),
-                         ["phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
+                         ["T35", "phase14", "phase15", "phase17", "phase18", "phase20", "phase21",
                           "phase22", "phase23", "phase24", "phase25", "phase26", "phase27", "phase28", "phase29",
-                          "phase30", "phase35"])
+                          "phase30"])
 
 
 def conn_profile(conn_us_per_row):
@@ -3272,9 +3272,9 @@ class RulesOrder(unittest.TestCase):
             "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_p29_idle_cost",
             "_p26_origin_warn_per_minute",
         ),
-        "phase35": (
+        "T35": (
             "_p20_watch_host", "_p22_refresh_rate", "_p29_miss_band", "_p20_timeout",
-            "_p29_conn_per_resolved_request", "_p20_warm_max", "_p35_events", "_p17_cgroup", "_p35_heap",
+            "_p29_conn_per_resolved_request", "_p20_warm_max", "_t35_events", "_p17_cgroup", "_t35_heap",
             "_p21_request_probes", "_p30_dns_slow", "_p22_stale_retries", "_p29_connect_errors",
             "_p22_connect_errors_shown", "_p30_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail",
             "_p26_header_timeouts", "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut",
@@ -3286,7 +3286,7 @@ class RulesOrder(unittest.TestCase):
     def test_each_phase_lists_the_same_rules_in_the_same_order(self):
         names = {}
         for key, value in sorted(vars(sc).items()):
-            if key.startswith("_p") and callable(value):
+            if key.startswith(("_p", "_t")) and callable(value):
                 names.setdefault(id(value), key)
         got = {phase: tuple(names.get(id(rule), "?") for rule in rules) for phase, rules in sc.RULES.items()}
         self.assertEqual(list(got), list(self.WANT))
@@ -3295,7 +3295,7 @@ class RulesOrder(unittest.TestCase):
 
 
 class Criteria35Events(unittest.TestCase):
-    """`--criteria phase35` (T35.9): `/events` の anomaly の行を要約 (`snapshot-summary.py`) と同じ関数で数える。"""
+    """`--criteria T35` (T35.9): `/events` の anomaly の行を要約 (`snapshot-summary.py`) と同じ関数で数える。"""
 
     T0 = 1_800_000_000
 
@@ -3311,16 +3311,16 @@ class Criteria35Events(unittest.TestCase):
         return s
 
     def row(self, rule, a, b):
-        return rule({"a": a, "b": b}, sc.PHASE31)
+        return rule({"a": a, "b": b}, sc.T35_TH)
 
-    def test_phase35_replaces_the_events_and_the_heap_rows_of_phase30(self):
-        p30, p31 = sd.RULES["phase30"], sd.RULES["phase35"]
+    def test_T35_replaces_the_events_and_the_heap_rows_of_phase30(self):
+        p30, p31 = sd.RULES["phase30"], sd.RULES["T35"]
         self.assertEqual(len(p31), 26)
         # 7 番目 (T35.9) と 9 番目 (T35.11。`Criteria35Heap`) だけ
         self.assertEqual([i for i in range(26) if p30[i] is not p31[i]], [6, 8])
-        self.assertIs(p31[6], sc._p35_events)
-        self.assertIs(p31[8], sc._p35_heap)
-        self.assertEqual(sc.PHASE31, sc.PHASE30)
+        self.assertIs(p31[6], sc._t35_events)
+        self.assertIs(p31[8], sc._t35_heap)
+        self.assertEqual(sc.T35_TH, sc.PHASE30)
 
     def test_the_summary_and_the_row_share_one_function(self):
         import _testing
@@ -3334,7 +3334,7 @@ class Criteria35Events(unittest.TestCase):
                        (130, "cleared: dns_slow after 1m"), (200, "connect_p95: c"), (300, "no colon here")])
         rates = sc.anomaly_rates_since_start(b)
         self.assertEqual(rates["rows"], [("dns_slow", 2, 1.0), ("?", 1, 0.5), ("connect_p95", 1, 0.5)])
-        row = self.row(sc._p35_events, a, b)
+        row = self.row(sc._t35_events, a, b)
         self.assertEqual(row[3], sd.SHOWN)
         self.assertEqual(row[1], "— (phase21 は `dns_slow` ≤ 0.1)")
         self.assertEqual(row[2], "`dns_slow` **1.000** 件/時 (2 件、前 0.500)、`?` 0.500 件/時 (1 件、前 0.000)、"
@@ -3346,29 +3346,29 @@ class Criteria35Events(unittest.TestCase):
         self.assertIn("`dns_slow` **1.00** 件/時 (2 件、前 0.50)", old[2])
 
     def test_the_uptime_comes_from_the_status_part_first(self):
-        # 雪像の上の段に `uptime_secs` の無い雪像: phase30 は数えられず、phase35 (要約) は `status` から読む
+        # 雪像の上の段に `uptime_secs` の無い雪像: phase30 は数えられず、T35 (要約) は `status` から読む
         b = self.snap([(60, "dns_slow: a")], top_uptime=False)
         self.assertEqual(self.row(sc._p22_events, {}, b)[2], "—")
-        row = self.row(sc._p35_events, {}, b)
+        row = self.row(sc._t35_events, {}, b)
         self.assertIn("`dns_slow` **0.500** 件/時 (1 件)", row[2])
         self.assertIn("前の雪像に `/events` が無い", row[4])
 
     def test_a_full_ring_without_older_events_is_read_as_cut(self):
         b = self.snap([(60, "dns_slow: a"), (70, "dns_slow: b")], capacity=2)
-        self.assertIn("**`/events` が満杯か切れている**", self.row(sc._p35_events, {}, b)[4])
+        self.assertIn("**`/events` が満杯か切れている**", self.row(sc._t35_events, {}, b)[4])
         self.assertNotIn("切れている", self.row(sc._p22_events, {}, b)[4])
         # 起動より前の出来事が 1 件でも残っていれば、起動からのぶんは落ちていない (T32.31)
         b = self.snap([(-10, "dns_slow: old"), (60, "dns_slow: a")], capacity=2)
-        self.assertNotIn("切れている", self.row(sc._p35_events, {}, b)[4])
+        self.assertNotIn("切れている", self.row(sc._t35_events, {}, b)[4])
 
     def test_a_snapshot_without_events_cannot_be_judged(self):
-        row = self.row(sc._p35_events, {}, {"taken_at": self.T0, "uptime_secs": 60})
+        row = self.row(sc._t35_events, {}, {"taken_at": self.T0, "uptime_secs": 60})
         self.assertEqual(row[2], "—")
         self.assertIn("後の雪像に `/events` の部が無い", row[4])
 
 
 class Criteria35Heap(unittest.TestCase):
-    """`--criteria phase35` (T35.11): heap の行を、キャッシュの持ち物 (本文の確保の端数と索引) を引いた残りで読む。"""
+    """`--criteria T35` (T35.11): heap の行を、キャッシュの持ち物 (本文の確保の端数と索引) を引いた残りで読む。"""
 
     T0 = 1_800_000_000
     UP = 48 * 3600
@@ -3391,7 +3391,7 @@ class Criteria35Heap(unittest.TestCase):
         return {"taken_at": self.T0, "uptime_secs": self.UP, "status": status}
 
     def row(self, b, rule=None):
-        return (rule or sc._p35_heap)({"a": {}, "b": b, "info": {}}, sc.PHASE31)
+        return (rule or sc._t35_heap)({"a": {}, "b": b, "info": {}}, sc.T35_TH)
 
     def test_the_tokyo_numbers_cannot_be_judged_without_the_allocation(self):
         # 0.34.165 の tokyo (T34.999): +6.3 MB、メモリ 25 件 30.4 MB、ディスク 132 件。phase30 は「届かず」
@@ -3452,20 +3452,35 @@ T34999_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-11-07T135149Z-snapshot.json
 @unittest.skipUnless(all(os.path.exists(x) for x in (T34999_BEFORE, T34999_AFTER)),
                      "tokyo の実データが無い (status/tokyo/ の T34.999 の 2 枚)")
 class Deployed35(unittest.TestCase):
-    """T34.999 の 2 枚 (0.33.3 の停止 → 0.34.165 の 48.1 時間。キャッシュが初めて使われた) に phase35 を当てる (T35.11)。"""
+    """T34.999 の 2 枚 (0.33.3 の停止 → 0.34.165 の 48.1 時間。キャッシュが初めて使われた) に T35 を当てる (T35.11)。"""
 
     def rows(self, criteria):
         return build([T34999_BEFORE, T34999_AFTER, "--no-dns", "--criteria", criteria])["criteria"]["rows"]
 
     def test_t34999_heap(self):
-        # phase30 は +6.3 MB の「届かず」。phase35 はキャッシュの持ち物 (メモリ 25 件 30.4 MB の端数 0〜32.0 MB と
+        # phase30 は +6.3 MB の「届かず」。T35 はキャッシュの持ち物 (メモリ 25 件 30.4 MB の端数 0〜32.0 MB と
         # 索引 0.1 MB) を引くと残りが -25.8〜+6.2 MB で閾 5 MB をまたぐので「判定できず」
         self.assertEqual(self.rows("phase30")[8][3], sd.MISSED)
-        row = self.rows("phase35")[8]
+        row = self.rows("T35")[8]
         self.assertEqual(row[3], sd.UNKNOWN, row)
         self.assertIn("残り **-25.8〜+6.2** MB (増え +6.3 MB − 持ち物 0.1〜32.1 MB)", row[2])
 
     def test_t34999_events_match_the_summary(self):
-        row = self.rows("phase35")[6]
+        row = self.rows("T35")[6]
         self.assertIn("`dns_slow` **0.062** 件/時 (3 件、前 0.000)、`connect_p95` 0.125 件/時 (6 件、前 0.087)", row[2])
         self.assertIn("より前の 461 件を外し", row[4])
+
+
+class CriteriaAliases(unittest.TestCase):
+    """判定表の名前はタスクの番号 (T35.14)。phase14〜30 はそのまま残り、T14〜T33 は同じ判定表の別名。"""
+
+    def test_each_alias_names_an_existing_criteria(self):
+        for alias, name in sc.CRITERIA_ALIASES.items():
+            self.assertIn(name, sc.CRITERIA, alias)
+            self.assertNotIn(alias, sc.CRITERIA, alias)
+            self.assertEqual(sc.criteria_name(alias), name)
+
+    def test_the_new_criteria_is_named_after_its_task(self):
+        self.assertIn("T35", sc.CRITERIA)
+        self.assertEqual(sc.criteria_name("T35"), "T35")
+        self.assertEqual(sc.criteria_name("phase30"), "phase30")

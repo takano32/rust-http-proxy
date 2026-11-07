@@ -269,17 +269,17 @@ python3 scripts/check-ledger.py || NG=1
 python3 - <<'CRITPY' || NG=1
 import glob, re, sys
 src = open('scripts/collect-deployed.sh', encoding='utf-8').read()
-m = re.search(r'^CRITERIA=\$\{CRITERIA:-(phase\d+)\}', src, re.M)
+m = re.search(r'^CRITERIA=\$\{CRITERIA:-(phase\d+|T\d+)\}', src, re.M)
 if not m:
     print("  NG (h): scripts/collect-deployed.sh に CRITERIA の既定が見つからない")
     sys.exit(1)
 want = m.group(1)
 # README から分けた本文 (`docs/*.md`。T29.32) も同じ文書として読む
 readme = ''.join(open(f, encoding='utf-8').read() for f in ['README.md'] + sorted(glob.glob('docs/*.md')))
-bad = sorted(set(x for x in re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)(phase\d+)', readme)
+bad = sorted(set(x for x in re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)(phase\d+|T\d+)', readme)
                  if x != want))
 print("(h) 判定表の既定: collect-deployed.sh は %s / README の「既定は」の書き方 %d か所"
-      % (want, len(re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)phase\d+', readme))))
+      % (want, len(re.findall(r'(?:collect-deployed\.sh`? の既定は\s*|判定表の既定は \*\*`CRITERIA=)(?:phase\d+|T\d+)', readme))))
 for x in bad:
     print("  NG (h): README に「既定は %s」と書いた所がある (collect-deployed.sh の既定は %s)" % (x, want))
 sys.exit(1 if bad else 0)

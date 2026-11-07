@@ -1,6 +1,6 @@
 # 判定表 (`scripts/snapshot_criteria.py`) の**閾と並び** (T34.129 で割った)。
 #
-# Phase ごとの閾の辞書 (`PHASE14`〜`PHASE31`)・`--criteria` の名前から閾を引く `CRITERIA`・出力を
+# Phase ごとの閾の辞書 (`PHASE14`〜`T35_TH`)・`--criteria` の名前から閾を引く `CRITERIA`・出力を
 # 変えない定義 `FROZEN`・名前から判定の関数の並びを引く `RULES` を、Phase の順に組む。判定の関数は
 # `criteria/phase*.py` にある。`RULES` の並びは `test_snapshot_criteria.py` の `RulesOrder` が固定している。
 
@@ -28,7 +28,7 @@ from .phase29_30 import (
     _p29_cgroup_cpu_shown, _p29_conn_per_resolved_request, _p29_connect_errors, _p29_dns_slow,
     _p29_idle_cost, _p29_miss_band, _p30_dns_slow, _p30_refresh_per_name,
 )
-from .phase35 import _p35_events, _p35_heap
+from .t35 import _t35_events, _t35_heap
 
 
 # ---------------------------------------------------------------- (9) 判定表
@@ -283,9 +283,24 @@ PHASE30["dns_slow_avg_factor"] = 1.5
 CRITERIA["phase30"] = PHASE30
 
 
-# phase35 = phase30 の 26 行のうち 7 番目 (`/events` の anomaly。表示だけ) を、要約 (`snapshot-summary.py`) と
+# T35 = phase30 の 26 行のうち 7 番目 (`/events` の anomaly。表示だけ) を、要約 (`snapshot-summary.py`) と
 # 同じ関数で数える行に (T35.9)、9 番目 (heap) をキャッシュの持ち物 (本文の確保の端数と索引) を引いた残りで
 # 読む行に (T35.11) 差し替えたもの。並びは同じ。**phase30 以前の並びと文面は 1 つも動かない**
-RULES["phase35"] = replaced(RULES["phase30"], {7: _p35_events, 9: _p35_heap})
-PHASE31 = dict(PHASE30)
-CRITERIA["phase35"] = PHASE31
+RULES["T35"] = replaced(RULES["phase30"], {7: _t35_events, 9: _t35_heap})
+T35_TH = dict(PHASE30)
+CRITERIA["T35"] = T35_TH
+
+# 判定表の名前は「足したタスクの番号」(2026-11-07、利用者の指示。T35.14)。phase14〜phase30 は過去の締めを
+# 同じ命令で出し直せるように名前を残し、タスクの番号の名前を**別名**として足す (中身と出力は同じもの)。
+# phase24 まではタスクと同じ番号、その後は phase25 = T27・phase26 = T29・phase27 = T30・phase28 = T31・
+# phase29 = T32・phase30 = T33。
+CRITERIA_ALIASES = {
+    "T14": "phase14", "T15": "phase15", "T17": "phase17", "T18": "phase18", "T20": "phase20",
+    "T21": "phase21", "T22": "phase22", "T23": "phase23", "T24": "phase24", "T27": "phase25",
+    "T29": "phase26", "T30": "phase27", "T31": "phase28", "T32": "phase29", "T33": "phase30",
+}
+
+
+def criteria_name(name):
+    """`--criteria` に渡された名前を、判定表の本当の名前に引く (別名なら元の phaseNN に)。"""
+    return CRITERIA_ALIASES.get(name, name)
