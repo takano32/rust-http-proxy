@@ -281,7 +281,7 @@ impl CacheConfig {
         let dir = env
             .get("PROXY_CACHE_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| resolve_default_dir(pterodactyl));
+            .unwrap_or_else(|| resolve_default_dir(pterodactyl, |k| env.get(k)));
         Self {
             enabled: env.flag("PROXY_CACHE_ENABLED", true),
             mem_limit: env.limit("PROXY_MEM_CACHE_MB", "PROXY_MEM_TARGET_PERCENT"),
@@ -352,8 +352,16 @@ impl CacheConfig {
 ///
 /// Pterodactyl ではコンテナが起動ごとに作り直され `/home/container` だけが残るので、
 /// 2 を最優先にする。
-pub fn resolve_default_dir(pterodactyl: bool) -> PathBuf {
-    pick_default_dir(pterodactyl, |k| std::env::var_os(k), is_writable_dir)
+///
+/// `HOME` と `XDG_CACHE_HOME` は `lookup` (`.env` 込み) から読む (T35.8。0.35 までは
+/// プロセスの環境変数だけを見ていたので、`.env` に `HOME` を書くと割当の根 (`quota_root`) と
+/// 食い違った)。**選ぶだけで何も作らない** (作るのは実際に使うとき = ディスクの層の初期化)。
+pub fn resolve_default_dir(pterodactyl: bool, lookup: impl Fn(&str) -> Option<String>) -> PathBuf {
+    pick_default_dir(
+        pterodactyl,
+        |k| lookup(k).map(OsString::from),
+        is_writable_dir,
+    )
 }
 
 /// [`resolve_default_dir`] の候補の順の判断 (環境変数の読みと「書けるか」を引数で受ける。
@@ -387,14 +395,44 @@ fn pick_default_dir(
         .unwrap_or_else(|| CacheConfig::default().dir)
 }
 
+/// `dir` を使えそうか (在れば書けて入れるか、無ければいちばん近い在る祖先に作れそうか)。
+///
+/// **作らないし書かない** (T35.8。0.35 までは `create_dir_all` して `.write-test` を書いていたので、
+/// 設定を読むだけ (`--check` も) で候補のディレクトリができた)。見るのは `access(2)` だけ。
 fn is_writable_dir(dir: &Path) -> bool {
-    if fs::create_dir_all(dir).is_err() {
-        return false;
+    let mut at = dir;
+    loop {
+        match fs::metadata(at) {
+            Ok(m) => return m.is_dir() && can_write_into(at),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => match at.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => at = parent,
+                _ => return false,
+            },
+            Err(_) => return false,
+        }
     }
-    let probe = dir.join(".write-test");
-    let ok = fs::write(&probe, b"").is_ok();
-    let _ = fs::remove_file(&probe);
-    ok
+}
+
+/// `access(dir, W_OK | X_OK)`: このプロセスがディレクトリに名前を足せるか (読み取り専用の
+/// ファイルシステムなら偽)。
+#[cfg(unix)]
+fn can_write_into(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    const W_OK: i32 = 2;
+    const X_OK: i32 = 1;
+    unsafe extern "C" {
+        fn access(path: *const std::ffi::c_char, mode: i32) -> i32;
+    }
+    let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` は NUL 終端の文字列で、呼ぶ間は生きている。`access` は読むだけ
+    unsafe { access(path.as_ptr(), W_OK | X_OK) == 0 }
+}
+
+#[cfg(not(unix))]
+fn can_write_into(dir: &Path) -> bool {
+    fs::metadata(dir).is_ok_and(|m| !m.permissions().readonly())
 }
 
 #[cfg(test)]
@@ -552,5 +590,43 @@ mod tests {
         });
         assert_eq!(got, p("/home/container/.cache/rust-http-proxy"));
         assert_eq!(asked.into_inner(), 1);
+    }
+
+    /// 書けるかの判定は何も作らない (T35.8)。無いディレクトリは在る祖先で答え、
+    /// ファイルの下は偽。
+    #[cfg(unix)]
+    #[test]
+    fn the_writable_check_creates_nothing() {
+        let root = std::env::temp_dir().join(format!("shp-cfg-writable-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let deep = root.join("a/b/rust-http-proxy");
+        assert!(is_writable_dir(&deep));
+        assert!(!root.join("a").exists(), "判定だけで作った");
+        assert!(is_writable_dir(&root));
+        assert!(fs::read_dir(&root).unwrap().next().is_none(), "印を残した");
+        let file = root.join("plain");
+        fs::write(&file, b"").unwrap();
+        assert!(!is_writable_dir(&file.join("below")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `HOME` と `XDG_CACHE_HOME` は `lookup` (`.env` 込み) から読む (T35.8)。
+    #[cfg(unix)]
+    #[test]
+    fn the_default_dir_reads_home_from_the_lookup() {
+        let root = std::env::temp_dir().join(format!("shp-cfg-home-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let home = root.display().to_string();
+        let cfg = CacheConfig::from_lookup(|k| match k {
+            "HOME" => Some(home.clone()),
+            "P_SERVER_UUID" => Some("t358".to_string()),
+            _ => None,
+        });
+        assert_eq!(cfg.dir, root.join(".cache/rust-http-proxy"));
+        assert_eq!(cfg.quota_root, Some(root.clone()));
+        assert!(!root.join(".cache").exists());
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -363,6 +363,9 @@ WARN を 1 行出し (綴りの近い名前があれば `did you mean PROXY_TIME
 `PROXY_CACHE_DIR` を指定しない場合は、書き込める最初の候補を使います:
 `$XDG_CACHE_HOME/rust-http-proxy` (または `~/.cache/rust-http-proxy`) → `/var/cache/rust-http-proxy` → `$TMPDIR/rust-http-proxy-cache`。
 Pterodactyl 以外で root 実行の場合は `/var/cache` を優先します。`$TMPDIR` は tmpfs (RAM) のことが多いので最後の手段です。
+`HOME` と `XDG_CACHE_HOME` は `.env` に書いたものも見ます (`PROXY_DISK_QUOTA_ROOT` の既定と同じ `HOME`)。
+選ぶときは書けそうかを見るだけで、ディレクトリを作るのはキャッシュを開くときです (`--check` では作りません。T35.8。
+0.35 までは環境変数の `HOME` だけを見て、設定を読むだけで候補を作り `.write-test` を書いていました)。
 
 ### 変数ごとの説明
 
