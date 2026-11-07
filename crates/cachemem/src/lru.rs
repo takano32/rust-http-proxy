@@ -10,6 +10,10 @@ use crate::key::{CacheKey, KeyMap};
 
 pub trait LruEntry {
     fn size(&self) -> u64;
+    /// 実際に確保している大きさ (`Vec::capacity` など)。既定は `size` と同じ (T35.11)。
+    fn alloc(&self) -> u64 {
+        self.size()
+    }
     fn last_used(&self) -> u64;
     fn set_last_used(&mut self, seq: u64);
 }
@@ -18,6 +22,8 @@ pub struct Store<E> {
     entries: KeyMap<E>,
     order: BTreeMap<u64, CacheKey>,
     bytes: u64,
+    /// `alloc` の合計 (`bytes` と同じ所で足し引きする。T35.11)
+    alloc: u64,
 }
 
 impl<E> Default for Store<E> {
@@ -26,6 +32,7 @@ impl<E> Default for Store<E> {
             entries: KeyMap::default(),
             order: BTreeMap::new(),
             bytes: 0,
+            alloc: 0,
         }
     }
 }
@@ -33,6 +40,11 @@ impl<E> Default for Store<E> {
 impl<E: LruEntry> Store<E> {
     pub fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// エントリの確保の大きさの合計 (`LruEntry::alloc` の和。T35.11)。
+    pub fn alloc_bytes(&self) -> u64 {
+        self.alloc
     }
 
     pub fn len(&self) -> usize {
@@ -70,13 +82,16 @@ impl<E: LruEntry> Store<E> {
     pub fn insert(&mut self, key: CacheKey, mut entry: E, seq: u64) -> Option<E> {
         entry.set_last_used(seq);
         let size = entry.size();
+        let alloc = entry.alloc();
         let old = self.entries.insert(key, entry);
         if let Some(old) = &old {
             self.order.remove(&old.last_used());
             self.bytes = self.bytes.saturating_sub(old.size());
+            self.alloc = self.alloc.saturating_sub(old.alloc());
         }
         self.order.insert(seq, key);
         self.bytes = self.bytes.saturating_add(size);
+        self.alloc = self.alloc.saturating_add(alloc);
         old
     }
 
@@ -84,6 +99,7 @@ impl<E: LruEntry> Store<E> {
         let e = self.entries.remove(&key)?;
         self.order.remove(&e.last_used());
         self.bytes = self.bytes.saturating_sub(e.size());
+        self.alloc = self.alloc.saturating_sub(e.alloc());
         Some(e)
     }
 
@@ -93,6 +109,7 @@ impl<E: LruEntry> Store<E> {
             let (_, key) = self.order.pop_first()?;
             if let Some(e) = self.entries.remove(&key) {
                 self.bytes = self.bytes.saturating_sub(e.size());
+                self.alloc = self.alloc.saturating_sub(e.alloc());
                 return Some((key, e));
             }
         }
@@ -164,6 +181,46 @@ mod tests {
         assert_eq!(s.remove(k(1)).unwrap().size, 25);
         assert_eq!(s.bytes(), 0);
         assert!(s.remove(k(1)).is_none());
+    }
+
+    /// 確保の大きさの合計は、置き換え・削除・追い出しで `bytes` と同じ所で足し引きされる (T35.11)。
+    #[test]
+    fn alloc_bytes_follow_insert_replace_remove_and_pop() {
+        struct A {
+            size: u64,
+            cap: u64,
+            seq: u64,
+        }
+        impl LruEntry for A {
+            fn size(&self) -> u64 {
+                self.size
+            }
+            fn alloc(&self) -> u64 {
+                self.cap
+            }
+            fn last_used(&self) -> u64 {
+                self.seq
+            }
+            fn set_last_used(&mut self, seq: u64) {
+                self.seq = seq;
+            }
+        }
+        let a = |size, cap| A { size, cap, seq: 0 };
+        let mut s: Store<A> = Store::default();
+        s.insert(k(1), a(10, 16), 1);
+        s.insert(k(2), a(20, 32), 2);
+        assert_eq!((s.bytes(), s.alloc_bytes()), (30, 48));
+        s.insert(k(1), a(5, 8), 3);
+        assert_eq!((s.bytes(), s.alloc_bytes()), (25, 40));
+        assert!(s.remove(k(1)).is_some());
+        assert_eq!((s.bytes(), s.alloc_bytes()), (20, 32));
+        assert_eq!(s.pop_lru().unwrap().0, k(2));
+        assert_eq!((s.bytes(), s.alloc_bytes()), (0, 0));
+
+        // `alloc` を書かない型は `size` と同じ
+        let mut s: Store<E> = Store::default();
+        s.insert(k(1), E { size: 7, seq: 0 }, 1);
+        assert_eq!(s.alloc_bytes(), 7);
     }
 
     #[test]

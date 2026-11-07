@@ -32,6 +32,10 @@ impl LruEntry for MemEntry {
     fn size(&self) -> u64 {
         self.data.len() as u64
     }
+    /// 本文の確保の大きさ (`/status` の `cache.memory.alloc_bytes`。T35.11)
+    fn alloc(&self) -> u64 {
+        self.data.capacity() as u64
+    }
     fn last_used(&self) -> u64 {
         self.last_used
     }
@@ -75,6 +79,12 @@ impl MemTier {
     pub fn usage(&self) -> (u64, usize) {
         let store = self.store.locked();
         (store.bytes(), store.len())
+    }
+
+    /// エントリの本文の確保の大きさ (`Vec::capacity`) の合計。`usage` の長さの和とは、
+    /// 本文を受けた `Vec` の余りの分だけ違う (保存の最後で縮めるので、ふつうは同じ。T35.11)。
+    pub fn alloc_bytes(&self) -> u64 {
+        self.store.locked().alloc_bytes()
     }
 
     pub fn ballast_bytes(&self) -> u64 {

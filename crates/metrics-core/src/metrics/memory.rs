@@ -199,7 +199,8 @@ impl RingBytes {
 ///   既定 2 MiB。常駐しているのは末尾の `stacks_resident` (smaps のスタックの写像の `Rss` の和。
 ///   T32.4) で、1 本 8〜28 KiB しか触っていない
 /// - `cache_memory` はキャッシュの本体 (`cache.memory.used_bytes`) と先行確保
-///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量
+///   (`cache.memory.reserved_bytes`) の合計 = キャッシュがヒープに持っている量。本文は**長さ**で
+///   数える (定義は変えない)。確保の大きさの合計は `cache.memory.alloc_bytes` に別に出す (T35.11)
 /// - `rings` は記録のリングが**満杯のときの見積もり** ([`RingBytes::full`])。`readers` だけは
 ///   環状ではなく表 (最大 256 行。T14.53) だが、同じ「満杯のとき」の見積もりで並べてある
 /// - `arenas` は `PROXY_MALLOC_ARENAS` で掛けた上限 (`0` = glibc の既定のまま。T5.6)

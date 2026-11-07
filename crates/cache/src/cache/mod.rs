@@ -301,6 +301,11 @@ impl Cache {
         self.mem.usage()
     }
 
+    /// メモリの層の本文の確保の大きさ (`Vec::capacity`) の合計 (`/status` の `cache.memory.alloc_bytes`。T35.11)。
+    pub fn mem_alloc_bytes(&self) -> u64 {
+        self.mem.alloc_bytes()
+    }
+
     pub fn disk_usage(&self) -> (u64, usize) {
         self.disk.usage()
     }

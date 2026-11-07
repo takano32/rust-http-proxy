@@ -293,9 +293,9 @@ scripts/snapshot-diff.py a.json b.json --criteria phase30 --daily b-daily.json \
 # phase31 (T35.9・T35.11。`collect-deployed.sh` の既定) は phase30 の 26 行のうち 2 行を直したもの。`/events` の anomaly の行
 # (表示だけ) を、要約 (`snapshot-summary.py`) の表と同じ関数 (`scripts/criteria/common.py` の `anomaly_rates_since_start`)
 # で数え (件/時は 3 桁)、heap の行を `heap_used + mmap − cache_memory` の起動 60 秒の基準からの増えから、さらに
-# キャッシュの持ち物 (本文の確保の端数と索引・鍵) を引いた残りで読む。端数は雪像に無いので
-# 0〜(`used_bytes` + 件数 × 64 KiB) の幅で引き、残りの上下限が閾をまたげば判定できず (`cache.memory.alloc_bytes` が
-# あればその差で 1 つに決まる)
+# キャッシュの持ち物 (本文の確保の端数と索引・鍵) を引いた残りで読む。端数は `cache.memory.alloc_bytes` (T35.11 で
+# 足した本文の確保の大きさの合計) があれば `alloc_bytes − used_bytes` の 1 つに決まり、無い雪像 (それより前の版) は
+# 0〜(`used_bytes` + 件数 × 64 KiB) の幅で引いて、残りの上下限が閾をまたげば判定できず
 scripts/snapshot-diff.py a.json b.json --criteria phase31 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status

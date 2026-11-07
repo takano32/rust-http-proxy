@@ -907,7 +907,8 @@
       (1 本 8〜28 KiB。tokyo の `stacks_estimate` 22.0 MB に対し常駐は 1 MB 未満とみられます)。smaps を読まないので
       `/status` 1 回の増えは 0.3 ms 未満。Linux 以外は `null`
     - `cache_memory` はキャッシュがヒープに持っている量 (`cache.memory` の `used_bytes` +
-      先行確保の `reserved_bytes`)
+      先行確保の `reserved_bytes`)。本文は長さで数えます。確保の大きさ (`Vec::capacity`) の合計は `cache.memory.alloc_bytes` に別に出ます
+      (T35.11。長さの分からない本文も保存の最後で縮めるので、ふつうは `used_bytes` と同じ)
     - `rings` は記録のリングが**満杯になったときの見積もり** (バイト): `recent` (2,000 件)、
       `errors` (500 件)、`bursts` (50 枚)、`log` (1,000 行)、`events` (512 件)、
       `trace` (1,000 行。T14.27)、

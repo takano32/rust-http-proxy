@@ -267,3 +267,51 @@ fn chunked_body_is_kept_without_the_doubling_slack() {
     assert_eq!(data.len(), payload.len());
     assert_eq!(data.capacity(), data.len(), "倍々に育てた余りを返している");
 }
+
+/// `/status` の `cache.memory.alloc_bytes` は本文の確保の大きさの合計で、保存の最後で縮めるので
+/// 長さの分からない本文を入れても `used_bytes` と一致する (T35.11 の案 1。判定表 phase31 が読む)。
+#[test]
+fn status_reports_alloc_bytes_equal_to_used_bytes() {
+    let cache = fresh("shp-test-alloc-bytes", 8 * MIB, 16 * MIB);
+    assert!(
+        cache
+            .to_json()
+            .contains("\"cgroup_keep_free_bytes\":0,\"alloc_bytes\":0},\"disk\""),
+        "{}",
+        cache.to_json()
+    );
+    for (i, len) in [1_000usize, 200_000, 3 * MIB as usize]
+        .into_iter()
+        .enumerate()
+    {
+        let url = format!("http://example.com/alloc/{}", i);
+        let key = cache_key("GET", &url);
+        let payload = wire(&vec![b'A'; len]);
+        let mut sink = cache.begin_store(key, &url, Duration::from_secs(60), 0, false, None, 1);
+        for chunk in payload.chunks(7_000) {
+            sink.write(chunk);
+        }
+        assert!(sink.finish().memory);
+    }
+    cache.put(
+        cache_key("GET", "http://example.com/alloc/cl"),
+        "http://example.com/alloc/cl",
+        wire(b"known length"),
+        Duration::from_secs(60),
+        1,
+    );
+    let (used, entries) = cache.mem_usage();
+    assert_eq!(entries, 4);
+    assert_eq!(cache.mem_alloc_bytes(), used);
+    let json = cache.to_json();
+    assert!(
+        json.contains(&format!("\"alloc_bytes\":{}}},\"disk\"", used)),
+        "{}",
+        json
+    );
+    assert!(
+        json.contains(&format!("\"memory\":{{\"used_bytes\":{},", used)),
+        "{}",
+        json
+    );
+}

@@ -104,7 +104,7 @@ impl Cache {
                 "\"inflight\":{},\"admission_rejected\":{},\"bytes_served\":{},\"reserve\":\"{}\",",
                 "\"memory\":{{\"used_bytes\":{},\"limit_bytes\":{},\"entries\":{},",
                 "\"mode\":\"{}\",\"target_percent\":{},\"reserved_bytes\":{},",
-                "\"keep_free_bytes\":{},\"cgroup_keep_free_bytes\":{}}},",
+                "\"keep_free_bytes\":{},\"cgroup_keep_free_bytes\":{},\"alloc_bytes\":{}}},",
                 "\"disk\":{{\"used_bytes\":{},\"limit_bytes\":{},\"entries\":{},\"dir\":\"{}\",",
                 "\"mode\":\"{}\",\"target_percent\":{},\"reserved_bytes\":{},\"quota_bytes\":{},",
                 "\"quota_mode\":\"{}\",\"keep_free_bytes\":{},\"entry_limit_bytes\":{}}},",
@@ -144,6 +144,8 @@ impl Cache {
             self.mem_reserved(),
             snap.mem_keep_free,
             snap.cgroup_keep_free,
+            // 本文の確保の大きさの合計 (T35.11。判定表 phase31 の heap の行が読む。**部の末尾に足した**)
+            self.mem_alloc_bytes(),
             disk_bytes,
             self.disk_capacity(),
             disk_entries,
