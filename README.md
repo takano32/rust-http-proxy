@@ -2262,6 +2262,7 @@ curl "http://127.0.0.1:8080/slo?days=7"   # しきい (PROXY_SLO) を満たし�
   `/recent` 615/2,000・`/hosts` 639/1,000・`/profile?res=60` 362/1,440 が切れているのに `dropped` は `[]` でした。
 - **`/recent` に残るのは「最後に閉じた N 本」**です。`at` (開始時刻) の最小で窓を切ると手前が抜けるので
   (2026-09-18 の雪像では 2 時間ぶん 85 本)、窓の左端は **`min(at + secs)`** で取ってください。
+- **`/recent` の `count` は `shown` と同じ値** (この応答に入れた件数) です。絞りに合った件数は `matched`、環に残っている件数は `kept`、起動からの通算は `recorded` を読んでください (T36.18)。
 - **T15.0 で足した `/history` の 8 列は、再デプロイより前の標本では 0 です**
   (`waits` / `wait_ms_sum` / `wait_ms_max` / `wait_buckets` / `dns_warm` / `requests_delta` /
   `bytes_delta` / `active_peak`)。版を上げずにレコードの余白へ足したので、前の版が書いた `.rrd` の
