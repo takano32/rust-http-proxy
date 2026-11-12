@@ -100,11 +100,27 @@ impl LogRing {
         (out, (pending - take) as u64)
     }
 
-    /// 読み戻しの締め: 書いた印を通算に合わせ、読み戻した行数を覚える (読み戻した行は
-    /// [`LogRing::push`] で足す。読み戻した行は書き直さない)。
-    fn mark_restored(&mut self, n: usize) {
-        self.written = self.total;
-        self.restored = n;
+    /// 状態ファイルから読み戻した行を足す (読み戻した行は書き直さない)。
+    ///
+    /// 読み戻した行は、**いま環にある行 (読み戻しより先に出た警告) より前に**置き、書いた印は
+    /// 読み戻した行数だけ進める (T36.11)。まだ書いていない行は環の末尾に残るので、
+    /// [`LogRing::take_unwritten`] がそれを書く。前は印を通算に合わせていたので、先に出た
+    /// 警告 (と、1 行ごとに鍵を取り直していたあいだに出た警告) は「書いた」扱いになり、
+    /// 状態ファイルに書かれなかった。
+    fn restore(&mut self, lines: Vec<Line>) {
+        let n = lines.len();
+        let (total, written) = (self.total, self.written);
+        // いまある行を古い順に抜き出す (置き場の確保は残す)
+        let start = self.start();
+        self.buf.rotate_left(start);
+        let held: Vec<Line> = self.buf.drain(..).collect();
+        self.next = 0;
+        for line in lines.into_iter().chain(held) {
+            self.push(line);
+        }
+        self.total = total + n as u64;
+        self.written = written + n as u64;
+        self.restored = n.min(self.cap);
     }
 
     /// 空にする (置き場の確保は残す)。
@@ -165,19 +181,13 @@ pub fn prefault() -> usize {
 
 /// 状態ファイルから読み戻す (**起動時に 1 回だけ**。T14.9)。
 ///
-/// 読み戻した行は**書き直さない** (印を通算に合わせる)。行数は `/log` の
-/// `"restored"` に出す。
+/// 読み戻した行は**書き直さない**。行数は `/log` の `"restored"` に出す。
 ///
-/// **鍵は 1 行ごとに取り直す** (T34.57 でメソッドに寄せたときも前のまま残した。そのため
-/// `LogRing` に `restore` は置かず、[`LogRing::push`] と [`LogRing::mark_restored`] を順に呼ぶ)。
-/// 1 回だけ取る形に変えると、読み戻しの最中に別のスレッドが出した警告の扱い (今は通算に
-/// 混ざって「書いた」印の内側に入り、状態ファイルには書かれない) が変わるため。
+/// **鍵は 1 回だけ取る** (T36.11。T34.57 までは 1 行ごとに取り直していたので、読み戻しの
+/// 最中に別のスレッドが出した警告が「書いた」印の内側に入り、状態ファイルに書かれなかった)。
+/// 読み戻しより先に出た警告も、まだ書いていない行として残る ([`LogRing::restore`])。
 pub fn restore(lines: Vec<Line>) {
-    let n = lines.len().min(MAX_LOG_LINES);
-    for line in lines {
-        RECENT.locked().push(line);
-    }
-    RECENT.locked().mark_restored(n);
+    RECENT.locked().restore(lines);
 }
 
 /// 再起動前から引き継いだ行数 (`/log` の `"restored"`)。

@@ -81,11 +81,9 @@ fn take_unwritten_drops_the_oldest_beyond_max_and_lines_already_overwritten() {
 #[test]
 fn restored_lines_are_not_written_again() {
     let mut r = LogRing::new(3);
-    for at in 1..=5 {
-        r.push(line(at));
-    }
-    r.mark_restored(3);
+    r.restore((1..=5).map(line).collect());
     assert_eq!((r.restored, r.written, r.total), (3, 5, 5));
+    assert_eq!(ats(&r.recent(3)), vec![5, 4, 3]);
     assert_eq!(r.take_unwritten(10), (Vec::new(), 0));
     r.push(line(6));
     assert_eq!(
@@ -95,6 +93,37 @@ fn restored_lines_are_not_written_again() {
     );
 }
 
+/// 読み戻しより先 (= 鍵を待つあいだ) に出た警告は、未書き込みのまま残る (T36.11)。
+/// 前は読み戻しの締めで印を通算に合わせていたので、この行は状態ファイルに書かれなかった。
+#[test]
+fn a_warning_that_comes_in_during_the_restore_stays_unwritten() {
+    let mut r = LogRing::new(8);
+    r.push(line(100));
+    r.restore((1..=3).map(line).collect());
+    assert_eq!((r.restored, r.total, r.written), (3, 4, 3));
+    // 読み戻した行が古く、はさまった行が新しい
+    assert_eq!(ats(&r.recent(8)), vec![100, 3, 2, 1]);
+    assert_eq!(r.take_unwritten(10), (vec![line(100)], 0));
+    // 読み戻しの後に来た行も今までどおり書く
+    r.push(line(101));
+    assert_eq!(r.take_unwritten(10), (vec![line(101)], 0));
+}
+
+/// 環が満杯でも、まだ書いていない行は末尾に残る (読み戻した行の古い方が押し出される)。
+#[test]
+fn restoring_into_a_full_ring_keeps_the_unwritten_lines() {
+    let mut r = LogRing::new(3);
+    for at in 100..=103 {
+        r.push(line(at));
+    }
+    assert_eq!(r.take_unwritten(1).0, vec![line(103)]);
+    r.push(line(104));
+    r.restore((1..=2).map(line).collect());
+    assert_eq!(ats(&r.recent(3)), vec![104, 103, 102]);
+    assert_eq!(r.take_unwritten(10), (vec![line(104)], 0));
+    assert_eq!(r.restored, 2);
+}
+
 #[test]
 fn clear_empties_the_ring_but_keeps_its_room() {
     let mut r = LogRing::new(3);
@@ -102,7 +131,7 @@ fn clear_empties_the_ring_but_keeps_its_room() {
     for at in 1..=4 {
         r.push(line(at));
     }
-    r.mark_restored(1);
+    r.restore(vec![line(0)]);
     r.clear();
     assert!(r.buf.is_empty() && r.buf.capacity() >= 3);
     assert_eq!((r.next, r.total, r.written, r.restored), (0, 0, 0, 0));
