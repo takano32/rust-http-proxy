@@ -298,8 +298,28 @@ fn test_integration_a_slow_reader_of_a_chunked_body_is_closed() {
 /// 実際に書けずに待つ形。splice の経路)。
 #[test]
 fn test_integration_a_client_just_above_the_minimum_gets_the_whole_body() {
+    // 64 KiB を読んでは 40 ms 休む。読み手が待つぶんもあって、プロキシから見た速さ (届いた量 ÷
+    // 書けずに待った時間) は実測で約 0.95 MB/s = 下限 384 KiB/s の 2.4 倍 (下限 1 MiB/s では
+    // 0.93 MiB/s で切られた。境目そのものは `proxy_base::minrate` の単体試験で見る)
+    paced_reader_gets_the_whole_body(12 << 20, Duration::from_millis(40));
+}
+
+/// 64 KiB を 69 ms ごとに読む相手 (平均 0.94 MB/s = 下限 384 KiB/s の 2.4 倍) も切られない
+/// (T36.29)。
+///
+/// 前は窓の始まりの送信キューを最初の待ちが終わってから読んでいたので、その待ちのあいだに
+/// 届いた分 (`POLLOUT` はキューが 2/3 ほどに減るまで返らない。手元で 1 回 1.4 MB) を数えず、
+/// 「720896 B in 2.0s of waiting」(下限を割る) に見えて 20 回とも切られた。40 ms 刻みで
+/// 通っていたのは、2 秒の窓に待ちが 3 回入り、取りこぼしが 1 回ぶんで済んでいたから
+#[test]
+fn test_integration_a_client_reading_every_69ms_is_not_closed() {
+    paced_reader_gets_the_whole_body(8 << 20, Duration::from_millis(69));
+}
+
+/// 下限 384 KiB/s・窓 2 秒のプロキシから `len` バイトの本文を、64 KiB を `pace` ごとに読んで
+/// 最後まで受け取れること、最小の速さで切った本数が増えないことを見る。
+fn paced_reader_gets_the_whole_body(len: usize, pace: Duration) {
     let _serial = response_side();
-    let len = 12 << 20;
     let origin = start_big_origin(len);
     let proxy_port = start_test_proxy(config(MinRate {
         bps: 384 * 1024,
@@ -307,18 +327,10 @@ fn test_integration_a_client_just_above_the_minimum_gets_the_whole_body() {
     }));
     let (before, _, _) = slow_counts(proxy_port);
     let mut s = get(proxy_port, origin, false);
-    // 64 KiB を読んでは 40 ms 休む。読み手が待つぶんもあって、プロキシから見た速さ (届いた量 ÷
-    // 書けずに待った時間) は実測で約 0.95 MB/s = 下限 384 KiB/s の 2.4 倍 (下限 1 MiB/s では
-    // 0.93 MiB/s で切られた。境目そのものは `proxy_base::minrate` の単体試験で見る)。
-    //
-    // **休む長さは決め打ちにせず、k 個目の 64 KiB の締め切り (`t0 + k × 40 ms`) まで寝る**
+    // **休む長さは決め打ちにせず、k 個目の 64 KiB の締め切り (`t0 + k × pace`) まで寝る**
     // (T36.22)。前は毎回 40 ms 寝ていたので、読み手のスレッドが混んだ機械で止められると、
     // 止められたぶんだけ間隔が延びて速さが下限へ寄り、強い負荷で 3 回中 2 回切られた。
-    // 締め切りで刻むと、止められた後は寝ずに追いつくので、速さは機械の混み方によらない。
-    // **刻み (64 KiB / 40 ms) は変えない**: 読み手の速さとプロキシから見た速さは比例しない。
-    // 手元で 69 ms ごと (読み手の平均 0.94 MB/s) にすると、プロキシからは 238 KB/s
-    // (「476160 B in 2.0s of waiting」) に見えて 20 回とも切られた
-    const PACE: Duration = Duration::from_millis(40);
+    // 締め切りで刻むと、止められた後は寝ずに追いつくので、速さは機械の混み方によらない
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let mut buf = vec![0u8; 64 * 1024];
     let mut got = 0usize;
@@ -336,7 +348,7 @@ fn test_integration_a_client_just_above_the_minimum_gets_the_whole_body() {
             }
         }
         got += filled;
-        next += PACE;
+        next += pace;
         if let Some(wait) = next.checked_duration_since(Instant::now()) {
             thread::sleep(wait);
         }

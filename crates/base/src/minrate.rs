@@ -14,6 +14,7 @@
 //! 小さな書きには使わない、トンネルは `poll` で書けるのを待つ回にだけ測る、など)。
 //! 熱い経路 (1 KiB の応答を 1 回で書く forward) には 1 命令も足さない。
 
+use std::cell::Cell;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -55,6 +56,7 @@ impl MinRate {
             bytes: 0,
             queue_fd: -1,
             queued_at_start: 0,
+            queued_before: Cell::new(UNREAD),
         }
     }
 }
@@ -142,9 +144,16 @@ pub struct RateGuard {
     /// 書き先のソケット (`-1` = 見ない)。渡したバイトから送信キューに残っている分を引く
     /// ([`RateGuard::watch_queue`])
     queue_fd: i32,
-    /// 窓の始まり (最初に待ったとき) の送信キューの量
+    /// 窓の始まり (最初の待ちに入る前) の送信キューの量
     queued_at_start: u64,
+    /// 窓がまだ始まっていないときに、待ちに入る直前に読んだ送信キューの量 (`UNREAD` = 読んでいない)。
+    /// 最初の待ちが積まれたら [`RateGuard::queued_at_start`] に移す。待ちの前に呼ばれる
+    /// [`RateGuard::left`] (`&self`) からも置くので `Cell` (T36.29)
+    queued_before: Cell<u64>,
 }
+
+/// [`RateGuard::queued_before`] を読んでいない印。
+const UNREAD: u64 = u64::MAX;
 
 impl RateGuard {
     /// 切らない見張り (設定が `0` のとき・試験の道具)。
@@ -163,6 +172,14 @@ impl RateGuard {
     /// 書けるようになるのを待つと、カーネルは送信バッファを広げながら受け取り続ける
     /// (自動調整。手元で読まない相手でも 3 秒待つごとに 100 KB 前後を受け取った) ので、
     /// 受け取られた量では遅い相手が速く見える。キューを読むのは窓の始まりと判定の 2 回だけ。
+    ///
+    /// **窓の始まりのキューは、最初の待ちに入る前に読む** (T36.29)。待ちのあいだにキューは
+    /// 相手へ流れて減る (`poll` の `POLLOUT` はキューが送信バッファの 2/3 ほどに減るまで
+    /// 返らない) ので、待ち終わってから読むと、最初の待ちの時間は数えるのにその間に届いた
+    /// 分 (手元で 1 回 1.4 MB) を数えない。64 KiB を 69 ms ごとに読む相手 (0.94 MB/s) が
+    /// 2 秒の窓で 0.72 MB (= 下限 384 KiB/s を割る) に見えて切られた。待つ前に読める口は
+    /// [`RateGuard::time`] (自分で待つ) と [`RateGuard::left`] (`poll` で待つ呼ぶ側が
+    /// 待つ直前に聞く) の 2 つ。どちらも通らずに積まれた待ちは、前と同じく待ち終わりに読む。
     pub fn watch_queue(&mut self, fd: i32) {
         self.queue_fd = fd;
     }
@@ -175,6 +192,10 @@ impl RateGuard {
     pub fn time(&mut self, f: impl FnOnce() -> io::Result<usize>) -> io::Result<usize> {
         if !self.rate.is_on() {
             return f();
+        }
+        if self.stalled.is_zero() {
+            // この待ちで窓が始まる: 待つ前のキューを読む (T36.29)
+            self.read_queue_before();
         }
         let t0 = Instant::now();
         let r = f();
@@ -207,8 +228,14 @@ impl RateGuard {
     #[cold]
     fn waited(&mut self, waited: Duration, bytes: u64) -> io::Result<()> {
         if self.stalled.is_zero() {
-            // 窓の始まり: いまキューに残っている分は前の窓のもの
-            self.queued_at_start = unsent(self.queue_fd);
+            // 窓の始まり: いまキューに残っている分は前の窓のもの。待つ前に読んであれば
+            // それを使う (待ちのあいだに届いた分も数える。T36.29)
+            let before = self.queued_before.replace(UNREAD);
+            self.queued_at_start = if before == UNREAD {
+                unsent(self.queue_fd)
+            } else {
+                before
+            };
         }
         self.bytes = self.bytes.saturating_add(bytes);
         self.stalled += waited;
@@ -252,11 +279,26 @@ impl RateGuard {
     }
 
     /// 窓の残り (この先これだけ待てば判定に届く)。切らない設定なら `None`。
-    /// 待ちの上限を決められる呼ぶ側 (トンネルの `poll`) が使う。
+    /// 待ちの上限を決められる呼ぶ側 (トンネルと splice の `poll`) が、**待つ直前に**聞く。
+    ///
+    /// 窓がまだ始まっていなければ、ここで送信キューを読んでおく (次に積まれる待ちで窓が
+    /// 始まるので、その待ちの前の量になる。[`RateGuard::watch_queue`] を見よ。T36.29)。
     pub fn left(&self) -> Option<Duration> {
-        self.rate
-            .is_on()
-            .then(|| self.rate.window.saturating_sub(self.stalled))
+        if !self.rate.is_on() {
+            return None;
+        }
+        if self.stalled.is_zero() {
+            self.read_queue_before();
+        }
+        Some(self.rate.window.saturating_sub(self.stalled))
+    }
+
+    /// 窓が始まる待ちの前の送信キューを読んで置く (待つ回だけ来る)。
+    #[cold]
+    fn read_queue_before(&self) {
+        if self.queue_fd >= 0 {
+            self.queued_before.set(unsent(self.queue_fd));
+        }
     }
 }
 
@@ -459,5 +501,98 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::BrokenPipe);
         assert!(!is_slow(&e));
+    }
+
+    /// 送信キューが詰まった接続 (書き手, 読み手) と、詰まったときのキューの量。
+    #[cfg(target_os = "linux")]
+    fn clogged() -> (std::net::TcpStream, std::net::TcpStream, u64) {
+        use std::io::Write as _;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut w = std::net::TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let (r, _) = l.accept().unwrap();
+        w.set_nonblocking(true).unwrap();
+        let chunk = [0u8; 64 * 1024];
+        while w.write(&chunk).is_ok() {}
+        use std::os::fd::AsRawFd as _;
+        let q = unsent(w.as_raw_fd());
+        assert!(q > 0, "キューが詰まらない");
+        (w, r, q)
+    }
+
+    /// 送信キューが `below` を下回るまで、読み手から読む (= 待ちのあいだに相手へ届く)。
+    #[cfg(target_os = "linux")]
+    fn drain_until(w: &std::net::TcpStream, r: &mut std::net::TcpStream, below: u64) {
+        use std::io::Read as _;
+        use std::os::fd::AsRawFd as _;
+        let mut buf = vec![0u8; 256 * 1024];
+        let t0 = Instant::now();
+        while unsent(w.as_raw_fd()) >= below {
+            assert!(t0.elapsed() < Duration::from_secs(10), "キューが減らない");
+            let _ = r.read(&mut buf).unwrap();
+        }
+    }
+
+    /// `poll` で待つ呼ぶ側 (splice・トンネル): 最初の待ちのあいだに相手へ届いた分も数える
+    /// (T36.29)。前は待ち終わってからキューを読んだので、届いた分が 0 に見えて切った。
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn what_drains_during_the_first_poll_wait_counts() {
+        use std::os::fd::AsRawFd as _;
+        let _ring = crate::sync::LockExt::locked(&crate::log::tests::RING_TEST_LOCK);
+        let (w, mut r, q) = clogged();
+        let mut g = MinRate {
+            bps: 100_000,
+            window: Duration::from_millis(10),
+        }
+        .guard(Side::Response, 1);
+        g.watch_queue(w.as_raw_fd());
+        // 待つ直前に窓の残りを聞き、待つあいだに半分が届く
+        assert_eq!(g.left(), Some(Duration::from_millis(10)));
+        drain_until(&w, &mut r, q / 2);
+        // 窓いっぱい待って、書けたのは 0 B。届いたのは q/2 以上 → 10 ms で 1000 B を上回る
+        g.note(Duration::from_millis(10), 0).unwrap();
+        assert_eq!(g.left(), Some(Duration::from_millis(10)), "通して数え直す");
+    }
+
+    /// 自分で待つ書き ([`RateGuard::time`]) も、待つ前のキューから数える (T36.29)。
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn what_drains_during_the_first_timed_write_counts() {
+        use std::os::fd::AsRawFd as _;
+        let _ring = crate::sync::LockExt::locked(&crate::log::tests::RING_TEST_LOCK);
+        let (w, mut r, q) = clogged();
+        let mut g = MinRate {
+            bps: 100_000,
+            window: Duration::from_millis(10),
+        }
+        .guard(Side::Response, 1);
+        g.watch_queue(w.as_raw_fd());
+        let n = g
+            .time(|| {
+                drain_until(&w, &mut r, q / 2);
+                std::thread::sleep(Duration::from_millis(10));
+                Ok(0)
+            })
+            .unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(g.left(), Some(Duration::from_millis(10)), "通して数え直す");
+    }
+
+    /// 待つ前に読んでいなければ、前と同じく待ち終わりのキューから数える (届いた分は見えない)。
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn without_asking_before_the_wait_the_queue_is_read_after_it() {
+        use std::os::fd::AsRawFd as _;
+        let _ring = crate::sync::LockExt::locked(&crate::log::tests::RING_TEST_LOCK);
+        let (w, mut r, q) = clogged();
+        let mut g = MinRate {
+            bps: 100_000,
+            window: Duration::from_millis(10),
+        }
+        .guard(Side::Response, 1);
+        g.watch_queue(w.as_raw_fd());
+        drain_until(&w, &mut r, q / 2);
+        let e = g.note(Duration::from_millis(10), 0).unwrap_err();
+        assert!(is_slow(&e), "{e}");
     }
 }
