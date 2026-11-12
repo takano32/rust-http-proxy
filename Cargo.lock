@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "proxy-base"
-version = "0.36.33"
+version = "0.36.34"
 
 [[package]]
 name = "proxy-bench"
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-server"
-version = "0.36.33"
+version = "0.36.34"
 dependencies = [
  "proxy-base",
  "proxy-blocklist",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "rust-http-proxy"
-version = "0.36.33"
+version = "0.36.34"
 dependencies = [
  "proxy-endpoints",
  "proxy-run",
