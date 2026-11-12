@@ -1533,7 +1533,8 @@ def parser():
                         "(`snapshot-summary.py`) と同じ関数で数え、heap の行をキャッシュの持ち物 (本文の確保の端数と"
                         "索引) を引いた残りで読むもの。T35.9・T35.11。"
                         "T36 = T35 の 26 行のうち heap の行を、キャッシュに加えて名前解決の表の持ち物 "
-                        "(`dns.entries` × 1 名前あたりの大きさ) も引いた残りで読むもの。T36.1)")
+                        "(`dns.entries` × 1 名前あたりの大きさ) も引いた残りで読み、接続のエラーの行に下限 0.001、`dns_slow` の行に"
+                        "前が 0 件のときの絶対値の閾 500 ms を置いたもの。T36.1・T36.3)")
     p.add_argument("--out", choices=["md", "json"], default="md", help="出力の形 (既定 md)")
     p.add_argument("--top", type=int, default=20, metavar="N", help="各表に出す行数 (既定 20)")
     p.add_argument("--burst-median-k", type=int, default=None, metavar="K",

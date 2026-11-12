@@ -3284,7 +3284,7 @@ class RulesOrder(unittest.TestCase):
         "T36": (
             "_p20_watch_host", "_p22_refresh_rate", "_p29_miss_band", "_p20_timeout",
             "_p29_conn_per_resolved_request", "_p20_warm_max", "_t35_events", "_p17_cgroup", "_t36_heap",
-            "_p21_request_probes", "_p30_dns_slow", "_p22_stale_retries", "_p29_connect_errors",
+            "_p21_request_probes", "_t36_dns_slow", "_p22_stale_retries", "_t36_connect_errors",
             "_p22_connect_errors_shown", "_p30_refresh_per_name", "_p25_silent_restarts", "_p24_connect_tail",
             "_p26_header_timeouts", "_p26_log_errors", "_p26_local_blocks", "_p26_connect_cut",
             "_p26_rejected", "_p28_trim_works", "_p29_cgroup_cpu_shown", "_p29_idle_cost",
@@ -3507,10 +3507,11 @@ class Criteria36Heap(unittest.TestCase):
     def row(self, b, rule=None):
         return (rule or sc._t36_heap)({"a": {}, "b": b, "info": {}}, sc.T36_TH)
 
-    def test_T36_replaces_only_the_heap_row_of_T35(self):
+    def test_T36_replaces_the_heap_row_of_T35(self):
         t35, t36 = sd.RULES["T35"], sd.RULES["T36"]
         self.assertEqual(len(t36), 26)
-        self.assertEqual([i for i in range(26) if t35[i] is not t36[i]], [8])
+        # 9 番目 (T36.1)。11・13 番目は T36.3 (`Criteria36ZeroBefore`)
+        self.assertEqual([i for i in range(26) if t35[i] is not t36[i]], [8, 10, 12])
         self.assertIs(t36[8], sc._t36_heap)
         self.assertEqual(sc.T36_TH, sc.T35_TH)
         self.assertEqual(sc.criteria_name("T36"), "T36")
@@ -3563,6 +3564,73 @@ class Criteria36Heap(unittest.TestCase):
         self.assertIn("前の起動が残した基準", row[4])
 
 
+class Criteria36ZeroBefore(unittest.TestCase):
+    """`--criteria T36` (T36.3): 前の期間が 0 件だと読めなかった `dns_slow` と接続のエラーの行を、下限つきで読む。"""
+
+    T0 = 1_800_000_000
+    # 作り物は phase29・phase30 の試験と同じものを使う
+    snap = Criteria30Rows.snap
+    slow = Criteria30Rows.slow
+    hist_snap = Criteria29Rows.hist_snap
+    rows = staticmethod(Criteria29Rows.rows)
+
+    def errors(self, a, b):
+        return sc._t36_connect_errors({"a": a, "b": b}, sc.T36_TH)
+
+    def dns_slow(self, a, b):
+        return sc._t36_dns_slow({"a": a, "b": b}, sc.T36_TH)
+
+    def test_T36_replaces_the_two_rows_of_T35(self):
+        t35, t36 = sd.RULES["T35"], sd.RULES["T36"]
+        self.assertEqual([i for i in range(26) if t35[i] is not t36[i]], [8, 10, 12])
+        self.assertIs(t36[10], sc._t36_dns_slow)
+        self.assertIs(t36[12], sc._t36_connect_errors)
+        self.assertEqual((sc.CONNECT_ERROR_FLOOR, sc.DNS_SLOW_AVG_FLOOR_MS), (0.001, 500))
+
+    def test_connect_errors_under_the_floor_are_met_even_after_zero(self):
+        # T34.999 の形: 前が 0 件で、後が 1 件でもあると phase29 の行は届かず。後が 0.001 未満なら T36 は満たした
+        a = self.hist_snap(self.rows(24, 0, 0, 9984, 0, 0))
+        b = self.hist_snap(self.rows(48, 48, 0, 95952, 0, 0))
+        self.assertEqual(sc._p29_connect_errors({"a": a, "b": b}, sc.PHASE30)[3], sd.MISSED)
+        row = self.errors(a, b)
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("0.00000 (0 / 9,984) → **0.00050** (48 / 96,000)", row[2])
+        self.assertIn("前の版の 1.5 倍未満か、後が 0.001 未満 (T36.3。", row[0])
+        self.assertEqual(row[1], "< 前 ×1.5 か < 0.001")
+        self.assertIn("が下限 0.001 未満なので、前の何倍かに依らず満たした (T36.3)", row[4])
+
+    def test_connect_errors_over_the_floor_still_compare_with_before(self):
+        a = self.hist_snap(self.rows(24, 0, 0, 9984, 0, 0))
+        # 後が 0.001 以上なら、前が 0 件なので届かずのまま
+        b = self.hist_snap(self.rows(48, 96, 0, 45504, 0, 0))
+        row = self.errors(a, b)
+        self.assertEqual(row[3], sd.MISSED, row)
+        self.assertNotIn("下限", row[4])
+        # 前と比べて満たす行・判定できずの行は、phase29 と同じ判定
+        b2 = self.hist_snap(self.rows(48, 3024, 71856, 33168, 3024, 7200))
+        a2 = self.hist_snap(self.rows(48, 1440, 48000, 24000, 1392, 6960))
+        self.assertEqual(self.errors(a2, b2)[3:], sc._p29_connect_errors({"a": a2, "b": b2}, sc.PHASE30)[3:])
+        a3 = self.hist_snap([r[:3] for r in self.rows(48, 1440, 48000, 24000, 1392, 6960)], other_ports=False)
+        self.assertEqual(self.errors(a3, b)[3], sd.UNKNOWN)
+
+    def test_dns_slow_without_before_windows_is_read_against_500_ms(self):
+        # 前の版に立った窓が無いと phase30 の行は判定できず。T36 は後の平均を 500 ms 未満で読む
+        quiet = self.snap({}, [])
+        self.assertEqual(sc._p30_dns_slow({"a": quiet, "b": self.slow(300, 2)}, sc.PHASE30)[3], sd.UNKNOWN)
+        row = self.dns_slow(quiet, self.slow(300, 2))
+        self.assertEqual(row[3], sd.MET, row)
+        self.assertIn("**300** ms (8 回、立った 2 件)", row[2])
+        self.assertIn("前の版に立った窓が無ければ 500 ms 未満。T36.3。", row[0])
+        self.assertIn("前の版に成功したミスで立った窓が無いので、後の平均 300 ms を絶対値の閾 500 ms と比べた", row[4])
+        self.assertNotIn("比べる平均が無い", row[4])
+        self.assertEqual(self.dns_slow(quiet, self.slow(600, 2))[3], sd.MISSED)
+
+    def test_dns_slow_with_before_windows_is_the_phase30_row(self):
+        for a, b in ((self.slow(300, 5), self.slow(330, 15)), (self.slow(300, 5), self.slow(600, 5)),
+                     ({}, self.slow(300, 5)), (self.slow(300, 5), self.slow(300, 5, exact=False))):
+            self.assertEqual(self.dns_slow(a, b)[2:], sc._p30_dns_slow({"a": a, "b": b}, sc.PHASE30)[2:])
+
+
 T3599_BEFORE = os.path.join(DEPLOYED, "tokyo", "2026-11-07T214622Z-shutdown-snapshot.json")
 T3599_AFTER = os.path.join(DEPLOYED, "tokyo", "2026-11-09T215159Z-snapshot.json")
 T36_NOW = os.path.join(DEPLOYED, "tokyo", "2026-11-12T100706Z-snapshot.json")
@@ -3586,6 +3654,16 @@ class Deployed36(unittest.TestCase):
                 row = self.heap(before, after, "T36")
                 self.assertEqual(row[3], sd.MET, row)
                 self.assertIn(want, row[2])
+
+    def test_t34999_rows_with_nothing_before(self):
+        # T36.3 の受け入れ基準: T34.999 の 2 枚で、前が 0 件だった 2 行が満たしたになる
+        c = build([T34999_BEFORE, T34999_AFTER, "--no-dns", "--criteria", "T35"])["criteria"]["rows"]
+        self.assertEqual((c[10][3], c[12][3]), (sd.UNKNOWN, sd.MISSED))
+        rows = build([T34999_BEFORE, T34999_AFTER, "--no-dns", "--criteria", "T36"])["criteria"]["rows"]
+        self.assertEqual(rows[10][3], sd.MET, rows[10])
+        self.assertIn("**219** ms (13 回、立った 2 件)", rows[10][2])
+        self.assertEqual(rows[12][3], sd.MET, rows[12])
+        self.assertIn("0.00000 (0 / 9,981) → **0.00029** (13 / 45,577)", rows[12][2])
 
 
 class CriteriaAliases(unittest.TestCase):

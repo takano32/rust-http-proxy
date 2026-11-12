@@ -299,10 +299,12 @@ scripts/snapshot-diff.py a.json b.json --criteria phase30 --daily b-daily.json \
 scripts/snapshot-diff.py a.json b.json --criteria T35 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status
-# T36 (T36.1。`collect-deployed.sh` の既定) は T35 の 26 行のうち heap の行を、キャッシュの持ち物に加えて名前解決の表の
+# T36 (T36.1・T36.3。`collect-deployed.sh` の既定) は T35 の 26 行のうち heap の行を、キャッシュの持ち物に加えて名前解決の表の
 # 持ち物 (`/status` の `dns.entries` × 1 名前あたり 1,070 B) も引いた残りで読むもの。表は上限 4,096 名前で止まる増えで、
 # 1 名前あたりの大きさは実バイナリの表を埋めて `/status` の `memory` を前後で読んで測った (答えのある名前 1,060 B・
-# 答えの無い名前 1,137 B・tokyo に似せた 2 対 1 の混ぜで 1,069 B)。`dns.entries` の無いスナップショットは 0〜上限ぶんの幅で引く
+# 答えの無い名前 1,137 B・tokyo に似せた 2 対 1 の混ぜで 1,069 B)。`dns.entries` の無いスナップショットは 0〜上限ぶんの幅で引く。
+# 前の版と比べる 2 行には下限を置いた (T36.3): 接続のエラー (443・80) の率は前の 1.5 倍未満か後が 0.001 未満、`dns_slow` は
+# 前の版に成功したミスで立った窓が無ければ後の平均が 500 ms 未満 (tokyo の立った窓の平均 144〜334 ms の最大の 1.5 倍)
 scripts/snapshot-diff.py a.json b.json --criteria T36 --daily b-daily.json \
                          --profile b-profile_res_60.json --profile-before a-profile_res_60.json \
                          --zero zero.json --daily-snapshots status

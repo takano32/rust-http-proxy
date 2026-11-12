@@ -1,11 +1,13 @@
-# 判定表 (`scripts/snapshot_criteria.py`) の **T36 の行** (T36.1)。
+# 判定表 (`scripts/snapshot_criteria.py`) の **T36 の行** (T36.1・T36.3)。
 #
 # T35 の 26 行のうち、heap の行 (9 番目) を、キャッシュの持ち物に加えて**名前解決の表の持ち物**も引いた残りで
-# 読む行 (T36.1)。並べるのは `RULES` (`criteria/rules.py`)。**T35 以前の行と文面は 1 つも動かさない**。
+# 読む行 (T36.1) と、前の期間が 0 件だと読めなかった `dns_slow` (11 番目) と接続のエラー (13 番目) を下限つきで
+# 読む行 (T36.3)。並べるのは `RULES` (`criteria/rules.py`)。**T35 以前の行と文面は 1 つも動かさない**。
 
 from .common import MET, MISSED, UNKNOWN, n, part, stamp
 from .phase14_18 import mb, memory_of, uptime_text
 from .phase23_25 import _p24_heap
+from .phase29_30 import _p29_connect_errors, _p30_dns_slow, dns_slow_windows, history_since_start
 from .t35 import ALLOC_KEY, cache_owned_range
 
 
@@ -107,3 +109,79 @@ def _t36_heap(c, th):
     return (label, limit, text, UNKNOWN,
             src + f"。**残りの幅が閾 {lim:.0f} MB をまたぐ** (長さの分からない本文の確保の端数か、名前解決の表の"
             f"名前の数がスナップショットに無い。本体が `cache.memory.{ALLOC_KEY}` と `dns.entries` を出せば 1 つに決まる)")
+
+
+# --- T36.3: 前の期間が 0 件のときの「前の何倍未満」を、下限つきで読む (11・13 番目の行) ---
+#
+# 前の版と比べる行は、前が 0 件だと読めない。T34.999 の 2 枚 (0.33.3 → 0.34.165) では:
+# - 13 番目 (接続のエラー ÷ 試行) は前が 0 / 9,981 で、後の 13 / 45,577 (0.00029) が 1 件でも「届かず」になった
+#   (`_p29_connect_errors` は前が 0 なら後も 0 のときだけ満たす)
+# - 11 番目 (`dns_slow` が立った窓の成功したミスの平均) は、前の版に立った窓が無く、比べる平均が無いので「判定できず」
+# どちらも、前の何倍かではなく**絶対の値**で読めば判定できる。T36 では、率の行は後が下限未満なら満たしたとし、
+# `dns_slow` は前に立った窓が無ければ後の平均を絶対値の閾で読む。T35 以前の行は変えない。
+
+# 接続のエラーの率の下限 (後がこれ未満なら、前の何倍かに依らず満たした。TASKS.md の T36.3 の「たとえば 0.001」)。
+# tokyo の締めの後の値は 0.00010〜0.00029 (T34.999・T35.99)
+CONNECT_ERROR_FLOOR = 0.001
+# 前の版に立った窓が無いときの、`dns_slow` が立った窓の成功したミスの平均の閾 (ms)。tokyo の `dns_fail_ms_sum` の
+# ある版のスナップショット (0.32.39〜0.35.14、2026-11-08 まで) で、立った窓の平均は 144〜334 ms だった。その最大の
+# 1.5 倍 (= 前の版と比べる行の倍率) を丸めた
+DNS_SLOW_AVG_FLOOR_MS = 500
+# `_p30_dns_slow` が前の版に立った窓が無いときに出どころの頭に付ける文 (T36 ではこれを外して書き直す)
+NO_BEFORE = "前の版の `/history?res=60` の窓で立った窓に成功したミスが無い (比べる平均が無い)。"
+
+
+def resolved_error_rate(snap):
+    """起動からの `/history?res=3600` の、443・80 宛ての接続のエラー (名前解決の失敗を除く) ÷ 試行。
+
+    数え方は `_p29_connect_errors` と同じ。欄が無いか試行が 0 なら None。
+    """
+    keys = ("errors", "errors_by_cause", "connects", "other_port_errors", "other_port_attempts")
+    v = history_since_start(snap, 3600, keys)
+    if v is None:
+        return None
+    causes = v["_causes"]
+    dns = v["errors_by_cause"][causes.index("dns")] if "dns" in causes else 0
+    errs = v["errors"] - dns
+    num, den = errs - v["other_port_errors"], v["connects"] + errs - v["other_port_attempts"]
+    return (num / den) if den else None
+
+
+def _t36_connect_errors(c, th):
+    """T36.3: 接続のエラー (443・80) の行を、前の版の 1.5 倍未満**か、後が下限 0.001 未満**で読む。
+
+    実測と出どころは `_p29_connect_errors` と同じ。前が 0 件だと後が 1 件でも「届かず」になっていたので、
+    後の率が `CONNECT_ERROR_FLOOR` 未満なら満たしたとする (「届かず」だけを読み替える。判定できずは変えない)。
+    """
+    label, limit, shown, verdict, src = _p29_connect_errors(c, th)
+    floor = CONNECT_ERROR_FLOOR
+    label = label.replace("倍未満 (", f"倍未満か、後が {floor} 未満 (T36.3。", 1)
+    limit = f"{limit} か < {floor}"
+    if verdict == MISSED:
+        rate = resolved_error_rate(c["b"])
+        if rate is not None and rate < floor:
+            return (label, limit, shown, MET,
+                    src + f"。後の {rate:.5f} が下限 {floor} 未満なので、前の何倍かに依らず満たした (T36.3)")
+    return (label, limit, shown, verdict, src)
+
+
+def _t36_dns_slow(c, th):
+    """T36.3: `dns_slow` の行を、前の版に立った窓が無ければ**後の平均の絶対値** (500 ms 未満) で読む。
+
+    実測と出どころは `_p30_dns_slow` と同じ。前の版の窓に成功したミスで立った窓が無いと比べる平均が無く
+    「判定できず」になっていたので、そのときだけ後の平均を `DNS_SLOW_AVG_FLOOR_MS` と比べる。
+    """
+    label, limit, shown, verdict, src = _p30_dns_slow(c, th)
+    floor = DNS_SLOW_AVG_FLOOR_MS
+    label = label.replace("(T.33.1。", f"(前の版に立った窓が無ければ {floor} ms 未満。T36.3。", 1)
+    limit = f"{limit}。前に無ければ < {floor} ms"
+    if verdict != UNKNOWN:
+        return (label, limit, shown, verdict, src)
+    aft, bef = dns_slow_windows(c["b"], th), dns_slow_windows(c["a"], th)
+    if (aft is None or not aft["exact"] or not aft["hours"] or not aft["fired"] or not aft["misses"]
+            or bef is None or bef["misses"]):
+        return (label, limit, shown, verdict, src)
+    a = aft["lo"] / aft["misses"]
+    return (label, limit, shown, MET if a < floor else MISSED,
+            f"前の版に成功したミスで立った窓が無いので、後の平均 {a:,.0f} ms を絶対値の閾 {floor} ms と比べた "
+            f"(T36.3。tokyo の 2026-11-08 までのスナップショットの平均 144〜334 ms の最大の 1.5 倍)。" + src.replace(NO_BEFORE, "", 1))
